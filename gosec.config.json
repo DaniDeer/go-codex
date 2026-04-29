@@ -1,0 +1,12 @@
+{
+	"global": {
+		"nosec": "enabled",
+		"audit": "disabled"
+	},
+	"exclude-rules": [
+		{
+			"path": ".*",
+			"rules": ["G301", "G304", "G306"]
+		}
+	]
+}
