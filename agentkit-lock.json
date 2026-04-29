@@ -1,0 +1,35 @@
+{
+  "copilot.instructions": {
+    "go": {
+      "source": "github.com/github/awesome-copilot",
+      "sourceType": "github",
+      "path": "instructions/go.instructions.md",
+      "sha": "83a24b7de99c886478659218a02c33e36130aae2",
+      "installPath": ".github/instructions/go.instructions.md"
+    },
+    "instructions": {
+      "source": "github.com/github/awesome-copilot",
+      "sourceType": "github",
+      "path": "instructions/instructions.instructions.md",
+      "sha": "c72cb2c41266cc37ff5790a1cec6fcd1476dc1d9",
+      "installPath": ".github/instructions/instructions.instructions.md"
+    }
+  },
+  "copilot.skills": {
+    "caveman": {
+      "source": "github.com/JuliusBrussee/caveman",
+      "sourceType": "github",
+      "path": "skills/caveman",
+      "sha": "2ab498bd0bc9084496f30659566f0577421c4c3d",
+      "installPath": ".github/skills/caveman"
+    },
+    "caveman-help": {
+      "source": "github.com/JuliusBrussee/caveman",
+      "sourceType": "github",
+      "path": "skills/caveman-help",
+      "sha": "078e4879851371d567f569935d6e93a21f1b2fb3",
+      "installPath": ".github/skills/caveman-help"
+    }
+  },
+  "version": 2
+}

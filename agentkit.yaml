@@ -1,0 +1,6 @@
+instructions:
+    - go
+    - instructions
+skills:
+    - github.com/JuliusBrussee/caveman/skills/caveman
+    - github.com/JuliusBrussee/caveman/skills/caveman-help
