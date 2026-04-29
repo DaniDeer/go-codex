@@ -5,5 +5,3 @@ Public API:
 Schema:
 
 Constraints:
-
-- [ ] Add basic validations e.g. email, UUID, URL, etc. This would be a great way to demonstrate the power of the `Refine` method and to provide common validation logic for users of the library.

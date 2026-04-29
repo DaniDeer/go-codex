@@ -99,10 +99,10 @@ Validation errors and field paths are identical regardless of which format is us
 
 go-codex draws a deliberate line between trusted and untrusted data:
 
-| Direction | What runs | Rationale |
-|-----------|-----------|-----------|
-| **Decode** | type checks + all `Refine` constraints | Input comes from outside — JSON on the wire, YAML from a file, a CLI flag. You cannot trust it. Every constraint runs. |
-| **Encode** | type conversion only | The Go value was constructed by your own code. You already trust it. Running constraints on every encode would be redundant and surprising. |
+| Direction  | What runs                              | Rationale                                                                                                                                   |
+| ---------- | -------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Decode** | type checks + all `Refine` constraints | Input comes from outside — JSON on the wire, YAML from a file, a CLI flag. You cannot trust it. Every constraint runs.                      |
+| **Encode** | type conversion only                   | The Go value was constructed by your own code. You already trust it. Running constraints on every encode would be redundant and surprising. |
 
 This mirrors the design of [autodocodec](https://hackage.haskell.org/package/autodocodec): constraints are a guard on ingress, not a restriction on your own domain logic.
 
@@ -139,6 +139,51 @@ if err := jsonFmt.Validate(u); err != nil {
 ```
 
 `Validate` is always explicit. `Marshal` and `Encode` never silently validate.
+
+## Builtin Format Constraints
+
+`validate/` ships format constraints for common string types. Each constraint validates the value **and** annotates `schema.Schema` so the format appears in OpenAPI output automatically.
+
+| Constraint          | Validates                        | OpenAPI format |
+| ------------------- | -------------------------------- | -------------- |
+| `validate.Email`    | `user@domain.tld`                | `email`        |
+| `validate.UUID`     | RFC 4122 UUID (case-insensitive) | `uuid`         |
+| `validate.URL`      | absolute http/https URL          | `uri`          |
+| `validate.IPv4`     | dotted-decimal IPv4              | `ipv4`         |
+| `validate.IPv6`     | IPv6 address                     | `ipv6`         |
+| `validate.Date`     | `YYYY-MM-DD` (ISO 8601)          | `date`         |
+| `validate.DateTime` | RFC 3339 date-time               | `date-time`    |
+| `validate.Slug`     | `lowercase-hyphen-slug`          | `pattern`      |
+
+```go
+var ContactCodec = codex.Struct[Contact](
+    codex.Field[Contact, string]{
+        Name:     "email",
+        Codec:    codex.String().Refine(validate.Email).WithDescription("Primary email."),
+        Get:      func(c Contact) string { return c.Email },
+        Set:      func(c *Contact, v string) { c.Email = v },
+        Required: true,
+    },
+    codex.Field[Contact, string]{
+        Name:     "id",
+        Codec:    codex.String().Refine(validate.UUID),
+        Get:      func(c Contact) string { return c.ID },
+        Set:      func(c *Contact, v string) { c.ID = v },
+        Required: true,
+    },
+)
+
+// Decode validates format automatically — no extra step.
+contact, err := ContactCodec.Decode(map[string]any{
+    "email": "not-an-email",   // → constraint failed (email): invalid email address: "not-an-email"
+    "id":    "bad-uuid",       // → constraint failed (uuid): invalid UUID: "bad-uuid"
+})
+
+// OpenAPI schema includes format: email, format: uuid automatically.
+yamlBytes, _ := openapi.MarshalYAML(map[string]schema.Schema{"Contact": ContactCodec.Schema})
+```
+
+See `examples/formats/` for a runnable demo covering all constraints.
 
 ## OpenAPI Schema Generation
 
@@ -180,6 +225,7 @@ yamlBytes, err := openapi.MarshalYAML(map[string]schema.Schema{
 ```
 
 Output (trimmed):
+
 ```yaml
 User:
   type: object
@@ -210,10 +256,10 @@ go-codex and Protobuf solve different problems. In a proto-first workflow the tw
 
 **Ownership model:**
 
-| Concern | Owner |
-|---------|-------|
-| Wire format, field numbers, binary encoding | `.proto` + `protoc-gen-go` |
-| Validation rules, richer documentation, format-agnostic decode | `Codec[T]` |
+| Concern                                                        | Owner                      |
+| -------------------------------------------------------------- | -------------------------- |
+| Wire format, field numbers, binary encoding                    | `.proto` + `protoc-gen-go` |
+| Validation rules, richer documentation, format-agnostic decode | `Codec[T]`                 |
 
 **Workflow:**
 
@@ -243,6 +289,7 @@ var CreateUserRequestCodec = codex.Struct[CreateUserRequest](
 ```
 
 **What this gives you:**
+
 - gRPC handles binary transport; the codec handles REST/JSON/YAML config validation.
 - `render/openapi` renders the codec's schema as OpenAPI documentation — no separate YAML file.
 - Validation rules (`Refine`) live in Go, next to the type, not scattered across proto options.
@@ -281,6 +328,7 @@ go-codex/
 │   ├── string.go
 │
 └── examples/
+    ├── formats/            # builtin format constraints demo (Email, UUID, URL, ...)
     ├── openapi/            # OpenAPI schema generation from a Codec
     ├── shape/              # tagged union + Downcast demo
     ├── order/              # nested structs + SliceOf demo

@@ -12,7 +12,6 @@ package main
 
 import (
 	"fmt"
-	"regexp"
 
 	"github.com/DaniDeer/go-codex/codex"
 	"github.com/DaniDeer/go-codex/format"
@@ -25,8 +24,6 @@ type User struct {
 	Age   int
 }
 
-var emailPattern = regexp.MustCompile(`^[^@]+@[^@]+\.[^@]+$`)
-
 var userCodec = codex.Struct[User](
 	codex.Field[User, string]{
 		Name:     "name",
@@ -37,7 +34,7 @@ var userCodec = codex.Struct[User](
 	},
 	codex.Field[User, string]{
 		Name:     "email",
-		Codec:    codex.String().Refine(validate.Pattern(emailPattern)),
+		Codec:    codex.String().Refine(validate.Email),
 		Get:      func(u User) string { return u.Email },
 		Set:      func(u *User, v string) { u.Email = v },
 		Required: true,
