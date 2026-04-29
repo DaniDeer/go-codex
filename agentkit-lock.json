@@ -1,5 +1,12 @@
 {
   "copilot.instructions": {
+    "agent-skills": {
+      "source": "github.com/github/awesome-copilot",
+      "sourceType": "github",
+      "path": "instructions/agent-skills.instructions.md",
+      "sha": "440d5831ff0f1f5c028c2d921c812a2d002fac16",
+      "installPath": ".github/instructions/agent-skills.instructions.md"
+    },
     "go": {
       "source": "github.com/github/awesome-copilot",
       "sourceType": "github",

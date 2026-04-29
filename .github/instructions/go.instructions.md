@@ -343,8 +343,11 @@ Follow idiomatic Go practices and community standards when writing Go code. Thes
 
 ### Essential Tools
 
+- `just`: Task runner — use `just` recipes instead of raw commands where available; run `just` with no arguments to list all recipes
 - `go fmt`: Format code
-- `go vet`: Find suspicious constructs
+- `go vet`: Find suspicious constructs (prefer `staticcheck` when available — it is a strict superset)
+- `staticcheck`: Static analysis that supersedes `go vet`; configured via `staticcheck.conf`
+- `gosec`: Security scanner; configured via `gosec.config.json`
 - `golangci-lint`: Additional linting (golint is deprecated)
 - `go test`: Run tests
 - `go mod`: Manage dependencies

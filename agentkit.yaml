@@ -1,6 +1,7 @@
 instructions:
     - go
     - instructions
+    - agent-skills
 skills:
     - github.com/JuliusBrussee/caveman/skills/caveman
     - github.com/JuliusBrussee/caveman/skills/caveman-help

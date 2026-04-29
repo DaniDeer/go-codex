@@ -4,6 +4,14 @@ default:
 
 # ── Build ──────────────────────────────────────────────────────────────────────
 
+# Build all packages
+build:
+    go build ./...
+
+# Tidy module dependencies
+tidy:
+    go mod tidy
+
 # ── Test & Quality ─────────────────────────────────────────────────────────────
 
 # Run all tests
