@@ -71,6 +71,28 @@ data, err := UserCodec.Encode(user)
 schemaJSON, _ := json.MarshalIndent(UserCodec.Schema, "", "  ")
 ```
 
+## Multi-Format Support
+
+`Codec[T]` operates on an intermediate representation (`map[string]any`) that is format-agnostic.
+The `format` package bridges that intermediate to concrete wire formats — the same codec reads and writes JSON, YAML, and TOML unchanged.
+
+```go
+jsonFmt := format.JSON(UserCodec)
+yamlFmt := format.YAML(UserCodec)
+tomlFmt := format.TOML(UserCodec)
+
+// All three produce identical Go values; validation runs on all three.
+user, err := jsonFmt.Unmarshal([]byte(`{"name":"Alice","age":30}`))
+user, err  = yamlFmt.Unmarshal([]byte("name: Alice\nage: 30\n"))
+user, err  = tomlFmt.Unmarshal([]byte("name = \"Alice\"\nage = 30\n"))
+
+// Encode to any format.
+jsonBytes, _ := jsonFmt.Marshal(user)
+tomlBytes, _ := tomlFmt.Marshal(user)
+```
+
+Validation errors and field paths are identical regardless of which format is used.
+
 ## Project Structure
 
 ```TEXT
@@ -87,14 +109,19 @@ go-codex/
 │   ├── union.go            # TaggedUnion[T]
 │   ├── slice.go            # SliceOf[T]
 │
+├── format/                 # format bridges: JSON, YAML, TOML
+│   ├── format.go           # Format[T], JSON(), YAML(), TOML()
+│
 ├── schema/                 # schema model
 │   ├── schema.go
 │
 ├── validate/               # reusable constraints
-│   ├── number.go
+│   ├── int.go
+│   ├── float.go
 │   ├── string.go
 │
 └── examples/
-    └── shape/
-        └── main.go
+    ├── shape/              # tagged union + Downcast demo
+    ├── order/              # nested structs + SliceOf demo
+    └── multiformat/        # JSON / YAML / TOML with one codec
 ```

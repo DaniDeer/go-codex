@@ -20,6 +20,8 @@ func Int() Codec[int] {
 				return int(n), nil
 			case int:
 				return n, nil
+			case int64:
+				return int(n), nil
 			default:
 				return 0, fmt.Errorf("expected number, got %T", v)
 			}

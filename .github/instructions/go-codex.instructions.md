@@ -25,6 +25,7 @@ go-codex is a Go port of the core ideas from Haskell's [autodocodec](https://hac
 | `codex`    | PUBLIC API: `Codec[T]`, primitives, struct, union, slice, `MapCodecSafe`, `Constraint`, `Refine` | `schema` |
 | `schema`   | Schema model (pure data, no codec logic)                     | none                        |
 | `validate` | Reusable `Constraint` functions for numbers, strings, etc.   | `codex`                     |
+| `format`   | Bridges `Codec[T]` to wire formats: JSON, YAML, TOML         | `codex`, external libs      |
 | `examples` | Usage demonstrations — not importable by other packages      | all                         |
 
 - No circular imports.
@@ -266,6 +267,35 @@ Set `Required: false` on the field. The field is omitted from the encoded object
 - Float constraints: `PositiveFloat`, `NegativeFloat`, `NonZeroFloat`, `MinFloat(n)`, `MaxFloat(n)`, `RangeFloat(min, max)`.
 - String constraints: `NonEmptyString`, `MinLen(n)`, `MaxLen(n)`, `Pattern(re)`, `OneOf(values...)`.
 - Constraints in `validate/` must not depend on any specific codec; they depend only on `codex.Constraint[T]`.
+
+## Multi-Format Output
+
+`Codec[T]` is format-agnostic: `Encode`/`Decode` operate on `any` (typically `map[string]any`).
+The `format` package adds a thin bridge to wire formats.
+
+```go
+// One codec — three formats.
+jsonFmt := format.JSON(configCodec)
+yamlFmt := format.YAML(configCodec)
+tomlFmt := format.TOML(configCodec)
+
+cfg, err := jsonFmt.Unmarshal(jsonBytes)
+cfg, err  = yamlFmt.Unmarshal(yamlBytes)
+cfg, err  = tomlFmt.Unmarshal(tomlBytes)
+
+out, err := tomlFmt.Marshal(cfg)
+```
+
+`Format[T]` has three methods: `Marshal(T) ([]byte, error)`, `Unmarshal([]byte) (T, error)`, `Schema() any`.
+
+`format.New[T]` accepts custom marshal/unmarshal functions for formats not built-in.
+
+**Important**: primitive codecs handle the numeric types each format produces:
+- JSON produces `float64` for all numbers
+- YAML produces `int` for integers, `float64` for floats
+- TOML produces `int64` for integers, `float64` for floats
+
+`Int()` handles `int`, `int64`, and integral `float64`. Add new numeric types to this list when extending.
 
 ## Testing
 
