@@ -20,16 +20,18 @@ go-codex is a Go port of the core ideas from Haskell's [autodocodec](https://hac
 
 ## Package Structure and Responsibilities
 
-| Package    | Responsibility                                               | Imports allowed from        |
-|------------|--------------------------------------------------------------|-----------------------------|
-| `codex`    | PUBLIC API: `Codec[T]`, primitives, struct, union, slice, `MapCodecSafe`, `Constraint`, `Refine` | `schema` |
-| `schema`   | Schema model (pure data, no codec logic)                     | none                        |
-| `validate` | Reusable `Constraint` functions for numbers, strings, etc.   | `codex`                     |
-| `format`   | Bridges `Codec[T]` to wire formats: JSON, YAML, TOML         | `codex`, external libs      |
-| `examples` | Usage demonstrations — not importable by other packages      | all                         |
+| Package          | Responsibility                                               | Imports allowed from        |
+|------------------|--------------------------------------------------------------|-----------------------------|
+| `codex`          | PUBLIC API: `Codec[T]`, primitives, struct, union, slice, `MapCodecSafe`, `Constraint`, `Refine` | `schema` |
+| `schema`         | Schema model (pure data, no codec logic)                     | none                        |
+| `validate`       | Reusable `Constraint` functions for numbers, strings, etc.   | `codex`, `schema`           |
+| `format`         | Bridges `Codec[T]` to wire formats: JSON, YAML, TOML         | `codex`, external libs      |
+| `render/openapi` | Renders `schema.Schema` as OpenAPI 3.x `components/schemas`  | `schema`, external libs     |
+| `examples`       | Usage demonstrations — not importable by other packages      | all                         |
 
 - No circular imports.
 - `schema` has zero dependencies inside this module.
+- `render/openapi` imports only `schema` — no codec logic in the renderer layer.
 - `examples/` must not be imported by any non-example package.
 
 ## Core Abstraction: `Codec[T]`
@@ -50,6 +52,27 @@ type Codec[T any] struct {
 - `Decode` transforms the intermediate back into a Go value, returning an error on failure.
 - `Schema` carries documentation: type name, description, examples, constraints.
 - Keep `Codec[T]` fields exported so callers can inspect or wrap them.
+
+### Annotating Codecs
+
+Use fluent methods to attach human-readable metadata to the schema:
+
+```go
+// WithDescription returns a new Codec with Schema.Description set.
+func (c Codec[T]) WithDescription(desc string) Codec[T]
+
+// WithTitle returns a new Codec with Schema.Title set.
+func (c Codec[T]) WithTitle(title string) Codec[T]
+```
+
+These are typically chained after `Refine`:
+
+```go
+var AgeCodec = codex.Int().
+    Refine(validate.RangeInt(0, 150)).
+    WithTitle("Age").
+    WithDescription("Age in years.")
+```
 
 ## `HasCodec` Interface
 
@@ -117,18 +140,24 @@ func Downcast[A any, B any](v B) (A, error)
 
 ```go
 // Constraint is a named validation predicate.
+// The optional Schema field annotates the codec's schema when the constraint
+// is applied via Refine. Set it to propagate constraint metadata (e.g. bounds,
+// patterns) into the schema for renderers such as render/openapi.
 type Constraint[T any] struct {
     Name    string
     Check   func(T) bool
     Message func(T) string
+    Schema  func(schema.Schema) schema.Schema // optional: mutates schema when Refine is applied
 }
 
 // Refine adds constraints to a codec. Constraints are checked during Decode.
+// If Constraint.Schema is non-nil, it is applied to the codec's schema.
 func Refine[T any](c codex.Codec[T], constraints ...codex.Constraint[T]) codex.Codec[T]
 ```
 
 - `Constraint.Name` identifies the constraint in error messages.
 - `Constraint.Message` produces the human-readable failure description.
+- `Constraint.Schema` is optional. Set it to annotate the codec's schema (e.g. `MinLength`, `Minimum`). Nil = no-op; all existing constraints are unaffected.
 - Reusable constraints live in `validate/`; domain-specific ones live next to the type.
 
 ```go
@@ -137,6 +166,18 @@ var PositiveIntCodec = codex.Refine(
     codex.Int(),
     validate.PositiveInt,
 )
+
+// Good example — custom constraint with schema annotation
+var ShortStringCodec = codex.String().Refine(codex.Constraint[string]{
+    Name:    "maxLen(50)",
+    Check:   func(v string) bool { return len(v) <= 50 },
+    Message: func(v string) string { return "string too long" },
+    Schema: func(s schema.Schema) schema.Schema {
+        n := 50
+        s.MaxLength = &n
+        return s
+    },
+})
 ```
 
 ## Object Codec: Struct Composition
@@ -266,7 +307,38 @@ Set `Required: false` on the field. The field is omitted from the encoded object
 - Number constraints: `PositiveInt`, `NegativeInt`, `MinInt(n)`, `MaxInt(n)`, `RangeInt(min, max)`.
 - Float constraints: `PositiveFloat`, `NegativeFloat`, `NonZeroFloat`, `MinFloat(n)`, `MaxFloat(n)`, `RangeFloat(min, max)`.
 - String constraints: `NonEmptyString`, `MinLen(n)`, `MaxLen(n)`, `Pattern(re)`, `OneOf(values...)`.
-- Constraints in `validate/` must not depend on any specific codec; they depend only on `codex.Constraint[T]`.
+- Constraints in `validate/` must not depend on any specific codec; they depend only on `codex.Constraint[T]` and `schema.Schema`.
+- All built-in `validate/` constraints carry a `Schema` transformer that annotates the codec's schema automatically when applied via `Refine`.
+
+## OpenAPI Schema Rendering
+
+The `render/openapi` package converts `schema.Schema` into OpenAPI 3.x schema objects. It imports only `schema` — no codec logic, no wire format.
+
+```go
+// SchemaObject converts s to an OpenAPI 3.x schema object (map[string]any).
+func SchemaObject(s schema.Schema) map[string]any
+
+// ComponentsSchemas produces the map for components.schemas in an OpenAPI doc.
+func ComponentsSchemas(named map[string]schema.Schema) map[string]any
+
+// MarshalJSON renders named schemas as JSON bytes.
+func MarshalJSON(named map[string]schema.Schema) ([]byte, error)
+
+// MarshalYAML renders named schemas as YAML bytes.
+func MarshalYAML(named map[string]schema.Schema) ([]byte, error)
+```
+
+```go
+// Good example — render OpenAPI schemas from codecs
+yamlBytes, err := openapi.MarshalYAML(map[string]schema.Schema{
+    "User": UserCodec.Schema,
+    "Order": OrderCodec.Schema,
+})
+```
+
+- The renderer is a pure function over `schema.Schema` — it never touches `Codec[T]` or any codec logic.
+- Constraint annotations (`MinLength`, `Minimum`, `Pattern`, `Enum`, etc.) flow from `Refine` automatically when using `validate.*` constraints.
+- Set `Constraint.Schema` on custom constraints to opt into schema annotation.
 
 ## Multi-Format Output
 

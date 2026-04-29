@@ -10,6 +10,18 @@ type Codec[T any] struct {
 	Schema schema.Schema
 }
 
+// WithDescription returns a new Codec with Schema.Description set to desc.
+func (c Codec[T]) WithDescription(desc string) Codec[T] {
+	c.Schema.Description = desc
+	return c
+}
+
+// WithTitle returns a new Codec with Schema.Title set to title.
+func (c Codec[T]) WithTitle(title string) Codec[T] {
+	c.Schema.Title = title
+	return c
+}
+
 // Validate checks v against the codec's constraints without persisting the result.
 //
 // It encodes v to the intermediate representation and decodes it back, running

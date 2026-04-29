@@ -6,13 +6,20 @@ import (
 	"strings"
 
 	"github.com/DaniDeer/go-codex/codex"
+	"github.com/DaniDeer/go-codex/schema"
 )
+
+func intptr(v int) *int { return &v }
 
 // NonEmptyString is a Constraint that requires a non-empty string.
 var NonEmptyString = codex.Constraint[string]{
 	Name:    "non-empty",
 	Check:   func(v string) bool { return v != "" },
 	Message: func(v string) string { return "expected non-empty string" },
+	Schema: func(s schema.Schema) schema.Schema {
+		s.MinLength = intptr(1)
+		return s
+	},
 }
 
 // MinLen returns a Constraint that requires a string of at least n characters.
@@ -22,6 +29,10 @@ func MinLen(n int) codex.Constraint[string] {
 		Check: func(v string) bool { return len(v) >= n },
 		Message: func(v string) string {
 			return fmt.Sprintf("expected string of at least %d characters, got %d", n, len(v))
+		},
+		Schema: func(s schema.Schema) schema.Schema {
+			s.MinLength = intptr(n)
+			return s
 		},
 	}
 }
@@ -34,6 +45,10 @@ func MaxLen(n int) codex.Constraint[string] {
 		Message: func(v string) string {
 			return fmt.Sprintf("expected string of at most %d characters, got %d", n, len(v))
 		},
+		Schema: func(s schema.Schema) schema.Schema {
+			s.MaxLength = intptr(n)
+			return s
+		},
 	}
 }
 
@@ -44,6 +59,10 @@ func Pattern(re *regexp.Regexp) codex.Constraint[string] {
 		Name:    fmt.Sprintf("pattern(%s)", re.String()),
 		Check:   func(v string) bool { return re.MatchString(v) },
 		Message: func(v string) string { return fmt.Sprintf("expected string matching %q, got %q", re.String(), v) },
+		Schema: func(s schema.Schema) schema.Schema {
+			s.Pattern = re.String()
+			return s
+		},
 	}
 }
 
@@ -58,6 +77,14 @@ func OneOf(values ...string) codex.Constraint[string] {
 		Check: func(v string) bool { _, ok := set[v]; return ok },
 		Message: func(v string) string {
 			return fmt.Sprintf("expected one of [%s], got %q", strings.Join(values, ", "), v)
+		},
+		Schema: func(s schema.Schema) schema.Schema {
+			enum := make([]any, len(values))
+			for i, v := range values {
+				enum[i] = v
+			}
+			s.Enum = enum
+			return s
 		},
 	}
 }
