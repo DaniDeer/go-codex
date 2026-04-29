@@ -1,0 +1,47 @@
+{
+	"name": "go-codex",
+	"image": "mcr.microsoft.com/devcontainers/go:1.25-bookworm",
+
+	"features": {
+		"ghcr.io/danideer/devcontainer-features/install-ca-cert:1": {
+			"cert_base64": "${localEnv:CERT_BASE64}",
+			"cert_name": "${localEnv:CERT_NAME}"
+		},
+		"ghcr.io/devcontainers/features/copilot-cli:1": {},
+		"ghcr.io/devcontainers/features/docker-outside-of-docker:1": {},
+		"ghcr.io/DaniDeer/devcontainer-features/just:1": {
+			"version": "1.50.0"
+		},
+		"ghcr.io/azutake/devcontainer-features/go-packages-install:0": {
+			"PACKAGES": "honnef.co/go/tools/cmd/staticcheck@latest,github.com/securego/gosec/v2/cmd/gosec@latest"
+		}
+	},
+
+	"customizations": {
+		"vscode": {
+			"settings": {
+				"go.useLanguageServer": true,
+				"editor.formatOnSave": true,
+				"[go]": {
+					"editor.codeActionsOnSave": {
+						"source.organizeImports": "always"
+					}
+				}
+			},
+			"extensions": [
+				"golang.go",
+				"github.copilot",
+				"github.copilot-chat",
+				"eamodio.gitlens",
+				"ms-azuretools.vscode-docker",
+				"streetsidesoftware.code-spell-checker",
+				"wayou.vscode-todo-highlight",
+				"oderwat.indent-rainbow",
+				"pnp.polacode",
+				"esbenp.prettier-vscode"
+			]
+		}
+	},
+
+	"remoteUser": "vscode"
+}
