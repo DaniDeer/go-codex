@@ -21,6 +21,10 @@ When modifying files in this repository, keep `.github/instructions/go-codex.ins
 | New naming convention established            | Add row to the Naming Conventions table                 |
 | Error handling pattern changed               | Update the Error Handling section                       |
 | New reusable constraint added to `validate/` | Add to the Validation section                           |
+| New codec or type added                      | Add `_test.go` cases: round-trip, error path, schema   |
+| Function signature changed                   | Update all `_test.go` files that call it                |
+| Codec renamed                                | Rename references in test files                         |
+| New `validate/` constraint added             | Add cases to `validate/number_test.go` or `validate/string_test.go` |
 
 ## When Modifying go-codex.instructions.md
 
@@ -36,4 +40,5 @@ When modifying files in this repository, keep `.github/instructions/go-codex.ins
 - [ ] New patterns have at least one code example
 - [ ] Removed patterns no longer appear in instructions
 - [ ] `just check` passes (fmt + staticcheck + gosec)
+- [ ] `just test` passes
 - [ ] `go build ./...` passes with no errors referencing symbols from examples

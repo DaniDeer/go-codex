@@ -22,10 +22,7 @@ go-codex is a Go port of the core ideas from Haskell's [autodocodec](https://hac
 
 | Package    | Responsibility                                               | Imports allowed from        |
 |------------|--------------------------------------------------------------|-----------------------------|
-| `codex`    | PUBLIC API: `Codec[T]`, `MapCodecSafe`, `Constraint`, `Refine` | `schema`                  |
-| `primitive`| Leaf codecs: `String`, `Int`, `Bool`, `Float64`, etc.        | `codex`, `schema`           |
-| `object`   | Struct composition via field descriptors                     | `codex`, `schema`           |
-| `union`    | Tagged union / discriminated union support                   | `codex`, `schema`           |
+| `codex`    | PUBLIC API: `Codec[T]`, primitives, struct, union, slice, `MapCodecSafe`, `Constraint`, `Refine` | `schema` |
 | `schema`   | Schema model (pure data, no codec logic)                     | none                        |
 | `validate` | Reusable `Constraint` functions for numbers, strings, etc.   | `codex`                     |
 | `examples` | Usage demonstrations — not importable by other packages      | all                         |
@@ -73,28 +70,45 @@ type HasCodec[T any] interface {
 
 ```go
 // MapCodecSafe creates a new Codec[B] from Codec[A] using two mapping functions.
-// toB may return an error (used during decoding).
-// toA must be total (used during encoding).
-func MapCodecSafe[A, B any](c codex.Codec[A], toB func(A) (B, error), toA func(B) A) codex.Codec[B]
+// to is the decode direction and must always succeed (total).
+// from is the encode direction and may return an error.
+func MapCodecSafe[A, B any](c codex.Codec[A], to func(A) B, from func(B) (A, error)) codex.Codec[B]
 ```
 
-- Use when a type wraps a primitive: e.g., `type Email string` over `primitive.String`.
-- `toB` is the decode direction and may fail (return `error`).
-- `toA` is the encode direction and must always succeed.
+- Use when a type wraps a primitive: e.g., `type Email string` over `primitive.String()`.
+- `to` is the decode direction: transforms the decoded `A` into `B`. Must be total.
+- `from` is the encode direction: transforms a `B` back to `A` for encoding. May fail.
+- For validation on decode, use `Refine` instead of `MapCodecSafe`.
 
 ```go
-// Good example — Email codec derived from String codec
+// Good example — Email newtype codec
+type Email string
+
 var EmailCodec = codex.MapCodecSafe(
-    primitive.String,
-    func(s string) (Email, error) {
-        if !strings.Contains(s, "@") {
-            return "", fmt.Errorf("invalid email: %q", s)
-        }
-        return Email(s), nil
-    },
-    func(e Email) string { return string(e) },
+    codex.String(),
+    func(s string) Email { return Email(s) },
+    func(e Email) (string, error) { return string(e), nil },
 )
+
+// Validation belongs in Refine, not MapCodecSafe:
+var ValidEmailCodec = EmailCodec.Refine(codex.Constraint[Email]{
+    Name:    "email",
+    Check:   func(e Email) bool { return strings.Contains(string(e), "@") },
+    Message: func(e Email) string { return fmt.Sprintf("invalid email: %q", e) },
+})
 ```
+
+## `Downcast`: Type Assertion Helper
+
+`Downcast[A, B any]` attempts to cast a value of type `B` to type `A` using a type assertion.
+
+```go
+// Downcast attempts to cast a value of type B to type A.
+// Useful for tagged unions where variants share a common interface.
+func Downcast[A any, B any](v B) (A, error)
+```
+
+- Use with `TaggedUnion` when variant types share a common interface and you need to convert to a concrete type.
 
 ## `Refine` and `Constraint`
 
@@ -103,33 +117,35 @@ var EmailCodec = codex.MapCodecSafe(
 ```go
 // Constraint is a named validation predicate.
 type Constraint[T any] struct {
-    Description string
-    Check       func(T) error
+    Name    string
+    Check   func(T) bool
+    Message func(T) string
 }
 
 // Refine adds constraints to a codec. Constraints are checked during Decode.
 func Refine[T any](c codex.Codec[T], constraints ...codex.Constraint[T]) codex.Codec[T]
 ```
 
-- `Constraint.Description` appears in the schema for documentation.
+- `Constraint.Name` identifies the constraint in error messages.
+- `Constraint.Message` produces the human-readable failure description.
 - Reusable constraints live in `validate/`; domain-specific ones live next to the type.
 
 ```go
 // Good example — constrained integer
-var PositiveInt = codex.Refine(
-    primitive.Int,
-    validate.Min(1),
+var PositiveIntCodec = codex.Refine(
+    codex.Int(),
+    validate.PositiveInt,
 )
 ```
 
 ## Object Codec: Struct Composition
 
-The `object` package builds codecs for structs by composing field codecs. Modelled after autodocodec's `ObjectCodec` with `RequiredKey` / `OptionalKey`.
+`codex.Struct` builds a codec for a struct by composing field codecs. Modelled after autodocodec's `ObjectCodec` with `RequiredKey` / `OptionalKey`.
 
 ```go
 // Field describes a single struct field and its codec.
 type Field[S, F any] struct {
-    Key      string
+    Name     string
     Codec    codex.Codec[F]
     Get      func(S) F          // for encoding
     Set      func(*S, F)        // for decoding
@@ -137,9 +153,8 @@ type Field[S, F any] struct {
 }
 ```
 
-- Use `object.RequiredField` for mandatory fields; `object.OptionalField` for nullable/absent fields.
-- Field keys are explicit strings — do not infer from struct field names.
-- Compose fields into an `ObjectCodec[S]` using `object.Build`.
+- `Field.Name` is the explicit key string used in the encoded representation.
+- Compose fields into a struct codec using `codex.Struct`.
 
 ```go
 // Good example — Point struct
@@ -148,40 +163,50 @@ type Point struct {
     Y float64
 }
 
-var PointCodec = object.Build[Point](
-    object.RequiredField("x", primitive.Float64,
-        func(p Point) float64 { return p.X },
-        func(p *Point, v float64) { p.X = v }),
-    object.RequiredField("y", primitive.Float64,
-        func(p Point) float64 { return p.Y },
-        func(p *Point, v float64) { p.Y = v }),
+var PointCodec = codex.Struct[Point](
+    codex.Field[Point, float64]{
+        Name:     "x",
+        Codec:    codex.Float64(),
+        Get:      func(p Point) float64 { return p.X },
+        Set:      func(p *Point, v float64) { p.X = v },
+        Required: true,
+    },
+    codex.Field[Point, float64]{
+        Name:     "y",
+        Codec:    codex.Float64(),
+        Get:      func(p Point) float64 { return p.Y },
+        Set:      func(p *Point, v float64) { p.Y = v },
+        Required: true,
+    },
 )
 ```
 
 ## Union Codec: Tagged Unions
 
-The `union` package handles discriminated unions via a string tag field.
+`codex.TaggedUnion` handles discriminated unions via a string tag field.
 
 ```go
-// Tagged builds a Codec[T] for a sum type discriminated by a tag field.
-func Tagged[T any](tagKey string, variants ...Variant[T]) codex.Codec[T]
-
-// Variant associates a tag value with a sub-codec.
-type Variant[T any] struct {
-    Tag   string
-    Codec codex.Codec[T]
-}
+// TaggedUnion builds a Codec[T] for a sum type discriminated by a tag field.
+func TaggedUnion[T any](
+    tag string,
+    variants map[string]codex.Codec[T],
+    selectVariant func(T) (string, error),
+) codex.Codec[T]
 ```
 
-- `tagKey` is the JSON key used to identify the variant (e.g., `"type"`).
-- Each `Variant` maps a tag string to a codec that handles that case.
+- `tag` is the JSON key used to identify the variant (e.g., `"type"`).
+- `variants` maps tag strings to codecs that handle each case.
+- `selectVariant` picks the tag for a given value during encoding.
 - Return an error during decode when no variant matches the tag.
 
 ```go
 // Good example — Shape union
-var ShapeCodec = union.Tagged[Shape]("type",
-    union.Variant[Shape]{Tag: "circle",    Codec: CircleCodec},
-    union.Variant[Shape]{Tag: "rectangle", Codec: RectangleCodec},
+var ShapeCodec = codex.TaggedUnion[Shape]("type",
+    map[string]codex.Codec[Shape]{
+        "circle":    CircleCodec,
+        "rectangle": RectangleCodec,
+    },
+    func(s Shape) (string, error) { return s.Kind(), nil },
 )
 ```
 
@@ -198,17 +223,17 @@ The `schema` package defines pure data structures that describe a codec. No code
 | Concept             | Convention                                      | Example                    |
 |---------------------|-------------------------------------------------|----------------------------|
 | Codec variable      | `<Type>Codec` (exported) or `codec` (unexported) | `EmailCodec`, `PointCodec` |
-| Constraint variable | descriptive noun/adjective                      | `validate.Min(1)`, `validate.NonEmpty` |
+| Constraint variable | descriptive noun/adjective                      | `validate.PositiveInt`, `validate.NonEmptyString` |
 | Field key string    | camelCase matching external representation      | `"firstName"`, `"createdAt"` |
 | Tag key string      | `"type"` by default unless domain differs       | `"type"`, `"kind"`         |
 | Package function    | `func Codec() codex.Codec[T]` for canonical codec | `func Codec() codex.Codec[Email]` |
 
 ## Error Handling in Codecs
 
-- Decode errors must include the field path (e.g., `"user.address.zip"`).
+- Decode errors must include the field path (e.g., `"field name: ..."`).
 - Wrap errors with `fmt.Errorf("decoding %s: %w", field, err)`.
 - Encode errors are exceptional; prefer designs where encoding is total (never fails).
-- `Constraint.Check` returns `nil` on success, a descriptive `error` on failure.
+- `Constraint.Check` returns `bool`; `Constraint.Message` returns the error string.
 
 ## Common Patterns
 
@@ -218,14 +243,9 @@ The `schema` package defines pure data structures that describe a codec. No code
 type UserID string
 
 var UserIDCodec = codex.MapCodecSafe(
-    primitive.String,
-    func(s string) (UserID, error) {
-        if s == "" {
-            return "", errors.New("user ID must not be empty")
-        }
-        return UserID(s), nil
-    },
-    func(id UserID) string { return string(id) },
+    codex.String(),
+    func(s string) UserID { return UserID(s) },
+    func(id UserID) (string, error) { return string(id), nil },
 )
 ```
 
@@ -237,18 +257,62 @@ var EmailListCodec = codex.SliceOf(EmailCodec)
 
 ### Optional Field in Object
 
-```go
-object.OptionalField("nickname", primitive.String,
-    func(u User) *string { return u.Nickname },
-    func(u *User, v *string) { u.Nickname = v }),
-```
+Set `Required: false` on the field. The field is omitted from the encoded object when missing during decode; no error is returned.
 
 ## Validation
 
 - `validate/` contains reusable `Constraint[T]` factory functions.
-- Number constraints: `Min`, `Max`, `Range`, `Positive`, `NonNegative`.
-- String constraints: `NonEmpty`, `MinLen`, `MaxLen`, `Pattern`, `OneOf`.
+- Number constraints: `PositiveInt`, `NegativeInt`, `MinInt(n)`, `MaxInt(n)`, `RangeInt(min, max)`.
+- Float constraints: `PositiveFloat`, `NegativeFloat`, `NonZeroFloat`, `MinFloat(n)`, `MaxFloat(n)`, `RangeFloat(min, max)`.
+- String constraints: `NonEmptyString`, `MinLen(n)`, `MaxLen(n)`, `Pattern(re)`, `OneOf(values...)`.
 - Constraints in `validate/` must not depend on any specific codec; they depend only on `codex.Constraint[T]`.
+
+## Testing
+
+Tests use the standard `testing` package. No test framework dependency.
+
+### File Placement
+
+- `_test.go` files co-located with the package under test.
+- Default: external test package (`package codex_test`) for black-box discipline.
+- White-box (`package codex`) only when unexported internals must be accessed.
+
+### Table-Driven Pattern
+
+Use `t.Run` subtests with a slice of `{name, input, want, wantErr}` structs:
+
+```go
+cases := []struct {
+    name    string
+    input   any
+    want    int
+    wantErr bool
+}{
+    {"from int", 42, 42, false},
+    {"wrong type", "x", 0, true},
+}
+for _, tc := range cases {
+    t.Run(tc.name, func(t *testing.T) {
+        got, err := codec.Decode(tc.input)
+        if (err != nil) != tc.wantErr { ... }
+    })
+}
+```
+
+### What to Test for Every Codec
+
+| Aspect | Test |
+|--------|------|
+| Happy path | Valid input decodes/encodes correctly |
+| Round-trip | `decode(encode(v)) == v` |
+| Error paths | Wrong type, missing field, constraint violation |
+| Schema | `Schema.Type` and sub-fields correct |
+| Error messages | Relevant field names / values included |
+
+### What NOT to Test
+
+- `Codec` struct function fields directly — test through behavior (`Encode`, `Decode`).
+- `examples/` — run via `go run`, not `go test`.
 
 ## Tooling
 
