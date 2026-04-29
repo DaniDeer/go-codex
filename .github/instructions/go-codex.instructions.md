@@ -256,7 +256,7 @@ var ShapeCodec = codex.TaggedUnion[Shape]("type",
 
 The `schema` package defines pure data structures that describe a codec. No codec logic lives here.
 
-- `schema.Schema` is the root type; it carries `Type`, `Description`, `Properties`, `Constraints`, etc.
+- `schema.Schema` is the root type; it carries `Type`, `Title`, `Description`, `Format`, `Example`, `Properties`, `Required`, `Enum`, `OneOf`, `Items`, and numeric/string constraint fields (`Minimum`, `Maximum`, `ExclusiveMinimum`, `ExclusiveMaximum`, `MinLength`, `MaxLength`, `Pattern`).
 - Codec constructors populate `Schema` when building a `Codec[T]`.
 - Downstream renderers (JSON Schema, OpenAPI) read `schema.Schema` without touching codec logic.
 

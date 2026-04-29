@@ -326,6 +326,7 @@ go-codex/
 │   ├── int.go
 │   ├── float.go
 │   ├── string.go
+│   ├── format.go           # Email, UUID, URL, IPv4, IPv6, Date, DateTime, Slug
 │
 └── examples/
     ├── formats/            # builtin format constraints demo (Email, UUID, URL, ...)
