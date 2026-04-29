@@ -286,7 +286,7 @@ cfg, err  = tomlFmt.Unmarshal(tomlBytes)
 out, err := tomlFmt.Marshal(cfg)
 ```
 
-`Format[T]` has three methods: `Marshal(T) ([]byte, error)`, `Unmarshal([]byte) (T, error)`, `Schema() any`.
+`Format[T]` has four methods: `Marshal(T) ([]byte, error)`, `Unmarshal([]byte) (T, error)`, `Validate(T) error`, `Schema() any`.
 
 `format.New[T]` accepts custom marshal/unmarshal functions for formats not built-in.
 
@@ -296,6 +296,25 @@ out, err := tomlFmt.Marshal(cfg)
 - TOML produces `int64` for integers, `float64` for floats
 
 `Int()` handles `int`, `int64`, and integral `float64`. Add new numeric types to this list when extending.
+
+## Explicit Validation (bidirectional)
+
+By design, `Refine` constraints run only in the **decode direction** — they guard external input you don't control.
+`Encode` is trusted: you constructed the value yourself.
+
+When bidirectional validation is needed, call `Validate` explicitly:
+
+```go
+// Codec.Validate — no format required.
+if err := userCodec.Validate(u); err != nil { ... }
+
+// Format.Validate — delegates to the codec, format-independent.
+if err := jsonFmt.Validate(u); err != nil { ... }
+```
+
+`Validate` reuses the exact same `Refine` constraints — builtin (`validate.*`) and self-defined — with no duplication. It encodes `v` to the intermediate and decodes it back, running all constraints in the decode path.
+
+**Never change `Refine` to also wrap `Encode`.** The encode direction must remain unconstrained to preserve the trusted-code design principle.
 
 ## Testing
 

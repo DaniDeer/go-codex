@@ -93,6 +93,53 @@ tomlBytes, _ := tomlFmt.Marshal(user)
 
 Validation errors and field paths are identical regardless of which format is used.
 
+## Encode, Decode, and Validation
+
+### The trust boundary
+
+go-codex draws a deliberate line between trusted and untrusted data:
+
+| Direction | What runs | Rationale |
+|-----------|-----------|-----------|
+| **Decode** | type checks + all `Refine` constraints | Input comes from outside — JSON on the wire, YAML from a file, a CLI flag. You cannot trust it. Every constraint runs. |
+| **Encode** | type conversion only | The Go value was constructed by your own code. You already trust it. Running constraints on every encode would be redundant and surprising. |
+
+This mirrors the design of [autodocodec](https://hackage.haskell.org/package/autodocodec): constraints are a guard on ingress, not a restriction on your own domain logic.
+
+### Decode — validates automatically
+
+```go
+// Constraints run during Decode. Invalid input is rejected with field-path errors.
+user, err := jsonFmt.Unmarshal([]byte(`{"name":"","age":-5}`))
+// err: field name: constraint failed (non-empty): expected non-empty string
+```
+
+### Encode — trusted, no constraints
+
+```go
+// Encoding the value you constructed always succeeds (no constraints run).
+// You are responsible for the correctness of values you build.
+data, err := jsonFmt.Marshal(User{Name: "", Age: -5}) // succeeds
+```
+
+### Validate — explicit bidirectional check
+
+When you need to validate a Go value you constructed — before storing it, after building it programmatically, or to surface errors early — call `Validate` explicitly. It reuses the exact same `Refine` constraints, with no duplication:
+
+```go
+// Codec.Validate — no format required.
+if err := UserCodec.Validate(u); err != nil {
+    return fmt.Errorf("constructed invalid user: %w", err)
+}
+
+// Format.Validate — same check, accessed through a Format binding.
+if err := jsonFmt.Validate(u); err != nil {
+    return err
+}
+```
+
+`Validate` is always explicit. `Marshal` and `Encode` never silently validate.
+
 ## Project Structure
 
 ```TEXT
@@ -123,5 +170,6 @@ go-codex/
 └── examples/
     ├── shape/              # tagged union + Downcast demo
     ├── order/              # nested structs + SliceOf demo
-    └── multiformat/        # JSON / YAML / TOML with one codec
+    ├── multiformat/        # JSON / YAML / TOML with one codec
+    └── validate/           # explicit Validate before marshal
 ```

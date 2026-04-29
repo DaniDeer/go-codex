@@ -48,6 +48,12 @@ func (f Format[T]) Unmarshal(data []byte) (T, error) {
 	return f.codec.Decode(intermediate)
 }
 
+// Validate checks v against the codec's constraints without serializing to bytes.
+// It delegates to Codec.Validate — see its documentation for the rationale.
+func (f Format[T]) Validate(v T) error {
+	return f.codec.Validate(v)
+}
+
 // Schema returns the schema from the underlying codec.
 func (f Format[T]) Schema() any {
 	return f.codec.Schema
