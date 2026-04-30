@@ -1,5 +1,7 @@
 # GO Codex
 
+[![CI](https://github.com/DaniDeer/go-codex/actions/workflows/ci.yml/badge.svg)](https://github.com/DaniDeer/go-codex/actions/workflows/ci.yml)
+
 ## What is go-codex?
 
 In standard Go, encoding, decoding, validation, and documentation are separate concerns that drift apart.
@@ -71,7 +73,27 @@ data, err := UserCodec.Encode(user)
 schemaJSON, _ := json.MarshalIndent(UserCodec.Schema, "", "  ")
 ```
 
-## Multi-Format Support
+## Installation & Usage
+
+```bash
+go get github.com/DaniDeer/go-codex@latest
+```
+
+Requires Go 1.25 or later.
+
+### Import paths
+
+| Package                           | Import path                                   |
+| --------------------------------- | --------------------------------------------- |
+| Core codecs                       | `github.com/DaniDeer/go-codex/codex`          |
+| Format bridges (JSON, YAML, TOML) | `github.com/DaniDeer/go-codex/format`         |
+| Built-in constraints              | `github.com/DaniDeer/go-codex/validate`       |
+| OpenAPI renderer                  | `github.com/DaniDeer/go-codex/render/openapi` |
+| Schema model                      | `github.com/DaniDeer/go-codex/schema`         |
+
+## Features
+
+### Multi-Format Support
 
 `Codec[T]` operates on an intermediate representation (`map[string]any`) that is format-agnostic.
 The `format` package bridges that intermediate to concrete wire formats — the same codec reads and writes JSON, YAML, and TOML unchanged.
@@ -93,9 +115,9 @@ tomlBytes, _ := tomlFmt.Marshal(user)
 
 Validation errors and field paths are identical regardless of which format is used.
 
-## Encode, Decode, and Validation
+### Encode, Decode, and Validation
 
-### The trust boundary
+#### The trust boundary
 
 go-codex draws a deliberate line between trusted and untrusted data:
 
@@ -106,7 +128,7 @@ go-codex draws a deliberate line between trusted and untrusted data:
 
 This mirrors the design of [autodocodec](https://hackage.haskell.org/package/autodocodec): constraints are a guard on ingress, not a restriction on your own domain logic.
 
-### Decode — validates automatically
+#### Decode — validates automatically
 
 ```go
 // Constraints run during Decode. Invalid input is rejected with field-path errors.
@@ -114,7 +136,7 @@ user, err := jsonFmt.Unmarshal([]byte(`{"name":"","age":-5}`))
 // err: field name: constraint failed (non-empty): expected non-empty string
 ```
 
-### Encode — trusted, no constraints
+#### Encode — trusted, no constraints
 
 ```go
 // Encoding the value you constructed always succeeds (no constraints run).
@@ -122,7 +144,7 @@ user, err := jsonFmt.Unmarshal([]byte(`{"name":"","age":-5}`))
 data, err := jsonFmt.Marshal(User{Name: "", Age: -5}) // succeeds
 ```
 
-### Validate — explicit bidirectional check
+#### Validate — explicit bidirectional check
 
 When you need to validate a Go value you constructed — before storing it, after building it programmatically, or to surface errors early — call `Validate` explicitly. It reuses the exact same `Refine` constraints, with no duplication:
 
@@ -140,7 +162,7 @@ if err := jsonFmt.Validate(u); err != nil {
 
 `Validate` is always explicit. `Marshal` and `Encode` never silently validate.
 
-## Builtin Format Constraints
+### Builtin Format Constraints
 
 `validate/` ships format constraints for common string types. Each constraint validates the value **and** annotates `schema.Schema` so the format appears in OpenAPI output automatically.
 
@@ -185,7 +207,7 @@ yamlBytes, _ := openapi.MarshalYAML(map[string]schema.Schema{"Contact": ContactC
 
 See `examples/formats/` for a runnable demo covering all constraints.
 
-## OpenAPI Schema Generation
+### OpenAPI Schema Generation
 
 `Codec[T]` carries a `schema.Schema` that describes the type: field names, types, constraints, descriptions, and examples. The `render/openapi` package converts that schema into an OpenAPI 3.x `components/schemas` map — no manual YAML authoring, no drift.
 
@@ -250,7 +272,9 @@ Constraint schema reflection is opt-in: `validate.*` constraints (e.g. `MinLen`,
 
 See `examples/openapi/` for a runnable demonstration.
 
-## Protobuf Integration
+## Special Topics
+
+### Protobuf Integration
 
 go-codex and Protobuf solve different problems. In a proto-first workflow the two complement each other cleanly.
 

@@ -51,4 +51,18 @@ check: staticcheck gosec
     fi
     echo "All checks passed."
 
+# ── Release ────────────────────────────────────────────────────────────────────
+
+# Tag and push a new release (e.g.: just release v0.2.0)
+release version:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    if [ -n "$(git status --porcelain)" ]; then
+        echo "Working tree is dirty. Commit or stash changes first."
+        exit 1
+    fi
+    git tag -a "{{version}}" -m "Release {{version}}"
+    git push origin "{{version}}"
+    echo "Tagged and pushed {{version}}"
+
 # ── Dev ────────────────────────────────────────────────────────────────────────
