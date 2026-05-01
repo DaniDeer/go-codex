@@ -1,6 +1,7 @@
 package codex_test
 
 import (
+	"errors"
 	"strings"
 	"testing"
 
@@ -183,5 +184,42 @@ func TestRequiredField_RoundTrip(t *testing.T) {
 	}
 	if got != original {
 		t.Errorf("round-trip = %+v, want %+v", got, original)
+	}
+}
+
+func TestStruct_DecodeMultipleErrors(t *testing.T) {
+	// codec with 2 required fields
+	type pair struct{ A, B int }
+	c := codex.Struct[pair](
+		codex.RequiredField[pair, int]("a", codex.Int(),
+			func(p pair) int { return p.A },
+			func(p *pair, v int) { p.A = v },
+		),
+		codex.RequiredField[pair, int]("b", codex.Int(),
+			func(p pair) int { return p.B },
+			func(p *pair, v int) { p.B = v },
+		),
+	)
+
+	// both required fields missing
+	_, err := c.Decode(map[string]any{})
+	if err == nil {
+		t.Fatal("expected error for two missing required fields")
+	}
+
+	var ve codex.ValidationErrors
+	if !errors.As(err, &ve) {
+		t.Fatalf("expected ValidationErrors, got %T", err)
+	}
+	if len(ve) != 2 {
+		t.Errorf("expected 2 validation errors, got %d: %v", len(ve), ve)
+	}
+
+	msg := err.Error()
+	if !strings.Contains(msg, "field a") {
+		t.Errorf("error %q does not mention field a", msg)
+	}
+	if !strings.Contains(msg, "field b") {
+		t.Errorf("error %q does not mention field b", msg)
 	}
 }

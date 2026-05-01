@@ -1,6 +1,7 @@
 package codex
 
 import (
+	"errors"
 	"fmt"
 
 	"github.com/DaniDeer/go-codex/schema"
@@ -33,14 +34,14 @@ func (f Field[T, F]) decode(obj map[string]any, target *T) error {
 	raw, ok := obj[f.Name]
 	if !ok {
 		if f.Required {
-			return fmt.Errorf("missing required field: %s", f.Name)
+			return errors.New("missing required field")
 		}
 		return nil
 	}
 
 	val, err := f.Codec.Decode(raw)
 	if err != nil {
-		return fmt.Errorf("field %s: %w", f.Name, err)
+		return err
 	}
 
 	f.Set(target, val)
@@ -94,10 +95,15 @@ func Struct[T any](fields ...fieldCodec[T]) Codec[T] {
 			if !ok {
 				return result, fmt.Errorf("expected object, got %T", v)
 			}
+			var errs ValidationErrors
 			for _, f := range fields {
+				name, _, _ := f.schema()
 				if err := f.decode(obj, &result); err != nil {
-					return result, err
+					errs = append(errs, ValidationError{Field: name, Err: err})
 				}
+			}
+			if len(errs) > 0 {
+				return result, errs
 			}
 			return result, nil
 		},

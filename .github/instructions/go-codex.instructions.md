@@ -22,13 +22,14 @@ go-codex is a Go port of the core ideas from Haskell's [autodocodec](https://hac
 
 | Package           | Responsibility                                                                            | Imports allowed from             |
 |-------------------|-------------------------------------------------------------------------------------------|----------------------------------|
-| `codex`           | PUBLIC API: `Codec[T]`, primitives, struct, union, slice, `MapCodecSafe`, `Constraint`, `Refine` | `schema`                  |
+| `codex`           | PUBLIC API: `Codec[T]`, primitives, struct, union, slice, `MapCodecSafe`, `Constraint`, `Refine`, `ValidationError`, `ValidationErrors` | `schema`     |
 | `schema`          | Schema model (pure data, no codec logic)                                                  | none                             |
 | `validate`        | Reusable `Constraint` functions for numbers, strings, etc.                                | `codex`, `schema`                |
 | `format`          | Bridges `Codec[T]` to wire formats: JSON, YAML, TOML                                     | `codex`, `schema`, external libs |
 | `route`           | HTTP route descriptors: `Route`, `Param`, `Body`, `Response`                             | `schema`                         |
-| `render/openapi`  | Renders `schema.Schema` as OpenAPI 3.1 `components/schemas`; `DocumentBuilder` for full spec | `schema`, `route`, external libs |
-| `render/asyncapi` | Renders channels and schemas as a full AsyncAPI 2.6 document                             | `schema`, external libs          |
+| `render/internal/schemarender` | Shared schema-to-map rendering logic used by both OpenAPI and AsyncAPI renderers | `schema`               |
+| `render/openapi`  | Renders `schema.Schema` as OpenAPI 3.1 `components/schemas`; `DocumentBuilder` for full spec | `schema`, `route`, `render/internal/schemarender`, external libs |
+| `render/asyncapi` | Renders channels and schemas as a full AsyncAPI 2.6 document                             | `schema`, `render/internal/schemarender`, external libs |
 | `api/rest`        | Transport-agnostic REST API builder; typed Decode/Encode + OpenAPI spec                  | `codex`, `format`, `route`, `render/openapi`, `schema` |
 | `api/events`      | Transport-agnostic event channel builder; typed Decode/Encode + AsyncAPI spec            | `codex`, `format`, `render/asyncapi`, `schema` |
 | `adapters/nethttp` | Framework/broker-specific adapters; wrap `RouteHandle` or `ChannelHandle`     | `api/rest` or `api/events` + transport lib |
@@ -240,6 +241,7 @@ func TaggedUnion[T any](
 - `variants` maps tag strings to codecs that handle each case.
 - `selectVariant` picks the tag for a given value during encoding.
 - Return an error during decode when no variant matches the tag.
+- `TaggedUnion` automatically sets `Schema.Discriminator = &schema.DiscriminatorSchema{PropertyName: tag}` on the returned codec's schema. This is reflected in OpenAPI/AsyncAPI specs via the shared `render/internal/schemarender` package.
 
 ```go
 // Good example — Shape union
@@ -259,6 +261,11 @@ The `schema` package defines pure data structures that describe a codec. No code
 - `schema.Schema` is the root type; it carries `Type`, `Title`, `Description`, `Format`, `Example`, `Properties` (ordered `[]schema.Property`), `Required`, `Enum`, `OneOf`, `Items`, and numeric/string constraint fields (`Minimum`, `Maximum`, `ExclusiveMinimum`, `ExclusiveMaximum`, `MinLength`, `MaxLength`, `Pattern`).
 - `schema.Property` is `{Name string; Schema Schema}` — using a slice instead of a map preserves registration order for deterministic YAML/JSON output.
 - Use `s.Prop(name)` to look up a property by name (returns `(Schema, bool)`).
+- Additional fields on `schema.Schema`:
+  - `Nullable bool` — marks the value as accepting null; renders as `nullable: true` in OpenAPI/AsyncAPI.
+  - `AdditionalProperties *bool` — nil = unset (spec default), `false` = no extra properties, `true` = any allowed.
+  - `Discriminator *schema.DiscriminatorSchema` — describes the polymorphism tag for `TaggedUnion` schemas. Set automatically by `TaggedUnion`.
+- `schema.DiscriminatorSchema` holds `PropertyName string` and optional `Mapping map[string]string`.
 - Codec constructors populate `Schema` when building a `Codec[T]`.
 - Downstream renderers (JSON Schema, OpenAPI) read `schema.Schema` without touching codec logic.
 
@@ -274,10 +281,23 @@ The `schema` package defines pure data structures that describe a codec. No code
 
 ## Error Handling in Codecs
 
-- Decode errors must include the field path (e.g., `"field name: ..."`).
-- Wrap errors with `fmt.Errorf("decoding %s: %w", field, err)`.
+- Struct decode collects **all** field errors before returning. The returned error is `codex.ValidationErrors` (a `[]ValidationError`), not a single error.
+- Use `errors.As(err, &ve)` to extract `codex.ValidationErrors` from a struct decode error.
+- `codex.ValidationError` is a single field-level failure: `Field string` (name of the failing field) and `Err error` (underlying error). Its `Error()` format is `"field <name>: <message>"`.
+- `codex.ValidationErrors.Error()` joins all field errors with `"; "`.
 - Encode errors are exceptional; prefer designs where encoding is total (never fails).
 - `Constraint.Check` returns `bool`; `Constraint.Message` returns the error string.
+
+```go
+// Extracting individual field errors after struct decode:
+_, err := MyCodec.Decode(input)
+var ve codex.ValidationErrors
+if errors.As(err, &ve) {
+    for _, fe := range ve {
+        fmt.Printf("field %s: %v\n", fe.Field, fe.Err)
+    }
+}
+```
 
 ## Common Patterns
 
@@ -315,7 +335,9 @@ Set `Required: false` on the field. The field is omitted from the encoded object
 
 ## OpenAPI Schema Rendering
 
-The `render/openapi` package converts `schema.Schema` into OpenAPI 3.x schema objects. It imports only `schema` — no codec logic, no wire format.
+The `render/openapi` package converts `schema.Schema` into OpenAPI 3.x schema objects. It delegates to the shared `render/internal/schemarender` package — no codec logic, no wire format.
+
+The shared `render/internal/schemarender.SchemaObject(s schema.Schema) map[string]any` function handles all schema fields including `Nullable`, `AdditionalProperties`, `Discriminator`, `OneOf`, numeric bounds, string constraints, and enum. Both `render/openapi` and `render/asyncapi` use it; adding a new `schema.Schema` field requires updating only `schemarender`.
 
 ```go
 // SchemaObject converts s to an OpenAPI 3.x schema object (map[string]any).

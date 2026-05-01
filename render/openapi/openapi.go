@@ -15,6 +15,7 @@ package openapi
 import (
 	"encoding/json"
 
+	"github.com/DaniDeer/go-codex/render/internal/schemarender"
 	"github.com/DaniDeer/go-codex/schema"
 	"gopkg.in/yaml.v3"
 )
@@ -22,81 +23,7 @@ import (
 // SchemaObject converts s into an OpenAPI 3.x schema object (map[string]any).
 // Only fields that are set in s are included in the output.
 func SchemaObject(s schema.Schema) map[string]any {
-	obj := map[string]any{}
-
-	if s.Type != "" {
-		obj["type"] = s.Type
-	}
-	if s.Title != "" {
-		obj["title"] = s.Title
-	}
-	if s.Description != "" {
-		obj["description"] = s.Description
-	}
-	if s.Format != "" {
-		obj["format"] = s.Format
-	}
-	if s.Example != nil {
-		obj["example"] = s.Example
-	}
-
-	// Numeric bounds.
-	if s.Minimum != nil {
-		obj["minimum"] = *s.Minimum
-	}
-	if s.Maximum != nil {
-		obj["maximum"] = *s.Maximum
-	}
-	if s.ExclusiveMinimum {
-		obj["exclusiveMinimum"] = true
-	}
-	if s.ExclusiveMaximum {
-		obj["exclusiveMaximum"] = true
-	}
-
-	// String constraints.
-	if s.MinLength != nil {
-		obj["minLength"] = *s.MinLength
-	}
-	if s.MaxLength != nil {
-		obj["maxLength"] = *s.MaxLength
-	}
-	if s.Pattern != "" {
-		obj["pattern"] = s.Pattern
-	}
-
-	// Enum.
-	if len(s.Enum) > 0 {
-		obj["enum"] = s.Enum
-	}
-
-	// Object properties.
-	if len(s.Properties) > 0 {
-		props := map[string]any{}
-		for _, p := range s.Properties {
-			props[p.Name] = SchemaObject(p.Schema)
-		}
-		obj["properties"] = props
-	}
-	if len(s.Required) > 0 {
-		obj["required"] = s.Required
-	}
-
-	// Array items.
-	if s.Items != nil {
-		obj["items"] = SchemaObject(*s.Items)
-	}
-
-	// Polymorphism.
-	if len(s.OneOf) > 0 {
-		oneOf := make([]any, len(s.OneOf))
-		for i, variant := range s.OneOf {
-			oneOf[i] = SchemaObject(variant)
-		}
-		obj["oneOf"] = oneOf
-	}
-
-	return obj
+	return schemarender.SchemaObject(s)
 }
 
 // ComponentsSchemas produces the map suitable for embedding as the value of

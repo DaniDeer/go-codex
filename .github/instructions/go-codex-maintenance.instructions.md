@@ -57,9 +57,10 @@ from codec → format → builder → renderer → adapter.
 ## Sync Checklist (run mentally before committing)
 
 - [ ] All renamed symbols updated in instruction examples
-- [ ] Package Structure table matches `go-codex/` directory tree
+- [ ] Package Structure table matches `go-codex/` directory tree (including `render/internal/schemarender`)
 - [ ] New patterns have at least one code example
 - [ ] Removed patterns no longer appear in instructions
+- [ ] When adding a new `schema.Schema` field: update `render/internal/schemarender/schemarender.go` (both `render/openapi` and `render/asyncapi` use it automatically)
 - [ ] `just check` passes (fmt + staticcheck + gosec)
 - [ ] `just test` passes
 - [ ] `go build ./...` passes with no errors referencing symbols from examples

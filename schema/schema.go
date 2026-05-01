@@ -8,6 +8,15 @@ type Property struct {
 	Schema Schema
 }
 
+// DiscriminatorSchema describes the polymorphism discriminator field used in
+// TaggedUnion schemas. It maps to the OpenAPI 3.x / AsyncAPI discriminator object.
+type DiscriminatorSchema struct {
+	// PropertyName is the name of the property that holds the type tag.
+	PropertyName string `json:",omitempty"`
+	// Mapping is an optional explicit tag-value → $ref map.
+	Mapping map[string]string `json:",omitempty"`
+}
+
 // Schema describes the shape of a value for documentation and validation purposes.
 type Schema struct {
 	Type        string     `json:",omitempty"`
@@ -20,6 +29,17 @@ type Schema struct {
 	Enum        []any      `json:",omitempty"`
 	OneOf       []Schema   `json:",omitempty"`
 	Items       *Schema    `json:",omitempty"`
+
+	// Nullable marks the value as accepting null in addition to its type.
+	// Renders as "nullable: true" in OpenAPI 3.0 / AsyncAPI.
+	Nullable bool `json:",omitempty"`
+
+	// AdditionalProperties controls whether undeclared properties are allowed.
+	// nil = unset (spec default), false = no additional properties, true = any allowed.
+	AdditionalProperties *bool `json:",omitempty"`
+
+	// Discriminator describes the polymorphism tag for TaggedUnion schemas.
+	Discriminator *DiscriminatorSchema `json:",omitempty"`
 
 	// Numeric constraints.
 	Minimum          *float64 `json:",omitempty"`

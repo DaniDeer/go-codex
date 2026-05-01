@@ -1,58 +1,17 @@
 Public API:
 
-- [ ] How to use this codec in a GO CLI scenario? Discuss this and add an example to the README since GO is a favourite language for CLI tools. The obvious use case are config files that CLI tools always read (YAML/TOML). But is codec also applicable for parsing the command line inputs with commands, flags, arguments?
+- [x] How to use this codec in a GO CLI scenario? Discuss this and add an example to the README since GO is a favourite language for CLI tools. The obvious use case are config files that CLI tools always read (YAML/TOML). But is codec also applicable for parsing the command line inputs with commands, flags, arguments?
+      Added "CLI Tools" section to README: codec suits config file decoding (YAML/TOML/JSON) with free validation and schema docs. cobra/pflag recommended for flag/arg parsing.
 
 Error handling:
 
-- [ ] The error model is too simple
-      Right now:
-  ```GO
-  (T, error)
-  ```
-  Example:
-  ```GO
-  {
-    "width": -1,
-    "height": -2
-  }
-  ```
-  You only get:
-  ```TEXT
-  width invalid
-  ```
-  But user want:
-  ```TEXT
-  width invalid
-  height invalid
-  ```
-  Introduce:
-  ```GO
-  type ValidationError struct {
-      Path string
-      Msg  string
-  }
-  ```
-  So that you can return multiple errors:
-  ```GO
-  type Result[T any] struct {
-      Value  T
-      Errors []ValidationError
-  }
-  ```
+- [x] The error model is too simple
+      Implemented `codex.ValidationError` (single field error: `Field string`, `Err error`) and `codex.ValidationErrors` (`[]ValidationError`) in `codex/errors.go`. Struct decode now collects ALL field errors before returning. Callers use `errors.As(err, &ve)` to extract `ValidationErrors`.
 
 Schema:
 
-- [ ] Schema is underpowered
-      We have:
-  ```GO
-  Type, Properties, Required, OneOf
-  ```
-  But we also need:
-  - additionalProperties: false
-  - minimum, maximum
-  - pattern
-  - nullable
-  - discriminator (OpenAPI)
+- [x] Schema is underpowered
+      Added: `additionalProperties: false` (`AdditionalProperties *bool`), `nullable: true` (`Nullable bool`), `discriminator` (`Discriminator *DiscriminatorSchema`). Numeric bounds (`Minimum`/`Maximum`/Exclusive*), string constraints (`MinLength`/`MaxLength`/`Pattern`) were already present. All rendered via shared `render/internal/schemarender`.
 
 Constraints:
 
@@ -75,21 +34,13 @@ Questions:
       `schema.Schema.Properties` changed to `[]schema.Property{Name string; Schema Schema}`.
       Added `Schema.Prop(name) (Schema, bool)` lookup helper.
 
-- [ ] **TaggedUnion has no discriminator in generated schema**
-      `codex.TaggedUnion` uses a tag field at encode/decode time, but `schema.Schema` has
-      no discriminator concept. The generated OpenAPI/AsyncAPI spec does not describe the
-      polymorphism — a spec validator sees an opaque object.
-      Fix: add `Discriminator *DiscriminatorSchema` to `schema.Schema`; render it in both
-      `render/openapi` and `render/asyncapi`.
+- [x] **TaggedUnion has no discriminator in generated schema** *(done)*
+      `codex.TaggedUnion` now sets `Schema.Discriminator = &schema.DiscriminatorSchema{PropertyName: tag}`. Rendered in both `render/openapi` and `render/asyncapi` via shared `render/internal/schemarender`.
 
 ### Codec
 
-- [ ] **Encode does not validate — silent footgun**
-      `Refine` constraints only run on `Decode`. Calling `Marshal` on a struct with
-      invalid field values (e.g. invalid email, out-of-range int) silently succeeds.
-      At minimum, add an explicit `Format[T].Validate(T) error` method and document
-      that publish-side callers must call it before `Marshal`. Optionally add a
-      `ValidateOnMarshal bool` option to `Format[T]`.
+- [x] **Encode does not validate — silent footgun** *(done — via Codec.Validate)*
+      `format.Format[T]` already exposes `Validate(T) error` that runs all `Refine` constraints. Document that publish-side callers must call `Validate` before `Marshal`. Optionally add `ValidateOnMarshal bool` in the future.
 
 - [ ] **Missing practical codec types**
       Real domain models routinely need types that don't exist yet:
@@ -120,16 +71,11 @@ Questions:
 
 ### Spec generation
 
-- [ ] **Schema-to-map rendering logic duplicated across renderers**
-      `render/openapi/openapi.go` and `render/asyncapi/asyncapi.go` each have their own
-      `schemaObject` function. Adding a new `schema.Schema` field requires updating both
-      renderers independently with no compiler enforcement.
-      Fix: extract to a shared `internal/schemarender` package.
+- [x] **Schema-to-map rendering logic duplicated across renderers** *(done)*
+      Extracted to `render/internal/schemarender`. Both `render/openapi` and `render/asyncapi` delegate to `schemarender.SchemaObject`. New `schema.Schema` fields need only one update.
 
-- [ ] **Dangling `$ref` possible — no build-time check**
-      Setting `SchemaName` on a response/operation generates a `$ref` without verifying
-      that the named schema is registered in `components`. A typo silently produces an
-      invalid spec. The builder should cross-check all `SchemaName` references.
+- [x] **Dangling `$ref` possible — no build-time check** *(done)*
+      `api/rest.Builder.OpenAPISpec()` and `api/events.Builder.AsyncAPISpec()` now cross-check all SchemaNames. Added `AddSchema(name, schema)` to both builders for registering reusable schemas. Returns error listing unregistered names.
 
 ### Adapters
 

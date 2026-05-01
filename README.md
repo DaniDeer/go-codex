@@ -586,6 +586,51 @@ var CreateUserRequestCodec = codex.Struct[CreateUserRequest](
 
 **What this is not:** go-codex does not generate `.proto` files from codecs, and does not read `.proto` files. The proto file is the wire-format source of truth; the codec is the validation-and-documentation source of truth. These concerns are intentionally separate.
 
+### CLI Tools
+
+Go is a popular language for CLI tools. go-codex is well suited for **config file decoding** (YAML, TOML, JSON): define a codec once and get type-safe parsing, structured validation errors, and auto-generated JSON Schema documentation for free.
+
+**For command-line flag and argument parsing** (the `--flag value` part), use [cobra](https://github.com/spf13/cobra), [pflag](https://github.com/spf13/pflag), or the standard `flag` package — they handle `--help`, shell completion, and usage text that codecs are not designed for.
+
+**Where go-codex fits in a CLI:** read the config file → decode with the codec → get typed struct with all validation errors collected upfront.
+
+```go
+// Config is the application configuration struct.
+type Config struct {
+    Port    int
+    LogLevel string
+}
+
+var configCodec = codex.Struct[Config](
+    codex.RequiredField[Config, int]("port", codex.Int().Refine(validate.RangeInt(1, 65535)),
+        func(c Config) int { return c.Port },
+        func(c *Config, v int) { c.Port = v },
+    ),
+    codex.OptionalField[Config, string]("log_level",
+        codex.String().Refine(validate.OneOf("debug", "info", "warn", "error")),
+        func(c Config) string { return c.LogLevel },
+        func(c *Config, v string) { c.LogLevel = v },
+    ),
+)
+
+// In main() or cobra's PersistentPreRunE:
+data, _ := os.ReadFile("config.toml")
+cfg, err := format.TOML(configCodec).Unmarshal(data)
+if err != nil {
+    // err is a codex.ValidationErrors — all field errors collected at once.
+    log.Fatal(err)
+}
+// cfg is fully validated and typed.
+_ = cfg.Port
+```
+
+**What you get for free:**
+- All field validation errors collected in one pass (not stop-at-first).
+- `render/openapi` can render the codec's schema as JSON Schema for documentation or editor autocomplete.
+- The same codec works with JSON, YAML, and TOML config files — swap `format.TOML` for `format.YAML` or `format.JSON` without touching the codec.
+
+**What go-codex does not do:** parse `os.Args`, generate `--help` output, or handle subcommands. Use cobra/flag for those.
+
 ## Project Structure
 
 ```TEXT

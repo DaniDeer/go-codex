@@ -65,7 +65,12 @@ func TaggedUnion[T any](
 			return val, nil
 		},
 
-		Schema: schema.Schema{OneOf: oneOf},
+		Schema: schema.Schema{
+			OneOf: oneOf,
+			Discriminator: &schema.DiscriminatorSchema{
+				PropertyName: tag,
+			},
+		},
 	}
 }
 

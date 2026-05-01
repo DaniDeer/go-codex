@@ -37,11 +37,15 @@
 package events
 
 import (
+	"fmt"
 	"slices"
+	"sort"
+	"strings"
 
 	"github.com/DaniDeer/go-codex/codex"
 	"github.com/DaniDeer/go-codex/format"
 	"github.com/DaniDeer/go-codex/render/asyncapi"
+	"github.com/DaniDeer/go-codex/schema"
 )
 
 // Info is an alias for [asyncapi.Info]. Using the alias avoids duplicating
@@ -117,6 +121,7 @@ type Builder struct {
 	info    Info
 	servers map[string]Server
 	entries []channelEntry
+	schemas map[string]schema.Schema
 }
 
 // NewBuilder returns a Builder initialised with the given API metadata.
@@ -124,12 +129,21 @@ func NewBuilder(info Info) *Builder {
 	return &Builder{
 		info:    info,
 		servers: make(map[string]Server),
+		schemas: make(map[string]schema.Schema),
 	}
 }
 
 // AddServer registers a named server entry in the spec.
 func (b *Builder) AddServer(name string, s Server) *Builder {
 	b.servers[name] = s
+	return b
+}
+
+// AddSchema registers a named schema in components/schemas.
+// Use this to register reusable schemas that are referenced by SchemaName in
+// channel configs but not inlined in any codec.
+func (b *Builder) AddSchema(name string, s schema.Schema) *Builder {
+	b.schemas[name] = s
 	return b
 }
 
@@ -165,15 +179,71 @@ func AddChannel[T any](
 }
 
 // AsyncAPISpec builds a complete AsyncAPI 2.6 document from all registered channels.
+// Returns an error if any non-empty SchemaName references a schema that will not
+// be present in components/schemas (a dangling $ref).
 func (b *Builder) AsyncAPISpec() (asyncapi.Document, error) {
+	if err := b.checkDanglingRefs(); err != nil {
+		return asyncapi.Document{}, err
+	}
 	ab := asyncapi.NewDocumentBuilder(b.info)
 	for name, s := range b.servers {
 		ab.AddServer(name, s)
+	}
+	for name, s := range b.schemas {
+		ab.AddSchema(name, s)
 	}
 	for _, e := range b.entries {
 		ab.AddChannel(e.topic(), e.descriptor())
 	}
 	return ab.Build()
+}
+
+// checkDanglingRefs verifies that every non-empty SchemaName used in channels
+// resolves to a schema that will be registered in components/schemas.
+// A name is resolvable when the accompanying Schema is non-empty (non-zero),
+// or when the name was explicitly registered via [Builder.AddSchema].
+func (b *Builder) checkDanglingRefs() error {
+	resolvable := make(map[string]bool, len(b.schemas))
+	for name := range b.schemas {
+		resolvable[name] = true
+	}
+	for _, e := range b.entries {
+		ch := e.descriptor()
+		collectResolvable(ch.Subscribe, resolvable)
+		collectResolvable(ch.Publish, resolvable)
+	}
+
+	seen := make(map[string]bool)
+	var unresolved []string
+	for _, e := range b.entries {
+		ch := e.descriptor()
+		checkOp(ch.Subscribe, resolvable, seen, &unresolved)
+		checkOp(ch.Publish, resolvable, seen, &unresolved)
+	}
+	if len(unresolved) > 0 {
+		sort.Strings(unresolved)
+		return fmt.Errorf("unregistered schema names (dangling $ref): %s", strings.Join(unresolved, ", "))
+	}
+	return nil
+}
+
+func collectResolvable(op *asyncapi.Operation, resolvable map[string]bool) {
+	if op == nil || op.Message.SchemaName == "" {
+		return
+	}
+	// Schema is a value type (schema.Schema); it's always present alongside SchemaName.
+	resolvable[op.Message.SchemaName] = true
+}
+
+func checkOp(op *asyncapi.Operation, resolvable, seen map[string]bool, unresolved *[]string) {
+	if op == nil || op.Message.SchemaName == "" {
+		return
+	}
+	name := op.Message.SchemaName
+	if !resolvable[name] && !seen[name] {
+		seen[name] = true
+		*unresolved = append(*unresolved, name)
+	}
 }
 
 // buildChannelItem constructs a frozen asyncapi.ChannelItem from the codec schema

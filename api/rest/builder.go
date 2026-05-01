@@ -35,7 +35,9 @@
 package rest
 
 import (
+	"fmt"
 	"slices"
+	"sort"
 	"strings"
 
 	"github.com/DaniDeer/go-codex/codex"
@@ -135,11 +137,12 @@ type Builder struct {
 	info    Info
 	servers []Server
 	entries []routeEntry
+	schemas map[string]schema.Schema
 }
 
 // NewBuilder returns a Builder initialised with the given API metadata.
 func NewBuilder(info Info) *Builder {
-	return &Builder{info: info}
+	return &Builder{info: info, schemas: make(map[string]schema.Schema)}
 }
 
 // AddServer appends a named server entry to the spec. name is used as the
@@ -150,6 +153,14 @@ func (b *Builder) AddServer(name string, s Server) *Builder {
 		s.Description = name
 	}
 	b.servers = append(b.servers, s)
+	return b
+}
+
+// AddSchema registers a named schema in components/schemas.
+// Use this to register reusable schemas (e.g. shared error types) that are
+// referenced by SchemaName in route configs but not inlined in any codec.
+func (b *Builder) AddSchema(name string, s schema.Schema) *Builder {
+	b.schemas[name] = s
 	return b
 }
 
@@ -186,15 +197,66 @@ func AddRoute[Req, Resp any](
 }
 
 // OpenAPISpec builds a complete OpenAPI 3.1 document from all registered routes.
+// Returns an error if any non-empty SchemaName references a schema that will not
+// be present in components/schemas (a dangling $ref).
 func (b *Builder) OpenAPISpec() (openapi.Document, error) {
+	if err := b.checkDanglingRefs(); err != nil {
+		return openapi.Document{}, err
+	}
 	ob := openapi.NewDocumentBuilder(b.info)
 	for _, s := range b.servers {
 		ob.AddServer(s)
+	}
+	for name, s := range b.schemas {
+		ob.AddSchema(name, s)
 	}
 	for _, e := range b.entries {
 		ob.AddRoute(e.descriptor())
 	}
 	return ob.Build()
+}
+
+// checkDanglingRefs verifies that every non-empty SchemaName used in routes
+// resolves to a schema that will be registered in components/schemas.
+// A name is resolvable when the accompanying Schema is non-nil, or when the
+// name was explicitly registered via [Builder.AddSchema].
+func (b *Builder) checkDanglingRefs() error {
+	// Build the set of resolvable names.
+	resolvable := make(map[string]bool, len(b.schemas))
+	for name := range b.schemas {
+		resolvable[name] = true
+	}
+	for _, e := range b.entries {
+		r := e.descriptor()
+		if r.RequestBody != nil && r.RequestBody.SchemaName != "" {
+			resolvable[r.RequestBody.SchemaName] = true
+		}
+		for _, resp := range r.Responses {
+			if resp.SchemaName != "" && resp.Schema != nil {
+				resolvable[resp.SchemaName] = true
+			}
+		}
+	}
+
+	// Collect any referenced names that are not resolvable.
+	seen := make(map[string]bool)
+	var unresolved []string
+	for _, e := range b.entries {
+		r := e.descriptor()
+		for _, resp := range r.Responses {
+			if resp.SchemaName != "" && resp.Schema == nil && !resolvable[resp.SchemaName] {
+				if !seen[resp.SchemaName] {
+					seen[resp.SchemaName] = true
+					unresolved = append(unresolved, resp.SchemaName)
+				}
+			}
+		}
+	}
+	if len(unresolved) > 0 {
+		sort.Strings(unresolved)
+		return fmt.Errorf("unregistered schema names (dangling $ref): %s", strings.Join(unresolved, ", "))
+	}
+	return nil
 }
 
 // buildDescriptor constructs a frozen route.Route from method, path, schemas,
