@@ -1,6 +1,10 @@
 // Package event-driven demonstrates generating a full AsyncAPI 2.6 document from
 // channel descriptors and Codec-derived schemas using the render/asyncapi package.
 //
+// AsyncAPI operations are app-centric:
+//   - Subscribe: this app RECEIVES messages (consumer)
+//   - Publish:   this app SENDS messages (producer)
+//
 // Run with: go run ./examples/event-driven
 package main
 
@@ -13,7 +17,7 @@ import (
 	"github.com/DaniDeer/go-codex/validate"
 )
 
-// UserCreatedEvent is published when a new user registers.
+// UserCreatedEvent is received by this service when a new user registers.
 type UserCreatedEvent struct {
 	ID    string
 	Name  string
@@ -44,7 +48,7 @@ var UserCreatedEventCodec = codex.Struct[UserCreatedEvent](
 	},
 )
 
-// OrderPlacedEvent is published when a user places an order.
+// OrderPlacedEvent is received by this service when a user places an order.
 type OrderPlacedEvent struct {
 	OrderID string
 	UserID  string
@@ -75,22 +79,54 @@ var OrderPlacedEventCodec = codex.Struct[OrderPlacedEvent](
 	},
 )
 
+// NotificationCommand is sent by this service to trigger a notification.
+type NotificationCommand struct {
+	Recipient string
+	Subject   string
+	Body      string
+}
+
+var NotificationCommandCodec = codex.Struct[NotificationCommand](
+	codex.Field[NotificationCommand, string]{
+		Name:     "recipient",
+		Codec:    codex.String().Refine(validate.Email).WithDescription("Recipient email address."),
+		Get:      func(c NotificationCommand) string { return c.Recipient },
+		Set:      func(c *NotificationCommand, v string) { c.Recipient = v },
+		Required: true,
+	},
+	codex.Field[NotificationCommand, string]{
+		Name:     "subject",
+		Codec:    codex.String().Refine(validate.NonEmptyString).WithDescription("Notification subject line."),
+		Get:      func(c NotificationCommand) string { return c.Subject },
+		Set:      func(c *NotificationCommand, v string) { c.Subject = v },
+		Required: true,
+	},
+	codex.Field[NotificationCommand, string]{
+		Name:     "body",
+		Codec:    codex.String().Refine(validate.NonEmptyString).WithDescription("Notification body text."),
+		Get:      func(c NotificationCommand) string { return c.Body },
+		Set:      func(c *NotificationCommand, v string) { c.Body = v },
+		Required: true,
+	},
+)
+
 func main() {
 	doc, err := asyncapi.NewDocumentBuilder(asyncapi.Info{
-		Title:       "E-Commerce Events",
+		Title:       "Notification Service Events",
 		Version:     "1.0.0",
-		Description: "Domain events for the e-commerce platform.",
+		Description: "Channels for the notification service.",
 	}).
 		AddServer("production", asyncapi.Server{
 			URL:         "amqp://broker.example.com",
 			Protocol:    "amqp",
 			Description: "Production message broker",
 		}).
+		// Subscribe: this app RECEIVES user created events from the broker.
 		AddChannel("user/created", asyncapi.ChannelItem{
-			Description: "Published when a new user registers.",
+			Description: "User registration events consumed by the notification service.",
 			Subscribe: &asyncapi.Operation{
-				Summary:     "User created",
-				Description: "Emitted by the user service after successful registration.",
+				Summary:     "Receive user created event",
+				Description: "Triggered after the user service completes registration.",
 				Tags:        []string{"user", "registration"},
 				Message: asyncapi.Message{
 					Name:       "UserCreatedEvent",
@@ -99,16 +135,31 @@ func main() {
 				},
 			},
 		}).
+		// Subscribe: this app RECEIVES order placed events from the broker.
 		AddChannel("order/placed", asyncapi.ChannelItem{
-			Description: "Published when a user places an order.",
+			Description: "Order events consumed by the notification service.",
 			Subscribe: &asyncapi.Operation{
-				Summary:     "Order placed",
-				Description: "Emitted by the order service after successful checkout.",
+				Summary:     "Receive order placed event",
+				Description: "Triggered after the order service completes checkout.",
 				Tags:        []string{"order"},
 				Message: asyncapi.Message{
 					Name:       "OrderPlacedEvent",
 					Schema:     OrderPlacedEventCodec.Schema,
 					SchemaName: "OrderPlacedEvent",
+				},
+			},
+		}).
+		// Publish: this app SENDS notification commands to the broker.
+		AddChannel("notification/send", asyncapi.ChannelItem{
+			Description: "Notification commands produced by this service.",
+			Publish: &asyncapi.Operation{
+				Summary:     "Send notification command",
+				Description: "Dispatched to the notification delivery worker.",
+				Tags:        []string{"notification"},
+				Message: asyncapi.Message{
+					Name:       "NotificationCommand",
+					Schema:     NotificationCommandCodec.Schema,
+					SchemaName: "NotificationCommand",
 				},
 			},
 		}).

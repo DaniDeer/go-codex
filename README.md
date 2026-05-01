@@ -89,6 +89,8 @@ Requires Go 1.25 or later.
 | Format bridges (JSON, YAML, TOML) | `github.com/DaniDeer/go-codex/format`          |
 | Built-in constraints              | `github.com/DaniDeer/go-codex/validate`        |
 | HTTP route descriptors            | `github.com/DaniDeer/go-codex/route`           |
+| REST API builder                  | `github.com/DaniDeer/go-codex/api/rest`        |
+| Event channel builder             | `github.com/DaniDeer/go-codex/api/events`      |
 | OpenAPI 3.1 renderer              | `github.com/DaniDeer/go-codex/render/openapi`  |
 | AsyncAPI 2.6 renderer             | `github.com/DaniDeer/go-codex/render/asyncapi` |
 | Schema model                      | `github.com/DaniDeer/go-codex/schema`          |
@@ -101,6 +103,8 @@ Requires Go 1.25 or later.
 - **OpenAPI Schema Generation** — `components/schemas` map from codec-derived schemas, no manual YAML
 - **Full OpenAPI 3.1 Document** — complete REST API spec (paths, operations, params) from `route.Route` descriptors
 - **AsyncAPI 2.6 Document** — complete event-driven spec from channel descriptors; same schemas, no duplication
+- **REST API Builder** — typed `Decode`/`Encode` helpers per route + OpenAPI spec generation, no HTTP library import
+- **Event Channel Builder** — typed `Decode`/`Encode` helpers per channel + AsyncAPI spec generation, no messaging library import
 
 ### Multi-Format Support
 
@@ -395,6 +399,95 @@ components:
 
 See `examples/event-driven/` for a runnable demonstration.
 
+### REST API Builder
+
+`api/rest` is a transport-agnostic REST API builder. Register routes with codec-backed request and response types; the builder returns a `RouteHandle` with typed `Decode` and `Encode` helpers. Pass those helpers to any HTTP framework — this package imports **no HTTP library**.
+
+The same builder generates a complete OpenAPI 3.1 spec from all registered routes.
+
+```go
+import "github.com/DaniDeer/go-codex/api/rest"
+
+b := rest.NewBuilder(rest.Info{Title: "User API", Version: "1.0.0"})
+b.AddServer(rest.Server{URL: "https://api.example.com/v1"})
+
+// AddRoute returns a RouteHandle — typed Decode/Encode helpers, no net/http import.
+createUser := rest.AddRoute[CreateUserRequest, User](b, "POST", "/users",
+    createUserCodec, userCodec,
+    rest.RouteConfig{
+        OperationID:    "createUser",
+        Summary:        "Create a user",
+        ReqSchemaName:  "CreateUserRequest",
+        RespSchemaName: "User",
+        Responses: []rest.ResponseMeta{
+            {Status: "400", Description: "Validation error."},
+        },
+    })
+
+// In your HTTP handler — works with net/http, Gin, Chi, Echo, anything:
+req, err := createUser.Decode(body)   // JSON → CreateUserRequest, validates
+user, err := myService.Create(req)
+out, err  := createUser.Encode(user)  // User → JSON
+
+// Route descriptor for your framework's router:
+fmt.Println(createUser.Descriptor.Method, createUser.Descriptor.Path) // POST /users
+
+// OpenAPI 3.1 spec from all registered routes:
+doc, err := b.OpenAPISpec()
+yamlBytes, _ := doc.MarshalYAML()
+```
+
+**Future:** framework-specific adapters (`adapters/nethttp`, `adapters/gin`, etc.) will wrap `RouteHandle` for zero-boilerplate integration. The `api/rest` core stays dependency-free.
+
+See `examples/api-rest/` for a runnable demonstration.
+
+### Event Channel Builder
+
+`api/events` is a transport-agnostic event channel builder. Register channels with codec-backed payload types; the builder returns a `ChannelHandle` with typed `Decode` and `Encode` helpers. Pass those helpers to any message broker — this package imports **no messaging library**.
+
+The same builder generates a complete AsyncAPI 2.6 spec from all registered channels.
+
+```go
+import "github.com/DaniDeer/go-codex/api/events"
+
+b := events.NewBuilder(events.Info{Title: "User Events", Version: "1.0.0"})
+b.AddServer("production", events.Server{URL: "amqp://broker.example.com", Protocol: "amqp"})
+
+// AddChannel returns a ChannelHandle — typed Decode/Encode helpers, no broker import.
+userCreated := events.AddChannel[UserCreatedEvent](b, "user/created", userCreatedCodec,
+    events.ChannelConfig{
+        Subscribe: &events.OperationConfig{
+            Summary:    "A user was created",
+            SchemaName: "UserCreatedEvent",
+        },
+    })
+
+// In your broker callback — works with Paho MQTT, AMQP, Kafka, NATS, anything:
+event, err := userCreated.Decode(msg.Payload()) // JSON → UserCreatedEvent, validates
+handleUserCreated(event)
+
+// Publish:
+payload, _ := userCreated.Encode(UserCreatedEvent{...})
+client.Publish(userCreated.Topic, payload)
+
+// AsyncAPI 2.6 spec from all registered channels:
+doc, err := b.AsyncAPISpec()
+yamlBytes, _ := doc.MarshalYAML()
+```
+
+Both subscribe and publish directions can be registered on the same channel:
+
+```go
+events.AddChannel[UserEvent](b, "user/events", codec, events.ChannelConfig{
+    Subscribe: &events.OperationConfig{Summary: "Receive user events"},
+    Publish:   &events.OperationConfig{Summary: "Send user events"},
+})
+```
+
+**Future:** broker-specific adapters (`adapters/mqtt`, `adapters/amqp`, etc.) will wrap `ChannelHandle` for zero-boilerplate integration.
+
+See `examples/api-events/` for a runnable demonstration.
+
 ## Special Topics
 
 ### Protobuf Integration
@@ -465,6 +558,12 @@ go-codex/
 ├── route/                  # HTTP route descriptors (no renderer logic)
 │   └── route.go            # Route, Param, Body, Response
 │
+├── api/                    # API builders (no HTTP or messaging library imports)
+│   ├── rest/               # REST API builder: typed Decode/Encode + OpenAPI spec
+│   │   └── builder.go      # Builder, AddRoute[Req,Resp], RouteHandle, RouteConfig
+│   └── events/             # Event channel builder: typed Decode/Encode + AsyncAPI spec
+│       └── builder.go      # Builder, AddChannel[T], ChannelHandle, ChannelConfig
+│
 ├── render/                 # spec renderers (import schema only, or schema + route)
 │   ├── openapi/            # OpenAPI 3.1 renderer
 │   │   ├── openapi.go      # SchemaObject, ComponentsSchemas, MarshalJSON, MarshalYAML
@@ -485,8 +584,10 @@ go-codex/
 └── examples/
     ├── formats/            # builtin format constraints demo (Email, UUID, URL, ...)
     ├── openapi/            # OpenAPI components/schemas generation from a Codec
-    ├── rest-api/           # full OpenAPI 3.1 document from route descriptors
-    ├── event-driven/       # full AsyncAPI 2.6 document from channel descriptors
+    ├── rest-api/           # full OpenAPI 3.1 document from route descriptors (low-level)
+    ├── event-driven/       # full AsyncAPI 2.6 document from channel descriptors (low-level)
+    ├── api-rest/           # REST API builder: typed helpers + OpenAPI spec
+    ├── api-events/         # Event channel builder: typed helpers + AsyncAPI spec
     ├── shape/              # tagged union + Downcast demo
     ├── order/              # nested structs + SliceOf demo
     ├── multiformat/        # JSON / YAML / TOML with one codec

@@ -12,6 +12,7 @@ import (
 
 	"github.com/BurntSushi/toml"
 	"github.com/DaniDeer/go-codex/codex"
+	"github.com/DaniDeer/go-codex/schema"
 	"gopkg.in/yaml.v3"
 )
 
@@ -54,8 +55,8 @@ func (f Format[T]) Validate(v T) error {
 	return f.codec.Validate(v)
 }
 
-// Schema returns the schema from the underlying codec.
-func (f Format[T]) Schema() any {
+// Schema returns the schema.Schema from the underlying codec.
+func (f Format[T]) Schema() schema.Schema {
 	return f.codec.Schema
 }
 

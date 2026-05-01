@@ -25,10 +25,13 @@ go-codex is a Go port of the core ideas from Haskell's [autodocodec](https://hac
 | `codex`           | PUBLIC API: `Codec[T]`, primitives, struct, union, slice, `MapCodecSafe`, `Constraint`, `Refine` | `schema`                  |
 | `schema`          | Schema model (pure data, no codec logic)                                                  | none                             |
 | `validate`        | Reusable `Constraint` functions for numbers, strings, etc.                                | `codex`, `schema`                |
-| `format`          | Bridges `Codec[T]` to wire formats: JSON, YAML, TOML                                     | `codex`, external libs           |
+| `format`          | Bridges `Codec[T]` to wire formats: JSON, YAML, TOML                                     | `codex`, `schema`, external libs |
 | `route`           | HTTP route descriptors: `Route`, `Param`, `Body`, `Response`                             | `schema`                         |
 | `render/openapi`  | Renders `schema.Schema` as OpenAPI 3.1 `components/schemas`; `DocumentBuilder` for full spec | `schema`, `route`, external libs |
 | `render/asyncapi` | Renders channels and schemas as a full AsyncAPI 2.6 document                             | `schema`, external libs          |
+| `api/rest`        | Transport-agnostic REST API builder; typed Decode/Encode + OpenAPI spec                  | `codex`, `format`, `route`, `render/openapi`, `schema` |
+| `api/events`      | Transport-agnostic event channel builder; typed Decode/Encode + AsyncAPI spec            | `codex`, `format`, `render/asyncapi`, `schema` |
+| `adapters/*`      | Framework/broker-specific adapters (future); wrap `RouteHandle` or `ChannelHandle`       | `api/rest` or `api/events` + transport lib |
 | `examples`        | Usage demonstrations — not importable by other packages                                   | all                              |
 
 - No circular imports.
@@ -453,6 +456,85 @@ Key rules:
 - Each channel must have at least one of `Subscribe` or `Publish`; `Build()` rejects channels with neither.
 - AsyncAPI 3.0 upgrade path: isolate version-specific serialisation so a v3 variant can be added as `render/asyncapi/v3` without breaking 2.6.
 
+## REST API Builder (`api/rest`)
+
+`api/rest` is a transport-agnostic REST API builder layered on top of `render/openapi`. It imports **no HTTP library**. Users receive typed `Decode`/`Encode` helpers per route; they wire those into any HTTP framework.
+
+```go
+// NewBuilder returns a Builder for REST route registration.
+func NewBuilder(info Info) *Builder
+
+// AddRoute is a free function (generic type params require free functions in Go).
+// Registers a route; returns a RouteHandle with frozen descriptor and typed helpers.
+func AddRoute[Req, Resp any](
+    b *Builder,
+    method, path string,
+    reqCodec codex.Codec[Req],
+    respCodec codex.Codec[Resp],
+    config RouteConfig,
+) *RouteHandle[Req, Resp]
+
+// OpenAPISpec builds a full OpenAPI 3.1 document from all registered routes.
+func (b *Builder) OpenAPISpec() (openapi.Document, error)
+```
+
+`RouteHandle[Req, Resp]`:
+- `Descriptor route.Route` — frozen at registration; use for framework routing
+- `Decode(body []byte) (Req, error)` — JSON decode + Refine validation
+- `Encode(resp Resp) ([]byte, error)` — JSON encode
+
+`RouteConfig` fields: `OperationID`, `Summary`, `Description`, `Tags`, `PathParams`, `QueryParams`, `ReqSchemaName`, `RespStatus` (default POST→"201", others→"200"), `RespDescription`, `RespSchemaName`, `Responses []ResponseMeta`.
+
+Key rules:
+- `api/rest` uses `format.JSON(codec)` internally — explicitly JSON-only.
+- Request body (`RequestBody`) is only added to the spec for `POST`, `PUT`, `PATCH`.
+- The descriptor is built and frozen at `AddRoute` call time; later config mutations do not affect the registered route.
+- `Info = openapi.Info` and `Server = openapi.Server` are type aliases to avoid drift.
+- `api/rest` may import `codex`, `format`, `route`, `render/openapi`, `schema`. No `net/http`.
+- Future: `adapters/nethttp`, `adapters/gin`, etc. wrap `RouteHandle` — they live in separate packages.
+
+## Event Channel Builder (`api/events`)
+
+`api/events` is a transport-agnostic event channel builder layered on top of `render/asyncapi`. It imports **no messaging library**. Users receive typed `Decode`/`Encode` helpers per channel; they wire those into any message broker.
+
+```go
+func NewBuilder(info Info) *Builder
+
+func AddChannel[T any](
+    b *Builder,
+    topic string,
+    codec codex.Codec[T],
+    config ChannelConfig,
+) *ChannelHandle[T]
+
+func (b *Builder) AsyncAPISpec() (asyncapi.Document, error)
+```
+
+`ChannelHandle[T]`:
+- `Topic string`
+- `Descriptor asyncapi.ChannelItem` — frozen at registration
+- `Decode(payload []byte) (T, error)` — JSON decode + Refine validation
+- `Encode(msg T) ([]byte, error)` — JSON encode
+
+`ChannelConfig` fields: `Description`, `Subscribe *OperationConfig`, `Publish *OperationConfig`. At least one must be non-nil.
+
+`OperationConfig` fields: `Summary`, `Description`, `Tags`, `SchemaName`.
+
+Key rules:
+- `api/events` uses `format.JSON(codec)` internally — explicitly JSON-only.
+- The descriptor is built and frozen at `AddChannel` call time.
+- `Info = asyncapi.Info` and `Server = asyncapi.Server` are type aliases.
+- `api/events` may import `codex`, `format`, `render/asyncapi`, `schema`. No messaging library.
+- Future: `adapters/mqtt`, `adapters/amqp`, etc. wrap `ChannelHandle` — they live in separate packages.
+
+### Package import table (updated)
+
+| Package           | Imports allowed from                                          |
+|-------------------|---------------------------------------------------------------|
+| `api/rest`        | `codex`, `format`, `route`, `render/openapi`, `schema`        |
+| `api/events`      | `codex`, `format`, `render/asyncapi`, `schema`                |
+| `adapters/*`      | `api/rest` or `api/events` + specific transport library       |
+
 
 ## Multi-Format Output
 
@@ -472,7 +554,7 @@ cfg, err  = tomlFmt.Unmarshal(tomlBytes)
 out, err := tomlFmt.Marshal(cfg)
 ```
 
-`Format[T]` has four methods: `Marshal(T) ([]byte, error)`, `Unmarshal([]byte) (T, error)`, `Validate(T) error`, `Schema() any`.
+`Format[T]` has four methods: `Marshal(T) ([]byte, error)`, `Unmarshal([]byte) (T, error)`, `Validate(T) error`, `Schema() schema.Schema`.
 
 `format.New[T]` accepts custom marshal/unmarshal functions for formats not built-in.
 
