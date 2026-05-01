@@ -771,60 +771,71 @@ go-codex/
 ├── README.md
 
 ├── codex/                  # ⭐ PUBLIC API: codecs, primitives, struct, union, slice
-│   ├── codec.go            # Codec[T], WithDescription, WithTitle
+│   ├── codec.go            # Codec[T], WithDescription, WithTitle, Validate
+│   ├── errors.go           # ValidationError, ValidationErrors
 │   ├── map.go              # MapCodecSafe, Downcast
-│   ├── refine.go           # Constraint + Refine (Constraint.Schema for schema reflection)
-│   ├── primitives.go       # Int, Int64, Float64, String, Bool
-│   ├── object.go           # Field[T,F], Struct[T]
-│   ├── union.go            # TaggedUnion[T]
+│   ├── nullable.go         # Nullable[T]
+│   ├── object.go           # Field[T,F], RequiredField, OptionalField, Struct[T]
+│   ├── primitives.go       # Int, Int64, Float64, String, Bool, Bytes
+│   ├── refine.go           # Constraint[T], Refine (Constraint.Schema for schema reflection)
 │   ├── slice.go            # SliceOf[T]
+│   ├── stringmap.go        # StringMap[V]
+│   ├── time.go             # Time(), Date()
+│   └── union.go            # TaggedUnion[T]
 │
 ├── format/                 # format bridges: JSON, YAML, TOML
-│   ├── format.go           # Format[T], JSON(), YAML(), TOML()
+│   └── format.go           # Format[T], JSON(), YAML(), TOML(), New()
 │
 ├── route/                  # HTTP route descriptors (no renderer logic)
 │   └── route.go            # Route, Param, Body, Response
 │
 ├── api/                    # API builders (no HTTP or messaging library imports)
 │   ├── rest/               # REST API builder: typed Decode/Encode + OpenAPI spec
-│   │   └── builder.go      # Builder, AddRoute[Req,Resp], RouteHandle, RouteConfig
+│   │   └── builder.go      # Builder, AddRoute[Req,Resp], AddServer, AddSchema, RouteHandle
 │   └── events/             # Event channel builder: typed Decode/Encode + AsyncAPI spec
-│       └── builder.go      # Builder, AddChannel[T], ChannelHandle, ChannelConfig
+│       └── builder.go      # Builder, AddChannel[T], AddServer, AddSchema, ChannelHandle
 │
 ├── adapters/               # transport-specific adapters (wrap api/rest or api/events)
 │   ├── nethttp/            # net/http adapter for api/rest RouteHandles
-│   │   └── adapter.go      # Handler[Req,Resp], Register[Req,Resp], HandlerFunc
+│   │   └── adapter.go      # Handler, Register, HandlerWithOptions, RequestFromContext
 │   └── mqtt/               # Paho MQTT adapter for api/events ChannelHandles
-│       └── adapter.go      # SubscribeHandler[T], Publish[T]
+│       └── adapter.go      # Subscribe, Publish, SubscribeError, ErrorKind
 │
 ├── render/                 # spec renderers (import schema only, or schema + route)
+│   ├── internal/
+│   │   └── schemarender/   # shared schema-to-map renderer (used by openapi + asyncapi)
+│   │       └── schemarender.go  # SchemaObject
 │   ├── openapi/            # OpenAPI 3.1 renderer
 │   │   ├── openapi.go      # SchemaObject, ComponentsSchemas, MarshalJSON, MarshalYAML
 │   │   └── document.go     # DocumentBuilder, Document, Info, Server — full 3.1 spec
 │   └── asyncapi/           # AsyncAPI 2.6 renderer
-│       ├── asyncapi.go     # unexported schema helpers (schemaObject, schemaRef)
+│       ├── asyncapi.go     # delegates schema rendering to render/internal/schemarender
 │       └── document.go     # DocumentBuilder, Document, ChannelItem, Operation, Message
 │
 ├── schema/                 # schema model (pure data, zero dependencies)
-│   ├── schema.go
+│   └── schema.go           # Schema, Property, DiscriminatorSchema
 │
 ├── validate/               # reusable constraints (reflect into schema automatically)
-│   ├── int.go
-│   ├── float.go
-│   ├── string.go
+│   ├── bytes.go            # MaxBytes(n), MinBytes(n)
+│   ├── float.go            # PositiveFloat, NegativeFloat, MinFloat, MaxFloat, RangeFloat
 │   ├── format.go           # Email, UUID, URL, IPv4, IPv6, Date, DateTime, Slug
+│   ├── int.go              # PositiveInt, NegativeInt, MinInt, MaxInt, RangeInt
+│   └── string.go           # NonEmptyString, MinLen, MaxLen, Pattern, OneOf
 │
-└── examples/
-    ├── formats/            # builtin format constraints demo (Email, UUID, URL, ...)
-    ├── openapi/            # OpenAPI components/schemas generation from a Codec
-    ├── rest-api/           # full OpenAPI 3.1 document from route descriptors (low-level)
-    ├── event-driven/       # full AsyncAPI 2.6 document from channel descriptors (low-level)
-    ├── api-rest/           # REST API builder: typed helpers + OpenAPI spec
-    ├── api-events/         # Event channel builder: typed helpers + AsyncAPI spec
-    ├── adapters-nethttp/   # net/http adapter: wiring api/rest to ServeMux
+└── examples/               # usage demonstrations — not importable
     ├── adapters-mqtt/      # Paho MQTT adapter: wiring api/events to Paho client
-    ├── shape/              # tagged union + Downcast demo
-    ├── order/              # nested structs + SliceOf demo
+    ├── adapters-nethttp/   # net/http adapter: wiring api/rest to ServeMux
+    ├── api-events/         # Event channel builder: typed helpers + AsyncAPI spec
+    ├── api-rest/           # REST API builder: typed helpers + OpenAPI spec
+    ├── decode-errors/      # multi-field ValidationErrors + errors.As demo
+    ├── event-driven/       # full AsyncAPI 2.6 document from channel descriptors
+    ├── formats/            # builtin format constraints demo (Email, UUID, URL, ...)
+    ├── html-sanitize/      # sanitizing untrusted HTML input with a codec
     ├── multiformat/        # JSON / YAML / TOML with one codec
+    ├── openapi/            # OpenAPI components/schemas generation from a Codec
+    ├── order/              # nested structs, SliceOf, Time, Nullable, StringMap demo
+    ├── rest-api/           # full OpenAPI 3.1 document from route descriptors
+    ├── shape/              # tagged union + Downcast demo
+    ├── templ-mapper/       # mapping codec-validated data to templ components
     └── validate/           # explicit Validate before marshal
 ```

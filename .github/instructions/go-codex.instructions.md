@@ -24,7 +24,7 @@ go-codex is a Go port of the core ideas from Haskell's [autodocodec](https://hac
 |-------------------|-------------------------------------------------------------------------------------------|----------------------------------|
 | `codex`           | PUBLIC API: `Codec[T]`, primitives (`Int`, `Int64`, `Float64`, `String`, `Bool`, `Bytes`, `Time`, `Date`), `Nullable[T]`, `SliceOf[T]`, `StringMap[V]`, struct, union, `MapCodecSafe`, `Constraint`, `Refine`, `ValidationError`, `ValidationErrors` | `schema`     |
 | `schema`          | Schema model (pure data, no codec logic)                                                  | none                             |
-| `validate`        | Reusable `Constraint` functions for numbers, strings, etc.                                | `codex`, `schema`                |
+| `validate`        | Reusable `Constraint` functions: numbers, strings, format, bytes                          | `codex`, `schema`                |
 | `format`          | Bridges `Codec[T]` to wire formats: JSON, YAML, TOML                                     | `codex`, `schema`, external libs |
 | `route`           | HTTP route descriptors: `Route`, `Param`, `Body`, `Response`                             | `schema`                         |
 | `render/internal/schemarender` | Shared schema-to-map rendering logic used by both OpenAPI and AsyncAPI renderers | `schema`               |
@@ -32,9 +32,8 @@ go-codex is a Go port of the core ideas from Haskell's [autodocodec](https://hac
 | `render/asyncapi` | Renders channels and schemas as a full AsyncAPI 2.6 document                             | `schema`, `render/internal/schemarender`, external libs |
 | `api/rest`        | Transport-agnostic REST API builder; typed Decode/Encode + OpenAPI spec                  | `codex`, `format`, `route`, `render/openapi`, `schema` |
 | `api/events`      | Transport-agnostic event channel builder; typed Decode/Encode + AsyncAPI spec            | `codex`, `format`, `render/asyncapi`, `schema` |
-| `adapters/nethttp` | Framework/broker-specific adapters; wrap `RouteHandle` or `ChannelHandle`     | `api/rest` or `api/events` + transport lib |
-| `adapters/mqtt`   | Framework/broker-specific adapters; wrap `RouteHandle` or `ChannelHandle`      | `api/rest` or `api/events` + transport lib |
-| `examples`        | Usage demonstrations — not importable by other packages                                   | all                              |
+| `adapters/nethttp` | net/http adapter: `Handler`, `Register`, `HandlerWithOptions`, `RegisterWithOptions`, `RequestFromContext` | `api/rest`, `net/http` |
+| `adapters/mqtt`   | Paho MQTT adapter: `SubscribeHandler`, `Publish`, `SubscribeError`, `ErrorKind`              | `api/events`, Paho MQTT lib |
 
 - No circular imports.
 - `schema` has zero dependencies inside this module.
