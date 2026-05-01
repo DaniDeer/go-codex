@@ -52,6 +52,18 @@ func (f Field[T, F]) schema() (string, schema.Schema, bool) {
 	return f.Name, f.Codec.Schema, f.Required
 }
 
+// RequiredField is a shorthand for [Field] with Required set to true.
+// The intent is explicit at the call site — no boolean flag needed.
+func RequiredField[T, F any](name string, codec Codec[F], get func(T) F, set func(*T, F)) Field[T, F] {
+	return Field[T, F]{Name: name, Codec: codec, Get: get, Set: set, Required: true}
+}
+
+// OptionalField is a shorthand for [Field] with Required set to false.
+// The intent is explicit at the call site — no boolean flag needed.
+func OptionalField[T, F any](name string, codec Codec[F], get func(T) F, set func(*T, F)) Field[T, F] {
+	return Field[T, F]{Name: name, Codec: codec, Get: get, Set: set}
+}
+
 // Struct builds a Codec[T] by composing field codecs. Schema is built eagerly.
 func Struct[T any](fields ...fieldCodec[T]) Codec[T] {
 	var props []schema.Property

@@ -20,7 +20,6 @@ import (
 	nethttp "github.com/DaniDeer/go-codex/adapters/nethttp"
 	"github.com/DaniDeer/go-codex/api/rest"
 	"github.com/DaniDeer/go-codex/codex"
-	"github.com/DaniDeer/go-codex/route"
 	"github.com/DaniDeer/go-codex/validate"
 )
 
@@ -37,47 +36,41 @@ type User struct {
 	Email string
 }
 
+// emptyReq is used for routes that carry no request body (e.g. GET).
+type emptyReq struct{}
+
 // --- Codecs ---
 
 var createUserReqCodec = codex.Struct[CreateUserReq](
-	codex.Field[CreateUserReq, string]{
-		Name:     "name",
-		Codec:    codex.String().Refine(validate.NonEmptyString).WithDescription("Display name."),
-		Get:      func(r CreateUserReq) string { return r.Name },
-		Set:      func(r *CreateUserReq, v string) { r.Name = v },
-		Required: true,
-	},
-	codex.Field[CreateUserReq, string]{
-		Name:     "email",
-		Codec:    codex.String().Refine(validate.Email).WithDescription("Primary email."),
-		Get:      func(r CreateUserReq) string { return r.Email },
-		Set:      func(r *CreateUserReq, v string) { r.Email = v },
-		Required: true,
-	},
+	codex.RequiredField[CreateUserReq, string]("name",
+		codex.String().Refine(validate.NonEmptyString).WithDescription("Display name."),
+		func(r CreateUserReq) string { return r.Name },
+		func(r *CreateUserReq, v string) { r.Name = v },
+	),
+	codex.RequiredField[CreateUserReq, string]("email",
+		codex.String().Refine(validate.Email).WithDescription("Primary email."),
+		func(r CreateUserReq) string { return r.Email },
+		func(r *CreateUserReq, v string) { r.Email = v },
+	),
 )
 
 var userCodec = codex.Struct[User](
-	codex.Field[User, string]{
-		Name:  "id",
-		Codec: codex.String().WithDescription("User UUID."),
-		Get:   func(u User) string { return u.ID },
-		Set:   func(u *User, v string) { u.ID = v },
-	},
-	codex.Field[User, string]{
-		Name:  "name",
-		Codec: codex.String(),
-		Get:   func(u User) string { return u.Name },
-		Set:   func(u *User, v string) { u.Name = v },
-	},
-	codex.Field[User, string]{
-		Name:  "email",
-		Codec: codex.String(),
-		Get:   func(u User) string { return u.Email },
-		Set:   func(u *User, v string) { u.Email = v },
-	},
+	codex.OptionalField[User, string]("id",
+		codex.String().WithDescription("User UUID."),
+		func(u User) string { return u.ID },
+		func(u *User, v string) { u.ID = v },
+	),
+	codex.OptionalField[User, string]("name",
+		codex.String(),
+		func(u User) string { return u.Name },
+		func(u *User, v string) { u.Name = v },
+	),
+	codex.OptionalField[User, string]("email",
+		codex.String(),
+		func(u User) string { return u.Email },
+		func(u *User, v string) { u.Email = v },
+	),
 )
-
-type emptyReq struct{}
 
 var emptyReqCodec = codex.Struct[emptyReq]()
 
@@ -88,7 +81,7 @@ func main() {
 		Version:     "1.0.0",
 		Description: "Example REST API wired to net/http via adapters/nethttp.",
 	})
-	b.AddServer(rest.Server{URL: "http://localhost:8080"})
+	b.AddServer("local", rest.Server{URL: "http://localhost:8080"})
 
 	createUser := rest.AddRoute[CreateUserReq, User](b, "POST", "/users",
 		createUserReqCodec, userCodec, rest.RouteConfig{
@@ -103,7 +96,7 @@ func main() {
 			OperationID:    "getUser",
 			Summary:        "Get a user by ID",
 			RespSchemaName: "User",
-			PathParams: []route.Param{
+			PathParams: []rest.Param{
 				{Name: "id", Description: "User UUID"},
 			},
 		})
@@ -115,8 +108,11 @@ func main() {
 		return User{ID: "f47ac10b-58cc-4372-a567-0e02b2c3d479", Name: req.Name, Email: req.Email}, nil
 	})
 
+	// GET handler: use RequestFromContext to read path parameters.
 	nethttp.Register(mux, getUser, func(ctx context.Context, _ emptyReq) (User, error) {
-		return User{ID: "f47ac10b-58cc-4372-a567-0e02b2c3d479", Name: "Alice", Email: "alice@example.com"}, nil
+		r, _ := nethttp.RequestFromContext(ctx)
+		id := r.PathValue("id")
+		return User{ID: id, Name: "Alice", Email: "alice@example.com"}, nil
 	})
 
 	// Step 3: demo requests against an in-process httptest server.
@@ -151,7 +147,7 @@ func main() {
 	fmt.Printf("Status: %d\nError:  %s\n\n", resp2.StatusCode, errBody["error"])
 
 	fmt.Println("=== GET /users/{id} ===")
-	resp3, err := http.Get(srv.URL + "/users/f47ac10b") //nolint:noctx
+	resp3, err := http.Get(srv.URL + "/users/f47ac10b-58cc-4372-a567-0e02b2c3d479") //nolint:noctx
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "GET error: %v\n", err)
 		os.Exit(1)

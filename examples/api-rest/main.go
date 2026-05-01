@@ -14,7 +14,6 @@ import (
 
 	"github.com/DaniDeer/go-codex/api/rest"
 	"github.com/DaniDeer/go-codex/codex"
-	"github.com/DaniDeer/go-codex/route"
 	"github.com/DaniDeer/go-codex/schema"
 	"github.com/DaniDeer/go-codex/validate"
 )
@@ -32,48 +31,43 @@ type User struct {
 	Email string
 }
 
+// emptyReq is used for routes that carry no request body (e.g. GET).
+type emptyReq struct{}
+
 // --- Codecs: single source of truth for encode, decode, validation, schema ---
 
 var createUserCodec = codex.Struct[CreateUserRequest](
-	codex.Field[CreateUserRequest, string]{
-		Name:     "name",
-		Codec:    codex.String().Refine(validate.NonEmptyString).Refine(validate.MaxLen(100)).WithDescription("Full display name."),
-		Get:      func(r CreateUserRequest) string { return r.Name },
-		Set:      func(r *CreateUserRequest, v string) { r.Name = v },
-		Required: true,
-	},
-	codex.Field[CreateUserRequest, string]{
-		Name:     "email",
-		Codec:    codex.String().Refine(validate.Email).WithDescription("Primary email address."),
-		Get:      func(r CreateUserRequest) string { return r.Email },
-		Set:      func(r *CreateUserRequest, v string) { r.Email = v },
-		Required: true,
-	},
+	codex.RequiredField[CreateUserRequest, string]("name",
+		codex.String().Refine(validate.NonEmptyString).Refine(validate.MaxLen(100)).WithDescription("Full display name."),
+		func(r CreateUserRequest) string { return r.Name },
+		func(r *CreateUserRequest, v string) { r.Name = v },
+	),
+	codex.RequiredField[CreateUserRequest, string]("email",
+		codex.String().Refine(validate.Email).WithDescription("Primary email address."),
+		func(r CreateUserRequest) string { return r.Email },
+		func(r *CreateUserRequest, v string) { r.Email = v },
+	),
 )
 
 var userCodec = codex.Struct[User](
-	codex.Field[User, string]{
-		Name:     "id",
-		Codec:    codex.String().Refine(validate.UUID).WithDescription("Unique user ID (UUID)."),
-		Get:      func(u User) string { return u.ID },
-		Set:      func(u *User, v string) { u.ID = v },
-		Required: true,
-	},
-	codex.Field[User, string]{
-		Name:     "name",
-		Codec:    codex.String().Refine(validate.NonEmptyString).Refine(validate.MaxLen(100)).WithDescription("Full display name."),
-		Get:      func(u User) string { return u.Name },
-		Set:      func(u *User, v string) { u.Name = v },
-		Required: true,
-	},
-	codex.Field[User, string]{
-		Name:     "email",
-		Codec:    codex.String().Refine(validate.Email).WithDescription("Primary email address."),
-		Get:      func(u User) string { return u.Email },
-		Set:      func(u *User, v string) { u.Email = v },
-		Required: true,
-	},
+	codex.RequiredField[User, string]("id",
+		codex.String().Refine(validate.UUID).WithDescription("Unique user ID (UUID)."),
+		func(u User) string { return u.ID },
+		func(u *User, v string) { u.ID = v },
+	),
+	codex.RequiredField[User, string]("name",
+		codex.String().Refine(validate.NonEmptyString).Refine(validate.MaxLen(100)).WithDescription("Full display name."),
+		func(u User) string { return u.Name },
+		func(u *User, v string) { u.Name = v },
+	),
+	codex.RequiredField[User, string]("email",
+		codex.String().Refine(validate.Email).WithDescription("Primary email address."),
+		func(u User) string { return u.Email },
+		func(u *User, v string) { u.Email = v },
+	),
 )
+
+var emptyCodec = codex.Struct[emptyReq]()
 
 func main() {
 	// Build the API: register routes with codecs.
@@ -83,8 +77,8 @@ func main() {
 		Version:     "1.0.0",
 		Description: "CRUD API for managing users.",
 	})
-	b.AddServer(rest.Server{URL: "https://api.example.com/v1", Description: "Production"})
-	b.AddServer(rest.Server{URL: "http://localhost:8080/v1", Description: "Local development"})
+	b.AddServer("production", rest.Server{URL: "https://api.example.com/v1", Description: "Production"})
+	b.AddServer("local", rest.Server{URL: "http://localhost:8080/v1", Description: "Local development"})
 
 	// POST /users — creates a user.
 	// createUser.Decode(body) and createUser.Encode(user) are the codec helpers.
@@ -102,16 +96,17 @@ func main() {
 			},
 		})
 
-	// GET /users/{id} — no request body; codec is used for the response only.
-	getUser := rest.AddRoute[CreateUserRequest, User](b, "GET", "/users/{id}",
-		createUserCodec, userCodec,
+	// GET /users/{id} — no request body; emptyReq carries no fields.
+	// Path parameter is extracted at the HTTP layer (e.g. r.PathValue("id")).
+	getUser := rest.AddRoute[emptyReq, User](b, "GET", "/users/{id}",
+		emptyCodec, userCodec,
 		rest.RouteConfig{
 			OperationID:     "getUser",
 			Summary:         "Get a user by ID",
 			Tags:            []string{"users"},
 			RespSchemaName:  "User",
 			RespDescription: "User found.",
-			PathParams: []route.Param{
+			PathParams: []rest.Param{
 				{Name: "id", Required: true, Description: "User ID (UUID).", Schema: schema.Schema{Type: "string", Format: "uuid"}},
 			},
 			Responses: []rest.ResponseMeta{
@@ -139,9 +134,9 @@ func main() {
 	fmt.Printf("Validation error: %v\n", err)
 	fmt.Println()
 
-	// Encode a response.
+	// Encode a response (same userCodec for both POST and GET routes).
 	user := User{ID: "f47ac10b-58cc-4372-a567-0e02b2c3d479", Name: req.Name, Email: req.Email}
-	respBytes, _ := createUser.Encode(user)
+	respBytes, _ := getUser.Encode(user)
 	fmt.Printf("Encoded response: %s\n", respBytes)
 	fmt.Println()
 

@@ -223,3 +223,64 @@ func TestHandler_CustomStatus(t *testing.T) {
 		t.Fatalf("want 204, got %d", rec.Code)
 	}
 }
+
+func TestHandler_RequestFromContext(t *testing.T) {
+	b := rest.NewBuilder(testInfo)
+	handle := rest.AddRoute[getReq, userResp](b, "GET", "/users/{id}",
+		getReqCodec, userRespCodec, rest.RouteConfig{OperationID: "getUser"})
+
+	var gotID string
+	h := nethttp.Handler(handle, func(ctx context.Context, _ getReq) (userResp, error) {
+		r, ok := nethttp.RequestFromContext(ctx)
+		if !ok {
+			return userResp{}, errors.New("no request in context")
+		}
+		gotID = r.PathValue("id")
+		return userResp{ID: gotID, Name: "Alice"}, nil
+	})
+
+	rec := httptest.NewRecorder()
+	// Use a mux so PathValue is populated.
+	mux := http.NewServeMux()
+	mux.Handle("GET /users/{id}", h)
+	r := httptest.NewRequest(http.MethodGet, "/users/42", nil)
+	mux.ServeHTTP(rec, r)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("want 200, got %d", rec.Code)
+	}
+	if gotID != "42" {
+		t.Fatalf("want PathValue id=42, got %q", gotID)
+	}
+}
+
+func TestHandlerWithOptions_CustomErrorHandler(t *testing.T) {
+	handle := newCreateRoute()
+	var capturedStatus int
+	var capturedMsg string
+
+	opts := nethttp.Options{
+		ErrorHandler: func(w http.ResponseWriter, _ *http.Request, status int, err error) {
+			capturedStatus = status
+			capturedMsg = err.Error()
+			http.Error(w, err.Error(), status)
+		},
+	}
+	h := nethttp.HandlerWithOptions(handle, func(_ context.Context, req createReq) (userResp, error) {
+		return userResp{}, errors.New("custom error")
+	}, opts)
+
+	rec := httptest.NewRecorder()
+	r := httptest.NewRequest(http.MethodPost, "/users", strings.NewReader(`{"name":"Alice"}`))
+	h.ServeHTTP(rec, r)
+
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("want 500, got %d", rec.Code)
+	}
+	if capturedStatus != http.StatusInternalServerError {
+		t.Fatalf("want capturedStatus=500, got %d", capturedStatus)
+	}
+	if !strings.Contains(capturedMsg, "custom error") {
+		t.Fatalf("want 'custom error' in msg, got %q", capturedMsg)
+	}
+}

@@ -137,3 +137,51 @@ func TestStruct_RoundTrip(t *testing.T) {
 		t.Errorf("round-trip = %+v, want %+v", got, original)
 	}
 }
+
+func TestRequiredField_SetsRequired(t *testing.T) {
+	f := codex.RequiredField[point, int]("x", codex.Int(),
+		func(p point) int { return p.X },
+		func(p *point, v int) { p.X = v },
+	)
+	if !f.Required {
+		t.Error("RequiredField: want Required=true")
+	}
+	if f.Name != "x" {
+		t.Errorf("RequiredField: want Name=x, got %q", f.Name)
+	}
+}
+
+func TestOptionalField_NotRequired(t *testing.T) {
+	f := codex.OptionalField[point, int]("y", codex.Int(),
+		func(p point) int { return p.Y },
+		func(p *point, v int) { p.Y = v },
+	)
+	if f.Required {
+		t.Error("OptionalField: want Required=false")
+	}
+}
+
+func TestRequiredField_RoundTrip(t *testing.T) {
+	c := codex.Struct[point](
+		codex.RequiredField[point, int]("x", codex.Int(),
+			func(p point) int { return p.X },
+			func(p *point, v int) { p.X = v },
+		),
+		codex.OptionalField[point, int]("y", codex.Int(),
+			func(p point) int { return p.Y },
+			func(p *point, v int) { p.Y = v },
+		),
+	)
+	original := point{X: 3, Y: 7}
+	enc, err := c.Encode(original)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := c.Decode(enc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != original {
+		t.Errorf("round-trip = %+v, want %+v", got, original)
+	}
+}

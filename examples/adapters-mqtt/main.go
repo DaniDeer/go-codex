@@ -203,7 +203,9 @@ func main() {
 				}
 				return adaptermqtt.Publish(ctx, client, notifSend, 1, false, cmd)
 			},
-			func(err error) { fmt.Fprintf(os.Stderr, "[error] %v\n", err) },
+			func(e adaptermqtt.SubscribeError) {
+				fmt.Fprintf(os.Stderr, "[error] kind=%s topic=%s: %v\n", e.Kind, e.Topic, e.Err)
+			},
 		),
 	)
 

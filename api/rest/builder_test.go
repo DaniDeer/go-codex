@@ -161,7 +161,7 @@ func TestAddRoute_additionalResponsesAppended(t *testing.T) {
 
 func TestBuilder_openAPISpec_containsRegisteredRoutes(t *testing.T) {
 	b := rest.NewBuilder(testInfo)
-	b.AddServer(rest.Server{URL: "https://api.example.com"})
+	b.AddServer("production", rest.Server{URL: "https://api.example.com"})
 
 	rest.AddRoute[createReq, userResp](b, "POST", "/users", createReqCodec, userCodec, rest.RouteConfig{
 		OperationID:    "createUser",

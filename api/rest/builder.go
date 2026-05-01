@@ -11,7 +11,7 @@
 // Typical usage:
 //
 //	b := rest.NewBuilder(rest.Info{Title: "User API", Version: "1.0.0"})
-//	b.AddServer(rest.Server{URL: "https://api.example.com"})
+//	b.AddServer("production", rest.Server{URL: "https://api.example.com"})
 //
 //	createUser := rest.AddRoute[CreateUserReq, User](b, "POST", "/users",
 //	    createUserCodec, userCodec, rest.RouteConfig{
@@ -142,8 +142,13 @@ func NewBuilder(info Info) *Builder {
 	return &Builder{info: info}
 }
 
-// AddServer appends a server entry to the spec.
-func (b *Builder) AddServer(s Server) *Builder {
+// AddServer appends a named server entry to the spec. name is used as the
+// server's Description if s.Description is empty, making it consistent with
+// [events.Builder.AddServer].
+func (b *Builder) AddServer(name string, s Server) *Builder {
+	if s.Description == "" {
+		s.Description = name
+	}
 	b.servers = append(b.servers, s)
 	return b
 }

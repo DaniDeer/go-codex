@@ -140,40 +140,46 @@ func TestSubscribeHandler_ValidPayload(t *testing.T) {
 
 func TestSubscribeHandler_DecodeError(t *testing.T) {
 	handle := newHandle()
-	var gotErr error
+	var gotErr adaptermqtt.SubscribeError
 
 	handler := adaptermqtt.SubscribeHandler(context.Background(), handle,
 		func(_ context.Context, e userEvent) error {
 			t.Fatal("fn must not be called on decode error")
 			return nil
 		},
-		func(err error) { gotErr = err },
+		func(e adaptermqtt.SubscribeError) { gotErr = e },
 	)
 
 	handler(nil, &mockMessage{payload: []byte(`{"id":"bad-uuid","email":"not-email"}`)})
 
-	if gotErr == nil {
+	if gotErr.Err == nil {
 		t.Fatal("want error, got nil")
 	}
-	if !strings.Contains(gotErr.Error(), "user/created") {
-		t.Fatalf("want topic in error, got %v", gotErr)
+	if gotErr.Kind != adaptermqtt.KindDecode {
+		t.Fatalf("want KindDecode, got %v", gotErr.Kind)
+	}
+	if gotErr.Topic != "user/created" {
+		t.Fatalf("want topic user/created, got %q", gotErr.Topic)
 	}
 }
 
 func TestSubscribeHandler_FnError(t *testing.T) {
 	handle := newHandle()
-	var gotErr error
+	var gotErr adaptermqtt.SubscribeError
 	fnErr := errors.New("downstream failure")
 
 	handler := adaptermqtt.SubscribeHandler(context.Background(), handle,
 		func(_ context.Context, _ userEvent) error { return fnErr },
-		func(err error) { gotErr = err },
+		func(e adaptermqtt.SubscribeError) { gotErr = e },
 	)
 
 	handler(nil, &mockMessage{payload: []byte(validPayload)})
 
-	if !errors.Is(gotErr, fnErr) {
-		t.Fatalf("want fnErr wrapped in gotErr, got %v", gotErr)
+	if !errors.Is(gotErr.Err, fnErr) {
+		t.Fatalf("want fnErr in gotErr.Err, got %v", gotErr.Err)
+	}
+	if gotErr.Kind != adaptermqtt.KindHandler {
+		t.Fatalf("want KindHandler, got %v", gotErr.Kind)
 	}
 }
 

@@ -26,6 +26,27 @@ When modifying files in this repository, keep `.github/instructions/go-codex.ins
 | Codec renamed                                | Rename references in test files                         |
 | New `validate/` constraint added             | Add cases to `validate/number_test.go` or `validate/string_test.go` |
 
+## Run Examples After Significant Changes
+
+Run all examples with `go run` after any change that affects:
+- Public API signatures (codec, format, field helpers, builder methods)
+- Adapter behaviour (nethttp, mqtt)
+- Spec renderers (openapi, asyncapi)
+- Any change that touches more than one package
+
+```bash
+just examples
+# or manually:
+for d in examples/*/; do echo "=== $d ===" && go run ./$d; done
+```
+
+All examples must produce output without errors (exit code 0). If an example
+panics or prints an unexpected error, the change broke something. Investigate
+before committing.
+
+The examples are the primary integration test — they exercise the full stack
+from codec → format → builder → renderer → adapter.
+
 ## When Modifying go-codex.instructions.md
 
 - Verify every code example compiles: run `go build ./...` to confirm no example references a non-existent symbol.
@@ -42,3 +63,4 @@ When modifying files in this repository, keep `.github/instructions/go-codex.ins
 - [ ] `just check` passes (fmt + staticcheck + gosec)
 - [ ] `just test` passes
 - [ ] `go build ./...` passes with no errors referencing symbols from examples
+- [ ] All examples run without errors: `just examples`

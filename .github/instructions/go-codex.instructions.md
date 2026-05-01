@@ -205,31 +205,23 @@ type Field[S, F any] struct {
 
 - `Field.Name` is the explicit key string used in the encoded representation.
 - Compose fields into a struct codec using `codex.Struct`.
+- Use `codex.RequiredField` / `codex.OptionalField` instead of `Field{..., Required: true/false}` for clearer intent:
 
 ```go
-// Good example — Point struct
-type Point struct {
-    X float64
-    Y float64
-}
-
+// Preferred — intent explicit from constructor name
 var PointCodec = codex.Struct[Point](
-    codex.Field[Point, float64]{
-        Name:     "x",
-        Codec:    codex.Float64(),
-        Get:      func(p Point) float64 { return p.X },
-        Set:      func(p *Point, v float64) { p.X = v },
-        Required: true,
-    },
-    codex.Field[Point, float64]{
-        Name:     "y",
-        Codec:    codex.Float64(),
-        Get:      func(p Point) float64 { return p.Y },
-        Set:      func(p *Point, v float64) { p.Y = v },
-        Required: true,
-    },
+    codex.RequiredField[Point, float64]("x", codex.Float64(),
+        func(p Point) float64 { return p.X },
+        func(p *Point, v float64) { p.X = v },
+    ),
+    codex.OptionalField[Point, float64]("y", codex.Float64(),
+        func(p Point) float64 { return p.Y },
+        func(p *Point, v float64) { p.Y = v },
+    ),
 )
 ```
+
+Using the explicit `Field` struct literal (with `Required: true/false`) is also valid but less expressive.
 
 ## Union Codec: Tagged Unions
 
@@ -496,9 +488,12 @@ Key rules:
 - `api/rest` may import `codex`, `format`, `route`, `render/openapi`, `schema`. No `net/http`.
 - `adapters/nethttp` wraps `RouteHandle` for `net/http`. It imports `api/rest` and `net/http`.
   - `Handler[Req,Resp](handle, fn) http.Handler` — decodes body (POST/PUT/PATCH), calls fn, encodes response.
+  - `HandlerWithOptions[Req,Resp](handle, fn, opts) http.Handler` — like Handler but accepts `Options`.
+  - `Options.ErrorHandler func(w, r, status, err)` — custom error response writer; default is JSON `{"error":"..."}`.
   - `Register[Req,Resp](mux, handle, fn)` — registers on `*http.ServeMux` via Go 1.22+ `"METHOD /path"` pattern.
-  - Error format: `{"error":"..."}` JSON; 400 for decode/validation, 500 for handler/encode errors.
-  - Non-body methods (GET/HEAD/DELETE): fn called with zero value of Req.
+  - `RegisterWithOptions[Req,Resp](mux, handle, fn, opts)` — like Register with Options.
+  - `RequestFromContext(ctx) (*http.Request, bool)` — retrieves the underlying `*http.Request` for path params, headers, etc. Use `r.PathValue("id")` for Go 1.22+ path segments.
+  - Non-body methods (GET/HEAD/DELETE): fn called with zero value of Req; body reader not touched.
 
 ## Event Channel Builder (`api/events`)
 
@@ -533,7 +528,8 @@ Key rules:
 - `Info = asyncapi.Info` and `Server = asyncapi.Server` are type aliases.
 - `api/events` may import `codex`, `format`, `render/asyncapi`, `schema`. No messaging library.
 - `adapters/mqtt` wraps `ChannelHandle` for Paho MQTT. It imports `api/events` and `github.com/eclipse/paho.mqtt.golang`.
-  - `SubscribeHandler[T](ctx, handle, fn, onErr) mqtt.MessageHandler` — decodes payload, calls fn, routes errors to onErr.
+  - `SubscribeHandler[T](ctx, handle, fn, onErr) mqtt.MessageHandler` — decodes payload, calls fn, routes typed errors to `onErr func(SubscribeError)`.
+  - `SubscribeError{Kind ErrorKind, Topic string, Err error}` — typed error; `Kind` is `KindDecode` or `KindHandler`.
   - `Publish[T](ctx, client, handle, qos, retained, msg) error` — encodes and publishes; context-aware token wait.
 
 ### Package import table (updated)

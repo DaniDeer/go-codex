@@ -66,3 +66,21 @@ release version:
     echo "Tagged and pushed {{version}}"
 
 # ── Dev ────────────────────────────────────────────────────────────────────────
+
+# Run all examples (integration smoke test — every example must exit 0)
+examples:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    failed=0
+    for d in examples/*/; do
+        echo "=== $d ==="
+        if ! go run ./"$d"; then
+            echo "FAILED: $d"
+            failed=1
+        fi
+    done
+    if [ "$failed" -eq 1 ]; then
+        echo "One or more examples failed."
+        exit 1
+    fi
+    echo "All examples passed."

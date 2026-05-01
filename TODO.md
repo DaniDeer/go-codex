@@ -106,10 +106,8 @@ Questions:
 
 ### API design
 
-- [ ] **`AddServer` signatures are inconsistent**
-      `api/rest`: `b.AddServer(Server)` — no name.
-      `api/events`: `b.AddServer(name, Server)` — named.
-      Align both to `b.AddServer(name, Server)`.
+- [x] **`AddServer` signatures are inconsistent** *(done 2026-05-01)*
+      `api/rest.AddServer` now takes `(name string, s Server)`. `name` used as `Description` if empty. Both builders consistent.
 
 - [x] **`route.Param` leaks into `api/rest` caller imports** *(done 2026-05-01)*
       Added `type Param = route.Param` alias in `api/rest`.
@@ -135,20 +133,15 @@ Questions:
 
 ### Adapters
 
-- [ ] **`adapters/nethttp`: no path parameter extraction**
-      `GET /users/{id}` always receives zero `Req`. `http.Request.PathValue("id")`
-      (Go 1.22+) is available but never used. Options:
-      (a) pass `*http.Request` to the handler via context, or
-      (b) extend `HandlerFunc` to `func(ctx, r *http.Request, req Req) (Resp, error)`.
+- [x] **`adapters/nethttp`: no path parameter extraction** *(done 2026-05-01)*
+      `RequestFromContext(ctx) (*http.Request, bool)` added. Handler stores `*http.Request` in context via `contextKey{}` before calling fn.
 
 - [x] **`adapters/nethttp`: unbounded `io.ReadAll`** *(done 2026-05-01)*
       Wrapped body with `http.MaxBytesReader` (1 MiB default via `maxRequestBodyBytes` const).
 
-- [ ] **`adapters/nethttp`: hardcoded error envelope**
-      `{"error":"..."}` is fixed. Add an `ErrorHandler func(w, r, status, err)` option.
+- [x] **`adapters/nethttp`: hardcoded error envelope** *(done 2026-05-01)*
+      Added `Options{ErrorHandler}` and `HandlerWithOptions`/`RegisterWithOptions`. `Handler` keeps old signature with default JSON envelope.
 
-- [ ] **`adapters/mqtt`: untyped error callback**
-      `onErr func(error)` gives callers no way to distinguish decode errors, validation
-      errors, and handler errors without string matching.
-      Define a `SubscribeError` type with a `Kind` field (`KindDecode`, `KindHandler`).
+- [x] **`adapters/mqtt`: untyped error callback** *(done 2026-05-01)*
+      Added `ErrorKind` (`KindDecode`, `KindHandler`) and `SubscribeError{Kind, Topic, Err}`. `onErr` changed to `func(SubscribeError)`.
 
