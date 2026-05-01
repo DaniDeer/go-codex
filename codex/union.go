@@ -73,21 +73,18 @@ func buildUnionSchema[T any](tag string, variants map[string]Codec[T]) []schema.
 	oneOf := make([]schema.Schema, 0, len(variants))
 	for name, c := range variants {
 		// Deep-copy properties and required to avoid mutating shared schema state.
-		props := make(map[string]schema.Schema, len(c.Schema.Properties)+1)
-		for k, v := range c.Schema.Properties {
-			props[k] = v
-		}
+		props := make([]schema.Property, len(c.Schema.Properties), len(c.Schema.Properties)+1)
+		copy(props, c.Schema.Properties)
 		req := make([]string, len(c.Schema.Required))
 		copy(req, c.Schema.Required)
 
 		s := c.Schema
-		s.Properties = props
+		s.Properties = append(props, schema.Property{
+			Name:   tag,
+			Schema: schema.Schema{Type: "string", Enum: []any{name}},
+		})
 		s.Required = req
 
-		s.Properties[tag] = schema.Schema{
-			Type: "string",
-			Enum: []any{name},
-		}
 		found := false
 		for _, r := range s.Required {
 			if r == tag {

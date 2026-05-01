@@ -54,11 +54,11 @@ func (f Field[T, F]) schema() (string, schema.Schema, bool) {
 
 // Struct builds a Codec[T] by composing field codecs. Schema is built eagerly.
 func Struct[T any](fields ...fieldCodec[T]) Codec[T] {
-	props := map[string]schema.Schema{}
-	req := []string{}
+	var props []schema.Property
+	var req []string
 	for _, f := range fields {
 		name, s, r := f.schema()
-		props[name] = s
+		props = append(props, schema.Property{Name: name, Schema: s})
 		if r {
 			req = append(req, name)
 		}

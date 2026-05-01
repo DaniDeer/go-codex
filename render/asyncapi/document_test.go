@@ -91,7 +91,7 @@ func TestDocumentBuilder_messageWithSchemaName_emitsRef(t *testing.T) {
 }
 
 func TestDocumentBuilder_messageWithoutSchemaName_inlinesSchema(t *testing.T) {
-	inlineSchema := schema.Schema{Type: "object", Properties: map[string]schema.Schema{"x": {Type: "integer"}}}
+	inlineSchema := schema.Schema{Type: "object", Properties: []schema.Property{{Name: "x", Schema: schema.Schema{Type: "integer"}}}}
 	doc, err := asyncapi.NewDocumentBuilder(testInfo).
 		AddChannel("item/updated", asyncapi.ChannelItem{
 			Subscribe: &asyncapi.Operation{

@@ -34,6 +34,10 @@ import (
 	"github.com/DaniDeer/go-codex/api/rest"
 )
 
+// maxRequestBodyBytes is the maximum number of bytes read from a request body.
+// Requests exceeding this limit are rejected with 400 Bad Request.
+const maxRequestBodyBytes = 1 << 20 // 1 MiB
+
 // HandlerFunc is the typed application handler called by [Handler].
 // ctx is the request context. req is the decoded request value; for body-less
 // methods it is the zero value of Req.
@@ -52,7 +56,8 @@ type HandlerFunc[Req, Resp any] func(ctx context.Context, req Req) (Resp, error)
 func Handler[Req, Resp any](handle *rest.RouteHandle[Req, Resp], fn HandlerFunc[Req, Resp]) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var req Req
-		if isBodyMethod(handle.Descriptor.Method) {
+		if handle.Descriptor.RequestBody != nil {
+			r.Body = http.MaxBytesReader(w, r.Body, maxRequestBodyBytes)
 			body, err := io.ReadAll(r.Body)
 			if err != nil {
 				writeError(w, http.StatusBadRequest, "cannot read request body")
@@ -90,15 +95,6 @@ func Handler[Req, Resp any](handle *rest.RouteHandle[Req, Resp], fn HandlerFunc[
 func Register[Req, Resp any](mux *http.ServeMux, handle *rest.RouteHandle[Req, Resp], fn HandlerFunc[Req, Resp]) {
 	pattern := strings.ToUpper(handle.Descriptor.Method) + " " + handle.Descriptor.Path
 	mux.Handle(pattern, Handler(handle, fn))
-}
-
-// isBodyMethod reports whether the HTTP method conventionally carries a request body.
-func isBodyMethod(method string) bool {
-	switch strings.ToUpper(method) {
-	case "POST", "PUT", "PATCH":
-		return true
-	}
-	return false
 }
 
 // primaryStatus returns the HTTP status code for the primary success response.

@@ -11,9 +11,9 @@ var testInfo = asyncapi.Info{Title: "User Events", Version: "1.0.0"}
 // userSchema is a minimal object schema used across asyncapi tests.
 var userSchema = schema.Schema{
 	Type: "object",
-	Properties: map[string]schema.Schema{
-		"id":   {Type: "string"},
-		"name": {Type: "string"},
+	Properties: []schema.Property{
+		{Name: "id", Schema: schema.Schema{Type: "string"}},
+		{Name: "name", Schema: schema.Schema{Type: "string"}},
 	},
 	Required: []string{"id", "name"},
 }

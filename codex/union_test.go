@@ -189,12 +189,12 @@ func TestTaggedUnion_SchemaMutation_Regression(t *testing.T) {
 	// v1 uses "type" tag; v2 uses "kind" tag.
 	// If buildUnionSchema mutates shared schema, one union's tag leaks into the other.
 	for _, s := range v1.Schema.OneOf {
-		if _, ok := s.Properties["kind"]; ok {
+		if _, ok := s.Prop("kind"); ok {
 			t.Error("v1 schema was polluted with v2's 'kind' tag property")
 		}
 	}
 	for _, s := range v2.Schema.OneOf {
-		if _, ok := s.Properties["type"]; ok {
+		if _, ok := s.Prop("type"); ok {
 			t.Error("v2 schema was polluted with v1's 'type' tag property")
 		}
 	}

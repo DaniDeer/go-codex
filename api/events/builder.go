@@ -37,6 +37,8 @@
 package events
 
 import (
+	"slices"
+
 	"github.com/DaniDeer/go-codex/codex"
 	"github.com/DaniDeer/go-codex/format"
 	"github.com/DaniDeer/go-codex/render/asyncapi"
@@ -187,7 +189,7 @@ func buildChannelItem[T any](codec codex.Codec[T], config ChannelConfig) asyncap
 		item.Subscribe = &asyncapi.Operation{
 			Summary:     op.Summary,
 			Description: op.Description,
-			Tags:        cloneStrings(op.Tags),
+			Tags:        slices.Clone(op.Tags),
 			Message: asyncapi.Message{
 				Schema:     codec.Schema,
 				SchemaName: op.SchemaName,
@@ -200,7 +202,7 @@ func buildChannelItem[T any](codec codex.Codec[T], config ChannelConfig) asyncap
 		item.Publish = &asyncapi.Operation{
 			Summary:     op.Summary,
 			Description: op.Description,
-			Tags:        cloneStrings(op.Tags),
+			Tags:        slices.Clone(op.Tags),
 			Message: asyncapi.Message{
 				Schema:     codec.Schema,
 				SchemaName: op.SchemaName,
@@ -209,13 +211,4 @@ func buildChannelItem[T any](codec codex.Codec[T], config ChannelConfig) asyncap
 	}
 
 	return item
-}
-
-func cloneStrings(s []string) []string {
-	if s == nil {
-		return nil
-	}
-	c := make([]string, len(s))
-	copy(c, s)
-	return c
 }

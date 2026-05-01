@@ -104,10 +104,10 @@ func TestStruct_Schema(t *testing.T) {
 	if s.Type != "object" {
 		t.Errorf("schema type = %q, want %q", s.Type, "object")
 	}
-	if _, ok := s.Properties["x"]; !ok {
+	if _, ok := s.Prop("x"); !ok {
 		t.Error("schema missing property 'x'")
 	}
-	if _, ok := s.Properties["y"]; !ok {
+	if _, ok := s.Prop("y"); !ok {
 		t.Error("schema missing property 'y'")
 	}
 	// Only 'x' is required (Required: true); 'y' is optional.

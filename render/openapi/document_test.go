@@ -15,9 +15,9 @@ var testInfo = openapi.Info{Title: "Test API", Version: "1.0.0"}
 // userSchema is a minimal schema used across test cases.
 var userSchema = schema.Schema{
 	Type: "object",
-	Properties: map[string]schema.Schema{
-		"id":   {Type: "string"},
-		"name": {Type: "string"},
+	Properties: []schema.Property{
+		{Name: "id", Schema: schema.Schema{Type: "string"}},
+		{Name: "name", Schema: schema.Schema{Type: "string"}},
 	},
 	Required: []string{"id", "name"},
 }
@@ -106,7 +106,7 @@ func TestDocumentBuilder_bodyWithSchemaName_emitsRef(t *testing.T) {
 }
 
 func TestDocumentBuilder_bodyWithoutSchemaName_inlinesSchema(t *testing.T) {
-	inlineSchema := schema.Schema{Type: "object", Properties: map[string]schema.Schema{"x": {Type: "integer"}}}
+	inlineSchema := schema.Schema{Type: "object", Properties: []schema.Property{{Name: "x", Schema: schema.Schema{Type: "integer"}}}}
 	doc, err := openapi.NewDocumentBuilder(testInfo).
 		AddRoute(route.Route{
 			Method: "POST",

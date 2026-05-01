@@ -73,8 +73,8 @@ func SchemaObject(s schema.Schema) map[string]any {
 	// Object properties.
 	if len(s.Properties) > 0 {
 		props := map[string]any{}
-		for name, prop := range s.Properties {
-			props[name] = SchemaObject(prop)
+		for _, p := range s.Properties {
+			props[p.Name] = SchemaObject(p.Schema)
 		}
 		obj["properties"] = props
 	}

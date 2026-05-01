@@ -144,9 +144,9 @@ func TestSchemaObject_enum(t *testing.T) {
 func TestSchemaObject_object(t *testing.T) {
 	s := schema.Schema{
 		Type: "object",
-		Properties: map[string]schema.Schema{
-			"name": {Type: "string", Description: "Full name"},
-			"age":  {Type: "integer"},
+		Properties: []schema.Property{
+			{Name: "name", Schema: schema.Schema{Type: "string", Description: "Full name"}},
+			{Name: "age", Schema: schema.Schema{Type: "integer"}},
 		},
 		Required: []string{"name"},
 	}

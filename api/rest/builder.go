@@ -35,6 +35,7 @@
 package rest
 
 import (
+	"slices"
 	"strings"
 
 	"github.com/DaniDeer/go-codex/codex"
@@ -50,6 +51,10 @@ type Info = openapi.Info
 
 // Server is an alias for [openapi.Server].
 type Server = openapi.Server
+
+// Param is an alias for [route.Param] so callers do not need to import route
+// just to specify path or query parameters.
+type Param = route.Param
 
 // ResponseMeta describes one additional response entry for a route (errors,
 // redirects, etc.). The primary success response is derived from the response
@@ -206,9 +211,9 @@ func buildDescriptor(method, path string, reqSchema, respSchema schema.Schema, c
 		OperationID: config.OperationID,
 		Summary:     config.Summary,
 		Description: config.Description,
-		Tags:        cloneStrings(config.Tags),
-		PathParams:  cloneParams(config.PathParams),
-		QueryParams: cloneParams(config.QueryParams),
+		Tags:        slices.Clone(config.Tags),
+		PathParams:  slices.Clone(config.PathParams),
+		QueryParams: slices.Clone(config.QueryParams),
 	}
 
 	if isBodyMethod(method) {
@@ -253,22 +258,4 @@ func isBodyMethod(method string) bool {
 		return true
 	}
 	return false
-}
-
-func cloneStrings(s []string) []string {
-	if s == nil {
-		return nil
-	}
-	c := make([]string, len(s))
-	copy(c, s)
-	return c
-}
-
-func cloneParams(p []route.Param) []route.Param {
-	if p == nil {
-		return nil
-	}
-	c := make([]route.Param, len(p))
-	copy(c, p)
-	return c
 }
