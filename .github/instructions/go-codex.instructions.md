@@ -22,7 +22,7 @@ go-codex is a Go port of the core ideas from Haskell's [autodocodec](https://hac
 
 | Package           | Responsibility                                                                            | Imports allowed from             |
 |-------------------|-------------------------------------------------------------------------------------------|----------------------------------|
-| `codex`           | PUBLIC API: `Codec[T]`, primitives, struct, union, slice, `MapCodecSafe`, `Constraint`, `Refine`, `ValidationError`, `ValidationErrors` | `schema`     |
+| `codex`           | PUBLIC API: `Codec[T]`, primitives (`Int`, `Int64`, `Float64`, `String`, `Bool`, `Bytes`, `Time`, `Date`), `Nullable[T]`, `SliceOf[T]`, `StringMap[V]`, struct, union, `MapCodecSafe`, `Constraint`, `Refine`, `ValidationError`, `ValidationErrors` | `schema`     |
 | `schema`          | Schema model (pure data, no codec logic)                                                  | none                             |
 | `validate`        | Reusable `Constraint` functions for numbers, strings, etc.                                | `codex`, `schema`                |
 | `format`          | Bridges `Codec[T]` to wire formats: JSON, YAML, TOML                                     | `codex`, `schema`, external libs |
@@ -319,6 +319,45 @@ var UserIDCodec = codex.MapCodecSafe(
 var EmailListCodec = codex.SliceOf(EmailCodec)
 ```
 
+### Time and Date Codecs
+
+```go
+// Codec[time.Time] — RFC 3339 strings; schema {type:string, format:date-time}
+var CreatedAtCodec = codex.Time()
+
+// Codec[time.Time] — date-only strings (2006-01-02); schema {type:string, format:date}
+var BirthDateCodec = codex.Date()
+```
+
+### Nullable Codec
+
+Wraps any codec to handle pointer fields (`*T`). `nil` encodes as JSON null.
+The generated schema inherits the inner schema and sets `nullable: true`.
+
+```go
+// Codec[*string] — accepts nil (null) or a string value
+var NoteCodec = codex.Nullable(codex.String())
+```
+
+### Bytes Codec
+
+Encodes `[]byte` as a base64 standard-encoded string.
+Schema: `{type:string, format:byte}`.
+
+```go
+var AvatarCodec = codex.Bytes()
+```
+
+### StringMap Codec
+
+Encodes `map[string]V` where all values share the same codec.
+Schema: `{type:object, additionalProperties:{...valueSchema}}`.
+
+```go
+var TagsCodec = codex.StringMap(codex.String())         // map[string]string
+var CountsCodec = codex.StringMap(codex.Int())          // map[string]int
+```
+
 ### Optional Field in Object
 
 Set `Required: false` on the field. The field is omitted from the encoded object when missing during decode; no error is returned.
@@ -330,14 +369,17 @@ Set `Required: false` on the field. The field is omitted from the encoded object
 - Float constraints: `PositiveFloat`, `NegativeFloat`, `NonZeroFloat`, `MinFloat(n)`, `MaxFloat(n)`, `RangeFloat(min, max)`.
 - String constraints: `NonEmptyString`, `MinLen(n)`, `MaxLen(n)`, `Pattern(re)`, `OneOf(values...)`.
 - Format constraints: `Email`, `UUID`, `URL`, `IPv4`, `IPv6`, `Date`, `DateTime`, `Slug`.
+- Byte-size constraints: `MaxBytes(n)`, `MinBytes(n)` — validate decoded `[]byte` length; no schema annotation (JSON Schema has no standard keyword for decoded-byte-count limits).
 - Constraints in `validate/` must not depend on any specific codec; they depend only on `codex.Constraint[T]` and `schema.Schema`.
-- All built-in `validate/` constraints carry a `Schema` transformer that annotates the codec's schema automatically when applied via `Refine`.
+- All built-in `validate/` constraints carry a `Schema` transformer that annotates the codec's schema automatically when applied via `Refine`, **except** `MaxBytes`/`MinBytes` (runtime-only).
 
 ## OpenAPI Schema Rendering
 
 The `render/openapi` package converts `schema.Schema` into OpenAPI 3.x schema objects. It delegates to the shared `render/internal/schemarender` package — no codec logic, no wire format.
 
-The shared `render/internal/schemarender.SchemaObject(s schema.Schema) map[string]any` function handles all schema fields including `Nullable`, `AdditionalProperties`, `Discriminator`, `OneOf`, numeric bounds, string constraints, and enum. Both `render/openapi` and `render/asyncapi` use it; adding a new `schema.Schema` field requires updating only `schemarender`.
+The shared `render/internal/schemarender.SchemaObject(s schema.Schema) map[string]any` function handles all schema fields including `Nullable`, `AdditionalProperties`, `AdditionalPropertiesSchema`, `Discriminator`, `OneOf`, numeric bounds, string constraints, and enum. Both `render/openapi` and `render/asyncapi` use it; adding a new `schema.Schema` field requires updating only `schemarender`.
+
+When `AdditionalPropertiesSchema` is set on a `schema.Schema`, it renders as a schema object (`additionalProperties: {type: ...}`). This takes precedence over the boolean `AdditionalProperties` field. Used by `StringMap[V]` codec.
 
 ```go
 // SchemaObject converts s to an OpenAPI 3.x schema object (map[string]any).

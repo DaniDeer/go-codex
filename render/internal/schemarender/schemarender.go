@@ -72,7 +72,9 @@ func SchemaObject(s schema.Schema) map[string]any {
 	if len(s.Required) > 0 {
 		obj["required"] = s.Required
 	}
-	if s.AdditionalProperties != nil {
+	if s.AdditionalPropertiesSchema != nil {
+		obj["additionalProperties"] = SchemaObject(*s.AdditionalPropertiesSchema)
+	} else if s.AdditionalProperties != nil {
 		obj["additionalProperties"] = *s.AdditionalProperties
 	}
 

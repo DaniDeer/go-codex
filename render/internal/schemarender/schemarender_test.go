@@ -276,6 +276,35 @@ func TestSchemaObject_AdditionalProperties_Nil_NotRendered(t *testing.T) {
 	}
 }
 
+func TestSchemaObject_AdditionalPropertiesSchema_RenderedAsObject(t *testing.T) {
+	valueSchema := schema.Schema{Type: "integer"}
+	obj := schemarender.SchemaObject(schema.Schema{
+		Type:                       "object",
+		AdditionalPropertiesSchema: &valueSchema,
+	})
+	ap, ok := obj["additionalProperties"].(map[string]any)
+	if !ok {
+		t.Fatalf("additionalProperties: got %T, want map[string]any", obj["additionalProperties"])
+	}
+	if ap["type"] != "integer" {
+		t.Errorf("additionalProperties.type: got %v, want %q", ap["type"], "integer")
+	}
+}
+
+func TestSchemaObject_AdditionalPropertiesSchema_TakesPrecedenceOverBool(t *testing.T) {
+	// When both are set, schema object wins.
+	f := false
+	valueSchema := schema.Schema{Type: "string"}
+	obj := schemarender.SchemaObject(schema.Schema{
+		Type:                       "object",
+		AdditionalProperties:       &f,
+		AdditionalPropertiesSchema: &valueSchema,
+	})
+	if _, ok := obj["additionalProperties"].(map[string]any); !ok {
+		t.Errorf("expected schema object form when AdditionalPropertiesSchema set, got %T", obj["additionalProperties"])
+	}
+}
+
 // --- Discriminator ---
 
 func TestSchemaObject_Discriminator_NoMapping(t *testing.T) {

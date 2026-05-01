@@ -73,6 +73,29 @@ data, err := UserCodec.Encode(user)
 schemaJSON, _ := json.MarshalIndent(UserCodec.Schema, "", "  ")
 ```
 
+### Shared Contract
+
+go-codex codecs are plain Go values — they can live in a shared package and be imported by any number of services.
+
+```
+pkg/contract/
+    user.go       ← UserCodec, CreateUserRequestCodec, ...
+```
+
+```go
+// server — decodes and validates incoming payloads
+import "yourorg/pkg/contract"
+
+user, err := contract.UserCodec.Decode(raw) // invalid input is rejected
+
+// client — encodes outgoing payloads; generates OpenAPI spec from the same codec
+spec, _ := openapi.MarshalYAML(map[string]schema.Schema{
+    "User": contract.UserCodec.Schema,
+})
+```
+
+A field rename in `contract.User` breaks compilation on both sides immediately — no stale YAML, no schema drift, no separate code-generation step. This is the key difference from protobuf or OpenAPI-first workflows: **the Go source is the contract**.
+
 ## Installation & Usage
 
 ```bash
@@ -83,25 +106,26 @@ Requires Go 1.25 or later.
 
 ### Import paths
 
-| Package                           | Import path                                    |
-| --------------------------------- | ---------------------------------------------- |
-| Core codecs                       | `github.com/DaniDeer/go-codex/codex`           |
-| Format bridges (JSON, YAML, TOML) | `github.com/DaniDeer/go-codex/format`          |
-| Built-in constraints              | `github.com/DaniDeer/go-codex/validate`        |
-| HTTP route descriptors            | `github.com/DaniDeer/go-codex/route`           |
-| REST API builder                  | `github.com/DaniDeer/go-codex/api/rest`        |
-| Event channel builder             | `github.com/DaniDeer/go-codex/api/events`      |
+| Package                           | Import path                                     |
+| --------------------------------- | ----------------------------------------------- |
+| Core codecs                       | `github.com/DaniDeer/go-codex/codex`            |
+| Format bridges (JSON, YAML, TOML) | `github.com/DaniDeer/go-codex/format`           |
+| Built-in constraints              | `github.com/DaniDeer/go-codex/validate`         |
+| HTTP route descriptors            | `github.com/DaniDeer/go-codex/route`            |
+| REST API builder                  | `github.com/DaniDeer/go-codex/api/rest`         |
+| Event channel builder             | `github.com/DaniDeer/go-codex/api/events`       |
 | net/http adapter                  | `github.com/DaniDeer/go-codex/adapters/nethttp` |
-| Paho MQTT adapter                 | `github.com/DaniDeer/go-codex/adapters/mqtt`   |
-| OpenAPI 3.1 renderer              | `github.com/DaniDeer/go-codex/render/openapi`  |
-| AsyncAPI 2.6 renderer             | `github.com/DaniDeer/go-codex/render/asyncapi` |
-| Schema model                      | `github.com/DaniDeer/go-codex/schema`          |
+| Paho MQTT adapter                 | `github.com/DaniDeer/go-codex/adapters/mqtt`    |
+| OpenAPI 3.1 renderer              | `github.com/DaniDeer/go-codex/render/openapi`   |
+| AsyncAPI 2.6 renderer             | `github.com/DaniDeer/go-codex/render/asyncapi`  |
+| Schema model                      | `github.com/DaniDeer/go-codex/schema`           |
 
 ## Features
 
 - **Multi-Format Support** — one `Codec[T]` reads and writes JSON, YAML, and TOML unchanged
 - **Encode, Decode, and Validation** — constraints run on decode; encode is trusted; validate is explicit
 - **Builtin Format Constraints** — `email`, `uuid`, `url`, `date`, `date-time` validated and reflected into schema automatically
+- **Rich Codec Types** — primitives, `Time`/`Date`, `Nullable[T]`, `Bytes`, `SliceOf[T]`, `StringMap[V]`, structs, tagged unions
 - **OpenAPI Schema Generation** — `components/schemas` map from codec-derived schemas, no manual YAML
 - **Full OpenAPI 3.1 Document** — complete REST API spec (paths, operations, params) from `route.Route` descriptors
 - **AsyncAPI 2.6 Document** — complete event-driven spec from channel descriptors; same schemas, no duplication
@@ -194,6 +218,25 @@ if err := jsonFmt.Validate(u); err != nil {
 | `validate.DateTime` | RFC 3339 date-time               | `date-time`    |
 | `validate.Slug`     | `lowercase-hyphen-slug`          | `pattern`      |
 
+Range / length constraints (with automatic schema annotation):
+
+| Constraint                                                 | Applies to | Validates       |
+| ---------------------------------------------------------- | ---------- | --------------- |
+| `validate.MinLen(n)` / `MaxLen(n)`                         | `string`   | character count |
+| `validate.MinInt(n)` / `MaxInt(n)` / `RangeInt(a,b)`       | `int`      | integer bounds  |
+| `validate.MinFloat(n)` / `MaxFloat(n)` / `RangeFloat(a,b)` | `float64`  | float bounds    |
+| `validate.NonEmptyString`                                  | `string`   | not empty       |
+| `validate.PositiveInt` / `NegativeInt`                     | `int`      | sign            |
+| `validate.OneOf(values...)`                                | `string`   | enum membership |
+| `validate.Pattern(re)`                                     | `string`   | regexp match    |
+
+Byte-size constraints (runtime-only, no schema annotation):
+
+| Constraint             | Applies to | Validates              |
+| ---------------------- | ---------- | ---------------------- |
+| `validate.MaxBytes(n)` | `[]byte`   | decoded byte count ≤ n |
+| `validate.MinBytes(n)` | `[]byte`   | decoded byte count ≥ n |
+
 ```go
 var ContactCodec = codex.Struct[Contact](
     codex.Field[Contact, string]{
@@ -223,6 +266,94 @@ yamlBytes, _ := openapi.MarshalYAML(map[string]schema.Schema{"Contact": ContactC
 ```
 
 See `examples/formats/` for a runnable demo covering all constraints.
+
+### Custom Constraints
+
+`codex.Constraint[T]` is the public API for defining your own validation rules. Pass any constraint directly to `.Refine()`.
+
+**Inline (one-off):**
+
+```go
+var AvatarCodec = codex.Bytes().Refine(codex.Constraint[[]byte]{
+    Name:    "maxBytes(65536)",
+    Check:   func(v []byte) bool { return len(v) <= 65536 },
+    Message: func(v []byte) string {
+        return fmt.Sprintf("expected at most 65536 bytes, got %d", len(v))
+    },
+})
+```
+
+**Reusable (like `validate/*`):**
+
+```go
+func MaxBytes(n int) codex.Constraint[[]byte] {
+    return codex.Constraint[[]byte]{
+        Name:  fmt.Sprintf("maxBytes(%d)", n),
+        Check: func(v []byte) bool { return len(v) <= n },
+        Message: func(v []byte) string {
+            return fmt.Sprintf("expected at most %d bytes, got %d", n, len(v))
+        },
+    }
+}
+
+var AvatarCodec = codex.Bytes().Refine(MaxBytes(65536))
+```
+
+**With schema annotation** — set `Constraint.Schema` to propagate constraint metadata into the generated OpenAPI/AsyncAPI schema:
+
+```go
+func MaxLen(n int) codex.Constraint[string] {
+    return codex.Constraint[string]{
+        Name:  fmt.Sprintf("maxLen(%d)", n),
+        Check: func(v string) bool { return len(v) <= n },
+        Message: func(v string) string {
+            return fmt.Sprintf("expected at most %d characters, got %d", n, len(v))
+        },
+        Schema: func(s schema.Schema) schema.Schema {
+            s.MaxLength = &n    // ← reflected into OpenAPI output automatically
+            return s
+        },
+    }
+}
+```
+
+The `validate/` package ships ready-made constraints using this exact pattern (`MinLen`, `MaxLen`, `RangeInt`, `Email`, etc.). `validate.MaxBytes` and `validate.MinBytes` are built-in for `[]byte` byte-count limits.
+
+### Available Codec Types
+
+| Constructor                              | Go type        | JSON wire           | Schema                                     |
+| ---------------------------------------- | -------------- | ------------------- | ------------------------------------------ |
+| `codex.Int()`                            | `int`          | number              | `{type:integer}`                           |
+| `codex.Int64()`                          | `int64`        | number              | `{type:integer}`                           |
+| `codex.Float64()`                        | `float64`      | number              | `{type:number}`                            |
+| `codex.String()`                         | `string`       | string              | `{type:string}`                            |
+| `codex.Bool()`                           | `bool`         | boolean             | `{type:boolean}`                           |
+| `codex.Bytes()`                          | `[]byte`       | base64 string       | `{type:string,format:byte}`                |
+| `codex.Time()`                           | `time.Time`    | RFC 3339 string     | `{type:string,format:date-time}`           |
+| `codex.Date()`                           | `time.Time`    | `YYYY-MM-DD` string | `{type:string,format:date}`                |
+| `codex.Nullable(inner)`                  | `*T`           | value or `null`     | inner schema + `nullable:true`             |
+| `codex.SliceOf(elem)`                    | `[]T`          | array               | `{type:array,items:{...}}`                 |
+| `codex.StringMap(value)`                 | `map[string]V` | object              | `{type:object,additionalProperties:{...}}` |
+| `codex.Struct[T](fields...)`             | any struct     | object              | `{type:object,properties:{...}}`           |
+| `codex.TaggedUnion[T](tag, variants...)` | any interface  | object              | `{oneOf:[...],discriminator:{...}}`        |
+
+```go
+// Nullable pointer field
+var noteCodec = codex.Nullable(codex.String())  // Codec[*string]
+note, _ := noteCodec.Decode(nil)                // → (*string)(nil)
+s := "hello"
+enc, _ := noteCodec.Encode(&s)                  // → "hello"
+enc, _ = noteCodec.Encode(nil)                  // → nil (JSON null)
+
+// Time and Date
+var createdAtCodec = codex.Time()               // Codec[time.Time]
+enc, _ := createdAtCodec.Encode(time.Now())     // → "2024-06-15T12:00:00Z"
+
+// StringMap
+var tagsCodec = codex.StringMap(codex.String()) // Codec[map[string]string]
+enc, _ := tagsCodec.Encode(map[string]string{"env":"prod"})
+// → map[string]any{"env":"prod"}
+```
 
 ### OpenAPI Schema Generation
 
@@ -625,6 +756,7 @@ _ = cfg.Port
 ```
 
 **What you get for free:**
+
 - All field validation errors collected in one pass (not stop-at-first).
 - `render/openapi` can render the codec's schema as JSON Schema for documentation or editor autocomplete.
 - The same codec works with JSON, YAML, and TOML config files — swap `format.TOML` for `format.YAML` or `format.JSON` without touching the codec.

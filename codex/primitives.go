@@ -1,6 +1,7 @@
 package codex
 
 import (
+	"encoding/base64"
 	"fmt"
 	"math"
 
@@ -100,5 +101,27 @@ func Bool() Codec[bool] {
 			return b, nil
 		},
 		Schema: schema.Schema{Type: "boolean"},
+	}
+}
+
+// Bytes returns a Codec for []byte using base64 standard encoding.
+// Encoded values are strings; schema format is "byte".
+func Bytes() Codec[[]byte] {
+	return Codec[[]byte]{
+		Schema: schema.Schema{Type: "string", Format: "byte"},
+		Encode: func(v []byte) (any, error) {
+			return base64.StdEncoding.EncodeToString(v), nil
+		},
+		Decode: func(v any) ([]byte, error) {
+			s, ok := v.(string)
+			if !ok {
+				return nil, fmt.Errorf("expected string, got %T", v)
+			}
+			b, err := base64.StdEncoding.DecodeString(s)
+			if err != nil {
+				return nil, fmt.Errorf("invalid base64: %w", err)
+			}
+			return b, nil
+		},
 	}
 }

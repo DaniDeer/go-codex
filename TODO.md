@@ -42,18 +42,27 @@ Questions:
 - [x] **Encode does not validate — silent footgun** *(done — via Codec.Validate)*
       `format.Format[T]` already exposes `Validate(T) error` that runs all `Refine` constraints. Document that publish-side callers must call `Validate` before `Marshal`. Optionally add `ValidateOnMarshal bool` in the future.
 
-- [ ] **Missing practical codec types**
-      Real domain models routinely need types that don't exist yet:
-      - `time.Time` (ISO 8601, `format: date-time` in schema)
-      - Nullable / pointer fields (`*T` → `nullable: true`)
-      - `map[string]V` (→ `additionalProperties` in schema)
-      - Byte slices / base64 strings
-      - Recursive types (self-referential structs)
+- [x] **Missing practical codec types** *(done — except Lazy[T])*
+      Implemented: `Time()`, `Date()`, `Nullable[T]()`, `Bytes()`, `StringMap[V]()`.
+      - `Time() Codec[time.Time]` — RFC 3339, schema `{type:string, format:date-time}`
+      - `Date() Codec[time.Time]` — date-only `2006-01-02`, schema `{type:string, format:date}`
+      - `Nullable[T](inner) Codec[*T]` — nil ↔ JSON null; schema inherits inner + `nullable:true`
+      - `Bytes() Codec[[]byte]` — base64 standard encoding, schema `{type:string, format:byte}`
+      - `StringMap[V](value) Codec[map[string]V]` — schema `{type:object, additionalProperties:{...}}`
 
-- [ ] **Struct codec boilerplate is verbose**
-      Each field requires `Name`, `Codec`, `Get`, `Set` (+ optional `Required`).
-      A 5-field struct = 25+ lines of lambdas. A `SimpleField` helper for the common case
-      (no custom getter/setter beyond direct field access) would reduce noise significantly.
+- [ ] **Lazy[T] / recursive types** *(deferred — complex)*
+      Self-referential structs (e.g. tree nodes) cannot reference their own codec during construction.
+      Needs `Lazy[T](fn func() Codec[T]) Codec[T]` using `sync.Once` to defer resolution.
+      Schema problem: a recursive schema cannot be inlined — it must emit a `$ref` to a named
+      component. So `Lazy` only works correctly when combined with `SchemaName` registration
+      in the API builder. Significant design work required before implementation.
+
+- [ ] **Struct codec boilerplate — accept and document**
+      `SimpleField` with reflection was evaluated and rejected: field-name typos and type
+      mismatches become runtime panics, breaking the compile-time type-safety guarantee that
+      is the library's primary strength. The `RequiredField`/`OptionalField` helpers are the
+      intended idiomatic pattern. Document with examples; consider a `go generate` code
+      generator as a future separate tool.
 
 ### API design
 

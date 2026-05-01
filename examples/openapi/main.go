@@ -20,10 +20,12 @@ var emailPattern = regexp.MustCompile(`^[^@\s]+@[^@\s]+\.[^@\s]+$`)
 // User is a domain type whose codec is the single source of truth for
 // encoding, decoding, validation, and schema documentation.
 type User struct {
-	Name  string
-	Email string
-	Age   int
-	Role  string
+	Name   string
+	Email  string
+	Age    int
+	Role   string
+	Avatar []byte  // base64-encoded profile image (optional)
+	Note   *string // optional free-text note
 }
 
 var UserCodec = codex.Struct[User](
@@ -68,6 +70,23 @@ var UserCodec = codex.Struct[User](
 		Set:      func(u *User, v string) { u.Role = v },
 		Required: true,
 	},
+	// Bytes: base64-encoded avatar image. Schema: {type:string, format:byte}.
+	// MaxBytes limits the decoded payload to 64 KiB.
+	codex.Field[User, []byte]{
+		Name:     "avatar",
+		Codec:    codex.Bytes().Refine(validate.MaxBytes(65536)).WithDescription("Profile image as base64-encoded bytes (max 64 KiB)."),
+		Get:      func(u User) []byte { return u.Avatar },
+		Set:      func(u *User, v []byte) { u.Avatar = v },
+		Required: false,
+	},
+	// Nullable: note is absent when nil; present when non-nil.
+	codex.Field[User, *string]{
+		Name:     "note",
+		Codec:    codex.Nullable(codex.String()).WithDescription("Optional admin note about the user."),
+		Get:      func(u User) *string { return u.Note },
+		Set:      func(u *User, v *string) { u.Note = v },
+		Required: false,
+	},
 )
 
 func main() {
@@ -89,10 +108,12 @@ func main() {
 
 	// Verify: the same codec still decodes and validates correctly.
 	_, err = UserCodec.Decode(map[string]any{
-		"name":  "Alice",
-		"email": "alice@example.com",
-		"age":   30,
-		"role":  "admin",
+		"name":   "Alice",
+		"email":  "alice@example.com",
+		"age":    30,
+		"role":   "admin",
+		"avatar": "aGVsbG8=", // base64("hello")
+		"note":   nil,
 	})
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "decode error: %v\n", err)

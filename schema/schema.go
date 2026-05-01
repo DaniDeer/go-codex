@@ -38,6 +38,11 @@ type Schema struct {
 	// nil = unset (spec default), false = no additional properties, true = any allowed.
 	AdditionalProperties *bool `json:",omitempty"`
 
+	// AdditionalPropertiesSchema constrains the type of additional properties.
+	// When set, takes precedence over AdditionalProperties and renders as a schema object.
+	// Used by StringMap to express map[string]V where V has a specific schema.
+	AdditionalPropertiesSchema *Schema `json:",omitempty"`
+
 	// Discriminator describes the polymorphism tag for TaggedUnion schemas.
 	Discriminator *DiscriminatorSchema `json:",omitempty"`
 

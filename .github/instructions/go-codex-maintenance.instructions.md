@@ -61,6 +61,8 @@ from codec → format → builder → renderer → adapter.
 - [ ] New patterns have at least one code example
 - [ ] Removed patterns no longer appear in instructions
 - [ ] When adding a new `schema.Schema` field: update `render/internal/schemarender/schemarender.go` (both `render/openapi` and `render/asyncapi` use it automatically)
+- [ ] When adding a new codec type to `codex/`: add entry to Package Structure table, add section in "Codec Patterns", add entry in README "Available Codecs" table
+- [ ] `AdditionalPropertiesSchema *Schema` takes precedence over `AdditionalProperties *bool` in schemarender — keep this ordering in `schemarender.go`
 - [ ] `just check` passes (fmt + staticcheck + gosec)
 - [ ] `just test` passes
 - [ ] `go build ./...` passes with no errors referencing symbols from examples

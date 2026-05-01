@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"regexp"
+	"time"
 
 	"github.com/DaniDeer/go-codex/codex"
 	"github.com/DaniDeer/go-codex/validate"
@@ -29,11 +30,14 @@ type LineItem struct {
 }
 
 type Order struct {
-	ID       string
-	Customer Customer
-	Shipping Address
-	Items    []LineItem
-	Note     string // optional
+	ID           string
+	Customer     Customer
+	Shipping     Address
+	Items        []LineItem
+	Tags         map[string]string // e.g. {"channel":"web","priority":"high"}
+	Note         *string           // optional free-text note (nil = absent)
+	CreatedAt    time.Time         // RFC 3339 timestamp
+	DeliveryDate *time.Time        // optional promised delivery date (date-only)
 }
 
 // ── Codecs ────────────────────────────────────────────────────────────────────
@@ -134,11 +138,36 @@ var orderCodec = codex.Struct[Order](
 		Set:      func(o *Order, v []LineItem) { o.Items = v },
 		Required: true,
 	},
-	codex.Field[Order, string]{
+	// StringMap: arbitrary string key/value labels on the order.
+	codex.Field[Order, map[string]string]{
+		Name:     "tags",
+		Codec:    codex.StringMap(codex.String()),
+		Get:      func(o Order) map[string]string { return o.Tags },
+		Set:      func(o *Order, v map[string]string) { o.Tags = v },
+		Required: false,
+	},
+	// Nullable: note is optional; nil means the field is absent (JSON null / omitted).
+	codex.Field[Order, *string]{
 		Name:     "note",
-		Codec:    codex.String(),
-		Get:      func(o Order) string { return o.Note },
-		Set:      func(o *Order, v string) { o.Note = v },
+		Codec:    codex.Nullable(codex.String()),
+		Get:      func(o Order) *string { return o.Note },
+		Set:      func(o *Order, v *string) { o.Note = v },
+		Required: false,
+	},
+	// Time: creation timestamp encoded as RFC 3339.
+	codex.Field[Order, time.Time]{
+		Name:     "createdAt",
+		Codec:    codex.Time(),
+		Get:      func(o Order) time.Time { return o.CreatedAt },
+		Set:      func(o *Order, v time.Time) { o.CreatedAt = v },
+		Required: true,
+	},
+	// Nullable + Date: optional promised delivery date encoded as YYYY-MM-DD.
+	codex.Field[Order, *time.Time]{
+		Name:     "deliveryDate",
+		Codec:    codex.Nullable(codex.Date()),
+		Get:      func(o Order) *time.Time { return o.DeliveryDate },
+		Set:      func(o *Order, v *time.Time) { o.DeliveryDate = v },
 		Required: false,
 	},
 )
@@ -146,6 +175,8 @@ var orderCodec = codex.Struct[Order](
 // ── Main ──────────────────────────────────────────────────────────────────────
 
 func main() {
+	note := "Please leave at door"
+	delivery := "2024-07-01"
 	// Raw input as it would arrive after json.Unmarshal into map[string]any.
 	raw := map[string]any{
 		"id": "ord-001",
@@ -162,7 +193,10 @@ func main() {
 			map[string]any{"product": "Widget A", "quantity": 2, "price": 9.99},
 			map[string]any{"product": "Widget B", "quantity": 1, "price": 24.50},
 		},
-		"note": "Please leave at door",
+		"tags":         map[string]any{"channel": "web", "priority": "high"},
+		"note":         note,
+		"createdAt":    "2024-06-15T09:00:00Z",
+		"deliveryDate": delivery,
 	}
 
 	order, err := orderCodec.Decode(raw)
@@ -170,41 +204,61 @@ func main() {
 		fmt.Println("decode error:", err)
 		return
 	}
-	fmt.Printf("order id:     %s\n", order.ID)
-	fmt.Printf("customer:     %s <%s>\n", order.Customer.Name, order.Customer.Email)
-	fmt.Printf("ship to:      %s, %s, %s\n", order.Shipping.Street, order.Shipping.City, order.Shipping.Country)
+	fmt.Printf("order id:      %s\n", order.ID)
+	fmt.Printf("customer:      %s <%s>\n", order.Customer.Name, order.Customer.Email)
+	fmt.Printf("ship to:       %s, %s, %s\n", order.Shipping.Street, order.Shipping.City, order.Shipping.Country)
 	for i, item := range order.Items {
-		fmt.Printf("item %d:       %s × %d @ $%.2f\n", i+1, item.Product, item.Quantity, item.Price)
+		fmt.Printf("item %d:        %s × %d @ $%.2f\n", i+1, item.Product, item.Quantity, item.Price)
 	}
-	fmt.Printf("note:         %s\n", order.Note)
+	fmt.Printf("tags:          %v\n", order.Tags)
+	if order.Note != nil {
+		fmt.Printf("note:          %s\n", *order.Note)
+	}
+	fmt.Printf("createdAt:     %s\n", order.CreatedAt.Format(time.RFC3339))
+	if order.DeliveryDate != nil {
+		fmt.Printf("deliveryDate:  %s\n", order.DeliveryDate.Format("2006-01-02"))
+	}
 
-	// Validation error: negative quantity.
+	// Nullable: order with no note and no delivery date.
 	fmt.Println()
-	badRaw := map[string]any{
+	rawNoNote := map[string]any{
 		"id": "ord-002",
 		"customer": map[string]any{
 			"name":  "Bob",
 			"email": "bob@example.com",
 		},
 		"shipping": map[string]any{
+			"street": "1 Main St", "city": "Testtown", "country": "Testland",
+		},
+		"items":        []any{map[string]any{"product": "Widget C", "quantity": 3, "price": 5.00}},
+		"createdAt":    "2024-06-16T10:30:00Z",
+		"note":         nil,
+		"deliveryDate": nil,
+	}
+	order2, err := orderCodec.Decode(rawNoNote)
+	if err != nil {
+		fmt.Println("decode error:", err)
+		return
+	}
+	fmt.Printf("order2 note:         %v (nil = absent)\n", order2.Note)
+	fmt.Printf("order2 deliveryDate: %v (nil = absent)\n", order2.DeliveryDate)
+
+	// Validation error: negative quantity.
+	fmt.Println()
+	badRaw := map[string]any{
+		"id": "ord-003",
+		"customer": map[string]any{
+			"name":  "Carol",
+			"email": "carol@example.com",
+		},
+		"shipping": map[string]any{
 			"street": "1 Bad St", "city": "Errortown", "country": "Nowhere",
 		},
-		"items": []any{
-			map[string]any{"product": "Widget C", "quantity": -1, "price": 5.00},
-		},
+		"items":     []any{map[string]any{"product": "Widget D", "quantity": -1, "price": 5.00}},
+		"createdAt": "2024-06-17T08:00:00Z",
 	}
 	_, err = orderCodec.Decode(badRaw)
 	fmt.Println("validation error:", err)
-
-	// Validation error: invalid email.
-	badEmail := map[string]any{
-		"id":       "ord-003",
-		"customer": map[string]any{"name": "Carol", "email": "not-an-email"},
-		"shipping": map[string]any{"street": "1 St", "city": "City", "country": "Land"},
-		"items":    []any{map[string]any{"product": "X", "quantity": 1, "price": 1.0}},
-	}
-	_, err = orderCodec.Decode(badEmail)
-	fmt.Println("email error:     ", err)
 
 	// Encode back to map.
 	fmt.Println()
@@ -221,14 +275,14 @@ func main() {
 	jsonBytes, _ := json.Marshal(encoded)
 	var roundTrip map[string]any
 	_ = json.Unmarshal(jsonBytes, &roundTrip)
-	order2, err := orderCodec.Decode(roundTrip)
+	order3, err := orderCodec.Decode(roundTrip)
 	if err != nil {
 		fmt.Println("round-trip error:", err)
 		return
 	}
-	fmt.Printf("round-trip ok:   id=%s items=%d\n", order2.ID, len(order2.Items))
+	fmt.Printf("round-trip ok:   id=%s items=%d tags=%v\n", order3.ID, len(order3.Items), order3.Tags)
 
-	// Schema — shows the full nested structure.
+	// Schema — shows the full nested structure including new field types.
 	fmt.Println()
 	schemaJSON, _ := json.MarshalIndent(orderCodec.Schema, "", "  ")
 	fmt.Printf("schema:\n%s\n", schemaJSON)
