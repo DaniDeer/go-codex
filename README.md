@@ -83,15 +83,24 @@ Requires Go 1.25 or later.
 
 ### Import paths
 
-| Package                           | Import path                                   |
-| --------------------------------- | --------------------------------------------- |
-| Core codecs                       | `github.com/DaniDeer/go-codex/codex`          |
-| Format bridges (JSON, YAML, TOML) | `github.com/DaniDeer/go-codex/format`         |
-| Built-in constraints              | `github.com/DaniDeer/go-codex/validate`       |
-| OpenAPI renderer                  | `github.com/DaniDeer/go-codex/render/openapi` |
-| Schema model                      | `github.com/DaniDeer/go-codex/schema`         |
+| Package                           | Import path                                    |
+| --------------------------------- | ---------------------------------------------- |
+| Core codecs                       | `github.com/DaniDeer/go-codex/codex`           |
+| Format bridges (JSON, YAML, TOML) | `github.com/DaniDeer/go-codex/format`          |
+| Built-in constraints              | `github.com/DaniDeer/go-codex/validate`        |
+| HTTP route descriptors            | `github.com/DaniDeer/go-codex/route`           |
+| OpenAPI 3.1 renderer              | `github.com/DaniDeer/go-codex/render/openapi`  |
+| AsyncAPI 2.6 renderer             | `github.com/DaniDeer/go-codex/render/asyncapi` |
+| Schema model                      | `github.com/DaniDeer/go-codex/schema`          |
 
 ## Features
+
+- **Multi-Format Support** — one `Codec[T]` reads and writes JSON, YAML, and TOML unchanged
+- **Encode, Decode, and Validation** — constraints run on decode; encode is trusted; validate is explicit
+- **Builtin Format Constraints** — `email`, `uuid`, `url`, `date`, `date-time` validated and reflected into schema automatically
+- **OpenAPI Schema Generation** — `components/schemas` map from codec-derived schemas, no manual YAML
+- **Full OpenAPI 3.1 Document** — complete REST API spec (paths, operations, params) from `route.Route` descriptors
+- **AsyncAPI 2.6 Document** — complete event-driven spec from channel descriptors; same schemas, no duplication
 
 ### Multi-Format Support
 
@@ -209,6 +218,8 @@ See `examples/formats/` for a runnable demo covering all constraints.
 
 ### OpenAPI Schema Generation
 
+[Spec: openapis.org - OpenAPI 3.2.0](https://spec.openapis.org/oas/v3.2.0.html)
+
 `Codec[T]` carries a `schema.Schema` that describes the type: field names, types, constraints, descriptions, and examples. The `render/openapi` package converts that schema into an OpenAPI 3.x `components/schemas` map — no manual YAML authoring, no drift.
 
 ```go
@@ -271,6 +282,118 @@ The same `UserCodec` encodes, decodes, validates, and documents — written once
 Constraint schema reflection is opt-in: `validate.*` constraints (e.g. `MinLen`, `RangeInt`, `OneOf`, `Pattern`) automatically annotate the schema. Custom constraints can do the same by setting `Constraint.Schema`.
 
 See `examples/openapi/` for a runnable demonstration.
+
+### Full OpenAPI 3.1 Document
+
+`render/openapi` can emit a complete OpenAPI 3.1 document — not just `components/schemas` — using the `DocumentBuilder`. Define HTTP routes with `route.Route` descriptors that reference codec schemas; the builder assembles paths, operations, parameters, request bodies, responses, and `components/schemas` in one step.
+
+Schemas named via `Body.SchemaName` or `Response.SchemaName` are automatically registered in `components/schemas` and referenced with `$ref`. Unnamed schemas are inlined.
+
+```go
+import (
+    "github.com/DaniDeer/go-codex/render/openapi"
+    "github.com/DaniDeer/go-codex/route"
+)
+
+doc, err := openapi.NewDocumentBuilder(openapi.Info{
+    Title:   "User API",
+    Version: "1.0.0",
+}).
+    AddServer(openapi.Server{URL: "https://api.example.com/v1"}).
+    AddRoute(route.Route{
+        Method:      "POST",
+        Path:        "/users",
+        OperationID: "createUser",
+        Summary:     "Create a user",
+        RequestBody: &route.Body{
+            Required:   true,
+            Schema:     CreateUserRequestCodec.Schema,
+            SchemaName: "CreateUserRequest", // → $ref + registered in components
+        },
+        Responses: []route.Response{
+            {Status: "201", Description: "Created", Schema: &UserCodec.Schema, SchemaName: "User"},
+            {Status: "400", Description: "Validation error."},
+        },
+    }).
+    AddRoute(route.Route{
+        Method: "GET",
+        Path:   "/users/{id}",
+        PathParams: []route.Param{
+            {Name: "id", Required: true, Schema: schema.Schema{Type: "string", Format: "uuid"}},
+        },
+        Responses: []route.Response{
+            {Status: "200", Description: "OK", Schema: &UserCodec.Schema, SchemaName: "User"},
+            {Status: "204", Description: "No Content"}, // no body — content omitted
+        },
+    }).
+    Build()
+
+yamlBytes, err := doc.MarshalYAML()
+```
+
+`Build()` validates:
+
+- No duplicate `(method, path)` pairs.
+- `PathParams` names exactly match `{placeholder}` segments in the path.
+- Path parameters are always `required: true` in the output.
+
+See `examples/rest-api/` for a runnable demonstration.
+
+### AsyncAPI 2.6 Document
+
+[Spec: asyncapi.com - specification 3.1.0](https://www.asyncapi.com/docs/reference/specification/v3.1.0)
+
+`render/asyncapi` produces a full AsyncAPI 2.6 document from channel descriptors. The same `schema.Schema` that drives OpenAPI output also describes AsyncAPI message payloads — no duplication.
+
+```go
+import "github.com/DaniDeer/go-codex/render/asyncapi"
+
+doc, err := asyncapi.NewDocumentBuilder(asyncapi.Info{
+    Title:   "User Events",
+    Version: "1.0.0",
+}).
+    AddServer("production", asyncapi.Server{
+        URL:      "amqp://broker.example.com",
+        Protocol: "amqp",
+    }).
+    AddChannel("user/created", asyncapi.ChannelItem{
+        Subscribe: &asyncapi.Operation{
+            Summary: "User created",
+            Message: asyncapi.Message{
+                Schema:     UserCreatedEventCodec.Schema,
+                SchemaName: "UserCreatedEvent", // → $ref + registered in components
+            },
+        },
+    }).
+    Build()
+
+yamlBytes, err := doc.MarshalYAML()
+```
+
+Output (trimmed):
+
+```yaml
+asyncapi: 2.6.0
+info:
+  title: User Events
+  version: 1.0.0
+channels:
+  user/created:
+    subscribe:
+      summary: User created
+      message:
+        payload:
+          $ref: "#/components/schemas/UserCreatedEvent"
+components:
+  schemas:
+    UserCreatedEvent:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        name: { type: string, minLength: 1 }
+```
+
+See `examples/event-driven/` for a runnable demonstration.
 
 ## Special Topics
 
@@ -339,9 +462,16 @@ go-codex/
 ├── format/                 # format bridges: JSON, YAML, TOML
 │   ├── format.go           # Format[T], JSON(), YAML(), TOML()
 │
-├── render/                 # schema renderers (import schema only)
-│   └── openapi/            # OpenAPI 3.x components/schemas renderer
-│       └── openapi.go      # SchemaObject, ComponentsSchemas, MarshalJSON, MarshalYAML
+├── route/                  # HTTP route descriptors (no renderer logic)
+│   └── route.go            # Route, Param, Body, Response
+│
+├── render/                 # spec renderers (import schema only, or schema + route)
+│   ├── openapi/            # OpenAPI 3.1 renderer
+│   │   ├── openapi.go      # SchemaObject, ComponentsSchemas, MarshalJSON, MarshalYAML
+│   │   └── document.go     # DocumentBuilder, Document, Info, Server — full 3.1 spec
+│   └── asyncapi/           # AsyncAPI 2.6 renderer
+│       ├── asyncapi.go     # unexported schema helpers (schemaObject, schemaRef)
+│       └── document.go     # DocumentBuilder, Document, ChannelItem, Operation, Message
 │
 ├── schema/                 # schema model (pure data, zero dependencies)
 │   ├── schema.go
@@ -354,7 +484,9 @@ go-codex/
 │
 └── examples/
     ├── formats/            # builtin format constraints demo (Email, UUID, URL, ...)
-    ├── openapi/            # OpenAPI schema generation from a Codec
+    ├── openapi/            # OpenAPI components/schemas generation from a Codec
+    ├── rest-api/           # full OpenAPI 3.1 document from route descriptors
+    ├── event-driven/       # full AsyncAPI 2.6 document from channel descriptors
     ├── shape/              # tagged union + Downcast demo
     ├── order/              # nested structs + SliceOf demo
     ├── multiformat/        # JSON / YAML / TOML with one codec

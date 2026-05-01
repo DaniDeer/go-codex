@@ -20,18 +20,22 @@ go-codex is a Go port of the core ideas from Haskell's [autodocodec](https://hac
 
 ## Package Structure and Responsibilities
 
-| Package          | Responsibility                                               | Imports allowed from        |
-|------------------|--------------------------------------------------------------|-----------------------------|
-| `codex`          | PUBLIC API: `Codec[T]`, primitives, struct, union, slice, `MapCodecSafe`, `Constraint`, `Refine` | `schema` |
-| `schema`         | Schema model (pure data, no codec logic)                     | none                        |
-| `validate`       | Reusable `Constraint` functions for numbers, strings, etc.   | `codex`, `schema`           |
-| `format`         | Bridges `Codec[T]` to wire formats: JSON, YAML, TOML         | `codex`, external libs      |
-| `render/openapi` | Renders `schema.Schema` as OpenAPI 3.x `components/schemas`  | `schema`, external libs     |
-| `examples`       | Usage demonstrations — not importable by other packages      | all                         |
+| Package           | Responsibility                                                                            | Imports allowed from             |
+|-------------------|-------------------------------------------------------------------------------------------|----------------------------------|
+| `codex`           | PUBLIC API: `Codec[T]`, primitives, struct, union, slice, `MapCodecSafe`, `Constraint`, `Refine` | `schema`                  |
+| `schema`          | Schema model (pure data, no codec logic)                                                  | none                             |
+| `validate`        | Reusable `Constraint` functions for numbers, strings, etc.                                | `codex`, `schema`                |
+| `format`          | Bridges `Codec[T]` to wire formats: JSON, YAML, TOML                                     | `codex`, external libs           |
+| `route`           | HTTP route descriptors: `Route`, `Param`, `Body`, `Response`                             | `schema`                         |
+| `render/openapi`  | Renders `schema.Schema` as OpenAPI 3.1 `components/schemas`; `DocumentBuilder` for full spec | `schema`, `route`, external libs |
+| `render/asyncapi` | Renders channels and schemas as a full AsyncAPI 2.6 document                             | `schema`, external libs          |
+| `examples`        | Usage demonstrations — not importable by other packages                                   | all                              |
 
 - No circular imports.
 - `schema` has zero dependencies inside this module.
-- `render/openapi` imports only `schema` — no codec logic in the renderer layer.
+- `route` imports only `schema` — no renderer or codec logic.
+- `render/openapi` imports `schema` and `route` — no codec logic in the renderer layer.
+- `render/asyncapi` imports only `schema` — channels are independent of HTTP route concepts.
 - `examples/` must not be imported by any non-example package.
 
 ## Core Abstraction: `Codec[T]`
@@ -340,6 +344,115 @@ yamlBytes, err := openapi.MarshalYAML(map[string]schema.Schema{
 - The renderer is a pure function over `schema.Schema` — it never touches `Codec[T]` or any codec logic.
 - Constraint annotations (`MinLength`, `Minimum`, `Pattern`, `Enum`, etc.) flow from `Refine` automatically when using `validate.*` constraints.
 - Set `Constraint.Schema` on custom constraints to opt into schema annotation.
+
+## HTTP Route Descriptors (`route/`)
+
+The `route` package describes HTTP operations without any renderer or codec logic. It imports only `schema`.
+
+```go
+// Route describes a single HTTP operation.
+type Route struct {
+    Method, Path, OperationID, Summary, Description string
+    Tags        []string
+    PathParams  []Param
+    QueryParams []Param
+    RequestBody *Body
+    Responses   []Response
+}
+
+// Body describes a request body.
+// SchemaName non-empty → renderer emits $ref and registers Schema in components/schemas.
+type Body struct {
+    Description string
+    Required    bool
+    Schema      schema.Schema
+    SchemaName  string
+    ContentType string // defaults to "application/json"
+}
+
+// Response describes one HTTP response.
+// Status is a string: "200", "201", "default", "2XX", etc.
+// Schema nil → description-only response (e.g. 204, 404 without body).
+type Response struct {
+    Status      string
+    Description string
+    Schema      *schema.Schema
+    SchemaName  string
+    ContentType string // defaults to "application/json"
+}
+```
+
+- `route` is purely a data descriptor — no HTTP server logic, no encoding.
+- Use codec schemas (`UserCodec.Schema`) as `Body.Schema` / `Response.Schema`.
+
+## Full OpenAPI 3.1 Document (`render/openapi`)
+
+In addition to `SchemaObject`/`ComponentsSchemas`/`MarshalYAML`, `render/openapi` provides `DocumentBuilder` for emitting a full 3.1 spec.
+
+```go
+// NewDocumentBuilder returns a builder for a full OpenAPI 3.1 document.
+func NewDocumentBuilder(info Info) *DocumentBuilder
+
+// Build validates routes and produces a Document. Returns error on:
+// - duplicate (method, path) pair
+// - PathParam name not matching a {placeholder} in the path (or vice versa)
+func (b *DocumentBuilder) Build() (Document, error)
+
+func (d Document) MarshalJSON() ([]byte, error)
+func (d Document) MarshalYAML() ([]byte, error)
+```
+
+Key rules:
+- `render/openapi` imports `route` and `schema`. No codec logic.
+- Path parameters are always `required: true` in the output (OpenAPI 3.1 requirement).
+- `Body.SchemaName != ""` → `$ref` emitted + schema auto-registered in `components/schemas`.
+- `Response.Schema == nil` → no `content` block (correct for 204, no-body errors).
+- Existing `SchemaObject`, `ComponentsSchemas`, `MarshalJSON`, `MarshalYAML` remain unchanged.
+
+## AsyncAPI 2.6 Document (`render/asyncapi`)
+
+`render/asyncapi` produces a full AsyncAPI 2.6 document. It imports only `schema`.
+
+```go
+// NewDocumentBuilder returns a builder for a full AsyncAPI 2.6 document.
+func NewDocumentBuilder(info Info) *DocumentBuilder
+
+// Build validates channels (each must have at least one operation) and produces a Document.
+func (b *DocumentBuilder) Build() (Document, error)
+
+func (d Document) MarshalJSON() ([]byte, error)
+func (d Document) MarshalYAML() ([]byte, error)
+```
+
+Key types:
+```go
+type ChannelItem struct {
+    Description string
+    Subscribe   *Operation // app receives
+    Publish     *Operation // app sends
+}
+
+type Operation struct {
+    Summary, Description string
+    Tags    []string
+    Message Message
+}
+
+type Message struct {
+    Name        string
+    Schema      schema.Schema
+    SchemaName  string // non-empty → $ref in payload + auto-registered in components/schemas
+    ContentType string
+}
+```
+
+Key rules:
+- `render/asyncapi` imports only `schema` — channels are independent of HTTP route concepts.
+- `Message.SchemaName != ""` → `$ref` in `message.payload` + schema auto-registered.
+- `Message.Schema` zero-value with empty `SchemaName` → empty payload `{}` inline.
+- Each channel must have at least one of `Subscribe` or `Publish`; `Build()` rejects channels with neither.
+- AsyncAPI 3.0 upgrade path: isolate version-specific serialisation so a v3 variant can be added as `render/asyncapi/v3` without breaking 2.6.
+
 
 ## Multi-Format Output
 
