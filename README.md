@@ -91,6 +91,8 @@ Requires Go 1.25 or later.
 | HTTP route descriptors            | `github.com/DaniDeer/go-codex/route`           |
 | REST API builder                  | `github.com/DaniDeer/go-codex/api/rest`        |
 | Event channel builder             | `github.com/DaniDeer/go-codex/api/events`      |
+| net/http adapter                  | `github.com/DaniDeer/go-codex/adapters/nethttp` |
+| Paho MQTT adapter                 | `github.com/DaniDeer/go-codex/adapters/mqtt`   |
 | OpenAPI 3.1 renderer              | `github.com/DaniDeer/go-codex/render/openapi`  |
 | AsyncAPI 2.6 renderer             | `github.com/DaniDeer/go-codex/render/asyncapi` |
 | Schema model                      | `github.com/DaniDeer/go-codex/schema`          |
@@ -105,6 +107,8 @@ Requires Go 1.25 or later.
 - **AsyncAPI 2.6 Document** — complete event-driven spec from channel descriptors; same schemas, no duplication
 - **REST API Builder** — typed `Decode`/`Encode` helpers per route + OpenAPI spec generation, no HTTP library import
 - **Event Channel Builder** — typed `Decode`/`Encode` helpers per channel + AsyncAPI spec generation, no messaging library import
+- **net/http Adapter** — wire `RouteHandle` to `net/http.ServeMux` with one call; 400/500 error handling included
+- **Paho MQTT Adapter** — wire `ChannelHandle` to Paho MQTT subscribe callbacks; context-aware publish
 
 ### Multi-Format Support
 
@@ -437,9 +441,31 @@ doc, err := b.OpenAPISpec()
 yamlBytes, _ := doc.MarshalYAML()
 ```
 
-**Future:** framework-specific adapters (`adapters/nethttp`, `adapters/gin`, etc.) will wrap `RouteHandle` for zero-boilerplate integration. The `api/rest` core stays dependency-free.
+**Future:** framework-specific adapters (`adapters/gin`, `adapters/chi`, etc.) will wrap `RouteHandle` for zero-boilerplate integration. The `api/rest` core stays dependency-free.
 
-See `examples/api-rest/` for a runnable demonstration.
+See `examples/api-rest/` for a runnable demonstration, and `examples/adapters-nethttp/` for the net/http adapter.
+
+### net/http Adapter
+
+`adapters/nethttp` wires a `RouteHandle` to `net/http` in one line. No boilerplate for body reading, JSON encoding, or error response formatting.
+
+```go
+import nethttp "github.com/DaniDeer/go-codex/adapters/nethttp"
+
+mux := http.NewServeMux()
+
+// Register uses the Go 1.22+ "METHOD /path" ServeMux pattern automatically.
+nethttp.Register(mux, createUser, func(ctx context.Context, req CreateUserReq) (User, error) {
+    return svc.CreateUser(ctx, req)
+})
+
+http.ListenAndServe(":8080", mux)
+```
+
+- POST/PUT/PATCH: body read → `handle.Decode` (validates) → handler → `handle.Encode` → write
+- GET/HEAD/DELETE: handler called with zero value of `Req`; path/query extraction via middleware or context
+- Errors: `{"error":"..."}` JSON — 400 for decode/validation, 500 for handler/encode failures
+- Response status: taken from the route descriptor's primary response (e.g. 201 for POST)
 
 ### Event Channel Builder
 
@@ -484,9 +510,33 @@ events.AddChannel[UserEvent](b, "user/events", codec, events.ChannelConfig{
 })
 ```
 
-**Future:** broker-specific adapters (`adapters/mqtt`, `adapters/amqp`, etc.) will wrap `ChannelHandle` for zero-boilerplate integration.
+**Future:** broker-specific adapters (`adapters/amqp`, `adapters/kafka`, etc.) will wrap `ChannelHandle` for zero-boilerplate integration.
 
-See `examples/api-events/` for a runnable demonstration.
+See `examples/api-events/` for a runnable demonstration, and `examples/adapters-mqtt/` for the Paho MQTT adapter.
+
+### Paho MQTT Adapter
+
+`adapters/mqtt` wires a `ChannelHandle` to Paho MQTT. `SubscribeHandler` returns a `mqtt.MessageHandler` ready to pass to `client.Subscribe`. `Publish` encodes the value and publishes it, waiting for broker acknowledgement with context-aware cancellation.
+
+```go
+import (
+    mqtt    "github.com/eclipse/paho.mqtt.golang"
+    amqtt   "github.com/DaniDeer/go-codex/adapters/mqtt"
+)
+
+// Subscribe: decode + validate incoming messages automatically.
+client.Subscribe(userCreated.Topic, 1,
+    amqtt.SubscribeHandler(ctx, userCreated,
+        func(ctx context.Context, e UserCreatedEvent) error {
+            return svc.HandleUserCreated(ctx, e)
+        },
+        func(err error) { log.Println("event error:", err) },
+    ),
+)
+
+// Publish: encode outgoing message and wait for broker ack.
+err := amqtt.Publish(ctx, client, notifChannel, 1, false, NotificationCommand{...})
+```
 
 ## Special Topics
 
@@ -564,6 +614,12 @@ go-codex/
 │   └── events/             # Event channel builder: typed Decode/Encode + AsyncAPI spec
 │       └── builder.go      # Builder, AddChannel[T], ChannelHandle, ChannelConfig
 │
+├── adapters/               # transport-specific adapters (wrap api/rest or api/events)
+│   ├── nethttp/            # net/http adapter for api/rest RouteHandles
+│   │   └── adapter.go      # Handler[Req,Resp], Register[Req,Resp], HandlerFunc
+│   └── mqtt/               # Paho MQTT adapter for api/events ChannelHandles
+│       └── adapter.go      # SubscribeHandler[T], Publish[T]
+│
 ├── render/                 # spec renderers (import schema only, or schema + route)
 │   ├── openapi/            # OpenAPI 3.1 renderer
 │   │   ├── openapi.go      # SchemaObject, ComponentsSchemas, MarshalJSON, MarshalYAML
@@ -588,6 +644,8 @@ go-codex/
     ├── event-driven/       # full AsyncAPI 2.6 document from channel descriptors (low-level)
     ├── api-rest/           # REST API builder: typed helpers + OpenAPI spec
     ├── api-events/         # Event channel builder: typed helpers + AsyncAPI spec
+    ├── adapters-nethttp/   # net/http adapter: wiring api/rest to ServeMux
+    ├── adapters-mqtt/      # Paho MQTT adapter: wiring api/events to Paho client
     ├── shape/              # tagged union + Downcast demo
     ├── order/              # nested structs + SliceOf demo
     ├── multiformat/        # JSON / YAML / TOML with one codec

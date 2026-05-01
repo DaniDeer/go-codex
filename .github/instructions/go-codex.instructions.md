@@ -31,7 +31,8 @@ go-codex is a Go port of the core ideas from Haskell's [autodocodec](https://hac
 | `render/asyncapi` | Renders channels and schemas as a full AsyncAPI 2.6 document                             | `schema`, external libs          |
 | `api/rest`        | Transport-agnostic REST API builder; typed Decode/Encode + OpenAPI spec                  | `codex`, `format`, `route`, `render/openapi`, `schema` |
 | `api/events`      | Transport-agnostic event channel builder; typed Decode/Encode + AsyncAPI spec            | `codex`, `format`, `render/asyncapi`, `schema` |
-| `adapters/*`      | Framework/broker-specific adapters (future); wrap `RouteHandle` or `ChannelHandle`       | `api/rest` or `api/events` + transport lib |
+| `adapters/nethttp` | Framework/broker-specific adapters; wrap `RouteHandle` or `ChannelHandle`     | `api/rest` or `api/events` + transport lib |
+| `adapters/mqtt`   | Framework/broker-specific adapters; wrap `RouteHandle` or `ChannelHandle`      | `api/rest` or `api/events` + transport lib |
 | `examples`        | Usage demonstrations — not importable by other packages                                   | all                              |
 
 - No circular imports.
@@ -491,7 +492,11 @@ Key rules:
 - The descriptor is built and frozen at `AddRoute` call time; later config mutations do not affect the registered route.
 - `Info = openapi.Info` and `Server = openapi.Server` are type aliases to avoid drift.
 - `api/rest` may import `codex`, `format`, `route`, `render/openapi`, `schema`. No `net/http`.
-- Future: `adapters/nethttp`, `adapters/gin`, etc. wrap `RouteHandle` — they live in separate packages.
+- `adapters/nethttp` wraps `RouteHandle` for `net/http`. It imports `api/rest` and `net/http`.
+  - `Handler[Req,Resp](handle, fn) http.Handler` — decodes body (POST/PUT/PATCH), calls fn, encodes response.
+  - `Register[Req,Resp](mux, handle, fn)` — registers on `*http.ServeMux` via Go 1.22+ `"METHOD /path"` pattern.
+  - Error format: `{"error":"..."}` JSON; 400 for decode/validation, 500 for handler/encode errors.
+  - Non-body methods (GET/HEAD/DELETE): fn called with zero value of Req.
 
 ## Event Channel Builder (`api/events`)
 
@@ -525,15 +530,18 @@ Key rules:
 - The descriptor is built and frozen at `AddChannel` call time.
 - `Info = asyncapi.Info` and `Server = asyncapi.Server` are type aliases.
 - `api/events` may import `codex`, `format`, `render/asyncapi`, `schema`. No messaging library.
-- Future: `adapters/mqtt`, `adapters/amqp`, etc. wrap `ChannelHandle` — they live in separate packages.
+- `adapters/mqtt` wraps `ChannelHandle` for Paho MQTT. It imports `api/events` and `github.com/eclipse/paho.mqtt.golang`.
+  - `SubscribeHandler[T](ctx, handle, fn, onErr) mqtt.MessageHandler` — decodes payload, calls fn, routes errors to onErr.
+  - `Publish[T](ctx, client, handle, qos, retained, msg) error` — encodes and publishes; context-aware token wait.
 
 ### Package import table (updated)
 
-| Package           | Imports allowed from                                          |
-|-------------------|---------------------------------------------------------------|
-| `api/rest`        | `codex`, `format`, `route`, `render/openapi`, `schema`        |
-| `api/events`      | `codex`, `format`, `render/asyncapi`, `schema`                |
-| `adapters/*`      | `api/rest` or `api/events` + specific transport library       |
+| Package            | Imports allowed from                                          |
+|--------------------|---------------------------------------------------------------|
+| `api/rest`         | `codex`, `format`, `route`, `render/openapi`, `schema`        |
+| `api/events`       | `codex`, `format`, `render/asyncapi`, `schema`                |
+| `adapters/nethttp` | `api/rest`, `net/http` (stdlib)                               |
+| `adapters/mqtt`    | `api/events`, `github.com/eclipse/paho.mqtt.golang`           |
 
 
 ## Multi-Format Output
