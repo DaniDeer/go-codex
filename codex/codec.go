@@ -39,7 +39,6 @@ func (c Codec[T]) New(v T) (T, error) {
 	return v, nil
 }
 
-//
 // It encodes v to the intermediate representation and decodes it back, running
 // all Refine constraints defined on the codec. This reuses the exact same
 // constraint logic as Decode — builtin constraints (via validate.*) and any
