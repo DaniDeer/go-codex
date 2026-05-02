@@ -110,6 +110,7 @@ func MapCodecSafe[A, B any](c codex.Codec[A], to func(A) B, from func(B) (A, err
 - Use when a type wraps a primitive: e.g., `type Email string` over `primitive.String()`.
 - `to` is the decode direction: transforms the decoded `A` into `B`. Must be total.
 - `from` is the encode direction: transforms a `B` back to `A` for encoding. May fail.
+- Schema is inherited from `Codec[A]`.
 - For validation on decode, use `Refine` instead of `MapCodecSafe`.
 
 ```go
@@ -129,6 +130,56 @@ var ValidEmailCodec = EmailCodec.Refine(codex.Constraint[Email]{
     Message: func(e Email) string { return fmt.Sprintf("invalid email: %q", e) },
 })
 ```
+
+## `MapCodecValidated`: Fallible Mapping with Post-Decode Validation
+
+`MapCodecValidated[A, B any]` transforms `Codec[A]` into `Codec[B]` where both mapping directions may fail, and the mapped `B` value is validated using a provided `Codec[B]`.
+
+```go
+// MapCodecValidated creates a Codec[B] from Codec[A] and Codec[B] using two fallible mapping functions.
+// After mapping to B in the decode direction, cb.Validate enforces all Refine constraints on cb.
+// The resulting codec carries cb's schema.
+func MapCodecValidated[A, B any](ca codex.Codec[A], cb codex.Codec[B], to func(A) (B, error), from func(B) (A, error)) codex.Codec[B]
+```
+
+- `to` is the decode direction: fallible — returns `(B, error)`.
+- `from` is the encode direction: fallible — returns `(A, error)`.
+- After `to(a)` succeeds, `cb.Validate(b)` runs all `Refine` constraints defined on `cb`.
+- On encode, `cb.Validate(b)` is called before `from(b)` to prevent encoding invalid values.
+- Schema comes from `cb` (the domain type with its constraints).
+- Use when the mapping itself can fail **and** the target type `B` carries its own validation rules.
+
+```go
+type Celsius float64
+
+var celsiusBaseCodec = codex.MapCodecSafe(
+    codex.Float64().
+        Refine(validate.MinFloat(-273.15)).
+        Refine(validate.MaxFloat(1_000_000)),
+    func(f float64) Celsius { return Celsius(f) },
+    func(c Celsius) (float64, error) { return float64(c), nil },
+)
+
+var celsiusCodec = codex.MapCodecValidated(
+    codex.Float64(),    // ca: wire codec
+    celsiusBaseCodec,   // cb: domain codec with range constraints
+    func(f float64) (Celsius, error) {
+        if f != f { return 0, errors.New("NaN is not a valid temperature") }
+        return Celsius(f), nil
+    },
+    func(c Celsius) (float64, error) { return float64(c), nil },
+)
+```
+
+**When to choose `MapCodecSafe` vs `MapCodecValidated`:**
+
+| | `MapCodecSafe` | `MapCodecValidated` |
+|---|---|---|
+| `to` direction | infallible `func(A) B` | fallible `func(A) (B, error)` |
+| Post-decode validation | none | `cb.Validate(b)` |
+| Pre-encode validation | none | `cb.Validate(b)` |
+| Schema source | `ca` | `cb` |
+| Typical use | newtype wrappers | domain types with constraints |
 
 ## `Downcast`: Type Assertion Helper
 

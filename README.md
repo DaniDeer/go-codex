@@ -355,6 +355,71 @@ enc, _ := tagsCodec.Encode(map[string]string{"env":"prod"})
 // → map[string]any{"env":"prod"}
 ```
 
+### Codec Transformations: `MapCodecSafe` and `MapCodecValidated`
+
+Both combinators build a `Codec[B]` from an existing `Codec[A]` by supplying mapping functions. Choose based on how much validation you need.
+
+#### `MapCodecSafe` — type mapping, infallible decode direction
+
+```go
+func MapCodecSafe[A, B any](c Codec[A], to func(A) B, from func(B) (A, error)) Codec[B]
+```
+
+- `to` (decode direction) must always succeed — it is a total function.
+- `from` (encode direction) may return an error.
+- Schema is inherited from `Codec[A]` (the wire codec).
+- Use for newtype wrappers: `type Email string` over `codex.String()`.
+
+```go
+type Email string
+
+var EmailCodec = codex.MapCodecSafe(
+    codex.String(),
+    func(s string) Email { return Email(s) },
+    func(e Email) (string, error) { return string(e), nil },
+)
+```
+
+#### `MapCodecValidated` — fallible mapping with post-decode validation
+
+```go
+func MapCodecValidated[A, B any](ca Codec[A], cb Codec[B], to func(A) (B, error), from func(B) (A, error)) Codec[B]
+```
+
+- Both `to` and `from` may return an error.
+- After mapping `A → B`, `cb.Validate(b)` enforces all `Refine` constraints defined on `cb`.
+- Validation also runs on the encode direction before `from` is called.
+- Schema comes from `cb` (the domain type with its constraints).
+- Use when the mapping itself is fallible **and** the target type `B` carries its own validation rules.
+
+```go
+type Celsius float64
+
+var celsiusBaseCodec = codex.MapCodecSafe(
+    codex.Float64().
+        Refine(validate.MinFloat(-273.15)).
+        Refine(validate.MaxFloat(1_000_000)),
+    func(f float64) Celsius { return Celsius(f) },
+    func(c Celsius) (float64, error) { return float64(c), nil },
+)
+
+var celsiusCodec = codex.MapCodecValidated(
+    codex.Float64(),    // ca: wire codec
+    celsiusBaseCodec,   // cb: domain codec with range constraints
+    func(f float64) (Celsius, error) {
+        if f != f { // NaN
+            return 0, errors.New("NaN is not a valid temperature")
+        }
+        return Celsius(f), nil
+    },
+    func(c Celsius) (float64, error) { return float64(c), nil },
+)
+
+temp, err := celsiusCodec.Decode(float64(36.6)) // → Celsius(36.6), nil
+_, err = celsiusCodec.Decode(float64(-300))     // → error: below absolute zero
+_, err = celsiusCodec.Encode(Celsius(2e6))      // → error: exceeds maximum
+```
+
 ### OpenAPI Schema Generation
 
 [Spec: openapis.org - OpenAPI 3.2.0](https://spec.openapis.org/oas/v3.2.0.html)
@@ -773,7 +838,7 @@ go-codex/
 ├── codex/                  # ⭐ PUBLIC API: codecs, primitives, struct, union, slice
 │   ├── codec.go            # Codec[T], WithDescription, WithTitle, Validate
 │   ├── errors.go           # ValidationError, ValidationErrors
-│   ├── map.go              # MapCodecSafe, Downcast
+│   ├── map.go              # MapCodecSafe, MapCodecValidated, Downcast
 │   ├── nullable.go         # Nullable[T]
 │   ├── object.go           # Field[T,F], RequiredField, OptionalField, Struct[T]
 │   ├── primitives.go       # Int, Int64, Float64, String, Bool, Bytes
@@ -837,5 +902,6 @@ go-codex/
     ├── rest-api/           # full OpenAPI 3.1 document from route descriptors
     ├── shape/              # tagged union + Downcast demo
     ├── templ-mapper/       # mapping codec-validated data to templ components
-    └── validate/           # explicit Validate before marshal
+    ├── validate/           # explicit Validate before marshal
+    └── mapvalidated/       # MapCodecValidated: fallible mapping + domain validation
 ```
