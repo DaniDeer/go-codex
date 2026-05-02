@@ -92,3 +92,49 @@ func TestCodecValidate_NoConstraintAlwaysPasses(t *testing.T) {
 		t.Fatalf("empty string should pass unconstrained codec, got: %v", err)
 	}
 }
+
+// ── New ───────────────────────────────────────────────────────────────────────
+
+func TestCodecNew_ReturnsValueOnSuccess(t *testing.T) {
+	c := codex.Int().Refine(validate.PositiveInt)
+	got, err := c.New(5)
+	if err != nil {
+		t.Fatalf("expected no error, got: %v", err)
+	}
+	if got != 5 {
+		t.Errorf("New returned %d, want 5", got)
+	}
+}
+
+func TestCodecNew_ReturnsZeroAndErrorOnFailure(t *testing.T) {
+	c := codex.Int().Refine(validate.PositiveInt)
+	got, err := c.New(-1)
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	if got != 0 {
+		t.Errorf("New returned %d on failure, want zero value 0", got)
+	}
+}
+
+func TestCodecNew_WorksAsSmartConstructor(t *testing.T) {
+	type Score int
+	scoreCodec := codex.MapCodecSafe(
+		codex.Int().Refine(validate.RangeInt(0, 100)),
+		func(n int) Score { return Score(n) },
+		func(s Score) (int, error) { return int(s), nil },
+	)
+
+	s, err := scoreCodec.New(Score(42))
+	if err != nil {
+		t.Fatalf("valid score should succeed: %v", err)
+	}
+	if s != Score(42) {
+		t.Errorf("got %d, want 42", s)
+	}
+
+	_, err = scoreCodec.New(Score(150))
+	if err == nil {
+		t.Fatal("score > 100 should fail")
+	}
+}

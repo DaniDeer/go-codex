@@ -22,7 +22,23 @@ func (c Codec[T]) WithTitle(title string) Codec[T] {
 	return c
 }
 
-// Validate checks v against the codec's constraints without persisting the result.
+// New validates v and returns it if all constraints pass.
+//
+// It is a single-call smart constructor: call New to create a validated instance
+// of T without separating construction from validation.
+// On success it returns (v, nil); on failure it returns (zero, err) where err
+// contains the first constraint that failed.
+//
+// New delegates to Validate internally, so the same Refine constraints and
+// encode-direction checks apply.
+func (c Codec[T]) New(v T) (T, error) {
+	if err := c.Validate(v); err != nil {
+		var zero T
+		return zero, err
+	}
+	return v, nil
+}
+
 //
 // It encodes v to the intermediate representation and decodes it back, running
 // all Refine constraints defined on the codec. This reuses the exact same

@@ -203,6 +203,35 @@ if err := jsonFmt.Validate(u); err != nil {
 
 `Validate` is always explicit. `Marshal` and `Encode` never silently validate.
 
+#### New — smart constructor
+
+`Codec.New` validates and returns the value in a single call. Use it as a smart constructor when you want to create a validated domain value from a Go value:
+
+```go
+// Validate + return in one call.
+email, err := emailCodec.New(Email("user@example.com"))
+if err != nil {
+    return err
+}
+// email is guaranteed valid here
+```
+
+`New` is equivalent to calling `Validate` and then returning the original value. It is a thin wrapper — no new constraint logic.
+
+#### Must — panic on invalid (for constants and test data)
+
+`codex.Must` is a generic panic-on-error helper, following the convention of `template.Must` and `regexp.MustCompile`. Use it for package-level validated constants or test data setup — places where an invalid value is a programming error, not a recoverable runtime condition:
+
+```go
+// Package-level constant — panics at startup if "guest" is somehow invalid.
+var guestUser = codex.Must(usernameCodec.New(Username("guest")))
+
+// Test helper — panics immediately rather than hiding setup errors.
+got := codex.Must(emailCodec.Decode("user@example.com"))
+```
+
+`Must` is generic and works with any `(T, error)` pair — `New`, `Decode`, `MapCodecValidated`, or your own functions.
+
 ### Builtin Format Constraints
 
 `validate/` ships format constraints for common string types. Each constraint validates the value **and** annotates `schema.Schema` so the format appears in OpenAPI output automatically.
@@ -836,9 +865,10 @@ go-codex/
 ├── README.md
 
 ├── codex/                  # ⭐ PUBLIC API: codecs, primitives, struct, union, slice
-│   ├── codec.go            # Codec[T], WithDescription, WithTitle, Validate
+│   ├── codec.go            # Codec[T], WithDescription, WithTitle, Validate, New
 │   ├── errors.go           # ValidationError, ValidationErrors
 │   ├── map.go              # MapCodecSafe, MapCodecValidated, Downcast
+│   ├── must.go             # Must[T] — generic panic-on-error helper
 │   ├── nullable.go         # Nullable[T]
 │   ├── object.go           # Field[T,F], RequiredField, OptionalField, Struct[T]
 │   ├── primitives.go       # Int, Int64, Float64, String, Bool, Bytes
@@ -903,5 +933,6 @@ go-codex/
     ├── shape/              # tagged union + Downcast demo
     ├── templ-mapper/       # mapping codec-validated data to templ components
     ├── validate/           # explicit Validate before marshal
-    └── mapvalidated/       # MapCodecValidated: fallible mapping + domain validation
+    ├── mapvalidated/       # MapCodecValidated: fallible mapping + domain validation
+    └── construction/       # New + Must: construction-time validation demo
 ```

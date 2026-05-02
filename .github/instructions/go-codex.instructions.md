@@ -22,7 +22,7 @@ go-codex is a Go port of the core ideas from Haskell's [autodocodec](https://hac
 
 | Package           | Responsibility                                                                            | Imports allowed from             |
 |-------------------|-------------------------------------------------------------------------------------------|----------------------------------|
-| `codex`           | PUBLIC API: `Codec[T]`, primitives (`Int`, `Int64`, `Float64`, `String`, `Bool`, `Bytes`, `Time`, `Date`), `Nullable[T]`, `SliceOf[T]`, `StringMap[V]`, struct, union, `MapCodecSafe`, `Constraint`, `Refine`, `ValidationError`, `ValidationErrors` | `schema`     |
+| `codex`           | PUBLIC API: `Codec[T]`, primitives (`Int`, `Int64`, `Float64`, `String`, `Bool`, `Bytes`, `Time`, `Date`), `Nullable[T]`, `SliceOf[T]`, `StringMap[V]`, struct, union, `MapCodecSafe`, `MapCodecValidated`, `Must`, `Constraint`, `Refine`, `ValidationError`, `ValidationErrors` | `schema`     |
 | `schema`          | Schema model (pure data, no codec logic)                                                  | none                             |
 | `validate`        | Reusable `Constraint` functions: numbers, strings, format, bytes                          | `codex`, `schema`                |
 | `format`          | Bridges `Codec[T]` to wire formats: JSON, YAML, TOML                                     | `codex`, `schema`, external libs |
@@ -81,6 +81,42 @@ var AgeCodec = codex.Int().
     WithTitle("Age").
     WithDescription("Age in years.")
 ```
+
+### `Validate`, `New`, and `Must`: Construction-Time Validation
+
+**`Codec.Validate(v T) error`** checks a Go value by round-tripping through encode+decode, running all `Refine` constraints. Returns only the error; the value is discarded.
+
+**`Codec.New(v T) (T, error)`** validates and returns the value. Use as a smart constructor — validate at the point of construction, get a typed result back:
+
+```go
+// Validate is declared on Codec[T]:
+func (c Codec[T]) New(v T) (T, error)
+
+// Example:
+email, err := emailCodec.New(Email("user@example.com"))
+if err != nil {
+    return err
+}
+// email is valid here
+```
+
+**`Must[T any](v T, err error) T`** is a generic panic-on-error helper. Use it for package-level validated constants and test data — not for user-facing code:
+
+```go
+// Package-level constant validated at init time:
+var guestUser = codex.Must(usernameCodec.New(Username("guest")))
+
+// Test helper:
+got := codex.Must(emailCodec.Decode("user@example.com"))
+```
+
+**When to use each:**
+
+| | `Validate` | `New` | `Must` |
+|---|---|---|---|
+| Returns value | no | yes | yes |
+| Returns error | yes | yes | panics |
+| Typical use | check before store/send | smart constructor | constants, tests |
 
 ## `HasCodec` Interface
 
