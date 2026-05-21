@@ -16,7 +16,7 @@ func SliceOf[T any](elem Codec[T]) Codec[[]T] {
 			for i, v := range vs {
 				enc, err := elem.Encode(v)
 				if err != nil {
-					return nil, fmt.Errorf("element %d: %w", i, err)
+					return nil, ElementError{Index: i, Err: err}
 				}
 				out[i] = enc
 			}
@@ -25,13 +25,13 @@ func SliceOf[T any](elem Codec[T]) Codec[[]T] {
 		Decode: func(v any) ([]T, error) {
 			raw, ok := v.([]any)
 			if !ok {
-				return nil, fmt.Errorf("expected array, got %T", v)
+				return nil, TypeMismatchError{Expected: "array", Got: fmt.Sprintf("%T", v)}
 			}
 			out := make([]T, len(raw))
 			for i, item := range raw {
 				decoded, err := elem.Decode(item)
 				if err != nil {
-					return nil, fmt.Errorf("element %d: %w", i, err)
+					return nil, ElementError{Index: i, Err: err}
 				}
 				out[i] = decoded
 			}

@@ -126,6 +126,7 @@ Requires Go 1.25 or later.
 - **Encode, Decode, and Validation** — constraints run on decode; encode is trusted; validate is explicit
 - **Builtin Format Constraints** — `email`, `uuid`, `url`, `date`, `date-time` validated and reflected into schema automatically
 - **Rich Codec Types** — primitives, `Time`/`Date`, `Nullable[T]`, `Bytes`, `SliceOf[T]`, `StringMap[V]`, structs, tagged unions
+- **Structured Decode Errors** — all failure types are concrete structs (`ValidationErrors`, `ConstraintError`, `TypeMismatchError`, `ElementError`, `KeyError`, `UnknownVariantError`, `VariantError`); use `errors.As` to inspect them, or pass them directly to `log/slog`
 - **OpenAPI Schema Generation** — `components/schemas` map from codec-derived schemas, no manual YAML
 - **Full OpenAPI 3.1 Document** — complete REST API spec (paths, operations, params) from `route.Route` descriptors
 - **AsyncAPI 2.6 Document** — complete event-driven spec from channel descriptors; same schemas, no duplication
@@ -231,6 +232,72 @@ got := codex.Must(emailCodec.Decode("user@example.com"))
 ```
 
 `Must` is generic and works with any `(T, error)` pair — `New`, `Decode`, `MapCodecValidated`, or your own functions.
+
+### Error Handling
+
+All decode failures are structured types. Use `errors.As` to inspect them precisely, or pass them directly to `log/slog` — every type implements `slog.LogValuer`.
+
+#### Error types
+
+| Type                  | Returned by                                                | Key fields                                              |
+| --------------------- | ---------------------------------------------------------- | ------------------------------------------------------- |
+| `ValidationErrors`    | `Struct` decode                                            | `[]ValidationError`; also implements `Unwrap() []error` |
+| `ValidationError`     | each field in `Struct` decode                              | `Field string`, `Err error`                             |
+| `ConstraintError`     | `Refine` on any codec; also `Int`/`Int64` for non-integral float | `Name string`, `Message string`                         |
+| `TypeMismatchError`   | any codec receiving wrong Go type                          | `Expected string`, `Got string`                         |
+| `ElementError`        | `SliceOf` decode                                           | `Index int`, `Err error`                                |
+| `KeyError`            | `StringMap` decode                                         | `Key string`, `Err error`                               |
+| `UnknownVariantError` | `TaggedUnion` when tag value has no matching codec         | `Tag string`, `Variant string`                          |
+| `VariantError`        | `TaggedUnion` when a known variant fails to decode/encode  | `Tag string`, `Variant string`, `Err error`             |
+| `ErrMissingField`     | required `Field` when key absent                           | sentinel; use `errors.Is`                               |
+
+#### Inspecting errors with `errors.As`
+
+```go
+var ve codex.ValidationErrors
+if errors.As(err, &ve) {
+    for _, fieldErr := range ve {
+        var ce codex.ConstraintError
+        if errors.As(fieldErr.Err, &ce) {
+            // ce.Name   — constraint identifier, e.g. "email", "minLen(3)"
+            // ce.Message — human-readable description of the failure
+            fmt.Printf("field %q: constraint %q failed: %s\n",
+                fieldErr.Field, ce.Name, ce.Message)
+        }
+        if errors.Is(fieldErr.Err, codex.ErrMissingField) {
+            fmt.Printf("field %q is required but absent\n", fieldErr.Field)
+        }
+    }
+}
+```
+
+#### Structured logging with `log/slog`
+
+All error types implement `slog.LogValuer`. Pass them as slog attributes to get structured key-value output instead of a flat error string:
+
+```go
+logger := slog.New(slog.NewTextHandler(os.Stdout, nil))
+
+var ve codex.ValidationErrors
+if errors.As(err, &ve) {
+    // Emits each field name and its error as separate slog attributes.
+    logger.Error("request validation failed", slog.Any("validation_errors", ve))
+
+    for _, fieldErr := range ve {
+        var ce codex.ConstraintError
+        if errors.As(fieldErr.Err, &ce) {
+            // Emits field.field, field.error, constraint.constraint, constraint.message.
+            logger.Warn("field constraint failed",
+                slog.Any("field", fieldErr),
+                slog.Any("constraint", ce),
+            )
+        }
+    }
+}
+```
+
+See `examples/error-types/` for a runnable demo of every error type with `errors.As` and slog.
+See `examples/decode-errors/` for struct validation errors and HTTP 400 response patterns.
 
 ### Builtin Format Constraints
 

@@ -18,7 +18,7 @@ func Time() Codec[time.Time] {
 		Decode: func(v any) (time.Time, error) {
 			s, ok := v.(string)
 			if !ok {
-				return time.Time{}, fmt.Errorf("expected string, got %T", v)
+				return time.Time{}, TypeMismatchError{Expected: "string", Got: fmt.Sprintf("%T", v)}
 			}
 			t, err := time.Parse(time.RFC3339, s)
 			if err != nil {
@@ -42,7 +42,7 @@ func Date() Codec[time.Time] {
 		Decode: func(v any) (time.Time, error) {
 			s, ok := v.(string)
 			if !ok {
-				return time.Time{}, fmt.Errorf("expected string, got %T", v)
+				return time.Time{}, TypeMismatchError{Expected: "string", Got: fmt.Sprintf("%T", v)}
 			}
 			t, err := time.Parse(layout, s)
 			if err != nil {

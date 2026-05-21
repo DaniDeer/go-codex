@@ -22,7 +22,7 @@ go-codex is a Go port of the core ideas from Haskell's [autodocodec](https://hac
 
 | Package           | Responsibility                                                                            | Imports allowed from             |
 |-------------------|-------------------------------------------------------------------------------------------|----------------------------------|
-| `codex`           | PUBLIC API: `Codec[T]`, primitives (`Int`, `Int64`, `Float64`, `String`, `Bool`, `Bytes`, `Time`, `Date`), `Nullable[T]`, `SliceOf[T]`, `StringMap[V]`, struct, union, `MapCodecSafe`, `MapCodecValidated`, `Must`, `Constraint`, `Refine`, `ValidationError`, `ValidationErrors` | `schema`     |
+| `codex`           | PUBLIC API: `Codec[T]`, primitives (`Int`, `Int64`, `Float64`, `String`, `Bool`, `Bytes`, `Time`, `Date`), `Nullable[T]`, `SliceOf[T]`, `StringMap[V]`, struct, union, `MapCodecSafe`, `MapCodecValidated`, `Must`, `Constraint`, `Refine`, `ValidationError`, `ValidationErrors`, `ConstraintError`, `TypeMismatchError`, `ElementError`, `KeyError`, `UnknownVariantError`, `VariantError`, `ErrMissingField` | `schema`     |
 | `schema`          | Schema model (pure data, no codec logic)                                                  | none                             |
 | `validate`        | Reusable `Constraint` functions: numbers, strings, format, bytes                          | `codex`, `schema`                |
 | `format`          | Bridges `Codec[T]` to wire formats: JSON, YAML, TOML                                     | `codex`, `schema`, external libs |
@@ -367,23 +367,49 @@ The `schema` package defines pure data structures that describe a codec. No code
 
 ## Error Handling in Codecs
 
-- Struct decode collects **all** field errors before returning. The returned error is `codex.ValidationErrors` (a `[]ValidationError`), not a single error.
-- Use `errors.As(err, &ve)` to extract `codex.ValidationErrors` from a struct decode error.
-- `codex.ValidationError` is a single field-level failure: `Field string` (name of the failing field) and `Err error` (underlying error). Its `Error()` format is `"field <name>: <message>"`.
-- `codex.ValidationErrors.Error()` joins all field errors with `"; "`.
-- Encode errors are exceptional; prefer designs where encoding is total (never fails).
-- `Constraint.Check` returns `bool`; `Constraint.Message` returns the error string.
+All decode failures are concrete structured types. Every type implements `error`, `slog.LogValuer`, and (where applicable) `Unwrap`.
+
+| Type | Returned by | Key fields |
+|------|-------------|------------|
+| `ValidationErrors` | `Struct` decode | `[]ValidationError`; `Unwrap() []error` for `errors.Is`/`As` traversal |
+| `ValidationError` | each failing field in `Struct` decode | `Field string`, `Err error`; `Unwrap()` returns `Err` |
+| `ConstraintError` | `Refine` on any codec when `Check` returns false; also `Int`/`Int64` for non-integral float | `Name string`, `Message string` |
+| `TypeMismatchError` | any codec receiving wrong Go type | `Expected string`, `Got string` |
+| `ElementError` | `SliceOf` decode/encode | `Index int`, `Err error`; `Unwrap()` returns `Err` |
+| `KeyError` | `StringMap` decode/encode | `Key string`, `Err error`; `Unwrap()` returns `Err` |
+| `UnknownVariantError` | `TaggedUnion` when tag value has no matching codec | `Tag string`, `Variant string`; no `Unwrap` |
+| `VariantError` | `TaggedUnion` when a known variant fails to decode/encode | `Tag string`, `Variant string`, `Err error`; `Err` is always non-nil; `Unwrap()` returns `Err` |
+| `ErrMissingField` | required `Field` when key absent | exported sentinel; use `errors.Is` |
+
+- Struct decode collects **all** field errors before returning — the error is always `ValidationErrors`, never a partial slice.
+- Use `errors.As(err, &ve)` to extract `ValidationErrors`. Then inspect each `ValidationError.Err` for the underlying cause.
+- `ValidationErrors.Unwrap() []error` enables `errors.Is`/`errors.As` to traverse the full list directly.
+- Encode errors are exceptional; prefer designs where encoding is total.
 
 ```go
-// Extracting individual field errors after struct decode:
+// Struct decode: collect all field errors, inspect constraint name.
 _, err := MyCodec.Decode(input)
 var ve codex.ValidationErrors
 if errors.As(err, &ve) {
     for _, fe := range ve {
-        fmt.Printf("field %s: %v\n", fe.Field, fe.Err)
+        var ce codex.ConstraintError
+        if errors.As(fe.Err, &ce) {
+            fmt.Printf("field %q: constraint %q failed: %s\n", fe.Field, ce.Name, ce.Message)
+        }
+        if errors.Is(fe.Err, codex.ErrMissingField) {
+            fmt.Printf("field %q: required but absent\n", fe.Field)
+        }
     }
 }
+
+// slog: all structured error types implement slog.LogValuer; wrapping types
+// use slog.Any("cause", e.Err) so nested LogValue() is preserved.
+logger.Error("decode failed", slog.Any("validation_errors", ve))
+// → validation_errors.name.constraint=non-empty validation_errors.name.message="..."
 ```
+
+See `examples/error-types/` for a runnable demo of every error type with `errors.As` and slog.
+See `examples/decode-errors/` for struct validation errors and HTTP 400 response patterns.
 
 ## Common Patterns
 

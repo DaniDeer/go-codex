@@ -1,8 +1,6 @@
 package codex
 
 import (
-	"fmt"
-
 	"github.com/DaniDeer/go-codex/schema"
 )
 
@@ -36,11 +34,10 @@ func (c Codec[T]) Refine(cons Constraint[T]) Codec[T] {
 			}
 			if !cons.Check(val) {
 				var zero T
-				return zero, fmt.Errorf(
-					"constraint failed (%s): %s",
-					cons.Name,
-					cons.Message(val),
-				)
+				return zero, ConstraintError{
+					Name:    cons.Name,
+					Message: cons.Message(val),
+				}
 			}
 			return val, nil
 		},

@@ -23,12 +23,12 @@ func TaggedUnion[T any](
 
 			c, ok := variants[name]
 			if !ok {
-				return nil, fmt.Errorf("unknown variant %q", name)
+				return nil, UnknownVariantError{Tag: tag, Variant: name}
 			}
 
 			obj, err := c.Encode(v)
 			if err != nil {
-				return nil, fmt.Errorf("encoding variant %q: %w", name, err)
+				return nil, VariantError{Tag: tag, Variant: name, Err: err}
 			}
 
 			m, ok := obj.(map[string]any)
@@ -49,18 +49,18 @@ func TaggedUnion[T any](
 
 			obj, ok := v.(map[string]any)
 			if !ok {
-				return zero, fmt.Errorf("expected object, got %T", v)
+				return zero, TypeMismatchError{Expected: "object", Got: fmt.Sprintf("%T", v)}
 			}
 
 			tagVal, _ := obj[tag].(string)
 			c, ok := variants[tagVal]
 			if !ok {
-				return zero, fmt.Errorf("field %s: unknown variant %q", tag, tagVal)
+				return zero, UnknownVariantError{Tag: tag, Variant: tagVal}
 			}
 
 			val, err := c.Decode(obj)
 			if err != nil {
-				return zero, fmt.Errorf("decoding variant %q: %w", tagVal, err)
+				return zero, VariantError{Tag: tag, Variant: tagVal, Err: err}
 			}
 			return val, nil
 		},

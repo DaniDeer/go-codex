@@ -16,7 +16,10 @@ func Int() Codec[int] {
 			switch n := v.(type) {
 			case float64:
 				if n != math.Trunc(n) {
-					return 0, fmt.Errorf("expected integer, got non-integral float %v", n)
+					return 0, ConstraintError{
+						Name:    "integer",
+						Message: fmt.Sprintf("expected integer, got non-integral float %v", n),
+					}
 				}
 				return int(n), nil
 			case int:
@@ -24,7 +27,7 @@ func Int() Codec[int] {
 			case int64:
 				return int(n), nil
 			default:
-				return 0, fmt.Errorf("expected number, got %T", v)
+				return 0, TypeMismatchError{Expected: "number", Got: fmt.Sprintf("%T", v)}
 			}
 		},
 		Schema: schema.Schema{Type: "integer"},
@@ -39,7 +42,10 @@ func Int64() Codec[int64] {
 			switch n := v.(type) {
 			case float64:
 				if n != math.Trunc(n) {
-					return 0, fmt.Errorf("expected integer, got non-integral float %v", n)
+					return 0, ConstraintError{
+						Name:    "integer",
+						Message: fmt.Sprintf("expected integer, got non-integral float %v", n),
+					}
 				}
 				return int64(n), nil
 			case int:
@@ -47,7 +53,7 @@ func Int64() Codec[int64] {
 			case int64:
 				return n, nil
 			default:
-				return 0, fmt.Errorf("expected number, got %T", v)
+				return 0, TypeMismatchError{Expected: "number", Got: fmt.Sprintf("%T", v)}
 			}
 		},
 		Schema: schema.Schema{Type: "integer"},
@@ -67,7 +73,7 @@ func Float64() Codec[float64] {
 			case int64:
 				return float64(n), nil
 			default:
-				return 0, fmt.Errorf("expected number, got %T", v)
+				return 0, TypeMismatchError{Expected: "number", Got: fmt.Sprintf("%T", v)}
 			}
 		},
 		Schema: schema.Schema{Type: "number"},
@@ -81,7 +87,7 @@ func String() Codec[string] {
 		Decode: func(v any) (string, error) {
 			s, ok := v.(string)
 			if !ok {
-				return "", fmt.Errorf("expected string, got %T", v)
+				return "", TypeMismatchError{Expected: "string", Got: fmt.Sprintf("%T", v)}
 			}
 			return s, nil
 		},
@@ -96,7 +102,7 @@ func Bool() Codec[bool] {
 		Decode: func(v any) (bool, error) {
 			b, ok := v.(bool)
 			if !ok {
-				return false, fmt.Errorf("expected bool, got %T", v)
+				return false, TypeMismatchError{Expected: "boolean", Got: fmt.Sprintf("%T", v)}
 			}
 			return b, nil
 		},
@@ -115,7 +121,7 @@ func Bytes() Codec[[]byte] {
 		Decode: func(v any) ([]byte, error) {
 			s, ok := v.(string)
 			if !ok {
-				return nil, fmt.Errorf("expected string, got %T", v)
+				return nil, TypeMismatchError{Expected: "string", Got: fmt.Sprintf("%T", v)}
 			}
 			b, err := base64.StdEncoding.DecodeString(s)
 			if err != nil {

@@ -20,7 +20,7 @@ func StringMap[V any](value Codec[V]) Codec[map[string]V] {
 			for k, v := range m {
 				enc, err := value.Encode(v)
 				if err != nil {
-					return nil, fmt.Errorf("key %q: %w", k, err)
+					return nil, KeyError{Key: k, Err: err}
 				}
 				out[k] = enc
 			}
@@ -29,13 +29,13 @@ func StringMap[V any](value Codec[V]) Codec[map[string]V] {
 		Decode: func(v any) (map[string]V, error) {
 			raw, ok := v.(map[string]any)
 			if !ok {
-				return nil, fmt.Errorf("expected object, got %T", v)
+				return nil, TypeMismatchError{Expected: "object", Got: fmt.Sprintf("%T", v)}
 			}
 			out := make(map[string]V, len(raw))
 			for k, item := range raw {
 				decoded, err := value.Decode(item)
 				if err != nil {
-					return nil, fmt.Errorf("key %q: %w", k, err)
+					return nil, KeyError{Key: k, Err: err}
 				}
 				out[k] = decoded
 			}

@@ -7,6 +7,14 @@
 // collected into a codex.ValidationErrors slice, so callers see the complete
 // picture immediately.
 //
+// Structured error types allow callers to inspect each failure precisely:
+//   - codex.ValidationErrors — slice of per-field errors
+//   - codex.ValidationError  — field name + underlying error
+//   - codex.ConstraintError  — constraint name + human-readable message
+//
+// All types implement slog.LogValuer for structured logging.
+// For a comprehensive tour of all error types, see examples/error-types.
+//
 // Run with: go run ./examples/decode-errors
 package main
 
@@ -14,6 +22,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
+	"os"
 
 	"github.com/DaniDeer/go-codex/codex"
 	"github.com/DaniDeer/go-codex/format"
@@ -65,8 +75,10 @@ func main() {
 
 	// ── Section 2: structured access via errors.As ───────────────────────────
 	//
-	// codex.ValidationErrors implements error. Use errors.As to extract the
-	// typed slice and inspect each field error individually.
+	// Use errors.As to extract ValidationErrors, then walk the chain:
+	//   ValidationErrors → ValidationError → ConstraintError
+	// Each level adds more structured context: field name, then constraint
+	// name and message as separate typed fields.
 
 	fmt.Println("=== 2. Structured access via errors.As ===")
 	fmt.Println()
@@ -75,7 +87,13 @@ func main() {
 	if errors.As(err, &ve) {
 		fmt.Printf("  %d field(s) failed:\n", len(ve))
 		for _, fieldErr := range ve {
-			fmt.Printf("    field=%q  err=%v\n", fieldErr.Field, fieldErr.Err)
+			var ce codex.ConstraintError
+			if errors.As(fieldErr.Err, &ce) {
+				fmt.Printf("    field=%q  constraint=%q  message=%q\n",
+					fieldErr.Field, ce.Name, ce.Message)
+			} else {
+				fmt.Printf("    field=%q  err=%v\n", fieldErr.Field, fieldErr.Err)
+			}
 		}
 	}
 	fmt.Println()
@@ -99,9 +117,37 @@ func main() {
 	fmt.Println(string(body))
 	fmt.Println()
 
-	// ── Section 4: valid input ───────────────────────────────────────────────
+	// ── Section 4: slog structured logging ───────────────────────────────────
+	//
+	// ValidationErrors, ValidationError, and ConstraintError all implement
+	// slog.LogValuer. Pass them directly as slog attributes — fields and
+	// constraint names are emitted as structured key-value pairs, not flat strings.
 
-	fmt.Println("=== 4. Valid input ===")
+	fmt.Println("=== 4. slog structured logging ===")
+	fmt.Println()
+
+	logger := slog.New(slog.NewTextHandler(os.Stdout, nil))
+	if errors.As(err, &ve) {
+		logger.Error("request validation failed",
+			slog.Any("validation_errors", ve),
+		)
+
+		// Log individual field errors with constraint detail.
+		for _, fieldErr := range ve {
+			var ce codex.ConstraintError
+			if errors.As(fieldErr.Err, &ce) {
+				logger.Warn("field constraint failed",
+					slog.Any("field", fieldErr),
+					slog.Any("constraint", ce),
+				)
+			}
+		}
+	}
+	fmt.Println()
+
+	// ── Section 5: valid input ───────────────────────────────────────────────
+
+	fmt.Println("=== 5. Valid input ===")
 	fmt.Println()
 
 	good := []byte(`{"name":"Alice","email":"alice@example.com","age":30}`)

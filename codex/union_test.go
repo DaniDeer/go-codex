@@ -2,7 +2,6 @@ package codex_test
 
 import (
 	"errors"
-	"strings"
 	"testing"
 
 	"github.com/DaniDeer/go-codex/codex"
@@ -93,8 +92,12 @@ func TestTaggedUnion_DecodeUnknownTag(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error for unknown tag")
 	}
-	if !strings.Contains(err.Error(), "triangle") {
-		t.Errorf("error %q does not mention unknown variant", err.Error())
+	var uve codex.UnknownVariantError
+	if !errors.As(err, &uve) {
+		t.Fatalf("expected UnknownVariantError, got %T: %v", err, err)
+	}
+	if uve.Variant != "triangle" {
+		t.Errorf("Variant: got %q, want %q", uve.Variant, "triangle")
 	}
 }
 

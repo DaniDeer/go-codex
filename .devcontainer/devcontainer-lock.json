@@ -1,0 +1,29 @@
+{
+  "features": {
+    "ghcr.io/azutake/devcontainer-features/go-packages-install:0": {
+      "version": "0.0.2",
+      "resolved": "ghcr.io/azutake/devcontainer-features/go-packages-install@sha256:2de9228b12e43192618e4b7652dad3922f2de1bc54ab94e4e66b1a8c79e83807",
+      "integrity": "sha256:2de9228b12e43192618e4b7652dad3922f2de1bc54ab94e4e66b1a8c79e83807"
+    },
+    "ghcr.io/danideer/devcontainer-features/install-ca-cert:1": {
+      "version": "1.0.0",
+      "resolved": "ghcr.io/danideer/devcontainer-features/install-ca-cert@sha256:26e8a0e573900c58b0c6bcaf553a353a8fd57f7feaa92b8e8a542d2a62513254",
+      "integrity": "sha256:26e8a0e573900c58b0c6bcaf553a353a8fd57f7feaa92b8e8a542d2a62513254"
+    },
+    "ghcr.io/DaniDeer/devcontainer-features/just:1": {
+      "version": "1.0.0",
+      "resolved": "ghcr.io/danideer/devcontainer-features/just@sha256:ca9e2ad9be3e4e34b82625d743169a015c138a3a2c606b61ca91366b9deef8f6",
+      "integrity": "sha256:ca9e2ad9be3e4e34b82625d743169a015c138a3a2c606b61ca91366b9deef8f6"
+    },
+    "ghcr.io/devcontainers/features/copilot-cli:1": {
+      "version": "1.1.2",
+      "resolved": "ghcr.io/devcontainers/features/copilot-cli@sha256:757c6c2899dc902c44a9f6164c1f7392832ced13c6bb632d8d60a880f2e92456",
+      "integrity": "sha256:757c6c2899dc902c44a9f6164c1f7392832ced13c6bb632d8d60a880f2e92456"
+    },
+    "ghcr.io/devcontainers/features/docker-outside-of-docker:1": {
+      "version": "1.9.1",
+      "resolved": "ghcr.io/devcontainers/features/docker-outside-of-docker@sha256:dc89605f01ff2f24252c61f7c8ba2a58ccdbc14f2ebf87a7952d9e2b89834850",
+      "integrity": "sha256:dc89605f01ff2f24252c61f7c8ba2a58ccdbc14f2ebf87a7952d9e2b89834850"
+    }
+  }
+}

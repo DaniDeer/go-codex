@@ -1,7 +1,6 @@
 package codex
 
 import (
-	"errors"
 	"fmt"
 
 	"github.com/DaniDeer/go-codex/schema"
@@ -34,7 +33,7 @@ func (f Field[T, F]) decode(obj map[string]any, target *T) error {
 	raw, ok := obj[f.Name]
 	if !ok {
 		if f.Required {
-			return errors.New("missing required field")
+			return ErrMissingField
 		}
 		return nil
 	}
@@ -93,7 +92,7 @@ func Struct[T any](fields ...fieldCodec[T]) Codec[T] {
 			var result T
 			obj, ok := v.(map[string]any)
 			if !ok {
-				return result, fmt.Errorf("expected object, got %T", v)
+				return result, TypeMismatchError{Expected: "object", Got: fmt.Sprintf("%T", v)}
 			}
 			var errs ValidationErrors
 			for _, f := range fields {
