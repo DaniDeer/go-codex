@@ -19,6 +19,10 @@ type Field[T any, F any] struct {
 	Get      func(T) F
 	Set      func(*T, F)
 	Required bool
+	// Default holds the field's default value. A non-nil pointer means the field
+	// has a declared default; nil means no default. A pointer is used to
+	// distinguish "no default" from a zero-value default.
+	Default *F
 }
 
 //lint:ignore U1000 implements fieldCodec interface
@@ -32,6 +36,10 @@ func (f Field[T, F]) encode(v T) (string, any, error) {
 func (f Field[T, F]) decode(obj map[string]any, target *T) error {
 	raw, ok := obj[f.Name]
 	if !ok {
+		if f.Default != nil {
+			f.Set(target, *f.Default)
+			return nil
+		}
 		if f.Required {
 			return ErrMissingField
 		}
@@ -49,7 +57,11 @@ func (f Field[T, F]) decode(obj map[string]any, target *T) error {
 
 //lint:ignore U1000 implements fieldCodec interface
 func (f Field[T, F]) schema() (string, schema.Schema, bool) {
-	return f.Name, f.Codec.Schema, f.Required
+	s := f.Codec.Schema
+	if f.Default != nil {
+		s.Default = any(*f.Default)
+	}
+	return f.Name, s, f.Required
 }
 
 // RequiredField is a shorthand for [Field] with Required set to true.
@@ -62,6 +74,13 @@ func RequiredField[T, F any](name string, codec Codec[F], get func(T) F, set fun
 // The intent is explicit at the call site — no boolean flag needed.
 func OptionalField[T, F any](name string, codec Codec[F], get func(T) F, set func(*T, F)) Field[T, F] {
 	return Field[T, F]{Name: name, Codec: codec, Get: get, Set: set}
+}
+
+// DefaultField is a shorthand for [Field] with Required set to false and a
+// documented default value. When the field is absent during decode, defaultVal
+// is used automatically. The default appears in generated schemas as "default".
+func DefaultField[T, F any](name string, codec Codec[F], defaultVal F, get func(T) F, set func(*T, F)) Field[T, F] {
+	return Field[T, F]{Name: name, Codec: codec, Get: get, Set: set, Default: &defaultVal}
 }
 
 // Struct builds a Codec[T] by composing field codecs. Schema is built eagerly.

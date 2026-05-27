@@ -1,0 +1,44 @@
+name: Publish Go module
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Module version to publish (e.g. v1.2.3)'
+        required: true
+
+jobs:
+  publish:
+    name: Trigger Go module proxy
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Resolve version
+        id: version
+        run: |
+          if [ -n "${{ inputs.version }}" ]; then
+            echo "VERSION=${{ inputs.version }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "VERSION=${GITHUB_REF_NAME}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Trigger proxy.golang.org
+        env:
+          # Go module proxy requires uppercase letters encoded as %21<lowercase>.
+          # github.com/DaniDeer/go-codex → github.com/%21dani%21deer/go-codex
+          MODULE: github.com/%21dani%21deer/go-codex
+          VERSION: ${{ steps.version.outputs.VERSION }}
+        run: |
+          echo "Triggering proxy cache for ${MODULE}@${VERSION}"
+          curl -sSf "https://proxy.golang.org/${MODULE}/@v/${VERSION}.info"
+
+      - name: Trigger pkg.go.dev
+        env:
+          MODULE: github.com/DaniDeer/go-codex
+          VERSION: ${{ steps.version.outputs.VERSION }}
+        run: |
+          echo "Notifying pkg.go.dev of ${MODULE}@${VERSION}"
+          curl -sSf "https://pkg.go.dev/${MODULE}@${VERSION}" > /dev/null || true

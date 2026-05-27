@@ -110,3 +110,70 @@ func TestDate_Schema(t *testing.T) {
 		t.Errorf("want format=date, got %q", c.Schema.Format)
 	}
 }
+
+// ── Duration ──────────────────────────────────────────────────────────────────
+
+func TestDuration_Decode(t *testing.T) {
+	c := codex.Duration()
+	cases := []struct {
+		name    string
+		input   any
+		want    time.Duration
+		wantErr bool
+	}{
+		{"1h", "1h", time.Hour, false},
+		{"1h30m5s", "1h30m5s", time.Hour + 30*time.Minute + 5*time.Second, false},
+		{"0s", "0s", 0, false},
+		{"invalid string", "notaduration", 0, true},
+		{"wrong type int", 42, 0, true},
+		{"wrong type float64", 3.14, 0, true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := c.Decode(tc.input)
+			if (err != nil) != tc.wantErr {
+				t.Fatalf("Decode(%v) error = %v, wantErr %v", tc.input, err, tc.wantErr)
+			}
+			if !tc.wantErr && got != tc.want {
+				t.Errorf("Decode(%v) = %v, want %v", tc.input, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestDuration_Encode(t *testing.T) {
+	c := codex.Duration()
+	got, err := c.Encode(2*time.Hour + 30*time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != "2h30m0s" {
+		t.Errorf("Encode(2h30m) = %v, want 2h30m0s", got)
+	}
+}
+
+func TestDuration_Schema(t *testing.T) {
+	c := codex.Duration()
+	if c.Schema.Type != "string" {
+		t.Errorf("Duration schema type = %q, want %q", c.Schema.Type, "string")
+	}
+	if c.Schema.Format != "duration" {
+		t.Errorf("Duration schema format = %q, want %q", c.Schema.Format, "duration")
+	}
+}
+
+func TestDuration_RoundTrip(t *testing.T) {
+	c := codex.Duration()
+	d := 5*time.Hour + 10*time.Minute + 3*time.Second
+	encoded, err := c.Encode(d)
+	if err != nil {
+		t.Fatal(err)
+	}
+	decoded, err := c.Decode(encoded)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if decoded != d {
+		t.Errorf("round-trip: got %v, want %v", decoded, d)
+	}
+}

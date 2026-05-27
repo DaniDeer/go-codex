@@ -22,6 +22,21 @@ func (c Codec[T]) WithTitle(title string) Codec[T] {
 	return c
 }
 
+// WithExample returns a new Codec with Schema.Example set to v.
+// The example value appears in generated schemas (OpenAPI, AsyncAPI) to
+// illustrate expected input for documentation purposes.
+func (c Codec[T]) WithExample(v any) Codec[T] {
+	c.Schema.Example = v
+	return c
+}
+
+// WithDeprecated returns a new Codec marked as deprecated.
+// Deprecated fields are rendered with "deprecated: true" in generated schemas.
+func (c Codec[T]) WithDeprecated() Codec[T] {
+	c.Schema.Deprecated = true
+	return c
+}
+
 // New validates v and returns it if all constraints pass.
 //
 // It is a single-call smart constructor: call New to create a validated instance

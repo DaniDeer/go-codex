@@ -202,3 +202,127 @@ func TestTaggedUnion_SchemaMutation_Regression(t *testing.T) {
 		}
 	}
 }
+
+// ── UntaggedUnion ─────────────────────────────────────────────────────────────
+
+func TestUntaggedUnion_DecodesFirstMatchingVariant(t *testing.T) {
+	type Circle struct{ Radius float64 }
+	type Square struct{ Side float64 }
+	type Shape struct {
+		Circle *Circle
+		Square *Square
+	}
+
+	circleCodec := codex.Struct[Shape](
+		codex.RequiredField[Shape, float64]("radius", codex.Float64(),
+			func(s Shape) float64 {
+				if s.Circle != nil {
+					return s.Circle.Radius
+				}
+				return 0
+			},
+			func(s *Shape, v float64) { s.Circle = &Circle{Radius: v} },
+		),
+	)
+	squareCodec := codex.Struct[Shape](
+		codex.RequiredField[Shape, float64]("side", codex.Float64(),
+			func(s Shape) float64 {
+				if s.Square != nil {
+					return s.Square.Side
+				}
+				return 0
+			},
+			func(s *Shape, v float64) { s.Square = &Square{Side: v} },
+		),
+	)
+
+	c := codex.UntaggedUnion(
+		func(s Shape) int {
+			if s.Circle != nil {
+				return 0
+			}
+			return 1
+		},
+		codex.UntaggedVariant[Shape]{Name: "circle", Codec: circleCodec},
+		codex.UntaggedVariant[Shape]{Name: "square", Codec: squareCodec},
+	)
+
+	got, err := c.Decode(map[string]any{"radius": 5.0})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got.Circle == nil || got.Circle.Radius != 5.0 {
+		t.Errorf("expected Circle{Radius:5}, got %+v", got)
+	}
+
+	got, err = c.Decode(map[string]any{"side": 3.0})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got.Square == nil || got.Square.Side != 3.0 {
+		t.Errorf("expected Square{Side:3}, got %+v", got)
+	}
+}
+
+func TestUntaggedUnion_AllBranchesFailReturnsEitherError(t *testing.T) {
+	c := codex.UntaggedUnion(
+		func(s string) int { return 0 },
+		codex.UntaggedVariant[string]{Name: "int-string", Codec: codex.String().Refine(codex.Constraint[string]{
+			Name:    "numeric",
+			Check:   func(v string) bool { return v == "1" },
+			Message: func(v string) string { return "must be '1'" },
+		})},
+		codex.UntaggedVariant[string]{Name: "bool-string", Codec: codex.String().Refine(codex.Constraint[string]{
+			Name:    "bool",
+			Check:   func(v string) bool { return v == "true" },
+			Message: func(v string) string { return "must be 'true'" },
+		})},
+	)
+
+	_, err := c.Decode("neither")
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	var eitherErr codex.EitherError
+	if !errors.As(err, &eitherErr) {
+		t.Fatalf("expected EitherError, got %T", err)
+	}
+	if len(eitherErr.Errors) != 2 {
+		t.Errorf("expected 2 branch errors, got %d", len(eitherErr.Errors))
+	}
+}
+
+func TestUntaggedUnion_EncodeUsesWhichSelector(t *testing.T) {
+	c := codex.UntaggedUnion(
+		func(n int) int {
+			if n >= 0 {
+				return 0
+			}
+			return 1
+		},
+		codex.UntaggedVariant[int]{Name: "non-negative", Codec: codex.Int()},
+		codex.UntaggedVariant[int]{Name: "negative", Codec: codex.Int()},
+	)
+
+	enc, err := c.Encode(5)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if enc != 5 {
+		t.Errorf("Encode(5) = %v, want 5", enc)
+	}
+}
+
+func TestUntaggedUnion_Schema(t *testing.T) {
+	c := codex.UntaggedUnion(
+		func(n int) int { return 0 },
+		codex.UntaggedVariant[int]{Name: "a", Codec: codex.Int()},
+		codex.UntaggedVariant[int]{Name: "b", Codec: codex.Int()},
+	)
+	if len(c.Schema.OneOf) != 2 {
+		t.Errorf("expected 2 oneOf branches, got %d", len(c.Schema.OneOf))
+	}
+	if c.Schema.Discriminator != nil {
+		t.Errorf("UntaggedUnion schema should have no discriminator")
+	}
+}

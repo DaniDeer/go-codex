@@ -303,28 +303,50 @@ See `examples/decode-errors/` for struct validation errors and HTTP 400 response
 
 `validate/` ships format constraints for common string types. Each constraint validates the value **and** annotates `schema.Schema` so the format appears in OpenAPI output automatically.
 
-| Constraint          | Validates                        | OpenAPI format |
-| ------------------- | -------------------------------- | -------------- |
-| `validate.Email`    | `user@domain.tld`                | `email`        |
-| `validate.UUID`     | RFC 4122 UUID (case-insensitive) | `uuid`         |
-| `validate.URL`      | absolute http/https URL          | `uri`          |
-| `validate.IPv4`     | dotted-decimal IPv4              | `ipv4`         |
-| `validate.IPv6`     | IPv6 address                     | `ipv6`         |
-| `validate.Date`     | `YYYY-MM-DD` (ISO 8601)          | `date`         |
-| `validate.DateTime` | RFC 3339 date-time               | `date-time`    |
-| `validate.Slug`     | `lowercase-hyphen-slug`          | `pattern`      |
+| Constraint                        | Validates                                  | OpenAPI format |
+| --------------------------------- | ------------------------------------------ | -------------- |
+| `validate.Email`                  | `user@domain.tld`                          | `email`        |
+| `validate.UUID`                   | RFC 4122 UUID (case-insensitive)           | `uuid`         |
+| `validate.URL`                    | absolute http/https URL                    | `uri`          |
+| `validate.URLWithSchemes(s...)`   | absolute URL restricted to given schemes   | `uri`          |
+| `validate.URI`                    | absolute URI with any scheme               | `uri`          |
+| `validate.Hostname`               | RFC 1123 hostname                          | `hostname`     |
+| `validate.IPv4`                   | dotted-decimal IPv4                        | `ipv4`         |
+| `validate.IPv6`                   | IPv6 address                               | `ipv6`         |
+| `validate.Date`                   | `YYYY-MM-DD` (ISO 8601)                    | `date`         |
+| `validate.Time`                   | RFC 3339 time-only (`HH:MM:SS[.frac]Z/±`) | `time`         |
+| `validate.DateTime`               | RFC 3339 date-time (with fractional secs)  | `date-time`    |
+| `validate.SemVer`                 | semantic version (`1.2.3`, `v2.0.0-beta`)  | `pattern`      |
+| `validate.Slug`                   | `lowercase-hyphen-slug`                    | `pattern`      |
+| `validate.CIDR`                   | CIDR notation (`192.168.0.0/24`, `::/0`)   | _(none)_       |
+
+`URLWithSchemes` enables scheme-specific URL validation:
+```go
+validate.URLWithSchemes("https")        // HTTPS only
+validate.URLWithSchemes("ws", "wss")    // WebSocket
+validate.URLWithSchemes("grpc")         // gRPC
+```
 
 Range / length constraints (with automatic schema annotation):
 
-| Constraint                                                 | Applies to | Validates       |
-| ---------------------------------------------------------- | ---------- | --------------- |
-| `validate.MinLen(n)` / `MaxLen(n)`                         | `string`   | character count |
-| `validate.MinInt(n)` / `MaxInt(n)` / `RangeInt(a,b)`       | `int`      | integer bounds  |
-| `validate.MinFloat(n)` / `MaxFloat(n)` / `RangeFloat(a,b)` | `float64`  | float bounds    |
-| `validate.NonEmptyString`                                  | `string`   | not empty       |
-| `validate.PositiveInt` / `NegativeInt`                     | `int`      | sign            |
-| `validate.OneOf(values...)`                                | `string`   | enum membership |
-| `validate.Pattern(re)`                                     | `string`   | regexp match    |
+| Constraint                                                 | Applies to      | Validates       |
+| ---------------------------------------------------------- | --------------- | --------------- |
+| `validate.MinLen(n)` / `MaxLen(n)`                         | `string`        | character count |
+| `validate.NonEmptyString`                                  | `string`        | not empty       |
+| `validate.OneOf(values...)`                                | `string`        | enum membership |
+| `validate.Pattern(re)`                                     | `string`        | regexp match    |
+| `validate.PositiveInt` / `NegativeInt` / `NonZeroInt`      | `int`           | sign            |
+| `validate.MinInt(n)` / `MaxInt(n)` / `RangeInt(a,b)`       | `int`           | integer bounds  |
+| `validate.PositiveInt32` / `NegativeInt32`                 | `int32`         | sign            |
+| `validate.MinInt32(n)` / `MaxInt32(n)` / `RangeInt32(a,b)` | `int32`         | integer bounds  |
+| `validate.PositiveInt64` / `NegativeInt64`                 | `int64`         | sign            |
+| `validate.MinInt64(n)` / `MaxInt64(n)` / `RangeInt64(a,b)` | `int64`         | integer bounds  |
+| `validate.PositiveUint` / `MinUint(n)` / `MaxUint(n)` / `RangeUint(a,b)`         | `uint`          | integer bounds  |
+| `validate.PositiveUint64` / `MinUint64(n)` / `MaxUint64(n)` / `RangeUint64(a,b)` | `uint64`        | integer bounds  |
+| `validate.PositiveFloat` / `NegativeFloat` / `NonZeroFloat` | `float64`      | sign            |
+| `validate.MinFloat(n)` / `MaxFloat(n)` / `RangeFloat(a,b)` | `float64`       | float bounds    |
+| `validate.PositiveDuration` / `NonNegativeDuration`        | `time.Duration` | sign            |
+| `validate.MinDuration(d)` / `MaxDuration(d)`               | `time.Duration` | duration bounds |
 
 Byte-size constraints (runtime-only, no schema annotation):
 
@@ -415,23 +437,60 @@ func MaxLen(n int) codex.Constraint[string] {
 
 The `validate/` package ships ready-made constraints using this exact pattern (`MinLen`, `MaxLen`, `RangeInt`, `Email`, etc.). `validate.MaxBytes` and `validate.MinBytes` are built-in for `[]byte` byte-count limits.
 
+### Cross-Field Constraints: `RefineFunc`
+
+`RefineFunc` wraps a plain `func(T) error` as a post-decode constraint. Use it on struct codecs to validate relationships between fields without defining a named `Constraint[T]`.
+
+```go
+type DateRange struct {
+    Start time.Time
+    End   time.Time
+}
+
+var dateRangeCodec = codex.Struct[DateRange](
+    codex.RequiredField[DateRange, time.Time]("start", codex.Time(),
+        func(r DateRange) time.Time { return r.Start },
+        func(r *DateRange, v time.Time) { r.Start = v }),
+    codex.RequiredField[DateRange, time.Time]("end", codex.Time(),
+        func(r DateRange) time.Time { return r.End },
+        func(r *DateRange, v time.Time) { r.End = v }),
+).RefineFunc(func(r DateRange) error {
+    if !r.End.After(r.Start) {
+        return errors.New("end must be after start")
+    }
+    return nil
+})
+```
+
+On failure, `RefineFunc` produces a `ConstraintError{Name:"refine", ...}` — the same error type as `Refine`.
+
 ### Available Codec Types
 
 | Constructor                              | Go type        | JSON wire           | Schema                                     |
 | ---------------------------------------- | -------------- | ------------------- | ------------------------------------------ |
 | `codex.Int()`                            | `int`          | number              | `{type:integer}`                           |
+| `codex.Int32()`                          | `int32`        | number              | `{type:integer,format:int32}`              |
 | `codex.Int64()`                          | `int64`        | number              | `{type:integer}`                           |
+| `codex.Uint()`                           | `uint`         | number              | `{type:integer,minimum:0}`                 |
+| `codex.Uint64()`                         | `uint64`       | number              | `{type:integer,minimum:0}`                 |
+| `codex.Float32()`                        | `float32`      | number              | `{type:number,format:float}`               |
 | `codex.Float64()`                        | `float64`      | number              | `{type:number}`                            |
 | `codex.String()`                         | `string`       | string              | `{type:string}`                            |
 | `codex.Bool()`                           | `bool`         | boolean             | `{type:boolean}`                           |
 | `codex.Bytes()`                          | `[]byte`       | base64 string       | `{type:string,format:byte}`                |
 | `codex.Time()`                           | `time.Time`    | RFC 3339 string     | `{type:string,format:date-time}`           |
 | `codex.Date()`                           | `time.Time`    | `YYYY-MM-DD` string | `{type:string,format:date}`                |
+| `codex.Duration()`                       | `time.Duration`| duration string     | `{type:string,format:duration}`            |
 | `codex.Nullable(inner)`                  | `*T`           | value or `null`     | inner schema + `nullable:true`             |
 | `codex.SliceOf(elem)`                    | `[]T`          | array               | `{type:array,items:{...}}`                 |
 | `codex.StringMap(value)`                 | `map[string]V` | object              | `{type:object,additionalProperties:{...}}` |
-| `codex.Struct[T](fields...)`             | any struct     | object              | `{type:object,properties:{...}}`           |
-| `codex.TaggedUnion[T](tag, variants...)` | any interface  | object              | `{oneOf:[...],discriminator:{...}}`        |
+| `codex.Struct[T](fields...)`                    | any struct     | object              | `{type:object,properties:{...}}`           |
+| `codex.TaggedUnion[T](tag, variants...)`        | any interface  | object              | `{oneOf:[...],discriminator:{...}}`        |
+| `codex.UntaggedUnion[T](which, variants...)`    | any interface  | object              | `{oneOf:[...]}` (no discriminator)         |
+| `codex.Either2(ca, cb)`                         | `Either[A,B]`  | value               | `{oneOf:[schemaA,schemaB]}`                |
+| `codex.Any()`                                   | `any`          | any                 | `{}` (accepts all)                         |
+| `codex.Pure(value)`                             | `T`            | fixed wire value    | `{enum:[value]}`                           |
+| `codex.Eq(base, value)`                         | `T comparable` | validated by base   | base schema + `{enum:[value]}`             |
 
 ```go
 // Nullable pointer field
@@ -449,7 +508,108 @@ enc, _ := createdAtCodec.Encode(time.Now())     // → "2024-06-15T12:00:00Z"
 var tagsCodec = codex.StringMap(codex.String()) // Codec[map[string]string]
 enc, _ := tagsCodec.Encode(map[string]string{"env":"prod"})
 // → map[string]any{"env":"prod"}
+
+// Any — opaque passthrough, no type enforcement
+var rawCodec = codex.Any()
+val, _ := rawCodec.Decode(map[string]any{"x": 1}) // passes through unchanged
 ```
+
+### `Either[A, B]` — Typed Sum Type
+
+`Either2` tries codec A first; if decode fails, tries codec B. Encode uses whichever branch is non-nil. Schema emits `{oneOf: [schemaA, schemaB]}`.
+
+```go
+// A config value that is either a string DSN or a structured DBConfig
+type DBConfig struct { Host string; Port uint }
+var dbConfigCodec = codex.Struct[DBConfig](...)
+
+var dsnOrConfig = codex.Either2(codex.String(), dbConfigCodec)
+// Codec[codex.Either[string, DBConfig]]
+
+// Decode from a plain string
+left, _ := dsnOrConfig.Decode("postgres://localhost/db")
+// left.Left = &"postgres://localhost/db", left.Right = nil
+
+// Decode from a structured object
+right, _ := dsnOrConfig.Decode(map[string]any{"host": "localhost", "port": float64(5432)})
+// right.Left = nil, right.Right = &DBConfig{...}
+```
+
+If both branches fail, `Decode` returns `EitherError{Errors: []error{errA, errB}}`. Left branch wins on ambiguity.
+
+### `UntaggedUnion[T]` — Interface Union Without Discriminator
+
+`UntaggedUnion` is the complement to `TaggedUnion` for cases where the encoded form has no discriminator field. Decode tries each variant in order; encode uses the explicit `which` selector.
+
+```go
+type Shape interface{ area() float64 }
+type Circle struct{ Radius float64 }
+type Rect   struct{ W, H   float64 }
+
+var shapeCodec = codex.UntaggedUnion[Shape](
+    func(s Shape) int {
+        switch s.(type) {
+        case Circle: return 0
+        case Rect:   return 1
+        }
+        return -1
+    },
+    codex.UntaggedVariant[Shape]{Name: "circle", Codec: codex.MapCodecSafe(circleCodec, ...)},
+    codex.UntaggedVariant[Shape]{Name: "rect",   Codec: codex.MapCodecSafe(rectCodec, ...)},
+)
+```
+
+Decode: first-match wins. Encode: `which(v)` returns the variant index (0-based). Schema: `{oneOf: [{...circle...}, {...rect...}]}`.
+
+If all branches fail, returns `EitherError{Errors: [...]}`.
+
+### `Pure[T]` and `Eq[T]` — Fixed and Single-Value Codecs
+
+`Pure` always decodes to a fixed value (ignoring wire input) and always encodes that value (ignoring the Go value). Use for protocol version fields, derived fields set automatically, or any field that must always carry one specific value.
+
+`Eq` wraps a base codec with an equality constraint. The base codec handles type coercion; `Eq` then rejects anything that doesn't equal `value`. Schema sets `{enum: [value]}`.
+
+```go
+// CloudEvents 1.0 envelope
+type CloudEvent struct {
+    SpecVersion string
+    Type        string
+    ID          string
+}
+
+var CloudEventCodec = codex.Struct[CloudEvent](
+    codex.Field[CloudEvent, string]{
+        Name:  "specversion",
+        // Pure: always decodes to "1.0"; always encodes "1.0". Wire value is ignored.
+        Codec: codex.Pure("1.0").WithDescription("CloudEvents spec version."),
+        ...
+    },
+    codex.Field[CloudEvent, string]{
+        Name:  "type",
+        // Eq: String() handles type coercion; then only "com.example.order.placed" passes.
+        Codec: codex.Eq(codex.String(), "com.example.order.placed"),
+        ...
+    },
+)
+
+// Decode: specversion wire value is ignored
+event, _ := CloudEventCodec.Decode(map[string]any{
+    "specversion": "ignored",
+    "type":        "com.example.order.placed",
+    "id":          "550e8400-...",
+})
+// event.SpecVersion == "1.0"  ← Pure always returns the fixed value
+
+// Eq rejects wrong type
+_, err := CloudEventCodec.Decode(map[string]any{
+    "specversion": "1.0",
+    "type":        "com.example.user.created",  // wrong
+    "id":          "550e8400-...",
+})
+// err: constraint failed (eq(com.example.order.placed)): expected ...
+```
+
+See [`examples/event-driven`](examples/event-driven/main.go) for a runnable demo.
 
 ### Codec Transformations: `MapCodecSafe` and `MapCodecValidated`
 
@@ -515,6 +675,8 @@ temp, err := celsiusCodec.Decode(float64(36.6)) // → Celsius(36.6), nil
 _, err = celsiusCodec.Decode(float64(-300))     // → error: below absolute zero
 _, err = celsiusCodec.Encode(Celsius(2e6))      // → error: exceeds maximum
 ```
+
+See [`examples/codec-mapping`](examples/codec-mapping/main.go) for a full example showing all three codec reuse patterns: shared field codec variables, sub-codec direct reuse, `MapCodecSafe`, and `MapCodecValidated`.
 
 ### OpenAPI Schema Generation
 
@@ -922,7 +1084,76 @@ _ = cfg.Port
 - `render/openapi` can render the codec's schema as JSON Schema for documentation or editor autocomplete.
 - The same codec works with JSON, YAML, and TOML config files — swap `format.TOML` for `format.YAML` or `format.JSON` without touching the codec.
 
+**Environment variables only (12-factor / containers):** use `format.FromEnv` — the codec's schema drives string-to-type coercion so you don't write per-field `strconv` code:
+
+```go
+// Env var names: strings.ToUpper(prefix + field_name)
+// "port"      + "APP_" → APP_PORT
+// "log_level" + "APP_" → APP_LOG_LEVEL
+cfg, err := format.FromEnv(configCodec, "APP_")
+if err != nil {
+    // err is a codex.ValidationErrors — parse errors, missing required
+    // fields, and constraint violations all collected in one pass.
+    log.Fatal(err)
+}
+```
+
+Nested struct fields expand the prefix (`db.host` → `APP_DB_HOST`). Slices use comma separation (`APP_TAGS=web,api,v2`). Complex fields also accept JSON — **no separate codec needed**: `format.FromEnv` parses the JSON string into the same intermediate `map[string]any` that `format.TOML` and `format.JSON` produce, then calls the same `codec.Decode`. All field validations run unchanged.
+
+```sh
+# Nested struct as JSON object — replaces prefix expansion (APP_DB_HOST etc.)
+APP_DB='{"host":"localhost","port":5432,"name":"mydb"}'
+
+# Slice as JSON array — replaces comma-separated
+APP_TAGS='["web","api","v2"]'
+
+# StringMap as JSON object — only supported format
+APP_LABELS='{"env":"prod","team":"platform"}'
+```
+
+JSON takes precedence when the value starts with `{` or `[`. See [`examples/env-config`](examples/env-config/main.go) for a full example.
+
+**Environment variable overrides on top of a config file:** decode the file, apply `os.LookupEnv` overrides to the struct, then call `configCodec.Validate(cfg)`. See [`examples/cli-config`](examples/cli-config/main.go).
+
 **What go-codex does not do:** parse `os.Args`, generate `--help` output, or handle subcommands. Use cobra/flag for those.
+
+### Schema Metadata: WithExample, WithDeprecated, DefaultField
+
+Codecs carry their schema. Three methods annotate that schema for documentation purposes:
+
+| Method / Constructor | Effect |
+| --- | --- |
+| `codec.WithExample(v any)` | Sets `example` in the generated schema |
+| `codec.WithDeprecated()` | Sets `deprecated: true` in the generated schema |
+| `DefaultField(name, codec, default, get, set)` | Optional field with a declared default; absent key uses the default; `default` appears in schema |
+
+```go
+var emailCodec = codex.String().
+    Refine(validate.Email).
+    WithDescription("Primary contact email.").
+    WithExample("alice@example.com")   // → example: alice@example.com in OpenAPI
+
+var legacyIPCodec = codex.String().
+    Refine(validate.IPv4).
+    WithDescription("IPv4 of last login. Deprecated: use hostname instead.").
+    WithDeprecated()                   // → deprecated: true in OpenAPI
+
+var configCodec = codex.Struct[Config](
+    codex.RequiredField[Config, int]("port", ...),
+    // Absent APP_LOG_LEVEL → "info" is used; default visible in generated schema
+    codex.DefaultField[Config, string](
+        "log_level",
+        codex.String().Refine(validate.OneOf("debug", "info", "warn", "error")),
+        "info",
+        func(c Config) string { return c.LogLevel },
+        func(c *Config, v string) { c.LogLevel = v },
+    ),
+)
+```
+
+The `DefaultField` constructor sets `Required: false` and propagates the default value into the schema's `default` property. Zero-value defaults are supported (the `Default *F` field uses a pointer to distinguish "no default" from `""` or `0`).
+
+See [`examples/formats`](examples/formats/main.go) for `WithExample` and `WithDeprecated` in context, and [`examples/env-config`](examples/env-config/main.go) for `DefaultField`.
 
 ## Project Structure
 
@@ -932,18 +1163,19 @@ go-codex/
 ├── README.md
 
 ├── codex/                  # ⭐ PUBLIC API: codecs, primitives, struct, union, slice
-│   ├── codec.go            # Codec[T], WithDescription, WithTitle, Validate, New
-│   ├── errors.go           # ValidationError, ValidationErrors
+│   ├── codec.go            # Codec[T], WithDescription, WithTitle, WithExample, WithDeprecated, Validate, New
+│   ├── either.go           # Either[A,B] type, Either2 codec
+│   ├── errors.go           # ValidationError, ValidationErrors, EitherError
 │   ├── map.go              # MapCodecSafe, MapCodecValidated, Downcast
 │   ├── must.go             # Must[T] — generic panic-on-error helper
 │   ├── nullable.go         # Nullable[T]
-│   ├── object.go           # Field[T,F], RequiredField, OptionalField, Struct[T]
-│   ├── primitives.go       # Int, Int64, Float64, String, Bool, Bytes
-│   ├── refine.go           # Constraint[T], Refine (Constraint.Schema for schema reflection)
+│   ├── object.go           # Field[T,F], RequiredField, OptionalField, DefaultField, Struct[T]
+│   ├── primitives.go       # Int, Int32, Int64, Uint, Uint64, Float32, Float64, String, Bool, Bytes, Any, Pure
+│   ├── refine.go           # Constraint[T], Refine, RefineFunc, Eq (Constraint.Schema for schema reflection)
 │   ├── slice.go            # SliceOf[T]
 │   ├── stringmap.go        # StringMap[V]
-│   ├── time.go             # Time(), Date()
-│   └── union.go            # TaggedUnion[T]
+│   ├── time.go             # Time(), Date(), Duration()
+│   └── union.go            # TaggedUnion[T], UntaggedUnion[T], UntaggedVariant[T]
 │
 ├── format/                 # format bridges: JSON, YAML, TOML
 │   └── format.go           # Format[T], JSON(), YAML(), TOML(), New()
@@ -979,9 +1211,11 @@ go-codex/
 │
 ├── validate/               # reusable constraints (reflect into schema automatically)
 │   ├── bytes.go            # MaxBytes(n), MinBytes(n)
-│   ├── float.go            # PositiveFloat, NegativeFloat, MinFloat, MaxFloat, RangeFloat
-│   ├── format.go           # Email, UUID, URL, IPv4, IPv6, Date, DateTime, Slug
-│   ├── int.go              # PositiveInt, NegativeInt, MinInt, MaxInt, RangeInt
+│   ├── duration.go         # PositiveDuration, NonNegativeDuration, MinDuration, MaxDuration
+│   ├── float.go            # PositiveFloat, NegativeFloat, NonZeroFloat, MinFloat, MaxFloat, RangeFloat
+│   ├── format.go           # Email, UUID, URL, URLWithSchemes, URI, Hostname, IPv4, IPv6, Date, Time, DateTime, SemVer, Slug, CIDR
+│   ├── int.go              # PositiveInt, NegativeInt, NonZeroInt, MinInt, MaxInt, RangeInt; int32 + int64 variants
+│   ├── uint.go             # PositiveUint, MinUint, MaxUint, RangeUint; uint64 variants
 │   └── string.go           # NonEmptyString, MinLen, MaxLen, Pattern, OneOf
 │
 └── examples/               # usage demonstrations — not importable
@@ -1000,6 +1234,6 @@ go-codex/
     ├── shape/              # tagged union + Downcast demo
     ├── templ-mapper/       # mapping codec-validated data to templ components
     ├── validate/           # explicit Validate before marshal
-    ├── mapvalidated/       # MapCodecValidated: fallible mapping + domain validation
+    ├── codec-mapping/      # shared field codecs, sub-codec reuse, MapCodecSafe, MapCodecValidated
     └── construction/       # New + Must: construction-time validation demo
 ```

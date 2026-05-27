@@ -94,3 +94,124 @@ func TestRangeInt(t *testing.T) {
 		t.Error("RangeInt.Message should not be empty")
 	}
 }
+
+func TestNonZeroInt(t *testing.T) {
+	c := validate.NonZeroInt
+	cases := []struct {
+		v    int
+		pass bool
+	}{
+		{1, true}, {-1, true},
+		{0, false},
+	}
+	for _, tc := range cases {
+		if got := c.Check(tc.v); got != tc.pass {
+			t.Errorf("NonZeroInt.Check(%d) = %v, want %v", tc.v, got, tc.pass)
+		}
+	}
+	if msg := c.Message(0); msg == "" {
+		t.Error("NonZeroInt.Message should not be empty")
+	}
+}
+
+func TestPositiveInt32(t *testing.T) {
+	c := validate.PositiveInt32
+	cases := []struct {
+		v    int32
+		pass bool
+	}{
+		{1, true}, {100, true},
+		{0, false}, {-1, false},
+	}
+	for _, tc := range cases {
+		if got := c.Check(tc.v); got != tc.pass {
+			t.Errorf("PositiveInt32.Check(%d) = %v, want %v", tc.v, got, tc.pass)
+		}
+	}
+}
+
+func TestNegativeInt32(t *testing.T) {
+	c := validate.NegativeInt32
+	cases := []struct {
+		v    int32
+		pass bool
+	}{
+		{-1, true}, {-100, true},
+		{0, false}, {1, false},
+	}
+	for _, tc := range cases {
+		if got := c.Check(tc.v); got != tc.pass {
+			t.Errorf("NegativeInt32.Check(%d) = %v, want %v", tc.v, got, tc.pass)
+		}
+	}
+}
+
+func TestRangeInt32(t *testing.T) {
+	c := validate.RangeInt32(1, 100)
+	cases := []struct {
+		v    int32
+		pass bool
+	}{
+		{1, true}, {50, true}, {100, true},
+		{0, false}, {101, false},
+	}
+	for _, tc := range cases {
+		if got := c.Check(tc.v); got != tc.pass {
+			t.Errorf("RangeInt32(1,100).Check(%d) = %v, want %v", tc.v, got, tc.pass)
+		}
+	}
+	if msg := c.Message(0); msg == "" {
+		t.Error("RangeInt32.Message should not be empty")
+	}
+}
+
+func TestPositiveInt64(t *testing.T) {
+	c := validate.PositiveInt64
+	cases := []struct {
+		v    int64
+		pass bool
+	}{
+		{1, true}, {1000000, true},
+		{0, false}, {-1, false},
+	}
+	for _, tc := range cases {
+		if got := c.Check(tc.v); got != tc.pass {
+			t.Errorf("PositiveInt64.Check(%d) = %v, want %v", tc.v, got, tc.pass)
+		}
+	}
+}
+
+func TestNegativeInt64(t *testing.T) {
+	c := validate.NegativeInt64
+	cases := []struct {
+		v    int64
+		pass bool
+	}{
+		{-1, true}, {-1000000, true},
+		{0, false}, {1, false},
+	}
+	for _, tc := range cases {
+		if got := c.Check(tc.v); got != tc.pass {
+			t.Errorf("NegativeInt64.Check(%d) = %v, want %v", tc.v, got, tc.pass)
+		}
+	}
+}
+
+func TestRangeInt64(t *testing.T) {
+	c := validate.RangeInt64(0, 1000000000)
+	cases := []struct {
+		v    int64
+		pass bool
+	}{
+		{0, true}, {500000000, true}, {1000000000, true},
+		{-1, false}, {1000000001, false},
+	}
+	for _, tc := range cases {
+		if got := c.Check(tc.v); got != tc.pass {
+			t.Errorf("RangeInt64(0,1e9).Check(%d) = %v, want %v", tc.v, got, tc.pass)
+		}
+	}
+	if msg := c.Message(-1); msg == "" {
+		t.Error("RangeInt64.Message should not be empty")
+	}
+}

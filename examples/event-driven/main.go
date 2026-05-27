@@ -110,7 +110,103 @@ var NotificationCommandCodec = codex.Struct[NotificationCommand](
 	},
 )
 
+// CloudEvent models a CloudEvents 1.0 envelope (https://cloudevents.io/).
+//
+// Pure and Eq demonstrate two patterns for fixed/constrained fields:
+//
+//   - specversion uses Pure("1.0"): always encodes as "1.0" and always decodes
+//     to "1.0" regardless of the wire value. No validation needed — the value
+//     is set automatically.
+//
+//   - type uses Eq(String(), "com.example.order.placed"): decodes using String()
+//     first (type coercion, format validation), then enforces the exact value.
+//     Any other event type returns a ConstraintError.
+type CloudEvent struct {
+	SpecVersion string
+	Type        string
+	ID          string
+}
+
+const cloudEventType = "com.example.order.placed"
+
+var CloudEventCodec = codex.Struct[CloudEvent](
+	// Pure("1.0"): always decodes to "1.0" and encodes "1.0" regardless of input.
+	codex.Field[CloudEvent, string]{
+		Name:     "specversion",
+		Codec:    codex.Pure("1.0").WithDescription("CloudEvents specification version. Always 1.0."),
+		Get:      func(e CloudEvent) string { return e.SpecVersion },
+		Set:      func(e *CloudEvent, v string) { e.SpecVersion = v },
+		Required: true,
+	},
+	// Eq(String(), cloudEventType): String() handles wire decoding; Eq enforces the exact value.
+	codex.Field[CloudEvent, string]{
+		Name:     "type",
+		Codec:    codex.Eq(codex.String(), cloudEventType).WithDescription("CloudEvent type. Must be " + cloudEventType + "."),
+		Get:      func(e CloudEvent) string { return e.Type },
+		Set:      func(e *CloudEvent, v string) { e.Type = v },
+		Required: true,
+	},
+	codex.Field[CloudEvent, string]{
+		Name:     "id",
+		Codec:    codex.String().Refine(validate.UUID).WithDescription("Unique event identifier (UUID v4)."),
+		Get:      func(e CloudEvent) string { return e.ID },
+		Set:      func(e *CloudEvent, v string) { e.ID = v },
+		Required: true,
+	},
+)
+
 func main() {
+	// ── Pure + Eq demo ────────────────────────────────────────────────────────
+	fmt.Println("=== Pure + Eq: CloudEvent codec ===")
+
+	// Valid CloudEvent.
+	event, err := CloudEventCodec.Decode(map[string]any{
+		"specversion": "1.0",
+		"type":        cloudEventType,
+		"id":          "550e8400-e29b-41d4-a716-446655440000",
+	})
+	if err != nil {
+		fmt.Println("decode error:", err)
+	} else {
+		fmt.Printf("decoded: specversion=%q type=%q id=%s\n", event.SpecVersion, event.Type, event.ID)
+	}
+
+	// Pure: specversion in wire data is ignored — always decodes to "1.0".
+	event, err = CloudEventCodec.Decode(map[string]any{
+		"specversion": "ignored",
+		"type":        cloudEventType,
+		"id":          "550e8400-e29b-41d4-a716-446655440000",
+	})
+	if err != nil {
+		fmt.Println("decode error:", err)
+	} else {
+		fmt.Printf("pure: specversion wire=ignored → decoded=%q\n", event.SpecVersion)
+	}
+
+	// Eq: wrong event type returns a ConstraintError.
+	_, err = CloudEventCodec.Decode(map[string]any{
+		"specversion": "1.0",
+		"type":        "com.example.user.created", // wrong type
+		"id":          "550e8400-e29b-41d4-a716-446655440000",
+	})
+	fmt.Println("wrong type:", err)
+
+	// Encode: Pure always writes "1.0" regardless of the CloudEvent.SpecVersion value.
+	enc, err := CloudEventCodec.Encode(CloudEvent{
+		SpecVersion: "anything",
+		Type:        cloudEventType,
+		ID:          "550e8400-e29b-41d4-a716-446655440000",
+	})
+	if err != nil {
+		fmt.Println("encode error:", err)
+	} else {
+		encMap := enc.(map[string]any)
+		fmt.Printf("encoded: specversion=%q (Pure ignores CloudEvent.SpecVersion)\n", encMap["specversion"])
+	}
+
+	fmt.Println()
+
+	// ── AsyncAPI document ─────────────────────────────────────────────────────
 	doc, err := asyncapi.NewDocumentBuilder(asyncapi.Info{
 		Title:       "Notification Service Events",
 		Version:     "1.0.0",

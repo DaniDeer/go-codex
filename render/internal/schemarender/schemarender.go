@@ -55,6 +55,12 @@ func SchemaObject(s schema.Schema) map[string]any {
 	if s.Pattern != "" {
 		obj["pattern"] = s.Pattern
 	}
+	if s.Deprecated {
+		obj["deprecated"] = true
+	}
+	if s.Default != nil {
+		obj["default"] = s.Default
+	}
 
 	// Enum.
 	if len(s.Enum) > 0 {

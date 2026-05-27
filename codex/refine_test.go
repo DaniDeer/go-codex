@@ -1,6 +1,7 @@
 package codex_test
 
 import (
+	"errors"
 	"strings"
 	"testing"
 
@@ -110,5 +111,131 @@ func TestRefine_EncodeUnaffected(t *testing.T) {
 	}
 	if enc != 42 {
 		t.Errorf("Encode(42) = %v, want 42", enc)
+	}
+}
+
+// ── RefineFunc ────────────────────────────────────────────────────────────────
+
+func TestRefineFunc_PassesWhenFnReturnsNil(t *testing.T) {
+	type Range struct{ Start, End int }
+	c := codex.Struct[Range](
+		codex.RequiredField[Range, int]("start", codex.Int(),
+			func(r Range) int { return r.Start },
+			func(r *Range, v int) { r.Start = v },
+		),
+		codex.RequiredField[Range, int]("end", codex.Int(),
+			func(r Range) int { return r.End },
+			func(r *Range, v int) { r.End = v },
+		),
+	).RefineFunc(func(r Range) error {
+		if r.End <= r.Start {
+			return errors.New("end must be greater than start")
+		}
+		return nil
+	})
+
+	got, err := c.Decode(map[string]any{"start": 1, "end": 5})
+	if err != nil {
+		t.Fatalf("expected no error, got: %v", err)
+	}
+	if got.Start != 1 || got.End != 5 {
+		t.Errorf("unexpected value: %+v", got)
+	}
+}
+
+func TestRefineFunc_FailsWhenFnReturnsError(t *testing.T) {
+	type Range struct{ Start, End int }
+	c := codex.Struct[Range](
+		codex.RequiredField[Range, int]("start", codex.Int(),
+			func(r Range) int { return r.Start },
+			func(r *Range, v int) { r.Start = v },
+		),
+		codex.RequiredField[Range, int]("end", codex.Int(),
+			func(r Range) int { return r.End },
+			func(r *Range, v int) { r.End = v },
+		),
+	).RefineFunc(func(r Range) error {
+		if r.End <= r.Start {
+			return errors.New("end must be greater than start")
+		}
+		return nil
+	})
+
+	_, err := c.Decode(map[string]any{"start": 10, "end": 3})
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	if !strings.Contains(err.Error(), "end must be greater than start") {
+		t.Errorf("error should contain fn message, got: %v", err)
+	}
+}
+
+func TestRefineFunc_EncodeUnaffected(t *testing.T) {
+	c := codex.Int().RefineFunc(func(v int) error {
+		if v < 0 {
+			return errors.New("must be positive")
+		}
+		return nil
+	})
+	enc, err := c.Encode(-1)
+	if err != nil {
+		t.Fatalf("encode should not apply RefineFunc, got: %v", err)
+	}
+	if enc != -1 {
+		t.Errorf("Encode(-1) = %v, want -1", enc)
+	}
+}
+
+func TestRefineFunc_SchemaUnchanged(t *testing.T) {
+	c := codex.Int().RefineFunc(func(v int) error { return nil })
+	if c.Schema.Type != "integer" {
+		t.Errorf("RefineFunc should not change schema type, got %q", c.Schema.Type)
+	}
+}
+
+func TestEq_MatchingValueSucceeds(t *testing.T) {
+	c := codex.Eq(codex.String(), "hello")
+	got, err := c.Decode("hello")
+	if err != nil {
+		t.Fatalf("expected nil error, got: %v", err)
+	}
+	if got != "hello" {
+		t.Errorf("Decode = %q, want %q", got, "hello")
+	}
+}
+
+func TestEq_NonMatchingValueFails(t *testing.T) {
+	c := codex.Eq(codex.String(), "hello")
+	_, err := c.Decode("world")
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	if !strings.Contains(err.Error(), "eq(hello)") {
+		t.Errorf("error should name the constraint, got: %v", err)
+	}
+}
+
+func TestEq_IntCoercionFromFloat64(t *testing.T) {
+	c := codex.Eq(codex.Int(), 42)
+	got, err := c.Decode(float64(42)) // JSON numbers arrive as float64
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got != 42 {
+		t.Errorf("Decode(float64(42)) = %v, want 42", got)
+	}
+	_, err = c.Decode(float64(99))
+	if err == nil {
+		t.Fatal("expected error for non-matching int, got nil")
+	}
+}
+
+func TestEq_SchemaEnum(t *testing.T) {
+	c := codex.Eq(codex.String(), "v2")
+	if len(c.Schema.Enum) != 1 || c.Schema.Enum[0] != "v2" {
+		t.Errorf("Eq schema Enum = %v, want [v2]", c.Schema.Enum)
+	}
+	if c.Schema.Type != "string" {
+		t.Errorf("Eq schema Type = %q, want string", c.Schema.Type)
 	}
 }

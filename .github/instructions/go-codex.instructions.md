@@ -22,10 +22,10 @@ go-codex is a Go port of the core ideas from Haskell's [autodocodec](https://hac
 
 | Package           | Responsibility                                                                            | Imports allowed from             |
 |-------------------|-------------------------------------------------------------------------------------------|----------------------------------|
-| `codex`           | PUBLIC API: `Codec[T]`, primitives (`Int`, `Int64`, `Float64`, `String`, `Bool`, `Bytes`, `Time`, `Date`), `Nullable[T]`, `SliceOf[T]`, `StringMap[V]`, struct, union, `MapCodecSafe`, `MapCodecValidated`, `Must`, `Constraint`, `Refine`, `ValidationError`, `ValidationErrors`, `ConstraintError`, `TypeMismatchError`, `ElementError`, `KeyError`, `UnknownVariantError`, `VariantError`, `ErrMissingField` | `schema`     |
+| `codex`           | PUBLIC API: `Codec[T]`, primitives (`Int`, `Int32`, `Int64`, `Uint`, `Uint64`, `Float32`, `Float64`, `String`, `Bool`, `Bytes`, `Time`, `Date`, `Duration`, `Any`, `Pure`, `Eq`), `Nullable[T]`, `SliceOf[T]`, `StringMap[V]`, struct, `TaggedUnion`, `UntaggedUnion`, `Either[A,B]`, `Either2`, `MapCodecSafe`, `MapCodecValidated`, `Must`, `Constraint`, `Refine`, `RefineFunc`, `ValidationError`, `ValidationErrors`, `ConstraintError`, `TypeMismatchError`, `ElementError`, `KeyError`, `UnknownVariantError`, `VariantError`, `EitherError`, `ErrMissingField` | `schema`     |
 | `schema`          | Schema model (pure data, no codec logic)                                                  | none                             |
 | `validate`        | Reusable `Constraint` functions: numbers, strings, format, bytes                          | `codex`, `schema`                |
-| `format`          | Bridges `Codec[T]` to wire formats: JSON, YAML, TOML                                     | `codex`, `schema`, external libs |
+| `format`          | Bridges `Codec[T]` to wire formats: JSON, YAML, TOML; `FromEnv[T]` for schema-driven env var loading | `codex`, `schema`, external libs |
 | `route`           | HTTP route descriptors: `Route`, `Param`, `Body`, `Response`                             | `schema`                         |
 | `render/internal/schemarender` | Shared schema-to-map rendering logic used by both OpenAPI and AsyncAPI renderers | `schema`               |
 | `render/openapi`  | Renders `schema.Schema` as OpenAPI 3.1 `components/schemas`; `DocumentBuilder` for full spec | `schema`, `route`, `render/internal/schemarender`, external libs |
@@ -71,6 +71,12 @@ func (c Codec[T]) WithDescription(desc string) Codec[T]
 
 // WithTitle returns a new Codec with Schema.Title set.
 func (c Codec[T]) WithTitle(title string) Codec[T]
+
+// WithExample returns a new Codec with Schema.Example set (any value).
+func (c Codec[T]) WithExample(v any) Codec[T]
+
+// WithDeprecated returns a new Codec with Schema.Deprecated = true.
+func (c Codec[T]) WithDeprecated() Codec[T]
 ```
 
 These are typically chained after `Refine`:
@@ -79,7 +85,13 @@ These are typically chained after `Refine`:
 var AgeCodec = codex.Int().
     Refine(validate.RangeInt(0, 150)).
     WithTitle("Age").
-    WithDescription("Age in years.")
+    WithDescription("Age in years.").
+    WithExample(25)
+
+var LegacyIPCodec = codex.String().
+    Refine(validate.IPv4).
+    WithDescription("IPv4 of last login. Deprecated: use hostname.").
+    WithDeprecated()
 ```
 
 ### `Validate`, `New`, and `Must`: Construction-Time Validation
@@ -255,6 +267,25 @@ func Refine[T any](c codex.Codec[T], constraints ...codex.Constraint[T]) codex.C
 - `Constraint.Schema` is optional. Set it to annotate the codec's schema (e.g. `MinLength`, `Minimum`). Nil = no-op; all existing constraints are unaffected.
 - Reusable constraints live in `validate/`; domain-specific ones live next to the type.
 
+For cross-field validation without defining a named `Constraint[T]`, use `RefineFunc`:
+
+```go
+// RefineFunc wraps a func(T) error as a post-decode constraint.
+// On failure, returns ConstraintError{Name:"refine", Message: err.Error()}.
+func (c Codec[T]) RefineFunc(fn func(T) error) Codec[T]
+```
+
+```go
+// Good example — cross-field constraint
+var rangeCodec = codex.Struct[DateRange](...).
+    RefineFunc(func(r DateRange) error {
+        if !r.End.After(r.Start) {
+            return errors.New("end must be after start")
+        }
+        return nil
+    })
+```
+
 ```go
 // Good example — constrained integer
 var PositiveIntCodec = codex.Refine(
@@ -275,6 +306,27 @@ var ShortStringCodec = codex.String().Refine(codex.Constraint[string]{
 })
 ```
 
+`codex.Pure` and `codex.Eq` are related fixed-value combinators:
+
+```go
+// Pure: always decodes to value, always encodes value. Schema: {enum:[value]}.
+// Use for protocol version fields, derived fields set automatically.
+func Pure[T any](value T) Codec[T]
+
+// Eq: wraps base with an equality constraint. Decode: base decodes, then checks == value.
+// Schema: inherits base schema with Enum set to [value].
+// Use a typed base codec so wire-type coercion is handled: Eq(Int(), 42) accepts JSON float64(42).
+func Eq[T comparable](base Codec[T], value T) Codec[T]
+```
+
+```go
+// Good example — CloudEvents spec version (always "1.0")
+var specVersionCodec = codex.Pure("1.0")
+
+// Good example — only accept one specific event type
+var orderEventTypeCodec = codex.Eq(codex.String(), "com.example.order.placed")
+```
+
 ## Object Codec: Struct Composition
 
 `codex.Struct` builds a codec for a struct by composing field codecs. Modelled after autodocodec's `ObjectCodec` with `RequiredKey` / `OptionalKey`.
@@ -292,7 +344,7 @@ type Field[S, F any] struct {
 
 - `Field.Name` is the explicit key string used in the encoded representation.
 - Compose fields into a struct codec using `codex.Struct`.
-- Use `codex.RequiredField` / `codex.OptionalField` instead of `Field{..., Required: true/false}` for clearer intent:
+- Use `codex.RequiredField` / `codex.OptionalField` / `codex.DefaultField` instead of `Field{..., Required: true/false}` for clearer intent:
 
 ```go
 // Preferred — intent explicit from constructor name
@@ -305,12 +357,17 @@ var PointCodec = codex.Struct[Point](
         func(p Point) float64 { return p.Y },
         func(p *Point, v float64) { p.Y = v },
     ),
+    // DefaultField: absent key uses "info"; default is also reflected in schema
+    codex.DefaultField[Config, string]("log_level", codex.String(), "info",
+        func(c Config) string { return c.LogLevel },
+        func(c *Config, v string) { c.LogLevel = v },
+    ),
 )
 ```
 
-Using the explicit `Field` struct literal (with `Required: true/false`) is also valid but less expressive.
+`DefaultField` sets `Required: false` and stores the default as `*F` (pointer, to distinguish zero-value defaults from "no default"). The default is reflected in `Schema.Default` and rendered as `default` in OpenAPI/AsyncAPI.
 
-## Union Codec: Tagged Unions
+## Union Codec: Tagged and Untagged Unions
 
 `codex.TaggedUnion` handles discriminated unions via a string tag field.
 
@@ -340,6 +397,39 @@ var ShapeCodec = codex.TaggedUnion[Shape]("type",
 )
 ```
 
+`codex.UntaggedUnion` is the complement for cases where no discriminator field is present in the encoded form.
+
+```go
+// UntaggedVariant[T] pairs a documentation name with a Codec[T].
+type UntaggedVariant[T any] struct {
+    Name  string
+    Codec Codec[T]
+}
+
+// UntaggedUnion tries each variant in order during decode (first match wins).
+// `which` selects the encode branch by 0-based variant index.
+func UntaggedUnion[T any](which func(T) int, variants ...UntaggedVariant[T]) Codec[T]
+```
+
+- Schema: `{oneOf: [...variant schemas...]}` — no `discriminator` block.
+- Decode failure (all variants fail): returns `EitherError{Errors: [...]}`
+
+`codex.Either2` produces a `Codec[Either[A,B]]` that tries codec A first, then B.
+
+```go
+type Either[A, B any] struct {
+    Left  *A  // non-nil if decoded as A
+    Right *B  // non-nil if decoded as B
+}
+
+func Either2[A, B any](ca Codec[A], cb Codec[B]) Codec[Either[A, B]]
+```
+
+- Decode: try `ca`; if it fails, try `cb`; if both fail, return `EitherError{Errors: []error{errA, errB}}`.
+- Encode: if `Left != nil`, use `ca`; else use `cb`.
+- Schema: `{oneOf: [schemaA, schemaB]}`.
+- Left branch wins on ambiguity (order-dependent, documented).
+
 ## Schema Model
 
 The `schema` package defines pure data structures that describe a codec. No codec logic lives here.
@@ -351,6 +441,8 @@ The `schema` package defines pure data structures that describe a codec. No code
   - `Nullable bool` — marks the value as accepting null; renders as `nullable: true` in OpenAPI/AsyncAPI.
   - `AdditionalProperties *bool` — nil = unset (spec default), `false` = no extra properties, `true` = any allowed.
   - `Discriminator *schema.DiscriminatorSchema` — describes the polymorphism tag for `TaggedUnion` schemas. Set automatically by `TaggedUnion`.
+  - `Deprecated bool` — renders as `deprecated: true` in OpenAPI/AsyncAPI. Set by `Codec.WithDeprecated()`.
+  - `Default any` — the declared default value for a field. Set by `DefaultField` and rendered as `default` in generated schemas.
 - `schema.DiscriminatorSchema` holds `PropertyName string` and optional `Mapping map[string]string`.
 - Codec constructors populate `Schema` when building a `Codec[T]`.
 - Downstream renderers (JSON Schema, OpenAPI) read `schema.Schema` without touching codec logic.
@@ -373,12 +465,13 @@ All decode failures are concrete structured types. Every type implements `error`
 |------|-------------|------------|
 | `ValidationErrors` | `Struct` decode | `[]ValidationError`; `Unwrap() []error` for `errors.Is`/`As` traversal |
 | `ValidationError` | each failing field in `Struct` decode | `Field string`, `Err error`; `Unwrap()` returns `Err` |
-| `ConstraintError` | `Refine` on any codec when `Check` returns false; also `Int`/`Int64` for non-integral float | `Name string`, `Message string` |
+| `ConstraintError` | `Refine`/`RefineFunc` on any codec when constraint fails | `Name string`, `Message string` |
 | `TypeMismatchError` | any codec receiving wrong Go type | `Expected string`, `Got string` |
 | `ElementError` | `SliceOf` decode/encode | `Index int`, `Err error`; `Unwrap()` returns `Err` |
 | `KeyError` | `StringMap` decode/encode | `Key string`, `Err error`; `Unwrap()` returns `Err` |
 | `UnknownVariantError` | `TaggedUnion` when tag value has no matching codec | `Tag string`, `Variant string`; no `Unwrap` |
 | `VariantError` | `TaggedUnion` when a known variant fails to decode/encode | `Tag string`, `Variant string`, `Err error`; `Err` is always non-nil; `Unwrap()` returns `Err` |
+| `EitherError` | `Either2`/`UntaggedUnion` when all branches fail | `Errors []error`; `Unwrap() []error` for `errors.Is`/`As` traversal |
 | `ErrMissingField` | required `Field` when key absent | exported sentinel; use `errors.Is` |
 
 - Struct decode collects **all** field errors before returning — the error is always `ValidationErrors`, never a partial slice.
@@ -477,13 +570,18 @@ Set `Required: false` on the field. The field is omitted from the encoded object
 ## Validation
 
 - `validate/` contains reusable `Constraint[T]` factory functions.
-- Number constraints: `PositiveInt`, `NegativeInt`, `MinInt(n)`, `MaxInt(n)`, `RangeInt(min, max)`.
+- `int` constraints: `PositiveInt`, `NegativeInt`, `NonZeroInt`, `MinInt(n)`, `MaxInt(n)`, `RangeInt(min, max)`.
+- `int32` constraints: `PositiveInt32`, `NegativeInt32`, `MinInt32(n)`, `MaxInt32(n)`, `RangeInt32(min, max)`.
+- `int64` constraints: `PositiveInt64`, `NegativeInt64`, `MinInt64(n)`, `MaxInt64(n)`, `RangeInt64(min, max)`.
+- `uint` constraints: `PositiveUint`, `MinUint(n)`, `MaxUint(n)`, `RangeUint(min, max)`. No `NegativeUint` — unsigned type.
+- `uint64` constraints: `PositiveUint64`, `MinUint64(n)`, `MaxUint64(n)`, `RangeUint64(min, max)`.
 - Float constraints: `PositiveFloat`, `NegativeFloat`, `NonZeroFloat`, `MinFloat(n)`, `MaxFloat(n)`, `RangeFloat(min, max)`.
+- `time.Duration` constraints: `PositiveDuration`, `NonNegativeDuration`, `MinDuration(d)`, `MaxDuration(d)`. No schema annotation (no JSON Schema standard for duration bounds).
 - String constraints: `NonEmptyString`, `MinLen(n)`, `MaxLen(n)`, `Pattern(re)`, `OneOf(values...)`.
-- Format constraints: `Email`, `UUID`, `URL`, `IPv4`, `IPv6`, `Date`, `DateTime`, `Slug`.
+- Format constraints: `Email`, `UUID`, `URL`, `URLWithSchemes(schemes...)`, `URI`, `Hostname`, `IPv4`, `IPv6`, `Date`, `Time`, `DateTime`, `SemVer`, `Slug`, `CIDR`.
 - Byte-size constraints: `MaxBytes(n)`, `MinBytes(n)` — validate decoded `[]byte` length; no schema annotation (JSON Schema has no standard keyword for decoded-byte-count limits).
 - Constraints in `validate/` must not depend on any specific codec; they depend only on `codex.Constraint[T]` and `schema.Schema`.
-- All built-in `validate/` constraints carry a `Schema` transformer that annotates the codec's schema automatically when applied via `Refine`, **except** `MaxBytes`/`MinBytes` (runtime-only).
+- All built-in `validate/` constraints carry a `Schema` transformer that annotates the codec's schema automatically when applied via `Refine`, **except** `MaxBytes`/`MinBytes` and Duration constraints (runtime-only).
 
 ## OpenAPI Schema Rendering
 
@@ -746,6 +844,38 @@ out, err := tomlFmt.Marshal(cfg)
 - TOML produces `int64` for integers, `float64` for floats
 
 `Int()` handles `int`, `int64`, and integral `float64`. Add new numeric types to this list when extending.
+
+## Environment Variable Loading (`format.FromEnv`)
+
+`format.FromEnv[T]` loads a struct from environment variables using the codec's schema for schema-driven string coercion. It is a standalone function, not a `Format[T]` (env vars are read-only; no Marshal direction).
+
+```go
+// Naming: strings.ToUpper(prefix + field_name)
+// "port"         + "APP_" → APP_PORT
+// "log_level"    + "APP_" → APP_LOG_LEVEL
+// nested "db.host"        → APP_DB_HOST
+cfg, err := format.FromEnv(configCodec, "APP_")
+// err is codex.ValidationErrors — parse errors + missing required + constraints.
+```
+
+**Supported types** (determined from codec schema):
+
+| Schema type | Coercion |
+|---|---|
+| `"integer"` | `strconv.Atoi` → `int` |
+| `"number"` | `strconv.ParseFloat(64)` → `float64` |
+| `"boolean"` | `strconv.ParseBool` → `bool` |
+| `"string"` (any other) | pass as-is |
+| nested struct (`Type="object"`, `Properties!=nil`, `AdditionalPropertiesSchema==nil`) | prefix expansion (`APP_DB_HOST`) OR JSON object (`APP_DB='{"host":"..."}'`) |
+| slice (`Type="array"`, `Items!=nil`) | comma-separated (`APP_TAGS=a,b,c`) OR JSON array (`APP_TAGS='["a","b","c"]'`) |
+| StringMap (`AdditionalPropertiesSchema!=nil`) | JSON object only (`APP_LABELS='{"k":"v"}'`) |
+| `Nullable[T]` | absent = nil; present = coerce inner type |
+
+**JSON detection**: when the env var value starts with `{` (for object fields) or `[` (for array fields), it is parsed as JSON. JSON takes precedence over prefix expansion and comma-split. Malformed JSON returns a `ValidationError` for that field.
+
+**Silently skipped**: `TaggedUnion`, slices of objects.
+
+**Error shape**: `codex.ValidationErrors` — parse errors are collected before Decode runs; decode errors (missing required, constraint violations) follow in the same type.
 
 ## Explicit Validation (bidirectional)
 

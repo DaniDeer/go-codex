@@ -139,6 +139,35 @@ var geometryCodec = codex.TaggedUnion[Geometry](
 	},
 )
 
+// ── Untagged union codec ───────────────────────────────────────────────────────
+//
+// UntaggedUnion[Geometry] decodes by shape alone — no "type" discriminator field.
+// First variant whose codec succeeds wins. Encode requires an explicit which
+// selector (0-based index) because there is no discriminator to inspect.
+
+var untaggedGeoCodec = codex.UntaggedUnion[Geometry](
+	func(g Geometry) int {
+		switch g.(type) {
+		case Rectangle:
+			return 0
+		case Square:
+			return 1
+		}
+		return -1
+	},
+	codex.UntaggedVariant[Geometry]{Name: "rectangle", Codec: rectGeoCodec},
+	codex.UntaggedVariant[Geometry]{Name: "square", Codec: squareGeoCodec},
+)
+
+// ── Either2 codec ─────────────────────────────────────────────────────────────
+//
+// Either2 produces Codec[Either[string, Rectangle]]: a value that is either a
+// shape name reference (string) or a full Rectangle definition. Left branch
+// (string) is tried first; if it fails, the right branch (Rectangle) is tried.
+// If both fail, Decode returns EitherError listing both branch errors.
+
+var shapeRefCodec = codex.Either2(codex.String(), rectangleCodec)
+
 // ── Main ──────────────────────────────────────────────────────────────────────
 
 func main() {
@@ -199,4 +228,58 @@ func main() {
 	// Downcast failure: pass a Rectangle where Square is expected.
 	_, err = codex.Downcast[Square](Rectangle{Width: 1, Height: 2})
 	fmt.Println("downcast failure:  ", err)
+
+	// ── Untagged union ────────────────────────────────────────────────────────
+	fmt.Println("\n=== Untagged union (no type discriminator) ===")
+
+	// {width, height} → Rectangle (first variant tried, succeeds).
+	geo, err = untaggedGeoCodec.Decode(map[string]any{"width": float64(6), "height": float64(4)})
+	if err != nil {
+		fmt.Println("untagged decode error:", err)
+	} else {
+		fmt.Printf("untagged decoded: %T, area=%.0f\n", geo, geo.Area())
+	}
+
+	// {side} → Square (first variant fails, second succeeds).
+	geo, err = untaggedGeoCodec.Decode(map[string]any{"side": float64(5)})
+	if err != nil {
+		fmt.Println("untagged decode error:", err)
+	} else {
+		fmt.Printf("untagged decoded: %T, area=%.0f\n", geo, geo.Area())
+	}
+
+	// Encode: which selector picks the variant by index.
+	encodedGeo, err = untaggedGeoCodec.Encode(Rectangle{Width: 3, Height: 4})
+	if err != nil {
+		fmt.Println("untagged encode error:", err)
+	} else {
+		fmt.Printf("untagged encoded: %v\n", encodedGeo)
+	}
+
+	// All variants fail: EitherError lists branch errors.
+	_, err = untaggedGeoCodec.Decode(map[string]any{"x": float64(1)})
+	fmt.Println("untagged all-fail:", err)
+
+	// ── Either2 ───────────────────────────────────────────────────────────────
+	fmt.Println("\n=== Either2 (string name or Rectangle definition) ===")
+
+	// Left branch (string) succeeds.
+	ref, err := shapeRefCodec.Decode("unit-square")
+	if err != nil {
+		fmt.Println("either decode error:", err)
+	} else {
+		fmt.Printf("either decoded: Left=%q\n", *ref.Left)
+	}
+
+	// Right branch (Rectangle) succeeds when input is a map.
+	ref, err = shapeRefCodec.Decode(map[string]any{"width": float64(4), "height": float64(3)})
+	if err != nil {
+		fmt.Println("either decode error:", err)
+	} else {
+		fmt.Printf("either decoded: Right=%+v\n", *ref.Right)
+	}
+
+	// Both branches fail: EitherError with both branch errors.
+	_, err = shapeRefCodec.Decode(42)
+	fmt.Println("either all-fail:", err)
 }

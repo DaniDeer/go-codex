@@ -138,3 +138,37 @@ func TestCodecNew_WorksAsSmartConstructor(t *testing.T) {
 		t.Fatal("score > 100 should fail")
 	}
 }
+
+// ── WithExample ───────────────────────────────────────────────────────────────
+
+func TestWithExample_SetsSchemaExample(t *testing.T) {
+	c := codex.String().WithExample("hello@example.com")
+	if c.Schema.Example != "hello@example.com" {
+		t.Errorf("WithExample: Schema.Example = %v, want %q", c.Schema.Example, "hello@example.com")
+	}
+}
+
+func TestWithExample_OriginalUnchanged(t *testing.T) {
+	orig := codex.String()
+	_ = orig.WithExample("example")
+	if orig.Schema.Example != nil {
+		t.Errorf("WithExample must not modify original codec")
+	}
+}
+
+// ── WithDeprecated ────────────────────────────────────────────────────────────
+
+func TestWithDeprecated_SetsSchemaDeprecated(t *testing.T) {
+	c := codex.String().WithDeprecated()
+	if !c.Schema.Deprecated {
+		t.Errorf("WithDeprecated: Schema.Deprecated = false, want true")
+	}
+}
+
+func TestWithDeprecated_OriginalUnchanged(t *testing.T) {
+	orig := codex.String()
+	_ = orig.WithDeprecated()
+	if orig.Schema.Deprecated {
+		t.Errorf("WithDeprecated must not modify original codec")
+	}
+}

@@ -52,3 +52,25 @@ func Date() Codec[time.Time] {
 		},
 	}
 }
+
+// Duration returns a Codec for time.Duration.
+// Values encode to the standard Go duration string (e.g. "1h30m5s") and decode from the same format.
+func Duration() Codec[time.Duration] {
+	return Codec[time.Duration]{
+		Schema: schema.Schema{Type: "string", Format: "duration"},
+		Encode: func(v time.Duration) (any, error) {
+			return v.String(), nil
+		},
+		Decode: func(v any) (time.Duration, error) {
+			s, ok := v.(string)
+			if !ok {
+				return 0, TypeMismatchError{Expected: "string", Got: fmt.Sprintf("%T", v)}
+			}
+			d, err := time.ParseDuration(s)
+			if err != nil {
+				return 0, fmt.Errorf("invalid duration %q: %w", s, err)
+			}
+			return d, nil
+		},
+	}
+}

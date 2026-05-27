@@ -1,6 +1,7 @@
 package validate_test
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/DaniDeer/go-codex/codex"
@@ -92,6 +93,60 @@ func TestURL(t *testing.T) {
 		if c.Check(v) {
 			t.Errorf("URL.Check(%q) = true, want false", v)
 		}
+	}
+}
+
+func TestURLWithSchemes(t *testing.T) {
+	c := validate.URLWithSchemes("ws", "wss")
+	cases := []struct {
+		v    string
+		pass bool
+	}{
+		{"ws://example.com/path", true},
+		{"wss://example.com/path", true},
+		{"http://example.com", false},  // wrong scheme
+		{"https://example.com", false}, // wrong scheme
+		{"ws://", false},               // no host
+		{"", false},
+	}
+	for _, tc := range cases {
+		if got := c.Check(tc.v); got != tc.pass {
+			t.Errorf("URLWithSchemes(ws,wss).Check(%q) = %v, want %v", tc.v, got, tc.pass)
+		}
+	}
+	if msg := c.Message("bad"); msg == "" {
+		t.Error("URLWithSchemes.Message should not be empty")
+	}
+}
+
+func TestURI(t *testing.T) {
+	c := validate.URI
+	valid := []string{
+		"http://example.com",
+		"https://example.com/path",
+		"grpc://host:443",
+		"ws://host/path",
+		"custom://example.com",
+	}
+	invalid := []string{
+		"",
+		"not-a-uri",
+		"//example.com",  // no scheme
+		"http://",        // no host
+		"/relative/path", // no scheme
+	}
+	for _, v := range valid {
+		if !c.Check(v) {
+			t.Errorf("URI.Check(%q) = false, want true", v)
+		}
+	}
+	for _, v := range invalid {
+		if c.Check(v) {
+			t.Errorf("URI.Check(%q) = true, want false", v)
+		}
+	}
+	if msg := c.Message("bad"); msg == "" {
+		t.Error("URI.Message should not be empty")
 	}
 }
 
@@ -230,6 +285,139 @@ func TestSlug(t *testing.T) {
 	}
 }
 
+func TestHostname(t *testing.T) {
+	c := validate.Hostname
+	valid := []string{
+		"example.com",
+		"db.internal",
+		"api.example.com",
+		"localhost",
+		"my-host-01",
+		"a",
+	}
+	invalid := []string{
+		"",
+		"-leading-dash.com",
+		"trailing-dash-.com",
+		"has space.com",
+		"has_underscore.com",
+		strings.Repeat("a", 254), // too long
+	}
+	for _, v := range valid {
+		if !c.Check(v) {
+			t.Errorf("Hostname.Check(%q) = false, want true", v)
+		}
+	}
+	for _, v := range invalid {
+		if c.Check(v) {
+			t.Errorf("Hostname.Check(%q) = true, want false", v)
+		}
+	}
+	if msg := c.Message("bad"); msg == "" {
+		t.Error("Hostname.Message should not be empty")
+	}
+}
+
+func TestTime(t *testing.T) {
+	c := validate.Time
+	valid := []string{
+		"10:30:00Z",
+		"23:59:59Z",
+		"00:00:00Z",
+		"10:30:00+02:00",
+		"10:30:00-05:30",
+		"10:30:00.5Z",
+		"10:30:00.123456789Z",
+	}
+	invalid := []string{
+		"",
+		"10:30:00",   // no timezone
+		"10:30",      // no seconds
+		"25:00:00Z",  // invalid hour
+		"10:60:00Z",  // invalid minute
+		"2024-01-15", // date, not time
+		"not-a-time",
+	}
+	for _, v := range valid {
+		if !c.Check(v) {
+			t.Errorf("Time.Check(%q) = false, want true", v)
+		}
+	}
+	for _, v := range invalid {
+		if c.Check(v) {
+			t.Errorf("Time.Check(%q) = true, want false", v)
+		}
+	}
+	if msg := c.Message("bad"); msg == "" {
+		t.Error("Time.Message should not be empty")
+	}
+}
+
+func TestSemVer(t *testing.T) {
+	c := validate.SemVer
+	valid := []string{
+		"1.0.0",
+		"0.0.1",
+		"v1.2.3",
+		"1.2.3-alpha",
+		"1.2.3-alpha.1",
+		"1.2.3+build.456",
+		"v2.0.0-beta+exp.sha.5114f85",
+	}
+	invalid := []string{
+		"",
+		"1.0",     // missing patch
+		"v1",      // missing minor+patch
+		"1.2.3.4", // extra segment
+		"not-a-semver",
+		"1.2.x", // non-numeric
+	}
+	for _, v := range valid {
+		if !c.Check(v) {
+			t.Errorf("SemVer.Check(%q) = false, want true", v)
+		}
+	}
+	for _, v := range invalid {
+		if c.Check(v) {
+			t.Errorf("SemVer.Check(%q) = true, want false", v)
+		}
+	}
+	if msg := c.Message("bad"); msg == "" {
+		t.Error("SemVer.Message should not be empty")
+	}
+}
+
+func TestCIDR(t *testing.T) {
+	c := validate.CIDR
+	valid := []string{
+		"192.168.0.0/24",
+		"10.0.0.0/8",
+		"0.0.0.0/0",
+		"::/0",
+		"2001:db8::/32",
+	}
+	invalid := []string{
+		"",
+		"192.168.0.0",    // no prefix length
+		"256.0.0.0/8",    // invalid IP
+		"192.168.0.0/33", // prefix too long
+		"not-cidr",
+	}
+	for _, v := range valid {
+		if !c.Check(v) {
+			t.Errorf("CIDR.Check(%q) = false, want true", v)
+		}
+	}
+	for _, v := range invalid {
+		if c.Check(v) {
+			t.Errorf("CIDR.Check(%q) = true, want false", v)
+		}
+	}
+	if msg := c.Message("bad"); msg == "" {
+		t.Error("CIDR.Message should not be empty")
+	}
+}
+
 func TestFormatConstraints_SchemaAnnotation(t *testing.T) {
 	// Each format constraint should annotate Schema.Format correctly.
 	cases := []struct {
@@ -240,10 +428,14 @@ func TestFormatConstraints_SchemaAnnotation(t *testing.T) {
 		{"Email", validate.Email, "email"},
 		{"UUID", validate.UUID, "uuid"},
 		{"URL", validate.URL, "uri"},
+		{"URI", validate.URI, "uri"},
+		{"URLWithSchemes", validate.URLWithSchemes("ws", "wss"), "uri"},
 		{"IPv4", validate.IPv4, "ipv4"},
 		{"IPv6", validate.IPv6, "ipv6"},
+		{"Hostname", validate.Hostname, "hostname"},
 		{"Date", validate.Date, "date"},
 		{"DateTime", validate.DateTime, "date-time"},
+		{"Time", validate.Time, "time"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

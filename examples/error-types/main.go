@@ -5,15 +5,16 @@
 // the structured LogValue() output is visible.
 //
 // Error types covered:
-//   - codex.TypeMismatchError  — wrong Go type passed to a codec
-//   - codex.ConstraintError    — Refine constraint check failed
-//   - codex.ErrMissingField    — required struct field absent from input
-//   - codex.ValidationError    — single field error from struct decode
-//   - codex.ValidationErrors   — all field errors from struct decode
-//   - codex.ElementError       — error at a specific slice index
-//   - codex.KeyError           — error at a specific map key
+//   - codex.TypeMismatchError   — wrong Go type passed to a codec
+//   - codex.ConstraintError     — Refine constraint check failed
+//   - codex.ErrMissingField     — required struct field absent from input
+//   - codex.ValidationError     — single field error from struct decode
+//   - codex.ValidationErrors    — all field errors from struct decode
+//   - codex.ElementError        — error at a specific slice index
+//   - codex.KeyError            — error at a specific map key
 //   - codex.UnknownVariantError — tagged-union discriminator has no matching codec
 //   - codex.VariantError        — known variant's codec failed
+//   - codex.EitherError         — all Either2 / UntaggedUnion branches failed
 //
 // Run with: go run ./examples/error-types
 package main
@@ -306,6 +307,34 @@ func main() {
 			for _, fieldErr := range innerVE {
 				fmt.Printf("    field=%q  err=%v\n", fieldErr.Field, fieldErr.Err)
 			}
+		}
+	}
+	fmt.Println()
+
+	// ── Section 9: EitherError ────────────────────────────────────────────────
+	//
+	// Returned by Either2 and UntaggedUnion when ALL branches fail to decode.
+	// Errors contains one error per branch in order. Unwrap() returns []error
+	// so errors.Is / errors.As can traverse into any branch's error.
+
+	fmt.Println("=== 9. EitherError ===")
+	fmt.Println()
+
+	// Either2[int, bool]: value "oops" is neither an int nor a bool.
+	eitherCodec := codex.Either2(codex.Int(), codex.Bool())
+	_, err = eitherCodec.Decode("oops")
+	var eitherErr codex.EitherError
+	if errors.As(err, &eitherErr) {
+		fmt.Printf("  %d branch(es) failed:\n", len(eitherErr.Errors))
+		for i, branchErr := range eitherErr.Errors {
+			fmt.Printf("    branch %d: %v\n", i+1, branchErr)
+		}
+		logger.Error("either decode failed", slog.Any("error", eitherErr))
+
+		// errors.Is / errors.As can traverse into individual branch errors.
+		var tme codex.TypeMismatchError
+		if errors.As(eitherErr, &tme) {
+			fmt.Printf("  branch mismatch: expected=%q got=%q\n", tme.Expected, tme.Got)
 		}
 	}
 	fmt.Println()

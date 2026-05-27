@@ -104,3 +104,52 @@ func buildUnionSchema[T any](tag string, variants map[string]Codec[T]) []schema.
 	}
 	return oneOf
 }
+
+// UntaggedVariant pairs a name (used in schema documentation) with a Codec[T].
+// The name appears in the oneOf schema to identify the branch but is NOT added
+// to the encoded value — unlike TaggedUnion which writes a discriminator field.
+type UntaggedVariant[T any] struct {
+	Name  string
+	Codec Codec[T]
+}
+
+// UntaggedUnion builds a Codec[T] that tries each variant in order during decode.
+//
+// Decode strategy: try variants in order; first success wins. If all fail,
+// return EitherError listing all branch errors.
+//
+// Encode strategy: which(v) returns the index (0-based) of the variant to use.
+//
+// Schema: {oneOf: [...variant schemas...]} — no discriminator field.
+//
+// Use TaggedUnion when your values carry a type discriminator field.
+// Use UntaggedUnion when the shape alone distinguishes variants.
+func UntaggedUnion[T any](which func(T) int, variants ...UntaggedVariant[T]) Codec[T] {
+	oneOf := make([]schema.Schema, len(variants))
+	for i, v := range variants {
+		oneOf[i] = v.Codec.Schema
+	}
+
+	return Codec[T]{
+		Encode: func(v T) (any, error) {
+			idx := which(v)
+			if idx < 0 || idx >= len(variants) {
+				return nil, fmt.Errorf("UntaggedUnion: which() returned out-of-range index %d (have %d variants)", idx, len(variants))
+			}
+			return variants[idx].Codec.Encode(v)
+		},
+		Decode: func(v any) (T, error) {
+			var zero T
+			errs := make([]error, 0, len(variants))
+			for _, variant := range variants {
+				val, err := variant.Codec.Decode(v)
+				if err == nil {
+					return val, nil
+				}
+				errs = append(errs, err)
+			}
+			return zero, EitherError{Errors: errs}
+		},
+		Schema: schema.Schema{OneOf: oneOf},
+	}
+}

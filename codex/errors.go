@@ -186,3 +186,29 @@ func (e VariantError) LogValue() slog.Value {
 		slog.Any("cause", e.Err),
 	)
 }
+
+// EitherError is returned when all branches of an Either2 or UntaggedUnion codec
+// fail to decode. Errors contains one error per branch in order.
+type EitherError struct {
+	Errors []error
+}
+
+func (e EitherError) Error() string {
+	msgs := make([]string, len(e.Errors))
+	for i, err := range e.Errors {
+		msgs[i] = fmt.Sprintf("branch %d: %s", i+1, err.Error())
+	}
+	return "all branches failed: " + strings.Join(msgs, "; ")
+}
+
+// Unwrap returns all branch errors for errors.Is/As traversal.
+func (e EitherError) Unwrap() []error { return e.Errors }
+
+// LogValue implements slog.LogValuer for structured logging.
+func (e EitherError) LogValue() slog.Value {
+	attrs := make([]slog.Attr, len(e.Errors))
+	for i, err := range e.Errors {
+		attrs[i] = slog.Any(fmt.Sprintf("branch%d", i+1), err)
+	}
+	return slog.GroupValue(attrs...)
+}

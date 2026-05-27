@@ -56,6 +56,12 @@ type Schema struct {
 	MinLength *int   `json:",omitempty"`
 	MaxLength *int   `json:",omitempty"`
 	Pattern   string `json:",omitempty"`
+
+	// Deprecated marks this schema as deprecated in generated documentation.
+	Deprecated bool `json:",omitempty"`
+
+	// Default is the default value for this schema, used when the field is absent.
+	Default any `json:",omitempty"`
 }
 
 // Prop returns the schema for the named property, and true if it was found.

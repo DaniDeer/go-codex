@@ -223,3 +223,88 @@ func TestStruct_DecodeMultipleErrors(t *testing.T) {
 		t.Errorf("error %q does not mention field b", msg)
 	}
 }
+
+// ── DefaultField ──────────────────────────────────────────────────────────────
+
+func TestDefaultField_UsesDefaultWhenAbsent(t *testing.T) {
+	type Config struct{ LogLevel string }
+	c := codex.Struct[Config](
+		codex.DefaultField[Config, string]("log_level", codex.String(), "info",
+			func(cfg Config) string { return cfg.LogLevel },
+			func(cfg *Config, v string) { cfg.LogLevel = v },
+		),
+	)
+
+	got, err := c.Decode(map[string]any{})
+	if err != nil {
+		t.Fatalf("decode empty map: %v", err)
+	}
+	if got.LogLevel != "info" {
+		t.Errorf("LogLevel = %q, want %q", got.LogLevel, "info")
+	}
+}
+
+func TestDefaultField_PresentValueOverridesDefault(t *testing.T) {
+	type Config struct{ LogLevel string }
+	c := codex.Struct[Config](
+		codex.DefaultField[Config, string]("log_level", codex.String(), "info",
+			func(cfg Config) string { return cfg.LogLevel },
+			func(cfg *Config, v string) { cfg.LogLevel = v },
+		),
+	)
+
+	got, err := c.Decode(map[string]any{"log_level": "debug"})
+	if err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if got.LogLevel != "debug" {
+		t.Errorf("LogLevel = %q, want %q", got.LogLevel, "debug")
+	}
+}
+
+func TestDefaultField_ZeroValueDefault(t *testing.T) {
+	type Config struct{ Timeout int }
+	c := codex.Struct[Config](
+		codex.DefaultField[Config, int]("timeout", codex.Int(), 0,
+			func(cfg Config) int { return cfg.Timeout },
+			func(cfg *Config, v int) { cfg.Timeout = v },
+		),
+	)
+
+	got, err := c.Decode(map[string]any{})
+	if err != nil {
+		t.Fatalf("decode empty map: %v", err)
+	}
+	if got.Timeout != 0 {
+		t.Errorf("Timeout = %d, want 0", got.Timeout)
+	}
+}
+
+func TestDefaultField_SchemaContainsDefault(t *testing.T) {
+	type Config struct{ LogLevel string }
+	c := codex.Struct[Config](
+		codex.DefaultField[Config, string]("log_level", codex.String(), "info",
+			func(cfg Config) string { return cfg.LogLevel },
+			func(cfg *Config, v string) { cfg.LogLevel = v },
+		),
+	)
+
+	prop, ok := c.Schema.Prop("log_level")
+	if !ok {
+		t.Fatal("expected log_level in schema properties")
+	}
+	if prop.Default != "info" {
+		t.Errorf("Schema.Default = %v, want %q", prop.Default, "info")
+	}
+}
+
+func TestDefaultField_RequiredIsFalse(t *testing.T) {
+	type Config struct{ X int }
+	f := codex.DefaultField[Config, int]("x", codex.Int(), 42,
+		func(c Config) int { return c.X },
+		func(c *Config, v int) { c.X = v },
+	)
+	if f.Required {
+		t.Errorf("DefaultField.Required should be false")
+	}
+}
