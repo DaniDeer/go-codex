@@ -921,6 +921,94 @@ http.ListenAndServe(":8080", mux)
 - Errors: `{"error":"..."}` JSON — 400 for decode/validation, 500 for handler/encode failures
 - Response status: taken from the route descriptor's primary response (e.g. 201 for POST)
 
+### Codec as domain boundary: the functional pipeline
+
+A codec is not just a validator — it is the **public contract** of a module boundary. Every boundary — HTTP request, database, HTTP response — is modelled as a codec. Constraints defined on shared field codec variables propagate to all boundaries that reference them: one definition, zero duplication.
+
+The architecture has three cleanly separated layers:
+
+```
+┌────────────────────────────────────────────────────────────────────┐
+│  LAYER 1 — DOMAIN MODELS + CONSTRAINTS                             │
+│                                                                     │
+│  emailFieldCodec  = codex.String().Refine(validate.Email)          │
+│  nameFieldCodec   = codex.String().Refine(validate.NonEmpty)       │
+│                                         ↑                           │
+│  createUserReqCodec  Codec[CreateUserReq]  │ shared field codecs   │
+│  userRecordCodec     Codec[UserRecord]     ┤ defined once          │
+│  userCodec           Codec[User]           ┘ used in all three     │
+├────────────────────────────────────────────────────────────────────┤
+│  LAYER 2 — BUSINESS LOGIC (pure domain functions, zero IO)         │
+│                                                                     │
+│  buildUserRecord(CreateUserReq) UserRecord                         │
+│  buildUserResponse(UserRecord) User                                │
+│    ← no database, no HTTP, no side effects                         │
+│    ← independently unit-testable with plain Go structs             │
+├────────────────────────────────────────────────────────────────────┤
+│  LAYER 3 — INFRASTRUCTURE (HTTP + database + external services)    │
+│                                                                     │
+│  UserStore — uses userRecordCodec.Encode/Decode for all DB IO      │
+│  makeCreateUserHandler(store) — orchestrates L2 + L3               │
+│  nethttp.Register(mux, route, handler) — the only HTTP line        │
+│  b.OpenAPISpec()               — the only OpenAPI line             │
+│    ← swap to gRPC, CLI, or test without touching L1 or L2          │
+└────────────────────────────────────────────────────────────────────┘
+```
+
+**The pipeline for POST /users:**
+
+```
+Codec[Req] ─ decode ─▶ CreateUserReq ─▶ buildUserRecord ─▶ UserRecord
+                                                               ↓ store.Save (Codec[UserRecord].Encode)
+Codec[Resp] ─ encode ─▶ User ◀─ buildUserResponse ◀─ UserRecord
+```
+
+**Shared field codecs** define each domain constraint once and propagate it to all three boundary codecs — HTTP request (required), database schema (required), HTTP response (optional):
+
+```go
+var emailFieldCodec = codex.String().Refine(validate.Email).WithDescription("Email address.")
+
+var createUserReqCodec = codex.Struct[CreateUserReq](
+    codex.RequiredField[CreateUserReq, string]("email", emailFieldCodec, ...),
+)
+var userRecordCodec = codex.Struct[UserRecord](
+    codex.RequiredField[UserRecord, string]("email", emailFieldCodec, ...),
+)
+var userCodec = codex.Struct[User](
+    codex.OptionalField[User, string]("email", emailFieldCodec, ...),
+)
+```
+
+**The database store uses the codec for all IO** — schema definition and serialization are the same object:
+
+```go
+func (s *UserStore) Save(r UserRecord) error {
+    encoded, _ := userRecordCodec.Encode(r)   // map[string]any — like SQL INSERT
+    s.rows[r.ID] = encoded.(map[string]any)
+    return nil
+}
+
+func (s *UserStore) Get(id string) (UserRecord, bool) {
+    row := s.rows[id]
+    record, _ := userRecordCodec.Decode(row)  // validates on read — like SQL scan
+    return record, true
+}
+```
+
+**Pure domain functions** are independently testable — no store, no HTTP server required:
+
+```go
+func TestBuildUserRecord(t *testing.T) {
+    req := CreateUserReq{Name: "Alice", Email: "alice@example.com"}
+    record := buildUserRecord(req) // Layer 2 called directly
+    // assert on record — zero setup
+}
+```
+
+See [`examples/adapters-nethttp`](examples/adapters-nethttp/main.go) for the full runnable demonstration including tests.
+
+**`MapCodecSafe` / `MapCodecValidated` are different:** they produce a single `Codec[B]` where encode uses A's wire format. They are designed for **same-wire bidirectional mappings** (newtypes, DSN strings) — not for HTTP request→response where the two wire formats differ. See [Codec Transformations](#codec-transformations-mapcodecsafe-and-mapcodecvalidated).
+
 ### Event Channel Builder
 
 `api/events` is a transport-agnostic event channel builder. Register channels with codec-backed payload types; the builder returns a `ChannelHandle` with typed `Decode` and `Encode` helpers. Pass those helpers to any message broker — this package imports **no messaging library**.
@@ -970,27 +1058,63 @@ See `examples/api-events/` for a runnable demonstration, and `examples/adapters-
 
 ### Paho MQTT Adapter
 
-`adapters/mqtt` wires a `ChannelHandle` to Paho MQTT. `SubscribeHandler` returns a `mqtt.MessageHandler` ready to pass to `client.Subscribe`. `Publish` encodes the value and publishes it, waiting for broker acknowledgement with context-aware cancellation.
+`adapters/mqtt` wires a `ChannelHandle` to Paho MQTT with production-ready error handling and observability. `SubscribeHandler` returns a `mqtt.MessageHandler` ready to pass to `client.Subscribe`. `Publish` encodes the value and publishes it, waiting for broker acknowledgement with context-aware cancellation.
+
+**Pattern: separate loggers for domain and transport concerns:**
 
 ```go
 import (
+    "errors"
+    "log/slog"
     mqtt    "github.com/eclipse/paho.mqtt.golang"
     amqtt   "github.com/DaniDeer/go-codex/adapters/mqtt"
+    "github.com/DaniDeer/go-codex/codex"
 )
 
-// Subscribe: decode + validate incoming messages automatically.
-client.Subscribe(userCreated.Topic, 1,
-    amqtt.SubscribeHandler(ctx, userCreated,
-        func(ctx context.Context, e UserCreatedEvent) error {
-            return svc.HandleUserCreated(ctx, e)
+// Create separate loggers for business logic and transport errors.
+domainLogger  := slog.Default().With("layer", "domain")
+mqttLogger    := slog.Default().With("transport", "mqtt")
+
+// Domain logging decorator — separates logging concern from handler body.
+handler := withDomainLoggingErr("measurement.process",
+    makeHandleMeasurement(store, threshold, publishAlert),
+    domainLogger,
+    extractMeasurementAttrs,
+)
+
+// Subscribe with structured error handling — distinguish decode vs handler failures.
+client.Subscribe(measurementChannel.Topic, 1,
+    amqtt.SubscribeHandler(ctx, measurementChannel, handler,
+        func(e amqtt.SubscribeError) {
+            switch e.Kind {
+            case amqtt.KindDecode:
+                var validationErrs codex.ValidationErrors
+                if errors.As(e.Err, &validationErrs) {
+                    mqttLogger.Warn("decode failed: validation errors",
+                        "topic", e.Topic,
+                        "errors", validationErrs, // triggers ValidationErrors.LogValue()
+                    )
+                } else {
+                    mqttLogger.Warn("decode failed", "topic", e.Topic, "error", e.Err)
+                }
+            case amqtt.KindHandler:
+                mqttLogger.Error("handler failed", "topic", e.Topic, "error", e.Err)
+            }
         },
-        func(err error) { log.Println("event error:", err) },
     ),
 )
 
 // Publish: encode outgoing message and wait for broker ack.
-err := amqtt.Publish(ctx, client, notifChannel, 1, false, NotificationCommand{...})
+err := amqtt.Publish(ctx, client, alertChannel, 1, false, AlertEvent{...})
 ```
+
+**`SubscribeError.Kind` distinguishes:**
+- `KindDecode` — codec validation failure (user error, log Warn)
+- `KindHandler` — application logic failure (system error, log Error)
+
+**Structured logging:** all codec error types (`ValidationErrors`, `ConstraintError`, `TypeMismatchError`, etc.) implement `slog.LogValuer`. Using `slog.Any("errors", err)` triggers the full nested structure — field names, constraint details, type mismatches — without string parsing.
+
+See [`examples/adapters-mqtt`](examples/adapters-mqtt/main.go) for the full runnable demonstration including tests — measurement ingestion from a sensor network, time series storage, and threshold-breach alerts using the three-layer codec pipeline pattern.
 
 ## Special Topics
 
