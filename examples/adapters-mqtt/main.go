@@ -311,6 +311,14 @@ func makeHandleMeasurement(
 	publishAlert func(context.Context, AlertEvent) error,
 ) func(context.Context, MeasurementEvent) error {
 	return func(ctx context.Context, m MeasurementEvent) error {
+		// MessageFromContext gives access to the raw MQTT envelope — QoS level,
+		// retained flag, message ID — without breaking the typed handler signature.
+		// Analogous to nethttp.RequestFromContext for HTTP handlers.
+		if msg, ok := adaptermqtt.MessageFromContext(ctx); ok {
+			_ = msg.Qos()      // e.g. enforce QoS ≥ 1 for critical measurements
+			_ = msg.Retained() // e.g. skip stale retained messages on reconnect
+		}
+
 		receivedAt := time.Now().UTC().Format(time.RFC3339)
 		record := buildTimeSeriesRecord(m, receivedAt) // L2: pure transform
 		if err := store.Append(record); err != nil {   // L3: database IO

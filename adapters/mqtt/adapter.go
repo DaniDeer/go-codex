@@ -70,6 +70,16 @@ func (e SubscribeError) Error() string {
 
 func (e SubscribeError) Unwrap() error { return e.Err }
 
+// contextKey is the unexported type for values stored in context by this package.
+type contextKey struct{}
+
+// MessageFromContext retrieves the [pahomqtt.Message] stored in ctx by [SubscribeHandler].
+// Returns false if the context was not created by this package.
+func MessageFromContext(ctx context.Context) (pahomqtt.Message, bool) {
+	msg, ok := ctx.Value(contextKey{}).(pahomqtt.Message)
+	return msg, ok
+}
+
 // SubscribeHandler returns a [pahomqtt.MessageHandler] that decodes the message
 // payload using handle's codec, validates it, and calls fn.
 //
@@ -88,6 +98,7 @@ func SubscribeHandler[T any](
 	onErr func(SubscribeError),
 ) pahomqtt.MessageHandler {
 	return func(_ pahomqtt.Client, msg pahomqtt.Message) {
+		ctx := context.WithValue(ctx, contextKey{}, msg)
 		value, err := handle.Decode(msg.Payload())
 		if err != nil {
 			if onErr != nil {

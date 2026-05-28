@@ -1297,6 +1297,20 @@ err = amqtt.Publish(ctx, client, sensorMeasurement, 1, false, m,
 
 **`SubscribeError.Topic`** — always the concrete incoming message topic, even for template channels (e.g. `sensors/abc-123/measurements` not `sensors/{sensorID}/measurements`).
 
+**`MessageFromContext`** — access the raw `pahomqtt.Message` from inside a handler, analogous to `nethttp.RequestFromContext`. Gives access to `Qos()`, `Retained()`, `MessageID()`, `Duplicate()` without breaking the typed handler signature:
+
+```go
+amqtt.SubscribeHandler(ctx, measurementChannel,
+    func(ctx context.Context, m MeasurementEvent) error {
+        if msg, ok := amqtt.MessageFromContext(ctx); ok {
+            if msg.Retained() {
+                return nil // skip stale retained message on reconnect
+            }
+        }
+        return svc.HandleMeasurement(ctx, m)
+    }, onErr)
+```
+
 **`Publish` signature:**
 ```go
 func Publish[T any](

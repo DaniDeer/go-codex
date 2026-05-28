@@ -978,6 +978,7 @@ Key rules:
 - `api/events` may import `codex`, `format`, `render/asyncapi`, `schema`. No messaging library.
 - `adapters/mqtt` wraps `ChannelHandle` for Paho MQTT. It imports `api/events` and `github.com/eclipse/paho.mqtt.golang`.
   - `SubscribeHandler[T](ctx, handle, fn, onErr) mqtt.MessageHandler` — decodes payload, calls fn, routes typed errors to `onErr func(SubscribeError)`. `SubscribeError.Topic` reflects the concrete incoming message topic (`msg.Topic()`).
+  - `MessageFromContext(ctx) (pahomqtt.Message, bool)` — retrieves the raw `pahomqtt.Message` stored in context by `SubscribeHandler`. Analogous to `nethttp.RequestFromContext`. Gives access to `Qos()`, `Retained()`, `MessageID()`, `Duplicate()` without breaking the typed handler signature. Returns false on a plain context.
   - `SubscribeError{Kind ErrorKind, Topic string, Err error}` — typed error; `Kind` is `KindDecode` or `KindHandler`.
   - `Publish[T](ctx, client, handle, qos, retained, msg, vars map[string]string) error` — unified publish: `nil` vars → use `handle.Topic` (static topics); non-nil vars → call `handle.BuildTopic(vars)` and publish to the result. Returns `TopicParamError` or `MissingTopicVarError` if `BuildTopic` fails. Context-aware token wait.
 

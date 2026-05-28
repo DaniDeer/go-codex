@@ -289,3 +289,32 @@ func TestPublish_TemplateVars_InvalidUUID(t *testing.T) {
 		t.Errorf("TopicParamError.Name = %q, want userID", paramErr.Name)
 	}
 }
+
+func TestMessageFromContext_InsideHandler(t *testing.T) {
+	handle := newHandle()
+	msg := &mockMessage{payload: []byte(validPayload)}
+	var gotMsg pahomqtt.Message
+	var gotOK bool
+
+	handler := adaptermqtt.SubscribeHandler(context.Background(), handle,
+		func(ctx context.Context, _ userEvent) error {
+			gotMsg, gotOK = adaptermqtt.MessageFromContext(ctx)
+			return nil
+		}, nil)
+
+	handler(nil, msg)
+
+	if !gotOK {
+		t.Fatal("MessageFromContext: want ok=true inside handler, got false")
+	}
+	if gotMsg != msg {
+		t.Fatal("MessageFromContext: returned message is not the original message")
+	}
+}
+
+func TestMessageFromContext_OutsideHandler(t *testing.T) {
+	msg, ok := adaptermqtt.MessageFromContext(context.Background())
+	if ok {
+		t.Fatalf("MessageFromContext: want ok=false on plain context, got true with %v", msg)
+	}
+}
