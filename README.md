@@ -945,6 +945,31 @@ if err != nil {
 }
 // path == "/users/f47ac10b-58cc-4372-a567-0e02b2c3d479"
 
+// Route with query parameters. QueryParam.Codec validates values at ValidateQuery time
+// and its schema flows into the OpenAPI query parameter spec automatically.
+pageCodec := codex.String().Refine(validate.NonNegativeIntString)
+listUsers, err := rest.AddRoute[struct{}, []User](b, "GET", "/users",
+    codex.Struct[struct{}](), codex.SliceOf(userCodec),
+    rest.RouteConfig{
+        OperationID: "listUsers",
+        Summary:     "List users",
+        QueryParams: []rest.QueryParam{
+            {Name: "page", Description: "Page number (0-based)", Codec: &pageCodec},
+            {Name: "search", Description: "Name filter (no validation)"},
+        },
+    })
+if err != nil {
+    log.Fatal(err)
+}
+
+// ValidateQuery checks codec-backed params; skips params with nil Codec or absent keys.
+if err := listUsers.ValidateQuery(map[string]string{"page": "abc"}); err != nil {
+    var qErr *rest.QueryParamError
+    if errors.As(err, &qErr) {
+        log.Fatalf("bad query param %q: %v", qErr.Name, qErr.Err)
+    }
+}
+
 // In your HTTP handler — works with net/http, Gin, Chi, Echo, anything:
 req, err := createUser.Decode(body)   // JSON → CreateUserRequest, validates
 user, err := myService.Create(req)
@@ -969,7 +994,7 @@ yamlBytes, _ := doc.MarshalYAML()
 
 **Final path re-validation:** `BuildPath` re-validates the fully assembled path (e.g. `/users/hello world`) against the builder-level codec after substitution. This catches variable values that pass their `PathParamCodecs` codec but violate the global path constraint. Returns `InvalidPathError` with the final path in the `Path` field.
 
-**Error types from `AddRoute` and `BuildPath`:**
+**Error types from `AddRoute`, `BuildPath`, and `ValidateQuery`:**
 
 | Error type | When returned | `errors.As` target |
 | --- | --- | --- |
@@ -977,8 +1002,9 @@ yamlBytes, _ := doc.MarshalYAML()
 | `*rest.PathParamError` | A path variable value fails its codec | `PathParamError{Name, Value, Err}` |
 | `*rest.MissingPathVarError` | A template variable is absent from the `vars` map | `MissingPathVarError{Name}` |
 | `*rest.InvalidPathParamError` | A `PathParams` entry names a variable not in the template | `InvalidPathParamError{Name, Path}` |
+| `*rest.QueryParamError` | A query parameter value fails its codec | `QueryParamError{Name, Value, Err}` |
 
-**Codec schema → OpenAPI spec:** `PathParam.Codec` schema flows automatically into the OpenAPI path parameter spec. When `Codec` is nil, the parameter is still declared in the spec (minimal entry). `PathParams` is only needed when you want a description or runtime codec validation for a specific variable.
+**Codec schema → OpenAPI spec:** `PathParam.Codec` schema flows automatically into the OpenAPI path parameter spec. `QueryParam.Codec` schema flows into the OpenAPI query parameter spec. When `Codec` is nil, the parameter is still declared in the spec (minimal entry).
 
 **Future:** framework-specific adapters (`adapters/gin`, `adapters/chi`, etc.) will wrap `RouteHandle` for zero-boilerplate integration. The `api/rest` core stays dependency-free.
 
@@ -1002,8 +1028,9 @@ http.ListenAndServe(":8080", mux)
 ```
 
 - POST/PUT/PATCH: body read → `handle.Decode` (validates) → handler → `handle.Encode` → write
-- GET/HEAD/DELETE: handler called with zero value of `Req`; path/query extraction via middleware or context
-- Errors: `{"error":"..."}` JSON — 400 for decode/validation, 500 for handler/encode failures
+- GET/HEAD/DELETE: handler called with zero value of `Req`; path/query extraction via `RequestFromContext`
+- **Query param validation**: `ValidateQuery` is called automatically before the handler; codec-backed `QueryParam` entries are validated from `r.URL.Query()`
+- Errors: `{"error":"..."}` JSON — 400 for decode/query validation failures, 500 for handler/encode failures
 - Response status: taken from the route descriptor's primary response (e.g. 201 for POST)
 
 ### Codec as domain boundary: the functional pipeline

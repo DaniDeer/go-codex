@@ -152,8 +152,9 @@ var emptyReqCodec = codex.Struct[emptyReq]()
 
 // PagedUsersResp is the response for a paginated user list.
 type PagedUsersResp struct {
-	Page  int
-	Users []User
+	Page   int
+	Search string
+	Users  []User
 }
 
 // pagedUsersRespCodec describes the paginated response.
@@ -162,6 +163,11 @@ var pagedUsersRespCodec = codex.Struct[PagedUsersResp](
 		codex.Int().WithDescription("Current page number."),
 		func(r PagedUsersResp) int { return r.Page },
 		func(r *PagedUsersResp, v int) { r.Page = v },
+	),
+	codex.OptionalField[PagedUsersResp, string]("search",
+		codex.String().WithDescription("Active name filter."),
+		func(r PagedUsersResp) string { return r.Search },
+		func(r *PagedUsersResp, v string) { r.Search = v },
 	),
 )
 
@@ -172,6 +178,22 @@ func makeListUsersPageHandler() func(context.Context, emptyReq) (PagedUsersResp,
 		page := r.PathValue("page") // L3: HTTP path parameter (already validated by BuildPath)
 		_ = page
 		return PagedUsersResp{Page: 1, Users: nil}, nil
+	}
+}
+
+// makeListUsersHandler handles GET /users with query params.
+// The nethttp adapter validates ?page against the NonNegativeIntString codec
+// before this handler is called — no manual parsing needed for bad input.
+func makeListUsersHandler() func(context.Context, emptyReq) (PagedUsersResp, error) {
+	return func(ctx context.Context, _ emptyReq) (PagedUsersResp, error) {
+		r, _ := nethttp.RequestFromContext(ctx)
+		q := r.URL.Query()
+		page := 0
+		if p := q.Get("page"); p != "" {
+			fmt.Sscanf(p, "%d", &page) // safe: already validated as non-negative int
+		}
+		search := q.Get("search")
+		return PagedUsersResp{Page: page, Search: search, Users: nil}, nil
 	}
 }
 
@@ -373,6 +395,32 @@ func main() {
 		os.Exit(1)
 	}
 
+	// GET /users — list users with optional query parameters.
+	// QueryParam.Codec validates the ?page value at request time via the nethttp
+	// adapter (auto-called before the handler). The schema flows into the OpenAPI
+	// spec automatically. ?search has no codec — it is documented only.
+	qPageCodec := codex.String().Refine(validate.NonNegativeIntString)
+	listUsersRoute, err := rest.AddRoute[emptyReq, PagedUsersResp](b, "GET", "/users",
+		emptyReqCodec, pagedUsersRespCodec, rest.RouteConfig{
+			OperationID: "listUsers",
+			Summary:     "List users",
+			QueryParams: []rest.QueryParam{
+				{
+					Name:        "page",
+					Description: "Page number (0-based, non-negative integer)",
+					Codec:       &qPageCodec,
+				},
+				{
+					Name:        "search",
+					Description: "Filter by name prefix (no validation)",
+				},
+			},
+		})
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "route registration failed: %v\n", err)
+		os.Exit(1)
+	}
+
 	// Custom ErrorHandler using httpLogger for transport-level errors.
 	// Distinguishes validation failures (400, Warn) from system errors (500, Error).
 	errorHandler := func(w http.ResponseWriter, r *http.Request, status int, err error) {
@@ -418,6 +466,10 @@ func main() {
 		nethttp.Options{ErrorHandler: errorHandler})
 	nethttp.RegisterWithOptions(mux, listUsersPageRoute,
 		withDomainLogging("user.list-page", makeListUsersPageHandler(), domainLogger,
+			func(_ emptyReq, _ PagedUsersResp) []slog.Attr { return nil }),
+		nethttp.Options{ErrorHandler: errorHandler})
+	nethttp.RegisterWithOptions(mux, listUsersRoute,
+		withDomainLogging("user.list", makeListUsersHandler(), domainLogger,
 			func(_ emptyReq, _ PagedUsersResp) []slog.Attr { return nil }),
 		nethttp.Options{ErrorHandler: errorHandler})
 
@@ -495,6 +547,32 @@ func main() {
 	if _, err := listUsersPageRoute.BuildPath(map[string]string{"page": "0"}); err != nil {
 		fmt.Printf("BuildPath(0) rejected:   %v\n\n", err)
 	}
+
+	fmt.Println("=== GET /users?page=2&search=alice (query params) ===")
+	// ?page is validated against NonNegativeIntString by the nethttp adapter.
+	// ?search has no codec — passed through to the handler as-is.
+	resp5, err := http.Get(srv.URL + "/users?page=2&search=alice") //nolint:noctx
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "GET error: %v\n", err)
+		os.Exit(1)
+	}
+	defer resp5.Body.Close()
+	var listResp PagedUsersResp
+	_ = json.NewDecoder(resp5.Body).Decode(&listResp)
+	fmt.Printf("Status: %d\nResult: %+v\n\n", resp5.StatusCode, listResp)
+
+	fmt.Println("=== GET /users?page=abc (invalid query param — auto-rejected) ===")
+	// The nethttp adapter calls ValidateQuery before the handler.
+	// "abc" fails NonNegativeIntString → 400 returned, handler never runs.
+	resp6, err := http.Get(srv.URL + "/users?page=abc") //nolint:noctx
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "GET error: %v\n", err)
+		os.Exit(1)
+	}
+	defer resp6.Body.Close()
+	var qErrBody map[string]string
+	_ = json.NewDecoder(resp6.Body).Decode(&qErrBody)
+	fmt.Printf("Status: %d\nError:  %s\n\n", resp6.StatusCode, qErrBody["error"])
 
 	fmt.Println("=== OpenAPI 3.1 spec (derived from domain codecs) ===")
 	doc, err := b.OpenAPISpec()

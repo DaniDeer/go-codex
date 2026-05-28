@@ -106,6 +106,12 @@ func HandlerWithOptions[Req, Resp any](handle *rest.RouteHandle[Req, Resp], fn H
 			}
 		}
 
+		// Validate query parameters against their registered codecs (if any).
+		if err := handle.ValidateQuery(queryValues(r)); err != nil {
+			errFn(w, r, http.StatusBadRequest, err)
+			return
+		}
+
 		resp, err := fn(ctx, req)
 		if err != nil {
 			errFn(w, r, http.StatusInternalServerError, err)
@@ -162,4 +168,17 @@ func defaultErrorHandler(w http.ResponseWriter, _ *http.Request, status int, err
 	w.WriteHeader(status)
 	body, _ := json.Marshal(errorBody{Error: err.Error()})
 	_, _ = w.Write(body)
+}
+
+// queryValues extracts all query parameters from r into a flat map[string]string.
+// When a key appears multiple times, the first value is used.
+func queryValues(r *http.Request) map[string]string {
+	q := r.URL.Query()
+	m := make(map[string]string, len(q))
+	for k, vs := range q {
+		if len(vs) > 0 {
+			m[k] = vs[0]
+		}
+	}
+	return m
 }

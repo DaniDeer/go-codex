@@ -297,3 +297,47 @@ func TestHandlerWithOptions_CustomErrorHandler(t *testing.T) {
 		t.Fatalf("want 'custom error' in msg, got %q", capturedMsg)
 	}
 }
+
+func TestHandler_QueryValidation_valid(t *testing.T) {
+	b := rest.NewBuilder(testInfo)
+	uuidCodec := codex.String().Refine(validate.UUID)
+	h, err := rest.AddRoute[getReq, userResp](b, "GET", "/users", getReqCodec, userRespCodec, rest.RouteConfig{
+		QueryParams: []rest.QueryParam{
+			{Name: "id", Codec: &uuidCodec},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	handler := nethttp.Handler(h, func(_ context.Context, _ getReq) (userResp, error) {
+		return userResp{ID: "1", Name: "Alice"}, nil
+	})
+	rec := httptest.NewRecorder()
+	r := httptest.NewRequest(http.MethodGet, "/users?id=f47ac10b-58cc-4372-a567-0e02b2c3d479", nil)
+	handler.ServeHTTP(rec, r)
+	if rec.Code != http.StatusOK {
+		t.Errorf("want 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestHandler_QueryValidation_invalid(t *testing.T) {
+	b := rest.NewBuilder(testInfo)
+	uuidCodec := codex.String().Refine(validate.UUID)
+	h, err := rest.AddRoute[getReq, userResp](b, "GET", "/users", getReqCodec, userRespCodec, rest.RouteConfig{
+		QueryParams: []rest.QueryParam{
+			{Name: "id", Codec: &uuidCodec},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	handler := nethttp.Handler(h, func(_ context.Context, _ getReq) (userResp, error) {
+		return userResp{}, nil
+	})
+	rec := httptest.NewRecorder()
+	r := httptest.NewRequest(http.MethodGet, "/users?id=not-a-uuid", nil)
+	handler.ServeHTTP(rec, r)
+	if rec.Code != http.StatusBadRequest {
+		t.Errorf("want 400, got %d: %s", rec.Code, rec.Body.String())
+	}
+}

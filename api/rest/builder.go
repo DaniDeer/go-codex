@@ -100,8 +100,10 @@ type RouteConfig struct {
 	// unknown names cause [AddRoute] to return an error immediately.
 	PathParams []PathParam
 
-	// QueryParams are included in the OpenAPI spec as query parameters.
-	QueryParams []route.Param
+	// QueryParams describes query parameters for the route.
+	// Each entry can add a description, required flag, and/or codec for runtime validation.
+	// The codec schema flows into the OpenAPI query parameter spec automatically.
+	QueryParams []QueryParam
 
 	// ReqSchemaName, when non-empty, emits a $ref for the request body schema
 	// in the spec and registers the schema under that name in components/schemas.
@@ -142,6 +144,9 @@ type RouteHandle[Req, Resp any] struct {
 
 	// pathParams holds per-variable params registered via PathParams.
 	pathParams []PathParam
+
+	// queryParams holds per-parameter entries registered via QueryParams.
+	queryParams []QueryParam
 
 	// pathCodec is the builder-level path codec (may be nil).
 	// Used to re-validate the final assembled path in BuildPath.
@@ -188,6 +193,37 @@ func (h *RouteHandle[Req, Resp]) BuildPath(vars map[string]string) (string, erro
 		}
 	}
 	return result, nil
+}
+
+// ValidateQuery validates query parameter values against their registered codecs.
+//
+// For each [QueryParam] that has a non-nil Codec, the corresponding value in
+// params is validated. Returns a [QueryParamError] on the first failure.
+// Parameters not present in params are silently skipped (use Required on the
+// [QueryParam] entry to document required params in the spec; enforcement is
+// the caller's responsibility). Extra keys in params are silently ignored.
+//
+// Example:
+//
+//	errs := listRoute.ValidateQuery(map[string]string{
+//	    "page": r.URL.Query().Get("page"),
+//	    "limit": r.URL.Query().Get("limit"),
+//	})
+func (h *RouteHandle[Req, Resp]) ValidateQuery(params map[string]string) error {
+	for i := range h.queryParams {
+		qp := &h.queryParams[i]
+		if qp.Codec == nil {
+			continue
+		}
+		value, ok := params[qp.Name]
+		if !ok {
+			continue
+		}
+		if err := qp.Codec.Validate(value); err != nil {
+			return QueryParamError{Name: qp.Name, Value: value, Err: err}
+		}
+	}
+	return nil
 }
 
 // routeEntry is the type-erased interface stored inside Builder.
@@ -280,6 +316,40 @@ type InvalidPathParamError struct {
 func (e InvalidPathParamError) Error() string {
 	return fmt.Sprintf("api/rest: PathParams entry %q not found in path template %q", e.Name, e.Path)
 }
+
+// QueryParam describes a query parameter for a route.
+// It combines spec metadata with optional runtime validation via a codec.
+type QueryParam struct {
+	Name        string
+	Description string
+	Required    bool
+	// Codec validates query parameter values at [RouteHandle.ValidateQuery] time.
+	// When non-nil, the codec's schema is also used in the OpenAPI spec.
+	// Nil means no runtime validation; the spec schema will be empty.
+	Codec *codex.Codec[string]
+}
+
+// QueryParamError is returned by [RouteHandle.ValidateQuery] when a query
+// parameter value fails codec validation.
+//
+// Use errors.As to extract the failing parameter name and value:
+//
+//	var paramErr rest.QueryParamError
+//	if errors.As(err, &paramErr) {
+//	    log.Printf("bad value for query param %q: %q — %v", paramErr.Name, paramErr.Value, paramErr.Err)
+//	}
+type QueryParamError struct {
+	Name  string // query parameter name
+	Value string // the value that failed validation
+	Err   error  // the underlying constraint or codec error
+}
+
+func (e QueryParamError) Error() string {
+	return fmt.Sprintf("query parameter %q: invalid value %q: %s", e.Name, e.Value, e.Err.Error())
+}
+
+// Unwrap allows errors.As and errors.Is to traverse the underlying constraint error.
+func (e QueryParamError) Unwrap() error { return e.Err }
 
 // Builder accumulates route registrations and produces OpenAPI specs.
 // Create one with [NewBuilder].
@@ -402,11 +472,12 @@ func AddRoute[Req, Resp any](
 	jsonResp := format.JSON(respCodec)
 
 	return &RouteHandle[Req, Resp]{
-		Descriptor: frozen,
-		Decode:     func(body []byte) (Req, error) { return jsonReq.Unmarshal(body) },
-		Encode:     func(resp Resp) ([]byte, error) { return jsonResp.Marshal(resp) },
-		pathParams: config.PathParams,
-		pathCodec:  b.pathCodec,
+		Descriptor:  frozen,
+		Decode:      func(body []byte) (Req, error) { return jsonReq.Unmarshal(body) },
+		Encode:      func(resp Resp) ([]byte, error) { return jsonResp.Marshal(resp) },
+		pathParams:  config.PathParams,
+		queryParams: config.QueryParams,
+		pathCodec:   b.pathCodec,
 	}, nil
 }
 
@@ -498,7 +569,7 @@ func buildDescriptor(method, path string, reqSchema, respSchema schema.Schema, c
 		Description: config.Description,
 		Tags:        slices.Clone(config.Tags),
 		PathParams:  buildRouteParams(config.PathParams, path),
-		QueryParams: slices.Clone(config.QueryParams),
+		QueryParams: buildQueryParams(config.QueryParams),
 	}
 
 	if isBodyMethod(method) {
@@ -569,6 +640,20 @@ func buildRouteParams(pathParams []PathParam, path string) []route.Param {
 		if !declared[name] {
 			result = append(result, route.Param{Name: name})
 		}
+	}
+	return result
+}
+
+// buildQueryParams converts []QueryParam to []route.Param for OpenAPI spec output.
+// Codec schema (when non-nil) flows into the route.Param.Schema field.
+func buildQueryParams(queryParams []QueryParam) []route.Param {
+	result := make([]route.Param, len(queryParams))
+	for i, q := range queryParams {
+		rp := route.Param{Name: q.Name, Description: q.Description, Required: q.Required}
+		if q.Codec != nil {
+			rp.Schema = q.Codec.Schema
+		}
+		result[i] = rp
 	}
 	return result
 }

@@ -824,11 +824,32 @@ type InvalidPathParamError struct {
 }
 ```
 
-`RouteConfig` fields: `OperationID`, `Summary`, `Description`, `Tags`, `PathParams []PathParam`, `QueryParams`, `ReqSchemaName`, `RespStatus` (default POST→"201", others→"200"), `RespDescription`, `RespSchemaName`, `Responses []ResponseMeta`.
+`RouteConfig` fields: `OperationID`, `Summary`, `Description`, `Tags`, `PathParams []PathParam`, `QueryParams []QueryParam`, `ReqSchemaName`, `RespStatus` (default POST→"201", others→"200"), `RespDescription`, `RespSchemaName`, `Responses []ResponseMeta`.
 
 `PathParam{Name, Description, Codec *codex.Codec[string]}` — optional per-variable metadata. `Name` must correspond to a `{varName}` placeholder in the path template. `Codec` (pointer, `nil` = no validation) provides runtime validation and auto-flows its schema into the OpenAPI spec. An unknown `Name` causes `AddRoute` to return `InvalidPathParamError` immediately.
 
-**Codec schema → spec**: `PathParam.Codec` schema automatically flows into the OpenAPI path parameter spec. When `Codec` is nil, the parameter is still declared (minimal entry with no schema). Every `{varName}` placeholder always gets a parameter entry in the spec — either from `PathParams` with/without a codec, or auto-generated. `PathParams` is only needed to add a description or runtime validation.
+`QueryParam{Name, Description string, Required bool, Codec *codex.Codec[string]}` — optional query parameter metadata. `Name` is the query key (no template syntax). `Codec` (pointer, `nil` = no validation) provides runtime validation via `RouteHandle.ValidateQuery` and auto-flows its schema into the OpenAPI spec. Unlike `PathParam`, query params are not auto-generated for template placeholders — only entries explicitly listed in `QueryParams` appear in the spec.
+
+```go
+type QueryParam struct {
+    Name        string
+    Description string
+    Required    bool
+    Codec       *codex.Codec[string] // nil = no validation
+}
+```
+
+`RouteHandle.ValidateQuery(params map[string]string) error` — validates each `QueryParam` with a non-nil `Codec` against the provided map. Missing keys are silently skipped (no error). Returns `QueryParamError` on first failure.
+
+```go
+type QueryParamError struct {
+    Name  string
+    Value string
+    Err   error // wrapped codec validation error
+}
+```
+
+**Codec schema → spec**: `PathParam.Codec` schema automatically flows into the OpenAPI path parameter spec. `QueryParam.Codec` schema automatically flows into the OpenAPI query parameter spec. When `Codec` is nil, the parameter is still declared (minimal entry with no schema).
 
 Key rules:
 - `api/rest` uses `format.JSON(codec)` internally — explicitly JSON-only.
@@ -847,6 +868,7 @@ Key rules:
   - `RegisterWithOptions[Req,Resp](mux, handle, fn, opts)` — like Register with Options.
   - `RequestFromContext(ctx) (*http.Request, bool)` — retrieves the underlying `*http.Request` for path params, headers, etc. Use `r.PathValue("id")` for Go 1.22+ path segments.
   - Non-body methods (GET/HEAD/DELETE): fn called with zero value of Req; body reader not touched.
+  - **Query validation**: `ValidateQuery` is called automatically before the handler function. Codec-backed `QueryParam` entries are validated from `r.URL.Query()`; 400 is returned on failure.
 
 ## Event Channel Builder (`api/events`)
 

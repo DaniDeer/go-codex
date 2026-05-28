@@ -555,3 +555,111 @@ func TestBuildPath_finalPathReValidatedAgainstBuilderCodec(t *testing.T) {
 		t.Errorf("InvalidPathError.Path = %q, want /users/hello world", pathErr.Path)
 	}
 }
+
+func TestValidateQuery_validValues(t *testing.T) {
+	b := rest.NewBuilder(testInfo)
+	uuidCodec := codex.String().Refine(validate.UUID)
+	pageCodec := codex.String().Refine(validate.NonNegativeIntString)
+	h, err := rest.AddRoute[createReq, userResp](b, "GET", "/users", createReqCodec, userCodec, rest.RouteConfig{
+		QueryParams: []rest.QueryParam{
+			{Name: "id", Description: "User UUID", Codec: &uuidCodec},
+			{Name: "page", Description: "Page number", Required: false, Codec: &pageCodec},
+		},
+	})
+	if err != nil {
+		t.Fatalf("AddRoute: %v", err)
+	}
+	if err := h.ValidateQuery(map[string]string{
+		"id":   "f47ac10b-58cc-4372-a567-0e02b2c3d479",
+		"page": "3",
+	}); err != nil {
+		t.Errorf("ValidateQuery with valid values: %v", err)
+	}
+}
+
+func TestValidateQuery_invalidValue(t *testing.T) {
+	b := rest.NewBuilder(testInfo)
+	uuidCodec := codex.String().Refine(validate.UUID)
+	h, err := rest.AddRoute[createReq, userResp](b, "GET", "/users", createReqCodec, userCodec, rest.RouteConfig{
+		QueryParams: []rest.QueryParam{
+			{Name: "id", Codec: &uuidCodec},
+		},
+	})
+	if err != nil {
+		t.Fatalf("AddRoute: %v", err)
+	}
+	err = h.ValidateQuery(map[string]string{"id": "not-a-uuid"})
+	if err == nil {
+		t.Fatal("expected QueryParamError, got nil")
+	}
+	var paramErr rest.QueryParamError
+	if !errors.As(err, &paramErr) {
+		t.Fatalf("expected QueryParamError, got %T: %v", err, err)
+	}
+	if paramErr.Name != "id" {
+		t.Errorf("QueryParamError.Name = %q, want id", paramErr.Name)
+	}
+	if paramErr.Value != "not-a-uuid" {
+		t.Errorf("QueryParamError.Value = %q, want not-a-uuid", paramErr.Value)
+	}
+}
+
+func TestValidateQuery_nilCodecSkipped(t *testing.T) {
+	b := rest.NewBuilder(testInfo)
+	h, err := rest.AddRoute[createReq, userResp](b, "GET", "/users", createReqCodec, userCodec, rest.RouteConfig{
+		QueryParams: []rest.QueryParam{
+			{Name: "search"}, // no codec
+		},
+	})
+	if err != nil {
+		t.Fatalf("AddRoute: %v", err)
+	}
+	if err := h.ValidateQuery(map[string]string{"search": "anything goes"}); err != nil {
+		t.Errorf("ValidateQuery with nil codec: %v", err)
+	}
+}
+
+func TestValidateQuery_missingKeySkipped(t *testing.T) {
+	b := rest.NewBuilder(testInfo)
+	uuidCodec := codex.String().Refine(validate.UUID)
+	h, err := rest.AddRoute[createReq, userResp](b, "GET", "/users", createReqCodec, userCodec, rest.RouteConfig{
+		QueryParams: []rest.QueryParam{
+			{Name: "id", Codec: &uuidCodec},
+		},
+	})
+	if err != nil {
+		t.Fatalf("AddRoute: %v", err)
+	}
+	// "id" not in params — should silently skip, not error
+	if err := h.ValidateQuery(map[string]string{}); err != nil {
+		t.Errorf("ValidateQuery with missing key: %v", err)
+	}
+}
+
+func TestQueryParam_schemaFlowsToSpec(t *testing.T) {
+	b := rest.NewBuilder(testInfo)
+	uuidCodec := codex.String().Refine(validate.UUID)
+	_, err := rest.AddRoute[createReq, userResp](b, "GET", "/users", createReqCodec, userCodec, rest.RouteConfig{
+		QueryParams: []rest.QueryParam{
+			{Name: "id", Description: "User UUID", Required: true, Codec: &uuidCodec},
+		},
+	})
+	if err != nil {
+		t.Fatalf("AddRoute: %v", err)
+	}
+	doc, err := b.OpenAPISpec()
+	if err != nil {
+		t.Fatalf("OpenAPISpec: %v", err)
+	}
+	raw, err := doc.MarshalJSON()
+	if err != nil {
+		t.Fatalf("MarshalJSON: %v", err)
+	}
+	spec := string(raw)
+	if !strings.Contains(spec, `"id"`) {
+		t.Errorf("spec missing query param 'id': %s", spec)
+	}
+	if !strings.Contains(spec, `"uuid"`) {
+		t.Errorf("spec missing 'uuid' format from codec schema: %s", spec)
+	}
+}
