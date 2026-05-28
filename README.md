@@ -912,20 +912,20 @@ if err != nil {
     log.Fatal(err) // *rest.InvalidPathError if path is invalid
 }
 
-// Route with a path variable and per-variable codec validation.
-// PathParamCodecs schema (UUID) automatically flows into the OpenAPI spec —
-// no need to repeat the schema in PathParams.
+// Route with a path variable. PathParam.Codec validates {id} at BuildPath time
+// and its schema (UUID) flows into the OpenAPI spec automatically.
+uuidCodec := codex.String().Refine(validate.UUID)
 getUser, err := rest.AddRoute[struct{}, User](b, "GET", "/users/{id}",
     codex.Struct[struct{}](), userCodec,
     rest.RouteConfig{
         OperationID:    "getUser",
         Summary:        "Get a user by ID",
         RespSchemaName: "User",
-        // PathParams adds a description; the UUID schema comes from PathParamCodecs.
-        PathParams: []rest.Param{{Name: "id", Description: "User UUID"}},
-        PathParamCodecs: map[string]codex.Codec[string]{
-            "id": codex.String().Refine(validate.UUID),
-        },
+        PathParams: []rest.PathParam{{
+            Name:        "id",
+            Description: "User UUID",
+            Codec:       &uuidCodec, // validates at BuildPath time; UUID schema → spec
+        }},
     })
 if err != nil {
     log.Fatal(err)
@@ -976,8 +976,9 @@ yamlBytes, _ := doc.MarshalYAML()
 | `*rest.InvalidPathError` | Path fails builder-level validation | `InvalidPathError{Path, Err}` |
 | `*rest.PathParamError` | A path variable value fails its codec | `PathParamError{Name, Value, Err}` |
 | `*rest.MissingPathVarError` | A template variable is absent from the `vars` map | `MissingPathVarError{Name}` |
+| `*rest.InvalidPathParamError` | A `PathParams` entry names a variable not in the template | `InvalidPathParamError{Name, Path}` |
 
-**Codec schema → OpenAPI spec:** `PathParamCodecs` schemas automatically flow into the OpenAPI path parameter spec. When a `PathParams` entry has no schema, the codec's schema is used. When a `{varName}` placeholder has a codec but no explicit `PathParams` entry, a parameter entry is auto-generated. `PathParams` is needed only to add a `Description`.
+**Codec schema → OpenAPI spec:** `PathParam.Codec` schema flows automatically into the OpenAPI path parameter spec. When `Codec` is nil, the parameter is still declared in the spec (minimal entry). `PathParams` is only needed when you want a description or runtime codec validation for a specific variable.
 
 **Future:** framework-specific adapters (`adapters/gin`, `adapters/chi`, etc.) will wrap `RouteHandle` for zero-boilerplate integration. The `api/rest` core stays dependency-free.
 
@@ -1124,21 +1125,19 @@ if err != nil {
     log.Fatal(err) // *events.InvalidTopicError if topic is invalid
 }
 
-// Channel with a topic template, per-variable codec validation, and spec enrichment.
-// TopicParamCodecs schema (UUID) flows into the AsyncAPI parameters: block automatically.
-// TopicParams adds a description shown in the spec.
+// Channel with a topic template. TopicParam.Codec validates {sensorID} at
+// BuildTopic time; the UUID schema flows into the AsyncAPI parameters: block.
+sensorUUIDCodec := codex.String().Refine(validate.UUID)
 sensorMeasurement, err := events.AddChannel[Measurement](b, "sensors/{sensorID}/measurements",
     measurementCodec,
     events.ChannelConfig{
         Subscribe: &events.OperationConfig{Summary: "Sensor measurement received"},
-        // TopicParams enriches the spec with a description for {sensorID}.
-        TopicParams: []events.TopicParam{
-            {Name: "sensorID", Description: "UUID of the sensor publishing the measurement."},
-        },
-        // TopicParamCodecs validates {sensorID} at BuildTopic time; UUID schema flows to spec.
-        TopicParamCodecs: map[string]codex.Codec[string]{
-            "sensorID": codex.String().Refine(validate.UUID),
-        },
+        // TopicParam.Codec validates + flows schema to spec. Description enriches spec.
+        TopicParams: []events.TopicParam{{
+            Name:        "sensorID",
+            Description: "UUID of the sensor publishing the measurement.",
+            Codec:       &sensorUUIDCodec,
+        }},
     })
 if err != nil {
     log.Fatal(err)
@@ -1196,9 +1195,9 @@ events.AddChannel[UserEvent](b, "user/events", codec, events.ChannelConfig{
 | `*events.InvalidTopicError` | Topic fails builder-level validation | `InvalidTopicError{Topic, Err}` |
 | `*events.TopicParamError` | A topic variable value fails its codec | `TopicParamError{Name, Value, Err}` |
 | `*events.MissingTopicVarError` | A template variable is absent from the `vars` map | `MissingTopicVarError{Name}` |
-| `*events.InvalidTopicParamError` | A `TopicParams` entry names a variable not in the template | `InvalidTopicParamError{Name}` |
+| `*events.InvalidTopicParamError` | A `TopicParams` entry names a variable not in the template | `InvalidTopicParamError{Name, Topic}` |
 
-**Codec schema → AsyncAPI spec:** `TopicParamCodecs` schemas automatically flow into the AsyncAPI `parameters:` block. Every `{varName}` placeholder in the topic gets a parameter entry — auto-generated as `{type: string}` when no codec is registered, or enriched with the codec schema when one is. `TopicParams` is optional and used solely to add `Description` overrides per variable.
+**Codec schema → AsyncAPI spec:** `TopicParam.Codec` schema flows automatically into the AsyncAPI `parameters:` block. Every `{varName}` placeholder in the topic gets a parameter entry — auto-generated as `{type: string}` when no `TopicParam` is declared. Set `TopicParam.Codec` to add runtime validation and emit the codec schema; set `TopicParam.Description` to enrich the spec without validation.
 
 **Future:** broker-specific adapters (`adapters/amqp`, `adapters/kafka`, etc.) will wrap `ChannelHandle` for zero-boilerplate integration.
 

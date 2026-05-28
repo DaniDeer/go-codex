@@ -242,11 +242,12 @@ func TestPublish_ContextCancelled(t *testing.T) {
 
 func newTemplateHandle() *events.ChannelHandle[userEvent] {
 	b := events.NewBuilder(events.Info{Title: "Test", Version: "1.0.0"})
+	uuidCodec := codex.String().Refine(validate.UUID)
 	h, err := events.AddChannel[userEvent](b, "users/{userID}/events", userEventCodec,
 		events.ChannelConfig{
 			Publish: &events.OperationConfig{Summary: "User event"},
-			TopicParamCodecs: map[string]codex.Codec[string]{
-				"userID": codex.String().Refine(validate.UUID),
+			TopicParams: []events.TopicParam{
+				{Name: "userID", Codec: &uuidCodec},
 			},
 		})
 	if err != nil {

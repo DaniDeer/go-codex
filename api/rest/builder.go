@@ -56,8 +56,19 @@ type Info = openapi.Info
 type Server = openapi.Server
 
 // Param is an alias for [route.Param] so callers do not need to import route
-// just to specify path or query parameters.
+// just to specify query parameters.
 type Param = route.Param
+
+// PathParam describes a {varName} placeholder in a route path template.
+// It combines spec metadata with optional runtime validation via a codec.
+type PathParam struct {
+	Name        string
+	Description string
+	// Codec validates substituted values at [RouteHandle.BuildPath] time.
+	// When non-nil, the codec's schema is also used in the OpenAPI spec.
+	// Nil means no runtime validation; the spec schema will be empty.
+	Codec *codex.Codec[string]
+}
 
 // ResponseMeta describes one additional response entry for a route (errors,
 // redirects, etc.). The primary success response is derived from the response
@@ -77,24 +88,20 @@ type RouteConfig struct {
 	Description string
 	Tags        []string
 
-	// PathParams and QueryParams are included in the OpenAPI spec as path/query
-	// parameters. Codec-based path/query decoding is a future extension.
-	PathParams  []route.Param
-	QueryParams []route.Param
+	// PathParams describes {varName} placeholder variables in the path template.
+	// Each entry can add a description and/or a codec for runtime validation.
+	// The codec schema is also used in the OpenAPI path parameter spec.
+	//
+	// PathParams is optional: the builder auto-generates a minimal parameter
+	// entry for every {varName} in the path. Only specify PathParams when you
+	// need a description or runtime validation for a specific variable.
+	//
+	// Entry names must correspond to {varName} placeholders in the path template;
+	// unknown names cause [AddRoute] to return an error immediately.
+	PathParams []PathParam
 
-	// PathParamCodecs maps path variable names (without braces) to codecs that
-	// validate substituted values at runtime via [RouteHandle.BuildPath].
-	//
-	// Example — require {id} to be a valid UUID:
-	//
-	//	PathParamCodecs: map[string]codex.Codec[string]{
-	//	    "id": codex.String().Refine(validate.UUID),
-	//	}
-	//
-	// A key that does not appear as a {varName} in the route path is a
-	// programming error: [AddRoute] returns an error immediately.
-	// Nil or empty means no runtime param validation.
-	PathParamCodecs map[string]codex.Codec[string]
+	// QueryParams are included in the OpenAPI spec as query parameters.
+	QueryParams []route.Param
 
 	// ReqSchemaName, when non-empty, emits a $ref for the request body schema
 	// in the spec and registers the schema under that name in components/schemas.
@@ -133,8 +140,8 @@ type RouteHandle[Req, Resp any] struct {
 	// Encode serialises Resp to JSON bytes.
 	Encode func(resp Resp) ([]byte, error)
 
-	// paramCodecs holds per-variable codecs registered via PathParamCodecs.
-	paramCodecs map[string]codex.Codec[string]
+	// pathParams holds per-variable params registered via PathParams.
+	pathParams []PathParam
 
 	// pathCodec is the builder-level path codec (may be nil).
 	// Used to re-validate the final assembled path in BuildPath.
@@ -159,7 +166,14 @@ type RouteHandle[Req, Resp any] struct {
 //	path, err := getUserRoute.BuildPath(map[string]string{"id": "f47ac10b-..."})
 //	// path = "/users/f47ac10b-..."
 func (h *RouteHandle[Req, Resp]) BuildPath(vars map[string]string) (string, error) {
-	result, err := internal.BuildFromTemplate(h.Descriptor.Path, vars, h.paramCodecs,
+	// Build codec lookup map from pathParams.
+	codecMap := make(map[string]*codex.Codec[string], len(h.pathParams))
+	for i := range h.pathParams {
+		if h.pathParams[i].Codec != nil {
+			codecMap[h.pathParams[i].Name] = h.pathParams[i].Codec
+		}
+	}
+	result, err := internal.BuildFromTemplate(h.Descriptor.Path, vars, codecMap,
 		func(name string) error { return MissingPathVarError{Name: name} },
 		func(name, value string, err error) error {
 			return PathParamError{Name: name, Value: value, Err: err}
@@ -249,6 +263,24 @@ func (e MissingPathVarError) Error() string {
 	return fmt.Sprintf("missing value for path variable {%s}", e.Name)
 }
 
+// InvalidPathParamError is returned by [AddRoute] when a [PathParam] entry
+// names a variable that does not appear in the path template.
+//
+// Use errors.As to extract the offending name and the path template:
+//
+//	var paramErr rest.InvalidPathParamError
+//	if errors.As(err, &paramErr) {
+//	    log.Printf("PathParam %q not in path %q", paramErr.Name, paramErr.Path)
+//	}
+type InvalidPathParamError struct {
+	Name string // the variable name (without braces) that is not in the template
+	Path string // the path template that was validated against
+}
+
+func (e InvalidPathParamError) Error() string {
+	return fmt.Sprintf("api/rest: PathParams entry %q not found in path template %q", e.Name, e.Path)
+}
+
 // Builder accumulates route registrations and produces OpenAPI specs.
 // Create one with [NewBuilder].
 type Builder struct {
@@ -332,9 +364,9 @@ func (b *Builder) AddSchema(name string, s schema.Schema) *Builder {
 // path is validated immediately. An error is returned if validation fails —
 // no route is registered in that case.
 //
-// If config.PathParamCodecs is non-empty, each key is verified to be a
-// {varName} present in the path template. A key that does not appear in the
-// path is a programming error and causes AddRoute to return an error.
+// If config.PathParams is non-empty, each entry name is verified to be a
+// {varName} present in the path template. An unknown name is a programming
+// error and causes AddRoute to return an error.
 //
 // AddRoute is a free function (not a method) because Go requires type
 // parameters to appear on free functions, not on method receivers.
@@ -355,9 +387,9 @@ func AddRoute[Req, Resp any](
 	}
 
 	templateVars := internal.ParseTemplateVars(path)
-	for name := range config.PathParamCodecs {
-		if !templateVars[name] {
-			return nil, fmt.Errorf("api/rest: PathParamCodecs key %q not found in path template %q", name, path)
+	for _, p := range config.PathParams {
+		if !templateVars[p.Name] {
+			return nil, InvalidPathParamError{Name: p.Name, Path: path}
 		}
 	}
 
@@ -370,11 +402,11 @@ func AddRoute[Req, Resp any](
 	jsonResp := format.JSON(respCodec)
 
 	return &RouteHandle[Req, Resp]{
-		Descriptor:  frozen,
-		Decode:      func(body []byte) (Req, error) { return jsonReq.Unmarshal(body) },
-		Encode:      func(resp Resp) ([]byte, error) { return jsonResp.Marshal(resp) },
-		paramCodecs: config.PathParamCodecs,
-		pathCodec:   b.pathCodec,
+		Descriptor: frozen,
+		Decode:     func(body []byte) (Req, error) { return jsonReq.Unmarshal(body) },
+		Encode:     func(resp Resp) ([]byte, error) { return jsonResp.Marshal(resp) },
+		pathParams: config.PathParams,
+		pathCodec:  b.pathCodec,
 	}, nil
 }
 
@@ -445,11 +477,9 @@ func (b *Builder) checkDanglingRefs() error {
 // and config. Deep-copies all slices to prevent later mutation from affecting
 // the registered route.
 //
-// Path params are enriched with codec schemas: if a PathParams entry has a
-// zero Schema and a matching PathParamCodecs entry exists, the codec's schema
-// is used. If a {varName} placeholder has a PathParamCodecs entry but no
-// PathParams entry, a param entry is auto-generated so the OpenAPI spec is
-// always complete without requiring manual re-declaration of codec information.
+// Path params are converted from PathParams ([]PathParam) to route.Param entries
+// for OpenAPI spec output. A minimal entry is auto-added for any {varName}
+// placeholder in the path that has no explicit PathParams declaration.
 func buildDescriptor(method, path string, reqSchema, respSchema schema.Schema, config RouteConfig) route.Route {
 	status := config.RespStatus
 	if status == "" {
@@ -467,7 +497,7 @@ func buildDescriptor(method, path string, reqSchema, respSchema schema.Schema, c
 		Summary:     config.Summary,
 		Description: config.Description,
 		Tags:        slices.Clone(config.Tags),
-		PathParams:  mergePathParams(config.PathParams, config.PathParamCodecs, path),
+		PathParams:  buildRouteParams(config.PathParams, path),
 		QueryParams: slices.Clone(config.QueryParams),
 	}
 
@@ -515,44 +545,29 @@ func isBodyMethod(method string) bool {
 	return false
 }
 
-// mergePathParams builds a PathParams slice that combines explicit param
-// declarations with schemas derived from PathParamCodecs.
+// buildRouteParams converts []PathParam to []route.Param for OpenAPI spec output.
 //
-// For each explicit PathParams entry:
-//   - If its Schema is zero-value and PathParamCodecs has a codec for that name,
-//     the codec's schema is used.
-//
-// For each {varName} placeholder in the path that has a PathParamCodecs entry
-// but no explicit PathParams declaration, a minimal param entry is auto-generated
-// using the codec's schema. This ensures the OpenAPI spec always declares
-// path parameters when codec information is available.
-func mergePathParams(explicit []route.Param, codecs map[string]codex.Codec[string], path string) []route.Param {
-	result := make([]route.Param, len(explicit))
-	copy(result, explicit)
-
-	// Enrich existing entries with codec schemas when Schema is zero-value.
-	// A schema is considered unset when its Type field is empty (the most
-	// fundamental field of any JSON Schema object).
-	for i, p := range result {
-		if p.Schema.Type == "" {
-			if c, ok := codecs[p.Name]; ok {
-				result[i].Schema = c.Schema
-			}
+// For each PathParam entry the codec's schema (if non-nil) populates the
+// route.Param.Schema field. A minimal route.Param{Name: name} is also
+// auto-added for any {varName} placeholder in the path that has no explicit
+// PathParam declaration, so the OpenAPI spec always has complete path parameter
+// coverage without requiring users to declare every variable.
+func buildRouteParams(pathParams []PathParam, path string) []route.Param {
+	result := make([]route.Param, 0, len(pathParams))
+	declared := make(map[string]bool, len(pathParams))
+	for _, p := range pathParams {
+		rp := route.Param{Name: p.Name, Description: p.Description}
+		if p.Codec != nil {
+			rp.Schema = p.Codec.Schema
 		}
-	}
-
-	// Auto-add entries for {varName} placeholders that have a codec but no
-	// explicit PathParams declaration.
-	declared := make(map[string]bool, len(result))
-	for _, p := range result {
+		result = append(result, rp)
 		declared[p.Name] = true
 	}
+	// Auto-add minimal entries for template vars with no explicit PathParam.
 	for _, m := range internal.TemplateVarRe.FindAllStringSubmatch(path, -1) {
 		name := m[1]
 		if !declared[name] {
-			if c, ok := codecs[name]; ok {
-				result = append(result, route.Param{Name: name, Schema: c.Schema})
-			}
+			result = append(result, route.Param{Name: name})
 		}
 	}
 	return result

@@ -333,17 +333,19 @@ func main() {
 		os.Exit(1)
 	}
 
+	uuidCodec := codex.String().Refine(validate.UUID)
 	getUserRoute, err := rest.AddRoute[emptyReq, User](b, "GET", "/users/{id}",
 		emptyReqCodec, userCodec, rest.RouteConfig{
 			OperationID:    "getUser",
 			Summary:        "Get a user by ID",
 			RespSchemaName: "User",
-			PathParams:     []rest.Param{{Name: "id", Description: "User UUID"}},
-			// PathParamCodecs validates {id} as a UUID when BuildPath is called.
-			// This catches invalid IDs at the call site before an HTTP request is made.
-			PathParamCodecs: map[string]codex.Codec[string]{
-				"id": codex.String().Refine(validate.UUID),
-			},
+			// PathParam.Codec validates {id} as a UUID at BuildPath time and
+			// flows the UUID schema into the OpenAPI spec automatically.
+			PathParams: []rest.PathParam{{
+				Name:        "id",
+				Description: "User UUID",
+				Codec:       &uuidCodec,
+			}},
 		})
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "route registration failed: %v\n", err)
@@ -351,18 +353,20 @@ func main() {
 	}
 
 	// GET /users/page/{page} — list users by page number.
-	// PositiveIntString validates {page} is a numeric string with value > 0.
-	// BuildPath rejects "0", "-1", "abc" — all before any HTTP request is made.
-	// The final assembled path (e.g. "/users/page/2") is also re-validated against
-	// the builder-level HTTPPath codec, catching any path-level constraint violations.
+	// PathParam.Codec (PositiveIntString) rejects "0", "-1", "abc" — all before
+	// any HTTP request is made. The UUID schema flows into the OpenAPI spec.
+	// The final assembled path is also re-validated against the builder-level
+	// HTTPPath codec, catching any path-level constraint violations.
+	pageCodec := codex.String().Refine(validate.PositiveIntString)
 	listUsersPageRoute, err := rest.AddRoute[emptyReq, PagedUsersResp](b, "GET", "/users/page/{page}",
 		emptyReqCodec, pagedUsersRespCodec, rest.RouteConfig{
 			OperationID: "listUsersPage",
 			Summary:     "List users by page",
-			PathParams:  []rest.Param{{Name: "page", Description: "Page number (positive integer)"}},
-			PathParamCodecs: map[string]codex.Codec[string]{
-				"page": codex.String().Refine(validate.PositiveIntString),
-			},
+			PathParams: []rest.PathParam{{
+				Name:        "page",
+				Description: "Page number (positive integer)",
+				Codec:       &pageCodec,
+			}},
 		})
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "route registration failed: %v\n", err)

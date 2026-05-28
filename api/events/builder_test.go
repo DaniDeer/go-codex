@@ -360,27 +360,34 @@ func TestBuilder_noTopicCodec_anyTopicAccepted(t *testing.T) {
 
 func TestAddChannel_unknownTopicParamCodecKey(t *testing.T) {
 	b := events.NewBuilder(testInfo)
+	uuidCodec := codex.String().Refine(validate.UUID)
+	strCodec := codex.String()
 	_, err := events.AddChannel[userEvent](b, "sensors/{sensorID}/data", userEventCodec, events.ChannelConfig{
 		Subscribe: &events.OperationConfig{Summary: "sensor data"},
-		TopicParamCodecs: map[string]codex.Codec[string]{
-			"sensorID": codex.String().Refine(validate.UUID),
-			"missing":  codex.String(), // not in template
+		TopicParams: []events.TopicParam{
+			{Name: "sensorID", Codec: &uuidCodec},
+			{Name: "missing", Codec: &strCodec}, // not in template
 		},
 	})
 	if err == nil {
-		t.Fatal("expected error for unknown TopicParamCodecs key, got nil")
+		t.Fatal("expected error for unknown TopicParams name, got nil")
 	}
-	if !strings.Contains(err.Error(), "missing") {
-		t.Errorf("error should mention the unknown key, got: %v", err)
+	var paramErr events.InvalidTopicParamError
+	if !errors.As(err, &paramErr) {
+		t.Fatalf("expected InvalidTopicParamError, got %T: %v", err, err)
+	}
+	if paramErr.Name != "missing" {
+		t.Errorf("InvalidTopicParamError.Name = %q, want %q", paramErr.Name, "missing")
 	}
 }
 
 func TestBuildTopic_validVars(t *testing.T) {
 	b := events.NewBuilder(testInfo)
+	uuidCodec := codex.String().Refine(validate.UUID)
 	h, err := events.AddChannel[userEvent](b, "sensors/{sensorID}/data", userEventCodec, events.ChannelConfig{
 		Subscribe: &events.OperationConfig{Summary: "sensor data"},
-		TopicParamCodecs: map[string]codex.Codec[string]{
-			"sensorID": codex.String().Refine(validate.UUID),
+		TopicParams: []events.TopicParam{
+			{Name: "sensorID", Codec: &uuidCodec},
 		},
 	})
 	if err != nil {
@@ -420,10 +427,11 @@ func TestBuildTopic_missingVar(t *testing.T) {
 
 func TestBuildTopic_codecFailure(t *testing.T) {
 	b := events.NewBuilder(testInfo)
+	uuidCodec := codex.String().Refine(validate.UUID)
 	h, err := events.AddChannel[userEvent](b, "sensors/{sensorID}/data", userEventCodec, events.ChannelConfig{
 		Subscribe: &events.OperationConfig{Summary: "sensor data"},
-		TopicParamCodecs: map[string]codex.Codec[string]{
-			"sensorID": codex.String().Refine(validate.UUID),
+		TopicParams: []events.TopicParam{
+			{Name: "sensorID", Codec: &uuidCodec},
 		},
 	})
 	if err != nil {
@@ -493,10 +501,11 @@ func TestBuildTopic_finalTopicReValidatedAgainstBuilderCodec(t *testing.T) {
 		Message: func(v string) string { return fmt.Sprintf("topic must be a single segment: %q", v) },
 	}
 	b := events.NewBuilder(testInfo, events.WithTopicConstraints(noSlash))
+	nonEmptyCodec := codex.String().Refine(validate.NonEmptyString)
 	h, err := events.AddChannel[userEvent](b, "{sensorID}", userEventCodec, events.ChannelConfig{
 		Subscribe: &events.OperationConfig{Summary: "sensor data"},
-		TopicParamCodecs: map[string]codex.Codec[string]{
-			"sensorID": codex.String().Refine(validate.NonEmptyString),
+		TopicParams: []events.TopicParam{
+			{Name: "sensorID", Codec: &nonEmptyCodec},
 		},
 	})
 	if err != nil {
@@ -537,17 +546,22 @@ func TestAddChannel_unknownTopicParamKey(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error for unknown TopicParams name, got nil")
 	}
-	if !strings.Contains(err.Error(), "notInTemplate") {
-		t.Errorf("error should mention the unknown name, got: %v", err)
+	var paramErr events.InvalidTopicParamError
+	if !errors.As(err, &paramErr) {
+		t.Fatalf("expected InvalidTopicParamError, got %T: %v", err, err)
+	}
+	if paramErr.Name != "notInTemplate" {
+		t.Errorf("InvalidTopicParamError.Name = %q, want %q", paramErr.Name, "notInTemplate")
 	}
 }
 
 func TestAddChannel_topicParamCodecSchemaFlowsToSpec(t *testing.T) {
 	b := events.NewBuilder(testInfo)
+	uuidCodec := codex.String().Refine(validate.UUID)
 	h, err := events.AddChannel[userEvent](b, "sensors/{sensorID}/data", userEventCodec, events.ChannelConfig{
 		Subscribe: &events.OperationConfig{Summary: "s"},
-		TopicParamCodecs: map[string]codex.Codec[string]{
-			"sensorID": codex.String().Refine(validate.UUID),
+		TopicParams: []events.TopicParam{
+			{Name: "sensorID", Codec: &uuidCodec},
 		},
 	})
 	if err != nil {
@@ -567,13 +581,11 @@ func TestAddChannel_topicParamCodecSchemaFlowsToSpec(t *testing.T) {
 
 func TestAddChannel_topicParamDescriptionEnrichment(t *testing.T) {
 	b := events.NewBuilder(testInfo)
+	uuidCodec := codex.String().Refine(validate.UUID)
 	h, err := events.AddChannel[userEvent](b, "sensors/{sensorID}/data", userEventCodec, events.ChannelConfig{
 		Subscribe: &events.OperationConfig{Summary: "s"},
 		TopicParams: []events.TopicParam{
-			{Name: "sensorID", Description: "The sensor UUID."},
-		},
-		TopicParamCodecs: map[string]codex.Codec[string]{
-			"sensorID": codex.String().Refine(validate.UUID),
+			{Name: "sensorID", Description: "The sensor UUID.", Codec: &uuidCodec},
 		},
 	})
 	if err != nil {
@@ -583,7 +595,7 @@ func TestAddChannel_topicParamDescriptionEnrichment(t *testing.T) {
 	if p.Description != "The sensor UUID." {
 		t.Errorf("expected description, got %q", p.Description)
 	}
-	// TopicParam had no explicit Schema; codec schema should flow through.
+	// Codec.Schema flows through to the spec parameter.
 	if p.Schema.Format != "uuid" {
 		t.Errorf("expected uuid format from codec schema, got %q", p.Schema.Format)
 	}

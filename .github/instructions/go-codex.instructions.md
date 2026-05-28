@@ -795,7 +795,7 @@ if err != nil {
 - `Descriptor route.Route` — frozen at registration; use for framework routing
 - `Decode(body []byte) (Req, error)` — JSON decode + Refine validation
 - `Encode(resp Resp) ([]byte, error)` — JSON encode
-- `BuildPath(vars map[string]string) (string, error)` — substitutes `{varName}` placeholders in the path template, validating each against its `PathParamCodecs` codec. After substitution, if a builder-level `pathCodec` is set, the final assembled path is re-validated against it (no template stripping — this is the real path). Returns `MissingPathVarError` for missing variables, `PathParamError` for per-variable codec failures, `InvalidPathError` if the final path fails the builder codec. Extra keys in `vars` are silently ignored.
+- `BuildPath(vars map[string]string) (string, error)` — substitutes `{varName}` placeholders in the path template, validating each against its `PathParam.Codec`. After substitution, if a builder-level `pathCodec` is set, the final assembled path is re-validated against it (no template stripping — this is the real path). Returns `MissingPathVarError` for missing variables, `PathParamError` for per-variable codec failures, `InvalidPathError` if the final path fails the builder codec. Extra keys in `vars` are silently ignored.
 
 `PathParamError` is returned by `BuildPath` when a path variable fails its codec:
 
@@ -815,11 +815,20 @@ type MissingPathVarError struct {
 }
 ```
 
-`RouteConfig` fields: `OperationID`, `Summary`, `Description`, `Tags`, `PathParams`, `QueryParams`, `ReqSchemaName`, `RespStatus` (default POST→"201", others→"200"), `RespDescription`, `RespSchemaName`, `Responses []ResponseMeta`, `PathParamCodecs map[string]codex.Codec[string]`.
+`InvalidPathParamError` is returned by `AddRoute` when a `PathParams` entry names a variable not in the path template:
 
-`PathParamCodecs` keys must correspond to `{varName}` placeholders in the path template; an unknown key causes `AddRoute` to return an error immediately (programming error).
+```go
+type InvalidPathParamError struct {
+    Name string // the variable name (without braces) not found in the template
+    Path string // the path template that was validated against
+}
+```
 
-**Codec schema → spec**: `PathParamCodecs` schemas automatically flow into the OpenAPI path parameter spec. When a `PathParams` entry has a zero-value `Schema` and a matching codec is registered, the codec schema is used. When a `{varName}` placeholder has a codec but no explicit `PathParams` entry, a parameter entry is auto-generated — so the spec is always complete without requiring manual re-declaration. `PathParams` is only needed to add a human-readable `Description`.
+`RouteConfig` fields: `OperationID`, `Summary`, `Description`, `Tags`, `PathParams []PathParam`, `QueryParams`, `ReqSchemaName`, `RespStatus` (default POST→"201", others→"200"), `RespDescription`, `RespSchemaName`, `Responses []ResponseMeta`.
+
+`PathParam{Name, Description, Codec *codex.Codec[string]}` — optional per-variable metadata. `Name` must correspond to a `{varName}` placeholder in the path template. `Codec` (pointer, `nil` = no validation) provides runtime validation and auto-flows its schema into the OpenAPI spec. An unknown `Name` causes `AddRoute` to return `InvalidPathParamError` immediately.
+
+**Codec schema → spec**: `PathParam.Codec` schema automatically flows into the OpenAPI path parameter spec. When `Codec` is nil, the parameter is still declared (minimal entry with no schema). Every `{varName}` placeholder always gets a parameter entry in the spec — either from `PathParams` with/without a codec, or auto-generated. `PathParams` is only needed to add a description or runtime validation.
 
 Key rules:
 - `api/rest` uses `format.JSON(codec)` internally — explicitly JSON-only.
@@ -827,7 +836,7 @@ Key rules:
 - The descriptor is built and frozen at `AddRoute` call time; later config mutations do not affect the registered route.
 - Path validation is **immediate**: if a `pathCodec` is set, `AddRoute` returns `InvalidPathError` at call time. The route is not registered on failure.
 - **Template-transparent validation**: before running the path codec, `{varName}` placeholders are replaced with the literal `x` (e.g. `"/users/{id}"` → `"/users/x"`). Constraints run on the structural shape of the path, not the template syntax. This means any path constraint — including ones that do not mention braces — works correctly on parameterised routes. The stored `Descriptor.Path` is always the original template.
-- **Final path re-validation**: `BuildPath` re-validates the fully assembled path (e.g. `"/users/hello world"`) against the builder-level `pathCodec` after substitution. This catches values that pass their `PathParamCodecs` codec but violate the global path constraint (e.g. a space introduced by a loose param codec). Returns `InvalidPathError{Path: finalPath, Err: ...}`.
+- **Final path re-validation**: `BuildPath` re-validates the fully assembled path (e.g. `"/users/hello world"`) against the builder-level `pathCodec` after substitution. This catches values that pass their `PathParam.Codec` but violate the global path constraint (e.g. a space introduced by a loose param codec). Returns `InvalidPathError{Path: finalPath, Err: ...}`.
 - `Info = openapi.Info` and `Server = openapi.Server` are type aliases to avoid drift.
 - `api/rest` may import `codex`, `format`, `route`, `render/openapi`, `schema`. No `net/http`.
 - `adapters/nethttp` wraps `RouteHandle` for `net/http`. It imports `api/rest` and `net/http`.
@@ -900,7 +909,7 @@ if err != nil {
 - `Descriptor asyncapi.ChannelItem` — frozen at registration
 - `Decode(payload []byte) (T, error)` — JSON decode + Refine validation
 - `Encode(msg T) ([]byte, error)` — JSON encode
-- `BuildTopic(vars map[string]string) (string, error)` — substitutes `{varName}` placeholders in the topic template, validating each against its `TopicParamCodecs` codec. After substitution, if a builder-level `topicCodec` is set, the final assembled topic is re-validated against it (no template stripping). Returns `MissingTopicVarError` for missing variables, `TopicParamError` for per-variable codec failures, `InvalidTopicError` if the final topic fails the builder codec. Extra keys in `vars` are silently ignored.
+- `BuildTopic(vars map[string]string) (string, error)` — substitutes `{varName}` placeholders in the topic template, validating each against its `TopicParam.Codec`. After substitution, if a builder-level `topicCodec` is set, the final assembled topic is re-validated against it (no template stripping). Returns `MissingTopicVarError` for missing variables, `TopicParamError` for per-variable codec failures, `InvalidTopicError` if the final topic fails the builder codec. Extra keys in `vars` are silently ignored.
 
 `TopicParamError` is returned by `BuildTopic` when a topic variable fails its codec:
 
@@ -920,13 +929,20 @@ type MissingTopicVarError struct {
 }
 ```
 
-`ChannelConfig` fields: `Description`, `Subscribe *OperationConfig`, `Publish *OperationConfig`, `TopicParams []TopicParam`, `TopicParamCodecs map[string]codex.Codec[string]`. At least one of `Subscribe`/`Publish` must be non-nil.
+`InvalidTopicParamError` is returned by `AddChannel` when a `TopicParams` entry names a variable not in the topic template:
 
-`TopicParam{Name, Description, Schema}` — optional per-variable metadata for the AsyncAPI spec. The events builder auto-derives `parameters:` from `{varName}` placeholders in the topic template; `TopicParam` enriches entries with a description and/or a schema override.
+```go
+type InvalidTopicParamError struct {
+    Name  string // the variable name (without braces) not found in the template
+    Topic string // the topic template that was validated against
+}
+```
 
-`TopicParamCodecs` keys must correspond to `{varName}` placeholders in the topic template; an unknown key causes `AddChannel` to return an error immediately (programming error). Same validation applies to `TopicParams` names.
+`ChannelConfig` fields: `Description`, `Subscribe *OperationConfig`, `Publish *OperationConfig`, `TopicParams []TopicParam`. At least one of `Subscribe`/`Publish` must be non-nil.
 
-**Codec schema → spec**: `TopicParamCodecs` schemas automatically flow into the AsyncAPI channel `parameters:` block. For each `{varName}` in the topic template, a parameter entry is auto-generated using the codec schema (or `{type: string}` as default). `TopicParams` adds descriptions or overrides the schema for specific variables.
+`TopicParam{Name, Description, Codec *codex.Codec[string]}` — optional per-variable metadata. `Name` must correspond to a `{varName}` placeholder in the topic template. `Codec` (pointer, `nil` = no validation) provides runtime validation and auto-flows its schema into the AsyncAPI `parameters:` block. An unknown `Name` causes `AddChannel` to return `InvalidTopicParamError` immediately.
+
+**Codec schema → spec**: `TopicParam.Codec` schema automatically flows into the AsyncAPI channel `parameters:` block. For each `{varName}` in the topic template, a parameter entry is always emitted — using the codec schema when a `TopicParam.Codec` is set, or `{type: string}` as default. `TopicParams` is only needed to add a description or runtime validation.
 
 `OperationConfig` fields: `Summary`, `Description`, `Tags`, `SchemaName`.
 
@@ -935,7 +951,7 @@ Key rules:
 - The descriptor is built and frozen at `AddChannel` call time.
 - Topic validation is **immediate**: if a `topicCodec` is set, `AddChannel` returns `InvalidTopicError` at call time. The channel is not registered on failure.
 - **Template-transparent validation**: before running the topic codec, `{varName}` placeholders are replaced with the literal `x` (e.g. `"sensors/{sensorID}/data"` → `"sensors/x/data"`). Constraints run on the structural shape of the topic, not the template syntax. The stored `ChannelHandle.Topic` is always the original template.
-- **Final topic re-validation**: `BuildTopic` re-validates the fully assembled topic against the builder-level `topicCodec` after substitution. Catches values that pass their `TopicParamCodecs` codec but violate the global topic constraint. Returns `InvalidTopicError{Topic: finalTopic, Err: ...}`.
+- **Final topic re-validation**: `BuildTopic` re-validates the fully assembled topic against the builder-level `topicCodec` after substitution. Catches values that pass their `TopicParam.Codec` but violate the global topic constraint. Returns `InvalidTopicError{Topic: finalTopic, Err: ...}`.
 - `Info = asyncapi.Info` and `Server = asyncapi.Server` are type aliases.
 - `api/events` may import `codex`, `format`, `render/asyncapi`, `schema`. No messaging library.
 - `adapters/mqtt` wraps `ChannelHandle` for Paho MQTT. It imports `api/events` and `github.com/eclipse/paho.mqtt.golang`.

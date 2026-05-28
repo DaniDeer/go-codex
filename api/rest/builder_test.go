@@ -9,7 +9,6 @@ import (
 
 	"github.com/DaniDeer/go-codex/api/rest"
 	"github.com/DaniDeer/go-codex/codex"
-	"github.com/DaniDeer/go-codex/route"
 	"github.com/DaniDeer/go-codex/schema"
 	"github.com/DaniDeer/go-codex/validate"
 )
@@ -202,8 +201,8 @@ func TestBuilder_openAPISpec_containsRegisteredRoutes(t *testing.T) {
 	}
 	if _, err := rest.AddRoute[createReq, userResp](b, "GET", "/users/{id}", createReqCodec, userCodec, rest.RouteConfig{
 		OperationID: "getUser",
-		PathParams: []route.Param{
-			{Name: "id", Required: true, Schema: schema.Schema{Type: "string"}},
+		PathParams: []rest.PathParam{
+			{Name: "id"},
 		},
 	}); err != nil {
 		t.Fatalf("AddRoute error: %v", err)
@@ -329,7 +328,7 @@ func TestBuilder_withPathCodec_validPathPasses(t *testing.T) {
 		t.Fatalf("AddRoute error: %v", err)
 	}
 	if _, err := rest.AddRoute[createReq, userResp](b, "GET", "/users/{id}", createReqCodec, userCodec, rest.RouteConfig{
-		PathParams: []route.Param{{Name: "id", Required: true, Schema: schema.Schema{Type: "string"}}},
+		PathParams: []rest.PathParam{{Name: "id"}},
 	}); err != nil {
 		t.Fatalf("AddRoute error: %v", err)
 	}
@@ -391,25 +390,32 @@ func TestBuilder_noPathCodec_anyPathAccepted(t *testing.T) {
 
 func TestAddRoute_unknownPathParamCodecKey(t *testing.T) {
 	b := rest.NewBuilder(testInfo)
+	uuidCodec := codex.String().Refine(validate.UUID)
+	strCodec := codex.String()
 	_, err := rest.AddRoute[createReq, userResp](b, "GET", "/users/{id}", createReqCodec, userCodec, rest.RouteConfig{
-		PathParamCodecs: map[string]codex.Codec[string]{
-			"id":      codex.String().Refine(validate.UUID),
-			"missing": codex.String(), // not in template
+		PathParams: []rest.PathParam{
+			{Name: "id", Codec: &uuidCodec},
+			{Name: "missing", Codec: &strCodec}, // not in template
 		},
 	})
 	if err == nil {
-		t.Fatal("expected error for unknown PathParamCodecs key, got nil")
+		t.Fatal("expected error for unknown PathParams name, got nil")
 	}
-	if !strings.Contains(err.Error(), "missing") {
-		t.Errorf("error should mention the unknown key, got: %v", err)
+	var paramErr rest.InvalidPathParamError
+	if !errors.As(err, &paramErr) {
+		t.Fatalf("expected InvalidPathParamError, got %T: %v", err, err)
+	}
+	if paramErr.Name != "missing" {
+		t.Errorf("InvalidPathParamError.Name = %q, want %q", paramErr.Name, "missing")
 	}
 }
 
 func TestBuildPath_validVars(t *testing.T) {
 	b := rest.NewBuilder(testInfo)
+	uuidCodec := codex.String().Refine(validate.UUID)
 	h, err := rest.AddRoute[createReq, userResp](b, "GET", "/users/{id}", createReqCodec, userCodec, rest.RouteConfig{
-		PathParamCodecs: map[string]codex.Codec[string]{
-			"id": codex.String().Refine(validate.UUID),
+		PathParams: []rest.PathParam{
+			{Name: "id", Codec: &uuidCodec},
 		},
 	})
 	if err != nil {
@@ -447,9 +453,10 @@ func TestBuildPath_missingVar(t *testing.T) {
 
 func TestBuildPath_codecFailure(t *testing.T) {
 	b := rest.NewBuilder(testInfo)
+	uuidCodec := codex.String().Refine(validate.UUID)
 	h, err := rest.AddRoute[createReq, userResp](b, "GET", "/users/{id}", createReqCodec, userCodec, rest.RouteConfig{
-		PathParamCodecs: map[string]codex.Codec[string]{
-			"id": codex.String().Refine(validate.UUID),
+		PathParams: []rest.PathParam{
+			{Name: "id", Codec: &uuidCodec},
 		},
 	})
 	if err != nil {
@@ -515,10 +522,11 @@ func TestBuildPath_finalPathReValidatedAgainstBuilderCodec(t *testing.T) {
 		Message: func(v string) string { return fmt.Sprintf("path must not contain spaces: %q", v) },
 	}
 	b := rest.NewBuilder(testInfo, rest.WithPathConstraints(noSpaces))
-	// PathParamCodecs only checks non-empty — does NOT forbid spaces.
+	// PathParams only checks non-empty — does NOT forbid spaces.
+	nonEmptyCodec := codex.String().Refine(validate.NonEmptyString)
 	h, err := rest.AddRoute[createReq, userResp](b, "GET", "/users/{name}", createReqCodec, userCodec, rest.RouteConfig{
-		PathParamCodecs: map[string]codex.Codec[string]{
-			"name": codex.String().Refine(validate.NonEmptyString),
+		PathParams: []rest.PathParam{
+			{Name: "name", Codec: &nonEmptyCodec},
 		},
 	})
 	if err != nil {

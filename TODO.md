@@ -16,6 +16,15 @@
       intended idiomatic pattern. Document with examples; consider a `go generate` code
       generator as a future separate tool.
 
+- [ ] **`schema.Schema` zero-value proxy** *(technical debt — low risk)*
+      Several places use `Schema.Type == ""` as a proxy for "schema not explicitly set"
+      (e.g. `mergePathParams` in `api/rest/builder.go`, `buildTopicParameters` in
+      `api/events/builder.go`). This is fragile: `schema.Schema` contains a `[]Property`
+      slice so `==` panics, and adding new fields to `schema.Schema` could silently break
+      the proxy logic.
+      Proposed fix: add `func (s Schema) IsZero() bool` to `schema/schema.go` and replace
+      all `Schema.Type == ""` checks with `s.IsZero()`. Low-risk, self-contained change.
+
 ### Spec generation
 
 - [ ] **`$ref` auto-deduplication** *(deferred — high risk)*
@@ -25,6 +34,24 @@
       detection. Changes output shape in potentially surprising ways.
       Current workaround: explicit `SchemaName` on `Body`/`Response` + `AddSchema` on the
       builder — intentional and sufficient for the common case.
+
+- [ ] **`$ref` for path/topic parameter schemas** *(deferred — low priority)*
+      Path parameter schemas (from `PathParamCodecs`) and AsyncAPI channel parameter schemas
+      (from `TopicParamCodecs`) are always inlined in the spec output. For projects that
+      reuse the same parameter codec across many routes (e.g. a UUID codec for dozens of
+      `{id}` parameters), this produces repetitive YAML.
+      This is only noticeable at scale and requires the `$ref` auto-deduplication machinery
+      to be in place first; block on that item.
+
+### API builders
+
+- [ ] **Generic type inference on body-less routes** *(watch — Go limitation)*
+      `AddRoute[struct{}, Resp]` and `AddChannel[T]` are ergonomic for typed payloads, but
+      Go's type inference occasionally fails to infer `struct{}` as the `Req` type parameter
+      without an explicit annotation. This is a Go compiler limitation, not a library bug;
+      the workaround is to state the type parameters explicitly:
+      `rest.AddRoute[struct{}, User](b, "GET", "/users/{id}", ...)`.
+      Track Go release notes for improvements to partial type argument inference.
 
 ---
 

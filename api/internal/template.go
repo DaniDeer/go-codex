@@ -38,7 +38,7 @@ func StripTemplateVars(template string) string {
 func BuildFromTemplate(
 	template string,
 	vars map[string]string,
-	paramCodecs map[string]codex.Codec[string],
+	paramCodecs map[string]*codex.Codec[string],
 	wrapMissing func(name string) error,
 	wrapErr func(name, value string, err error) error,
 ) (string, error) {
@@ -53,7 +53,7 @@ func BuildFromTemplate(
 			firstErr = wrapMissing(name)
 			return placeholder
 		}
-		if c, hasCodec := paramCodecs[name]; hasCodec {
+		if c := paramCodecs[name]; c != nil {
 			if err := c.Validate(value); err != nil {
 				firstErr = wrapErr(name, value, err)
 				return placeholder

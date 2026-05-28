@@ -14,7 +14,6 @@ import (
 
 	"github.com/DaniDeer/go-codex/api/rest"
 	"github.com/DaniDeer/go-codex/codex"
-	"github.com/DaniDeer/go-codex/schema"
 	"github.com/DaniDeer/go-codex/validate"
 )
 
@@ -116,8 +115,8 @@ func main() {
 			Tags:            []string{"users"},
 			RespSchemaName:  "User",
 			RespDescription: "User found.",
-			PathParams: []rest.Param{
-				{Name: "id", Required: true, Description: "User ID (UUID).", Schema: schema.Schema{Type: "string", Format: "uuid"}},
+			PathParams: []rest.PathParam{
+				{Name: "id", Description: "User ID (UUID)."},
 			},
 			Responses: []rest.ResponseMeta{
 				{Status: "404", Description: "User not found."},

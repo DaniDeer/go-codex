@@ -69,21 +69,24 @@ type OperationConfig struct {
 }
 
 // TopicParam describes a {varName} placeholder in a topic template for AsyncAPI
-// spec generation. It is the AsyncAPI equivalent of [route.Param] in the REST
-// builder — it carries display metadata that enriches the generated spec.
+// spec generation and runtime validation.
+//
+// TopicParam is the single configuration point for a topic variable: it carries
+// spec metadata (description) and an optional codec for runtime validation.
+// The codec schema is also used to enrich the AsyncAPI parameters: block.
 //
 // TopicParam is optional: the events builder auto-derives parameters from the
-// topic template and populates their schemas from [ChannelConfig.TopicParamCodecs].
-// Use TopicParam only when you want to add a description or override the schema.
+// topic template. Use TopicParam to add a description or register a codec for
+// a specific variable.
 type TopicParam struct {
 	// Name is the variable name (without braces) as it appears in the topic template.
 	Name string
 	// Description is shown in the AsyncAPI spec for this parameter.
 	Description string
-	// Schema overrides the schema for this parameter. When zero-value, the
-	// codec schema from TopicParamCodecs is used; when no codec is registered,
-	// the default {type: string} is emitted.
-	Schema schema.Schema
+	// Codec validates substituted values at [ChannelHandle.BuildTopic] time.
+	// When non-nil, the codec's schema is also emitted in the AsyncAPI spec.
+	// Nil means no runtime validation; the spec defaults to {type: string}.
+	Codec *codex.Codec[string]
 }
 
 // ChannelConfig holds metadata for a channel registration.
@@ -101,21 +104,17 @@ type ChannelConfig struct {
 	// Set to nil to omit the publish operation from the spec.
 	Publish *OperationConfig
 
-	// TopicParams enriches {varName} placeholder metadata in the AsyncAPI spec.
-	// Each entry adds a description or schema override for one variable.
-	// If TopicParamCodecs also has an entry for the same name, the codec schema
-	// is used as the base and TopicParam.Schema (if set) overrides it.
+	// TopicParams describes {varName} placeholder variables in the topic template.
+	// Each entry can add a description and/or a codec for runtime validation.
+	// The codec schema is also emitted in the AsyncAPI parameters: block.
 	//
-	// Keys must correspond to {varName} placeholders in the topic template;
-	// unknown keys cause [AddChannel] to return an error immediately.
+	// TopicParams is optional: the builder auto-derives a minimal parameter entry
+	// ({type: string}) for every {varName} in the topic template. Only specify
+	// TopicParams when you need a description or runtime validation for a variable.
+	//
+	// Entry names must correspond to {varName} placeholders in the topic template;
+	// unknown names cause [AddChannel] to return an error immediately.
 	TopicParams []TopicParam
-
-	// TopicParamCodecs maps {varName} template variables in the topic to codecs
-	// that validate concrete values at runtime via [ChannelHandle.BuildTopic].
-	//
-	// Keys must correspond to {varName} placeholders in the topic template;
-	// unknown keys cause [AddChannel] to return an error immediately.
-	TopicParamCodecs map[string]codex.Codec[string]
 }
 
 // ChannelHandle is returned by [AddChannel]. It holds the frozen spec
@@ -134,8 +133,8 @@ type ChannelHandle[T any] struct {
 	// Encode serialises T to JSON bytes.
 	Encode func(msg T) ([]byte, error)
 
-	// topicParamCodecs holds per-variable codecs registered via TopicParamCodecs.
-	topicParamCodecs map[string]codex.Codec[string]
+	// topicParams holds per-variable params registered via TopicParams.
+	topicParams []TopicParam
 
 	// topicCodec is the builder-level topic codec (may be nil).
 	// Used to re-validate the final assembled topic in BuildTopic.
@@ -160,7 +159,14 @@ type ChannelHandle[T any] struct {
 //	topic, err := sensorChannel.BuildTopic(map[string]string{"sensorID": "f47ac10b-..."})
 //	// topic = "sensors/f47ac10b-.../measurements"
 func (h *ChannelHandle[T]) BuildTopic(vars map[string]string) (string, error) {
-	result, err := internal.BuildFromTemplate(h.Topic, vars, h.topicParamCodecs,
+	// Build codec lookup map from topicParams.
+	codecMap := make(map[string]*codex.Codec[string], len(h.topicParams))
+	for i := range h.topicParams {
+		if h.topicParams[i].Codec != nil {
+			codecMap[h.topicParams[i].Name] = h.topicParams[i].Codec
+		}
+	}
+	result, err := internal.BuildFromTemplate(h.Topic, vars, codecMap,
 		func(name string) error { return MissingTopicVarError{Name: name} },
 		func(name, value string, err error) error {
 			return TopicParamError{Name: name, Value: value, Err: err}
@@ -214,6 +220,24 @@ type MissingTopicVarError struct {
 
 func (e MissingTopicVarError) Error() string {
 	return fmt.Sprintf("missing value for topic variable {%s}", e.Name)
+}
+
+// InvalidTopicParamError is returned by [AddChannel] when a [TopicParam] entry
+// names a variable that does not appear in the topic template.
+//
+// Use errors.As to extract the offending name and the topic template:
+//
+//	var paramErr events.InvalidTopicParamError
+//	if errors.As(err, &paramErr) {
+//	    log.Printf("TopicParam %q not in topic %q", paramErr.Name, paramErr.Topic)
+//	}
+type InvalidTopicParamError struct {
+	Name  string // the variable name (without braces) that is not in the template
+	Topic string // the topic template that was validated against
+}
+
+func (e InvalidTopicParamError) Error() string {
+	return fmt.Sprintf("api/events: TopicParams entry %q not found in topic template %q", e.Name, e.Topic)
 }
 
 // channelEntry is the type-erased interface stored inside Builder.
@@ -335,9 +359,9 @@ func (b *Builder) AddSchema(name string, s schema.Schema) *Builder {
 // the topic is validated immediately. An error is returned if validation fails —
 // no channel is registered in that case.
 //
-// If config.TopicParamCodecs is non-empty, each key is verified to be a
-// {varName} present in the topic template. A key that does not appear in the
-// topic is a programming error and causes AddChannel to return an error.
+// If config.TopicParams is non-empty, each entry name is verified to be a
+// {varName} present in the topic template. An unknown name is a programming
+// error and causes AddChannel to return an error.
 //
 // AddChannel is a free function (not a method) because Go requires type
 // parameters to appear on free functions, not on method receivers.
@@ -357,14 +381,9 @@ func AddChannel[T any](
 	}
 
 	templateVars := internal.ParseTemplateVars(topic)
-	for name := range config.TopicParamCodecs {
-		if !templateVars[name] {
-			return nil, fmt.Errorf("api/events: TopicParamCodecs key %q not found in topic template %q", name, topic)
-		}
-	}
 	for _, tp := range config.TopicParams {
 		if !templateVars[tp.Name] {
-			return nil, fmt.Errorf("api/events: TopicParams entry %q not found in topic template %q", tp.Name, topic)
+			return nil, InvalidTopicParamError{Name: tp.Name, Topic: topic}
 		}
 	}
 
@@ -376,12 +395,12 @@ func AddChannel[T any](
 	jsonFmt := format.JSON(codec)
 
 	return &ChannelHandle[T]{
-		Topic:            topic,
-		Descriptor:       frozen,
-		Decode:           func(payload []byte) (T, error) { return jsonFmt.Unmarshal(payload) },
-		Encode:           func(msg T) ([]byte, error) { return jsonFmt.Marshal(msg) },
-		topicParamCodecs: config.TopicParamCodecs,
-		topicCodec:       b.topicCodec,
+		Topic:       topic,
+		Descriptor:  frozen,
+		Decode:      func(payload []byte) (T, error) { return jsonFmt.Unmarshal(payload) },
+		Encode:      func(msg T) ([]byte, error) { return jsonFmt.Marshal(msg) },
+		topicParams: config.TopicParams,
+		topicCodec:  b.topicCodec,
 	}, nil
 }
 
@@ -458,12 +477,12 @@ func checkOp(op *asyncapi.Operation, resolvable, seen map[string]bool, unresolve
 // from affecting the registered channel.
 //
 // Channel parameters are auto-derived from {varName} placeholders in topic.
-// The schema for each parameter comes from TopicParamCodecs (if registered);
-// TopicParams entries add descriptions and can override schemas.
+// The schema for each parameter comes from the TopicParam.Codec (if set);
+// TopicParam.Description adds a human-readable description.
 func buildChannelItem[T any](topic string, codec codex.Codec[T], config ChannelConfig) asyncapi.ChannelItem {
 	item := asyncapi.ChannelItem{
 		Description: config.Description,
-		Parameters:  buildTopicParameters(topic, config.TopicParamCodecs, config.TopicParams),
+		Parameters:  buildTopicParameters(topic, config.TopicParams),
 	}
 
 	if config.Subscribe != nil {
@@ -496,16 +515,13 @@ func buildChannelItem[T any](topic string, codec codex.Codec[T], config ChannelC
 }
 
 // buildTopicParameters derives the AsyncAPI channel parameters map from a
-// topic template, optional per-variable codecs, and optional TopicParam
-// enrichment entries.
+// topic template and optional TopicParam entries.
 //
-// Priority for each variable:
-//  1. TopicParam.Schema (if non-zero) — explicit override
-//  2. TopicParamCodecs[name].Schema   — codec-derived schema
-//  3. Default: {type: string}
+// Priority for each variable's schema:
+//  1. TopicParam.Codec.Schema — when a codec is registered for the variable
+//  2. Default: {type: string}
 func buildTopicParameters(
 	topic string,
-	codecs map[string]codex.Codec[string],
 	params []TopicParam,
 ) map[string]asyncapi.Parameter {
 	vars := internal.ParseTemplateVars(topic)
@@ -524,14 +540,8 @@ func buildTopicParameters(
 		p := asyncapi.Parameter{}
 		if tp, ok := paramsByName[name]; ok {
 			p.Description = tp.Description
-			if tp.Schema.Type != "" {
-				p.Schema = tp.Schema
-			}
-		}
-		// Fall back to codec schema when TopicParam didn't set an explicit schema.
-		if p.Schema.Type == "" {
-			if c, ok := codecs[name]; ok {
-				p.Schema = c.Schema
+			if tp.Codec != nil {
+				p.Schema = tp.Codec.Schema
 			}
 		}
 		result[name] = p

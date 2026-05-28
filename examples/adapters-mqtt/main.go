@@ -177,6 +177,11 @@ var alertEventCodec = codex.Struct[AlertEvent](
 	),
 )
 
+// measurementSensorCodec validates a sensor UUID used as a {sensorID} topic variable.
+// Registered in TopicParam.Codec so the UUID schema flows into the AsyncAPI spec
+// and BuildTopic rejects invalid IDs at the call site.
+var measurementSensorCodec = codex.String().Refine(validate.UUID)
+
 // ── Layer 2: Business logic (pure domain functions) ───────────────────────────
 //
 // Pure domain functions transform between domain types. Zero IO — no database,
@@ -399,7 +404,7 @@ func (c *mockClient) OptionsReader() pahomqtt.ClientOptionsReader {
 //   - The first segment is "sensors".
 //
 // Template variable placeholders such as {sensorID} are accepted — the UUID
-// content of that segment is validated at runtime via TopicParamCodecs when
+// content of that segment is validated at runtime via TopicParam.Codec when
 // BuildTopic is called with a concrete sensor ID.
 //
 // Composed with validate.MQTTPublishTopic via WithTopicConstraints, any topic
@@ -452,14 +457,14 @@ func main() {
 				Summary:    "Receive sensor measurement",
 				SchemaName: "MeasurementEvent",
 			},
-			// TopicParams enriches the AsyncAPI spec with a description for {sensorID}.
+			// TopicParams describes {sensorID}: description enriches the AsyncAPI spec;
+			// Codec validates the UUID at BuildTopic time and flows schema into the spec.
 			TopicParams: []events.TopicParam{
-				{Name: "sensorID", Description: "UUID of the sensor publishing the measurement."},
-			},
-			// TopicParamCodecs validates {sensorID} as a UUID when BuildTopic is called.
-			// The UUID codec schema (format: uuid, type: string) also flows into the spec.
-			TopicParamCodecs: map[string]codex.Codec[string]{
-				"sensorID": codex.String().Refine(validate.UUID),
+				{
+					Name:        "sensorID",
+					Description: "UUID of the sensor publishing the measurement.",
+					Codec:       &measurementSensorCodec,
+				},
 			},
 		})
 	if err != nil {
@@ -474,14 +479,14 @@ func main() {
 				Summary:    "Publish threshold alert",
 				SchemaName: "AlertEvent",
 			},
-			// TopicParams enriches the AsyncAPI spec with a description for {sensorID}.
+			// TopicParams describes {sensorID}: description enriches the AsyncAPI spec;
+			// Codec validates the UUID at BuildTopic time and flows schema into the spec.
 			TopicParams: []events.TopicParam{
-				{Name: "sensorID", Description: "UUID of the sensor that triggered the alert."},
-			},
-			// TopicParamCodecs validates {sensorID} as a UUID when BuildTopic is called.
-			// The UUID codec schema (format: uuid, type: string) also flows into the spec.
-			TopicParamCodecs: map[string]codex.Codec[string]{
-				"sensorID": codex.String().Refine(validate.UUID),
+				{
+					Name:        "sensorID",
+					Description: "UUID of the sensor that triggered the alert.",
+					Codec:       &measurementSensorCodec,
+				},
 			},
 		})
 	if err != nil {
