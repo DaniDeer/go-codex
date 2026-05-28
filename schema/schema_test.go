@@ -66,3 +66,31 @@ func TestSchema_JSONNilItemsOmitted(t *testing.T) {
 		t.Error("Items should be omitted when nil")
 	}
 }
+
+func TestSchema_IsZero_emptySchema(t *testing.T) {
+	s := schema.Schema{}
+	if !s.IsZero() {
+		t.Error("zero Schema should report IsZero() = true")
+	}
+}
+
+func TestSchema_IsZero_typeSet(t *testing.T) {
+	s := schema.Schema{Type: "string"}
+	if s.IsZero() {
+		t.Error("Schema{Type:string} should report IsZero() = false")
+	}
+}
+
+func TestSchema_IsZero_descriptionOnly(t *testing.T) {
+	s := schema.Schema{Description: "a description"}
+	if s.IsZero() {
+		t.Error("Schema with Description set should report IsZero() = false")
+	}
+}
+
+func TestSchema_IsZero_propertiesSet(t *testing.T) {
+	s := schema.Schema{Properties: []schema.Property{{Name: "id", Schema: schema.Schema{Type: "string"}}}}
+	if s.IsZero() {
+		t.Error("Schema with Properties set should report IsZero() = false")
+	}
+}

@@ -64,6 +64,34 @@ type Schema struct {
 	Default any `json:",omitempty"`
 }
 
+// IsZero reports whether s is the zero value — i.e. no schema data has been set.
+// Use this instead of comparing Schema.Type to "" to guard against future field additions.
+func (s Schema) IsZero() bool {
+	return s.Type == "" &&
+		s.Title == "" &&
+		s.Description == "" &&
+		s.Format == "" &&
+		s.Example == nil &&
+		len(s.Properties) == 0 &&
+		len(s.Required) == 0 &&
+		len(s.Enum) == 0 &&
+		len(s.OneOf) == 0 &&
+		s.Items == nil &&
+		!s.Nullable &&
+		s.AdditionalProperties == nil &&
+		s.AdditionalPropertiesSchema == nil &&
+		s.Discriminator == nil &&
+		s.Minimum == nil &&
+		s.Maximum == nil &&
+		!s.ExclusiveMinimum &&
+		!s.ExclusiveMaximum &&
+		s.MinLength == nil &&
+		s.MaxLength == nil &&
+		s.Pattern == "" &&
+		!s.Deprecated &&
+		s.Default == nil
+}
+
 // Prop returns the schema for the named property, and true if it was found.
 func (s Schema) Prop(name string) (Schema, bool) {
 	for _, p := range s.Properties {

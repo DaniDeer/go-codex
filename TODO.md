@@ -2,7 +2,7 @@
 
 ### Codec
 
-- [ ] **Lazy[T] / recursive types** *(deferred — complex)*
+- [ ] **Lazy[T] / recursive types** _(deferred — complex)_
       Self-referential structs (e.g. tree nodes) cannot reference their own codec during construction.
       Needs `Lazy[T](fn func() Codec[T]) Codec[T]` using `sync.Once` to defer resolution.
       Schema problem: a recursive schema cannot be inlined — it must emit a `$ref` to a named
@@ -16,18 +16,9 @@
       intended idiomatic pattern. Document with examples; consider a `go generate` code
       generator as a future separate tool.
 
-- [ ] **`schema.Schema` zero-value proxy** *(technical debt — low risk)*
-      Several places use `Schema.Type == ""` as a proxy for "schema not explicitly set"
-      (e.g. `mergePathParams` in `api/rest/builder.go`, `buildTopicParameters` in
-      `api/events/builder.go`). This is fragile: `schema.Schema` contains a `[]Property`
-      slice so `==` panics, and adding new fields to `schema.Schema` could silently break
-      the proxy logic.
-      Proposed fix: add `func (s Schema) IsZero() bool` to `schema/schema.go` and replace
-      all `Schema.Type == ""` checks with `s.IsZero()`. Low-risk, self-contained change.
-
 ### Spec generation
 
-- [ ] **`$ref` auto-deduplication** *(deferred — high risk)*
+- [ ] **`$ref` auto-deduplication** _(deferred — high risk)_
       Repeated schemas (e.g. a shared `Address` codec used in multiple places) are inlined
       everywhere rather than deduplicated into `components/schemas`.
       Requires schema canonicalization, a naming registry, a second render pass, and cycle
@@ -35,7 +26,7 @@
       Current workaround: explicit `SchemaName` on `Body`/`Response` + `AddSchema` on the
       builder — intentional and sufficient for the common case.
 
-- [ ] **`$ref` for path/topic parameter schemas** *(deferred — low priority)*
+- [ ] **`$ref` for path/topic parameter schemas** _(deferred — low priority)_
       Path parameter schemas (from `PathParamCodecs`) and AsyncAPI channel parameter schemas
       (from `TopicParamCodecs`) are always inlined in the spec output. For projects that
       reuse the same parameter codec across many routes (e.g. a UUID codec for dozens of
@@ -45,7 +36,7 @@
 
 ### API builders
 
-- [ ] **Generic type inference on body-less routes** *(watch — Go limitation)*
+- [ ] **Generic type inference on body-less routes** _(watch — Go limitation)_
       `AddRoute[struct{}, Resp]` and `AddChannel[T]` are ergonomic for typed payloads, but
       Go's type inference occasionally fails to infer `struct{}` as the `Req` type parameter
       without an explicit annotation. This is a Go compiler limitation, not a library bug;

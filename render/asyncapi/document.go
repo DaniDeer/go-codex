@@ -244,7 +244,7 @@ func buildParameters(params map[string]Parameter) map[string]any {
 		if p.Description != "" {
 			entry["description"] = p.Description
 		}
-		if p.Schema.Type != "" {
+		if !p.Schema.IsZero() {
 			entry["schema"] = schemaRef(p.Schema, "")
 		} else {
 			entry["schema"] = map[string]any{"type": "string"}
