@@ -34,6 +34,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"strings"
 	"sync"
 	"time"
 
@@ -391,6 +392,33 @@ func (c *mockClient) OptionsReader() pahomqtt.ClientOptionsReader {
 	return pahomqtt.ClientOptionsReader{}
 }
 
+// sensorTopicConstraint is a custom Constraint[string] that enforces the
+// sensors/{sensorID}/<action> topic structure used by this service.
+// It validates that:
+//   - The topic has exactly 3 slash-separated segments.
+//   - The first segment is "sensors".
+//
+// Template variable placeholders such as {sensorID} are accepted — the UUID
+// content of that segment is validated at runtime via TopicParamCodecs when
+// BuildTopic is called with a concrete sensor ID.
+//
+// Composed with validate.MQTTPublishTopic via WithTopicConstraints, any topic
+// that violates either rule causes AddChannel to return an InvalidTopicError
+// immediately — before the channel is registered.
+var sensorTopicConstraint = codex.Constraint[string]{
+	Name: "sensor-topic-format",
+	Check: func(v string) bool {
+		parts := strings.SplitN(v, "/", 4)
+		return len(parts) == 3 && parts[0] == "sensors"
+	},
+	Message: func(v string) string {
+		return fmt.Sprintf("topic must follow sensors/<id>/<action> format, got %q", v)
+	},
+}
+
+// sensorUUID is the fixed sensor identifier used in this demo.
+const sensorUUID = "f47ac10b-58cc-4372-a567-0e02b2c3d479"
+
 func main() {
 	ctx := context.Background()
 	store := newTimeSeriesStore()
@@ -405,36 +433,69 @@ func main() {
 		Title:       "Measurement Ingestion Service",
 		Version:     "1.0.0",
 		Description: "Subscribe to sensor measurements, persist to TSDB, alert on threshold breach.",
-	})
+	},
+		// WithTopicConstraints is optional. Compose built-in and custom constraints:
+		// - MQTTPublishTopic: non-empty, no wildcard characters (+ or #).
+		// - sensorTopicConstraint: topic must follow sensors/<uuid>/<action> format.
+		// AddChannel returns an InvalidTopicError immediately if either check fails.
+		events.WithTopicConstraints(validate.MQTTPublishTopic, sensorTopicConstraint),
+	)
 	b.AddServer("production", events.Server{
 		URL:      "mqtt://broker.example.com:1883",
 		Protocol: "mqtt",
 	})
 
-	measurementChannel := events.AddChannel[MeasurementEvent](b, "sensors/measurements", measurementEventCodec,
+	measurementChannel, err := events.AddChannel[MeasurementEvent](b, "sensors/{sensorID}/measurements", measurementEventCodec,
 		events.ChannelConfig{
 			Description: "Measurement points published by the sensor network.",
 			Subscribe: &events.OperationConfig{
 				Summary:    "Receive sensor measurement",
 				SchemaName: "MeasurementEvent",
 			},
+			// TopicParamCodecs validates {sensorID} as a UUID when BuildTopic is called.
+			TopicParamCodecs: map[string]codex.Codec[string]{
+				"sensorID": codex.String().Refine(validate.UUID),
+			},
 		})
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "channel registration failed: %v\n", err)
+		os.Exit(1)
+	}
 
-	alertChannel := events.AddChannel[AlertEvent](b, "sensors/alerts", alertEventCodec,
+	alertChannel, err := events.AddChannel[AlertEvent](b, "sensors/{sensorID}/alerts", alertEventCodec,
 		events.ChannelConfig{
 			Description: "Threshold breach alerts published by this service.",
 			Publish: &events.OperationConfig{
 				Summary:    "Publish threshold alert",
 				SchemaName: "AlertEvent",
 			},
+			// TopicParamCodecs validates {sensorID} as a UUID when BuildTopic is called.
+			TopicParamCodecs: map[string]codex.Codec[string]{
+				"sensorID": codex.String().Refine(validate.UUID),
+			},
 		})
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "channel registration failed: %v\n", err)
+		os.Exit(1)
+	}
 
 	// Wire infrastructure: inject store + alert publish function.
 	// Use domain logging decorator to separate logging concern from handler body.
 	client := newMockClient()
 
+	// BuildTopic substitutes {sensorID} and validates it against the UUID codec.
+	// The concrete topic is needed for client.Subscribe and client.deliver.
+	measurementTopic, err := measurementChannel.BuildTopic(map[string]string{"sensorID": sensorUUID})
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "BuildTopic error: %v\n", err)
+		os.Exit(1)
+	}
+
+	// Publish uses the vars map to build and validate the concrete alert topic at publish time.
+	// Pass nil for static topics (no template variables).
 	publishAlert := func(ctx context.Context, alert AlertEvent) error {
-		return adaptermqtt.Publish(ctx, client, alertChannel, 1, false, alert)
+		return adaptermqtt.Publish(ctx, client, alertChannel, 1, false, alert,
+			map[string]string{"sensorID": sensorUUID})
 	}
 
 	// Attribute extractor for domain logging — extract business-relevant fields from requests.
@@ -452,7 +513,7 @@ func main() {
 		extractMeasurementAttrs,
 	)
 
-	client.Subscribe(measurementChannel.Topic, 1,
+	client.Subscribe(measurementTopic, 1,
 		adaptermqtt.SubscribeHandler(ctx, measurementChannel, handler,
 			func(e adaptermqtt.SubscribeError) {
 				// Use mqttLogger for transport-level errors.
@@ -483,17 +544,17 @@ func main() {
 
 	// Simulate the broker delivering messages.
 	fmt.Println("=== Measurement within threshold (no alert) ===")
-	client.deliver("sensors/measurements",
+	client.deliver(measurementTopic,
 		[]byte(`{"sensor_id":"temp-01","value":62.5,"unit":"celsius","timestamp":"2024-01-15T10:30:00Z"}`))
 	fmt.Printf("TSDB rows: %d\n\n", store.Count())
 
 	fmt.Println("=== Measurement exceeding threshold (alert published) ===")
-	client.deliver("sensors/measurements",
+	client.deliver(measurementTopic,
 		[]byte(`{"sensor_id":"temp-01","value":87.3,"unit":"celsius","timestamp":"2024-01-15T10:31:00Z"}`))
 	fmt.Printf("TSDB rows: %d\n\n", store.Count())
 
 	fmt.Println("=== Malformed message (decode error, no store write) ===")
-	client.deliver("sensors/measurements",
+	client.deliver(measurementTopic,
 		[]byte(`{"sensor_id":"","value":"not-a-number"}`))
 	fmt.Printf("TSDB rows: %d (unchanged)\n\n", store.Count())
 

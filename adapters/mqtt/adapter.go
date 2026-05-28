@@ -77,6 +77,10 @@ func (e SubscribeError) Unwrap() error { return e.Err }
 // If onErr is non-nil it is called with a typed [SubscribeError] containing the
 // error kind, topic, and underlying error. If onErr is nil errors are silently
 // discarded.
+//
+// The Topic field of [SubscribeError] reflects the concrete topic of the incoming
+// message (from msg.Topic()), which is useful when the channel was registered with
+// a template topic.
 func SubscribeHandler[T any](
 	ctx context.Context,
 	handle *events.ChannelHandle[T],
@@ -87,27 +91,51 @@ func SubscribeHandler[T any](
 		value, err := handle.Decode(msg.Payload())
 		if err != nil {
 			if onErr != nil {
-				onErr(SubscribeError{Kind: KindDecode, Topic: handle.Topic, Err: err})
+				onErr(SubscribeError{Kind: KindDecode, Topic: msg.Topic(), Err: err})
 			}
 			return
 		}
 		if err := fn(ctx, value); err != nil {
 			if onErr != nil {
-				onErr(SubscribeError{Kind: KindHandler, Topic: handle.Topic, Err: err})
+				onErr(SubscribeError{Kind: KindHandler, Topic: msg.Topic(), Err: err})
 			}
 		}
 	}
 }
 
-// Publish encodes msg using handle's codec and publishes it to handle.Topic.
-// It waits for broker acknowledgement, respecting ctx cancellation. If the
+// Publish encodes msg using handle's codec and publishes it to the broker.
+//
+// vars controls the topic used for publishing:
+//   - nil: publish to handle.Topic directly (use for static topics).
+//   - non-nil: call handle.BuildTopic(vars) to build a concrete topic from the
+//     template, validating each variable against its registered codec. An error
+//     is returned if any variable is missing or fails validation.
+//
+// Example — static topic:
+//
+//	err := adaptermqtt.Publish(ctx, client, notifChannel, 1, false, notification, nil)
+//
+// Example — template topic (sensors/{sensorID}/alerts):
+//
+//	err := adaptermqtt.Publish(ctx, client, alertChannel, 1, false, alert,
+//	    map[string]string{"sensorID": id})
+//
+// Publish waits for broker acknowledgement, respecting ctx cancellation. If the
 // context is cancelled before the broker responds, ctx.Err() is returned.
-func Publish[T any](ctx context.Context, client pahomqtt.Client, handle *events.ChannelHandle[T], qos byte, retained bool, msg T) error {
+func Publish[T any](ctx context.Context, client pahomqtt.Client, handle *events.ChannelHandle[T], qos byte, retained bool, msg T, vars map[string]string) error {
+	topic := handle.Topic
+	if vars != nil {
+		var err error
+		topic, err = handle.BuildTopic(vars)
+		if err != nil {
+			return err
+		}
+	}
 	payload, err := handle.Encode(msg)
 	if err != nil {
-		return fmt.Errorf("mqtt encode %s: %w", handle.Topic, err)
+		return fmt.Errorf("mqtt encode %s: %w", topic, err)
 	}
-	token := client.Publish(handle.Topic, qos, retained, payload)
+	token := client.Publish(topic, qos, retained, payload)
 	select {
 	case <-ctx.Done():
 		return ctx.Err()

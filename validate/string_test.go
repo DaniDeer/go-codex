@@ -98,3 +98,78 @@ func TestOneOf(t *testing.T) {
 		t.Errorf("OneOf.Message = %q, want allowed values and rejected value", msg)
 	}
 }
+
+func TestMQTTTopic(t *testing.T) {
+	c := validate.MQTTTopic
+	cases := []struct {
+		v    string
+		pass bool
+	}{
+		{"sensor/temperature", true},
+		{"home/+/temp", true}, // wildcards allowed for subscriptions
+		{"home/#", true},      // wildcards allowed for subscriptions
+		{"a", true},
+		{"/leading/slash", true},
+		{"", false},                // empty
+		{string([]byte{0}), false}, // null byte
+	}
+	for _, tc := range cases {
+		if got := c.Check(tc.v); got != tc.pass {
+			t.Errorf("MQTTTopic.Check(%q) = %v, want %v", tc.v, got, tc.pass)
+		}
+	}
+	if msg := c.Message(""); !strings.Contains(msg, "empty") {
+		t.Errorf("MQTTTopic.Message(\"\") = %q, want mention of empty", msg)
+	}
+}
+
+func TestMQTTPublishTopic(t *testing.T) {
+	c := validate.MQTTPublishTopic
+	cases := []struct {
+		v    string
+		pass bool
+	}{
+		{"sensor/temperature", true},
+		{"home/living/temp", true},
+		{"a", true},
+		{"/leading/slash", true},
+		{"", false},                // empty
+		{string([]byte{0}), false}, // null byte
+		{"home/+/temp", false},     // wildcard + not allowed for publish
+		{"home/#", false},          // wildcard # not allowed for publish
+		{"sensor/+", false},
+	}
+	for _, tc := range cases {
+		if got := c.Check(tc.v); got != tc.pass {
+			t.Errorf("MQTTPublishTopic.Check(%q) = %v, want %v", tc.v, got, tc.pass)
+		}
+	}
+	if msg := c.Message("sensor/+"); !strings.Contains(msg, "wildcard") {
+		t.Errorf("MQTTPublishTopic.Message(\"sensor/+\") = %q, want mention of wildcard", msg)
+	}
+}
+
+func TestHTTPPath(t *testing.T) {
+	c := validate.HTTPPath
+	cases := []struct {
+		v    string
+		pass bool
+	}{
+		{"/", true},
+		{"/users", true},
+		{"/users/{id}", true},
+		{"/api/v1/users/{id}/posts", true},
+		{"", false},             // empty
+		{"users", false},        // no leading slash
+		{"/users/my id", false}, // space
+		{"/users/\x00", false},  // null byte
+	}
+	for _, tc := range cases {
+		if got := c.Check(tc.v); got != tc.pass {
+			t.Errorf("HTTPPath.Check(%q) = %v, want %v", tc.v, got, tc.pass)
+		}
+	}
+	if msg := c.Message("users"); !strings.Contains(msg, "/") {
+		t.Errorf("HTTPPath.Message(\"users\") = %q, want mention of leading slash", msg)
+	}
+}

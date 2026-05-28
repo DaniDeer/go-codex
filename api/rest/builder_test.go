@@ -2,6 +2,7 @@ package rest_test
 
 import (
 	"encoding/json"
+	"errors"
 	"strings"
 	"testing"
 
@@ -50,7 +51,10 @@ type userResp struct {
 
 func TestAddRoute_returnsHandleWithDecodeEncode(t *testing.T) {
 	b := rest.NewBuilder(testInfo)
-	h := rest.AddRoute[createReq, userResp](b, "POST", "/users", createReqCodec, userCodec, rest.RouteConfig{})
+	h, err := rest.AddRoute[createReq, userResp](b, "POST", "/users", createReqCodec, userCodec, rest.RouteConfig{})
+	if err != nil {
+		t.Fatalf("AddRoute error: %v", err)
+	}
 
 	// Decode valid JSON body.
 	req, err := h.Decode([]byte(`{"name":"Alice"}`))
@@ -77,9 +81,12 @@ func TestAddRoute_returnsHandleWithDecodeEncode(t *testing.T) {
 
 func TestAddRoute_decodeRunsValidation(t *testing.T) {
 	b := rest.NewBuilder(testInfo)
-	h := rest.AddRoute[createReq, userResp](b, "POST", "/users", createReqCodec, userCodec, rest.RouteConfig{})
+	h, err := rest.AddRoute[createReq, userResp](b, "POST", "/users", createReqCodec, userCodec, rest.RouteConfig{})
+	if err != nil {
+		t.Fatalf("AddRoute error: %v", err)
+	}
 
-	_, err := h.Decode([]byte(`{"name":""}`))
+	_, err = h.Decode([]byte(`{"name":""}`))
 	if err == nil {
 		t.Fatal("expected validation error for empty name, got nil")
 	}
@@ -91,7 +98,10 @@ func TestAddRoute_decodeRunsValidation(t *testing.T) {
 func TestAddRoute_descriptorFrozenAtRegistration(t *testing.T) {
 	b := rest.NewBuilder(testInfo)
 	config := rest.RouteConfig{OperationID: "createUser", Tags: []string{"users"}}
-	h := rest.AddRoute[createReq, userResp](b, "POST", "/users", createReqCodec, userCodec, config)
+	h, err := rest.AddRoute[createReq, userResp](b, "POST", "/users", createReqCodec, userCodec, config)
+	if err != nil {
+		t.Fatalf("AddRoute error: %v", err)
+	}
 
 	// Mutate the original config after registration.
 	config.OperationID = "mutated"
@@ -107,7 +117,10 @@ func TestAddRoute_descriptorFrozenAtRegistration(t *testing.T) {
 
 func TestAddRoute_postDefaultStatus201(t *testing.T) {
 	b := rest.NewBuilder(testInfo)
-	h := rest.AddRoute[createReq, userResp](b, "POST", "/users", createReqCodec, userCodec, rest.RouteConfig{})
+	h, err := rest.AddRoute[createReq, userResp](b, "POST", "/users", createReqCodec, userCodec, rest.RouteConfig{})
+	if err != nil {
+		t.Fatalf("AddRoute error: %v", err)
+	}
 
 	if len(h.Descriptor.Responses) == 0 || h.Descriptor.Responses[0].Status != "201" {
 		t.Errorf("POST default status: got %v, want 201", h.Descriptor.Responses)
@@ -116,7 +129,10 @@ func TestAddRoute_postDefaultStatus201(t *testing.T) {
 
 func TestAddRoute_getDefaultStatus200(t *testing.T) {
 	b := rest.NewBuilder(testInfo)
-	h := rest.AddRoute[createReq, userResp](b, "GET", "/users", createReqCodec, userCodec, rest.RouteConfig{})
+	h, err := rest.AddRoute[createReq, userResp](b, "GET", "/users", createReqCodec, userCodec, rest.RouteConfig{})
+	if err != nil {
+		t.Fatalf("AddRoute error: %v", err)
+	}
 
 	if len(h.Descriptor.Responses) == 0 || h.Descriptor.Responses[0].Status != "200" {
 		t.Errorf("GET default status: got %v, want 200", h.Descriptor.Responses)
@@ -126,8 +142,14 @@ func TestAddRoute_getDefaultStatus200(t *testing.T) {
 func TestAddRoute_bodyOnlyForBodyMethods(t *testing.T) {
 	b := rest.NewBuilder(testInfo)
 
-	post := rest.AddRoute[createReq, userResp](b, "POST", "/users", createReqCodec, userCodec, rest.RouteConfig{})
-	get := rest.AddRoute[createReq, userResp](b, "GET", "/users", createReqCodec, userCodec, rest.RouteConfig{})
+	post, err := rest.AddRoute[createReq, userResp](b, "POST", "/users", createReqCodec, userCodec, rest.RouteConfig{})
+	if err != nil {
+		t.Fatalf("AddRoute error: %v", err)
+	}
+	get, err := rest.AddRoute[createReq, userResp](b, "GET", "/users", createReqCodec, userCodec, rest.RouteConfig{})
+	if err != nil {
+		t.Fatalf("AddRoute error: %v", err)
+	}
 
 	if post.Descriptor.RequestBody == nil {
 		t.Error("POST descriptor: expected RequestBody, got nil")
@@ -146,7 +168,10 @@ func TestAddRoute_additionalResponsesAppended(t *testing.T) {
 			{Status: "404", Description: "Not found"},
 		},
 	}
-	h := rest.AddRoute[createReq, userResp](b, "POST", "/users", createReqCodec, userCodec, config)
+	h, err := rest.AddRoute[createReq, userResp](b, "POST", "/users", createReqCodec, userCodec, config)
+	if err != nil {
+		t.Fatalf("AddRoute error: %v", err)
+	}
 
 	if len(h.Descriptor.Responses) != 3 {
 		t.Fatalf("expected 3 responses (1 success + 2 extra), got %d", len(h.Descriptor.Responses))
@@ -163,7 +188,7 @@ func TestBuilder_openAPISpec_containsRegisteredRoutes(t *testing.T) {
 	b := rest.NewBuilder(testInfo)
 	b.AddServer("production", rest.Server{URL: "https://api.example.com"})
 
-	rest.AddRoute[createReq, userResp](b, "POST", "/users", createReqCodec, userCodec, rest.RouteConfig{
+	if _, err := rest.AddRoute[createReq, userResp](b, "POST", "/users", createReqCodec, userCodec, rest.RouteConfig{
 		OperationID:    "createUser",
 		Summary:        "Create a user",
 		ReqSchemaName:  "CreateUserRequest",
@@ -171,13 +196,17 @@ func TestBuilder_openAPISpec_containsRegisteredRoutes(t *testing.T) {
 		Responses: []rest.ResponseMeta{
 			{Status: "400", Description: "Validation error"},
 		},
-	})
-	rest.AddRoute[createReq, userResp](b, "GET", "/users/{id}", createReqCodec, userCodec, rest.RouteConfig{
+	}); err != nil {
+		t.Fatalf("AddRoute error: %v", err)
+	}
+	if _, err := rest.AddRoute[createReq, userResp](b, "GET", "/users/{id}", createReqCodec, userCodec, rest.RouteConfig{
 		OperationID: "getUser",
 		PathParams: []route.Param{
 			{Name: "id", Required: true, Schema: schema.Schema{Type: "string"}},
 		},
-	})
+	}); err != nil {
+		t.Fatalf("AddRoute error: %v", err)
+	}
 
 	doc, err := b.OpenAPISpec()
 	if err != nil {
@@ -211,8 +240,12 @@ func TestBuilder_openAPISpec_containsRegisteredRoutes(t *testing.T) {
 
 func TestBuilder_openAPISpec_duplicateRouteError(t *testing.T) {
 	b := rest.NewBuilder(testInfo)
-	rest.AddRoute[createReq, userResp](b, "POST", "/users", createReqCodec, userCodec, rest.RouteConfig{})
-	rest.AddRoute[createReq, userResp](b, "POST", "/users", createReqCodec, userCodec, rest.RouteConfig{})
+	if _, err := rest.AddRoute[createReq, userResp](b, "POST", "/users", createReqCodec, userCodec, rest.RouteConfig{}); err != nil {
+		t.Fatalf("AddRoute error: %v", err)
+	}
+	if _, err := rest.AddRoute[createReq, userResp](b, "POST", "/users", createReqCodec, userCodec, rest.RouteConfig{}); err != nil {
+		t.Fatalf("AddRoute error: %v", err)
+	}
 
 	_, err := b.OpenAPISpec()
 	if err == nil {
@@ -222,8 +255,12 @@ func TestBuilder_openAPISpec_duplicateRouteError(t *testing.T) {
 
 func TestBuilder_openAPISpec_multipleRoutesOnSamePath(t *testing.T) {
 	b := rest.NewBuilder(testInfo)
-	rest.AddRoute[createReq, userResp](b, "GET", "/users", createReqCodec, userCodec, rest.RouteConfig{OperationID: "listUsers"})
-	rest.AddRoute[createReq, userResp](b, "POST", "/users", createReqCodec, userCodec, rest.RouteConfig{OperationID: "createUser"})
+	if _, err := rest.AddRoute[createReq, userResp](b, "GET", "/users", createReqCodec, userCodec, rest.RouteConfig{OperationID: "listUsers"}); err != nil {
+		t.Fatalf("AddRoute error: %v", err)
+	}
+	if _, err := rest.AddRoute[createReq, userResp](b, "POST", "/users", createReqCodec, userCodec, rest.RouteConfig{OperationID: "createUser"}); err != nil {
+		t.Fatalf("AddRoute error: %v", err)
+	}
 
 	doc, err := b.OpenAPISpec()
 	if err != nil {
@@ -238,9 +275,11 @@ func TestBuilder_openAPISpec_multipleRoutesOnSamePath(t *testing.T) {
 
 func TestBuilder_openAPISpec_schemaRefInComponents(t *testing.T) {
 	b := rest.NewBuilder(testInfo)
-	rest.AddRoute[createReq, userResp](b, "POST", "/users", createReqCodec, userCodec, rest.RouteConfig{
+	if _, err := rest.AddRoute[createReq, userResp](b, "POST", "/users", createReqCodec, userCodec, rest.RouteConfig{
 		RespSchemaName: "UserResponse",
-	})
+	}); err != nil {
+		t.Fatalf("AddRoute error: %v", err)
+	}
 
 	doc, err := b.OpenAPISpec()
 	if err != nil {
@@ -258,9 +297,11 @@ func TestBuilder_openAPISpec_schemaRefInComponents(t *testing.T) {
 
 func TestBuilder_openAPISpec_jsonOutput(t *testing.T) {
 	b := rest.NewBuilder(testInfo)
-	rest.AddRoute[createReq, userResp](b, "GET", "/health", createReqCodec, userCodec, rest.RouteConfig{
+	if _, err := rest.AddRoute[createReq, userResp](b, "GET", "/health", createReqCodec, userCodec, rest.RouteConfig{
 		OperationID: "healthCheck",
-	})
+	}); err != nil {
+		t.Fatalf("AddRoute error: %v", err)
+	}
 
 	doc, err := b.OpenAPISpec()
 	if err != nil {
@@ -276,5 +317,172 @@ func TestBuilder_openAPISpec_jsonOutput(t *testing.T) {
 	}
 	if m["openapi"] != "3.1.0" {
 		t.Errorf("openapi version: got %v, want 3.1.0", m["openapi"])
+	}
+}
+
+func TestBuilder_withPathCodec_validPathPasses(t *testing.T) {
+	b := rest.NewBuilder(testInfo, rest.WithPathCodec(
+		codex.String().Refine(validate.HTTPPath),
+	))
+	if _, err := rest.AddRoute[createReq, userResp](b, "POST", "/users", createReqCodec, userCodec, rest.RouteConfig{}); err != nil {
+		t.Fatalf("AddRoute error: %v", err)
+	}
+	if _, err := rest.AddRoute[createReq, userResp](b, "GET", "/users/{id}", createReqCodec, userCodec, rest.RouteConfig{
+		PathParams: []route.Param{{Name: "id", Required: true, Schema: schema.Schema{Type: "string"}}},
+	}); err != nil {
+		t.Fatalf("AddRoute error: %v", err)
+	}
+
+	_, err := b.OpenAPISpec()
+	if err != nil {
+		t.Fatalf("expected no error for valid paths, got: %v", err)
+	}
+}
+
+func TestBuilder_withPathCodec_invalidPathSurfacesError(t *testing.T) {
+	b := rest.NewBuilder(testInfo, rest.WithPathCodec(
+		codex.String().Refine(validate.HTTPPath),
+	))
+	_, err := rest.AddRoute[createReq, userResp](b, "POST", "users", createReqCodec, userCodec, rest.RouteConfig{})
+	if err == nil {
+		t.Fatal("expected error for path missing leading slash, got nil")
+	}
+	if !strings.Contains(err.Error(), "users") {
+		t.Errorf("error message should mention the invalid path, got: %v", err)
+	}
+	var pathErr rest.InvalidPathError
+	if !errors.As(err, &pathErr) {
+		t.Errorf("expected InvalidPathError, got %T: %v", err, err)
+	}
+	if pathErr.Path != "users" {
+		t.Errorf("InvalidPathError.Path = %q, want %q", pathErr.Path, "users")
+	}
+	if pathErr.Err == nil {
+		t.Error("InvalidPathError.Err should be non-nil")
+	}
+}
+
+func TestBuilder_withPathConstraints_multipleInvalidPathsCollected(t *testing.T) {
+	b := rest.NewBuilder(testInfo, rest.WithPathConstraints(validate.HTTPPath))
+	_, err := rest.AddRoute[createReq, userResp](b, "POST", "no-slash", createReqCodec, userCodec, rest.RouteConfig{})
+	if err == nil {
+		t.Fatal("expected error for path missing leading slash, got nil")
+	}
+	if !strings.Contains(err.Error(), "no-slash") {
+		t.Errorf("error should mention the invalid path, got: %v", err)
+	}
+
+	_, err = rest.AddRoute[createReq, userResp](b, "GET", "also-bad", createReqCodec, userCodec, rest.RouteConfig{})
+	if err == nil {
+		t.Fatal("expected error for path missing leading slash, got nil")
+	}
+	if !strings.Contains(err.Error(), "also-bad") {
+		t.Errorf("error should mention the invalid path, got: %v", err)
+	}
+}
+
+func TestBuilder_noPathCodec_anyPathAccepted(t *testing.T) {
+	b := rest.NewBuilder(testInfo)
+	if _, err := rest.AddRoute[createReq, userResp](b, "POST", "no-slash", createReqCodec, userCodec, rest.RouteConfig{}); err != nil {
+		t.Fatalf("AddRoute error: %v", err)
+	}
+}
+
+func TestAddRoute_unknownPathParamCodecKey(t *testing.T) {
+	b := rest.NewBuilder(testInfo)
+	_, err := rest.AddRoute[createReq, userResp](b, "GET", "/users/{id}", createReqCodec, userCodec, rest.RouteConfig{
+		PathParamCodecs: map[string]codex.Codec[string]{
+			"id":      codex.String().Refine(validate.UUID),
+			"missing": codex.String(), // not in template
+		},
+	})
+	if err == nil {
+		t.Fatal("expected error for unknown PathParamCodecs key, got nil")
+	}
+	if !strings.Contains(err.Error(), "missing") {
+		t.Errorf("error should mention the unknown key, got: %v", err)
+	}
+}
+
+func TestBuildPath_validVars(t *testing.T) {
+	b := rest.NewBuilder(testInfo)
+	h, err := rest.AddRoute[createReq, userResp](b, "GET", "/users/{id}", createReqCodec, userCodec, rest.RouteConfig{
+		PathParamCodecs: map[string]codex.Codec[string]{
+			"id": codex.String().Refine(validate.UUID),
+		},
+	})
+	if err != nil {
+		t.Fatalf("AddRoute error: %v", err)
+	}
+
+	path, err := h.BuildPath(map[string]string{"id": "f47ac10b-58cc-4372-a567-0e02b2c3d479"})
+	if err != nil {
+		t.Fatalf("BuildPath error: %v", err)
+	}
+	if path != "/users/f47ac10b-58cc-4372-a567-0e02b2c3d479" {
+		t.Errorf("BuildPath = %q, want /users/f47ac10b-58cc-4372-a567-0e02b2c3d479", path)
+	}
+}
+
+func TestBuildPath_missingVar(t *testing.T) {
+	b := rest.NewBuilder(testInfo)
+	h, err := rest.AddRoute[createReq, userResp](b, "GET", "/users/{id}", createReqCodec, userCodec, rest.RouteConfig{})
+	if err != nil {
+		t.Fatalf("AddRoute error: %v", err)
+	}
+
+	_, err = h.BuildPath(map[string]string{})
+	if err == nil {
+		t.Fatal("expected error for missing template variable, got nil")
+	}
+	var missingErr rest.MissingPathVarError
+	if !errors.As(err, &missingErr) {
+		t.Fatalf("expected MissingPathVarError, got %T: %v", err, err)
+	}
+	if missingErr.Name != "id" {
+		t.Errorf("MissingPathVarError.Name = %q, want id", missingErr.Name)
+	}
+}
+
+func TestBuildPath_codecFailure(t *testing.T) {
+	b := rest.NewBuilder(testInfo)
+	h, err := rest.AddRoute[createReq, userResp](b, "GET", "/users/{id}", createReqCodec, userCodec, rest.RouteConfig{
+		PathParamCodecs: map[string]codex.Codec[string]{
+			"id": codex.String().Refine(validate.UUID),
+		},
+	})
+	if err != nil {
+		t.Fatalf("AddRoute error: %v", err)
+	}
+
+	_, err = h.BuildPath(map[string]string{"id": "not-a-uuid"})
+	if err == nil {
+		t.Fatal("expected PathParamError for invalid UUID, got nil")
+	}
+	var paramErr rest.PathParamError
+	if !errors.As(err, &paramErr) {
+		t.Fatalf("expected PathParamError, got %T: %v", err, err)
+	}
+	if paramErr.Name != "id" {
+		t.Errorf("PathParamError.Name = %q, want id", paramErr.Name)
+	}
+	if paramErr.Value != "not-a-uuid" {
+		t.Errorf("PathParamError.Value = %q, want not-a-uuid", paramErr.Value)
+	}
+}
+
+func TestBuildPath_extraKeysIgnored(t *testing.T) {
+	b := rest.NewBuilder(testInfo)
+	h, err := rest.AddRoute[createReq, userResp](b, "GET", "/users/{id}", createReqCodec, userCodec, rest.RouteConfig{})
+	if err != nil {
+		t.Fatalf("AddRoute error: %v", err)
+	}
+
+	path, err := h.BuildPath(map[string]string{"id": "42", "extra": "ignored"})
+	if err != nil {
+		t.Fatalf("BuildPath error: %v", err)
+	}
+	if path != "/users/42" {
+		t.Errorf("BuildPath = %q, want /users/42", path)
 	}
 }

@@ -125,15 +125,16 @@ Requires Go 1.25 or later.
 - **Multi-Format Support** — one `Codec[T]` reads and writes JSON, YAML, and TOML unchanged
 - **Encode, Decode, and Validation** — constraints run on decode; encode is trusted; validate is explicit
 - **Builtin Format Constraints** — `email`, `uuid`, `url`, `date`, `date-time` validated and reflected into schema automatically
+- **Protocol Path/Topic Constraints** — `validate.HTTPPath`, `validate.MQTTPublishTopic`, `validate.MQTTTopic` validate path and topic strings; compose with custom constraints via `WithPathConstraints` / `WithTopicConstraints`
 - **Rich Codec Types** — primitives, `Time`/`Date`, `Nullable[T]`, `Bytes`, `SliceOf[T]`, `StringMap[V]`, structs, tagged unions
 - **Structured Decode Errors** — all failure types are concrete structs (`ValidationErrors`, `ConstraintError`, `TypeMismatchError`, `ElementError`, `KeyError`, `UnknownVariantError`, `VariantError`); use `errors.As` to inspect them, or pass them directly to `log/slog`
 - **OpenAPI Schema Generation** — `components/schemas` map from codec-derived schemas, no manual YAML
 - **Full OpenAPI 3.1 Document** — complete REST API spec (paths, operations, params) from `route.Route` descriptors
 - **AsyncAPI 2.6 Document** — complete event-driven spec from channel descriptors; same schemas, no duplication
-- **REST API Builder** — typed `Decode`/`Encode` helpers per route + OpenAPI spec generation, no HTTP library import
-- **Event Channel Builder** — typed `Decode`/`Encode` helpers per channel + AsyncAPI spec generation, no messaging library import
+- **REST API Builder** — typed `Decode`/`Encode` helpers per route + OpenAPI spec generation; immediate path validation; `BuildPath` for runtime path construction with per-variable codec checks
+- **Event Channel Builder** — typed `Decode`/`Encode` helpers per channel + AsyncAPI spec generation; immediate topic validation; `BuildTopic` for runtime topic construction with per-variable codec checks
 - **net/http Adapter** — wire `RouteHandle` to `net/http.ServeMux` with one call; 400/500 error handling included
-- **Paho MQTT Adapter** — wire `ChannelHandle` to Paho MQTT subscribe callbacks; context-aware publish
+- **Paho MQTT Adapter** — wire `ChannelHandle` to Paho MQTT subscribe callbacks; unified `Publish` handles both static and template topics
 
 ### Multi-Format Support
 
@@ -354,6 +355,14 @@ Byte-size constraints (runtime-only, no schema annotation):
 | ---------------------- | ---------- | ---------------------- |
 | `validate.MaxBytes(n)` | `[]byte`   | decoded byte count ≤ n |
 | `validate.MinBytes(n)` | `[]byte`   | decoded byte count ≥ n |
+
+Protocol path/topic constraints (for use with `WithPathConstraints` / `WithTopicConstraints`):
+
+| Constraint                    | Applies to    | Validates                                           |
+| ----------------------------- | ------------- | --------------------------------------------------- |
+| `validate.HTTPPath`           | `string`      | starts with `/`, no null bytes or spaces; `{param}` placeholders allowed |
+| `validate.MQTTPublishTopic`   | `string`      | valid MQTT topic, no wildcard chars (`+`, `#`)      |
+| `validate.MQTTTopic`          | `string`      | valid MQTT topic, wildcards allowed (for subscribing) |
 
 ```go
 var ContactCodec = codex.Struct[Contact](
@@ -864,13 +873,20 @@ See `examples/event-driven/` for a runnable demonstration.
 The same builder generates a complete OpenAPI 3.1 spec from all registered routes.
 
 ```go
-import "github.com/DaniDeer/go-codex/api/rest"
+import (
+    "github.com/DaniDeer/go-codex/api/rest"
+    "github.com/DaniDeer/go-codex/validate"
+)
 
-b := rest.NewBuilder(rest.Info{Title: "User API", Version: "1.0.0"})
+// WithPathConstraints validates every registered path at AddRoute time.
+b := rest.NewBuilder(
+    rest.Info{Title: "User API", Version: "1.0.0"},
+    rest.WithPathConstraints(validate.HTTPPath),
+)
 b.AddServer(rest.Server{URL: "https://api.example.com/v1"})
 
-// AddRoute returns a RouteHandle — typed Decode/Encode helpers, no net/http import.
-createUser := rest.AddRoute[CreateUserRequest, User](b, "POST", "/users",
+// AddRoute returns (RouteHandle, error) — path is validated immediately.
+createUser, err := rest.AddRoute[CreateUserRequest, User](b, "POST", "/users",
     createUserCodec, userCodec,
     rest.RouteConfig{
         OperationID:    "createUser",
@@ -881,6 +897,38 @@ createUser := rest.AddRoute[CreateUserRequest, User](b, "POST", "/users",
             {Status: "400", Description: "Validation error."},
         },
     })
+if err != nil {
+    log.Fatal(err) // *rest.InvalidPathError if path is invalid
+}
+
+// Route with a path variable and per-variable codec validation.
+getUser, err := rest.AddRoute[struct{}, User](b, "GET", "/users/{id}",
+    codex.Struct[struct{}](), userCodec,
+    rest.RouteConfig{
+        OperationID:    "getUser",
+        Summary:        "Get a user by ID",
+        RespSchemaName: "User",
+        PathParamCodecs: map[string]codex.Codec[string]{
+            "id": codex.String().Refine(validate.UUID),
+        },
+    })
+if err != nil {
+    log.Fatal(err)
+}
+
+// BuildPath substitutes {id} and validates it against the UUID codec.
+path, err := getUser.BuildPath(map[string]string{"id": "f47ac10b-58cc-4372-a567-0e02b2c3d479"})
+if err != nil {
+    var missingVar *rest.MissingPathVarError
+    var paramErr *rest.PathParamError
+    switch {
+    case errors.As(err, &missingVar):
+        log.Fatalf("missing path variable: %s", missingVar.Name)
+    case errors.As(err, &paramErr):
+        log.Fatalf("invalid value for path variable %s: %v", paramErr.Name, paramErr.Err)
+    }
+}
+// path == "/users/f47ac10b-58cc-4372-a567-0e02b2c3d479"
 
 // In your HTTP handler — works with net/http, Gin, Chi, Echo, anything:
 req, err := createUser.Decode(body)   // JSON → CreateUserRequest, validates
@@ -894,6 +942,21 @@ fmt.Println(createUser.Descriptor.Method, createUser.Descriptor.Path) // POST /u
 doc, err := b.OpenAPISpec()
 yamlBytes, _ := doc.MarshalYAML()
 ```
+
+**Builder options:**
+
+| Option | Effect |
+| --- | --- |
+| `WithPathCodec(c)` | Validates paths against codec `c` at `AddRoute` time |
+| `WithPathConstraints(cs...)` | Validates paths against one or more constraints at `AddRoute` time |
+
+**Error types from `AddRoute` and `BuildPath`:**
+
+| Error type | When returned | `errors.As` target |
+| --- | --- | --- |
+| `*rest.InvalidPathError` | Path fails builder-level validation | `InvalidPathError{Path, Err}` |
+| `*rest.PathParamError` | A path variable value fails its codec | `PathParamError{Name, Value, Err}` |
+| `*rest.MissingPathVarError` | A template variable is absent from the `vars` map | `MissingPathVarError{Name}` |
 
 **Future:** framework-specific adapters (`adapters/gin`, `adapters/chi`, etc.) will wrap `RouteHandle` for zero-boilerplate integration. The `api/rest` core stays dependency-free.
 
@@ -1016,27 +1079,62 @@ See [`examples/adapters-nethttp`](examples/adapters-nethttp/main.go) for the ful
 The same builder generates a complete AsyncAPI 2.6 spec from all registered channels.
 
 ```go
-import "github.com/DaniDeer/go-codex/api/events"
+import (
+    "github.com/DaniDeer/go-codex/api/events"
+    "github.com/DaniDeer/go-codex/validate"
+)
 
-b := events.NewBuilder(events.Info{Title: "User Events", Version: "1.0.0"})
+// WithTopicConstraints validates every registered topic at AddChannel time.
+b := events.NewBuilder(
+    events.Info{Title: "User Events", Version: "1.0.0"},
+    events.WithTopicConstraints(validate.MQTTPublishTopic),
+)
 b.AddServer("production", events.Server{URL: "amqp://broker.example.com", Protocol: "amqp"})
 
-// AddChannel returns a ChannelHandle — typed Decode/Encode helpers, no broker import.
-userCreated := events.AddChannel[UserCreatedEvent](b, "user/created", userCreatedCodec,
+// AddChannel returns (ChannelHandle, error) — topic is validated immediately.
+userCreated, err := events.AddChannel[UserCreatedEvent](b, "user/created", userCreatedCodec,
     events.ChannelConfig{
         Subscribe: &events.OperationConfig{
             Summary:    "A user was created",
             SchemaName: "UserCreatedEvent",
         },
     })
+if err != nil {
+    log.Fatal(err) // *events.InvalidTopicError if topic is invalid
+}
+
+// Channel with a topic template and per-variable codec validation.
+sensorMeasurement, err := events.AddChannel[Measurement](b, "sensors/{sensorID}/measurements",
+    measurementCodec,
+    events.ChannelConfig{
+        Subscribe: &events.OperationConfig{Summary: "Sensor measurement received"},
+        TopicParamCodecs: map[string]codex.Codec[string]{
+            "sensorID": codex.String().Refine(validate.UUID),
+        },
+    })
+if err != nil {
+    log.Fatal(err)
+}
+
+// BuildTopic substitutes {sensorID} and validates it against the UUID codec.
+topic, err := sensorMeasurement.BuildTopic(map[string]string{
+    "sensorID": "f47ac10b-58cc-4372-a567-0e02b2c3d479",
+})
+if err != nil {
+    var missingVar *events.MissingTopicVarError
+    var paramErr *events.TopicParamError
+    switch {
+    case errors.As(err, &missingVar):
+        log.Fatalf("missing topic variable: %s", missingVar.Name)
+    case errors.As(err, &paramErr):
+        log.Fatalf("invalid value for topic variable %s: %v", paramErr.Name, paramErr.Err)
+    }
+}
+// topic == "sensors/f47ac10b-58cc-4372-a567-0e02b2c3d479/measurements"
 
 // In your broker callback — works with Paho MQTT, AMQP, Kafka, NATS, anything:
 event, err := userCreated.Decode(msg.Payload()) // JSON → UserCreatedEvent, validates
 handleUserCreated(event)
-
-// Publish:
-payload, _ := userCreated.Encode(UserCreatedEvent{...})
-client.Publish(userCreated.Topic, payload)
 
 // AsyncAPI 2.6 spec from all registered channels:
 doc, err := b.AsyncAPISpec()
@@ -1051,6 +1149,21 @@ events.AddChannel[UserEvent](b, "user/events", codec, events.ChannelConfig{
     Publish:   &events.OperationConfig{Summary: "Send user events"},
 })
 ```
+
+**Builder options:**
+
+| Option | Effect |
+| --- | --- |
+| `WithTopicCodec(c)` | Validates topics against codec `c` at `AddChannel` time |
+| `WithTopicConstraints(cs...)` | Validates topics against one or more constraints at `AddChannel` time |
+
+**Error types from `AddChannel` and `BuildTopic`:**
+
+| Error type | When returned | `errors.As` target |
+| --- | --- | --- |
+| `*events.InvalidTopicError` | Topic fails builder-level validation | `InvalidTopicError{Topic, Err}` |
+| `*events.TopicParamError` | A topic variable value fails its codec | `TopicParamError{Name, Value, Err}` |
+| `*events.MissingTopicVarError` | A template variable is absent from the `vars` map | `MissingTopicVarError{Name}` |
 
 **Future:** broker-specific adapters (`adapters/amqp`, `adapters/kafka`, etc.) will wrap `ChannelHandle` for zero-boilerplate integration.
 
@@ -1083,9 +1196,13 @@ handler := withDomainLoggingErr("measurement.process",
 )
 
 // Subscribe with structured error handling — distinguish decode vs handler failures.
-client.Subscribe(measurementChannel.Topic, 1,
-    amqtt.SubscribeHandler(ctx, measurementChannel, handler,
+// For template topics (e.g. "sensors/{sensorID}/measurements"), build the concrete
+// topic with BuildTopic before subscribing.
+topic, _ := sensorMeasurement.BuildTopic(map[string]string{"sensorID": sensorUUID})
+client.Subscribe(topic, 1,
+    amqtt.SubscribeHandler(ctx, sensorMeasurement, handler,
         func(e amqtt.SubscribeError) {
+            // e.Topic is the concrete incoming topic (msg.Topic()), not the template.
             switch e.Kind {
             case amqtt.KindDecode:
                 var validationErrs codex.ValidationErrors
@@ -1104,13 +1221,32 @@ client.Subscribe(measurementChannel.Topic, 1,
     ),
 )
 
-// Publish: encode outgoing message and wait for broker ack.
-err := amqtt.Publish(ctx, client, alertChannel, 1, false, AlertEvent{...})
+// Publish — static topic: pass nil for vars.
+err := amqtt.Publish(ctx, client, alertChannel, 1, false, AlertEvent{...}, nil)
+
+// Publish — template topic: pass vars map; BuildTopic is called internally.
+err = amqtt.Publish(ctx, client, sensorMeasurement, 1, false, m,
+    map[string]string{"sensorID": sensorUUID})
 ```
 
 **`SubscribeError.Kind` distinguishes:**
 - `KindDecode` — codec validation failure (user error, log Warn)
 - `KindHandler` — application logic failure (system error, log Error)
+
+**`SubscribeError.Topic`** — always the concrete incoming message topic, even for template channels (e.g. `sensors/abc-123/measurements` not `sensors/{sensorID}/measurements`).
+
+**`Publish` signature:**
+```go
+func Publish[T any](
+    ctx      context.Context,
+    client   pahomqtt.Client,
+    handle   *events.ChannelHandle[T],
+    qos      byte,
+    retained bool,
+    msg      T,
+    vars     map[string]string, // nil → use handle.Topic; non-nil → BuildTopic(vars)
+) error
+```
 
 **Structured logging:** all codec error types (`ValidationErrors`, `ConstraintError`, `TypeMismatchError`, etc.) implement `slog.LogValuer`. Using `slog.Any("errors", err)` triggers the full nested structure — field names, constraint details, type mismatches — without string parsing.
 
@@ -1308,16 +1444,18 @@ go-codex/
 │   └── route.go            # Route, Param, Body, Response
 │
 ├── api/                    # API builders (no HTTP or messaging library imports)
+│   ├── internal/           # shared helpers (not public API)
+│   │   └── template.go     # ParseTemplateVars, BuildFromTemplate — used by rest + events
 │   ├── rest/               # REST API builder: typed Decode/Encode + OpenAPI spec
-│   │   └── builder.go      # Builder, AddRoute[Req,Resp], AddServer, AddSchema, RouteHandle
+│   │   └── builder.go      # Builder, AddRoute[Req,Resp], AddServer, AddSchema, RouteHandle, BuildPath
 │   └── events/             # Event channel builder: typed Decode/Encode + AsyncAPI spec
-│       └── builder.go      # Builder, AddChannel[T], AddServer, AddSchema, ChannelHandle
+│       └── builder.go      # Builder, AddChannel[T], AddServer, AddSchema, ChannelHandle, BuildTopic
 │
 ├── adapters/               # transport-specific adapters (wrap api/rest or api/events)
 │   ├── nethttp/            # net/http adapter for api/rest RouteHandles
 │   │   └── adapter.go      # Handler, Register, HandlerWithOptions, RequestFromContext
 │   └── mqtt/               # Paho MQTT adapter for api/events ChannelHandles
-│       └── adapter.go      # Subscribe, Publish, SubscribeError, ErrorKind
+│       └── adapter.go      # SubscribeHandler, Publish, SubscribeError, ErrorKind
 │
 ├── render/                 # spec renderers (import schema only, or schema + route)
 │   ├── internal/
@@ -1340,7 +1478,7 @@ go-codex/
 │   ├── format.go           # Email, UUID, URL, URLWithSchemes, URI, Hostname, IPv4, IPv6, Date, Time, DateTime, SemVer, Slug, CIDR
 │   ├── int.go              # PositiveInt, NegativeInt, NonZeroInt, MinInt, MaxInt, RangeInt; int32 + int64 variants
 │   ├── uint.go             # PositiveUint, MinUint, MaxUint, RangeUint; uint64 variants
-│   └── string.go           # NonEmptyString, MinLen, MaxLen, Pattern, OneOf
+│   └── string.go           # NonEmptyString, MinLen, MaxLen, Pattern, OneOf, HTTPPath, MQTTTopic, MQTTPublishTopic
 │
 └── examples/               # usage demonstrations — not importable
     ├── adapters-mqtt/      # Paho MQTT adapter: wiring api/events to Paho client

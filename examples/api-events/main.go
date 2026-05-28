@@ -95,7 +95,13 @@ func main() {
 		Title:       "Notification Service Events",
 		Version:     "1.0.0",
 		Description: "Channels for the notification service: receives user events, sends notification commands.",
-	})
+	},
+		// WithTopicConstraints is optional. When set, AddChannel returns an
+		// InvalidTopicError immediately if the topic violates the constraint.
+		// MQTTPublishTopic requires a non-empty topic with no wildcard characters
+		// (+ or #), which is correct for producer channels.
+		events.WithTopicConstraints(validate.MQTTPublishTopic),
+	)
 	b.AddServer("production", events.Server{
 		URL:         "amqp://broker.example.com",
 		Protocol:    "amqp",
@@ -104,7 +110,7 @@ func main() {
 
 	// user/created — Subscribe: this app RECEIVES events when users register.
 	// AsyncAPI "subscribe" means the broker delivers messages to this application.
-	userCreated := events.AddChannel[UserCreatedEvent](b, "user/created", userCreatedCodec,
+	userCreated, err := events.AddChannel[UserCreatedEvent](b, "user/created", userCreatedCodec,
 		events.ChannelConfig{
 			Description: "User registration events consumed by the notification service.",
 			Subscribe: &events.OperationConfig{
@@ -113,10 +119,14 @@ func main() {
 				SchemaName: "UserCreatedEvent",
 			},
 		})
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "channel registration failed: %v\n", err)
+		os.Exit(1)
+	}
 
 	// notification/send — Publish: this app SENDS notification commands.
 	// AsyncAPI "publish" means this application produces messages to the broker.
-	notificationSend := events.AddChannel[NotificationCommand](b, "notification/send", notificationCommandCodec,
+	notificationSend, err := events.AddChannel[NotificationCommand](b, "notification/send", notificationCommandCodec,
 		events.ChannelConfig{
 			Description: "Notification commands sent by this service to trigger delivery.",
 			Publish: &events.OperationConfig{
@@ -125,6 +135,10 @@ func main() {
 				SchemaName: "NotificationCommand",
 			},
 		})
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "channel registration failed: %v\n", err)
+		os.Exit(1)
+	}
 
 	// Bidirectional example (Both directions on one channel):
 	// ChannelConfig{

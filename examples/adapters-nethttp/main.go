@@ -286,24 +286,44 @@ func main() {
 		Title:       "User API",
 		Version:     "1.0.0",
 		Description: "Three-layer codec pipeline: HTTP ↔ domain ↔ database.",
-	})
+	},
+		// WithPathConstraints is optional. When set, AddRoute returns an
+		// InvalidPathError immediately if the path violates the constraint.
+		// HTTPPath requires a leading '/' and forbids unencoded spaces and null
+		// bytes. OpenAPI-style path parameters like {id} are allowed, so
+		// /users/{id} passes correctly.
+		rest.WithPathConstraints(validate.HTTPPath),
+	)
 	b.AddServer("local", rest.Server{URL: "http://localhost:8080"})
 
-	createUserRoute := rest.AddRoute[CreateUserReq, User](b, "POST", "/users",
+	createUserRoute, err := rest.AddRoute[CreateUserReq, User](b, "POST", "/users",
 		createUserReqCodec, userCodec, rest.RouteConfig{
 			OperationID:    "createUser",
 			Summary:        "Create a user",
 			ReqSchemaName:  "CreateUserRequest",
 			RespSchemaName: "User",
 		})
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "route registration failed: %v\n", err)
+		os.Exit(1)
+	}
 
-	getUserRoute := rest.AddRoute[emptyReq, User](b, "GET", "/users/{id}",
+	getUserRoute, err := rest.AddRoute[emptyReq, User](b, "GET", "/users/{id}",
 		emptyReqCodec, userCodec, rest.RouteConfig{
 			OperationID:    "getUser",
 			Summary:        "Get a user by ID",
 			RespSchemaName: "User",
 			PathParams:     []rest.Param{{Name: "id", Description: "User UUID"}},
+			// PathParamCodecs validates {id} as a UUID when BuildPath is called.
+			// This catches invalid IDs at the call site before an HTTP request is made.
+			PathParamCodecs: map[string]codex.Codec[string]{
+				"id": codex.String().Refine(validate.UUID),
+			},
 		})
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "route registration failed: %v\n", err)
+		os.Exit(1)
+	}
 
 	// Custom ErrorHandler using httpLogger for transport-level errors.
 	// Distinguishes validation failures (400, Warn) from system errors (500, Error).
@@ -381,7 +401,13 @@ func main() {
 	fmt.Printf("Status: %d\nError:  %s\n\n", resp2.StatusCode, errBody["error"])
 
 	fmt.Println("=== GET /users/{id} ===")
-	resp3, err := http.Get(srv.URL + "/users/" + created.ID) //nolint:noctx
+	// BuildPath substitutes {id} and validates the value against the UUID codec.
+	userPath, err := getUserRoute.BuildPath(map[string]string{"id": created.ID})
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "BuildPath error: %v\n", err)
+		os.Exit(1)
+	}
+	resp3, err := http.Get(srv.URL + userPath) //nolint:noctx
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "GET error: %v\n", err)
 		os.Exit(1)

@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"regexp"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/DaniDeer/go-codex/codex"
 	"github.com/DaniDeer/go-codex/schema"
@@ -87,4 +88,77 @@ func OneOf(values ...string) codex.Constraint[string] {
 			return s
 		},
 	}
+}
+
+// MQTTTopic is a Constraint that validates an MQTT topic string for general use
+// (subscribe or publish). It requires the string to be non-empty, contain no
+// null bytes (U+0000), and be at most 65535 UTF-8 bytes — as required by the
+// MQTT specification (section 4.7).
+var MQTTTopic = codex.Constraint[string]{
+	Name: "mqtt-topic",
+	Check: func(v string) bool {
+		return v != "" && !strings.ContainsRune(v, 0) && utf8.RuneCountInString(v) > 0 && len(v) <= 65535
+	},
+	Message: func(v string) string {
+		switch {
+		case v == "":
+			return "mqtt topic must not be empty"
+		case strings.ContainsRune(v, 0):
+			return "mqtt topic must not contain null bytes"
+		case len(v) > 65535:
+			return fmt.Sprintf("mqtt topic exceeds maximum length of 65535 bytes, got %d", len(v))
+		default:
+			return fmt.Sprintf("invalid mqtt topic: %q", v)
+		}
+	},
+}
+
+// MQTTPublishTopic is a Constraint that validates an MQTT topic string for
+// publishing. It applies all rules from [MQTTTopic] and additionally forbids
+// wildcard characters ('+' and '#'), which are reserved for subscriptions only.
+var MQTTPublishTopic = codex.Constraint[string]{
+	Name: "mqtt-publish-topic",
+	Check: func(v string) bool {
+		return v != "" && !strings.ContainsRune(v, 0) && len(v) <= 65535 &&
+			!strings.ContainsAny(v, "+#")
+	},
+	Message: func(v string) string {
+		switch {
+		case v == "":
+			return "mqtt publish topic must not be empty"
+		case strings.ContainsRune(v, 0):
+			return "mqtt publish topic must not contain null bytes"
+		case len(v) > 65535:
+			return fmt.Sprintf("mqtt publish topic exceeds maximum length of 65535 bytes, got %d", len(v))
+		case strings.ContainsAny(v, "+#"):
+			return fmt.Sprintf("mqtt publish topic must not contain wildcard characters '+' or '#', got %q", v)
+		default:
+			return fmt.Sprintf("invalid mqtt publish topic: %q", v)
+		}
+	},
+}
+
+// httpPathRe matches a valid HTTP path: starts with '/', followed by any
+// sequence of path characters including OpenAPI-style path parameters ({name}).
+// Spaces and null bytes are not allowed.
+var httpPathRe = regexp.MustCompile(`^/[^\x00 ]*$`)
+
+// HTTPPath is a Constraint that validates an HTTP path string. It requires the
+// path to start with '/' and contain no unencoded spaces or null bytes.
+// OpenAPI-style path parameters (e.g. /users/{id}) are permitted.
+var HTTPPath = codex.Constraint[string]{
+	Name:  "http-path",
+	Check: func(v string) bool { return httpPathRe.MatchString(v) },
+	Message: func(v string) string {
+		switch {
+		case v == "" || v[0] != '/':
+			return fmt.Sprintf("http path must start with '/', got %q", v)
+		case strings.ContainsRune(v, 0):
+			return fmt.Sprintf("http path must not contain null bytes, got %q", v)
+		case strings.ContainsRune(v, ' '):
+			return fmt.Sprintf("http path must not contain unencoded spaces, got %q", v)
+		default:
+			return fmt.Sprintf("invalid http path: %q", v)
+		}
+	},
 }

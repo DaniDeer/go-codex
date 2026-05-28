@@ -76,13 +76,19 @@ func main() {
 		Title:       "User API",
 		Version:     "1.0.0",
 		Description: "CRUD API for managing users.",
-	})
+	},
+		// WithPathConstraints is optional. When set, AddRoute returns an
+		// InvalidPathError immediately if the path violates the constraint.
+		// HTTPPath requires a leading '/' and forbids unencoded spaces and null
+		// bytes. OpenAPI-style path parameters like {id} are allowed.
+		rest.WithPathConstraints(validate.HTTPPath),
+	)
 	b.AddServer("production", rest.Server{URL: "https://api.example.com/v1", Description: "Production"})
 	b.AddServer("local", rest.Server{URL: "http://localhost:8080/v1", Description: "Local development"})
 
 	// POST /users — creates a user.
 	// createUser.Decode(body) and createUser.Encode(user) are the codec helpers.
-	createUser := rest.AddRoute[CreateUserRequest, User](b, "POST", "/users",
+	createUser, err := rest.AddRoute[CreateUserRequest, User](b, "POST", "/users",
 		createUserCodec, userCodec,
 		rest.RouteConfig{
 			OperationID:     "createUser",
@@ -95,10 +101,14 @@ func main() {
 				{Status: "400", Description: "Validation error."},
 			},
 		})
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "route registration failed: %v\n", err)
+		os.Exit(1)
+	}
 
 	// GET /users/{id} — no request body; emptyReq carries no fields.
 	// Path parameter is extracted at the HTTP layer (e.g. r.PathValue("id")).
-	getUser := rest.AddRoute[emptyReq, User](b, "GET", "/users/{id}",
+	getUser, err := rest.AddRoute[emptyReq, User](b, "GET", "/users/{id}",
 		emptyCodec, userCodec,
 		rest.RouteConfig{
 			OperationID:     "getUser",
@@ -113,6 +123,10 @@ func main() {
 				{Status: "404", Description: "User not found."},
 			},
 		})
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "route registration failed: %v\n", err)
+		os.Exit(1)
+	}
 
 	// --- Demonstrate codec-backed Decode/Encode ---
 	// These helpers work with any HTTP library; pass them to your handler.

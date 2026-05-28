@@ -30,10 +30,11 @@ go-codex is a Go port of the core ideas from Haskell's [autodocodec](https://hac
 | `render/internal/schemarender` | Shared schema-to-map rendering logic used by both OpenAPI and AsyncAPI renderers | `schema`               |
 | `render/openapi`  | Renders `schema.Schema` as OpenAPI 3.1 `components/schemas`; `DocumentBuilder` for full spec | `schema`, `route`, `render/internal/schemarender`, external libs |
 | `render/asyncapi` | Renders channels and schemas as a full AsyncAPI 2.6 document                             | `schema`, `render/internal/schemarender`, external libs |
-| `api/rest`        | Transport-agnostic REST API builder; typed Decode/Encode + OpenAPI spec                  | `codex`, `format`, `route`, `render/openapi`, `schema` |
-| `api/events`      | Transport-agnostic event channel builder; typed Decode/Encode + AsyncAPI spec            | `codex`, `format`, `render/asyncapi`, `schema` |
+| `api/internal`    | Shared helpers for `api/rest` and `api/events` (template variable parsing and substitution); not part of the public API | `codex` |
+| `api/rest`        | Transport-agnostic REST API builder; typed Decode/Encode + OpenAPI spec                  | `codex`, `format`, `route`, `render/openapi`, `schema`, `api/internal` |
+| `api/events`      | Transport-agnostic event channel builder; typed Decode/Encode + AsyncAPI spec            | `codex`, `format`, `render/asyncapi`, `schema`, `api/internal` |
 | `adapters/nethttp` | net/http adapter: `Handler`, `Register`, `HandlerWithOptions`, `RegisterWithOptions`, `RequestFromContext` | `api/rest`, `net/http` |
-| `adapters/mqtt`   | Paho MQTT adapter: `SubscribeHandler`, `Publish`, `SubscribeError`, `ErrorKind`              | `api/events`, Paho MQTT lib |
+| `adapters/mqtt`   | Paho MQTT adapter: `SubscribeHandler`, `Publish`, `SubscribeError`, `ErrorKind` | `api/events`, Paho MQTT lib |
 
 - No circular imports.
 - `schema` has zero dependencies inside this module.
@@ -578,6 +579,7 @@ Set `Required: false` on the field. The field is omitted from the encoded object
 - Float constraints: `PositiveFloat`, `NegativeFloat`, `NonZeroFloat`, `MinFloat(n)`, `MaxFloat(n)`, `RangeFloat(min, max)`.
 - `time.Duration` constraints: `PositiveDuration`, `NonNegativeDuration`, `MinDuration(d)`, `MaxDuration(d)`. No schema annotation (no JSON Schema standard for duration bounds).
 - String constraints: `NonEmptyString`, `MinLen(n)`, `MaxLen(n)`, `Pattern(re)`, `OneOf(values...)`.
+- Protocol path/topic constraints: `MQTTTopic` (non-empty, no null byte, max 65535 UTF-8 bytes), `MQTTPublishTopic` (same + no `+`/`#` wildcards), `HTTPPath` (must start with `/`, no spaces or null bytes, OpenAPI-style `{param}` allowed). None carry schema annotations (no JSON Schema standard keywords for these rules).
 - Format constraints: `Email`, `UUID`, `URL`, `URLWithSchemes(schemes...)`, `URI`, `Hostname`, `IPv4`, `IPv6`, `Date`, `Time`, `DateTime`, `SemVer`, `Slug`, `CIDR`.
 - Byte-size constraints: `MaxBytes(n)`, `MinBytes(n)` — validate decoded `[]byte` length; no schema annotation (JSON Schema has no standard keyword for decoded-byte-count limits).
 - Constraints in `validate/` must not depend on any specific codec; they depend only on `codex.Constraint[T]` and `schema.Schema`.
@@ -731,33 +733,89 @@ Key rules:
 
 ```go
 // NewBuilder returns a Builder for REST route registration.
-func NewBuilder(info Info) *Builder
+// opts are applied in order; use WithPathCodec or WithPathConstraints to validate paths.
+func NewBuilder(info Info, opts ...BuilderOption) *Builder
+
+// WithPathCodec sets a codec used to validate every path registered via AddRoute.
+// If validation fails, AddRoute returns an InvalidPathError immediately.
+func WithPathCodec(c codex.Codec[string]) BuilderOption
+
+// WithPathConstraints is a convenience wrapper: builds codex.String() refined with cons
+// and delegates to WithPathCodec.
+func WithPathConstraints(cons ...codex.Constraint[string]) BuilderOption
 
 // AddRoute is a free function (generic type params require free functions in Go).
 // Registers a route; returns a RouteHandle with frozen descriptor and typed helpers.
+// Returns InvalidPathError immediately if path codec validation fails.
 func AddRoute[Req, Resp any](
     b *Builder,
     method, path string,
     reqCodec codex.Codec[Req],
     respCodec codex.Codec[Resp],
     config RouteConfig,
-) *RouteHandle[Req, Resp]
+) (*RouteHandle[Req, Resp], error)
+
+// InvalidPathError is returned by AddRoute when path codec validation fails.
+// Use errors.As to extract it and inspect Path or the underlying constraint Err.
+type InvalidPathError struct {
+    Path string
+    Err  error
+}
 
 // OpenAPISpec builds a full OpenAPI 3.1 document from all registered routes.
+// Returns an error if there are dangling $refs.
 func (b *Builder) OpenAPISpec() (openapi.Document, error)
+```
+
+Example — enforce HTTP path format:
+
+```go
+import "github.com/DaniDeer/go-codex/validate"
+
+b := rest.NewBuilder(info, rest.WithPathConstraints(validate.HTTPPath))
+
+createUser, err := rest.AddRoute[CreateUserReq, User](b, "POST", "/users", reqCodec, respCodec, cfg)
+if err != nil {
+    // err is an InvalidPathError — path failed validation immediately
+    var pathErr rest.InvalidPathError
+    errors.As(err, &pathErr) // pathErr.Path, pathErr.Err available
+    return err
+}
 ```
 
 `RouteHandle[Req, Resp]`:
 - `Descriptor route.Route` — frozen at registration; use for framework routing
 - `Decode(body []byte) (Req, error)` — JSON decode + Refine validation
 - `Encode(resp Resp) ([]byte, error)` — JSON encode
+- `BuildPath(vars map[string]string) (string, error)` — substitutes `{varName}` placeholders in the path template, validating each against its `PathParamCodecs` codec. Returns `MissingPathVarError` for missing variables, `PathParamError` for codec failures. Extra keys in `vars` are silently ignored.
 
-`RouteConfig` fields: `OperationID`, `Summary`, `Description`, `Tags`, `PathParams`, `QueryParams`, `ReqSchemaName`, `RespStatus` (default POST→"201", others→"200"), `RespDescription`, `RespSchemaName`, `Responses []ResponseMeta`.
+`PathParamError` is returned by `BuildPath` when a path variable fails its codec:
+
+```go
+type PathParamError struct {
+    Name  string // the {varName} that failed
+    Value string // the value that was rejected
+    Err   error  // the underlying codec error
+}
+```
+
+`MissingPathVarError` is returned by `BuildPath` when a template variable has no entry in `vars`:
+
+```go
+type MissingPathVarError struct {
+    Name string // the variable name (without braces) that had no value
+}
+```
+
+`RouteConfig` fields: `OperationID`, `Summary`, `Description`, `Tags`, `PathParams`, `QueryParams`, `ReqSchemaName`, `RespStatus` (default POST→"201", others→"200"), `RespDescription`, `RespSchemaName`, `Responses []ResponseMeta`, `PathParamCodecs map[string]codex.Codec[string]`.
+
+`PathParamCodecs` keys must correspond to `{varName}` placeholders in the path template; an unknown key causes `AddRoute` to return an error immediately (programming error).
 
 Key rules:
 - `api/rest` uses `format.JSON(codec)` internally — explicitly JSON-only.
 - Request body (`RequestBody`) is only added to the spec for `POST`, `PUT`, `PATCH`.
 - The descriptor is built and frozen at `AddRoute` call time; later config mutations do not affect the registered route.
+- Path validation is **immediate**: if a `pathCodec` is set, `AddRoute` returns `InvalidPathError` at call time. The route is not registered on failure.
 - `Info = openapi.Info` and `Server = openapi.Server` are type aliases to avoid drift.
 - `api/rest` may import `codex`, `format`, `route`, `render/openapi`, `schema`. No `net/http`.
 - `adapters/nethttp` wraps `RouteHandle` for `net/http`. It imports `api/rest` and `net/http`.
@@ -774,16 +832,55 @@ Key rules:
 `api/events` is a transport-agnostic event channel builder layered on top of `render/asyncapi`. It imports **no messaging library**. Users receive typed `Decode`/`Encode` helpers per channel; they wire those into any message broker.
 
 ```go
-func NewBuilder(info Info) *Builder
+// NewBuilder returns a Builder for event channel registration.
+// opts are applied in order; use WithTopicCodec or WithTopicConstraints to validate topics.
+func NewBuilder(info Info, opts ...BuilderOption) *Builder
 
+// WithTopicCodec sets a codec used to validate every topic registered via AddChannel.
+// If validation fails, AddChannel returns an InvalidTopicError immediately.
+func WithTopicCodec(c codex.Codec[string]) BuilderOption
+
+// WithTopicConstraints is a convenience wrapper: builds codex.String() refined with cons
+// and delegates to WithTopicCodec.
+func WithTopicConstraints(cons ...codex.Constraint[string]) BuilderOption
+
+// AddChannel is a free function (generic type params require free functions in Go).
+// Registers a channel; returns a ChannelHandle with frozen descriptor and typed helpers.
+// Returns InvalidTopicError immediately if topic codec validation fails.
 func AddChannel[T any](
     b *Builder,
     topic string,
     codec codex.Codec[T],
     config ChannelConfig,
-) *ChannelHandle[T]
+) (*ChannelHandle[T], error)
 
+// InvalidTopicError is returned by AddChannel when topic codec validation fails.
+// Use errors.As to extract it and inspect Topic or the underlying constraint Err.
+type InvalidTopicError struct {
+    Topic string
+    Err   error
+}
+
+// AsyncAPISpec builds a full AsyncAPI 2.6 document from all registered channels.
+// Returns an error if there are dangling $refs.
 func (b *Builder) AsyncAPISpec() (asyncapi.Document, error)
+```
+
+Example — enforce MQTT publish topic rules:
+
+```go
+import "github.com/DaniDeer/go-codex/validate"
+
+b := events.NewBuilder(info, events.WithTopicConstraints(validate.MQTTPublishTopic))
+// Use validate.MQTTTopic (without the publish restriction) for subscribe-only builders.
+
+ch, err := events.AddChannel[MeasurementEvent](b, "sensors/+/data", codec, cfg)
+if err != nil {
+    // err is an InvalidTopicError — topic failed validation immediately
+    var topicErr events.InvalidTopicError
+    errors.As(err, &topicErr) // topicErr.Topic, topicErr.Err available
+    return err
+}
 ```
 
 `ChannelHandle[T]`:
@@ -791,20 +888,42 @@ func (b *Builder) AsyncAPISpec() (asyncapi.Document, error)
 - `Descriptor asyncapi.ChannelItem` — frozen at registration
 - `Decode(payload []byte) (T, error)` — JSON decode + Refine validation
 - `Encode(msg T) ([]byte, error)` — JSON encode
+- `BuildTopic(vars map[string]string) (string, error)` — substitutes `{varName}` placeholders in the topic template, validating each against its `TopicParamCodecs` codec. Returns `MissingTopicVarError` for missing variables, `TopicParamError` for codec failures. Extra keys in `vars` are silently ignored.
 
-`ChannelConfig` fields: `Description`, `Subscribe *OperationConfig`, `Publish *OperationConfig`. At least one must be non-nil.
+`TopicParamError` is returned by `BuildTopic` when a topic variable fails its codec:
+
+```go
+type TopicParamError struct {
+    Name  string // the {varName} that failed
+    Value string // the value that was rejected
+    Err   error  // the underlying codec error
+}
+```
+
+`MissingTopicVarError` is returned by `BuildTopic` when a template variable has no entry in `vars`:
+
+```go
+type MissingTopicVarError struct {
+    Name string // the variable name (without braces) that had no value
+}
+```
+
+`ChannelConfig` fields: `Description`, `Subscribe *OperationConfig`, `Publish *OperationConfig`, `TopicParamCodecs map[string]codex.Codec[string]`. At least one of `Subscribe`/`Publish` must be non-nil.
+
+`TopicParamCodecs` keys must correspond to `{varName}` placeholders in the topic template; an unknown key causes `AddChannel` to return an error immediately (programming error).
 
 `OperationConfig` fields: `Summary`, `Description`, `Tags`, `SchemaName`.
 
 Key rules:
 - `api/events` uses `format.JSON(codec)` internally — explicitly JSON-only.
 - The descriptor is built and frozen at `AddChannel` call time.
+- Topic validation is **immediate**: if a `topicCodec` is set, `AddChannel` returns `InvalidTopicError` at call time. The channel is not registered on failure.
 - `Info = asyncapi.Info` and `Server = asyncapi.Server` are type aliases.
 - `api/events` may import `codex`, `format`, `render/asyncapi`, `schema`. No messaging library.
 - `adapters/mqtt` wraps `ChannelHandle` for Paho MQTT. It imports `api/events` and `github.com/eclipse/paho.mqtt.golang`.
-  - `SubscribeHandler[T](ctx, handle, fn, onErr) mqtt.MessageHandler` — decodes payload, calls fn, routes typed errors to `onErr func(SubscribeError)`.
+  - `SubscribeHandler[T](ctx, handle, fn, onErr) mqtt.MessageHandler` — decodes payload, calls fn, routes typed errors to `onErr func(SubscribeError)`. `SubscribeError.Topic` reflects the concrete incoming message topic (`msg.Topic()`).
   - `SubscribeError{Kind ErrorKind, Topic string, Err error}` — typed error; `Kind` is `KindDecode` or `KindHandler`.
-  - `Publish[T](ctx, client, handle, qos, retained, msg) error` — encodes and publishes; context-aware token wait.
+  - `Publish[T](ctx, client, handle, qos, retained, msg, vars map[string]string) error` — unified publish: `nil` vars → use `handle.Topic` (static topics); non-nil vars → call `handle.BuildTopic(vars)` and publish to the result. Returns `TopicParamError` or `MissingTopicVarError` if `BuildTopic` fails. Context-aware token wait.
 
 ### Package import table (updated)
 

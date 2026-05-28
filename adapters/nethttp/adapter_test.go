@@ -54,8 +54,12 @@ var testInfo = rest.Info{Title: "Test API", Version: "1.0.0"}
 // newCreateRoute is a helper that creates a POST /users route.
 func newCreateRoute() *rest.RouteHandle[createReq, userResp] {
 	b := rest.NewBuilder(testInfo)
-	return rest.AddRoute[createReq, userResp](b, "POST", "/users",
+	h, err := rest.AddRoute[createReq, userResp](b, "POST", "/users",
 		createReqCodec, userRespCodec, rest.RouteConfig{OperationID: "createUser"})
+	if err != nil {
+		panic(err)
+	}
+	return h
 }
 
 func TestHandler_PostValidBody(t *testing.T) {
@@ -146,8 +150,11 @@ func TestHandler_PostHandlerError(t *testing.T) {
 
 func TestHandler_GetNonBody(t *testing.T) {
 	b := rest.NewBuilder(testInfo)
-	handle := rest.AddRoute[getReq, userResp](b, "GET", "/users/{id}",
+	handle, err := rest.AddRoute[getReq, userResp](b, "GET", "/users/{id}",
 		getReqCodec, userRespCodec, rest.RouteConfig{OperationID: "getUser"})
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	called := false
 	h := nethttp.Handler(handle, func(_ context.Context, req getReq) (userResp, error) {
@@ -205,11 +212,14 @@ func TestRegister_WiresCorrectPattern(t *testing.T) {
 
 func TestHandler_CustomStatus(t *testing.T) {
 	b := rest.NewBuilder(testInfo)
-	handle := rest.AddRoute[createReq, userResp](b, "PUT", "/users/{id}",
+	handle, err := rest.AddRoute[createReq, userResp](b, "PUT", "/users/{id}",
 		createReqCodec, userRespCodec, rest.RouteConfig{
 			OperationID: "updateUser",
 			RespStatus:  "204",
 		})
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	h := nethttp.Handler(handle, func(_ context.Context, req createReq) (userResp, error) {
 		return userResp{ID: "1", Name: req.Name}, nil
@@ -226,8 +236,11 @@ func TestHandler_CustomStatus(t *testing.T) {
 
 func TestHandler_RequestFromContext(t *testing.T) {
 	b := rest.NewBuilder(testInfo)
-	handle := rest.AddRoute[getReq, userResp](b, "GET", "/users/{id}",
+	handle, err := rest.AddRoute[getReq, userResp](b, "GET", "/users/{id}",
 		getReqCodec, userRespCodec, rest.RouteConfig{OperationID: "getUser"})
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	var gotID string
 	h := nethttp.Handler(handle, func(ctx context.Context, _ getReq) (userResp, error) {

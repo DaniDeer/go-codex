@@ -42,6 +42,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/DaniDeer/go-codex/api/internal"
 	"github.com/DaniDeer/go-codex/codex"
 	"github.com/DaniDeer/go-codex/format"
 	"github.com/DaniDeer/go-codex/render/asyncapi"
@@ -81,6 +82,13 @@ type ChannelConfig struct {
 	// Publish describes the operation where the application sends messages.
 	// Set to nil to omit the publish operation from the spec.
 	Publish *OperationConfig
+
+	// TopicParamCodecs maps {varName} template variables in the topic to codecs
+	// that validate concrete values at runtime via [ChannelHandle.BuildTopic].
+	//
+	// Keys must correspond to {varName} placeholders in the topic template;
+	// unknown keys cause [AddChannel] to return an error immediately.
+	TopicParamCodecs map[string]codex.Codec[string]
 }
 
 // ChannelHandle is returned by [AddChannel]. It holds the frozen spec
@@ -98,6 +106,70 @@ type ChannelHandle[T any] struct {
 
 	// Encode serialises T to JSON bytes.
 	Encode func(msg T) ([]byte, error)
+
+	// topicParamCodecs holds per-variable codecs registered via TopicParamCodecs.
+	topicParamCodecs map[string]codex.Codec[string]
+}
+
+// BuildTopic substitutes {varName} placeholders in the channel's topic template
+// with the values provided in vars, validating each against its registered
+// codec (if any).
+//
+// All template variables must be present in vars; missing variables return an
+// error. Values are validated before substitution; codec failures return a
+// [TopicParamError] that identifies the variable name and the failing value.
+// Keys in vars that do not appear in the template are silently ignored.
+//
+// Example:
+//
+//	topic, err := sensorChannel.BuildTopic(map[string]string{"sensorID": "f47ac10b-..."})
+//	// topic = "sensors/f47ac10b-.../measurements"
+func (h *ChannelHandle[T]) BuildTopic(vars map[string]string) (string, error) {
+	return internal.BuildFromTemplate(h.Topic, vars, h.topicParamCodecs,
+		func(name string) error { return MissingTopicVarError{Name: name} },
+		func(name, value string, err error) error {
+			return TopicParamError{Name: name, Value: value, Err: err}
+		},
+	)
+}
+
+// TopicParamError is returned by [ChannelHandle.BuildTopic] when a topic variable
+// fails its registered codec check.
+//
+// Use errors.As to extract it and inspect the failing variable:
+//
+//	var paramErr events.TopicParamError
+//	if errors.As(err, &paramErr) {
+//	    log.Printf("bad value %q for {%s}: %v", paramErr.Value, paramErr.Name, paramErr.Err)
+//	}
+type TopicParamError struct {
+	Name  string // the {varName} that failed
+	Value string // the value that was rejected
+	Err   error  // the underlying codec error
+}
+
+func (e TopicParamError) Error() string {
+	return fmt.Sprintf("invalid value %q for topic variable {%s}: %s", e.Value, e.Name, e.Err.Error())
+}
+
+// Unwrap allows errors.As and errors.Is to traverse the underlying codec error.
+func (e TopicParamError) Unwrap() error { return e.Err }
+
+// MissingTopicVarError is returned by [ChannelHandle.BuildTopic] when a {varName}
+// placeholder in the topic template has no corresponding entry in the vars map.
+//
+// Use errors.As to extract the missing variable name:
+//
+//	var missingErr events.MissingTopicVarError
+//	if errors.As(err, &missingErr) {
+//	    log.Printf("caller forgot to supply topic variable {%s}", missingErr.Name)
+//	}
+type MissingTopicVarError struct {
+	Name string // the variable name (without braces) that had no value
+}
+
+func (e MissingTopicVarError) Error() string {
+	return fmt.Sprintf("missing value for topic variable {%s}", e.Name)
 }
 
 // channelEntry is the type-erased interface stored inside Builder.
@@ -115,22 +187,85 @@ type typedChannelEntry[T any] struct {
 func (e *typedChannelEntry[T]) topic() string                    { return e.topicStr }
 func (e *typedChannelEntry[T]) descriptor() asyncapi.ChannelItem { return e.frozen }
 
+// InvalidTopicError is returned by [AddChannel] when the topic fails builder-level
+// topic codec validation.
+//
+// Use errors.As to extract it and inspect the failing topic or the underlying
+// constraint error:
+//
+//	var topicErr events.InvalidTopicError
+//	if errors.As(err, &topicErr) {
+//	    log.Printf("bad topic %q: %v", topicErr.Topic, topicErr.Err)
+//	}
+type InvalidTopicError struct {
+	Topic string // the topic that failed validation
+	Err   error  // the underlying constraint or codec error
+}
+
+func (e InvalidTopicError) Error() string {
+	return fmt.Sprintf("invalid topic %q: %s", e.Topic, e.Err.Error())
+}
+
+// Unwrap allows errors.As and errors.Is to traverse the underlying constraint error.
+func (e InvalidTopicError) Unwrap() error { return e.Err }
+
 // Builder accumulates channel registrations and produces AsyncAPI specs.
 // Create one with [NewBuilder].
 type Builder struct {
-	info    Info
-	servers map[string]Server
-	entries []channelEntry
-	schemas map[string]schema.Schema
+	info       Info
+	servers    map[string]Server
+	entries    []channelEntry
+	schemas    map[string]schema.Schema
+	topicCodec *codex.Codec[string]
+}
+
+// BuilderOption configures a [Builder] at construction time.
+type BuilderOption func(*Builder)
+
+// WithTopicCodec sets a codec used to validate every topic passed to [AddChannel].
+// If the topic is invalid, [AddChannel] returns an error immediately.
+//
+// Use [WithTopicConstraints] for the common case of stacking one or more
+// [codex.Constraint] values; use WithTopicCodec when you need a fully-custom
+// [codex.Codec].
+//
+// Example — enforce MQTT publish topic rules:
+//
+//	import "github.com/DaniDeer/go-codex/validate"
+//
+//	b := events.NewBuilder(info, events.WithTopicConstraints(validate.MQTTPublishTopic))
+func WithTopicCodec(c codex.Codec[string]) BuilderOption {
+	return func(b *Builder) { b.topicCodec = &c }
+}
+
+// WithTopicConstraints is a convenience wrapper around [WithTopicCodec] that
+// builds a codec from [codex.String] refined with the given constraints.
+// Multiple constraints are applied in order; all must pass.
+//
+// Users can mix built-in constraints from the validate package with their own:
+//
+//	sensorLevel := codex.Constraint[string]{
+//	    Name:    "sensor-prefix",
+//	    Check:   func(v string) bool { return strings.HasPrefix(v, "sensors/") },
+//	    Message: func(v string) string { return fmt.Sprintf("topic must start with sensors/, got %q", v) },
+//	}
+//	b := events.NewBuilder(info, events.WithTopicConstraints(validate.MQTTPublishTopic, sensorLevel))
+func WithTopicConstraints(cons ...codex.Constraint[string]) BuilderOption {
+	c := codex.Refine(codex.String(), cons...)
+	return WithTopicCodec(c)
 }
 
 // NewBuilder returns a Builder initialised with the given API metadata.
-func NewBuilder(info Info) *Builder {
-	return &Builder{
+func NewBuilder(info Info, opts ...BuilderOption) *Builder {
+	b := &Builder{
 		info:    info,
 		servers: make(map[string]Server),
 		schemas: make(map[string]schema.Schema),
 	}
+	for _, opt := range opts {
+		opt(b)
+	}
+	return b
 }
 
 // AddServer registers a named server entry in the spec.
@@ -152,6 +287,14 @@ func (b *Builder) AddSchema(name string, s schema.Schema) *Builder {
 // codec is used to decode and validate incoming payloads and to encode outgoing
 // messages. The same codec applies to both subscribe and publish directions.
 //
+// If the builder was created with [WithTopicCodec] or [WithTopicConstraints],
+// the topic is validated immediately. An error is returned if validation fails —
+// no channel is registered in that case.
+//
+// If config.TopicParamCodecs is non-empty, each key is verified to be a
+// {varName} present in the topic template. A key that does not appear in the
+// topic is a programming error and causes AddChannel to return an error.
+//
 // AddChannel is a free function (not a method) because Go requires type
 // parameters to appear on free functions, not on method receivers.
 //
@@ -162,7 +305,20 @@ func AddChannel[T any](
 	topic string,
 	codec codex.Codec[T],
 	config ChannelConfig,
-) *ChannelHandle[T] {
+) (*ChannelHandle[T], error) {
+	if b.topicCodec != nil {
+		if err := b.topicCodec.Validate(topic); err != nil {
+			return nil, InvalidTopicError{Topic: topic, Err: err}
+		}
+	}
+
+	templateVars := internal.ParseTemplateVars(topic)
+	for name := range config.TopicParamCodecs {
+		if !templateVars[name] {
+			return nil, fmt.Errorf("api/events: TopicParamCodecs key %q not found in topic template %q", name, topic)
+		}
+	}
+
 	frozen := buildChannelItem(codec, config)
 
 	entry := &typedChannelEntry[T]{topicStr: topic, frozen: frozen}
@@ -171,11 +327,12 @@ func AddChannel[T any](
 	jsonFmt := format.JSON(codec)
 
 	return &ChannelHandle[T]{
-		Topic:      topic,
-		Descriptor: frozen,
-		Decode:     func(payload []byte) (T, error) { return jsonFmt.Unmarshal(payload) },
-		Encode:     func(msg T) ([]byte, error) { return jsonFmt.Marshal(msg) },
-	}
+		Topic:            topic,
+		Descriptor:       frozen,
+		Decode:           func(payload []byte) (T, error) { return jsonFmt.Unmarshal(payload) },
+		Encode:           func(msg T) ([]byte, error) { return jsonFmt.Marshal(msg) },
+		topicParamCodecs: config.TopicParamCodecs,
+	}, nil
 }
 
 // AsyncAPISpec builds a complete AsyncAPI 2.6 document from all registered channels.

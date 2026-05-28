@@ -41,10 +41,14 @@ var userEventCodec = codex.Struct[userEvent](
 
 func newHandle() *events.ChannelHandle[userEvent] {
 	b := events.NewBuilder(events.Info{Title: "Test", Version: "1.0.0"})
-	return events.AddChannel[userEvent](b, "user/created", userEventCodec,
+	h, err := events.AddChannel[userEvent](b, "user/created", userEventCodec,
 		events.ChannelConfig{
 			Subscribe: &events.OperationConfig{Summary: "User created"},
 		})
+	if err != nil {
+		panic(err)
+	}
+	return h
 }
 
 // --- mock implementations ---
@@ -198,7 +202,7 @@ func TestPublish_Success(t *testing.T) {
 	client := &mockClient{token: newCompletedToken(nil)}
 
 	event := userEvent{ID: "f47ac10b-58cc-4372-a567-0e02b2c3d479", Email: "alice@example.com"}
-	err := adaptermqtt.Publish(context.Background(), client, handle, 1, false, event)
+	err := adaptermqtt.Publish(context.Background(), client, handle, 1, false, event, nil)
 	if err != nil {
 		t.Fatalf("want nil error, got %v", err)
 	}
@@ -216,7 +220,7 @@ func TestPublish_BrokerError(t *testing.T) {
 	client := &mockClient{token: newCompletedToken(brokerErr)}
 
 	event := userEvent{ID: "f47ac10b-58cc-4372-a567-0e02b2c3d479", Email: "alice@example.com"}
-	err := adaptermqtt.Publish(context.Background(), client, handle, 1, false, event)
+	err := adaptermqtt.Publish(context.Background(), client, handle, 1, false, event, nil)
 	if !errors.Is(err, brokerErr) {
 		t.Fatalf("want brokerErr, got %v", err)
 	}
@@ -230,8 +234,57 @@ func TestPublish_ContextCancelled(t *testing.T) {
 	cancel() // cancel immediately
 
 	event := userEvent{ID: "f47ac10b-58cc-4372-a567-0e02b2c3d479", Email: "alice@example.com"}
-	err := adaptermqtt.Publish(ctx, client, handle, 1, false, event)
+	err := adaptermqtt.Publish(ctx, client, handle, 1, false, event, nil)
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("want context.Canceled, got %v", err)
+	}
+}
+
+func newTemplateHandle() *events.ChannelHandle[userEvent] {
+	b := events.NewBuilder(events.Info{Title: "Test", Version: "1.0.0"})
+	h, err := events.AddChannel[userEvent](b, "users/{userID}/events", userEventCodec,
+		events.ChannelConfig{
+			Publish: &events.OperationConfig{Summary: "User event"},
+			TopicParamCodecs: map[string]codex.Codec[string]{
+				"userID": codex.String().Refine(validate.UUID),
+			},
+		})
+	if err != nil {
+		panic(err)
+	}
+	return h
+}
+
+func TestPublish_TemplateVars(t *testing.T) {
+	handle := newTemplateHandle()
+	client := &mockClient{token: newCompletedToken(nil)}
+
+	event := userEvent{ID: "f47ac10b-58cc-4372-a567-0e02b2c3d479", Email: "alice@example.com"}
+	err := adaptermqtt.Publish(context.Background(), client, handle, 1, false, event,
+		map[string]string{"userID": "f47ac10b-58cc-4372-a567-0e02b2c3d479"})
+	if err != nil {
+		t.Fatalf("want nil error, got %v", err)
+	}
+	if client.publishedTopic != "users/f47ac10b-58cc-4372-a567-0e02b2c3d479/events" {
+		t.Fatalf("want concrete topic, got %q", client.publishedTopic)
+	}
+}
+
+func TestPublish_TemplateVars_InvalidUUID(t *testing.T) {
+	handle := newTemplateHandle()
+	client := &mockClient{token: newCompletedToken(nil)}
+
+	event := userEvent{ID: "f47ac10b-58cc-4372-a567-0e02b2c3d479", Email: "alice@example.com"}
+	err := adaptermqtt.Publish(context.Background(), client, handle, 1, false, event,
+		map[string]string{"userID": "not-a-uuid"})
+	if err == nil {
+		t.Fatal("want error for invalid UUID, got nil")
+	}
+	var paramErr events.TopicParamError
+	if !errors.As(err, &paramErr) {
+		t.Fatalf("expected TopicParamError, got %T: %v", err, err)
+	}
+	if paramErr.Name != "userID" {
+		t.Errorf("TopicParamError.Name = %q, want userID", paramErr.Name)
 	}
 }

@@ -40,6 +40,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/DaniDeer/go-codex/api/internal"
 	"github.com/DaniDeer/go-codex/codex"
 	"github.com/DaniDeer/go-codex/format"
 	"github.com/DaniDeer/go-codex/render/openapi"
@@ -81,6 +82,20 @@ type RouteConfig struct {
 	PathParams  []route.Param
 	QueryParams []route.Param
 
+	// PathParamCodecs maps path variable names (without braces) to codecs that
+	// validate substituted values at runtime via [RouteHandle.BuildPath].
+	//
+	// Example — require {id} to be a valid UUID:
+	//
+	//	PathParamCodecs: map[string]codex.Codec[string]{
+	//	    "id": codex.String().Refine(validate.UUID),
+	//	}
+	//
+	// A key that does not appear as a {varName} in the route path is a
+	// programming error: [AddRoute] returns an error immediately.
+	// Nil or empty means no runtime param validation.
+	PathParamCodecs map[string]codex.Codec[string]
+
 	// ReqSchemaName, when non-empty, emits a $ref for the request body schema
 	// in the spec and registers the schema under that name in components/schemas.
 	ReqSchemaName string
@@ -117,6 +132,31 @@ type RouteHandle[Req, Resp any] struct {
 
 	// Encode serialises Resp to JSON bytes.
 	Encode func(resp Resp) ([]byte, error)
+
+	// paramCodecs holds per-variable codecs registered via PathParamCodecs.
+	paramCodecs map[string]codex.Codec[string]
+}
+
+// BuildPath substitutes {varName} placeholders in the route's path template
+// with the values provided in vars, validating each against its registered
+// codec (if any).
+//
+// All template variables must be present in vars; missing variables return an
+// error. Values are validated before substitution; codec failures return a
+// [PathParamError] that identifies the variable name and the failing value.
+// Keys in vars that do not appear in the template are silently ignored.
+//
+// Example:
+//
+//	path, err := getUserRoute.BuildPath(map[string]string{"id": "f47ac10b-..."})
+//	// path = "/users/f47ac10b-..."
+func (h *RouteHandle[Req, Resp]) BuildPath(vars map[string]string) (string, error) {
+	return internal.BuildFromTemplate(h.Descriptor.Path, vars, h.paramCodecs,
+		func(name string) error { return MissingPathVarError{Name: name} },
+		func(name, value string, err error) error {
+			return PathParamError{Name: name, Value: value, Err: err}
+		},
+	)
 }
 
 // routeEntry is the type-erased interface stored inside Builder.
@@ -131,18 +171,120 @@ type typedRouteEntry[Req, Resp any] struct {
 
 func (e *typedRouteEntry[Req, Resp]) descriptor() route.Route { return e.frozen }
 
+// InvalidPathError is returned by [AddRoute] when the path fails builder-level
+// path codec validation.
+//
+// Use errors.As to extract it and inspect the failing path or the underlying
+// constraint error:
+//
+//	var pathErr rest.InvalidPathError
+//	if errors.As(err, &pathErr) {
+//	    log.Printf("bad path %q: %v", pathErr.Path, pathErr.Err)
+//	}
+type InvalidPathError struct {
+	Path string // the path that failed validation
+	Err  error  // the underlying constraint or codec error
+}
+
+func (e InvalidPathError) Error() string {
+	return fmt.Sprintf("invalid path %q: %s", e.Path, e.Err.Error())
+}
+
+// Unwrap allows errors.As and errors.Is to traverse the underlying constraint error.
+func (e InvalidPathError) Unwrap() error { return e.Err }
+
+// PathParamError is returned by [RouteHandle.BuildPath] when a path variable
+// value fails codec validation.
+//
+// Use errors.As to extract the failing variable name and value:
+//
+//	var paramErr rest.PathParamError
+//	if errors.As(err, &paramErr) {
+//	    log.Printf("bad value for {%s}: %q — %v", paramErr.Name, paramErr.Value, paramErr.Err)
+//	}
+type PathParamError struct {
+	Name  string // variable name without braces, e.g. "id"
+	Value string // the value that failed validation
+	Err   error  // the underlying constraint or codec error
+}
+
+func (e PathParamError) Error() string {
+	return fmt.Sprintf("path variable {%s}: invalid value %q: %s", e.Name, e.Value, e.Err.Error())
+}
+
+// Unwrap allows errors.As and errors.Is to traverse the underlying constraint error.
+func (e PathParamError) Unwrap() error { return e.Err }
+
+// MissingPathVarError is returned by [RouteHandle.BuildPath] when a {varName}
+// placeholder in the path template has no corresponding entry in the vars map.
+//
+// Use errors.As to extract the missing variable name:
+//
+//	var missingErr rest.MissingPathVarError
+//	if errors.As(err, &missingErr) {
+//	    log.Printf("caller forgot to supply path variable {%s}", missingErr.Name)
+//	}
+type MissingPathVarError struct {
+	Name string // the variable name (without braces) that had no value
+}
+
+func (e MissingPathVarError) Error() string {
+	return fmt.Sprintf("missing value for path variable {%s}", e.Name)
+}
+
 // Builder accumulates route registrations and produces OpenAPI specs.
 // Create one with [NewBuilder].
 type Builder struct {
-	info    Info
-	servers []Server
-	entries []routeEntry
-	schemas map[string]schema.Schema
+	info      Info
+	servers   []Server
+	entries   []routeEntry
+	schemas   map[string]schema.Schema
+	pathCodec *codex.Codec[string]
+}
+
+// BuilderOption configures a [Builder] at construction time.
+type BuilderOption func(*Builder)
+
+// WithPathCodec sets a codec used to validate every path passed to [AddRoute].
+// If the path is invalid, [AddRoute] returns an error immediately.
+//
+// Use [WithPathConstraints] for the common case of stacking one or more
+// [codex.Constraint] values; use WithPathCodec when you need a fully-custom
+// [codex.Codec].
+//
+// Example — enforce HTTP path rules:
+//
+//	import "github.com/DaniDeer/go-codex/validate"
+//
+//	b := rest.NewBuilder(info, rest.WithPathConstraints(validate.HTTPPath))
+func WithPathCodec(c codex.Codec[string]) BuilderOption {
+	return func(b *Builder) { b.pathCodec = &c }
+}
+
+// WithPathConstraints is a convenience wrapper around [WithPathCodec] that
+// builds a codec from [codex.String] refined with the given constraints.
+// Multiple constraints are applied in order; all must pass.
+//
+// Users can mix built-in constraints from the validate package with their own:
+//
+//	sensorPrefix := codex.Constraint[string]{
+//	    Name:    "sensor-prefix",
+//	    Check:   func(v string) bool { return strings.HasPrefix(v, "/sensors/") },
+//	    Message: func(v string) string { return fmt.Sprintf("path must start with /sensors/, got %q", v) },
+//	}
+//	b := rest.NewBuilder(info, rest.WithPathConstraints(validate.HTTPPath, sensorPrefix))
+func WithPathConstraints(cons ...codex.Constraint[string]) BuilderOption {
+	c := codex.Refine(codex.String(), cons...)
+	return WithPathCodec(c)
 }
 
 // NewBuilder returns a Builder initialised with the given API metadata.
-func NewBuilder(info Info) *Builder {
-	return &Builder{info: info, schemas: make(map[string]schema.Schema)}
+func NewBuilder(info Info, opts ...BuilderOption) *Builder {
+	b := &Builder{info: info, schemas: make(map[string]schema.Schema)}
+	for _, opt := range opts {
+		opt(b)
+	}
+	return b
 }
 
 // AddServer appends a named server entry to the spec. name is used as the
@@ -169,6 +311,14 @@ func (b *Builder) AddSchema(name string, s schema.Schema) *Builder {
 // reqCodec is used to decode and validate the JSON request body.
 // respCodec is used to encode the JSON response.
 //
+// If the builder was created with [WithPathCodec] or [WithPathConstraints], the
+// path is validated immediately. An error is returned if validation fails —
+// no route is registered in that case.
+//
+// If config.PathParamCodecs is non-empty, each key is verified to be a
+// {varName} present in the path template. A key that does not appear in the
+// path is a programming error and causes AddRoute to return an error.
+//
 // AddRoute is a free function (not a method) because Go requires type
 // parameters to appear on free functions, not on method receivers.
 //
@@ -180,7 +330,20 @@ func AddRoute[Req, Resp any](
 	reqCodec codex.Codec[Req],
 	respCodec codex.Codec[Resp],
 	config RouteConfig,
-) *RouteHandle[Req, Resp] {
+) (*RouteHandle[Req, Resp], error) {
+	if b.pathCodec != nil {
+		if err := b.pathCodec.Validate(path); err != nil {
+			return nil, InvalidPathError{Path: path, Err: err}
+		}
+	}
+
+	templateVars := internal.ParseTemplateVars(path)
+	for name := range config.PathParamCodecs {
+		if !templateVars[name] {
+			return nil, fmt.Errorf("api/rest: PathParamCodecs key %q not found in path template %q", name, path)
+		}
+	}
+
 	frozen := buildDescriptor(method, path, reqCodec.Schema, respCodec.Schema, config)
 
 	entry := &typedRouteEntry[Req, Resp]{frozen: frozen}
@@ -190,10 +353,11 @@ func AddRoute[Req, Resp any](
 	jsonResp := format.JSON(respCodec)
 
 	return &RouteHandle[Req, Resp]{
-		Descriptor: frozen,
-		Decode:     func(body []byte) (Req, error) { return jsonReq.Unmarshal(body) },
-		Encode:     func(resp Resp) ([]byte, error) { return jsonResp.Marshal(resp) },
-	}
+		Descriptor:  frozen,
+		Decode:      func(body []byte) (Req, error) { return jsonReq.Unmarshal(body) },
+		Encode:      func(resp Resp) ([]byte, error) { return jsonResp.Marshal(resp) },
+		paramCodecs: config.PathParamCodecs,
+	}, nil
 }
 
 // OpenAPISpec builds a complete OpenAPI 3.1 document from all registered routes.
