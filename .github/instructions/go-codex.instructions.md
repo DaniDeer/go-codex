@@ -579,6 +579,7 @@ Set `Required: false` on the field. The field is omitted from the encoded object
 - Float constraints: `PositiveFloat`, `NegativeFloat`, `NonZeroFloat`, `MinFloat(n)`, `MaxFloat(n)`, `RangeFloat(min, max)`.
 - `time.Duration` constraints: `PositiveDuration`, `NonNegativeDuration`, `MinDuration(d)`, `MaxDuration(d)`. No schema annotation (no JSON Schema standard for duration bounds).
 - String constraints: `NonEmptyString`, `MinLen(n)`, `MaxLen(n)`, `Pattern(re)`, `OneOf(values...)`.
+- Numeric string constraints (for path/topic variables): `IntString` (valid signed integer), `PositiveIntString` (> 0), `NonNegativeIntString` (≥ 0), `IntStringInRange(min, max)` (bounded). No schema annotation. Designed for use in `PathParamCodecs`/`TopicParamCodecs`.
 - Protocol path/topic constraints: `MQTTTopic` (non-empty, no null byte, max 65535 UTF-8 bytes), `MQTTPublishTopic` (same + no `+`/`#` wildcards), `HTTPPath` (must start with `/`, no spaces or null bytes, OpenAPI-style `{param}` allowed). None carry schema annotations (no JSON Schema standard keywords for these rules).
 - Format constraints: `Email`, `UUID`, `URL`, `URLWithSchemes(schemes...)`, `URI`, `Hostname`, `IPv4`, `IPv6`, `Date`, `Time`, `DateTime`, `SemVer`, `Slug`, `CIDR`.
 - Byte-size constraints: `MaxBytes(n)`, `MinBytes(n)` — validate decoded `[]byte` length; no schema annotation (JSON Schema has no standard keyword for decoded-byte-count limits).
@@ -787,7 +788,7 @@ if err != nil {
 - `Descriptor route.Route` — frozen at registration; use for framework routing
 - `Decode(body []byte) (Req, error)` — JSON decode + Refine validation
 - `Encode(resp Resp) ([]byte, error)` — JSON encode
-- `BuildPath(vars map[string]string) (string, error)` — substitutes `{varName}` placeholders in the path template, validating each against its `PathParamCodecs` codec. Returns `MissingPathVarError` for missing variables, `PathParamError` for codec failures. Extra keys in `vars` are silently ignored.
+- `BuildPath(vars map[string]string) (string, error)` — substitutes `{varName}` placeholders in the path template, validating each against its `PathParamCodecs` codec. After substitution, if a builder-level `pathCodec` is set, the final assembled path is re-validated against it (no template stripping — this is the real path). Returns `MissingPathVarError` for missing variables, `PathParamError` for per-variable codec failures, `InvalidPathError` if the final path fails the builder codec. Extra keys in `vars` are silently ignored.
 
 `PathParamError` is returned by `BuildPath` when a path variable fails its codec:
 
@@ -816,6 +817,8 @@ Key rules:
 - Request body (`RequestBody`) is only added to the spec for `POST`, `PUT`, `PATCH`.
 - The descriptor is built and frozen at `AddRoute` call time; later config mutations do not affect the registered route.
 - Path validation is **immediate**: if a `pathCodec` is set, `AddRoute` returns `InvalidPathError` at call time. The route is not registered on failure.
+- **Template-transparent validation**: before running the path codec, `{varName}` placeholders are replaced with the literal `x` (e.g. `"/users/{id}"` → `"/users/x"`). Constraints run on the structural shape of the path, not the template syntax. This means any path constraint — including ones that do not mention braces — works correctly on parameterised routes. The stored `Descriptor.Path` is always the original template.
+- **Final path re-validation**: `BuildPath` re-validates the fully assembled path (e.g. `"/users/hello world"`) against the builder-level `pathCodec` after substitution. This catches values that pass their `PathParamCodecs` codec but violate the global path constraint (e.g. a space introduced by a loose param codec). Returns `InvalidPathError{Path: finalPath, Err: ...}`.
 - `Info = openapi.Info` and `Server = openapi.Server` are type aliases to avoid drift.
 - `api/rest` may import `codex`, `format`, `route`, `render/openapi`, `schema`. No `net/http`.
 - `adapters/nethttp` wraps `RouteHandle` for `net/http`. It imports `api/rest` and `net/http`.
@@ -888,7 +891,7 @@ if err != nil {
 - `Descriptor asyncapi.ChannelItem` — frozen at registration
 - `Decode(payload []byte) (T, error)` — JSON decode + Refine validation
 - `Encode(msg T) ([]byte, error)` — JSON encode
-- `BuildTopic(vars map[string]string) (string, error)` — substitutes `{varName}` placeholders in the topic template, validating each against its `TopicParamCodecs` codec. Returns `MissingTopicVarError` for missing variables, `TopicParamError` for codec failures. Extra keys in `vars` are silently ignored.
+- `BuildTopic(vars map[string]string) (string, error)` — substitutes `{varName}` placeholders in the topic template, validating each against its `TopicParamCodecs` codec. After substitution, if a builder-level `topicCodec` is set, the final assembled topic is re-validated against it (no template stripping). Returns `MissingTopicVarError` for missing variables, `TopicParamError` for per-variable codec failures, `InvalidTopicError` if the final topic fails the builder codec. Extra keys in `vars` are silently ignored.
 
 `TopicParamError` is returned by `BuildTopic` when a topic variable fails its codec:
 
@@ -918,6 +921,8 @@ Key rules:
 - `api/events` uses `format.JSON(codec)` internally — explicitly JSON-only.
 - The descriptor is built and frozen at `AddChannel` call time.
 - Topic validation is **immediate**: if a `topicCodec` is set, `AddChannel` returns `InvalidTopicError` at call time. The channel is not registered on failure.
+- **Template-transparent validation**: before running the topic codec, `{varName}` placeholders are replaced with the literal `x` (e.g. `"sensors/{sensorID}/data"` → `"sensors/x/data"`). Constraints run on the structural shape of the topic, not the template syntax. The stored `ChannelHandle.Topic` is always the original template.
+- **Final topic re-validation**: `BuildTopic` re-validates the fully assembled topic against the builder-level `topicCodec` after substitution. Catches values that pass their `TopicParamCodecs` codec but violate the global topic constraint. Returns `InvalidTopicError{Topic: finalTopic, Err: ...}`.
 - `Info = asyncapi.Info` and `Server = asyncapi.Server` are type aliases.
 - `api/events` may import `codex`, `format`, `render/asyncapi`, `schema`. No messaging library.
 - `adapters/mqtt` wraps `ChannelHandle` for Paho MQTT. It imports `api/events` and `github.com/eclipse/paho.mqtt.golang`.

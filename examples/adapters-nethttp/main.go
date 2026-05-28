@@ -150,6 +150,31 @@ type emptyReq struct{}
 
 var emptyReqCodec = codex.Struct[emptyReq]()
 
+// PagedUsersResp is the response for a paginated user list.
+type PagedUsersResp struct {
+	Page  int
+	Users []User
+}
+
+// pagedUsersRespCodec describes the paginated response.
+var pagedUsersRespCodec = codex.Struct[PagedUsersResp](
+	codex.RequiredField[PagedUsersResp, int]("page",
+		codex.Int().WithDescription("Current page number."),
+		func(r PagedUsersResp) int { return r.Page },
+		func(r *PagedUsersResp, v int) { r.Page = v },
+	),
+)
+
+// makeListUsersPageHandler returns a paginated user list for the given page number.
+func makeListUsersPageHandler() func(context.Context, emptyReq) (PagedUsersResp, error) {
+	return func(ctx context.Context, _ emptyReq) (PagedUsersResp, error) {
+		r, _ := nethttp.RequestFromContext(ctx)
+		page := r.PathValue("page") // L3: HTTP path parameter (already validated by BuildPath)
+		_ = page
+		return PagedUsersResp{Page: 1, Users: nil}, nil
+	}
+}
+
 // ── Layer 2: Business logic (pure domain functions) ───────────────────────────
 //
 // Pure domain functions transform between domain types. Zero IO — no database,
@@ -325,6 +350,25 @@ func main() {
 		os.Exit(1)
 	}
 
+	// GET /users/page/{page} — list users by page number.
+	// PositiveIntString validates {page} is a numeric string with value > 0.
+	// BuildPath rejects "0", "-1", "abc" — all before any HTTP request is made.
+	// The final assembled path (e.g. "/users/page/2") is also re-validated against
+	// the builder-level HTTPPath codec, catching any path-level constraint violations.
+	listUsersPageRoute, err := rest.AddRoute[emptyReq, PagedUsersResp](b, "GET", "/users/page/{page}",
+		emptyReqCodec, pagedUsersRespCodec, rest.RouteConfig{
+			OperationID: "listUsersPage",
+			Summary:     "List users by page",
+			PathParams:  []rest.Param{{Name: "page", Description: "Page number (positive integer)"}},
+			PathParamCodecs: map[string]codex.Codec[string]{
+				"page": codex.String().Refine(validate.PositiveIntString),
+			},
+		})
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "route registration failed: %v\n", err)
+		os.Exit(1)
+	}
+
 	// Custom ErrorHandler using httpLogger for transport-level errors.
 	// Distinguishes validation failures (400, Warn) from system errors (500, Error).
 	errorHandler := func(w http.ResponseWriter, r *http.Request, status int, err error) {
@@ -367,6 +411,10 @@ func main() {
 		nethttp.Options{ErrorHandler: errorHandler})
 	nethttp.RegisterWithOptions(mux, getUserRoute,
 		withDomainLogging("user.get", makeGetUserHandler(store), domainLogger, extractGetUserAttrs),
+		nethttp.Options{ErrorHandler: errorHandler})
+	nethttp.RegisterWithOptions(mux, listUsersPageRoute,
+		withDomainLogging("user.list-page", makeListUsersPageHandler(), domainLogger,
+			func(_ emptyReq, _ PagedUsersResp) []slog.Attr { return nil }),
 		nethttp.Options{ErrorHandler: errorHandler})
 
 	// Demo requests against an in-process test server.
@@ -417,7 +465,34 @@ func main() {
 	_ = json.NewDecoder(resp3.Body).Decode(&fetched)
 	fmt.Printf("Status: %d\nUser:   %+v\n\n", resp3.StatusCode, fetched)
 
-	// Generate the OpenAPI spec — derived from the same codec definitions.
+	fmt.Println("=== GET /users/page/{page} (valid page) ===")
+	// BuildPath validates {page} via PositiveIntString before making any request.
+	pagePath, err := listUsersPageRoute.BuildPath(map[string]string{"page": "2"})
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "BuildPath error: %v\n", err)
+		os.Exit(1)
+	}
+	resp4, err := http.Get(srv.URL + pagePath) //nolint:noctx
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "GET error: %v\n", err)
+		os.Exit(1)
+	}
+	defer resp4.Body.Close()
+	var pagedResp PagedUsersResp
+	_ = json.NewDecoder(resp4.Body).Decode(&pagedResp)
+	fmt.Printf("Status: %d\nPage:   %+v\n\n", resp4.StatusCode, pagedResp)
+
+	fmt.Println("=== GET /users/page/{page} (invalid page — BuildPath error) ===")
+	// "abc" fails PositiveIntString: not a valid integer.
+	if _, err := listUsersPageRoute.BuildPath(map[string]string{"page": "abc"}); err != nil {
+		fmt.Printf("BuildPath(abc) rejected: %v\n", err)
+	}
+	// "0" fails PositiveIntString: not positive.
+	if _, err := listUsersPageRoute.BuildPath(map[string]string{"page": "0"}); err != nil {
+		fmt.Printf("BuildPath(0) rejected:   %v\n\n", err)
+	}
+
+
 	fmt.Println("=== OpenAPI 3.1 spec (derived from domain codecs) ===")
 	doc, err := b.OpenAPISpec()
 	if err != nil {

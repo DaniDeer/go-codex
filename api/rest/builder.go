@@ -135,6 +135,10 @@ type RouteHandle[Req, Resp any] struct {
 
 	// paramCodecs holds per-variable codecs registered via PathParamCodecs.
 	paramCodecs map[string]codex.Codec[string]
+
+	// pathCodec is the builder-level path codec (may be nil).
+	// Used to re-validate the final assembled path in BuildPath.
+	pathCodec *codex.Codec[string]
 }
 
 // BuildPath substitutes {varName} placeholders in the route's path template
@@ -146,17 +150,30 @@ type RouteHandle[Req, Resp any] struct {
 // [PathParamError] that identifies the variable name and the failing value.
 // Keys in vars that do not appear in the template are silently ignored.
 //
+// If the builder was created with [WithPathCodec] or [WithPathConstraints],
+// the final assembled path is also validated against that codec. A failure
+// returns an [InvalidPathError] with the concrete path (not the template).
+//
 // Example:
 //
 //	path, err := getUserRoute.BuildPath(map[string]string{"id": "f47ac10b-..."})
 //	// path = "/users/f47ac10b-..."
 func (h *RouteHandle[Req, Resp]) BuildPath(vars map[string]string) (string, error) {
-	return internal.BuildFromTemplate(h.Descriptor.Path, vars, h.paramCodecs,
+	result, err := internal.BuildFromTemplate(h.Descriptor.Path, vars, h.paramCodecs,
 		func(name string) error { return MissingPathVarError{Name: name} },
 		func(name, value string, err error) error {
 			return PathParamError{Name: name, Value: value, Err: err}
 		},
 	)
+	if err != nil {
+		return "", err
+	}
+	if h.pathCodec != nil {
+		if err := h.pathCodec.Validate(result); err != nil {
+			return "", InvalidPathError{Path: result, Err: err}
+		}
+	}
+	return result, nil
 }
 
 // routeEntry is the type-erased interface stored inside Builder.
@@ -332,7 +349,7 @@ func AddRoute[Req, Resp any](
 	config RouteConfig,
 ) (*RouteHandle[Req, Resp], error) {
 	if b.pathCodec != nil {
-		if err := b.pathCodec.Validate(path); err != nil {
+		if err := b.pathCodec.Validate(internal.StripTemplateVars(path)); err != nil {
 			return nil, InvalidPathError{Path: path, Err: err}
 		}
 	}
@@ -357,6 +374,7 @@ func AddRoute[Req, Resp any](
 		Decode:      func(body []byte) (Req, error) { return jsonReq.Unmarshal(body) },
 		Encode:      func(resp Resp) ([]byte, error) { return jsonResp.Marshal(resp) },
 		paramCodecs: config.PathParamCodecs,
+		pathCodec:   b.pathCodec,
 	}, nil
 }
 

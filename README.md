@@ -131,8 +131,8 @@ Requires Go 1.25 or later.
 - **OpenAPI Schema Generation** — `components/schemas` map from codec-derived schemas, no manual YAML
 - **Full OpenAPI 3.1 Document** — complete REST API spec (paths, operations, params) from `route.Route` descriptors
 - **AsyncAPI 2.6 Document** — complete event-driven spec from channel descriptors; same schemas, no duplication
-- **REST API Builder** — typed `Decode`/`Encode` helpers per route + OpenAPI spec generation; immediate path validation; `BuildPath` for runtime path construction with per-variable codec checks
-- **Event Channel Builder** — typed `Decode`/`Encode` helpers per channel + AsyncAPI spec generation; immediate topic validation; `BuildTopic` for runtime topic construction with per-variable codec checks
+- **REST API Builder** — typed `Decode`/`Encode` helpers per route + OpenAPI spec generation; immediate path validation; `BuildPath` for runtime path construction with per-variable codec checks and final path re-validation
+- **Event Channel Builder** — typed `Decode`/`Encode` helpers per channel + AsyncAPI spec generation; immediate topic validation; `BuildTopic` for runtime topic construction with per-variable codec checks and final topic re-validation
 - **net/http Adapter** — wire `RouteHandle` to `net/http.ServeMux` with one call; 400/500 error handling included
 - **Paho MQTT Adapter** — wire `ChannelHandle` to Paho MQTT subscribe callbacks; unified `Publish` handles both static and template topics
 
@@ -363,6 +363,17 @@ Protocol path/topic constraints (for use with `WithPathConstraints` / `WithTopic
 | `validate.HTTPPath`           | `string`      | starts with `/`, no null bytes or spaces; `{param}` placeholders allowed |
 | `validate.MQTTPublishTopic`   | `string`      | valid MQTT topic, no wildcard chars (`+`, `#`)      |
 | `validate.MQTTTopic`          | `string`      | valid MQTT topic, wildcards allowed (for subscribing) |
+
+Numeric string constraints (for use in `PathParamCodecs` / `TopicParamCodecs`):
+
+| Constraint                         | Applies to | Validates                       |
+| ---------------------------------- | ---------- | ------------------------------- |
+| `validate.IntString`               | `string`   | valid signed integer string     |
+| `validate.PositiveIntString`       | `string`   | integer > 0                     |
+| `validate.NonNegativeIntString`    | `string`   | integer ≥ 0                     |
+| `validate.IntStringInRange(n, m)`  | `string`   | integer within [n, m] inclusive |
+
+These have no OpenAPI schema annotation — path/topic segments have no standard JSON Schema format keyword.
 
 ```go
 var ContactCodec = codex.Struct[Contact](
@@ -950,6 +961,10 @@ yamlBytes, _ := doc.MarshalYAML()
 | `WithPathCodec(c)` | Validates paths against codec `c` at `AddRoute` time |
 | `WithPathConstraints(cs...)` | Validates paths against one or more constraints at `AddRoute` time |
 
+**Template-transparent validation:** constraints run on the *structural shape* of the path, not the literal template syntax. `{varName}` placeholders are replaced with `x` before validation (`/users/{id}` → `/users/x`). Any constraint — including ones that reject `{` or `}` — works correctly on parameterised routes. The stored `Descriptor.Path` is always the original template.
+
+**Final path re-validation:** `BuildPath` re-validates the fully assembled path (e.g. `/users/hello world`) against the builder-level codec after substitution. This catches variable values that pass their `PathParamCodecs` codec but violate the global path constraint. Returns `InvalidPathError` with the final path in the `Path` field.
+
 **Error types from `AddRoute` and `BuildPath`:**
 
 | Error type | When returned | `errors.As` target |
@@ -1156,6 +1171,10 @@ events.AddChannel[UserEvent](b, "user/events", codec, events.ChannelConfig{
 | --- | --- |
 | `WithTopicCodec(c)` | Validates topics against codec `c` at `AddChannel` time |
 | `WithTopicConstraints(cs...)` | Validates topics against one or more constraints at `AddChannel` time |
+
+**Template-transparent validation:** constraints run on the *structural shape* of the topic, not the literal template syntax. `{varName}` placeholders are replaced with `x` before validation (`sensors/{sensorID}/measurements` → `sensors/x/measurements`). Any constraint works correctly on template topics. The stored `ChannelHandle.Topic` is always the original template.
+
+**Final topic re-validation:** `BuildTopic` re-validates the fully assembled topic against the builder-level codec after substitution. Catches variable values that pass their `TopicParamCodecs` codec but violate the global topic constraint. Returns `InvalidTopicError` with the final topic in the `Topic` field.
 
 **Error types from `AddChannel` and `BuildTopic`:**
 
@@ -1445,7 +1464,7 @@ go-codex/
 │
 ├── api/                    # API builders (no HTTP or messaging library imports)
 │   ├── internal/           # shared helpers (not public API)
-│   │   └── template.go     # ParseTemplateVars, BuildFromTemplate — used by rest + events
+│   │   └── template.go     # ParseTemplateVars, BuildFromTemplate, StripTemplateVars — used by rest + events
 │   ├── rest/               # REST API builder: typed Decode/Encode + OpenAPI spec
 │   │   └── builder.go      # Builder, AddRoute[Req,Resp], AddServer, AddSchema, RouteHandle, BuildPath
 │   └── events/             # Event channel builder: typed Decode/Encode + AsyncAPI spec
@@ -1478,7 +1497,7 @@ go-codex/
 │   ├── format.go           # Email, UUID, URL, URLWithSchemes, URI, Hostname, IPv4, IPv6, Date, Time, DateTime, SemVer, Slug, CIDR
 │   ├── int.go              # PositiveInt, NegativeInt, NonZeroInt, MinInt, MaxInt, RangeInt; int32 + int64 variants
 │   ├── uint.go             # PositiveUint, MinUint, MaxUint, RangeUint; uint64 variants
-│   └── string.go           # NonEmptyString, MinLen, MaxLen, Pattern, OneOf, HTTPPath, MQTTTopic, MQTTPublishTopic
+│   └── string.go           # NonEmptyString, MinLen, MaxLen, Pattern, OneOf, HTTPPath, MQTTTopic, MQTTPublishTopic, IntString, PositiveIntString, NonNegativeIntString, IntStringInRange
 │
 └── examples/               # usage demonstrations — not importable
     ├── adapters-mqtt/      # Paho MQTT adapter: wiring api/events to Paho client

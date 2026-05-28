@@ -109,6 +109,10 @@ type ChannelHandle[T any] struct {
 
 	// topicParamCodecs holds per-variable codecs registered via TopicParamCodecs.
 	topicParamCodecs map[string]codex.Codec[string]
+
+	// topicCodec is the builder-level topic codec (may be nil).
+	// Used to re-validate the final assembled topic in BuildTopic.
+	topicCodec *codex.Codec[string]
 }
 
 // BuildTopic substitutes {varName} placeholders in the channel's topic template
@@ -120,17 +124,30 @@ type ChannelHandle[T any] struct {
 // [TopicParamError] that identifies the variable name and the failing value.
 // Keys in vars that do not appear in the template are silently ignored.
 //
+// If the builder was created with [WithTopicCodec] or [WithTopicConstraints],
+// the final assembled topic is also validated against that codec. A failure
+// returns an [InvalidTopicError] with the concrete topic (not the template).
+//
 // Example:
 //
 //	topic, err := sensorChannel.BuildTopic(map[string]string{"sensorID": "f47ac10b-..."})
 //	// topic = "sensors/f47ac10b-.../measurements"
 func (h *ChannelHandle[T]) BuildTopic(vars map[string]string) (string, error) {
-	return internal.BuildFromTemplate(h.Topic, vars, h.topicParamCodecs,
+	result, err := internal.BuildFromTemplate(h.Topic, vars, h.topicParamCodecs,
 		func(name string) error { return MissingTopicVarError{Name: name} },
 		func(name, value string, err error) error {
 			return TopicParamError{Name: name, Value: value, Err: err}
 		},
 	)
+	if err != nil {
+		return "", err
+	}
+	if h.topicCodec != nil {
+		if err := h.topicCodec.Validate(result); err != nil {
+			return "", InvalidTopicError{Topic: result, Err: err}
+		}
+	}
+	return result, nil
 }
 
 // TopicParamError is returned by [ChannelHandle.BuildTopic] when a topic variable
@@ -307,7 +324,7 @@ func AddChannel[T any](
 	config ChannelConfig,
 ) (*ChannelHandle[T], error) {
 	if b.topicCodec != nil {
-		if err := b.topicCodec.Validate(topic); err != nil {
+		if err := b.topicCodec.Validate(internal.StripTemplateVars(topic)); err != nil {
 			return nil, InvalidTopicError{Topic: topic, Err: err}
 		}
 	}
@@ -332,6 +349,7 @@ func AddChannel[T any](
 		Decode:           func(payload []byte) (T, error) { return jsonFmt.Unmarshal(payload) },
 		Encode:           func(msg T) ([]byte, error) { return jsonFmt.Marshal(msg) },
 		topicParamCodecs: config.TopicParamCodecs,
+		topicCodec:       b.topicCodec,
 	}, nil
 }
 

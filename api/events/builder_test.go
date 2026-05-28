@@ -3,6 +3,7 @@ package events_test
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -460,5 +461,67 @@ func TestBuildTopic_extraKeysIgnored(t *testing.T) {
 	}
 	if topic != "sensors/42/data" {
 		t.Errorf("BuildTopic = %q, want sensors/42/data", topic)
+	}
+}
+
+// TestBuilder_withTopicConstraints_templateTransparent verifies that a constraint
+// that does not mention braces still accepts template topics. The constraint sees
+// "sensors/x/data" (with {sensorID} replaced by "x"), not "sensors/{sensorID}/data".
+func TestBuilder_withTopicConstraints_templateTransparent(t *testing.T) {
+	noBraces := codex.Constraint[string]{
+		Name:    "no-braces",
+		Check:   func(v string) bool { return !strings.ContainsAny(v, "{}") },
+		Message: func(v string) string { return fmt.Sprintf("topic must not contain braces: %q", v) },
+	}
+	b := events.NewBuilder(testInfo, events.WithTopicConstraints(noBraces))
+
+	// Without template-transparent stripping this would return an InvalidTopicError.
+	if _, err := events.AddChannel[userEvent](b, "sensors/{sensorID}/data", userEventCodec, events.ChannelConfig{
+		Subscribe: &events.OperationConfig{Summary: "sensor data"},
+	}); err != nil {
+		t.Fatalf("expected template topic to pass brace-free constraint after stripping, got: %v", err)
+	}
+}
+
+// TestBuildTopic_finalTopicReValidatedAgainstBuilderCodec verifies that if a
+// variable value passes its TopicParamCodecs codec but the final assembled topic
+// would fail the builder's topic codec, BuildTopic returns an InvalidTopicError.
+func TestBuildTopic_finalTopicReValidatedAgainstBuilderCodec(t *testing.T) {
+	noSlash := codex.Constraint[string]{
+		Name:    "single-segment-only",
+		Check:   func(v string) bool { return !strings.ContainsRune(v, '/') },
+		Message: func(v string) string { return fmt.Sprintf("topic must be a single segment: %q", v) },
+	}
+	b := events.NewBuilder(testInfo, events.WithTopicConstraints(noSlash))
+	h, err := events.AddChannel[userEvent](b, "{sensorID}", userEventCodec, events.ChannelConfig{
+		Subscribe: &events.OperationConfig{Summary: "sensor data"},
+		TopicParamCodecs: map[string]codex.Codec[string]{
+			"sensorID": codex.String().Refine(validate.NonEmptyString),
+		},
+	})
+	if err != nil {
+		t.Fatalf("AddChannel error: %v", err)
+	}
+
+	// "abc" passes NonEmptyString and final "abc" passes single-segment.
+	topic, err := h.BuildTopic(map[string]string{"sensorID": "abc"})
+	if err != nil {
+		t.Fatalf("BuildTopic(abc) error: %v", err)
+	}
+	if topic != "abc" {
+		t.Errorf("BuildTopic = %q, want abc", topic)
+	}
+
+	// "a/b" passes NonEmptyString but final "a/b" fails single-segment (contains slash).
+	_, err = h.BuildTopic(map[string]string{"sensorID": "a/b"})
+	if err == nil {
+		t.Fatal("expected error for slash in final topic, got nil")
+	}
+	var topicErr events.InvalidTopicError
+	if !errors.As(err, &topicErr) {
+		t.Errorf("expected InvalidTopicError, got %T: %v", err, err)
+	}
+	if topicErr.Topic != "a/b" {
+		t.Errorf("InvalidTopicError.Topic = %q, want a/b", topicErr.Topic)
 	}
 }

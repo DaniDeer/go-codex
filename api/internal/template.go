@@ -21,7 +21,16 @@ func ParseTemplateVars(template string) map[string]bool {
 	return vars
 }
 
-// BuildFromTemplate substitutes {varName} placeholders in template with values
+// StripTemplateVars replaces each {varName} placeholder in template with the
+// literal segment placeholder (the single character "x"). The result has the
+// same structural shape as the template but contains no brace syntax.
+//
+// This is used internally to make path/topic codec validation template-transparent:
+// constraints run on the shape of the path/topic, not on the literal {varName} tokens.
+func StripTemplateVars(template string) string {
+	return TemplateVarRe.ReplaceAllString(template, "x")
+}
+
 // from vars, validating each against the corresponding codec in paramCodecs.
 // wrapMissing is called to produce a typed error when a template variable has no
 // entry in vars. wrapErr is called to produce a typed error when codec validation

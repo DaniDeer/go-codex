@@ -3,6 +3,7 @@ package validate
 import (
 	"fmt"
 	"regexp"
+	"strconv"
 	"strings"
 	"unicode/utf8"
 
@@ -161,4 +162,61 @@ var HTTPPath = codex.Constraint[string]{
 			return fmt.Sprintf("invalid http path: %q", v)
 		}
 	},
+}
+
+// IntString is a Constraint that requires the string to be a valid signed
+// integer (as accepted by [strconv.Atoi]).
+//
+// Intended for use in [api/rest.RouteConfig.PathParamCodecs] and
+// [api/events.ChannelConfig.TopicParamCodecs] where path and topic variables
+// are always strings but may represent integers:
+//
+//	PathParamCodecs: map[string]codex.Codec[string]{
+//	    "page": codex.String().Refine(validate.IntString),
+//	}
+var IntString = codex.Constraint[string]{
+	Name:    "int-string",
+	Check:   func(v string) bool { _, err := strconv.Atoi(v); return err == nil },
+	Message: func(v string) string { return fmt.Sprintf("expected a valid integer string, got %q", v) },
+}
+
+// PositiveIntString is a Constraint that requires the string to represent a
+// positive integer (> 0).
+var PositiveIntString = codex.Constraint[string]{
+	Name: "positive-int-string",
+	Check: func(v string) bool {
+		n, err := strconv.Atoi(v)
+		return err == nil && n > 0
+	},
+	Message: func(v string) string {
+		return fmt.Sprintf("expected a positive integer string (> 0), got %q", v)
+	},
+}
+
+// NonNegativeIntString is a Constraint that requires the string to represent a
+// non-negative integer (≥ 0).
+var NonNegativeIntString = codex.Constraint[string]{
+	Name: "non-negative-int-string",
+	Check: func(v string) bool {
+		n, err := strconv.Atoi(v)
+		return err == nil && n >= 0
+	},
+	Message: func(v string) string {
+		return fmt.Sprintf("expected a non-negative integer string (>= 0), got %q", v)
+	},
+}
+
+// IntStringInRange returns a Constraint that requires the string to represent
+// an integer within [min, max] (inclusive on both ends).
+func IntStringInRange(min, max int) codex.Constraint[string] {
+	return codex.Constraint[string]{
+		Name: fmt.Sprintf("int-string-range(%d,%d)", min, max),
+		Check: func(v string) bool {
+			n, err := strconv.Atoi(v)
+			return err == nil && n >= min && n <= max
+		},
+		Message: func(v string) string {
+			return fmt.Sprintf("expected integer string in [%d, %d], got %q", min, max, v)
+		},
+	}
 }

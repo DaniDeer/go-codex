@@ -3,6 +3,7 @@ package rest_test
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -484,5 +485,65 @@ func TestBuildPath_extraKeysIgnored(t *testing.T) {
 	}
 	if path != "/users/42" {
 		t.Errorf("BuildPath = %q, want /users/42", path)
+	}
+}
+
+// TestBuilder_withPathConstraints_templateTransparent verifies that a constraint
+// that does not mention braces still accepts template paths. The constraint sees
+// "/users/x" (with {id} replaced by "x"), not "/users/{id}".
+func TestBuilder_withPathConstraints_templateTransparent(t *testing.T) {
+	noBraces := codex.Constraint[string]{
+		Name:    "no-braces",
+		Check:   func(v string) bool { return !strings.ContainsAny(v, "{}") },
+		Message: func(v string) string { return fmt.Sprintf("path must not contain braces: %q", v) },
+	}
+	b := rest.NewBuilder(testInfo, rest.WithPathConstraints(noBraces))
+
+	// Without template-transparent stripping this would return an InvalidPathError.
+	if _, err := rest.AddRoute[createReq, userResp](b, "GET", "/users/{id}", createReqCodec, userCodec, rest.RouteConfig{}); err != nil {
+		t.Fatalf("expected template path to pass brace-free constraint after stripping, got: %v", err)
+	}
+}
+
+// TestBuildPath_finalPathReValidatedAgainstBuilderCodec verifies that if a
+// variable value passes its PathParamCodecs codec but the final assembled path
+// would fail the builder's path codec, BuildPath returns an InvalidPathError.
+func TestBuildPath_finalPathReValidatedAgainstBuilderCodec(t *testing.T) {
+	noSpaces := codex.Constraint[string]{
+		Name:    "no-spaces",
+		Check:   func(v string) bool { return !strings.ContainsRune(v, ' ') },
+		Message: func(v string) string { return fmt.Sprintf("path must not contain spaces: %q", v) },
+	}
+	b := rest.NewBuilder(testInfo, rest.WithPathConstraints(noSpaces))
+	// PathParamCodecs only checks non-empty — does NOT forbid spaces.
+	h, err := rest.AddRoute[createReq, userResp](b, "GET", "/users/{name}", createReqCodec, userCodec, rest.RouteConfig{
+		PathParamCodecs: map[string]codex.Codec[string]{
+			"name": codex.String().Refine(validate.NonEmptyString),
+		},
+	})
+	if err != nil {
+		t.Fatalf("AddRoute error: %v", err)
+	}
+
+	// "alice" is fine: NonEmptyString passes, final "/users/alice" passes no-spaces.
+	path, err := h.BuildPath(map[string]string{"name": "alice"})
+	if err != nil {
+		t.Fatalf("BuildPath(alice) error: %v", err)
+	}
+	if path != "/users/alice" {
+		t.Errorf("BuildPath = %q, want /users/alice", path)
+	}
+
+	// "hello world" passes NonEmptyString but final "/users/hello world" fails no-spaces.
+	_, err = h.BuildPath(map[string]string{"name": "hello world"})
+	if err == nil {
+		t.Fatal("expected error for space in final path, got nil")
+	}
+	var pathErr rest.InvalidPathError
+	if !errors.As(err, &pathErr) {
+		t.Errorf("expected InvalidPathError, got %T: %v", err, err)
+	}
+	if pathErr.Path != "/users/hello world" {
+		t.Errorf("InvalidPathError.Path = %q, want /users/hello world", pathErr.Path)
 	}
 }

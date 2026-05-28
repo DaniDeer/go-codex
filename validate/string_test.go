@@ -173,3 +173,70 @@ func TestHTTPPath(t *testing.T) {
 		t.Errorf("HTTPPath.Message(\"users\") = %q, want mention of leading slash", msg)
 	}
 }
+
+func TestIntString(t *testing.T) {
+	c := validate.IntString
+	pass := []string{"0", "1", "-1", "42", "-999", "2147483647"}
+	fail := []string{"", "abc", "1.5", " 1", "1 ", "1e2"}
+	for _, v := range pass {
+		if !c.Check(v) {
+			t.Errorf("IntString.Check(%q) = false, want true", v)
+		}
+	}
+	for _, v := range fail {
+		if c.Check(v) {
+			t.Errorf("IntString.Check(%q) = true, want false", v)
+		}
+	}
+}
+
+func TestPositiveIntString(t *testing.T) {
+	c := validate.PositiveIntString
+	pass := []string{"1", "42", "2147483647"}
+	fail := []string{"0", "-1", "-42", "", "abc", "1.5"}
+	for _, v := range pass {
+		if !c.Check(v) {
+			t.Errorf("PositiveIntString.Check(%q) = false, want true", v)
+		}
+	}
+	for _, v := range fail {
+		if c.Check(v) {
+			t.Errorf("PositiveIntString.Check(%q) = true, want false", v)
+		}
+	}
+}
+
+func TestNonNegativeIntString(t *testing.T) {
+	c := validate.NonNegativeIntString
+	pass := []string{"0", "1", "42", "2147483647"}
+	fail := []string{"-1", "-42", "", "abc", "1.5"}
+	for _, v := range pass {
+		if !c.Check(v) {
+			t.Errorf("NonNegativeIntString.Check(%q) = false, want true", v)
+		}
+	}
+	for _, v := range fail {
+		if c.Check(v) {
+			t.Errorf("NonNegativeIntString.Check(%q) = true, want false", v)
+		}
+	}
+}
+
+func TestIntStringInRange(t *testing.T) {
+	c := validate.IntStringInRange(1, 100)
+	pass := []string{"1", "50", "100"}
+	fail := []string{"0", "101", "-1", "", "abc", "1.5"}
+	for _, v := range pass {
+		if !c.Check(v) {
+			t.Errorf("IntStringInRange(1,100).Check(%q) = false, want true", v)
+		}
+	}
+	for _, v := range fail {
+		if c.Check(v) {
+			t.Errorf("IntStringInRange(1,100).Check(%q) = true, want false", v)
+		}
+	}
+	if msg := c.Message("200"); !strings.Contains(msg, "100") {
+		t.Errorf("IntStringInRange.Message = %q, want mention of max bound", msg)
+	}
+}
