@@ -525,3 +525,81 @@ func TestBuildTopic_finalTopicReValidatedAgainstBuilderCodec(t *testing.T) {
 		t.Errorf("InvalidTopicError.Topic = %q, want a/b", topicErr.Topic)
 	}
 }
+
+func TestAddChannel_unknownTopicParamKey(t *testing.T) {
+	b := events.NewBuilder(testInfo)
+	_, err := events.AddChannel[userEvent](b, "sensors/{sensorID}/data", userEventCodec, events.ChannelConfig{
+		Subscribe: &events.OperationConfig{Summary: "sensor data"},
+		TopicParams: []events.TopicParam{
+			{Name: "notInTemplate"},
+		},
+	})
+	if err == nil {
+		t.Fatal("expected error for unknown TopicParams name, got nil")
+	}
+	if !strings.Contains(err.Error(), "notInTemplate") {
+		t.Errorf("error should mention the unknown name, got: %v", err)
+	}
+}
+
+func TestAddChannel_topicParamCodecSchemaFlowsToSpec(t *testing.T) {
+	b := events.NewBuilder(testInfo)
+	h, err := events.AddChannel[userEvent](b, "sensors/{sensorID}/data", userEventCodec, events.ChannelConfig{
+		Subscribe: &events.OperationConfig{Summary: "s"},
+		TopicParamCodecs: map[string]codex.Codec[string]{
+			"sensorID": codex.String().Refine(validate.UUID),
+		},
+	})
+	if err != nil {
+		t.Fatalf("AddChannel error: %v", err)
+	}
+	p, ok := h.Descriptor.Parameters["sensorID"]
+	if !ok {
+		t.Fatal("expected sensorID in Descriptor.Parameters, not found")
+	}
+	if p.Schema.Format != "uuid" {
+		t.Errorf("expected schema.Format=uuid, got %q", p.Schema.Format)
+	}
+	if p.Schema.Type != "string" {
+		t.Errorf("expected schema.Type=string, got %q", p.Schema.Type)
+	}
+}
+
+func TestAddChannel_topicParamDescriptionEnrichment(t *testing.T) {
+	b := events.NewBuilder(testInfo)
+	h, err := events.AddChannel[userEvent](b, "sensors/{sensorID}/data", userEventCodec, events.ChannelConfig{
+		Subscribe: &events.OperationConfig{Summary: "s"},
+		TopicParams: []events.TopicParam{
+			{Name: "sensorID", Description: "The sensor UUID."},
+		},
+		TopicParamCodecs: map[string]codex.Codec[string]{
+			"sensorID": codex.String().Refine(validate.UUID),
+		},
+	})
+	if err != nil {
+		t.Fatalf("AddChannel error: %v", err)
+	}
+	p := h.Descriptor.Parameters["sensorID"]
+	if p.Description != "The sensor UUID." {
+		t.Errorf("expected description, got %q", p.Description)
+	}
+	// TopicParam had no explicit Schema; codec schema should flow through.
+	if p.Schema.Format != "uuid" {
+		t.Errorf("expected uuid format from codec schema, got %q", p.Schema.Format)
+	}
+}
+
+func TestAddChannel_autoDerivesParamWithoutTopicParams(t *testing.T) {
+	// No TopicParams declared; parameter entry should still appear in spec
+	// because the topic template has {varName}.
+	b := events.NewBuilder(testInfo)
+	h, err := events.AddChannel[userEvent](b, "orders/{orderID}", userEventCodec, events.ChannelConfig{
+		Subscribe: &events.OperationConfig{Summary: "s"},
+	})
+	if err != nil {
+		t.Fatalf("AddChannel error: %v", err)
+	}
+	if _, ok := h.Descriptor.Parameters["orderID"]; !ok {
+		t.Fatal("expected orderID auto-derived in Descriptor.Parameters, not found")
+	}
+}

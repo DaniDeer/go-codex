@@ -444,6 +444,12 @@ func (b *Builder) checkDanglingRefs() error {
 // buildDescriptor constructs a frozen route.Route from method, path, schemas,
 // and config. Deep-copies all slices to prevent later mutation from affecting
 // the registered route.
+//
+// Path params are enriched with codec schemas: if a PathParams entry has a
+// zero Schema and a matching PathParamCodecs entry exists, the codec's schema
+// is used. If a {varName} placeholder has a PathParamCodecs entry but no
+// PathParams entry, a param entry is auto-generated so the OpenAPI spec is
+// always complete without requiring manual re-declaration of codec information.
 func buildDescriptor(method, path string, reqSchema, respSchema schema.Schema, config RouteConfig) route.Route {
 	status := config.RespStatus
 	if status == "" {
@@ -461,7 +467,7 @@ func buildDescriptor(method, path string, reqSchema, respSchema schema.Schema, c
 		Summary:     config.Summary,
 		Description: config.Description,
 		Tags:        slices.Clone(config.Tags),
-		PathParams:  slices.Clone(config.PathParams),
+		PathParams:  mergePathParams(config.PathParams, config.PathParamCodecs, path),
 		QueryParams: slices.Clone(config.QueryParams),
 	}
 
@@ -507,4 +513,47 @@ func isBodyMethod(method string) bool {
 		return true
 	}
 	return false
+}
+
+// mergePathParams builds a PathParams slice that combines explicit param
+// declarations with schemas derived from PathParamCodecs.
+//
+// For each explicit PathParams entry:
+//   - If its Schema is zero-value and PathParamCodecs has a codec for that name,
+//     the codec's schema is used.
+//
+// For each {varName} placeholder in the path that has a PathParamCodecs entry
+// but no explicit PathParams declaration, a minimal param entry is auto-generated
+// using the codec's schema. This ensures the OpenAPI spec always declares
+// path parameters when codec information is available.
+func mergePathParams(explicit []route.Param, codecs map[string]codex.Codec[string], path string) []route.Param {
+	result := make([]route.Param, len(explicit))
+	copy(result, explicit)
+
+	// Enrich existing entries with codec schemas when Schema is zero-value.
+	// A schema is considered unset when its Type field is empty (the most
+	// fundamental field of any JSON Schema object).
+	for i, p := range result {
+		if p.Schema.Type == "" {
+			if c, ok := codecs[p.Name]; ok {
+				result[i].Schema = c.Schema
+			}
+		}
+	}
+
+	// Auto-add entries for {varName} placeholders that have a codec but no
+	// explicit PathParams declaration.
+	declared := make(map[string]bool, len(result))
+	for _, p := range result {
+		declared[p.Name] = true
+	}
+	for _, m := range internal.TemplateVarRe.FindAllStringSubmatch(path, -1) {
+		name := m[1]
+		if !declared[name] {
+			if c, ok := codecs[name]; ok {
+				result = append(result, route.Param{Name: name, Schema: c.Schema})
+			}
+		}
+	}
+	return result
 }

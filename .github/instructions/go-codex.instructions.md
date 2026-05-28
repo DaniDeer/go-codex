@@ -703,8 +703,14 @@ Key types:
 ```go
 type ChannelItem struct {
     Description string
-    Subscribe   *Operation // app receives
-    Publish     *Operation // app sends
+    Parameters  map[string]Parameter // {varName} → Parameter; auto-populated by api/events builder
+    Subscribe   *Operation           // app receives
+    Publish     *Operation           // app sends
+}
+
+type Parameter struct {
+    Description string
+    Schema      schema.Schema // zero-value → default {type: string} in spec output
 }
 
 type Operation struct {
@@ -725,6 +731,7 @@ Key rules:
 - `render/asyncapi` imports only `schema` — channels are independent of HTTP route concepts.
 - `Message.SchemaName != ""` → `$ref` in `message.payload` + schema auto-registered.
 - `Message.Schema` zero-value with empty `SchemaName` → empty payload `{}` inline.
+- `ChannelItem.Parameters` non-empty → `parameters:` block emitted in spec. Schema zero-value → `{type: string}`.
 - Each channel must have at least one of `Subscribe` or `Publish`; `Build()` rejects channels with neither.
 - AsyncAPI 3.0 upgrade path: isolate version-specific serialisation so a v3 variant can be added as `render/asyncapi/v3` without breaking 2.6.
 
@@ -811,6 +818,8 @@ type MissingPathVarError struct {
 `RouteConfig` fields: `OperationID`, `Summary`, `Description`, `Tags`, `PathParams`, `QueryParams`, `ReqSchemaName`, `RespStatus` (default POST→"201", others→"200"), `RespDescription`, `RespSchemaName`, `Responses []ResponseMeta`, `PathParamCodecs map[string]codex.Codec[string]`.
 
 `PathParamCodecs` keys must correspond to `{varName}` placeholders in the path template; an unknown key causes `AddRoute` to return an error immediately (programming error).
+
+**Codec schema → spec**: `PathParamCodecs` schemas automatically flow into the OpenAPI path parameter spec. When a `PathParams` entry has a zero-value `Schema` and a matching codec is registered, the codec schema is used. When a `{varName}` placeholder has a codec but no explicit `PathParams` entry, a parameter entry is auto-generated — so the spec is always complete without requiring manual re-declaration. `PathParams` is only needed to add a human-readable `Description`.
 
 Key rules:
 - `api/rest` uses `format.JSON(codec)` internally — explicitly JSON-only.
@@ -911,9 +920,13 @@ type MissingTopicVarError struct {
 }
 ```
 
-`ChannelConfig` fields: `Description`, `Subscribe *OperationConfig`, `Publish *OperationConfig`, `TopicParamCodecs map[string]codex.Codec[string]`. At least one of `Subscribe`/`Publish` must be non-nil.
+`ChannelConfig` fields: `Description`, `Subscribe *OperationConfig`, `Publish *OperationConfig`, `TopicParams []TopicParam`, `TopicParamCodecs map[string]codex.Codec[string]`. At least one of `Subscribe`/`Publish` must be non-nil.
 
-`TopicParamCodecs` keys must correspond to `{varName}` placeholders in the topic template; an unknown key causes `AddChannel` to return an error immediately (programming error).
+`TopicParam{Name, Description, Schema}` — optional per-variable metadata for the AsyncAPI spec. The events builder auto-derives `parameters:` from `{varName}` placeholders in the topic template; `TopicParam` enriches entries with a description and/or a schema override.
+
+`TopicParamCodecs` keys must correspond to `{varName}` placeholders in the topic template; an unknown key causes `AddChannel` to return an error immediately (programming error). Same validation applies to `TopicParams` names.
+
+**Codec schema → spec**: `TopicParamCodecs` schemas automatically flow into the AsyncAPI channel `parameters:` block. For each `{varName}` in the topic template, a parameter entry is auto-generated using the codec schema (or `{type: string}` as default). `TopicParams` adds descriptions or overrides the schema for specific variables.
 
 `OperationConfig` fields: `Summary`, `Description`, `Tags`, `SchemaName`.
 

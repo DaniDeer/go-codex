@@ -309,3 +309,66 @@ func TestDocumentBuilder_operationTags_inOutput(t *testing.T) {
 		t.Errorf("missing operation tags in output:\n%s", out)
 	}
 }
+
+func TestDocumentBuilder_channelParameters_emittedForTemplateChannel(t *testing.T) {
+	doc, err := asyncapi.NewDocumentBuilder(testInfo).
+		AddChannel("sensors/{sensorID}/data", asyncapi.ChannelItem{
+			Parameters: map[string]asyncapi.Parameter{
+				"sensorID": {
+					Description: "The sensor UUID.",
+					Schema:      schema.Schema{Type: "string", Format: "uuid"},
+				},
+			},
+			Subscribe: &asyncapi.Operation{
+				Summary: "Receive sensor data",
+				Message: asyncapi.Message{Schema: userSchema},
+			},
+		}).
+		Build()
+	if err != nil {
+		t.Fatalf("Build error: %v", err)
+	}
+	b, err := doc.MarshalYAML()
+	if err != nil {
+		t.Fatalf("MarshalYAML error: %v", err)
+	}
+	out := string(b)
+	if !strings.Contains(out, "parameters:") {
+		t.Errorf("expected 'parameters:' in output:\n%s", out)
+	}
+	if !strings.Contains(out, "sensorID:") {
+		t.Errorf("expected 'sensorID:' in parameters:\n%s", out)
+	}
+	if !strings.Contains(out, "The sensor UUID.") {
+		t.Errorf("expected description in parameters:\n%s", out)
+	}
+	if !strings.Contains(out, "format: uuid") {
+		t.Errorf("expected 'format: uuid' schema in parameters:\n%s", out)
+	}
+}
+
+func TestDocumentBuilder_channelParameters_defaultTypeString(t *testing.T) {
+	// A parameter with zero-value Schema should default to {type: string}.
+	doc, err := asyncapi.NewDocumentBuilder(testInfo).
+		AddChannel("events/{eventID}", asyncapi.ChannelItem{
+			Parameters: map[string]asyncapi.Parameter{
+				"eventID": {},
+			},
+			Subscribe: &asyncapi.Operation{
+				Summary: "Some event",
+				Message: asyncapi.Message{Schema: userSchema},
+			},
+		}).
+		Build()
+	if err != nil {
+		t.Fatalf("Build error: %v", err)
+	}
+	b, err := doc.MarshalYAML()
+	if err != nil {
+		t.Fatalf("MarshalYAML error: %v", err)
+	}
+	out := string(b)
+	if !strings.Contains(out, "type: string") {
+		t.Errorf("expected default 'type: string' for zero-value Schema:\n%s", out)
+	}
+}

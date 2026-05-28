@@ -492,7 +492,6 @@ func main() {
 		fmt.Printf("BuildPath(0) rejected:   %v\n\n", err)
 	}
 
-
 	fmt.Println("=== OpenAPI 3.1 spec (derived from domain codecs) ===")
 	doc, err := b.OpenAPISpec()
 	if err != nil {

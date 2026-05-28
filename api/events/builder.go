@@ -68,6 +68,24 @@ type OperationConfig struct {
 	SchemaName string
 }
 
+// TopicParam describes a {varName} placeholder in a topic template for AsyncAPI
+// spec generation. It is the AsyncAPI equivalent of [route.Param] in the REST
+// builder — it carries display metadata that enriches the generated spec.
+//
+// TopicParam is optional: the events builder auto-derives parameters from the
+// topic template and populates their schemas from [ChannelConfig.TopicParamCodecs].
+// Use TopicParam only when you want to add a description or override the schema.
+type TopicParam struct {
+	// Name is the variable name (without braces) as it appears in the topic template.
+	Name string
+	// Description is shown in the AsyncAPI spec for this parameter.
+	Description string
+	// Schema overrides the schema for this parameter. When zero-value, the
+	// codec schema from TopicParamCodecs is used; when no codec is registered,
+	// the default {type: string} is emitted.
+	Schema schema.Schema
+}
+
 // ChannelConfig holds metadata for a channel registration.
 //
 // At least one of Subscribe or Publish must be non-nil. When both are set, the
@@ -82,6 +100,15 @@ type ChannelConfig struct {
 	// Publish describes the operation where the application sends messages.
 	// Set to nil to omit the publish operation from the spec.
 	Publish *OperationConfig
+
+	// TopicParams enriches {varName} placeholder metadata in the AsyncAPI spec.
+	// Each entry adds a description or schema override for one variable.
+	// If TopicParamCodecs also has an entry for the same name, the codec schema
+	// is used as the base and TopicParam.Schema (if set) overrides it.
+	//
+	// Keys must correspond to {varName} placeholders in the topic template;
+	// unknown keys cause [AddChannel] to return an error immediately.
+	TopicParams []TopicParam
 
 	// TopicParamCodecs maps {varName} template variables in the topic to codecs
 	// that validate concrete values at runtime via [ChannelHandle.BuildTopic].
@@ -335,8 +362,13 @@ func AddChannel[T any](
 			return nil, fmt.Errorf("api/events: TopicParamCodecs key %q not found in topic template %q", name, topic)
 		}
 	}
+	for _, tp := range config.TopicParams {
+		if !templateVars[tp.Name] {
+			return nil, fmt.Errorf("api/events: TopicParams entry %q not found in topic template %q", tp.Name, topic)
+		}
+	}
 
-	frozen := buildChannelItem(codec, config)
+	frozen := buildChannelItem(topic, codec, config)
 
 	entry := &typedChannelEntry[T]{topicStr: topic, frozen: frozen}
 	b.entries = append(b.entries, entry)
@@ -421,12 +453,17 @@ func checkOp(op *asyncapi.Operation, resolvable, seen map[string]bool, unresolve
 	}
 }
 
-// buildChannelItem constructs a frozen asyncapi.ChannelItem from the codec schema
-// and config. Deep-copies all slices to prevent later mutation from affecting
-// the registered channel.
-func buildChannelItem[T any](codec codex.Codec[T], config ChannelConfig) asyncapi.ChannelItem {
+// buildChannelItem constructs a frozen asyncapi.ChannelItem from the topic,
+// codec schema, and config. Deep-copies all slices to prevent later mutation
+// from affecting the registered channel.
+//
+// Channel parameters are auto-derived from {varName} placeholders in topic.
+// The schema for each parameter comes from TopicParamCodecs (if registered);
+// TopicParams entries add descriptions and can override schemas.
+func buildChannelItem[T any](topic string, codec codex.Codec[T], config ChannelConfig) asyncapi.ChannelItem {
 	item := asyncapi.ChannelItem{
 		Description: config.Description,
+		Parameters:  buildTopicParameters(topic, config.TopicParamCodecs, config.TopicParams),
 	}
 
 	if config.Subscribe != nil {
@@ -456,4 +493,48 @@ func buildChannelItem[T any](codec codex.Codec[T], config ChannelConfig) asyncap
 	}
 
 	return item
+}
+
+// buildTopicParameters derives the AsyncAPI channel parameters map from a
+// topic template, optional per-variable codecs, and optional TopicParam
+// enrichment entries.
+//
+// Priority for each variable:
+//  1. TopicParam.Schema (if non-zero) — explicit override
+//  2. TopicParamCodecs[name].Schema   — codec-derived schema
+//  3. Default: {type: string}
+func buildTopicParameters(
+	topic string,
+	codecs map[string]codex.Codec[string],
+	params []TopicParam,
+) map[string]asyncapi.Parameter {
+	vars := internal.ParseTemplateVars(topic)
+	if len(vars) == 0 {
+		return nil
+	}
+
+	// Index TopicParams by name for O(1) lookup.
+	paramsByName := make(map[string]TopicParam, len(params))
+	for _, tp := range params {
+		paramsByName[tp.Name] = tp
+	}
+
+	result := make(map[string]asyncapi.Parameter, len(vars))
+	for name := range vars {
+		p := asyncapi.Parameter{}
+		if tp, ok := paramsByName[name]; ok {
+			p.Description = tp.Description
+			if tp.Schema.Type != "" {
+				p.Schema = tp.Schema
+			}
+		}
+		// Fall back to codec schema when TopicParam didn't set an explicit schema.
+		if p.Schema.Type == "" {
+			if c, ok := codecs[name]; ok {
+				p.Schema = c.Schema
+			}
+		}
+		result[name] = p
+	}
+	return result
 }

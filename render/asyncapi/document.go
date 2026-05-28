@@ -36,6 +36,15 @@ type Message struct {
 	ContentType string // defaults to "application/json"
 }
 
+// Parameter describes a channel parameter in an AsyncAPI 2.6 document.
+//
+// Channel parameters correspond to {varName} placeholders in topic templates.
+// Each parameter may carry a description and a JSON Schema.
+type Parameter struct {
+	Description string
+	Schema      schema.Schema
+}
+
 // Operation describes a subscribe or publish operation on a channel.
 type Operation struct {
 	Summary     string
@@ -47,6 +56,10 @@ type Operation struct {
 // ChannelItem describes one channel with optional subscribe and publish operations.
 type ChannelItem struct {
 	Description string
+	// Parameters describes the {varName} placeholders in the topic template.
+	// Keyed by variable name (without braces). Auto-populated by the events
+	// builder from TopicParamCodecs schemas and TopicParams descriptions.
+	Parameters map[string]Parameter
 	// Subscribe is the operation where the application receives messages.
 	Subscribe *Operation
 	// Publish is the operation where the application sends messages.
@@ -209,6 +222,9 @@ func buildChannels(channels map[string]ChannelItem) map[string]any {
 		if ch.Description != "" {
 			item["description"] = ch.Description
 		}
+		if len(ch.Parameters) > 0 {
+			item["parameters"] = buildParameters(ch.Parameters)
+		}
 		if ch.Subscribe != nil {
 			item["subscribe"] = buildOperation(ch.Subscribe)
 		}
@@ -216,6 +232,24 @@ func buildChannels(channels map[string]ChannelItem) map[string]any {
 			item["publish"] = buildOperation(ch.Publish)
 		}
 		out[name] = item
+	}
+	return out
+}
+
+// buildParameters converts a map of channel parameters into the AsyncAPI parameters object.
+func buildParameters(params map[string]Parameter) map[string]any {
+	out := make(map[string]any, len(params))
+	for name, p := range params {
+		entry := map[string]any{}
+		if p.Description != "" {
+			entry["description"] = p.Description
+		}
+		if p.Schema.Type != "" {
+			entry["schema"] = schemaRef(p.Schema, "")
+		} else {
+			entry["schema"] = map[string]any{"type": "string"}
+		}
+		out[name] = entry
 	}
 	return out
 }

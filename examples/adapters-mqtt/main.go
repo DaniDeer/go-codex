@@ -452,7 +452,12 @@ func main() {
 				Summary:    "Receive sensor measurement",
 				SchemaName: "MeasurementEvent",
 			},
+			// TopicParams enriches the AsyncAPI spec with a description for {sensorID}.
+			TopicParams: []events.TopicParam{
+				{Name: "sensorID", Description: "UUID of the sensor publishing the measurement."},
+			},
 			// TopicParamCodecs validates {sensorID} as a UUID when BuildTopic is called.
+			// The UUID codec schema (format: uuid, type: string) also flows into the spec.
 			TopicParamCodecs: map[string]codex.Codec[string]{
 				"sensorID": codex.String().Refine(validate.UUID),
 			},
@@ -469,7 +474,12 @@ func main() {
 				Summary:    "Publish threshold alert",
 				SchemaName: "AlertEvent",
 			},
+			// TopicParams enriches the AsyncAPI spec with a description for {sensorID}.
+			TopicParams: []events.TopicParam{
+				{Name: "sensorID", Description: "UUID of the sensor that triggered the alert."},
+			},
 			// TopicParamCodecs validates {sensorID} as a UUID when BuildTopic is called.
+			// The UUID codec schema (format: uuid, type: string) also flows into the spec.
 			TopicParamCodecs: map[string]codex.Codec[string]{
 				"sensorID": codex.String().Refine(validate.UUID),
 			},
