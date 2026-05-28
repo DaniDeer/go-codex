@@ -190,7 +190,7 @@ func makeListUsersHandler() func(context.Context, emptyReq) (PagedUsersResp, err
 		q := r.URL.Query()
 		page := 0
 		if p := q.Get("page"); p != "" {
-			fmt.Sscanf(p, "%d", &page) // safe: already validated as non-negative int
+			_, _ = fmt.Sscanf(p, "%d", &page) // safe: already validated as non-negative int
 		}
 		search := q.Get("search")
 		return PagedUsersResp{Page: page, Search: search, Users: nil}, nil

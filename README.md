@@ -314,6 +314,7 @@ See `examples/decode-errors/` for struct validation errors and HTTP 400 response
 | `validate.Hostname`               | RFC 1123 hostname                          | `hostname`     |
 | `validate.IPv4`                   | dotted-decimal IPv4                        | `ipv4`         |
 | `validate.IPv6`                   | IPv6 address                               | `ipv6`         |
+| `validate.IP`                     | IPv4 or IPv6 address                       | `ip`           |
 | `validate.Date`                   | `YYYY-MM-DD` (ISO 8601)                    | `date`         |
 | `validate.Time`                   | RFC 3339 time-only (`HH:MM:SS[.frac]Z/±`) | `time`         |
 | `validate.DateTime`               | RFC 3339 date-time (with fractional secs)  | `date-time`    |
@@ -1536,7 +1537,7 @@ go-codex/
 │   ├── bytes.go            # MaxBytes(n), MinBytes(n)
 │   ├── duration.go         # PositiveDuration, NonNegativeDuration, MinDuration, MaxDuration
 │   ├── float.go            # PositiveFloat, NegativeFloat, NonZeroFloat, MinFloat, MaxFloat, RangeFloat
-│   ├── format.go           # Email, UUID, URL, URLWithSchemes, URI, Hostname, IPv4, IPv6, Date, Time, DateTime, SemVer, Slug, CIDR
+│   ├── format.go           # Email, UUID, URL, URLWithSchemes, URI, Hostname, IPv4, IPv6, IP, Date, Time, DateTime, SemVer, Slug, CIDR
 │   ├── int.go              # PositiveInt, NegativeInt, NonZeroInt, MinInt, MaxInt, RangeInt; int32 + int64 variants
 │   ├── uint.go             # PositiveUint, MinUint, MaxUint, RangeUint; uint64 variants
 │   └── string.go           # NonEmptyString, MinLen, MaxLen, Pattern, OneOf, HTTPPath, MQTTTopic, MQTTPublishTopic, IntString, PositiveIntString, NonNegativeIntString, IntStringInRange

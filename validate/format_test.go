@@ -203,6 +203,34 @@ func TestIPv6(t *testing.T) {
 	}
 }
 
+func TestIP(t *testing.T) {
+	c := validate.IP
+	valid := []string{
+		"192.168.1.1",
+		"0.0.0.0",
+		"255.255.255.255",
+		"::1",
+		"2001:db8::1",
+		"2001:0db8:0000:0000:0000:0000:0000:0001",
+	}
+	invalid := []string{
+		"",
+		"notanip",
+		"256.0.0.1",
+		":::1",
+	}
+	for _, v := range valid {
+		if !c.Check(v) {
+			t.Errorf("IP.Check(%q) = false, want true", v)
+		}
+	}
+	for _, v := range invalid {
+		if c.Check(v) {
+			t.Errorf("IP.Check(%q) = true, want false", v)
+		}
+	}
+}
+
 func TestDate(t *testing.T) {
 	c := validate.Date
 	valid := []string{
@@ -432,6 +460,7 @@ func TestFormatConstraints_SchemaAnnotation(t *testing.T) {
 		{"URLWithSchemes", validate.URLWithSchemes("ws", "wss"), "uri"},
 		{"IPv4", validate.IPv4, "ipv4"},
 		{"IPv6", validate.IPv6, "ipv6"},
+		{"IP", validate.IP, "ip"},
 		{"Hostname", validate.Hostname, "hostname"},
 		{"Date", validate.Date, "date"},
 		{"DateTime", validate.DateTime, "date-time"},

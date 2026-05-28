@@ -109,6 +109,14 @@ var IPv6 = codex.Constraint[string]{
 	Schema:  withFormat("ipv6"),
 }
 
+// IP is a Constraint that requires a valid IP address (IPv4 or IPv6).
+var IP = codex.Constraint[string]{
+	Name:    "ip",
+	Check:   func(v string) bool { return net.ParseIP(v) != nil },
+	Message: func(v string) string { return fmt.Sprintf("invalid IP address: %q", v) },
+	Schema:  withFormat("ip"),
+}
+
 // Hostname is a Constraint that requires a valid RFC 1123 hostname.
 // Labels must be 1–63 characters; total length must not exceed 253 characters.
 var Hostname = codex.Constraint[string]{

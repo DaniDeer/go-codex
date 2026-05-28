@@ -16,11 +16,20 @@
       intended idiomatic pattern. Document with examples; consider a `go generate` code
       generator as a future separate tool.
 
+- [ ] **`go generate` struct codec generator** _(medium effort — separate binary/module)_
+      A `//go:generate go-codex-gen` tool that reads a Go struct's field names and types and
+      emits the `codex.Struct[T](RequiredField..., OptionalField...)` boilerplate removes the
+      primary ergonomic friction of the library. Must be a separate `cmd/go-codex-gen` binary
+      (or separate module) — not part of the importable library. Struct tags (e.g.
+      `codex:"name,required"`) could drive field name and required/optional.
+
 - [ ] **`codex.Map[K, V]` — typed-key maps**
       `StringMap[V]` only supports `string` keys. A `Map[K, V]` with a key codec would enable
       validated `map[uuid.UUID]T` patterns and richer schema output. Requires a new codec
       primitive and schema support (JSON only allows string keys; YAML/TOML allow more).
       Medium complexity; depends on whether schema can express a key type.
+
+### Validate
 
 ### Spec generation
 

@@ -581,7 +581,7 @@ Set `Required: false` on the field. The field is omitted from the encoded object
 - String constraints: `NonEmptyString`, `MinLen(n)`, `MaxLen(n)`, `Pattern(re)`, `OneOf(values...)`.
 - Numeric string constraints (for path/topic variables): `IntString` (valid signed integer), `PositiveIntString` (> 0), `NonNegativeIntString` (≥ 0), `IntStringInRange(min, max)` (bounded). No schema annotation. Designed for use in `PathParamCodecs`/`TopicParamCodecs`.
 - Protocol path/topic constraints: `MQTTTopic` (non-empty, no null byte, max 65535 UTF-8 bytes), `MQTTPublishTopic` (same + no `+`/`#` wildcards), `HTTPPath` (must start with `/`, no spaces or null bytes, OpenAPI-style `{param}` allowed). None carry schema annotations (no JSON Schema standard keywords for these rules).
-- Format constraints: `Email`, `UUID`, `URL`, `URLWithSchemes(schemes...)`, `URI`, `Hostname`, `IPv4`, `IPv6`, `Date`, `Time`, `DateTime`, `SemVer`, `Slug`, `CIDR`.
+- Format constraints: `Email`, `UUID`, `URL`, `URLWithSchemes(schemes...)`, `URI`, `Hostname`, `IPv4`, `IPv6`, `IP`, `Date`, `Time`, `DateTime`, `SemVer`, `Slug`, `CIDR`.
 - Byte-size constraints: `MaxBytes(n)`, `MinBytes(n)` — validate decoded `[]byte` length; no schema annotation (JSON Schema has no standard keyword for decoded-byte-count limits).
 - Constraints in `validate/` must not depend on any specific codec; they depend only on `codex.Constraint[T]` and `schema.Schema`.
 - All built-in `validate/` constraints carry a `Schema` transformer that annotates the codec's schema automatically when applied via `Refine`, **except** `MaxBytes`/`MinBytes` and Duration constraints (runtime-only).
