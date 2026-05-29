@@ -907,6 +907,14 @@ Key rules:
   - **Query validation**: `ValidateQuery` is called automatically before the handler function. Codec-backed `QueryParam` entries are validated from `r.URL.Query()`; 400 is returned on failure.
   - **Cookie validation**: `ValidateCookies` is called automatically before the handler function. Codec-backed `CookieParam` entries are validated from `r.Cookies()`; 400 is returned on failure.
   - **Header validation**: `ValidateHeaders` is called automatically before the handler function. Codec-backed `HeaderParam` entries are validated from `r.Header`; 400 is returned on failure. Observer reports with `location="cookie"` or `location="header"` respectively.
+  - **`SetCookie(w, name, value, opts CookieOptions) error`** — writes a `Set-Cookie` header with secure defaults (`Secure=true`, `HttpOnly=true`, `SameSite=Strict`, `Path="/"`). If `opts.Codec` is non-nil, value is validated before writing; on failure returns `rest.CookieParamError` without writing the header. Use the same `*codex.Codec[string]` as the read-side `CookieParam` for symmetric validation.
+    - `CookieOptions.Insecure bool` — omit `Secure` (for non-TLS, e.g. localhost dev)
+    - `CookieOptions.AllowJS bool` — omit `HttpOnly` (for JS-readable cookies, e.g. CSRF tokens)
+    - `CookieOptions.SameSite http.SameSite` — override; defaults to `SameSiteStrictMode`
+    - `CookieOptions.MaxAge int` — 0 = session; negative = delete immediately
+    - `CookieOptions.Path string` — defaults to `"/"`
+    - `CookieOptions.Domain string` — defaults to current host
+    - `CookieOptions.Codec *codex.Codec[string]` — optional write-side validator; returns `rest.CookieParamError` on failure without writing header
 
 ## Event Channel Builder (`api/events`)
 

@@ -670,6 +670,30 @@ func main() {
 	_ = json.NewDecoder(resp9.Body).Decode(&headerErrBody)
 	fmt.Printf("Status: %d\nError:  %s\n\n", resp9.StatusCode, headerErrBody["error"])
 
+	fmt.Println("=== nethttp.SetCookie — write-side validation with same codec ===")
+	// nethttp.SetCookie writes a Set-Cookie header with secure defaults
+	// (Secure, HttpOnly, SameSite=Strict). When CookieOptions.Codec is set,
+	// the value is validated against that codec before writing — the same codec
+	// used in CookieParam for the read path. One definition, two boundaries.
+
+	// Valid value: validated against profileSessionCodec (NonEmptyString) → Set-Cookie written.
+	setRec := httptest.NewRecorder()
+	if err := nethttp.SetCookie(setRec, "session_token", "refreshed-session-token", nethttp.CookieOptions{
+		Codec:  &profileSessionCodec, // same codec as read-side CookieParam
+		MaxAge: 3600,
+	}); err != nil {
+		fmt.Fprintf(os.Stderr, "SetCookie error: %v\n", err)
+		os.Exit(1)
+	}
+	fmt.Printf("Valid:    Set-Cookie: %s\n", setRec.Header().Get("Set-Cookie"))
+
+	// Invalid value: empty string fails NonEmptyString → error returned, no header written.
+	setRec2 := httptest.NewRecorder()
+	setErr := nethttp.SetCookie(setRec2, "session_token", "", nethttp.CookieOptions{
+		Codec: &profileSessionCodec,
+	})
+	fmt.Printf("Invalid:  error=%v, Set-Cookie=%q\n\n", setErr, setRec2.Header().Get("Set-Cookie"))
+
 	fmt.Println("=== OpenAPI 3.1 spec (derived from domain codecs) ===")
 	doc, err := b.OpenAPISpec()
 	if err != nil {

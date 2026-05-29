@@ -100,24 +100,6 @@
       `rest.AddRoute[struct{}, User](b, "GET", "/users/{id}", ...)`.
       Track Go release notes for improvements to partial type argument inference.
 
-- [x] **`CookieParam` — HTTP cookie validation** _(low effort — mirrors QueryParam)_
-      `api/rest` has no concept of cookies. Introduce `CookieParam{Name, Description string,
-  Required bool, Codec *codex.Codec[string]}` (same shape as `QueryParam`) and
-      `RouteConfig.CookieParams []CookieParam`. Add `RouteHandle.ValidateCookies(map[string]string) error`
-      and a matching `CookieParamError{Name, Value, Err}`. In the OpenAPI spec, cookie params
-      render as `in: cookie`. The `adapters/nethttp` adapter extracts cookies via
-      `r.Cookie(name)` and calls `ValidateCookies` automatically before the handler — same
-      pattern as query param auto-validation. Zero new dependencies.
-
-- [x] **`HeaderParam` — HTTP header validation** _(low effort — mirrors CookieParam)_
-      Introduce `HeaderParam{Name, Description string, Required bool, Codec *codex.Codec[string]}`
-      and `RouteConfig.HeaderParams []HeaderParam`. Add `RouteHandle.ValidateHeaders(map[string]string) error`
-      and `HeaderParamError{Name, Value, Err}`. In the OpenAPI spec, header params render as
-      `in: header`. The `adapters/nethttp` adapter extracts headers via `r.Header.Get(name)`
-      (canonicalised by `net/http`) and calls `ValidateHeaders` before the handler.
-      Note: OpenAPI reserves `Accept`, `Content-Type`, and `Authorization` — these should not
-      be declared as `HeaderParam` entries (standard convention; worth a doc note).
-
 ### Adapters
 
 #### net/http adapter gaps
@@ -159,24 +141,6 @@
       (c) A `WithResponseHeaders(ctx, headers)` / `ResponseHeadersFromContext(ctx)` pair where
       the handler deposits headers into context and the adapter reads them after `fn` returns.
       Option (c) is the least intrusive and most composable. Needs design decision.
-
-- [ ] **`adapters/nethttp`: secure cookie response helper** _(low effort)_
-      `CookieParam` validates incoming cookie *values*, but the library has no helper for
-      *setting* cookies on responses. Handlers must call `http.SetCookie` manually, with no
-      enforcement of `Secure`, `HttpOnly`, or `SameSite` attributes.
-      
-      Design note: security attributes (`Secure`, `HttpOnly`, `SameSite`, `Path`, `Domain`,
-      `MaxAge`) are server-side hints in the `Set-Cookie` response header. They are **not**
-      transmitted by the client in the `Cookie` request header — so it is fundamentally
-      impossible to verify them at request validation time. The codec can only validate the
-      cookie *value* (e.g. `validate.MinLen(32)`, `validate.UUID`, `validate.NonEmptyString`).
-      
-      Proposal: add a `nethttp.SetCookie(w, name, value, opts CookieOptions)` helper that
-      always applies `Secure: true, HttpOnly: true, SameSite: http.SameSiteStrictMode` by
-      default, allowing opt-in relaxation for legitimate cases (e.g. `SameSite: Lax` for
-      cross-site read-only cookies). The `CookieParam.Codec` schema could optionally be reused
-      to validate the value before setting. This closes the write-side security gap without
-      requiring framework changes.
 
 #### MQTT adapter gaps
 

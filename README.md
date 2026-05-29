@@ -1074,6 +1074,30 @@ http.ListenAndServe(":8080", mux)
 - Response status: taken from the route descriptor's primary response (e.g. 201 for POST)
 - **Custom error handling**: `Options.ErrorHandler func(w, r, status, err)` overrides the default JSON envelope
 - **Metrics / observability**: `Options.Observer stats.Observer` — implement [`stats.Observer`](#stats--observer) to receive per-request events; defaults to `stats.NoopObserver`
+- **Secure cookie responses**: `nethttp.SetCookie(w, name, value, opts)` writes a `Set-Cookie` header with secure defaults (`Secure`, `HttpOnly`, `SameSite=Strict`, `Path="/"`); accepts a `CookieOptions.Codec` for symmetric read/write validation using the same codec as `CookieParam`
+
+```go
+// Define once — shared between read (CookieParam) and write (SetCookie).
+sessionCodec := codex.String().Refine(validate.NonEmptyString)
+
+// Read side: adapter validates incoming cookie automatically.
+rest.CookieParam{Name: "session_token", Codec: &sessionCodec}
+
+// Write side: SetCookie validates before writing, returns CookieParamError on failure.
+if err := nethttp.SetCookie(w, "session_token", newToken, nethttp.CookieOptions{
+    Codec:  &sessionCodec, // same codec — validated before Set-Cookie header is written
+    MaxAge: 3600,
+}); err != nil {
+    // rest.CookieParamError{Name: "session_token", Value: newToken, Err: ...}
+}
+
+// Opt-in to less restrictive attributes when needed:
+nethttp.CookieOptions{
+    Insecure: true,  // omit Secure (for non-TLS environments)
+    AllowJS:  true,  // omit HttpOnly (for JS-readable cookies, e.g. CSRF tokens)
+    SameSite: http.SameSiteLaxMode,
+}
+```
 
 ### Codec as domain boundary: the functional pipeline
 
