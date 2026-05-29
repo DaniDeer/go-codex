@@ -629,11 +629,13 @@ The `route` package describes HTTP operations without any renderer or codec logi
 // Route describes a single HTTP operation.
 type Route struct {
     Method, Path, OperationID, Summary, Description string
-    Tags        []string
-    PathParams  []Param
-    QueryParams []Param
-    RequestBody *Body
-    Responses   []Response
+    Tags         []string
+    PathParams   []Param
+    QueryParams  []Param
+    CookieParams []Param
+    HeaderParams []Param
+    RequestBody  *Body
+    Responses    []Response
 }
 
 // Body describes a request body.
@@ -825,7 +827,7 @@ type InvalidPathParamError struct {
 }
 ```
 
-`RouteConfig` fields: `OperationID`, `Summary`, `Description`, `Tags`, `PathParams []PathParam`, `QueryParams []QueryParam`, `ReqSchemaName`, `RespStatus` (default POST→"201", others→"200"), `RespDescription`, `RespSchemaName`, `Responses []ResponseMeta`.
+`RouteConfig` fields: `OperationID`, `Summary`, `Description`, `Tags`, `PathParams []PathParam`, `QueryParams []QueryParam`, `CookieParams []CookieParam`, `HeaderParams []HeaderParam`, `ReqSchemaName`, `RespStatus` (default POST→"201", others→"200"), `RespDescription`, `RespSchemaName`, `Responses []ResponseMeta`.
 
 `PathParam{Name, Description, Codec *codex.Codec[string]}` — optional per-variable metadata. `Name` must correspond to a `{varName}` placeholder in the path template. `Codec` (pointer, `nil` = no validation) provides runtime validation and auto-flows its schema into the OpenAPI spec. An unknown `Name` causes `AddRoute` to return `InvalidPathParamError` immediately.
 
@@ -850,7 +852,41 @@ type QueryParamError struct {
 }
 ```
 
-**Codec schema → spec**: `PathParam.Codec` schema automatically flows into the OpenAPI path parameter spec. `QueryParam.Codec` schema automatically flows into the OpenAPI query parameter spec. When `Codec` is nil, the parameter is still declared (minimal entry with no schema).
+`CookieParam{Name, Description string, Required bool, Codec *codex.Codec[string]}` — optional cookie parameter metadata. Follows the same pattern as `QueryParam`. `Codec` provides runtime validation via `RouteHandle.ValidateCookies` and auto-flows its schema into the OpenAPI spec (`in: cookie`).
+
+```go
+type CookieParam struct {
+    Name        string
+    Description string
+    Required    bool
+    Codec       *codex.Codec[string] // nil = no validation
+}
+
+type CookieParamError struct {
+    Name  string
+    Value string
+    Err   error
+}
+```
+
+`HeaderParam{Name, Description string, Required bool, Codec *codex.Codec[string]}` — optional HTTP header parameter metadata. Follows the same pattern as `QueryParam`. `Codec` provides runtime validation via `RouteHandle.ValidateHeaders` and auto-flows its schema into the OpenAPI spec (`in: header`). Do **not** declare `Accept`, `Content-Type`, or `Authorization` as `HeaderParam` entries — OpenAPI reserves these for `requestBody` and security schemes respectively.
+
+```go
+type HeaderParam struct {
+    Name        string
+    Description string
+    Required    bool
+    Codec       *codex.Codec[string] // nil = no validation
+}
+
+type HeaderParamError struct {
+    Name  string
+    Value string
+    Err   error
+}
+```
+
+**Codec schema → spec**: `PathParam.Codec` schema automatically flows into the OpenAPI path parameter spec. `QueryParam.Codec`, `CookieParam.Codec`, and `HeaderParam.Codec` schemas automatically flow into their respective OpenAPI parameter specs (`in: query`, `in: cookie`, `in: header`). When `Codec` is nil, the parameter is still declared (minimal entry with no schema).
 
 Key rules:
 - `api/rest` uses `format.JSON(codec)` internally — explicitly JSON-only.
@@ -869,6 +905,8 @@ Key rules:
   - `RequestFromContext(ctx) (*http.Request, bool)` — retrieves the underlying `*http.Request` for path params, headers, etc. Use `r.PathValue("id")` for Go 1.22+ path segments.
   - Non-body methods (GET/HEAD/DELETE): fn called with zero value of Req; body reader not touched.
   - **Query validation**: `ValidateQuery` is called automatically before the handler function. Codec-backed `QueryParam` entries are validated from `r.URL.Query()`; 400 is returned on failure.
+  - **Cookie validation**: `ValidateCookies` is called automatically before the handler function. Codec-backed `CookieParam` entries are validated from `r.Cookies()`; 400 is returned on failure.
+  - **Header validation**: `ValidateHeaders` is called automatically before the handler function. Codec-backed `HeaderParam` entries are validated from `r.Header`; 400 is returned on failure. Observer reports with `location="cookie"` or `location="header"` respectively.
 
 ## Event Channel Builder (`api/events`)
 

@@ -131,6 +131,20 @@ func Handler[Req, Resp any](handle *rest.RouteHandle[Req, Resp], fn HandlerFunc[
 			return
 		}
 
+		// Validate cookie parameters against their registered codecs (if any).
+		if err := handle.ValidateCookies(cookieValues(r)); err != nil {
+			reportCookieErrors(err, obs)
+			errFn(sw, r, http.StatusBadRequest, err)
+			return
+		}
+
+		// Validate header parameters against their registered codecs (if any).
+		if err := handle.ValidateHeaders(headerValues(r)); err != nil {
+			reportHeaderErrors(err, obs)
+			errFn(sw, r, http.StatusBadRequest, err)
+			return
+		}
+
 		resp, err := fn(ctx, req)
 		if err != nil {
 			errFn(sw, r, http.StatusInternalServerError, err)
@@ -209,6 +223,31 @@ func queryValues(r *http.Request) map[string]string {
 	return m
 }
 
+// cookieValues extracts all cookies from r into a flat map[string]string.
+// When a cookie name appears multiple times, the first value is used.
+func cookieValues(r *http.Request) map[string]string {
+	cookies := r.Cookies()
+	m := make(map[string]string, len(cookies))
+	for _, c := range cookies {
+		if _, exists := m[c.Name]; !exists {
+			m[c.Name] = c.Value
+		}
+	}
+	return m
+}
+
+// headerValues extracts HTTP headers from r into a flat map[string]string.
+// When a header has multiple values, only the first is kept.
+func headerValues(r *http.Request) map[string]string {
+	m := make(map[string]string, len(r.Header))
+	for k, vs := range r.Header {
+		if len(vs) > 0 {
+			m[k] = vs[0]
+		}
+	}
+	return m
+}
+
 // reportBodyErrors extracts per-field validation errors from a body decode error
 // and reports them to obs with location "body".
 func reportBodyErrors(err error, obs stats.Observer) {
@@ -223,4 +262,24 @@ func reportQueryErrors(err error, obs stats.Observer) {
 		return
 	}
 	obs.RecordValidationError("query", stats.ConstraintName(qe.Err), qe.Name)
+}
+
+// reportCookieErrors extracts the failing cookie parameter from a [rest.CookieParamError]
+// and reports it to obs with location "cookie".
+func reportCookieErrors(err error, obs stats.Observer) {
+	var ce rest.CookieParamError
+	if !errors.As(err, &ce) {
+		return
+	}
+	obs.RecordValidationError("cookie", stats.ConstraintName(ce.Err), ce.Name)
+}
+
+// reportHeaderErrors extracts the failing header from a [rest.HeaderParamError]
+// and reports it to obs with location "header".
+func reportHeaderErrors(err error, obs stats.Observer) {
+	var he rest.HeaderParamError
+	if !errors.As(err, &he) {
+		return
+	}
+	obs.RecordValidationError("header", stats.ConstraintName(he.Err), he.Name)
 }

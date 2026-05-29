@@ -468,3 +468,157 @@ func TestObserver_RecordValidationError_query(t *testing.T) {
 		t.Errorf("want field 'id', got %q", obs.valErrors[0].field)
 	}
 }
+
+func TestHandler_CookieValidation_valid(t *testing.T) {
+	b := rest.NewBuilder(testInfo)
+	tokenCodec := codex.String().Refine(validate.NonEmptyString)
+	h, err := rest.AddRoute[getReq, userResp](b, "GET", "/protected", getReqCodec, userRespCodec, rest.RouteConfig{
+		CookieParams: []rest.CookieParam{{Name: "session_token", Required: true, Codec: &tokenCodec}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	handler := nethttp.Handler(h, func(_ context.Context, _ getReq) (userResp, error) {
+		return userResp{ID: "1", Name: "Alice"}, nil
+	}, nethttp.Options{})
+
+	rec := httptest.NewRecorder()
+	r := httptest.NewRequest(http.MethodGet, "/protected", nil)
+	r.AddCookie(&http.Cookie{Name: "session_token", Value: "abc123"})
+	handler.ServeHTTP(rec, r)
+
+	if rec.Code != http.StatusOK {
+		t.Errorf("want 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestHandler_CookieValidation_invalid(t *testing.T) {
+	b := rest.NewBuilder(testInfo)
+	tokenCodec := codex.String().Refine(validate.NonEmptyString)
+	h, err := rest.AddRoute[getReq, userResp](b, "GET", "/protected", getReqCodec, userRespCodec, rest.RouteConfig{
+		CookieParams: []rest.CookieParam{{Name: "session_token", Required: true, Codec: &tokenCodec}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	handler := nethttp.Handler(h, func(_ context.Context, _ getReq) (userResp, error) {
+		t.Fatal("handler must not be called on cookie validation error")
+		return userResp{}, nil
+	}, nethttp.Options{})
+
+	rec := httptest.NewRecorder()
+	r := httptest.NewRequest(http.MethodGet, "/protected", nil)
+	r.AddCookie(&http.Cookie{Name: "session_token", Value: ""})
+	handler.ServeHTTP(rec, r)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Errorf("want 400, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestHandler_HeaderValidation_valid(t *testing.T) {
+	b := rest.NewBuilder(testInfo)
+	uuidCodec := codex.String().Refine(validate.UUID)
+	h, err := rest.AddRoute[getReq, userResp](b, "GET", "/items", getReqCodec, userRespCodec, rest.RouteConfig{
+		HeaderParams: []rest.HeaderParam{{Name: "X-Request-Id", Required: true, Codec: &uuidCodec}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	handler := nethttp.Handler(h, func(_ context.Context, _ getReq) (userResp, error) {
+		return userResp{ID: "1", Name: "Alice"}, nil
+	}, nethttp.Options{})
+
+	rec := httptest.NewRecorder()
+	r := httptest.NewRequest(http.MethodGet, "/items", nil)
+	r.Header.Set("X-Request-Id", "f47ac10b-58cc-4372-a567-0e02b2c3d479")
+	handler.ServeHTTP(rec, r)
+
+	if rec.Code != http.StatusOK {
+		t.Errorf("want 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestHandler_HeaderValidation_invalid(t *testing.T) {
+	b := rest.NewBuilder(testInfo)
+	uuidCodec := codex.String().Refine(validate.UUID)
+	h, err := rest.AddRoute[getReq, userResp](b, "GET", "/items", getReqCodec, userRespCodec, rest.RouteConfig{
+		HeaderParams: []rest.HeaderParam{{Name: "X-Request-Id", Required: true, Codec: &uuidCodec}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	handler := nethttp.Handler(h, func(_ context.Context, _ getReq) (userResp, error) {
+		t.Fatal("handler must not be called on header validation error")
+		return userResp{}, nil
+	}, nethttp.Options{})
+
+	rec := httptest.NewRecorder()
+	r := httptest.NewRequest(http.MethodGet, "/items", nil)
+	r.Header.Set("X-Request-Id", "not-a-uuid")
+	handler.ServeHTTP(rec, r)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Errorf("want 400, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestObserver_RecordValidationError_cookie(t *testing.T) {
+	b := rest.NewBuilder(testInfo)
+	tokenCodec := codex.String().Refine(validate.NonEmptyString)
+	h, err := rest.AddRoute[getReq, userResp](b, "GET", "/protected", getReqCodec, userRespCodec, rest.RouteConfig{
+		CookieParams: []rest.CookieParam{{Name: "session_token", Codec: &tokenCodec}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	obs := &spyObserver{}
+	handler := nethttp.Handler(h, func(_ context.Context, _ getReq) (userResp, error) {
+		return userResp{}, nil
+	}, nethttp.Options{Observer: obs})
+
+	rec := httptest.NewRecorder()
+	r := httptest.NewRequest(http.MethodGet, "/protected", nil)
+	r.AddCookie(&http.Cookie{Name: "session_token", Value: ""})
+	handler.ServeHTTP(rec, r)
+
+	if len(obs.valErrors) == 0 {
+		t.Fatal("want at least one RecordValidationError call, got none")
+	}
+	if obs.valErrors[0].location != "cookie" {
+		t.Errorf("want location 'cookie', got %q", obs.valErrors[0].location)
+	}
+	if obs.valErrors[0].field != "session_token" {
+		t.Errorf("want field 'session_token', got %q", obs.valErrors[0].field)
+	}
+}
+
+func TestObserver_RecordValidationError_header(t *testing.T) {
+	b := rest.NewBuilder(testInfo)
+	uuidCodec := codex.String().Refine(validate.UUID)
+	h, err := rest.AddRoute[getReq, userResp](b, "GET", "/items", getReqCodec, userRespCodec, rest.RouteConfig{
+		HeaderParams: []rest.HeaderParam{{Name: "X-Request-Id", Codec: &uuidCodec}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	obs := &spyObserver{}
+	handler := nethttp.Handler(h, func(_ context.Context, _ getReq) (userResp, error) {
+		return userResp{}, nil
+	}, nethttp.Options{Observer: obs})
+
+	rec := httptest.NewRecorder()
+	r := httptest.NewRequest(http.MethodGet, "/items", nil)
+	r.Header.Set("X-Request-Id", "not-a-uuid")
+	handler.ServeHTTP(rec, r)
+
+	if len(obs.valErrors) == 0 {
+		t.Fatal("want at least one RecordValidationError call, got none")
+	}
+	if obs.valErrors[0].location != "header" {
+		t.Errorf("want location 'header', got %q", obs.valErrors[0].location)
+	}
+	if obs.valErrors[0].field != "X-Request-Id" {
+		t.Errorf("want field 'X-Request-Id', got %q", obs.valErrors[0].field)
+	}
+}

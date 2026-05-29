@@ -971,6 +971,39 @@ if err := listUsers.ValidateQuery(map[string]string{"page": "abc"}); err != nil 
     }
 }
 
+// Route with cookie and header parameters.
+// CookieParam and HeaderParam follow the same pattern as QueryParam:
+// - Codec validates values at ValidateCookies / ValidateHeaders time
+// - Schema flows into the OpenAPI cookie / header parameter spec automatically
+// - The nethttp adapter calls both automatically before the handler runs
+sessionCodec := codex.String().Refine(validate.NonEmptyString)
+requestIDCodec := codex.String().Refine(validate.UUID)
+profile, err := rest.AddRoute[struct{}, User](b, "GET", "/profile",
+    codex.Struct[struct{}](), userCodec,
+    rest.RouteConfig{
+        OperationID: "getProfile",
+        Summary:     "Get the current user profile",
+        CookieParams: []rest.CookieParam{
+            {Name: "session_token", Description: "Active session token", Required: true, Codec: &sessionCodec},
+        },
+        HeaderParams: []rest.HeaderParam{
+            // Note: Do not declare Accept, Content-Type, Authorization — those are
+            // OpenAPI-reserved and should be handled via requestBody / security schemes.
+            {Name: "X-Request-Id", Description: "Idempotency and tracing UUID", Required: true, Codec: &requestIDCodec},
+        },
+    })
+if err != nil {
+    log.Fatal(err)
+}
+
+// ValidateCookies / ValidateHeaders work exactly like ValidateQuery:
+if err := profile.ValidateCookies(map[string]string{"session_token": ""}); err != nil {
+    var ce rest.CookieParamError
+    if errors.As(err, &ce) {
+        log.Fatalf("bad cookie %q: %v", ce.Name, ce.Err)
+    }
+}
+
 // In your HTTP handler — works with net/http, Gin, Chi, Echo, anything:
 req, err := createUser.Decode(body)   // JSON → CreateUserRequest, validates
 user, err := myService.Create(req)
@@ -995,7 +1028,7 @@ yamlBytes, _ := doc.MarshalYAML()
 
 **Final path re-validation:** `BuildPath` re-validates the fully assembled path (e.g. `/users/hello world`) against the builder-level codec after substitution. This catches variable values that pass their `PathParamCodecs` codec but violate the global path constraint. Returns `InvalidPathError` with the final path in the `Path` field.
 
-**Error types from `AddRoute`, `BuildPath`, and `ValidateQuery`:**
+**Error types from `AddRoute`, `BuildPath`, `ValidateQuery`, `ValidateCookies`, and `ValidateHeaders`:**
 
 | Error type | When returned | `errors.As` target |
 | --- | --- | --- |
@@ -1004,8 +1037,12 @@ yamlBytes, _ := doc.MarshalYAML()
 | `*rest.MissingPathVarError` | A template variable is absent from the `vars` map | `MissingPathVarError{Name}` |
 | `*rest.InvalidPathParamError` | A `PathParams` entry names a variable not in the template | `InvalidPathParamError{Name, Path}` |
 | `*rest.QueryParamError` | A query parameter value fails its codec | `QueryParamError{Name, Value, Err}` |
+| `*rest.CookieParamError` | A cookie value fails its codec | `CookieParamError{Name, Value, Err}` |
+| `*rest.HeaderParamError` | An HTTP header value fails its codec | `HeaderParamError{Name, Value, Err}` |
 
-**Codec schema → OpenAPI spec:** `PathParam.Codec` schema flows automatically into the OpenAPI path parameter spec. `QueryParam.Codec` schema flows into the OpenAPI query parameter spec. When `Codec` is nil, the parameter is still declared in the spec (minimal entry).
+**Codec schema → OpenAPI spec:** `PathParam.Codec` schema flows automatically into the OpenAPI path parameter spec. `QueryParam.Codec`, `CookieParam.Codec`, and `HeaderParam.Codec` schemas flow into their respective OpenAPI parameter specs (`in: query`, `in: cookie`, `in: header`). When `Codec` is nil, the parameter is still declared in the spec (minimal entry).
+
+> **OpenAPI header convention:** Do not declare `Accept`, `Content-Type`, or `Authorization` as `HeaderParam` entries — these are reserved by the OpenAPI 3.1 specification and must be handled via `requestBody` and security scheme definitions respectively.
 
 **Future:** framework-specific adapters (`adapters/gin`, `adapters/chi`, etc.) will wrap `RouteHandle` for zero-boilerplate integration. The `api/rest` core stays dependency-free.
 
@@ -1031,7 +1068,9 @@ http.ListenAndServe(":8080", mux)
 - POST/PUT/PATCH: body read → `handle.Decode` (validates) → handler → `handle.Encode` → write
 - GET/HEAD/DELETE: handler called with zero value of `Req`; path/query extraction via `RequestFromContext`
 - **Query param validation**: `ValidateQuery` is called automatically before the handler; codec-backed `QueryParam` entries are validated from `r.URL.Query()`
-- Errors: `{"error":"..."}` JSON — 400 for decode/query validation failures, 500 for handler/encode failures
+- **Cookie param validation**: `ValidateCookies` is called automatically before the handler; codec-backed `CookieParam` entries are validated from `r.Cookies()`
+- **Header param validation**: `ValidateHeaders` is called automatically before the handler; codec-backed `HeaderParam` entries are validated from `r.Header`
+- Errors: `{"error":"..."}` JSON — 400 for decode/validation failures (body, query, cookie, header), 500 for handler/encode failures
 - Response status: taken from the route descriptor's primary response (e.g. 201 for POST)
 - **Custom error handling**: `Options.ErrorHandler func(w, r, status, err)` overrides the default JSON envelope
 - **Metrics / observability**: `Options.Observer stats.Observer` — implement [`stats.Observer`](#stats--observer) to receive per-request events; defaults to `stats.NoopObserver`

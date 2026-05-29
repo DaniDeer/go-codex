@@ -421,7 +421,39 @@ func main() {
 		os.Exit(1)
 	}
 
-	// Custom ErrorHandler using httpLogger for transport-level errors.
+	// GET /profile — demonstrates CookieParam and HeaderParam validation.
+	// session_token cookie: required, non-empty (validates auth session).
+	// X-Request-ID header: required UUID (idempotency/tracing key).
+	// The nethttp adapter calls ValidateCookies and ValidateHeaders automatically
+	// before the handler runs — no manual extraction needed.
+	profileSessionCodec := codex.String().Refine(validate.NonEmptyString)
+	profileRequestIDCodec := codex.String().Refine(validate.UUID)
+	profileRoute, err := rest.AddRoute[emptyReq, User](b, "GET", "/profile",
+		emptyReqCodec, userCodec, rest.RouteConfig{
+			OperationID: "getProfile",
+			Summary:     "Get the current user profile",
+			CookieParams: []rest.CookieParam{
+				{
+					Name:        "session_token",
+					Description: "Active session token",
+					Required:    true,
+					Codec:       &profileSessionCodec,
+				},
+			},
+			HeaderParams: []rest.HeaderParam{
+				{
+					Name:        "X-Request-Id",
+					Description: "Idempotency and tracing UUID",
+					Required:    true,
+					Codec:       &profileRequestIDCodec,
+				},
+			},
+		})
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "route registration failed: %v\n", err)
+		os.Exit(1)
+	}
+
 	// Distinguishes validation failures (400, Warn) from system errors (500, Error).
 	errorHandler := func(w http.ResponseWriter, r *http.Request, status int, err error) {
 		var validationErrs codex.ValidationErrors
@@ -471,6 +503,12 @@ func main() {
 	nethttp.Register(mux, listUsersRoute,
 		withDomainLogging("user.list", makeListUsersHandler(), domainLogger,
 			func(_ emptyReq, _ PagedUsersResp) []slog.Attr { return nil }),
+		nethttp.Options{ErrorHandler: errorHandler})
+	nethttp.Register(mux, profileRoute,
+		func(_ context.Context, _ emptyReq) (User, error) {
+			// Handler only runs when both cookie and header are valid.
+			return User{ID: "f47ac10b-58cc-4372-a567-0e02b2c3d479", Name: "Alice", Email: "alice@example.com"}, nil
+		},
 		nethttp.Options{ErrorHandler: errorHandler})
 
 	// Demo requests against an in-process test server.
@@ -573,6 +611,64 @@ func main() {
 	var qErrBody map[string]string
 	_ = json.NewDecoder(resp6.Body).Decode(&qErrBody)
 	fmt.Printf("Status: %d\nError:  %s\n\n", resp6.StatusCode, qErrBody["error"])
+
+	fmt.Println("=== GET /profile (valid cookie + header) ===")
+	// Both session_token cookie and X-Request-Id header are valid.
+	// The nethttp adapter validates them before the handler runs.
+	req7, err := http.NewRequest(http.MethodGet, srv.URL+"/profile", nil) //nolint:noctx
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "NewRequest error: %v\n", err)
+		os.Exit(1)
+	}
+	req7.AddCookie(&http.Cookie{Name: "session_token", Value: "my-valid-session-token", Secure: true, HttpOnly: true, SameSite: http.SameSiteStrictMode})
+	req7.Header.Set("X-Request-Id", "f47ac10b-58cc-4372-a567-0e02b2c3d479")
+	resp7, err := http.DefaultClient.Do(req7)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "GET error: %v\n", err)
+		os.Exit(1)
+	}
+	defer resp7.Body.Close()
+	var profile User
+	_ = json.NewDecoder(resp7.Body).Decode(&profile)
+	fmt.Printf("Status: %d\nUser:   %+v\n\n", resp7.StatusCode, profile)
+
+	fmt.Println("=== GET /profile (invalid cookie — auto-rejected) ===")
+	// Empty session_token fails NonEmptyString → 400, handler never runs.
+	req8, err := http.NewRequest(http.MethodGet, srv.URL+"/profile", nil) //nolint:noctx
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "NewRequest error: %v\n", err)
+		os.Exit(1)
+	}
+	req8.AddCookie(&http.Cookie{Name: "session_token", Value: "", Secure: true, HttpOnly: true, SameSite: http.SameSiteStrictMode})
+	req8.Header.Set("X-Request-Id", "f47ac10b-58cc-4372-a567-0e02b2c3d479")
+	resp8, err := http.DefaultClient.Do(req8)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "GET error: %v\n", err)
+		os.Exit(1)
+	}
+	defer resp8.Body.Close()
+	var cookieErrBody map[string]string
+	_ = json.NewDecoder(resp8.Body).Decode(&cookieErrBody)
+	fmt.Printf("Status: %d\nError:  %s\n\n", resp8.StatusCode, cookieErrBody["error"])
+
+	fmt.Println("=== GET /profile (invalid header — auto-rejected) ===")
+	// X-Request-Id is not a UUID → 400, handler never runs.
+	req9, err := http.NewRequest(http.MethodGet, srv.URL+"/profile", nil) //nolint:noctx
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "NewRequest error: %v\n", err)
+		os.Exit(1)
+	}
+	req9.AddCookie(&http.Cookie{Name: "session_token", Value: "my-valid-session-token", Secure: true, HttpOnly: true, SameSite: http.SameSiteStrictMode})
+	req9.Header.Set("X-Request-Id", "not-a-uuid")
+	resp9, err := http.DefaultClient.Do(req9)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "GET error: %v\n", err)
+		os.Exit(1)
+	}
+	defer resp9.Body.Close()
+	var headerErrBody map[string]string
+	_ = json.NewDecoder(resp9.Body).Decode(&headerErrBody)
+	fmt.Printf("Status: %d\nError:  %s\n\n", resp9.StatusCode, headerErrBody["error"])
 
 	fmt.Println("=== OpenAPI 3.1 spec (derived from domain codecs) ===")
 	doc, err := b.OpenAPISpec()

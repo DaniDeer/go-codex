@@ -40,6 +40,19 @@
 
 ### Validate
 
+### Format
+
+- [ ] **`format/protobuf` — protobuf binary format** _(medium effort)_
+      A `format.Protobuf[T proto.Message]` function that bridges `[]byte` (protobuf binary) ↔
+      `T` (proto-generated Go struct). Enables codecs whose `Encode`/`Decode` operate on
+      protobuf binary payloads rather than JSON `map[string]any` — useful for MQTT brokers,
+      Kafka, or other binary transports where payloads happen to be protobuf-encoded.
+      Complements `adapters/grpc` for end-to-end typed validation on the binary wire format.
+      Schema output for proto binary is a stub (proto has its own schema language — `.proto` IDL)
+      but the codec's `Refine` constraints and `ValidationErrors` work normally.
+      New dependency: `google.golang.org/protobuf` in `format/` only; core library stays
+      dependency-free.
+
 ### Spec generation
 
 - [ ] **`$ref` auto-deduplication** _(deferred — high risk)_
@@ -58,6 +71,19 @@
       This is only noticeable at scale and requires the `$ref` auto-deduplication machinery
       to be in place first; block on that item.
 
+- [ ] **`render/graphql` — GraphQL SDL generation** _(medium effort)_
+      Generate GraphQL SDL `type` and `input` definitions from `codex.Struct[T]` codecs —
+      same direction as `render/openapi` and `render/asyncapi`. Mapping rules:
+      struct fields → SDL fields, `Required: true` → `!` (non-null), `Nullable[T]` → nullable
+      field, `SliceOf[T]` → `[T!]!`, `codex.Union` → SDL union type, `schema.Format`
+      annotations → SDL `scalar` declarations. `input` types (for mutations) and `type`
+      definitions (for queries/subscriptions) are separate renderers.
+      New package `render/graphql`; no external dependency (pure string generation like
+      `render/openapi`).
+      Note: GraphQL subscriptions carry the same push semantics as `api/events.ChannelHandle`
+      channels — a `render/asyncapi`-style AsyncAPI output that targets GraphQL subscriptions
+      as a transport is a natural extension.
+
 - [ ] **OpenAPI / AsyncAPI version targeting** _(medium effort)_
       Currently renders AsyncAPI 2.x and OpenAPI 3.0. Explicit version targeting (e.g.
       `RenderOpenAPI31()`, `RenderAsyncAPI30()`) with per-version schema differences handled
@@ -74,7 +100,7 @@
       `rest.AddRoute[struct{}, User](b, "GET", "/users/{id}", ...)`.
       Track Go release notes for improvements to partial type argument inference.
 
-- [ ] **`CookieParam` — HTTP cookie validation** _(low effort — mirrors QueryParam)_
+- [x] **`CookieParam` — HTTP cookie validation** _(low effort — mirrors QueryParam)_
       `api/rest` has no concept of cookies. Introduce `CookieParam{Name, Description string,
   Required bool, Codec *codex.Codec[string]}` (same shape as `QueryParam`) and
       `RouteConfig.CookieParams []CookieParam`. Add `RouteHandle.ValidateCookies(map[string]string) error`
@@ -83,7 +109,7 @@
       `r.Cookie(name)` and calls `ValidateCookies` automatically before the handler — same
       pattern as query param auto-validation. Zero new dependencies.
 
-- [ ] **`HeaderParam` — HTTP header validation** _(low effort — mirrors CookieParam)_
+- [x] **`HeaderParam` — HTTP header validation** _(low effort — mirrors CookieParam)_
       Introduce `HeaderParam{Name, Description string, Required bool, Codec *codex.Codec[string]}`
       and `RouteConfig.HeaderParams []HeaderParam`. Add `RouteHandle.ValidateHeaders(map[string]string) error`
       and `HeaderParamError{Name, Value, Err}`. In the OpenAPI spec, header params render as
@@ -134,6 +160,24 @@
       the handler deposits headers into context and the adapter reads them after `fn` returns.
       Option (c) is the least intrusive and most composable. Needs design decision.
 
+- [ ] **`adapters/nethttp`: secure cookie response helper** _(low effort)_
+      `CookieParam` validates incoming cookie *values*, but the library has no helper for
+      *setting* cookies on responses. Handlers must call `http.SetCookie` manually, with no
+      enforcement of `Secure`, `HttpOnly`, or `SameSite` attributes.
+      
+      Design note: security attributes (`Secure`, `HttpOnly`, `SameSite`, `Path`, `Domain`,
+      `MaxAge`) are server-side hints in the `Set-Cookie` response header. They are **not**
+      transmitted by the client in the `Cookie` request header — so it is fundamentally
+      impossible to verify them at request validation time. The codec can only validate the
+      cookie *value* (e.g. `validate.MinLen(32)`, `validate.UUID`, `validate.NonEmptyString`).
+      
+      Proposal: add a `nethttp.SetCookie(w, name, value, opts CookieOptions)` helper that
+      always applies `Secure: true, HttpOnly: true, SameSite: http.SameSiteStrictMode` by
+      default, allowing opt-in relaxation for legitimate cases (e.g. `SameSite: Lax` for
+      cross-site read-only cookies). The `CookieParam.Codec` schema could optionally be reused
+      to validate the value before setting. This closes the write-side security gap without
+      requiring framework changes.
+
 #### MQTT adapter gaps
 
 - [ ] **`adapters/mqtt`: wildcard topic variable extraction** _(medium effort)_
@@ -157,6 +201,44 @@
       value — these are the ecosystems most users land in. Chi is preferred as it builds
       directly on `net/http` with no magic.
 
+- [ ] **`adapters/grpc` — gRPC unary validation interceptor** _(medium-high effort)_
+      Proto-generated code decodes wire format correctly but has no business validation (field
+      length, format, range). go-codex fills this gap: write a `codex.Struct[*pb.T]` with
+      `Refine` constraints, then register it with a `UnaryServerInterceptor` that runs codec
+      validation after gRPC decodes the message and before the handler is called.
+      Per-field errors map to `google.rpc.BadRequest.FieldViolation` (gRPC rich error details),
+      returning status code `InvalidArgument` with structured field diagnostics. The same codec's
+      `Schema` can feed an OpenAPI spec for grpc-gateway REST transcoding — single source of
+      truth for both validation and documentation. `stats.Observer.RecordValidationError`
+      integration applies without modification.
+      Streaming RPC (ServerStream, ClientStream, BiDi) is deferred — requires a separate
+      streaming interceptor design with per-message validation semantics.
+      New dependency: `google.golang.org/grpc` in `adapters/grpc` only; core library stays
+      dependency-free.
+
+- [ ] **`adapters/websocket` — WebSocket typed message adapter** _(medium effort)_
+      Maps `api/events.ChannelHandle[T]` to a WebSocket connection lifecycle: upgrade →
+      decode incoming messages → typed handler → encode outgoing messages. Direct parallel to
+      `adapters/mqtt`: the handler signature, `stats.Observer` integration, and
+      `MessageFromContext` escape hatch follow the same patterns. AsyncAPI `ws` binding
+      documents the channel in the spec.
+      Library choice: `nhooyr.io/websocket` (context-aware, stdlib-compatible, actively
+      maintained) preferred over gorilla/websocket (archived).
+      New dependency: `nhooyr.io/websocket` in `adapters/websocket` only.
+
+- [ ] **`adapters/nethttp`: SSE (Server-Sent Events) streaming responses** _(medium effort)_
+      HTTP SSE (`text/event-stream`) allows the server to push a typed event stream over an
+      open connection. Requires a `StreamHandle[T]` concept in `api/rest` (or a streaming
+      variant of `RouteHandle`) and a `StreamHandler[T]` in `adapters/nethttp` that encodes
+      events as `data: <json>\n\n` frames. Flush is called per event.
+      Works on both HTTP/1.1 (chunked transfer encoding) and HTTP/2 (multiplexed stream) — no
+      protocol-specific code; `net/http` handles the transport difference transparently.
+      OpenAPI spec: the streaming route would render with `text/event-stream` response media type.
+      Note on HTTP/3: `adapters/nethttp` is transport-agnostic (`http.Handler`). HTTP/3 servers
+      (`quic-go`, cloudflare quiche-go) expose the same interface — no adapter change needed.
+      Security note worth documenting: non-idempotent routes (POST/PUT/DELETE) should not be
+      served as 0-RTT early data in HTTP/3 without replay protection.
+
 - [ ] **MQTT message header validation** _(medium effort — MQTT 5.0 only)_
       MQTT 5.0 introduced User Properties: arbitrary key-value string pairs attached to any
       message. AsyncAPI models these via `message.headers` (a JSON Schema object). The
@@ -170,6 +252,16 @@
       Caveats: MQTT 3.1.1 has no User Properties — this feature is MQTT 5.0 only. The adapter
       should skip header validation silently when the broker connection is v3. Consider a
       build tag or runtime version check.
+
+- [ ] **`adapters/graphql` — GraphQL input validation middleware** _(medium effort)_
+      Middleware for gqlgen resolvers (or graphql-go): validate resolver `Input` structs using
+      a registered `codex.Struct[InputType]` before the resolver runs. Per-field errors map to
+      GraphQL error extensions (`{"extensions": {"field": "email", "constraint": "email"}}`),
+      returning a typed error list instead of an opaque server error.
+      This is the runtime complement to `render/graphql` — the same codec drives both SDL
+      generation and runtime validation. `stats.Observer.RecordValidationError` integration
+      applies with `location = "input"`.
+      New dependency: `github.com/99designs/gqlgen` (or graphql-go) in `adapters/graphql` only.
 
 - [ ] **`adapters/amqp` — AMQP 0-9-1 adapter** _(high effort)_
       Add an adapter for AMQP 0-9-1 (RabbitMQ and compatible brokers) using
@@ -225,6 +317,25 @@
       `Refine(validate.UUID)`, `format: email` → `Refine(validate.Email)`) - Must be a separate `cmd/go-codex-gen` binary (or separate module) — not part of the
       importable library - High effort: spec parsing, type inference, code generation, edge cases (`nullable`,
       `discriminator`, circular `$ref`s). Significant design work before implementation.
+
+- [ ] **Proto IDL → codec generator** _(high effort — separate binary/module)_
+      Reads a `.proto` file and emits `codex.Struct[*pb.T](...)` Go source alongside the
+      existing proto-generated Go code. Complements the "Spec → codec generator" item.
+      Mapping: proto `string` + field options → `codex.String()` + constraints; `int32/int64`
+      → `codex.Int()`; `repeated T` → `codex.SliceOf(...)`; `optional T` → `codex.Nullable(...)`;
+      `message` → `codex.Struct[T]`. Known `google.protobuf.*` well-known types map to
+      typed codecs (e.g. `google.protobuf.Timestamp` → `codex.Time()`).
+      `buf.validate` / `protoc-gen-validate` annotations → `Refine(validate.*)` constraints.
+      Must be a separate `protoc` plugin binary or `cmd/go-codex-proto` tool — not part of the
+      importable library.
+
+- [ ] **GraphQL SDL → codec generator** _(high effort — separate binary/module)_
+      Reads a GraphQL SDL schema file and emits `codex.Struct[T](...)` Go source for each
+      `type` and `input` definition. Complements `render/graphql` (inverse direction).
+      Mapping: SDL `String!` → `codex.String()` (required); `String` → `codex.Nullable(codex.String())`;
+      `[T!]!` → `codex.SliceOf(...)`; `scalar Email` → `codex.String().Refine(validate.Email)`.
+      Custom `@constraint` directives map to `Refine` constraints; `enum` → `codex.String().Refine(validate.OneOf(...))`.
+      Must be a separate `cmd/go-codex-graphql` binary or module.
 
 ---
 

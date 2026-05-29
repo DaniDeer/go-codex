@@ -209,6 +209,8 @@ func buildOperation(r route.Route) map[string]any {
 	var params []any
 	params = append(params, buildParams(r.PathParams, "path")...)
 	params = append(params, buildParams(r.QueryParams, "query")...)
+	params = append(params, buildParams(r.CookieParams, "cookie")...)
+	params = append(params, buildParams(r.HeaderParams, "header")...)
 	if len(params) > 0 {
 		op["parameters"] = params
 	}

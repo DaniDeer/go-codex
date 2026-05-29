@@ -28,16 +28,18 @@ import "github.com/DaniDeer/go-codex/schema"
 
 // Route describes a single HTTP operation.
 type Route struct {
-	Method      string // GET, POST, PUT, PATCH, DELETE
-	Path        string // e.g. /users/{id}
-	OperationID string
-	Summary     string
-	Description string
-	Tags        []string
-	PathParams  []Param
-	QueryParams []Param
-	RequestBody *Body
-	Responses   []Response
+	Method       string // GET, POST, PUT, PATCH, DELETE
+	Path         string // e.g. /users/{id}
+	OperationID  string
+	Summary      string
+	Description  string
+	Tags         []string
+	PathParams   []Param
+	QueryParams  []Param
+	CookieParams []Param
+	HeaderParams []Param
+	RequestBody  *Body
+	Responses    []Response
 }
 
 // Param describes a path or query parameter.
