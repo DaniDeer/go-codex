@@ -33,8 +33,9 @@ go-codex is a Go port of the core ideas from Haskell's [autodocodec](https://hac
 | `api/internal`    | Shared helpers for `api/rest` and `api/events` (template variable parsing and substitution); not part of the public API | `codex` |
 | `api/rest`        | Transport-agnostic REST API builder; typed Decode/Encode + OpenAPI spec                  | `codex`, `format`, `route`, `render/openapi`, `schema`, `api/internal` |
 | `api/events`      | Transport-agnostic event channel builder; typed Decode/Encode + AsyncAPI spec            | `codex`, `format`, `render/asyncapi`, `schema`, `api/internal` |
-| `adapters/nethttp` | net/http adapter: `Handler`, `Register`, `HandlerWithOptions`, `RegisterWithOptions`, `RequestFromContext` | `api/rest`, `net/http` |
-| `adapters/mqtt`   | Paho MQTT adapter: `SubscribeHandler`, `Publish`, `SubscribeError`, `ErrorKind` | `api/events`, Paho MQTT lib |
+| `adapters/nethttp` | net/http adapter: `Handler`, `Register`, `RequestFromContext`, `Options` (with `Observer stats.Observer`) | `api/rest`, `net/http`, `stats` |
+| `adapters/mqtt`   | Paho MQTT adapter: `SubscribeHandler`, `Publish`, `SubscribeError`, `ErrorKind`, `SubscribeOptions` (with `Observer stats.Observer`), `PublishOptions` (with `Observer stats.Observer`) | `api/events`, `stats`, Paho MQTT lib |
+| `stats`           | Observer hooks: `ValidationObserver` (codec-level, 1 method); `Observer` (adapter-level, embeds `ValidationObserver` + transport hooks); `NoopObserver`; `ReportErrors(obs, location, err)`; `ConstraintName(err)` | `codex`, `time` (stdlib only) |
 
 - No circular imports.
 - `schema` has zero dependencies inside this module.
@@ -860,12 +861,11 @@ Key rules:
 - **Final path re-validation**: `BuildPath` re-validates the fully assembled path (e.g. `"/users/hello world"`) against the builder-level `pathCodec` after substitution. This catches values that pass their `PathParam.Codec` but violate the global path constraint (e.g. a space introduced by a loose param codec). Returns `InvalidPathError{Path: finalPath, Err: ...}`.
 - `Info = openapi.Info` and `Server = openapi.Server` are type aliases to avoid drift.
 - `api/rest` may import `codex`, `format`, `route`, `render/openapi`, `schema`. No `net/http`.
-- `adapters/nethttp` wraps `RouteHandle` for `net/http`. It imports `api/rest` and `net/http`.
-  - `Handler[Req,Resp](handle, fn) http.Handler` — decodes body (POST/PUT/PATCH), calls fn, encodes response.
-  - `HandlerWithOptions[Req,Resp](handle, fn, opts) http.Handler` — like Handler but accepts `Options`.
+- `adapters/nethttp` wraps `RouteHandle` for `net/http`. It imports `api/rest`, `net/http`, and `stats`.
+  - `Handler[Req,Resp](handle, fn, opts Options) http.Handler` — decodes body (POST/PUT/PATCH), calls fn, encodes response; instruments via `opts.Observer`.
   - `Options.ErrorHandler func(w, r, status, err)` — custom error response writer; default is JSON `{"error":"..."}`.
-  - `Register[Req,Resp](mux, handle, fn)` — registers on `*http.ServeMux` via Go 1.22+ `"METHOD /path"` pattern.
-  - `RegisterWithOptions[Req,Resp](mux, handle, fn, opts)` — like Register with Options.
+  - `Options.Observer stats.Observer` — receives `RecordRequest` and `RecordValidationError` events; defaults to `stats.NoopObserver`.
+  - `Register[Req,Resp](mux, handle, fn, opts Options)` — registers on `*http.ServeMux` via Go 1.22+ `"METHOD /path"` pattern.
   - `RequestFromContext(ctx) (*http.Request, bool)` — retrieves the underlying `*http.Request` for path params, headers, etc. Use `r.PathValue("id")` for Go 1.22+ path segments.
   - Non-body methods (GET/HEAD/DELETE): fn called with zero value of Req; body reader not touched.
   - **Query validation**: `ValidateQuery` is called automatically before the handler function. Codec-backed `QueryParam` entries are validated from `r.URL.Query()`; 400 is returned on failure.
@@ -976,11 +976,21 @@ Key rules:
 - **Final topic re-validation**: `BuildTopic` re-validates the fully assembled topic against the builder-level `topicCodec` after substitution. Catches values that pass their `TopicParam.Codec` but violate the global topic constraint. Returns `InvalidTopicError{Topic: finalTopic, Err: ...}`.
 - `Info = asyncapi.Info` and `Server = asyncapi.Server` are type aliases.
 - `api/events` may import `codex`, `format`, `render/asyncapi`, `schema`. No messaging library.
-- `adapters/mqtt` wraps `ChannelHandle` for Paho MQTT. It imports `api/events` and `github.com/eclipse/paho.mqtt.golang`.
-  - `SubscribeHandler[T](ctx, handle, fn, onErr) mqtt.MessageHandler` — decodes payload, calls fn, routes typed errors to `onErr func(SubscribeError)`. `SubscribeError.Topic` reflects the concrete incoming message topic (`msg.Topic()`).
+- `adapters/mqtt` wraps `ChannelHandle` for Paho MQTT. It imports `api/events`, `stats`, and `github.com/eclipse/paho.mqtt.golang`.
+  - `SubscribeHandler[T](ctx, handle, fn, opts SubscribeOptions) mqtt.MessageHandler` — decodes payload, calls fn, routes typed errors to `opts.OnError`; instruments via `opts.Observer` (`RecordSubscribe` + `RecordValidationError("payload", ...)`). `SubscribeError.Topic` reflects the concrete incoming message topic (`msg.Topic()`).
+  - `SubscribeOptions{OnError func(SubscribeError), Observer stats.Observer}` — zero value is safe (nil `OnError` discards errors, nil `Observer` defaults to `NoopObserver`).
   - `MessageFromContext(ctx) (pahomqtt.Message, bool)` — retrieves the raw `pahomqtt.Message` stored in context by `SubscribeHandler`. Analogous to `nethttp.RequestFromContext`. Gives access to `Qos()`, `Retained()`, `MessageID()`, `Duplicate()` without breaking the typed handler signature. Returns false on a plain context.
   - `SubscribeError{Kind ErrorKind, Topic string, Err error}` — typed error; `Kind` is `KindDecode` or `KindHandler`.
-  - `Publish[T](ctx, client, handle, qos, retained, msg, vars map[string]string) error` — unified publish: `nil` vars → use `handle.Topic` (static topics); non-nil vars → call `handle.BuildTopic(vars)` and publish to the result. Returns `TopicParamError` or `MissingTopicVarError` if `BuildTopic` fails. Context-aware token wait.
+  - `Publish[T](ctx, client, handle, qos, retained, msg, vars map[string]string, opts PublishOptions) error` — unified publish: `nil` vars → use `handle.Topic` (static topics); non-nil vars → call `handle.BuildTopic(vars)`. Instruments via `opts.Observer`: calls `RecordPublish(topic, success, duration)` on all exit paths; calls `RecordValidationError("payload", ...)` on encode errors. Returns `TopicParamError` or `MissingTopicVarError` if `BuildTopic` fails. Context-aware token wait.
+  - `PublishOptions{Observer stats.Observer}` — zero value is safe (nil `Observer` defaults to `NoopObserver`).
+
+- `stats` — dependency-free observability package.
+  - `ValidationObserver` — codec-level interface: `RecordValidationError(location, constraintName, field string)`. Implement this when using codecs directly (no adapter). The `location` is a user-chosen label (e.g. `"config"`, `"input"`).
+  - `Observer` — adapter-level interface: embeds `ValidationObserver` + `RecordRequest`, `RecordSubscribe`, `RecordPublish`. Use this with `adapters/nethttp` and `adapters/mqtt`.
+  - `NoopObserver{}` — satisfies both interfaces, zero-cost default.
+  - `ReportErrors(obs ValidationObserver, location string, err error)` — iterates `codex.ValidationErrors` from a decode error, calls `obs.RecordValidationError` per field. Codec-only users call this after `codec.Decode`.
+  - `ConstraintName(err error) string` — extracts stable constraint label: `ConstraintError.Name`, `"type-mismatch"`, `"required"`, or `""`.
+  - `location` values by context: `"body"` (nethttp body), `"query"` (nethttp query), `"payload"` (mqtt), user-defined string (codec-only).
 
 ### Package import table (updated)
 
@@ -988,8 +998,9 @@ Key rules:
 |--------------------|---------------------------------------------------------------|
 | `api/rest`         | `codex`, `format`, `route`, `render/openapi`, `schema`        |
 | `api/events`       | `codex`, `format`, `render/asyncapi`, `schema`                |
-| `adapters/nethttp` | `api/rest`, `net/http` (stdlib)                               |
-| `adapters/mqtt`    | `api/events`, `github.com/eclipse/paho.mqtt.golang`           |
+| `adapters/nethttp` | `api/rest`, `net/http` (stdlib), `stats`                      |
+| `adapters/mqtt`    | `api/events`, `stats`, `github.com/eclipse/paho.mqtt.golang`  |
+| `stats`            | `codex`, `errors`, `time` (stdlib only)                       |
 
 
 ## Multi-Format Output

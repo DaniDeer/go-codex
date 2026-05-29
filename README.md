@@ -1023,7 +1023,7 @@ mux := http.NewServeMux()
 // Register uses the Go 1.22+ "METHOD /path" ServeMux pattern automatically.
 nethttp.Register(mux, createUser, func(ctx context.Context, req CreateUserReq) (User, error) {
     return svc.CreateUser(ctx, req)
-})
+}, nethttp.Options{})
 
 http.ListenAndServe(":8080", mux)
 ```
@@ -1033,6 +1033,8 @@ http.ListenAndServe(":8080", mux)
 - **Query param validation**: `ValidateQuery` is called automatically before the handler; codec-backed `QueryParam` entries are validated from `r.URL.Query()`
 - Errors: `{"error":"..."}` JSON — 400 for decode/query validation failures, 500 for handler/encode failures
 - Response status: taken from the route descriptor's primary response (e.g. 201 for POST)
+- **Custom error handling**: `Options.ErrorHandler func(w, r, status, err)` overrides the default JSON envelope
+- **Metrics / observability**: `Options.Observer stats.Observer` — implement [`stats.Observer`](#stats--observer) to receive per-request events; defaults to `stats.NoopObserver`
 
 ### Codec as domain boundary: the functional pipeline
 
@@ -1263,32 +1265,35 @@ handler := withDomainLoggingErr("measurement.process",
 topic, _ := sensorMeasurement.BuildTopic(map[string]string{"sensorID": sensorUUID})
 client.Subscribe(topic, 1,
     amqtt.SubscribeHandler(ctx, sensorMeasurement, handler,
-        func(e amqtt.SubscribeError) {
-            // e.Topic is the concrete incoming topic (msg.Topic()), not the template.
-            switch e.Kind {
-            case amqtt.KindDecode:
-                var validationErrs codex.ValidationErrors
-                if errors.As(e.Err, &validationErrs) {
-                    mqttLogger.Warn("decode failed: validation errors",
-                        "topic", e.Topic,
-                        "errors", validationErrs, // triggers ValidationErrors.LogValue()
-                    )
-                } else {
-                    mqttLogger.Warn("decode failed", "topic", e.Topic, "error", e.Err)
+        amqtt.SubscribeOptions{
+            OnError: func(e amqtt.SubscribeError) {
+                // e.Topic is the concrete incoming topic (msg.Topic()), not the template.
+                switch e.Kind {
+                case amqtt.KindDecode:
+                    var validationErrs codex.ValidationErrors
+                    if errors.As(e.Err, &validationErrs) {
+                        mqttLogger.Warn("decode failed: validation errors",
+                            "topic", e.Topic,
+                            "errors", validationErrs, // triggers ValidationErrors.LogValue()
+                        )
+                    } else {
+                        mqttLogger.Warn("decode failed", "topic", e.Topic, "error", e.Err)
+                    }
+                case amqtt.KindHandler:
+                    mqttLogger.Error("handler failed", "topic", e.Topic, "error", e.Err)
                 }
-            case amqtt.KindHandler:
-                mqttLogger.Error("handler failed", "topic", e.Topic, "error", e.Err)
-            }
+            },
         },
     ),
 )
 
 // Publish — static topic: pass nil for vars.
-err := amqtt.Publish(ctx, client, alertChannel, 1, false, AlertEvent{...}, nil)
+err := amqtt.Publish(ctx, client, alertChannel, 1, false, AlertEvent{...}, nil,
+    amqtt.PublishOptions{})
 
 // Publish — template topic: pass vars map; BuildTopic is called internally.
 err = amqtt.Publish(ctx, client, sensorMeasurement, 1, false, m,
-    map[string]string{"sensorID": sensorUUID})
+    map[string]string{"sensorID": sensorUUID}, amqtt.PublishOptions{Observer: mqttObs})
 ```
 
 **`SubscribeError.Kind` distinguishes:**
@@ -1308,7 +1313,7 @@ amqtt.SubscribeHandler(ctx, measurementChannel,
             }
         }
         return svc.HandleMeasurement(ctx, m)
-    }, onErr)
+    }, amqtt.SubscribeOptions{})
 ```
 
 **`Publish` signature:**
@@ -1320,13 +1325,106 @@ func Publish[T any](
     qos      byte,
     retained bool,
     msg      T,
-    vars     map[string]string, // nil → use handle.Topic; non-nil → BuildTopic(vars)
+    vars     map[string]string,  // nil → use handle.Topic; non-nil → BuildTopic(vars)
+    opts     PublishOptions,     // zero value = NoopObserver
 ) error
 ```
 
 **Structured logging:** all codec error types (`ValidationErrors`, `ConstraintError`, `TypeMismatchError`, etc.) implement `slog.LogValuer`. Using `slog.Any("errors", err)` triggers the full nested structure — field names, constraint details, type mismatches — without string parsing.
 
 See [`examples/adapters-mqtt`](examples/adapters-mqtt/main.go) for the full runnable demonstration including tests — measurement ingestion from a sensor network, time series storage, and threshold-breach alerts using the three-layer codec pipeline pattern.
+
+### Stats / Observer
+
+`stats` exposes two levels of observability, both dependency-free:
+
+**Codec-level** — use when calling codecs directly (config validation, protocol parsing, any non-HTTP/MQTT use case). Implement just `stats.ValidationObserver` (one method) and call `stats.ReportErrors`:
+
+```go
+// Implement only the codec-level hook — no HTTP/MQTT stubs
+type ConfigObserver struct{}
+func (o *ConfigObserver) RecordValidationError(location, constraint, field string) {
+    // increment counter, emit log, etc.
+}
+
+// After any codec.Decode call:
+val, err := appConfigCodec.Decode(rawData)
+stats.ReportErrors(&ConfigObserver{}, "config", err) // calls RecordValidationError per failing field
+```
+
+`stats.ConstraintName(err)` extracts a stable label from any field-level error (`ConstraintError.Name`, `"type-mismatch"`, `"required"`, or `""`).
+
+**Adapter-level** — use `stats.Observer` (embeds `ValidationObserver`) when wiring to HTTP or MQTT adapters:
+
+```go
+// stats/observer.go
+type ValidationObserver interface {
+    RecordValidationError(location, constraintName, field string)
+}
+
+type Observer interface {
+    ValidationObserver
+    RecordRequest(method, path string, statusCode int, duration time.Duration)
+    RecordSubscribe(topic string, success bool, duration time.Duration)  // MQTT
+    RecordPublish(topic string, success bool, duration time.Duration)    // MQTT
+}
+```
+
+**Wiring to nethttp:**
+```go
+nethttp.Register(mux, createUser, handler, nethttp.Options{
+    Observer: myObserver, // stats.Observer implementation
+})
+```
+
+**Wiring to mqtt (subscribe + publish):**
+```go
+amqtt.SubscribeHandler(ctx, channel, handler, amqtt.SubscribeOptions{
+    Observer: myObserver, // RecordSubscribe + RecordValidationError("payload", ...)
+    OnError:  onErr,
+})
+
+amqtt.Publish(ctx, client, channel, qos, retained, msg, vars, amqtt.PublishOptions{
+    Observer: myObserver, // RecordPublish on broker ack or error
+})
+```
+
+**Prometheus example (user-side, no lib dependency):**
+```go
+type PrometheusObserver struct {
+    requests   *prometheus.CounterVec   // labels: method, path, status
+    subscribed *prometheus.CounterVec   // labels: topic, success
+    published  *prometheus.CounterVec   // labels: topic, success
+    valErrors  *prometheus.CounterVec   // labels: location, constraint, field
+    latency    *prometheus.HistogramVec // labels: method, path
+}
+
+func (o *PrometheusObserver) RecordRequest(method, path string, code int, d time.Duration) {
+    status := strconv.Itoa(code)
+    o.requests.WithLabelValues(method, path, status).Inc()
+    o.latency.WithLabelValues(method, path).Observe(d.Seconds())
+}
+func (o *PrometheusObserver) RecordSubscribe(topic string, ok bool, d time.Duration) {
+    o.subscribed.WithLabelValues(topic, strconv.FormatBool(ok)).Inc()
+}
+func (o *PrometheusObserver) RecordPublish(topic string, ok bool, d time.Duration) {
+    o.published.WithLabelValues(topic, strconv.FormatBool(ok)).Inc()
+}
+func (o *PrometheusObserver) RecordValidationError(loc, constraint, field string) {
+    o.valErrors.WithLabelValues(loc, constraint, field).Inc()
+}
+```
+
+Pass `stats.NoopObserver{}` (or omit the field — adapter defaults to it) for zero overhead when observability is not needed.
+
+| location value | adapter / use case |
+|---|---|
+| `"body"` | nethttp — request body decode |
+| `"query"` | nethttp — query parameter validation |
+| `"payload"` | mqtt — message payload decode/encode |
+| any string | codec-only: choose a label meaningful to your domain (`"config"`, `"input"`, …) |
+
+See [`examples/stats-observer`](examples/stats-observer/main.go) for a runnable codec-only observer example (config file validation, no adapters). See [`examples/stats-observer-http`](examples/stats-observer-http/main.go) for the HTTP body + query validation demo. See [`examples/stats-observer-mqtt`](examples/stats-observer-mqtt/main.go) for the MQTT subscribe + publish observer demo.
 
 ## Special Topics
 
@@ -1529,9 +1627,9 @@ go-codex/
 │
 ├── adapters/               # transport-specific adapters (wrap api/rest or api/events)
 │   ├── nethttp/            # net/http adapter for api/rest RouteHandles
-│   │   └── adapter.go      # Handler, Register, HandlerWithOptions, RequestFromContext
+│   │   └── adapter.go      # Handler, Register, RequestFromContext, Options (with Observer)
 │   └── mqtt/               # Paho MQTT adapter for api/events ChannelHandles
-│       └── adapter.go      # SubscribeHandler, Publish, SubscribeError, ErrorKind
+│       └── adapter.go      # SubscribeHandler, SubscribeOptions, Publish, SubscribeError, ErrorKind, MessageFromContext
 │
 ├── render/                 # spec renderers (import schema only, or schema + route)
 │   ├── internal/
@@ -1556,6 +1654,9 @@ go-codex/
 │   ├── uint.go             # PositiveUint, MinUint, MaxUint, RangeUint; uint64 variants
 │   └── string.go           # NonEmptyString, MinLen, MaxLen, Pattern, OneOf, HTTPPath, MQTTTopic, MQTTPublishTopic, IntString, PositiveIntString, NonNegativeIntString, IntStringInRange
 │
+├── stats/                  # dependency-free metrics observer interface
+│   └── observer.go         # Observer interface, NoopObserver
+│
 └── examples/               # usage demonstrations — not importable
     ├── adapters-mqtt/      # Paho MQTT adapter: wiring api/events to Paho client
     ├── adapters-nethttp/   # net/http adapter: wiring api/rest to ServeMux
@@ -1570,6 +1671,9 @@ go-codex/
     ├── order/              # nested structs, SliceOf, Time, Nullable, StringMap demo
     ├── rest-api/           # full OpenAPI 3.1 document from route descriptors
     ├── shape/              # tagged union + Downcast demo
+    ├── stats-observer/          # stats.ValidationObserver with codecs directly: config validation, no adapter
+    ├── stats-observer-http/     # stats.Observer wired to nethttp: request counts, latency, validation errors (body + query)
+    ├── stats-observer-mqtt/     # stats.Observer wired to mqtt subscribe + publish: message counts, latency, payload errors
     ├── templ-mapper/       # mapping codec-validated data to templ components
     ├── validate/           # explicit Validate before marshal
     ├── codec-mapping/      # shared field codecs, sub-codec reuse, MapCodecSafe, MapCodecValidated

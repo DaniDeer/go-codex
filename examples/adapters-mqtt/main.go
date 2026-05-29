@@ -518,7 +518,7 @@ func main() {
 	// Pass nil for static topics (no template variables).
 	publishAlert := func(ctx context.Context, alert AlertEvent) error {
 		return adaptermqtt.Publish(ctx, client, alertChannel, 1, false, alert,
-			map[string]string{"sensorID": sensorUUID})
+			map[string]string{"sensorID": sensorUUID}, adaptermqtt.PublishOptions{})
 	}
 
 	// Attribute extractor for domain logging — extract business-relevant fields from requests.
@@ -538,29 +538,31 @@ func main() {
 
 	client.Subscribe(measurementTopic, 1,
 		adaptermqtt.SubscribeHandler(ctx, measurementChannel, handler,
-			func(e adaptermqtt.SubscribeError) {
-				// Use mqttLogger for transport-level errors.
-				// Switch on Kind to distinguish decode vs handler failures.
-				switch e.Kind {
-				case adaptermqtt.KindDecode:
-					var validationErrs codex.ValidationErrors
-					if errors.As(e.Err, &validationErrs) {
-						mqttLogger.Warn("decode failed: validation errors",
+			adaptermqtt.SubscribeOptions{
+				OnError: func(e adaptermqtt.SubscribeError) {
+					// Use mqttLogger for transport-level errors.
+					// Switch on Kind to distinguish decode vs handler failures.
+					switch e.Kind {
+					case adaptermqtt.KindDecode:
+						var validationErrs codex.ValidationErrors
+						if errors.As(e.Err, &validationErrs) {
+							mqttLogger.Warn("decode failed: validation errors",
+								"topic", e.Topic,
+								"errors", validationErrs, // triggers ValidationErrors.LogValue()
+							)
+						} else {
+							mqttLogger.Warn("decode failed",
+								"topic", e.Topic,
+								"error", e.Err, // triggers TypeMismatchError.LogValue() etc.
+							)
+						}
+					case adaptermqtt.KindHandler:
+						mqttLogger.Error("handler failed",
 							"topic", e.Topic,
-							"errors", validationErrs, // triggers ValidationErrors.LogValue()
-						)
-					} else {
-						mqttLogger.Warn("decode failed",
-							"topic", e.Topic,
-							"error", e.Err, // triggers TypeMismatchError.LogValue() etc.
+							"error", e.Err,
 						)
 					}
-				case adaptermqtt.KindHandler:
-					mqttLogger.Error("handler failed",
-						"topic", e.Topic,
-						"error", e.Err,
-					)
-				}
+				},
 			},
 		),
 	)

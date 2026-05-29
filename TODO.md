@@ -76,7 +76,7 @@
 
 - [ ] **`CookieParam` — HTTP cookie validation** _(low effort — mirrors QueryParam)_
       `api/rest` has no concept of cookies. Introduce `CookieParam{Name, Description string,
-    Required bool, Codec *codex.Codec[string]}` (same shape as `QueryParam`) and
+  Required bool, Codec *codex.Codec[string]}` (same shape as `QueryParam`) and
       `RouteConfig.CookieParams []CookieParam`. Add `RouteHandle.ValidateCookies(map[string]string) error`
       and a matching `CookieParamError{Name, Value, Err}`. In the OpenAPI spec, cookie params
       render as `in: cookie`. The `adapters/nethttp` adapter extracts cookies via

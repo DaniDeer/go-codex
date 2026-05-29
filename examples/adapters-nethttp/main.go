@@ -458,17 +458,17 @@ func main() {
 
 	// Wire infrastructure handlers to HTTP routes with custom error handling + domain logging decorator.
 	mux := http.NewServeMux()
-	nethttp.RegisterWithOptions(mux, createUserRoute,
+	nethttp.Register(mux, createUserRoute,
 		withDomainLogging("user.create", makeCreateUserHandler(store), domainLogger, extractUserAttrs),
 		nethttp.Options{ErrorHandler: errorHandler})
-	nethttp.RegisterWithOptions(mux, getUserRoute,
+	nethttp.Register(mux, getUserRoute,
 		withDomainLogging("user.get", makeGetUserHandler(store), domainLogger, extractGetUserAttrs),
 		nethttp.Options{ErrorHandler: errorHandler})
-	nethttp.RegisterWithOptions(mux, listUsersPageRoute,
+	nethttp.Register(mux, listUsersPageRoute,
 		withDomainLogging("user.list-page", makeListUsersPageHandler(), domainLogger,
 			func(_ emptyReq, _ PagedUsersResp) []slog.Attr { return nil }),
 		nethttp.Options{ErrorHandler: errorHandler})
-	nethttp.RegisterWithOptions(mux, listUsersRoute,
+	nethttp.Register(mux, listUsersRoute,
 		withDomainLogging("user.list", makeListUsersHandler(), domainLogger,
 			func(_ emptyReq, _ PagedUsersResp) []slog.Attr { return nil }),
 		nethttp.Options{ErrorHandler: errorHandler})

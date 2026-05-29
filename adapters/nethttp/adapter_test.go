@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	nethttp "github.com/DaniDeer/go-codex/adapters/nethttp"
 	"github.com/DaniDeer/go-codex/api/rest"
@@ -66,7 +67,7 @@ func TestHandler_PostValidBody(t *testing.T) {
 	handle := newCreateRoute()
 	h := nethttp.Handler(handle, func(_ context.Context, req createReq) (userResp, error) {
 		return userResp{ID: "1", Name: req.Name}, nil
-	})
+	}, nethttp.Options{})
 
 	body := `{"name":"Alice"}`
 	rec := httptest.NewRecorder()
@@ -93,7 +94,7 @@ func TestHandler_PostValidationError(t *testing.T) {
 	h := nethttp.Handler(handle, func(_ context.Context, req createReq) (userResp, error) {
 		t.Fatal("handler must not be called on validation error")
 		return userResp{}, nil
-	})
+	}, nethttp.Options{})
 
 	rec := httptest.NewRecorder()
 	r := httptest.NewRequest(http.MethodPost, "/users", strings.NewReader(`{"name":""}`))
@@ -115,7 +116,7 @@ func TestHandler_PostMalformedJSON(t *testing.T) {
 	handle := newCreateRoute()
 	h := nethttp.Handler(handle, func(_ context.Context, req createReq) (userResp, error) {
 		return userResp{}, nil
-	})
+	}, nethttp.Options{})
 
 	rec := httptest.NewRecorder()
 	r := httptest.NewRequest(http.MethodPost, "/users", strings.NewReader(`not-json`))
@@ -130,7 +131,7 @@ func TestHandler_PostHandlerError(t *testing.T) {
 	handle := newCreateRoute()
 	h := nethttp.Handler(handle, func(_ context.Context, req createReq) (userResp, error) {
 		return userResp{}, errors.New("service unavailable")
-	})
+	}, nethttp.Options{})
 
 	rec := httptest.NewRecorder()
 	r := httptest.NewRequest(http.MethodPost, "/users", strings.NewReader(`{"name":"Alice"}`))
@@ -160,7 +161,7 @@ func TestHandler_GetNonBody(t *testing.T) {
 	h := nethttp.Handler(handle, func(_ context.Context, req getReq) (userResp, error) {
 		called = true
 		return userResp{ID: "42", Name: "Bob"}, nil
-	})
+	}, nethttp.Options{})
 
 	rec := httptest.NewRecorder()
 	r := httptest.NewRequest(http.MethodGet, "/users/42", nil)
@@ -186,7 +187,7 @@ func TestRegister_WiresCorrectPattern(t *testing.T) {
 	mux := http.NewServeMux()
 	nethttp.Register(mux, handle, func(_ context.Context, req createReq) (userResp, error) {
 		return userResp{ID: "1", Name: req.Name}, nil
-	})
+	}, nethttp.Options{})
 
 	srv := httptest.NewServer(mux)
 	defer srv.Close()
@@ -223,7 +224,7 @@ func TestHandler_CustomStatus(t *testing.T) {
 
 	h := nethttp.Handler(handle, func(_ context.Context, req createReq) (userResp, error) {
 		return userResp{ID: "1", Name: req.Name}, nil
-	})
+	}, nethttp.Options{})
 
 	rec := httptest.NewRecorder()
 	r := httptest.NewRequest(http.MethodPut, "/users/1", strings.NewReader(`{"name":"Dave"}`))
@@ -250,7 +251,7 @@ func TestHandler_RequestFromContext(t *testing.T) {
 		}
 		gotID = r.PathValue("id")
 		return userResp{ID: gotID, Name: "Alice"}, nil
-	})
+	}, nethttp.Options{})
 
 	rec := httptest.NewRecorder()
 	// Use a mux so PathValue is populated.
@@ -279,7 +280,7 @@ func TestHandlerWithOptions_CustomErrorHandler(t *testing.T) {
 			http.Error(w, err.Error(), status)
 		},
 	}
-	h := nethttp.HandlerWithOptions(handle, func(_ context.Context, req createReq) (userResp, error) {
+	h := nethttp.Handler(handle, func(_ context.Context, req createReq) (userResp, error) {
 		return userResp{}, errors.New("custom error")
 	}, opts)
 
@@ -311,7 +312,7 @@ func TestHandler_QueryValidation_valid(t *testing.T) {
 	}
 	handler := nethttp.Handler(h, func(_ context.Context, _ getReq) (userResp, error) {
 		return userResp{ID: "1", Name: "Alice"}, nil
-	})
+	}, nethttp.Options{})
 	rec := httptest.NewRecorder()
 	r := httptest.NewRequest(http.MethodGet, "/users?id=f47ac10b-58cc-4372-a567-0e02b2c3d479", nil)
 	handler.ServeHTTP(rec, r)
@@ -333,11 +334,137 @@ func TestHandler_QueryValidation_invalid(t *testing.T) {
 	}
 	handler := nethttp.Handler(h, func(_ context.Context, _ getReq) (userResp, error) {
 		return userResp{}, nil
-	})
+	}, nethttp.Options{})
 	rec := httptest.NewRecorder()
 	r := httptest.NewRequest(http.MethodGet, "/users?id=not-a-uuid", nil)
 	handler.ServeHTTP(rec, r)
 	if rec.Code != http.StatusBadRequest {
 		t.Errorf("want 400, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+// ── Observer tests ─────────────────────────────────────────────────────────────
+
+type spyObserver struct {
+	requests  []spyRequest
+	valErrors []spyValError
+}
+
+type spyRequest struct {
+	method     string
+	path       string
+	statusCode int
+}
+
+type spyValError struct {
+	location       string
+	constraintName string
+	field          string
+}
+
+func (s *spyObserver) RecordRequest(method, path string, statusCode int, _ time.Duration) {
+	s.requests = append(s.requests, spyRequest{method: method, path: path, statusCode: statusCode})
+}
+
+func (s *spyObserver) RecordSubscribe(_ string, _ bool, _ time.Duration) {}
+func (s *spyObserver) RecordPublish(_ string, _ bool, _ time.Duration)   {}
+
+func (s *spyObserver) RecordValidationError(location, constraintName, field string) {
+	s.valErrors = append(s.valErrors, spyValError{location: location, constraintName: constraintName, field: field})
+}
+
+func TestObserver_RecordRequest_success(t *testing.T) {
+	handle := newCreateRoute()
+	obs := &spyObserver{}
+	h := nethttp.Handler(handle, func(_ context.Context, req createReq) (userResp, error) {
+		return userResp{ID: "1", Name: req.Name}, nil
+	}, nethttp.Options{Observer: obs})
+
+	rec := httptest.NewRecorder()
+	r := httptest.NewRequest(http.MethodPost, "/users", strings.NewReader(`{"name":"Alice"}`))
+	h.ServeHTTP(rec, r)
+
+	if len(obs.requests) != 1 {
+		t.Fatalf("want 1 RecordRequest call, got %d", len(obs.requests))
+	}
+	got := obs.requests[0]
+	if got.method != "POST" {
+		t.Errorf("want method POST, got %q", got.method)
+	}
+	if got.path != "/users" {
+		t.Errorf("want path /users, got %q", got.path)
+	}
+	if got.statusCode != http.StatusCreated {
+		t.Errorf("want statusCode 201, got %d", got.statusCode)
+	}
+}
+
+func TestObserver_RecordRequest_handlerError(t *testing.T) {
+	handle := newCreateRoute()
+	obs := &spyObserver{}
+	h := nethttp.Handler(handle, func(_ context.Context, req createReq) (userResp, error) {
+		return userResp{}, errors.New("oops")
+	}, nethttp.Options{Observer: obs})
+
+	rec := httptest.NewRecorder()
+	r := httptest.NewRequest(http.MethodPost, "/users", strings.NewReader(`{"name":"Alice"}`))
+	h.ServeHTTP(rec, r)
+
+	if len(obs.requests) != 1 {
+		t.Fatalf("want 1 RecordRequest call, got %d", len(obs.requests))
+	}
+	if obs.requests[0].statusCode != http.StatusInternalServerError {
+		t.Errorf("want 500, got %d", obs.requests[0].statusCode)
+	}
+}
+
+func TestObserver_RecordValidationError_body(t *testing.T) {
+	handle := newCreateRoute()
+	obs := &spyObserver{}
+	h := nethttp.Handler(handle, func(_ context.Context, req createReq) (userResp, error) {
+		return userResp{}, nil
+	}, nethttp.Options{Observer: obs})
+
+	rec := httptest.NewRecorder()
+	r := httptest.NewRequest(http.MethodPost, "/users", strings.NewReader(`{"name":""}`))
+	h.ServeHTTP(rec, r)
+
+	if len(obs.valErrors) == 0 {
+		t.Fatal("want at least one RecordValidationError call, got none")
+	}
+	if obs.valErrors[0].location != "body" {
+		t.Errorf("want location 'body', got %q", obs.valErrors[0].location)
+	}
+	if obs.valErrors[0].field != "name" {
+		t.Errorf("want field 'name', got %q", obs.valErrors[0].field)
+	}
+}
+
+func TestObserver_RecordValidationError_query(t *testing.T) {
+	b := rest.NewBuilder(testInfo)
+	uuidCodec := codex.String().Refine(validate.UUID)
+	h, err := rest.AddRoute[getReq, userResp](b, "GET", "/users", getReqCodec, userRespCodec, rest.RouteConfig{
+		QueryParams: []rest.QueryParam{{Name: "id", Codec: &uuidCodec}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	obs := &spyObserver{}
+	handler := nethttp.Handler(h, func(_ context.Context, _ getReq) (userResp, error) {
+		return userResp{}, nil
+	}, nethttp.Options{Observer: obs})
+
+	rec := httptest.NewRecorder()
+	r := httptest.NewRequest(http.MethodGet, "/users?id=not-a-uuid", nil)
+	handler.ServeHTTP(rec, r)
+
+	if len(obs.valErrors) == 0 {
+		t.Fatal("want at least one RecordValidationError call, got none")
+	}
+	if obs.valErrors[0].location != "query" {
+		t.Errorf("want location 'query', got %q", obs.valErrors[0].location)
+	}
+	if obs.valErrors[0].field != "id" {
+		t.Errorf("want field 'id', got %q", obs.valErrors[0].field)
 	}
 }

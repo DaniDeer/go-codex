@@ -133,7 +133,7 @@ func TestSubscribeHandler_ValidPayload(t *testing.T) {
 		func(_ context.Context, e userEvent) error {
 			received = e
 			return nil
-		}, nil)
+		}, adaptermqtt.SubscribeOptions{})
 
 	handler(nil, &mockMessage{payload: []byte(validPayload)})
 
@@ -151,7 +151,7 @@ func TestSubscribeHandler_DecodeError(t *testing.T) {
 			t.Fatal("fn must not be called on decode error")
 			return nil
 		},
-		func(e adaptermqtt.SubscribeError) { gotErr = e },
+		adaptermqtt.SubscribeOptions{OnError: func(e adaptermqtt.SubscribeError) { gotErr = e }},
 	)
 
 	handler(nil, &mockMessage{payload: []byte(`{"id":"bad-uuid","email":"not-email"}`)})
@@ -174,7 +174,7 @@ func TestSubscribeHandler_FnError(t *testing.T) {
 
 	handler := adaptermqtt.SubscribeHandler(context.Background(), handle,
 		func(_ context.Context, _ userEvent) error { return fnErr },
-		func(e adaptermqtt.SubscribeError) { gotErr = e },
+		adaptermqtt.SubscribeOptions{OnError: func(e adaptermqtt.SubscribeError) { gotErr = e }},
 	)
 
 	handler(nil, &mockMessage{payload: []byte(validPayload)})
@@ -191,7 +191,7 @@ func TestSubscribeHandler_NilOnErrNoPanic(t *testing.T) {
 	handle := newHandle()
 	handler := adaptermqtt.SubscribeHandler(context.Background(), handle,
 		func(_ context.Context, _ userEvent) error { return errors.New("boom") },
-		nil,
+		adaptermqtt.SubscribeOptions{},
 	)
 	// Must not panic.
 	handler(nil, &mockMessage{payload: []byte(validPayload)})
@@ -202,7 +202,7 @@ func TestPublish_Success(t *testing.T) {
 	client := &mockClient{token: newCompletedToken(nil)}
 
 	event := userEvent{ID: "f47ac10b-58cc-4372-a567-0e02b2c3d479", Email: "alice@example.com"}
-	err := adaptermqtt.Publish(context.Background(), client, handle, 1, false, event, nil)
+	err := adaptermqtt.Publish(context.Background(), client, handle, 1, false, event, nil, adaptermqtt.PublishOptions{})
 	if err != nil {
 		t.Fatalf("want nil error, got %v", err)
 	}
@@ -220,7 +220,7 @@ func TestPublish_BrokerError(t *testing.T) {
 	client := &mockClient{token: newCompletedToken(brokerErr)}
 
 	event := userEvent{ID: "f47ac10b-58cc-4372-a567-0e02b2c3d479", Email: "alice@example.com"}
-	err := adaptermqtt.Publish(context.Background(), client, handle, 1, false, event, nil)
+	err := adaptermqtt.Publish(context.Background(), client, handle, 1, false, event, nil, adaptermqtt.PublishOptions{})
 	if !errors.Is(err, brokerErr) {
 		t.Fatalf("want brokerErr, got %v", err)
 	}
@@ -234,7 +234,7 @@ func TestPublish_ContextCancelled(t *testing.T) {
 	cancel() // cancel immediately
 
 	event := userEvent{ID: "f47ac10b-58cc-4372-a567-0e02b2c3d479", Email: "alice@example.com"}
-	err := adaptermqtt.Publish(ctx, client, handle, 1, false, event, nil)
+	err := adaptermqtt.Publish(ctx, client, handle, 1, false, event, nil, adaptermqtt.PublishOptions{})
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("want context.Canceled, got %v", err)
 	}
@@ -262,7 +262,7 @@ func TestPublish_TemplateVars(t *testing.T) {
 
 	event := userEvent{ID: "f47ac10b-58cc-4372-a567-0e02b2c3d479", Email: "alice@example.com"}
 	err := adaptermqtt.Publish(context.Background(), client, handle, 1, false, event,
-		map[string]string{"userID": "f47ac10b-58cc-4372-a567-0e02b2c3d479"})
+		map[string]string{"userID": "f47ac10b-58cc-4372-a567-0e02b2c3d479"}, adaptermqtt.PublishOptions{})
 	if err != nil {
 		t.Fatalf("want nil error, got %v", err)
 	}
@@ -277,7 +277,7 @@ func TestPublish_TemplateVars_InvalidUUID(t *testing.T) {
 
 	event := userEvent{ID: "f47ac10b-58cc-4372-a567-0e02b2c3d479", Email: "alice@example.com"}
 	err := adaptermqtt.Publish(context.Background(), client, handle, 1, false, event,
-		map[string]string{"userID": "not-a-uuid"})
+		map[string]string{"userID": "not-a-uuid"}, adaptermqtt.PublishOptions{})
 	if err == nil {
 		t.Fatal("want error for invalid UUID, got nil")
 	}
@@ -300,7 +300,7 @@ func TestMessageFromContext_InsideHandler(t *testing.T) {
 		func(ctx context.Context, _ userEvent) error {
 			gotMsg, gotOK = adaptermqtt.MessageFromContext(ctx)
 			return nil
-		}, nil)
+		}, adaptermqtt.SubscribeOptions{})
 
 	handler(nil, msg)
 
@@ -316,5 +316,151 @@ func TestMessageFromContext_OutsideHandler(t *testing.T) {
 	msg, ok := adaptermqtt.MessageFromContext(context.Background())
 	if ok {
 		t.Fatalf("MessageFromContext: want ok=false on plain context, got true with %v", msg)
+	}
+}
+
+// ── Observer tests ─────────────────────────────────────────────────────────────
+
+type mqttSpyObserver struct {
+	messages  []mqttSpyMessage
+	valErrors []mqttSpyValError
+}
+
+type mqttSpyMessage struct {
+	topic   string
+	success bool
+	dir     string // "subscribe" or "publish"
+}
+
+type mqttSpyValError struct {
+	location       string
+	constraintName string
+	field          string
+}
+
+func (s *mqttSpyObserver) RecordRequest(_, _ string, _ int, _ time.Duration) {}
+
+func (s *mqttSpyObserver) RecordSubscribe(topic string, success bool, _ time.Duration) {
+	s.messages = append(s.messages, mqttSpyMessage{topic: topic, success: success, dir: "subscribe"})
+}
+
+func (s *mqttSpyObserver) RecordPublish(topic string, success bool, _ time.Duration) {
+	s.messages = append(s.messages, mqttSpyMessage{topic: topic, success: success, dir: "publish"})
+}
+
+func (s *mqttSpyObserver) RecordValidationError(location, constraintName, field string) {
+	s.valErrors = append(s.valErrors, mqttSpyValError{location: location, constraintName: constraintName, field: field})
+}
+
+func TestObserver_RecordSubscribe_success(t *testing.T) {
+	handle := newHandle()
+	obs := &mqttSpyObserver{}
+
+	handler := adaptermqtt.SubscribeHandler(context.Background(), handle,
+		func(_ context.Context, _ userEvent) error { return nil },
+		adaptermqtt.SubscribeOptions{Observer: obs},
+	)
+	handler(nil, &mockMessage{payload: []byte(validPayload)})
+
+	if len(obs.messages) != 1 {
+		t.Fatalf("want 1 RecordSubscribe call, got %d", len(obs.messages))
+	}
+	if !obs.messages[0].success {
+		t.Error("want success=true on successful message, got false")
+	}
+	if obs.messages[0].dir != "subscribe" {
+		t.Errorf("want dir=subscribe, got %q", obs.messages[0].dir)
+	}
+	if obs.messages[0].topic != "user/created" {
+		t.Errorf("want topic user/created, got %q", obs.messages[0].topic)
+	}
+}
+
+func TestObserver_RecordSubscribe_decodeError(t *testing.T) {
+	handle := newHandle()
+	obs := &mqttSpyObserver{}
+
+	handler := adaptermqtt.SubscribeHandler(context.Background(), handle,
+		func(_ context.Context, _ userEvent) error { return nil },
+		adaptermqtt.SubscribeOptions{Observer: obs},
+	)
+	handler(nil, &mockMessage{payload: []byte(`{"id":"bad","email":"not-email"}`)})
+
+	if len(obs.messages) != 1 {
+		t.Fatalf("want 1 RecordSubscribe call, got %d", len(obs.messages))
+	}
+	if obs.messages[0].success {
+		t.Error("want success=false on decode error, got true")
+	}
+	if obs.messages[0].dir != "subscribe" {
+		t.Errorf("want dir=subscribe, got %q", obs.messages[0].dir)
+	}
+}
+
+func TestObserver_RecordValidationError_payload(t *testing.T) {
+	handle := newHandle()
+	obs := &mqttSpyObserver{}
+
+	handler := adaptermqtt.SubscribeHandler(context.Background(), handle,
+		func(_ context.Context, _ userEvent) error { return nil },
+		adaptermqtt.SubscribeOptions{Observer: obs},
+	)
+	handler(nil, &mockMessage{payload: []byte(`{"id":"bad-uuid","email":"bad-email"}`)})
+
+	if len(obs.valErrors) == 0 {
+		t.Fatal("want at least one RecordValidationError call, got none")
+	}
+	for _, ve := range obs.valErrors {
+		if ve.location != "payload" {
+			t.Errorf("want location 'payload', got %q", ve.location)
+		}
+	}
+}
+
+func TestObserver_RecordPublish_success(t *testing.T) {
+	handle := newHandle()
+	obs := &mqttSpyObserver{}
+	client := &mockClient{token: newCompletedToken(nil)}
+
+	event := userEvent{ID: "f47ac10b-58cc-4372-a567-0e02b2c3d479", Email: "alice@example.com"}
+	err := adaptermqtt.Publish(context.Background(), client, handle, 1, false, event, nil,
+		adaptermqtt.PublishOptions{Observer: obs})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(obs.messages) != 1 {
+		t.Fatalf("want 1 RecordPublish call, got %d", len(obs.messages))
+	}
+	if !obs.messages[0].success {
+		t.Error("want success=true on successful publish, got false")
+	}
+	if obs.messages[0].dir != "publish" {
+		t.Errorf("want dir=publish, got %q", obs.messages[0].dir)
+	}
+	if obs.messages[0].topic != "user/created" {
+		t.Errorf("want topic user/created, got %q", obs.messages[0].topic)
+	}
+}
+
+func TestObserver_RecordPublish_brokerError(t *testing.T) {
+	handle := newHandle()
+	obs := &mqttSpyObserver{}
+	brokerErr := errors.New("broker unavailable")
+	client := &mockClient{token: newCompletedToken(brokerErr)}
+
+	event := userEvent{ID: "f47ac10b-58cc-4372-a567-0e02b2c3d479", Email: "alice@example.com"}
+	err := adaptermqtt.Publish(context.Background(), client, handle, 1, false, event, nil,
+		adaptermqtt.PublishOptions{Observer: obs})
+	if !errors.Is(err, brokerErr) {
+		t.Fatalf("want brokerErr, got %v", err)
+	}
+	if len(obs.messages) != 1 {
+		t.Fatalf("want 1 RecordPublish call, got %d", len(obs.messages))
+	}
+	if obs.messages[0].success {
+		t.Error("want success=false on broker error, got true")
+	}
+	if obs.messages[0].dir != "publish" {
+		t.Errorf("want dir=publish, got %q", obs.messages[0].dir)
 	}
 }

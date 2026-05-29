@@ -15,12 +15,12 @@
 //	    r, _ := nethttp.RequestFromContext(ctx)
 //	    id := r.PathValue("id")
 //	    return svc.CreateUser(ctx, req)
-//	})
+//	}, nethttp.Options{})
 //	http.ListenAndServe(":8080", mux)
 //
 // Error responses use the JSON body {"error":"<message>"} by default: 400 for
-// decode/validation failures, 500 for handler or encode errors. Override by
-// supplying a custom [Options.ErrorHandler] via [HandlerWithOptions].
+// decode/validation failures, 500 for handler or encode errors. Override via
+// [Options.ErrorHandler].
 //
 // For body-less methods (GET, HEAD, DELETE) the handler function is called
 // with the zero value of Req. Access path and query parameters through
@@ -30,12 +30,15 @@ package nethttp
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/DaniDeer/go-codex/api/rest"
+	"github.com/DaniDeer/go-codex/stats"
 )
 
 // maxRequestBodyBytes is the maximum number of bytes read from a request body.
@@ -59,16 +62,20 @@ func RequestFromContext(ctx context.Context) (*http.Request, bool) {
 	return r, ok
 }
 
-// Options configures the behaviour of [HandlerWithOptions].
+// Options configures the behaviour of [Handler] and [Register].
 type Options struct {
 	// ErrorHandler, when non-nil, is called instead of the default JSON error
 	// envelope when a request fails. status is the suggested HTTP status code
 	// (400 or 500). Implementations must write the response header and body.
 	ErrorHandler func(w http.ResponseWriter, r *http.Request, status int, err error)
+
+	// Observer, when non-nil, receives per-request lifecycle events: request
+	// counts with latency and HTTP status, and per-field validation errors.
+	// Defaults to [stats.NoopObserver] when nil.
+	Observer stats.Observer
 }
 
-// Handler wraps a [rest.RouteHandle] and a [HandlerFunc] into an [http.Handler]
-// using default options (JSON error envelope, 1 MiB body limit).
+// Handler wraps a [rest.RouteHandle] and a [HandlerFunc] into an [http.Handler].
 //
 // For body-bearing methods (POST, PUT, PATCH) the request body is read,
 // decoded, and validated using the route's codec before fn is called.
@@ -76,73 +83,81 @@ type Options struct {
 //
 // On success the response is JSON-encoded and written with the HTTP status from
 // the route descriptor's primary response (the first entry in Responses).
-func Handler[Req, Resp any](handle *rest.RouteHandle[Req, Resp], fn HandlerFunc[Req, Resp]) http.Handler {
-	return HandlerWithOptions(handle, fn, Options{})
-}
-
-// HandlerWithOptions is like [Handler] but accepts [Options] to customise error
-// handling.
-func HandlerWithOptions[Req, Resp any](handle *rest.RouteHandle[Req, Resp], fn HandlerFunc[Req, Resp], opts Options) http.Handler {
+//
+// Pass a zero-value [Options]{} for default behaviour (JSON error envelope, 1 MiB
+// body limit, no-op observer).
+func Handler[Req, Resp any](handle *rest.RouteHandle[Req, Resp], fn HandlerFunc[Req, Resp], opts Options) http.Handler {
 	errFn := opts.ErrorHandler
 	if errFn == nil {
 		errFn = defaultErrorHandler
 	}
+	obs := opts.Observer
+	if obs == nil {
+		obs = stats.NoopObserver{}
+	}
+	method := strings.ToUpper(handle.Descriptor.Method)
+	path := handle.Descriptor.Path
+
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		start := time.Now()
+		sw := &statusResponseWriter{ResponseWriter: w, code: http.StatusOK}
+		defer func() {
+			obs.RecordRequest(method, path, sw.code, time.Since(start))
+		}()
+
 		ctx := context.WithValue(r.Context(), contextKey{}, r)
 
 		var req Req
 		if handle.Descriptor.RequestBody != nil {
-			r.Body = http.MaxBytesReader(w, r.Body, maxRequestBodyBytes)
+			r.Body = http.MaxBytesReader(sw, r.Body, maxRequestBodyBytes)
 			body, err := io.ReadAll(r.Body)
 			if err != nil {
-				errFn(w, r, http.StatusBadRequest, err)
+				errFn(sw, r, http.StatusBadRequest, err)
 				return
 			}
 			var decErr error
 			req, decErr = handle.Decode(body)
 			if decErr != nil {
-				errFn(w, r, http.StatusBadRequest, decErr)
+				reportBodyErrors(decErr, obs)
+				errFn(sw, r, http.StatusBadRequest, decErr)
 				return
 			}
 		}
 
 		// Validate query parameters against their registered codecs (if any).
 		if err := handle.ValidateQuery(queryValues(r)); err != nil {
-			errFn(w, r, http.StatusBadRequest, err)
+			reportQueryErrors(err, obs)
+			errFn(sw, r, http.StatusBadRequest, err)
 			return
 		}
 
 		resp, err := fn(ctx, req)
 		if err != nil {
-			errFn(w, r, http.StatusInternalServerError, err)
+			errFn(sw, r, http.StatusInternalServerError, err)
 			return
 		}
 
 		out, encErr := handle.Encode(resp)
 		if encErr != nil {
-			errFn(w, r, http.StatusInternalServerError, encErr)
+			errFn(sw, r, http.StatusInternalServerError, encErr)
 			return
 		}
 
 		status := primaryStatus(handle)
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(status)
-		_, _ = w.Write(out)
+		sw.Header().Set("Content-Type", "application/json")
+		sw.WriteHeader(status)
+		_, _ = sw.Write(out)
 	})
 }
 
 // Register registers the route on mux using its method and path from the
 // route descriptor. It uses the Go 1.22+ enhanced ServeMux pattern
 // "METHOD /path" so each registration is scoped to a single method.
-func Register[Req, Resp any](mux *http.ServeMux, handle *rest.RouteHandle[Req, Resp], fn HandlerFunc[Req, Resp]) {
+//
+// Pass a zero-value [Options]{} for default behaviour.
+func Register[Req, Resp any](mux *http.ServeMux, handle *rest.RouteHandle[Req, Resp], fn HandlerFunc[Req, Resp], opts Options) {
 	pattern := strings.ToUpper(handle.Descriptor.Method) + " " + handle.Descriptor.Path
-	mux.Handle(pattern, Handler(handle, fn))
-}
-
-// RegisterWithOptions is like [Register] but accepts [Options].
-func RegisterWithOptions[Req, Resp any](mux *http.ServeMux, handle *rest.RouteHandle[Req, Resp], fn HandlerFunc[Req, Resp], opts Options) {
-	pattern := strings.ToUpper(handle.Descriptor.Method) + " " + handle.Descriptor.Path
-	mux.Handle(pattern, HandlerWithOptions(handle, fn, opts))
+	mux.Handle(pattern, Handler(handle, fn, opts))
 }
 
 // primaryStatus returns the HTTP status code for the primary success response.
@@ -156,6 +171,17 @@ func primaryStatus[Req, Resp any](handle *rest.RouteHandle[Req, Resp]) int {
 		return http.StatusOK
 	}
 	return code
+}
+
+// statusResponseWriter wraps [http.ResponseWriter] to capture the written status code.
+type statusResponseWriter struct {
+	http.ResponseWriter
+	code int
+}
+
+func (rw *statusResponseWriter) WriteHeader(code int) {
+	rw.code = code
+	rw.ResponseWriter.WriteHeader(code)
 }
 
 // errorBody is the JSON error envelope used by defaultErrorHandler.
@@ -181,4 +207,20 @@ func queryValues(r *http.Request) map[string]string {
 		}
 	}
 	return m
+}
+
+// reportBodyErrors extracts per-field validation errors from a body decode error
+// and reports them to obs with location "body".
+func reportBodyErrors(err error, obs stats.Observer) {
+	stats.ReportErrors(obs, "body", err)
+}
+
+// reportQueryErrors extracts the failing query parameter from a [rest.QueryParamError]
+// and reports it to obs with location "query".
+func reportQueryErrors(err error, obs stats.Observer) {
+	var qe rest.QueryParamError
+	if !errors.As(err, &qe) {
+		return
+	}
+	obs.RecordValidationError("query", stats.ConstraintName(qe.Err), qe.Name)
 }
