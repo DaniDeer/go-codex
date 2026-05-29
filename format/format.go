@@ -19,15 +19,28 @@ import (
 // Format binds a Codec[T] to a specific serialization format.
 // Use JSON, YAML, or TOML to construct one.
 type Format[T any] struct {
-	codec     codex.Codec[T]
-	marshal   func(any) ([]byte, error)
-	unmarshal func([]byte) (any, error)
+	codec       codex.Codec[T]
+	marshal     func(any) ([]byte, error)
+	unmarshal   func([]byte) (any, error)
+	contentType string
 }
 
 // New creates a Format from a codec and custom marshal/unmarshal functions.
 // Use this to integrate formats not covered by the built-in constructors.
+// ContentType is empty by default; call [Format.WithContentType] to set it.
 func New[T any](c codex.Codec[T], marshal func(any) ([]byte, error), unmarshal func([]byte) (any, error)) Format[T] {
 	return Format[T]{codec: c, marshal: marshal, unmarshal: unmarshal}
+}
+
+// ContentType returns the MIME type associated with this format (e.g. "application/json").
+// Empty string means the format has no registered content type.
+func (f Format[T]) ContentType() string { return f.contentType }
+
+// WithContentType returns a copy of the format with the given MIME content type set.
+// Use this when registering custom formats for content negotiation.
+func (f Format[T]) WithContentType(ct string) Format[T] {
+	f.contentType = ct
+	return f
 }
 
 // Marshal encodes v to bytes using the codec and then the format serializer.
@@ -61,38 +74,47 @@ func (f Format[T]) Schema() schema.Schema {
 }
 
 // JSON returns a Format that reads and writes JSON.
+// ContentType is "application/json".
 func JSON[T any](c codex.Codec[T]) Format[T] {
-	return New(c,
-		func(v any) ([]byte, error) { return json.Marshal(v) },
-		func(data []byte) (any, error) {
+	return Format[T]{
+		codec:       c,
+		contentType: "application/json",
+		marshal:     func(v any) ([]byte, error) { return json.Marshal(v) },
+		unmarshal: func(data []byte) (any, error) {
 			var v any
 			return v, json.Unmarshal(data, &v)
 		},
-	)
+	}
 }
 
 // YAML returns a Format that reads and writes YAML.
+// ContentType is "application/yaml".
 func YAML[T any](c codex.Codec[T]) Format[T] {
-	return New(c,
-		func(v any) ([]byte, error) { return yaml.Marshal(v) },
-		func(data []byte) (any, error) {
+	return Format[T]{
+		codec:       c,
+		contentType: "application/yaml",
+		marshal:     func(v any) ([]byte, error) { return yaml.Marshal(v) },
+		unmarshal: func(data []byte) (any, error) {
 			var v any
 			return v, yaml.Unmarshal(data, &v)
 		},
-	)
+	}
 }
 
 // TOML returns a Format that reads and writes TOML.
+// ContentType is "application/toml".
 func TOML[T any](c codex.Codec[T]) Format[T] {
-	return New(c,
-		func(v any) ([]byte, error) {
+	return Format[T]{
+		codec:       c,
+		contentType: "application/toml",
+		marshal: func(v any) ([]byte, error) {
 			var buf bytes.Buffer
 			if err := toml.NewEncoder(&buf).Encode(v); err != nil {
 				return nil, err
 			}
 			return buf.Bytes(), nil
 		},
-		func(data []byte) (any, error) {
+		unmarshal: func(data []byte) (any, error) {
 			var v any
 			_, err := toml.Decode(string(data), &v)
 			if err != nil {
@@ -100,5 +122,5 @@ func TOML[T any](c codex.Codec[T]) Format[T] {
 			}
 			return v, nil
 		},
-	)
+	}
 }

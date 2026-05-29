@@ -11,6 +11,14 @@
 		{
 			"path": "adapters/nethttp/cookie.go",
 			"rules": ["G124"]
+		},
+		{
+			"path": "adapters/nethttp/adapter.go",
+			"rules": ["G705"]
+		},
+		{
+			"path": "adapters/chi/adapter.go",
+			"rules": ["G124", "G705"]
 		}
 	]
 }

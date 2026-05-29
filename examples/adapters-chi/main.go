@@ -1,6 +1,6 @@
-// Package adapters-nethttp demonstrates the three-layer codec pipeline pattern
-// where every boundary — HTTP request, database, HTTP response — is modelled
-// as a codec contract.
+// Package adapters-chi demonstrates the three-layer codec pipeline pattern
+// using the chi router. The architecture mirrors adapters-nethttp exactly —
+// the only difference is the HTTP router and how path variables are extracted.
 //
 // Three boundary codecs:
 //
@@ -13,23 +13,6 @@
 // buildUserRecord(CreateUserReq) UserRecord   — request → DB record
 // buildUserResponse(UserRecord) User          — DB record → response
 //
-// The pipeline for POST /users:
-//
-// Codec[Req] ─ decode ─▶ CreateUserReq ─▶ buildUserRecord ─▶ UserRecord
-//
-//	↓ (store IO via Codec[UserRecord])
-//
-// Codec[Resp] ─ encode ─▶ User ◀─ buildUserResponse ◀─ UserRecord
-//
-// The infrastructure layer (Layer 3) owns all IO: HTTP adapter, database reads
-// and writes. The store uses Codec[UserRecord] to encode/decode rows — the
-// database schema is defined exactly once in the codec, just like the HTTP
-// contracts.
-//
-// Pure domain functions have zero IO and can be unit-tested with plain Go
-// structs and no setup. Swap the entire infrastructure layer (HTTP → gRPC →
-// CLI) without touching the domain layer or the business logic.
-//
 // Routes:
 //   - POST /users      — body validate, response headers + cookies (codec-validated), content negotiation
 //   - GET  /users/{id} — UUID path param, BuildPath type-safe URL construction
@@ -39,7 +22,7 @@
 // A CountingObserver wired into every route collects per-request metrics and
 // per-field validation errors without any metrics library dependency.
 //
-// Run with: go run ./examples/adapters-nethttp
+// Run with: go run ./examples/adapters-chi
 package main
 
 import (
@@ -55,23 +38,24 @@ import (
 	"sync"
 	"time"
 
-	nethttp "github.com/DaniDeer/go-codex/adapters/nethttp"
+	gochi "github.com/go-chi/chi/v5"
+
+	chiadapter "github.com/DaniDeer/go-codex/adapters/chi"
 	"github.com/DaniDeer/go-codex/api/rest"
 	"github.com/DaniDeer/go-codex/codex"
+	"github.com/DaniDeer/go-codex/format"
 	"github.com/DaniDeer/go-codex/validate"
 )
 
 // ── Observer ──────────────────────────────────────────────────────────────────
 
 // CountingObserver is an in-memory implementation of [stats.Observer].
-// It records request counts, HTTP status codes, validation error locations, and
-// latencies. In production, replace the counters with Prometheus / OpenTelemetry
-// instruments — the interface is identical.
+// In production, replace the counters with Prometheus / OpenTelemetry instruments.
 type CountingObserver struct {
 	mu             sync.Mutex
 	total          int
 	byStatus       map[int]int
-	valErrorsByLoc map[string]int // keyed by location: "body", "query", "cookie", "header"
+	valErrorsByLoc map[string]int
 	latencies      []time.Duration
 }
 
@@ -159,7 +143,6 @@ var createUserReqCodec = codex.Struct[CreateUserReq](
 // ── Database boundary (SQL model) ─────────────────────────────────────────────
 
 // UserRecord is the domain entity mapped to a database row.
-// Column names and types are defined here — once — in the codec.
 type UserRecord struct {
 	ID    string
 	Name  string
@@ -167,8 +150,7 @@ type UserRecord struct {
 }
 
 // userRecordCodec describes the SQL model. The store uses this codec to
-// encode records for persistence and decode rows on retrieval — exactly
-// the same mechanism as the HTTP boundaries.
+// encode records for persistence and decode rows on retrieval.
 var userRecordCodec = codex.Struct[UserRecord](
 	codex.RequiredField[UserRecord, string]("id",
 		codex.String().Refine(validate.UUID).WithDescription("Primary key."),
@@ -195,8 +177,6 @@ type User struct {
 }
 
 // userCodec describes what the HTTP client receives.
-// Shared field codecs propagate the same constraints from the request and
-// database contracts into the response schema — no duplication.
 var userCodec = codex.Struct[User](
 	codex.OptionalField[User, string]("id",
 		codex.String().Refine(validate.UUID).WithDescription("User UUID."),
@@ -239,30 +219,12 @@ var pagedUsersRespCodec = codex.Struct[PagedUsersResp](
 	),
 )
 
-// makeListUsersHandler handles GET /users with query params.
-// The nethttp adapter validates ?page against the NonNegativeIntString codec
-// before this handler is called — no manual parsing needed for bad input.
-func makeListUsersHandler() func(context.Context, emptyReq) (PagedUsersResp, error) {
-	return func(ctx context.Context, _ emptyReq) (PagedUsersResp, error) {
-		r, _ := nethttp.RequestFromContext(ctx)
-		q := r.URL.Query()
-		page := 0
-		if p := q.Get("page"); p != "" {
-			_, _ = fmt.Sscanf(p, "%d", &page) // safe: already validated as non-negative int
-		}
-		search := q.Get("search")
-		return PagedUsersResp{Page: page, Search: search, Users: nil}, nil
-	}
-}
-
 // ── Layer 2: Business logic (pure domain functions) ───────────────────────────
 //
 // Pure domain functions transform between domain types. Zero IO — no database,
-// no HTTP, no external services. They encode business rules as data
-// transformations and can be unit-tested with plain Go structs.
+// no HTTP, no external services.
 
 // buildUserRecord creates a database record from a user creation request.
-// This is where business rules live: ID assignment, default fields, etc.
 func buildUserRecord(req CreateUserReq) UserRecord {
 	return UserRecord{
 		ID:    "f47ac10b-58cc-4372-a567-0e02b2c3d479",
@@ -277,15 +239,9 @@ func buildUserResponse(record UserRecord) User {
 }
 
 // ── Layer 3: Infrastructure (HTTP + database + external services) ─────────────
-//
-// Infrastructure closures orchestrate all IO. The UserStore uses
-// userRecordCodec to encode rows on save and decode rows on fetch — the
-// database schema and the codec are the same definition.
 
 // withDomainLogging is a decorator that wraps a handler function, logging
-// success (Info) or failure (Error) after the handler returns. This pattern
-// separates the logging concern from the handler body, keeping L2/L3 business
-// logic clean while providing consistent observability.
+// success (Info) or failure (Error) after the handler returns.
 func withDomainLogging[Req, Resp any](
 	name string,
 	handler func(context.Context, Req) (Resp, error),
@@ -298,7 +254,6 @@ func withDomainLogging[Req, Resp any](
 			logger.ErrorContext(ctx, name+" failed", "error", err)
 		} else {
 			attrs := extractAttrs(req, resp)
-			// Convert []slog.Attr to []any for InfoContext
 			args := make([]any, 0, len(attrs)*2)
 			for _, attr := range attrs {
 				args = append(args, attr.Key, attr.Value.Any())
@@ -310,10 +265,9 @@ func withDomainLogging[Req, Resp any](
 }
 
 // UserStore is a mock database that operates via userRecordCodec.
-// Replace with a real SQL driver; the codec encode/decode mechanism stays.
 type UserStore struct {
 	mu   sync.RWMutex
-	rows map[string]map[string]any // simulates SQL table rows
+	rows map[string]map[string]any
 }
 
 func newUserStore() *UserStore {
@@ -336,7 +290,7 @@ func (s *UserStore) Save(r UserRecord) error {
 	return nil
 }
 
-// Get decodes a UserRecord from a stored row using userRecordCodec (analogous to SQL SELECT + scan).
+// Get decodes a UserRecord from a stored row using userRecordCodec.
 func (s *UserStore) Get(id string) (UserRecord, bool) {
 	s.mu.RLock()
 	row, ok := s.rows[id]
@@ -356,68 +310,71 @@ func (s *UserStore) Get(id string) (UserRecord, bool) {
 // decode (codec) → buildUserRecord (L2) → Save (store IO) → buildUserResponse (L2) → encode (codec)
 func makeCreateUserHandler(store *UserStore) func(context.Context, CreateUserReq) (User, error) {
 	return func(ctx context.Context, req CreateUserReq) (User, error) {
-		record := buildUserRecord(req)             // L2: pure business rule
-		if err := store.Save(record); err != nil { // L3: database IO
+		record := buildUserRecord(req)
+		if err := store.Save(record); err != nil {
 			return User{}, err
 		}
-		user := buildUserResponse(record) // L2: pure projection
+		user := buildUserResponse(record)
 		// Deposit the Location header — validated by the adapter against the
 		// ResponseHeaderParam codec after this function returns.
 		h := make(http.Header)
 		h.Set("Location", "/users/"+user.ID)
-		nethttp.WithResponseHeaders(ctx, h)
+		chiadapter.WithResponseHeaders(ctx, h)
 		// Deposit the session cookie — validated by the adapter against the
 		// ResponseCookieParam codec after this function returns.
-		nethttp.WithResponseCookies(ctx, nethttp.PendingCookie{
+		chiadapter.WithResponseCookies(ctx, chiadapter.PendingCookie{
 			Name:  "session",
 			Value: "sess-" + user.ID + "-token",
-			Opts:  nethttp.CookieOptions{MaxAge: 3600, Insecure: true},
+			Opts:  chiadapter.CookieOptions{MaxAge: 3600, Insecure: true},
 		})
 		return user, nil
 	}
 }
 
-// makeGetUserHandler orchestrates the get-user pipeline:
-//
-// path param (HTTP infra) → Get (store IO) → buildUserResponse (L2) → encode (codec)
+// makeGetUserHandler orchestrates the get-user pipeline.
+// Chi path vars are extracted via chi.URLParam from the raw *http.Request.
 func makeGetUserHandler(store *UserStore) func(context.Context, emptyReq) (User, error) {
 	return func(ctx context.Context, _ emptyReq) (User, error) {
-		r, _ := nethttp.RequestFromContext(ctx)
-		id := r.PathValue("id") // L3: HTTP path parameter
+		r, _ := chiadapter.RequestFromContext(ctx)
+		id := gochi.URLParam(r, "id") // L3: HTTP path parameter (chi-specific)
 		record, ok := store.Get(id)
 		if !ok {
 			return User{}, fmt.Errorf("user %q not found", id)
 		}
-		return buildUserResponse(record), nil // L2: pure projection
+		return buildUserResponse(record), nil
+	}
+}
+
+// makeListUsersHandler handles GET /users with query params.
+// The chi adapter validates ?page before this handler is called.
+func makeListUsersHandler() func(context.Context, emptyReq) (PagedUsersResp, error) {
+	return func(ctx context.Context, _ emptyReq) (PagedUsersResp, error) {
+		r, _ := chiadapter.RequestFromContext(ctx)
+		q := r.URL.Query()
+		page := 0
+		if p := q.Get("page"); p != "" {
+			_, _ = fmt.Sscanf(p, "%d", &page)
+		}
+		search := q.Get("search")
+		return PagedUsersResp{Page: page, Search: search, Users: nil}, nil
 	}
 }
 
 func main() {
 	store := newUserStore()
 
-	// Create separate loggers for domain and transport concerns.
 	domainLogger := slog.Default().With("layer", "domain")
 	httpLogger := slog.Default().With("transport", "http")
 
-	// Build the REST API description (transport-agnostic).
 	b := rest.NewBuilder(rest.Info{
-		Title:       "User API",
+		Title:       "User API (chi)",
 		Version:     "1.0.0",
 		Description: "Three-layer codec pipeline: HTTP ↔ domain ↔ database.",
 	},
-		// WithPathConstraints is optional. When set, AddRoute returns an
-		// InvalidPathError immediately if the path violates the constraint.
-		// HTTPPath requires a leading '/' and forbids unencoded spaces and null
-		// bytes. OpenAPI-style path parameters like {id} are allowed, so
-		// /users/{id} passes correctly.
 		rest.WithPathConstraints(validate.HTTPPath),
 	)
 	b.AddServer("local", rest.Server{URL: "http://localhost:8080"})
 
-	// locationCodec validates Location response header values as non-empty strings.
-	// sessionCodec validates the session cookie value (at least 8 chars).
-	// The same codecs enforce the contract at route-definition time and at
-	// request-handling time — the adapter rejects invalid values with 500.
 	locationCodec := codex.String().Refine(validate.NonEmptyString)
 	sessionCodec := codex.String().Refine(validate.MinLen(8))
 
@@ -427,24 +384,22 @@ func main() {
 			Summary:        "Create a user",
 			ReqSchemaName:  "CreateUserRequest",
 			RespSchemaName: "User",
-			// ResponseHeaderParams declares the Location header returned on 201.
-			// The adapter validates it after the handler returns; a violation → 500.
-			// The codec schema flows into the OpenAPI response header spec automatically.
 			ResponseHeaderParams: []rest.ResponseHeaderParam{{
 				Name:        "Location",
 				Description: "URL of the newly created user resource",
 				Required:    true,
 				Codec:       &locationCodec,
 			}},
-			// ResponseCookieParams declares the session cookie written on 201.
-			// The adapter validates the value after the handler returns; a violation → 500.
 			ResponseCookieParams: []rest.ResponseCookieParam{{
 				Name:        "session",
 				Description: "Session token for the new user",
 				Required:    true,
 				Codec:       &sessionCodec,
 			}},
-		})
+		},
+		format.JSON[User](userCodec),
+		format.YAML[User](userCodec),
+	)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "route registration failed: %v\n", err)
 		os.Exit(1)
@@ -456,23 +411,20 @@ func main() {
 			OperationID:    "getUser",
 			Summary:        "Get a user by ID",
 			RespSchemaName: "User",
-			// PathParam.Codec validates {id} as a UUID at BuildPath time and
-			// flows the UUID schema into the OpenAPI spec automatically.
 			PathParams: []rest.PathParam{{
 				Name:        "id",
 				Description: "User UUID",
 				Codec:       &uuidCodec,
 			}},
-		})
+		},
+		format.JSON[User](userCodec),
+		format.YAML[User](userCodec),
+	)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "route registration failed: %v\n", err)
 		os.Exit(1)
 	}
 
-	// GET /users — list users with optional query parameters.
-	// QueryParam.Codec validates the ?page value at request time via the nethttp
-	// adapter (auto-called before the handler). The schema flows into the OpenAPI
-	// spec automatically. ?search has no codec — it is documented only.
 	qPageCodec := codex.String().Refine(validate.NonNegativeIntString)
 	listUsersRoute, err := rest.AddRoute[emptyReq, PagedUsersResp](b, "GET", "/users",
 		emptyReqCodec, pagedUsersRespCodec, rest.RouteConfig{
@@ -489,17 +441,14 @@ func main() {
 					Description: "Filter by name prefix (no validation)",
 				},
 			},
-		})
+		},
+		format.JSON[PagedUsersResp](pagedUsersRespCodec),
+	)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "route registration failed: %v\n", err)
 		os.Exit(1)
 	}
 
-	// GET /profile — demonstrates CookieParam and HeaderParam validation.
-	// session_token cookie: required, non-empty (validates auth session).
-	// X-Request-ID header: required UUID (idempotency/tracing key).
-	// The nethttp adapter calls ValidateCookies and ValidateHeaders automatically
-	// before the handler runs — no manual extraction needed.
 	profileSessionCodec := codex.String().Refine(validate.NonEmptyString)
 	profileRequestIDCodec := codex.String().Refine(validate.UUID)
 	profileRoute, err := rest.AddRoute[emptyReq, User](b, "GET", "/profile",
@@ -522,26 +471,27 @@ func main() {
 					Codec:       &profileRequestIDCodec,
 				},
 			},
-		})
+		},
+		format.JSON[User](userCodec),
+	)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "route registration failed: %v\n", err)
 		os.Exit(1)
 	}
 
-	// Distinguishes validation failures (400, Warn) from system errors (500, Error).
 	errorHandler := func(w http.ResponseWriter, r *http.Request, status int, err error) {
 		var validationErrs codex.ValidationErrors
 		if errors.As(err, &validationErrs) {
 			httpLogger.Warn("request validation failed",
 				"method", r.Method,
 				"path", r.URL.Path,
-				"errors", validationErrs, // triggers ValidationErrors.LogValue()
+				"errors", validationErrs,
 			)
 		} else {
 			httpLogger.Error("handler error",
 				"method", r.Method,
 				"path", r.URL.Path,
-				"error", err, // triggers ConstraintError.LogValue() etc.
+				"error", err,
 			)
 		}
 		w.Header().Set("Content-Type", "application/json")
@@ -550,7 +500,6 @@ func main() {
 		_, _ = w.Write(body)
 	}
 
-	// Attribute extractors for domain logging — extract business-relevant fields from responses.
 	extractUserAttrs := func(_ CreateUserReq, u User) []slog.Attr {
 		return []slog.Attr{
 			slog.String("id", u.ID),
@@ -563,229 +512,229 @@ func main() {
 	}
 
 	obs := &CountingObserver{}
-	opts := nethttp.Options{ErrorHandler: errorHandler, Observer: obs}
+	opts := chiadapter.Options{ErrorHandler: errorHandler, Observer: obs}
 
-	// Wire infrastructure handlers to HTTP routes with custom error handling + domain logging decorator.
-	mux := http.NewServeMux()
-	nethttp.Register(mux, createUserRoute,
+	r := gochi.NewRouter()
+	chiadapter.Register(r, createUserRoute,
 		withDomainLogging("user.create", makeCreateUserHandler(store), domainLogger, extractUserAttrs),
 		opts)
-	nethttp.Register(mux, getUserRoute,
+	chiadapter.Register(r, getUserRoute,
 		withDomainLogging("user.get", makeGetUserHandler(store), domainLogger, extractGetUserAttrs),
 		opts)
-	nethttp.Register(mux, listUsersRoute,
+	chiadapter.Register(r, listUsersRoute,
 		withDomainLogging("user.list", makeListUsersHandler(), domainLogger,
 			func(_ emptyReq, _ PagedUsersResp) []slog.Attr { return nil }),
 		opts)
-	nethttp.Register(mux, profileRoute,
+	chiadapter.Register(r, profileRoute,
 		func(_ context.Context, _ emptyReq) (User, error) {
-			// Handler only runs when both cookie and header are valid.
 			return User{ID: "f47ac10b-58cc-4372-a567-0e02b2c3d479", Name: "Alice", Email: "alice@example.com"}, nil
 		},
 		opts)
 
-	// Demo requests against an in-process test server.
-	srv := httptest.NewServer(mux)
+	srv := httptest.NewServer(r)
 	defer srv.Close()
 
-	fmt.Println("=== POST /users ===")
-	resp, err := http.Post(srv.URL+"/users", "application/json", //nolint:noctx
-		strings.NewReader(`{"name":"Alice","email":"alice@example.com"}`))
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "POST error: %v\n", err)
-		os.Exit(1)
-	}
-	defer resp.Body.Close()
-	var created User
-	if err := json.NewDecoder(resp.Body).Decode(&created); err != nil {
-		fmt.Fprintf(os.Stderr, "decode error: %v\n", err)
-		os.Exit(1)
-	}
-	fmt.Printf("Status:     %d\nUser:       %+v\nLocation:   %s\nSet-Cookie: %s\n\n",
-		resp.StatusCode, created, resp.Header.Get("Location"), resp.Header.Get("Set-Cookie"))
+	fmt.Println("=== chi adapter demo ===")
 
-	fmt.Println("=== POST /users (body constraint violation) ===")
-	resp2, err := http.Post(srv.URL+"/users", "application/json", //nolint:noctx
-		strings.NewReader(`{"name":"","email":"bad"}`))
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "POST error: %v\n", err)
-		os.Exit(1)
-	}
-	defer resp2.Body.Close()
-	var errBody map[string]string
-	_ = json.NewDecoder(resp2.Body).Decode(&errBody)
-	fmt.Printf("Status: %d\nError:  %s\n\n", resp2.StatusCode, errBody["error"])
+	fmt.Println("\n--- POST /users (JSON) ---")
+	func() {
+		body := strings.NewReader(`{"name":"Alice","email":"alice@example.com"}`)
+		resp, err := http.Post(srv.URL+"/users", "application/json", body) //nolint:noctx
+		if err != nil {
+			panic(err)
+		}
+		defer resp.Body.Close()
+		var created User
+		if err := json.NewDecoder(resp.Body).Decode(&created); err != nil {
+			panic(err)
+		}
+		fmt.Printf("Status:     %s\nUser:       %+v\nLocation:   %s\nSet-Cookie: %s\n",
+			resp.Status, created, resp.Header.Get("Location"), resp.Header.Get("Set-Cookie"))
+	}()
 
-	fmt.Println("=== GET /users/{id} — BuildPath validates UUID codec ===")
-	// BuildPath substitutes {id} and validates the value against the UUID codec.
-	userPath, err := getUserRoute.BuildPath(map[string]string{"id": created.ID})
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "BuildPath error: %v\n", err)
-		os.Exit(1)
-	}
-	resp3, err := http.Get(srv.URL + userPath) //nolint:noctx
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "GET error: %v\n", err)
-		os.Exit(1)
-	}
-	defer resp3.Body.Close()
-	var fetched User
-	_ = json.NewDecoder(resp3.Body).Decode(&fetched)
-	fmt.Printf("Status: %d\nUser:   %+v\n", resp3.StatusCode, fetched)
+	fmt.Println("\n--- POST /users (YAML response via Accept header) ---")
+	func() {
+		body := strings.NewReader(`{"name":"Bob","email":"bob@example.com"}`)
+		req, _ := http.NewRequest(http.MethodPost, srv.URL+"/users", body) //nolint:noctx
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Accept", "application/yaml")
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			panic(err)
+		}
+		defer resp.Body.Close()
+		fmt.Printf("Status: %s\nContent-Type: %s\nLocation: %s\n",
+			resp.Status, resp.Header.Get("Content-Type"), resp.Header.Get("Location"))
+	}()
 
-	// BuildPath rejects a non-UUID value before any HTTP request is made.
-	if _, err := getUserRoute.BuildPath(map[string]string{"id": "not-a-uuid"}); err != nil {
-		fmt.Printf("BuildPath(not-a-uuid) rejected: %v\n\n", err)
-	}
+	fmt.Println("\n--- POST /users (body constraint violation) ---")
+	func() {
+		body := strings.NewReader(`{"name":"","email":"bad"}`)
+		resp, err := http.Post(srv.URL+"/users", "application/json", body) //nolint:noctx
+		if err != nil {
+			panic(err)
+		}
+		defer resp.Body.Close()
+		var errBody map[string]string
+		_ = json.NewDecoder(resp.Body).Decode(&errBody)
+		fmt.Printf("Status: %s\nError:  %s\n", resp.Status, errBody["error"])
+	}()
 
-	fmt.Println("=== GET /users?page=2&search=alice (query params) ===")
-	// ?page is validated against NonNegativeIntString by the nethttp adapter.
-	// ?search has no codec — passed through to the handler as-is.
-	resp4, err := http.Get(srv.URL + "/users?page=2&search=alice") //nolint:noctx
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "GET error: %v\n", err)
-		os.Exit(1)
-	}
-	defer resp4.Body.Close()
-	var listResp PagedUsersResp
-	_ = json.NewDecoder(resp4.Body).Decode(&listResp)
-	fmt.Printf("Status: %d\nResult: %+v\n\n", resp4.StatusCode, listResp)
+	fmt.Println("\n--- GET /users/{id} — BuildPath validates UUID codec ---")
+	func() {
+		// BuildPath substitutes {id} and validates the value against the UUID codec.
+		userPath, err := getUserRoute.BuildPath(map[string]string{"id": "f47ac10b-58cc-4372-a567-0e02b2c3d479"})
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "BuildPath error: %v\n", err)
+			return
+		}
+		resp, err := http.Get(srv.URL + userPath) //nolint:noctx
+		if err != nil {
+			panic(err)
+		}
+		defer resp.Body.Close()
+		var fetched User
+		_ = json.NewDecoder(resp.Body).Decode(&fetched)
+		fmt.Printf("Status: %s\nUser:   %+v\n", resp.Status, fetched)
 
-	fmt.Println("=== GET /users?page=abc (invalid query param — auto-rejected) ===")
-	// The nethttp adapter calls ValidateQuery before the handler.
-	// "abc" fails NonNegativeIntString → 400 returned, handler never runs.
-	resp5, err := http.Get(srv.URL + "/users?page=abc") //nolint:noctx
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "GET error: %v\n", err)
-		os.Exit(1)
-	}
-	defer resp5.Body.Close()
-	var qErrBody map[string]string
-	_ = json.NewDecoder(resp5.Body).Decode(&qErrBody)
-	fmt.Printf("Status: %d\nError:  %s\n\n", resp5.StatusCode, qErrBody["error"])
+		if _, err := getUserRoute.BuildPath(map[string]string{"id": "not-a-uuid"}); err != nil {
+			fmt.Printf("BuildPath(not-a-uuid) rejected: %v\n", err)
+		}
+	}()
 
-	fmt.Println("=== GET /profile (valid cookie + header) ===")
-	// Both session_token cookie and X-Request-Id header are valid.
-	req6, err := http.NewRequest(http.MethodGet, srv.URL+"/profile", nil) //nolint:noctx
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "NewRequest error: %v\n", err)
-		os.Exit(1)
-	}
-	req6.AddCookie(&http.Cookie{Name: "session_token", Value: "my-valid-session-token", Secure: true, HttpOnly: true, SameSite: http.SameSiteStrictMode})
-	req6.Header.Set("X-Request-Id", "f47ac10b-58cc-4372-a567-0e02b2c3d479")
-	resp6, err := http.DefaultClient.Do(req6)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "GET error: %v\n", err)
-		os.Exit(1)
-	}
-	defer resp6.Body.Close()
-	var profile User
-	_ = json.NewDecoder(resp6.Body).Decode(&profile)
-	fmt.Printf("Status: %d\nUser:   %+v\n\n", resp6.StatusCode, profile)
+	fmt.Println("\n--- GET /users?page=2&search=alice (query params) ---")
+	func() {
+		resp, err := http.Get(srv.URL + "/users?page=2&search=alice") //nolint:noctx
+		if err != nil {
+			panic(err)
+		}
+		defer resp.Body.Close()
+		var listResp PagedUsersResp
+		_ = json.NewDecoder(resp.Body).Decode(&listResp)
+		fmt.Printf("Status: %s\nResult: %+v\n", resp.Status, listResp)
+	}()
 
-	fmt.Println("=== GET /profile (invalid cookie — auto-rejected) ===")
-	req7, err := http.NewRequest(http.MethodGet, srv.URL+"/profile", nil) //nolint:noctx
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "NewRequest error: %v\n", err)
-		os.Exit(1)
-	}
-	req7.AddCookie(&http.Cookie{Name: "session_token", Value: "", Secure: true, HttpOnly: true, SameSite: http.SameSiteStrictMode})
-	req7.Header.Set("X-Request-Id", "f47ac10b-58cc-4372-a567-0e02b2c3d479")
-	resp7, err := http.DefaultClient.Do(req7)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "GET error: %v\n", err)
-		os.Exit(1)
-	}
-	defer resp7.Body.Close()
-	var cookieErrBody map[string]string
-	_ = json.NewDecoder(resp7.Body).Decode(&cookieErrBody)
-	fmt.Printf("Status: %d\nError:  %s\n\n", resp7.StatusCode, cookieErrBody["error"])
+	fmt.Println("\n--- GET /users?page=abc (invalid query param — auto-rejected) ---")
+	func() {
+		resp, err := http.Get(srv.URL + "/users?page=abc") //nolint:noctx
+		if err != nil {
+			panic(err)
+		}
+		defer resp.Body.Close()
+		var errBody map[string]string
+		_ = json.NewDecoder(resp.Body).Decode(&errBody)
+		fmt.Printf("Status: %s\nError:  %s\n", resp.Status, errBody["error"])
+	}()
 
-	fmt.Println("=== GET /profile (invalid header — auto-rejected) ===")
-	req8, err := http.NewRequest(http.MethodGet, srv.URL+"/profile", nil) //nolint:noctx
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "NewRequest error: %v\n", err)
-		os.Exit(1)
-	}
-	req8.AddCookie(&http.Cookie{Name: "session_token", Value: "my-valid-session-token", Secure: true, HttpOnly: true, SameSite: http.SameSiteStrictMode})
-	req8.Header.Set("X-Request-Id", "not-a-uuid")
-	resp8, err := http.DefaultClient.Do(req8)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "GET error: %v\n", err)
-		os.Exit(1)
-	}
-	defer resp8.Body.Close()
-	var headerErrBody map[string]string
-	_ = json.NewDecoder(resp8.Body).Decode(&headerErrBody)
-	fmt.Printf("Status: %d\nError:  %s\n\n", resp8.StatusCode, headerErrBody["error"])
+	fmt.Println("\n--- GET /profile (valid cookie + header) ---")
+	func() {
+		req, _ := http.NewRequest(http.MethodGet, srv.URL+"/profile", nil) //nolint:noctx
+		req.AddCookie(&http.Cookie{Name: "session_token", Value: "my-valid-session-token", Secure: true, HttpOnly: true, SameSite: http.SameSiteStrictMode})
+		req.Header.Set("X-Request-Id", "f47ac10b-58cc-4372-a567-0e02b2c3d479")
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			panic(err)
+		}
+		defer resp.Body.Close()
+		var profile User
+		_ = json.NewDecoder(resp.Body).Decode(&profile)
+		fmt.Printf("Status: %s\nUser:   %+v\n", resp.Status, profile)
+	}()
 
-	fmt.Println("=== ResponseHeaderParams + ResponseCookieParams — contract violation demos ===")
-	// A separate server uses a handler that:
-	//   (a) deposits an empty Location value → fails NonEmptyString codec → adapter returns 500
-	//   (b) deposits a too-short session value → fails MinLen(8) codec → adapter returns 500
-	violationMux := http.NewServeMux()
-	nethttp.Register(violationMux, createUserRoute,
-		func(ctx context.Context, req CreateUserReq) (User, error) {
-			h := make(http.Header)
-			h.Set("Location", "") // empty → fails NonEmptyString → 500
-			nethttp.WithResponseHeaders(ctx, h)
-			nethttp.WithResponseCookies(ctx, nethttp.PendingCookie{
-				Name:  "session",
-				Value: "short", // < 8 chars → fails MinLen(8) → 500
-				Opts:  nethttp.CookieOptions{Insecure: true},
-			})
-			return buildUserResponse(buildUserRecord(req)), nil
-		},
-		nethttp.Options{})
-	violationSrv := httptest.NewServer(violationMux)
-	defer violationSrv.Close()
+	fmt.Println("\n--- GET /profile (invalid cookie — auto-rejected) ---")
+	func() {
+		req, _ := http.NewRequest(http.MethodGet, srv.URL+"/profile", nil) //nolint:noctx
+		req.AddCookie(&http.Cookie{Name: "session_token", Value: "", Secure: true, HttpOnly: true, SameSite: http.SameSiteStrictMode})
+		req.Header.Set("X-Request-Id", "f47ac10b-58cc-4372-a567-0e02b2c3d479")
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			panic(err)
+		}
+		defer resp.Body.Close()
+		var errBody map[string]string
+		_ = json.NewDecoder(resp.Body).Decode(&errBody)
+		fmt.Printf("Status: %s\nError:  %s\n", resp.Status, errBody["error"])
+	}()
 
-	violResp, err := http.Post(violationSrv.URL+"/users", "application/json", //nolint:noctx
-		strings.NewReader(`{"name":"Carol","email":"carol@example.com"}`))
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "POST error: %v\n", err)
-		os.Exit(1)
-	}
-	defer violResp.Body.Close()
-	var violBody map[string]string
-	_ = json.NewDecoder(violResp.Body).Decode(&violBody)
-	fmt.Printf("Contract violation → Status: %d, error: %s\n\n", violResp.StatusCode, violBody["error"])
+	fmt.Println("\n--- GET /profile (invalid header — auto-rejected) ---")
+	func() {
+		req, _ := http.NewRequest(http.MethodGet, srv.URL+"/profile", nil) //nolint:noctx
+		req.AddCookie(&http.Cookie{Name: "session_token", Value: "my-valid-session-token", Secure: true, HttpOnly: true, SameSite: http.SameSiteStrictMode})
+		req.Header.Set("X-Request-Id", "not-a-uuid")
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			panic(err)
+		}
+		defer resp.Body.Close()
+		var errBody map[string]string
+		_ = json.NewDecoder(resp.Body).Decode(&errBody)
+		fmt.Printf("Status: %s\nError:  %s\n", resp.Status, errBody["error"])
+	}()
 
-	fmt.Println("=== nethttp.SetCookie — write-side validation with same codec ===")
-	// nethttp.SetCookie writes a Set-Cookie header with secure defaults
-	// (Secure, HttpOnly, SameSite=Strict). When CookieOptions.Codec is set,
-	// the value is validated against that codec before writing — the same codec
-	// used in CookieParam for the read path. One definition, two boundaries.
-	setRec := httptest.NewRecorder()
-	if err := nethttp.SetCookie(setRec, "session_token", "refreshed-session-token", nethttp.CookieOptions{
-		Codec:  &profileSessionCodec, // same codec as read-side CookieParam
-		MaxAge: 3600,
-	}); err != nil {
-		fmt.Fprintf(os.Stderr, "SetCookie error: %v\n", err)
-		os.Exit(1)
-	}
-	fmt.Printf("Valid:    Set-Cookie: %s\n", setRec.Header().Get("Set-Cookie"))
+	fmt.Println("\n--- ResponseHeaderParams + ResponseCookieParams — contract violation demo ---")
+	func() {
+		violationRouter := gochi.NewRouter()
+		chiadapter.Register(violationRouter, createUserRoute,
+			func(ctx context.Context, req CreateUserReq) (User, error) {
+				h := make(http.Header)
+				h.Set("Location", "") // empty → fails NonEmptyString → 500
+				chiadapter.WithResponseHeaders(ctx, h)
+				chiadapter.WithResponseCookies(ctx, chiadapter.PendingCookie{
+					Name:  "session",
+					Value: "short", // < 8 chars → fails MinLen(8) → 500
+					Opts:  chiadapter.CookieOptions{Insecure: true},
+				})
+				return buildUserResponse(buildUserRecord(req)), nil
+			},
+			chiadapter.Options{})
+		violationSrv := httptest.NewServer(violationRouter)
+		defer violationSrv.Close()
 
-	setRec2 := httptest.NewRecorder()
-	setErr := nethttp.SetCookie(setRec2, "session_token", "", nethttp.CookieOptions{
-		Codec: &profileSessionCodec,
-	})
-	fmt.Printf("Invalid:  error=%v, Set-Cookie=%q\n\n", setErr, setRec2.Header().Get("Set-Cookie"))
+		body := strings.NewReader(`{"name":"Carol","email":"carol@example.com"}`)
+		resp, err := http.Post(violationSrv.URL+"/users", "application/json", body) //nolint:noctx
+		if err != nil {
+			panic(err)
+		}
+		defer resp.Body.Close()
+		var errBody map[string]string
+		_ = json.NewDecoder(resp.Body).Decode(&errBody)
+		fmt.Printf("Contract violation → Status: %s, error: %s\n", resp.Status, errBody["error"])
+	}()
 
-	fmt.Println("=== Observer summary ===")
+	fmt.Println("\n--- chiadapter.SetCookie — write-side validation with same codec ---")
+	// chiadapter.SetCookie validates the value before writing Set-Cookie — the
+	// same codec used in CookieParam for the read path. One definition, two boundaries.
+	func() {
+		setRec := httptest.NewRecorder()
+		if err := chiadapter.SetCookie(setRec, "session_token", "refreshed-session-token", chiadapter.CookieOptions{
+			Codec:  &profileSessionCodec,
+			MaxAge: 3600,
+		}); err != nil {
+			fmt.Fprintf(os.Stderr, "SetCookie error: %v\n", err)
+			return
+		}
+		fmt.Printf("Valid:   Set-Cookie: %s\n", setRec.Header().Get("Set-Cookie"))
+
+		setRec2 := httptest.NewRecorder()
+		setErr := chiadapter.SetCookie(setRec2, "session_token", "", chiadapter.CookieOptions{
+			Codec: &profileSessionCodec,
+		})
+		fmt.Printf("Invalid: error=%v, Set-Cookie=%q\n", setErr, setRec2.Header().Get("Set-Cookie"))
+	}()
+
+	fmt.Println("\n--- Observer summary ---")
 	obs.Print()
-	fmt.Println()
 
-	fmt.Println("=== OpenAPI 3.1 spec (derived from domain codecs) ===")
+	fmt.Println("\n--- OpenAPI 3.1 spec ---")
 	doc, err := b.OpenAPISpec()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "OpenAPISpec error: %v\n", err)
 		os.Exit(1)
 	}
-	yaml, err := doc.MarshalYAML()
+	yamlBytes, err := doc.MarshalYAML()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "MarshalYAML error: %v\n", err)
 		os.Exit(1)
 	}
-	fmt.Print(string(yaml))
+	fmt.Print(string(yamlBytes))
 }

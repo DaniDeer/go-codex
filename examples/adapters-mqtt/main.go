@@ -43,8 +43,88 @@ import (
 	adaptermqtt "github.com/DaniDeer/go-codex/adapters/mqtt"
 	"github.com/DaniDeer/go-codex/api/events"
 	"github.com/DaniDeer/go-codex/codex"
+	"github.com/DaniDeer/go-codex/stats"
 	"github.com/DaniDeer/go-codex/validate"
 )
+
+// ── Observer ──────────────────────────────────────────────────────────────────
+
+// CountingObserver is an in-memory implementation of [stats.Observer].
+// It records subscribe/publish counts, success rates, validation error locations,
+// and latencies. In production, replace the counters with Prometheus /
+// OpenTelemetry instruments — the interface is identical.
+type CountingObserver struct {
+	mu             sync.Mutex
+	subscribes     int
+	subSuccess     int
+	publishes      int
+	pubSuccess     int
+	valErrorsByLoc map[string]int // keyed by location: "payload"
+	subLatencies   []time.Duration
+	pubLatencies   []time.Duration
+}
+
+func (o *CountingObserver) RecordRequest(_ string, _ string, _ int, _ time.Duration) {}
+
+func (o *CountingObserver) RecordSubscribe(_ string, success bool, d time.Duration) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	o.subscribes++
+	if success {
+		o.subSuccess++
+	}
+	o.subLatencies = append(o.subLatencies, d)
+}
+
+func (o *CountingObserver) RecordPublish(_ string, success bool, d time.Duration) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	o.publishes++
+	if success {
+		o.pubSuccess++
+	}
+	o.pubLatencies = append(o.pubLatencies, d)
+}
+
+func (o *CountingObserver) RecordValidationError(location, constraintName, field string) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	if o.valErrorsByLoc == nil {
+		o.valErrorsByLoc = make(map[string]int)
+	}
+	o.valErrorsByLoc[location]++
+	fmt.Printf("  [observer] validation error — location=%q constraint=%q field=%q\n",
+		location, constraintName, field)
+}
+
+func (o *CountingObserver) Print() {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	fmt.Printf("  subscribes     : %d total, %d success, %d failed\n",
+		o.subscribes, o.subSuccess, o.subscribes-o.subSuccess)
+	fmt.Printf("  publishes      : %d total, %d success, %d failed\n",
+		o.publishes, o.pubSuccess, o.publishes-o.pubSuccess)
+	for loc, n := range o.valErrorsByLoc {
+		fmt.Printf("  val errs %-10s: %d\n", "("+loc+")", n)
+	}
+	if len(o.subLatencies) > 0 {
+		var sum time.Duration
+		for _, l := range o.subLatencies {
+			sum += l
+		}
+		fmt.Printf("  avg sub latency: %v\n", sum/time.Duration(len(o.subLatencies)))
+	}
+	if len(o.pubLatencies) > 0 {
+		var sum time.Duration
+		for _, l := range o.pubLatencies {
+			sum += l
+		}
+		fmt.Printf("  avg pub latency: %v\n", sum/time.Duration(len(o.pubLatencies)))
+	}
+}
+
+// Ensure CountingObserver satisfies the stats.Observer interface at compile time.
+var _ stats.Observer = (*CountingObserver)(nil)
 
 // ── Layer 1: Domain models and codec contracts ─────────────────────────────────
 //
@@ -385,11 +465,36 @@ func (c *mockClient) Publish(topic string, _ byte, _ bool, payload interface{}) 
 
 func (c *mockClient) deliver(topic string, payload []byte) {
 	c.mu.Lock()
-	h := c.handlers[topic]
+	// Collect all handlers whose subscription pattern matches this concrete topic.
+	var matched []pahomqtt.MessageHandler
+	for sub, h := range c.handlers {
+		if topicMatchesSub(sub, topic) {
+			matched = append(matched, h)
+		}
+	}
 	c.mu.Unlock()
-	if h != nil {
+	for _, h := range matched {
 		h(c, &mockMessage{topic: topic, payload: payload})
 	}
+}
+
+// topicMatchesSub reports whether a concrete MQTT topic matches a subscription
+// pattern. It handles MQTT single-level (+) and multi-level (#) wildcards.
+func topicMatchesSub(sub, topic string) bool {
+	subParts := strings.Split(sub, "/")
+	topicParts := strings.Split(topic, "/")
+	for i, seg := range subParts {
+		if seg == "#" {
+			return true // matches all remaining levels
+		}
+		if i >= len(topicParts) {
+			return false
+		}
+		if seg != "+" && seg != topicParts[i] {
+			return false
+		}
+	}
+	return len(subParts) == len(topicParts)
 }
 
 func (c *mockClient) IsConnected() bool       { return true }
@@ -505,6 +610,7 @@ func main() {
 	// Wire infrastructure: inject store + alert publish function.
 	// Use domain logging decorator to separate logging concern from handler body.
 	client := newMockClient()
+	obs := &CountingObserver{}
 
 	// BuildTopic substitutes {sensorID} and validates it against the UUID codec.
 	// The concrete topic is needed for client.Subscribe and client.deliver.
@@ -518,7 +624,7 @@ func main() {
 	// Pass nil for static topics (no template variables).
 	publishAlert := func(ctx context.Context, alert AlertEvent) error {
 		return adaptermqtt.Publish(ctx, client, alertChannel, 1, false, alert,
-			map[string]string{"sensorID": sensorUUID}, adaptermqtt.PublishOptions{})
+			map[string]string{"sensorID": sensorUUID}, adaptermqtt.PublishOptions{Observer: obs})
 	}
 
 	// Attribute extractor for domain logging — extract business-relevant fields from requests.
@@ -539,6 +645,7 @@ func main() {
 	client.Subscribe(measurementTopic, 1,
 		adaptermqtt.SubscribeHandler(ctx, measurementChannel, handler,
 			adaptermqtt.SubscribeOptions{
+				Observer: obs,
 				OnError: func(e adaptermqtt.SubscribeError) {
 					// Use mqttLogger for transport-level errors.
 					// Switch on Kind to distinguish decode vs handler failures.
@@ -596,4 +703,150 @@ func main() {
 		os.Exit(1)
 	}
 	fmt.Print(string(yaml))
+
+	// ── Wildcard subscription showcase ────────────────────────────────────────
+	//
+	// Subscribe with MQTT wildcard "#": receive ALL messages under "sensors/".
+	// TopicVarsFromMessage extracts {sensorID} and validates it against the
+	// registered TopicParam.Codec (UUID constraint) — the same validation that
+	// BuildTopic runs on the outgoing path.
+	//
+	// Validation chain for each incoming message:
+	//   1. Structural match (level count + literal segments)  →  TopicMismatchError
+	//   2. Builder-level topic codec (MQTTPublishTopic + sensorTopicConstraint)  →  InvalidTopicError
+	//   3. TopicParam.Codec on extracted {sensorID} (UUID)  →  TopicParamError
+	fmt.Println("\n=== Wildcard subscription: sensors/# ===")
+
+	const sensorUUID2 = "a1b2c3d4-e5f6-7890-abcd-ef1234567890"
+
+	wildcardHandler := adaptermqtt.SubscribeHandler(ctx, measurementChannel,
+		func(ctx context.Context, m MeasurementEvent) error {
+			msg, _ := adaptermqtt.MessageFromContext(ctx)
+			vars, err := adaptermqtt.TopicVarsFromMessage(measurementChannel, msg)
+			if err != nil {
+				return err
+			}
+			fmt.Printf("  [wildcard] sensor=%s  value=%.1f %s\n", vars["sensorID"], m.Value, m.Unit)
+			return nil
+		},
+		adaptermqtt.SubscribeOptions{
+			Observer: obs,
+			OnError: func(e adaptermqtt.SubscribeError) {
+				// KindHandler covers TopicVarsFromMessage errors (mismatch, topic codec,
+				// param codec). Distinguish all three for structured log fields.
+				var topicMismatch adaptermqtt.TopicMismatchError
+				var topicErr events.InvalidTopicError
+				var paramErr events.TopicParamError
+				switch {
+				case e.Kind == adaptermqtt.KindDecode:
+					mqttLogger.Warn("wildcard: decode failed",
+						"topic", e.Topic,
+						"error", e.Err,
+					)
+				case errors.As(e.Err, &topicMismatch):
+					mqttLogger.Warn("wildcard: topic structure mismatch",
+						"topic", e.Topic,
+						"template", topicMismatch.Template,
+					)
+				case errors.As(e.Err, &topicErr):
+					mqttLogger.Warn("wildcard: topic codec violation",
+						"topic", e.Topic,
+						"error", topicErr.Err,
+					)
+				case errors.As(e.Err, &paramErr):
+					mqttLogger.Warn("wildcard: topic param codec violation",
+						"topic", e.Topic,
+						"var", paramErr.Name,
+						"value", paramErr.Value,
+						"error", paramErr.Err,
+					)
+				default:
+					mqttLogger.Error("wildcard: handler failed",
+						"topic", e.Topic,
+						"error", e.Err,
+					)
+				}
+			},
+		},
+	)
+
+	// Subscribe to sensors/# — the MQTT broker delivers any sub-topic.
+	client.Subscribe("sensors/#", 1, wildcardHandler)
+
+	validPayload := func(v float64) []byte {
+		return []byte(fmt.Sprintf(`{"sensor_id":"temp","value":%.1f,"unit":"celsius","timestamp":"2024-01-15T11:00:00Z"}`, v))
+	}
+
+	fmt.Println("\n-- Two valid sensor UUIDs (both pass UUID codec) --")
+	client.deliver("sensors/"+sensorUUID+"/measurements", validPayload(55.0))
+	client.deliver("sensors/"+sensorUUID2+"/measurements", validPayload(60.0))
+
+	fmt.Println("\n-- Invalid sensorID 'not-a-uuid' → TopicParamError --")
+	client.deliver("sensors/not-a-uuid/measurements", validPayload(70.0))
+
+	fmt.Println("\n-- Wrong topic structure (4 segments) → TopicMismatchError --")
+	// sensors/{sensorID}/measurements is 3 segments; 4 segments won't match.
+	client.deliver("sensors/"+sensorUUID+"/extra/measurements", validPayload(50.0))
+
+	// ── Publish failure showcase ──────────────────────────────────────────────
+	//
+	// Publish has two codec-guarded failure paths:
+	//   1. Topic codec failure — BuildTopic rejects the vars before any broker call.
+	//      Returns TopicParamError (or MissingTopicVarError) when a var fails its codec.
+	//   2. Payload codec failure — handle.Encode rejects the struct value.
+	//      Returns codex.ValidationErrors listing every failing field.
+	//
+	// Both are transport-layer errors; log them via mqttLogger, not the domain logger.
+
+	fmt.Println("\n=== Publish failure: topic codec (invalid sensorID) ===")
+	// "not-a-uuid" fails the UUID codec registered on {sensorID} via TopicParam.Codec.
+	// BuildTopic returns TopicParamError before Encode or broker I/O is attempted.
+	err = adaptermqtt.Publish(ctx, client, alertChannel, 1, false,
+		AlertEvent{
+			SensorID:  "temp-01",
+			Value:     90.0,
+			Unit:      "celsius",
+			Threshold: 75.0,
+			Timestamp: "2024-01-15T11:10:00Z",
+		},
+		map[string]string{"sensorID": "not-a-uuid"},
+		adaptermqtt.PublishOptions{Observer: obs},
+	)
+	if err != nil {
+		var paramErr events.TopicParamError
+		if errors.As(err, &paramErr) {
+			mqttLogger.Warn("publish failed: topic param codec",
+				"var", paramErr.Name,
+				"value", paramErr.Value,
+				"error", paramErr.Err,
+			)
+		} else {
+			mqttLogger.Error("publish failed", "error", err)
+		}
+	}
+
+	fmt.Println("\n=== Publish failure: payload codec (invalid AlertEvent fields) ===")
+	// Encode is a pure transformation — Refine constraints do NOT run on the outgoing
+	// path. To guard against invalid payloads, call Validate explicitly before Publish.
+	// This mirrors the same codex.ValidationErrors type you handle on the subscribe side.
+	badAlert := AlertEvent{
+		SensorID:  "", // fails NonEmptyString
+		Value:     0,  // fails NonZeroFloat
+		Unit:      "celsius",
+		Threshold: 75.0,
+		Timestamp: "2024-01-15T11:10:00Z",
+	}
+	if err := alertEventCodec.Validate(badAlert); err != nil {
+		var validationErrs codex.ValidationErrors
+		if errors.As(err, &validationErrs) {
+			mqttLogger.Warn("publish aborted: payload validation failed",
+				"errors", validationErrs, // triggers ValidationErrors.LogValue()
+			)
+		} else {
+			mqttLogger.Error("publish aborted", "error", err)
+		}
+	}
+
+	fmt.Println("\n=== Observer stats ===")
+	obs.Print()
 }

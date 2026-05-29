@@ -14,6 +14,7 @@ import (
 	nethttp "github.com/DaniDeer/go-codex/adapters/nethttp"
 	"github.com/DaniDeer/go-codex/api/rest"
 	"github.com/DaniDeer/go-codex/codex"
+	"github.com/DaniDeer/go-codex/format"
 	"github.com/DaniDeer/go-codex/validate"
 )
 
@@ -856,5 +857,318 @@ func TestWithResponseHeaders_notAppliedOnError(t *testing.T) {
 	}
 	if loc := rec.Header().Get("Location"); loc != "" {
 		t.Errorf("want no Location header on error, got %q", loc)
+	}
+}
+
+// ── ResponseHeaderParam adapter tests ──────────────────────────────────────
+
+func TestResponseHeaderParam_validHeader_appearsInResponse(t *testing.T) {
+	b := rest.NewBuilder(testInfo)
+	uuidCodec := codex.String().Refine(validate.UUID)
+	h, err := rest.AddRoute[createReq, userResp](b, "POST", "/users", createReqCodec, userRespCodec,
+		rest.RouteConfig{
+			OperationID: "createUser",
+			ResponseHeaderParams: []rest.ResponseHeaderParam{
+				{Name: "Location", Codec: &uuidCodec},
+			},
+		})
+	if err != nil {
+		t.Fatal(err)
+	}
+	handler := nethttp.Handler(h, func(ctx context.Context, req createReq) (userResp, error) {
+		extra := make(http.Header)
+		extra.Set("Location", "f47ac10b-58cc-4372-a567-0e02b2c3d479")
+		nethttp.WithResponseHeaders(ctx, extra)
+		return userResp{ID: "1", Name: req.Name}, nil
+	}, nethttp.Options{})
+
+	rec := httptest.NewRecorder()
+	r := httptest.NewRequest(http.MethodPost, "/users", strings.NewReader(`{"name":"Alice"}`))
+	r.Header.Set("Content-Type", "application/json")
+	handler.ServeHTTP(rec, r)
+
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("want 201, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if loc := rec.Header().Get("Location"); loc != "f47ac10b-58cc-4372-a567-0e02b2c3d479" {
+		t.Errorf("want Location=f47ac10b-..., got %q", loc)
+	}
+}
+
+func TestResponseHeaderParam_codecViolation_returns500(t *testing.T) {
+	b := rest.NewBuilder(testInfo)
+	uuidCodec := codex.String().Refine(validate.UUID)
+	h, err := rest.AddRoute[createReq, userResp](b, "POST", "/users", createReqCodec, userRespCodec,
+		rest.RouteConfig{
+			OperationID: "createUser",
+			ResponseHeaderParams: []rest.ResponseHeaderParam{
+				{Name: "Location", Codec: &uuidCodec},
+			},
+		})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var capturedErr error
+	handler := nethttp.Handler(h, func(ctx context.Context, req createReq) (userResp, error) {
+		extra := make(http.Header)
+		extra.Set("Location", "not-a-uuid") // violates UUID codec
+		nethttp.WithResponseHeaders(ctx, extra)
+		return userResp{ID: "1", Name: req.Name}, nil
+	}, nethttp.Options{
+		ErrorHandler: func(w http.ResponseWriter, _ *http.Request, status int, err error) {
+			capturedErr = err
+			w.WriteHeader(status)
+		},
+	})
+
+	rec := httptest.NewRecorder()
+	r := httptest.NewRequest(http.MethodPost, "/users", strings.NewReader(`{"name":"Alice"}`))
+	r.Header.Set("Content-Type", "application/json")
+	handler.ServeHTTP(rec, r)
+
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("want 500, got %d", rec.Code)
+	}
+	var rhe rest.ResponseHeaderParamError
+	if !errors.As(capturedErr, &rhe) {
+		t.Fatalf("want ResponseHeaderParamError, got %T: %v", capturedErr, capturedErr)
+	}
+	if rhe.Name != "Location" {
+		t.Errorf("want Name=Location, got %q", rhe.Name)
+	}
+}
+
+func TestResponseHeaderParam_unregisteredHeaderPassesThrough(t *testing.T) {
+	b := rest.NewBuilder(testInfo)
+	h, err := rest.AddRoute[createReq, userResp](b, "POST", "/users", createReqCodec, userRespCodec,
+		rest.RouteConfig{OperationID: "createUser"}) // no ResponseHeaderParams
+	if err != nil {
+		t.Fatal(err)
+	}
+	handler := nethttp.Handler(h, func(ctx context.Context, req createReq) (userResp, error) {
+		extra := make(http.Header)
+		extra.Set("X-Custom", "whatever")
+		nethttp.WithResponseHeaders(ctx, extra)
+		return userResp{ID: "1", Name: req.Name}, nil
+	}, nethttp.Options{})
+
+	rec := httptest.NewRecorder()
+	r := httptest.NewRequest(http.MethodPost, "/users", strings.NewReader(`{"name":"Alice"}`))
+	r.Header.Set("Content-Type", "application/json")
+	handler.ServeHTTP(rec, r)
+
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("want 201, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if v := rec.Header().Get("X-Custom"); v != "whatever" {
+		t.Errorf("want X-Custom=whatever, got %q", v)
+	}
+}
+
+// --- WithResponseCookies tests ---
+
+func TestWithResponseCookies_setsCookieOnSuccess(t *testing.T) {
+	b := rest.NewBuilder(testInfo)
+	sessionCodec := codex.String().Refine(validate.MinLen(8))
+	h, err := rest.AddRoute[createReq, userResp](b, "POST", "/users", createReqCodec, userRespCodec,
+		rest.RouteConfig{
+			ResponseCookieParams: []rest.ResponseCookieParam{
+				{Name: "session", Required: true, Codec: &sessionCodec},
+			},
+		})
+	if err != nil {
+		t.Fatal(err)
+	}
+	handler := nethttp.Handler(h, func(ctx context.Context, req createReq) (userResp, error) {
+		nethttp.WithResponseCookies(ctx, nethttp.PendingCookie{
+			Name:  "session",
+			Value: "tok_abcdefgh",
+			Opts:  nethttp.CookieOptions{MaxAge: 3600},
+		})
+		return userResp{ID: "1", Name: req.Name}, nil
+	}, nethttp.Options{})
+
+	rec := httptest.NewRecorder()
+	r := httptest.NewRequest(http.MethodPost, "/users", strings.NewReader(`{"name":"Alice"}`))
+	r.Header.Set("Content-Type", "application/json")
+	handler.ServeHTTP(rec, r)
+
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("want 201, got %d: %s", rec.Code, rec.Body.String())
+	}
+	cookies := rec.Result().Cookies()
+	var found bool
+	for _, c := range cookies {
+		if c.Name == "session" && c.Value == "tok_abcdefgh" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("Set-Cookie session not found in response; cookies: %v", cookies)
+	}
+}
+
+func TestWithResponseCookies_codecViolationReturns500(t *testing.T) {
+	b := rest.NewBuilder(testInfo)
+	sessionCodec := codex.String().Refine(validate.MinLen(32))
+	h, err := rest.AddRoute[createReq, userResp](b, "POST", "/users", createReqCodec, userRespCodec,
+		rest.RouteConfig{
+			ResponseCookieParams: []rest.ResponseCookieParam{
+				{Name: "session", Required: true, Codec: &sessionCodec},
+			},
+		})
+	if err != nil {
+		t.Fatal(err)
+	}
+	handler := nethttp.Handler(h, func(ctx context.Context, req createReq) (userResp, error) {
+		nethttp.WithResponseCookies(ctx, nethttp.PendingCookie{
+			Name:  "session",
+			Value: "tooshort", // violates MinLen(32)
+		})
+		return userResp{ID: "1", Name: req.Name}, nil
+	}, nethttp.Options{})
+
+	rec := httptest.NewRecorder()
+	r := httptest.NewRequest(http.MethodPost, "/users", strings.NewReader(`{"name":"Alice"}`))
+	r.Header.Set("Content-Type", "application/json")
+	handler.ServeHTTP(rec, r)
+
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("want 500, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+// --- Content negotiation tests ---
+
+func TestContentNegotiation_acceptJSON(t *testing.T) {
+	b := rest.NewBuilder(testInfo)
+	h, err := rest.AddRoute[createReq, userResp](b, "POST", "/users", createReqCodec, userRespCodec,
+		rest.RouteConfig{},
+		format.JSON(userRespCodec),
+		format.YAML(userRespCodec),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	handler := nethttp.Handler(h, func(_ context.Context, req createReq) (userResp, error) {
+		return userResp{ID: "1", Name: req.Name}, nil
+	}, nethttp.Options{})
+
+	rec := httptest.NewRecorder()
+	r := httptest.NewRequest(http.MethodPost, "/users", strings.NewReader(`{"name":"Alice"}`))
+	r.Header.Set("Content-Type", "application/json")
+	r.Header.Set("Accept", "application/json")
+	handler.ServeHTTP(rec, r)
+
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("want 201, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if ct := rec.Header().Get("Content-Type"); ct != "application/json" {
+		t.Errorf("want Content-Type application/json, got %q", ct)
+	}
+}
+
+func TestContentNegotiation_acceptYAML(t *testing.T) {
+	b := rest.NewBuilder(testInfo)
+	h, err := rest.AddRoute[createReq, userResp](b, "POST", "/users", createReqCodec, userRespCodec,
+		rest.RouteConfig{},
+		format.JSON(userRespCodec),
+		format.YAML(userRespCodec),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	handler := nethttp.Handler(h, func(_ context.Context, req createReq) (userResp, error) {
+		return userResp{ID: "1", Name: req.Name}, nil
+	}, nethttp.Options{})
+
+	rec := httptest.NewRecorder()
+	r := httptest.NewRequest(http.MethodPost, "/users", strings.NewReader(`{"name":"Alice"}`))
+	r.Header.Set("Content-Type", "application/json")
+	r.Header.Set("Accept", "application/yaml")
+	handler.ServeHTTP(rec, r)
+
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("want 201, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if ct := rec.Header().Get("Content-Type"); ct != "application/yaml" {
+		t.Errorf("want Content-Type application/yaml, got %q", ct)
+	}
+}
+
+func TestContentNegotiation_wildcardAcceptPicksFirst(t *testing.T) {
+	b := rest.NewBuilder(testInfo)
+	h, err := rest.AddRoute[createReq, userResp](b, "POST", "/users", createReqCodec, userRespCodec,
+		rest.RouteConfig{},
+		format.JSON(userRespCodec),
+		format.YAML(userRespCodec),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	handler := nethttp.Handler(h, func(_ context.Context, req createReq) (userResp, error) {
+		return userResp{ID: "1", Name: req.Name}, nil
+	}, nethttp.Options{})
+
+	rec := httptest.NewRecorder()
+	r := httptest.NewRequest(http.MethodPost, "/users", strings.NewReader(`{"name":"Alice"}`))
+	r.Header.Set("Content-Type", "application/json")
+	r.Header.Set("Accept", "*/*")
+	handler.ServeHTTP(rec, r)
+
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("want 201, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if ct := rec.Header().Get("Content-Type"); ct != "application/json" {
+		t.Errorf("want Content-Type application/json (first format), got %q", ct)
+	}
+}
+
+func TestContentNegotiation_unacceptableReturns406(t *testing.T) {
+	b := rest.NewBuilder(testInfo)
+	h, err := rest.AddRoute[createReq, userResp](b, "POST", "/users", createReqCodec, userRespCodec,
+		rest.RouteConfig{},
+		format.JSON(userRespCodec),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	handler := nethttp.Handler(h, func(_ context.Context, req createReq) (userResp, error) {
+		return userResp{ID: "1", Name: req.Name}, nil
+	}, nethttp.Options{})
+
+	rec := httptest.NewRecorder()
+	r := httptest.NewRequest(http.MethodPost, "/users", strings.NewReader(`{"name":"Alice"}`))
+	r.Header.Set("Content-Type", "application/json")
+	r.Header.Set("Accept", "application/xml")
+	handler.ServeHTTP(rec, r)
+
+	if rec.Code != http.StatusNotAcceptable {
+		t.Fatalf("want 406, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestContentNegotiation_noFormatsUsesJSON(t *testing.T) {
+	b := rest.NewBuilder(testInfo)
+	h, err := rest.AddRoute[createReq, userResp](b, "POST", "/users", createReqCodec, userRespCodec,
+		rest.RouteConfig{}) // no responseFormats
+	if err != nil {
+		t.Fatal(err)
+	}
+	handler := nethttp.Handler(h, func(_ context.Context, req createReq) (userResp, error) {
+		return userResp{ID: "1", Name: req.Name}, nil
+	}, nethttp.Options{})
+
+	rec := httptest.NewRecorder()
+	r := httptest.NewRequest(http.MethodPost, "/users", strings.NewReader(`{"name":"Alice"}`))
+	r.Header.Set("Content-Type", "application/json")
+	handler.ServeHTTP(rec, r)
+
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("want 201, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if ct := rec.Header().Get("Content-Type"); ct != "application/json" {
+		t.Errorf("want Content-Type application/json, got %q", ct)
 	}
 }

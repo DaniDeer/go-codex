@@ -615,3 +615,98 @@ func TestAddChannel_autoDerivesParamWithoutTopicParams(t *testing.T) {
 		t.Fatal("expected orderID auto-derived in Descriptor.Parameters, not found")
 	}
 }
+
+func TestValidateTopic_noCodecAlwaysPasses(t *testing.T) {
+	b := events.NewBuilder(testInfo) // no topic codec
+	h, err := events.AddChannel[userEvent](b, "sensors/{sensorID}/data", userEventCodec, events.ChannelConfig{})
+	if err != nil {
+		t.Fatalf("AddChannel: %v", err)
+	}
+	if err := h.ValidateTopic("sensors/abc/data"); err != nil {
+		t.Fatalf("expected nil without topic codec, got: %v", err)
+	}
+}
+
+func TestValidateTopic_passingTopicReturnsNil(t *testing.T) {
+	b := events.NewBuilder(testInfo, events.WithTopicConstraints(validate.MQTTPublishTopic))
+	h, err := events.AddChannel[userEvent](b, "sensors/{sensorID}/data", userEventCodec, events.ChannelConfig{})
+	if err != nil {
+		t.Fatalf("AddChannel: %v", err)
+	}
+	if err := h.ValidateTopic("sensors/f47ac10b/data"); err != nil {
+		t.Fatalf("expected nil for valid topic, got: %v", err)
+	}
+}
+
+func TestValidateTopic_wildcardTopicFailsMQTTConstraint(t *testing.T) {
+	b := events.NewBuilder(testInfo, events.WithTopicConstraints(validate.MQTTPublishTopic))
+	// Register with a template topic — AddChannel sees the stripped form.
+	h, err := events.AddChannel[userEvent](b, "sensors/{sensorID}/data", userEventCodec, events.ChannelConfig{})
+	if err != nil {
+		t.Fatalf("AddChannel: %v", err)
+	}
+	err = h.ValidateTopic("sensors/+/data") // '+' is illegal in publish topics
+	if err == nil {
+		t.Fatal("expected InvalidTopicError for wildcard concrete topic, got nil")
+	}
+	var topicErr events.InvalidTopicError
+	if !errors.As(err, &topicErr) {
+		t.Fatalf("expected InvalidTopicError, got %T: %v", err, err)
+	}
+	if topicErr.Topic != "sensors/+/data" {
+		t.Errorf("InvalidTopicError.Topic = %q, want sensors/+/data", topicErr.Topic)
+	}
+}
+
+func TestValidateTopicVars_noCodecAlwaysPasses(t *testing.T) {
+	b := events.NewBuilder(testInfo)
+	h, err := events.AddChannel[userEvent](b, "sensors/{sensorID}/data", userEventCodec, events.ChannelConfig{
+		// No Codec on the TopicParam.
+		TopicParams: []events.TopicParam{{Name: "sensorID", Description: "any"}},
+	})
+	if err != nil {
+		t.Fatalf("AddChannel: %v", err)
+	}
+	if err := h.ValidateTopicVars(map[string]string{"sensorID": "not-a-uuid"}); err != nil {
+		t.Fatalf("expected nil without param codec, got: %v", err)
+	}
+}
+
+func TestValidateTopicVars_validValuePasses(t *testing.T) {
+	b := events.NewBuilder(testInfo)
+	uuidCodec := codex.String().Refine(validate.UUID)
+	h, err := events.AddChannel[userEvent](b, "sensors/{sensorID}/data", userEventCodec, events.ChannelConfig{
+		TopicParams: []events.TopicParam{{Name: "sensorID", Codec: &uuidCodec}},
+	})
+	if err != nil {
+		t.Fatalf("AddChannel: %v", err)
+	}
+	if err := h.ValidateTopicVars(map[string]string{"sensorID": "f47ac10b-58cc-4372-a567-0e02b2c3d479"}); err != nil {
+		t.Fatalf("expected nil for valid UUID, got: %v", err)
+	}
+}
+
+func TestValidateTopicVars_invalidValueReturnsTopicParamError(t *testing.T) {
+	b := events.NewBuilder(testInfo)
+	uuidCodec := codex.String().Refine(validate.UUID)
+	h, err := events.AddChannel[userEvent](b, "sensors/{sensorID}/data", userEventCodec, events.ChannelConfig{
+		TopicParams: []events.TopicParam{{Name: "sensorID", Codec: &uuidCodec}},
+	})
+	if err != nil {
+		t.Fatalf("AddChannel: %v", err)
+	}
+	err = h.ValidateTopicVars(map[string]string{"sensorID": "not-a-uuid"})
+	if err == nil {
+		t.Fatal("expected TopicParamError for non-UUID sensorID, got nil")
+	}
+	var paramErr events.TopicParamError
+	if !errors.As(err, &paramErr) {
+		t.Fatalf("expected TopicParamError, got %T: %v", err, err)
+	}
+	if paramErr.Name != "sensorID" {
+		t.Errorf("TopicParamError.Name = %q, want sensorID", paramErr.Name)
+	}
+	if paramErr.Value != "not-a-uuid" {
+		t.Errorf("TopicParamError.Value = %q, want not-a-uuid", paramErr.Value)
+	}
+}

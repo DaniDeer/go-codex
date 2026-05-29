@@ -115,6 +115,7 @@ Requires Go 1.25 or later.
 | REST API builder                  | `github.com/DaniDeer/go-codex/api/rest`         |
 | Event channel builder             | `github.com/DaniDeer/go-codex/api/events`       |
 | net/http adapter                  | `github.com/DaniDeer/go-codex/adapters/nethttp` |
+| chi adapter                       | `github.com/DaniDeer/go-codex/adapters/chi`     |
 | Paho MQTT adapter                 | `github.com/DaniDeer/go-codex/adapters/mqtt`    |
 | OpenAPI 3.1 renderer              | `github.com/DaniDeer/go-codex/render/openapi`   |
 | AsyncAPI 2.6 renderer             | `github.com/DaniDeer/go-codex/render/asyncapi`  |
@@ -134,7 +135,8 @@ Requires Go 1.25 or later.
 - **REST API Builder** — typed `Decode`/`Encode` helpers per route + OpenAPI spec generation; immediate path validation; `BuildPath` for runtime path construction with per-variable codec checks and final path re-validation
 - **Event Channel Builder** — typed `Decode`/`Encode` helpers per channel + AsyncAPI spec generation; immediate topic validation; `BuildTopic` for runtime topic construction with per-variable codec checks and final topic re-validation
 - **net/http Adapter** — wire `RouteHandle` to `net/http.ServeMux` with one call; 400/500 error handling included
-- **Paho MQTT Adapter** — wire `ChannelHandle` to Paho MQTT subscribe callbacks; unified `Publish` handles both static and template topics
+- **chi Adapter** — wire `RouteHandle` to `chi.Router` with one call; identical feature set to net/http adapter; path vars via `chi.URLParam`
+- **Paho MQTT Adapter** — wire `ChannelHandle` to Paho MQTT subscribe callbacks; unified `Publish` handles both static and template topics; `TopicVarsFromMessage` extracts `{varName}` values from received topics and validates them (structural match → builder-level topic codec → per-param codecs) — fully symmetric with `BuildTopic`
 
 ### Multi-Format Support
 
@@ -1038,17 +1040,18 @@ yamlBytes, _ := doc.MarshalYAML()
 | `*rest.InvalidPathParamError` | A `PathParams` entry names a variable not in the template | `InvalidPathParamError{Name, Path}` |
 | `*rest.QueryParamError` | A query parameter value fails its codec | `QueryParamError{Name, Value, Err}` |
 | `*rest.CookieParamError` | A cookie value fails its codec | `CookieParamError{Name, Value, Err}` |
-| `*rest.HeaderParamError` | An HTTP header value fails its codec | `HeaderParamError{Name, Value, Err}` |
+| `*rest.HeaderParamError` | An HTTP request header value fails its codec | `HeaderParamError{Name, Value, Err}` |
+| `*rest.ResponseHeaderParamError` | A response header value fails its `ResponseHeaderParam` codec (adapter returns 500) | `ResponseHeaderParamError{Name, Value, Err}` |
+| `*rest.ResponseCookieParamError` | A response cookie value fails its `ResponseCookieParam` codec (adapter returns 500) | `ResponseCookieParamError{Name, Value, Err}` |
 | `rest.UnsupportedMediaTypeError` | Wrong `Content-Type` on POST/PUT/PATCH (adapter) | `UnsupportedMediaTypeError{Got, Expected}` |
+| `rest.NotAcceptableError` | Client `Accept` header has no match among registered response formats (adapter returns 406) | `NotAcceptableError{Accept, Supported}` |
 | `rest.BodyTooLargeError` | Request body exceeds `Options.MaxBodyBytes` (adapter) | `BodyTooLargeError{Limit}` |
 
-**Codec schema → OpenAPI spec:** `PathParam.Codec` schema flows automatically into the OpenAPI path parameter spec. `QueryParam.Codec`, `CookieParam.Codec`, and `HeaderParam.Codec` schemas flow into their respective OpenAPI parameter specs (`in: query`, `in: cookie`, `in: header`). When `Codec` is nil, the parameter is still declared in the spec (minimal entry).
+**Codec schema → OpenAPI spec:** `PathParam.Codec` schema flows automatically into the OpenAPI path parameter spec. `QueryParam.Codec`, `CookieParam.Codec`, and `HeaderParam.Codec` schemas flow into their respective OpenAPI parameter specs (`in: query`, `in: cookie`, `in: header`). `ResponseHeaderParam.Codec` schema flows into `responses[status].headers`. `ResponseCookieParam.Codec` schema flows into `responses[status].headers["Set-Cookie"]` (OpenAPI 3.1 has no first-class response cookie object). When `Codec` is nil, the parameter is still declared in the spec (minimal entry).
 
 > **OpenAPI header convention:** Do not declare `Accept`, `Content-Type`, or `Authorization` as `HeaderParam` entries — these are reserved by the OpenAPI 3.1 specification and must be handled via `requestBody` and security scheme definitions respectively.
 
-**Future:** framework-specific adapters (`adapters/gin`, `adapters/chi`, etc.) will wrap `RouteHandle` for zero-boilerplate integration. The `api/rest` core stays dependency-free.
-
-See `examples/api-rest/` for a runnable demonstration, and `examples/adapters-nethttp/` for the net/http adapter.
+See `examples/api-rest/` for a runnable demonstration, `examples/adapters-nethttp/` for the net/http adapter, and `examples/adapters-chi/` for the chi adapter.
 
 ### net/http Adapter
 
@@ -1074,11 +1077,15 @@ http.ListenAndServe(":8080", mux)
 - **Query param validation**: `ValidateQuery` is called automatically before the handler; codec-backed `QueryParam` entries are validated from `r.URL.Query()`. For repeated keys (`?tags=a&tags=b`), set `Options.MultiValueQueryParams: true` to use `ValidateQueryMulti` (validates first value per key)
 - **Cookie param validation**: `ValidateCookies` is called automatically before the handler; codec-backed `CookieParam` entries are validated from `r.Cookies()`
 - **Header param validation**: `ValidateHeaders` is called automatically before the handler; codec-backed `HeaderParam` entries are validated from `r.Header`
-- Errors: `{"error":"..."}` JSON — 400 for decode/validation failures (body, query, cookie, header), 413 when body exceeds `MaxBodyBytes`, 415 for wrong Content-Type, 500 for handler/encode failures
+- Errors: `{"error":"..."}` JSON — 400 for decode/validation failures (body, query, cookie, header), 406 for unacceptable `Accept`, 413 when body exceeds `MaxBodyBytes`, 415 for wrong Content-Type, 500 for handler/encode/response-side failures
 - Response status: taken from the route descriptor's primary response (e.g. 201 for POST)
 - **Custom error handling**: `Options.ErrorHandler func(w, r, status, err)` overrides the default JSON envelope
 - **Metrics / observability**: `Options.Observer stats.Observer` — implement [`stats.Observer`](#stats--observer) to receive per-request events; defaults to `stats.NoopObserver`
-- **Response header control**: `nethttp.WithResponseHeaders(ctx, h)` deposits extra headers into `ctx` from inside a `HandlerFunc`. The adapter merges them into the HTTP response before writing the status code on success paths only. `ResponseHeadersFromContext(ctx)` retrieves the collected headers (useful for testing or middleware).
+- **Content negotiation**: pass `format.Format[Resp]` values as variadic trailing arguments to `AddRoute` to register multiple response formats. The adapter reads the `Accept` header, picks the first matching format, and encodes the response with it. `*/*` picks the first registered format. A mismatch returns 406 (`rest.NotAcceptableError{Accept, Supported}`). When no formats are passed, JSON is used (current default behavior preserved).
+- **Response header control**: `nethttp.WithResponseHeaders(ctx, h)` deposits extra headers into `ctx` from inside a `HandlerFunc`. The adapter merges them into the HTTP response on success paths only. `ResponseHeadersFromContext(ctx)` retrieves the collected headers (useful for testing or middleware).
+- **Response header validation**: `ResponseHeaderParams []rest.ResponseHeaderParam` in `RouteConfig` — each entry declares an outgoing response header with an optional codec. The adapter validates all collected response headers after the handler returns; a codec violation results in 500 (`ResponseHeaderParamError`). The codec schema flows into the OpenAPI spec as `responses[status].headers` automatically.
+- **Response cookie control**: `nethttp.WithResponseCookies(ctx, cookies...)` deposits `PendingCookie` values into `ctx` from inside a `HandlerFunc`. The adapter validates cookie values against `ResponseCookieParams` codecs, then writes `Set-Cookie` headers on success. `ResponseCookiesFromContext(ctx)` retrieves the pending cookies (useful for testing/middleware).
+- **Response cookie validation**: `ResponseCookieParams []rest.ResponseCookieParam` in `RouteConfig` — each entry declares an outgoing `Set-Cookie` with an optional codec. The adapter validates all collected cookie values after the handler returns; a codec violation results in 500 (`ResponseCookieParamError`). Emitted as a `Set-Cookie` string entry in `responses[status].headers` in the OpenAPI spec (OpenAPI 3.1 has no first-class response cookie object).
 - **Secure cookie responses**: `nethttp.SetCookie(w, name, value, opts)` writes a `Set-Cookie` header with secure defaults (`Secure`, `HttpOnly`, `SameSite=Strict`, `Path="/"`); accepts a `CookieOptions.Codec` for symmetric read/write validation using the same codec as `CookieParam`
 
 ```go
@@ -1103,6 +1110,37 @@ nethttp.CookieOptions{
     SameSite: http.SameSiteLaxMode,
 }
 ```
+
+### chi Adapter
+
+`adapters/chi` wires a `RouteHandle` to a `chi.Router` in one call. Chi uses the same `{param}` placeholder syntax as go-codex path templates — no translation needed. Path variables are extracted via `chi.URLParam(r, "name")`.
+
+```go
+import (
+    gochi      "github.com/go-chi/chi/v5"
+    chiadapter "github.com/DaniDeer/go-codex/adapters/chi"
+)
+
+r := gochi.NewRouter()
+
+// Register uses the method and path from the RouteHandle descriptor automatically.
+chiadapter.Register(r, getUser, func(ctx context.Context, _ GetUserReq) (User, error) {
+    rr, _ := chiadapter.RequestFromContext(ctx)
+    id := gochi.URLParam(rr, "id")
+    return svc.GetUser(ctx, id)
+}, chiadapter.Options{})
+
+http.ListenAndServe(":8080", r)
+```
+
+`adapters/chi` has the same feature set as `adapters/nethttp`:
+- All request validation (body decode, query, cookie, header params)
+- Response header validation (`WithResponseHeaders`, `ResponseHeaderParams`)
+- Response cookie validation (`WithResponseCookies`, `ResponseCookieParams`, `SetCookie`)
+- Content negotiation via `Accept` header (same `NotAcceptableError` on mismatch)
+- `Options.Observer`, `Options.ErrorHandler`, `Options.MaxBodyBytes`, `Options.ContentType`, `Options.MultiValueQueryParams`
+
+See [`examples/adapters-chi`](examples/adapters-chi/main.go) for a runnable demonstration.
 
 ### Codec as domain boundary: the functional pipeline
 
@@ -1382,6 +1420,46 @@ amqtt.SubscribeHandler(ctx, measurementChannel,
         }
         return svc.HandleMeasurement(ctx, m)
     }, amqtt.SubscribeOptions{})
+```
+
+**`TopicVarsFromMessage`** — inverse of `BuildTopic`. Extracts `{varName}` variable values from the concrete received topic by matching it against the channel's topic template. Applies the same full validation chain as `BuildTopic` on the incoming path:
+
+```go
+// Channel registered with template: "sensors/{sensorID}/measurements"
+// Client subscribed to MQTT pattern: "sensors/+/measurements"
+// Message arrives on: "sensors/f47ac10b-58cc-4372-a567-0e02b2c3d479/measurements"
+
+vars, err := amqtt.TopicVarsFromMessage(sensorChannel, msg)
+// vars["sensorID"] == "f47ac10b-58cc-4372-a567-0e02b2c3d479"
+```
+
+- `{varName}` — captures the corresponding topic segment into the variable.
+- `+` in the template — matches one level (anonymous; not captured).
+- `#` as the last template segment — matches all remaining levels; captured under key `"#"`.
+
+**Validation chain (in order):**
+
+1. **Structural match** — segment count and all literal segments must match the template. Returns `TopicMismatchError{Template, Topic}` on failure.
+2. **Builder-level topic codec** — if the builder was created with `WithTopicConstraints` or `WithTopicCodec`, the concrete received topic is validated against it. Returns `InvalidTopicError{Topic, Err}` on failure.
+3. **Topic param codecs** — each extracted `{varName}` value is validated against its `TopicParam.Codec` (if set). Returns `TopicParamError{Name, Value, Err}` on failure.
+
+This makes incoming message validation fully symmetric with `BuildTopic` (outgoing path). Use `errors.As` to distinguish failure types:
+
+```go
+vars, err := amqtt.TopicVarsFromMessage(sensorChannel, msg)
+if err != nil {
+    var mismatch   amqtt.TopicMismatchError
+    var topicErr   events.InvalidTopicError
+    var paramErr   events.TopicParamError
+    switch {
+    case errors.As(err, &mismatch):
+        // wrong number of levels or literal segment mismatch
+    case errors.As(err, &topicErr):
+        // concrete topic violates builder-level codec constraint
+    case errors.As(err, &paramErr):
+        // extracted {sensorID} value failed its UUID codec
+    }
+}
 ```
 
 **`Publish` signature:**
@@ -1695,9 +1773,13 @@ go-codex/
 │
 ├── adapters/               # transport-specific adapters (wrap api/rest or api/events)
 │   ├── nethttp/            # net/http adapter for api/rest RouteHandles
-│   │   └── adapter.go      # Handler, Register, RequestFromContext, WithResponseHeaders, Options (with Observer)
+│   │   ├── adapter.go      # Handler, Register, RequestFromContext, WithResponseHeaders, WithResponseCookies, Options
+│   │   └── cookie.go       # SetCookie, CookieOptions, PendingCookie
+│   ├── chi/                # chi adapter for api/rest RouteHandles (github.com/go-chi/chi/v5)
+│   │   └── adapter.go      # Handler, Register, RequestFromContext, WithResponseHeaders, WithResponseCookies, SetCookie, CookieOptions, PendingCookie, Options
 │   └── mqtt/               # Paho MQTT adapter for api/events ChannelHandles
-│       └── adapter.go      # SubscribeHandler, SubscribeOptions, Publish, SubscribeError, ErrorKind, MessageFromContext
+│       ├── adapter.go      # SubscribeHandler, SubscribeOptions, Publish, SubscribeError, ErrorKind, MessageFromContext
+│       └── topicvars.go    # TopicVarsFromMessage, TopicMismatchError
 │
 ├── render/                 # spec renderers (import schema only, or schema + route)
 │   ├── internal/
@@ -1726,6 +1808,7 @@ go-codex/
 │   └── observer.go         # Observer interface, NoopObserver
 │
 └── examples/               # usage demonstrations — not importable
+    ├── adapters-chi/       # chi adapter: wiring api/rest to chi.Router
     ├── adapters-mqtt/      # Paho MQTT adapter: wiring api/events to Paho client
     ├── adapters-nethttp/   # net/http adapter: wiring api/rest to ServeMux
     ├── api-events/         # Event channel builder: typed helpers + AsyncAPI spec

@@ -77,5 +77,11 @@ type Response struct {
 	Schema *schema.Schema
 	// SchemaName, when non-empty, emits a $ref and registers Schema in components/schemas.
 	SchemaName  string
-	ContentType string // defaults to "application/json"
+	ContentType string // defaults to "application/json"; ignored when ContentTypes is non-empty
+	// ContentTypes, when non-empty, lists all content types this response can produce.
+	// The renderer emits the schema under every listed content type in the spec.
+	// Takes precedence over ContentType when set.
+	ContentTypes []string
+	// Headers describes response headers emitted by this operation.
+	Headers []Param
 }

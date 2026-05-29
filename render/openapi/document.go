@@ -280,15 +280,36 @@ func buildResponses(responses []route.Response) map[string]any {
 			"description": r.Description,
 		}
 		if r.Schema != nil {
-			ct := r.ContentType
-			if ct == "" {
-				ct = "application/json"
+			contentTypes := r.ContentTypes
+			if len(contentTypes) == 0 {
+				ct := r.ContentType
+				if ct == "" {
+					ct = "application/json"
+				}
+				contentTypes = []string{ct}
 			}
-			resp["content"] = map[string]any{
-				ct: map[string]any{
-					"schema": schemaRef(*r.Schema, r.SchemaName),
-				},
+			schemaObj := schemaRef(*r.Schema, r.SchemaName)
+			content := make(map[string]any, len(contentTypes))
+			for _, ct := range contentTypes {
+				content[ct] = map[string]any{"schema": schemaObj}
 			}
+			resp["content"] = content
+		}
+		if len(r.Headers) > 0 {
+			headers := map[string]any{}
+			for _, h := range r.Headers {
+				hdr := map[string]any{
+					"schema": SchemaObject(h.Schema),
+				}
+				if h.Description != "" {
+					hdr["description"] = h.Description
+				}
+				if h.Required {
+					hdr["required"] = true
+				}
+				headers[h.Name] = hdr
+			}
+			resp["headers"] = headers
 		}
 		result[r.Status] = resp
 	}

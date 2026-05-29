@@ -183,8 +183,48 @@ func (h *ChannelHandle[T]) BuildTopic(vars map[string]string) (string, error) {
 	return result, nil
 }
 
-// TopicParamError is returned by [ChannelHandle.BuildTopic] when a topic variable
-// fails its registered codec check.
+// ValidateTopic validates a received concrete topic string against the builder-level
+// topic codec (set via [WithTopicCodec] or [WithTopicConstraints]).
+//
+// Call this after a wildcard subscription delivers a message to verify the concrete
+// topic satisfies the same constraints applied at channel registration time.
+// Returns [InvalidTopicError] on failure; returns nil if no topic codec is registered.
+//
+// Note: unlike [AddChannel], which validates a template-stripped topic, this method
+// validates the concrete topic as-is (with real segment values in place).
+func (h *ChannelHandle[T]) ValidateTopic(topic string) error {
+	if h.topicCodec == nil {
+		return nil
+	}
+	if err := h.topicCodec.Validate(topic); err != nil {
+		return InvalidTopicError{Topic: topic, Err: err}
+	}
+	return nil
+}
+
+// ValidateTopicVars validates extracted topic variable values against the registered
+// [TopicParam] codecs. Call this after [TopicVarsFromMessage] has extracted the vars
+// map to ensure each variable satisfies its codec constraints.
+//
+// Returns [TopicParamError] for the first variable that fails its codec.
+// Variables without a registered codec are skipped.
+func (h *ChannelHandle[T]) ValidateTopicVars(vars map[string]string) error {
+	for i := range h.topicParams {
+		p := &h.topicParams[i]
+		if p.Codec == nil {
+			continue
+		}
+		val := vars[p.Name]
+		if err := p.Codec.Validate(val); err != nil {
+			return TopicParamError{Name: p.Name, Value: val, Err: err}
+		}
+	}
+	return nil
+}
+
+// TopicParamError is returned by [ChannelHandle.BuildTopic] and
+// [ChannelHandle.ValidateTopicVars] when a topic variable fails its registered
+// codec check.
 //
 // Use errors.As to extract it and inspect the failing variable:
 //

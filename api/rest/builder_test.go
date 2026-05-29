@@ -870,3 +870,176 @@ func TestHeaderParam_schemaFlowsToSpec(t *testing.T) {
 		t.Errorf("spec missing 'header' in param location: %s", spec)
 	}
 }
+
+func TestResponseHeaderParam_validateValid(t *testing.T) {
+	b := rest.NewBuilder(testInfo)
+	uuidCodec := codex.String().Refine(validate.UUID)
+	h, err := rest.AddRoute[createReq, userResp](b, "POST", "/users", createReqCodec, userCodec, rest.RouteConfig{
+		ResponseHeaderParams: []rest.ResponseHeaderParam{
+			{Name: "Location", Description: "URL of created resource", Codec: &uuidCodec},
+		},
+	})
+	if err != nil {
+		t.Fatalf("AddRoute: %v", err)
+	}
+	err = h.ValidateResponseHeaders(map[string]string{
+		"Location": "f47ac10b-58cc-4372-a567-0e02b2c3d479",
+	})
+	if err != nil {
+		t.Errorf("want nil, got %v", err)
+	}
+}
+
+func TestResponseHeaderParam_validateInvalid(t *testing.T) {
+	b := rest.NewBuilder(testInfo)
+	uuidCodec := codex.String().Refine(validate.UUID)
+	h, err := rest.AddRoute[createReq, userResp](b, "POST", "/users", createReqCodec, userCodec, rest.RouteConfig{
+		ResponseHeaderParams: []rest.ResponseHeaderParam{
+			{Name: "ETag", Description: "Entity tag", Codec: &uuidCodec},
+		},
+	})
+	if err != nil {
+		t.Fatalf("AddRoute: %v", err)
+	}
+	err = h.ValidateResponseHeaders(map[string]string{"ETag": "not-a-uuid"})
+	if err == nil {
+		t.Fatal("want error, got nil")
+	}
+	var rhe rest.ResponseHeaderParamError
+	if !errors.As(err, &rhe) {
+		t.Fatalf("want ResponseHeaderParamError, got %T: %v", err, err)
+	}
+	if rhe.Name != "ETag" {
+		t.Errorf("want Name=ETag, got %q", rhe.Name)
+	}
+	if rhe.Value != "not-a-uuid" {
+		t.Errorf("want Value='not-a-uuid', got %q", rhe.Value)
+	}
+}
+
+func TestResponseHeaderParam_nilCodecSkipped(t *testing.T) {
+	b := rest.NewBuilder(testInfo)
+	h, err := rest.AddRoute[createReq, userResp](b, "POST", "/users", createReqCodec, userCodec, rest.RouteConfig{
+		ResponseHeaderParams: []rest.ResponseHeaderParam{
+			{Name: "Location", Description: "URL of created resource", Codec: nil},
+		},
+	})
+	if err != nil {
+		t.Fatalf("AddRoute: %v", err)
+	}
+	// nil codec means no validation — any value is accepted.
+	if err := h.ValidateResponseHeaders(map[string]string{"Location": "anything"}); err != nil {
+		t.Errorf("want nil for nil-codec param, got %v", err)
+	}
+}
+
+func TestResponseHeaderParam_schemaFlowsToSpec(t *testing.T) {
+	b := rest.NewBuilder(testInfo)
+	uuidCodec := codex.String().Refine(validate.UUID)
+	_, err := rest.AddRoute[createReq, userResp](b, "POST", "/users", createReqCodec, userCodec, rest.RouteConfig{
+		ResponseHeaderParams: []rest.ResponseHeaderParam{
+			{Name: "Location", Description: "URL of created resource", Codec: &uuidCodec},
+		},
+	})
+	if err != nil {
+		t.Fatalf("AddRoute: %v", err)
+	}
+	doc, err := b.OpenAPISpec()
+	if err != nil {
+		t.Fatalf("OpenAPISpec: %v", err)
+	}
+	raw, err := doc.MarshalJSON()
+	if err != nil {
+		t.Fatalf("MarshalJSON: %v", err)
+	}
+	spec := string(raw)
+	if !strings.Contains(spec, `"Location"`) {
+		t.Errorf("spec missing response header 'Location': %s", spec)
+	}
+	if !strings.Contains(spec, `"headers"`) {
+		t.Errorf("spec missing 'headers' key in response: %s", spec)
+	}
+}
+
+func TestResponseCookieParam_validateValid(t *testing.T) {
+	b := rest.NewBuilder(testInfo)
+	sessionCodec := codex.String().Refine(validate.MinLen(8))
+	handle, err := rest.AddRoute[createReq, userResp](b, "POST", "/users", createReqCodec, userCodec, rest.RouteConfig{
+		ResponseCookieParams: []rest.ResponseCookieParam{
+			{Name: "session", Codec: &sessionCodec},
+		},
+	})
+	if err != nil {
+		t.Fatalf("AddRoute: %v", err)
+	}
+	if err := handle.ValidateResponseCookies(map[string]string{"session": "abc12345"}); err != nil {
+		t.Errorf("expected valid cookie to pass: %v", err)
+	}
+}
+
+func TestResponseCookieParam_validateInvalid(t *testing.T) {
+	b := rest.NewBuilder(testInfo)
+	sessionCodec := codex.String().Refine(validate.MinLen(8))
+	handle, err := rest.AddRoute[createReq, userResp](b, "POST", "/users", createReqCodec, userCodec, rest.RouteConfig{
+		ResponseCookieParams: []rest.ResponseCookieParam{
+			{Name: "session", Codec: &sessionCodec},
+		},
+	})
+	if err != nil {
+		t.Fatalf("AddRoute: %v", err)
+	}
+	err = handle.ValidateResponseCookies(map[string]string{"session": "short"})
+	if err == nil {
+		t.Fatal("expected error for too-short cookie value")
+	}
+	var rcErr rest.ResponseCookieParamError
+	if !errors.As(err, &rcErr) {
+		t.Fatalf("expected ResponseCookieParamError, got %T: %v", err, err)
+	}
+	if rcErr.Name != "session" {
+		t.Errorf("want Name=session, got %q", rcErr.Name)
+	}
+}
+
+func TestResponseCookieParam_nilCodecSkipped(t *testing.T) {
+	b := rest.NewBuilder(testInfo)
+	handle, err := rest.AddRoute[createReq, userResp](b, "POST", "/users", createReqCodec, userCodec, rest.RouteConfig{
+		ResponseCookieParams: []rest.ResponseCookieParam{
+			{Name: "session"}, // no codec
+		},
+	})
+	if err != nil {
+		t.Fatalf("AddRoute: %v", err)
+	}
+	if err := handle.ValidateResponseCookies(map[string]string{"session": "anything"}); err != nil {
+		t.Errorf("expected nil codec to skip validation: %v", err)
+	}
+}
+
+func TestResponseCookieParam_schemaFlowsToSpec(t *testing.T) {
+	b := rest.NewBuilder(testInfo)
+	sessionCodec := codex.String().Refine(validate.MinLen(8))
+	_, err := rest.AddRoute[createReq, userResp](b, "POST", "/users", createReqCodec, userCodec, rest.RouteConfig{
+		ResponseCookieParams: []rest.ResponseCookieParam{
+			{Name: "session", Description: "Session token", Codec: &sessionCodec},
+		},
+	})
+	if err != nil {
+		t.Fatalf("AddRoute: %v", err)
+	}
+	doc, err := b.OpenAPISpec()
+	if err != nil {
+		t.Fatalf("OpenAPISpec: %v", err)
+	}
+	raw, err := doc.MarshalJSON()
+	if err != nil {
+		t.Fatalf("MarshalJSON: %v", err)
+	}
+	spec := string(raw)
+	if !strings.Contains(spec, `"Set-Cookie"`) {
+		t.Errorf("spec missing Set-Cookie response header: %s", spec)
+	}
+	if !strings.Contains(spec, `"headers"`) {
+		t.Errorf("spec missing 'headers' key in response: %s", spec)
+	}
+}

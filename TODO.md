@@ -104,14 +104,6 @@
 
 #### net/http adapter gaps
 
-- [ ] **`adapters/nethttp`: content negotiation (`Accept` header)** _(medium effort)_
-      The adapter hardcodes `Content-Type: application/json` on responses. Add
-      `Options.Formats []format.Format[Resp]` so the adapter can select the response format
-      based on the client's `Accept` header. The `format` package already provides
-      `format.JSON`, `format.YAML`, and `format.TOML`. When no acceptable format is found,
-      return 406 Not Acceptable. The OpenAPI spec `produces` list would reflect the registered
-      formats.
-
 #### MQTT adapter gaps
 
 - [ ] **`Observer`: `RecordRejection` hook for protocol-level request rejections** _(medium effort — breaking interface change)_
@@ -125,26 +117,11 @@
       method. Consider using a separate optional interface (`RejectionObserver`) or a
       version-compatible extension pattern (e.g. type-assert before calling).
 
-- [ ] **`adapters/mqtt`: wildcard topic variable extraction** _(medium effort)_
-      When subscribing to a template topic like `sensors/{sensorID}/temperature` (compiled to
-      the MQTT wildcard `sensors/+/temperature`), the concrete incoming topic is e.g.
-      `sensors/abc123/temperature`. The handler currently has no automatic way to get
-      `sensorID = "abc123"` — it must parse the concrete topic string manually.
-      Add `mqtt.TopicVarsFromMessage(handle, msg) (map[string]string, error)` that matches
-      the concrete topic against the channel's template and extracts variable values. Ties
-      into the existing `BuildTopic` template logic; inverse operation of variable substitution.
-
 - [ ] **`adapters/mqtt`: MQTT 5.0 User Properties** _(medium effort — MQTT 5.0 only)_
       See "MQTT message header validation" in the API builders section above — this adapter
       item is the wire-up half: extract User Properties from the MQTT 5.0 message envelope
       using the `paho.mqtt.golang` v5 API and pass them to `ChannelHandle.ValidateHeaders`.
       MQTT 3.x has no User Properties; the adapter must skip validation gracefully.
-
-- [ ] **`adapters/chi` or `adapters/gin`** _(medium effort)_
-      `adapters/nethttp` wraps `RouteHandle` for the standard library. Most Go services use a
-      router (Chi, Gin, Echo). A Chi adapter is ~50 lines; Gin similar. High discoverability
-      value — these are the ecosystems most users land in. Chi is preferred as it builds
-      directly on `net/http` with no magic.
 
 - [ ] **`adapters/grpc` — gRPC unary validation interceptor** _(medium-high effort)_
       Proto-generated code decodes wire format correctly but has no business validation (field

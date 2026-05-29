@@ -119,6 +119,23 @@ type RouteConfig struct {
 	// security scheme definitions.
 	HeaderParams []HeaderParam
 
+	// ResponseHeaderParams describes HTTP headers returned in the primary success
+	// response. Each entry can add a description, required flag, and/or codec for
+	// runtime validation. The adapter validates these headers after the handler
+	// returns and before writing the response; a codec violation returns 500 (the
+	// server violated its own contract). The codec schema flows into the OpenAPI
+	// response header spec automatically.
+	ResponseHeaderParams []ResponseHeaderParam
+
+	// ResponseCookieParams describes Set-Cookie headers returned in the primary
+	// success response. Each entry can add a description, required flag, and/or
+	// codec for runtime validation of the cookie value. The adapter validates
+	// these cookies after the handler returns and before writing the response;
+	// a codec violation returns 500. The codec schema flows into the OpenAPI
+	// response header spec as a "Set-Cookie" entry (OpenAPI 3.1 has no
+	// first-class response cookie object).
+	ResponseCookieParams []ResponseCookieParam
+
 	// ReqSchemaName, when non-empty, emits a $ref for the request body schema
 	// in the spec and registers the schema under that name in components/schemas.
 	ReqSchemaName string
@@ -156,6 +173,12 @@ type RouteHandle[Req, Resp any] struct {
 	// Encode serialises Resp to JSON bytes.
 	Encode func(resp Resp) ([]byte, error)
 
+	// ResponseFormats, when non-empty, lists the formats the route can produce.
+	// The adapter uses this slice for content negotiation: it picks the format
+	// matching the client's Accept header and encodes the response with it.
+	// When empty, the adapter falls back to JSON (via Encode).
+	ResponseFormats []format.Format[Resp]
+
 	// pathParams holds per-variable params registered via PathParams.
 	pathParams []PathParam
 
@@ -167,6 +190,12 @@ type RouteHandle[Req, Resp any] struct {
 
 	// headerParams holds per-parameter entries registered via HeaderParams.
 	headerParams []HeaderParam
+
+	// responseHeaderParams holds per-header entries registered via ResponseHeaderParams.
+	responseHeaderParams []ResponseHeaderParam
+
+	// responseCookieParams holds per-cookie entries registered via ResponseCookieParams.
+	responseCookieParams []ResponseCookieParam
 
 	// pathCodec is the builder-level path codec (may be nil).
 	// Used to re-validate the final assembled path in BuildPath.
@@ -327,6 +356,57 @@ func (h *RouteHandle[Req, Resp]) ValidateHeaders(params map[string]string) error
 		}
 		if err := hp.Codec.Validate(value); err != nil {
 			return HeaderParamError{Name: hp.Name, Value: value, Err: err}
+		}
+	}
+	return nil
+}
+
+// ValidateResponseHeaders validates HTTP response header values against their registered codecs.
+//
+// For each [ResponseHeaderParam] that has a non-nil Codec, the corresponding value
+// in headers is validated. Returns a [ResponseHeaderParamError] on the first failure.
+// Parameters not present in headers are silently skipped.
+//
+// The net/http adapter calls this automatically after the handler returns and
+// before writing the response. A failure indicates a server-side contract
+// violation and results in a 500 response.
+func (rh *RouteHandle[Req, Resp]) ValidateResponseHeaders(headers map[string]string) error {
+	for i := range rh.responseHeaderParams {
+		rp := &rh.responseHeaderParams[i]
+		if rp.Codec == nil {
+			continue
+		}
+		value, ok := headers[rp.Name]
+		if !ok {
+			continue
+		}
+		if err := rp.Codec.Validate(value); err != nil {
+			return ResponseHeaderParamError{Name: rp.Name, Value: value, Err: err}
+		}
+	}
+	return nil
+}
+
+// ValidateResponseCookies validates the cookie values collected by the handler
+// against their registered [ResponseCookieParam] codecs. Only entries whose name
+// is present in cookies is validated. Returns a [ResponseCookieParamError] on the
+// first failure.
+//
+// The net/http adapter calls this automatically after the handler returns and
+// before writing the response. A failure indicates a server-side contract
+// violation and results in a 500 response.
+func (rh *RouteHandle[Req, Resp]) ValidateResponseCookies(cookies map[string]string) error {
+	for i := range rh.responseCookieParams {
+		cp := &rh.responseCookieParams[i]
+		if cp.Codec == nil {
+			continue
+		}
+		value, ok := cookies[cp.Name]
+		if !ok {
+			continue
+		}
+		if err := cp.Codec.Validate(value); err != nil {
+			return ResponseCookieParamError{Name: cp.Name, Value: value, Err: err}
 		}
 	}
 	return nil
@@ -528,6 +608,85 @@ func (e HeaderParamError) Error() string {
 // Unwrap allows errors.As and errors.Is to traverse the underlying constraint error.
 func (e HeaderParamError) Unwrap() error { return e.Err }
 
+// ResponseHeaderParam describes an HTTP header returned in the primary success
+// response. It combines spec metadata with optional runtime validation via a codec.
+//
+// The adapter validates response headers after the handler returns and before
+// writing the response. A codec violation results in a 500 (server contract
+// violation). The codec schema flows into the OpenAPI response header spec automatically.
+type ResponseHeaderParam struct {
+	Name        string
+	Description string
+	Required    bool
+	// Codec validates response header values at [RouteHandle.ValidateResponseHeaders] time.
+	// When non-nil, the codec's schema is also used in the OpenAPI spec.
+	// Nil means no runtime validation; the spec schema will be empty.
+	Codec *codex.Codec[string]
+}
+
+// ResponseHeaderParamError is returned by [RouteHandle.ValidateResponseHeaders] when
+// a response header value fails codec validation.
+//
+// Use errors.As to extract the failing header name and value:
+//
+//	var rhErr rest.ResponseHeaderParamError
+//	if errors.As(err, &rhErr) {
+//	    log.Printf("bad response header %q: %q — %v", rhErr.Name, rhErr.Value, rhErr.Err)
+//	}
+type ResponseHeaderParamError struct {
+	Name  string // header name
+	Value string // the value that failed validation
+	Err   error  // the underlying constraint or codec error
+}
+
+func (e ResponseHeaderParamError) Error() string {
+	return fmt.Sprintf("response header %q: invalid value %q: %s", e.Name, e.Value, e.Err.Error())
+}
+
+// Unwrap allows errors.As and errors.Is to traverse the underlying constraint error.
+func (e ResponseHeaderParamError) Unwrap() error { return e.Err }
+
+// ResponseCookieParam describes a Set-Cookie header returned in the primary
+// success response. It combines spec metadata with optional runtime validation
+// via a codec that validates the cookie value string.
+//
+// The adapter validates response cookie values after the handler returns and
+// before writing the response. A codec violation results in a 500 (server
+// contract violation). The codec schema flows into the OpenAPI response header
+// spec as a "Set-Cookie" string header (OpenAPI 3.1 has no first-class
+// response cookie object).
+type ResponseCookieParam struct {
+	Name        string
+	Description string
+	Required    bool
+	// Codec validates the cookie value at [RouteHandle.ValidateResponseCookies] time.
+	// When non-nil, the codec's schema is also used in the OpenAPI spec.
+	// Nil means no runtime validation; the spec schema will be empty.
+	Codec *codex.Codec[string]
+}
+
+// ResponseCookieParamError is returned by [RouteHandle.ValidateResponseCookies]
+// when a response cookie value fails codec validation.
+//
+// Use errors.As to extract the failing cookie name and value:
+//
+//	var rcErr rest.ResponseCookieParamError
+//	if errors.As(err, &rcErr) {
+//	    log.Printf("bad response cookie %q: %q — %v", rcErr.Name, rcErr.Value, rcErr.Err)
+//	}
+type ResponseCookieParamError struct {
+	Name  string // cookie name
+	Value string // the value that failed validation
+	Err   error  // the underlying constraint or codec error
+}
+
+func (e ResponseCookieParamError) Error() string {
+	return fmt.Sprintf("response cookie %q: invalid value %q: %s", e.Name, e.Value, e.Err.Error())
+}
+
+// Unwrap allows errors.As and errors.Is to traverse the underlying constraint error.
+func (e ResponseCookieParamError) Unwrap() error { return e.Err }
+
 // UnsupportedMediaTypeError is returned by the net/http adapter when the
 // request Content-Type does not match the expected media type.
 // Use [errors.As] to inspect the Got and Expected fields.
@@ -562,6 +721,25 @@ type BodyTooLargeError struct {
 
 func (e BodyTooLargeError) Error() string {
 	return fmt.Sprintf("request body exceeds limit of %d bytes", e.Limit)
+}
+
+// NotAcceptableError is returned by the net/http adapter when the client's
+// Accept header does not match any of the route's registered response formats.
+// Use [errors.As] to inspect the Accept and Supported fields.
+//
+//	var naErr rest.NotAcceptableError
+//	if errors.As(err, &naErr) {
+//	    log.Printf("client wants %q; route supports %v", naErr.Accept, naErr.Supported)
+//	}
+type NotAcceptableError struct {
+	// Accept is the value of the client's Accept header.
+	Accept string
+	// Supported lists the content types the route can produce.
+	Supported []string
+}
+
+func (e NotAcceptableError) Error() string {
+	return fmt.Sprintf("not acceptable: Accept %q; supported: %s", e.Accept, strings.Join(e.Supported, ", "))
 }
 
 // Create one with [NewBuilder].
@@ -642,6 +820,12 @@ func (b *Builder) AddSchema(name string, s schema.Schema) *Builder {
 // reqCodec is used to decode and validate the JSON request body.
 // respCodec is used to encode the JSON response.
 //
+// responseFormats optionally lists the formats the route can produce for content
+// negotiation. When non-empty the adapter picks the format matching the client's
+// Accept header and encodes the response accordingly; a mismatch returns 406.
+// When empty, the adapter defaults to JSON. The first format in the list is used
+// when the client sends Accept: */*, or when no formats are registered.
+//
 // If the builder was created with [WithPathCodec] or [WithPathConstraints], the
 // path is validated immediately. An error is returned if validation fails —
 // no route is registered in that case.
@@ -661,6 +845,7 @@ func AddRoute[Req, Resp any](
 	reqCodec codex.Codec[Req],
 	respCodec codex.Codec[Resp],
 	config RouteConfig,
+	responseFormats ...format.Format[Resp],
 ) (*RouteHandle[Req, Resp], error) {
 	if b.pathCodec != nil {
 		if err := b.pathCodec.Validate(internal.StripTemplateVars(path)); err != nil {
@@ -675,7 +860,15 @@ func AddRoute[Req, Resp any](
 		}
 	}
 
-	frozen := buildDescriptor(method, path, reqCodec.Schema, respCodec.Schema, config)
+	// Collect content types from registered response formats for spec generation.
+	var respContentTypes []string
+	for _, f := range responseFormats {
+		if ct := f.ContentType(); ct != "" {
+			respContentTypes = append(respContentTypes, ct)
+		}
+	}
+
+	frozen := buildDescriptor(method, path, reqCodec.Schema, respCodec.Schema, config, respContentTypes)
 
 	entry := &typedRouteEntry[Req, Resp]{frozen: frozen}
 	b.entries = append(b.entries, entry)
@@ -684,14 +877,17 @@ func AddRoute[Req, Resp any](
 	jsonResp := format.JSON(respCodec)
 
 	return &RouteHandle[Req, Resp]{
-		Descriptor:   frozen,
-		Decode:       func(body []byte) (Req, error) { return jsonReq.Unmarshal(body) },
-		Encode:       func(resp Resp) ([]byte, error) { return jsonResp.Marshal(resp) },
-		pathParams:   config.PathParams,
-		queryParams:  config.QueryParams,
-		cookieParams: config.CookieParams,
-		headerParams: config.HeaderParams,
-		pathCodec:    b.pathCodec,
+		Descriptor:           frozen,
+		Decode:               func(body []byte) (Req, error) { return jsonReq.Unmarshal(body) },
+		Encode:               func(resp Resp) ([]byte, error) { return jsonResp.Marshal(resp) },
+		ResponseFormats:      slices.Clone(responseFormats),
+		pathParams:           config.PathParams,
+		queryParams:          config.QueryParams,
+		cookieParams:         config.CookieParams,
+		headerParams:         config.HeaderParams,
+		responseHeaderParams: config.ResponseHeaderParams,
+		responseCookieParams: config.ResponseCookieParams,
+		pathCodec:            b.pathCodec,
 	}, nil
 }
 
@@ -765,7 +961,7 @@ func (b *Builder) checkDanglingRefs() error {
 // Path params are converted from PathParams ([]PathParam) to route.Param entries
 // for OpenAPI spec output. A minimal entry is auto-added for any {varName}
 // placeholder in the path that has no explicit PathParams declaration.
-func buildDescriptor(method, path string, reqSchema, respSchema schema.Schema, config RouteConfig) route.Route {
+func buildDescriptor(method, path string, reqSchema, respSchema schema.Schema, config RouteConfig, respContentTypes []string) route.Route {
 	status := config.RespStatus
 	if status == "" {
 		if strings.ToUpper(method) == "POST" {
@@ -798,10 +994,12 @@ func buildDescriptor(method, path string, reqSchema, respSchema schema.Schema, c
 
 	respSchemaCopy := respSchema
 	primary := route.Response{
-		Status:      status,
-		Description: config.RespDescription,
-		Schema:      &respSchemaCopy,
-		SchemaName:  config.RespSchemaName,
+		Status:       status,
+		Description:  config.RespDescription,
+		Schema:       &respSchemaCopy,
+		SchemaName:   config.RespSchemaName,
+		ContentTypes: slices.Clone(respContentTypes),
+		Headers:      append(buildResponseHeaderParams(config.ResponseHeaderParams), buildResponseCookieParams(config.ResponseCookieParams)...),
 	}
 	r.Responses = append([]route.Response{primary}, buildExtraResponses(config.Responses)...)
 
@@ -896,6 +1094,40 @@ func buildHeaderParams(headerParams []HeaderParam) []route.Param {
 		rp := route.Param{Name: h.Name, Description: h.Description, Required: h.Required}
 		if h.Codec != nil {
 			rp.Schema = h.Codec.Schema
+		}
+		result[i] = rp
+	}
+	return result
+}
+
+// buildResponseHeaderParams converts []ResponseHeaderParam to []route.Param for OpenAPI spec output.
+// Codec schema (when non-nil) flows into the route.Param.Schema field.
+func buildResponseHeaderParams(params []ResponseHeaderParam) []route.Param {
+	result := make([]route.Param, len(params))
+	for i, p := range params {
+		rp := route.Param{Name: p.Name, Description: p.Description, Required: p.Required}
+		if p.Codec != nil {
+			rp.Schema = p.Codec.Schema
+		}
+		result[i] = rp
+	}
+	return result
+}
+
+// buildResponseCookieParams converts []ResponseCookieParam to []route.Param for OpenAPI spec
+// output. Because OpenAPI 3.1 has no first-class response cookie object, each entry is
+// emitted as a "Set-Cookie" string header under responses[N].headers. The Codec schema
+// (when non-nil) flows into the route.Param.Schema field.
+func buildResponseCookieParams(params []ResponseCookieParam) []route.Param {
+	result := make([]route.Param, len(params))
+	for i, p := range params {
+		rp := route.Param{
+			Name:        "Set-Cookie",
+			Description: p.Description,
+			Required:    p.Required,
+		}
+		if p.Codec != nil {
+			rp.Schema = p.Codec.Schema
 		}
 		result[i] = rp
 	}
