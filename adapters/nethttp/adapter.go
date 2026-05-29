@@ -45,8 +45,11 @@ import (
 // Requests exceeding this limit are rejected with 400 Bad Request.
 const maxRequestBodyBytes = 1 << 20 // 1 MiB
 
-// contextKey is the unexported type for values stored in context by this package.
+// contextKey is the unexported type for request values stored in context by this package.
 type contextKey struct{}
+
+// responseHeadersKey is the unexported type for response header values stored in context.
+type responseHeadersKey struct{}
 
 // HandlerFunc is the typed application handler called by [Handler].
 // ctx is the request context. req is the decoded request value; for body-less
@@ -60,6 +63,31 @@ type HandlerFunc[Req, Resp any] func(ctx context.Context, req Req) (Resp, error)
 func RequestFromContext(ctx context.Context) (*http.Request, bool) {
 	r, ok := ctx.Value(contextKey{}).(*http.Request)
 	return r, ok
+}
+
+// WithResponseHeaders copies the key-value pairs from h into the response
+// header map stored in ctx (pre-allocated by [Handler] before calling the
+// [HandlerFunc]).  Call this inside a [HandlerFunc] to emit response headers
+// such as Location, ETag, or custom headers without direct access to
+// [http.ResponseWriter].
+//
+//	resp, _ := svc.Create(ctx, req)
+//	h := make(http.Header)
+//	h.Set("Location", "/users/"+resp.ID)
+//	nethttp.WithResponseHeaders(ctx, h) // mutates the header map in ctx
+func WithResponseHeaders(ctx context.Context, h http.Header) {
+	if existing, ok := ctx.Value(responseHeadersKey{}).(http.Header); ok {
+		for k, vs := range h {
+			existing[k] = vs
+		}
+	}
+}
+
+// ResponseHeadersFromContext retrieves response headers previously stored by
+// [WithResponseHeaders]. Returns false if no headers were set.
+func ResponseHeadersFromContext(ctx context.Context) (http.Header, bool) {
+	h, ok := ctx.Value(responseHeadersKey{}).(http.Header)
+	return h, ok
 }
 
 // Options configures the behaviour of [Handler] and [Register].
@@ -132,6 +160,8 @@ func Handler[Req, Resp any](handle *rest.RouteHandle[Req, Resp], fn HandlerFunc[
 		}()
 
 		ctx := context.WithValue(r.Context(), contextKey{}, r)
+		respHeaders := make(http.Header)
+		ctx = context.WithValue(ctx, responseHeadersKey{}, respHeaders)
 
 		var req Req
 		if handle.Descriptor.RequestBody != nil {
@@ -202,6 +232,11 @@ func Handler[Req, Resp any](handle *rest.RouteHandle[Req, Resp], fn HandlerFunc[
 			return
 		}
 
+		for key, vals := range respHeaders {
+			for _, v := range vals {
+				sw.Header().Add(key, v)
+			}
+		}
 		status := primaryStatus(handle)
 		sw.Header().Set("Content-Type", "application/json")
 		sw.WriteHeader(status)

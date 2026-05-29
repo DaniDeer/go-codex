@@ -670,6 +670,51 @@ func main() {
 	_ = json.NewDecoder(resp9.Body).Decode(&headerErrBody)
 	fmt.Printf("Status: %d\nError:  %s\n\n", resp9.StatusCode, headerErrBody["error"])
 
+	fmt.Println("=== nethttp.WithResponseHeaders — Location on 201 Created ===")
+	// WithResponseHeaders lets a HandlerFunc set response headers (e.g. Location,
+	// ETag, Cache-Control) without direct access to http.ResponseWriter. The
+	// adapter pre-allocates an http.Header map in ctx; WithResponseHeaders writes
+	// into it; on success the adapter merges all collected headers before
+	// WriteHeader. On error paths the collected headers are discarded.
+	withHdrMux := http.NewServeMux()
+	nethttp.Register(withHdrMux, createUserRoute,
+		func(ctx context.Context, req CreateUserReq) (User, error) {
+			record := buildUserRecord(req)
+			if err := store.Save(record); err != nil {
+				return User{}, err
+			}
+			user := buildUserResponse(record)
+			// Deposit the Location header — adapter applies it on success only.
+			h := make(http.Header)
+			h.Set("Location", "/users/"+user.ID)
+			nethttp.WithResponseHeaders(ctx, h)
+			return user, nil
+		},
+		nethttp.Options{})
+	withHdrSrv := httptest.NewServer(withHdrMux)
+	defer withHdrSrv.Close()
+
+	// Valid request: handler returns 201 with Location header.
+	whResp, err := http.Post(withHdrSrv.URL+"/users", "application/json", //nolint:noctx
+		strings.NewReader(`{"name":"Bob","email":"bob@example.com"}`))
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "POST error: %v\n", err)
+		os.Exit(1)
+	}
+	defer whResp.Body.Close()
+	fmt.Printf("Status:   %d\nLocation: %s\n\n", whResp.StatusCode, whResp.Header.Get("Location"))
+
+	// Validation error: 400 — Location header must NOT appear (headers are not
+	// applied on error paths, even if WithResponseHeaders was called).
+	whErrResp, err := http.Post(withHdrSrv.URL+"/users", "application/json", //nolint:noctx
+		strings.NewReader(`{"name":"","email":"bad"}`))
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "POST error: %v\n", err)
+		os.Exit(1)
+	}
+	defer whErrResp.Body.Close()
+	fmt.Printf("Status (error path): %d, Location: %q\n\n", whErrResp.StatusCode, whErrResp.Header.Get("Location"))
+
 	fmt.Println("=== nethttp.SetCookie — write-side validation with same codec ===")
 	// nethttp.SetCookie writes a Set-Cookie header with secure defaults
 	// (Secure, HttpOnly, SameSite=Strict). When CookieOptions.Codec is set,

@@ -781,3 +781,80 @@ func TestOptions_MultiValueQueryParams_invalid(t *testing.T) {
 		t.Errorf("want 400, got %d", rec.Code)
 	}
 }
+
+// ── WithResponseHeaders tests ───────────────────────────────────────────────
+
+func TestWithResponseHeaders_setsHeaderOnSuccess(t *testing.T) {
+	handle := newCreateRoute()
+	h := nethttp.Handler(handle, func(ctx context.Context, req createReq) (userResp, error) {
+		extra := make(http.Header)
+		extra.Set("Location", "/users/42")
+		nethttp.WithResponseHeaders(ctx, extra)
+		return userResp{ID: "42", Name: req.Name}, nil
+	}, nethttp.Options{})
+
+	rec := httptest.NewRecorder()
+	r := httptest.NewRequest(http.MethodPost, "/users", strings.NewReader(`{"name":"Bob"}`))
+	r.Header.Set("Content-Type", "application/json")
+	h.ServeHTTP(rec, r)
+
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("want 201, got %d", rec.Code)
+	}
+	if loc := rec.Header().Get("Location"); loc != "/users/42" {
+		t.Errorf("want Location=/users/42, got %q", loc)
+	}
+}
+
+func TestWithResponseHeaders_multiValueHeader(t *testing.T) {
+	handle := newCreateRoute()
+	h := nethttp.Handler(handle, func(ctx context.Context, req createReq) (userResp, error) {
+		extra := make(http.Header)
+		extra.Add("X-Tag", "alpha")
+		extra.Add("X-Tag", "beta")
+		nethttp.WithResponseHeaders(ctx, extra)
+		return userResp{ID: "1", Name: req.Name}, nil
+	}, nethttp.Options{})
+
+	rec := httptest.NewRecorder()
+	r := httptest.NewRequest(http.MethodPost, "/users", strings.NewReader(`{"name":"Carol"}`))
+	r.Header.Set("Content-Type", "application/json")
+	h.ServeHTTP(rec, r)
+
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("want 201, got %d", rec.Code)
+	}
+	tags := rec.Header()["X-Tag"]
+	if len(tags) != 2 || tags[0] != "alpha" || tags[1] != "beta" {
+		t.Errorf("want X-Tag=[alpha beta], got %v", tags)
+	}
+}
+
+func TestResponseHeadersFromContext_falseWhenAbsent(t *testing.T) {
+	ctx := context.Background()
+	if _, ok := nethttp.ResponseHeadersFromContext(ctx); ok {
+		t.Error("want false for empty context, got true")
+	}
+}
+
+func TestWithResponseHeaders_notAppliedOnError(t *testing.T) {
+	handle := newCreateRoute()
+	h := nethttp.Handler(handle, func(ctx context.Context, req createReq) (userResp, error) {
+		extra := make(http.Header)
+		extra.Set("Location", "/users/99")
+		nethttp.WithResponseHeaders(ctx, extra) // headers must NOT appear on error path
+		return userResp{}, errors.New("handler failed")
+	}, nethttp.Options{})
+
+	rec := httptest.NewRecorder()
+	r := httptest.NewRequest(http.MethodPost, "/users", strings.NewReader(`{"name":"Dave"}`))
+	r.Header.Set("Content-Type", "application/json")
+	h.ServeHTTP(rec, r)
+
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("want 500, got %d", rec.Code)
+	}
+	if loc := rec.Header().Get("Location"); loc != "" {
+		t.Errorf("want no Location header on error, got %q", loc)
+	}
+}

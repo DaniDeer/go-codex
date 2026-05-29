@@ -33,7 +33,7 @@ go-codex is a Go port of the core ideas from Haskell's [autodocodec](https://hac
 | `api/internal`    | Shared helpers for `api/rest` and `api/events` (template variable parsing and substitution); not part of the public API | `codex` |
 | `api/rest`        | Transport-agnostic REST API builder; typed Decode/Encode + OpenAPI spec                  | `codex`, `format`, `route`, `render/openapi`, `schema`, `api/internal` |
 | `api/events`      | Transport-agnostic event channel builder; typed Decode/Encode + AsyncAPI spec            | `codex`, `format`, `render/asyncapi`, `schema`, `api/internal` |
-| `adapters/nethttp` | net/http adapter: `Handler`, `Register`, `RequestFromContext`, `Options` (with `Observer stats.Observer`) | `api/rest`, `net/http`, `stats` |
+| `adapters/nethttp` | net/http adapter: `Handler`, `Register`, `RequestFromContext`, `WithResponseHeaders`, `ResponseHeadersFromContext`, `Options` (with `Observer stats.Observer`) | `api/rest`, `net/http`, `stats` |
 | `adapters/mqtt`   | Paho MQTT adapter: `SubscribeHandler`, `Publish`, `SubscribeError`, `ErrorKind`, `SubscribeOptions` (with `Observer stats.Observer`), `PublishOptions` (with `Observer stats.Observer`) | `api/events`, `stats`, Paho MQTT lib |
 | `stats`           | Observer hooks: `ValidationObserver` (codec-level, 1 method); `Observer` (adapter-level, embeds `ValidationObserver` + transport hooks); `NoopObserver`; `ReportErrors(obs, location, err)`; `ConstraintName(err)` | `codex`, `time` (stdlib only) |
 

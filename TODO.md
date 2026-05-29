@@ -112,16 +112,6 @@
       return 406 Not Acceptable. The OpenAPI spec `produces` list would reflect the registered
       formats.
 
-- [ ] **`adapters/nethttp`: response header control** _(medium effort)_
-      Handlers return `(Resp, error)` with no way to set response headers such as `Location`
-      (for 201 Created), `ETag`, `Cache-Control`, or custom headers. Options:
-      (a) Expose `http.ResponseWriter` via context (escape hatch — breaks the typed contract);
-      (b) Introduce a `ResponseEnvelope[Resp]` wrapper that carries both the value and a
-      `http.Header` map — the adapter detects this type and merges headers before writing;
-      (c) A `WithResponseHeaders(ctx, headers)` / `ResponseHeadersFromContext(ctx)` pair where
-      the handler deposits headers into context and the adapter reads them after `fn` returns.
-      Option (c) is the least intrusive and most composable. Needs design decision.
-
 #### MQTT adapter gaps
 
 - [ ] **`Observer`: `RecordRejection` hook for protocol-level request rejections** _(medium effort — breaking interface change)_

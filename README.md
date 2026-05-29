@@ -1078,6 +1078,7 @@ http.ListenAndServe(":8080", mux)
 - Response status: taken from the route descriptor's primary response (e.g. 201 for POST)
 - **Custom error handling**: `Options.ErrorHandler func(w, r, status, err)` overrides the default JSON envelope
 - **Metrics / observability**: `Options.Observer stats.Observer` — implement [`stats.Observer`](#stats--observer) to receive per-request events; defaults to `stats.NoopObserver`
+- **Response header control**: `nethttp.WithResponseHeaders(ctx, h)` deposits extra headers into `ctx` from inside a `HandlerFunc`. The adapter merges them into the HTTP response before writing the status code on success paths only. `ResponseHeadersFromContext(ctx)` retrieves the collected headers (useful for testing or middleware).
 - **Secure cookie responses**: `nethttp.SetCookie(w, name, value, opts)` writes a `Set-Cookie` header with secure defaults (`Secure`, `HttpOnly`, `SameSite=Strict`, `Path="/"`); accepts a `CookieOptions.Codec` for symmetric read/write validation using the same codec as `CookieParam`
 
 ```go
@@ -1694,7 +1695,7 @@ go-codex/
 │
 ├── adapters/               # transport-specific adapters (wrap api/rest or api/events)
 │   ├── nethttp/            # net/http adapter for api/rest RouteHandles
-│   │   └── adapter.go      # Handler, Register, RequestFromContext, Options (with Observer)
+│   │   └── adapter.go      # Handler, Register, RequestFromContext, WithResponseHeaders, Options (with Observer)
 │   └── mqtt/               # Paho MQTT adapter for api/events ChannelHandles
 │       └── adapter.go      # SubscribeHandler, SubscribeOptions, Publish, SubscribeError, ErrorKind, MessageFromContext
 │
