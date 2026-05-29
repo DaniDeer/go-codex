@@ -54,12 +54,20 @@ func newHandle() *events.ChannelHandle[userEvent] {
 // --- mock implementations ---
 
 // mockMessage implements pahomqtt.Message.
-type mockMessage struct{ payload []byte }
+type mockMessage struct {
+	topic   string
+	payload []byte
+}
 
-func (m *mockMessage) Duplicate() bool   { return false }
-func (m *mockMessage) Qos() byte         { return 0 }
-func (m *mockMessage) Retained() bool    { return false }
-func (m *mockMessage) Topic() string     { return "user/created" }
+func (m *mockMessage) Duplicate() bool { return false }
+func (m *mockMessage) Qos() byte       { return 0 }
+func (m *mockMessage) Retained() bool  { return false }
+func (m *mockMessage) Topic() string {
+	if m.topic != "" {
+		return m.topic
+	}
+	return "user/created"
+}
 func (m *mockMessage) MessageID() uint16 { return 0 }
 func (m *mockMessage) Payload() []byte   { return m.payload }
 func (m *mockMessage) Ack()              {}
@@ -290,6 +298,28 @@ func TestPublish_TemplateVars_InvalidUUID(t *testing.T) {
 	}
 }
 
+func TestObserver_RecordPublish_buildTopicError(t *testing.T) {
+	handle := newTemplateHandle()
+	obs := &mqttSpyObserver{}
+	client := &mockClient{token: newCompletedToken(nil)}
+
+	event := userEvent{ID: "f47ac10b-58cc-4372-a567-0e02b2c3d479", Email: "alice@example.com"}
+	err := adaptermqtt.Publish(context.Background(), client, handle, 1, false, event,
+		map[string]string{"userID": "not-a-uuid"}, adaptermqtt.PublishOptions{Observer: obs})
+	if err == nil {
+		t.Fatal("want error, got nil")
+	}
+	if len(obs.messages) != 1 {
+		t.Fatalf("want 1 RecordPublish call, got %d", len(obs.messages))
+	}
+	if obs.messages[0].success {
+		t.Error("want success=false on BuildTopic error, got true")
+	}
+	if obs.messages[0].dir != "publish" {
+		t.Errorf("want dir=publish, got %q", obs.messages[0].dir)
+	}
+}
+
 func TestMessageFromContext_InsideHandler(t *testing.T) {
 	handle := newHandle()
 	msg := &mockMessage{payload: []byte(validPayload)}
@@ -462,5 +492,92 @@ func TestObserver_RecordPublish_brokerError(t *testing.T) {
 	}
 	if obs.messages[0].dir != "publish" {
 		t.Errorf("want dir=publish, got %q", obs.messages[0].dir)
+	}
+}
+
+func TestObserver_RecordValidationError_topicParam_publish(t *testing.T) {
+	handle := newTemplateHandle()
+	obs := &mqttSpyObserver{}
+	client := &mockClient{token: newCompletedToken(nil)}
+
+	event := userEvent{ID: "f47ac10b-58cc-4372-a567-0e02b2c3d479", Email: "alice@example.com"}
+	err := adaptermqtt.Publish(context.Background(), client, handle, 1, false, event,
+		map[string]string{"userID": "not-a-uuid"}, adaptermqtt.PublishOptions{Observer: obs})
+	if err == nil {
+		t.Fatal("want error, got nil")
+	}
+	if len(obs.valErrors) != 1 {
+		t.Fatalf("want 1 RecordValidationError call, got %d", len(obs.valErrors))
+	}
+	ve := obs.valErrors[0]
+	if ve.location != "topic_var" {
+		t.Errorf("want location=%q, got %q", "topic_var", ve.location)
+	}
+	if ve.field != "userID" {
+		t.Errorf("want field=%q, got %q", "userID", ve.field)
+	}
+	if ve.constraintName != "uuid" {
+		t.Errorf("want constraintName=%q, got %q", "uuid", ve.constraintName)
+	}
+}
+
+func TestObserver_RecordValidationError_topicParam_subscribe(t *testing.T) {
+	handle := newTemplateHandle()
+	obs := &mqttSpyObserver{}
+
+	// Handler simulates what TopicVarsFromMessage returns when the topic param fails.
+	handler := adaptermqtt.SubscribeHandler(context.Background(), handle,
+		func(_ context.Context, _ userEvent) error {
+			return events.TopicParamError{
+				Name:  "userID",
+				Value: "not-a-uuid",
+				Err:   errors.New("constraint failed (uuid): invalid UUID"),
+			}
+		},
+		adaptermqtt.SubscribeOptions{Observer: obs},
+	)
+	handler(nil, &mockMessage{
+		topic:   "users/not-a-uuid/events",
+		payload: []byte(validPayload),
+	})
+	if len(obs.valErrors) != 1 {
+		t.Fatalf("want 1 RecordValidationError call, got %d", len(obs.valErrors))
+	}
+	ve := obs.valErrors[0]
+	if ve.location != "topic_var" {
+		t.Errorf("want location=%q, got %q", "topic_var", ve.location)
+	}
+	if ve.field != "userID" {
+		t.Errorf("want field=%q, got %q", "userID", ve.field)
+	}
+}
+
+func TestObserver_RecordValidationError_topicMismatch_subscribe(t *testing.T) {
+	handle := newTemplateHandle()
+	obs := &mqttSpyObserver{}
+
+	// Handler simulates what TopicVarsFromMessage returns on structural mismatch.
+	handler := adaptermqtt.SubscribeHandler(context.Background(), handle,
+		func(_ context.Context, _ userEvent) error {
+			return adaptermqtt.TopicMismatchError{
+				Template: "users/{userID}/events",
+				Topic:    "wrong/topic",
+			}
+		},
+		adaptermqtt.SubscribeOptions{Observer: obs},
+	)
+	handler(nil, &mockMessage{
+		topic:   "wrong/topic",
+		payload: []byte(validPayload),
+	})
+	if len(obs.valErrors) != 1 {
+		t.Fatalf("want 1 RecordValidationError call, got %d", len(obs.valErrors))
+	}
+	ve := obs.valErrors[0]
+	if ve.location != "topic" {
+		t.Errorf("want location=%q, got %q", "topic", ve.location)
+	}
+	if ve.constraintName != "topic-mismatch" {
+		t.Errorf("want constraintName=%q, got %q", "topic-mismatch", ve.constraintName)
 	}
 }

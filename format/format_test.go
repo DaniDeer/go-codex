@@ -51,11 +51,22 @@ func TestFormatValidate_SameResultAcrossFormats(t *testing.T) {
 	}
 }
 
-func TestFormatValidate_MarshalDoesNotValidate(t *testing.T) {
-	// Marshal is intentionally unconstrained — encode direction is trusted.
+func TestFormatValidate_MarshalValidates(t *testing.T) {
+	// Marshal calls Encode, which now validates Refine constraints symmetrically.
 	f := format.JSON(testCodec)
 	_, err := f.Marshal(struct{ N int }{N: -1})
+	if err == nil {
+		t.Fatal("Marshal should validate constraints, got no error")
+	}
+	if !strings.Contains(err.Error(), "positive") {
+		t.Errorf("expected constraint name in error, got: %v", err)
+	}
+	// Valid value marshals without error.
+	data, err := f.Marshal(struct{ N int }{N: 5})
 	if err != nil {
-		t.Fatalf("Marshal should not validate constraints, got: %v", err)
+		t.Fatalf("Marshal with valid value should succeed, got: %v", err)
+	}
+	if string(data) != `{"n":5}` {
+		t.Errorf("unexpected marshal output: %s", data)
 	}
 }

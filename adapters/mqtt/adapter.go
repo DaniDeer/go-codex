@@ -26,6 +26,7 @@ package mqtt
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
@@ -84,8 +85,11 @@ type SubscribeOptions struct {
 	OnError func(SubscribeError)
 
 	// Observer, when non-nil, receives per-message lifecycle events: success/
-	// failure counts and processing duration per topic. Per-field validation
-	// errors are reported via [stats.Observer.RecordValidationError].
+	// failure counts and processing duration per topic. Per-field payload validation
+	// errors are reported via [stats.Observer.RecordValidationError] with location
+	// "payload". Topic variable errors from [TopicVarsFromMessage] propagated through
+	// the handler are reported with location "topic_var" (per-variable codec failures)
+	// or "topic" (topic-level codec or structural mismatch).
 	// Defaults to [stats.NoopObserver] when nil.
 	Observer stats.Observer
 }
@@ -130,6 +134,9 @@ func SubscribeHandler[T any](
 			return
 		}
 		if err := fn(ctx, value); err != nil {
+			reportTopicParamErrors(err, obs)
+			reportTopicMismatchErrors(err, obs)
+			reportInvalidTopicErrors(err, obs)
 			obs.RecordSubscribe(msg.Topic(), false, time.Since(start))
 			if opts.OnError != nil {
 				opts.OnError(SubscribeError{Kind: KindHandler, Topic: msg.Topic(), Err: err})
@@ -146,12 +153,55 @@ func reportPayloadErrors(err error, obs stats.Observer) {
 	stats.ReportErrors(obs, "payload", err)
 }
 
+// reportTopicParamErrors extracts the failing topic variable from a [events.TopicParamError]
+// and reports it to obs with location "topic_var".
+func reportTopicParamErrors(err error, obs stats.Observer) {
+	var pe events.TopicParamError
+	if !errors.As(err, &pe) {
+		return
+	}
+	obs.RecordValidationError("topic_var", stats.ConstraintName(pe.Err), pe.Name)
+}
+
+// reportMissingTopicVarErrors extracts the missing variable name from a [events.MissingTopicVarError]
+// and reports it to obs with location "topic_var" and constraint "required".
+func reportMissingTopicVarErrors(err error, obs stats.Observer) {
+	var me events.MissingTopicVarError
+	if !errors.As(err, &me) {
+		return
+	}
+	obs.RecordValidationError("topic_var", "required", me.Name)
+}
+
+// reportInvalidTopicErrors extracts the constraint from an [events.InvalidTopicError]
+// and reports it to obs with location "topic".
+func reportInvalidTopicErrors(err error, obs stats.Observer) {
+	var ie events.InvalidTopicError
+	if !errors.As(err, &ie) {
+		return
+	}
+	obs.RecordValidationError("topic", stats.ConstraintName(ie.Err), "")
+}
+
+// reportTopicMismatchErrors reports a [TopicMismatchError] to obs with location "topic"
+// and constraint name "topic-mismatch".
+func reportTopicMismatchErrors(err error, obs stats.Observer) {
+	var mm TopicMismatchError
+	if !errors.As(err, &mm) {
+		return
+	}
+	obs.RecordValidationError("topic", "topic-mismatch", "")
+}
+
 type PublishOptions struct {
 	// Observer, when non-nil, receives per-publish lifecycle events:
 	// [stats.Observer.RecordPublish] is called with success=true on broker
 	// acknowledgement and success=false on encode failure, broker error, or
-	// context cancellation. Per-field encode errors are reported via
+	// context cancellation. Per-field payload encode errors are reported via
 	// [stats.Observer.RecordValidationError] with location "payload".
+	// Topic variable errors from [events.ChannelHandle.BuildTopic] are reported
+	// with location "topic_var" (per-variable codec failures) or "topic"
+	// (topic-level codec failures).
 	// Defaults to [stats.NoopObserver] when nil.
 	Observer stats.Observer
 }
@@ -191,6 +241,10 @@ func Publish[T any](ctx context.Context, client pahomqtt.Client, handle *events.
 		var err error
 		topic, err = handle.BuildTopic(vars)
 		if err != nil {
+			reportTopicParamErrors(err, obs)
+			reportMissingTopicVarErrors(err, obs)
+			reportInvalidTopicErrors(err, obs)
+			obs.RecordPublish(handle.Topic, false, time.Since(start))
 			return err
 		}
 	}

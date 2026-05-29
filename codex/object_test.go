@@ -308,3 +308,66 @@ func TestDefaultField_RequiredIsFalse(t *testing.T) {
 		t.Errorf("DefaultField.Required should be false")
 	}
 }
+
+func TestStruct_Encode_CollectsAllFieldErrors(t *testing.T) {
+	type User struct {
+		Name  string
+		Email string
+	}
+	c := codex.Struct[User](
+		codex.RequiredField[User, string]("name",
+			codex.String().Refine(codex.Constraint[string]{
+				Name:    "non-empty",
+				Check:   func(v string) bool { return v != "" },
+				Message: func(v string) string { return "must not be empty" },
+			}),
+			func(u User) string { return u.Name },
+			func(u *User, v string) { u.Name = v },
+		),
+		codex.RequiredField[User, string]("email",
+			codex.String().Refine(codex.Constraint[string]{
+				Name:    "has-at",
+				Check:   func(v string) bool { return strings.Contains(v, "@") },
+				Message: func(v string) string { return "must contain @" },
+			}),
+			func(u User) string { return u.Email },
+			func(u *User, v string) { u.Email = v },
+		),
+	)
+
+	// Both fields fail — should collect all errors, not fail-fast.
+	_, err := c.Encode(User{Name: "", Email: "not-an-email"})
+	if err == nil {
+		t.Fatal("expected ValidationErrors, got nil")
+	}
+	var ve codex.ValidationErrors
+	if !errors.As(err, &ve) {
+		t.Fatalf("expected ValidationErrors, got %T: %v", err, err)
+	}
+	if len(ve) != 2 {
+		t.Errorf("expected 2 field errors, got %d: %v", len(ve), ve)
+	}
+}
+
+func TestStruct_Encode_ValidValueSucceeds(t *testing.T) {
+	type User struct{ Name string }
+	c := codex.Struct[User](
+		codex.RequiredField[User, string]("name",
+			codex.String().Refine(codex.Constraint[string]{
+				Name:    "non-empty",
+				Check:   func(v string) bool { return v != "" },
+				Message: func(v string) string { return "must not be empty" },
+			}),
+			func(u User) string { return u.Name },
+			func(u *User, v string) { u.Name = v },
+		),
+	)
+	enc, err := c.Encode(User{Name: "Alice"})
+	if err != nil {
+		t.Fatalf("expected no error, got: %v", err)
+	}
+	obj, ok := enc.(map[string]any)
+	if !ok || obj["name"] != "Alice" {
+		t.Errorf("unexpected encode result: %v", enc)
+	}
+}

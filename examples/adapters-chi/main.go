@@ -686,7 +686,7 @@ func main() {
 				})
 				return buildUserResponse(buildUserRecord(req)), nil
 			},
-			chiadapter.Options{})
+			chiadapter.Options{Observer: obs})
 		violationSrv := httptest.NewServer(violationRouter)
 		defer violationSrv.Close()
 
@@ -701,7 +701,36 @@ func main() {
 		fmt.Printf("Contract violation → Status: %s, error: %s\n", resp.Status, errBody["error"])
 	}()
 
-	fmt.Println("\n--- chiadapter.SetCookie — write-side validation with same codec ---")
+	fmt.Println("\n--- Response body encode violation — symmetric validation ---")
+	// The same codec that rejects an invalid request body at 400 now also rejects
+	// an invalid response body at 500. Refine constraints run on both Encode and Decode.
+	func() {
+		bodyViolRouter := gochi.NewRouter()
+		chiadapter.Register(bodyViolRouter, createUserRoute,
+			func(ctx context.Context, req CreateUserReq) (User, error) {
+				// Handler deliberately returns a User with invalid field values to
+				// demonstrate that handle.Encode now validates the response body.
+				return User{
+					ID:    "not-a-uuid",   // fails UUID constraint
+					Name:  "",             // fails NonEmptyString constraint
+					Email: "not-an-email", // fails Email constraint
+				}, nil
+			},
+			chiadapter.Options{Observer: obs})
+		bodyViolSrv := httptest.NewServer(bodyViolRouter)
+		defer bodyViolSrv.Close()
+
+		body := strings.NewReader(`{"name":"Dave","email":"dave@example.com"}`)
+		resp, err := http.Post(bodyViolSrv.URL+"/users", "application/json", body) //nolint:noctx
+		if err != nil {
+			panic(err)
+		}
+		defer resp.Body.Close()
+		var errBody map[string]string
+		_ = json.NewDecoder(resp.Body).Decode(&errBody)
+		fmt.Printf("Response body violation → Status: %s, error: %s\n", resp.Status, errBody["error"])
+	}()
+
 	// chiadapter.SetCookie validates the value before writing Set-Cookie — the
 	// same codec used in CookieParam for the read path. One definition, two boundaries.
 	func() {

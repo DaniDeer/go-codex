@@ -279,6 +279,7 @@ func Handler[Req, Resp any](handle *rest.RouteHandle[Req, Resp], fn HandlerFunc[
 			var encErr error
 			out, encErr = chosen.Marshal(resp)
 			if encErr != nil {
+				reportBodyErrors(encErr, obs)
 				errFn(sw, r, http.StatusInternalServerError, encErr)
 				return
 			}
@@ -287,6 +288,7 @@ func Handler[Req, Resp any](handle *rest.RouteHandle[Req, Resp], fn HandlerFunc[
 			var encErr error
 			out, encErr = handle.Encode(resp)
 			if encErr != nil {
+				reportBodyErrors(encErr, obs)
 				errFn(sw, r, http.StatusInternalServerError, encErr)
 				return
 			}

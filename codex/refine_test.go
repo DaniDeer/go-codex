@@ -98,19 +98,28 @@ func TestRefine_SchemaPreserved(t *testing.T) {
 	}
 }
 
-func TestRefine_EncodeUnaffected(t *testing.T) {
+func TestRefine_EncodeValidates(t *testing.T) {
 	c := codex.Int().Refine(codex.Constraint[int]{
 		Name:    "negative-only",
 		Check:   func(v int) bool { return v < 0 },
 		Message: func(v int) string { return "must be negative" },
 	})
-	// Encode should succeed even for a value that would fail the constraint.
-	enc, err := c.Encode(42)
-	if err != nil {
-		t.Fatalf("Encode should not apply constraints, got error: %v", err)
+	// Encode should reject a value that fails the constraint.
+	_, err := c.Encode(42)
+	if err == nil {
+		t.Fatal("Encode should apply constraint, got no error")
 	}
-	if enc != 42 {
-		t.Errorf("Encode(42) = %v, want 42", enc)
+	var ce codex.ConstraintError
+	if !errors.As(err, &ce) {
+		t.Errorf("expected ConstraintError, got %T: %v", err, err)
+	}
+	// Valid value encodes successfully.
+	enc, err := c.Encode(-1)
+	if err != nil {
+		t.Fatalf("Encode(-1) should pass constraint, got: %v", err)
+	}
+	if enc != -1 {
+		t.Errorf("Encode(-1) = %v, want -1", enc)
 	}
 }
 
@@ -170,19 +179,29 @@ func TestRefineFunc_FailsWhenFnReturnsError(t *testing.T) {
 	}
 }
 
-func TestRefineFunc_EncodeUnaffected(t *testing.T) {
+func TestRefineFunc_EncodeValidates(t *testing.T) {
 	c := codex.Int().RefineFunc(func(v int) error {
 		if v < 0 {
 			return errors.New("must be positive")
 		}
 		return nil
 	})
-	enc, err := c.Encode(-1)
-	if err != nil {
-		t.Fatalf("encode should not apply RefineFunc, got: %v", err)
+	// Encode should reject a value that fails the fn constraint.
+	_, err := c.Encode(-1)
+	if err == nil {
+		t.Fatal("encode should apply RefineFunc, got no error")
 	}
-	if enc != -1 {
-		t.Errorf("Encode(-1) = %v, want -1", enc)
+	var ce codex.ConstraintError
+	if !errors.As(err, &ce) {
+		t.Errorf("expected ConstraintError, got %T: %v", err, err)
+	}
+	// Valid value encodes successfully.
+	enc, err := c.Encode(5)
+	if err != nil {
+		t.Fatalf("Encode(5) should pass constraint, got: %v", err)
+	}
+	if enc != 5 {
+		t.Errorf("Encode(5) = %v, want 5", enc)
 	}
 }
 

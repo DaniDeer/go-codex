@@ -51,7 +51,12 @@ import (
 
 // CountingObserver is an in-memory implementation of [stats.Observer].
 // It records subscribe/publish counts, success rates, validation error locations,
-// and latencies. In production, replace the counters with Prometheus /
+// and latencies. Validation errors are bucketed by location:
+//   - "payload"   — per-field codec failures on subscribe/publish payload
+//   - "topic_var" — per-variable codec failure in topic template (subscribe via handler / publish)
+//   - "topic"     — topic-level codec or structural mismatch
+//
+// In production, replace the counters with Prometheus /
 // OpenTelemetry instruments — the interface is identical.
 type CountingObserver struct {
 	mu             sync.Mutex
@@ -59,7 +64,7 @@ type CountingObserver struct {
 	subSuccess     int
 	publishes      int
 	pubSuccess     int
-	valErrorsByLoc map[string]int // keyed by location: "payload"
+	valErrorsByLoc map[string]int // keyed by location: "payload", "topic_var", "topic"
 	subLatencies   []time.Duration
 	pubLatencies   []time.Duration
 }
@@ -826,9 +831,9 @@ func main() {
 	}
 
 	fmt.Println("\n=== Publish failure: payload codec (invalid AlertEvent fields) ===")
-	// Encode is a pure transformation — Refine constraints do NOT run on the outgoing
-	// path. To guard against invalid payloads, call Validate explicitly before Publish.
-	// This mirrors the same codex.ValidationErrors type you handle on the subscribe side.
+	// Refine constraints now run on both Encode and Decode — no explicit Validate
+	// call needed. Publish catches the invalid payload via handle.Encode and returns
+	// codex.ValidationErrors, just like the subscribe side does for invalid messages.
 	badAlert := AlertEvent{
 		SensorID:  "", // fails NonEmptyString
 		Value:     0,  // fails NonZeroFloat
@@ -836,14 +841,15 @@ func main() {
 		Threshold: 75.0,
 		Timestamp: "2024-01-15T11:10:00Z",
 	}
-	if err := alertEventCodec.Validate(badAlert); err != nil {
+	if err := adaptermqtt.Publish(ctx, client, alertChannel, 1, false, badAlert,
+		map[string]string{"sensorID": "f47ac10b-58cc-4372-a567-0e02b2c3d479"}, adaptermqtt.PublishOptions{Observer: obs}); err != nil {
 		var validationErrs codex.ValidationErrors
 		if errors.As(err, &validationErrs) {
-			mqttLogger.Warn("publish aborted: payload validation failed",
+			mqttLogger.Warn("publish failed: payload encode validation",
 				"errors", validationErrs, // triggers ValidationErrors.LogValue()
 			)
 		} else {
-			mqttLogger.Error("publish aborted", "error", err)
+			mqttLogger.Error("publish failed", "error", err)
 		}
 	}
 

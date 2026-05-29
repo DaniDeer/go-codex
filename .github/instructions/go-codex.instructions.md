@@ -99,7 +99,7 @@ var LegacyIPCodec = codex.String().
 
 ### `Validate`, `New`, and `Must`: Construction-Time Validation
 
-**`Codec.Validate(v T) error`** checks a Go value by round-tripping through encode+decode, running all `Refine` constraints. Returns only the error; the value is discarded.
+**`Codec.Validate(v T) error`** checks a Go value by encoding it (which runs Refine constraints) and then decoding it back. Returns only the error; the value is discarded.
 
 **`Codec.New(v T) (T, error)`** validates and returns the value. Use as a smart constructor — validate at the point of construction, get a typed result back:
 
@@ -246,7 +246,7 @@ func Downcast[A any, B any](v B) (A, error)
 
 ## `Refine` and `Constraint`
 
-`Refine[T]` wraps an existing `Codec[T]` with one or more `Constraint[T]` predicates. All constraints must pass during decoding; encoding is unaffected.
+`Refine[T]` wraps an existing `Codec[T]` with one or more `Constraint[T]` predicates. All constraints run on **both Encode and Decode** — a value that fails a constraint cannot be serialised OR deserialised. This ensures the codec is the single source of truth for validity.
 
 ```go
 // Constraint is a named validation predicate.
@@ -260,7 +260,7 @@ type Constraint[T any] struct {
     Schema  func(schema.Schema) schema.Schema // optional: mutates schema when Refine is applied
 }
 
-// Refine adds constraints to a codec. Constraints are checked during Decode.
+// Refine adds constraints to a codec. Constraints run on both Encode and Decode.
 // If Constraint.Schema is non-nil, it is applied to the codec's schema.
 func Refine[T any](c codex.Codec[T], constraints ...codex.Constraint[T]) codex.Codec[T]
 ```
@@ -273,7 +273,7 @@ func Refine[T any](c codex.Codec[T], constraints ...codex.Constraint[T]) codex.C
 For cross-field validation without defining a named `Constraint[T]`, use `RefineFunc`:
 
 ```go
-// RefineFunc wraps a func(T) error as a post-decode constraint.
+// RefineFunc wraps a func(T) error as a constraint applied on both Encode and Decode.
 // On failure, returns ConstraintError{Name:"refine", Message: err.Error()}.
 func (c Codec[T]) RefineFunc(fn func(T) error) Codec[T]
 ```
@@ -1095,11 +1095,11 @@ Key rules:
 - `Info = asyncapi.Info` and `Server = asyncapi.Server` are type aliases.
 - `api/events` may import `codex`, `format`, `render/asyncapi`, `schema`. No messaging library.
 - `adapters/mqtt` wraps `ChannelHandle` for Paho MQTT. It imports `api/events`, `stats`, and `github.com/eclipse/paho.mqtt.golang`.
-  - `SubscribeHandler[T](ctx, handle, fn, opts SubscribeOptions) mqtt.MessageHandler` — decodes payload, calls fn, routes typed errors to `opts.OnError`; instruments via `opts.Observer` (`RecordSubscribe` + `RecordValidationError("payload", ...)`). `SubscribeError.Topic` reflects the concrete incoming message topic (`msg.Topic()`).
+  - `SubscribeHandler[T](ctx, handle, fn, opts SubscribeOptions) mqtt.MessageHandler` — decodes payload, calls fn, routes typed errors to `opts.OnError`; instruments via `opts.Observer` (`RecordSubscribe` + `RecordValidationError` for payload and topic errors). `SubscribeError.Topic` reflects the concrete incoming message topic (`msg.Topic()`).
   - `SubscribeOptions{OnError func(SubscribeError), Observer stats.Observer}` — zero value is safe (nil `OnError` discards errors, nil `Observer` defaults to `NoopObserver`).
   - `MessageFromContext(ctx) (pahomqtt.Message, bool)` — retrieves the raw `pahomqtt.Message` stored in context by `SubscribeHandler`. Analogous to `nethttp.RequestFromContext`. Gives access to `Qos()`, `Retained()`, `MessageID()`, `Duplicate()` without breaking the typed handler signature. Returns false on a plain context.
   - `SubscribeError{Kind ErrorKind, Topic string, Err error}` — typed error; `Kind` is `KindDecode` or `KindHandler`.
-  - `Publish[T](ctx, client, handle, qos, retained, msg, vars map[string]string, opts PublishOptions) error` — unified publish: `nil` vars → use `handle.Topic` (static topics); non-nil vars → call `handle.BuildTopic(vars)`. Instruments via `opts.Observer`: calls `RecordPublish(topic, success, duration)` on all exit paths; calls `RecordValidationError("payload", ...)` on encode errors. Returns `TopicParamError` or `MissingTopicVarError` if `BuildTopic` fails. Context-aware token wait.
+  - `Publish[T](ctx, client, handle, qos, retained, msg, vars map[string]string, opts PublishOptions) error` — unified publish: `nil` vars → use `handle.Topic` (static topics); non-nil vars → call `handle.BuildTopic(vars)`. Instruments via `opts.Observer`: calls `RecordPublish(topic, success, duration)` on all exit paths; calls `RecordValidationError("payload", ...)` on encode errors; calls `RecordValidationError("topic_var", ...)` or `RecordValidationError("topic", ...)` on `BuildTopic` failures. Returns `TopicParamError` or `MissingTopicVarError` if `BuildTopic` fails. Context-aware token wait.
   - `PublishOptions{Observer stats.Observer}` — zero value is safe (nil `Observer` defaults to `NoopObserver`).
   - `TopicVarsFromMessage[T](handle, msg) (map[string]string, error)` — inverse of `BuildTopic`. Matches the concrete MQTT topic (`msg.Topic()`) against the channel's topic template, extracting `{varName}` values into the returned map. Template rules: `{varName}` captures one level; `+` matches one level (anonymous, not captured); `#` as last segment captures all remaining levels under key `"#"`. Applies full validation chain (symmetric with `BuildTopic`): (1) structural match → `TopicMismatchError{Template, Topic}`; (2) builder-level topic codec → `InvalidTopicError{Topic, Err}`; (3) per-param `TopicParam.Codec` validation → `TopicParamError{Name, Value, Err}`.
   - `TopicMismatchError{Template, Topic string}` — returned by `TopicVarsFromMessage` when the received topic does not match the template structure.
@@ -1110,7 +1110,7 @@ Key rules:
   - `NoopObserver{}` — satisfies both interfaces, zero-cost default.
   - `ReportErrors(obs ValidationObserver, location string, err error)` — iterates `codex.ValidationErrors` from a decode error, calls `obs.RecordValidationError` per field. Codec-only users call this after `codec.Decode`.
   - `ConstraintName(err error) string` — extracts stable constraint label: `ConstraintError.Name`, `"type-mismatch"`, `"required"`, or `""`.
-  - `location` values by context: `"body"` (nethttp body), `"query"` (nethttp query), `"payload"` (mqtt), user-defined string (codec-only).
+  - `location` values by adapter: `"body"` (nethttp/chi body decode/encode), `"query"` (nethttp/chi query), `"cookie"` (nethttp/chi request cookie), `"header"` (nethttp/chi request header), `"response_header"` (nethttp/chi response header), `"response_cookie"` (nethttp/chi response cookie), `"payload"` (mqtt payload), `"topic_var"` (mqtt per-variable codec failure), `"topic"` (mqtt topic-level codec or structural mismatch), user-defined string (codec-only).
 
 ### Package import table (updated)
 

@@ -736,7 +736,7 @@ func main() {
 			})
 			return buildUserResponse(buildUserRecord(req)), nil
 		},
-		nethttp.Options{})
+		nethttp.Options{Observer: obs})
 	violationSrv := httptest.NewServer(violationMux)
 	defer violationSrv.Close()
 
@@ -751,7 +751,35 @@ func main() {
 	_ = json.NewDecoder(violResp.Body).Decode(&violBody)
 	fmt.Printf("Contract violation → Status: %d, error: %s\n\n", violResp.StatusCode, violBody["error"])
 
-	fmt.Println("=== nethttp.SetCookie — write-side validation with same codec ===")
+	fmt.Println("=== Response body encode violation — symmetric validation ===")
+	// The same codec that rejects an invalid request body at 400 now also rejects
+	// an invalid response body at 500. Refine constraints run on both Encode and Decode.
+	bodyViolMux := http.NewServeMux()
+	nethttp.Register(bodyViolMux, createUserRoute,
+		func(ctx context.Context, req CreateUserReq) (User, error) {
+			// Handler deliberately returns a User with invalid field values to
+			// demonstrate that handle.Encode now validates the response body.
+			return User{
+				ID:    "not-a-uuid",   // fails UUID constraint
+				Name:  "",             // fails NonEmptyString constraint
+				Email: "not-an-email", // fails Email constraint
+			}, nil
+		},
+		nethttp.Options{Observer: obs})
+	bodyViolSrv := httptest.NewServer(bodyViolMux)
+	defer bodyViolSrv.Close()
+
+	bodyViolResp, err := http.Post(bodyViolSrv.URL+"/users", "application/json", //nolint:noctx
+		strings.NewReader(`{"name":"Dave","email":"dave@example.com"}`))
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "POST error: %v\n", err)
+		os.Exit(1)
+	}
+	defer bodyViolResp.Body.Close()
+	var bodyViolBody map[string]string
+	_ = json.NewDecoder(bodyViolResp.Body).Decode(&bodyViolBody)
+	fmt.Printf("Response body violation → Status: %d, error: %s\n\n", bodyViolResp.StatusCode, bodyViolBody["error"])
+
 	// nethttp.SetCookie writes a Set-Cookie header with secure defaults
 	// (Secure, HttpOnly, SameSite=Strict). When CookieOptions.Codec is set,
 	// the value is validated against that codec before writing — the same codec

@@ -19,7 +19,8 @@ type Constraint[T any] struct {
 	Schema  func(schema.Schema) schema.Schema // optional: mutates schema when Refine is applied
 }
 
-// Refine wraps the codec with a single constraint checked during Decode.
+// Refine wraps the codec with a single constraint checked during both Encode and Decode.
+// Encode validates before serialising; Decode validates after parsing.
 // If cons.Schema is non-nil, it is applied to the codec's schema.
 func (c Codec[T]) Refine(cons Constraint[T]) Codec[T] {
 	s := c.Schema
@@ -27,7 +28,15 @@ func (c Codec[T]) Refine(cons Constraint[T]) Codec[T] {
 		s = cons.Schema(s)
 	}
 	return Codec[T]{
-		Encode: c.Encode,
+		Encode: func(v T) (any, error) {
+			if !cons.Check(v) {
+				return nil, ConstraintError{
+					Name:    cons.Name,
+					Message: cons.Message(v),
+				}
+			}
+			return c.Encode(v)
+		},
 		Decode: func(v any) (T, error) {
 			val, err := c.Decode(v)
 			if err != nil {
@@ -56,6 +65,7 @@ func Refine[T any](c Codec[T], constraints ...Constraint[T]) Codec[T] {
 }
 
 // RefineFunc wraps the codec with a constraint expressed as a function returning an error.
+// The constraint runs on both Encode (before serialising) and Decode (after parsing).
 // If fn returns nil the value passes; if fn returns an error it becomes a ConstraintError.
 //
 // This is the idiomatic way to add cross-field constraints to a struct codec:
@@ -69,7 +79,12 @@ func Refine[T any](c Codec[T], constraints ...Constraint[T]) Codec[T] {
 //	    })
 func (c Codec[T]) RefineFunc(fn func(T) error) Codec[T] {
 	return Codec[T]{
-		Encode: c.Encode,
+		Encode: func(v T) (any, error) {
+			if err := fn(v); err != nil {
+				return nil, ConstraintError{Name: "refine", Message: err.Error()}
+			}
+			return c.Encode(v)
+		},
 		Decode: func(v any) (T, error) {
 			val, err := c.Decode(v)
 			if err != nil {

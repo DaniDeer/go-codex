@@ -169,9 +169,9 @@ go-codex draws a deliberate line between trusted and untrusted data:
 | Direction  | What runs                              | Rationale                                                                                                                                   |
 | ---------- | -------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------- |
 | **Decode** | type checks + all `Refine` constraints | Input comes from outside — JSON on the wire, YAML from a file, a CLI flag. You cannot trust it. Every constraint runs.                      |
-| **Encode** | type conversion only                   | The Go value was constructed by your own code. You already trust it. Running constraints on every encode would be redundant and surprising. |
+| **Encode** | type conversion + all `Refine` constraints | Constraints also run on the outgoing path, so an invalid value can never be serialised. Both directions enforce the same contract.       |
 
-This mirrors the design of [autodocodec](https://hackage.haskell.org/package/autodocodec): constraints are a guard on ingress, not a restriction on your own domain logic.
+This symmetric design ensures that a codec is the **single source of truth for validity** — the same rule that rejects a bad request body at 400 also rejects a bad response body at 500.
 
 #### Decode — validates automatically
 
@@ -181,17 +181,18 @@ user, err := jsonFmt.Unmarshal([]byte(`{"name":"","age":-5}`))
 // err: field name: constraint failed (non-empty): expected non-empty string
 ```
 
-#### Encode — trusted, no constraints
+#### Encode — also validates
 
 ```go
-// Encoding the value you constructed always succeeds (no constraints run).
-// You are responsible for the correctness of values you build.
-data, err := jsonFmt.Marshal(User{Name: "", Age: -5}) // succeeds
+// Constraints also run during Encode. Returning an invalid value from a handler
+// produces an error before the value reaches the wire.
+data, err := jsonFmt.Marshal(User{Name: "", Age: -5})
+// err: field name: constraint failed (non-empty): ...; field age: constraint failed (positive): ...
 ```
 
-#### Validate — explicit bidirectional check
+#### Validate — explicit round-trip check
 
-When you need to validate a Go value you constructed — before storing it, after building it programmatically, or to surface errors early — call `Validate` explicitly. It reuses the exact same `Refine` constraints, with no duplication:
+When you need to validate a Go value you constructed — before storing it, after building it programmatically, or to surface errors early — call `Validate` explicitly. It performs a full encode + decode round-trip:
 
 ```go
 // Codec.Validate — no format required.
@@ -205,7 +206,6 @@ if err := jsonFmt.Validate(u); err != nil {
 }
 ```
 
-`Validate` is always explicit. `Marshal` and `Encode` never silently validate.
 
 #### New — smart constructor
 
@@ -246,7 +246,7 @@ All decode failures are structured types. Use `errors.As` to inspect them precis
 | --------------------- | ---------------------------------------------------------- | ------------------------------------------------------- |
 | `ValidationErrors`    | `Struct` decode                                            | `[]ValidationError`; also implements `Unwrap() []error` |
 | `ValidationError`     | each field in `Struct` decode                              | `Field string`, `Err error`                             |
-| `ConstraintError`     | `Refine` on any codec; also `Int`/`Int64` for non-integral float | `Name string`, `Message string`                         |
+| `ConstraintError`     | `Refine` on any codec (both Encode and Decode); also `Int`/`Int64` for non-integral float | `Name string`, `Message string`                         |
 | `TypeMismatchError`   | any codec receiving wrong Go type                          | `Expected string`, `Got string`                         |
 | `ElementError`        | `SliceOf` decode                                           | `Index int`, `Err error`                                |
 | `KeyError`            | `StringMap` decode                                         | `Key string`, `Err error`                               |
@@ -462,7 +462,7 @@ The `validate/` package ships ready-made constraints using this exact pattern (`
 
 ### Cross-Field Constraints: `RefineFunc`
 
-`RefineFunc` wraps a plain `func(T) error` as a post-decode constraint. Use it on struct codecs to validate relationships between fields without defining a named `Constraint[T]`.
+`RefineFunc` wraps a plain `func(T) error` as a constraint applied on both Encode and Decode. Use it on struct codecs to validate relationships between fields without defining a named `Constraint[T]`.
 
 ```go
 type DateRange struct {
@@ -1526,12 +1526,12 @@ nethttp.Register(mux, createUser, handler, nethttp.Options{
 **Wiring to mqtt (subscribe + publish):**
 ```go
 amqtt.SubscribeHandler(ctx, channel, handler, amqtt.SubscribeOptions{
-    Observer: myObserver, // RecordSubscribe + RecordValidationError("payload", ...)
+    Observer: myObserver, // RecordSubscribe + RecordValidationError for payload/topic errors
     OnError:  onErr,
 })
 
 amqtt.Publish(ctx, client, channel, qos, retained, msg, vars, amqtt.PublishOptions{
-    Observer: myObserver, // RecordPublish on broker ack or error
+    Observer: myObserver, // RecordPublish + RecordValidationError for payload/topic errors
 })
 ```
 
@@ -1565,9 +1565,15 @@ Pass `stats.NoopObserver{}` (or omit the field — adapter defaults to it) for z
 
 | location value | adapter / use case |
 |---|---|
-| `"body"` | nethttp — request body decode |
-| `"query"` | nethttp — query parameter validation |
-| `"payload"` | mqtt — message payload decode/encode |
+| `"body"` | nethttp/chi — request or response body decode/encode |
+| `"query"` | nethttp/chi — query parameter validation |
+| `"cookie"` | nethttp/chi — request cookie parameter validation |
+| `"header"` | nethttp/chi — request header parameter validation |
+| `"response_header"` | nethttp/chi — response header parameter validation |
+| `"response_cookie"` | nethttp/chi — response cookie parameter validation |
+| `"payload"` | mqtt — message payload decode (subscribe) or encode (publish) |
+| `"topic_var"` | mqtt — per-variable codec failure in topic template (subscribe handler / publish) |
+| `"topic"` | mqtt — topic-level codec failure or structural mismatch (subscribe handler / publish) |
 | any string | codec-only: choose a label meaningful to your domain (`"config"`, `"input"`, …) |
 
 See [`examples/stats-observer`](examples/stats-observer/main.go) for a runnable codec-only observer example (config file validation, no adapters). See [`examples/stats-observer-http`](examples/stats-observer-http/main.go) for the HTTP body + query validation demo. See [`examples/stats-observer-mqtt`](examples/stats-observer-mqtt/main.go) for the MQTT subscribe + publish observer demo.

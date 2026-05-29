@@ -54,13 +54,9 @@ func (c Codec[T]) New(v T) (T, error) {
 	return v, nil
 }
 
-// It encodes v to the intermediate representation and decodes it back, running
-// all Refine constraints defined on the codec. This reuses the exact same
-// constraint logic as Decode — builtin constraints (via validate.*) and any
-// self-defined Constraint[T] values work without modification.
-//
-// The encode direction is intentionally unconstrained (you constructed the value
-// yourself). Call Validate explicitly when you want bidirectional enforcement.
+// Validate checks v against all Refine constraints by encoding it and decoding
+// it back. Both directions now run constraints, so an invalid value fails at
+// the Encode step. This is equivalent to calling Encode followed by Decode.
 func (c Codec[T]) Validate(v T) error {
 	intermediate, err := c.Encode(v)
 	if err != nil {

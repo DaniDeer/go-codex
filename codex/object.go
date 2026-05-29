@@ -98,12 +98,17 @@ func Struct[T any](fields ...fieldCodec[T]) Codec[T] {
 	return Codec[T]{
 		Encode: func(v T) (any, error) {
 			obj := map[string]any{}
+			var errs ValidationErrors
 			for _, f := range fields {
 				name, val, err := f.encode(v)
 				if err != nil {
-					return nil, err
+					errs = append(errs, ValidationError{Field: name, Err: err})
+				} else {
+					obj[name] = val
 				}
-				obj[name] = val
+			}
+			if len(errs) > 0 {
+				return obj, errs
 			}
 			return obj, nil
 		},
