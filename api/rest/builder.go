@@ -246,6 +246,34 @@ func (h *RouteHandle[Req, Resp]) ValidateQuery(params map[string]string) error {
 	return nil
 }
 
+// ValidateQueryMulti validates query parameter values against their registered codecs
+// using a multi-value map (such as [url.Values] returned by r.URL.Query()).
+//
+// For each [QueryParam] that has a non-nil Codec, the first value in the slice
+// for that key is validated. This mirrors the behaviour of [ValidateQuery] but
+// accepts the raw map[string][]string directly — useful when handling repeated
+// query keys such as "?tags=a&tags=b".
+//
+// Returns a [QueryParamError] on the first failure. Parameters not present in
+// params are silently skipped; extra keys are silently ignored.
+func (h *RouteHandle[Req, Resp]) ValidateQueryMulti(params map[string][]string) error {
+	for i := range h.queryParams {
+		qp := &h.queryParams[i]
+		if qp.Codec == nil {
+			continue
+		}
+		values, ok := params[qp.Name]
+		if !ok || len(values) == 0 {
+			continue
+		}
+		value := values[0]
+		if err := qp.Codec.Validate(value); err != nil {
+			return QueryParamError{Name: qp.Name, Value: value, Err: err}
+		}
+	}
+	return nil
+}
+
 // ValidateCookies validates cookie parameter values against their registered codecs.
 //
 // For each [CookieParam] that has a non-nil Codec, the corresponding value in
@@ -499,6 +527,42 @@ func (e HeaderParamError) Error() string {
 
 // Unwrap allows errors.As and errors.Is to traverse the underlying constraint error.
 func (e HeaderParamError) Unwrap() error { return e.Err }
+
+// UnsupportedMediaTypeError is returned by the net/http adapter when the
+// request Content-Type does not match the expected media type.
+// Use [errors.As] to inspect the Got and Expected fields.
+//
+//	var ctErr rest.UnsupportedMediaTypeError
+//	if errors.As(err, &ctErr) {
+//	    log.Printf("got %q, want %q", ctErr.Got, ctErr.Expected)
+//	}
+type UnsupportedMediaTypeError struct {
+	// Got is the actual Content-Type value sent by the client (without parameters).
+	Got string
+	// Expected is the media type the adapter was configured to accept.
+	Expected string
+}
+
+func (e UnsupportedMediaTypeError) Error() string {
+	return fmt.Sprintf("unsupported media type %q: expected %q", e.Got, e.Expected)
+}
+
+// BodyTooLargeError is returned by the net/http adapter when the request body
+// exceeds [Options.MaxBodyBytes]. Use [errors.As] to inspect the Limit field.
+//
+//	var sizeErr rest.BodyTooLargeError
+//	if errors.As(err, &sizeErr) {
+//	    log.Printf("body exceeded %d byte limit", sizeErr.Limit)
+//	}
+type BodyTooLargeError struct {
+	// Limit is the maximum allowed body size in bytes (from Options.MaxBodyBytes,
+	// or the default 1 MiB when not configured).
+	Limit int64
+}
+
+func (e BodyTooLargeError) Error() string {
+	return fmt.Sprintf("request body exceeds limit of %d bytes", e.Limit)
+}
 
 // Create one with [NewBuilder].
 type Builder struct {

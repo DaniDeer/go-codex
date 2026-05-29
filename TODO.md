@@ -104,26 +104,6 @@
 
 #### net/http adapter gaps
 
-- [ ] **`adapters/nethttp`: configurable body size limit** _(low effort)_
-      `maxRequestBodyBytes` is hardcoded at 1 MiB. Add `Options.MaxBodyBytes int64` (zero
-      means use the default). Callers hosting large file uploads or tiny IoT payloads need
-      control over this limit without forking the adapter.
-
-- [ ] **`adapters/nethttp`: `Content-Type` validation on request** _(low effort)_
-      The adapter currently reads and decodes the body regardless of the `Content-Type` header.
-      A client sending `Content-Type: application/xml` gets a confusing JSON decode error.
-      For body-bearing methods (POST, PUT, PATCH), reject requests whose `Content-Type` does
-      not match the route's expected media type (default: `application/json`), returning 415
-      Unsupported Media Type. The expected media type should be derivable from the route
-      descriptor or overridable in `Options`.
-
-- [ ] **`adapters/nethttp`: multi-value query parameter support** _(low effort)_
-      `queryValues` currently drops all but the first value for repeated keys
-      (`?tags=a&tags=b` → only `"a"` is validated). Add `Options.MultiValueQueryParams bool`
-      or a separate `ValidateQueryMulti(map[string][]string) error` on `RouteHandle` so
-      repeated keys can be validated as a slice. OpenAPI allows `style: form, explode: true`
-      for this pattern.
-
 - [ ] **`adapters/nethttp`: content negotiation (`Accept` header)** _(medium effort)_
       The adapter hardcodes `Content-Type: application/json` on responses. Add
       `Options.Formats []format.Format[Resp]` so the adapter can select the response format
@@ -143,6 +123,17 @@
       Option (c) is the least intrusive and most composable. Needs design decision.
 
 #### MQTT adapter gaps
+
+- [ ] **`Observer`: `RecordRejection` hook for protocol-level request rejections** _(medium effort — breaking interface change)_
+      `RecordRequest` already captures 413 and 415 status codes, so Prometheus users can
+      filter by status code bucket. However, if a custom `ErrorHandler` rewrites the status,
+      the observer loses the distinction between body-too-large and codec validation failures.
+      A dedicated `RecordRejection(reason string)` method on `Observer` (e.g.
+      `"body-too-large"`, `"unsupported-media-type"`) would give observers a semantic signal
+      without relying on status codes.
+      **Breaking change**: all existing `Observer` implementations would need to add the new
+      method. Consider using a separate optional interface (`RejectionObserver`) or a
+      version-compatible extension pattern (e.g. type-assert before calling).
 
 - [ ] **`adapters/mqtt`: wildcard topic variable extraction** _(medium effort)_
       When subscribing to a template topic like `sensors/{sensorID}/temperature` (compiled to

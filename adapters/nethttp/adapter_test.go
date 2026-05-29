@@ -72,6 +72,7 @@ func TestHandler_PostValidBody(t *testing.T) {
 	body := `{"name":"Alice"}`
 	rec := httptest.NewRecorder()
 	r := httptest.NewRequest(http.MethodPost, "/users", strings.NewReader(body))
+	r.Header.Set("Content-Type", "application/json")
 	h.ServeHTTP(rec, r)
 
 	if rec.Code != http.StatusCreated {
@@ -98,6 +99,7 @@ func TestHandler_PostValidationError(t *testing.T) {
 
 	rec := httptest.NewRecorder()
 	r := httptest.NewRequest(http.MethodPost, "/users", strings.NewReader(`{"name":""}`))
+	r.Header.Set("Content-Type", "application/json")
 	h.ServeHTTP(rec, r)
 
 	if rec.Code != http.StatusBadRequest {
@@ -120,6 +122,7 @@ func TestHandler_PostMalformedJSON(t *testing.T) {
 
 	rec := httptest.NewRecorder()
 	r := httptest.NewRequest(http.MethodPost, "/users", strings.NewReader(`not-json`))
+	r.Header.Set("Content-Type", "application/json")
 	h.ServeHTTP(rec, r)
 
 	if rec.Code != http.StatusBadRequest {
@@ -135,6 +138,7 @@ func TestHandler_PostHandlerError(t *testing.T) {
 
 	rec := httptest.NewRecorder()
 	r := httptest.NewRequest(http.MethodPost, "/users", strings.NewReader(`{"name":"Alice"}`))
+	r.Header.Set("Content-Type", "application/json")
 	h.ServeHTTP(rec, r)
 
 	if rec.Code != http.StatusInternalServerError {
@@ -228,6 +232,7 @@ func TestHandler_CustomStatus(t *testing.T) {
 
 	rec := httptest.NewRecorder()
 	r := httptest.NewRequest(http.MethodPut, "/users/1", strings.NewReader(`{"name":"Dave"}`))
+	r.Header.Set("Content-Type", "application/json")
 	h.ServeHTTP(rec, r)
 
 	if rec.Code != 204 {
@@ -286,6 +291,7 @@ func TestHandlerWithOptions_CustomErrorHandler(t *testing.T) {
 
 	rec := httptest.NewRecorder()
 	r := httptest.NewRequest(http.MethodPost, "/users", strings.NewReader(`{"name":"Alice"}`))
+	r.Header.Set("Content-Type", "application/json")
 	h.ServeHTTP(rec, r)
 
 	if rec.Code != http.StatusInternalServerError {
@@ -382,6 +388,7 @@ func TestObserver_RecordRequest_success(t *testing.T) {
 
 	rec := httptest.NewRecorder()
 	r := httptest.NewRequest(http.MethodPost, "/users", strings.NewReader(`{"name":"Alice"}`))
+	r.Header.Set("Content-Type", "application/json")
 	h.ServeHTTP(rec, r)
 
 	if len(obs.requests) != 1 {
@@ -408,6 +415,7 @@ func TestObserver_RecordRequest_handlerError(t *testing.T) {
 
 	rec := httptest.NewRecorder()
 	r := httptest.NewRequest(http.MethodPost, "/users", strings.NewReader(`{"name":"Alice"}`))
+	r.Header.Set("Content-Type", "application/json")
 	h.ServeHTTP(rec, r)
 
 	if len(obs.requests) != 1 {
@@ -427,6 +435,7 @@ func TestObserver_RecordValidationError_body(t *testing.T) {
 
 	rec := httptest.NewRecorder()
 	r := httptest.NewRequest(http.MethodPost, "/users", strings.NewReader(`{"name":""}`))
+	r.Header.Set("Content-Type", "application/json")
 	h.ServeHTTP(rec, r)
 
 	if len(obs.valErrors) == 0 {
@@ -620,5 +629,155 @@ func TestObserver_RecordValidationError_header(t *testing.T) {
 	}
 	if obs.valErrors[0].field != "X-Request-Id" {
 		t.Errorf("want field 'X-Request-Id', got %q", obs.valErrors[0].field)
+	}
+}
+
+func TestOptions_MaxBodyBytes_rejectOversized(t *testing.T) {
+	b := rest.NewBuilder(testInfo)
+	h, err := rest.AddRoute[createReq, userResp](b, "POST", "/users", createReqCodec, userRespCodec, rest.RouteConfig{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	handler := nethttp.Handler(h, func(_ context.Context, _ createReq) (userResp, error) {
+		return userResp{}, nil
+	}, nethttp.Options{MaxBodyBytes: 10}) // 10 bytes — tiny
+
+	var capturedErr error
+	captureHandler := nethttp.Handler(h, func(_ context.Context, _ createReq) (userResp, error) {
+		return userResp{}, nil
+	}, nethttp.Options{
+		MaxBodyBytes: 10,
+		ErrorHandler: func(w http.ResponseWriter, _ *http.Request, status int, err error) {
+			capturedErr = err
+			w.WriteHeader(status)
+		},
+	})
+
+	rec := httptest.NewRecorder()
+	body := `{"name":"Alice","age":30}` // 24 bytes > 10
+	r := httptest.NewRequest(http.MethodPost, "/users", strings.NewReader(body))
+	r.Header.Set("Content-Type", "application/json")
+	handler.ServeHTTP(rec, r)
+
+	if rec.Code != http.StatusRequestEntityTooLarge {
+		t.Errorf("want 413, got %d", rec.Code)
+	}
+
+	// Verify typed error via errors.As.
+	rec2 := httptest.NewRecorder()
+	r2 := httptest.NewRequest(http.MethodPost, "/users", strings.NewReader(body))
+	r2.Header.Set("Content-Type", "application/json")
+	captureHandler.ServeHTTP(rec2, r2)
+
+	var sizeErr rest.BodyTooLargeError
+	if !errors.As(capturedErr, &sizeErr) {
+		t.Fatalf("want BodyTooLargeError, got %T: %v", capturedErr, capturedErr)
+	}
+	if sizeErr.Limit != 10 {
+		t.Errorf("want Limit=10, got %d", sizeErr.Limit)
+	}
+}
+
+func TestOptions_ContentType_415onWrongType(t *testing.T) {
+	b := rest.NewBuilder(testInfo)
+	h, err := rest.AddRoute[createReq, userResp](b, "POST", "/users", createReqCodec, userRespCodec, rest.RouteConfig{})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var capturedErr error
+	handler := nethttp.Handler(h, func(_ context.Context, _ createReq) (userResp, error) {
+		return userResp{}, nil
+	}, nethttp.Options{
+		ErrorHandler: func(w http.ResponseWriter, _ *http.Request, status int, err error) {
+			capturedErr = err
+			w.WriteHeader(status)
+		},
+	})
+
+	rec := httptest.NewRecorder()
+	body := `{"name":"Alice"}`
+	r := httptest.NewRequest(http.MethodPost, "/users", strings.NewReader(body))
+	r.Header.Set("Content-Type", "application/xml")
+	handler.ServeHTTP(rec, r)
+
+	if rec.Code != http.StatusUnsupportedMediaType {
+		t.Errorf("want 415, got %d", rec.Code)
+	}
+
+	var ctErr rest.UnsupportedMediaTypeError
+	if !errors.As(capturedErr, &ctErr) {
+		t.Fatalf("want UnsupportedMediaTypeError, got %T: %v", capturedErr, capturedErr)
+	}
+	if ctErr.Got != "application/xml" {
+		t.Errorf("want Got=%q, got %q", "application/xml", ctErr.Got)
+	}
+	if ctErr.Expected != "application/json" {
+		t.Errorf("want Expected=%q, got %q", "application/json", ctErr.Expected)
+	}
+}
+
+func TestOptions_ContentType_acceptsWithCharset(t *testing.T) {
+	b := rest.NewBuilder(testInfo)
+	h, err := rest.AddRoute[createReq, userResp](b, "POST", "/users", createReqCodec, userRespCodec, rest.RouteConfig{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	handler := nethttp.Handler(h, func(_ context.Context, req createReq) (userResp, error) {
+		return userResp{ID: "1", Name: req.Name}, nil
+	}, nethttp.Options{})
+
+	rec := httptest.NewRecorder()
+	body := `{"name":"Alice"}`
+	r := httptest.NewRequest(http.MethodPost, "/users", strings.NewReader(body))
+	r.Header.Set("Content-Type", "application/json; charset=utf-8")
+	handler.ServeHTTP(rec, r)
+
+	if rec.Code != http.StatusCreated {
+		t.Errorf("want 201, got %d (body: %s)", rec.Code, rec.Body.String())
+	}
+}
+
+func TestOptions_MultiValueQueryParams_valid(t *testing.T) {
+	b := rest.NewBuilder(testInfo)
+	uuidCodec := codex.String().Refine(validate.UUID)
+	h, err := rest.AddRoute[getReq, userResp](b, "GET", "/items", getReqCodec, userRespCodec, rest.RouteConfig{
+		QueryParams: []rest.QueryParam{{Name: "id", Codec: &uuidCodec}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	handler := nethttp.Handler(h, func(_ context.Context, _ getReq) (userResp, error) {
+		return userResp{ID: "1", Name: "Alice"}, nil
+	}, nethttp.Options{MultiValueQueryParams: true})
+
+	rec := httptest.NewRecorder()
+	r := httptest.NewRequest(http.MethodGet, "/items?id=550e8400-e29b-41d4-a716-446655440000&id=ignored", nil)
+	handler.ServeHTTP(rec, r)
+
+	if rec.Code != http.StatusOK {
+		t.Errorf("want 200, got %d (body: %s)", rec.Code, rec.Body.String())
+	}
+}
+
+func TestOptions_MultiValueQueryParams_invalid(t *testing.T) {
+	b := rest.NewBuilder(testInfo)
+	uuidCodec := codex.String().Refine(validate.UUID)
+	h, err := rest.AddRoute[getReq, userResp](b, "GET", "/items", getReqCodec, userRespCodec, rest.RouteConfig{
+		QueryParams: []rest.QueryParam{{Name: "id", Codec: &uuidCodec}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	handler := nethttp.Handler(h, func(_ context.Context, _ getReq) (userResp, error) {
+		return userResp{}, nil
+	}, nethttp.Options{MultiValueQueryParams: true})
+
+	rec := httptest.NewRecorder()
+	r := httptest.NewRequest(http.MethodGet, "/items?id=not-a-uuid", nil)
+	handler.ServeHTTP(rec, r)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Errorf("want 400, got %d", rec.Code)
 	}
 }

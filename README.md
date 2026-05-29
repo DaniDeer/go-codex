@@ -1039,6 +1039,8 @@ yamlBytes, _ := doc.MarshalYAML()
 | `*rest.QueryParamError` | A query parameter value fails its codec | `QueryParamError{Name, Value, Err}` |
 | `*rest.CookieParamError` | A cookie value fails its codec | `CookieParamError{Name, Value, Err}` |
 | `*rest.HeaderParamError` | An HTTP header value fails its codec | `HeaderParamError{Name, Value, Err}` |
+| `rest.UnsupportedMediaTypeError` | Wrong `Content-Type` on POST/PUT/PATCH (adapter) | `UnsupportedMediaTypeError{Got, Expected}` |
+| `rest.BodyTooLargeError` | Request body exceeds `Options.MaxBodyBytes` (adapter) | `BodyTooLargeError{Limit}` |
 
 **Codec schema → OpenAPI spec:** `PathParam.Codec` schema flows automatically into the OpenAPI path parameter spec. `QueryParam.Codec`, `CookieParam.Codec`, and `HeaderParam.Codec` schemas flow into their respective OpenAPI parameter specs (`in: query`, `in: cookie`, `in: header`). When `Codec` is nil, the parameter is still declared in the spec (minimal entry).
 
@@ -1067,10 +1069,12 @@ http.ListenAndServe(":8080", mux)
 
 - POST/PUT/PATCH: body read → `handle.Decode` (validates) → handler → `handle.Encode` → write
 - GET/HEAD/DELETE: handler called with zero value of `Req`; path/query extraction via `RequestFromContext`
-- **Query param validation**: `ValidateQuery` is called automatically before the handler; codec-backed `QueryParam` entries are validated from `r.URL.Query()`
+- **Content-Type enforcement**: POST/PUT/PATCH requests with wrong `Content-Type` are rejected with 415 Unsupported Media Type (default expected: `application/json`; override via `Options.ContentType`)
+- **Body size limit**: default 1 MiB; configurable via `Options.MaxBodyBytes int64` (0 = default)
+- **Query param validation**: `ValidateQuery` is called automatically before the handler; codec-backed `QueryParam` entries are validated from `r.URL.Query()`. For repeated keys (`?tags=a&tags=b`), set `Options.MultiValueQueryParams: true` to use `ValidateQueryMulti` (validates first value per key)
 - **Cookie param validation**: `ValidateCookies` is called automatically before the handler; codec-backed `CookieParam` entries are validated from `r.Cookies()`
 - **Header param validation**: `ValidateHeaders` is called automatically before the handler; codec-backed `HeaderParam` entries are validated from `r.Header`
-- Errors: `{"error":"..."}` JSON — 400 for decode/validation failures (body, query, cookie, header), 500 for handler/encode failures
+- Errors: `{"error":"..."}` JSON — 400 for decode/validation failures (body, query, cookie, header), 413 when body exceeds `MaxBodyBytes`, 415 for wrong Content-Type, 500 for handler/encode failures
 - Response status: taken from the route descriptor's primary response (e.g. 201 for POST)
 - **Custom error handling**: `Options.ErrorHandler func(w, r, status, err)` overrides the default JSON envelope
 - **Metrics / observability**: `Options.Observer stats.Observer` — implement [`stats.Observer`](#stats--observer) to receive per-request events; defaults to `stats.NoopObserver`

@@ -636,6 +636,66 @@ func TestValidateQuery_missingKeySkipped(t *testing.T) {
 	}
 }
 
+func TestValidateQueryMulti_validFirstValue(t *testing.T) {
+	b := rest.NewBuilder(testInfo)
+	uuidCodec := codex.String().Refine(validate.UUID)
+	h, err := rest.AddRoute[createReq, userResp](b, "GET", "/items", createReqCodec, userCodec, rest.RouteConfig{
+		QueryParams: []rest.QueryParam{
+			{Name: "id", Codec: &uuidCodec},
+		},
+	})
+	if err != nil {
+		t.Fatalf("AddRoute: %v", err)
+	}
+	params := map[string][]string{
+		"id": {"550e8400-e29b-41d4-a716-446655440000", "ignored-second-value"},
+	}
+	if err := h.ValidateQueryMulti(params); err != nil {
+		t.Errorf("ValidateQueryMulti with valid first value: %v", err)
+	}
+}
+
+func TestValidateQueryMulti_invalidFirstValue(t *testing.T) {
+	b := rest.NewBuilder(testInfo)
+	uuidCodec := codex.String().Refine(validate.UUID)
+	h, err := rest.AddRoute[createReq, userResp](b, "GET", "/items", createReqCodec, userCodec, rest.RouteConfig{
+		QueryParams: []rest.QueryParam{
+			{Name: "id", Codec: &uuidCodec},
+		},
+	})
+	if err != nil {
+		t.Fatalf("AddRoute: %v", err)
+	}
+	params := map[string][]string{"id": {"not-a-uuid"}}
+	err = h.ValidateQueryMulti(params)
+	if err == nil {
+		t.Fatal("expected error for invalid first value")
+	}
+	var qpe rest.QueryParamError
+	if !errors.As(err, &qpe) {
+		t.Errorf("expected QueryParamError, got %T: %v", err, err)
+	}
+	if qpe.Name != "id" || qpe.Value != "not-a-uuid" {
+		t.Errorf("unexpected QueryParamError fields: %+v", qpe)
+	}
+}
+
+func TestValidateQueryMulti_missingKeySkipped(t *testing.T) {
+	b := rest.NewBuilder(testInfo)
+	uuidCodec := codex.String().Refine(validate.UUID)
+	h, err := rest.AddRoute[createReq, userResp](b, "GET", "/items", createReqCodec, userCodec, rest.RouteConfig{
+		QueryParams: []rest.QueryParam{
+			{Name: "id", Codec: &uuidCodec},
+		},
+	})
+	if err != nil {
+		t.Fatalf("AddRoute: %v", err)
+	}
+	if err := h.ValidateQueryMulti(map[string][]string{}); err != nil {
+		t.Errorf("ValidateQueryMulti with missing key: %v", err)
+	}
+}
+
 func TestQueryParam_schemaFlowsToSpec(t *testing.T) {
 	b := rest.NewBuilder(testInfo)
 	uuidCodec := codex.String().Refine(validate.UUID)

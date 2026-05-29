@@ -844,6 +844,8 @@ type QueryParam struct {
 
 `RouteHandle.ValidateQuery(params map[string]string) error` — validates each `QueryParam` with a non-nil `Codec` against the provided map. Missing keys are silently skipped (no error). Returns `QueryParamError` on first failure.
 
+`RouteHandle.ValidateQueryMulti(params map[string][]string) error` — same as `ValidateQuery` but accepts the multi-value map returned by `r.URL.Query()`. Validates the first value per key. Use when handling repeated query keys (`?tags=a&tags=b`). Called by the adapter when `Options.MultiValueQueryParams` is true.
+
 ```go
 type QueryParamError struct {
     Name  string
@@ -884,6 +886,17 @@ type HeaderParamError struct {
     Value string
     Err   error
 }
+
+// UnsupportedMediaTypeError — returned by the adapter when Content-Type does not match expected.
+type UnsupportedMediaTypeError struct {
+    Got      string // actual Content-Type (without parameters)
+    Expected string // configured expected type (default "application/json")
+}
+
+// BodyTooLargeError — returned by the adapter when body exceeds Options.MaxBodyBytes.
+type BodyTooLargeError struct {
+    Limit int64 // configured byte limit
+}
 ```
 
 **Codec schema → spec**: `PathParam.Codec` schema automatically flows into the OpenAPI path parameter spec. `QueryParam.Codec`, `CookieParam.Codec`, and `HeaderParam.Codec` schemas automatically flow into their respective OpenAPI parameter specs (`in: query`, `in: cookie`, `in: header`). When `Codec` is nil, the parameter is still declared (minimal entry with no schema).
@@ -901,10 +914,14 @@ Key rules:
   - `Handler[Req,Resp](handle, fn, opts Options) http.Handler` — decodes body (POST/PUT/PATCH), calls fn, encodes response; instruments via `opts.Observer`.
   - `Options.ErrorHandler func(w, r, status, err)` — custom error response writer; default is JSON `{"error":"..."}`.
   - `Options.Observer stats.Observer` — receives `RecordRequest` and `RecordValidationError` events; defaults to `stats.NoopObserver`.
+  - `Options.MaxBodyBytes int64` — max request body size for POST/PUT/PATCH; 0 = default (1 MiB). Requests exceeding the limit are rejected with 413 Request Entity Too Large and a `rest.BodyTooLargeError`.
+  - `Options.ContentType string` — expected `Content-Type` for body-bearing methods; default `"application/json"`. Wrong type → 415 Unsupported Media Type with a `rest.UnsupportedMediaTypeError`. Parameters (e.g. `; charset=utf-8`) are stripped before comparison.
+  - `Options.MultiValueQueryParams bool` — when true, passes `r.URL.Query()` (`map[string][]string`) to `ValidateQueryMulti` instead of the flat single-value map. Use for repeated keys like `?tags=a&tags=b`.
   - `Register[Req,Resp](mux, handle, fn, opts Options)` — registers on `*http.ServeMux` via Go 1.22+ `"METHOD /path"` pattern.
   - `RequestFromContext(ctx) (*http.Request, bool)` — retrieves the underlying `*http.Request` for path params, headers, etc. Use `r.PathValue("id")` for Go 1.22+ path segments.
   - Non-body methods (GET/HEAD/DELETE): fn called with zero value of Req; body reader not touched.
-  - **Query validation**: `ValidateQuery` is called automatically before the handler function. Codec-backed `QueryParam` entries are validated from `r.URL.Query()`; 400 is returned on failure.
+  - **Content-Type check**: for POST/PUT/PATCH, `Content-Type` is checked before reading body; 415 on mismatch.
+  - **Query validation**: `ValidateQuery` is called automatically before the handler function. Codec-backed `QueryParam` entries are validated from `r.URL.Query()`; 400 is returned on failure. Use `ValidateQueryMulti` (via `Options.MultiValueQueryParams`) for repeated keys.
   - **Cookie validation**: `ValidateCookies` is called automatically before the handler function. Codec-backed `CookieParam` entries are validated from `r.Cookies()`; 400 is returned on failure.
   - **Header validation**: `ValidateHeaders` is called automatically before the handler function. Codec-backed `HeaderParam` entries are validated from `r.Header`; 400 is returned on failure. Observer reports with `location="cookie"` or `location="header"` respectively.
   - **`SetCookie(w, name, value, opts CookieOptions) error`** — writes a `Set-Cookie` header with secure defaults (`Secure=true`, `HttpOnly=true`, `SameSite=Strict`, `Path="/"`). If `opts.Codec` is non-nil, value is validated before writing; on failure returns `rest.CookieParamError` without writing the header. Use the same `*codex.Codec[string]` as the read-side `CookieParam` for symmetric validation.

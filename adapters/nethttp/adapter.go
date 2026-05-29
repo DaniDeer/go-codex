@@ -73,6 +73,24 @@ type Options struct {
 	// counts with latency and HTTP status, and per-field validation errors.
 	// Defaults to [stats.NoopObserver] when nil.
 	Observer stats.Observer
+
+	// MaxBodyBytes limits the number of bytes read from the request body for
+	// body-bearing methods (POST, PUT, PATCH). Zero means the default (1 MiB).
+	// Requests exceeding the limit are rejected with 400 Bad Request.
+	MaxBodyBytes int64
+
+	// ContentType is the expected Content-Type for body-bearing methods (POST,
+	// PUT, PATCH). When non-empty, requests whose Content-Type does not match
+	// (ignoring parameters such as "; charset=utf-8") are rejected with
+	// 415 Unsupported Media Type. Defaults to "application/json".
+	ContentType string
+
+	// MultiValueQueryParams, when true, passes the raw multi-value query map
+	// (map[string][]string from r.URL.Query()) to [rest.RouteHandle.ValidateQueryMulti]
+	// instead of the flat single-value map. Use when your routes use repeated query
+	// keys such as "?tags=a&tags=b". When false (default), the first value per key
+	// is validated via [rest.RouteHandle.ValidateQuery].
+	MultiValueQueryParams bool
 }
 
 // Handler wraps a [rest.RouteHandle] and a [HandlerFunc] into an [http.Handler].
@@ -85,7 +103,7 @@ type Options struct {
 // the route descriptor's primary response (the first entry in Responses).
 //
 // Pass a zero-value [Options]{} for default behaviour (JSON error envelope, 1 MiB
-// body limit, no-op observer).
+// body limit, application/json Content-Type check, no-op observer).
 func Handler[Req, Resp any](handle *rest.RouteHandle[Req, Resp], fn HandlerFunc[Req, Resp], opts Options) http.Handler {
 	errFn := opts.ErrorHandler
 	if errFn == nil {
@@ -94,6 +112,14 @@ func Handler[Req, Resp any](handle *rest.RouteHandle[Req, Resp], fn HandlerFunc[
 	obs := opts.Observer
 	if obs == nil {
 		obs = stats.NoopObserver{}
+	}
+	maxBody := opts.MaxBodyBytes
+	if maxBody <= 0 {
+		maxBody = maxRequestBodyBytes
+	}
+	expectedCT := opts.ContentType
+	if expectedCT == "" {
+		expectedCT = "application/json"
 	}
 	method := strings.ToUpper(handle.Descriptor.Method)
 	path := handle.Descriptor.Path
@@ -109,10 +135,21 @@ func Handler[Req, Resp any](handle *rest.RouteHandle[Req, Resp], fn HandlerFunc[
 
 		var req Req
 		if handle.Descriptor.RequestBody != nil {
-			r.Body = http.MaxBytesReader(sw, r.Body, maxRequestBodyBytes)
+			ct, _, _ := strings.Cut(r.Header.Get("Content-Type"), ";")
+			if strings.TrimSpace(ct) != expectedCT {
+				errFn(sw, r, http.StatusUnsupportedMediaType,
+					rest.UnsupportedMediaTypeError{Got: strings.TrimSpace(ct), Expected: expectedCT})
+				return
+			}
+			r.Body = http.MaxBytesReader(sw, r.Body, maxBody)
 			body, err := io.ReadAll(r.Body)
 			if err != nil {
-				errFn(sw, r, http.StatusBadRequest, err)
+				var mbe *http.MaxBytesError
+				if errors.As(err, &mbe) {
+					errFn(sw, r, http.StatusRequestEntityTooLarge, rest.BodyTooLargeError{Limit: maxBody})
+				} else {
+					errFn(sw, r, http.StatusBadRequest, err)
+				}
 				return
 			}
 			var decErr error
@@ -125,10 +162,18 @@ func Handler[Req, Resp any](handle *rest.RouteHandle[Req, Resp], fn HandlerFunc[
 		}
 
 		// Validate query parameters against their registered codecs (if any).
-		if err := handle.ValidateQuery(queryValues(r)); err != nil {
-			reportQueryErrors(err, obs)
-			errFn(sw, r, http.StatusBadRequest, err)
-			return
+		if opts.MultiValueQueryParams {
+			if err := handle.ValidateQueryMulti(r.URL.Query()); err != nil {
+				reportQueryErrors(err, obs)
+				errFn(sw, r, http.StatusBadRequest, err)
+				return
+			}
+		} else {
+			if err := handle.ValidateQuery(queryValues(r)); err != nil {
+				reportQueryErrors(err, obs)
+				errFn(sw, r, http.StatusBadRequest, err)
+				return
+			}
 		}
 
 		// Validate cookie parameters against their registered codecs (if any).
