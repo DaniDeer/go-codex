@@ -17,12 +17,15 @@ import (
 )
 
 // Format binds a Codec[T] to a specific serialization format.
-// Use JSON, YAML, or TOML to construct one.
+// Use JSON, YAML, or TOML to construct one. For formats that operate on the
+// typed value directly (e.g. HTML rendering), use [NewTyped].
 type Format[T any] struct {
-	codec       codex.Codec[T]
-	marshal     func(any) ([]byte, error)
-	unmarshal   func([]byte) (any, error)
-	contentType string
+	codec          codex.Codec[T]
+	marshal        func(any) ([]byte, error)
+	unmarshal      func([]byte) (any, error)
+	marshalTyped   func(T) ([]byte, error)
+	unmarshalTyped func([]byte) (T, error)
+	contentType    string
 }
 
 // New creates a Format from a codec and custom marshal/unmarshal functions.
@@ -30,6 +33,37 @@ type Format[T any] struct {
 // ContentType is empty by default; call [Format.WithContentType] to set it.
 func New[T any](c codex.Codec[T], marshal func(any) ([]byte, error), unmarshal func([]byte) (any, error)) Format[T] {
 	return Format[T]{codec: c, marshal: marshal, unmarshal: unmarshal}
+}
+
+// NewTyped creates a Format where the marshal and unmarshal functions operate
+// on the typed value directly, rather than on the intermediate representation.
+// The codec is still used for validation: [Format.Marshal] runs all Refine
+// constraints on the value before calling marshal, and [Format.Validate] works
+// as normal.
+//
+// Use this when the wire format cannot be represented via a map[string]any
+// intermediate — for example, rendering HTML via a templ component:
+//
+//	htmlFormat := format.NewTyped(
+//	    propsCodec,
+//	    func(props Props) ([]byte, error) {
+//	        var buf bytes.Buffer
+//	        err := component(props).Render(context.Background(), &buf)
+//	        return buf.Bytes(), err
+//	    },
+//	    func([]byte) (Props, error) {
+//	        var zero Props
+//	        return zero, errors.New("HTML is not decodable")
+//	    },
+//	    "text/html; charset=utf-8",
+//	)
+func NewTyped[T any](c codex.Codec[T], marshal func(T) ([]byte, error), unmarshal func([]byte) (T, error), contentType string) Format[T] {
+	return Format[T]{
+		codec:          c,
+		marshalTyped:   marshal,
+		unmarshalTyped: unmarshal,
+		contentType:    contentType,
+	}
 }
 
 // ContentType returns the MIME type associated with this format (e.g. "application/json").
@@ -44,7 +78,16 @@ func (f Format[T]) WithContentType(ct string) Format[T] {
 }
 
 // Marshal encodes v to bytes using the codec and then the format serializer.
+// If the format was created with [NewTyped], the codec validates v first and
+// then the typed marshal function is called directly (bypassing the intermediate).
 func (f Format[T]) Marshal(v T) ([]byte, error) {
+	if f.marshalTyped != nil {
+		// Validate via codec (runs all Refine constraints) before rendering.
+		if _, err := f.codec.Encode(v); err != nil {
+			return nil, err
+		}
+		return f.marshalTyped(v)
+	}
 	intermediate, err := f.codec.Encode(v)
 	if err != nil {
 		return nil, err
@@ -53,7 +96,11 @@ func (f Format[T]) Marshal(v T) ([]byte, error) {
 }
 
 // Unmarshal deserializes data into an intermediate and then decodes it via the codec.
+// If the format was created with [NewTyped], the typed unmarshal function is used directly.
 func (f Format[T]) Unmarshal(data []byte) (T, error) {
+	if f.unmarshalTyped != nil {
+		return f.unmarshalTyped(data)
+	}
 	intermediate, err := f.unmarshal(data)
 	if err != nil {
 		var zero T

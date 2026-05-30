@@ -518,7 +518,8 @@ func negotiateFormat[T any](formats []format.Format[T], accept string) (format.F
 			return formats[0], true
 		}
 		for _, f := range formats {
-			if f.ContentType() == mediaType {
+			fmtMediaType, _, _ := strings.Cut(f.ContentType(), ";")
+			if strings.TrimSpace(fmtMediaType) == mediaType {
 				return f, true
 			}
 		}

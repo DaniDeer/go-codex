@@ -36,6 +36,7 @@ go-codex is a Go port of the core ideas from Haskell's [autodocodec](https://hac
 | `adapters/nethttp` | net/http adapter: `Handler`, `Register`, `RequestFromContext`, `WithResponseHeaders`, `ResponseHeadersFromContext`, `WithResponseCookies`, `ResponseCookiesFromContext`, `PendingCookie`, `SetCookie`, `CookieOptions`, `Options` (with `Observer stats.Observer`) | `api/rest`, `net/http`, `stats`, `format` |
 | `adapters/chi`    | chi adapter: same API surface as `adapters/nethttp` but for `github.com/go-chi/chi/v5`; path vars via `chi.URLParam`; `Handler`, `Register`, `RequestFromContext`, `WithResponseHeaders`, `WithResponseCookies`, `PendingCookie`, `SetCookie`, `CookieOptions`, `Options` | `api/rest`, `net/http`, `stats`, `format`, chi lib |
 | `adapters/mqtt`   | Paho MQTT adapter: `SubscribeHandler`, `Publish`, `TopicVarsFromMessage`, `TopicMismatchError`, `SubscribeError`, `ErrorKind`, `SubscribeOptions` (with `Observer stats.Observer`), `PublishOptions` (with `Observer stats.Observer`) | `api/events`, `stats`, Paho MQTT lib |
+| `adapters/templ`  | templ SSR format plug-in: `Format[Props](codec, component) format.Format[Props]`, `DecodeNotSupportedError`; add to a route's `ResponseFormats` to serve `text/html` alongside JSON via the existing nethttp/chi adapters | `codex`, `format`, `github.com/a-h/templ` |
 | `stats`           | Observer hooks: `ValidationObserver` (codec-level, 1 method); `Observer` (adapter-level, embeds `ValidationObserver` + transport hooks); `NoopObserver`; `ReportErrors(obs, location, err)`; `ConstraintName(err)` | `codex`, `time` (stdlib only) |
 
 - No circular imports.
@@ -986,6 +987,43 @@ Key rules:
   - All validation, response header/cookie, content negotiation features are identical to `adapters/nethttp`.
   - `SetCookie`, `CookieOptions`, `PendingCookie`, `WithResponseCookies`, `WithResponseHeaders` all present with identical signatures.
 
+- `adapters/templ` is a plug-in for the templ SSR library (`github.com/a-h/templ`). It does **not** implement an HTTP adapter — it produces a `format.Format[Props]` value that participates in the existing content negotiation pipeline of `adapters/nethttp` and `adapters/chi`.
+  - `Format[Props](c codex.Codec[Props], component func(Props) atempl.Component) format.Format[Props]` — wraps a templ component as a `format.Format` with `ContentType: "text/html; charset=utf-8"`. Add it to a route's `ResponseFormats`.
+  - `DecodeNotSupportedError{ContentType string}` — returned by the format's `Unmarshal`; HTML cannot be decoded back to a typed value. Use `errors.As` to detect it.
+  - Props are validated via the codec's `Refine` constraints before the component renders. Validation failure → HTTP 500 via the hosting adapter; the component is never called with invalid data.
+  - The component receives `context.Background()` during rendering; pass all data the component needs through the Props struct.
+  - Works with both `adapters/nethttp` and `adapters/chi` — no chi-specific variant needed.
+
+  ```go
+  import (
+      adapttempl "github.com/DaniDeer/go-codex/adapters/templ"
+      nethttp    "github.com/DaniDeer/go-codex/adapters/nethttp"
+      atempl     "github.com/a-h/templ"
+      "github.com/DaniDeer/go-codex/format"
+  )
+
+  // Define a templ component (or use a real templ-generated one):
+  func ArticleCard(p ArticleProps) atempl.Component {
+      return atempl.ComponentFunc(func(ctx context.Context, w io.Writer) error {
+          _, err := fmt.Fprintf(w, "<h2>%s</h2>", html.EscapeString(p.Title))
+          return err
+      })
+  }
+
+  // Register both formats on one route:
+  articleRoute, _ := rest.AddRoute(b, "GET", "/article",
+      articleReqCodec, articlePropsCodec,
+      rest.RouteConfig{},
+      adapttempl.Format(articlePropsCodec, ArticleCard), // Accept: text/html
+      format.JSON(articlePropsCodec),                     // Accept: application/json
+  )
+
+  // One handler, one registration — adapter handles content negotiation:
+  nethttp.Register(mux, articleRoute, func(ctx context.Context, req Req) (ArticleProps, error) {
+      return svc.GetArticle(ctx, req.ID)
+  }, nethttp.Options{})
+  ```
+
 
 
 `api/events` is a transport-agnostic event channel builder layered on top of `render/asyncapi`. It imports **no messaging library**. Users receive typed `Decode`/`Encode` helpers per channel; they wire those into any message broker.
@@ -1121,6 +1159,7 @@ Key rules:
 | `adapters/nethttp` | `api/rest`, `net/http` (stdlib), `stats`, `format`            |
 | `adapters/chi`     | `api/rest`, `net/http` (stdlib), `stats`, `format`, chi lib   |
 | `adapters/mqtt`    | `api/events`, `stats`, `github.com/eclipse/paho.mqtt.golang`  |
+| `adapters/templ`   | `codex`, `format`, `github.com/a-h/templ`                     |
 | `stats`            | `codex`, `errors`, `time` (stdlib only)                       |
 
 

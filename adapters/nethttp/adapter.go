@@ -498,6 +498,8 @@ func reportResponseCookieErrors(err error, obs stats.Observer) {
 
 // negotiateFormat picks the first format whose ContentType matches an entry in
 // the Accept header. "*/*" matches the first format in the list.
+// Format content-type parameters (e.g. "; charset=utf-8") are stripped before
+// comparison so "Accept: text/html" matches "text/html; charset=utf-8".
 // Returns false if no format satisfies the Accept value.
 func negotiateFormat[T any](formats []format.Format[T], accept string) (format.Format[T], bool) {
 	if len(formats) == 0 {
@@ -513,7 +515,8 @@ func negotiateFormat[T any](formats []format.Format[T], accept string) (format.F
 			return formats[0], true
 		}
 		for _, f := range formats {
-			if f.ContentType() == mediaType {
+			fmtMediaType, _, _ := strings.Cut(f.ContentType(), ";")
+			if strings.TrimSpace(fmtMediaType) == mediaType {
 				return f, true
 			}
 		}

@@ -117,6 +117,7 @@ Requires Go 1.25 or later.
 | net/http adapter                  | `github.com/DaniDeer/go-codex/adapters/nethttp` |
 | chi adapter                       | `github.com/DaniDeer/go-codex/adapters/chi`     |
 | Paho MQTT adapter                 | `github.com/DaniDeer/go-codex/adapters/mqtt`    |
+| templ SSR format plug-in          | `github.com/DaniDeer/go-codex/adapters/templ`   |
 | OpenAPI 3.1 renderer              | `github.com/DaniDeer/go-codex/render/openapi`   |
 | AsyncAPI 2.6 renderer             | `github.com/DaniDeer/go-codex/render/asyncapi`  |
 | Schema model                      | `github.com/DaniDeer/go-codex/schema`           |
@@ -137,6 +138,7 @@ Requires Go 1.25 or later.
 - **net/http Adapter** — wire `RouteHandle` to `net/http.ServeMux` with one call; 400/500 error handling included
 - **chi Adapter** — wire `RouteHandle` to `chi.Router` with one call; identical feature set to net/http adapter; path vars via `chi.URLParam`
 - **Paho MQTT Adapter** — wire `ChannelHandle` to Paho MQTT subscribe callbacks; unified `Publish` handles both static and template topics; `TopicVarsFromMessage` extracts `{varName}` values from received topics and validates them (structural match → builder-level topic codec → per-param codecs) — fully symmetric with `BuildTopic`
+- **templ SSR Format Plug-in** — add `adapttempl.Format(propsCodec, component)` to a route's `ResponseFormats`; the existing nethttp/chi adapters then serve HTML to `Accept: text/html` clients and JSON to API clients from the same handler
 
 ### Multi-Format Support
 
@@ -159,6 +161,45 @@ tomlBytes, _ := tomlFmt.Marshal(user)
 ```
 
 Validation errors and field paths are identical regardless of which format is used.
+
+### Format Extensibility
+
+The `format` package covers all wire formats via two constructors. The built-in `JSON`, `YAML`, and `TOML` helpers are thin wrappers around these:
+
+| Constructor | Intermediate | Use cases |
+|---|---|---|
+| `format.New[T](codec, marshal, unmarshal)` | `map[string]any` | CBOR, MessagePack, XML — any format with a map-based intermediate |
+| `format.NewTyped[T](codec, marshal, unmarshal, ct)` | typed `T` directly | templ HTML, Protobuf, CSV — any renderer that takes a typed value |
+
+`format.NewTyped` runs the codec's Refine constraints on the value **before** calling `marshal`, so validation always fires regardless of the output format.
+
+```go
+// Custom MessagePack format (map[string]any → msgpack bytes):
+msgpackFmt := format.New(userCodec,
+    func(v any) ([]byte, error) { return msgpack.Marshal(v) },
+    func(b []byte) (any, error) { var m any; return m, msgpack.Unmarshal(b, &m) },
+).WithContentType("application/msgpack")
+
+// Custom typed format — e.g. CSV row from a typed struct:
+csvFmt := format.NewTyped(userCodec,
+    func(u User) ([]byte, error) {
+        return []byte(fmt.Sprintf("%s,%d\n", u.Name, u.Age)), nil
+    },
+    func([]byte) (User, error) { return User{}, errors.New("csv: decode not supported") },
+    "text/csv",
+)
+```
+
+`adapttempl.Format` is a real-world `format.NewTyped` example — props are validated by the codec, then the templ component renders HTML directly. Adding it to a route's `ResponseFormats` slice enables content negotiation with no adapter changes:
+
+```go
+route, _ := rest.AddRoute(b, "GET", "/article",
+    reqCodec, propsCodec, rest.RouteConfig{},
+    adapttempl.Format(propsCodec, ArticleCard), // Accept: text/html
+    format.JSON(propsCodec),                     // Accept: application/json
+)
+// Same handler, same route — the adapter picks the format from the Accept header.
+```
 
 ### Encode, Decode, and Validation
 
@@ -1480,7 +1521,39 @@ func Publish[T any](
 
 See [`examples/adapters-mqtt`](examples/adapters-mqtt/main.go) for the full runnable demonstration including tests — measurement ingestion from a sensor network, time series storage, and threshold-breach alerts using the three-layer codec pipeline pattern.
 
-### Stats / Observer
+### templ SSR Format Plug-in
+
+`adapters/templ` bridges a [templ](https://templ.guide/) component into the existing `adapters/nethttp` and `adapters/chi` content negotiation pipeline. Add `adapttempl.Format` to a route's `ResponseFormats` and the same handler serves HTML to browser clients and JSON to API clients — no separate route, no separate handler.
+
+```go
+import (
+    adapttempl "github.com/DaniDeer/go-codex/adapters/templ"
+    nethttp    "github.com/DaniDeer/go-codex/adapters/nethttp"
+    "github.com/DaniDeer/go-codex/format"
+)
+
+// Register both formats on one route.
+articleRoute, _ := rest.AddRoute(b, "GET", "/article",
+    articleReqCodec, articlePropsCodec,
+    rest.RouteConfig{OperationID: "getArticle"},
+    adapttempl.Format(articlePropsCodec, ArticleCard), // Accept: text/html
+    format.JSON(articlePropsCodec),                     // Accept: application/json
+)
+
+// One handler, one route — adapter handles content negotiation.
+nethttp.Register(mux, articleRoute, func(ctx context.Context, req ArticleReq) (ArticleProps, error) {
+    return svc.GetArticle(ctx, req.ID)
+}, nethttp.Options{Observer: obs})
+```
+
+- Props are validated via the response codec's `Refine` constraints before the component renders. Invalid props return HTTP 500; the template is never reached with bad data.
+- Works with both `adapters/nethttp` and `adapters/chi` — no chi-specific variant needed.
+- `DecodeNotSupportedError` is returned by the format's `Unmarshal`; use `errors.As` to detect it.
+- Components written with `templ.ComponentFunc` require no code generation — self-contained in any Go file.
+
+See [`examples/templ-mapper`](examples/templ-mapper/main.go) for a runnable demonstration.
+
+
 
 `stats` exposes two levels of observability, both dependency-free:
 
@@ -1576,7 +1649,7 @@ Pass `stats.NoopObserver{}` (or omit the field — adapter defaults to it) for z
 | `"topic"` | mqtt — topic-level codec failure or structural mismatch (subscribe handler / publish) |
 | any string | codec-only: choose a label meaningful to your domain (`"config"`, `"input"`, …) |
 
-See [`examples/stats-observer`](examples/stats-observer/main.go) for a runnable codec-only observer example (config file validation, no adapters). See [`examples/stats-observer-http`](examples/stats-observer-http/main.go) for the HTTP body + query validation demo. See [`examples/stats-observer-mqtt`](examples/stats-observer-mqtt/main.go) for the MQTT subscribe + publish observer demo.
+See [`examples/stats-observer`](examples/stats-observer/main.go) for a runnable codec-only observer example (config file validation, no adapters). See [`examples/adapters-nethttp`](examples/adapters-nethttp/main.go) for the HTTP body + query validation demo. See [`examples/adapters-mqtt`](examples/adapters-mqtt/main.go) for the MQTT subscribe + publish observer demo.
 
 ## Special Topics
 
@@ -1783,9 +1856,11 @@ go-codex/
 │   │   └── cookie.go       # SetCookie, CookieOptions, PendingCookie
 │   ├── chi/                # chi adapter for api/rest RouteHandles (github.com/go-chi/chi/v5)
 │   │   └── adapter.go      # Handler, Register, RequestFromContext, WithResponseHeaders, WithResponseCookies, SetCookie, CookieOptions, PendingCookie, Options
-│   └── mqtt/               # Paho MQTT adapter for api/events ChannelHandles
-│       ├── adapter.go      # SubscribeHandler, SubscribeOptions, Publish, SubscribeError, ErrorKind, MessageFromContext
-│       └── topicvars.go    # TopicVarsFromMessage, TopicMismatchError
+│   ├── mqtt/               # Paho MQTT adapter for api/events ChannelHandles
+│   │   ├── adapter.go      # SubscribeHandler, SubscribeOptions, Publish, SubscribeError, ErrorKind, MessageFromContext
+│   │   └── topicvars.go    # TopicVarsFromMessage, TopicMismatchError
+│   └── templ/              # templ SSR format plug-in for api/rest RouteHandles
+│       └── adapter.go      # Format[Props], DecodeNotSupportedError
 │
 ├── render/                 # spec renderers (import schema only, or schema + route)
 │   ├── internal/
@@ -1829,9 +1904,7 @@ go-codex/
     ├── rest-api/           # full OpenAPI 3.1 document from route descriptors
     ├── shape/              # tagged union + Downcast demo
     ├── stats-observer/          # stats.ValidationObserver with codecs directly: config validation, no adapter
-    ├── stats-observer-http/     # stats.Observer wired to nethttp: request counts, latency, validation errors (body + query)
-    ├── stats-observer-mqtt/     # stats.Observer wired to mqtt subscribe + publish: message counts, latency, payload errors
-    ├── templ-mapper/       # mapping codec-validated data to templ components
+    ├── templ-mapper/            # templ SSR format plug-in: same route serves HTML and JSON; observer wired
     ├── validate/           # explicit Validate before marshal
     ├── codec-mapping/      # shared field codecs, sub-codec reuse, MapCodecSafe, MapCodecValidated
     └── construction/       # New + Must: construction-time validation demo

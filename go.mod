@@ -9,8 +9,9 @@ require (
 )
 
 require (
+	github.com/a-h/templ v0.3.1020 // indirect
 	github.com/go-chi/chi/v5 v5.3.0 // indirect
 	github.com/gorilla/websocket v1.5.3 // indirect
-	golang.org/x/net v0.44.0 // indirect
+	golang.org/x/net v0.51.0 // indirect
 	golang.org/x/sync v0.17.0 // indirect
 )

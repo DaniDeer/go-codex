@@ -1,6 +1,7 @@
 package format_test
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 
@@ -68,5 +69,79 @@ func TestFormatValidate_MarshalValidates(t *testing.T) {
 	}
 	if string(data) != `{"n":5}` {
 		t.Errorf("unexpected marshal output: %s", data)
+	}
+}
+
+func TestNewTyped_MarshalValidatesAndRenders(t *testing.T) {
+	// NewTyped.Marshal runs codec validation before calling the typed marshal fn.
+	var rendered string
+	f := format.NewTyped(
+		testCodec,
+		func(v struct{ N int }) ([]byte, error) {
+			rendered = fmt.Sprintf("<p>%d</p>", v.N)
+			return []byte(rendered), nil
+		},
+		func([]byte) (struct{ N int }, error) { return struct{ N int }{}, nil },
+		"text/html; charset=utf-8",
+	)
+
+	if f.ContentType() != "text/html; charset=utf-8" {
+		t.Errorf("unexpected content type: %s", f.ContentType())
+	}
+
+	// Invalid value: Refine constraint should reject before marshal fn is called.
+	_, err := f.Marshal(struct{ N int }{N: -1})
+	if err == nil {
+		t.Fatal("expected validation error, got nil")
+	}
+	if rendered != "" {
+		t.Error("marshal fn should not be called when validation fails")
+	}
+
+	// Valid value: marshal fn should be called.
+	data, err := f.Marshal(struct{ N int }{N: 7})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if string(data) != "<p>7</p>" {
+		t.Errorf("unexpected output: %s", data)
+	}
+}
+
+func TestNewTyped_Validate(t *testing.T) {
+	f := format.NewTyped(
+		testCodec,
+		func(v struct{ N int }) ([]byte, error) { return nil, nil },
+		func([]byte) (struct{ N int }, error) { return struct{ N int }{}, nil },
+		"text/html",
+	)
+	if err := f.Validate(struct{ N int }{N: 5}); err != nil {
+		t.Errorf("expected no error for valid value, got: %v", err)
+	}
+	if err := f.Validate(struct{ N int }{N: 0}); err == nil {
+		t.Error("expected constraint error for zero value, got nil")
+	}
+}
+
+func TestNewTyped_UnmarshalTyped(t *testing.T) {
+	called := false
+	f := format.NewTyped(
+		testCodec,
+		func(v struct{ N int }) ([]byte, error) { return nil, nil },
+		func([]byte) (struct{ N int }, error) {
+			called = true
+			return struct{ N int }{N: 42}, nil
+		},
+		"text/html",
+	)
+	v, err := f.Unmarshal([]byte("ignored"))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !called {
+		t.Error("typed unmarshal fn should have been called")
+	}
+	if v.N != 42 {
+		t.Errorf("expected N=42, got %d", v.N)
 	}
 }
