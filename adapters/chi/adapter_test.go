@@ -3,6 +3,8 @@ package chi_test
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -295,4 +297,200 @@ func TestHandler_ContentNegotiation(t *testing.T) {
 			t.Fatalf("want 406, got %d", rr.Code)
 		}
 	})
+}
+
+func TestContentNegotiation_streamedFormat_writesDirectly(t *testing.T) {
+	b := rest.NewBuilder(testInfo)
+	streamFmt := format.NewStreamed(userRespCodec,
+		func(v userResp, w io.Writer) error {
+			_, err := fmt.Fprintf(w, "id=%s name=%s", v.ID, v.Name)
+			return err
+		},
+		func([]byte) (userResp, error) { return userResp{}, errors.New("not decodable") },
+		"text/plain",
+	)
+	h, err := rest.AddRoute[createReq, userResp](b, "POST", "/users", createReqCodec, userRespCodec,
+		rest.RouteConfig{},
+		streamFmt,
+		format.JSON(userRespCodec),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	handler := chiadapter.Handler(h, func(_ context.Context, req createReq) (userResp, error) {
+		return userResp{ID: "42", Name: req.Name}, nil
+	}, chiadapter.Options{})
+
+	rec := httptest.NewRecorder()
+	r := httptest.NewRequest(http.MethodPost, "/users", strings.NewReader(`{"name":"Bob"}`))
+	r.Header.Set("Content-Type", "application/json")
+	r.Header.Set("Accept", "text/plain")
+	handler(rec, r)
+
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("want 201, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if ct := rec.Header().Get("Content-Type"); ct != "text/plain" {
+		t.Errorf("want Content-Type text/plain, got %q", ct)
+	}
+	if body := rec.Body.String(); body != "id=42 name=Bob" {
+		t.Errorf("want body 'id=42 name=Bob', got %q", body)
+	}
+}
+
+func TestContentNegotiation_streamedFormat_validationErrorBefore200(t *testing.T) {
+	// Codec with NonEmpty validation on response name field
+	strictRespCodec := codex.Struct[userResp](
+		codex.Field[userResp, string]{
+			Name:  "id",
+			Codec: codex.String(),
+			Get:   func(u userResp) string { return u.ID },
+			Set:   func(u *userResp, v string) { u.ID = v },
+		},
+		codex.Field[userResp, string]{
+			Name:  "name",
+			Codec: codex.String().Refine(validate.NonEmptyString),
+			Get:   func(u userResp) string { return u.Name },
+			Set:   func(u *userResp, v string) { u.Name = v },
+		},
+	)
+	b := rest.NewBuilder(testInfo)
+	streamFmt := format.NewStreamed(strictRespCodec,
+		func(v userResp, w io.Writer) error {
+			_, err := fmt.Fprintf(w, "%s", v.ID)
+			return err
+		},
+		func([]byte) (userResp, error) { return userResp{}, nil },
+		"text/plain",
+	)
+	h, err := rest.AddRoute[createReq, userResp](b, "POST", "/users", createReqCodec, strictRespCodec,
+		rest.RouteConfig{},
+		streamFmt,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	handler := chiadapter.Handler(h, func(_ context.Context, _ createReq) (userResp, error) {
+		return userResp{ID: "1", Name: ""}, nil // Name="" fails NonEmptyString
+	}, chiadapter.Options{})
+
+	rec := httptest.NewRecorder()
+	r := httptest.NewRequest(http.MethodPost, "/users", strings.NewReader(`{"name":"x"}`))
+	r.Header.Set("Content-Type", "application/json")
+	r.Header.Set("Accept", "text/plain")
+	handler(rec, r)
+
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("want 500 on validation failure, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+// --- SSE tests ---
+
+type sseEvent struct{ Message string }
+
+var sseEventCodec = codex.Struct[sseEvent](
+	codex.Field[sseEvent, string]{
+		Name:     "message",
+		Codec:    codex.String().Refine(validate.NonEmptyString),
+		Required: true,
+		Get:      func(e sseEvent) string { return e.Message },
+		Set:      func(e *sseEvent, v string) { e.Message = v },
+	},
+)
+
+func TestSSEHandler_streamEvents(t *testing.T) {
+	b := rest.NewBuilder(testInfo)
+	handle, err := rest.AddSSERoute[createReq, sseEvent](b, "/events",
+		createReqCodec, sseEventCodec, rest.RouteConfig{OperationID: "streamEvents"})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	handler := chiadapter.SSEHandler(handle, func(ctx context.Context, _ createReq, send func(sseEvent) error) error {
+		for _, msg := range []string{"hello", "world"} {
+			if err := send(sseEvent{Message: msg}); err != nil {
+				return err
+			}
+		}
+		return nil
+	}, chiadapter.Options{})
+
+	rec := httptest.NewRecorder()
+	r := httptest.NewRequest(http.MethodGet, "/events", nil)
+	handler(rec, r)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("want 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if ct := rec.Header().Get("Content-Type"); ct != "text/event-stream" {
+		t.Errorf("want text/event-stream, got %q", ct)
+	}
+	body := rec.Body.String()
+	if !strings.Contains(body, `"hello"`) || !strings.Contains(body, `"world"`) {
+		t.Errorf("expected both events in body, got: %s", body)
+	}
+	if !strings.Contains(body, "data:") {
+		t.Errorf("expected SSE data: prefix, got: %s", body)
+	}
+}
+
+func TestSSEHandler_validationRejectsEvent(t *testing.T) {
+	b := rest.NewBuilder(testInfo)
+	handle, err := rest.AddSSERoute[createReq, sseEvent](b, "/events2",
+		createReqCodec, sseEventCodec, rest.RouteConfig{OperationID: "streamEventsValidate"})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var sendErr error
+	handler := chiadapter.SSEHandler(handle, func(ctx context.Context, _ createReq, send func(sseEvent) error) error {
+		sendErr = send(sseEvent{Message: ""})
+		return nil
+	}, chiadapter.Options{})
+
+	rec := httptest.NewRecorder()
+	r := httptest.NewRequest(http.MethodGet, "/events2", nil)
+	handler(rec, r)
+
+	if sendErr == nil {
+		t.Fatal("expected send to return validation error for empty message")
+	}
+	if body := rec.Body.String(); body != "" {
+		t.Errorf("expected empty body on validation rejection, got: %s", body)
+	}
+}
+
+func TestSSEHandler_RegisterSSE_wiresOntoRouter(t *testing.T) {
+	b := rest.NewBuilder(testInfo)
+	handle, err := rest.AddSSERoute[createReq, sseEvent](b, "/events3",
+		createReqCodec, sseEventCodec, rest.RouteConfig{OperationID: "streamRegister"})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	r := gochi.NewRouter()
+	chiadapter.RegisterSSE(r, handle, func(ctx context.Context, _ createReq, send func(sseEvent) error) error {
+		return send(sseEvent{Message: "chi-registered"})
+	}, chiadapter.Options{})
+
+	srv := httptest.NewServer(r)
+	defer srv.Close()
+
+	resp, err := http.Get(srv.URL + "/events3")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("want 200, got %d", resp.StatusCode)
+	}
+	if ct := resp.Header.Get("Content-Type"); ct != "text/event-stream" {
+		t.Errorf("want text/event-stream, got %q", ct)
+	}
+	if !strings.Contains(string(body), "chi-registered") {
+		t.Errorf("expected 'chi-registered' in body, got: %s", body)
+	}
 }

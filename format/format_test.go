@@ -1,7 +1,9 @@
 package format_test
 
 import (
+	"errors"
 	"fmt"
+	"io"
 	"strings"
 	"testing"
 
@@ -143,5 +145,90 @@ func TestNewTyped_UnmarshalTyped(t *testing.T) {
 	}
 	if v.N != 42 {
 		t.Errorf("expected N=42, got %d", v.N)
+	}
+}
+
+func TestNewStreamed_IsStreamable(t *testing.T) {
+	f := format.NewStreamed(testCodec,
+		func(v struct{ N int }, w io.Writer) error { return nil },
+		func([]byte) (struct{ N int }, error) { return struct{ N int }{}, nil },
+		"text/csv",
+	)
+	if !f.IsStreamable() {
+		t.Error("expected IsStreamable() == true for NewStreamed format")
+	}
+	if ct := f.ContentType(); ct != "text/csv" {
+		t.Errorf("expected ContentType text/csv, got %q", ct)
+	}
+}
+
+func TestNewStreamed_NonStreamable(t *testing.T) {
+	f := format.JSON(testCodec)
+	if f.IsStreamable() {
+		t.Error("expected IsStreamable() == false for JSON format")
+	}
+	if err := f.MarshalTo(struct{ N int }{N: 1}, io.Discard); !errors.Is(err, format.ErrNotStreamable) {
+		t.Errorf("expected ErrNotStreamable, got %v", err)
+	}
+}
+
+func TestNewStreamed_MarshalTo_WritesToWriter(t *testing.T) {
+	f := format.NewStreamed(testCodec,
+		func(v struct{ N int }, w io.Writer) error {
+			_, err := fmt.Fprintf(w, "n=%d", v.N)
+			return err
+		},
+		func([]byte) (struct{ N int }, error) { return struct{ N int }{}, nil },
+		"text/plain",
+	)
+	var buf strings.Builder
+	if err := f.MarshalTo(struct{ N int }{N: 7}, &buf); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if buf.String() != "n=7" {
+		t.Errorf("expected n=7, got %q", buf.String())
+	}
+}
+
+func TestNewStreamed_MarshalTo_ValidatesBeforeWriting(t *testing.T) {
+	written := false
+	f := format.NewStreamed(testCodec,
+		func(v struct{ N int }, w io.Writer) error {
+			written = true
+			_, err := fmt.Fprintf(w, "n=%d", v.N)
+			return err
+		},
+		func([]byte) (struct{ N int }, error) { return struct{ N int }{}, nil },
+		"text/plain",
+	)
+	// N=0 violates PositiveInt constraint
+	err := f.MarshalTo(struct{ N int }{N: 0}, io.Discard)
+	if err == nil {
+		t.Fatal("expected validation error for N=0")
+	}
+	if written {
+		t.Error("marshal function must not be called when validation fails")
+	}
+}
+
+func TestNewStreamed_Unmarshal(t *testing.T) {
+	called := false
+	f := format.NewStreamed(testCodec,
+		func(v struct{ N int }, w io.Writer) error { return nil },
+		func([]byte) (struct{ N int }, error) {
+			called = true
+			return struct{ N int }{N: 5}, nil
+		},
+		"text/plain",
+	)
+	v, err := f.Unmarshal([]byte("ignored"))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !called {
+		t.Error("unmarshal fn should have been called")
+	}
+	if v.N != 5 {
+		t.Errorf("expected N=5, got %d", v.N)
 	}
 }

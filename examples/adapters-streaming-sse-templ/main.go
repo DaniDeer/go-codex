@@ -1,0 +1,405 @@
+// Package main demonstrates two templ + go-codex patterns on a single server:
+//
+//  1. Chunked HTML streaming — GET /stream/dashboard
+//     adapttempl.StreamingFormat renders the templ component directly to the
+//     ResponseWriter without an intermediate bytes.Buffer, enabling true
+//     chunked delivery of large HTML pages.
+//
+//  2. SSE with HTML fragments — GET /sse/notifications
+//     rest.AddSSERoute uses adapttempl.Format as the event format.
+//     Each event is a templ-rendered <li> HTML fragment pushed over the
+//     text/event-stream wire format — compatible with HTMX sse-swap.
+//     Events with invalid props are rejected by the codec before rendering.
+//
+// Components are implemented with templ.ComponentFunc — no code generation
+// required to run this example.
+//
+// Run with: go run ./examples/adapters-streaming-sse-templ
+package main
+
+import (
+	"bufio"
+	"context"
+	"fmt"
+	"html"
+	"io"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"strings"
+	"sync"
+	"time"
+
+	atempl "github.com/a-h/templ"
+
+	nethttp "github.com/DaniDeer/go-codex/adapters/nethttp"
+	adapttempl "github.com/DaniDeer/go-codex/adapters/templ"
+	"github.com/DaniDeer/go-codex/api/rest"
+	"github.com/DaniDeer/go-codex/codex"
+	"github.com/DaniDeer/go-codex/format"
+	"github.com/DaniDeer/go-codex/validate"
+)
+
+// ── Domain types ──────────────────────────────────────────────────────────────
+
+// DashboardReq carries no request body for this GET endpoint.
+type DashboardReq struct{}
+
+// DashboardProps is the validated data for the full-page streaming response.
+type DashboardProps struct {
+	Title    string
+	Subtitle string
+	Section1 string
+	Section2 string
+	Section3 string
+}
+
+// NotifReq carries no request body for the SSE endpoint.
+type NotifReq struct{}
+
+// NotifProps is the validated payload for each SSE notification event.
+// Level must be one of "info", "warn", or "error" — enforced by codec Refine.
+type NotifProps struct {
+	ID      string
+	Message string
+	Level   string
+}
+
+// ── Codecs ────────────────────────────────────────────────────────────────────
+
+var dashReqCodec = codex.Struct[DashboardReq]()
+
+var dashPropsCodec = codex.Struct[DashboardProps](
+	codex.Field[DashboardProps, string]{
+		Name:     "title",
+		Codec:    codex.String().Refine(validate.NonEmptyString).WithTitle("Title"),
+		Get:      func(p DashboardProps) string { return p.Title },
+		Set:      func(p *DashboardProps, v string) { p.Title = v },
+		Required: true,
+	},
+	codex.Field[DashboardProps, string]{
+		Name:  "subtitle",
+		Codec: codex.String().WithTitle("Subtitle"),
+		Get:   func(p DashboardProps) string { return p.Subtitle },
+		Set:   func(p *DashboardProps, v string) { p.Subtitle = v },
+	},
+	codex.Field[DashboardProps, string]{
+		Name:     "section1",
+		Codec:    codex.String().Refine(validate.NonEmptyString).WithTitle("Section 1"),
+		Get:      func(p DashboardProps) string { return p.Section1 },
+		Set:      func(p *DashboardProps, v string) { p.Section1 = v },
+		Required: true,
+	},
+	codex.Field[DashboardProps, string]{
+		Name:     "section2",
+		Codec:    codex.String().Refine(validate.NonEmptyString).WithTitle("Section 2"),
+		Get:      func(p DashboardProps) string { return p.Section2 },
+		Set:      func(p *DashboardProps, v string) { p.Section2 = v },
+		Required: true,
+	},
+	codex.Field[DashboardProps, string]{
+		Name:     "section3",
+		Codec:    codex.String().Refine(validate.NonEmptyString).WithTitle("Section 3"),
+		Get:      func(p DashboardProps) string { return p.Section3 },
+		Set:      func(p *DashboardProps, v string) { p.Section3 = v },
+		Required: true,
+	},
+)
+
+var notifReqCodec = codex.Struct[NotifReq]()
+
+// validLevel enforces notification severity values.
+var validLevel = codex.Constraint[string]{
+	Name: "validLevel",
+	Check: func(s string) bool {
+		return s == "info" || s == "warn" || s == "error"
+	},
+	Message: func(s string) string {
+		return fmt.Sprintf("level must be info, warn, or error; got %q", s)
+	},
+}
+
+var notifCodec = codex.Struct[NotifProps](
+	codex.Field[NotifProps, string]{
+		Name:     "id",
+		Codec:    codex.String().Refine(validate.NonEmptyString).WithTitle("ID"),
+		Get:      func(p NotifProps) string { return p.ID },
+		Set:      func(p *NotifProps, v string) { p.ID = v },
+		Required: true,
+	},
+	codex.Field[NotifProps, string]{
+		Name:     "message",
+		Codec:    codex.String().Refine(validate.NonEmptyString).WithTitle("Message"),
+		Get:      func(p NotifProps) string { return p.Message },
+		Set:      func(p *NotifProps, v string) { p.Message = v },
+		Required: true,
+	},
+	codex.Field[NotifProps, string]{
+		Name:     "level",
+		Codec:    codex.String().Refine(validLevel).WithTitle("Level"),
+		Get:      func(p NotifProps) string { return p.Level },
+		Set:      func(p *NotifProps, v string) { p.Level = v },
+		Required: true,
+	},
+)
+
+// ── templ components ──────────────────────────────────────────────────────────
+
+// dashboardPage renders a full HTML dashboard page.
+// Used with adapttempl.StreamingFormat — writes directly to ResponseWriter.
+func dashboardPage(p DashboardProps) atempl.Component {
+	return atempl.ComponentFunc(func(_ context.Context, w io.Writer) error {
+		_, err := fmt.Fprintf(w,
+			`<!DOCTYPE html>`+
+				`<html><head><title>%s</title></head>`+
+				`<body>`+
+				`<header><h1>%s</h1><p>%s</p></header>`+
+				`<main>`+
+				`<section><h2>Metrics</h2><p>%s</p></section>`+
+				`<section><h2>Alerts</h2><p>%s</p></section>`+
+				`<section><h2>Activity</h2><p>%s</p></section>`+
+				`</main>`+
+				`</body></html>`,
+			html.EscapeString(p.Title),
+			html.EscapeString(p.Title),
+			html.EscapeString(p.Subtitle),
+			html.EscapeString(p.Section1),
+			html.EscapeString(p.Section2),
+			html.EscapeString(p.Section3),
+		)
+		return err
+	})
+}
+
+// notifFragment renders one notification as an HTML <li> fragment.
+// Used with adapttempl.Format as SSE event format — each SSE data line
+// contains the rendered HTML, ready for HTMX sse-swap.
+func notifFragment(p NotifProps) atempl.Component {
+	return atempl.ComponentFunc(func(_ context.Context, w io.Writer) error {
+		_, err := fmt.Fprintf(w,
+			`<li class="notif notif-%s"><strong>[%s]</strong> %s</li>`,
+			html.EscapeString(p.Level),
+			html.EscapeString(p.ID),
+			html.EscapeString(p.Message),
+		)
+		return err
+	})
+}
+
+// ── Observer ──────────────────────────────────────────────────────────────────
+
+type statsObserver struct {
+	mu             sync.Mutex
+	requests       int
+	byStatus       map[int]int
+	valErrorsByLoc map[string]int
+}
+
+func (o *statsObserver) RecordRequest(_ string, _ string, statusCode int, _ time.Duration) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	o.requests++
+	if o.byStatus == nil {
+		o.byStatus = make(map[int]int)
+	}
+	o.byStatus[statusCode]++
+}
+
+func (o *statsObserver) RecordValidationError(location, constraintName, field string) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	if o.valErrorsByLoc == nil {
+		o.valErrorsByLoc = make(map[string]int)
+	}
+	o.valErrorsByLoc[location]++
+	fmt.Printf("  [observer] validation error — location=%q constraint=%q field=%q\n",
+		location, constraintName, field)
+}
+
+func (o *statsObserver) RecordSubscribe(_ string, _ bool, _ time.Duration) {}
+func (o *statsObserver) RecordPublish(_ string, _ bool, _ time.Duration)   {}
+
+func (o *statsObserver) print() {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	fmt.Printf("  total requests : %d\n", o.requests)
+	for code, n := range o.byStatus {
+		fmt.Printf("  HTTP %-3d        : %d\n", code, n)
+	}
+	for loc, n := range o.valErrorsByLoc {
+		fmt.Printf("  val errs (%s): %d\n", loc, n)
+	}
+}
+
+// ── Main ──────────────────────────────────────────────────────────────────────
+
+func main() {
+	obs := &statsObserver{}
+	b := rest.NewBuilder(rest.Info{Title: "Streaming + SSE + templ Demo", Version: "1.0.0"})
+
+	// ── Route 1: Chunked HTML streaming ──────────────────────────────────────
+	//
+	// adapttempl.StreamingFormat builds a format.Format[DashboardProps] backed
+	// by format.NewStreamed. The adapter detects IsStreamable() == true and
+	// calls MarshalTo(props, w) — writing directly to the ResponseWriter
+	// without buffering the entire page in memory first.
+	//
+	// The same route also serves JSON via content negotiation:
+	//   Accept: text/html        → streams the templ component (chunked)
+	//   Accept: application/json → returns JSON-encoded DashboardProps
+
+	dashRoute, err := rest.AddRoute[DashboardReq, DashboardProps](b, "GET", "/stream/dashboard",
+		dashReqCodec, dashPropsCodec,
+		rest.RouteConfig{OperationID: "streamDashboard"},
+		adapttempl.StreamingFormat(dashPropsCodec, dashboardPage), // chunked HTML
+		format.JSON(dashPropsCodec),                               // JSON fallback
+	)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "route error:", err)
+		os.Exit(1)
+	}
+
+	// ── Route 2: SSE with HTML fragment events ────────────────────────────────
+	//
+	// rest.AddSSERoute registers an SSE endpoint. Passing adapttempl.Format as
+	// the eventFormat means each event's data field is a rendered HTML <li>
+	// fragment instead of JSON — the HTMX html-over-the-wire SSE pattern.
+	//
+	// The codec validates every NotifProps before rendering: events with an
+	// invalid Level or empty Message are rejected by send() and never written
+	// to the stream. The observer records each validation error.
+
+	notifRoute, err := rest.AddSSERoute[NotifReq, NotifProps](b, "/sse/notifications",
+		notifReqCodec, notifCodec,
+		rest.RouteConfig{OperationID: "sseNotifications"},
+		adapttempl.Format(notifCodec, notifFragment), // events as HTML fragments
+	)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "SSE route error:", err)
+		os.Exit(1)
+	}
+
+	// ── Shared mux ───────────────────────────────────────────────────────────
+
+	mux := http.NewServeMux()
+	opts := nethttp.Options{Observer: obs}
+
+	nethttp.Register(mux, dashRoute, func(_ context.Context, _ DashboardReq) (DashboardProps, error) {
+		return DashboardProps{
+			Title:    "Operations Dashboard",
+			Subtitle: "Real-time system overview",
+			Section1: "CPU 42% | Memory 61% | Disk 78%",
+			Section2: "2 active alerts — see notification feed",
+			Section3: "Last deployment: 2024-06-01 14:32 UTC",
+		}, nil
+	}, opts)
+
+	nethttp.RegisterSSE(mux, notifRoute, func(ctx context.Context, _ NotifReq, send func(NotifProps) error) error {
+		events := []NotifProps{
+			{ID: "n1", Message: "Deployment succeeded", Level: "info"},
+			{ID: "n2", Message: "Disk usage above 75%", Level: "warn"},
+			{ID: "n3", Message: "", Level: "critical"}, // invalid: empty message + unknown level
+			{ID: "n4", Message: "Database connection restored", Level: "info"},
+			{ID: "n5", Message: "CPU spike detected", Level: "error"},
+		}
+		for _, e := range events {
+			if err := send(e); err != nil {
+				fmt.Printf("  [sse] event rejected: id=%s err=%v\n", e.ID, err)
+			}
+		}
+		return nil
+	}, opts)
+
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	// ── Demo 1: Chunked streaming — Accept: text/html ─────────────────────────
+	fmt.Println("=== GET /stream/dashboard (Accept: text/html — chunked streaming) ===")
+	resp1 := mustGet(srv.URL+"/stream/dashboard", "text/html")
+	body1, _ := io.ReadAll(resp1.Body)
+	_ = resp1.Body.Close()
+	preview := strings.TrimSpace(string(body1))
+	if len(preview) > 80 {
+		preview = preview[:80] + "..."
+	}
+	fmt.Printf("  Status       : %d\n", resp1.StatusCode)
+	fmt.Printf("  Content-Type : %s\n", resp1.Header.Get("Content-Type"))
+	fmt.Printf("  Body (trim)  : %s\n\n", preview)
+
+	// ── Demo 2: Same route, JSON via content negotiation ─────────────────────
+	fmt.Println("=== GET /stream/dashboard (Accept: application/json) ===")
+	resp2 := mustGet(srv.URL+"/stream/dashboard", "application/json")
+	body2, _ := io.ReadAll(resp2.Body)
+	_ = resp2.Body.Close()
+	fmt.Printf("  Status       : %d\n", resp2.StatusCode)
+	fmt.Printf("  Content-Type : %s\n", resp2.Header.Get("Content-Type"))
+	fmt.Printf("  Body         : %s\n\n", strings.TrimSpace(string(body2)))
+
+	// ── Demo 3: Streaming with invalid props → 500 ───────────────────────────
+	//
+	// The streaming adapter validates props before calling MarshalTo. When the
+	// codec rejects the response the adapter returns 500 — the component never
+	// receives or renders invalid data.
+
+	invalidMux := http.NewServeMux()
+	nethttp.Register(invalidMux, dashRoute, func(_ context.Context, _ DashboardReq) (DashboardProps, error) {
+		return DashboardProps{
+			Title:    "", // fails NonEmptyString
+			Section1: "ok",
+			Section2: "ok",
+			Section3: "ok",
+		}, nil
+	}, nethttp.Options{Observer: obs})
+	invalidSrv := httptest.NewServer(invalidMux)
+	defer invalidSrv.Close()
+
+	fmt.Println("=== GET /stream/dashboard with invalid props (title empty) ===")
+	resp3 := mustGet(invalidSrv.URL+"/stream/dashboard", "text/html")
+	body3, _ := io.ReadAll(resp3.Body)
+	_ = resp3.Body.Close()
+	fmt.Printf("  Status       : %d (props rejected — component never rendered)\n\n", resp3.StatusCode)
+	_ = body3
+
+	// ── Demo 4: SSE notifications — HTML fragment events ─────────────────────
+	//
+	// Each valid event produces a "data: <li ...>" line. The invalid event
+	// (n3: empty message, unknown level "critical") is rejected before the
+	// notifFragment component is ever called. The observer counts the error.
+
+	fmt.Println("=== GET /sse/notifications (SSE — events as HTML fragments) ===")
+	req, _ := http.NewRequestWithContext(context.Background(), http.MethodGet,
+		srv.URL+"/sse/notifications", nil)
+	sseResp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "SSE request error:", err)
+		os.Exit(1)
+	}
+	fmt.Printf("  Content-Type : %s\n", sseResp.Header.Get("Content-Type"))
+	fmt.Println("  Events received:")
+	scanner := bufio.NewScanner(sseResp.Body)
+	for scanner.Scan() {
+		line := scanner.Text()
+		if strings.HasPrefix(line, "data: ") {
+			fmt.Printf("    %s\n", line)
+		}
+	}
+	_ = sseResp.Body.Close()
+	fmt.Println()
+
+	// ── Observer summary ──────────────────────────────────────────────────────
+	fmt.Println("=== Observer summary ===")
+	obs.print()
+}
+
+func mustGet(url, accept string) *http.Response {
+	req, _ := http.NewRequest(http.MethodGet, url, nil) //nolint:noctx
+	if accept != "" {
+		req.Header.Set("Accept", accept)
+	}
+	resp, err := http.DefaultClient.Do(req) //nolint:noctx
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "request error:", err)
+		os.Exit(1)
+	}
+	return resp
+}

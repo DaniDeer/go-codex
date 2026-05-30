@@ -12,7 +12,7 @@
 // Components are implemented with templ.ComponentFunc — no code generation
 // required to run this example.
 //
-// Run with: go run ./examples/templ-mapper
+// Run with: go run ./examples/adapters-templ
 package main
 
 import (

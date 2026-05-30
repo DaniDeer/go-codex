@@ -423,6 +423,13 @@ type typedRouteEntry[Req, Resp any] struct {
 
 func (e *typedRouteEntry[Req, Resp]) descriptor() route.Route { return e.frozen }
 
+// typedSSEEntry stores the frozen descriptor for a single SSE route.
+type typedSSEEntry struct {
+	frozen route.Route
+}
+
+func (e *typedSSEEntry) descriptor() route.Route { return e.frozen }
+
 // InvalidPathError is returned by [AddRoute] when the path fails builder-level
 // path codec validation.
 //
@@ -888,6 +895,118 @@ func AddRoute[Req, Resp any](
 		responseHeaderParams: config.ResponseHeaderParams,
 		responseCookieParams: config.ResponseCookieParams,
 		pathCodec:            b.pathCodec,
+	}, nil
+}
+
+// SSERouteHandle is returned by [AddSSERoute]. It holds the route descriptor
+// and typed helpers for decoding requests and encoding SSE events.
+//
+// The adapter uses EncodeEvent to serialise each event to JSON and ValidateEvent
+// to reject invalid values before they are written to the client.
+// When EventFormats is non-empty the adapter may use an explicit format for
+// event data serialisation (e.g. JSON or YAML inside the data field).
+type SSERouteHandle[Req, Event any] struct {
+	// Descriptor is the frozen route.Route built at registration time.
+	Descriptor route.Route
+
+	// Decode deserialises and validates a JSON request body into Req.
+	// For SSE (GET) routes, this is rarely called — use [RequestFromContext]
+	// to read path and query parameters instead.
+	Decode func(body []byte) (Req, error)
+
+	// EncodeEvent serialises one event value to JSON bytes.
+	// Used as the fallback encoder when EventFormats is empty.
+	EncodeEvent func(e Event) ([]byte, error)
+
+	// ValidateEvent runs the event codec constraints on e without serialising.
+	// The adapter calls this inside the send func before encoding.
+	ValidateEvent func(e Event) error
+
+	// EventFormats, when non-empty, lists the formats available for encoding
+	// event data. The adapter picks the first format (or the JSON fallback).
+	EventFormats []format.Format[Event]
+
+	// pathParams holds per-variable params registered via PathParams in config.
+	pathParams []PathParam
+
+	// pathCodec is the builder-level path codec (may be nil).
+	pathCodec *codex.Codec[string]
+}
+
+// BuildPath substitutes {varName} placeholders in the route's path template
+// with the values provided in vars, validating each against its registered
+// codec (if any). Follows the same contract as [RouteHandle.BuildPath].
+func (h *SSERouteHandle[Req, Event]) BuildPath(vars map[string]string) (string, error) {
+	codecMap := make(map[string]*codex.Codec[string], len(h.pathParams))
+	for i := range h.pathParams {
+		if h.pathParams[i].Codec != nil {
+			codecMap[h.pathParams[i].Name] = h.pathParams[i].Codec
+		}
+	}
+	result, err := internal.BuildFromTemplate(h.Descriptor.Path, vars, codecMap,
+		func(name string) error { return MissingPathVarError{Name: name} },
+		func(name, value string, err error) error {
+			return PathParamError{Name: name, Value: value, Err: err}
+		},
+	)
+	if err != nil {
+		return "", err
+	}
+	if h.pathCodec != nil {
+		if err := h.pathCodec.Validate(result); err != nil {
+			return "", InvalidPathError{Path: result, Err: err}
+		}
+	}
+	return result, nil
+}
+
+// AddSSERoute registers a Server-Sent Events route (always GET) with the
+// builder and returns an [SSERouteHandle].
+//
+// reqCodec decodes the (usually empty) request body; for query/path parameter
+// extraction use [RequestFromContext] inside the handler.
+// eventCodec validates and encodes each outbound event as JSON.
+// eventFormats optionally lists formats for event data serialisation; when
+// empty the adapter defaults to JSON. The first format is the default encoder.
+//
+// The route appears in the OpenAPI spec with Content-Type text/event-stream.
+// Path validation follows the same rules as [AddRoute].
+func AddSSERoute[Req, Event any](
+	b *Builder,
+	path string,
+	reqCodec codex.Codec[Req],
+	eventCodec codex.Codec[Event],
+	config RouteConfig,
+	eventFormats ...format.Format[Event],
+) (*SSERouteHandle[Req, Event], error) {
+	if b.pathCodec != nil {
+		if err := b.pathCodec.Validate(internal.StripTemplateVars(path)); err != nil {
+			return nil, InvalidPathError{Path: path, Err: err}
+		}
+	}
+
+	templateVars := internal.ParseTemplateVars(path)
+	for _, p := range config.PathParams {
+		if !templateVars[p.Name] {
+			return nil, InvalidPathParamError{Name: p.Name, Path: path}
+		}
+	}
+
+	frozen := buildDescriptor("GET", path, reqCodec.Schema, eventCodec.Schema, config, []string{"text/event-stream"})
+	entry := &typedSSEEntry{frozen: frozen}
+	b.entries = append(b.entries, entry)
+
+	jsonReq := format.JSON(reqCodec)
+	jsonEvent := format.JSON(eventCodec)
+
+	return &SSERouteHandle[Req, Event]{
+		Descriptor:    frozen,
+		Decode:        func(body []byte) (Req, error) { return jsonReq.Unmarshal(body) },
+		EncodeEvent:   func(e Event) ([]byte, error) { return jsonEvent.Marshal(e) },
+		ValidateEvent: func(e Event) error { return jsonEvent.Validate(e) },
+		EventFormats:  slices.Clone(eventFormats),
+		pathParams:    config.PathParams,
+		pathCodec:     b.pathCodec,
 	}, nil
 }
 

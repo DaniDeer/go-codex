@@ -118,6 +118,7 @@ Requires Go 1.25 or later.
 | chi adapter                       | `github.com/DaniDeer/go-codex/adapters/chi`     |
 | Paho MQTT adapter                 | `github.com/DaniDeer/go-codex/adapters/mqtt`    |
 | templ SSR format plug-in          | `github.com/DaniDeer/go-codex/adapters/templ`   |
+| SSE (Server-Sent Events) adapters | `github.com/DaniDeer/go-codex/adapters/nethttp` / `adapters/chi` |
 | OpenAPI 3.1 renderer              | `github.com/DaniDeer/go-codex/render/openapi`   |
 | AsyncAPI 2.6 renderer             | `github.com/DaniDeer/go-codex/render/asyncapi`  |
 | Schema model                      | `github.com/DaniDeer/go-codex/schema`           |
@@ -139,6 +140,8 @@ Requires Go 1.25 or later.
 - **chi Adapter** — wire `RouteHandle` to `chi.Router` with one call; identical feature set to net/http adapter; path vars via `chi.URLParam`
 - **Paho MQTT Adapter** — wire `ChannelHandle` to Paho MQTT subscribe callbacks; unified `Publish` handles both static and template topics; `TopicVarsFromMessage` extracts `{varName}` values from received topics and validates them (structural match → builder-level topic codec → per-param codecs) — fully symmetric with `BuildTopic`
 - **templ SSR Format Plug-in** — add `adapttempl.Format(propsCodec, component)` to a route's `ResponseFormats`; the existing nethttp/chi adapters then serve HTML to `Accept: text/html` clients and JSON to API clients from the same handler
+- **Streaming Responses** — `format.NewStreamed` creates a format that writes directly to the `ResponseWriter` without buffering; `adapttempl.StreamingFormat` renders templ components as a stream; the adapter validates before committing headers
+- **Server-Sent Events (SSE)** — `rest.AddSSERoute[Req, Event]` registers a typed SSE route; `nethttp.SSEHandler` / `nethttp.RegisterSSE` and `chiadapter.SSEHandler` / `chiadapter.RegisterSSE` stream codec-validated events; path param codecs work identically to REST routes; stats observer counts validation errors per event
 
 ### Multi-Format Support
 
@@ -170,8 +173,11 @@ The `format` package covers all wire formats via two constructors. The built-in 
 |---|---|---|
 | `format.New[T](codec, marshal, unmarshal)` | `map[string]any` | CBOR, MessagePack, XML — any format with a map-based intermediate |
 | `format.NewTyped[T](codec, marshal, unmarshal, ct)` | typed `T` directly | templ HTML, Protobuf, CSV — any renderer that takes a typed value |
+| `format.NewStreamed[T](codec, marshalTo, unmarshal, ct)` | writes to `io.Writer` | SSR streaming, chunked responses — validates then streams without buffering |
 
 `format.NewTyped` runs the codec's Refine constraints on the value **before** calling `marshal`, so validation always fires regardless of the output format.
+
+`format.NewStreamed` validates first (same constraints), then streams to the `io.Writer` — headers are only committed after validation passes. Call `IsStreamable()` to detect streaming formats; `MarshalTo(v, w)` performs the stream write.
 
 ```go
 // Custom MessagePack format (map[string]any → msgpack bytes):
@@ -1551,11 +1557,86 @@ nethttp.Register(mux, articleRoute, func(ctx context.Context, req ArticleReq) (A
 - `DecodeNotSupportedError` is returned by the format's `Unmarshal`; use `errors.As` to detect it.
 - Components written with `templ.ComponentFunc` require no code generation — self-contained in any Go file.
 
-See [`examples/templ-mapper`](examples/templ-mapper/main.go) for a runnable demonstration.
+See [`examples/adapters-templ`](examples/adapters-templ/main.go) for a runnable demonstration.
+
+#### Chunked streaming + SSE HTML fragments (HTMX-style)
+
+`adapttempl.StreamingFormat` and `adapttempl.Format` compose directly with the SSE adapter:
+
+- **Chunked streaming**: pass `adapttempl.StreamingFormat(codec, component)` as a `ResponseFormat` on any route. The adapter detects `IsStreamable() == true` and calls `MarshalTo(props, w)` — the templ component writes directly to the `ResponseWriter` without buffering.
+- **SSE with HTML fragments**: pass `adapttempl.Format(codec, fragment)` as an `EventFormat` to `rest.AddSSERoute`. Each SSE event's `data:` field contains a rendered HTML fragment — the HTML-over-the-wire / HTMX `sse-swap` pattern. Events with invalid props are rejected by the codec before the fragment component renders.
+
+```go
+// Chunked streaming HTML page
+dashRoute, _ := rest.AddRoute[DashboardReq, DashboardProps](b, "GET", "/dashboard",
+    dashReqCodec, dashPropsCodec, rest.RouteConfig{},
+    adapttempl.StreamingFormat(dashPropsCodec, dashboardPage), // chunked HTML
+    format.JSON(dashPropsCodec),                               // JSON fallback
+)
+
+// SSE with HTML fragment events — each event is a rendered <li>
+notifRoute, _ := rest.AddSSERoute[NotifReq, NotifProps](b, "/sse/notifications",
+    notifReqCodec, notifCodec, rest.RouteConfig{},
+    adapttempl.Format(notifCodec, notifFragment), // data: <li class="notif-warn">...</li>
+)
+```
+
+See [`examples/adapters-streaming-sse-templ`](examples/adapters-streaming-sse-templ/main.go) for a runnable demonstration of both patterns including invalid event rejection and observer stats.
+
+### SSE (Server-Sent Events)
+
+`rest.AddSSERoute[Req, Event]` registers a typed SSE route — always GET — with a request codec and an event codec. The event codec validates every value before it is serialised to `data: ...\n\n` and written to the client.
+
+```go
+import (
+    nethttp "github.com/DaniDeer/go-codex/adapters/nethttp"
+    "github.com/DaniDeer/go-codex/api/rest"
+    "github.com/DaniDeer/go-codex/codex"
+    "github.com/DaniDeer/go-codex/validate"
+)
+
+// sensorRoute registers GET /sensors/{id}/readings.
+// {id} is validated by sensorIDCodec at BuildPath time and in the OpenAPI spec.
+sensorRoute, err := rest.AddSSERoute[emptyReq, sensorReading](
+    b, "/sensors/{id}/readings",
+    emptyReqCodec, sensorReadingCodec,
+    rest.RouteConfig{
+        OperationID: "streamSensor",
+        PathParams: []rest.PathParam{
+            {Name: "id", Description: "Sensor ID", Codec: &sensorIDCodec},
+        },
+    },
+)
+
+// Wire onto net/http.
+nethttp.RegisterSSE(mux, sensorRoute, func(ctx context.Context, _ emptyReq, send func(sensorReading) error) error {
+    r, _ := nethttp.RequestFromContext(ctx)
+    sensorID := r.PathValue("id")
+    for {
+        select {
+        case <-ctx.Done():
+            return nil  // client disconnected
+        default:
+        }
+        reading := svc.Read(sensorID)
+        if err := send(reading); err != nil {
+            return err  // codec rejected the value — no bytes written
+        }
+        time.Sleep(time.Second)
+    }
+}, nethttp.Options{Observer: obs})
+```
+
+- `send(event)` validates via the event codec, encodes to JSON, writes `data: <json>\n\n`, and flushes. If the codec rejects the event, `send` returns an error **without writing anything** — the stream remains clean.
+- `ctx.Done()` signals client disconnects; the handler is expected to return when the context is cancelled.
+- `sensorRoute.BuildPath(map[string]string{"id": "room-42"})` validates the path variable before assembling the URL — same contract as `RouteHandle.BuildPath`.
+- The route appears in the OpenAPI spec as `GET /sensors/{id}/readings` with `Content-Type: text/event-stream`.
+- Works identically with `chiadapter.SSEHandler` / `chiadapter.RegisterSSE`; use `chi.URLParam(r, "id")` for path vars.
+- Stats observer receives a validation error call via `RecordValidationError("response", constraint, "event")` for each rejected event.
+
+See [`examples/adapters-sse`](examples/adapters-sse/main.go) for a runnable demonstration including BuildPath validation, invalid event rejection, stats, and OpenAPI spec output.
 
 
-
-`stats` exposes two levels of observability, both dependency-free:
 
 **Codec-level** — use when calling codecs directly (config validation, protocol parsing, any non-HTTP/MQTT use case). Implement just `stats.ValidationObserver` (one method) and call `stats.ReportErrors`:
 
@@ -1836,8 +1917,8 @@ go-codex/
 │   ├── time.go             # Time(), Date(), Duration()
 │   └── union.go            # TaggedUnion[T], UntaggedUnion[T], UntaggedVariant[T]
 │
-├── format/                 # format bridges: JSON, YAML, TOML
-│   └── format.go           # Format[T], JSON(), YAML(), TOML(), New()
+├── format/                 # format bridges: JSON, YAML, TOML, streaming
+│   └── format.go           # Format[T], JSON(), YAML(), TOML(), New(), NewTyped(), NewStreamed(), ErrNotStreamable
 │
 ├── route/                  # HTTP route descriptors (no renderer logic)
 │   └── route.go            # Route, Param, Body, Response
@@ -1846,21 +1927,21 @@ go-codex/
 │   ├── internal/           # shared helpers (not public API)
 │   │   └── template.go     # ParseTemplateVars, BuildFromTemplate, StripTemplateVars — used by rest + events
 │   ├── rest/               # REST API builder: typed Decode/Encode + OpenAPI spec
-│   │   └── builder.go      # Builder, AddRoute[Req,Resp], AddServer, AddSchema, RouteHandle, BuildPath
+│   │   └── builder.go      # Builder, AddRoute[Req,Resp], AddSSERoute[Req,Event], AddServer, AddSchema, RouteHandle, SSERouteHandle, BuildPath
 │   └── events/             # Event channel builder: typed Decode/Encode + AsyncAPI spec
 │       └── builder.go      # Builder, AddChannel[T], AddServer, AddSchema, ChannelHandle, BuildTopic
 │
 ├── adapters/               # transport-specific adapters (wrap api/rest or api/events)
 │   ├── nethttp/            # net/http adapter for api/rest RouteHandles
-│   │   ├── adapter.go      # Handler, Register, RequestFromContext, WithResponseHeaders, WithResponseCookies, Options
+│   │   ├── adapter.go      # Handler, Register, SSEHandler, RegisterSSE, RequestFromContext, WithResponseHeaders, WithResponseCookies, Options
 │   │   └── cookie.go       # SetCookie, CookieOptions, PendingCookie
 │   ├── chi/                # chi adapter for api/rest RouteHandles (github.com/go-chi/chi/v5)
-│   │   └── adapter.go      # Handler, Register, RequestFromContext, WithResponseHeaders, WithResponseCookies, SetCookie, CookieOptions, PendingCookie, Options
+│   │   └── adapter.go      # Handler, Register, SSEHandler, RegisterSSE, RequestFromContext, WithResponseHeaders, WithResponseCookies, SetCookie, CookieOptions, PendingCookie, Options
 │   ├── mqtt/               # Paho MQTT adapter for api/events ChannelHandles
 │   │   ├── adapter.go      # SubscribeHandler, SubscribeOptions, Publish, SubscribeError, ErrorKind, MessageFromContext
 │   │   └── topicvars.go    # TopicVarsFromMessage, TopicMismatchError
 │   └── templ/              # templ SSR format plug-in for api/rest RouteHandles
-│       └── adapter.go      # Format[Props], DecodeNotSupportedError
+│       └── adapter.go      # Format[Props], StreamingFormat[Props], DecodeNotSupportedError
 │
 ├── render/                 # spec renderers (import schema only, or schema + route)
 │   ├── internal/
@@ -1892,6 +1973,7 @@ go-codex/
     ├── adapters-chi/       # chi adapter: wiring api/rest to chi.Router
     ├── adapters-mqtt/      # Paho MQTT adapter: wiring api/events to Paho client
     ├── adapters-nethttp/   # net/http adapter: wiring api/rest to ServeMux
+    ├── adapters-sse/       # SSE: AddSSERoute, SSEHandler, path codec, stats, OpenAPI spec
     ├── api-events/         # Event channel builder: typed helpers + AsyncAPI spec
     ├── api-rest/           # REST API builder: typed helpers + OpenAPI spec
     ├── decode-errors/      # multi-field ValidationErrors + errors.As demo
@@ -1904,7 +1986,8 @@ go-codex/
     ├── rest-api/           # full OpenAPI 3.1 document from route descriptors
     ├── shape/              # tagged union + Downcast demo
     ├── stats-observer/          # stats.ValidationObserver with codecs directly: config validation, no adapter
-    ├── templ-mapper/            # templ SSR format plug-in: same route serves HTML and JSON; observer wired
+    ├── adapters-templ/          # templ SSR format plug-in: same route serves HTML and JSON; observer wired
+    ├── adapters-streaming-sse-templ/ # chunked streaming + SSE HTML fragments via templ components
     ├── validate/           # explicit Validate before marshal
     ├── codec-mapping/      # shared field codecs, sub-codec reuse, MapCodecSafe, MapCodecValidated
     └── construction/       # New + Must: construction-time validation demo

@@ -8,7 +8,9 @@ package format
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 
 	"github.com/BurntSushi/toml"
 	"github.com/DaniDeer/go-codex/codex"
@@ -16,15 +18,21 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
+// ErrNotStreamable is returned by [Format.MarshalTo] when the format was not
+// created with [NewStreamed] and therefore does not support streaming output.
+var ErrNotStreamable = errors.New("format: not streamable — use NewStreamed to create a streaming format")
+
 // Format binds a Codec[T] to a specific serialization format.
 // Use JSON, YAML, or TOML to construct one. For formats that operate on the
-// typed value directly (e.g. HTML rendering), use [NewTyped].
+// typed value directly (e.g. HTML rendering), use [NewTyped]. For streaming
+// output (write to io.Writer without buffering), use [NewStreamed].
 type Format[T any] struct {
 	codec          codex.Codec[T]
 	marshal        func(any) ([]byte, error)
 	unmarshal      func([]byte) (any, error)
 	marshalTyped   func(T) ([]byte, error)
 	unmarshalTyped func([]byte) (T, error)
+	marshalTo      func(T, io.Writer) error
 	contentType    string
 }
 
@@ -66,6 +74,43 @@ func NewTyped[T any](c codex.Codec[T], marshal func(T) ([]byte, error), unmarsha
 	}
 }
 
+// NewStreamed creates a Format where responses are written directly to an
+// [io.Writer] without buffering to a []byte intermediate. This enables chunked
+// or streaming responses for large payloads (HTML pages, JSON arrays, CSV exports).
+//
+// The codec is used for validation: [Format.MarshalTo] runs all Refine
+// constraints on the value before calling marshalTo, so invalid data is
+// rejected before any bytes are written.
+//
+// unmarshal is used for [Format.Unmarshal] (reading streaming formats is rarely
+// needed; pass a function that returns an error when not applicable).
+//
+// Use [Format.IsStreamable] to detect streaming formats. The adapter calls
+// [Format.MarshalTo] instead of [Format.Marshal] and writes response headers
+// before streaming, so partial output is never flushed on validation failure.
+//
+// Example — streaming a templ component without buffering:
+//
+//	streamFmt := format.NewStreamed(
+//	    propsCodec,
+//	    func(props Props, w io.Writer) error {
+//	        return component(props).Render(context.Background(), w)
+//	    },
+//	    func([]byte) (Props, error) {
+//	        var zero Props
+//	        return zero, errors.New("HTML is not decodable")
+//	    },
+//	    "text/html; charset=utf-8",
+//	)
+func NewStreamed[T any](c codex.Codec[T], marshalTo func(T, io.Writer) error, unmarshal func([]byte) (T, error), contentType string) Format[T] {
+	return Format[T]{
+		codec:          c,
+		marshalTo:      marshalTo,
+		unmarshalTyped: unmarshal,
+		contentType:    contentType,
+	}
+}
+
 // ContentType returns the MIME type associated with this format (e.g. "application/json").
 // Empty string means the format has no registered content type.
 func (f Format[T]) ContentType() string { return f.contentType }
@@ -77,9 +122,14 @@ func (f Format[T]) WithContentType(ct string) Format[T] {
 	return f
 }
 
+// IsStreamable reports whether this format supports streaming output via [Format.MarshalTo].
+// Streaming formats are created with [NewStreamed].
+func (f Format[T]) IsStreamable() bool { return f.marshalTo != nil }
+
 // Marshal encodes v to bytes using the codec and then the format serializer.
 // If the format was created with [NewTyped], the codec validates v first and
 // then the typed marshal function is called directly (bypassing the intermediate).
+// For streaming formats created with [NewStreamed], use [Format.MarshalTo] instead.
 func (f Format[T]) Marshal(v T) ([]byte, error) {
 	if f.marshalTyped != nil {
 		// Validate via codec (runs all Refine constraints) before rendering.
@@ -93,6 +143,23 @@ func (f Format[T]) Marshal(v T) ([]byte, error) {
 		return nil, err
 	}
 	return f.marshal(intermediate)
+}
+
+// MarshalTo validates v via the codec and then writes the serialized form
+// directly to w without buffering to a []byte intermediate. Use this with
+// formats created via [NewStreamed]; call [Format.IsStreamable] first.
+// Returns [ErrNotStreamable] if the format has no streaming marshal function.
+// Validation errors are returned before any bytes are written to w.
+func (f Format[T]) MarshalTo(v T, w io.Writer) error {
+	if f.marshalTo == nil {
+		return ErrNotStreamable
+	}
+	// Validate via codec before writing any bytes — ensures headers are not
+	// yet committed when validation fails (adapter writes headers after this).
+	if _, err := f.codec.Encode(v); err != nil {
+		return err
+	}
+	return f.marshalTo(v, w)
 }
 
 // Unmarshal deserializes data into an intermediate and then decodes it via the codec.

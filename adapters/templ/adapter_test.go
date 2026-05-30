@@ -232,3 +232,81 @@ func TestFormat_SameHandlerServesHTMLAndJSON(t *testing.T) {
 		t.Errorf("JSON: status=%d body=%s", jsonStatus, jsonBody)
 	}
 }
+
+func TestStreamingFormat_HTMLResponse(t *testing.T) {
+	b := rest.NewBuilder(rest.Info{Title: "Test", Version: "1.0.0"})
+	route, err := rest.AddRoute[pageReq, pageProps](b, "GET", "/page",
+		pageReqCodec, pagePropsCodec,
+		rest.RouteConfig{OperationID: "streamPage"},
+		adapttempl.StreamingFormat(pagePropsCodec, pageComponent),
+	)
+	if err != nil {
+		t.Fatalf("AddRoute: %v", err)
+	}
+	mux := http.NewServeMux()
+	nethttp.Register(mux, route, func(_ context.Context, _ pageReq) (pageProps, error) {
+		return pageProps{Title: "Streamed", Items: []string{"a"}}, nil
+	}, nethttp.Options{})
+
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	status, body := get(t, srv, "/page", "text/html")
+	if status != 200 {
+		t.Fatalf("want 200, got %d: %s", status, body)
+	}
+	if !strings.Contains(body, "<h1>Streamed</h1>") {
+		t.Errorf("expected HTML body, got: %s", body)
+	}
+}
+
+func TestStreamingFormat_ContentTypeHeader(t *testing.T) {
+	b := rest.NewBuilder(rest.Info{Title: "Test", Version: "1.0.0"})
+	route, err := rest.AddRoute[pageReq, pageProps](b, "GET", "/page",
+		pageReqCodec, pagePropsCodec,
+		rest.RouteConfig{OperationID: "streamPage"},
+		adapttempl.StreamingFormat(pagePropsCodec, pageComponent),
+	)
+	if err != nil {
+		t.Fatalf("AddRoute: %v", err)
+	}
+	handler := nethttp.Handler(route, func(_ context.Context, _ pageReq) (pageProps, error) {
+		return pageProps{Title: "T", Items: []string{}}, nil
+	}, nethttp.Options{})
+
+	rec := httptest.NewRecorder()
+	r := httptest.NewRequest(http.MethodGet, "/page", nil)
+	r.Header.Set("Accept", "text/html")
+	handler.ServeHTTP(rec, r)
+
+	if rec.Code != 200 {
+		t.Fatalf("want 200, got %d", rec.Code)
+	}
+	if ct := rec.Header().Get("Content-Type"); ct != "text/html; charset=utf-8" {
+		t.Errorf("want 'text/html; charset=utf-8', got %q", ct)
+	}
+}
+
+func TestStreamingFormat_InvalidPropsReturn500(t *testing.T) {
+	b := rest.NewBuilder(rest.Info{Title: "Test", Version: "1.0.0"})
+	route, err := rest.AddRoute[pageReq, pageProps](b, "GET", "/page",
+		pageReqCodec, pagePropsCodec,
+		rest.RouteConfig{OperationID: "streamPageInvalid"},
+		adapttempl.StreamingFormat(pagePropsCodec, pageComponent),
+	)
+	if err != nil {
+		t.Fatalf("AddRoute: %v", err)
+	}
+	handler := nethttp.Handler(route, func(_ context.Context, _ pageReq) (pageProps, error) {
+		return pageProps{Title: "", Items: []string{}}, nil // Title="" fails NonEmptyString
+	}, nethttp.Options{})
+
+	rec := httptest.NewRecorder()
+	r := httptest.NewRequest(http.MethodGet, "/page", nil)
+	r.Header.Set("Accept", "text/html")
+	handler.ServeHTTP(rec, r)
+
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("want 500, got %d: %s", rec.Code, rec.Body.String())
+	}
+}

@@ -25,18 +25,18 @@ go-codex is a Go port of the core ideas from Haskell's [autodocodec](https://hac
 | `codex`           | PUBLIC API: `Codec[T]`, primitives (`Int`, `Int32`, `Int64`, `Uint`, `Uint64`, `Float32`, `Float64`, `String`, `Bool`, `Bytes`, `Time`, `Date`, `Duration`, `Any`, `Pure`, `Eq`), `Nullable[T]`, `SliceOf[T]`, `StringMap[V]`, struct, `TaggedUnion`, `UntaggedUnion`, `Either[A,B]`, `Either2`, `MapCodecSafe`, `MapCodecValidated`, `Must`, `Constraint`, `Refine`, `RefineFunc`, `ValidationError`, `ValidationErrors`, `ConstraintError`, `TypeMismatchError`, `ElementError`, `KeyError`, `UnknownVariantError`, `VariantError`, `EitherError`, `ErrMissingField` | `schema`     |
 | `schema`          | Schema model (pure data, no codec logic)                                                  | none                             |
 | `validate`        | Reusable `Constraint` functions: numbers, strings, format, bytes                          | `codex`, `schema`                |
-| `format`          | Bridges `Codec[T]` to wire formats: JSON, YAML, TOML; `FromEnv[T]` for schema-driven env var loading | `codex`, `schema`, external libs |
+| `format`          | Bridges `Codec[T]` to wire formats: JSON, YAML, TOML, streaming; `FromEnv[T]` for schema-driven env var loading; `NewStreamed` for chunked/SSE writes | `codex`, `schema`, external libs |
 | `route`           | HTTP route descriptors: `Route`, `Param`, `Body`, `Response`                             | `schema`                         |
 | `render/internal/schemarender` | Shared schema-to-map rendering logic used by both OpenAPI and AsyncAPI renderers | `schema`               |
 | `render/openapi`  | Renders `schema.Schema` as OpenAPI 3.1 `components/schemas`; `DocumentBuilder` for full spec | `schema`, `route`, `render/internal/schemarender`, external libs |
 | `render/asyncapi` | Renders channels and schemas as a full AsyncAPI 2.6 document                             | `schema`, `render/internal/schemarender`, external libs |
 | `api/internal`    | Shared helpers for `api/rest` and `api/events` (template variable parsing and substitution); not part of the public API | `codex` |
-| `api/rest`        | Transport-agnostic REST API builder; typed Decode/Encode + OpenAPI spec                  | `codex`, `format`, `route`, `render/openapi`, `schema`, `api/internal` |
+| `api/rest`        | Transport-agnostic REST API builder; typed Decode/Encode + OpenAPI spec; `AddSSERoute` for Server-Sent Events; `SSERouteHandle` with `BuildPath` | `codex`, `format`, `route`, `render/openapi`, `schema`, `api/internal` |
 | `api/events`      | Transport-agnostic event channel builder; typed Decode/Encode + AsyncAPI spec            | `codex`, `format`, `render/asyncapi`, `schema`, `api/internal` |
-| `adapters/nethttp` | net/http adapter: `Handler`, `Register`, `RequestFromContext`, `WithResponseHeaders`, `ResponseHeadersFromContext`, `WithResponseCookies`, `ResponseCookiesFromContext`, `PendingCookie`, `SetCookie`, `CookieOptions`, `Options` (with `Observer stats.Observer`) | `api/rest`, `net/http`, `stats`, `format` |
-| `adapters/chi`    | chi adapter: same API surface as `adapters/nethttp` but for `github.com/go-chi/chi/v5`; path vars via `chi.URLParam`; `Handler`, `Register`, `RequestFromContext`, `WithResponseHeaders`, `WithResponseCookies`, `PendingCookie`, `SetCookie`, `CookieOptions`, `Options` | `api/rest`, `net/http`, `stats`, `format`, chi lib |
+| `adapters/nethttp` | net/http adapter: `Handler`, `Register`, `SSEHandler`, `RegisterSSE`, `SSEHandlerFunc`, `RequestFromContext`, `WithResponseHeaders`, `ResponseHeadersFromContext`, `WithResponseCookies`, `ResponseCookiesFromContext`, `PendingCookie`, `SetCookie`, `CookieOptions`, `Options` (with `Observer stats.Observer`) | `api/rest`, `net/http`, `stats`, `format` |
+| `adapters/chi`    | chi adapter: same API surface as `adapters/nethttp` plus `SSEHandler`, `RegisterSSE`, `SSEHandlerFunc`; path vars via `chi.URLParam`; `Handler`, `Register`, `RequestFromContext`, `WithResponseHeaders`, `WithResponseCookies`, `PendingCookie`, `SetCookie`, `CookieOptions`, `Options` | `api/rest`, `net/http`, `stats`, `format`, chi lib |
 | `adapters/mqtt`   | Paho MQTT adapter: `SubscribeHandler`, `Publish`, `TopicVarsFromMessage`, `TopicMismatchError`, `SubscribeError`, `ErrorKind`, `SubscribeOptions` (with `Observer stats.Observer`), `PublishOptions` (with `Observer stats.Observer`) | `api/events`, `stats`, Paho MQTT lib |
-| `adapters/templ`  | templ SSR format plug-in: `Format[Props](codec, component) format.Format[Props]`, `DecodeNotSupportedError`; add to a route's `ResponseFormats` to serve `text/html` alongside JSON via the existing nethttp/chi adapters | `codex`, `format`, `github.com/a-h/templ` |
+| `adapters/templ`  | templ SSR format plug-in: `Format[Props](codec, component) format.Format[Props]`, `StreamingFormat[Props](codec, component) format.Format[Props]`, `DecodeNotSupportedError`; add to a route's `ResponseFormats` to serve `text/html` alongside JSON via the existing nethttp/chi adapters | `codex`, `format`, `github.com/a-h/templ` |
 | `stats`           | Observer hooks: `ValidationObserver` (codec-level, 1 method); `Observer` (adapter-level, embeds `ValidationObserver` + transport hooks); `NoopObserver`; `ReportErrors(obs, location, err)`; `ConstraintName(err)` | `codex`, `time` (stdlib only) |
 
 - No circular imports.
@@ -979,20 +979,28 @@ Key rules:
     - `CookieOptions.Path string` — defaults to `"/"`
     - `CookieOptions.Domain string` — defaults to current host
     - `CookieOptions.Codec *codex.Codec[string]` — optional write-side validator; returns `rest.CookieParamError` on failure without writing header
+  - **`SSEHandler[Req,Event](handle *rest.SSERouteHandle[Req,Event], fn SSEHandlerFunc[Req,Event], opts Options) http.Handler`** — SSE streaming handler. Sets `Content-Type: text/event-stream`, `Cache-Control: no-cache`, `Connection: keep-alive`. Calls `fn`; the `send` func validates each event via the codec before writing `data: <json>\n\n` and flushing.
+  - **`RegisterSSE[Req,Event](mux, handle, fn, opts Options)`** — registers the SSE handler on `*http.ServeMux` under `GET <path>`.
+  - **`SSEHandlerFunc[Req,Event]`** = `func(ctx context.Context, req Req, send func(Event) error) error` — typed handler signature for SSE. `send` returns error if codec rejects the event; no bytes are written. Honour `ctx.Done()` for clean disconnect handling.
 
 - `adapters/chi` wraps `RouteHandle` for `github.com/go-chi/chi/v5`. It has the same API surface as `adapters/nethttp` with one key difference: path variables are extracted via `chi.URLParam(r, "name")` instead of `r.PathValue("name")`. Chi uses the same `{param}` placeholder syntax as go-codex path templates.
   - `Handler[Req,Resp](handle, fn, opts Options) http.HandlerFunc` — same pipeline as nethttp.
   - `Register[Req,Resp](r gochi.Router, handle, fn, opts Options)` — calls `r.Method(method, path, handler)`.
+  - `SSEHandler[Req,Event](handle, fn, opts Options) http.HandlerFunc` — SSE streaming handler; same contract as `nethttp.SSEHandler`.
+  - `RegisterSSE[Req,Event](r gochi.Router, handle, fn, opts Options)` — calls `r.Get(path, handler)`.
   - `RequestFromContext(ctx) (*http.Request, bool)` — retrieve request for `chi.URLParam(r, "id")`.
-  - All validation, response header/cookie, content negotiation features are identical to `adapters/nethttp`.
+  - All validation, response header/cookie, content negotiation, SSE features are identical to `adapters/nethttp`.
   - `SetCookie`, `CookieOptions`, `PendingCookie`, `WithResponseCookies`, `WithResponseHeaders` all present with identical signatures.
 
 - `adapters/templ` is a plug-in for the templ SSR library (`github.com/a-h/templ`). It does **not** implement an HTTP adapter — it produces a `format.Format[Props]` value that participates in the existing content negotiation pipeline of `adapters/nethttp` and `adapters/chi`.
   - `Format[Props](c codex.Codec[Props], component func(Props) atempl.Component) format.Format[Props]` — wraps a templ component as a `format.Format` with `ContentType: "text/html; charset=utf-8"`. Add it to a route's `ResponseFormats`.
+  - `StreamingFormat[Props](c codex.Codec[Props], component func(Props) atempl.Component) format.Format[Props]` — streaming variant built with `format.NewStreamed`; renders directly to `ResponseWriter` without buffering.
   - `DecodeNotSupportedError{ContentType string}` — returned by the format's `Unmarshal`; HTML cannot be decoded back to a typed value. Use `errors.As` to detect it.
   - Props are validated via the codec's `Refine` constraints before the component renders. Validation failure → HTTP 500 via the hosting adapter; the component is never called with invalid data.
   - The component receives `context.Background()` during rendering; pass all data the component needs through the Props struct.
   - Works with both `adapters/nethttp` and `adapters/chi` — no chi-specific variant needed.
+
+  **Composability with SSE (HTMX HTML-over-the-wire):** `adapttempl.Format` can be passed as an `EventFormat` to `rest.AddSSERoute`. Each SSE `data:` line contains a rendered HTML fragment — events with invalid props are rejected before the component renders. `adapttempl.StreamingFormat` can be used as a `ResponseFormat` on any regular route for chunked HTML delivery. See `examples/adapters-streaming-sse-templ` for both patterns together.
 
   ```go
   import (
@@ -1023,6 +1031,58 @@ Key rules:
       return svc.GetArticle(ctx, req.ID)
   }, nethttp.Options{})
   ```
+
+- `StreamingFormat[Props](c codex.Codec[Props], component func(Props) atempl.Component) format.Format[Props]` — streaming variant that renders directly to `ResponseWriter` via `format.NewStreamed`, bypassing the intermediate `bytes.Buffer`. Use when you want true chunked delivery of large HTML responses.
+
+### `adapters/nethttp` + `adapters/chi` — SSE (Server-Sent Events)
+
+Both adapters expose `SSEHandler` and `RegisterSSE` for streaming Server-Sent Events from a `rest.SSERouteHandle`.
+
+```go
+import (
+    nethttp "github.com/DaniDeer/go-codex/adapters/nethttp"
+    "github.com/DaniDeer/go-codex/api/rest"
+)
+
+// Register an SSE route — always GET.
+sensorRoute, err := rest.AddSSERoute[emptyReq, sensorReading](
+    b, "/sensors/{id}/readings",
+    emptyReqCodec, sensorReadingCodec,
+    rest.RouteConfig{
+        OperationID: "streamSensor",
+        PathParams: []rest.PathParam{
+            {Name: "id", Description: "Sensor ID", Codec: &sensorIDCodec},
+        },
+    },
+)
+
+// Wire onto net/http.
+nethttp.RegisterSSE(mux, sensorRoute,
+    func(ctx context.Context, _ emptyReq, send func(sensorReading) error) error {
+        r, _ := nethttp.RequestFromContext(ctx)
+        id := r.PathValue("id")
+        for {
+            select {
+            case <-ctx.Done():
+                return nil // client disconnected
+            default:
+            }
+            if err := send(svc.Read(id)); err != nil {
+                return err // codec rejected value — no bytes written
+            }
+            time.Sleep(time.Second)
+        }
+    }, nethttp.Options{Observer: obs})
+```
+
+Key contract rules:
+- `send(event)` validates via the event codec → encodes to JSON → writes `data: <json>\n\n` → flushes. If validation fails, `send` returns an error without writing anything; the stream remains clean.
+- `ctx.Done()` signals client disconnects; always respect it to avoid goroutine leaks.
+- `SSERouteHandle.BuildPath(vars)` validates path variables via per-param codecs and the builder-level path codec — same contract as `RouteHandle.BuildPath`.
+- `rest.AddSSERoute` also accepts `...format.Format[Event]` as variadic trailing args (`EventFormats`); the adapter uses the first format for event data serialisation (defaults to JSON when empty).
+- The route appears in the OpenAPI spec as a GET operation with `Content-Type: text/event-stream`.
+- Stats observer receives `RecordValidationError("response", constraint, "event")` for each rejected event.
+- For chi: use `chiadapter.SSEHandler` / `chiadapter.RegisterSSE`; path vars via `chi.URLParam(r, "id")`.
 
 
 

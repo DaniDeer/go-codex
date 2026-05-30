@@ -32,6 +32,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"strconv"
@@ -317,6 +318,45 @@ func Handler[Req, Resp any](handle *rest.RouteHandle[Req, Resp], fn HandlerFunc[
 					rest.NotAcceptableError{Accept: r.Header.Get("Accept"), Supported: supported})
 				return
 			}
+			if chosen.IsStreamable() {
+				if valErr := chosen.Validate(resp); valErr != nil {
+					reportBodyErrors(valErr, obs)
+					errFn(sw, r, http.StatusInternalServerError, valErr)
+					return
+				}
+				respCT = chosen.ContentType()
+
+				if err := handle.ValidateResponseHeaders(responseHeaderValues(respHeaders)); err != nil {
+					reportResponseHeaderErrors(err, obs)
+					errFn(sw, r, http.StatusInternalServerError, err)
+					return
+				}
+				if err := handle.ValidateResponseCookies(responseCookieValues(pendingCookies)); err != nil {
+					reportResponseCookieErrors(err, obs)
+					errFn(sw, r, http.StatusInternalServerError, err)
+					return
+				}
+				for key, vals := range respHeaders {
+					for _, v := range vals {
+						sw.Header().Add(key, v)
+					}
+				}
+				for i := range pendingCookies {
+					pc := &pendingCookies[i]
+					writeOpts := pc.Opts
+					writeOpts.Codec = nil
+					if err := SetCookie(sw, pc.Name, pc.Value, writeOpts); err != nil {
+						errFn(sw, r, http.StatusInternalServerError, err)
+						return
+					}
+				}
+				sw.Header().Set("Content-Type", respCT)
+				sw.WriteHeader(primaryStatus(handle))
+				if streamErr := chosen.MarshalTo(resp, sw); streamErr != nil {
+					reportBodyErrors(streamErr, obs)
+				}
+				return
+			}
 			var encErr error
 			out, encErr = chosen.Marshal(resp)
 			if encErr != nil {
@@ -376,6 +416,92 @@ func Handler[Req, Resp any](handle *rest.RouteHandle[Req, Resp], fn HandlerFunc[
 func Register[Req, Resp any](r gochi.Router, handle *rest.RouteHandle[Req, Resp], fn HandlerFunc[Req, Resp], opts Options) {
 	method := strings.ToUpper(handle.Descriptor.Method)
 	r.Method(method, handle.Descriptor.Path, Handler(handle, fn, opts))
+}
+
+// SSEHandlerFunc is the typed application handler called by [SSEHandler].
+// ctx is the request context (cancelled when the client disconnects).
+// req is the decoded request (zero value for body-less GET requests).
+// send encodes, validates, and writes one SSE event; it returns an error if
+// the event fails codec validation or if the underlying write fails.
+type SSEHandlerFunc[Req, Event any] func(ctx context.Context, req Req, send func(Event) error) error
+
+// SSEHandler wraps an [rest.SSERouteHandle] and a user-supplied [SSEHandlerFunc]
+// into an [http.HandlerFunc] that streams Server-Sent Events.
+//
+// The handler sets Content-Type: text/event-stream, Cache-Control: no-cache,
+// and Connection: keep-alive, then calls fn. The send func provided to fn
+// validates the event via the codec, encodes it as JSON, writes
+// "data: <json>\n\n" to the response, and flushes. If the event fails
+// validation, send returns an error without writing anything.
+//
+// fn should honour ctx.Done() for clean client-disconnect handling.
+func SSEHandler[Req, Event any](handle *rest.SSERouteHandle[Req, Event], fn SSEHandlerFunc[Req, Event], opts Options) http.HandlerFunc {
+	if opts.ErrorHandler == nil {
+		opts.ErrorHandler = defaultErrorHandler
+	}
+	obs := opts.Observer
+	if obs == nil {
+		obs = stats.NoopObserver{}
+	}
+
+	return func(w http.ResponseWriter, r *http.Request) {
+		start := time.Now()
+		sw := &statusResponseWriter{ResponseWriter: w, code: http.StatusOK}
+
+		var req Req
+		ctx := context.WithValue(r.Context(), contextKey{}, r)
+		responseHeaders := make(http.Header)
+		ctx = context.WithValue(ctx, responseHeadersKey{}, responseHeaders)
+		ctx = context.WithValue(ctx, responseCookiesKey{}, &[]PendingCookie{})
+
+		defer func() {
+			obs.RecordRequest(r.Method, handle.Descriptor.Path, sw.code, time.Since(start))
+		}()
+
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.Header().Set("Cache-Control", "no-cache")
+		w.Header().Set("Connection", "keep-alive")
+		w.Header().Set("X-Accel-Buffering", "no")
+
+		flusher, canFlush := w.(http.Flusher)
+
+		encode := handle.EncodeEvent
+		if len(handle.EventFormats) > 0 {
+			f := handle.EventFormats[0]
+			encode = func(e Event) ([]byte, error) { return f.Marshal(e) }
+		}
+
+		validate := handle.ValidateEvent
+
+		send := func(e Event) error {
+			if err := validate(e); err != nil {
+				obs.RecordValidationError("response", stats.ConstraintName(err), "event")
+				return err
+			}
+			data, err := encode(e)
+			if err != nil {
+				return err
+			}
+			if _, werr := fmt.Fprintf(sw, "data: %s\n\n", data); werr != nil {
+				return werr
+			}
+			if canFlush {
+				flusher.Flush()
+			}
+			return nil
+		}
+
+		if err := fn(ctx, req, send); err != nil {
+			if sw.code == http.StatusOK {
+				opts.ErrorHandler(sw, r, http.StatusInternalServerError, err)
+			}
+		}
+	}
+}
+
+// RegisterSSE wires an [rest.SSERouteHandle] onto a chi router as a GET SSE endpoint.
+func RegisterSSE[Req, Event any](r gochi.Router, handle *rest.SSERouteHandle[Req, Event], fn SSEHandlerFunc[Req, Event], opts Options) {
+	r.Get(handle.Descriptor.Path, SSEHandler(handle, fn, opts))
 }
 
 func primaryStatus[Req, Resp any](handle *rest.RouteHandle[Req, Resp]) int {
