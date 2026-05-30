@@ -1971,12 +1971,17 @@ go-codex/
 │
 └── examples/               # usage demonstrations — not importable
     ├── adapters-chi/       # chi adapter: wiring api/rest to chi.Router
-    ├── adapters-mqtt/      # Paho MQTT adapter: wiring api/events to Paho client
-    ├── adapters-nethttp/   # net/http adapter: wiring api/rest to ServeMux
+    ├── adapters-mqtt/      # Paho MQTT adapter: wiring api/events to Paho client; multi-format pub/sub
+    ├── adapters-nethttp/   # net/http adapter: wiring api/rest to ServeMux; multi-format request bodies
     ├── adapters-sse/       # SSE: AddSSERoute, SSEHandler, path codec, stats, OpenAPI spec
     ├── api-events/         # Event channel builder: typed helpers + AsyncAPI spec
     ├── api-rest/           # REST API builder: typed helpers + OpenAPI spec
+    ├── cli-config/         # CLI tool config: TOML file + env var overlay with codecs
+    ├── codec-mapping/      # shared field codecs, sub-codec reuse, MapCodecSafe, MapCodecValidated
+    ├── construction/       # New + Must: construction-time validation demo
     ├── decode-errors/      # multi-field ValidationErrors + errors.As demo
+    ├── env-config/         # format.FromEnv: schema-driven env var loading
+    ├── error-types/        # every structured error type: ValidationError, TypeMismatch, etc.
     ├── event-driven/       # full AsyncAPI 2.6 document from channel descriptors
     ├── formats/            # builtin format constraints demo (Email, UUID, URL, ...)
     ├── html-sanitize/      # sanitizing untrusted HTML input with a codec
@@ -1988,7 +1993,5 @@ go-codex/
     ├── stats-observer/          # stats.ValidationObserver with codecs directly: config validation, no adapter
     ├── adapters-templ/          # templ SSR format plug-in: same route serves HTML and JSON; observer wired
     ├── adapters-streaming-sse-templ/ # chunked streaming + SSE HTML fragments via templ components
-    ├── validate/           # explicit Validate before marshal
-    ├── codec-mapping/      # shared field codecs, sub-codec reuse, MapCodecSafe, MapCodecValidated
-    └── construction/       # New + Must: construction-time validation demo
+    └── validate/           # explicit Validate before marshal
 ```

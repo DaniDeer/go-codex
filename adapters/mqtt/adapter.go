@@ -10,7 +10,7 @@
 //	userCreated := events.AddChannel[UserCreated](b, "user/created", codec,
 //	    events.ChannelConfig{Subscribe: &events.OperationConfig{...}})
 //
-//	// Wire to Paho on connect:
+//	// Wire to Paho on connect (JSON, the default):
 //	client.Subscribe(userCreated.Topic, 1,
 //	    mqtt.SubscribeHandler(ctx, userCreated, func(ctx context.Context, e UserCreated) error {
 //	        return svc.HandleUserCreated(ctx, e)
@@ -19,9 +19,16 @@
 //	    }),
 //	)
 //
-//	// Publish an event:
+//	// Subscribe with a custom format (e.g. YAML):
+//	client.Subscribe(userCreated.Topic, 1,
+//	    mqtt.SubscribeHandler(ctx, userCreated, handler, opts, format.YAML(codec)))
+//
+//	// Publish an event (JSON, the default):
 //	notification := NotificationCommand{Recipient: "alice@example.com", ...}
-//	mqtt.Publish(ctx, client, notifChannel, 1, false, notification)
+//	mqtt.Publish(ctx, client, notifChannel, 1, false, notification, nil, opts)
+//
+//	// Publish with a custom format (e.g. YAML):
+//	mqtt.Publish(ctx, client, notifChannel, 1, false, notification, nil, opts, format.YAML(codec))
 package mqtt
 
 import (
@@ -33,6 +40,7 @@ import (
 	pahomqtt "github.com/eclipse/paho.mqtt.golang"
 
 	"github.com/DaniDeer/go-codex/api/events"
+	"github.com/DaniDeer/go-codex/format"
 	"github.com/DaniDeer/go-codex/stats"
 )
 
@@ -108,6 +116,11 @@ func MessageFromContext(ctx context.Context) (pahomqtt.Message, bool) {
 // Pass [SubscribeOptions] to handle errors and observe lifecycle events. Pass a
 // zero-value [SubscribeOptions]{} for no-op behaviour.
 //
+// The optional formats parameter specifies the payload format to use for
+// decoding. When provided, the first format is used; when omitted, the default
+// JSON codec of the channel handle is used. MQTT 3.1.1 carries no content-type
+// metadata, so the format must be agreed out-of-band per subscription.
+//
 // The Topic field of [SubscribeError] reflects the concrete topic of the incoming
 // message (from msg.Topic()), which is useful when the channel was registered with
 // a template topic.
@@ -116,6 +129,7 @@ func SubscribeHandler[T any](
 	handle *events.ChannelHandle[T],
 	fn func(context.Context, T) error,
 	opts SubscribeOptions,
+	formats ...format.Format[T],
 ) pahomqtt.MessageHandler {
 	obs := opts.Observer
 	if obs == nil {
@@ -124,7 +138,13 @@ func SubscribeHandler[T any](
 	return func(_ pahomqtt.Client, msg pahomqtt.Message) {
 		start := time.Now()
 		ctx := context.WithValue(ctx, contextKey{}, msg)
-		value, err := handle.Decode(msg.Payload())
+		var value T
+		var err error
+		if len(formats) > 0 {
+			value, err = formats[0].Unmarshal(msg.Payload())
+		} else {
+			value, err = handle.Decode(msg.Payload())
+		}
 		if err != nil {
 			reportPayloadErrors(err, obs)
 			obs.RecordSubscribe(msg.Topic(), false, time.Since(start))
@@ -217,10 +237,19 @@ type PublishOptions struct {
 // Pass [PublishOptions] to observe publish lifecycle events via a [stats.Observer].
 // Pass a zero-value [PublishOptions]{} for no-op behaviour.
 //
-// Example — static topic:
+// The optional formats parameter specifies the payload format to use for
+// encoding. When provided, the first format is used; when omitted, the default
+// JSON codec of the channel handle is used.
+//
+// Example — static topic (JSON, the default):
 //
 //	err := adaptermqtt.Publish(ctx, client, notifChannel, 1, false, notification, nil,
 //	    adaptermqtt.PublishOptions{})
+//
+// Example — static topic with YAML encoding:
+//
+//	err := adaptermqtt.Publish(ctx, client, notifChannel, 1, false, notification, nil,
+//	    adaptermqtt.PublishOptions{}, format.YAML(notifCodec))
 //
 // Example — template topic (sensors/{sensorID}/alerts):
 //
@@ -229,7 +258,7 @@ type PublishOptions struct {
 //
 // Publish waits for broker acknowledgement, respecting ctx cancellation. If the
 // context is cancelled before the broker responds, ctx.Err() is returned.
-func Publish[T any](ctx context.Context, client pahomqtt.Client, handle *events.ChannelHandle[T], qos byte, retained bool, msg T, vars map[string]string, opts PublishOptions) error {
+func Publish[T any](ctx context.Context, client pahomqtt.Client, handle *events.ChannelHandle[T], qos byte, retained bool, msg T, vars map[string]string, opts PublishOptions, formats ...format.Format[T]) error {
 	obs := opts.Observer
 	if obs == nil {
 		obs = stats.NoopObserver{}
@@ -248,7 +277,13 @@ func Publish[T any](ctx context.Context, client pahomqtt.Client, handle *events.
 			return err
 		}
 	}
-	payload, err := handle.Encode(msg)
+	var payload []byte
+	var err error
+	if len(formats) > 0 {
+		payload, err = formats[0].Marshal(msg)
+	} else {
+		payload, err = handle.Encode(msg)
+	}
 	if err != nil {
 		reportPayloadErrors(err, obs)
 		obs.RecordPublish(topic, false, time.Since(start))

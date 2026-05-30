@@ -12,6 +12,7 @@ import (
 	adaptermqtt "github.com/DaniDeer/go-codex/adapters/mqtt"
 	"github.com/DaniDeer/go-codex/api/events"
 	"github.com/DaniDeer/go-codex/codex"
+	"github.com/DaniDeer/go-codex/format"
 	"github.com/DaniDeer/go-codex/validate"
 )
 
@@ -579,5 +580,91 @@ func TestObserver_RecordValidationError_topicMismatch_subscribe(t *testing.T) {
 	}
 	if ve.constraintName != "topic-mismatch" {
 		t.Errorf("want constraintName=%q, got %q", "topic-mismatch", ve.constraintName)
+	}
+}
+
+// --- Multi-format tests ---
+
+func TestSubscribeHandler_YAMLFormat(t *testing.T) {
+	handle := newHandle()
+	var received userEvent
+	handler := adaptermqtt.SubscribeHandler(context.Background(), handle,
+		func(_ context.Context, e userEvent) error {
+			received = e
+			return nil
+		},
+		adaptermqtt.SubscribeOptions{},
+		format.YAML(userEventCodec),
+	)
+
+	// Well-formed YAML payload matching codec constraints.
+	yamlPayload := "id: \"f47ac10b-58cc-4372-a567-0e02b2c3d479\"\nemail: alice@example.com\n"
+	msg := &mockMessage{topic: "user/created", payload: []byte(yamlPayload)}
+	handler(nil, msg)
+
+	if received.ID != "f47ac10b-58cc-4372-a567-0e02b2c3d479" {
+		t.Errorf("want ID f47ac10b-…, got %q", received.ID)
+	}
+	if received.Email != "alice@example.com" {
+		t.Errorf("want Email alice@example.com, got %q", received.Email)
+	}
+}
+
+func TestSubscribeHandler_YAMLFormat_DecodeError(t *testing.T) {
+	handle := newHandle()
+	var subErr adaptermqtt.SubscribeError
+	handler := adaptermqtt.SubscribeHandler(context.Background(), handle,
+		func(_ context.Context, _ userEvent) error { return nil },
+		adaptermqtt.SubscribeOptions{
+			OnError: func(e adaptermqtt.SubscribeError) { subErr = e },
+		},
+		format.YAML(userEventCodec),
+	)
+
+	// Invalid YAML — codec validation will fail on id (not a UUID).
+	msg := &mockMessage{topic: "user/created", payload: []byte("id: bad\nemail: alice@example.com\n")}
+	handler(nil, msg)
+
+	if subErr.Kind != adaptermqtt.KindDecode {
+		t.Errorf("want KindDecode, got %v", subErr.Kind)
+	}
+}
+
+func TestPublish_YAMLFormat(t *testing.T) {
+	client := &mockClient{token: newCompletedToken(nil)}
+	handle := newHandle()
+
+	event := userEvent{
+		ID:    "f47ac10b-58cc-4372-a567-0e02b2c3d479",
+		Email: "alice@example.com",
+	}
+	err := adaptermqtt.Publish(context.Background(), client, handle, 1, false, event, nil,
+		adaptermqtt.PublishOptions{},
+		format.YAML(userEventCodec),
+	)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !strings.Contains(string(client.publishedPayload), "alice@example.com") {
+		t.Errorf("want YAML payload with alice@example.com, got %q", string(client.publishedPayload))
+	}
+	// YAML payload should not be JSON.
+	if strings.HasPrefix(string(client.publishedPayload), "{") {
+		t.Errorf("want YAML payload, got JSON-like: %q", string(client.publishedPayload))
+	}
+}
+
+func TestPublish_YAMLFormat_EncodeError(t *testing.T) {
+	client := &mockClient{token: newCompletedToken(nil)}
+	handle := newHandle()
+
+	// Empty email fails the Email constraint.
+	event := userEvent{ID: "f47ac10b-58cc-4372-a567-0e02b2c3d479", Email: ""}
+	err := adaptermqtt.Publish(context.Background(), client, handle, 1, false, event, nil,
+		adaptermqtt.PublishOptions{},
+		format.YAML(userEventCodec),
+	)
+	if err == nil {
+		t.Fatal("expected encode error, got nil")
 	}
 }

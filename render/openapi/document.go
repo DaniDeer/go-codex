@@ -252,17 +252,20 @@ func buildRequestBody(body *route.Body) map[string]any {
 	if body == nil {
 		return nil
 	}
-	ct := body.ContentType
-	if ct == "" {
-		ct = "application/json"
+	contentTypes := body.ContentTypes
+	if len(contentTypes) == 0 {
+		ct := body.ContentType
+		if ct == "" {
+			ct = "application/json"
+		}
+		contentTypes = []string{ct}
 	}
-	rb := map[string]any{
-		"content": map[string]any{
-			ct: map[string]any{
-				"schema": schemaRef(body.Schema, body.SchemaName),
-			},
-		},
+	schemaObj := schemaRef(body.Schema, body.SchemaName)
+	content := make(map[string]any, len(contentTypes))
+	for _, ct := range contentTypes {
+		content[ct] = map[string]any{"schema": schemaObj}
 	}
+	rb := map[string]any{"content": content}
 	if body.Required {
 		rb["required"] = true
 	}

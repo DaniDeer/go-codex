@@ -31,7 +31,7 @@
 // CLI) without touching the domain layer or the business logic.
 //
 // Routes:
-//   - POST /users      — body validate, response headers + cookies (codec-validated), content negotiation
+//   - POST /users      — body validate, JSON + YAML request formats, response headers + cookies (codec-validated), content negotiation
 //   - GET  /users/{id} — UUID path param, BuildPath type-safe URL construction
 //   - GET  /users      — query params (page, search)
 //   - GET  /profile    — request-side cookie + header validation
@@ -58,6 +58,7 @@ import (
 	nethttp "github.com/DaniDeer/go-codex/adapters/nethttp"
 	"github.com/DaniDeer/go-codex/api/rest"
 	"github.com/DaniDeer/go-codex/codex"
+	"github.com/DaniDeer/go-codex/format"
 	"github.com/DaniDeer/go-codex/validate"
 )
 
@@ -449,6 +450,13 @@ func main() {
 		fmt.Fprintf(os.Stderr, "route registration failed: %v\n", err)
 		os.Exit(1)
 	}
+	// WithRequestFormats enables multi-format request bodies.
+	// The adapter negotiates by Content-Type; unsupported types return 415.
+	// The OpenAPI spec gains additional content-type entries automatically.
+	createUserRoute = createUserRoute.WithRequestFormats(
+		format.JSON(createUserReqCodec),
+		format.YAML(createUserReqCodec),
+	)
 
 	uuidCodec := codex.String().Refine(validate.UUID)
 	getUserRoute, err := rest.AddRoute[emptyReq, User](b, "GET", "/users/{id}",
@@ -603,6 +611,36 @@ func main() {
 	}
 	fmt.Printf("Status:     %d\nUser:       %+v\nLocation:   %s\nSet-Cookie: %s\n\n",
 		resp.StatusCode, created, resp.Header.Get("Location"), resp.Header.Get("Set-Cookie"))
+
+	fmt.Println("=== POST /users (YAML body — multi-format request) ===")
+	// WithRequestFormats enables content negotiation for incoming request bodies.
+	// The adapter picks the decoder matching the Content-Type header.
+	yamlReq, _ := http.NewRequest(http.MethodPost, srv.URL+"/users", //nolint:noctx
+		strings.NewReader("name: Bob\nemail: bob@example.com\n"))
+	yamlReq.Header.Set("Content-Type", "application/yaml")
+	respYAML, err := http.DefaultClient.Do(yamlReq)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "POST error: %v\n", err)
+		os.Exit(1)
+	}
+	defer respYAML.Body.Close()
+	var createdYAML User
+	_ = json.NewDecoder(respYAML.Body).Decode(&createdYAML)
+	fmt.Printf("Status: %d\nUser:   %+v\n\n", respYAML.StatusCode, createdYAML)
+
+	fmt.Println("=== POST /users (unsupported Content-Type → 415) ===")
+	xmlReq, _ := http.NewRequest(http.MethodPost, srv.URL+"/users", //nolint:noctx
+		strings.NewReader(`<name>Carol</name>`))
+	xmlReq.Header.Set("Content-Type", "application/xml")
+	respXML, err := http.DefaultClient.Do(xmlReq)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "POST error: %v\n", err)
+		os.Exit(1)
+	}
+	defer respXML.Body.Close()
+	var xmlErrBody map[string]string
+	_ = json.NewDecoder(respXML.Body).Decode(&xmlErrBody)
+	fmt.Printf("Status: %d\nError:  %s\n\n", respXML.StatusCode, xmlErrBody["error"])
 
 	fmt.Println("=== POST /users (body constraint violation) ===")
 	resp2, err := http.Post(srv.URL+"/users", "application/json", //nolint:noctx

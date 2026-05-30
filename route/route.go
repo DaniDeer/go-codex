@@ -61,8 +61,14 @@ type Body struct {
 	// Schema is the payload schema. Required when SchemaName is non-empty.
 	Schema schema.Schema
 	// SchemaName, when non-empty, emits a $ref and registers Schema in components/schemas.
-	SchemaName  string
-	ContentType string // defaults to "application/json"
+	SchemaName string
+	// ContentType is the primary media type for the request body. Defaults to
+	// "application/json". Ignored when ContentTypes is non-empty.
+	ContentType string
+	// ContentTypes, when non-empty, lists all media types this body can accept.
+	// The renderer emits the schema under every listed content type in the spec.
+	// Takes precedence over ContentType when set.
+	ContentTypes []string
 }
 
 // Response describes one HTTP response for an operation.

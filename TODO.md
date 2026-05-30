@@ -148,19 +148,6 @@
       maintained) preferred over gorilla/websocket (archived).
       New dependency: `nhooyr.io/websocket` in `adapters/websocket` only.
 
-- [ ] **`adapters/nethttp`: SSE (Server-Sent Events) streaming responses** _(medium effort)_
-      HTTP SSE (`text/event-stream`) allows the server to push a typed event stream over an
-      open connection. Requires a `StreamHandle[T]` concept in `api/rest` (or a streaming
-      variant of `RouteHandle`) and a `StreamHandler[T]` in `adapters/nethttp` that encodes
-      events as `data: <json>\n\n` frames. Flush is called per event.
-      Works on both HTTP/1.1 (chunked transfer encoding) and HTTP/2 (multiplexed stream) — no
-      protocol-specific code; `net/http` handles the transport difference transparently.
-      OpenAPI spec: the streaming route would render with `text/event-stream` response media type.
-      Note on HTTP/3: `adapters/nethttp` is transport-agnostic (`http.Handler`). HTTP/3 servers
-      (`quic-go`, cloudflare quiche-go) expose the same interface — no adapter change needed.
-      Security note worth documenting: non-idempotent routes (POST/PUT/DELETE) should not be
-      served as 0-RTT early data in HTTP/3 without replay protection.
-
 - [ ] **MQTT message header validation** _(medium effort — MQTT 5.0 only)_
       MQTT 5.0 introduced User Properties: arbitrary key-value string pairs attached to any
       message. AsyncAPI models these via `message.headers` (a JSON Schema object). The

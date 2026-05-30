@@ -43,6 +43,7 @@ import (
 	adaptermqtt "github.com/DaniDeer/go-codex/adapters/mqtt"
 	"github.com/DaniDeer/go-codex/api/events"
 	"github.com/DaniDeer/go-codex/codex"
+	"github.com/DaniDeer/go-codex/format"
 	"github.com/DaniDeer/go-codex/stats"
 	"github.com/DaniDeer/go-codex/validate"
 )
@@ -854,5 +855,45 @@ func main() {
 	}
 
 	fmt.Println("\n=== Observer stats ===")
+	obs.Print()
+
+	// ── Multi-format showcase (YAML payload) ──────────────────────────────────
+	//
+	// MQTT 3.1.1 carries no content-type metadata — format is agreed out-of-band
+	// per subscription/publish. Pass the desired format as the last argument to
+	// SubscribeHandler and Publish; omit for default JSON.
+	fmt.Println("\n=== Multi-format: YAML subscribe + publish ===")
+
+	var yamlReceived MeasurementEvent
+	yamlHandler := adaptermqtt.SubscribeHandler(ctx, measurementChannel,
+		func(_ context.Context, m MeasurementEvent) error {
+			yamlReceived = m
+			return nil
+		},
+		adaptermqtt.SubscribeOptions{Observer: obs},
+		format.YAML(measurementEventCodec), // decode YAML payloads
+	)
+	// Deliver a YAML-encoded measurement directly to the handler.
+	yamlPayload := "sensor_id: temp-02\nvalue: 55.0\nunit: celsius\ntimestamp: \"2024-01-15T12:00:00Z\"\n"
+	yamlHandler(nil, &mockMessage{topic: measurementTopic, payload: []byte(yamlPayload)})
+	fmt.Printf("Received (YAML): sensor=%s value=%.1f\n", yamlReceived.SensorID, yamlReceived.Value)
+
+	// Publish a YAML-encoded alert.
+	yamlAlert := AlertEvent{
+		SensorID:  "f47ac10b-58cc-4372-a567-0e02b2c3d479",
+		Value:     92.1,
+		Unit:      "celsius",
+		Threshold: 75.0,
+		Timestamp: "2024-01-15T12:01:00Z",
+	}
+	if err := adaptermqtt.Publish(ctx, client, alertChannel, 1, false, yamlAlert,
+		map[string]string{"sensorID": "f47ac10b-58cc-4372-a567-0e02b2c3d479"},
+		adaptermqtt.PublishOptions{Observer: obs},
+		format.YAML(alertEventCodec), // encode as YAML
+	); err != nil {
+		fmt.Fprintf(os.Stderr, "YAML publish error: %v\n", err)
+	}
+
+	fmt.Println("\n=== Final observer stats ===")
 	obs.Print()
 }

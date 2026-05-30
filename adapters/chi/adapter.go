@@ -246,11 +246,7 @@ func Handler[Req, Resp any](handle *rest.RouteHandle[Req, Resp], fn HandlerFunc[
 		var req Req
 		if handle.Descriptor.RequestBody != nil {
 			ct, _, _ := strings.Cut(r.Header.Get("Content-Type"), ";")
-			if strings.TrimSpace(ct) != expectedCT {
-				errFn(sw, r, http.StatusUnsupportedMediaType,
-					rest.UnsupportedMediaTypeError{Got: strings.TrimSpace(ct), Expected: expectedCT})
-				return
-			}
+			ct = strings.TrimSpace(ct)
 			r.Body = http.MaxBytesReader(sw, r.Body, maxBody)
 			body, err := io.ReadAll(r.Body)
 			if err != nil {
@@ -263,7 +259,30 @@ func Handler[Req, Resp any](handle *rest.RouteHandle[Req, Resp], fn HandlerFunc[
 				return
 			}
 			var decErr error
-			req, decErr = handle.Decode(body)
+			if len(handle.RequestFormats) > 0 {
+				// Multi-format: negotiate by Content-Type, 415 on no match.
+				chosen, ok := negotiateRequestFormat(handle.RequestFormats, ct)
+				if !ok {
+					var supported []string
+					for _, f := range handle.RequestFormats {
+						supported = append(supported, f.ContentType())
+					}
+					errFn(sw, r, http.StatusUnsupportedMediaType,
+						rest.UnsupportedMediaTypeError{Got: ct, Supported: supported})
+					return
+				}
+				var v Req
+				v, decErr = chosen.Unmarshal(body)
+				req = v
+			} else {
+				// Single-format: enforce opts.ContentType (default application/json).
+				if ct != expectedCT {
+					errFn(sw, r, http.StatusUnsupportedMediaType,
+						rest.UnsupportedMediaTypeError{Got: ct, Supported: []string{expectedCT}})
+					return
+				}
+				req, decErr = handle.Decode(body)
+			}
 			if decErr != nil {
 				reportBodyErrors(decErr, obs)
 				errFn(sw, r, http.StatusBadRequest, decErr)
@@ -648,6 +667,18 @@ func negotiateFormat[T any](formats []format.Format[T], accept string) (format.F
 			if strings.TrimSpace(fmtMediaType) == mediaType {
 				return f, true
 			}
+		}
+	}
+	return format.Format[T]{}, false
+}
+
+// negotiateRequestFormat picks the format whose ContentType matches the given
+// Content-Type header value (exact match after stripping parameters).
+func negotiateRequestFormat[T any](formats []format.Format[T], contentType string) (format.Format[T], bool) {
+	for _, f := range formats {
+		fmtMediaType, _, _ := strings.Cut(f.ContentType(), ";")
+		if strings.TrimSpace(fmtMediaType) == contentType {
+			return f, true
 		}
 	}
 	return format.Format[T]{}, false

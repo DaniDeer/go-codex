@@ -714,8 +714,8 @@ func TestOptions_ContentType_415onWrongType(t *testing.T) {
 	if ctErr.Got != "application/xml" {
 		t.Errorf("want Got=%q, got %q", "application/xml", ctErr.Got)
 	}
-	if ctErr.Expected != "application/json" {
-		t.Errorf("want Expected=%q, got %q", "application/json", ctErr.Expected)
+	if len(ctErr.Supported) != 1 || ctErr.Supported[0] != "application/json" {
+		t.Errorf("want Supported=[application/json], got %v", ctErr.Supported)
 	}
 }
 
@@ -1256,6 +1256,130 @@ func TestContentNegotiation_streamedFormat_validationErrorBefore200(t *testing.T
 
 	if rec.Code != http.StatusInternalServerError {
 		t.Fatalf("want 500 on validation failure, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+// --- Request format negotiation tests ---
+
+func TestRequestFormats_JSONBodyAccepted(t *testing.T) {
+	b := rest.NewBuilder(testInfo)
+	h, err := rest.AddRoute[createReq, userResp](b, "POST", "/users", createReqCodec, userRespCodec, rest.RouteConfig{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	h = h.WithRequestFormats(format.JSON(createReqCodec), format.YAML(createReqCodec))
+
+	handler := nethttp.Handler(h, func(_ context.Context, req createReq) (userResp, error) {
+		return userResp{ID: "1", Name: req.Name}, nil
+	}, nethttp.Options{})
+
+	rec := httptest.NewRecorder()
+	r := httptest.NewRequest(http.MethodPost, "/users", strings.NewReader(`{"name":"Alice"}`))
+	r.Header.Set("Content-Type", "application/json")
+	handler.ServeHTTP(rec, r)
+
+	if rec.Code != http.StatusCreated {
+		t.Errorf("want 201, got %d (body: %s)", rec.Code, rec.Body.String())
+	}
+}
+
+func TestRequestFormats_YAMLBodyAccepted(t *testing.T) {
+	b := rest.NewBuilder(testInfo)
+	h, err := rest.AddRoute[createReq, userResp](b, "POST", "/users", createReqCodec, userRespCodec, rest.RouteConfig{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	h = h.WithRequestFormats(format.JSON(createReqCodec), format.YAML(createReqCodec))
+
+	handler := nethttp.Handler(h, func(_ context.Context, req createReq) (userResp, error) {
+		return userResp{ID: "1", Name: req.Name}, nil
+	}, nethttp.Options{})
+
+	rec := httptest.NewRecorder()
+	r := httptest.NewRequest(http.MethodPost, "/users", strings.NewReader("name: Bob\n"))
+	r.Header.Set("Content-Type", "application/yaml")
+	handler.ServeHTTP(rec, r)
+
+	if rec.Code != http.StatusCreated {
+		t.Errorf("want 201, got %d (body: %s)", rec.Code, rec.Body.String())
+	}
+	var got userResp
+	if err := json.NewDecoder(rec.Body).Decode(&got); err != nil {
+		t.Fatal(err)
+	}
+	if got.Name != "Bob" {
+		t.Errorf("want Name=Bob, got %q", got.Name)
+	}
+}
+
+func TestRequestFormats_WrongContentType_returns415(t *testing.T) {
+	var capturedErr error
+	b := rest.NewBuilder(testInfo)
+	h, err := rest.AddRoute[createReq, userResp](b, "POST", "/users", createReqCodec, userRespCodec, rest.RouteConfig{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	h = h.WithRequestFormats(format.JSON(createReqCodec), format.YAML(createReqCodec))
+
+	handler := nethttp.Handler(h, func(_ context.Context, req createReq) (userResp, error) {
+		return userResp{ID: "1", Name: req.Name}, nil
+	}, nethttp.Options{
+		ErrorHandler: func(w http.ResponseWriter, _ *http.Request, status int, e error) {
+			capturedErr = e
+			w.WriteHeader(status)
+		},
+	})
+
+	rec := httptest.NewRecorder()
+	r := httptest.NewRequest(http.MethodPost, "/users", strings.NewReader(`<name>Alice</name>`))
+	r.Header.Set("Content-Type", "application/xml")
+	handler.ServeHTTP(rec, r)
+
+	if rec.Code != http.StatusUnsupportedMediaType {
+		t.Errorf("want 415, got %d", rec.Code)
+	}
+	var ctErr rest.UnsupportedMediaTypeError
+	if !errors.As(capturedErr, &ctErr) {
+		t.Fatalf("want UnsupportedMediaTypeError, got %T: %v", capturedErr, capturedErr)
+	}
+	if ctErr.Got != "application/xml" {
+		t.Errorf("want Got=application/xml, got %q", ctErr.Got)
+	}
+	if len(ctErr.Supported) != 2 {
+		t.Errorf("want 2 supported types, got %v", ctErr.Supported)
+	}
+}
+
+func TestRequestFormats_SpecContentTypesUpdated(t *testing.T) {
+	b := rest.NewBuilder(testInfo)
+	h, err := rest.AddRoute[createReq, userResp](b, "POST", "/users", createReqCodec, userRespCodec, rest.RouteConfig{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	h = h.WithRequestFormats(format.JSON(createReqCodec), format.YAML(createReqCodec))
+	_ = h
+
+	doc, err := b.OpenAPISpec()
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, err := doc.MarshalJSON()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var spec map[string]any
+	if err := json.Unmarshal(raw, &spec); err != nil {
+		t.Fatal(err)
+	}
+	paths := spec["paths"].(map[string]any)
+	post := paths["/users"].(map[string]any)["post"].(map[string]any)
+	body := post["requestBody"].(map[string]any)
+	content := body["content"].(map[string]any)
+	if _, ok := content["application/json"]; !ok {
+		t.Error("want application/json in requestBody content")
+	}
+	if _, ok := content["application/yaml"]; !ok {
+		t.Error("want application/yaml in requestBody content")
 	}
 }
 

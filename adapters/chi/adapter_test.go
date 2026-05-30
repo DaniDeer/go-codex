@@ -385,6 +385,98 @@ func TestContentNegotiation_streamedFormat_validationErrorBefore200(t *testing.T
 	}
 }
 
+// --- Request format negotiation tests ---
+
+func TestRequestFormats_JSONBodyAccepted(t *testing.T) {
+	b := rest.NewBuilder(testInfo)
+	h, err := rest.AddRoute[createReq, userResp](b, "POST", "/users", createReqCodec, userRespCodec, rest.RouteConfig{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	h = h.WithRequestFormats(format.JSON(createReqCodec), format.YAML(createReqCodec))
+
+	r := gochi.NewRouter()
+	chiadapter.Register(r, h, func(_ context.Context, req createReq) (userResp, error) {
+		return userResp{ID: "1", Name: req.Name}, nil
+	}, chiadapter.Options{})
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/users", strings.NewReader(`{"name":"Alice"}`))
+	req.Header.Set("Content-Type", "application/json")
+	r.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusCreated {
+		t.Errorf("want 201, got %d (body: %s)", rec.Code, rec.Body.String())
+	}
+}
+
+func TestRequestFormats_YAMLBodyAccepted(t *testing.T) {
+	b := rest.NewBuilder(testInfo)
+	h, err := rest.AddRoute[createReq, userResp](b, "POST", "/users", createReqCodec, userRespCodec, rest.RouteConfig{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	h = h.WithRequestFormats(format.JSON(createReqCodec), format.YAML(createReqCodec))
+
+	r := gochi.NewRouter()
+	chiadapter.Register(r, h, func(_ context.Context, req createReq) (userResp, error) {
+		return userResp{ID: "1", Name: req.Name}, nil
+	}, chiadapter.Options{})
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/users", strings.NewReader("name: Bob\n"))
+	req.Header.Set("Content-Type", "application/yaml")
+	r.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusCreated {
+		t.Errorf("want 201, got %d (body: %s)", rec.Code, rec.Body.String())
+	}
+	var got userResp
+	decodeJSON(t, rec.Body, &got)
+	if got.Name != "Bob" {
+		t.Errorf("want Name=Bob, got %q", got.Name)
+	}
+}
+
+func TestRequestFormats_WrongContentType_returns415(t *testing.T) {
+	var capturedErr error
+	b := rest.NewBuilder(testInfo)
+	h, err := rest.AddRoute[createReq, userResp](b, "POST", "/users", createReqCodec, userRespCodec, rest.RouteConfig{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	h = h.WithRequestFormats(format.JSON(createReqCodec), format.YAML(createReqCodec))
+
+	r := gochi.NewRouter()
+	chiadapter.Register(r, h, func(_ context.Context, req createReq) (userResp, error) {
+		return userResp{ID: "1", Name: req.Name}, nil
+	}, chiadapter.Options{
+		ErrorHandler: func(w http.ResponseWriter, _ *http.Request, status int, e error) {
+			capturedErr = e
+			w.WriteHeader(status)
+		},
+	})
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/users", strings.NewReader(`<name>Alice</name>`))
+	req.Header.Set("Content-Type", "application/xml")
+	r.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusUnsupportedMediaType {
+		t.Errorf("want 415, got %d", rec.Code)
+	}
+	var ctErr rest.UnsupportedMediaTypeError
+	if !errors.As(capturedErr, &ctErr) {
+		t.Fatalf("want UnsupportedMediaTypeError, got %T: %v", capturedErr, capturedErr)
+	}
+	if ctErr.Got != "application/xml" {
+		t.Errorf("want Got=application/xml, got %q", ctErr.Got)
+	}
+	if len(ctErr.Supported) != 2 {
+		t.Errorf("want 2 supported types, got %v", ctErr.Supported)
+	}
+}
+
 // --- SSE tests ---
 
 type sseEvent struct{ Message string }

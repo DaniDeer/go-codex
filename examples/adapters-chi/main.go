@@ -404,6 +404,12 @@ func main() {
 		fmt.Fprintf(os.Stderr, "route registration failed: %v\n", err)
 		os.Exit(1)
 	}
+	// WithRequestFormats enables multi-format request body decoding.
+	// The adapter negotiates by Content-Type; unsupported types → 415.
+	createUserRoute = createUserRoute.WithRequestFormats(
+		format.JSON(createUserReqCodec),
+		format.YAML(createUserReqCodec),
+	)
 
 	uuidCodec := codex.String().Refine(validate.UUID)
 	getUserRoute, err := rest.AddRoute[emptyReq, User](b, "GET", "/users/{id}",
@@ -565,6 +571,38 @@ func main() {
 		defer resp.Body.Close()
 		fmt.Printf("Status: %s\nContent-Type: %s\nLocation: %s\n",
 			resp.Status, resp.Header.Get("Content-Type"), resp.Header.Get("Location"))
+	}()
+
+	fmt.Println("\n--- POST /users (YAML request body — multi-format) ---")
+	func() {
+		// WithRequestFormats enables decoding request bodies by Content-Type.
+		// Sending application/yaml routes to the YAML decoder; codec validation still runs.
+		body := strings.NewReader("name: Carol\nemail: carol@example.com\n")
+		req, _ := http.NewRequest(http.MethodPost, srv.URL+"/users", body) //nolint:noctx
+		req.Header.Set("Content-Type", "application/yaml")
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			panic(err)
+		}
+		defer resp.Body.Close()
+		var created User
+		_ = json.NewDecoder(resp.Body).Decode(&created)
+		fmt.Printf("Status: %s\nUser:   %+v\n", resp.Status, created)
+	}()
+
+	fmt.Println("\n--- POST /users (unsupported Content-Type → 415) ---")
+	func() {
+		body := strings.NewReader(`<name>Dave</name>`)
+		req, _ := http.NewRequest(http.MethodPost, srv.URL+"/users", body) //nolint:noctx
+		req.Header.Set("Content-Type", "application/xml")
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			panic(err)
+		}
+		defer resp.Body.Close()
+		var errBody map[string]string
+		_ = json.NewDecoder(resp.Body).Decode(&errBody)
+		fmt.Printf("Status: %s\nError:  %s\n", resp.Status, errBody["error"])
 	}()
 
 	fmt.Println("\n--- POST /users (body constraint violation) ---")

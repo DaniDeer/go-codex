@@ -173,6 +173,13 @@ type RouteHandle[Req, Resp any] struct {
 	// Encode serialises Resp to JSON bytes.
 	Encode func(resp Resp) ([]byte, error)
 
+	// RequestFormats, when non-empty, lists the formats the route accepts for
+	// request body decoding. The adapter uses this slice for content negotiation:
+	// it picks the format matching the client's Content-Type header and decodes
+	// the request body with it. When empty, the adapter falls back to JSON (via
+	// Decode) and enforces opts.ContentType.
+	RequestFormats []format.Format[Req]
+
 	// ResponseFormats, when non-empty, lists the formats the route can produce.
 	// The adapter uses this slice for content negotiation: it picks the format
 	// matching the client's Accept header and encodes the response with it.
@@ -200,6 +207,40 @@ type RouteHandle[Req, Resp any] struct {
 	// pathCodec is the builder-level path codec (may be nil).
 	// Used to re-validate the final assembled path in BuildPath.
 	pathCodec *codex.Codec[string]
+
+	// updateReqSpec updates the request body ContentTypes on the frozen route entry
+	// (captured closure pointing at the entry's *route.Body). Set by AddRoute; nil
+	// for routes that have no request body.
+	updateReqSpec func(contentTypes []string)
+}
+
+// WithRequestFormats registers the formats the route accepts for request body
+// decoding. The adapter performs content negotiation using the client's
+// Content-Type header; a mismatch returns HTTP 415 [UnsupportedMediaTypeError].
+//
+// Calling WithRequestFormats also updates the OpenAPI spec: the request body
+// will list all accepted content types.
+//
+// Example:
+//
+//	route, _ := rest.AddRoute[CreateItemReq, Item](b, "POST", "/items",
+//	    reqCodec, respCodec, rest.RouteConfig{}, format.JSON(respCodec))
+//	route = route.WithRequestFormats(
+//	    format.JSON(reqCodec),  // Accept: application/json
+//	    format.YAML(reqCodec),  // Accept: application/yaml
+//	)
+func (h *RouteHandle[Req, Resp]) WithRequestFormats(fmts ...format.Format[Req]) *RouteHandle[Req, Resp] {
+	h.RequestFormats = slices.Clone(fmts)
+	if h.updateReqSpec != nil {
+		var cts []string
+		for _, f := range fmts {
+			if ct := f.ContentType(); ct != "" {
+				cts = append(cts, ct)
+			}
+		}
+		h.updateReqSpec(cts)
+	}
+	return h
 }
 
 // BuildPath substitutes {varName} placeholders in the route's path template
@@ -695,22 +736,24 @@ func (e ResponseCookieParamError) Error() string {
 func (e ResponseCookieParamError) Unwrap() error { return e.Err }
 
 // UnsupportedMediaTypeError is returned by the net/http adapter when the
-// request Content-Type does not match the expected media type.
-// Use [errors.As] to inspect the Got and Expected fields.
+// request Content-Type does not match any accepted media type.
+// Use [errors.As] to inspect the Got and Supported fields.
 //
 //	var ctErr rest.UnsupportedMediaTypeError
 //	if errors.As(err, &ctErr) {
-//	    log.Printf("got %q, want %q", ctErr.Got, ctErr.Expected)
+//	    log.Printf("got %q, supported: %v", ctErr.Got, ctErr.Supported)
 //	}
 type UnsupportedMediaTypeError struct {
 	// Got is the actual Content-Type value sent by the client (without parameters).
 	Got string
-	// Expected is the media type the adapter was configured to accept.
-	Expected string
+	// Supported lists the media types the adapter accepts. Contains one entry
+	// for routes with a fixed content type; multiple entries when
+	// [RouteHandle.WithRequestFormats] is used.
+	Supported []string
 }
 
 func (e UnsupportedMediaTypeError) Error() string {
-	return fmt.Sprintf("unsupported media type %q: expected %q", e.Got, e.Expected)
+	return fmt.Sprintf("unsupported media type %q: supported: %s", e.Got, strings.Join(e.Supported, ", "))
 }
 
 // BodyTooLargeError is returned by the net/http adapter when the request body
@@ -883,6 +926,14 @@ func AddRoute[Req, Resp any](
 	jsonReq := format.JSON(reqCodec)
 	jsonResp := format.JSON(respCodec)
 
+	// updateReqSpec captures a pointer to the entry's RequestBody so that
+	// WithRequestFormats can update the spec content types after AddRoute returns.
+	var updateReqSpec func([]string)
+	if entry.frozen.RequestBody != nil {
+		rb := entry.frozen.RequestBody
+		updateReqSpec = func(cts []string) { rb.ContentTypes = cts }
+	}
+
 	return &RouteHandle[Req, Resp]{
 		Descriptor:           frozen,
 		Decode:               func(body []byte) (Req, error) { return jsonReq.Unmarshal(body) },
@@ -895,6 +946,7 @@ func AddRoute[Req, Resp any](
 		responseHeaderParams: config.ResponseHeaderParams,
 		responseCookieParams: config.ResponseCookieParams,
 		pathCodec:            b.pathCodec,
+		updateReqSpec:        updateReqSpec,
 	}, nil
 }
 
