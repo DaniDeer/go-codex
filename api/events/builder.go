@@ -16,13 +16,10 @@
 //	    Protocol: "mqtt",
 //	})
 //
-//	userCreated := events.AddChannel[UserCreated](b, "user/created", userCreatedCodec,
-//	    events.ChannelConfig{
-//	        Subscribe: &events.OperationConfig{
-//	            Summary:    "A user was created",
-//	            SchemaName: "UserCreatedEvent",
-//	        },
-//	    })
+//	userCreated, err := events.AddChannel[UserCreated](b, "user/created", userCreatedCodec,
+//	    events.ChannelMeta{Description: "A user was created"},
+//	    events.Subscribe{Summary: "Receive user created events", SchemaName: "UserCreatedEvent"},
+//	)
 //
 //	// In your broker callback (any library):
 //	event, err := userCreated.Decode(msg.Payload())   // JSON → UserCreated, validates
@@ -32,8 +29,8 @@
 //	doc, err := b.AsyncAPISpec()
 //	yaml, _  := doc.MarshalYAML()
 //
-// Encoding is JSON only. AddChannel uses [format.JSON] internally; for other
-// formats construct a [format.Format] directly and call its Unmarshal/Marshal.
+// Encoding is JSON only by default. For other formats construct a [format.Format]
+// directly and pass it to the adapter (e.g. [adapters/mqtt.SubscribeHandler]).
 package events
 
 import (
@@ -56,9 +53,14 @@ type Info = asyncapi.Info
 // Server is an alias for [asyncapi.Server].
 type Server = asyncapi.Server
 
-// OperationConfig holds metadata for one direction (subscribe or publish) on a
-// channel. It controls the operation entry in the AsyncAPI spec.
-type OperationConfig struct {
+// Subscribe describes the subscribe operation on a channel (application receives).
+// It controls the subscribe entry in the AsyncAPI spec.
+//
+// Subscribe implements [ChannelOpt]: pass it directly to [AddChannel].
+type Subscribe struct {
+	// OperationID is the unique identifier for the subscribe operation in the
+	// AsyncAPI spec. Used by code generators and documentation tools.
+	OperationID string
 	Summary     string
 	Description string
 	Tags        []string
@@ -67,6 +69,37 @@ type OperationConfig struct {
 	// spec and registers the schema under that name in components/schemas.
 	SchemaName string
 }
+
+func (s Subscribe) applyChannel(cb *channelBuilder) { cb.subscribe = &s }
+
+// Publish describes the publish operation on a channel (application sends).
+// It controls the publish entry in the AsyncAPI spec.
+//
+// Publish implements [ChannelOpt]: pass it directly to [AddChannel].
+type Publish struct {
+	// OperationID is the unique identifier for the publish operation in the
+	// AsyncAPI spec. Used by code generators and documentation tools.
+	OperationID string
+	Summary     string
+	Description string
+	Tags        []string
+
+	// SchemaName, when non-empty, emits a $ref for the payload schema in the
+	// spec and registers the schema under that name in components/schemas.
+	SchemaName string
+}
+
+func (p Publish) applyChannel(cb *channelBuilder) { cb.publish = &p }
+
+// ChannelMeta holds description metadata for a channel registration.
+// It controls the channel-level description in the AsyncAPI spec.
+//
+// ChannelMeta implements [ChannelOpt]: pass it directly to [AddChannel].
+type ChannelMeta struct {
+	Description string
+}
+
+func (m ChannelMeta) applyChannel(cb *channelBuilder) { cb.meta = m }
 
 // TopicParam describes a {varName} placeholder in a topic template for AsyncAPI
 // spec generation and runtime validation.
@@ -78,6 +111,11 @@ type OperationConfig struct {
 // TopicParam is optional: the events builder auto-derives parameters from the
 // topic template. Use TopicParam to add a description or register a codec for
 // a specific variable.
+//
+// TopicParam implements [ChannelOpt]: pass it directly to [AddChannel].
+//
+// Entry names must correspond to {varName} placeholders in the topic template;
+// unknown names cause [AddChannel] to return an error immediately.
 type TopicParam struct {
 	// Name is the variable name (without braces) as it appears in the topic template.
 	Name string
@@ -89,41 +127,35 @@ type TopicParam struct {
 	Codec *codex.Codec[string]
 }
 
-// ChannelConfig holds metadata for a channel registration.
-//
-// At least one of Subscribe or Publish must be non-nil. When both are set, the
-// same payload codec is used for both directions.
-type ChannelConfig struct {
-	Description string
-
-	// Subscribe describes the operation where the application receives messages.
-	// Set to nil to omit the subscribe operation from the spec.
-	Subscribe *OperationConfig
-
-	// Publish describes the operation where the application sends messages.
-	// Set to nil to omit the publish operation from the spec.
-	Publish *OperationConfig
-
-	// TopicParams describes {varName} placeholder variables in the topic template.
-	// Each entry can add a description and/or a codec for runtime validation.
-	// The codec schema is also emitted in the AsyncAPI parameters: block.
-	//
-	// TopicParams is optional: the builder auto-derives a minimal parameter entry
-	// ({type: string}) for every {varName} in the topic template. Only specify
-	// TopicParams when you need a description or runtime validation for a variable.
-	//
-	// Entry names must correspond to {varName} placeholders in the topic template;
-	// unknown names cause [AddChannel] to return an error immediately.
-	TopicParams []TopicParam
+func (p TopicParam) applyChannel(cb *channelBuilder) {
+	cb.topicParams = append(cb.topicParams, p)
 }
 
-// ChannelHandle is returned by [AddChannel]. It holds the frozen spec
+// ChannelOpt is the sealed interface for variadic [AddChannel] options.
+//
+// The following types implement ChannelOpt:
+//   - [ChannelMeta] — channel description
+//   - [Subscribe] — subscribe operation metadata (application receives messages)
+//   - [Publish] — publish operation metadata (application sends messages)
+//   - [TopicParam] — topic template variable with optional codec and description
+type ChannelOpt interface{ applyChannel(*channelBuilder) }
+
+// channelBuilder accumulates ChannelOpt values before building the channel descriptor.
+type channelBuilder struct {
+	meta        ChannelMeta
+	subscribe   *Subscribe
+	publish     *Publish
+	topicParams []TopicParam
+}
+
+// ChannelHandle is returned by [AddChannel]. It holds the spec
 // descriptor and codec-backed Decode/Encode helpers.
 type ChannelHandle[T any] struct {
 	// Topic is the channel name (e.g. "user/created", "orders.placed").
 	Topic string
 
-	// Descriptor is the frozen asyncapi.ChannelItem built at registration time.
+	// Descriptor is the live asyncapi.ChannelItem descriptor. It reflects the
+	// current configuration and is used by the builder at AsyncAPISpec() time.
 	Descriptor asyncapi.ChannelItem
 
 	// Decode deserialises and validates a JSON payload into T.
@@ -133,7 +165,13 @@ type ChannelHandle[T any] struct {
 	// Encode serialises T to JSON bytes.
 	Encode func(msg T) ([]byte, error)
 
-	// topicParams holds per-variable params registered via TopicParams.
+	// Formats, when non-empty, specifies the default payload format for both
+	// subscribe (decode) and publish (encode). The adapter uses Formats[0] when
+	// no call-time format override is provided. Defaults to JSON when empty.
+	// Configure via [ChannelHandle.WithFormats].
+	Formats []format.Format[T]
+
+	// topicParams holds per-variable params registered via TopicParam options.
 	topicParams []TopicParam
 
 	// topicCodec is the builder-level topic codec (may be nil).
@@ -222,6 +260,37 @@ func (h *ChannelHandle[T]) ValidateTopicVars(vars map[string]string) error {
 	return nil
 }
 
+// WithFormats sets the default payload format for this channel. The adapter
+// uses Formats[0] for both subscribe (decode) and publish (encode) when no
+// call-time format override is provided. Defaults to JSON when empty.
+//
+// WithFormats also updates the live AsyncAPI descriptor: if fmts is non-empty,
+// Message.ContentType on each registered operation (Subscribe/Publish) is set to
+// fmts[0].ContentType(). Calling WithFormats with no arguments clears both
+// Formats and the content-type override (restoring the AsyncAPI default).
+//
+// This mirrors [rest.RouteHandle.WithResponseFormats] for event channels.
+// Call it after [AddChannel] to configure non-JSON payload serialisation:
+//
+//	ch = ch.WithFormats(format.YAML(measurementCodec))
+//
+//	// Adapter uses YAML automatically — no format arg needed:
+//	client.Subscribe(topic, 1, amqtt.SubscribeHandler(ctx, ch, fn, opts))
+func (h *ChannelHandle[T]) WithFormats(fmts ...format.Format[T]) *ChannelHandle[T] {
+	h.Formats = slices.Clone(fmts)
+	ct := ""
+	if len(fmts) > 0 {
+		ct = fmts[0].ContentType()
+	}
+	if h.Descriptor.Subscribe != nil {
+		h.Descriptor.Subscribe.Message.ContentType = ct
+	}
+	if h.Descriptor.Publish != nil {
+		h.Descriptor.Publish.Message.ContentType = ct
+	}
+	return h
+}
+
 // TopicParamError is returned by [ChannelHandle.BuildTopic] and
 // [ChannelHandle.ValidateTopicVars] when a topic variable fails its registered
 // codec check.
@@ -286,14 +355,15 @@ type channelEntry interface {
 	descriptor() asyncapi.ChannelItem
 }
 
-// typedChannelEntry stores the frozen topic and descriptor for one channel.
+// typedChannelEntry stores a pointer to the ChannelHandle so that the builder
+// always sees the live descriptor at AsyncAPISpec() time.
 type typedChannelEntry[T any] struct {
 	topicStr string
-	frozen   asyncapi.ChannelItem
+	handle   *ChannelHandle[T]
 }
 
 func (e *typedChannelEntry[T]) topic() string                    { return e.topicStr }
-func (e *typedChannelEntry[T]) descriptor() asyncapi.ChannelItem { return e.frozen }
+func (e *typedChannelEntry[T]) descriptor() asyncapi.ChannelItem { return e.handle.Descriptor }
 
 // InvalidTopicError is returned by [AddChannel] when the topic fails builder-level
 // topic codec validation.
@@ -395,24 +465,24 @@ func (b *Builder) AddSchema(name string, s schema.Schema) *Builder {
 // codec is used to decode and validate incoming payloads and to encode outgoing
 // messages. The same codec applies to both subscribe and publish directions.
 //
+// opts is variadic: pass any combination of [ChannelMeta], [Subscribe],
+// [Publish], and [TopicParam] to describe the channel fully.
+// All opts are optional — omit to register a minimal channel with no spec metadata.
+//
 // If the builder was created with [WithTopicCodec] or [WithTopicConstraints],
 // the topic is validated immediately. An error is returned if validation fails —
 // no channel is registered in that case.
 //
-// If config.TopicParams is non-empty, each entry name is verified to be a
-// {varName} present in the topic template. An unknown name is a programming
-// error and causes AddChannel to return an error.
+// Any [TopicParam] entry whose name does not appear as a {varName} placeholder
+// in the topic template causes AddChannel to return an error immediately.
 //
 // AddChannel is a free function (not a method) because Go requires type
 // parameters to appear on free functions, not on method receivers.
-//
-// The descriptor is built and frozen at call time; later mutations to config
-// do not affect the registered channel or the returned handle.
 func AddChannel[T any](
 	b *Builder,
 	topic string,
 	codec codex.Codec[T],
-	config ChannelConfig,
+	opts ...ChannelOpt,
 ) (*ChannelHandle[T], error) {
 	if b.topicCodec != nil {
 		if err := b.topicCodec.Validate(internal.StripTemplateVars(topic)); err != nil {
@@ -420,28 +490,33 @@ func AddChannel[T any](
 		}
 	}
 
+	var cb channelBuilder
+	for _, opt := range opts {
+		opt.applyChannel(&cb)
+	}
+
 	templateVars := internal.ParseTemplateVars(topic)
-	for _, tp := range config.TopicParams {
+	for _, tp := range cb.topicParams {
 		if !templateVars[tp.Name] {
 			return nil, InvalidTopicParamError{Name: tp.Name, Topic: topic}
 		}
 	}
 
-	frozen := buildChannelItem(topic, codec, config)
-
-	entry := &typedChannelEntry[T]{topicStr: topic, frozen: frozen}
-	b.entries = append(b.entries, entry)
+	frozen := buildChannelItem(topic, codec, cb)
 
 	jsonFmt := format.JSON(codec)
 
-	return &ChannelHandle[T]{
+	h := &ChannelHandle[T]{
 		Topic:       topic,
 		Descriptor:  frozen,
 		Decode:      func(payload []byte) (T, error) { return jsonFmt.Unmarshal(payload) },
 		Encode:      func(msg T) ([]byte, error) { return jsonFmt.Marshal(msg) },
-		topicParams: config.TopicParams,
+		topicParams: cb.topicParams,
 		topicCodec:  b.topicCodec,
-	}, nil
+	}
+	entry := &typedChannelEntry[T]{topicStr: topic, handle: h}
+	b.entries = append(b.entries, entry)
+	return h, nil
 }
 
 // AsyncAPISpec builds a complete AsyncAPI 2.6 document from all registered channels.
@@ -512,22 +587,22 @@ func checkOp(op *asyncapi.Operation, resolvable, seen map[string]bool, unresolve
 	}
 }
 
-// buildChannelItem constructs a frozen asyncapi.ChannelItem from the topic,
-// codec schema, and config. Deep-copies all slices to prevent later mutation
-// from affecting the registered channel.
+// buildChannelItem constructs an asyncapi.ChannelItem from the topic, codec
+// schema, and channelBuilder options.
 //
 // Channel parameters are auto-derived from {varName} placeholders in topic.
 // The schema for each parameter comes from the TopicParam.Codec (if set);
 // TopicParam.Description adds a human-readable description.
-func buildChannelItem[T any](topic string, codec codex.Codec[T], config ChannelConfig) asyncapi.ChannelItem {
+func buildChannelItem[T any](topic string, codec codex.Codec[T], cb channelBuilder) asyncapi.ChannelItem {
 	item := asyncapi.ChannelItem{
-		Description: config.Description,
-		Parameters:  buildTopicParameters(topic, config.TopicParams),
+		Description: cb.meta.Description,
+		Parameters:  buildTopicParameters(topic, cb.topicParams),
 	}
 
-	if config.Subscribe != nil {
-		op := config.Subscribe
+	if cb.subscribe != nil {
+		op := cb.subscribe
 		item.Subscribe = &asyncapi.Operation{
+			OperationID: op.OperationID,
 			Summary:     op.Summary,
 			Description: op.Description,
 			Tags:        slices.Clone(op.Tags),
@@ -538,9 +613,10 @@ func buildChannelItem[T any](topic string, codec codex.Codec[T], config ChannelC
 		}
 	}
 
-	if config.Publish != nil {
-		op := config.Publish
+	if cb.publish != nil {
+		op := cb.publish
 		item.Publish = &asyncapi.Operation{
+			OperationID: op.OperationID,
 			Summary:     op.Summary,
 			Description: op.Description,
 			Tags:        slices.Clone(op.Tags),

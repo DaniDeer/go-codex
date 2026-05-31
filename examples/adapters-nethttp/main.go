@@ -423,29 +423,31 @@ func main() {
 	sessionCodec := codex.String().Refine(validate.MinLen(8))
 
 	createUserRoute, err := rest.AddRoute[CreateUserReq, User](b, "POST", "/users",
-		createUserReqCodec, userCodec, rest.RouteConfig{
+		createUserReqCodec, userCodec,
+		rest.RouteMeta{
 			OperationID:    "createUser",
 			Summary:        "Create a user",
 			ReqSchemaName:  "CreateUserRequest",
 			RespSchemaName: "User",
-			// ResponseHeaderParams declares the Location header returned on 201.
-			// The adapter validates it after the handler returns; a violation → 500.
-			// The codec schema flows into the OpenAPI response header spec automatically.
-			ResponseHeaderParams: []rest.ResponseHeaderParam{{
-				Name:        "Location",
-				Description: "URL of the newly created user resource",
-				Required:    true,
-				Codec:       &locationCodec,
-			}},
-			// ResponseCookieParams declares the session cookie written on 201.
-			// The adapter validates the value after the handler returns; a violation → 500.
-			ResponseCookieParams: []rest.ResponseCookieParam{{
-				Name:        "session",
-				Description: "Session token for the new user",
-				Required:    true,
-				Codec:       &sessionCodec,
-			}},
-		})
+		},
+		// ResponseHeaderParam declares the Location header returned on 201.
+		// The adapter validates it after the handler returns; a violation → 500.
+		// The codec schema flows into the OpenAPI response header spec automatically.
+		rest.ResponseHeaderParam{
+			Name:        "Location",
+			Description: "URL of the newly created user resource",
+			Required:    true,
+			Codec:       &locationCodec,
+		},
+		// ResponseCookieParam declares the session cookie written on 201.
+		// The adapter validates the value after the handler returns; a violation → 500.
+		rest.ResponseCookieParam{
+			Name:        "session",
+			Description: "Session token for the new user",
+			Required:    true,
+			Codec:       &sessionCodec,
+		},
+	)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "route registration failed: %v\n", err)
 		os.Exit(1)
@@ -460,18 +462,20 @@ func main() {
 
 	uuidCodec := codex.String().Refine(validate.UUID)
 	getUserRoute, err := rest.AddRoute[emptyReq, User](b, "GET", "/users/{id}",
-		emptyReqCodec, userCodec, rest.RouteConfig{
+		emptyReqCodec, userCodec,
+		rest.RouteMeta{
 			OperationID:    "getUser",
 			Summary:        "Get a user by ID",
 			RespSchemaName: "User",
-			// PathParam.Codec validates {id} as a UUID at BuildPath time and
-			// flows the UUID schema into the OpenAPI spec automatically.
-			PathParams: []rest.PathParam{{
-				Name:        "id",
-				Description: "User UUID",
-				Codec:       &uuidCodec,
-			}},
-		})
+		},
+		// PathParam.Codec validates {id} as a UUID at BuildPath time and
+		// flows the UUID schema into the OpenAPI spec automatically.
+		rest.PathParam{
+			Name:        "id",
+			Description: "User UUID",
+			Codec:       &uuidCodec,
+		},
+	)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "route registration failed: %v\n", err)
 		os.Exit(1)
@@ -483,21 +487,21 @@ func main() {
 	// spec automatically. ?search has no codec — it is documented only.
 	qPageCodec := codex.String().Refine(validate.NonNegativeIntString)
 	listUsersRoute, err := rest.AddRoute[emptyReq, PagedUsersResp](b, "GET", "/users",
-		emptyReqCodec, pagedUsersRespCodec, rest.RouteConfig{
+		emptyReqCodec, pagedUsersRespCodec,
+		rest.RouteMeta{
 			OperationID: "listUsers",
 			Summary:     "List users",
-			QueryParams: []rest.QueryParam{
-				{
-					Name:        "page",
-					Description: "Page number (0-based, non-negative integer)",
-					Codec:       &qPageCodec,
-				},
-				{
-					Name:        "search",
-					Description: "Filter by name prefix (no validation)",
-				},
-			},
-		})
+		},
+		rest.QueryParam{
+			Name:        "page",
+			Description: "Page number (0-based, non-negative integer)",
+			Codec:       &qPageCodec,
+		},
+		rest.QueryParam{
+			Name:        "search",
+			Description: "Filter by name prefix (no validation)",
+		},
+	)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "route registration failed: %v\n", err)
 		os.Exit(1)
@@ -511,26 +515,24 @@ func main() {
 	profileSessionCodec := codex.String().Refine(validate.NonEmptyString)
 	profileRequestIDCodec := codex.String().Refine(validate.UUID)
 	profileRoute, err := rest.AddRoute[emptyReq, User](b, "GET", "/profile",
-		emptyReqCodec, userCodec, rest.RouteConfig{
+		emptyReqCodec, userCodec,
+		rest.RouteMeta{
 			OperationID: "getProfile",
 			Summary:     "Get the current user profile",
-			CookieParams: []rest.CookieParam{
-				{
-					Name:        "session_token",
-					Description: "Active session token",
-					Required:    true,
-					Codec:       &profileSessionCodec,
-				},
-			},
-			HeaderParams: []rest.HeaderParam{
-				{
-					Name:        "X-Request-Id",
-					Description: "Idempotency and tracing UUID",
-					Required:    true,
-					Codec:       &profileRequestIDCodec,
-				},
-			},
-		})
+		},
+		rest.CookieParam{
+			Name:        "session_token",
+			Description: "Active session token",
+			Required:    true,
+			Codec:       &profileSessionCodec,
+		},
+		rest.HeaderParam{
+			Name:        "X-Request-Id",
+			Description: "Idempotency and tracing UUID",
+			Required:    true,
+			Codec:       &profileRequestIDCodec,
+		},
+	)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "route registration failed: %v\n", err)
 		os.Exit(1)

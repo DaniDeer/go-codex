@@ -27,7 +27,7 @@ func (m *mockMsg) Ack()              {}
 func newTestHandle(topic string) *events.ChannelHandle[struct{}] {
 	b := events.NewBuilder(events.Info{Title: "Test", Version: "1"})
 	c := codex.Struct[struct{}]()
-	h, err := events.AddChannel[struct{}](b, topic, c, events.ChannelConfig{})
+	h, err := events.AddChannel[struct{}](b, topic, c)
 	if err != nil {
 		panic(err)
 	}
@@ -153,11 +153,9 @@ func newTestHandleWithUUIDParam(topic string) *events.ChannelHandle[struct{}] {
 	b := events.NewBuilder(events.Info{Title: "Test", Version: "1"})
 	c := codex.Struct[struct{}]()
 	uuidCodec := codex.String().Refine(validate.UUID)
-	h, err := events.AddChannel[struct{}](b, topic, c, events.ChannelConfig{
-		TopicParams: []events.TopicParam{
-			{Name: "sensorID", Codec: &uuidCodec},
-		},
-	})
+	h, err := events.AddChannel[struct{}](b, topic, c,
+		events.TopicParam{Name: "sensorID", Codec: &uuidCodec},
+	)
 	if err != nil {
 		panic(err)
 	}
@@ -171,7 +169,7 @@ func newTestHandleWithMQTTConstraint(topic string) *events.ChannelHandle[struct{
 		events.WithTopicConstraints(validate.MQTTPublishTopic),
 	)
 	c := codex.Struct[struct{}]()
-	h, err := events.AddChannel[struct{}](b, topic, c, events.ChannelConfig{})
+	h, err := events.AddChannel[struct{}](b, topic, c)
 	if err != nil {
 		panic(err)
 	}

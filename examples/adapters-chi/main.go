@@ -379,31 +379,34 @@ func main() {
 	sessionCodec := codex.String().Refine(validate.MinLen(8))
 
 	createUserRoute, err := rest.AddRoute[CreateUserReq, User](b, "POST", "/users",
-		createUserReqCodec, userCodec, rest.RouteConfig{
+		createUserReqCodec, userCodec,
+		rest.RouteMeta{
 			OperationID:    "createUser",
 			Summary:        "Create a user",
 			ReqSchemaName:  "CreateUserRequest",
 			RespSchemaName: "User",
-			ResponseHeaderParams: []rest.ResponseHeaderParam{{
-				Name:        "Location",
-				Description: "URL of the newly created user resource",
-				Required:    true,
-				Codec:       &locationCodec,
-			}},
-			ResponseCookieParams: []rest.ResponseCookieParam{{
-				Name:        "session",
-				Description: "Session token for the new user",
-				Required:    true,
-				Codec:       &sessionCodec,
-			}},
 		},
-		format.JSON[User](userCodec),
-		format.YAML[User](userCodec),
+		rest.ResponseHeaderParam{
+			Name:        "Location",
+			Description: "URL of the newly created user resource",
+			Required:    true,
+			Codec:       &locationCodec,
+		},
+		rest.ResponseCookieParam{
+			Name:        "session",
+			Description: "Session token for the new user",
+			Required:    true,
+			Codec:       &sessionCodec,
+		},
 	)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "route registration failed: %v\n", err)
 		os.Exit(1)
 	}
+	createUserRoute = createUserRoute.WithResponseFormats(
+		format.JSON(userCodec),
+		format.YAML(userCodec),
+	)
 	// WithRequestFormats enables multi-format request body decoding.
 	// The adapter negotiates by Content-Type; unsupported types → 415.
 	createUserRoute = createUserRoute.WithRequestFormats(
@@ -413,77 +416,80 @@ func main() {
 
 	uuidCodec := codex.String().Refine(validate.UUID)
 	getUserRoute, err := rest.AddRoute[emptyReq, User](b, "GET", "/users/{id}",
-		emptyReqCodec, userCodec, rest.RouteConfig{
+		emptyReqCodec, userCodec,
+		rest.RouteMeta{
 			OperationID:    "getUser",
 			Summary:        "Get a user by ID",
 			RespSchemaName: "User",
-			PathParams: []rest.PathParam{{
-				Name:        "id",
-				Description: "User UUID",
-				Codec:       &uuidCodec,
-			}},
 		},
-		format.JSON[User](userCodec),
-		format.YAML[User](userCodec),
+		rest.PathParam{
+			Name:        "id",
+			Description: "User UUID",
+			Codec:       &uuidCodec,
+		},
 	)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "route registration failed: %v\n", err)
 		os.Exit(1)
 	}
+	getUserRoute = getUserRoute.WithResponseFormats(
+		format.JSON(userCodec),
+		format.YAML(userCodec),
+	)
 
 	qPageCodec := codex.String().Refine(validate.NonNegativeIntString)
 	listUsersRoute, err := rest.AddRoute[emptyReq, PagedUsersResp](b, "GET", "/users",
-		emptyReqCodec, pagedUsersRespCodec, rest.RouteConfig{
+		emptyReqCodec, pagedUsersRespCodec,
+		rest.RouteMeta{
 			OperationID: "listUsers",
 			Summary:     "List users",
-			QueryParams: []rest.QueryParam{
-				{
-					Name:        "page",
-					Description: "Page number (0-based, non-negative integer)",
-					Codec:       &qPageCodec,
-				},
-				{
-					Name:        "search",
-					Description: "Filter by name prefix (no validation)",
-				},
-			},
 		},
-		format.JSON[PagedUsersResp](pagedUsersRespCodec),
+		rest.QueryParam{
+			Name:        "page",
+			Description: "Page number (0-based, non-negative integer)",
+			Codec:       &qPageCodec,
+		},
+		rest.QueryParam{
+			Name:        "search",
+			Description: "Filter by name prefix (no validation)",
+		},
 	)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "route registration failed: %v\n", err)
 		os.Exit(1)
 	}
+	listUsersRoute = listUsersRoute.WithResponseFormats(
+		format.JSON(pagedUsersRespCodec),
+	)
 
 	profileSessionCodec := codex.String().Refine(validate.NonEmptyString)
 	profileRequestIDCodec := codex.String().Refine(validate.UUID)
 	profileRoute, err := rest.AddRoute[emptyReq, User](b, "GET", "/profile",
-		emptyReqCodec, userCodec, rest.RouteConfig{
+		emptyReqCodec, userCodec,
+		rest.RouteMeta{
 			OperationID: "getProfile",
 			Summary:     "Get the current user profile",
-			CookieParams: []rest.CookieParam{
-				{
-					Name:        "session_token",
-					Description: "Active session token",
-					Required:    true,
-					Codec:       &profileSessionCodec,
-				},
-			},
-			HeaderParams: []rest.HeaderParam{
-				{
-					Name:        "X-Request-Id",
-					Description: "Idempotency and tracing UUID",
-					Required:    true,
-					Codec:       &profileRequestIDCodec,
-				},
-			},
 		},
-		format.JSON[User](userCodec),
+		rest.CookieParam{
+			Name:        "session_token",
+			Description: "Active session token",
+			Required:    true,
+			Codec:       &profileSessionCodec,
+		},
+		rest.HeaderParam{
+			Name:        "X-Request-Id",
+			Description: "Idempotency and tracing UUID",
+			Required:    true,
+			Codec:       &profileRequestIDCodec,
+		},
 	)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "route registration failed: %v\n", err)
 		os.Exit(1)
 	}
+	profileRoute = profileRoute.WithResponseFormats(
+		format.JSON(userCodec),
+	)
 
 	errorHandler := func(w http.ResponseWriter, r *http.Request, status int, err error) {
 		var validationErrs codex.ValidationErrors

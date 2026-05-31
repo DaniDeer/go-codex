@@ -43,9 +43,7 @@ var userEventCodec = codex.Struct[userEvent](
 func newHandle() *events.ChannelHandle[userEvent] {
 	b := events.NewBuilder(events.Info{Title: "Test", Version: "1.0.0"})
 	h, err := events.AddChannel[userEvent](b, "user/created", userEventCodec,
-		events.ChannelConfig{
-			Subscribe: &events.OperationConfig{Summary: "User created"},
-		})
+		events.Subscribe{Summary: "User created"})
 	if err != nil {
 		panic(err)
 	}
@@ -253,12 +251,8 @@ func newTemplateHandle() *events.ChannelHandle[userEvent] {
 	b := events.NewBuilder(events.Info{Title: "Test", Version: "1.0.0"})
 	uuidCodec := codex.String().Refine(validate.UUID)
 	h, err := events.AddChannel[userEvent](b, "users/{userID}/events", userEventCodec,
-		events.ChannelConfig{
-			Publish: &events.OperationConfig{Summary: "User event"},
-			TopicParams: []events.TopicParam{
-				{Name: "userID", Codec: &uuidCodec},
-			},
-		})
+		events.Publish{Summary: "User event"},
+		events.TopicParam{Name: "userID", Codec: &uuidCodec})
 	if err != nil {
 		panic(err)
 	}

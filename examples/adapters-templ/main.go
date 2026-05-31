@@ -187,8 +187,9 @@ func (o *CountingObserver) Print() {
 func main() {
 	// ── Route definition ─────────────────────────────────────────────────────
 	//
-	// rest.AddRoute accepts variadic ResponseFormats. By adding both the templ
-	// format and JSON, the same route serves two representations:
+	// rest.AddRoute registers route metadata and codecs. By configuring both the
+	// templ format and JSON on the returned handle, the same route serves two
+	// representations:
 	//   Accept: text/html        → articleCard component rendered as HTML
 	//   Accept: application/json → JSON-encoded ArticleProps
 	//
@@ -197,14 +198,16 @@ func main() {
 	b := rest.NewBuilder(rest.Info{Title: "Article API", Version: "1.0.0"})
 	articleRoute, err := rest.AddRoute[ArticleReq, ArticleProps](b, "GET", "/article",
 		articleReqCodec, ArticlePropsCodec,
-		rest.RouteConfig{OperationID: "getArticle"},
-		adapttempl.Format(ArticlePropsCodec, articleCard), // Accept: text/html
-		format.JSON(ArticlePropsCodec),                    // Accept: application/json
+		rest.RouteMeta{OperationID: "getArticle"},
 	)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "route error:", err)
 		os.Exit(1)
 	}
+	articleRoute = articleRoute.WithResponseFormats(
+		adapttempl.Format(ArticlePropsCodec, articleCard), // Accept: text/html
+		format.JSON(ArticlePropsCodec),                    // Accept: application/json
+	)
 
 	// ── Handler ──────────────────────────────────────────────────────────────
 	//

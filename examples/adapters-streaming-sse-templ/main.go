@@ -250,19 +250,21 @@ func main() {
 
 	dashRoute, err := rest.AddRoute[DashboardReq, DashboardProps](b, "GET", "/stream/dashboard",
 		dashReqCodec, dashPropsCodec,
-		rest.RouteConfig{OperationID: "streamDashboard"},
-		adapttempl.StreamingFormat(dashPropsCodec, dashboardPage), // chunked HTML
-		format.JSON(dashPropsCodec),                               // JSON fallback
+		rest.RouteMeta{OperationID: "streamDashboard"},
 	)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "route error:", err)
 		os.Exit(1)
 	}
+	dashRoute = dashRoute.WithResponseFormats(
+		adapttempl.StreamingFormat(dashPropsCodec, dashboardPage), // chunked HTML
+		format.JSON(dashPropsCodec),                               // JSON fallback
+	)
 
 	// ── Route 2: SSE with HTML fragment events ────────────────────────────────
 	//
-	// rest.AddSSERoute registers an SSE endpoint. Passing adapttempl.Format as
-	// the eventFormat means each event's data field is a rendered HTML <li>
+	// rest.AddSSERoute registers an SSE endpoint. Setting EventFormats to use
+	// adapttempl.Format makes each event's data field a rendered HTML <li>
 	// fragment instead of JSON — the HTMX html-over-the-wire SSE pattern.
 	//
 	// The codec validates every NotifProps before rendering: events with an
@@ -271,13 +273,15 @@ func main() {
 
 	notifRoute, err := rest.AddSSERoute[NotifReq, NotifProps](b, "/sse/notifications",
 		notifReqCodec, notifCodec,
-		rest.RouteConfig{OperationID: "sseNotifications"},
-		adapttempl.Format(notifCodec, notifFragment), // events as HTML fragments
+		rest.RouteMeta{OperationID: "sseNotifications"},
 	)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "SSE route error:", err)
 		os.Exit(1)
 	}
+	notifRoute = notifRoute.WithEventFormats(
+		adapttempl.Format(notifCodec, notifFragment), // events as HTML fragments
+	)
 
 	// ── Shared mux ───────────────────────────────────────────────────────────
 

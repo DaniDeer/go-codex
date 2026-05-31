@@ -135,13 +135,18 @@ func SubscribeHandler[T any](
 	if obs == nil {
 		obs = stats.NoopObserver{}
 	}
+	// Priority: call-time formats > handle formats > JSON fallback (handle.Decode).
+	effectiveFmts := formats
+	if len(effectiveFmts) == 0 {
+		effectiveFmts = handle.Formats
+	}
 	return func(_ pahomqtt.Client, msg pahomqtt.Message) {
 		start := time.Now()
 		ctx := context.WithValue(ctx, contextKey{}, msg)
 		var value T
 		var err error
-		if len(formats) > 0 {
-			value, err = formats[0].Unmarshal(msg.Payload())
+		if len(effectiveFmts) > 0 {
+			value, err = effectiveFmts[0].Unmarshal(msg.Payload())
 		} else {
 			value, err = handle.Decode(msg.Payload())
 		}
@@ -277,10 +282,15 @@ func Publish[T any](ctx context.Context, client pahomqtt.Client, handle *events.
 			return err
 		}
 	}
+	// Priority: call-time formats > handle formats > JSON fallback (handle.Encode).
+	effectiveFmts := formats
+	if len(effectiveFmts) == 0 {
+		effectiveFmts = handle.Formats
+	}
 	var payload []byte
 	var err error
-	if len(formats) > 0 {
-		payload, err = formats[0].Marshal(msg)
+	if len(effectiveFmts) > 0 {
+		payload, err = effectiveFmts[0].Marshal(msg)
 	} else {
 		payload, err = handle.Encode(msg)
 	}

@@ -9,6 +9,7 @@ import (
 
 	"github.com/DaniDeer/go-codex/api/events"
 	"github.com/DaniDeer/go-codex/codex"
+	"github.com/DaniDeer/go-codex/format"
 	"github.com/DaniDeer/go-codex/validate"
 )
 
@@ -30,8 +31,7 @@ var userEventCodec = codex.Struct[userEvent](
 		Get:      func(e userEvent) string { return e.Name },
 		Set:      func(e *userEvent, v string) { e.Name = v },
 		Required: true,
-	},
-)
+	})
 
 type userEvent struct {
 	ID   string
@@ -40,9 +40,7 @@ type userEvent struct {
 
 func TestAddChannel_returnsHandleWithDecodeEncode(t *testing.T) {
 	b := events.NewBuilder(testInfo)
-	h, err := events.AddChannel[userEvent](b, "user/created", userEventCodec, events.ChannelConfig{
-		Subscribe: &events.OperationConfig{Summary: "User created"},
-	})
+	h, err := events.AddChannel[userEvent](b, "user/created", userEventCodec, events.Subscribe{Summary: "User created"})
 	if err != nil {
 		t.Fatalf("AddChannel error: %v", err)
 	}
@@ -72,9 +70,7 @@ func TestAddChannel_returnsHandleWithDecodeEncode(t *testing.T) {
 
 func TestAddChannel_decodeRunsValidation(t *testing.T) {
 	b := events.NewBuilder(testInfo)
-	h, err := events.AddChannel[userEvent](b, "user/created", userEventCodec, events.ChannelConfig{
-		Subscribe: &events.OperationConfig{Summary: "User created"},
-	})
+	h, err := events.AddChannel[userEvent](b, "user/created", userEventCodec, events.Subscribe{Summary: "User created"})
 	if err != nil {
 		t.Fatalf("AddChannel error: %v", err)
 	}
@@ -90,9 +86,7 @@ func TestAddChannel_decodeRunsValidation(t *testing.T) {
 
 func TestAddChannel_topicAndDescriptorSet(t *testing.T) {
 	b := events.NewBuilder(testInfo)
-	h, err := events.AddChannel[userEvent](b, "user/created", userEventCodec, events.ChannelConfig{
-		Subscribe: &events.OperationConfig{Summary: "User created"},
-	})
+	h, err := events.AddChannel[userEvent](b, "user/created", userEventCodec, events.Subscribe{Summary: "User created"})
 	if err != nil {
 		t.Fatalf("AddChannel error: %v", err)
 	}
@@ -110,30 +104,26 @@ func TestAddChannel_topicAndDescriptorSet(t *testing.T) {
 
 func TestAddChannel_descriptorFrozenAtRegistration(t *testing.T) {
 	b := events.NewBuilder(testInfo)
-	opConfig := &events.OperationConfig{Summary: "Original", Tags: []string{"original"}}
-	config := events.ChannelConfig{Subscribe: opConfig}
-	h, err := events.AddChannel[userEvent](b, "user/created", userEventCodec, config)
+	h, err := events.AddChannel[userEvent](b, "user/created", userEventCodec,
+		events.Subscribe{Summary: "Original", Tags: []string{"original"}})
 	if err != nil {
 		t.Fatalf("AddChannel error: %v", err)
 	}
 
-	// Mutate original config after registration.
-	opConfig.Summary = "Mutated"
-	opConfig.Tags[0] = "mutated"
-
-	if h.Descriptor.Subscribe.Summary != "Original" {
-		t.Errorf("descriptor Summary mutated: got %q", h.Descriptor.Subscribe.Summary)
+	if h.Descriptor.Subscribe == nil {
+		t.Fatal("Descriptor.Subscribe: expected non-nil, got nil")
 	}
-	if len(h.Descriptor.Subscribe.Tags) > 0 && h.Descriptor.Subscribe.Tags[0] != "original" {
-		t.Errorf("descriptor Tags mutated: got %v", h.Descriptor.Subscribe.Tags)
+	if h.Descriptor.Subscribe.Summary != "Original" {
+		t.Errorf("descriptor Summary: got %q, want %q", h.Descriptor.Subscribe.Summary, "Original")
+	}
+	if len(h.Descriptor.Subscribe.Tags) != 1 || h.Descriptor.Subscribe.Tags[0] != "original" {
+		t.Errorf("descriptor Tags: got %v, want [original]", h.Descriptor.Subscribe.Tags)
 	}
 }
 
 func TestAddChannel_publishDirection(t *testing.T) {
 	b := events.NewBuilder(testInfo)
-	h, err := events.AddChannel[userEvent](b, "user/notify", userEventCodec, events.ChannelConfig{
-		Publish: &events.OperationConfig{Summary: "Notify user"},
-	})
+	h, err := events.AddChannel[userEvent](b, "user/notify", userEventCodec, events.Publish{Summary: "Notify user"})
 	if err != nil {
 		t.Fatalf("AddChannel error: %v", err)
 	}
@@ -148,10 +138,8 @@ func TestAddChannel_publishDirection(t *testing.T) {
 
 func TestAddChannel_bothDirections(t *testing.T) {
 	b := events.NewBuilder(testInfo)
-	h, err := events.AddChannel[userEvent](b, "user/events", userEventCodec, events.ChannelConfig{
-		Subscribe: &events.OperationConfig{Summary: "Receive user event"},
-		Publish:   &events.OperationConfig{Summary: "Send user event"},
-	})
+	h, err := events.AddChannel[userEvent](b, "user/events", userEventCodec, events.Subscribe{Summary: "Receive user event"},
+		events.Publish{Summary: "Send user event"})
 	if err != nil {
 		t.Fatalf("AddChannel error: %v", err)
 	}
@@ -171,18 +159,14 @@ func TestBuilder_asyncAPISpec_containsRegisteredChannels(t *testing.T) {
 		Protocol: "mqtt",
 	})
 
-	if _, err := events.AddChannel[userEvent](b, "user/created", userEventCodec, events.ChannelConfig{
-		Subscribe: &events.OperationConfig{
-			Summary:    "A user was created",
-			SchemaName: "UserCreatedEvent",
-			Tags:       []string{"users"},
-		},
+	if _, err := events.AddChannel[userEvent](b, "user/created", userEventCodec, events.Subscribe{
+		Summary:    "A user was created",
+		SchemaName: "UserCreatedEvent",
+		Tags:       []string{"users"},
 	}); err != nil {
 		t.Fatalf("AddChannel error: %v", err)
 	}
-	if _, err := events.AddChannel[userEvent](b, "user/deleted", userEventCodec, events.ChannelConfig{
-		Subscribe: &events.OperationConfig{Summary: "A user was deleted"},
-	}); err != nil {
+	if _, err := events.AddChannel[userEvent](b, "user/deleted", userEventCodec, events.Subscribe{Summary: "A user was deleted"}); err != nil {
 		t.Fatalf("AddChannel error: %v", err)
 	}
 
@@ -233,10 +217,8 @@ func TestBuilder_asyncAPISpec_emptyChannelError(t *testing.T) {
 
 func TestBuilder_asyncAPISpec_schemaRefInComponents(t *testing.T) {
 	b := events.NewBuilder(testInfo)
-	if _, err := events.AddChannel[userEvent](b, "user/created", userEventCodec, events.ChannelConfig{
-		Subscribe: &events.OperationConfig{
-			SchemaName: "UserCreatedEvent",
-		},
+	if _, err := events.AddChannel[userEvent](b, "user/created", userEventCodec, events.Subscribe{
+		SchemaName: "UserCreatedEvent",
 	}); err != nil {
 		t.Fatalf("AddChannel error: %v", err)
 	}
@@ -257,9 +239,7 @@ func TestBuilder_asyncAPISpec_schemaRefInComponents(t *testing.T) {
 
 func TestBuilder_asyncAPISpec_jsonOutput(t *testing.T) {
 	b := events.NewBuilder(testInfo)
-	if _, err := events.AddChannel[userEvent](b, "order/placed", userEventCodec, events.ChannelConfig{
-		Subscribe: &events.OperationConfig{Summary: "Order placed"},
-	}); err != nil {
+	if _, err := events.AddChannel[userEvent](b, "order/placed", userEventCodec, events.Subscribe{Summary: "Order placed"}); err != nil {
 		t.Fatalf("AddChannel error: %v", err)
 	}
 
@@ -282,11 +262,8 @@ func TestBuilder_asyncAPISpec_jsonOutput(t *testing.T) {
 
 func TestBuilder_withTopicCodec_validTopicPasses(t *testing.T) {
 	b := events.NewBuilder(testInfo, events.WithTopicCodec(
-		codex.String().Refine(validate.MQTTPublishTopic),
-	))
-	if _, err := events.AddChannel[userEvent](b, "user/created", userEventCodec, events.ChannelConfig{
-		Subscribe: &events.OperationConfig{Summary: "User created"},
-	}); err != nil {
+		codex.String().Refine(validate.MQTTPublishTopic)))
+	if _, err := events.AddChannel[userEvent](b, "user/created", userEventCodec, events.Subscribe{Summary: "User created"}); err != nil {
 		t.Fatalf("AddChannel error: %v", err)
 	}
 
@@ -298,11 +275,8 @@ func TestBuilder_withTopicCodec_validTopicPasses(t *testing.T) {
 
 func TestBuilder_withTopicCodec_invalidTopicSurfacesError(t *testing.T) {
 	b := events.NewBuilder(testInfo, events.WithTopicCodec(
-		codex.String().Refine(validate.MQTTPublishTopic),
-	))
-	_, err := events.AddChannel[userEvent](b, "user/+/created", userEventCodec, events.ChannelConfig{
-		Subscribe: &events.OperationConfig{Summary: "User created"},
-	})
+		codex.String().Refine(validate.MQTTPublishTopic)))
+	_, err := events.AddChannel[userEvent](b, "user/+/created", userEventCodec, events.Subscribe{Summary: "User created"})
 	if err == nil {
 		t.Fatal("expected error for topic with wildcard '+', got nil")
 	}
@@ -323,9 +297,7 @@ func TestBuilder_withTopicCodec_invalidTopicSurfacesError(t *testing.T) {
 
 func TestBuilder_withTopicConstraints_multipleInvalidTopicsCollected(t *testing.T) {
 	b := events.NewBuilder(testInfo, events.WithTopicConstraints(validate.MQTTPublishTopic))
-	_, err := events.AddChannel[userEvent](b, "user/+/created", userEventCodec, events.ChannelConfig{
-		Subscribe: &events.OperationConfig{Summary: "User created"},
-	})
+	_, err := events.AddChannel[userEvent](b, "user/+/created", userEventCodec, events.Subscribe{Summary: "User created"})
 	if err == nil {
 		t.Fatal("expected error for topic with wildcard '+', got nil")
 	}
@@ -333,9 +305,7 @@ func TestBuilder_withTopicConstraints_multipleInvalidTopicsCollected(t *testing.
 		t.Errorf("error should mention the invalid topic, got: %v", err)
 	}
 
-	_, err = events.AddChannel[userEvent](b, "order/#", userEventCodec, events.ChannelConfig{
-		Subscribe: &events.OperationConfig{Summary: "Order event"},
-	})
+	_, err = events.AddChannel[userEvent](b, "order/#", userEventCodec, events.Subscribe{Summary: "Order event"})
 	if err == nil {
 		t.Fatal("expected error for topic with wildcard '#', got nil")
 	}
@@ -346,9 +316,7 @@ func TestBuilder_withTopicConstraints_multipleInvalidTopicsCollected(t *testing.
 
 func TestBuilder_noTopicCodec_anyTopicAccepted(t *testing.T) {
 	b := events.NewBuilder(testInfo)
-	if _, err := events.AddChannel[userEvent](b, "user/+/wildcard", userEventCodec, events.ChannelConfig{
-		Subscribe: &events.OperationConfig{Summary: "Wildcard sub"},
-	}); err != nil {
+	if _, err := events.AddChannel[userEvent](b, "user/+/wildcard", userEventCodec, events.Subscribe{Summary: "Wildcard sub"}); err != nil {
 		t.Fatalf("AddChannel error: %v", err)
 	}
 
@@ -362,13 +330,11 @@ func TestAddChannel_unknownTopicParamCodecKey(t *testing.T) {
 	b := events.NewBuilder(testInfo)
 	uuidCodec := codex.String().Refine(validate.UUID)
 	strCodec := codex.String()
-	_, err := events.AddChannel[userEvent](b, "sensors/{sensorID}/data", userEventCodec, events.ChannelConfig{
-		Subscribe: &events.OperationConfig{Summary: "sensor data"},
-		TopicParams: []events.TopicParam{
-			{Name: "sensorID", Codec: &uuidCodec},
-			{Name: "missing", Codec: &strCodec}, // not in template
-		},
-	})
+	_, err := events.AddChannel[userEvent](b, "sensors/{sensorID}/data", userEventCodec,
+		events.Subscribe{Summary: "sensor data"},
+		events.TopicParam{Name: "sensorID", Codec: &uuidCodec},
+		events.TopicParam{Name: "missing", Codec: &strCodec}, // not in template
+	)
 	if err == nil {
 		t.Fatal("expected error for unknown TopicParams name, got nil")
 	}
@@ -384,12 +350,8 @@ func TestAddChannel_unknownTopicParamCodecKey(t *testing.T) {
 func TestBuildTopic_validVars(t *testing.T) {
 	b := events.NewBuilder(testInfo)
 	uuidCodec := codex.String().Refine(validate.UUID)
-	h, err := events.AddChannel[userEvent](b, "sensors/{sensorID}/data", userEventCodec, events.ChannelConfig{
-		Subscribe: &events.OperationConfig{Summary: "sensor data"},
-		TopicParams: []events.TopicParam{
-			{Name: "sensorID", Codec: &uuidCodec},
-		},
-	})
+	h, err := events.AddChannel[userEvent](b, "sensors/{sensorID}/data", userEventCodec, events.Subscribe{Summary: "sensor data"},
+		events.TopicParam{Name: "sensorID", Codec: &uuidCodec})
 	if err != nil {
 		t.Fatalf("AddChannel error: %v", err)
 	}
@@ -405,9 +367,7 @@ func TestBuildTopic_validVars(t *testing.T) {
 
 func TestBuildTopic_missingVar(t *testing.T) {
 	b := events.NewBuilder(testInfo)
-	h, err := events.AddChannel[userEvent](b, "sensors/{sensorID}/data", userEventCodec, events.ChannelConfig{
-		Subscribe: &events.OperationConfig{Summary: "sensor data"},
-	})
+	h, err := events.AddChannel[userEvent](b, "sensors/{sensorID}/data", userEventCodec, events.Subscribe{Summary: "sensor data"})
 	if err != nil {
 		t.Fatalf("AddChannel error: %v", err)
 	}
@@ -428,12 +388,8 @@ func TestBuildTopic_missingVar(t *testing.T) {
 func TestBuildTopic_codecFailure(t *testing.T) {
 	b := events.NewBuilder(testInfo)
 	uuidCodec := codex.String().Refine(validate.UUID)
-	h, err := events.AddChannel[userEvent](b, "sensors/{sensorID}/data", userEventCodec, events.ChannelConfig{
-		Subscribe: &events.OperationConfig{Summary: "sensor data"},
-		TopicParams: []events.TopicParam{
-			{Name: "sensorID", Codec: &uuidCodec},
-		},
-	})
+	h, err := events.AddChannel[userEvent](b, "sensors/{sensorID}/data", userEventCodec, events.Subscribe{Summary: "sensor data"},
+		events.TopicParam{Name: "sensorID", Codec: &uuidCodec})
 	if err != nil {
 		t.Fatalf("AddChannel error: %v", err)
 	}
@@ -456,9 +412,7 @@ func TestBuildTopic_codecFailure(t *testing.T) {
 
 func TestBuildTopic_extraKeysIgnored(t *testing.T) {
 	b := events.NewBuilder(testInfo)
-	h, err := events.AddChannel[userEvent](b, "sensors/{sensorID}/data", userEventCodec, events.ChannelConfig{
-		Subscribe: &events.OperationConfig{Summary: "sensor data"},
-	})
+	h, err := events.AddChannel[userEvent](b, "sensors/{sensorID}/data", userEventCodec, events.Subscribe{Summary: "sensor data"})
 	if err != nil {
 		t.Fatalf("AddChannel error: %v", err)
 	}
@@ -484,9 +438,7 @@ func TestBuilder_withTopicConstraints_templateTransparent(t *testing.T) {
 	b := events.NewBuilder(testInfo, events.WithTopicConstraints(noBraces))
 
 	// Without template-transparent stripping this would return an InvalidTopicError.
-	if _, err := events.AddChannel[userEvent](b, "sensors/{sensorID}/data", userEventCodec, events.ChannelConfig{
-		Subscribe: &events.OperationConfig{Summary: "sensor data"},
-	}); err != nil {
+	if _, err := events.AddChannel[userEvent](b, "sensors/{sensorID}/data", userEventCodec, events.Subscribe{Summary: "sensor data"}); err != nil {
 		t.Fatalf("expected template topic to pass brace-free constraint after stripping, got: %v", err)
 	}
 }
@@ -502,12 +454,8 @@ func TestBuildTopic_finalTopicReValidatedAgainstBuilderCodec(t *testing.T) {
 	}
 	b := events.NewBuilder(testInfo, events.WithTopicConstraints(noSlash))
 	nonEmptyCodec := codex.String().Refine(validate.NonEmptyString)
-	h, err := events.AddChannel[userEvent](b, "{sensorID}", userEventCodec, events.ChannelConfig{
-		Subscribe: &events.OperationConfig{Summary: "sensor data"},
-		TopicParams: []events.TopicParam{
-			{Name: "sensorID", Codec: &nonEmptyCodec},
-		},
-	})
+	h, err := events.AddChannel[userEvent](b, "{sensorID}", userEventCodec, events.Subscribe{Summary: "sensor data"},
+		events.TopicParam{Name: "sensorID", Codec: &nonEmptyCodec})
 	if err != nil {
 		t.Fatalf("AddChannel error: %v", err)
 	}
@@ -537,12 +485,8 @@ func TestBuildTopic_finalTopicReValidatedAgainstBuilderCodec(t *testing.T) {
 
 func TestAddChannel_unknownTopicParamKey(t *testing.T) {
 	b := events.NewBuilder(testInfo)
-	_, err := events.AddChannel[userEvent](b, "sensors/{sensorID}/data", userEventCodec, events.ChannelConfig{
-		Subscribe: &events.OperationConfig{Summary: "sensor data"},
-		TopicParams: []events.TopicParam{
-			{Name: "notInTemplate"},
-		},
-	})
+	_, err := events.AddChannel[userEvent](b, "sensors/{sensorID}/data", userEventCodec, events.Subscribe{Summary: "sensor data"},
+		events.TopicParam{Name: "notInTemplate"})
 	if err == nil {
 		t.Fatal("expected error for unknown TopicParams name, got nil")
 	}
@@ -558,12 +502,8 @@ func TestAddChannel_unknownTopicParamKey(t *testing.T) {
 func TestAddChannel_topicParamCodecSchemaFlowsToSpec(t *testing.T) {
 	b := events.NewBuilder(testInfo)
 	uuidCodec := codex.String().Refine(validate.UUID)
-	h, err := events.AddChannel[userEvent](b, "sensors/{sensorID}/data", userEventCodec, events.ChannelConfig{
-		Subscribe: &events.OperationConfig{Summary: "s"},
-		TopicParams: []events.TopicParam{
-			{Name: "sensorID", Codec: &uuidCodec},
-		},
-	})
+	h, err := events.AddChannel[userEvent](b, "sensors/{sensorID}/data", userEventCodec, events.Subscribe{Summary: "s"},
+		events.TopicParam{Name: "sensorID", Codec: &uuidCodec})
 	if err != nil {
 		t.Fatalf("AddChannel error: %v", err)
 	}
@@ -582,12 +522,8 @@ func TestAddChannel_topicParamCodecSchemaFlowsToSpec(t *testing.T) {
 func TestAddChannel_topicParamDescriptionEnrichment(t *testing.T) {
 	b := events.NewBuilder(testInfo)
 	uuidCodec := codex.String().Refine(validate.UUID)
-	h, err := events.AddChannel[userEvent](b, "sensors/{sensorID}/data", userEventCodec, events.ChannelConfig{
-		Subscribe: &events.OperationConfig{Summary: "s"},
-		TopicParams: []events.TopicParam{
-			{Name: "sensorID", Description: "The sensor UUID.", Codec: &uuidCodec},
-		},
-	})
+	h, err := events.AddChannel[userEvent](b, "sensors/{sensorID}/data", userEventCodec, events.Subscribe{Summary: "s"},
+		events.TopicParam{Name: "sensorID", Description: "The sensor UUID.", Codec: &uuidCodec})
 	if err != nil {
 		t.Fatalf("AddChannel error: %v", err)
 	}
@@ -605,9 +541,7 @@ func TestAddChannel_autoDerivesParamWithoutTopicParams(t *testing.T) {
 	// No TopicParams declared; parameter entry should still appear in spec
 	// because the topic template has {varName}.
 	b := events.NewBuilder(testInfo)
-	h, err := events.AddChannel[userEvent](b, "orders/{orderID}", userEventCodec, events.ChannelConfig{
-		Subscribe: &events.OperationConfig{Summary: "s"},
-	})
+	h, err := events.AddChannel[userEvent](b, "orders/{orderID}", userEventCodec, events.Subscribe{Summary: "s"})
 	if err != nil {
 		t.Fatalf("AddChannel error: %v", err)
 	}
@@ -618,7 +552,7 @@ func TestAddChannel_autoDerivesParamWithoutTopicParams(t *testing.T) {
 
 func TestValidateTopic_noCodecAlwaysPasses(t *testing.T) {
 	b := events.NewBuilder(testInfo) // no topic codec
-	h, err := events.AddChannel[userEvent](b, "sensors/{sensorID}/data", userEventCodec, events.ChannelConfig{})
+	h, err := events.AddChannel[userEvent](b, "sensors/{sensorID}/data", userEventCodec)
 	if err != nil {
 		t.Fatalf("AddChannel: %v", err)
 	}
@@ -629,7 +563,7 @@ func TestValidateTopic_noCodecAlwaysPasses(t *testing.T) {
 
 func TestValidateTopic_passingTopicReturnsNil(t *testing.T) {
 	b := events.NewBuilder(testInfo, events.WithTopicConstraints(validate.MQTTPublishTopic))
-	h, err := events.AddChannel[userEvent](b, "sensors/{sensorID}/data", userEventCodec, events.ChannelConfig{})
+	h, err := events.AddChannel[userEvent](b, "sensors/{sensorID}/data", userEventCodec)
 	if err != nil {
 		t.Fatalf("AddChannel: %v", err)
 	}
@@ -641,7 +575,7 @@ func TestValidateTopic_passingTopicReturnsNil(t *testing.T) {
 func TestValidateTopic_wildcardTopicFailsMQTTConstraint(t *testing.T) {
 	b := events.NewBuilder(testInfo, events.WithTopicConstraints(validate.MQTTPublishTopic))
 	// Register with a template topic — AddChannel sees the stripped form.
-	h, err := events.AddChannel[userEvent](b, "sensors/{sensorID}/data", userEventCodec, events.ChannelConfig{})
+	h, err := events.AddChannel[userEvent](b, "sensors/{sensorID}/data", userEventCodec)
 	if err != nil {
 		t.Fatalf("AddChannel: %v", err)
 	}
@@ -660,10 +594,7 @@ func TestValidateTopic_wildcardTopicFailsMQTTConstraint(t *testing.T) {
 
 func TestValidateTopicVars_noCodecAlwaysPasses(t *testing.T) {
 	b := events.NewBuilder(testInfo)
-	h, err := events.AddChannel[userEvent](b, "sensors/{sensorID}/data", userEventCodec, events.ChannelConfig{
-		// No Codec on the TopicParam.
-		TopicParams: []events.TopicParam{{Name: "sensorID", Description: "any"}},
-	})
+	h, err := events.AddChannel[userEvent](b, "sensors/{sensorID}/data", userEventCodec, events.TopicParam{Name: "sensorID", Description: "any"})
 	if err != nil {
 		t.Fatalf("AddChannel: %v", err)
 	}
@@ -675,9 +606,7 @@ func TestValidateTopicVars_noCodecAlwaysPasses(t *testing.T) {
 func TestValidateTopicVars_validValuePasses(t *testing.T) {
 	b := events.NewBuilder(testInfo)
 	uuidCodec := codex.String().Refine(validate.UUID)
-	h, err := events.AddChannel[userEvent](b, "sensors/{sensorID}/data", userEventCodec, events.ChannelConfig{
-		TopicParams: []events.TopicParam{{Name: "sensorID", Codec: &uuidCodec}},
-	})
+	h, err := events.AddChannel[userEvent](b, "sensors/{sensorID}/data", userEventCodec, events.TopicParam{Name: "sensorID", Codec: &uuidCodec})
 	if err != nil {
 		t.Fatalf("AddChannel: %v", err)
 	}
@@ -689,9 +618,7 @@ func TestValidateTopicVars_validValuePasses(t *testing.T) {
 func TestValidateTopicVars_invalidValueReturnsTopicParamError(t *testing.T) {
 	b := events.NewBuilder(testInfo)
 	uuidCodec := codex.String().Refine(validate.UUID)
-	h, err := events.AddChannel[userEvent](b, "sensors/{sensorID}/data", userEventCodec, events.ChannelConfig{
-		TopicParams: []events.TopicParam{{Name: "sensorID", Codec: &uuidCodec}},
-	})
+	h, err := events.AddChannel[userEvent](b, "sensors/{sensorID}/data", userEventCodec, events.TopicParam{Name: "sensorID", Codec: &uuidCodec})
 	if err != nil {
 		t.Fatalf("AddChannel: %v", err)
 	}
@@ -708,5 +635,197 @@ func TestValidateTopicVars_invalidValueReturnsTopicParamError(t *testing.T) {
 	}
 	if paramErr.Value != "not-a-uuid" {
 		t.Errorf("TopicParamError.Value = %q, want not-a-uuid", paramErr.Value)
+	}
+}
+
+func TestWithFormats_setsContentTypeOnSubscribeDescriptor(t *testing.T) {
+	b := events.NewBuilder(testInfo)
+	h, err := events.AddChannel[userEvent](b, "user/created", userEventCodec,
+		events.Subscribe{Summary: "User created", SchemaName: "UserEvent"},
+	)
+	if err != nil {
+		t.Fatalf("AddChannel: %v", err)
+	}
+
+	h = h.WithFormats(format.YAML(userEventCodec))
+
+	ct := h.Descriptor.Subscribe.Message.ContentType
+	if ct != "application/yaml" {
+		t.Errorf("Subscribe.Message.ContentType = %q, want application/yaml", ct)
+	}
+	if h.Descriptor.Publish != nil {
+		t.Errorf("expected Publish to be nil (not registered)")
+	}
+}
+
+func TestWithFormats_setsContentTypeOnPublishDescriptor(t *testing.T) {
+	b := events.NewBuilder(testInfo)
+	h, err := events.AddChannel[userEvent](b, "user/created", userEventCodec,
+		events.Publish{Summary: "Publish user event"},
+	)
+	if err != nil {
+		t.Fatalf("AddChannel: %v", err)
+	}
+
+	h = h.WithFormats(format.YAML(userEventCodec))
+
+	ct := h.Descriptor.Publish.Message.ContentType
+	if ct != "application/yaml" {
+		t.Errorf("Publish.Message.ContentType = %q, want application/yaml", ct)
+	}
+}
+
+func TestWithFormats_updatesBothOperationsWhenBothPresent(t *testing.T) {
+	b := events.NewBuilder(testInfo)
+	h, err := events.AddChannel[userEvent](b, "user/events", userEventCodec,
+		events.Subscribe{Summary: "Receive"},
+		events.Publish{Summary: "Send"},
+	)
+	if err != nil {
+		t.Fatalf("AddChannel: %v", err)
+	}
+
+	h = h.WithFormats(format.YAML(userEventCodec))
+
+	subCT := h.Descriptor.Subscribe.Message.ContentType
+	pubCT := h.Descriptor.Publish.Message.ContentType
+	if subCT != "application/yaml" {
+		t.Errorf("Subscribe.Message.ContentType = %q, want application/yaml", subCT)
+	}
+	if pubCT != "application/yaml" {
+		t.Errorf("Publish.Message.ContentType = %q, want application/yaml", pubCT)
+	}
+}
+
+func TestWithFormats_clearsContentTypeWhenCalledEmpty(t *testing.T) {
+	b := events.NewBuilder(testInfo)
+	h, err := events.AddChannel[userEvent](b, "user/created", userEventCodec,
+		events.Subscribe{Summary: "User created"},
+	)
+	if err != nil {
+		t.Fatalf("AddChannel: %v", err)
+	}
+
+	h = h.WithFormats(format.YAML(userEventCodec))
+	h = h.WithFormats() // clear
+
+	if len(h.Formats) != 0 {
+		t.Errorf("expected Formats to be empty after WithFormats()")
+	}
+	ct := h.Descriptor.Subscribe.Message.ContentType
+	if ct != "" {
+		t.Errorf("Subscribe.Message.ContentType = %q after clear, want empty", ct)
+	}
+}
+
+func TestWithFormats_reflectsInAsyncAPISpec(t *testing.T) {
+	b := events.NewBuilder(testInfo)
+	h, err := events.AddChannel[userEvent](b, "user/created", userEventCodec,
+		events.Subscribe{Summary: "User created", SchemaName: "UserEvent"},
+	)
+	if err != nil {
+		t.Fatalf("AddChannel: %v", err)
+	}
+	h.WithFormats(format.YAML(userEventCodec))
+
+	doc, err := b.AsyncAPISpec()
+	if err != nil {
+		t.Fatalf("AsyncAPISpec: %v", err)
+	}
+	yamlBytes, err := doc.MarshalYAML()
+	if err != nil {
+		t.Fatalf("MarshalYAML: %v", err)
+	}
+	if !strings.Contains(string(yamlBytes), "application/yaml") {
+		t.Errorf("expected AsyncAPI spec to contain application/yaml, got:\n%s", yamlBytes)
+	}
+}
+
+func TestSubscribe_operationIDInAsyncAPISpec(t *testing.T) {
+	b := events.NewBuilder(testInfo)
+	_, err := events.AddChannel[userEvent](b, "user/created", userEventCodec,
+		events.Subscribe{OperationID: "receiveUserCreated", Summary: "User created"},
+	)
+	if err != nil {
+		t.Fatalf("AddChannel: %v", err)
+	}
+	doc, err := b.AsyncAPISpec()
+	if err != nil {
+		t.Fatalf("AsyncAPISpec: %v", err)
+	}
+	yamlBytes, err := doc.MarshalYAML()
+	if err != nil {
+		t.Fatalf("MarshalYAML: %v", err)
+	}
+	if !strings.Contains(string(yamlBytes), "receiveUserCreated") {
+		t.Errorf("expected AsyncAPI spec to contain operationId receiveUserCreated, got:\n%s", yamlBytes)
+	}
+}
+
+func TestPublish_operationIDInAsyncAPISpec(t *testing.T) {
+	b := events.NewBuilder(testInfo)
+	_, err := events.AddChannel[userEvent](b, "user/events", userEventCodec,
+		events.Publish{OperationID: "publishUserEvent", Summary: "Publish user event"},
+	)
+	if err != nil {
+		t.Fatalf("AddChannel: %v", err)
+	}
+	doc, err := b.AsyncAPISpec()
+	if err != nil {
+		t.Fatalf("AsyncAPISpec: %v", err)
+	}
+	yamlBytes, err := doc.MarshalYAML()
+	if err != nil {
+		t.Fatalf("MarshalYAML: %v", err)
+	}
+	if !strings.Contains(string(yamlBytes), "publishUserEvent") {
+		t.Errorf("expected AsyncAPI spec to contain operationId publishUserEvent, got:\n%s", yamlBytes)
+	}
+}
+
+func TestSubscribePublish_bothOperationIDsInAsyncAPISpec(t *testing.T) {
+	b := events.NewBuilder(testInfo)
+	_, err := events.AddChannel[userEvent](b, "user/events", userEventCodec,
+		events.Subscribe{OperationID: "receiveEvent", Summary: "Receive"},
+		events.Publish{OperationID: "sendEvent", Summary: "Send"},
+	)
+	if err != nil {
+		t.Fatalf("AddChannel: %v", err)
+	}
+	doc, err := b.AsyncAPISpec()
+	if err != nil {
+		t.Fatalf("AsyncAPISpec: %v", err)
+	}
+	yamlBytes, err := doc.MarshalYAML()
+	if err != nil {
+		t.Fatalf("MarshalYAML: %v", err)
+	}
+	spec := string(yamlBytes)
+	if !strings.Contains(spec, "receiveEvent") {
+		t.Errorf("expected AsyncAPI spec to contain receiveEvent, got:\n%s", spec)
+	}
+	if !strings.Contains(spec, "sendEvent") {
+		t.Errorf("expected AsyncAPI spec to contain sendEvent, got:\n%s", spec)
+	}
+}
+
+func TestSubscribe_emptyOperationIDOmittedFromSpec(t *testing.T) {
+	b := events.NewBuilder(testInfo)
+	_, err := events.AddChannel[userEvent](b, "user/created", userEventCodec,
+		events.Subscribe{Summary: "User created"},
+	)
+	if err != nil {
+		t.Fatalf("AddChannel: %v", err)
+	}
+	doc, err := b.AsyncAPISpec()
+	if err != nil {
+		t.Fatalf("AsyncAPISpec: %v", err)
+	}
+	yamlBytes, err := doc.MarshalYAML()
+	if err != nil {
+		t.Fatalf("MarshalYAML: %v", err)
+	}
+	if strings.Contains(string(yamlBytes), "operationId") {
+		t.Errorf("expected AsyncAPI spec to omit operationId when empty, got:\n%s", yamlBytes)
 	}
 }

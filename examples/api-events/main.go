@@ -5,7 +5,7 @@
 // AsyncAPI operations are app-centric:
 //   - Subscribe: this app RECEIVES messages on the channel (consumer)
 //   - Publish:   this app SENDS messages on the channel (producer)
-//   - Both:      bidirectional — set both Subscribe and Publish on one ChannelConfig
+//   - Both:      bidirectional — pass both events.Subscribe and events.Publish to one AddChannel call
 //
 // The same ChannelHandle.Decode and ChannelHandle.Encode helpers work unchanged
 // with MQTT (Paho), AMQP, Kafka, NATS, or any other message broker.
@@ -111,14 +111,13 @@ func main() {
 	// user/created — Subscribe: this app RECEIVES events when users register.
 	// AsyncAPI "subscribe" means the broker delivers messages to this application.
 	userCreated, err := events.AddChannel[UserCreatedEvent](b, "user/created", userCreatedCodec,
-		events.ChannelConfig{
-			Description: "User registration events consumed by the notification service.",
-			Subscribe: &events.OperationConfig{
-				Summary:    "Receive user created event",
-				Tags:       []string{"user", "registration"},
-				SchemaName: "UserCreatedEvent",
-			},
-		})
+		events.ChannelMeta{Description: "User registration events consumed by the notification service."},
+		events.Subscribe{
+			Summary:    "Receive user created event",
+			Tags:       []string{"user", "registration"},
+			SchemaName: "UserCreatedEvent",
+		},
+	)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "channel registration failed: %v\n", err)
 		os.Exit(1)
@@ -127,24 +126,21 @@ func main() {
 	// notification/send — Publish: this app SENDS notification commands.
 	// AsyncAPI "publish" means this application produces messages to the broker.
 	notificationSend, err := events.AddChannel[NotificationCommand](b, "notification/send", notificationCommandCodec,
-		events.ChannelConfig{
-			Description: "Notification commands sent by this service to trigger delivery.",
-			Publish: &events.OperationConfig{
-				Summary:    "Send notification command",
-				Tags:       []string{"notification"},
-				SchemaName: "NotificationCommand",
-			},
-		})
+		events.ChannelMeta{Description: "Notification commands sent by this service to trigger delivery."},
+		events.Publish{
+			Summary:    "Send notification command",
+			Tags:       []string{"notification"},
+			SchemaName: "NotificationCommand",
+		},
+	)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "channel registration failed: %v\n", err)
 		os.Exit(1)
 	}
 
-	// Bidirectional example (Both directions on one channel):
-	// ChannelConfig{
-	//     Subscribe: &events.OperationConfig{Summary: "Receive command result"},
-	//     Publish:   &events.OperationConfig{Summary: "Send command"},
-	// }
+	// Bidirectional example (both directions on one channel):
+	// events.Subscribe{Summary: "Receive command result"},
+	// events.Publish{Summary: "Send command"},
 
 	// --- Demonstrate codec-backed Decode/Encode ---
 	// These helpers work with any broker library; pass them to your callbacks.

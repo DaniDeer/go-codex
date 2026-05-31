@@ -89,17 +89,16 @@ func main() {
 	// createUser.Decode(body) and createUser.Encode(user) are the codec helpers.
 	createUser, err := rest.AddRoute[CreateUserRequest, User](b, "POST", "/users",
 		createUserCodec, userCodec,
-		rest.RouteConfig{
+		rest.RouteMeta{
 			OperationID:     "createUser",
 			Summary:         "Create a user",
 			Tags:            []string{"users"},
 			ReqSchemaName:   "CreateUserRequest",
 			RespSchemaName:  "User",
 			RespDescription: "User created.",
-			Responses: []rest.ResponseMeta{
-				{Status: "400", Description: "Validation error."},
-			},
-		})
+		},
+		rest.ResponseMeta{Status: "400", Description: "Validation error."},
+	)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "route registration failed: %v\n", err)
 		os.Exit(1)
@@ -109,19 +108,16 @@ func main() {
 	// Path parameter is extracted at the HTTP layer (e.g. r.PathValue("id")).
 	getUser, err := rest.AddRoute[emptyReq, User](b, "GET", "/users/{id}",
 		emptyCodec, userCodec,
-		rest.RouteConfig{
+		rest.RouteMeta{
 			OperationID:     "getUser",
 			Summary:         "Get a user by ID",
 			Tags:            []string{"users"},
 			RespSchemaName:  "User",
 			RespDescription: "User found.",
-			PathParams: []rest.PathParam{
-				{Name: "id", Description: "User ID (UUID)."},
-			},
-			Responses: []rest.ResponseMeta{
-				{Status: "404", Description: "User not found."},
-			},
-		})
+		},
+		rest.PathParam{Name: "id", Description: "User ID (UUID)."},
+		rest.ResponseMeta{Status: "404", Description: "User not found."},
+	)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "route registration failed: %v\n", err)
 		os.Exit(1)

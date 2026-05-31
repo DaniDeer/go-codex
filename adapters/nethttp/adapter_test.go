@@ -58,7 +58,7 @@ var testInfo = rest.Info{Title: "Test API", Version: "1.0.0"}
 func newCreateRoute() *rest.RouteHandle[createReq, userResp] {
 	b := rest.NewBuilder(testInfo)
 	h, err := rest.AddRoute[createReq, userResp](b, "POST", "/users",
-		createReqCodec, userRespCodec, rest.RouteConfig{OperationID: "createUser"})
+		createReqCodec, userRespCodec, rest.RouteMeta{OperationID: "createUser"})
 	if err != nil {
 		panic(err)
 	}
@@ -158,7 +158,7 @@ func TestHandler_PostHandlerError(t *testing.T) {
 func TestHandler_GetNonBody(t *testing.T) {
 	b := rest.NewBuilder(testInfo)
 	handle, err := rest.AddRoute[getReq, userResp](b, "GET", "/users/{id}",
-		getReqCodec, userRespCodec, rest.RouteConfig{OperationID: "getUser"})
+		getReqCodec, userRespCodec, rest.RouteMeta{OperationID: "getUser"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -220,7 +220,7 @@ func TestRegister_WiresCorrectPattern(t *testing.T) {
 func TestHandler_CustomStatus(t *testing.T) {
 	b := rest.NewBuilder(testInfo)
 	handle, err := rest.AddRoute[createReq, userResp](b, "PUT", "/users/{id}",
-		createReqCodec, userRespCodec, rest.RouteConfig{
+		createReqCodec, userRespCodec, rest.RouteMeta{
 			OperationID: "updateUser",
 			RespStatus:  "204",
 		})
@@ -245,7 +245,7 @@ func TestHandler_CustomStatus(t *testing.T) {
 func TestHandler_RequestFromContext(t *testing.T) {
 	b := rest.NewBuilder(testInfo)
 	handle, err := rest.AddRoute[getReq, userResp](b, "GET", "/users/{id}",
-		getReqCodec, userRespCodec, rest.RouteConfig{OperationID: "getUser"})
+		getReqCodec, userRespCodec, rest.RouteMeta{OperationID: "getUser"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -310,11 +310,7 @@ func TestHandlerWithOptions_CustomErrorHandler(t *testing.T) {
 func TestHandler_QueryValidation_valid(t *testing.T) {
 	b := rest.NewBuilder(testInfo)
 	uuidCodec := codex.String().Refine(validate.UUID)
-	h, err := rest.AddRoute[getReq, userResp](b, "GET", "/users", getReqCodec, userRespCodec, rest.RouteConfig{
-		QueryParams: []rest.QueryParam{
-			{Name: "id", Codec: &uuidCodec},
-		},
-	})
+	h, err := rest.AddRoute[getReq, userResp](b, "GET", "/users", getReqCodec, userRespCodec, rest.QueryParam{Name: "id", Codec: &uuidCodec})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -332,11 +328,7 @@ func TestHandler_QueryValidation_valid(t *testing.T) {
 func TestHandler_QueryValidation_invalid(t *testing.T) {
 	b := rest.NewBuilder(testInfo)
 	uuidCodec := codex.String().Refine(validate.UUID)
-	h, err := rest.AddRoute[getReq, userResp](b, "GET", "/users", getReqCodec, userRespCodec, rest.RouteConfig{
-		QueryParams: []rest.QueryParam{
-			{Name: "id", Codec: &uuidCodec},
-		},
-	})
+	h, err := rest.AddRoute[getReq, userResp](b, "GET", "/users", getReqCodec, userRespCodec, rest.QueryParam{Name: "id", Codec: &uuidCodec})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -454,9 +446,7 @@ func TestObserver_RecordValidationError_body(t *testing.T) {
 func TestObserver_RecordValidationError_query(t *testing.T) {
 	b := rest.NewBuilder(testInfo)
 	uuidCodec := codex.String().Refine(validate.UUID)
-	h, err := rest.AddRoute[getReq, userResp](b, "GET", "/users", getReqCodec, userRespCodec, rest.RouteConfig{
-		QueryParams: []rest.QueryParam{{Name: "id", Codec: &uuidCodec}},
-	})
+	h, err := rest.AddRoute[getReq, userResp](b, "GET", "/users", getReqCodec, userRespCodec, rest.QueryParam{Name: "id", Codec: &uuidCodec})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -483,9 +473,7 @@ func TestObserver_RecordValidationError_query(t *testing.T) {
 func TestHandler_CookieValidation_valid(t *testing.T) {
 	b := rest.NewBuilder(testInfo)
 	tokenCodec := codex.String().Refine(validate.NonEmptyString)
-	h, err := rest.AddRoute[getReq, userResp](b, "GET", "/protected", getReqCodec, userRespCodec, rest.RouteConfig{
-		CookieParams: []rest.CookieParam{{Name: "session_token", Required: true, Codec: &tokenCodec}},
-	})
+	h, err := rest.AddRoute[getReq, userResp](b, "GET", "/protected", getReqCodec, userRespCodec, rest.CookieParam{Name: "session_token", Required: true, Codec: &tokenCodec})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -506,9 +494,7 @@ func TestHandler_CookieValidation_valid(t *testing.T) {
 func TestHandler_CookieValidation_invalid(t *testing.T) {
 	b := rest.NewBuilder(testInfo)
 	tokenCodec := codex.String().Refine(validate.NonEmptyString)
-	h, err := rest.AddRoute[getReq, userResp](b, "GET", "/protected", getReqCodec, userRespCodec, rest.RouteConfig{
-		CookieParams: []rest.CookieParam{{Name: "session_token", Required: true, Codec: &tokenCodec}},
-	})
+	h, err := rest.AddRoute[getReq, userResp](b, "GET", "/protected", getReqCodec, userRespCodec, rest.CookieParam{Name: "session_token", Required: true, Codec: &tokenCodec})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -530,9 +516,7 @@ func TestHandler_CookieValidation_invalid(t *testing.T) {
 func TestHandler_HeaderValidation_valid(t *testing.T) {
 	b := rest.NewBuilder(testInfo)
 	uuidCodec := codex.String().Refine(validate.UUID)
-	h, err := rest.AddRoute[getReq, userResp](b, "GET", "/items", getReqCodec, userRespCodec, rest.RouteConfig{
-		HeaderParams: []rest.HeaderParam{{Name: "X-Request-Id", Required: true, Codec: &uuidCodec}},
-	})
+	h, err := rest.AddRoute[getReq, userResp](b, "GET", "/items", getReqCodec, userRespCodec, rest.HeaderParam{Name: "X-Request-Id", Required: true, Codec: &uuidCodec})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -553,9 +537,7 @@ func TestHandler_HeaderValidation_valid(t *testing.T) {
 func TestHandler_HeaderValidation_invalid(t *testing.T) {
 	b := rest.NewBuilder(testInfo)
 	uuidCodec := codex.String().Refine(validate.UUID)
-	h, err := rest.AddRoute[getReq, userResp](b, "GET", "/items", getReqCodec, userRespCodec, rest.RouteConfig{
-		HeaderParams: []rest.HeaderParam{{Name: "X-Request-Id", Required: true, Codec: &uuidCodec}},
-	})
+	h, err := rest.AddRoute[getReq, userResp](b, "GET", "/items", getReqCodec, userRespCodec, rest.HeaderParam{Name: "X-Request-Id", Required: true, Codec: &uuidCodec})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -577,9 +559,7 @@ func TestHandler_HeaderValidation_invalid(t *testing.T) {
 func TestObserver_RecordValidationError_cookie(t *testing.T) {
 	b := rest.NewBuilder(testInfo)
 	tokenCodec := codex.String().Refine(validate.NonEmptyString)
-	h, err := rest.AddRoute[getReq, userResp](b, "GET", "/protected", getReqCodec, userRespCodec, rest.RouteConfig{
-		CookieParams: []rest.CookieParam{{Name: "session_token", Codec: &tokenCodec}},
-	})
+	h, err := rest.AddRoute[getReq, userResp](b, "GET", "/protected", getReqCodec, userRespCodec, rest.CookieParam{Name: "session_token", Codec: &tokenCodec})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -607,9 +587,7 @@ func TestObserver_RecordValidationError_cookie(t *testing.T) {
 func TestObserver_RecordValidationError_header(t *testing.T) {
 	b := rest.NewBuilder(testInfo)
 	uuidCodec := codex.String().Refine(validate.UUID)
-	h, err := rest.AddRoute[getReq, userResp](b, "GET", "/items", getReqCodec, userRespCodec, rest.RouteConfig{
-		HeaderParams: []rest.HeaderParam{{Name: "X-Request-Id", Codec: &uuidCodec}},
-	})
+	h, err := rest.AddRoute[getReq, userResp](b, "GET", "/items", getReqCodec, userRespCodec, rest.HeaderParam{Name: "X-Request-Id", Codec: &uuidCodec})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -636,7 +614,7 @@ func TestObserver_RecordValidationError_header(t *testing.T) {
 
 func TestOptions_MaxBodyBytes_rejectOversized(t *testing.T) {
 	b := rest.NewBuilder(testInfo)
-	h, err := rest.AddRoute[createReq, userResp](b, "POST", "/users", createReqCodec, userRespCodec, rest.RouteConfig{})
+	h, err := rest.AddRoute[createReq, userResp](b, "POST", "/users", createReqCodec, userRespCodec)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -682,7 +660,7 @@ func TestOptions_MaxBodyBytes_rejectOversized(t *testing.T) {
 
 func TestOptions_ContentType_415onWrongType(t *testing.T) {
 	b := rest.NewBuilder(testInfo)
-	h, err := rest.AddRoute[createReq, userResp](b, "POST", "/users", createReqCodec, userRespCodec, rest.RouteConfig{})
+	h, err := rest.AddRoute[createReq, userResp](b, "POST", "/users", createReqCodec, userRespCodec)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -721,7 +699,7 @@ func TestOptions_ContentType_415onWrongType(t *testing.T) {
 
 func TestOptions_ContentType_acceptsWithCharset(t *testing.T) {
 	b := rest.NewBuilder(testInfo)
-	h, err := rest.AddRoute[createReq, userResp](b, "POST", "/users", createReqCodec, userRespCodec, rest.RouteConfig{})
+	h, err := rest.AddRoute[createReq, userResp](b, "POST", "/users", createReqCodec, userRespCodec)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -743,9 +721,7 @@ func TestOptions_ContentType_acceptsWithCharset(t *testing.T) {
 func TestOptions_MultiValueQueryParams_valid(t *testing.T) {
 	b := rest.NewBuilder(testInfo)
 	uuidCodec := codex.String().Refine(validate.UUID)
-	h, err := rest.AddRoute[getReq, userResp](b, "GET", "/items", getReqCodec, userRespCodec, rest.RouteConfig{
-		QueryParams: []rest.QueryParam{{Name: "id", Codec: &uuidCodec}},
-	})
+	h, err := rest.AddRoute[getReq, userResp](b, "GET", "/items", getReqCodec, userRespCodec, rest.QueryParam{Name: "id", Codec: &uuidCodec})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -765,9 +741,7 @@ func TestOptions_MultiValueQueryParams_valid(t *testing.T) {
 func TestOptions_MultiValueQueryParams_invalid(t *testing.T) {
 	b := rest.NewBuilder(testInfo)
 	uuidCodec := codex.String().Refine(validate.UUID)
-	h, err := rest.AddRoute[getReq, userResp](b, "GET", "/items", getReqCodec, userRespCodec, rest.RouteConfig{
-		QueryParams: []rest.QueryParam{{Name: "id", Codec: &uuidCodec}},
-	})
+	h, err := rest.AddRoute[getReq, userResp](b, "GET", "/items", getReqCodec, userRespCodec, rest.QueryParam{Name: "id", Codec: &uuidCodec})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -867,12 +841,8 @@ func TestResponseHeaderParam_validHeader_appearsInResponse(t *testing.T) {
 	b := rest.NewBuilder(testInfo)
 	uuidCodec := codex.String().Refine(validate.UUID)
 	h, err := rest.AddRoute[createReq, userResp](b, "POST", "/users", createReqCodec, userRespCodec,
-		rest.RouteConfig{
-			OperationID: "createUser",
-			ResponseHeaderParams: []rest.ResponseHeaderParam{
-				{Name: "Location", Codec: &uuidCodec},
-			},
-		})
+		rest.RouteMeta{OperationID: "createUser"},
+		rest.ResponseHeaderParam{Name: "Location", Codec: &uuidCodec})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -900,12 +870,8 @@ func TestResponseHeaderParam_codecViolation_returns500(t *testing.T) {
 	b := rest.NewBuilder(testInfo)
 	uuidCodec := codex.String().Refine(validate.UUID)
 	h, err := rest.AddRoute[createReq, userResp](b, "POST", "/users", createReqCodec, userRespCodec,
-		rest.RouteConfig{
-			OperationID: "createUser",
-			ResponseHeaderParams: []rest.ResponseHeaderParam{
-				{Name: "Location", Codec: &uuidCodec},
-			},
-		})
+		rest.RouteMeta{OperationID: "createUser"},
+		rest.ResponseHeaderParam{Name: "Location", Codec: &uuidCodec})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -943,7 +909,7 @@ func TestResponseHeaderParam_codecViolation_returns500(t *testing.T) {
 func TestResponseHeaderParam_unregisteredHeaderPassesThrough(t *testing.T) {
 	b := rest.NewBuilder(testInfo)
 	h, err := rest.AddRoute[createReq, userResp](b, "POST", "/users", createReqCodec, userRespCodec,
-		rest.RouteConfig{OperationID: "createUser"}) // no ResponseHeaderParams
+		rest.RouteMeta{OperationID: "createUser"}) // no ResponseHeaderParams
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -973,11 +939,7 @@ func TestWithResponseCookies_setsCookieOnSuccess(t *testing.T) {
 	b := rest.NewBuilder(testInfo)
 	sessionCodec := codex.String().Refine(validate.MinLen(8))
 	h, err := rest.AddRoute[createReq, userResp](b, "POST", "/users", createReqCodec, userRespCodec,
-		rest.RouteConfig{
-			ResponseCookieParams: []rest.ResponseCookieParam{
-				{Name: "session", Required: true, Codec: &sessionCodec},
-			},
-		})
+		rest.ResponseCookieParam{Name: "session", Required: true, Codec: &sessionCodec})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1014,11 +976,7 @@ func TestWithResponseCookies_codecViolationReturns500(t *testing.T) {
 	b := rest.NewBuilder(testInfo)
 	sessionCodec := codex.String().Refine(validate.MinLen(32))
 	h, err := rest.AddRoute[createReq, userResp](b, "POST", "/users", createReqCodec, userRespCodec,
-		rest.RouteConfig{
-			ResponseCookieParams: []rest.ResponseCookieParam{
-				{Name: "session", Required: true, Codec: &sessionCodec},
-			},
-		})
+		rest.ResponseCookieParam{Name: "session", Required: true, Codec: &sessionCodec})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1044,14 +1002,11 @@ func TestWithResponseCookies_codecViolationReturns500(t *testing.T) {
 
 func TestContentNegotiation_acceptJSON(t *testing.T) {
 	b := rest.NewBuilder(testInfo)
-	h, err := rest.AddRoute[createReq, userResp](b, "POST", "/users", createReqCodec, userRespCodec,
-		rest.RouteConfig{},
-		format.JSON(userRespCodec),
-		format.YAML(userRespCodec),
-	)
+	h, err := rest.AddRoute[createReq, userResp](b, "POST", "/users", createReqCodec, userRespCodec)
 	if err != nil {
 		t.Fatal(err)
 	}
+	h.WithResponseFormats(format.JSON(userRespCodec), format.YAML(userRespCodec))
 	handler := nethttp.Handler(h, func(_ context.Context, req createReq) (userResp, error) {
 		return userResp{ID: "1", Name: req.Name}, nil
 	}, nethttp.Options{})
@@ -1072,14 +1027,11 @@ func TestContentNegotiation_acceptJSON(t *testing.T) {
 
 func TestContentNegotiation_acceptYAML(t *testing.T) {
 	b := rest.NewBuilder(testInfo)
-	h, err := rest.AddRoute[createReq, userResp](b, "POST", "/users", createReqCodec, userRespCodec,
-		rest.RouteConfig{},
-		format.JSON(userRespCodec),
-		format.YAML(userRespCodec),
-	)
+	h, err := rest.AddRoute[createReq, userResp](b, "POST", "/users", createReqCodec, userRespCodec)
 	if err != nil {
 		t.Fatal(err)
 	}
+	h.WithResponseFormats(format.JSON(userRespCodec), format.YAML(userRespCodec))
 	handler := nethttp.Handler(h, func(_ context.Context, req createReq) (userResp, error) {
 		return userResp{ID: "1", Name: req.Name}, nil
 	}, nethttp.Options{})
@@ -1100,14 +1052,11 @@ func TestContentNegotiation_acceptYAML(t *testing.T) {
 
 func TestContentNegotiation_wildcardAcceptPicksFirst(t *testing.T) {
 	b := rest.NewBuilder(testInfo)
-	h, err := rest.AddRoute[createReq, userResp](b, "POST", "/users", createReqCodec, userRespCodec,
-		rest.RouteConfig{},
-		format.JSON(userRespCodec),
-		format.YAML(userRespCodec),
-	)
+	h, err := rest.AddRoute[createReq, userResp](b, "POST", "/users", createReqCodec, userRespCodec)
 	if err != nil {
 		t.Fatal(err)
 	}
+	h.WithResponseFormats(format.JSON(userRespCodec), format.YAML(userRespCodec))
 	handler := nethttp.Handler(h, func(_ context.Context, req createReq) (userResp, error) {
 		return userResp{ID: "1", Name: req.Name}, nil
 	}, nethttp.Options{})
@@ -1128,13 +1077,11 @@ func TestContentNegotiation_wildcardAcceptPicksFirst(t *testing.T) {
 
 func TestContentNegotiation_unacceptableReturns406(t *testing.T) {
 	b := rest.NewBuilder(testInfo)
-	h, err := rest.AddRoute[createReq, userResp](b, "POST", "/users", createReqCodec, userRespCodec,
-		rest.RouteConfig{},
-		format.JSON(userRespCodec),
-	)
+	h, err := rest.AddRoute[createReq, userResp](b, "POST", "/users", createReqCodec, userRespCodec)
 	if err != nil {
 		t.Fatal(err)
 	}
+	h.WithResponseFormats(format.JSON(userRespCodec))
 	handler := nethttp.Handler(h, func(_ context.Context, req createReq) (userResp, error) {
 		return userResp{ID: "1", Name: req.Name}, nil
 	}, nethttp.Options{})
@@ -1152,8 +1099,7 @@ func TestContentNegotiation_unacceptableReturns406(t *testing.T) {
 
 func TestContentNegotiation_noFormatsUsesJSON(t *testing.T) {
 	b := rest.NewBuilder(testInfo)
-	h, err := rest.AddRoute[createReq, userResp](b, "POST", "/users", createReqCodec, userRespCodec,
-		rest.RouteConfig{}) // no responseFormats
+	h, err := rest.AddRoute[createReq, userResp](b, "POST", "/users", createReqCodec, userRespCodec) // no responseFormats
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1184,14 +1130,11 @@ func TestContentNegotiation_streamedFormat_writesDirectly(t *testing.T) {
 		func([]byte) (userResp, error) { return userResp{}, errors.New("not decodable") },
 		"text/plain",
 	)
-	h, err := rest.AddRoute[createReq, userResp](b, "POST", "/users", createReqCodec, userRespCodec,
-		rest.RouteConfig{},
-		streamFmt,
-		format.JSON(userRespCodec),
-	)
+	h, err := rest.AddRoute[createReq, userResp](b, "POST", "/users", createReqCodec, userRespCodec)
 	if err != nil {
 		t.Fatal(err)
 	}
+	h.WithResponseFormats(streamFmt, format.JSON(userRespCodec))
 	handler := nethttp.Handler(h, func(_ context.Context, req createReq) (userResp, error) {
 		return userResp{ID: "42", Name: req.Name}, nil
 	}, nethttp.Options{})
@@ -1237,13 +1180,11 @@ func TestContentNegotiation_streamedFormat_validationErrorBefore200(t *testing.T
 		func([]byte) (userResp, error) { return userResp{}, nil },
 		"text/plain",
 	)
-	h, err := rest.AddRoute[createReq, userResp](b, "POST", "/users", createReqCodec, strictRespCodec,
-		rest.RouteConfig{},
-		streamFmt,
-	)
+	h, err := rest.AddRoute[createReq, userResp](b, "POST", "/users", createReqCodec, strictRespCodec)
 	if err != nil {
 		t.Fatal(err)
 	}
+	h.WithResponseFormats(streamFmt)
 	handler := nethttp.Handler(h, func(_ context.Context, _ createReq) (userResp, error) {
 		return userResp{ID: "1", Name: ""}, nil // Name="" fails NonEmptyString
 	}, nethttp.Options{})
@@ -1263,7 +1204,7 @@ func TestContentNegotiation_streamedFormat_validationErrorBefore200(t *testing.T
 
 func TestRequestFormats_JSONBodyAccepted(t *testing.T) {
 	b := rest.NewBuilder(testInfo)
-	h, err := rest.AddRoute[createReq, userResp](b, "POST", "/users", createReqCodec, userRespCodec, rest.RouteConfig{})
+	h, err := rest.AddRoute[createReq, userResp](b, "POST", "/users", createReqCodec, userRespCodec)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1285,7 +1226,7 @@ func TestRequestFormats_JSONBodyAccepted(t *testing.T) {
 
 func TestRequestFormats_YAMLBodyAccepted(t *testing.T) {
 	b := rest.NewBuilder(testInfo)
-	h, err := rest.AddRoute[createReq, userResp](b, "POST", "/users", createReqCodec, userRespCodec, rest.RouteConfig{})
+	h, err := rest.AddRoute[createReq, userResp](b, "POST", "/users", createReqCodec, userRespCodec)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1315,7 +1256,7 @@ func TestRequestFormats_YAMLBodyAccepted(t *testing.T) {
 func TestRequestFormats_WrongContentType_returns415(t *testing.T) {
 	var capturedErr error
 	b := rest.NewBuilder(testInfo)
-	h, err := rest.AddRoute[createReq, userResp](b, "POST", "/users", createReqCodec, userRespCodec, rest.RouteConfig{})
+	h, err := rest.AddRoute[createReq, userResp](b, "POST", "/users", createReqCodec, userRespCodec)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1352,7 +1293,7 @@ func TestRequestFormats_WrongContentType_returns415(t *testing.T) {
 
 func TestRequestFormats_SpecContentTypesUpdated(t *testing.T) {
 	b := rest.NewBuilder(testInfo)
-	h, err := rest.AddRoute[createReq, userResp](b, "POST", "/users", createReqCodec, userRespCodec, rest.RouteConfig{})
+	h, err := rest.AddRoute[createReq, userResp](b, "POST", "/users", createReqCodec, userRespCodec)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1400,7 +1341,7 @@ var sseEventCodec = codex.Struct[sseEvent](
 func TestSSEHandler_streamEvents(t *testing.T) {
 	b := rest.NewBuilder(testInfo)
 	handle, err := rest.AddSSERoute[createReq, sseEvent](b, "/events",
-		createReqCodec, sseEventCodec, rest.RouteConfig{OperationID: "streamEvents"})
+		createReqCodec, sseEventCodec, rest.RouteMeta{OperationID: "streamEvents"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1437,7 +1378,7 @@ func TestSSEHandler_streamEvents(t *testing.T) {
 func TestSSEHandler_validationRejectsEvent(t *testing.T) {
 	b := rest.NewBuilder(testInfo)
 	handle, err := rest.AddSSERoute[createReq, sseEvent](b, "/events",
-		createReqCodec, sseEventCodec, rest.RouteConfig{OperationID: "streamEventsValidate"})
+		createReqCodec, sseEventCodec, rest.RouteMeta{OperationID: "streamEventsValidate"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1464,7 +1405,7 @@ func TestSSEHandler_validationRejectsEvent(t *testing.T) {
 func TestSSEHandler_clientDisconnect(t *testing.T) {
 	b := rest.NewBuilder(testInfo)
 	handle, err := rest.AddSSERoute[createReq, sseEvent](b, "/events",
-		createReqCodec, sseEventCodec, rest.RouteConfig{OperationID: "streamDisconnect"})
+		createReqCodec, sseEventCodec, rest.RouteMeta{OperationID: "streamDisconnect"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1494,7 +1435,7 @@ func TestSSEHandler_clientDisconnect(t *testing.T) {
 func TestSSEHandler_RegisterSSE_wiresOntoMux(t *testing.T) {
 	b := rest.NewBuilder(testInfo)
 	handle, err := rest.AddSSERoute[createReq, sseEvent](b, "/events",
-		createReqCodec, sseEventCodec, rest.RouteConfig{OperationID: "streamRegister"})
+		createReqCodec, sseEventCodec, rest.RouteMeta{OperationID: "streamRegister"})
 	if err != nil {
 		t.Fatal(err)
 	}

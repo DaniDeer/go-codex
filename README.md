@@ -200,7 +200,9 @@ csvFmt := format.NewTyped(userCodec,
 
 ```go
 route, _ := rest.AddRoute(b, "GET", "/article",
-    reqCodec, propsCodec, rest.RouteConfig{},
+    reqCodec, propsCodec, rest.RouteMeta{},
+)
+route = route.WithResponseFormats(
     adapttempl.Format(propsCodec, ArticleCard), // Accept: text/html
     format.JSON(propsCodec),                     // Accept: application/json
 )
@@ -949,15 +951,14 @@ b.AddServer(rest.Server{URL: "https://api.example.com/v1"})
 // AddRoute returns (RouteHandle, error) — path is validated immediately.
 createUser, err := rest.AddRoute[CreateUserRequest, User](b, "POST", "/users",
     createUserCodec, userCodec,
-    rest.RouteConfig{
+    rest.RouteMeta{
         OperationID:    "createUser",
         Summary:        "Create a user",
         ReqSchemaName:  "CreateUserRequest",
         RespSchemaName: "User",
-        Responses: []rest.ResponseMeta{
-            {Status: "400", Description: "Validation error."},
-        },
-    })
+    },
+    rest.ResponseMeta{Status: "400", Description: "Validation error."},
+)
 if err != nil {
     log.Fatal(err) // *rest.InvalidPathError if path is invalid
 }
@@ -967,16 +968,17 @@ if err != nil {
 uuidCodec := codex.String().Refine(validate.UUID)
 getUser, err := rest.AddRoute[struct{}, User](b, "GET", "/users/{id}",
     codex.Struct[struct{}](), userCodec,
-    rest.RouteConfig{
+    rest.RouteMeta{
         OperationID:    "getUser",
         Summary:        "Get a user by ID",
         RespSchemaName: "User",
-        PathParams: []rest.PathParam{{
-            Name:        "id",
-            Description: "User UUID",
-            Codec:       &uuidCodec, // validates at BuildPath time; UUID schema → spec
-        }},
-    })
+    },
+    rest.PathParam{
+        Name:        "id",
+        Description: "User UUID",
+        Codec:       &uuidCodec, // validates at BuildPath time; UUID schema → spec
+    },
+)
 if err != nil {
     log.Fatal(err)
 }
@@ -1000,14 +1002,13 @@ if err != nil {
 pageCodec := codex.String().Refine(validate.NonNegativeIntString)
 listUsers, err := rest.AddRoute[struct{}, []User](b, "GET", "/users",
     codex.Struct[struct{}](), codex.SliceOf(userCodec),
-    rest.RouteConfig{
+    rest.RouteMeta{
         OperationID: "listUsers",
         Summary:     "List users",
-        QueryParams: []rest.QueryParam{
-            {Name: "page", Description: "Page number (0-based)", Codec: &pageCodec},
-            {Name: "search", Description: "Name filter (no validation)"},
-        },
-    })
+    },
+    rest.QueryParam{Name: "page", Description: "Page number (0-based)", Codec: &pageCodec},
+    rest.QueryParam{Name: "search", Description: "Name filter (no validation)"},
+)
 if err != nil {
     log.Fatal(err)
 }
@@ -1029,18 +1030,15 @@ sessionCodec := codex.String().Refine(validate.NonEmptyString)
 requestIDCodec := codex.String().Refine(validate.UUID)
 profile, err := rest.AddRoute[struct{}, User](b, "GET", "/profile",
     codex.Struct[struct{}](), userCodec,
-    rest.RouteConfig{
+    rest.RouteMeta{
         OperationID: "getProfile",
         Summary:     "Get the current user profile",
-        CookieParams: []rest.CookieParam{
-            {Name: "session_token", Description: "Active session token", Required: true, Codec: &sessionCodec},
-        },
-        HeaderParams: []rest.HeaderParam{
-            // Note: Do not declare Accept, Content-Type, Authorization — those are
-            // OpenAPI-reserved and should be handled via requestBody / security schemes.
-            {Name: "X-Request-Id", Description: "Idempotency and tracing UUID", Required: true, Codec: &requestIDCodec},
-        },
-    })
+    },
+    rest.CookieParam{Name: "session_token", Description: "Active session token", Required: true, Codec: &sessionCodec},
+    // Note: Do not declare Accept, Content-Type, Authorization — those are
+    // OpenAPI-reserved and should be handled via requestBody / security schemes.
+    rest.HeaderParam{Name: "X-Request-Id", Description: "Idempotency and tracing UUID", Required: true, Codec: &requestIDCodec},
+)
 if err != nil {
     log.Fatal(err)
 }
@@ -1298,12 +1296,11 @@ b.AddServer("production", events.Server{URL: "amqp://broker.example.com", Protoc
 
 // AddChannel returns (ChannelHandle, error) — topic is validated immediately.
 userCreated, err := events.AddChannel[UserCreatedEvent](b, "user/created", userCreatedCodec,
-    events.ChannelConfig{
-        Subscribe: &events.OperationConfig{
-            Summary:    "A user was created",
-            SchemaName: "UserCreatedEvent",
-        },
-    })
+    events.Subscribe{
+        Summary:    "A user was created",
+        SchemaName: "UserCreatedEvent",
+    },
+)
 if err != nil {
     log.Fatal(err) // *events.InvalidTopicError if topic is invalid
 }
@@ -1313,15 +1310,14 @@ if err != nil {
 sensorUUIDCodec := codex.String().Refine(validate.UUID)
 sensorMeasurement, err := events.AddChannel[Measurement](b, "sensors/{sensorID}/measurements",
     measurementCodec,
-    events.ChannelConfig{
-        Subscribe: &events.OperationConfig{Summary: "Sensor measurement received"},
-        // TopicParam.Codec validates + flows schema to spec. Description enriches spec.
-        TopicParams: []events.TopicParam{{
-            Name:        "sensorID",
-            Description: "UUID of the sensor publishing the measurement.",
-            Codec:       &sensorUUIDCodec,
-        }},
-    })
+    events.Subscribe{Summary: "Sensor measurement received"},
+    // TopicParam.Codec validates + flows schema to spec. Description enriches spec.
+    events.TopicParam{
+        Name:        "sensorID",
+        Description: "UUID of the sensor publishing the measurement.",
+        Codec:       &sensorUUIDCodec,
+    },
+)
 if err != nil {
     log.Fatal(err)
 }
@@ -1354,10 +1350,10 @@ yamlBytes, _ := doc.MarshalYAML()
 Both subscribe and publish directions can be registered on the same channel:
 
 ```go
-events.AddChannel[UserEvent](b, "user/events", codec, events.ChannelConfig{
-    Subscribe: &events.OperationConfig{Summary: "Receive user events"},
-    Publish:   &events.OperationConfig{Summary: "Send user events"},
-})
+events.AddChannel[UserEvent](b, "user/events", codec,
+    events.Subscribe{Summary: "Receive user events"},
+    events.Publish{Summary: "Send user events"},
+)
 ```
 
 **Builder options:**
@@ -1523,6 +1519,26 @@ func Publish[T any](
 ) error
 ```
 
+**Multi-format MQTT (non-JSON payloads):** MQTT 3.1.1 carries no content-type metadata — the payload format is agreed out-of-band. Configure the default format once on the handle via `WithFormats`; the adapter picks it up automatically. `WithFormats` also updates the AsyncAPI spec: the first format's content type is written to `message.contentType` on each registered operation. Call-time format overrides are still accepted as a trailing variadic to both `SubscribeHandler` and `Publish`.
+
+```go
+// Configure YAML as the default format for this channel once.
+yamlMeasurementCh := measurementCh.WithFormats(format.YAML(measurementCodec))
+
+// Adapter uses YAML from handle — no format arg needed at call site.
+client.Subscribe(topic, 1,
+    amqtt.SubscribeHandler(ctx, yamlMeasurementCh, handler, amqtt.SubscribeOptions{}),
+)
+err := amqtt.Publish(ctx, client, yamlMeasurementCh, 1, false, m, nil, amqtt.PublishOptions{})
+
+// Call-time override still works when needed (e.g. per-message format):
+amqtt.SubscribeHandler(ctx, yamlMeasurementCh, handler, amqtt.SubscribeOptions{},
+    format.JSON(measurementCodec), // overrides YAML set on handle
+)
+```
+
+Format priority chain (highest to lowest): call-time variadic → `handle.Formats` → JSON fallback.
+
 **Structured logging:** all codec error types (`ValidationErrors`, `ConstraintError`, `TypeMismatchError`, etc.) implement `slog.LogValuer`. Using `slog.Any("errors", err)` triggers the full nested structure — field names, constraint details, type mismatches — without string parsing.
 
 See [`examples/adapters-mqtt`](examples/adapters-mqtt/main.go) for the full runnable demonstration including tests — measurement ingestion from a sensor network, time series storage, and threshold-breach alerts using the three-layer codec pipeline pattern.
@@ -1541,7 +1557,9 @@ import (
 // Register both formats on one route.
 articleRoute, _ := rest.AddRoute(b, "GET", "/article",
     articleReqCodec, articlePropsCodec,
-    rest.RouteConfig{OperationID: "getArticle"},
+    rest.RouteMeta{OperationID: "getArticle"},
+)
+articleRoute = articleRoute.WithResponseFormats(
     adapttempl.Format(articlePropsCodec, ArticleCard), // Accept: text/html
     format.JSON(articlePropsCodec),                     // Accept: application/json
 )
@@ -1569,14 +1587,18 @@ See [`examples/adapters-templ`](examples/adapters-templ/main.go) for a runnable 
 ```go
 // Chunked streaming HTML page
 dashRoute, _ := rest.AddRoute[DashboardReq, DashboardProps](b, "GET", "/dashboard",
-    dashReqCodec, dashPropsCodec, rest.RouteConfig{},
+    dashReqCodec, dashPropsCodec, rest.RouteMeta{},
+)
+dashRoute = dashRoute.WithResponseFormats(
     adapttempl.StreamingFormat(dashPropsCodec, dashboardPage), // chunked HTML
     format.JSON(dashPropsCodec),                               // JSON fallback
 )
 
 // SSE with HTML fragment events — each event is a rendered <li>
 notifRoute, _ := rest.AddSSERoute[NotifReq, NotifProps](b, "/sse/notifications",
-    notifReqCodec, notifCodec, rest.RouteConfig{},
+    notifReqCodec, notifCodec, rest.RouteMeta{},
+)
+notifRoute = notifRoute.WithEventFormats(
     adapttempl.Format(notifCodec, notifFragment), // data: <li class="notif-warn">...</li>
 )
 ```
@@ -1600,12 +1622,8 @@ import (
 sensorRoute, err := rest.AddSSERoute[emptyReq, sensorReading](
     b, "/sensors/{id}/readings",
     emptyReqCodec, sensorReadingCodec,
-    rest.RouteConfig{
-        OperationID: "streamSensor",
-        PathParams: []rest.PathParam{
-            {Name: "id", Description: "Sensor ID", Codec: &sensorIDCodec},
-        },
-    },
+    rest.RouteMeta{OperationID: "streamSensor"},
+    rest.PathParam{Name: "id", Description: "Sensor ID", Codec: &sensorIDCodec},
 )
 
 // Wire onto net/http.

@@ -570,44 +570,40 @@ func main() {
 	})
 
 	measurementChannel, err := events.AddChannel[MeasurementEvent](b, "sensors/{sensorID}/measurements", measurementEventCodec,
-		events.ChannelConfig{
-			Description: "Measurement points published by the sensor network.",
-			Subscribe: &events.OperationConfig{
-				Summary:    "Receive sensor measurement",
-				SchemaName: "MeasurementEvent",
-			},
-			// TopicParams describes {sensorID}: description enriches the AsyncAPI spec;
-			// Codec validates the UUID at BuildTopic time and flows schema into the spec.
-			TopicParams: []events.TopicParam{
-				{
-					Name:        "sensorID",
-					Description: "UUID of the sensor publishing the measurement.",
-					Codec:       &measurementSensorCodec,
-				},
-			},
-		})
+		events.ChannelMeta{Description: "Measurement points published by the sensor network."},
+		events.Subscribe{
+			OperationID: "receiveSensorMeasurement",
+			Summary:     "Receive sensor measurement",
+			SchemaName:  "MeasurementEvent",
+		},
+		// TopicParam describes {sensorID}: description enriches AsyncAPI spec;
+		// Codec validates UUID at BuildTopic time and flows schema into spec.
+		events.TopicParam{
+			Name:        "sensorID",
+			Description: "UUID of the sensor publishing the measurement.",
+			Codec:       &measurementSensorCodec,
+		},
+	)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "channel registration failed: %v\n", err)
 		os.Exit(1)
 	}
 
 	alertChannel, err := events.AddChannel[AlertEvent](b, "sensors/{sensorID}/alerts", alertEventCodec,
-		events.ChannelConfig{
-			Description: "Threshold breach alerts published by this service.",
-			Publish: &events.OperationConfig{
-				Summary:    "Publish threshold alert",
-				SchemaName: "AlertEvent",
-			},
-			// TopicParams describes {sensorID}: description enriches the AsyncAPI spec;
-			// Codec validates the UUID at BuildTopic time and flows schema into the spec.
-			TopicParams: []events.TopicParam{
-				{
-					Name:        "sensorID",
-					Description: "UUID of the sensor that triggered the alert.",
-					Codec:       &measurementSensorCodec,
-				},
-			},
-		})
+		events.ChannelMeta{Description: "Threshold breach alerts published by this service."},
+		events.Publish{
+			OperationID: "publishThresholdAlert",
+			Summary:     "Publish threshold alert",
+			SchemaName:  "AlertEvent",
+		},
+		// TopicParam describes {sensorID}: description enriches AsyncAPI spec;
+		// Codec validates UUID at BuildTopic time and flows schema into spec.
+		events.TopicParam{
+			Name:        "sensorID",
+			Description: "UUID of the sensor that triggered the alert.",
+			Codec:       &measurementSensorCodec,
+		},
+	)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "channel registration failed: %v\n", err)
 		os.Exit(1)
@@ -860,18 +856,24 @@ func main() {
 	// ── Multi-format showcase (YAML payload) ──────────────────────────────────
 	//
 	// MQTT 3.1.1 carries no content-type metadata — format is agreed out-of-band
-	// per subscription/publish. Pass the desired format as the last argument to
-	// SubscribeHandler and Publish; omit for default JSON.
+	// per subscription/publish. Configure once on the channel handle via
+	// WithFormats; the adapter picks it up automatically. Call-time format
+	// overrides are still accepted as a trailing variadic.
 	fmt.Println("\n=== Multi-format: YAML subscribe + publish ===")
 
+	// Configure YAML as default format on a channel-scoped copy for this demo.
+	// In production you'd configure WithFormats when the channel is first set up.
+	yamlMeasurementChannel := measurementChannel.WithFormats(format.YAML(measurementEventCodec))
+	yamlAlertChannel := alertChannel.WithFormats(format.YAML(alertEventCodec))
+
 	var yamlReceived MeasurementEvent
-	yamlHandler := adaptermqtt.SubscribeHandler(ctx, measurementChannel,
+	yamlHandler := adaptermqtt.SubscribeHandler(ctx, yamlMeasurementChannel,
 		func(_ context.Context, m MeasurementEvent) error {
 			yamlReceived = m
 			return nil
 		},
 		adaptermqtt.SubscribeOptions{Observer: obs},
-		format.YAML(measurementEventCodec), // decode YAML payloads
+		// no format arg needed — YAML is set on the handle
 	)
 	// Deliver a YAML-encoded measurement directly to the handler.
 	yamlPayload := "sensor_id: temp-02\nvalue: 55.0\nunit: celsius\ntimestamp: \"2024-01-15T12:00:00Z\"\n"
@@ -886,10 +888,10 @@ func main() {
 		Threshold: 75.0,
 		Timestamp: "2024-01-15T12:01:00Z",
 	}
-	if err := adaptermqtt.Publish(ctx, client, alertChannel, 1, false, yamlAlert,
+	if err := adaptermqtt.Publish(ctx, client, yamlAlertChannel, 1, false, yamlAlert,
 		map[string]string{"sensorID": "f47ac10b-58cc-4372-a567-0e02b2c3d479"},
 		adaptermqtt.PublishOptions{Observer: obs},
-		format.YAML(alertEventCodec), // encode as YAML
+		// no format arg needed — YAML is set on the handle
 	); err != nil {
 		fmt.Fprintf(os.Stderr, "YAML publish error: %v\n", err)
 	}

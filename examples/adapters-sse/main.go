@@ -201,7 +201,7 @@ func main() {
 	counterRoute, err := rest.AddSSERoute[emptyReq, counterEvent](
 		b, "/sse/counter",
 		emptyReqCodec, counterEventCodec,
-		rest.RouteConfig{OperationID: "streamCounter", Summary: "Stream a counter"},
+		rest.RouteMeta{OperationID: "streamCounter", Summary: "Stream a counter"},
 	)
 	if err != nil {
 		log.Fatalf("AddSSERoute counter: %v", err)
@@ -210,13 +210,11 @@ func main() {
 	sensorRoute, err := rest.AddSSERoute[emptyReq, sensorReading](
 		b, "/sse/sensor/{id}",
 		emptyReqCodec, sensorReadingCodec,
-		rest.RouteConfig{
+		rest.RouteMeta{
 			OperationID: "streamSensor",
 			Summary:     "Stream sensor readings",
-			PathParams: []rest.PathParam{
-				{Name: "id", Description: "Sensor ID (<word>-<word>)", Codec: &sensorIDCodec},
-			},
 		},
+		rest.PathParam{Name: "id", Description: "Sensor ID (<word>-<word>)", Codec: &sensorIDCodec},
 	)
 	if err != nil {
 		log.Fatalf("AddSSERoute sensor: %v", err)
@@ -225,7 +223,7 @@ func main() {
 	invalidRoute, err := rest.AddSSERoute[emptyReq, sensorReading](
 		b, "/sse/invalid",
 		emptyReqCodec, sensorReadingCodec,
-		rest.RouteConfig{OperationID: "streamInvalid", Summary: "Codec rejection demo"},
+		rest.RouteMeta{OperationID: "streamInvalid", Summary: "Codec rejection demo"},
 	)
 	if err != nil {
 		log.Fatalf("AddSSERoute invalid: %v", err)

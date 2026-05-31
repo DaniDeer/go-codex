@@ -47,6 +47,7 @@ type Parameter struct {
 
 // Operation describes a subscribe or publish operation on a channel.
 type Operation struct {
+	OperationID string
 	Summary     string
 	Description string
 	Tags        []string
@@ -258,6 +259,9 @@ func buildParameters(params map[string]Parameter) map[string]any {
 func buildOperation(op *Operation) map[string]any {
 	o := map[string]any{
 		"message": buildMessage(op.Message),
+	}
+	if op.OperationID != "" {
+		o["operationId"] = op.OperationID
 	}
 	if op.Summary != "" {
 		o["summary"] = op.Summary

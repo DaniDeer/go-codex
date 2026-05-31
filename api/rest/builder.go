@@ -13,13 +13,15 @@
 //	b := rest.NewBuilder(rest.Info{Title: "User API", Version: "1.0.0"})
 //	b.AddServer("production", rest.Server{URL: "https://api.example.com"})
 //
-//	createUser := rest.AddRoute[CreateUserReq, User](b, "POST", "/users",
-//	    createUserCodec, userCodec, rest.RouteConfig{
-//	        OperationID:    "createUser",
-//	        Summary:        "Create a user",
-//	        ReqSchemaName:  "CreateUserRequest",
-//	        RespSchemaName: "User",
-//	    })
+//	createUser, err := rest.AddRoute[CreateUserReq, User](b, "POST", "/users/{id}",
+//	    createUserCodec, userCodec,
+//	    rest.RouteMeta{OperationID: "createUser", Summary: "Create a user",
+//	        ReqSchemaName: "CreateUserRequest", RespSchemaName: "User"},
+//	    rest.PathParam{Name: "id", Codec: &uuidCodec},
+//	)
+//	createUser.
+//	    WithRequestFormats(format.JSON(createUserCodec), format.YAML(createUserCodec)).
+//	    WithResponseFormats(format.JSON(userCodec))
 //
 //	// In your HTTP handler (any framework):
 //	req, err := createUser.Decode(body)      // JSON → CreateUserReq, validates
@@ -30,8 +32,9 @@
 //	doc, err := b.OpenAPISpec()
 //	yaml, _  := doc.MarshalYAML()
 //
-// Encoding is JSON only. AddRoute uses [format.JSON] internally; for other
-// formats construct a [format.Format] directly and call its Unmarshal/Marshal.
+// Encoding is JSON only by default. Use [RouteHandle.WithRequestFormats] and
+// [RouteHandle.WithResponseFormats] to enable additional formats such as YAML,
+// TOML, or templ HTML.
 package rest
 
 import (
@@ -61,6 +64,15 @@ type Param = route.Param
 
 // PathParam describes a {varName} placeholder in a route path template.
 // It combines spec metadata with optional runtime validation via a codec.
+//
+// PathParam implements [RouteOpt]: pass it directly to [AddRoute] or [AddSSERoute].
+//
+// Entry names must correspond to {varName} placeholders in the path template;
+// unknown names cause [AddRoute] to return an error immediately.
+//
+// PathParam is optional: the builder auto-generates a minimal parameter entry
+// for every {varName} in the path. Only specify PathParam when you need a
+// description or runtime validation for a specific variable.
 type PathParam struct {
 	Name        string
 	Description string
@@ -70,9 +82,13 @@ type PathParam struct {
 	Codec *codex.Codec[string]
 }
 
+func (p PathParam) applyRoute(rb *routeBuilder) { rb.pathParams = append(rb.pathParams, p) }
+
 // ResponseMeta describes one additional response entry for a route (errors,
 // redirects, etc.). The primary success response is derived from the response
-// codec and RespStatus/RespDescription/RespSchemaName in RouteConfig.
+// codec and RespStatus/RespDescription/RespSchemaName in RouteMeta.
+//
+// ResponseMeta implements [RouteOpt]: pass it directly to [AddRoute].
 type ResponseMeta struct {
 	Status      string // e.g. "400", "404", "default"
 	Description string
@@ -80,61 +96,18 @@ type ResponseMeta struct {
 	SchemaName  string         // non-empty → $ref in spec
 }
 
-// RouteConfig holds metadata for a route registration. It controls both spec
-// output and default behaviour of the returned [RouteHandle].
-type RouteConfig struct {
+func (m ResponseMeta) applyRoute(rb *routeBuilder) { rb.extraResps = append(rb.extraResps, m) }
+
+// RouteMeta holds documentation and response metadata for a route registration.
+// It controls spec output (OpenAPI operation fields and the primary success
+// response). Pass it as a variadic option to [AddRoute] or [AddSSERoute].
+//
+// RouteMeta implements [RouteOpt].
+type RouteMeta struct {
 	OperationID string
 	Summary     string
 	Description string
 	Tags        []string
-
-	// PathParams describes {varName} placeholder variables in the path template.
-	// Each entry can add a description and/or a codec for runtime validation.
-	// The codec schema is also used in the OpenAPI path parameter spec.
-	//
-	// PathParams is optional: the builder auto-generates a minimal parameter
-	// entry for every {varName} in the path. Only specify PathParams when you
-	// need a description or runtime validation for a specific variable.
-	//
-	// Entry names must correspond to {varName} placeholders in the path template;
-	// unknown names cause [AddRoute] to return an error immediately.
-	PathParams []PathParam
-
-	// QueryParams describes query parameters for the route.
-	// Each entry can add a description, required flag, and/or codec for runtime validation.
-	// The codec schema flows into the OpenAPI query parameter spec automatically.
-	QueryParams []QueryParam
-
-	// CookieParams describes HTTP cookie parameters for the route.
-	// Each entry can add a description, required flag, and/or codec for runtime validation.
-	// The codec schema flows into the OpenAPI cookie parameter spec automatically.
-	CookieParams []CookieParam
-
-	// HeaderParams describes HTTP header parameters for the route.
-	// Each entry can add a description, required flag, and/or codec for runtime validation.
-	// The codec schema flows into the OpenAPI header parameter spec automatically.
-	//
-	// Note: OpenAPI reserves Accept, Content-Type, and Authorization as standard
-	// headers — do not declare those here; they are handled via request body and
-	// security scheme definitions.
-	HeaderParams []HeaderParam
-
-	// ResponseHeaderParams describes HTTP headers returned in the primary success
-	// response. Each entry can add a description, required flag, and/or codec for
-	// runtime validation. The adapter validates these headers after the handler
-	// returns and before writing the response; a codec violation returns 500 (the
-	// server violated its own contract). The codec schema flows into the OpenAPI
-	// response header spec automatically.
-	ResponseHeaderParams []ResponseHeaderParam
-
-	// ResponseCookieParams describes Set-Cookie headers returned in the primary
-	// success response. Each entry can add a description, required flag, and/or
-	// codec for runtime validation of the cookie value. The adapter validates
-	// these cookies after the handler returns and before writing the response;
-	// a codec violation returns 500. The codec schema flows into the OpenAPI
-	// response header spec as a "Set-Cookie" entry (OpenAPI 3.1 has no
-	// first-class response cookie object).
-	ResponseCookieParams []ResponseCookieParam
 
 	// ReqSchemaName, when non-empty, emits a $ref for the request body schema
 	// in the spec and registers the schema under that name in components/schemas.
@@ -149,21 +122,45 @@ type RouteConfig struct {
 
 	// RespSchemaName, when non-empty, emits a $ref for the response schema.
 	RespSchemaName string
-
-	// Responses are additional response entries (error codes, etc.) appended
-	// after the primary success response in the spec.
-	Responses []ResponseMeta
 }
 
-// RouteHandle is returned by [AddRoute]. It holds the frozen spec descriptor
+func (m RouteMeta) applyRoute(rb *routeBuilder) { rb.meta = m }
+
+// RouteOpt is the sealed interface for variadic [AddRoute] and [AddSSERoute] options.
+//
+// The following types implement RouteOpt:
+//   - [RouteMeta] — operation metadata (ID, summary, description, schema names, response status)
+//   - [PathParam] — path template variable with optional codec and description
+//   - [QueryParam] — query parameter with optional codec, description, and required flag
+//   - [CookieParam] — cookie parameter with optional codec, description, and required flag
+//   - [HeaderParam] — request header with optional codec, description, and required flag
+//   - [ResponseHeaderParam] — response header with optional codec for server-side validation
+//   - [ResponseCookieParam] — response Set-Cookie with optional codec for server-side validation
+//   - [ResponseMeta] — additional response entries (error codes, redirects, etc.)
+type RouteOpt interface{ applyRoute(*routeBuilder) }
+
+// routeBuilder accumulates RouteOpt values before building the route descriptor.
+type routeBuilder struct {
+	meta         RouteMeta
+	pathParams   []PathParam
+	queryParams  []QueryParam
+	cookieParams []CookieParam
+	headerParams []HeaderParam
+	respHeaders  []ResponseHeaderParam
+	respCookies  []ResponseCookieParam
+	extraResps   []ResponseMeta
+}
+
+// RouteHandle is returned by [AddRoute]. It holds the spec descriptor
 // and codec-backed Decode/Encode helpers.
 //
 // Decode and Encode use JSON encoding. For body-less methods (GET, HEAD,
 // DELETE), Decode can still be called if the request carries a body, but
 // typical REST usage will not call it.
 type RouteHandle[Req, Resp any] struct {
-	// Descriptor is the frozen route.Route built at registration time.
-	// Use it to inspect method, path, parameters, and spec metadata.
+	// Descriptor is the live route.Route descriptor. It is updated in place
+	// by [WithRequestFormats] and [WithResponseFormats] so that spec generation
+	// always reflects the latest configuration.
 	Descriptor route.Route
 
 	// Decode deserialises and validates a JSON request body into Req.
@@ -186,32 +183,27 @@ type RouteHandle[Req, Resp any] struct {
 	// When empty, the adapter falls back to JSON (via Encode).
 	ResponseFormats []format.Format[Resp]
 
-	// pathParams holds per-variable params registered via PathParams.
+	// pathParams holds per-variable params registered via PathParam options.
 	pathParams []PathParam
 
-	// queryParams holds per-parameter entries registered via QueryParams.
+	// queryParams holds per-parameter entries registered via QueryParam options.
 	queryParams []QueryParam
 
-	// cookieParams holds per-parameter entries registered via CookieParams.
+	// cookieParams holds per-parameter entries registered via CookieParam options.
 	cookieParams []CookieParam
 
-	// headerParams holds per-parameter entries registered via HeaderParams.
+	// headerParams holds per-parameter entries registered via HeaderParam options.
 	headerParams []HeaderParam
 
-	// responseHeaderParams holds per-header entries registered via ResponseHeaderParams.
+	// responseHeaderParams holds per-header entries registered via ResponseHeaderParam options.
 	responseHeaderParams []ResponseHeaderParam
 
-	// responseCookieParams holds per-cookie entries registered via ResponseCookieParams.
+	// responseCookieParams holds per-cookie entries registered via ResponseCookieParam options.
 	responseCookieParams []ResponseCookieParam
 
 	// pathCodec is the builder-level path codec (may be nil).
 	// Used to re-validate the final assembled path in BuildPath.
 	pathCodec *codex.Codec[string]
-
-	// updateReqSpec updates the request body ContentTypes on the frozen route entry
-	// (captured closure pointing at the entry's *route.Body). Set by AddRoute; nil
-	// for routes that have no request body.
-	updateReqSpec func(contentTypes []string)
 }
 
 // WithRequestFormats registers the formats the route accepts for request body
@@ -223,22 +215,54 @@ type RouteHandle[Req, Resp any] struct {
 //
 // Example:
 //
-//	route, _ := rest.AddRoute[CreateItemReq, Item](b, "POST", "/items",
-//	    reqCodec, respCodec, rest.RouteConfig{}, format.JSON(respCodec))
-//	route = route.WithRequestFormats(
-//	    format.JSON(reqCodec),  // Accept: application/json
-//	    format.YAML(reqCodec),  // Accept: application/yaml
+//	route, err := rest.AddRoute[CreateItemReq, Item](b, "POST", "/items",
+//	    reqCodec, respCodec,
+//	    rest.RouteMeta{OperationID: "createItem"})
+//	route.WithRequestFormats(
+//	    format.JSON(reqCodec),  // Content-Type: application/json
+//	    format.YAML(reqCodec),  // Content-Type: application/yaml
 //	)
 func (h *RouteHandle[Req, Resp]) WithRequestFormats(fmts ...format.Format[Req]) *RouteHandle[Req, Resp] {
 	h.RequestFormats = slices.Clone(fmts)
-	if h.updateReqSpec != nil {
+	if h.Descriptor.RequestBody != nil {
 		var cts []string
 		for _, f := range fmts {
 			if ct := f.ContentType(); ct != "" {
 				cts = append(cts, ct)
 			}
 		}
-		h.updateReqSpec(cts)
+		h.Descriptor.RequestBody.ContentTypes = cts
+	}
+	return h
+}
+
+// WithResponseFormats registers the formats the route can produce for content
+// negotiation. The adapter picks the format matching the client's Accept header;
+// a mismatch returns HTTP 406 [NotAcceptableError].
+//
+// When empty, the adapter defaults to JSON (via Encode).
+// The first format is used when the client sends Accept: */*.
+//
+// Calling WithResponseFormats also updates the OpenAPI spec: the primary
+// response will list all registered content types.
+//
+// Example:
+//
+//	route.WithResponseFormats(
+//	    adapttempl.Format(propsCodec, pageComponent),  // Accept: text/html
+//	    format.JSON(respCodec),                         // Accept: application/json
+//	    format.YAML(respCodec),                         // Accept: application/yaml
+//	)
+func (h *RouteHandle[Req, Resp]) WithResponseFormats(fmts ...format.Format[Resp]) *RouteHandle[Req, Resp] {
+	h.ResponseFormats = slices.Clone(fmts)
+	if len(h.Descriptor.Responses) > 0 {
+		var cts []string
+		for _, f := range fmts {
+			if ct := f.ContentType(); ct != "" {
+				cts = append(cts, ct)
+			}
+		}
+		h.Descriptor.Responses[0].ContentTypes = cts
 	}
 	return h
 }
@@ -457,19 +481,21 @@ type routeEntry interface {
 	descriptor() route.Route
 }
 
-// typedRouteEntry stores the frozen descriptor for a single route.
+// typedRouteEntry stores a pointer to the RouteHandle so that With* mutations
+// are visible to the builder at OpenAPISpec() time.
 type typedRouteEntry[Req, Resp any] struct {
-	frozen route.Route
+	handle *RouteHandle[Req, Resp]
 }
 
-func (e *typedRouteEntry[Req, Resp]) descriptor() route.Route { return e.frozen }
+func (e *typedRouteEntry[Req, Resp]) descriptor() route.Route { return e.handle.Descriptor }
 
-// typedSSEEntry stores the frozen descriptor for a single SSE route.
-type typedSSEEntry struct {
-	frozen route.Route
+// typedSSEEntry stores a pointer to the SSERouteHandle so that With* mutations
+// are visible to the builder at OpenAPISpec() time.
+type typedSSEEntry[Req, Event any] struct {
+	handle *SSERouteHandle[Req, Event]
 }
 
-func (e *typedSSEEntry) descriptor() route.Route { return e.frozen }
+func (e *typedSSEEntry[Req, Event]) descriptor() route.Route { return e.handle.Descriptor }
 
 // InvalidPathError is returned by [AddRoute] when the path fails builder-level
 // path codec validation.
@@ -552,6 +578,8 @@ func (e InvalidPathParamError) Error() string {
 
 // QueryParam describes a query parameter for a route.
 // It combines spec metadata with optional runtime validation via a codec.
+//
+// QueryParam implements [RouteOpt]: pass it directly to [AddRoute].
 type QueryParam struct {
 	Name        string
 	Description string
@@ -561,6 +589,8 @@ type QueryParam struct {
 	// Nil means no runtime validation; the spec schema will be empty.
 	Codec *codex.Codec[string]
 }
+
+func (q QueryParam) applyRoute(rb *routeBuilder) { rb.queryParams = append(rb.queryParams, q) }
 
 // QueryParamError is returned by [RouteHandle.ValidateQuery] when a query
 // parameter value fails codec validation.
@@ -586,6 +616,8 @@ func (e QueryParamError) Unwrap() error { return e.Err }
 
 // CookieParam describes an HTTP cookie parameter for a route.
 // It combines spec metadata with optional runtime validation via a codec.
+//
+// CookieParam implements [RouteOpt]: pass it directly to [AddRoute].
 type CookieParam struct {
 	Name        string
 	Description string
@@ -595,6 +627,8 @@ type CookieParam struct {
 	// Nil means no runtime validation; the spec schema will be empty.
 	Codec *codex.Codec[string]
 }
+
+func (c CookieParam) applyRoute(rb *routeBuilder) { rb.cookieParams = append(rb.cookieParams, c) }
 
 // CookieParamError is returned by [RouteHandle.ValidateCookies] when a cookie
 // parameter value fails codec validation.
@@ -624,6 +658,8 @@ func (e CookieParamError) Unwrap() error { return e.Err }
 // Note: OpenAPI reserves Accept, Content-Type, and Authorization — do not
 // declare those as HeaderParams; they belong to request body and security scheme
 // definitions respectively.
+//
+// HeaderParam implements [RouteOpt]: pass it directly to [AddRoute].
 type HeaderParam struct {
 	Name        string
 	Description string
@@ -633,6 +669,8 @@ type HeaderParam struct {
 	// Nil means no runtime validation; the spec schema will be empty.
 	Codec *codex.Codec[string]
 }
+
+func (h HeaderParam) applyRoute(rb *routeBuilder) { rb.headerParams = append(rb.headerParams, h) }
 
 // HeaderParamError is returned by [RouteHandle.ValidateHeaders] when a header
 // value fails codec validation.
@@ -662,6 +700,8 @@ func (e HeaderParamError) Unwrap() error { return e.Err }
 // The adapter validates response headers after the handler returns and before
 // writing the response. A codec violation results in a 500 (server contract
 // violation). The codec schema flows into the OpenAPI response header spec automatically.
+//
+// ResponseHeaderParam implements [RouteOpt]: pass it directly to [AddRoute].
 type ResponseHeaderParam struct {
 	Name        string
 	Description string
@@ -670,6 +710,10 @@ type ResponseHeaderParam struct {
 	// When non-nil, the codec's schema is also used in the OpenAPI spec.
 	// Nil means no runtime validation; the spec schema will be empty.
 	Codec *codex.Codec[string]
+}
+
+func (p ResponseHeaderParam) applyRoute(rb *routeBuilder) {
+	rb.respHeaders = append(rb.respHeaders, p)
 }
 
 // ResponseHeaderParamError is returned by [RouteHandle.ValidateResponseHeaders] when
@@ -703,6 +747,8 @@ func (e ResponseHeaderParamError) Unwrap() error { return e.Err }
 // contract violation). The codec schema flows into the OpenAPI response header
 // spec as a "Set-Cookie" string header (OpenAPI 3.1 has no first-class
 // response cookie object).
+//
+// ResponseCookieParam implements [RouteOpt]: pass it directly to [AddRoute].
 type ResponseCookieParam struct {
 	Name        string
 	Description string
@@ -711,6 +757,10 @@ type ResponseCookieParam struct {
 	// When non-nil, the codec's schema is also used in the OpenAPI spec.
 	// Nil means no runtime validation; the spec schema will be empty.
 	Codec *codex.Codec[string]
+}
+
+func (p ResponseCookieParam) applyRoute(rb *routeBuilder) {
+	rb.respCookies = append(rb.respCookies, p)
 }
 
 // ResponseCookieParamError is returned by [RouteHandle.ValidateResponseCookies]
@@ -867,35 +917,32 @@ func (b *Builder) AddSchema(name string, s schema.Schema) *Builder {
 
 // AddRoute registers a route with the builder and returns a [RouteHandle].
 //
-// reqCodec is used to decode and validate the JSON request body.
-// respCodec is used to encode the JSON response.
+// reqCodec is used to decode and validate request bodies.
+// respCodec is used to encode responses.
 //
-// responseFormats optionally lists the formats the route can produce for content
-// negotiation. When non-empty the adapter picks the format matching the client's
-// Accept header and encodes the response accordingly; a mismatch returns 406.
-// When empty, the adapter defaults to JSON. The first format in the list is used
-// when the client sends Accept: */*, or when no formats are registered.
+// opts is variadic: pass any combination of [RouteMeta], [PathParam],
+// [QueryParam], [CookieParam], [HeaderParam], [ResponseHeaderParam],
+// [ResponseCookieParam], and [ResponseMeta] to describe the route fully.
+// All opts are optional — omit to register a minimal route.
+//
+// Use [RouteHandle.WithRequestFormats] and [RouteHandle.WithResponseFormats]
+// after AddRoute to configure multi-format request/response handling.
 //
 // If the builder was created with [WithPathCodec] or [WithPathConstraints], the
 // path is validated immediately. An error is returned if validation fails —
 // no route is registered in that case.
 //
-// If config.PathParams is non-empty, each entry name is verified to be a
-// {varName} present in the path template. An unknown name is a programming
-// error and causes AddRoute to return an error.
+// Any [PathParam] entry whose name does not appear as a {varName} placeholder
+// in the path template causes AddRoute to return an error immediately.
 //
 // AddRoute is a free function (not a method) because Go requires type
 // parameters to appear on free functions, not on method receivers.
-//
-// The descriptor is built and frozen at call time; later mutations to config
-// do not affect the registered route or the returned handle.
 func AddRoute[Req, Resp any](
 	b *Builder,
 	method, path string,
 	reqCodec codex.Codec[Req],
 	respCodec codex.Codec[Resp],
-	config RouteConfig,
-	responseFormats ...format.Format[Resp],
+	opts ...RouteOpt,
 ) (*RouteHandle[Req, Resp], error) {
 	if b.pathCodec != nil {
 		if err := b.pathCodec.Validate(internal.StripTemplateVars(path)); err != nil {
@@ -903,51 +950,38 @@ func AddRoute[Req, Resp any](
 		}
 	}
 
+	var rb routeBuilder
+	for _, opt := range opts {
+		opt.applyRoute(&rb)
+	}
+
 	templateVars := internal.ParseTemplateVars(path)
-	for _, p := range config.PathParams {
+	for _, p := range rb.pathParams {
 		if !templateVars[p.Name] {
 			return nil, InvalidPathParamError{Name: p.Name, Path: path}
 		}
 	}
 
-	// Collect content types from registered response formats for spec generation.
-	var respContentTypes []string
-	for _, f := range responseFormats {
-		if ct := f.ContentType(); ct != "" {
-			respContentTypes = append(respContentTypes, ct)
-		}
-	}
-
-	frozen := buildDescriptor(method, path, reqCodec.Schema, respCodec.Schema, config, respContentTypes)
-
-	entry := &typedRouteEntry[Req, Resp]{frozen: frozen}
-	b.entries = append(b.entries, entry)
+	frozen := buildDescriptor(method, path, reqCodec.Schema, respCodec.Schema, rb, nil)
 
 	jsonReq := format.JSON(reqCodec)
 	jsonResp := format.JSON(respCodec)
 
-	// updateReqSpec captures a pointer to the entry's RequestBody so that
-	// WithRequestFormats can update the spec content types after AddRoute returns.
-	var updateReqSpec func([]string)
-	if entry.frozen.RequestBody != nil {
-		rb := entry.frozen.RequestBody
-		updateReqSpec = func(cts []string) { rb.ContentTypes = cts }
-	}
-
-	return &RouteHandle[Req, Resp]{
+	h := &RouteHandle[Req, Resp]{
 		Descriptor:           frozen,
 		Decode:               func(body []byte) (Req, error) { return jsonReq.Unmarshal(body) },
 		Encode:               func(resp Resp) ([]byte, error) { return jsonResp.Marshal(resp) },
-		ResponseFormats:      slices.Clone(responseFormats),
-		pathParams:           config.PathParams,
-		queryParams:          config.QueryParams,
-		cookieParams:         config.CookieParams,
-		headerParams:         config.HeaderParams,
-		responseHeaderParams: config.ResponseHeaderParams,
-		responseCookieParams: config.ResponseCookieParams,
+		pathParams:           rb.pathParams,
+		queryParams:          rb.queryParams,
+		cookieParams:         rb.cookieParams,
+		headerParams:         rb.headerParams,
+		responseHeaderParams: rb.respHeaders,
+		responseCookieParams: rb.respCookies,
 		pathCodec:            b.pathCodec,
-		updateReqSpec:        updateReqSpec,
-	}, nil
+	}
+	entry := &typedRouteEntry[Req, Resp]{handle: h}
+	b.entries = append(b.entries, entry)
+	return h, nil
 }
 
 // SSERouteHandle is returned by [AddSSERoute]. It holds the route descriptor
@@ -958,7 +992,7 @@ func AddRoute[Req, Resp any](
 // When EventFormats is non-empty the adapter may use an explicit format for
 // event data serialisation (e.g. JSON or YAML inside the data field).
 type SSERouteHandle[Req, Event any] struct {
-	// Descriptor is the frozen route.Route built at registration time.
+	// Descriptor is the live route.Route descriptor.
 	Descriptor route.Route
 
 	// Decode deserialises and validates a JSON request body into Req.
@@ -978,7 +1012,7 @@ type SSERouteHandle[Req, Event any] struct {
 	// event data. The adapter picks the first format (or the JSON fallback).
 	EventFormats []format.Format[Event]
 
-	// pathParams holds per-variable params registered via PathParams in config.
+	// pathParams holds per-variable params registered via PathParam options.
 	pathParams []PathParam
 
 	// pathCodec is the builder-level path codec (may be nil).
@@ -1012,14 +1046,31 @@ func (h *SSERouteHandle[Req, Event]) BuildPath(vars map[string]string) (string, 
 	return result, nil
 }
 
+// WithEventFormats registers the formats available for encoding SSE event data.
+// The adapter uses the first format; when empty, events are encoded as JSON.
+//
+// This mirrors [RouteHandle.WithResponseFormats] for SSE routes. Call it after
+// [AddSSERoute] to configure non-JSON event serialisation:
+//
+//	notifRoute = notifRoute.WithEventFormats(
+//	    adapttempl.Format(notifCodec, notifFragment), // HTML fragments over SSE
+//	)
+func (h *SSERouteHandle[Req, Event]) WithEventFormats(fmts ...format.Format[Event]) *SSERouteHandle[Req, Event] {
+	h.EventFormats = slices.Clone(fmts)
+	return h
+}
+
 // AddSSERoute registers a Server-Sent Events route (always GET) with the
 // builder and returns an [SSERouteHandle].
 //
 // reqCodec decodes the (usually empty) request body; for query/path parameter
 // extraction use [RequestFromContext] inside the handler.
 // eventCodec validates and encodes each outbound event as JSON.
-// eventFormats optionally lists formats for event data serialisation; when
-// empty the adapter defaults to JSON. The first format is the default encoder.
+//
+// opts is variadic: pass any combination of [RouteMeta], [PathParam],
+// [QueryParam], [CookieParam], [HeaderParam], and [ResponseMeta].
+// Use [SSERouteHandle.WithEventFormats] to configure alternate event serialisation
+// formats after AddSSERoute returns.
 //
 // The route appears in the OpenAPI spec with Content-Type text/event-stream.
 // Path validation follows the same rules as [AddRoute].
@@ -1028,8 +1079,7 @@ func AddSSERoute[Req, Event any](
 	path string,
 	reqCodec codex.Codec[Req],
 	eventCodec codex.Codec[Event],
-	config RouteConfig,
-	eventFormats ...format.Format[Event],
+	opts ...RouteOpt,
 ) (*SSERouteHandle[Req, Event], error) {
 	if b.pathCodec != nil {
 		if err := b.pathCodec.Validate(internal.StripTemplateVars(path)); err != nil {
@@ -1037,29 +1087,34 @@ func AddSSERoute[Req, Event any](
 		}
 	}
 
+	var rb routeBuilder
+	for _, opt := range opts {
+		opt.applyRoute(&rb)
+	}
+
 	templateVars := internal.ParseTemplateVars(path)
-	for _, p := range config.PathParams {
+	for _, p := range rb.pathParams {
 		if !templateVars[p.Name] {
 			return nil, InvalidPathParamError{Name: p.Name, Path: path}
 		}
 	}
 
-	frozen := buildDescriptor("GET", path, reqCodec.Schema, eventCodec.Schema, config, []string{"text/event-stream"})
-	entry := &typedSSEEntry{frozen: frozen}
-	b.entries = append(b.entries, entry)
+	frozen := buildDescriptor("GET", path, reqCodec.Schema, eventCodec.Schema, rb, []string{"text/event-stream"})
 
 	jsonReq := format.JSON(reqCodec)
 	jsonEvent := format.JSON(eventCodec)
 
-	return &SSERouteHandle[Req, Event]{
+	h := &SSERouteHandle[Req, Event]{
 		Descriptor:    frozen,
 		Decode:        func(body []byte) (Req, error) { return jsonReq.Unmarshal(body) },
 		EncodeEvent:   func(e Event) ([]byte, error) { return jsonEvent.Marshal(e) },
 		ValidateEvent: func(e Event) error { return jsonEvent.Validate(e) },
-		EventFormats:  slices.Clone(eventFormats),
-		pathParams:    config.PathParams,
+		pathParams:    rb.pathParams,
 		pathCodec:     b.pathCodec,
-	}, nil
+	}
+	entry := &typedSSEEntry[Req, Event]{handle: h}
+	b.entries = append(b.entries, entry)
+	return h, nil
 }
 
 // OpenAPISpec builds a complete OpenAPI 3.1 document from all registered routes.
@@ -1125,15 +1180,15 @@ func (b *Builder) checkDanglingRefs() error {
 	return nil
 }
 
-// buildDescriptor constructs a frozen route.Route from method, path, schemas,
-// and config. Deep-copies all slices to prevent later mutation from affecting
-// the registered route.
+// buildDescriptor constructs a route.Route from method, path, schemas, and the
+// accumulated routeBuilder options. respContentTypes overrides the content types
+// for the primary response (used by SSE routes to force text/event-stream).
 //
-// Path params are converted from PathParams ([]PathParam) to route.Param entries
-// for OpenAPI spec output. A minimal entry is auto-added for any {varName}
-// placeholder in the path that has no explicit PathParams declaration.
-func buildDescriptor(method, path string, reqSchema, respSchema schema.Schema, config RouteConfig, respContentTypes []string) route.Route {
-	status := config.RespStatus
+// Path params are converted from []PathParam to []route.Param entries for
+// OpenAPI spec output. A minimal entry is auto-added for any {varName}
+// placeholder in the path that has no explicit PathParam declaration.
+func buildDescriptor(method, path string, reqSchema, respSchema schema.Schema, rb routeBuilder, respContentTypes []string) route.Route {
+	status := rb.meta.RespStatus
 	if status == "" {
 		if strings.ToUpper(method) == "POST" {
 			status = "201"
@@ -1145,34 +1200,34 @@ func buildDescriptor(method, path string, reqSchema, respSchema schema.Schema, c
 	r := route.Route{
 		Method:       method,
 		Path:         path,
-		OperationID:  config.OperationID,
-		Summary:      config.Summary,
-		Description:  config.Description,
-		Tags:         slices.Clone(config.Tags),
-		PathParams:   buildRouteParams(config.PathParams, path),
-		QueryParams:  buildQueryParams(config.QueryParams),
-		CookieParams: buildCookieParams(config.CookieParams),
-		HeaderParams: buildHeaderParams(config.HeaderParams),
+		OperationID:  rb.meta.OperationID,
+		Summary:      rb.meta.Summary,
+		Description:  rb.meta.Description,
+		Tags:         slices.Clone(rb.meta.Tags),
+		PathParams:   buildRouteParams(rb.pathParams, path),
+		QueryParams:  buildQueryParams(rb.queryParams),
+		CookieParams: buildCookieParams(rb.cookieParams),
+		HeaderParams: buildHeaderParams(rb.headerParams),
 	}
 
 	if isBodyMethod(method) {
 		r.RequestBody = &route.Body{
 			Required:   true,
 			Schema:     reqSchema,
-			SchemaName: config.ReqSchemaName,
+			SchemaName: rb.meta.ReqSchemaName,
 		}
 	}
 
 	respSchemaCopy := respSchema
 	primary := route.Response{
 		Status:       status,
-		Description:  config.RespDescription,
+		Description:  rb.meta.RespDescription,
 		Schema:       &respSchemaCopy,
-		SchemaName:   config.RespSchemaName,
+		SchemaName:   rb.meta.RespSchemaName,
 		ContentTypes: slices.Clone(respContentTypes),
-		Headers:      append(buildResponseHeaderParams(config.ResponseHeaderParams), buildResponseCookieParams(config.ResponseCookieParams)...),
+		Headers:      append(buildResponseHeaderParams(rb.respHeaders), buildResponseCookieParams(rb.respCookies)...),
 	}
-	r.Responses = append([]route.Response{primary}, buildExtraResponses(config.Responses)...)
+	r.Responses = append([]route.Response{primary}, buildExtraResponses(rb.extraResps)...)
 
 	return r
 }
