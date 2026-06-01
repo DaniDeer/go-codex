@@ -1,12 +1,16 @@
-// Package png-upload demonstrates how to define a REST route that:
+// Package png-upload demonstrates how to define REST routes for PNG binary
+// transfer using go-codex:
 //
-//  1. Accepts a PNG binary request body (Content-Type: image/png).
-//  2. Validates a path parameter ({id}) against a UUID codec.
-//  3. Validates an incoming cookie (session_token) against a codec.
+//   - Upload (PUT /images/{id}): binary PNG request body, JSON response.
+//   - Download (POST /images/{id}/download): JSON request body, binary PNG response.
+//
+// Both routes validate a path parameter ({id} as UUID) and a session cookie
+// via codec constraints.
 //
 // The example is transport-agnostic: it does not import net/http or any HTTP
-// framework. The same RouteHandle helpers (BuildPath, ValidateCookies, and
-// the registered pngFormat) work unchanged with net/http, Chi, Gin, or Echo.
+// framework. The same RouteHandle helpers (BuildPath, ValidateCookies,
+// WithRequestFormats, WithResponseFormats) work unchanged with net/http, Chi,
+// Gin, or Echo.
 //
 // Run with: go run ./examples/png-upload
 package main
@@ -28,6 +32,11 @@ type ImageMeta struct {
 	ID          string
 	SizeBytes   int
 	ContentType string
+}
+
+// DownloadImageRequest is the JSON request body for the download route.
+type DownloadImageRequest struct {
+	Quality string // "original" or "thumbnail"
 }
 
 // --- Codecs ---
@@ -98,7 +107,7 @@ var sessionTokenCodec = codex.String().
 	Refine(validate.MaxLen(256)).
 	WithDescription("Opaque session token issued at login.")
 
-// imageMetaCodec encodes the JSON response.
+// imageMetaCodec encodes the JSON response for the upload route.
 var imageMetaCodec = codex.Struct[ImageMeta](
 	codex.RequiredField[ImageMeta, string]("id",
 		codex.String().Refine(validate.UUID).WithDescription("Image resource ID (UUID)."),
@@ -117,11 +126,21 @@ var imageMetaCodec = codex.Struct[ImageMeta](
 	),
 )
 
+// downloadRequestCodec decodes and validates the JSON download request body.
+var downloadRequestCodec = codex.Struct[DownloadImageRequest](
+	codex.RequiredField[DownloadImageRequest, string]("quality",
+		codex.String().Refine(validate.OneOf("original", "thumbnail")).
+			WithDescription(`Requested image quality. "original" returns the full-resolution PNG; "thumbnail" returns a downscaled version.`),
+		func(r DownloadImageRequest) string { return r.Quality },
+		func(r *DownloadImageRequest, v string) { r.Quality = v },
+	),
+)
+
 func main() {
 	b := rest.NewBuilder(rest.Info{
-		Title:       "Image Upload API",
+		Title:       "Image Transfer API",
 		Version:     "1.0.0",
-		Description: "Demonstrates PNG binary request bodies with codec-validated path and cookie parameters.",
+		Description: "Demonstrates PNG binary transfer: upload (binary request → JSON response) and download (JSON request → binary response).",
 	}, rest.WithPathConstraints(validate.HTTPPath))
 
 	// PUT /images/{id} — upload a PNG image identified by a UUID.
@@ -165,6 +184,51 @@ func main() {
 	// Register PNG as the accepted request format.
 	// The adapter picks this format when the client sends Content-Type: image/png.
 	uploadImage.WithRequestFormats(pngFormat)
+
+	// POST /images/{id}/download — download a PNG image.
+	//
+	// The request body is JSON (quality selector); the response is a raw PNG
+	// binary. WithResponseFormats(pngFormat) puts pngFormat on the response
+	// side: the adapter negotiates Accept: image/png and calls pngFormat.Marshal
+	// to encode the handler's []byte return value before writing it to the client.
+	//
+	// The same MaxBytes + magic-bytes constraints on pngCodec protect both
+	// directions: Unmarshal validates incoming PNG on upload; Marshal validates
+	// outgoing PNG on download, preventing the server from emitting corrupt data.
+	downloadImage, err := rest.AddRoute[DownloadImageRequest, []byte](b, "POST", "/images/{id}/download",
+		downloadRequestCodec, pngCodec,
+		rest.RouteMeta{
+			OperationID:     "downloadImage",
+			Summary:         "Download a PNG image",
+			Description:     "Returns the stored PNG for the given resource ID at the requested quality level.",
+			Tags:            []string{"images"},
+			RespStatus:      "200",
+			RespDescription: "PNG image bytes.",
+			ReqSchemaName:   "DownloadImageRequest",
+		},
+		rest.PathParam{
+			Name:        "id",
+			Description: "Resource ID (UUID) of the image to download.",
+			Codec:       &uuidCodec,
+		},
+		rest.CookieParam{
+			Name:        "session_token",
+			Description: "Session token issued at login.",
+			Required:    true,
+			Codec:       &sessionTokenCodec,
+		},
+		rest.ResponseMeta{Status: "400", Description: "Invalid request body or parameter validation failure."},
+		rest.ResponseMeta{Status: "401", Description: "Missing or invalid session cookie."},
+		rest.ResponseMeta{Status: "404", Description: "Image not found."},
+	)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "route registration error: %v\n", err)
+		os.Exit(1)
+	}
+
+	// Register PNG as the produced response format.
+	// The adapter picks this format when the client sends Accept: image/png.
+	downloadImage.WithResponseFormats(pngFormat)
 
 	// --- Transport-agnostic demo (no net/http required) ---
 
@@ -222,6 +286,37 @@ func main() {
 
 	notPNG := []byte("this is not a PNG file")
 	_, err = pngFormat.Unmarshal(notPNG)
+	fmt.Printf("Not PNG           → error: %v\n", err)
+	fmt.Println()
+
+	// --- Download route: JSON request decode + PNG response encode ---
+
+	fmt.Println("=== Download route: Decode JSON request ===")
+	fmt.Println()
+
+	// Valid JSON body: quality is one of the allowed values.
+	req, err := downloadImage.Decode([]byte(`{"quality":"original"}`))
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "unexpected error: %v\n", err)
+		os.Exit(1)
+	}
+	fmt.Printf("Valid quality    → %+v\n", req)
+
+	// Invalid JSON body: quality value not in the allowed set.
+	_, err = downloadImage.Decode([]byte(`{"quality":"ultra-hd"}`))
+	fmt.Printf("Invalid quality  → error: %v\n", err)
+	fmt.Println()
+
+	fmt.Println("=== Download route: pngFormat.Marshal PNG response ===")
+	fmt.Println()
+
+	// Marshal validates the outgoing PNG (MaxBytes + magic bytes) before
+	// returning the bytes to the caller or adapter. This prevents the server
+	// from sending corrupt or oversized data to the client.
+	out, err := pngFormat.Marshal(validPNG)
+	fmt.Printf("Valid PNG (%d bytes) → marshalled %d bytes, error: %v\n", len(validPNG), len(out), err)
+
+	_, err = pngFormat.Marshal(notPNG)
 	fmt.Printf("Not PNG           → error: %v\n", err)
 	fmt.Println()
 
