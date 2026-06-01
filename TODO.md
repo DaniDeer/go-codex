@@ -32,12 +32,6 @@
       (or separate module) — not part of the importable library. Struct tags (e.g.
       `codex:"name,required"`) could drive field name and required/optional.
 
-- [ ] **`codex.Map[K, V]` — typed-key maps**
-      `StringMap[V]` only supports `string` keys. A `Map[K, V]` with a key codec would enable
-      validated `map[uuid.UUID]T` patterns and richer schema output. Requires a new codec
-      primitive and schema support (JSON only allows string keys; YAML/TOML allow more).
-      Medium complexity; depends on whether schema can express a key type.
-
 ### Validate
 
 ### Format

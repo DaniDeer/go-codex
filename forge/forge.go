@@ -131,7 +131,8 @@ type InputSpec struct {
 
 // FunctionSpec is the type-erased, schema-level descriptor of a function.
 //
-// All fields are set automatically by New and Compose.
+// All fields are set automatically by New, Compose, and the collection constructors
+// (Map, Filter, Reduce, MapValues).
 // Hash is computed over (Name, Version, Inputs[].Schema, Output.Schema); governance
 // fields (Author, ApprovedBy, ApprovedAt) are excluded from the hash — changing
 // who approved a function does not alter what it computes.
@@ -141,6 +142,13 @@ type FunctionSpec struct {
 	Version string
 	// Hash is "sha256:<hex>" over the canonical JSON of the computation contract.
 	Hash string
+	// Kind identifies the constructor that produced this function.
+	// "" (empty) for scalar functions created by New or Compose.
+	// "map", "filter", "reduce", or "mapValues" for collection functions.
+	Kind string
+	// Wraps is the Name of the scalar Function lifted by Map or MapValues.
+	// Empty for scalar functions and for Filter/Reduce (which take raw predicates).
+	Wraps string
 	// Governance metadata — set via WithDescription, WithAuthor, WithApproval.
 	Description string
 	Author      string

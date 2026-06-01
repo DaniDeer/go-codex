@@ -33,6 +33,7 @@ package stats
 
 import (
 	"errors"
+	"fmt"
 	"time"
 
 	"github.com/DaniDeer/go-codex/codex"
@@ -106,17 +107,50 @@ func (NoopObserver) RecordSubscribe(_ string, _ bool, _ time.Duration) {}
 func (NoopObserver) RecordPublish(_ string, _ bool, _ time.Duration)   {}
 func (NoopObserver) RecordApply(_, _ string, _ bool, _ time.Duration)  {}
 
-// ReportErrors extracts [codex.ValidationErrors] from err and calls
-// obs.RecordValidationError for each failing field. location identifies the
-// data source (e.g. "body", "query", "payload", "config"). A no-op if err
-// contains no ValidationErrors.
+// ReportErrors walks err and calls obs.RecordValidationError for every codec
+// validation failure it finds. location identifies the data source (e.g. "body",
+// "query", "payload", "config"). A no-op if err is nil or contains no recognisable
+// validation errors.
+//
+// Handled error types:
+//   - [codex.ValidationErrors]  — each entry reports its field and constraint.
+//   - [codex.KeyError]          — reports the failing map key as the field.
+//   - [codex.ElementError]      — reports the slice index as the field (e.g. "[2]").
+//
+// For all three, the walker recurses into the wrapped cause so nested errors
+// (e.g. a KeyError whose cause is a ValidationErrors) are fully reported.
+// Any other wrapped error is unwrapped and recursed into silently.
 func ReportErrors(obs ValidationObserver, location string, err error) {
-	var ve codex.ValidationErrors
-	if !errors.As(err, &ve) {
+	walkErrors(obs, location, err)
+}
+
+func walkErrors(obs ValidationObserver, location string, err error) {
+	if err == nil {
 		return
 	}
-	for _, e := range ve {
-		obs.RecordValidationError(location, ConstraintName(e.Err), e.Field)
+	var ve codex.ValidationErrors
+	if errors.As(err, &ve) {
+		for _, e := range ve {
+			obs.RecordValidationError(location, ConstraintName(e.Err), e.Field)
+			walkErrors(obs, location, e.Err)
+		}
+		return
+	}
+	var ke codex.KeyError
+	if errors.As(err, &ke) {
+		obs.RecordValidationError(location, ConstraintName(ke.Err), ke.Key)
+		walkErrors(obs, location, ke.Err)
+		return
+	}
+	var ee codex.ElementError
+	if errors.As(err, &ee) {
+		obs.RecordValidationError(location, ConstraintName(ee.Err), fmt.Sprintf("[%d]", ee.Index))
+		walkErrors(obs, location, ee.Err)
+		return
+	}
+	// Unwrap and recurse for any other wrapping error (e.g. forge.InputError).
+	if u := errors.Unwrap(err); u != nil {
+		walkErrors(obs, location, u)
 	}
 }
 

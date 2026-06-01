@@ -80,6 +80,12 @@ func buildFunction(fn forge.FunctionSpec) map[string]any {
 		"version": fn.Version,
 		"hash":    fn.Hash,
 	}
+	if fn.Kind != "" {
+		m["kind"] = fn.Kind
+	}
+	if fn.Wraps != "" {
+		m["wraps"] = fn.Wraps
+	}
 	if fn.Description != "" {
 		m["description"] = fn.Description
 	}

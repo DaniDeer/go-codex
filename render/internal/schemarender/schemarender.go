@@ -83,6 +83,9 @@ func SchemaObject(s schema.Schema) map[string]any {
 	} else if s.AdditionalProperties != nil {
 		obj["additionalProperties"] = *s.AdditionalProperties
 	}
+	if s.PropertyNames != nil {
+		obj["propertyNames"] = SchemaObject(*s.PropertyNames)
+	}
 
 	// Discriminator (TaggedUnion).
 	if s.Discriminator != nil {

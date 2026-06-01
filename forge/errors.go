@@ -113,3 +113,51 @@ func (e ConfigError) LogValue() slog.Value {
 		slog.String("field", e.Field),
 	)
 }
+
+// CollectionElementError is returned by Map, Filter, or Reduce when a collection
+// operation fails at a specific element index. Function is the collection function's
+// name, Index is the 0-based element position, Err is the underlying error.
+type CollectionElementError struct {
+	Function string
+	Index    int
+	Err      error
+}
+
+func (e CollectionElementError) Error() string {
+	return fmt.Sprintf("function %q: element %d: %s", e.Function, e.Index, e.Err)
+}
+
+func (e CollectionElementError) Unwrap() error { return e.Err }
+
+// LogValue implements slog.LogValuer for structured logging.
+func (e CollectionElementError) LogValue() slog.Value {
+	return slog.GroupValue(
+		slog.String("function", e.Function),
+		slog.Int("index", e.Index),
+		slog.Any("cause", e.Err),
+	)
+}
+
+// CollectionKeyError is returned by MapValues when an operation fails at a specific
+// map key. Function is the collection function's name, Key is the failing map key,
+// Err is the underlying error.
+type CollectionKeyError struct {
+	Function string
+	Key      string
+	Err      error
+}
+
+func (e CollectionKeyError) Error() string {
+	return fmt.Sprintf("function %q: key %q: %s", e.Function, e.Key, e.Err)
+}
+
+func (e CollectionKeyError) Unwrap() error { return e.Err }
+
+// LogValue implements slog.LogValuer for structured logging.
+func (e CollectionKeyError) LogValue() slog.Value {
+	return slog.GroupValue(
+		slog.String("function", e.Function),
+		slog.String("key", e.Key),
+		slog.Any("cause", e.Err),
+	)
+}

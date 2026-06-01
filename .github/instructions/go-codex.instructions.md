@@ -22,7 +22,7 @@ go-codex is a Go port of the core ideas from Haskell's [autodocodec](https://hac
 
 | Package           | Responsibility                                                                            | Imports allowed from             |
 |-------------------|-------------------------------------------------------------------------------------------|----------------------------------|
-| `codex`           | PUBLIC API: `Codec[T]`, primitives (`Int`, `Int32`, `Int64`, `Uint`, `Uint64`, `Float32`, `Float64`, `String`, `Bool`, `Bytes`, `Time`, `Date`, `Duration`, `Any`, `Pure`, `Eq`), `Nullable[T]`, `SliceOf[T]`, `StringMap[V]`, struct, `TaggedUnion`, `UntaggedUnion`, `Either[A,B]`, `Either2`, `MapCodecSafe`, `MapCodecValidated`, `Must`, `Constraint`, `Refine`, `RefineFunc`, `ValidationError`, `ValidationErrors`, `ConstraintError`, `TypeMismatchError`, `ElementError`, `KeyError`, `UnknownVariantError`, `VariantError`, `EitherError`, `ErrMissingField` | `schema`     |
+| `codex`           | PUBLIC API: `Codec[T]`, primitives (`Int`, `Int32`, `Int64`, `Uint`, `Uint64`, `Float32`, `Float64`, `String`, `Bool`, `Bytes`, `Time`, `Date`, `Duration`, `Any`, `Pure`, `Eq`), `Nullable[T]`, `SliceOf[T]`, `StringMap[V]`, `Map[K, V]`, struct, `TaggedUnion`, `UntaggedUnion`, `Either[A,B]`, `Either2`, `MapCodecSafe`, `MapCodecValidated`, `Must`, `Constraint`, `Refine`, `RefineFunc`, `ValidationError`, `ValidationErrors`, `ConstraintError`, `TypeMismatchError`, `ElementError`, `KeyError`, `UnknownVariantError`, `VariantError`, `EitherError`, `ErrMissingField` | `schema`     |
 | `schema`          | Schema model (pure data, no codec logic)                                                  | none                             |
 | `validate`        | Reusable `Constraint` functions: numbers, strings, format, bytes                          | `codex`, `schema`                |
 | `format`          | Bridges `Codec[T]` to wire formats: JSON, YAML, TOML, streaming; `FromEnv[T]` for schema-driven env var loading; `NewStreamed` for chunked/SSE writes | `codex`, `schema`, external libs |
@@ -30,7 +30,7 @@ go-codex is a Go port of the core ideas from Haskell's [autodocodec](https://hac
 | `render/internal/schemarender` | Shared schema-to-map rendering logic used by both OpenAPI and AsyncAPI renderers | `schema`               |
 | `render/openapi`  | Renders `schema.Schema` as OpenAPI 3.1 `components/schemas`; `DocumentBuilder` for full spec | `schema`, `route`, `render/internal/schemarender`, external libs |
 | `render/asyncapi` | Renders channels and schemas as a full AsyncAPI 2.6 document                             | `schema`, `render/internal/schemarender`, external libs |
-| `forge`           | Governed, signed KPI computation: `Measured[T]` boundary wrapper with provenance; `MeasuredCodec[T]` struct codec; `Function[In,Out]` generic derivation function with SHA-256 contract hash — single-input or struct-input (use `codex.Struct[T]` for multi-input); `New[In,Out](name, version, inputName, inputCodec, outputName, outputCodec, fn, opts...)` constructor; `Compose[A,B,Out]` for type-safe chaining; `Registry` fluent builder (`NewRegistry(title, version string).WithDescription().WithObserver()`) + `PipelineSpec` for graph inference (struct input codec properties auto-expand to individual `InputSpec` entries for DAG edges); `Must[T]` panic helper; `FunctionOption` variadic governance metadata (`WithDescription`, `WithAuthor`, `WithApproval`) and pipeline-level cross-input refinement (`WithRefinement[In](func(In)error)` — preferred: cross-field constraints via `codex.RefineFunc` on the input struct codec surface as `InputError`; `WithRefinement` surfaces as `RefinementError`); Apply sequence: input codec validation → optional cross-input refinement → compute → output codec validation; typed errors: `InputError`, `OutputError`, `ApplyError`, `RefinementError{Function,Err}`, `ConfigError` | `codex`, `schema`, `stats`, stdlib (`crypto/sha256`, `encoding/json`) |
+| `forge`           | Governed, signed KPI computation: `Measured[T]` boundary wrapper with provenance; `MeasuredCodec[T]` struct codec; `Function[In,Out]` generic derivation function with SHA-256 contract hash — single-input or struct-input (use `codex.Struct[T]` for multi-input); `New[In,Out](name, version, inputName, inputCodec, outputName, outputCodec, fn, opts...)` constructor; `Compose[A,B,Out]` for type-safe chaining; `Registry` fluent builder (`NewRegistry(title, version string).WithDescription().WithObserver()`) + `PipelineSpec` for graph inference (struct input codec properties auto-expand to individual `InputSpec` entries for DAG edges); `Must[T]` panic helper; `FunctionOption` variadic governance metadata (`WithDescription`, `WithAuthor`, `WithApproval`) and pipeline-level cross-input refinement (`WithRefinement[In](func(In)error)` — preferred: cross-field constraints via `codex.RefineFunc` on the input struct codec surface as `InputError`; `WithRefinement` surfaces as `RefinementError`); Apply sequence: input codec validation → optional cross-input refinement → compute → output codec validation; typed errors: `InputError`, `OutputError`, `ApplyError`, `RefinementError{Function,Err}`, `ConfigError`; collection ops: `Map` (lift fn over slice), `Filter` (predicate over slice), `Reduce` (fold slice), `MapValues` (lift fn over `map[string]_`, no key validation), `MapValuesK[K]` (lift fn over `map[K]_` with key codec validation — validates all keys atomically before any value is processed; invalid key → `InputError → KeyError → ConstraintError`; `Kind="mapValues"`, `Wraps=innerFn.Spec.Name` in pipeline YAML) | `codex`, `schema`, `stats`, stdlib (`crypto/sha256`, `encoding/json`) |
 | `render/pipeline` | Renders a `forge.PipelineSpec` as a `pipelineSpec` YAML document (mirrors `render/openapi` / `render/asyncapi`) | `forge`, `schema`, `render/internal/schemarender`, external libs |
 | `api/internal`    | Shared helpers for `api/rest` and `api/events` (template variable parsing and substitution); not part of the public API | `codex` |
 | `api/rest`        | Transport-agnostic REST API builder; typed Decode/Encode + OpenAPI spec; `AddSSERoute` for Server-Sent Events; `SSERouteHandle` with `BuildPath` and `WithEventFormats`; `RouteHandle.WithRequestFormats` / `WithResponseFormats` for multi-format request/response bodies | `codex`, `format`, `route`, `render/openapi`, `schema`, `api/internal` |
@@ -569,6 +569,21 @@ var TagsCodec = codex.StringMap(codex.String())         // map[string]string
 var CountsCodec = codex.StringMap(codex.Int())          // map[string]int
 ```
 
+### Map[K, V] Codec
+
+Encodes `map[K]V` where **key codec** validates and transforms map keys, and **value codec** handles values. Key codec must encode `K` to a `string` (JSON/YAML require string keys). Key validation errors surface as `KeyError{Key, Err}`. Schema: `{type:object, propertyNames:{...keySchema}, additionalProperties:{...valueSchema}}`.
+
+```go
+var sensorIDCodec = codex.String().
+    Refine(validate.Pattern(regexp.MustCompile(`^[a-z]+-\d+$`))).
+    WithTitle("SensorID")
+var sensorsCodec = codex.Map[string, float64](sensorIDCodec, codex.Float64())
+// Encode: validates each key against sensorIDCodec; returns KeyError for invalid keys.
+// Schema: {type:object, propertyNames:{type:string,title:SensorID,pattern:...}, additionalProperties:{type:number}}
+```
+
+`StringMap[V]` stays as the zero-overhead variant when no key validation is needed.
+
 ### Optional Field in Object
 
 Set `Required: false` on the field. The field is omitted from the encoded object when missing during decode; no error is returned.
@@ -597,7 +612,7 @@ The `render/openapi` package converts `schema.Schema` into OpenAPI 3.x schema ob
 
 The shared `render/internal/schemarender.SchemaObject(s schema.Schema) map[string]any` function handles all schema fields including `Nullable`, `AdditionalProperties`, `AdditionalPropertiesSchema`, `Discriminator`, `OneOf`, numeric bounds, string constraints, and enum. Both `render/openapi` and `render/asyncapi` use it; adding a new `schema.Schema` field requires updating only `schemarender`.
 
-When `AdditionalPropertiesSchema` is set on a `schema.Schema`, it renders as a schema object (`additionalProperties: {type: ...}`). This takes precedence over the boolean `AdditionalProperties` field. Used by `StringMap[V]` codec.
+When `AdditionalPropertiesSchema` is set on a `schema.Schema`, it renders as a schema object (`additionalProperties: {type: ...}`). This takes precedence over the boolean `AdditionalProperties` field. Used by `StringMap[V]` and `Map[K, V]` codecs. When `PropertyNames` is set, it renders as `propertyNames: {...}` — used by `Map[K, V]` to express key format constraints.
 
 ```go
 // SchemaObject converts s to an OpenAPI 3.x schema object (map[string]any).

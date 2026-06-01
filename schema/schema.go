@@ -43,6 +43,11 @@ type Schema struct {
 	// Used by StringMap to express map[string]V where V has a specific schema.
 	AdditionalPropertiesSchema *Schema `json:",omitempty"`
 
+	// PropertyNames constrains the format of map keys.
+	// Corresponds to the JSON Schema "propertyNames" keyword.
+	// Used by Map[K, V] to express the key codec's schema (e.g. pattern, format).
+	PropertyNames *Schema `json:",omitempty"`
+
 	// Discriminator describes the polymorphism tag for TaggedUnion schemas.
 	Discriminator *DiscriminatorSchema `json:",omitempty"`
 
@@ -80,6 +85,7 @@ func (s Schema) IsZero() bool {
 		!s.Nullable &&
 		s.AdditionalProperties == nil &&
 		s.AdditionalPropertiesSchema == nil &&
+		s.PropertyNames == nil &&
 		s.Discriminator == nil &&
 		s.Minimum == nil &&
 		s.Maximum == nil &&

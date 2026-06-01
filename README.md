@@ -129,7 +129,7 @@ Requires Go 1.25 or later.
 - **Encode, Decode, and Validation** — constraints run on decode; encode is trusted; validate is explicit
 - **Builtin Format Constraints** — `email`, `uuid`, `url`, `date`, `date-time` validated and reflected into schema automatically
 - **Protocol Path/Topic Constraints** — `validate.HTTPPath`, `validate.MQTTPublishTopic`, `validate.MQTTTopic` validate path and topic strings; compose with custom constraints via `WithPathConstraints` / `WithTopicConstraints`
-- **Rich Codec Types** — primitives, `Time`/`Date`, `Nullable[T]`, `Bytes`, `SliceOf[T]`, `StringMap[V]`, structs, tagged unions
+- **Rich Codec Types** — primitives, `Time`/`Date`, `Nullable[T]`, `Bytes`, `SliceOf[T]`, `StringMap[V]`, `Map[K, V]`, structs, tagged unions
 - **Structured Decode Errors** — all failure types are concrete structs (`ValidationErrors`, `ConstraintError`, `TypeMismatchError`, `ElementError`, `KeyError`, `UnknownVariantError`, `VariantError`); use `errors.As` to inspect them, or pass them directly to `log/slog`
 - **OpenAPI Schema Generation** — `components/schemas` map from codec-derived schemas, no manual YAML
 - **Full OpenAPI 3.1 Document** — complete REST API spec (paths, operations, params) from `route.Route` descriptors
@@ -586,6 +586,7 @@ On failure, `RefineFunc` produces a `ConstraintError{Name:"refine", ...}` — th
 | `codex.Nullable(inner)`                  | `*T`           | value or `null`     | inner schema + `nullable:true`             |
 | `codex.SliceOf(elem)`                    | `[]T`          | array               | `{type:array,items:{...}}`                 |
 | `codex.StringMap(value)`                 | `map[string]V` | object              | `{type:object,additionalProperties:{...}}` |
+| `codex.Map(keyCodec, valueCodec)`        | `map[K]V`      | object              | `{type:object,propertyNames:{...},additionalProperties:{...}}` |
 | `codex.Struct[T](fields...)`                    | any struct     | object              | `{type:object,properties:{...}}`           |
 | `codex.TaggedUnion[T](tag, variants...)`        | any interface  | object              | `{oneOf:[...],discriminator:{...}}`        |
 | `codex.UntaggedUnion[T](which, variants...)`    | any interface  | object              | `{oneOf:[...]}` (no discriminator)         |
@@ -610,6 +611,18 @@ enc, _ := createdAtCodec.Encode(time.Now())     // → "2024-06-15T12:00:00Z"
 var tagsCodec = codex.StringMap(codex.String()) // Codec[map[string]string]
 enc, _ := tagsCodec.Encode(map[string]string{"env":"prod"})
 // → map[string]any{"env":"prod"}
+
+// Map[K, V] — validated keys via a key codec
+// Key codec must encode K to a string (JSON/YAML require string map keys).
+// The schema emits "propertyNames" for the key constraint.
+var sensorIDCodec = codex.String().
+    Refine(validate.Pattern(regexp.MustCompile(`^[a-z]+-\d+$`))).
+    WithTitle("SensorID")
+var sensorsCodec = codex.Map[string, float64](sensorIDCodec, codex.Float64())
+// Schema: {type:object, propertyNames:{type:string,title:"SensorID",pattern:"^[a-z]+-\\d+$"}, additionalProperties:{type:number}}
+enc, _ = sensorsCodec.Encode(map[string]float64{"temp-01": 22.5}) // ok
+_, err := sensorsCodec.Encode(map[string]float64{"INVALID": 22.5})
+// → KeyError{Key:"INVALID", Err: constraint failed (pattern)}
 
 // Any — opaque passthrough, no type enforcement
 var rawCodec = codex.Any()
@@ -1947,6 +1960,57 @@ Every error from `Apply` implements one of the forge error types, all inspectabl
 | `forge.ApplyError` | The compute function returned an error |
 | `forge.OutputError` | Output codec validation failed |
 | `forge.ConfigError` | Returned by `forge.New` / `forge.Compose` for invalid configuration |
+| `forge.CollectionElementError` | A slice collection op failed at element `.Index`; `.Function` names the operation |
+| `forge.CollectionKeyError` | A map collection op failed at key `.Key`; `.Function` names the operation |
+
+### Collection operations
+
+When inputs are batches (slices or string maps), four **lifting constructors** promote a scalar `Function[In, Out]` to a collection-level function:
+
+| Constructor | Signature | Kind in YAML | `wraps` |
+|---|---|---|---|
+| `forge.Map` | `Function[In,Out]` → `Function[[]In, []Out]` | `map` | scalar fn name |
+| `forge.Filter` | predicate `func(T) bool` → `Function[[]T, []T]` | `filter` | — |
+| `forge.Reduce` | step `func(Acc,T) Acc` → `Function[[]T, Acc]` | `reduce` | — |
+| `forge.MapValues` | `Function[In,Out]` → `Function[map[string]In, map[string]Out]` | `mapValues` | scalar fn name |
+| `forge.MapValuesK` | `Codec[K]` + `Function[In,Out]` → `Function[map[K]In, map[K]Out]` | `mapValues` | scalar fn name |
+
+All four return `*Function[_,_]` — composable with `Compose`, registerable in a `Registry`, observable via `PipelineObserver`, and represented in pipeline YAML with `kind`/`wraps` fields:
+
+```yaml
+- name: mapToCelsius
+  version: 1.0.0
+  kind: map
+  wraps: rawToCelsius
+  hash: sha256:...
+```
+
+Errors are attributed to the failing element or key:
+
+```go
+_, err := mapToCelsius.Apply(batch)
+var ce forge.CollectionElementError
+if errors.As(err, &ce) {
+    fmt.Printf("element %d failed in %q: %v\n", ce.Index, ce.Function, ce.Err)
+}
+```
+
+`forge.Map` and `forge.MapValues`/`forge.MapValuesK` take an existing `*Function` and delegate per-element `Apply`; errors wrap as `CollectionElementError` / `CollectionKeyError`. `forge.Filter` and `forge.Reduce` accept raw predicates / step functions plus an explicit element codec.
+
+**`forge.MapValues` vs `forge.MapValuesK`:** use `MapValues` for unvalidated `map[string]In` (keys are unchecked string pass-throughs); use `MapValuesK` when keys must satisfy a codec constraint (e.g. `<sensor>-<id>` format). `MapValuesK` validates all keys atomically before processing any value — one bad key returns `InputError → KeyError → ConstraintError` immediately.
+
+`WithRefinement` applies to the whole collection (e.g. minimum batch size):
+
+```go
+mapToCelsius, err := forge.Map("mapToCelsius", "1.0.0", rawToCelsius,
+    forge.WithRefinement(func(readings []RawReading) error {
+        if len(readings) == 0 {
+            return fmt.Errorf("batch must contain at least one reading")
+        }
+        return nil
+    }),
+)
+```
 
 ### Full-chain example
 
@@ -1957,6 +2021,14 @@ Every error from `Apply` implements one of the forge error types, all inspectabl
 - `forge.Function` pipeline computes `availabilityCalc`, `performanceCalc`, `qualityCalc`, `oeeCalc`
 - `forge.Registry` generates pipeline YAML with inferred graph edges
 - `applyLogger` implements `stats.PipelineObserver` for per-Apply logging
+
+[`examples/forge-collection`](examples/forge-collection/main.go) shows collection operations on MQTT-style sensor batches:
+
+- `forge.Filter` discards warm-up readings from a sensor batch
+- `forge.Map` converts each `RawReading` to a validated `Celsius` value (wraps a scalar `Function`)
+- `forge.Reduce` folds `[]Celsius` into a `BatchSummary` (count, min, max, avg)
+- `forge.MapValuesK` applies the full pipeline per-sensor over `map[string][]RawReading` with key validation (`<sensor>-<id>` pattern enforced via `sensorIDCodec`)
+- Pipeline YAML shows `kind`/`wraps` fields; `ChainObserver` tracks per-function apply stats
 
 See also [`examples/forge-oee`](examples/forge-oee/main.go) for a focused forge pipeline demo with `Compose`, governance options, and `forge.MeasuredCodec`.
 
@@ -2142,7 +2214,7 @@ go-codex/
 │   ├── primitives.go       # Int, Int32, Int64, Uint, Uint64, Float32, Float64, String, Bool, Bytes, Any, Pure
 │   ├── refine.go           # Constraint[T], Refine, RefineFunc, Eq (Constraint.Schema for schema reflection)
 │   ├── slice.go            # SliceOf[T]
-│   ├── stringmap.go        # StringMap[V]
+│   ├── stringmap.go        # StringMap[V], Map[K, V]
 │   ├── time.go             # Time(), Date(), Duration()
 │   └── union.go            # TaggedUnion[T], UntaggedUnion[T], UntaggedVariant[T]
 │
@@ -2223,6 +2295,7 @@ go-codex/
     ├── adapters-templ/          # templ SSR format plug-in: same route serves HTML and JSON; observer wired
     ├── adapters-streaming-sse-templ/ # chunked streaming + SSE HTML fragments via templ components
     ├── forge-oee/          # forge pipeline: OEE KPI computation, governance, Compose, MeasuredCodec
+    ├── forge-collection/   # forge collection ops: Map, Filter, Reduce, MapValues on MQTT sensor batches
     ├── oee-chain/          # full three-layer chain: codex + api/events + forge with AsyncAPI + pipeline spec
     └── validate/           # explicit Validate before marshal
 ```
