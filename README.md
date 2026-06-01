@@ -194,6 +194,36 @@ csvFmt := format.NewTyped(userCodec,
     func([]byte) (User, error) { return User{}, errors.New("csv: decode not supported") },
     "text/csv",
 )
+
+// Binary format — raw PNG request body with magic-byte validation:
+// Build a raw-bytes codec (not codex.Bytes(), which uses base64) and add a
+// Refine constraint that checks the 8-byte PNG signature. NewTyped bypasses
+// the map[string]any intermediate, so the wire representation stays binary.
+// The unmarshal function must call codec.Validate explicitly because NewTyped
+// invokes it directly (unlike the JSON/YAML path which runs through Decode).
+pngMagic := []byte{0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A}
+pngCodec := codex.Codec[[]byte]{
+    Schema: schema.Schema{Type: "string", Format: "binary"},
+    Encode: func(v []byte) (any, error) { return v, nil },
+    Decode: func(v any) ([]byte, error) { return v.([]byte), nil },
+}.
+    Refine(validate.MaxBytes(5 * 1024 * 1024)). // reject before reading content
+    Refine(codex.Constraint[[]byte]{
+        Name:    "png-header",
+        Check:   func(v []byte) bool { return len(v) >= 8 && bytes.Equal(v[:8], pngMagic) },
+        Message: func([]byte) string { return "expected PNG magic bytes" },
+    })
+pngFormat := format.NewTyped(
+    pngCodec,
+    func(v []byte) ([]byte, error) { return v, nil },
+    func(data []byte) ([]byte, error) {
+        if err := pngCodec.Validate(data); err != nil { return nil, err }
+        return data, nil
+    },
+    "image/png",
+)
+// See examples/png-upload for the full route definition with PathParam and
+// CookieParam codec validation alongside the PNG request format.
 ```
 
 `adapttempl.Format` is a real-world `format.NewTyped` example — props are validated by the codec, then the templ component renders HTML directly. Adding it to a route's `ResponseFormats` slice enables content negotiation with no adapter changes:
