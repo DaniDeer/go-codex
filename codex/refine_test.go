@@ -212,6 +212,49 @@ func TestRefineFunc_SchemaUnchanged(t *testing.T) {
 	}
 }
 
+// TestRefineFunc_FieldErrorSurfacesBeforeCrossFieldConstraint verifies that when a struct
+// codec has both per-field constraints and a cross-field RefineFunc, an invalid individual
+// field produces a field-level ValidationErrors — not a cross-field ConstraintError.
+// This ensures the Encode direction calls c.Encode(v) first so field errors surface first.
+func TestRefineFunc_FieldErrorSurfacesBeforeCrossFieldConstraint(t *testing.T) {
+	type Range struct{ Start, End int }
+	positive := codex.Constraint[int]{
+		Name:    "positive",
+		Check:   func(v int) bool { return v > 0 },
+		Message: func(v int) string { return "must be positive" },
+	}
+	c := codex.Struct[Range](
+		codex.RequiredField[Range, int]("start", codex.Int().Refine(positive),
+			func(r Range) int { return r.Start },
+			func(r *Range, v int) { r.Start = v },
+		),
+		codex.RequiredField[Range, int]("end", codex.Int().Refine(positive),
+			func(r Range) int { return r.End },
+			func(r *Range, v int) { r.End = v },
+		),
+	).RefineFunc(func(r Range) error {
+		if r.End <= r.Start {
+			return errors.New("end must be greater than start")
+		}
+		return nil
+	})
+
+	// Start = -1 is invalid (fails positive constraint), End = 3 is valid.
+	// The cross-field RefineFunc would also fire (-1 < 3, so end > start — RefineFunc passes).
+	// But importantly, field validation should catch the invalid "start" before RefineFunc.
+	err := c.Validate(Range{Start: -1, End: 3})
+	if err == nil {
+		t.Fatal("expected error for invalid Start field, got nil")
+	}
+	var ve codex.ValidationErrors
+	if !errors.As(err, &ve) {
+		t.Fatalf("expected ValidationErrors (field-level), got %T: %v", err, err)
+	}
+	if len(ve) == 0 || ve[0].Field != "start" {
+		t.Errorf("expected first failing field to be 'start', got: %v", ve)
+	}
+}
+
 func TestEq_MatchingValueSucceeds(t *testing.T) {
 	c := codex.Eq(codex.String(), "hello")
 	got, err := c.Decode("hello")

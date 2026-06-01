@@ -1780,7 +1780,188 @@ Pass `stats.NoopObserver{}` (or omit the field — adapter defaults to it) for z
 
 See [`examples/stats-observer`](examples/stats-observer/main.go) for a runnable codec-only observer example (config file validation, no adapters). See [`examples/adapters-nethttp`](examples/adapters-nethttp/main.go) for the HTTP body + query validation demo. See [`examples/adapters-mqtt`](examples/adapters-mqtt/main.go) for the MQTT subscribe + publish observer demo.
 
+## `forge` — Governed KPI Pipelines
+
+`forge` is the third layer of go-codex. It adds **named, versioned, and governance-tracked computation** on top of the validated domain types from Layer 1 and the event/REST channels from Layer 2.
+
+### Three-layer architecture
+
+```
+┌────────────────────────────────────────────────────────────────────┐
+│  LAYER 1 — codex: validated domain types                            │
+│                                                                     │
+│  PlannedTime, Downtime, Availability, OEE …                        │
+│  codex.MapCodecSafe(float64 → PlannedTime)  ← wire-type bridging   │
+│  codex.Struct[AvailabilityIn].RefineFunc    ← cross-field rules    │
+├────────────────────────────────────────────────────────────────────┤
+│  LAYER 2 — api/rest + api/events: transport contracts              │
+│                                                                     │
+│  events.AddChannel[SensorReading]  ← typed Decode/Encode           │
+│  b.AsyncAPISpec()                  ← AsyncAPI 2.6 YAML             │
+├────────────────────────────────────────────────────────────────────┤
+│  LAYER 3 — forge: governed KPI computation                         │
+│                                                                     │
+│  forge.New("availabilityCalc", "1.0.0", …, WithAuthor(…))         │
+│  forge.Registry → pipeline YAML spec + graph inference             │
+│  stats.PipelineObserver → per-Apply telemetry                      │
+└────────────────────────────────────────────────────────────────────┘
+```
+
+### `codex.MapCodecSafe` vs `forge.Function`
+
+These two tools are often confused because both involve transforming one type to another. They are fundamentally different and designed for different layers:
+
+| Aspect | `codex.MapCodecSafe` / `MapCodecValidated` | `forge.Function[In, Out]` |
+|---|---|---|
+| **Purpose** | Structural type mapping (wire bridging) | Named, governed domain computation |
+| **Direction** | Bidirectional (encode + decode) | Unidirectional: `In → Out` only |
+| **Identity** | None — anonymous | name + version + SHA-256 contract hash |
+| **Governance** | None | `WithAuthor`, `WithApproval` |
+| **Spec / schema output** | No | `Registry.Spec()` → pipeline YAML |
+| **Graph inference** | No | Registry matches input/output names |
+| **Telemetry** | None | `PipelineObserver.RecordApply` |
+| **Cross-input constraints** | None | `WithRefinement` + codec `RefineFunc` |
+| **Compose** | No | `forge.Compose` for chaining |
+| **Error types** | codec errors | `InputError`, `OutputError`, `ApplyError`, `RefinementError` |
+
+**Rule of thumb:**
+- `codex.Map*` answers: _"How do I represent `float64` as `PlannedTime`?"_ → structural, bidirectional, anonymous.
+- `forge.Function` answers: _"What named computation derives `Availability` from `AvailabilityIn`?"_ → business logic, unidirectional, governed.
+
+### Quick-start
+
+```go
+import "github.com/DaniDeer/go-codex/forge"
+
+// 1. Define a forge.Function[In, Out] — named, versioned, codec-validated.
+availabilityCalc, err := forge.New(
+    "availabilityCalc", "1.0.0",
+    "availabilityIn", availabilityInCodec,   // codex.Codec[AvailabilityIn] — validates inputs
+    "availability",   availabilityCodec,     // codex.Codec[Availability]  — validates output
+    func(in AvailabilityIn) (Availability, error) {
+        return Availability((float64(in.PlannedTime) - float64(in.Downtime)) / float64(in.PlannedTime)), nil
+    },
+    forge.WithDescription("Computes availability as (plannedTime - downtime) / plannedTime."),
+    forge.WithAuthor("oee-team"),
+)
+
+// 2. Apply — input and output are codec-validated; errors are structured.
+avail, err := availabilityCalc.Apply(AvailabilityIn{PlannedTime: 8.0, Downtime: 1.0})
+var ie forge.InputError
+if errors.As(err, &ie) {
+    fmt.Printf("input %q failed: %v\n", ie.Input, ie.Err)
+}
+```
+
+### Multi-input functions (struct input codec)
+
+For functions with multiple inputs, define a struct and a `codex.Struct` codec for it. This is the **sum type composition pattern**: validated output types from upstream functions compose as fields of a downstream function's input struct.
+
+```go
+type AvailabilityIn struct {
+    PlannedTime PlannedTime
+    Downtime    Downtime
+}
+
+// Cross-field constraint: downtime cannot exceed planned time.
+var availabilityInCodec = codex.Struct[AvailabilityIn](
+    codex.RequiredField[AvailabilityIn, PlannedTime]("plannedTime", plannedTimeCodec, ...),
+    codex.RequiredField[AvailabilityIn, Downtime]("downtime", downtimeCodec, ...),
+).RefineFunc(func(a AvailabilityIn) error {
+    if float64(a.Downtime) > float64(a.PlannedTime) {
+        return fmt.Errorf("downtime exceeds plannedTime")
+    }
+    return nil
+})
+```
+
+Cross-field constraints can also be added at the pipeline definition site via `forge.WithRefinement`:
+
+```go
+availabilityCalc, _ := forge.New("availabilityCalc", "1.0.0",
+    "availabilityIn", availabilityInCodec, "availability", availabilityCodec,
+    func(in AvailabilityIn) (Availability, error) { ... },
+    forge.WithRefinement(func(in AvailabilityIn) error {
+        // pipeline-specific constraint — supplements the codec-level RefineFunc
+        return nil
+    }),
+)
+```
+
+### Governance options
+
+```go
+forge.WithDescription("…")            // human-readable description
+forge.WithAuthor("team-name")         // who owns this function
+forge.WithApproval("reviewer", time.Now()) // governance sign-off
+```
+
+### Composing functions
+
+`forge.Compose` chains two functions `f1: A→B` and `f2: B→Out` into a single `Function[A, Out]`:
+
+```go
+combined, err := forge.Compose("combined", "1.0.0", f1, f2,
+    forge.WithDescription("chained pipeline"),
+    forge.WithRefinement(func(a A) error { /* pre-compose constraint */ return nil }),
+)
+```
+
+### Registry and pipeline spec
+
+Register functions to build a graph and generate a pipeline YAML spec:
+
+```go
+reg := forge.NewRegistry("OEE Pipeline", "1.0.0").
+    WithObserver(myObserver)         // optional: PipelineObserver for Apply telemetry
+reg = availabilityCalc.Register(reg)
+reg = performanceCalc.Register(reg)
+reg = oeeCalc.Register(reg)
+
+// Registry infers graph edges by matching input names to output names of other functions.
+spec, err := pipeline.Render(reg.Spec())  // YAML pipeline spec
+fmt.Println(string(spec))
+```
+
+### `PipelineObserver` telemetry
+
+Implement `stats.PipelineObserver` to record per-Apply telemetry:
+
+```go
+type myObserver struct{}
+
+func (myObserver) RecordApply(name, version string, success bool, d time.Duration) {
+    // name/version identify the function; success=false on any error
+    log.Printf("[forge] %s@%s ok=%v dur=%v", name, version, success, d)
+}
+```
+
+### Structured errors
+
+Every error from `Apply` implements one of the forge error types, all inspectable with `errors.As`:
+
+| Error type | When |
+|---|---|
+| `forge.InputError` | Input codec validation failed; `.Input` is the failing field name |
+| `forge.RefinementError` | Cross-input `RefineFunc` or `WithRefinement` constraint failed |
+| `forge.ApplyError` | The compute function returned an error |
+| `forge.OutputError` | Output codec validation failed |
+| `forge.ConfigError` | Returned by `forge.New` / `forge.Compose` for invalid configuration |
+
+### Full-chain example
+
+[`examples/oee-chain`](examples/oee-chain/main.go) demonstrates all three layers together:
+
+- `codex.MapCodecSafe` maps `float64` wire values to domain types (`PlannedTime`, `Downtime`, …)
+- `api/events.AddChannel` registers sensor reading + KPI result channels; generates AsyncAPI spec
+- `forge.Function` pipeline computes `availabilityCalc`, `performanceCalc`, `qualityCalc`, `oeeCalc`
+- `forge.Registry` generates pipeline YAML with inferred graph edges
+- `applyLogger` implements `stats.PipelineObserver` for per-Apply logging
+
+See also [`examples/forge-oee`](examples/forge-oee/main.go) for a focused forge pipeline demo with `Compose`, governance options, and `forge.MeasuredCodec`.
+
 ## Special Topics
+
 
 ### Protobuf Integration
 
@@ -2041,5 +2222,7 @@ go-codex/
     ├── stats-observer/          # stats.ValidationObserver with codecs directly: config validation, no adapter
     ├── adapters-templ/          # templ SSR format plug-in: same route serves HTML and JSON; observer wired
     ├── adapters-streaming-sse-templ/ # chunked streaming + SSE HTML fragments via templ components
+    ├── forge-oee/          # forge pipeline: OEE KPI computation, governance, Compose, MeasuredCodec
+    ├── oee-chain/          # full three-layer chain: codex + api/events + forge with AsyncAPI + pipeline spec
     └── validate/           # explicit Validate before marshal
 ```

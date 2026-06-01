@@ -83,15 +83,28 @@ type Observer interface {
 	RecordPublish(topic string, success bool, duration time.Duration)
 }
 
-// NoopObserver discards all events. It satisfies both [Observer] and
-// [ValidationObserver] and is the zero-cost default used when no observer
-// is configured.
+// PipelineObserver receives lifecycle events from forge.Function*.Apply calls.
+// It is a separate interface from [Observer] because forge is a domain computation
+// layer, not a transport adapter. Implement alongside [Observer] when you want
+// telemetry for both transport and KPI computation in the same process.
+type PipelineObserver interface {
+	// RecordApply is called after every forge.Function*.Apply completes.
+	// name is the function name, version is its version string, success is false
+	// when any validation or computation step returned an error, duration is the
+	// total Apply time (input validation + computation + output validation).
+	RecordApply(name, version string, success bool, duration time.Duration)
+}
+
+// NoopObserver discards all events. It satisfies [Observer], [ValidationObserver],
+// and [PipelineObserver] and is the zero-cost default used when no observer is
+// configured.
 type NoopObserver struct{}
 
 func (NoopObserver) RecordValidationError(_, _, _ string)              {}
 func (NoopObserver) RecordRequest(_, _ string, _ int, _ time.Duration) {}
 func (NoopObserver) RecordSubscribe(_ string, _ bool, _ time.Duration) {}
 func (NoopObserver) RecordPublish(_ string, _ bool, _ time.Duration)   {}
+func (NoopObserver) RecordApply(_, _ string, _ bool, _ time.Duration)  {}
 
 // ReportErrors extracts [codex.ValidationErrors] from err and calls
 // obs.RecordValidationError for each failing field. location identifies the
