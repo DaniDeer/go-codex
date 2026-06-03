@@ -60,27 +60,9 @@ type DBConfig struct {
 }
 
 var dbCodec = codex.Struct[DBConfig](
-	codex.Field[DBConfig, string]{
-		Name:     "host",
-		Codec:    hostCodec, // ← shared field codec
-		Get:      func(c DBConfig) string { return c.Host },
-		Set:      func(c *DBConfig, v string) { c.Host = v },
-		Required: true,
-	},
-	codex.Field[DBConfig, uint]{
-		Name:     "port",
-		Codec:    portCodec, // ← shared field codec
-		Get:      func(c DBConfig) uint { return c.Port },
-		Set:      func(c *DBConfig, v uint) { c.Port = v },
-		Required: true,
-	},
-	codex.Field[DBConfig, string]{
-		Name:     "name",
-		Codec:    codex.String().Refine(validate.NonEmptyString).WithDescription("Database name."),
-		Get:      func(c DBConfig) string { return c.Name },
-		Set:      func(c *DBConfig, v string) { c.Name = v },
-		Required: true,
-	},
+	codex.RequiredField("host", hostCodec, func(c DBConfig) string { return c.Host }, func(c *DBConfig, v string) { c.Host = v }),   // ← shared field codec
+	codex.RequiredField("port", portCodec, func(c DBConfig) uint { return c.Port }, func(c *DBConfig, v uint) { c.Port = v }),        // ← shared field codec
+	codex.RequiredField("name", codex.String().Refine(validate.NonEmptyString).WithDescription("Database name."), func(c DBConfig) string { return c.Name }, func(c *DBConfig, v string) { c.Name = v }),
 )
 
 // ── AppConfig embeds dbCodec (Pattern 2) ──────────────────────────────────────
@@ -92,27 +74,9 @@ type AppConfig struct {
 }
 
 var appConfigCodec = codex.Struct[AppConfig](
-	codex.Field[AppConfig, string]{
-		Name:     "host",
-		Codec:    hostCodec, // ← same shared field codec
-		Get:      func(c AppConfig) string { return c.Host },
-		Set:      func(c *AppConfig, v string) { c.Host = v },
-		Required: true,
-	},
-	codex.Field[AppConfig, uint]{
-		Name:     "port",
-		Codec:    portCodec, // ← same shared field codec
-		Get:      func(c AppConfig) uint { return c.Port },
-		Set:      func(c *AppConfig, v uint) { c.Port = v },
-		Required: true,
-	},
-	codex.Field[AppConfig, DBConfig]{
-		Name:     "db",
-		Codec:    dbCodec.WithDescription("Database connection."), // ← sub-codec reused
-		Get:      func(c AppConfig) DBConfig { return c.DB },
-		Set:      func(c *AppConfig, v DBConfig) { c.DB = v },
-		Required: true,
-	},
+	codex.RequiredField("host", hostCodec, func(c AppConfig) string { return c.Host }, func(c *AppConfig, v string) { c.Host = v }),                            // ← same shared field codec
+	codex.RequiredField("port", portCodec, func(c AppConfig) uint { return c.Port }, func(c *AppConfig, v uint) { c.Port = v }),                               // ← same shared field codec
+	codex.RequiredField("db", dbCodec.WithDescription("Database connection."), func(c AppConfig) DBConfig { return c.DB }, func(c *AppConfig, v DBConfig) { c.DB = v }), // ← sub-codec reused
 )
 
 // ── ProxyConfig also reuses shared field codecs (Pattern 1) ───────────────────
@@ -123,20 +87,8 @@ type ProxyConfig struct {
 }
 
 var proxyConfigCodec = codex.Struct[ProxyConfig](
-	codex.Field[ProxyConfig, string]{
-		Name:     "upstream_host",
-		Codec:    hostCodec, // ← same hostCodec — constraint defined once
-		Get:      func(c ProxyConfig) string { return c.UpstreamHost },
-		Set:      func(c *ProxyConfig, v string) { c.UpstreamHost = v },
-		Required: true,
-	},
-	codex.Field[ProxyConfig, uint]{
-		Name:     "upstream_port",
-		Codec:    portCodec, // ← same portCodec — constraint defined once
-		Get:      func(c ProxyConfig) uint { return c.UpstreamPort },
-		Set:      func(c *ProxyConfig, v uint) { c.UpstreamPort = v },
-		Required: true,
-	},
+	codex.RequiredField("upstream_host", hostCodec, func(c ProxyConfig) string { return c.UpstreamHost }, func(c *ProxyConfig, v string) { c.UpstreamHost = v }), // ← same hostCodec — constraint defined once
+	codex.RequiredField("upstream_port", portCodec, func(c ProxyConfig) uint { return c.UpstreamPort }, func(c *ProxyConfig, v uint) { c.UpstreamPort = v }), // ← same portCodec — constraint defined once
 )
 
 // ── MapCodecSafe: Port newtype (Pattern 3a) ───────────────────────────────────
@@ -200,20 +152,8 @@ type TimeWindow struct {
 }
 
 var timeWindowCodec = codex.Struct[TimeWindow](
-	codex.Field[TimeWindow, int]{
-		Name:     "start",
-		Codec:    codex.Int().WithDescription("Start timestamp (Unix seconds)."),
-		Get:      func(w TimeWindow) int { return w.Start },
-		Set:      func(w *TimeWindow, v int) { w.Start = v },
-		Required: true,
-	},
-	codex.Field[TimeWindow, int]{
-		Name:     "end",
-		Codec:    codex.Int().WithDescription("End timestamp (Unix seconds)."),
-		Get:      func(w TimeWindow) int { return w.End },
-		Set:      func(w *TimeWindow, v int) { w.End = v },
-		Required: true,
-	},
+	codex.RequiredField("start", codex.Int().WithDescription("Start timestamp (Unix seconds)."), func(w TimeWindow) int { return w.Start }, func(w *TimeWindow, v int) { w.Start = v }),
+	codex.RequiredField("end", codex.Int().WithDescription("End timestamp (Unix seconds)."), func(w TimeWindow) int { return w.End }, func(w *TimeWindow, v int) { w.End = v }),
 ).RefineFunc(func(w TimeWindow) error {
 	if w.End <= w.Start {
 		return errors.New("end must be after start")

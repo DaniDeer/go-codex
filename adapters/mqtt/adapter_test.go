@@ -13,6 +13,8 @@ import (
 	"github.com/DaniDeer/go-codex/api/events"
 	"github.com/DaniDeer/go-codex/codex"
 	"github.com/DaniDeer/go-codex/format"
+	"github.com/DaniDeer/go-codex/route"
+	"github.com/DaniDeer/go-codex/stats"
 	"github.com/DaniDeer/go-codex/validate"
 )
 
@@ -660,5 +662,224 @@ func TestPublish_YAMLFormat_EncodeError(t *testing.T) {
 	)
 	if err == nil {
 		t.Fatal("expected encode error, got nil")
+	}
+}
+
+// --- Security tests ---
+
+type mockSecurityObserver struct {
+	stats.NoopObserver
+	location string
+	scheme   string
+}
+
+func (o *mockSecurityObserver) RecordSecurityRejection(location, scheme string) {
+	o.location = location
+	o.scheme = scheme
+}
+
+func newSecuredHandle() (*events.ChannelHandle[userEvent], error) {
+	b := events.NewBuilder(events.Info{Title: "Test", Version: "1.0.0"})
+	return events.AddChannel[userEvent](b, "user/created", userEventCodec,
+		events.Subscribe{
+			Summary:  "User created",
+			Security: []route.SecurityRequirement{route.Require("bearerAuth")},
+		},
+	)
+}
+
+func TestSubscribeHandler_SecurityFunc_calledForSecuredChannel(t *testing.T) {
+	handle, err := newSecuredHandle()
+	if err != nil {
+		t.Fatal(err)
+	}
+	secFuncCalled := false
+	handlerCalled := false
+	handler := adaptermqtt.SubscribeHandler(context.Background(), handle,
+		func(_ context.Context, e userEvent) error {
+			handlerCalled = true
+			return nil
+		},
+		adaptermqtt.SubscribeOptions{
+			SecurityFunc: func(_ context.Context, _ pahomqtt.Message, _ []route.SecurityRequirement) error {
+				secFuncCalled = true
+				return nil
+			},
+		},
+	)
+
+	handler(nil, &mockMessage{payload: []byte(validPayload)})
+
+	if !secFuncCalled {
+		t.Error("want SecurityFunc called for secured channel")
+	}
+	if !handlerCalled {
+		t.Error("want handler called when SecurityFunc returns nil")
+	}
+}
+
+func TestSubscribeHandler_SecurityFunc_rejectsMessage(t *testing.T) {
+	handle, err := newSecuredHandle()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var subErr adaptermqtt.SubscribeError
+	handler := adaptermqtt.SubscribeHandler(context.Background(), handle,
+		func(_ context.Context, e userEvent) error {
+			t.Fatal("handler must not be called when SecurityFunc rejects")
+			return nil
+		},
+		adaptermqtt.SubscribeOptions{
+			SecurityFunc: func(_ context.Context, _ pahomqtt.Message, _ []route.SecurityRequirement) error {
+				return errors.New("unauthorized")
+			},
+			OnError: func(e adaptermqtt.SubscribeError) {
+				subErr = e
+			},
+		},
+	)
+
+	handler(nil, &mockMessage{payload: []byte(validPayload)})
+
+	if subErr.Kind != adaptermqtt.KindSecurity {
+		t.Errorf("want KindSecurity, got %v", subErr.Kind)
+	}
+}
+
+func TestSubscribeHandler_SecurityFunc_notCalledForUnsecuredChannel(t *testing.T) {
+	handle := newHandle()
+	secFuncCalled := false
+	handler := adaptermqtt.SubscribeHandler(context.Background(), handle,
+		func(_ context.Context, e userEvent) error { return nil },
+		adaptermqtt.SubscribeOptions{
+			SecurityFunc: func(_ context.Context, _ pahomqtt.Message, _ []route.SecurityRequirement) error {
+				secFuncCalled = true
+				return nil
+			},
+		},
+	)
+
+	handler(nil, &mockMessage{payload: []byte(validPayload)})
+
+	if secFuncCalled {
+		t.Error("want SecurityFunc NOT called for unsecured channel")
+	}
+}
+
+func TestSubscribeHandler_SecurityObserver_calledOnRejection(t *testing.T) {
+	handle, err := newSecuredHandle()
+	if err != nil {
+		t.Fatal(err)
+	}
+	obs := &mockSecurityObserver{}
+	handler := adaptermqtt.SubscribeHandler(context.Background(), handle,
+		func(_ context.Context, e userEvent) error { return nil },
+		adaptermqtt.SubscribeOptions{
+			Observer: obs,
+			SecurityFunc: func(_ context.Context, _ pahomqtt.Message, _ []route.SecurityRequirement) error {
+				return errors.New("unauthorized")
+			},
+		},
+	)
+
+	handler(nil, &mockMessage{payload: []byte(validPayload)})
+
+	if obs.location != "user/created" {
+		t.Errorf("want location=user/created, got %q", obs.location)
+	}
+	if obs.scheme != "bearerAuth" {
+		t.Errorf("want scheme=bearerAuth, got %q", obs.scheme)
+	}
+}
+
+func newGlobalSecuredMQTTHandle() (*events.ChannelHandle[userEvent], error) {
+	b := events.NewBuilder(events.Info{Title: "Test", Version: "1.0.0"})
+	b.AddSecurityScheme("bearerAuth", events.SecurityScheme{
+		SecurityScheme: route.BearerScheme("JWT"),
+	})
+	b.AddGlobalSecurity(route.Require("bearerAuth"))
+	// No per-operation Security — inherits global.
+	return events.AddChannel[userEvent](b, "user/created", userEventCodec,
+		events.Subscribe{Summary: "User created"},
+	)
+}
+
+func TestSubscribeHandler_GlobalSecurity_enforcedWhenNoPerChannelSecurity(t *testing.T) {
+	handle, err := newGlobalSecuredMQTTHandle()
+	if err != nil {
+		t.Fatal(err)
+	}
+	secFuncCalled := false
+	handler := adaptermqtt.SubscribeHandler(context.Background(), handle,
+		func(_ context.Context, e userEvent) error { return nil },
+		adaptermqtt.SubscribeOptions{
+			SecurityFunc: func(_ context.Context, _ pahomqtt.Message, _ []route.SecurityRequirement) error {
+				secFuncCalled = true
+				return nil
+			},
+		},
+	)
+
+	handler(nil, &mockMessage{payload: []byte(validPayload)})
+
+	if !secFuncCalled {
+		t.Error("want SecurityFunc called for channel inheriting global security")
+	}
+}
+
+func TestSubscribeHandler_GlobalSecurity_rejectsMessage(t *testing.T) {
+	handle, err := newGlobalSecuredMQTTHandle()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var gotErr adaptermqtt.SubscribeError
+	handler := adaptermqtt.SubscribeHandler(context.Background(), handle,
+		func(_ context.Context, e userEvent) error { return nil },
+		adaptermqtt.SubscribeOptions{
+			OnError: func(e adaptermqtt.SubscribeError) { gotErr = e },
+			SecurityFunc: func(_ context.Context, _ pahomqtt.Message, _ []route.SecurityRequirement) error {
+				return errors.New("missing api key")
+			},
+		},
+	)
+
+	handler(nil, &mockMessage{payload: []byte(validPayload)})
+
+	if gotErr.Kind != adaptermqtt.KindSecurity {
+		t.Errorf("want KindSecurity, got %v", gotErr.Kind)
+	}
+}
+
+func TestSubscribeHandler_GlobalSecurity_notCalledWhenExplicitlyEmpty(t *testing.T) {
+	b := events.NewBuilder(events.Info{Title: "Test", Version: "1.0.0"})
+	b.AddSecurityScheme("bearerAuth", events.SecurityScheme{
+		SecurityScheme: route.BearerScheme("JWT"),
+	})
+	b.AddGlobalSecurity(route.Require("bearerAuth"))
+	// Explicitly empty Security = no auth on this channel.
+	handle, err := events.AddChannel[userEvent](b, "user/created", userEventCodec,
+		events.Subscribe{
+			Summary:  "User created",
+			Security: []route.SecurityRequirement{},
+		},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	secFuncCalled := false
+	handler := adaptermqtt.SubscribeHandler(context.Background(), handle,
+		func(_ context.Context, e userEvent) error { return nil },
+		adaptermqtt.SubscribeOptions{
+			SecurityFunc: func(_ context.Context, _ pahomqtt.Message, _ []route.SecurityRequirement) error {
+				secFuncCalled = true
+				return nil
+			},
+		},
+	)
+
+	handler(nil, &mockMessage{payload: []byte(validPayload)})
+
+	if secFuncCalled {
+		t.Error("want SecurityFunc NOT called for channel with explicit empty Security")
 	}
 }

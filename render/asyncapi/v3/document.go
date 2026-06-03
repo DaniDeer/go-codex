@@ -1,9 +1,12 @@
-package asyncapi
+package v3
 
 import (
 	"encoding/json"
 	"fmt"
+	"sort"
+	"unicode"
 
+	"github.com/DaniDeer/go-codex/route"
 	"github.com/DaniDeer/go-codex/schema"
 	"gopkg.in/yaml.v3"
 )
@@ -15,14 +18,23 @@ type Info struct {
 	Description string
 }
 
-// Server describes one entry in the AsyncAPI servers map.
+// Server describes one entry in the AsyncAPI 3.0 servers map.
+//
+// URL holds the server address (host[:port]).  In AsyncAPI 3.0 the field is
+// called "host"; the renderer emits URL as the "host" value so that code
+// written against AsyncAPI 2.6 (events.Server{URL: "...", Protocol: "..."})
+// continues to compile without change.
 type Server struct {
-	URL         string
+	URL         string // emitted as "host" in AsyncAPI 3.0
 	Protocol    string // e.g. "amqp", "mqtt", "kafka", "https"
 	Description string
+	// Security, when non-nil, lists security requirements for all operations on
+	// this server. Per-operation security in ChannelItem.Subscribe/Publish takes
+	// precedence.
+	Security []route.SecurityRequirement
 }
 
-// Message describes the payload of an AsyncAPI operation.
+// Message describes the payload of an AsyncAPI 3.0 operation.
 //
 // When SchemaName is non-empty, the renderer emits a $ref in the payload and
 // registers Schema under that name in components/schemas automatically.
@@ -36,7 +48,7 @@ type Message struct {
 	ContentType string // defaults to "application/json"
 }
 
-// Parameter describes a channel parameter in an AsyncAPI 2.6 document.
+// Parameter describes a channel parameter in an AsyncAPI 3.0 document.
 //
 // Channel parameters correspond to {varName} placeholders in topic templates.
 // Each parameter may carry a description and a JSON Schema.
@@ -45,21 +57,29 @@ type Parameter struct {
 	Schema      schema.Schema
 }
 
-// Operation describes a subscribe or publish operation on a channel.
+// Operation describes a subscribe (receive) or publish (send) operation.
 type Operation struct {
 	OperationID string
 	Summary     string
 	Description string
 	Tags        []string
 	Message     Message
+	// Security, when non-nil, sets per-operation security requirements.
+	// nil means the operation inherits server-level security.
+	// An empty slice marks the operation as unsecured.
+	Security []route.SecurityRequirement
 }
 
 // ChannelItem describes one channel with optional subscribe and publish operations.
+// In AsyncAPI 3.0 the channel key is a logical identifier; Address is the actual
+// topic string. Operations are emitted as a separate top-level map.
 type ChannelItem struct {
+	// Address is the actual topic address (e.g. "user/created"). When empty,
+	// the channel key is used as the address.
+	Address     string
 	Description string
 	// Parameters describes the {varName} placeholders in the topic template.
-	// Keyed by variable name (without braces). Auto-populated by the events
-	// builder from TopicParamCodecs schemas and TopicParams descriptions.
+	// Keyed by variable name (without braces).
 	Parameters map[string]Parameter
 	// Subscribe is the operation where the application receives messages.
 	Subscribe *Operation
@@ -67,30 +87,33 @@ type ChannelItem struct {
 	Publish *Operation
 }
 
-// Document is a full AsyncAPI 2.6 document produced by DocumentBuilder.
+// Document is a full AsyncAPI 3.0 document produced by DocumentBuilder.
 // Use MarshalJSON or MarshalYAML to serialise it.
 type Document struct {
-	info     Info
-	servers  map[string]Server
-	channels map[string]ChannelItem
-	schemas  map[string]schema.Schema
+	info            Info
+	servers         map[string]Server
+	channels        map[string]ChannelItem
+	schemas         map[string]schema.Schema
+	securitySchemes map[string]route.SecurityScheme
 }
 
 // DocumentBuilder accumulates channels and named schemas, then produces a Document.
 type DocumentBuilder struct {
-	info     Info
-	servers  map[string]Server
-	channels map[string]ChannelItem
-	schemas  map[string]schema.Schema
+	info            Info
+	servers         map[string]Server
+	channels        map[string]ChannelItem
+	schemas         map[string]schema.Schema
+	securitySchemes map[string]route.SecurityScheme
 }
 
 // NewDocumentBuilder returns a builder initialised with the given Info.
 func NewDocumentBuilder(info Info) *DocumentBuilder {
 	return &DocumentBuilder{
-		info:     info,
-		servers:  make(map[string]Server),
-		channels: make(map[string]ChannelItem),
-		schemas:  make(map[string]schema.Schema),
+		info:            info,
+		servers:         make(map[string]Server),
+		channels:        make(map[string]ChannelItem),
+		schemas:         make(map[string]schema.Schema),
+		securitySchemes: make(map[string]route.SecurityScheme),
 	}
 }
 
@@ -110,6 +133,13 @@ func (b *DocumentBuilder) AddChannel(name string, c ChannelItem) *DocumentBuilde
 // Explicitly registered schemas take precedence over schemas inferred from channels.
 func (b *DocumentBuilder) AddSchema(name string, s schema.Schema) *DocumentBuilder {
 	b.schemas[name] = s
+	return b
+}
+
+// AddSecurityScheme registers a named security scheme in components/securitySchemes.
+// The name must match those used in SecurityRequirement maps on operations and servers.
+func (b *DocumentBuilder) AddSecurityScheme(name string, s route.SecurityScheme) *DocumentBuilder {
+	b.securitySchemes[name] = s
 	return b
 }
 
@@ -136,10 +166,11 @@ func (b *DocumentBuilder) Build() (Document, error) {
 	}
 
 	return Document{
-		info:     b.info,
-		servers:  b.servers,
-		channels: b.channels,
-		schemas:  schemas,
+		info:            b.info,
+		servers:         b.servers,
+		channels:        b.channels,
+		schemas:         schemas,
+		securitySchemes: b.securitySchemes,
 	}, nil
 }
 
@@ -166,7 +197,7 @@ func (d Document) MarshalYAML() ([]byte, error) {
 // toMap converts the document to a map[string]any suitable for JSON/YAML marshaling.
 func (d Document) toMap() map[string]any {
 	doc := map[string]any{
-		"asyncapi": "2.6.0",
+		"asyncapi": "3.0.0",
 		"info":     buildInfo(d.info),
 	}
 
@@ -174,14 +205,23 @@ func (d Document) toMap() map[string]any {
 		doc["servers"] = buildServers(d.servers)
 	}
 
-	if len(d.channels) > 0 {
-		doc["channels"] = buildChannels(d.channels)
+	channels, operations := buildChannelsAndOperations(d.channels)
+	if len(channels) > 0 {
+		doc["channels"] = channels
+	}
+	if len(operations) > 0 {
+		doc["operations"] = operations
 	}
 
+	components := map[string]any{}
 	if len(d.schemas) > 0 {
-		doc["components"] = map[string]any{
-			"schemas": buildComponentsSchemas(d.schemas),
-		}
+		components["schemas"] = buildComponentsSchemas(d.schemas)
+	}
+	if len(d.securitySchemes) > 0 {
+		components["securitySchemes"] = buildSecuritySchemes(d.securitySchemes)
+	}
+	if len(components) > 0 {
+		doc["components"] = components
 	}
 
 	return doc
@@ -199,42 +239,93 @@ func buildInfo(info Info) map[string]any {
 	return m
 }
 
-// buildServers produces the AsyncAPI servers map.
+// buildServers produces the AsyncAPI 3.0 servers map.
 func buildServers(servers map[string]Server) map[string]any {
 	out := make(map[string]any, len(servers))
 	for name, s := range servers {
 		srv := map[string]any{
-			"url":      s.URL,
+			"host":     s.URL,
 			"protocol": s.Protocol,
 		}
 		if s.Description != "" {
 			srv["description"] = s.Description
+		}
+		if len(s.Security) > 0 {
+			srv["security"] = buildSecurityRequirements(s.Security)
 		}
 		out[name] = srv
 	}
 	return out
 }
 
-// buildChannels produces the AsyncAPI channels map.
-func buildChannels(channels map[string]ChannelItem) map[string]any {
-	out := make(map[string]any, len(channels))
-	for name, ch := range channels {
-		item := map[string]any{}
+// buildChannelsAndOperations produces the AsyncAPI 3.0 channels map and
+// operations map from ChannelItems. In 3.0 these are separate top-level keys.
+func buildChannelsAndOperations(channels map[string]ChannelItem) (map[string]any, map[string]any) {
+	chOut := make(map[string]any, len(channels))
+	opOut := map[string]any{}
+
+	// Sort channel keys for deterministic output.
+	keys := make([]string, 0, len(channels))
+	for k := range channels {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+
+	for _, key := range keys {
+		ch := channels[key]
+		chItem := map[string]any{}
+
+		address := ch.Address
+		if address == "" {
+			address = key
+		}
+		chItem["address"] = address
+
 		if ch.Description != "" {
-			item["description"] = ch.Description
+			chItem["description"] = ch.Description
 		}
 		if len(ch.Parameters) > 0 {
-			item["parameters"] = buildParameters(ch.Parameters)
+			chItem["parameters"] = buildParameters(ch.Parameters)
 		}
+
+		// Collect messages from operations into the channel messages map.
+		messages := map[string]any{}
+		if ch.Subscribe != nil && ch.Subscribe.Message.SchemaName != "" {
+			messages[ch.Subscribe.Message.SchemaName] = buildMessage(ch.Subscribe.Message)
+		} else if ch.Subscribe != nil {
+			messages["subscribeMessage"] = buildMessage(ch.Subscribe.Message)
+		}
+		if ch.Publish != nil && ch.Publish.Message.SchemaName != "" {
+			messages[ch.Publish.Message.SchemaName] = buildMessage(ch.Publish.Message)
+		} else if ch.Publish != nil {
+			messages["publishMessage"] = buildMessage(ch.Publish.Message)
+		}
+		if len(messages) > 0 {
+			chItem["messages"] = messages
+		}
+
+		chOut[key] = chItem
+
+		// Emit subscribe operation (action: receive).
 		if ch.Subscribe != nil {
-			item["subscribe"] = buildOperation(ch.Subscribe)
+			opID := ch.Subscribe.OperationID
+			if opID == "" {
+				opID = "receive" + capitalise(key)
+			}
+			opOut[opID] = buildOperation(ch.Subscribe, key, "receive")
 		}
+
+		// Emit publish operation (action: send).
 		if ch.Publish != nil {
-			item["publish"] = buildOperation(ch.Publish)
+			opID := ch.Publish.OperationID
+			if opID == "" {
+				opID = "send" + capitalise(key)
+			}
+			opOut[opID] = buildOperation(ch.Publish, key, "send")
 		}
-		out[name] = item
 	}
-	return out
+
+	return chOut, opOut
 }
 
 // buildParameters converts a map of channel parameters into the AsyncAPI parameters object.
@@ -255,13 +346,11 @@ func buildParameters(params map[string]Parameter) map[string]any {
 	return out
 }
 
-// buildOperation converts an Operation into an AsyncAPI operation object.
-func buildOperation(op *Operation) map[string]any {
+// buildOperation converts an Operation into an AsyncAPI 3.0 operation object.
+func buildOperation(op *Operation, channelKey, action string) map[string]any {
 	o := map[string]any{
-		"message": buildMessage(op.Message),
-	}
-	if op.OperationID != "" {
-		o["operationId"] = op.OperationID
+		"action":  action,
+		"channel": map[string]any{"$ref": "#/channels/" + channelKey},
 	}
 	if op.Summary != "" {
 		o["summary"] = op.Summary
@@ -276,10 +365,13 @@ func buildOperation(op *Operation) map[string]any {
 		}
 		o["tags"] = tags
 	}
+	if op.Security != nil {
+		o["security"] = buildSecurityRequirements(op.Security)
+	}
 	return o
 }
 
-// buildMessage converts a Message into an AsyncAPI message object.
+// buildMessage converts a Message into an AsyncAPI 3.0 message object.
 func buildMessage(m Message) map[string]any {
 	msg := map[string]any{
 		"payload": schemaRef(m.Schema, m.SchemaName),
@@ -291,4 +383,14 @@ func buildMessage(m Message) map[string]any {
 		msg["contentType"] = m.ContentType
 	}
 	return msg
+}
+
+// capitalise returns s with the first rune uppercased.
+func capitalise(s string) string {
+	if s == "" {
+		return ""
+	}
+	runes := []rune(s)
+	runes[0] = unicode.ToUpper(runes[0])
+	return string(runes)
 }

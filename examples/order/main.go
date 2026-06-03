@@ -45,131 +45,35 @@ type Order struct {
 var emailPattern = regexp.MustCompile(`^[^@]+@[^@]+\.[^@]+$`)
 
 var addressCodec = codex.Struct[Address](
-	codex.Field[Address, string]{
-		Name:     "street",
-		Codec:    codex.String().Refine(validate.NonEmptyString),
-		Get:      func(a Address) string { return a.Street },
-		Set:      func(a *Address, v string) { a.Street = v },
-		Required: true,
-	},
-	codex.Field[Address, string]{
-		Name:     "city",
-		Codec:    codex.String().Refine(validate.NonEmptyString),
-		Get:      func(a Address) string { return a.City },
-		Set:      func(a *Address, v string) { a.City = v },
-		Required: true,
-	},
-	codex.Field[Address, string]{
-		Name:     "country",
-		Codec:    codex.String().Refine(validate.NonEmptyString),
-		Get:      func(a Address) string { return a.Country },
-		Set:      func(a *Address, v string) { a.Country = v },
-		Required: true,
-	},
+	codex.RequiredField("street", codex.String().Refine(validate.NonEmptyString), func(a Address) string { return a.Street }, func(a *Address, v string) { a.Street = v }),
+	codex.RequiredField("city", codex.String().Refine(validate.NonEmptyString), func(a Address) string { return a.City }, func(a *Address, v string) { a.City = v }),
+	codex.RequiredField("country", codex.String().Refine(validate.NonEmptyString), func(a Address) string { return a.Country }, func(a *Address, v string) { a.Country = v }),
 )
 
 var customerCodec = codex.Struct[Customer](
-	codex.Field[Customer, string]{
-		Name:     "name",
-		Codec:    codex.String().Refine(validate.NonEmptyString),
-		Get:      func(c Customer) string { return c.Name },
-		Set:      func(c *Customer, v string) { c.Name = v },
-		Required: true,
-	},
-	codex.Field[Customer, string]{
-		Name:     "email",
-		Codec:    codex.String().Refine(validate.Pattern(emailPattern)),
-		Get:      func(c Customer) string { return c.Email },
-		Set:      func(c *Customer, v string) { c.Email = v },
-		Required: true,
-	},
+	codex.RequiredField("name", codex.String().Refine(validate.NonEmptyString), func(c Customer) string { return c.Name }, func(c *Customer, v string) { c.Name = v }),
+	codex.RequiredField("email", codex.String().Refine(validate.Pattern(emailPattern)), func(c Customer) string { return c.Email }, func(c *Customer, v string) { c.Email = v }),
 )
 
 var lineItemCodec = codex.Struct[LineItem](
-	codex.Field[LineItem, string]{
-		Name:     "product",
-		Codec:    codex.String().Refine(validate.NonEmptyString),
-		Get:      func(l LineItem) string { return l.Product },
-		Set:      func(l *LineItem, v string) { l.Product = v },
-		Required: true,
-	},
-	codex.Field[LineItem, int]{
-		Name:     "quantity",
-		Codec:    codex.Int().Refine(validate.PositiveInt),
-		Get:      func(l LineItem) int { return l.Quantity },
-		Set:      func(l *LineItem, v int) { l.Quantity = v },
-		Required: true,
-	},
-	codex.Field[LineItem, float64]{
-		Name:     "price",
-		Codec:    codex.Float64().Refine(validate.PositiveFloat),
-		Get:      func(l LineItem) float64 { return l.Price },
-		Set:      func(l *LineItem, v float64) { l.Price = v },
-		Required: true,
-	},
+	codex.RequiredField("product", codex.String().Refine(validate.NonEmptyString), func(l LineItem) string { return l.Product }, func(l *LineItem, v string) { l.Product = v }),
+	codex.RequiredField("quantity", codex.Int().Refine(validate.PositiveInt), func(l LineItem) int { return l.Quantity }, func(l *LineItem, v int) { l.Quantity = v }),
+	codex.RequiredField("price", codex.Float64().Refine(validate.PositiveFloat), func(l LineItem) float64 { return l.Price }, func(l *LineItem, v float64) { l.Price = v }),
 )
 
 var orderCodec = codex.Struct[Order](
-	codex.Field[Order, string]{
-		Name:     "id",
-		Codec:    codex.String().Refine(validate.NonEmptyString),
-		Get:      func(o Order) string { return o.ID },
-		Set:      func(o *Order, v string) { o.ID = v },
-		Required: true,
-	},
-	codex.Field[Order, Customer]{
-		Name:     "customer",
-		Codec:    customerCodec,
-		Get:      func(o Order) Customer { return o.Customer },
-		Set:      func(o *Order, v Customer) { o.Customer = v },
-		Required: true,
-	},
-	codex.Field[Order, Address]{
-		Name:     "shipping",
-		Codec:    addressCodec,
-		Get:      func(o Order) Address { return o.Shipping },
-		Set:      func(o *Order, v Address) { o.Shipping = v },
-		Required: true,
-	},
-	codex.Field[Order, []LineItem]{
-		Name:     "items",
-		Codec:    codex.SliceOf(lineItemCodec),
-		Get:      func(o Order) []LineItem { return o.Items },
-		Set:      func(o *Order, v []LineItem) { o.Items = v },
-		Required: true,
-	},
+	codex.RequiredField("id", codex.String().Refine(validate.NonEmptyString), func(o Order) string { return o.ID }, func(o *Order, v string) { o.ID = v }),
+	codex.RequiredField("customer", customerCodec, func(o Order) Customer { return o.Customer }, func(o *Order, v Customer) { o.Customer = v }),
+	codex.RequiredField("shipping", addressCodec, func(o Order) Address { return o.Shipping }, func(o *Order, v Address) { o.Shipping = v }),
+	codex.RequiredField("items", codex.SliceOf(lineItemCodec), func(o Order) []LineItem { return o.Items }, func(o *Order, v []LineItem) { o.Items = v }),
 	// StringMap: arbitrary string key/value labels on the order.
-	codex.Field[Order, map[string]string]{
-		Name:     "tags",
-		Codec:    codex.StringMap(codex.String()),
-		Get:      func(o Order) map[string]string { return o.Tags },
-		Set:      func(o *Order, v map[string]string) { o.Tags = v },
-		Required: false,
-	},
+	codex.OptionalField("tags", codex.StringMap(codex.String()), func(o Order) map[string]string { return o.Tags }, func(o *Order, v map[string]string) { o.Tags = v }),
 	// Nullable: note is optional; nil means the field is absent (JSON null / omitted).
-	codex.Field[Order, *string]{
-		Name:     "note",
-		Codec:    codex.Nullable(codex.String()),
-		Get:      func(o Order) *string { return o.Note },
-		Set:      func(o *Order, v *string) { o.Note = v },
-		Required: false,
-	},
+	codex.OptionalField("note", codex.Nullable(codex.String()), func(o Order) *string { return o.Note }, func(o *Order, v *string) { o.Note = v }),
 	// Time: creation timestamp encoded as RFC 3339.
-	codex.Field[Order, time.Time]{
-		Name:     "createdAt",
-		Codec:    codex.Time(),
-		Get:      func(o Order) time.Time { return o.CreatedAt },
-		Set:      func(o *Order, v time.Time) { o.CreatedAt = v },
-		Required: true,
-	},
+	codex.RequiredField("createdAt", codex.Time(), func(o Order) time.Time { return o.CreatedAt }, func(o *Order, v time.Time) { o.CreatedAt = v }),
 	// Nullable + Date: optional promised delivery date encoded as YYYY-MM-DD.
-	codex.Field[Order, *time.Time]{
-		Name:     "deliveryDate",
-		Codec:    codex.Nullable(codex.Date()),
-		Get:      func(o Order) *time.Time { return o.DeliveryDate },
-		Set:      func(o *Order, v *time.Time) { o.DeliveryDate = v },
-		Required: false,
-	},
+	codex.OptionalField("deliveryDate", codex.Nullable(codex.Date()), func(o Order) *time.Time { return o.DeliveryDate }, func(o *Order, v *time.Time) { o.DeliveryDate = v }),
 )
 
 // ── Main ──────────────────────────────────────────────────────────────────────

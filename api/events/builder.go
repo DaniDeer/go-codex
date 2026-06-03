@@ -42,7 +42,8 @@ import (
 	"github.com/DaniDeer/go-codex/api/internal"
 	"github.com/DaniDeer/go-codex/codex"
 	"github.com/DaniDeer/go-codex/format"
-	"github.com/DaniDeer/go-codex/render/asyncapi"
+	asyncapi "github.com/DaniDeer/go-codex/render/asyncapi/v3"
+	"github.com/DaniDeer/go-codex/route"
 	"github.com/DaniDeer/go-codex/schema"
 )
 
@@ -52,6 +53,37 @@ type Info = asyncapi.Info
 
 // Server is an alias for [asyncapi.Server].
 type Server = asyncapi.Server
+
+// SecurityScheme combines [route.SecurityScheme] spec metadata with optional
+// runtime credential validation for message broker adapters.
+//
+// AddSecurityScheme registers it with the builder. The spec fields flow into the
+// AsyncAPI document; Codec, when non-nil, is used by adapters to validate the
+// raw credential string before SecurityFunc is called.
+//
+// MQTT note: paho.mqtt.golang (MQTT 3.1.1) does not expose per-message credentials.
+// Codec-level extraction is a no-op for standard MQTT. Use SecurityFunc + closure
+// (credentials passed at MQTT CONNECT time) for runtime enforcement.
+//
+// Use [SecurityScheme.WithCodec] to set the Codec field inline without a temporary
+// variable: events.SecurityScheme{SecurityScheme: route.APIKeyScheme(...)}.WithCodec(c)
+type SecurityScheme struct {
+	route.SecurityScheme
+	// Codec, when non-nil, validates the extracted raw credential string.
+	// Nil means no format validation; SecurityFunc receives the message as-is.
+	Codec *codex.Codec[string]
+}
+
+// WithCodec returns a copy of s with Codec set to c. It avoids the
+// temporary-variable + address-of pattern required when setting Codec inline:
+//
+//	b.AddSecurityScheme("apiKey", events.SecurityScheme{
+//	    SecurityScheme: route.APIKeyScheme("X-API-Key", "header"),
+//	}.WithCodec(codex.String().Refine(validate.NonEmptyString)))
+func (s SecurityScheme) WithCodec(c codex.Codec[string]) SecurityScheme {
+	s.Codec = &c
+	return s
+}
 
 // Subscribe describes the subscribe operation on a channel (application receives).
 // It controls the subscribe entry in the AsyncAPI spec.
@@ -68,6 +100,11 @@ type Subscribe struct {
 	// SchemaName, when non-empty, emits a $ref for the payload schema in the
 	// spec and registers the schema under that name in components/schemas.
 	SchemaName string
+
+	// Security, when non-nil, overrides global security for this operation.
+	// Pass an empty slice to declare "no auth required" for this subscription.
+	// nil (default) inherits global security declared via [Builder.AddGlobalSecurity].
+	Security []route.SecurityRequirement
 }
 
 func (s Subscribe) applyChannel(cb *channelBuilder) { cb.subscribe = &s }
@@ -87,6 +124,11 @@ type Publish struct {
 	// SchemaName, when non-empty, emits a $ref for the payload schema in the
 	// spec and registers the schema under that name in components/schemas.
 	SchemaName string
+
+	// Security, when non-nil, overrides global security for this operation.
+	// Pass an empty slice to declare "no auth required" for this publish operation.
+	// nil (default) inherits global security declared via [Builder.AddGlobalSecurity].
+	Security []route.SecurityRequirement
 }
 
 func (p Publish) applyChannel(cb *channelBuilder) { cb.publish = &p }
@@ -177,6 +219,19 @@ type ChannelHandle[T any] struct {
 	// topicCodec is the builder-level topic codec (may be nil).
 	// Used to re-validate the final assembled topic in BuildTopic.
 	topicCodec *codex.Codec[string]
+
+	// SecuritySchemes maps scheme name to SecurityScheme (with runtime Codec).
+	// Populated from Builder.AddSecurityScheme when AddChannel is called.
+	// Adapters use this map to extract and validate credentials per scheme.
+	SecuritySchemes map[string]SecurityScheme
+
+	// GlobalSecurity holds the builder-level security requirements that apply
+	// when the channel operation's Security field is nil (i.e. the channel
+	// inherits global security). Adapters resolve the effective requirements as:
+	//   reqs := handle.Descriptor.Subscribe.Security
+	//   if reqs == nil { reqs = handle.GlobalSecurity }
+	// Set via [Builder.AddGlobalSecurity]. nil when no global security is declared.
+	GlobalSecurity []route.SecurityRequirement
 }
 
 // BuildTopic substitutes {varName} placeholders in the channel's topic template
@@ -390,11 +445,13 @@ func (e InvalidTopicError) Unwrap() error { return e.Err }
 // Builder accumulates channel registrations and produces AsyncAPI specs.
 // Create one with [NewBuilder].
 type Builder struct {
-	info       Info
-	servers    map[string]Server
-	entries    []channelEntry
-	schemas    map[string]schema.Schema
-	topicCodec *codex.Codec[string]
+	info            Info
+	servers         map[string]Server
+	entries         []channelEntry
+	schemas         map[string]schema.Schema
+	topicCodec      *codex.Codec[string]
+	securitySchemes map[string]SecurityScheme
+	globalSecurity  []route.SecurityRequirement
 }
 
 // BuilderOption configures a [Builder] at construction time.
@@ -436,9 +493,10 @@ func WithTopicConstraints(cons ...codex.Constraint[string]) BuilderOption {
 // NewBuilder returns a Builder initialised with the given API metadata.
 func NewBuilder(info Info, opts ...BuilderOption) *Builder {
 	b := &Builder{
-		info:    info,
-		servers: make(map[string]Server),
-		schemas: make(map[string]schema.Schema),
+		info:            info,
+		servers:         make(map[string]Server),
+		schemas:         make(map[string]schema.Schema),
+		securitySchemes: make(map[string]SecurityScheme),
 	}
 	for _, opt := range opts {
 		opt(b)
@@ -457,6 +515,34 @@ func (b *Builder) AddServer(name string, s Server) *Builder {
 // channel configs but not inlined in any codec.
 func (b *Builder) AddSchema(name string, s schema.Schema) *Builder {
 	b.schemas[name] = s
+	return b
+}
+
+// AddSecurityScheme registers a named security scheme with the builder.
+// The spec fields flow into the AsyncAPI document via AsyncAPISpec; Codec, when
+// non-nil, is used by adapters to validate extracted credentials before
+// SecurityFunc is called (MQTT adapters skip Codec validation — use SecurityFunc).
+//
+// The name must match those used in [route.Require] calls on Subscribe/Publish
+// Security fields and in [Builder.AddGlobalSecurity].
+func (b *Builder) AddSecurityScheme(name string, s SecurityScheme) *Builder {
+	b.securitySchemes[name] = s
+	return b
+}
+
+// AddGlobalSecurity appends security requirements that apply to all channels
+// by default. The requirements flow into runtime enforcement: channels with
+// nil Subscribe.Security or Publish.Security inherit these requirements at the
+// adapter layer via [ChannelHandle.GlobalSecurity].
+//
+// AsyncAPI 3.0 has no document-level global security field; these requirements
+// do NOT appear in the AsyncAPI spec output. To annotate per-channel security in
+// the spec, set [Subscribe.Security] or [Publish.Security] explicitly.
+//
+// To mark a specific channel as explicitly unsecured (exempt from global
+// security), set Security to an empty slice: Security: []route.SecurityRequirement{}.
+func (b *Builder) AddGlobalSecurity(reqs ...route.SecurityRequirement) *Builder {
+	b.globalSecurity = append(b.globalSecurity, reqs...)
 	return b
 }
 
@@ -506,20 +592,26 @@ func AddChannel[T any](
 
 	jsonFmt := format.JSON(codec)
 
+	schemes := make(map[string]SecurityScheme, len(b.securitySchemes))
+	for k, v := range b.securitySchemes {
+		schemes[k] = v
+	}
 	h := &ChannelHandle[T]{
-		Topic:       topic,
-		Descriptor:  frozen,
-		Decode:      func(payload []byte) (T, error) { return jsonFmt.Unmarshal(payload) },
-		Encode:      func(msg T) ([]byte, error) { return jsonFmt.Marshal(msg) },
-		topicParams: cb.topicParams,
-		topicCodec:  b.topicCodec,
+		Topic:           topic,
+		Descriptor:      frozen,
+		Decode:          func(payload []byte) (T, error) { return jsonFmt.Unmarshal(payload) },
+		Encode:          func(msg T) ([]byte, error) { return jsonFmt.Marshal(msg) },
+		topicParams:     cb.topicParams,
+		topicCodec:      b.topicCodec,
+		SecuritySchemes: schemes,
+		GlobalSecurity:  slices.Clone(b.globalSecurity),
 	}
 	entry := &typedChannelEntry[T]{topicStr: topic, handle: h}
 	b.entries = append(b.entries, entry)
 	return h, nil
 }
 
-// AsyncAPISpec builds a complete AsyncAPI 2.6 document from all registered channels.
+// AsyncAPISpec builds a complete AsyncAPI 3.0 document from all registered channels.
 // Returns an error if any non-empty SchemaName references a schema that will not
 // be present in components/schemas (a dangling $ref).
 func (b *Builder) AsyncAPISpec() (asyncapi.Document, error) {
@@ -532,6 +624,9 @@ func (b *Builder) AsyncAPISpec() (asyncapi.Document, error) {
 	}
 	for name, s := range b.schemas {
 		ab.AddSchema(name, s)
+	}
+	for name, s := range b.securitySchemes {
+		ab.AddSecurityScheme(name, s.SecurityScheme)
 	}
 	for _, e := range b.entries {
 		ab.AddChannel(e.topic(), e.descriptor())
@@ -595,6 +690,7 @@ func checkOp(op *asyncapi.Operation, resolvable, seen map[string]bool, unresolve
 // TopicParam.Description adds a human-readable description.
 func buildChannelItem[T any](topic string, codec codex.Codec[T], cb channelBuilder) asyncapi.ChannelItem {
 	item := asyncapi.ChannelItem{
+		Address:     topic,
 		Description: cb.meta.Description,
 		Parameters:  buildTopicParameters(topic, cb.topicParams),
 	}
@@ -610,6 +706,7 @@ func buildChannelItem[T any](topic string, codec codex.Codec[T], cb channelBuild
 				Schema:     codec.Schema,
 				SchemaName: op.SchemaName,
 			},
+			Security: slices.Clone(op.Security),
 		}
 	}
 
@@ -624,6 +721,7 @@ func buildChannelItem[T any](topic string, codec codex.Codec[T], cb channelBuild
 				Schema:     codec.Schema,
 				SchemaName: op.SchemaName,
 			},
+			Security: slices.Clone(op.Security),
 		}
 	}
 

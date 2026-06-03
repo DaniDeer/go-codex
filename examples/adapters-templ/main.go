@@ -64,54 +64,13 @@ var articleReqCodec = codex.Struct[ArticleReq]()
 // The same constraints apply to both JSON encoding and HTML rendering (symmetric
 // Refine): the codec rejects invalid data in both directions.
 var ArticlePropsCodec = codex.Struct[ArticleProps](
-	codex.Field[ArticleProps, string]{
-		Name:     "id",
-		Codec:    codex.String().Refine(validate.UUID).WithTitle("ID"),
-		Get:      func(a ArticleProps) string { return a.ID },
-		Set:      func(a *ArticleProps, v string) { a.ID = v },
-		Required: true,
-	},
-	codex.Field[ArticleProps, string]{
-		Name:     "title",
-		Codec:    codex.String().Refine(validate.NonEmptyString).WithTitle("Title"),
-		Get:      func(a ArticleProps) string { return a.Title },
-		Set:      func(a *ArticleProps, v string) { a.Title = v },
-		Required: true,
-	},
-	codex.Field[ArticleProps, string]{
-		Name:     "slug",
-		Codec:    codex.String().Refine(validate.Slug).WithTitle("Slug"),
-		Get:      func(a ArticleProps) string { return a.Slug },
-		Set:      func(a *ArticleProps, v string) { a.Slug = v },
-		Required: true,
-	},
-	codex.Field[ArticleProps, string]{
-		Name:     "authorLine",
-		Codec:    codex.String().Refine(validate.NonEmptyString).WithTitle("Author"),
-		Get:      func(a ArticleProps) string { return a.AuthorLine },
-		Set:      func(a *ArticleProps, v string) { a.AuthorLine = v },
-		Required: true,
-	},
-	codex.Field[ArticleProps, string]{
-		Name:     "date",
-		Codec:    codex.String().Refine(validate.Date).WithTitle("Published At"),
-		Get:      func(a ArticleProps) string { return a.Date },
-		Set:      func(a *ArticleProps, v string) { a.Date = v },
-		Required: true,
-	},
-	codex.Field[ArticleProps, string]{
-		Name:     "readMoreURL",
-		Codec:    codex.String().Refine(validate.URL).WithTitle("URL"),
-		Get:      func(a ArticleProps) string { return a.ReadMoreURL },
-		Set:      func(a *ArticleProps, v string) { a.ReadMoreURL = v },
-		Required: true,
-	},
-	codex.Field[ArticleProps, string]{
-		Name:  "summary",
-		Codec: codex.String().WithTitle("Summary"),
-		Get:   func(a ArticleProps) string { return a.Summary },
-		Set:   func(a *ArticleProps, v string) { a.Summary = v },
-	},
+	codex.RequiredField("id", codex.String().Refine(validate.UUID).WithTitle("ID"), func(a ArticleProps) string { return a.ID }, func(a *ArticleProps, v string) { a.ID = v }),
+	codex.RequiredField("title", codex.String().Refine(validate.NonEmptyString).WithTitle("Title"), func(a ArticleProps) string { return a.Title }, func(a *ArticleProps, v string) { a.Title = v }),
+	codex.RequiredField("slug", codex.String().Refine(validate.Slug).WithTitle("Slug"), func(a ArticleProps) string { return a.Slug }, func(a *ArticleProps, v string) { a.Slug = v }),
+	codex.RequiredField("authorLine", codex.String().Refine(validate.NonEmptyString).WithTitle("Author"), func(a ArticleProps) string { return a.AuthorLine }, func(a *ArticleProps, v string) { a.AuthorLine = v }),
+	codex.RequiredField("date", codex.String().Refine(validate.Date).WithTitle("Published At"), func(a ArticleProps) string { return a.Date }, func(a *ArticleProps, v string) { a.Date = v }),
+	codex.RequiredField("readMoreURL", codex.String().Refine(validate.URL).WithTitle("URL"), func(a ArticleProps) string { return a.ReadMoreURL }, func(a *ArticleProps, v string) { a.ReadMoreURL = v }),
+	codex.OptionalField("summary", codex.String().WithTitle("Summary"), func(a ArticleProps) string { return a.Summary }, func(a *ArticleProps, v string) { a.Summary = v }),
 )
 
 // ── templ component (implemented with ComponentFunc — no codegen required) ───

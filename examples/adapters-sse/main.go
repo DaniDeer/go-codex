@@ -53,13 +53,7 @@ type sensorReading struct {
 var emptyReqCodec = codex.Struct[emptyReq]()
 
 var counterEventCodec = codex.Struct[counterEvent](
-	codex.Field[counterEvent, int]{
-		Name:     "count",
-		Codec:    codex.Int(),
-		Required: true,
-		Get:      func(e counterEvent) int { return e.Count },
-		Set:      func(e *counterEvent, v int) { e.Count = v },
-	},
+	codex.RequiredField("count", codex.Int(), func(e counterEvent) int { return e.Count }, func(e *counterEvent, v int) { e.Count = v }),
 )
 
 var temperatureConstraint = codex.Constraint[float64]{
@@ -69,27 +63,9 @@ var temperatureConstraint = codex.Constraint[float64]{
 }
 
 var sensorReadingCodec = codex.Struct[sensorReading](
-	codex.Field[sensorReading, string]{
-		Name:     "sensor_id",
-		Codec:    codex.String().Refine(validate.NonEmptyString),
-		Required: true,
-		Get:      func(r sensorReading) string { return r.SensorID },
-		Set:      func(r *sensorReading, v string) { r.SensorID = v },
-	},
-	codex.Field[sensorReading, float64]{
-		Name:     "temperature",
-		Codec:    codex.Float64().Refine(temperatureConstraint),
-		Required: true,
-		Get:      func(r sensorReading) float64 { return r.Temperature },
-		Set:      func(r *sensorReading, v float64) { r.Temperature = v },
-	},
-	codex.Field[sensorReading, string]{
-		Name:     "unit",
-		Codec:    codex.String().Refine(validate.NonEmptyString),
-		Required: true,
-		Get:      func(r sensorReading) string { return r.Unit },
-		Set:      func(r *sensorReading, v string) { r.Unit = v },
-	},
+	codex.RequiredField("sensor_id", codex.String().Refine(validate.NonEmptyString), func(r sensorReading) string { return r.SensorID }, func(r *sensorReading, v string) { r.SensorID = v }),
+	codex.RequiredField("temperature", codex.Float64().Refine(temperatureConstraint), func(r sensorReading) float64 { return r.Temperature }, func(r *sensorReading, v float64) { r.Temperature = v }),
+	codex.RequiredField("unit", codex.String().Refine(validate.NonEmptyString), func(r sensorReading) string { return r.Unit }, func(r *sensorReading, v string) { r.Unit = v }),
 )
 
 // sensorIDCodec validates that a sensor ID is in the "<word>-<word>" format.

@@ -35,56 +35,26 @@ type AppConfig struct {
 // configCodec is the single source of truth: encoding, decoding, validation,
 // and JSON Schema documentation all derive from this one definition.
 var configCodec = codex.Struct[AppConfig](
-	codex.Field[AppConfig, string]{
-		Name: "host",
-		Codec: codex.String().
+	codex.RequiredField("host", codex.String().
 			Refine(validate.NonEmptyString).
 			WithTitle("Host").
-			WithDescription("Hostname or IP address the server binds to."),
-		Get:      func(c AppConfig) string { return c.Host },
-		Set:      func(c *AppConfig, v string) { c.Host = v },
-		Required: true,
-	},
-	codex.Field[AppConfig, int]{
-		Name: "port",
-		Codec: codex.Int().
+			WithDescription("Hostname or IP address the server binds to."), func(c AppConfig) string { return c.Host }, func(c *AppConfig, v string) { c.Host = v }),
+	codex.RequiredField("port", codex.Int().
 			Refine(validate.RangeInt(1, 65535)).
 			WithTitle("Port").
-			WithDescription("TCP port the server listens on (1–65535)."),
-		Get:      func(c AppConfig) int { return c.Port },
-		Set:      func(c *AppConfig, v int) { c.Port = v },
-		Required: true,
-	},
-	codex.Field[AppConfig, string]{
-		Name: "log_level",
-		Codec: codex.String().
+			WithDescription("TCP port the server listens on (1–65535)."), func(c AppConfig) int { return c.Port }, func(c *AppConfig, v int) { c.Port = v }),
+	codex.OptionalField("log_level", codex.String().
 			Refine(validate.OneOf("debug", "info", "warn", "error")).
 			WithTitle("Log Level").
-			WithDescription("Minimum log severity: debug, info, warn, or error."),
-		Get:      func(c AppConfig) string { return c.LogLevel },
-		Set:      func(c *AppConfig, v string) { c.LogLevel = v },
-		Required: false,
-	},
-	codex.Field[AppConfig, string]{
-		Name: "database_url",
-		Codec: codex.String().
+			WithDescription("Minimum log severity: debug, info, warn, or error."), func(c AppConfig) string { return c.LogLevel }, func(c *AppConfig, v string) { c.LogLevel = v }),
+	codex.RequiredField("database_url", codex.String().
 			Refine(validate.NonEmptyString).
 			WithTitle("Database URL").
-			WithDescription("Connection URL for the primary database."),
-		Get:      func(c AppConfig) string { return c.DatabaseURL },
-		Set:      func(c *AppConfig, v string) { c.DatabaseURL = v },
-		Required: true,
-	},
-	codex.Field[AppConfig, int]{
-		Name: "workers",
-		Codec: codex.Int().
+			WithDescription("Connection URL for the primary database."), func(c AppConfig) string { return c.DatabaseURL }, func(c *AppConfig, v string) { c.DatabaseURL = v }),
+	codex.RequiredField("workers", codex.Int().
 			Refine(validate.RangeInt(1, 256)).
 			WithTitle("Workers").
-			WithDescription("Number of worker goroutines (1–256)."),
-		Get:      func(c AppConfig) int { return c.Workers },
-		Set:      func(c *AppConfig, v int) { c.Workers = v },
-		Required: true,
-	},
+			WithDescription("Number of worker goroutines (1–256)."), func(c AppConfig) int { return c.Workers }, func(c *AppConfig, v int) { c.Workers = v }),
 )
 
 var tomlFmt = format.TOML(configCodec)

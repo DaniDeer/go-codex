@@ -1,16 +1,16 @@
-package asyncapi_test
+package v2_test
 
 import (
 	"encoding/json"
 	"strings"
 	"testing"
 
-	"github.com/DaniDeer/go-codex/render/asyncapi"
+	v2 "github.com/DaniDeer/go-codex/render/asyncapi/v2"
 	"github.com/DaniDeer/go-codex/schema"
 )
 
 func TestDocumentBuilder_emptyBuildProducesMinimalDocument(t *testing.T) {
-	doc, err := asyncapi.NewDocumentBuilder(testInfo).Build()
+	doc, err := v2.NewDocumentBuilder(testInfo).Build()
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -29,12 +29,12 @@ func TestDocumentBuilder_emptyBuildProducesMinimalDocument(t *testing.T) {
 }
 
 func TestDocumentBuilder_addChannel_populatesChannels(t *testing.T) {
-	doc, err := asyncapi.NewDocumentBuilder(testInfo).
-		AddChannel("user/created", asyncapi.ChannelItem{
+	doc, err := v2.NewDocumentBuilder(testInfo).
+		AddChannel("user/created", v2.ChannelItem{
 			Description: "User creation events.",
-			Subscribe: &asyncapi.Operation{
+			Subscribe: &v2.Operation{
 				Summary: "User created",
-				Message: asyncapi.Message{
+				Message: v2.Message{
 					Schema:     userSchema,
 					SchemaName: "User",
 				},
@@ -62,11 +62,11 @@ func TestDocumentBuilder_addChannel_populatesChannels(t *testing.T) {
 }
 
 func TestDocumentBuilder_messageWithSchemaName_emitsRef(t *testing.T) {
-	doc, err := asyncapi.NewDocumentBuilder(testInfo).
-		AddChannel("order/placed", asyncapi.ChannelItem{
-			Publish: &asyncapi.Operation{
+	doc, err := v2.NewDocumentBuilder(testInfo).
+		AddChannel("order/placed", v2.ChannelItem{
+			Publish: &v2.Operation{
 				Summary: "Place an order",
-				Message: asyncapi.Message{
+				Message: v2.Message{
 					Schema:     userSchema,
 					SchemaName: "Order",
 				},
@@ -92,10 +92,10 @@ func TestDocumentBuilder_messageWithSchemaName_emitsRef(t *testing.T) {
 
 func TestDocumentBuilder_messageWithoutSchemaName_inlinesSchema(t *testing.T) {
 	inlineSchema := schema.Schema{Type: "object", Properties: []schema.Property{{Name: "x", Schema: schema.Schema{Type: "integer"}}}}
-	doc, err := asyncapi.NewDocumentBuilder(testInfo).
-		AddChannel("item/updated", asyncapi.ChannelItem{
-			Subscribe: &asyncapi.Operation{
-				Message: asyncapi.Message{
+	doc, err := v2.NewDocumentBuilder(testInfo).
+		AddChannel("item/updated", v2.ChannelItem{
+			Subscribe: &v2.Operation{
+				Message: v2.Message{
 					Schema: inlineSchema,
 				},
 			},
@@ -119,11 +119,11 @@ func TestDocumentBuilder_messageWithoutSchemaName_inlinesSchema(t *testing.T) {
 }
 
 func TestDocumentBuilder_subscribeOnly(t *testing.T) {
-	doc, err := asyncapi.NewDocumentBuilder(testInfo).
-		AddChannel("user/deleted", asyncapi.ChannelItem{
-			Subscribe: &asyncapi.Operation{
+	doc, err := v2.NewDocumentBuilder(testInfo).
+		AddChannel("user/deleted", v2.ChannelItem{
+			Subscribe: &v2.Operation{
 				Summary: "User deleted",
-				Message: asyncapi.Message{Schema: schema.Schema{Type: "object"}},
+				Message: v2.Message{Schema: schema.Schema{Type: "object"}},
 			},
 		}).
 		Build()
@@ -145,11 +145,11 @@ func TestDocumentBuilder_subscribeOnly(t *testing.T) {
 }
 
 func TestDocumentBuilder_publishOnly(t *testing.T) {
-	doc, err := asyncapi.NewDocumentBuilder(testInfo).
-		AddChannel("cmd/send-email", asyncapi.ChannelItem{
-			Publish: &asyncapi.Operation{
+	doc, err := v2.NewDocumentBuilder(testInfo).
+		AddChannel("cmd/send-email", v2.ChannelItem{
+			Publish: &v2.Operation{
 				Summary: "Send email command",
-				Message: asyncapi.Message{Schema: schema.Schema{Type: "object"}},
+				Message: v2.Message{Schema: schema.Schema{Type: "object"}},
 			},
 		}).
 		Build()
@@ -171,15 +171,15 @@ func TestDocumentBuilder_publishOnly(t *testing.T) {
 }
 
 func TestDocumentBuilder_subscribeAndPublish_onSameChannel(t *testing.T) {
-	doc, err := asyncapi.NewDocumentBuilder(testInfo).
-		AddChannel("chat/message", asyncapi.ChannelItem{
-			Subscribe: &asyncapi.Operation{
+	doc, err := v2.NewDocumentBuilder(testInfo).
+		AddChannel("chat/message", v2.ChannelItem{
+			Subscribe: &v2.Operation{
 				Summary: "Receive chat message",
-				Message: asyncapi.Message{Schema: schema.Schema{Type: "object"}},
+				Message: v2.Message{Schema: schema.Schema{Type: "object"}},
 			},
-			Publish: &asyncapi.Operation{
+			Publish: &v2.Operation{
 				Summary: "Send chat message",
-				Message: asyncapi.Message{Schema: schema.Schema{Type: "object"}},
+				Message: v2.Message{Schema: schema.Schema{Type: "object"}},
 			},
 		}).
 		Build()
@@ -198,8 +198,8 @@ func TestDocumentBuilder_subscribeAndPublish_onSameChannel(t *testing.T) {
 }
 
 func TestDocumentBuilder_channelWithNoOps_returnsError(t *testing.T) {
-	_, err := asyncapi.NewDocumentBuilder(testInfo).
-		AddChannel("empty/channel", asyncapi.ChannelItem{
+	_, err := v2.NewDocumentBuilder(testInfo).
+		AddChannel("empty/channel", v2.ChannelItem{
 			Description: "No ops defined.",
 		}).
 		Build()
@@ -211,11 +211,11 @@ func TestDocumentBuilder_channelWithNoOps_returnsError(t *testing.T) {
 func TestDocumentBuilder_explicitSchemaWinsOverChannel(t *testing.T) {
 	channelSchema := schema.Schema{Type: "string"}
 	explicitSchema := schema.Schema{Type: "object", Title: "Explicit"}
-	doc, err := asyncapi.NewDocumentBuilder(testInfo).
+	doc, err := v2.NewDocumentBuilder(testInfo).
 		AddSchema("MyEvent", explicitSchema).
-		AddChannel("my/event", asyncapi.ChannelItem{
-			Subscribe: &asyncapi.Operation{
-				Message: asyncapi.Message{
+		AddChannel("my/event", v2.ChannelItem{
+			Subscribe: &v2.Operation{
+				Message: v2.Message{
 					Schema:     channelSchema,
 					SchemaName: "MyEvent",
 				},
@@ -237,15 +237,15 @@ func TestDocumentBuilder_explicitSchemaWinsOverChannel(t *testing.T) {
 }
 
 func TestDocumentBuilder_addServer_includesInOutput(t *testing.T) {
-	doc, err := asyncapi.NewDocumentBuilder(testInfo).
-		AddServer("production", asyncapi.Server{
+	doc, err := v2.NewDocumentBuilder(testInfo).
+		AddServer("production", v2.Server{
 			URL:         "amqp://broker.example.com",
 			Protocol:    "amqp",
 			Description: "Production broker",
 		}).
-		AddChannel("ping", asyncapi.ChannelItem{
-			Subscribe: &asyncapi.Operation{
-				Message: asyncapi.Message{Schema: schema.Schema{Type: "object"}},
+		AddChannel("ping", v2.ChannelItem{
+			Subscribe: &v2.Operation{
+				Message: v2.Message{Schema: schema.Schema{Type: "object"}},
 			},
 		}).
 		Build()
@@ -267,10 +267,10 @@ func TestDocumentBuilder_addServer_includesInOutput(t *testing.T) {
 }
 
 func TestDocument_marshalJSON_validJSON(t *testing.T) {
-	doc, err := asyncapi.NewDocumentBuilder(testInfo).
-		AddChannel("ping", asyncapi.ChannelItem{
-			Subscribe: &asyncapi.Operation{
-				Message: asyncapi.Message{Schema: schema.Schema{Type: "object"}},
+	doc, err := v2.NewDocumentBuilder(testInfo).
+		AddChannel("ping", v2.ChannelItem{
+			Subscribe: &v2.Operation{
+				Message: v2.Message{Schema: schema.Schema{Type: "object"}},
 			},
 		}).
 		Build()
@@ -288,11 +288,11 @@ func TestDocument_marshalJSON_validJSON(t *testing.T) {
 }
 
 func TestDocumentBuilder_operationTags_inOutput(t *testing.T) {
-	doc, err := asyncapi.NewDocumentBuilder(testInfo).
-		AddChannel("user/created", asyncapi.ChannelItem{
-			Subscribe: &asyncapi.Operation{
+	doc, err := v2.NewDocumentBuilder(testInfo).
+		AddChannel("user/created", v2.ChannelItem{
+			Subscribe: &v2.Operation{
 				Tags:    []string{"user", "events"},
-				Message: asyncapi.Message{Schema: schema.Schema{Type: "object"}},
+				Message: v2.Message{Schema: schema.Schema{Type: "object"}},
 			},
 		}).
 		Build()
@@ -311,17 +311,17 @@ func TestDocumentBuilder_operationTags_inOutput(t *testing.T) {
 }
 
 func TestDocumentBuilder_channelParameters_emittedForTemplateChannel(t *testing.T) {
-	doc, err := asyncapi.NewDocumentBuilder(testInfo).
-		AddChannel("sensors/{sensorID}/data", asyncapi.ChannelItem{
-			Parameters: map[string]asyncapi.Parameter{
+	doc, err := v2.NewDocumentBuilder(testInfo).
+		AddChannel("sensors/{sensorID}/data", v2.ChannelItem{
+			Parameters: map[string]v2.Parameter{
 				"sensorID": {
 					Description: "The sensor UUID.",
 					Schema:      schema.Schema{Type: "string", Format: "uuid"},
 				},
 			},
-			Subscribe: &asyncapi.Operation{
+			Subscribe: &v2.Operation{
 				Summary: "Receive sensor data",
-				Message: asyncapi.Message{Schema: userSchema},
+				Message: v2.Message{Schema: userSchema},
 			},
 		}).
 		Build()
@@ -349,14 +349,14 @@ func TestDocumentBuilder_channelParameters_emittedForTemplateChannel(t *testing.
 
 func TestDocumentBuilder_channelParameters_defaultTypeString(t *testing.T) {
 	// A parameter with zero-value Schema should default to {type: string}.
-	doc, err := asyncapi.NewDocumentBuilder(testInfo).
-		AddChannel("events/{eventID}", asyncapi.ChannelItem{
-			Parameters: map[string]asyncapi.Parameter{
+	doc, err := v2.NewDocumentBuilder(testInfo).
+		AddChannel("events/{eventID}", v2.ChannelItem{
+			Parameters: map[string]v2.Parameter{
 				"eventID": {},
 			},
-			Subscribe: &asyncapi.Operation{
+			Subscribe: &v2.Operation{
 				Summary: "Some event",
-				Message: asyncapi.Message{Schema: userSchema},
+				Message: v2.Message{Schema: userSchema},
 			},
 		}).
 		Build()

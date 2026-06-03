@@ -57,30 +57,12 @@ type Shape struct {
 }
 
 var rectangleCodec = codex.Struct[Rectangle](
-	codex.Field[Rectangle, int]{
-		Name:     "width",
-		Codec:    codex.Int().Refine(validate.PositiveInt),
-		Get:      func(r Rectangle) int { return r.Width },
-		Set:      func(r *Rectangle, v int) { r.Width = v },
-		Required: true,
-	},
-	codex.Field[Rectangle, int]{
-		Name:     "height",
-		Codec:    codex.Int().Refine(validate.PositiveInt),
-		Get:      func(r Rectangle) int { return r.Height },
-		Set:      func(r *Rectangle, v int) { r.Height = v },
-		Required: true,
-	},
+	codex.RequiredField("width", codex.Int().Refine(validate.PositiveInt), func(r Rectangle) int { return r.Width }, func(r *Rectangle, v int) { r.Width = v }),
+	codex.RequiredField("height", codex.Int().Refine(validate.PositiveInt), func(r Rectangle) int { return r.Height }, func(r *Rectangle, v int) { r.Height = v }),
 )
 
 var squareCodec = codex.Struct[Square](
-	codex.Field[Square, int]{
-		Name:     "side",
-		Codec:    codex.Int().Refine(validate.PositiveInt),
-		Get:      func(s Square) int { return s.Side },
-		Set:      func(s *Square, v int) { s.Side = v },
-		Required: true,
-	},
+	codex.RequiredField("side", codex.Int().Refine(validate.PositiveInt), func(s Square) int { return s.Side }, func(s *Square, v int) { s.Side = v }),
 )
 
 var shapeCodec = codex.TaggedUnion[Shape](

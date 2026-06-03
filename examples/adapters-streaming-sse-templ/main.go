@@ -70,40 +70,11 @@ type NotifProps struct {
 var dashReqCodec = codex.Struct[DashboardReq]()
 
 var dashPropsCodec = codex.Struct[DashboardProps](
-	codex.Field[DashboardProps, string]{
-		Name:     "title",
-		Codec:    codex.String().Refine(validate.NonEmptyString).WithTitle("Title"),
-		Get:      func(p DashboardProps) string { return p.Title },
-		Set:      func(p *DashboardProps, v string) { p.Title = v },
-		Required: true,
-	},
-	codex.Field[DashboardProps, string]{
-		Name:  "subtitle",
-		Codec: codex.String().WithTitle("Subtitle"),
-		Get:   func(p DashboardProps) string { return p.Subtitle },
-		Set:   func(p *DashboardProps, v string) { p.Subtitle = v },
-	},
-	codex.Field[DashboardProps, string]{
-		Name:     "section1",
-		Codec:    codex.String().Refine(validate.NonEmptyString).WithTitle("Section 1"),
-		Get:      func(p DashboardProps) string { return p.Section1 },
-		Set:      func(p *DashboardProps, v string) { p.Section1 = v },
-		Required: true,
-	},
-	codex.Field[DashboardProps, string]{
-		Name:     "section2",
-		Codec:    codex.String().Refine(validate.NonEmptyString).WithTitle("Section 2"),
-		Get:      func(p DashboardProps) string { return p.Section2 },
-		Set:      func(p *DashboardProps, v string) { p.Section2 = v },
-		Required: true,
-	},
-	codex.Field[DashboardProps, string]{
-		Name:     "section3",
-		Codec:    codex.String().Refine(validate.NonEmptyString).WithTitle("Section 3"),
-		Get:      func(p DashboardProps) string { return p.Section3 },
-		Set:      func(p *DashboardProps, v string) { p.Section3 = v },
-		Required: true,
-	},
+	codex.RequiredField("title", codex.String().Refine(validate.NonEmptyString).WithTitle("Title"), func(p DashboardProps) string { return p.Title }, func(p *DashboardProps, v string) { p.Title = v }),
+	codex.OptionalField("subtitle", codex.String().WithTitle("Subtitle"), func(p DashboardProps) string { return p.Subtitle }, func(p *DashboardProps, v string) { p.Subtitle = v }),
+	codex.RequiredField("section1", codex.String().Refine(validate.NonEmptyString).WithTitle("Section 1"), func(p DashboardProps) string { return p.Section1 }, func(p *DashboardProps, v string) { p.Section1 = v }),
+	codex.RequiredField("section2", codex.String().Refine(validate.NonEmptyString).WithTitle("Section 2"), func(p DashboardProps) string { return p.Section2 }, func(p *DashboardProps, v string) { p.Section2 = v }),
+	codex.RequiredField("section3", codex.String().Refine(validate.NonEmptyString).WithTitle("Section 3"), func(p DashboardProps) string { return p.Section3 }, func(p *DashboardProps, v string) { p.Section3 = v }),
 )
 
 var notifReqCodec = codex.Struct[NotifReq]()
@@ -120,27 +91,9 @@ var validLevel = codex.Constraint[string]{
 }
 
 var notifCodec = codex.Struct[NotifProps](
-	codex.Field[NotifProps, string]{
-		Name:     "id",
-		Codec:    codex.String().Refine(validate.NonEmptyString).WithTitle("ID"),
-		Get:      func(p NotifProps) string { return p.ID },
-		Set:      func(p *NotifProps, v string) { p.ID = v },
-		Required: true,
-	},
-	codex.Field[NotifProps, string]{
-		Name:     "message",
-		Codec:    codex.String().Refine(validate.NonEmptyString).WithTitle("Message"),
-		Get:      func(p NotifProps) string { return p.Message },
-		Set:      func(p *NotifProps, v string) { p.Message = v },
-		Required: true,
-	},
-	codex.Field[NotifProps, string]{
-		Name:     "level",
-		Codec:    codex.String().Refine(validLevel).WithTitle("Level"),
-		Get:      func(p NotifProps) string { return p.Level },
-		Set:      func(p *NotifProps, v string) { p.Level = v },
-		Required: true,
-	},
+	codex.RequiredField("id", codex.String().Refine(validate.NonEmptyString).WithTitle("ID"), func(p NotifProps) string { return p.ID }, func(p *NotifProps, v string) { p.ID = v }),
+	codex.RequiredField("message", codex.String().Refine(validate.NonEmptyString).WithTitle("Message"), func(p NotifProps) string { return p.Message }, func(p *NotifProps, v string) { p.Message = v }),
+	codex.RequiredField("level", codex.String().Refine(validLevel).WithTitle("Level"), func(p NotifProps) string { return p.Level }, func(p *NotifProps, v string) { p.Level = v }),
 )
 
 // ── templ components ──────────────────────────────────────────────────────────

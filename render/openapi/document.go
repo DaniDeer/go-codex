@@ -29,25 +29,30 @@ type Server struct {
 // Document is a full OpenAPI 3.1 document produced by DocumentBuilder.
 // Use MarshalJSON or MarshalYAML to serialise it.
 type Document struct {
-	info    Info
-	servers []Server
-	routes  []route.Route
-	schemas map[string]schema.Schema
+	info            Info
+	servers         []Server
+	routes          []route.Route
+	schemas         map[string]schema.Schema
+	securitySchemes map[string]route.SecurityScheme
+	globalSecurity  []route.SecurityRequirement
 }
 
 // DocumentBuilder accumulates routes and named schemas, then produces a Document.
 type DocumentBuilder struct {
-	info    Info
-	servers []Server
-	routes  []route.Route
-	schemas map[string]schema.Schema
+	info            Info
+	servers         []Server
+	routes          []route.Route
+	schemas         map[string]schema.Schema
+	securitySchemes map[string]route.SecurityScheme
+	globalSecurity  []route.SecurityRequirement
 }
 
 // NewDocumentBuilder returns a builder initialised with the given Info.
 func NewDocumentBuilder(info Info) *DocumentBuilder {
 	return &DocumentBuilder{
-		info:    info,
-		schemas: make(map[string]schema.Schema),
+		info:            info,
+		schemas:         make(map[string]schema.Schema),
+		securitySchemes: make(map[string]route.SecurityScheme),
 	}
 }
 
@@ -67,6 +72,22 @@ func (b *DocumentBuilder) AddRoute(r route.Route) *DocumentBuilder {
 // Explicitly registered schemas take precedence over schemas inferred from routes.
 func (b *DocumentBuilder) AddSchema(name string, s schema.Schema) *DocumentBuilder {
 	b.schemas[name] = s
+	return b
+}
+
+// AddSecurityScheme registers a named security scheme in components/securitySchemes.
+// The name must match those used in SecurityRequirement maps on routes and
+// in AddGlobalSecurity calls.
+func (b *DocumentBuilder) AddSecurityScheme(name string, s route.SecurityScheme) *DocumentBuilder {
+	b.securitySchemes[name] = s
+	return b
+}
+
+// AddGlobalSecurity appends security requirements that apply to all operations
+// by default. Per-route Security on a route.Route overrides the global list for
+// that operation; an empty per-route slice marks the operation as unsecured.
+func (b *DocumentBuilder) AddGlobalSecurity(reqs ...route.SecurityRequirement) *DocumentBuilder {
+	b.globalSecurity = append(b.globalSecurity, reqs...)
 	return b
 }
 
@@ -108,10 +129,12 @@ func (b *DocumentBuilder) Build() (Document, error) {
 	}
 
 	return Document{
-		info:    b.info,
-		servers: b.servers,
-		routes:  b.routes,
-		schemas: schemas,
+		info:            b.info,
+		servers:         b.servers,
+		routes:          b.routes,
+		schemas:         schemas,
+		securitySchemes: b.securitySchemes,
+		globalSecurity:  b.globalSecurity,
 	}, nil
 }
 
@@ -141,10 +164,19 @@ func (d Document) toMap() map[string]any {
 		doc["paths"] = paths
 	}
 
+	if len(d.globalSecurity) > 0 {
+		doc["security"] = buildSecurityRequirements(d.globalSecurity)
+	}
+
+	components := map[string]any{}
 	if len(d.schemas) > 0 {
-		doc["components"] = map[string]any{
-			"schemas": ComponentsSchemas(d.schemas),
-		}
+		components["schemas"] = ComponentsSchemas(d.schemas)
+	}
+	if len(d.securitySchemes) > 0 {
+		components["securitySchemes"] = buildSecuritySchemes(d.securitySchemes)
+	}
+	if len(components) > 0 {
+		doc["components"] = components
 	}
 
 	return doc
@@ -221,6 +253,11 @@ func buildOperation(r route.Route) map[string]any {
 
 	if len(r.Responses) > 0 {
 		op["responses"] = buildResponses(r.Responses)
+	}
+
+	// nil Security = inherit global; non-nil (including empty) overrides global.
+	if r.Security != nil {
+		op["security"] = buildSecurityRequirements(r.Security)
 	}
 
 	return op
@@ -317,6 +354,96 @@ func buildResponses(responses []route.Response) map[string]any {
 		result[r.Status] = resp
 	}
 	return result
+}
+
+// buildSecurityRequirements converts a slice of SecurityRequirement into the
+// OpenAPI security array format: [{schemeName: [scope, ...]}, ...].
+func buildSecurityRequirements(reqs []route.SecurityRequirement) []any {
+	out := make([]any, len(reqs))
+	for i, req := range reqs {
+		m := make(map[string]any, len(req))
+		for name, scopes := range req {
+			if scopes == nil {
+				scopes = []string{}
+			}
+			m[name] = scopes
+		}
+		out[i] = m
+	}
+	return out
+}
+
+// buildSecuritySchemes converts the named security schemes into the OpenAPI
+// components/securitySchemes object.
+func buildSecuritySchemes(schemes map[string]route.SecurityScheme) map[string]any {
+	out := make(map[string]any, len(schemes))
+	for name, s := range schemes {
+		out[name] = buildSecurityScheme(s)
+	}
+	return out
+}
+
+// buildSecurityScheme converts a route.SecurityScheme to its OpenAPI representation.
+func buildSecurityScheme(s route.SecurityScheme) map[string]any {
+	m := map[string]any{"type": string(s.Type)}
+	if s.Description != "" {
+		m["description"] = s.Description
+	}
+	switch s.Type {
+	case route.SecuritySchemeAPIKey:
+		m["name"] = s.Name
+		m["in"] = s.In
+	case route.SecuritySchemeHTTP:
+		m["scheme"] = s.Scheme
+		if s.BearerFormat != "" {
+			m["bearerFormat"] = s.BearerFormat
+		}
+	case route.SecuritySchemeOAuth2:
+		if s.Flows != nil {
+			m["flows"] = buildOAuthFlows(s.Flows)
+		}
+	case route.SecuritySchemeOpenIDConnect:
+		m["openIdConnectUrl"] = s.OpenIDConnectURL
+	}
+	return m
+}
+
+// buildOAuthFlows converts OAuthFlows to the OpenAPI flows object.
+func buildOAuthFlows(flows *route.OAuthFlows) map[string]any {
+	m := map[string]any{}
+	if flows.Implicit != nil {
+		m["implicit"] = buildOAuthFlow(flows.Implicit)
+	}
+	if flows.Password != nil {
+		m["password"] = buildOAuthFlow(flows.Password)
+	}
+	if flows.ClientCredentials != nil {
+		m["clientCredentials"] = buildOAuthFlow(flows.ClientCredentials)
+	}
+	if flows.AuthorizationCode != nil {
+		m["authorizationCode"] = buildOAuthFlow(flows.AuthorizationCode)
+	}
+	return m
+}
+
+// buildOAuthFlow converts an OAuthFlow to its OpenAPI representation.
+func buildOAuthFlow(f *route.OAuthFlow) map[string]any {
+	m := map[string]any{}
+	if f.AuthorizationURL != "" {
+		m["authorizationUrl"] = f.AuthorizationURL
+	}
+	if f.TokenURL != "" {
+		m["tokenUrl"] = f.TokenURL
+	}
+	if f.RefreshURL != "" {
+		m["refreshUrl"] = f.RefreshURL
+	}
+	scopes := make(map[string]any, len(f.Scopes))
+	for k, v := range f.Scopes {
+		scopes[k] = v
+	}
+	m["scopes"] = scopes
+	return m
 }
 
 // schemaRef returns a $ref object when name is non-empty, otherwise inlines the schema.

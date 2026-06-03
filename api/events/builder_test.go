@@ -10,6 +10,7 @@ import (
 	"github.com/DaniDeer/go-codex/api/events"
 	"github.com/DaniDeer/go-codex/codex"
 	"github.com/DaniDeer/go-codex/format"
+	"github.com/DaniDeer/go-codex/route"
 	"github.com/DaniDeer/go-codex/validate"
 )
 
@@ -186,7 +187,7 @@ func TestBuilder_asyncAPISpec_containsRegisteredChannels(t *testing.T) {
 		"Test Events",
 		"user/created:",
 		"user/deleted:",
-		"subscribe:",
+		"action: receive",
 		"A user was created",
 		"A user was deleted",
 		"components:",
@@ -255,8 +256,8 @@ func TestBuilder_asyncAPISpec_jsonOutput(t *testing.T) {
 	if err := json.Unmarshal(jsonBytes, &m); err != nil {
 		t.Fatalf("output not valid JSON: %v", err)
 	}
-	if m["asyncapi"] != "2.6.0" {
-		t.Errorf("asyncapi version: got %v, want 2.6.0", m["asyncapi"])
+	if m["asyncapi"] != "3.0.0" {
+		t.Errorf("asyncapi version: got %v, want 3.0.0", m["asyncapi"])
 	}
 }
 
@@ -827,5 +828,92 @@ func TestSubscribe_emptyOperationIDOmittedFromSpec(t *testing.T) {
 	}
 	if strings.Contains(string(yamlBytes), "operationId") {
 		t.Errorf("expected AsyncAPI spec to omit operationId when empty, got:\n%s", yamlBytes)
+	}
+}
+
+// --- Security builder tests ---
+
+func TestSecurityScheme_WithCodec_setsCodec(t *testing.T) {
+	c := codex.String().Refine(validate.NonEmptyString)
+	s := events.SecurityScheme{SecurityScheme: route.BearerScheme("JWT")}.WithCodec(c)
+	if s.Codec == nil {
+		t.Fatal("expected Codec to be non-nil after WithCodec")
+	}
+}
+
+func TestSecurityScheme_WithCodec_returnsDistinctCopy(t *testing.T) {
+	c := codex.String().Refine(validate.NonEmptyString)
+	orig := events.SecurityScheme{SecurityScheme: route.BearerScheme("JWT")}
+	updated := orig.WithCodec(c)
+	if orig.Codec != nil {
+		t.Fatal("WithCodec must not mutate the original")
+	}
+	if updated.Codec == nil {
+		t.Fatal("updated copy must have non-nil Codec")
+	}
+}
+
+func TestBuilder_AddSecurityScheme_propagatesToChannelHandle(t *testing.T) {
+	b := events.NewBuilder(testInfo)
+	c := codex.String().Refine(validate.NonEmptyString)
+	b.AddSecurityScheme("bearer", events.SecurityScheme{SecurityScheme: route.BearerScheme("JWT")}.WithCodec(c))
+
+	handle, err := events.AddChannel[userEvent](b, "user/created", userEventCodec)
+	if err != nil {
+		t.Fatalf("AddChannel: %v", err)
+	}
+	if _, ok := handle.SecuritySchemes["bearer"]; !ok {
+		t.Fatal("expected SecuritySchemes to contain 'bearer'")
+	}
+	if handle.SecuritySchemes["bearer"].Codec == nil {
+		t.Fatal("expected Codec to be propagated to ChannelHandle")
+	}
+}
+
+func TestBuilder_AddGlobalSecurity_populatesChannelHandleGlobalSecurity(t *testing.T) {
+	b := events.NewBuilder(testInfo)
+	b.AddGlobalSecurity(route.Require("bearer"))
+
+	handle, err := events.AddChannel[userEvent](b, "user/created", userEventCodec)
+	if err != nil {
+		t.Fatalf("AddChannel: %v", err)
+	}
+	if len(handle.GlobalSecurity) == 0 {
+		t.Fatal("expected GlobalSecurity to be populated on ChannelHandle")
+	}
+	req := handle.GlobalSecurity[0]
+	if _, ok := req["bearer"]; !ok {
+		t.Errorf("expected GlobalSecurity to contain 'bearer' requirement, got %v", req)
+	}
+}
+
+func TestBuilder_AddGlobalSecurity_doesNotAppearInAsyncAPISpec(t *testing.T) {
+	b := events.NewBuilder(testInfo)
+	b.AddSecurityScheme("bearer", events.SecurityScheme{SecurityScheme: route.BearerScheme("JWT")})
+	b.AddGlobalSecurity(route.Require("bearer"))
+
+	_, err := events.AddChannel[userEvent](b, "user/created", userEventCodec,
+		events.Subscribe{Summary: "User created"},
+	)
+	if err != nil {
+		t.Fatalf("AddChannel: %v", err)
+	}
+	doc, err := b.AsyncAPISpec()
+	if err != nil {
+		t.Fatalf("AsyncAPISpec: %v", err)
+	}
+	yamlBytes, err := doc.MarshalYAML()
+	if err != nil {
+		t.Fatalf("MarshalYAML: %v", err)
+	}
+	// AsyncAPI 3.0 has no document-level global security — must not appear at top level.
+	// Per-server or per-operation security would appear nested, but a global "security:"
+	// key at document root is not valid AsyncAPI 3.0.
+	spec := string(yamlBytes)
+	lines := strings.Split(spec, "\n")
+	for _, line := range lines {
+		if strings.HasPrefix(line, "security:") {
+			t.Errorf("AsyncAPI spec must not have a top-level 'security:' key (AsyncAPI 3.0 has no global security); got:\n%s", spec)
+		}
 	}
 }

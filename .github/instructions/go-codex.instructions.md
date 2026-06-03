@@ -26,26 +26,28 @@ go-codex is a Go port of the core ideas from Haskell's [autodocodec](https://hac
 | `schema`          | Schema model (pure data, no codec logic)                                                  | none                             |
 | `validate`        | Reusable `Constraint` functions: numbers, strings, format, bytes                          | `codex`, `schema`                |
 | `format`          | Bridges `Codec[T]` to wire formats: JSON, YAML, TOML, streaming; `FromEnv[T]` for schema-driven env var loading; `NewStreamed` for chunked/SSE writes | `codex`, `schema`, external libs |
-| `route`           | HTTP route descriptors: `Route`, `Param`, `Body`, `Response`                             | `schema`                         |
+| `route`           | HTTP route descriptors: `Route`, `Param`, `Body`, `Response`; security: `SecurityScheme` (spec-only, no codec), `SecuritySchemeType` constants (`SecuritySchemeAPIKey`, `SecuritySchemeHTTP`, `SecuritySchemeOAuth2`, `SecuritySchemeOpenIDConnect`), `OAuthFlow`, `OAuthFlows`, `SecurityRequirement` (`map[string][]string`); named constructors: `BearerScheme(format)`, `BasicScheme()`, `APIKeyScheme(name, in)`, `OAuth2Scheme(flows)`, `OpenIDConnectScheme(url)`; `Require(scheme, scopes...)` helper; `Route.Security []SecurityRequirement` (nil=inherit global, empty=no auth) | `schema`                         |
 | `render/internal/schemarender` | Shared schema-to-map rendering logic used by both OpenAPI and AsyncAPI renderers | `schema`               |
 | `render/openapi`  | Renders `schema.Schema` as OpenAPI 3.1 `components/schemas`; `DocumentBuilder` for full spec | `schema`, `route`, `render/internal/schemarender`, external libs |
-| `render/asyncapi` | Renders channels and schemas as a full AsyncAPI 2.6 document                             | `schema`, `render/internal/schemarender`, external libs |
+| `render/asyncapi/v2` | Renders channels and schemas as a full AsyncAPI 2.6 document (frozen)               | `schema`, `render/internal/schemarender`, external libs |
+| `render/asyncapi/v3` | Renders channels and schemas as a full AsyncAPI 3.0 document; separate `channels` + `operations` top-level keys; per-operation `security`; `Server.Security`; `ChannelItem.Address`; `AddSecurityScheme(name, route.SecurityScheme)` | `schema`, `route`, `render/internal/schemarender`, external libs |
 | `forge`           | Governed, signed KPI computation: `Measured[T]` boundary wrapper with provenance; `MeasuredCodec[T]` struct codec; `Function[In,Out]` generic derivation function with SHA-256 contract hash — single-input or struct-input (use `codex.Struct[T]` for multi-input); `New[In,Out](name, version, inputName, inputCodec, outputName, outputCodec, fn, opts...)` constructor; `Compose[A,B,Out]` for type-safe chaining; `Registry` fluent builder (`NewRegistry(title, version string).WithDescription().WithObserver()`) + `PipelineSpec` for graph inference (struct input codec properties auto-expand to individual `InputSpec` entries for DAG edges); `Must[T]` panic helper; `FunctionOption` variadic governance metadata (`WithDescription`, `WithAuthor`, `WithApproval`) and pipeline-level cross-input refinement (`WithRefinement[In](func(In)error)` — preferred: cross-field constraints via `codex.RefineFunc` on the input struct codec surface as `InputError`; `WithRefinement` surfaces as `RefinementError`); Apply sequence: input codec validation → optional cross-input refinement → compute → output codec validation; typed errors: `InputError`, `OutputError`, `ApplyError`, `RefinementError{Function,Err}`, `ConfigError`; collection ops: `Map` (lift fn over slice), `Filter` (predicate over slice), `Reduce` (fold slice), `MapValues` (lift fn over `map[string]_`, no key validation), `MapValuesK[K]` (lift fn over `map[K]_` with key codec validation — validates all keys atomically before any value is processed; invalid key → `InputError → KeyError → ConstraintError`; `Kind="mapValues"`, `Wraps=innerFn.Spec.Name` in pipeline YAML) | `codex`, `schema`, `stats`, stdlib (`crypto/sha256`, `encoding/json`) |
 | `render/pipeline` | Renders a `forge.PipelineSpec` as a `pipelineSpec` YAML document (mirrors `render/openapi` / `render/asyncapi`) | `forge`, `schema`, `render/internal/schemarender`, external libs |
 | `api/internal`    | Shared helpers for `api/rest` and `api/events` (template variable parsing and substitution); not part of the public API | `codex` |
-| `api/rest`        | Transport-agnostic REST API builder; typed Decode/Encode + OpenAPI spec; `AddSSERoute` for Server-Sent Events; `SSERouteHandle` with `BuildPath` and `WithEventFormats`; `RouteHandle.WithRequestFormats` / `WithResponseFormats` for multi-format request/response bodies | `codex`, `format`, `route`, `render/openapi`, `schema`, `api/internal` |
-| `api/events`      | Transport-agnostic event channel builder; typed Decode/Encode + AsyncAPI spec; `ChannelHandle.WithFormats` sets default payload format and updates `message.contentType` in the AsyncAPI descriptor | `codex`, `format`, `render/asyncapi`, `schema`, `api/internal` |
-| `adapters/nethttp` | net/http adapter: `Handler`, `Register`, `SSEHandler`, `RegisterSSE`, `SSEHandlerFunc`, `RequestFromContext`, `WithResponseHeaders`, `ResponseHeadersFromContext`, `WithResponseCookies`, `ResponseCookiesFromContext`, `PendingCookie`, `SetCookie`, `CookieOptions`, `Options` (with `Observer stats.Observer`); request format negotiation via `RouteHandle.WithRequestFormats` | `api/rest`, `net/http`, `stats`, `format` |
-| `adapters/chi`    | chi adapter: same API surface as `adapters/nethttp` plus `SSEHandler`, `RegisterSSE`, `SSEHandlerFunc`; path vars via `chi.URLParam`; `Handler`, `Register`, `RequestFromContext`, `WithResponseHeaders`, `WithResponseCookies`, `PendingCookie`, `SetCookie`, `CookieOptions`, `Options`; request format negotiation via `RouteHandle.WithRequestFormats` | `api/rest`, `net/http`, `stats`, `format`, chi lib |
-| `adapters/mqtt`   | Paho MQTT adapter: `SubscribeHandler` (uses `handle.Formats` as default; call-time `formats ...format.Format[T]` variadic overrides), `Publish` (same priority chain), `TopicVarsFromMessage`, `TopicMismatchError`, `SubscribeError`, `ErrorKind`, `SubscribeOptions` (with `Observer stats.Observer`), `PublishOptions` (with `Observer stats.Observer`) | `api/events`, `format`, `stats`, Paho MQTT lib |
+| `api/rest`        | Transport-agnostic REST API builder; typed Decode/Encode + OpenAPI spec; `AddSSERoute` for Server-Sent Events; `SSERouteHandle` with `BuildPath` and `WithEventFormats`; `RouteHandle.WithRequestFormats` / `WithResponseFormats` for multi-format request/response bodies; `rest.SecurityScheme{route.SecurityScheme + Codec}` for credential format validation; `WithCodec(c codex.Codec[string]) SecurityScheme` to set codec without pointer boilerplate; `Builder.AddSecurityScheme(name, rest.SecurityScheme)` / `AddGlobalSecurity(reqs...)`; `RouteMeta.Security []route.SecurityRequirement` (nil=inherit global, empty=explicitly no auth); `RouteHandle.SecuritySchemes map[string]rest.SecurityScheme`; `RouteHandle.GlobalSecurity []route.SecurityRequirement` (populated from `AddGlobalSecurity`); `SecurityCredentialError{Scheme, Err}` / `SecurityError{Err}` structured errors | `codex`, `format`, `route`, `render/openapi`, `schema`, `api/internal` |
+| `api/events`      | Transport-agnostic event channel builder; typed Decode/Encode + AsyncAPI 3.0 spec; `ChannelHandle.WithFormats` sets default payload format and updates `message.contentType` in the AsyncAPI descriptor; `events.SecurityScheme{route.SecurityScheme + Codec}` for credential validation; `WithCodec(c codex.Codec[string]) SecurityScheme` to set codec without pointer boilerplate; `Builder.AddSecurityScheme`; `Builder.AddGlobalSecurity(reqs...)` (runtime enforcement only — AsyncAPI 3.0 has no document-level global security); `Subscribe.Security` / `Publish.Security` for per-operation requirements (nil=inherit global, empty=no auth); `ChannelHandle.SecuritySchemes` / `ChannelHandle.GlobalSecurity` used by adapters | `codex`, `format`, `render/asyncapi/v3`, `route`, `schema`, `api/internal` |
+| `adapters/nethttp` | net/http adapter: `Handler`, `Register`, `SSEHandler`, `RegisterSSE`, `SSEHandlerFunc`, `RequestFromContext`, `WithResponseHeaders`, `ResponseHeadersFromContext`, `WithResponseCookies`, `ResponseCookiesFromContext`, `PendingCookie`, `SetCookie`, `CookieOptions`, `Options` (with `Observer stats.Observer`, `SecurityFunc func(ctx, *http.Request, []route.SecurityRequirement) error`); security enforcement: nil per-route Security falls back to `RouteHandle.GlobalSecurity`; `len(secReqs) > 0` gate (empty=no auth); credential extraction + codec validation + SecurityFunc; type-asserts `stats.SecurityObserver` for rejection metrics; request format negotiation via `RouteHandle.WithRequestFormats` | `api/rest`, `net/http`, `route`, `stats`, `format` |
+| `adapters/chi`    | chi adapter: same API surface as `adapters/nethttp` plus `SSEHandler`, `RegisterSSE`, `SSEHandlerFunc`; path vars via `chi.URLParam`; `Handler`, `Register`, `RequestFromContext`, `WithResponseHeaders`, `WithResponseCookies`, `PendingCookie`, `SetCookie`, `CookieOptions`, `Options` (with `SecurityFunc`); global security fallback + empty=no-auth semantics same as nethttp; request format negotiation via `RouteHandle.WithRequestFormats` | `api/rest`, `net/http`, `route`, `stats`, `format`, chi lib |
+| `adapters/mqtt`   | Paho MQTT adapter: `SubscribeHandler` (uses `handle.Formats` as default; call-time `formats ...format.Format[T]` variadic overrides), `Publish` (same priority chain), `TopicVarsFromMessage`, `TopicMismatchError`, `SubscribeError`, `ErrorKind` (KindDecode/KindHandler/KindSecurity), `SubscribeOptions` (with `Observer stats.Observer`, `SecurityFunc func(ctx, pahomqtt.Message, []route.SecurityRequirement) error`), `PublishOptions` (with `Observer stats.Observer`); nil per-channel Subscribe.Security falls back to `ChannelHandle.GlobalSecurity`; `len(secReqs) > 0` gate (empty=no auth) | `api/events`, `format`, `route`, `stats`, Paho MQTT lib |
 | `adapters/templ`  | templ SSR format plug-in: `Format[Props](codec, component) format.Format[Props]`, `StreamingFormat[Props](codec, component) format.Format[Props]`, `DecodeNotSupportedError`; add to a route's `ResponseFormats` to serve `text/html` alongside JSON via the existing nethttp/chi adapters | `codex`, `format`, `github.com/a-h/templ` |
-| `stats`           | Observer hooks: `ValidationObserver` (codec-level, 1 method); `Observer` (adapter-level, embeds `ValidationObserver` + transport hooks); `PipelineObserver` (forge-level, `RecordApply(name, version string, success bool, duration time.Duration)`); `NoopObserver` (satisfies all three interfaces); `ReportErrors(obs, location, err)`; `ConstraintName(err)` | `codex`, `time` (stdlib only) |
+| `stats`           | Observer hooks: `ValidationObserver` (codec-level, 1 method); `Observer` (adapter-level, embeds `ValidationObserver` + transport hooks); `PipelineObserver` (forge-level, `RecordApply(name, version string, success bool, duration time.Duration)`); `SecurityObserver` (optional interface, `RecordSecurityRejection(location, scheme string)` — type-asserted by adapters, never embedded in `Observer`); `NoopObserver` (satisfies all four interfaces); `ReportErrors(obs, location, err)`; `ConstraintName(err)` | `codex`, `time` (stdlib only) |
 
 - No circular imports.
 - `schema` has zero dependencies inside this module.
 - `route` imports only `schema` — no renderer or codec logic.
 - `render/openapi` imports `schema` and `route` — no codec logic in the renderer layer.
-- `render/asyncapi` imports only `schema` — channels are independent of HTTP route concepts.
+- `render/asyncapi/v2` imports only `schema` — channels are independent of HTTP route concepts.
+- `render/asyncapi/v3` imports `schema` and `route` — per-operation security requires route types.
 - `examples/` must not be imported by any non-example package.
 
 ## Core Abstraction: `Codec[T]`
@@ -706,9 +708,9 @@ Key rules:
 - `Response.Schema == nil` → no `content` block (correct for 204, no-body errors).
 - Existing `SchemaObject`, `ComponentsSchemas`, `MarshalJSON`, `MarshalYAML` remain unchanged.
 
-## AsyncAPI 2.6 Document (`render/asyncapi`)
+## AsyncAPI 2.6 Document (`render/asyncapi/v2`)
 
-`render/asyncapi` produces a full AsyncAPI 2.6 document. It imports only `schema`.
+`render/asyncapi/v2` produces a full AsyncAPI 2.6 document. It imports only `schema`.
 
 ```go
 // NewDocumentBuilder returns a builder for a full AsyncAPI 2.6 document.
@@ -750,7 +752,7 @@ type Message struct {
 ```
 
 Key rules:
-- `render/asyncapi` imports only `schema` — channels are independent of HTTP route concepts.
+- `render/asyncapi/v2` imports only `schema` — channels are independent of HTTP route concepts.
 - `Message.SchemaName != ""` → `$ref` in `message.payload` + schema auto-registered.
 - `Message.Schema` zero-value with empty `SchemaName` → empty payload `{}` inline.
 - `ChannelItem.Parameters` non-empty → `parameters:` block emitted in spec. Schema zero-value → `{type: string}`.
@@ -1218,13 +1220,13 @@ Key rules:
 - Topic validation is **immediate**: if a `topicCodec` is set, `AddChannel` returns `InvalidTopicError` at call time. The channel is not registered on failure.
 - **Template-transparent validation**: before running the topic codec, `{varName}` placeholders are replaced with the literal `x` (e.g. `"sensors/{sensorID}/data"` → `"sensors/x/data"`). Constraints run on the structural shape of the topic, not the template syntax. The stored `ChannelHandle.Topic` is always the original template.
 - **Final topic re-validation**: `BuildTopic` re-validates the fully assembled topic against the builder-level `topicCodec` after substitution. Catches values that pass their `TopicParam.Codec` but violate the global topic constraint. Returns `InvalidTopicError{Topic: finalTopic, Err: ...}`.
-- `Info = asyncapi.Info` and `Server = asyncapi.Server` are type aliases.
-- `api/events` may import `codex`, `format`, `render/asyncapi`, `schema`. No messaging library.
+- `Info = asyncapi.Info` and `Server = asyncapi.Server` are type aliases (where `asyncapi` now refers to `render/asyncapi/v3`).
+- `api/events` may import `codex`, `format`, `route`, `render/asyncapi/v3`, `schema`. No messaging library.
 - `adapters/mqtt` wraps `ChannelHandle` for Paho MQTT. It imports `api/events`, `stats`, and `github.com/eclipse/paho.mqtt.golang`.
   - `SubscribeHandler[T](ctx, handle, fn, opts SubscribeOptions, formats ...format.Format[T]) mqtt.MessageHandler` — decodes payload, calls fn, routes typed errors to `opts.OnError`; instruments via `opts.Observer` (`RecordSubscribe` + `RecordValidationError` for payload and topic errors). Format priority: call-time `formats` → `handle.Formats` → JSON fallback. `SubscribeError.Topic` reflects the concrete incoming message topic (`msg.Topic()`).
   - `SubscribeOptions{OnError func(SubscribeError), Observer stats.Observer}` — zero value is safe (nil `OnError` discards errors, nil `Observer` defaults to `NoopObserver`).
   - `MessageFromContext(ctx) (pahomqtt.Message, bool)` — retrieves the raw `pahomqtt.Message` stored in context by `SubscribeHandler`. Analogous to `nethttp.RequestFromContext`. Gives access to `Qos()`, `Retained()`, `MessageID()`, `Duplicate()` without breaking the typed handler signature. Returns false on a plain context.
-  - `SubscribeError{Kind ErrorKind, Topic string, Err error}` — typed error; `Kind` is `KindDecode` or `KindHandler`.
+  - `SubscribeError{Kind ErrorKind, Topic string, Err error}` — typed error; `Kind` is `KindDecode`, `KindHandler`, or `KindSecurity`.
   - `Publish[T](ctx, client, handle, qos, retained, msg, vars map[string]string, opts PublishOptions, formats ...format.Format[T]) error` — unified publish: `nil` vars → use `handle.Topic` (static topics); non-nil vars → call `handle.BuildTopic(vars)`. Format priority: call-time `formats` → `handle.Formats` → JSON fallback. Instruments via `opts.Observer`: calls `RecordPublish(topic, success, duration)` on all exit paths; calls `RecordValidationError("payload", ...)` on encode errors; calls `RecordValidationError("topic_var", ...)` or `RecordValidationError("topic", ...)` on `BuildTopic` failures. Returns `TopicParamError` or `MissingTopicVarError` if `BuildTopic` fails. Context-aware token wait.
   - `PublishOptions{Observer stats.Observer}` — zero value is safe (nil `Observer` defaults to `NoopObserver`).
   - `TopicVarsFromMessage[T](handle, msg) (map[string]string, error)` — inverse of `BuildTopic`. Matches the concrete MQTT topic (`msg.Topic()`) against the channel's topic template, extracting `{varName}` values into the returned map. Template rules: `{varName}` captures one level; `+` matches one level (anonymous, not captured); `#` as last segment captures all remaining levels under key `"#"`. Applies full validation chain (symmetric with `BuildTopic`): (1) structural match → `TopicMismatchError{Template, Topic}`; (2) builder-level topic codec → `InvalidTopicError{Topic, Err}`; (3) per-param `TopicParam.Codec` validation → `TopicParamError{Name, Value, Err}`.
@@ -1240,15 +1242,16 @@ Key rules:
 
 ### Package import table (updated)
 
-| Package            | Imports allowed from                                          |
-|--------------------|---------------------------------------------------------------|
-| `api/rest`         | `codex`, `format`, `route`, `render/openapi`, `schema`        |
-| `api/events`       | `codex`, `format`, `render/asyncapi`, `schema`                |
-| `adapters/nethttp` | `api/rest`, `net/http` (stdlib), `stats`, `format`            |
-| `adapters/chi`     | `api/rest`, `net/http` (stdlib), `stats`, `format`, chi lib   |
-| `adapters/mqtt`    | `api/events`, `stats`, `github.com/eclipse/paho.mqtt.golang`  |
-| `adapters/templ`   | `codex`, `format`, `github.com/a-h/templ`                     |
-| `stats`            | `codex`, `errors`, `time` (stdlib only)                       |
+| Package              | Imports allowed from                                                         |
+|----------------------|------------------------------------------------------------------------------|
+| `api/rest`           | `codex`, `format`, `route`, `render/openapi`, `schema`                       |
+| `api/events`         | `codex`, `format`, `route`, `render/asyncapi/v3`, `schema`                   |
+| `adapters/nethttp`   | `api/rest`, `net/http` (stdlib), `route`, `stats`, `format`                  |
+| `adapters/chi`       | `api/rest`, `net/http` (stdlib), `route`, `stats`, `format`, chi lib         |
+| `adapters/mqtt`      | `api/events`, `route`, `stats`, `github.com/eclipse/paho.mqtt.golang`        |
+| `adapters/templ`     | `codex`, `format`, `github.com/a-h/templ`                                    |
+| `stats`              | `codex`, `errors`, `time` (stdlib only)                                      |
+| `render/asyncapi/v3` | `schema`, `route`, `render/internal/schemarender`, external libs              |
 
 
 ## Multi-Format Output

@@ -122,6 +122,11 @@ type RouteMeta struct {
 
 	// RespSchemaName, when non-empty, emits a $ref for the response schema.
 	RespSchemaName string
+
+	// Security, when non-nil, overrides global security for this operation.
+	// Pass an empty slice to declare "no auth required" for this route.
+	// nil (default) inherits global security declared via Builder.AddGlobalSecurity.
+	Security []route.SecurityRequirement
 }
 
 func (m RouteMeta) applyRoute(rb *routeBuilder) { rb.meta = m }
@@ -204,6 +209,19 @@ type RouteHandle[Req, Resp any] struct {
 	// pathCodec is the builder-level path codec (may be nil).
 	// Used to re-validate the final assembled path in BuildPath.
 	pathCodec *codex.Codec[string]
+
+	// SecuritySchemes maps scheme name to SecurityScheme (with runtime Codec).
+	// Populated from Builder.AddSecurityScheme when AddRoute is called.
+	// Adapters use this map to extract and validate credentials per scheme.
+	SecuritySchemes map[string]SecurityScheme
+
+	// GlobalSecurity holds the builder-level security requirements that apply
+	// when Descriptor.Security is nil (i.e. the route inherits global security).
+	// Adapters resolve the effective requirements as:
+	//   reqs := handle.Descriptor.Security
+	//   if reqs == nil { reqs = handle.GlobalSecurity }
+	// Set via [Builder.AddGlobalSecurity]. nil when no global security is declared.
+	GlobalSecurity []route.SecurityRequirement
 }
 
 // WithRequestFormats registers the formats the route accepts for request body
@@ -785,6 +803,84 @@ func (e ResponseCookieParamError) Error() string {
 // Unwrap allows errors.As and errors.Is to traverse the underlying constraint error.
 func (e ResponseCookieParamError) Unwrap() error { return e.Err }
 
+// SecurityScheme combines [route.SecurityScheme] spec metadata with optional
+// runtime credential extraction and format validation.
+//
+// AddSecurityScheme registers a SecurityScheme with the builder. The spec fields
+// flow into the OpenAPI document; Codec, when non-nil, is used by adapters to
+// validate the raw credential string before SecurityFunc is called.
+//
+// The adapter extracts the raw credential from the request based on the scheme
+// Type and location fields:
+//   - http bearer / openIdConnect / oauth2: strips "Bearer " from the Authorization header
+//   - http basic: strips "Basic " from the Authorization header
+//   - apiKey: reads from the header / query / cookie named Name according to In
+//
+// A codec validation failure causes the adapter to return a [SecurityCredentialError]
+// with HTTP 401, without invoking SecurityFunc.
+type SecurityScheme struct {
+	route.SecurityScheme
+	// Codec, when non-nil, validates the extracted raw credential string.
+	// Nil means no format validation; SecurityFunc receives the request as-is.
+	//
+	// Use [SecurityScheme.WithCodec] to set this field inline without a temporary
+	// variable: rest.SecurityScheme{SecurityScheme: route.BearerScheme("JWT")}.WithCodec(c)
+	Codec *codex.Codec[string]
+}
+
+// WithCodec returns a copy of s with Codec set to c. It avoids the
+// temporary-variable + address-of pattern required when setting Codec inline:
+//
+//	b.AddSecurityScheme("bearer", rest.SecurityScheme{
+//	    SecurityScheme: route.BearerScheme("JWT"),
+//	}.WithCodec(codex.String().Refine(validate.BearerToken)))
+func (s SecurityScheme) WithCodec(c codex.Codec[string]) SecurityScheme {
+	s.Codec = &c
+	return s
+}
+
+// SecurityCredentialError is returned when credential format validation via
+// SecurityScheme.Codec fails. It is distinct from [SecurityError], which wraps
+// rejections from SecurityFunc.
+//
+// Use [errors.As] to extract the scheme name and underlying constraint error:
+//
+//	var credErr rest.SecurityCredentialError
+//	if errors.As(err, &credErr) {
+//	    log.Printf("security scheme %q: invalid credential: %v", credErr.Scheme, credErr.Err)
+//	}
+type SecurityCredentialError struct {
+	Scheme string // security scheme name
+	Err    error  // codec constraint error
+}
+
+func (e SecurityCredentialError) Error() string {
+	return fmt.Sprintf("security scheme %q: invalid credential: %s", e.Scheme, e.Err)
+}
+
+// Unwrap allows errors.As and errors.Is to traverse the underlying constraint error.
+func (e SecurityCredentialError) Unwrap() error { return e.Err }
+
+// SecurityError is returned when SecurityFunc rejects a request.
+// It is distinct from [SecurityCredentialError], which covers codec format failures.
+//
+// Use [errors.As] to extract the underlying error from SecurityFunc:
+//
+//	var secErr rest.SecurityError
+//	if errors.As(err, &secErr) {
+//	    log.Printf("security check failed: %v", secErr.Err)
+//	}
+type SecurityError struct {
+	Err error
+}
+
+func (e SecurityError) Error() string {
+	return fmt.Sprintf("security check failed: %s", e.Err)
+}
+
+// Unwrap allows errors.As and errors.Is to traverse the underlying SecurityFunc error.
+func (e SecurityError) Unwrap() error { return e.Err }
+
 // UnsupportedMediaTypeError is returned by the net/http adapter when the
 // request Content-Type does not match any accepted media type.
 // Use [errors.As] to inspect the Got and Supported fields.
@@ -842,13 +938,18 @@ func (e NotAcceptableError) Error() string {
 	return fmt.Sprintf("not acceptable: Accept %q; supported: %s", e.Accept, strings.Join(e.Supported, ", "))
 }
 
+// Builder accumulates route registrations and security schemes, and produces
+// OpenAPI 3.1 specifications. It is safe to register routes from multiple
+// goroutines as long as [Builder.Build] is not called concurrently.
 // Create one with [NewBuilder].
 type Builder struct {
-	info      Info
-	servers   []Server
-	entries   []routeEntry
-	schemas   map[string]schema.Schema
-	pathCodec *codex.Codec[string]
+	info            Info
+	servers         []Server
+	entries         []routeEntry
+	schemas         map[string]schema.Schema
+	pathCodec       *codex.Codec[string]
+	securitySchemes map[string]SecurityScheme
+	globalSecurity  []route.SecurityRequirement
 }
 
 // BuilderOption configures a [Builder] at construction time.
@@ -889,7 +990,11 @@ func WithPathConstraints(cons ...codex.Constraint[string]) BuilderOption {
 
 // NewBuilder returns a Builder initialised with the given API metadata.
 func NewBuilder(info Info, opts ...BuilderOption) *Builder {
-	b := &Builder{info: info, schemas: make(map[string]schema.Schema)}
+	b := &Builder{
+		info:            info,
+		schemas:         make(map[string]schema.Schema),
+		securitySchemes: make(map[string]SecurityScheme),
+	}
 	for _, opt := range opts {
 		opt(b)
 	}
@@ -912,6 +1017,30 @@ func (b *Builder) AddServer(name string, s Server) *Builder {
 // referenced by SchemaName in route configs but not inlined in any codec.
 func (b *Builder) AddSchema(name string, s schema.Schema) *Builder {
 	b.schemas[name] = s
+	return b
+}
+
+// AddSecurityScheme registers a named security scheme with the builder.
+// The spec fields flow into the OpenAPI document via OpenAPISpec; Codec, when
+// non-nil, is used by adapters to validate extracted credentials before
+// SecurityFunc is called.
+//
+// The name must match those used in route.Require calls and AddGlobalSecurity.
+func (b *Builder) AddSecurityScheme(name string, s SecurityScheme) *Builder {
+	b.securitySchemes[name] = s
+	return b
+}
+
+// AddGlobalSecurity appends security requirements that apply to all operations
+// by default. The requirements flow into both:
+//   - The OpenAPI spec (top-level security field).
+//   - Runtime enforcement: routes with nil RouteMeta.Security inherit these
+//     requirements at the adapter layer via [RouteHandle.GlobalSecurity].
+//
+// To mark a specific route as explicitly unsecured (exempt from global security),
+// set Security to an empty slice in [RouteMeta]: Security: []route.SecurityRequirement{}.
+func (b *Builder) AddGlobalSecurity(reqs ...route.SecurityRequirement) *Builder {
+	b.globalSecurity = append(b.globalSecurity, reqs...)
 	return b
 }
 
@@ -967,6 +1096,10 @@ func AddRoute[Req, Resp any](
 	jsonReq := format.JSON(reqCodec)
 	jsonResp := format.JSON(respCodec)
 
+	schemes := make(map[string]SecurityScheme, len(b.securitySchemes))
+	for k, v := range b.securitySchemes {
+		schemes[k] = v
+	}
 	h := &RouteHandle[Req, Resp]{
 		Descriptor:           frozen,
 		Decode:               func(body []byte) (Req, error) { return jsonReq.Unmarshal(body) },
@@ -978,6 +1111,8 @@ func AddRoute[Req, Resp any](
 		responseHeaderParams: rb.respHeaders,
 		responseCookieParams: rb.respCookies,
 		pathCodec:            b.pathCodec,
+		SecuritySchemes:      schemes,
+		GlobalSecurity:       slices.Clone(b.globalSecurity),
 	}
 	entry := &typedRouteEntry[Req, Resp]{handle: h}
 	b.entries = append(b.entries, entry)
@@ -1131,6 +1266,12 @@ func (b *Builder) OpenAPISpec() (openapi.Document, error) {
 	for name, s := range b.schemas {
 		ob.AddSchema(name, s)
 	}
+	for name, s := range b.securitySchemes {
+		ob.AddSecurityScheme(name, s.SecurityScheme)
+	}
+	for _, req := range b.globalSecurity {
+		ob.AddGlobalSecurity(req)
+	}
 	for _, e := range b.entries {
 		ob.AddRoute(e.descriptor())
 	}
@@ -1208,6 +1349,7 @@ func buildDescriptor(method, path string, reqSchema, respSchema schema.Schema, r
 		QueryParams:  buildQueryParams(rb.queryParams),
 		CookieParams: buildCookieParams(rb.cookieParams),
 		HeaderParams: buildHeaderParams(rb.headerParams),
+		Security:     slices.Clone(rb.meta.Security),
 	}
 
 	if isBodyMethod(method) {

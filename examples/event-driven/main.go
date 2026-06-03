@@ -1,9 +1,16 @@
-// Package event-driven demonstrates generating a full AsyncAPI 2.6 document from
-// channel descriptors and Codec-derived schemas using the render/asyncapi package.
+// Package event-driven demonstrates generating a full AsyncAPI 3.0 document from
+// channel descriptors and Codec-derived schemas using the render/asyncapi/v3 package.
 //
-// AsyncAPI operations are app-centric:
-//   - Subscribe: this app RECEIVES messages (consumer)
-//   - Publish:   this app SENDS messages (producer)
+// AsyncAPI 3.0 operations are app-centric:
+//   - Subscribe (action: receive): this app RECEIVES messages (consumer)
+//   - Publish   (action: send):    this app SENDS messages (producer)
+//
+// In AsyncAPI 3.0 channels and operations are separate top-level maps:
+//   - channels: describe topics and their message schemas
+//   - operations: link operations to channels via $ref (action: receive/send)
+//
+// Security schemes are declared once in components/securitySchemes and
+// referenced per-operation via Security []route.SecurityRequirement.
 //
 // Run with: go run ./examples/event-driven
 package main
@@ -13,7 +20,8 @@ import (
 	"os"
 
 	"github.com/DaniDeer/go-codex/codex"
-	"github.com/DaniDeer/go-codex/render/asyncapi"
+	v3 "github.com/DaniDeer/go-codex/render/asyncapi/v3"
+	"github.com/DaniDeer/go-codex/route"
 	"github.com/DaniDeer/go-codex/validate"
 )
 
@@ -25,27 +33,9 @@ type UserCreatedEvent struct {
 }
 
 var UserCreatedEventCodec = codex.Struct[UserCreatedEvent](
-	codex.Field[UserCreatedEvent, string]{
-		Name:     "id",
-		Codec:    codex.String().Refine(validate.UUID).WithDescription("New user's UUID."),
-		Get:      func(e UserCreatedEvent) string { return e.ID },
-		Set:      func(e *UserCreatedEvent, v string) { e.ID = v },
-		Required: true,
-	},
-	codex.Field[UserCreatedEvent, string]{
-		Name:     "name",
-		Codec:    codex.String().Refine(validate.NonEmptyString).WithDescription("Full display name."),
-		Get:      func(e UserCreatedEvent) string { return e.Name },
-		Set:      func(e *UserCreatedEvent, v string) { e.Name = v },
-		Required: true,
-	},
-	codex.Field[UserCreatedEvent, string]{
-		Name:     "email",
-		Codec:    codex.String().Refine(validate.Email).WithDescription("Primary email address."),
-		Get:      func(e UserCreatedEvent) string { return e.Email },
-		Set:      func(e *UserCreatedEvent, v string) { e.Email = v },
-		Required: true,
-	},
+	codex.RequiredField("id", codex.String().Refine(validate.UUID).WithDescription("New user's UUID."), func(e UserCreatedEvent) string { return e.ID }, func(e *UserCreatedEvent, v string) { e.ID = v }),
+	codex.RequiredField("name", codex.String().Refine(validate.NonEmptyString).WithDescription("Full display name."), func(e UserCreatedEvent) string { return e.Name }, func(e *UserCreatedEvent, v string) { e.Name = v }),
+	codex.RequiredField("email", codex.String().Refine(validate.Email).WithDescription("Primary email address."), func(e UserCreatedEvent) string { return e.Email }, func(e *UserCreatedEvent, v string) { e.Email = v }),
 )
 
 // OrderPlacedEvent is received by this service when a user places an order.
@@ -56,27 +46,9 @@ type OrderPlacedEvent struct {
 }
 
 var OrderPlacedEventCodec = codex.Struct[OrderPlacedEvent](
-	codex.Field[OrderPlacedEvent, string]{
-		Name:     "orderId",
-		Codec:    codex.String().Refine(validate.UUID).WithDescription("Unique order ID."),
-		Get:      func(e OrderPlacedEvent) string { return e.OrderID },
-		Set:      func(e *OrderPlacedEvent, v string) { e.OrderID = v },
-		Required: true,
-	},
-	codex.Field[OrderPlacedEvent, string]{
-		Name:     "userId",
-		Codec:    codex.String().Refine(validate.UUID).WithDescription("ID of the user who placed the order."),
-		Get:      func(e OrderPlacedEvent) string { return e.UserID },
-		Set:      func(e *OrderPlacedEvent, v string) { e.UserID = v },
-		Required: true,
-	},
-	codex.Field[OrderPlacedEvent, float64]{
-		Name:     "total",
-		Codec:    codex.Float64().Refine(validate.PositiveFloat).WithDescription("Order total in USD."),
-		Get:      func(e OrderPlacedEvent) float64 { return e.Total },
-		Set:      func(e *OrderPlacedEvent, v float64) { e.Total = v },
-		Required: true,
-	},
+	codex.RequiredField("orderId", codex.String().Refine(validate.UUID).WithDescription("Unique order ID."), func(e OrderPlacedEvent) string { return e.OrderID }, func(e *OrderPlacedEvent, v string) { e.OrderID = v }),
+	codex.RequiredField("userId", codex.String().Refine(validate.UUID).WithDescription("ID of the user who placed the order."), func(e OrderPlacedEvent) string { return e.UserID }, func(e *OrderPlacedEvent, v string) { e.UserID = v }),
+	codex.RequiredField("total", codex.Float64().Refine(validate.PositiveFloat).WithDescription("Order total in USD."), func(e OrderPlacedEvent) float64 { return e.Total }, func(e *OrderPlacedEvent, v float64) { e.Total = v }),
 )
 
 // NotificationCommand is sent by this service to trigger a notification.
@@ -87,27 +59,9 @@ type NotificationCommand struct {
 }
 
 var NotificationCommandCodec = codex.Struct[NotificationCommand](
-	codex.Field[NotificationCommand, string]{
-		Name:     "recipient",
-		Codec:    codex.String().Refine(validate.Email).WithDescription("Recipient email address."),
-		Get:      func(c NotificationCommand) string { return c.Recipient },
-		Set:      func(c *NotificationCommand, v string) { c.Recipient = v },
-		Required: true,
-	},
-	codex.Field[NotificationCommand, string]{
-		Name:     "subject",
-		Codec:    codex.String().Refine(validate.NonEmptyString).WithDescription("Notification subject line."),
-		Get:      func(c NotificationCommand) string { return c.Subject },
-		Set:      func(c *NotificationCommand, v string) { c.Subject = v },
-		Required: true,
-	},
-	codex.Field[NotificationCommand, string]{
-		Name:     "body",
-		Codec:    codex.String().Refine(validate.NonEmptyString).WithDescription("Notification body text."),
-		Get:      func(c NotificationCommand) string { return c.Body },
-		Set:      func(c *NotificationCommand, v string) { c.Body = v },
-		Required: true,
-	},
+	codex.RequiredField("recipient", codex.String().Refine(validate.Email).WithDescription("Recipient email address."), func(c NotificationCommand) string { return c.Recipient }, func(c *NotificationCommand, v string) { c.Recipient = v }),
+	codex.RequiredField("subject", codex.String().Refine(validate.NonEmptyString).WithDescription("Notification subject line."), func(c NotificationCommand) string { return c.Subject }, func(c *NotificationCommand, v string) { c.Subject = v }),
+	codex.RequiredField("body", codex.String().Refine(validate.NonEmptyString).WithDescription("Notification body text."), func(c NotificationCommand) string { return c.Body }, func(c *NotificationCommand, v string) { c.Body = v }),
 )
 
 // CloudEvent models a CloudEvents 1.0 envelope (https://cloudevents.io/).
@@ -131,28 +85,10 @@ const cloudEventType = "com.example.order.placed"
 
 var CloudEventCodec = codex.Struct[CloudEvent](
 	// Pure("1.0"): always decodes to "1.0" and encodes "1.0" regardless of input.
-	codex.Field[CloudEvent, string]{
-		Name:     "specversion",
-		Codec:    codex.Pure("1.0").WithDescription("CloudEvents specification version. Always 1.0."),
-		Get:      func(e CloudEvent) string { return e.SpecVersion },
-		Set:      func(e *CloudEvent, v string) { e.SpecVersion = v },
-		Required: true,
-	},
+	codex.RequiredField("specversion", codex.Pure("1.0").WithDescription("CloudEvents specification version. Always 1.0."), func(e CloudEvent) string { return e.SpecVersion }, func(e *CloudEvent, v string) { e.SpecVersion = v }),
 	// Eq(String(), cloudEventType): String() handles wire decoding; Eq enforces the exact value.
-	codex.Field[CloudEvent, string]{
-		Name:     "type",
-		Codec:    codex.Eq(codex.String(), cloudEventType).WithDescription("CloudEvent type. Must be " + cloudEventType + "."),
-		Get:      func(e CloudEvent) string { return e.Type },
-		Set:      func(e *CloudEvent, v string) { e.Type = v },
-		Required: true,
-	},
-	codex.Field[CloudEvent, string]{
-		Name:     "id",
-		Codec:    codex.String().Refine(validate.UUID).WithDescription("Unique event identifier (UUID v4)."),
-		Get:      func(e CloudEvent) string { return e.ID },
-		Set:      func(e *CloudEvent, v string) { e.ID = v },
-		Required: true,
-	},
+	codex.RequiredField("type", codex.Eq(codex.String(), cloudEventType).WithDescription("CloudEvent type. Must be " + cloudEventType + "."), func(e CloudEvent) string { return e.Type }, func(e *CloudEvent, v string) { e.Type = v }),
+	codex.RequiredField("id", codex.String().Refine(validate.UUID).WithDescription("Unique event identifier (UUID v4)."), func(e CloudEvent) string { return e.ID }, func(e *CloudEvent, v string) { e.ID = v }),
 )
 
 func main() {
@@ -206,53 +142,70 @@ func main() {
 
 	fmt.Println()
 
-	// ── AsyncAPI document ─────────────────────────────────────────────────────
-	doc, err := asyncapi.NewDocumentBuilder(asyncapi.Info{
+	// ── AsyncAPI 3.0 document ─────────────────────────────────────────────────
+	// Security schemes are declared once in components/securitySchemes and
+	// referenced per-operation. Operations link to channels via $ref.
+	doc, err := v3.NewDocumentBuilder(v3.Info{
 		Title:       "Notification Service Events",
 		Version:     "1.0.0",
 		Description: "Channels for the notification service.",
 	}).
-		AddServer("production", asyncapi.Server{
-			URL:         "amqp://broker.example.com",
+		AddServer("production", v3.Server{
+			URL:         "broker.example.com",
 			Protocol:    "amqp",
 			Description: "Production message broker",
+			// Server-level security: all channels on this server require bearerAuth
+			// unless a per-operation security field overrides it.
+			Security: []route.SecurityRequirement{route.Require("bearerAuth")},
 		}).
-		// Subscribe: this app RECEIVES user created events from the broker.
-		AddChannel("user/created", asyncapi.ChannelItem{
+		// bearerAuth scheme: JWT Bearer token, format-validated.
+		AddSecurityScheme("bearerAuth", route.BearerScheme("JWT")).
+		// action: receive — this app RECEIVES user created events.
+		// In AsyncAPI 3.0 the channel key is a logical identifier; Address is the topic.
+		AddChannel("userCreated", v3.ChannelItem{
+			Address:     "user/created",
 			Description: "User registration events consumed by the notification service.",
-			Subscribe: &asyncapi.Operation{
+			Subscribe: &v3.Operation{
 				Summary:     "Receive user created event",
 				Description: "Triggered after the user service completes registration.",
 				Tags:        []string{"user", "registration"},
-				Message: asyncapi.Message{
+				// Per-operation security: same as server default here, but explicit.
+				Security: []route.SecurityRequirement{route.Require("bearerAuth")},
+				Message: v3.Message{
 					Name:       "UserCreatedEvent",
 					Schema:     UserCreatedEventCodec.Schema,
 					SchemaName: "UserCreatedEvent",
 				},
 			},
 		}).
-		// Subscribe: this app RECEIVES order placed events from the broker.
-		AddChannel("order/placed", asyncapi.ChannelItem{
+		// action: receive — this app RECEIVES order placed events.
+		AddChannel("orderPlaced", v3.ChannelItem{
+			Address:     "order/placed",
 			Description: "Order events consumed by the notification service.",
-			Subscribe: &asyncapi.Operation{
+			Subscribe: &v3.Operation{
 				Summary:     "Receive order placed event",
 				Description: "Triggered after the order service completes checkout.",
 				Tags:        []string{"order"},
-				Message: asyncapi.Message{
+				Security:    []route.SecurityRequirement{route.Require("bearerAuth")},
+				Message: v3.Message{
 					Name:       "OrderPlacedEvent",
 					Schema:     OrderPlacedEventCodec.Schema,
 					SchemaName: "OrderPlacedEvent",
 				},
 			},
 		}).
-		// Publish: this app SENDS notification commands to the broker.
-		AddChannel("notification/send", asyncapi.ChannelItem{
+		// action: send — this app SENDS notification commands to the broker.
+		// Empty Security slice marks this outbound channel as unsecured (no auth
+		// required to publish — the broker accepts commands from this service).
+		AddChannel("notificationSend", v3.ChannelItem{
+			Address:     "notification/send",
 			Description: "Notification commands produced by this service.",
-			Publish: &asyncapi.Operation{
+			Publish: &v3.Operation{
 				Summary:     "Send notification command",
 				Description: "Dispatched to the notification delivery worker.",
 				Tags:        []string{"notification"},
-				Message: asyncapi.Message{
+				Security:    []route.SecurityRequirement{}, // explicitly unsecured
+				Message: v3.Message{
 					Name:       "NotificationCommand",
 					Schema:     NotificationCommandCodec.Schema,
 					SchemaName: "NotificationCommand",
@@ -271,7 +224,9 @@ func main() {
 		os.Exit(1)
 	}
 
-	fmt.Println("# Full AsyncAPI 2.6 document (YAML)")
+	fmt.Println("# Full AsyncAPI 3.0 document (YAML)")
+	fmt.Println("# channels + operations are separate top-level keys.")
+	fmt.Println("# action: receive (subscribe) / action: send (publish).")
 	fmt.Println()
 	fmt.Print(string(yamlBytes))
 }

@@ -53,44 +53,14 @@ type AppConfig struct {
 }
 
 var dbCodec = codex.Struct[DBConfig](
-	codex.Field[DBConfig, string]{
-		Name:     "host",
-		Codec:    codex.String().Refine(validate.NonEmptyString).WithDescription("Database host."),
-		Get:      func(c DBConfig) string { return c.Host },
-		Set:      func(c *DBConfig, v string) { c.Host = v },
-		Required: true,
-	},
-	codex.Field[DBConfig, int]{
-		Name:     "port",
-		Codec:    codex.Int().Refine(validate.RangeInt(1, 65535)).WithDescription("Database port (1–65535)."),
-		Get:      func(c DBConfig) int { return c.Port },
-		Set:      func(c *DBConfig, v int) { c.Port = v },
-		Required: true,
-	},
-	codex.Field[DBConfig, string]{
-		Name:     "name",
-		Codec:    codex.String().Refine(validate.NonEmptyString).WithDescription("Database name."),
-		Get:      func(c DBConfig) string { return c.Name },
-		Set:      func(c *DBConfig, v string) { c.Name = v },
-		Required: true,
-	},
+	codex.RequiredField("host", codex.String().Refine(validate.NonEmptyString).WithDescription("Database host."), func(c DBConfig) string { return c.Host }, func(c *DBConfig, v string) { c.Host = v }),
+	codex.RequiredField("port", codex.Int().Refine(validate.RangeInt(1, 65535)).WithDescription("Database port (1–65535)."), func(c DBConfig) int { return c.Port }, func(c *DBConfig, v int) { c.Port = v }),
+	codex.RequiredField("name", codex.String().Refine(validate.NonEmptyString).WithDescription("Database name."), func(c DBConfig) string { return c.Name }, func(c *DBConfig, v string) { c.Name = v }),
 )
 
 var configCodec = codex.Struct[AppConfig](
-	codex.Field[AppConfig, string]{
-		Name:     "host",
-		Codec:    codex.String().Refine(validate.NonEmptyString).WithDescription("Server bind address."),
-		Get:      func(c AppConfig) string { return c.Host },
-		Set:      func(c *AppConfig, v string) { c.Host = v },
-		Required: true,
-	},
-	codex.Field[AppConfig, int]{
-		Name:     "port",
-		Codec:    codex.Int().Refine(validate.RangeInt(1, 65535)).WithDescription("Server port (1–65535)."),
-		Get:      func(c AppConfig) int { return c.Port },
-		Set:      func(c *AppConfig, v int) { c.Port = v },
-		Required: true,
-	},
+	codex.RequiredField("host", codex.String().Refine(validate.NonEmptyString).WithDescription("Server bind address."), func(c AppConfig) string { return c.Host }, func(c *AppConfig, v string) { c.Host = v }),
+	codex.RequiredField("port", codex.Int().Refine(validate.RangeInt(1, 65535)).WithDescription("Server port (1–65535)."), func(c AppConfig) int { return c.Port }, func(c *AppConfig, v int) { c.Port = v }),
 	// DefaultField: when APP_LOG_LEVEL is absent, "info" is used automatically.
 	// The default value is also reflected in the generated JSON Schema.
 	codex.DefaultField[AppConfig, string](
@@ -100,45 +70,15 @@ var configCodec = codex.Struct[AppConfig](
 		func(c AppConfig) string { return c.LogLevel },
 		func(c *AppConfig, v string) { c.LogLevel = v },
 	),
-	codex.Field[AppConfig, int]{
-		Name:     "workers",
-		Codec:    codex.Int().Refine(validate.RangeInt(1, 256)).WithDescription("Worker goroutines (1–256)."),
-		Get:      func(c AppConfig) int { return c.Workers },
-		Set:      func(c *AppConfig, v int) { c.Workers = v },
-		Required: true,
-	},
-	codex.Field[AppConfig, DBConfig]{
-		Name:     "db",
-		Codec:    dbCodec.WithDescription("Database connection settings."),
-		Get:      func(c AppConfig) DBConfig { return c.DB },
-		Set:      func(c *AppConfig, v DBConfig) { c.DB = v },
-		Required: true,
-	},
-	codex.Field[AppConfig, []string]{
-		Name:     "tags",
-		Codec:    codex.SliceOf(codex.String()).WithDescription("Optional deployment tags (comma-separated)."),
-		Get:      func(c AppConfig) []string { return c.Tags },
-		Set:      func(c *AppConfig, v []string) { c.Tags = v },
-		Required: false,
-	},
-	codex.Field[AppConfig, map[string]string]{
-		Name:     "labels",
-		Codec:    codex.StringMap(codex.String()).WithDescription("Arbitrary key-value labels (JSON object)."),
-		Get:      func(c AppConfig) map[string]string { return c.Labels },
-		Set:      func(c *AppConfig, v map[string]string) { c.Labels = v },
-		Required: false,
-	},
+	codex.RequiredField("workers", codex.Int().Refine(validate.RangeInt(1, 256)).WithDescription("Worker goroutines (1–256)."), func(c AppConfig) int { return c.Workers }, func(c *AppConfig, v int) { c.Workers = v }),
+	codex.RequiredField("db", dbCodec.WithDescription("Database connection settings."), func(c AppConfig) DBConfig { return c.DB }, func(c *AppConfig, v DBConfig) { c.DB = v }),
+	codex.OptionalField("tags", codex.SliceOf(codex.String()).WithDescription("Optional deployment tags (comma-separated)."), func(c AppConfig) []string { return c.Tags }, func(c *AppConfig, v []string) { c.Tags = v }),
+	codex.OptionalField("labels", codex.StringMap(codex.String()).WithDescription("Arbitrary key-value labels (JSON object)."), func(c AppConfig) map[string]string { return c.Labels }, func(c *AppConfig, v map[string]string) { c.Labels = v }),
 	// Any(): Extensions passes the raw value through without type enforcement.
 	// format.FromEnv parses JSON-prefixed strings into map[string]any automatically,
 	// so APP_EXTENSIONS='{"flag":true}' arrives as map[string]any after env loading.
 	// Any() accepts it as-is with no further schema constraint.
-	codex.Field[AppConfig, any]{
-		Name:     "extensions",
-		Codec:    codex.Any().WithDescription("Arbitrary extension config (raw JSON object or nil)."),
-		Get:      func(c AppConfig) any { return c.Extensions },
-		Set:      func(c *AppConfig, v any) { c.Extensions = v },
-		Required: false,
-	},
+	codex.OptionalField("extensions", codex.Any().WithDescription("Arbitrary extension config (raw JSON object or nil)."), func(c AppConfig) any { return c.Extensions }, func(c *AppConfig, v any) { c.Extensions = v }),
 )
 
 func mustSetenv(k, v string) {

@@ -28,27 +28,9 @@ type AppConfig struct {
 }
 
 var appConfigCodec = codex.Struct[AppConfig](
-	codex.Field[AppConfig, string]{
-		Name:     "server_url",
-		Codec:    codex.String().Refine(validate.URL),
-		Required: true,
-		Get:      func(c AppConfig) string { return c.ServerURL },
-		Set:      func(c *AppConfig, v string) { c.ServerURL = v },
-	},
-	codex.Field[AppConfig, int]{
-		Name:     "max_workers",
-		Codec:    codex.Int().Refine(validate.MinInt(1)),
-		Required: true,
-		Get:      func(c AppConfig) int { return c.MaxWorkers },
-		Set:      func(c *AppConfig, v int) { c.MaxWorkers = v },
-	},
-	codex.Field[AppConfig, string]{
-		Name:     "api_key",
-		Codec:    codex.String().Refine(validate.MinLen(16)),
-		Required: true,
-		Get:      func(c AppConfig) string { return c.APIKey },
-		Set:      func(c *AppConfig, v string) { c.APIKey = v },
-	},
+	codex.RequiredField("server_url", codex.String().Refine(validate.URL), func(c AppConfig) string { return c.ServerURL }, func(c *AppConfig, v string) { c.ServerURL = v }),
+	codex.RequiredField("max_workers", codex.Int().Refine(validate.MinInt(1)), func(c AppConfig) int { return c.MaxWorkers }, func(c *AppConfig, v int) { c.MaxWorkers = v }),
+	codex.RequiredField("api_key", codex.String().Refine(validate.MinLen(16)), func(c AppConfig) string { return c.APIKey }, func(c *AppConfig, v string) { c.APIKey = v }),
 )
 
 // ── Observer ─────────────────────────────────────────────────────────────────

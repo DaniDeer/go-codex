@@ -25,27 +25,9 @@ type User struct {
 }
 
 var userCodec = codex.Struct[User](
-	codex.Field[User, string]{
-		Name:     "name",
-		Codec:    codex.String().Refine(validate.NonEmptyString),
-		Get:      func(u User) string { return u.Name },
-		Set:      func(u *User, v string) { u.Name = v },
-		Required: true,
-	},
-	codex.Field[User, string]{
-		Name:     "email",
-		Codec:    codex.String().Refine(validate.Email),
-		Get:      func(u User) string { return u.Email },
-		Set:      func(u *User, v string) { u.Email = v },
-		Required: true,
-	},
-	codex.Field[User, int]{
-		Name:     "age",
-		Codec:    codex.Int().Refine(validate.PositiveInt),
-		Get:      func(u User) int { return u.Age },
-		Set:      func(u *User, v int) { u.Age = v },
-		Required: true,
-	},
+	codex.RequiredField("name", codex.String().Refine(validate.NonEmptyString), func(u User) string { return u.Name }, func(u *User, v string) { u.Name = v }),
+	codex.RequiredField("email", codex.String().Refine(validate.Email), func(u User) string { return u.Email }, func(u *User, v string) { u.Email = v }),
+	codex.RequiredField("age", codex.Int().Refine(validate.PositiveInt), func(u User) int { return u.Age }, func(u *User, v int) { u.Age = v }),
 )
 
 func main() {

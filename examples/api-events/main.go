@@ -1,11 +1,15 @@
 // Package api-events demonstrates the api/events builder: define channels with
 // codec-backed payload types, get typed Decode/Encode helpers, and generate a
-// full AsyncAPI 2.6 spec — all without importing any messaging library.
+// full AsyncAPI 3.0 spec — all without importing any messaging library.
 //
-// AsyncAPI operations are app-centric:
-//   - Subscribe: this app RECEIVES messages on the channel (consumer)
-//   - Publish:   this app SENDS messages on the channel (producer)
+// AsyncAPI 3.0 operations are app-centric:
+//   - Subscribe (action: receive): this app RECEIVES messages on the channel (consumer)
+//   - Publish   (action: send):    this app SENDS messages on the channel (producer)
 //   - Both:      bidirectional — pass both events.Subscribe and events.Publish to one AddChannel call
+//
+// Security schemes are declared once via AddSecurityScheme and referenced
+// per-channel via Subscribe.Security / Publish.Security. The spec output
+// includes components/securitySchemes and per-operation security requirements.
 //
 // The same ChannelHandle.Decode and ChannelHandle.Encode helpers work unchanged
 // with MQTT (Paho), AMQP, Kafka, NATS, or any other message broker.
@@ -19,6 +23,7 @@ import (
 
 	"github.com/DaniDeer/go-codex/api/events"
 	"github.com/DaniDeer/go-codex/codex"
+	"github.com/DaniDeer/go-codex/route"
 	"github.com/DaniDeer/go-codex/validate"
 )
 
@@ -41,51 +46,15 @@ type NotificationCommand struct {
 // --- Codecs: single source of truth for encode, decode, validation, schema ---
 
 var userCreatedCodec = codex.Struct[UserCreatedEvent](
-	codex.Field[UserCreatedEvent, string]{
-		Name:     "id",
-		Codec:    codex.String().Refine(validate.UUID).WithDescription("New user's UUID."),
-		Get:      func(e UserCreatedEvent) string { return e.ID },
-		Set:      func(e *UserCreatedEvent, v string) { e.ID = v },
-		Required: true,
-	},
-	codex.Field[UserCreatedEvent, string]{
-		Name:     "name",
-		Codec:    codex.String().Refine(validate.NonEmptyString).WithDescription("Full display name."),
-		Get:      func(e UserCreatedEvent) string { return e.Name },
-		Set:      func(e *UserCreatedEvent, v string) { e.Name = v },
-		Required: true,
-	},
-	codex.Field[UserCreatedEvent, string]{
-		Name:     "email",
-		Codec:    codex.String().Refine(validate.Email).WithDescription("Primary email address."),
-		Get:      func(e UserCreatedEvent) string { return e.Email },
-		Set:      func(e *UserCreatedEvent, v string) { e.Email = v },
-		Required: true,
-	},
+	codex.RequiredField("id", codex.String().Refine(validate.UUID).WithDescription("New user's UUID."), func(e UserCreatedEvent) string { return e.ID }, func(e *UserCreatedEvent, v string) { e.ID = v }),
+	codex.RequiredField("name", codex.String().Refine(validate.NonEmptyString).WithDescription("Full display name."), func(e UserCreatedEvent) string { return e.Name }, func(e *UserCreatedEvent, v string) { e.Name = v }),
+	codex.RequiredField("email", codex.String().Refine(validate.Email).WithDescription("Primary email address."), func(e UserCreatedEvent) string { return e.Email }, func(e *UserCreatedEvent, v string) { e.Email = v }),
 )
 
 var notificationCommandCodec = codex.Struct[NotificationCommand](
-	codex.Field[NotificationCommand, string]{
-		Name:     "recipient",
-		Codec:    codex.String().Refine(validate.Email).WithDescription("Recipient email address."),
-		Get:      func(c NotificationCommand) string { return c.Recipient },
-		Set:      func(c *NotificationCommand, v string) { c.Recipient = v },
-		Required: true,
-	},
-	codex.Field[NotificationCommand, string]{
-		Name:     "subject",
-		Codec:    codex.String().Refine(validate.NonEmptyString).WithDescription("Notification subject line."),
-		Get:      func(c NotificationCommand) string { return c.Subject },
-		Set:      func(c *NotificationCommand, v string) { c.Subject = v },
-		Required: true,
-	},
-	codex.Field[NotificationCommand, string]{
-		Name:     "body",
-		Codec:    codex.String().Refine(validate.NonEmptyString).WithDescription("Notification body text."),
-		Get:      func(c NotificationCommand) string { return c.Body },
-		Set:      func(c *NotificationCommand, v string) { c.Body = v },
-		Required: true,
-	},
+	codex.RequiredField("recipient", codex.String().Refine(validate.Email).WithDescription("Recipient email address."), func(c NotificationCommand) string { return c.Recipient }, func(c *NotificationCommand, v string) { c.Recipient = v }),
+	codex.RequiredField("subject", codex.String().Refine(validate.NonEmptyString).WithDescription("Notification subject line."), func(c NotificationCommand) string { return c.Subject }, func(c *NotificationCommand, v string) { c.Subject = v }),
+	codex.RequiredField("body", codex.String().Refine(validate.NonEmptyString).WithDescription("Notification body text."), func(c NotificationCommand) string { return c.Body }, func(c *NotificationCommand, v string) { c.Body = v }),
 )
 
 func main() {
@@ -103,19 +72,29 @@ func main() {
 		events.WithTopicConstraints(validate.MQTTPublishTopic),
 	)
 	b.AddServer("production", events.Server{
-		URL:         "amqp://broker.example.com",
+		URL:         "broker.example.com",
 		Protocol:    "amqp",
 		Description: "Production message broker",
 	})
 
-	// user/created — Subscribe: this app RECEIVES events when users register.
-	// AsyncAPI "subscribe" means the broker delivers messages to this application.
+	// Declare a Bearer JWT security scheme once — referenced by subscribe channels.
+	// The Codec field is optional; set it to validate the credential format at the
+	// adapter layer (e.g. validate.JWT constraint) before calling SecurityFunc.
+	b.AddSecurityScheme("bearerAuth", events.SecurityScheme{
+		SecurityScheme: route.BearerScheme("JWT"),
+	})
+
+	// user/created — action: receive — this app RECEIVES events when users register.
+	// Security: requires bearerAuth — adapters (e.g. adapters/mqtt) enforce this via
+	// SubscribeOptions.SecurityFunc before calling the application handler.
 	userCreated, err := events.AddChannel[UserCreatedEvent](b, "user/created", userCreatedCodec,
 		events.ChannelMeta{Description: "User registration events consumed by the notification service."},
 		events.Subscribe{
 			Summary:    "Receive user created event",
 			Tags:       []string{"user", "registration"},
 			SchemaName: "UserCreatedEvent",
+			// Security: requires bearerAuth on this operation.
+			Security: []route.SecurityRequirement{route.Require("bearerAuth")},
 		},
 	)
 	if err != nil {
@@ -123,8 +102,8 @@ func main() {
 		os.Exit(1)
 	}
 
-	// notification/send — Publish: this app SENDS notification commands.
-	// AsyncAPI "publish" means this application produces messages to the broker.
+	// notification/send — action: send — this app SENDS notification commands.
+	// No security on outbound channels: the broker accepts messages from this service.
 	notificationSend, err := events.AddChannel[NotificationCommand](b, "notification/send", notificationCommandCodec,
 		events.ChannelMeta{Description: "Notification commands sent by this service to trigger delivery."},
 		events.Publish{
@@ -139,7 +118,7 @@ func main() {
 	}
 
 	// Bidirectional example (both directions on one channel):
-	// events.Subscribe{Summary: "Receive command result"},
+	// events.Subscribe{Summary: "Receive command result", Security: []route.SecurityRequirement{route.Require("bearerAuth")}},
 	// events.Publish{Summary: "Send command"},
 
 	// --- Demonstrate codec-backed Decode/Encode ---
@@ -181,8 +160,13 @@ func main() {
 	fmt.Printf("notificationSend topic: %s\n", notificationSend.Topic)
 	fmt.Println()
 
-	// --- Generate AsyncAPI 2.6 spec from the same builder ---
-	fmt.Println("=== AsyncAPI 2.6 spec ===")
+	// --- Generate AsyncAPI 3.0 spec from the same builder ---
+	// The spec output includes:
+	//   - asyncapi: 3.0.0
+	//   - channels: topic descriptors (address, messages)
+	//   - operations: linked to channels via $ref (action: receive / action: send)
+	//   - components/securitySchemes: declared schemes (bearerAuth)
+	fmt.Println("=== AsyncAPI 3.0 spec ===")
 	fmt.Println()
 
 	doc, err := b.AsyncAPISpec()

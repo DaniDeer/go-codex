@@ -40,6 +40,7 @@ import (
 
 	"github.com/DaniDeer/go-codex/api/rest"
 	"github.com/DaniDeer/go-codex/format"
+	"github.com/DaniDeer/go-codex/route"
 	"github.com/DaniDeer/go-codex/stats"
 )
 
@@ -153,6 +154,23 @@ type Options struct {
 	// keys such as "?tags=a&tags=b". When false (default), the first value per key
 	// is validated via [rest.RouteHandle.ValidateQuery].
 	MultiValueQueryParams bool
+
+	// SecurityFunc, when non-nil, is called for routes that declare a non-nil
+	// Security field (via [rest.RouteMeta.Security] or global security), after
+	// parameter validation but before the handler fn.
+	//
+	// Return a non-nil error to reject the request with 401 Unauthorized.
+	// reqs contains the route's declared security requirements (scheme names +
+	// scopes). The adapter has already extracted and codec-validated the credential
+	// from the request before calling SecurityFunc.
+	//
+	// Example — JWT bearer verification:
+	//
+	//	opts.SecurityFunc = func(ctx context.Context, r *http.Request, reqs []route.SecurityRequirement) error {
+	//	    token := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
+	//	    return jwtlib.VerifyScopes(token, reqs)
+	//	}
+	SecurityFunc func(ctx context.Context, r *http.Request, reqs []route.SecurityRequirement) error
 }
 
 // Handler wraps a [rest.RouteHandle] and a [HandlerFunc] into an [http.Handler].
@@ -273,6 +291,32 @@ func Handler[Req, Resp any](handle *rest.RouteHandle[Req, Resp], fn HandlerFunc[
 			reportHeaderErrors(err, obs)
 			errFn(sw, r, http.StatusBadRequest, err)
 			return
+		}
+
+		// Enforce security: per-route requirements take precedence; nil falls back
+		// to global security declared via Builder.AddGlobalSecurity.
+		secReqs := handle.Descriptor.Security
+		if secReqs == nil {
+			secReqs = handle.GlobalSecurity
+		}
+		if len(secReqs) > 0 {
+			if credErr := validateSecurityCredentials(r, secReqs, handle.SecuritySchemes); credErr != nil {
+				if secObs, ok := obs.(stats.SecurityObserver); ok {
+					secObs.RecordSecurityRejection(handle.Descriptor.Path, firstScheme(secReqs))
+				}
+				errFn(sw, r, http.StatusUnauthorized, credErr)
+				return
+			}
+			if opts.SecurityFunc != nil {
+				if err := opts.SecurityFunc(ctx, r, secReqs); err != nil {
+					secErr := rest.SecurityError{Err: err}
+					if secObs, ok := obs.(stats.SecurityObserver); ok {
+						secObs.RecordSecurityRejection(handle.Descriptor.Path, firstScheme(secReqs))
+					}
+					errFn(sw, r, http.StatusUnauthorized, secErr)
+					return
+				}
+			}
 		}
 
 		resp, err := fn(ctx, req)
@@ -689,4 +733,75 @@ func negotiateRequestFormat[T any](formats []format.Format[T], contentType strin
 		}
 	}
 	return format.Format[T]{}, false
+}
+
+// validateSecurityCredentials extracts credentials from the request and validates
+// them against the registered SecurityScheme codecs for the declared requirements.
+// Returns a [rest.SecurityCredentialError] if any codec check fails.
+func validateSecurityCredentials(r *http.Request, reqs []route.SecurityRequirement, schemes map[string]rest.SecurityScheme) error {
+	for _, req := range reqs {
+		for name := range req {
+			s, ok := schemes[name]
+			if !ok || s.Codec == nil {
+				continue
+			}
+			cred := extractCredential(r, s)
+			if err := s.Codec.Validate(cred); err != nil {
+				return rest.SecurityCredentialError{Scheme: name, Err: err}
+			}
+		}
+	}
+	return nil
+}
+
+// extractCredential returns the raw credential string from the request based
+// on the scheme type and location.
+func extractCredential(r *http.Request, s rest.SecurityScheme) string {
+	switch s.Type {
+	case route.SecuritySchemeHTTP:
+		auth := r.Header.Get("Authorization")
+		switch strings.ToLower(s.Scheme) {
+		case "bearer":
+			// RFC 7235 §2.1: scheme names are case-insensitive.
+			if len(auth) >= 7 && strings.EqualFold(auth[:7], "Bearer ") {
+				return auth[7:]
+			}
+			return auth
+		case "basic":
+			if len(auth) >= 6 && strings.EqualFold(auth[:6], "Basic ") {
+				return auth[6:]
+			}
+			return auth
+		}
+		return auth
+	case route.SecuritySchemeOAuth2, route.SecuritySchemeOpenIDConnect:
+		auth := r.Header.Get("Authorization")
+		if len(auth) >= 7 && strings.EqualFold(auth[:7], "Bearer ") {
+			return auth[7:]
+		}
+		return auth
+	case route.SecuritySchemeAPIKey:
+		switch strings.ToLower(s.In) {
+		case "header":
+			return r.Header.Get(s.Name)
+		case "query":
+			return r.URL.Query().Get(s.Name)
+		case "cookie":
+			if c, err := r.Cookie(s.Name); err == nil {
+				return c.Value
+			}
+		}
+	}
+	return ""
+}
+
+// firstScheme returns the first scheme name from the security requirements,
+// or an empty string if there are none. Used for observer reporting.
+func firstScheme(reqs []route.SecurityRequirement) string {
+	for _, req := range reqs {
+		for name := range req {
+			return name
+		}
+	}
+	return ""
 }

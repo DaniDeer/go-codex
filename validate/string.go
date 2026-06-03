@@ -206,6 +206,33 @@ var NonNegativeIntString = codex.Constraint[string]{
 	},
 }
 
+// jwtRe matches a compact JWT: three base64url-encoded segments separated by dots.
+// It does not verify signatures or decode payloads.
+var jwtRe = regexp.MustCompile(`^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]*$`)
+
+// BearerToken is a Constraint that validates a non-empty Bearer token string.
+// It accepts any non-empty string without leading or trailing whitespace.
+// Use with [api/rest.SecurityScheme] or [api/events.SecurityScheme] Codec to
+// format-check extracted Bearer tokens before calling SecurityFunc.
+var BearerToken = codex.Constraint[string]{
+	Name:  "bearer-token",
+	Check: func(v string) bool { return v != "" && v == strings.TrimSpace(v) },
+	Message: func(_ string) string {
+		return "bearer token must be non-empty and contain no leading or trailing whitespace"
+	},
+}
+
+// JWT is a Constraint that validates a compact JWT serialization:
+// three base64url-encoded segments separated by dots (header.payload.signature).
+// It does not verify signatures or decode claims.
+// Use with [api/rest.SecurityScheme] or [api/events.SecurityScheme] Codec to
+// format-check extracted JWTs before calling SecurityFunc.
+var JWT = codex.Constraint[string]{
+	Name:    "jwt",
+	Check:   func(v string) bool { return jwtRe.MatchString(v) },
+	Message: func(_ string) string { return "value must be a compact JWT (header.payload.signature in base64url)" },
+}
+
 // IntStringInRange returns a Constraint that requires the string to represent
 // an integer within [min, max] (inclusive on both ends).
 func IntStringInRange(min, max int) codex.Constraint[string] {

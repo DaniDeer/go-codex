@@ -9,6 +9,7 @@ import (
 
 	"github.com/DaniDeer/go-codex/api/rest"
 	"github.com/DaniDeer/go-codex/codex"
+	"github.com/DaniDeer/go-codex/route"
 	"github.com/DaniDeer/go-codex/schema"
 	"github.com/DaniDeer/go-codex/validate"
 )
@@ -922,5 +923,87 @@ func TestResponseCookieParam_schemaFlowsToSpec(t *testing.T) {
 	}
 	if !strings.Contains(spec, `"headers"`) {
 		t.Errorf("spec missing 'headers' key in response: %s", spec)
+	}
+}
+
+// --- Security builder tests ---
+
+func TestSecurityScheme_WithCodec_setsCodec(t *testing.T) {
+	c := codex.String().Refine(validate.NonEmptyString)
+	s := rest.SecurityScheme{SecurityScheme: route.BearerScheme("JWT")}.WithCodec(c)
+	if s.Codec == nil {
+		t.Fatal("expected Codec to be non-nil after WithCodec")
+	}
+}
+
+func TestSecurityScheme_WithCodec_returnsDistinctCopy(t *testing.T) {
+	c := codex.String().Refine(validate.NonEmptyString)
+	orig := rest.SecurityScheme{SecurityScheme: route.BearerScheme("JWT")}
+	updated := orig.WithCodec(c)
+	if orig.Codec != nil {
+		t.Fatal("WithCodec must not mutate the original")
+	}
+	if updated.Codec == nil {
+		t.Fatal("updated copy must have non-nil Codec")
+	}
+}
+
+func TestBuilder_AddSecurityScheme_propagatesToRouteHandle(t *testing.T) {
+	b := rest.NewBuilder(testInfo)
+	c := codex.String().Refine(validate.NonEmptyString)
+	b.AddSecurityScheme("bearer", rest.SecurityScheme{SecurityScheme: route.BearerScheme("JWT")}.WithCodec(c))
+
+	handle, err := rest.AddRoute[createReq, userResp](b, "GET", "/secure", createReqCodec, userCodec)
+	if err != nil {
+		t.Fatalf("AddRoute: %v", err)
+	}
+	if _, ok := handle.SecuritySchemes["bearer"]; !ok {
+		t.Fatal("expected SecuritySchemes to contain 'bearer'")
+	}
+	if handle.SecuritySchemes["bearer"].Codec == nil {
+		t.Fatal("expected Codec to be propagated to RouteHandle")
+	}
+}
+
+func TestBuilder_AddGlobalSecurity_appearsInOpenAPISpec(t *testing.T) {
+	b := rest.NewBuilder(testInfo)
+	b.AddSecurityScheme("bearer", rest.SecurityScheme{SecurityScheme: route.BearerScheme("JWT")})
+	b.AddGlobalSecurity(route.Require("bearer"))
+
+	_, err := rest.AddRoute[createReq, userResp](b, "GET", "/secure", createReqCodec, userCodec)
+	if err != nil {
+		t.Fatalf("AddRoute: %v", err)
+	}
+	doc, err := b.OpenAPISpec()
+	if err != nil {
+		t.Fatalf("OpenAPISpec: %v", err)
+	}
+	raw, err := doc.MarshalJSON()
+	if err != nil {
+		t.Fatalf("MarshalJSON: %v", err)
+	}
+	spec := string(raw)
+	if !strings.Contains(spec, `"bearer"`) {
+		t.Errorf("expected OpenAPI spec to contain global security scheme 'bearer'; got:\n%s", spec)
+	}
+	if !strings.Contains(spec, `"securitySchemes"`) {
+		t.Errorf("expected OpenAPI spec to contain securitySchemes; got:\n%s", spec)
+	}
+}
+
+func TestBuilder_AddGlobalSecurity_populatesRouteHandleGlobalSecurity(t *testing.T) {
+	b := rest.NewBuilder(testInfo)
+	b.AddGlobalSecurity(route.Require("bearer"))
+
+	handle, err := rest.AddRoute[createReq, userResp](b, "GET", "/secure", createReqCodec, userCodec)
+	if err != nil {
+		t.Fatalf("AddRoute: %v", err)
+	}
+	if len(handle.GlobalSecurity) == 0 {
+		t.Fatal("expected GlobalSecurity to be populated on RouteHandle")
+	}
+	req := handle.GlobalSecurity[0]
+	if _, ok := req["bearer"]; !ok {
+		t.Errorf("expected GlobalSecurity to contain 'bearer' requirement, got %v", req)
 	}
 }

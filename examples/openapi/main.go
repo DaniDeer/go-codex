@@ -29,64 +29,28 @@ type User struct {
 }
 
 var UserCodec = codex.Struct[User](
-	codex.Field[User, string]{
-		Name: "name",
-		Codec: codex.String().
+	codex.RequiredField("name", codex.String().
 			Refine(validate.NonEmptyString).
 			Refine(validate.MaxLen(100)).
 			WithTitle("Full Name").
-			WithDescription("The user's full display name."),
-		Get:      func(u User) string { return u.Name },
-		Set:      func(u *User, v string) { u.Name = v },
-		Required: true,
-	},
-	codex.Field[User, string]{
-		Name: "email",
-		Codec: codex.String().
+			WithDescription("The user's full display name."), func(u User) string { return u.Name }, func(u *User, v string) { u.Name = v }),
+	codex.RequiredField("email", codex.String().
 			Refine(validate.Pattern(emailPattern)).
 			WithTitle("Email Address").
-			WithDescription("Contact email. Must be a valid RFC 5321 address."),
-		Get:      func(u User) string { return u.Email },
-		Set:      func(u *User, v string) { u.Email = v },
-		Required: true,
-	},
-	codex.Field[User, int]{
-		Name: "age",
-		Codec: codex.Int().
+			WithDescription("Contact email. Must be a valid RFC 5321 address."), func(u User) string { return u.Email }, func(u *User, v string) { u.Email = v }),
+	codex.RequiredField("age", codex.Int().
 			Refine(validate.RangeInt(0, 150)).
 			WithTitle("Age").
-			WithDescription("Age in years. Must be between 0 and 150."),
-		Get:      func(u User) int { return u.Age },
-		Set:      func(u *User, v int) { u.Age = v },
-		Required: true,
-	},
-	codex.Field[User, string]{
-		Name: "role",
-		Codec: codex.String().
+			WithDescription("Age in years. Must be between 0 and 150."), func(u User) int { return u.Age }, func(u *User, v int) { u.Age = v }),
+	codex.RequiredField("role", codex.String().
 			Refine(validate.OneOf("admin", "editor", "viewer")).
 			WithTitle("Role").
-			WithDescription("Access role assigned to the user."),
-		Get:      func(u User) string { return u.Role },
-		Set:      func(u *User, v string) { u.Role = v },
-		Required: true,
-	},
+			WithDescription("Access role assigned to the user."), func(u User) string { return u.Role }, func(u *User, v string) { u.Role = v }),
 	// Bytes: base64-encoded avatar image. Schema: {type:string, format:byte}.
 	// MaxBytes limits the decoded payload to 64 KiB.
-	codex.Field[User, []byte]{
-		Name:     "avatar",
-		Codec:    codex.Bytes().Refine(validate.MaxBytes(65536)).WithDescription("Profile image as base64-encoded bytes (max 64 KiB)."),
-		Get:      func(u User) []byte { return u.Avatar },
-		Set:      func(u *User, v []byte) { u.Avatar = v },
-		Required: false,
-	},
+	codex.OptionalField("avatar", codex.Bytes().Refine(validate.MaxBytes(65536)).WithDescription("Profile image as base64-encoded bytes (max 64 KiB)."), func(u User) []byte { return u.Avatar }, func(u *User, v []byte) { u.Avatar = v }),
 	// Nullable: note is absent when nil; present when non-nil.
-	codex.Field[User, *string]{
-		Name:     "note",
-		Codec:    codex.Nullable(codex.String()).WithDescription("Optional admin note about the user."),
-		Get:      func(u User) *string { return u.Note },
-		Set:      func(u *User, v *string) { u.Note = v },
-		Required: false,
-	},
+	codex.OptionalField("note", codex.Nullable(codex.String()).WithDescription("Optional admin note about the user."), func(u User) *string { return u.Note }, func(u *User, v *string) { u.Note = v }),
 )
 
 func main() {

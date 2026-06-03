@@ -18,34 +18,10 @@ type Config struct {
 
 // configCodec is defined once and works with every format.
 var configCodec = codex.Struct[Config](
-	codex.Field[Config, string]{
-		Name:     "host",
-		Codec:    codex.String().Refine(validate.NonEmptyString),
-		Get:      func(c Config) string { return c.Host },
-		Set:      func(c *Config, v string) { c.Host = v },
-		Required: true,
-	},
-	codex.Field[Config, int]{
-		Name:     "port",
-		Codec:    codex.Int().Refine(validate.RangeInt(1, 65535)),
-		Get:      func(c Config) int { return c.Port },
-		Set:      func(c *Config, v int) { c.Port = v },
-		Required: true,
-	},
-	codex.Field[Config, bool]{
-		Name:     "debug",
-		Codec:    codex.Bool(),
-		Get:      func(c Config) bool { return c.Debug },
-		Set:      func(c *Config, v bool) { c.Debug = v },
-		Required: false,
-	},
-	codex.Field[Config, float64]{
-		Name:     "timeout",
-		Codec:    codex.Float64().Refine(validate.PositiveFloat),
-		Get:      func(c Config) float64 { return c.Timeout },
-		Set:      func(c *Config, v float64) { c.Timeout = v },
-		Required: true,
-	},
+	codex.RequiredField("host", codex.String().Refine(validate.NonEmptyString), func(c Config) string { return c.Host }, func(c *Config, v string) { c.Host = v }),
+	codex.RequiredField("port", codex.Int().Refine(validate.RangeInt(1, 65535)), func(c Config) int { return c.Port }, func(c *Config, v int) { c.Port = v }),
+	codex.OptionalField("debug", codex.Bool(), func(c Config) bool { return c.Debug }, func(c *Config, v bool) { c.Debug = v }),
+	codex.RequiredField("timeout", codex.Float64().Refine(validate.PositiveFloat), func(c Config) float64 { return c.Timeout }, func(c *Config, v float64) { c.Timeout = v }),
 )
 
 var (

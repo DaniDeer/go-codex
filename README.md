@@ -120,7 +120,8 @@ Requires Go 1.25 or later.
 | templ SSR format plug-in          | `github.com/DaniDeer/go-codex/adapters/templ`   |
 | SSE (Server-Sent Events) adapters | `github.com/DaniDeer/go-codex/adapters/nethttp` / `adapters/chi` |
 | OpenAPI 3.1 renderer              | `github.com/DaniDeer/go-codex/render/openapi`   |
-| AsyncAPI 2.6 renderer             | `github.com/DaniDeer/go-codex/render/asyncapi`  |
+| AsyncAPI 2.6 renderer (frozen)    | `github.com/DaniDeer/go-codex/render/asyncapi/v2` |
+| AsyncAPI 3.0 renderer             | `github.com/DaniDeer/go-codex/render/asyncapi/v3` |
 | Schema model                      | `github.com/DaniDeer/go-codex/schema`           |
 
 ## Features
@@ -133,7 +134,7 @@ Requires Go 1.25 or later.
 - **Structured Decode Errors** — all failure types are concrete structs (`ValidationErrors`, `ConstraintError`, `TypeMismatchError`, `ElementError`, `KeyError`, `UnknownVariantError`, `VariantError`); use `errors.As` to inspect them, or pass them directly to `log/slog`
 - **OpenAPI Schema Generation** — `components/schemas` map from codec-derived schemas, no manual YAML
 - **Full OpenAPI 3.1 Document** — complete REST API spec (paths, operations, params) from `route.Route` descriptors
-- **AsyncAPI 2.6 Document** — complete event-driven spec from channel descriptors; same schemas, no duplication
+- **AsyncAPI 3.0 Document** — complete event-driven spec from channel descriptors; separate `channels` + `operations` keys; per-operation security; same schemas, no duplication
 - **REST API Builder** — typed `Decode`/`Encode` helpers per route + OpenAPI spec generation; immediate path validation; `BuildPath` for runtime path construction with per-variable codec checks and final path re-validation
 - **Event Channel Builder** — typed `Decode`/`Encode` helpers per channel + AsyncAPI spec generation; immediate topic validation; `BuildTopic` for runtime topic construction with per-variable codec checks and final topic re-validation
 - **net/http Adapter** — wire `RouteHandle` to `net/http.ServeMux` with one call; 400/500 error handling included
@@ -916,27 +917,30 @@ yamlBytes, err := doc.MarshalYAML()
 
 See `examples/rest-api/` for a runnable demonstration.
 
-### AsyncAPI 2.6 Document
+### AsyncAPI 3.0 Document
 
-[Spec: asyncapi.com - specification 3.1.0](https://www.asyncapi.com/docs/reference/specification/v3.1.0)
+[Spec: asyncapi.com - specification 3.0.0](https://www.asyncapi.com/docs/reference/specification/v3.0.0)
 
-`render/asyncapi` produces a full AsyncAPI 2.6 document from channel descriptors. The same `schema.Schema` that drives OpenAPI output also describes AsyncAPI message payloads — no duplication.
+`render/asyncapi/v3` produces a full AsyncAPI 3.0 document from channel descriptors. The same `schema.Schema` that drives OpenAPI output also describes AsyncAPI message payloads — no duplication. AsyncAPI 3.0 emits `channels` and `operations` as separate top-level keys, with `action: receive` / `action: send` replacing the 2.6 `subscribe` / `publish` keys.
+
+The `render/asyncapi/v2` (2.6) package is preserved for existing users who want AsyncAPI 2.6 output.
 
 ```go
-import "github.com/DaniDeer/go-codex/render/asyncapi"
+import "github.com/DaniDeer/go-codex/render/asyncapi/v3"
 
-doc, err := asyncapi.NewDocumentBuilder(asyncapi.Info{
+doc, err := v3.NewDocumentBuilder(v3.Info{
     Title:   "User Events",
     Version: "1.0.0",
 }).
-    AddServer("production", asyncapi.Server{
-        URL:      "amqp://broker.example.com",
+    AddServer("production", v3.Server{
+        URL:      "broker.example.com",
         Protocol: "amqp",
     }).
-    AddChannel("user/created", asyncapi.ChannelItem{
-        Subscribe: &asyncapi.Operation{
+    AddChannel("userCreated", v3.ChannelItem{
+        Address: "user/created",
+        Subscribe: &v3.Operation{
             Summary: "User created",
-            Message: asyncapi.Message{
+            Message: v3.Message{
                 Schema:     UserCreatedEventCodec.Schema,
                 SchemaName: "UserCreatedEvent", // → $ref + registered in components
             },
@@ -950,17 +954,23 @@ yamlBytes, err := doc.MarshalYAML()
 Output (trimmed):
 
 ```yaml
-asyncapi: 2.6.0
+asyncapi: 3.0.0
 info:
   title: User Events
   version: 1.0.0
 channels:
-  user/created:
-    subscribe:
-      summary: User created
-      message:
+  userCreated:
+    address: user/created
+    messages:
+      UserCreatedEvent:
         payload:
           $ref: "#/components/schemas/UserCreatedEvent"
+operations:
+  receiveUserCreated:
+    action: receive
+    channel:
+      $ref: "#/channels/userCreated"
+    summary: User created
 components:
   schemas:
     UserCreatedEvent:
@@ -1318,11 +1328,132 @@ See [`examples/adapters-nethttp`](examples/adapters-nethttp/main.go) for the ful
 
 **`MapCodecSafe` / `MapCodecValidated` are different:** they produce a single `Codec[B]` where encode uses A's wire format. They are designed for **same-wire bidirectional mappings** (newtypes, DSN strings) — not for HTTP request→response where the two wire formats differ. See [Codec Transformations](#codec-transformations-mapcodecsafe-and-mapcodecvalidated).
 
+### Authentication & Authorization
+
+go-codex documents security requirements in the spec and provides declarative hooks for runtime enforcement. Security schemes are registered on the builder; runtime credential validation is handled by adapters via a `SecurityFunc` hook — the library does not import any crypto or JWT library.
+
+#### Declaring security schemes (REST)
+
+```go
+import (
+    "github.com/DaniDeer/go-codex/api/rest"
+    "github.com/DaniDeer/go-codex/route"
+    "github.com/DaniDeer/go-codex/validate"
+)
+
+b := rest.NewBuilder(rest.Info{Title: "User API", Version: "1.0.0"})
+
+// Register schemes — spec fields flow into OpenAPI; Codec validates the raw credential.
+b.AddSecurityScheme("bearerAuth", rest.SecurityScheme{
+    SecurityScheme: route.BearerScheme("JWT"),
+    Codec:          codex.String().Refine(validate.JWT), // format check before SecurityFunc
+})
+b.AddSecurityScheme("apiKey", rest.SecurityScheme{
+    SecurityScheme: route.APIKeyScheme("X-API-Key", "header"),
+})
+
+// Global security — applies to all operations by default.
+b.AddGlobalSecurity(route.Require("bearerAuth"))
+
+// Per-route override — nil inherits global; empty slice = no auth required.
+createUser, _ := rest.AddRoute[CreateUserReq, User](b, "POST", "/users",
+    reqCodec, respCodec,
+    rest.RouteMeta{
+        OperationID: "createUser",
+        Security: []route.SecurityRequirement{
+            route.Require("bearerAuth", "write:users"),
+        },
+    },
+)
+```
+
+#### Runtime enforcement (nethttp / chi adapters)
+
+```go
+mux := http.NewServeMux()
+nethttp.Register(mux, createUser, handler, nethttp.Options{
+    // Codec validation runs automatically for registered schemes.
+    // SecurityFunc receives the request after codec checks pass.
+    SecurityFunc: func(ctx context.Context, r *http.Request, reqs []route.SecurityRequirement) error {
+        token := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
+        return jwtlib.VerifyScopes(token, reqs)
+    },
+})
+```
+
+The adapter:
+1. Extracts the raw credential per scheme type (`Authorization: Bearer <token>`, `X-API-Key: <key>`, etc.)
+2. Validates it via `SecurityScheme.Codec` → returns `rest.SecurityCredentialError` + 401 on failure
+3. Calls `SecurityFunc` → returns `rest.SecurityError` + 401 on rejection
+
+Routes with `nil Security` (default) also trigger enforcement when global security is set.
+
+#### validate constraints for credential formats
+
+```go
+// JWT: three base64url segments separated by dots
+codex.String().Refine(validate.JWT)
+
+// Bearer token: non-empty, no leading/trailing whitespace
+codex.String().Refine(validate.BearerToken)
+```
+
+#### Security for event channels (AsyncAPI)
+
+```go
+b := events.NewBuilder(events.Info{Title: "User Events", Version: "1.0.0"})
+b.AddServer("production", events.Server{
+    URL:      "broker.example.com",
+    Protocol: "mqtt",
+    Security: []route.SecurityRequirement{route.Require("bearerAuth")},
+})
+b.AddSecurityScheme("bearerAuth", events.SecurityScheme{
+    SecurityScheme: route.BearerScheme("JWT"),
+    Codec:          codex.String().Refine(validate.JWT),
+})
+
+userCreated, _ := events.AddChannel[UserCreated](b, "user/created", codec,
+    events.Subscribe{
+        Summary:  "Receive user created events",
+        Security: []route.SecurityRequirement{route.Require("bearerAuth")},
+    },
+)
+```
+
+MQTT adapter:
+
+```go
+mqtt.SubscribeHandler(ctx, userCreated, handler, mqtt.SubscribeOptions{
+    SecurityFunc: func(ctx context.Context, msg pahomqtt.Message, reqs []route.SecurityRequirement) error {
+        // Extract token from MQTT 5.0 User Properties or application headers.
+        return verifyJWT(msg, reqs)
+    },
+})
+```
+
+#### SecurityObserver
+
+To track rejection metrics, implement `stats.SecurityObserver` on your observer:
+
+```go
+type myObs struct{ stats.NoopObserver }
+
+func (o myObs) RecordSecurityRejection(location, scheme string) {
+    metrics.SecurityRejections.WithLabelValues(location, scheme).Inc()
+}
+```
+
+Adapters type-assert `stats.SecurityObserver` at call time — no breaking change to the `Observer` interface.
+
+#### OpenAPI output
+
+Security schemes appear in `components/securitySchemes`; global security at document root; per-operation security overrides inline — all generated automatically from `AddSecurityScheme` / `AddGlobalSecurity` / `RouteMeta.Security`.
+
 ### Event Channel Builder
 
 `api/events` is a transport-agnostic event channel builder. Register channels with codec-backed payload types; the builder returns a `ChannelHandle` with typed `Decode` and `Encode` helpers. Pass those helpers to any message broker — this package imports **no messaging library**.
 
-The same builder generates a complete AsyncAPI 2.6 spec from all registered channels.
+The same builder generates a complete AsyncAPI 3.0 spec from all registered channels.
 
 ```go
 import (
@@ -1385,7 +1516,7 @@ if err != nil {
 event, err := userCreated.Decode(msg.Payload()) // JSON → UserCreatedEvent, validates
 handleUserCreated(event)
 
-// AsyncAPI 2.6 spec from all registered channels:
+// AsyncAPI 3.0 spec from all registered channels:
 doc, err := b.AsyncAPISpec()
 yamlBytes, _ := doc.MarshalYAML()
 ```
@@ -2251,9 +2382,12 @@ go-codex/
 │   ├── openapi/            # OpenAPI 3.1 renderer
 │   │   ├── openapi.go      # SchemaObject, ComponentsSchemas, MarshalJSON, MarshalYAML
 │   │   └── document.go     # DocumentBuilder, Document, Info, Server — full 3.1 spec
-│   └── asyncapi/           # AsyncAPI 2.6 renderer
-│       ├── asyncapi.go     # delegates schema rendering to render/internal/schemarender
-│       └── document.go     # DocumentBuilder, Document, ChannelItem, Operation, Message
+│   ├── asyncapi/           # AsyncAPI 2.6 renderer (frozen)
+│   │   ├── asyncapi.go     # delegates schema rendering to render/internal/schemarender
+│   │   └── document.go     # DocumentBuilder, Document, ChannelItem, Operation, Message
+│   └── asyncapi/v3/        # AsyncAPI 3.0 renderer
+│       ├── asyncapi.go     # security scheme helpers, schema rendering
+│       └── document.go     # DocumentBuilder, Document, Server (Security), Operation (Security), ChannelItem (Address)
 │
 ├── schema/                 # schema model (pure data, zero dependencies)
 │   └── schema.go           # Schema, Property, DiscriminatorSchema

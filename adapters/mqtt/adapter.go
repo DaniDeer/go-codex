@@ -41,6 +41,7 @@ import (
 
 	"github.com/DaniDeer/go-codex/api/events"
 	"github.com/DaniDeer/go-codex/format"
+	"github.com/DaniDeer/go-codex/route"
 	"github.com/DaniDeer/go-codex/stats"
 )
 
@@ -55,6 +56,9 @@ const (
 	// KindHandler indicates the application handler returned an error after
 	// successful decoding.
 	KindHandler
+
+	// KindSecurity indicates the SecurityFunc rejected the message.
+	KindSecurity
 )
 
 func (k ErrorKind) String() string {
@@ -63,6 +67,8 @@ func (k ErrorKind) String() string {
 		return "decode"
 	case KindHandler:
 		return "handler"
+	case KindSecurity:
+		return "security"
 	default:
 		return "unknown"
 	}
@@ -100,6 +106,36 @@ type SubscribeOptions struct {
 	// or "topic" (topic-level codec or structural mismatch).
 	// Defaults to [stats.NoopObserver] when nil.
 	Observer stats.Observer
+
+	// SecurityFunc, when non-nil, is called for channels whose subscribe operation
+	// has non-empty security requirements (per-channel Security or global security
+	// declared via [Builder.AddGlobalSecurity]), before fn is invoked.
+	// Return a non-nil error to reject the message; [Options.OnError] is called with
+	// [KindSecurity] and the returned error.
+	//
+	// reqs contains the effective security requirements for the channel.
+	//
+	// Three patterns for obtaining credentials:
+	//
+	// Pattern 1 — Closure: capture a shared secret or token at CONNECT time
+	// and reference it in the closure. No message access needed.
+	//
+	// Pattern 2 — Direct msg access: msg is passed directly to SecurityFunc.
+	// For MQTT 5.0 libraries that expose User Properties, extract via
+	// msg.Properties().User.Get("key"). For MQTT 3.1.1 (Paho), msg does not
+	// carry per-message credentials; use Pattern 1 or 3 instead.
+	//
+	// Pattern 3 — Handler access: use [MessageFromContext] inside fn (after
+	// SecurityFunc returns nil) to inspect QoS, retained flag, or full topic.
+	// SecurityFunc itself always receives the message directly via the msg parameter.
+	//
+	// Example (Pattern 2 with MQTT 5.0 User Properties):
+	//
+	//	opts.SecurityFunc = func(ctx context.Context, msg pahomqtt.Message, reqs []route.SecurityRequirement) error {
+	//	    token := msg.Properties().User.Get("Authorization")
+	//	    return verifyJWT(token, reqs)
+	//	}
+	SecurityFunc func(ctx context.Context, msg pahomqtt.Message, reqs []route.SecurityRequirement) error
 }
 
 // MessageFromContext retrieves the [pahomqtt.Message] stored in ctx by [SubscribeHandler].
@@ -158,10 +194,45 @@ func SubscribeHandler[T any](
 			}
 			return
 		}
+		// Enforce security: per-operation requirements take precedence; nil falls
+		// back to global security declared via Builder.AddGlobalSecurity.
+		var secReqs []route.SecurityRequirement
+		if handle.Descriptor.Subscribe != nil {
+			secReqs = handle.Descriptor.Subscribe.Security
+		}
+		if secReqs == nil {
+			secReqs = handle.GlobalSecurity
+		}
+		if len(secReqs) > 0 {
+			if credErr := validateSecurityCredentials(msg, secReqs, handle.SecuritySchemes); credErr != nil {
+				if secObs, ok := obs.(stats.SecurityObserver); ok {
+					secObs.RecordSecurityRejection(msg.Topic(), firstScheme(secReqs))
+				}
+				obs.RecordSubscribe(msg.Topic(), false, time.Since(start))
+				if opts.OnError != nil {
+					opts.OnError(SubscribeError{Kind: KindSecurity, Topic: msg.Topic(), Err: credErr})
+				}
+				return
+			}
+			if opts.SecurityFunc != nil {
+				if err := opts.SecurityFunc(ctx, msg, secReqs); err != nil {
+					if secObs, ok := obs.(stats.SecurityObserver); ok {
+						secObs.RecordSecurityRejection(msg.Topic(), firstScheme(secReqs))
+					}
+					obs.RecordSubscribe(msg.Topic(), false, time.Since(start))
+					if opts.OnError != nil {
+						opts.OnError(SubscribeError{Kind: KindSecurity, Topic: msg.Topic(), Err: err})
+					}
+					return
+				}
+			}
+		}
+
 		if err := fn(ctx, value); err != nil {
 			reportTopicParamErrors(err, obs)
 			reportTopicMismatchErrors(err, obs)
 			reportInvalidTopicErrors(err, obs)
+			reportMissingTopicVarErrors(err, obs)
 			obs.RecordSubscribe(msg.Topic(), false, time.Since(start))
 			if opts.OnError != nil {
 				opts.OnError(SubscribeError{Kind: KindHandler, Topic: msg.Topic(), Err: err})
@@ -312,4 +383,34 @@ func Publish[T any](ctx context.Context, client pahomqtt.Client, handle *events.
 		obs.RecordPublish(topic, true, time.Since(start))
 		return nil
 	}
+}
+
+// validateSecurityCredentials checks registered SecurityScheme codecs against
+// credentials extracted from the MQTT message.
+//
+// Because the paho.mqtt.golang library does not expose MQTT 5.0 User Properties
+// through the pahomqtt.Message interface, credential extraction is always a
+// no-op and Codec validation is deliberately skipped. Use SecurityFunc with
+// MessageFromContext for runtime credential inspection instead.
+func validateSecurityCredentials(_ pahomqtt.Message, reqs []route.SecurityRequirement, schemes map[string]events.SecurityScheme) error {
+	for _, req := range reqs {
+		for name := range req {
+			if _, ok := schemes[name]; !ok {
+				continue
+			}
+			// Codec validation skipped: MQTT 3.1.1 cannot expose credentials
+			// via pahomqtt.Message. Use SecurityFunc for enforcement.
+		}
+	}
+	return nil
+}
+
+// firstScheme returns the first scheme name from the security requirements.
+func firstScheme(reqs []route.SecurityRequirement) string {
+	for _, req := range reqs {
+		for name := range req {
+			return name
+		}
+	}
+	return ""
 }

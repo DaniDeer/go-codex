@@ -69,27 +69,9 @@ type CommentResponse struct {
 // CommentCodec decodes a comment payload. One Decode call handles type
 // checking, HTML escaping, and all constraint validation for every field.
 var CommentCodec = codex.Struct[CommentResponse](
-	codex.Field[CommentResponse, string]{
-		Name:     "id",
-		Codec:    codex.String().Refine(validate.UUID).WithTitle("ID").WithDescription("Comment identifier (UUID v4)."),
-		Get:      func(c CommentResponse) string { return c.ID },
-		Set:      func(c *CommentResponse, v string) { c.ID = v },
-		Required: true,
-	},
-	codex.Field[CommentResponse, string]{
-		Name:     "author",
-		Codec:    CommentAuthorCodec,
-		Get:      func(c CommentResponse) string { return c.Author },
-		Set:      func(c *CommentResponse, v string) { c.Author = v },
-		Required: true,
-	},
-	codex.Field[CommentResponse, string]{
-		Name:     "body",
-		Codec:    CommentBodyCodec,
-		Get:      func(c CommentResponse) string { return c.Body },
-		Set:      func(c *CommentResponse, v string) { c.Body = v },
-		Required: true,
-	},
+	codex.RequiredField("id", codex.String().Refine(validate.UUID).WithTitle("ID").WithDescription("Comment identifier (UUID v4)."), func(c CommentResponse) string { return c.ID }, func(c *CommentResponse, v string) { c.ID = v }),
+	codex.RequiredField("author", CommentAuthorCodec, func(c CommentResponse) string { return c.Author }, func(c *CommentResponse, v string) { c.Author = v }),
+	codex.RequiredField("body", CommentBodyCodec, func(c CommentResponse) string { return c.Body }, func(c *CommentResponse, v string) { c.Body = v }),
 )
 
 func main() {

@@ -5,6 +5,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/DaniDeer/go-codex/codex"
 	"github.com/DaniDeer/go-codex/validate"
 )
 
@@ -238,5 +239,77 @@ func TestIntStringInRange(t *testing.T) {
 	}
 	if msg := c.Message("200"); !strings.Contains(msg, "100") {
 		t.Errorf("IntStringInRange.Message = %q, want mention of max bound", msg)
+	}
+}
+
+func TestBearerToken_valid(t *testing.T) {
+	c := codex.String().Refine(validate.BearerToken)
+	if err := c.Validate("my-bearer-token"); err != nil {
+		t.Errorf("want nil, got %v", err)
+	}
+}
+
+func TestBearerToken_emptyString(t *testing.T) {
+	c := codex.String().Refine(validate.BearerToken)
+	if err := c.Validate(""); err == nil {
+		t.Error("want error for empty string, got nil")
+	}
+}
+
+func TestBearerToken_leadingSpace(t *testing.T) {
+	c := codex.String().Refine(validate.BearerToken)
+	if err := c.Validate(" token"); err == nil {
+		t.Error("want error for leading space, got nil")
+	}
+}
+
+func TestBearerToken_trailingSpace(t *testing.T) {
+	c := codex.String().Refine(validate.BearerToken)
+	if err := c.Validate("token "); err == nil {
+		t.Error("want error for trailing space, got nil")
+	}
+}
+
+func TestJWT_valid(t *testing.T) {
+	c := codex.String().Refine(validate.JWT)
+	if err := c.Validate("header.payload.sig"); err != nil {
+		t.Errorf("want nil, got %v", err)
+	}
+}
+
+func TestJWT_validWithUnpaddedBase64url(t *testing.T) {
+	c := codex.String().Refine(validate.JWT)
+	// real-world JWT style with _ and - chars
+	tok := "eyJhbGciOiJSUzI1NiJ9.eyJzdWIiOiJ1c2VyXzEifQ.SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV_adQssw5c"
+	if err := c.Validate(tok); err != nil {
+		t.Errorf("want nil for base64url JWT, got %v", err)
+	}
+}
+
+func TestJWT_missingSegment(t *testing.T) {
+	c := codex.String().Refine(validate.JWT)
+	if err := c.Validate("header.payload"); err == nil {
+		t.Error("want error for 2-part token, got nil")
+	}
+}
+
+func TestJWT_empty(t *testing.T) {
+	c := codex.String().Refine(validate.JWT)
+	if err := c.Validate(""); err == nil {
+		t.Error("want error for empty string, got nil")
+	}
+}
+
+func TestJWT_tooManyParts(t *testing.T) {
+	c := codex.String().Refine(validate.JWT)
+	if err := c.Validate("a.b.c.d"); err == nil {
+		t.Error("want error for 4-part token, got nil")
+	}
+}
+
+func TestJWT_withSpaces(t *testing.T) {
+	c := codex.String().Refine(validate.JWT)
+	if err := c.Validate("a.b.c "); err == nil {
+		t.Error("want error for token with trailing space, got nil")
 	}
 }

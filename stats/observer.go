@@ -96,9 +96,25 @@ type PipelineObserver interface {
 	RecordApply(name, version string, success bool, duration time.Duration)
 }
 
+// SecurityObserver is an optional extension to [Observer] for security rejection
+// events. Adapters type-assert the configured Observer to SecurityObserver before
+// calling RecordSecurityRejection, so implementing this interface is purely
+// additive — existing Observer implementations need not change.
+//
+//	type MyObserver struct{ ... }
+//	func (o *MyObserver) RecordSecurityRejection(location, scheme string) {
+//	    // increment a Prometheus counter, emit a log line, etc.
+//	}
+type SecurityObserver interface {
+	// RecordSecurityRejection is called when a security check rejects a request
+	// or message. location is the route path (HTTP) or topic (MQTT). scheme is
+	// the first declared security scheme name for the operation.
+	RecordSecurityRejection(location, scheme string)
+}
+
 // NoopObserver discards all events. It satisfies [Observer], [ValidationObserver],
-// and [PipelineObserver] and is the zero-cost default used when no observer is
-// configured.
+// [PipelineObserver], and [SecurityObserver] and is the zero-cost default used
+// when no observer is configured.
 type NoopObserver struct{}
 
 func (NoopObserver) RecordValidationError(_, _, _ string)              {}
@@ -106,6 +122,7 @@ func (NoopObserver) RecordRequest(_, _ string, _ int, _ time.Duration) {}
 func (NoopObserver) RecordSubscribe(_ string, _ bool, _ time.Duration) {}
 func (NoopObserver) RecordPublish(_ string, _ bool, _ time.Duration)   {}
 func (NoopObserver) RecordApply(_, _ string, _ bool, _ time.Duration)  {}
+func (NoopObserver) RecordSecurityRejection(_, _ string)               {}
 
 // ReportErrors walks err and calls obs.RecordValidationError for every codec
 // validation failure it finds. location identifies the data source (e.g. "body",

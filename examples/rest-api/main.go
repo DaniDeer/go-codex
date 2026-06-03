@@ -24,28 +24,9 @@ type User struct {
 }
 
 var UserCodec = codex.Struct[User](
-	codex.Field[User, string]{
-		Name:     "id",
-		Codec:    codex.String().Refine(validate.UUID).WithDescription("Unique user ID (UUID)."),
-		Get:      func(u User) string { return u.ID },
-		Set:      func(u *User, v string) { u.ID = v },
-		Required: true,
-	},
-	codex.Field[User, string]{
-		Name:  "name",
-		Codec: codex.String().Refine(validate.NonEmptyString).Refine(validate.MaxLen(100)).WithDescription("Full display name."),
-		Get:   func(u User) string { return u.Name },
-		Set:   func(u *User, v string) { u.Name = v },
-
-		Required: true,
-	},
-	codex.Field[User, string]{
-		Name:     "email",
-		Codec:    codex.String().Refine(validate.Email).WithDescription("Primary email address."),
-		Get:      func(u User) string { return u.Email },
-		Set:      func(u *User, v string) { u.Email = v },
-		Required: true,
-	},
+	codex.RequiredField("id", codex.String().Refine(validate.UUID).WithDescription("Unique user ID (UUID)."), func(u User) string { return u.ID }, func(u *User, v string) { u.ID = v }),
+	codex.RequiredField("name", codex.String().Refine(validate.NonEmptyString).Refine(validate.MaxLen(100)).WithDescription("Full display name."), func(u User) string { return u.Name }, func(u *User, v string) { u.Name = v }),
+	codex.RequiredField("email", codex.String().Refine(validate.Email).WithDescription("Primary email address."), func(u User) string { return u.Email }, func(u *User, v string) { u.Email = v }),
 )
 
 // CreateUserRequest is the request body for POST /users.
@@ -55,20 +36,8 @@ type CreateUserRequest struct {
 }
 
 var CreateUserRequestCodec = codex.Struct[CreateUserRequest](
-	codex.Field[CreateUserRequest, string]{
-		Name:     "name",
-		Codec:    codex.String().Refine(validate.NonEmptyString).Refine(validate.MaxLen(100)).WithDescription("Full display name."),
-		Get:      func(r CreateUserRequest) string { return r.Name },
-		Set:      func(r *CreateUserRequest, v string) { r.Name = v },
-		Required: true,
-	},
-	codex.Field[CreateUserRequest, string]{
-		Name:     "email",
-		Codec:    codex.String().Refine(validate.Email).WithDescription("Primary email address."),
-		Get:      func(r CreateUserRequest) string { return r.Email },
-		Set:      func(r *CreateUserRequest, v string) { r.Email = v },
-		Required: true,
-	},
+	codex.RequiredField("name", codex.String().Refine(validate.NonEmptyString).Refine(validate.MaxLen(100)).WithDescription("Full display name."), func(r CreateUserRequest) string { return r.Name }, func(r *CreateUserRequest, v string) { r.Name = v }),
+	codex.RequiredField("email", codex.String().Refine(validate.Email).WithDescription("Primary email address."), func(r CreateUserRequest) string { return r.Email }, func(r *CreateUserRequest, v string) { r.Email = v }),
 )
 
 func main() {
