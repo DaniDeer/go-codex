@@ -60,8 +60,8 @@ type DBConfig struct {
 }
 
 var dbCodec = codex.Struct[DBConfig](
-	codex.RequiredField("host", hostCodec, func(c DBConfig) string { return c.Host }, func(c *DBConfig, v string) { c.Host = v }),   // ← shared field codec
-	codex.RequiredField("port", portCodec, func(c DBConfig) uint { return c.Port }, func(c *DBConfig, v uint) { c.Port = v }),        // ← shared field codec
+	codex.RequiredField("host", hostCodec, func(c DBConfig) string { return c.Host }, func(c *DBConfig, v string) { c.Host = v }), // ← shared field codec
+	codex.RequiredField("port", portCodec, func(c DBConfig) uint { return c.Port }, func(c *DBConfig, v uint) { c.Port = v }),     // ← shared field codec
 	codex.RequiredField("name", codex.String().Refine(validate.NonEmptyString).WithDescription("Database name."), func(c DBConfig) string { return c.Name }, func(c *DBConfig, v string) { c.Name = v }),
 )
 
@@ -74,8 +74,8 @@ type AppConfig struct {
 }
 
 var appConfigCodec = codex.Struct[AppConfig](
-	codex.RequiredField("host", hostCodec, func(c AppConfig) string { return c.Host }, func(c *AppConfig, v string) { c.Host = v }),                            // ← same shared field codec
-	codex.RequiredField("port", portCodec, func(c AppConfig) uint { return c.Port }, func(c *AppConfig, v uint) { c.Port = v }),                               // ← same shared field codec
+	codex.RequiredField("host", hostCodec, func(c AppConfig) string { return c.Host }, func(c *AppConfig, v string) { c.Host = v }),                                     // ← same shared field codec
+	codex.RequiredField("port", portCodec, func(c AppConfig) uint { return c.Port }, func(c *AppConfig, v uint) { c.Port = v }),                                         // ← same shared field codec
 	codex.RequiredField("db", dbCodec.WithDescription("Database connection."), func(c AppConfig) DBConfig { return c.DB }, func(c *AppConfig, v DBConfig) { c.DB = v }), // ← sub-codec reused
 )
 
@@ -88,7 +88,7 @@ type ProxyConfig struct {
 
 var proxyConfigCodec = codex.Struct[ProxyConfig](
 	codex.RequiredField("upstream_host", hostCodec, func(c ProxyConfig) string { return c.UpstreamHost }, func(c *ProxyConfig, v string) { c.UpstreamHost = v }), // ← same hostCodec — constraint defined once
-	codex.RequiredField("upstream_port", portCodec, func(c ProxyConfig) uint { return c.UpstreamPort }, func(c *ProxyConfig, v uint) { c.UpstreamPort = v }), // ← same portCodec — constraint defined once
+	codex.RequiredField("upstream_port", portCodec, func(c ProxyConfig) uint { return c.UpstreamPort }, func(c *ProxyConfig, v uint) { c.UpstreamPort = v }),     // ← same portCodec — constraint defined once
 )
 
 // ── MapCodecSafe: Port newtype (Pattern 3a) ───────────────────────────────────

@@ -87,7 +87,7 @@ var CloudEventCodec = codex.Struct[CloudEvent](
 	// Pure("1.0"): always decodes to "1.0" and encodes "1.0" regardless of input.
 	codex.RequiredField("specversion", codex.Pure("1.0").WithDescription("CloudEvents specification version. Always 1.0."), func(e CloudEvent) string { return e.SpecVersion }, func(e *CloudEvent, v string) { e.SpecVersion = v }),
 	// Eq(String(), cloudEventType): String() handles wire decoding; Eq enforces the exact value.
-	codex.RequiredField("type", codex.Eq(codex.String(), cloudEventType).WithDescription("CloudEvent type. Must be " + cloudEventType + "."), func(e CloudEvent) string { return e.Type }, func(e *CloudEvent, v string) { e.Type = v }),
+	codex.RequiredField("type", codex.Eq(codex.String(), cloudEventType).WithDescription("CloudEvent type. Must be "+cloudEventType+"."), func(e CloudEvent) string { return e.Type }, func(e *CloudEvent, v string) { e.Type = v }),
 	codex.RequiredField("id", codex.String().Refine(validate.UUID).WithDescription("Unique event identifier (UUID v4)."), func(e CloudEvent) string { return e.ID }, func(e *CloudEvent, v string) { e.ID = v }),
 )
 

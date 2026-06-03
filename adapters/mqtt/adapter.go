@@ -392,16 +392,9 @@ func Publish[T any](ctx context.Context, client pahomqtt.Client, handle *events.
 // through the pahomqtt.Message interface, credential extraction is always a
 // no-op and Codec validation is deliberately skipped. Use SecurityFunc with
 // MessageFromContext for runtime credential inspection instead.
-func validateSecurityCredentials(_ pahomqtt.Message, reqs []route.SecurityRequirement, schemes map[string]events.SecurityScheme) error {
-	for _, req := range reqs {
-		for name := range req {
-			if _, ok := schemes[name]; !ok {
-				continue
-			}
-			// Codec validation skipped: MQTT 3.1.1 cannot expose credentials
-			// via pahomqtt.Message. Use SecurityFunc for enforcement.
-		}
-	}
+func validateSecurityCredentials(_ pahomqtt.Message, _ []route.SecurityRequirement, _ map[string]events.SecurityScheme) error {
+	// Codec validation skipped: pahomqtt.Message (MQTT 3.1.1) does not expose
+	// per-message credentials. Use SecurityFunc for runtime enforcement instead.
 	return nil
 }
 
