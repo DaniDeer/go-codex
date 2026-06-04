@@ -59,7 +59,7 @@ func TestWithRefinement_Passes(t *testing.T) {
 	out := float64Codec(0, 1)
 	called := false
 	f := forge.NewFunction("fn", "1.0.0",
-		"inputs", availInCodec(), "out", out,
+		availInCodec(), out,
 		func(in availIn) (float64, error) {
 			called = true
 			return (in.PlannedTime - in.Downtime) / in.PlannedTime, nil
@@ -86,7 +86,7 @@ func TestWithRefinement_FailsBeforeCompute(t *testing.T) {
 	out := float64Codec(0, 1)
 	computeCalled := false
 	f := forge.NewFunction("fn", "1.0.0",
-		"inputs", availInCodec(), "out", out,
+		availInCodec(), out,
 		func(in availIn) (float64, error) {
 			computeCalled = true
 			return 0, nil
@@ -140,7 +140,7 @@ func TestObserver_CapturesRefinementFailure(t *testing.T) {
 	reg := forge.NewRegistry("test", "1.0.0").WithObserver(obs)
 
 	f := forge.NewFunction("fn", "1.0.0",
-		"inputs", availInCodec(), "out", out,
+		availInCodec(), out,
 		func(in availIn) (float64, error) { return 0, nil },
 		forge.WithRefinement(func(in availIn) error {
 			return errBadRefinement
@@ -164,7 +164,7 @@ func TestObserver_CapturesRefinementFailure(t *testing.T) {
 func TestWithRefinement_StructInput_ThreeFields(t *testing.T) {
 	out := float64Codec(0, 1)
 	f := forge.NewFunction("oee", "1.0.0",
-		"oeeIn", oeeInCodec(), "oee", out,
+		oeeInCodec(), out,
 		func(in oeeIn) (float64, error) { return in.A * in.P * in.Q, nil },
 		forge.WithRefinement(func(in oeeIn) error {
 			if in.A+in.P+in.Q == 0 {
@@ -201,7 +201,7 @@ func TestCompose_RefinementRunsInComposedFunction(t *testing.T) {
 	refinementCalled := false
 
 	f1 := forge.NewFunction("double", "1.0.0",
-		"in", c, "out", c,
+		c, c,
 		func(v float64) (float64, error) { return v * 2, nil },
 		forge.WithRefinement(func(v float64) error {
 			refinementCalled = true
@@ -212,7 +212,7 @@ func TestCompose_RefinementRunsInComposedFunction(t *testing.T) {
 		}),
 	)
 	f2 := forge.NewFunction("addOne", "1.0.0",
-		"in", c, "out", c,
+		c, c,
 		func(v float64) (float64, error) { return v + 1, nil },
 	)
 
@@ -264,7 +264,7 @@ func TestCodecRefine_CrossFieldConstraint(t *testing.T) {
 
 	out := float64Codec(0, 1)
 	f := forge.NewFunction("availCalc", "1.0.0",
-		"inputs", constrainedInCodec, "availability", out,
+		constrainedInCodec, out,
 		func(in availIn) (float64, error) {
 			return (in.PlannedTime - in.Downtime) / in.PlannedTime, nil
 		},

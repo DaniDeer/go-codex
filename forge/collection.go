@@ -187,12 +187,12 @@ func Map[In, Out any](
 	inputCodec := containerSlice(fn.inputCodec)
 	outputCodec := codex.SliceOf(fn.output)
 	inputs := inputSpecs(fn.Spec.Inputs[0].Name, inputCodec.Schema)
-	out := InputSpec{Name: fn.Spec.Output.Name, Schema: outputCodec.Schema}
+	out := PortSpec{Name: fn.Spec.Output.Name, Schema: outputCodec.Schema}
 	spec := FunctionSpec{
 		Name:        name,
 		Version:     version,
 		Hash:        computeHash(name, version, inputs, out),
-		Kind:        "map",
+		Kind:        FunctionKindMap,
 		Wraps:       fn.Spec.Name,
 		Description: cfg.description,
 		Author:      cfg.author,
@@ -254,13 +254,17 @@ func Filter[T any](
 	cfg := applyFunctionOptions(opts)
 	inputCodec := containerSlice(elemCodec)
 	outputCodec := codex.SliceOf(elemCodec)
-	inputs := inputSpecs("elements", inputCodec.Schema)
-	out := InputSpec{Name: "elements", Schema: outputCodec.Schema}
+	elemName := elemCodec.Schema.Title
+	if elemName == "" {
+		elemName = "elements"
+	}
+	inputs := inputSpecs(elemName, inputCodec.Schema)
+	out := PortSpec{Name: elemName, Schema: outputCodec.Schema}
 	spec := FunctionSpec{
 		Name:        name,
 		Version:     version,
 		Hash:        computeHash(name, version, inputs, out),
-		Kind:        "filter",
+		Kind:        FunctionKindFilter,
 		Description: cfg.description,
 		Author:      cfg.author,
 		ApprovedBy:  cfg.approvedBy,
@@ -325,13 +329,21 @@ func Reduce[T, Acc any](
 	}
 	cfg := applyFunctionOptions(opts)
 	inputCodec := containerSlice(elemCodec)
-	inputs := inputSpecs("elements", inputCodec.Schema)
-	out := InputSpec{Name: "result", Schema: accCodec.Schema}
+	elemName2 := elemCodec.Schema.Title
+	if elemName2 == "" {
+		elemName2 = "elements"
+	}
+	accName := accCodec.Schema.Title
+	if accName == "" {
+		accName = "result"
+	}
+	inputs := inputSpecs(elemName2, inputCodec.Schema)
+	out := PortSpec{Name: accName, Schema: accCodec.Schema}
 	spec := FunctionSpec{
 		Name:        name,
 		Version:     version,
 		Hash:        computeHash(name, version, inputs, out),
-		Kind:        "reduce",
+		Kind:        FunctionKindReduce,
 		Description: cfg.description,
 		Author:      cfg.author,
 		ApprovedBy:  cfg.approvedBy,
@@ -392,12 +404,12 @@ func MapValues[In, Out any](
 	inputCodec := containerMap(fn.inputCodec)
 	outputCodec := codex.StringMap(fn.output)
 	inputs := inputSpecs(fn.Spec.Inputs[0].Name, inputCodec.Schema)
-	out := InputSpec{Name: fn.Spec.Output.Name, Schema: outputCodec.Schema}
+	out := PortSpec{Name: fn.Spec.Output.Name, Schema: outputCodec.Schema}
 	spec := FunctionSpec{
 		Name:        name,
 		Version:     version,
 		Hash:        computeHash(name, version, inputs, out),
-		Kind:        "mapValues",
+		Kind:        FunctionKindMapValues,
 		Wraps:       fn.Spec.Name,
 		Description: cfg.description,
 		Author:      cfg.author,
@@ -471,12 +483,12 @@ func MapValuesK[K comparable, In, Out any](
 	inputCodec := containerMapK(keyCodec, fn.inputCodec)
 	outputCodec := codex.Map[K, Out](keyCodec, fn.output)
 	inputs := inputSpecs(fn.Spec.Inputs[0].Name, inputCodec.Schema)
-	out := InputSpec{Name: fn.Spec.Output.Name, Schema: outputCodec.Schema}
+	out := PortSpec{Name: fn.Spec.Output.Name, Schema: outputCodec.Schema}
 	spec := FunctionSpec{
 		Name:        name,
 		Version:     version,
 		Hash:        computeHash(name, version, inputs, out),
-		Kind:        "mapValues",
+		Kind:        FunctionKindMapValues,
 		Wraps:       fn.Spec.Name,
 		Description: cfg.description,
 		Author:      cfg.author,

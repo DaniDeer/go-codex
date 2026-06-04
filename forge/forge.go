@@ -29,17 +29,21 @@
 // governance metadata (Author, ApprovedBy, ApprovedAt) and a tamper-evident hash
 // of the computation contract (name + version + input/output schemas).
 //
-// For single-value inputs, In is a plain domain type:
+// For single-value inputs, In is a plain domain type. Port names for pipeline
+// graph-edge inference come from codec.Schema.Title (set via .WithTitle):
+//
+//	var oeeCodec   = codex.Float64(zeroToOne()).WithTitle("oee")
+//	var gradeCodec = codex.String(gradeEnum).WithTitle("grade")
 //
 //	gradeCalc := forge.NewFunction("gradeCalc", "1.0.0",
-//	    "oee", oeeCodec,
-//	    "grade", gradeCodec,
+//	    oeeCodec, gradeCodec,
 //	    func(oee OEE) (Grade, error) { ... },
 //	)
 //
 // For multi-input computations, define a struct and build a codex.Struct codec.
-// Cross-field constraints belong on the struct codec via codex.Refine; use
-// WithRefinement for pipeline-level constraints:
+// Struct field names are used as input port names automatically (Schema.Title on the
+// struct codec is not needed for port naming). Cross-field constraints belong on the
+// struct codec via codex.Refine; use WithRefinement for pipeline-level constraints:
 //
 //	type OEEIn struct {
 //	    Availability Availability
@@ -51,9 +55,10 @@
 //	    codex.RequiredField("performance",  performanceCodec, ...),
 //	    codex.RequiredField("quality",      qualityCodec, ...),
 //	)
+//	var oeeCodec = codex.Float64(zeroToOne()).WithTitle("oee")
+//
 //	oeeCalc := forge.NewFunction("oeeCalc", "1.0.0",
-//	    "oeeInputs", oeeInCodec,
-//	    "oee", oeeCodec,
+//	    oeeInCodec, oeeCodec,
 //	    func(in OEEIn) (OEE, error) {
 //	        return OEE(float64(in.Availability) * float64(in.Performance) * float64(in.Quality)), nil
 //	    },
@@ -122,16 +127,32 @@ func MeasuredCodec[T any](inner codex.Codec[T]) codex.Codec[Measured[T]] {
 	)
 }
 
-// InputSpec describes one named input or output of a function.
+// PortSpec describes one named input or output port of a function.
 // Schema is the codec's schema for this value.
-type InputSpec struct {
+type PortSpec struct {
 	Name   string        `json:"name"`
 	Schema schema.Schema `json:"schema"`
 }
 
+// FunctionKind identifies how a Function was constructed.
+type FunctionKind string
+
+const (
+	// FunctionKindScalar is the default: a scalar function created by NewFunction or Compose.
+	FunctionKindScalar FunctionKind = ""
+	// FunctionKindMap is a function created by Map (lifts a Function over a slice).
+	FunctionKindMap FunctionKind = "map"
+	// FunctionKindFilter is a function created by Filter (keeps elements satisfying a predicate).
+	FunctionKindFilter FunctionKind = "filter"
+	// FunctionKindReduce is a function created by Reduce (folds a slice to an accumulator).
+	FunctionKindReduce FunctionKind = "reduce"
+	// FunctionKindMapValues is a function created by MapValues or MapValuesK.
+	FunctionKindMapValues FunctionKind = "mapValues"
+)
+
 // FunctionSpec is the type-erased, schema-level descriptor of a function.
 //
-// All fields are set automatically by New, Compose, and the collection constructors
+// All fields are set automatically by NewFunction, Compose, and the collection constructors
 // (Map, Filter, Reduce, MapValues).
 // Hash is computed over (Name, Version, Inputs[].Schema, Output.Schema); governance
 // fields (Author, ApprovedBy, ApprovedAt) are excluded from the hash — changing
@@ -143,9 +164,9 @@ type FunctionSpec struct {
 	// Hash is "sha256:<hex>" over the canonical JSON of the computation contract.
 	Hash string
 	// Kind identifies the constructor that produced this function.
-	// "" (empty) for scalar functions created by New or Compose.
-	// "map", "filter", "reduce", or "mapValues" for collection functions.
-	Kind string
+	// FunctionKindScalar ("") for scalar functions created by NewFunction or Compose.
+	// FunctionKindMap/Filter/Reduce/MapValues for collection functions.
+	Kind FunctionKind
 	// Wraps is the Name of the scalar Function lifted by Map or MapValues.
 	// Empty for scalar functions and for Filter/Reduce (which take raw predicates).
 	Wraps string
@@ -155,8 +176,8 @@ type FunctionSpec struct {
 	ApprovedBy  string
 	ApprovedAt  string // ISO 8601 date, e.g. "2024-01-15"
 	// Input/output shapes.
-	Inputs []InputSpec
-	Output InputSpec
+	Inputs []PortSpec
+	Output PortSpec
 }
 
 // GraphEdge links a consuming function's named input to the function that produces it.

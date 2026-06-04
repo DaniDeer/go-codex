@@ -78,10 +78,11 @@ func TestRegistry_FluentBuilder(t *testing.T) {
 
 func TestRegistry_GraphEdgeInference(t *testing.T) {
 	c := float64Codec(0, 100)
-	f1 := forge.NewFunction("step1", "1.0.0",
-		"in", c, "mid", c, identity)
-	f2 := forge.NewFunction("step2", "1.0.0",
-		"mid", c, "out", c, identity)
+	cIn := c.WithTitle("in")
+	cMid := c.WithTitle("mid")
+	cOut := c.WithTitle("out")
+	f1 := forge.NewFunction("step1", "1.0.0", cIn, cMid, identity)
+	f2 := forge.NewFunction("step2", "1.0.0", cMid, cOut, identity)
 
 	reg := forge.NewRegistry("P", "1")
 	f1.Register(reg)
@@ -105,7 +106,7 @@ func TestRegistry_GraphEdgeInference(t *testing.T) {
 func TestRegistry_WithObserver(t *testing.T) {
 	obs := &recordingObserver{}
 	c := float64Codec(0, 1)
-	f := forge.NewFunction("fn", "1.0.0", "x", c, "y", c, identity)
+	f := forge.NewFunction("fn", "1.0.0", c, c, identity)
 
 	reg := forge.NewRegistry("P", "1").WithObserver(obs)
 	f.Register(reg)
@@ -124,7 +125,7 @@ func TestRegistry_WithObserver(t *testing.T) {
 func TestFunctionOption_FieldsApplied(t *testing.T) {
 	c := float64Codec(0, 1)
 	f := forge.NewFunction("fn", "1.0.0",
-		"x", c, "y", c, identity,
+		c, c, identity,
 		forge.WithDescription("desc"),
 		forge.WithAuthor("author"),
 		forge.WithApproval("approver", "2024-01-01"),
@@ -145,8 +146,8 @@ func TestFunctionOption_FieldsApplied(t *testing.T) {
 
 func TestFunctionOption_GovernanceExcludedFromHash(t *testing.T) {
 	c := float64Codec(0, 1)
-	noGov := forge.NewFunction("fn", "1.0.0", "x", c, "y", c, identity)
-	withGov := forge.NewFunction("fn", "1.0.0", "x", c, "y", c, identity,
+	noGov := forge.NewFunction("fn", "1.0.0", c, c, identity)
+	withGov := forge.NewFunction("fn", "1.0.0", c, c, identity,
 		forge.WithAuthor("x"), forge.WithApproval("y", "2024-01-01"),
 	)
 	if noGov.Spec.Hash != withGov.Spec.Hash {
@@ -158,7 +159,7 @@ func TestFunctionOption_GovernanceExcludedFromHash(t *testing.T) {
 
 func TestNew_ReturnsValue(t *testing.T) {
 	c := float64Codec(0, 1)
-	f := forge.NewFunction("fn", "1.0.0", "x", c, "y", c, identity)
+	f := forge.NewFunction("fn", "1.0.0", c, c, identity)
 	if f.Spec.Name != "fn" {
 		t.Errorf("name: got %q", f.Spec.Name)
 	}
@@ -171,7 +172,7 @@ func TestNew_PanicsOnEmptyName(t *testing.T) {
 		}
 	}()
 	c := float64Codec(0, 1)
-	forge.NewFunction("", "1.0.0", "x", c, "y", c, identity)
+	forge.NewFunction("", "1.0.0", c, c, identity)
 }
 
 // --- recordingObserver ------------------------------------------------------

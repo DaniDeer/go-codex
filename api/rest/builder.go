@@ -1215,16 +1215,16 @@ func (h *SSERouteHandle[Req, Event]) BuildPath(vars map[string]string) (string, 
 	return result, nil
 }
 
-// WithEventFormats registers the formats available for encoding SSE event data.
+// WithFormats registers the formats available for encoding SSE event data.
 // The adapter uses the first format; when empty, events are encoded as JSON.
 //
-// This mirrors [RouteHandle.WithResponseFormats] for SSE routes. Call it after
-// [NewSSERoute] to configure non-JSON event serialisation:
+// This mirrors [RouteHandle.WithResponseFormats] for SSE routes and [ChannelHandle.WithFormats]
+// for event channels. Call it after [NewSSERoute] to configure non-JSON event serialisation:
 //
-//	notifRoute = notifRoute.WithEventFormats(
+//	notifRoute = notifRoute.WithFormats(
 //	    adapttempl.Format(notifCodec, notifFragment), // HTML fragments over SSE
 //	)
-func (h *SSERouteHandle[Req, Event]) WithEventFormats(fmts ...format.Format[Event]) *SSERouteHandle[Req, Event] {
+func (h *SSERouteHandle[Req, Event]) WithFormats(fmts ...format.Format[Event]) *SSERouteHandle[Req, Event] {
 	h.EventFormats = slices.Clone(fmts)
 	return h
 }
@@ -1275,7 +1275,7 @@ func NewSSERoute[Req, Event any](
 // Register registers the SSE route with b and returns an [SSERouteHandle].
 //
 // Path validation follows the same rules as [Route.Register].
-// Use [SSERouteHandle.WithEventFormats] after Register to configure non-JSON
+// Use [SSERouteHandle.WithFormats] after Register to configure non-JSON
 // event serialisation formats.
 func (s SSERoute[Req, Event]) Register(b *Builder) (*SSERouteHandle[Req, Event], error) {
 	if b.pathCodec != nil {

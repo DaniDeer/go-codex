@@ -23,8 +23,8 @@ func scaleCalc(t *testing.T) *forge.Function[float64, float64] {
 	t.Helper()
 	fn := forge.NewFunction(
 		"scaleCalc", "1.0.0",
-		"value", positiveFloat64Codec(),
-		"scaled", positiveFloat64Codec(),
+		positiveFloat64Codec(),
+		positiveFloat64Codec(),
 		func(v float64) (float64, error) { return v * 2, nil },
 	)
 	return fn
@@ -52,8 +52,8 @@ func TestMap_FunctionSpec(t *testing.T) {
 	fn := scaleCalc(t)
 	batchFn := forge.Map("batchScale", "1.0.0", fn)
 
-	if batchFn.Spec.Kind != "map" {
-		t.Errorf("Kind: got %q, want %q", batchFn.Spec.Kind, "map")
+	if batchFn.Spec.Kind != forge.FunctionKindMap {
+		t.Errorf("Kind: got %v, want %v", batchFn.Spec.Kind, forge.FunctionKindMap)
 	}
 	if batchFn.Spec.Wraps != "scaleCalc" {
 		t.Errorf("Wraps: got %q, want %q", batchFn.Spec.Wraps, "scaleCalc")
@@ -87,8 +87,8 @@ func TestMap_ElementValidationFailure(t *testing.T) {
 func TestMap_ApplyFailure(t *testing.T) {
 	fn := forge.NewFunction(
 		"errCalc", "1.0.0",
-		"v", positiveFloat64Codec(),
-		"out", positiveFloat64Codec(),
+		positiveFloat64Codec(),
+		positiveFloat64Codec(),
 		func(v float64) (float64, error) { return 0, fmt.Errorf("compute failed") },
 	)
 	batchFn := forge.Map("batchErr", "1.0.0", fn)
@@ -177,8 +177,8 @@ func TestFilter_FunctionSpec(t *testing.T) {
 	c := positiveFloat64Codec()
 	filterFn := forge.Filter("filterPos", "1.0.0", c, func(v float64) bool { return true })
 
-	if filterFn.Spec.Kind != "filter" {
-		t.Errorf("Kind: got %q, want %q", filterFn.Spec.Kind, "filter")
+	if filterFn.Spec.Kind != forge.FunctionKindFilter {
+		t.Errorf("Kind: got %v, want %v", filterFn.Spec.Kind, forge.FunctionKindFilter)
 	}
 	if filterFn.Spec.Wraps != "" {
 		t.Errorf("Wraps: got %q, want empty", filterFn.Spec.Wraps)
@@ -286,8 +286,8 @@ func TestReduce_FunctionSpec(t *testing.T) {
 		elemCodec, accCodec, sumResult{},
 		func(acc sumResult, v float64) sumResult { return acc },
 	)
-	if reduceFn.Spec.Kind != "reduce" {
-		t.Errorf("Kind: got %q, want %q", reduceFn.Spec.Kind, "reduce")
+	if reduceFn.Spec.Kind != forge.FunctionKindReduce {
+		t.Errorf("Kind: got %v, want %v", reduceFn.Spec.Kind, forge.FunctionKindReduce)
 	}
 	if reduceFn.Spec.Wraps != "" {
 		t.Errorf("Wraps: got %q, want empty", reduceFn.Spec.Wraps)
@@ -385,8 +385,8 @@ func TestMapValues_FunctionSpec(t *testing.T) {
 	fn := scaleCalc(t)
 	mapValFn := forge.MapValues("perSensor", "1.0.0", fn)
 
-	if mapValFn.Spec.Kind != "mapValues" {
-		t.Errorf("Kind: got %q, want %q", mapValFn.Spec.Kind, "mapValues")
+	if mapValFn.Spec.Kind != forge.FunctionKindMapValues {
+		t.Errorf("Kind: got %v, want %v", mapValFn.Spec.Kind, forge.FunctionKindMapValues)
 	}
 	if mapValFn.Spec.Wraps != "scaleCalc" {
 		t.Errorf("Wraps: got %q, want %q", mapValFn.Spec.Wraps, "scaleCalc")
@@ -489,8 +489,8 @@ func TestMapValuesK_FunctionSpec(t *testing.T) {
 	fn := scaleCalc(t)
 	mapFn := forge.MapValuesK("perSensor", "1.0.0", sensorIDCodecTest(), fn)
 
-	if mapFn.Spec.Kind != "mapValues" {
-		t.Errorf("Kind: got %q, want %q", mapFn.Spec.Kind, "mapValues")
+	if mapFn.Spec.Kind != forge.FunctionKindMapValues {
+		t.Errorf("Kind: got %v, want %v", mapFn.Spec.Kind, forge.FunctionKindMapValues)
 	}
 	if mapFn.Spec.Wraps != "scaleCalc" {
 		t.Errorf("Wraps: got %q, want %q", mapFn.Spec.Wraps, "scaleCalc")

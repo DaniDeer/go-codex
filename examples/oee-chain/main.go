@@ -431,8 +431,8 @@ func main() {
 
 	availabilityCalc := forge.NewFunction(
 		"availabilityCalc", "1.0.0",
-		"availabilityIn", availabilityInCodec,
-		"availability", availabilityCodec,
+		availabilityInCodec,
+		availabilityCodec,
 		func(in AvailabilityIn) (Availability, error) {
 			return Availability((float64(in.PlannedTime) - float64(in.Downtime)) / float64(in.PlannedTime)), nil
 		},
@@ -442,8 +442,8 @@ func main() {
 
 	performanceCalc := forge.NewFunction(
 		"performanceCalc", "1.0.0",
-		"performanceIn", performanceInCodec,
-		"performance", performanceCodec,
+		performanceInCodec,
+		performanceCodec,
 		func(in PerformanceIn) (Performance, error) {
 			return Performance(float64(in.ActualCycles) / float64(in.PlannedCycles)), nil
 		},
@@ -453,8 +453,8 @@ func main() {
 
 	qualityCalc := forge.NewFunction(
 		"qualityCalc", "1.0.0",
-		"qualityIn", qualityInCodec,
-		"quality", qualityCodec,
+		qualityInCodec,
+		qualityCodec,
 		func(in QualityIn) (Quality, error) {
 			if float64(in.TotalUnits) == 0 {
 				return 0, nil
@@ -467,8 +467,8 @@ func main() {
 
 	oeeCalc := forge.NewFunction(
 		"oeeCalc", "1.0.0",
-		"oeeIn", oeeInCodec,
-		"oee", oeeCodec,
+		oeeInCodec,
+		oeeCodec,
 		func(in OEEIn) (OEE, error) {
 			return OEE(float64(in.Availability) * float64(in.Performance) * float64(in.Quality)), nil
 		},

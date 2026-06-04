@@ -23,8 +23,8 @@ func TestCompose_PanicEmptyName(t *testing.T) {
 		}
 	}()
 	c := float64Codec(0, 1)
-	f1 := forge.NewFunction("f1", "1.0.0", "x", c, "y", c, identity)
-	f2 := forge.NewFunction("f2", "1.0.0", "y", c, "z", c, identity)
+	f1 := forge.NewFunction("f1", "1.0.0", c, c, identity)
+	f2 := forge.NewFunction("f2", "1.0.0", c, c, identity)
 	forge.Compose("", "1.0.0", f1, f2)
 }
 
@@ -40,8 +40,8 @@ func TestCompose_PanicEmptyVersion(t *testing.T) {
 		}
 	}()
 	c := float64Codec(0, 1)
-	f1 := forge.NewFunction("f1", "1.0.0", "x", c, "y", c, identity)
-	f2 := forge.NewFunction("f2", "1.0.0", "y", c, "z", c, identity)
+	f1 := forge.NewFunction("f1", "1.0.0", c, c, identity)
+	f2 := forge.NewFunction("f2", "1.0.0", c, c, identity)
 	forge.Compose("comp", "", f1, f2)
 }
 
@@ -54,8 +54,8 @@ func TestCompose_Success(t *testing.T) {
 		}
 		return result, nil
 	}
-	f1 := forge.NewFunction("f1", "1.0.0", "x", c, "y", c, double)
-	f2 := forge.NewFunction("f2", "1.0.0", "y", c, "z", c, identity)
+	f1 := forge.NewFunction("f1", "1.0.0", c, c, double)
+	f2 := forge.NewFunction("f2", "1.0.0", c, c, identity)
 
 	comp := forge.Compose("comp", "1.0.0", f1, f2)
 	got, err := comp.Apply(0.3)
@@ -69,8 +69,8 @@ func TestCompose_Success(t *testing.T) {
 
 func TestCompose_WithGovernanceOptions(t *testing.T) {
 	c := float64Codec(0, 1)
-	f1 := forge.NewFunction("f1", "1.0.0", "x", c, "y", c, identity)
-	f2 := forge.NewFunction("f2", "1.0.0", "y", c, "z", c, identity)
+	f1 := forge.NewFunction("f1", "1.0.0", c, c, identity)
+	f2 := forge.NewFunction("f2", "1.0.0", c, c, identity)
 
 	comp := forge.Compose("comp", "1.0.0", f1, f2,
 		forge.WithDescription("chained"),
@@ -90,7 +90,7 @@ func TestCompose_WithGovernanceOptions(t *testing.T) {
 func TestCompose_WithRefinement(t *testing.T) {
 	c := float64Codec(0, 1)
 	// f1 doubles its input (capped at 1); f2 is identity
-	f1 := forge.NewFunction("f1", "1.0.0", "x", c, "y", c,
+	f1 := forge.NewFunction("f1", "1.0.0", c, c,
 		func(v float64) (float64, error) {
 			r := v * 2
 			if r > 1 {
@@ -99,7 +99,7 @@ func TestCompose_WithRefinement(t *testing.T) {
 			return r, nil
 		},
 	)
-	f2 := forge.NewFunction("f2", "1.0.0", "y", c, "z", c, identity)
+	f2 := forge.NewFunction("f2", "1.0.0", c, c, identity)
 
 	comp := forge.Compose("comp", "1.0.0", f1, f2,
 		forge.WithRefinement(func(v float64) error {
@@ -128,8 +128,8 @@ func TestCompose_WithRefinement(t *testing.T) {
 
 func TestCompose_PropagatesInputError(t *testing.T) {
 	c := float64Codec(0, 1)
-	f1 := forge.NewFunction("f1", "1.0.0", "x", c, "y", c, identity)
-	f2 := forge.NewFunction("f2", "1.0.0", "y", c, "z", c, identity)
+	f1 := forge.NewFunction("f1", "1.0.0", c, c, identity)
+	f2 := forge.NewFunction("f2", "1.0.0", c, c, identity)
 
 	comp := forge.Compose("comp", "1.0.0", f1, f2)
 	_, err := comp.Apply(2.0) // input validation failure
@@ -140,10 +140,10 @@ func TestCompose_PropagatesInputError(t *testing.T) {
 
 func TestCompose_PropagatesApplyError(t *testing.T) {
 	c := float64Codec(0, 1)
-	f1 := forge.NewFunction("f1", "1.0.0", "x", c, "y", c,
+	f1 := forge.NewFunction("f1", "1.0.0", c, c,
 		func(v float64) (float64, error) { return 0, fmt.Errorf("f1 failed") },
 	)
-	f2 := forge.NewFunction("f2", "1.0.0", "y", c, "z", c, identity)
+	f2 := forge.NewFunction("f2", "1.0.0", c, c, identity)
 
 	comp := forge.Compose("comp", "1.0.0", f1, f2)
 	_, err := comp.Apply(0.5)

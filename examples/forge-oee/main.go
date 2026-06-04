@@ -104,15 +104,15 @@ var (
 	actualCycleCodec  = mapFloat64[ActualCycles](codex.Float64().Refine(validate.MinFloat(0)))
 
 	qualityCodec      = mapFloat64[Quality](zeroToOne())
-	availabilityCodec = mapFloat64[Availability](zeroToOne())
-	performanceCodec  = mapFloat64[Performance](zeroToOne())
-	oeeCodec          = mapFloat64[OEE](zeroToOne())
+	availabilityCodec = mapFloat64[Availability](zeroToOne()).WithTitle("availability")
+	performanceCodec  = mapFloat64[Performance](zeroToOne()).WithTitle("performance")
+	oeeCodec          = mapFloat64[OEE](zeroToOne()).WithTitle("oee")
 
 	gradeCodec = codex.MapCodecSafe(
 		codex.String().Refine(validate.OneOf("excellent", "acceptable", "poor")),
 		func(s string) EfficiencyGrade { return EfficiencyGrade(s) },
 		func(g EfficiencyGrade) (string, error) { return string(g), nil },
-	)
+	).WithTitle("grade")
 
 	// availabilityInCodec validates each field and enforces the cross-field constraint
 	// that Downtime ≤ PlannedTime directly on the codec — the preferred place for
@@ -211,8 +211,8 @@ func main() {
 		),
 	)
 	simpleAvailCalc := forge.NewFunction("availabilityCalcSimple", "1.0.0",
-		"availabilityIn", simpleAvailInCodec,
-		"availability", availabilityCodec,
+		simpleAvailInCodec,
+		availabilityCodec,
 		func(in AvailabilityIn) (Availability, error) {
 			return Availability((float64(in.PlannedTime) - float64(in.Downtime)) / float64(in.PlannedTime)), nil
 		},
@@ -252,8 +252,8 @@ func main() {
 	fmt.Println()
 
 	availabilityCalc := forge.NewFunction("availabilityCalc", "1.0.0",
-		"availabilityIn", availabilityInCodec, // RefineFunc is on the codec
-		"availability", availabilityCodec,
+		availabilityInCodec, // RefineFunc is on the codec
+		availabilityCodec,
 		func(in AvailabilityIn) (Availability, error) {
 			return Availability((float64(in.PlannedTime) - float64(in.Downtime)) / float64(in.PlannedTime)), nil
 		},
@@ -278,8 +278,8 @@ func main() {
 	// performanceCalc: Function[PerformanceIn, Performance]
 	// -----------------------------------------------------------------------
 	performanceCalc := forge.NewFunction("performanceCalc", "1.0.0",
-		"performanceIn", performanceInCodec,
-		"performance", performanceCodec,
+		performanceInCodec,
+		performanceCodec,
 		func(in PerformanceIn) (Performance, error) {
 			ratio := float64(in.ActualCycles) / float64(in.PlannedCycles)
 			if ratio > 1 {
@@ -304,8 +304,8 @@ func main() {
 	// Each field is re-validated by the oeeInCodec before computing the product.
 	// -----------------------------------------------------------------------
 	oeeCalc := forge.NewFunction("oeeCalc", "1.0.0",
-		"oeeIn", oeeInCodec,
-		"oee", oeeCodec,
+		oeeInCodec,
+		oeeCodec,
 		func(in OEEIn) (OEE, error) {
 			return OEE(float64(in.Availability) * float64(in.Performance) * float64(in.Quality)), nil
 		},
@@ -374,8 +374,8 @@ func main() {
 	// Compose → Function[Availability, EfficiencyGrade]
 	// -----------------------------------------------------------------------
 	gradeCalc := forge.NewFunction("gradeCalc", "1.0.0",
-		"oee", oeeCodec,
-		"grade", gradeCodec,
+		oeeCodec,
+		gradeCodec,
 		func(o OEE) (EfficiencyGrade, error) {
 			switch {
 			case float64(o) >= 0.85:
@@ -392,8 +392,8 @@ func main() {
 	)
 
 	availabilityOnlyOEE := forge.NewFunction("availabilityOnlyOEE", "1.0.0",
-		"availability", availabilityCodec,
-		"oee", oeeCodec,
+		availabilityCodec,
+		oeeCodec,
 		func(a Availability) (OEE, error) { return OEE(float64(a)), nil },
 		forge.WithDescription("Simplified OEE assuming perfect performance and quality."),
 		forge.WithAuthor("OT Engineering"),

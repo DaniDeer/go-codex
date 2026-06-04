@@ -24,7 +24,7 @@ func TestNew_PanicEmptyName(t *testing.T) {
 		}
 	}()
 	c := float64Codec(0, 1)
-	forge.NewFunction[float64, float64]("", "1.0.0", "x", c, "y", c, identity)
+	forge.NewFunction[float64, float64]("", "1.0.0", c, c, identity)
 }
 
 func TestNew_PanicEmptyVersion(t *testing.T) {
@@ -39,14 +39,14 @@ func TestNew_PanicEmptyVersion(t *testing.T) {
 		}
 	}()
 	c := float64Codec(0, 1)
-	forge.NewFunction[float64, float64]("fn", "", "x", c, "y", c, identity)
+	forge.NewFunction[float64, float64]("fn", "", c, c, identity)
 }
 
 // --- Function.Apply (scalar In) ---------------------------------------------
 
 func TestFunction_Apply_Success(t *testing.T) {
 	c := float64Codec(0, 1)
-	f := forge.NewFunction("fn", "1.0.0", "x", c, "y", c, identity)
+	f := forge.NewFunction("fn", "1.0.0", c, c, identity)
 	got, err := f.Apply(0.5)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -58,7 +58,9 @@ func TestFunction_Apply_Success(t *testing.T) {
 
 func TestFunction_Apply_InputError(t *testing.T) {
 	c := float64Codec(0, 1)
-	f := forge.NewFunction("fn", "1.0.0", "x", c, "y", c, identity)
+	cX := c.WithTitle("x")
+	cY := c.WithTitle("y")
+	f := forge.NewFunction("fn", "1.0.0", cX, cY, identity)
 	_, err := f.Apply(1.5) // > 1, fails input validation
 	var ie forge.InputError
 	if !errors.As(err, &ie) {
@@ -77,7 +79,7 @@ func TestFunction_Apply_InputError(t *testing.T) {
 
 func TestFunction_Apply_ApplyError(t *testing.T) {
 	c := float64Codec(0, 1)
-	f := forge.NewFunction("fn", "1.0.0", "x", c, "y", c,
+	f := forge.NewFunction("fn", "1.0.0", c, c,
 		func(v float64) (float64, error) { return 0, fmt.Errorf("compute failed") },
 	)
 	_, err := f.Apply(0.5)
@@ -93,7 +95,7 @@ func TestFunction_Apply_ApplyError(t *testing.T) {
 func TestFunction_Apply_OutputError(t *testing.T) {
 	in := float64Codec(-10, 10)
 	out := float64Codec(0, 1)
-	f := forge.NewFunction("fn", "1.0.0", "x", in, "y", out,
+	f := forge.NewFunction("fn", "1.0.0", in, out,
 		func(v float64) (float64, error) { return v, nil },
 	)
 	_, err := f.Apply(-5.0) // valid input but invalid output
@@ -128,7 +130,7 @@ func pairCodec(min, max float64) codex.Codec[pair] {
 func TestFunction_Apply_StructIn_Success(t *testing.T) {
 	pc := pairCodec(0, 1)
 	out := float64Codec(0, 1)
-	f := forge.NewFunction("fn", "1.0.0", "inputs", pc, "out", out,
+	f := forge.NewFunction("fn", "1.0.0", pc, out,
 		func(p pair) (float64, error) { return (p.A + p.B) / 2, nil },
 	)
 	got, err := f.Apply(pair{A: 0.4, B: 0.6})
@@ -143,7 +145,7 @@ func TestFunction_Apply_StructIn_Success(t *testing.T) {
 func TestFunction_Apply_StructIn_FieldValidationError(t *testing.T) {
 	pc := pairCodec(0, 1)
 	out := float64Codec(0, 1)
-	f := forge.NewFunction("fn", "1.0.0", "inputs", pc, "out", out,
+	f := forge.NewFunction("fn", "1.0.0", pc, out,
 		func(p pair) (float64, error) { return (p.A + p.B) / 2, nil },
 	)
 	// B = 2.0 exceeds the [0,1] range — struct codec validation should fail
@@ -163,7 +165,7 @@ func TestFunction_Apply_StructIn_FieldValidationError(t *testing.T) {
 func TestFunction_Apply_StructIn_InputError_FieldName(t *testing.T) {
 	pc := pairCodec(0, 1)
 	out := float64Codec(0, 1)
-	f := forge.NewFunction("myFunc", "1.0.0", "inputs", pc, "out", out,
+	f := forge.NewFunction("myFunc", "1.0.0", pc, out,
 		func(p pair) (float64, error) { return (p.A + p.B) / 2, nil },
 	)
 	// Field "b" fails — InputError.Input should be "b", not "myFunc".
@@ -202,7 +204,7 @@ func tripleCodec(min, max float64) codex.Codec[triple] {
 func TestFunction_Apply_TripleIn_Success(t *testing.T) {
 	tc := tripleCodec(0, 1)
 	out := float64Codec(0, 1)
-	f := forge.NewFunction("fn", "1.0.0", "inputs", tc, "out", out,
+	f := forge.NewFunction("fn", "1.0.0", tc, out,
 		func(v triple) (float64, error) { return v.A * v.B * v.C, nil },
 	)
 	got, err := f.Apply(triple{A: 0.8, B: 0.9, C: 0.98})
@@ -218,7 +220,7 @@ func TestFunction_Apply_TripleIn_Success(t *testing.T) {
 func TestFunction_Apply_TripleIn_FieldValidationError(t *testing.T) {
 	tc := tripleCodec(0, 1)
 	out := float64Codec(0, 1)
-	f := forge.NewFunction("fn", "1.0.0", "inputs", tc, "out", out,
+	f := forge.NewFunction("fn", "1.0.0", tc, out,
 		func(v triple) (float64, error) { return v.A * v.B * v.C, nil },
 	)
 	_, err := f.Apply(triple{A: 0.8, B: 0.9, C: 1.5}) // C out of range

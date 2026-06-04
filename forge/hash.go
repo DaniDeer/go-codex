@@ -11,12 +11,12 @@ import (
 //
 // Governance fields (Author, ApprovedBy, ApprovedAt) are excluded — changing who
 // approved a function does not alter what it computes, so the hash stays stable.
-func computeHash(name, version string, inputs []InputSpec, output InputSpec) string {
+func computeHash(name, version string, inputs []PortSpec, output PortSpec) string {
 	type contract struct {
-		Name    string      `json:"name"`
-		Version string      `json:"version"`
-		Inputs  []InputSpec `json:"inputs"`
-		Output  InputSpec   `json:"output"`
+		Name    string     `json:"name"`
+		Version string     `json:"version"`
+		Inputs  []PortSpec `json:"inputs"`
+		Output  PortSpec   `json:"output"`
 	}
 	data, _ := json.Marshal(contract{
 		Name:    name,

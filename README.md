@@ -131,8 +131,11 @@ handle, err := sensorCh.Register(b)
 reading, err := handle.Decode(payload)
 
 // Layer 3 — pipeline: declare a governed computation, use directly, register for spec
+// Port names for graph edge inference are inferred from codec.Schema.Title.
+var availabilityCodec = codex.Float64(zeroToOne()).WithTitle("availability")
+
 availCalc := forge.NewFunction[AvailabilityIn, Availability]("availCalc", "1.0.0",
-    "inputs", availInCodec, "availability", availabilityCodec,
+    availInCodec, availabilityCodec,
     computeAvailability,
     forge.WithAuthor("OT Engineering"),
 )
@@ -1816,7 +1819,7 @@ dashRoute = dashRoute.WithResponseFormats(
 notifRoute, _ := rest.NewSSERoute[NotifReq, NotifProps]("/sse/notifications",
     notifReqCodec, notifCodec, rest.RouteMeta{},
 ).Register(b)
-notifRoute = notifRoute.WithEventFormats(
+notifRoute = notifRoute.WithFormats(
     adapttempl.Format(notifCodec, notifFragment), // data: <li class="notif-warn">...</li>
 )
 ```
@@ -1989,7 +1992,7 @@ See [`examples/stats-observer`](examples/stats-observer/main.go) for a runnable 
 ├────────────────────────────────────────────────────────────────────┤
 │  LAYER 3 — forge: governed KPI computation                         │
 │                                                                     │
-│  forge.New("availabilityCalc", "1.0.0", …, WithAuthor(…))         │
+│  forge.NewFunction("availabilityCalc", "1.0.0", …, WithAuthor(…)) │
 │  forge.Registry → pipeline YAML spec + graph inference             │
 │  stats.PipelineObserver → per-Apply telemetry                      │
 └────────────────────────────────────────────────────────────────────┘
@@ -2022,11 +2025,14 @@ These two tools are often confused because both involve transforming one type to
 import "github.com/DaniDeer/go-codex/forge"
 
 // 1. Define a forge.Function[In, Out] — named, versioned, codec-validated.
-// forge.New is infallible: panics only on empty name/version, never returns an error.
-availabilityCalc := forge.New(
+// forge.NewFunction is infallible: panics only on empty name/version, never returns an error.
+// Port names for graph edge inference come from codec.Schema.Title (set via .WithTitle).
+var availabilityCodec = codex.Float64(zeroToOne()).WithTitle("availability")
+
+availabilityCalc := forge.NewFunction(
     "availabilityCalc", "1.0.0",
-    "availabilityIn", availabilityInCodec,   // codex.Codec[AvailabilityIn] — validates inputs
-    "availability",   availabilityCodec,     // codex.Codec[Availability]  — validates output
+    availabilityInCodec,   // codex.Codec[AvailabilityIn] — validates inputs; field names used as ports
+    availabilityCodec,     // codex.Codec[Availability]  — validates output; title "availability" = port name
     func(in AvailabilityIn) (Availability, error) {
         return Availability((float64(in.PlannedTime) - float64(in.Downtime)) / float64(in.PlannedTime)), nil
     },
@@ -2067,8 +2073,8 @@ var availabilityInCodec = codex.Struct[AvailabilityIn](
 Cross-field constraints can also be added at the pipeline definition site via `forge.WithRefinement`:
 
 ```go
-availabilityCalc := forge.New("availabilityCalc", "1.0.0",
-    "availabilityIn", availabilityInCodec, "availability", availabilityCodec,
+availabilityCalc := forge.NewFunction("availabilityCalc", "1.0.0",
+    availabilityInCodec, availabilityCodec,
     func(in AvailabilityIn) (Availability, error) { ... },
     forge.WithRefinement(func(in AvailabilityIn) error {
         // pipeline-specific constraint — supplements the codec-level RefineFunc
@@ -2087,7 +2093,7 @@ forge.WithApproval("reviewer", time.Now()) // governance sign-off
 
 ### Composing functions
 
-`forge.Compose` chains two functions `f1: A→B` and `f2: B→Out` into a single `Function[A, Out]`. Like `forge.New`, it is infallible (panics only on empty name/version):
+`forge.Compose` chains two functions `f1: A→B` and `f2: B→Out` into a single `Function[A, Out]`. Like `forge.NewFunction`, it is infallible (panics only on empty name/version):
 
 ```go
 combined := forge.Compose("combined", "1.0.0", f1, f2,

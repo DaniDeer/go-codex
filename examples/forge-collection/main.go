@@ -149,8 +149,8 @@ func buildEventChannel() *events.ChannelHandle[RawReading] {
 func buildRawToCelsius() *forge.Function[RawReading, Celsius] {
 	fn := forge.NewFunction(
 		"rawToCelsius", "1.0.0",
-		"reading", rawReadingCodec,
-		"celsius", codex.MapCodecSafe(celsiusCodec,
+		rawReadingCodec,
+		codex.MapCodecSafe(celsiusCodec,
 			func(c float64) Celsius { return Celsius(c) },
 			func(c Celsius) (float64, error) { return float64(c), nil },
 		),

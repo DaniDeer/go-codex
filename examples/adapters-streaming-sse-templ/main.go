@@ -232,7 +232,7 @@ func main() {
 		fmt.Fprintln(os.Stderr, "SSE route error:", err)
 		os.Exit(1)
 	}
-	notifRoute = notifRoute.WithEventFormats(
+	notifRoute = notifRoute.WithFormats(
 		adapttempl.Format(notifCodec, notifFragment), // events as HTML fragments
 	)
 

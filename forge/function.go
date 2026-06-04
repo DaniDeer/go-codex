@@ -57,11 +57,18 @@ type Function[In, Out any] struct {
 // NewFunction is a free function (not a method) because Go requires type parameters
 // to appear on free functions, not on method receivers.
 //
+// Port names (used for pipeline graph-edge inference) are inferred from the codec's
+// Schema.Title (set via [codex.Codec.WithTitle]). For struct codecs the struct field
+// names are always used regardless of Title. Scalar codecs default to "input"/"output"
+// when no title is set.
+//
 // For single-value inputs pass any scalar codec directly:
 //
+//	var oeeCodec   = codex.Float64(zeroToOne()).WithTitle("oee")
+//	var gradeCodec = codex.String(gradeEnum).WithTitle("grade")
+//
 //	gradeCalc := forge.NewFunction("gradeCalc", "1.0.0",
-//	    "oee", oeeCodec,
-//	    "grade", gradeCodec,
+//	    oeeCodec, gradeCodec,
 //	    func(oee OEE) (Grade, error) { ... },
 //	)
 //
@@ -77,17 +84,18 @@ type Function[In, Out any] struct {
 //	    codex.RequiredField("plannedTime", ptCodec, ...),
 //	    codex.RequiredField("downtime",    dtCodec, ...),
 //	)
+//	availabilityCodec := codex.Float64(zeroToOne()).WithTitle("availability")
+//
 //	availCalc := forge.NewFunction("availabilityCalc", "1.0.0",
-//	    "inputs", availInCodec,
-//	    "availability", availabilityCodec,
+//	    availInCodec, availabilityCodec,
 //	    func(in AvailabilityIn) (Availability, error) { ... },
 //	    forge.WithRefinement(func(in AvailabilityIn) error { ... }),
 //	    forge.WithDescription("Computes availability as (plannedTime - downtime) / plannedTime."),
 //	)
 func NewFunction[In, Out any](
 	name, version string,
-	inputName string, input codex.Codec[In],
-	outputName string, output codex.Codec[Out],
+	input codex.Codec[In],
+	output codex.Codec[Out],
 	apply func(In) (Out, error),
 	opts ...FunctionOption,
 ) *Function[In, Out] {
@@ -98,8 +106,16 @@ func NewFunction[In, Out any](
 		panic("forge.NewFunction: version must not be empty")
 	}
 	cfg := applyFunctionOptions(opts)
-	inputs := inputSpecs(inputName, input.Schema)
-	out := InputSpec{Name: outputName, Schema: output.Schema}
+	inName := input.Schema.Title
+	if inName == "" {
+		inName = "input"
+	}
+	inputs := inputSpecs(inName, input.Schema)
+	outName := output.Schema.Title
+	if outName == "" {
+		outName = "output"
+	}
+	out := PortSpec{Name: outName, Schema: output.Schema}
 	spec := FunctionSpec{
 		Name:        name,
 		Version:     version,
@@ -127,18 +143,18 @@ func NewFunction[In, Out any](
 
 // inputSpecs builds the Inputs slice for a FunctionSpec.
 // When the codec schema is an object with declared properties (i.e. the input is a
-// codex struct codec), each property becomes a separate InputSpec so that the Registry
+// codex struct codec), each property becomes a separate PortSpec so that the Registry
 // can infer graph edges by matching individual field names to producer output names.
-// For scalar codecs a single InputSpec is returned.
-func inputSpecs(name string, s schema.Schema) []InputSpec {
+// For scalar codecs a single PortSpec is returned using name as the port name.
+func inputSpecs(name string, s schema.Schema) []PortSpec {
 	if len(s.Properties) > 0 {
-		specs := make([]InputSpec, 0, len(s.Properties))
+		specs := make([]PortSpec, 0, len(s.Properties))
 		for _, p := range s.Properties {
-			specs = append(specs, InputSpec{Name: p.Name, Schema: p.Schema})
+			specs = append(specs, PortSpec{Name: p.Name, Schema: p.Schema})
 		}
 		return specs
 	}
-	return []InputSpec{{Name: name, Schema: s}}
+	return []PortSpec{{Name: name, Schema: s}}
 }
 
 func (f *Function[In, Out]) obs() stats.PipelineObserver {
