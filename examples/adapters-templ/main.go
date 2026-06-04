@@ -155,10 +155,10 @@ func main() {
 	// No separate route, no separate handler — one definition, two formats.
 
 	b := rest.NewBuilder(rest.Info{Title: "Article API", Version: "1.0.0"})
-	articleRoute, err := rest.AddRoute[ArticleReq, ArticleProps](b, "GET", "/article",
+	articleRoute, err := rest.NewRoute[ArticleReq, ArticleProps]("GET", "/article",
 		articleReqCodec, ArticlePropsCodec,
 		rest.RouteMeta{OperationID: "getArticle"},
-	)
+	).Register(b)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "route error:", err)
 		os.Exit(1)

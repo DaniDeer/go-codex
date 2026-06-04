@@ -78,9 +78,9 @@ func TestRegistry_FluentBuilder(t *testing.T) {
 
 func TestRegistry_GraphEdgeInference(t *testing.T) {
 	c := float64Codec(0, 100)
-	f1, _ := forge.New("step1", "1.0.0",
+	f1 := forge.NewFunction("step1", "1.0.0",
 		"in", c, "mid", c, identity)
-	f2, _ := forge.New("step2", "1.0.0",
+	f2 := forge.NewFunction("step2", "1.0.0",
 		"mid", c, "out", c, identity)
 
 	reg := forge.NewRegistry("P", "1")
@@ -105,7 +105,7 @@ func TestRegistry_GraphEdgeInference(t *testing.T) {
 func TestRegistry_WithObserver(t *testing.T) {
 	obs := &recordingObserver{}
 	c := float64Codec(0, 1)
-	f, _ := forge.New("fn", "1.0.0", "x", c, "y", c, identity)
+	f := forge.NewFunction("fn", "1.0.0", "x", c, "y", c, identity)
 
 	reg := forge.NewRegistry("P", "1").WithObserver(obs)
 	f.Register(reg)
@@ -123,15 +123,12 @@ func TestRegistry_WithObserver(t *testing.T) {
 
 func TestFunctionOption_FieldsApplied(t *testing.T) {
 	c := float64Codec(0, 1)
-	f, err := forge.New("fn", "1.0.0",
+	f := forge.NewFunction("fn", "1.0.0",
 		"x", c, "y", c, identity,
 		forge.WithDescription("desc"),
 		forge.WithAuthor("author"),
 		forge.WithApproval("approver", "2024-01-01"),
 	)
-	if err != nil {
-		t.Fatalf("New: %v", err)
-	}
 	if f.Spec.Description != "desc" {
 		t.Errorf("Description: got %q", f.Spec.Description)
 	}
@@ -148,8 +145,8 @@ func TestFunctionOption_FieldsApplied(t *testing.T) {
 
 func TestFunctionOption_GovernanceExcludedFromHash(t *testing.T) {
 	c := float64Codec(0, 1)
-	noGov, _ := forge.New("fn", "1.0.0", "x", c, "y", c, identity)
-	withGov, _ := forge.New("fn", "1.0.0", "x", c, "y", c, identity,
+	noGov := forge.NewFunction("fn", "1.0.0", "x", c, "y", c, identity)
+	withGov := forge.NewFunction("fn", "1.0.0", "x", c, "y", c, identity,
 		forge.WithAuthor("x"), forge.WithApproval("y", "2024-01-01"),
 	)
 	if noGov.Spec.Hash != withGov.Spec.Hash {
@@ -157,24 +154,24 @@ func TestFunctionOption_GovernanceExcludedFromHash(t *testing.T) {
 	}
 }
 
-// --- Must -------------------------------------------------------------------
+// --- New panics on invalid config -------------------------------------------
 
-func TestMust_ReturnsValue(t *testing.T) {
+func TestNew_ReturnsValue(t *testing.T) {
 	c := float64Codec(0, 1)
-	f := forge.Must(forge.New("fn", "1.0.0", "x", c, "y", c, identity))
+	f := forge.NewFunction("fn", "1.0.0", "x", c, "y", c, identity)
 	if f.Spec.Name != "fn" {
 		t.Errorf("name: got %q", f.Spec.Name)
 	}
 }
 
-func TestMust_PanicsOnError(t *testing.T) {
+func TestNew_PanicsOnEmptyName(t *testing.T) {
 	defer func() {
 		if r := recover(); r == nil {
 			t.Error("expected panic, got none")
 		}
 	}()
 	c := float64Codec(0, 1)
-	forge.Must(forge.New("", "1.0.0", "x", c, "y", c, identity))
+	forge.NewFunction("", "1.0.0", "x", c, "y", c, identity)
 }
 
 // --- recordingObserver ------------------------------------------------------

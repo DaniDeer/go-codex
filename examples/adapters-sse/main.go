@@ -174,33 +174,30 @@ func main() {
 
 	b := rest.NewBuilder(rest.Info{Title: "SSE Demo API", Version: "1.0.0"})
 
-	counterRoute, err := rest.AddSSERoute[emptyReq, counterEvent](
-		b, "/sse/counter",
+	counterRoute, err := rest.NewSSERoute[emptyReq, counterEvent]("/sse/counter",
 		emptyReqCodec, counterEventCodec,
 		rest.RouteMeta{OperationID: "streamCounter", Summary: "Stream a counter"},
-	)
+	).Register(b)
 	if err != nil {
 		log.Fatalf("AddSSERoute counter: %v", err)
 	}
 
-	sensorRoute, err := rest.AddSSERoute[emptyReq, sensorReading](
-		b, "/sse/sensor/{id}",
+	sensorRoute, err := rest.NewSSERoute[emptyReq, sensorReading]("/sse/sensor/{id}",
 		emptyReqCodec, sensorReadingCodec,
 		rest.RouteMeta{
 			OperationID: "streamSensor",
 			Summary:     "Stream sensor readings",
 		},
 		rest.PathParam{Name: "id", Description: "Sensor ID (<word>-<word>)", Codec: &sensorIDCodec},
-	)
+	).Register(b)
 	if err != nil {
 		log.Fatalf("AddSSERoute sensor: %v", err)
 	}
 
-	invalidRoute, err := rest.AddSSERoute[emptyReq, sensorReading](
-		b, "/sse/invalid",
+	invalidRoute, err := rest.NewSSERoute[emptyReq, sensorReading]("/sse/invalid",
 		emptyReqCodec, sensorReadingCodec,
 		rest.RouteMeta{OperationID: "streamInvalid", Summary: "Codec rejection demo"},
-	)
+	).Register(b)
 	if err != nil {
 		log.Fatalf("AddSSERoute invalid: %v", err)
 	}

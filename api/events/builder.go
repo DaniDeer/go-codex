@@ -1,12 +1,12 @@
 // Package events provides a transport-agnostic event channel builder for go-codex.
 //
-// Define channels with codec-backed payload types; the builder returns a
-// [ChannelHandle] with typed Decode and Encode helpers. Pass those helpers to
-// any message broker (MQTT, AMQP, Kafka, NATS) — this package does not import
-// any messaging library.
+// Define channels declaratively with codec-backed payload types; register them
+// with a [Builder] to obtain a [ChannelHandle] with typed Decode and Encode helpers.
+// Pass those helpers to any message broker (MQTT, AMQP, Kafka, NATS) — this package
+// does not import any messaging library.
 //
 // Spec generation is also available: [Builder.AsyncAPISpec] derives a complete
-// AsyncAPI 2.6 document from the registered channels.
+// AsyncAPI 3.0 document from the registered channels.
 //
 // Typical usage:
 //
@@ -16,16 +16,19 @@
 //	    Protocol: "mqtt",
 //	})
 //
-//	userCreated, err := events.AddChannel[UserCreated](b, "user/created", userCreatedCodec,
+//	// Declare the channel as a value — define once, pass around, register later.
+//	var userCreated = events.NewChannel[UserCreated]("user/created", userCreatedCodec,
 //	    events.ChannelMeta{Description: "A user was created"},
 //	    events.Subscribe{Summary: "Receive user created events", SchemaName: "UserCreatedEvent"},
 //	)
 //
-//	// In your broker callback (any library):
-//	event, err := userCreated.Decode(msg.Payload())   // JSON → UserCreated, validates
-//	payload, err := userCreated.Encode(event)          // UserCreated → JSON
+//	handle, err := userCreated.Register(b)
 //
-//	// AsyncAPI 2.6 spec:
+//	// In your broker callback (any library):
+//	event, err := handle.Decode(msg.Payload())   // JSON → UserCreated, validates
+//	payload, err := handle.Encode(event)          // UserCreated → JSON
+//
+//	// AsyncAPI 3.0 spec:
 //	doc, err := b.AsyncAPISpec()
 //	yaml, _  := doc.MarshalYAML()
 //
@@ -88,7 +91,7 @@ func (s SecurityScheme) WithCodec(c codex.Codec[string]) SecurityScheme {
 // Subscribe describes the subscribe operation on a channel (application receives).
 // It controls the subscribe entry in the AsyncAPI spec.
 //
-// Subscribe implements [ChannelOpt]: pass it directly to [AddChannel].
+// Subscribe implements [ChannelOpt]: pass it directly to [NewChannel].
 type Subscribe struct {
 	// OperationID is the unique identifier for the subscribe operation in the
 	// AsyncAPI spec. Used by code generators and documentation tools.
@@ -112,7 +115,7 @@ func (s Subscribe) applyChannel(cb *channelBuilder) { cb.subscribe = &s }
 // Publish describes the publish operation on a channel (application sends).
 // It controls the publish entry in the AsyncAPI spec.
 //
-// Publish implements [ChannelOpt]: pass it directly to [AddChannel].
+// Publish implements [ChannelOpt]: pass it directly to [NewChannel].
 type Publish struct {
 	// OperationID is the unique identifier for the publish operation in the
 	// AsyncAPI spec. Used by code generators and documentation tools.
@@ -136,7 +139,7 @@ func (p Publish) applyChannel(cb *channelBuilder) { cb.publish = &p }
 // ChannelMeta holds description metadata for a channel registration.
 // It controls the channel-level description in the AsyncAPI spec.
 //
-// ChannelMeta implements [ChannelOpt]: pass it directly to [AddChannel].
+// ChannelMeta implements [ChannelOpt]: pass it directly to [NewChannel].
 type ChannelMeta struct {
 	Description string
 }
@@ -154,10 +157,10 @@ func (m ChannelMeta) applyChannel(cb *channelBuilder) { cb.meta = m }
 // topic template. Use TopicParam to add a description or register a codec for
 // a specific variable.
 //
-// TopicParam implements [ChannelOpt]: pass it directly to [AddChannel].
+// TopicParam implements [ChannelOpt]: pass it directly to [NewChannel].
 //
 // Entry names must correspond to {varName} placeholders in the topic template;
-// unknown names cause [AddChannel] to return an error immediately.
+// unknown names cause [Channel.Register] to return an error immediately.
 type TopicParam struct {
 	// Name is the variable name (without braces) as it appears in the topic template.
 	Name string
@@ -173,7 +176,7 @@ func (p TopicParam) applyChannel(cb *channelBuilder) {
 	cb.topicParams = append(cb.topicParams, p)
 }
 
-// ChannelOpt is the sealed interface for variadic [AddChannel] options.
+// ChannelOpt is the sealed interface for variadic [NewChannel] options.
 //
 // The following types implement ChannelOpt:
 //   - [ChannelMeta] — channel description
@@ -190,7 +193,7 @@ type channelBuilder struct {
 	topicParams []TopicParam
 }
 
-// ChannelHandle is returned by [AddChannel]. It holds the spec
+// ChannelHandle is returned by [Channel.Register]. It holds the spec
 // descriptor and codec-backed Decode/Encode helpers.
 type ChannelHandle[T any] struct {
 	// Topic is the channel name (e.g. "user/created", "orders.placed").
@@ -283,7 +286,7 @@ func (h *ChannelHandle[T]) BuildTopic(vars map[string]string) (string, error) {
 // topic satisfies the same constraints applied at channel registration time.
 // Returns [InvalidTopicError] on failure; returns nil if no topic codec is registered.
 //
-// Note: unlike [AddChannel], which validates a template-stripped topic, this method
+// Note: unlike [Channel.Register], which validates a template-stripped topic, this method
 // validates the concrete topic as-is (with real segment values in place).
 func (h *ChannelHandle[T]) ValidateTopic(topic string) error {
 	if h.topicCodec == nil {
@@ -325,7 +328,7 @@ func (h *ChannelHandle[T]) ValidateTopicVars(vars map[string]string) error {
 // Formats and the content-type override (restoring the AsyncAPI default).
 //
 // This mirrors [rest.RouteHandle.WithResponseFormats] for event channels.
-// Call it after [AddChannel] to configure non-JSON payload serialisation:
+// Call it after [Channel.Register] to configure non-JSON payload serialisation:
 //
 //	ch = ch.WithFormats(format.YAML(measurementCodec))
 //
@@ -386,7 +389,7 @@ func (e MissingTopicVarError) Error() string {
 	return fmt.Sprintf("missing value for topic variable {%s}", e.Name)
 }
 
-// InvalidTopicParamError is returned by [AddChannel] when a [TopicParam] entry
+// InvalidTopicParamError is returned by [Channel.Register] when a [TopicParam] entry
 // names a variable that does not appear in the topic template.
 //
 // Use errors.As to extract the offending name and the topic template:
@@ -420,7 +423,7 @@ type typedChannelEntry[T any] struct {
 func (e *typedChannelEntry[T]) topic() string                    { return e.topicStr }
 func (e *typedChannelEntry[T]) descriptor() asyncapi.ChannelItem { return e.handle.Descriptor }
 
-// InvalidTopicError is returned by [AddChannel] when the topic fails builder-level
+// InvalidTopicError is returned by [Channel.Register] when the topic fails builder-level
 // topic codec validation.
 //
 // Use errors.As to extract it and inspect the failing topic or the underlying
@@ -457,8 +460,8 @@ type Builder struct {
 // BuilderOption configures a [Builder] at construction time.
 type BuilderOption func(*Builder)
 
-// WithTopicCodec sets a codec used to validate every topic passed to [AddChannel].
-// If the topic is invalid, [AddChannel] returns an error immediately.
+// WithTopicCodec sets a codec used to validate every topic passed to [Channel.Register].
+// If the topic is invalid, [Channel.Register] returns an error immediately.
 //
 // Use [WithTopicConstraints] for the common case of stacking one or more
 // [codex.Constraint] values; use WithTopicCodec when you need a fully-custom
@@ -546,58 +549,85 @@ func (b *Builder) AddGlobalSecurity(reqs ...route.SecurityRequirement) *Builder 
 	return b
 }
 
-// AddChannel registers a channel with the builder and returns a [ChannelHandle].
+// Channel is a declarative event channel spec: topic, codec, and options.
+// It is a value type — define it once, store it, pass it around, and register
+// it with one or more [Builder] instances via [Channel.Register].
 //
-// codec is used to decode and validate incoming payloads and to encode outgoing
-// messages. The same codec applies to both subscribe and publish directions.
+// Create a Channel with [NewChannel].
+type Channel[T any] struct {
+	topic string
+	codec codex.Codec[T]
+	opts  []ChannelOpt
+}
+
+// NewChannel creates a [Channel] spec from a topic, codec, and variadic opts.
+// NewChannel is infallible — it only captures the spec. Validation (topic codec,
+// TopicParam template consistency) runs at [Channel.Register] time.
 //
-// opts is variadic: pass any combination of [ChannelMeta], [Subscribe],
-// [Publish], and [TopicParam] to describe the channel fully.
-// All opts are optional — omit to register a minimal channel with no spec metadata.
+// Pass any combination of [ChannelMeta], [Subscribe], [Publish], and [TopicParam]
+// as opts. All opts are optional.
 //
-// If the builder was created with [WithTopicCodec] or [WithTopicConstraints],
-// the topic is validated immediately. An error is returned if validation fails —
-// no channel is registered in that case.
-//
-// Any [TopicParam] entry whose name does not appear as a {varName} placeholder
-// in the topic template causes AddChannel to return an error immediately.
-//
-// AddChannel is a free function (not a method) because Go requires type
+// NewChannel is a free function (not a method) because Go requires type
 // parameters to appear on free functions, not on method receivers.
-func AddChannel[T any](
-	b *Builder,
+//
+// Typical usage:
+//
+//	var userCreated = events.NewChannel[UserCreated]("user/created", userCreatedCodec,
+//	    events.ChannelMeta{Description: "A user was created"},
+//	    events.Subscribe{Summary: "Receive user created events", SchemaName: "UserCreatedEvent"},
+//	)
+//
+//	// Later, register with a builder:
+//	handle, err := userCreated.Register(b)
+func NewChannel[T any](
 	topic string,
 	codec codex.Codec[T],
 	opts ...ChannelOpt,
-) (*ChannelHandle[T], error) {
+) Channel[T] {
+	return Channel[T]{
+		topic: topic,
+		codec: codec,
+		opts:  opts,
+	}
+}
+
+// Register registers the channel with b and returns a [ChannelHandle].
+//
+// If the builder was created with [WithTopicCodec] or [WithTopicConstraints],
+// the topic is validated immediately and an error is returned if it fails — no
+// channel is registered in that case.
+//
+// Any [TopicParam] entry whose name does not appear as a {varName} placeholder
+// in the topic template causes Register to return an error immediately.
+func (c Channel[T]) Register(b *Builder) (*ChannelHandle[T], error) {
 	if b.topicCodec != nil {
-		if err := b.topicCodec.Validate(internal.StripTemplateVars(topic)); err != nil {
-			return nil, InvalidTopicError{Topic: topic, Err: err}
+		if err := b.topicCodec.Validate(internal.StripTemplateVars(c.topic)); err != nil {
+			return nil, InvalidTopicError{Topic: c.topic, Err: err}
 		}
 	}
 
 	var cb channelBuilder
-	for _, opt := range opts {
+	for _, opt := range c.opts {
 		opt.applyChannel(&cb)
 	}
 
-	templateVars := internal.ParseTemplateVars(topic)
+	templateVars := internal.ParseTemplateVars(c.topic)
 	for _, tp := range cb.topicParams {
 		if !templateVars[tp.Name] {
-			return nil, InvalidTopicParamError{Name: tp.Name, Topic: topic}
+			return nil, InvalidTopicParamError{Name: tp.Name, Topic: c.topic}
 		}
 	}
 
-	frozen := buildChannelItem(topic, codec, cb)
+	frozen := buildChannelItem(c.topic, c.codec, cb)
 
-	jsonFmt := format.JSON(codec)
+	jsonFmt := format.JSON(c.codec)
 
 	schemes := make(map[string]SecurityScheme, len(b.securitySchemes))
 	for k, v := range b.securitySchemes {
 		schemes[k] = v
 	}
 	h := &ChannelHandle[T]{
-		Topic:           topic,
+		Topic:           c.topic,
 		Descriptor:      frozen,
 		Decode:          func(payload []byte) (T, error) { return jsonFmt.Unmarshal(payload) },
 		Encode:          func(msg T) ([]byte, error) { return jsonFmt.Marshal(msg) },
@@ -606,7 +636,7 @@ func AddChannel[T any](
 		SecuritySchemes: schemes,
 		GlobalSecurity:  slices.Clone(b.globalSecurity),
 	}
-	entry := &typedChannelEntry[T]{topicStr: topic, handle: h}
+	entry := &typedChannelEntry[T]{topicStr: c.topic, handle: h}
 	b.entries = append(b.entries, entry)
 	return h, nil
 }

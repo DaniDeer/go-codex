@@ -24,7 +24,7 @@ import (
 //
 // Typical usage — channel defined with go-codex template variables:
 //
-//	sensorChannel, _ := events.AddChannel[SensorReading](b, "sensors/{sensorID}/measurements", ...)
+//	sensorChannel, _ := events.NewChannel[SensorReading]("sensors/{sensorID}/measurements", ...).Register(b)
 //	client.Subscribe("sensors/+/measurements", 1, mqtt.SubscribeHandler(ctx, sensorChannel,
 //	    func(ctx context.Context, r SensorReading) error {
 //	        msg, _ := mqtt.MessageFromContext(ctx)

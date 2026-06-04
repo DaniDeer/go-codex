@@ -44,8 +44,8 @@ var userEventCodec = codex.Struct[userEvent](
 
 func newHandle() *events.ChannelHandle[userEvent] {
 	b := events.NewBuilder(events.Info{Title: "Test", Version: "1.0.0"})
-	h, err := events.AddChannel[userEvent](b, "user/created", userEventCodec,
-		events.Subscribe{Summary: "User created"})
+	h, err := events.NewChannel[userEvent]("user/created", userEventCodec,
+		events.Subscribe{Summary: "User created"}).Register(b)
 	if err != nil {
 		panic(err)
 	}
@@ -252,9 +252,9 @@ func TestPublish_ContextCancelled(t *testing.T) {
 func newTemplateHandle() *events.ChannelHandle[userEvent] {
 	b := events.NewBuilder(events.Info{Title: "Test", Version: "1.0.0"})
 	uuidCodec := codex.String().Refine(validate.UUID)
-	h, err := events.AddChannel[userEvent](b, "users/{userID}/events", userEventCodec,
+	h, err := events.NewChannel[userEvent]("users/{userID}/events", userEventCodec,
 		events.Publish{Summary: "User event"},
-		events.TopicParam{Name: "userID", Codec: &uuidCodec})
+		events.TopicParam{Name: "userID", Codec: &uuidCodec}).Register(b)
 	if err != nil {
 		panic(err)
 	}
@@ -680,12 +680,12 @@ func (o *mockSecurityObserver) RecordSecurityRejection(location, scheme string) 
 
 func newSecuredHandle() (*events.ChannelHandle[userEvent], error) {
 	b := events.NewBuilder(events.Info{Title: "Test", Version: "1.0.0"})
-	return events.AddChannel[userEvent](b, "user/created", userEventCodec,
+	return events.NewChannel[userEvent]("user/created", userEventCodec,
 		events.Subscribe{
 			Summary:  "User created",
 			Security: []route.SecurityRequirement{route.Require("bearerAuth")},
 		},
-	)
+	).Register(b)
 }
 
 func TestSubscribeHandler_SecurityFunc_calledForSecuredChannel(t *testing.T) {
@@ -799,9 +799,9 @@ func newGlobalSecuredMQTTHandle() (*events.ChannelHandle[userEvent], error) {
 	})
 	b.AddGlobalSecurity(route.Require("bearerAuth"))
 	// No per-operation Security — inherits global.
-	return events.AddChannel[userEvent](b, "user/created", userEventCodec,
+	return events.NewChannel[userEvent]("user/created", userEventCodec,
 		events.Subscribe{Summary: "User created"},
-	)
+	).Register(b)
 }
 
 func TestSubscribeHandler_GlobalSecurity_enforcedWhenNoPerChannelSecurity(t *testing.T) {
@@ -857,12 +857,12 @@ func TestSubscribeHandler_GlobalSecurity_notCalledWhenExplicitlyEmpty(t *testing
 	})
 	b.AddGlobalSecurity(route.Require("bearerAuth"))
 	// Explicitly empty Security = no auth on this channel.
-	handle, err := events.AddChannel[userEvent](b, "user/created", userEventCodec,
+	handle, err := events.NewChannel[userEvent]("user/created", userEventCodec,
 		events.Subscribe{
 			Summary:  "User created",
 			Security: []route.SecurityRequirement{},
 		},
-	)
+	).Register(b)
 	if err != nil {
 		t.Fatal(err)
 	}

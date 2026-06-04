@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"regexp"
+	"strings"
 	"testing"
 
 	"github.com/DaniDeer/go-codex/codex"
@@ -20,15 +21,12 @@ func positiveFloat64Codec() codex.Codec[float64] {
 // scaleCalc: float64 → float64, multiplies by 2.
 func scaleCalc(t *testing.T) *forge.Function[float64, float64] {
 	t.Helper()
-	fn, err := forge.New(
+	fn := forge.NewFunction(
 		"scaleCalc", "1.0.0",
 		"value", positiveFloat64Codec(),
 		"scaled", positiveFloat64Codec(),
 		func(v float64) (float64, error) { return v * 2, nil },
 	)
-	if err != nil {
-		t.Fatalf("forge.New: %v", err)
-	}
 	return fn
 }
 
@@ -36,10 +34,7 @@ func scaleCalc(t *testing.T) *forge.Function[float64, float64] {
 
 func TestMap_HappyPath(t *testing.T) {
 	fn := scaleCalc(t)
-	batchFn, err := forge.Map("batchScale", "1.0.0", fn)
-	if err != nil {
-		t.Fatalf("forge.Map: %v", err)
-	}
+	batchFn := forge.Map("batchScale", "1.0.0", fn)
 
 	got, err := batchFn.Apply([]float64{1, 2, 3})
 	if err != nil {
@@ -55,7 +50,7 @@ func TestMap_HappyPath(t *testing.T) {
 
 func TestMap_FunctionSpec(t *testing.T) {
 	fn := scaleCalc(t)
-	batchFn, _ := forge.Map("batchScale", "1.0.0", fn)
+	batchFn := forge.Map("batchScale", "1.0.0", fn)
 
 	if batchFn.Spec.Kind != "map" {
 		t.Errorf("Kind: got %q, want %q", batchFn.Spec.Kind, "map")
@@ -70,7 +65,7 @@ func TestMap_FunctionSpec(t *testing.T) {
 
 func TestMap_ElementValidationFailure(t *testing.T) {
 	fn := scaleCalc(t)
-	batchFn, _ := forge.Map("batchScale", "1.0.0", fn)
+	batchFn := forge.Map("batchScale", "1.0.0", fn)
 
 	// element 1 is invalid (negative — out of range [0,100])
 	_, err := batchFn.Apply([]float64{10, -5, 20})
@@ -90,14 +85,13 @@ func TestMap_ElementValidationFailure(t *testing.T) {
 }
 
 func TestMap_ApplyFailure(t *testing.T) {
-	// fn that always errors from the compute function
-	fn, _ := forge.New(
+	fn := forge.NewFunction(
 		"errCalc", "1.0.0",
 		"v", positiveFloat64Codec(),
 		"out", positiveFloat64Codec(),
 		func(v float64) (float64, error) { return 0, fmt.Errorf("compute failed") },
 	)
-	batchFn, _ := forge.Map("batchErr", "1.0.0", fn)
+	batchFn := forge.Map("batchErr", "1.0.0", fn)
 
 	_, err := batchFn.Apply([]float64{1.0})
 	if err == nil {
@@ -112,21 +106,39 @@ func TestMap_ApplyFailure(t *testing.T) {
 	}
 }
 
-func TestMap_EmptyName(t *testing.T) {
+func TestMap_PanicEmptyName(t *testing.T) {
+	defer func() {
+		r := recover()
+		if r == nil {
+			t.Fatal("expected panic for empty name")
+		}
+		msg, _ := r.(string)
+		if !strings.Contains(msg, "name") {
+			t.Errorf("unexpected panic message: %v", r)
+		}
+	}()
 	fn := scaleCalc(t)
-	_, err := forge.Map("", "1.0.0", fn)
-	if err == nil {
-		t.Fatal("expected ConfigError for empty name")
-	}
-	var ce forge.ConfigError
-	if !errors.As(err, &ce) {
-		t.Fatalf("expected ConfigError, got %T", err)
-	}
+	forge.Map("", "1.0.0", fn)
+}
+
+func TestMap_PanicEmptyVersion(t *testing.T) {
+	defer func() {
+		r := recover()
+		if r == nil {
+			t.Fatal("expected panic for empty version")
+		}
+		msg, _ := r.(string)
+		if !strings.Contains(msg, "version") {
+			t.Errorf("unexpected panic message: %v", r)
+		}
+	}()
+	fn := scaleCalc(t)
+	forge.Map("batchScale", "", fn)
 }
 
 func TestMap_WithRefinement(t *testing.T) {
 	fn := scaleCalc(t)
-	batchFn, _ := forge.Map("batchScale", "1.0.0", fn,
+	batchFn := forge.Map("batchScale", "1.0.0", fn,
 		forge.WithRefinement(func(in []float64) error {
 			if len(in) == 0 {
 				return fmt.Errorf("batch must not be empty")
@@ -148,12 +160,9 @@ func TestMap_WithRefinement(t *testing.T) {
 
 func TestFilter_KeepsMatchingElements(t *testing.T) {
 	c := positiveFloat64Codec()
-	filterFn, err := forge.Filter("filterPos", "1.0.0", c, func(v float64) bool {
+	filterFn := forge.Filter("filterPos", "1.0.0", c, func(v float64) bool {
 		return v >= 50
 	})
-	if err != nil {
-		t.Fatalf("forge.Filter: %v", err)
-	}
 
 	got, err := filterFn.Apply([]float64{10, 60, 30, 80})
 	if err != nil {
@@ -166,7 +175,7 @@ func TestFilter_KeepsMatchingElements(t *testing.T) {
 
 func TestFilter_FunctionSpec(t *testing.T) {
 	c := positiveFloat64Codec()
-	filterFn, _ := forge.Filter("filterPos", "1.0.0", c, func(v float64) bool { return true })
+	filterFn := forge.Filter("filterPos", "1.0.0", c, func(v float64) bool { return true })
 
 	if filterFn.Spec.Kind != "filter" {
 		t.Errorf("Kind: got %q, want %q", filterFn.Spec.Kind, "filter")
@@ -178,7 +187,7 @@ func TestFilter_FunctionSpec(t *testing.T) {
 
 func TestFilter_ElementValidationFailure(t *testing.T) {
 	c := positiveFloat64Codec()
-	filterFn, _ := forge.Filter("filterPos", "1.0.0", c, func(v float64) bool { return true })
+	filterFn := forge.Filter("filterPos", "1.0.0", c, func(v float64) bool { return true })
 
 	// element 1 is negative — invalid
 	_, err := filterFn.Apply([]float64{10, -5})
@@ -196,7 +205,7 @@ func TestFilter_ElementValidationFailure(t *testing.T) {
 
 func TestFilter_EmptySliceReturnsEmpty(t *testing.T) {
 	c := positiveFloat64Codec()
-	filterFn, _ := forge.Filter("filterPos", "1.0.0", c, func(v float64) bool { return false })
+	filterFn := forge.Filter("filterPos", "1.0.0", c, func(v float64) bool { return false })
 	got, err := filterFn.Apply([]float64{})
 	if err != nil {
 		t.Fatalf("Apply: %v", err)
@@ -204,6 +213,36 @@ func TestFilter_EmptySliceReturnsEmpty(t *testing.T) {
 	if len(got) != 0 {
 		t.Errorf("got %v, want empty", got)
 	}
+}
+
+func TestFilter_PanicEmptyName(t *testing.T) {
+	defer func() {
+		r := recover()
+		if r == nil {
+			t.Fatal("expected panic for empty name")
+		}
+		msg, _ := r.(string)
+		if !strings.Contains(msg, "name") {
+			t.Errorf("unexpected panic message: %v", r)
+		}
+	}()
+	c := positiveFloat64Codec()
+	forge.Filter("", "1.0.0", c, func(v float64) bool { return true })
+}
+
+func TestFilter_PanicEmptyVersion(t *testing.T) {
+	defer func() {
+		r := recover()
+		if r == nil {
+			t.Fatal("expected panic for empty version")
+		}
+		msg, _ := r.(string)
+		if !strings.Contains(msg, "version") {
+			t.Errorf("unexpected panic message: %v", r)
+		}
+	}()
+	c := positiveFloat64Codec()
+	forge.Filter("filterPos", "", c, func(v float64) bool { return true })
 }
 
 // ── forge.Reduce ─────────────────────────────────────────────────────────────
@@ -218,15 +257,12 @@ func TestReduce_CorrectFold(t *testing.T) {
 			func(s *sumResult, v float64) { s.Total = v },
 		),
 	)
-	reduceFn, err := forge.Reduce(
+	reduceFn := forge.Reduce(
 		"sumCalc", "1.0.0",
 		elemCodec, accCodec,
 		sumResult{},
 		func(acc sumResult, v float64) sumResult { return sumResult{Total: acc.Total + v} },
 	)
-	if err != nil {
-		t.Fatalf("forge.Reduce: %v", err)
-	}
 
 	got, err := reduceFn.Apply([]float64{10, 20, 30})
 	if err != nil {
@@ -245,7 +281,7 @@ func TestReduce_FunctionSpec(t *testing.T) {
 			func(s *sumResult, v float64) { s.Total = v },
 		),
 	)
-	reduceFn, _ := forge.Reduce(
+	reduceFn := forge.Reduce(
 		"sumCalc", "1.0.0",
 		elemCodec, accCodec, sumResult{},
 		func(acc sumResult, v float64) sumResult { return acc },
@@ -266,7 +302,7 @@ func TestReduce_ElementValidationFailure(t *testing.T) {
 			func(s *sumResult, v float64) { s.Total = v },
 		),
 	)
-	reduceFn, _ := forge.Reduce(
+	reduceFn := forge.Reduce(
 		"sumCalc", "1.0.0",
 		elemCodec, accCodec, sumResult{},
 		func(acc sumResult, v float64) sumResult { return sumResult{Total: acc.Total + v} },
@@ -286,14 +322,55 @@ func TestReduce_ElementValidationFailure(t *testing.T) {
 	}
 }
 
+func TestReduce_PanicEmptyName(t *testing.T) {
+	defer func() {
+		r := recover()
+		if r == nil {
+			t.Fatal("expected panic for empty name")
+		}
+		msg, _ := r.(string)
+		if !strings.Contains(msg, "name") {
+			t.Errorf("unexpected panic message: %v", r)
+		}
+	}()
+	elemCodec := positiveFloat64Codec()
+	accCodec := codex.Struct[sumResult](
+		codex.RequiredField("total", codex.Float64(),
+			func(s sumResult) float64 { return s.Total },
+			func(s *sumResult, v float64) { s.Total = v },
+		),
+	)
+	forge.Reduce("", "1.0.0", elemCodec, accCodec, sumResult{},
+		func(acc sumResult, v float64) sumResult { return acc })
+}
+
+func TestReduce_PanicEmptyVersion(t *testing.T) {
+	defer func() {
+		r := recover()
+		if r == nil {
+			t.Fatal("expected panic for empty version")
+		}
+		msg, _ := r.(string)
+		if !strings.Contains(msg, "version") {
+			t.Errorf("unexpected panic message: %v", r)
+		}
+	}()
+	elemCodec := positiveFloat64Codec()
+	accCodec := codex.Struct[sumResult](
+		codex.RequiredField("total", codex.Float64(),
+			func(s sumResult) float64 { return s.Total },
+			func(s *sumResult, v float64) { s.Total = v },
+		),
+	)
+	forge.Reduce("sumCalc", "", elemCodec, accCodec, sumResult{},
+		func(acc sumResult, v float64) sumResult { return acc })
+}
+
 // ── forge.MapValues ──────────────────────────────────────────────────────────
 
 func TestMapValues_HappyPath(t *testing.T) {
 	fn := scaleCalc(t)
-	mapValFn, err := forge.MapValues("perSensor", "1.0.0", fn)
-	if err != nil {
-		t.Fatalf("forge.MapValues: %v", err)
-	}
+	mapValFn := forge.MapValues("perSensor", "1.0.0", fn)
 
 	got, err := mapValFn.Apply(map[string]float64{"a": 10, "b": 20})
 	if err != nil {
@@ -306,7 +383,7 @@ func TestMapValues_HappyPath(t *testing.T) {
 
 func TestMapValues_FunctionSpec(t *testing.T) {
 	fn := scaleCalc(t)
-	mapValFn, _ := forge.MapValues("perSensor", "1.0.0", fn)
+	mapValFn := forge.MapValues("perSensor", "1.0.0", fn)
 
 	if mapValFn.Spec.Kind != "mapValues" {
 		t.Errorf("Kind: got %q, want %q", mapValFn.Spec.Kind, "mapValues")
@@ -318,7 +395,7 @@ func TestMapValues_FunctionSpec(t *testing.T) {
 
 func TestMapValues_KeyError(t *testing.T) {
 	fn := scaleCalc(t)
-	mapValFn, _ := forge.MapValues("perSensor", "1.0.0", fn)
+	mapValFn := forge.MapValues("perSensor", "1.0.0", fn)
 
 	// single invalid entry — deterministic (only one key)
 	_, err := mapValFn.Apply(map[string]float64{"bad": -5})
@@ -337,23 +414,41 @@ func TestMapValues_KeyError(t *testing.T) {
 	}
 }
 
-func TestMapValues_EmptyName(t *testing.T) {
+func TestMapValues_PanicEmptyName(t *testing.T) {
+	defer func() {
+		r := recover()
+		if r == nil {
+			t.Fatal("expected panic for empty name")
+		}
+		msg, _ := r.(string)
+		if !strings.Contains(msg, "name") {
+			t.Errorf("unexpected panic message: %v", r)
+		}
+	}()
 	fn := scaleCalc(t)
-	_, err := forge.MapValues("", "1.0.0", fn)
-	if err == nil {
-		t.Fatal("expected ConfigError for empty name")
-	}
-	var ce forge.ConfigError
-	if !errors.As(err, &ce) {
-		t.Fatalf("expected ConfigError, got %T", err)
-	}
+	forge.MapValues("", "1.0.0", fn)
+}
+
+func TestMapValues_PanicEmptyVersion(t *testing.T) {
+	defer func() {
+		r := recover()
+		if r == nil {
+			t.Fatal("expected panic for empty version")
+		}
+		msg, _ := r.(string)
+		if !strings.Contains(msg, "version") {
+			t.Errorf("unexpected panic message: %v", r)
+		}
+	}()
+	fn := scaleCalc(t)
+	forge.MapValues("perSensor", "", fn)
 }
 
 // ── observer integration ─────────────────────────────────────────────────────
 
 func TestMap_ObserverCalled(t *testing.T) {
 	fn := scaleCalc(t)
-	batchFn, _ := forge.Map("batchScale", "1.0.0", fn)
+	batchFn := forge.Map("batchScale", "1.0.0", fn)
 	reg := forge.NewRegistry("test", "1.0.0")
 	batchFn.Register(reg)
 
@@ -376,10 +471,7 @@ func sensorIDCodecTest() codex.Codec[string] {
 
 func TestMapValuesK_HappyPath(t *testing.T) {
 	fn := scaleCalc(t)
-	mapFn, err := forge.MapValuesK("perSensor", "1.0.0", sensorIDCodecTest(), fn)
-	if err != nil {
-		t.Fatalf("forge.MapValuesK: %v", err)
-	}
+	mapFn := forge.MapValuesK("perSensor", "1.0.0", sensorIDCodecTest(), fn)
 
 	got, err := mapFn.Apply(map[string]float64{
 		"sensor-01": 10,
@@ -395,7 +487,7 @@ func TestMapValuesK_HappyPath(t *testing.T) {
 
 func TestMapValuesK_FunctionSpec(t *testing.T) {
 	fn := scaleCalc(t)
-	mapFn, _ := forge.MapValuesK("perSensor", "1.0.0", sensorIDCodecTest(), fn)
+	mapFn := forge.MapValuesK("perSensor", "1.0.0", sensorIDCodecTest(), fn)
 
 	if mapFn.Spec.Kind != "mapValues" {
 		t.Errorf("Kind: got %q, want %q", mapFn.Spec.Kind, "mapValues")
@@ -407,7 +499,7 @@ func TestMapValuesK_FunctionSpec(t *testing.T) {
 
 func TestMapValuesK_InvalidKey_InputError(t *testing.T) {
 	fn := scaleCalc(t)
-	mapFn, _ := forge.MapValuesK("perSensor", "1.0.0", sensorIDCodecTest(), fn)
+	mapFn := forge.MapValuesK("perSensor", "1.0.0", sensorIDCodecTest(), fn)
 
 	// "SENSOR_01" fails the pattern — invalid key
 	_, err := mapFn.Apply(map[string]float64{"SENSOR_01": 10})
@@ -429,7 +521,7 @@ func TestMapValuesK_InvalidKey_InputError(t *testing.T) {
 
 func TestMapValuesK_MixedKeys_FailFast(t *testing.T) {
 	fn := scaleCalc(t)
-	mapFn, _ := forge.MapValuesK("perSensor", "1.0.0", sensorIDCodecTest(), fn)
+	mapFn := forge.MapValuesK("perSensor", "1.0.0", sensorIDCodecTest(), fn)
 
 	// One valid key + one invalid key — still fails (no partial results)
 	_, err := mapFn.Apply(map[string]float64{
@@ -447,7 +539,7 @@ func TestMapValuesK_MixedKeys_FailFast(t *testing.T) {
 
 func TestMapValuesK_InvalidValue_CollectionKeyError(t *testing.T) {
 	fn := scaleCalc(t)
-	mapFn, _ := forge.MapValuesK("perSensor", "1.0.0", sensorIDCodecTest(), fn)
+	mapFn := forge.MapValuesK("perSensor", "1.0.0", sensorIDCodecTest(), fn)
 
 	// valid key, invalid value (-5 violates positiveFloat64Codec range)
 	_, err := mapFn.Apply(map[string]float64{"sensor-01": -5})
@@ -466,14 +558,32 @@ func TestMapValuesK_InvalidValue_CollectionKeyError(t *testing.T) {
 	}
 }
 
-func TestMapValuesK_EmptyName(t *testing.T) {
+func TestMapValuesK_PanicEmptyName(t *testing.T) {
+	defer func() {
+		r := recover()
+		if r == nil {
+			t.Fatal("expected panic for empty name")
+		}
+		msg, _ := r.(string)
+		if !strings.Contains(msg, "name") {
+			t.Errorf("unexpected panic message: %v", r)
+		}
+	}()
 	fn := scaleCalc(t)
-	_, err := forge.MapValuesK("", "1.0.0", sensorIDCodecTest(), fn)
-	if err == nil {
-		t.Fatal("expected ConfigError for empty name")
-	}
-	var ce forge.ConfigError
-	if !errors.As(err, &ce) {
-		t.Fatalf("expected ConfigError, got %T", err)
-	}
+	forge.MapValuesK("", "1.0.0", sensorIDCodecTest(), fn)
+}
+
+func TestMapValuesK_PanicEmptyVersion(t *testing.T) {
+	defer func() {
+		r := recover()
+		if r == nil {
+			t.Fatal("expected panic for empty version")
+		}
+		msg, _ := r.(string)
+		if !strings.Contains(msg, "version") {
+			t.Errorf("unexpected panic message: %v", r)
+		}
+	}()
+	fn := scaleCalc(t)
+	forge.MapValuesK("perSensor", "", sensorIDCodecTest(), fn)
 }

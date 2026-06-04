@@ -58,7 +58,7 @@ func oeeInCodec() codex.Codec[oeeIn] {
 func TestWithRefinement_Passes(t *testing.T) {
 	out := float64Codec(0, 1)
 	called := false
-	f := forge.Must(forge.New("fn", "1.0.0",
+	f := forge.NewFunction("fn", "1.0.0",
 		"inputs", availInCodec(), "out", out,
 		func(in availIn) (float64, error) {
 			called = true
@@ -70,7 +70,7 @@ func TestWithRefinement_Passes(t *testing.T) {
 			}
 			return nil
 		}),
-	))
+	)
 	_, err := f.Apply(availIn{PlannedTime: 8, Downtime: 2})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -85,7 +85,7 @@ func TestWithRefinement_Passes(t *testing.T) {
 func TestWithRefinement_FailsBeforeCompute(t *testing.T) {
 	out := float64Codec(0, 1)
 	computeCalled := false
-	f := forge.Must(forge.New("fn", "1.0.0",
+	f := forge.NewFunction("fn", "1.0.0",
 		"inputs", availInCodec(), "out", out,
 		func(in availIn) (float64, error) {
 			computeCalled = true
@@ -94,7 +94,7 @@ func TestWithRefinement_FailsBeforeCompute(t *testing.T) {
 		forge.WithRefinement(func(in availIn) error {
 			return errBadRefinement
 		}),
-	))
+	)
 	_, err := f.Apply(availIn{PlannedTime: 5, Downtime: 8})
 	if err == nil {
 		t.Fatal("expected error, got nil")
@@ -139,13 +139,13 @@ func TestObserver_CapturesRefinementFailure(t *testing.T) {
 	obs := &recordingObserver{}
 	reg := forge.NewRegistry("test", "1.0.0").WithObserver(obs)
 
-	f := forge.Must(forge.New("fn", "1.0.0",
+	f := forge.NewFunction("fn", "1.0.0",
 		"inputs", availInCodec(), "out", out,
 		func(in availIn) (float64, error) { return 0, nil },
 		forge.WithRefinement(func(in availIn) error {
 			return errBadRefinement
 		}),
-	))
+	)
 	f.Register(reg)
 
 	_, err := f.Apply(availIn{PlannedTime: 5, Downtime: 8})
@@ -163,7 +163,7 @@ func TestObserver_CapturesRefinementFailure(t *testing.T) {
 // TestWithRefinement_StructInput_ThreeFields verifies three-field struct input refinement.
 func TestWithRefinement_StructInput_ThreeFields(t *testing.T) {
 	out := float64Codec(0, 1)
-	f := forge.Must(forge.New("oee", "1.0.0",
+	f := forge.NewFunction("oee", "1.0.0",
 		"oeeIn", oeeInCodec(), "oee", out,
 		func(in oeeIn) (float64, error) { return in.A * in.P * in.Q, nil },
 		forge.WithRefinement(func(in oeeIn) error {
@@ -172,7 +172,7 @@ func TestWithRefinement_StructInput_ThreeFields(t *testing.T) {
 			}
 			return nil
 		}),
-	))
+	)
 
 	// passes
 	result, err := f.Apply(oeeIn{A: 0.9, P: 0.8, Q: 0.95})
@@ -200,7 +200,7 @@ func TestCompose_RefinementRunsInComposedFunction(t *testing.T) {
 	c := float64Codec(0, 10)
 	refinementCalled := false
 
-	f1 := forge.Must(forge.New("double", "1.0.0",
+	f1 := forge.NewFunction("double", "1.0.0",
 		"in", c, "out", c,
 		func(v float64) (float64, error) { return v * 2, nil },
 		forge.WithRefinement(func(v float64) error {
@@ -210,13 +210,13 @@ func TestCompose_RefinementRunsInComposedFunction(t *testing.T) {
 			}
 			return nil
 		}),
-	))
-	f2 := forge.Must(forge.New("addOne", "1.0.0",
+	)
+	f2 := forge.NewFunction("addOne", "1.0.0",
 		"in", c, "out", c,
 		func(v float64) (float64, error) { return v + 1, nil },
-	))
+	)
 
-	composed := forge.Must(forge.Compose("doubleAddOne", "1.0.0", f1, f2))
+	composed := forge.Compose("doubleAddOne", "1.0.0", f1, f2)
 
 	// passes: f1 refinement OK (input 4 ≤ 8), output = 4*2+1 = 9
 	result, err := composed.Apply(4.0)
@@ -263,12 +263,12 @@ func TestCodecRefine_CrossFieldConstraint(t *testing.T) {
 	})
 
 	out := float64Codec(0, 1)
-	f := forge.Must(forge.New("availCalc", "1.0.0",
+	f := forge.NewFunction("availCalc", "1.0.0",
 		"inputs", constrainedInCodec, "availability", out,
 		func(in availIn) (float64, error) {
 			return (in.PlannedTime - in.Downtime) / in.PlannedTime, nil
 		},
-	))
+	)
 
 	// valid
 	_, err := f.Apply(availIn{PlannedTime: 8, Downtime: 2})

@@ -31,10 +31,10 @@ go-codex is a Go port of the core ideas from Haskell's [autodocodec](https://hac
 | `render/openapi`  | Renders `schema.Schema` as OpenAPI 3.1 `components/schemas`; `DocumentBuilder` for full spec | `schema`, `route`, `render/internal/schemarender`, external libs |
 | `render/asyncapi/v2` | Renders channels and schemas as a full AsyncAPI 2.6 document (frozen)               | `schema`, `render/internal/schemarender`, external libs |
 | `render/asyncapi/v3` | Renders channels and schemas as a full AsyncAPI 3.0 document; separate `channels` + `operations` top-level keys; per-operation `security`; `Server.Security`; `ChannelItem.Address`; `AddSecurityScheme(name, route.SecurityScheme)` | `schema`, `route`, `render/internal/schemarender`, external libs |
-| `forge`           | Governed, signed KPI computation: `Measured[T]` boundary wrapper with provenance; `MeasuredCodec[T]` struct codec; `Function[In,Out]` generic derivation function with SHA-256 contract hash — single-input or struct-input (use `codex.Struct[T]` for multi-input); `New[In,Out](name, version, inputName, inputCodec, outputName, outputCodec, fn, opts...)` constructor; `Compose[A,B,Out]` for type-safe chaining; `Registry` fluent builder (`NewRegistry(title, version string).WithDescription().WithObserver()`) + `PipelineSpec` for graph inference (struct input codec properties auto-expand to individual `InputSpec` entries for DAG edges); `Must[T]` panic helper; `FunctionOption` variadic governance metadata (`WithDescription`, `WithAuthor`, `WithApproval`) and pipeline-level cross-input refinement (`WithRefinement[In](func(In)error)` — preferred: cross-field constraints via `codex.RefineFunc` on the input struct codec surface as `InputError`; `WithRefinement` surfaces as `RefinementError`); Apply sequence: input codec validation → optional cross-input refinement → compute → output codec validation; typed errors: `InputError`, `OutputError`, `ApplyError`, `RefinementError{Function,Err}`, `ConfigError`; collection ops: `Map` (lift fn over slice), `Filter` (predicate over slice), `Reduce` (fold slice), `MapValues` (lift fn over `map[string]_`, no key validation), `MapValuesK[K]` (lift fn over `map[K]_` with key codec validation — validates all keys atomically before any value is processed; invalid key → `InputError → KeyError → ConstraintError`; `Kind="mapValues"`, `Wraps=innerFn.Spec.Name` in pipeline YAML) | `codex`, `schema`, `stats`, stdlib (`crypto/sha256`, `encoding/json`) |
+| `forge`           | Governed, signed KPI computation: `Measured[T]` boundary wrapper with provenance; `MeasuredCodec[T]` struct codec; `Function[In,Out]` generic derivation function with SHA-256 contract hash — single-input or struct-input (use `codex.Struct[T]` for multi-input); `New[In,Out](name, version, inputName, inputCodec, outputName, outputCodec, fn, opts...)` constructor — infallible (panics on empty name/version, no error return); `Compose[A,B,Out]` for type-safe chaining — infallible (same pattern); `Registry` fluent builder (`NewRegistry(title, version string).WithDescription().WithObserver()`) + `PipelineSpec` for graph inference (struct input codec properties auto-expand to individual `InputSpec` entries for DAG edges); `FunctionOption` variadic governance metadata (`WithDescription`, `WithAuthor`, `WithApproval`) and pipeline-level cross-input refinement (`WithRefinement[In](func(In)error)` — preferred: cross-field constraints via `codex.RefineFunc` on the input struct codec surface as `InputError`; `WithRefinement` surfaces as `RefinementError`); Apply sequence: input codec validation → optional cross-input refinement → compute → output codec validation; typed errors: `InputError`, `OutputError`, `ApplyError`, `RefinementError{Function,Err}`, `ConfigError` (returned by collection functions only); collection ops: `Map` (lift fn over slice), `Filter` (predicate over slice), `Reduce` (fold slice), `MapValues` (lift fn over `map[string]_`, no key validation), `MapValuesK[K]` (lift fn over `map[K]_` with key codec validation — validates all keys atomically before any value is processed; invalid key → `InputError → KeyError → ConstraintError`; `Kind="mapValues"`, `Wraps=innerFn.Spec.Name` in pipeline YAML) | `codex`, `schema`, `stats`, stdlib (`crypto/sha256`, `encoding/json`) |
 | `render/pipeline` | Renders a `forge.PipelineSpec` as a `pipelineSpec` YAML document (mirrors `render/openapi` / `render/asyncapi`) | `forge`, `schema`, `render/internal/schemarender`, external libs |
 | `api/internal`    | Shared helpers for `api/rest` and `api/events` (template variable parsing and substitution); not part of the public API | `codex` |
-| `api/rest`        | Transport-agnostic REST API builder; typed Decode/Encode + OpenAPI spec; `AddSSERoute` for Server-Sent Events; `SSERouteHandle` with `BuildPath` and `WithEventFormats`; `RouteHandle.WithRequestFormats` / `WithResponseFormats` for multi-format request/response bodies; `rest.SecurityScheme{route.SecurityScheme + Codec}` for credential format validation; `WithCodec(c codex.Codec[string]) SecurityScheme` to set codec without pointer boilerplate; `Builder.AddSecurityScheme(name, rest.SecurityScheme)` / `AddGlobalSecurity(reqs...)`; `RouteMeta.Security []route.SecurityRequirement` (nil=inherit global, empty=explicitly no auth); `RouteHandle.SecuritySchemes map[string]rest.SecurityScheme`; `RouteHandle.GlobalSecurity []route.SecurityRequirement` (populated from `AddGlobalSecurity`); `SecurityCredentialError{Scheme, Err}` / `SecurityError{Err}` structured errors | `codex`, `format`, `route`, `render/openapi`, `schema`, `api/internal` |
+| `api/rest`        | Transport-agnostic REST API builder; typed Decode/Encode + OpenAPI spec; `NewSSERoute` for Server-Sent Events; `SSERouteHandle` with `BuildPath` and `WithEventFormats`; `RouteHandle.WithRequestFormats` / `WithResponseFormats` for multi-format request/response bodies; `rest.SecurityScheme{route.SecurityScheme + Codec}` for credential format validation; `WithCodec(c codex.Codec[string]) SecurityScheme` to set codec without pointer boilerplate; `Builder.AddSecurityScheme(name, rest.SecurityScheme)` / `AddGlobalSecurity(reqs...)`; `RouteMeta.Security []route.SecurityRequirement` (nil=inherit global, empty=explicitly no auth); `RouteHandle.SecuritySchemes map[string]rest.SecurityScheme`; `RouteHandle.GlobalSecurity []route.SecurityRequirement` (populated from `AddGlobalSecurity`); `SecurityCredentialError{Scheme, Err}` / `SecurityError{Err}` structured errors | `codex`, `format`, `route`, `render/openapi`, `schema`, `api/internal` |
 | `api/events`      | Transport-agnostic event channel builder; typed Decode/Encode + AsyncAPI 3.0 spec; `ChannelHandle.WithFormats` sets default payload format and updates `message.contentType` in the AsyncAPI descriptor; `events.SecurityScheme{route.SecurityScheme + Codec}` for credential validation; `WithCodec(c codex.Codec[string]) SecurityScheme` to set codec without pointer boilerplate; `Builder.AddSecurityScheme`; `Builder.AddGlobalSecurity(reqs...)` (runtime enforcement only — AsyncAPI 3.0 has no document-level global security); `Subscribe.Security` / `Publish.Security` for per-operation requirements (nil=inherit global, empty=no auth); `ChannelHandle.SecuritySchemes` / `ChannelHandle.GlobalSecurity` used by adapters | `codex`, `format`, `render/asyncapi/v3`, `route`, `schema`, `api/internal` |
 | `adapters/nethttp` | net/http adapter: `Handler`, `Register`, `SSEHandler`, `RegisterSSE`, `SSEHandlerFunc`, `RequestFromContext`, `WithResponseHeaders`, `ResponseHeadersFromContext`, `WithResponseCookies`, `ResponseCookiesFromContext`, `PendingCookie`, `SetCookie`, `CookieOptions`, `Options` (with `Observer stats.Observer`, `SecurityFunc func(ctx, *http.Request, []route.SecurityRequirement) error`); security enforcement: nil per-route Security falls back to `RouteHandle.GlobalSecurity`; `len(secReqs) > 0` gate (empty=no auth); credential extraction + codec validation + SecurityFunc; type-asserts `stats.SecurityObserver` for rejection metrics; request format negotiation via `RouteHandle.WithRequestFormats` | `api/rest`, `net/http`, `route`, `stats`, `format` |
 | `adapters/chi`    | chi adapter: same API surface as `adapters/nethttp` plus `SSEHandler`, `RegisterSSE`, `SSEHandlerFunc`; path vars via `chi.URLParam`; `Handler`, `Register`, `RequestFromContext`, `WithResponseHeaders`, `WithResponseCookies`, `PendingCookie`, `SetCookie`, `CookieOptions`, `Options` (with `SecurityFunc`); global security fallback + empty=no-auth semantics same as nethttp; request format negotiation via `RouteHandle.WithRequestFormats` | `api/rest`, `net/http`, `route`, `stats`, `format`, chi lib |
@@ -768,26 +768,27 @@ Key rules:
 // opts are applied in order; use WithPathCodec or WithPathConstraints to validate paths.
 func NewBuilder(info Info, opts ...BuilderOption) *Builder
 
-// WithPathCodec sets a codec used to validate every path registered via AddRoute.
-// If validation fails, AddRoute returns an InvalidPathError immediately.
+// WithPathCodec sets a codec used to validate every path registered via Register.
+// If validation fails, Register returns an InvalidPathError immediately.
 func WithPathCodec(c codex.Codec[string]) BuilderOption
 
 // WithPathConstraints is a convenience wrapper: builds codex.String() refined with cons
 // and delegates to WithPathCodec.
 func WithPathConstraints(cons ...codex.Constraint[string]) BuilderOption
 
-// AddRoute is a free function (generic type params require free functions in Go).
-// Registers a route; returns a RouteHandle with live descriptor and typed helpers.
-// Returns InvalidPathError immediately if path codec validation fails.
-func AddRoute[Req, Resp any](
-    b *Builder,
+// NewRoute constructs a Route value (not yet registered). Call .Register(b) to register.
+// Route[Req, Resp] is a value type — construct, pass around, register.
+// Register returns (RouteHandle, error); returns InvalidPathError immediately if path codec validation fails.
+func NewRoute[Req, Resp any](
     method, path string,
     reqCodec codex.Codec[Req],
     respCodec codex.Codec[Resp],
     opts ...RouteOpt,
-) (*RouteHandle[Req, Resp], error)
+) Route[Req, Resp]
 
-// InvalidPathError is returned by AddRoute when path codec validation fails.
+func (r Route[Req, Resp]) Register(b *Builder) (*RouteHandle[Req, Resp], error)
+
+// InvalidPathError is returned by Register when path codec validation fails.
 // Use errors.As to extract it and inspect Path or the underlying constraint Err.
 type InvalidPathError struct {
     Path string
@@ -806,9 +807,9 @@ import "github.com/DaniDeer/go-codex/validate"
 
 b := rest.NewBuilder(info, rest.WithPathConstraints(validate.HTTPPath))
 
-createUser, err := rest.AddRoute[CreateUserReq, User](b, "POST", "/users", reqCodec, respCodec,
+createUser, err := rest.NewRoute[CreateUserReq, User]("POST", "/users", reqCodec, respCodec,
     rest.RouteMeta{OperationID: "createUser"},
-)
+).Register(b)
 if err != nil {
     // err is an InvalidPathError — path failed validation immediately
     var pathErr rest.InvalidPathError
@@ -841,7 +842,7 @@ type MissingPathVarError struct {
 }
 ```
 
-`InvalidPathParamError` is returned by `AddRoute` when a `PathParams` entry names a variable not in the path template:
+`InvalidPathParamError` is returned by `Register` when a `PathParams` entry names a variable not in the path template:
 
 ```go
 type InvalidPathParamError struct {
@@ -850,7 +851,7 @@ type InvalidPathParamError struct {
 }
 ```
 
-`RouteOpt` values are passed as variadic trailing args to `AddRoute` and `AddSSERoute`. Available options:
+`RouteOpt` values are passed as variadic trailing args to `NewRoute` and `NewSSERoute`. Available options:
 - `RouteMeta{OperationID, Summary, Description, Tags, ReqSchemaName, RespStatus, RespDescription, RespSchemaName}` — route-level metadata.
 - `PathParam{Name, Description, Codec *codex.Codec[string]}` — pass directly.
 - `QueryParam{Name, Description string, Required bool, Codec *codex.Codec[string]}` — pass directly.
@@ -860,7 +861,7 @@ type InvalidPathParamError struct {
 - `ResponseCookieParam{Name, Description string, Required bool, Codec *codex.Codec[string]}` — pass directly.
 - `ResponseMeta{Status, Description string}` — extra responses beyond the primary success response.
 
-`PathParam{Name, Description, Codec *codex.Codec[string]}` — optional per-variable metadata. `Name` must correspond to a `{varName}` placeholder in the path template. `Codec` (pointer, `nil` = no validation) provides runtime validation and auto-flows its schema into the OpenAPI spec. An unknown `Name` causes `AddRoute` to return `InvalidPathParamError` immediately.
+`PathParam{Name, Description, Codec *codex.Codec[string]}` — optional per-variable metadata. `Name` must correspond to a `{varName}` placeholder in the path template. `Codec` (pointer, `nil` = no validation) provides runtime validation and auto-flows its schema into the OpenAPI spec. An unknown `Name` causes `Register` to return `InvalidPathParamError` immediately.
 
 `QueryParam{Name, Description string, Required bool, Codec *codex.Codec[string]}` — optional query parameter metadata. `Name` is the query key (no template syntax). `Codec` (pointer, `nil` = no validation) provides runtime validation via `RouteHandle.ValidateQuery` and auto-flows its schema into the OpenAPI spec. Unlike `PathParam`, query params are not auto-generated for template placeholders — only entries explicitly listed in `QueryParams` appear in the spec.
 
@@ -936,9 +937,9 @@ type NotAcceptableError struct {
 }
 ```
 
-`ResponseHeaderParam{Name, Description string, Required bool, Codec *codex.Codec[string]}` — declares an outgoing response header. Symmetric to `HeaderParam` but for the server side. Codec is validated by the adapter **after** the handler returns; a violation returns `ResponseHeaderParamError` and the adapter responds with 500 (server contract violation). Schema auto-flows into `responses[status].headers` in the OpenAPI spec. Pass directly as a `RouteOpt` to `AddRoute`.
+`ResponseHeaderParam{Name, Description string, Required bool, Codec *codex.Codec[string]}` — declares an outgoing response header. Symmetric to `HeaderParam` but for the server side. Codec is validated by the adapter **after** the handler returns; a violation returns `ResponseHeaderParamError` and the adapter responds with 500 (server contract violation). Schema auto-flows into `responses[status].headers` in the OpenAPI spec. Pass directly as a `RouteOpt` to `NewRoute`.
 
-`ResponseCookieParam{Name, Description string, Required bool, Codec *codex.Codec[string]}` — declares a `Set-Cookie` header returned in the primary success response. Same flow as `ResponseHeaderParam` but for cookies. The adapter validates cookie values via `ValidateResponseCookies` after the handler returns. The handler deposits cookies via `WithResponseCookies(ctx, ...PendingCookie)`. A codec violation returns `ResponseCookieParamError` and adapter responds with 500. Schema flows into `responses[status].headers["Set-Cookie"]` in spec (OpenAPI 3.1 has no first-class response cookie object). Pass directly as a `RouteOpt` to `AddRoute`.
+`ResponseCookieParam{Name, Description string, Required bool, Codec *codex.Codec[string]}` — declares a `Set-Cookie` header returned in the primary success response. Same flow as `ResponseHeaderParam` but for cookies. The adapter validates cookie values via `ValidateResponseCookies` after the handler returns. The handler deposits cookies via `WithResponseCookies(ctx, ...PendingCookie)`. A codec violation returns `ResponseCookieParamError` and adapter responds with 500. Schema flows into `responses[status].headers["Set-Cookie"]` in spec (OpenAPI 3.1 has no first-class response cookie object). Pass directly as a `RouteOpt` to `NewRoute`.
 
 ```go
 type ResponseHeaderParam struct {
@@ -971,11 +972,11 @@ type ResponseCookieParamError struct {
 **Codec schema → spec**: `PathParam.Codec` schema automatically flows into the OpenAPI path parameter spec. `QueryParam.Codec`, `CookieParam.Codec`, and `HeaderParam.Codec` schemas automatically flow into their respective OpenAPI parameter specs (`in: query`, `in: cookie`, `in: header`). `ResponseHeaderParam.Codec` schema flows into `responses[status].headers`. `ResponseCookieParam.Codec` flows into `responses[status].headers["Set-Cookie"]`. When `Codec` is nil, the parameter is still declared (minimal entry with no schema).
 
 Key rules:
-- `api/rest` encodes responses as JSON by default. To enable content negotiation, call `handle.WithResponseFormats(formats...)` after `AddRoute`; the adapter picks the format matching the client's `Accept` header (406 on mismatch via `rest.NotAcceptableError`).
+- `api/rest` encodes responses as JSON by default. To enable content negotiation, call `handle.WithResponseFormats(formats...)` after `Register`; the adapter picks the format matching the client's `Accept` header (406 on mismatch via `rest.NotAcceptableError`).
 - `route.Response.ContentTypes []string` — when non-empty, the OpenAPI renderer emits the schema under all listed content types in `responses[N].content`. Set automatically from `WithResponseFormats` content types.
 - Request body (`RequestBody`) is only added to the spec for `POST`, `PUT`, `PATCH`.
 - The descriptor is updated live via `WithRequestFormats` and `WithResponseFormats`; all mutations must happen before `OpenAPISpec()` is called.
-- Path validation is **immediate**: if a `pathCodec` is set, `AddRoute` returns `InvalidPathError` at call time. The route is not registered on failure.
+- Path validation is **immediate**: if a `pathCodec` is set, `Register` returns `InvalidPathError` at call time. The route is not registered on failure.
 - **Template-transparent validation**: before running the path codec, `{varName}` placeholders are replaced with the literal `x` (e.g. `"/users/{id}"` → `"/users/x"`). Constraints run on the structural shape of the path, not the template syntax. This means any path constraint — including ones that do not mention braces — works correctly on parameterised routes. The stored `Descriptor.Path` is always the original template.
 - **Final path re-validation**: `BuildPath` re-validates the fully assembled path (e.g. `"/users/hello world"`) against the builder-level `pathCodec` after substitution. This catches values that pass their `PathParam.Codec` but violate the global path constraint (e.g. a space introduced by a loose param codec). Returns `InvalidPathError{Path: finalPath, Err: ...}`.
 - `Info = openapi.Info` and `Server = openapi.Server` are type aliases to avoid drift.
@@ -1029,7 +1030,7 @@ Key rules:
   - The component receives `context.Background()` during rendering; pass all data the component needs through the Props struct.
   - Works with both `adapters/nethttp` and `adapters/chi` — no chi-specific variant needed.
 
-  **Composability with SSE (HTMX HTML-over-the-wire):** `adapttempl.Format` can be passed as an `EventFormat` to `rest.AddSSERoute`. Each SSE `data:` line contains a rendered HTML fragment — events with invalid props are rejected before the component renders. `adapttempl.StreamingFormat` can be used as a `ResponseFormat` on any regular route for chunked HTML delivery. See `examples/adapters-streaming-sse-templ` for both patterns together.
+  **Composability with SSE (HTMX HTML-over-the-wire):** `adapttempl.Format` can be passed as an `EventFormat` to `rest.NewSSERoute`. Each SSE `data:` line contains a rendered HTML fragment — events with invalid props are rejected before the component renders. `adapttempl.StreamingFormat` can be used as a `ResponseFormat` on any regular route for chunked HTML delivery. See `examples/adapters-streaming-sse-templ` for both patterns together.
 
   ```go
   import (
@@ -1048,10 +1049,10 @@ Key rules:
   }
 
   // Register both formats on one route:
-  articleRoute, _ := rest.AddRoute(b, "GET", "/article",
+  articleRoute, _ := rest.NewRoute[ArticleReq, ArticleProps]("GET", "/article",
       articleReqCodec, articlePropsCodec,
       rest.RouteMeta{},
-  )
+  ).Register(b)
   articleRoute = articleRoute.WithResponseFormats(
       adapttempl.Format(articlePropsCodec, ArticleCard), // Accept: text/html
       format.JSON(articlePropsCodec),                     // Accept: application/json
@@ -1076,12 +1077,12 @@ import (
 )
 
 // Register an SSE route — always GET.
-sensorRoute, err := rest.AddSSERoute[emptyReq, sensorReading](
-    b, "/sensors/{id}/readings",
+sensorRoute, err := rest.NewSSERoute[emptyReq, sensorReading](
+    "/sensors/{id}/readings",
     emptyReqCodec, sensorReadingCodec,
     rest.RouteMeta{OperationID: "streamSensor"},
     rest.PathParam{Name: "id", Description: "Sensor ID", Codec: &sensorIDCodec},
-)
+).Register(b)
 
 // Wire onto net/http.
 nethttp.RegisterSSE(mux, sensorRoute,
@@ -1106,7 +1107,7 @@ Key contract rules:
 - `send(event)` validates via the event codec → encodes to JSON → writes `data: <json>\n\n` → flushes. If validation fails, `send` returns an error without writing anything; the stream remains clean.
 - `ctx.Done()` signals client disconnects; always respect it to avoid goroutine leaks.
 - `SSERouteHandle.BuildPath(vars)` validates path variables via per-param codecs and the builder-level path codec — same contract as `RouteHandle.BuildPath`.
-- `rest.AddSSERoute` accepts `...RouteOpt` as variadic trailing args (same as `AddRoute`). Configure event formats via `handle.WithEventFormats(fmts...)` after registration; the adapter uses the first format for event data serialisation (defaults to JSON when empty).
+- `rest.NewSSERoute` accepts `...RouteOpt` as variadic trailing args (same as `NewRoute`). Configure event formats via `handle.WithEventFormats(fmts...)` after registration; the adapter uses the first format for event data serialisation (defaults to JSON when empty).
 - The route appears in the OpenAPI spec as a GET operation with `Content-Type: text/event-stream`.
 - Stats observer receives `RecordValidationError("response", constraint, "event")` for each rejected event.
 - For chi: use `chiadapter.SSEHandler` / `chiadapter.RegisterSSE`; path vars via `chi.URLParam(r, "id")`.
@@ -1120,25 +1121,26 @@ Key contract rules:
 // opts are applied in order; use WithTopicCodec or WithTopicConstraints to validate topics.
 func NewBuilder(info Info, opts ...BuilderOption) *Builder
 
-// WithTopicCodec sets a codec used to validate every topic registered via AddChannel.
-// If validation fails, AddChannel returns an InvalidTopicError immediately.
+// WithTopicCodec sets a codec used to validate every topic registered via Register.
+// If validation fails, Register returns an InvalidTopicError immediately.
 func WithTopicCodec(c codex.Codec[string]) BuilderOption
 
 // WithTopicConstraints is a convenience wrapper: builds codex.String() refined with cons
 // and delegates to WithTopicCodec.
 func WithTopicConstraints(cons ...codex.Constraint[string]) BuilderOption
 
-// AddChannel is a free function (generic type params require free functions in Go).
-// Registers a channel; returns a ChannelHandle with frozen descriptor and typed helpers.
-// Returns InvalidTopicError immediately if topic codec validation fails.
-func AddChannel[T any](
-    b *Builder,
+// NewChannel constructs a Channel value (not yet registered). Call .Register(b) to register.
+// Channel[T] is a value type — construct, pass around, register.
+// Register returns (ChannelHandle, error); returns InvalidTopicError immediately if topic codec validation fails.
+func NewChannel[T any](
     topic string,
     codec codex.Codec[T],
     opts ...ChannelOpt,
-) (*ChannelHandle[T], error)
+) Channel[T]
 
-// InvalidTopicError is returned by AddChannel when topic codec validation fails.
+func (c Channel[T]) Register(b *Builder) (*ChannelHandle[T], error)
+
+// InvalidTopicError is returned by Register when topic codec validation fails.
 // Use errors.As to extract it and inspect Topic or the underlying constraint Err.
 type InvalidTopicError struct {
     Topic string
@@ -1158,9 +1160,9 @@ import "github.com/DaniDeer/go-codex/validate"
 b := events.NewBuilder(info, events.WithTopicConstraints(validate.MQTTPublishTopic))
 // Use validate.MQTTTopic (without the publish restriction) for subscribe-only builders.
 
-ch, err := events.AddChannel[MeasurementEvent](b, "sensors/+/data", codec,
+ch, err := events.NewChannel[MeasurementEvent]("sensors/+/data", codec,
     events.Subscribe{Summary: "Sensor data"},
-)
+).Register(b)
 if err != nil {
     // err is an InvalidTopicError — topic failed validation immediately
     var topicErr events.InvalidTopicError
@@ -1175,7 +1177,7 @@ if err != nil {
 - `Decode(payload []byte) (T, error)` — JSON decode + Refine validation
 - `Encode(msg T) ([]byte, error)` — JSON encode
 - `BuildTopic(vars map[string]string) (string, error)` — substitutes `{varName}` placeholders in the topic template, validating each against its `TopicParam.Codec`. After substitution, if a builder-level `topicCodec` is set, the final assembled topic is re-validated against it (no template stripping). Returns `MissingTopicVarError` for missing variables, `TopicParamError` for per-variable codec failures, `InvalidTopicError` if the final topic fails the builder codec. Extra keys in `vars` are silently ignored.
-- `WithFormats(fmts ...format.Format[T]) *ChannelHandle[T]` — sets default payload format for adapter use (subscribe decode + publish encode) **and** updates `Descriptor.Subscribe.Message.ContentType` / `Descriptor.Publish.Message.ContentType` to `fmts[0].ContentType()`. Calling with no arguments clears both. Changes are visible to `AsyncAPISpec()` since the builder holds a `*ChannelHandle` (live pointer). Call after `AddChannel`.
+- `WithFormats(fmts ...format.Format[T]) *ChannelHandle[T]` — sets default payload format for adapter use (subscribe decode + publish encode) **and** updates `Descriptor.Subscribe.Message.ContentType` / `Descriptor.Publish.Message.ContentType` to `fmts[0].ContentType()`. Calling with no arguments clears both. Changes are visible to `AsyncAPISpec()` since the builder holds a `*ChannelHandle` (live pointer). Call after `Register`.
 - `ValidateTopic(topic string) error` — validates a received concrete topic string against the builder-level topic codec. Returns `InvalidTopicError` on failure; nil if no topic codec is registered. Call after a wildcard subscription delivers a message.
 - `ValidateTopicVars(vars map[string]string) error` — validates extracted topic variable values against registered `TopicParam` codecs. Returns `TopicParamError` for the first variable that fails. Call after `TopicVarsFromMessage` or directly on a vars map. Both methods are called internally by `TopicVarsFromMessage`.
 
@@ -1197,7 +1199,7 @@ type MissingTopicVarError struct {
 }
 ```
 
-`InvalidTopicParamError` is returned by `AddChannel` when a `TopicParam` option names a variable not in the topic template:
+`InvalidTopicParamError` is returned by `Register` when a `TopicParam` option names a variable not in the topic template:
 
 ```go
 type InvalidTopicParamError struct {
@@ -1206,18 +1208,18 @@ type InvalidTopicParamError struct {
 }
 ```
 
-`ChannelOpt` values are passed directly to `AddChannel`. Available options:
+`ChannelOpt` values are passed directly to `NewChannel`. Available options:
 - `ChannelMeta{Description}` — channel-level description metadata.
 - `Subscribe{OperationID, Summary, Description, Tags, SchemaName}` — subscribe operation metadata. `OperationID` is emitted as `operationId` in the AsyncAPI spec (used by codegen tools).
 - `Publish{OperationID, Summary, Description, Tags, SchemaName}` — publish operation metadata. `OperationID` is emitted as `operationId` in the AsyncAPI spec (used by codegen tools).
-- `TopicParam{Name, Description, Codec *codex.Codec[string]}` — optional per-variable metadata. `Name` must correspond to a `{varName}` placeholder in the topic template. `Codec` (pointer, `nil` = no validation) provides runtime validation and auto-flows its schema into the AsyncAPI `parameters:` block. An unknown `Name` causes `AddChannel` to return `InvalidTopicParamError` immediately.
+- `TopicParam{Name, Description, Codec *codex.Codec[string]}` — optional per-variable metadata. `Name` must correspond to a `{varName}` placeholder in the topic template. `Codec` (pointer, `nil` = no validation) provides runtime validation and auto-flows its schema into the AsyncAPI `parameters:` block. An unknown `Name` causes `Register` to return `InvalidTopicParamError` immediately.
 
 **Codec schema → spec**: `TopicParam.Codec` schema automatically flows into the AsyncAPI channel `parameters:` block. For each `{varName}` in the topic template, a parameter entry is always emitted — using the codec schema when a `TopicParam.Codec` is set, or `{type: string}` as default. `TopicParam` is only needed to add a description or runtime validation.
 
 Key rules:
 - `api/events` uses `format.JSON(codec)` internally — explicitly JSON-only.
-- The descriptor is built and frozen at `AddChannel` call time.
-- Topic validation is **immediate**: if a `topicCodec` is set, `AddChannel` returns `InvalidTopicError` at call time. The channel is not registered on failure.
+- The descriptor is built and frozen at `Register` call time.
+- Topic validation is **immediate**: if a `topicCodec` is set, `Register` returns `InvalidTopicError` at call time. The channel is not registered on failure.
 - **Template-transparent validation**: before running the topic codec, `{varName}` placeholders are replaced with the literal `x` (e.g. `"sensors/{sensorID}/data"` → `"sensors/x/data"`). Constraints run on the structural shape of the topic, not the template syntax. The stored `ChannelHandle.Topic` is always the original template.
 - **Final topic re-validation**: `BuildTopic` re-validates the fully assembled topic against the builder-level `topicCodec` after substitution. Catches values that pass their `TopicParam.Codec` but violate the global topic constraint. Returns `InvalidTopicError{Topic: finalTopic, Err: ...}`.
 - `Info = asyncapi.Info` and `Server = asyncapi.Server` are type aliases (where `asyncapi` now refers to `render/asyncapi/v3`).

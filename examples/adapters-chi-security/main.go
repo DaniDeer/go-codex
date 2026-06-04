@@ -261,14 +261,14 @@ func buildAPI() (
 	}.WithCodec(codex.String().Refine(validate.BearerToken)))
 
 	// POST /login — public.
-	loginHandle, _ = rest.AddRoute[loginReq, tokenResp](b, "POST", "/login",
+	loginHandle, _ = rest.NewRoute[loginReq, tokenResp]("POST", "/login",
 		loginReqCodec, tokenRespCodec,
 		rest.RouteMeta{OperationID: "login", Summary: "Authenticate and receive a bearer token", Tags: []string{"auth"}},
-	)
+	).Register(b)
 
 	// GET /users/{id}/profile — secured + chi path variable.
 	emptyCodec := codex.Struct[emptyReq]()
-	profileHandle, _ = rest.AddRoute[emptyReq, profileResp](b, "GET", "/users/{id}/profile",
+	profileHandle, _ = rest.NewRoute[emptyReq, profileResp]("GET", "/users/{id}/profile",
 		emptyCodec, profileRespCodec,
 		rest.RouteMeta{
 			OperationID: "getUserProfile",
@@ -276,10 +276,10 @@ func buildAPI() (
 			Tags:        []string{"user"},
 			Security:    []route.SecurityRequirement{route.Require("bearerAuth", "profile")},
 		},
-	)
+	).Register(b)
 
 	// POST /admin/action — secured with admin scope.
-	adminHandle, _ = rest.AddRoute[adminActionReq, adminActionResp](b, "POST", "/admin/action",
+	adminHandle, _ = rest.NewRoute[adminActionReq, adminActionResp]("POST", "/admin/action",
 		adminActionReqCodec, adminActionRespCodec,
 		rest.RouteMeta{
 			OperationID: "adminAction",
@@ -287,7 +287,7 @@ func buildAPI() (
 			Tags:        []string{"admin"},
 			Security:    []route.SecurityRequirement{route.Require("bearerAuth", "admin")},
 		},
-	)
+	).Register(b)
 
 	return
 }

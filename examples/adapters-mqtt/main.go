@@ -569,7 +569,7 @@ func main() {
 		Protocol: "mqtt",
 	})
 
-	measurementChannel, err := events.AddChannel[MeasurementEvent](b, "sensors/{sensorID}/measurements", measurementEventCodec,
+	measurementChannel, err := events.NewChannel[MeasurementEvent]("sensors/{sensorID}/measurements", measurementEventCodec,
 		events.ChannelMeta{Description: "Measurement points published by the sensor network."},
 		events.Subscribe{
 			OperationID: "receiveSensorMeasurement",
@@ -583,13 +583,13 @@ func main() {
 			Description: "UUID of the sensor publishing the measurement.",
 			Codec:       &measurementSensorCodec,
 		},
-	)
+	).Register(b)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "channel registration failed: %v\n", err)
 		os.Exit(1)
 	}
 
-	alertChannel, err := events.AddChannel[AlertEvent](b, "sensors/{sensorID}/alerts", alertEventCodec,
+	alertChannel, err := events.NewChannel[AlertEvent]("sensors/{sensorID}/alerts", alertEventCodec,
 		events.ChannelMeta{Description: "Threshold breach alerts published by this service."},
 		events.Publish{
 			OperationID: "publishThresholdAlert",
@@ -603,7 +603,7 @@ func main() {
 			Description: "UUID of the sensor that triggered the alert.",
 			Codec:       &measurementSensorCodec,
 		},
-	)
+	).Register(b)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "channel registration failed: %v\n", err)
 		os.Exit(1)

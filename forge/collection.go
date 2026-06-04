@@ -161,7 +161,9 @@ func containerMapK[K comparable, V any](keyCodec codex.Codec[K], value codex.Cod
 // WithRefinement) work on the slice-level function. WithRefinement receives the
 // whole []In slice — use it for collection-level constraints (e.g. minimum count).
 //
-//	batchCalc, err := forge.Map("batchCalc", "1.0.0", oeeCalc,
+// Panics if name or version is empty — these are programming errors.
+//
+//	batchCalc := forge.Map("batchCalc", "1.0.0", oeeCalc,
 //	    forge.WithDescription("Applies oeeCalc to a batch of measurements."),
 //	    forge.WithRefinement(func(in []OEEIn) error {
 //	        if len(in) == 0 {
@@ -174,12 +176,12 @@ func Map[In, Out any](
 	name, version string,
 	fn *Function[In, Out],
 	opts ...FunctionOption,
-) (*Function[[]In, []Out], error) {
+) *Function[[]In, []Out] {
 	if name == "" {
-		return nil, ConfigError{Func: "forge.Map", Field: "name"}
+		panic("forge.Map: name must not be empty")
 	}
 	if version == "" {
-		return nil, ConfigError{Func: "forge.Map", Field: "version"}
+		panic("forge.Map: version must not be empty")
 	}
 	cfg := applyFunctionOptions(opts)
 	inputCodec := containerSlice(fn.inputCodec)
@@ -222,7 +224,7 @@ func Map[In, Out any](
 		output:     outputCodec,
 		apply:      apply,
 		refinement: refinement,
-	}, nil
+	}
 }
 
 // Filter returns a Function[[]T, []T] that keeps only elements satisfying pred.
@@ -232,8 +234,9 @@ func Map[In, Out any](
 // Elements for which pred returns false are silently dropped (no error).
 //
 // The FunctionSpec carries Kind="filter".
+// Panics if name or version is empty — these are programming errors.
 //
-//	warmFilter, err := forge.Filter("warmFilter", "1.0.0", rawCodec,
+//	warmFilter := forge.Filter("warmFilter", "1.0.0", rawCodec,
 //	    func(r RawReading) bool { return r.WarmUp },
 //	)
 func Filter[T any](
@@ -241,12 +244,12 @@ func Filter[T any](
 	elemCodec codex.Codec[T],
 	pred func(T) bool,
 	opts ...FunctionOption,
-) (*Function[[]T, []T], error) {
+) *Function[[]T, []T] {
 	if name == "" {
-		return nil, ConfigError{Func: "forge.Filter", Field: "name"}
+		panic("forge.Filter: name must not be empty")
 	}
 	if version == "" {
-		return nil, ConfigError{Func: "forge.Filter", Field: "version"}
+		panic("forge.Filter: version must not be empty")
 	}
 	cfg := applyFunctionOptions(opts)
 	inputCodec := containerSlice(elemCodec)
@@ -289,7 +292,7 @@ func Filter[T any](
 		output:     outputCodec,
 		apply:      apply,
 		refinement: refinement,
-	}, nil
+	}
 }
 
 // Reduce returns a Function[[]T, Acc] that folds the slice to a single accumulator.
@@ -299,8 +302,9 @@ func Filter[T any](
 // The final accumulator is validated by accCodec before being returned.
 //
 // The FunctionSpec carries Kind="reduce".
+// Panics if name or version is empty — these are programming errors.
 //
-//	summarise, err := forge.Reduce("summarise", "1.0.0",
+//	summarise := forge.Reduce("summarise", "1.0.0",
 //	    celsiusCodec, summaryCodec,
 //	    BatchSummary{},
 //	    func(acc BatchSummary, c Celsius) BatchSummary { ... },
@@ -312,12 +316,12 @@ func Reduce[T, Acc any](
 	init Acc,
 	step func(Acc, T) Acc,
 	opts ...FunctionOption,
-) (*Function[[]T, Acc], error) {
+) *Function[[]T, Acc] {
 	if name == "" {
-		return nil, ConfigError{Func: "forge.Reduce", Field: "name"}
+		panic("forge.Reduce: name must not be empty")
 	}
 	if version == "" {
-		return nil, ConfigError{Func: "forge.Reduce", Field: "version"}
+		panic("forge.Reduce: version must not be empty")
 	}
 	cfg := applyFunctionOptions(opts)
 	inputCodec := containerSlice(elemCodec)
@@ -358,7 +362,7 @@ func Reduce[T, Acc any](
 		output:     accCodec,
 		apply:      apply,
 		refinement: refinement,
-	}, nil
+	}
 }
 
 // MapValues lifts fn to operate over all values of a map[string]In → map[string]Out.
@@ -370,18 +374,19 @@ func Reduce[T, Acc any](
 // The FunctionSpec carries Kind="mapValues" and Wraps=fn.Spec.Name.
 //
 // Map keys are not validated by MapValues. To enforce a key format, use MapValuesK.
+// Panics if name or version is empty — these are programming errors.
 //
-//	batchPerSensor, err := forge.MapValues("batchPerSensor", "1.0.0", summariseCalc)
+//	batchPerSensor := forge.MapValues("batchPerSensor", "1.0.0", summariseCalc)
 func MapValues[In, Out any](
 	name, version string,
 	fn *Function[In, Out],
 	opts ...FunctionOption,
-) (*Function[map[string]In, map[string]Out], error) {
+) *Function[map[string]In, map[string]Out] {
 	if name == "" {
-		return nil, ConfigError{Func: "forge.MapValues", Field: "name"}
+		panic("forge.MapValues: name must not be empty")
 	}
 	if version == "" {
-		return nil, ConfigError{Func: "forge.MapValues", Field: "version"}
+		panic("forge.MapValues: version must not be empty")
 	}
 	cfg := applyFunctionOptions(opts)
 	inputCodec := containerMap(fn.inputCodec)
@@ -424,7 +429,7 @@ func MapValues[In, Out any](
 		output:     outputCodec,
 		apply:      apply,
 		refinement: refinement,
-	}, nil
+	}
 }
 
 // MapValuesK lifts fn to operate over all values of a map[K]In → map[K]Out, with
@@ -443,7 +448,9 @@ func MapValues[In, Out any](
 // The FunctionSpec carries Kind="mapValues" and Wraps=fn.Spec.Name. The input schema
 // gains a "propertyNames" entry from keyCodec.Schema.
 //
-//	perSensor, err := forge.MapValuesK("perSensor", "1.0.0",
+// Panics if name or version is empty — these are programming errors.
+//
+//	perSensor := forge.MapValuesK("perSensor", "1.0.0",
 //	    sensorIDCodec,  // enforces ^[a-z]+-\d+$ on every key
 //	    singleSensorPipeline,
 //	    forge.WithDescription("Applies the sensor pipeline to every validated sensor key."),
@@ -453,12 +460,12 @@ func MapValuesK[K comparable, In, Out any](
 	keyCodec codex.Codec[K],
 	fn *Function[In, Out],
 	opts ...FunctionOption,
-) (*Function[map[K]In, map[K]Out], error) {
+) *Function[map[K]In, map[K]Out] {
 	if name == "" {
-		return nil, ConfigError{Func: "forge.MapValuesK", Field: "name"}
+		panic("forge.MapValuesK: name must not be empty")
 	}
 	if version == "" {
-		return nil, ConfigError{Func: "forge.MapValuesK", Field: "version"}
+		panic("forge.MapValuesK: version must not be empty")
 	}
 	cfg := applyFunctionOptions(opts)
 	inputCodec := containerMapK(keyCodec, fn.inputCodec)
@@ -501,5 +508,5 @@ func MapValuesK[K comparable, In, Out any](
 		output:     outputCodec,
 		apply:      apply,
 		refinement: refinement,
-	}, nil
+	}
 }

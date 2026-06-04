@@ -201,10 +201,10 @@ func main() {
 	//   Accept: text/html        → streams the templ component (chunked)
 	//   Accept: application/json → returns JSON-encoded DashboardProps
 
-	dashRoute, err := rest.AddRoute[DashboardReq, DashboardProps](b, "GET", "/stream/dashboard",
+	dashRoute, err := rest.NewRoute[DashboardReq, DashboardProps]("GET", "/stream/dashboard",
 		dashReqCodec, dashPropsCodec,
 		rest.RouteMeta{OperationID: "streamDashboard"},
-	)
+	).Register(b)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "route error:", err)
 		os.Exit(1)
@@ -224,10 +224,10 @@ func main() {
 	// invalid Level or empty Message are rejected by send() and never written
 	// to the stream. The observer records each validation error.
 
-	notifRoute, err := rest.AddSSERoute[NotifReq, NotifProps](b, "/sse/notifications",
+	notifRoute, err := rest.NewSSERoute[NotifReq, NotifProps]("/sse/notifications",
 		notifReqCodec, notifCodec,
 		rest.RouteMeta{OperationID: "sseNotifications"},
-	)
+	).Register(b)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "SSE route error:", err)
 		os.Exit(1)

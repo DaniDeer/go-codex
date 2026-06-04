@@ -87,7 +87,7 @@ func main() {
 
 	// POST /users — creates a user.
 	// createUser.Decode(body) and createUser.Encode(user) are the codec helpers.
-	createUser, err := rest.AddRoute[CreateUserRequest, User](b, "POST", "/users",
+	createUser, err := rest.NewRoute[CreateUserRequest, User]("POST", "/users",
 		createUserCodec, userCodec,
 		rest.RouteMeta{
 			OperationID:     "createUser",
@@ -98,7 +98,7 @@ func main() {
 			RespDescription: "User created.",
 		},
 		rest.ResponseMeta{Status: "400", Description: "Validation error."},
-	)
+	).Register(b)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "route registration failed: %v\n", err)
 		os.Exit(1)
@@ -106,7 +106,7 @@ func main() {
 
 	// GET /users/{id} — no request body; emptyReq carries no fields.
 	// Path parameter is extracted at the HTTP layer (e.g. r.PathValue("id")).
-	getUser, err := rest.AddRoute[emptyReq, User](b, "GET", "/users/{id}",
+	getUser, err := rest.NewRoute[emptyReq, User]("GET", "/users/{id}",
 		emptyCodec, userCodec,
 		rest.RouteMeta{
 			OperationID:     "getUser",
@@ -117,7 +117,7 @@ func main() {
 		},
 		rest.PathParam{Name: "id", Description: "User ID (UUID)."},
 		rest.ResponseMeta{Status: "404", Description: "User not found."},
-	)
+	).Register(b)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "route registration failed: %v\n", err)
 		os.Exit(1)

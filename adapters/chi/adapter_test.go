@@ -58,15 +58,15 @@ var testInfo = rest.Info{Title: "Test API", Version: "1.0.0"}
 
 func newCreateHandle() *rest.RouteHandle[createReq, userResp] {
 	b := rest.NewBuilder(testInfo)
-	h, _ := rest.AddRoute[createReq, userResp](b, "POST", "/users",
-		createReqCodec, userRespCodec, rest.RouteMeta{OperationID: "createUser"})
+	h, _ := rest.NewRoute[createReq, userResp]("POST", "/users",
+		createReqCodec, userRespCodec, rest.RouteMeta{OperationID: "createUser"}).Register(b)
 	return h
 }
 
 func newGetHandle(path string) *rest.RouteHandle[getReq, userResp] {
 	b := rest.NewBuilder(testInfo)
-	h, _ := rest.AddRoute[getReq, userResp](b, "GET", path,
-		getReqCodec, userRespCodec, rest.RouteMeta{OperationID: "getUser"})
+	h, _ := rest.NewRoute[getReq, userResp]("GET", path,
+		getReqCodec, userRespCodec, rest.RouteMeta{OperationID: "getUser"}).Register(b)
 	return h
 }
 
@@ -183,10 +183,10 @@ func TestRegister_WiresOntoRouter(t *testing.T) {
 func TestHandler_ResponseHeaders(t *testing.T) {
 	b := rest.NewBuilder(testInfo)
 	locationCodec := codex.String().Refine(validate.MinLen(1))
-	h, _ := rest.AddRoute[createReq, userResp](b, "POST", "/users",
+	h, _ := rest.NewRoute[createReq, userResp]("POST", "/users",
 		createReqCodec, userRespCodec,
 		rest.ResponseHeaderParam{Name: "Location", Required: true, Codec: &locationCodec},
-	)
+	).Register(b)
 
 	srv := httptest.NewServer(chiadapter.Handler(h, func(ctx context.Context, req createReq) (userResp, error) {
 		header := make(http.Header)
@@ -214,10 +214,10 @@ func TestHandler_ResponseHeaders(t *testing.T) {
 func TestHandler_ResponseCookies(t *testing.T) {
 	sessionCodec := codex.String().Refine(validate.MinLen(8))
 	b := rest.NewBuilder(testInfo)
-	h, _ := rest.AddRoute[createReq, userResp](b, "POST", "/users",
+	h, _ := rest.NewRoute[createReq, userResp]("POST", "/users",
 		createReqCodec, userRespCodec,
 		rest.ResponseCookieParam{Name: "session", Required: true, Codec: &sessionCodec},
-	)
+	).Register(b)
 
 	srv := httptest.NewServer(chiadapter.Handler(h, func(ctx context.Context, req createReq) (userResp, error) {
 		chiadapter.WithResponseCookies(ctx, chiadapter.PendingCookie{
@@ -253,8 +253,8 @@ func TestHandler_ContentNegotiation(t *testing.T) {
 	jsonFmt := format.JSON[userResp](userRespCodec)
 	yamlFmt := format.YAML[userResp](userRespCodec)
 	b := rest.NewBuilder(testInfo)
-	h, _ := rest.AddRoute[getReq, userResp](b, "GET", "/users",
-		getReqCodec, userRespCodec)
+	h, _ := rest.NewRoute[getReq, userResp]("GET", "/users",
+		getReqCodec, userRespCodec).Register(b)
 	h.WithResponseFormats(jsonFmt, yamlFmt)
 
 	handler := chiadapter.Handler(h, func(_ context.Context, _ getReq) (userResp, error) {
@@ -308,7 +308,7 @@ func TestContentNegotiation_streamedFormat_writesDirectly(t *testing.T) {
 		func([]byte) (userResp, error) { return userResp{}, errors.New("not decodable") },
 		"text/plain",
 	)
-	h, err := rest.AddRoute[createReq, userResp](b, "POST", "/users", createReqCodec, userRespCodec)
+	h, err := rest.NewRoute[createReq, userResp]("POST", "/users", createReqCodec, userRespCodec).Register(b)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -359,7 +359,7 @@ func TestContentNegotiation_streamedFormat_validationErrorBefore200(t *testing.T
 		func([]byte) (userResp, error) { return userResp{}, nil },
 		"text/plain",
 	)
-	h, err := rest.AddRoute[createReq, userResp](b, "POST", "/users", createReqCodec, strictRespCodec)
+	h, err := rest.NewRoute[createReq, userResp]("POST", "/users", createReqCodec, strictRespCodec).Register(b)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -383,7 +383,7 @@ func TestContentNegotiation_streamedFormat_validationErrorBefore200(t *testing.T
 
 func TestRequestFormats_JSONBodyAccepted(t *testing.T) {
 	b := rest.NewBuilder(testInfo)
-	h, err := rest.AddRoute[createReq, userResp](b, "POST", "/users", createReqCodec, userRespCodec)
+	h, err := rest.NewRoute[createReq, userResp]("POST", "/users", createReqCodec, userRespCodec).Register(b)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -406,7 +406,7 @@ func TestRequestFormats_JSONBodyAccepted(t *testing.T) {
 
 func TestRequestFormats_YAMLBodyAccepted(t *testing.T) {
 	b := rest.NewBuilder(testInfo)
-	h, err := rest.AddRoute[createReq, userResp](b, "POST", "/users", createReqCodec, userRespCodec)
+	h, err := rest.NewRoute[createReq, userResp]("POST", "/users", createReqCodec, userRespCodec).Register(b)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -435,7 +435,7 @@ func TestRequestFormats_YAMLBodyAccepted(t *testing.T) {
 func TestRequestFormats_WrongContentType_returns415(t *testing.T) {
 	var capturedErr error
 	b := rest.NewBuilder(testInfo)
-	h, err := rest.AddRoute[createReq, userResp](b, "POST", "/users", createReqCodec, userRespCodec)
+	h, err := rest.NewRoute[createReq, userResp]("POST", "/users", createReqCodec, userRespCodec).Register(b)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -487,8 +487,8 @@ var sseEventCodec = codex.Struct[sseEvent](
 
 func TestSSEHandler_streamEvents(t *testing.T) {
 	b := rest.NewBuilder(testInfo)
-	handle, err := rest.AddSSERoute[createReq, sseEvent](b, "/events",
-		createReqCodec, sseEventCodec, rest.RouteMeta{OperationID: "streamEvents"})
+	handle, err := rest.NewSSERoute[createReq, sseEvent]("/events",
+		createReqCodec, sseEventCodec, rest.RouteMeta{OperationID: "streamEvents"}).Register(b)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -523,8 +523,8 @@ func TestSSEHandler_streamEvents(t *testing.T) {
 
 func TestSSEHandler_validationRejectsEvent(t *testing.T) {
 	b := rest.NewBuilder(testInfo)
-	handle, err := rest.AddSSERoute[createReq, sseEvent](b, "/events2",
-		createReqCodec, sseEventCodec, rest.RouteMeta{OperationID: "streamEventsValidate"})
+	handle, err := rest.NewSSERoute[createReq, sseEvent]("/events2",
+		createReqCodec, sseEventCodec, rest.RouteMeta{OperationID: "streamEventsValidate"}).Register(b)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -549,8 +549,8 @@ func TestSSEHandler_validationRejectsEvent(t *testing.T) {
 
 func TestSSEHandler_RegisterSSE_wiresOntoRouter(t *testing.T) {
 	b := rest.NewBuilder(testInfo)
-	handle, err := rest.AddSSERoute[createReq, sseEvent](b, "/events3",
-		createReqCodec, sseEventCodec, rest.RouteMeta{OperationID: "streamRegister"})
+	handle, err := rest.NewSSERoute[createReq, sseEvent]("/events3",
+		createReqCodec, sseEventCodec, rest.RouteMeta{OperationID: "streamRegister"}).Register(b)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -599,13 +599,13 @@ func newSecuredRoute() (*rest.RouteHandle[createReq, userResp], error) {
 	b.AddSecurityScheme("bearerAuth", rest.SecurityScheme{
 		SecurityScheme: route.BearerScheme("JWT"),
 	})
-	return rest.AddRoute[createReq, userResp](b, "POST", "/users",
+	return rest.NewRoute[createReq, userResp]("POST", "/users",
 		createReqCodec, userRespCodec,
 		rest.RouteMeta{
 			OperationID: "createUser",
 			Security:    []route.SecurityRequirement{route.Require("bearerAuth")},
 		},
-	)
+	).Register(b)
 }
 
 func TestHandler_SecurityFunc_calledForSecuredRoute(t *testing.T) {
@@ -697,13 +697,13 @@ func TestHandler_SecurityFunc_codecValidationFailure(t *testing.T) {
 		SecurityScheme: route.BearerScheme("JWT"),
 		Codec:          &jwtCodec,
 	})
-	handle, err := rest.AddRoute[createReq, userResp](b, "POST", "/users",
+	handle, err := rest.NewRoute[createReq, userResp]("POST", "/users",
 		createReqCodec, userRespCodec,
 		rest.RouteMeta{
 			OperationID: "createUser",
 			Security:    []route.SecurityRequirement{route.Require("bearerAuth")},
 		},
-	)
+	).Register(b)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -762,10 +762,10 @@ func newGlobalSecuredChiRoute() (*rest.RouteHandle[createReq, userResp], error) 
 		SecurityScheme: route.BearerScheme("JWT"),
 	})
 	b.AddGlobalSecurity(route.Require("bearerAuth"))
-	return rest.AddRoute[createReq, userResp](b, "POST", "/users",
+	return rest.NewRoute[createReq, userResp]("POST", "/users",
 		createReqCodec, userRespCodec,
 		rest.RouteMeta{OperationID: "createUser"},
-	)
+	).Register(b)
 }
 
 func TestChiHandler_GlobalSecurity_enforcedWhenNoPerRouteSecurity(t *testing.T) {
@@ -829,13 +829,13 @@ func TestChiHandler_GlobalSecurity_notCalledWhenExplicitlyEmpty(t *testing.T) {
 		SecurityScheme: route.BearerScheme("JWT"),
 	})
 	b.AddGlobalSecurity(route.Require("bearerAuth"))
-	handle, err := rest.AddRoute[createReq, userResp](b, "POST", "/users",
+	handle, err := rest.NewRoute[createReq, userResp]("POST", "/users",
 		createReqCodec, userRespCodec,
 		rest.RouteMeta{
 			OperationID: "createUser",
 			Security:    []route.SecurityRequirement{},
 		},
-	)
+	).Register(b)
 	if err != nil {
 		t.Fatal(err)
 	}

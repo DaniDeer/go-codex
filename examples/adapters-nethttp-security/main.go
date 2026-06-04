@@ -269,7 +269,7 @@ func buildAPI() (
 	}.WithCodec(codex.String().Refine(validate.BearerToken)))
 
 	// POST /login — public, no security requirement.
-	loginHandle, _ = rest.AddRoute[loginReq, tokenResp](b, "POST", "/login",
+	loginHandle, _ = rest.NewRoute[loginReq, tokenResp]("POST", "/login",
 		loginReqCodec, tokenRespCodec,
 		rest.RouteMeta{
 			OperationID: "login",
@@ -278,11 +278,11 @@ func buildAPI() (
 			// Security: nil means "no per-route requirement" — inherits global.
 			// Since no global security is set, this route is public.
 		},
-	)
+	).Register(b)
 
 	// GET /profile — secured: bearerAuth with "profile" scope.
 	emptyCodec := codex.Struct[emptyReq]()
-	profileHandle, _ = rest.AddRoute[emptyReq, profileResp](b, "GET", "/profile",
+	profileHandle, _ = rest.NewRoute[emptyReq, profileResp]("GET", "/profile",
 		emptyCodec, profileRespCodec,
 		rest.RouteMeta{
 			OperationID: "getProfile",
@@ -293,10 +293,10 @@ func buildAPI() (
 				route.Require("bearerAuth", "profile"),
 			},
 		},
-	)
+	).Register(b)
 
 	// POST /admin/action — secured: bearerAuth with "admin" scope.
-	adminHandle, _ = rest.AddRoute[adminActionReq, adminActionResp](b, "POST", "/admin/action",
+	adminHandle, _ = rest.NewRoute[adminActionReq, adminActionResp]("POST", "/admin/action",
 		adminActionReqCodec, adminActionRespCodec,
 		rest.RouteMeta{
 			OperationID: "adminAction",
@@ -307,7 +307,7 @@ func buildAPI() (
 				route.Require("bearerAuth", "admin"),
 			},
 		},
-	)
+	).Register(b)
 
 	return
 }

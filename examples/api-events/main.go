@@ -87,7 +87,7 @@ func main() {
 	// user/created — action: receive — this app RECEIVES events when users register.
 	// Security: requires bearerAuth — adapters (e.g. adapters/mqtt) enforce this via
 	// SubscribeOptions.SecurityFunc before calling the application handler.
-	userCreated, err := events.AddChannel[UserCreatedEvent](b, "user/created", userCreatedCodec,
+	userCreated, err := events.NewChannel[UserCreatedEvent]("user/created", userCreatedCodec,
 		events.ChannelMeta{Description: "User registration events consumed by the notification service."},
 		events.Subscribe{
 			Summary:    "Receive user created event",
@@ -96,7 +96,7 @@ func main() {
 			// Security: requires bearerAuth on this operation.
 			Security: []route.SecurityRequirement{route.Require("bearerAuth")},
 		},
-	)
+	).Register(b)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "channel registration failed: %v\n", err)
 		os.Exit(1)
@@ -104,14 +104,14 @@ func main() {
 
 	// notification/send — action: send — this app SENDS notification commands.
 	// No security on outbound channels: the broker accepts messages from this service.
-	notificationSend, err := events.AddChannel[NotificationCommand](b, "notification/send", notificationCommandCodec,
+	notificationSend, err := events.NewChannel[NotificationCommand]("notification/send", notificationCommandCodec,
 		events.ChannelMeta{Description: "Notification commands sent by this service to trigger delivery."},
 		events.Publish{
 			Summary:    "Send notification command",
 			Tags:       []string{"notification"},
 			SchemaName: "NotificationCommand",
 		},
-	)
+	).Register(b)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "channel registration failed: %v\n", err)
 		os.Exit(1)

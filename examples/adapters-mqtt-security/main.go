@@ -223,7 +223,7 @@ func buildChannels() (
 	var err error
 
 	// sensor/data/{sensorId} — action: receive — secured with apiKeyAuth.
-	sensorData, err = events.AddChannel[SensorReading](b, "sensor/data", sensorReadingCodec,
+	sensorData, err = events.NewChannel[SensorReading]("sensor/data", sensorReadingCodec,
 		events.ChannelMeta{Description: "Sensor readings received from the sensor network."},
 		events.Subscribe{
 			Summary:    "Receive sensor reading",
@@ -232,21 +232,21 @@ func buildChannels() (
 			// Security: requires apiKeyAuth. Enforced by SecurityFunc.
 			Security: []route.SecurityRequirement{route.Require("apiKeyAuth")},
 		},
-	)
+	).Register(b)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "channel registration failed: %v\n", err)
 		os.Exit(1)
 	}
 
 	// sensor/alerts — action: send — no security (outbound publish).
-	sensorAlerts, err = events.AddChannel[SensorAlert](b, "sensor/alerts", sensorAlertCodec,
+	sensorAlerts, err = events.NewChannel[SensorAlert]("sensor/alerts", sensorAlertCodec,
 		events.ChannelMeta{Description: "Alert events produced by this service on threshold breach."},
 		events.Publish{
 			Summary:    "Send sensor alert",
 			Tags:       []string{"sensor", "alerts"},
 			SchemaName: "SensorAlert",
 		},
-	)
+	).Register(b)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "channel registration failed: %v\n", err)
 		os.Exit(1)

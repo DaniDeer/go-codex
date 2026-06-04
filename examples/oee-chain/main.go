@@ -397,27 +397,27 @@ func main() {
 		events.WithTopicConstraints(validate.MQTTPublishTopic),
 	)
 
-	sensorCh, err := events.AddChannel[SensorReading](b, "sensors/oee/reading", sensorReadingCodec,
+	sensorCh, err := events.NewChannel[SensorReading]("sensors/oee/reading", sensorReadingCodec,
 		events.ChannelMeta{Description: "Raw equipment measurements from OT sensors."},
 		events.Subscribe{
 			Summary:    "Receive sensor reading",
 			Tags:       []string{"sensor", "oee"},
 			SchemaName: "SensorReading",
 		},
-	)
+	).Register(b)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "AddChannel sensor: %v\n", err)
 		os.Exit(1)
 	}
 
-	kpiCh, err := events.AddChannel[KPIResult](b, "kpi/oee/result", kpiResultCodec,
+	kpiCh, err := events.NewChannel[KPIResult]("kpi/oee/result", kpiResultCodec,
 		events.ChannelMeta{Description: "Computed OEE KPI results published after each sensor reading."},
 		events.Publish{
 			Summary:    "Publish KPI result",
 			Tags:       []string{"kpi", "oee"},
 			SchemaName: "KPIResult",
 		},
-	)
+	).Register(b)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "AddChannel kpi: %v\n", err)
 		os.Exit(1)
@@ -425,12 +425,11 @@ func main() {
 
 	// ── Layer 3: forge pipeline ───────────────────────────────────────────────
 	//
-	// forge.New returns (function, error). The error is always a forge.ConfigError
-	// and signals a misconfigured function definition (empty name, empty version,
-	// nil codec, nil compute function). These are programmer errors — check them
-	// at startup and fail fast, just like you would for a misconfigured HTTP router.
+	// forge.NewFunction panics on misconfigured function definitions (empty name,
+	// empty version). These are programmer errors — they are caught at startup,
+	// just like a misconfigured HTTP router.
 
-	availabilityCalc, err := forge.New(
+	availabilityCalc := forge.NewFunction(
 		"availabilityCalc", "1.0.0",
 		"availabilityIn", availabilityInCodec,
 		"availability", availabilityCodec,
@@ -440,12 +439,8 @@ func main() {
 		forge.WithDescription("Computes availability as (plannedTime - downtime) / plannedTime."),
 		forge.WithAuthor("oee-team"),
 	)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "forge.New availabilityCalc: %v\n", err)
-		os.Exit(1)
-	}
 
-	performanceCalc, err := forge.New(
+	performanceCalc := forge.NewFunction(
 		"performanceCalc", "1.0.0",
 		"performanceIn", performanceInCodec,
 		"performance", performanceCodec,
@@ -455,12 +450,8 @@ func main() {
 		forge.WithDescription("Computes performance as actualCycles / plannedCycles."),
 		forge.WithAuthor("oee-team"),
 	)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "forge.New performanceCalc: %v\n", err)
-		os.Exit(1)
-	}
 
-	qualityCalc, err := forge.New(
+	qualityCalc := forge.NewFunction(
 		"qualityCalc", "1.0.0",
 		"qualityIn", qualityInCodec,
 		"quality", qualityCodec,
@@ -473,12 +464,8 @@ func main() {
 		forge.WithDescription("Computes quality as goodUnits / totalUnits."),
 		forge.WithAuthor("oee-team"),
 	)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "forge.New qualityCalc: %v\n", err)
-		os.Exit(1)
-	}
 
-	oeeCalc, err := forge.New(
+	oeeCalc := forge.NewFunction(
 		"oeeCalc", "1.0.0",
 		"oeeIn", oeeInCodec,
 		"oee", oeeCodec,
@@ -488,10 +475,6 @@ func main() {
 		forge.WithDescription("Computes OEE = availability × performance × quality."),
 		forge.WithAuthor("oee-team"),
 	)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "forge.New oeeCalc: %v\n", err)
-		os.Exit(1)
-	}
 
 	// ── Registry: graph inference + pipeline spec ─────────────────────────────
 	// Wire obs as the PipelineObserver — every Apply call reports to obs.RecordApply.

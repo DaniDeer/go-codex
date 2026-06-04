@@ -150,7 +150,7 @@ func main() {
 	// and at most 256 characters.
 	// WithRequestFormats(pngFormat): the adapter (nethttp/chi) negotiates
 	// Content-Type: image/png and decodes the body via pngFormat.Unmarshal.
-	uploadImage, err := rest.AddRoute[[]byte, ImageMeta](b, "PUT", "/images/{id}",
+	uploadImage, err := rest.NewRoute[[]byte, ImageMeta]("PUT", "/images/{id}",
 		pngCodec, imageMetaCodec,
 		rest.RouteMeta{
 			OperationID:     "uploadImage",
@@ -175,7 +175,7 @@ func main() {
 		rest.ResponseMeta{Status: "400", Description: "Invalid PNG data or parameter validation failure."},
 		rest.ResponseMeta{Status: "401", Description: "Missing or invalid session cookie."},
 		rest.ResponseMeta{Status: "404", Description: "Resource not found."},
-	)
+	).Register(b)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "route registration error: %v\n", err)
 		os.Exit(1)
@@ -195,7 +195,7 @@ func main() {
 	// The same MaxBytes + magic-bytes constraints on pngCodec protect both
 	// directions: Unmarshal validates incoming PNG on upload; Marshal validates
 	// outgoing PNG on download, preventing the server from emitting corrupt data.
-	downloadImage, err := rest.AddRoute[DownloadImageRequest, []byte](b, "POST", "/images/{id}/download",
+	downloadImage, err := rest.NewRoute[DownloadImageRequest, []byte]("POST", "/images/{id}/download",
 		downloadRequestCodec, pngCodec,
 		rest.RouteMeta{
 			OperationID:     "downloadImage",
@@ -220,7 +220,7 @@ func main() {
 		rest.ResponseMeta{Status: "400", Description: "Invalid request body or parameter validation failure."},
 		rest.ResponseMeta{Status: "401", Description: "Missing or invalid session cookie."},
 		rest.ResponseMeta{Status: "404", Description: "Image not found."},
-	)
+	).Register(b)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "route registration error: %v\n", err)
 		os.Exit(1)

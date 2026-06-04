@@ -96,6 +96,50 @@ spec, _ := openapi.MarshalYAML(map[string]schema.Schema{
 
 A field rename in `contract.User` breaks compilation on both sides immediately — no stale YAML, no schema drift, no separate code-generation step. This is the key difference from protobuf or OpenAPI-first workflows: **the Go source is the contract**.
 
+### Three Layers
+
+go-codex grows with your system. Each layer is independent — use what you need:
+
+| Layer | Package | Role |
+|-------|---------|------|
+| **1 — Codecs** | `codex` | Encode, decode, validate, schema — one value, no duplication |
+| **2 — API contracts** | `api/rest`, `api/events` | Declarative route and channel specs; generate OpenAPI 3.1 and AsyncAPI 3.0 |
+| **3 — Pipelines** | `forge` | Named, versioned, governed computation functions; generate a signed pipeline spec |
+
+All three follow the same declarative pattern: **define as a value, register separately**.
+
+```go
+// Layer 1 — codec: plain value, used everywhere
+var userCodec = codex.Struct[User](
+    codex.RequiredField("name", codex.String().Refine(validate.NonEmptyString), ...),
+    codex.RequiredField("email", codex.String().Refine(validate.Email), ...),
+)
+user, err := userCodec.Decode(raw) // validate + decode in one step
+
+// Layer 2 — route: declare as value, register with builder → typed handle + OpenAPI spec
+var createUser = rest.NewRoute[CreateUserReq, User]("POST", "/users", reqCodec, userCodec,
+    rest.RouteMeta{OperationID: "createUser", Summary: "Create a user"},
+)
+handle, err := createUser.Register(b) // returns typed Decode/Encode helpers
+req, err := handle.Decode(body)
+
+// Layer 2 — channel: same pattern for events → typed handle + AsyncAPI spec
+var sensorCh = events.NewChannel[SensorReading]("sensors/{id}/readings", sensorCodec,
+    events.Subscribe{Summary: "Receive sensor readings"},
+)
+handle, err := sensorCh.Register(b)
+reading, err := handle.Decode(payload)
+
+// Layer 3 — pipeline: declare a governed computation, use directly, register for spec
+availCalc := forge.NewFunction[AvailabilityIn, Availability]("availCalc", "1.0.0",
+    "inputs", availInCodec, "availability", availabilityCodec,
+    computeAvailability,
+    forge.WithAuthor("OT Engineering"),
+)
+result, err := availCalc.Apply(in)  // validate → compute → validate output
+availCalc.Register(reg)             // optional: pipeline YAML spec + telemetry
+```
+
 ## Installation & Usage
 
 ```bash
@@ -142,7 +186,7 @@ Requires Go 1.25 or later.
 - **Paho MQTT Adapter** — wire `ChannelHandle` to Paho MQTT subscribe callbacks; unified `Publish` handles both static and template topics; `TopicVarsFromMessage` extracts `{varName}` values from received topics and validates them (structural match → builder-level topic codec → per-param codecs) — fully symmetric with `BuildTopic`
 - **templ SSR Format Plug-in** — add `adapttempl.Format(propsCodec, component)` to a route's `ResponseFormats`; the existing nethttp/chi adapters then serve HTML to `Accept: text/html` clients and JSON to API clients from the same handler
 - **Streaming Responses** — `format.NewStreamed` creates a format that writes directly to the `ResponseWriter` without buffering; `adapttempl.StreamingFormat` renders templ components as a stream; the adapter validates before committing headers
-- **Server-Sent Events (SSE)** — `rest.AddSSERoute[Req, Event]` registers a typed SSE route; `nethttp.SSEHandler` / `nethttp.RegisterSSE` and `chiadapter.SSEHandler` / `chiadapter.RegisterSSE` stream codec-validated events; path param codecs work identically to REST routes; stats observer counts validation errors per event
+- **Server-Sent Events (SSE)** — `rest.NewSSERoute[Req, Event](...).Register(b)` registers a typed SSE route; `nethttp.SSEHandler` / `nethttp.RegisterSSE` and `chiadapter.SSEHandler` / `chiadapter.RegisterSSE` stream codec-validated events; path param codecs work identically to REST routes; stats observer counts validation errors per event
 
 ### Multi-Format Support
 
@@ -230,9 +274,9 @@ pngFormat := format.NewTyped(
 `adapttempl.Format` is a real-world `format.NewTyped` example — props are validated by the codec, then the templ component renders HTML directly. Adding it to a route's `ResponseFormats` slice enables content negotiation with no adapter changes:
 
 ```go
-route, _ := rest.AddRoute(b, "GET", "/article",
+route, _ := rest.NewRoute[Req, Props]("GET", "/article",
     reqCodec, propsCodec, rest.RouteMeta{},
-)
+).Register(b)
 route = route.WithResponseFormats(
     adapttempl.Format(propsCodec, ArticleCard), // Accept: text/html
     format.JSON(propsCodec),                     // Accept: application/json
@@ -994,15 +1038,15 @@ import (
     "github.com/DaniDeer/go-codex/validate"
 )
 
-// WithPathConstraints validates every registered path at AddRoute time.
+// WithPathConstraints validates every registered path at Register time.
 b := rest.NewBuilder(
     rest.Info{Title: "User API", Version: "1.0.0"},
     rest.WithPathConstraints(validate.HTTPPath),
 )
 b.AddServer(rest.Server{URL: "https://api.example.com/v1"})
 
-// AddRoute returns (RouteHandle, error) — path is validated immediately.
-createUser, err := rest.AddRoute[CreateUserRequest, User](b, "POST", "/users",
+// NewRoute(...).Register(b) returns (RouteHandle, error) — path is validated immediately.
+createUser, err := rest.NewRoute[CreateUserRequest, User]("POST", "/users",
     createUserCodec, userCodec,
     rest.RouteMeta{
         OperationID:    "createUser",
@@ -1011,7 +1055,7 @@ createUser, err := rest.AddRoute[CreateUserRequest, User](b, "POST", "/users",
         RespSchemaName: "User",
     },
     rest.ResponseMeta{Status: "400", Description: "Validation error."},
-)
+).Register(b)
 if err != nil {
     log.Fatal(err) // *rest.InvalidPathError if path is invalid
 }
@@ -1019,7 +1063,7 @@ if err != nil {
 // Route with a path variable. PathParam.Codec validates {id} at BuildPath time
 // and its schema (UUID) flows into the OpenAPI spec automatically.
 uuidCodec := codex.String().Refine(validate.UUID)
-getUser, err := rest.AddRoute[struct{}, User](b, "GET", "/users/{id}",
+getUser, err := rest.NewRoute[struct{}, User]("GET", "/users/{id}",
     codex.Struct[struct{}](), userCodec,
     rest.RouteMeta{
         OperationID:    "getUser",
@@ -1031,7 +1075,7 @@ getUser, err := rest.AddRoute[struct{}, User](b, "GET", "/users/{id}",
         Description: "User UUID",
         Codec:       &uuidCodec, // validates at BuildPath time; UUID schema → spec
     },
-)
+).Register(b)
 if err != nil {
     log.Fatal(err)
 }
@@ -1053,7 +1097,7 @@ if err != nil {
 // Route with query parameters. QueryParam.Codec validates values at ValidateQuery time
 // and its schema flows into the OpenAPI query parameter spec automatically.
 pageCodec := codex.String().Refine(validate.NonNegativeIntString)
-listUsers, err := rest.AddRoute[struct{}, []User](b, "GET", "/users",
+listUsers, err := rest.NewRoute[struct{}, []User]("GET", "/users",
     codex.Struct[struct{}](), codex.SliceOf(userCodec),
     rest.RouteMeta{
         OperationID: "listUsers",
@@ -1061,7 +1105,7 @@ listUsers, err := rest.AddRoute[struct{}, []User](b, "GET", "/users",
     },
     rest.QueryParam{Name: "page", Description: "Page number (0-based)", Codec: &pageCodec},
     rest.QueryParam{Name: "search", Description: "Name filter (no validation)"},
-)
+).Register(b)
 if err != nil {
     log.Fatal(err)
 }
@@ -1081,7 +1125,7 @@ if err := listUsers.ValidateQuery(map[string]string{"page": "abc"}); err != nil 
 // - The nethttp adapter calls both automatically before the handler runs
 sessionCodec := codex.String().Refine(validate.NonEmptyString)
 requestIDCodec := codex.String().Refine(validate.UUID)
-profile, err := rest.AddRoute[struct{}, User](b, "GET", "/profile",
+profile, err := rest.NewRoute[struct{}, User]("GET", "/profile",
     codex.Struct[struct{}](), userCodec,
     rest.RouteMeta{
         OperationID: "getProfile",
@@ -1091,7 +1135,7 @@ profile, err := rest.AddRoute[struct{}, User](b, "GET", "/profile",
     // Note: Do not declare Accept, Content-Type, Authorization — those are
     // OpenAPI-reserved and should be handled via requestBody / security schemes.
     rest.HeaderParam{Name: "X-Request-Id", Description: "Idempotency and tracing UUID", Required: true, Codec: &requestIDCodec},
-)
+).Register(b)
 if err != nil {
     log.Fatal(err)
 }
@@ -1121,14 +1165,14 @@ yamlBytes, _ := doc.MarshalYAML()
 
 | Option | Effect |
 | --- | --- |
-| `WithPathCodec(c)` | Validates paths against codec `c` at `AddRoute` time |
-| `WithPathConstraints(cs...)` | Validates paths against one or more constraints at `AddRoute` time |
+| `WithPathCodec(c)` | Validates paths against codec `c` at `Register` time |
+| `WithPathConstraints(cs...)` | Validates paths against one or more constraints at `Register` time |
 
 **Template-transparent validation:** constraints run on the *structural shape* of the path, not the literal template syntax. `{varName}` placeholders are replaced with `x` before validation (`/users/{id}` → `/users/x`). Any constraint — including ones that reject `{` or `}` — works correctly on parameterised routes. The stored `Descriptor.Path` is always the original template.
 
 **Final path re-validation:** `BuildPath` re-validates the fully assembled path (e.g. `/users/hello world`) against the builder-level codec after substitution. This catches variable values that pass their `PathParamCodecs` codec but violate the global path constraint. Returns `InvalidPathError` with the final path in the `Path` field.
 
-**Error types from `AddRoute`, `BuildPath`, `ValidateQuery`, `ValidateCookies`, and `ValidateHeaders`:**
+**Error types from `NewRoute(...).Register(b)`, `BuildPath`, `ValidateQuery`, `ValidateCookies`, and `ValidateHeaders`:**
 
 | Error type | When returned | `errors.As` target |
 | --- | --- | --- |
@@ -1179,7 +1223,7 @@ http.ListenAndServe(":8080", mux)
 - Response status: taken from the route descriptor's primary response (e.g. 201 for POST)
 - **Custom error handling**: `Options.ErrorHandler func(w, r, status, err)` overrides the default JSON envelope
 - **Metrics / observability**: `Options.Observer stats.Observer` — implement [`stats.Observer`](#stats--observer) to receive per-request events; defaults to `stats.NoopObserver`
-- **Content negotiation**: pass `format.Format[Resp]` values as variadic trailing arguments to `AddRoute` to register multiple response formats. The adapter reads the `Accept` header, picks the first matching format, and encodes the response with it. `*/*` picks the first registered format. A mismatch returns 406 (`rest.NotAcceptableError{Accept, Supported}`). When no formats are passed, JSON is used (current default behavior preserved).
+- **Content negotiation**: pass `format.Format[Resp]` values as variadic trailing arguments to `NewRoute` to register multiple response formats. The adapter reads the `Accept` header, picks the first matching format, and encodes the response with it. `*/*` picks the first registered format. A mismatch returns 406 (`rest.NotAcceptableError{Accept, Supported}`). When no formats are passed, JSON is used (current default behavior preserved).
 - **Response header control**: `nethttp.WithResponseHeaders(ctx, h)` deposits extra headers into `ctx` from inside a `HandlerFunc`. The adapter merges them into the HTTP response on success paths only. `ResponseHeadersFromContext(ctx)` retrieves the collected headers (useful for testing or middleware).
 - **Response header validation**: `ResponseHeaderParams []rest.ResponseHeaderParam` in `RouteConfig` — each entry declares an outgoing response header with an optional codec. The adapter validates all collected response headers after the handler returns; a codec violation results in 500 (`ResponseHeaderParamError`). The codec schema flows into the OpenAPI spec as `responses[status].headers` automatically.
 - **Response cookie control**: `nethttp.WithResponseCookies(ctx, cookies...)` deposits `PendingCookie` values into `ctx` from inside a `HandlerFunc`. The adapter validates cookie values against `ResponseCookieParams` codecs, then writes `Set-Cookie` headers on success. `ResponseCookiesFromContext(ctx)` retrieves the pending cookies (useful for testing/middleware).
@@ -1356,7 +1400,7 @@ b.AddSecurityScheme("apiKey", rest.SecurityScheme{
 b.AddGlobalSecurity(route.Require("bearerAuth"))
 
 // Per-route override — nil inherits global; empty slice = no auth required.
-createUser, _ := rest.AddRoute[CreateUserReq, User](b, "POST", "/users",
+createUser, _ := rest.NewRoute[CreateUserReq, User]("POST", "/users",
     reqCodec, respCodec,
     rest.RouteMeta{
         OperationID: "createUser",
@@ -1364,7 +1408,7 @@ createUser, _ := rest.AddRoute[CreateUserReq, User](b, "POST", "/users",
             route.Require("bearerAuth", "write:users"),
         },
     },
-)
+).Register(b)
 ```
 
 #### Runtime enforcement (nethttp / chi adapters)
@@ -1412,12 +1456,12 @@ b.AddSecurityScheme("bearerAuth", events.SecurityScheme{
     Codec:          codex.String().Refine(validate.JWT),
 })
 
-userCreated, _ := events.AddChannel[UserCreated](b, "user/created", codec,
+userCreated, _ := events.NewChannel[UserCreated]("user/created", codec,
     events.Subscribe{
         Summary:  "Receive user created events",
         Security: []route.SecurityRequirement{route.Require("bearerAuth")},
     },
-)
+).Register(b)
 ```
 
 MQTT adapter:
@@ -1461,20 +1505,20 @@ import (
     "github.com/DaniDeer/go-codex/validate"
 )
 
-// WithTopicConstraints validates every registered topic at AddChannel time.
+// WithTopicConstraints validates every registered topic at Register time.
 b := events.NewBuilder(
     events.Info{Title: "User Events", Version: "1.0.0"},
     events.WithTopicConstraints(validate.MQTTPublishTopic),
 )
 b.AddServer("production", events.Server{URL: "amqp://broker.example.com", Protocol: "amqp"})
 
-// AddChannel returns (ChannelHandle, error) — topic is validated immediately.
-userCreated, err := events.AddChannel[UserCreatedEvent](b, "user/created", userCreatedCodec,
+// NewChannel(...).Register(b) returns (ChannelHandle, error) — topic is validated immediately.
+userCreated, err := events.NewChannel[UserCreatedEvent]("user/created", userCreatedCodec,
     events.Subscribe{
         Summary:    "A user was created",
         SchemaName: "UserCreatedEvent",
     },
-)
+).Register(b)
 if err != nil {
     log.Fatal(err) // *events.InvalidTopicError if topic is invalid
 }
@@ -1482,7 +1526,7 @@ if err != nil {
 // Channel with a topic template. TopicParam.Codec validates {sensorID} at
 // BuildTopic time; the UUID schema flows into the AsyncAPI parameters: block.
 sensorUUIDCodec := codex.String().Refine(validate.UUID)
-sensorMeasurement, err := events.AddChannel[Measurement](b, "sensors/{sensorID}/measurements",
+sensorMeasurement, err := events.NewChannel[Measurement]("sensors/{sensorID}/measurements",
     measurementCodec,
     events.Subscribe{Summary: "Sensor measurement received"},
     // TopicParam.Codec validates + flows schema to spec. Description enriches spec.
@@ -1491,7 +1535,7 @@ sensorMeasurement, err := events.AddChannel[Measurement](b, "sensors/{sensorID}/
         Description: "UUID of the sensor publishing the measurement.",
         Codec:       &sensorUUIDCodec,
     },
-)
+).Register(b)
 if err != nil {
     log.Fatal(err)
 }
@@ -1524,24 +1568,24 @@ yamlBytes, _ := doc.MarshalYAML()
 Both subscribe and publish directions can be registered on the same channel:
 
 ```go
-events.AddChannel[UserEvent](b, "user/events", codec,
+events.NewChannel[UserEvent]("user/events", codec,
     events.Subscribe{Summary: "Receive user events"},
     events.Publish{Summary: "Send user events"},
-)
+).Register(b)
 ```
 
 **Builder options:**
 
 | Option | Effect |
 | --- | --- |
-| `WithTopicCodec(c)` | Validates topics against codec `c` at `AddChannel` time |
-| `WithTopicConstraints(cs...)` | Validates topics against one or more constraints at `AddChannel` time |
+| `WithTopicCodec(c)` | Validates topics against codec `c` at `Register` time |
+| `WithTopicConstraints(cs...)` | Validates topics against one or more constraints at `Register` time |
 
 **Template-transparent validation:** constraints run on the *structural shape* of the topic, not the literal template syntax. `{varName}` placeholders are replaced with `x` before validation (`sensors/{sensorID}/measurements` → `sensors/x/measurements`). Any constraint works correctly on template topics. The stored `ChannelHandle.Topic` is always the original template.
 
 **Final topic re-validation:** `BuildTopic` re-validates the fully assembled topic against the builder-level codec after substitution. Catches variable values that pass their `TopicParamCodecs` codec but violate the global topic constraint. Returns `InvalidTopicError` with the final topic in the `Topic` field.
 
-**Error types from `AddChannel` and `BuildTopic`:**
+**Error types from `NewChannel(...).Register(b)` and `BuildTopic`:**
 
 | Error type | When returned | `errors.As` target |
 | --- | --- | --- |
@@ -1729,10 +1773,10 @@ import (
 )
 
 // Register both formats on one route.
-articleRoute, _ := rest.AddRoute(b, "GET", "/article",
+articleRoute, _ := rest.NewRoute[ArticleReq, ArticleProps]("GET", "/article",
     articleReqCodec, articlePropsCodec,
     rest.RouteMeta{OperationID: "getArticle"},
-)
+).Register(b)
 articleRoute = articleRoute.WithResponseFormats(
     adapttempl.Format(articlePropsCodec, ArticleCard), // Accept: text/html
     format.JSON(articlePropsCodec),                     // Accept: application/json
@@ -1756,22 +1800,22 @@ See [`examples/adapters-templ`](examples/adapters-templ/main.go) for a runnable 
 `adapttempl.StreamingFormat` and `adapttempl.Format` compose directly with the SSE adapter:
 
 - **Chunked streaming**: pass `adapttempl.StreamingFormat(codec, component)` as a `ResponseFormat` on any route. The adapter detects `IsStreamable() == true` and calls `MarshalTo(props, w)` — the templ component writes directly to the `ResponseWriter` without buffering.
-- **SSE with HTML fragments**: pass `adapttempl.Format(codec, fragment)` as an `EventFormat` to `rest.AddSSERoute`. Each SSE event's `data:` field contains a rendered HTML fragment — the HTML-over-the-wire / HTMX `sse-swap` pattern. Events with invalid props are rejected by the codec before the fragment component renders.
+- **SSE with HTML fragments**: pass `adapttempl.Format(codec, fragment)` as an `EventFormat` to `rest.NewSSERoute`. Each SSE event's `data:` field contains a rendered HTML fragment — the HTML-over-the-wire / HTMX `sse-swap` pattern. Events with invalid props are rejected by the codec before the fragment component renders.
 
 ```go
 // Chunked streaming HTML page
-dashRoute, _ := rest.AddRoute[DashboardReq, DashboardProps](b, "GET", "/dashboard",
+dashRoute, _ := rest.NewRoute[DashboardReq, DashboardProps]("GET", "/dashboard",
     dashReqCodec, dashPropsCodec, rest.RouteMeta{},
-)
+).Register(b)
 dashRoute = dashRoute.WithResponseFormats(
     adapttempl.StreamingFormat(dashPropsCodec, dashboardPage), // chunked HTML
     format.JSON(dashPropsCodec),                               // JSON fallback
 )
 
 // SSE with HTML fragment events — each event is a rendered <li>
-notifRoute, _ := rest.AddSSERoute[NotifReq, NotifProps](b, "/sse/notifications",
+notifRoute, _ := rest.NewSSERoute[NotifReq, NotifProps]("/sse/notifications",
     notifReqCodec, notifCodec, rest.RouteMeta{},
-)
+).Register(b)
 notifRoute = notifRoute.WithEventFormats(
     adapttempl.Format(notifCodec, notifFragment), // data: <li class="notif-warn">...</li>
 )
@@ -1781,7 +1825,7 @@ See [`examples/adapters-streaming-sse-templ`](examples/adapters-streaming-sse-te
 
 ### SSE (Server-Sent Events)
 
-`rest.AddSSERoute[Req, Event]` registers a typed SSE route — always GET — with a request codec and an event codec. The event codec validates every value before it is serialised to `data: ...\n\n` and written to the client.
+`rest.NewSSERoute[Req, Event](...).Register(b)` registers a typed SSE route — always GET — with a request codec and an event codec. The event codec validates every value before it is serialised to `data: ...\n\n` and written to the client.
 
 ```go
 import (
@@ -1793,12 +1837,12 @@ import (
 
 // sensorRoute registers GET /sensors/{id}/readings.
 // {id} is validated by sensorIDCodec at BuildPath time and in the OpenAPI spec.
-sensorRoute, err := rest.AddSSERoute[emptyReq, sensorReading](
-    b, "/sensors/{id}/readings",
+sensorRoute, err := rest.NewSSERoute[emptyReq, sensorReading](
+    "/sensors/{id}/readings",
     emptyReqCodec, sensorReadingCodec,
     rest.RouteMeta{OperationID: "streamSensor"},
     rest.PathParam{Name: "id", Description: "Sensor ID", Codec: &sensorIDCodec},
-)
+).Register(b)
 
 // Wire onto net/http.
 nethttp.RegisterSSE(mux, sensorRoute, func(ctx context.Context, _ emptyReq, send func(sensorReading) error) error {
@@ -1940,7 +1984,7 @@ See [`examples/stats-observer`](examples/stats-observer/main.go) for a runnable 
 ├────────────────────────────────────────────────────────────────────┤
 │  LAYER 2 — api/rest + api/events: transport contracts              │
 │                                                                     │
-│  events.AddChannel[SensorReading]  ← typed Decode/Encode           │
+│  events.NewChannel[SensorReading](...).Register(b)  ← typed Decode/Encode │
 │  b.AsyncAPISpec()                  ← AsyncAPI 2.6 YAML             │
 ├────────────────────────────────────────────────────────────────────┤
 │  LAYER 3 — forge: governed KPI computation                         │
@@ -1978,7 +2022,8 @@ These two tools are often confused because both involve transforming one type to
 import "github.com/DaniDeer/go-codex/forge"
 
 // 1. Define a forge.Function[In, Out] — named, versioned, codec-validated.
-availabilityCalc, err := forge.New(
+// forge.New is infallible: panics only on empty name/version, never returns an error.
+availabilityCalc := forge.New(
     "availabilityCalc", "1.0.0",
     "availabilityIn", availabilityInCodec,   // codex.Codec[AvailabilityIn] — validates inputs
     "availability",   availabilityCodec,     // codex.Codec[Availability]  — validates output
@@ -2022,7 +2067,7 @@ var availabilityInCodec = codex.Struct[AvailabilityIn](
 Cross-field constraints can also be added at the pipeline definition site via `forge.WithRefinement`:
 
 ```go
-availabilityCalc, _ := forge.New("availabilityCalc", "1.0.0",
+availabilityCalc := forge.New("availabilityCalc", "1.0.0",
     "availabilityIn", availabilityInCodec, "availability", availabilityCodec,
     func(in AvailabilityIn) (Availability, error) { ... },
     forge.WithRefinement(func(in AvailabilityIn) error {
@@ -2042,10 +2087,10 @@ forge.WithApproval("reviewer", time.Now()) // governance sign-off
 
 ### Composing functions
 
-`forge.Compose` chains two functions `f1: A→B` and `f2: B→Out` into a single `Function[A, Out]`:
+`forge.Compose` chains two functions `f1: A→B` and `f2: B→Out` into a single `Function[A, Out]`. Like `forge.New`, it is infallible (panics only on empty name/version):
 
 ```go
-combined, err := forge.Compose("combined", "1.0.0", f1, f2,
+combined := forge.Compose("combined", "1.0.0", f1, f2,
     forge.WithDescription("chained pipeline"),
     forge.WithRefinement(func(a A) error { /* pre-compose constraint */ return nil }),
 )
@@ -2090,7 +2135,7 @@ Every error from `Apply` implements one of the forge error types, all inspectabl
 | `forge.RefinementError` | Cross-input `RefineFunc` or `WithRefinement` constraint failed |
 | `forge.ApplyError` | The compute function returned an error |
 | `forge.OutputError` | Output codec validation failed |
-| `forge.ConfigError` | Returned by `forge.New` / `forge.Compose` for invalid configuration |
+| `forge.ConfigError` | Returned by collection functions (`forge.Map`, `forge.Filter`, `forge.Reduce`, `forge.MapValues`, `forge.MapValuesK`) for invalid configuration |
 | `forge.CollectionElementError` | A slice collection op failed at element `.Index`; `.Function` names the operation |
 | `forge.CollectionKeyError` | A map collection op failed at key `.Key`; `.Function` names the operation |
 
@@ -2148,7 +2193,7 @@ mapToCelsius, err := forge.Map("mapToCelsius", "1.0.0", rawToCelsius,
 [`examples/oee-chain`](examples/oee-chain/main.go) demonstrates all three layers together:
 
 - `codex.MapCodecSafe` maps `float64` wire values to domain types (`PlannedTime`, `Downtime`, …)
-- `api/events.AddChannel` registers sensor reading + KPI result channels; generates AsyncAPI spec
+- `api/events.NewChannel(...).Register(b)` registers sensor reading + KPI result channels; generates AsyncAPI spec
 - `forge.Function` pipeline computes `availabilityCalc`, `performanceCalc`, `qualityCalc`, `oeeCalc`
 - `forge.Registry` generates pipeline YAML with inferred graph edges
 - `applyLogger` implements `stats.PipelineObserver` for per-Apply logging
@@ -2359,9 +2404,9 @@ go-codex/
 │   ├── internal/           # shared helpers (not public API)
 │   │   └── template.go     # ParseTemplateVars, BuildFromTemplate, StripTemplateVars — used by rest + events
 │   ├── rest/               # REST API builder: typed Decode/Encode + OpenAPI spec
-│   │   └── builder.go      # Builder, AddRoute[Req,Resp], AddSSERoute[Req,Event], AddServer, AddSchema, RouteHandle, SSERouteHandle, BuildPath
+│   │   └── builder.go      # Builder, Route[Req,Resp]/NewRoute, SSERoute[Req,Event]/NewSSERoute, AddServer, AddSchema, RouteHandle, SSERouteHandle, BuildPath
 │   └── events/             # Event channel builder: typed Decode/Encode + AsyncAPI spec
-│       └── builder.go      # Builder, AddChannel[T], AddServer, AddSchema, ChannelHandle, BuildTopic
+│       └── builder.go      # Builder, Channel[T]/NewChannel, AddServer, AddSchema, ChannelHandle, BuildTopic
 │
 ├── adapters/               # transport-specific adapters (wrap api/rest or api/events)
 │   ├── nethttp/            # net/http adapter for api/rest RouteHandles
@@ -2408,7 +2453,7 @@ go-codex/
     ├── adapters-chi/       # chi adapter: wiring api/rest to chi.Router
     ├── adapters-mqtt/      # Paho MQTT adapter: wiring api/events to Paho client; multi-format pub/sub
     ├── adapters-nethttp/   # net/http adapter: wiring api/rest to ServeMux; multi-format request bodies
-    ├── adapters-sse/       # SSE: AddSSERoute, SSEHandler, path codec, stats, OpenAPI spec
+    ├── adapters-sse/       # SSE: NewSSERoute/Register, SSEHandler, path codec, stats, OpenAPI spec
     ├── api-events/         # Event channel builder: typed helpers + AsyncAPI spec
     ├── api-rest/           # REST API builder: typed helpers + OpenAPI spec
     ├── cli-config/         # CLI tool config: TOML file + env var overlay with codecs

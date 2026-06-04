@@ -422,7 +422,7 @@ func main() {
 	locationCodec := codex.String().Refine(validate.NonEmptyString)
 	sessionCodec := codex.String().Refine(validate.MinLen(8))
 
-	createUserRoute, err := rest.AddRoute[CreateUserReq, User](b, "POST", "/users",
+	createUserRoute, err := rest.NewRoute[CreateUserReq, User]("POST", "/users",
 		createUserReqCodec, userCodec,
 		rest.RouteMeta{
 			OperationID:    "createUser",
@@ -447,7 +447,7 @@ func main() {
 			Required:    true,
 			Codec:       &sessionCodec,
 		},
-	)
+	).Register(b)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "route registration failed: %v\n", err)
 		os.Exit(1)
@@ -461,7 +461,7 @@ func main() {
 	)
 
 	uuidCodec := codex.String().Refine(validate.UUID)
-	getUserRoute, err := rest.AddRoute[emptyReq, User](b, "GET", "/users/{id}",
+	getUserRoute, err := rest.NewRoute[emptyReq, User]("GET", "/users/{id}",
 		emptyReqCodec, userCodec,
 		rest.RouteMeta{
 			OperationID:    "getUser",
@@ -475,7 +475,7 @@ func main() {
 			Description: "User UUID",
 			Codec:       &uuidCodec,
 		},
-	)
+	).Register(b)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "route registration failed: %v\n", err)
 		os.Exit(1)
@@ -486,7 +486,7 @@ func main() {
 	// adapter (auto-called before the handler). The schema flows into the OpenAPI
 	// spec automatically. ?search has no codec — it is documented only.
 	qPageCodec := codex.String().Refine(validate.NonNegativeIntString)
-	listUsersRoute, err := rest.AddRoute[emptyReq, PagedUsersResp](b, "GET", "/users",
+	listUsersRoute, err := rest.NewRoute[emptyReq, PagedUsersResp]("GET", "/users",
 		emptyReqCodec, pagedUsersRespCodec,
 		rest.RouteMeta{
 			OperationID: "listUsers",
@@ -501,7 +501,7 @@ func main() {
 			Name:        "search",
 			Description: "Filter by name prefix (no validation)",
 		},
-	)
+	).Register(b)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "route registration failed: %v\n", err)
 		os.Exit(1)
@@ -514,7 +514,7 @@ func main() {
 	// before the handler runs — no manual extraction needed.
 	profileSessionCodec := codex.String().Refine(validate.NonEmptyString)
 	profileRequestIDCodec := codex.String().Refine(validate.UUID)
-	profileRoute, err := rest.AddRoute[emptyReq, User](b, "GET", "/profile",
+	profileRoute, err := rest.NewRoute[emptyReq, User]("GET", "/profile",
 		emptyReqCodec, userCodec,
 		rest.RouteMeta{
 			OperationID: "getProfile",
@@ -532,7 +532,7 @@ func main() {
 			Required:    true,
 			Codec:       &profileRequestIDCodec,
 		},
-	)
+	).Register(b)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "route registration failed: %v\n", err)
 		os.Exit(1)

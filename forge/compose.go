@@ -10,18 +10,20 @@ package forge
 // Pass WithRefinement to add a pipeline-level cross-input constraint on the composed
 // function's input (type A). It runs after f1's input codec validation and before f1.
 //
-// celsius2kelvin := forge.Must(forge.Compose("c2k", "1.0.0", celsius2centi, centi2kelvin))
+// Compose panics if name or version is empty — these are programming errors.
+//
+//	celsius2kelvin := forge.Compose("c2k", "1.0.0", celsius2centi, centi2kelvin)
 func Compose[A, B, Out any](
 	name, version string,
 	f1 *Function[A, B],
 	f2 *Function[B, Out],
 	opts ...FunctionOption,
-) (*Function[A, Out], error) {
+) *Function[A, Out] {
 	if name == "" {
-		return nil, ConfigError{Func: "forge.Compose", Field: "name"}
+		panic("forge.Compose: name must not be empty")
 	}
 	if version == "" {
-		return nil, ConfigError{Func: "forge.Compose", Field: "version"}
+		panic("forge.Compose: version must not be empty")
 	}
 	cfg := applyFunctionOptions(opts)
 	inputs := f1.Spec.Inputs
@@ -55,5 +57,5 @@ func Compose[A, B, Out any](
 		output:     f2.output,
 		apply:      composed,
 		refinement: refinement,
-	}, nil
+	}
 }

@@ -7,11 +7,11 @@
 // receive the rendered component; API clients that send Accept: application/json
 // receive JSON — all from the same handler and the same route definition.
 //
-//	route, _ := rest.AddRoute(b, "GET", "/articles", reqCodec, propsCodec,
-//	    rest.RouteConfig{...},
+//	route, _ := rest.NewRoute[Req, Props]("GET", "/articles", reqCodec, propsCodec,
+//	    rest.RouteMeta{},
 //	    adapttempl.Format(propsCodec, ArticleList),  // Accept: text/html
 //	    format.JSON(propsCodec),                      // Accept: application/json
-//	)
+//	).Register(b)
 //
 //	// Same handler, same route — nethttp handles both formats:
 //	nethttp.Register(mux, route, func(ctx context.Context, req SearchReq) (Props, error) {

@@ -66,10 +66,10 @@ func pageComponent(p pageProps) atempl.Component {
 func buildRoute(t *testing.T) *rest.RouteHandle[pageReq, pageProps] {
 	t.Helper()
 	b := rest.NewBuilder(rest.Info{Title: "Test", Version: "1.0.0"})
-	route, err := rest.AddRoute[pageReq, pageProps](b, "GET", "/page",
+	route, err := rest.NewRoute[pageReq, pageProps]("GET", "/page",
 		pageReqCodec, pagePropsCodec,
 		rest.RouteMeta{OperationID: "page"},
-	)
+	).Register(b)
 	if err != nil {
 		t.Fatalf("AddRoute: %v", err)
 	}
@@ -237,10 +237,10 @@ func TestFormat_SameHandlerServesHTMLAndJSON(t *testing.T) {
 
 func TestStreamingFormat_HTMLResponse(t *testing.T) {
 	b := rest.NewBuilder(rest.Info{Title: "Test", Version: "1.0.0"})
-	route, err := rest.AddRoute[pageReq, pageProps](b, "GET", "/page",
+	route, err := rest.NewRoute[pageReq, pageProps]("GET", "/page",
 		pageReqCodec, pagePropsCodec,
 		rest.RouteMeta{OperationID: "streamPage"},
-	)
+	).Register(b)
 	if err != nil {
 		t.Fatalf("AddRoute: %v", err)
 	}
@@ -264,10 +264,10 @@ func TestStreamingFormat_HTMLResponse(t *testing.T) {
 
 func TestStreamingFormat_ContentTypeHeader(t *testing.T) {
 	b := rest.NewBuilder(rest.Info{Title: "Test", Version: "1.0.0"})
-	route, err := rest.AddRoute[pageReq, pageProps](b, "GET", "/page",
+	route, err := rest.NewRoute[pageReq, pageProps]("GET", "/page",
 		pageReqCodec, pagePropsCodec,
 		rest.RouteMeta{OperationID: "streamPage"},
-	)
+	).Register(b)
 	if err != nil {
 		t.Fatalf("AddRoute: %v", err)
 	}
@@ -291,10 +291,10 @@ func TestStreamingFormat_ContentTypeHeader(t *testing.T) {
 
 func TestStreamingFormat_InvalidPropsReturn500(t *testing.T) {
 	b := rest.NewBuilder(rest.Info{Title: "Test", Version: "1.0.0"})
-	route, err := rest.AddRoute[pageReq, pageProps](b, "GET", "/page",
+	route, err := rest.NewRoute[pageReq, pageProps]("GET", "/page",
 		pageReqCodec, pagePropsCodec,
 		rest.RouteMeta{OperationID: "streamPageInvalid"},
-	)
+	).Register(b)
 	if err != nil {
 		t.Fatalf("AddRoute: %v", err)
 	}

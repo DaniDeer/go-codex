@@ -7,7 +7,7 @@
 // Typical usage:
 //
 //	b := rest.NewBuilder(rest.Info{Title: "User API", Version: "1.0.0"})
-//	createUser := rest.AddRoute[CreateReq, User](b, "POST", "/users", ...)
+//	createUser, _ := rest.NewRoute[CreateReq, User]("POST", "/users", ...).Register(b)
 //
 //	mux := http.NewServeMux()
 //	nethttp.Register(mux, createUser, func(ctx context.Context, req CreateReq) (User, error) {

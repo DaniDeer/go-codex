@@ -125,12 +125,11 @@ func buildEventChannel() *events.ChannelHandle[RawReading] {
 		},
 		events.WithTopicConstraints(validate.MQTTPublishTopic),
 	)
-	ch, err := events.AddChannel[RawReading](b,
-		"sensors/{sensorId}/readings",
+	ch, err := events.NewChannel[RawReading]("sensors/{sensorId}/readings",
 		rawReadingCodec,
 		events.ChannelMeta{Description: "Raw temperature readings from field sensors."},
 		events.Subscribe{Summary: "Receive raw temperature readings"},
-	)
+	).Register(b)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "events.AddChannel: %v\n", err)
 		os.Exit(1)
@@ -148,7 +147,7 @@ func buildEventChannel() *events.ChannelHandle[RawReading] {
 // rawToCelsius converts one RawReading to a validated Celsius value.
 // This is the scalar Function lifted by forge.Map below.
 func buildRawToCelsius() *forge.Function[RawReading, Celsius] {
-	fn, err := forge.New(
+	fn := forge.NewFunction(
 		"rawToCelsius", "1.0.0",
 		"reading", rawReadingCodec,
 		"celsius", codex.MapCodecSafe(celsiusCodec,
@@ -161,30 +160,21 @@ func buildRawToCelsius() *forge.Function[RawReading, Celsius] {
 		forge.WithDescription("Maps a raw sensor reading to a validated Celsius value."),
 		forge.WithAuthor("Sensor Engineering"),
 	)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "forge.New rawToCelsius: %v\n", err)
-		os.Exit(1)
-	}
 	return fn
 }
 
 func buildFilterWarmUp(rawCodec codex.Codec[RawReading]) *forge.Function[[]RawReading, []RawReading] {
-	fn, err := forge.Filter(
+	return forge.Filter(
 		"filterWarmUp", "1.0.0",
 		rawCodec,
 		func(r RawReading) bool { return !r.WarmUp },
 		forge.WithDescription("Discards readings taken during sensor warm-up phase."),
 		forge.WithAuthor("Sensor Engineering"),
 	)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "forge.Filter filterWarmUp: %v\n", err)
-		os.Exit(1)
-	}
-	return fn
 }
 
 func buildMapToCelsius(rawToCelsius *forge.Function[RawReading, Celsius]) *forge.Function[[]RawReading, []Celsius] {
-	fn, err := forge.Map(
+	return forge.Map(
 		"mapToCelsius", "1.0.0",
 		rawToCelsius,
 		forge.WithDescription("Applies rawToCelsius over a batch of readings."),
@@ -195,15 +185,10 @@ func buildMapToCelsius(rawToCelsius *forge.Function[RawReading, Celsius]) *forge
 			return nil
 		}),
 	)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "forge.Map mapToCelsius: %v\n", err)
-		os.Exit(1)
-	}
-	return fn
 }
 
 func buildReduceSummary() *forge.Function[[]Celsius, BatchSummary] {
-	fn, err := forge.Reduce(
+	return forge.Reduce(
 		"reduceSummary", "1.0.0",
 		codex.MapCodecSafe(celsiusCodec,
 			func(c float64) Celsius { return Celsius(c) },
@@ -227,11 +212,6 @@ func buildReduceSummary() *forge.Function[[]Celsius, BatchSummary] {
 		forge.WithAuthor("Analytics Team"),
 		forge.WithApproval("Data Engineering Lead", "2024-06-01"),
 	)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "forge.Reduce reduceSummary: %v\n", err)
-		os.Exit(1)
-	}
-	return fn
 }
 
 // buildPerSensorSummary composes Filter → Map → Reduce into a Compose chain,
@@ -245,30 +225,21 @@ func buildPerSensorSummary(
 	reduceFn *forge.Function[[]Celsius, BatchSummary],
 ) *forge.Function[map[string][]RawReading, map[string]BatchSummary] {
 	// Compose mapToCelsius → reduceSummary: []RawReading → BatchSummary
-	singleSensorPipeline, err := forge.Compose(
+	singleSensorPipeline := forge.Compose(
 		"singleSensorPipeline", "1.0.0",
 		mapFn, reduceFn,
 		forge.WithDescription("Full pipeline for one sensor: map readings to Celsius, then summarise."),
 	)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "forge.Compose: %v\n", err)
-		os.Exit(1)
-	}
 
 	// MapValuesK: apply singleSensorPipeline over map[string][]RawReading,
 	// validating every key against sensorIDCodec (<sensor>-<digits> pattern).
-	fn, err := forge.MapValuesK(
+	return forge.MapValuesK(
 		"perSensorSummary", "1.0.0",
 		sensorIDCodec,
 		singleSensorPipeline,
 		forge.WithDescription("Applies the single-sensor pipeline to every validated sensor key."),
 		forge.WithAuthor("Analytics Team"),
 	)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "forge.MapValuesK: %v\n", err)
-		os.Exit(1)
-	}
-	return fn
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

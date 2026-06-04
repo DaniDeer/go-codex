@@ -55,7 +55,7 @@ func WithApproval(approvedBy, approvedAt string) FunctionOption {
 // codec via codex.Refine — prefer that approach when the constraint is a property of
 // the domain type itself rather than the pipeline definition.
 //
-// availCalc, _ := forge.New("availabilityCalc", "1.0.0",
+// availCalc := forge.NewFunction("availabilityCalc", "1.0.0",
 //
 //	"inputs", availInCodec,
 //	"availability", availabilityCodec,

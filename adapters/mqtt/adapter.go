@@ -7,8 +7,8 @@
 // Typical usage:
 //
 //	b := events.NewBuilder(events.Info{Title: "My Events", Version: "1.0.0"})
-//	userCreated := events.AddChannel[UserCreated](b, "user/created", codec,
-//	    events.ChannelConfig{Subscribe: &events.OperationConfig{...}})
+//	userCreated, _ := events.NewChannel[UserCreated]("user/created", codec,
+//	    events.ChannelMeta{}, events.Subscribe{}).Register(b)
 //
 //	// Wire to Paho on connect (JSON, the default):
 //	client.Subscribe(userCreated.Topic, 1,

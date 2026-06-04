@@ -31,7 +31,7 @@
 //
 // For single-value inputs, In is a plain domain type:
 //
-//	gradeCalc, _ := forge.New("gradeCalc", "1.0.0",
+//	gradeCalc := forge.NewFunction("gradeCalc", "1.0.0",
 //	    "oee", oeeCodec,
 //	    "grade", gradeCodec,
 //	    func(oee OEE) (Grade, error) { ... },
@@ -51,7 +51,7 @@
 //	    codex.RequiredField("performance",  performanceCodec, ...),
 //	    codex.RequiredField("quality",      qualityCodec, ...),
 //	)
-//	oeeCalc, _ := forge.New("oeeCalc", "1.0.0",
+//	oeeCalc := forge.NewFunction("oeeCalc", "1.0.0",
 //	    "oeeInputs", oeeInCodec,
 //	    "oee", oeeCodec,
 //	    func(in OEEIn) (OEE, error) {

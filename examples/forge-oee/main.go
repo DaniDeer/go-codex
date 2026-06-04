@@ -210,7 +210,7 @@ func main() {
 			func(v *AvailabilityIn, f Downtime) { v.Downtime = f },
 		),
 	)
-	simpleAvailCalc, err := forge.New("availabilityCalcSimple", "1.0.0",
+	simpleAvailCalc := forge.NewFunction("availabilityCalcSimple", "1.0.0",
 		"availabilityIn", simpleAvailInCodec,
 		"availability", availabilityCodec,
 		func(in AvailabilityIn) (Availability, error) {
@@ -227,7 +227,6 @@ func main() {
 			return nil
 		}),
 	)
-	must(err, "simpleAvailCalc")
 
 	av0, err := simpleAvailCalc.Apply(AvailabilityIn{PlannedTime: 8, Downtime: 1})
 	must(err, "simpleAvailCalc.Apply")
@@ -252,7 +251,7 @@ func main() {
 	fmt.Println("=== Governed pipeline: codec RefineFunc + governance metadata ===")
 	fmt.Println()
 
-	availabilityCalc, err := forge.New("availabilityCalc", "1.0.0",
+	availabilityCalc := forge.NewFunction("availabilityCalc", "1.0.0",
 		"availabilityIn", availabilityInCodec, // RefineFunc is on the codec
 		"availability", availabilityCodec,
 		func(in AvailabilityIn) (Availability, error) {
@@ -262,7 +261,6 @@ func main() {
 		forge.WithAuthor("OT Engineering"),
 		forge.WithApproval("Plant Manager", "2024-03-01"),
 	)
-	must(err, "availabilityCalc")
 
 	av, err := availabilityCalc.Apply(AvailabilityIn{PlannedTime: 8, Downtime: 1})
 	must(err, "availabilityCalc.Apply")
@@ -279,7 +277,7 @@ func main() {
 	// -----------------------------------------------------------------------
 	// performanceCalc: Function[PerformanceIn, Performance]
 	// -----------------------------------------------------------------------
-	performanceCalc, err := forge.New("performanceCalc", "1.0.0",
+	performanceCalc := forge.NewFunction("performanceCalc", "1.0.0",
 		"performanceIn", performanceInCodec,
 		"performance", performanceCodec,
 		func(in PerformanceIn) (Performance, error) {
@@ -293,7 +291,6 @@ func main() {
 		forge.WithAuthor("OT Engineering"),
 		forge.WithApproval("Plant Manager", "2024-03-01"),
 	)
-	must(err, "performanceCalc")
 
 	pe, err := performanceCalc.Apply(PerformanceIn{PlannedCycles: 400, ActualCycles: 360})
 	must(err, "performanceCalc.Apply")
@@ -306,7 +303,7 @@ func main() {
 	// performanceCalc, and a quality measurement into a single struct input.
 	// Each field is re-validated by the oeeInCodec before computing the product.
 	// -----------------------------------------------------------------------
-	oeeCalc, err := forge.New("oeeCalc", "1.0.0",
+	oeeCalc := forge.NewFunction("oeeCalc", "1.0.0",
 		"oeeIn", oeeInCodec,
 		"oee", oeeCodec,
 		func(in OEEIn) (OEE, error) {
@@ -316,7 +313,6 @@ func main() {
 		forge.WithAuthor("OT Engineering"),
 		forge.WithApproval("Quality Manager", "2024-03-01"),
 	)
-	must(err, "oeeCalc")
 
 	fmt.Println("=== Sum type composition: OEEIn assembles upstream KPI outputs ===")
 	fmt.Println()
@@ -377,7 +373,7 @@ func main() {
 	// availabilityOnlyOEE: Availability → OEE (perfect perf + quality assumed)
 	// Compose → Function[Availability, EfficiencyGrade]
 	// -----------------------------------------------------------------------
-	gradeCalc, err := forge.New("gradeCalc", "1.0.0",
+	gradeCalc := forge.NewFunction("gradeCalc", "1.0.0",
 		"oee", oeeCodec,
 		"grade", gradeCodec,
 		func(o OEE) (EfficiencyGrade, error) {
@@ -394,23 +390,20 @@ func main() {
 		forge.WithAuthor("OT Engineering"),
 		forge.WithApproval("Quality Manager", "2024-03-01"),
 	)
-	must(err, "gradeCalc")
 
-	availabilityOnlyOEE, err := forge.New("availabilityOnlyOEE", "1.0.0",
+	availabilityOnlyOEE := forge.NewFunction("availabilityOnlyOEE", "1.0.0",
 		"availability", availabilityCodec,
 		"oee", oeeCodec,
 		func(a Availability) (OEE, error) { return OEE(float64(a)), nil },
 		forge.WithDescription("Simplified OEE assuming perfect performance and quality."),
 		forge.WithAuthor("OT Engineering"),
 	)
-	must(err, "availabilityOnlyOEE")
 
-	shiftGrade, err := forge.Compose("shiftGradeFromAvailability", "1.0.0",
+	shiftGrade := forge.Compose("shiftGradeFromAvailability", "1.0.0",
 		availabilityOnlyOEE, gradeCalc,
 		forge.WithDescription("Rates a shift by availability alone (perf=1, quality=1)."),
 		forge.WithAuthor("OT Engineering"),
 	)
-	must(err, "forge.Compose")
 
 	fmt.Println("=== Compose: shiftGradeFromAvailability ===")
 	fmt.Println()

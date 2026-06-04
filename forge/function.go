@@ -24,18 +24,6 @@ func passOrWrapApply(fnName string, err error) error {
 	return ApplyError{Function: fnName, Err: err}
 }
 
-// Must unwraps a (T, error) pair, panicking if err is non-nil.
-//
-// Use at program startup where a construction error indicates a programming mistake:
-//
-// availCalc := forge.Must(forge.New("availabilityCalc", "1.0.0", ...))
-func Must[T any](v T, err error) T {
-	if err != nil {
-		panic("forge: " + err.Error())
-	}
-	return v
-}
-
 // Function is a validated, signed derivation function with a single generic input In
 // and output Out.
 //
@@ -62,55 +50,52 @@ type Function[In, Out any] struct {
 	observer   stats.PipelineObserver
 }
 
-// New creates a Function and computes its contract hash.
-// Returns a ConfigError when name or version is empty.
+// NewFunction creates a [Function] and computes its contract hash.
+// Panics if name or version is empty — these are programming errors detected at
+// startup, not runtime conditions.
+//
+// NewFunction is a free function (not a method) because Go requires type parameters
+// to appear on free functions, not on method receivers.
 //
 // For single-value inputs pass any scalar codec directly:
 //
-// gradeCalc, _ := forge.New("gradeCalc", "1.0.0",
-//
-//	"oee", oeeCodec,
-//	"grade", gradeCodec,
-//	func(oee OEE) (Grade, error) { ... },
-//
-// )
+//	gradeCalc := forge.NewFunction("gradeCalc", "1.0.0",
+//	    "oee", oeeCodec,
+//	    "grade", gradeCodec,
+//	    func(oee OEE) (Grade, error) { ... },
+//	)
 //
 // For multi-input computations, define an input struct and a codex.Struct codec.
 // Cross-field constraints belong on the struct codec via codex.Refine; use
 // WithRefinement for pipeline-level constraints:
 //
 //	type AvailabilityIn struct {
-//	   PlannedTime PlannedTime
-//	   Downtime    Downtime
+//	    PlannedTime PlannedTime
+//	    Downtime    Downtime
 //	}
-//
-// availInCodec := codex.Struct[AvailabilityIn](
-//
-//	codex.RequiredField("plannedTime", ptCodec, ...),
-//	codex.RequiredField("downtime",    dtCodec, ...),
-//
-// )
-// availCalc, _ := forge.New("availabilityCalc", "1.0.0",
-//
-//	"inputs", availInCodec,
-//	"availability", availabilityCodec,
-//	func(in AvailabilityIn) (Availability, error) { ... },
-//	forge.WithRefinement(func(in AvailabilityIn) error { ... }),
-//	forge.WithDescription("Computes availability as (plannedTime - downtime) / plannedTime."),
-//
-// )
-func New[In, Out any](
+//	availInCodec := codex.Struct[AvailabilityIn](
+//	    codex.RequiredField("plannedTime", ptCodec, ...),
+//	    codex.RequiredField("downtime",    dtCodec, ...),
+//	)
+//	availCalc := forge.NewFunction("availabilityCalc", "1.0.0",
+//	    "inputs", availInCodec,
+//	    "availability", availabilityCodec,
+//	    func(in AvailabilityIn) (Availability, error) { ... },
+//	    forge.WithRefinement(func(in AvailabilityIn) error { ... }),
+//	    forge.WithDescription("Computes availability as (plannedTime - downtime) / plannedTime."),
+//	)
+func NewFunction[In, Out any](
 	name, version string,
 	inputName string, input codex.Codec[In],
 	outputName string, output codex.Codec[Out],
 	apply func(In) (Out, error),
 	opts ...FunctionOption,
-) (*Function[In, Out], error) {
+) *Function[In, Out] {
 	if name == "" {
-		return nil, ConfigError{Func: "forge.New", Field: "name"}
+		panic("forge.NewFunction: name must not be empty")
 	}
 	if version == "" {
-		return nil, ConfigError{Func: "forge.New", Field: "version"}
+		panic("forge.NewFunction: version must not be empty")
 	}
 	cfg := applyFunctionOptions(opts)
 	inputs := inputSpecs(inputName, input.Schema)
@@ -137,7 +122,7 @@ func New[In, Out any](
 		output:     output,
 		apply:      apply,
 		refinement: refinement,
-	}, nil
+	}
 }
 
 // inputSpecs builds the Inputs slice for a FunctionSpec.
