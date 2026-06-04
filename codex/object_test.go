@@ -140,7 +140,7 @@ func TestStruct_RoundTrip(t *testing.T) {
 }
 
 func TestRequiredField_SetsRequired(t *testing.T) {
-	f := codex.RequiredField[point, int]("x", codex.Int(),
+	f := codex.RequiredField("x", codex.Int(),
 		func(p point) int { return p.X },
 		func(p *point, v int) { p.X = v },
 	)
@@ -153,7 +153,7 @@ func TestRequiredField_SetsRequired(t *testing.T) {
 }
 
 func TestOptionalField_NotRequired(t *testing.T) {
-	f := codex.OptionalField[point, int]("y", codex.Int(),
+	f := codex.OptionalField("y", codex.Int(),
 		func(p point) int { return p.Y },
 		func(p *point, v int) { p.Y = v },
 	)
@@ -164,11 +164,11 @@ func TestOptionalField_NotRequired(t *testing.T) {
 
 func TestRequiredField_RoundTrip(t *testing.T) {
 	c := codex.Struct[point](
-		codex.RequiredField[point, int]("x", codex.Int(),
+		codex.RequiredField("x", codex.Int(),
 			func(p point) int { return p.X },
 			func(p *point, v int) { p.X = v },
 		),
-		codex.OptionalField[point, int]("y", codex.Int(),
+		codex.OptionalField("y", codex.Int(),
 			func(p point) int { return p.Y },
 			func(p *point, v int) { p.Y = v },
 		),
@@ -191,11 +191,11 @@ func TestStruct_DecodeMultipleErrors(t *testing.T) {
 	// codec with 2 required fields
 	type pair struct{ A, B int }
 	c := codex.Struct[pair](
-		codex.RequiredField[pair, int]("a", codex.Int(),
+		codex.RequiredField("a", codex.Int(),
 			func(p pair) int { return p.A },
 			func(p *pair, v int) { p.A = v },
 		),
-		codex.RequiredField[pair, int]("b", codex.Int(),
+		codex.RequiredField("b", codex.Int(),
 			func(p pair) int { return p.B },
 			func(p *pair, v int) { p.B = v },
 		),
@@ -229,7 +229,7 @@ func TestStruct_DecodeMultipleErrors(t *testing.T) {
 func TestDefaultField_UsesDefaultWhenAbsent(t *testing.T) {
 	type Config struct{ LogLevel string }
 	c := codex.Struct[Config](
-		codex.DefaultField[Config, string]("log_level", codex.String(), "info",
+		codex.DefaultField("log_level", codex.String(), "info",
 			func(cfg Config) string { return cfg.LogLevel },
 			func(cfg *Config, v string) { cfg.LogLevel = v },
 		),
@@ -247,7 +247,7 @@ func TestDefaultField_UsesDefaultWhenAbsent(t *testing.T) {
 func TestDefaultField_PresentValueOverridesDefault(t *testing.T) {
 	type Config struct{ LogLevel string }
 	c := codex.Struct[Config](
-		codex.DefaultField[Config, string]("log_level", codex.String(), "info",
+		codex.DefaultField("log_level", codex.String(), "info",
 			func(cfg Config) string { return cfg.LogLevel },
 			func(cfg *Config, v string) { cfg.LogLevel = v },
 		),
@@ -265,7 +265,7 @@ func TestDefaultField_PresentValueOverridesDefault(t *testing.T) {
 func TestDefaultField_ZeroValueDefault(t *testing.T) {
 	type Config struct{ Timeout int }
 	c := codex.Struct[Config](
-		codex.DefaultField[Config, int]("timeout", codex.Int(), 0,
+		codex.DefaultField("timeout", codex.Int(), 0,
 			func(cfg Config) int { return cfg.Timeout },
 			func(cfg *Config, v int) { cfg.Timeout = v },
 		),
@@ -283,7 +283,7 @@ func TestDefaultField_ZeroValueDefault(t *testing.T) {
 func TestDefaultField_SchemaContainsDefault(t *testing.T) {
 	type Config struct{ LogLevel string }
 	c := codex.Struct[Config](
-		codex.DefaultField[Config, string]("log_level", codex.String(), "info",
+		codex.DefaultField("log_level", codex.String(), "info",
 			func(cfg Config) string { return cfg.LogLevel },
 			func(cfg *Config, v string) { cfg.LogLevel = v },
 		),
@@ -300,7 +300,7 @@ func TestDefaultField_SchemaContainsDefault(t *testing.T) {
 
 func TestDefaultField_RequiredIsFalse(t *testing.T) {
 	type Config struct{ X int }
-	f := codex.DefaultField[Config, int]("x", codex.Int(), 42,
+	f := codex.DefaultField("x", codex.Int(), 42,
 		func(c Config) int { return c.X },
 		func(c *Config, v int) { c.X = v },
 	)
@@ -315,7 +315,7 @@ func TestStruct_Encode_CollectsAllFieldErrors(t *testing.T) {
 		Email string
 	}
 	c := codex.Struct[User](
-		codex.RequiredField[User, string]("name",
+		codex.RequiredField("name",
 			codex.String().Refine(codex.Constraint[string]{
 				Name:    "non-empty",
 				Check:   func(v string) bool { return v != "" },
@@ -324,7 +324,7 @@ func TestStruct_Encode_CollectsAllFieldErrors(t *testing.T) {
 			func(u User) string { return u.Name },
 			func(u *User, v string) { u.Name = v },
 		),
-		codex.RequiredField[User, string]("email",
+		codex.RequiredField("email",
 			codex.String().Refine(codex.Constraint[string]{
 				Name:    "has-at",
 				Check:   func(v string) bool { return strings.Contains(v, "@") },
@@ -352,7 +352,7 @@ func TestStruct_Encode_CollectsAllFieldErrors(t *testing.T) {
 func TestStruct_Encode_ValidValueSucceeds(t *testing.T) {
 	type User struct{ Name string }
 	c := codex.Struct[User](
-		codex.RequiredField[User, string]("name",
+		codex.RequiredField("name",
 			codex.String().Refine(codex.Constraint[string]{
 				Name:    "non-empty",
 				Check:   func(v string) bool { return v != "" },

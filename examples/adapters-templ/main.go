@@ -163,7 +163,7 @@ func main() {
 		fmt.Fprintln(os.Stderr, "route error:", err)
 		os.Exit(1)
 	}
-	articleRoute = articleRoute.WithResponseFormats(
+	articleRoute = articleRoute.WithFormats(
 		adapttempl.Format(ArticlePropsCodec, articleCard), // Accept: text/html
 		format.JSON(ArticlePropsCodec),                    // Accept: application/json
 	)

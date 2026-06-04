@@ -327,7 +327,7 @@ func (h *ChannelHandle[T]) ValidateTopicVars(vars map[string]string) error {
 // fmts[0].ContentType(). Calling WithFormats with no arguments clears both
 // Formats and the content-type override (restoring the AsyncAPI default).
 //
-// This mirrors [rest.RouteHandle.WithResponseFormats] for event channels.
+// This mirrors [rest.RouteHandle.WithFormats] for event channels.
 // Call it after [Channel.Register] to configure non-JSON payload serialisation:
 //
 //	ch = ch.WithFormats(format.YAML(measurementCodec))

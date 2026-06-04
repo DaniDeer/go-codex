@@ -130,11 +130,11 @@ type CreateUserReq struct {
 // createUserReqCodec describes what the HTTP client sends and enforces the
 // domain invariants on the incoming request.
 var createUserReqCodec = codex.Struct[CreateUserReq](
-	codex.RequiredField[CreateUserReq, string]("name", nameFieldCodec,
+	codex.RequiredField("name", nameFieldCodec,
 		func(r CreateUserReq) string { return r.Name },
 		func(r *CreateUserReq, v string) { r.Name = v },
 	),
-	codex.RequiredField[CreateUserReq, string]("email", emailFieldCodec,
+	codex.RequiredField("email", emailFieldCodec,
 		func(r CreateUserReq) string { return r.Email },
 		func(r *CreateUserReq, v string) { r.Email = v },
 	),
@@ -152,16 +152,16 @@ type UserRecord struct {
 // userRecordCodec describes the SQL model. The store uses this codec to
 // encode records for persistence and decode rows on retrieval.
 var userRecordCodec = codex.Struct[UserRecord](
-	codex.RequiredField[UserRecord, string]("id",
+	codex.RequiredField("id",
 		codex.String().Refine(validate.UUID).WithDescription("Primary key."),
 		func(r UserRecord) string { return r.ID },
 		func(r *UserRecord, v string) { r.ID = v },
 	),
-	codex.RequiredField[UserRecord, string]("name", nameFieldCodec,
+	codex.RequiredField("name", nameFieldCodec,
 		func(r UserRecord) string { return r.Name },
 		func(r *UserRecord, v string) { r.Name = v },
 	),
-	codex.RequiredField[UserRecord, string]("email", emailFieldCodec,
+	codex.RequiredField("email", emailFieldCodec,
 		func(r UserRecord) string { return r.Email },
 		func(r *UserRecord, v string) { r.Email = v },
 	),
@@ -178,16 +178,16 @@ type User struct {
 
 // userCodec describes what the HTTP client receives.
 var userCodec = codex.Struct[User](
-	codex.OptionalField[User, string]("id",
+	codex.OptionalField("id",
 		codex.String().Refine(validate.UUID).WithDescription("User UUID."),
 		func(u User) string { return u.ID },
 		func(u *User, v string) { u.ID = v },
 	),
-	codex.OptionalField[User, string]("name", nameFieldCodec,
+	codex.OptionalField("name", nameFieldCodec,
 		func(u User) string { return u.Name },
 		func(u *User, v string) { u.Name = v },
 	),
-	codex.OptionalField[User, string]("email", emailFieldCodec,
+	codex.OptionalField("email", emailFieldCodec,
 		func(u User) string { return u.Email },
 		func(u *User, v string) { u.Email = v },
 	),
@@ -207,12 +207,12 @@ type PagedUsersResp struct {
 
 // pagedUsersRespCodec describes the paginated response.
 var pagedUsersRespCodec = codex.Struct[PagedUsersResp](
-	codex.RequiredField[PagedUsersResp, int]("page",
+	codex.RequiredField("page",
 		codex.Int().WithDescription("Current page number."),
 		func(r PagedUsersResp) int { return r.Page },
 		func(r *PagedUsersResp, v int) { r.Page = v },
 	),
-	codex.OptionalField[PagedUsersResp, string]("search",
+	codex.OptionalField("search",
 		codex.String().WithDescription("Active name filter."),
 		func(r PagedUsersResp) string { return r.Search },
 		func(r *PagedUsersResp, v string) { r.Search = v },
@@ -403,7 +403,7 @@ func main() {
 		fmt.Fprintf(os.Stderr, "route registration failed: %v\n", err)
 		os.Exit(1)
 	}
-	createUserRoute = createUserRoute.WithResponseFormats(
+	createUserRoute = createUserRoute.WithFormats(
 		format.JSON(userCodec),
 		format.YAML(userCodec),
 	)
@@ -432,7 +432,7 @@ func main() {
 		fmt.Fprintf(os.Stderr, "route registration failed: %v\n", err)
 		os.Exit(1)
 	}
-	getUserRoute = getUserRoute.WithResponseFormats(
+	getUserRoute = getUserRoute.WithFormats(
 		format.JSON(userCodec),
 		format.YAML(userCodec),
 	)
@@ -458,7 +458,7 @@ func main() {
 		fmt.Fprintf(os.Stderr, "route registration failed: %v\n", err)
 		os.Exit(1)
 	}
-	listUsersRoute = listUsersRoute.WithResponseFormats(
+	listUsersRoute = listUsersRoute.WithFormats(
 		format.JSON(pagedUsersRespCodec),
 	)
 
@@ -487,7 +487,7 @@ func main() {
 		fmt.Fprintf(os.Stderr, "route registration failed: %v\n", err)
 		os.Exit(1)
 	}
-	profileRoute = profileRoute.WithResponseFormats(
+	profileRoute = profileRoute.WithFormats(
 		format.JSON(userCodec),
 	)
 

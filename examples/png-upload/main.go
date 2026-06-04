@@ -9,7 +9,7 @@
 //
 // The example is transport-agnostic: it does not import net/http or any HTTP
 // framework. The same RouteHandle helpers (BuildPath, ValidateCookies,
-// WithRequestFormats, WithResponseFormats) work unchanged with net/http, Chi,
+// WithRequestFormats, WithFormats) work unchanged with net/http, Chi,
 // Gin, or Echo.
 //
 // Run with: go run ./examples/png-upload
@@ -109,17 +109,17 @@ var sessionTokenCodec = codex.String().
 
 // imageMetaCodec encodes the JSON response for the upload route.
 var imageMetaCodec = codex.Struct[ImageMeta](
-	codex.RequiredField[ImageMeta, string]("id",
+	codex.RequiredField("id",
 		codex.String().Refine(validate.UUID).WithDescription("Image resource ID (UUID)."),
 		func(m ImageMeta) string { return m.ID },
 		func(m *ImageMeta, v string) { m.ID = v },
 	),
-	codex.RequiredField[ImageMeta, int]("size_bytes",
+	codex.RequiredField("size_bytes",
 		codex.Int().WithDescription("Size of the uploaded image in bytes."),
 		func(m ImageMeta) int { return m.SizeBytes },
 		func(m *ImageMeta, v int) { m.SizeBytes = v },
 	),
-	codex.RequiredField[ImageMeta, string]("content_type",
+	codex.RequiredField("content_type",
 		codex.String().WithDescription("MIME type of the stored image."),
 		func(m ImageMeta) string { return m.ContentType },
 		func(m *ImageMeta, v string) { m.ContentType = v },
@@ -128,7 +128,7 @@ var imageMetaCodec = codex.Struct[ImageMeta](
 
 // downloadRequestCodec decodes and validates the JSON download request body.
 var downloadRequestCodec = codex.Struct[DownloadImageRequest](
-	codex.RequiredField[DownloadImageRequest, string]("quality",
+	codex.RequiredField("quality",
 		codex.String().Refine(validate.OneOf("original", "thumbnail")).
 			WithDescription(`Requested image quality. "original" returns the full-resolution PNG; "thumbnail" returns a downscaled version.`),
 		func(r DownloadImageRequest) string { return r.Quality },
@@ -188,7 +188,7 @@ func main() {
 	// POST /images/{id}/download — download a PNG image.
 	//
 	// The request body is JSON (quality selector); the response is a raw PNG
-	// binary. WithResponseFormats(pngFormat) puts pngFormat on the response
+	// binary. WithFormats(pngFormat) puts pngFormat on the response
 	// side: the adapter negotiates Accept: image/png and calls pngFormat.Marshal
 	// to encode the handler's []byte return value before writing it to the client.
 	//
@@ -228,7 +228,7 @@ func main() {
 
 	// Register PNG as the produced response format.
 	// The adapter picks this format when the client sends Accept: image/png.
-	downloadImage.WithResponseFormats(pngFormat)
+	downloadImage.WithFormats(pngFormat)
 
 	// --- Transport-agnostic demo (no net/http required) ---
 

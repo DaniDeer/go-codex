@@ -63,7 +63,7 @@ var configCodec = codex.Struct[AppConfig](
 	codex.RequiredField("port", codex.Int().Refine(validate.RangeInt(1, 65535)).WithDescription("Server port (1–65535)."), func(c AppConfig) int { return c.Port }, func(c *AppConfig, v int) { c.Port = v }),
 	// DefaultField: when APP_LOG_LEVEL is absent, "info" is used automatically.
 	// The default value is also reflected in the generated JSON Schema.
-	codex.DefaultField[AppConfig, string](
+	codex.DefaultField(
 		"log_level",
 		codex.String().Refine(validate.OneOf("debug", "info", "warn", "error")).WithDescription("Minimum log severity."),
 		"info",

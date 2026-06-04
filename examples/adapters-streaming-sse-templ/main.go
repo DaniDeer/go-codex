@@ -209,14 +209,14 @@ func main() {
 		fmt.Fprintln(os.Stderr, "route error:", err)
 		os.Exit(1)
 	}
-	dashRoute = dashRoute.WithResponseFormats(
+	dashRoute = dashRoute.WithFormats(
 		adapttempl.StreamingFormat(dashPropsCodec, dashboardPage), // chunked HTML
 		format.JSON(dashPropsCodec),                               // JSON fallback
 	)
 
 	// ── Route 2: SSE with HTML fragment events ────────────────────────────────
 	//
-	// rest.AddSSERoute registers an SSE endpoint. Setting EventFormats to use
+	// rest.AddSSERoute registers an SSE endpoint. Setting Formats to use
 	// adapttempl.Format makes each event's data field a rendered HTML <li>
 	// fragment instead of JSON — the HTMX html-over-the-wire SSE pattern.
 	//

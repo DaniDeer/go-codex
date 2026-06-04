@@ -128,11 +128,11 @@ func TestRefine_EncodeValidates(t *testing.T) {
 func TestRefineFunc_PassesWhenFnReturnsNil(t *testing.T) {
 	type Range struct{ Start, End int }
 	c := codex.Struct[Range](
-		codex.RequiredField[Range, int]("start", codex.Int(),
+		codex.RequiredField("start", codex.Int(),
 			func(r Range) int { return r.Start },
 			func(r *Range, v int) { r.Start = v },
 		),
-		codex.RequiredField[Range, int]("end", codex.Int(),
+		codex.RequiredField("end", codex.Int(),
 			func(r Range) int { return r.End },
 			func(r *Range, v int) { r.End = v },
 		),
@@ -155,11 +155,11 @@ func TestRefineFunc_PassesWhenFnReturnsNil(t *testing.T) {
 func TestRefineFunc_FailsWhenFnReturnsError(t *testing.T) {
 	type Range struct{ Start, End int }
 	c := codex.Struct[Range](
-		codex.RequiredField[Range, int]("start", codex.Int(),
+		codex.RequiredField("start", codex.Int(),
 			func(r Range) int { return r.Start },
 			func(r *Range, v int) { r.Start = v },
 		),
-		codex.RequiredField[Range, int]("end", codex.Int(),
+		codex.RequiredField("end", codex.Int(),
 			func(r Range) int { return r.End },
 			func(r *Range, v int) { r.End = v },
 		),
@@ -224,11 +224,11 @@ func TestRefineFunc_FieldErrorSurfacesBeforeCrossFieldConstraint(t *testing.T) {
 		Message: func(v int) string { return "must be positive" },
 	}
 	c := codex.Struct[Range](
-		codex.RequiredField[Range, int]("start", codex.Int().Refine(positive),
+		codex.RequiredField("start", codex.Int().Refine(positive),
 			func(r Range) int { return r.Start },
 			func(r *Range, v int) { r.Start = v },
 		),
-		codex.RequiredField[Range, int]("end", codex.Int().Refine(positive),
+		codex.RequiredField("end", codex.Int().Refine(positive),
 			func(r Range) int { return r.End },
 			func(r *Range, v int) { r.End = v },
 		),

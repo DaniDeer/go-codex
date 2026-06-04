@@ -22,11 +22,11 @@ type availIn struct {
 func availInCodec() codex.Codec[availIn] {
 	pos := float64Codec(0, 100)
 	return codex.Struct[availIn](
-		codex.RequiredField[availIn, float64]("plannedTime", pos,
+		codex.RequiredField("plannedTime", pos,
 			func(v availIn) float64 { return v.PlannedTime },
 			func(v *availIn, f float64) { v.PlannedTime = f },
 		),
-		codex.RequiredField[availIn, float64]("downtime", pos,
+		codex.RequiredField("downtime", pos,
 			func(v availIn) float64 { return v.Downtime },
 			func(v *availIn, f float64) { v.Downtime = f },
 		),
@@ -38,15 +38,15 @@ type oeeIn struct{ A, P, Q float64 }
 func oeeInCodec() codex.Codec[oeeIn] {
 	c := float64Codec(0, 1)
 	return codex.Struct[oeeIn](
-		codex.RequiredField[oeeIn, float64]("a", c,
+		codex.RequiredField("a", c,
 			func(v oeeIn) float64 { return v.A },
 			func(v *oeeIn, f float64) { v.A = f },
 		),
-		codex.RequiredField[oeeIn, float64]("p", c,
+		codex.RequiredField("p", c,
 			func(v oeeIn) float64 { return v.P },
 			func(v *oeeIn, f float64) { v.P = f },
 		),
-		codex.RequiredField[oeeIn, float64]("q", c,
+		codex.RequiredField("q", c,
 			func(v oeeIn) float64 { return v.Q },
 			func(v *oeeIn, f float64) { v.Q = f },
 		),
@@ -247,11 +247,11 @@ func TestCompose_RefinementRunsInComposedFunction(t *testing.T) {
 func TestCodecRefine_CrossFieldConstraint(t *testing.T) {
 	pos := float64Codec(0, 100)
 	constrainedInCodec := codex.Struct[availIn](
-		codex.RequiredField[availIn, float64]("plannedTime", pos,
+		codex.RequiredField("plannedTime", pos,
 			func(v availIn) float64 { return v.PlannedTime },
 			func(v *availIn, f float64) { v.PlannedTime = f },
 		),
-		codex.RequiredField[availIn, float64]("downtime", pos,
+		codex.RequiredField("downtime", pos,
 			func(v availIn) float64 { return v.Downtime },
 			func(v *availIn, f float64) { v.Downtime = f },
 		),

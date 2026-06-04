@@ -118,11 +118,11 @@ var (
 	// that Downtime ≤ PlannedTime directly on the codec — the preferred place for
 	// constraints that are properties of the domain rather than the pipeline.
 	availabilityInCodec = codex.Struct[AvailabilityIn](
-		codex.RequiredField[AvailabilityIn, PlannedTime]("plannedTime", plannedTimeCodec,
+		codex.RequiredField("plannedTime", plannedTimeCodec,
 			func(v AvailabilityIn) PlannedTime { return v.PlannedTime },
 			func(v *AvailabilityIn, f PlannedTime) { v.PlannedTime = f },
 		),
-		codex.RequiredField[AvailabilityIn, Downtime]("downtime", downtimeCodec,
+		codex.RequiredField("downtime", downtimeCodec,
 			func(v AvailabilityIn) Downtime { return v.Downtime },
 			func(v *AvailabilityIn, f Downtime) { v.Downtime = f },
 		),
@@ -135,11 +135,11 @@ var (
 	})
 
 	performanceInCodec = codex.Struct[PerformanceIn](
-		codex.RequiredField[PerformanceIn, PlannedCycles]("plannedCycles", plannedCycleCodec,
+		codex.RequiredField("plannedCycles", plannedCycleCodec,
 			func(v PerformanceIn) PlannedCycles { return v.PlannedCycles },
 			func(v *PerformanceIn, f PlannedCycles) { v.PlannedCycles = f },
 		),
-		codex.RequiredField[PerformanceIn, ActualCycles]("actualCycles", actualCycleCodec,
+		codex.RequiredField("actualCycles", actualCycleCodec,
 			func(v PerformanceIn) ActualCycles { return v.ActualCycles },
 			func(v *PerformanceIn, f ActualCycles) { v.ActualCycles = f },
 		),
@@ -149,15 +149,15 @@ var (
 	// This is the sum type composition: each field was produced and validated by its own
 	// forge function; oeeInCodec re-validates them as a unit.
 	oeeInCodec = codex.Struct[OEEIn](
-		codex.RequiredField[OEEIn, Availability]("availability", availabilityCodec,
+		codex.RequiredField("availability", availabilityCodec,
 			func(v OEEIn) Availability { return v.Availability },
 			func(v *OEEIn, f Availability) { v.Availability = f },
 		),
-		codex.RequiredField[OEEIn, Performance]("performance", performanceCodec,
+		codex.RequiredField("performance", performanceCodec,
 			func(v OEEIn) Performance { return v.Performance },
 			func(v *OEEIn, f Performance) { v.Performance = f },
 		),
-		codex.RequiredField[OEEIn, Quality]("quality", qualityCodec,
+		codex.RequiredField("quality", qualityCodec,
 			func(v OEEIn) Quality { return v.Quality },
 			func(v *OEEIn, f Quality) { v.Quality = f },
 		),
@@ -201,11 +201,11 @@ func main() {
 	fmt.Println()
 
 	simpleAvailInCodec := codex.Struct[AvailabilityIn](
-		codex.RequiredField[AvailabilityIn, PlannedTime]("plannedTime", plannedTimeCodec,
+		codex.RequiredField("plannedTime", plannedTimeCodec,
 			func(v AvailabilityIn) PlannedTime { return v.PlannedTime },
 			func(v *AvailabilityIn, f PlannedTime) { v.PlannedTime = f },
 		),
-		codex.RequiredField[AvailabilityIn, Downtime]("downtime", downtimeCodec,
+		codex.RequiredField("downtime", downtimeCodec,
 			func(v AvailabilityIn) Downtime { return v.Downtime },
 			func(v *AvailabilityIn, f Downtime) { v.Downtime = f },
 		),

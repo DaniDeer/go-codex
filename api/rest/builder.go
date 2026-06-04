@@ -24,7 +24,7 @@
 //	handle, err := createUser.Register(b)
 //	handle.
 //	    WithRequestFormats(format.JSON(createUserCodec), format.YAML(createUserCodec)).
-//	    WithResponseFormats(format.JSON(userCodec))
+//	    WithFormats(format.JSON(userCodec))
 //
 //	// In your HTTP handler (any framework):
 //	req, err := handle.Decode(body)      // JSON → CreateUserReq, validates
@@ -36,7 +36,7 @@
 //	yaml, _  := doc.MarshalYAML()
 //
 // Encoding is JSON only by default. Use [RouteHandle.WithRequestFormats] and
-// [RouteHandle.WithResponseFormats] to enable additional formats such as YAML,
+// [RouteHandle.WithFormats] to enable additional formats such as YAML,
 // TOML, or templ HTML.
 package rest
 
@@ -167,7 +167,7 @@ type routeBuilder struct {
 // typical REST usage will not call it.
 type RouteHandle[Req, Resp any] struct {
 	// Descriptor is the live route.Route descriptor. It is updated in place
-	// by [WithRequestFormats] and [WithResponseFormats] so that spec generation
+	// by [WithRequestFormats] and [WithFormats] so that spec generation
 	// always reflects the latest configuration.
 	Descriptor route.Route
 
@@ -185,11 +185,11 @@ type RouteHandle[Req, Resp any] struct {
 	// Decode) and enforces opts.ContentType.
 	RequestFormats []format.Format[Req]
 
-	// ResponseFormats, when non-empty, lists the formats the route can produce.
+	// Formats, when non-empty, lists the formats the route can produce.
 	// The adapter uses this slice for content negotiation: it picks the format
 	// matching the client's Accept header and encodes the response with it.
 	// When empty, the adapter falls back to JSON (via Encode).
-	ResponseFormats []format.Format[Resp]
+	Formats []format.Format[Resp]
 
 	// pathParams holds per-variable params registered via PathParam options.
 	pathParams []PathParam
@@ -257,25 +257,25 @@ func (h *RouteHandle[Req, Resp]) WithRequestFormats(fmts ...format.Format[Req]) 
 	return h
 }
 
-// WithResponseFormats registers the formats the route can produce for content
+// WithFormats registers the formats the route can produce for content
 // negotiation. The adapter picks the format matching the client's Accept header;
 // a mismatch returns HTTP 406 [NotAcceptableError].
 //
 // When empty, the adapter defaults to JSON (via Encode).
 // The first format is used when the client sends Accept: */*.
 //
-// Calling WithResponseFormats also updates the OpenAPI spec: the primary
+// Calling WithFormats also updates the OpenAPI spec: the primary
 // response will list all registered content types.
 //
 // Example:
 //
-//	route.WithResponseFormats(
+//	route.WithFormats(
 //	    adapttempl.Format(propsCodec, pageComponent),  // Accept: text/html
 //	    format.JSON(respCodec),                         // Accept: application/json
 //	    format.YAML(respCodec),                         // Accept: application/yaml
 //	)
-func (h *RouteHandle[Req, Resp]) WithResponseFormats(fmts ...format.Format[Resp]) *RouteHandle[Req, Resp] {
-	h.ResponseFormats = slices.Clone(fmts)
+func (h *RouteHandle[Req, Resp]) WithFormats(fmts ...format.Format[Resp]) *RouteHandle[Req, Resp] {
+	h.Formats = slices.Clone(fmts)
 	if len(h.Descriptor.Responses) > 0 {
 		var cts []string
 		for _, f := range fmts {
@@ -1104,7 +1104,7 @@ func NewRoute[Req, Resp any](
 // Any [PathParam] entry whose name does not appear as a {varName} placeholder
 // in the path template causes Register to return an error immediately.
 //
-// Use [RouteHandle.WithRequestFormats] and [RouteHandle.WithResponseFormats]
+// Use [RouteHandle.WithRequestFormats] and [RouteHandle.WithFormats]
 // after Register to configure multi-format request/response handling.
 func (r Route[Req, Resp]) Register(b *Builder) (*RouteHandle[Req, Resp], error) {
 	if b.pathCodec != nil {
@@ -1158,7 +1158,7 @@ func (r Route[Req, Resp]) Register(b *Builder) (*RouteHandle[Req, Resp], error) 
 //
 // The adapter uses EncodeEvent to serialise each event to JSON and ValidateEvent
 // to reject invalid values before they are written to the client.
-// When EventFormats is non-empty the adapter may use an explicit format for
+// When Formats is non-empty the adapter may use an explicit format for
 // event data serialisation (e.g. JSON or YAML inside the data field).
 type SSERouteHandle[Req, Event any] struct {
 	// Descriptor is the live route.Route descriptor.
@@ -1170,16 +1170,16 @@ type SSERouteHandle[Req, Event any] struct {
 	Decode func(body []byte) (Req, error)
 
 	// EncodeEvent serialises one event value to JSON bytes.
-	// Used as the fallback encoder when EventFormats is empty.
+	// Used as the fallback encoder when Formats is empty.
 	EncodeEvent func(e Event) ([]byte, error)
 
 	// ValidateEvent runs the event codec constraints on e without serialising.
 	// The adapter calls this inside the send func before encoding.
 	ValidateEvent func(e Event) error
 
-	// EventFormats, when non-empty, lists the formats available for encoding
+	// Formats, when non-empty, lists the formats available for encoding
 	// event data. The adapter picks the first format (or the JSON fallback).
-	EventFormats []format.Format[Event]
+	Formats []format.Format[Event]
 
 	// pathParams holds per-variable params registered via PathParam options.
 	pathParams []PathParam
@@ -1218,14 +1218,14 @@ func (h *SSERouteHandle[Req, Event]) BuildPath(vars map[string]string) (string, 
 // WithFormats registers the formats available for encoding SSE event data.
 // The adapter uses the first format; when empty, events are encoded as JSON.
 //
-// This mirrors [RouteHandle.WithResponseFormats] for SSE routes and [ChannelHandle.WithFormats]
+// This mirrors [RouteHandle.WithFormats] for SSE routes and [ChannelHandle.WithFormats]
 // for event channels. Call it after [NewSSERoute] to configure non-JSON event serialisation:
 //
 //	notifRoute = notifRoute.WithFormats(
 //	    adapttempl.Format(notifCodec, notifFragment), // HTML fragments over SSE
 //	)
 func (h *SSERouteHandle[Req, Event]) WithFormats(fmts ...format.Format[Event]) *SSERouteHandle[Req, Event] {
-	h.EventFormats = slices.Clone(fmts)
+	h.Formats = slices.Clone(fmts)
 	return h
 }
 

@@ -1008,7 +1008,7 @@ func TestContentNegotiation_acceptJSON(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	h.WithResponseFormats(format.JSON(userRespCodec), format.YAML(userRespCodec))
+	h.WithFormats(format.JSON(userRespCodec), format.YAML(userRespCodec))
 	handler := nethttp.Handler(h, func(_ context.Context, req createReq) (userResp, error) {
 		return userResp{ID: "1", Name: req.Name}, nil
 	}, nethttp.Options{})
@@ -1033,7 +1033,7 @@ func TestContentNegotiation_acceptYAML(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	h.WithResponseFormats(format.JSON(userRespCodec), format.YAML(userRespCodec))
+	h.WithFormats(format.JSON(userRespCodec), format.YAML(userRespCodec))
 	handler := nethttp.Handler(h, func(_ context.Context, req createReq) (userResp, error) {
 		return userResp{ID: "1", Name: req.Name}, nil
 	}, nethttp.Options{})
@@ -1058,7 +1058,7 @@ func TestContentNegotiation_wildcardAcceptPicksFirst(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	h.WithResponseFormats(format.JSON(userRespCodec), format.YAML(userRespCodec))
+	h.WithFormats(format.JSON(userRespCodec), format.YAML(userRespCodec))
 	handler := nethttp.Handler(h, func(_ context.Context, req createReq) (userResp, error) {
 		return userResp{ID: "1", Name: req.Name}, nil
 	}, nethttp.Options{})
@@ -1083,7 +1083,7 @@ func TestContentNegotiation_unacceptableReturns406(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	h.WithResponseFormats(format.JSON(userRespCodec))
+	h.WithFormats(format.JSON(userRespCodec))
 	handler := nethttp.Handler(h, func(_ context.Context, req createReq) (userResp, error) {
 		return userResp{ID: "1", Name: req.Name}, nil
 	}, nethttp.Options{})
@@ -1136,7 +1136,7 @@ func TestContentNegotiation_streamedFormat_writesDirectly(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	h.WithResponseFormats(streamFmt, format.JSON(userRespCodec))
+	h.WithFormats(streamFmt, format.JSON(userRespCodec))
 	handler := nethttp.Handler(h, func(_ context.Context, req createReq) (userResp, error) {
 		return userResp{ID: "42", Name: req.Name}, nil
 	}, nethttp.Options{})
@@ -1186,7 +1186,7 @@ func TestContentNegotiation_streamedFormat_validationErrorBefore200(t *testing.T
 	if err != nil {
 		t.Fatal(err)
 	}
-	h.WithResponseFormats(streamFmt)
+	h.WithFormats(streamFmt)
 	handler := nethttp.Handler(h, func(_ context.Context, _ createReq) (userResp, error) {
 		return userResp{ID: "1", Name: ""}, nil // Name="" fails NonEmptyString
 	}, nethttp.Options{})

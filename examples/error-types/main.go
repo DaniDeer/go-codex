@@ -150,7 +150,7 @@ func main() {
 
 	type Req struct{ Name string }
 	reqCodec := codex.Struct[Req](
-		codex.RequiredField[Req, string]("name", codex.String(),
+		codex.RequiredField("name", codex.String(),
 			func(r Req) string { return r.Name },
 			func(r *Req, v string) { r.Name = v },
 		),
@@ -184,17 +184,17 @@ func main() {
 		Age   int
 	}
 	userCodec := codex.Struct[CreateUser](
-		codex.RequiredField[CreateUser, string]("name",
+		codex.RequiredField("name",
 			codex.String().Refine(validate.NonEmptyString),
 			func(r CreateUser) string { return r.Name },
 			func(r *CreateUser, v string) { r.Name = v },
 		),
-		codex.RequiredField[CreateUser, string]("email",
+		codex.RequiredField("email",
 			codex.String().Refine(validate.Email),
 			func(r CreateUser) string { return r.Email },
 			func(r *CreateUser, v string) { r.Email = v },
 		),
-		codex.RequiredField[CreateUser, int]("age",
+		codex.RequiredField("age",
 			codex.Int().Refine(validate.PositiveInt),
 			func(r CreateUser) int { return r.Age },
 			func(r *CreateUser, v int) { r.Age = v },

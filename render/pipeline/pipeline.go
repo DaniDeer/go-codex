@@ -80,7 +80,7 @@ func buildFunction(fn forge.FunctionSpec) map[string]any {
 		"version": fn.Version,
 		"hash":    fn.Hash,
 	}
-	if fn.Kind != "" {
+	if fn.Kind != forge.FunctionKindScalar {
 		m["kind"] = fn.Kind
 	}
 	if fn.Wraps != "" {

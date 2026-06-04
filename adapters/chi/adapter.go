@@ -368,11 +368,11 @@ func Handler[Req, Resp any](handle *rest.RouteHandle[Req, Resp], fn HandlerFunc[
 
 		var out []byte
 		var respCT string
-		if len(handle.ResponseFormats) > 0 {
-			chosen, ok := negotiateFormat(handle.ResponseFormats, r.Header.Get("Accept"))
+		if len(handle.Formats) > 0 {
+			chosen, ok := negotiateFormat(handle.Formats, r.Header.Get("Accept"))
 			if !ok {
-				supported := make([]string, 0, len(handle.ResponseFormats))
-				for _, f := range handle.ResponseFormats {
+				supported := make([]string, 0, len(handle.Formats))
+				for _, f := range handle.Formats {
 					if ct := f.ContentType(); ct != "" {
 						supported = append(supported, ct)
 					}
@@ -529,8 +529,8 @@ func SSEHandler[Req, Event any](handle *rest.SSERouteHandle[Req, Event], fn SSEH
 		flusher, canFlush := w.(http.Flusher)
 
 		encode := handle.EncodeEvent
-		if len(handle.EventFormats) > 0 {
-			f := handle.EventFormats[0]
+		if len(handle.Formats) > 0 {
+			f := handle.Formats[0]
 			encode = func(e Event) ([]byte, error) { return f.Marshal(e) }
 		}
 

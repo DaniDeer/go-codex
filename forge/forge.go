@@ -108,19 +108,19 @@ type Measured[T any] struct {
 func MeasuredCodec[T any](inner codex.Codec[T]) codex.Codec[Measured[T]] {
 	nonEmpty := codex.String().Refine(validate.NonEmptyString)
 	return codex.Struct[Measured[T]](
-		codex.RequiredField[Measured[T], string]("source", nonEmpty,
+		codex.RequiredField("source", nonEmpty,
 			func(m Measured[T]) string { return m.Source },
 			func(m *Measured[T], v string) { m.Source = v },
 		),
-		codex.RequiredField[Measured[T], string]("version", nonEmpty,
+		codex.RequiredField("version", nonEmpty,
 			func(m Measured[T]) string { return m.Version },
 			func(m *Measured[T], v string) { m.Version = v },
 		),
-		codex.RequiredField[Measured[T], string]("author", nonEmpty,
+		codex.RequiredField("author", nonEmpty,
 			func(m Measured[T]) string { return m.Author },
 			func(m *Measured[T], v string) { m.Author = v },
 		),
-		codex.RequiredField[Measured[T], T]("value", inner,
+		codex.RequiredField("value", inner,
 			func(m Measured[T]) T { return m.Value },
 			func(m *Measured[T], v T) { m.Value = v },
 		),
@@ -139,7 +139,7 @@ type FunctionKind string
 
 const (
 	// FunctionKindScalar is the default: a scalar function created by NewFunction or Compose.
-	FunctionKindScalar FunctionKind = ""
+	FunctionKindScalar FunctionKind = "scalar"
 	// FunctionKindMap is a function created by Map (lifts a Function over a slice).
 	FunctionKindMap FunctionKind = "map"
 	// FunctionKindFilter is a function created by Filter (keeps elements satisfying a predicate).

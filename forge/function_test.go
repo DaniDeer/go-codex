@@ -116,11 +116,11 @@ type pair struct{ A, B float64 }
 func pairCodec(min, max float64) codex.Codec[pair] {
 	c := float64Codec(min, max)
 	return codex.Struct[pair](
-		codex.RequiredField[pair, float64]("a", c,
+		codex.RequiredField("a", c,
 			func(p pair) float64 { return p.A },
 			func(p *pair, v float64) { p.A = v },
 		),
-		codex.RequiredField[pair, float64]("b", c,
+		codex.RequiredField("b", c,
 			func(p pair) float64 { return p.B },
 			func(p *pair, v float64) { p.B = v },
 		),
@@ -186,15 +186,15 @@ type triple struct{ A, B, C float64 }
 func tripleCodec(min, max float64) codex.Codec[triple] {
 	c := float64Codec(min, max)
 	return codex.Struct[triple](
-		codex.RequiredField[triple, float64]("a", c,
+		codex.RequiredField("a", c,
 			func(t triple) float64 { return t.A },
 			func(t *triple, v float64) { t.A = v },
 		),
-		codex.RequiredField[triple, float64]("b", c,
+		codex.RequiredField("b", c,
 			func(t triple) float64 { return t.B },
 			func(t *triple, v float64) { t.B = v },
 		),
-		codex.RequiredField[triple, float64]("c", c,
+		codex.RequiredField("c", c,
 			func(t triple) float64 { return t.C },
 			func(t *triple, v float64) { t.C = v },
 		),

@@ -73,7 +73,7 @@ func buildRoute(t *testing.T) *rest.RouteHandle[pageReq, pageProps] {
 	if err != nil {
 		t.Fatalf("AddRoute: %v", err)
 	}
-	route = route.WithResponseFormats(
+	route = route.WithFormats(
 		adapttempl.Format(pagePropsCodec, pageComponent),
 		format.JSON(pagePropsCodec),
 	)
@@ -244,7 +244,7 @@ func TestStreamingFormat_HTMLResponse(t *testing.T) {
 	if err != nil {
 		t.Fatalf("AddRoute: %v", err)
 	}
-	route = route.WithResponseFormats(adapttempl.StreamingFormat(pagePropsCodec, pageComponent))
+	route = route.WithFormats(adapttempl.StreamingFormat(pagePropsCodec, pageComponent))
 	mux := http.NewServeMux()
 	nethttp.Register(mux, route, func(_ context.Context, _ pageReq) (pageProps, error) {
 		return pageProps{Title: "Streamed", Items: []string{"a"}}, nil
@@ -271,7 +271,7 @@ func TestStreamingFormat_ContentTypeHeader(t *testing.T) {
 	if err != nil {
 		t.Fatalf("AddRoute: %v", err)
 	}
-	route = route.WithResponseFormats(adapttempl.StreamingFormat(pagePropsCodec, pageComponent))
+	route = route.WithFormats(adapttempl.StreamingFormat(pagePropsCodec, pageComponent))
 	handler := nethttp.Handler(route, func(_ context.Context, _ pageReq) (pageProps, error) {
 		return pageProps{Title: "T", Items: []string{}}, nil
 	}, nethttp.Options{})
@@ -298,7 +298,7 @@ func TestStreamingFormat_InvalidPropsReturn500(t *testing.T) {
 	if err != nil {
 		t.Fatalf("AddRoute: %v", err)
 	}
-	route = route.WithResponseFormats(adapttempl.StreamingFormat(pagePropsCodec, pageComponent))
+	route = route.WithFormats(adapttempl.StreamingFormat(pagePropsCodec, pageComponent))
 	handler := nethttp.Handler(route, func(_ context.Context, _ pageReq) (pageProps, error) {
 		return pageProps{Title: "", Items: []string{}}, nil // Title="" fails NonEmptyString
 	}, nethttp.Options{})

@@ -255,7 +255,7 @@ func TestHandler_ContentNegotiation(t *testing.T) {
 	b := rest.NewBuilder(testInfo)
 	h, _ := rest.NewRoute[getReq, userResp]("GET", "/users",
 		getReqCodec, userRespCodec).Register(b)
-	h.WithResponseFormats(jsonFmt, yamlFmt)
+	h.WithFormats(jsonFmt, yamlFmt)
 
 	handler := chiadapter.Handler(h, func(_ context.Context, _ getReq) (userResp, error) {
 		return userResp{ID: "1", Name: "Alice"}, nil
@@ -312,7 +312,7 @@ func TestContentNegotiation_streamedFormat_writesDirectly(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	h.WithResponseFormats(streamFmt, format.JSON(userRespCodec))
+	h.WithFormats(streamFmt, format.JSON(userRespCodec))
 	handler := chiadapter.Handler(h, func(_ context.Context, req createReq) (userResp, error) {
 		return userResp{ID: "42", Name: req.Name}, nil
 	}, chiadapter.Options{})
@@ -363,7 +363,7 @@ func TestContentNegotiation_streamedFormat_validationErrorBefore200(t *testing.T
 	if err != nil {
 		t.Fatal(err)
 	}
-	h.WithResponseFormats(streamFmt)
+	h.WithFormats(streamFmt)
 	handler := chiadapter.Handler(h, func(_ context.Context, _ createReq) (userResp, error) {
 		return userResp{ID: "1", Name: ""}, nil // Name="" fails NonEmptyString
 	}, chiadapter.Options{})

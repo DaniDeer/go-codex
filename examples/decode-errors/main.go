@@ -37,17 +37,17 @@ type CreateUserRequest struct {
 }
 
 var createUserCodec = codex.Struct[CreateUserRequest](
-	codex.RequiredField[CreateUserRequest, string]("name",
+	codex.RequiredField("name",
 		codex.String().Refine(validate.NonEmptyString).Refine(validate.MaxLen(100)),
 		func(r CreateUserRequest) string { return r.Name },
 		func(r *CreateUserRequest, v string) { r.Name = v },
 	),
-	codex.RequiredField[CreateUserRequest, string]("email",
+	codex.RequiredField("email",
 		codex.String().Refine(validate.Email),
 		func(r CreateUserRequest) string { return r.Email },
 		func(r *CreateUserRequest, v string) { r.Email = v },
 	),
-	codex.RequiredField[CreateUserRequest, int]("age",
+	codex.RequiredField("age",
 		codex.Int().Refine(validate.PositiveInt),
 		func(r CreateUserRequest) int { return r.Age },
 		func(r *CreateUserRequest, v int) { r.Age = v },

@@ -28,7 +28,7 @@ func TestEither2_DecodesRightBranchWhenLeftFails(t *testing.T) {
 	// Use a struct+int so the struct codec fails on a plain int.
 	c2 := codex.Either2(
 		codex.Struct[struct{ X int }](
-			codex.RequiredField[struct{ X int }, int]("x", codex.Int(),
+			codex.RequiredField("x", codex.Int(),
 				func(s struct{ X int }) int { return s.X },
 				func(s *struct{ X int }, v int) { s.X = v },
 			),
@@ -51,13 +51,13 @@ func TestEither2_DecodesRightBranchWhenLeftFails(t *testing.T) {
 func TestEither2_ReturnsEitherErrorWhenBothFail(t *testing.T) {
 	c := codex.Either2(
 		codex.Struct[struct{ X int }](
-			codex.RequiredField[struct{ X int }, int]("x", codex.Int(),
+			codex.RequiredField("x", codex.Int(),
 				func(s struct{ X int }) int { return s.X },
 				func(s *struct{ X int }, v int) { s.X = v },
 			),
 		),
 		codex.Struct[struct{ Y string }](
-			codex.RequiredField[struct{ Y string }, string]("y", codex.String(),
+			codex.RequiredField("y", codex.String(),
 				func(s struct{ Y string }) string { return s.Y },
 				func(s *struct{ Y string }, v string) { s.Y = v },
 			),

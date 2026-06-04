@@ -214,7 +214,7 @@ func TestUntaggedUnion_DecodesFirstMatchingVariant(t *testing.T) {
 	}
 
 	circleCodec := codex.Struct[Shape](
-		codex.RequiredField[Shape, float64]("radius", codex.Float64(),
+		codex.RequiredField("radius", codex.Float64(),
 			func(s Shape) float64 {
 				if s.Circle != nil {
 					return s.Circle.Radius
@@ -225,7 +225,7 @@ func TestUntaggedUnion_DecodesFirstMatchingVariant(t *testing.T) {
 		),
 	)
 	squareCodec := codex.Struct[Shape](
-		codex.RequiredField[Shape, float64]("side", codex.Float64(),
+		codex.RequiredField("side", codex.Float64(),
 			func(s Shape) float64 {
 				if s.Square != nil {
 					return s.Square.Side

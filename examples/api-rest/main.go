@@ -36,12 +36,12 @@ type emptyReq struct{}
 // --- Codecs: single source of truth for encode, decode, validation, schema ---
 
 var createUserCodec = codex.Struct[CreateUserRequest](
-	codex.RequiredField[CreateUserRequest, string]("name",
+	codex.RequiredField("name",
 		codex.String().Refine(validate.NonEmptyString).Refine(validate.MaxLen(100)).WithDescription("Full display name."),
 		func(r CreateUserRequest) string { return r.Name },
 		func(r *CreateUserRequest, v string) { r.Name = v },
 	),
-	codex.RequiredField[CreateUserRequest, string]("email",
+	codex.RequiredField("email",
 		codex.String().Refine(validate.Email).WithDescription("Primary email address."),
 		func(r CreateUserRequest) string { return r.Email },
 		func(r *CreateUserRequest, v string) { r.Email = v },
@@ -49,17 +49,17 @@ var createUserCodec = codex.Struct[CreateUserRequest](
 )
 
 var userCodec = codex.Struct[User](
-	codex.RequiredField[User, string]("id",
+	codex.RequiredField("id",
 		codex.String().Refine(validate.UUID).WithDescription("Unique user ID (UUID)."),
 		func(u User) string { return u.ID },
 		func(u *User, v string) { u.ID = v },
 	),
-	codex.RequiredField[User, string]("name",
+	codex.RequiredField("name",
 		codex.String().Refine(validate.NonEmptyString).Refine(validate.MaxLen(100)).WithDescription("Full display name."),
 		func(u User) string { return u.Name },
 		func(u *User, v string) { u.Name = v },
 	),
-	codex.RequiredField[User, string]("email",
+	codex.RequiredField("email",
 		codex.String().Refine(validate.Email).WithDescription("Primary email address."),
 		func(u User) string { return u.Email },
 		func(u *User, v string) { u.Email = v },

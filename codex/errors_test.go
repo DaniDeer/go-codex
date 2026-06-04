@@ -67,11 +67,11 @@ func TestValidationErrors_FromStructDecode(t *testing.T) {
 	// Verify that Struct.Decode returns ValidationErrors when multiple fields fail.
 	type req struct{ Name, Email string }
 	c := codex.Struct[req](
-		codex.RequiredField[req, string]("name", codex.String(),
+		codex.RequiredField("name", codex.String(),
 			func(r req) string { return r.Name },
 			func(r *req, v string) { r.Name = v },
 		),
-		codex.RequiredField[req, string]("email", codex.String(),
+		codex.RequiredField("email", codex.String(),
 			func(r req) string { return r.Email },
 			func(r *req, v string) { r.Email = v },
 		),
@@ -182,7 +182,7 @@ func TestConstraintError_FromStructDecode(t *testing.T) {
 	// Verify that ConstraintError is returned inside ValidationError.Err after Refine fails.
 	type req struct{ Age int }
 	c := codex.Struct[req](
-		codex.RequiredField[req, int]("age",
+		codex.RequiredField("age",
 			codex.Int().Refine(codex.Constraint[int]{
 				Name:    "positive",
 				Check:   func(v int) bool { return v > 0 },

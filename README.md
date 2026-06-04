@@ -187,7 +187,7 @@ Requires Go 1.25 or later.
 - **net/http Adapter** — wire `RouteHandle` to `net/http.ServeMux` with one call; 400/500 error handling included
 - **chi Adapter** — wire `RouteHandle` to `chi.Router` with one call; identical feature set to net/http adapter; path vars via `chi.URLParam`
 - **Paho MQTT Adapter** — wire `ChannelHandle` to Paho MQTT subscribe callbacks; unified `Publish` handles both static and template topics; `TopicVarsFromMessage` extracts `{varName}` values from received topics and validates them (structural match → builder-level topic codec → per-param codecs) — fully symmetric with `BuildTopic`
-- **templ SSR Format Plug-in** — add `adapttempl.Format(propsCodec, component)` to a route's `ResponseFormats`; the existing nethttp/chi adapters then serve HTML to `Accept: text/html` clients and JSON to API clients from the same handler
+- **templ SSR Format Plug-in** — add `adapttempl.Format(propsCodec, component)` to a route's `Formats`; the existing nethttp/chi adapters then serve HTML to `Accept: text/html` clients and JSON to API clients from the same handler
 - **Streaming Responses** — `format.NewStreamed` creates a format that writes directly to the `ResponseWriter` without buffering; `adapttempl.StreamingFormat` renders templ components as a stream; the adapter validates before committing headers
 - **Server-Sent Events (SSE)** — `rest.NewSSERoute[Req, Event](...).Register(b)` registers a typed SSE route; `nethttp.SSEHandler` / `nethttp.RegisterSSE` and `chiadapter.SSEHandler` / `chiadapter.RegisterSSE` stream codec-validated events; path param codecs work identically to REST routes; stats observer counts validation errors per event
 
@@ -274,13 +274,13 @@ pngFormat := format.NewTyped(
 // CookieParam codec validation alongside the PNG request format.
 ```
 
-`adapttempl.Format` is a real-world `format.NewTyped` example — props are validated by the codec, then the templ component renders HTML directly. Adding it to a route's `ResponseFormats` slice enables content negotiation with no adapter changes:
+`adapttempl.Format` is a real-world `format.NewTyped` example — props are validated by the codec, then the templ component renders HTML directly. Adding it to a route's `Formats` slice enables content negotiation with no adapter changes:
 
 ```go
 route, _ := rest.NewRoute[Req, Props]("GET", "/article",
     reqCodec, propsCodec, rest.RouteMeta{},
 ).Register(b)
-route = route.WithResponseFormats(
+route = route.WithFormats(
     adapttempl.Format(propsCodec, ArticleCard), // Accept: text/html
     format.JSON(propsCodec),                     // Accept: application/json
 )
@@ -598,10 +598,10 @@ type DateRange struct {
 }
 
 var dateRangeCodec = codex.Struct[DateRange](
-    codex.RequiredField[DateRange, time.Time]("start", codex.Time(),
+    codex.RequiredField("start", codex.Time(),
         func(r DateRange) time.Time { return r.Start },
         func(r *DateRange, v time.Time) { r.Start = v }),
-    codex.RequiredField[DateRange, time.Time]("end", codex.Time(),
+    codex.RequiredField("end", codex.Time(),
         func(r DateRange) time.Time { return r.End },
         func(r *DateRange, v time.Time) { r.End = v }),
 ).RefineFunc(func(r DateRange) error {
@@ -1335,13 +1335,13 @@ Codec[Resp] ─ encode ─▶ User ◀─ buildUserResponse ◀─ UserRecord
 var emailFieldCodec = codex.String().Refine(validate.Email).WithDescription("Email address.")
 
 var createUserReqCodec = codex.Struct[CreateUserReq](
-    codex.RequiredField[CreateUserReq, string]("email", emailFieldCodec, ...),
+    codex.RequiredField("email", emailFieldCodec, ...),
 )
 var userRecordCodec = codex.Struct[UserRecord](
-    codex.RequiredField[UserRecord, string]("email", emailFieldCodec, ...),
+    codex.RequiredField("email", emailFieldCodec, ...),
 )
 var userCodec = codex.Struct[User](
-    codex.OptionalField[User, string]("email", emailFieldCodec, ...),
+    codex.OptionalField("email", emailFieldCodec, ...),
 )
 ```
 
@@ -1766,7 +1766,7 @@ See [`examples/adapters-mqtt`](examples/adapters-mqtt/main.go) for the full runn
 
 ### templ SSR Format Plug-in
 
-`adapters/templ` bridges a [templ](https://templ.guide/) component into the existing `adapters/nethttp` and `adapters/chi` content negotiation pipeline. Add `adapttempl.Format` to a route's `ResponseFormats` and the same handler serves HTML to browser clients and JSON to API clients — no separate route, no separate handler.
+`adapters/templ` bridges a [templ](https://templ.guide/) component into the existing `adapters/nethttp` and `adapters/chi` content negotiation pipeline. Add `adapttempl.Format` to a route's `Formats` and the same handler serves HTML to browser clients and JSON to API clients — no separate route, no separate handler.
 
 ```go
 import (
@@ -1780,7 +1780,7 @@ articleRoute, _ := rest.NewRoute[ArticleReq, ArticleProps]("GET", "/article",
     articleReqCodec, articlePropsCodec,
     rest.RouteMeta{OperationID: "getArticle"},
 ).Register(b)
-articleRoute = articleRoute.WithResponseFormats(
+articleRoute = articleRoute.WithFormats(
     adapttempl.Format(articlePropsCodec, ArticleCard), // Accept: text/html
     format.JSON(articlePropsCodec),                     // Accept: application/json
 )
@@ -1810,7 +1810,7 @@ See [`examples/adapters-templ`](examples/adapters-templ/main.go) for a runnable 
 dashRoute, _ := rest.NewRoute[DashboardReq, DashboardProps]("GET", "/dashboard",
     dashReqCodec, dashPropsCodec, rest.RouteMeta{},
 ).Register(b)
-dashRoute = dashRoute.WithResponseFormats(
+dashRoute = dashRoute.WithFormats(
     adapttempl.StreamingFormat(dashPropsCodec, dashboardPage), // chunked HTML
     format.JSON(dashPropsCodec),                               // JSON fallback
 )
@@ -1992,7 +1992,7 @@ See [`examples/stats-observer`](examples/stats-observer/main.go) for a runnable 
 ├────────────────────────────────────────────────────────────────────┤
 │  LAYER 3 — forge: governed KPI computation                         │
 │                                                                     │
-│  forge.NewFunction("availabilityCalc", "1.0.0", …, WithAuthor(…)) │
+│  forge.NewFunction("availabilityCalc", "1.0.0", …, FunctionMeta{…}) │
 │  forge.Registry → pipeline YAML spec + graph inference             │
 │  stats.PipelineObserver → per-Apply telemetry                      │
 └────────────────────────────────────────────────────────────────────┘
@@ -2007,7 +2007,7 @@ These two tools are often confused because both involve transforming one type to
 | **Purpose** | Structural type mapping (wire bridging) | Named, governed domain computation |
 | **Direction** | Bidirectional (encode + decode) | Unidirectional: `In → Out` only |
 | **Identity** | None — anonymous | name + version + SHA-256 contract hash |
-| **Governance** | None | `WithAuthor`, `WithApproval` |
+| **Governance** | None | `FunctionMeta{Author, ApprovedBy, …}` |
 | **Spec / schema output** | No | `Registry.Spec()` → pipeline YAML |
 | **Graph inference** | No | Registry matches input/output names |
 | **Telemetry** | None | `PipelineObserver.RecordApply` |
@@ -2036,8 +2036,10 @@ availabilityCalc := forge.NewFunction(
     func(in AvailabilityIn) (Availability, error) {
         return Availability((float64(in.PlannedTime) - float64(in.Downtime)) / float64(in.PlannedTime)), nil
     },
-    forge.WithDescription("Computes availability as (plannedTime - downtime) / plannedTime."),
-    forge.WithAuthor("oee-team"),
+    forge.FunctionMeta{
+        Description: "Computes availability as (plannedTime - downtime) / plannedTime.",
+        Author:      "oee-team",
+    },
 )
 
 // 2. Apply — input and output are codec-validated; errors are structured.
@@ -2060,8 +2062,8 @@ type AvailabilityIn struct {
 
 // Cross-field constraint: downtime cannot exceed planned time.
 var availabilityInCodec = codex.Struct[AvailabilityIn](
-    codex.RequiredField[AvailabilityIn, PlannedTime]("plannedTime", plannedTimeCodec, ...),
-    codex.RequiredField[AvailabilityIn, Downtime]("downtime", downtimeCodec, ...),
+    codex.RequiredField("plannedTime", plannedTimeCodec, ...),
+    codex.RequiredField("downtime", downtimeCodec, ...),
 ).RefineFunc(func(a AvailabilityIn) error {
     if float64(a.Downtime) > float64(a.PlannedTime) {
         return fmt.Errorf("downtime exceeds plannedTime")
@@ -2083,13 +2085,22 @@ availabilityCalc := forge.NewFunction("availabilityCalc", "1.0.0",
 )
 ```
 
-### Governance options
+### Governance metadata
+
+Pass a `forge.FunctionMeta` struct literal as an option to set governance fields declaratively:
 
 ```go
-forge.WithDescription("…")            // human-readable description
-forge.WithAuthor("team-name")         // who owns this function
-forge.WithApproval("reviewer", time.Now()) // governance sign-off
+forge.NewFunction("calc", "1.0.0", inCodec, outCodec, fn,
+    forge.FunctionMeta{
+        Description: "human-readable description",
+        Author:      "team-name",
+        ApprovedBy:  "reviewer",
+        ApprovedAt:  "2024-03-01",
+    },
+)
 ```
+
+Individual fields can also be set via convenience wrappers (`WithDescription`, `WithAuthor`, `WithApproval`), though `FunctionMeta` is preferred when setting multiple fields.
 
 ### Composing functions
 
@@ -2097,7 +2108,7 @@ forge.WithApproval("reviewer", time.Now()) // governance sign-off
 
 ```go
 combined := forge.Compose("combined", "1.0.0", f1, f2,
-    forge.WithDescription("chained pipeline"),
+    forge.FunctionMeta{Description: "chained pipeline"},
     forge.WithRefinement(func(a A) error { /* pre-compose constraint */ return nil }),
 )
 ```
@@ -2279,11 +2290,11 @@ type Config struct {
 }
 
 var configCodec = codex.Struct[Config](
-    codex.RequiredField[Config, int]("port", codex.Int().Refine(validate.RangeInt(1, 65535)),
+    codex.RequiredField("port", codex.Int().Refine(validate.RangeInt(1, 65535)),
         func(c Config) int { return c.Port },
         func(c *Config, v int) { c.Port = v },
     ),
-    codex.OptionalField[Config, string]("log_level",
+    codex.OptionalField("log_level",
         codex.String().Refine(validate.OneOf("debug", "info", "warn", "error")),
         func(c Config) string { return c.LogLevel },
         func(c *Config, v string) { c.LogLevel = v },
@@ -2362,9 +2373,9 @@ var legacyIPCodec = codex.String().
     WithDeprecated()                   // → deprecated: true in OpenAPI
 
 var configCodec = codex.Struct[Config](
-    codex.RequiredField[Config, int]("port", ...),
+    codex.RequiredField("port", ...),
     // Absent APP_LOG_LEVEL → "info" is used; default visible in generated schema
-    codex.DefaultField[Config, string](
+    codex.DefaultField(
         "log_level",
         codex.String().Refine(validate.OneOf("debug", "info", "warn", "error")),
         "info",

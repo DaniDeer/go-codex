@@ -147,11 +147,11 @@ type CreateUserReq struct {
 // createUserReqCodec describes what the HTTP client sends and enforces the
 // domain invariants on the incoming request.
 var createUserReqCodec = codex.Struct[CreateUserReq](
-	codex.RequiredField[CreateUserReq, string]("name", nameFieldCodec,
+	codex.RequiredField("name", nameFieldCodec,
 		func(r CreateUserReq) string { return r.Name },
 		func(r *CreateUserReq, v string) { r.Name = v },
 	),
-	codex.RequiredField[CreateUserReq, string]("email", emailFieldCodec,
+	codex.RequiredField("email", emailFieldCodec,
 		func(r CreateUserReq) string { return r.Email },
 		func(r *CreateUserReq, v string) { r.Email = v },
 	),
@@ -171,16 +171,16 @@ type UserRecord struct {
 // encode records for persistence and decode rows on retrieval — exactly
 // the same mechanism as the HTTP boundaries.
 var userRecordCodec = codex.Struct[UserRecord](
-	codex.RequiredField[UserRecord, string]("id",
+	codex.RequiredField("id",
 		codex.String().Refine(validate.UUID).WithDescription("Primary key."),
 		func(r UserRecord) string { return r.ID },
 		func(r *UserRecord, v string) { r.ID = v },
 	),
-	codex.RequiredField[UserRecord, string]("name", nameFieldCodec,
+	codex.RequiredField("name", nameFieldCodec,
 		func(r UserRecord) string { return r.Name },
 		func(r *UserRecord, v string) { r.Name = v },
 	),
-	codex.RequiredField[UserRecord, string]("email", emailFieldCodec,
+	codex.RequiredField("email", emailFieldCodec,
 		func(r UserRecord) string { return r.Email },
 		func(r *UserRecord, v string) { r.Email = v },
 	),
@@ -199,16 +199,16 @@ type User struct {
 // Shared field codecs propagate the same constraints from the request and
 // database contracts into the response schema — no duplication.
 var userCodec = codex.Struct[User](
-	codex.OptionalField[User, string]("id",
+	codex.OptionalField("id",
 		codex.String().Refine(validate.UUID).WithDescription("User UUID."),
 		func(u User) string { return u.ID },
 		func(u *User, v string) { u.ID = v },
 	),
-	codex.OptionalField[User, string]("name", nameFieldCodec,
+	codex.OptionalField("name", nameFieldCodec,
 		func(u User) string { return u.Name },
 		func(u *User, v string) { u.Name = v },
 	),
-	codex.OptionalField[User, string]("email", emailFieldCodec,
+	codex.OptionalField("email", emailFieldCodec,
 		func(u User) string { return u.Email },
 		func(u *User, v string) { u.Email = v },
 	),
@@ -228,12 +228,12 @@ type PagedUsersResp struct {
 
 // pagedUsersRespCodec describes the paginated response.
 var pagedUsersRespCodec = codex.Struct[PagedUsersResp](
-	codex.RequiredField[PagedUsersResp, int]("page",
+	codex.RequiredField("page",
 		codex.Int().WithDescription("Current page number."),
 		func(r PagedUsersResp) int { return r.Page },
 		func(r *PagedUsersResp, v int) { r.Page = v },
 	),
-	codex.OptionalField[PagedUsersResp, string]("search",
+	codex.OptionalField("search",
 		codex.String().WithDescription("Active name filter."),
 		func(r PagedUsersResp) string { return r.Search },
 		func(r *PagedUsersResp, v string) { r.Search = v },

@@ -19,46 +19,53 @@ type Constraint[T any] struct {
 	Schema  func(schema.Schema) schema.Schema // optional: mutates schema when Refine is applied
 }
 
-// Refine wraps the codec with a single constraint checked during both Encode and Decode.
+// Refine wraps the codec with one or more constraints checked during both Encode and Decode.
+// Constraints are applied in order; the first failing constraint stops evaluation.
 // Encode validates after serialising (field errors surface before cross-field constraints);
 // Decode validates after parsing.
-// If cons.Schema is non-nil, it is applied to the codec's schema.
-func (c Codec[T]) Refine(cons Constraint[T]) Codec[T] {
-	s := c.Schema
-	if cons.Schema != nil {
-		s = cons.Schema(s)
-	}
-	return Codec[T]{
-		Encode: func(v T) (any, error) {
-			encoded, err := c.Encode(v)
-			if err != nil {
-				return nil, err
-			}
-			if !cons.Check(v) {
-				return nil, ConstraintError{
-					Name:    cons.Name,
-					Message: cons.Message(v),
+// If a constraint's Schema is non-nil, it is applied to the codec's schema.
+// Calling Refine with no arguments returns the codec unchanged.
+func (c Codec[T]) Refine(cons ...Constraint[T]) Codec[T] {
+	for _, con := range cons {
+		con := con
+		s := c.Schema
+		if con.Schema != nil {
+			s = con.Schema(s)
+		}
+		prev := c
+		c = Codec[T]{
+			Encode: func(v T) (any, error) {
+				encoded, err := prev.Encode(v)
+				if err != nil {
+					return nil, err
 				}
-			}
-			return encoded, nil
-		},
-		Decode: func(v any) (T, error) {
-			val, err := c.Decode(v)
-			if err != nil {
-				var zero T
-				return zero, err
-			}
-			if !cons.Check(val) {
-				var zero T
-				return zero, ConstraintError{
-					Name:    cons.Name,
-					Message: cons.Message(val),
+				if !con.Check(v) {
+					return nil, ConstraintError{
+						Name:    con.Name,
+						Message: con.Message(v),
+					}
 				}
-			}
-			return val, nil
-		},
-		Schema: s,
+				return encoded, nil
+			},
+			Decode: func(v any) (T, error) {
+				val, err := prev.Decode(v)
+				if err != nil {
+					var zero T
+					return zero, err
+				}
+				if !con.Check(val) {
+					var zero T
+					return zero, ConstraintError{
+						Name:    con.Name,
+						Message: con.Message(val),
+					}
+				}
+				return val, nil
+			},
+			Schema: s,
+		}
 	}
+	return c
 }
 
 // Refine applies multiple constraints to a codec.
