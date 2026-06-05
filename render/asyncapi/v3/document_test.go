@@ -341,3 +341,24 @@ func TestV3DocumentBuilder_schemaAutoCollectedFromMessage(t *testing.T) {
 		t.Errorf("want schemas: in components, got:\n%s", out)
 	}
 }
+
+func TestV3DocumentBuilder_channelItem_titleSummaryTags(t *testing.T) {
+	b := v3.NewDocumentBuilder(testInfo)
+	b.AddChannel("user.created", v3.ChannelItem{
+		Address:     "user/created",
+		Title:       "User Created Channel",
+		Summary:     "Fires when a user signs up",
+		Description: "Extended description.",
+		Tags:        []string{"users", "events"},
+		Subscribe: &v3.Operation{
+			Summary: "Receive user created events",
+			Message: v3.Message{Schema: schema.Schema{Type: "object"}},
+		},
+	})
+	out := mustYAML(t, buildDoc(t, b))
+	for _, want := range []string{"title: User Created Channel", "summary: Fires when a user signs up", "tags:", "name: users"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("want %q in output:\n%s", want, out)
+		}
+	}
+}

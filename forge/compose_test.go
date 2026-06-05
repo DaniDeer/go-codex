@@ -73,8 +73,7 @@ func TestCompose_WithGovernanceOptions(t *testing.T) {
 	f2 := forge.NewFunction("f2", "1.0.0", c, c, identity)
 
 	comp := forge.Compose("comp", "1.0.0", f1, f2,
-		forge.WithDescription("chained"),
-		forge.WithAuthor("a"),
+		forge.FunctionMeta{Description: "chained", Author: "a"},
 	)
 	if comp.Spec.Author != "a" {
 		t.Errorf("Author: got %q", comp.Spec.Author)

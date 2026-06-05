@@ -704,16 +704,29 @@ func TestValidateCookies_invalid(t *testing.T) {
 	}
 }
 
-func TestValidateCookies_missingParam_skipped(t *testing.T) {
+func TestValidateCookies_missingParam_notRequired_skipped(t *testing.T) {
+	b := rest.NewBuilder(testInfo)
+	tokenCodec := codex.String().Refine(validate.NonEmptyString)
+	h, err := rest.NewRoute[createReq, userResp]("GET", "/protected", createReqCodec, userCodec, rest.CookieParam{Name: "session_token", Required: false, Codec: &tokenCodec}).Register(b)
+	if err != nil {
+		t.Fatalf("AddRoute: %v", err)
+	}
+	// Optional cookie not present — silently skipped.
+	if err := h.ValidateCookies(map[string]string{}); err != nil {
+		t.Fatalf("want nil for missing optional cookie, got %v", err)
+	}
+}
+
+func TestValidateCookies_missingParam_required_returnsError(t *testing.T) {
 	b := rest.NewBuilder(testInfo)
 	tokenCodec := codex.String().Refine(validate.NonEmptyString)
 	h, err := rest.NewRoute[createReq, userResp]("GET", "/protected", createReqCodec, userCodec, rest.CookieParam{Name: "session_token", Required: true, Codec: &tokenCodec}).Register(b)
 	if err != nil {
 		t.Fatalf("AddRoute: %v", err)
 	}
-	// Cookie not present in map — silently skipped.
-	if err := h.ValidateCookies(map[string]string{}); err != nil {
-		t.Fatalf("want nil for missing cookie, got %v", err)
+	err = h.ValidateCookies(map[string]string{})
+	if !errors.Is(err, rest.ErrRequiredParam) {
+		t.Fatalf("want ErrRequiredParam, got %v", err)
 	}
 }
 
@@ -1178,5 +1191,272 @@ func TestSSERouteHandle_GlobalSecurity_populated(t *testing.T) {
 	}
 	if _, ok := h.SecuritySchemes["bearerAuth"]; !ok {
 		t.Error("want SecuritySchemes populated on SSERouteHandle")
+	}
+}
+
+func TestSSERouteHandle_ValidateResponseHeaders_valid(t *testing.T) {
+	b := rest.NewBuilder(testInfo)
+	strCodec := codex.String()
+
+	h, err := rest.NewSSERoute[createReq, sseEvent]("/stream",
+		createReqCodec, sseEventCodec,
+		rest.ResponseHeaderParam{Name: "X-Correlation-Id", Codec: &strCodec},
+	).Register(b)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := h.ValidateResponseHeaders(map[string]string{"X-Correlation-Id": "abc-123"}); err != nil {
+		t.Errorf("want nil, got %v", err)
+	}
+}
+
+func TestSSERouteHandle_ValidateResponseHeaders_invalid(t *testing.T) {
+	b := rest.NewBuilder(testInfo)
+	// Use a string codec with a length constraint so we can trigger a validation error.
+	strCodec := codex.String().Refine(codex.Constraint[string]{
+		Name:  "maxLen3",
+		Check: func(s string) bool { return len(s) <= 3 },
+		Message: func(s string) string {
+			return fmt.Sprintf("value %q exceeds max length 3", s)
+		},
+	})
+
+	h, err := rest.NewSSERoute[createReq, sseEvent]("/stream2",
+		createReqCodec, sseEventCodec,
+		rest.ResponseHeaderParam{Name: "X-Short", Codec: &strCodec},
+	).Register(b)
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = h.ValidateResponseHeaders(map[string]string{"X-Short": "toolongvalue"})
+	if err == nil {
+		t.Fatal("want error for invalid response header, got nil")
+	}
+	var rhe rest.ResponseHeaderParamError
+	if !errors.As(err, &rhe) {
+		t.Fatalf("want ResponseHeaderParamError, got %T: %v", err, err)
+	}
+	if rhe.Name != "X-Short" {
+		t.Errorf("want Name=X-Short, got %q", rhe.Name)
+	}
+}
+
+func TestSSERouteHandle_responseHeaderParams_populated(t *testing.T) {
+	b := rest.NewBuilder(testInfo)
+	strCodec := codex.String()
+
+	h, err := rest.NewSSERoute[createReq, sseEvent]("/stream3",
+		createReqCodec, sseEventCodec,
+		rest.ResponseHeaderParam{Name: "X-Trace-Id", Codec: &strCodec},
+	).Register(b)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// nil response header map → no error (nothing to validate)
+	if err := h.ValidateResponseHeaders(nil); err != nil {
+		t.Errorf("want nil for empty map, got %v", err)
+	}
+}
+
+// --- G1: ValidatePathParams ---
+
+func TestRouteHandle_ValidatePathParams_valid(t *testing.T) {
+	b := rest.NewBuilder(testInfo)
+	uuidCodec := codex.String().Refine(validate.UUID)
+	h, err := rest.NewRoute[createReq, userResp]("GET", "/users/{id}", createReqCodec, userCodec,
+		rest.PathParam{Name: "id", Codec: &uuidCodec},
+	).Register(b)
+	if err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+	if err := h.ValidatePathParams(map[string]string{"id": "550e8400-e29b-41d4-a716-446655440000"}); err != nil {
+		t.Errorf("want nil, got %v", err)
+	}
+}
+
+func TestRouteHandle_ValidatePathParams_invalid(t *testing.T) {
+	b := rest.NewBuilder(testInfo)
+	uuidCodec := codex.String().Refine(validate.UUID)
+	h, err := rest.NewRoute[createReq, userResp]("GET", "/users/{id}", createReqCodec, userCodec,
+		rest.PathParam{Name: "id", Codec: &uuidCodec},
+	).Register(b)
+	if err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+	err = h.ValidatePathParams(map[string]string{"id": "not-a-uuid"})
+	var pathErr rest.PathParamError
+	if !errors.As(err, &pathErr) {
+		t.Fatalf("want PathParamError, got %T: %v", err, err)
+	}
+	if pathErr.Name != "id" {
+		t.Errorf("want Name=id, got %q", pathErr.Name)
+	}
+}
+
+func TestSSERouteHandle_ValidatePathParams_valid(t *testing.T) {
+	b := rest.NewBuilder(testInfo)
+	uuidCodec := codex.String().Refine(validate.UUID)
+	h, err := rest.NewSSERoute[createReq, sseEvent]("/stream/{id}",
+		createReqCodec, sseEventCodec,
+		rest.PathParam{Name: "id", Codec: &uuidCodec},
+	).Register(b)
+	if err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+	if err := h.ValidatePathParams(map[string]string{"id": "550e8400-e29b-41d4-a716-446655440000"}); err != nil {
+		t.Errorf("want nil, got %v", err)
+	}
+}
+
+func TestSSERouteHandle_ValidatePathParams_invalid(t *testing.T) {
+	b := rest.NewBuilder(testInfo)
+	uuidCodec := codex.String().Refine(validate.UUID)
+	h, err := rest.NewSSERoute[createReq, sseEvent]("/stream/{id}",
+		createReqCodec, sseEventCodec,
+		rest.PathParam{Name: "id", Codec: &uuidCodec},
+	).Register(b)
+	if err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+	err = h.ValidatePathParams(map[string]string{"id": "bad"})
+	var pathErr rest.PathParamError
+	if !errors.As(err, &pathErr) {
+		t.Fatalf("want PathParamError, got %T: %v", err, err)
+	}
+}
+
+// --- G2: Required enforcement ---
+
+func TestValidateQuery_required_missing_returnsError(t *testing.T) {
+	b := rest.NewBuilder(testInfo)
+	pageCodec := codex.String()
+	h, err := rest.NewRoute[createReq, userResp]("GET", "/items", createReqCodec, userCodec,
+		rest.QueryParam{Name: "page", Required: true, Codec: &pageCodec},
+	).Register(b)
+	if err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+	if err := h.ValidateQuery(map[string]string{}); !errors.Is(err, rest.ErrRequiredParam) {
+		t.Fatalf("want ErrRequiredParam, got %v", err)
+	}
+}
+
+func TestValidateQuery_notRequired_missing_skipped(t *testing.T) {
+	b := rest.NewBuilder(testInfo)
+	pageCodec := codex.String()
+	h, err := rest.NewRoute[createReq, userResp]("GET", "/items", createReqCodec, userCodec,
+		rest.QueryParam{Name: "page", Required: false, Codec: &pageCodec},
+	).Register(b)
+	if err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+	if err := h.ValidateQuery(map[string]string{}); err != nil {
+		t.Errorf("want nil for optional missing param, got %v", err)
+	}
+}
+
+func TestValidateHeaders_required_missing_returnsError(t *testing.T) {
+	b := rest.NewBuilder(testInfo)
+	uuidCodec := codex.String().Refine(validate.UUID)
+	h, err := rest.NewRoute[createReq, userResp]("POST", "/items", createReqCodec, userCodec,
+		rest.HeaderParam{Name: "X-Request-Id", Required: true, Codec: &uuidCodec},
+	).Register(b)
+	if err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+	if err := h.ValidateHeaders(map[string]string{}); !errors.Is(err, rest.ErrRequiredParam) {
+		t.Fatalf("want ErrRequiredParam, got %v", err)
+	}
+}
+
+// --- G4: ValidateResponseCookies on SSERouteHandle ---
+
+func TestSSERouteHandle_ValidateResponseCookies_valid(t *testing.T) {
+	b := rest.NewBuilder(testInfo)
+	strCodec := codex.String()
+	h, err := rest.NewSSERoute[createReq, sseEvent]("/stream-cookies",
+		createReqCodec, sseEventCodec,
+		rest.ResponseCookieParam{Name: "X-Session", Codec: &strCodec},
+	).Register(b)
+	if err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+	if err := h.ValidateResponseCookies(map[string]string{"X-Session": "token123"}); err != nil {
+		t.Errorf("want nil, got %v", err)
+	}
+}
+
+func TestSSERouteHandle_ValidateResponseCookies_invalid(t *testing.T) {
+	b := rest.NewBuilder(testInfo)
+	nonEmpty := codex.String().Refine(validate.NonEmptyString)
+	h, err := rest.NewSSERoute[createReq, sseEvent]("/stream-cookies2",
+		createReqCodec, sseEventCodec,
+		rest.ResponseCookieParam{Name: "X-Session", Codec: &nonEmpty},
+	).Register(b)
+	if err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+	err = h.ValidateResponseCookies(map[string]string{"X-Session": ""})
+	var rce rest.ResponseCookieParamError
+	if !errors.As(err, &rce) {
+		t.Fatalf("want ResponseCookieParamError, got %T: %v", err, err)
+	}
+	if rce.Name != "X-Session" {
+		t.Errorf("want Name=X-Session, got %q", rce.Name)
+	}
+}
+
+// --- G6: SSERouteHandle.BuildPath ---
+
+func TestSSERouteHandle_BuildPath_noParams(t *testing.T) {
+	b := rest.NewBuilder(testInfo)
+	h, err := rest.NewSSERoute[createReq, sseEvent]("/stream",
+		createReqCodec, sseEventCodec,
+	).Register(b)
+	if err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+	got, err := h.BuildPath(nil)
+	if err != nil {
+		t.Fatalf("BuildPath: %v", err)
+	}
+	if got != "/stream" {
+		t.Errorf("want /stream, got %q", got)
+	}
+}
+
+func TestSSERouteHandle_BuildPath_withPathParam(t *testing.T) {
+	b := rest.NewBuilder(testInfo)
+	uuidCodec := codex.String().Refine(validate.UUID)
+	h, err := rest.NewSSERoute[createReq, sseEvent]("/stream/{id}",
+		createReqCodec, sseEventCodec,
+		rest.PathParam{Name: "id", Codec: &uuidCodec},
+	).Register(b)
+	if err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+	got, err := h.BuildPath(map[string]string{"id": "550e8400-e29b-41d4-a716-446655440000"})
+	if err != nil {
+		t.Fatalf("BuildPath: %v", err)
+	}
+	if got != "/stream/550e8400-e29b-41d4-a716-446655440000" {
+		t.Errorf("want /stream/550e8400..., got %q", got)
+	}
+}
+
+func TestSSERouteHandle_BuildPath_invalidParam_returnsError(t *testing.T) {
+	b := rest.NewBuilder(testInfo)
+	uuidCodec := codex.String().Refine(validate.UUID)
+	h, err := rest.NewSSERoute[createReq, sseEvent]("/stream/{id}",
+		createReqCodec, sseEventCodec,
+		rest.PathParam{Name: "id", Codec: &uuidCodec},
+	).Register(b)
+	if err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+	_, err = h.BuildPath(map[string]string{"id": "not-a-uuid"})
+	var pathErr rest.PathParamError
+	if !errors.As(err, &pathErr) {
+		t.Fatalf("want PathParamError, got %T: %v", err, err)
 	}
 }

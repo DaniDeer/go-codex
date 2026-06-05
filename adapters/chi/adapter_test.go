@@ -1026,3 +1026,136 @@ func TestChiSSEHandler_HeaderParam_rejectsInvalid(t *testing.T) {
 		t.Errorf("want 400 for invalid SSE header param, got %d", rec.Code)
 	}
 }
+
+func TestSSEHandler_ResponseHeaderParam_appearsOnFirstSend(t *testing.T) {
+	b := rest.NewBuilder(testInfo)
+	traceCodec := codex.String().Refine(validate.NonEmptyString)
+	handle, err := rest.NewSSERoute[createReq, sseEvent]("/stream-rh",
+		createReqCodec, sseEventCodec,
+		rest.ResponseHeaderParam{Name: "X-Trace-Id", Codec: &traceCodec},
+	).Register(b)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	router := gochi.NewRouter()
+	chiadapter.RegisterSSE(router, handle, func(ctx context.Context, _ createReq, send func(sseEvent) error) error {
+		extra := make(http.Header)
+		extra.Set("X-Trace-Id", "trace-abc-123")
+		chiadapter.WithResponseHeaders(ctx, extra)
+		return send(sseEvent{Message: "hello"})
+	}, chiadapter.Options{})
+
+	srv := httptest.NewServer(router)
+	defer srv.Close()
+
+	resp, err := http.Get(srv.URL + "/stream-rh") //nolint:noctx
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("want 200, got %d", resp.StatusCode)
+	}
+	if v := resp.Header.Get("X-Trace-Id"); v != "trace-abc-123" {
+		t.Errorf("want X-Trace-Id=trace-abc-123, got %q", v)
+	}
+}
+
+func TestSSEHandler_ResponseHeaderParam_codecViolation_abortsStream(t *testing.T) {
+	b := rest.NewBuilder(testInfo)
+	traceCodec := codex.String().Refine(validate.NonEmptyString)
+	handle, err := rest.NewSSERoute[createReq, sseEvent]("/stream-rh2",
+		createReqCodec, sseEventCodec,
+		rest.ResponseHeaderParam{Name: "X-Trace-Id", Codec: &traceCodec},
+	).Register(b)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	sendCalled := false
+	h := chiadapter.SSEHandler(handle, func(ctx context.Context, _ createReq, send func(sseEvent) error) error {
+		extra := make(http.Header)
+		extra.Set("X-Trace-Id", "") // empty — codec rejects it
+		chiadapter.WithResponseHeaders(ctx, extra)
+		err := send(sseEvent{Message: "should not appear"})
+		if err != nil {
+			sendCalled = true
+			return err
+		}
+		return nil
+	}, chiadapter.Options{})
+
+	rec := httptest.NewRecorder()
+	r := httptest.NewRequest(http.MethodGet, "/stream-rh2", nil)
+	h.ServeHTTP(rec, r)
+
+	if !sendCalled {
+		t.Error("want send to return error for invalid response header codec, but send was not called")
+	}
+	if strings.Contains(rec.Body.String(), "should not appear") {
+		t.Errorf("want no event data written when response header codec fails, got: %s", rec.Body.String())
+	}
+}
+
+func TestHandler_PathParam_codecValidated(t *testing.T) {
+	b := rest.NewBuilder(testInfo)
+	uuidCodec := codex.String().Refine(validate.UUID)
+	handle, err := rest.NewRoute[getReq, userResp]("GET", "/users/{id}",
+		getReqCodec, userRespCodec,
+		rest.PathParam{Name: "id", Codec: &uuidCodec},
+	).Register(b)
+	if err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+	h := chiadapter.Handler(handle, func(_ context.Context, r getReq) (userResp, error) {
+		return userResp{ID: "ok"}, nil
+	}, chiadapter.Options{})
+	router := gochi.NewRouter()
+	router.Get("/users/{id}", h)
+
+	// Invalid UUID → 400.
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/users/not-a-uuid", nil))
+	if rec.Code != http.StatusBadRequest {
+		t.Errorf("want 400 for invalid path param, got %d", rec.Code)
+	}
+
+	// Valid UUID → 200.
+	rec2 := httptest.NewRecorder()
+	router.ServeHTTP(rec2, httptest.NewRequest(http.MethodGet, "/users/550e8400-e29b-41d4-a716-446655440000", nil))
+	if rec2.Code != http.StatusOK {
+		t.Errorf("want 200 for valid path param, got %d: %s", rec2.Code, rec2.Body.String())
+	}
+}
+
+func TestSSEHandler_PathParam_codecValidated(t *testing.T) {
+	b := rest.NewBuilder(testInfo)
+	uuidCodec := codex.String().Refine(validate.UUID)
+	handle, err := rest.NewSSERoute[getReq, sseEvent]("/stream/{id}",
+		getReqCodec, sseEventCodec,
+		rest.PathParam{Name: "id", Codec: &uuidCodec},
+	).Register(b)
+	if err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+	h := chiadapter.SSEHandler(handle, func(ctx context.Context, _ getReq, send func(sseEvent) error) error {
+		return send(sseEvent{Message: "hi"})
+	}, chiadapter.Options{})
+	router := gochi.NewRouter()
+	router.Get("/stream/{id}", h)
+
+	// Invalid UUID → 400.
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/stream/bad", nil))
+	if rec.Code != http.StatusBadRequest {
+		t.Errorf("want 400 for invalid path param, got %d", rec.Code)
+	}
+
+	// Valid UUID → 200.
+	rec2 := httptest.NewRecorder()
+	router.ServeHTTP(rec2, httptest.NewRequest(http.MethodGet, "/stream/550e8400-e29b-41d4-a716-446655440000", nil))
+	if rec2.Code != http.StatusOK {
+		t.Errorf("want 200 for valid path param, got %d", rec2.Code)
+	}
+}

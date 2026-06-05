@@ -77,7 +77,10 @@ type ChannelItem struct {
 	// Address is the actual topic address (e.g. "user/created"). When empty,
 	// the channel key is used as the address.
 	Address     string
+	Title       string
+	Summary     string
 	Description string
+	Tags        []string
 	// Parameters describes the {varName} placeholders in the topic template.
 	// Keyed by variable name (without braces).
 	Parameters map[string]Parameter
@@ -281,8 +284,21 @@ func buildChannelsAndOperations(channels map[string]ChannelItem) (map[string]any
 		}
 		chItem["address"] = address
 
+		if ch.Title != "" {
+			chItem["title"] = ch.Title
+		}
+		if ch.Summary != "" {
+			chItem["summary"] = ch.Summary
+		}
 		if ch.Description != "" {
 			chItem["description"] = ch.Description
+		}
+		if len(ch.Tags) > 0 {
+			tags := make([]any, len(ch.Tags))
+			for i, t := range ch.Tags {
+				tags[i] = map[string]any{"name": t}
+			}
+			chItem["tags"] = tags
 		}
 		if len(ch.Parameters) > 0 {
 			chItem["parameters"] = buildParameters(ch.Parameters)

@@ -157,8 +157,7 @@ func buildRawToCelsius() *forge.Function[RawReading, Celsius] {
 		func(r RawReading) (Celsius, error) {
 			return Celsius(r.RawCelsius), nil
 		},
-		forge.WithDescription("Maps a raw sensor reading to a validated Celsius value."),
-		forge.WithAuthor("Sensor Engineering"),
+		forge.FunctionMeta{Description: "Maps a raw sensor reading to a validated Celsius value.", Author: "Sensor Engineering"},
 	)
 	return fn
 }
@@ -168,8 +167,7 @@ func buildFilterWarmUp(rawCodec codex.Codec[RawReading]) *forge.Function[[]RawRe
 		"filterWarmUp", "1.0.0",
 		rawCodec,
 		func(r RawReading) bool { return !r.WarmUp },
-		forge.WithDescription("Discards readings taken during sensor warm-up phase."),
-		forge.WithAuthor("Sensor Engineering"),
+		forge.FunctionMeta{Description: "Discards readings taken during sensor warm-up phase.", Author: "Sensor Engineering"},
 	)
 }
 
@@ -177,7 +175,7 @@ func buildMapToCelsius(rawToCelsius *forge.Function[RawReading, Celsius]) *forge
 	return forge.Map(
 		"mapToCelsius", "1.0.0",
 		rawToCelsius,
-		forge.WithDescription("Applies rawToCelsius over a batch of readings."),
+		forge.FunctionMeta{Description: "Applies rawToCelsius over a batch of readings."},
 		forge.WithRefinement(func(readings []RawReading) error {
 			if len(readings) == 0 {
 				return fmt.Errorf("batch must contain at least one reading after warm-up filter")
@@ -208,9 +206,7 @@ func buildReduceSummary() *forge.Function[[]Celsius, BatchSummary] {
 			acc.Avg += (v - acc.Avg) / float64(acc.Count) // incremental mean
 			return acc
 		},
-		forge.WithDescription("Reduces a []Celsius batch to a BatchSummary (count, min, max, avg)."),
-		forge.WithAuthor("Analytics Team"),
-		forge.WithApproval("Data Engineering Lead", "2024-06-01"),
+		forge.FunctionMeta{Description: "Reduces a []Celsius batch to a BatchSummary (count, min, max, avg).", Author: "Analytics Team", ApprovedBy: "Data Engineering Lead", ApprovedAt: "2024-06-01"},
 	)
 }
 
@@ -228,7 +224,7 @@ func buildPerSensorSummary(
 	singleSensorPipeline := forge.Compose(
 		"singleSensorPipeline", "1.0.0",
 		mapFn, reduceFn,
-		forge.WithDescription("Full pipeline for one sensor: map readings to Celsius, then summarise."),
+		forge.FunctionMeta{Description: "Full pipeline for one sensor: map readings to Celsius, then summarise."},
 	)
 
 	// MapValuesK: apply singleSensorPipeline over map[string][]RawReading,
@@ -237,8 +233,7 @@ func buildPerSensorSummary(
 		"perSensorSummary", "1.0.0",
 		sensorIDCodec,
 		singleSensorPipeline,
-		forge.WithDescription("Applies the single-sensor pipeline to every validated sensor key."),
-		forge.WithAuthor("Analytics Team"),
+		forge.FunctionMeta{Description: "Applies the single-sensor pipeline to every validated sensor key.", Author: "Analytics Team"},
 	)
 }
 

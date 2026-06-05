@@ -76,28 +76,6 @@ func applyFunctionOptions(opts []FunctionOpt) functionOptions {
 	return cfg
 }
 
-// WithDescription sets the human-readable description for a forge function.
-// Prefer [FunctionMeta] when setting multiple governance fields at once.
-func WithDescription(desc string) FunctionOpt {
-	return funcOpt(func(o *functionOptions) { o.description = desc })
-}
-
-// WithAuthor sets the author governance field for a forge function.
-// Prefer [FunctionMeta] when setting multiple governance fields at once.
-func WithAuthor(author string) FunctionOpt {
-	return funcOpt(func(o *functionOptions) { o.author = author })
-}
-
-// WithApproval sets the approvedBy and approvedAt governance fields.
-// approvedAt should be an ISO 8601 date string (e.g. "2024-03-01").
-// Prefer [FunctionMeta] when setting multiple governance fields at once.
-func WithApproval(approvedBy, approvedAt string) FunctionOpt {
-	return funcOpt(func(o *functionOptions) {
-		o.approvedBy = approvedBy
-		o.approvedAt = approvedAt
-	})
-}
-
 // WithRefinement adds a pipeline-level cross-input constraint to a function.
 //
 // The constraint runs after input codec validation and before the compute function.

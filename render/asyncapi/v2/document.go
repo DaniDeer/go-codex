@@ -56,7 +56,10 @@ type Operation struct {
 
 // ChannelItem describes one channel with optional subscribe and publish operations.
 type ChannelItem struct {
+	Title       string
+	Summary     string
 	Description string
+	Tags        []string
 	// Parameters describes the {varName} placeholders in the topic template.
 	// Keyed by variable name (without braces). Auto-populated by the events
 	// builder from TopicParamCodecs schemas and TopicParams descriptions.
@@ -220,8 +223,21 @@ func buildChannels(channels map[string]ChannelItem) map[string]any {
 	out := make(map[string]any, len(channels))
 	for name, ch := range channels {
 		item := map[string]any{}
+		if ch.Title != "" {
+			item["title"] = ch.Title
+		}
+		if ch.Summary != "" {
+			item["summary"] = ch.Summary
+		}
 		if ch.Description != "" {
 			item["description"] = ch.Description
+		}
+		if len(ch.Tags) > 0 {
+			tags := make([]any, len(ch.Tags))
+			for i, t := range ch.Tags {
+				tags[i] = map[string]any{"name": t}
+			}
+			item["tags"] = tags
 		}
 		if len(ch.Parameters) > 0 {
 			item["parameters"] = buildParameters(ch.Parameters)

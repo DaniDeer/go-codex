@@ -62,9 +62,7 @@
 //	    func(in OEEIn) (OEE, error) {
 //	        return OEE(float64(in.Availability) * float64(in.Performance) * float64(in.Quality)), nil
 //	    },
-//	    forge.WithDescription("Computes OEE as availability × performance × quality."),
-//	    forge.WithAuthor("OT Engineering"),
-//	    forge.WithApproval("Quality Manager", "2024-03-01"),
+//	    forge.FunctionMeta{Description: "Computes OEE as availability × performance × quality.", Author: "OT Engineering", ApprovedBy: "Quality Manager", ApprovedAt: "2024-03-01"},
 //	)
 //	result, err := oeeCalc.Apply(OEEIn{Availability: av, Performance: pe, Quality: qu})
 //
@@ -170,7 +168,7 @@ type FunctionSpec struct {
 	// Wraps is the Name of the scalar Function lifted by Map or MapValues.
 	// Empty for scalar functions and for Filter/Reduce (which take raw predicates).
 	Wraps string
-	// Governance metadata — set via WithDescription, WithAuthor, WithApproval.
+	// Governance metadata — set via [FunctionMeta].
 	Description string
 	Author      string
 	ApprovedBy  string

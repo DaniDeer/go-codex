@@ -104,7 +104,7 @@ func Int64() Codec[int64] {
 				return 0, TypeMismatchError{Expected: "number", Got: fmt.Sprintf("%T", v)}
 			}
 		},
-		Schema: schema.Schema{Type: "integer"},
+		Schema: schema.Schema{Type: "integer", Format: "int64"},
 	}
 }
 

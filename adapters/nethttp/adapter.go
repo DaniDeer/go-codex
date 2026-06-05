@@ -293,6 +293,15 @@ func Handler[Req, Resp any](handle *rest.RouteHandle[Req, Resp], fn HandlerFunc[
 			return
 		}
 
+		// Validate path parameters against their registered codecs (if any).
+		if names := handle.PathParamNames(); len(names) > 0 {
+			if err := handle.ValidatePathParams(pathValues(r, names)); err != nil {
+				obs.RecordValidationError("path", stats.ConstraintName(err), "")
+				errFn(sw, r, http.StatusBadRequest, err)
+				return
+			}
+		}
+
 		// Enforce security: per-route requirements take precedence; nil falls back
 		// to global security declared via Builder.AddGlobalSecurity.
 		secReqs := handle.Descriptor.Security
@@ -520,6 +529,15 @@ func SSEHandler[Req, Event any](handle *rest.SSERouteHandle[Req, Event], fn SSEH
 			return
 		}
 
+		// Validate path parameters against their registered codecs (if any).
+		if names := handle.PathParamNames(); len(names) > 0 {
+			if err := handle.ValidatePathParams(pathValues(r, names)); err != nil {
+				obs.RecordValidationError("path", stats.ConstraintName(err), "")
+				opts.ErrorHandler(sw, r, http.StatusBadRequest, err)
+				return
+			}
+		}
+
 		// Enforce security: per-route requirements take precedence; nil falls back
 		// to global security declared via Builder.AddGlobalSecurity.
 		secReqs := handle.Descriptor.Security
@@ -554,16 +572,64 @@ func SSEHandler[Req, Event any](handle *rest.SSERouteHandle[Req, Event], fn SSEH
 
 		flusher, canFlush := w.(http.Flusher)
 
-		// pick event encoder: first EventFormat, or fallback to EncodeEvent (JSON)
+		// pick event encoder: first EventFormat or fallback to EncodeEvent (JSON).
+		// When Formats is non-empty, negotiate using the Accept header; return 406
+		// if the client requests a specific format not offered. Accept: text/event-stream
+		// or */* falls back to the first registered format.
 		encode := handle.EncodeEvent
 		if len(handle.Formats) > 0 {
-			f := handle.Formats[0]
+			accept := r.Header.Get("Accept")
+			f, ok := negotiateFormat(handle.Formats, accept)
+			if !ok {
+				// text/event-stream is the stream transport type, not a data format —
+				// treat it as "use the default".
+				if strings.Contains(accept, "text/event-stream") {
+					f = handle.Formats[0]
+				} else {
+					var supported []string
+					for _, fmt := range handle.Formats {
+						supported = append(supported, fmt.ContentType())
+					}
+					opts.ErrorHandler(sw, r, http.StatusNotAcceptable,
+						rest.NotAcceptableError{Accept: accept, Supported: supported})
+					return
+				}
+			}
 			encode = func(e Event) ([]byte, error) { return f.Marshal(e) }
 		}
 
 		validate := handle.ValidateEvent
 
+		headersCommitted := false
 		send := func(e Event) error {
+			if !headersCommitted {
+				headersCommitted = true
+				// Commit staged response headers/cookies on first send, before
+				// any data is written (headers are not yet sent to the client).
+				if err := handle.ValidateResponseHeaders(responseHeaderValues(responseHeaders)); err != nil {
+					reportResponseHeaderErrors(err, obs)
+					return err
+				}
+				if pending, ok := ctx.Value(responseCookiesKey{}).(*[]PendingCookie); ok {
+					if err := handle.ValidateResponseCookies(responseCookieValues(*pending)); err != nil {
+						reportResponseCookieErrors(err, obs)
+						return err
+					}
+					for i := range *pending {
+						pc := &(*pending)[i]
+						writeOpts := pc.Opts
+						writeOpts.Codec = nil
+						if err := SetCookie(sw, pc.Name, pc.Value, writeOpts); err != nil {
+							return err
+						}
+					}
+				}
+				for key, vals := range responseHeaders {
+					for _, v := range vals {
+						sw.Header().Add(key, v)
+					}
+				}
+			}
 			if err := validate(e); err != nil {
 				obs.RecordValidationError("response", stats.ConstraintName(err), "event")
 				return err
@@ -630,6 +696,16 @@ func defaultErrorHandler(w http.ResponseWriter, _ *http.Request, status int, err
 	w.WriteHeader(status)
 	body, _ := json.Marshal(errorBody{Error: err.Error()})
 	_, _ = w.Write(body)
+}
+
+// pathValues extracts the path variable values named in names from r using
+// the stdlib net/http r.PathValue method (available since Go 1.22).
+func pathValues(r *http.Request, names []string) map[string]string {
+	m := make(map[string]string, len(names))
+	for _, name := range names {
+		m[name] = r.PathValue(name)
+	}
+	return m
 }
 
 // queryValues extracts all query parameters from r into a flat map[string]string.

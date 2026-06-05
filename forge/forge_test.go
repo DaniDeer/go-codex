@@ -126,9 +126,7 @@ func TestFunctionOption_FieldsApplied(t *testing.T) {
 	c := float64Codec(0, 1)
 	f := forge.NewFunction("fn", "1.0.0",
 		c, c, identity,
-		forge.WithDescription("desc"),
-		forge.WithAuthor("author"),
-		forge.WithApproval("approver", "2024-01-01"),
+		forge.FunctionMeta{Description: "desc", Author: "author", ApprovedBy: "approver", ApprovedAt: "2024-01-01"},
 	)
 	if f.Spec.Description != "desc" {
 		t.Errorf("Description: got %q", f.Spec.Description)
@@ -148,7 +146,7 @@ func TestFunctionOption_GovernanceExcludedFromHash(t *testing.T) {
 	c := float64Codec(0, 1)
 	noGov := forge.NewFunction("fn", "1.0.0", c, c, identity)
 	withGov := forge.NewFunction("fn", "1.0.0", c, c, identity,
-		forge.WithAuthor("x"), forge.WithApproval("y", "2024-01-01"),
+		forge.FunctionMeta{Author: "x", ApprovedBy: "y", ApprovedAt: "2024-01-01"},
 	)
 	if noGov.Spec.Hash != withGov.Spec.Hash {
 		t.Errorf("governance opts changed hash: %q vs %q", noGov.Spec.Hash, withGov.Spec.Hash)

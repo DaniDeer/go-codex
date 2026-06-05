@@ -90,7 +90,7 @@ type Function[In, Out any] struct {
 //	    availInCodec, availabilityCodec,
 //	    func(in AvailabilityIn) (Availability, error) { ... },
 //	    forge.WithRefinement(func(in AvailabilityIn) error { ... }),
-//	    forge.WithDescription("Computes availability as (plannedTime - downtime) / plannedTime."),
+//	    forge.FunctionMeta{Description: "Computes availability as (plannedTime - downtime) / plannedTime."},
 //	)
 func NewFunction[In, Out any](
 	name, version string,

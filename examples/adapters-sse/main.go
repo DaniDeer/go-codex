@@ -10,6 +10,7 @@
 //   - [rest.SSERouteHandle.BuildPath] for validated URL assembly
 //   - Codec validation on each event before it is written to the client
 //   - Stats observer counting validation errors from rejected events
+//   - [rest.ResponseHeaderParam] on SSE routes — custom response header committed on first send
 //   - OpenAPI 3.1 spec generation including SSE routes
 package main
 
@@ -135,6 +136,15 @@ func handleSensor(ctx context.Context, _ struct{}, send func(sensorReading) erro
 	return nil
 }
 
+// handleWithHeaders stages a custom response header before sending the first event.
+// The adapter commits the header to the wire on the first send() call.
+func handleWithHeaders(ctx context.Context, _ struct{}, send func(counterEvent) error) error {
+	extra := make(http.Header)
+	extra.Set("X-Trace-Id", "trace-abc-123")
+	nethttp.WithResponseHeaders(ctx, extra)
+	return send(counterEvent{Count: 1})
+}
+
 // handleInvalid sends one valid event, then an invalid one (empty SensorID),
 // then another valid event — demonstrating per-event validation.
 func handleInvalid(_ context.Context, _ struct{}, send func(sensorReading) error) error {
@@ -198,6 +208,16 @@ func main() {
 		log.Fatalf("AddSSERoute invalid: %v", err)
 	}
 
+	traceCodec := codex.String().Refine(validate.NonEmptyString)
+	withHeadersRoute, err := rest.NewSSERoute[struct{}, counterEvent]("/sse/with-headers",
+		codex.Empty, counterEventCodec,
+		rest.RouteMeta{OperationID: "streamWithHeaders", Summary: "Stream with custom response header"},
+		rest.ResponseHeaderParam{Name: "X-Trace-Id", Description: "Distributed trace ID", Codec: &traceCodec},
+	).Register(b)
+	if err != nil {
+		log.Fatalf("AddSSERoute with-headers: %v", err)
+	}
+
 	// ── BuildPath codec validation ─────────────────────────────────────────
 	fmt.Println("=== BuildPath with sensorIDCodec ===")
 	if path, err := sensorRoute.BuildPath(map[string]string{"id": "room-42"}); err != nil {
@@ -213,6 +233,7 @@ func main() {
 	mux := http.NewServeMux()
 	nethttp.RegisterSSE(mux, counterRoute, handleCounter, opts)
 	nethttp.RegisterSSE(mux, invalidRoute, handleInvalid, opts)
+	nethttp.RegisterSSE(mux, withHeadersRoute, handleWithHeaders, opts)
 
 	r := gochi.NewRouter()
 	chiadapter.RegisterSSE(r, sensorRoute, handleSensor, chiOpts)
@@ -254,6 +275,18 @@ func main() {
 	lines := readSSELines(resp3)
 	fmt.Printf("  received %d events (1 rejected, 2 sent)\n", len(lines))
 	for _, line := range lines {
+		fmt.Printf("  event: %s\n", line)
+	}
+	fmt.Println()
+
+	// ── ResponseHeaderParam: custom header committed on first send ─────────
+	fmt.Println("=== GET /sse/with-headers (X-Trace-Id committed on first send) ===")
+	resp4, err := http.Get(srv.URL + "/sse/with-headers") //nolint:noctx
+	if err != nil {
+		log.Fatal(err)
+	}
+	fmt.Printf("  X-Trace-Id: %s\n", resp4.Header.Get("X-Trace-Id"))
+	for _, line := range readSSELines(resp4) {
 		fmt.Printf("  event: %s\n", line)
 	}
 	fmt.Println()

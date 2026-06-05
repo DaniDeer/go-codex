@@ -372,3 +372,31 @@ func TestDocumentBuilder_channelParameters_defaultTypeString(t *testing.T) {
 		t.Errorf("expected default 'type: string' for zero-value Schema:\n%s", out)
 	}
 }
+
+func TestDocumentBuilder_channelItem_titleSummaryTags(t *testing.T) {
+	doc, err := v2.NewDocumentBuilder(testInfo).
+		AddChannel("user.created", v2.ChannelItem{
+			Title:       "User Created",
+			Summary:     "Fires when a user signs up",
+			Description: "Extended description of the channel.",
+			Tags:        []string{"users", "events"},
+			Subscribe: &v2.Operation{
+				Summary: "Receive user created events",
+				Message: v2.Message{Schema: userSchema},
+			},
+		}).
+		Build()
+	if err != nil {
+		t.Fatalf("Build error: %v", err)
+	}
+	b, err := doc.MarshalYAML()
+	if err != nil {
+		t.Fatalf("MarshalYAML error: %v", err)
+	}
+	out := string(b)
+	for _, want := range []string{"title: User Created", "summary: Fires when a user signs up", "tags:", "name: users"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("want %q in output:\n%s", want, out)
+		}
+	}
+}

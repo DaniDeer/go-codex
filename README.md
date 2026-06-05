@@ -137,7 +137,7 @@ var availabilityCodec = codex.Float64(zeroToOne()).WithTitle("availability")
 availCalc := forge.NewFunction[AvailabilityIn, Availability]("availCalc", "1.0.0",
     availInCodec, availabilityCodec,
     computeAvailability,
-    forge.WithAuthor("OT Engineering"),
+    forge.FunctionMeta{Author: "OT Engineering"},
 )
 result, err := availCalc.Apply(in)  // validate → compute → validate output
 availCalc.Register(reg)             // optional: pipeline YAML spec + telemetry
@@ -620,7 +620,7 @@ On failure, `RefineFunc` produces a `ConstraintError{Name:"refine", ...}` — th
 | ---------------------------------------- | -------------- | ------------------- | ------------------------------------------ |
 | `codex.Int()`                            | `int`          | number              | `{type:integer}`                           |
 | `codex.Int32()`                          | `int32`        | number              | `{type:integer,format:int32}`              |
-| `codex.Int64()`                          | `int64`        | number              | `{type:integer}`                           |
+| `codex.Int64()`                          | `int64`        | number              | `{type:integer,format:int64}`              |
 | `codex.Uint()`                           | `uint`         | number              | `{type:integer,minimum:0}`                 |
 | `codex.Uint64()`                         | `uint64`       | number              | `{type:integer,minimum:0}`                 |
 | `codex.Float32()`                        | `float32`      | number              | `{type:number,format:float}`               |
@@ -2100,7 +2100,7 @@ forge.NewFunction("calc", "1.0.0", inCodec, outCodec, fn,
 )
 ```
 
-Individual fields can also be set via convenience wrappers (`WithDescription`, `WithAuthor`, `WithApproval`), though `FunctionMeta` is preferred when setting multiple fields.
+Use `FunctionMeta` to set governance fields. `WithRefinement` remains available as a free function for pipeline-level constraints.
 
 ### Composing functions
 

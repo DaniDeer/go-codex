@@ -141,10 +141,13 @@ func (p Publish) applyChannel(cb *channelBuilder) { cb.publish = &p }
 //
 // ChannelMeta implements [ChannelOpt]: pass it directly to [NewChannel].
 //
-// The struct currently holds a single field. Additional channel-level metadata
-// fields (e.g. Title, Tags) may be added in future without breaking callers.
+// ChannelMeta carries channel-level metadata used in the generated AsyncAPI spec.
+// All fields are optional. Pass ChannelMeta as a [ChannelOpt] to [NewChannel].
 type ChannelMeta struct {
+	Title       string
+	Summary     string
 	Description string
+	Tags        []string
 }
 
 func (m ChannelMeta) applyChannel(cb *channelBuilder) { cb.meta = m }
@@ -724,7 +727,10 @@ func checkOp(op *asyncapi.Operation, resolvable, seen map[string]bool, unresolve
 func buildChannelItem[T any](topic string, codec codex.Codec[T], cb channelBuilder) asyncapi.ChannelItem {
 	item := asyncapi.ChannelItem{
 		Address:     topic,
+		Title:       cb.meta.Title,
+		Summary:     cb.meta.Summary,
 		Description: cb.meta.Description,
+		Tags:        slices.Clone(cb.meta.Tags),
 		Parameters:  buildTopicParameters(topic, cb.topicParams),
 	}
 

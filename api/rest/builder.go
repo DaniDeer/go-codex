@@ -41,6 +41,7 @@
 package rest
 
 import (
+	"errors"
 	"fmt"
 	"slices"
 	"sort"
@@ -60,10 +61,6 @@ type Info = openapi.Info
 
 // Server is an alias for [openapi.Server].
 type Server = openapi.Server
-
-// Param is an alias for [route.Param] so callers do not need to import route
-// just to specify query parameters.
-type Param = route.Param
 
 // PathParam describes a {varName} placeholder in a route path template.
 // It combines spec metadata with optional runtime validation via a codec.
@@ -331,13 +328,54 @@ func (h *RouteHandle[Req, Resp]) BuildPath(vars map[string]string) (string, erro
 	return result, nil
 }
 
+// ErrRequiredParam is the sentinel wrapped inside a param error when a required
+// parameter is absent from the request. Check with [errors.Is]:
+//
+//	if errors.Is(err, rest.ErrRequiredParam) {
+//	    http.Error(w, "missing required parameter", http.StatusBadRequest)
+//	}
+var ErrRequiredParam = errors.New("required parameter missing")
+
+// ValidatePathParams validates path variable values against their registered
+// codecs. For each [PathParam] that has a non-nil Codec, the corresponding
+// value in vars is validated. Returns a [PathParamError] on the first failure.
+// Extra keys in vars are silently ignored.
+//
+// Adapters build the vars map using [RouteHandle.PathParamNames] and the
+// path-variable extraction provided by their router (e.g. r.PathValue).
+func (h *RouteHandle[Req, Resp]) ValidatePathParams(vars map[string]string) error {
+	for i := range h.pathParams {
+		pp := &h.pathParams[i]
+		if pp.Codec == nil {
+			continue
+		}
+		value, ok := vars[pp.Name]
+		if !ok {
+			continue
+		}
+		if err := pp.Codec.Validate(value); err != nil {
+			return PathParamError{Name: pp.Name, Value: value, Err: err}
+		}
+	}
+	return nil
+}
+
+// PathParamNames returns the names of all registered path parameters.
+// Adapters use this to build the map required by [RouteHandle.ValidatePathParams].
+func (h *RouteHandle[Req, Resp]) PathParamNames() []string {
+	names := make([]string, len(h.pathParams))
+	for i := range h.pathParams {
+		names[i] = h.pathParams[i].Name
+	}
+	return names
+}
+
 // ValidateQuery validates query parameter values against their registered codecs.
 //
 // For each [QueryParam] that has a non-nil Codec, the corresponding value in
 // params is validated. Returns a [QueryParamError] on the first failure.
-// Parameters not present in params are silently skipped (use Required on the
-// [QueryParam] entry to document required params in the spec; enforcement is
-// the caller's responsibility). Extra keys in params are silently ignored.
+// When [QueryParam.Required] is true and the key is absent, ValidateQuery
+// returns a [QueryParamError] wrapping [ErrRequiredParam]. Extra keys are ignored.
 //
 // Example:
 //
@@ -353,6 +391,9 @@ func (h *RouteHandle[Req, Resp]) ValidateQuery(params map[string]string) error {
 		}
 		value, ok := params[qp.Name]
 		if !ok {
+			if qp.Required {
+				return QueryParamError{Name: qp.Name, Err: ErrRequiredParam}
+			}
 			continue
 		}
 		if err := qp.Codec.Validate(value); err != nil {
@@ -370,8 +411,9 @@ func (h *RouteHandle[Req, Resp]) ValidateQuery(params map[string]string) error {
 // accepts the raw map[string][]string directly — useful when handling repeated
 // query keys such as "?tags=a&tags=b".
 //
-// Returns a [QueryParamError] on the first failure. Parameters not present in
-// params are silently skipped; extra keys are silently ignored.
+// Returns a [QueryParamError] on the first failure. When [QueryParam.Required] is
+// true and the key is absent or empty, ValidateQueryMulti returns a [QueryParamError]
+// wrapping [ErrRequiredParam]. Extra keys are silently ignored.
 func (h *RouteHandle[Req, Resp]) ValidateQueryMulti(params map[string][]string) error {
 	for i := range h.queryParams {
 		qp := &h.queryParams[i]
@@ -380,6 +422,9 @@ func (h *RouteHandle[Req, Resp]) ValidateQueryMulti(params map[string][]string) 
 		}
 		values, ok := params[qp.Name]
 		if !ok || len(values) == 0 {
+			if qp.Required {
+				return QueryParamError{Name: qp.Name, Err: ErrRequiredParam}
+			}
 			continue
 		}
 		value := values[0]
@@ -394,7 +439,8 @@ func (h *RouteHandle[Req, Resp]) ValidateQueryMulti(params map[string][]string) 
 //
 // For each [CookieParam] that has a non-nil Codec, the corresponding value in
 // params is validated. Returns a [CookieParamError] on the first failure.
-// Parameters not present in params are silently skipped. Extra keys are ignored.
+// When [CookieParam.Required] is true and the key is absent, ValidateCookies
+// returns a [CookieParamError] wrapping [ErrRequiredParam]. Extra keys are ignored.
 //
 // Example:
 //
@@ -410,6 +456,9 @@ func (h *RouteHandle[Req, Resp]) ValidateCookies(params map[string]string) error
 		}
 		value, ok := params[cp.Name]
 		if !ok {
+			if cp.Required {
+				return CookieParamError{Name: cp.Name, Err: ErrRequiredParam}
+			}
 			continue
 		}
 		if err := cp.Codec.Validate(value); err != nil {
@@ -423,7 +472,8 @@ func (h *RouteHandle[Req, Resp]) ValidateCookies(params map[string]string) error
 //
 // For each [HeaderParam] that has a non-nil Codec, the corresponding value in
 // params is validated. Returns a [HeaderParamError] on the first failure.
-// Parameters not present in params are silently skipped. Extra keys are ignored.
+// When [HeaderParam.Required] is true and the key is absent, ValidateHeaders
+// returns a [HeaderParamError] wrapping [ErrRequiredParam]. Extra keys are ignored.
 //
 // Example:
 //
@@ -439,6 +489,9 @@ func (h *RouteHandle[Req, Resp]) ValidateHeaders(params map[string]string) error
 		}
 		value, ok := params[hp.Name]
 		if !ok {
+			if hp.Required {
+				return HeaderParamError{Name: hp.Name, Err: ErrRequiredParam}
+			}
 			continue
 		}
 		if err := hp.Codec.Validate(value); err != nil {
@@ -452,7 +505,8 @@ func (h *RouteHandle[Req, Resp]) ValidateHeaders(params map[string]string) error
 //
 // For each [ResponseHeaderParam] that has a non-nil Codec, the corresponding value
 // in headers is validated. Returns a [ResponseHeaderParamError] on the first failure.
-// Parameters not present in headers are silently skipped.
+// When [ResponseHeaderParam.Required] is true and the key is absent, ValidateResponseHeaders
+// returns a [ResponseHeaderParamError] wrapping [ErrRequiredParam].
 //
 // The net/http adapter calls this automatically after the handler returns and
 // before writing the response. A failure indicates a server-side contract
@@ -465,6 +519,9 @@ func (rh *RouteHandle[Req, Resp]) ValidateResponseHeaders(headers map[string]str
 		}
 		value, ok := headers[rp.Name]
 		if !ok {
+			if rp.Required {
+				return ResponseHeaderParamError{Name: rp.Name, Err: ErrRequiredParam}
+			}
 			continue
 		}
 		if err := rp.Codec.Validate(value); err != nil {
@@ -475,9 +532,9 @@ func (rh *RouteHandle[Req, Resp]) ValidateResponseHeaders(headers map[string]str
 }
 
 // ValidateResponseCookies validates the cookie values collected by the handler
-// against their registered [ResponseCookieParam] codecs. Only entries whose name
-// is present in cookies is validated. Returns a [ResponseCookieParamError] on the
-// first failure.
+// against their registered [ResponseCookieParam] codecs. Returns a [ResponseCookieParamError]
+// on the first failure. When [ResponseCookieParam.Required] is true and the key is absent,
+// ValidateResponseCookies returns a [ResponseCookieParamError] wrapping [ErrRequiredParam].
 //
 // The net/http adapter calls this automatically after the handler returns and
 // before writing the response. A failure indicates a server-side contract
@@ -490,6 +547,9 @@ func (rh *RouteHandle[Req, Resp]) ValidateResponseCookies(cookies map[string]str
 		}
 		value, ok := cookies[cp.Name]
 		if !ok {
+			if cp.Required {
+				return ResponseCookieParamError{Name: cp.Name, Err: ErrRequiredParam}
+			}
 			continue
 		}
 		if err := cp.Codec.Validate(value); err != nil {
@@ -1209,6 +1269,12 @@ type SSERouteHandle[Req, Event any] struct {
 	//   if reqs == nil { reqs = handle.GlobalSecurity }
 	// Set via [Builder.AddGlobalSecurity]. nil when no global security is declared.
 	GlobalSecurity []route.SecurityRequirement
+
+	// responseHeaderParams holds per-header entries registered via ResponseHeaderParam options.
+	responseHeaderParams []ResponseHeaderParam
+
+	// responseCookieParams holds per-cookie entries registered via ResponseCookieParam options.
+	responseCookieParams []ResponseCookieParam
 }
 
 // BuildPath substitutes {varName} placeholders in the route's path template
@@ -1261,6 +1327,35 @@ func (h *SSERouteHandle[Req, Event]) WithFormats(fmts ...format.Format[Event]) *
 	return h
 }
 
+// ValidatePathParams validates path variable values against their registered codecs.
+// Mirrors [RouteHandle.ValidatePathParams] for SSE routes.
+func (h *SSERouteHandle[Req, Event]) ValidatePathParams(vars map[string]string) error {
+	for i := range h.pathParams {
+		pp := &h.pathParams[i]
+		if pp.Codec == nil {
+			continue
+		}
+		value, ok := vars[pp.Name]
+		if !ok {
+			continue
+		}
+		if err := pp.Codec.Validate(value); err != nil {
+			return PathParamError{Name: pp.Name, Value: value, Err: err}
+		}
+	}
+	return nil
+}
+
+// PathParamNames returns the names of all registered path parameters.
+// Adapters use this to build the map required by [SSERouteHandle.ValidatePathParams].
+func (h *SSERouteHandle[Req, Event]) PathParamNames() []string {
+	names := make([]string, len(h.pathParams))
+	for i := range h.pathParams {
+		names[i] = h.pathParams[i].Name
+	}
+	return names
+}
+
 // ValidateQuery validates query parameter values against their registered codecs.
 // Mirrors [RouteHandle.ValidateQuery] for SSE routes.
 func (h *SSERouteHandle[Req, Event]) ValidateQuery(params map[string]string) error {
@@ -1271,6 +1366,9 @@ func (h *SSERouteHandle[Req, Event]) ValidateQuery(params map[string]string) err
 		}
 		value, ok := params[qp.Name]
 		if !ok {
+			if qp.Required {
+				return QueryParamError{Name: qp.Name, Err: ErrRequiredParam}
+			}
 			continue
 		}
 		if err := qp.Codec.Validate(value); err != nil {
@@ -1290,6 +1388,9 @@ func (h *SSERouteHandle[Req, Event]) ValidateQueryMulti(params map[string][]stri
 		}
 		values, ok := params[qp.Name]
 		if !ok || len(values) == 0 {
+			if qp.Required {
+				return QueryParamError{Name: qp.Name, Err: ErrRequiredParam}
+			}
 			continue
 		}
 		value := values[0]
@@ -1310,6 +1411,9 @@ func (h *SSERouteHandle[Req, Event]) ValidateCookies(params map[string]string) e
 		}
 		value, ok := params[cp.Name]
 		if !ok {
+			if cp.Required {
+				return CookieParamError{Name: cp.Name, Err: ErrRequiredParam}
+			}
 			continue
 		}
 		if err := cp.Codec.Validate(value); err != nil {
@@ -1329,10 +1433,63 @@ func (h *SSERouteHandle[Req, Event]) ValidateHeaders(params map[string]string) e
 		}
 		value, ok := params[hp.Name]
 		if !ok {
+			if hp.Required {
+				return HeaderParamError{Name: hp.Name, Err: ErrRequiredParam}
+			}
 			continue
 		}
 		if err := hp.Codec.Validate(value); err != nil {
 			return HeaderParamError{Name: hp.Name, Value: value, Err: err}
+		}
+	}
+	return nil
+}
+
+// ValidateResponseHeaders validates HTTP response header values against their
+// registered codecs. Only entries with a non-nil Codec are validated.
+// Returns a [ResponseHeaderParamError] on the first invalid value.
+// When [ResponseHeaderParam.Required] is true and the key is absent, returns a
+// [ResponseHeaderParamError] wrapping [ErrRequiredParam].
+func (h *SSERouteHandle[Req, Event]) ValidateResponseHeaders(headers map[string]string) error {
+	for i := range h.responseHeaderParams {
+		rp := &h.responseHeaderParams[i]
+		if rp.Codec == nil {
+			continue
+		}
+		value, ok := headers[rp.Name]
+		if !ok {
+			if rp.Required {
+				return ResponseHeaderParamError{Name: rp.Name, Err: ErrRequiredParam}
+			}
+			continue
+		}
+		if err := rp.Codec.Validate(value); err != nil {
+			return ResponseHeaderParamError{Name: rp.Name, Value: value, Err: err}
+		}
+	}
+	return nil
+}
+
+// ValidateResponseCookies validates response cookie values against their
+// registered codecs. Only entries with a non-nil Codec are validated.
+// Returns a [ResponseCookieParamError] on the first invalid value.
+// When [ResponseCookieParam.Required] is true and the key is absent, returns a
+// [ResponseCookieParamError] wrapping [ErrRequiredParam].
+func (h *SSERouteHandle[Req, Event]) ValidateResponseCookies(cookies map[string]string) error {
+	for i := range h.responseCookieParams {
+		cp := &h.responseCookieParams[i]
+		if cp.Codec == nil {
+			continue
+		}
+		value, ok := cookies[cp.Name]
+		if !ok {
+			if cp.Required {
+				return ResponseCookieParamError{Name: cp.Name, Err: ErrRequiredParam}
+			}
+			continue
+		}
+		if err := cp.Codec.Validate(value); err != nil {
+			return ResponseCookieParamError{Name: cp.Name, Value: value, Err: err}
 		}
 	}
 	return nil
@@ -1416,17 +1573,19 @@ func (s SSERoute[Req, Event]) Register(b *Builder) (*SSERouteHandle[Req, Event],
 	}
 
 	h := &SSERouteHandle[Req, Event]{
-		Descriptor:      frozen,
-		Decode:          func(body []byte) (Req, error) { return jsonReq.Unmarshal(body) },
-		EncodeEvent:     func(e Event) ([]byte, error) { return jsonEvent.Marshal(e) },
-		ValidateEvent:   func(e Event) error { return jsonEvent.Validate(e) },
-		pathParams:      rb.pathParams,
-		queryParams:     rb.queryParams,
-		cookieParams:    rb.cookieParams,
-		headerParams:    rb.headerParams,
-		pathCodec:       b.pathCodec,
-		SecuritySchemes: schemes,
-		GlobalSecurity:  slices.Clone(b.globalSecurity),
+		Descriptor:           frozen,
+		Decode:               func(body []byte) (Req, error) { return jsonReq.Unmarshal(body) },
+		EncodeEvent:          func(e Event) ([]byte, error) { return jsonEvent.Marshal(e) },
+		ValidateEvent:        func(e Event) error { return jsonEvent.Validate(e) },
+		pathParams:           rb.pathParams,
+		queryParams:          rb.queryParams,
+		cookieParams:         rb.cookieParams,
+		headerParams:         rb.headerParams,
+		pathCodec:            b.pathCodec,
+		SecuritySchemes:      schemes,
+		GlobalSecurity:       slices.Clone(b.globalSecurity),
+		responseHeaderParams: rb.respHeaders,
+		responseCookieParams: rb.respCookies,
 	}
 	entry := &typedSSEEntry[Req, Event]{handle: h}
 	b.entries = append(b.entries, entry)

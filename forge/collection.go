@@ -157,14 +157,14 @@ func containerMapK[K comparable, V any](keyCodec codex.Codec[K], value codex.Cod
 // The resulting Function carries Kind="map" and Wraps=fn.Spec.Name in its
 // FunctionSpec, making the relationship visible in the pipeline YAML spec.
 //
-// The full governance options (WithDescription, WithAuthor, WithApproval,
-// WithRefinement) work on the slice-level function. WithRefinement receives the
-// whole []In slice — use it for collection-level constraints (e.g. minimum count).
+// Governance options ([FunctionMeta] and [WithRefinement]) work on the slice-level
+// function. [WithRefinement] receives the whole []In slice — use it for
+// collection-level constraints (e.g. minimum count).
 //
 // Panics if name or version is empty — these are programming errors.
 //
 //	batchCalc := forge.Map("batchCalc", "1.0.0", oeeCalc,
-//	    forge.WithDescription("Applies oeeCalc to a batch of measurements."),
+//	    forge.FunctionMeta{Description: "Applies oeeCalc to a batch of measurements."},
 //	    forge.WithRefinement(func(in []OEEIn) error {
 //	        if len(in) == 0 {
 //	            return fmt.Errorf("batch must not be empty")
@@ -465,7 +465,7 @@ func MapValues[In, Out any](
 //	perSensor := forge.MapValuesK("perSensor", "1.0.0",
 //	    sensorIDCodec,  // enforces ^[a-z]+-\d+$ on every key
 //	    singleSensorPipeline,
-//	    forge.WithDescription("Applies the sensor pipeline to every validated sensor key."),
+//	    forge.FunctionMeta{Description: "Applies the sensor pipeline to every validated sensor key."},
 //	)
 func MapValuesK[K comparable, In, Out any](
 	name, version string,
