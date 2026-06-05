@@ -97,7 +97,7 @@ func NewFunction[In, Out any](
 	input codex.Codec[In],
 	output codex.Codec[Out],
 	apply func(In) (Out, error),
-	opts ...FunctionOption,
+	opts ...FunctionOpt,
 ) *Function[In, Out] {
 	if name == "" {
 		panic("forge.NewFunction: name must not be empty")

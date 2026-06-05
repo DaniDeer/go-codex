@@ -42,9 +42,6 @@ import (
 
 // ── Domain types ──────────────────────────────────────────────────────────────
 
-// DashboardReq carries no request body for this GET endpoint.
-type DashboardReq struct{}
-
 // DashboardProps is the validated data for the full-page streaming response.
 type DashboardProps struct {
 	Title    string
@@ -53,9 +50,6 @@ type DashboardProps struct {
 	Section2 string
 	Section3 string
 }
-
-// NotifReq carries no request body for the SSE endpoint.
-type NotifReq struct{}
 
 // NotifProps is the validated payload for each SSE notification event.
 // Level must be one of "info", "warn", or "error" — enforced by codec Refine.
@@ -67,8 +61,6 @@ type NotifProps struct {
 
 // ── Codecs ────────────────────────────────────────────────────────────────────
 
-var dashReqCodec = codex.Struct[DashboardReq]()
-
 var dashPropsCodec = codex.Struct[DashboardProps](
 	codex.RequiredField("title", codex.String().Refine(validate.NonEmptyString).WithTitle("Title"), func(p DashboardProps) string { return p.Title }, func(p *DashboardProps, v string) { p.Title = v }),
 	codex.OptionalField("subtitle", codex.String().WithTitle("Subtitle"), func(p DashboardProps) string { return p.Subtitle }, func(p *DashboardProps, v string) { p.Subtitle = v }),
@@ -76,8 +68,6 @@ var dashPropsCodec = codex.Struct[DashboardProps](
 	codex.RequiredField("section2", codex.String().Refine(validate.NonEmptyString).WithTitle("Section 2"), func(p DashboardProps) string { return p.Section2 }, func(p *DashboardProps, v string) { p.Section2 = v }),
 	codex.RequiredField("section3", codex.String().Refine(validate.NonEmptyString).WithTitle("Section 3"), func(p DashboardProps) string { return p.Section3 }, func(p *DashboardProps, v string) { p.Section3 = v }),
 )
-
-var notifReqCodec = codex.Struct[NotifReq]()
 
 // validLevel enforces notification severity values.
 var validLevel = codex.Constraint[string]{
@@ -201,8 +191,8 @@ func main() {
 	//   Accept: text/html        → streams the templ component (chunked)
 	//   Accept: application/json → returns JSON-encoded DashboardProps
 
-	dashRoute, err := rest.NewRoute[DashboardReq, DashboardProps]("GET", "/stream/dashboard",
-		dashReqCodec, dashPropsCodec,
+	dashRoute, err := rest.NewRoute[struct{}, DashboardProps]("GET", "/stream/dashboard",
+		codex.Empty, dashPropsCodec,
 		rest.RouteMeta{OperationID: "streamDashboard"},
 	).Register(b)
 	if err != nil {
@@ -224,8 +214,8 @@ func main() {
 	// invalid Level or empty Message are rejected by send() and never written
 	// to the stream. The observer records each validation error.
 
-	notifRoute, err := rest.NewSSERoute[NotifReq, NotifProps]("/sse/notifications",
-		notifReqCodec, notifCodec,
+	notifRoute, err := rest.NewSSERoute[struct{}, NotifProps]("/sse/notifications",
+		codex.Empty, notifCodec,
 		rest.RouteMeta{OperationID: "sseNotifications"},
 	).Register(b)
 	if err != nil {
@@ -241,7 +231,7 @@ func main() {
 	mux := http.NewServeMux()
 	opts := nethttp.Options{Observer: obs}
 
-	nethttp.Register(mux, dashRoute, func(_ context.Context, _ DashboardReq) (DashboardProps, error) {
+	nethttp.Register(mux, dashRoute, func(_ context.Context, _ struct{}) (DashboardProps, error) {
 		return DashboardProps{
 			Title:    "Operations Dashboard",
 			Subtitle: "Real-time system overview",
@@ -251,7 +241,7 @@ func main() {
 		}, nil
 	}, opts)
 
-	nethttp.RegisterSSE(mux, notifRoute, func(ctx context.Context, _ NotifReq, send func(NotifProps) error) error {
+	nethttp.RegisterSSE(mux, notifRoute, func(ctx context.Context, _ struct{}, send func(NotifProps) error) error {
 		events := []NotifProps{
 			{ID: "n1", Message: "Deployment succeeded", Level: "info"},
 			{ID: "n2", Message: "Disk usage above 75%", Level: "warn"},
@@ -299,7 +289,7 @@ func main() {
 	// receives or renders invalid data.
 
 	invalidMux := http.NewServeMux()
-	nethttp.Register(invalidMux, dashRoute, func(_ context.Context, _ DashboardReq) (DashboardProps, error) {
+	nethttp.Register(invalidMux, dashRoute, func(_ context.Context, _ struct{}) (DashboardProps, error) {
 		return DashboardProps{
 			Title:    "", // fails NonEmptyString
 			Section1: "ok",

@@ -491,6 +491,61 @@ func SSEHandler[Req, Event any](handle *rest.SSERouteHandle[Req, Event], fn SSEH
 			obs.RecordRequest(r.Method, handle.Descriptor.Path, sw.code, time.Since(start))
 		}()
 
+		// Validate query parameters against their registered codecs (if any).
+		if opts.MultiValueQueryParams {
+			if err := handle.ValidateQueryMulti(r.URL.Query()); err != nil {
+				reportQueryErrors(err, obs)
+				opts.ErrorHandler(sw, r, http.StatusBadRequest, err)
+				return
+			}
+		} else {
+			if err := handle.ValidateQuery(queryValues(r)); err != nil {
+				reportQueryErrors(err, obs)
+				opts.ErrorHandler(sw, r, http.StatusBadRequest, err)
+				return
+			}
+		}
+
+		// Validate cookie parameters against their registered codecs (if any).
+		if err := handle.ValidateCookies(cookieValues(r)); err != nil {
+			reportCookieErrors(err, obs)
+			opts.ErrorHandler(sw, r, http.StatusBadRequest, err)
+			return
+		}
+
+		// Validate header parameters against their registered codecs (if any).
+		if err := handle.ValidateHeaders(headerValues(r)); err != nil {
+			reportHeaderErrors(err, obs)
+			opts.ErrorHandler(sw, r, http.StatusBadRequest, err)
+			return
+		}
+
+		// Enforce security: per-route requirements take precedence; nil falls back
+		// to global security declared via Builder.AddGlobalSecurity.
+		secReqs := handle.Descriptor.Security
+		if secReqs == nil {
+			secReqs = handle.GlobalSecurity
+		}
+		if len(secReqs) > 0 {
+			if credErr := validateSecurityCredentials(r, secReqs, handle.SecuritySchemes); credErr != nil {
+				if secObs, ok := obs.(stats.SecurityObserver); ok {
+					secObs.RecordSecurityRejection(handle.Descriptor.Path, firstScheme(secReqs))
+				}
+				opts.ErrorHandler(sw, r, http.StatusUnauthorized, credErr)
+				return
+			}
+			if opts.SecurityFunc != nil {
+				if err := opts.SecurityFunc(ctx, r, secReqs); err != nil {
+					secErr := rest.SecurityError{Err: err}
+					if secObs, ok := obs.(stats.SecurityObserver); ok {
+						secObs.RecordSecurityRejection(handle.Descriptor.Path, firstScheme(secReqs))
+					}
+					opts.ErrorHandler(sw, r, http.StatusUnauthorized, secErr)
+					return
+				}
+			}
+		}
+
 		// SSE headers — must be set before WriteHeader.
 		w.Header().Set("Content-Type", "text/event-stream")
 		w.Header().Set("Cache-Control", "no-cache")

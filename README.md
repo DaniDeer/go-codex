@@ -1067,7 +1067,7 @@ if err != nil {
 // and its schema (UUID) flows into the OpenAPI spec automatically.
 uuidCodec := codex.String().Refine(validate.UUID)
 getUser, err := rest.NewRoute[struct{}, User]("GET", "/users/{id}",
-    codex.Struct[struct{}](), userCodec,
+    codex.Empty, userCodec,
     rest.RouteMeta{
         OperationID:    "getUser",
         Summary:        "Get a user by ID",
@@ -1101,7 +1101,7 @@ if err != nil {
 // and its schema flows into the OpenAPI query parameter spec automatically.
 pageCodec := codex.String().Refine(validate.NonNegativeIntString)
 listUsers, err := rest.NewRoute[struct{}, []User]("GET", "/users",
-    codex.Struct[struct{}](), codex.SliceOf(userCodec),
+    codex.Empty, codex.SliceOf(userCodec),
     rest.RouteMeta{
         OperationID: "listUsers",
         Summary:     "List users",
@@ -1129,7 +1129,7 @@ if err := listUsers.ValidateQuery(map[string]string{"page": "abc"}); err != nil 
 sessionCodec := codex.String().Refine(validate.NonEmptyString)
 requestIDCodec := codex.String().Refine(validate.UUID)
 profile, err := rest.NewRoute[struct{}, User]("GET", "/profile",
-    codex.Struct[struct{}](), userCodec,
+    codex.Empty, userCodec,
     rest.RouteMeta{
         OperationID: "getProfile",
         Summary:     "Get the current user profile",
@@ -1776,8 +1776,8 @@ import (
 )
 
 // Register both formats on one route.
-articleRoute, _ := rest.NewRoute[ArticleReq, ArticleProps]("GET", "/article",
-    articleReqCodec, articlePropsCodec,
+articleRoute, _ := rest.NewRoute[struct{}, ArticleProps]("GET", "/article",
+    codex.Empty, articlePropsCodec,
     rest.RouteMeta{OperationID: "getArticle"},
 ).Register(b)
 articleRoute = articleRoute.WithFormats(
@@ -1786,8 +1786,8 @@ articleRoute = articleRoute.WithFormats(
 )
 
 // One handler, one route — adapter handles content negotiation.
-nethttp.Register(mux, articleRoute, func(ctx context.Context, req ArticleReq) (ArticleProps, error) {
-    return svc.GetArticle(ctx, req.ID)
+nethttp.Register(mux, articleRoute, func(ctx context.Context, _ struct{}) (ArticleProps, error) {
+    return svc.GetArticle(ctx)
 }, nethttp.Options{Observer: obs})
 ```
 
@@ -1807,8 +1807,8 @@ See [`examples/adapters-templ`](examples/adapters-templ/main.go) for a runnable 
 
 ```go
 // Chunked streaming HTML page
-dashRoute, _ := rest.NewRoute[DashboardReq, DashboardProps]("GET", "/dashboard",
-    dashReqCodec, dashPropsCodec, rest.RouteMeta{},
+dashRoute, _ := rest.NewRoute[struct{}, DashboardProps]("GET", "/dashboard",
+    codex.Empty, dashPropsCodec, rest.RouteMeta{},
 ).Register(b)
 dashRoute = dashRoute.WithFormats(
     adapttempl.StreamingFormat(dashPropsCodec, dashboardPage), // chunked HTML
@@ -1816,8 +1816,8 @@ dashRoute = dashRoute.WithFormats(
 )
 
 // SSE with HTML fragment events — each event is a rendered <li>
-notifRoute, _ := rest.NewSSERoute[NotifReq, NotifProps]("/sse/notifications",
-    notifReqCodec, notifCodec, rest.RouteMeta{},
+notifRoute, _ := rest.NewSSERoute[struct{}, NotifProps]("/sse/notifications",
+    codex.Empty, notifCodec, rest.RouteMeta{},
 ).Register(b)
 notifRoute = notifRoute.WithFormats(
     adapttempl.Format(notifCodec, notifFragment), // data: <li class="notif-warn">...</li>
@@ -1840,15 +1840,15 @@ import (
 
 // sensorRoute registers GET /sensors/{id}/readings.
 // {id} is validated by sensorIDCodec at BuildPath time and in the OpenAPI spec.
-sensorRoute, err := rest.NewSSERoute[emptyReq, sensorReading](
+sensorRoute, err := rest.NewSSERoute[struct{}, sensorReading](
     "/sensors/{id}/readings",
-    emptyReqCodec, sensorReadingCodec,
+    codex.Empty, sensorReadingCodec,
     rest.RouteMeta{OperationID: "streamSensor"},
     rest.PathParam{Name: "id", Description: "Sensor ID", Codec: &sensorIDCodec},
 ).Register(b)
 
 // Wire onto net/http.
-nethttp.RegisterSSE(mux, sensorRoute, func(ctx context.Context, _ emptyReq, send func(sensorReading) error) error {
+nethttp.RegisterSSE(mux, sensorRoute, func(ctx context.Context, _ struct{}, send func(sensorReading) error) error {
     r, _ := nethttp.RequestFromContext(ctx)
     sensorID := r.PathValue("id")
     for {

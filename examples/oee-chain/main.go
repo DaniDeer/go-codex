@@ -436,8 +436,10 @@ func main() {
 		func(in AvailabilityIn) (Availability, error) {
 			return Availability((float64(in.PlannedTime) - float64(in.Downtime)) / float64(in.PlannedTime)), nil
 		},
-		forge.WithDescription("Computes availability as (plannedTime - downtime) / plannedTime."),
-		forge.WithAuthor("oee-team"),
+		forge.FunctionMeta{
+			Description: "Computes availability as (plannedTime - downtime) / plannedTime.",
+			Author:      "oee-team",
+		},
 	)
 
 	performanceCalc := forge.NewFunction(
@@ -447,8 +449,10 @@ func main() {
 		func(in PerformanceIn) (Performance, error) {
 			return Performance(float64(in.ActualCycles) / float64(in.PlannedCycles)), nil
 		},
-		forge.WithDescription("Computes performance as actualCycles / plannedCycles."),
-		forge.WithAuthor("oee-team"),
+		forge.FunctionMeta{
+			Description: "Computes performance as actualCycles / plannedCycles.",
+			Author:      "oee-team",
+		},
 	)
 
 	qualityCalc := forge.NewFunction(
@@ -461,8 +465,10 @@ func main() {
 			}
 			return Quality(float64(in.GoodUnits) / float64(in.TotalUnits)), nil
 		},
-		forge.WithDescription("Computes quality as goodUnits / totalUnits."),
-		forge.WithAuthor("oee-team"),
+		forge.FunctionMeta{
+			Description: "Computes quality as goodUnits / totalUnits.",
+			Author:      "oee-team",
+		},
 	)
 
 	oeeCalc := forge.NewFunction(
@@ -472,8 +478,10 @@ func main() {
 		func(in OEEIn) (OEE, error) {
 			return OEE(float64(in.Availability) * float64(in.Performance) * float64(in.Quality)), nil
 		},
-		forge.WithDescription("Computes OEE = availability × performance × quality."),
-		forge.WithAuthor("oee-team"),
+		forge.FunctionMeta{
+			Description: "Computes OEE = availability × performance × quality.",
+			Author:      "oee-team",
+		},
 	)
 
 	// ── Registry: graph inference + pipeline spec ─────────────────────────────

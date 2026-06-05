@@ -22,7 +22,7 @@ go-codex is a Go port of the core ideas from Haskell's [autodocodec](https://hac
 
 | Package           | Responsibility                                                                            | Imports allowed from             |
 |-------------------|-------------------------------------------------------------------------------------------|----------------------------------|
-| `codex`           | PUBLIC API: `Codec[T]`, primitives (`Int`, `Int32`, `Int64`, `Uint`, `Uint64`, `Float32`, `Float64`, `String`, `Bool`, `Bytes`, `Time`, `Date`, `Duration`, `Any`, `Pure`, `Eq`), `Nullable[T]`, `SliceOf[T]`, `StringMap[V]`, `Map[K, V]`, struct, `TaggedUnion`, `UntaggedUnion`, `Either[A,B]`, `Either2`, `MapCodecSafe`, `MapCodecValidated`, `Must`, `Constraint`, `Refine`, `RefineFunc`, `ValidationError`, `ValidationErrors`, `ConstraintError`, `TypeMismatchError`, `ElementError`, `KeyError`, `UnknownVariantError`, `VariantError`, `EitherError`, `ErrMissingField` | `schema`     |
+| `codex`           | PUBLIC API: `Codec[T]`, primitives (`Int`, `Int32`, `Int64`, `Uint`, `Uint64`, `Float32`, `Float64`, `String`, `Bool`, `Bytes`, `Time`, `Date`, `Duration`, `Any`, `Pure`, `Eq`, `Empty`), `Nullable[T]`, `SliceOf[T]`, `StringMap[V]`, `Map[K, V]`, struct, `TaggedUnion`, `UntaggedUnion`, `Either[A,B]`, `Either2`, `MapCodecSafe`, `MapCodecValidated`, `Must`, `Constraint`, `Refine`, `RefineFunc`, `ValidationError`, `ValidationErrors`, `ConstraintError`, `TypeMismatchError`, `ElementError`, `KeyError`, `UnknownVariantError`, `VariantError`, `EitherError`, `ErrMissingField` | `schema`     |
 | `schema`          | Schema model (pure data, no codec logic)                                                  | none                             |
 | `validate`        | Reusable `Constraint` functions: numbers, strings, format, bytes                          | `codex`, `schema`                |
 | `format`          | Bridges `Codec[T]` to wire formats: JSON, YAML, TOML, streaming; `FromEnv[T]` for schema-driven env var loading; `NewStreamed` for chunked/SSE writes | `codex`, `schema`, external libs |
@@ -31,7 +31,7 @@ go-codex is a Go port of the core ideas from Haskell's [autodocodec](https://hac
 | `render/openapi`  | Renders `schema.Schema` as OpenAPI 3.1 `components/schemas`; `DocumentBuilder` for full spec | `schema`, `route`, `render/internal/schemarender`, external libs |
 | `render/asyncapi/v2` | Renders channels and schemas as a full AsyncAPI 2.6 document (frozen)               | `schema`, `render/internal/schemarender`, external libs |
 | `render/asyncapi/v3` | Renders channels and schemas as a full AsyncAPI 3.0 document; separate `channels` + `operations` top-level keys; per-operation `security`; `Server.Security`; `ChannelItem.Address`; `AddSecurityScheme(name, route.SecurityScheme)` | `schema`, `route`, `render/internal/schemarender`, external libs |
-| `forge`           | Governed, signed KPI computation: `Measured[T]` boundary wrapper with provenance; `MeasuredCodec[T]` struct codec; `Function[In,Out]` generic derivation function with SHA-256 contract hash — single-input or struct-input (use `codex.Struct[T]` for multi-input); `NewFunction[In,Out](name, version string, input codex.Codec[In], output codex.Codec[Out], fn, opts...)` constructor — infallible (panics on empty name/version); port names for pipeline graph-edge inference are inferred from `codec.Schema.Title` (set via `.WithTitle("name")`); struct codec properties auto-expand to individual `PortSpec` entries; scalar codecs default to `"input"` / `"output"` when title is empty; `Compose[A,B,Out]` for type-safe chaining — infallible; `Registry` fluent builder (`NewRegistry(title, version string).WithDescription().WithObserver()`) + `PipelineSpec` for graph inference; `FunctionOption` interface — primary option is `FunctionMeta{Description, Author, ApprovedBy, ApprovedAt string}` struct literal (matches `RouteMeta` / `ChannelMeta` pattern); convenience wrappers `WithDescription`, `WithAuthor`, `WithApproval` also available; pipeline-level cross-input refinement via `WithRefinement[In](func(In)error)` — preferred: cross-field constraints via `codex.RefineFunc` on the input struct codec surface as `InputError`; `WithRefinement` surfaces as `RefinementError`; Apply sequence: input codec validation → optional cross-input refinement → compute → output codec validation; typed errors: `InputError`, `OutputError`, `ApplyError`, `RefinementError{Function,Err}`; `FunctionKind` typed constants: `FunctionKindScalar`(`"scalar"`), `FunctionKindMap`, `FunctionKindFilter`, `FunctionKindReduce`, `FunctionKindMapValues`; `render/pipeline` omits `kind:` key for `FunctionKindScalar`; `FunctionSpec.Kind FunctionKind`, `FunctionSpec.Inputs []PortSpec`, `FunctionSpec.Output PortSpec`; collection ops: `Map` (lift fn over slice), `Filter` (predicate over slice, element port name inferred from `elemCodec.Schema.Title`), `Reduce` (fold slice, elem+acc port names from codec titles), `MapValues` (lift fn over `map[string]_`, no key validation), `MapValuesK[K]` (lift fn over `map[K]_` with key codec validation — validates all keys atomically before any value is processed; invalid key → `InputError → KeyError → ConstraintError`; `Kind=FunctionKindMapValues`, `Wraps=innerFn.Spec.Name` in pipeline YAML) | `codex`, `schema`, `stats`, stdlib (`crypto/sha256`, `encoding/json`) |
+| `forge`           | Governed, signed KPI computation: `Measured[T]` boundary wrapper with provenance; `MeasuredCodec[T]` struct codec; `Function[In,Out]` generic derivation function with SHA-256 contract hash — single-input or struct-input (use `codex.Struct[T]` for multi-input); `NewFunction[In,Out](name, version string, input codex.Codec[In], output codex.Codec[Out], fn, opts...)` constructor — infallible (panics on empty name/version); port names for pipeline graph-edge inference are inferred from `codec.Schema.Title` (set via `.WithTitle("name")`); struct codec properties auto-expand to individual `PortSpec` entries; scalar codecs default to `"input"` / `"output"` when title is empty; `Compose[A,B,Out]` for type-safe chaining — infallible; `Registry` fluent builder (`NewRegistry(title, version string).WithDescription().WithObserver()`) + `PipelineSpec` for graph inference; `FunctionOpt` interface — primary option is `FunctionMeta{Description, Author, ApprovedBy, ApprovedAt string}` struct literal (matches `RouteMeta` / `ChannelMeta` pattern); convenience wrappers `WithDescription`, `WithAuthor`, `WithApproval` also available; pipeline-level cross-input refinement via `WithRefinement[In](func(In)error)` — preferred: cross-field constraints via `codex.RefineFunc` on the input struct codec surface as `InputError`; `WithRefinement` surfaces as `RefinementError`; Apply sequence: input codec validation → optional cross-input refinement → compute → output codec validation; typed errors: `InputError`, `OutputError`, `ApplyError`, `RefinementError{Function,Err}`; `FunctionKind` typed constants: `FunctionKindScalar`(`"scalar"`), `FunctionKindMap`, `FunctionKindFilter`, `FunctionKindReduce`, `FunctionKindMapValues`; `render/pipeline` omits `kind:` key for `FunctionKindScalar`; `FunctionSpec.Kind FunctionKind`, `FunctionSpec.Inputs []PortSpec`, `FunctionSpec.Output PortSpec`; collection ops: `Map` (lift fn over slice), `Filter` (predicate over slice, element port name inferred from `elemCodec.Schema.Title`), `Reduce` (fold slice, elem+acc port names from codec titles), `MapValues` (lift fn over `map[string]_`, no key validation), `MapValuesK[K]` (lift fn over `map[K]_` with key codec validation — validates all keys atomically before any value is processed; invalid key → `InputError → KeyError → ConstraintError`; `Kind=FunctionKindMapValues`, `Wraps=innerFn.Spec.Name` in pipeline YAML) | `codex`, `schema`, `stats`, stdlib (`crypto/sha256`, `encoding/json`) |
 | `render/pipeline` | Renders a `forge.PipelineSpec` as a `pipelineSpec` YAML document (mirrors `render/openapi` / `render/asyncapi`) | `forge`, `schema`, `render/internal/schemarender`, external libs |
 | `api/internal`    | Shared helpers for `api/rest` and `api/events` (template variable parsing and substitution); not part of the public API | `codex` |
 | `api/rest`        | Transport-agnostic REST API builder; typed Decode/Encode + OpenAPI spec; `NewSSERoute` for Server-Sent Events; `SSERouteHandle` with `BuildPath` and `WithFormats` (renamed from `WithFormats`; mirrors `ChannelHandle.WithFormats`); `RouteHandle.WithRequestFormats` / `WithFormats` for multi-format request/response bodies; `rest.SecurityScheme{route.SecurityScheme + Codec}` for credential format validation; `WithCodec(c codex.Codec[string]) SecurityScheme` to set codec without pointer boilerplate; `Builder.AddSecurityScheme(name, rest.SecurityScheme)` / `AddGlobalSecurity(reqs...)`; `RouteMeta.Security []route.SecurityRequirement` (nil=inherit global, empty=explicitly no auth); `RouteHandle.SecuritySchemes map[string]rest.SecurityScheme`; `RouteHandle.GlobalSecurity []route.SecurityRequirement` (populated from `AddGlobalSecurity`); `SecurityCredentialError{Scheme, Err}` / `SecurityError{Err}` structured errors | `codex`, `format`, `route`, `render/openapi`, `schema`, `api/internal` |
@@ -265,14 +265,11 @@ type Constraint[T any] struct {
     Schema  func(schema.Schema) schema.Schema // optional: mutates schema when Refine is applied
 }
 
-// Refine (method) adds one or more constraints to a codec. Constraints run on
+// Refine adds one or more constraints to a codec. Constraints run on
 // both Encode and Decode, in order; first failure stops evaluation.
 // If Constraint.Schema is non-nil, it is applied to the codec's schema.
 // Calling Refine with no arguments returns the codec unchanged.
 func (c Codec[T]) Refine(cons ...Constraint[T]) Codec[T]
-
-// Refine (free function) — convenience wrapper, identical behaviour to the method.
-func Refine[T any](c codex.Codec[T], constraints ...codex.Constraint[T]) codex.Codec[T]
 ```
 
 - `Constraint.Name` identifies the constraint in error messages.
@@ -301,10 +298,7 @@ var rangeCodec = codex.Struct[DateRange](...).
 
 ```go
 // Good example — constrained integer
-var PositiveIntCodec = codex.Refine(
-    codex.Int(),
-    validate.PositiveInt,
-)
+var PositiveIntCodec = codex.Int().Refine(validate.PositiveInt)
 
 // Good example — custom constraint with schema annotation
 var ShortStringCodec = codex.String().Refine(codex.Constraint[string]{
@@ -317,6 +311,20 @@ var ShortStringCodec = codex.String().Refine(codex.Constraint[string]{
         return s
     },
 })
+```
+
+`codex.Empty` is a ready-made `Codec[struct{}]` for body-less routes:
+
+```go
+// Use codex.Empty as reqCodec for GET / DELETE / SSE routes — no per-file empty struct needed.
+// Adapters skip body decoding when Descriptor.RequestBody == nil (GET, HEAD, DELETE, etc.).
+handle, err := rest.NewRoute[struct{}, User]("GET", "/users/{id}",
+    codex.Empty, userCodec, rest.RouteMeta{OperationID: "getUser"},
+).Register(b)
+
+sseRoute, err := rest.NewSSERoute[struct{}, Event]("/stream",
+    codex.Empty, eventCodec, rest.RouteMeta{OperationID: "streamEvents"},
+).Register(b)
 ```
 
 `codex.Pure` and `codex.Eq` are related fixed-value combinators:
@@ -1082,16 +1090,16 @@ import (
 )
 
 // Register an SSE route — always GET.
-sensorRoute, err := rest.NewSSERoute[emptyReq, sensorReading](
+sensorRoute, err := rest.NewSSERoute[struct{}, sensorReading](
     "/sensors/{id}/readings",
-    emptyReqCodec, sensorReadingCodec,
+    codex.Empty, sensorReadingCodec,
     rest.RouteMeta{OperationID: "streamSensor"},
     rest.PathParam{Name: "id", Description: "Sensor ID", Codec: &sensorIDCodec},
 ).Register(b)
 
 // Wire onto net/http.
 nethttp.RegisterSSE(mux, sensorRoute,
-    func(ctx context.Context, _ emptyReq, send func(sensorReading) error) error {
+    func(ctx context.Context, _ struct{}, send func(sensorReading) error) error {
         r, _ := nethttp.RequestFromContext(ctx)
         id := r.PathValue("id")
         for {

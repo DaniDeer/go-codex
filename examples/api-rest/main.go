@@ -30,9 +30,6 @@ type User struct {
 	Email string
 }
 
-// emptyReq is used for routes that carry no request body (e.g. GET).
-type emptyReq struct{}
-
 // --- Codecs: single source of truth for encode, decode, validation, schema ---
 
 var createUserCodec = codex.Struct[CreateUserRequest](
@@ -66,7 +63,7 @@ var userCodec = codex.Struct[User](
 	),
 )
 
-var emptyCodec = codex.Struct[emptyReq]()
+var _ = struct{}{} // placeholder removed — use codex.Empty
 
 func main() {
 	// Build the API: register routes with codecs.
@@ -104,10 +101,9 @@ func main() {
 		os.Exit(1)
 	}
 
-	// GET /users/{id} — no request body; emptyReq carries no fields.
 	// Path parameter is extracted at the HTTP layer (e.g. r.PathValue("id")).
-	getUser, err := rest.NewRoute[emptyReq, User]("GET", "/users/{id}",
-		emptyCodec, userCodec,
+	getUser, err := rest.NewRoute[struct{}, User]("GET", "/users/{id}",
+		codex.Empty, userCodec,
 		rest.RouteMeta{
 			OperationID:     "getUser",
 			Summary:         "Get a user by ID",

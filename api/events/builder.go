@@ -140,6 +140,9 @@ func (p Publish) applyChannel(cb *channelBuilder) { cb.publish = &p }
 // It controls the channel-level description in the AsyncAPI spec.
 //
 // ChannelMeta implements [ChannelOpt]: pass it directly to [NewChannel].
+//
+// The struct currently holds a single field. Additional channel-level metadata
+// fields (e.g. Title, Tags) may be added in future without breaking callers.
 type ChannelMeta struct {
 	Description string
 }
@@ -489,7 +492,7 @@ func WithTopicCodec(c codex.Codec[string]) BuilderOption {
 //	}
 //	b := events.NewBuilder(info, events.WithTopicConstraints(validate.MQTTPublishTopic, sensorLevel))
 func WithTopicConstraints(cons ...codex.Constraint[string]) BuilderOption {
-	c := codex.Refine(codex.String(), cons...)
+	c := codex.String().Refine(cons...)
 	return WithTopicCodec(c)
 }
 

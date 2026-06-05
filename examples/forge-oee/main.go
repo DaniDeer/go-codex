@@ -18,7 +18,7 @@
 //  1. Domain codecs with validate.RangeFloat constraints.
 //  2. forge.MeasuredCodec for attaching provenance to values crossing system boundaries.
 //  3. Minimal pipeline definition — only name + version + codecs + compute fn.
-//  4. Governed pipeline definition — same but with FunctionOption governance metadata.
+//  4. Governed pipeline definition — same but with FunctionOpt governance metadata.
 //  5. Single-input functions: gradeCalc, availabilityOnlyOEE.
 //  6. Multi-input functions via struct codecs (codex.Struct): availabilityCalc, performanceCalc.
 //  7. Sum-type composition: OEEIn assembles validated Availability+Performance+Quality outputs.
@@ -257,9 +257,12 @@ func main() {
 		func(in AvailabilityIn) (Availability, error) {
 			return Availability((float64(in.PlannedTime) - float64(in.Downtime)) / float64(in.PlannedTime)), nil
 		},
-		forge.WithDescription("Computes availability as (plannedTime - downtime) / plannedTime."),
-		forge.WithAuthor("OT Engineering"),
-		forge.WithApproval("Plant Manager", "2024-03-01"),
+		forge.FunctionMeta{
+			Description: "Computes availability as (plannedTime - downtime) / plannedTime.",
+			Author:      "OT Engineering",
+			ApprovedBy:  "Plant Manager",
+			ApprovedAt:  "2024-03-01",
+		},
 	)
 
 	av, err := availabilityCalc.Apply(AvailabilityIn{PlannedTime: 8, Downtime: 1})
@@ -287,9 +290,12 @@ func main() {
 			}
 			return Performance(ratio), nil
 		},
-		forge.WithDescription("Computes performance as min(1, actualCycles / plannedCycles)."),
-		forge.WithAuthor("OT Engineering"),
-		forge.WithApproval("Plant Manager", "2024-03-01"),
+		forge.FunctionMeta{
+			Description: "Computes performance as min(1, actualCycles / plannedCycles).",
+			Author:      "OT Engineering",
+			ApprovedBy:  "Plant Manager",
+			ApprovedAt:  "2024-03-01",
+		},
 	)
 
 	pe, err := performanceCalc.Apply(PerformanceIn{PlannedCycles: 400, ActualCycles: 360})
@@ -309,9 +315,12 @@ func main() {
 		func(in OEEIn) (OEE, error) {
 			return OEE(float64(in.Availability) * float64(in.Performance) * float64(in.Quality)), nil
 		},
-		forge.WithDescription("Computes OEE as the product of availability, performance, and quality."),
-		forge.WithAuthor("OT Engineering"),
-		forge.WithApproval("Quality Manager", "2024-03-01"),
+		forge.FunctionMeta{
+			Description: "Computes OEE as the product of availability, performance, and quality.",
+			Author:      "OT Engineering",
+			ApprovedBy:  "Quality Manager",
+			ApprovedAt:  "2024-03-01",
+		},
 	)
 
 	fmt.Println("=== Sum type composition: OEEIn assembles upstream KPI outputs ===")
@@ -386,23 +395,30 @@ func main() {
 				return "poor", nil
 			}
 		},
-		forge.WithDescription("Converts an OEE value to an efficiency grade."),
-		forge.WithAuthor("OT Engineering"),
-		forge.WithApproval("Quality Manager", "2024-03-01"),
+		forge.FunctionMeta{
+			Description: "Converts an OEE value to an efficiency grade.",
+			Author:      "OT Engineering",
+			ApprovedBy:  "Quality Manager",
+			ApprovedAt:  "2024-03-01",
+		},
 	)
 
 	availabilityOnlyOEE := forge.NewFunction("availabilityOnlyOEE", "1.0.0",
 		availabilityCodec,
 		oeeCodec,
 		func(a Availability) (OEE, error) { return OEE(float64(a)), nil },
-		forge.WithDescription("Simplified OEE assuming perfect performance and quality."),
-		forge.WithAuthor("OT Engineering"),
+		forge.FunctionMeta{
+			Description: "Simplified OEE assuming perfect performance and quality.",
+			Author:      "OT Engineering",
+		},
 	)
 
 	shiftGrade := forge.Compose("shiftGradeFromAvailability", "1.0.0",
 		availabilityOnlyOEE, gradeCalc,
-		forge.WithDescription("Rates a shift by availability alone (perf=1, quality=1)."),
-		forge.WithAuthor("OT Engineering"),
+		forge.FunctionMeta{
+			Description: "Rates a shift by availability alone (perf=1, quality=1).",
+			Author:      "OT Engineering",
+		},
 	)
 
 	fmt.Println("=== Compose: shiftGradeFromAvailability ===")

@@ -114,6 +114,7 @@ type RouteMeta struct {
 
 	// ReqSchemaName, when non-empty, emits a $ref for the request body schema
 	// in the spec and registers the schema under that name in components/schemas.
+	// Has no effect on SSE routes (GET — no request body).
 	ReqSchemaName string
 
 	// RespStatus is the HTTP status code for the primary success response.
@@ -987,7 +988,7 @@ func WithPathCodec(c codex.Codec[string]) BuilderOption {
 //	}
 //	b := rest.NewBuilder(info, rest.WithPathConstraints(validate.HTTPPath, sensorPrefix))
 func WithPathConstraints(cons ...codex.Constraint[string]) BuilderOption {
-	c := codex.Refine(codex.String(), cons...)
+	c := codex.String().Refine(cons...)
 	return WithPathCodec(c)
 }
 
@@ -1184,8 +1185,30 @@ type SSERouteHandle[Req, Event any] struct {
 	// pathParams holds per-variable params registered via PathParam options.
 	pathParams []PathParam
 
+	// queryParams holds per-parameter entries registered via QueryParam options.
+	queryParams []QueryParam
+
+	// cookieParams holds per-parameter entries registered via CookieParam options.
+	cookieParams []CookieParam
+
+	// headerParams holds per-parameter entries registered via HeaderParam options.
+	headerParams []HeaderParam
+
 	// pathCodec is the builder-level path codec (may be nil).
 	pathCodec *codex.Codec[string]
+
+	// SecuritySchemes maps scheme name to SecurityScheme (with runtime Codec).
+	// Populated from Builder.AddSecurityScheme when Register is called.
+	// Adapters use this map to extract and validate credentials per scheme.
+	SecuritySchemes map[string]SecurityScheme
+
+	// GlobalSecurity holds the builder-level security requirements that apply
+	// when Descriptor.Security is nil (i.e. the route inherits global security).
+	// Adapters resolve the effective requirements as:
+	//   reqs := handle.Descriptor.Security
+	//   if reqs == nil { reqs = handle.GlobalSecurity }
+	// Set via [Builder.AddGlobalSecurity]. nil when no global security is declared.
+	GlobalSecurity []route.SecurityRequirement
 }
 
 // BuildPath substitutes {varName} placeholders in the route's path template
@@ -1226,7 +1249,93 @@ func (h *SSERouteHandle[Req, Event]) BuildPath(vars map[string]string) (string, 
 //	)
 func (h *SSERouteHandle[Req, Event]) WithFormats(fmts ...format.Format[Event]) *SSERouteHandle[Req, Event] {
 	h.Formats = slices.Clone(fmts)
+	if len(h.Descriptor.Responses) > 0 {
+		var cts []string
+		for _, f := range fmts {
+			if ct := f.ContentType(); ct != "" {
+				cts = append(cts, ct)
+			}
+		}
+		h.Descriptor.Responses[0].ContentTypes = cts
+	}
 	return h
+}
+
+// ValidateQuery validates query parameter values against their registered codecs.
+// Mirrors [RouteHandle.ValidateQuery] for SSE routes.
+func (h *SSERouteHandle[Req, Event]) ValidateQuery(params map[string]string) error {
+	for i := range h.queryParams {
+		qp := &h.queryParams[i]
+		if qp.Codec == nil {
+			continue
+		}
+		value, ok := params[qp.Name]
+		if !ok {
+			continue
+		}
+		if err := qp.Codec.Validate(value); err != nil {
+			return QueryParamError{Name: qp.Name, Value: value, Err: err}
+		}
+	}
+	return nil
+}
+
+// ValidateQueryMulti validates query parameter values using a multi-value map.
+// Mirrors [RouteHandle.ValidateQueryMulti] for SSE routes.
+func (h *SSERouteHandle[Req, Event]) ValidateQueryMulti(params map[string][]string) error {
+	for i := range h.queryParams {
+		qp := &h.queryParams[i]
+		if qp.Codec == nil {
+			continue
+		}
+		values, ok := params[qp.Name]
+		if !ok || len(values) == 0 {
+			continue
+		}
+		value := values[0]
+		if err := qp.Codec.Validate(value); err != nil {
+			return QueryParamError{Name: qp.Name, Value: value, Err: err}
+		}
+	}
+	return nil
+}
+
+// ValidateCookies validates cookie parameter values against their registered codecs.
+// Mirrors [RouteHandle.ValidateCookies] for SSE routes.
+func (h *SSERouteHandle[Req, Event]) ValidateCookies(params map[string]string) error {
+	for i := range h.cookieParams {
+		cp := &h.cookieParams[i]
+		if cp.Codec == nil {
+			continue
+		}
+		value, ok := params[cp.Name]
+		if !ok {
+			continue
+		}
+		if err := cp.Codec.Validate(value); err != nil {
+			return CookieParamError{Name: cp.Name, Value: value, Err: err}
+		}
+	}
+	return nil
+}
+
+// ValidateHeaders validates HTTP header values against their registered codecs.
+// Mirrors [RouteHandle.ValidateHeaders] for SSE routes.
+func (h *SSERouteHandle[Req, Event]) ValidateHeaders(params map[string]string) error {
+	for i := range h.headerParams {
+		hp := &h.headerParams[i]
+		if hp.Codec == nil {
+			continue
+		}
+		value, ok := params[hp.Name]
+		if !ok {
+			continue
+		}
+		if err := hp.Codec.Validate(value); err != nil {
+			return HeaderParamError{Name: hp.Name, Value: value, Err: err}
+		}
+	}
+	return nil
 }
 
 // SSERoute is a declarative Server-Sent Events route spec: path, codecs, and
@@ -1301,13 +1410,23 @@ func (s SSERoute[Req, Event]) Register(b *Builder) (*SSERouteHandle[Req, Event],
 	jsonReq := format.JSON(s.reqCodec)
 	jsonEvent := format.JSON(s.eventCodec)
 
+	schemes := make(map[string]SecurityScheme, len(b.securitySchemes))
+	for k, v := range b.securitySchemes {
+		schemes[k] = v
+	}
+
 	h := &SSERouteHandle[Req, Event]{
-		Descriptor:    frozen,
-		Decode:        func(body []byte) (Req, error) { return jsonReq.Unmarshal(body) },
-		EncodeEvent:   func(e Event) ([]byte, error) { return jsonEvent.Marshal(e) },
-		ValidateEvent: func(e Event) error { return jsonEvent.Validate(e) },
-		pathParams:    rb.pathParams,
-		pathCodec:     b.pathCodec,
+		Descriptor:      frozen,
+		Decode:          func(body []byte) (Req, error) { return jsonReq.Unmarshal(body) },
+		EncodeEvent:     func(e Event) ([]byte, error) { return jsonEvent.Marshal(e) },
+		ValidateEvent:   func(e Event) error { return jsonEvent.Validate(e) },
+		pathParams:      rb.pathParams,
+		queryParams:     rb.queryParams,
+		cookieParams:    rb.cookieParams,
+		headerParams:    rb.headerParams,
+		pathCodec:       b.pathCodec,
+		SecuritySchemes: schemes,
+		GlobalSecurity:  slices.Clone(b.globalSecurity),
 	}
 	entry := &typedSSEEntry[Req, Event]{handle: h}
 	b.entries = append(b.entries, entry)

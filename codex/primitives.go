@@ -333,3 +333,14 @@ func Pure[T any](value T) Codec[T] {
 		Schema: schema.Schema{Enum: []any{value}},
 	}
 }
+
+// Empty is a ready-made [Codec] for routes and SSE streams that carry no request body.
+// Use it as the reqCodec argument to [api/rest.NewRoute] and [api/rest.NewSSERoute] for
+// GET, DELETE, and other body-less routes — no per-file empty struct or codec needed.
+//
+// handle, err := rest.NewRoute[struct{}, User]("GET", "/users/{id}",
+//
+//	codex.Empty, userCodec, rest.RouteMeta{OperationID: "getUser"},
+//
+// ).Register(b)
+var Empty Codec[struct{}] = Struct[struct{}]()

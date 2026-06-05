@@ -68,14 +68,6 @@ func (c Codec[T]) Refine(cons ...Constraint[T]) Codec[T] {
 	return c
 }
 
-// Refine applies multiple constraints to a codec.
-func Refine[T any](c Codec[T], constraints ...Constraint[T]) Codec[T] {
-	for _, cons := range constraints {
-		c = c.Refine(cons)
-	}
-	return c
-}
-
 // RefineFunc wraps the codec with a constraint expressed as a function returning an error.
 // Encode validates after serialising (underlying field errors surface before cross-field
 // constraints); Decode validates after parsing.

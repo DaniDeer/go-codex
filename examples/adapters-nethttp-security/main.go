@@ -79,9 +79,6 @@ type adminActionResp struct {
 	Result string
 }
 
-// emptyReq is used for routes that have no request body (GET, HEAD, etc.).
-type emptyReq struct{}
-
 // ── Codecs ────────────────────────────────────────────────────────────────────
 
 var loginReqCodec = codex.Struct[loginReq](
@@ -251,7 +248,7 @@ func (o *telemetryObserver) Print() {
 
 func buildAPI() (
 	loginHandle *rest.RouteHandle[loginReq, tokenResp],
-	profileHandle *rest.RouteHandle[emptyReq, profileResp],
+	profileHandle *rest.RouteHandle[struct{}, profileResp],
 	adminHandle *rest.RouteHandle[adminActionReq, adminActionResp],
 	b *rest.Builder,
 ) {
@@ -281,9 +278,8 @@ func buildAPI() (
 	).Register(b)
 
 	// GET /profile — secured: bearerAuth with "profile" scope.
-	emptyCodec := codex.Struct[emptyReq]()
-	profileHandle, _ = rest.NewRoute[emptyReq, profileResp]("GET", "/profile",
-		emptyCodec, profileRespCodec,
+	profileHandle, _ = rest.NewRoute[struct{}, profileResp]("GET", "/profile",
+		codex.Empty, profileRespCodec,
 		rest.RouteMeta{
 			OperationID: "getProfile",
 			Summary:     "Get the authenticated user's profile",
@@ -350,7 +346,7 @@ func main() {
 		}
 	}, opts)
 
-	nethttp.Register(mux, profileHandle, func(_ context.Context, _ emptyReq) (profileResp, error) {
+	nethttp.Register(mux, profileHandle, func(_ context.Context, _ struct{}) (profileResp, error) {
 		return profileResp{
 			UserID: "f47ac10b-58cc-4372-a567-0e02b2c3d479",
 			Name:   "Alice",

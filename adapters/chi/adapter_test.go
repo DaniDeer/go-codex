@@ -861,3 +861,168 @@ func TestChiHandler_GlobalSecurity_notCalledWhenExplicitlyEmpty(t *testing.T) {
 		t.Errorf("want 201, got %d", rec.Code)
 	}
 }
+
+// --- SSE security + param validation tests ---
+
+func newGlobalSecuredSSERoute() (*rest.SSERouteHandle[createReq, sseEvent], error) {
+	b := rest.NewBuilder(testInfo)
+	b.AddSecurityScheme("bearerAuth", rest.SecurityScheme{
+		SecurityScheme: route.BearerScheme("JWT"),
+	})
+	b.AddGlobalSecurity(route.Require("bearerAuth"))
+	return rest.NewSSERoute[createReq, sseEvent]("/stream",
+		createReqCodec, sseEventCodec,
+		rest.RouteMeta{OperationID: "streamSecured"},
+	).Register(b)
+}
+
+func TestChiSSEHandler_GlobalSecurity_enforced(t *testing.T) {
+	handle, err := newGlobalSecuredSSERoute()
+	if err != nil {
+		t.Fatal(err)
+	}
+	secFuncCalled := false
+	h := chiadapter.SSEHandler(handle, func(_ context.Context, _ createReq, _ func(sseEvent) error) error {
+		return nil
+	}, chiadapter.Options{
+		SecurityFunc: func(_ context.Context, r *http.Request, _ []route.SecurityRequirement) error {
+			secFuncCalled = true
+			if r.Header.Get("Authorization") != "Bearer valid-token" {
+				return errors.New("unauthorized")
+			}
+			return nil
+		},
+	})
+
+	rec := httptest.NewRecorder()
+	r := httptest.NewRequest(http.MethodGet, "/stream", nil)
+	r.Header.Set("Authorization", "Bearer valid-token")
+	h.ServeHTTP(rec, r)
+
+	if !secFuncCalled {
+		t.Error("want SecurityFunc called for SSE route inheriting global security")
+	}
+	if rec.Code != http.StatusOK {
+		t.Errorf("want 200, got %d", rec.Code)
+	}
+}
+
+func TestChiSSEHandler_GlobalSecurity_rejectsWhenNoToken(t *testing.T) {
+	handle, err := newGlobalSecuredSSERoute()
+	if err != nil {
+		t.Fatal(err)
+	}
+	h := chiadapter.SSEHandler(handle, func(_ context.Context, _ createReq, _ func(sseEvent) error) error {
+		return nil
+	}, chiadapter.Options{
+		SecurityFunc: func(_ context.Context, _ *http.Request, _ []route.SecurityRequirement) error {
+			return errors.New("missing token")
+		},
+	})
+
+	rec := httptest.NewRecorder()
+	r := httptest.NewRequest(http.MethodGet, "/stream", nil)
+	h.ServeHTTP(rec, r)
+
+	if rec.Code != http.StatusUnauthorized {
+		t.Errorf("want 401 from SSE global security, got %d", rec.Code)
+	}
+}
+
+func TestChiSSEHandler_QueryParam_rejectsInvalid(t *testing.T) {
+	b := rest.NewBuilder(testInfo)
+	uuidCodec := codex.String().Refine(validate.UUID)
+	handle, err := rest.NewSSERoute[createReq, sseEvent]("/stream",
+		createReqCodec, sseEventCodec,
+		rest.QueryParam{Name: "id", Codec: &uuidCodec},
+	).Register(b)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	h := chiadapter.SSEHandler(handle, func(_ context.Context, _ createReq, _ func(sseEvent) error) error {
+		return nil
+	}, chiadapter.Options{})
+
+	rec := httptest.NewRecorder()
+	r := httptest.NewRequest(http.MethodGet, "/stream?id=not-a-uuid", nil)
+	h.ServeHTTP(rec, r)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Errorf("want 400 for invalid SSE query param, got %d", rec.Code)
+	}
+}
+
+func TestChiSSEHandler_QueryParam_allowsValid(t *testing.T) {
+	b := rest.NewBuilder(testInfo)
+	uuidCodec := codex.String().Refine(validate.UUID)
+	handle, err := rest.NewSSERoute[createReq, sseEvent]("/stream",
+		createReqCodec, sseEventCodec,
+		rest.QueryParam{Name: "id", Codec: &uuidCodec},
+	).Register(b)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	h := chiadapter.SSEHandler(handle, func(_ context.Context, _ createReq, send func(sseEvent) error) error {
+		return send(sseEvent{Message: "ok"})
+	}, chiadapter.Options{})
+
+	rec := httptest.NewRecorder()
+	r := httptest.NewRequest(http.MethodGet, "/stream?id=f47ac10b-58cc-4372-a567-0e02b2c3d479", nil)
+	h.ServeHTTP(rec, r)
+
+	if rec.Code != http.StatusOK {
+		t.Errorf("want 200 for valid SSE query param, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestChiSSEHandler_CookieParam_rejectsInvalid(t *testing.T) {
+	b := rest.NewBuilder(testInfo)
+	tokenCodec := codex.String().Refine(validate.NonEmptyString)
+	handle, err := rest.NewSSERoute[createReq, sseEvent]("/stream",
+		createReqCodec, sseEventCodec,
+		rest.CookieParam{Name: "session", Codec: &tokenCodec},
+	).Register(b)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	h := chiadapter.SSEHandler(handle, func(_ context.Context, _ createReq, _ func(sseEvent) error) error {
+		return nil
+	}, chiadapter.Options{})
+
+	rec := httptest.NewRecorder()
+	r := httptest.NewRequest(http.MethodGet, "/stream", nil)
+	r.AddCookie(&http.Cookie{Name: "session", Value: ""})
+	h.ServeHTTP(rec, r)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Errorf("want 400 for invalid SSE cookie param, got %d", rec.Code)
+	}
+}
+
+func TestChiSSEHandler_HeaderParam_rejectsInvalid(t *testing.T) {
+	b := rest.NewBuilder(testInfo)
+	uuidCodec := codex.String().Refine(validate.UUID)
+	handle, err := rest.NewSSERoute[createReq, sseEvent]("/stream",
+		createReqCodec, sseEventCodec,
+		rest.HeaderParam{Name: "X-Request-Id", Codec: &uuidCodec},
+	).Register(b)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	h := chiadapter.SSEHandler(handle, func(_ context.Context, _ createReq, _ func(sseEvent) error) error {
+		return nil
+	}, chiadapter.Options{})
+
+	rec := httptest.NewRecorder()
+	r := httptest.NewRequest(http.MethodGet, "/stream", nil)
+	r.Header.Set("X-Request-Id", "not-a-uuid")
+	h.ServeHTTP(rec, r)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Errorf("want 400 for invalid SSE header param, got %d", rec.Code)
+	}
+}

@@ -1,8 +1,8 @@
 package forge
 
-// FunctionOption configures optional governance metadata or cross-input validation on a forge function.
+// FunctionOpt configures optional governance metadata or cross-input validation on a forge function.
 //
-// Pass one or more FunctionOption values as trailing variadic arguments to
+// Pass one or more FunctionOpt values as trailing variadic arguments to
 // NewFunction or Compose. The primary ways to supply options are:
 //
 //   - [FunctionMeta] struct literal — for governance metadata (description, author, approval)
@@ -11,17 +11,17 @@ package forge
 //
 // Governance fields not supplied default to the zero string ("") and are omitted from
 // the YAML spec output.
-type FunctionOption interface {
+type FunctionOpt interface {
 	applyFunctionOption(*functionOptions)
 }
 
-// funcOpt is the function-based implementation of FunctionOption.
+// funcOpt is the function-based implementation of FunctionOpt.
 type funcOpt func(*functionOptions)
 
 func (f funcOpt) applyFunctionOption(o *functionOptions) { f(o) }
 
 // FunctionMeta holds optional governance metadata for a forge function.
-// It implements [FunctionOption] and can be passed directly to [NewFunction] or [Compose].
+// It implements [FunctionOpt] and can be passed directly to [NewFunction] or [Compose].
 //
 //	forge.NewFunction("calc", "1.0.0", inCodec, outCodec, fn,
 //	    forge.FunctionMeta{
@@ -68,7 +68,7 @@ type functionOptions struct {
 	refinement func(any) error
 }
 
-func applyFunctionOptions(opts []FunctionOption) functionOptions {
+func applyFunctionOptions(opts []FunctionOpt) functionOptions {
 	var cfg functionOptions
 	for _, o := range opts {
 		o.applyFunctionOption(&cfg)
@@ -78,20 +78,20 @@ func applyFunctionOptions(opts []FunctionOption) functionOptions {
 
 // WithDescription sets the human-readable description for a forge function.
 // Prefer [FunctionMeta] when setting multiple governance fields at once.
-func WithDescription(desc string) FunctionOption {
+func WithDescription(desc string) FunctionOpt {
 	return funcOpt(func(o *functionOptions) { o.description = desc })
 }
 
 // WithAuthor sets the author governance field for a forge function.
 // Prefer [FunctionMeta] when setting multiple governance fields at once.
-func WithAuthor(author string) FunctionOption {
+func WithAuthor(author string) FunctionOpt {
 	return funcOpt(func(o *functionOptions) { o.author = author })
 }
 
 // WithApproval sets the approvedBy and approvedAt governance fields.
 // approvedAt should be an ISO 8601 date string (e.g. "2024-03-01").
 // Prefer [FunctionMeta] when setting multiple governance fields at once.
-func WithApproval(approvedBy, approvedAt string) FunctionOption {
+func WithApproval(approvedBy, approvedAt string) FunctionOpt {
 	return funcOpt(func(o *functionOptions) {
 		o.approvedBy = approvedBy
 		o.approvedAt = approvedAt
@@ -119,7 +119,7 @@ func WithApproval(approvedBy, approvedAt string) FunctionOption {
 //	        return nil
 //	    }),
 //	)
-func WithRefinement[In any](fn func(In) error) FunctionOption {
+func WithRefinement[In any](fn func(In) error) FunctionOpt {
 	return funcOpt(func(o *functionOptions) {
 		o.refinement = func(v any) error { return fn(v.(In)) }
 	})

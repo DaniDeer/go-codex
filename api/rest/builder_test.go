@@ -45,6 +45,18 @@ var userCodec = codex.Struct[userResp](
 )
 
 type createReq struct{ Name string }
+type sseEvent struct{ Message string }
+
+var sseEventCodec = codex.Struct[sseEvent](
+	codex.Field[sseEvent, string]{
+		Name:     "message",
+		Codec:    codex.String().Refine(validate.NonEmptyString),
+		Required: true,
+		Get:      func(e sseEvent) string { return e.Message },
+		Set:      func(e *sseEvent, v string) { e.Message = v },
+	},
+)
+
 type userResp struct {
 	ID   string
 	Name string
@@ -1005,5 +1017,166 @@ func TestBuilder_AddGlobalSecurity_populatesRouteHandleGlobalSecurity(t *testing
 	req := handle.GlobalSecurity[0]
 	if _, ok := req["bearer"]; !ok {
 		t.Errorf("expected GlobalSecurity to contain 'bearer' requirement, got %v", req)
+	}
+}
+
+// --- SSERouteHandle param validation tests ---
+
+func TestSSERouteHandle_ValidateQuery_valid(t *testing.T) {
+	b := rest.NewBuilder(testInfo)
+	uuidCodec := codex.String().Refine(validate.UUID)
+	h, err := rest.NewSSERoute[createReq, sseEvent]("/stream",
+		createReqCodec, sseEventCodec,
+		rest.QueryParam{Name: "id", Codec: &uuidCodec},
+	).Register(b)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := h.ValidateQuery(map[string]string{"id": "f47ac10b-58cc-4372-a567-0e02b2c3d479"}); err != nil {
+		t.Errorf("want nil, got %v", err)
+	}
+}
+
+func TestSSERouteHandle_ValidateQuery_invalid(t *testing.T) {
+	b := rest.NewBuilder(testInfo)
+	uuidCodec := codex.String().Refine(validate.UUID)
+	h, err := rest.NewSSERoute[createReq, sseEvent]("/stream",
+		createReqCodec, sseEventCodec,
+		rest.QueryParam{Name: "id", Codec: &uuidCodec},
+	).Register(b)
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = h.ValidateQuery(map[string]string{"id": "not-a-uuid"})
+	var paramErr rest.QueryParamError
+	if !errors.As(err, &paramErr) {
+		t.Fatalf("want QueryParamError, got %T: %v", err, err)
+	}
+	if paramErr.Name != "id" {
+		t.Errorf("want Name=id, got %q", paramErr.Name)
+	}
+}
+
+func TestSSERouteHandle_ValidateQueryMulti_valid(t *testing.T) {
+	b := rest.NewBuilder(testInfo)
+	uuidCodec := codex.String().Refine(validate.UUID)
+	h, err := rest.NewSSERoute[createReq, sseEvent]("/stream",
+		createReqCodec, sseEventCodec,
+		rest.QueryParam{Name: "id", Codec: &uuidCodec},
+	).Register(b)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := h.ValidateQueryMulti(map[string][]string{"id": {"f47ac10b-58cc-4372-a567-0e02b2c3d479"}}); err != nil {
+		t.Errorf("want nil, got %v", err)
+	}
+}
+
+func TestSSERouteHandle_ValidateQueryMulti_invalid(t *testing.T) {
+	b := rest.NewBuilder(testInfo)
+	uuidCodec := codex.String().Refine(validate.UUID)
+	h, err := rest.NewSSERoute[createReq, sseEvent]("/stream",
+		createReqCodec, sseEventCodec,
+		rest.QueryParam{Name: "id", Codec: &uuidCodec},
+	).Register(b)
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = h.ValidateQueryMulti(map[string][]string{"id": {"not-a-uuid"}})
+	var paramErr rest.QueryParamError
+	if !errors.As(err, &paramErr) {
+		t.Fatalf("want QueryParamError, got %T: %v", err, err)
+	}
+}
+
+func TestSSERouteHandle_ValidateCookies_valid(t *testing.T) {
+	b := rest.NewBuilder(testInfo)
+	tokenCodec := codex.String().Refine(validate.NonEmptyString)
+	h, err := rest.NewSSERoute[createReq, sseEvent]("/stream",
+		createReqCodec, sseEventCodec,
+		rest.CookieParam{Name: "session", Codec: &tokenCodec},
+	).Register(b)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := h.ValidateCookies(map[string]string{"session": "abc123"}); err != nil {
+		t.Errorf("want nil, got %v", err)
+	}
+}
+
+func TestSSERouteHandle_ValidateCookies_invalid(t *testing.T) {
+	b := rest.NewBuilder(testInfo)
+	tokenCodec := codex.String().Refine(validate.NonEmptyString)
+	h, err := rest.NewSSERoute[createReq, sseEvent]("/stream",
+		createReqCodec, sseEventCodec,
+		rest.CookieParam{Name: "session", Codec: &tokenCodec},
+	).Register(b)
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = h.ValidateCookies(map[string]string{"session": ""})
+	var cookieErr rest.CookieParamError
+	if !errors.As(err, &cookieErr) {
+		t.Fatalf("want CookieParamError, got %T: %v", err, err)
+	}
+	if cookieErr.Name != "session" {
+		t.Errorf("want Name=session, got %q", cookieErr.Name)
+	}
+}
+
+func TestSSERouteHandle_ValidateHeaders_valid(t *testing.T) {
+	b := rest.NewBuilder(testInfo)
+	uuidCodec := codex.String().Refine(validate.UUID)
+	h, err := rest.NewSSERoute[createReq, sseEvent]("/stream",
+		createReqCodec, sseEventCodec,
+		rest.HeaderParam{Name: "X-Request-Id", Codec: &uuidCodec},
+	).Register(b)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := h.ValidateHeaders(map[string]string{"X-Request-Id": "f47ac10b-58cc-4372-a567-0e02b2c3d479"}); err != nil {
+		t.Errorf("want nil, got %v", err)
+	}
+}
+
+func TestSSERouteHandle_ValidateHeaders_invalid(t *testing.T) {
+	b := rest.NewBuilder(testInfo)
+	uuidCodec := codex.String().Refine(validate.UUID)
+	h, err := rest.NewSSERoute[createReq, sseEvent]("/stream",
+		createReqCodec, sseEventCodec,
+		rest.HeaderParam{Name: "X-Request-Id", Codec: &uuidCodec},
+	).Register(b)
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = h.ValidateHeaders(map[string]string{"X-Request-Id": "bad"})
+	var headerErr rest.HeaderParamError
+	if !errors.As(err, &headerErr) {
+		t.Fatalf("want HeaderParamError, got %T: %v", err, err)
+	}
+	if headerErr.Name != "X-Request-Id" {
+		t.Errorf("want Name=X-Request-Id, got %q", headerErr.Name)
+	}
+}
+
+func TestSSERouteHandle_GlobalSecurity_populated(t *testing.T) {
+	b := rest.NewBuilder(testInfo)
+	b.AddSecurityScheme("bearerAuth", rest.SecurityScheme{SecurityScheme: route.BearerScheme("JWT")})
+	b.AddGlobalSecurity(route.Require("bearerAuth"))
+
+	h, err := rest.NewSSERoute[createReq, sseEvent]("/stream",
+		createReqCodec, sseEventCodec,
+	).Register(b)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(h.GlobalSecurity) == 0 {
+		t.Fatal("want GlobalSecurity populated on SSERouteHandle")
+	}
+	if _, ok := h.GlobalSecurity[0]["bearerAuth"]; !ok {
+		t.Errorf("want bearerAuth in GlobalSecurity, got %v", h.GlobalSecurity[0])
+	}
+	if _, ok := h.SecuritySchemes["bearerAuth"]; !ok {
+		t.Error("want SecuritySchemes populated on SSERouteHandle")
 	}
 }

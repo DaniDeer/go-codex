@@ -175,7 +175,7 @@ func containerMapK[K comparable, V any](keyCodec codex.Codec[K], value codex.Cod
 func Map[In, Out any](
 	name, version string,
 	fn *Function[In, Out],
-	opts ...FunctionOption,
+	opts ...FunctionOpt,
 ) *Function[[]In, []Out] {
 	if name == "" {
 		panic("forge.Map: name must not be empty")
@@ -243,7 +243,7 @@ func Filter[T any](
 	name, version string,
 	elemCodec codex.Codec[T],
 	pred func(T) bool,
-	opts ...FunctionOption,
+	opts ...FunctionOpt,
 ) *Function[[]T, []T] {
 	if name == "" {
 		panic("forge.Filter: name must not be empty")
@@ -319,7 +319,7 @@ func Reduce[T, Acc any](
 	accCodec codex.Codec[Acc],
 	init Acc,
 	step func(Acc, T) Acc,
-	opts ...FunctionOption,
+	opts ...FunctionOpt,
 ) *Function[[]T, Acc] {
 	if name == "" {
 		panic("forge.Reduce: name must not be empty")
@@ -392,7 +392,7 @@ func Reduce[T, Acc any](
 func MapValues[In, Out any](
 	name, version string,
 	fn *Function[In, Out],
-	opts ...FunctionOption,
+	opts ...FunctionOpt,
 ) *Function[map[string]In, map[string]Out] {
 	if name == "" {
 		panic("forge.MapValues: name must not be empty")
@@ -471,7 +471,7 @@ func MapValuesK[K comparable, In, Out any](
 	name, version string,
 	keyCodec codex.Codec[K],
 	fn *Function[In, Out],
-	opts ...FunctionOption,
+	opts ...FunctionOpt,
 ) *Function[map[K]In, map[K]Out] {
 	if name == "" {
 		panic("forge.MapValuesK: name must not be empty")

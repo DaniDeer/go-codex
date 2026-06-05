@@ -120,7 +120,7 @@ func TestRegistry_WithObserver(t *testing.T) {
 	}
 }
 
-// --- FunctionOption ---------------------------------------------------------
+// --- FunctionOpt ---------------------------------------------------------
 
 func TestFunctionOption_FieldsApplied(t *testing.T) {
 	c := float64Codec(0, 1)

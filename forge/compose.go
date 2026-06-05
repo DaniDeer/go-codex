@@ -17,7 +17,7 @@ func Compose[A, B, Out any](
 	name, version string,
 	f1 *Function[A, B],
 	f2 *Function[B, Out],
-	opts ...FunctionOption,
+	opts ...FunctionOpt,
 ) *Function[A, Out] {
 	if name == "" {
 		panic("forge.Compose: name must not be empty")

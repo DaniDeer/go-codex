@@ -67,9 +67,6 @@ type invalidCredentialsError struct{ Err error }
 func (e invalidCredentialsError) Error() string { return e.Err.Error() }
 func (e invalidCredentialsError) Unwrap() error { return e.Err }
 
-// emptyReq is used for routes that have no request body (GET, HEAD, etc.).
-type emptyReq struct{}
-
 type profileResp struct {
 	UserID string
 	Name   string
@@ -246,7 +243,7 @@ func (o *telemetryObserver) Print() {
 
 func buildAPI() (
 	loginHandle *rest.RouteHandle[loginReq, tokenResp],
-	profileHandle *rest.RouteHandle[emptyReq, profileResp],
+	profileHandle *rest.RouteHandle[struct{}, profileResp],
 	adminHandle *rest.RouteHandle[adminActionReq, adminActionResp],
 	b *rest.Builder,
 ) {
@@ -267,9 +264,8 @@ func buildAPI() (
 	).Register(b)
 
 	// GET /users/{id}/profile — secured + chi path variable.
-	emptyCodec := codex.Struct[emptyReq]()
-	profileHandle, _ = rest.NewRoute[emptyReq, profileResp]("GET", "/users/{id}/profile",
-		emptyCodec, profileRespCodec,
+	profileHandle, _ = rest.NewRoute[struct{}, profileResp]("GET", "/users/{id}/profile",
+		codex.Empty, profileRespCodec,
 		rest.RouteMeta{
 			OperationID: "getUserProfile",
 			Summary:     "Get a user's profile by ID",
@@ -326,7 +322,7 @@ func main() {
 		}
 	}, opts)
 
-	chiadapter.Register(router, profileHandle, func(ctx context.Context, _ emptyReq) (profileResp, error) {
+	chiadapter.Register(router, profileHandle, func(ctx context.Context, _ struct{}) (profileResp, error) {
 		// chi path variable: chi.URLParam is accessible from the request context.
 		id := gochi.URLParamFromCtx(ctx, "id")
 		return profileResp{

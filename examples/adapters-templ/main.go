@@ -39,10 +39,6 @@ import (
 
 // ── Domain types ──────────────────────────────────────────────────────────────
 
-// ArticleReq carries query parameters from the incoming request.
-// For this example it is body-less (GET).
-type ArticleReq struct{}
-
 // ArticleProps is the validated data passed to the templ component.
 // All fields carry Refine constraints — the codec rejects invalid data before
 // the component ever renders.
@@ -57,8 +53,6 @@ type ArticleProps struct {
 }
 
 // ── Codecs ────────────────────────────────────────────────────────────────────
-
-var articleReqCodec = codex.Struct[ArticleReq]()
 
 // ArticlePropsCodec validates the props passed to the templ component.
 // The same constraints apply to both JSON encoding and HTML rendering (symmetric
@@ -155,8 +149,8 @@ func main() {
 	// No separate route, no separate handler — one definition, two formats.
 
 	b := rest.NewBuilder(rest.Info{Title: "Article API", Version: "1.0.0"})
-	articleRoute, err := rest.NewRoute[ArticleReq, ArticleProps]("GET", "/article",
-		articleReqCodec, ArticlePropsCodec,
+	articleRoute, err := rest.NewRoute[struct{}, ArticleProps]("GET", "/article",
+		codex.Empty, ArticlePropsCodec,
 		rest.RouteMeta{OperationID: "getArticle"},
 	).Register(b)
 	if err != nil {
@@ -174,7 +168,7 @@ func main() {
 	// on the Accept header. Props are validated before any format renders them.
 
 	obs := &CountingObserver{}
-	handler := func(_ context.Context, _ ArticleReq) (ArticleProps, error) {
+	handler := func(_ context.Context, _ struct{}) (ArticleProps, error) {
 		return ArticleProps{
 			ID:          "550e8400-e29b-41d4-a716-446655440000",
 			Title:       "Introduction to go-codex",
@@ -217,7 +211,7 @@ func main() {
 	// articleCard component is never rendered with invalid data.
 
 	invalidMux := http.NewServeMux()
-	nethttp.Register(invalidMux, articleRoute, func(_ context.Context, _ ArticleReq) (ArticleProps, error) {
+	nethttp.Register(invalidMux, articleRoute, func(_ context.Context, _ struct{}) (ArticleProps, error) {
 		return ArticleProps{
 			ID:          "not-a-uuid",   // fails UUID
 			Title:       "",             // fails NonEmptyString

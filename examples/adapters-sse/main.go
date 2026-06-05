@@ -36,8 +36,6 @@ import (
 
 // ── Domain types ──────────────────────────────────────────────────────────────
 
-type emptyReq struct{}
-
 type counterEvent struct {
 	Count int
 }
@@ -49,8 +47,6 @@ type sensorReading struct {
 }
 
 // ── Codecs ────────────────────────────────────────────────────────────────────
-
-var emptyReqCodec = codex.Struct[emptyReq]()
 
 var counterEventCodec = codex.Struct[counterEvent](
 	codex.RequiredField("count", codex.Int(), func(e counterEvent) int { return e.Count }, func(e *counterEvent, v int) { e.Count = v }),
@@ -69,7 +65,7 @@ var sensorReadingCodec = codex.Struct[sensorReading](
 )
 
 // sensorIDCodec validates that a sensor ID is in the "<word>-<word>" format.
-var sensorIDCodec = codex.Refine(codex.String(),
+var sensorIDCodec = codex.String().Refine(
 	validate.NonEmptyString,
 	codex.Constraint[string]{
 		Name:    "sensor-id",
@@ -106,7 +102,7 @@ var _ stats.Observer = (*statsObserver)(nil)
 
 // ── Handlers ──────────────────────────────────────────────────────────────────
 
-func handleCounter(_ context.Context, _ emptyReq, send func(counterEvent) error) error {
+func handleCounter(_ context.Context, _ struct{}, send func(counterEvent) error) error {
 	for i := 1; i <= 3; i++ {
 		if err := send(counterEvent{Count: i}); err != nil {
 			return fmt.Errorf("counter send: %w", err)
@@ -116,7 +112,7 @@ func handleCounter(_ context.Context, _ emptyReq, send func(counterEvent) error)
 }
 
 // handleSensor uses chi URL params to extract {id}.
-func handleSensor(ctx context.Context, _ emptyReq, send func(sensorReading) error) error {
+func handleSensor(ctx context.Context, _ struct{}, send func(sensorReading) error) error {
 	r, _ := chiadapter.RequestFromContext(ctx)
 	sensorID := "unknown"
 	if r != nil {
@@ -141,7 +137,7 @@ func handleSensor(ctx context.Context, _ emptyReq, send func(sensorReading) erro
 
 // handleInvalid sends one valid event, then an invalid one (empty SensorID),
 // then another valid event — demonstrating per-event validation.
-func handleInvalid(_ context.Context, _ emptyReq, send func(sensorReading) error) error {
+func handleInvalid(_ context.Context, _ struct{}, send func(sensorReading) error) error {
 	_ = send(sensorReading{SensorID: "s1", Temperature: 21.0, Unit: "°C"})
 	if err := send(sensorReading{SensorID: "", Temperature: 99.0, Unit: "°C"}); err != nil {
 		fmt.Printf("  rejected invalid event (expected): %v\n", err)
@@ -174,16 +170,16 @@ func main() {
 
 	b := rest.NewBuilder(rest.Info{Title: "SSE Demo API", Version: "1.0.0"})
 
-	counterRoute, err := rest.NewSSERoute[emptyReq, counterEvent]("/sse/counter",
-		emptyReqCodec, counterEventCodec,
+	counterRoute, err := rest.NewSSERoute[struct{}, counterEvent]("/sse/counter",
+		codex.Empty, counterEventCodec,
 		rest.RouteMeta{OperationID: "streamCounter", Summary: "Stream a counter"},
 	).Register(b)
 	if err != nil {
 		log.Fatalf("AddSSERoute counter: %v", err)
 	}
 
-	sensorRoute, err := rest.NewSSERoute[emptyReq, sensorReading]("/sse/sensor/{id}",
-		emptyReqCodec, sensorReadingCodec,
+	sensorRoute, err := rest.NewSSERoute[struct{}, sensorReading]("/sse/sensor/{id}",
+		codex.Empty, sensorReadingCodec,
 		rest.RouteMeta{
 			OperationID: "streamSensor",
 			Summary:     "Stream sensor readings",
@@ -194,8 +190,8 @@ func main() {
 		log.Fatalf("AddSSERoute sensor: %v", err)
 	}
 
-	invalidRoute, err := rest.NewSSERoute[emptyReq, sensorReading]("/sse/invalid",
-		emptyReqCodec, sensorReadingCodec,
+	invalidRoute, err := rest.NewSSERoute[struct{}, sensorReading]("/sse/invalid",
+		codex.Empty, sensorReadingCodec,
 		rest.RouteMeta{OperationID: "streamInvalid", Summary: "Codec rejection demo"},
 	).Register(b)
 	if err != nil {

@@ -55,7 +55,7 @@ func TestRefine_MultipleConstraints_FirstFails(t *testing.T) {
 		Check:   func(v int) bool { checked++; return true },
 		Message: func(v int) string { return "second failed" },
 	}
-	c := codex.Refine(codex.Int(), first, second)
+	c := codex.Int().Refine(first, second)
 	_, err := c.Decode(1)
 	if err == nil {
 		t.Fatal("expected error")
@@ -76,7 +76,7 @@ func TestRefine_MultipleConstraints_AllPass(t *testing.T) {
 		Check:   func(v int) bool { return v < 100 },
 		Message: func(v int) string { return "too large" },
 	}
-	c := codex.Refine(codex.Int(), positive, small)
+	c := codex.Int().Refine(positive, small)
 	got, err := c.Decode(50)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)

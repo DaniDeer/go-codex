@@ -590,3 +590,20 @@ func TestPure_SchemaEnum(t *testing.T) {
 		t.Errorf("Pure schema Enum = %v, want [42]", c.Schema.Enum)
 	}
 }
+
+func TestEmpty_isZeroStruct(t *testing.T) {
+	v, err := codex.Empty.Decode(map[string]any{})
+	if err != nil {
+		t.Fatalf("Empty.Decode: %v", err)
+	}
+	if v != (struct{}{}) {
+		t.Errorf("Empty.Decode = %v, want struct{}{}", v)
+	}
+	enc, err := codex.Empty.Encode(struct{}{})
+	if err != nil {
+		t.Fatalf("Empty.Encode: %v", err)
+	}
+	if enc == nil {
+		t.Error("Empty.Encode returned nil")
+	}
+}

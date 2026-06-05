@@ -214,11 +214,6 @@ var userCodec = codex.Struct[User](
 	),
 )
 
-// emptyReq is used for routes that carry no request body (e.g. GET).
-type emptyReq struct{}
-
-var emptyReqCodec = codex.Struct[emptyReq]()
-
 // PagedUsersResp is the response for a paginated user list.
 type PagedUsersResp struct {
 	Page   int
@@ -243,8 +238,8 @@ var pagedUsersRespCodec = codex.Struct[PagedUsersResp](
 // makeListUsersHandler handles GET /users with query params.
 // The nethttp adapter validates ?page against the NonNegativeIntString codec
 // before this handler is called — no manual parsing needed for bad input.
-func makeListUsersHandler() func(context.Context, emptyReq) (PagedUsersResp, error) {
-	return func(ctx context.Context, _ emptyReq) (PagedUsersResp, error) {
+func makeListUsersHandler() func(context.Context, struct{}) (PagedUsersResp, error) {
+	return func(ctx context.Context, _ struct{}) (PagedUsersResp, error) {
 		r, _ := nethttp.RequestFromContext(ctx)
 		q := r.URL.Query()
 		page := 0
@@ -381,8 +376,8 @@ func makeCreateUserHandler(store *UserStore) func(context.Context, CreateUserReq
 // makeGetUserHandler orchestrates the get-user pipeline:
 //
 // path param (HTTP infra) → Get (store IO) → buildUserResponse (L2) → encode (codec)
-func makeGetUserHandler(store *UserStore) func(context.Context, emptyReq) (User, error) {
-	return func(ctx context.Context, _ emptyReq) (User, error) {
+func makeGetUserHandler(store *UserStore) func(context.Context, struct{}) (User, error) {
+	return func(ctx context.Context, _ struct{}) (User, error) {
 		r, _ := nethttp.RequestFromContext(ctx)
 		id := r.PathValue("id") // L3: HTTP path parameter
 		record, ok := store.Get(id)
@@ -461,8 +456,8 @@ func main() {
 	)
 
 	uuidCodec := codex.String().Refine(validate.UUID)
-	getUserRoute, err := rest.NewRoute[emptyReq, User]("GET", "/users/{id}",
-		emptyReqCodec, userCodec,
+	getUserRoute, err := rest.NewRoute[struct{}, User]("GET", "/users/{id}",
+		codex.Empty, userCodec,
 		rest.RouteMeta{
 			OperationID:    "getUser",
 			Summary:        "Get a user by ID",
@@ -486,8 +481,8 @@ func main() {
 	// adapter (auto-called before the handler). The schema flows into the OpenAPI
 	// spec automatically. ?search has no codec — it is documented only.
 	qPageCodec := codex.String().Refine(validate.NonNegativeIntString)
-	listUsersRoute, err := rest.NewRoute[emptyReq, PagedUsersResp]("GET", "/users",
-		emptyReqCodec, pagedUsersRespCodec,
+	listUsersRoute, err := rest.NewRoute[struct{}, PagedUsersResp]("GET", "/users",
+		codex.Empty, pagedUsersRespCodec,
 		rest.RouteMeta{
 			OperationID: "listUsers",
 			Summary:     "List users",
@@ -514,8 +509,8 @@ func main() {
 	// before the handler runs — no manual extraction needed.
 	profileSessionCodec := codex.String().Refine(validate.NonEmptyString)
 	profileRequestIDCodec := codex.String().Refine(validate.UUID)
-	profileRoute, err := rest.NewRoute[emptyReq, User]("GET", "/profile",
-		emptyReqCodec, userCodec,
+	profileRoute, err := rest.NewRoute[struct{}, User]("GET", "/profile",
+		codex.Empty, userCodec,
 		rest.RouteMeta{
 			OperationID: "getProfile",
 			Summary:     "Get the current user profile",
@@ -568,7 +563,7 @@ func main() {
 			slog.String("email", u.Email),
 		}
 	}
-	extractGetUserAttrs := func(_ emptyReq, u User) []slog.Attr {
+	extractGetUserAttrs := func(_ struct{}, u User) []slog.Attr {
 		return []slog.Attr{slog.String("id", u.ID)}
 	}
 
@@ -585,10 +580,10 @@ func main() {
 		opts)
 	nethttp.Register(mux, listUsersRoute,
 		withDomainLogging("user.list", makeListUsersHandler(), domainLogger,
-			func(_ emptyReq, _ PagedUsersResp) []slog.Attr { return nil }),
+			func(_ struct{}, _ PagedUsersResp) []slog.Attr { return nil }),
 		opts)
 	nethttp.Register(mux, profileRoute,
-		func(_ context.Context, _ emptyReq) (User, error) {
+		func(_ context.Context, _ struct{}) (User, error) {
 			// Handler only runs when both cookie and header are valid.
 			return User{ID: "f47ac10b-58cc-4372-a567-0e02b2c3d479", Name: "Alice", Email: "alice@example.com"}, nil
 		},
