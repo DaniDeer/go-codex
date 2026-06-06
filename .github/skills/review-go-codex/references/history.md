@@ -1,4 +1,4 @@
-# go-codex Review History (R1–R13)
+# go-codex Review History (R1–R14)
 
 Do not re-report any of these findings. They have been implemented and tested.
 
@@ -100,3 +100,10 @@ All findings listed in the active plan.md under "Round 9" are implemented:
 
 - **G1 — `CookieParam.WithCodec` receiver inconsistency**: Renamed receiver from `c` to `cp` in both `applyRoute` and `WithCodec`; renamed codec arg from `cc` to `c` — now consistent with all other 9 `WithCodec` methods.
 - **G2 — `PathParam.Codec` godoc incomplete**: Updated godoc to mention both `ValidatePathParams` and `BuildPath` — previously only mentioned `BuildPath`, hiding the adapter-side validation use.
+
+---
+
+## Round 14 (TopicParam.Codec godoc + PathParam duplicate godoc)
+
+- **G1 — `TopicParam.Codec` godoc incomplete**: Updated godoc to mention both `ValidateTopicVars` and `BuildTopic` — previously only mentioned `BuildTopic`, hiding adapter-side validation use (parallel to R13 G2 fix for `PathParam.Codec`).
+- **G2 — `PathParam` type-level godoc duplicated**: Removed the first of two overlapping introductory paragraphs — "PathParam describes…" appeared twice and `PathParam implements [RouteOpt]` appeared twice; kept the more specific version with the `{id}` example and `Required` note.

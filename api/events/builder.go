@@ -173,7 +173,8 @@ type TopicParam struct {
 	Name string
 	// Description is shown in the AsyncAPI spec for this parameter.
 	Description string
-	// Codec validates substituted values at [ChannelHandle.BuildTopic] time.
+	// Codec validates topic parameter values at [ChannelHandle.ValidateTopicVars] and
+	// [ChannelHandle.BuildTopic] time.
 	// When non-nil, the codec's schema is also emitted in the AsyncAPI spec.
 	// Nil means no runtime validation; the spec defaults to {type: string}.
 	Codec *codex.Codec[string]

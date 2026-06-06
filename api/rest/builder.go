@@ -62,10 +62,8 @@ type Info = openapi.Info
 // Server is an alias for [openapi.Server].
 type Server = openapi.Server
 
-// PathParam describes a {varName} placeholder in a route path template.
+// PathParam describes an HTTP path variable for a route (e.g. `{id}` in `/users/{id}`).
 // It combines spec metadata with optional runtime validation via a codec.
-//
-// PathParam implements [RouteOpt]: pass it directly to [NewRoute] or [NewSSERoute].
 //
 // Entry names must correspond to {varName} placeholders in the path template;
 // unknown names cause [Route.Register] to return an error immediately.
@@ -73,8 +71,6 @@ type Server = openapi.Server
 // PathParam is optional: the builder auto-generates a minimal parameter entry
 // for every {varName} in the path. Only specify PathParam when you need a
 // description or runtime validation for a specific variable.
-// PathParam describes an HTTP path variable for a route (e.g. `{id}` in `/users/{id}`).
-// It combines spec metadata with optional runtime validation via a codec.
 //
 // Note: path parameters are always required by the OpenAPI specification — there
 // is no Required field. For optional key-value parameters use [QueryParam] with
