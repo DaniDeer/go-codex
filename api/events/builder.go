@@ -182,6 +182,9 @@ func (p TopicParam) applyChannel(cb *channelBuilder) {
 	cb.topicParams = append(cb.topicParams, p)
 }
 
+// WithCodec sets the validation codec and returns the updated TopicParam.
+func (p TopicParam) WithCodec(c codex.Codec[string]) TopicParam { p.Codec = &c; return p }
+
 // ChannelOpt is the sealed interface for variadic [NewChannel] options.
 //
 // The following types implement ChannelOpt:
@@ -220,7 +223,21 @@ type ChannelHandle[T any] struct {
 	// subscribe (decode) and publish (encode). The adapter uses Formats[0] when
 	// no call-time format override is provided. Defaults to JSON when empty.
 	// Configure via [ChannelHandle.WithFormats].
+	// Use [ChannelHandle.WithSubscribeFormats] / [ChannelHandle.WithPublishFormats]
+	// for asymmetric channels where decode and encode use different formats.
 	Formats []format.Format[T]
+
+	// SubscribeFormats, when non-empty, overrides Formats for the subscribe
+	// (receive / decode) direction only. The adapter uses SubscribeFormats[0]
+	// instead of Formats[0] when decoding incoming messages.
+	// Configure via [ChannelHandle.WithSubscribeFormats].
+	SubscribeFormats []format.Format[T]
+
+	// PublishFormats, when non-empty, overrides Formats for the publish
+	// (send / encode) direction only. The adapter uses PublishFormats[0]
+	// instead of Formats[0] when encoding outgoing messages.
+	// Configure via [ChannelHandle.WithPublishFormats].
+	PublishFormats []format.Format[T]
 
 	// topicParams holds per-variable params registered via TopicParam options.
 	topicParams []TopicParam
@@ -355,6 +372,44 @@ func (h *ChannelHandle[T]) WithFormats(fmts ...format.Format[T]) *ChannelHandle[
 	return h
 }
 
+// WithSubscribeFormats sets the default payload format for the subscribe
+// (receive / decode) direction only, leaving the publish direction unchanged.
+// The adapter uses SubscribeFormats[0] when decoding incoming messages.
+// Calling with no arguments clears the subscribe-specific override (Formats is used).
+//
+// Use this for asymmetric channels where inbound and outbound payloads use
+// different serialisation formats (e.g. YAML in, JSON out).
+func (h *ChannelHandle[T]) WithSubscribeFormats(fmts ...format.Format[T]) *ChannelHandle[T] {
+	h.SubscribeFormats = slices.Clone(fmts)
+	ct := ""
+	if len(fmts) > 0 {
+		ct = fmts[0].ContentType()
+	}
+	if h.Descriptor.Subscribe != nil {
+		h.Descriptor.Subscribe.Message.ContentType = ct
+	}
+	return h
+}
+
+// WithPublishFormats sets the default payload format for the publish
+// (send / encode) direction only, leaving the subscribe direction unchanged.
+// The adapter uses PublishFormats[0] when encoding outgoing messages.
+// Calling with no arguments clears the publish-specific override (Formats is used).
+//
+// Use this for asymmetric channels where inbound and outbound payloads use
+// different serialisation formats (e.g. YAML in, JSON out).
+func (h *ChannelHandle[T]) WithPublishFormats(fmts ...format.Format[T]) *ChannelHandle[T] {
+	h.PublishFormats = slices.Clone(fmts)
+	ct := ""
+	if len(fmts) > 0 {
+		ct = fmts[0].ContentType()
+	}
+	if h.Descriptor.Publish != nil {
+		h.Descriptor.Publish.Message.ContentType = ct
+	}
+	return h
+}
+
 // TopicParamError is returned by [ChannelHandle.BuildTopic] and
 // [ChannelHandle.ValidateTopicVars] when a topic variable fails its registered
 // codec check.
@@ -451,11 +506,17 @@ func (e InvalidTopicError) Error() string {
 // Unwrap allows errors.As and errors.Is to traverse the underlying constraint error.
 func (e InvalidTopicError) Unwrap() error { return e.Err }
 
+// namedServer pairs a server name with its Server value for deterministic iteration.
+type namedServer struct {
+	name   string
+	server Server
+}
+
 // Builder accumulates channel registrations and produces AsyncAPI specs.
 // Create one with [NewBuilder].
 type Builder struct {
 	info            Info
-	servers         map[string]Server
+	servers         []namedServer
 	entries         []channelEntry
 	schemas         map[string]schema.Schema
 	topicCodec      *codex.Codec[string]
@@ -503,7 +564,6 @@ func WithTopicConstraints(cons ...codex.Constraint[string]) BuilderOption {
 func NewBuilder(info Info, opts ...BuilderOption) *Builder {
 	b := &Builder{
 		info:            info,
-		servers:         make(map[string]Server),
 		schemas:         make(map[string]schema.Schema),
 		securitySchemes: make(map[string]SecurityScheme),
 	}
@@ -514,8 +574,13 @@ func NewBuilder(info Info, opts ...BuilderOption) *Builder {
 }
 
 // AddServer registers a named server entry in the spec.
+// Servers appear in the AsyncAPI output in registration order.
+// If s.Description is empty, name is used as the description.
 func (b *Builder) AddServer(name string, s Server) *Builder {
-	b.servers[name] = s
+	if s.Description == "" {
+		s.Description = name
+	}
+	b.servers = append(b.servers, namedServer{name: name, server: s})
 	return b
 }
 
@@ -655,8 +720,8 @@ func (b *Builder) AsyncAPISpec() (asyncapi.Document, error) {
 		return asyncapi.Document{}, err
 	}
 	ab := asyncapi.NewDocumentBuilder(b.info)
-	for name, s := range b.servers {
-		ab.AddServer(name, s)
+	for _, ns := range b.servers {
+		ab.AddServer(ns.name, ns.server)
 	}
 	for name, s := range b.schemas {
 		ab.AddSchema(name, s)

@@ -137,7 +137,9 @@ type FunctionKind string
 
 const (
 	// FunctionKindScalar is the default: a scalar function created by NewFunction or Compose.
-	FunctionKindScalar FunctionKind = "scalar"
+	// Its value is "" because scalar is the implicit kind — NewFunction and Compose
+	// do not write Kind explicitly, so the zero value is the correct sentinel.
+	FunctionKindScalar FunctionKind = ""
 	// FunctionKindMap is a function created by Map (lifts a Function over a slice).
 	FunctionKindMap FunctionKind = "map"
 	// FunctionKindFilter is a function created by Filter (keeps elements satisfying a predicate).
@@ -162,7 +164,7 @@ type FunctionSpec struct {
 	// Hash is "sha256:<hex>" over the canonical JSON of the computation contract.
 	Hash string
 	// Kind identifies the constructor that produced this function.
-	// FunctionKindScalar ("") for scalar functions created by NewFunction or Compose.
+	// FunctionKindScalar (empty string) for scalar functions created by NewFunction or Compose.
 	// FunctionKindMap/Filter/Reduce/MapValues for collection functions.
 	Kind FunctionKind
 	// Wraps is the Name of the scalar Function lifted by Map or MapValues.

@@ -194,7 +194,7 @@ func main() {
 			OperationID: "streamSensor",
 			Summary:     "Stream sensor readings",
 		},
-		rest.PathParam{Name: "id", Description: "Sensor ID (<word>-<word>)", Codec: &sensorIDCodec},
+		rest.PathParam{Name: "id", Description: "Sensor ID (<word>-<word>)"}.WithCodec(sensorIDCodec),
 	).Register(b)
 	if err != nil {
 		log.Fatalf("AddSSERoute sensor: %v", err)
@@ -212,7 +212,7 @@ func main() {
 	withHeadersRoute, err := rest.NewSSERoute[struct{}, counterEvent]("/sse/with-headers",
 		codex.Empty, counterEventCodec,
 		rest.RouteMeta{OperationID: "streamWithHeaders", Summary: "Stream with custom response header"},
-		rest.ResponseHeaderParam{Name: "X-Trace-Id", Description: "Distributed trace ID", Codec: &traceCodec},
+		rest.ResponseHeaderParam{Name: "X-Trace-Id", Description: "Distributed trace ID"}.WithCodec(traceCodec),
 	).Register(b)
 	if err != nil {
 		log.Fatalf("AddSSERoute with-headers: %v", err)

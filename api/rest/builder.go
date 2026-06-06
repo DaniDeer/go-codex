@@ -84,6 +84,9 @@ type PathParam struct {
 
 func (p PathParam) applyRoute(rb *routeBuilder) { rb.pathParams = append(rb.pathParams, p) }
 
+// WithCodec sets the validation codec and returns the updated PathParam.
+func (p PathParam) WithCodec(c codex.Codec[string]) PathParam { p.Codec = &c; return p }
+
 // ResponseMeta describes one additional response entry for a route (errors,
 // redirects, etc.). The primary success response is derived from the response
 // codec and RespStatus/RespDescription/RespSchemaName in RouteMeta.
@@ -674,6 +677,9 @@ type QueryParam struct {
 
 func (q QueryParam) applyRoute(rb *routeBuilder) { rb.queryParams = append(rb.queryParams, q) }
 
+// WithCodec sets the validation codec and returns the updated QueryParam.
+func (q QueryParam) WithCodec(c codex.Codec[string]) QueryParam { q.Codec = &c; return q }
+
 // QueryParamError is returned by [RouteHandle.ValidateQuery] when a query
 // parameter value fails codec validation.
 //
@@ -711,6 +717,9 @@ type CookieParam struct {
 }
 
 func (c CookieParam) applyRoute(rb *routeBuilder) { rb.cookieParams = append(rb.cookieParams, c) }
+
+// WithCodec sets the validation codec and returns the updated CookieParam.
+func (c CookieParam) WithCodec(cc codex.Codec[string]) CookieParam { c.Codec = &cc; return c }
 
 // CookieParamError is returned by [RouteHandle.ValidateCookies] when a cookie
 // parameter value fails codec validation.
@@ -754,6 +763,9 @@ type HeaderParam struct {
 
 func (h HeaderParam) applyRoute(rb *routeBuilder) { rb.headerParams = append(rb.headerParams, h) }
 
+// WithCodec sets the validation codec and returns the updated HeaderParam.
+func (h HeaderParam) WithCodec(c codex.Codec[string]) HeaderParam { h.Codec = &c; return h }
+
 // HeaderParamError is returned by [RouteHandle.ValidateHeaders] when a header
 // value fails codec validation.
 //
@@ -796,6 +808,12 @@ type ResponseHeaderParam struct {
 
 func (p ResponseHeaderParam) applyRoute(rb *routeBuilder) {
 	rb.respHeaders = append(rb.respHeaders, p)
+}
+
+// WithCodec sets the validation codec and returns the updated ResponseHeaderParam.
+func (p ResponseHeaderParam) WithCodec(c codex.Codec[string]) ResponseHeaderParam {
+	p.Codec = &c
+	return p
 }
 
 // ResponseHeaderParamError is returned by [RouteHandle.ValidateResponseHeaders] when
@@ -843,6 +861,12 @@ type ResponseCookieParam struct {
 
 func (p ResponseCookieParam) applyRoute(rb *routeBuilder) {
 	rb.respCookies = append(rb.respCookies, p)
+}
+
+// WithCodec sets the validation codec and returns the updated ResponseCookieParam.
+func (p ResponseCookieParam) WithCodec(c codex.Codec[string]) ResponseCookieParam {
+	p.Codec = &c
+	return p
 }
 
 // ResponseCookieParamError is returned by [RouteHandle.ValidateResponseCookies]
@@ -1226,8 +1250,8 @@ type SSERouteHandle[Req, Event any] struct {
 	Descriptor route.Route
 
 	// Decode deserialises and validates a JSON request body into Req.
-	// For SSE (GET) routes, this is rarely called — use [RequestFromContext]
-	// to read path and query parameters instead.
+	// For SSE (GET) routes, this is rarely called — read path and query
+	// parameter values from your HTTP framework's request context instead.
 	Decode func(body []byte) (Req, error)
 
 	// EncodeEvent serialises one event value to JSON bytes.

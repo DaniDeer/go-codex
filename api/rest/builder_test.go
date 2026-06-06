@@ -1460,3 +1460,62 @@ func TestSSERouteHandle_BuildPath_invalidParam_returnsError(t *testing.T) {
 		t.Fatalf("want PathParamError, got %T: %v", err, err)
 	}
 }
+
+func TestPathParam_WithCodec_setsCodecWithoutAddressOf(t *testing.T) {
+	uuidCodec := codex.String().Refine(validate.UUID)
+	p := rest.PathParam{Name: "id"}.WithCodec(uuidCodec)
+	if p.Codec == nil {
+		t.Fatal("expected Codec to be non-nil after WithCodec")
+	}
+	if err := p.Codec.Validate("550e8400-e29b-41d4-a716-446655440000"); err != nil {
+		t.Errorf("expected valid UUID to pass: %v", err)
+	}
+}
+
+func TestPathParam_WithCodec_returnsDistinctCopy(t *testing.T) {
+	uuidCodec := codex.String().Refine(validate.UUID)
+	original := rest.PathParam{Name: "id"}
+	updated := original.WithCodec(uuidCodec)
+	if original.Codec != nil {
+		t.Error("original PathParam must not be mutated")
+	}
+	if updated.Codec == nil {
+		t.Fatal("updated PathParam must have Codec set")
+	}
+}
+
+func TestQueryParam_WithCodec_setsCodecWithoutAddressOf(t *testing.T) {
+	nonEmptyCodec := codex.String().Refine(validate.NonEmptyString)
+	p := rest.QueryParam{Name: "q"}.WithCodec(nonEmptyCodec)
+	if p.Codec == nil {
+		t.Fatal("expected Codec to be non-nil after WithCodec")
+	}
+}
+
+func TestCookieParam_WithCodec_setsCodecWithoutAddressOf(t *testing.T) {
+	c := rest.CookieParam{Name: "session"}.WithCodec(codex.String())
+	if c.Codec == nil {
+		t.Fatal("expected Codec to be non-nil after WithCodec")
+	}
+}
+
+func TestHeaderParam_WithCodec_setsCodecWithoutAddressOf(t *testing.T) {
+	h := rest.HeaderParam{Name: "X-Trace-Id"}.WithCodec(codex.String())
+	if h.Codec == nil {
+		t.Fatal("expected Codec to be non-nil after WithCodec")
+	}
+}
+
+func TestResponseHeaderParam_WithCodec_setsCodecWithoutAddressOf(t *testing.T) {
+	rh := rest.ResponseHeaderParam{Name: "X-Request-Id"}.WithCodec(codex.String())
+	if rh.Codec == nil {
+		t.Fatal("expected Codec to be non-nil after WithCodec")
+	}
+}
+
+func TestResponseCookieParam_WithCodec_setsCodecWithoutAddressOf(t *testing.T) {
+	rc := rest.ResponseCookieParam{Name: "token"}.WithCodec(codex.String())
+	if rc.Codec == nil {
+		t.Fatal("expected Codec to be non-nil after WithCodec")
+	}
+}

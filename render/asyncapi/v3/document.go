@@ -90,11 +90,17 @@ type ChannelItem struct {
 	Publish *Operation
 }
 
+// namedServer pairs a server name with its Server value for deterministic output.
+type namedServer struct {
+	name   string
+	server Server
+}
+
 // Document is a full AsyncAPI 3.0 document produced by DocumentBuilder.
 // Use MarshalJSON or MarshalYAML to serialise it.
 type Document struct {
 	info            Info
-	servers         map[string]Server
+	servers         []namedServer
 	channels        map[string]ChannelItem
 	schemas         map[string]schema.Schema
 	securitySchemes map[string]route.SecurityScheme
@@ -103,7 +109,7 @@ type Document struct {
 // DocumentBuilder accumulates channels and named schemas, then produces a Document.
 type DocumentBuilder struct {
 	info            Info
-	servers         map[string]Server
+	servers         []namedServer
 	channels        map[string]ChannelItem
 	schemas         map[string]schema.Schema
 	securitySchemes map[string]route.SecurityScheme
@@ -113,16 +119,16 @@ type DocumentBuilder struct {
 func NewDocumentBuilder(info Info) *DocumentBuilder {
 	return &DocumentBuilder{
 		info:            info,
-		servers:         make(map[string]Server),
 		channels:        make(map[string]ChannelItem),
 		schemas:         make(map[string]schema.Schema),
 		securitySchemes: make(map[string]route.SecurityScheme),
 	}
 }
 
-// AddServer registers a named server in the document.
+// AddServer registers a named server in the document. Servers appear in output
+// in registration order.
 func (b *DocumentBuilder) AddServer(name string, s Server) *DocumentBuilder {
-	b.servers[name] = s
+	b.servers = append(b.servers, namedServer{name: name, server: s})
 	return b
 }
 
@@ -242,21 +248,21 @@ func buildInfo(info Info) map[string]any {
 	return m
 }
 
-// buildServers produces the AsyncAPI 3.0 servers map.
-func buildServers(servers map[string]Server) map[string]any {
+// buildServers produces the AsyncAPI 3.0 servers map in insertion order.
+func buildServers(servers []namedServer) map[string]any {
 	out := make(map[string]any, len(servers))
-	for name, s := range servers {
+	for _, ns := range servers {
 		srv := map[string]any{
-			"host":     s.URL,
-			"protocol": s.Protocol,
+			"host":     ns.server.URL,
+			"protocol": ns.server.Protocol,
 		}
-		if s.Description != "" {
-			srv["description"] = s.Description
+		if ns.server.Description != "" {
+			srv["description"] = ns.server.Description
 		}
-		if len(s.Security) > 0 {
-			srv["security"] = buildSecurityRequirements(s.Security)
+		if len(ns.server.Security) > 0 {
+			srv["security"] = buildSecurityRequirements(ns.server.Security)
 		}
-		out[name] = srv
+		out[ns.name] = srv
 	}
 	return out
 }

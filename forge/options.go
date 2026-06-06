@@ -3,11 +3,10 @@ package forge
 // FunctionOpt configures optional governance metadata or cross-input validation on a forge function.
 //
 // Pass one or more FunctionOpt values as trailing variadic arguments to
-// NewFunction or Compose. The primary ways to supply options are:
+// NewFunction or Compose. The two implementations are:
 //
 //   - [FunctionMeta] struct literal — for governance metadata (description, author, approval)
 //   - [WithRefinement] — for a typed pipeline-level cross-input constraint
-//   - [WithDescription], [WithAuthor], [WithApproval] — convenience wrappers (prefer FunctionMeta)
 //
 // Governance fields not supplied default to the zero string ("") and are omitted from
 // the YAML spec output.

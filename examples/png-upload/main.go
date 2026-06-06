@@ -164,14 +164,12 @@ func main() {
 		rest.PathParam{
 			Name:        "id",
 			Description: "Resource ID (UUID) to associate the image with.",
-			Codec:       &uuidCodec,
-		},
+		}.WithCodec(uuidCodec),
 		rest.CookieParam{
 			Name:        "session_token",
 			Description: "Session token issued at login. Required for all write operations.",
 			Required:    true,
-			Codec:       &sessionTokenCodec,
-		},
+		}.WithCodec(sessionTokenCodec),
 		rest.ResponseMeta{Status: "400", Description: "Invalid PNG data or parameter validation failure."},
 		rest.ResponseMeta{Status: "401", Description: "Missing or invalid session cookie."},
 		rest.ResponseMeta{Status: "404", Description: "Resource not found."},
