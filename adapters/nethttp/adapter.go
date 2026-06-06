@@ -296,7 +296,7 @@ func Handler[Req, Resp any](handle *rest.RouteHandle[Req, Resp], fn HandlerFunc[
 		// Validate path parameters against their registered codecs (if any).
 		if names := handle.PathParamNames(); len(names) > 0 {
 			if err := handle.ValidatePathParams(pathValues(r, names)); err != nil {
-				obs.RecordValidationError("path", stats.ConstraintName(err), "")
+				reportPathErrors(err, obs)
 				errFn(sw, r, http.StatusBadRequest, err)
 				return
 			}
@@ -532,7 +532,7 @@ func SSEHandler[Req, Event any](handle *rest.SSERouteHandle[Req, Event], fn SSEH
 		// Validate path parameters against their registered codecs (if any).
 		if names := handle.PathParamNames(); len(names) > 0 {
 			if err := handle.ValidatePathParams(pathValues(r, names)); err != nil {
-				obs.RecordValidationError("path", stats.ConstraintName(err), "")
+				reportPathErrors(err, obs)
 				opts.ErrorHandler(sw, r, http.StatusBadRequest, err)
 				return
 			}
@@ -824,6 +824,16 @@ func reportResponseCookieErrors(err error, obs stats.Observer) {
 		return
 	}
 	obs.RecordValidationError("response_cookie", stats.ConstraintName(rce.Err), rce.Name)
+}
+
+// reportPathErrors extracts the failing path variable from a [rest.PathParamError]
+// and reports it to obs with location "path".
+func reportPathErrors(err error, obs stats.Observer) {
+	var pe rest.PathParamError
+	if !errors.As(err, &pe) {
+		return
+	}
+	obs.RecordValidationError("path", stats.ConstraintName(pe.Err), pe.Name)
 }
 
 // negotiateFormat picks the first format whose ContentType matches an entry in

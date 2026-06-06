@@ -23,11 +23,11 @@ Every finding and fix must be evaluated against one question:
 The three layers form a single workflow. A user should be able to move between them without context
 switching or learning a new mental model:
 
-| Layer | User action | How it should feel |
-|-------|------------|-------------------|
-| **Layer 1 — Codec** | Define `codex.Codec[T]` | Declare shape + constraints once; derive encode/decode/schema for free |
-| **Layer 2 — API contract** | `NewRoute` / `NewChannel` | Declare the contract as a value; pass it around; register it anywhere |
-| **Layer 3 — Pipeline** | `forge.NewFunction` + `Registry` | Declare computation contracts; compose; register; govern |
+| Layer                      | User action                      | How it should feel                                                     |
+| -------------------------- | -------------------------------- | ---------------------------------------------------------------------- |
+| **Layer 1 — Codec**        | Define `codex.Codec[T]`          | Declare shape + constraints once; derive encode/decode/schema for free |
+| **Layer 2 — API contract** | `NewRoute` / `NewChannel`        | Declare the contract as a value; pass it around; register it anywhere  |
+| **Layer 3 — Pipeline**     | `forge.NewFunction` + `Registry` | Declare computation contracts; compose; register; govern               |
 
 The workflow across layers is always: **declare → compose → register**. If a finding breaks this
 pattern — forces the user to use imperative calls, repeat themselves, or learn layer-specific
@@ -56,18 +56,18 @@ Concrete implications for every review:
 
 Read all of these before opening any finding:
 
-| File | Why |
-|------|-----|
-| `api/rest/builder.go` | Layer 2 REST: all param types, builder methods, error types |
-| `api/events/builder.go` | Layer 2 events: ChannelHandle, TopicParam, Builder |
-| `forge/forge.go` | Layer 3: PipelineInfo, FunctionMeta, Registry, error types |
-| `render/pipeline/pipeline.go` | Pipeline YAML renderer |
-| `render/asyncapi/v3/document.go` | AsyncAPI renderer |
-| `render/openapi/openapi.go` | OpenAPI renderer |
-| `adapters/nethttp/handler.go` | Adapter: observer calls, security enforcement |
-| `adapters/chi/handler.go` | Adapter: same as nethttp |
-| `adapters/mqtt/handler.go` | Adapter: subscribe/publish, observer calls |
-| `.github/instructions/go-codex.instructions.md` | Design contract and prior decisions |
+| File                                            | Why                                                         |
+| ----------------------------------------------- | ----------------------------------------------------------- |
+| `api/rest/builder.go`                           | Layer 2 REST: all param types, builder methods, error types |
+| `api/events/builder.go`                         | Layer 2 events: ChannelHandle, TopicParam, Builder          |
+| `forge/forge.go`                                | Layer 3: PipelineInfo, FunctionMeta, Registry, error types  |
+| `render/pipeline/pipeline.go`                   | Pipeline YAML renderer                                      |
+| `render/asyncapi/v3/document.go`                | AsyncAPI renderer                                           |
+| `render/openapi/openapi.go`                     | OpenAPI renderer                                            |
+| `adapters/nethttp/handler.go`                   | Adapter: observer calls, security enforcement               |
+| `adapters/chi/handler.go`                       | Adapter: same as nethttp                                    |
+| `adapters/mqtt/handler.go`                      | Adapter: subscribe/publish, observer calls                  |
+| `.github/instructions/go-codex.instructions.md` | Design contract and prior decisions                         |
 
 Also scan: `api/rest/*_test.go`, `api/events/*_test.go`, `forge/*_test.go`, `render/pipeline/*_test.go`
 
@@ -92,14 +92,14 @@ Work through `references/checklist.md` section by section:
 
 For every issue found, assign:
 
-| Field | Values |
-|-------|--------|
-| ID | `G<N>` (sequential) |
-| Severity | `bug` / `small` / `trivial` |
-| Category | one of the 10 checklist sections |
-| File:line | exact location |
-| Problem | one sentence |
-| Fix | one sentence |
+| Field     | Values                           |
+| --------- | -------------------------------- |
+| ID        | `G<N>` (sequential)              |
+| Severity  | `bug` / `small` / `trivial`      |
+| Category  | one of the 10 checklist sections |
+| File:line | exact location                   |
+| Problem   | one sentence                     |
+| Fix       | one sentence                     |
 
 Present findings as a table, then group by priority: bugs first, then small, then trivial.
 
@@ -138,9 +138,29 @@ just check            # staticcheck + gosec; no new suppressions allowed
 If `just check` surfaces a warning introduced by your changes, fix it before proceeding.
 Do not add `//nolint` or `//gosec` suppressions to silence new findings.
 
-### Phase 7 — Commit Summary
+### Phase 7 — Update History
 
-After all fixes are verified, produce a commit-ready summary. **Do not commit** — present this to
+Before producing the commit summary, append a new section to
+`references/history.md` for this round. Follow the existing format:
+
+```markdown
+## Round <N> (<short title>)
+
+- **<ID> — <finding title>**: one-sentence description of what was wrong and how it was fixed.
+- ...
+
+---
+```
+
+Rules:
+
+- Include only findings that were actually implemented (not deferred/skipped).
+- One bullet per finding; keep the description concise and factual.
+- Insert the new section **above** Round <N-1> (newest round at top of file, below the header).
+
+### Phase 8 — Commit Summary
+
+After updating history.md, produce a commit-ready summary. **Do not commit** — present this to
 the user and let them decide.
 
 Format:
@@ -163,6 +183,7 @@ Co-authored-by: Copilot <223556219+Copilot@users.noreply.github.com>
 ```
 
 Rules:
+
 - Title must be imperative: "Fix ValidateTopicVars missing key check", not "Fixed…"
 - List only findings that were actually implemented, not skipped or deferred
 - If zero examples changed, write "Examples: no changes needed"
@@ -186,14 +207,15 @@ go-codex uses typed errors, not bare strings. Check every error return site:
 
 `stats.Observer` has four interfaces; adapters must call them correctly:
 
-| Interface | Who calls it | When |
-|-----------|-------------|------|
-| `stats.ValidationObserver` | codecs (internal) | on codec validation failure |
-| `stats.Observer` | adapters (nethttp, chi, mqtt) | on decode/encode start+finish, errors |
-| `stats.PipelineObserver` | forge `Registry.Apply` | on each function apply |
-| `stats.SecurityObserver` | adapters | on security rejection — **type-asserted, never embedded** |
+| Interface                  | Who calls it                  | When                                                      |
+| -------------------------- | ----------------------------- | --------------------------------------------------------- |
+| `stats.ValidationObserver` | codecs (internal)             | on codec validation failure                               |
+| `stats.Observer`           | adapters (nethttp, chi, mqtt) | on decode/encode start+finish, errors                     |
+| `stats.PipelineObserver`   | forge `Registry.Apply`        | on each function apply                                    |
+| `stats.SecurityObserver`   | adapters                      | on security rejection — **type-asserted, never embedded** |
 
 Rules:
+
 - `SecurityObserver` must be guarded: `if so, ok := obs.(stats.SecurityObserver); ok { so.RecordSecurityRejection(...) }`
 - `PipelineObserver.RecordApply` must be called for every function in a pipeline, including
   wrapped collection ops (Map, Filter, etc.)
@@ -240,7 +262,7 @@ If an example panics or uses a stale pattern, file a finding.
 
 ## Gotchas
 
-- **Do not re-report R1–R10 items.** See `references/history.md` for the full list of what is already fixed.
+- **Do not re-report R1-Rxx items.** See `references/history.md` for the full list of what is already fixed.
 - **`FunctionKindScalar` is `""` (empty string).** `NewFunction`/`Compose` never write `Kind` — scalar functions have `Kind==""` by design. The `render/pipeline` renderer omits `kind:` for scalar. This is correct.
 - **`rest.Builder.AddServer` discards `name` after description fallback.** OpenAPI servers are a keyless ordered array. `events.Builder.AddServer` stores the name (AsyncAPI servers are keyed). Same call site, different semantics.
 - **`PathParam` and `TopicParam` have no `Required` field.** This is by design — OpenAPI mandates path params are always required; topic vars must always be present. Godoc explains this.
@@ -251,6 +273,6 @@ If an example panics or uses a stale pattern, file a finding.
 
 ## References
 
-- [`references/history.md`](references/history.md) — findings fixed in Rounds 1–10
+- [`references/history.md`](references/history.md) — findings fixed in Rounds
 - [`references/checklist.md`](references/checklist.md) — full cross-layer consistency checklist
 - [`.github/instructions/go-codex.instructions.md`](../../instructions/go-codex.instructions.md) — design contract

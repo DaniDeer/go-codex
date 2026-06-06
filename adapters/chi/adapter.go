@@ -89,7 +89,18 @@ type CookieOptions struct {
 	AllowJS bool
 
 	// Codec, when non-nil, validates value before the Set-Cookie header is written.
+	// Set via [CookieOptions.WithCodec] to avoid address-of boilerplate.
 	Codec *codex.Codec[string]
+}
+
+// WithCodec sets the validation codec and returns the updated CookieOptions.
+// Avoids the temporary-variable + address-of pattern required when setting Codec inline:
+//
+//	err := chiadapter.SetCookie(w, "session_token", token,
+//	    chiadapter.CookieOptions{MaxAge: 3600}.WithCodec(sessionCodec))
+func (o CookieOptions) WithCodec(c codex.Codec[string]) CookieOptions {
+	o.Codec = &c
+	return o
 }
 
 // SetCookie writes a Set-Cookie header on w with secure defaults:
@@ -337,7 +348,7 @@ func Handler[Req, Resp any](handle *rest.RouteHandle[Req, Resp], fn HandlerFunc[
 		// Validate path parameters against their registered codecs (if any).
 		if names := handle.PathParamNames(); len(names) > 0 {
 			if err := handle.ValidatePathParams(pathValues(r, names)); err != nil {
-				obs.RecordValidationError("path", stats.ConstraintName(err), "")
+				reportPathErrors(err, obs)
 				errFn(sw, r, http.StatusBadRequest, err)
 				return
 			}
@@ -562,7 +573,7 @@ func SSEHandler[Req, Event any](handle *rest.SSERouteHandle[Req, Event], fn SSEH
 		// Validate path parameters against their registered codecs (if any).
 		if names := handle.PathParamNames(); len(names) > 0 {
 			if err := handle.ValidatePathParams(pathValues(r, names)); err != nil {
-				obs.RecordValidationError("path", stats.ConstraintName(err), "")
+				reportPathErrors(err, obs)
 				opts.ErrorHandler(sw, r, http.StatusBadRequest, err)
 				return
 			}
@@ -823,6 +834,14 @@ func reportResponseCookieErrors(err error, obs stats.Observer) {
 		return
 	}
 	obs.RecordValidationError("response_cookie", stats.ConstraintName(rce.Err), rce.Name)
+}
+
+func reportPathErrors(err error, obs stats.Observer) {
+	var pe rest.PathParamError
+	if !errors.As(err, &pe) {
+		return
+	}
+	obs.RecordValidationError("path", stats.ConstraintName(pe.Err), pe.Name)
 }
 
 func negotiateFormat[T any](formats []format.Format[T], accept string) (format.Format[T], bool) {

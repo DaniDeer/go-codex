@@ -41,25 +41,22 @@ type CookieOptions struct {
 
 	// Codec, when non-nil, validates value before the Set-Cookie header is
 	// written. Use the same [codex.Codec] as the matching [rest.CookieParam]
-	// for symmetric read/write validation from a single definition:
-	//
-	//	sessionCodec := codex.String().Refine(validate.MinLen(32))
-	//
-	//	// Read: incoming cookie validated against sessionCodec.
-	//	rest.RouteConfig{
-	//	    CookieParams: []rest.CookieParam{
-	//	        {Name: "session_token", Required: true, Codec: &sessionCodec},
-	//	    },
-	//	}
-	//
-	//	// Write: same codec validates the outgoing value before Set-Cookie.
-	//	err := nethttp.SetCookie(w, "session_token", newToken, nethttp.CookieOptions{
-	//	    Codec: &sessionCodec,
-	//	})
+	// for symmetric read/write validation from a single definition.
+	// Set via [CookieOptions.WithCodec] to avoid address-of boilerplate.
 	//
 	// If validation fails, SetCookie returns [rest.CookieParamError] and does
 	// NOT write the Set-Cookie header.
 	Codec *codex.Codec[string]
+}
+
+// WithCodec sets the validation codec and returns the updated CookieOptions.
+// Avoids the temporary-variable + address-of pattern required when setting Codec inline:
+//
+//	err := nethttp.SetCookie(w, "session_token", token,
+//	    nethttp.CookieOptions{MaxAge: 3600}.WithCodec(sessionCodec))
+func (o CookieOptions) WithCodec(c codex.Codec[string]) CookieOptions {
+	o.Codec = &c
+	return o
 }
 
 // SetCookie writes a Set-Cookie header on w with secure defaults:
@@ -75,13 +72,12 @@ type CookieOptions struct {
 //	sessionCodec := codex.String().Refine(validate.MinLen(32))
 //
 //	// Read (adapter validates automatically via CookieParam):
-//	RouteConfig{CookieParams: []rest.CookieParam{{Name: "session_token", Codec: &sessionCodec}}}
+//	rest.CookieParam{Name: "session_token"}.WithCodec(sessionCodec)
 //
 //	// Write (handler sets the cookie with the same codec):
-//	if err := nethttp.SetCookie(w, "session_token", token, nethttp.CookieOptions{
-//	    MaxAge: 3600,
-//	    Codec:  &sessionCodec,
-//	}); err != nil {
+//	if err := nethttp.SetCookie(w, "session_token", token,
+//	    nethttp.CookieOptions{MaxAge: 3600}.WithCodec(sessionCodec),
+//	); err != nil {
 //	    http.Error(w, err.Error(), http.StatusInternalServerError)
 //	    return
 //	}

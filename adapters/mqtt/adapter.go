@@ -171,8 +171,11 @@ func SubscribeHandler[T any](
 	if obs == nil {
 		obs = stats.NoopObserver{}
 	}
-	// Priority: call-time formats > handle formats > JSON fallback (handle.Decode).
+	// Priority: call-time formats > handle.SubscribeFormats > handle.Formats > JSON fallback (handle.Decode).
 	effectiveFmts := formats
+	if len(effectiveFmts) == 0 {
+		effectiveFmts = handle.SubscribeFormats
+	}
 	if len(effectiveFmts) == 0 {
 		effectiveFmts = handle.Formats
 	}
@@ -353,8 +356,11 @@ func Publish[T any](ctx context.Context, client pahomqtt.Client, handle *events.
 			return err
 		}
 	}
-	// Priority: call-time formats > handle formats > JSON fallback (handle.Encode).
+	// Priority: call-time formats > handle.PublishFormats > handle.Formats > JSON fallback (handle.Encode).
 	effectiveFmts := formats
+	if len(effectiveFmts) == 0 {
+		effectiveFmts = handle.PublishFormats
+	}
 	if len(effectiveFmts) == 0 {
 		effectiveFmts = handle.Formats
 	}

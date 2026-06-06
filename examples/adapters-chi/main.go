@@ -784,9 +784,7 @@ func main() {
 		fmt.Printf("Valid:   Set-Cookie: %s\n", setRec.Header().Get("Set-Cookie"))
 
 		setRec2 := httptest.NewRecorder()
-		setErr := chiadapter.SetCookie(setRec2, "session_token", "", chiadapter.CookieOptions{
-			Codec: &profileSessionCodec,
-		})
+		setErr := chiadapter.SetCookie(setRec2, "session_token", "", chiadapter.CookieOptions{}.WithCodec(profileSessionCodec))
 		fmt.Printf("Invalid: error=%v, Set-Cookie=%q\n", setErr, setRec2.Header().Get("Set-Cookie"))
 	}()
 
