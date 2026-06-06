@@ -84,7 +84,8 @@ type Server = openapi.Server
 type PathParam struct {
 	Name        string
 	Description string
-	// Codec validates substituted values at [RouteHandle.BuildPath] time.
+	// Codec validates path parameter values at [RouteHandle.ValidatePathParams] and
+	// [RouteHandle.BuildPath] time.
 	// When non-nil, the codec's schema is also used in the OpenAPI spec.
 	// Nil means no runtime validation; the spec schema will be empty.
 	Codec *codex.Codec[string]
@@ -724,10 +725,10 @@ type CookieParam struct {
 	Codec *codex.Codec[string]
 }
 
-func (c CookieParam) applyRoute(rb *routeBuilder) { rb.cookieParams = append(rb.cookieParams, c) }
+func (cp CookieParam) applyRoute(rb *routeBuilder) { rb.cookieParams = append(rb.cookieParams, cp) }
 
 // WithCodec sets the validation codec and returns the updated CookieParam.
-func (c CookieParam) WithCodec(cc codex.Codec[string]) CookieParam { c.Codec = &cc; return c }
+func (cp CookieParam) WithCodec(c codex.Codec[string]) CookieParam { cp.Codec = &c; return cp }
 
 // CookieParamError is returned by [RouteHandle.ValidateCookies] when a cookie
 // parameter value fails codec validation.
