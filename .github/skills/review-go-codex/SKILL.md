@@ -113,9 +113,11 @@ user confirms the plan or says "start" / "get to work".
 For each finding, in priority order:
 
 1. Apply the fix
-2. Run `go build ./...` (must stay clean)
-3. Run `go test ./...` (all packages must pass)
-4. Update `.github/instructions/go-codex.instructions.md` if any exported API changed
+2. Run `go fmt ./...` — format immediately after each edit
+3. Run `go build ./...` (must stay clean)
+4. Run `go test ./...` (all packages must pass)
+5. Run `just check` (staticcheck + gosec — no new warnings)
+6. Update `.github/instructions/go-codex.instructions.md` if any exported API changed
 
 After all fixes:
 
@@ -124,12 +126,17 @@ After all fixes:
 
 ### Phase 6 — Verify
 
+Run in this order — each must be clean before proceeding to the next:
+
 ```bash
-go build ./...
-go test ./...
+go fmt ./...          # format all files; no diff should remain
+go build ./...        # must compile with zero errors
+go test ./...         # all packages must pass
+just check            # staticcheck + gosec; no new suppressions allowed
 ```
 
-Both must be clean. No new linting suppressions.
+If `just check` surfaces a warning introduced by your changes, fix it before proceeding.
+Do not add `//nolint` or `//gosec` suppressions to silence new findings.
 
 ### Phase 7 — Commit Summary
 
