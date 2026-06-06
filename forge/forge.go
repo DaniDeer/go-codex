@@ -193,6 +193,13 @@ type PipelineInfo struct {
 	Title       string
 	Version     string
 	Description string
+	// Author is the team or person responsible for this pipeline definition.
+	// Mirrors the per-function [FunctionMeta.Author] field at the pipeline level.
+	Author string
+	// ApprovedBy names the approval authority for the pipeline as a whole.
+	ApprovedBy string
+	// ApprovedAt is the ISO 8601 date of pipeline approval (e.g. "2024-03-01").
+	ApprovedAt string
 }
 
 // PipelineSpec is the full machine-readable computation graph spec.
@@ -209,10 +216,13 @@ type PipelineSpec struct {
 // function B's input name, the registry records that B depends on A.
 //
 // Build a registry with NewRegistry and chain optional configuration via
-// WithDescription and WithObserver before registering any functions:
+// WithDescription, WithAuthor, WithApproval, and WithObserver before
+// registering any functions:
 //
 //	reg := forge.NewRegistry("OEE Pipeline", "1.0.0").
 //	    WithDescription("Signed, governed OEE computation pipeline.").
+//	    WithAuthor("OT Engineering").
+//	    WithApproval("Quality Manager", "2024-03-01").
 //	    WithObserver(myObs)
 //	availabilityCalc.Register(reg)
 //	oeeCalc.Register(reg)
@@ -234,6 +244,22 @@ func NewRegistry(title, version string) *Registry {
 // WithDescription sets the pipeline-level description and returns r for chaining.
 func (r *Registry) WithDescription(desc string) *Registry {
 	r.info.Description = desc
+	return r
+}
+
+// WithAuthor sets the pipeline-level author and returns r for chaining.
+// Mirrors [FunctionMeta.Author] at the pipeline level.
+func (r *Registry) WithAuthor(author string) *Registry {
+	r.info.Author = author
+	return r
+}
+
+// WithApproval sets the pipeline-level approver and approval date, returning r
+// for chaining. approvedAt should be an ISO 8601 date string (e.g. "2024-03-01").
+// Mirrors [FunctionMeta.ApprovedBy] and [FunctionMeta.ApprovedAt] at the pipeline level.
+func (r *Registry) WithApproval(approvedBy, approvedAt string) *Registry {
+	r.info.ApprovedBy = approvedBy
+	r.info.ApprovedAt = approvedAt
 	return r
 }
 

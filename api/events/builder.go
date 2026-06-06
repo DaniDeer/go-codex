@@ -136,13 +136,11 @@ type Publish struct {
 
 func (p Publish) applyChannel(cb *channelBuilder) { cb.publish = &p }
 
-// ChannelMeta holds description metadata for a channel registration.
-// It controls the channel-level description in the AsyncAPI spec.
+// ChannelMeta holds channel-level metadata for a channel registration:
+// title, summary, description, and tags. All fields are optional.
+// The values flow into the generated AsyncAPI ChannelItem.
 //
 // ChannelMeta implements [ChannelOpt]: pass it directly to [NewChannel].
-//
-// ChannelMeta carries channel-level metadata used in the generated AsyncAPI spec.
-// All fields are optional. Pass ChannelMeta as a [ChannelOpt] to [NewChannel].
 type ChannelMeta struct {
 	Title       string
 	Summary     string
@@ -162,6 +160,9 @@ func (m ChannelMeta) applyChannel(cb *channelBuilder) { cb.meta = m }
 // TopicParam is optional: the events builder auto-derives parameters from the
 // topic template. Use TopicParam to add a description or register a codec for
 // a specific variable.
+//
+// Note: all topic variables are always required — a template cannot be resolved
+// without every {varName} placeholder present. There is no Required field.
 //
 // TopicParam implements [ChannelOpt]: pass it directly to [NewChannel].
 //
@@ -188,7 +189,7 @@ func (p TopicParam) WithCodec(c codex.Codec[string]) TopicParam { p.Codec = &c; 
 // ChannelOpt is the sealed interface for variadic [NewChannel] options.
 //
 // The following types implement ChannelOpt:
-//   - [ChannelMeta] — channel description
+//   - [ChannelMeta] — channel-level metadata (title, summary, description, tags)
 //   - [Subscribe] — subscribe operation metadata (application receives messages)
 //   - [Publish] — publish operation metadata (application sends messages)
 //   - [TopicParam] — topic template variable with optional codec and description
@@ -333,7 +334,10 @@ func (h *ChannelHandle[T]) ValidateTopicVars(vars map[string]string) error {
 		if p.Codec == nil {
 			continue
 		}
-		val := vars[p.Name]
+		val, ok := vars[p.Name]
+		if !ok {
+			return MissingTopicVarError{Name: p.Name}
+		}
 		if err := p.Codec.Validate(val); err != nil {
 			return TopicParamError{Name: p.Name, Value: val, Err: err}
 		}

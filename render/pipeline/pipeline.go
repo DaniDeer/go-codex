@@ -63,6 +63,15 @@ func buildInfo(info forge.PipelineInfo) map[string]any {
 	if info.Description != "" {
 		m["description"] = info.Description
 	}
+	if info.Author != "" {
+		m["author"] = info.Author
+	}
+	if info.ApprovedBy != "" {
+		m["approvedBy"] = info.ApprovedBy
+	}
+	if info.ApprovedAt != "" {
+		m["approvedAt"] = info.ApprovedAt
+	}
 	return m
 }
 

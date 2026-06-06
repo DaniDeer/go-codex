@@ -1068,3 +1068,48 @@ func TestWithPublishFormats_setsOnlyPublishDirection(t *testing.T) {
 			ch.Descriptor.Subscribe.Message.ContentType)
 	}
 }
+
+func TestValidateTopicVars_missingKey_returnsMissingTopicVarError(t *testing.T) {
+	uuidCodec := codex.String().Refine(validate.UUID)
+	b := events.NewBuilder(testInfo)
+	ch, err := events.NewChannel[userEvent]("sensors/{sensorID}/data",
+		userEventCodec,
+		events.TopicParam{Name: "sensorID"}.WithCodec(uuidCodec),
+		events.Subscribe{Summary: "Sensor data"},
+	).Register(b)
+	if err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+
+	// Pass a vars map that is missing "sensorID" entirely.
+	err = ch.ValidateTopicVars(map[string]string{})
+	var missingErr events.MissingTopicVarError
+	if !errors.As(err, &missingErr) {
+		t.Fatalf("expected MissingTopicVarError for absent key, got %T: %v", err, err)
+	}
+	if missingErr.Name != "sensorID" {
+		t.Errorf("expected Name=sensorID, got %q", missingErr.Name)
+	}
+}
+
+func TestValidateTopicVars_presentKey_codecFailure_returnsTopicParamError(t *testing.T) {
+	uuidCodec := codex.String().Refine(validate.UUID)
+	b := events.NewBuilder(testInfo)
+	ch, err := events.NewChannel[userEvent]("sensors/{sensorID}/data",
+		userEventCodec,
+		events.TopicParam{Name: "sensorID"}.WithCodec(uuidCodec),
+		events.Subscribe{Summary: "Sensor data"},
+	).Register(b)
+	if err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+
+	err = ch.ValidateTopicVars(map[string]string{"sensorID": "not-a-uuid"})
+	var paramErr events.TopicParamError
+	if !errors.As(err, &paramErr) {
+		t.Fatalf("expected TopicParamError for invalid value, got %T: %v", err, err)
+	}
+	if paramErr.Name != "sensorID" {
+		t.Errorf("expected Name=sensorID, got %q", paramErr.Name)
+	}
+}

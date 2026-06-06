@@ -198,3 +198,41 @@ func TestNoopObserver_SatisfiesAllInterfaces(t *testing.T) {
 	// just a compile-time assertion — if it compiles, the test passes
 	_ = errors.New("compile-time check only")
 }
+
+func TestRegistry_WithAuthor_setsInfoAuthor(t *testing.T) {
+	reg := forge.NewRegistry("Test Pipeline", "1.0.0").
+		WithAuthor("Platform Team")
+	spec := reg.Spec()
+	if spec.Info.Author != "Platform Team" {
+		t.Errorf("expected Author %q, got %q", "Platform Team", spec.Info.Author)
+	}
+}
+
+func TestRegistry_WithApproval_setsInfoApproverAndDate(t *testing.T) {
+	reg := forge.NewRegistry("Test Pipeline", "1.0.0").
+		WithApproval("Quality Manager", "2024-03-01")
+	spec := reg.Spec()
+	if spec.Info.ApprovedBy != "Quality Manager" {
+		t.Errorf("expected ApprovedBy %q, got %q", "Quality Manager", spec.Info.ApprovedBy)
+	}
+	if spec.Info.ApprovedAt != "2024-03-01" {
+		t.Errorf("expected ApprovedAt %q, got %q", "2024-03-01", spec.Info.ApprovedAt)
+	}
+}
+
+func TestRegistry_WithAuthorAndApproval_chainable(t *testing.T) {
+	reg := forge.NewRegistry("OEE Pipeline", "2.0.0").
+		WithDescription("Signed OEE pipeline.").
+		WithAuthor("OT Engineering").
+		WithApproval("Quality Manager", "2024-03-01")
+	spec := reg.Spec()
+	if spec.Info.Title != "OEE Pipeline" {
+		t.Errorf("Title: want %q, got %q", "OEE Pipeline", spec.Info.Title)
+	}
+	if spec.Info.Author != "OT Engineering" {
+		t.Errorf("Author: want %q, got %q", "OT Engineering", spec.Info.Author)
+	}
+	if spec.Info.ApprovedBy != "Quality Manager" {
+		t.Errorf("ApprovedBy: want %q, got %q", "Quality Manager", spec.Info.ApprovedBy)
+	}
+}

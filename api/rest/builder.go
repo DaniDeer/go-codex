@@ -73,6 +73,14 @@ type Server = openapi.Server
 // PathParam is optional: the builder auto-generates a minimal parameter entry
 // for every {varName} in the path. Only specify PathParam when you need a
 // description or runtime validation for a specific variable.
+// PathParam describes an HTTP path variable for a route (e.g. `{id}` in `/users/{id}`).
+// It combines spec metadata with optional runtime validation via a codec.
+//
+// Note: path parameters are always required by the OpenAPI specification — there
+// is no Required field. For optional key-value parameters use [QueryParam] with
+// Required: true or false as appropriate.
+//
+// PathParam implements [RouteOpt]: pass it directly to [NewRoute] or [NewSSERoute].
 type PathParam struct {
 	Name        string
 	Description string
@@ -755,7 +763,7 @@ type HeaderParam struct {
 	Name        string
 	Description string
 	Required    bool
-	// Codec validates header values at [RouteHandle.ValidateHeaders] time.
+	// Codec validates request header parameter values at [RouteHandle.ValidateHeaders] time.
 	// When non-nil, the codec's schema is also used in the OpenAPI spec.
 	// Nil means no runtime validation; the spec schema will be empty.
 	Codec *codex.Codec[string]
@@ -800,7 +808,7 @@ type ResponseHeaderParam struct {
 	Name        string
 	Description string
 	Required    bool
-	// Codec validates response header values at [RouteHandle.ValidateResponseHeaders] time.
+	// Codec validates response header parameter values at [RouteHandle.ValidateResponseHeaders] time.
 	// When non-nil, the codec's schema is also used in the OpenAPI spec.
 	// Nil means no runtime validation; the spec schema will be empty.
 	Codec *codex.Codec[string]
@@ -853,7 +861,7 @@ type ResponseCookieParam struct {
 	Name        string
 	Description string
 	Required    bool
-	// Codec validates the cookie value at [RouteHandle.ValidateResponseCookies] time.
+	// Codec validates response cookie parameter values at [RouteHandle.ValidateResponseCookies] time.
 	// When non-nil, the codec's schema is also used in the OpenAPI spec.
 	// Nil means no runtime validation; the spec schema will be empty.
 	Codec *codex.Codec[string]
@@ -1089,9 +1097,10 @@ func NewBuilder(info Info, opts ...BuilderOption) *Builder {
 	return b
 }
 
-// AddServer appends a named server entry to the spec. name is used as the
-// server's Description if s.Description is empty, making it consistent with
-// [events.Builder.AddServer].
+// AddServer appends a server entry to the OpenAPI spec in registration order.
+// If s.Description is empty, name is used as the description (consistent with
+// [events.Builder.AddServer]). Unlike the AsyncAPI builder, OpenAPI servers are
+// an ordered array with no named keys — name is not stored beyond this point.
 func (b *Builder) AddServer(name string, s Server) *Builder {
 	if s.Description == "" {
 		s.Description = name
