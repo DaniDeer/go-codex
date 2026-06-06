@@ -149,7 +149,7 @@ func TestSetCookie_Domain(t *testing.T) {
 func TestSetCookie_Codec_valid(t *testing.T) {
 	minLen := codex.String().Refine(validate.MinLen(8))
 	rec := httptest.NewRecorder()
-	err := nethttp.SetCookie(rec, "token", "longenoughtoken", nethttp.CookieOptions{Codec: &minLen})
+	err := nethttp.SetCookie(rec, "token", "longenoughtoken", nethttp.CookieOptions{}.WithCodec(minLen))
 	if err != nil {
 		t.Fatalf("want nil, got %v", err)
 	}
@@ -162,7 +162,7 @@ func TestSetCookie_Codec_valid(t *testing.T) {
 func TestSetCookie_Codec_invalid(t *testing.T) {
 	minLen := codex.String().Refine(validate.MinLen(8))
 	rec := httptest.NewRecorder()
-	err := nethttp.SetCookie(rec, "token", "short", nethttp.CookieOptions{Codec: &minLen})
+	err := nethttp.SetCookie(rec, "token", "short", nethttp.CookieOptions{}.WithCodec(minLen))
 
 	var cookieErr rest.CookieParamError
 	if !errors.As(err, &cookieErr) {
@@ -178,6 +178,29 @@ func TestSetCookie_Codec_invalid(t *testing.T) {
 	cookies := parseCookies(rec)
 	if findCookie(cookies, "token") != nil {
 		t.Error("cookie must not be written when codec validation fails")
+	}
+}
+
+func TestCookieOptions_WithCodec_setsCodec(t *testing.T) {
+	c := codex.String().Refine(validate.MinLen(4))
+	opts := nethttp.CookieOptions{}.WithCodec(c)
+	if opts.Codec == nil {
+		t.Fatal("want Codec set, got nil")
+	}
+}
+
+func TestCookieOptions_WithCodec_returnsDistinctCopy(t *testing.T) {
+	c := codex.String().Refine(validate.MinLen(4))
+	base := nethttp.CookieOptions{MaxAge: 3600}
+	updated := base.WithCodec(c)
+	if base.Codec != nil {
+		t.Error("WithCodec must not mutate the original")
+	}
+	if updated.Codec == nil {
+		t.Error("WithCodec must set Codec on the returned copy")
+	}
+	if updated.MaxAge != 3600 {
+		t.Error("WithCodec must preserve other fields")
 	}
 }
 

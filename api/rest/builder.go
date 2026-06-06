@@ -18,7 +18,7 @@
 //	    createUserCodec, userCodec,
 //	    rest.RouteMeta{OperationID: "createUser", Summary: "Create a user",
 //	        ReqSchemaName: "CreateUserRequest", RespSchemaName: "User"},
-//	    rest.PathParam{Name: "id", Codec: &uuidCodec},
+//	    rest.PathParam{Name: "id"}.WithCodec(uuidCodec),
 //	)
 //
 //	handle, err := createUser.Register(b)
