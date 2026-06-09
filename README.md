@@ -152,7 +152,7 @@ Requires Go 1.25 or later.
 | Package                           | Import path                                     |
 | --------------------------------- | ----------------------------------------------- |
 | Core codecs                       | `github.com/DaniDeer/go-codex/codex`            |
-| Format bridges (JSON, YAML, TOML) | `github.com/DaniDeer/go-codex/format`           |
+| Format bridges (JSON, YAML, TOML, Gob) | `github.com/DaniDeer/go-codex/format`           |
 | Built-in constraints              | `github.com/DaniDeer/go-codex/validate`         |
 | HTTP route descriptors            | `github.com/DaniDeer/go-codex/route`            |
 | REST API builder                  | `github.com/DaniDeer/go-codex/api/rest`         |
@@ -169,7 +169,7 @@ Requires Go 1.25 or later.
 
 ## Features
 
-- **Multi-Format Support** — one `Codec[T]` reads and writes JSON, YAML, and TOML unchanged
+- **Multi-Format Support** — one `Codec[T]` reads and writes JSON, YAML, TOML, and Gob (binary) unchanged
 - **Encode, Decode, and Validation** — constraints run on decode; encode is trusted; validate is explicit
 - **Builtin Format Constraints** — `email`, `uuid`, `url`, `date`, `date-time` validated and reflected into schema automatically
 - **Protocol Path/Topic Constraints** — `validate.HTTPPath`, `validate.MQTTPublishTopic`, `validate.MQTTTopic` validate path and topic strings; compose with custom constraints via `WithPathConstraints` / `WithTopicConstraints`
@@ -190,24 +190,46 @@ Requires Go 1.25 or later.
 ### Multi-Format Support
 
 `Codec[T]` operates on an intermediate representation (`map[string]any`) that is format-agnostic.
-The `format` package bridges that intermediate to concrete wire formats — the same codec reads and writes JSON, YAML, and TOML unchanged.
+The `format` package bridges that intermediate to concrete wire formats — the same codec reads and writes JSON, YAML, TOML, and Gob unchanged.
 
 ```go
 jsonFmt := format.JSON(UserCodec)
 yamlFmt := format.YAML(UserCodec)
 tomlFmt := format.TOML(UserCodec)
+gobFmt  := format.Gob(UserCodec)  // binary, Go-only; bypasses map[string]any
 
-// All three produce identical Go values; validation runs on all three.
+// All four produce identical Go values; validation runs on all four.
 user, err := jsonFmt.Unmarshal([]byte(`{"name":"Alice","age":30}`))
 user, err  = yamlFmt.Unmarshal([]byte("name: Alice\nage: 30\n"))
 user, err  = tomlFmt.Unmarshal([]byte("name = \"Alice\"\nage = 30\n"))
+user, err  = gobFmt.Unmarshal(gobBytes)  // binary round-trip, codec constraints enforced
 
 // Encode to any format.
 jsonBytes, _ := jsonFmt.Marshal(user)
-tomlBytes, _ := tomlFmt.Marshal(user)
+gobBytes, _  = gobFmt.Marshal(user)   // compact binary — same codec, different wire
 ```
 
 Validation errors and field paths are identical regardless of which format is used.
+
+`format.Gob` is suitable for internal Go-to-Go communication (forge pipelines, MQTT between Go services, binary caching). It is not suitable for REST content negotiation or cross-language interoperability.
+
+### Go Library as Contract
+
+For internal Go-to-Go channels, a shared Go module can *be* the contract between services — replacing the OpenAPI/AsyncAPI document as the enforcement mechanism:
+
+```go
+// contract/ — shared module imported by both producer and consumer services
+var OrderCodec = codex.Struct[Order](...)        // shape + validation rules
+var GobFormat  = format.Gob(OrderCodec)          // binary wire format
+var OrderChannel = events.NewChannel(            // topic + schema
+    "orders/{orderId}", OrderCodec, ...)
+```
+
+Both services `import contract`. The Go compiler enforces the shape: any field rename, type change, or constraint modification breaks compilation on both sides immediately — no stale YAML, no schema drift, no code-generation step.
+
+**Gob in OpenAPI/AsyncAPI specs**: the spec renderer emits `"application/gob"` as the content type alongside the JSON Schema body. The schema correctly documents the data shape for human readers, but tooling (Swagger UI, API gateways, code generators) cannot interpret binary gob payloads. OpenAPI/AsyncAPI specs remain useful for human documentation; the Go library is the authoritative contract.
+
+See `examples/gob-contract` for a full demonstration.
 
 ### Format Extensibility
 
@@ -218,6 +240,8 @@ The `format` package covers all wire formats via two constructors. The built-in 
 | `format.New[T](codec, marshal, unmarshal)` | `map[string]any` | CBOR, MessagePack, XML — any format with a map-based intermediate |
 | `format.NewTyped[T](codec, marshal, unmarshal, ct)` | typed `T` directly | templ HTML, Protobuf, CSV — any renderer that takes a typed value |
 | `format.NewStreamed[T](codec, marshalTo, unmarshal, ct)` | writes to `io.Writer` | SSR streaming, chunked responses — validates then streams without buffering |
+
+The built-in `format.Gob` constructor uses the `NewTyped` path internally — codec constraints run on both marshal and unmarshal, and gob wire bytes are self-contained per call.
 
 `format.NewTyped` runs the codec's Refine constraints on the value **before** calling `marshal`, so validation always fires regardless of the output format.
 

@@ -1,12 +1,17 @@
-// Package format bridges Codec[T] to concrete serialization formats (JSON, YAML, TOML).
+// Package format bridges Codec[T] to concrete serialization formats (JSON, YAML, TOML, Gob).
 //
 // A codec works with an intermediate representation (map[string]any) that is
 // format-agnostic. Format wraps that intermediate layer so the same codec can
 // read and write multiple wire formats without any changes to the codec itself.
+//
+// Text-based formats (JSON, YAML, TOML) pass through the map[string]any intermediate.
+// Binary and typed formats (Gob) bypass the intermediate and operate on the typed
+// value directly via the marshalTyped/unmarshalTyped path.
 package format
 
 import (
 	"bytes"
+	"encoding/gob"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -23,7 +28,7 @@ import (
 var ErrNotStreamable = errors.New("format: not streamable — use NewStreamed to create a streaming format")
 
 // Format binds a Codec[T] to a specific serialization format.
-// Use JSON, YAML, or TOML to construct one. For formats that operate on the
+// Use JSON, YAML, TOML, or Gob to construct one. For formats that operate on the
 // typed value directly (e.g. HTML rendering), use [NewTyped]. For streaming
 // output (write to io.Writer without buffering), use [NewStreamed].
 type Format[T any] struct {
@@ -185,6 +190,49 @@ func (f Format[T]) Validate(v T) error {
 // Schema returns the schema.Schema from the underlying codec.
 func (f Format[T]) Schema() schema.Schema {
 	return f.codec.Schema
+}
+
+// Gob returns a Format[T] that serialises T using encoding/gob.
+//
+// Unlike JSON, YAML, and TOML — which pass a map[string]any intermediate through
+// the codec — Gob encodes and decodes the typed value directly. Codec constraints
+// are enforced on both marshal (before encoding) and unmarshal (after decoding).
+//
+// Suitable for internal Go-to-Go communication: forge pipelines, MQTT between Go
+// services, and binary caching. Not suitable for REST content negotiation,
+// human-readable output, or cross-language interoperability.
+//
+// Requirements and limitations:
+//   - All struct fields that gob encodes must be exported; unexported fields are silently skipped.
+//   - For interface values, register concrete types with [encoding/gob.Register] before use.
+//   - "application/gob" is a conventional content type; it is not an IANA-registered MIME type.
+//   - Observability is handled by the adapter layer — no special configuration needed.
+//
+// ContentType is "application/gob".
+func Gob[T any](c codex.Codec[T]) Format[T] {
+	return Format[T]{
+		codec:       c,
+		contentType: "application/gob",
+		marshalTyped: func(v T) ([]byte, error) {
+			var buf bytes.Buffer
+			if err := gob.NewEncoder(&buf).Encode(v); err != nil {
+				return nil, fmt.Errorf("gob: %w", err)
+			}
+			return buf.Bytes(), nil
+		},
+		unmarshalTyped: func(data []byte) (T, error) {
+			var v T
+			if err := gob.NewDecoder(bytes.NewReader(data)).Decode(&v); err != nil {
+				var zero T
+				return zero, fmt.Errorf("gob: %w", err)
+			}
+			if err := c.Validate(v); err != nil {
+				var zero T
+				return zero, err
+			}
+			return v, nil
+		},
+	}
 }
 
 // JSON returns a Format that reads and writes JSON.

@@ -28,6 +28,9 @@ var (
 	jsonFmt = format.JSON(configCodec)
 	yamlFmt = format.YAML(configCodec)
 	tomlFmt = format.TOML(configCodec)
+	// Gob is a binary, Go-only format — no human-readable output, but same
+	// codec validation and round-trip guarantee as JSON/YAML/TOML.
+	gobFmt = format.Gob(configCodec)
 )
 
 func main() {
@@ -57,21 +60,31 @@ timeout = 30.5
 	fromTOML, err := tomlFmt.Unmarshal(tomlData)
 	check("TOML", err)
 
+	// Gob round-trip: marshal to binary, unmarshal back.
+	fromGob, err := gobFmt.Unmarshal(func() []byte {
+		data, _ := gobFmt.Marshal(Config{Host: "localhost", Port: 8080, Debug: true, Timeout: 30.5})
+		return data
+	}())
+	check("Gob", err)
+
 	fmt.Printf("from JSON: %+v\n", fromJSON)
 	fmt.Printf("from YAML: %+v\n", fromYAML)
 	fmt.Printf("from TOML: %+v\n", fromTOML)
+	fmt.Printf("from Gob:  %+v\n", fromGob)
 
-	// Encode one Go value to all three formats using the same codec.
-	cfg := Config{Host: "api.example.com", Port: 443, Debug: false, Timeout: -10.0}
+	// Encode one Go value to all four formats using the same codec.
+	cfg := Config{Host: "api.example.com", Port: 443, Debug: false, Timeout: 60.0}
 	fmt.Println()
 
 	jsonOut, _ := jsonFmt.Marshal(cfg)
 	yamlOut, _ := yamlFmt.Marshal(cfg)
 	tomlOut, _ := tomlFmt.Marshal(cfg)
+	gobOut, _ := gobFmt.Marshal(cfg)
 
 	fmt.Printf("JSON:\n%s\n", jsonOut)
 	fmt.Printf("YAML:\n%s\n", yamlOut)
 	fmt.Printf("TOML:\n%s\n", tomlOut)
+	fmt.Printf("Gob:  %d bytes (binary)\n", len(gobOut))
 
 	// Validation works the same regardless of format.
 	fmt.Println("validation errors:")
@@ -82,6 +95,10 @@ timeout = 30.5
 	badTOML := []byte("host = \"x\"\nport = -1\ntimeout = 5.0\n")
 	_, err = tomlFmt.Unmarshal(badTOML)
 	fmt.Println(" TOML:", err)
+
+	// Gob enforces the same codec constraints on Marshal.
+	_, err = gobFmt.Marshal(Config{Host: "x", Port: 99999, Timeout: 1.0})
+	fmt.Println(" Gob:  ", err)
 }
 
 func check(label string, err error) {

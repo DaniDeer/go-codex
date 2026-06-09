@@ -1,6 +1,8 @@
 package format_test
 
 import (
+	"bytes"
+	"encoding/gob"
 	"errors"
 	"fmt"
 	"io"
@@ -41,13 +43,14 @@ func TestFormatValidate_FailsInvalid(t *testing.T) {
 }
 
 func TestFormatValidate_SameResultAcrossFormats(t *testing.T) {
-	// Validate is format-independent — result must be identical for all three.
+	// Validate is format-independent — result must be identical for all formats.
 	v := struct{ N int }{N: -5}
 	errJSON := format.JSON(testCodec).Validate(v)
 	errYAML := format.YAML(testCodec).Validate(v)
 	errTOML := format.TOML(testCodec).Validate(v)
+	errGob := format.Gob(testCodec).Validate(v)
 
-	for label, err := range map[string]error{"JSON": errJSON, "YAML": errYAML, "TOML": errTOML} {
+	for label, err := range map[string]error{"JSON": errJSON, "YAML": errYAML, "TOML": errTOML, "Gob": errGob} {
 		if err == nil {
 			t.Errorf("%s: expected error, got nil", label)
 		}
@@ -230,5 +233,68 @@ func TestNewStreamed_Unmarshal(t *testing.T) {
 	}
 	if v.N != 5 {
 		t.Errorf("expected N=5, got %d", v.N)
+	}
+}
+
+func TestGob_ContentType(t *testing.T) {
+	f := format.Gob(testCodec)
+	if ct := f.ContentType(); ct != "application/gob" {
+		t.Errorf("expected application/gob, got %q", ct)
+	}
+}
+
+func TestGob_RoundTrip(t *testing.T) {
+	f := format.Gob(testCodec)
+	original := struct{ N int }{N: 42}
+	data, err := f.Marshal(original)
+	if err != nil {
+		t.Fatalf("marshal error: %v", err)
+	}
+	decoded, err := f.Unmarshal(data)
+	if err != nil {
+		t.Fatalf("unmarshal error: %v", err)
+	}
+	if decoded.N != original.N {
+		t.Errorf("round-trip mismatch: got N=%d, want N=%d", decoded.N, original.N)
+	}
+}
+
+func TestGob_MarshalValidatesConstraints(t *testing.T) {
+	f := format.Gob(testCodec)
+	_, err := f.Marshal(struct{ N int }{N: -1})
+	if err == nil {
+		t.Fatal("expected constraint error, got nil")
+	}
+	if !strings.Contains(err.Error(), "positive") {
+		t.Errorf("expected constraint name in error, got: %v", err)
+	}
+}
+
+func TestGob_UnmarshalValidatesConstraints(t *testing.T) {
+	// Encode a value that violates the codec constraint directly via gob
+	// (bypassing format.Gob.Marshal), then unmarshal through format.Gob
+	// to verify that constraints are enforced on decode.
+	var buf bytes.Buffer
+	if err := gob.NewEncoder(&buf).Encode(struct{ N int }{N: -3}); err != nil {
+		t.Fatalf("raw gob encode error: %v", err)
+	}
+	f := format.Gob(testCodec)
+	_, err := f.Unmarshal(buf.Bytes())
+	if err == nil {
+		t.Fatal("expected constraint error on unmarshal, got nil")
+	}
+	if !strings.Contains(err.Error(), "positive") {
+		t.Errorf("expected constraint name in error, got: %v", err)
+	}
+}
+
+func TestGob_DecodeError(t *testing.T) {
+	f := format.Gob(testCodec)
+	_, err := f.Unmarshal([]byte("not valid gob bytes"))
+	if err == nil {
+		t.Fatal("expected gob decode error, got nil")
+	}
+	if !strings.Contains(err.Error(), "gob:") {
+		t.Errorf("expected error prefixed with gob:, got: %v", err)
 	}
 }
