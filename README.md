@@ -1279,6 +1279,88 @@ nethttp.CookieOptions{
 }
 ```
 
+### net/http Client Adapter
+
+The same `adapters/nethttp` package that drives the server also provides `nethttp.Call` — a typed HTTP client that reuses the same `Route` definition, codecs, and parameter constraints. This enables two patterns:
+
+**Pattern 1 — Shared contract (import pattern)**
+
+Define routes, codecs, and types in a shared Go package. Both server and client import it. The compiler enforces the contract: any change breaks compilation on both sides immediately — no stale YAML, no code generation.
+
+```go
+// contract/contract.go — shared by server and client
+var CreateUser = rest.NewRoute[CreateUserReq, User]("POST", "/users",
+    createUserReqCodec, userCodec,
+    rest.RouteMeta{OperationID: "createUser"},
+)
+
+// server.go
+handle, _ := contract.CreateUser.Register(builder)
+nethttp.Register(mux, handle, myHandler, nethttp.Options{})
+
+// client.go — same Route, no duplication
+handle, _ := contract.CreateUser.Register(rest.NewBuilder(...))
+// or, for client-only (no OpenAPI spec needed):
+handle = contract.CreateUser.ClientHandle()
+
+user, err := nethttp.Call(ctx, http.DefaultClient, "https://api.example.com",
+    handle, CreateUserReq{Name: "Alice", Email: "alice@example.com"}, nil,
+    nethttp.CallOptions{Observer: obs})
+```
+
+**Pattern 2 — Client-only (`ClientHandle`)**
+
+When the client has no server role, use `Route.ClientHandle()` — no `Builder` required. All codec validation, path building, and parameter checks work identically.
+
+```go
+handle := rest.NewRoute[GetUserReq, User]("GET", "/users/{id}",
+    getReqCodec, userCodec,
+    rest.PathParam{Name: "id"}.WithCodec(uuidCodec),
+).ClientHandle() // no builder, no spec
+
+user, err := nethttp.Call(ctx, http.DefaultClient, "https://api.example.com",
+    handle, GetUserReq{}, map[string]string{"id": userID},
+    nethttp.CallOptions{})
+```
+
+`nethttp.Call` behaviour:
+
+- **Full codec validation before sending**: path vars (`BuildPath`), query params (`ValidateQuery`), cookies (`ValidateCookies`), headers (`ValidateHeaders`) — same rules as the server-side adapter; a validation failure returns a structured error without sending any request
+- **Request encoding**: POST/PUT/PATCH bodies are encoded via the route's request codec; GET/HEAD/DELETE send no body
+- **Response decoding**: 2xx responses are decoded via the route's response codec into the typed `Resp`
+- **Non-2xx**: returns `UnexpectedStatusError{Method, Path, StatusCode, Body}` — use `errors.As` for slog-friendly structured logging
+- **Authentication**: `CallOptions.CredentialFunc func(ctx, []route.SecurityRequirement)(http.Header, error)` mirrors the server's `SecurityFunc`; called for routes with declared security requirements; return credential headers (e.g. `Authorization: Bearer <token>`); use `CallOptions.ExtraHeaders` for simpler static credentials
+- **Observability**: `CallOptions.Observer stats.Observer` — `RecordRequest` is called with the route path template (not the concrete URL), status code, and duration; per-field validation errors reported via `RecordValidationError`
+
+```go
+// CallOptions fields:
+nethttp.CallOptions{
+    QueryParams:    map[string]string{"page": "2"},
+    CookieParams:   map[string]string{"session": token},
+    HeaderParams:   map[string]string{"X-Tenant-ID": tenantID},
+    ExtraHeaders:   http.Header{"User-Agent": {"my-client/1.0"}},
+    CredentialFunc: func(ctx context.Context, reqs []route.SecurityRequirement) (http.Header, error) {
+        h := make(http.Header)
+        h.Set("Authorization", "Bearer "+getToken(ctx))
+        return h, nil
+    },
+    Observer: obs,
+}
+
+// Structured error on non-2xx:
+var statusErr nethttp.UnexpectedStatusError
+if errors.As(err, &statusErr) {
+    slog.Error("api call failed",
+        "method",  statusErr.Method,
+        "path",    statusErr.Path,
+        "status",  statusErr.StatusCode,
+        "body",    string(statusErr.Body),
+    )
+}
+```
+
+See `examples/adapters-nethttp-client/` for a runnable demonstration of both patterns including an in-process server+client using the shared contract.
+
 ### chi Adapter
 
 `adapters/chi` wires a `RouteHandle` to a `chi.Router` in one call. Chi uses the same `{param}` placeholder syntax as go-codex path templates — no translation needed. Path variables are extracted via `chi.URLParam(r, "name")`.

@@ -1519,3 +1519,113 @@ func TestResponseCookieParam_WithCodec_setsCodecWithoutAddressOf(t *testing.T) {
 		t.Fatal("expected Codec to be non-nil after WithCodec")
 	}
 }
+
+// --- EncodeRequest / DecodeResponse (client-side codec helpers) ---
+
+func TestRouteHandle_EncodeRequest_roundTrip(t *testing.T) {
+	b := rest.NewBuilder(testInfo)
+	h, err := rest.NewRoute[createReq, userResp]("POST", "/users",
+		createReqCodec, userCodec).Register(b)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if h.EncodeRequest == nil {
+		t.Fatal("EncodeRequest must not be nil after Register")
+	}
+	body, err := h.EncodeRequest(createReq{Name: "Alice"})
+	if err != nil {
+		t.Fatalf("EncodeRequest error: %v", err)
+	}
+	if len(body) == 0 {
+		t.Error("EncodeRequest returned empty body")
+	}
+	// Decode must round-trip through the same codec.
+	got, err := h.Decode(body)
+	if err != nil {
+		t.Fatalf("Decode error: %v", err)
+	}
+	if got.Name != "Alice" {
+		t.Errorf("round-trip name = %q, want 'Alice'", got.Name)
+	}
+}
+
+func TestRouteHandle_DecodeResponse_roundTrip(t *testing.T) {
+	b := rest.NewBuilder(testInfo)
+	h, err := rest.NewRoute[createReq, userResp]("POST", "/users",
+		createReqCodec, userCodec).Register(b)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if h.DecodeResponse == nil {
+		t.Fatal("DecodeResponse must not be nil after Register")
+	}
+	// Encode a response and decode it back.
+	body, err := h.Encode(userResp{ID: "1", Name: "Alice"})
+	if err != nil {
+		t.Fatalf("Encode error: %v", err)
+	}
+	got, err := h.DecodeResponse(body)
+	if err != nil {
+		t.Fatalf("DecodeResponse error: %v", err)
+	}
+	if got.ID != "1" || got.Name != "Alice" {
+		t.Errorf("round-trip = %+v, want {ID:1 Name:Alice}", got)
+	}
+}
+
+// --- Route.ClientHandle ---
+
+func TestRoute_ClientHandle_returnsHandle(t *testing.T) {
+	route := rest.NewRoute[createReq, userResp]("POST", "/items",
+		createReqCodec, userCodec)
+	h := route.ClientHandle()
+	if h == nil {
+		t.Fatal("ClientHandle returned nil")
+	}
+	if h.Descriptor.Method != "POST" || h.Descriptor.Path != "/items" {
+		t.Errorf("descriptor = %+v", h.Descriptor)
+	}
+	if h.EncodeRequest == nil {
+		t.Error("EncodeRequest must not be nil")
+	}
+	if h.DecodeResponse == nil {
+		t.Error("DecodeResponse must not be nil")
+	}
+}
+
+func TestRoute_ClientHandle_notRegisteredWithBuilder(t *testing.T) {
+	// ClientHandle must not add the route to any builder; verifiable by
+	// calling it without constructing a builder at all.
+	route := rest.NewRoute[createReq, userResp]("GET", "/items/{id}",
+		createReqCodec, userCodec,
+		rest.PathParam{Name: "id"}.WithCodec(codex.String()),
+	)
+	h := route.ClientHandle()
+	// BuildPath should still work.
+	path, err := h.BuildPath(map[string]string{"id": "42"})
+	if err != nil {
+		t.Fatalf("BuildPath error: %v", err)
+	}
+	if path != "/items/42" {
+		t.Errorf("path = %q, want '/items/42'", path)
+	}
+}
+
+func TestRoute_ClientHandle_encodeDecodeRoundTrip(t *testing.T) {
+	route := rest.NewRoute[createReq, userResp]("POST", "/items",
+		createReqCodec, userCodec)
+	h := route.ClientHandle()
+
+	// Encode a request, decode it back.
+	body, err := h.EncodeRequest(createReq{Name: "Widget"})
+	if err != nil {
+		t.Fatalf("EncodeRequest: %v", err)
+	}
+	got, err := h.Decode(body)
+	if err != nil {
+		t.Fatalf("Decode: %v", err)
+	}
+	if got.Name != "Widget" {
+		t.Errorf("name = %q, want 'Widget'", got.Name)
+	}
+}

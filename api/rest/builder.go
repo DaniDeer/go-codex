@@ -184,6 +184,16 @@ type RouteHandle[Req, Resp any] struct {
 	// Encode serialises Resp to JSON bytes.
 	Encode func(resp Resp) ([]byte, error)
 
+	// EncodeRequest serialises Req to JSON bytes for use as an outgoing HTTP
+	// request body. It is the complement of Decode and is used by client-side
+	// adapters (e.g. nethttp.Call) to encode the typed request before sending.
+	EncodeRequest func(req Req) ([]byte, error)
+
+	// DecodeResponse deserialises and validates a JSON response body into Resp.
+	// It is the complement of Encode and is used by client-side adapters to
+	// decode the server response into a typed value.
+	DecodeResponse func(body []byte) (Resp, error)
+
 	// RequestFormats, when non-empty, lists the formats the route accepts for
 	// request body decoding. The adapter uses this slice for content negotiation:
 	// it picks the format matching the client's Content-Type header and decodes
@@ -1229,6 +1239,8 @@ func (r Route[Req, Resp]) Register(b *Builder) (*RouteHandle[Req, Resp], error) 
 		Descriptor:           frozen,
 		Decode:               func(body []byte) (Req, error) { return jsonReq.Unmarshal(body) },
 		Encode:               func(resp Resp) ([]byte, error) { return jsonResp.Marshal(resp) },
+		EncodeRequest:        func(req Req) ([]byte, error) { return jsonReq.Marshal(req) },
+		DecodeResponse:       func(body []byte) (Resp, error) { return jsonResp.Unmarshal(body) },
 		pathParams:           rb.pathParams,
 		queryParams:          rb.queryParams,
 		cookieParams:         rb.cookieParams,
@@ -1242,6 +1254,51 @@ func (r Route[Req, Resp]) Register(b *Builder) (*RouteHandle[Req, Resp], error) 
 	entry := &typedRouteEntry[Req, Resp]{handle: h}
 	b.entries = append(b.entries, entry)
 	return h, nil
+}
+
+// ClientHandle returns a [RouteHandle] for client-side use without registering
+// with a [Builder]. No path codec validation and no spec registration occur.
+//
+// Use ClientHandle when only the client side needs codec and route definitions
+// (no OpenAPI spec, no server), or when sharing a [Route] definition between
+// server and client in the same binary.
+//
+// The returned handle has the same Decode / Encode / EncodeRequest / DecodeResponse
+// codec helpers and the same parameter validation methods as a handle returned
+// by [Route.Register].
+//
+// Example — client-only usage:
+//
+//	var getUser = rest.NewRoute[GetUserReq, User]("GET", "/users/{id}",
+//	    getUserReqCodec, userCodec,
+//	    rest.PathParam{Name: "id"}.WithCodec(uuidCodec),
+//	)
+//
+//	handle := getUser.ClientHandle()
+//	user, err := nethttp.Call(ctx, http.DefaultClient, "https://api.example.com",
+//	    handle, GetUserReq{}, map[string]string{"id": userID}, nethttp.CallOptions{})
+func (r Route[Req, Resp]) ClientHandle() *RouteHandle[Req, Resp] {
+	var rb routeBuilder
+	for _, opt := range r.opts {
+		opt.applyRoute(&rb)
+	}
+
+	frozen := buildDescriptor(r.method, r.path, r.reqCodec.Schema, r.respCodec.Schema, rb, nil)
+
+	jsonReq := format.JSON(r.reqCodec)
+	jsonResp := format.JSON(r.respCodec)
+
+	return &RouteHandle[Req, Resp]{
+		Descriptor:     frozen,
+		Decode:         func(body []byte) (Req, error) { return jsonReq.Unmarshal(body) },
+		Encode:         func(resp Resp) ([]byte, error) { return jsonResp.Marshal(resp) },
+		EncodeRequest:  func(req Req) ([]byte, error) { return jsonReq.Marshal(req) },
+		DecodeResponse: func(body []byte) (Resp, error) { return jsonResp.Unmarshal(body) },
+		pathParams:     rb.pathParams,
+		queryParams:    rb.queryParams,
+		cookieParams:   rb.cookieParams,
+		headerParams:   rb.headerParams,
+	}
 }
 
 // SSERouteHandle is returned by [SSERoute.Register]. It holds the route descriptor

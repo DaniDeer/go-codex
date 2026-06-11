@@ -69,6 +69,7 @@ Read all of these before opening any finding:
 | `render/openapi/openapi.go`                     | OpenAPI renderer                                                         |
 | `render/jsonschema/jsonschema.go`               | JSON Schema renderer: schema.Schema → json.RawMessage for MCP            |
 | `adapters/nethttp/adapter.go`                   | Adapter: observer calls, security enforcement                            |
+| `adapters/nethttp/client.go`                    | Client adapter: `Call`, `CallOptions`, typed transport errors            |
 | `adapters/chi/adapter.go`                       | Adapter: same as nethttp                                                 |
 | `adapters/mqtt/adapter.go`                      | Adapter: subscribe/publish, observer calls                               |
 | `adapters/mcpgo/adapter.go`                     | MCP adapter: ToolHandler/ResourceHandler/PromptHandler, observer, errors |
@@ -198,9 +199,17 @@ Rules:
 
 go-codex uses typed errors, not bare strings. Check every error return site:
 
-- **Adapters** must return typed errors: `rest.PathParamError`, `rest.QueryParamError`,
+- **Server adapters** (nethttp/chi) must return typed errors: `rest.PathParamError`, `rest.QueryParamError`,
   `rest.HeaderParamError`, `rest.CookieParamError`, `rest.MissingPathVarError`,
   `rest.SecurityCredentialError`, `rest.SecurityError`.
+- **Client adapter** (`nethttp.Call`) must return typed errors (all `errors.As`-navigable):
+  - `rest.PathParamError`, `rest.QueryParamError`, `rest.CookieParamError`, `rest.HeaderParamError`,
+    `rest.MissingPathVarError` — same as server (from pre-flight codec validation, no HTTP call sent)
+  - `nethttp.UnexpectedStatusError{Method, Path, StatusCode, Body}` — non-2xx response
+  - `nethttp.RequestBuildError{Err}` — `http.NewRequestWithContext` failure (invalid URL, cancelled ctx)
+  - `nethttp.RequestError{Method, Path, Err}` — `http.Client.Do` failure (network, DNS, TLS, timeout)
+  - `nethttp.ResponseBodyError{Err}` — `io.ReadAll` failure after successful connection
+  - Bare `fmt.Errorf(...)` without wrapping a typed sentinel is a finding in `client.go`.
 - **events adapter** must return: `events.TopicParamError`, `events.MissingTopicVarError`.
 - **forge** must return: `forge.InputError`, `forge.OutputError`, `forge.ApplyError`,
   `forge.RefinementError`.
@@ -238,6 +247,11 @@ Rules:
 - `PipelineObserver.RecordApply` must be called for every function in a pipeline, including
   wrapped collection ops (Map, Filter, etc.)
 - Adapter `Observer` must be called on every code path, including early-exit error paths
+- **`adapters/nethttp` client (`Call`) observer rules**:
+  - `RecordRequest(method, path, statusCode, duration)` called on **every** code path — status 0 when no HTTP call was sent (pre-flight validation failure, `CredentialFunc` error, `RequestBuildError`)
+  - `stats.ReportErrors(obs, location, err)` called for param validation failures before `RecordRequest` (location: `"path"`, `"query"`, `"cookie"`, `"header"`, `"body"`)
+  - `RecordRequest` uses the route **path template** (e.g. `"/users/{id}"`), not the concrete URL — this allows observers to group metrics by route
+  - Status 0 is the sentinel for "call attempted but no HTTP request reached the network" — document this in any `Observer` godoc for client-side code
 - **`adapters/mcpgo` observer rules**:
   - `RecordRequest("tool"|"resource"|"prompt", name, statusCode, duration)` — called on every code path (200 success, 400 input error, 500 handler/output error)
   - `stats.ReportErrors(obs, "input", err)` — called before `RecordRequest` when codec validation fails (fires `RecordValidationError` per field)

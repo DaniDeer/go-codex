@@ -177,6 +177,21 @@ All error returns must be typed — not bare `fmt.Errorf` strings without a type
 | `mcp.PromptArgError{Name, Err}` | `PromptHandle.ValidateArgs` — arg codec failure |
 | `mcp.MissingPromptArgError{Name}` | `PromptHandle.ValidateArgs` — required arg absent |
 
+### adapters/nethttp client (`nethttp.Call`)
+
+| Error type | When to use |
+|------------|-------------|
+| `rest.PathParamError`, `rest.MissingPathVarError` | path var codec failure or missing var (pre-flight, no HTTP call) |
+| `rest.QueryParamError` | query param codec failure (pre-flight) |
+| `rest.CookieParamError` | cookie codec failure (pre-flight) |
+| `rest.HeaderParamError` | header codec failure (pre-flight) |
+| `nethttp.UnexpectedStatusError{Method,Path,StatusCode,Body}` | non-2xx HTTP response |
+| `nethttp.RequestBuildError{Err}` | `http.NewRequestWithContext` failure (bad URL, cancelled ctx) |
+| `nethttp.RequestError{Method,Path,Err}` | `http.Client.Do` transport failure (network, DNS, TLS, timeout) |
+| `nethttp.ResponseBodyError{Err}` | `io.ReadAll` failure on response body |
+
+All must be `errors.As`-navigable. Bare `fmt.Errorf` in `client.go` without a typed sentinel is a finding.
+
 ### adapters/mcpgo adapter behavior (distinct from REST/events)
 
 | Situation | How mcpgo handles it |
@@ -216,6 +231,10 @@ doesn't wrap a typed sentinel is a finding.
 - `PipelineObserver.RecordApply` must be called for every function in a pipeline, including `Map`/`Filter`/etc.
 - Adapters must call `Observer` on every code path — including early-exit error paths — not just the happy path
 - `NoopObserver` satisfies all four interfaces; use as default when no observer provided
+- **`adapters/nethttp` client (`Call`) observer rules**:
+  - `RecordRequest(method, routePathTemplate, statusCode, duration)` — called on **every** code path; status 0 = pre-flight failure (no HTTP call reached the network)
+  - `stats.ReportErrors(obs, location, err)` called before `RecordRequest` for param validation failures (location: `"path"`, `"query"`, `"cookie"`, `"header"`, `"body"`)
+  - Path template (e.g. `/users/{id}`), not concrete URL — allows grouping metrics by route
 - **`adapters/mcpgo` observer locations**:
   - `"input"` — tool argument decode/validation failure (`stats.ReportErrors(obs, "input", err)`)
   - `"prompt.args"` — prompt argument codec failure (`stats.ReportErrors(obs, "prompt.args", err)`)
@@ -231,7 +250,8 @@ doesn't wrap a typed sentinel is a finding.
 
 | Package | Test file | Expected coverage |
 |---------|-----------|-------------------|
-| `api/rest` | `builder_test.go` | Each param type: WithCodec, Validate* happy+error path |
+| `api/rest` | `builder_test.go` | Each param type: WithCodec, Validate* happy+error path; `RouteHandle.EncodeRequest`/`DecodeResponse` round-trip; `Route.ClientHandle` returns handle, BuildPath works, encode/decode round-trip |
+| `adapters/nethttp` | `client_test.go` | `Call` happy path (POST+GET); non-2xx → `UnexpectedStatusError`; path/query/cookie/header param validation errors; `CredentialFunc` invoked + error; `Observer.RecordRequest` called on validation failure (status 0); `ClientHandle` (no builder); query params in URL; extra headers sent |
 | `api/events` | `builder_test.go` | TopicParam WithCodec; ValidateTopicVars missing key → MissingTopicVarError; WithSubscribeFormats/WithPublishFormats |
 | `api/mcp` | `builder_test.go` | Tool/Resource/Prompt Register happy+error; ToolHandle.Decode/Encode; ResourceHandle.BuildURI/ValidateURIVars; PromptHandle.ValidateArgs; ResourceParam.WithCodec; PromptArg.WithCodec; Tags flow to handles + MCPSpec; all typed errors via errors.As |
 | `adapters/mcpgo` | `adapter_test.go` | ToolHandler success; input error → IsError=true; handler error → IsError=true; output error → protocol error; observer RecordRequest 200/400/500; ResourceHandler happy+error+encodeError+template detection; PromptHandler happy+missingArg+handlerError |
