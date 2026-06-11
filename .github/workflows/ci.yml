@@ -2,9 +2,9 @@ name: CI
 
 on:
   push:
-    branches: [ main ]
+    branches: [main]
   pull_request:
-    branches: [ main ]
+    branches: [main]
 
 jobs:
   ci:
@@ -19,21 +19,6 @@ jobs:
           go-version-file: go.mod
           cache: true
 
-      - name: Test
-        run: go test ./...
-
-      - name: Install staticcheck
-        run: go install honnef.co/go/tools/cmd/staticcheck@latest
-
-      - name: Staticcheck
-        run: staticcheck ./...
-
-      - name: Install gosec
-        run: go install github.com/securego/gosec/v2/cmd/gosec@latest
-
-      - name: Gosec
-        run: gosec -conf gosec.config.json ./...
-
       - name: Format check
         run: |
           files=$(gofmt -l .)
@@ -42,3 +27,27 @@ jobs:
             echo "$files"
             exit 1
           fi
+
+      - name: Cache tool binaries
+        id: tools-cache
+        uses: actions/cache@v5
+        with:
+          path: ~/go/bin
+          key: ${{ runner.os }}-go-tools-staticcheck-v0.7.0-gosec-v2.27.1
+
+      - name: Install staticcheck
+        if: steps.tools-cache.outputs.cache-hit != 'true'
+        run: go install honnef.co/go/tools/cmd/staticcheck@v0.7.0
+
+      - name: Install gosec
+        if: steps.tools-cache.outputs.cache-hit != 'true'
+        run: go install github.com/securego/gosec/v2/cmd/gosec@v2.27.1
+
+      - name: Test
+        run: go test ./...
+
+      - name: Staticcheck
+        run: staticcheck ./...
+
+      - name: Gosec
+        run: gosec -conf gosec.config.json ./...
