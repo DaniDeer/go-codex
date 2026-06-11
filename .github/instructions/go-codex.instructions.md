@@ -8,7 +8,7 @@ applyTo: '**/*.go,**/go.mod'
 go-codex is a Go port of the core ideas from Haskell's [autodocodec](https://hackage.haskell.org/package/autodocodec). A single `Codec[T]` value simultaneously describes how to encode, decode, and document a type. Write once; derive JSON, YAML, OpenAPI, and other representations from the same definition.
 
 **Module:** `github.com/DaniDeer/go-codex`
-**Go version:** 1.25.9
+**Go version:** 1.26.2
 
 ## Design Philosophy
 
