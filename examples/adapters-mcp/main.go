@@ -369,7 +369,7 @@ func main() {
 	}
 	_, err = resHandle.BuildURI(map[string]string{"id": ""}) // empty string fails NonEmptyString
 	if err != nil {
-		var ve mcp.ResourceURIVarError
+		var ve mcp.ResourceParamError
 		if errors.As(err, &ve) {
 			logger.Error("BuildURI failed", "var", ve.Name, "value", ve.Value, "error", ve.Err)
 		}

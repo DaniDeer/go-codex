@@ -1994,6 +1994,106 @@ Pass `stats.NoopObserver{}` (or omit the field — adapter defaults to it) for z
 
 See [`examples/stats-observer`](examples/stats-observer/main.go) for a runnable codec-only observer example (config file validation, no adapters). See [`examples/adapters-nethttp`](examples/adapters-nethttp/main.go) for the HTTP body + query validation demo. See [`examples/adapters-mqtt`](examples/adapters-mqtt/main.go) for the MQTT subscribe + publish observer demo.
 
+### MCP Server Adapter
+
+`api/mcp` + `adapters/mcpgo` bring the same declare → register → handle workflow to [Model Context Protocol (MCP)](https://modelcontextprotocol.io/) servers. Define Tools, Resources, and Prompts as package-level values backed by codecs; register them with a `Builder`; wire the resulting handles to a `mark3labs/mcp-go` server. The codec drives the MCP tool's `inputSchema` automatically — no duplicate struct-tag definitions.
+
+```go
+import (
+    "github.com/DaniDeer/go-codex/api/mcp"
+    "github.com/DaniDeer/go-codex/adapters/mcpgo"
+    mcpgoserver "github.com/mark3labs/mcp-go/server"
+)
+
+// Layer 1: codec (defines schema + constraints once).
+var calcInputCodec = codex.Struct[CalcInput](
+    codex.RequiredField("a", positiveFloat, ...),
+    codex.RequiredField("op", codex.String().Refine(validate.OneOf("+","-","*","/")), ...),
+)
+
+// Layer 2: declare as a package-level value.
+var calcTool = mcp.NewTool[CalcInput, CalcOutput]("calculate",
+    calcInputCodec, calcOutputCodec,
+    mcp.ToolMeta{Description: "Arithmetic on two non-negative numbers."},
+)
+
+var itemResource = mcp.NewResource[Item]("items://{id}", itemCodec,
+    mcp.ResourceMeta{Name: "Item", MimeType: "application/json"},
+    mcp.ResourceParam{Name: "id"}.WithCodec(validate.NonEmptyString),
+)
+
+var summaryPrompt = mcp.NewPrompt("summarize",
+    mcp.PromptMeta{Description: "Ask the LLM to summarize content."},
+    mcp.PromptArg{Name: "content", Required: true},
+    mcp.PromptArg{Name: "style"},
+)
+
+// Register with builder — obtain typed handles.
+b := mcp.NewBuilder(mcp.Info{Name: "My Server", Version: "1.0.0"})
+toolHandle, _   := calcTool.Register(b)
+resHandle, _    := itemResource.Register(b)
+promptHandle, _ := summaryPrompt.Register(b)
+
+// Static spec (analogous to OpenAPISpec / AsyncAPISpec).
+spec, _ := b.MCPSpec()
+data, _ := json.MarshalIndent(spec, "", "  ") // lists all tools/resources/prompts + schemas
+
+// Layer 3: wire to mcp-go server with observer.
+s := mcpgoserver.NewMCPServer(b.Info().Name, b.Info().Version)
+
+mcpgo.RegisterTool(s, toolHandle, func(ctx context.Context, in CalcInput) (CalcOutput, error) {
+    return svc.Calculate(ctx, in)
+}, mcpgo.Options{Observer: obs})
+
+mcpgo.RegisterResource(s, resHandle, func(ctx context.Context, uri string) (Item, error) {
+    return svc.GetItem(ctx, uri)
+}, mcpgo.Options{})
+
+mcpgo.RegisterPrompt(s, promptHandle, func(ctx context.Context, args map[string]string) ([]mcpgo.PromptMessage, error) {
+    return []mcpgo.PromptMessage{{Role: "user", Content: "Summarize: " + args["content"]}}, nil
+}, mcpgo.Options{})
+
+// Transport options (choose one):
+//   Stdio (local clients, e.g. Claude Desktop):
+//     server.ServeStdio(s)
+//   Streamable HTTP (MCP 2025-03-26+, recommended for remote):
+//     mcpgoserver.NewStreamableHTTPServer(s).Start(":8080")
+//   SSE over HTTP (legacy transport, older clients):
+//     mcpgoserver.NewSSEServer(s, mcpgoserver.WithBaseURL("http://localhost:8080")).Start(":8080")
+```
+
+**Key behaviours:**
+
+- **Codec-driven `inputSchema`**: the codec's `schema.Schema` is rendered to `json.RawMessage` and set as the MCP tool's `inputSchema` — no `jsonschema:""` struct tags needed. Clients see exactly the constraints declared in the codec.
+- **Input validation errors → `IsError: true`**: codec constraint failures are returned to the LLM as tool errors (`mcp.CallToolResult.IsError = true`). The LLM sees the field-level detail and can retry with corrected arguments.
+- **Output encode errors → protocol error**: if the handler returns data that violates the output codec, the adapter returns a protocol-level error (not a tool error). Use `errors.As(err, &mcp.ToolOutputError{})` to inspect.
+- **`BuildURI` / `ValidateURIVars`**: `ResourceHandle` provides these as methods (mirrors `BuildPath`/`ValidatePathParams` on `RouteHandle` and `BuildTopic`/`ValidateTopicVars` on `ChannelHandle`).
+- **`ValidateArgs`**: `PromptHandle.ValidateArgs(args)` validates argument presence and codec constraints. Present-but-empty strings are passed to the codec; only absent keys trigger `MissingPromptArgError`.
+- **Observer**: `mcpgo.Options{Observer: obs}` wires `stats.Observer` to tool/resource/prompt calls. `RecordRequest("tool"|"resource"|"prompt", name, statusCode, duration)` fires per call; `RecordValidationError` fires per failing codec field.
+- **`MCPSpec()`**: `Builder.MCPSpec()` returns a JSON-serialisable struct listing all registered primitives with their schemas — useful for documentation, testing, or static analysis.
+
+**Structured errors:**
+
+| Error type | Returned by | When |
+|---|---|---|
+| `mcp.ToolInputError{Name, Err}` | `ToolHandle.Decode` | input codec validation failure |
+| `mcp.ToolOutputError{Name, Err}` | `ToolHandle.Encode` | output codec validation failure |
+| `mcp.ResourceParamError{Name, Value, Err}` | `ResourceHandle.BuildURI`/`ValidateURIVars` | URI var codec failure |
+| `mcp.MissingResourceVarError{Name}` | `ResourceHandle.BuildURI`/`ValidateURIVars` | required URI var absent |
+| `mcp.ResourceEncodeError{URI, Err}` | `ResourceHandle.Encode` | resource encode failure |
+| `mcp.PromptArgError{Name, Err}` | `PromptHandle.ValidateArgs` | arg codec failure |
+| `mcp.MissingPromptArgError{Name}` | `PromptHandle.ValidateArgs` | required arg absent |
+| `mcp.InvalidResourceParamError{Name, URITemplate}` | `Resource.Register` | `ResourceParam` not in URI template |
+
+See [`examples/adapters-mcp`](examples/adapters-mcp/main.go) for the full runnable demonstration: codec → `MCPSpec` output, simulated tool calls with observer metrics and slog logging, `BuildURI` validation, `ValidateArgs` checks, and all three transport options.
+
+Also add `"input"` to the observer location table:
+
+| location value | adapter / use case |
+|---|---|
+| `"input"` | mcpgo — tool argument decode/validation failure |
+| `"prompt.args"` | mcpgo — prompt argument codec failure |
+
 ## `forge` — Governed KPI Pipelines
 
 `forge` is the third layer of go-codex. It adds **named, versioned, and governance-tracked computation** on top of the validated domain types from Layer 1 and the event/REST channels from Layer 2.

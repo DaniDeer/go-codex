@@ -222,7 +222,7 @@ func TestResource_Register_happyPath(t *testing.T) {
 	}
 }
 
-func TestResource_Register_unknownParamFails(t *testing.T) {
+func TestResource_Register_unknownParamFails_returnsInvalidResourceParamError(t *testing.T) {
 	b := newBuilder()
 	res := apimcp.NewResource[itemData]("items://{id}", itemCodec,
 		apimcp.ResourceParam{Name: "unknown"},
@@ -230,6 +230,16 @@ func TestResource_Register_unknownParamFails(t *testing.T) {
 	_, err := res.Register(b)
 	if err == nil {
 		t.Fatal("expected error for unknown URI param")
+	}
+	var pe apimcp.InvalidResourceParamError
+	if !errors.As(err, &pe) {
+		t.Fatalf("expected InvalidResourceParamError, got %T: %v", err, err)
+	}
+	if pe.Name != "unknown" {
+		t.Errorf("Name: got %q, want %q", pe.Name, "unknown")
+	}
+	if pe.URITemplate != "items://{id}" {
+		t.Errorf("URITemplate: got %q", pe.URITemplate)
 	}
 }
 
@@ -260,9 +270,9 @@ func TestResourceHandle_BuildURI_missingVar(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error for missing var")
 	}
-	var me apimcp.MissingResourceURIVarError
+	var me apimcp.MissingResourceVarError
 	if !errors.As(err, &me) {
-		t.Fatalf("expected MissingResourceURIVarError, got %T", err)
+		t.Fatalf("expected MissingResourceVarError, got %T", err)
 	}
 }
 
@@ -277,12 +287,12 @@ func TestResourceHandle_BuildURI_codecFailure(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error for UUID validation failure")
 	}
-	var ve apimcp.ResourceURIVarError
+	var ve apimcp.ResourceParamError
 	if !errors.As(err, &ve) {
-		t.Fatalf("expected ResourceURIVarError, got %T", err)
+		t.Fatalf("expected ResourceParamError, got %T", err)
 	}
 	if ve.Name != "id" {
-		t.Errorf("ResourceURIVarError.Name: got %q, want %q", ve.Name, "id")
+		t.Errorf("ResourceParamError.Name: got %q, want %q", ve.Name, "id")
 	}
 }
 
@@ -388,6 +398,41 @@ func TestPromptHandle_ValidateArgs_optionalMissing_passes(t *testing.T) {
 	err := handle.ValidateArgs(map[string]string{})
 	if err != nil {
 		t.Errorf("unexpected error for optional missing arg: %v", err)
+	}
+}
+
+func TestPromptHandle_ValidateArgs_emptyStringRunsCodec(t *testing.T) {
+	// Empty string present should run the codec (not be silently skipped).
+	enumCodec := codex.String().Refine(validate.NonEmptyString)
+	b := newBuilder()
+	p := apimcp.NewPrompt("test",
+		apimcp.PromptArg{Name: "style"}.WithCodec(enumCodec),
+	)
+	handle, _ := p.Register(b)
+
+	// Empty string is present in the map — codec must be called and should fail.
+	err := handle.ValidateArgs(map[string]string{"style": ""})
+	if err == nil {
+		t.Fatal("expected codec error for empty string, got nil")
+	}
+	var pe apimcp.PromptArgError
+	if !errors.As(err, &pe) {
+		t.Fatalf("expected PromptArgError, got %T", err)
+	}
+}
+
+func TestPromptHandle_ValidateArgs_requiredPresentEmpty_noErrorWithoutCodec(t *testing.T) {
+	// Required arg present with "" and no codec — no error (presence check only).
+	b := newBuilder()
+	p := apimcp.NewPrompt("test",
+		apimcp.PromptArg{Name: "content", Required: true},
+	)
+	handle, _ := p.Register(b)
+
+	// "" is present — required check passes; no codec to enforce non-empty.
+	err := handle.ValidateArgs(map[string]string{"content": ""})
+	if err != nil {
+		t.Errorf("unexpected error: %v (required but no codec — presence check only)", err)
 	}
 }
 

@@ -417,16 +417,11 @@ type ResourceHandle[T any] struct {
 	// Errors are wrapped as [ResourceEncodeError].
 	Encode func(v T) ([]byte, error)
 
-	// BuildURI substitutes {varName} placeholders in URITemplate with the
-	// values from vars, validating each against its registered codec.
-	// Returns [MissingResourceURIVarError] for absent vars;
-	// [ResourceURIVarError] for codec failures.
-	BuildURI func(vars map[string]string) (string, error)
+	// uriParams holds per-variable params registered via ResourceParam options.
+	uriParams []ResourceParam
 
-	// ValidateURIVars validates extracted URI variable values against registered
-	// [ResourceParam] codecs. Returns [ResourceURIVarError] on the first failure.
-	// Variables without a registered codec are skipped.
-	ValidateURIVars func(vars map[string]string) error
+	// codecMap is the pre-built codec lookup derived from uriParams.
+	codecMap map[string]*codex.Codec[string]
 }
 
 // Register validates the resource declaration and returns a [ResourceHandle].
@@ -441,8 +436,7 @@ func (r Resource[T]) Register(b *Builder) (*ResourceHandle[T], error) {
 	templateVars := internal.ParseTemplateVars(r.uriTemplate)
 	for _, p := range r.rb.uriParams {
 		if !templateVars[p.Name] {
-			return nil, fmt.Errorf("mcp: resource %q: URI param %q not found in template %q",
-				r.rb.meta.Name, p.Name, r.uriTemplate)
+			return nil, InvalidResourceParamError{Name: p.Name, URITemplate: r.uriTemplate}
 		}
 	}
 
@@ -465,6 +459,8 @@ func (r Resource[T]) Register(b *Builder) (*ResourceHandle[T], error) {
 		Description: meta.Description,
 		MimeType:    meta.MimeType,
 		Tags:        meta.Tags,
+		uriParams:   uriParams,
+		codecMap:    codecMap,
 
 		Encode: func(v T) ([]byte, error) {
 			intermediate, err := codec.Encode(v)
@@ -476,32 +472,6 @@ func (r Resource[T]) Register(b *Builder) (*ResourceHandle[T], error) {
 				return nil, ResourceEncodeError{URI: uriTemplate, Err: fmt.Errorf("json: %w", err)}
 			}
 			return data, nil
-		},
-
-		BuildURI: func(vars map[string]string) (string, error) {
-			return internal.BuildFromTemplate(uriTemplate, vars, codecMap,
-				func(name string) error { return MissingResourceURIVarError{Name: name} },
-				func(name, value string, err error) error {
-					return ResourceURIVarError{Name: name, Value: value, Err: err}
-				},
-			)
-		},
-
-		ValidateURIVars: func(vars map[string]string) error {
-			for i := range uriParams {
-				p := &uriParams[i]
-				if p.Codec == nil {
-					continue
-				}
-				val, ok := vars[p.Name]
-				if !ok {
-					return MissingResourceURIVarError{Name: p.Name}
-				}
-				if err := p.Codec.Validate(val); err != nil {
-					return ResourceURIVarError{Name: p.Name, Value: val, Err: err}
-				}
-			}
-			return nil
 		},
 	}
 
@@ -515,6 +485,50 @@ func (r Resource[T]) Register(b *Builder) (*ResourceHandle[T], error) {
 	})
 
 	return h, nil
+}
+
+// BuildURI substitutes {varName} placeholders in [ResourceHandle.URITemplate]
+// with the values provided in vars, validating each against its registered codec.
+//
+// All template variables must be present in vars; missing variables return a
+// [MissingResourceVarError]. Values are validated before substitution; codec
+// failures return a [ResourceParamError]. Keys in vars that do not appear in
+// the template are silently ignored.
+//
+// Example:
+//
+//	uri, err := itemResource.BuildURI(map[string]string{"id": "abc-123"})
+//	// uri = "items://abc-123"
+func (h *ResourceHandle[T]) BuildURI(vars map[string]string) (string, error) {
+	return internal.BuildFromTemplate(h.URITemplate, vars, h.codecMap,
+		func(name string) error { return MissingResourceVarError{Name: name} },
+		func(name, value string, err error) error {
+			return ResourceParamError{Name: name, Value: value, Err: err}
+		},
+	)
+}
+
+// ValidateURIVars validates extracted URI variable values against registered
+// [ResourceParam] codecs. Call this after extracting vars from a received URI
+// to ensure each variable satisfies its codec constraints.
+//
+// Returns [ResourceParamError] for the first variable that fails its codec.
+// Variables without a registered codec are skipped.
+func (h *ResourceHandle[T]) ValidateURIVars(vars map[string]string) error {
+	for i := range h.uriParams {
+		p := &h.uriParams[i]
+		if p.Codec == nil {
+			continue
+		}
+		val, ok := vars[p.Name]
+		if !ok {
+			return MissingResourceVarError{Name: p.Name}
+		}
+		if err := p.Codec.Validate(val); err != nil {
+			return ResourceParamError{Name: p.Name, Value: val, Err: err}
+		}
+	}
+	return nil
 }
 
 // ---------------------------------------------------------------------------
@@ -621,13 +635,6 @@ type PromptHandle struct {
 	// The MCP adapter uses this to populate the prompt's argument list in
 	// the spec and to validate incoming arguments.
 	Args []PromptArg
-
-	// ValidateArgs validates the provided args map against the declared
-	// [PromptArg] definitions: required args must be present, and args with
-	// a non-nil Codec are validated against it.
-	// Returns [MissingPromptArgError] for absent required args;
-	// [PromptArgError] for codec failures.
-	ValidateArgs func(args map[string]string) error
 }
 
 // Register validates the prompt declaration and returns a [PromptHandle].
@@ -659,25 +666,6 @@ func (p Prompt) Register(b *Builder) (*PromptHandle, error) {
 		Description: meta.Description,
 		Tags:        meta.Tags,
 		Args:        args,
-
-		ValidateArgs: func(argsMap map[string]string) error {
-			for i := range args {
-				arg := &args[i]
-				val, ok := argsMap[arg.Name]
-				if !ok || val == "" {
-					if arg.Required {
-						return MissingPromptArgError{Name: arg.Name}
-					}
-					continue
-				}
-				if arg.Codec != nil {
-					if err := arg.Codec.Validate(val); err != nil {
-						return PromptArgError{Name: arg.Name, Err: err}
-					}
-				}
-			}
-			return nil
-		},
 	}
 
 	b.promNames[p.name] = struct{}{}
@@ -689,4 +677,34 @@ func (p Prompt) Register(b *Builder) (*PromptHandle, error) {
 	})
 
 	return h, nil
+}
+
+// ValidateArgs validates the provided args map against the declared [PromptArg]
+// definitions: required args must be present, and args with a non-nil Codec are
+// validated against it.
+//
+// A present-but-empty string is treated as a valid value and passed to the codec;
+// the codec decides whether "" is acceptable. Only a missing key triggers
+// [MissingPromptArgError] for required args.
+//
+// Returns [MissingPromptArgError] for absent required args;
+// [PromptArgError] for codec failures.
+func (h *PromptHandle) ValidateArgs(argsMap map[string]string) error {
+	for i := range h.Args {
+		arg := &h.Args[i]
+		val, ok := argsMap[arg.Name]
+		if !ok {
+			if arg.Required {
+				return MissingPromptArgError{Name: arg.Name}
+			}
+			continue
+		}
+		// Arg is present (even if empty string) — run codec if set.
+		if arg.Codec != nil {
+			if err := arg.Codec.Validate(val); err != nil {
+				return PromptArgError{Name: arg.Name, Err: err}
+			}
+		}
+	}
+	return nil
 }
