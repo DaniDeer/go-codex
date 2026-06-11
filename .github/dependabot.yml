@@ -1,0 +1,17 @@
+version: 2
+updates:
+  # Go module dependency updates.
+  # Also tracks the `go` toolchain directive — opens a PR when a new Go
+  # patch or minor version is available.
+  - package-ecosystem: gomod
+    directory: /
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+
+  # GitHub Actions version updates (e.g. actions/checkout, actions/setup-go).
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
