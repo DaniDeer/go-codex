@@ -107,10 +107,18 @@ func (e MissingResourceVarError) Error() string {
 
 // PromptArgError is returned by [PromptHandle.ValidateArgs] when an argument
 // fails its registered codec constraint.
+//
+// Use [errors.As] to extract the argument name and underlying error:
+//
+//	var pe mcp.PromptArgError
+//	if errors.As(err, &pe) {
+//	    log.Printf("prompt arg %q failed: %v", pe.Name, pe.Err)
+//	}
 type PromptArgError struct {
 	// Name is the argument name.
 	Name string
-	Err  error
+	// Err is the underlying codec constraint error.
+	Err error
 }
 
 func (e PromptArgError) Error() string {
@@ -120,6 +128,13 @@ func (e PromptArgError) Unwrap() error { return e.Err }
 
 // MissingPromptArgError is returned by [PromptHandle.ValidateArgs] when a
 // required argument is absent from the provided args map.
+//
+// Use [errors.As] to extract the missing argument name:
+//
+//	var me mcp.MissingPromptArgError
+//	if errors.As(err, &me) {
+//	    log.Printf("required prompt arg %q was not provided", me.Name)
+//	}
 type MissingPromptArgError struct {
 	Name string
 }

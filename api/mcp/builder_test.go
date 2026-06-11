@@ -485,3 +485,112 @@ func TestBuilder_MCPSpec_toolInputSchemaPresent(t *testing.T) {
 		t.Error("ToolSpec.InputSchema must be set")
 	}
 }
+
+// ---------------------------------------------------------------------------
+// WithCodec tests (G1 — mirrors TestPathParam_WithCodec_* in api/rest)
+// ---------------------------------------------------------------------------
+
+func TestResourceParam_WithCodec_setsCodecWithoutAddressOf(t *testing.T) {
+	uuidCodec := codex.String().Refine(validate.UUID)
+	p := apimcp.ResourceParam{Name: "id"}.WithCodec(uuidCodec)
+	if p.Codec == nil {
+		t.Fatal("expected Codec to be non-nil after WithCodec")
+	}
+	if err := p.Codec.Validate("550e8400-e29b-41d4-a716-446655440000"); err != nil {
+		t.Errorf("expected valid UUID to pass: %v", err)
+	}
+}
+
+func TestResourceParam_WithCodec_returnsDistinctCopy(t *testing.T) {
+	uuidCodec := codex.String().Refine(validate.UUID)
+	original := apimcp.ResourceParam{Name: "id"}
+	updated := original.WithCodec(uuidCodec)
+	if original.Codec != nil {
+		t.Error("original ResourceParam must not be mutated")
+	}
+	if updated.Codec == nil {
+		t.Fatal("updated ResourceParam must have Codec set")
+	}
+}
+
+func TestPromptArg_WithCodec_setsCodecWithoutAddressOf(t *testing.T) {
+	enumCodec := codex.String().Refine(validate.OneOf("bullets", "paragraph"))
+	a := apimcp.PromptArg{Name: "style"}.WithCodec(enumCodec)
+	if a.Codec == nil {
+		t.Fatal("expected Codec to be non-nil after WithCodec")
+	}
+	if err := a.Codec.Validate("bullets"); err != nil {
+		t.Errorf("expected valid value to pass: %v", err)
+	}
+}
+
+func TestPromptArg_WithCodec_returnsDistinctCopy(t *testing.T) {
+	enumCodec := codex.String().Refine(validate.OneOf("bullets", "paragraph"))
+	original := apimcp.PromptArg{Name: "style"}
+	updated := original.WithCodec(enumCodec)
+	if original.Codec != nil {
+		t.Error("original PromptArg must not be mutated")
+	}
+	if updated.Codec == nil {
+		t.Fatal("updated PromptArg must have Codec set")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Tags propagation tests (G2 — R16 added Tags but no test verified flow)
+// ---------------------------------------------------------------------------
+
+func TestToolMeta_Tags_flowToHandleAndSpec(t *testing.T) {
+	b := newBuilder()
+	tool := apimcp.NewTool[calcInput, calcOutput]("tag-tool", calcInputCodec, calcOutputCodec,
+		apimcp.ToolMeta{Description: "desc", Tags: []string{"math", "v1"}},
+	)
+	handle, err := tool.Register(b)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(handle.Tags) != 2 || handle.Tags[0] != "math" {
+		t.Errorf("handle.Tags: got %v, want [math v1]", handle.Tags)
+	}
+	spec, _ := b.MCPSpec()
+	if len(spec.Tools[0].Tags) != 2 || spec.Tools[0].Tags[1] != "v1" {
+		t.Errorf("spec.Tools[0].Tags: got %v", spec.Tools[0].Tags)
+	}
+}
+
+func TestResourceMeta_Tags_flowToHandleAndSpec(t *testing.T) {
+	b := newBuilder()
+	res := apimcp.NewResource[itemData]("items://{id}", itemCodec,
+		apimcp.ResourceMeta{Name: "Item", Tags: []string{"catalog", "v2"}},
+	)
+	handle, err := res.Register(b)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(handle.Tags) != 2 || handle.Tags[0] != "catalog" {
+		t.Errorf("handle.Tags: got %v, want [catalog v2]", handle.Tags)
+	}
+	spec, _ := b.MCPSpec()
+	if len(spec.Resources[0].Tags) != 2 || spec.Resources[0].Tags[1] != "v2" {
+		t.Errorf("spec.Resources[0].Tags: got %v", spec.Resources[0].Tags)
+	}
+}
+
+func TestPromptMeta_Tags_flowToHandleAndSpec(t *testing.T) {
+	b := newBuilder()
+	p := apimcp.NewPrompt("tag-prompt",
+		apimcp.PromptMeta{Description: "desc", Tags: []string{"editorial"}},
+		apimcp.PromptArg{Name: "text", Required: true},
+	)
+	handle, err := p.Register(b)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(handle.Tags) != 1 || handle.Tags[0] != "editorial" {
+		t.Errorf("handle.Tags: got %v, want [editorial]", handle.Tags)
+	}
+	spec, _ := b.MCPSpec()
+	if len(spec.Prompts[0].Tags) != 1 || spec.Prompts[0].Tags[0] != "editorial" {
+		t.Errorf("spec.Prompts[0].Tags: got %v", spec.Prompts[0].Tags)
+	}
+}
