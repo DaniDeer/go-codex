@@ -10,9 +10,13 @@ format specified in SKILL.md.
 | Check | Expected |
 |-------|----------|
 | Meta struct naming | `RouteMeta`, `ChannelMeta`, `FunctionMeta` — all three exist with same fields: `Title`, `Summary`, `Description`, `Tags []string` |
+| MCP Meta structs | `ToolMeta{Description, Tags}`, `ResourceMeta{Name, Description, MimeType, Tags}`, `PromptMeta{Description, Tags}` — all three have `Tags []string` |
 | Opt interface naming | `RouteOpt`, `ChannelOpt`, `FunctionOpt` — all three exist as interfaces |
+| MCP Opt interfaces | `ToolOpt`, `ResourceOpt`, `PromptOpt` — all three exist as sealed interfaces |
 | Info struct naming | `PipelineInfo{Title, Version, Description, Author, ApprovedBy, ApprovedAt}` — governance mirrors `FunctionMeta` governance fields |
+| MCP Info | `mcp.Info{Name, Version}` — uses `Name` (MCP protocol) not `Title` (OpenAPI/AsyncAPI); correct by design |
 | Builder naming | `rest.Builder`, `events.Builder`, `forge.Registry` — consistent fluent builder pattern |
+| MCP Builder | `mcp.Builder` with `NewBuilder(info)`, `Info()`, `MCPSpec()` — analogous to `OpenAPISpec()`/`AsyncAPISpec()` |
 | `AddServer` | Both `rest.Builder.AddServer(name, Server)` and `events.Builder.AddServer(name, Server)` exist; description fallback on both |
 | `AddSecurityScheme` | Both `rest.Builder` and `events.Builder` have `AddSecurityScheme(name, SecurityScheme)` |
 | `AddGlobalSecurity` | Both builders have `AddGlobalSecurity(reqs...)` |
@@ -26,9 +30,12 @@ format specified in SKILL.md.
 |-------|----------|
 | `PathParam` | No `Required` field (always required by OpenAPI spec); godoc explains why |
 | `TopicParam` | No `Required` field (topic vars always required); godoc explains why |
+| `ResourceParam` | No `Required` field (URI vars always required, same rationale as PathParam/TopicParam); godoc must explain |
+| `PromptArg` | Has `Required bool` — prompt args are optional by default; `Required: true` triggers `MissingPromptArgError` |
 | `QueryParam`, `CookieParam`, `HeaderParam` | Have `Required bool` |
 | `ResponseHeaderParam`, `ResponseCookieParam` | Have appropriate fields; no `Required` (response params are always present when set) |
-| `.WithCodec(c codex.Codec[string])` | Present on all 7 param types: PathParam, QueryParam, CookieParam, HeaderParam, ResponseHeaderParam, ResponseCookieParam, TopicParam |
+| `.WithCodec(c codex.Codec[string])` | Present on all 7 REST/events param types: PathParam, QueryParam, CookieParam, HeaderParam, ResponseHeaderParam, ResponseCookieParam, TopicParam |
+| `.WithCodec(c codex.Codec[string])` on MCP | Present on `ResourceParam` and `PromptArg` — mirrors TopicParam pattern |
 | Pointer-free codec setting | No usage of `Codec: &codec` in the library itself; examples must use `.WithCodec()` |
 
 ---
@@ -56,6 +63,26 @@ format specified in SKILL.md.
 
 If a method exists on `RouteHandle` and has a natural equivalent on `ChannelHandle`, both should exist.
 
+### mcp.Builder parity
+
+| Feature | rest/events Builder | mcp.Builder |
+|---------|---------------------|-------------|
+| Spec generation | `OpenAPISpec()` / `AsyncAPISpec()` | `MCPSpec()` → `*MCPSpec{Name, Version, Tools, Resources, Prompts}` |
+| Server info | `NewBuilder(Info{Title, Version})` | `NewBuilder(Info{Name, Version})` — Name per MCP protocol |
+| Security | `AddSecurityScheme`, `AddGlobalSecurity` | n/a — MCP security outside builder |
+
+### mcp Handle parity
+
+| Feature | RouteHandle | ChannelHandle | ToolHandle / ResourceHandle / PromptHandle |
+|---------|-------------|---------------|---------------------------------------------|
+| Typed decode | `Decode([]byte)(Req,error)` (field) | `Decode([]byte)(T,error)` (field) | `ToolHandle.Decode(any)(In,error)` (field) |
+| Typed encode | `Encode(Resp)([]byte,error)` (field) | `Encode(T)([]byte,error)` (field) | `ToolHandle.Encode(Out)([]byte,error)` (field) |
+| Build path/topic/URI | `BuildPath(vars)(string,error)` (method) | `BuildTopic(vars)(string,error)` (method) | `ResourceHandle.BuildURI(vars)(string,error)` (method) |
+| Validate params | `ValidatePathParams(vars)` (method) | `ValidateTopicVars(vars)` (method) | `ResourceHandle.ValidateURIVars(vars)` (method); `PromptHandle.ValidateArgs(args)` (method) |
+| JSON Schema | n/a | n/a | `ToolHandle.InputSchema`/`OutputSchema json.RawMessage` |
+
+**Key**: `BuildURI`, `ValidateURIVars`, and `ValidateArgs` MUST be methods (not function fields) — consistent with REST/events. If they become function fields, that is a `small` finding.
+
 ### Registry (forge) parity with Builders
 
 | Feature | rest/events Builder | forge Registry |
@@ -71,10 +98,14 @@ If a method exists on `RouteHandle` and has a natural equivalent on `ChannelHand
 
 All `Codec *codex.Codec[string]` fields on param types must use consistent wording:
 
-> `Codec validates X parameter values at [RouteHandle.ValidateY] time.`
+> `Codec validates X parameter values at [Handle.ValidateY] time.`
 
 Check: `HeaderParam.Codec`, `ResponseHeaderParam.Codec`, `ResponseCookieParam.Codec`,
-`QueryParam.Codec`, `CookieParam.Codec`, `PathParam.Codec`, `TopicParam.Codec`.
+`QueryParam.Codec`, `CookieParam.Codec`, `PathParam.Codec`, `TopicParam.Codec`,
+`ResourceParam.Codec`, `PromptArg.Codec`.
+
+`ResourceParam.Codec` should say: "Codec validates URI parameter values at [ResourceHandle.ValidateURIVars] and [ResourceHandle.BuildURI] time."
+`PromptArg.Codec` should say: "Codec validates the argument value at [PromptHandle.ValidateArgs] time."
 
 Deviation from this pattern = trivial finding.
 
@@ -133,6 +164,27 @@ All error returns must be typed — not bare `fmt.Errorf` strings without a type
 | `events.TopicParamError{Name, Value, Err}` | codec validation failure on topic var |
 | `events.MissingTopicVarError{Name}` | topic var missing from `vars` map |
 
+### mcp package
+
+| Error type | When to use |
+|------------|-------------|
+| `mcp.ToolInputError{Name, Err}` | `ToolHandle.Decode` — input codec validation failure |
+| `mcp.ToolOutputError{Name, Err}` | `ToolHandle.Encode` — output codec validation failure |
+| `mcp.ResourceEncodeError{URI, Err}` | `ResourceHandle.Encode` — resource encode failure |
+| `mcp.ResourceParamError{Name, Value, Err}` | `ResourceHandle.BuildURI`/`ValidateURIVars` — URI var codec failure |
+| `mcp.MissingResourceVarError{Name}` | `ResourceHandle.BuildURI`/`ValidateURIVars` — required URI var absent |
+| `mcp.InvalidResourceParamError{Name, URITemplate}` | `Resource.Register` — `ResourceParam` not in URI template |
+| `mcp.PromptArgError{Name, Err}` | `PromptHandle.ValidateArgs` — arg codec failure |
+| `mcp.MissingPromptArgError{Name}` | `PromptHandle.ValidateArgs` — required arg absent |
+
+### adapters/mcpgo adapter behavior (distinct from REST/events)
+
+| Situation | How mcpgo handles it |
+|-----------|----------------------|
+| Input decode/validation failure | Returns `mcp.NewToolResultError(err.Error())` — `IsError: true` result, **not** a Go error |
+| Handler error | Returns `mcp.NewToolResultError(err.Error())` — `IsError: true` result |
+| Output encode failure | Returns `(nil, err)` — protocol-level Go error (server contract violation) |
+
 ### forge package
 
 | Error type | When to use |
@@ -154,9 +206,9 @@ doesn't wrap a typed sentinel is a finding.
 | Interface | Methods | Used by |
 |-----------|---------|---------|
 | `ValidationObserver` | `RecordValidation(location string, err error)` | codecs (internal) |
-| `Observer` | embeds `ValidationObserver` + transport hooks | adapters |
+| `Observer` | embeds `ValidationObserver` + transport hooks | adapters (nethttp, chi, mqtt, mcpgo) |
 | `PipelineObserver` | `RecordApply(name, version string, success bool, duration time.Duration)` | forge Registry |
-| `SecurityObserver` | `RecordSecurityRejection(location, scheme string)` | adapters (type-asserted) |
+| `SecurityObserver` | `RecordSecurityRejection(location, scheme string)` | adapters (type-asserted, not mcpgo) |
 
 ### Rules
 
@@ -164,8 +216,12 @@ doesn't wrap a typed sentinel is a finding.
 - `PipelineObserver.RecordApply` must be called for every function in a pipeline, including `Map`/`Filter`/etc.
 - Adapters must call `Observer` on every code path — including early-exit error paths — not just the happy path
 - `NoopObserver` satisfies all four interfaces; use as default when no observer provided
+- **`adapters/mcpgo` observer locations**:
+  - `"input"` — tool argument decode/validation failure (`stats.ReportErrors(obs, "input", err)`)
+  - `"prompt.args"` — prompt argument codec failure (`stats.ReportErrors(obs, "prompt.args", err)`)
+  - `RecordRequest("tool"|"resource"|"prompt", name, 200|400|500, d)` — one call per tool/resource/prompt invocation
 
-**Check**: in each adapter `handler.go`, verify Observer is called in both success and error branches.
+**Check**: in each adapter (`adapter.go`), verify Observer is called in both success and error branches.
 
 ---
 
@@ -177,6 +233,9 @@ doesn't wrap a typed sentinel is a finding.
 |---------|-----------|-------------------|
 | `api/rest` | `builder_test.go` | Each param type: WithCodec, Validate* happy+error path |
 | `api/events` | `builder_test.go` | TopicParam WithCodec; ValidateTopicVars missing key → MissingTopicVarError; WithSubscribeFormats/WithPublishFormats |
+| `api/mcp` | `builder_test.go` | Tool/Resource/Prompt Register happy+error; ToolHandle.Decode/Encode; ResourceHandle.BuildURI/ValidateURIVars; PromptHandle.ValidateArgs; ResourceParam.WithCodec; PromptArg.WithCodec; Tags flow to handles + MCPSpec; all typed errors via errors.As |
+| `adapters/mcpgo` | `adapter_test.go` | ToolHandler success; input error → IsError=true; handler error → IsError=true; output error → protocol error; observer RecordRequest 200/400/500; ResourceHandler happy+error+encodeError+template detection; PromptHandler happy+missingArg+handlerError |
+| `render/jsonschema` | `jsonschema_test.go` | zero schema → nil; string type; object with properties; enum; numeric constraints |
 | `forge` | `forge_test.go` | FunctionKindScalar; PipelineInfo.WithAuthor/WithApproval; collection ops |
 | `render/pipeline` | `pipeline_test.go` | governance fields emitted when set; omitted when empty |
 | `render/asyncapi/v2` | any `*_test.go` | server insertion order deterministic |
@@ -202,6 +261,8 @@ Scan all `examples/*/main.go` files.
 | `AddRoute(` | Should not exist (replaced by `NewRoute`) | File a `small` finding |
 | `AddChannel(` | Should not exist (replaced by `NewChannel`) | File a `small` finding |
 | `codex.Field[` | Should not exist (replaced by `RequiredField`/`OptionalField`) | File a `trivial` finding |
+| MCP: `s.AddTool(` direct on `MCPServer` | Should use `mcpgo.RegisterTool(s, handle, fn, opts)` unless using `ToolHandler` directly | File a `trivial` finding |
+| MCP: `mcp.NewTool(name, mcp.WithDescription(...))` directly | Should use `mcp.NewTool[In,Out](name, inputCodec, outputCodec, mcp.ToolMeta{...})` | File a `small` finding |
 
 ### Runtime check
 
@@ -219,3 +280,11 @@ finding if the example just runs forever (server) and timeout is expected.
 
 Each example directory name should match what it demonstrates. If an example named `adapters-sse`
 does not exercise SSE, file a `trivial` finding.
+
+Verify `examples/adapters-mcp/main.go` demonstrates:
+- All three MCP primitives: Tool, Resource, Prompt
+- `mcp.NewBuilder` + `MCPSpec()` output
+- `mcpgo.RegisterTool/Resource/Prompt` with `Options{Observer: obs}`
+- Observer (CountingObserver) wired and printed at end
+- Structured error handling (`errors.As` on `ResourceParamError`, `MissingPromptArgError`)
+- Transport options comment block (stdio / streamable HTTP / SSE)

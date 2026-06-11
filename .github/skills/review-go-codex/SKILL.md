@@ -1,7 +1,7 @@
 ---
 name: review-go-codex
 description: >
-  Systematic consistency review of the go-codex library: codecs (Layer 1), REST/event API contracts
+  Systematic consistency review of the go-codex library: codecs (Layer 1), REST/event/MCP API contracts
   (Layer 2), and forge pipelines (Layer 3). Use when asked to "review go-codex", "consistency audit",
   "check for inconsistencies", "simple workflow review", "audit API surface", or after a significant
   round of refactoring. Reviews cross-layer naming parity, param types, builder methods, error shapes,
@@ -23,11 +23,11 @@ Every finding and fix must be evaluated against one question:
 The three layers form a single workflow. A user should be able to move between them without context
 switching or learning a new mental model:
 
-| Layer                      | User action                      | How it should feel                                                     |
-| -------------------------- | -------------------------------- | ---------------------------------------------------------------------- |
-| **Layer 1 — Codec**        | Define `codex.Codec[T]`          | Declare shape + constraints once; derive encode/decode/schema for free |
-| **Layer 2 — API contract** | `NewRoute` / `NewChannel`        | Declare the contract as a value; pass it around; register it anywhere  |
-| **Layer 3 — Pipeline**     | `forge.NewFunction` + `Registry` | Declare computation contracts; compose; register; govern               |
+| Layer                      | User action                                           | How it should feel                                                     |
+| -------------------------- | ----------------------------------------------------- | ---------------------------------------------------------------------- |
+| **Layer 1 — Codec**        | Define `codex.Codec[T]`                               | Declare shape + constraints once; derive encode/decode/schema for free |
+| **Layer 2 — API contract** | `NewRoute` / `NewChannel` / `NewTool` / `NewResource` | Declare the contract as a value; pass it around; register it anywhere  |
+| **Layer 3 — Pipeline**     | `forge.NewFunction` + `Registry`                      | Declare computation contracts; compose; register; govern               |
 
 The workflow across layers is always: **declare → compose → register**. If a finding breaks this
 pattern — forces the user to use imperative calls, repeat themselves, or learn layer-specific
@@ -35,8 +35,9 @@ vocabulary — it is at minimum a `small` finding.
 
 Concrete implications for every review:
 
-- **Declarative**: API objects (`RouteHandle`, `ChannelHandle`, `FunctionSpec`) are values, not
-  builder side-effects. Users pass and store them. No magic, no global state.
+- **Declarative**: API objects (`RouteHandle`, `ChannelHandle`, `ToolHandle`, `ResourceHandle`,
+  `PromptHandle`, `FunctionSpec`) are values, not builder side-effects. Users pass and store them.
+  No magic, no global state.
 - **Simple**: one method does one thing. Avoid overloaded methods. Param defaults should be safe.
 - **Consistent**: same concept, same name. `Meta` structs, `Opt` interfaces, `Builder`/`Registry`
   fluent methods, error type shapes — all should follow the same pattern across layers. If Layer 2
@@ -56,22 +57,26 @@ Concrete implications for every review:
 
 Read all of these before opening any finding:
 
-| File                                            | Why                                                         |
-| ----------------------------------------------- | ----------------------------------------------------------- |
-| `api/rest/builder.go`                           | Layer 2 REST: all param types, builder methods, error types |
-| `api/events/builder.go`                         | Layer 2 events: ChannelHandle, TopicParam, Builder          |
-| `forge/forge.go`                                | Layer 3: PipelineInfo, FunctionMeta, Registry, error types  |
-| `render/pipeline/pipeline.go`                   | Pipeline YAML renderer                                      |
-| `render/asyncapi/v3/document.go`                | AsyncAPI renderer                                           |
-| `render/openapi/openapi.go`                     | OpenAPI renderer                                            |
-| `adapters/nethttp/handler.go`                   | Adapter: observer calls, security enforcement               |
-| `adapters/chi/handler.go`                       | Adapter: same as nethttp                                    |
-| `adapters/mqtt/handler.go`                      | Adapter: subscribe/publish, observer calls                  |
-| `.github/instructions/go-codex.instructions.md` | Design contract and prior decisions                         |
+| File                                            | Why                                                                      |
+| ----------------------------------------------- | ------------------------------------------------------------------------ |
+| `api/rest/builder.go`                           | Layer 2 REST: all param types, builder methods, error types              |
+| `api/events/builder.go`                         | Layer 2 events: ChannelHandle, TopicParam, Builder                       |
+| `api/mcp/builder.go`                            | Layer 2 MCP: ToolHandle, ResourceHandle, PromptHandle, Builder, MCPSpec  |
+| `api/mcp/errors.go`                             | MCP error types: ToolInputError, ResourceParamError, PromptArgError, … |
+| `forge/forge.go`                                | Layer 3: PipelineInfo, FunctionMeta, Registry, error types               |
+| `render/pipeline/pipeline.go`                   | Pipeline YAML renderer                                                   |
+| `render/asyncapi/v3/document.go`                | AsyncAPI renderer                                                        |
+| `render/openapi/openapi.go`                     | OpenAPI renderer                                                         |
+| `render/jsonschema/jsonschema.go`               | JSON Schema renderer: schema.Schema → json.RawMessage for MCP            |
+| `adapters/nethttp/adapter.go`                   | Adapter: observer calls, security enforcement                            |
+| `adapters/chi/adapter.go`                       | Adapter: same as nethttp                                                 |
+| `adapters/mqtt/adapter.go`                      | Adapter: subscribe/publish, observer calls                               |
+| `adapters/mcpgo/adapter.go`                     | MCP adapter: ToolHandler/ResourceHandler/PromptHandler, observer, errors |
+| `.github/instructions/go-codex.instructions.md` | Design contract and prior decisions                                      |
 
-Also scan: `api/rest/*_test.go`, `api/events/*_test.go`, `forge/*_test.go`, `render/pipeline/*_test.go`
+Also scan: `api/rest/*_test.go`, `api/events/*_test.go`, `api/mcp/*_test.go`, `adapters/mcpgo/*_test.go`, `forge/*_test.go`, `render/pipeline/*_test.go`
 
-Then read `references/history.md` to see what was already fixed in R1–R10. **Do not re-report these.**
+Then read `references/history.md` to see what was already fixed. **Do not re-report these.**
 
 ### Phase 2 — Apply the checklist
 
@@ -168,7 +173,7 @@ Format:
 ```
 <short imperative title — max 72 chars>
 
-Layer(s) affected: <Layer 1 / Layer 2 REST / Layer 2 events / Layer 3 forge>
+Layer(s) affected: <Layer 1 / Layer 2 REST / Layer 2 events / Layer 2 MCP / Layer 2 MCP adapter / Layer 3 forge>
 Round: R<N>
 
 Findings fixed:
@@ -199,6 +204,19 @@ go-codex uses typed errors, not bare strings. Check every error return site:
 - **events adapter** must return: `events.TopicParamError`, `events.MissingTopicVarError`.
 - **forge** must return: `forge.InputError`, `forge.OutputError`, `forge.ApplyError`,
   `forge.RefinementError`.
+- **api/mcp** typed errors (all `errors.As`-navigable):
+  - `mcp.ToolInputError{Name, Err}` — from `ToolHandle.Decode`
+  - `mcp.ToolOutputError{Name, Err}` — from `ToolHandle.Encode`
+  - `mcp.ResourceEncodeError{URI, Err}` — from `ResourceHandle.Encode`
+  - `mcp.ResourceParamError{Name, Value, Err}` — from `ResourceHandle.BuildURI`/`ValidateURIVars`
+  - `mcp.MissingResourceVarError{Name}` — from `ResourceHandle.BuildURI`/`ValidateURIVars`
+  - `mcp.InvalidResourceParamError{Name, URITemplate}` — from `Resource.Register`
+  - `mcp.PromptArgError{Name, Err}` — from `PromptHandle.ValidateArgs`
+  - `mcp.MissingPromptArgError{Name}` — from `PromptHandle.ValidateArgs`
+- **adapters/mcpgo** error behavior — **different from REST/events adapters**:
+  - Input decode/validation failures → `mcp.NewToolResultError(err.Error())` returned as `*mcp.CallToolResult` with `IsError: true` (not a Go error). LLM sees the error text.
+  - Output encode failures → protocol-level Go error `(nil, err)` (server contract violation).
+  - `fmt.Errorf("...")` wrapping a typed sentinel is fine; bare `fmt.Errorf` without a typed wrapper is a finding.
 - `fmt.Errorf("...")` wrapping a structured error is fine; a bare `fmt.Errorf` without wrapping a
   typed sentinel is a finding.
 - Callers must be able to `errors.As` / type-switch on every error for structured logging.
@@ -207,12 +225,12 @@ go-codex uses typed errors, not bare strings. Check every error return site:
 
 `stats.Observer` has four interfaces; adapters must call them correctly:
 
-| Interface                  | Who calls it                  | When                                                      |
-| -------------------------- | ----------------------------- | --------------------------------------------------------- |
-| `stats.ValidationObserver` | codecs (internal)             | on codec validation failure                               |
-| `stats.Observer`           | adapters (nethttp, chi, mqtt) | on decode/encode start+finish, errors                     |
-| `stats.PipelineObserver`   | forge `Registry.Apply`        | on each function apply                                    |
-| `stats.SecurityObserver`   | adapters                      | on security rejection — **type-asserted, never embedded** |
+| Interface                  | Who calls it                        | When                                                      |
+| -------------------------- | ----------------------------------- | --------------------------------------------------------- |
+| `stats.ValidationObserver` | codecs (internal)                   | on codec validation failure                               |
+| `stats.Observer`           | adapters (nethttp, chi, mqtt, mcpgo)| on decode/encode start+finish, errors                     |
+| `stats.PipelineObserver`   | forge `Registry.Apply`              | on each function apply                                    |
+| `stats.SecurityObserver`   | adapters                            | on security rejection — **type-asserted, never embedded** |
 
 Rules:
 
@@ -220,6 +238,11 @@ Rules:
 - `PipelineObserver.RecordApply` must be called for every function in a pipeline, including
   wrapped collection ops (Map, Filter, etc.)
 - Adapter `Observer` must be called on every code path, including early-exit error paths
+- **`adapters/mcpgo` observer rules**:
+  - `RecordRequest("tool"|"resource"|"prompt", name, statusCode, duration)` — called on every code path (200 success, 400 input error, 500 handler/output error)
+  - `stats.ReportErrors(obs, "input", err)` — called before `RecordRequest` when codec validation fails (fires `RecordValidationError` per field)
+  - No `SecurityObserver` at the mcpgo adapter level — MCP security is handled outside the adapter (no `SecurityFunc` field on `mcpgo.Options`)
+  - Observer location values: `"input"` for tool argument decode/validation; `"prompt.args"` for prompt arg codec failures
 
 ## Unit Test Coverage
 
@@ -266,8 +289,13 @@ If an example panics or uses a stale pattern, file a finding.
 - **`FunctionKindScalar` is `""` (empty string).** `NewFunction`/`Compose` never write `Kind` — scalar functions have `Kind==""` by design. The `render/pipeline` renderer omits `kind:` for scalar. This is correct.
 - **`rest.Builder.AddServer` discards `name` after description fallback.** OpenAPI servers are a keyless ordered array. `events.Builder.AddServer` stores the name (AsyncAPI servers are keyed). Same call site, different semantics.
 - **`PathParam` and `TopicParam` have no `Required` field.** This is by design — OpenAPI mandates path params are always required; topic vars must always be present. Godoc explains this.
+- **`ResourceParam` has no `Required` field.** URI vars in a template must always be present (same rationale as PathParam/TopicParam). `PromptArg` DOES have `Required bool` — prompt args are optional by default.
 - **`SecurityScheme` codec is spec-only.** No adapter enforces it unless `SecurityFunc` does so explicitly.
 - **`SubscribeFormats` / `PublishFormats` take priority over `Formats`.** Adapters must check these before falling back to `handle.Formats`.
+- **`ToolHandle.Decode` takes `any`, not `[]byte`.** MCP protocol already deserializes arguments to `map[string]any` before the adapter calls `BindArguments`. Re-encoding to bytes and back would be wasteful. This is correct and intentional — do not flag as inconsistency with REST/events `Decode([]byte)`.
+- **MCP input errors are `IsError: true` results, not Go errors.** `adapters/mcpgo.ToolHandler` returns `mcp.NewToolResultError(...)` with `IsError: true` for codec validation failures. This is the MCP protocol's way of reporting tool errors to the LLM. Do not flag as missing typed error return.
+- **`mcp.Info` uses `Name` not `Title`.** REST uses `Info{Title}` (OpenAPI spec), events uses `Info{Title}` (AsyncAPI spec), MCP uses `Info{Name}` (MCP protocol). All are protocol-driven — this is correct, not an inconsistency.
+- **`api/mcp` has no security methods.** No `AddSecurityScheme`, `AddGlobalSecurity`, or `SecurityFunc` — MCP security is handled separately and not part of the core `api/mcp` builder. This is by design.
 - **Do not invent new API surface** during a review. Findings should fix inconsistencies in existing API, not design new features.
 - **Update `go-codex.instructions.md` after every code change.** The instructions file is the single source of design truth — it must stay in sync.
 
