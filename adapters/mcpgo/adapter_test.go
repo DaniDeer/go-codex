@@ -223,3 +223,197 @@ func TestToolHandler_toolDescriptor_hasName(t *testing.T) {
 		t.Errorf("tool.Description: got %q", tool.Description)
 	}
 }
+
+// ---------------------------------------------------------------------------
+// ResourceHandler tests
+// ---------------------------------------------------------------------------
+
+type itemRes struct {
+	ID   string
+	Name string
+}
+
+var itemResCodec = codex.Struct[itemRes](
+	codex.RequiredField("id", codex.String(),
+		func(v itemRes) string { return v.ID },
+		func(v *itemRes, s string) { v.ID = s },
+	),
+	codex.RequiredField("name", codex.String().Refine(validate.NonEmptyString),
+		func(v itemRes) string { return v.Name },
+		func(v *itemRes, s string) { v.Name = s },
+	),
+)
+
+func buildItemHandle(uriTemplate string) *apimcp.ResourceHandle[itemRes] {
+	b := apimcp.NewBuilder(apimcp.Info{Name: "test", Version: "1.0.0"})
+	res := apimcp.NewResource[itemRes](uriTemplate, itemResCodec,
+		apimcp.ResourceMeta{Name: "Item", MimeType: "application/json"},
+	)
+	h, err := res.Register(b)
+	if err != nil {
+		panic(err)
+	}
+	return h
+}
+
+func callResource(t *testing.T, handle *apimcp.ResourceHandle[itemRes], fn mcpgo.ResourceHandlerFunc[itemRes], opts mcpgo.Options, uri string) ([]mcp.ResourceContents, error) {
+	t.Helper()
+	_, _, _, handler := mcpgo.ResourceHandler(handle, fn, opts)
+	req := mcp.ReadResourceRequest{}
+	req.Params.URI = uri
+	return handler(context.Background(), req)
+}
+
+func TestResourceHandler_success(t *testing.T) {
+	handle := buildItemHandle("items://{id}")
+	fn := func(_ context.Context, uri string) (itemRes, error) {
+		return itemRes{ID: "1", Name: "Widget"}, nil
+	}
+	contents, err := callResource(t, handle, fn, mcpgo.Options{}, "items://1")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(contents) != 1 {
+		t.Fatalf("expected 1 content item, got %d", len(contents))
+	}
+}
+
+func TestResourceHandler_handlerError_returnsError(t *testing.T) {
+	handle := buildItemHandle("items://{id}")
+	fn := func(_ context.Context, _ string) (itemRes, error) {
+		return itemRes{}, errors.New("not found")
+	}
+	_, err := callResource(t, handle, fn, mcpgo.Options{}, "items://999")
+	if err == nil {
+		t.Fatal("expected error from handler")
+	}
+}
+
+func TestResourceHandler_encodeError_returnsError(t *testing.T) {
+	// Codec with NonEmptyString on name — empty name will fail encode.
+	handle := buildItemHandle("items://{id}")
+	fn := func(_ context.Context, _ string) (itemRes, error) {
+		// Empty Name violates NonEmptyString constraint on itemResCodec.
+		return itemRes{ID: "1", Name: ""}, nil
+	}
+	_, err := callResource(t, handle, fn, mcpgo.Options{}, "items://1")
+	if err == nil {
+		t.Fatal("expected encode error for empty Name")
+	}
+}
+
+func TestResourceHandler_isTemplate_forURIWithPlaceholder(t *testing.T) {
+	handle := buildItemHandle("items://{id}")
+	_, _, isTemplate, _ := mcpgo.ResourceHandler(handle, func(_ context.Context, _ string) (itemRes, error) {
+		return itemRes{ID: "1", Name: "x"}, nil
+	}, mcpgo.Options{})
+	if !isTemplate {
+		t.Error("expected isTemplate=true for URI with {id} placeholder")
+	}
+}
+
+func TestResourceHandler_isNotTemplate_forLiteralURI(t *testing.T) {
+	handle := buildItemHandle("items://featured")
+	_, _, isTemplate, _ := mcpgo.ResourceHandler(handle, func(_ context.Context, _ string) (itemRes, error) {
+		return itemRes{ID: "1", Name: "x"}, nil
+	}, mcpgo.Options{})
+	if isTemplate {
+		t.Error("expected isTemplate=false for literal URI")
+	}
+}
+
+func TestResourceHandler_observerRecordsSuccess(t *testing.T) {
+	obs := &recordingObserver{}
+	handle := buildItemHandle("items://{id}")
+	fn := func(_ context.Context, _ string) (itemRes, error) {
+		return itemRes{ID: "1", Name: "Widget"}, nil
+	}
+	_, _ = callResource(t, handle, fn, mcpgo.Options{Observer: obs}, "items://1")
+	if len(obs.calls) != 1 || obs.calls[0].statusCode != 200 {
+		t.Errorf("expected 1 call with status 200, got %v", obs.calls)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// PromptHandler tests
+// ---------------------------------------------------------------------------
+
+func buildSummarizeHandle() *apimcp.PromptHandle {
+	b := apimcp.NewBuilder(apimcp.Info{Name: "test", Version: "1.0.0"})
+	p := apimcp.NewPrompt("summarize",
+		apimcp.PromptMeta{Description: "Summarize content"},
+		apimcp.PromptArg{Name: "content", Required: true},
+	)
+	h, err := p.Register(b)
+	if err != nil {
+		panic(err)
+	}
+	return h
+}
+
+func callPrompt(t *testing.T, handle *apimcp.PromptHandle, fn mcpgo.PromptHandlerFunc, opts mcpgo.Options, args map[string]string) (*mcp.GetPromptResult, error) {
+	t.Helper()
+	_, handler := mcpgo.PromptHandler(handle, fn, opts)
+	req := mcp.GetPromptRequest{}
+	req.Params.Arguments = args
+	return handler(context.Background(), req)
+}
+
+func TestPromptHandler_success(t *testing.T) {
+	handle := buildSummarizeHandle()
+	fn := func(_ context.Context, args map[string]string) ([]mcpgo.PromptMessage, error) {
+		return []mcpgo.PromptMessage{{Role: "user", Content: "summarize: " + args["content"]}}, nil
+	}
+	result, err := callPrompt(t, handle, fn, mcpgo.Options{}, map[string]string{"content": "hello"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(result.Messages) != 1 {
+		t.Fatalf("expected 1 message, got %d", len(result.Messages))
+	}
+}
+
+func TestPromptHandler_missingRequiredArg_returnsProtocolError(t *testing.T) {
+	handle := buildSummarizeHandle()
+	fn := func(_ context.Context, args map[string]string) ([]mcpgo.PromptMessage, error) {
+		return []mcpgo.PromptMessage{{Role: "user", Content: "ok"}}, nil
+	}
+	// Missing required "content" arg.
+	_, err := callPrompt(t, handle, fn, mcpgo.Options{}, map[string]string{})
+	if err == nil {
+		t.Fatal("expected protocol error for missing required arg")
+	}
+}
+
+func TestPromptHandler_handlerError_returnsProtocolError(t *testing.T) {
+	handle := buildSummarizeHandle()
+	fn := func(_ context.Context, _ map[string]string) ([]mcpgo.PromptMessage, error) {
+		return nil, errors.New("service unavailable")
+	}
+	_, err := callPrompt(t, handle, fn, mcpgo.Options{}, map[string]string{"content": "hello"})
+	if err == nil {
+		t.Fatal("expected error from handler")
+	}
+}
+
+func TestPromptHandler_promptDescriptor_hasName(t *testing.T) {
+	handle := buildSummarizeHandle()
+	prompt, _ := mcpgo.PromptHandler(handle, func(_ context.Context, _ map[string]string) ([]mcpgo.PromptMessage, error) {
+		return nil, nil
+	}, mcpgo.Options{})
+	if prompt.Name != "summarize" {
+		t.Errorf("prompt.Name: got %q, want summarize", prompt.Name)
+	}
+}
+
+func TestPromptHandler_observerRecordsSuccess(t *testing.T) {
+	obs := &recordingObserver{}
+	handle := buildSummarizeHandle()
+	fn := func(_ context.Context, _ map[string]string) ([]mcpgo.PromptMessage, error) {
+		return []mcpgo.PromptMessage{{Role: "user", Content: "ok"}}, nil
+	}
+	_, _ = callPrompt(t, handle, fn, mcpgo.Options{Observer: obs}, map[string]string{"content": "hello"})
+	if len(obs.calls) != 1 || obs.calls[0].statusCode != 200 {
+		t.Errorf("expected 1 call with status 200, got %v", obs.calls)
+	}
+}

@@ -129,16 +129,18 @@ type ToolSpec struct {
 
 // ResourceSpec is the spec entry for a single resource in [MCPSpec].
 type ResourceSpec struct {
-	URITemplate string `json:"uriTemplate"`
-	Name        string `json:"name,omitempty"`
-	Description string `json:"description,omitempty"`
-	MimeType    string `json:"mimeType,omitempty"`
+	URITemplate string   `json:"uriTemplate"`
+	Name        string   `json:"name,omitempty"`
+	Description string   `json:"description,omitempty"`
+	MimeType    string   `json:"mimeType,omitempty"`
+	Tags        []string `json:"tags,omitempty"`
 }
 
 // PromptSpec is the spec entry for a single prompt in [MCPSpec].
 type PromptSpec struct {
 	Name        string          `json:"name"`
 	Description string          `json:"description,omitempty"`
+	Tags        []string        `json:"tags,omitempty"`
 	Args        []PromptArgSpec `json:"arguments,omitempty"`
 }
 
@@ -322,6 +324,8 @@ type ResourceMeta struct {
 	Description string
 	// MimeType is the MIME type of the resource content (e.g. "application/json").
 	MimeType string
+	// Tags are arbitrary labels for this resource for categorisation.
+	Tags []string
 }
 
 func (m ResourceMeta) applyResource(rb *resourceBuilder) {
@@ -406,6 +410,8 @@ type ResourceHandle[T any] struct {
 	Description string
 	// MimeType is the content type of this resource.
 	MimeType string
+	// Tags are arbitrary labels for this resource.
+	Tags []string
 
 	// Encode validates v via the codec and marshals it to JSON bytes.
 	// Errors are wrapped as [ResourceEncodeError].
@@ -458,6 +464,7 @@ func (r Resource[T]) Register(b *Builder) (*ResourceHandle[T], error) {
 		Name:        meta.Name,
 		Description: meta.Description,
 		MimeType:    meta.MimeType,
+		Tags:        meta.Tags,
 
 		Encode: func(v T) ([]byte, error) {
 			intermediate, err := codec.Encode(v)
@@ -504,6 +511,7 @@ func (r Resource[T]) Register(b *Builder) (*ResourceHandle[T], error) {
 		Name:        meta.Name,
 		Description: meta.Description,
 		MimeType:    meta.MimeType,
+		Tags:        meta.Tags,
 	})
 
 	return h, nil
@@ -520,6 +528,8 @@ func (r Resource[T]) Register(b *Builder) (*ResourceHandle[T], error) {
 type PromptMeta struct {
 	// Description is a human-readable description of what the prompt does.
 	Description string
+	// Tags are arbitrary labels for this prompt for categorisation.
+	Tags []string
 }
 
 func (m PromptMeta) applyPrompt(pb *promptBuilder) {
@@ -605,6 +615,8 @@ type PromptHandle struct {
 	Name string
 	// Description is the human-readable prompt description.
 	Description string
+	// Tags are arbitrary labels for this prompt.
+	Tags []string
 	// Args is the ordered list of declared prompt arguments.
 	// The MCP adapter uses this to populate the prompt's argument list in
 	// the spec and to validate incoming arguments.
@@ -645,6 +657,7 @@ func (p Prompt) Register(b *Builder) (*PromptHandle, error) {
 	h := &PromptHandle{
 		Name:        name,
 		Description: meta.Description,
+		Tags:        meta.Tags,
 		Args:        args,
 
 		ValidateArgs: func(argsMap map[string]string) error {
@@ -671,6 +684,7 @@ func (p Prompt) Register(b *Builder) (*PromptHandle, error) {
 	b.promSpecs = append(b.promSpecs, PromptSpec{
 		Name:        name,
 		Description: meta.Description,
+		Tags:        meta.Tags,
 		Args:        argSpecs,
 	})
 
