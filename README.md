@@ -157,9 +157,11 @@ Requires Go 1.25 or later.
 | HTTP route descriptors            | `github.com/DaniDeer/go-codex/route`            |
 | REST API builder                  | `github.com/DaniDeer/go-codex/api/rest`         |
 | Event channel builder             | `github.com/DaniDeer/go-codex/api/events`       |
+| MCP server builder                | `github.com/DaniDeer/go-codex/api/mcp`          |
 | net/http adapter                  | `github.com/DaniDeer/go-codex/adapters/nethttp` |
 | chi adapter                       | `github.com/DaniDeer/go-codex/adapters/chi`     |
 | Paho MQTT adapter                 | `github.com/DaniDeer/go-codex/adapters/mqtt`    |
+| mark3labs/mcp-go adapter          | `github.com/DaniDeer/go-codex/adapters/mcpgo`   |
 | templ SSR format plug-in          | `github.com/DaniDeer/go-codex/adapters/templ`   |
 | SSE (Server-Sent Events) adapters | `github.com/DaniDeer/go-codex/adapters/nethttp` / `adapters/chi` |
 | OpenAPI 3.1 renderer              | `github.com/DaniDeer/go-codex/render/openapi`   |
@@ -186,6 +188,7 @@ Requires Go 1.25 or later.
 - **templ SSR Format Plug-in** — add `adapttempl.Format(propsCodec, component)` to a route's `Formats`; the existing nethttp/chi adapters then serve HTML to `Accept: text/html` clients and JSON to API clients from the same handler
 - **Streaming Responses** — `format.NewStreamed` creates a format that writes directly to the `ResponseWriter` without buffering; `adapttempl.StreamingFormat` renders templ components as a stream; the adapter validates before committing headers
 - **Server-Sent Events (SSE)** — `rest.NewSSERoute[Req, Event](...).Register(b)` registers a typed SSE route; `nethttp.SSEHandler` / `nethttp.RegisterSSE` and `chiadapter.SSEHandler` / `chiadapter.RegisterSSE` stream codec-validated events; path param codecs work identically to REST routes; stats observer counts validation errors per event
+- **MCP Server Adapter** — `api/mcp` provides a transport-agnostic builder for MCP Tools, Resources, and Prompts following the same declare → register → handle pattern as REST and event channels; `adapters/mcpgo` wires handles to a `mark3labs/mcp-go` server; `Builder.MCPSpec()` generates a static JSON document (analogous to OpenAPI/AsyncAPI) listing all registered primitives with their codec-derived JSON Schemas; structured input/output errors surface to the LLM via `IsError: true` tool results
 
 ### Multi-Format Support
 
