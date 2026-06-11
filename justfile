@@ -57,6 +57,10 @@ check: staticcheck gosec
 release version:
     #!/usr/bin/env bash
     set -euo pipefail
+    if ! [[ "{{version}}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+        echo "Error: version must match vX.X.X (e.g. v1.2.0), got: {{version}}"
+        exit 1
+    fi
     if [ -n "$(git status --porcelain)" ]; then
         echo "Working tree is dirty. Commit or stash changes first."
         exit 1
