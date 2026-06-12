@@ -4,34 +4,17 @@
 // the server (nethttp.Handler / nethttp.Register) can be used on the client
 // (nethttp.Call) to make typed HTTP calls with full codec validation.
 //
-// # Two usage patterns
+// The shared contract/ sub-package defines types, codecs, and route specs.
+// Both server and client import it. The Go compiler enforces the contract:
+// any change breaks compilation on both sides immediately — no stale YAML.
 //
-// ## 1. Shared contract (import pattern)
+// The example covers all CallOptions fields in five sections:
 //
-// Define the route, codecs, and types in a shared Go package (here: contract/).
-// Both the server and the client import that package. The Go compiler enforces
-// the contract: any field rename, type change, or constraint modification breaks
-// compilation on both sides immediately — no stale YAML, no schema drift.
-//
-//	Server:
-//	    handle, _ := contract.CreateUser.Register(builder)
-//	    nethttp.Register(mux, handle, myHandler, nethttp.Options{})
-//
-//	Client:
-//	    handle, _ := contract.CreateUser.Register(builder) // or:
-//	    handle  := contract.CreateUser.ClientHandle()       // no builder needed
-//	    user, err := nethttp.Call(ctx, http.DefaultClient, serverURL, handle, req, nil, nethttp.CallOptions{})
-//
-// ## 2. Client-only (ClientHandle)
-//
-// When the client has no server role — it only calls a remote API — no [rest.Builder]
-// is needed. Call [rest.Route.ClientHandle] directly to get a handle with all codec
-// helpers and parameter validation, without registering for spec generation.
-//
-//	handle := rest.NewRoute[MyReq, MyResp]("GET", "/external/{id}", reqCodec, respCodec,
-//	    rest.PathParam{Name: "id"}.WithCodec(uuidCodec),
-//	).ClientHandle()
-//	resp, err := nethttp.Call(ctx, http.DefaultClient, "https://external.api", handle, req, vars, opts)
+//  1. Body — POST /users (request body codec, shared-contract pattern)
+//  2. Path params — GET /users/{id} (codec-validated path variable)
+//  3. Cookies + headers — GET /profile (CookieParam + HeaderParam validation)
+//  4. Security — GET /data (CredentialFunc injects bearer Authorization header)
+//  5. Structured error logging — errors.As + slog for all typed error types
 //
 // Run with: go run ./examples/adapters-nethttp-client
 package main
@@ -44,6 +27,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"strings"
 	"sync"
 	"time"
 
@@ -51,6 +35,7 @@ import (
 	"github.com/DaniDeer/go-codex/api/rest"
 	"github.com/DaniDeer/go-codex/codex"
 	"github.com/DaniDeer/go-codex/examples/adapters-nethttp-client/contract"
+	"github.com/DaniDeer/go-codex/route"
 	"github.com/DaniDeer/go-codex/validate"
 )
 
@@ -121,15 +106,15 @@ func (o *CountingObserver) Print() {
 	}
 }
 
-// --- in-memory user store for the demo server ---
+// ── Server store ──────────────────────────────────────────────────────────────
 
-type store struct {
+type userStore struct {
 	mu    sync.RWMutex
 	users map[string]contract.User
 	seq   int
 }
 
-func (s *store) create(req contract.CreateUserReq) contract.User {
+func (s *userStore) create(req contract.CreateUserReq) contract.User {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.seq++
@@ -139,7 +124,7 @@ func (s *store) create(req contract.CreateUserReq) contract.User {
 	return u
 }
 
-func (s *store) get(id string) (contract.User, bool) {
+func (s *userStore) get(id string) (contract.User, bool) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	u, ok := s.users[id]
@@ -147,21 +132,28 @@ func (s *store) get(id string) (contract.User, bool) {
 }
 
 func main() {
-	// logger is the structured logger for all HTTP client events.
-	// In production attach attributes from the request context (trace IDs, tenant,
-	// user) using logger.With(...). Here a simple transport label suffices.
+	// logger is the structured logger for all HTTP client-side events.
+	// In production attach trace IDs, tenant, or user via logger.With(...).
 	logger := slog.Default().With("transport", "http-client")
 
-	// CountingObserver wired into every Call. Collects per-call metrics without
-	// any metrics library dependency. In production swap in Prometheus / OTel.
+	// CountingObserver collects per-call metrics without any library dependency.
+	// In production replace counters with Prometheus / OpenTelemetry instruments.
 	obs := &CountingObserver{}
 
-	db := &store{users: make(map[string]contract.User)}
+	db := &userStore{users: make(map[string]contract.User)}
 
-	// ── 1. Server: register routes from the shared contract ───────────────────
-	fmt.Println("=== Server: registering routes from shared contract ===")
+	// ── Server setup ──────────────────────────────────────────────────────────
+	//
+	// Register all routes from the shared contract. The client will import the
+	// same route specs — the compiler enforces the contract at both ends.
 
 	b := rest.NewBuilder(rest.Info{Title: "User API", Version: "1.0.0"})
+
+	// Register the bearer security scheme so the OpenAPI spec documents it.
+	// The codec validates the raw credential format before SecurityFunc runs.
+	b.AddSecurityScheme("bearerAuth", rest.SecurityScheme{
+		SecurityScheme: route.BearerScheme("JWT"),
+	}.WithCodec(codex.String().Refine(validate.NonEmptyString)))
 
 	createHandle, err := contract.CreateUser.Register(b)
 	if err != nil {
@@ -173,35 +165,73 @@ func main() {
 		fmt.Fprintln(os.Stderr, "register getUser:", err)
 		os.Exit(1)
 	}
+	profileHandle, err := contract.GetProfile.Register(b)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "register getProfile:", err)
+		os.Exit(1)
+	}
+	securedHandle, err := contract.GetSecuredData.Register(b)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "register getSecuredData:", err)
+		os.Exit(1)
+	}
+
+	// SecurityFunc checks the Authorization header for the secured route.
+	// In production verify a signed JWT; here a fixed token suffices.
+	const validToken = "secret-token"
+	srvOpts := nethttp.Options{
+		SecurityFunc: func(ctx context.Context, r *http.Request, _ []route.SecurityRequirement) error {
+			token := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
+			if token != validToken {
+				return fmt.Errorf("invalid token")
+			}
+			return nil
+		},
+	}
 
 	mux := http.NewServeMux()
+
 	nethttp.Register(mux, createHandle, func(ctx context.Context, req contract.CreateUserReq) (contract.User, error) {
 		u := db.create(req)
-		w, _ := nethttp.ResponseHeadersFromContext(ctx)
-		if w != nil {
-			w.Set("Location", "/users/"+u.ID)
+		if h, ok := nethttp.ResponseHeadersFromContext(ctx); ok {
+			h.Set("Location", "/users/"+u.ID)
 		}
 		return u, nil
 	}, nethttp.Options{})
-	nethttp.Register(mux, getHandle, func(ctx context.Context, _ contract.GetUserReq) (contract.User, error) {
+
+	nethttp.Register(mux, getHandle, func(ctx context.Context, _ struct{}) (contract.User, error) {
 		r, _ := nethttp.RequestFromContext(ctx)
-		id := r.PathValue("id")
-		u, ok := db.get(id)
+		u, ok := db.get(r.PathValue("id"))
 		if !ok {
-			return contract.User{}, fmt.Errorf("user %q not found", id)
+			return contract.User{}, fmt.Errorf("user not found")
 		}
 		return u, nil
 	}, nethttp.Options{})
+
+	// GET /profile — adapter validates session_token cookie and X-Request-ID
+	// header automatically before this handler is called.
+	// The adapter validates session_token cookie and X-Request-Id header before
+	// calling this handler. The handler can read them via RequestFromContext if needed.
+	nethttp.Register(mux, profileHandle, func(_ context.Context, _ struct{}) (contract.Profile, error) {
+		return contract.Profile{
+			ID:    "p1",
+			Name:  "Alice",
+			Email: "alice@example.com",
+			Role:  "user",
+		}, nil
+	}, nethttp.Options{})
+
+	// GET /data — secured route; SecurityFunc runs after codec validation.
+	nethttp.Register(mux, securedHandle, func(_ context.Context, _ struct{}) (contract.Profile, error) {
+		return contract.Profile{ID: "p1", Name: "Alice", Email: "alice@example.com", Role: "admin"}, nil
+	}, srvOpts)
 
 	srv := httptest.NewServer(mux)
 	defer srv.Close()
-	fmt.Printf("server listening at %s\n\n", srv.URL)
 
-	// ── 2. Client: shared-contract pattern with Observer ─────────────────────
-	fmt.Println("=== Client: shared-contract pattern (same Route as server) ===")
+	// ── 1. Body — POST /users ─────────────────────────────────────────────────
+	fmt.Println("=== 1. Body: POST /users (request body codec) ===")
 
-	// The client reuses the same contract.CreateUser route.
-	// Register gives a handle; ClientHandle() works if no spec is needed.
 	clientCreate, err := contract.CreateUser.Register(
 		rest.NewBuilder(rest.Info{Title: "User API", Version: "1.0.0"}),
 	)
@@ -210,7 +240,6 @@ func main() {
 		os.Exit(1)
 	}
 
-	// Observer tracks metrics for every call; logger handles structured error logging.
 	alice, err := nethttp.Call(context.Background(), srv.Client(), srv.URL,
 		clientCreate,
 		contract.CreateUserReq{Name: "Alice", Email: "alice@example.com"},
@@ -219,49 +248,33 @@ func main() {
 		fmt.Fprintln(os.Stderr, "create alice:", err)
 		os.Exit(1)
 	}
-	fmt.Printf("created: %+v\n", alice)
+	fmt.Printf("created: %+v\n\n", alice)
 
-	// Fetch via GET /users/{id} — path var validated by codec before sending.
-	clientGet := contract.GetUser.ClientHandle() // no builder needed for GET
+	// ── 2. Path params — GET /users/{id} ──────────────────────────────────────
+	fmt.Println("=== 2. Path params: GET /users/{id} ===")
+
+	// ClientHandle() — no builder needed for client-only usage.
+	clientGet := contract.GetUser.ClientHandle()
+
 	fetched, err := nethttp.Call(context.Background(), srv.Client(), srv.URL,
-		clientGet, contract.GetUserReq{},
+		clientGet, struct{}{},
 		map[string]string{"id": alice.ID},
 		nethttp.CallOptions{Observer: obs})
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "get alice:", err)
 		os.Exit(1)
 	}
-	fmt.Printf("fetched: %+v\n\n", fetched)
+	fmt.Printf("fetched: %+v\n", fetched)
 
-	// ── 3. Structured error logging with slog ─────────────────────────────────
-	fmt.Println("=== Structured error logging with slog ===")
-
-	// Trigger a 404 — UnexpectedStatusError carries method, path, status, body.
+	// Path param validation happens client-side before any HTTP call is sent.
 	_, err = nethttp.Call(context.Background(), srv.Client(), srv.URL,
-		clientGet, contract.GetUserReq{},
-		map[string]string{"id": "nonexistent"},
-		nethttp.CallOptions{Observer: obs})
-	if err != nil {
-		var statusErr nethttp.UnexpectedStatusError
-		if errors.As(err, &statusErr) {
-			logger.Error("api call failed",
-				"method", statusErr.Method,
-				"path", statusErr.Path,
-				"status", statusErr.StatusCode,
-				"body", string(statusErr.Body),
-			)
-		}
-	}
-
-	// Trigger a pre-flight path param validation failure — rest.PathParamError.
-	_, err = nethttp.Call(context.Background(), srv.Client(), srv.URL,
-		clientGet, contract.GetUserReq{},
-		map[string]string{"id": ""}, // fails NonEmptyString codec
+		clientGet, struct{}{},
+		map[string]string{"id": ""}, // empty — fails NonEmptyString codec
 		nethttp.CallOptions{Observer: obs})
 	if err != nil {
 		var pathErr rest.PathParamError
 		if errors.As(err, &pathErr) {
-			logger.Warn("invalid path variable (no request sent)",
+			logger.Warn("path param rejected (no request sent)",
 				"param", pathErr.Name,
 				"value", pathErr.Value,
 				"cause", pathErr.Err,
@@ -270,63 +283,154 @@ func main() {
 	}
 	fmt.Println()
 
-	// ── 4. Client: client-only pattern (no server builder) ────────────────────
-	fmt.Println("=== Client: client-only pattern (ClientHandle, no builder) ===")
+	// ── 3. Cookies + headers — GET /profile ───────────────────────────────────
+	//
+	// CookieParams and HeaderParams are codec-validated before the request is
+	// sent. A violation aborts the call and returns the typed error — no network
+	// round-trip wasted on a request that the server would reject anyway.
+	fmt.Println("=== 3. Cookies + headers: GET /profile ===")
 
-	type SearchReq struct{}
-	type SearchResp struct{ Count int }
-	searchCodec := codex.Struct[SearchResp](
-		codex.Field[SearchResp, int]{
-			Name:  "count",
-			Codec: codex.Int(),
-			Get:   func(r SearchResp) int { return r.Count },
-			Set:   func(r *SearchResp, v int) { r.Count = v },
-		},
-	)
-	searchHandle := rest.NewRoute[SearchReq, SearchResp]("GET", "/search",
-		codex.Struct[SearchReq](), searchCodec,
-		rest.QueryParam{Name: "q", Required: true}.WithCodec(
-			codex.String().Refine(validate.NonEmptyString),
-		),
-	).ClientHandle()
+	clientProfile := contract.GetProfile.ClientHandle()
 
-	searchSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		fmt.Fprintf(w, `{"count":42}`)
-	}))
-	defer searchSrv.Close()
-
-	result, err := nethttp.Call(context.Background(), searchSrv.Client(), searchSrv.URL,
-		searchHandle, SearchReq{}, nil,
+	// Happy path: valid session_token cookie and X-Request-Id header.
+	profile, err := nethttp.Call(context.Background(), srv.Client(), srv.URL,
+		clientProfile, struct{}{}, nil,
 		nethttp.CallOptions{
-			QueryParams: map[string]string{"q": "alice"},
-			Observer:    obs,
+			CookieParams: map[string]string{
+				"session_token": "my-valid-session-abc123",
+			},
+			HeaderParams: map[string]string{
+				"X-Request-Id": "f47ac10b-58cc-4372-a567-0e02b2c3d479",
+			},
+			Observer: obs,
 		})
 	if err != nil {
-		fmt.Fprintln(os.Stderr, "search:", err)
+		fmt.Fprintln(os.Stderr, "get profile:", err)
 		os.Exit(1)
 	}
-	fmt.Printf("search result: %+v\n\n", result)
+	fmt.Printf("profile: %+v\n", profile)
 
-	// Trigger a query param validation error — observer records it; logger logs it.
-	_, err = nethttp.Call(context.Background(), searchSrv.Client(), searchSrv.URL,
-		searchHandle, SearchReq{}, nil,
+	// Cookie validation failure: empty session_token fails NonEmptyString codec.
+	_, err = nethttp.Call(context.Background(), srv.Client(), srv.URL,
+		clientProfile, struct{}{}, nil,
 		nethttp.CallOptions{
-			QueryParams: map[string]string{"q": ""}, // fails NonEmptyString
-			Observer:    obs,
+			CookieParams: map[string]string{"session_token": ""}, // invalid
+			HeaderParams: map[string]string{"X-Request-Id": "f47ac10b-58cc-4372-a567-0e02b2c3d479"},
+			Observer:     obs,
 		})
 	if err != nil {
-		var qpErr rest.QueryParamError
-		if errors.As(err, &qpErr) {
-			logger.Warn("invalid query parameter (no request sent)",
-				"param", qpErr.Name,
-				"value", qpErr.Value,
-				"cause", qpErr.Err,
+		var cookieErr rest.CookieParamError
+		if errors.As(err, &cookieErr) {
+			logger.Warn("cookie rejected (no request sent)",
+				"param", cookieErr.Name,
+				"value", cookieErr.Value,
+				"cause", cookieErr.Err,
 			)
 		}
 	}
 
-	// ── 5. Observer summary ────────────────────────────────────────────────────
+	// Header validation failure: non-UUID value fails UUID codec.
+	_, err = nethttp.Call(context.Background(), srv.Client(), srv.URL,
+		clientProfile, struct{}{}, nil,
+		nethttp.CallOptions{
+			CookieParams: map[string]string{"session_token": "my-valid-session-abc123"},
+			HeaderParams: map[string]string{"X-Request-Id": "not-a-uuid"}, // invalid
+			Observer:     obs,
+		})
+	if err != nil {
+		var headerErr rest.HeaderParamError
+		if errors.As(err, &headerErr) {
+			logger.Warn("header rejected (no request sent)",
+				"param", headerErr.Name,
+				"value", headerErr.Value,
+				"cause", headerErr.Err,
+			)
+		}
+	}
+	fmt.Println()
+
+	// ── 4. Security — GET /data (CredentialFunc) ──────────────────────────────
+	//
+	// CredentialFunc is called when the route declares Security requirements.
+	// It receives the resolved []route.SecurityRequirement and must return
+	// headers to merge into the request — typically Authorization.
+	// A CredentialFunc error aborts the call before any network activity.
+	fmt.Println("=== 4. Security: GET /data (CredentialFunc) ===")
+
+	clientSecured := contract.GetSecuredData.ClientHandle()
+
+	// Happy path: CredentialFunc injects the bearer token.
+	data, err := nethttp.Call(context.Background(), srv.Client(), srv.URL,
+		clientSecured, struct{}{}, nil,
+		nethttp.CallOptions{
+			CredentialFunc: func(_ context.Context, reqs []route.SecurityRequirement) (http.Header, error) {
+				// reqs contains the declared security requirements from the route spec.
+				// In production: look up the token from a token store / refresh if expired.
+				h := make(http.Header)
+				h.Set("Authorization", "Bearer "+validToken)
+				return h, nil
+			},
+			Observer: obs,
+		})
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "get secured data:", err)
+		os.Exit(1)
+	}
+	fmt.Printf("secured data: %+v\n", data)
+
+	// No CredentialFunc: request is sent without Authorization → server returns 401.
+	_, err = nethttp.Call(context.Background(), srv.Client(), srv.URL,
+		clientSecured, struct{}{}, nil,
+		nethttp.CallOptions{Observer: obs}) // no CredentialFunc
+	if err != nil {
+		var statusErr nethttp.UnexpectedStatusError
+		if errors.As(err, &statusErr) {
+			logger.Error("unauthorized (no credentials supplied)",
+				"method", statusErr.Method,
+				"path", statusErr.Path,
+				"status", statusErr.StatusCode,
+			)
+		}
+	}
+
+	// CredentialFunc returning an error: aborts the call client-side.
+	tokenExpiredErr := fmt.Errorf("token expired")
+	_, err = nethttp.Call(context.Background(), srv.Client(), srv.URL,
+		clientSecured, struct{}{}, nil,
+		nethttp.CallOptions{
+			CredentialFunc: func(_ context.Context, _ []route.SecurityRequirement) (http.Header, error) {
+				return nil, tokenExpiredErr
+			},
+			Observer: obs,
+		})
+	if err != nil {
+		if errors.Is(err, tokenExpiredErr) {
+			logger.Warn("credential error (no request sent)", "cause", err)
+		}
+	}
+	fmt.Println()
+
+	// ── 5. OpenAPI spec ───────────────────────────────────────────────────────
+	//
+	// The same builder that registered routes for runtime use also generates
+	// the full OpenAPI 3.1 spec — one definition drives both. Routes declared
+	// with headers, cookies, path params, query params, and security schemes
+	// all flow into the spec automatically.
+	fmt.Println("=== 5. OpenAPI spec (derived from shared contract) ===")
+
+	doc, err := b.OpenAPISpec()
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "OpenAPISpec error:", err)
+		os.Exit(1)
+	}
+	yamlBytes, err := doc.MarshalYAML()
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "MarshalYAML error:", err)
+		os.Exit(1)
+	}
+	fmt.Println(string(yamlBytes))
+
+	// ── 6. Observer summary ───────────────────────────────────────────────────
 	fmt.Println("=== Observer summary ===")
 	obs.Print()
 	fmt.Println()
