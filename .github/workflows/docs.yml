@@ -31,17 +31,17 @@ jobs:
 
       - uses: actions/checkout@v6
         with:
-          fetch-depth: 0 # full history for git-dates plugin
+          fetch-depth: 0  # full history for git-dates plugin
 
-      - uses: actions/setup-python@v6
-        with:
-          python-version: "3.x"
-
-      - name: Install Zensical
-        run: pip install zensical
-
-      - name: Build docs
-        run: zensical build --clean
+      - name: Build docs (Zensical container)
+        # Official Zensical Docker image — no Python install needed.
+        # Mounts the repo root as /docs; writes output to site/.
+        # See: https://hub.docker.com/r/zensical/zensical
+        run: |
+          docker run --rm \
+            -v ${{ github.workspace }}:/docs \
+            zensical/zensical \
+            build --clean
 
       - name: Upload pages artifact
         uses: actions/upload-pages-artifact@v5

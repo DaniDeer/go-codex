@@ -88,3 +88,14 @@ examples:
         exit 1
     fi
     echo "All examples passed."
+
+# ── Docs ───────────────────────────────────────────────────────────────────────
+
+# Preview docs site locally (auto-reloads on file changes)
+# Opens at http://localhost:8000
+docs-preview:
+    docker run --rm -it -p 8000:8000 -v "$(pwd)":/docs zensical/zensical
+
+# Build docs site locally (outputs to site/)
+docs-build:
+    docker run --rm -v "$(pwd)":/docs zensical/zensical build --clean
