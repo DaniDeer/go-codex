@@ -1619,3 +1619,50 @@ func TestRoute_ClientHandle_encodeDecodeRoundTrip(t *testing.T) {
 		t.Errorf("name = %q, want 'Widget'", got.Name)
 	}
 }
+
+// --- Example functions (shown on pkg.go.dev as runnable snippets) ---
+
+func ExampleNewRoute() {
+	type CreateUserReq struct{ Name string }
+	type User struct{ ID, Name string }
+
+	reqCodec := codex.Struct[CreateUserReq](
+		codex.RequiredField("name", codex.String(),
+			func(r CreateUserReq) string { return r.Name },
+			func(r *CreateUserReq, v string) { r.Name = v },
+		),
+	)
+	userCodec := codex.Struct[User](
+		codex.RequiredField("id", codex.String(),
+			func(u User) string { return u.ID },
+			func(u *User, v string) { u.ID = v },
+		),
+		codex.RequiredField("name", codex.String(),
+			func(u User) string { return u.Name },
+			func(u *User, v string) { u.Name = v },
+		),
+	)
+
+	b := rest.NewBuilder(rest.Info{Title: "User API", Version: "1.0.0"})
+
+	// NewRoute declares a typed route as a value — no builder coupling.
+	route := rest.NewRoute[CreateUserReq, User]("POST", "/users",
+		reqCodec, userCodec,
+		rest.RouteMeta{OperationID: "createUser", Summary: "Create a user"},
+	)
+
+	handle, err := route.Register(b)
+	if err != nil {
+		fmt.Println("register error:", err)
+		return
+	}
+
+	// Decode a request body.
+	req, err := handle.Decode([]byte(`{"name":"Alice"}`))
+	if err != nil {
+		fmt.Println("decode error:", err)
+		return
+	}
+	fmt.Println(req.Name)
+	// Output: Alice
+}

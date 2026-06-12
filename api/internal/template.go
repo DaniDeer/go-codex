@@ -1,5 +1,3 @@
-// Package internal provides shared helpers for api/rest and api/events.
-// It is not part of the public API.
 package internal
 
 import (

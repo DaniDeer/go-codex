@@ -1108,3 +1108,47 @@ func TestValidateTopicVars_presentKey_codecFailure_returnsTopicParamError(t *tes
 		t.Errorf("expected Name=sensorID, got %q", paramErr.Name)
 	}
 }
+
+// --- Example functions (shown on pkg.go.dev as runnable snippets) ---
+
+func ExampleNewChannel() {
+	type SensorReading struct {
+		SensorID string
+		Value    float64
+	}
+
+	readingCodec := codex.Struct[SensorReading](
+		codex.RequiredField("sensor_id", codex.String(),
+			func(r SensorReading) string { return r.SensorID },
+			func(r *SensorReading, v string) { r.SensorID = v },
+		),
+		codex.RequiredField("value", codex.Float64(),
+			func(r SensorReading) float64 { return r.Value },
+			func(r *SensorReading, v float64) { r.Value = v },
+		),
+	)
+
+	b := events.NewBuilder(events.Info{Title: "Sensor API", Version: "1.0.0"})
+
+	// NewChannel declares a typed channel as a value — register with any builder.
+	ch := events.NewChannel[SensorReading](
+		"sensors/{sensorID}/readings",
+		readingCodec,
+		events.Subscribe{OperationID: "receiveSensorReading", Summary: "Receive a reading"},
+	)
+
+	handle, err := ch.Register(b)
+	if err != nil {
+		fmt.Println("register error:", err)
+		return
+	}
+
+	// Decode a payload.
+	reading, err := handle.Decode([]byte(`{"sensor_id":"s1","value":42.5}`))
+	if err != nil {
+		fmt.Println("decode error:", err)
+		return
+	}
+	fmt.Printf("sensor=%s value=%.1f\n", reading.SensorID, reading.Value)
+	// Output: sensor=s1 value=42.5
+}

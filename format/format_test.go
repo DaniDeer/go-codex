@@ -298,3 +298,36 @@ func TestGob_DecodeError(t *testing.T) {
 		t.Errorf("expected error prefixed with gob:, got: %v", err)
 	}
 }
+
+// --- Example functions (shown on pkg.go.dev as runnable snippets) ---
+
+func ExampleJSON() {
+	type Item struct {
+		Name  string
+		Price float64
+	}
+
+	itemCodec := codex.Struct[Item](
+		codex.RequiredField("name", codex.String(),
+			func(i Item) string { return i.Name },
+			func(i *Item, v string) { i.Name = v },
+		),
+		codex.RequiredField("price", codex.Float64(),
+			func(i Item) float64 { return i.Price },
+			func(i *Item, v float64) { i.Price = v },
+		),
+	)
+
+	j := format.JSON(itemCodec)
+
+	// Marshal a Go value to JSON bytes.
+	data, _ := j.Marshal(Item{Name: "Widget", Price: 9.99})
+	fmt.Println(string(data))
+
+	// Unmarshal JSON bytes back to the typed value.
+	item, _ := j.Unmarshal(data)
+	fmt.Printf("%s: %.2f\n", item.Name, item.Price)
+	// Output:
+	// {"name":"Widget","price":9.99}
+	// Widget: 9.99
+}

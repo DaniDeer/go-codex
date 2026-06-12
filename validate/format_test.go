@@ -1,6 +1,7 @@
 package validate_test
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 
@@ -487,4 +488,32 @@ func TestSlug_SchemaAnnotation(t *testing.T) {
 	if s.Pattern == "" {
 		t.Error("Slug.Schema should set Pattern")
 	}
+}
+
+// --- Example functions (shown on pkg.go.dev as runnable snippets) ---
+
+func ExampleEmail() {
+	emailCodec := codex.String().Refine(validate.Email)
+
+	_, err := emailCodec.Decode("not-an-email")
+	fmt.Println(err != nil) // invalid email
+
+	_, err = emailCodec.Decode("alice@example.com")
+	fmt.Println(err) // valid
+	// Output:
+	// true
+	// <nil>
+}
+
+func ExampleNonEmptyString() {
+	c := codex.String().Refine(validate.NonEmptyString)
+
+	_, err := c.Decode("")
+	fmt.Println(err != nil) // empty string rejected
+
+	v, _ := c.Decode("hello")
+	fmt.Println(v)
+	// Output:
+	// true
+	// hello
 }

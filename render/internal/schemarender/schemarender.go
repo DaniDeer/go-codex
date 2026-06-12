@@ -1,8 +1,3 @@
-// Package schemarender converts schema.Schema values to map[string]any objects
-// suitable for marshalling into OpenAPI or AsyncAPI documents.
-//
-// Both render/openapi and render/asyncapi delegate to this package so that
-// adding a new schema field requires only one change.
 package schemarender
 
 import "github.com/DaniDeer/go-codex/schema"

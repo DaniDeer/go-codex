@@ -2,6 +2,7 @@ package codex_test
 
 import (
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -370,4 +371,40 @@ func TestStruct_Encode_ValidValueSucceeds(t *testing.T) {
 	if !ok || obj["name"] != "Alice" {
 		t.Errorf("unexpected encode result: %v", enc)
 	}
+}
+
+// --- Example functions (shown on pkg.go.dev as runnable snippets) ---
+
+func ExampleRequiredField() {
+	type User struct {
+		Name  string
+		Email string
+	}
+
+	// Define the codec once — encode, decode, validate, and schema from one value.
+	userCodec := codex.Struct[User](
+		codex.RequiredField("name", codex.String(),
+			func(u User) string { return u.Name },
+			func(u *User, v string) { u.Name = v },
+		),
+		codex.RequiredField("email", codex.String(),
+			func(u User) string { return u.Email },
+			func(u *User, v string) { u.Email = v },
+		),
+	)
+
+	// Decode from intermediate representation (map[string]any).
+	user, err := userCodec.Decode(map[string]any{"name": "Alice", "email": "alice@example.com"})
+	if err != nil {
+		fmt.Println("error:", err)
+		return
+	}
+	fmt.Printf("%s <%s>\n", user.Name, user.Email)
+
+	// Missing required field returns a structured error.
+	_, err = userCodec.Decode(map[string]any{"name": "Bob"})
+	fmt.Println(err != nil)
+	// Output:
+	// Alice <alice@example.com>
+	// true
 }

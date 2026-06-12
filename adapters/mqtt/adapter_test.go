@@ -3,6 +3,7 @@ package mqtt_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -876,4 +877,43 @@ func TestSubscribeHandler_GlobalSecurity_notCalledWhenExplicitlyEmpty(t *testing
 	if secFuncCalled {
 		t.Error("want SecurityFunc NOT called for channel with explicit empty Security")
 	}
+}
+
+// --- Example functions (shown on pkg.go.dev as runnable snippets) ---
+
+func ExamplePublish() {
+	type Alert struct{ SensorID, Message string }
+
+	alertCodec := codex.Struct[Alert](
+		codex.RequiredField("sensor_id", codex.String(),
+			func(a Alert) string { return a.SensorID },
+			func(a *Alert, v string) { a.SensorID = v },
+		),
+		codex.RequiredField("message", codex.String(),
+			func(a Alert) string { return a.Message },
+			func(a *Alert, v string) { a.Message = v },
+		),
+	)
+
+	b := events.NewBuilder(events.Info{Title: "Alert Service", Version: "1.0.0"})
+	alertChannel, _ := events.NewChannel[Alert]("alerts/{sensorID}", alertCodec,
+		events.Publish{OperationID: "publishAlert", Summary: "Publish a threshold alert"},
+		events.TopicParam{Name: "sensorID"}.WithCodec(
+			codex.String().Refine(validate.NonEmptyString),
+		),
+	).Register(b)
+
+	// Mock client records the published topic and payload.
+	client := &mockClient{token: newCompletedToken(nil)}
+
+	err := adaptermqtt.Publish(context.Background(), client, alertChannel, 1, false,
+		Alert{SensorID: "s1", Message: "threshold exceeded"},
+		map[string]string{"sensorID": "sensor-01"},
+		adaptermqtt.PublishOptions{},
+	)
+	fmt.Println(err)
+	fmt.Println(client.publishedTopic)
+	// Output:
+	// <nil>
+	// alerts/sensor-01
 }

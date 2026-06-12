@@ -3,6 +3,7 @@ package mcp_test
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"testing"
 
 	apimcp "github.com/DaniDeer/go-codex/api/mcp"
@@ -593,4 +594,52 @@ func TestPromptMeta_Tags_flowToHandleAndSpec(t *testing.T) {
 	if len(spec.Prompts[0].Tags) != 1 || spec.Prompts[0].Tags[0] != "editorial" {
 		t.Errorf("spec.Prompts[0].Tags: got %v", spec.Prompts[0].Tags)
 	}
+}
+
+// --- Example functions (shown on pkg.go.dev as runnable snippets) ---
+
+func ExampleNewTool() {
+	type SearchReq struct{ Query string }
+	type SearchResp struct{ Count int }
+
+	reqCodec := codex.Struct[SearchReq](
+		codex.RequiredField("query", codex.String().Refine(validate.NonEmptyString),
+			func(r SearchReq) string { return r.Query },
+			func(r *SearchReq, v string) { r.Query = v },
+		),
+	)
+	respCodec := codex.Struct[SearchResp](
+		codex.RequiredField("count", codex.Int(),
+			func(r SearchResp) int { return r.Count },
+			func(r *SearchResp, v int) { r.Count = v },
+		),
+	)
+
+	// Declare the tool as a value — define once, register anywhere.
+	searchTool := apimcp.NewTool[SearchReq, SearchResp]("search",
+		reqCodec, respCodec,
+		apimcp.ToolMeta{Description: "Search the knowledge base."},
+	)
+
+	b := apimcp.NewBuilder(apimcp.Info{Name: "My Server", Version: "1.0.0"})
+	handle, err := searchTool.Register(b)
+	if err != nil {
+		fmt.Println("error:", err)
+		return
+	}
+
+	// Decode tool arguments — validated against codec constraints.
+	req, err := handle.Decode(map[string]any{"query": "go-codex"})
+	if err != nil {
+		fmt.Println("error:", err)
+		return
+	}
+	fmt.Println(req.Query)
+
+	// Missing required field returns a typed error.
+	_, err = handle.Decode(map[string]any{})
+	fmt.Println(err != nil)
+	// Output:
+	// go-codex
+	// true
 }

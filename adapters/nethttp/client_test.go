@@ -522,3 +522,36 @@ func TestResponseBodyError_ErrorAndUnwrap(t *testing.T) {
 		t.Errorf("extracted.Err = %v, want %v", extracted.Err, cause)
 	}
 }
+
+// --- Example functions (shown on pkg.go.dev as runnable snippets) ---
+
+func ExampleCall() {
+	// Define the route — use ClientHandle() when no OpenAPI spec is needed.
+	type Item struct{ ID, Name string }
+	itemCodec := codex.Struct[Item](
+		codex.OptionalField("id", codex.String(),
+			func(i Item) string { return i.ID },
+			func(i *Item, v string) { i.ID = v },
+		),
+		codex.RequiredField("name", codex.String().Refine(validate.NonEmptyString),
+			func(i Item) string { return i.Name },
+			func(i *Item, v string) { i.Name = v },
+		),
+	)
+	getRoute := rest.NewRoute[getReq, Item]("GET", "/items/{id}",
+		codex.Struct[getReq](), itemCodec,
+		rest.PathParam{Name: "id"}.WithCodec(codex.String().Refine(validate.NonEmptyString)),
+	).ClientHandle()
+
+	// Validate path params before any HTTP call.
+	_, err := nethttp.Call(context.Background(), http.DefaultClient, "https://api.example.com",
+		getRoute, getReq{}, map[string]string{"id": ""},
+		nethttp.CallOptions{})
+	if err != nil {
+		var pathErr rest.PathParamError
+		if errors.As(err, &pathErr) {
+			fmt.Printf("param %q rejected: %v\n", pathErr.Name, pathErr.Err)
+		}
+	}
+	// Output: param "id" rejected: constraint failed (non-empty): expected non-empty string
+}

@@ -2,6 +2,7 @@ package forge_test
 
 import (
 	"errors"
+	"fmt"
 	"testing"
 	"time"
 
@@ -235,4 +236,58 @@ func TestRegistry_WithAuthorAndApproval_chainable(t *testing.T) {
 	if spec.Info.ApprovedBy != "Quality Manager" {
 		t.Errorf("ApprovedBy: want %q, got %q", "Quality Manager", spec.Info.ApprovedBy)
 	}
+}
+
+// --- Example functions (shown on pkg.go.dev as runnable snippets) ---
+
+func ExampleNewFunction() {
+	type OEEInput struct {
+		Availability float64
+		Performance  float64
+		Quality      float64
+	}
+	type OEEResult struct {
+		OEE float64
+	}
+
+	inputCodec := codex.Struct[OEEInput](
+		codex.RequiredField("availability", codex.Float64(),
+			func(v OEEInput) float64 { return v.Availability },
+			func(v *OEEInput, f float64) { v.Availability = f },
+		),
+		codex.RequiredField("performance", codex.Float64(),
+			func(v OEEInput) float64 { return v.Performance },
+			func(v *OEEInput, f float64) { v.Performance = f },
+		),
+		codex.RequiredField("quality", codex.Float64(),
+			func(v OEEInput) float64 { return v.Quality },
+			func(v *OEEInput, f float64) { v.Quality = f },
+		),
+	)
+	outputCodec := codex.Struct[OEEResult](
+		codex.RequiredField("oee", codex.Float64(),
+			func(v OEEResult) float64 { return v.OEE },
+			func(v *OEEResult, f float64) { v.OEE = f },
+		),
+	)
+
+	// NewFunction creates a governed, self-documenting computation.
+	fn := forge.NewFunction[OEEInput, OEEResult](
+		"oee", "1.0.0",
+		inputCodec, outputCodec,
+		func(in OEEInput) (OEEResult, error) {
+			return OEEResult{OEE: in.Availability * in.Performance * in.Quality}, nil
+		},
+		forge.FunctionMeta{Description: "Overall Equipment Effectiveness"},
+	)
+
+	result, err := fn.Apply(OEEInput{
+		Availability: 0.9, Performance: 0.85, Quality: 0.95,
+	})
+	if err != nil {
+		fmt.Println("error:", err)
+		return
+	}
+	fmt.Printf("OEE=%.4f\n", result.OEE)
+	// Output: OEE=0.7268
 }

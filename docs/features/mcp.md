@@ -1,0 +1,126 @@
+# MCP Server
+
+> See also: [`api/mcp` on pkg.go.dev](https://pkg.go.dev/github.com/DaniDeer/go-codex/api/mcp) · [`adapters/mcpgo` on pkg.go.dev](https://pkg.go.dev/github.com/DaniDeer/go-codex/adapters/mcpgo)
+>
+> Runnable demo: [`examples/adapters-mcp`](https://github.com/DaniDeer/go-codex/tree/main/examples/adapters-mcp)
+
+`api/mcp` + `adapters/mcpgo` bring the same **declare → register → handle** workflow to [Model Context Protocol (MCP)](https://modelcontextprotocol.io/) servers. The codec drives the MCP tool's `inputSchema` automatically — no duplicate struct-tag definitions.
+
+## Quick start
+
+```go
+import (
+    "github.com/DaniDeer/go-codex/api/mcp"
+    "github.com/DaniDeer/go-codex/adapters/mcpgo"
+    mcpgoserver "github.com/mark3labs/mcp-go/server"
+)
+
+// Layer 1: codec
+var calcInputCodec = codex.Struct[CalcInput](
+    codex.RequiredField("a", codex.Float64().Refine(validate.PositiveFloat), ...),
+    codex.RequiredField("op",
+        codex.String().Refine(validate.OneOf("+", "-", "*", "/")), ...),
+)
+
+// Layer 2: declare as package-level values
+var calcTool = mcp.NewTool[CalcInput, CalcOutput]("calculate",
+    calcInputCodec, calcOutputCodec,
+    mcp.ToolMeta{Description: "Arithmetic on two non-negative numbers."},
+)
+
+var itemResource = mcp.NewResource[Item]("items://{id}", itemCodec,
+    mcp.ResourceMeta{Name: "Item", MimeType: "application/json"},
+    mcp.ResourceParam{Name: "id"}.WithCodec(codex.String().Refine(validate.NonEmptyString)),
+)
+
+var summaryPrompt = mcp.NewPrompt("summarize",
+    mcp.PromptMeta{Description: "Ask the LLM to summarize content."},
+    mcp.PromptArg{Name: "content", Required: true},
+    mcp.PromptArg{Name: "style"},
+)
+
+// Register with builder — obtain typed handles
+b := mcp.NewBuilder(mcp.Info{Name: "My Server", Version: "1.0.0"})
+toolHandle, _   := calcTool.Register(b)
+resHandle, _    := itemResource.Register(b)
+promptHandle, _ := summaryPrompt.Register(b)
+
+// Static spec (analogous to OpenAPISpec / AsyncAPISpec)
+spec, _ := b.MCPSpec()
+data, _ := json.MarshalIndent(spec, "", "  ")
+
+// Layer 3: wire to mcp-go server
+s := mcpgoserver.NewMCPServer(b.Info().Name, b.Info().Version)
+
+mcpgo.RegisterTool(s, toolHandle, func(ctx context.Context, in CalcInput) (CalcOutput, error) {
+    return svc.Calculate(ctx, in)
+}, mcpgo.Options{Observer: obs})
+
+mcpgo.RegisterResource(s, resHandle, func(ctx context.Context, uri string) (Item, error) {
+    return svc.GetItem(ctx, uri)
+}, mcpgo.Options{})
+
+mcpgo.RegisterPrompt(s, promptHandle, func(ctx context.Context, args map[string]string) ([]mcpgo.PromptMessage, error) {
+    return []mcpgo.PromptMessage{{Role: "user", Content: "Summarize: " + args["content"]}}, nil
+}, mcpgo.Options{})
+```
+
+## Transport options
+
+```go
+// Stdio (local clients, e.g. Claude Desktop):
+server.ServeStdio(s)
+
+// Streamable HTTP (MCP 2025-03-26+, recommended for remote):
+mcpgoserver.NewStreamableHTTPServer(s).Start(":8080")
+
+// SSE over HTTP (legacy transport, older clients):
+mcpgoserver.NewSSEServer(s, mcpgoserver.WithBaseURL("http://localhost:8080")).Start(":8080")
+```
+
+## Key behaviours
+
+- **Codec-driven `inputSchema`**: the codec's `schema.Schema` is rendered to `json.RawMessage` as the tool's `inputSchema` — no `jsonschema:""` struct tags needed. Clients see exactly the constraints declared in the codec.
+- **Input validation → `IsError: true`**: codec constraint failures are returned to the LLM as tool errors (`IsError: true`). The LLM sees field-level detail and can retry with corrected arguments.
+- **Output encode errors → protocol error**: if the output codec validation fails, the adapter returns a protocol-level Go error (not a tool error). Use `errors.As(err, &mcp.ToolOutputError{})` to inspect.
+
+## URI and prompt validation
+
+```go
+// ResourceHandle.BuildURI — validates URI variables before assembling
+uri, err := resHandle.BuildURI(map[string]string{"id": "item-123"})
+
+// ResourceHandle.ValidateURIVars — validate without building
+err = resHandle.ValidateURIVars(map[string]string{"id": ""})
+// → mcp.ResourceParamError{Name: "id", Value: "", Err: ...}
+
+// PromptHandle.ValidateArgs — validate arg presence and codecs
+err = promptHandle.ValidateArgs(map[string]string{"style": "bullet"})
+// → mcp.MissingPromptArgError{Name: "content"} (required arg absent)
+```
+
+## Structured errors
+
+| Error type | Returned by | When |
+|---|---|---|
+| `mcp.ToolInputError{Name, Err}` | `ToolHandle.Decode` | input codec validation failure |
+| `mcp.ToolOutputError{Name, Err}` | `ToolHandle.Encode` | output codec validation failure |
+| `mcp.ResourceParamError{Name, Value, Err}` | `ResourceHandle.BuildURI` / `ValidateURIVars` | URI var codec failure |
+| `mcp.MissingResourceVarError{Name}` | `ResourceHandle.BuildURI` / `ValidateURIVars` | required URI var absent |
+| `mcp.ResourceEncodeError{URI, Err}` | `ResourceHandle.Encode` | resource encode failure |
+| `mcp.PromptArgError{Name, Err}` | `PromptHandle.ValidateArgs` | arg codec failure |
+| `mcp.MissingPromptArgError{Name}` | `PromptHandle.ValidateArgs` | required arg absent |
+
+## Observer
+
+```go
+mcpgo.RegisterTool(s, toolHandle, handler, mcpgo.Options{Observer: obs})
+// obs.RecordRequest("tool", "calculate", 200, duration) — per call
+// obs.RecordValidationError("input", constraint, field) — per failing field
+```
+
+Observer location values: `"input"` for tool argument decode/validation; `"prompt.args"` for prompt argument codec failures.
+
+## See also
+
+- [examples/adapters-mcp](https://github.com/DaniDeer/go-codex/tree/main/examples/adapters-mcp) — full demo: Tools, Resources, Prompts, MCPSpec, observer

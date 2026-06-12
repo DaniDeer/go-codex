@@ -1,0 +1,165 @@
+# Metrics Observer
+
+> See also: [`stats` package on pkg.go.dev](https://pkg.go.dev/github.com/DaniDeer/go-codex/stats)
+>
+> Runnable demos: [`examples/stats-observer`](https://github.com/DaniDeer/go-codex/tree/main/examples/stats-observer) · [`examples/adapters-nethttp`](https://github.com/DaniDeer/go-codex/tree/main/examples/adapters-nethttp) · [`examples/adapters-mqtt`](https://github.com/DaniDeer/go-codex/tree/main/examples/adapters-mqtt)
+
+go-codex's observer pattern provides structured metrics hooks without any metrics library dependency. Implement the interface you need; swap in Prometheus or OpenTelemetry in production.
+
+## Observer interfaces
+
+| Interface | Methods | Used by |
+|---|---|---|
+| `stats.ValidationObserver` | `RecordValidationError(location, constraint, field string)` | Codecs directly (config validation, no adapter) |
+| `stats.Observer` | embeds `ValidationObserver` + `RecordRequest`, `RecordSubscribe`, `RecordPublish` | HTTP and MQTT adapters |
+| `stats.PipelineObserver` | `RecordApply(name, version string, success bool, d time.Duration)` | `forge.Registry` |
+| `stats.SecurityObserver` | `RecordSecurityRejection(location, scheme string)` | adapters — type-asserted, never embedded |
+
+`stats.NoopObserver` satisfies all four interfaces at zero cost.
+
+## Codec-level (ValidationObserver)
+
+Use when calling codecs directly without any adapter:
+
+```go
+type ConfigObserver struct{}
+
+func (o *ConfigObserver) RecordValidationError(location, constraint, field string) {
+    fmt.Printf("validation error: location=%q constraint=%q field=%q\n",
+        location, constraint, field)
+}
+
+val, err := appConfigCodec.Decode(rawData)
+stats.ReportErrors(&ConfigObserver{}, "config", err)
+// Calls RecordValidationError once per failing field
+```
+
+`stats.ConstraintName(err)` extracts a stable label from any field-level error: `ConstraintError.Name`, `"type-mismatch"`, `"required"`, or `""`.
+
+## HTTP adapter (Observer)
+
+```go
+type CountingObserver struct {
+    mu             sync.Mutex
+    total          int
+    byStatus       map[int]int
+    valErrorsByLoc map[string]int
+    latencies      []time.Duration
+}
+
+func (o *CountingObserver) RecordRequest(method, path string, statusCode int, d time.Duration) {
+    o.mu.Lock()
+    defer o.mu.Unlock()
+    o.total++
+    if o.byStatus == nil { o.byStatus = make(map[int]int) }
+    o.byStatus[statusCode]++
+    o.latencies = append(o.latencies, d)
+}
+
+func (o *CountingObserver) RecordValidationError(location, constraintName, field string) {
+    o.mu.Lock()
+    defer o.mu.Unlock()
+    if o.valErrorsByLoc == nil { o.valErrorsByLoc = make(map[string]int) }
+    o.valErrorsByLoc[location]++
+    fmt.Printf("  [observer] validation error — location=%q constraint=%q field=%q\n",
+        location, constraintName, field)
+}
+
+func (o *CountingObserver) RecordSubscribe(_ string, _ bool, _ time.Duration) {}
+func (o *CountingObserver) RecordPublish(_ string, _ bool, _ time.Duration)   {}
+
+var _ stats.Observer = (*CountingObserver)(nil)
+
+// Wire to HTTP adapter:
+nethttp.Register(mux, createUser, handler, nethttp.Options{Observer: obs})
+
+// Wire to HTTP client:
+nethttp.Call(ctx, client, serverURL, handle, req, nil, nethttp.CallOptions{Observer: obs})
+// Note: status 0 = pre-flight validation failure (no HTTP call sent)
+```
+
+## MQTT adapter
+
+```go
+amqtt.SubscribeHandler(ctx, channel, handler, amqtt.SubscribeOptions{Observer: obs})
+
+amqtt.Publish(ctx, client, channel, qos, retained, msg, vars,
+    amqtt.PublishOptions{Observer: obs})
+```
+
+## Forge pipeline (PipelineObserver)
+
+```go
+type PipelineLogger struct{}
+
+func (PipelineLogger) RecordApply(name, version string, success bool, d time.Duration) {
+    log.Printf("[forge] %s@%s ok=%v dur=%v", name, version, success, d)
+}
+
+registry := forge.NewRegistry("OEE Pipeline", "1.0.0").
+    WithObserver(PipelineLogger{})
+```
+
+## SecurityObserver
+
+```go
+type TelemetryObserver struct {
+    CountingObserver // embed for Observer methods
+}
+
+func (o *TelemetryObserver) RecordSecurityRejection(location, scheme string) {
+    // increment a Prometheus counter, emit a log line, etc.
+}
+```
+
+Adapters type-assert `stats.SecurityObserver` — implementing it is purely additive; existing `Observer` implementations need not change.
+
+## Observer location values
+
+| Location | Adapter / use case |
+|---|---|
+| `"body"` | nethttp/chi — request or response body decode/encode |
+| `"query"` | nethttp/chi — query parameter validation |
+| `"cookie"` | nethttp/chi — request cookie parameter validation |
+| `"header"` | nethttp/chi — request header parameter validation |
+| `"response_header"` | nethttp/chi — response header parameter validation |
+| `"response_cookie"` | nethttp/chi — response cookie parameter validation |
+| `"path"` | nethttp/chi — path parameter validation |
+| `"payload"` | mqtt — message payload decode (subscribe) or encode (publish) |
+| `"topic_var"` | mqtt — per-variable codec failure in topic template |
+| `"topic"` | mqtt — topic-level codec failure |
+| `"input"` | mcpgo — tool argument decode/validation |
+| `"prompt.args"` | mcpgo — prompt argument codec failure |
+| any string | codec-only: choose a label meaningful to your domain (`"config"`, `"input"`, etc.) |
+
+## Prometheus example
+
+```go
+type PrometheusObserver struct {
+    requests   *prometheus.CounterVec   // labels: method, path, status
+    subscribed *prometheus.CounterVec   // labels: topic, success
+    published  *prometheus.CounterVec   // labels: topic, success
+    valErrors  *prometheus.CounterVec   // labels: location, constraint, field
+    latency    *prometheus.HistogramVec // labels: method, path
+}
+
+func (o *PrometheusObserver) RecordRequest(method, path string, code int, d time.Duration) {
+    o.requests.WithLabelValues(method, path, strconv.Itoa(code)).Inc()
+    o.latency.WithLabelValues(method, path).Observe(d.Seconds())
+}
+func (o *PrometheusObserver) RecordSubscribe(topic string, ok bool, _ time.Duration) {
+    o.subscribed.WithLabelValues(topic, strconv.FormatBool(ok)).Inc()
+}
+func (o *PrometheusObserver) RecordPublish(topic string, ok bool, _ time.Duration) {
+    o.published.WithLabelValues(topic, strconv.FormatBool(ok)).Inc()
+}
+func (o *PrometheusObserver) RecordValidationError(loc, constraint, field string) {
+    o.valErrors.WithLabelValues(loc, constraint, field).Inc()
+}
+```
+
+## See also
+
+- [examples/stats-observer](https://github.com/DaniDeer/go-codex/tree/main/examples/stats-observer) — codec-only observer (config validation)
+- [examples/adapters-nethttp](https://github.com/DaniDeer/go-codex/tree/main/examples/adapters-nethttp) — HTTP request metrics
+- [examples/adapters-mqtt](https://github.com/DaniDeer/go-codex/tree/main/examples/adapters-mqtt) — MQTT subscribe + publish metrics

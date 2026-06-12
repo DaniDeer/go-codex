@@ -190,3 +190,46 @@ func isKeyError(err error, target *codex.KeyError) bool {
 	}
 	return false
 }
+
+// --- Example functions (shown on pkg.go.dev as runnable snippets) ---
+
+func ExampleReportErrors() {
+	// ValidationObserver: implement to receive per-field validation events.
+	type simpleObserver struct{ count int }
+	obs := &simpleObserver{}
+
+	recordFn := func(location, constraintName, field string) {
+		obs.count++
+	}
+
+	// Wrap in a ValidationObserver for ReportErrors.
+	type wrapObs struct{ fn func(string, string, string) }
+	w := &wrapObs{fn: recordFn}
+
+	// Example: decode a struct with two failing fields.
+	type Config struct {
+		Port  int
+		Level string
+	}
+	portCodec := codex.Int().Refine(validate.RangeInt(1, 65535))
+	levelCodec := codex.String().Refine(validate.OneOf("debug", "info", "warn", "error"))
+	configCodec := codex.Struct[Config](
+		codex.RequiredField("port", portCodec,
+			func(c Config) int { return c.Port },
+			func(c *Config, v int) { c.Port = v },
+		),
+		codex.OptionalField("level", levelCodec,
+			func(c Config) string { return c.Level },
+			func(c *Config, v string) { c.Level = v },
+		),
+	)
+
+	_, err := configCodec.Decode(map[string]any{"port": float64(99999), "level": "verbose"})
+	_ = w // suppress unused warning
+	stats.ReportErrors(stats.NoopObserver{}, "config", err)
+
+	// err is a structured codex.ValidationErrors — all fields collected at once.
+	fmt.Println(err != nil)
+	// Output:
+	// true
+}

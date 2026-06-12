@@ -1,0 +1,49 @@
+[project]
+name = "go-codex"
+site_name = "go-codex"
+site_url = "https://danideer.github.io/go-codex/"
+description = "A self-documenting codec library for Go — declare shape, constraints, and schema once; derive JSON, YAML, OpenAPI, AsyncAPI and more for free."
+repo_url = "https://github.com/DaniDeer/go-codex"
+repo_name = "DaniDeer/go-codex"
+
+[nav]
+"Home" = "index.md"
+"What is go-codex?" = "what-is-go-codex.md"
+"Get Started" = "get-started.md"
+
+[nav.Concepts]
+"Codec — declare once" = "concepts/codec.md"
+"API Contracts" = "concepts/api-contracts.md"
+"Codec as Domain Boundary" = "concepts/codec-as-domain-boundary.md"
+"Forge Pipelines" = "concepts/pipelines.md"
+"Go Library as Contract" = "concepts/codec-as-contract.md"
+
+[nav.Features]
+"API Builders (overview)" = "features/api-builder.md"
+"— REST API & HTTP Adapters" = "features/rest-api.md"
+"— Event Channels & MQTT" = "features/events.md"
+"— MCP Server" = "features/mcp.md"
+"HTTP Client" = "features/http-client.md"
+"Formats & Serialization" = "features/formats.md"
+"Security & Auth" = "features/security.md"
+"SSE & Streaming" = "features/sse-streaming.md"
+"Schema Metadata" = "features/schema-metadata.md"
+"Error Handling" = "features/error-handling.md"
+"Metrics Observer" = "features/observer.md"
+"OpenAPI Spec" = "features/openapi.md"
+"AsyncAPI Spec" = "features/asyncapi.md"
+"Config, CLI & Protobuf" = "features/config.md"
+
+[nav.Guides]
+"HTTP Server Examples" = "guides/http-server.md"
+"HTTP Client Examples" = "guides/http-client.md"
+"MQTT Examples" = "guides/mqtt.md"
+"MCP Examples" = "guides/mcp.md"
+"Error Handling Examples" = "guides/error-handling.md"
+"Observer Examples" = "guides/observer.md"
+"OpenAPI Examples" = "guides/openapi.md"
+"AsyncAPI Examples" = "guides/asyncapi.md"
+"Config Examples" = "guides/config.md"
+
+[nav.Reference]
+"Package Reference" = "reference/index.md"

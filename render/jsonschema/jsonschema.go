@@ -1,10 +1,3 @@
-// Package jsonschema renders [schema.Schema] values to plain JSON Schema
-// compatible [json.RawMessage].
-//
-// Unlike [render/openapi] and [render/asyncapi], this package produces
-// stand-alone JSON Schema objects without any OpenAPI or AsyncAPI envelope.
-// The output is suitable for use as MCP tool input/output schemas or any
-// context that requires raw JSON Schema rather than a full API document.
 package jsonschema
 
 import (

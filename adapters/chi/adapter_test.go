@@ -1159,3 +1159,52 @@ func TestSSEHandler_PathParam_codecValidated(t *testing.T) {
 		t.Errorf("want 200 for valid path param, got %d", rec2.Code)
 	}
 }
+
+// --- Example functions (shown on pkg.go.dev as runnable snippets) ---
+
+func ExampleRegister() {
+	type CreateReq struct{ Name string }
+	type Item struct{ ID, Name string }
+
+	reqCodec := codex.Struct[CreateReq](
+		codex.RequiredField("name", codex.String(),
+			func(r CreateReq) string { return r.Name },
+			func(r *CreateReq, v string) { r.Name = v },
+		),
+	)
+	itemCodec := codex.Struct[Item](
+		codex.RequiredField("id", codex.String(),
+			func(i Item) string { return i.ID },
+			func(i *Item, v string) { i.ID = v },
+		),
+		codex.RequiredField("name", codex.String(),
+			func(i Item) string { return i.Name },
+			func(i *Item, v string) { i.Name = v },
+		),
+	)
+
+	b := rest.NewBuilder(rest.Info{Title: "Example API", Version: "1.0.0"})
+	handle, err := rest.NewRoute[CreateReq, Item]("POST", "/items",
+		reqCodec, itemCodec,
+		rest.RouteMeta{OperationID: "createItem", RespStatus: "201"},
+	).Register(b)
+	if err != nil {
+		fmt.Println("register error:", err)
+		return
+	}
+
+	r := gochi.NewRouter()
+	chiadapter.Register(r, handle, func(_ context.Context, req CreateReq) (Item, error) {
+		return Item{ID: "1", Name: req.Name}, nil
+	}, chiadapter.Options{})
+
+	srv := httptest.NewServer(r)
+	defer srv.Close()
+
+	resp, _ := http.Post(srv.URL+"/items", "application/json",
+		strings.NewReader(`{"name":"Widget"}`))
+	defer resp.Body.Close()
+	fmt.Println(resp.StatusCode)
+	// Output:
+	// 201
+}

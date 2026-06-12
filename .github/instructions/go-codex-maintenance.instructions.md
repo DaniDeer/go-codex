@@ -1,6 +1,6 @@
 ---
-description: 'Maintenance rules: keep go-codex.instructions.md in sync with code changes'
-applyTo: '**/*.go,**/*.instructions.md'
+description: 'Maintenance rules: keep go-codex.instructions.md, docs/, and doc.go files in sync with code changes'
+applyTo: '**/*.go,**/*.instructions.md,**/docs/**/*.md,**/doc.go'
 ---
 
 # go-codex Instructions Maintenance
@@ -54,6 +54,42 @@ from codec → format → builder → renderer → adapter.
 - Verify import paths use `github.com/DaniDeer/go-codex/...`.
 - After updating, confirm the Package Structure table still matches the actual directory layout.
 
+## Documentation Maintenance
+
+go-codex has three documentation surfaces. Keep them in sync:
+
+| Surface | Files | Updated by |
+|---------|-------|-----------|
+| **API instructions** | `.github/instructions/go-codex.instructions.md` | Every code change (required) |
+| **Zensical docs site** | `docs/**/*.md`, `zensical.toml` | Significant feature additions |
+| **pkg.go.dev** | `*/doc.go`, `Example...()` in `*_test.go` | New packages / major API additions |
+| **README.md** | `README.md` | Only for Quick Start and links — keep minimal |
+
+### When to update docs/ (Zensical site)
+
+| Change type | Required docs update |
+|-------------|---------------------|
+| New exported package | Add row to `docs/reference/index.md`; add stub `docs/guides/<pkg>.md`; add nav entry in `zensical.toml` |
+| New major user-facing feature | Add/update relevant `docs/guides/*.md` or `docs/concepts/*.md` |
+| New adapter (nethttp, mqtt, etc.) | Update `docs/guides/<transport>.md` with the new adapter pattern |
+| API rename or removal | Update all `docs/` pages that reference the old name |
+| New example added | Check if `docs/guides/` links to or mentions it |
+| New codec-as-contract example | Update `docs/concepts/codec-as-contract.md` |
+
+### When to update doc.go files
+
+- When a package's exported API surface grows significantly, ensure the `// Package ...` comment (or `doc.go`) covers the new symbols.
+- When a package is new, write at least 10 lines of package-level documentation.
+
+### When to add Example() functions
+
+- When a key user workflow lacks a runnable pkg.go.dev example, add an `Example...()` function to the package's `*_test.go` file.
+- Every `Example...()` function must compile, produce output, and match the `// Output:` comment.
+
+### Using the documentation skill
+
+- **`review-docs`** — the single documentation skill. Run it after code changes to patch stale references (reactive), and periodically to audit docs quality and completeness (proactive). It covers README sync, instructions.md sync, docs/ content accuracy, doc.go quality, and Example() function coverage.
+
 ## Sync Checklist (run mentally before committing)
 
 - [ ] All renamed symbols updated in instruction examples
@@ -67,3 +103,6 @@ from codec → format → builder → renderer → adapter.
 - [ ] `just test` passes
 - [ ] `go build ./...` passes with no errors referencing symbols from examples
 - [ ] All examples run without errors: `just examples`
+- [ ] If a new package was added: `docs/reference/index.md` has a new row, `zensical.toml` has a nav entry
+- [ ] If a major feature was added: a `docs/guides/*.md` or `docs/concepts/*.md` page exists (stub is OK)
+- [ ] If an API was renamed: stale name not present in `docs/**/*.md` files
