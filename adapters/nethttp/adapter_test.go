@@ -27,28 +27,21 @@ type createReq struct{ Name string }
 type userResp struct{ ID, Name string }
 
 var createReqCodec = codex.Struct[createReq](
-	codex.Field[createReq, string]{
-		Name:     "name",
-		Codec:    codex.String().Refine(validate.NonEmptyString),
-		Get:      func(r createReq) string { return r.Name },
-		Set:      func(r *createReq, v string) { r.Name = v },
-		Required: true,
-	},
+	codex.RequiredField("name", codex.String().Refine(validate.NonEmptyString),
+		func(r createReq) string { return r.Name },
+		func(r *createReq, v string) { r.Name = v },
+	),
 )
 
 var userRespCodec = codex.Struct[userResp](
-	codex.Field[userResp, string]{
-		Name:  "id",
-		Codec: codex.String(),
-		Get:   func(u userResp) string { return u.ID },
-		Set:   func(u *userResp, v string) { u.ID = v },
-	},
-	codex.Field[userResp, string]{
-		Name:  "name",
-		Codec: codex.String(),
-		Get:   func(u userResp) string { return u.Name },
-		Set:   func(u *userResp, v string) { u.Name = v },
-	},
+	codex.OptionalField("id", codex.String(),
+		func(u userResp) string { return u.ID },
+		func(u *userResp, v string) { u.ID = v },
+	),
+	codex.OptionalField("name", codex.String(),
+		func(u userResp) string { return u.Name },
+		func(u *userResp, v string) { u.Name = v },
+	),
 )
 
 type getReq struct{}
@@ -1160,18 +1153,14 @@ func TestContentNegotiation_streamedFormat_writesDirectly(t *testing.T) {
 
 func TestContentNegotiation_streamedFormat_validationErrorBefore200(t *testing.T) {
 	strictRespCodec := codex.Struct[userResp](
-		codex.Field[userResp, string]{
-			Name:  "id",
-			Codec: codex.String(),
-			Get:   func(u userResp) string { return u.ID },
-			Set:   func(u *userResp, v string) { u.ID = v },
-		},
-		codex.Field[userResp, string]{
-			Name:  "name",
-			Codec: codex.String().Refine(validate.NonEmptyString),
-			Get:   func(u userResp) string { return u.Name },
-			Set:   func(u *userResp, v string) { u.Name = v },
-		},
+		codex.OptionalField("id", codex.String(),
+			func(u userResp) string { return u.ID },
+			func(u *userResp, v string) { u.ID = v },
+		),
+		codex.RequiredField("name", codex.String().Refine(validate.NonEmptyString),
+			func(u userResp) string { return u.Name },
+			func(u *userResp, v string) { u.Name = v },
+		),
 	)
 	b := rest.NewBuilder(testInfo)
 	streamFmt := format.NewStreamed(strictRespCodec,
@@ -1331,13 +1320,10 @@ func TestRequestFormats_SpecContentTypesUpdated(t *testing.T) {
 type sseEvent struct{ Message string }
 
 var sseEventCodec = codex.Struct[sseEvent](
-	codex.Field[sseEvent, string]{
-		Name:     "message",
-		Codec:    codex.String().Refine(validate.NonEmptyString),
-		Required: true,
-		Get:      func(e sseEvent) string { return e.Message },
-		Set:      func(e *sseEvent, v string) { e.Message = v },
-	},
+	codex.RequiredField("message", codex.String().Refine(validate.NonEmptyString),
+		func(e sseEvent) string { return e.Message },
+		func(e *sseEvent, v string) { e.Message = v },
+	),
 )
 
 func TestSSEHandler_streamEvents(t *testing.T) {

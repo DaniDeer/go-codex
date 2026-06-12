@@ -26,20 +26,14 @@ type userEvent struct {
 }
 
 var userEventCodec = codex.Struct[userEvent](
-	codex.Field[userEvent, string]{
-		Name:     "id",
-		Codec:    codex.String().Refine(validate.UUID),
-		Get:      func(e userEvent) string { return e.ID },
-		Set:      func(e *userEvent, v string) { e.ID = v },
-		Required: true,
-	},
-	codex.Field[userEvent, string]{
-		Name:     "email",
-		Codec:    codex.String().Refine(validate.Email),
-		Get:      func(e userEvent) string { return e.Email },
-		Set:      func(e *userEvent, v string) { e.Email = v },
-		Required: true,
-	},
+	codex.RequiredField("id", codex.String().Refine(validate.UUID),
+		func(e userEvent) string { return e.ID },
+		func(e *userEvent, v string) { e.ID = v },
+	),
+	codex.RequiredField("email", codex.String().Refine(validate.Email),
+		func(e userEvent) string { return e.Email },
+		func(e *userEvent, v string) { e.Email = v },
+	),
 )
 
 func newHandle() *events.ChannelHandle[userEvent] {

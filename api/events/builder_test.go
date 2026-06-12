@@ -19,20 +19,15 @@ var testInfo = events.Info{Title: "Test Events", Version: "1.0.0"}
 
 // userEventCodec decodes a simple user-created event.
 var userEventCodec = codex.Struct[userEvent](
-	codex.Field[userEvent, string]{
-		Name:     "id",
-		Codec:    codex.String().Refine(validate.NonEmptyString),
-		Get:      func(e userEvent) string { return e.ID },
-		Set:      func(e *userEvent, v string) { e.ID = v },
-		Required: true,
-	},
-	codex.Field[userEvent, string]{
-		Name:     "name",
-		Codec:    codex.String().Refine(validate.NonEmptyString),
-		Get:      func(e userEvent) string { return e.Name },
-		Set:      func(e *userEvent, v string) { e.Name = v },
-		Required: true,
-	})
+	codex.RequiredField("id", codex.String().Refine(validate.NonEmptyString),
+		func(e userEvent) string { return e.ID },
+		func(e *userEvent, v string) { e.ID = v },
+	),
+	codex.RequiredField("name", codex.String().Refine(validate.NonEmptyString),
+		func(e userEvent) string { return e.Name },
+		func(e *userEvent, v string) { e.Name = v },
+	),
+)
 
 type userEvent struct {
 	ID   string

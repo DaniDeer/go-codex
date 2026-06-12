@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -457,5 +458,67 @@ func TestCall_ExtraHeaders_Sent(t *testing.T) {
 
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+// --- Transport error types: Error() string and Unwrap() ---
+
+func TestRequestBuildError_ErrorAndUnwrap(t *testing.T) {
+	cause := errors.New("invalid url")
+	e := nethttp.RequestBuildError{Err: cause}
+
+	if e.Error() == "" {
+		t.Error("Error() must return a non-empty string")
+	}
+	if !errors.Is(e, cause) {
+		t.Error("errors.Is must traverse Unwrap to cause")
+	}
+	var extracted nethttp.RequestBuildError
+	wrapped := fmt.Errorf("outer: %w", e)
+	if !errors.As(wrapped, &extracted) {
+		t.Error("errors.As must extract RequestBuildError through wrapping")
+	}
+	if extracted.Err != cause {
+		t.Errorf("extracted.Err = %v, want %v", extracted.Err, cause)
+	}
+}
+
+func TestRequestError_ErrorAndUnwrap(t *testing.T) {
+	cause := errors.New("connection refused")
+	e := nethttp.RequestError{Method: "GET", Path: "/users/{id}", Err: cause}
+
+	if e.Error() == "" {
+		t.Error("Error() must return a non-empty string")
+	}
+	if !errors.Is(e, cause) {
+		t.Error("errors.Is must traverse Unwrap to cause")
+	}
+	var extracted nethttp.RequestError
+	wrapped := fmt.Errorf("outer: %w", e)
+	if !errors.As(wrapped, &extracted) {
+		t.Error("errors.As must extract RequestError through wrapping")
+	}
+	if extracted.Method != "GET" || extracted.Path != "/users/{id}" {
+		t.Errorf("extracted = {%s %s}, want {GET /users/{id}}", extracted.Method, extracted.Path)
+	}
+}
+
+func TestResponseBodyError_ErrorAndUnwrap(t *testing.T) {
+	cause := errors.New("unexpected EOF")
+	e := nethttp.ResponseBodyError{Err: cause}
+
+	if e.Error() == "" {
+		t.Error("Error() must return a non-empty string")
+	}
+	if !errors.Is(e, cause) {
+		t.Error("errors.Is must traverse Unwrap to cause")
+	}
+	var extracted nethttp.ResponseBodyError
+	wrapped := fmt.Errorf("outer: %w", e)
+	if !errors.As(wrapped, &extracted) {
+		t.Error("errors.As must extract ResponseBodyError through wrapping")
+	}
+	if extracted.Err != cause {
+		t.Errorf("extracted.Err = %v, want %v", extracted.Err, cause)
 	}
 }

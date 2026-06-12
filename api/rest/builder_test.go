@@ -19,42 +19,32 @@ var testInfo = rest.Info{Title: "Test API", Version: "1.0.0"}
 
 // createReqCodec decodes a simple create-user request.
 var createReqCodec = codex.Struct[createReq](
-	codex.Field[createReq, string]{
-		Name:     "name",
-		Codec:    codex.String().Refine(validate.NonEmptyString),
-		Get:      func(r createReq) string { return r.Name },
-		Set:      func(r *createReq, v string) { r.Name = v },
-		Required: true,
-	},
+	codex.RequiredField("name", codex.String().Refine(validate.NonEmptyString),
+		func(r createReq) string { return r.Name },
+		func(r *createReq, v string) { r.Name = v },
+	),
 )
 
 // userCodec encodes a user response.
 var userCodec = codex.Struct[userResp](
-	codex.Field[userResp, string]{
-		Name:  "id",
-		Codec: codex.String(),
-		Get:   func(u userResp) string { return u.ID },
-		Set:   func(u *userResp, v string) { u.ID = v },
-	},
-	codex.Field[userResp, string]{
-		Name:  "name",
-		Codec: codex.String(),
-		Get:   func(u userResp) string { return u.Name },
-		Set:   func(u *userResp, v string) { u.Name = v },
-	},
+	codex.OptionalField("id", codex.String(),
+		func(u userResp) string { return u.ID },
+		func(u *userResp, v string) { u.ID = v },
+	),
+	codex.OptionalField("name", codex.String(),
+		func(u userResp) string { return u.Name },
+		func(u *userResp, v string) { u.Name = v },
+	),
 )
 
 type createReq struct{ Name string }
 type sseEvent struct{ Message string }
 
 var sseEventCodec = codex.Struct[sseEvent](
-	codex.Field[sseEvent, string]{
-		Name:     "message",
-		Codec:    codex.String().Refine(validate.NonEmptyString),
-		Required: true,
-		Get:      func(e sseEvent) string { return e.Message },
-		Set:      func(e *sseEvent, v string) { e.Message = v },
-	},
+	codex.RequiredField("message", codex.String().Refine(validate.NonEmptyString),
+		func(e sseEvent) string { return e.Message },
+		func(e *sseEvent, v string) { e.Message = v },
+	),
 )
 
 type userResp struct {
