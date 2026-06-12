@@ -176,7 +176,7 @@ doc, err := openapi.NewDocumentBuilder(openapi.Info{
 
 ## See also
 
-- [Guide: HTTP Server](http-server.md) — full `api/rest` + `adapters/nethttp` example
+- [Guide: HTTP Server](../guides/http-server.md) — full `api/rest` + `adapters/nethttp` example
 - [examples/openapi](https://github.com/DaniDeer/go-codex/tree/main/examples/openapi) — components/schemas generation
 - [examples/rest-api](https://github.com/DaniDeer/go-codex/tree/main/examples/rest-api) — full OpenAPI 3.1 document
 - [examples/api-rest](https://github.com/DaniDeer/go-codex/tree/main/examples/api-rest) — REST builder + spec

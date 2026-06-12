@@ -173,7 +173,7 @@ Pass `nethttp.CallOptions{Observer: obs}` to every `Call` to collect metrics. In
 ## See also
 
 - [Concept: Go Library as Contract](../concepts/codec-as-contract.md) — shared contract pattern
-- [Guide: HTTP Server](http-server.md) — server-side setup
+- [Guide: HTTP Server](../guides/http-server.md) — server-side setup
 - [Guide: Error Handling](error-handling.md) — all typed errors
 - [Guide: Observer](observer.md) — metrics wiring
 - [examples/adapters-nethttp-client](https://github.com/DaniDeer/go-codex/tree/main/examples/adapters-nethttp-client) — full demo with shared contract, cookies, headers, CredentialFunc, Observer + slog

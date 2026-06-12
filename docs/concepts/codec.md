@@ -177,7 +177,7 @@ if err != nil { return err }
 var guestUser = codex.Must(usernameCodec.New(Username("guest")))
 ```
 
-## Either[A, B] — typed sum type
+## Either — typed sum type
 
 `Either2` tries codec A first; if decode fails, tries codec B. Encode uses whichever branch is non-nil:
 
@@ -191,7 +191,7 @@ left, _ := dsnOrConfig.Decode("postgres://localhost/db")
 
 If both branches fail, returns `EitherError{Errors: []error{errA, errB}}`.
 
-## UntaggedUnion[T] — interface union without discriminator
+## UntaggedUnion — interface union without discriminator
 
 ```go
 var shapeCodec = codex.UntaggedUnion[Shape](
@@ -209,7 +209,7 @@ var shapeCodec = codex.UntaggedUnion[Shape](
 
 Decode: first-match wins. Schema: `{oneOf: [{...circle...}, {...rect...}]}`.
 
-## Pure[T] and Eq[T]
+## Pure and Eq — fixed and single-value codecs
 
 `Pure` always decodes to a fixed value (ignoring wire input). `Eq` rejects anything that doesn't equal a specific value:
 

@@ -167,6 +167,6 @@ userCreated, _ := events.NewChannel[UserCreatedEvent]("user/created", codec,
 
 ## See also
 
-- [Guide: MQTT Events](mqtt.md) — Paho MQTT adapter + full pub/sub example
+- [Guide: MQTT Events](../guides/mqtt.md) — Paho MQTT adapter + full pub/sub example
 - [examples/api-events](https://github.com/DaniDeer/go-codex/tree/main/examples/api-events) — event channel builder + AsyncAPI spec
 - [examples/event-driven](https://github.com/DaniDeer/go-codex/tree/main/examples/event-driven) — full AsyncAPI 2.6 document
