@@ -250,6 +250,12 @@ func main() {
 	} else {
 		updated, _ := loadConfig(cfgPath, obs)
 		fmt.Printf("  after Update: retention_days=%d\n", updated.RetentionDays)
+
+		// writeConfig demonstrates writing a config value directly.
+		// It uses the same TOML codec and file path — same contract, different helper.
+		if err := writeConfig(cfgPath, updated, obs); err != nil {
+			slog.Error("writeConfig failed", "err", err)
+		}
 	}
 
 	// ── Section 2: Template measurement files ─────────────────────────────────
@@ -264,7 +270,17 @@ func main() {
 	}
 	defer os.RemoveAll(dataDir)
 
-	// Patch the template to use our temp dir.
+	// measurementFile shows the declared template (relative path, no I/O).
+	// BuildPath validates the variables without touching the filesystem.
+	if templatePath, err := measurementFile.BuildPath(map[string]string{
+		"date": "2024-01-15", "sensor": "temp-42",
+	}); err != nil {
+		slog.Error("template BuildPath failed", "err", err)
+	} else {
+		fmt.Printf("  template path: %s\n", templatePath)
+	}
+
+	// sensorFile uses the temp dir prefix for actual I/O in this example.
 	sensorFile := format.NewFile(
 		dataDir+"/data/{date}/{sensor}.json",
 		format.JSON(measurementCodec),
@@ -277,7 +293,7 @@ func main() {
 		"sensor": "temp-42",
 	}
 
-	// Pre-flight: build path without I/O.
+	// Pre-flight: build concrete path without I/O.
 	path, err := sensorFile.BuildPath(vars)
 	if err != nil {
 		slog.Error("BuildPath failed", "err", err)

@@ -89,8 +89,8 @@ type FileOptions struct {
 //
 //	// Update (read-modify-write)
 //	err = configFile.Update(nil, func(c Config) Config {
-// 		c.Port = 9090
-// 		return c
+//		c.Port = 9090
+//		return c
 //	}, format.FileOptions{Observer: obs})
 //
 //	// Template path with variable validation
