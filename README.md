@@ -196,8 +196,12 @@ go-codex/
 │   ├── time.go             # Time(), Date(), Duration()
 │   └── union.go            # TaggedUnion[T], UntaggedUnion[T], UntaggedVariant[T]
 │
-├── format/                 # format bridges: JSON, YAML, TOML, Gob, Binary (raw bytes), streaming
-│   └── format.go           # Format[T], JSON(), YAML(), TOML(), Gob(), Binary(), New(), NewTyped(), NewStreamed(), FromEnv()
+├── format/                 # format bridges: JSON, YAML, TOML, Gob, Binary (raw bytes), streaming; File I/O
+│   ├── format.go           # Format[T], JSON(), YAML(), TOML(), Gob(), Binary(), New(), NewTyped(), NewStreamed()
+│   ├── file.go             # NewFile, File[T], FilePathParam, FileOptions, PathParamSchemas,
+│   │                       #   FilePathParamError, MissingFilePathVarError, FileReadError,
+│   │                       #   FileDecodeError, FileEncodeError, FileWriteError
+│   └── env.go              # FromEnv[T], FromEnvVar[T], EnvVarError
 │
 ├── route/                  # HTTP route descriptors (no renderer logic)
 │   └── route.go            # Route, Param, Body, Response, SecurityScheme, SecurityRequirement
@@ -269,7 +273,8 @@ go-codex/
 │   └── schema.go           # Schema, Property, DiscriminatorSchema
 │
 ├── validate/               # reusable constraints (reflect into schema automatically)
-│   ├── bytes.go            # MaxBytes(n), MinBytes(n)
+│   ├── binary.go           # PNG, JPEG, GIF, WebP, PDF, ZIP — predefined magic-byte constraints
+│   ├── bytes.go            # MaxBytes(n), MinBytes(n), HasPrefix(prefix)
 │   ├── duration.go         # PositiveDuration, NonNegativeDuration, MinDuration, MaxDuration
 │   ├── float.go            # PositiveFloat, NegativeFloat, NonZeroFloat, MinFloat, MaxFloat, RangeFloat
 │   ├── format.go           # Email, UUID, URL, URLWithSchemes, URI, Hostname, IPv4, IPv6, IP,
@@ -281,7 +286,8 @@ go-codex/
 │                           #   NonNegativeIntString, IntStringInRange
 │
 ├── stats/                  # dependency-free metrics observer interfaces
-│   └── observer.go         # ValidationObserver, Observer, PipelineObserver, SecurityObserver, NoopObserver
+│   └── observer.go         # ValidationObserver, Observer, PipelineObserver, SecurityObserver,
+│                           #   FileObserver, NoopObserver (satisfies all five interfaces)
 │
 └── examples/               # usage demonstrations — not importable by library packages
     │
@@ -310,7 +316,7 @@ go-codex/
     ├── adapters-sse/           # SSE: NewSSERoute, SSEHandler, path codec, OpenAPI spec
     ├── adapters-streaming-sse-templ/ # chunked streaming + SSE HTML fragments via templ components
     ├── adapters-templ/         # templ SSR: same route serves HTML and JSON; observer wired
-    └── png-upload/             # binary payload upload: Bytes codec, content-type enforcement
+    └── png-upload/             # binary payload upload + download: format.Binary, validate.PNG, codex.Bytes()
     │
     │   # ── Events / MQTT (Layer 2) ─────────────────────────────────────────────
     ├── api-events/             # Event channel builder: typed helpers + AsyncAPI spec

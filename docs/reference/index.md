@@ -8,14 +8,14 @@ All packages are fully documented on [pkg.go.dev](https://pkg.go.dev/github.com/
 go get github.com/DaniDeer/go-codex@latest
 ```
 
-**Go 1.21+** required.
+**Go 1.26+** required.
 
 ## Quick import reference
 
 | What | Import path |
 |------|------------|
 | Core codecs | `github.com/DaniDeer/go-codex/codex` |
-| Format bridges (JSON, YAML, TOML, Gob) | `github.com/DaniDeer/go-codex/format` |
+| Format bridges (JSON, YAML, TOML, Gob, Binary (raw bytes)) | `github.com/DaniDeer/go-codex/format` |
 | Built-in constraints | `github.com/DaniDeer/go-codex/validate` |
 | REST API builder | `github.com/DaniDeer/go-codex/api/rest` |
 | Event channel builder | `github.com/DaniDeer/go-codex/api/events` |
