@@ -13,6 +13,7 @@ repo_name = "DaniDeer/go-codex"
 
 [nav.Concepts]
 "Codec — declare once" = "concepts/codec.md"
+"Type Modeling (Enum, Union, Sum)" = "concepts/type-modeling.md"
 "API Contracts" = "concepts/api-contracts.md"
 "Codec as Domain Boundary" = "concepts/codec-as-domain-boundary.md"
 "Forge Pipelines" = "concepts/pipelines.md"
@@ -35,6 +36,7 @@ repo_name = "DaniDeer/go-codex"
 "Config, CLI & Protobuf" = "features/config.md"
 
 [nav.Guides]
+"Enums, Unions & Sum Types" = "guides/enum-union-sum.md"
 "HTTP Server Examples" = "guides/http-server.md"
 "HTTP Client Examples" = "guides/http-client.md"
 "MQTT Examples" = "guides/mqtt.md"
