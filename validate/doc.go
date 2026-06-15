@@ -33,17 +33,17 @@
 //	rest.NewBuilder(info, rest.WithPathConstraints(validate.HTTPPath))
 //	events.NewBuilder(info, events.WithTopicConstraints(validate.MQTTPublishTopic))
 //
+// # Binary byte constraints
+//
+// Byte size constraints work with any []byte value:
+//
+//	codex.Bytes().Refine(validate.MaxBytes(5 * 1024 * 1024)) // at most 5 MiB
+//	codex.Bytes().Refine(validate.MinBytes(1))               // non-empty
+//
 // # Binary file format constraints
 //
-// Predefined constraints validate common binary file formats by checking their
+// Predefined constants validate common binary file formats by checking their
 // magic bytes (file signatures). Use them with [codex.Bytes] and [format.Binary]:
-//
-//	// Validate a PNG upload — magic-byte check + size cap
-//	pngCodec := codex.Bytes().
-//	    Refine(validate.MaxBytes(5 * 1024 * 1024)).
-//	    Refine(validate.PNG)
-//
-// Available format constraints:
 //
 //	validate.PNG   // \x89PNG\r\n\x1a\n  — PNG images
 //	validate.JPEG  // \xFF\xD8\xFF        — JPEG images (all subtypes)
@@ -51,6 +51,27 @@
 //	validate.WebP  // RIFF....WEBP       — WebP images
 //	validate.PDF   // %PDF-              — PDF documents
 //	validate.ZIP   // PK\x03\x04         — ZIP archives (also DOCX, XLSX, APK, JAR)
+//
+// # When to use which
+//
+// Use a built-in constant ([PNG], [JPEG], [GIF], [WebP], [PDF], [ZIP]) for
+// known file formats — they produce readable error names ("png", "jpeg", …)
+// in logs and [codex.ConstraintError] values.
+//
+// Use [HasPrefix] for custom or proprietary binary formats not covered by the
+// built-in set (e.g. an internal protocol header or a vendor-specific file type).
+//
+// Use [MaxBytes] and [MinBytes] to enforce size limits on any []byte value.
+//
+// # Composition and ordering
+//
+// When combining constraints with [codex.Codec.Refine], put size checks
+// before format checks — rejecting oversized input before reading the magic
+// bytes avoids unnecessary work:
+//
+//	pngCodec := codex.Bytes().
+//	    Refine(validate.MaxBytes(5 * 1024 * 1024)). // 1. size (cheap, fails fast)
+//	    Refine(validate.PNG)                         // 2. format (reads 8 bytes)
 //
 // # Custom constraints
 //

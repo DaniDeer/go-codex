@@ -32,7 +32,16 @@ func MinBytes(n int) codex.Constraint[[]byte] {
 }
 
 // HasPrefix returns a Constraint that requires the byte slice to begin with the
-// given prefix. Useful for validating file magic bytes (PNG, JPEG, PDF, …).
+// given prefix.
+//
+// For well-known file formats, prefer the predefined constants in this package:
+// [PNG], [JPEG], [GIF], [WebP], [PDF], [ZIP]. They produce human-readable
+// constraint names ("png", "jpeg", …) instead of hex strings, and their
+// check logic is tested and documented.
+//
+// Use HasPrefix for custom or proprietary binary formats not covered by the
+// built-in constants — for example, an internal binary protocol or a
+// vendor-specific file type.
 //
 // An empty prefix always passes. The produced error is a [codex.ConstraintError]
 // navigable via [errors.As].

@@ -8,13 +8,19 @@ import (
 
 // Binary file format constraints.
 //
-// Each constraint validates the magic bytes (file signature) at the start of a
-// byte slice. Use them with [codex.Bytes] and [format.Binary] to validate binary
-// files on both read and write:
+// Each constant validates the magic bytes (file signature) at the start of a
+// byte slice — the same mechanism as [HasPrefix], but with a human-readable
+// constraint name ("png", "jpeg", …) instead of a hex string, and with
+// format-specific error messages.
+//
+// Prefer these constants over [HasPrefix] for the formats listed here. Use
+// [HasPrefix] only for custom or proprietary formats not covered by this set.
+//
+// Typical usage with [format.Binary]:
 //
 //	pngCodec := codex.Bytes().
-//	    Refine(validate.MaxBytes(5 * 1024 * 1024)).
-//	    Refine(validate.PNG)
+//	    Refine(validate.MaxBytes(5 * 1024 * 1024)). // size check first
+//	    Refine(validate.PNG)                         // then format check
 //
 //	var pngFile = format.NewFile(
 //	    "images/{name}.png",
