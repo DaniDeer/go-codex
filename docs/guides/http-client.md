@@ -31,3 +31,55 @@ if errors.As(err, &pathErr) {
 ```
 
 → [examples/adapters-nethttp-client](https://github.com/DaniDeer/go-codex/tree/main/examples/adapters-nethttp-client)
+
+## Binary requests and responses (PNG, JPEG, PDF…)
+
+The client (`nethttp.Call`) supports binary request bodies and binary response bodies the same way as JSON — register `format.Binary` on the route handle and the client sets headers and validates automatically.
+
+### Sending a binary request body
+
+Register `format.Binary` via `WithRequestFormats`. The client calls `format.Binary.Marshal` (validates magic bytes and size), sets `Content-Type: image/png`, and sends the raw bytes as the request body:
+
+```go
+pngCodec := codex.Bytes().
+    Refine(validate.MaxBytes(5 * 1024 * 1024)).
+    Refine(validate.PNG)
+
+uploadHandle := uploadRoute.ClientHandle()
+uploadHandle.WithRequestFormats(format.Binary(pngCodec).WithContentType("image/png"))
+
+meta, err := nethttp.Call(ctx, client, baseURL, uploadHandle, pngBytes,
+    map[string]string{"id": imageID},
+    nethttp.CallOptions{Observer: obs},
+)
+```
+
+The `Content-Type: image/png` header is set automatically from the registered format.
+
+### Receiving a binary response body
+
+Register `format.Binary` via `WithFormats`. The client sets `Accept: image/png`, reads the raw response body, and calls `format.Binary.Unmarshal` (validates magic bytes and size before returning):
+
+```go
+downloadHandle := downloadRoute.ClientHandle()
+downloadHandle.WithFormats(format.Binary(pngCodec).WithContentType("image/png"))
+
+png, err := nethttp.Call(ctx, client, baseURL, downloadHandle, downloadReq,
+    map[string]string{"id": imageID},
+    nethttp.CallOptions{Observer: obs},
+)
+// png is validated (magic bytes + size) — safe to write to disk or display
+```
+
+The `Accept: image/png` header is set automatically. A server that returns a different `Content-Type` will cause `format.Binary.Unmarshal` to fail constraint validation (magic-byte mismatch).
+
+### Both directions
+
+A route that uploads binary and returns binary registers both:
+
+```go
+handle.WithRequestFormats(format.Binary(pngCodec).WithContentType("image/png"))
+handle.WithFormats(format.Binary(pngCodec).WithContentType("image/png"))
+```
+
+See [`examples/png-upload`](https://github.com/DaniDeer/go-codex/tree/main/examples/png-upload) for upload (binary request → JSON response) and download (JSON request → binary response) routes with full codec validation.
