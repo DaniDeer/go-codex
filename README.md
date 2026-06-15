@@ -119,9 +119,9 @@ func main() {
 ## What you get
 
 - **One codec — four concerns** — encode, decode, validate, and schema from a single `Codec[T]` value; no struct tags, no reflection, no code generation
-- **Multi-format** — the same codec reads and writes JSON, YAML, TOML, and Gob unchanged
+- **Multi-format** — the same codec reads and writes JSON, YAML, TOML, Gob, and Binary (raw bytes) unchanged
 - **Structured errors** — all failures are concrete types (`ValidationErrors`, `ConstraintError`, `TypeMismatchError`, …); use `errors.As` or pass directly to `log/slog`
-- **Builtin constraints** — `email`, `uuid`, `url`, `date`, `date-time`, ranges, lengths — validated and reflected into OpenAPI/AsyncAPI schema automatically
+- **Builtin constraints** — `email`, `uuid`, `url`, `date`, `date-time`, ranges, lengths, binary file formats (`png`, `jpeg`, `pdf`, `zip`, …) — validated and reflected into OpenAPI/AsyncAPI schema automatically
 - **OpenAPI 3.1 + AsyncAPI 3.0** — complete specs derived from the same codec; no manual YAML, no drift
 - **REST + HTTP client** — typed `Decode`/`Encode` per route; `nethttp.Call` for typed client calls; both share the same `Route` definition
 - **MQTT events** — typed subscribe/publish with topic validation, wildcard support, and AsyncAPI spec
@@ -189,15 +189,15 @@ go-codex/
 │   ├── must.go             # Must[T] — generic panic-on-error helper
 │   ├── nullable.go         # Nullable[T]
 │   ├── object.go           # Field[T,F], RequiredField, OptionalField, DefaultField, Struct[T]
-│   ├── primitives.go       # Int, Int32, Int64, Uint, Uint64, Float32, Float64, String, Bool, Bytes, Any, Pure
+│   ├── primitives.go       # Int, Int32, Int64, Uint, Uint64, Float32, Float64, String, Bool, Bytes, Base64, Any, Pure
 │   ├── refine.go           # Constraint[T], Refine, RefineFunc, Eq (Constraint.Schema for schema reflection)
 │   ├── slice.go            # SliceOf[T]
 │   ├── stringmap.go        # StringMap[V], Map[K, V]
 │   ├── time.go             # Time(), Date(), Duration()
 │   └── union.go            # TaggedUnion[T], UntaggedUnion[T], UntaggedVariant[T]
 │
-├── format/                 # format bridges: JSON, YAML, TOML, Gob, streaming
-│   └── format.go           # Format[T], JSON(), YAML(), TOML(), Gob(), New(), NewTyped(), NewStreamed(), FromEnv()
+├── format/                 # format bridges: JSON, YAML, TOML, Gob, Binary (raw bytes), streaming
+│   └── format.go           # Format[T], JSON(), YAML(), TOML(), Gob(), Binary(), New(), NewTyped(), NewStreamed(), FromEnv()
 │
 ├── route/                  # HTTP route descriptors (no renderer logic)
 │   └── route.go            # Route, Param, Body, Response, SecurityScheme, SecurityRequirement

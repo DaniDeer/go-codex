@@ -38,8 +38,8 @@ go get github.com/DaniDeer/go-codex@latest
 | Package | Description | pkg.go.dev |
 |---------|-------------|-----------|
 | `codex` | ⭐ Public API: `Codec[T]`, primitives, struct, union, slice, constraints | [→](https://pkg.go.dev/github.com/DaniDeer/go-codex/codex) |
-| `validate` | Reusable constraints: Email, UUID, URL, ranges, MQTT topics, … | [→](https://pkg.go.dev/github.com/DaniDeer/go-codex/validate) |
-| `format` | Format bridges: JSON, YAML, TOML, Gob, streaming, env vars | [→](https://pkg.go.dev/github.com/DaniDeer/go-codex/format) |
+| `validate` | Reusable constraints: Email, UUID, URL, ranges, MQTT topics, binary file formats (PNG, JPEG, PDF, ZIP…), … | [→](https://pkg.go.dev/github.com/DaniDeer/go-codex/validate) |
+| `format` | Format bridges: JSON, YAML, TOML, Gob, Binary (raw bytes), streaming, env vars, File I/O | [→](https://pkg.go.dev/github.com/DaniDeer/go-codex/format) |
 | `schema` | Schema model (pure data, zero dependencies) | [→](https://pkg.go.dev/github.com/DaniDeer/go-codex/schema) |
 | `route` | HTTP route descriptors: `Route`, `Param`, `SecurityScheme` | [→](https://pkg.go.dev/github.com/DaniDeer/go-codex/route) |
 | `stats` | Observer interfaces: `ValidationObserver`, `Observer`, `PipelineObserver`, `SecurityObserver`, `FileObserver`; `NoopObserver` satisfies all five | [→](https://pkg.go.dev/github.com/DaniDeer/go-codex/stats) |

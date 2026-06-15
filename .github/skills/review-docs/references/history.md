@@ -4,6 +4,17 @@ Do not re-report any findings listed here. They have been implemented.
 
 ---
 
+## Round DR4 (README + reference sync after binary additions + R22)
+
+- **D1 — README "Multi-format" bullet missing Binary**: Added "Binary (raw bytes)" to the feature bullet listing JSON, YAML, TOML, Gob.
+- **D2 — README "Builtin constraints" bullet missing binary file format validators**: Added "binary file formats (png, jpeg, pdf, zip, …)" to the constraints bullet.
+- **D3 — README primitives.go comment missing Base64**: Added `Base64` alongside `Bytes` in the Project Structure tree inline comment for `primitives.go`.
+- **D4 — README format/ description missing Binary**: Updated format/ tree entry description and `format.go` inline comment to include `Binary()`.
+- **D5 — docs/reference/index.md validate/format descriptions stale**: Updated `validate` row to mention binary file format constants; updated `format` row to mention Binary and File I/O.
+- **D6 — docs/features/formats.md missing PathParamSchemas/ValidatePathVars**: Added pre-flight introspection section documenting `ValidatePathVars` and `PathParamSchemas()` (added in R22).
+
+---
+
 ## Round DR3 (Binary codec, validators, and format.Binary docs)
 
 - **`docs/features/formats.md` Binary section added**: New "Binary — raw binary file I/O and HTTP bodies" section with Gob vs Binary comparison table, `format.Binary` wiring example, built-in format constraint table (`validate.PNG/JPEG/GIF/WebP/PDF/ZIP`), and `codex.Bytes` vs `codex.Base64` table.

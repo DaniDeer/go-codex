@@ -172,7 +172,7 @@ cfg, err := configFile.Read(nil, format.FileOptions{})
 err = configFile.Write(nil, cfg, format.FileOptions{Perm: 0600})
 ```
 
-### Pre-flight path validation
+### Pre-flight path validation and introspection
 
 `BuildPath` substitutes template variables and validates without any I/O — useful for early error detection:
 
@@ -180,6 +180,19 @@ err = configFile.Write(nil, cfg, format.FileOptions{Perm: 0600})
 path, err := measurementFile.BuildPath(vars)
 // Returns FilePathParamError when a variable fails its codec
 // Returns MissingFilePathVarError when a variable is absent
+```
+
+`ValidatePathVars` runs only the codec constraints without building the full path (useful when you have the vars map and want to check them before calling `BuildPath`):
+
+```go
+err := measurementFile.ValidatePathVars(vars)
+```
+
+`PathParamSchemas` returns a map of variable name → codec schema for each param that has a codec registered — useful for documentation generation and spec tooling:
+
+```go
+schemas := measurementFile.PathParamSchemas()
+// map["date"] = schema.Schema{Type:"string", Format:"date"}
 ```
 
 ### Typed file errors
