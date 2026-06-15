@@ -33,6 +33,25 @@
 //	rest.NewBuilder(info, rest.WithPathConstraints(validate.HTTPPath))
 //	events.NewBuilder(info, events.WithTopicConstraints(validate.MQTTPublishTopic))
 //
+// # Binary file format constraints
+//
+// Predefined constraints validate common binary file formats by checking their
+// magic bytes (file signatures). Use them with [codex.Bytes] and [format.Binary]:
+//
+//	// Validate a PNG upload — magic-byte check + size cap
+//	pngCodec := codex.Bytes().
+//	    Refine(validate.MaxBytes(5 * 1024 * 1024)).
+//	    Refine(validate.PNG)
+//
+// Available format constraints:
+//
+//	validate.PNG   // \x89PNG\r\n\x1a\n  — PNG images
+//	validate.JPEG  // \xFF\xD8\xFF        — JPEG images (all subtypes)
+//	validate.GIF   // GIF87a / GIF89a    — GIF images
+//	validate.WebP  // RIFF....WEBP       — WebP images
+//	validate.PDF   // %PDF-              — PDF documents
+//	validate.ZIP   // PK\x03\x04         — ZIP archives (also DOCX, XLSX, APK, JAR)
+//
 // # Custom constraints
 //
 // Use [codex.Constraint][T] to define your own rules; the validate package

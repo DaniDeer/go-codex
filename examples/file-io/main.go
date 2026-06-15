@@ -8,7 +8,7 @@
 //   - Validates path variables (date format) with a [format.FilePathParam] codec
 //   - Handles all typed file errors with [errors.As]
 //   - Wires a [stats.FileObserver] for per-operation metrics + slog for structured errors
-//   - Writes and reads raw binary (PNG) files using [format.Binary] + [validate.HasPrefix]
+//   - Writes and reads raw binary (PNG) files using [format.Binary] + [validate.PNG]
 //
 // Key patterns shown:
 //   - [format.NewFile] — declare once, use anywhere (mirrors rest.Route / events.Channel)
@@ -360,18 +360,15 @@ func main() {
 
 	fmt.Println("\n── Section 4: Binary (PNG) file I/O ───────────────────────────")
 
-	// pngSignature is the 8-byte PNG magic bytes defined in the PNG specification.
-	pngSignature := []byte{0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A}
-
 	// pngFile is a typed file descriptor for raw PNG data.
 	// format.Binary writes and reads []byte as-is (unlike Gob, which adds framing).
-	// validate.HasPrefix rejects any file that does not begin with the PNG magic bytes.
+	// validate.PNG checks the 8-byte PNG magic bytes on every read and write.
 	pngFile := format.NewFile(
 		dataDir+"/images/{name}.png",
 		format.Binary(
 			codex.Bytes().
 				Refine(validate.MaxBytes(10*1024*1024)).
-				Refine(validate.HasPrefix(pngSignature)),
+				Refine(validate.PNG),
 		).WithContentType("image/png"),
 		format.FilePathParam{Name: "name", Description: "Image name (no extension)."},
 	)

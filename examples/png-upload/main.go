@@ -39,24 +39,21 @@ type DownloadImageRequest struct {
 
 // --- Codecs ---
 
-// pngMagic is the 8-byte PNG signature defined in the PNG specification.
-var pngMagic = []byte{0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A}
-
 // maxPNGBytes is the maximum accepted upload size (5 MiB).
 const maxPNGBytes = 5 * 1024 * 1024
 
 // pngCodec validates PNG payloads with two constraints applied in order:
 //  1. validate.MaxBytes — rejects payloads that exceed the size limit.
-//  2. validate.HasPrefix — rejects data that does not begin with the PNG magic bytes.
+//  2. validate.PNG — rejects data that is not a PNG file (magic-byte check).
 //
 // MaxBytes runs first so oversized bodies are rejected with a clear size error
-// before the magic-byte check reads any content.
+// before the format check reads any content.
 //
 // codex.Bytes() passes []byte through without any encoding — the raw binary
 // payload is the wire form for HTTP bodies and file I/O.
 var pngCodec = codex.Bytes().
 	Refine(validate.MaxBytes(maxPNGBytes)).
-	Refine(validate.HasPrefix(pngMagic))
+	Refine(validate.PNG)
 
 // pngFormat reads and writes raw PNG bytes.
 // format.Binary uses the NewTyped path internally: bytes are stored as-is,

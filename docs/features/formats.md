@@ -58,28 +58,25 @@ Gob is ideal for internal Go-to-Go communication where binary efficiency matters
 | Use case | Go-to-Go internal caching | PNG, JPEG, PDF, WAV file I/O; binary HTTP bodies |
 
 ```go
-// pngSignature is the 8-byte PNG magic bytes (PNG specification).
-var pngSignature = []byte{0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A}
-
-// Declare once — the file descriptor validates magic bytes on every read and write.
+// Declare once — the file descriptor validates format on every read and write.
 var pngFile = format.NewFile(
     "images/{name}.png",
     format.Binary(
         codex.Bytes().
             Refine(validate.MaxBytes(5*1024*1024)).
-            Refine(validate.HasPrefix(pngSignature)),
+            Refine(validate.PNG),
     ).WithContentType("image/png"),
     format.FilePathParam{Name: "name"},
 )
 
-// Write — magic-byte constraint runs before the file is written.
+// Write — validate.PNG runs before the file is written.
 err := pngFile.Write(
     map[string]string{"name": "chart"},
     pngBytes,
     format.FileOptions{Observer: obs},
 )
 
-// Read — magic-byte constraint runs after the file is read.
+// Read — validate.PNG runs after the file is read.
 data, err := pngFile.Read(
     map[string]string{"name": "chart"},
     format.FileOptions{Observer: obs},
@@ -87,6 +84,31 @@ data, err := pngFile.Read(
 ```
 
 Constraint failures surface as `format.FileEncodeError` (write) or `format.FileDecodeError` (read), both implementing `Unwrap()` and navigable via `errors.As`. The `FileObserver` callbacks fire on every path — success and failure alike.
+
+### Built-in binary format constraints
+
+The `validate` package provides predefined constraints for common binary file formats. Each checks the file's magic bytes — no external dependency required:
+
+| Constraint | Magic bytes | Covers |
+|-----------|------------|--------|
+| `validate.PNG` | `\x89PNG\r\n\x1a\n` | PNG images |
+| `validate.JPEG` | `\xFF\xD8\xFF` | JPEG images (JFIF, Exif, all subtypes) |
+| `validate.GIF` | `GIF87a` / `GIF89a` | GIF images (both versions) |
+| `validate.WebP` | `RIFF....WEBP` | WebP images |
+| `validate.PDF` | `%PDF-` | PDF documents |
+| `validate.ZIP` | `PK\x03\x04` | ZIP archives; also DOCX, XLSX, APK, JAR |
+
+```go
+// Image upload — accept JPEG or PNG, max 5 MiB each
+jpegCodec := codex.Bytes().Refine(validate.MaxBytes(5*1024*1024)).Refine(validate.JPEG)
+pngCodec  := codex.Bytes().Refine(validate.MaxBytes(5*1024*1024)).Refine(validate.PNG)
+
+// Document upload — PDF only
+pdfCodec := codex.Bytes().Refine(validate.MaxBytes(20*1024*1024)).Refine(validate.PDF)
+
+// Archive upload
+zipCodec := codex.Bytes().Refine(validate.MaxBytes(50*1024*1024)).Refine(validate.ZIP)
+```
 
 ### codex.Bytes vs codex.Base64
 
@@ -100,7 +122,7 @@ Both work with `[]byte` in Go, but the wire representation differs:
 
 ```go
 // Bytes: raw binary in a file or HTTP body
-pngCodec := codex.Bytes().Refine(validate.HasPrefix(pngSignature))
+pngCodec := codex.Bytes().Refine(validate.PNG)
 
 // Base64: binary field inside a JSON document
 avatarField := codex.Base64().Refine(validate.MaxBytes(65536)).
@@ -245,11 +267,11 @@ csvFmt := format.NewTyped(userCodec,
 
 ```go
 // format.Binary is the recommended shorthand for raw []byte I/O.
-pngSignature := []byte{0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A}
+// validate.PNG checks the PNG magic bytes — no manual byte slice needed.
 pngFormat := format.Binary(
     codex.Bytes().
         Refine(validate.MaxBytes(5 * 1024 * 1024)).
-        Refine(validate.HasPrefix(pngSignature)),
+        Refine(validate.PNG),
 ).WithContentType("image/png")
 ```
 
