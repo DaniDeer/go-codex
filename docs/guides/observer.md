@@ -18,6 +18,7 @@ For the full API reference, interface definitions, and Prometheus wiring, see th
 | `"topic_var"` | mqtt — per-variable codec failure |
 | `"input"` | mcpgo — tool argument decode/validation |
 | `"prompt.args"` | mcpgo — prompt argument codec failure |
+| `"file"` | format.File — per-field codec failure during file read/write |
 
 ## Examples
 

@@ -48,6 +48,68 @@ func FromEnv[T any](c codex.Codec[T], prefix string) (T, error) {
 	return c.Decode(intermediate)
 }
 
+// FromEnvVar loads a single typed value from one environment variable.
+//
+// The codec's schema determines the string coercion (integer, number, boolean,
+// string). All Refine constraints run after coercion — the same rules apply as
+// in any codec Decode call.
+//
+// Returns [EnvVarError] wrapping a [codex.ValidationErrors] when coercion or
+// constraint validation fails. Returns the zero value of T when the variable is
+// not set. Use [errors.As] to inspect the structured error:
+//
+//	port, err := format.FromEnvVar("APP_PORT", codex.Int().Refine(validate.RangeInt(1, 65535)))
+//	if err != nil {
+//	    var envErr format.EnvVarError
+//	    if errors.As(err, &envErr) {
+//	        slog.Warn("env var invalid", "key", envErr.Key, "cause", envErr.Err)
+//	    }
+//	}
+func FromEnvVar[T any](key string, c codex.Codec[T]) (T, error) {
+	var zero T
+	raw, ok := os.LookupEnv(key)
+	if !ok {
+		return zero, nil
+	}
+	coerced, err := coercePrimitive(raw, c.Schema.Type)
+	if err != nil {
+		return zero, EnvVarError{Key: key, Err: fmt.Errorf("%w", codex.ValidationErrors{{
+			Field: key,
+			Err:   fmt.Errorf("%s", err.Error()),
+		}})}
+	}
+	v, decErr := c.Decode(coerced)
+	if decErr != nil {
+		return zero, EnvVarError{Key: key, Err: decErr}
+	}
+	return v, nil
+}
+
+// EnvVarError is returned by [FromEnvVar] when coercion or codec validation
+// fails for a single environment variable.
+//
+// Use [errors.As] to extract the key and structured cause:
+//
+//	var envErr format.EnvVarError
+//	if errors.As(err, &envErr) {
+//	    slog.Warn("env var invalid", "key", envErr.Key, "cause", envErr.Err)
+//	    stats.ReportErrors(obs, "env", envErr.Err)
+//	}
+type EnvVarError struct {
+	// Key is the environment variable name (e.g. "APP_PORT").
+	Key string
+	// Err is the underlying coercion or validation error.
+	// Typically wraps [codex.ValidationErrors].
+	Err error
+}
+
+func (e EnvVarError) Error() string {
+	return fmt.Sprintf("env var %q: %s", e.Key, e.Err)
+}
+
+// Unwrap allows [errors.Is] and [errors.As] to traverse the underlying error.
+func (e EnvVarError) Unwrap() error { return e.Err }
+
 // buildEnvIntermediate walks the schema, reads matching env vars, coerces their
 // string values to the expected types, and returns the intermediate map that
 // codec.Decode expects, plus any parse errors encountered.

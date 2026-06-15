@@ -418,3 +418,93 @@ func TestFromEnv_MalformedJSONArray_ReturnsError(t *testing.T) {
 		t.Fatal("expected parse error for malformed JSON array, got nil")
 	}
 }
+
+// ── FromEnvVar ────────────────────────────────────────────────────────────────
+
+func TestFromEnvVar_HappyPath_Int(t *testing.T) {
+	t.Setenv("TEST_PORT", "8080")
+
+	port, err := format.FromEnvVar("TEST_PORT",
+		codex.Int().Refine(validate.RangeInt(1, 65535)))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if port != 8080 {
+		t.Errorf("want 8080, got %d", port)
+	}
+}
+
+func TestFromEnvVar_HappyPath_String(t *testing.T) {
+	t.Setenv("TEST_LEVEL", "debug")
+
+	level, err := format.FromEnvVar("TEST_LEVEL",
+		codex.String().Refine(validate.OneOf("debug", "info", "warn", "error")))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if level != "debug" {
+		t.Errorf("want debug, got %q", level)
+	}
+}
+
+func TestFromEnvVar_NotSet_ReturnsZero(t *testing.T) {
+	// ensure variable is absent
+	t.Setenv("TEST_ABSENT_VAR_XYZ", "")
+	// Use a key that is definitely not set — t.Setenv always sets, so use a
+	// unique key and then unset it via t.Cleanup (simpler: just don't set it).
+	port, err := format.FromEnvVar("TEST_TRULY_ABSENT_VAR_12345",
+		codex.Int().Refine(validate.RangeInt(1, 65535)))
+	if err != nil {
+		t.Fatalf("expected nil error for unset var, got: %v", err)
+	}
+	if port != 0 {
+		t.Errorf("expected zero value, got %d", port)
+	}
+}
+
+func TestFromEnvVar_InvalidValue_ReturnsEnvVarError(t *testing.T) {
+	t.Setenv("TEST_PORT_BAD", "99999") // out of range
+
+	_, err := format.FromEnvVar("TEST_PORT_BAD",
+		codex.Int().Refine(validate.RangeInt(1, 65535)))
+	if err == nil {
+		t.Fatal("expected error for out-of-range port, got nil")
+	}
+	var envErr format.EnvVarError
+	if !errors.As(err, &envErr) {
+		t.Fatalf("expected EnvVarError, got %T: %v", err, err)
+	}
+	if envErr.Key != "TEST_PORT_BAD" {
+		t.Errorf("expected Key=TEST_PORT_BAD, got %q", envErr.Key)
+	}
+	if envErr.Err == nil {
+		t.Error("expected non-nil Err inside EnvVarError")
+	}
+}
+
+func TestFromEnvVar_InvalidType_ReturnsEnvVarError(t *testing.T) {
+	t.Setenv("TEST_PORT_STR", "not-a-number")
+
+	_, err := format.FromEnvVar("TEST_PORT_STR", codex.Int())
+	if err == nil {
+		t.Fatal("expected error for non-integer value, got nil")
+	}
+	var envErr format.EnvVarError
+	if !errors.As(err, &envErr) {
+		t.Fatalf("expected EnvVarError, got %T: %v", err, err)
+	}
+}
+
+func TestFromEnvVar_Unwrap_ExposesInnerError(t *testing.T) {
+	t.Setenv("TEST_PORT_INNER", "bad")
+
+	_, err := format.FromEnvVar("TEST_PORT_INNER", codex.Int())
+
+	var envErr format.EnvVarError
+	if !errors.As(err, &envErr) {
+		t.Fatalf("expected EnvVarError, got %T", err)
+	}
+	if envErr.Unwrap() == nil {
+		t.Error("Unwrap() must return non-nil inner error")
+	}
+}

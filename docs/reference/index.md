@@ -42,7 +42,7 @@ go get github.com/DaniDeer/go-codex@latest
 | `format` | Format bridges: JSON, YAML, TOML, Gob, streaming, env vars | [→](https://pkg.go.dev/github.com/DaniDeer/go-codex/format) |
 | `schema` | Schema model (pure data, zero dependencies) | [→](https://pkg.go.dev/github.com/DaniDeer/go-codex/schema) |
 | `route` | HTTP route descriptors: `Route`, `Param`, `SecurityScheme` | [→](https://pkg.go.dev/github.com/DaniDeer/go-codex/route) |
-| `stats` | Observer interfaces: `ValidationObserver`, `Observer`, `PipelineObserver` | [→](https://pkg.go.dev/github.com/DaniDeer/go-codex/stats) |
+| `stats` | Observer interfaces: `ValidationObserver`, `Observer`, `PipelineObserver`, `SecurityObserver`, `FileObserver`; `NoopObserver` satisfies all five | [→](https://pkg.go.dev/github.com/DaniDeer/go-codex/stats) |
 
 ## API builders (Layer 2)
 

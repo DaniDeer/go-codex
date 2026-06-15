@@ -81,6 +81,29 @@ type SecurityObserver interface {
 	RecordSecurityRejection(location, scheme string)
 }
 
+// FileObserver is an optional extension to [Observer] for file I/O lifecycle
+// events. [format.File] type-asserts the configured observer to FileObserver
+// before calling its methods, so implementing this interface is purely additive
+// — existing Observer implementations need not change.
+//
+//	type MyObserver struct{ ... }
+//	func (o *MyObserver) RecordFileRead(path string, success bool, d time.Duration) {
+//	    // increment a Prometheus counter, emit a log line, etc.
+//	}
+//	func (o *MyObserver) RecordFileWrite(path string, success bool, d time.Duration) { ... }
+type FileObserver interface {
+	// RecordFileRead is called after every [format.File.Read] or
+	// [format.File.Update] attempt (read phase). path is the concrete file path
+	// (after template substitution), success is false on any error including
+	// decode/validation failures.
+	RecordFileRead(path string, success bool, duration time.Duration)
+
+	// RecordFileWrite is called after every [format.File.Write] or
+	// [format.File.Update] attempt (write phase). success is false on any
+	// encode or filesystem error.
+	RecordFileWrite(path string, success bool, duration time.Duration)
+}
+
 // NoopObserver discards all events. It satisfies [Observer], [ValidationObserver],
 // [PipelineObserver], and [SecurityObserver] and is the zero-cost default used
 // when no observer is configured.
@@ -92,6 +115,8 @@ func (NoopObserver) RecordSubscribe(_ string, _ bool, _ time.Duration) {}
 func (NoopObserver) RecordPublish(_ string, _ bool, _ time.Duration)   {}
 func (NoopObserver) RecordApply(_, _ string, _ bool, _ time.Duration)  {}
 func (NoopObserver) RecordSecurityRejection(_, _ string)               {}
+func (NoopObserver) RecordFileRead(_ string, _ bool, _ time.Duration)  {}
+func (NoopObserver) RecordFileWrite(_ string, _ bool, _ time.Duration) {}
 
 // ReportErrors walks err and calls obs.RecordValidationError for every codec
 // validation failure it finds. location identifies the data source (e.g. "body",

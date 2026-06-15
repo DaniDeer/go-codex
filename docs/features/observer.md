@@ -14,8 +14,9 @@ go-codex's observer pattern provides structured metrics hooks without any metric
 | `stats.Observer` | embeds `ValidationObserver` + `RecordRequest`, `RecordSubscribe`, `RecordPublish` | HTTP and MQTT adapters |
 | `stats.PipelineObserver` | `RecordApply(name, version string, success bool, d time.Duration)` | `forge.Registry` |
 | `stats.SecurityObserver` | `RecordSecurityRejection(location, scheme string)` | adapters — type-asserted, never embedded |
+| `stats.FileObserver` | `RecordFileRead(path string, success bool, d time.Duration)` · `RecordFileWrite(path string, success bool, d time.Duration)` | `format.File[T]` — type-asserted, never embedded |
 
-`stats.NoopObserver` satisfies all four interfaces at zero cost.
+`stats.NoopObserver` satisfies all five interfaces at zero cost.
 
 ## Codec-level (ValidationObserver)
 
@@ -100,6 +101,36 @@ registry := forge.NewRegistry("OEE Pipeline", "1.0.0").
     WithObserver(PipelineLogger{})
 ```
 
+## FileObserver (format.File)
+
+`format.File[T]` type-asserts the observer in `FileOptions` to `stats.FileObserver`. Implement it alongside your existing `Observer`:
+
+```go
+type TelemetryObserver struct {
+    CountingObserver // embed for Observer methods
+}
+
+func (o *TelemetryObserver) RecordSecurityRejection(location, scheme string) {
+    // security rejections
+}
+
+func (o *TelemetryObserver) RecordFileRead(path string, ok bool, d time.Duration) {
+    slog.Info("file read", "path", path, "ok", ok, "dur", d)
+}
+
+func (o *TelemetryObserver) RecordFileWrite(path string, ok bool, d time.Duration) {
+    slog.Info("file write", "path", path, "ok", ok, "dur", d)
+}
+
+var _ stats.FileObserver = (*TelemetryObserver)(nil)
+
+// Wire to File:
+opts := format.FileOptions{Observer: obs}
+cfg, err := configFile.Read(nil, opts)
+```
+
+`path` in the callback is the concrete path after template substitution, never the template string.
+
 ## SecurityObserver
 
 ```go
@@ -130,6 +161,7 @@ Adapters type-assert `stats.SecurityObserver` — implementing it is purely addi
 | `"topic"` | mqtt — topic-level codec failure |
 | `"input"` | mcpgo — tool argument decode/validation |
 | `"prompt.args"` | mcpgo — prompt argument codec failure |
+| `"file"` | format.File — per-field codec failure during read/write |
 | any string | codec-only: choose a label meaningful to your domain (`"config"`, `"input"`, etc.) |
 
 ## Prometheus example

@@ -67,6 +67,37 @@ APP_LABELS='{"env":"prod","team":"platform"}'
 
 JSON takes precedence when the value starts with `{` or `[`.
 
+## Single env var (FromEnvVar)
+
+`format.FromEnvVar[T]` loads a single typed value from one environment variable. The codec's schema drives coercion; all `Refine` constraints run after:
+
+```go
+import "github.com/DaniDeer/go-codex/format"
+
+// Load a typed port number — returns zero value when APP_PORT is not set
+port, err := format.FromEnvVar("APP_PORT",
+    codex.Int().Refine(validate.RangeInt(1, 65535)))
+if err != nil {
+    var envErr format.EnvVarError
+    if errors.As(err, &envErr) {
+        slog.Warn("env var invalid", "key", envErr.Key, "cause", envErr.Err)
+        stats.ReportErrors(obs, "env", envErr.Err)
+    }
+    log.Fatal(err)
+}
+
+// Load a typed log level — falls back to default when not set
+level, err := format.FromEnvVar("LOG_LEVEL",
+    codex.String().Refine(validate.OneOf("debug", "info", "warn", "error")))
+if level == "" {
+    level = "info" // caller decides the default
+}
+```
+
+`FromEnvVar` returns `format.EnvVarError{Key, Err}` when the variable is present but fails coercion or constraint validation. It returns the zero value of T (no error) when the variable is not set — the caller decides whether the variable is required.
+
+Use `FromEnvVar` for ad-hoc overrides of individual settings. Use `format.FromEnv` when loading an entire config struct from environment variables.
+
 ## Config file + env var overrides
 
 ```go

@@ -31,10 +31,11 @@ format specified in SKILL.md.
 | `PathParam` | No `Required` field (always required by OpenAPI spec); godoc explains why |
 | `TopicParam` | No `Required` field (topic vars always required); godoc explains why |
 | `ResourceParam` | No `Required` field (URI vars always required, same rationale as PathParam/TopicParam); godoc must explain |
+| `FilePathParam` | No `Required` field (template vars always required, same rationale as PathParam/TopicParam); use `WithCodec(c)` value-receiver |
 | `PromptArg` | Has `Required bool` — prompt args are optional by default; `Required: true` triggers `MissingPromptArgError` |
 | `QueryParam`, `CookieParam`, `HeaderParam` | Have `Required bool` |
 | `ResponseHeaderParam`, `ResponseCookieParam` | Have appropriate fields; no `Required` (response params are always present when set) |
-| `.WithCodec(c codex.Codec[string])` | Present on all 7 REST/events param types: PathParam, QueryParam, CookieParam, HeaderParam, ResponseHeaderParam, ResponseCookieParam, TopicParam |
+| `.WithCodec(c codex.Codec[string])` | Present on all 7 REST/events param types: PathParam, QueryParam, CookieParam, HeaderParam, ResponseHeaderParam, ResponseCookieParam, TopicParam; also on `FilePathParam` |
 | `.WithCodec(c codex.Codec[string])` on MCP | Present on `ResourceParam` and `PromptArg` — mirrors TopicParam pattern |
 | Pointer-free codec setting | No usage of `Codec: &codec` in the library itself; examples must use `.WithCodec()` |
 
@@ -200,6 +201,19 @@ All must be `errors.As`-navigable. Bare `fmt.Errorf` in `client.go` without a ty
 | Handler error | Returns `mcp.NewToolResultError(err.Error())` — `IsError: true` result |
 | Output encode failure | Returns `(nil, err)` — protocol-level Go error (server contract violation) |
 
+### format package (File I/O)
+
+| Error type | When to use |
+|------------|-------------|
+| `format.FilePathParamError{Param, Err}` | path variable fails its codec constraint in `BuildPath`/`Read`/`Write`/`Update` |
+| `format.MissingFilePathVarError{Param}` | path variable absent from the `vars` map |
+| `format.FileReadError{Path, Err}` | `os.ReadFile` fails |
+| `format.FileDecodeError{Path, Err}` | codec decode or constraint validation fails on read |
+| `format.FileEncodeError{Path, Err}` | codec encode fails on write |
+| `format.FileWriteError{Path, Err}` | `os.WriteFile` fails |
+
+Also: `format.EnvVarError{Key, Err}` — returned by `FromEnvVar[T]` when coercion or constraint fails. `Unwrap()` exposes `codex.ValidationErrors`.
+
 ### forge package
 
 | Error type | When to use |
@@ -224,13 +238,15 @@ doesn't wrap a typed sentinel is a finding.
 | `Observer` | embeds `ValidationObserver` + transport hooks | adapters (nethttp, chi, mqtt, mcpgo) |
 | `PipelineObserver` | `RecordApply(name, version string, success bool, duration time.Duration)` | forge Registry |
 | `SecurityObserver` | `RecordSecurityRejection(location, scheme string)` | adapters (type-asserted, not mcpgo) |
+| `FileObserver` | `RecordFileRead(path string, success bool, d time.Duration)` · `RecordFileWrite(path string, success bool, d time.Duration)` | `format.File[T]` (type-asserted, never embedded) |
 
 ### Rules
 
 - `SecurityObserver` must be guarded: `if so, ok := obs.(stats.SecurityObserver); ok { ... }` — **never** embedded in `Observer`
+- `FileObserver` must be guarded: `if fo, ok := obs.(stats.FileObserver); ok { ... }` — **never** embedded in `Observer`; `path` is concrete path after template substitution, never the template
 - `PipelineObserver.RecordApply` must be called for every function in a pipeline, including `Map`/`Filter`/etc.
 - Adapters must call `Observer` on every code path — including early-exit error paths — not just the happy path
-- `NoopObserver` satisfies all four interfaces; use as default when no observer provided
+- `NoopObserver` satisfies all five interfaces; use as default when no observer provided
 - **`adapters/nethttp` client (`Call`) observer rules**:
   - `RecordRequest(method, routePathTemplate, statusCode, duration)` — called on **every** code path; status 0 = pre-flight failure (no HTTP call reached the network)
   - `stats.ReportErrors(obs, location, err)` called before `RecordRequest` for param validation failures (location: `"path"`, `"query"`, `"cookie"`, `"header"`, `"body"`)

@@ -2,7 +2,7 @@
 
 > See also: [`format` package on pkg.go.dev](https://pkg.go.dev/github.com/DaniDeer/go-codex/format)
 >
-> Runnable demo: [`examples/formats`](https://github.com/DaniDeer/go-codex/tree/main/examples/formats) · [`examples/multiformat`](https://github.com/DaniDeer/go-codex/tree/main/examples/multiformat)
+> Runnable demo: [`examples/formats`](https://github.com/DaniDeer/go-codex/tree/main/examples/formats) · [`examples/multiformat`](https://github.com/DaniDeer/go-codex/tree/main/examples/multiformat) · [`examples/file-io`](https://github.com/DaniDeer/go-codex/tree/main/examples/file-io)
 
 A `Codec[T]` works with an intermediate representation (`map[string]any`) that is format-agnostic. The `format` package bridges that intermediate to concrete wire formats — the **same codec** reads and writes multiple formats without any changes.
 
@@ -43,6 +43,85 @@ order, err := GobFormat.Unmarshal(data)
 Gob is ideal for internal Go-to-Go communication where binary efficiency matters. Use JSON/YAML/TOML for external-facing APIs or when OpenAPI/AsyncAPI spec generation is needed.
 
 **Gob in OpenAPI/AsyncAPI specs:** the spec renderer emits `"application/gob"` as the content type alongside the JSON Schema body. The schema correctly documents the logical data shape for human readers, but tooling (Swagger UI, API gateways, code generators) cannot interpret binary gob payloads. Keep `"application/gob"` out of external-facing specs; use it only for internal Go-to-Go channels where the Go library itself is the authoritative contract.
+
+## File I/O — declarative typed file access
+
+`format.File[T]` is a declarative typed file descriptor: declare a path template, wire format, and optional per-variable codecs once — then read, write, and update files with full codec validation.
+
+It mirrors the declare-once pattern of `rest.Route` and `events.Channel`:
+
+```go
+import "github.com/DaniDeer/go-codex/format"
+
+// Declare once — no side effects
+var measurementFile = format.NewFile(
+    "data/{date}/{sensor}.json",
+    format.JSON(measurementCodec),
+    format.FilePathParam{Name: "date", Description: "ISO date (YYYY-MM-DD)"}.
+        WithCodec(codex.String().Refine(validate.Date)),
+    format.FilePathParam{Name: "sensor", Description: "Sensor ID"},
+)
+
+// Read a file (validates path vars + decodes + runs constraints)
+vars := map[string]string{"date": "2024-01-15", "sensor": "sensor-42"}
+m, err := measurementFile.Read(vars, format.FileOptions{Observer: obs})
+
+// Write a file (validates path vars + encodes + writes)
+err = measurementFile.Write(vars, measurement, format.FileOptions{Perm: 0644})
+
+// Update a file (read → transform → write in one call)
+err = measurementFile.Update(vars, func(m Measurement) Measurement {
+    m.Value += 1.0
+    return m
+}, format.FileOptions{Observer: obs})
+```
+
+### Static paths
+
+For static paths (no template variables), pass `nil` for vars:
+
+```go
+var configFile = format.NewFile("config.toml", format.TOML(configCodec))
+
+cfg, err := configFile.Read(nil, format.FileOptions{})
+err = configFile.Write(nil, cfg, format.FileOptions{Perm: 0600})
+```
+
+### Pre-flight path validation
+
+`BuildPath` substitutes template variables and validates without any I/O — useful for early error detection:
+
+```go
+path, err := measurementFile.BuildPath(vars)
+// Returns FilePathParamError when a variable fails its codec
+// Returns MissingFilePathVarError when a variable is absent
+```
+
+### Typed file errors
+
+| Error type | Returned by |
+|---|---|
+| `FilePathParamError` | path variable fails its codec constraint |
+| `MissingFilePathVarError` | path variable not in provided map |
+| `FileReadError` | `os.ReadFile` fails |
+| `FileDecodeError` | codec decode or constraint validation fails |
+| `FileEncodeError` | codec encode fails |
+| `FileWriteError` | `os.WriteFile` fails |
+
+All errors implement `Unwrap()` for `errors.As`/`errors.Is` traversal and `slog.LogValuer` for structured logging.
+
+### FileObserver
+
+`FileOptions.Observer` accepts any `stats.Observer`. When the observer also implements `stats.FileObserver`, it receives per-operation lifecycle events:
+
+```go
+type FileObserver interface {
+    RecordFileRead(path string, success bool, d time.Duration)
+    RecordFileWrite(path string, success bool, d time.Duration)
+}
+```
+
+See [Metrics Observer](observer.md) for the full observer interface table.
 
 ## Loading from environment variables
 
