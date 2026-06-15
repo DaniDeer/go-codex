@@ -170,14 +170,12 @@ func main() {
 		rest.PathParam{
 			Name:        "id",
 			Description: "Resource ID (UUID) of the image to download.",
-			Codec:       &uuidCodec,
-		},
+		}.WithCodec(uuidCodec),
 		rest.CookieParam{
 			Name:        "session_token",
 			Description: "Session token issued at login.",
 			Required:    true,
-			Codec:       &sessionTokenCodec,
-		},
+		}.WithCodec(sessionTokenCodec),
 		rest.ResponseMeta{Status: "400", Description: "Invalid request body or parameter validation failure."},
 		rest.ResponseMeta{Status: "401", Description: "Missing or invalid session cookie."},
 		rest.ResponseMeta{Status: "404", Description: "Image not found."},

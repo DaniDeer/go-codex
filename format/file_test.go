@@ -215,6 +215,37 @@ func TestValidatePathVars_NoCodecs_AlwaysNil(t *testing.T) {
 	}
 }
 
+// ── PathParamSchemas ──────────────────────────────────────────────────────────
+
+func TestPathParamSchemas_ReturnsSchemaForParamsWithCodec(t *testing.T) {
+	schemas := templateFile.PathParamSchemas()
+	// templateFile has "category" with codec and "id" without codec.
+	if _, ok := schemas["category"]; !ok {
+		t.Error("expected schema for 'category' (has codec)")
+	}
+	if _, ok := schemas["id"]; ok {
+		t.Error("expected no schema for 'id' (no codec)")
+	}
+}
+
+func TestPathParamSchemas_EmptyWhenNoCodecs(t *testing.T) {
+	f := format.NewFile("data/{a}/{b}.json", format.JSON(fileItemCodec),
+		format.FilePathParam{Name: "a"},
+		format.FilePathParam{Name: "b"},
+	)
+	schemas := f.PathParamSchemas()
+	if len(schemas) != 0 {
+		t.Errorf("expected empty map, got %d entries", len(schemas))
+	}
+}
+
+func TestPathParamSchemas_StaticPath_EmptyMap(t *testing.T) {
+	schemas := staticFile.PathParamSchemas()
+	if len(schemas) != 0 {
+		t.Errorf("expected empty map for static file, got %d entries", len(schemas))
+	}
+}
+
 // ── Read ──────────────────────────────────────────────────────────────────────
 
 func TestRead_HappyPath(t *testing.T) {

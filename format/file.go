@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/DaniDeer/go-codex/codex"
+	"github.com/DaniDeer/go-codex/schema"
 	"github.com/DaniDeer/go-codex/stats"
 )
 
@@ -176,6 +177,24 @@ func (fh File[T]) ValidatePathVars(vars map[string]string) error {
 		}
 	}
 	return nil
+}
+
+// PathParamSchemas returns a map from template variable name to the codec's
+// [schema.Schema] for each [FilePathParam] that has a [FilePathParam.Codec] set.
+// Parameters without a codec are omitted. Returns an empty map when no params
+// have codecs registered.
+//
+// Use this for documentation generation or spec tooling that needs the schema
+// of each path variable (e.g. emitting a machine-readable description of an
+// API that reads or writes files with templated paths).
+func (fh File[T]) PathParamSchemas() map[string]schema.Schema {
+	out := make(map[string]schema.Schema, len(fh.params))
+	for _, p := range fh.params {
+		if p.Codec != nil {
+			out[p.Name] = p.Codec.Schema
+		}
+	}
+	return out
 }
 
 // Read builds the concrete path from vars, reads the file, and decodes its
