@@ -123,6 +123,12 @@ Deviation from this pattern = trivial finding.
 | `ChannelHandle.WithPublishFormats` | Sets publish-only formats |
 | Adapter priority | Adapters check `SubscribeFormats`/`PublishFormats` before falling back to `Formats` |
 | `SSERouteHandle.WithFormats` | Sets SSE stream formats (mirrors ChannelHandle pattern) |
+| `format.Binary(c codex.Codec[[]byte]) Format[[]byte]` | Raw bytes identity format — validates via Refine constraints; distinct from Gob (Gob adds framing; Binary writes raw bytes) |
+| `codex.Bytes()` | Raw `[]byte` codec, schema `{type:"string", format:"binary"}` — for binary file I/O and HTTP binary bodies |
+| `codex.Base64()` | Base64 `[]byte` codec, schema `{type:"string", format:"byte"}` — for binary fields embedded in JSON |
+| `Format` struct godoc | Must list `Binary` alongside JSON, YAML, TOML, Gob: "Use JSON, YAML, TOML, Gob, or Binary to construct one" |
+| Binary file format constraints | `validate.PNG`, `validate.JPEG`, `validate.GIF`, `validate.WebP`, `validate.PDF`, `validate.ZIP` — predefined `Constraint[[]byte]` values, no Schema annotation, produce `ConstraintError` |
+| `validate.HasPrefix(prefix []byte)` | General magic-byte check; prefer built-in constants for known formats; use HasPrefix for custom/proprietary formats |
 
 ---
 
@@ -276,6 +282,10 @@ doesn't wrap a typed sentinel is a finding.
 | `render/pipeline` | `pipeline_test.go` | governance fields emitted when set; omitted when empty |
 | `render/asyncapi/v2` | any `*_test.go` | server insertion order deterministic |
 | `render/asyncapi/v3` | any `*_test.go` | server insertion order deterministic |
+| `validate` | `bytes_test.go` | `HasPrefix`: match, no-match, empty prefix, too-short value, `ConstraintError` type assertion; `MaxBytes`/`MinBytes` integration via `codex.Base64()` |
+| `validate` | `binary_test.go` | Each format constraint (`PNG`, `JPEG`, `GIF`, `WebP`, `PDF`, `ZIP`): valid magic passes, wrong magic fails, too-short fails, `Name` non-empty, `ConstraintError` via `errors.As` |
+| `format` | `format_test.go` | `Binary`: roundtrip, constraint fail on write (`ConstraintError`), constraint fail on read (`ConstraintError`), default CT `"application/octet-stream"`, `WithContentType` override, not streamable |
+| `codex` | `primitives_test.go` | `Bytes`: roundtrip (identity encode), schema `{type:"string",format:"binary"}`, `TypeMismatchError` on non-`[]byte` Decode; `Base64`: roundtrip (base64 encode), schema `{type:"string",format:"byte"}`, invalid base64 Decode error |
 
 ### Missing test finding rule
 
@@ -297,6 +307,8 @@ Scan all `examples/*/main.go` files.
 | `AddRoute(` | Should not exist (replaced by `NewRoute`) | File a `small` finding |
 | `AddChannel(` | Should not exist (replaced by `NewChannel`) | File a `small` finding |
 | `codex.Field[` | Should not exist (replaced by `RequiredField`/`OptionalField`) | File a `trivial` finding |
+| `validate.HasPrefix(` in examples | Prefer built-in constants (`validate.PNG` etc.) for known formats; `HasPrefix` only for custom formats | File a `trivial` finding if a known format (PNG, JPEG, PDF…) is checked via `HasPrefix` instead of the built-in constant |
+| `codex.Bytes()` used for base64 JSON fields | Should be `codex.Base64()` — `codex.Bytes()` is now the raw binary codec | File a `small` finding |
 | MCP: `s.AddTool(` direct on `MCPServer` | Should use `mcpgo.RegisterTool(s, handle, fn, opts)` unless using `ToolHandler` directly | File a `trivial` finding |
 | MCP: `mcp.NewTool(name, mcp.WithDescription(...))` directly | Should use `mcp.NewTool[In,Out](name, inputCodec, outputCodec, mcp.ToolMeta{...})` | File a `small` finding |
 

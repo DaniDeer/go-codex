@@ -19,7 +19,7 @@ import (
 var ErrNotStreamable = errors.New("format: not streamable — use NewStreamed to create a streaming format")
 
 // Format binds a Codec[T] to a specific serialization format.
-// Use JSON, YAML, TOML, or Gob to construct one. For formats that operate on the
+// Use JSON, YAML, TOML, Gob, or Binary to construct one. For formats that operate on the
 // typed value directly (e.g. HTML rendering), use [NewTyped]. For streaming
 // output (write to io.Writer without buffering), use [NewStreamed].
 type Format[T any] struct {

@@ -57,6 +57,11 @@ For each fenced code block in `docs/` that contains Go code:
 | OpenAPI spec generation | `docs/guides/openapi.md` — must have code examples |
 | AsyncAPI spec generation | `docs/guides/asyncapi.md` — must have code examples |
 | CLI / config / env vars | `docs/guides/config.md` — must have code examples |
+| `format.Binary` + `codex.Bytes`/`Base64` | `docs/features/formats.md` — must have Binary section with Gob vs Binary table, `codex.Bytes` vs `codex.Base64` table, and binary format constraint examples |
+| Binary over MQTT | `docs/guides/mqtt.md` — must have "Binary payloads" section with `format.Binary` + `WithFormats` wiring |
+| Binary over HTTP server | `docs/guides/http-server.md` — must have "Binary payloads" section covering `WithRequestFormats` + `WithFormats` + `MaxBodyBytes` subtlety |
+| Binary over HTTP client | `docs/guides/http-client.md` — must have "Binary requests and responses" section |
+| Binary file format validators | `docs/features/formats.md` — `validate.PNG/JPEG/GIF/WebP/PDF/ZIP` must be listed with usage table |
 
 A page with no code examples for a mature feature = `small` finding.
 A page that is entirely missing = `small` finding.
@@ -116,7 +121,7 @@ find . -name "doc.go" | grep -v examples | sort
 | `api/mcp/doc.go` | Package purpose, Tools/Resources/Prompts pattern |
 | `adapters/nethttp/doc.go` | Server AND client (Call) covered |
 | `schema/doc.go` | Zero-dependency design rationale |
-| `validate/doc.go` | Format + range + custom constraints explained |
+| `validate/doc.go` | Format + range + binary byte constraints + binary file format constraints + "when to use which" guide + composition ordering rule |
 | All other doc.go files | At least 5 lines of meaningful description |
 
 A `doc.go` with fewer than 10 meaningful lines for a key public package = `trivial` finding.
