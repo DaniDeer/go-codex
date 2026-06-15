@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"os"
 	"strings"
 	"testing"
 
@@ -297,6 +298,183 @@ func TestGob_DecodeError(t *testing.T) {
 	if !strings.Contains(err.Error(), "gob:") {
 		t.Errorf("expected error prefixed with gob:, got: %v", err)
 	}
+}
+
+// ── Binary ────────────────────────────────────────────────────────────────────
+
+func TestBinary_Roundtrip(t *testing.T) {
+	f := format.Binary(codex.Bytes())
+	input := []byte{0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A}
+
+	marshalled, err := f.Marshal(input)
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+	if !bytes.Equal(marshalled, input) {
+		t.Errorf("Marshal should be identity: want %v, got %v", input, marshalled)
+	}
+
+	got, err := f.Unmarshal(marshalled)
+	if err != nil {
+		t.Fatalf("Unmarshal: %v", err)
+	}
+	if !bytes.Equal(got, input) {
+		t.Errorf("Unmarshal roundtrip: want %v, got %v", input, got)
+	}
+}
+
+func TestBinary_ContentType_Default(t *testing.T) {
+	f := format.Binary(codex.Bytes())
+	if f.ContentType() != "application/octet-stream" {
+		t.Errorf("want application/octet-stream, got %q", f.ContentType())
+	}
+}
+
+func TestBinary_ContentType_Override(t *testing.T) {
+	f := format.Binary(codex.Bytes()).WithContentType("image/png")
+	if f.ContentType() != "image/png" {
+		t.Errorf("want image/png, got %q", f.ContentType())
+	}
+}
+
+func TestBinary_Marshal_ConstraintFail_ReturnsError(t *testing.T) {
+	prefix := []byte{0x89, 0x50, 0x4E, 0x47}
+	f := format.Binary(codex.Bytes().Refine(validate.HasPrefix(prefix)))
+
+	// Wrong prefix — Marshal should fail before writing anything.
+	_, err := f.Marshal([]byte{0x00, 0x01, 0x02, 0x03})
+	if err == nil {
+		t.Fatal("expected constraint error, got nil")
+	}
+	// Non-struct codecs return ConstraintError directly (not wrapped in ValidationErrors).
+	var constraintErr codex.ConstraintError
+	if !errors.As(err, &constraintErr) {
+		t.Fatalf("expected ConstraintError, got %T: %v", err, err)
+	}
+}
+
+func TestBinary_Unmarshal_ConstraintFail_ReturnsError(t *testing.T) {
+	prefix := []byte{0x89, 0x50, 0x4E, 0x47}
+	f := format.Binary(codex.Bytes().Refine(validate.HasPrefix(prefix)))
+
+	// Data read from disk doesn't match prefix.
+	_, err := f.Unmarshal([]byte{0x00, 0x01, 0x02, 0x03, 0x04})
+	if err == nil {
+		t.Fatal("expected constraint error, got nil")
+	}
+	// Non-struct codecs return ConstraintError directly (not wrapped in ValidationErrors).
+	var constraintErr codex.ConstraintError
+	if !errors.As(err, &constraintErr) {
+		t.Fatalf("expected ConstraintError, got %T: %v", err, err)
+	}
+}
+
+func TestBinary_Marshal_ValidPrefix_ReturnsRawBytes(t *testing.T) {
+	prefix := []byte{0x89, 0x50, 0x4E, 0x47}
+	f := format.Binary(codex.Bytes().Refine(validate.HasPrefix(prefix)))
+
+	input := []byte{0x89, 0x50, 0x4E, 0x47, 0xFF, 0xAB}
+	out, err := f.Marshal(input)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !bytes.Equal(out, input) {
+		t.Errorf("Binary.Marshal should return raw bytes unchanged")
+	}
+}
+
+func TestBinary_IsNotStreamable(t *testing.T) {
+	f := format.Binary(codex.Bytes())
+	if f.IsStreamable() {
+		t.Error("Binary format must not be streamable")
+	}
+}
+
+// ── Binary + File integration (Observer) ─────────────────────────────────────
+
+func TestBinary_FileObserver_WriteSuccess(t *testing.T) {
+	dir := t.TempDir()
+	path := dir + "/out.bin"
+	spy := &fileObserverSpy{}
+
+	f := format.NewFile(path, format.Binary(codex.Bytes()))
+	err := f.Write(nil, []byte{0x01, 0x02, 0x03}, format.FileOptions{Observer: spy})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(spy.writes) != 1 || !spy.writes[0].success {
+		t.Errorf("expected 1 successful write, got %+v", spy.writes)
+	}
+}
+
+func TestBinary_FileObserver_WriteConstraintFail(t *testing.T) {
+	dir := t.TempDir()
+	path := dir + "/out.bin"
+	spy := &fileObserverSpy{}
+
+	prefix := []byte{0xAA, 0xBB}
+	f := format.NewFile(path, format.Binary(codex.Bytes().Refine(validate.HasPrefix(prefix))))
+	err := f.Write(nil, []byte{0x00, 0x01}, format.FileOptions{Observer: spy})
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	var encErr format.FileEncodeError
+	if !errors.As(err, &encErr) {
+		t.Fatalf("expected FileEncodeError, got %T: %v", err, err)
+	}
+	if len(spy.writes) != 1 || spy.writes[0].success {
+		t.Errorf("expected 1 failed write callback, got %+v", spy.writes)
+	}
+}
+
+func TestBinary_FileObserver_ReadSuccess(t *testing.T) {
+	dir := t.TempDir()
+	path := dir + "/data.bin"
+	data := []byte{0x10, 0x20, 0x30}
+	if err := writeRawFile(path, data); err != nil {
+		t.Fatal(err)
+	}
+	spy := &fileObserverSpy{}
+
+	f := format.NewFile(path, format.Binary(codex.Bytes()))
+	got, err := f.Read(nil, format.FileOptions{Observer: spy})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !bytes.Equal(got, data) {
+		t.Errorf("read mismatch: want %v, got %v", data, got)
+	}
+	if len(spy.reads) != 1 || !spy.reads[0].success {
+		t.Errorf("expected 1 successful read, got %+v", spy.reads)
+	}
+}
+
+func TestBinary_FileObserver_ReadConstraintFail(t *testing.T) {
+	dir := t.TempDir()
+	path := dir + "/data.bin"
+	if err := writeRawFile(path, []byte{0x00, 0x01, 0x02}); err != nil {
+		t.Fatal(err)
+	}
+	spy := &fileObserverSpy{}
+
+	prefix := []byte{0xAA, 0xBB}
+	f := format.NewFile(path, format.Binary(codex.Bytes().Refine(validate.HasPrefix(prefix))))
+	_, err := f.Read(nil, format.FileOptions{Observer: spy})
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	var decErr format.FileDecodeError
+	if !errors.As(err, &decErr) {
+		t.Fatalf("expected FileDecodeError, got %T: %v", err, err)
+	}
+	if len(spy.reads) != 1 || spy.reads[0].success {
+		t.Errorf("expected 1 failed read callback, got %+v", spy.reads)
+	}
+}
+
+// writeRawFile writes raw bytes to path.
+func writeRawFile(path string, data []byte) error {
+	return os.WriteFile(path, data, 0644)
 }
 
 // --- Example functions (shown on pkg.go.dev as runnable snippets) ---

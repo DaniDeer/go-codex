@@ -8,6 +8,7 @@
 //   - Validates path variables (date format) with a [format.FilePathParam] codec
 //   - Handles all typed file errors with [errors.As]
 //   - Wires a [stats.FileObserver] for per-operation metrics + slog for structured errors
+//   - Writes and reads raw binary (PNG) files using [format.Binary] + [validate.HasPrefix]
 //
 // Key patterns shown:
 //   - [format.NewFile] — declare once, use anywhere (mirrors rest.Route / events.Channel)
@@ -16,6 +17,7 @@
 //   - [format.FileOptions] — wiring observer + custom file permission
 //   - [format.FilePathParamError], [format.MissingFilePathVarError],
 //     [format.FileReadError] — navigate via [errors.As]
+//   - [format.Binary] — raw binary file I/O with magic-byte validation
 //
 // Run with: go run ./examples/file-io
 package main
@@ -338,9 +340,74 @@ func main() {
 		}
 	}
 
-	// ── Section 4: Observer summary ───────────────────────────────────────────
+	// ── Section 4: Binary file I/O with format.Binary ────────────────────────
 
-	fmt.Println("\n── Section 4: Observer summary ────────────────────────────────")
+	fmt.Println("\n── Section 4: Binary (PNG) file I/O ───────────────────────────")
+
+	// pngSignature is the 8-byte PNG magic bytes defined in the PNG specification.
+	pngSignature := []byte{0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A}
+
+	// pngFile is a typed file descriptor for raw PNG data.
+	// format.Binary writes and reads []byte as-is (unlike Gob, which adds framing).
+	// validate.HasPrefix rejects any file that does not begin with the PNG magic bytes.
+	pngFile := format.NewFile(
+		dataDir+"/images/{name}.png",
+		format.Binary(
+			codex.Bytes().
+				Refine(validate.MaxBytes(10*1024*1024)).
+				Refine(validate.HasPrefix(pngSignature)),
+		).WithContentType("image/png"),
+		format.FilePathParam{Name: "name", Description: "Image name (no extension)."},
+	)
+
+	if err := os.MkdirAll(dataDir+"/images", 0755); err != nil {
+		slog.Error("mkdir failed", "err", err)
+		os.Exit(1)
+	}
+
+	// Minimal syntactically-valid 1×1 pixel PNG (67 bytes).
+	validPNG := []byte{
+		0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, // PNG signature
+		0x00, 0x00, 0x00, 0x0D, 0x49, 0x48, 0x44, 0x52, // IHDR chunk length + type
+		0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, // width=1, height=1
+		0x08, 0x02, 0x00, 0x00, 0x00, 0x90, 0x77, 0x53, // bit depth, color type, CRC
+		0xDE, 0x00, 0x00, 0x00, 0x0C, 0x49, 0x44, 0x41, // IDAT chunk
+		0x54, 0x08, 0xD7, 0x63, 0xF8, 0xCF, 0xC0, 0x00, // compressed pixel data
+		0x00, 0x00, 0x02, 0x00, 0x01, 0xE2, 0x21, 0xBC, // IDAT CRC
+		0x33, 0x00, 0x00, 0x00, 0x00, 0x49, 0x45, 0x4E, // IEND chunk
+		0x44, 0xAE, 0x42, 0x60, 0x82, // IEND CRC
+	}
+
+	pngVars := map[string]string{"name": "chart"}
+
+	// Write — FileObserver.RecordFileWrite is called after the write.
+	if err := pngFile.Write(pngVars, validPNG, format.FileOptions{Observer: obs}); err != nil {
+		slog.Error("PNG write failed", "err", err)
+	} else {
+		fmt.Printf("  written PNG: %d bytes\n", len(validPNG))
+	}
+
+	// Read — FileObserver.RecordFileRead is called after the read.
+	data, err := pngFile.Read(pngVars, format.FileOptions{Observer: obs})
+	if err != nil {
+		slog.Error("PNG read failed", "err", err)
+	} else {
+		fmt.Printf("  read PNG: %d bytes, first 4: %X\n", len(data), data[:4])
+	}
+
+	// Write invalid data (missing PNG magic bytes) — constraint failure.
+	notPNG := []byte("this is not a PNG file")
+	if err := pngFile.Write(pngVars, notPNG, format.FileOptions{Observer: obs}); err != nil {
+		var encErr format.FileEncodeError
+		if errors.As(err, &encErr) {
+			fmt.Printf("  FileEncodeError (constraint): path=%q\n", encErr.Path)
+			slog.Warn("PNG write rejected", "path", encErr.Path, "cause", encErr.Err)
+		}
+	}
+
+	// ── Section 5: Observer summary ───────────────────────────────────────────
+
+	fmt.Println("\n── Section 5: Observer summary ────────────────────────────────")
 	obs.mu.Lock()
 	defer obs.mu.Unlock()
 	fmt.Printf("  successful reads:  %d\n", obs.reads)

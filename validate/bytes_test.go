@@ -1,6 +1,7 @@
 package validate_test
 
 import (
+	"errors"
 	"testing"
 
 	"github.com/DaniDeer/go-codex/codex"
@@ -50,7 +51,7 @@ func TestMaxBytes_NoSchemaAnnotation(t *testing.T) {
 }
 
 func TestMaxBytes_RefineIntegration(t *testing.T) {
-	codec := codex.Bytes().Refine(validate.MaxBytes(3))
+	codec := codex.Base64().Refine(validate.MaxBytes(3))
 
 	// Decode base64("ab") = 2 bytes — OK.
 	if _, err := codec.Decode("YWI="); err != nil {
@@ -102,7 +103,7 @@ func TestMinBytes_NoSchemaAnnotation(t *testing.T) {
 }
 
 func TestMinBytes_RefineIntegration(t *testing.T) {
-	codec := codex.Bytes().Refine(validate.MinBytes(2))
+	codec := codex.Base64().Refine(validate.MinBytes(2))
 
 	// Decode base64("ab") = 2 bytes — OK.
 	if _, err := codec.Decode("YWI="); err != nil {
@@ -112,5 +113,73 @@ func TestMinBytes_RefineIntegration(t *testing.T) {
 	// Decode base64("a") = 1 byte — below minimum.
 	if _, err := codec.Decode("YQ=="); err == nil {
 		t.Fatal("expected error for 1-byte payload with MinBytes(2)")
+	}
+}
+
+// ── HasPrefix ─────────────────────────────────────────────────────────────────
+
+func TestHasPrefix_Match(t *testing.T) {
+	c := validate.HasPrefix([]byte{0x89, 0x50, 0x4E, 0x47})
+	if !c.Check([]byte{0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A}) {
+		t.Error("expected Check to pass for matching prefix")
+	}
+}
+
+func TestHasPrefix_NoMatch(t *testing.T) {
+	c := validate.HasPrefix([]byte{0x89, 0x50, 0x4E, 0x47})
+	if c.Check([]byte{0x00, 0x01, 0x02, 0x03}) {
+		t.Error("expected Check to fail for non-matching prefix")
+	}
+}
+
+func TestHasPrefix_EmptyPrefix(t *testing.T) {
+	c := validate.HasPrefix([]byte{})
+	if !c.Check([]byte{0x01, 0x02}) {
+		t.Error("empty prefix should always pass")
+	}
+	if !c.Check([]byte{}) {
+		t.Error("empty prefix should pass even for empty input")
+	}
+}
+
+func TestHasPrefix_TooShort(t *testing.T) {
+	c := validate.HasPrefix([]byte{0x89, 0x50, 0x4E, 0x47})
+	if c.Check([]byte{0x89, 0x50}) {
+		t.Error("expected Check to fail when value is shorter than prefix")
+	}
+}
+
+func TestHasPrefix_Message_ContainsPrefixInfo(t *testing.T) {
+	c := validate.HasPrefix([]byte{0x89, 0x50})
+	msg := c.Message([]byte{0x00, 0x01})
+	if msg == "" {
+		t.Fatal("Message should not be empty")
+	}
+}
+
+func TestHasPrefix_Name(t *testing.T) {
+	c := validate.HasPrefix([]byte{0x89, 0x50})
+	if c.Name == "" {
+		t.Fatal("Name should not be empty")
+	}
+}
+
+func TestHasPrefix_RefineIntegration_ConstraintError(t *testing.T) {
+	prefix := []byte{0x89, 0x50, 0x4E, 0x47}
+	codec := codex.Bytes().Refine(validate.HasPrefix(prefix))
+
+	// Valid prefix passes.
+	if _, err := codec.Encode([]byte{0x89, 0x50, 0x4E, 0x47, 0x0D}); err != nil {
+		t.Fatalf("expected no error for matching prefix: %v", err)
+	}
+
+	// Wrong prefix produces ConstraintError (non-struct codec returns ConstraintError directly).
+	_, err := codec.Encode([]byte{0x00, 0x01, 0x02, 0x03, 0x04})
+	if err == nil {
+		t.Fatal("expected error for non-matching prefix")
+	}
+	var constraintErr codex.ConstraintError
+	if !errors.As(err, &constraintErr) {
+		t.Fatalf("expected ConstraintError, got %T: %v", err, err)
 	}
 }

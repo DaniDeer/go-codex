@@ -183,6 +183,49 @@ func (f Format[T]) Schema() schema.Schema {
 	return f.codec.Schema
 }
 
+// Binary returns a Format that reads and writes raw binary data.
+//
+// It is equivalent to [NewTyped][[]byte] with identity marshal and validate+identity
+// unmarshal — bytes are stored and read exactly as they are, without any encoding.
+// Unlike [Gob] (which adds framing bytes), Binary writes raw bytes that any tool
+// understanding the underlying format (PNG viewer, PDF reader, etc.) can open.
+//
+// The codec validates the []byte value via [Codec.Refine] constraints on both paths:
+//   - Write: constraints run before the bytes are written; failure returns [format.FileEncodeError] (via [format.File]).
+//   - Read: constraints run after the bytes are read; failure returns [format.FileDecodeError] (via [format.File]).
+//
+// ContentType defaults to "application/octet-stream"; override with [Format.WithContentType].
+//
+// For typed binary formats where the Go type is not []byte (e.g. [image.Image],
+// Protobuf structs) or for write-only formats, use [NewTyped] directly.
+//
+// Typical usage:
+//
+//	var pngSignature = []byte{0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A}
+//
+//	var pngFile = format.NewFile(
+//	    "images/{name}.png",
+//	    format.Binary(
+//	        codex.Bytes().
+//	            Refine(validate.MaxBytes(5*1024*1024)).
+//	            Refine(validate.HasPrefix(pngSignature)),
+//	    ).WithContentType("image/png"),
+//	    format.FilePathParam{Name: "name"},
+//	)
+func Binary(c codex.Codec[[]byte]) Format[[]byte] {
+	return Format[[]byte]{
+		codec:        c,
+		contentType:  "application/octet-stream",
+		marshalTyped: func(v []byte) ([]byte, error) { return v, nil },
+		unmarshalTyped: func(data []byte) ([]byte, error) {
+			if err := c.Validate(data); err != nil {
+				return nil, err
+			}
+			return data, nil
+		},
+	}
+}
+
 // Gob returns a Format[T] that serialises T using encoding/gob.
 //
 // Unlike JSON, YAML, and TOML — which pass a map[string]any intermediate through

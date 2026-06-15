@@ -16,14 +16,12 @@
 package main
 
 import (
-	"bytes"
 	"fmt"
 	"os"
 
 	"github.com/DaniDeer/go-codex/api/rest"
 	"github.com/DaniDeer/go-codex/codex"
 	"github.com/DaniDeer/go-codex/format"
-	"github.com/DaniDeer/go-codex/schema"
 	"github.com/DaniDeer/go-codex/validate"
 )
 
@@ -44,58 +42,26 @@ type DownloadImageRequest struct {
 // pngMagic is the 8-byte PNG signature defined in the PNG specification.
 var pngMagic = []byte{0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A}
 
-// rawBytesCodec passes []byte through without base64 encoding.
-// Unlike codex.Bytes(), which encodes to/from base64, this codec treats the
-// value as opaque binary data — suitable for binary HTTP request bodies.
-var rawBytesCodec = codex.Codec[[]byte]{
-	Schema: schema.Schema{Type: "string", Format: "binary"},
-	Encode: func(v []byte) (any, error) { return v, nil },
-	Decode: func(v any) ([]byte, error) {
-		b, ok := v.([]byte)
-		if !ok {
-			return nil, codex.TypeMismatchError{Expected: "bytes", Got: fmt.Sprintf("%T", v)}
-		}
-		return b, nil
-	},
-}
-
 // maxPNGBytes is the maximum accepted upload size (5 MiB).
 const maxPNGBytes = 5 * 1024 * 1024
 
-// pngCodec extends rawBytesCodec with two constraints applied in order:
+// pngCodec validates PNG payloads with two constraints applied in order:
 //  1. validate.MaxBytes — rejects payloads that exceed the size limit.
-//  2. PNG magic-bytes check — rejects data that is not a PNG file.
+//  2. validate.HasPrefix — rejects data that does not begin with the PNG magic bytes.
 //
 // MaxBytes runs first so oversized bodies are rejected with a clear size error
 // before the magic-byte check reads any content.
-var pngCodec = rawBytesCodec.
+//
+// codex.Bytes() passes []byte through without any encoding — the raw binary
+// payload is the wire form for HTTP bodies and file I/O.
+var pngCodec = codex.Bytes().
 	Refine(validate.MaxBytes(maxPNGBytes)).
-	Refine(codex.Constraint[[]byte]{
-		Name: "png-header",
-		Check: func(v []byte) bool {
-			return len(v) >= 8 && bytes.Equal(v[:8], pngMagic)
-		},
-		Message: func([]byte) string {
-			return "expected PNG data: missing or invalid PNG magic bytes (\\x89PNG\\r\\n\\x1a\\n)"
-		},
-	})
+	Refine(validate.HasPrefix(pngMagic))
 
-// pngFormat is a format.Format[[]byte] that reads and writes raw PNG bytes.
-// format.NewTyped is used because the wire representation is binary, not a
-// map[string]any intermediate. The codec validates (PNG magic bytes) on both
-// the marshal path (via codec.Encode inside format.Marshal) and on the unmarshal
-// path (explicitly, because format.NewTyped's unmarshal bypasses the codec).
-var pngFormat = format.NewTyped(
-	pngCodec,
-	func(v []byte) ([]byte, error) { return v, nil }, // marshal: identity — bytes are already the wire form
-	func(data []byte) ([]byte, error) { // unmarshal: validate then return
-		if err := pngCodec.Validate(data); err != nil {
-			return nil, err
-		}
-		return data, nil
-	},
-	"image/png",
-)
+// pngFormat reads and writes raw PNG bytes.
+// format.Binary uses the NewTyped path internally: bytes are stored as-is,
+// and pngCodec constraints are validated on both write and read.
+var pngFormat = format.Binary(pngCodec).WithContentType("image/png")
 
 // uuidCodec validates that a string is a valid UUID (used for the {id} path param).
 var uuidCodec = codex.String().Refine(validate.UUID)

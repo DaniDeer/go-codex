@@ -24,6 +24,31 @@
 //	codex.Time()     // time.Time ↔ RFC 3339 string
 //	codex.Any()      // any
 //
+// # Binary codecs — Bytes vs Base64
+//
+// Both [Bytes] and [Base64] work with []byte in Go, but serialize differently:
+//
+//	codex.Bytes()    // raw []byte pass-through; schema format "binary" (OpenAPI binary body)
+//	codex.Base64()   // base64 string encoding; schema format "byte" (OpenAPI base64 field)
+//
+// Use [Bytes] for binary file I/O and HTTP binary request/response bodies — the wire
+// representation is the raw bytes themselves. Combine with [format.Binary] and
+// [validate.HasPrefix] for magic-byte validation:
+//
+//	pngSignature := []byte{0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A}
+//	pngCodec := codex.Bytes().
+//	    Refine(validate.MaxBytes(5 * 1024 * 1024)).
+//	    Refine(validate.HasPrefix(pngSignature))
+//
+// Use [Base64] when the binary data is embedded inside a JSON document as a
+// base64-encoded string field (e.g. an "avatar" field in a user profile):
+//
+//	codex.OptionalField("avatar",
+//	    codex.Base64().Refine(validate.MaxBytes(65536)).
+//	        WithDescription("Profile image (base64, max 64 KiB)."),
+//	    ...
+//	)
+//
 // # Struct codecs
 //
 // Build struct codecs with [RequiredField] and [OptionalField]:

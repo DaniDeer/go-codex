@@ -48,7 +48,7 @@ var UserCodec = codex.Struct[User](
 		WithDescription("Access role assigned to the user."), func(u User) string { return u.Role }, func(u *User, v string) { u.Role = v }),
 	// Bytes: base64-encoded avatar image. Schema: {type:string, format:byte}.
 	// MaxBytes limits the decoded payload to 64 KiB.
-	codex.OptionalField("avatar", codex.Bytes().Refine(validate.MaxBytes(65536)).WithDescription("Profile image as base64-encoded bytes (max 64 KiB)."), func(u User) []byte { return u.Avatar }, func(u *User, v []byte) { u.Avatar = v }),
+	codex.OptionalField("avatar", codex.Base64().Refine(validate.MaxBytes(65536)).WithDescription("Profile image as base64-encoded bytes (max 64 KiB)."), func(u User) []byte { return u.Avatar }, func(u *User, v []byte) { u.Avatar = v }),
 	// Nullable: note is absent when nil; present when non-nil.
 	codex.OptionalField("note", codex.Nullable(codex.String()).WithDescription("Optional admin note about the user."), func(u User) *string { return u.Note }, func(u *User, v *string) { u.Note = v }),
 )

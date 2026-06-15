@@ -9,10 +9,11 @@ A `Codec[T]` works with an intermediate representation (`map[string]any`) that i
 ## Built-in formats
 
 ```go
-json := format.JSON(userCodec)   // Content-Type: application/json
-yaml := format.YAML(userCodec)   // Content-Type: application/yaml
-toml := format.TOML(userCodec)   // Content-Type: application/toml
-gob  := format.Gob(userCodec)    // Content-Type: application/gob (binary)
+json   := format.JSON(userCodec)   // Content-Type: application/json
+yaml   := format.YAML(userCodec)   // Content-Type: application/yaml
+toml   := format.TOML(userCodec)   // Content-Type: application/toml
+gob    := format.Gob(userCodec)    // Content-Type: application/gob (Go-to-Go binary)
+binary := format.Binary(bytesCodec) // Content-Type: application/octet-stream (raw binary)
 ```
 
 All four share the same codec — constraints, schema, and field names are identical.
@@ -43,6 +44,68 @@ order, err := GobFormat.Unmarshal(data)
 Gob is ideal for internal Go-to-Go communication where binary efficiency matters. Use JSON/YAML/TOML for external-facing APIs or when OpenAPI/AsyncAPI spec generation is needed.
 
 **Gob in OpenAPI/AsyncAPI specs:** the spec renderer emits `"application/gob"` as the content type alongside the JSON Schema body. The schema correctly documents the logical data shape for human readers, but tooling (Swagger UI, API gateways, code generators) cannot interpret binary gob payloads. Keep `"application/gob"` out of external-facing specs; use it only for internal Go-to-Go channels where the Go library itself is the authoritative contract.
+
+## Binary — raw binary file I/O and HTTP bodies
+
+`format.Binary` writes and reads `[]byte` exactly as-is — no encoding framing is added. Any tool that understands the underlying format (an image viewer, a PDF reader, a media player) can open the resulting file directly.
+
+**Gob vs Binary:**
+
+| | `format.Gob` | `format.Binary` |
+|---|---|---|
+| Wire form | Gob-framed bytes (adds header) | Raw bytes — byte-identical to original |
+| Opens in external tools | No | Yes |
+| Use case | Go-to-Go internal caching | PNG, JPEG, PDF, WAV file I/O; binary HTTP bodies |
+
+```go
+// pngSignature is the 8-byte PNG magic bytes (PNG specification).
+var pngSignature = []byte{0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A}
+
+// Declare once — the file descriptor validates magic bytes on every read and write.
+var pngFile = format.NewFile(
+    "images/{name}.png",
+    format.Binary(
+        codex.Bytes().
+            Refine(validate.MaxBytes(5*1024*1024)).
+            Refine(validate.HasPrefix(pngSignature)),
+    ).WithContentType("image/png"),
+    format.FilePathParam{Name: "name"},
+)
+
+// Write — magic-byte constraint runs before the file is written.
+err := pngFile.Write(
+    map[string]string{"name": "chart"},
+    pngBytes,
+    format.FileOptions{Observer: obs},
+)
+
+// Read — magic-byte constraint runs after the file is read.
+data, err := pngFile.Read(
+    map[string]string{"name": "chart"},
+    format.FileOptions{Observer: obs},
+)
+```
+
+Constraint failures surface as `format.FileEncodeError` (write) or `format.FileDecodeError` (read), both implementing `Unwrap()` and navigable via `errors.As`. The `FileObserver` callbacks fire on every path — success and failure alike.
+
+### codex.Bytes vs codex.Base64
+
+Both work with `[]byte` in Go, but the wire representation differs:
+
+| | `codex.Bytes()` | `codex.Base64()` |
+|---|---|---|
+| OpenAPI schema | `type: string, format: binary` | `type: string, format: byte` |
+| Wire representation | Raw bytes (not encoded) | Base64 string |
+| Use case | Binary file I/O, HTTP binary body | Binary field embedded in a JSON document |
+
+```go
+// Bytes: raw binary in a file or HTTP body
+pngCodec := codex.Bytes().Refine(validate.HasPrefix(pngSignature))
+
+// Base64: binary field inside a JSON document
+avatarField := codex.Base64().Refine(validate.MaxBytes(65536)).
+    WithDescription("Profile image (base64, max 64 KiB).")
+```
 
 ## File I/O — declarative typed file access
 
@@ -178,29 +241,32 @@ csvFmt := format.NewTyped(userCodec,
 
 `format.NewTyped` runs the codec's `Refine` constraints on the value **before** calling `marshal`, so validation always fires regardless of output format.
 
-**Binary formats** — `NewTyped` bypasses the `map[string]any` intermediate entirely, so the wire representation stays binary. The unmarshal function must call `codec.Validate` explicitly (unlike the JSON/YAML path which runs through `Decode`):
+**Raw binary `[]byte` formats** — for raw binary data where `T = []byte`, use `format.Binary` instead of wiring `NewTyped` manually:
 
 ```go
-// Raw PNG request body with magic-byte validation.
-pngMagic := []byte{0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A}
-pngCodec := codex.Codec[[]byte]{
-    Schema: schema.Schema{Type: "string", Format: "binary"},
-    Encode: func(v []byte) (any, error) { return v, nil },
-    Decode: func(v any) ([]byte, error) { return v.([]byte), nil },
-}.
-    Refine(validate.MaxBytes(5 * 1024 * 1024)).  // reject before reading content
-    Refine(codex.Constraint[[]byte]{
-        Name:    "png-header",
-        Check:   func(v []byte) bool { return len(v) >= 8 && bytes.Equal(v[:8], pngMagic) },
-        Message: func([]byte) string { return "expected PNG magic bytes" },
-    })
+// format.Binary is the recommended shorthand for raw []byte I/O.
+pngSignature := []byte{0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A}
+pngFormat := format.Binary(
+    codex.Bytes().
+        Refine(validate.MaxBytes(5 * 1024 * 1024)).
+        Refine(validate.HasPrefix(pngSignature)),
+).WithContentType("image/png")
+```
 
-pngFormat := format.NewTyped(
-    pngCodec,
-    func(v []byte) ([]byte, error) { return v, nil },
-    func(data []byte) ([]byte, error) {
-        if err := pngCodec.Validate(data); err != nil { return nil, err }
-        return data, nil
+`format.Binary` is equivalent to `NewTyped[[]byte]` with identity marshal/unmarshal — `NewTyped` is not needed for the `[]byte` raw passthrough case.
+
+**Typed binary formats** — use `NewTyped` directly when `T ≠ []byte` or when real encoding/decoding logic is required (e.g. `image.Image`, Protobuf structs, write-only formats):
+
+```go
+// Decode PNG bytes into image.Image — NewTyped is the right tool here.
+imgFormat := format.NewTyped(
+    imageCodec,
+    func(img image.Image) ([]byte, error) {
+        var buf bytes.Buffer
+        return buf.Bytes(), png.Encode(&buf, img)
+    },
+    func(data []byte) (image.Image, error) {
+        return png.Decode(bytes.NewReader(data))
     },
     "image/png",
 )

@@ -279,9 +279,40 @@ func Bool() Codec[bool] {
 	}
 }
 
-// Bytes returns a Codec for []byte using base64 standard encoding.
-// Encoded values are strings; schema format is "byte".
+// Bytes returns a Codec for []byte that passes raw bytes through without encoding.
+// Schema format is "binary" (OpenAPI binary body convention for raw HTTP bodies and file I/O).
+//
+// Use Bytes for binary file I/O (format.Binary) and HTTP binary request/response bodies.
+// For base64-encoded fields inside JSON documents, use Base64 instead.
+//
+// Errors:
+//   - [TypeMismatchError] — Decode receives a value that is not []byte
+//   - [ConstraintError] — a Refine constraint is violated (when constraints are added)
 func Bytes() Codec[[]byte] {
+	return Codec[[]byte]{
+		Schema: schema.Schema{Type: "string", Format: "binary"},
+		Encode: func(v []byte) (any, error) { return v, nil },
+		Decode: func(v any) ([]byte, error) {
+			b, ok := v.([]byte)
+			if !ok {
+				return nil, TypeMismatchError{Expected: "bytes", Got: fmt.Sprintf("%T", v)}
+			}
+			return b, nil
+		},
+	}
+}
+
+// Base64 returns a Codec for []byte using standard base64 encoding.
+// Encoded values are base64 strings; schema format is "byte" (OpenAPI base64 convention).
+//
+// Use Base64 when embedding binary data inside a JSON document (e.g. an "avatar" field).
+// For raw binary data in file I/O or HTTP binary bodies, use Bytes instead.
+//
+// Errors:
+//   - [TypeMismatchError] — Decode receives a non-string value
+//   - A plain error — the string is not valid base64
+//   - [ConstraintError] — a Refine constraint is violated (when constraints are added)
+func Base64() Codec[[]byte] {
 	return Codec[[]byte]{
 		Schema: schema.Schema{Type: "string", Format: "byte"},
 		Encode: func(v []byte) (any, error) {

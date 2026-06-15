@@ -224,7 +224,8 @@ func TestPrimitive_TypeMismatchError(t *testing.T) {
 		{"Float64/string", func(v any) error { _, err := codex.Float64().Decode(v); return err }, "x", "number"},
 		{"String/int", func(v any) error { _, err := codex.String().Decode(v); return err }, 42, "string"},
 		{"Bool/int", func(v any) error { _, err := codex.Bool().Decode(v); return err }, 1, "boolean"},
-		{"Bytes/int", func(v any) error { _, err := codex.Bytes().Decode(v); return err }, 99, "string"},
+		{"Base64/int", func(v any) error { _, err := codex.Base64().Decode(v); return err }, 99, "string"},
+		{"Bytes/string", func(v any) error { _, err := codex.Bytes().Decode(v); return err }, "notbytes", "bytes"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

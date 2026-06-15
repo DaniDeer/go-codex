@@ -1,6 +1,7 @@
 package codex_test
 
 import (
+	"errors"
 	"math"
 	"testing"
 
@@ -195,7 +196,7 @@ func TestBool_Schema(t *testing.T) {
 	}
 }
 
-// ── Bytes ─────────────────────────────────────────────────────────────────────
+// ── Bytes (raw binary) ────────────────────────────────────────────────────────
 
 func TestBytes_RoundTrip(t *testing.T) {
 	c := codex.Bytes()
@@ -213,8 +214,79 @@ func TestBytes_RoundTrip(t *testing.T) {
 	}
 }
 
-func TestBytes_EncodeIsBase64String(t *testing.T) {
+func TestBytes_EncodeIsIdentity(t *testing.T) {
 	c := codex.Bytes()
+	input := []byte{0x89, 0x50, 0x4E, 0x47}
+	enc, err := c.Encode(input)
+	if err != nil {
+		t.Fatalf("Encode: %v", err)
+	}
+	b, ok := enc.([]byte)
+	if !ok {
+		t.Fatalf("expected []byte, got %T", enc)
+	}
+	if string(b) != string(input) {
+		t.Errorf("Encode should be identity: want %v, got %v", input, b)
+	}
+}
+
+func TestBytes_DecodeWrongType(t *testing.T) {
+	c := codex.Bytes()
+	_, err := c.Decode(42)
+	if err == nil {
+		t.Fatal("expected error for non-[]byte input")
+	}
+	var mismatch codex.TypeMismatchError
+	if !errors.As(err, &mismatch) {
+		t.Fatalf("expected TypeMismatchError, got %T: %v", err, err)
+	}
+	if mismatch.Expected != "bytes" {
+		t.Errorf("expected Expected=%q, got %q", "bytes", mismatch.Expected)
+	}
+}
+
+func TestBytes_Schema(t *testing.T) {
+	c := codex.Bytes()
+	if c.Schema.Type != "string" {
+		t.Errorf("want type=string, got %q", c.Schema.Type)
+	}
+	if c.Schema.Format != "binary" {
+		t.Errorf("want format=binary, got %q", c.Schema.Format)
+	}
+}
+
+func TestBytes_WithRefine_ConstraintError(t *testing.T) {
+	c := codex.Bytes().Refine(codex.Constraint[[]byte]{
+		Name:    "nonempty",
+		Check:   func(v []byte) bool { return len(v) > 0 },
+		Message: func([]byte) string { return "must not be empty" },
+	})
+	_, err := c.Encode([]byte{})
+	if err == nil {
+		t.Fatal("expected error for empty bytes")
+	}
+}
+
+// ── Base64 ────────────────────────────────────────────────────────────────────
+
+func TestBase64_RoundTrip(t *testing.T) {
+	c := codex.Base64()
+	original := []byte{0x00, 0xFF, 0xAB, 0x12}
+	enc, err := c.Encode(original)
+	if err != nil {
+		t.Fatalf("Encode: %v", err)
+	}
+	got, err := c.Decode(enc)
+	if err != nil {
+		t.Fatalf("Decode: %v", err)
+	}
+	if string(got) != string(original) {
+		t.Errorf("round-trip mismatch: want %v, got %v", original, got)
+	}
+}
+
+func TestBase64_EncodeIsBase64String(t *testing.T) {
+	c := codex.Base64()
 	enc, _ := c.Encode([]byte("hello"))
 	s, ok := enc.(string)
 	if !ok {
@@ -225,22 +297,22 @@ func TestBytes_EncodeIsBase64String(t *testing.T) {
 	}
 }
 
-func TestBytes_DecodeInvalidBase64(t *testing.T) {
-	c := codex.Bytes()
+func TestBase64_DecodeInvalidBase64(t *testing.T) {
+	c := codex.Base64()
 	if _, err := c.Decode("not-valid-base64!!!"); err == nil {
 		t.Fatal("expected error for invalid base64")
 	}
 }
 
-func TestBytes_DecodeWrongType(t *testing.T) {
-	c := codex.Bytes()
+func TestBase64_DecodeWrongType(t *testing.T) {
+	c := codex.Base64()
 	if _, err := c.Decode(42); err == nil {
 		t.Fatal("expected error for non-string input")
 	}
 }
 
-func TestBytes_Schema(t *testing.T) {
-	c := codex.Bytes()
+func TestBase64_Schema(t *testing.T) {
+	c := codex.Base64()
 	if c.Schema.Type != "string" {
 		t.Errorf("want type=string, got %q", c.Schema.Type)
 	}
