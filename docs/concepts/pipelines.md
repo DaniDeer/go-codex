@@ -215,3 +215,45 @@ if errors.As(err, &ce) {
 - [examples/forge-oee](https://github.com/DaniDeer/go-codex/tree/main/examples/forge-oee) — OEE KPI computation, governance, Compose, MeasuredCodec
 - [examples/forge-collection](https://github.com/DaniDeer/go-codex/tree/main/examples/forge-collection) — Map, Filter, Reduce, MapValuesK on sensor batches
 - [examples/oee-chain](https://github.com/DaniDeer/go-codex/tree/main/examples/oee-chain) — full three-layer chain: codex + api/events + forge + AsyncAPI + pipeline spec
+
+## Binary data in forge functions
+
+`forge.NewFunction` accepts any codec type — including `codex.Bytes` for raw binary data (images, documents, sensor captures). Binary functions work exactly like numeric or struct functions:
+
+```go
+pngCodec := codex.Bytes().
+    Refine(validate.MaxBytes(5 * 1024 * 1024)).
+    Refine(validate.PNG).
+    WithTitle("rawImage")
+
+// Validates input + output; PNG magic-byte check runs on both
+resizeImage := forge.NewFunction("resizeImage", "1.0.0",
+    pngCodec,
+    pngCodec.WithTitle("resizedImage"),
+    func(raw []byte) ([]byte, error) {
+        return resizePNG(raw, 128, 128)
+    },
+    forge.FunctionMeta{Description: "Downscale PNG to 128×128 thumbnail."},
+)
+
+result, err := resizeImage.Apply(pngBytes)
+// validate.PNG ran on pngBytes (input) and result (output)
+```
+
+Port names come from `.WithTitle(...)`. The pipeline YAML emits `schema: {type: string, format: binary}` for binary ports — readable and machine-processable.
+
+### MeasuredCodec with binary values
+
+`MeasuredCodec` wraps any codec, including binary:
+
+```go
+measuredPNG := forge.MeasuredCodec(codex.Bytes().Refine(validate.PNG))
+```
+
+Choose the value codec based on how `Measured[[]byte]` is serialised downstream:
+
+| Downstream serialisation | Value codec | Why |
+|--------------------------|-------------|-----|
+| forge computation only (no serialisation) | `codex.Bytes()` | Raw bytes, no encoding overhead |
+| Published via `format.Binary` (MQTT, HTTP binary) | `codex.Bytes()` | Identity marshal — bytes stay raw |
+| Published via `format.JSON` (REST, MQTT JSON) | `codex.Base64()` | Go's JSON encoder base64-encodes `[]byte`; `Base64()` makes this explicit and round-trip correct |

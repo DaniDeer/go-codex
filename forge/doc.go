@@ -56,8 +56,49 @@
 //	alerts    := forge.Filter(alertFn)     // []Reading → []Reading
 //	total     := forge.Reduce(sumFn)       // ([]Reading, float64) → float64
 //
+// # Binary data in forge functions
+//
+// [NewFunction] accepts any codec type, including [codex.Bytes] for raw binary data
+// (images, documents, sensor captures). Binary functions work exactly like numeric or
+// struct functions — the codec validates on both input and output via Refine constraints:
+//
+//	pngCodec := codex.Bytes().
+//	    Refine(validate.MaxBytes(5 * 1024 * 1024)).
+//	    Refine(validate.PNG).
+//	    WithTitle("rawImage")
+//
+//	// Function that validates and processes a raw PNG
+//	resizeImage := forge.NewFunction("resizeImage", "1.0.0",
+//	    pngCodec,
+//	    pngCodec.WithTitle("resizedImage"),
+//	    func(raw []byte) ([]byte, error) {
+//	        return resizePNG(raw, 128, 128)
+//	    },
+//	)
+//
+// Port names are inferred from [codex.Codec.WithTitle]; the pipeline YAML emits
+// schema {type: string, format: binary} for binary ports.
+//
+// # MeasuredCodec with binary values
+//
+// [MeasuredCodec] wraps any codec, including binary:
+//
+//	measured := forge.MeasuredCodec(codex.Bytes().Refine(validate.PNG))
+//
+// However, if the resulting [Measured][[]byte] value is later serialised via
+// [format.JSON] (REST response, MQTT JSON body), Go's JSON encoder base64-encodes
+// []byte values automatically — the consumer receives base64, not raw bytes.
+//
+// Choose the value codec based on the downstream serialisation:
+//
+//   - [codex.Bytes] (raw) — use when Measured is published via [format.Binary] or
+//     consumed only within the forge computation layer (no JSON serialisation).
+//   - [codex.Base64] — use when Measured is published via JSON (REST, MQTT JSON),
+//     making the base64 encoding explicit and round-trip correct.
+//
 // # Further reading
 //
 //   - [render/pipeline] — renders a [PipelineSpec] to YAML
 //   - [codex] — codec primitives used for input/output contracts
+//   - [validate.PNG], [validate.JPEG], [validate.PDF] — built-in binary format constraints
 package forge
