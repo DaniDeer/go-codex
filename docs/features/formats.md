@@ -161,6 +161,111 @@ err = measurementFile.Update(vars, func(m Measurement) Measurement {
 }, format.FileOptions{Observer: obs})
 ```
 
+### Choosing the right write operation
+
+| Operation | Input | When to use |
+|-----------|-------|------------|
+| `Write(vars, T, opts)` | Full value `T` | Full overwrite — no re-read. **Use this when you already have the decoded value.** |
+| `Update(vars, func(T)T, opts)` | Transform function | Need the latest file state before deciding what to write (e.g. increment a counter). |
+| `Patch(vars, map[string]any, opts)` | Explicit field map | Partial update: only the keys in the map change; unknown fields dropped. |
+| `format.PatchEncoded(file, vars, Codec[P], P, opts)` | Patch struct + codec | Typed partial update; fields declared in patchCodec but not in file codec are also written. |
+
+> **If you already have a decoded struct in memory, use `Write` directly.** `Update` performs an unnecessary re-read when you already hold the current value.
+
+### Field survival rules
+
+Every write operation filters the output through its codec. Understanding which fields survive is important for multi-schema files:
+
+| Field in file | Field in patch | `Patch` | `PatchEncoded` |
+|---------------|---------------|---------|----------------|
+| ✓ file codec | — | Preserved (re-written) | Preserved (re-written) |
+| ✓ file codec | ✓ patch map / patchCodec | **Updated** | **Updated** |
+| ✗ file codec only | ✓ patch map | **Dropped** (no codec validates it) | **Dropped** |
+| ✗ file codec only | ✓ patchCodec | N/A | **Written** (validated by patchCodec) |
+| ✗ neither codec | — | **Dropped** | **Dropped** |
+
+Key rule: **a field is written only if at least one codec knows about it**. `PatchEncoded` is the correct tool for intentionally adding new fields to a file — declare them in the patch codec.
+
+#### `Patch` — explicit map (RFC 7396)
+
+```go
+// Only port and log_level change — max_workers not in the map, preserved unchanged
+err = configFile.Patch(nil, map[string]any{
+    "port":      9090,
+    "log_level": "debug",
+}, format.FileOptions{Observer: obs})
+```
+
+#### `format.PatchEncoded` — typed patch via a separate codec
+
+`PatchEncoded` is a free function (not a method) because Go methods cannot introduce new type parameters. Declare a dedicated patch struct and codec containing only the fields you want to be patchable.
+
+**Updating known fields** — patch type is a subset of the file type:
+
+```go
+// Full file type and codec
+type AppConfig struct { Port int; LogLevel string; MaxWorkers int }
+var configFile = format.NewFile("config.json", format.JSON(appConfigCodec))
+
+// Patch type — only patchable fields; MaxWorkers cannot be patched via this codec
+type AppConfigPatch struct { Port int; LogLevel string }
+var appConfigPatchCodec = codex.Struct[AppConfigPatch](
+    codex.RequiredField("port",
+        codex.Int().Refine(validate.RangeInt(1, 65535)),
+        func(p AppConfigPatch) int { return p.Port },
+        func(p *AppConfigPatch, v int) { p.Port = v },
+    ),
+    codex.RequiredField("log_level",
+        codex.String().Refine(validate.OneOf("debug", "info", "warn", "error")),
+        func(p AppConfigPatch) string { return p.LogLevel },
+        func(p *AppConfigPatch, v string) { p.LogLevel = v },
+    ),
+)
+
+// MaxWorkers preserved — it is not in the patch type
+err = format.PatchEncoded(configFile, nil, appConfigPatchCodec,
+    AppConfigPatch{Port: 9090, LogLevel: "debug"},
+    format.FileOptions{Observer: obs},
+)
+```
+
+**Adding new fields** — patch type contains fields NOT in the file type:
+
+Fields declared in the patch codec but absent from the file codec are **written to the file and preserved**. This is the intended mechanism for intentionally extending a file with new fields:
+
+```go
+// Existing file type — does not include FeatureFlags
+type AppConfig struct { Port int; LogLevel string }
+var configFile = format.NewFile("config.json", format.JSON(appConfigCodec))
+
+// Patch type adds FeatureFlags — a new field the file codec doesn't know about
+type AppConfigPatch struct {
+    Port         int
+    FeatureFlags map[string]bool `json:"feature_flags"`
+}
+var extendedPatchCodec = codex.Struct[AppConfigPatch](
+    codex.RequiredField("port",
+        codex.Int().Refine(validate.RangeInt(1, 65535)),
+        func(p AppConfigPatch) int { return p.Port },
+        func(p *AppConfigPatch, v int) { p.Port = v },
+    ),
+    codex.RequiredField("feature_flags",
+        codex.StringMap(codex.Bool()),
+        func(p AppConfigPatch) map[string]bool { return p.FeatureFlags },
+        func(p *AppConfigPatch, v map[string]bool) { p.FeatureFlags = v },
+    ),
+)
+
+// After this call, config.json contains both AppConfig fields AND feature_flags
+err = format.PatchEncoded(configFile, nil, extendedPatchCodec,
+    AppConfigPatch{Port: 9090, FeatureFlags: map[string]bool{"dark_mode": true}},
+    format.FileOptions{Observer: obs},
+)
+// config.json: {"port":9090,"log_level":"info","feature_flags":{"dark_mode":true}}
+```
+
+The file codec (`appConfigCodec`) validates `port` and `log_level`; the patch codec (`extendedPatchCodec`) validates `feature_flags`. Both sets of constraints run before the file is written.
+
 ### Static paths
 
 For static paths (no template variables), pass `nil` for vars:
@@ -205,8 +310,16 @@ schemas := measurementFile.PathParamSchemas()
 | `FileDecodeError` | codec decode or constraint validation fails |
 | `FileEncodeError` | codec encode fails |
 | `FileWriteError` | `os.WriteFile` fails |
+| `FilePatchNotSupportedError` | `Patch` or `PatchEncoded` called on Gob/Binary/streaming format |
 
-All errors implement `Unwrap()` for `errors.As`/`errors.Is` traversal and `slog.LogValuer` for structured logging.
+All errors implement `Unwrap()` for `errors.As`/`errors.Is` traversal and `slog.LogValuer` for structured logging:
+
+```go
+var encErr format.FileEncodeError
+if errors.As(err, &encErr) {
+    slog.Warn("encode failed", "error", encErr) // → error.path=..., error.cause=...
+}
+```
 
 ### FileObserver
 

@@ -27,6 +27,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"strings"
 	"sync"
 	"time"
 
@@ -418,9 +419,123 @@ func main() {
 		}
 	}
 
-	// ── Section 5: Observer summary ───────────────────────────────────────────
+	// ── Section 5: Partial file updates — Patch and PatchEncoded ─────────────
 
-	fmt.Println("\n── Section 5: Observer summary ────────────────────────────────")
+	fmt.Println("\n── Section 5: Partial file updates (Patch + PatchEncoded) ─────")
+
+	// ── Choosing the right write operation ────────────────────────────────────
+	//
+	//   Write(vars, T, opts)                      — full overwrite, no re-read
+	//   Update(vars, func(T)T, opts)              — read current → transform → write
+	//   Patch(vars, map[string]any, opts)         — explicit partial field update (RFC 7396)
+	//   format.PatchEncoded(file, vars, Codec[P], P, opts) — typed partial update via patch codec
+	//
+	// If you already have the decoded value and want to write it back: use Write.
+	// Update re-reads the file — only use it when you need the latest file state.
+	// Patch and PatchEncoded preserve fields not in the patch.
+
+	type appCfg struct {
+		Port       int    `json:"port"`
+		LogLevel   string `json:"log_level"`
+		MaxWorkers int    `json:"max_workers"`
+	}
+	appCfgCodec := codex.Struct[appCfg](
+		codex.RequiredField("port", codex.Int().Refine(validate.RangeInt(1, 65535)),
+			func(c appCfg) int { return c.Port }, func(c *appCfg, v int) { c.Port = v }),
+		codex.RequiredField("log_level", codex.String().Refine(validate.OneOf("debug", "info", "warn", "error")),
+			func(c appCfg) string { return c.LogLevel }, func(c *appCfg, v string) { c.LogLevel = v }),
+		codex.RequiredField("max_workers", codex.Int().Refine(validate.RangeInt(1, 256)),
+			func(c appCfg) int { return c.MaxWorkers }, func(c *appCfg, v int) { c.MaxWorkers = v }),
+	)
+	appCfgFile := format.NewFile(dataDir+"/app-config.json", format.JSON(appCfgCodec))
+
+	initial := appCfg{Port: 8080, LogLevel: "info", MaxWorkers: 4}
+	if err := appCfgFile.Write(nil, initial, format.FileOptions{Observer: obs}); err != nil {
+		slog.Error("Write initial config failed", "err", err)
+		os.Exit(1)
+	}
+	fmt.Printf("  initial: port=%d log_level=%q max_workers=%d\n",
+		initial.Port, initial.LogLevel, initial.MaxWorkers)
+
+	// ── Patch: explicit map[string]any ────────────────────────────────────────
+	// Only port and log_level change; max_workers is absent from the map and preserved.
+	if err := appCfgFile.Patch(nil, map[string]any{
+		"port":      9090,
+		"log_level": "debug",
+	}, format.FileOptions{Observer: obs}); err != nil {
+		slog.Error("Patch failed", "err", err)
+	} else {
+		after, _ := appCfgFile.Read(nil, format.FileOptions{})
+		fmt.Printf("  after Patch: port=%d log_level=%q max_workers=%d (unchanged)\n",
+			after.Port, after.LogLevel, after.MaxWorkers)
+	}
+
+	// ── PatchEncoded: typed patch via a separate patch codec ──────────────────
+	// Declare a patch type containing ONLY the fields you want to update.
+	// Fields absent from the patch type are ALWAYS preserved in the file —
+	// this is enforced by the type system, not by runtime checks.
+	//
+	// Field survival rules:
+	//   - Fields in the FILE codec     → re-written with their current values
+	//   - Fields in BOTH codecs        → updated to patch value
+	//   - Fields in PATCH codec only   → written to file (validated by patchCodec)
+	//   - Fields in NEITHER codec      → dropped
+	type appCfgPatch struct {
+		Port         int    `json:"port"`
+		LogLevel     string `json:"log_level"`
+		NewDebugMode bool   `json:"debug_mode"` // NEW: not in appCfgCodec — will be written
+		// MaxWorkers intentionally absent — can never be changed via this codec
+	}
+	appCfgPatchCodec := codex.Struct[appCfgPatch](
+		codex.RequiredField("port", codex.Int().Refine(validate.RangeInt(1, 65535)),
+			func(p appCfgPatch) int { return p.Port }, func(p *appCfgPatch, v int) { p.Port = v }),
+		codex.RequiredField("log_level", codex.String().Refine(validate.OneOf("debug", "info", "warn", "error")),
+			func(p appCfgPatch) string { return p.LogLevel }, func(p *appCfgPatch, v string) { p.LogLevel = v }),
+		codex.RequiredField("debug_mode", codex.Bool(),
+			func(p appCfgPatch) bool { return p.NewDebugMode }, func(p *appCfgPatch, v bool) { p.NewDebugMode = v }),
+	)
+
+	// Reset to initial values.
+	_ = appCfgFile.Write(nil, initial, format.FileOptions{})
+	fmt.Printf("  reset: port=%d log_level=%q max_workers=%d\n",
+		initial.Port, initial.LogLevel, initial.MaxWorkers)
+
+	// PatchEncoded writes all patchCodec fields — including debug_mode which is
+	// not in appCfgCodec. After this call, "debug_mode" will be in the JSON file.
+	if err := format.PatchEncoded(appCfgFile, nil, appCfgPatchCodec,
+		appCfgPatch{Port: 7777, LogLevel: "warn", NewDebugMode: true},
+		format.FileOptions{Observer: obs}); err != nil {
+		slog.Error("PatchEncoded failed", "err", err)
+	} else {
+		after, _ := appCfgFile.Read(nil, format.FileOptions{})
+		fmt.Printf("  after PatchEncoded: port=%d log_level=%q max_workers=%d (always unchanged)\n",
+			after.Port, after.LogLevel, after.MaxWorkers)
+		// Read raw bytes to show debug_mode was persisted despite not being in appCfgCodec
+		raw, _ := os.ReadFile(dataDir + "/app-config.json")
+		fmt.Printf("  raw JSON includes debug_mode: %v\n", strings.Contains(string(raw), `"debug_mode":true`))
+	}
+
+	// ── Caveat: already decoded struct → use Write ────────────────────────────
+	// If you've already decoded the struct and modified it, Write is the right choice.
+	// Update re-reads unnecessarily if you already have the value in memory.
+	decoded, _ := appCfgFile.Read(nil, format.FileOptions{})
+	decoded.Port = 5050                                                   // modify in memory
+	_ = appCfgFile.Write(nil, decoded, format.FileOptions{Observer: obs}) // Write directly — no re-read
+	fmt.Printf("  after Write (decoded→modified): port=%d\n", decoded.Port)
+
+	// ── FilePatchNotSupportedError for Gob ────────────────────────────────────
+	gobFile := format.NewFile("/tmp/example.gob", format.Gob(appCfgCodec))
+	if err := gobFile.Patch(nil, map[string]any{"port": 1234}, format.FileOptions{}); err != nil {
+		var patchErr format.FilePatchNotSupportedError
+		if errors.As(err, &patchErr) {
+			fmt.Printf("  FilePatchNotSupportedError: %s\n", patchErr.Error())
+			slog.Warn("patch not supported", "error", patchErr) // slog.LogValuer fires
+		}
+	}
+
+	// ── Section 6: Observer summary ───────────────────────────────────────────
+
+	fmt.Println("\n── Section 6: Observer summary ────────────────────────────────")
 	obs.mu.Lock()
 	defer obs.mu.Unlock()
 	fmt.Printf("  successful reads:  %d\n", obs.reads)

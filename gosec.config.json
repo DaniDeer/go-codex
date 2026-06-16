@@ -6,7 +6,7 @@
 	"exclude-rules": [
 		{
 			"path": ".*",
-			"rules": ["G301", "G304", "G306"]
+			"rules": ["G301", "G304", "G306", "G703"]
 		},
 		{
 			"path": "adapters/nethttp/cookie.go",

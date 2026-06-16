@@ -122,6 +122,46 @@ func (f Format[T]) WithContentType(ct string) Format[T] {
 // Streaming formats are created with [NewStreamed].
 func (f Format[T]) IsStreamable() bool { return f.marshalTo != nil }
 
+// IsPatchable reports whether [File.Patch] is supported for this format.
+// Only map-based formats (JSON, YAML, TOML, and formats created with [New])
+// return true — they use a [map[string]any] intermediate that can be partially
+// overridden. Gob, Binary, [NewTyped], and [NewStreamed] formats return false.
+func (f Format[T]) IsPatchable() bool { return f.unmarshal != nil }
+
+// patchInto parses existing bytes into a map[string]any intermediate, deep-patches
+// it with the provided patch map, and decodes the result through the codec to
+// validate all Refine constraints. Only called for formats where [IsPatchable] is true.
+func (f Format[T]) patchInto(existing []byte, patch map[string]any) (T, error) {
+	var zero T
+	raw, err := f.unmarshal(existing)
+	if err != nil {
+		return zero, err
+	}
+	base, ok := raw.(map[string]any)
+	if !ok {
+		// Shouldn't happen for JSON/YAML/TOML struct codecs, but guard defensively.
+		return zero, fmt.Errorf("patch: intermediate is not a map (got %T)", raw)
+	}
+	deepMerge(base, patch)
+	return f.codec.Decode(base)
+}
+
+// deepMerge applies src over dst in place. Nested maps at the same key are
+// recursively merged. Scalar and array values in src overwrite those in dst.
+func deepMerge(dst, src map[string]any) {
+	for k, sv := range src {
+		if dv, ok := dst[k]; ok {
+			dm, dmOK := dv.(map[string]any)
+			sm, smOK := sv.(map[string]any)
+			if dmOK && smOK {
+				deepMerge(dm, sm)
+				continue
+			}
+		}
+		dst[k] = sv
+	}
+}
+
 // Marshal encodes v to bytes using the codec and then the format serializer.
 // If the format was created with [NewTyped], the codec validates v first and
 // then the typed marshal function is called directly (bypassing the intermediate).

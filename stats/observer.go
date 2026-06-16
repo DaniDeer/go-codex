@@ -92,14 +92,14 @@ type SecurityObserver interface {
 //	}
 //	func (o *MyObserver) RecordFileWrite(path string, success bool, d time.Duration) { ... }
 type FileObserver interface {
-	// RecordFileRead is called after every [format.File.Read] or
-	// [format.File.Update] attempt (read phase). path is the concrete file path
+	// RecordFileRead is called after every [format.File.Read], [format.File.Update],
+	// or [format.File.Patch] attempt (read phase). path is the concrete file path
 	// (after template substitution), success is false on any error including
 	// decode/validation failures.
 	RecordFileRead(path string, success bool, duration time.Duration)
 
-	// RecordFileWrite is called after every [format.File.Write] or
-	// [format.File.Update] attempt (write phase). success is false on any
+	// RecordFileWrite is called after every [format.File.Write], [format.File.Update],
+	// or [format.File.Patch] attempt (write phase). success is false on any
 	// encode or filesystem error.
 	RecordFileWrite(path string, success bool, duration time.Duration)
 }

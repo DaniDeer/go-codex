@@ -2,6 +2,7 @@ package format_test
 
 import (
 	"errors"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
@@ -31,6 +32,22 @@ var fileItemCodec = codex.Struct[fileItem](
 		codex.Int().Refine(validate.RangeInt(0, 1000)),
 		func(v fileItem) int { return v.Value },
 		func(v *fileItem, i int) { v.Value = i },
+	),
+)
+
+// fileItemPatch is a separate patch type for PatchEncoded tests — only the
+// fields that should be patchable. Fields absent from this struct are always
+// preserved in the file regardless of what value fileItem has.
+type fileItemPatch struct {
+	Value int `json:"value"`
+}
+
+// fileItemPatchCodec encodes only the Value field — used with PatchEncoded.
+var fileItemPatchCodec = codex.Struct[fileItemPatch](
+	codex.RequiredField("value",
+		codex.Int().Refine(validate.RangeInt(0, 1000)),
+		func(p fileItemPatch) int { return p.Value },
+		func(p *fileItemPatch, i int) { p.Value = i },
 	),
 )
 
@@ -604,5 +621,582 @@ func TestFileWriteError_ErrorAndUnwrap(t *testing.T) {
 	}
 	if !errors.Is(e, inner) {
 		t.Error("errors.Is should find inner error via Unwrap")
+	}
+}
+
+// ── slog.LogValuer on file error types ────────────────────────────────────────
+
+func TestFilePathParamError_LogValue(t *testing.T) {
+	e := format.FilePathParamError{Name: "date", Value: "bad", Err: errors.New("invalid")}
+	v := e.LogValue()
+	if v.Kind() != slog.KindGroup {
+		t.Fatalf("expected GroupValue, got %v", v.Kind())
+	}
+	attrs := v.Group()
+	keys := make(map[string]bool, len(attrs))
+	for _, a := range attrs {
+		keys[a.Key] = true
+	}
+	for _, want := range []string{"param", "value", "cause"} {
+		if !keys[want] {
+			t.Errorf("LogValue missing attr %q", want)
+		}
+	}
+}
+
+func TestMissingFilePathVarError_LogValue(t *testing.T) {
+	e := format.MissingFilePathVarError{Name: "sensor"}
+	v := e.LogValue()
+	if v.Kind() != slog.KindGroup {
+		t.Fatalf("expected GroupValue, got %v", v.Kind())
+	}
+	attrs := v.Group()
+	if len(attrs) == 0 || attrs[0].Key != "param" {
+		t.Errorf("expected first attr key=param, got %+v", attrs)
+	}
+}
+
+func TestFileReadError_LogValue(t *testing.T) {
+	e := format.FileReadError{Path: "/a/b.json", Err: errors.New("not found")}
+	v := e.LogValue()
+	if v.Kind() != slog.KindGroup {
+		t.Fatalf("expected GroupValue, got %v", v.Kind())
+	}
+	keys := make(map[string]bool)
+	for _, a := range v.Group() {
+		keys[a.Key] = true
+	}
+	for _, want := range []string{"path", "cause"} {
+		if !keys[want] {
+			t.Errorf("LogValue missing attr %q", want)
+		}
+	}
+}
+
+func TestFileDecodeError_LogValue(t *testing.T) {
+	e := format.FileDecodeError{Path: "/a/b.json", Err: errors.New("bad json")}
+	v := e.LogValue()
+	if v.Kind() != slog.KindGroup {
+		t.Fatalf("expected GroupValue, got %v", v.Kind())
+	}
+}
+
+func TestFileEncodeError_LogValue(t *testing.T) {
+	e := format.FileEncodeError{Path: "/a/b.json", Err: errors.New("constraint")}
+	v := e.LogValue()
+	if v.Kind() != slog.KindGroup {
+		t.Fatalf("expected GroupValue, got %v", v.Kind())
+	}
+}
+
+func TestFileWriteError_LogValue(t *testing.T) {
+	e := format.FileWriteError{Path: "/a/b.json", Err: errors.New("disk full")}
+	v := e.LogValue()
+	if v.Kind() != slog.KindGroup {
+		t.Fatalf("expected GroupValue, got %v", v.Kind())
+	}
+}
+
+func TestFilePatchNotSupportedError_LogValue(t *testing.T) {
+	e := format.FilePatchNotSupportedError{Path: "/a/b.gob"}
+	v := e.LogValue()
+	if v.Kind() != slog.KindGroup {
+		t.Fatalf("expected GroupValue, got %v", v.Kind())
+	}
+	if len(v.Group()) == 0 || v.Group()[0].Key != "path" {
+		t.Errorf("expected first attr key=path, got %+v", v.Group())
+	}
+}
+
+func TestFilePatchNotSupportedError_ErrorAndUnwrap(t *testing.T) {
+	e := format.FilePatchNotSupportedError{Path: "/a/b.gob"}
+	if !strings.Contains(e.Error(), "/a/b.gob") {
+		t.Errorf("Error() missing path: %q", e.Error())
+	}
+}
+
+// ── IsPatchable ───────────────────────────────────────────────────────────────
+
+func TestIsPatchable_JSON_True(t *testing.T) {
+	f := format.JSON(fileItemCodec)
+	if !f.IsPatchable() {
+		t.Error("JSON format must be patchable")
+	}
+}
+
+func TestIsPatchable_YAML_True(t *testing.T) {
+	f := format.YAML(fileItemCodec)
+	if !f.IsPatchable() {
+		t.Error("YAML format must be patchable")
+	}
+}
+
+func TestIsPatchable_TOML_True(t *testing.T) {
+	f := format.TOML(fileItemCodec)
+	if !f.IsPatchable() {
+		t.Error("TOML format must be patchable")
+	}
+}
+
+func TestIsPatchable_Gob_False(t *testing.T) {
+	f := format.Gob(fileItemCodec)
+	if f.IsPatchable() {
+		t.Error("Gob format must not be patchable")
+	}
+}
+
+func TestIsPatchable_Binary_False(t *testing.T) {
+	f := format.Binary(codex.Bytes())
+	if f.IsPatchable() {
+		t.Error("Binary format must not be patchable")
+	}
+}
+
+// ── File.Patch happy paths ────────────────────────────────────────────────────
+
+func TestPatch_JSON_OnlyPatchedFieldChanges(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "item.json")
+	f := format.NewFile(path, format.JSON(fileItemCodec))
+
+	// Write initial value
+	if err := f.Write(nil, fileItem{Name: "original", Value: 42}, format.FileOptions{}); err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+
+	// Patch only Value — Name must survive unchanged
+	if err := f.Patch(nil, map[string]any{"value": 99}, format.FileOptions{}); err != nil {
+		t.Fatalf("Patch: %v", err)
+	}
+
+	got, err := f.Read(nil, format.FileOptions{})
+	if err != nil {
+		t.Fatalf("Read: %v", err)
+	}
+	if got.Name != "original" {
+		t.Errorf("Name changed unexpectedly: want %q, got %q", "original", got.Name)
+	}
+	if got.Value != 99 {
+		t.Errorf("Value not patched: want 99, got %d", got.Value)
+	}
+}
+
+func TestPatch_YAML_HappyPath(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "item.yaml")
+	f := format.NewFile(path, format.YAML(fileItemCodec))
+
+	if err := f.Write(nil, fileItem{Name: "yaml-item", Value: 10}, format.FileOptions{}); err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+
+	if err := f.Patch(nil, map[string]any{"value": 20}, format.FileOptions{}); err != nil {
+		t.Fatalf("Patch: %v", err)
+	}
+
+	got, _ := f.Read(nil, format.FileOptions{})
+	if got.Name != "yaml-item" || got.Value != 20 {
+		t.Errorf("unexpected result: %+v", got)
+	}
+}
+
+func TestPatch_TOML_HappyPath(t *testing.T) {
+	type cfg struct {
+		Port int    `toml:"port"`
+		Host string `toml:"host"`
+	}
+	cfgCodec := codex.Struct[cfg](
+		codex.RequiredField("port", codex.Int(), func(c cfg) int { return c.Port }, func(c *cfg, v int) { c.Port = v }),
+		codex.RequiredField("host", codex.String(), func(c cfg) string { return c.Host }, func(c *cfg, v string) { c.Host = v }),
+	)
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.toml")
+	f := format.NewFile(path, format.TOML(cfgCodec))
+
+	if err := f.Write(nil, cfg{Port: 8080, Host: "localhost"}, format.FileOptions{}); err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+
+	// Patch only port; host must survive
+	if err := f.Patch(nil, map[string]any{"port": int64(9090)}, format.FileOptions{}); err != nil {
+		t.Fatalf("Patch: %v", err)
+	}
+
+	got, _ := f.Read(nil, format.FileOptions{})
+	if got.Host != "localhost" {
+		t.Errorf("Host changed: want localhost, got %q", got.Host)
+	}
+	if got.Port != 9090 {
+		t.Errorf("Port not patched: want 9090, got %d", got.Port)
+	}
+}
+
+// ── Patch — Gob and Binary return FilePatchNotSupportedError (no I/O) ─────────
+
+func TestPatch_Gob_ReturnsPatchNotSupportedError_NoIO(t *testing.T) {
+	// Use a non-existent path — error must come before I/O
+	f := format.NewFile("/nonexistent/item.gob", format.Gob(fileItemCodec))
+	err := f.Patch(nil, map[string]any{"name": "x"}, format.FileOptions{})
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	var patchErr format.FilePatchNotSupportedError
+	if !errors.As(err, &patchErr) {
+		t.Fatalf("expected FilePatchNotSupportedError, got %T: %v", err, err)
+	}
+}
+
+func TestPatch_Binary_ReturnsPatchNotSupportedError_NoIO(t *testing.T) {
+	f := format.NewFile("/nonexistent/img.png", format.Binary(codex.Bytes()))
+	err := f.Patch(nil, map[string]any{}, format.FileOptions{})
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	var patchErr format.FilePatchNotSupportedError
+	if !errors.As(err, &patchErr) {
+		t.Fatalf("expected FilePatchNotSupportedError, got %T: %v", err, err)
+	}
+}
+
+// ── Patch — constraint violation ──────────────────────────────────────────────
+
+func TestPatch_ConstraintViolation_ReturnsFileDecodeError(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "item.json")
+	f := format.NewFile(path, format.JSON(fileItemCodec))
+
+	if err := f.Write(nil, fileItem{Name: "widget", Value: 10}, format.FileOptions{}); err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+
+	// value 9999 violates RangeInt(0, 1000)
+	err := f.Patch(nil, map[string]any{"value": 9999}, format.FileOptions{})
+	if err == nil {
+		t.Fatal("expected error for out-of-range value, got nil")
+	}
+	var decErr format.FileDecodeError
+	if !errors.As(err, &decErr) {
+		t.Fatalf("expected FileDecodeError, got %T: %v", err, err)
+	}
+}
+
+// ── Patch — FileReadError when file absent ────────────────────────────────────
+
+func TestPatch_FileNotFound_ReturnsFileReadError(t *testing.T) {
+	f := format.NewFile("/nonexistent/item.json", format.JSON(fileItemCodec))
+	err := f.Patch(nil, map[string]any{"name": "x"}, format.FileOptions{})
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	var readErr format.FileReadError
+	if !errors.As(err, &readErr) {
+		t.Fatalf("expected FileReadError, got %T: %v", err, err)
+	}
+}
+
+// ── Patch — Observer ──────────────────────────────────────────────────────────
+
+func TestPatch_Observer_ReadAndWriteBothCalled(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "item.json")
+	f := format.NewFile(path, format.JSON(fileItemCodec))
+	spy := &fileObserverSpy{}
+
+	if err := f.Write(nil, fileItem{Name: "x", Value: 1}, format.FileOptions{}); err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+	spy.reads = nil
+	spy.writes = nil
+
+	if err := f.Patch(nil, map[string]any{"value": 2}, format.FileOptions{Observer: spy}); err != nil {
+		t.Fatalf("Patch: %v", err)
+	}
+	if len(spy.reads) != 1 || !spy.reads[0].success {
+		t.Errorf("expected 1 successful read callback, got %+v", spy.reads)
+	}
+	if len(spy.writes) != 1 || !spy.writes[0].success {
+		t.Errorf("expected 1 successful write callback, got %+v", spy.writes)
+	}
+}
+
+func TestPatch_Observer_ReadFailure_CallsRecordFileReadFalse(t *testing.T) {
+	f := format.NewFile("/nonexistent/item.json", format.JSON(fileItemCodec))
+	spy := &fileObserverSpy{}
+	_ = f.Patch(nil, map[string]any{"name": "x"}, format.FileOptions{Observer: spy})
+	if len(spy.reads) != 1 || spy.reads[0].success {
+		t.Errorf("expected 1 failed read callback, got %+v", spy.reads)
+	}
+	if len(spy.writes) != 0 {
+		t.Errorf("expected no write callbacks on read failure, got %d", len(spy.writes))
+	}
+}
+
+// ── Patch — PathParam errors propagated ──────────────────────────────────────
+
+func TestPatch_PathVarError_NoIO(t *testing.T) {
+	spy := &fileObserverSpy{}
+	err := templateFile.Patch(
+		map[string]string{"category": "", "id": "1"},
+		map[string]any{"name": "x"},
+		format.FileOptions{Observer: spy},
+	)
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	var paramErr format.FilePathParamError
+	if !errors.As(err, &paramErr) {
+		t.Fatalf("expected FilePathParamError, got %T: %v", err, err)
+	}
+	if len(spy.reads) != 0 {
+		t.Errorf("expected no observer reads, got %d", len(spy.reads))
+	}
+}
+
+// ── format.PatchEncoded (free function) ──────────────────────────────────────
+//
+// PatchEncoded is a free function because Go methods cannot introduce new type
+// parameters. The patch type P is separate from the file type T.
+
+func TestPatchEncoded_HappyPath_OnlyPatchCodecFieldsChange(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "item.json")
+	f := format.NewFile(path, format.JSON(fileItemCodec))
+
+	if err := f.Write(nil, fileItem{Name: "original", Value: 10}, format.FileOptions{}); err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+
+	// fileItemPatchCodec only encodes "value" — "name" is NOT in the patch type.
+	// Name must survive unchanged.
+	if err := format.PatchEncoded(f, nil, fileItemPatchCodec,
+		fileItemPatch{Value: 99}, format.FileOptions{}); err != nil {
+		t.Fatalf("PatchEncoded: %v", err)
+	}
+
+	got, err := f.Read(nil, format.FileOptions{})
+	if err != nil {
+		t.Fatalf("Read: %v", err)
+	}
+	if got.Name != "original" {
+		t.Errorf("Name changed: want %q, got %q", "original", got.Name)
+	}
+	if got.Value != 99 {
+		t.Errorf("Value not patched: want 99, got %d", got.Value)
+	}
+}
+
+func TestPatchEncoded_FieldNotInPatchCodec_PreservedInFile(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "item.json")
+	f := format.NewFile(path, format.JSON(fileItemCodec))
+
+	if err := f.Write(nil, fileItem{Name: "widget", Value: 42}, format.FileOptions{}); err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+
+	// Patch with Value=0 via patch codec — 0 is valid (RangeInt(0,1000) passes).
+	// "name" is NOT in fileItemPatchCodec, so it is always preserved.
+	if err := format.PatchEncoded(f, nil, fileItemPatchCodec,
+		fileItemPatch{Value: 0}, format.FileOptions{}); err != nil {
+		t.Fatalf("PatchEncoded: %v", err)
+	}
+
+	got, _ := f.Read(nil, format.FileOptions{})
+	if got.Name != "widget" {
+		t.Errorf("Name changed: want %q, got %q", "widget", got.Name)
+	}
+	if got.Value != 0 {
+		t.Errorf("Value not patched to 0: got %d", got.Value)
+	}
+}
+
+func TestPatchEncoded_EncodeFailure_ReturnsFileEncodeError(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "item.json")
+	f := format.NewFile(path, format.JSON(fileItemCodec))
+
+	if err := f.Write(nil, fileItem{Name: "x", Value: 1}, format.FileOptions{}); err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+
+	// Value 9999 violates RangeInt(0, 1000) in the patch codec — encode fails before I/O.
+	err := format.PatchEncoded(f, nil, fileItemPatchCodec,
+		fileItemPatch{Value: 9999}, format.FileOptions{})
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	var encErr format.FileEncodeError
+	if !errors.As(err, &encErr) {
+		t.Fatalf("expected FileEncodeError, got %T: %v", err, err)
+	}
+}
+
+func TestPatchEncoded_NonMapIntermediate_ReturnsPatchNotSupportedError(t *testing.T) {
+	// Use a scalar patch codec — Encode returns int, not map[string]any.
+	dir := t.TempDir()
+	path := filepath.Join(dir, "item.json")
+	f := format.NewFile(path, format.JSON(fileItemCodec))
+
+	if err := f.Write(nil, fileItem{Name: "x", Value: 1}, format.FileOptions{}); err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+
+	// Scalar codec — intermediate is int, not map[string]any.
+	err := format.PatchEncoded(f, nil, codex.Int(), 99, format.FileOptions{})
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	var patchErr format.FilePatchNotSupportedError
+	if !errors.As(err, &patchErr) {
+		t.Fatalf("expected FilePatchNotSupportedError, got %T: %v", err, err)
+	}
+}
+
+func TestPatchEncoded_Observer_ReadAndWriteBothCalled(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "item.json")
+	f := format.NewFile(path, format.JSON(fileItemCodec))
+	spy := &fileObserverSpy{}
+
+	if err := f.Write(nil, fileItem{Name: "x", Value: 1}, format.FileOptions{}); err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+	spy.reads = nil
+	spy.writes = nil
+
+	if err := format.PatchEncoded(f, nil, fileItemPatchCodec,
+		fileItemPatch{Value: 5}, format.FileOptions{Observer: spy}); err != nil {
+		t.Fatalf("PatchEncoded: %v", err)
+	}
+	// PatchEncoded → Patch → RecordFileRead + RecordFileWrite both called
+	if len(spy.reads) != 1 || !spy.reads[0].success {
+		t.Errorf("expected 1 successful read, got %+v", spy.reads)
+	}
+	if len(spy.writes) != 1 || !spy.writes[0].success {
+		t.Errorf("expected 1 successful write, got %+v", spy.writes)
+	}
+}
+
+func TestPatchEncoded_GobFile_ReturnsPatchNotSupportedError(t *testing.T) {
+	f := format.NewFile("/tmp/x.gob", format.Gob(fileItemCodec))
+	err := format.PatchEncoded(f, nil, fileItemPatchCodec,
+		fileItemPatch{Value: 1}, format.FileOptions{})
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	var patchErr format.FilePatchNotSupportedError
+	if !errors.As(err, &patchErr) {
+		t.Fatalf("expected FilePatchNotSupportedError, got %T: %v", err, err)
+	}
+}
+
+// ── Field survival: patchCodec fields not in file codec ARE written ───────────
+
+// fileItemWithExtra is used to define a patch codec that has an extra field
+// "tag" not present in fileItemCodec. This verifies that PatchEncoded writes
+// fields declared in the patch codec even when the file codec doesn't know them.
+type fileItemWithTag struct {
+	Value int    `json:"value"`
+	Tag   string `json:"tag"` // not in fileItemCodec
+}
+
+var fileItemWithTagCodec = codex.Struct[fileItemWithTag](
+	codex.RequiredField("value",
+		codex.Int().Refine(validate.RangeInt(0, 1000)),
+		func(p fileItemWithTag) int { return p.Value },
+		func(p *fileItemWithTag, i int) { p.Value = i },
+	),
+	codex.RequiredField("tag",
+		codex.String().Refine(validate.NonEmptyString),
+		func(p fileItemWithTag) string { return p.Tag },
+		func(p *fileItemWithTag, s string) { p.Tag = s },
+	),
+)
+
+func TestPatchEncoded_PatchCodecFieldNotInFileCodec_WrittenToFile(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "item.json")
+	f := format.NewFile(path, format.JSON(fileItemCodec))
+
+	if err := f.Write(nil, fileItem{Name: "widget", Value: 10}, format.FileOptions{}); err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+
+	// fileItemWithTagCodec has "tag" which is NOT in fileItemCodec.
+	// After PatchEncoded, "tag" must appear in the JSON file.
+	if err := format.PatchEncoded(f, nil, fileItemWithTagCodec,
+		fileItemWithTag{Value: 20, Tag: "featured"},
+		format.FileOptions{}); err != nil {
+		t.Fatalf("PatchEncoded: %v", err)
+	}
+
+	// Read raw bytes — "tag" should be present even though fileItemCodec ignores it.
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
+	if !strings.Contains(string(raw), `"tag"`) || !strings.Contains(string(raw), `"featured"`) {
+		t.Errorf("expected tag field in file, got: %s", raw)
+	}
+
+	// File codec fields are also correctly updated.
+	got, err := f.Read(nil, format.FileOptions{})
+	if err != nil {
+		t.Fatalf("Read: %v", err)
+	}
+	if got.Value != 20 {
+		t.Errorf("Value not updated: want 20, got %d", got.Value)
+	}
+	if got.Name != "widget" {
+		t.Errorf("Name changed: want %q, got %q", "widget", got.Name)
+	}
+}
+
+// ── Field survival: Patch drops unknown fields ────────────────────────────────
+
+func TestPatch_UnknownFieldInExistingFile_Dropped(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "item.json")
+
+	// Seed file with an extra field not in fileItemCodec.
+	if err := os.WriteFile(path, []byte(`{"name":"widget","value":10,"unknown":"drop-me"}`), 0644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	f := format.NewFile(path, format.JSON(fileItemCodec))
+	if err := f.Patch(nil, map[string]any{"value": 99}, format.FileOptions{}); err != nil {
+		t.Fatalf("Patch: %v", err)
+	}
+
+	raw, _ := os.ReadFile(path)
+	if strings.Contains(string(raw), "unknown") || strings.Contains(string(raw), "drop-me") {
+		t.Errorf("unknown field survived Patch — should be dropped: %s", raw)
+	}
+	if !strings.Contains(string(raw), `"value":99`) && !strings.Contains(string(raw), `"value": 99`) {
+		t.Errorf("value not patched: %s", raw)
+	}
+}
+
+func TestPatch_UnknownFieldInPatchMap_Dropped(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "item.json")
+	f := format.NewFile(path, format.JSON(fileItemCodec))
+
+	if err := f.Write(nil, fileItem{Name: "x", Value: 1}, format.FileOptions{}); err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+
+	// Patch with a key not in fileItemCodec — should be silently dropped.
+	if err := f.Patch(nil, map[string]any{"value": 5, "ghost_field": "nope"}, format.FileOptions{}); err != nil {
+		t.Fatalf("Patch: %v", err)
+	}
+
+	raw, _ := os.ReadFile(path)
+	if strings.Contains(string(raw), "ghost_field") {
+		t.Errorf("unknown patch field written — should be dropped: %s", raw)
+	}
+	got, _ := f.Read(nil, format.FileOptions{})
+	if got.Value != 5 {
+		t.Errorf("value not patched: want 5, got %d", got.Value)
 	}
 }

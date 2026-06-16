@@ -2,6 +2,7 @@ package format
 
 import (
 	"fmt"
+	"log/slog"
 	"os"
 	"regexp"
 	"strings"
@@ -276,6 +277,11 @@ func (fh File[T]) Write(vars map[string]string, v T, opts FileOptions) error {
 // Update reads the file at the path built from vars, applies fn to the decoded
 // value, then writes the result back. It is equivalent to Read followed by Write.
 //
+// Use Update when you need the current file contents to decide what to write —
+// for example, incrementing a counter or conditionally modifying a field.
+// If you already have the decoded value in memory, use [File.Write] directly
+// to avoid an unnecessary re-read.
+//
 // Errors: see [File.Read] and [File.Write].
 func (fh File[T]) Update(vars map[string]string, fn func(T) T, opts FileOptions) error {
 	v, err := fh.Read(vars, opts)
@@ -283,6 +289,241 @@ func (fh File[T]) Update(vars map[string]string, fn func(T) T, opts FileOptions)
 		return err
 	}
 	return fh.Write(vars, fn(v), opts)
+}
+
+// PatchEncoded encodes patch using patchCodec and merges the result into the
+// existing file, preserving fields not covered by either codec.
+//
+// PatchEncoded is a free function (not a method on File) because Go methods
+// on a generic type cannot introduce additional type parameters. P is the
+// patch type — a struct that contains only the fields you want to update.
+// T is the full file type; it does not need to match P.
+//
+// # Field survival rules
+//
+//   - Fields in the file codec (T): re-written with their current values and validated.
+//   - Fields in patchCodec (P) but NOT in the file codec: written to the file as-is.
+//     These are validated by patchCodec before being merged, so they are safe to persist.
+//   - Fields in the existing file that are in neither codec: dropped (no codec validates them).
+//
+// This makes PatchEncoded the right tool for intentionally adding new fields to a
+// file — declare them in the patch codec and they will be persisted.
+//
+// Declare separate codecs for the file type and the patch type:
+//
+//	type AppConfig struct { Port int; LogLevel string; MaxWorkers int }
+//	var configFile = format.NewFile("config.json", format.JSON(appConfigCodec))
+//
+//	// Patch type — only patchable fields; may include fields not in AppConfig
+//	type AppConfigPatch struct { Port int; LogLevel string; NewFeatureFlag bool }
+//	var configPatchCodec = codex.Struct[AppConfigPatch](
+//	    codex.RequiredField("port",
+//	        codex.Int().Refine(validate.RangeInt(1, 65535)),
+//	        func(p AppConfigPatch) int { return p.Port },
+//	        func(p *AppConfigPatch, v int) { p.Port = v },
+//	    ),
+//	    codex.RequiredField("log_level",
+//	        codex.String().Refine(validate.OneOf("debug", "info", "warn", "error")),
+//	        func(p AppConfigPatch) string { return p.LogLevel },
+//	        func(p *AppConfigPatch, v string) { p.LogLevel = v },
+//	    ),
+//	    codex.RequiredField("new_feature_flag",
+//	        codex.Bool(),
+//	        func(p AppConfigPatch) bool { return p.NewFeatureFlag },
+//	        func(p *AppConfigPatch, v bool) { p.NewFeatureFlag = v },
+//	    ),
+//	)
+//
+//	// new_feature_flag is not in AppConfig but IS in patchCodec — it will be written
+//	err = format.PatchEncoded(configFile, nil, configPatchCodec,
+//	    AppConfigPatch{Port: 9090, LogLevel: "debug", NewFeatureFlag: true},
+//	    format.FileOptions{Observer: obs},
+//	)
+//
+// PatchEncoded returns [FilePatchNotSupportedError] when the encoded
+// intermediate is not a map[string]any (scalar or slice patch codec, or
+// Gob/Binary format).
+//
+// Errors:
+//   - [FilePathParamError] / [MissingFilePathVarError] — path variable validation (no I/O)
+//   - [FileEncodeError] — patchCodec.Encode(patch) fails (Refine constraint violation)
+//   - [FilePatchNotSupportedError] — encoded intermediate is not map[string]any, or format not patchable
+//   - [FileReadError] — os.ReadFile failure
+//   - [FileDecodeError] — merged result fails fh's codec constraints for known fields
+//   - [FileWriteError] — os.WriteFile failure
+func PatchEncoded[T, P any](fh File[T], vars map[string]string, patchCodec codex.Codec[P], patch P, opts FileOptions) error {
+	path, err := fh.BuildPath(vars)
+	if err != nil {
+		return err
+	}
+
+	obs := opts.Observer
+	if obs == nil {
+		obs = stats.NoopObserver{}
+	}
+
+	// Fail fast before any I/O when the format doesn't support patching.
+	if !fh.format.IsPatchable() {
+		return FilePatchNotSupportedError{Path: path}
+	}
+
+	// 1. Encode the patch value using the patch codec — validates Refine constraints.
+	intermediate, err := patchCodec.Encode(patch)
+	if err != nil {
+		stats.ReportErrors(obs, "file", err)
+		recordFileWrite(obs, path, false, 0)
+		return FileEncodeError{Path: path, Err: err}
+	}
+	patchMap, ok := intermediate.(map[string]any)
+	if !ok {
+		// Scalar, slice, or other non-struct codecs produce a non-map intermediate.
+		return FilePatchNotSupportedError{Path: path}
+	}
+
+	// 2. Read the existing file.
+	perm := opts.Perm
+	if perm == 0 {
+		perm = 0644
+	}
+	readStart := time.Now()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		recordFileRead(obs, path, false, time.Since(readStart))
+		return FileReadError{Path: path, Err: err}
+	}
+
+	// 3. Unmarshal existing bytes to intermediate map.
+	raw, err := fh.format.unmarshal(data)
+	if err != nil {
+		recordFileRead(obs, path, false, time.Since(readStart))
+		return FileDecodeError{Path: path, Err: err}
+	}
+	existingMap, ok := raw.(map[string]any)
+	if !ok {
+		recordFileRead(obs, path, false, time.Since(readStart))
+		return FileDecodeError{Path: path, Err: fmt.Errorf("existing file intermediate is not a map (got %T)", raw)}
+	}
+
+	// 4. Deep-merge patchMap into existingMap.
+	deepMerge(existingMap, patchMap)
+
+	// 5. Validate the file codec's known fields in the merged map.
+	//    Unknown fields (from patchCodec or the existing file outside either codec)
+	//    are ignored by Decode and are NOT dropped here — they survive in existingMap.
+	if _, err := fh.format.codec.Decode(existingMap); err != nil {
+		stats.ReportErrors(obs, "file", err)
+		recordFileRead(obs, path, false, time.Since(readStart))
+		return FileDecodeError{Path: path, Err: err}
+	}
+	recordFileRead(obs, path, true, time.Since(readStart))
+
+	// 6. Marshal the merged map directly — NOT re-encode T.
+	//    This preserves fields declared in patchCodec even if they are absent
+	//    from the file codec (T).
+	out, err := fh.format.marshal(existingMap)
+	if err != nil {
+		recordFileWrite(obs, path, false, 0)
+		return FileEncodeError{Path: path, Err: err}
+	}
+
+	// 7. Write.
+	writeStart := time.Now()
+	if err := os.WriteFile(path, out, perm); err != nil {
+		recordFileWrite(obs, path, false, time.Since(writeStart))
+		return FileWriteError{Path: path, Err: err}
+	}
+	recordFileWrite(obs, path, true, time.Since(writeStart))
+	return nil
+}
+
+// Patch reads the existing file, deep-patches its intermediate representation
+// with the provided patch map, validates the result through the codec, and
+// writes it back.
+//
+// patch follows JSON Merge Patch semantics (RFC 7396): keys present in patch
+// overwrite the corresponding fields in the file; fields absent from patch are
+// preserved through the read phase but dropped when the merged value is
+// re-encoded through the file's codec. Only fields the codec knows about
+// survive in the written file — unknown fields are silently dropped.
+//
+// To intentionally write fields not declared in the file's codec, use
+// [PatchEncoded] with a patch codec that declares those fields explicitly.
+//
+// Patch is supported only for map-based formats: JSON, YAML, TOML, and formats
+// created with [New]. Returns [FilePatchNotSupportedError] before any I/O for
+// Gob, Binary, [NewTyped], and [NewStreamed] formats — check [Format.IsPatchable]
+// upfront when the format type is not known at compile time.
+//
+// Errors:
+//   - [FilePathParamError] / [MissingFilePathVarError] — path variable validation failure (no I/O)
+//   - [FilePatchNotSupportedError] — format does not use a map[string]any intermediate (no I/O)
+//   - [FileReadError] — os.ReadFile failure
+//   - [FileDecodeError] — patched result fails codec constraint validation
+//   - [FileEncodeError] — encode failure after patch
+//   - [FileWriteError] — os.WriteFile failure
+func (fh File[T]) Patch(vars map[string]string, patch map[string]any, opts FileOptions) error {
+	obs := opts.Observer
+	if obs == nil {
+		obs = stats.NoopObserver{}
+	}
+
+	path, err := fh.BuildPath(vars)
+	if err != nil {
+		return err // FilePathParamError or MissingFilePathVarError — no I/O
+	}
+
+	// Fail fast before any I/O when the format doesn't support patching.
+	if !fh.format.IsPatchable() {
+		return FilePatchNotSupportedError{Path: path}
+	}
+
+	// Read the raw bytes.
+	start := time.Now()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		recordFileRead(obs, path, false, time.Since(start))
+		return FileReadError{Path: path, Err: err}
+	}
+
+	// Parse existing bytes, apply patch, validate through codec.
+	patched, err := fh.format.patchInto(data, patch)
+	if err != nil {
+		stats.ReportErrors(obs, "file", err)
+		recordFileRead(obs, path, false, time.Since(start))
+		return FileDecodeError{Path: path, Err: err}
+	}
+	recordFileRead(obs, path, true, time.Since(start))
+
+	// Write the patched value back.
+	return fh.Write(vars, patched, opts)
+}
+
+// ── FilePatchNotSupportedError ────────────────────────────────────────────────
+
+// FilePatchNotSupportedError is returned by [File.Patch] when the file's format
+// does not use a [map[string]any] intermediate. Only JSON, YAML, TOML, and
+// formats created with [New] support patching.
+//
+// Use [errors.As] to extract the path:
+//
+//	var patchErr format.FilePatchNotSupportedError
+//	if errors.As(err, &patchErr) {
+//	    slog.Warn("patch not supported", "error", patchErr)
+//	}
+type FilePatchNotSupportedError struct {
+	// Path is the concrete file path after template substitution.
+	Path string
+}
+
+func (e FilePatchNotSupportedError) Error() string {
+	return fmt.Sprintf("patch file %q: format does not support partial patch (use JSON, YAML, or TOML)", e.Path)
+}
+
+// LogValue implements [slog.LogValuer] for structured logging.
+func (e FilePatchNotSupportedError) LogValue() slog.Value {
+	return slog.GroupValue(
+		slog.String("path", e.Path),
+	)
 }
 
 // ── Observer helpers ──────────────────────────────────────────────────────────
@@ -364,6 +605,15 @@ func (e FilePathParamError) Error() string {
 // Unwrap allows [errors.Is] and [errors.As] to traverse the underlying error.
 func (e FilePathParamError) Unwrap() error { return e.Err }
 
+// LogValue implements [slog.LogValuer] for structured logging.
+func (e FilePathParamError) LogValue() slog.Value {
+	return slog.GroupValue(
+		slog.String("param", e.Name),
+		slog.String("value", e.Value),
+		slog.Any("cause", e.Err),
+	)
+}
+
 // MissingFilePathVarError is returned by [File.BuildPath] when a {varName}
 // placeholder has no corresponding entry in the vars map.
 //
@@ -381,6 +631,13 @@ func (e MissingFilePathVarError) Error() string {
 	return fmt.Sprintf("missing value for file path variable {%s}", e.Name)
 }
 
+// LogValue implements [slog.LogValuer] for structured logging.
+func (e MissingFilePathVarError) LogValue() slog.Value {
+	return slog.GroupValue(
+		slog.String("param", e.Name),
+	)
+}
+
 // FileReadError is returned by [File.Read] when [os.ReadFile] fails.
 //
 // Use [errors.As] to extract the path and underlying OS error.
@@ -393,6 +650,14 @@ func (e FileReadError) Error() string { return fmt.Sprintf("read file %q: %s", e
 
 // Unwrap allows [errors.Is] and [errors.As] to traverse the underlying error.
 func (e FileReadError) Unwrap() error { return e.Err }
+
+// LogValue implements [slog.LogValuer] for structured logging.
+func (e FileReadError) LogValue() slog.Value {
+	return slog.GroupValue(
+		slog.String("path", e.Path),
+		slog.Any("cause", e.Err),
+	)
+}
 
 // FileDecodeError is returned by [File.Read] when format decoding or codec
 // validation fails after a successful [os.ReadFile].
@@ -411,6 +676,14 @@ func (e FileDecodeError) Error() string {
 // Unwrap allows [errors.Is] and [errors.As] to traverse the underlying error.
 func (e FileDecodeError) Unwrap() error { return e.Err }
 
+// LogValue implements [slog.LogValuer] for structured logging.
+func (e FileDecodeError) LogValue() slog.Value {
+	return slog.GroupValue(
+		slog.String("path", e.Path),
+		slog.Any("cause", e.Err),
+	)
+}
+
 // FileEncodeError is returned by [File.Write] when format encoding or codec
 // validation fails before any write to the filesystem.
 type FileEncodeError struct {
@@ -425,6 +698,14 @@ func (e FileEncodeError) Error() string {
 // Unwrap allows [errors.Is] and [errors.As] to traverse the underlying error.
 func (e FileEncodeError) Unwrap() error { return e.Err }
 
+// LogValue implements [slog.LogValuer] for structured logging.
+func (e FileEncodeError) LogValue() slog.Value {
+	return slog.GroupValue(
+		slog.String("path", e.Path),
+		slog.Any("cause", e.Err),
+	)
+}
+
 // FileWriteError is returned by [File.Write] when [os.WriteFile] fails after
 // successful encoding.
 type FileWriteError struct {
@@ -436,3 +717,11 @@ func (e FileWriteError) Error() string { return fmt.Sprintf("write file %q: %s",
 
 // Unwrap allows [errors.Is] and [errors.As] to traverse the underlying error.
 func (e FileWriteError) Unwrap() error { return e.Err }
+
+// LogValue implements [slog.LogValuer] for structured logging.
+func (e FileWriteError) LogValue() slog.Value {
+	return slog.GroupValue(
+		slog.String("path", e.Path),
+		slog.Any("cause", e.Err),
+	)
+}
