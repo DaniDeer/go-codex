@@ -226,6 +226,41 @@ func (o *PrometheusObserver) RecordValidationError(loc, constraint, field string
 }
 ```
 
+## Using go-logx as the logger backend
+
+[go-logx](https://github.com/DaniDeer/go-logx) is a companion library that produces a `*slog.Logger`
+with rotating file output, buffered writes, and static service/build attrs. Because `stats.NewLoggingObserver`
+takes `*slog.Logger`, go-logx is a drop-in replacement for `slog.NewTextHandler` — no go-codex changes needed.
+
+```go
+import "github.com/DaniDeer/go-logx/logx"
+
+logger, cleanup, err := logx.New(logx.Config{
+    Console:   true,
+    Level:     slog.LevelDebug,
+    File:      "/var/log/myapp.log", // optional; omit for console-only
+    FileLevel: slog.LevelInfo,       // file captures Info+; console captures Debug+
+    DefaultAttrs: []slog.Attr{
+        slog.String("service", "order-api"),
+        slog.String("env", "prod"),
+    },
+    Build: &logx.BuildInfo{Version: version, Commit: commit, Date: date},
+})
+if err != nil {
+    log.Fatal(err)
+}
+defer cleanup() // flushes the 8 KB file buffer — must not be omitted
+
+slog.SetDefault(logger)
+
+metrics := &MyMetricsObserver{}
+obs := stats.NewFanout(metrics, stats.NewLoggingObserver(logger.With("component", "http")))
+```
+
+Every log line emitted by `LoggingObserver` will carry `service=order-api env=prod build.version=...`
+automatically via `DefaultAttrs`. The `cleanup()` function flushes the internal 8 KB `bufio.Writer`
+and closes the rotating file — omitting `defer cleanup()` risks losing buffered lines on exit.
+
 ## See also
 
 - [examples/stats-observer](https://github.com/DaniDeer/go-codex/tree/main/examples/stats-observer) — codec-only observer: `NewFanout(metrics, NewLoggingObserver)`
