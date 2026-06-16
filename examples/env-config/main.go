@@ -19,6 +19,9 @@
 //	field "db" (nested) + prefix "APP_" → APP_DB_ prefix for its sub-fields
 //	nested field "host"                 → APP_DB_HOST
 //
+// The example also shows validate.EnvVarName and validate.EnvVarPrefix for
+// validating user-supplied env var names before passing them to FromEnvVar.
+//
 // Run with: go run ./examples/env-config
 package main
 
@@ -238,8 +241,65 @@ func main() {
 
 	os.Unsetenv("APP_EXTENSIONS")
 
-	// ── 8. JSON Schema for documentation ─────────────────────────────────────
-	fmt.Println("\n=== 8. JSON Schema (default value visible in log_level field) ===")
+	// ── 9. Validate env var names from external input ────────────────────────
+	// When env var names come from outside Go code (a config file, CLI flag, or
+	// user form), validate them before passing to format.FromEnvVar or os.LookupEnv.
+	//
+	// Two composable constraints:
+	//   validate.EnvVarName         — POSIX format: [A-Z_][A-Z0-9_]*
+	//   validate.EnvVarPrefix("X_") — namespace prefix check
+	//
+	// Hardcoded Go literals like "APP_PORT" do not need runtime validation;
+	// use these constraints only when the name itself arrives as user input.
+	fmt.Println("\n=== 8. Validate env var names from external input ===")
+
+	// Format only — valid POSIX env var name format
+	nameCodec := codex.String().Refine(validate.EnvVarName)
+
+	for _, name := range []string{"APP_PORT", "LOG_LEVEL", "_INTERNAL", "X1"} {
+		fmt.Printf("  valid format:   %q\n", name)
+		_ = nameCodec.Validate(name) // always passes
+	}
+	for _, name := range []string{"log_level", "APP-PORT", "1STVAR", "APP PORT"} {
+		if err := nameCodec.Validate(name); err != nil {
+			fmt.Printf("  invalid format: %q → %v\n", name, err)
+		}
+	}
+
+	// Format + namespace — must be valid POSIX AND start with "APP_"
+	appVarCodec := codex.String().
+		Refine(validate.EnvVarName).
+		Refine(validate.EnvVarPrefix("APP_")).
+		WithDescription("Valid APP_ namespace env var name")
+
+	fmt.Println()
+	for _, name := range []string{"APP_PORT", "APP_DB_HOST", "APP_LOG_LEVEL"} {
+		fmt.Printf("  valid APP_ name:   %q\n", name)
+		_ = appVarCodec.Validate(name)
+	}
+	for _, name := range []string{"DB_HOST", "LOG_LEVEL", "app_port"} {
+		if err := appVarCodec.Validate(name); err != nil {
+			fmt.Printf("  rejected:         %q → %v\n", name, err)
+		}
+	}
+
+	// Use a validated name with FromEnvVar
+	fmt.Println()
+	userKey := "APP_PORT" // e.g. from a config file
+	if err := appVarCodec.Validate(userKey); err != nil {
+		fmt.Printf("  invalid key %q: %v\n", userKey, err)
+	} else {
+		// Safe to use: name is both valid POSIX format and in the APP_ namespace
+		port, err := format.FromEnvVar(userKey, codex.Int().Refine(validate.RangeInt(1, 65535)))
+		if err != nil {
+			fmt.Printf("  APP_PORT read error: %v\n", err)
+		} else {
+			fmt.Printf("  APP_PORT value: %d\n", port)
+		}
+	}
+
+	// ── 9. JSON Schema for documentation ─────────────────────────────────────
+	fmt.Println("\n=== 9. JSON Schema (default value visible in log_level field) ===")
 
 	jsonBytes, err := openapi.MarshalJSON(map[string]schema.Schema{
 		"AppConfig": configCodec.Schema,

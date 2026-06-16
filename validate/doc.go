@@ -33,6 +33,22 @@
 //	rest.NewBuilder(info, rest.WithPathConstraints(validate.HTTPPath))
 //	events.NewBuilder(info, events.WithTopicConstraints(validate.MQTTPublishTopic))
 //
+// # Environment variable name constraints
+//
+// Validate environment variable names from external input (config files, CLI flags,
+// user-supplied overrides) before passing them to [format.FromEnvVar] or [os.LookupEnv]:
+//
+//	// POSIX format: [A-Z_][A-Z0-9_]*
+//	codex.String().Refine(validate.EnvVarName)
+//
+//	// Format + namespace — combine for full validation
+//	appVarCodec := codex.String().
+//	    Refine(validate.EnvVarName).
+//	    Refine(validate.EnvVarPrefix("APP_"))
+//
+// These constraints are not needed when env var names are Go code literals —
+// use them only when names arrive as runtime string input.
+//
 // # Binary byte constraints
 //
 // Byte size constraints work with any []byte value:

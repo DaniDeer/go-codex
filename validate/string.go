@@ -206,6 +206,60 @@ var NonNegativeIntString = codex.Constraint[string]{
 	},
 }
 
+// reEnvVar matches a valid POSIX environment variable name: starts with an
+// uppercase letter or underscore, followed by uppercase letters, digits, or
+// underscores. Lowercase letters and hyphens are not allowed.
+var reEnvVar = regexp.MustCompile(`^[A-Z_][A-Z0-9_]*$`)
+
+// EnvVarName is a Constraint that requires a valid POSIX environment variable
+// name: the value must start with an uppercase letter or underscore, and contain
+// only uppercase letters (A–Z), digits (0–9), and underscores.
+//
+// Rejects lowercase names ("log_level"), names with hyphens ("APP-PORT"),
+// names that start with a digit ("1STVAR"), and names with spaces.
+//
+// Use this constraint when environment variable names arrive from external input
+// (configuration files, CLI flags, user-provided overrides) rather than as
+// Go code literals, so that programming errors are caught before the name is
+// passed to [format.FromEnvVar] or [os.LookupEnv].
+//
+// Compose with [EnvVarPrefix] to enforce both format and namespace:
+//
+//	appVarCodec := codex.String().
+//	    Refine(validate.EnvVarName).
+//	    Refine(validate.EnvVarPrefix("APP_"))
+var EnvVarName = codex.Constraint[string]{
+	Name:  "envVarName",
+	Check: func(v string) bool { return reEnvVar.MatchString(v) },
+	Message: func(v string) string {
+		return fmt.Sprintf("invalid env var name %q: must match [A-Z_][A-Z0-9_]*", v)
+	},
+	Schema: func(s schema.Schema) schema.Schema {
+		s.Pattern = reEnvVar.String()
+		return s
+	},
+}
+
+// EnvVarPrefix returns a Constraint that requires the string to begin with the
+// given prefix. Use this with [EnvVarName] to enforce both the POSIX format
+// and a project-specific namespace (e.g. "APP_"):
+//
+//	appVarCodec := codex.String().
+//	    Refine(validate.EnvVarName).
+//	    Refine(validate.EnvVarPrefix("APP_"))
+//
+// The prefix itself is not validated against [EnvVarName]; ensure it follows
+// the same conventions (e.g. "APP_" not "app_").
+func EnvVarPrefix(prefix string) codex.Constraint[string] {
+	return codex.Constraint[string]{
+		Name:  fmt.Sprintf("envVarPrefix(%s)", prefix),
+		Check: func(v string) bool { return strings.HasPrefix(v, prefix) },
+		Message: func(v string) string {
+			return fmt.Sprintf("env var name %q must start with prefix %q", v, prefix)
+		},
+	}
+}
+
 // jwtRe matches a compact JWT: three base64url-encoded segments separated by dots.
 // It does not verify signatures or decode payloads.
 var jwtRe = regexp.MustCompile(`^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]*$`)

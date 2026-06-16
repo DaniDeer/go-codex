@@ -1,6 +1,7 @@
 package validate_test
 
 import (
+	"errors"
 	"regexp"
 	"strings"
 	"testing"
@@ -311,5 +312,113 @@ func TestJWT_withSpaces(t *testing.T) {
 	c := codex.String().Refine(validate.JWT)
 	if err := c.Validate("a.b.c "); err == nil {
 		t.Error("want error for token with trailing space, got nil")
+	}
+}
+
+// ── EnvVarName ────────────────────────────────────────────────────────────────
+
+func TestEnvVarName_Valid(t *testing.T) {
+	c := codex.String().Refine(validate.EnvVarName)
+	cases := []string{"APP_PORT", "LOG_LEVEL", "_INTERNAL", "X1", "A", "_", "MY_APP_123"}
+	for _, v := range cases {
+		if err := c.Validate(v); err != nil {
+			t.Errorf("expected %q to be valid, got: %v", v, err)
+		}
+	}
+}
+
+func TestEnvVarName_Lowercase_Fails(t *testing.T) {
+	c := codex.String().Refine(validate.EnvVarName)
+	err := c.Validate("log_level")
+	if err == nil {
+		t.Fatal("expected error for lowercase name, got nil")
+	}
+	var ce codex.ConstraintError
+	if !errors.As(err, &ce) {
+		t.Fatalf("expected ConstraintError, got %T: %v", err, err)
+	}
+}
+
+func TestEnvVarName_Dash_Fails(t *testing.T) {
+	c := codex.String().Refine(validate.EnvVarName)
+	if err := c.Validate("APP-PORT"); err == nil {
+		t.Error("expected error for name with dash, got nil")
+	}
+}
+
+func TestEnvVarName_StartsWithDigit_Fails(t *testing.T) {
+	c := codex.String().Refine(validate.EnvVarName)
+	if err := c.Validate("1STVAR"); err == nil {
+		t.Error("expected error for name starting with digit, got nil")
+	}
+}
+
+func TestEnvVarName_Space_Fails(t *testing.T) {
+	c := codex.String().Refine(validate.EnvVarName)
+	if err := c.Validate("APP PORT"); err == nil {
+		t.Error("expected error for name with space, got nil")
+	}
+}
+
+func TestEnvVarName_Empty_Fails(t *testing.T) {
+	c := codex.String().Refine(validate.EnvVarName)
+	if err := c.Validate(""); err == nil {
+		t.Error("expected error for empty name, got nil")
+	}
+}
+
+func TestEnvVarName_Schema_HasPattern(t *testing.T) {
+	c := codex.String().Refine(validate.EnvVarName)
+	if c.Schema.Pattern == "" {
+		t.Error("expected Schema.Pattern to be set")
+	}
+}
+
+// ── EnvVarPrefix ──────────────────────────────────────────────────────────────
+
+func TestEnvVarPrefix_Match_Passes(t *testing.T) {
+	c := codex.String().Refine(validate.EnvVarPrefix("APP_"))
+	if err := c.Validate("APP_PORT"); err != nil {
+		t.Fatalf("expected no error, got: %v", err)
+	}
+}
+
+func TestEnvVarPrefix_NoMatch_Fails(t *testing.T) {
+	c := codex.String().Refine(validate.EnvVarPrefix("APP_"))
+	err := c.Validate("DB_HOST")
+	if err == nil {
+		t.Fatal("expected error for wrong prefix, got nil")
+	}
+	var ce codex.ConstraintError
+	if !errors.As(err, &ce) {
+		t.Fatalf("expected ConstraintError, got %T: %v", err, err)
+	}
+}
+
+func TestEnvVarPrefix_Name_NotEmpty(t *testing.T) {
+	c := validate.EnvVarPrefix("APP_")
+	if c.Name == "" {
+		t.Fatal("constraint Name must not be empty")
+	}
+}
+
+func TestEnvVarName_AndPrefix_Composition(t *testing.T) {
+	appVarCodec := codex.String().
+		Refine(validate.EnvVarName).
+		Refine(validate.EnvVarPrefix("APP_"))
+
+	// Valid: POSIX format + correct prefix
+	if err := appVarCodec.Validate("APP_PORT"); err != nil {
+		t.Fatalf("expected APP_PORT to be valid: %v", err)
+	}
+
+	// Invalid format (lowercase)
+	if err := appVarCodec.Validate("app_port"); err == nil {
+		t.Error("expected error for lowercase name")
+	}
+
+	// Valid format but wrong namespace
+	if err := appVarCodec.Validate("DB_HOST"); err == nil {
+		t.Error("expected error for wrong prefix")
 	}
 }
