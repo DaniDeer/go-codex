@@ -46,53 +46,40 @@ import (
 // It records call counts, status codes, validation error locations, and latencies.
 // In production replace the counters with Prometheus or OpenTelemetry instruments
 // — the interface is identical.
+// CountingObserver collects per-call metrics for MCP primitives.
+// Logging is handled separately via stats.NewLoggingObserver — no slog calls here.
+// In production replace counters with Prometheus / OpenTelemetry instruments.
 type CountingObserver struct {
+	stats.NoopObserver
 	mu             sync.Mutex
 	total          int
 	byStatus       map[int]int
 	valErrorsByLoc map[string]int
 	latencies      []time.Duration
-	logger         *slog.Logger
-}
-
-func newObserver(logger *slog.Logger) *CountingObserver {
-	return &CountingObserver{
-		byStatus:       make(map[int]int),
-		valErrorsByLoc: make(map[string]int),
-		logger:         logger,
-	}
 }
 
 // RecordRequest implements [stats.Observer]. method is "tool", "resource", or
 // "prompt"; path is the primitive name.
-func (o *CountingObserver) RecordRequest(method, path string, statusCode int, d time.Duration) {
+func (o *CountingObserver) RecordRequest(_ string, _ string, statusCode int, d time.Duration) {
 	o.mu.Lock()
 	defer o.mu.Unlock()
+	if o.byStatus == nil {
+		o.byStatus = make(map[int]int)
+	}
 	o.total++
 	o.byStatus[statusCode]++
 	o.latencies = append(o.latencies, d)
-	o.logger.Info("mcp call",
-		"type", method,
-		"name", path,
-		"status", statusCode,
-		"duration_us", d.Microseconds(),
-	)
 }
-
-func (o *CountingObserver) RecordSubscribe(_ string, _ bool, _ time.Duration) {}
-func (o *CountingObserver) RecordPublish(_ string, _ bool, _ time.Duration)   {}
 
 // RecordValidationError implements [stats.ValidationObserver]. Called once per
 // failing field when a codec validation error occurs in a tool/resource/prompt call.
-func (o *CountingObserver) RecordValidationError(location, constraintName, field string) {
+func (o *CountingObserver) RecordValidationError(location, _, _ string) {
 	o.mu.Lock()
 	defer o.mu.Unlock()
+	if o.valErrorsByLoc == nil {
+		o.valErrorsByLoc = make(map[string]int)
+	}
 	o.valErrorsByLoc[location]++
-	o.logger.Warn("validation error",
-		"location", location,
-		"constraint", constraintName,
-		"field", field,
-	)
 }
 
 // Print writes a human-readable summary to stdout.
@@ -301,8 +288,13 @@ func main() {
 	logger := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelDebug}))
 	slog.SetDefault(logger)
 
-	// Observer — collects per-call metrics and per-field validation errors.
-	obs := newObserver(logger.With("component", "observer"))
+	// metrics collects per-call counters. In production replace with Prometheus / OTel.
+	// Logging is handled separately by stats.NewLoggingObserver — no mixing of concerns.
+	metrics := &CountingObserver{}
+	obs := stats.NewFanout(
+		metrics,
+		stats.NewLoggingObserver(logger.With("component", "mcp")),
+	)
 	opts := mcpgo.Options{Observer: obs}
 
 	// ── Layer 2: Register all primitives with the Builder ──────────────────
@@ -388,7 +380,7 @@ func main() {
 	}
 
 	fmt.Println("\n=== Observer summary ===")
-	obs.Print()
+	metrics.Print()
 
 	// ── Start server if SERVE=1 ────────────────────────────────────────────
 	if os.Getenv("SERVE") != "1" {

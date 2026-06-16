@@ -2,8 +2,11 @@ package stats_test
 
 import (
 	"fmt"
+	"io"
+	"log/slog"
 	"regexp"
 	"testing"
+	"time"
 
 	"github.com/DaniDeer/go-codex/codex"
 	"github.com/DaniDeer/go-codex/stats"
@@ -232,4 +235,143 @@ func ExampleReportErrors() {
 	fmt.Println(err != nil)
 	// Output:
 	// true
+}
+
+// ── LoggingObserver ───────────────────────────────────────────────────────────
+
+func TestLoggingObserver_ImplementsAllInterfaces(t *testing.T) {
+	obs := stats.NewLoggingObserver(slog.New(slog.NewTextHandler(io.Discard, nil)))
+	var _ stats.Observer = obs
+	var _ stats.PipelineObserver = obs
+	var _ stats.SecurityObserver = obs
+	var _ stats.FileObserver = obs
+}
+
+func TestLoggingObserver_AllMethods_NoPanic(t *testing.T) {
+	obs := stats.NewLoggingObserver(slog.New(slog.NewTextHandler(io.Discard, nil)))
+	obs.RecordValidationError("body", "minLen(3)", "email")
+	obs.RecordRequest("GET", "/users/{id}", 200, 5*time.Millisecond)
+	obs.RecordSubscribe("sensors/+/data", true, 2*time.Millisecond)
+	obs.RecordPublish("sensors/42/data", false, 1*time.Millisecond)
+	obs.RecordApply("oeeCalc", "1.0.0", true, 3*time.Millisecond)
+	obs.RecordSecurityRejection("/admin", "bearerAuth")
+	obs.RecordFileRead("/etc/config.toml", true, 1*time.Millisecond)
+	obs.RecordFileWrite("/etc/config.toml", false, 1*time.Millisecond)
+}
+
+// ── NewFanout ─────────────────────────────────────────────────────────────────
+
+// fanoutSpy records call counts for assertion.
+type fanoutSpy struct {
+	stats.NoopObserver
+	valErrors, requests, subscribes, publishes int
+}
+
+func (s *fanoutSpy) RecordValidationError(_, _, _ string)              { s.valErrors++ }
+func (s *fanoutSpy) RecordRequest(_, _ string, _ int, _ time.Duration) { s.requests++ }
+func (s *fanoutSpy) RecordSubscribe(_ string, _ bool, _ time.Duration) { s.subscribes++ }
+func (s *fanoutSpy) RecordPublish(_ string, _ bool, _ time.Duration)   { s.publishes++ }
+
+type fanoutFileSpy struct {
+	fanoutSpy
+	reads, writes int
+}
+
+func (s *fanoutFileSpy) RecordFileRead(_ string, _ bool, _ time.Duration)  { s.reads++ }
+func (s *fanoutFileSpy) RecordFileWrite(_ string, _ bool, _ time.Duration) { s.writes++ }
+
+var _ stats.FileObserver = (*fanoutFileSpy)(nil)
+
+type fanoutSecSpy struct {
+	fanoutSpy
+	rejections int
+}
+
+func (s *fanoutSecSpy) RecordSecurityRejection(_, _ string) { s.rejections++ }
+
+var _ stats.SecurityObserver = (*fanoutSecSpy)(nil)
+
+type fanoutPipeSpy struct {
+	fanoutSpy
+	applies int
+}
+
+func (s *fanoutPipeSpy) RecordApply(_, _ string, _ bool, _ time.Duration) { s.applies++ }
+
+var _ stats.PipelineObserver = (*fanoutPipeSpy)(nil)
+
+func TestNewFanout_DelegatesBaseToAll(t *testing.T) {
+	a, b := &fanoutSpy{}, &fanoutSpy{}
+	obs := stats.NewFanout(a, b)
+	obs.RecordValidationError("body", "email", "f")
+	obs.RecordRequest("GET", "/", 200, 0)
+	obs.RecordSubscribe("t", true, 0)
+	obs.RecordPublish("t", false, 0)
+	for _, s := range []*fanoutSpy{a, b} {
+		if s.valErrors != 1 || s.requests != 1 || s.subscribes != 1 || s.publishes != 1 {
+			t.Errorf("base call not fanned out: %+v", s)
+		}
+	}
+}
+
+func TestNewFanout_FileObserver_OnlyToImplementors(t *testing.T) {
+	plain := &fanoutSpy{}
+	file := &fanoutFileSpy{}
+	obs := stats.NewFanout(plain, file)
+	fo, ok := obs.(stats.FileObserver)
+	if !ok {
+		t.Fatal("fanout must implement FileObserver")
+	}
+	fo.RecordFileRead("/p", true, 0)
+	fo.RecordFileWrite("/p", false, 0)
+	if file.reads != 1 || file.writes != 1 {
+		t.Errorf("FileObserver not delegated: reads=%d writes=%d", file.reads, file.writes)
+	}
+}
+
+func TestNewFanout_SecurityObserver_OnlyToImplementors(t *testing.T) {
+	plain := &fanoutSpy{}
+	sec := &fanoutSecSpy{}
+	obs := stats.NewFanout(plain, sec)
+	so, ok := obs.(stats.SecurityObserver)
+	if !ok {
+		t.Fatal("fanout must implement SecurityObserver")
+	}
+	so.RecordSecurityRejection("/admin", "bearer")
+	if sec.rejections != 1 {
+		t.Errorf("SecurityObserver not delegated: %d", sec.rejections)
+	}
+}
+
+func TestNewFanout_PipelineObserver_OnlyToImplementors(t *testing.T) {
+	plain := &fanoutSpy{}
+	pipe := &fanoutPipeSpy{}
+	obs := stats.NewFanout(plain, pipe)
+	po, ok := obs.(stats.PipelineObserver)
+	if !ok {
+		t.Fatal("fanout must implement PipelineObserver")
+	}
+	po.RecordApply("fn", "1.0", true, 0)
+	if pipe.applies != 1 {
+		t.Errorf("PipelineObserver not delegated: %d", pipe.applies)
+	}
+}
+
+func TestNewFanout_Empty_NoPanic(t *testing.T) {
+	obs := stats.NewFanout()
+	obs.RecordValidationError("x", "y", "z")
+	if fo, ok := obs.(stats.FileObserver); ok {
+		fo.RecordFileRead("/", true, 0)
+	}
+}
+
+func TestNewFanout_WithLoggingObserver(t *testing.T) {
+	metrics := &fanoutSpy{}
+	logging := stats.NewLoggingObserver(slog.New(slog.NewTextHandler(io.Discard, nil)))
+	obs := stats.NewFanout(metrics, logging)
+	obs.RecordValidationError("body", "email", "email")
+	obs.RecordRequest("POST", "/users", 201, 10*time.Millisecond)
+	if metrics.valErrors != 1 || metrics.requests != 1 {
+		t.Errorf("metrics not updated: valErrs=%d reqs=%d", metrics.valErrors, metrics.requests)
+	}
 }

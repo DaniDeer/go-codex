@@ -264,6 +264,22 @@ doesn't wrap a typed sentinel is a finding.
 
 **Check**: in each adapter (`adapter.go`), verify Observer is called in both success and error branches.
 
+### Separation of concerns — metrics vs logging
+
+Observer implementations must **not mix** metric counting with slog logging. The canonical pattern uses the library-provided types:
+
+```go
+// CORRECT: separate concerns via stats.NewFanout
+obs := stats.NewFanout(
+    metricsObserver,                                       // pure counters
+    stats.NewLoggingObserver(slog.Default().With(...)),    // pure slog
+)
+```
+
+**Check**: no `fmt.Printf` or `slog.*` calls inside `RecordValidationError`, `RecordRequest`, `RecordSubscribe`, `RecordPublish`, `RecordFileRead`, or `RecordFileWrite` method bodies in **any** observer implementation in the codebase or examples. These calls indicate mixed concerns. File a `trivial` finding for each occurrence.
+
+**Check**: all example `CountingObserver`/`telemetryObserver` implementations use `stats.NewFanout` + `stats.NewLoggingObserver` for logging rather than embedding a logger or calling slog directly.
+
 ---
 
 ## 9. Unit Test Coverage

@@ -43,6 +43,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"os"
 	"time"
 
@@ -318,7 +319,10 @@ type applyEvent struct {
 
 // ChainObserver collects codec validation errors and forge Apply events.
 // It satisfies both [stats.ValidationObserver] and [stats.PipelineObserver].
+// Embedding [stats.NoopObserver] fulfils the full [stats.Observer] interface
+// so ChainObserver can be passed to [stats.NewFanout].
 type ChainObserver struct {
+	stats.NoopObserver
 	validations []validationEvent
 	applies     []applyEvent
 }
@@ -327,20 +331,12 @@ type ChainObserver struct {
 // Called by stats.ReportErrors after each codec Decode that returns errors.
 func (o *ChainObserver) RecordValidationError(location, constraint, field string) {
 	o.validations = append(o.validations, validationEvent{location, constraint, field})
-	fmt.Printf("  [codec]  validation error — location=%-10s constraint=%-20s field=%s\n",
-		location, constraint, field)
 }
 
 // RecordApply implements [stats.PipelineObserver].
 // Called automatically by forge.Function.Apply via the Registry observer.
 func (o *ChainObserver) RecordApply(name, version string, success bool, d time.Duration) {
 	o.applies = append(o.applies, applyEvent{name, version, success, d})
-	status := "ok"
-	if !success {
-		status = "FAIL"
-	}
-	fmt.Printf("  [forge]  apply         — function=%-20s version=%s status=%s duration=%v\n",
-		name, version, status, d.Round(time.Microsecond))
 }
 
 // Summary prints aggregated stats collected across all levels.
@@ -380,7 +376,11 @@ func (o *ChainObserver) Summary() {
 func main() {
 	// Create the shared observer. It is wired at every layer below so that a
 	// single Summary() call at the end reports across codec + forge.
-	obs := &ChainObserver{}
+	logger := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelDebug}))
+	slog.SetDefault(logger)
+
+	chainObs := &ChainObserver{}
+	obs := stats.NewFanout(chainObs, stats.NewLoggingObserver(logger.With("component", "oee-chain")))
 
 	// ── Layer 2: event channels ───────────────────────────────────────────────
 
@@ -487,7 +487,7 @@ func main() {
 	// ── Registry: graph inference + pipeline spec ─────────────────────────────
 	// Wire obs as the PipelineObserver — every Apply call reports to obs.RecordApply.
 
-	reg := forge.NewRegistry("OEE Pipeline", "1.0.0").WithObserver(obs)
+	reg := forge.NewRegistry("OEE Pipeline", "1.0.0").WithObserver(obs.(stats.PipelineObserver))
 	reg = availabilityCalc.Register(reg)
 	reg = performanceCalc.Register(reg)
 	reg = qualityCalc.Register(reg)
@@ -617,5 +617,5 @@ func main() {
 	fmt.Println(string(pipelineSpec))
 
 	// ── Stats summary — collected across all levels ───────────────────────────
-	obs.Summary()
+	chainObs.Summary()
 }

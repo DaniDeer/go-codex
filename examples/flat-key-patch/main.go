@@ -132,7 +132,9 @@ var modulePatchCodec = codex.Map[string, ModuleConfig](
 // FileMetricsObserver counts file I/O events for metrics.
 // In production, replace the counters with prometheus.CounterVec.With(...).Inc().
 // Metrics and logging are intentionally separate concerns — no slog calls here.
+// Embed [stats.NoopObserver] to satisfy [stats.Observer] without boilerplate.
 type FileMetricsObserver struct {
+	stats.NoopObserver
 	mu         sync.Mutex
 	reads      int
 	writes     int
@@ -169,61 +171,6 @@ func (o *FileMetricsObserver) RecordFileWrite(_ string, success bool, _ time.Dur
 
 var _ stats.FileObserver = (*FileMetricsObserver)(nil)
 
-// ── Observer — structured logging ─────────────────────────────────────────────
-
-// FileLoggingObserver logs file I/O lifecycle events via slog.
-// In production, swap the logger for an OpenTelemetry-backed slog handler.
-// Logging and metrics are intentionally separate concerns — no counters here.
-type FileLoggingObserver struct {
-	logger *slog.Logger
-}
-
-func (o *FileLoggingObserver) RecordValidationError(location, constraint, field string) {
-	o.logger.Warn("codec validation error",
-		"location", location, "constraint", constraint, "field", field)
-}
-
-func (o *FileLoggingObserver) RecordFileRead(path string, success bool, d time.Duration) {
-	o.logger.Debug("file read", "path", path, "success", success, "ms", d.Milliseconds())
-}
-
-func (o *FileLoggingObserver) RecordFileWrite(path string, success bool, d time.Duration) {
-	o.logger.Debug("file write", "path", path, "success", success, "ms", d.Milliseconds())
-}
-
-var _ stats.FileObserver = (*FileLoggingObserver)(nil)
-
-// ── Observer — fanout ─────────────────────────────────────────────────────────
-
-// observerFanout fans out [stats.Observer] and [stats.FileObserver] calls to both
-// a metrics observer and a logging observer.
-//
-// Because [stats.FileObserver] is type-asserted (never embedded in [stats.Observer]),
-// a single struct must implement RecordValidationError (stats.Observer) plus
-// RecordFileRead and RecordFileWrite (stats.FileObserver) and delegate each to both.
-type observerFanout struct {
-	stats.NoopObserver // satisfies RecordRequest, RecordSubscribe, RecordPublish
-	metrics            *FileMetricsObserver
-	logging            *FileLoggingObserver
-}
-
-func (f *observerFanout) RecordValidationError(location, constraint, field string) {
-	f.metrics.RecordValidationError(location, constraint, field)
-	f.logging.RecordValidationError(location, constraint, field)
-}
-
-func (f *observerFanout) RecordFileRead(path string, success bool, d time.Duration) {
-	f.metrics.RecordFileRead(path, success, d)
-	f.logging.RecordFileRead(path, success, d)
-}
-
-func (f *observerFanout) RecordFileWrite(path string, success bool, d time.Duration) {
-	f.metrics.RecordFileWrite(path, success, d)
-	f.logging.RecordFileWrite(path, success, d)
-}
-
-var _ stats.FileObserver = (*observerFanout)(nil)
-
 // ── main ──────────────────────────────────────────────────────────────────────
 
 func main() {
@@ -243,11 +190,8 @@ func main() {
 	// Metrics — separate from logging. Swap FileMetricsObserver for Prometheus in production.
 	metrics := &FileMetricsObserver{}
 
-	// Fanout: a single stats.Observer that delegates to both metrics and logger.
-	obs := &observerFanout{
-		metrics: metrics,
-		logging: &FileLoggingObserver{logger: fileLogger},
-	}
+	// Fanout: delegates to both metrics and the library-provided logging observer.
+	obs := stats.NewFanout(metrics, stats.NewLoggingObserver(fileLogger))
 	opts := format.FileOptions{Observer: obs}
 
 	twinPath := dir + "/device-twin.json"

@@ -36,6 +36,7 @@ import (
 	"github.com/DaniDeer/go-codex/codex"
 	"github.com/DaniDeer/go-codex/examples/adapters-nethttp-client/contract"
 	"github.com/DaniDeer/go-codex/route"
+	"github.com/DaniDeer/go-codex/stats"
 	"github.com/DaniDeer/go-codex/validate"
 )
 
@@ -77,8 +78,7 @@ func (o *CountingObserver) RecordValidationError(location, constraintName, field
 		o.valErrorsByLoc = make(map[string]int)
 	}
 	o.valErrorsByLoc[location]++
-	fmt.Printf("  [observer] validation error — location=%q constraint=%q field=%q\n",
-		location, constraintName, field)
+	// No logging — use stats.NewLoggingObserver via stats.NewFanout for structured logging.
 }
 
 func (o *CountingObserver) Print() {
@@ -134,11 +134,17 @@ func (s *userStore) get(id string) (contract.User, bool) {
 func main() {
 	// logger is the structured logger for all HTTP client-side events.
 	// In production attach trace IDs, tenant, or user via logger.With(...).
-	logger := slog.Default().With("transport", "http-client")
+	logger := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelDebug}))
+	slog.SetDefault(logger)
+	logger = logger.With("transport", "http-client")
 
-	// CountingObserver collects per-call metrics without any library dependency.
-	// In production replace counters with Prometheus / OpenTelemetry instruments.
-	obs := &CountingObserver{}
+	// metrics collects per-call counters. In production replace with Prometheus / OTel.
+	// Logging is handled separately by stats.NewLoggingObserver — no mixing of concerns.
+	metrics := &CountingObserver{}
+	obs := stats.NewFanout(
+		metrics,
+		stats.NewLoggingObserver(logger),
+	)
 
 	db := &userStore{users: make(map[string]contract.User)}
 
@@ -432,7 +438,7 @@ func main() {
 
 	// ── 6. Observer summary ───────────────────────────────────────────────────
 	fmt.Println("=== Observer summary ===")
-	obs.Print()
+	metrics.Print()
 	fmt.Println()
 	fmt.Println("done.")
 }

@@ -3,6 +3,7 @@ package stats
 import (
 	"errors"
 	"fmt"
+	"log/slog"
 	"time"
 
 	"github.com/DaniDeer/go-codex/codex"
@@ -102,6 +103,145 @@ type FileObserver interface {
 	// or [format.File.Patch] attempt (write phase). success is false on any
 	// encode or filesystem error.
 	RecordFileWrite(path string, success bool, duration time.Duration)
+}
+
+// LoggingObserver logs every observer event as a structured slog message.
+// It implements all five observer interfaces: [Observer] (embeds [ValidationObserver]),
+// [PipelineObserver], [SecurityObserver], and [FileObserver].
+//
+// Configure the logger's handler for your environment:
+//   - [slog.NewTextHandler] for development
+//   - [slog.NewJSONHandler] for structured log aggregation
+//   - An OpenTelemetry slog bridge for distributed traces
+//
+// Combine with a metrics observer via [NewFanout] for both metrics and logging:
+//
+//	obs := stats.NewFanout(
+//	    metricsObserver,
+//	    stats.NewLoggingObserver(slog.Default().With("component", "api")),
+//	)
+type LoggingObserver struct {
+	logger *slog.Logger
+}
+
+// NewLoggingObserver returns a [LoggingObserver] backed by logger.
+func NewLoggingObserver(logger *slog.Logger) *LoggingObserver {
+	return &LoggingObserver{logger: logger}
+}
+
+func (o *LoggingObserver) RecordValidationError(location, constraint, field string) {
+	o.logger.Warn("codec validation error",
+		"location", location, "constraint", constraint, "field", field)
+}
+
+func (o *LoggingObserver) RecordRequest(method, path string, statusCode int, d time.Duration) {
+	o.logger.Info("request",
+		"method", method, "path", path, "status", statusCode, "ms", d.Milliseconds())
+}
+
+func (o *LoggingObserver) RecordSubscribe(topic string, success bool, d time.Duration) {
+	o.logger.Debug("subscribe",
+		"topic", topic, "success", success, "ms", d.Milliseconds())
+}
+
+func (o *LoggingObserver) RecordPublish(topic string, success bool, d time.Duration) {
+	o.logger.Debug("publish",
+		"topic", topic, "success", success, "ms", d.Milliseconds())
+}
+
+func (o *LoggingObserver) RecordApply(name, version string, success bool, d time.Duration) {
+	o.logger.Debug("pipeline apply",
+		"function", name, "version", version, "success", success, "ms", d.Milliseconds())
+}
+
+func (o *LoggingObserver) RecordSecurityRejection(location, scheme string) {
+	o.logger.Warn("security rejection", "location", location, "scheme", scheme)
+}
+
+func (o *LoggingObserver) RecordFileRead(path string, success bool, d time.Duration) {
+	o.logger.Debug("file read", "path", path, "success", success, "ms", d.Milliseconds())
+}
+
+func (o *LoggingObserver) RecordFileWrite(path string, success bool, d time.Duration) {
+	o.logger.Debug("file write", "path", path, "success", success, "ms", d.Milliseconds())
+}
+
+// NewFanout returns an [Observer] that fans out all calls to each provided observer.
+// The returned value also implements [FileObserver], [SecurityObserver], and
+// [PipelineObserver] — delegating each to the inner observers that satisfy those
+// interfaces, so composing a metrics-only observer with a [LoggingObserver] works
+// without any type-assertion boilerplate.
+//
+//	obs := stats.NewFanout(
+//	    metricsObserver,
+//	    stats.NewLoggingObserver(slog.Default()),
+//	)
+func NewFanout(observers ...Observer) Observer {
+	return &fanout{observers: observers}
+}
+
+// fanout fans out all observer calls to multiple observers.
+type fanout struct{ observers []Observer }
+
+func (f *fanout) RecordValidationError(location, constraint, field string) {
+	for _, o := range f.observers {
+		o.RecordValidationError(location, constraint, field)
+	}
+}
+
+func (f *fanout) RecordRequest(method, path string, statusCode int, d time.Duration) {
+	for _, o := range f.observers {
+		o.RecordRequest(method, path, statusCode, d)
+	}
+}
+
+func (f *fanout) RecordSubscribe(topic string, success bool, d time.Duration) {
+	for _, o := range f.observers {
+		o.RecordSubscribe(topic, success, d)
+	}
+}
+
+func (f *fanout) RecordPublish(topic string, success bool, d time.Duration) {
+	for _, o := range f.observers {
+		o.RecordPublish(topic, success, d)
+	}
+}
+
+// RecordFileRead implements [FileObserver] — delegates to inner observers that also
+// implement [FileObserver].
+func (f *fanout) RecordFileRead(path string, success bool, d time.Duration) {
+	for _, o := range f.observers {
+		if fo, ok := o.(FileObserver); ok {
+			fo.RecordFileRead(path, success, d)
+		}
+	}
+}
+
+// RecordFileWrite implements [FileObserver].
+func (f *fanout) RecordFileWrite(path string, success bool, d time.Duration) {
+	for _, o := range f.observers {
+		if fo, ok := o.(FileObserver); ok {
+			fo.RecordFileWrite(path, success, d)
+		}
+	}
+}
+
+// RecordSecurityRejection implements [SecurityObserver].
+func (f *fanout) RecordSecurityRejection(location, scheme string) {
+	for _, o := range f.observers {
+		if so, ok := o.(SecurityObserver); ok {
+			so.RecordSecurityRejection(location, scheme)
+		}
+	}
+}
+
+// RecordApply implements [PipelineObserver].
+func (f *fanout) RecordApply(name, version string, success bool, d time.Duration) {
+	for _, o := range f.observers {
+		if po, ok := o.(PipelineObserver); ok {
+			po.RecordApply(name, version, success, d)
+		}
+	}
 }
 
 // NoopObserver discards all events. It satisfies [Observer], [ValidationObserver],

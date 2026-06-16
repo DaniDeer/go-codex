@@ -23,6 +23,7 @@ import (
 	"fmt"
 	"html"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -37,6 +38,7 @@ import (
 	"github.com/DaniDeer/go-codex/api/rest"
 	"github.com/DaniDeer/go-codex/codex"
 	"github.com/DaniDeer/go-codex/format"
+	"github.com/DaniDeer/go-codex/stats"
 	"github.com/DaniDeer/go-codex/validate"
 )
 
@@ -155,8 +157,6 @@ func (o *statsObserver) RecordValidationError(location, constraintName, field st
 		o.valErrorsByLoc = make(map[string]int)
 	}
 	o.valErrorsByLoc[location]++
-	fmt.Printf("  [observer] validation error — location=%q constraint=%q field=%q\n",
-		location, constraintName, field)
 }
 
 func (o *statsObserver) RecordSubscribe(_ string, _ bool, _ time.Duration) {}
@@ -177,7 +177,11 @@ func (o *statsObserver) print() {
 // ── Main ──────────────────────────────────────────────────────────────────────
 
 func main() {
-	obs := &statsObserver{}
+	logger := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelDebug}))
+	slog.SetDefault(logger)
+
+	metrics := &statsObserver{}
+	obs := stats.NewFanout(metrics, stats.NewLoggingObserver(logger.With("component", "sse-templ")))
 	b := rest.NewBuilder(rest.Info{Title: "Streaming + SSE + templ Demo", Version: "1.0.0"})
 
 	// ── Route 1: Chunked HTML streaming ──────────────────────────────────────
@@ -335,7 +339,7 @@ func main() {
 
 	// ── Observer summary ──────────────────────────────────────────────────────
 	fmt.Println("=== Observer summary ===")
-	obs.print()
+	metrics.print()
 }
 
 func mustGet(url, accept string) *http.Response {

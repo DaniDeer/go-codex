@@ -13,6 +13,8 @@ package main
 
 import (
 	"fmt"
+	"log/slog"
+	"os"
 
 	"github.com/DaniDeer/go-codex/codex"
 	"github.com/DaniDeer/go-codex/stats"
@@ -35,11 +37,13 @@ var appConfigCodec = codex.Struct[AppConfig](
 
 // ── Observer ─────────────────────────────────────────────────────────────────
 
-// ConfigObserver implements [stats.ValidationObserver] — the narrow codec-level
-// interface. No HTTP or MQTT stubs required.
+// ConfigObserver implements [stats.Observer] — pure metrics counting, no logging.
+// Embed [stats.NoopObserver] to satisfy the full Observer interface without boilerplate.
+// Combine with [stats.NewLoggingObserver] via [stats.NewFanout] for logging.
 //
 // A production observer would call prometheus.CounterVec.With(...).Inc() here.
 type ConfigObserver struct {
+	stats.NoopObserver
 	errors []configError
 }
 
@@ -52,8 +56,6 @@ type configError struct {
 // RecordValidationError implements [stats.ValidationObserver].
 func (o *ConfigObserver) RecordValidationError(location, constraint, field string) {
 	o.errors = append(o.errors, configError{location: location, constraint: constraint, field: field})
-	fmt.Printf("  [observer] validation error — location=%q constraint=%q field=%q\n",
-		location, constraint, field)
 }
 
 func (o *ConfigObserver) Print() {
@@ -66,7 +68,11 @@ func (o *ConfigObserver) Print() {
 // ── Main ─────────────────────────────────────────────────────────────────────
 
 func main() {
-	obs := &ConfigObserver{}
+	logger := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelDebug}))
+	slog.SetDefault(logger)
+
+	configObs := &ConfigObserver{}
+	obs := stats.NewFanout(configObs, stats.NewLoggingObserver(logger))
 
 	// ── Valid config ──────────────────────────────────────────────────────────
 
@@ -113,5 +119,5 @@ func main() {
 	}
 
 	fmt.Println("\n=== Observer summary ===")
-	obs.Print()
+	configObs.Print()
 }

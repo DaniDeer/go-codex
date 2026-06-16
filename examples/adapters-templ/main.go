@@ -20,6 +20,7 @@ import (
 	"fmt"
 	"html"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -34,6 +35,7 @@ import (
 	"github.com/DaniDeer/go-codex/api/rest"
 	"github.com/DaniDeer/go-codex/codex"
 	"github.com/DaniDeer/go-codex/format"
+	"github.com/DaniDeer/go-codex/stats"
 	"github.com/DaniDeer/go-codex/validate"
 )
 
@@ -119,8 +121,6 @@ func (o *CountingObserver) RecordValidationError(location, constraintName, field
 		o.valErrorsByLoc = make(map[string]int)
 	}
 	o.valErrorsByLoc[location]++
-	fmt.Printf("  [observer] validation error — location=%q constraint=%q field=%q\n",
-		location, constraintName, field)
 }
 
 func (o *CountingObserver) Print() {
@@ -167,7 +167,11 @@ func main() {
 	// The handler returns ArticleProps. The adapter picks the right format based
 	// on the Accept header. Props are validated before any format renders them.
 
-	obs := &CountingObserver{}
+	logger := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelDebug}))
+	slog.SetDefault(logger)
+
+	metrics := &CountingObserver{}
+	obs := stats.NewFanout(metrics, stats.NewLoggingObserver(logger.With("component", "templ")))
 	handler := func(_ context.Context, _ struct{}) (ArticleProps, error) {
 		return ArticleProps{
 			ID:          "550e8400-e29b-41d4-a716-446655440000",
@@ -249,7 +253,7 @@ func main() {
 	}
 
 	fmt.Println("\n=== Observer summary ===")
-	obs.Print()
+	metrics.Print()
 }
 
 func get(url, accept string) (*http.Response, error) {

@@ -18,21 +18,57 @@ go-codex's observer pattern provides structured metrics hooks without any metric
 
 `stats.NoopObserver` satisfies all five interfaces at zero cost.
 
+## Composing metrics and logging
+
+**Keep metrics and logging separate.** The observer's job is counting events (swap for Prometheus); logging is a separate concern (configure via slog handler).
+
+`stats.NewLoggingObserver` implements all five observer interfaces and logs every event via slog. `stats.NewFanout` fans out calls to multiple observers:
+
+```go
+// metrics: pure counters — swap for Prometheus.CounterVec in production
+metrics := &MyMetricsObserver{}
+
+// logging: slog — configure handler for dev/prod/OTel
+logger := slog.Default().With("component", "api")
+
+obs := stats.NewFanout(
+    metrics,
+    stats.NewLoggingObserver(logger),
+)
+
+// Both receive every call — metrics counts, logger emits structured events
+nethttp.Register(mux, route, handler, nethttp.Options{Observer: obs})
+```
+
+`NewFanout` also fans out the optional [FileObserver], [SecurityObserver], and [PipelineObserver] interfaces — delegating to each inner observer that implements them:
+
+```go
+// LoggingObserver implements FileObserver — no extra wiring needed
+obs := stats.NewFanout(metrics, stats.NewLoggingObserver(logger))
+
+configFile := format.NewFile("config.json", format.JSON(codec))
+configFile.Read(nil, format.FileOptions{Observer: obs})
+// → metrics.RecordFileRead called
+// → logger emits: level=DEBUG msg="file read" path=config.json success=true
+```
+
 ## Codec-level (ValidationObserver)
 
 Use when calling codecs directly without any adapter:
 
 ```go
-type ConfigObserver struct{}
+// Pure counter — no slog calls
+type ConfigMetrics struct{ errors int }
+func (o *ConfigMetrics) RecordValidationError(_, _, _ string) { o.errors++ }
 
-func (o *ConfigObserver) RecordValidationError(location, constraint, field string) {
-    fmt.Printf("validation error: location=%q constraint=%q field=%q\n",
-        location, constraint, field)
-}
+// Combine with library logging observer
+metrics := &ConfigMetrics{}
+obs := stats.NewFanout(metrics, stats.NewLoggingObserver(slog.Default()))
 
 val, err := appConfigCodec.Decode(rawData)
-stats.ReportErrors(&ConfigObserver{}, "config", err)
-// Calls RecordValidationError once per failing field
+stats.ReportErrors(obs, "config", err)
+// → metrics.errors incremented
+// → slog emits: level=WARN msg="codec validation error" location=config ...
 ```
 
 `stats.ConstraintName(err)` extracts a stable label from any field-level error: `ConstraintError.Name`, `"type-mismatch"`, `"required"`, or `""`.
@@ -192,6 +228,7 @@ func (o *PrometheusObserver) RecordValidationError(loc, constraint, field string
 
 ## See also
 
-- [examples/stats-observer](https://github.com/DaniDeer/go-codex/tree/main/examples/stats-observer) — codec-only observer (config validation)
-- [examples/adapters-nethttp](https://github.com/DaniDeer/go-codex/tree/main/examples/adapters-nethttp) — HTTP request metrics
-- [examples/adapters-mqtt](https://github.com/DaniDeer/go-codex/tree/main/examples/adapters-mqtt) — MQTT subscribe + publish metrics
+- [examples/stats-observer](https://github.com/DaniDeer/go-codex/tree/main/examples/stats-observer) — codec-only observer: `NewFanout(metrics, NewLoggingObserver)`
+- [examples/adapters-nethttp](https://github.com/DaniDeer/go-codex/tree/main/examples/adapters-nethttp) — HTTP request metrics + logging via `NewFanout`
+- [examples/adapters-mqtt](https://github.com/DaniDeer/go-codex/tree/main/examples/adapters-mqtt) — MQTT subscribe + publish metrics + logging via `NewFanout`
+- [examples/flat-key-patch](https://github.com/DaniDeer/go-codex/tree/main/examples/flat-key-patch) — FileObserver with `NewFanout`: metrics + logging fully separated

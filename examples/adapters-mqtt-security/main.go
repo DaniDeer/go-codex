@@ -113,10 +113,10 @@ var validAPIKeys = map[string]bool{
 
 // ── Observer ──────────────────────────────────────────────────────────────────
 
-// telemetryObserver implements [stats.Observer] and [stats.SecurityObserver].
-// It logs every event via slog and accumulates counters for a final summary.
-// Replace the slog calls with Prometheus/OpenTelemetry instruments in production.
-type telemetryObserver struct {
+// CountingObserver implements [stats.Observer] and [stats.SecurityObserver].
+// It accumulates counters for a final summary.
+// Combine with [stats.NewLoggingObserver] via [stats.NewFanout] for logging.
+type CountingObserver struct {
 	stats.NoopObserver // satisfies RecordRequest (unused for MQTT)
 
 	mu         sync.Mutex
@@ -124,45 +124,33 @@ type telemetryObserver struct {
 	published  int
 	valErrors  int
 	rejections int
-	log        *slog.Logger
 }
 
-func newTelemetryObserver() *telemetryObserver {
-	return &telemetryObserver{
-		log: slog.Default().With("component", "observer"),
-	}
-}
-
-func (o *telemetryObserver) RecordSubscribe(topic string, success bool, d time.Duration) {
+func (o *CountingObserver) RecordSubscribe(topic string, success bool, d time.Duration) {
 	o.mu.Lock()
 	o.subscribed++
 	o.mu.Unlock()
-	o.log.Info("subscribe", "topic", topic, "success", success, "duration_ms", d.Milliseconds())
 }
 
-func (o *telemetryObserver) RecordPublish(topic string, success bool, d time.Duration) {
+func (o *CountingObserver) RecordPublish(topic string, success bool, d time.Duration) {
 	o.mu.Lock()
 	o.published++
 	o.mu.Unlock()
-	o.log.Info("publish", "topic", topic, "success", success, "duration_ms", d.Milliseconds())
 }
 
-func (o *telemetryObserver) RecordValidationError(location, constraintName, field string) {
+func (o *CountingObserver) RecordValidationError(location, constraintName, field string) {
 	o.mu.Lock()
 	o.valErrors++
 	o.mu.Unlock()
-	o.log.Warn("validation error", "location", location, "constraint", constraintName, "field", field)
 }
 
-func (o *telemetryObserver) RecordSecurityRejection(location, scheme string) {
+func (o *CountingObserver) RecordSecurityRejection(location, scheme string) {
 	o.mu.Lock()
 	o.rejections++
 	o.mu.Unlock()
-	o.log.Warn("security rejection", "topic", location, "scheme", scheme)
-	fmt.Printf("  ✗ security rejection: topic=%s scheme=%s\n", location, scheme)
 }
 
-func (o *telemetryObserver) Print() {
+func (o *CountingObserver) Print() {
 	o.mu.Lock()
 	defer o.mu.Unlock()
 	fmt.Printf("  messages received   : %d\n", o.subscribed)
@@ -256,8 +244,12 @@ func buildChannels() (
 }
 
 func main() {
+	logger := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelDebug}))
+	slog.SetDefault(logger)
+
 	sensorData, sensorAlerts, b := buildChannels()
-	obs := newTelemetryObserver()
+	metrics := &CountingObserver{}
+	obs := stats.NewFanout(metrics, stats.NewLoggingObserver(logger.With("component", "mqtt-security")))
 
 	fmt.Println("=== adapters-mqtt-security demo ===")
 	fmt.Println()
@@ -404,7 +396,7 @@ func main() {
 
 	// ── Observer summary ──────────────────────────────────────────────────────
 	fmt.Println("=== Observer summary ===")
-	obs.Print()
+	metrics.Print()
 	fmt.Println()
 
 	// ── AsyncAPI 3.0 spec ─────────────────────────────────────────────────────

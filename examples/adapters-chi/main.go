@@ -44,6 +44,7 @@ import (
 	"github.com/DaniDeer/go-codex/api/rest"
 	"github.com/DaniDeer/go-codex/codex"
 	"github.com/DaniDeer/go-codex/format"
+	"github.com/DaniDeer/go-codex/stats"
 	"github.com/DaniDeer/go-codex/validate"
 )
 
@@ -80,8 +81,6 @@ func (o *CountingObserver) RecordValidationError(location, constraintName, field
 		o.valErrorsByLoc = make(map[string]int)
 	}
 	o.valErrorsByLoc[location]++
-	fmt.Printf("  [observer] validation error — location=%q constraint=%q field=%q\n",
-		location, constraintName, field)
 }
 
 func (o *CountingObserver) Print() {
@@ -356,10 +355,13 @@ func makeListUsersHandler() func(context.Context, struct{}) (PagedUsersResp, err
 }
 
 func main() {
+	baseLogger := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelDebug}))
+	slog.SetDefault(baseLogger)
+
 	store := newUserStore()
 
-	domainLogger := slog.Default().With("layer", "domain")
-	httpLogger := slog.Default().With("transport", "http")
+	domainLogger := baseLogger.With("layer", "domain")
+	httpLogger := baseLogger.With("transport", "http")
 
 	b := rest.NewBuilder(rest.Info{
 		Title:       "User API (chi)",
@@ -518,7 +520,8 @@ func main() {
 		return []slog.Attr{slog.String("id", u.ID)}
 	}
 
-	obs := &CountingObserver{}
+	metrics := &CountingObserver{}
+	obs := stats.NewFanout(metrics, stats.NewLoggingObserver(baseLogger.With("component", "http")))
 	opts := chiadapter.Options{ErrorHandler: errorHandler, Observer: obs}
 
 	r := gochi.NewRouter()
@@ -789,7 +792,7 @@ func main() {
 	}()
 
 	fmt.Println("\n--- Observer summary ---")
-	obs.Print()
+	metrics.Print()
 
 	fmt.Println("\n--- OpenAPI 3.1 spec ---")
 	doc, err := b.OpenAPISpec()

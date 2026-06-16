@@ -33,12 +33,13 @@ package main
 import (
 	"errors"
 	"fmt"
+	"log/slog"
 	"os"
-	"time"
 
 	"github.com/DaniDeer/go-codex/codex"
 	"github.com/DaniDeer/go-codex/forge"
 	"github.com/DaniDeer/go-codex/render/pipeline"
+	"github.com/DaniDeer/go-codex/stats"
 	"github.com/DaniDeer/go-codex/validate"
 )
 
@@ -165,6 +166,9 @@ var (
 )
 
 func main() {
+	logger := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelDebug}))
+	slog.SetDefault(logger)
+
 	// -----------------------------------------------------------------------
 	// Layer 1 demo: MeasuredCodec
 	// -----------------------------------------------------------------------
@@ -366,7 +370,7 @@ func main() {
 	fmt.Println("=== PipelineObserver: Apply telemetry ===")
 	fmt.Println()
 
-	obs := &applyLogger{}
+	obs := stats.NewLoggingObserver(logger.With("component", "forge"))
 	obsReg := forge.NewRegistry("OEE Observer Demo", "1.0.0").WithObserver(obs)
 	availabilityCalc.Register(obsReg)
 	oeeCalc.Register(obsReg)
@@ -457,16 +461,4 @@ func must(err error, ctx string) {
 		fmt.Fprintf(os.Stderr, "%s: unexpected error: %v\n", ctx, err)
 		os.Exit(1)
 	}
-}
-
-// applyLogger is a stats.PipelineObserver that prints each Apply event to stdout.
-type applyLogger struct{}
-
-func (a *applyLogger) RecordApply(name, version string, success bool, dur time.Duration) {
-	status := "ok"
-	if !success {
-		status = "err"
-	}
-	fmt.Printf("[observer] RecordApply name=%-28s version=%s status=%s dur=%v\n",
-		name, version, status, dur.Round(time.Microsecond))
 }

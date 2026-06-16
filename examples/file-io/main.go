@@ -148,11 +148,6 @@ func (o *CountingObserver) RecordValidationError(location, constraint, field str
 	o.mu.Lock()
 	o.valErrors++
 	o.mu.Unlock()
-	slog.Warn("file codec validation error",
-		"location", location,
-		"constraint", constraint,
-		"field", field,
-	)
 }
 
 // RecordFileRead implements [stats.FileObserver].
@@ -164,7 +159,6 @@ func (o *CountingObserver) RecordFileRead(path string, success bool, d time.Dura
 		o.readFails++
 	}
 	o.mu.Unlock()
-	slog.Info("file read", "path", path, "success", success, "duration_ms", d.Milliseconds())
 }
 
 // RecordFileWrite implements [stats.FileObserver].
@@ -176,7 +170,6 @@ func (o *CountingObserver) RecordFileWrite(path string, success bool, d time.Dur
 		o.writeFails++
 	}
 	o.mu.Unlock()
-	slog.Info("file write", "path", path, "success", success, "duration_ms", d.Milliseconds())
 }
 
 var _ stats.FileObserver = (*CountingObserver)(nil)
@@ -201,7 +194,8 @@ func main() {
 	logger := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelDebug}))
 	slog.SetDefault(logger)
 
-	obs := &CountingObserver{}
+	metrics := &CountingObserver{}
+	obs := stats.NewFanout(metrics, stats.NewLoggingObserver(slog.Default().With("component", "file-io")))
 
 	// ── Section 1: Static config file ─────────────────────────────────────────
 
@@ -536,13 +530,13 @@ func main() {
 	// ── Section 6: Observer summary ───────────────────────────────────────────
 
 	fmt.Println("\n── Section 6: Observer summary ────────────────────────────────")
-	obs.mu.Lock()
-	defer obs.mu.Unlock()
-	fmt.Printf("  successful reads:  %d\n", obs.reads)
-	fmt.Printf("  successful writes: %d\n", obs.writes)
-	fmt.Printf("  failed reads:      %d\n", obs.readFails)
-	fmt.Printf("  failed writes:     %d\n", obs.writeFails)
-	fmt.Printf("  validation errors: %d\n", obs.valErrors)
+	metrics.mu.Lock()
+	defer metrics.mu.Unlock()
+	fmt.Printf("  successful reads:  %d\n", metrics.reads)
+	fmt.Printf("  successful writes: %d\n", metrics.writes)
+	fmt.Printf("  failed reads:      %d\n", metrics.readFails)
+	fmt.Printf("  failed writes:     %d\n", metrics.writeFails)
+	fmt.Printf("  validation errors: %d\n", metrics.valErrors)
 
 	_ = configFile // suppress unused warning — configFile is shown as a declaration pattern
 }

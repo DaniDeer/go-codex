@@ -90,8 +90,7 @@ func (o *CountingObserver) RecordValidationError(location, constraintName, field
 		o.valErrorsByLoc = make(map[string]int)
 	}
 	o.valErrorsByLoc[location]++
-	fmt.Printf("  [observer] validation error — location=%q constraint=%q field=%q\n",
-		location, constraintName, field)
+	// No logging — use stats.NewLoggingObserver via stats.NewFanout for structured logging.
 }
 
 func (o *CountingObserver) Print() {
@@ -250,9 +249,15 @@ func main() {
 
 	// logger is the structured logger for transport-level events.
 	// In production attach trace IDs or tenant context via logger.With(...).
-	logger := slog.Default().With("transport", "mqtt")
+	logger := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelDebug}))
+	slog.SetDefault(logger)
+	logger = logger.With("transport", "mqtt")
 
-	obs := &CountingObserver{}
+	metrics := &CountingObserver{}
+	obs := stats.NewFanout(
+		metrics,
+		stats.NewLoggingObserver(logger),
+	)
 	client := newMockClient()
 
 	// ── Consumer service: register channels ───────────────────────────────────
@@ -520,5 +525,5 @@ func main() {
 
 	// ── 6. Observer summary ───────────────────────────────────────────────────
 	fmt.Println("=== Observer summary ===")
-	obs.Print()
+	metrics.Print()
 }

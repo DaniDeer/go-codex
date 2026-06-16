@@ -19,6 +19,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -84,12 +85,10 @@ type statsObserver struct {
 
 func (o *statsObserver) RecordRequest(method, path string, statusCode int, d time.Duration) {
 	o.requests++
-	fmt.Printf("  [stats] %s %s → %d (%s)\n", method, path, statusCode, d.Round(time.Millisecond))
 }
 
 func (o *statsObserver) RecordValidationError(location, constraint, fieldName string) {
 	o.validationErrors++
-	fmt.Printf("  [stats] validation error: location=%s constraint=%s field=%s\n", location, constraint, fieldName)
 }
 
 func (o *statsObserver) Print() {
@@ -174,7 +173,11 @@ func readSSELines(resp *http.Response) []string {
 // ── Main ──────────────────────────────────────────────────────────────────────
 
 func main() {
-	obs := &statsObserver{}
+	logger := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelDebug}))
+	slog.SetDefault(logger)
+
+	metrics := &statsObserver{}
+	obs := stats.NewFanout(metrics, stats.NewLoggingObserver(logger.With("component", "sse")))
 	opts := nethttp.Options{Observer: obs}
 	chiOpts := chiadapter.Options{Observer: obs}
 
@@ -293,7 +296,7 @@ func main() {
 
 	// ── Stats summary ──────────────────────────────────────────────────────
 	fmt.Println("=== Observer summary ===")
-	obs.Print()
+	metrics.Print()
 	fmt.Println()
 
 	// ── OpenAPI spec ───────────────────────────────────────────────────────

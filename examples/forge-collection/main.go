@@ -241,7 +241,15 @@ func buildPerSensorSummary(
 // Observer — collects stats across codec and forge layers
 // ─────────────────────────────────────────────────────────────────────────────
 
+// ChainObserver is a rich analytics observer for forge pipelines.
+// It stores structured per-constraint and per-function metrics for the
+// Summary() and SummaryDelta() output — not simple counters.
+//
+// Observer methods are pure data collection (no slog, no fmt.Printf).
+// Logging is handled separately via stats.NewLoggingObserver + stats.NewFanout.
+// [stats.NoopObserver] is embedded to satisfy the full [stats.Observer] interface.
 type ChainObserver struct {
+	stats.NoopObserver
 	codecErrors  map[string]int    // constraint name → count
 	applyResults map[string][2]int // fn name → [ok, fail]
 	applyDurs    map[string][]time.Duration
@@ -382,6 +390,10 @@ func main() {
 	obs := newChainObserver()
 	logger := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelDebug}))
 
+	// fanoutObs fans out forge Apply events to both the analytics observer (obs)
+	// and the structured logger. obs is kept separately for Summary/SummaryDelta.
+	fanoutObs := stats.NewFanout(obs, stats.NewLoggingObserver(logger.With("component", "forge")))
+
 	// ── Build pipeline ──────────────────────────────────────────────────────
 	rawToCelsius := buildRawToCelsius()
 	filterWarmUp := buildFilterWarmUp(rawReadingCodec)
@@ -390,9 +402,12 @@ func main() {
 	perSensor := buildPerSensorSummary(mapToCelsius, reduceSummary)
 
 	// ── Register all functions with an observer-wired registry ──────────────
+	// fanoutObs implements PipelineObserver — forwards Apply events to both
+	// obs (analytics storage) and stats.NewLoggingObserver (structured slog).
+	pipeObs, _ := fanoutObs.(stats.PipelineObserver)
 	reg := forge.NewRegistry("SensorBatchPipeline", "1.0.0").
 		WithDescription("Collection-based temperature sensor batch processing pipeline.").
-		WithObserver(obs)
+		WithObserver(pipeObs)
 	rawToCelsius.Register(reg)
 	filterWarmUp.Register(reg)
 	mapToCelsius.Register(reg)
@@ -500,7 +515,7 @@ func main() {
 		// stats.ReportErrors walks the error tree; CollectionElementError wraps an OutputError
 		// whose cause carries the ConstraintError — RecordValidationError fires for the element.
 		logger.Error("element validation failed", slog.Any("error", err))
-		stats.ReportErrors(obs, "batch", err)
+		stats.ReportErrors(fanoutObs, "batch", err)
 	}
 
 	// ─────────────────────────────────────────────────────────────────────
@@ -544,7 +559,7 @@ func main() {
 			slog.String("case", label),
 			slog.Any("error", err),
 		)
-		stats.ReportErrors(obs, "badKey", err)
+		stats.ReportErrors(fanoutObs, "badKey", err)
 	}
 
 	// Case A: only bad keys
@@ -646,7 +661,7 @@ func main() {
 		if errors.As(err, &ke) {
 			fmt.Printf("  6b bad key: key=%q  cause=%v\n", ke.Key, ke.Err)
 		}
-		stats.ReportErrors(obs, "allSensorsCodec", err)
+		stats.ReportErrors(fanoutObs, "allSensorsCodec", err)
 	}
 
 	// ── 6c: Bad value — a reading has a wrong-type field ─────────────────
@@ -663,7 +678,7 @@ func main() {
 		if errors.As(err, &ke) {
 			fmt.Printf("  6c bad value: key=%q  cause=%v\n", ke.Key, ke.Err)
 		}
-		stats.ReportErrors(obs, "allSensorsCodec", err)
+		stats.ReportErrors(fanoutObs, "allSensorsCodec", err)
 	}
 
 	obs.SummaryDelta("Scenario 6 (codex.Map)", snap6)

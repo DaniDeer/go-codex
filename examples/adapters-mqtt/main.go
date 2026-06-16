@@ -99,8 +99,6 @@ func (o *CountingObserver) RecordValidationError(location, constraintName, field
 		o.valErrorsByLoc = make(map[string]int)
 	}
 	o.valErrorsByLoc[location]++
-	fmt.Printf("  [observer] validation error — location=%q constraint=%q field=%q\n",
-		location, constraintName, field)
 }
 
 func (o *CountingObserver) Print() {
@@ -544,13 +542,16 @@ var sensorTopicConstraint = codex.Constraint[string]{
 const sensorUUID = "f47ac10b-58cc-4372-a567-0e02b2c3d479"
 
 func main() {
+	baseLogger := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelDebug}))
+	slog.SetDefault(baseLogger)
+
 	ctx := context.Background()
 	store := newTimeSeriesStore()
 	const threshold = 75.0 // alert when value > 75
 
 	// Create separate loggers for domain and transport concerns.
-	domainLogger := slog.Default().With("layer", "domain")
-	mqttLogger := slog.Default().With("transport", "mqtt")
+	domainLogger := baseLogger.With("layer", "domain")
+	mqttLogger := baseLogger.With("transport", "mqtt")
 
 	// Build the event API description (transport-agnostic).
 	b := events.NewBuilder(events.Info{
@@ -612,7 +613,8 @@ func main() {
 	// Wire infrastructure: inject store + alert publish function.
 	// Use domain logging decorator to separate logging concern from handler body.
 	client := newMockClient()
-	obs := &CountingObserver{}
+	metrics := &CountingObserver{}
+	obs := stats.NewFanout(metrics, stats.NewLoggingObserver(baseLogger.With("component", "mqtt")))
 
 	// BuildTopic substitutes {sensorID} and validates it against the UUID codec.
 	// The concrete topic is needed for client.Subscribe and client.deliver.
@@ -851,7 +853,7 @@ func main() {
 	}
 
 	fmt.Println("\n=== Observer stats ===")
-	obs.Print()
+	metrics.Print()
 
 	// ── Multi-format showcase (YAML payload) ──────────────────────────────────
 	//
@@ -897,5 +899,5 @@ func main() {
 	}
 
 	fmt.Println("\n=== Final observer stats ===")
-	obs.Print()
+	metrics.Print()
 }

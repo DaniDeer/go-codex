@@ -59,6 +59,7 @@ import (
 	"github.com/DaniDeer/go-codex/api/rest"
 	"github.com/DaniDeer/go-codex/codex"
 	"github.com/DaniDeer/go-codex/format"
+	"github.com/DaniDeer/go-codex/stats"
 	"github.com/DaniDeer/go-codex/validate"
 )
 
@@ -97,8 +98,6 @@ func (o *CountingObserver) RecordValidationError(location, constraintName, field
 		o.valErrorsByLoc = make(map[string]int)
 	}
 	o.valErrorsByLoc[location]++
-	fmt.Printf("  [observer] validation error — location=%q constraint=%q field=%q\n",
-		location, constraintName, field)
 }
 
 func (o *CountingObserver) Print() {
@@ -389,11 +388,14 @@ func makeGetUserHandler(store *UserStore) func(context.Context, struct{}) (User,
 }
 
 func main() {
+	baseLogger := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelDebug}))
+	slog.SetDefault(baseLogger)
+
 	store := newUserStore()
 
 	// Create separate loggers for domain and transport concerns.
-	domainLogger := slog.Default().With("layer", "domain")
-	httpLogger := slog.Default().With("transport", "http")
+	domainLogger := baseLogger.With("layer", "domain")
+	httpLogger := baseLogger.With("transport", "http")
 
 	// Build the REST API description (transport-agnostic).
 	b := rest.NewBuilder(rest.Info{
@@ -567,7 +569,8 @@ func main() {
 		return []slog.Attr{slog.String("id", u.ID)}
 	}
 
-	obs := &CountingObserver{}
+	metrics := &CountingObserver{}
+	obs := stats.NewFanout(metrics, stats.NewLoggingObserver(baseLogger.With("component", "http")))
 	opts := nethttp.Options{ErrorHandler: errorHandler, Observer: obs}
 
 	// Wire infrastructure handlers to HTTP routes with custom error handling + domain logging decorator.
@@ -834,7 +837,7 @@ func main() {
 	fmt.Printf("Invalid:  error=%v, Set-Cookie=%q\n\n", setErr, setRec2.Header().Get("Set-Cookie"))
 
 	fmt.Println("=== Observer summary ===")
-	obs.Print()
+	metrics.Print()
 	fmt.Println()
 
 	fmt.Println("=== OpenAPI 3.1 spec (derived from domain codecs) ===")

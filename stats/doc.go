@@ -9,13 +9,8 @@
 // non-HTTP/MQTT use case. Implement just [ValidationObserver.RecordValidationError]
 // and call [ReportErrors] after each [codex.Codec.Decode]:
 //
-//	type MyObserver struct{}
-//	func (o *MyObserver) RecordValidationError(location, constraint, field string) {
-//	    // increment Prometheus counter, emit log, etc.
-//	}
-//
 //	val, err := appConfigCodec.Decode(rawData)
-//	stats.ReportErrors(&MyObserver{}, "config", err)
+//	stats.ReportErrors(obs, "config", err)
 //
 // # Adapter-level (Observer)
 //
@@ -23,10 +18,32 @@
 // [ValidationObserver] and adds transport-specific hooks for HTTP and MQTT:
 //
 //	nethttp.Register(mux, route, handler, nethttp.Options{Observer: obs})
-//
 //	adaptermqtt.SubscribeHandler(ctx, ch, fn, adaptermqtt.SubscribeOptions{Observer: obs})
-//	adaptermqtt.Publish(ctx, client, ch, qos, retained, msg, vars,
-//	    adaptermqtt.PublishOptions{Observer: obs})
 //
-// [NoopObserver] is a zero-cost default used when no observer is configured.
+// # Composing metrics and logging
+//
+// Use [NewLoggingObserver] and [NewFanout] to separate the metrics concern
+// from the logging concern — no mixing of slog and counters in one struct:
+//
+//	metrics := &MyMetricsObserver{}  // pure counters — swap for Prometheus
+//
+//	obs := stats.NewFanout(
+//	    metrics,
+//	    stats.NewLoggingObserver(slog.Default().With("component", "api")),
+//	)
+//
+//	nethttp.Register(mux, route, handler, nethttp.Options{Observer: obs})
+//
+// [LoggingObserver] implements all five observer interfaces and logs every event
+// via slog. Configure the logger's handler for your environment:
+//   - [slog.NewTextHandler] for development
+//   - [slog.NewJSONHandler] for log aggregation
+//   - An OpenTelemetry slog bridge for distributed traces
+//
+// [NewFanout] fans out to all provided observers and also implements the optional
+// [FileObserver], [SecurityObserver], and [PipelineObserver] interfaces —
+// delegating each to the inner observers that satisfy those interfaces.
+//
+// [NoopObserver] satisfies all five interfaces at zero cost; it is the default
+// when no observer is configured.
 package stats
