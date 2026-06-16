@@ -19,26 +19,26 @@ type flat struct {
 }
 
 var flatCodec = codex.Struct[flat](
-	codex.Field[flat, string]{
-		Name: "host", Codec: codex.String().Refine(validate.NonEmptyString),
-		Get: func(c flat) string { return c.Host }, Set: func(c *flat, v string) { c.Host = v },
-		Required: true,
-	},
-	codex.Field[flat, int]{
-		Name: "port", Codec: codex.Int().Refine(validate.RangeInt(1, 65535)),
-		Get: func(c flat) int { return c.Port }, Set: func(c *flat, v int) { c.Port = v },
-		Required: true,
-	},
-	codex.Field[flat, bool]{
-		Name: "debug", Codec: codex.Bool(),
-		Get: func(c flat) bool { return c.Debug }, Set: func(c *flat, v bool) { c.Debug = v },
-		Required: false,
-	},
-	codex.Field[flat, float64]{
-		Name: "timeout", Codec: codex.Float64().Refine(validate.PositiveFloat),
-		Get: func(c flat) float64 { return c.Timeout }, Set: func(c *flat, v float64) { c.Timeout = v },
-		Required: true,
-	},
+	codex.RequiredField("host",
+		codex.String().Refine(validate.NonEmptyString),
+		func(c flat) string { return c.Host },
+		func(c *flat, v string) { c.Host = v },
+	),
+	codex.RequiredField("port",
+		codex.Int().Refine(validate.RangeInt(1, 65535)),
+		func(c flat) int { return c.Port },
+		func(c *flat, v int) { c.Port = v },
+	),
+	codex.OptionalField("debug",
+		codex.Bool(),
+		func(c flat) bool { return c.Debug },
+		func(c *flat, v bool) { c.Debug = v },
+	),
+	codex.RequiredField("timeout",
+		codex.Float64().Refine(validate.PositiveFloat),
+		func(c flat) float64 { return c.Timeout },
+		func(c *flat, v float64) { c.Timeout = v },
+	),
 )
 
 type nested struct {
@@ -52,28 +52,27 @@ type serverCfg struct {
 }
 
 var nestedCodec = codex.Struct[nested](
-	codex.Field[nested, serverCfg]{
-		Name: "server",
-		Codec: codex.Struct[serverCfg](
-			codex.Field[serverCfg, string]{
-				Name: "host", Codec: codex.String().Refine(validate.NonEmptyString),
-				Get: func(c serverCfg) string { return c.Host }, Set: func(c *serverCfg, v string) { c.Host = v },
-				Required: true,
-			},
-			codex.Field[serverCfg, bool]{
-				Name: "tls", Codec: codex.Bool(),
-				Get: func(c serverCfg) bool { return c.TLS }, Set: func(c *serverCfg, v bool) { c.TLS = v },
-				Required: false,
-			},
+	codex.RequiredField("server",
+		codex.Struct[serverCfg](
+			codex.RequiredField("host",
+				codex.String().Refine(validate.NonEmptyString),
+				func(c serverCfg) string { return c.Host },
+				func(c *serverCfg, v string) { c.Host = v },
+			),
+			codex.OptionalField("tls",
+				codex.Bool(),
+				func(c serverCfg) bool { return c.TLS },
+				func(c *serverCfg, v bool) { c.TLS = v },
+			),
 		),
-		Get: func(c nested) serverCfg { return c.Server }, Set: func(c *nested, v serverCfg) { c.Server = v },
-		Required: true,
-	},
-	codex.Field[nested, int]{
-		Name: "port", Codec: codex.Int(),
-		Get: func(c nested) int { return c.Port }, Set: func(c *nested, v int) { c.Port = v },
-		Required: true,
-	},
+		func(c nested) serverCfg { return c.Server },
+		func(c *nested, v serverCfg) { c.Server = v },
+	),
+	codex.RequiredField("port",
+		codex.Int(),
+		func(c nested) int { return c.Port },
+		func(c *nested, v int) { c.Port = v },
+	),
 )
 
 type withSlice struct {
@@ -82,16 +81,16 @@ type withSlice struct {
 }
 
 var sliceCodec = codex.Struct[withSlice](
-	codex.Field[withSlice, []string]{
-		Name: "tags", Codec: codex.SliceOf(codex.String()),
-		Get: func(c withSlice) []string { return c.Tags }, Set: func(c *withSlice, v []string) { c.Tags = v },
-		Required: false,
-	},
-	codex.Field[withSlice, []int]{
-		Name: "ports", Codec: codex.SliceOf(codex.Int()),
-		Get: func(c withSlice) []int { return c.Ports }, Set: func(c *withSlice, v []int) { c.Ports = v },
-		Required: false,
-	},
+	codex.OptionalField("tags",
+		codex.SliceOf(codex.String()),
+		func(c withSlice) []string { return c.Tags },
+		func(c *withSlice, v []string) { c.Tags = v },
+	),
+	codex.OptionalField("ports",
+		codex.SliceOf(codex.Int()),
+		func(c withSlice) []int { return c.Ports },
+		func(c *withSlice, v []int) { c.Ports = v },
+	),
 )
 
 type withNullable struct {
@@ -99,11 +98,11 @@ type withNullable struct {
 }
 
 var nullableCodec = codex.Struct[withNullable](
-	codex.Field[withNullable, *string]{
-		Name: "note", Codec: codex.Nullable(codex.String()),
-		Get: func(c withNullable) *string { return c.Note }, Set: func(c *withNullable, v *string) { c.Note = v },
-		Required: false,
-	},
+	codex.OptionalField("note",
+		codex.Nullable(codex.String()),
+		func(c withNullable) *string { return c.Note },
+		func(c *withNullable, v *string) { c.Note = v },
+	),
 )
 
 // ── Tests ─────────────────────────────────────────────────────────────────────

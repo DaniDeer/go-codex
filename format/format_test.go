@@ -16,13 +16,11 @@ import (
 )
 
 var testCodec = codex.Struct[struct{ N int }](
-	codex.Field[struct{ N int }, int]{
-		Name:     "n",
-		Codec:    codex.Int().Refine(validate.PositiveInt),
-		Get:      func(v struct{ N int }) int { return v.N },
-		Set:      func(v *struct{ N int }, x int) { v.N = x },
-		Required: true,
-	},
+	codex.RequiredField("n",
+		codex.Int().Refine(validate.PositiveInt),
+		func(v struct{ N int }) int { return v.N },
+		func(v *struct{ N int }, x int) { v.N = x },
+	),
 )
 
 func TestFormatValidate_PassesValid(t *testing.T) {

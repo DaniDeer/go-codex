@@ -16,20 +16,16 @@ type point struct {
 
 func pointCodec() codex.Codec[point] {
 	return codex.Struct[point](
-		codex.Field[point, int]{
-			Name:     "x",
-			Codec:    codex.Int(),
-			Get:      func(p point) int { return p.X },
-			Set:      func(p *point, v int) { p.X = v },
-			Required: true,
-		},
-		codex.Field[point, int]{
-			Name:     "y",
-			Codec:    codex.Int(),
-			Get:      func(p point) int { return p.Y },
-			Set:      func(p *point, v int) { p.Y = v },
-			Required: false,
-		},
+		codex.RequiredField("x",
+			codex.Int(),
+			func(p point) int { return p.X },
+			func(p *point, v int) { p.X = v },
+		),
+		codex.OptionalField("y",
+			codex.Int(),
+			func(p point) int { return p.Y },
+			func(p *point, v int) { p.Y = v },
+		),
 	)
 }
 

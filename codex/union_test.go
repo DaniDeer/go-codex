@@ -20,23 +20,23 @@ type vehicle struct {
 
 func vehicleCodec() codex.Codec[vehicle] {
 	circleC := codex.Struct[circle](
-		codex.Field[circle, int]{
-			Name: "radius", Codec: codex.Int(),
-			Get: func(c circle) int { return c.Radius },
-			Set: func(c *circle, v int) { c.Radius = v }, Required: true,
-		},
+		codex.RequiredField("radius",
+			codex.Int(),
+			func(c circle) int { return c.Radius },
+			func(c *circle, v int) { c.Radius = v },
+		),
 	)
 	rectC := codex.Struct[rect](
-		codex.Field[rect, int]{
-			Name: "width", Codec: codex.Int(),
-			Get: func(r rect) int { return r.Width },
-			Set: func(r *rect, v int) { r.Width = v }, Required: true,
-		},
-		codex.Field[rect, int]{
-			Name: "height", Codec: codex.Int(),
-			Get: func(r rect) int { return r.Height },
-			Set: func(r *rect, v int) { r.Height = v }, Required: true,
-		},
+		codex.RequiredField("width",
+			codex.Int(),
+			func(r rect) int { return r.Width },
+			func(r *rect, v int) { r.Width = v },
+		),
+		codex.RequiredField("height",
+			codex.Int(),
+			func(r rect) int { return r.Height },
+			func(r *rect, v int) { r.Height = v },
+		),
 	)
 
 	circleV := codex.MapCodecSafe(circleC,
@@ -161,11 +161,11 @@ func TestTaggedUnion_RoundTrip(t *testing.T) {
 // codec in two different TaggedUnions does not corrupt either union's schema.
 func TestTaggedUnion_SchemaMutation_Regression(t *testing.T) {
 	base := codex.Struct[circle](
-		codex.Field[circle, int]{
-			Name: "radius", Codec: codex.Int(),
-			Get: func(c circle) int { return c.Radius },
-			Set: func(c *circle, v int) { c.Radius = v }, Required: true,
-		},
+		codex.RequiredField("radius",
+			codex.Int(),
+			func(c circle) int { return c.Radius },
+			func(c *circle, v int) { c.Radius = v },
+		),
 	)
 
 	liftFn := func(c circle) vehicle { return vehicle{Circle: &c} }

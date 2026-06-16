@@ -59,20 +59,16 @@ func TestCodecValidate_MultipleConstraints(t *testing.T) {
 func TestCodecValidate_StructAllFields(t *testing.T) {
 	type Point struct{ X, Y int }
 	c := codex.Struct[Point](
-		codex.Field[Point, int]{
-			Name:     "x",
-			Codec:    codex.Int().Refine(validate.MinInt(0)),
-			Get:      func(p Point) int { return p.X },
-			Set:      func(p *Point, v int) { p.X = v },
-			Required: true,
-		},
-		codex.Field[Point, int]{
-			Name:     "y",
-			Codec:    codex.Int().Refine(validate.MinInt(0)),
-			Get:      func(p Point) int { return p.Y },
-			Set:      func(p *Point, v int) { p.Y = v },
-			Required: true,
-		},
+		codex.RequiredField("x",
+			codex.Int().Refine(validate.MinInt(0)),
+			func(p Point) int { return p.X },
+			func(p *Point, v int) { p.X = v },
+		),
+		codex.RequiredField("y",
+			codex.Int().Refine(validate.MinInt(0)),
+			func(p Point) int { return p.Y },
+			func(p *Point, v int) { p.Y = v },
+		),
 	)
 
 	if err := c.Validate(Point{X: 1, Y: 2}); err != nil {
