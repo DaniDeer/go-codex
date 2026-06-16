@@ -266,6 +266,8 @@ err = format.PatchEncoded(configFile, nil, extendedPatchCodec,
 
 The file codec (`appConfigCodec`) validates `port` and `log_level`; the patch codec (`extendedPatchCodec`) validates `feature_flags`. Both sets of constraints run before the file is written.
 
+See [`examples/flat-key-patch`](https://github.com/DaniDeer/go-codex/tree/main/examples/flat-key-patch) for a complete demo using flat dotted-key JSON (IoT Edge device twin style), showing all four patterns: fixed key in struct codec, `File.Patch` with dynamic key concatenation, `PatchEncoded` with `StringMap`, and `PatchEncoded` with `Map` (key format + value both validated).
+
 ### Static paths
 
 For static paths (no template variables), pass `nil` for vars:

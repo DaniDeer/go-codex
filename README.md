@@ -339,6 +339,7 @@ go-codex/
     │   # ── Config / CLI ────────────────────────────────────────────────────────
     ├── cli-config/         # CLI tool config: TOML file + env var overlay with codecs
     ├── env-config/         # format.FromEnv: schema-driven env var loading with defaults
-    ├── file-io/            # format.File[T]: static + template files, FileObserver, FromEnvVar
+    ├── file-io/            # format.File[T]: static + template files, Patch, PatchEncoded, FileObserver
+    ├── flat-key-patch/     # flat dotted-key JSON: Patch + PatchEncoded with Map key validation
     └── stats-observer/     # stats.ValidationObserver wired to codecs directly (no adapter)
 ```
