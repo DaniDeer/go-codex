@@ -47,6 +47,27 @@ configFile.Read(nil, format.FileOptions{Observer: obs})                // format
 forge.NewRegistry("P", "1.0.0").WithObserver(obs)                      // forge
 ```
 
+### Context propagation for trace spans
+
+`TraceObserver.StartSpan` returns a `context.Context` that carries the active span. Adapters
+pass this context to the application handler, enabling parent-child span relationships:
+
+```
+HTTP client:    nethttp.Call(ctx, ...)          → sends traceparent header
+Downstream:     handler(ctx, req)               → ctx carries incoming span
+  ├─ forge:     ApplyContext(ctx, in)           → child of HTTP span
+  └─ file:      FileOptions{Context: ctx}       → child of HTTP span
+```
+
+All adapter entry points accept `context.Context`:
+- `nethttp.Call(ctx, ...)` — HTTP client, propagates to downstream
+- `mqtt.Publish(ctx, ...)` — MQTT publish
+- `mqtt.SubscribeHandler(ctx, ...)` — MQTT subscribe, ctx flows to handler
+
+To propagate into forge and file:
+- Use **`forge.Function.ApplyContext(ctx, in)`** (new) instead of `Apply(in)`
+- Set **`format.FileOptions.Context`** (new optional field) to the handler's context
+
 ## Per-layer behavior
 
 | Layer | How the observer is injected | Events emitted |

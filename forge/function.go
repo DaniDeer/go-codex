@@ -165,15 +165,24 @@ func (f *Function[In, Out]) obs() stats.PipelineObserver {
 	return f.observer
 }
 
-// Apply validates in, runs the optional cross-input refinement, runs the computation,
-// then validates and returns the result.
+// Apply validates and runs the computation with [context.Background] for
+// TraceObserver span parent propagation. Use [ApplyContext] to propagate a
+// parent trace span from a calling adapter (HTTP handler, MQTT callback, etc.).
 func (f *Function[In, Out]) Apply(in In) (Out, error) {
+	return f.ApplyContext(context.Background(), in)
+}
+
+// ApplyContext validates in, runs the optional cross-input refinement, runs the
+// computation, then validates and returns the result. ctx is used for
+// TraceObserver span parent propagation — pass the context from the calling
+// adapter (e.g. HTTP handler's ctx) to create child spans.
+func (f *Function[In, Out]) ApplyContext(ctx context.Context, in In) (Out, error) {
 	start := time.Now()
 	var zero Out
 	var err error
 
 	if to, ok := f.observer.(stats.TraceObserver); ok {
-		ctx := to.StartSpan(context.Background(), "forge.apply", f.Spec.Name)
+		ctx = to.StartSpan(ctx, "forge.apply", f.Spec.Name)
 		defer func() { to.EndSpan(ctx, err) }()
 	}
 

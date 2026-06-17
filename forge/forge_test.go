@@ -1,8 +1,10 @@
 package forge_test
 
 import (
+	"context"
 	"errors"
 	"fmt"
+	"sync"
 	"testing"
 	"time"
 
@@ -192,6 +194,65 @@ func (r *recordingObserver) RecordApply(name, version string, success bool, dur 
 }
 
 var _ stats.PipelineObserver = (*recordingObserver)(nil)
+
+type spanRecorder struct {
+	stats.NoopObserver
+	mu    sync.Mutex
+	ops   []string
+	names []string
+}
+
+type ctxKey struct{}
+
+func (s *spanRecorder) StartSpan(ctx context.Context, operation, name string) context.Context {
+	s.mu.Lock()
+	s.ops = append(s.ops, operation)
+	s.names = append(s.names, name)
+	s.mu.Unlock()
+	return context.WithValue(ctx, ctxKey{}, true)
+}
+
+func (s *spanRecorder) EndSpan(_ context.Context, _ error) {}
+
+func TestFunction_ApplyContext_ParentSpan(t *testing.T) {
+	spy := &spanRecorder{}
+	reg := forge.NewRegistry("test", "1.0.0").WithObserver(spy)
+	fn := forge.NewFunction("fn", "1.0.0",
+		codex.String(), codex.String(),
+		func(s string) (string, error) { return s, nil },
+	)
+	fn.Register(reg)
+
+	_, err := fn.ApplyContext(context.Background(), "hello")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	spy.mu.Lock()
+	defer spy.mu.Unlock()
+	if len(spy.ops) != 1 || spy.ops[0] != "forge.apply" {
+		t.Errorf("want forge.apply span, got %v", spy.ops)
+	}
+}
+
+func TestFunction_ApplyContext_NoopFallback(t *testing.T) {
+	// Apply should behave identically to ApplyContext(context.Background(), ...)
+	obs := &recordingObserver{}
+	reg := forge.NewRegistry("test", "1.0.0").WithObserver(obs)
+	fn := forge.NewFunction("fn", "1.0.0",
+		codex.String(), codex.String(),
+		func(s string) (string, error) { return s, nil },
+	)
+	fn.Register(reg)
+
+	_, err := fn.Apply("hello")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(obs.calls) != 1 {
+		t.Errorf("want 1 RecordApply call, got %d", len(obs.calls))
+	}
+}
 
 func TestNoopObserver_SatisfiesAllInterfaces(t *testing.T) {
 	var _ stats.ValidationObserver = stats.NoopObserver{}

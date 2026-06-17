@@ -266,6 +266,87 @@ obs := stats.NewFanout(metrics, stats.NewLoggingObserver(logger), &OTelTracer{})
 
 > **Note**: `LoggingObserver` does **not** implement `TraceObserver` (slog has no tracing). Use a slog→OTel bridge for log-trace correlation.
 
+## Context propagation through layers
+
+TraceObserver spans form a parent-child tree. go-codex adapters propagate the traced
+`context.Context` through the application, enabling full trace chains.
+
+### Flow diagram
+
+```
+Service A (client)
+  nethttp.Call(ctx, ...)
+  └─ traceparent header → Service B
+
+Service B (server)
+  handler(ctx, req)           ← ctx carries incoming span
+  ├─ ApplyContext(ctx, in)    ← forge span becomes child of HTTP span
+  └─ FileOptions{Context: ctx} ← file span becomes child of HTTP span
+```
+
+### Adapters (already propagate ctx)
+
+| Entry point | ctx purpose |
+|---|---|
+| `nethttp.Call(ctx, url, handle, req, vars, opts)` | Creates child span, sends `traceparent` header |
+| `mqtt.SubscribeHandler(ctx, handle, fn, opts)` | Parent for subscribe span, passed to `fn(ctx, value)` |
+| `mqtt.Publish(ctx, client, handle, qos, retained, msg, vars, opts)` | Creates child span for publish |
+
+### Forge (use ApplyContext)
+
+```go
+result, err := oeeCalc.ApplyContext(ctx, OEEIn{
+    Availability: 0.9,
+    Performance:  0.85,
+    Quality:      0.95,
+})
+// forge.apply span is child of HTTP handler span
+```
+
+`Apply(in)` is unchanged — uses `context.Background()`. `ApplyContext(ctx, in)` was added to
+enable context propagation without breaking existing callers.
+
+### File I/O (set FileOptions.Context)
+
+```go
+opts := format.FileOptions{
+    Observer: metrics,
+    Context:  ctx,  // file.read span is child of HTTP handler span
+}
+value, err := configFile.Read(nil, opts)
+```
+
+`FileOptions.Context` is optional — when nil, falls back to `context.Background()`.
+
+### Full example: HTTP handler → forge → file
+
+```go
+func handler(ctx context.Context, req MyRequest) (MyResponse, error) {
+    // ctx already carries the HTTP span
+
+    // Step 1: forge computation as child span
+    result, err := oeeCalc.ApplyContext(ctx, OEEIn{
+        Availability: req.Availability,
+        Performance:  req.Performance,
+        Quality:      req.Quality,
+    })
+    if err != nil {
+        return MyResponse{}, err
+    }
+
+    // Step 2: write result to file as child span
+    err = resultFile.Write(nil, result, format.FileOptions{
+        Observer: obs,
+        Context:  ctx,
+    })
+    if err != nil {
+        return MyResponse{}, err
+    }
+
+    return MyResponse{OEE: result.OEE}, nil
+}
+```
+
 ## Operation values (TraceObserver)
 
 | Operation | Call site |

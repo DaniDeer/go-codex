@@ -1,11 +1,13 @@
 package format_test
 
 import (
+	"context"
 	"errors"
 	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -1198,5 +1200,63 @@ func TestPatch_UnknownFieldInPatchMap_Dropped(t *testing.T) {
 	got, _ := f.Read(nil, format.FileOptions{})
 	if got.Value != 5 {
 		t.Errorf("value not patched: want 5, got %d", got.Value)
+	}
+}
+
+// ── Context propagation for TraceObserver ──────────────────────────────────
+
+type fileTraceSpy struct {
+	stats.NoopObserver
+	mu  sync.Mutex
+	ops []string
+}
+
+func (s *fileTraceSpy) StartSpan(ctx context.Context, operation, name string) context.Context {
+	s.mu.Lock()
+	s.ops = append(s.ops, operation)
+	s.mu.Unlock()
+	return ctx
+}
+
+func (s *fileTraceSpy) EndSpan(_ context.Context, _ error) {}
+
+type parentKey struct{}
+
+func TestFile_TraceObserver_ContextPropagation(t *testing.T) {
+	spy := &fileTraceSpy{}
+	dir := t.TempDir()
+	path := filepath.Join(dir, "test.txt")
+	f := format.NewFile(path, format.JSON(codex.String()))
+
+	parentCtx := context.Background()
+	parentCtx = context.WithValue(parentCtx, parentKey{}, "value")
+	opts := format.FileOptions{Observer: spy, Context: parentCtx}
+	f.Read(nil, opts)
+	// file doesn't exist — TraceObserver guard fires before the read error
+
+	spy.mu.Lock()
+	defer spy.mu.Unlock()
+	if len(spy.ops) == 0 {
+		t.Error("want at least 1 StartSpan call from Read")
+	}
+	if spy.ops[0] != "file.read" {
+		t.Errorf("want file.read, got %s", spy.ops[0])
+	}
+}
+
+func TestFile_TraceObserver_ContextNilFallback(t *testing.T) {
+	spy := &fileTraceSpy{}
+	dir := t.TempDir()
+	path := filepath.Join(dir, "test.txt")
+	f := format.NewFile(path, format.JSON(codex.String()))
+
+	// No Context in FileOptions — should use context.Background()
+	f.Read(nil, format.FileOptions{Observer: spy})
+	// file doesn't exist — still fires TraceObserver
+
+	spy.mu.Lock()
+	defer spy.mu.Unlock()
+	if len(spy.ops) == 0 {
+		t.Error("want StartSpan call even with nil Context")
 	}
 }

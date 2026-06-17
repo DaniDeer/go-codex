@@ -65,6 +65,12 @@ type FileOptions struct {
 	// Perm is the file permission used when creating a new file.
 	// Defaults to 0644 when zero.
 	Perm os.FileMode
+
+	// Context is an optional context for TraceObserver span parent propagation.
+	// When non-nil, file operations create child spans under the trace span
+	// carried by this context. When nil (default), spans use [context.Background]
+	// and become root spans.
+	Context context.Context
 }
 
 // ── File ──────────────────────────────────────────────────────────────────────
@@ -219,9 +225,13 @@ func (fh File[T]) Read(vars map[string]string, opts FileOptions) (T, error) {
 	}
 
 	var opErr error
+	traceCtx := opts.Context
+	if traceCtx == nil {
+		traceCtx = context.Background()
+	}
 	if to, ok := obs.(stats.TraceObserver); ok {
-		ctx := to.StartSpan(context.Background(), "file.read", path)
-		defer func() { to.EndSpan(ctx, opErr) }()
+		traceCtx = to.StartSpan(traceCtx, "file.read", path)
+		defer func() { to.EndSpan(traceCtx, opErr) }()
 	}
 
 	start := time.Now()
@@ -267,9 +277,13 @@ func (fh File[T]) Write(vars map[string]string, v T, opts FileOptions) error {
 	}
 
 	var opErr error
+	traceCtx := opts.Context
+	if traceCtx == nil {
+		traceCtx = context.Background()
+	}
 	if to, ok := obs.(stats.TraceObserver); ok {
-		ctx := to.StartSpan(context.Background(), "file.write", path)
-		defer func() { to.EndSpan(ctx, opErr) }()
+		traceCtx = to.StartSpan(traceCtx, "file.write", path)
+		defer func() { to.EndSpan(traceCtx, opErr) }()
 	}
 
 	data, err := fh.format.Marshal(v)
@@ -398,9 +412,13 @@ func PatchEncoded[T, P any](fh File[T], vars map[string]string, patchCodec codex
 	}
 
 	var opErr error
+	traceCtx := opts.Context
+	if traceCtx == nil {
+		traceCtx = context.Background()
+	}
 	if to, ok := obs.(stats.TraceObserver); ok {
-		ctx := to.StartSpan(context.Background(), "file.write", path)
-		defer func() { to.EndSpan(ctx, opErr) }()
+		traceCtx = to.StartSpan(traceCtx, "file.write", path)
+		defer func() { to.EndSpan(traceCtx, opErr) }()
 	}
 
 	// 2. Read the existing file.
@@ -508,9 +526,13 @@ func (fh File[T]) Patch(vars map[string]string, patch map[string]any, opts FileO
 	}
 
 	var opErr error
+	traceCtx := opts.Context
+	if traceCtx == nil {
+		traceCtx = context.Background()
+	}
 	if to, ok := obs.(stats.TraceObserver); ok {
-		ctx := to.StartSpan(context.Background(), "file.write", path)
-		defer func() { to.EndSpan(ctx, opErr) }()
+		traceCtx = to.StartSpan(traceCtx, "file.write", path)
+		defer func() { to.EndSpan(traceCtx, opErr) }()
 	}
 
 	// Read the raw bytes.
