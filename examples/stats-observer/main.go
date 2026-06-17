@@ -8,10 +8,17 @@
 // fields emit [stats.RecordValidationError] events that a production observer
 // would route to Prometheus counters, structured logs, or alerting.
 //
+// The final section demonstrates [stats.TraceObserver] — an additive optional
+// interface for distributed tracing. Implement StartSpan/EndSpan against your
+// tracing backend (OpenTelemetry, Datadog, etc.) and wire it via [stats.NewFanout]
+// alongside metrics and logging observers.
+//
 // Run with: go run ./examples/stats-observer
 package main
 
 import (
+	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
@@ -56,6 +63,25 @@ type configError struct {
 // RecordValidationError implements [stats.ValidationObserver].
 func (o *ConfigObserver) RecordValidationError(location, constraint, field string) {
 	o.errors = append(o.errors, configError{location: location, constraint: constraint, field: field})
+}
+
+// demoTraceObserver implements [stats.TraceObserver] — records spans in memory.
+// A production implementation would call otel.Tracer("go-codex").Start(ctx, operation, ...).
+type demoTraceObserver struct {
+	stats.NoopObserver
+	operations []string
+	errCount   int
+}
+
+func (t *demoTraceObserver) StartSpan(ctx context.Context, operation, name string) context.Context {
+	t.operations = append(t.operations, operation+":"+name)
+	return ctx
+}
+
+func (t *demoTraceObserver) EndSpan(ctx context.Context, err error) {
+	if err != nil {
+		t.errCount++
+	}
 }
 
 func (o *ConfigObserver) Print() {
@@ -120,4 +146,29 @@ func main() {
 
 	fmt.Println("\n=== Observer summary ===")
 	configObs.Print()
+
+	// ── TraceObserver demo ─────────────────────────────────────────────────────
+
+	fmt.Println("\n=== TraceObserver demo ===")
+	traceObs := &demoTraceObserver{}
+	tracedObs := stats.NewFanout(configObs, stats.NewLoggingObserver(logger), traceObs)
+
+	// Simulate a request that creates a root span and a child span.
+	ctx := context.Background()
+	if to, ok := tracedObs.(stats.TraceObserver); ok {
+		ctx = to.StartSpan(ctx, "http.request", "/users/{id}")
+		if childTo, ok := tracedObs.(stats.TraceObserver); ok {
+			childCtx := childTo.StartSpan(ctx, "db.query", "SELECT * FROM users WHERE id = $1")
+			childTo.EndSpan(childCtx, errors.New("connection timeout"))
+		}
+		to.EndSpan(ctx, nil)
+	}
+
+	// Simulate a failed request.
+	if to, ok := tracedObs.(stats.TraceObserver); ok {
+		ctx = to.StartSpan(context.Background(), "forge.apply", "oeeCalc")
+		to.EndSpan(ctx, errors.New("input validation failed"))
+	}
+
+	fmt.Printf("  TraceObserver: operations=%v errors=%d\n", traceObs.operations, traceObs.errCount)
 }

@@ -227,7 +227,12 @@ func SubscribeHandler[T any](
 			}
 		}
 
-		if err := fn(ctx, value); err != nil {
+		if to, ok := obs.(stats.TraceObserver); ok {
+			ctx = to.StartSpan(ctx, "mqtt.subscribe", msg.Topic())
+			defer func() { to.EndSpan(ctx, err) }()
+		}
+
+		if err = fn(ctx, value); err != nil {
 			reportTopicParamErrors(err, obs)
 			reportTopicMismatchErrors(err, obs)
 			reportInvalidTopicErrors(err, obs)
@@ -339,15 +344,21 @@ func Publish[T any](ctx context.Context, client pahomqtt.Client, handle *events.
 		obs = stats.NoopObserver{}
 	}
 	start := time.Now()
+	var err error
+	if to, ok := obs.(stats.TraceObserver); ok {
+		ctx = to.StartSpan(ctx, "mqtt.publish", handle.Topic)
+		defer func() { to.EndSpan(ctx, err) }()
+	}
 
 	topic := handle.Topic
 	if vars != nil {
-		var err error
-		topic, err = handle.BuildTopic(vars)
-		if err != nil {
-			reportTopicParamErrors(err, obs)
-			reportMissingTopicVarErrors(err, obs)
-			reportInvalidTopicErrors(err, obs)
+		var err2 error
+		topic, err2 = handle.BuildTopic(vars)
+		if err2 != nil {
+			err = err2
+			reportTopicParamErrors(err2, obs)
+			reportMissingTopicVarErrors(err2, obs)
+			reportInvalidTopicErrors(err2, obs)
 			obs.RecordPublish(handle.Topic, false, time.Since(start))
 			return err
 		}
@@ -361,7 +372,6 @@ func Publish[T any](ctx context.Context, client pahomqtt.Client, handle *events.
 		effectiveFmts = handle.Formats
 	}
 	var payload []byte
-	var err error
 	if len(effectiveFmts) > 0 {
 		payload, err = effectiveFmts[0].Marshal(msg)
 	} else {
@@ -375,12 +385,14 @@ func Publish[T any](ctx context.Context, client pahomqtt.Client, handle *events.
 	token := client.Publish(topic, qos, retained, payload)
 	select {
 	case <-ctx.Done():
+		err = ctx.Err()
 		obs.RecordPublish(topic, false, time.Since(start))
-		return ctx.Err()
+		return err
 	case <-token.Done():
 		if token.Error() != nil {
+			err = token.Error()
 			obs.RecordPublish(topic, false, time.Since(start))
-			return token.Error()
+			return err
 		}
 		obs.RecordPublish(topic, true, time.Since(start))
 		return nil

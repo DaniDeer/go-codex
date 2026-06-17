@@ -301,7 +301,16 @@ func Handler[Req, Resp any](handle *rest.RouteHandle[Req, Resp], fn HandlerFunc[
 			}
 		}
 
-		resp, err := fn(ctx, req)
+		var (
+			resp Resp
+			err  error
+		)
+		if to, ok := obs.(stats.TraceObserver); ok {
+			ctx = to.StartSpan(ctx, "http.request", handle.Descriptor.Path)
+			defer func() { to.EndSpan(ctx, err) }()
+		}
+
+		resp, err = fn(ctx, req)
 		if err != nil {
 			errFn(sw, r, http.StatusInternalServerError, err)
 			return
@@ -620,7 +629,13 @@ func SSEHandler[Req, Event any](handle *rest.SSERouteHandle[Req, Event], fn SSEH
 			return nil
 		}
 
-		if err := fn(ctx, req, send); err != nil {
+		var err error
+		if to, ok := obs.(stats.TraceObserver); ok {
+			ctx = to.StartSpan(ctx, "http.request", handle.Descriptor.Path)
+			defer func() { to.EndSpan(ctx, err) }()
+		}
+
+		if err = fn(ctx, req, send); err != nil {
 			// If headers not yet written (first call failed before any send),
 			// we can still emit an error response.
 			if sw.code == http.StatusOK {

@@ -181,6 +181,60 @@ func (o *TelemetryObserver) RecordSecurityRejection(location, scheme string) {
 
 Adapters type-assert `stats.SecurityObserver` — implementing it is purely additive; existing `Observer` implementations need not change.
 
+## TraceObserver (distributed tracing)
+
+`TraceObserver` is the 6th optional interface — purely additive, no breaking change. Type-asserted by adapters (never embedded in `Observer`).
+
+```go
+type TraceObserver interface {
+    StartSpan(ctx context.Context, operation, name string) context.Context
+    EndSpan(ctx context.Context, err error)
+}
+```
+
+Wire via `stats.NewFanout` alongside other observer implementations:
+
+```go
+obs := stats.NewFanout(metrics, stats.NewLoggingObserver(logger), myTracer)
+```
+
+### OpenTelemetry example
+
+```go
+type OTelTracer struct{ stats.NoopObserver }
+
+func (t *OTelTracer) StartSpan(ctx context.Context, operation, name string) context.Context {
+    ctx, span := otel.Tracer("go-codex").Start(ctx, operation,
+        otel.WithAttributes(attribute.String("name", name)),
+    )
+    return ctx
+}
+
+func (t *OTelTracer) EndSpan(ctx context.Context, err error) {
+    span := trace.SpanFromContext(ctx)
+    if err != nil {
+        span.RecordError(err)
+    }
+    span.End()
+}
+```
+
+> **Note**: `LoggingObserver` does **not** implement `TraceObserver` (slog has no tracing). Use a slog→OTel bridge for correlating logs with traces.
+
+### Operation values
+
+| Operation | Call site |
+|---|---|
+| `"http.request"` | nethttp/chi adapter — request handler or client call |
+| `"mqtt.subscribe"` | mqtt adapter — `SubscribeHandler` |
+| `"mqtt.publish"` | mqtt adapter — `Publish` |
+| `"forge.apply"` | forge Registry — `Apply` |
+| `"file.read"` | format.File — `Read` / `Update` |
+| `"file.write"` | format.File — `Write` / `Patch` / `PatchEncoded` |
+| `"mcp.tool"` | mcpgo adapter — `ToolHandler` |
+| `"mcp.resource"` | mcpgo adapter — `ResourceHandler` |
+| `"mcp.prompt"` | mcpgo adapter — `PromptHandler` |
+
 ## Observer location values
 
 | Location | Adapter / use case |

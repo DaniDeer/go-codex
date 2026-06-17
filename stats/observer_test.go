@@ -1,6 +1,8 @@
 package stats_test
 
 import (
+	"context"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -374,4 +376,119 @@ func TestNewFanout_WithLoggingObserver(t *testing.T) {
 	if metrics.valErrors != 1 || metrics.requests != 1 {
 		t.Errorf("metrics not updated: valErrs=%d reqs=%d", metrics.valErrors, metrics.requests)
 	}
+}
+
+// ── TraceObserver tests ──────────────────────────────────────────────────────
+
+type traceSpy struct {
+	stats.NoopObserver
+	startOperation string
+	startName      string
+	endErr         error
+	started        int
+	ended          int
+}
+
+func (s *traceSpy) StartSpan(ctx context.Context, operation, name string) context.Context {
+	s.startOperation = operation
+	s.startName = name
+	s.started++
+	return context.WithValue(ctx, traceKey{}, "injected")
+}
+
+func (s *traceSpy) EndSpan(ctx context.Context, err error) {
+	s.endErr = err
+	s.ended++
+	if v := ctx.Value(traceKey{}); v != nil {
+		_ = v
+	}
+}
+
+type traceKey struct{}
+
+func TestTraceObserver_StartEnd(t *testing.T) {
+	spy := &traceSpy{}
+	obs := stats.NewFanout(spy)
+	to, ok := obs.(stats.TraceObserver)
+	if !ok {
+		t.Fatal("fanout with TraceObserver must implement TraceObserver")
+	}
+	ctx := to.StartSpan(context.Background(), "http.request", "/users/{id}")
+	if spy.startOperation != "http.request" {
+		t.Errorf("want http.request, got %s", spy.startOperation)
+	}
+	if spy.startName != "/users/{id}" {
+		t.Errorf("want /users/{id}, got %s", spy.startName)
+	}
+	if spy.started != 1 {
+		t.Errorf("want 1 StartSpan call, got %d", spy.started)
+	}
+	if ctx.Value(traceKey{}) == nil {
+		t.Error("want StartSpan to return modified ctx")
+	}
+	to.EndSpan(ctx, nil)
+	if spy.ended != 1 {
+		t.Errorf("want 1 EndSpan call, got %d", spy.ended)
+	}
+	if spy.endErr != nil {
+		t.Errorf("want nil err, got %v", spy.endErr)
+	}
+}
+
+func TestTraceObserver_EndSpanWithError(t *testing.T) {
+	spy := &traceSpy{}
+	obs := stats.NewFanout(spy)
+	to := obs.(stats.TraceObserver)
+	ctx := to.StartSpan(context.Background(), "file.read", "/tmp/data.json")
+	errSentinel := errors.New("file not found")
+	to.EndSpan(ctx, errSentinel)
+	if spy.ended != 1 {
+		t.Errorf("want 1 EndSpan call, got %d", spy.ended)
+	}
+	if !errors.Is(spy.endErr, errSentinel) {
+		t.Errorf("want err sentinel, got %v", spy.endErr)
+	}
+}
+
+func TestFanout_TraceObserver_OnlyToImplementors(t *testing.T) {
+	spy := &traceSpy{}
+	plain := &fanoutSpy{} // does NOT implement TraceObserver
+	obs := stats.NewFanout(plain, spy)
+	to, ok := obs.(stats.TraceObserver)
+	if !ok {
+		t.Fatal("fanout must implement TraceObserver when any inner does")
+	}
+	ctx := to.StartSpan(context.Background(), "forge.apply", "calc")
+	if spy.started != 1 {
+		t.Errorf("want 1 StartSpan on spy, got %d", spy.started)
+	}
+	to.EndSpan(ctx, errors.New("fail"))
+	if spy.ended != 1 {
+		t.Errorf("want 1 EndSpan on spy, got %d", spy.ended)
+	}
+}
+
+func TestLoggingObserver_DoesNotImplementTraceObserver(t *testing.T) {
+	logging := stats.NewLoggingObserver(slog.New(slog.NewTextHandler(io.Discard, nil)))
+	var anyObs any = logging
+	_, ok := anyObs.(stats.TraceObserver)
+	if ok {
+		t.Error("LoggingObserver should NOT implement TraceObserver")
+	}
+}
+
+func TestNoopObserver_ImplementsTraceObserver(t *testing.T) {
+	var noop stats.NoopObserver
+	var anyObs any = noop
+	to, ok := anyObs.(stats.TraceObserver)
+	if !ok {
+		t.Fatal("NoopObserver must implement TraceObserver")
+	}
+	ctx := to.StartSpan(context.Background(), "op", "name")
+	if ctx == nil {
+		t.Error("StartSpan must return non-nil ctx")
+	}
+	// Must not panic
+	to.EndSpan(ctx, nil)
+	to.EndSpan(ctx, errors.New("err"))
 }

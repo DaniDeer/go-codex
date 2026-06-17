@@ -78,13 +78,19 @@ func ToolHandler[In, Out any](
 
 	handler := func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		start := time.Now()
+		var err error
+		if to, ok := obs.(stats.TraceObserver); ok {
+			ctx = to.StartSpan(ctx, "mcp.tool", handle.Name)
+			defer func() { to.EndSpan(ctx, err) }()
+		}
 
 		// Decode + validate input from the MCP arguments.
 		var args any
-		if err := req.BindArguments(&args); err != nil {
-			stats.ReportErrors(obs, "input", err)
+		if e := req.BindArguments(&args); e != nil {
+			err = e
+			stats.ReportErrors(obs, "input", e)
 			obs.RecordRequest("tool", handle.Name, 400, time.Since(start))
-			return mcp.NewToolResultError(fmt.Sprintf("invalid arguments: %s", err)), nil
+			return mcp.NewToolResultError(fmt.Sprintf("invalid arguments: %s", e)), nil
 		}
 
 		input, err := handle.Decode(args)
@@ -113,6 +119,7 @@ func ToolHandler[In, Out any](
 			}
 			return nil, err
 		}
+		err = nil
 
 		obs.RecordRequest("tool", handle.Name, 200, time.Since(start))
 		return mcp.NewToolResultStructured(json.RawMessage(data), string(data)), nil
@@ -164,6 +171,11 @@ func ResourceHandler[T any](
 
 	handlerFn := func(ctx context.Context, req mcp.ReadResourceRequest) ([]mcp.ResourceContents, error) {
 		start := time.Now()
+		var err error
+		if to, ok := obs.(stats.TraceObserver); ok {
+			ctx = to.StartSpan(ctx, "mcp.resource", handle.URITemplate)
+			defer func() { to.EndSpan(ctx, err) }()
+		}
 		result, err := fn(ctx, req.Params.URI)
 		if err != nil {
 			obs.RecordRequest("resource", handle.URITemplate, 500, time.Since(start))
@@ -252,13 +264,19 @@ func PromptHandler(
 
 	handler := func(ctx context.Context, req mcp.GetPromptRequest) (*mcp.GetPromptResult, error) {
 		start := time.Now()
+		var err error
+		if to, ok := obs.(stats.TraceObserver); ok {
+			ctx = to.StartSpan(ctx, "mcp.prompt", handle.Name)
+			defer func() { to.EndSpan(ctx, err) }()
+		}
 		args := req.Params.Arguments
 
 		// Validate arguments via declared PromptArg codecs.
-		if err := handle.ValidateArgs(args); err != nil {
-			stats.ReportErrors(obs, "prompt.args", err)
+		if e := handle.ValidateArgs(args); e != nil {
+			err = e
+			stats.ReportErrors(obs, "prompt.args", e)
 			obs.RecordRequest("prompt", handle.Name, 400, time.Since(start))
-			return nil, fmt.Errorf("prompt %q: %w", handle.Name, err)
+			return nil, fmt.Errorf("prompt %q: %w", handle.Name, e)
 		}
 
 		messages, err := fn(ctx, args)

@@ -257,11 +257,13 @@ doesn't wrap a typed sentinel is a finding.
 | `PipelineObserver` | `RecordApply(name, version string, success bool, duration time.Duration)` | forge Registry |
 | `SecurityObserver` | `RecordSecurityRejection(location, scheme string)` | adapters (type-asserted, not mcpgo) |
 | `FileObserver` | `RecordFileRead(path string, success bool, d time.Duration)` · `RecordFileWrite(path string, success bool, d time.Duration)` | `format.File[T]` (type-asserted, never embedded) |
+| `TraceObserver` | `StartSpan(ctx, operation, name string) context.Context` · `EndSpan(ctx, err error)` | all adapters (type-asserted, never embedded) |
 
 ### Rules
 
 - `SecurityObserver` must be guarded: `if so, ok := obs.(stats.SecurityObserver); ok { ... }` — **never** embedded in `Observer`
 - `FileObserver` must be guarded: `if fo, ok := obs.(stats.FileObserver); ok { ... }` — **never** embedded in `Observer`; `path` is concrete path after template substitution, never the template
+- `TraceObserver` must be guarded: `if to, ok := obs.(stats.TraceObserver); ok { ... }` — **never** embedded in `Observer`; `LoggingObserver` does NOT implement `TraceObserver`
 - `PipelineObserver.RecordApply` must be called for every function in a pipeline, including `Map`/`Filter`/etc.
 - Adapters must call `Observer` on every code path — including early-exit error paths — not just the happy path
 - `NoopObserver` satisfies all five interfaces; use as default when no observer provided

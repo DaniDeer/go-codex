@@ -1,6 +1,7 @@
 package format
 
 import (
+	"context"
 	"fmt"
 	"log/slog"
 	"os"
@@ -217,18 +218,26 @@ func (fh File[T]) Read(vars map[string]string, opts FileOptions) (T, error) {
 		return zero, err // FilePathParamError or MissingFilePathVarError — no I/O
 	}
 
+	var opErr error
+	if to, ok := obs.(stats.TraceObserver); ok {
+		ctx := to.StartSpan(context.Background(), "file.read", path)
+		defer func() { to.EndSpan(ctx, opErr) }()
+	}
+
 	start := time.Now()
 	data, err := os.ReadFile(path)
 	if err != nil {
+		opErr = FileReadError{Path: path, Err: err}
 		recordFileRead(obs, path, false, time.Since(start))
-		return zero, FileReadError{Path: path, Err: err}
+		return zero, opErr
 	}
 
 	v, err := fh.format.Unmarshal(data)
 	if err != nil {
+		opErr = FileDecodeError{Path: path, Err: err}
 		stats.ReportErrors(obs, "file", err)
 		recordFileRead(obs, path, false, time.Since(start))
-		return zero, FileDecodeError{Path: path, Err: err}
+		return zero, opErr
 	}
 
 	recordFileRead(obs, path, true, time.Since(start))
@@ -257,17 +266,25 @@ func (fh File[T]) Write(vars map[string]string, v T, opts FileOptions) error {
 		return err
 	}
 
+	var opErr error
+	if to, ok := obs.(stats.TraceObserver); ok {
+		ctx := to.StartSpan(context.Background(), "file.write", path)
+		defer func() { to.EndSpan(ctx, opErr) }()
+	}
+
 	data, err := fh.format.Marshal(v)
 	if err != nil {
+		opErr = FileEncodeError{Path: path, Err: err}
 		stats.ReportErrors(obs, "file", err)
 		recordFileWrite(obs, path, false, 0)
-		return FileEncodeError{Path: path, Err: err}
+		return opErr
 	}
 
 	start := time.Now()
 	if err := os.WriteFile(path, data, perm); err != nil {
+		opErr = FileWriteError{Path: path, Err: err}
 		recordFileWrite(obs, path, false, time.Since(start))
-		return FileWriteError{Path: path, Err: err}
+		return opErr
 	}
 
 	recordFileWrite(obs, path, true, time.Since(start))
@@ -380,6 +397,12 @@ func PatchEncoded[T, P any](fh File[T], vars map[string]string, patchCodec codex
 		return FilePatchNotSupportedError{Path: path}
 	}
 
+	var opErr error
+	if to, ok := obs.(stats.TraceObserver); ok {
+		ctx := to.StartSpan(context.Background(), "file.write", path)
+		defer func() { to.EndSpan(ctx, opErr) }()
+	}
+
 	// 2. Read the existing file.
 	perm := opts.Perm
 	if perm == 0 {
@@ -388,20 +411,23 @@ func PatchEncoded[T, P any](fh File[T], vars map[string]string, patchCodec codex
 	readStart := time.Now()
 	data, err := os.ReadFile(path)
 	if err != nil {
+		opErr = FileReadError{Path: path, Err: err}
 		recordFileRead(obs, path, false, time.Since(readStart))
-		return FileReadError{Path: path, Err: err}
+		return opErr
 	}
 
 	// 3. Unmarshal existing bytes to intermediate map.
 	raw, err := fh.format.unmarshal(data)
 	if err != nil {
+		opErr = FileDecodeError{Path: path, Err: err}
 		recordFileRead(obs, path, false, time.Since(readStart))
-		return FileDecodeError{Path: path, Err: err}
+		return opErr
 	}
 	existingMap, ok := raw.(map[string]any)
 	if !ok {
+		opErr = FileDecodeError{Path: path, Err: fmt.Errorf("existing file intermediate is not a map (got %T)", raw)}
 		recordFileRead(obs, path, false, time.Since(readStart))
-		return FileDecodeError{Path: path, Err: fmt.Errorf("existing file intermediate is not a map (got %T)", raw)}
+		return opErr
 	}
 
 	// 4. Deep-merge patchMap into existingMap.
@@ -412,8 +438,9 @@ func PatchEncoded[T, P any](fh File[T], vars map[string]string, patchCodec codex
 	//    are ignored by Decode and are NOT dropped here — they survive in existingMap.
 	if _, err := fh.format.codec.Decode(existingMap); err != nil {
 		stats.ReportErrors(obs, "file", err)
+		opErr = FileDecodeError{Path: path, Err: err}
 		recordFileRead(obs, path, false, time.Since(readStart))
-		return FileDecodeError{Path: path, Err: err}
+		return opErr
 	}
 	recordFileRead(obs, path, true, time.Since(readStart))
 
@@ -422,16 +449,19 @@ func PatchEncoded[T, P any](fh File[T], vars map[string]string, patchCodec codex
 	//    from the file codec (T).
 	out, err := fh.format.marshal(existingMap)
 	if err != nil {
+		opErr = FileEncodeError{Path: path, Err: err}
 		recordFileWrite(obs, path, false, 0)
-		return FileEncodeError{Path: path, Err: err}
+		return opErr
 	}
 
 	// 7. Write.
 	writeStart := time.Now()
 	if err := os.WriteFile(path, out, perm); err != nil {
+		opErr = FileWriteError{Path: path, Err: err}
 		recordFileWrite(obs, path, false, time.Since(writeStart))
-		return FileWriteError{Path: path, Err: err}
+		return opErr
 	}
+
 	recordFileWrite(obs, path, true, time.Since(writeStart))
 	return nil
 }
@@ -477,20 +507,28 @@ func (fh File[T]) Patch(vars map[string]string, patch map[string]any, opts FileO
 		return FilePatchNotSupportedError{Path: path}
 	}
 
+	var opErr error
+	if to, ok := obs.(stats.TraceObserver); ok {
+		ctx := to.StartSpan(context.Background(), "file.write", path)
+		defer func() { to.EndSpan(ctx, opErr) }()
+	}
+
 	// Read the raw bytes.
 	start := time.Now()
 	data, err := os.ReadFile(path)
 	if err != nil {
+		opErr = FileReadError{Path: path, Err: err}
 		recordFileRead(obs, path, false, time.Since(start))
-		return FileReadError{Path: path, Err: err}
+		return opErr
 	}
 
 	// Parse existing bytes, apply patch, validate through codec.
 	patched, err := fh.format.patchInto(data, patch)
 	if err != nil {
+		opErr = FileDecodeError{Path: path, Err: err}
 		stats.ReportErrors(obs, "file", err)
 		recordFileRead(obs, path, false, time.Since(start))
-		return FileDecodeError{Path: path, Err: err}
+		return opErr
 	}
 	recordFileRead(obs, path, true, time.Since(start))
 

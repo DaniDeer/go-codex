@@ -1,6 +1,7 @@
 package stats
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -80,6 +81,53 @@ type SecurityObserver interface {
 	// or message. location is the route path (HTTP) or topic (MQTT). scheme is
 	// the first declared security scheme name for the operation.
 	RecordSecurityRejection(location, scheme string)
+}
+
+// TraceObserver is an optional extension to [Observer] for distributed tracing.
+// Adapters type-assert the configured Observer to TraceObserver before calling
+// StartSpan/EndSpan, so implementing this interface is purely additive — existing
+// Observer implementations need not change.
+//
+//	type MyTracer struct{ ... }
+//	func (t *MyTracer) StartSpan(ctx context.Context, operation, name string) context.Context {
+//	    span, ctx := otel.Tracer("go-codex").Start(ctx, operation,
+//	        otel.WithAttributes(attribute.String("name", name)),
+//	    )
+//	    return ctx
+//	}
+//	func (t *MyTracer) EndSpan(ctx context.Context, err error) {
+//	    span := trace.SpanFromContext(ctx)
+//	    if err != nil {
+//	        span.RecordError(err)
+//	        span.SetStatus(codes.Error, err.Error())
+//	    }
+//	    span.End()
+//	}
+//
+// The pattern at each adapter call site mirrors the [SecurityObserver] guard:
+//
+//	if to, ok := obs.(TraceObserver); ok {
+//	    ctx = to.StartSpan(ctx, op, name)
+//	    defer func() { to.EndSpan(ctx, err) }()
+//	}
+//
+// Where err is the eventual operation error (nil on success).
+//
+// operation values follow a convention: "http.request", "mqtt.subscribe",
+// "mqtt.publish", "forge.apply", "file.read", "file.write", "mcp.tool",
+// "mcp.resource", "mcp.prompt".
+// name is the concrete identifier (route path template, topic, function name,
+// file path).
+type TraceObserver interface {
+	// StartSpan starts a new trace span for the named operation and returns
+	// a context.Context containing the new span for child propagation.
+	// The returned context should be passed to the application's handler
+	// function so that business logic can create child spans.
+	StartSpan(ctx context.Context, operation, name string) context.Context
+
+	// EndSpan ends the span associated with ctx, recording err as an error
+	// event when non-nil.
+	EndSpan(ctx context.Context, err error)
 }
 
 // FileObserver is an optional extension to [Observer] for file I/O lifecycle
@@ -244,19 +292,40 @@ func (f *fanout) RecordApply(name, version string, success bool, d time.Duration
 	}
 }
 
+// StartSpan implements [TraceObserver].
+func (f *fanout) StartSpan(ctx context.Context, operation, name string) context.Context {
+	for _, o := range f.observers {
+		if to, ok := o.(TraceObserver); ok {
+			ctx = to.StartSpan(ctx, operation, name)
+		}
+	}
+	return ctx
+}
+
+// EndSpan implements [TraceObserver].
+func (f *fanout) EndSpan(ctx context.Context, err error) {
+	for _, o := range f.observers {
+		if to, ok := o.(TraceObserver); ok {
+			to.EndSpan(ctx, err)
+		}
+	}
+}
+
 // NoopObserver discards all events. It satisfies [Observer], [ValidationObserver],
 // [PipelineObserver], and [SecurityObserver] and is the zero-cost default used
 // when no observer is configured.
 type NoopObserver struct{}
 
-func (NoopObserver) RecordValidationError(_, _, _ string)              {}
-func (NoopObserver) RecordRequest(_, _ string, _ int, _ time.Duration) {}
-func (NoopObserver) RecordSubscribe(_ string, _ bool, _ time.Duration) {}
-func (NoopObserver) RecordPublish(_ string, _ bool, _ time.Duration)   {}
-func (NoopObserver) RecordApply(_, _ string, _ bool, _ time.Duration)  {}
-func (NoopObserver) RecordSecurityRejection(_, _ string)               {}
-func (NoopObserver) RecordFileRead(_ string, _ bool, _ time.Duration)  {}
-func (NoopObserver) RecordFileWrite(_ string, _ bool, _ time.Duration) {}
+func (NoopObserver) RecordValidationError(_, _, _ string)                       {}
+func (NoopObserver) RecordRequest(_, _ string, _ int, _ time.Duration)          {}
+func (NoopObserver) RecordSubscribe(_ string, _ bool, _ time.Duration)          {}
+func (NoopObserver) RecordPublish(_ string, _ bool, _ time.Duration)            {}
+func (NoopObserver) RecordApply(_, _ string, _ bool, _ time.Duration)           {}
+func (NoopObserver) RecordSecurityRejection(_, _ string)                        {}
+func (NoopObserver) RecordFileRead(_ string, _ bool, _ time.Duration)           {}
+func (NoopObserver) RecordFileWrite(_ string, _ bool, _ time.Duration)          {}
+func (NoopObserver) StartSpan(ctx context.Context, _, _ string) context.Context { return ctx }
+func (NoopObserver) EndSpan(_ context.Context, _ error)                         {}
 
 // ReportErrors walks err and calls obs.RecordValidationError for every codec
 // validation failure it finds. location identifies the data source (e.g. "body",

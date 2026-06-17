@@ -1,6 +1,7 @@
 package forge
 
 import (
+	"context"
 	"errors"
 	"time"
 
@@ -169,6 +170,13 @@ func (f *Function[In, Out]) obs() stats.PipelineObserver {
 func (f *Function[In, Out]) Apply(in In) (Out, error) {
 	start := time.Now()
 	var zero Out
+	var err error
+
+	if to, ok := f.observer.(stats.TraceObserver); ok {
+		ctx := to.StartSpan(context.Background(), "forge.apply", f.Spec.Name)
+		defer func() { to.EndSpan(ctx, err) }()
+	}
+
 	if err := f.inputCodec.Validate(in); err != nil {
 		f.obs().RecordApply(f.Spec.Name, f.Spec.Version, false, time.Since(start))
 		return zero, InputError{Function: f.Spec.Name, Input: inputNameFromErr(f.Spec, err), Err: err}

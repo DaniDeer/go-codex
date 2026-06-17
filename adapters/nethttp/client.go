@@ -260,6 +260,11 @@ func Call[Req, Resp any](
 		return zero, err
 	}
 
+	if to, ok := obs.(stats.TraceObserver); ok {
+		ctx = to.StartSpan(ctx, "http.request", routePath)
+		defer func() { to.EndSpan(ctx, err) }()
+	}
+
 	// 5. Build full URL.
 	rawURL := strings.TrimRight(baseURL, "/") + concretePath
 	if len(opts.QueryParams) > 0 {
