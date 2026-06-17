@@ -442,3 +442,4 @@ Every log line carries `service=order-api env=prod build.version=...` automatica
 - [`examples/flat-key-patch`](https://github.com/DaniDeer/go-codex/tree/main/examples/flat-key-patch) — `FileObserver` with `NewFanout`
 - [`examples/forge-collection`](https://github.com/DaniDeer/go-codex/tree/main/examples/forge-collection) — forge `PipelineObserver` with `NewFanout`
 - [`examples/oee-chain`](https://github.com/DaniDeer/go-codex/tree/main/examples/oee-chain) — `PipelineObserver` across all three layers
+- [`examples/http-trace-span-propagation`](https://github.com/DaniDeer/go-codex/tree/main/examples/http-trace-span-propagation) — end-to-end trace propagation: HTTP client → server → forge → file
