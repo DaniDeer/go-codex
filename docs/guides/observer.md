@@ -286,11 +286,11 @@ Service B (server)
 
 ### Adapters (already propagate ctx)
 
-| Entry point | ctx purpose |
-|---|---|
-| `nethttp.Call(ctx, url, handle, req, vars, opts)` | Creates child span, sends `traceparent` header |
-| `mqtt.SubscribeHandler(ctx, handle, fn, opts)` | Parent for subscribe span, passed to `fn(ctx, value)` |
-| `mqtt.Publish(ctx, client, handle, qos, retained, msg, vars, opts)` | Creates child span for publish |
+| Entry point                                                         | ctx purpose                                           |
+| ------------------------------------------------------------------- | ----------------------------------------------------- |
+| `nethttp.Call(ctx, url, handle, req, vars, opts)`                   | Creates child span, sends `traceparent` header        |
+| `mqtt.SubscribeHandler(ctx, handle, fn, opts)`                      | Parent for subscribe span, passed to `fn(ctx, value)` |
+| `mqtt.Publish(ctx, client, handle, qos, retained, msg, vars, opts)` | Creates child span for publish                        |
 
 ### Forge (use ApplyContext)
 
@@ -349,36 +349,36 @@ func handler(ctx context.Context, req MyRequest) (MyResponse, error) {
 
 ## Operation values (TraceObserver)
 
-| Operation | Call site |
-|---|---|
-| `"http.request"` | nethttp/chi — handler or client call |
-| `"mqtt.subscribe"` | mqtt — `SubscribeHandler` |
-| `"mqtt.publish"` | mqtt — `Publish` |
-| `"forge.apply"` | forge — `Apply` |
-| `"file.read"` | format.File — `Read` / `Update` |
-| `"file.write"` | format.File — `Write` / `Patch` / `PatchEncoded` |
-| `"mcp.tool"` | mcpgo — `ToolHandler` |
-| `"mcp.resource"` | mcpgo — `ResourceHandler` |
-| `"mcp.prompt"` | mcpgo — `PromptHandler` |
+| Operation          | Call site                                        |
+| ------------------ | ------------------------------------------------ |
+| `"http.request"`   | nethttp/chi — handler or client call             |
+| `"mqtt.subscribe"` | mqtt — `SubscribeHandler`                        |
+| `"mqtt.publish"`   | mqtt — `Publish`                                 |
+| `"forge.apply"`    | forge — `Apply`                                  |
+| `"file.read"`      | format.File — `Read` / `Update`                  |
+| `"file.write"`     | format.File — `Write` / `Patch` / `PatchEncoded` |
+| `"mcp.tool"`       | mcpgo — `ToolHandler`                            |
+| `"mcp.resource"`   | mcpgo — `ResourceHandler`                        |
+| `"mcp.prompt"`     | mcpgo — `PromptHandler`                          |
 
 ## Observer location values by adapter
 
-| Location | Adapter / use case |
-|---|---|
-| `"body"` | nethttp/chi — request or response body decode/encode |
-| `"query"` | nethttp/chi — query parameter validation |
-| `"cookie"` | nethttp/chi — request cookie parameter validation |
-| `"header"` | nethttp/chi — request header parameter validation |
-| `"response_header"` | nethttp/chi — response header parameter validation |
-| `"response_cookie"` | nethttp/chi — response cookie parameter validation |
-| `"path"` | nethttp/chi — path parameter validation |
-| `"payload"` | mqtt — message payload decode (subscribe) or encode (publish) |
-| `"topic_var"` | mqtt — per-variable codec failure in topic template |
-| `"topic"` | mqtt — topic-level codec failure |
-| `"input"` | mcpgo — tool argument decode/validation |
-| `"prompt.args"` | mcpgo — prompt argument codec failure |
-| `"file"` | format.File — per-field codec failure during read/write |
-| any string | codec-only: choose your own label (`"config"`, `"input"`, etc.) |
+| Location            | Adapter / use case                                              |
+| ------------------- | --------------------------------------------------------------- |
+| `"body"`            | nethttp/chi — request or response body decode/encode            |
+| `"query"`           | nethttp/chi — query parameter validation                        |
+| `"cookie"`          | nethttp/chi — request cookie parameter validation               |
+| `"header"`          | nethttp/chi — request header parameter validation               |
+| `"response_header"` | nethttp/chi — response header parameter validation              |
+| `"response_cookie"` | nethttp/chi — response cookie parameter validation              |
+| `"path"`            | nethttp/chi — path parameter validation                         |
+| `"payload"`         | mqtt — message payload decode (subscribe) or encode (publish)   |
+| `"topic_var"`       | mqtt — per-variable codec failure in topic template             |
+| `"topic"`           | mqtt — topic-level codec failure                                |
+| `"input"`           | mcpgo — tool argument decode/validation                         |
+| `"prompt.args"`     | mcpgo — prompt argument codec failure                           |
+| `"file"`            | format.File — per-field codec failure during read/write         |
+| any string          | codec-only: choose your own label (`"config"`, `"input"`, etc.) |
 
 ## Prometheus example
 
@@ -405,6 +405,74 @@ func (o *PrometheusObserver) RecordValidationError(loc, constraint, field string
     o.valErrors.WithLabelValues(loc, constraint, field).Inc()
 }
 ```
+
+## OpenTelemetry tracing example
+
+A `TraceObserver` implementation wrapping the OpenTelemetry SDK. Wire it alongside
+metrics and logging via `stats.NewFanout`:
+
+```go
+import (
+    "go.opentelemetry.io/otel"
+    "go.opentelemetry.io/otel/attribute"
+    "go.opentelemetry.io/otel/codes"
+    "go.opentelemetry.io/otel/trace"
+)
+
+type OTelTracer struct{ stats.NoopObserver }
+
+func (t *OTelTracer) StartSpan(ctx context.Context, op, name string) context.Context {
+    ctx, span := otel.Tracer("go-codex").Start(ctx, op,
+        otel.WithAttributes(attribute.String("name", name)),
+    )
+    return ctx
+}
+
+func (t *OTelTracer) EndSpan(ctx context.Context, err error) {
+    span := trace.SpanFromContext(ctx)
+    if err != nil {
+        span.RecordError(err)
+        span.SetStatus(codes.Error, err.Error())
+    }
+    span.End()
+}
+
+// Wire alongside metrics and logging:
+obs := stats.NewFanout(metrics, stats.NewLoggingObserver(logger), &OTelTracer{})
+
+// The same obs propagates traces across every layer:
+nethttp.Register(mux, route, handler, nethttp.Options{Observer: obs})
+configFile.Read(nil, format.FileOptions{Observer: obs})
+forge.NewRegistry("Pipeline", "1.0.0").WithObserver(obs)
+```
+
+How it works:
+
+1. **Server adapters** pass the incoming `*http.Request.Context()` to `StartSpan`. When
+   an OTel middleware has extracted a `traceparent` header, the new span is a **child**.
+   Without middleware, a **root** span is created.
+2. **Client adapters** (`nethttp.Call`, `mqtt.Publish`) create a child span from the
+   user-provided `ctx`. For HTTP, the `traceparent` header propagates via the SDK's
+   > **Note**: `LoggingObserver` does **not** implement `TraceObserver` (slog has no tracing
+   > built-in). To correlate log output with trace IDs, configure the logging observer's
+   > logger with an OTel slog handler:
+   >
+   > ```go
+   > import (
+   >     "log/slog"
+   >     "go.opentelemetry.io/contrib/slog" // OTel slog handler
+   >     "os"
+   > )
+   >
+   > otelHandler := slogotel.NewHandler(slog.NewJSONHandler(os.Stdout), nil)
+   > logger := slog.New(otelHandler)
+   >
+   > obs := stats.NewFanout(metrics, stats.NewLoggingObserver(logger), &OTelTracer{})
+   > ```
+   >
+   > Every line emitted by `LoggingObserver` now carries `trace_id` and `span_id`
+   > automatically — correlated with the active trace in your observability backend.
+   > This is done by OTel SDK's global `TracerProvider` and `TextMapPropagator` being picked up by the handler at runtime.
 
 ## Using go-logx as the logger backend
 

@@ -4,13 +4,9 @@
 >
 > Runnable demos: [`examples/stats-observer`](https://github.com/DaniDeer/go-codex/tree/main/examples/stats-observer) · [`examples/adapters-nethttp`](https://github.com/DaniDeer/go-codex/tree/main/examples/adapters-nethttp) · [`examples/adapters-mqtt`](https://github.com/DaniDeer/go-codex/tree/main/examples/adapters-mqtt) · [`examples/flat-key-patch`](https://github.com/DaniDeer/go-codex/tree/main/examples/flat-key-patch)
 
-The observer pattern is go-codex's unified observability layer across **all four layers** of the
-library: codecs, adapters, formats (files), and forge. It provides structured hooks for three
-observability signals — **metrics, logging, and distributed tracing** — with no library dependency.
+The observer pattern is go-codex's unified observability layer across **all four layers** of the library: codecs, adapters, formats (files), and forge. It provides structured hooks for three observability signals — **metrics, logging, and distributed tracing** — with no library dependency.
 
-The user decides which signals to use (any, all, or none) and implements the corresponding
-interfaces. Implementations are fully swappable between development stubs, Prometheus counters,
-OTel tracing, or any other backend.
+The user decides which signals to use (any, all, or none) and implements the corresponding interfaces. Implementations are fully swappable between development stubs, Prometheus counters, OTel tracing, or any other backend.
 
 ## The six observer interfaces
 
@@ -49,24 +45,41 @@ forge.NewRegistry("P", "1.0.0").WithObserver(obs)                      // forge
 
 ### Context propagation for trace spans
 
-`TraceObserver.StartSpan` returns a `context.Context` that carries the active span. Adapters
-pass this context to the application handler, enabling parent-child span relationships:
+`TraceObserver.StartSpan` returns a `context.Context` that carries the active span. Adapters pass this context to the application handler, enabling parent-child span relationships:
 
 ```
-HTTP client:    nethttp.Call(ctx, ...)          → sends traceparent header
+HTTP client:    nethttp.Call(ctx, ...)          → traceparent header
 Downstream:     handler(ctx, req)               → ctx carries incoming span
   ├─ forge:     ApplyContext(ctx, in)           → child of HTTP span
   └─ file:      FileOptions{Context: ctx}       → child of HTTP span
 ```
 
+Server adapters (nethttp, chi, mqtt) **always pass the incoming ctx** to `StartSpan`. They do not detect whether a parent span exists — the `TraceObserver` implementation decides:
+
+- When a parent span is present (e.g. extracted from an HTTP `traceparent` header by OTel middleware) → **child span**.
+- When no parent is present (`context.Background()`, direct test call) → **root span**.
+
+```go
+// OTel — parent decision handled automatically by the SDK:
+func (t *OTelTracer) StartSpan(ctx context.Context, op, name string) context.Context {
+    ctx, span := otel.Tracer("go-codex").Start(ctx, op, // parent or nil from ctx
+        otel.WithAttributes(attribute.String("name", name)),
+    )
+    return ctx
+}
+```
+
+The library provides the hook; the user's implementation controls span parenting.
+
 All adapter entry points accept `context.Context`:
-- `nethttp.Call(ctx, ...)` — HTTP client, propagates to downstream
+- `nethttp.Call(ctx, ...)` — HTTP client, propagates downstream
+- `nethttp.Handler` — HTTP server, ctx from `*http.Request.Context()`
 - `mqtt.Publish(ctx, ...)` — MQTT publish
 - `mqtt.SubscribeHandler(ctx, ...)` — MQTT subscribe, ctx flows to handler
 
 To propagate into forge and file:
-- Use **`forge.Function.ApplyContext(ctx, in)`** (new) instead of `Apply(in)`
-- Set **`format.FileOptions.Context`** (new optional field) to the handler's context
+- Use **`forge.Function.ApplyContext(ctx, in)`** instead of `Apply(in)`
+- Set **`format.FileOptions.Context`** to the handler's context
 
 ## Per-layer behavior
 
@@ -77,5 +90,4 @@ To propagate into forge and file:
 | **Format (file I/O)** | `FileOptions{Observer: obs}` | `RecordFileRead`/`RecordFileWrite`, validation errors, trace spans |
 | **Forge** | `Registry.WithObserver(obs)` | `RecordApply` per function call, trace spans |
 
-For per-adapter code examples, OpenTelemetry tracing, Prometheus wiring, location values, and a
-full end-to-end walk-through, see the [Guide: Using the Observer Pattern](../guides/observer.md).
+For per-adapter code examples, OpenTelemetry tracing, Prometheus wiring, location values, and a full end-to-end walk-through, see the [Guide: Using the Observer Pattern](../guides/observer.md).
