@@ -660,6 +660,42 @@ func TestPublish_YAMLFormat_EncodeError(t *testing.T) {
 	}
 }
 
+func TestPublish_EncodeError_returnsPublishEncodeError(t *testing.T) {
+	client := &mockClient{token: newCompletedToken(nil)}
+	handle := newHandle()
+
+	// Empty email fails the Email constraint on default JSON encode.
+	event := userEvent{ID: "f47ac10b-58cc-4372-a567-0e02b2c3d479", Email: ""}
+	err := adaptermqtt.Publish(context.Background(), client, handle, 1, false, event, nil,
+		adaptermqtt.PublishOptions{},
+	)
+	if err == nil {
+		t.Fatal("expected PublishEncodeError, got nil")
+	}
+	var encErr adaptermqtt.PublishEncodeError
+	if !errors.As(err, &encErr) {
+		t.Fatalf("want errors.As(PublishEncodeError), got %T: %v", err, err)
+	}
+	if encErr.Topic == "" {
+		t.Error("want non-empty Topic in PublishEncodeError")
+	}
+	if encErr.Err == nil {
+		t.Error("want non-nil Err in PublishEncodeError")
+	}
+}
+
+func TestPublishEncodeError_ErrorAndUnwrap(t *testing.T) {
+	inner := errors.New("constraint failed")
+	e := adaptermqtt.PublishEncodeError{Topic: "sensors/01", Err: inner}
+
+	if e.Error() != "mqtt encode sensors/01: constraint failed" {
+		t.Errorf("unexpected Error() string: %s", e.Error())
+	}
+	if !errors.Is(e, inner) {
+		t.Error("errors.Is should traverse Unwrap to inner error")
+	}
+}
+
 // --- Security tests ---
 
 type mockSecurityObserver struct {

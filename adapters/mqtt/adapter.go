@@ -58,6 +58,33 @@ func (e SubscribeError) Error() string {
 
 func (e SubscribeError) Unwrap() error { return e.Err }
 
+// PublishEncodeError is returned by [Publish] when encoding the outgoing
+// message payload fails (codec validation or marshal error).
+//
+// Use [errors.As] to extract the topic and underlying error for structured logging:
+//
+//	var encErr mqtt.PublishEncodeError
+//	if errors.As(err, &encErr) {
+//	    slog.Error("mqtt publish encode failed",
+//	        "topic", encErr.Topic,
+//	        "cause", encErr.Err,
+//	    )
+//	}
+type PublishEncodeError struct {
+	// Topic is the concrete topic (after template substitution) to which the
+	// publish was attempted.
+	Topic string
+	// Err is the underlying codec validation or marshal error.
+	Err error
+}
+
+func (e PublishEncodeError) Error() string {
+	return fmt.Sprintf("mqtt encode %s: %s", e.Topic, e.Err)
+}
+
+// Unwrap allows [errors.Is] and [errors.As] to traverse the underlying error.
+func (e PublishEncodeError) Unwrap() error { return e.Err }
+
 // contextKey is the unexported type for values stored in context by this package.
 type contextKey struct{}
 
@@ -343,7 +370,7 @@ func Publish[T any](ctx context.Context, client pahomqtt.Client, handle *events.
 	if err != nil {
 		reportPayloadErrors(err, obs)
 		obs.RecordPublish(topic, false, time.Since(start))
-		return fmt.Errorf("mqtt encode %s: %w", topic, err)
+		return PublishEncodeError{Topic: topic, Err: err}
 	}
 	token := client.Publish(topic, qos, retained, payload)
 	select {

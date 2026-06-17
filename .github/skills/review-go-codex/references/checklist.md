@@ -171,6 +171,15 @@ All error returns must be typed — not bare `fmt.Errorf` strings without a type
 | `events.TopicParamError{Name, Value, Err}` | codec validation failure on topic var |
 | `events.MissingTopicVarError{Name}` | topic var missing from `vars` map |
 
+### adapters/mqtt (`Publish`)
+
+| Error type | When to use |
+|------------|-------------|
+| `events.TopicParamError`, `events.MissingTopicVarError` | topic var codec failure or missing var (from `BuildTopic`) |
+| `mqtt.PublishEncodeError{Topic, Err}` | payload encode/marshal failure — `Topic` is the concrete topic after template substitution; `Unwrap()` exposes the underlying codec error |
+
+All must be `errors.As`-navigable. Bare `fmt.Errorf` in `adapter.go` Publish without a typed sentinel is a finding.
+
 ### mcp package
 
 | Error type | When to use |
@@ -211,12 +220,15 @@ All must be `errors.As`-navigable. Bare `fmt.Errorf` in `client.go` without a ty
 
 | Error type | When to use |
 |------------|-------------|
-| `format.FilePathParamError{Param, Err}` | path variable fails its codec constraint in `BuildPath`/`Read`/`Write`/`Update` |
-| `format.MissingFilePathVarError{Param}` | path variable absent from the `vars` map |
+| `format.FilePathParamError{Name, Value, Err}` | path variable fails its codec constraint in `BuildPath`/`Read`/`Write`/`Update` |
+| `format.MissingFilePathVarError{Name}` | path variable absent from the `vars` map |
 | `format.FileReadError{Path, Err}` | `os.ReadFile` fails |
 | `format.FileDecodeError{Path, Err}` | codec decode or constraint validation fails on read |
 | `format.FileEncodeError{Path, Err}` | codec encode fails on write |
 | `format.FileWriteError{Path, Err}` | `os.WriteFile` fails |
+| `format.FilePatchNotSupportedError{Path}` | `Patch`/`PatchEncoded` called on a Gob or Binary format |
+
+All 7 file error types implement `Unwrap()` **and** `slog.LogValuer`. Callers can pass any file error directly to `slog.Any(...)` for nested structured attributes.
 
 Also: `format.EnvVarError{Key, Err}` — returned by `FromEnvVar[T]` when coercion or constraint fails. `Unwrap()` exposes `codex.ValidationErrors`.
 

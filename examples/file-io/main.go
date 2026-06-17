@@ -195,7 +195,7 @@ func main() {
 	slog.SetDefault(logger)
 
 	metrics := &CountingObserver{}
-	obs := stats.NewFanout(metrics, stats.NewLoggingObserver(slog.Default().With("component", "file-io")))
+	obs := stats.NewFanout(metrics, stats.NewLoggingObserver(logger.With("component", "file-io")))
 
 	// ── Section 1: Static config file ─────────────────────────────────────────
 
