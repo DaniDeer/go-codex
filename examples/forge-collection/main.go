@@ -404,10 +404,10 @@ func main() {
 	// ── Register all functions with an observer-wired registry ──────────────
 	// fanoutObs implements PipelineObserver — forwards Apply events to both
 	// obs (analytics storage) and stats.NewLoggingObserver (structured slog).
-	pipeObs, _ := fanoutObs.(stats.PipelineObserver)
+	// WithObserver accepts stats.Observer directly (no cast needed).
 	reg := forge.NewRegistry("SensorBatchPipeline", "1.0.0").
 		WithDescription("Collection-based temperature sensor batch processing pipeline.").
-		WithObserver(pipeObs)
+		WithObserver(fanoutObs)
 	rawToCelsius.Register(reg)
 	filterWarmUp.Register(reg)
 	mapToCelsius.Register(reg)

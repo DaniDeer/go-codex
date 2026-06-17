@@ -264,10 +264,12 @@ func (r *Registry) WithApproval(approvedBy, approvedAt string) *Registry {
 }
 
 // WithObserver sets the PipelineObserver injected into every function that
-// registers itself with this registry. Returns r for chaining.
-func (r *Registry) WithObserver(obs stats.PipelineObserver) *Registry {
-	if obs != nil {
-		r.observer = obs
+// registers itself with this registry. Takes [stats.Observer] for consistency
+// with all other go-codex adapter packages — the observer is type-asserted to
+// [stats.PipelineObserver] internally. Returns r for chaining.
+func (r *Registry) WithObserver(obs stats.Observer) *Registry {
+	if po, ok := obs.(stats.PipelineObserver); ok {
+		r.observer = po
 	}
 	return r
 }

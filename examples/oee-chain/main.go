@@ -485,9 +485,8 @@ func main() {
 	)
 
 	// ── Registry: graph inference + pipeline spec ─────────────────────────────
-	// Wire obs as the PipelineObserver — every Apply call reports to obs.RecordApply.
-
-	reg := forge.NewRegistry("OEE Pipeline", "1.0.0").WithObserver(obs.(stats.PipelineObserver))
+	// WithObserver now accepts stats.Observer directly — no cast needed.
+	reg := forge.NewRegistry("OEE Pipeline", "1.0.0").WithObserver(obs)
 	reg = availabilityCalc.Register(reg)
 	reg = performanceCalc.Register(reg)
 	reg = qualityCalc.Register(reg)

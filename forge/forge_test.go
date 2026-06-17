@@ -183,6 +183,7 @@ type applyCall struct {
 }
 
 type recordingObserver struct {
+	stats.NoopObserver
 	calls []applyCall
 }
 
