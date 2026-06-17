@@ -16,13 +16,13 @@ go-codex's observer pattern provides structured metrics hooks without any metric
 | `stats.SecurityObserver` | `RecordSecurityRejection(location, scheme string)` | adapters — type-asserted, never embedded |
 | `stats.FileObserver` | `RecordFileRead(path string, success bool, d time.Duration)` · `RecordFileWrite(path string, success bool, d time.Duration)` | `format.File[T]` — type-asserted, never embedded |
 
-`stats.NoopObserver` satisfies all five interfaces at zero cost.
+`stats.NoopObserver` satisfies all six interfaces at zero cost.
 
 ## Composing metrics and logging
 
 **Keep metrics and logging separate.** The observer's job is counting events (swap for Prometheus); logging is a separate concern (configure via slog handler).
 
-`stats.NewLoggingObserver` implements all five observer interfaces and logs every event via slog. `stats.NewFanout` fans out calls to multiple observers:
+`stats.NewLoggingObserver` implements all five original observer interfaces (`ValidationObserver`, `Observer`, `PipelineObserver`, `SecurityObserver`, `FileObserver`) and logs every event via slog. It does **not** implement `TraceObserver` — slog has no tracing concept; use a slog→OTel bridge for trace→log correlation instead.
 
 ```go
 // metrics: pure counters — swap for Prometheus.CounterVec in production
@@ -40,7 +40,7 @@ obs := stats.NewFanout(
 nethttp.Register(mux, route, handler, nethttp.Options{Observer: obs})
 ```
 
-`NewFanout` also fans out the optional [FileObserver], [SecurityObserver], and [PipelineObserver] interfaces — delegating to each inner observer that implements them:
+`NewFanout` also fans out the optional [FileObserver], [SecurityObserver], [PipelineObserver], and [TraceObserver] interfaces — delegating to each inner observer that implements them:
 
 ```go
 // LoggingObserver implements FileObserver — no extra wiring needed
@@ -98,12 +98,16 @@ func (o *CountingObserver) RecordValidationError(location, constraintName, field
     defer o.mu.Unlock()
     if o.valErrorsByLoc == nil { o.valErrorsByLoc = make(map[string]int) }
     o.valErrorsByLoc[location]++
-    fmt.Printf("  [observer] validation error — location=%q constraint=%q field=%q\n",
-        location, constraintName, field)
 }
 
 func (o *CountingObserver) RecordSubscribe(_ string, _ bool, _ time.Duration) {}
 func (o *CountingObserver) RecordPublish(_ string, _ bool, _ time.Duration)   {}
+
+func (o *CountingObserver) Print() {
+    for loc, n := range o.valErrorsByLoc {
+        fmt.Printf("  validation errors at %q: %d\n", loc, n)
+    }
+}
 
 var _ stats.Observer = (*CountingObserver)(nil)
 
@@ -127,14 +131,34 @@ amqtt.Publish(ctx, client, channel, qos, retained, msg, vars,
 ## Forge pipeline (PipelineObserver)
 
 ```go
-type PipelineLogger struct{}
+type PipelineLogger struct {
+    mu       sync.Mutex
+    applies  int
+    failures int
+}
 
-func (PipelineLogger) RecordApply(name, version string, success bool, d time.Duration) {
-    log.Printf("[forge] %s@%s ok=%v dur=%v", name, version, success, d)
+func (l *PipelineLogger) RecordApply(name, version string, ok bool, d time.Duration) {
+    l.mu.Lock()
+    defer l.mu.Unlock()
+    l.applies++
+    if !ok {
+        l.failures++
+    }
+}
+
+func (l *PipelineLogger) Print() {
+    fmt.Printf("forge: %d applies, %d failures\n", l.applies, l.failures)
 }
 
 registry := forge.NewRegistry("OEE Pipeline", "1.0.0").
     WithObserver(PipelineLogger{})
+```
+
+For structured logging, combine with `stats.NewLoggingObserver` via `stats.NewFanout`:
+
+```go
+obs := stats.NewFanout(&PipelineLogger{}, stats.NewLoggingObserver(logger))
+reg := forge.NewRegistry("OEE Pipeline", "1.0.0").WithObserver(obs.(stats.PipelineObserver))
 ```
 
 ## FileObserver (format.File)
@@ -144,18 +168,32 @@ registry := forge.NewRegistry("OEE Pipeline", "1.0.0").
 ```go
 type TelemetryObserver struct {
     CountingObserver // embed for Observer methods
+    mu       sync.Mutex
+    fileReads  int
+    fileWrites int
 }
 
 func (o *TelemetryObserver) RecordSecurityRejection(location, scheme string) {
-    // security rejections
+    o.mu.Lock()
+    defer o.mu.Unlock()
+    o.rejections++
 }
 
 func (o *TelemetryObserver) RecordFileRead(path string, ok bool, d time.Duration) {
-    slog.Info("file read", "path", path, "ok", ok, "dur", d)
+    o.mu.Lock()
+    defer o.mu.Unlock()
+    o.fileReads++
 }
 
 func (o *TelemetryObserver) RecordFileWrite(path string, ok bool, d time.Duration) {
-    slog.Info("file write", "path", path, "ok", ok, "dur", d)
+    o.mu.Lock()
+    defer o.mu.Unlock()
+    o.fileWrites++
+}
+
+func (o *TelemetryObserver) Print() {
+    fmt.Printf("file reads: %d  file writes: %d  rejections: %d\n",
+        o.fileReads, o.fileWrites, o.rejections)
 }
 
 var _ stats.FileObserver = (*TelemetryObserver)(nil)
