@@ -11,10 +11,11 @@
 // Format constraints validate common string patterns and set the corresponding
 // OpenAPI format keyword in the schema:
 //
-//	codex.String().Refine(validate.Email)    // format: email
-//	codex.String().Refine(validate.UUID)     // format: uuid
-//	codex.String().Refine(validate.URL)      // format: uri
-//	codex.String().Refine(validate.DateTime) // format: date-time
+//	codex.String().Refine(validate.Email)         // format: email
+//	codex.String().Refine(validate.UUID)          // format: uuid
+//	codex.String().Refine(validate.URL)           // format: uri
+//	codex.String().Refine(validate.DateTime)      // format: date-time
+//	codex.String().Refine(validate.ContainerImage) // OCI container image reference
 //
 // # Range and length constraints
 //

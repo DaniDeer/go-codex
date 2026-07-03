@@ -214,3 +214,43 @@ var CIDR = codex.Constraint[string]{
 	},
 	Message: func(v string) string { return fmt.Sprintf("invalid CIDR notation: %q", v) },
 }
+
+// reContainerImage matches OCI container image references:
+//
+//	[registry-host[:port]/]repository[:tag][@digest]
+//
+// Registry host: hostname optionally with port.
+// Repository: one or more slash-separated segments, each 2-255 chars.
+// Tag: optional, follows distribution spec (alphanumeric + separators).
+// Digest: optional, format algorithm:hex (e.g. sha256:abc...).
+var reContainerImage = regexp.MustCompile(`^` +
+	// Optional registry host (hostname or hostname:port).
+	`(?:` +
+	`[a-zA-Z0-9](?:[a-zA-Z0-9\-]{0,61}[a-zA-Z0-9])?` +
+	`(?:\.[a-zA-Z0-9](?:[a-zA-Z0-9\-]{0,61}[a-zA-Z0-9])?)*` +
+	`(?::[0-9]{1,5})?` +
+	`/)?` +
+	// Repository: one or more segments separated by slash.
+	`[a-z0-9]+(?:[._-][a-z0-9]+)*` +
+	`(?:/[a-z0-9]+(?:[._-][a-z0-9]+)*)*` +
+	// Optional tag.
+	`(?::[\w][\w\.\-]{0,127})?` +
+	// Optional digest.
+	`(?:@[a-z0-9]+(?:[.+_\-][a-z0-9]+)*:[a-fA-F0-9]{32,})?` +
+	`$`)
+
+// ContainerImage is a Constraint that requires a valid OCI container image
+// reference (e.g. "alpine:latest", "ubuntu:22.04", "docker.io/library/nginx:1.25",
+// "my.registry.io:5000/project/image@sha256:abc...").
+//
+// The reference is checked against the OCI Distribution Spec format:
+//
+//	[registry-host[:port]/]repository[:tag][@digest]
+//
+// No Schema annotation — there is no standard JSON Schema format for container
+// image references.
+var ContainerImage = codex.Constraint[string]{
+	Name:    "container-image",
+	Check:   func(v string) bool { return reContainerImage.MatchString(v) },
+	Message: func(v string) string { return fmt.Sprintf("invalid container image reference: %q", v) },
+}

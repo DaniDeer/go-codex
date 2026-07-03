@@ -24,7 +24,7 @@ var UserCodec = codex.Struct[User](
 - **One codec — four concerns** — encode, decode, validate, and schema from a single `Codec[T]` value; no struct tags, no reflection, no code generation
 - **Multi-format** — JSON, YAML, TOML, and Gob from the same codec without any changes
 - **Structured errors** — every failure type is a concrete struct (`ValidationErrors`, `ConstraintError`, `TypeMismatchError`, `ElementError`, `KeyError`, …); use `errors.As` or pass directly to `log/slog`
-- **Builtin constraints** — `email`, `uuid`, `url`, `date`, `date-time`, hostname, IP, SemVer, ranges, lengths — validated and reflected into OpenAPI/AsyncAPI schema automatically
+- **Builtin constraints** — `email`, `uuid`, `url`, `date`, `date-time`, `container-image`, ranges, lengths, binary file formats (`png`, `jpeg`, `pdf`, `zip`, …) — validated and reflected into OpenAPI/AsyncAPI schema automatically
 - **Custom constraints** — `codex.Constraint[T]` with optional schema annotation; compose with `.Refine()` and `.RefineFunc()` for cross-field rules
 - **OpenAPI 3.1** — complete spec (paths, operations, params, security) from the same codec definitions; no manual YAML, no drift
 - **AsyncAPI 3.0** — complete event-driven spec from channel descriptors; same schemas, no duplication

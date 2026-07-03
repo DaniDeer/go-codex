@@ -302,6 +302,7 @@ Format constraints (annotate schema automatically):
 | `validate.SemVer` | semantic version | `pattern` |
 | `validate.Slug` | `lowercase-hyphen-slug` | `pattern` |
 | `validate.CIDR` | CIDR notation | _(none)_ |
+| `validate.ContainerImage` | OCI container image reference (e.g. `alpine:latest`, `docker.io/library/nginx:1.25`) | _(none)_ |
 | `validate.BearerToken` | non-empty, no leading/trailing whitespace | — |
 
 Range/length constraints:

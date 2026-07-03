@@ -121,7 +121,7 @@ func main() {
 - **One codec — four concerns** — encode, decode, validate, and schema from a single `Codec[T]` value; no struct tags, no reflection, no code generation
 - **Multi-format** — the same codec reads and writes JSON, YAML, TOML, Gob, and Binary (raw bytes) unchanged
 - **Structured errors** — all failures are concrete types (`ValidationErrors`, `ConstraintError`, `TypeMismatchError`, …); use `errors.As` or pass directly to `log/slog`
-- **Builtin constraints** — `email`, `uuid`, `url`, `date`, `date-time`, ranges, lengths, binary file formats (`png`, `jpeg`, `pdf`, `zip`, …) — validated and reflected into OpenAPI/AsyncAPI schema automatically
+- **Builtin constraints** — `email`, `uuid`, `url`, `date`, `date-time`, `container-image`, ranges, lengths, binary file formats (`png`, `jpeg`, `pdf`, `zip`, …) — validated and reflected into OpenAPI/AsyncAPI schema automatically
 - **OpenAPI 3.1 + AsyncAPI 3.0** — complete specs derived from the same codec; no manual YAML, no drift
 - **REST + HTTP client** — typed `Decode`/`Encode` per route; `nethttp.Call` for typed client calls; both share the same `Route` definition
 - **MQTT events** — typed subscribe/publish with topic validation, wildcard support, and AsyncAPI spec

@@ -517,3 +517,52 @@ func ExampleNonEmptyString() {
 	// true
 	// hello
 }
+
+func TestContainerImage_valid(t *testing.T) {
+	c := validate.ContainerImage
+	cases := []struct {
+		v   string
+		msg string
+	}{
+		{"alpine:latest", "simple tag"},
+		{"ubuntu:22.04", "two-segment tag"},
+		{"nginx:1.25-alpine", "tag with suffix"},
+		{"docker.io/library/nginx:1.25", "full registry path"},
+		{"my.registry.io:5000/project/image:v1", "registry with port"},
+		{"alpine", "no tag (implicit latest)"},
+		{"gcr.io/project/my-image", "two-level path no tag"},
+		{"busybox@sha256:abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890", "digest only"},
+		{"alpine:latest@sha256:abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890", "tag + digest"},
+		{"registry.io:5000/org/repo:tag@sha256:abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890", "full form"},
+	}
+	for _, tc := range cases {
+		if got := c.Check(tc.v); !got {
+			t.Errorf("ContainerImage.Check(%q) = false, want true — %s", tc.v, tc.msg)
+		}
+	}
+}
+
+func TestContainerImage_invalid(t *testing.T) {
+	c := validate.ContainerImage
+	cases := []struct {
+		v   string
+		msg string
+	}{
+		{"", "empty"},
+		{"   ", "whitespace"},
+		{"UPPERCASE:latest", "uppercase not allowed in repo"},
+		{"image@sha256:xyz", "invalid hex digest"},
+		{"-leading-hyphen", "leading hyphen in first segment"},
+		{"repo/", "trailing slash"},
+		{":tag-only", "leading colon"},
+		{"@sha256:abc", "digest without repo"},
+	}
+	for _, tc := range cases {
+		if got := c.Check(tc.v); got {
+			t.Errorf("ContainerImage.Check(%q) = true, want false — %s", tc.v, tc.msg)
+		}
+	}
+	if msg := c.Message("bad"); msg == "" {
+		t.Error("ContainerImage.Message should not be empty")
+	}
+}
