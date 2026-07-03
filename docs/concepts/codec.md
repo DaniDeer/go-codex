@@ -304,6 +304,10 @@ Format constraints (annotate schema automatically):
 | `validate.CIDR` | CIDR notation | _(none)_ |
 | `validate.ContainerImage` | OCI container image reference (e.g. `alpine:latest`, `docker.io/library/nginx:1.25`) | _(none)_ |
 | `validate.BearerToken` | non-empty, no leading/trailing whitespace | — |
+| `validate.JWT` | compact JWT (header.payload.signature) | — |
+| `validate.EnvVarName` | POSIX env var name (`^[A-Z_][A-Z0-9_]*$`) | `pattern` |
+| `validate.EnvVarPrefix(prefix)` | starts with given prefix | — |
+| `validate.IntString` / `PositiveIntString` / `NonNegativeIntString` / `IntStringInRange` | integer as string | — |
 
 Range/length constraints:
 
@@ -319,10 +323,6 @@ Range/length constraints:
 | `validate.MinFloat(n)` / `MaxFloat(n)` / `RangeFloat(a,b)` | `float64` | bounds |
 | `validate.PositiveDuration` / `MinDuration(d)` | `time.Duration` | duration bounds |
 | `validate.MaxBytes(n)` / `MinBytes(n)` | `[]byte` | byte count |
-| `validate.HTTPPath` | `string` | starts with `/`, no null bytes |
-| `validate.MQTTPublishTopic` | `string` | valid MQTT topic, no wildcards |
-| `validate.MQTTTopic` | `string` | valid MQTT topic, wildcards allowed |
-| `validate.IntString` / `PositiveIntString` / `NonNegativeIntString` | `string` | integer string |
 
 ### Custom constraints
 

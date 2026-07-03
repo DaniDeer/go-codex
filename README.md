@@ -277,13 +277,14 @@ go-codex/
 │   ├── bytes.go            # MaxBytes(n), MinBytes(n), HasPrefix(prefix)
 │   ├── duration.go         # PositiveDuration, NonNegativeDuration, MinDuration, MaxDuration
 │   ├── float.go            # PositiveFloat, NegativeFloat, NonZeroFloat, MinFloat, MaxFloat, RangeFloat
-│   ├── format.go           # Email, UUID, URL, URLWithSchemes, URI, Hostname, IPv4, IPv6, IP,
-│   │                       #   Date, Time, DateTime, SemVer, Slug, CIDR, BearerToken
+│   ├── format.go           # format constraints: Email, UUID, URL, URLWithSchemes, URI, Hostname,
+│   │                       #   IPv4, IPv6, IP, Date, Time, DateTime, SemVer, Slug, CIDR,
+│   │                       #   ContainerImage, MQTTTopic, MQTTPublishTopic, HTTPPath,
+│   │                       #   IntString, PositiveIntString, NonNegativeIntString,
+│   │                       #   IntStringInRange, BearerToken, JWT, EnvVarName, EnvVarPrefix
 │   ├── int.go              # PositiveInt, NegativeInt, NonZeroInt, MinInt, MaxInt, RangeInt; int32 + int64 variants
 │   ├── uint.go             # PositiveUint, MinUint, MaxUint, RangeUint; uint64 variants
-│   └── string.go           # NonEmptyString, MinLen, MaxLen, Pattern, OneOf, HTTPPath,
-│                           #   MQTTTopic, MQTTPublishTopic, IntString, PositiveIntString,
-│                           #   NonNegativeIntString, IntStringInRange
+│   └── string.go           # string constraints: NonEmptyString, MinLen, MaxLen, Pattern, OneOf
 │
 ├── stats/                  # dependency-free metrics observer interfaces
 │   └── observer.go         # ValidationObserver, Observer, PipelineObserver, SecurityObserver,
