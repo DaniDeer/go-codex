@@ -152,6 +152,10 @@ func (t *OTelTracer) EndSpan(ctx context.Context, err error) {
 | `"http.request"` | `adapters/nethttp`, `adapters/chi` |
 | `"mqtt.subscribe"` | `adapters/mqtt` |
 | `"mqtt.publish"` | `adapters/mqtt` |
+| `"zmq.subscribe"` | `adapters/zeromq` |
+| `"zmq.publish"` | `adapters/zeromq` |
+| `"zmq.serve"` | `adapters/zeromq` (REP socket) |
+| `"zmq.request"` | `adapters/zeromq` (REQ socket) |
 | `"mcp.tool"` | `adapters/mcpgo` |
 | `"mcp.resource"` | `adapters/mcpgo` |
 | `"mcp.prompt"` | `adapters/mcpgo` |
