@@ -17,6 +17,7 @@ repo_name = "DaniDeer/go-codex"
 "API Contracts" = "concepts/api-contracts.md"
 "Codec as Domain Boundary" = "concepts/codec-as-domain-boundary.md"
 "Forge Pipelines" = "concepts/pipelines.md"
+"Codec Layers as Observable Layers" = "concepts/observable-layers.md"
 "Go Library as Contract" = "concepts/codec-as-contract.md"
 
 [nav.Features]
