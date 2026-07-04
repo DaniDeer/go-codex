@@ -912,3 +912,65 @@ func TestCallDealer_ContextCancelled(t *testing.T) {
 		t.Fatalf("expected CallError on ctx cancel, got %T: %v", err, err)
 	}
 }
+
+// ── SocketError tests ─────────────────────────────────────────────────────────
+
+func TestSocketError_LogValue(t *testing.T) {
+	inner := errors.New("connection reset")
+	e := zeromq.SocketError{Op: "recv", Err: inner}
+	v := e.LogValue()
+	if v.Kind() != slog.KindGroup {
+		t.Fatalf("expected Group log value, got %v", v.Kind())
+	}
+}
+
+func TestSocketError_ErrorsAs(t *testing.T) {
+	inner := errors.New("io error")
+	outer := zeromq.SocketError{Op: "set_subscription", Err: inner}
+	if !errors.Is(outer, inner) {
+		t.Fatal("errors.Is must traverse Unwrap to find inner")
+	}
+}
+
+func TestSocketError_ErrorString(t *testing.T) {
+	e := zeromq.SocketError{Op: "send", Err: errors.New("broken pipe")}
+	if e.Error() != "zeromq socket send: broken pipe" {
+		t.Fatalf("unexpected Error() string: %q", e.Error())
+	}
+}
+
+func TestSubscribe_SocketError_OnSetSubscriptionFail(t *testing.T) {
+	// A socket that fails SetSubscription should return SocketError.
+	sock := &failingSocket{setSubErr: errors.New("not a SUB socket")}
+	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	defer cancel()
+
+	err := zeromq.Subscribe(ctx, sock, newChannelHandle(),
+		func(_ context.Context, _ sensorReading) error { return nil },
+		zeromq.SubscribeOptions{})
+
+	var sockErr zeromq.SocketError
+	if !errors.As(err, &sockErr) {
+		t.Fatalf("expected SocketError, got %T: %v", err, err)
+	}
+	if sockErr.Op != "set_subscription" {
+		t.Fatalf("expected Op=set_subscription, got %q", sockErr.Op)
+	}
+}
+
+// failingSocket is a FramedSocket that returns configured errors on specific ops.
+type failingSocket struct {
+	setSubErr     error
+	setTimeoutErr error
+	recvErr       error
+}
+
+func (f *failingSocket) SendFrames(_ [][]byte) error          { return nil }
+func (f *failingSocket) SetSubscription(_ string) error       { return f.setSubErr }
+func (f *failingSocket) SetRecvTimeout(_ time.Duration) error { return f.setTimeoutErr }
+func (f *failingSocket) RecvFrames() ([][]byte, error) {
+	if f.recvErr != nil {
+		return nil, f.recvErr
+	}
+	return nil, zeromq.ErrTimeout
+}

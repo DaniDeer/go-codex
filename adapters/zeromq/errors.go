@@ -147,3 +147,44 @@ func (e CallError) LogValue() slog.Value {
 		slog.Any("err", e.Err),
 	)
 }
+
+// SocketError wraps socket-level infrastructure failures: socket option
+// configuration (SetSubscription, SetRecvTimeout) and transport I/O (recv, send).
+// It is distinct from codec-level errors (SubscribeError, ServeError, CallError)
+// which reflect application-layer decode/handler/encode failures.
+//
+// The Op field identifies which socket operation failed so callers can distinguish
+// a recv failure from a configuration failure without string matching:
+//
+//	var sockErr zeromq.SocketError
+//	if errors.As(err, &sockErr) {
+//	    switch sockErr.Op {
+//	    case "recv":               // socket connection died mid-loop
+//	    case "send":               // socket send failed
+//	    case "set_recv_timeout":   // could not configure socket option
+//	    case "set_subscription":   // could not set SUB filter
+//	    }
+//	    slog.Error("socket failed", "error", sockErr)
+//	}
+type SocketError struct {
+	// Op identifies the socket operation that failed.
+	// Common values: "set_subscription", "set_recv_timeout", "recv", "send".
+	Op string
+	// Err is the underlying socket or OS error.
+	Err error
+}
+
+func (e SocketError) Error() string {
+	return fmt.Sprintf("zeromq socket %s: %v", e.Op, e.Err)
+}
+
+// Unwrap allows [errors.Is] and [errors.As] to traverse the underlying error.
+func (e SocketError) Unwrap() error { return e.Err }
+
+// LogValue implements [slog.LogValuer] for structured logging.
+func (e SocketError) LogValue() slog.Value {
+	return slog.GroupValue(
+		slog.String("op", e.Op),
+		slog.Any("err", e.Err),
+	)
+}

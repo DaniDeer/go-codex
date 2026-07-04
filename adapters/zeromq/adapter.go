@@ -114,10 +114,10 @@ func Subscribe[T any](
 		obs = stats.NoopObserver{}
 	}
 	if err := sock.SetSubscription(handle.Topic); err != nil {
-		return fmt.Errorf("zeromq: set subscription: %w", err)
+		return SocketError{Op: "set_subscription", Err: err}
 	}
 	if err := sock.SetRecvTimeout(recvPollInterval); err != nil {
-		return fmt.Errorf("zeromq: set recv timeout: %w", err)
+		return SocketError{Op: "set_recv_timeout", Err: err}
 	}
 	effectiveFmts := formats
 	if len(effectiveFmts) == 0 {
@@ -141,7 +141,7 @@ func Subscribe[T any](
 			case <-ctx.Done():
 				return nil
 			default:
-				return fmt.Errorf("zeromq: recv: %w", err)
+				return SocketError{Op: "recv", Err: err}
 			}
 		}
 		if len(frames) < 2 {
@@ -255,7 +255,7 @@ func Publish[T any](
 
 	if err = sock.SendFrames([][]byte{[]byte(topic), payload}); err != nil {
 		obs.RecordPublish(topic, false, time.Since(start))
-		return fmt.Errorf("zeromq: send: %w", err)
+		return SocketError{Op: "send", Err: err}
 	}
 	obs.RecordPublish(topic, true, time.Since(start))
 	return nil
@@ -297,7 +297,7 @@ func Serve[Req, Resp any](
 		obs = stats.NoopObserver{}
 	}
 	if err := sock.SetRecvTimeout(recvPollInterval); err != nil {
-		return fmt.Errorf("zeromq: set recv timeout: %w", err)
+		return SocketError{Op: "set_recv_timeout", Err: err}
 	}
 	path := handle.Descriptor.Path
 	for {
@@ -315,7 +315,7 @@ func Serve[Req, Resp any](
 			case <-ctx.Done():
 				return nil
 			default:
-				return fmt.Errorf("zeromq: recv: %w", err)
+				return SocketError{Op: "recv", Err: err}
 			}
 		}
 		if len(frames) == 0 {
@@ -576,7 +576,7 @@ func ServeRouter[Req, Resp any](
 		obs = stats.NoopObserver{}
 	}
 	if err := sock.SetRecvTimeout(recvPollInterval); err != nil {
-		return fmt.Errorf("zeromq: set recv timeout: %w", err)
+		return SocketError{Op: "set_recv_timeout", Err: err}
 	}
 	path := handle.Descriptor.Path
 
@@ -598,7 +598,7 @@ func ServeRouter[Req, Resp any](
 				wg.Wait()
 				return nil
 			default:
-				return fmt.Errorf("zeromq: recv: %w", err)
+				return SocketError{Op: "recv", Err: err}
 			}
 		}
 		// Expect at least [identity, delimiter, payload].

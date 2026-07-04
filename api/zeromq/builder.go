@@ -88,7 +88,7 @@ func Register[Req, Resp any](b *Builder, route rest.Route[Req, Resp], meta Socke
 	b.docBuilder.AddChannel(reqChannelKey, asyncapi.ChannelItem{
 		Address: path,
 		Summary: meta.Summary,
-		Tags:    tagsToSlice(meta.Tags),
+		Tags:    meta.Tags,
 		Publish: &asyncapi.Operation{
 			OperationID: sendOpID,
 			Summary:     meta.Summary,
@@ -156,10 +156,4 @@ func capitalise(s string) string {
 	runes := []rune(s)
 	runes[0] = unicode.ToUpper(runes[0])
 	return string(runes)
-}
-
-// tagsToSlice converts a slice of tag strings into the value that
-// asyncapi.ChannelItem.Tags expects ([]string).
-func tagsToSlice(tags []string) []string {
-	return tags
 }
