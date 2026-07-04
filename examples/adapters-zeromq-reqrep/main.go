@@ -23,6 +23,7 @@ import (
 
 	zeromq "github.com/DaniDeer/go-codex/adapters/zeromq"
 	"github.com/DaniDeer/go-codex/api/rest"
+	zmqapi "github.com/DaniDeer/go-codex/api/zeromq"
 	"github.com/DaniDeer/go-codex/codex"
 	"github.com/DaniDeer/go-codex/stats"
 )
@@ -57,6 +58,10 @@ var computeRespCodec = codex.Struct[ComputeResp](
 )
 
 // ── Layer 2: route declaration ────────────────────────────────────────────────
+//
+// The same rest.Route declaration works with the HTTP adapter (nethttp),
+// the Phase 1 ZMQ adapter (rest.Builder), and the Phase 2 ZMQ builder
+// (zmqapi.Register) that generates AsyncAPI request-reply specs.
 
 var ComputeRoute = rest.NewRoute[ComputeReq, ComputeResp](
 	"POST", "/compute",
@@ -108,15 +113,25 @@ func (p *halfPipe) SetRecvTimeout(_ time.Duration) error { return nil }
 func main() {
 	obs := stats.NoopObserver{}
 
-	// Layer 2: register route with builder (server side).
-	serverBuilder := rest.NewBuilder(rest.Info{Title: "Compute API", Version: "1.0.0"})
-	serverHandle, err := ComputeRoute.Register(serverBuilder)
+	// Layer 2: register route with the ZMQ builder to get an AsyncAPI spec.
+	// The returned handle is a plain *rest.RouteHandle — identical to Phase 1.
+	zmqBuilder := zmqapi.NewBuilder(zmqapi.Info{Title: "Compute API", Version: "1.0.0"})
+	zmqBuilder.AddServer("zmq", zmqapi.Server{
+		URL:         "tcp://localhost:5556",
+		Protocol:    "zmq",
+		Description: "ZeroMQ REQ/REP compute service",
+	})
+	serverHandle, err := zmqapi.Register(zmqBuilder, ComputeRoute,
+		zmqapi.SocketMeta{
+			OperationID: "compute",
+			Summary:     "Add two integers.",
+		})
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "register server: %v\n", err)
+		fmt.Fprintf(os.Stderr, "register: %v\n", err)
 		os.Exit(1)
 	}
 
-	// Layer 2: client side uses ClientHandle (no builder, no spec needed).
+	// Client side uses ClientHandle (no builder, no spec needed).
 	clientHandle := ComputeRoute.ClientHandle()
 
 	// In-process socket pair simulating ZMQ REQ ↔ REP.
@@ -126,6 +141,7 @@ func main() {
 	defer cancel()
 
 	// Layer 3: REP server — blocking, run in a goroutine.
+	// Adapter call is UNCHANGED from Phase 1: serverHandle IS *rest.RouteHandle.
 	go func() {
 		if err := zeromq.Serve(ctx, repSock, serverHandle,
 			func(_ context.Context, req ComputeReq) (ComputeResp, error) {
@@ -157,4 +173,18 @@ func main() {
 		}
 		fmt.Printf("compute(%d + %d) = %d\n", req.X, req.Y, resp.Sum)
 	}
+
+	// Print the AsyncAPI 3.0 spec with request-reply.
+	doc, err := zmqBuilder.AsyncAPISpec()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "spec: %v\n", err)
+		os.Exit(1)
+	}
+	specYAML, err := doc.MarshalYAML()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "marshal spec: %v\n", err)
+		os.Exit(1)
+	}
+	fmt.Println("\n── AsyncAPI spec (zmq request-reply) ──")
+	fmt.Println(string(specYAML))
 }

@@ -57,6 +57,25 @@ type Parameter struct {
 	Schema      schema.Schema
 }
 
+// OperationReply describes the reply leg of a request-reply operation in an
+// AsyncAPI 3.0 document. It is embedded in the sending operation to declare
+// which channel carries the reply messages.
+//
+// In AsyncAPI 3.0 this maps to the `reply:` block inside an operation:
+//
+//	operations:
+//	  sendRequest:
+//	    action: send
+//	    channel: { $ref: '#/channels/request' }
+//	    reply:
+//	      channel: { $ref: '#/channels/reply' }
+type OperationReply struct {
+	// Channel is the key of the reply channel as registered in the document
+	// (e.g. via [DocumentBuilder.AddChannel] or [DocumentBuilder.AddReplyChannel]).
+	// The renderer emits this as a $ref to #/channels/<Channel>.
+	Channel string
+}
+
 // Operation describes a subscribe (receive) or publish (send) operation.
 type Operation struct {
 	OperationID string
@@ -64,6 +83,10 @@ type Operation struct {
 	Description string
 	Tags        []string
 	Message     Message
+	// Reply, when non-nil, declares the reply channel for request-reply patterns.
+	// Set this on the sending (action: send) operation only. The reply channel
+	// must be registered in the same document via [DocumentBuilder.AddReplyChannel].
+	Reply *OperationReply
 	// Security, when non-nil, sets per-operation security requirements.
 	// nil means the operation inherits server-level security.
 	// An empty slice marks the operation as unsecured.
@@ -102,6 +125,7 @@ type Document struct {
 	info            Info
 	servers         []namedServer
 	channels        map[string]ChannelItem
+	replyChannels   map[string]struct{}
 	schemas         map[string]schema.Schema
 	securitySchemes map[string]route.SecurityScheme
 }
@@ -111,6 +135,7 @@ type DocumentBuilder struct {
 	info            Info
 	servers         []namedServer
 	channels        map[string]ChannelItem
+	replyChannels   map[string]struct{} // keys of reply-only channels; skip publish/subscribe validation
 	schemas         map[string]schema.Schema
 	securitySchemes map[string]route.SecurityScheme
 }
@@ -120,6 +145,7 @@ func NewDocumentBuilder(info Info) *DocumentBuilder {
 	return &DocumentBuilder{
 		info:            info,
 		channels:        make(map[string]ChannelItem),
+		replyChannels:   make(map[string]struct{}),
 		schemas:         make(map[string]schema.Schema),
 		securitySchemes: make(map[string]route.SecurityScheme),
 	}
@@ -152,6 +178,28 @@ func (b *DocumentBuilder) AddSecurityScheme(name string, s route.SecurityScheme)
 	return b
 }
 
+// AddReplyChannel registers a reply-only channel — one that carries reply messages
+// in a request-reply pattern (e.g. ZMQ REQ/REP, AMQP RPC).
+//
+// Unlike [AddChannel], reply channels are not required to have a Subscribe or
+// Publish operation set: the sending operation references them via
+// [OperationReply.Channel] rather than declaring a separate operation.
+//
+// Typical usage with [api/zeromq]:
+//
+//	b.AddReplyChannel("computeReply", asyncapi.ChannelItem{
+//	    Address: "/compute/reply",
+//	    Subscribe: &asyncapi.Operation{
+//	        OperationID: "receiveComputeReply",
+//	        Message:     asyncapi.Message{Schema: respSchema},
+//	    },
+//	})
+func (b *DocumentBuilder) AddReplyChannel(name string, c ChannelItem) *DocumentBuilder {
+	b.channels[name] = c
+	b.replyChannels[name] = struct{}{}
+	return b
+}
+
 // Build validates the accumulated channels and produces a Document.
 //
 // Validation:
@@ -167,8 +215,13 @@ func (b *DocumentBuilder) Build() (Document, error) {
 		schemas[k] = v // explicit wins
 	}
 
-	// Validate channels.
+	// Validate channels. Reply-only channels are exempt from the
+	// "must have subscribe or publish" requirement — they are referenced by
+	// the reply: block of a sending operation, not by their own operations.
 	for name, ch := range b.channels {
+		if _, isReply := b.replyChannels[name]; isReply {
+			continue
+		}
 		if ch.Subscribe == nil && ch.Publish == nil {
 			return Document{}, fmt.Errorf("channel %q has no subscribe or publish operation", name)
 		}
@@ -178,6 +231,7 @@ func (b *DocumentBuilder) Build() (Document, error) {
 		info:            b.info,
 		servers:         b.servers,
 		channels:        b.channels,
+		replyChannels:   b.replyChannels,
 		schemas:         schemas,
 		securitySchemes: b.securitySchemes,
 	}, nil
@@ -386,6 +440,11 @@ func buildOperation(op *Operation, channelKey, action string) map[string]any {
 			tags[i] = map[string]any{"name": tag}
 		}
 		o["tags"] = tags
+	}
+	if op.Reply != nil && op.Reply.Channel != "" {
+		o["reply"] = map[string]any{
+			"channel": map[string]any{"$ref": "#/channels/" + op.Reply.Channel},
+		}
 	}
 	if op.Security != nil {
 		o["security"] = buildSecurityRequirements(op.Security)

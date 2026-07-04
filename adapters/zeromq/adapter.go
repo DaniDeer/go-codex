@@ -1,60 +1,10 @@
-// Package zeromq provides codec-backed adapters for ZeroMQ sockets.
-//
-// The package follows the same declare → register → handle pattern as
-// [api/rest] and [api/events]: codec contracts are defined once and the
-// adapter handles encode/decode/validate at the transport boundary.
-//
-// # Patterns
-//
-// Three ZMQ patterns are supported:
-//
-//   - PUB/SUB (and PUSH/PULL) — via [api/events] channel declarations + [Subscribe]/[Publish]
-//   - REQ/REP — via [api/rest] route declarations + [Serve]/[Call]
-//
-// Channel and route declarations are identical to the MQTT and HTTP adapters.
-// Only the adapter import changes.
-//
-// # Transport abstraction
-//
-// The adapter requires a [FramedSocket] interface rather than a concrete ZMQ
-// socket type. This keeps the package free of CGO dependencies so unit tests
-// can run without libzmq installed.
-//
-// Wire a [FramedSocket] to your ZMQ library of choice. See [FramedSocket] for
-// a complete pebbe/zmq4 example:
-//
-//	sock := &pebbeSocket{s: zmqSocket}   // implements FramedSocket
-//	zeromq.Subscribe(ctx, sock, handle, fn, opts)
-//
-// # Observer
-//
-// Pass a [stats.Observer] via the options structs to receive lifecycle events:
-// [stats.Observer.RecordSubscribe] per message, [stats.Observer.RecordPublish]
-// per publish, [stats.Observer.RecordRequest] per REQ/REP exchange. Implement
-// [stats.TraceObserver] to receive per-operation distributed tracing spans with
-// operation names "zmq.subscribe", "zmq.publish", "zmq.serve", "zmq.request".
-//
-// Combine multiple observers with [stats.NewFanout] — no changes needed when
-// the same observer value is already used for HTTP or MQTT adapters.
-//
-// # libzmq installation
-//
-// pebbe/zmq4 requires libzmq. See the ZeroMQ setup guide in docs/guides/zeromq.md:
-//
-//   - Debian/Ubuntu: apt install libzmq3-dev
-//   - macOS: brew install zeromq
-//
-// See also:
-//   - [api/events] — channel declarations for PUB/SUB
-//   - [api/rest] — route declarations for REQ/REP
-//   - [stats] — observer interfaces
-//   - https://github.com/pebbe/zmq4 — recommended ZMQ Go binding
 package zeromq
 
 import (
 	"context"
 	"errors"
 	"fmt"
+	"sync"
 	"time"
 
 	"github.com/DaniDeer/go-codex/api/events"
@@ -580,4 +530,300 @@ func Call[Req, Resp any](
 // to prevent the REQ socket from blocking indefinitely.
 func sendErrorReply(sock FramedSocket, err error) {
 	_ = sock.SendFrames([][]byte{statusError, []byte(err.Error())})
+}
+
+// emptyDelimiter is the empty frame separating the identity stack from the
+// payload in DEALER/ROUTER ZMQ envelope format.
+var emptyDelimiter = []byte{}
+
+// ServeRouter runs a blocking ROUTER loop. Each incoming request is dispatched
+// concurrently in its own goroutine. Identity frames are extracted automatically
+// and re-prepended to every reply so the DEALER peer can correlate responses.
+//
+// ROUTER message framing (server receives):
+//
+//	[identity, "", payload]
+//
+// Reply framing (server sends):
+//
+//	[identity, "", "ok", encoded_response]
+//	[identity, "", "error", error_message]
+//
+// The loop runs until ctx is cancelled; it waits for all in-flight goroutines
+// to drain before returning nil. A socket recv error stops the loop immediately.
+//
+// Errors are delivered via [ServeOptions.OnError] using the same [ServeError]
+// type as [Serve]. Format overrides are applied via [rest.RouteHandle.WithRequestFormats]
+// and [rest.RouteHandle.WithFormats] before calling ServeRouter.
+//
+// Example (ROUTER compute server):
+//
+//	go func() {
+//	    if err := zeromq.ServeRouter(ctx, sock, handle, handler,
+//	        zeromq.ServeOptions{Observer: obs}); err != nil {
+//	        log.Error("serve stopped", "err", err)
+//	    }
+//	}()
+func ServeRouter[Req, Resp any](
+	ctx context.Context,
+	sock FramedSocket,
+	handle *rest.RouteHandle[Req, Resp],
+	fn func(context.Context, Req) (Resp, error),
+	opts ServeOptions,
+) error {
+	obs := opts.Observer
+	if obs == nil {
+		obs = stats.NoopObserver{}
+	}
+	if err := sock.SetRecvTimeout(recvPollInterval); err != nil {
+		return fmt.Errorf("zeromq: set recv timeout: %w", err)
+	}
+	path := handle.Descriptor.Path
+
+	var wg sync.WaitGroup
+	for {
+		select {
+		case <-ctx.Done():
+			wg.Wait()
+			return nil
+		default:
+		}
+		frames, err := sock.RecvFrames()
+		if errors.Is(err, ErrTimeout) {
+			continue
+		}
+		if err != nil {
+			select {
+			case <-ctx.Done():
+				wg.Wait()
+				return nil
+			default:
+				return fmt.Errorf("zeromq: recv: %w", err)
+			}
+		}
+		// Expect at least [identity, delimiter, payload].
+		if len(frames) < 3 {
+			continue
+		}
+		identity := frames[0]
+		// frames[1] = empty delimiter
+		payload := frames[2]
+
+		wg.Add(1)
+		go func(id, pl []byte) {
+			defer wg.Done()
+			start := time.Now()
+			serveRouterRequest(ctx, sock, handle, fn, obs, opts, path, id, pl, start)
+		}(identity, payload)
+	}
+}
+
+// serveRouterRequest handles one ROUTER request in its own goroutine.
+func serveRouterRequest[Req, Resp any](
+	ctx context.Context,
+	sock FramedSocket,
+	handle *rest.RouteHandle[Req, Resp],
+	fn func(context.Context, Req) (Resp, error),
+	obs stats.Observer,
+	opts ServeOptions,
+	path string,
+	identity []byte,
+	payload []byte,
+	start time.Time,
+) {
+	var spanCtx = ctx
+	var serveErr error
+	if to, ok := obs.(stats.TraceObserver); ok {
+		spanCtx = to.StartSpan(ctx, "zmq.serve", path)
+	}
+	defer func() {
+		if to, ok := obs.(stats.TraceObserver); ok {
+			to.EndSpan(spanCtx, serveErr)
+		}
+	}()
+
+	// decode request
+	var req Req
+	if len(handle.RequestFormats) > 0 {
+		req, serveErr = handle.RequestFormats[0].Unmarshal(payload)
+	} else {
+		req, serveErr = handle.Decode(payload)
+	}
+	if serveErr != nil {
+		stats.ReportErrors(obs, "body", serveErr)
+		obs.RecordRequest("ZMQ-ROUTER", path, 0, time.Since(start))
+		sendRouterErrorReply(sock, identity, serveErr)
+		if opts.OnError != nil {
+			opts.OnError(ServeError{Kind: KindDecode, Err: serveErr})
+		}
+		return
+	}
+
+	// call handler
+	var resp Resp
+	resp, serveErr = fn(spanCtx, req)
+	if serveErr != nil {
+		obs.RecordRequest("ZMQ-ROUTER", path, 0, time.Since(start))
+		sendRouterErrorReply(sock, identity, serveErr)
+		if opts.OnError != nil {
+			opts.OnError(ServeError{Kind: KindHandler, Err: serveErr})
+		}
+		return
+	}
+
+	// encode response
+	var respPayload []byte
+	if len(handle.Formats) > 0 {
+		respPayload, serveErr = handle.Formats[0].Marshal(resp)
+	} else {
+		respPayload, serveErr = handle.Encode(resp)
+	}
+	if serveErr != nil {
+		obs.RecordRequest("ZMQ-ROUTER", path, 0, time.Since(start))
+		sendRouterErrorReply(sock, identity, serveErr)
+		if opts.OnError != nil {
+			opts.OnError(ServeError{Kind: KindEncode, Err: serveErr})
+		}
+		return
+	}
+
+	if sendErr := sock.SendFrames([][]byte{identity, emptyDelimiter, statusOK, respPayload}); sendErr != nil {
+		serveErr = sendErr
+		obs.RecordRequest("ZMQ-ROUTER", path, 0, time.Since(start))
+		if opts.OnError != nil {
+			opts.OnError(ServeError{Kind: KindEncode, Err: sendErr})
+		}
+		return
+	}
+	obs.RecordRequest("ZMQ-ROUTER", path, 200, time.Since(start))
+}
+
+// sendRouterErrorReply sends an error reply to a ROUTER peer, preserving identity frames.
+func sendRouterErrorReply(sock FramedSocket, identity []byte, err error) {
+	_ = sock.SendFrames([][]byte{identity, emptyDelimiter, statusError, []byte(err.Error())})
+}
+
+// CallDealer encodes req and sends it via a DEALER socket using the ZMQ envelope
+// format (empty delimiter + payload), then synchronously waits for one reply.
+//
+// DEALER message framing (client sends):
+//
+//	["", payload]
+//
+// Expected reply framing (client receives):
+//
+//	["", "ok", encoded_response]
+//	["", "error", error_message]
+//
+// For concurrent use, call CallDealer from multiple goroutines; each invocation
+// manages its own independent send/recv cycle.
+//
+// ctx cancellation is honoured during the reply receive loop.
+//
+// Errors are wrapped in [CallError], the same type used by [Call].
+//
+// Example (DEALER compute client):
+//
+//	result, err := zeromq.CallDealer(ctx, sock, handle, ComputeReq{X: 3, Y: 4},
+//	    zeromq.CallOptions{Observer: obs})
+func CallDealer[Req, Resp any](
+	ctx context.Context,
+	sock FramedSocket,
+	handle *rest.RouteHandle[Req, Resp],
+	req Req,
+	opts CallOptions,
+) (Resp, error) {
+	obs := opts.Observer
+	if obs == nil {
+		obs = stats.NoopObserver{}
+	}
+	var zero Resp
+	start := time.Now()
+	path := handle.Descriptor.Path
+	var callErr error
+	if to, ok := obs.(stats.TraceObserver); ok {
+		ctx = to.StartSpan(ctx, "zmq.request", path)
+		defer func() { to.EndSpan(ctx, callErr) }()
+	}
+
+	// encode request
+	var payload []byte
+	if len(handle.RequestFormats) > 0 {
+		payload, callErr = handle.RequestFormats[0].Marshal(req)
+	} else {
+		payload, callErr = handle.EncodeRequest(req)
+	}
+	if callErr != nil {
+		stats.ReportErrors(obs, "body", callErr)
+		obs.RecordRequest("ZMQ-DEALER", path, 0, time.Since(start))
+		callErr = CallError{Err: callErr}
+		return zero, callErr
+	}
+
+	// send with empty delimiter (DEALER envelope)
+	if err := sock.SendFrames([][]byte{emptyDelimiter, payload}); err != nil {
+		callErr = CallError{Err: fmt.Errorf("send: %w", err)}
+		obs.RecordRequest("ZMQ-DEALER", path, 0, time.Since(start))
+		return zero, callErr
+	}
+
+	// configure recv timeout for ctx-cancellation polling
+	if err := sock.SetRecvTimeout(recvPollInterval); err != nil {
+		callErr = CallError{Err: fmt.Errorf("set recv timeout: %w", err)}
+		return zero, callErr
+	}
+
+	// receive reply
+	var frames [][]byte
+	for {
+		select {
+		case <-ctx.Done():
+			callErr = CallError{Err: ctx.Err()}
+			obs.RecordRequest("ZMQ-DEALER", path, 0, time.Since(start))
+			return zero, callErr
+		default:
+		}
+		var recvErr error
+		frames, recvErr = sock.RecvFrames()
+		if errors.Is(recvErr, ErrTimeout) {
+			continue
+		}
+		if recvErr != nil {
+			callErr = CallError{Err: fmt.Errorf("recv: %w", recvErr)}
+			obs.RecordRequest("ZMQ-DEALER", path, 0, time.Since(start))
+			return zero, callErr
+		}
+		break
+	}
+
+	// validate framing: expect ["", status, payload]
+	if len(frames) < 3 {
+		callErr = CallError{Err: fmt.Errorf("malformed reply: expected [\"\", status, payload], got %d frame(s)", len(frames))}
+		obs.RecordRequest("ZMQ-DEALER", path, 0, time.Since(start))
+		return zero, callErr
+	}
+	// frames[0] = empty delimiter
+
+	// check status
+	if string(frames[1]) == "error" {
+		callErr = CallError{Err: fmt.Errorf("server error: %s", frames[2])}
+		obs.RecordRequest("ZMQ-DEALER", path, 500, time.Since(start))
+		return zero, callErr
+	}
+
+	// decode response
+	var resp Resp
+	if len(handle.Formats) > 0 {
+		resp, callErr = handle.Formats[0].Unmarshal(frames[2])
+	} else {
+		resp, callErr = handle.DecodeResponse(frames[2])
+	}
+	if callErr != nil {
+		stats.ReportErrors(obs, "body", callErr)
+		callErr = CallError{Err: fmt.Errorf("decode response: %w", callErr)}
+		obs.RecordRequest("ZMQ-DEALER", path, 0, time.Since(start))
+		return zero, callErr
+	}
+	obs.RecordRequest("ZMQ-DEALER", path, 200, time.Since(start))
+	return resp, nil
 }

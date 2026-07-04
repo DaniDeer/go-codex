@@ -362,3 +362,139 @@ func TestV3DocumentBuilder_channelItem_titleSummaryTags(t *testing.T) {
 		}
 	}
 }
+
+func TestOperationReply_EmittedInSendOp(t *testing.T) {
+	b := v3.NewDocumentBuilder(testInfo)
+	reqSchema := schema.Schema{Type: "object"}
+	respSchema := schema.Schema{Type: "object"}
+	b.AddChannel("computeRequest", v3.ChannelItem{
+		Address: "/compute",
+		Publish: &v3.Operation{
+			OperationID: "sendComputeRequest",
+			Summary:     "Send a compute request.",
+			Message:     v3.Message{Schema: reqSchema},
+			Reply:       &v3.OperationReply{Channel: "computeReply"},
+		},
+	})
+	b.AddReplyChannel("computeReply", v3.ChannelItem{
+		Address: "/compute/reply",
+		Subscribe: &v3.Operation{
+			OperationID: "receiveComputeReply",
+			Summary:     "Receive the compute reply.",
+			Message:     v3.Message{Schema: respSchema},
+		},
+	})
+	out := mustYAML(t, buildDoc(t, b))
+
+	if !strings.Contains(out, "reply:") {
+		t.Errorf("want 'reply:' in YAML output:\n%s", out)
+	}
+	if !strings.Contains(out, "$ref: '#/channels/computeReply'") {
+		t.Errorf("want reply channel $ref in output:\n%s", out)
+	}
+	if !strings.Contains(out, "sendComputeRequest") {
+		t.Errorf("want sendComputeRequest operation in output:\n%s", out)
+	}
+	if !strings.Contains(out, "receiveComputeReply") {
+		t.Errorf("want receiveComputeReply operation in output:\n%s", out)
+	}
+}
+
+func TestOperationReply_BothChannelsInSpec(t *testing.T) {
+	b := v3.NewDocumentBuilder(testInfo)
+	b.AddChannel("computeRequest", v3.ChannelItem{
+		Address: "/compute",
+		Publish: &v3.Operation{
+			Message: v3.Message{Schema: schema.Schema{Type: "object"}},
+			Reply:   &v3.OperationReply{Channel: "computeReply"},
+		},
+	})
+	b.AddReplyChannel("computeReply", v3.ChannelItem{
+		Address: "/compute/reply",
+		Subscribe: &v3.Operation{
+			Message: v3.Message{Schema: schema.Schema{Type: "object"}},
+		},
+	})
+	out := mustYAML(t, buildDoc(t, b))
+
+	if !strings.Contains(out, "computeRequest:") {
+		t.Errorf("want computeRequest channel:\n%s", out)
+	}
+	if !strings.Contains(out, "computeReply:") {
+		t.Errorf("want computeReply channel:\n%s", out)
+	}
+}
+
+func TestOperationReply_NilReply_NoReplyBlock(t *testing.T) {
+	b := v3.NewDocumentBuilder(testInfo)
+	b.AddChannel("events", v3.ChannelItem{
+		Subscribe: &v3.Operation{
+			OperationID: "receiveEvent",
+			Message:     v3.Message{Schema: schema.Schema{Type: "object"}},
+		},
+	})
+	out := mustYAML(t, buildDoc(t, b))
+	if strings.Contains(out, "reply:") {
+		t.Errorf("must not emit 'reply:' when Reply is nil:\n%s", out)
+	}
+}
+
+func TestAddReplyChannel_ValidatesWithoutSubscribeOrPublish(t *testing.T) {
+	// Reply-only channel with no subscribe/publish should not cause Build to fail.
+	b := v3.NewDocumentBuilder(testInfo)
+	b.AddChannel("computeRequest", v3.ChannelItem{
+		Publish: &v3.Operation{
+			Message: v3.Message{Schema: schema.Schema{Type: "object"}},
+			Reply:   &v3.OperationReply{Channel: "computeReply"},
+		},
+	})
+	// Reply channel has no Subscribe/Publish — would fail normal AddChannel validation.
+	b.AddReplyChannel("computeReply", v3.ChannelItem{Address: "/compute/reply"})
+	if _, err := b.Build(); err != nil {
+		t.Fatalf("Build() must not error for reply channel with no operations: %v", err)
+	}
+}
+
+func TestAddChannel_StillValidatesNonReplyChannel(t *testing.T) {
+	b := v3.NewDocumentBuilder(testInfo)
+	b.AddChannel("noOps", v3.ChannelItem{Address: "/no-ops"}) // no subscribe/publish
+	if _, err := b.Build(); err == nil {
+		t.Fatal("Build() must error when non-reply channel has no subscribe or publish operation")
+	}
+}
+
+func TestOperationReply_JSONMarshal(t *testing.T) {
+	b := v3.NewDocumentBuilder(testInfo)
+	b.AddChannel("req", v3.ChannelItem{
+		Publish: &v3.Operation{
+			Message: v3.Message{Schema: schema.Schema{Type: "object"}},
+			Reply:   &v3.OperationReply{Channel: "rep"},
+		},
+	})
+	b.AddReplyChannel("rep", v3.ChannelItem{
+		Subscribe: &v3.Operation{
+			Message: v3.Message{Schema: schema.Schema{Type: "object"}},
+		},
+	})
+	doc := buildDoc(t, b)
+	raw, err := doc.MarshalJSON()
+	if err != nil {
+		t.Fatalf("MarshalJSON error: %v", err)
+	}
+	var m map[string]any
+	if err := json.Unmarshal(raw, &m); err != nil {
+		t.Fatalf("JSON parse error: %v", err)
+	}
+	ops, _ := m["operations"].(map[string]any)
+	found := false
+	for _, v := range ops {
+		op, _ := v.(map[string]any)
+		if _, ok := op["reply"]; ok {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("expected 'reply' key in at least one operation in JSON output")
+	}
+}

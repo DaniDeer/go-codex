@@ -125,6 +125,7 @@ func main() {
 - **OpenAPI 3.1 + AsyncAPI 3.0** — complete specs derived from the same codec; no manual YAML, no drift
 - **REST + HTTP client** — typed `Decode`/`Encode` per route; `nethttp.Call` for typed client calls; both share the same `Route` definition
 - **MQTT events** — typed subscribe/publish with topic validation, wildcard support, and AsyncAPI spec
+- **ZeroMQ** — typed REQ/REP and PUB/SUB via the same codec declarations as REST and MQTT; AsyncAPI 3.0 with request-reply (`api/zeromq`); DEALER/ROUTER for concurrent patterns; transport-agnostic `FramedSocket` interface (no CGO in the adapter)
 - **MCP server** — Tools, Resources, and Prompts follow the same declare → register → handle pattern; codec drives the `inputSchema` automatically
 - **SSE + templ SSR** — codec-validated event streams; same route serves HTML and JSON via content negotiation
 - **Forge pipelines** — named, versioned, governed KPI computation with SHA-256 contract hash and pipeline YAML spec
@@ -148,6 +149,8 @@ go get github.com/DaniDeer/go-codex@latest
 | net/http adapter (server + client) | `github.com/DaniDeer/go-codex/adapters/nethttp` |
 | chi adapter | `github.com/DaniDeer/go-codex/adapters/chi` |
 | Paho MQTT adapter | `github.com/DaniDeer/go-codex/adapters/mqtt` |
+| ZeroMQ REQ/REP AsyncAPI spec builder | `github.com/DaniDeer/go-codex/api/zeromq` |
+| ZeroMQ adapter (PUB/SUB, REQ/REP, DEALER/ROUTER) | `github.com/DaniDeer/go-codex/adapters/zeromq` |
 | mark3labs/mcp-go adapter | `github.com/DaniDeer/go-codex/adapters/mcpgo` |
 | templ SSR format plug-in | `github.com/DaniDeer/go-codex/adapters/templ` |
 | OpenAPI 3.1 renderer | `github.com/DaniDeer/go-codex/render/openapi` |
@@ -219,11 +222,14 @@ go-codex/
 │   │   └── builder.go      # Builder, Channel[T]/NewChannel, ChannelHandle, BuildTopic,
 │   │                       #   AddServer, AddSchema, AddSecurityScheme, AddGlobalSecurity,
 │   │                       #   TopicParam, ChannelMeta, Subscribe, Publish, SecurityScheme
-│   └── mcp/                # MCP server builder: Tools, Resources, Prompts
-│       ├── builder.go      # Builder, NewTool[In,Out], NewResource[T], NewPrompt,
-│       │                   #   ToolHandle, ResourceHandle, PromptHandle, MCPSpec
-│       └── errors.go       # ToolInputError, ToolOutputError, ResourceEncodeError,
-│                           #   ResourceParamError, MissingResourceVarError, PromptArgError, …
+│   ├── mcp/                # MCP server builder: Tools, Resources, Prompts
+│   │   ├── builder.go      # Builder, NewTool[In,Out], NewResource[T], NewPrompt,
+│   │   │                   #   ToolHandle, ResourceHandle, PromptHandle, MCPSpec
+│   │   └── errors.go       # ToolInputError, ToolOutputError, ResourceEncodeError,
+│   │                       #   ResourceParamError, MissingResourceVarError, PromptArgError, …
+│   └── zeromq/             # ZeroMQ REQ/REP AsyncAPI 3.0 spec builder
+│       ├── builder.go      # Builder, NewBuilder, Register[Req,Resp], AsyncAPISpec
+│       └── types.go        # SocketMeta, Info alias, Server alias
 │
 ├── adapters/               # transport-specific adapters
 │   ├── nethttp/            # net/http adapter — server + client
@@ -240,6 +246,10 @@ go-codex/
 │   │   ├── adapter.go      # SubscribeHandler, SubscribeOptions, Publish, PublishOptions,
 │   │   │                   #   SubscribeError, ErrorKind, MessageFromContext
 │   │   └── topicvars.go    # TopicVarsFromMessage, TopicMismatchError
+│   ├── zeromq/             # ZeroMQ adapter — PUB/SUB, REQ/REP, DEALER/ROUTER
+│   │   ├── adapter.go      # Subscribe, Publish, Serve, Call, ServeRouter, CallDealer
+│   │   ├── errors.go       # SubscribeError, PublishEncodeError, ServeError, CallError
+│   │   └── socket.go       # FramedSocket interface, ErrTimeout
 │   ├── mcpgo/              # mark3labs/mcp-go adapter for api/mcp handles
 │   │   └── adapter.go      # ToolHandler, ResourceHandler, PromptHandler,
 │   │                       #   RegisterTool, RegisterResource, RegisterPrompt, Options

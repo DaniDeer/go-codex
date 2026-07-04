@@ -1,8 +1,15 @@
 # ZeroMQ Examples
 
-> See also: [`adapters/zeromq` on pkg.go.dev](https://pkg.go.dev/github.com/DaniDeer/go-codex/adapters/zeromq) · [`api/events`](../concepts/api-contracts.md) · [`api/rest`](../concepts/api-contracts.md) · [Feature: Metrics Observer](../features/observer.md)
+> See also: [`adapters/zeromq` on pkg.go.dev](https://pkg.go.dev/github.com/DaniDeer/go-codex/adapters/zeromq) · [`api/zeromq` on pkg.go.dev](https://pkg.go.dev/github.com/DaniDeer/go-codex/api/zeromq) · [`api/events`](../concepts/api-contracts.md) · [`api/rest`](../concepts/api-contracts.md) · [Feature: Metrics Observer](../features/observer.md)
 
-The `adapters/zeromq` package provides codec-backed adapters for ZeroMQ sockets. It follows the same **declare → register → handle → adapt** pattern as the HTTP and MQTT adapters — only the import changes.
+go-codex provides two ZeroMQ packages:
+
+| Package | Purpose |
+|---|---|
+| `adapters/zeromq` | Codec-backed adapters: `Subscribe`, `Publish`, `Serve`, `Call`, `ServeRouter`, `CallDealer` |
+| `api/zeromq` | AsyncAPI 3.0 spec builder for REQ/REP contracts (`Register`, `Builder`, `AsyncAPISpec`) |
+
+Both follow the same **declare → register → handle → adapt** pattern as the HTTP and MQTT adapters.
 
 ## Prerequisites: libzmq installation
 
@@ -222,6 +229,48 @@ var ComputeRoute = rest.NewRoute[ComputeReq, ComputeResp](
 )
 ```
 
+### Register with ZMQ builder (AsyncAPI spec + handle)
+
+Use `api/zeromq.Register` to get both the AsyncAPI spec and the route handle in one call:
+
+```go
+import (
+    zmqadapter "github.com/DaniDeer/go-codex/adapters/zeromq"
+    zmqapi "github.com/DaniDeer/go-codex/api/zeromq"
+)
+
+zmqBuilder := zmqapi.NewBuilder(zmqapi.Info{Title: "Compute API", Version: "1.0.0"})
+zmqBuilder.AddServer("zmq", zmqapi.Server{URL: "tcp://localhost:5556", Protocol: "zmq"})
+
+// Register returns the same *rest.RouteHandle — no new types.
+handle, _ := zmqapi.Register(zmqBuilder, contract.ComputeRoute,
+    zmqapi.SocketMeta{OperationID: "compute", Summary: "Add two integers."})
+
+// Adapter calls are IDENTICAL to Phase 1 (Serve/Call signatures unchanged).
+zmqadapter.Serve(ctx, sock, handle, fn, zmqadapter.ServeOptions{Observer: obs})
+
+// AsyncAPI 3.0 with request-reply
+doc, _ := zmqBuilder.AsyncAPISpec()
+yaml, _ := doc.MarshalYAML()
+```
+
+The generated AsyncAPI spec includes `reply:` on the send operation, linking to a reply channel:
+
+```yaml
+operations:
+  sendCompute:
+    action: send
+    channel:
+      $ref: '#/channels/compute'
+    reply:
+      channel:
+        $ref: '#/channels/computeReply'
+  receiveComputeReply:
+    action: receive
+    channel:
+      $ref: '#/channels/computeReply'
+```
+
 ### Server (REP socket)
 
 ```go
@@ -229,17 +278,19 @@ func main() {
     ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
     defer stop()
 
-    builder := rest.NewBuilder(rest.Info{Title: "Compute", Version: "1.0.0"})
-    handle, _ := contract.ComputeRoute.Register(builder)
+    zmqBuilder := zmqapi.NewBuilder(zmqapi.Info{Title: "Compute", Version: "1.0.0"})
+    zmqBuilder.AddServer("zmq", zmqapi.Server{URL: "tcp://localhost:5556", Protocol: "zmq"})
+    handle, _ := zmqapi.Register(zmqBuilder, contract.ComputeRoute,
+        zmqapi.SocketMeta{OperationID: "compute"})
 
     rep, _ := zmq.NewSocket(zmq.REP)
     defer rep.Close()
     rep.Bind("tcp://*:5556")
 
     sock := WrapSocket(rep)
-    if err := zeromq.Serve(ctx, sock, handle, func(ctx context.Context, req ComputeReq) (ComputeResp, error) {
+    if err := zmqadapter.Serve(ctx, sock, handle, func(ctx context.Context, req ComputeReq) (ComputeResp, error) {
         return ComputeResp{Sum: req.X + req.Y}, nil
-    }, zeromq.ServeOptions{Observer: obs}); err != nil {
+    }, zmqadapter.ServeOptions{Observer: obs}); err != nil {
         log.Fatal(err)
     }
 }
@@ -257,8 +308,8 @@ func main() {
     req.Connect("tcp://localhost:5556")
 
     sock := WrapSocket(req)
-    result, err := zeromq.Call(ctx, sock, handle, ComputeReq{X: 3, Y: 4},
-        zeromq.CallOptions{Observer: obs})
+    result, err := zmqadapter.Call(ctx, sock, handle, ComputeReq{X: 3, Y: 4},
+        zmqadapter.CallOptions{Observer: obs})
     if err != nil {
         log.Fatal(err)
     }
@@ -292,6 +343,8 @@ zeromq.Call(ctx, sock, handle, req, zeromq.CallOptions{Observer: obs})
 | Message published | `RecordPublish(topic, success, dur)` | |
 | REP request processed | `RecordRequest("ZMQ-REP", path, status, dur)` | |
 | REQ call completed | `RecordRequest("ZMQ-REQ", path, status, dur)` | |
+| ROUTER request processed | `RecordRequest("ZMQ-ROUTER", path, status, dur)` | |
+| DEALER call completed | `RecordRequest("ZMQ-DEALER", path, status, dur)` | |
 | Trace span | `StartSpan(ctx, op, name)` / `EndSpan` | `"zmq.subscribe"`, `"zmq.publish"`, `"zmq.serve"`, `"zmq.request"` |
 
 ---
@@ -324,12 +377,106 @@ if errors.As(err, &callErr) {
 }
 ```
 
+---
+
+## DEALER/ROUTER — concurrent REQ/REP
+
+DEALER and ROUTER are the async variants of REQ and REP. The ROUTER server handles each request in its own goroutine; the DEALER client sends multiple requests concurrently.
+
+| | REQ/REP | DEALER/ROUTER |
+|---|---|---|
+| Alternation | Strict (send→recv) | Free (async) |
+| Concurrency | Serial | Per-request goroutine (ROUTER) |
+| Framing | `[payload]` / `["ok", resp]` | `["", payload]` / `["", "ok", resp]` |
+| API | `Serve` / `Call` | `ServeRouter` / `CallDealer` |
+
+The frame layout adds an empty **delimiter frame** to separate the DEALER identity from the payload:
+
+```
+ROUTER receives: [identity, "", payload]
+ROUTER replies:  [identity, "", "ok", encoded_response]
+DEALER sends:    ["", payload]
+DEALER receives: ["", "ok", encoded_response]
+```
+
+`ServeRouter` and `CallDealer` reuse the same `ServeOptions`/`CallOptions` and `ServeError`/`CallError` types:
+
+```go
+// Server (ROUTER socket) — concurrent
+go func() {
+    router, _ := zmq.NewSocket(zmq.ROUTER)
+    router.Bind("tcp://*:5557")
+    zeromqadapter.ServeRouter(ctx, WrapSocket(router), handle, fn,
+        zeromqadapter.ServeOptions{Observer: obs})
+}()
+
+// Client (DEALER socket) — concurrent calls from multiple goroutines
+dealer, _ := zmq.NewSocket(zmq.DEALER)
+dealer.Connect("tcp://localhost:5557")
+sock := WrapSocket(dealer)
+
+var wg sync.WaitGroup
+for _, req := range reqs {
+    wg.Add(1)
+    go func(req ComputeReq) {
+        defer wg.Done()
+        resp, err := zeromqadapter.CallDealer(ctx, sock, handle, req,
+            zeromqadapter.CallOptions{Observer: obs})
+        // ...
+    }(req)
+}
+wg.Wait()
+```
+
+---
+
+## Security — CURVE and PLAIN
+
+ZMQ CURVE and PLAIN authentication are configured at the socket level before passing the socket to the adapter. go-codex's `FramedSocket` interface carries no credential metadata.
+
+### CURVE (public-key encryption)
+
+```go
+// Server
+server, _ := zmq.NewSocket(zmq.ROUTER)
+server.SetOption(zmq4.CURVE_SERVER, 1)
+server.SetOption(zmq4.CURVE_SECRETKEY, serverSecretKey)
+server.SetOption(zmq4.CURVE_PUBLICKEY, serverPublicKey)
+server.Bind("tcp://*:5557")
+
+// Client
+client, _ := zmq.NewSocket(zmq.DEALER)
+client.SetOption(zmq4.CURVE_SERVERKEY, serverPublicKey)
+client.SetOption(zmq4.CURVE_PUBLICKEY, clientPublicKey)
+client.SetOption(zmq4.CURVE_SECRETKEY, clientSecretKey)
+client.Connect("tcp://localhost:5557")
+```
+
+Use `zmq.NewCurveKeypair()` to generate server and client key pairs.
+
+### PLAIN (username/password)
+
+```go
+// Server
+server.SetOption(zmq4.PLAIN_SERVER, 1)
+
+// Client
+client.SetOption(zmq4.PLAIN_USERNAME, "myuser")
+client.SetOption(zmq4.PLAIN_PASSWORD, "mypass")
+```
+
+**AsyncAPI spec:** AsyncAPI 3.0 has no standard security scheme type for ZMQ CURVE or PLAIN. These authentication mechanisms are documented in prose and configured at the transport layer; they do not appear in the generated spec.
+
+---
+
 ## See also
 
 - [`adapters/zeromq` on pkg.go.dev](https://pkg.go.dev/github.com/DaniDeer/go-codex/adapters/zeromq)
+- [`api/zeromq` on pkg.go.dev](https://pkg.go.dev/github.com/DaniDeer/go-codex/api/zeromq)
 - [Concept: Codec Layers as Observable Layers](../concepts/observable-layers.md)
 - [Concept: API Contracts](../concepts/api-contracts.md)
 - [Feature: Metrics Observer](../features/observer.md)
 - [examples/adapters-zeromq](https://github.com/DaniDeer/go-codex/tree/main/examples/adapters-zeromq) — PUB/SUB demo
-- [examples/adapters-zeromq-reqrep](https://github.com/DaniDeer/go-codex/tree/main/examples/adapters-zeromq-reqrep) — REQ/REP demo
+- [examples/adapters-zeromq-reqrep](https://github.com/DaniDeer/go-codex/tree/main/examples/adapters-zeromq-reqrep) — REQ/REP with AsyncAPI spec
+- [examples/adapters-zeromq-dealer-router](https://github.com/DaniDeer/go-codex/tree/main/examples/adapters-zeromq-dealer-router) — DEALER/ROUTER concurrent demo
 - [pebbe/zmq4](https://github.com/pebbe/zmq4) — recommended ZMQ Go binding
