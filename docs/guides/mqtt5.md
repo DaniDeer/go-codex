@@ -15,7 +15,7 @@
 | User Properties | ❌ `validateSecurityCredentials` no-op | ✅ Per-message key-value metadata |
 | Content-Type | ❌ Format agreed out-of-band | ✅ Auto format selection from message property |
 | Message Expiry | ❌ | Phase 2 |
-| Shared Subscriptions | ❌ | Phase 2 |
+| Shared Subscriptions | ❌ | ✅ via `SharedReplyTopic` builder |
 
 ---
 
@@ -198,7 +198,48 @@ resp, err = mqtt5adapter.Request(ctx, client, router, tenantHandle,
 // On validation failure: RequestError wrapping reqreply.RouteParamError
 // or reqreply.MissingRouteParamError — both errors.As-navigable.
 ```
+
+
+### Custom reply topics
+
+By default, `Request` generates `"replies/<uuid>"` for both the MQTT 5 `ResponseTopic` property and the broker subscription. Use `ReplyTopicBuilder` in `RequestOptions` to override this with a built-in constructor or a custom function.
+
+```go
+// Built-in default — explicit form (identical to not setting ReplyTopicBuilder)
+resp, err := mqtt5adapter.Request(ctx, client, router, handle, req,
+    mqtt5adapter.RequestOptions{
+        ReplyTopicBuilder: mqtt5adapter.UUIDReplyTopic("replies"),
+    })
+
+// Shared subscription — scale reply consumers horizontally.
+// The ResponseTopic sent to the responder is "replies/<uuid>" (plain publish topic).
+// The local subscribe uses "$share/gateway-pool/replies/<uuid>".
+// The broker delivers each reply to exactly one subscriber in the group.
+resp, err = mqtt5adapter.Request(ctx, client, router, handle, req,
+    mqtt5adapter.RequestOptions{
+        ReplyTopicBuilder: mqtt5adapter.SharedReplyTopic("replies", "gateway-pool"),
+    })
+
+// Fully custom builder — client-ID + monotonic counter, no uuid dependency.
+var seq int64
+resp, err = mqtt5adapter.Request(ctx, client, router, handle, req,
+    mqtt5adapter.RequestOptions{
+        ReplyTopicBuilder: func() (string, string) {
+            t := fmt.Sprintf("replies/gw-1/%d", atomic.AddInt64(&seq, 1))
+            return t, t
+        },
+    })
 ```
+
+**`ReplyTopicBuilder` contract:**
+- Returns `(responseTopic, subscribeFilter string)`.
+- `responseTopic` — written into the MQTT 5 `ResponseTopic` property; must be a plain publish topic (no wildcards, no `$share` prefix).
+- `subscribeFilter` — passed to `client.Subscribe`; for shared subscriptions it carries the `$share/<group>/` prefix.
+- Return equal strings for regular (non-shared) subscriptions.
+- Empty `subscribeFilter` falls back to `responseTopic`.
+- Empty `responseTopic` returns `RequestError{Kind: KindEncode}`.
+
+---
 
 ### AsyncAPI spec for request-reply
 

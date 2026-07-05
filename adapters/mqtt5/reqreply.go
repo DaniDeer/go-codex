@@ -38,7 +38,24 @@ type RequestOptions struct {
 	// ReplyTopicPrefix is the prefix for the auto-generated reply topic.
 	// Request generates: "<ReplyTopicPrefix>/<uuid>" per call.
 	// When empty, defaults to "replies".
+	// Ignored when [ReplyTopicBuilder] is non-nil.
 	ReplyTopicPrefix string
+
+	// ReplyTopicBuilder, when non-nil, overrides [ReplyTopicPrefix] and controls
+	// how the reply topic pair is generated for each call. It must return
+	// (responseTopic, subscribeFilter):
+	//   - responseTopic is set as the MQTT 5 ResponseTopic property on the
+	//     outgoing request and must be a valid publish topic (no wildcards).
+	//   - subscribeFilter is passed to client.Subscribe. For regular
+	//     subscriptions it equals responseTopic. For shared subscriptions it
+	//     carries the "$share/<group>/" prefix.
+	//
+	// An empty responseTopic is a programmer error and causes [Request] to
+	// return [RequestError]{Kind: [KindEncode]}. An empty subscribeFilter
+	// falls back to responseTopic.
+	//
+	// Use [UUIDReplyTopic] or [SharedReplyTopic] for built-in builders.
+	ReplyTopicBuilder ReplyTopicBuilder
 
 	// Timeout is how long Request waits for a reply before returning
 	// [RequestError]{Kind: [KindTimeout]}.
@@ -267,24 +284,42 @@ func Request[Req, Resp any](
 	if timeout == 0 {
 		timeout = 30 * time.Second
 	}
-	prefix := opts.ReplyTopicPrefix
-	if prefix == "" {
-		prefix = "replies"
-	}
 	qos := opts.QoS
 	if qos == 0 {
 		qos = 1
 	}
 
-	// Generate unique correlation data and reply topic.
+	// Resolve the reply topic pair.
+	var replyTopic, subscribeFilter string
+	if opts.ReplyTopicBuilder != nil {
+		replyTopic, subscribeFilter = opts.ReplyTopicBuilder()
+		if replyTopic == "" {
+			callErr = RequestError{Kind: KindEncode, Err: fmt.Errorf("reply topic builder returned empty response topic")}
+			obs.RecordRequest("MQTT5-REQ", path, 0, time.Since(start))
+			return zero, callErr
+		}
+		if subscribeFilter == "" {
+			subscribeFilter = replyTopic
+		}
+	} else {
+		prefix := opts.ReplyTopicPrefix
+		if prefix == "" {
+			prefix = "replies"
+		}
+		replyTopic = prefix + "/" + uuid.New().String()
+		subscribeFilter = replyTopic
+	}
+
+	// Generate unique correlation data for this call.
 	corrID := uuid.New()
 	corrData := corrID[:]
-	replyTopic := prefix + "/" + corrID.String()
 
 	// Channel to receive the reply message.
 	replyCh := make(chan *pahomqtt5.Publish, 1)
 
-	// Register reply handler before subscribing.
+	// Register reply handler before subscribing. The handler key is the plain
+	// replyTopic — the router dispatches on the actual message topic, not the
+	// $share-prefixed subscribe filter.
 	router.RegisterHandler(replyTopic, func(msg *pahomqtt5.Publish) {
 		if msg.Properties == nil || string(msg.Properties.CorrelationData) != string(corrData) {
 			return // not our reply
@@ -295,10 +330,10 @@ func Request[Req, Resp any](
 		}
 	})
 
-	// Subscribe to reply topic.
+	// Subscribe using the filter (may carry a $share prefix).
 	if _, err := client.Subscribe(ctx, &pahomqtt5.Subscribe{
 		Subscriptions: []pahomqtt5.SubscribeOptions{
-			{Topic: replyTopic, QoS: qos},
+			{Topic: subscribeFilter, QoS: qos},
 		},
 	}); err != nil {
 		router.UnregisterHandler(replyTopic)
@@ -312,7 +347,7 @@ func Request[Req, Resp any](
 	cleanup := func() {
 		once.Do(func() {
 			router.UnregisterHandler(replyTopic)
-			_, _ = client.Unsubscribe(ctx, &pahomqtt5.Unsubscribe{Topics: []string{replyTopic}})
+			_, _ = client.Unsubscribe(ctx, &pahomqtt5.Unsubscribe{Topics: []string{subscribeFilter}})
 		})
 	}
 	defer cleanup()
@@ -427,5 +462,72 @@ func reportRouteParamErrors(err error, obs stats.Observer) {
 	}
 	if e, ok := err.(reqreply.RouteParamError); ok {
 		obs.RecordValidationError("topic_var", stats.ConstraintName(e.Err), e.Name)
+	}
+}
+
+// ReplyTopicBuilder generates the reply topic pair for a single [Request] call.
+//
+// It returns two strings:
+//   - responseTopic: the concrete MQTT topic written into the MQTT 5
+//     ResponseTopic property of the outgoing request. Must be a valid publish
+//     topic (no wildcards, no $share prefix).
+//   - subscribeFilter: the topic filter passed to [MQTTClient.Subscribe]. For
+//     regular subscriptions this equals responseTopic. For shared subscriptions
+//     it carries the "$share/<group>/" prefix while responseTopic does not.
+//
+// When nil, [Request] falls back to [UUIDReplyTopic]("replies") behaviour.
+// Use [UUIDReplyTopic] or [SharedReplyTopic] for built-in builders.
+type ReplyTopicBuilder func() (responseTopic, subscribeFilter string)
+
+// UUIDReplyTopic returns a [ReplyTopicBuilder] that generates "<prefix>/<uuid>"
+// for both responseTopic and subscribeFilter. It is the explicit form of the
+// default behaviour when [RequestOptions.ReplyTopicBuilder] is nil.
+//
+// When prefix is empty, "replies" is used.
+//
+// Example:
+//
+//	mqtt5.Request(ctx, client, router, handle, req,
+//	    mqtt5.RequestOptions{
+//	        ReplyTopicBuilder: mqtt5.UUIDReplyTopic("replies"),
+//	    })
+func UUIDReplyTopic(prefix string) ReplyTopicBuilder {
+	if prefix == "" {
+		prefix = "replies"
+	}
+	return func() (string, string) {
+		topic := prefix + "/" + uuid.New().String()
+		return topic, topic
+	}
+}
+
+// SharedReplyTopic returns a [ReplyTopicBuilder] that generates a unique
+// responseTopic "<prefix>/<uuid>" and a shared subscribeFilter
+// "$share/<group>/<prefix>/<uuid>".
+//
+// Use shared subscriptions when a pool of [Request] callers shares a single
+// reply consumer. The MQTT broker delivers each reply to exactly one subscriber
+// in the group. The responseTopic sent to the responder is a plain publish topic
+// (no $share prefix); the broker routes it to the shared group transparently.
+//
+// When prefix is empty, "replies" is used.
+//
+// Example:
+//
+//	mqtt5.Request(ctx, client, router, handle, req,
+//	    mqtt5.RequestOptions{
+//	        ReplyTopicBuilder: mqtt5.SharedReplyTopic("replies", "gateway-pool"),
+//	        // ResponseTopic sent:   "replies/<uuid>"
+//	        // client.Subscribe on:  "$share/gateway-pool/replies/<uuid>"
+//	    })
+func SharedReplyTopic(prefix, group string) ReplyTopicBuilder {
+	if prefix == "" {
+		prefix = "replies"
+	}
+	return func() (string, string) {
+		id := uuid.New().String()
+		responseTopic := prefix + "/" + id
+		subscribeFilter := "$share/" + group + "/" + responseTopic
+		return responseTopic, subscribeFilter
 	}
 }

@@ -24,6 +24,8 @@
 //   - Request-Reply: [ServeRequestReply] reads the ResponseTopic and CorrelationData
 //     MQTT 5 message properties to reply to the requester. [Request] publishes
 //     a request with a per-call reply topic and waits for the response.
+//     Customise reply topic generation via [RequestOptions.ReplyTopicBuilder];
+//     use [UUIDReplyTopic] (default) or [SharedReplyTopic] for shared subscriptions.
 //
 // # Client and router
 //

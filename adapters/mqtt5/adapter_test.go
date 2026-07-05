@@ -68,6 +68,7 @@ var computeRoute = reqreply.NewRoute[computeReq, computeResp](
 type mockClient struct {
 	mu             sync.Mutex
 	published      []*pahomqtt5.Publish
+	subscribed     []*pahomqtt5.Subscribe
 	publishErr     error
 	subscribeErr   error
 	unsubscribeErr error
@@ -83,8 +84,26 @@ func (c *mockClient) Publish(_ context.Context, p *pahomqtt5.Publish) (*pahomqtt
 	return &pahomqtt5.PublishResponse{}, nil
 }
 
-func (c *mockClient) Subscribe(_ context.Context, _ *pahomqtt5.Subscribe) (*pahomqtt5.Suback, error) {
-	return &pahomqtt5.Suback{}, c.subscribeErr
+func (c *mockClient) Subscribe(_ context.Context, s *pahomqtt5.Subscribe) (*pahomqtt5.Suback, error) {
+	if c.subscribeErr != nil {
+		return nil, c.subscribeErr
+	}
+	c.mu.Lock()
+	c.subscribed = append(c.subscribed, s)
+	c.mu.Unlock()
+	return &pahomqtt5.Suback{}, nil
+}
+
+func (c *mockClient) subscribedFilters() []string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	var filters []string
+	for _, s := range c.subscribed {
+		for _, sub := range s.Subscriptions {
+			filters = append(filters, sub.Topic)
+		}
+	}
+	return filters
 }
 
 func (c *mockClient) Unsubscribe(_ context.Context, _ *pahomqtt5.Unsubscribe) (*pahomqtt5.Unsuback, error) {

@@ -3,6 +3,7 @@ package mqtt5_test
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -454,5 +455,269 @@ func TestRequest_WithVars_MissingVar_ReportsRequiredConstraintWithVarName(t *tes
 	}
 	if got.field != "tenantID" {
 		t.Errorf("expected field=%q, got %q", "tenantID", got.field)
+	}
+}
+
+// ── ReplyTopicBuilder unit tests ──────────────────────────────────────────────
+
+func TestUUIDReplyTopic_DefaultPrefix(t *testing.T) {
+	b := mqtt5.UUIDReplyTopic("")
+	topic, filter := b()
+	if !strings.HasPrefix(topic, "replies/") {
+		t.Errorf("expected topic to start with %q, got %q", "replies/", topic)
+	}
+	if !strings.HasPrefix(filter, "replies/") {
+		t.Errorf("expected filter to start with %q, got %q", "replies/", filter)
+	}
+}
+
+func TestUUIDReplyTopic_CustomPrefix(t *testing.T) {
+	b := mqtt5.UUIDReplyTopic("myns")
+	topic, filter := b()
+	if !strings.HasPrefix(topic, "myns/") {
+		t.Errorf("expected topic prefix %q, got %q", "myns/", topic)
+	}
+	if !strings.HasPrefix(filter, "myns/") {
+		t.Errorf("expected filter prefix %q, got %q", "myns/", filter)
+	}
+}
+
+func TestUUIDReplyTopic_EqualTopicAndFilter(t *testing.T) {
+	b := mqtt5.UUIDReplyTopic("replies")
+	topic, filter := b()
+	if topic != filter {
+		t.Errorf("expected responseTopic == subscribeFilter, got %q vs %q", topic, filter)
+	}
+}
+
+func TestUUIDReplyTopic_UniquePerCall(t *testing.T) {
+	b := mqtt5.UUIDReplyTopic("replies")
+	t1, _ := b()
+	t2, _ := b()
+	if t1 == t2 {
+		t.Errorf("expected unique topics per call, both returned %q", t1)
+	}
+}
+
+func TestSharedReplyTopic_SubscribeFilterHasSharePrefix(t *testing.T) {
+	b := mqtt5.SharedReplyTopic("replies", "pool")
+	_, filter := b()
+	if !strings.HasPrefix(filter, "$share/pool/replies/") {
+		t.Errorf("expected filter to start with %q, got %q", "$share/pool/replies/", filter)
+	}
+}
+
+func TestSharedReplyTopic_ResponseTopicHasNoSharePrefix(t *testing.T) {
+	b := mqtt5.SharedReplyTopic("replies", "pool")
+	topic, _ := b()
+	if strings.HasPrefix(topic, "$share/") {
+		t.Errorf("responseTopic must not carry $share prefix, got %q", topic)
+	}
+	if !strings.HasPrefix(topic, "replies/") {
+		t.Errorf("expected responseTopic to start with %q, got %q", "replies/", topic)
+	}
+}
+
+func TestSharedReplyTopic_UniquePerCall(t *testing.T) {
+	b := mqtt5.SharedReplyTopic("replies", "pool")
+	t1, f1 := b()
+	t2, f2 := b()
+	if t1 == t2 {
+		t.Errorf("expected unique response topics, both returned %q", t1)
+	}
+	if f1 == f2 {
+		t.Errorf("expected unique subscribe filters, both returned %q", f1)
+	}
+}
+
+func TestSharedReplyTopic_DefaultPrefix(t *testing.T) {
+	b := mqtt5.SharedReplyTopic("", "pool")
+	topic, filter := b()
+	if !strings.HasPrefix(topic, "replies/") {
+		t.Errorf("expected responseTopic prefix %q, got %q", "replies/", topic)
+	}
+	if !strings.HasPrefix(filter, "$share/pool/replies/") {
+		t.Errorf("expected filter prefix %q, got %q", "$share/pool/replies/", filter)
+	}
+}
+
+// ── Request integration tests for ReplyTopicBuilder ───────────────────────────
+
+func TestRequest_ReplyTopicBuilder_UsesReturnedResponseTopic(t *testing.T) {
+	// Verifies that the ResponseTopic property on the published request matches
+	// the responseTopic returned by the builder.
+	client := &mockClient{}
+	router := newMockRouter()
+	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	defer cancel()
+
+	b := reqreply.NewBuilder(reqreply.Info{Title: "T", Version: "1"})
+	handle, _ := computeRoute.Register(b)
+
+	customTopic := "custom/replies/abc"
+	_, _ = mqtt5.Request(ctx, client, router, handle, computeReq{X: 1, Y: 2},
+		mqtt5.RequestOptions{
+			ReplyTopicBuilder: func() (string, string) { return customTopic, customTopic },
+			Timeout:           100 * time.Millisecond,
+		})
+
+	// Find the published request (not the reply-topic subscription).
+	var reqPub *pahomqtt5.Publish
+	client.mu.Lock()
+	for _, p := range client.published {
+		if p.Topic == "compute/add" {
+			reqPub = p
+			break
+		}
+	}
+	client.mu.Unlock()
+
+	if reqPub == nil {
+		t.Fatal("expected a publish to compute/add")
+	}
+	if reqPub.Properties == nil || reqPub.Properties.ResponseTopic != customTopic {
+		t.Errorf("expected ResponseTopic=%q, got %q",
+			customTopic, reqPub.Properties.ResponseTopic)
+	}
+}
+
+func TestRequest_ReplyTopicBuilder_UsesReturnedSubscribeFilter(t *testing.T) {
+	// Verifies that client.Subscribe is called with the subscribeFilter returned
+	// by the builder, not the responseTopic.
+	client := &mockClient{}
+	router := newMockRouter()
+	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	defer cancel()
+
+	b := reqreply.NewBuilder(reqreply.Info{Title: "T", Version: "1"})
+	handle, _ := computeRoute.Register(b)
+
+	responseTopic := "replies/abc"
+	sharedFilter := "$share/mygroup/replies/abc"
+
+	_, _ = mqtt5.Request(ctx, client, router, handle, computeReq{X: 1, Y: 2},
+		mqtt5.RequestOptions{
+			ReplyTopicBuilder: func() (string, string) { return responseTopic, sharedFilter },
+			Timeout:           100 * time.Millisecond,
+		})
+
+	filters := client.subscribedFilters()
+	var found bool
+	for _, f := range filters {
+		if f == sharedFilter {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("expected client.Subscribe with filter %q, subscribed to: %v", sharedFilter, filters)
+	}
+}
+
+func TestRequest_ReplyTopicBuilder_EmptyResponseTopic_ReturnsRequestError(t *testing.T) {
+	client := &mockClient{}
+	router := newMockRouter()
+	ctx := context.Background()
+
+	b := reqreply.NewBuilder(reqreply.Info{Title: "T", Version: "1"})
+	handle, _ := computeRoute.Register(b)
+
+	_, err := mqtt5.Request(ctx, client, router, handle, computeReq{X: 1, Y: 2},
+		mqtt5.RequestOptions{
+			ReplyTopicBuilder: func() (string, string) { return "", "" },
+		})
+
+	var reqErr mqtt5.RequestError
+	if !errors.As(err, &reqErr) {
+		t.Fatalf("expected RequestError, got %T: %v", err, err)
+	}
+	if reqErr.Kind != mqtt5.KindEncode {
+		t.Errorf("expected KindEncode, got %v", reqErr.Kind)
+	}
+}
+
+func TestRequest_ReplyTopicBuilder_EmptyFilter_FallsBackToResponseTopic(t *testing.T) {
+	// When subscribeFilter is empty, Request must fall back to responseTopic.
+	client := &mockClient{}
+	router := newMockRouter()
+	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	defer cancel()
+
+	b := reqreply.NewBuilder(reqreply.Info{Title: "T", Version: "1"})
+	handle, _ := computeRoute.Register(b)
+
+	responseTopic := "replies/fallback"
+	_, _ = mqtt5.Request(ctx, client, router, handle, computeReq{X: 1, Y: 2},
+		mqtt5.RequestOptions{
+			ReplyTopicBuilder: func() (string, string) { return responseTopic, "" },
+			Timeout:           100 * time.Millisecond,
+		})
+
+	filters := client.subscribedFilters()
+	var found bool
+	for _, f := range filters {
+		if f == responseTopic {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("expected subscribe fallback to responseTopic %q, subscribed to: %v", responseTopic, filters)
+	}
+}
+
+func TestRequest_NilBuilder_UsesReplyTopicPrefix(t *testing.T) {
+	client := &mockClient{}
+	router := newMockRouter()
+	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	defer cancel()
+
+	b := reqreply.NewBuilder(reqreply.Info{Title: "T", Version: "1"})
+	handle, _ := computeRoute.Register(b)
+
+	_, _ = mqtt5.Request(ctx, client, router, handle, computeReq{X: 1, Y: 2},
+		mqtt5.RequestOptions{
+			ReplyTopicPrefix: "custom-prefix",
+			Timeout:          100 * time.Millisecond,
+		})
+
+	// The reply subscription filter must start with the custom prefix.
+	filters := client.subscribedFilters()
+	var found bool
+	for _, f := range filters {
+		if strings.HasPrefix(f, "custom-prefix/") {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("expected subscribe filter starting with %q, subscribed to: %v", "custom-prefix/", filters)
+	}
+}
+
+func TestRequest_NilBuilder_DefaultPrefix(t *testing.T) {
+	client := &mockClient{}
+	router := newMockRouter()
+	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	defer cancel()
+
+	b := reqreply.NewBuilder(reqreply.Info{Title: "T", Version: "1"})
+	handle, _ := computeRoute.Register(b)
+
+	_, _ = mqtt5.Request(ctx, client, router, handle, computeReq{X: 1, Y: 2},
+		mqtt5.RequestOptions{
+			Timeout: 100 * time.Millisecond,
+		})
+
+	filters := client.subscribedFilters()
+	var found bool
+	for _, f := range filters {
+		if strings.HasPrefix(f, "replies/") {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("expected default subscribe filter starting with %q, subscribed to: %v", "replies/", filters)
 	}
 }
