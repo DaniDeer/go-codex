@@ -185,7 +185,7 @@ func (b *DocumentBuilder) AddSecurityScheme(name string, s route.SecurityScheme)
 // Publish operation set: the sending operation references them via
 // [OperationReply.Channel] rather than declaring a separate operation.
 //
-// Typical usage with [api/zeromq]:
+// Typical usage with [api/reqreply]:
 //
 //	b.AddReplyChannel("computeReply", asyncapi.ChannelItem{
 //	    Address: "/compute/reply",

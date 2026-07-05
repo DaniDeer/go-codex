@@ -15,14 +15,17 @@ go get github.com/DaniDeer/go-codex@latest
 | What | Import path |
 |------|------------|
 | Core codecs | `github.com/DaniDeer/go-codex/codex` |
-| Format bridges (JSON, YAML, TOML, Gob, Binary (raw bytes)) | `github.com/DaniDeer/go-codex/format` |
+| Format bridges (JSON, YAML, TOML, Gob, Binary) | `github.com/DaniDeer/go-codex/format` |
 | Built-in constraints | `github.com/DaniDeer/go-codex/validate` |
 | REST API builder | `github.com/DaniDeer/go-codex/api/rest` |
 | Event channel builder | `github.com/DaniDeer/go-codex/api/events` |
+| Request-reply route builder (ZMQ, MQTT 5, …) | `github.com/DaniDeer/go-codex/api/reqreply` |
 | MCP server builder | `github.com/DaniDeer/go-codex/api/mcp` |
 | net/http adapter (server + client) | `github.com/DaniDeer/go-codex/adapters/nethttp` |
 | chi adapter | `github.com/DaniDeer/go-codex/adapters/chi` |
-| Paho MQTT adapter | `github.com/DaniDeer/go-codex/adapters/mqtt` |
+| Paho MQTT 3.1.1 adapter | `github.com/DaniDeer/go-codex/adapters/mqtt` |
+| MQTT 5.0 adapter | `github.com/DaniDeer/go-codex/adapters/mqtt5` |
+| ZeroMQ adapter (PUB/SUB, REQ/REP, DEALER/ROUTER) | `github.com/DaniDeer/go-codex/adapters/zeromq` |
 | mark3labs/mcp-go adapter | `github.com/DaniDeer/go-codex/adapters/mcpgo` |
 | templ SSR format plug-in | `github.com/DaniDeer/go-codex/adapters/templ` |
 | OpenAPI 3.1 renderer | `github.com/DaniDeer/go-codex/render/openapi` |
@@ -42,14 +45,15 @@ go get github.com/DaniDeer/go-codex@latest
 | `format` | Format bridges: JSON, YAML, TOML, Gob, Binary (raw bytes), streaming, env vars, File I/O | [→](https://pkg.go.dev/github.com/DaniDeer/go-codex/format) |
 | `schema` | Schema model (pure data, zero dependencies) | [→](https://pkg.go.dev/github.com/DaniDeer/go-codex/schema) |
 | `route` | HTTP route descriptors: `Route`, `Param`, `SecurityScheme` | [→](https://pkg.go.dev/github.com/DaniDeer/go-codex/route) |
-| `stats` | Observer interfaces: `ValidationObserver`, `Observer`, `PipelineObserver`, `SecurityObserver`, `FileObserver`; `NoopObserver` satisfies all five | [→](https://pkg.go.dev/github.com/DaniDeer/go-codex/stats) |
+| `stats` | Observer interfaces: `ValidationObserver`, `Observer`, `PipelineObserver`, `SecurityObserver`, `FileObserver`, `TraceObserver`; `NoopObserver` + `LoggingObserver` + `NewFanout` | [→](https://pkg.go.dev/github.com/DaniDeer/go-codex/stats) |
 
 ## API builders (Layer 2)
 
 | Package | Description | pkg.go.dev |
 |---------|-------------|-----------|
 | `api/rest` | REST API builder: typed Decode/Encode + OpenAPI spec | [→](https://pkg.go.dev/github.com/DaniDeer/go-codex/api/rest) |
-| `api/events` | Event channel builder: typed Decode/Encode + AsyncAPI spec | [→](https://pkg.go.dev/github.com/DaniDeer/go-codex/api/events) |
+| `api/events` | Event channel builder (PUB/SUB): typed Decode/Encode + AsyncAPI spec; works for MQTT 3, MQTT 5, ZMQ PUB/SUB | [→](https://pkg.go.dev/github.com/DaniDeer/go-codex/api/events) |
+| `api/reqreply` | Request-reply route builder: `NewRoute[Req,Resp](topic, codecs, ...RouteMeta)` + `Route.Register(b) *RouteHandle`; mirrors `api/rest` for async transports (ZMQ REQ/REP, MQTT 5); generates AsyncAPI 3.0 with request-reply `reply:` block | [→](https://pkg.go.dev/github.com/DaniDeer/go-codex/api/reqreply) |
 | `api/mcp` | MCP server builder: Tools, Resources, Prompts | [→](https://pkg.go.dev/github.com/DaniDeer/go-codex/api/mcp) |
 
 ## Adapters
@@ -58,7 +62,9 @@ go get github.com/DaniDeer/go-codex@latest
 |---------|-------------|-----------|
 | `adapters/nethttp` | net/http: server (Handler, Register) + client (Call) | [→](https://pkg.go.dev/github.com/DaniDeer/go-codex/adapters/nethttp) |
 | `adapters/chi` | chi router adapter | [→](https://pkg.go.dev/github.com/DaniDeer/go-codex/adapters/chi) |
-| `adapters/mqtt` | Paho MQTT: SubscribeHandler + Publish | [→](https://pkg.go.dev/github.com/DaniDeer/go-codex/adapters/mqtt) |
+| `adapters/mqtt` | Paho MQTT 3.1.1: `SubscribeHandler` + `Publish`; uses `api/events` channel declarations | [→](https://pkg.go.dev/github.com/DaniDeer/go-codex/adapters/mqtt) |
+| `adapters/mqtt5` | MQTT 5.0 (paho.golang): `Subscribe` + `Publish` (PUB/SUB) + `ServeRequestReply` + `Request` (request-reply); User Properties + ContentType auto-format; `UserPropertyParam.WithCodec` for property validation | [→](https://pkg.go.dev/github.com/DaniDeer/go-codex/adapters/mqtt5) |
+| `adapters/zeromq` | ZeroMQ (CGO-free `FramedSocket` interface): `Subscribe`/`Publish` (PUB/SUB) + `Serve`/`Call` (REQ/REP) + `ServeRouter`/`CallDealer` (DEALER/ROUTER concurrent); accepts `*reqreply.RouteHandle` | [→](https://pkg.go.dev/github.com/DaniDeer/go-codex/adapters/zeromq) |
 | `adapters/mcpgo` | mark3labs/mcp-go adapter | [→](https://pkg.go.dev/github.com/DaniDeer/go-codex/adapters/mcpgo) |
 | `adapters/templ` | templ SSR format plug-in | [→](https://pkg.go.dev/github.com/DaniDeer/go-codex/adapters/templ) |
 

@@ -229,7 +229,7 @@ go-codex/
 │   │                       #   ResourceParamError, MissingResourceVarError, PromptArgError, …
 │   └── zeromq/             # ZeroMQ REQ/REP AsyncAPI 3.0 spec builder
 │       ├── builder.go      # Builder, NewBuilder, Register[Req,Resp], AsyncAPISpec
-│       └── types.go        # SocketMeta, Info alias, Server alias
+│       └── types.go        # ContractMeta, Info alias, Server alias
 │
 ├── adapters/               # transport-specific adapters
 │   ├── nethttp/            # net/http adapter — server + client

@@ -22,8 +22,7 @@ import (
 	"time"
 
 	zeromq "github.com/DaniDeer/go-codex/adapters/zeromq"
-	"github.com/DaniDeer/go-codex/api/rest"
-	zmqapi "github.com/DaniDeer/go-codex/api/zeromq"
+	"github.com/DaniDeer/go-codex/api/reqreply"
 	"github.com/DaniDeer/go-codex/codex"
 	"github.com/DaniDeer/go-codex/stats"
 )
@@ -59,14 +58,14 @@ var computeRespCodec = codex.Struct[ComputeResp](
 
 // ── Layer 2: route declaration ────────────────────────────────────────────────
 //
-// The same rest.Route declaration works with the HTTP adapter (nethttp),
-// the Phase 1 ZMQ adapter (rest.Builder), and the Phase 2 ZMQ builder
-// (zmqapi.Register) that generates AsyncAPI request-reply specs.
+// reqreply.NewRoute declares a typed request-reply contract.
+// No HTTP method — just a topic/address. The same Route works with
+// any request-reply adapter (ZMQ, MQTT 5, etc.).
 
-var ComputeRoute = rest.NewRoute[ComputeReq, ComputeResp](
-	"POST", "/compute",
+var ComputeRoute = reqreply.NewRoute[ComputeReq, ComputeResp](
+	"compute/add",
 	computeReqCodec, computeRespCodec,
-	rest.RouteMeta{
+	reqreply.RouteMeta{
 		OperationID: "compute",
 		Summary:     "Add two integers.",
 	},
@@ -115,24 +114,21 @@ func main() {
 
 	// Layer 2: register route with the ZMQ builder to get an AsyncAPI spec.
 	// The returned handle is a plain *rest.RouteHandle — identical to Phase 1.
-	zmqBuilder := zmqapi.NewBuilder(zmqapi.Info{Title: "Compute API", Version: "1.0.0"})
-	zmqBuilder.AddServer("zmq", zmqapi.Server{
+	zmqBuilder := reqreply.NewBuilder(reqreply.Info{Title: "Compute API", Version: "1.0.0"})
+	zmqBuilder.AddServer("zmq", reqreply.Server{
 		URL:         "tcp://localhost:5556",
 		Protocol:    "zmq",
 		Description: "ZeroMQ REQ/REP compute service",
 	})
-	serverHandle, err := zmqapi.Register(zmqBuilder, ComputeRoute,
-		zmqapi.SocketMeta{
-			OperationID: "compute",
-			Summary:     "Add two integers.",
-		})
+	// Register: Route.Register(builder) — consistent with rest.Route.Register and events.Channel.Register
+	serverHandle, err := ComputeRoute.Register(zmqBuilder)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "register: %v\n", err)
 		os.Exit(1)
 	}
 
-	// Client side uses ClientHandle (no builder, no spec needed).
-	clientHandle := ComputeRoute.ClientHandle()
+	// Client side reuses serverHandle — no separate ClientHandle needed.
+	clientHandle := serverHandle
 
 	// In-process socket pair simulating ZMQ REQ ↔ REP.
 	reqSock, repSock := newSocketPair()

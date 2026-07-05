@@ -156,6 +156,10 @@ func (t *OTelTracer) EndSpan(ctx context.Context, err error) {
 | `"zmq.publish"` | `adapters/zeromq` |
 | `"zmq.serve"` | `adapters/zeromq` (REP socket) |
 | `"zmq.request"` | `adapters/zeromq` (REQ socket) |
+| `"mqtt5.subscribe"` | `adapters/mqtt5` |
+| `"mqtt5.publish"` | `adapters/mqtt5` |
+| `"mqtt5.serve"` | `adapters/mqtt5` (ServeRequestReply) |
+| `"mqtt5.request"` | `adapters/mqtt5` (Request) |
 | `"mcp.tool"` | `adapters/mcpgo` |
 | `"mcp.resource"` | `adapters/mcpgo` |
 | `"mcp.prompt"` | `adapters/mcpgo` |

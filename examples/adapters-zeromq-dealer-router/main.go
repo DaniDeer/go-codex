@@ -29,8 +29,7 @@ import (
 	"time"
 
 	zeromq "github.com/DaniDeer/go-codex/adapters/zeromq"
-	"github.com/DaniDeer/go-codex/api/rest"
-	zmqapi "github.com/DaniDeer/go-codex/api/zeromq"
+	"github.com/DaniDeer/go-codex/api/reqreply"
 	"github.com/DaniDeer/go-codex/codex"
 	"github.com/DaniDeer/go-codex/stats"
 )
@@ -60,10 +59,10 @@ var computeRespCodec = codex.Struct[ComputeResp](
 
 // ── Layer 2: route declaration ────────────────────────────────────────────────
 
-var ComputeRoute = rest.NewRoute[ComputeReq, ComputeResp](
-	"POST", "/compute",
+var ComputeRoute = reqreply.NewRoute[ComputeReq, ComputeResp](
+	"compute/add",
 	computeReqCodec, computeRespCodec,
-	rest.RouteMeta{OperationID: "compute", Summary: "Add two integers."},
+	reqreply.RouteMeta{OperationID: "compute", Summary: "Add two integers."},
 )
 
 // ── in-process ROUTER/DEALER socket pair ─────────────────────────────────────
@@ -154,13 +153,11 @@ func copyFrames(frames [][]byte) [][]byte {
 func main() {
 	obs := stats.NoopObserver{}
 
-	// Register with ZMQ builder for AsyncAPI spec.
-	zmqBuilder := zmqapi.NewBuilder(zmqapi.Info{Title: "Compute API (DEALER/ROUTER)", Version: "1.0.0"})
-	zmqBuilder.AddServer("zmq", zmqapi.Server{URL: "tcp://localhost:5557", Protocol: "zmq"})
-	serverHandle, err := zmqapi.Register(zmqBuilder, ComputeRoute, zmqapi.SocketMeta{
-		OperationID: "compute",
-		Summary:     "Add two integers (concurrent DEALER/ROUTER).",
-	})
+	// Register with reqreply.Builder for AsyncAPI spec.
+	zmqBuilder := reqreply.NewBuilder(reqreply.Info{Title: "Compute API (DEALER/ROUTER)", Version: "1.0.0"})
+	zmqBuilder.AddServer("zmq", reqreply.Server{URL: "tcp://localhost:5557", Protocol: "zmq"})
+	// Route.Register(builder) — consistent with rest.Route.Register and events.Channel.Register.
+	serverHandle, err := ComputeRoute.Register(zmqBuilder)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "register: %v\n", err)
 		os.Exit(1)
@@ -201,7 +198,7 @@ func main() {
 	// called from separate goroutines with independent sockets).
 	// Note: sharing one DEALER socket across goroutines requires external
 	// synchronization; per-goroutine sockets are the idiomatic pattern.
-	clientHandle := ComputeRoute.ClientHandle()
+	clientHandle := serverHandle
 	reqs := []ComputeReq{{X: 3, Y: 4}, {X: 10, Y: 20}, {X: -5, Y: 5}}
 
 	for _, req := range reqs {

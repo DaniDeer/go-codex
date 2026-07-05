@@ -1,0 +1,360 @@
+# MQTT 5 Examples
+
+> See also: [`adapters/mqtt5` on pkg.go.dev](https://pkg.go.dev/github.com/DaniDeer/go-codex/adapters/mqtt5) · [`api/reqreply`](../concepts/api-contracts.md) · [`api/events`](../concepts/api-contracts.md) · [Feature: Metrics Observer](../features/observer.md) · [MQTT 3.1.1 Examples](mqtt.md)
+>
+> **Runnable demo**: [`examples/adapters-mqtt5`](https://github.com/DaniDeer/go-codex/tree/main/examples/adapters-mqtt5) — showcases User Properties, UserPropertyParam validation, ContentType auto-format, and Request-Reply in a single self-contained example.
+
+`adapters/mqtt5` provides codec-backed adapters for **MQTT 5.0** using the [`paho.golang`](https://github.com/eclipse/paho.golang) library. It follows the same **declare → register → handle → adapt** pattern as `adapters/mqtt`, `adapters/nethttp`, and `adapters/zeromq`.
+
+## MQTT 5.0 vs 3.1.1 — what's new
+
+| Feature | MQTT 3.1.1 (`adapters/mqtt`) | MQTT 5.0 (`adapters/mqtt5`) |
+|---|---|---|
+| PUB/SUB | ✅ | ✅ (unchanged API) |
+| Request-Reply | ❌ | ✅ `ServeRequestReply` + `Request` |
+| User Properties | ❌ `validateSecurityCredentials` no-op | ✅ Per-message key-value metadata |
+| Content-Type | ❌ Format agreed out-of-band | ✅ Auto format selection from message property |
+| Message Expiry | ❌ | Phase 2 |
+| Shared Subscriptions | ❌ | Phase 2 |
+
+---
+
+## Prerequisites
+
+### Install the library
+
+`adapters/mqtt5` uses `github.com/eclipse/paho.golang` — **pure Go**, no CGO required:
+
+```bash
+go get github.com/eclipse/paho.golang
+```
+
+### Broker setup (Mosquitto)
+
+MQTT 5.0 requires broker support. Enable it in `mosquitto.conf`:
+
+```
+listener 1883
+allow_anonymous true
+# MQTT 5.0 is on by default in Mosquitto 2.x
+```
+
+Start:
+```bash
+mosquitto -c mosquitto.conf
+```
+
+### Client setup
+
+`paho.golang` uses a lower-level API than paho.mqtt.golang v1: you create a `*paho.Client` from a `net.Conn`:
+
+```go
+import (
+    "net"
+    "github.com/eclipse/paho.golang/paho"
+)
+
+conn, err := net.Dial("tcp", "localhost:1883")
+router := paho.NewStandardRouter()
+client := paho.NewClient(paho.ClientConfig{
+    Conn:   conn,
+    Router: router,
+    OnClientError:      func(err error) { log.Error("client error", "err", err) },
+    OnServerDisconnect: func(d *paho.Disconnect) { log.Warn("disconnected") },
+})
+
+// Connect
+if _, err := client.Connect(ctx, &paho.Connect{
+    KeepAlive:  60,
+    ClientID:   "my-service",
+    CleanStart: true,
+}); err != nil {
+    log.Fatal(err)
+}
+```
+
+---
+
+## PUB/SUB — unchanged from MQTT 3.1.1
+
+The `api/events.NewChannel` declaration is **identical**. Only the adapter import and library change:
+
+```go
+import (
+    mqtt5adapter "github.com/DaniDeer/go-codex/adapters/mqtt5"
+    "github.com/DaniDeer/go-codex/api/events"
+    "github.com/DaniDeer/go-codex/stats"
+)
+
+// Subscribe
+if err := mqtt5adapter.Subscribe(ctx, client, router, readingsHandle, 1,
+    func(ctx context.Context, r SensorReading) error {
+        return store.Save(ctx, r)
+    },
+    mqtt5adapter.SubscribeOptions{Observer: obs},
+); err != nil {
+    log.Fatal(err)
+}
+
+// Publish
+err := mqtt5adapter.Publish(ctx, client, readingsHandle, 1, false, reading,
+    map[string]string{"sensorID": sensorID},
+    mqtt5adapter.PublishOptions{
+        Observer:    obs,
+        ContentType: "application/json",     // sets MQTT 5 ContentType property
+        UserProperties: []mqtt5adapter.UserProperty{
+            {Key: "TenantID", Value: "acme"},
+        },
+    },
+)
+```
+
+### AsyncAPI spec
+
+Use the existing `api/events.Builder` with `Protocol: "mqtt5"` — no changes needed:
+
+```go
+builder := events.NewBuilder(events.Info{Title: "Sensor Network", Version: "1.0.0"})
+builder.AddServer("mqtt5", events.Server{URL: "mqtt://broker:1883", Protocol: "mqtt5"})
+handle, _ := ReadingsChannel.Register(builder)
+spec, _ := builder.AsyncAPISpec()
+```
+
+---
+
+## Request-Reply (MQTT 5 only)
+
+MQTT 5.0 introduces `ResponseTopic` and `CorrelationData` message properties, enabling typed request-reply over pub/sub infrastructure.
+
+**How it works:**
+1. Requester generates a unique reply topic: `replies/<uuid>`
+2. Requester publishes to the service topic with `ResponseTopic=replies/<uuid>` and `CorrelationData`
+3. Responder subscribes to the service topic, calls the handler, and publishes the reply to `ResponseTopic`
+4. Requester receives the reply (matched by `CorrelationData`) and returns the decoded value
+
+### Route declaration (shared contract — same as HTTP and ZMQ)
+
+```go
+var ComputeRoute = rest.NewRoute[ComputeReq, ComputeResp](
+    "POST", "compute/add",      // topic instead of HTTP path
+    computeReqCodec, computeRespCodec,
+    rest.RouteMeta{OperationID: "computeAdd"},
+)
+```
+
+### Responder (ServeRequestReply)
+
+```go
+if err := mqtt5adapter.ServeRequestReply(ctx, client, router, handle,
+    func(ctx context.Context, req ComputeReq) (ComputeResp, error) {
+        return ComputeResp{Sum: req.X + req.Y}, nil
+    },
+    mqtt5adapter.ServeOptions{Observer: obs},
+); err != nil {
+    log.Fatal(err)
+}
+```
+
+### Requester (Request)
+
+```go
+resp, err := mqtt5adapter.Request(ctx, client, router, handle,
+    ComputeReq{X: 3, Y: 4},
+    mqtt5adapter.RequestOptions{
+        ReplyTopicPrefix: "replies",    // generates: "replies/<uuid>"
+        Timeout:          5 * time.Second,
+        Observer:         obs,
+    })
+if err != nil {
+    var reqErr mqtt5adapter.RequestError
+    if errors.As(err, &reqErr) && reqErr.Kind == mqtt5adapter.KindTimeout {
+        log.Warn("request timed out")
+    }
+}
+```
+
+### AsyncAPI spec for request-reply
+
+Use `api/reqreply.Builder` (transport-agnostic — the same builder works for ZMQ):
+
+```go
+rrBuilder := reqreply.NewBuilder(reqreply.Info{Title: "Compute API", Version: "1.0.0"})
+rrBuilder.AddServer("mqtt5", reqreply.Server{URL: "mqtt://broker:1883", Protocol: "mqtt5"})
+handle, _ := reqreply.Register(rrBuilder, ComputeRoute,
+    reqreply.ContractMeta{OperationID: "computeAdd", Summary: "Add two integers."})
+
+doc, _ := rrBuilder.AsyncAPISpec()  // AsyncAPI 3.0 with reply: block
+```
+
+---
+
+## User Properties for authentication
+
+MQTT 5.0 User Properties expose per-message key-value pairs. Use them in `SecurityFunc` for runtime authentication:
+
+```go
+mqtt5adapter.Subscribe(ctx, client, router, handle, 1, fn,
+    mqtt5adapter.SubscribeOptions{
+        SecurityFunc: func(ctx context.Context, msg *paho.Publish, reqs []route.SecurityRequirement) error {
+            for _, p := range msg.Properties.User {
+                if p.Key == "Authorization" {
+                    return verifyJWT(strings.TrimPrefix(p.Value, "Bearer "), reqs)
+                }
+            }
+            return errors.New("missing Authorization User Property")
+        },
+    })
+
+// Access User Properties inside the handler:
+func(ctx context.Context, r SensorReading) error {
+    props, ok := mqtt5adapter.UserPropertiesFromContext(ctx)
+    if ok {
+        tenantID := ""
+        for _, p := range props {
+            if p.Key == "TenantID" {
+                tenantID = p.Value
+            }
+        }
+    }
+    return nil
+}
+```
+
+---
+
+## User Property codec validation
+
+`UserPropertyParam` lets you validate MQTT 5 User Properties with codecs — the same mechanism as `rest.HeaderParam` for HTTP request headers. Define params in `SubscribeOptions.UserPropertyParams` (or `ServeOptions.UserPropertyParams` for request-reply responders).
+
+```go
+mqtt5adapter.Subscribe(ctx, client, router, handle, 1, fn,
+    mqtt5adapter.SubscribeOptions{
+        UserPropertyParams: []mqtt5adapter.UserPropertyParam{
+            // Required bearer token — validated with a codec:
+            mqtt5adapter.UserPropertyParam{Name: "Authorization", Required: true}.
+                WithCodec(codex.String().Refine(validate.BearerToken)),
+            // Optional tenant ID — present must be non-empty:
+            mqtt5adapter.UserPropertyParam{Name: "TenantID", Required: false}.
+                WithCodec(codex.String().Refine(validate.NonEmptyString)),
+        },
+    })
+```
+
+**Validation order** for each incoming message:
+1. User Property params validated (before SecurityFunc)
+2. SecurityFunc called (if channel has security requirements)
+3. Payload decoded
+4. fn called
+
+Missing required property → `SubscribeError{Kind: KindSecurity}` wrapping `MissingUserPropertyError{Name}`.
+Codec failure → `SubscribeError{Kind: KindSecurity}` wrapping `UserPropertyError{Name, Value, Err}`.
+Both are `errors.As`-navigable and implement `slog.LogValuer`.
+
+```go
+// Error handling:
+opts.OnError = func(e mqtt5adapter.SubscribeError) {
+    var missing mqtt5adapter.MissingUserPropertyError
+    if errors.As(e, &missing) {
+        slog.Warn("required property absent", "name", missing.Name)
+        return
+    }
+    var propErr mqtt5adapter.UserPropertyError
+    if errors.As(e, &propErr) {
+        slog.Warn("property validation failed", "error", propErr)
+        return
+    }
+}
+```
+
+Per-property validation errors are also reported via `obs.RecordValidationError("user_property", constraintName, propertyName)`.
+
+---
+
+## Content-Type auto format selection
+
+When a message carries a ContentType property, the adapter auto-selects the matching format from the provided `formats` slice by comparing `format.Format.ContentType()`. No manual content-type switching needed:
+
+```go
+mqtt5adapter.Subscribe(ctx, client, router, handle, 1, fn,
+    mqtt5adapter.SubscribeOptions{},
+    format.JSON(sensorCodec),   // ContentType: "application/json"
+    format.YAML(sensorCodec),   // ContentType: "application/yaml"
+)
+```
+
+When the incoming message has `ContentType: "application/yaml"`, the YAML format is used automatically.
+
+---
+
+## Observer integration
+
+All four functions instrument the full observer chain:
+
+```go
+obs := stats.NewFanout(
+    metricsObserver,
+    stats.NewLoggingObserver(slog.Default()),
+    tracer,
+)
+
+mqtt5adapter.Subscribe(ctx, client, router, handle, 1, fn, mqtt5adapter.SubscribeOptions{Observer: obs})
+mqtt5adapter.Publish(ctx, client, handle, 1, false, msg, nil, mqtt5adapter.PublishOptions{Observer: obs})
+mqtt5adapter.ServeRequestReply(ctx, client, router, handle, fn, mqtt5adapter.ServeOptions{Observer: obs})
+mqtt5adapter.Request(ctx, client, router, handle, req, mqtt5adapter.RequestOptions{Observer: obs})
+```
+
+| Event | Observer method | Trace op |
+|---|---|---|
+| Message received (success) | `RecordSubscribe(topic, true, dur)` | `"mqtt5.subscribe"` |
+| Message received (failure) | `RecordSubscribe(topic, false, dur)` | |
+| Message published | `RecordPublish(topic, success, dur)` | `"mqtt5.publish"` |
+| REP request processed | `RecordRequest("MQTT5-REP", path, status, dur)` | `"mqtt5.serve"` |
+| REQ call completed | `RecordRequest("MQTT5-REQ", path, status, dur)` | `"mqtt5.request"` |
+| Security rejection | `RecordSecurityRejection(topic, scheme)` | |
+
+---
+
+## Error handling
+
+All errors implement `Unwrap()` and `slog.LogValuer`:
+
+```go
+// Subscribe / ServeRequestReply — delivered to OnError callback
+var subErr mqtt5.SubscribeError
+if errors.As(err, &subErr) {
+    switch subErr.Kind {
+    case mqtt5.KindDecode:    // payload validation failed
+    case mqtt5.KindHandler:   // application handler error
+    case mqtt5.KindSecurity:  // SecurityFunc rejected the message
+    }
+    slog.Warn("subscribe failed", "error", subErr) // emits kind, topic, err
+}
+
+// Request — returned directly
+var reqErr mqtt5.RequestError
+if errors.As(err, &reqErr) {
+    switch reqErr.Kind {
+    case mqtt5.KindTimeout:   // no reply within deadline
+    case mqtt5.KindDecode:    // reply could not be decoded
+    case mqtt5.KindHandler:   // server returned an error
+    case mqtt5.KindEncode:    // request encoding failed or subscribe failed
+    }
+    slog.Error("request failed", "error", reqErr)
+}
+
+// Publish — returned directly
+var encErr mqtt5.PublishEncodeError
+if errors.As(err, &encErr) {
+    slog.Error("publish encode failed", "error", encErr) // emits topic, err
+}
+```
+
+## See also
+
+- [`adapters/mqtt5` on pkg.go.dev](https://pkg.go.dev/github.com/DaniDeer/go-codex/adapters/mqtt5)
+- [`api/reqreply` on pkg.go.dev](https://pkg.go.dev/github.com/DaniDeer/go-codex/api/reqreply)
+- [examples/adapters-mqtt5](https://github.com/DaniDeer/go-codex/tree/main/examples/adapters-mqtt5) — runnable demo: User Properties, UserPropertyParam codec validation, ContentType auto-format, request-reply, AsyncAPI specs
+- [MQTT 3.1.1 Examples](mqtt.md)
+- [Concept: Codec Layers as Observable Layers](../concepts/observable-layers.md)
+- [Feature: Metrics Observer](../features/observer.md)
+- [paho.golang](https://github.com/eclipse/paho.golang) — MQTT 5.0 Go client

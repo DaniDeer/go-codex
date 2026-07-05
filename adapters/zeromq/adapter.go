@@ -8,7 +8,7 @@ import (
 	"time"
 
 	"github.com/DaniDeer/go-codex/api/events"
-	"github.com/DaniDeer/go-codex/api/rest"
+	"github.com/DaniDeer/go-codex/api/reqreply"
 	"github.com/DaniDeer/go-codex/format"
 	"github.com/DaniDeer/go-codex/stats"
 )
@@ -275,8 +275,8 @@ func Publish[T any](
 // The loop runs until ctx is cancelled (returns nil) or a socket error occurs.
 // Run Serve in a dedicated goroutine.
 //
-// Format overrides are applied via [rest.RouteHandle.WithRequestFormats] and
-// [rest.RouteHandle.WithFormats] on the handle before calling Serve.
+// Format overrides are applied via [reqreply.RouteHandle.WithRequestFormats] and
+// [reqreply.RouteHandle.WithFormats] on the handle before calling Serve.
 //
 // Example (REP compute server):
 //
@@ -288,7 +288,7 @@ func Publish[T any](
 func Serve[Req, Resp any](
 	ctx context.Context,
 	sock FramedSocket,
-	handle *rest.RouteHandle[Req, Resp],
+	handle *reqreply.RouteHandle[Req, Resp],
 	fn func(context.Context, Req) (Resp, error),
 	opts ServeOptions,
 ) error {
@@ -299,7 +299,7 @@ func Serve[Req, Resp any](
 	if err := sock.SetRecvTimeout(recvPollInterval); err != nil {
 		return SocketError{Op: "set_recv_timeout", Err: err}
 	}
-	path := handle.Descriptor.Path
+	path := handle.Topic
 	for {
 		select {
 		case <-ctx.Done():
@@ -331,7 +331,7 @@ func Serve[Req, Resp any](
 func serveRequest[Req, Resp any](
 	ctx context.Context,
 	sock FramedSocket,
-	handle *rest.RouteHandle[Req, Resp],
+	handle *reqreply.RouteHandle[Req, Resp],
 	fn func(context.Context, Req) (Resp, error),
 	obs stats.Observer,
 	opts ServeOptions,
@@ -417,8 +417,8 @@ func serveRequest[Req, Resp any](
 // ctx cancellation is honoured during the reply receive loop. Call blocks
 // until a reply arrives, ctx is cancelled, or a socket error occurs.
 //
-// Format overrides are applied via [rest.RouteHandle.WithRequestFormats] and
-// [rest.RouteHandle.WithFormats] on the handle before calling Call.
+// Format overrides are applied via [reqreply.RouteHandle.WithRequestFormats] and
+// [reqreply.RouteHandle.WithFormats] on the handle before calling Call.
 //
 // Example (REQ compute client):
 //
@@ -427,7 +427,7 @@ func serveRequest[Req, Resp any](
 func Call[Req, Resp any](
 	ctx context.Context,
 	sock FramedSocket,
-	handle *rest.RouteHandle[Req, Resp],
+	handle *reqreply.RouteHandle[Req, Resp],
 	req Req,
 	opts CallOptions,
 ) (Resp, error) {
@@ -437,7 +437,7 @@ func Call[Req, Resp any](
 	}
 	var zero Resp
 	start := time.Now()
-	path := handle.Descriptor.Path
+	path := handle.Topic
 	var callErr error
 	if to, ok := obs.(stats.TraceObserver); ok {
 		ctx = to.StartSpan(ctx, "zmq.request", path)
@@ -553,8 +553,8 @@ var emptyDelimiter = []byte{}
 // to drain before returning nil. A socket recv error stops the loop immediately.
 //
 // Errors are delivered via [ServeOptions.OnError] using the same [ServeError]
-// type as [Serve]. Format overrides are applied via [rest.RouteHandle.WithRequestFormats]
-// and [rest.RouteHandle.WithFormats] before calling ServeRouter.
+// type as [Serve]. Format overrides are applied via [reqreply.RouteHandle.WithRequestFormats]
+// and [reqreply.RouteHandle.WithFormats] before calling ServeRouter.
 //
 // Example (ROUTER compute server):
 //
@@ -567,7 +567,7 @@ var emptyDelimiter = []byte{}
 func ServeRouter[Req, Resp any](
 	ctx context.Context,
 	sock FramedSocket,
-	handle *rest.RouteHandle[Req, Resp],
+	handle *reqreply.RouteHandle[Req, Resp],
 	fn func(context.Context, Req) (Resp, error),
 	opts ServeOptions,
 ) error {
@@ -578,7 +578,7 @@ func ServeRouter[Req, Resp any](
 	if err := sock.SetRecvTimeout(recvPollInterval); err != nil {
 		return SocketError{Op: "set_recv_timeout", Err: err}
 	}
-	path := handle.Descriptor.Path
+	path := handle.Topic
 
 	var wg sync.WaitGroup
 	for {
@@ -622,7 +622,7 @@ func ServeRouter[Req, Resp any](
 func serveRouterRequest[Req, Resp any](
 	ctx context.Context,
 	sock FramedSocket,
-	handle *rest.RouteHandle[Req, Resp],
+	handle *reqreply.RouteHandle[Req, Resp],
 	fn func(context.Context, Req) (Resp, error),
 	obs stats.Observer,
 	opts ServeOptions,
@@ -729,7 +729,7 @@ func sendRouterErrorReply(sock FramedSocket, identity []byte, err error) {
 func CallDealer[Req, Resp any](
 	ctx context.Context,
 	sock FramedSocket,
-	handle *rest.RouteHandle[Req, Resp],
+	handle *reqreply.RouteHandle[Req, Resp],
 	req Req,
 	opts CallOptions,
 ) (Resp, error) {
@@ -739,7 +739,7 @@ func CallDealer[Req, Resp any](
 	}
 	var zero Resp
 	start := time.Now()
-	path := handle.Descriptor.Path
+	path := handle.Topic
 	var callErr error
 	if to, ok := obs.(stats.TraceObserver); ok {
 		ctx = to.StartSpan(ctx, "zmq.request", path)

@@ -9,7 +9,7 @@ import (
 
 	zeromq "github.com/DaniDeer/go-codex/adapters/zeromq"
 	"github.com/DaniDeer/go-codex/api/events"
-	"github.com/DaniDeer/go-codex/api/rest"
+	"github.com/DaniDeer/go-codex/api/reqreply"
 	"github.com/DaniDeer/go-codex/codex"
 	"github.com/DaniDeer/go-codex/validate"
 )
@@ -122,12 +122,12 @@ func newChannelHandle() *events.ChannelHandle[sensorReading] {
 	return h
 }
 
-func newRouteHandle() *rest.RouteHandle[computeReq, computeResp] {
-	b := rest.NewBuilder(rest.Info{Title: "Test", Version: "1.0.0"})
-	h, err := rest.NewRoute[computeReq, computeResp](
-		"POST", "/compute",
+func newRouteHandle() *reqreply.RouteHandle[computeReq, computeResp] {
+	b := reqreply.NewBuilder(reqreply.Info{Title: "Test", Version: "1.0.0"})
+	h, err := reqreply.NewRoute[computeReq, computeResp](
+		"/compute",
 		computeReqCodec, computeRespCodec,
-		rest.RouteMeta{OperationID: "compute"},
+		reqreply.RouteMeta{OperationID: "compute"},
 	).Register(b)
 	if err != nil {
 		panic(err)

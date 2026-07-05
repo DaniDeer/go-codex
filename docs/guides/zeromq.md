@@ -244,7 +244,7 @@ zmqBuilder.AddServer("zmq", zmqapi.Server{URL: "tcp://localhost:5556", Protocol:
 
 // Register returns the same *rest.RouteHandle — no new types.
 handle, _ := zmqapi.Register(zmqBuilder, contract.ComputeRoute,
-    zmqapi.SocketMeta{OperationID: "compute", Summary: "Add two integers."})
+    zmqapi.ContractMeta{OperationID: "compute", Summary: "Add two integers."})
 
 // Adapter calls are IDENTICAL to Phase 1 (Serve/Call signatures unchanged).
 zmqadapter.Serve(ctx, sock, handle, fn, zmqadapter.ServeOptions{Observer: obs})
@@ -281,7 +281,7 @@ func main() {
     zmqBuilder := zmqapi.NewBuilder(zmqapi.Info{Title: "Compute", Version: "1.0.0"})
     zmqBuilder.AddServer("zmq", zmqapi.Server{URL: "tcp://localhost:5556", Protocol: "zmq"})
     handle, _ := zmqapi.Register(zmqBuilder, contract.ComputeRoute,
-        zmqapi.SocketMeta{OperationID: "compute"})
+        zmqapi.ContractMeta{OperationID: "compute"})
 
     rep, _ := zmq.NewSocket(zmq.REP)
     defer rep.Close()
