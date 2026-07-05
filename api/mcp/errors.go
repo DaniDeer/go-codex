@@ -1,6 +1,9 @@
 package mcp
 
-import "fmt"
+import (
+	"fmt"
+	"log/slog"
+)
 
 // ToolInputError is returned by [ToolHandle.Decode] when the incoming arguments
 // fail codec validation or cannot be decoded into the input type.
@@ -21,6 +24,14 @@ func (e ToolInputError) Error() string {
 	return fmt.Sprintf("tool %q: input error: %s", e.Name, e.Err)
 }
 func (e ToolInputError) Unwrap() error { return e.Err }
+
+// LogValue implements [slog.LogValuer] for structured logging.
+func (e ToolInputError) LogValue() slog.Value {
+	return slog.GroupValue(
+		slog.String("name", e.Name),
+		slog.Any("cause", e.Err),
+	)
+}
 
 // ToolOutputError is returned by [ToolHandle.Encode] when the handler's return
 // value fails codec validation or cannot be marshalled to JSON.
@@ -45,6 +56,14 @@ func (e ToolOutputError) Error() string {
 }
 func (e ToolOutputError) Unwrap() error { return e.Err }
 
+// LogValue implements [slog.LogValuer] for structured logging.
+func (e ToolOutputError) LogValue() slog.Value {
+	return slog.GroupValue(
+		slog.String("name", e.Name),
+		slog.Any("cause", e.Err),
+	)
+}
+
 // ResourceEncodeError is returned by [ResourceHandle.Encode] when the resource
 // value fails codec validation or cannot be marshalled.
 //
@@ -65,6 +84,14 @@ func (e ResourceEncodeError) Error() string {
 	return fmt.Sprintf("resource %q: encode error: %s", e.URI, e.Err)
 }
 func (e ResourceEncodeError) Unwrap() error { return e.Err }
+
+// LogValue implements [slog.LogValuer] for structured logging.
+func (e ResourceEncodeError) LogValue() slog.Value {
+	return slog.GroupValue(
+		slog.String("uri", e.URI),
+		slog.Any("cause", e.Err),
+	)
+}
 
 // ResourceParamError is returned by [ResourceHandle.BuildURI] or
 // [ResourceHandle.ValidateURIVars] when a URI variable fails its registered
@@ -87,6 +114,15 @@ func (e ResourceParamError) Error() string {
 }
 func (e ResourceParamError) Unwrap() error { return e.Err }
 
+// LogValue implements [slog.LogValuer] for structured logging.
+func (e ResourceParamError) LogValue() slog.Value {
+	return slog.GroupValue(
+		slog.String("name", e.Name),
+		slog.String("value", e.Value),
+		slog.Any("cause", e.Err),
+	)
+}
+
 // MissingResourceVarError is returned by [ResourceHandle.BuildURI] when a
 // {varName} placeholder in the URI template has no corresponding entry in the
 // vars map.
@@ -103,6 +139,13 @@ type MissingResourceVarError struct {
 
 func (e MissingResourceVarError) Error() string {
 	return fmt.Sprintf("missing value for resource URI variable {%s}", e.Name)
+}
+
+// LogValue implements [slog.LogValuer] for structured logging.
+func (e MissingResourceVarError) LogValue() slog.Value {
+	return slog.GroupValue(
+		slog.String("name", e.Name),
+	)
 }
 
 // PromptArgError is returned by [PromptHandle.ValidateArgs] when an argument
@@ -126,6 +169,14 @@ func (e PromptArgError) Error() string {
 }
 func (e PromptArgError) Unwrap() error { return e.Err }
 
+// LogValue implements [slog.LogValuer] for structured logging.
+func (e PromptArgError) LogValue() slog.Value {
+	return slog.GroupValue(
+		slog.String("name", e.Name),
+		slog.Any("cause", e.Err),
+	)
+}
+
 // MissingPromptArgError is returned by [PromptHandle.ValidateArgs] when a
 // required argument is absent from the provided args map.
 //
@@ -141,6 +192,13 @@ type MissingPromptArgError struct {
 
 func (e MissingPromptArgError) Error() string {
 	return fmt.Sprintf("prompt arg %q: required argument missing", e.Name)
+}
+
+// LogValue implements [slog.LogValuer] for structured logging.
+func (e MissingPromptArgError) LogValue() slog.Value {
+	return slog.GroupValue(
+		slog.String("name", e.Name),
+	)
 }
 
 // InvalidResourceParamError is returned by [Resource.Register] when a
@@ -161,4 +219,12 @@ type InvalidResourceParamError struct {
 
 func (e InvalidResourceParamError) Error() string {
 	return fmt.Sprintf("api/mcp: ResourceParam %q not found in URI template %q", e.Name, e.URITemplate)
+}
+
+// LogValue implements [slog.LogValuer] for structured logging.
+func (e InvalidResourceParamError) LogValue() slog.Value {
+	return slog.GroupValue(
+		slog.String("name", e.Name),
+		slog.String("uri_template", e.URITemplate),
+	)
 }

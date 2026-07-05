@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"time"
 
 	pahomqtt "github.com/eclipse/paho.mqtt.golang"
@@ -58,6 +59,15 @@ func (e SubscribeError) Error() string {
 
 func (e SubscribeError) Unwrap() error { return e.Err }
 
+// LogValue implements [slog.LogValuer] for structured logging.
+func (e SubscribeError) LogValue() slog.Value {
+	return slog.GroupValue(
+		slog.String("kind", e.Kind.String()),
+		slog.String("topic", e.Topic),
+		slog.Any("err", e.Err),
+	)
+}
+
 // PublishEncodeError is returned by [Publish] when encoding the outgoing
 // message payload fails (codec validation or marshal error).
 //
@@ -84,6 +94,14 @@ func (e PublishEncodeError) Error() string {
 
 // Unwrap allows [errors.Is] and [errors.As] to traverse the underlying error.
 func (e PublishEncodeError) Unwrap() error { return e.Err }
+
+// LogValue implements [slog.LogValuer] for structured logging.
+func (e PublishEncodeError) LogValue() slog.Value {
+	return slog.GroupValue(
+		slog.String("topic", e.Topic),
+		slog.Any("err", e.Err),
+	)
+}
 
 // contextKey is the unexported type for values stored in context by this package.
 type contextKey struct{}

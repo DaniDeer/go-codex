@@ -2,6 +2,7 @@ package mqtt
 
 import (
 	"fmt"
+	"log/slog"
 	"strings"
 
 	pahomqtt "github.com/eclipse/paho.mqtt.golang"
@@ -70,6 +71,14 @@ type TopicMismatchError struct {
 
 func (e TopicMismatchError) Error() string {
 	return fmt.Sprintf("topic %q does not match template %q", e.Topic, e.Template)
+}
+
+// LogValue implements [slog.LogValuer] for structured logging.
+func (e TopicMismatchError) LogValue() slog.Value {
+	return slog.GroupValue(
+		slog.String("template", e.Template),
+		slog.String("topic", e.Topic),
+	)
 }
 
 // matchTopicTemplate performs the level-by-level matching of a concrete MQTT topic

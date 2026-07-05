@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/url"
 	"strings"
@@ -94,6 +95,15 @@ func (e UnexpectedStatusError) Error() string {
 	return fmt.Sprintf("%s %s: unexpected status %d", e.Method, e.Path, e.StatusCode)
 }
 
+// LogValue implements [slog.LogValuer] for structured logging.
+func (e UnexpectedStatusError) LogValue() slog.Value {
+	return slog.GroupValue(
+		slog.String("method", e.Method),
+		slog.String("path", e.Path),
+		slog.Int("status", e.StatusCode),
+	)
+}
+
 // RequestBuildError is returned by [Call] when constructing the outgoing
 // *http.Request fails (e.g. malformed base URL or context already cancelled).
 //
@@ -114,6 +124,13 @@ func (e RequestBuildError) Error() string {
 
 // Unwrap allows [errors.Is] and [errors.As] to traverse the underlying error.
 func (e RequestBuildError) Unwrap() error { return e.Err }
+
+// LogValue implements [slog.LogValuer] for structured logging.
+func (e RequestBuildError) LogValue() slog.Value {
+	return slog.GroupValue(
+		slog.Any("cause", e.Err),
+	)
+}
 
 // RequestError is returned by [Call] when executing the HTTP call fails
 // (network error, DNS failure, TLS error, or context cancellation).
@@ -144,6 +161,15 @@ func (e RequestError) Error() string {
 // Unwrap allows [errors.Is] and [errors.As] to traverse the underlying error.
 func (e RequestError) Unwrap() error { return e.Err }
 
+// LogValue implements [slog.LogValuer] for structured logging.
+func (e RequestError) LogValue() slog.Value {
+	return slog.GroupValue(
+		slog.String("method", e.Method),
+		slog.String("path", e.Path),
+		slog.Any("cause", e.Err),
+	)
+}
+
 // ResponseBodyError is returned by [Call] when reading the HTTP response body
 // fails after a successful connection.
 //
@@ -164,6 +190,13 @@ func (e ResponseBodyError) Error() string {
 
 // Unwrap allows [errors.Is] and [errors.As] to traverse the underlying error.
 func (e ResponseBodyError) Unwrap() error { return e.Err }
+
+// LogValue implements [slog.LogValuer] for structured logging.
+func (e ResponseBodyError) LogValue() slog.Value {
+	return slog.GroupValue(
+		slog.Any("cause", e.Err),
+	)
+}
 
 // Call executes a typed HTTP request for the given route handle against baseURL.
 //

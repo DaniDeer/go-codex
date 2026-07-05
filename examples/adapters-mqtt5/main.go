@@ -257,28 +257,41 @@ func (b *mockBroker) Unsubscribe(_ context.Context, _ *pahomqtt5.Unsubscribe) (*
 
 // ── observer ──────────────────────────────────────────────────────────────────
 
-type exampleObserver struct {
-	logger *slog.Logger
+// eventCounter tracks publish and subscribe counts for demonstration purposes.
+// Logging is handled separately via stats.NewLoggingObserver — keeping metrics
+// and logging concerns distinct per the stats.NewFanout pattern.
+type eventCounter struct {
+	mu         sync.Mutex
+	subscribes int
+	publishes  int
+	requests   int
 }
 
-func (o *exampleObserver) RecordValidationError(location, constraint, field string) {
-	o.logger.Warn("validation error", "location", location, "constraint", constraint, "field", field)
+func (c *eventCounter) RecordSubscribe(_ string, _ bool, _ time.Duration) {
+	c.mu.Lock()
+	c.subscribes++
+	c.mu.Unlock()
 }
-func (o *exampleObserver) RecordRequest(method, path string, code int, d time.Duration) {
-	o.logger.Info("request", "method", method, "path", path, "status", code, "ms", d.Milliseconds())
+func (c *eventCounter) RecordPublish(_ string, _ bool, _ time.Duration) {
+	c.mu.Lock()
+	c.publishes++
+	c.mu.Unlock()
 }
-func (o *exampleObserver) RecordSubscribe(topic string, success bool, d time.Duration) {
-	o.logger.Info("subscribe", "topic", topic, "success", success, "ms", d.Milliseconds())
+func (c *eventCounter) RecordRequest(_, _ string, _ int, _ time.Duration) {
+	c.mu.Lock()
+	c.requests++
+	c.mu.Unlock()
 }
-func (o *exampleObserver) RecordPublish(topic string, success bool, d time.Duration) {
-	o.logger.Info("publish", "topic", topic, "success", success, "ms", d.Milliseconds())
-}
+func (c *eventCounter) RecordValidationError(_, _, _ string) {}
 
 // ── main ──────────────────────────────────────────────────────────────────────
 
 func main() {
 	logger := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelDebug}))
-	obs := &exampleObserver{logger: logger}
+	counter := &eventCounter{}
+	// stats.NewFanout separates metrics (counter) from logging (NewLoggingObserver)
+	// — neither observer mixes both concerns.
+	obs := stats.NewFanout(counter, stats.NewLoggingObserver(logger))
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
