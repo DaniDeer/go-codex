@@ -429,4 +429,3 @@ func reportRouteParamErrors(err error, obs stats.Observer) {
 		obs.RecordValidationError("topic_var", stats.ConstraintName(e.Err), e.Name)
 	}
 }
-
