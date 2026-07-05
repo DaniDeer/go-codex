@@ -196,6 +196,44 @@ func (e UserPropertyError) LogValue() slog.Value {
 	)
 }
 
+// BrokerError wraps broker-level communication failures: `client.Subscribe` and
+// `client.Publish` returning a non-nil error. It is distinct from codec-level
+// errors (SubscribeError, ServeRequestReplyError, RequestError) which reflect
+// application-layer failures after the broker interaction.
+//
+// The Op field identifies which broker operation failed:
+//
+//	var brokerErr mqtt5.BrokerError
+//	if errors.As(err, &brokerErr) {
+//	    switch brokerErr.Op {
+//	    case "subscribe":   // client.Subscribe failed (setup-time error)
+//	    case "publish":     // client.Publish failed
+//	    }
+//	    slog.Error("broker failed", "error", brokerErr)
+//	}
+type BrokerError struct {
+	// Op identifies the broker operation that failed.
+	// Common values: "subscribe", "publish".
+	Op string
+	// Err is the underlying broker or network error.
+	Err error
+}
+
+func (e BrokerError) Error() string {
+	return fmt.Sprintf("mqtt5 broker %s: %v", e.Op, e.Err)
+}
+
+// Unwrap allows [errors.Is] and [errors.As] to traverse the underlying error.
+func (e BrokerError) Unwrap() error { return e.Err }
+
+// LogValue implements [slog.LogValuer] for structured logging.
+func (e BrokerError) LogValue() slog.Value {
+	return slog.GroupValue(
+		slog.String("op", e.Op),
+		slog.Any("err", e.Err),
+	)
+}
+
 // MissingUserPropertyError is returned when a required [UserPropertyParam] is
 // absent from an incoming MQTT 5 message. It mirrors [events.MissingTopicVarError].
 //

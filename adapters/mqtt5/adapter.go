@@ -2,7 +2,6 @@ package mqtt5
 
 import (
 	"context"
-	"fmt"
 	"time"
 
 	"github.com/DaniDeer/go-codex/api/events"
@@ -283,7 +282,7 @@ func Subscribe[T any](
 	})
 	if err != nil {
 		router.UnregisterHandler(handle.Topic)
-		return fmt.Errorf("mqtt5: subscribe: %w", err)
+		return BrokerError{Op: "subscribe", Err: err}
 	}
 	return nil
 }
@@ -368,7 +367,7 @@ func Publish[T any](
 		Properties: props,
 	}); err != nil {
 		obs.RecordPublish(topic, false, time.Since(start))
-		return fmt.Errorf("mqtt5: publish: %w", err)
+		return BrokerError{Op: "publish", Err: err}
 	}
 	obs.RecordPublish(topic, true, time.Since(start))
 	return nil

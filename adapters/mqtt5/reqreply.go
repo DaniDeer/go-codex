@@ -202,7 +202,7 @@ func ServeRequestReply[Req, Resp any](
 	})
 	if err != nil {
 		router.UnregisterHandler(path)
-		return fmt.Errorf("mqtt5: serve subscribe: %w", err)
+		return BrokerError{Op: "subscribe", Err: err}
 	}
 	return nil
 }

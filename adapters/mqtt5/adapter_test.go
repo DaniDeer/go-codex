@@ -780,3 +780,70 @@ func TestUserPropertyParam_WithCodec_ReturnsCopy(t *testing.T) {
 		t.Fatal("WithCodec must set Codec on the copy")
 	}
 }
+
+// ── BrokerError tests ─────────────────────────────────────────────────────────
+
+func TestBrokerError_LogValue(t *testing.T) {
+	inner := errors.New("connection refused")
+	e := mqtt5.BrokerError{Op: "subscribe", Err: inner}
+	v := e.LogValue()
+	if v.Kind() != slog.KindGroup {
+		t.Fatalf("expected Group log value, got %v", v.Kind())
+	}
+}
+
+func TestBrokerError_ErrorsAs(t *testing.T) {
+	inner := errors.New("network error")
+	outer := mqtt5.BrokerError{Op: "publish", Err: inner}
+	if !errors.Is(outer, inner) {
+		t.Fatal("errors.Is must traverse Unwrap to find inner error")
+	}
+}
+
+func TestBrokerError_ErrorString(t *testing.T) {
+	e := mqtt5.BrokerError{Op: "subscribe", Err: errors.New("timeout")}
+	if e.Error() != "mqtt5 broker subscribe: timeout" {
+		t.Fatalf("unexpected Error() string: %q", e.Error())
+	}
+}
+
+func TestSubscribe_BrokerError_OnSubscribeFail(t *testing.T) {
+	brokerErr := errors.New("broker unavailable")
+	client := &mockClient{subscribeErr: brokerErr}
+	router := newMockRouter()
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+
+	err := mqtt5.Subscribe(ctx, client, router, newChannelHandle(), 1,
+		func(_ context.Context, _ sensorReading) error { return nil },
+		mqtt5.SubscribeOptions{})
+
+	var be mqtt5.BrokerError
+	if !errors.As(err, &be) {
+		t.Fatalf("expected BrokerError, got %T: %v", err, err)
+	}
+	if be.Op != "subscribe" {
+		t.Fatalf("expected Op=subscribe, got %q", be.Op)
+	}
+	if !errors.Is(be, brokerErr) {
+		t.Fatal("errors.Is must find brokerErr via Unwrap")
+	}
+}
+
+func TestPublish_BrokerError_OnPublishFail(t *testing.T) {
+	brokerErr := errors.New("broker unavailable")
+	client := &mockClient{publishErr: brokerErr}
+	reading := sensorReading{SensorID: "f47ac10b-58cc-4372-a567-0e02b2c3d479", Value: 1.0}
+
+	err := mqtt5.Publish(context.Background(), client, newChannelHandle(), 1, false, reading, nil,
+		mqtt5.PublishOptions{})
+
+	var be mqtt5.BrokerError
+	if !errors.As(err, &be) {
+		t.Fatalf("expected BrokerError, got %T: %v", err, err)
+	}
+	if be.Op != "publish" {
+		t.Fatalf("expected Op=publish, got %q", be.Op)
+	}
+}
