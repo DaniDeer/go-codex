@@ -2,6 +2,7 @@ package reqreply_test
 
 import (
 	"errors"
+	"fmt"
 	"log/slog"
 	"strings"
 	"testing"
@@ -252,5 +253,117 @@ func TestDuplicateRouteError_LogValue(t *testing.T) {
 	v := e.LogValue()
 	if v.Kind() != slog.KindGroup {
 		t.Fatalf("expected Group log value, got %v", v.Kind())
+	}
+}
+
+// ── TopicParam and BuildTopic tests ──────────────────────────────────────────
+
+var templateRoute = reqreply.NewRoute[computeReq, computeResp](
+	"compute/{tenantID}/add",
+	reqCodec, respCodec,
+	reqreply.RouteMeta{OperationID: "computeAdd"},
+	reqreply.TopicParam{
+		Name:        "tenantID",
+		Description: "Tenant namespace.",
+	}.WithCodec(codex.String().RefineFunc(func(v string) error {
+		if v == "" {
+			return fmt.Errorf("tenantID must not be empty")
+		}
+		return nil
+	})),
+)
+
+func TestTopicParam_WithCodec_ReturnsCopy(t *testing.T) {
+	p := reqreply.TopicParam{Name: "tenantID"}
+	codec := codex.String()
+	p2 := p.WithCodec(codec)
+	if p.Codec != nil {
+		t.Fatal("WithCodec must not mutate original")
+	}
+	if p2.Codec == nil {
+		t.Fatal("WithCodec must set Codec on copy")
+	}
+}
+
+func TestRouteHandle_BuildTopic_Happy(t *testing.T) {
+	b := newBuilder()
+	handle, _ := templateRoute.Register(b)
+
+	topic, err := handle.BuildTopic(map[string]string{"tenantID": "acme"})
+	if err != nil {
+		t.Fatalf("BuildTopic error: %v", err)
+	}
+	if topic != "compute/acme/add" {
+		t.Fatalf("expected 'compute/acme/add', got %q", topic)
+	}
+}
+
+func TestRouteHandle_BuildTopic_MissingVar(t *testing.T) {
+	b := newBuilder()
+	handle, _ := templateRoute.Register(b)
+
+	_, err := handle.BuildTopic(map[string]string{}) // tenantID missing
+	var missing reqreply.MissingRouteParamError
+	if !errors.As(err, &missing) {
+		t.Fatalf("expected MissingRouteParamError, got %T: %v", err, err)
+	}
+	if missing.Name != "tenantID" {
+		t.Fatalf("expected Name=tenantID, got %q", missing.Name)
+	}
+}
+
+func TestRouteHandle_BuildTopic_CodecFailure(t *testing.T) {
+	b := newBuilder()
+	handle, _ := templateRoute.Register(b)
+
+	_, err := handle.BuildTopic(map[string]string{"tenantID": ""}) // empty → codec fails
+	var paramErr reqreply.RouteParamError
+	if !errors.As(err, &paramErr) {
+		t.Fatalf("expected RouteParamError, got %T: %v", err, err)
+	}
+	if paramErr.Name != "tenantID" {
+		t.Fatalf("expected Name=tenantID, got %q", paramErr.Name)
+	}
+}
+
+func TestRouteHandle_ValidateTopicVars_Happy(t *testing.T) {
+	b := newBuilder()
+	handle, _ := templateRoute.Register(b)
+	if err := handle.ValidateTopicVars(map[string]string{"tenantID": "acme"}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestRouteHandle_ValidateTopicVars_Missing(t *testing.T) {
+	b := newBuilder()
+	handle, _ := templateRoute.Register(b)
+	err := handle.ValidateTopicVars(map[string]string{})
+	var missing reqreply.MissingRouteParamError
+	if !errors.As(err, &missing) {
+		t.Fatalf("expected MissingRouteParamError, got %T: %v", err, err)
+	}
+}
+
+func TestRouteParamError_LogValue(t *testing.T) {
+	e := reqreply.RouteParamError{Name: "tenantID", Value: "", Err: errors.New("must not be empty")}
+	v := e.LogValue()
+	if v.Kind() != slog.KindGroup {
+		t.Fatalf("expected Group, got %v", v.Kind())
+	}
+}
+
+func TestMissingRouteParamError_LogValue(t *testing.T) {
+	e := reqreply.MissingRouteParamError{Name: "tenantID"}
+	v := e.LogValue()
+	if v.Kind() != slog.KindGroup {
+		t.Fatalf("expected Group, got %v", v.Kind())
+	}
+}
+
+func TestRouteParamError_ErrorsAs(t *testing.T) {
+	inner := errors.New("constraint failed")
+	outer := reqreply.RouteParamError{Name: "tenantID", Value: "x", Err: inner}
+	if !errors.Is(outer, inner) {
+		t.Fatal("errors.Is must traverse Unwrap")
 	}
 }

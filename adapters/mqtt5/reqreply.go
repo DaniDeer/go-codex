@@ -58,6 +58,19 @@ type RequestOptions struct {
 
 	// UserProperties, when non-nil, are attached to the outgoing request message.
 	UserProperties []UserProperty
+
+	// Vars, when non-nil, substitutes {varName} placeholders in the route topic
+	// template before publishing. Uses [reqreply.RouteHandle.BuildTopic] to
+	// resolve and codec-validate each variable.
+	//
+	// Example — template topic "compute/{tenantID}/add":
+	//
+	//	mqtt5.Request(ctx, client, router, handle, req,
+	//	    mqtt5.RequestOptions{Vars: map[string]string{"tenantID": "acme"}})
+	//
+	// Returns [reqreply.RouteParamError] or [reqreply.MissingRouteParamError] on
+	// validation failure.
+	Vars map[string]string
 }
 
 // ServeRequestReply subscribes to the route path as an MQTT 5 request topic and
@@ -232,8 +245,19 @@ func Request[Req, Resp any](
 		obs = stats.NoopObserver{}
 	}
 	start := time.Now()
-	path := handle.Topic
 	var callErr error
+	// Resolve template topic vars if provided.
+	path := handle.Topic
+	if opts.Vars != nil {
+		var buildErr error
+		path, buildErr = handle.BuildTopic(opts.Vars)
+		if buildErr != nil {
+			reportRouteParamErrors(buildErr, obs)
+			callErr = RequestError{Kind: KindEncode, Err: buildErr}
+			obs.RecordRequest("MQTT5-REQ", handle.Topic, 0, time.Since(start))
+			return zero, callErr
+		}
+	}
 	if to, ok := obs.(stats.TraceObserver); ok {
 		ctx = to.StartSpan(ctx, "mqtt5.request", path)
 		defer func() { to.EndSpan(ctx, callErr) }()
@@ -392,3 +416,17 @@ func publishErrorReply(ctx context.Context, client MQTTClient, responseTopic str
 		Properties: props,
 	})
 }
+
+// reportRouteParamErrors reports topic variable errors from [reqreply.RouteHandle.BuildTopic]
+// to obs with location "topic_var", extracting variable names and using "required" as the
+// constraint name for missing variables.
+func reportRouteParamErrors(err error, obs stats.Observer) {
+	if e, ok := err.(reqreply.MissingRouteParamError); ok {
+		obs.RecordValidationError("topic_var", "required", e.Name)
+		return
+	}
+	if e, ok := err.(reqreply.RouteParamError); ok {
+		obs.RecordValidationError("topic_var", stats.ConstraintName(e.Err), e.Name)
+	}
+}
+

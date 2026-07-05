@@ -132,15 +132,29 @@ MQTT 5.0 introduces `ResponseTopic` and `CorrelationData` message properties, en
 3. Responder subscribes to the service topic, calls the handler, and publishes the reply to `ResponseTopic`
 4. Requester receives the reply (matched by `CorrelationData`) and returns the decoded value
 
-### Route declaration (shared contract — same as HTTP and ZMQ)
+### Route declaration (shared contract — same as ZMQ)
 
 ```go
-var ComputeRoute = rest.NewRoute[ComputeReq, ComputeResp](
-    "POST", "compute/add",      // topic instead of HTTP path
+// Static topic — no template variables.
+var ComputeRoute = reqreply.NewRoute[ComputeReq, ComputeResp](
+    "compute/add",
     computeReqCodec, computeRespCodec,
-    rest.RouteMeta{OperationID: "computeAdd"},
+    reqreply.RouteMeta{OperationID: "computeAdd"},
+)
+
+// Template topic — {tenantID} is validated per-call via TopicParam.
+var TenantComputeRoute = reqreply.NewRoute[ComputeReq, ComputeResp](
+    "compute/{tenantID}/add",
+    computeReqCodec, computeRespCodec,
+    reqreply.RouteMeta{OperationID: "computeAdd"},
+    reqreply.TopicParam{
+        Name:        "tenantID",
+        Description: "Tenant namespace for this computation.",
+    }.WithCodec(codex.String().Refine(validate.NonEmptyString)),
 )
 ```
+
+`reqreply.TopicParam` mirrors `events.TopicParam` for MQTT channel subscriptions — same field structure, same `.WithCodec(c)` method, same error types.
 
 ### Responder (ServeRequestReply)
 
@@ -158,6 +172,7 @@ if err := mqtt5adapter.ServeRequestReply(ctx, client, router, handle,
 ### Requester (Request)
 
 ```go
+// Static topic — no Vars needed.
 resp, err := mqtt5adapter.Request(ctx, client, router, handle,
     ComputeReq{X: 3, Y: 4},
     mqtt5adapter.RequestOptions{
@@ -171,6 +186,18 @@ if err != nil {
         log.Warn("request timed out")
     }
 }
+
+// Template topic — Vars resolved before publish; each variable codec-validated.
+resp, err = mqtt5adapter.Request(ctx, client, router, tenantHandle,
+    ComputeReq{X: 3, Y: 4},
+    mqtt5adapter.RequestOptions{
+        Vars:    map[string]string{"tenantID": "acme"},
+        Timeout: 5 * time.Second,
+        Observer: obs,
+    })
+// On validation failure: RequestError wrapping reqreply.RouteParamError
+// or reqreply.MissingRouteParamError — both errors.As-navigable.
+```
 ```
 
 ### AsyncAPI spec for request-reply
@@ -180,8 +207,7 @@ Use `api/reqreply.Builder` (transport-agnostic — the same builder works for ZM
 ```go
 rrBuilder := reqreply.NewBuilder(reqreply.Info{Title: "Compute API", Version: "1.0.0"})
 rrBuilder.AddServer("mqtt5", reqreply.Server{URL: "mqtt://broker:1883", Protocol: "mqtt5"})
-handle, _ := reqreply.Register(rrBuilder, ComputeRoute,
-    reqreply.ContractMeta{OperationID: "computeAdd", Summary: "Add two integers."})
+handle, _ := ComputeRoute.Register(rrBuilder)
 
 doc, _ := rrBuilder.AsyncAPISpec()  // AsyncAPI 3.0 with reply: block
 ```

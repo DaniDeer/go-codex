@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"log/slog"
 
+	"github.com/DaniDeer/go-codex/api/internal"
 	"github.com/DaniDeer/go-codex/codex"
 	"github.com/DaniDeer/go-codex/format"
 )
@@ -12,7 +13,50 @@ import (
 //
 // The following types implement RouteOpt:
 //   - [RouteMeta] — operation metadata (OperationID, Summary, Description, Tags, schema names)
+//   - [TopicParam] — topic template variable with optional codec and description
 type RouteOpt interface{ applyRoute(*routeBuilder) }
+
+// TopicParam describes a {varName} placeholder in a topic template.
+// It is the [api/reqreply] analogue of [events.TopicParam].
+//
+// TopicParam is optional: [RouteHandle.BuildTopic] and [RouteHandle.ValidateTopicVars]
+// use registered params to validate variable values. Use TopicParam when you want
+// runtime codec validation on a specific variable.
+//
+// Note: all topic variables are always required — a template cannot be resolved
+// without every {varName} placeholder present. There is no Required field.
+//
+// TopicParam implements [RouteOpt]: pass it directly to [NewRoute].
+//
+// Entry names must correspond to {varName} placeholders in the topic template.
+//
+//	var ComputeRoute = reqreply.NewRoute[ComputeReq, ComputeResp](
+//	    "compute/{tenantID}/add",
+//	    computeReqCodec, computeRespCodec,
+//	    reqreply.RouteMeta{OperationID: "computeAdd"},
+//	    reqreply.TopicParam{
+//	        Name:        "tenantID",
+//	        Description: "Tenant namespace for this computation.",
+//	    }.WithCodec(codex.String().Refine(validate.NonEmptyString)),
+//	)
+type TopicParam struct {
+	// Name is the variable name (without braces) as it appears in the topic template.
+	Name string
+	// Description is shown in the AsyncAPI spec for this parameter.
+	Description string
+	// Codec validates topic parameter values at [RouteHandle.ValidateTopicVars] and
+	// [RouteHandle.BuildTopic] time.
+	// When non-nil, the codec's schema is also emitted in the AsyncAPI spec.
+	// Nil means no runtime validation.
+	Codec *codex.Codec[string]
+}
+
+func (p TopicParam) applyRoute(rb *routeBuilder) {
+	rb.topicParams = append(rb.topicParams, p)
+}
+
+// WithCodec sets the validation codec and returns the updated TopicParam.
+func (p TopicParam) WithCodec(c codex.Codec[string]) TopicParam { p.Codec = &c; return p }
 
 // RouteMeta holds metadata for a [Route] registration. It controls the generated
 // AsyncAPI operation IDs, summary, description, and schema refs.
@@ -47,7 +91,8 @@ func (m RouteMeta) applyRoute(rb *routeBuilder) { rb.meta = m }
 
 // routeBuilder accumulates RouteOpt values before building the route.
 type routeBuilder struct {
-	meta RouteMeta
+	meta        RouteMeta
+	topicParams []TopicParam
 }
 
 // Route[Req,Resp] is a typed request-reply route for async transports (ZeroMQ,
@@ -126,6 +171,7 @@ func (r Route[Req, Resp]) Register(b *Builder) (*RouteHandle[Req, Resp], error) 
 		Encode:         func(v Resp) ([]byte, error) { return jsonResp.Marshal(v) },
 		EncodeRequest:  func(v Req) ([]byte, error) { return jsonReq.Marshal(v) },
 		DecodeResponse: func(p []byte) (Resp, error) { return jsonResp.Unmarshal(p) },
+		topicParams:    rb.topicParams,
 	}
 
 	b.registerRoute(r.topic, r.reqCodec.Schema, r.respCodec.Schema, rb.meta)
@@ -167,6 +213,9 @@ type RouteHandle[Req, Resp any] struct {
 	// reply payloads. The adapter uses Formats[0] instead of Encode when present.
 	// Configure via [RouteHandle.WithFormats].
 	Formats []format.Format[Resp]
+
+	// topicParams holds per-variable params registered via [TopicParam] options.
+	topicParams []TopicParam
 }
 
 // WithRequestFormats sets the formats the route accepts for request body decoding
@@ -187,6 +236,114 @@ func (h *RouteHandle[Req, Resp]) WithRequestFormats(fmts ...format.Format[Req]) 
 func (h *RouteHandle[Req, Resp]) WithFormats(fmts ...format.Format[Resp]) *RouteHandle[Req, Resp] {
 	h.Formats = append(h.Formats[:0:0], fmts...)
 	return h
+}
+
+// BuildTopic substitutes {varName} placeholders in the route's topic template
+// with the values provided in vars, validating each against its registered
+// [TopicParam] codec (if any).
+//
+// All template variables must be present in vars; missing variables return a
+// [MissingRouteParamError]. Values are validated before substitution; codec
+// failures return a [RouteParamError] identifying the variable name and value.
+// Keys in vars that do not appear in the template are silently ignored.
+//
+// Mirrors [events.ChannelHandle.BuildTopic].
+//
+//	topic, err := computeRoute.BuildTopic(map[string]string{"tenantID": "acme"})
+//	// topic = "compute/acme/add"
+func (h *RouteHandle[Req, Resp]) BuildTopic(vars map[string]string) (string, error) {
+	codecMap := make(map[string]*codex.Codec[string], len(h.topicParams))
+	for i := range h.topicParams {
+		if h.topicParams[i].Codec != nil {
+			codecMap[h.topicParams[i].Name] = h.topicParams[i].Codec
+		}
+	}
+	return internal.BuildFromTemplate(h.Topic, vars, codecMap,
+		func(name string) error { return MissingRouteParamError{Name: name} },
+		func(name, value string, err error) error {
+			return RouteParamError{Name: name, Value: value, Err: err}
+		},
+	)
+}
+
+// ValidateTopicVars validates extracted topic variable values against the
+// registered [TopicParam] codecs. Call this after extracting vars from an
+// incoming request topic to ensure each variable satisfies its codec constraints.
+//
+// Returns [RouteParamError] for the first variable that fails its codec.
+// Variables without a registered codec are skipped.
+// Missing required variables return [MissingRouteParamError].
+//
+// Mirrors [events.ChannelHandle.ValidateTopicVars].
+func (h *RouteHandle[Req, Resp]) ValidateTopicVars(vars map[string]string) error {
+	for i := range h.topicParams {
+		p := &h.topicParams[i]
+		if p.Codec == nil {
+			continue
+		}
+		val, ok := vars[p.Name]
+		if !ok {
+			return MissingRouteParamError{Name: p.Name}
+		}
+		if err := p.Codec.Validate(val); err != nil {
+			return RouteParamError{Name: p.Name, Value: val, Err: err}
+		}
+	}
+	return nil
+}
+
+// RouteParamError is returned by [RouteHandle.BuildTopic] and
+// [RouteHandle.ValidateTopicVars] when a topic variable fails its registered
+// codec check. It mirrors [events.TopicParamError].
+//
+//	var paramErr reqreply.RouteParamError
+//	if errors.As(err, &paramErr) {
+//	    slog.Warn("bad topic var", "error", paramErr)
+//	}
+type RouteParamError struct {
+	Name  string // the {varName} that failed
+	Value string // the value that was rejected
+	Err   error  // the underlying codec error
+}
+
+func (e RouteParamError) Error() string {
+	return fmt.Sprintf("invalid value %q for topic variable {%s}: %v", e.Value, e.Name, e.Err)
+}
+
+// Unwrap allows [errors.Is] and [errors.As] to traverse the underlying error.
+func (e RouteParamError) Unwrap() error { return e.Err }
+
+// LogValue implements [slog.LogValuer] for structured logging.
+func (e RouteParamError) LogValue() slog.Value {
+	return slog.GroupValue(
+		slog.String("name", e.Name),
+		slog.String("value", e.Value),
+		slog.Any("err", e.Err),
+	)
+}
+
+// MissingRouteParamError is returned by [RouteHandle.BuildTopic] and
+// [RouteHandle.ValidateTopicVars] when a required topic variable is absent from
+// the vars map. It mirrors [events.MissingTopicVarError].
+//
+//	var missing reqreply.MissingRouteParamError
+//	if errors.As(err, &missing) {
+//	    slog.Warn("missing topic var", "name", missing.Name)
+//	}
+type MissingRouteParamError struct {
+	// Name is the {varName} placeholder that was missing from vars.
+	Name string
+}
+
+func (e MissingRouteParamError) Error() string {
+	return fmt.Sprintf("missing topic variable {%s}", e.Name)
+}
+
+// LogValue implements [slog.LogValuer] for structured logging.
+func (e MissingRouteParamError) LogValue() slog.Value {
+	return slog.GroupValue(
+		slog.String("name", e.Name),
+	)
 }
 
 // DuplicateRouteError is returned by [Route.Register] when a route with the

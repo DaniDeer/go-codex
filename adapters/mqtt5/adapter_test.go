@@ -134,18 +134,26 @@ func (r *mockRouter) dispatch(topic string, msg *pahomqtt5.Publish) {
 
 // ── observer stub ─────────────────────────────────────────────────────────────
 
+type validationEntry struct {
+	location   string
+	constraint string
+	field      string
+}
+
 type testObserver struct {
 	subscribes       []bool
 	publishes        []bool
 	requests         []int
 	validationErrors []string
+	validationFull   []validationEntry
 	startSpanOps     []string
 	endSpanErrs      []error
 	secRejections    []string
 }
 
-func (o *testObserver) RecordValidationError(_, constraint, _ string) {
+func (o *testObserver) RecordValidationError(location, constraint, field string) {
 	o.validationErrors = append(o.validationErrors, constraint)
+	o.validationFull = append(o.validationFull, validationEntry{location, constraint, field})
 }
 func (o *testObserver) RecordRequest(_, _ string, code int, _ time.Duration) {
 	o.requests = append(o.requests, code)
@@ -845,5 +853,81 @@ func TestPublish_BrokerError_OnPublishFail(t *testing.T) {
 	}
 	if be.Op != "publish" {
 		t.Fatalf("expected Op=publish, got %q", be.Op)
+	}
+}
+
+// ── Publish topic vars observer reporting ─────────────────────────────────────
+
+func newTemplateChannelHandle() *events.ChannelHandle[sensorReading] {
+	uuidCodec := codex.String().Refine(validate.UUID)
+	b := events.NewBuilder(events.Info{Title: "Test", Version: "1.0.0"})
+	h, err := events.NewChannel[sensorReading](
+		"sensors/{sensorID}/readings",
+		sensorCodec,
+		events.Publish{Summary: "test"},
+		events.TopicParam{Name: "sensorID"}.WithCodec(uuidCodec),
+	).Register(b)
+	if err != nil {
+		panic(err)
+	}
+	return h
+}
+
+func TestPublish_Vars_MissingVar_ReportsRequiredConstraintWithVarName(t *testing.T) {
+	// Verifies that a missing topic variable is reported as constraint "required"
+	// with the variable name as the field — matching the mqtt adapter's behaviour.
+	obs := &testObserver{}
+	client := &mockClient{}
+	reading := sensorReading{SensorID: "f47ac10b-58cc-4372-a567-0e02b2c3d479", Value: 1.0}
+
+	err := mqtt5.Publish(context.Background(), client, newTemplateChannelHandle(), 1, false,
+		reading, map[string]string{}, // sensorID missing
+		mqtt5.PublishOptions{Observer: obs})
+
+	var missingErr events.MissingTopicVarError
+	if !errors.As(err, &missingErr) {
+		t.Fatalf("expected MissingTopicVarError, got %T: %v", err, err)
+	}
+
+	if len(obs.validationFull) == 0 {
+		t.Fatal("expected RecordValidationError to be called for missing topic variable")
+	}
+	got := obs.validationFull[0]
+	if got.location != "topic_var" {
+		t.Errorf("expected location=%q, got %q", "topic_var", got.location)
+	}
+	if got.constraint != "required" {
+		t.Errorf("expected constraint=%q, got %q", "required", got.constraint)
+	}
+	if got.field != "sensorID" {
+		t.Errorf("expected field=%q, got %q", "sensorID", got.field)
+	}
+}
+
+func TestPublish_Vars_CodecFailure_ReportsVarNameAsField(t *testing.T) {
+	// Verifies that a topic variable that fails its codec is reported with the
+	// variable name as the field — matching the mqtt adapter's behaviour.
+	obs := &testObserver{}
+	client := &mockClient{}
+	reading := sensorReading{SensorID: "f47ac10b-58cc-4372-a567-0e02b2c3d479", Value: 1.0}
+
+	err := mqtt5.Publish(context.Background(), client, newTemplateChannelHandle(), 1, false,
+		reading, map[string]string{"sensorID": "not-a-uuid"},
+		mqtt5.PublishOptions{Observer: obs})
+
+	var paramErr events.TopicParamError
+	if !errors.As(err, &paramErr) {
+		t.Fatalf("expected TopicParamError, got %T: %v", err, err)
+	}
+
+	if len(obs.validationFull) == 0 {
+		t.Fatal("expected RecordValidationError to be called for failing topic variable")
+	}
+	got := obs.validationFull[0]
+	if got.location != "topic_var" {
+		t.Errorf("expected location=%q, got %q", "topic_var", got.location)
+	}
+	if got.field != "sensorID" {
+		t.Errorf("expected field=%q (variable name), got %q", "sensorID", got.field)
 	}
 }

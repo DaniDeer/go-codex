@@ -7,6 +7,7 @@ import (
 	"time"
 
 	mqtt5 "github.com/DaniDeer/go-codex/adapters/mqtt5"
+	"github.com/DaniDeer/go-codex/api/reqreply"
 	pahomqtt5 "github.com/eclipse/paho.golang/paho"
 )
 
@@ -339,5 +340,119 @@ func TestRequest_ContextCancelled(t *testing.T) {
 	var reqErr mqtt5.RequestError
 	if !errors.As(err, &reqErr) {
 		t.Fatalf("expected RequestError on ctx cancel, got %T: %v", err, err)
+	}
+}
+
+// ── Request with topic vars ───────────────────────────────────────────────────
+
+func TestRequest_WithVars_PublishesToResolvedTopic(t *testing.T) {
+	// Verifies that Request resolves the template topic before publishing.
+	// The resolved topic "compute/acme/add" must appear in the published message.
+	templateRoute := reqreply.NewRoute[computeReq, computeResp](
+		"compute/{tenantID}/add",
+		computeReqCodec, computeRespCodec,
+	)
+	client := &mockClient{} // plain mock — no routing, just records publishes
+	router := newMockRouter()
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+
+	b := reqreply.NewBuilder(reqreply.Info{Title: "Test", Version: "1.0.0"})
+	handle, _ := templateRoute.Register(b)
+
+	// Request will timeout (no responder), but we only care that it published
+	// to the resolved topic "compute/acme/add".
+	_, _ = mqtt5.Request(ctx, client, router, handle,
+		computeReq{X: 3, Y: 4},
+		mqtt5.RequestOptions{
+			Vars:    map[string]string{"tenantID": "acme"},
+			Timeout: 100 * time.Millisecond, // fast timeout
+		})
+
+	// Find the outgoing request publish (not the reply-topic subscribe).
+	var requestPub *pahomqtt5.Publish
+	client.mu.Lock()
+	for _, p := range client.published {
+		if p.Topic == "compute/acme/add" {
+			requestPub = p
+			break
+		}
+	}
+	client.mu.Unlock()
+
+	if requestPub == nil {
+		t.Fatal("expected a publish to 'compute/acme/add', got none")
+	}
+	if requestPub.Properties == nil || requestPub.Properties.ResponseTopic == "" {
+		t.Fatal("published request must carry ResponseTopic property")
+	}
+}
+
+func TestRequest_WithVars_MissingVar_ReturnsRequestError(t *testing.T) {
+	templateRoute := reqreply.NewRoute[computeReq, computeResp](
+		"compute/{tenantID}/add",
+		computeReqCodec, computeRespCodec,
+	)
+	router := newMockRouter()
+	client := &mockClient{}
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+
+	b := reqreply.NewBuilder(reqreply.Info{Title: "Test", Version: "1.0.0"})
+	handle, _ := templateRoute.Register(b)
+
+	_, err := mqtt5.Request(ctx, client, router, handle,
+		computeReq{X: 1, Y: 2},
+		mqtt5.RequestOptions{
+			Vars:    map[string]string{}, // tenantID missing
+			Timeout: time.Second,
+		})
+
+	var reqErr mqtt5.RequestError
+	if !errors.As(err, &reqErr) {
+		t.Fatalf("expected RequestError, got %T: %v", err, err)
+	}
+	var missing reqreply.MissingRouteParamError
+	if !errors.As(reqErr, &missing) {
+		t.Fatalf("expected MissingRouteParamError inside RequestError, got %T", reqErr.Err)
+	}
+}
+
+func TestRequest_WithVars_MissingVar_ReportsRequiredConstraintWithVarName(t *testing.T) {
+	// Verifies that a missing topic variable is reported to the observer with
+	// constraint "required" and the variable name as the field — consistent with
+	// the mqtt adapter's reportMissingTopicVarErrors behaviour.
+	templateRoute := reqreply.NewRoute[computeReq, computeResp](
+		"compute/{tenantID}/add",
+		computeReqCodec, computeRespCodec,
+	)
+	obs := &testObserver{}
+	router := newMockRouter()
+	client := &mockClient{}
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+
+	b := reqreply.NewBuilder(reqreply.Info{Title: "Test", Version: "1.0.0"})
+	handle, _ := templateRoute.Register(b)
+
+	_, _ = mqtt5.Request(ctx, client, router, handle,
+		computeReq{X: 1, Y: 2},
+		mqtt5.RequestOptions{
+			Vars:     map[string]string{}, // tenantID missing
+			Observer: obs,
+		})
+
+	if len(obs.validationFull) == 0 {
+		t.Fatal("expected RecordValidationError to be called for missing topic variable")
+	}
+	got := obs.validationFull[0]
+	if got.location != "topic_var" {
+		t.Errorf("expected location=%q, got %q", "topic_var", got.location)
+	}
+	if got.constraint != "required" {
+		t.Errorf("expected constraint=%q, got %q", "required", got.constraint)
+	}
+	if got.field != "tenantID" {
+		t.Errorf("expected field=%q, got %q", "tenantID", got.field)
 	}
 }

@@ -2,6 +2,7 @@ package mqtt5
 
 import (
 	"context"
+	"errors"
 	"time"
 
 	"github.com/DaniDeer/go-codex/api/events"
@@ -325,7 +326,9 @@ func Publish[T any](
 		topic, buildErr = handle.BuildTopic(vars)
 		if buildErr != nil {
 			err = buildErr
-			stats.ReportErrors(obs, "topic_var", buildErr)
+			reportTopicParamErrors(buildErr, obs)
+			reportMissingTopicVarErrors(buildErr, obs)
+			reportInvalidTopicErrors(buildErr, obs)
 			obs.RecordPublish(handle.Topic, false, time.Since(start))
 			return err
 		}
@@ -413,6 +416,36 @@ func validateUserProperties(msg *pahomqtt5.Publish, params []UserPropertyParam) 
 		}
 	}
 	return nil
+}
+
+// reportTopicParamErrors extracts the failing topic variable from a [events.TopicParamError]
+// and reports it to obs with location "topic_var".
+func reportTopicParamErrors(err error, obs stats.Observer) {
+	var pe events.TopicParamError
+	if !errors.As(err, &pe) {
+		return
+	}
+	obs.RecordValidationError("topic_var", stats.ConstraintName(pe.Err), pe.Name)
+}
+
+// reportMissingTopicVarErrors extracts the missing variable name from a [events.MissingTopicVarError]
+// and reports it to obs with location "topic_var" and constraint "required".
+func reportMissingTopicVarErrors(err error, obs stats.Observer) {
+	var me events.MissingTopicVarError
+	if !errors.As(err, &me) {
+		return
+	}
+	obs.RecordValidationError("topic_var", "required", me.Name)
+}
+
+// reportInvalidTopicErrors extracts the constraint from an [events.InvalidTopicError]
+// and reports it to obs with location "topic".
+func reportInvalidTopicErrors(err error, obs stats.Observer) {
+	var ie events.InvalidTopicError
+	if !errors.As(err, &ie) {
+		return
+	}
+	obs.RecordValidationError("topic", stats.ConstraintName(ie.Err), "")
 }
 
 // userPropertyName extracts the property key from a User Property error for
