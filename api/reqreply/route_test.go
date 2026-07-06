@@ -367,3 +367,74 @@ func TestRouteParamError_ErrorsAs(t *testing.T) {
 		t.Fatal("errors.Is must traverse Unwrap")
 	}
 }
+
+// ── ClientHandle tests ────────────────────────────────────────────────────────
+
+func TestRoute_ClientHandle_returnsNonNilHandle(t *testing.T) {
+	h := computeRoute.ClientHandle()
+	if h == nil {
+		t.Fatal("ClientHandle returned nil")
+	}
+}
+
+func TestRoute_ClientHandle_topicMatches(t *testing.T) {
+	h := computeRoute.ClientHandle()
+	if h.Topic != "compute/add" {
+		t.Errorf("expected topic %q, got %q", "compute/add", h.Topic)
+	}
+}
+
+func TestRoute_ClientHandle_encodeDecodeRoundTrip(t *testing.T) {
+	h := computeRoute.ClientHandle()
+
+	// EncodeRequest + Decode (server path)
+	payload, err := h.EncodeRequest(computeReq{X: 3, Y: 4})
+	if err != nil {
+		t.Fatalf("EncodeRequest: %v", err)
+	}
+	decoded, err := h.Decode(payload)
+	if err != nil {
+		t.Fatalf("Decode: %v", err)
+	}
+	if decoded.X != 3 || decoded.Y != 4 {
+		t.Errorf("round-trip mismatch: got %+v", decoded)
+	}
+
+	// Encode + DecodeResponse (client path)
+	respPayload, err := h.Encode(computeResp{Sum: 7})
+	if err != nil {
+		t.Fatalf("Encode: %v", err)
+	}
+	resp, err := h.DecodeResponse(respPayload)
+	if err != nil {
+		t.Fatalf("DecodeResponse: %v", err)
+	}
+	if resp.Sum != 7 {
+		t.Errorf("response round-trip: got sum=%d, want 7", resp.Sum)
+	}
+}
+
+func TestRoute_ClientHandle_noBuilderRequired(t *testing.T) {
+	// ClientHandle must not panic and must produce a usable handle
+	// even when no Builder is created.
+	h := computeRoute.ClientHandle()
+	if h.Decode == nil || h.EncodeRequest == nil {
+		t.Fatal("ClientHandle fields must not be nil")
+	}
+}
+
+func TestRoute_ClientHandle_topicParamsPreserved(t *testing.T) {
+	uuidCodec := codex.String()
+	templateRoute := reqreply.NewRoute[computeReq, computeResp](
+		"compute/{tenantID}/add", reqCodec, respCodec,
+		reqreply.TopicParam{Name: "tenantID"}.WithCodec(uuidCodec),
+	)
+	h := templateRoute.ClientHandle()
+	topic, err := h.BuildTopic(map[string]string{"tenantID": "acme"})
+	if err != nil {
+		t.Fatalf("BuildTopic: %v", err)
+	}
+	if topic != "compute/acme/add" {
+		t.Errorf("expected %q, got %q", "compute/acme/add", topic)
+	}
+}

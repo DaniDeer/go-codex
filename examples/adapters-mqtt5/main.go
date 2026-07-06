@@ -420,7 +420,7 @@ func runRequestReplyDemo(ctx context.Context, obs stats.Observer, logger *slog.L
 	handle, _ := ComputeRoute.Register(rrBuilder)
 
 	// Responder: subscribes to "compute/add", replies to ResponseTopic.
-	_ = mqtt5adapter.ServeRequestReply(ctx, broker, router, handle,
+	_ = mqtt5adapter.Serve(ctx, broker, router, handle,
 		func(_ context.Context, req ComputeReq) (ComputeResp, error) {
 			return ComputeResp{Sum: req.X + req.Y}, nil
 		},
@@ -430,8 +430,8 @@ func runRequestReplyDemo(ctx context.Context, obs stats.Observer, logger *slog.L
 	// Requester: publishes with ResponseTopic + CorrelationData; waits for reply.
 	reqs := []ComputeReq{{X: 3, Y: 4}, {X: 10, Y: 20}, {X: -5, Y: 5}}
 	for _, req := range reqs {
-		resp, err := mqtt5adapter.Request(ctx, broker, router, handle, req,
-			mqtt5adapter.RequestOptions{
+		resp, err := mqtt5adapter.Call(ctx, broker, router, handle, req,
+			mqtt5adapter.CallOptions{
 				ReplyTopicPrefix: "replies",
 				Timeout:          2 * time.Second,
 				Observer:         obs,

@@ -4,6 +4,17 @@ Do not re-report any findings listed here. They have been implemented.
 
 ---
 
+## Round DR5 (docs sync after R28–R29: slog.LogValuer parity + reqreply rename)
+
+- **D1 — `docs/reference/index.md` mqtt5 row names `ServeRequestReply`+`Request`**: Updated to `Serve`+`Call` to match R29 rename.
+- **D2 — `docs/concepts/observable-layers.md` stale `(ServeRequestReply)` annotation**: Changed to `(Serve)` and `(Call)`.
+- **D3 — `docs/guides/mqtt5.md` section heading `### Requester (Request)`**: Renamed to `### Caller (Call)`; also fixed inline `// Request — returned directly` comment.
+- **D4 — `docs/features/error-handling.md` missing MQTT 5.0 adapter errors section**: Added `## MQTT 5.0 adapter errors` section covering `CallError`, `ServeError`, `BrokerError`, `UserPropertyError`, `MissingUserPropertyError`; updated MQTT 3.1.1 section to include `SubscribeError`, `PublishEncodeError`, `TopicMismatchError`.
+- **D5 — `docs/features/error-handling.md` missing `slog.LogValuer` notes for mqtt/mcp error tables**: Added explicit note that all MQTT 3.1.1, MQTT 5.0, and MCP error types implement `slog.LogValuer`; added `ResourceEncodeError` and `InvalidResourceParamError` to MCP table.
+- **D6 — `docs/features/error-handling.md` missing reqreply route param errors**: Added `## Request-reply route errors` section covering `RouteParamError`, `MissingRouteParamError`, `DuplicateRouteError` and their relationship to `CallOptions.Vars`.
+
+---
+
 ## Round DR4 (README + reference sync after binary additions + R22)
 
 - **D1 — README "Multi-format" bullet missing Binary**: Added "Binary (raw bytes)" to the feature bullet listing JSON, YAML, TOML, Gob.

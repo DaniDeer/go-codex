@@ -141,6 +141,7 @@ type testObserver struct {
 	subscribes       []bool
 	publishes        []bool
 	requests         []int // status codes
+	paths            []string
 	validationErrors []string
 	startSpanOps     []string
 	endSpanErrs      []error
@@ -149,8 +150,9 @@ type testObserver struct {
 func (o *testObserver) RecordValidationError(_, constraint, _ string) {
 	o.validationErrors = append(o.validationErrors, constraint)
 }
-func (o *testObserver) RecordRequest(_, _ string, code int, _ time.Duration) {
+func (o *testObserver) RecordRequest(_, path string, code int, _ time.Duration) {
 	o.requests = append(o.requests, code)
+	o.paths = append(o.paths, path)
 }
 func (o *testObserver) RecordSubscribe(_ string, success bool, _ time.Duration) {
 	o.subscribes = append(o.subscribes, success)
@@ -973,4 +975,95 @@ func (f *failingSocket) RecvFrames() ([][]byte, error) {
 		return nil, f.recvErr
 	}
 	return nil, zeromq.ErrTimeout
+}
+
+// ── Call/CallDealer Vars tests ────────────────────────────────────────────────
+
+func newTemplateRouteHandle() *reqreply.RouteHandle[computeReq, computeResp] {
+	uuidCodec := codex.String().Refine(validate.UUID)
+	return reqreply.NewRoute[computeReq, computeResp](
+		"compute/{tenantID}/add",
+		computeReqCodec, computeRespCodec,
+		reqreply.TopicParam{Name: "tenantID"}.WithCodec(uuidCodec),
+	).ClientHandle()
+}
+
+func TestCall_Vars_ObserverPathIsResolved(t *testing.T) {
+	// Verifies that Vars resolves the template topic and the resolved path
+	// is reported to the observer.
+	obs := &testObserver{}
+	tenantID := "f47ac10b-58cc-4372-a567-0e02b2c3d479"
+	expectedPath := "compute/" + tenantID + "/add"
+	respPayload := `{"sum":3}`
+
+	sock := &mockSocket{
+		inFrames: [][][]byte{
+			{[]byte("ok"), []byte(respPayload)},
+		},
+	}
+
+	_, _ = zeromq.Call(context.Background(), sock, newTemplateRouteHandle(),
+		computeReq{X: 1, Y: 2},
+		zeromq.CallOptions{
+			Observer: obs,
+			Vars:     map[string]string{"tenantID": tenantID},
+		})
+
+	if len(obs.paths) == 0 || obs.paths[0] != expectedPath {
+		t.Errorf("expected observer path %q, got %v", expectedPath, obs.paths)
+	}
+}
+
+func TestCall_Vars_MissingVar_ReturnsCallError(t *testing.T) {
+	sock := &mockSocket{}
+	_, err := zeromq.Call(context.Background(), sock, newTemplateRouteHandle(),
+		computeReq{X: 1, Y: 2},
+		zeromq.CallOptions{
+			Vars: map[string]string{}, // tenantID missing
+		})
+
+	var callErr zeromq.CallError
+	if !errors.As(err, &callErr) {
+		t.Fatalf("expected CallError, got %T: %v", err, err)
+	}
+	var missing reqreply.MissingRouteParamError
+	if !errors.As(callErr, &missing) {
+		t.Fatalf("expected MissingRouteParamError inside CallError, got %T", callErr.Err)
+	}
+}
+
+func TestCallDealer_Vars_MissingVar_ReturnsCallError(t *testing.T) {
+	sock := &mockSocket{}
+	_, err := zeromq.CallDealer(context.Background(), sock, newTemplateRouteHandle(),
+		computeReq{X: 1, Y: 2},
+		zeromq.CallOptions{
+			Vars: map[string]string{}, // tenantID missing
+		})
+
+	var callErr zeromq.CallError
+	if !errors.As(err, &callErr) {
+		t.Fatalf("expected CallError, got %T: %v", err, err)
+	}
+	var missing reqreply.MissingRouteParamError
+	if !errors.As(callErr, &missing) {
+		t.Fatalf("expected MissingRouteParamError inside CallError, got %T", callErr.Err)
+	}
+}
+
+func TestCall_Vars_InvalidVar_ReturnsCallError(t *testing.T) {
+	sock := &mockSocket{}
+	_, err := zeromq.Call(context.Background(), sock, newTemplateRouteHandle(),
+		computeReq{X: 1, Y: 2},
+		zeromq.CallOptions{
+			Vars: map[string]string{"tenantID": "not-a-uuid"},
+		})
+
+	var callErr zeromq.CallError
+	if !errors.As(err, &callErr) {
+		t.Fatalf("expected CallError, got %T: %v", err, err)
+	}
+	var paramErr reqreply.RouteParamError
+	if !errors.As(callErr, &paramErr) {
+		t.Fatalf("expected RouteParamError inside CallError, got %T", callErr.Err)
+	}
 }

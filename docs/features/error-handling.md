@@ -103,19 +103,23 @@ if errors.As(err, &statusErr) {
 }
 ```
 
-## MQTT adapter errors (adapters/mqtt)
+## MQTT 3.1.1 adapter errors (adapters/mqtt)
+
+All MQTT adapter error types implement `slog.LogValuer`.
 
 | Error type | When returned |
 |---|---|
+| `mqtt.SubscribeError{Kind, Topic, Err}` | decode, handler, or security failure in `SubscribeHandler` |
+| `mqtt.PublishEncodeError{Topic, Err}` | payload encode failure in `Publish` |
+| `mqtt.TopicMismatchError{Template, Topic}` | concrete topic doesn't match template structure |
 | `events.TopicParamError{Name, Value, Err}` | topic variable fails its codec |
 | `events.MissingTopicVarError{Name}` | topic variable absent from vars map |
-| `amqtt.TopicMismatchError{Template, Topic}` | concrete topic doesn't match template structure |
 
 ```go
-amqtt.SubscribeHandler(ctx, channel, handler, amqtt.SubscribeOptions{
-    OnError: func(e amqtt.SubscribeError) {
+mqtt.SubscribeHandler(ctx, channel, handler, mqtt.SubscribeOptions{
+    OnError: func(e mqtt.SubscribeError) {
         switch e.Kind {
-        case amqtt.KindDecode:
+        case mqtt.KindDecode:
             var validationErrs codex.ValidationErrors
             if errors.As(e.Err, &validationErrs) {
                 logger.Warn("decode validation error",
@@ -123,12 +127,57 @@ amqtt.SubscribeHandler(ctx, channel, handler, amqtt.SubscribeOptions{
                     "errors", validationErrs, // triggers ValidationErrors.LogValue()
                 )
             }
-        case amqtt.KindHandler:
-            logger.Error("handler error", "topic", e.Topic, "error", e.Err)
+        case mqtt.KindHandler:
+            logger.Error("handler error", "error", e) // slog.LogValuer: emits kind, topic, err
         }
     },
 })
 ```
+
+## MQTT 5.0 adapter errors (adapters/mqtt5)
+
+All MQTT 5.0 adapter error types implement `slog.LogValuer`.
+
+| Error type | When returned |
+|---|---|
+| `mqtt5.SubscribeError{Kind, Topic, Err}` | decode, handler, or security failure in `Subscribe` |
+| `mqtt5.PublishEncodeError{Topic, Err}` | payload encode failure in `Publish` |
+| `mqtt5.ServeError{Kind, Err}` | decode, handler, or encode failure in `Serve` (responder side) |
+| `mqtt5.CallError{Kind, Err}` | encode, timeout, server-error, or decode failure in `Call` (caller side) |
+| `mqtt5.BrokerError{Op, Err}` | broker-level failure in `Subscribe`/`Publish` (Op: "subscribe", "publish") |
+| `mqtt5.UserPropertyError{Name, Value, Err}` | User Property codec validation failure |
+| `mqtt5.MissingUserPropertyError{Name}` | required User Property absent |
+
+```go
+// Call (requester side) — returned directly.
+resp, err := mqtt5adapter.Call(ctx, client, router, handle, req, mqtt5adapter.CallOptions{})
+var callErr mqtt5.CallError
+if errors.As(err, &callErr) {
+    switch callErr.Kind {
+    case mqtt5.KindTimeout:  // no reply within deadline
+    case mqtt5.KindHandler:  // server returned an error reply
+    case mqtt5.KindDecode:   // reply payload could not be decoded
+    }
+    slog.Error("call failed", "error", callErr) // emits kind, err
+}
+
+// Serve (responder side) — delivered to OnError callback.
+mqtt5adapter.Serve(ctx, client, router, handle, fn, mqtt5adapter.ServeOptions{
+    OnError: func(e mqtt5.ServeError) {
+        slog.Warn("serve error", "error", e) // emits kind, err
+    },
+})
+```
+
+## Request-reply route errors (api/reqreply)
+
+| Error type | When returned |
+|---|---|
+| `reqreply.RouteParamError{Name, Value, Err}` | topic variable fails its codec in `BuildTopic` or `ValidateTopicVars` |
+| `reqreply.MissingRouteParamError{Name}` | topic variable absent from vars map |
+| `reqreply.DuplicateRouteError{Topic}` | same topic registered twice with one `Builder` |
+
+These are returned by `RouteHandle.BuildTopic` and wrapped by adapter call errors (e.g. `mqtt5.CallError`, `zeromq.CallError`) when `CallOptions.Vars` resolves a template topic.
 
 ## Forge pipeline errors (forge)
 
@@ -143,14 +192,18 @@ amqtt.SubscribeHandler(ctx, channel, handler, amqtt.SubscribeOptions{
 
 ## MCP errors (api/mcp)
 
+All MCP error types implement `slog.LogValuer`.
+
 | Error type | When |
 |---|---|
 | `mcp.ToolInputError{Name, Err}` | `ToolHandle.Decode` — input codec failure |
 | `mcp.ToolOutputError{Name, Err}` | `ToolHandle.Encode` — output codec failure |
+| `mcp.ResourceEncodeError{URI, Err}` | `ResourceHandle.Encode` — resource encode failure |
 | `mcp.ResourceParamError{Name, Value, Err}` | URI variable fails its codec |
 | `mcp.MissingResourceVarError{Name}` | required URI variable absent |
 | `mcp.PromptArgError{Name, Err}` | prompt argument codec failure |
 | `mcp.MissingPromptArgError{Name}` | required prompt argument absent |
+| `mcp.InvalidResourceParamError{Name, URITemplate}` | `Resource.Register` — `ResourceParam` not in URI template |
 
 ## See also
 

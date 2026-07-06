@@ -11,7 +11,7 @@
 | Feature | MQTT 3.1.1 (`adapters/mqtt`) | MQTT 5.0 (`adapters/mqtt5`) |
 |---|---|---|
 | PUB/SUB | ✅ | ✅ (unchanged API) |
-| Request-Reply | ❌ | ✅ `ServeRequestReply` + `Request` |
+| Request-Reply | ❌ | ✅ `Serve` + `Call` |
 | User Properties | ❌ `validateSecurityCredentials` no-op | ✅ Per-message key-value metadata |
 | Content-Type | ❌ Format agreed out-of-band | ✅ Auto format selection from message property |
 | Message Expiry | ❌ | Phase 2 |
@@ -156,10 +156,10 @@ var TenantComputeRoute = reqreply.NewRoute[ComputeReq, ComputeResp](
 
 `reqreply.TopicParam` mirrors `events.TopicParam` for MQTT channel subscriptions — same field structure, same `.WithCodec(c)` method, same error types.
 
-### Responder (ServeRequestReply)
+### Responder (Serve)
 
 ```go
-if err := mqtt5adapter.ServeRequestReply(ctx, client, router, handle,
+if err := mqtt5adapter.Serve(ctx, client, router, handle,
     func(ctx context.Context, req ComputeReq) (ComputeResp, error) {
         return ComputeResp{Sum: req.X + req.Y}, nil
     },
@@ -169,45 +169,45 @@ if err := mqtt5adapter.ServeRequestReply(ctx, client, router, handle,
 }
 ```
 
-### Requester (Request)
+### Caller (Call)
 
 ```go
 // Static topic — no Vars needed.
-resp, err := mqtt5adapter.Request(ctx, client, router, handle,
+resp, err := mqtt5adapter.Call(ctx, client, router, handle,
     ComputeReq{X: 3, Y: 4},
-    mqtt5adapter.RequestOptions{
+    mqtt5adapter.CallOptions{
         ReplyTopicPrefix: "replies",    // generates: "replies/<uuid>"
         Timeout:          5 * time.Second,
         Observer:         obs,
     })
 if err != nil {
-    var reqErr mqtt5adapter.RequestError
+    var reqErr mqtt5adapter.CallError
     if errors.As(err, &reqErr) && reqErr.Kind == mqtt5adapter.KindTimeout {
         log.Warn("request timed out")
     }
 }
 
 // Template topic — Vars resolved before publish; each variable codec-validated.
-resp, err = mqtt5adapter.Request(ctx, client, router, tenantHandle,
+resp, err = mqtt5adapter.Call(ctx, client, router, tenantHandle,
     ComputeReq{X: 3, Y: 4},
-    mqtt5adapter.RequestOptions{
+    mqtt5adapter.CallOptions{
         Vars:    map[string]string{"tenantID": "acme"},
         Timeout: 5 * time.Second,
         Observer: obs,
     })
-// On validation failure: RequestError wrapping reqreply.RouteParamError
+// On validation failure: CallError wrapping reqreply.RouteParamError
 // or reqreply.MissingRouteParamError — both errors.As-navigable.
 ```
 
 
 ### Custom reply topics
 
-By default, `Request` generates `"replies/<uuid>"` for both the MQTT 5 `ResponseTopic` property and the broker subscription. Use `ReplyTopicBuilder` in `RequestOptions` to override this with a built-in constructor or a custom function.
+By default, `Call` generates `"replies/<uuid>"` for both the MQTT 5 `ResponseTopic` property and the broker subscription. Use `ReplyTopicBuilder` in `CallOptions` to override this with a built-in constructor or a custom function.
 
 ```go
 // Built-in default — explicit form (identical to not setting ReplyTopicBuilder)
-resp, err := mqtt5adapter.Request(ctx, client, router, handle, req,
-    mqtt5adapter.RequestOptions{
+resp, err := mqtt5adapter.Call(ctx, client, router, handle, req,
+    mqtt5adapter.CallOptions{
         ReplyTopicBuilder: mqtt5adapter.UUIDReplyTopic("replies"),
     })
 
@@ -215,15 +215,15 @@ resp, err := mqtt5adapter.Request(ctx, client, router, handle, req,
 // The ResponseTopic sent to the responder is "replies/<uuid>" (plain publish topic).
 // The local subscribe uses "$share/gateway-pool/replies/<uuid>".
 // The broker delivers each reply to exactly one subscriber in the group.
-resp, err = mqtt5adapter.Request(ctx, client, router, handle, req,
-    mqtt5adapter.RequestOptions{
+resp, err = mqtt5adapter.Call(ctx, client, router, handle, req,
+    mqtt5adapter.CallOptions{
         ReplyTopicBuilder: mqtt5adapter.SharedReplyTopic("replies", "gateway-pool"),
     })
 
 // Fully custom builder — client-ID + monotonic counter, no uuid dependency.
 var seq int64
-resp, err = mqtt5adapter.Request(ctx, client, router, handle, req,
-    mqtt5adapter.RequestOptions{
+resp, err = mqtt5adapter.Call(ctx, client, router, handle, req,
+    mqtt5adapter.CallOptions{
         ReplyTopicBuilder: func() (string, string) {
             t := fmt.Sprintf("replies/gw-1/%d", atomic.AddInt64(&seq, 1))
             return t, t
@@ -237,7 +237,7 @@ resp, err = mqtt5adapter.Request(ctx, client, router, handle, req,
 - `subscribeFilter` — passed to `client.Subscribe`; for shared subscriptions it carries the `$share/<group>/` prefix.
 - Return equal strings for regular (non-shared) subscriptions.
 - Empty `subscribeFilter` falls back to `responseTopic`.
-- Empty `responseTopic` returns `RequestError{Kind: KindEncode}`.
+- Empty `responseTopic` returns `CallError{Kind: KindEncode}`.
 
 ---
 
@@ -366,8 +366,8 @@ obs := stats.NewFanout(
 
 mqtt5adapter.Subscribe(ctx, client, router, handle, 1, fn, mqtt5adapter.SubscribeOptions{Observer: obs})
 mqtt5adapter.Publish(ctx, client, handle, 1, false, msg, nil, mqtt5adapter.PublishOptions{Observer: obs})
-mqtt5adapter.ServeRequestReply(ctx, client, router, handle, fn, mqtt5adapter.ServeOptions{Observer: obs})
-mqtt5adapter.Request(ctx, client, router, handle, req, mqtt5adapter.RequestOptions{Observer: obs})
+mqtt5adapter.Serve(ctx, client, router, handle, fn, mqtt5adapter.ServeOptions{Observer: obs})
+mqtt5adapter.Call(ctx, client, router, handle, req, mqtt5adapter.CallOptions{Observer: obs})
 ```
 
 | Event | Observer method | Trace op |
@@ -386,7 +386,7 @@ mqtt5adapter.Request(ctx, client, router, handle, req, mqtt5adapter.RequestOptio
 All errors implement `Unwrap()` and `slog.LogValuer`:
 
 ```go
-// Subscribe / ServeRequestReply — delivered to OnError callback
+// Subscribe / Serve — delivered to OnError callback
 var subErr mqtt5.SubscribeError
 if errors.As(err, &subErr) {
     switch subErr.Kind {
@@ -397,8 +397,8 @@ if errors.As(err, &subErr) {
     slog.Warn("subscribe failed", "error", subErr) // emits kind, topic, err
 }
 
-// Request — returned directly
-var reqErr mqtt5.RequestError
+// Call — returned directly
+var reqErr mqtt5.CallError
 if errors.As(err, &reqErr) {
     switch reqErr.Kind {
     case mqtt5.KindTimeout:   // no reply within deadline

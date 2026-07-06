@@ -145,6 +145,47 @@ func NewRoute[Req, Resp any](
 	}
 }
 
+// ClientHandle returns a [RouteHandle] for client-side use without registering
+// with a [Builder]. No spec registration occurs.
+//
+// Use ClientHandle when only the client side needs codec and route definitions
+// (no AsyncAPI spec, no server), or when sharing a [Route] definition between
+// server and client in the same binary without a second builder registration.
+//
+// The returned handle has the same Decode / Encode / EncodeRequest / DecodeResponse
+// codec helpers and BuildTopic / ValidateTopicVars methods as a handle returned
+// by [Route.Register].
+//
+// Example — client-only usage (no builder required):
+//
+//	var ComputeRoute = reqreply.NewRoute[ComputeReq, ComputeResp](
+//	    "compute/add", computeReqCodec, computeRespCodec,
+//	)
+//
+//	// Client side — no builder needed.
+//	handle := ComputeRoute.ClientHandle()
+//	resp, err := mqtt5adapter.Call(ctx, client, router, handle, req, mqtt5adapter.CallOptions{})
+//
+// Mirrors [rest.Route.ClientHandle].
+func (r Route[Req, Resp]) ClientHandle() *RouteHandle[Req, Resp] {
+	var rb routeBuilder
+	for _, opt := range r.opts {
+		opt.applyRoute(&rb)
+	}
+
+	jsonReq := format.JSON(r.reqCodec)
+	jsonResp := format.JSON(r.respCodec)
+
+	return &RouteHandle[Req, Resp]{
+		Topic:          r.topic,
+		Decode:         func(p []byte) (Req, error) { return jsonReq.Unmarshal(p) },
+		Encode:         func(v Resp) ([]byte, error) { return jsonResp.Marshal(v) },
+		EncodeRequest:  func(v Req) ([]byte, error) { return jsonReq.Marshal(v) },
+		DecodeResponse: func(p []byte) (Resp, error) { return jsonResp.Unmarshal(p) },
+		topicParams:    rb.topicParams,
+	}
+}
+
 // Register registers the route with b and returns a [RouteHandle].
 //
 // Returns [DuplicateRouteError] if a route with the same topic has already been

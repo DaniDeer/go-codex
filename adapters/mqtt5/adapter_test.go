@@ -572,16 +572,16 @@ func TestPublishEncodeError_LogValue(t *testing.T) {
 	}
 }
 
-func TestRequestError_LogValue(t *testing.T) {
-	e := mqtt5.RequestError{Kind: mqtt5.KindTimeout, Err: errors.New("timeout")}
+func TestCallError_LogValue(t *testing.T) {
+	e := mqtt5.CallError{Kind: mqtt5.KindTimeout, Err: errors.New("timeout")}
 	v := e.LogValue()
 	if v.Kind() != slog.KindGroup {
 		t.Fatalf("expected Group log value, got %v", v.Kind())
 	}
 }
 
-func TestServeRequestReplyError_LogValue(t *testing.T) {
-	e := mqtt5.ServeRequestReplyError{Kind: mqtt5.KindHandler, Err: errors.New("fail")}
+func TestServeError_LogValue(t *testing.T) {
+	e := mqtt5.ServeError{Kind: mqtt5.KindHandler, Err: errors.New("fail")}
 	v := e.LogValue()
 	if v.Kind() != slog.KindGroup {
 		t.Fatalf("expected Group log value, got %v", v.Kind())
@@ -596,17 +596,17 @@ func TestSubscribeError_ErrorsAs(t *testing.T) {
 	}
 }
 
-func TestRequestError_ErrorsAs(t *testing.T) {
+func TestCallError_ErrorsAs(t *testing.T) {
 	inner := errors.New("inner")
-	outer := mqtt5.RequestError{Kind: mqtt5.KindTimeout, Err: inner}
+	outer := mqtt5.CallError{Kind: mqtt5.KindTimeout, Err: inner}
 	if !errors.Is(outer, inner) {
 		t.Fatal("errors.Is must traverse Unwrap")
 	}
 }
 
-func TestServeRequestReplyError_ErrorsAs(t *testing.T) {
+func TestServeError_ErrorsAs(t *testing.T) {
 	inner := errors.New("inner")
-	outer := mqtt5.ServeRequestReplyError{Kind: mqtt5.KindHandler, Err: inner}
+	outer := mqtt5.ServeError{Kind: mqtt5.KindHandler, Err: inner}
 	if !errors.Is(outer, inner) {
 		t.Fatal("errors.Is must traverse Unwrap")
 	}

@@ -12,13 +12,13 @@ import (
 	"github.com/google/uuid"
 )
 
-// ServeOptions configures [ServeRequestReply].
+// ServeOptions configures [Serve].
 type ServeOptions struct {
-	// OnError, when non-nil, is called with a typed [ServeRequestReplyError] on
-	// decode, handler, or reply-encode failure. If nil, errors are silently discarded.
-	// A reply is always attempted (even on failure) to avoid leaving the requester
+	// OnError, when non-nil, is called with a typed [ServeError] on decode,
+	// handler, or reply-encode failure. If nil, errors are silently discarded.
+	// A reply is always attempted (even on failure) to avoid leaving the caller
 	// waiting — the reply payload carries the error string on failure.
-	OnError func(ServeRequestReplyError)
+	OnError func(ServeError)
 
 	// Observer receives per-request lifecycle events.
 	// [stats.Observer.RecordRequest] is called with method "MQTT5-REP",
@@ -28,15 +28,15 @@ type ServeOptions struct {
 
 	// UserPropertyParams, when non-nil, are validated against the incoming
 	// request's MQTT 5 User Properties before the payload is decoded.
-	// Validation failure delivers [ServeRequestReplyError]{Kind: KindSecurity}
-	// and sends an error reply to the requester.
+	// Validation failure delivers [ServeError]{Kind: KindSecurity}
+	// and sends an error reply to the caller.
 	UserPropertyParams []UserPropertyParam
 }
 
-// RequestOptions configures [Request].
-type RequestOptions struct {
+// CallOptions configures [Call].
+type CallOptions struct {
 	// ReplyTopicPrefix is the prefix for the auto-generated reply topic.
-	// Request generates: "<ReplyTopicPrefix>/<uuid>" per call.
+	// Call generates: "<ReplyTopicPrefix>/<uuid>" per call.
 	// When empty, defaults to "replies".
 	// Ignored when [ReplyTopicBuilder] is non-nil.
 	ReplyTopicPrefix string
@@ -50,19 +50,19 @@ type RequestOptions struct {
 	//     subscriptions it equals responseTopic. For shared subscriptions it
 	//     carries the "$share/<group>/" prefix.
 	//
-	// An empty responseTopic is a programmer error and causes [Request] to
-	// return [RequestError]{Kind: [KindEncode]}. An empty subscribeFilter
+	// An empty responseTopic is a programmer error and causes [Call] to
+	// return [CallError]{Kind: [KindEncode]}. An empty subscribeFilter
 	// falls back to responseTopic.
 	//
 	// Use [UUIDReplyTopic] or [SharedReplyTopic] for built-in builders.
 	ReplyTopicBuilder ReplyTopicBuilder
 
-	// Timeout is how long Request waits for a reply before returning
-	// [RequestError]{Kind: [KindTimeout]}.
+	// Timeout is how long Call waits for a reply before returning
+	// [CallError]{Kind: [KindTimeout]}.
 	// When zero, defaults to 30 seconds.
 	Timeout time.Duration
 
-	// Observer receives per-request lifecycle events.
+	// Observer receives per-call lifecycle events.
 	// [stats.Observer.RecordRequest] is called with method "MQTT5-REQ",
 	// the route path, status 200 on success, status 0 on timeout/error,
 	// and status 500 on server-side error reply.
@@ -82,33 +82,33 @@ type RequestOptions struct {
 	//
 	// Example — template topic "compute/{tenantID}/add":
 	//
-	//	mqtt5.Request(ctx, client, router, handle, req,
-	//	    mqtt5.RequestOptions{Vars: map[string]string{"tenantID": "acme"}})
+	//	mqtt5.Call(ctx, client, router, handle, req,
+	//	    mqtt5.CallOptions{Vars: map[string]string{"tenantID": "acme"}})
 	//
 	// Returns [reqreply.RouteParamError] or [reqreply.MissingRouteParamError] on
 	// validation failure.
 	Vars map[string]string
 }
 
-// ServeRequestReply subscribes to the route path as an MQTT 5 request topic and
+// Serve subscribes to the route path as an MQTT 5 request topic and
 // replies to each request using the ResponseTopic and CorrelationData MQTT 5
 // properties.
 //
-// For each incoming message, ServeRequestReply:
+// For each incoming message, Serve:
 //  1. Decodes the payload using handle's codec.
 //  2. Calls fn with the decoded value.
 //  3. Encodes the response and publishes it to msg.Properties.ResponseTopic
 //     with the same CorrelationData.
 //
 // When fn or encoding fails, an error reply is published to ResponseTopic so the
-// requester receives a [RequestError] rather than blocking indefinitely.
+// requester receives a [CallError] rather than blocking indefinitely.
 //
 // Errors per-request are delivered via [ServeOptions.OnError].
 //
-// ServeRequestReply registers the handler with router and calls client.Subscribe
+// Serve registers the handler with router and calls client.Subscribe
 // once. It returns nil immediately; messages are processed asynchronously as
 // they arrive via the router.
-func ServeRequestReply[Req, Resp any](
+func Serve[Req, Resp any](
 	ctx context.Context,
 	client MQTTClient,
 	router MQTTRouter,
@@ -152,7 +152,7 @@ func ServeRequestReply[Req, Resp any](
 			obs.RecordRequest("MQTT5-REP", path, 0, time.Since(start))
 			publishErrorReply(spanCtx, client, responseTopic, correlationData, propErr)
 			if opts.OnError != nil {
-				opts.OnError(ServeRequestReplyError{Kind: KindSecurity, Err: propErr})
+				opts.OnError(ServeError{Kind: KindSecurity, Err: propErr})
 			}
 			return
 		}
@@ -169,7 +169,7 @@ func ServeRequestReply[Req, Resp any](
 			obs.RecordRequest("MQTT5-REP", path, 0, time.Since(start))
 			publishErrorReply(spanCtx, client, responseTopic, correlationData, serveErr)
 			if opts.OnError != nil {
-				opts.OnError(ServeRequestReplyError{Kind: KindDecode, Err: serveErr})
+				opts.OnError(ServeError{Kind: KindDecode, Err: serveErr})
 			}
 			return
 		}
@@ -181,7 +181,7 @@ func ServeRequestReply[Req, Resp any](
 			obs.RecordRequest("MQTT5-REP", path, 0, time.Since(start))
 			publishErrorReply(spanCtx, client, responseTopic, correlationData, serveErr)
 			if opts.OnError != nil {
-				opts.OnError(ServeRequestReplyError{Kind: KindHandler, Err: serveErr})
+				opts.OnError(ServeError{Kind: KindHandler, Err: serveErr})
 			}
 			return
 		}
@@ -197,7 +197,7 @@ func ServeRequestReply[Req, Resp any](
 			obs.RecordRequest("MQTT5-REP", path, 0, time.Since(start))
 			publishErrorReply(spanCtx, client, responseTopic, correlationData, serveErr)
 			if opts.OnError != nil {
-				opts.OnError(ServeRequestReplyError{Kind: KindEncode, Err: serveErr})
+				opts.OnError(ServeError{Kind: KindEncode, Err: serveErr})
 			}
 			return
 		}
@@ -217,7 +217,7 @@ func ServeRequestReply[Req, Resp any](
 				serveErr = pubErr
 				obs.RecordRequest("MQTT5-REP", path, 0, time.Since(start))
 				if opts.OnError != nil {
-					opts.OnError(ServeRequestReplyError{Kind: KindEncode, Err: pubErr})
+					opts.OnError(ServeError{Kind: KindEncode, Err: pubErr})
 				}
 				return
 			}
@@ -245,16 +245,16 @@ func ServeRequestReply[Req, Resp any](
 // for a message with matching CorrelationData, then unsubscribes.
 //
 // On success, returns the decoded response.
-// On timeout, returns [RequestError]{Kind: [KindTimeout]}.
-// On server error reply, returns [RequestError]{Kind: [KindHandler]}.
-// On decode failure, returns [RequestError]{Kind: [KindDecode]}.
-func Request[Req, Resp any](
+// On timeout, returns [CallError]{Kind: [KindTimeout]}.
+// On server error reply, returns [CallError]{Kind: [KindHandler]}.
+// On decode failure, returns [CallError]{Kind: [KindDecode]}.
+func Call[Req, Resp any](
 	ctx context.Context,
 	client MQTTClient,
 	router MQTTRouter,
 	handle *reqreply.RouteHandle[Req, Resp],
 	req Req,
-	opts RequestOptions,
+	opts CallOptions,
 ) (Resp, error) {
 	var zero Resp
 	obs := opts.Observer
@@ -270,7 +270,7 @@ func Request[Req, Resp any](
 		path, buildErr = handle.BuildTopic(opts.Vars)
 		if buildErr != nil {
 			reportRouteParamErrors(buildErr, obs)
-			callErr = RequestError{Kind: KindEncode, Err: buildErr}
+			callErr = CallError{Kind: KindEncode, Err: buildErr}
 			obs.RecordRequest("MQTT5-REQ", handle.Topic, 0, time.Since(start))
 			return zero, callErr
 		}
@@ -294,7 +294,7 @@ func Request[Req, Resp any](
 	if opts.ReplyTopicBuilder != nil {
 		replyTopic, subscribeFilter = opts.ReplyTopicBuilder()
 		if replyTopic == "" {
-			callErr = RequestError{Kind: KindEncode, Err: fmt.Errorf("reply topic builder returned empty response topic")}
+			callErr = CallError{Kind: KindEncode, Err: fmt.Errorf("reply topic builder returned empty response topic")}
 			obs.RecordRequest("MQTT5-REQ", path, 0, time.Since(start))
 			return zero, callErr
 		}
@@ -337,7 +337,7 @@ func Request[Req, Resp any](
 		},
 	}); err != nil {
 		router.UnregisterHandler(replyTopic)
-		callErr = RequestError{Kind: KindEncode, Err: fmt.Errorf("subscribe reply topic: %w", err)}
+		callErr = CallError{Kind: KindEncode, Err: fmt.Errorf("subscribe reply topic: %w", err)}
 		obs.RecordRequest("MQTT5-REQ", path, 0, time.Since(start))
 		return zero, callErr
 	}
@@ -361,7 +361,7 @@ func Request[Req, Resp any](
 	}
 	if callErr != nil {
 		stats.ReportErrors(obs, "body", callErr)
-		callErr = RequestError{Kind: KindEncode, Err: callErr}
+		callErr = CallError{Kind: KindEncode, Err: callErr}
 		obs.RecordRequest("MQTT5-REQ", path, 0, time.Since(start))
 		return zero, callErr
 	}
@@ -381,7 +381,7 @@ func Request[Req, Resp any](
 		Payload:    payload,
 		Properties: reqProps,
 	}); err != nil {
-		callErr = RequestError{Kind: KindEncode, Err: fmt.Errorf("publish request: %w", err)}
+		callErr = CallError{Kind: KindEncode, Err: fmt.Errorf("publish request: %w", err)}
 		obs.RecordRequest("MQTT5-REQ", path, 0, time.Since(start))
 		return zero, callErr
 	}
@@ -392,17 +392,17 @@ func Request[Req, Resp any](
 
 	select {
 	case <-ctx.Done():
-		callErr = RequestError{Kind: KindTimeout, Err: ctx.Err()}
+		callErr = CallError{Kind: KindTimeout, Err: ctx.Err()}
 		obs.RecordRequest("MQTT5-REQ", path, 0, time.Since(start))
 		return zero, callErr
 	case <-timer.C:
-		callErr = RequestError{Kind: KindTimeout, Err: fmt.Errorf("no reply within %s", timeout)}
+		callErr = CallError{Kind: KindTimeout, Err: fmt.Errorf("no reply within %s", timeout)}
 		obs.RecordRequest("MQTT5-REQ", path, 0, time.Since(start))
 		return zero, callErr
 	case replyMsg := <-replyCh:
 		// Check for server error reply.
 		if isErrorReply(replyMsg) {
-			callErr = RequestError{Kind: KindHandler, Err: fmt.Errorf("server error: %s", replyMsg.Payload)}
+			callErr = CallError{Kind: KindHandler, Err: fmt.Errorf("server error: %s", replyMsg.Payload)}
 			obs.RecordRequest("MQTT5-REQ", path, 500, time.Since(start))
 			return zero, callErr
 		}
@@ -416,7 +416,7 @@ func Request[Req, Resp any](
 		}
 		if callErr != nil {
 			stats.ReportErrors(obs, "body", callErr)
-			callErr = RequestError{Kind: KindDecode, Err: fmt.Errorf("decode response: %w", callErr)}
+			callErr = CallError{Kind: KindDecode, Err: fmt.Errorf("decode response: %w", callErr)}
 			obs.RecordRequest("MQTT5-REQ", path, 0, time.Since(start))
 			return zero, callErr
 		}
@@ -432,7 +432,7 @@ func isErrorReply(msg *pahomqtt5.Publish) bool {
 		msg.Properties.ContentType == errorReplyContentType
 }
 
-// errorReplyContentType is the ContentType set on error replies by [ServeRequestReply].
+// errorReplyContentType is the ContentType set on error replies by [Serve].
 const errorReplyContentType = "application/mqtt5-error"
 
 // publishErrorReply sends an error reply to the requester's ResponseTopic.
@@ -488,7 +488,7 @@ type ReplyTopicBuilder func() (responseTopic, subscribeFilter string)
 // Example:
 //
 //	mqtt5.Request(ctx, client, router, handle, req,
-//	    mqtt5.RequestOptions{
+//	    mqtt5.CallOptions{
 //	        ReplyTopicBuilder: mqtt5.UUIDReplyTopic("replies"),
 //	    })
 func UUIDReplyTopic(prefix string) ReplyTopicBuilder {
@@ -515,7 +515,7 @@ func UUIDReplyTopic(prefix string) ReplyTopicBuilder {
 // Example:
 //
 //	mqtt5.Request(ctx, client, router, handle, req,
-//	    mqtt5.RequestOptions{
+//	    mqtt5.CallOptions{
 //	        ReplyTopicBuilder: mqtt5.SharedReplyTopic("replies", "gateway-pool"),
 //	        // ResponseTopic sent:   "replies/<uuid>"
 //	        // client.Subscribe on:  "$share/gateway-pool/replies/<uuid>"

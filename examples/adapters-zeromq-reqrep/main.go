@@ -113,7 +113,7 @@ func main() {
 	obs := stats.NoopObserver{}
 
 	// Layer 2: register route with the ZMQ builder to get an AsyncAPI spec.
-	// The returned handle is a plain *rest.RouteHandle — identical to Phase 1.
+	// The returned handle is a *reqreply.RouteHandle — same type used by both server and client adapters.
 	zmqBuilder := reqreply.NewBuilder(reqreply.Info{Title: "Compute API", Version: "1.0.0"})
 	zmqBuilder.AddServer("zmq", reqreply.Server{
 		URL:         "tcp://localhost:5556",
@@ -127,8 +127,9 @@ func main() {
 		os.Exit(1)
 	}
 
-	// Client side reuses serverHandle — no separate ClientHandle needed.
-	clientHandle := serverHandle
+	// ClientHandle returns a handle with codec helpers but no spec registration.
+	// Use it when the client does not need a builder or AsyncAPI output.
+	clientHandle := ComputeRoute.ClientHandle()
 
 	// In-process socket pair simulating ZMQ REQ ↔ REP.
 	reqSock, repSock := newSocketPair()
@@ -137,7 +138,7 @@ func main() {
 	defer cancel()
 
 	// Layer 3: REP server — blocking, run in a goroutine.
-	// Adapter call is UNCHANGED from Phase 1: serverHandle IS *rest.RouteHandle.
+	// Serve accepts the registered server handle.
 	go func() {
 		if err := zeromq.Serve(ctx, repSock, serverHandle,
 			func(_ context.Context, req ComputeReq) (ComputeResp, error) {

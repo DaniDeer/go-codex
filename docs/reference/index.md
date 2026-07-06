@@ -63,7 +63,7 @@ go get github.com/DaniDeer/go-codex@latest
 | `adapters/nethttp` | net/http: server (Handler, Register) + client (Call) | [→](https://pkg.go.dev/github.com/DaniDeer/go-codex/adapters/nethttp) |
 | `adapters/chi` | chi router adapter | [→](https://pkg.go.dev/github.com/DaniDeer/go-codex/adapters/chi) |
 | `adapters/mqtt` | Paho MQTT 3.1.1: `SubscribeHandler` + `Publish`; uses `api/events` channel declarations | [→](https://pkg.go.dev/github.com/DaniDeer/go-codex/adapters/mqtt) |
-| `adapters/mqtt5` | MQTT 5.0 (paho.golang): `Subscribe` + `Publish` (PUB/SUB) + `ServeRequestReply` + `Request` (request-reply); User Properties + ContentType auto-format; `UserPropertyParam.WithCodec` for property validation | [→](https://pkg.go.dev/github.com/DaniDeer/go-codex/adapters/mqtt5) |
+| `adapters/mqtt5` | MQTT 5.0 (paho.golang): `Subscribe` + `Publish` (PUB/SUB) + `Serve` + `Call` (request-reply); User Properties + ContentType auto-format; `UserPropertyParam.WithCodec` for property validation | [→](https://pkg.go.dev/github.com/DaniDeer/go-codex/adapters/mqtt5) |
 | `adapters/zeromq` | ZeroMQ (CGO-free `FramedSocket` interface): `Subscribe`/`Publish` (PUB/SUB) + `Serve`/`Call` (REQ/REP) + `ServeRouter`/`CallDealer` (DEALER/ROUTER concurrent); accepts `*reqreply.RouteHandle` | [→](https://pkg.go.dev/github.com/DaniDeer/go-codex/adapters/zeromq) |
 | `adapters/mcpgo` | mark3labs/mcp-go adapter | [→](https://pkg.go.dev/github.com/DaniDeer/go-codex/adapters/mcpgo) |
 | `adapters/templ` | templ SSR format plug-in | [→](https://pkg.go.dev/github.com/DaniDeer/go-codex/adapters/templ) |

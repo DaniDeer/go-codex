@@ -198,7 +198,7 @@ func main() {
 	// called from separate goroutines with independent sockets).
 	// Note: sharing one DEALER socket across goroutines requires external
 	// synchronization; per-goroutine sockets are the idiomatic pattern.
-	clientHandle := serverHandle
+	clientHandle := ComputeRoute.ClientHandle()
 	reqs := []ComputeReq{{X: 3, Y: 4}, {X: 10, Y: 20}, {X: -5, Y: 5}}
 
 	for _, req := range reqs {

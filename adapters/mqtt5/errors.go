@@ -106,57 +106,57 @@ func (e PublishEncodeError) LogValue() slog.Value {
 	)
 }
 
-// RequestError wraps requester-side failures in [Request]: encode, send,
+// CallError wraps requester-side failures in [Call]: encode, send,
 // timeout, or reply decode failures.
 //
-//	var reqErr mqtt5.RequestError
-//	if errors.As(err, &reqErr) {
-//	    if reqErr.Kind == mqtt5.KindTimeout {
+//	var callErr mqtt5.CallError
+//	if errors.As(err, &callErr) {
+//	    if callErr.Kind == mqtt5.KindTimeout {
 //	        // retry or report timeout
 //	    }
-//	    slog.Error("mqtt5 request failed", "error", reqErr)
+//	    slog.Error("mqtt5 call failed", "error", callErr)
 //	}
-type RequestError struct {
+type CallError struct {
 	Kind ErrorKind
 	Err  error
 }
 
-func (e RequestError) Error() string {
-	return fmt.Sprintf("mqtt5 request %s: %v", e.Kind, e.Err)
+func (e CallError) Error() string {
+	return fmt.Sprintf("mqtt5 call %s: %v", e.Kind, e.Err)
 }
 
 // Unwrap allows [errors.Is] and [errors.As] to traverse the underlying error.
-func (e RequestError) Unwrap() error { return e.Err }
+func (e CallError) Unwrap() error { return e.Err }
 
 // LogValue implements [slog.LogValuer] for structured logging.
-func (e RequestError) LogValue() slog.Value {
+func (e CallError) LogValue() slog.Value {
 	return slog.GroupValue(
 		slog.String("kind", e.Kind.String()),
 		slog.Any("err", e.Err),
 	)
 }
 
-// ServeRequestReplyError is delivered to [ServeOptions.OnError] on
-// responder-side failures: decode, handler, or reply-encode failures.
+// ServeError is delivered to [ServeOptions.OnError] on responder-side
+// failures: decode, handler, or reply-encode failures.
 //
-//	var serveErr mqtt5.ServeRequestReplyError
+//	var serveErr mqtt5.ServeError
 //	if errors.As(err, &serveErr) {
 //	    slog.Warn("mqtt5 serve failed", "error", serveErr)
 //	}
-type ServeRequestReplyError struct {
+type ServeError struct {
 	Kind ErrorKind
 	Err  error
 }
 
-func (e ServeRequestReplyError) Error() string {
+func (e ServeError) Error() string {
 	return fmt.Sprintf("mqtt5 serve %s: %v", e.Kind, e.Err)
 }
 
 // Unwrap allows [errors.Is] and [errors.As] to traverse the underlying error.
-func (e ServeRequestReplyError) Unwrap() error { return e.Err }
+func (e ServeError) Unwrap() error { return e.Err }
 
 // LogValue implements [slog.LogValuer] for structured logging.
-func (e ServeRequestReplyError) LogValue() slog.Value {
+func (e ServeError) LogValue() slog.Value {
 	return slog.GroupValue(
 		slog.String("kind", e.Kind.String()),
 		slog.Any("err", e.Err),

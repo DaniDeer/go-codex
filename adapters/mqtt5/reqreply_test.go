@@ -23,7 +23,7 @@ func TestServeRequestReply_ValidRoundTrip(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
 
-	err := mqtt5.ServeRequestReply(ctx, client, router, newRouteHandle(),
+	err := mqtt5.Serve(ctx, client, router, newRouteHandle(),
 		func(_ context.Context, req computeReq) (computeResp, error) {
 			return computeResp{Sum: req.X + req.Y}, nil
 		},
@@ -60,17 +60,17 @@ func TestServeRequestReply_ValidRoundTrip(t *testing.T) {
 func TestServeRequestReply_DecodeError(t *testing.T) {
 	client := &mockClient{}
 	router := newMockRouter()
-	var gotErr mqtt5.ServeRequestReplyError
+	var gotErr mqtt5.ServeError
 
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
 
-	_ = mqtt5.ServeRequestReply(ctx, client, router, newRouteHandle(),
+	_ = mqtt5.Serve(ctx, client, router, newRouteHandle(),
 		func(_ context.Context, _ computeReq) (computeResp, error) {
 			t.Fatal("fn must not be called on decode error")
 			return computeResp{}, nil
 		},
-		mqtt5.ServeOptions{OnError: func(e mqtt5.ServeRequestReplyError) { gotErr = e }})
+		mqtt5.ServeOptions{OnError: func(e mqtt5.ServeError) { gotErr = e }})
 
 	router.dispatch("compute/add", &pahomqtt5.Publish{
 		Topic:   "compute/add",
@@ -90,17 +90,17 @@ func TestServeRequestReply_DecodeError(t *testing.T) {
 func TestServeRequestReply_HandlerError(t *testing.T) {
 	client := &mockClient{}
 	router := newMockRouter()
-	var gotErr mqtt5.ServeRequestReplyError
+	var gotErr mqtt5.ServeError
 	handlerErr := errors.New("compute overflow")
 
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
 
-	_ = mqtt5.ServeRequestReply(ctx, client, router, newRouteHandle(),
+	_ = mqtt5.Serve(ctx, client, router, newRouteHandle(),
 		func(_ context.Context, _ computeReq) (computeResp, error) {
 			return computeResp{}, handlerErr
 		},
-		mqtt5.ServeOptions{OnError: func(e mqtt5.ServeRequestReplyError) { gotErr = e }})
+		mqtt5.ServeOptions{OnError: func(e mqtt5.ServeError) { gotErr = e }})
 
 	router.dispatch("compute/add", &pahomqtt5.Publish{
 		Topic:   "compute/add",
@@ -128,7 +128,7 @@ func TestServeRequestReply_ObserverRecordRequestSuccess(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
 
-	_ = mqtt5.ServeRequestReply(ctx, client, router, newRouteHandle(),
+	_ = mqtt5.Serve(ctx, client, router, newRouteHandle(),
 		func(_ context.Context, req computeReq) (computeResp, error) {
 			return computeResp{Sum: req.X + req.Y}, nil
 		},
@@ -156,7 +156,7 @@ func TestServeRequestReply_ObserverRecordRequestFailure(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
 
-	_ = mqtt5.ServeRequestReply(ctx, client, router, newRouteHandle(),
+	_ = mqtt5.Serve(ctx, client, router, newRouteHandle(),
 		func(_ context.Context, _ computeReq) (computeResp, error) { return computeResp{}, nil },
 		mqtt5.ServeOptions{Observer: obs})
 
@@ -180,7 +180,7 @@ func TestServeRequestReply_TraceSpan(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
 
-	_ = mqtt5.ServeRequestReply(ctx, client, router, newRouteHandle(),
+	_ = mqtt5.Serve(ctx, client, router, newRouteHandle(),
 		func(_ context.Context, req computeReq) (computeResp, error) {
 			return computeResp{Sum: req.X + req.Y}, nil
 		},
@@ -224,16 +224,16 @@ func TestRequest_ValidRoundTrip(t *testing.T) {
 	defer cancel()
 
 	// Set up the responder.
-	_ = mqtt5.ServeRequestReply(ctx, client, router, newRouteHandle(),
+	_ = mqtt5.Serve(ctx, client, router, newRouteHandle(),
 		func(_ context.Context, req computeReq) (computeResp, error) {
 			return computeResp{Sum: req.X + req.Y}, nil
 		},
 		mqtt5.ServeOptions{})
 
 	// Make a request.
-	resp, err := mqtt5.Request(ctx, client, router, newRouteHandle(),
+	resp, err := mqtt5.Call(ctx, client, router, newRouteHandle(),
 		computeReq{X: 3, Y: 4},
-		mqtt5.RequestOptions{
+		mqtt5.CallOptions{
 			ReplyTopicPrefix: "replies",
 			Timeout:          2 * time.Second,
 		})
@@ -252,16 +252,16 @@ func TestRequest_Timeout(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
 
-	_, err := mqtt5.Request(ctx, client, router, newRouteHandle(),
+	_, err := mqtt5.Call(ctx, client, router, newRouteHandle(),
 		computeReq{X: 1, Y: 2},
-		mqtt5.RequestOptions{
+		mqtt5.CallOptions{
 			ReplyTopicPrefix: "replies",
 			Timeout:          100 * time.Millisecond,
 		})
 
-	var reqErr mqtt5.RequestError
+	var reqErr mqtt5.CallError
 	if !errors.As(err, &reqErr) {
-		t.Fatalf("expected RequestError, got %T: %v", err, err)
+		t.Fatalf("expected CallError, got %T: %v", err, err)
 	}
 	if reqErr.Kind != mqtt5.KindTimeout {
 		t.Fatalf("expected KindTimeout, got %v", reqErr.Kind)
@@ -275,15 +275,15 @@ func TestRequest_ObserverRecordRequestSuccess(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
 
-	_ = mqtt5.ServeRequestReply(ctx, client, router, newRouteHandle(),
+	_ = mqtt5.Serve(ctx, client, router, newRouteHandle(),
 		func(_ context.Context, req computeReq) (computeResp, error) {
 			return computeResp{Sum: req.X + req.Y}, nil
 		},
 		mqtt5.ServeOptions{})
 
-	_, _ = mqtt5.Request(ctx, client, router, newRouteHandle(),
+	_, _ = mqtt5.Call(ctx, client, router, newRouteHandle(),
 		computeReq{X: 1, Y: 2},
-		mqtt5.RequestOptions{Timeout: 2 * time.Second, Observer: obs})
+		mqtt5.CallOptions{Timeout: 2 * time.Second, Observer: obs})
 
 	if len(obs.requests) != 1 || obs.requests[0] != 200 {
 		t.Fatalf("expected RecordRequest(200), got %v", obs.requests)
@@ -297,9 +297,9 @@ func TestRequest_ObserverRecordRequestTimeout(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
 
-	_, _ = mqtt5.Request(ctx, client, router, newRouteHandle(),
+	_, _ = mqtt5.Call(ctx, client, router, newRouteHandle(),
 		computeReq{X: 1, Y: 2},
-		mqtt5.RequestOptions{Timeout: 50 * time.Millisecond, Observer: obs})
+		mqtt5.CallOptions{Timeout: 50 * time.Millisecond, Observer: obs})
 
 	if len(obs.requests) != 1 || obs.requests[0] != 0 {
 		t.Fatalf("expected RecordRequest(0) on timeout, got %v", obs.requests)
@@ -313,15 +313,15 @@ func TestRequest_TraceSpan(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
 
-	_ = mqtt5.ServeRequestReply(ctx, client, router, newRouteHandle(),
+	_ = mqtt5.Serve(ctx, client, router, newRouteHandle(),
 		func(_ context.Context, req computeReq) (computeResp, error) {
 			return computeResp{Sum: req.X + req.Y}, nil
 		},
 		mqtt5.ServeOptions{})
 
-	_, _ = mqtt5.Request(ctx, client, router, newRouteHandle(),
+	_, _ = mqtt5.Call(ctx, client, router, newRouteHandle(),
 		computeReq{X: 1, Y: 2},
-		mqtt5.RequestOptions{Timeout: 2 * time.Second, Observer: obs})
+		mqtt5.CallOptions{Timeout: 2 * time.Second, Observer: obs})
 
 	if len(obs.startSpanOps) != 1 || obs.startSpanOps[0] != "mqtt5.request" {
 		t.Fatalf("expected StartSpan 'mqtt5.request', got %v", obs.startSpanOps)
@@ -334,13 +334,13 @@ func TestRequest_ContextCancelled(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel() // cancel immediately
 
-	_, err := mqtt5.Request(ctx, client, router, newRouteHandle(),
+	_, err := mqtt5.Call(ctx, client, router, newRouteHandle(),
 		computeReq{X: 1, Y: 2},
-		mqtt5.RequestOptions{Timeout: 5 * time.Second})
+		mqtt5.CallOptions{Timeout: 5 * time.Second})
 
-	var reqErr mqtt5.RequestError
+	var reqErr mqtt5.CallError
 	if !errors.As(err, &reqErr) {
-		t.Fatalf("expected RequestError on ctx cancel, got %T: %v", err, err)
+		t.Fatalf("expected CallError on ctx cancel, got %T: %v", err, err)
 	}
 }
 
@@ -363,9 +363,9 @@ func TestRequest_WithVars_PublishesToResolvedTopic(t *testing.T) {
 
 	// Request will timeout (no responder), but we only care that it published
 	// to the resolved topic "compute/acme/add".
-	_, _ = mqtt5.Request(ctx, client, router, handle,
+	_, _ = mqtt5.Call(ctx, client, router, handle,
 		computeReq{X: 3, Y: 4},
-		mqtt5.RequestOptions{
+		mqtt5.CallOptions{
 			Vars:    map[string]string{"tenantID": "acme"},
 			Timeout: 100 * time.Millisecond, // fast timeout
 		})
@@ -402,20 +402,20 @@ func TestRequest_WithVars_MissingVar_ReturnsRequestError(t *testing.T) {
 	b := reqreply.NewBuilder(reqreply.Info{Title: "Test", Version: "1.0.0"})
 	handle, _ := templateRoute.Register(b)
 
-	_, err := mqtt5.Request(ctx, client, router, handle,
+	_, err := mqtt5.Call(ctx, client, router, handle,
 		computeReq{X: 1, Y: 2},
-		mqtt5.RequestOptions{
+		mqtt5.CallOptions{
 			Vars:    map[string]string{}, // tenantID missing
 			Timeout: time.Second,
 		})
 
-	var reqErr mqtt5.RequestError
+	var reqErr mqtt5.CallError
 	if !errors.As(err, &reqErr) {
-		t.Fatalf("expected RequestError, got %T: %v", err, err)
+		t.Fatalf("expected CallError, got %T: %v", err, err)
 	}
 	var missing reqreply.MissingRouteParamError
 	if !errors.As(reqErr, &missing) {
-		t.Fatalf("expected MissingRouteParamError inside RequestError, got %T", reqErr.Err)
+		t.Fatalf("expected MissingRouteParamError inside CallError, got %T", reqErr.Err)
 	}
 }
 
@@ -436,9 +436,9 @@ func TestRequest_WithVars_MissingVar_ReportsRequiredConstraintWithVarName(t *tes
 	b := reqreply.NewBuilder(reqreply.Info{Title: "Test", Version: "1.0.0"})
 	handle, _ := templateRoute.Register(b)
 
-	_, _ = mqtt5.Request(ctx, client, router, handle,
+	_, _ = mqtt5.Call(ctx, client, router, handle,
 		computeReq{X: 1, Y: 2},
-		mqtt5.RequestOptions{
+		mqtt5.CallOptions{
 			Vars:     map[string]string{}, // tenantID missing
 			Observer: obs,
 		})
@@ -555,8 +555,8 @@ func TestRequest_ReplyTopicBuilder_UsesReturnedResponseTopic(t *testing.T) {
 	handle, _ := computeRoute.Register(b)
 
 	customTopic := "custom/replies/abc"
-	_, _ = mqtt5.Request(ctx, client, router, handle, computeReq{X: 1, Y: 2},
-		mqtt5.RequestOptions{
+	_, _ = mqtt5.Call(ctx, client, router, handle, computeReq{X: 1, Y: 2},
+		mqtt5.CallOptions{
 			ReplyTopicBuilder: func() (string, string) { return customTopic, customTopic },
 			Timeout:           100 * time.Millisecond,
 		})
@@ -595,8 +595,8 @@ func TestRequest_ReplyTopicBuilder_UsesReturnedSubscribeFilter(t *testing.T) {
 	responseTopic := "replies/abc"
 	sharedFilter := "$share/mygroup/replies/abc"
 
-	_, _ = mqtt5.Request(ctx, client, router, handle, computeReq{X: 1, Y: 2},
-		mqtt5.RequestOptions{
+	_, _ = mqtt5.Call(ctx, client, router, handle, computeReq{X: 1, Y: 2},
+		mqtt5.CallOptions{
 			ReplyTopicBuilder: func() (string, string) { return responseTopic, sharedFilter },
 			Timeout:           100 * time.Millisecond,
 		})
@@ -622,14 +622,14 @@ func TestRequest_ReplyTopicBuilder_EmptyResponseTopic_ReturnsRequestError(t *tes
 	b := reqreply.NewBuilder(reqreply.Info{Title: "T", Version: "1"})
 	handle, _ := computeRoute.Register(b)
 
-	_, err := mqtt5.Request(ctx, client, router, handle, computeReq{X: 1, Y: 2},
-		mqtt5.RequestOptions{
+	_, err := mqtt5.Call(ctx, client, router, handle, computeReq{X: 1, Y: 2},
+		mqtt5.CallOptions{
 			ReplyTopicBuilder: func() (string, string) { return "", "" },
 		})
 
-	var reqErr mqtt5.RequestError
+	var reqErr mqtt5.CallError
 	if !errors.As(err, &reqErr) {
-		t.Fatalf("expected RequestError, got %T: %v", err, err)
+		t.Fatalf("expected CallError, got %T: %v", err, err)
 	}
 	if reqErr.Kind != mqtt5.KindEncode {
 		t.Errorf("expected KindEncode, got %v", reqErr.Kind)
@@ -647,8 +647,8 @@ func TestRequest_ReplyTopicBuilder_EmptyFilter_FallsBackToResponseTopic(t *testi
 	handle, _ := computeRoute.Register(b)
 
 	responseTopic := "replies/fallback"
-	_, _ = mqtt5.Request(ctx, client, router, handle, computeReq{X: 1, Y: 2},
-		mqtt5.RequestOptions{
+	_, _ = mqtt5.Call(ctx, client, router, handle, computeReq{X: 1, Y: 2},
+		mqtt5.CallOptions{
 			ReplyTopicBuilder: func() (string, string) { return responseTopic, "" },
 			Timeout:           100 * time.Millisecond,
 		})
@@ -675,8 +675,8 @@ func TestRequest_NilBuilder_UsesReplyTopicPrefix(t *testing.T) {
 	b := reqreply.NewBuilder(reqreply.Info{Title: "T", Version: "1"})
 	handle, _ := computeRoute.Register(b)
 
-	_, _ = mqtt5.Request(ctx, client, router, handle, computeReq{X: 1, Y: 2},
-		mqtt5.RequestOptions{
+	_, _ = mqtt5.Call(ctx, client, router, handle, computeReq{X: 1, Y: 2},
+		mqtt5.CallOptions{
 			ReplyTopicPrefix: "custom-prefix",
 			Timeout:          100 * time.Millisecond,
 		})
@@ -704,8 +704,8 @@ func TestRequest_NilBuilder_DefaultPrefix(t *testing.T) {
 	b := reqreply.NewBuilder(reqreply.Info{Title: "T", Version: "1"})
 	handle, _ := computeRoute.Register(b)
 
-	_, _ = mqtt5.Request(ctx, client, router, handle, computeReq{X: 1, Y: 2},
-		mqtt5.RequestOptions{
+	_, _ = mqtt5.Call(ctx, client, router, handle, computeReq{X: 1, Y: 2},
+		mqtt5.CallOptions{
 			Timeout: 100 * time.Millisecond,
 		})
 

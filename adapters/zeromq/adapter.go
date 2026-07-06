@@ -65,14 +65,31 @@ type ServeOptions struct {
 	Observer stats.Observer
 }
 
-// CallOptions configures [Call].
+// CallOptions configures [Call] and [CallDealer].
 type CallOptions struct {
 	// Observer, when non-nil, receives per-call lifecycle events:
-	// [stats.Observer.RecordRequest] is called with method "ZMQ-REQ", the
-	// route path, status 200 on success, and status 0 or 500 on failure.
-	// Per-field decode errors are reported with location "body".
+	// [stats.Observer.RecordRequest] is called with method "ZMQ-REQ" or
+	// "ZMQ-DEALER", the route path, status 200 on success, and status 0 or
+	// 500 on failure. Per-field decode errors are reported with location "body".
+	// Topic variable errors are reported with location "topic_var".
 	// Defaults to [stats.NoopObserver] when nil.
 	Observer stats.Observer
+
+	// Vars, when non-nil, substitutes {varName} placeholders in the route topic
+	// template before encoding. Uses [reqreply.RouteHandle.BuildTopic] to
+	// resolve and codec-validate each variable.
+	//
+	// In ZMQ REQ/REP, the resolved topic is used for observer reporting only —
+	// the actual routing is socket-based. Validation still runs on each variable.
+	//
+	// Example — template topic "compute/{tenantID}/add":
+	//
+	//	zeromq.Call(ctx, sock, handle, req,
+	//	    zeromq.CallOptions{Vars: map[string]string{"tenantID": "acme"}})
+	//
+	// Returns [CallError] wrapping [reqreply.RouteParamError] or
+	// [reqreply.MissingRouteParamError] on validation failure.
+	Vars map[string]string
 }
 
 // Subscribe blocks and processes incoming messages from a SUB or PULL socket.
@@ -439,6 +456,19 @@ func Call[Req, Resp any](
 	start := time.Now()
 	path := handle.Topic
 	var callErr error
+
+	// Resolve template topic vars if provided.
+	if opts.Vars != nil {
+		var buildErr error
+		path, buildErr = handle.BuildTopic(opts.Vars)
+		if buildErr != nil {
+			stats.ReportErrors(obs, "topic_var", buildErr)
+			obs.RecordRequest("ZMQ-REQ", handle.Topic, 0, time.Since(start))
+			callErr = CallError{Err: buildErr}
+			return zero, callErr
+		}
+	}
+
 	if to, ok := obs.(stats.TraceObserver); ok {
 		ctx = to.StartSpan(ctx, "zmq.request", path)
 		defer func() { to.EndSpan(ctx, callErr) }()
@@ -741,6 +771,19 @@ func CallDealer[Req, Resp any](
 	start := time.Now()
 	path := handle.Topic
 	var callErr error
+
+	// Resolve template topic vars if provided.
+	if opts.Vars != nil {
+		var buildErr error
+		path, buildErr = handle.BuildTopic(opts.Vars)
+		if buildErr != nil {
+			stats.ReportErrors(obs, "topic_var", buildErr)
+			obs.RecordRequest("ZMQ-DEALER", handle.Topic, 0, time.Since(start))
+			callErr = CallError{Err: buildErr}
+			return zero, callErr
+		}
+	}
+
 	if to, ok := obs.(stats.TraceObserver); ok {
 		ctx = to.StartSpan(ctx, "zmq.request", path)
 		defer func() { to.EndSpan(ctx, callErr) }()

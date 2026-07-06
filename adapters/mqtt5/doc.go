@@ -11,7 +11,7 @@
 // Three patterns are supported:
 //
 //   - PUB/SUB — via [api/events] channel declarations + [Subscribe]/[Publish]
-//   - REQ/REP — via [api/rest] route declarations + [ServeRequestReply]/[Request]
+//   - REQ/REP — via [api/reqreply] route declarations + [Serve]/[Call]
 //
 // # MQTT 5 enhancements over MQTT 3.1.1
 //
@@ -21,10 +21,10 @@
 //     property, [Subscribe] auto-selects the matching format from the formats slice
 //     by comparing with [format.Format.ContentType]. Set ContentType on outgoing
 //     messages via [PublishOptions.ContentType].
-//   - Request-Reply: [ServeRequestReply] reads the ResponseTopic and CorrelationData
-//     MQTT 5 message properties to reply to the requester. [Request] publishes
+//   - Request-Reply: [Serve] reads the ResponseTopic and CorrelationData
+//     MQTT 5 message properties to reply to the caller. [Call] publishes
 //     a request with a per-call reply topic and waits for the response.
-//     Customise reply topic generation via [RequestOptions.ReplyTopicBuilder];
+//     Customise reply topic generation via [CallOptions.ReplyTopicBuilder];
 //     use [UUIDReplyTopic] (default) or [SharedReplyTopic] for shared subscriptions.
 //
 // # Client and router
