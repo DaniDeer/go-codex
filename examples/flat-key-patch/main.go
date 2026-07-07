@@ -11,7 +11,7 @@
 // This pattern is common in Azure IoT Edge device twins, Kubernetes ConfigMaps
 // with dot-separated keys, and flat namespaced configuration stores.
 //
-// The example shows seven patterns:
+// The example shows nine patterns:
 //
 //  1. Fixed dotted key — [codex.RequiredField] with a dotted Name literal.
 //  2. Dynamic key via [File.Patch] — build the key with string concatenation.
@@ -21,6 +21,8 @@
 //  6. Schema rendering — twinCodec, moduleCodec, modulePatchCodec as OpenAPI YAML.
 //  7. Error cases + structured logging — FileEncodeError, FileDecodeError, FileReadError.
 //  8. Observer summary — per-operation metrics collected by FileMetricsObserver.
+//  9. Key+value merge with [codex.Entries] — decode flat object into []Container where
+//     container name is extracted from the key. Shows JSON, YAML, and TOML (quoted headers).
 //
 // Run with: go run ./examples/flat-key-patch
 package main
@@ -125,6 +127,60 @@ var moduleKeyConstraint = codex.Constraint[string]{
 var modulePatchCodec = codex.Map[string, ModuleConfig](
 	codex.String().Refine(moduleKeyConstraint),
 	moduleCodec,
+)
+
+// ── Section 9: codecs for Entries key+value merge ────────────────────────────
+
+// Container combines the module name (from the key) with its config (from the value).
+// codex.Entries decodes the flat JSON/YAML/TOML object directly into []Container —
+// no post-processing loop needed.
+type Container struct {
+	Name   string // extracted from wire key, e.g. "cv-writer-kvrocks"
+	Image  string
+	Status string
+}
+
+// containerNameConstraint validates the module name segment (after the prefix).
+var containerNameConstraint = codex.Constraint[string]{
+	Name: "container-name",
+	Check: func(v string) bool {
+		return len(v) > 0 && !strings.ContainsAny(v, " /_")
+	},
+	Message: func(v string) string {
+		return fmt.Sprintf("container name %q must be non-empty and contain no spaces, slashes, or underscores", v)
+	},
+}
+
+// containerKeyCodec: two-layer validation via MapCodecValidated.
+//   - wire codec validates the full dotted key ("properties.desired.modules.cv-writer")
+//   - domain codec validates the extracted container name ("cv-writer")
+//
+// On decode: full key → strip prefix → validate name → return name.
+// On encode: validate name → add prefix → validate full key → return full key.
+var containerKeyCodec = codex.MapCodecValidated(
+	codex.String().Refine(moduleKeyConstraint),
+	codex.String().Refine(containerNameConstraint),
+	func(fullKey string) (string, error) {
+		return strings.TrimPrefix(fullKey, moduleKeyPrefix), nil
+	},
+	func(name string) (string, error) {
+		return moduleKeyPrefix + name, nil
+	},
+)
+
+// containersCodec decodes a flat JSON/YAML/TOML object into []Container.
+// K = string (container name, after prefix stripping).
+// V = ModuleConfig (image + status).
+// merge injects K into Container.Name — no strings.TrimPrefix in merge/split.
+var containersCodec = codex.Entries(
+	containerKeyCodec,
+	moduleCodec,
+	func(name string, m ModuleConfig) Container {
+		return Container{Name: name, Image: m.Image, Status: m.Status}
+	},
+	func(c Container) (string, ModuleConfig) {
+		return c.Name, ModuleConfig{Image: c.Image, Status: c.Status}
+	},
 )
 
 // ── Observer — metrics (counting) ─────────────────────────────────────────────
@@ -380,9 +436,93 @@ func main() {
 	fmt.Printf("failed reads:      %d\n", metrics.readFails)
 	fmt.Printf("failed writes:     %d\n", metrics.writeFails)
 	fmt.Printf("validation errors: %d\n", metrics.valErrors)
+
+	// ── 9. codex.Entries — key+value merge ─────────────────────────────────
+	runEntriesDemo()
 }
 
 func readFile(path string) string {
 	b, _ := os.ReadFile(path)
 	return string(b)
+}
+
+// runEntriesDemo shows Section 9: key+value merge with codex.Entries.
+func runEntriesDemo() {
+	fmt.Println("\n=== 9. Key+value merge with codex.Entries ===")
+
+	// The flat JSON object — keys encode the container name.
+	rawJSON := map[string]any{
+		moduleKeyPrefix + "cv-writer-kvrocks": map[string]any{
+			"image":  "myregistry/cv-writer:1.0",
+			"status": "running",
+		},
+		moduleKeyPrefix + "analytics-engine": map[string]any{
+			"image":  "myregistry/analytics:2.1",
+			"status": "stopped",
+		},
+	}
+
+	// ── 9a. Decode JSON intermediate → []Container ─────────────────────────
+	fmt.Println("\n9a. Decode: flat object → []Container (name extracted from key)")
+	containers, err := containersCodec.Decode(rawJSON)
+	if err != nil {
+		fmt.Println("  decode error:", err)
+		return
+	}
+	for _, c := range containers {
+		fmt.Printf("  Name=%-25s Image=%-35s Status=%s\n", c.Name, c.Image, c.Status)
+	}
+
+	// ── 9b. Encode []Container → flat object ───────────────────────────────
+	fmt.Println("\n9b. Encode: []Container → flat dotted-key object")
+	enc, err := containersCodec.Encode(containers)
+	if err != nil {
+		fmt.Println("  encode error:", err)
+		return
+	}
+	m := enc.(map[string]any)
+	for k := range m {
+		fmt.Printf("  key: %s\n", k)
+	}
+
+	// ── 9c. YAML round-trip ─────────────────────────────────────────────────
+	fmt.Println("\n9c. YAML round-trip (quoted keys preserve dotted path)")
+	yamlFmt := format.YAML(containersCodec)
+	yamlBytes, err := yamlFmt.Marshal(containers)
+	if err != nil {
+		fmt.Println("  YAML marshal error:", err)
+		return
+	}
+	decoded, err := yamlFmt.Unmarshal(yamlBytes)
+	if err != nil {
+		fmt.Println("  YAML unmarshal error:", err)
+		return
+	}
+	fmt.Printf("  decoded %d container(s) from YAML\n", len(decoded))
+
+	// ── 9d. TOML round-trip (quoted table headers) ──────────────────────────
+	fmt.Println("\n9d. TOML round-trip (quoted headers keep dotted key flat)")
+	tomlFmt := format.TOML(containersCodec)
+	tomlBytes, err := tomlFmt.Marshal(containers)
+	if err != nil {
+		fmt.Println("  TOML marshal error:", err)
+		return
+	}
+	decoded, err = tomlFmt.Unmarshal(tomlBytes)
+	if err != nil {
+		fmt.Println("  TOML unmarshal error:", err)
+		return
+	}
+	fmt.Printf("  decoded %d container(s) from TOML\n", len(decoded))
+
+	// ── 9e. Encode validation: invalid container name ───────────────────────
+	fmt.Println("\n9e. Encode with invalid container name → KeyError")
+	bad := []Container{{Name: "bad_name", Image: "img:1", Status: "running"}}
+	_, err = containersCodec.Encode(bad)
+	if err != nil {
+		var ke codex.KeyError
+		if errors.As(err, &ke) {
+			fmt.Printf("  KeyError: key=%q err=%v\n", ke.Key, ke.Err)
+		}
+	}
 }

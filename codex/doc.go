@@ -89,6 +89,30 @@
 //	var UserCodec    = codex.Struct[User](   codex.RequiredField("email", emailField, ...), ...)
 //	var ProfileCodec = codex.Struct[Profile](codex.RequiredField("email", emailField, ...), ...)
 //
+// Key composing constructors:
+//
+//   - [SliceOf] — homogeneous array
+//   - [StringMap] — map[string]V
+//   - [Map] — map[K]V with validated keys
+//   - [Entries] — JSON/YAML/TOML object where key+value are merged into a single element type
+//   - [Nullable] — optional pointer *T
+//   - [TaggedUnion] — discriminated union
+//   - [UntaggedUnion] — structural union (first-match decode)
+//
+// [Entries] is particularly useful when the object key carries domain meaning:
+//
+//	var containersCodec = codex.Entries(
+//	    containerKeyCodec,   // validates + strips prefix from wire key
+//	    moduleCodec,         // decodes value
+//	    func(name string, m ModuleConfig) Container {
+//	        return Container{Name: name, Image: m.Image, Status: m.Status}
+//	    },
+//	    func(c Container) (string, ModuleConfig) {
+//	        return c.Name, ModuleConfig{Image: c.Image, Status: c.Status}
+//	    },
+//	)
+//	// Codec[[]Container] — no post-processing needed
+//
 // # Smart constructors
 //
 // Use [Codec.New] to validate at construction time:

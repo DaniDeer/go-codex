@@ -64,6 +64,7 @@ The following constructors accept another codec as an argument, letting you comp
 | `codex.TaggedUnion[T](tag, variants...)` | discriminated union — tag field selects variant | `TaggedUnion[Shape]("type", circleVariant, rectVariant)` |
 | `codex.UntaggedUnion[T](which, variants...)` | structural union — first-match decode | `UntaggedUnion[Shape](selector, variants...)` |
 | `codex.Either2(ca, cb)` | two-branch sum — `Either[A, B]` | `Either2(codex.String(), dbConfigCodec)` |
+| `codex.Entries(keyCodec, valCodec, merge, split)` | object → `[]R`, key merged into element | `Entries(containerKeyCodec, moduleCodec, merge, split)` |
 | `codex.Nullable(SliceOf(inner))` | optional array | compose freely to any depth |
 
 Any of these can be used as the codec argument of `RequiredField` / `OptionalField`, so nesting is unlimited: `Struct` → `SliceOf(Struct)` → `Nullable(Struct)` → …
@@ -226,6 +227,81 @@ var orderCodec = codex.Struct[Order](
 - Schema generation — `OrderCodec.Schema` produces a nested `$object` with inline `Customer` and `Address` schemas.
 
 See [`examples/order`](https://github.com/DaniDeer/go-codex/tree/main/examples/order) for a complete runnable demo with all four nesting patterns.
+
+## Merging key and value into one type (`Entries`)
+
+`Entries[K, V, R]` handles the case where the **object key itself carries domain meaning** that belongs inside the value struct. It decodes a JSON/YAML/TOML object into `[]R`, merging the decoded key and value into each element.
+
+**Use case:** Azure IoT Edge device twins, Kubernetes ConfigMaps, and similar formats use dotted keys like `"properties.desired.modules.cv-writer-kvrocks"` where the last segment is the container name. With `Entries`, this decodes directly into `[]Container` — no post-processing loop needed.
+
+### Recommended key codec: `MapCodecValidated` (Option B)
+
+Put the prefix logic in the key codec, not in `merge`/`split`. This way:
+- The key codec validates the full wire key **and** the extracted container name separately
+- `merge` receives only the already-extracted name — no `strings.TrimPrefix` needed
+- `split` returns only the name — the codec re-adds the prefix on encode
+
+```go
+const prefix = "properties.desired.modules."
+
+var containerNameConstraint = codex.Constraint[string]{
+    Name:  "container-name",
+    Check: func(v string) bool { return len(v) > 0 && !strings.ContainsAny(v, " /_") },
+}
+var moduleKeyConstraint = codex.Constraint[string]{
+    Name:  "module-key-path",
+    Check: func(v string) bool { return strings.HasPrefix(v, prefix) && len(v) > len(prefix) },
+}
+
+// containerKeyCodec: wire validates full dotted key; domain validates container name.
+var containerKeyCodec = codex.MapCodecValidated(
+    codex.String().Refine(moduleKeyConstraint),      // wire: "properties.desired.modules.cv-writer"
+    codex.String().Refine(containerNameConstraint),   // domain: "cv-writer"
+    func(fullKey string) (string, error) {            // decode: strip prefix
+        return strings.TrimPrefix(fullKey, prefix), nil
+    },
+    func(name string) (string, error) {               // encode: add prefix
+        return prefix + name, nil
+    },
+)
+
+var containersCodec = codex.Entries(
+    containerKeyCodec,   // K = string (container name)
+    moduleCodec,         // V = ModuleConfig
+    func(name string, m ModuleConfig) Container {     // merge: name already extracted
+        return Container{Name: name, Image: m.Image, Status: m.Status}
+    },
+    func(c Container) (string, ModuleConfig) {        // split: returns container name
+        return c.Name, ModuleConfig{Image: c.Image, Status: c.Status}
+    },
+)
+// → Codec[[]Container]
+```
+
+### Encode path walkthrough
+
+For `Container{Name: "cv-writer", Image: "registry/cv-writer:1.0", Status: "running"}`:
+
+1. `split(c)` → `("cv-writer", ModuleConfig{...})`
+2. `containerKeyCodec.Encode("cv-writer")`:
+   - `containerNameConstraint.Validate("cv-writer")` ✅
+   - adds prefix → `"properties.desired.modules.cv-writer"`
+   - `moduleKeyConstraint.Validate("properties.desired.modules.cv-writer")` ✅
+3. `moduleCodec.Encode(ModuleConfig{...})` → `{"image":"...","status":"running"}`
+4. Wire result: `{"properties.desired.modules.cv-writer": {"image":"...","status":"running"}}`
+
+For `Container{Name: "BAD NAME!"}`: step 2 fails at `containerNameConstraint` → `KeyError{Key: "BAD NAME!", Err: ConstraintError{...}}`.
+
+### Format compatibility
+
+| Format | Flat dotted key | Notes |
+|---|---|---|
+| JSON | ✅ | Always flat string keys |
+| YAML (quoted) | ✅ | `"properties.desired.modules.cv-writer":` → flat key |
+| TOML (quoted headers) | ✅ | `["properties.desired.modules.cv-writer"]` → flat key |
+| TOML (bare dotted) | ⚠️ | `[properties.desired.modules]` → **nested** per TOML spec — use quoted headers |
+
+See [`examples/flat-key-patch`](https://github.com/DaniDeer/go-codex/tree/main/examples/flat-key-patch) for a runnable demo including JSON, YAML, and TOML variants.
 
 ## Cross-field constraints: RefineFunc
 
