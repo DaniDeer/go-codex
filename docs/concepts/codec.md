@@ -50,6 +50,24 @@ go-codex collapses all three into a single `Codec[T]` that you define once and p
 | `codex.Pure(value)` | `T` | fixed wire value | `{enum:[value]}` |
 | `codex.Eq(base, value)` | `T comparable` | validated by base | base schema + `{enum:[value]}` |
 
+### Composition at a glance
+
+The following constructors accept another codec as an argument, letting you compose types of arbitrary depth and shape:
+
+| Composer | Use for | Example |
+|---|---|---|
+| `codex.Struct[T](fields...)` | object with named, typed fields | `Struct[Order](RequiredField("customer", customerCodec, ...))` |
+| `codex.SliceOf(elem)` | homogeneous array | `SliceOf(lineItemCodec)` → `Codec[[]LineItem]` |
+| `codex.StringMap(value)` | `map[string]V` — string keys, typed values | `StringMap(codex.Int())` → `Codec[map[string]int]` |
+| `codex.Map(keyCodec, valCodec)` | `map[K]V` — both key and value validated | `Map(sensorIDCodec, codex.Float64())` |
+| `codex.Nullable(inner)` | optional pointer `*T` (present or nil) | `Nullable(codex.String())` → `Codec[*string]` |
+| `codex.TaggedUnion[T](tag, variants...)` | discriminated union — tag field selects variant | `TaggedUnion[Shape]("type", circleVariant, rectVariant)` |
+| `codex.UntaggedUnion[T](which, variants...)` | structural union — first-match decode | `UntaggedUnion[Shape](selector, variants...)` |
+| `codex.Either2(ca, cb)` | two-branch sum — `Either[A, B]` | `Either2(codex.String(), dbConfigCodec)` |
+| `codex.Nullable(SliceOf(inner))` | optional array | compose freely to any depth |
+
+Any of these can be used as the codec argument of `RequiredField` / `OptionalField`, so nesting is unlimited: `Struct` → `SliceOf(Struct)` → `Nullable(Struct)` → …
+
 ```go
 // Nullable pointer field
 var noteCodec = codex.Nullable(codex.String())  // Codec[*string]
@@ -126,6 +144,52 @@ var UserCodec    = codex.Struct[User](   codex.RequiredField("email", emailField
 var ProfileCodec = codex.Struct[Profile](codex.RequiredField("email", emailFieldCodec, ...), ...)
 // Both carry the same constraint and description — no duplication.
 ```
+
+## Nested structs
+
+A field codec can be any `Codec[F]` — including another `Struct[...]` codec. Nesting is unlimited and composes with `SliceOf`, `Nullable`, and `StringMap`:
+
+```go
+type Address struct { Street, City, Country string }
+type Customer struct { Name, Email string }
+type LineItem struct { Product string; Quantity int; Price float64 }
+type Order struct {
+    ID       string
+    Customer Customer
+    Shipping Address
+    Items    []LineItem
+    Tags     map[string]string
+    Note     *string
+}
+
+var addressCodec = codex.Struct[Address](
+    codex.RequiredField("street",  codex.String().Refine(validate.NonEmptyString), ...),
+    codex.RequiredField("city",    codex.String().Refine(validate.NonEmptyString), ...),
+    codex.RequiredField("country", codex.String().Refine(validate.NonEmptyString), ...),
+)
+
+var lineItemCodec = codex.Struct[LineItem](
+    codex.RequiredField("product",  codex.String(), ...),
+    codex.RequiredField("quantity", codex.Int().Refine(validate.PositiveInt), ...),
+    codex.RequiredField("price",    codex.Float64().Refine(validate.PositiveFloat), ...),
+)
+
+var orderCodec = codex.Struct[Order](
+    codex.RequiredField("id",       codex.String(), ...),
+    codex.RequiredField("customer", customerCodec,              ...),  // nested Struct
+    codex.RequiredField("shipping", addressCodec,               ...),  // nested Struct
+    codex.RequiredField("items",    codex.SliceOf(lineItemCodec), ...), // slice of structs
+    codex.OptionalField("tags",     codex.StringMap(codex.String()), ...), // map
+    codex.OptionalField("note",     codex.Nullable(codex.String()),  ...), // optional
+)
+```
+
+**What you get for free:**
+- Encode/decode recurses automatically — `order.Customer` is a Go struct, the JSON `"customer"` is an object.
+- Validation cascades — a constraint failure on `customer.email` surfaces as `ValidationErrors` with path `"customer.email"`.
+- Schema generation — `OrderCodec.Schema` produces a nested `$object` with inline `Customer` and `Address` schemas.
+
+See [`examples/order`](https://github.com/DaniDeer/go-codex/tree/main/examples/order) for a complete runnable demo with all four nesting patterns.
 
 ## Cross-field constraints: RefineFunc
 
