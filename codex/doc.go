@@ -94,14 +94,14 @@
 //   - [SliceOf] — homogeneous array
 //   - [StringMap] — map[string]V
 //   - [Map] — map[K]V with validated keys
-//   - [Entries] — JSON/YAML/TOML object where key+value are merged into a single element type
+//   - [EntrySlice] — JSON/YAML/TOML object where key+value are merged into a single element type
 //   - [Nullable] — optional pointer *T
 //   - [TaggedUnion] — discriminated union
 //   - [UntaggedUnion] — structural union (first-match decode)
 //
-// [Entries] is particularly useful when the object key carries domain meaning:
+// [EntrySlice] is particularly useful when the object key carries domain meaning:
 //
-//	var containersCodec = codex.Entries(
+//	var containersCodec = codex.EntrySlice(
 //	    containerKeyCodec,   // validates + strips prefix from wire key
 //	    moduleCodec,         // decodes value
 //	    func(name string, m ModuleConfig) Container {

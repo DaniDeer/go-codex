@@ -44,7 +44,7 @@ func StringMap[V any](value Codec[V]) Codec[map[string]V] {
 	}
 }
 
-// Entries[K, V, R any] decodes a JSON/YAML/TOML object by merging each entry's decoded
+// EntrySlice[K, V, R any] decodes a JSON/YAML/TOML object by merging each entry's decoded
 // key and value into a single element of type R. The result is Codec[[]R].
 //
 // keyCodec decodes each string key on the wire into K and validates it.
@@ -59,7 +59,7 @@ func StringMap[V any](value Codec[V]) Codec[map[string]V] {
 //
 //	{"properties.desired.modules.cv-writer": {"image": "...", "status": "running"}}
 //
-// With Entries, this decodes directly into []Container where Container.Name is
+// With EntrySlice, this decodes directly into []Container where Container.Name is
 // extracted from the key by the key codec (e.g. via [MapCodecValidated] to strip a prefix).
 //
 // All key errors are reported as [KeyError]{Key, Err}. The order of elements in the
@@ -72,7 +72,7 @@ func StringMap[V any](value Codec[V]) Codec[map[string]V] {
 //
 // Schema: identical to [Map] — an object schema with propertyNames for the key
 // constraint and additionalProperties for the value schema.
-func Entries[K comparable, V, R any](
+func EntrySlice[K comparable, V, R any](
 	keyCodec Codec[K],
 	valueCodec Codec[V],
 	merge func(K, V) R,

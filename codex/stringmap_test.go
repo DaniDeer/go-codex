@@ -191,7 +191,7 @@ func TestMap_Schema(t *testing.T) {
 	}
 }
 
-// ── Entries tests ─────────────────────────────────────────────────────────────
+// ── EntrySlice tests ─────────────────────────────────────────────────────────────
 
 const moduleKeyPrefix = "properties.desired.modules."
 
@@ -248,7 +248,7 @@ var containerKeyCodec = codex.MapCodecValidated(
 	func(name string) (string, error) { return moduleKeyPrefix + name, nil },
 )
 
-var containersCodec = codex.Entries(
+var containersCodec = codex.EntrySlice(
 	containerKeyCodec,
 	moduleConfigCodec,
 	func(name string, m moduleConfig) container {
@@ -259,7 +259,7 @@ var containersCodec = codex.Entries(
 	},
 )
 
-func TestEntries_RoundTrip(t *testing.T) {
+func TestEntrySlice_RoundTrip(t *testing.T) {
 	input := []container{
 		{Name: "cv-writer", Image: "registry/cv-writer:1.0", Status: "running"},
 		{Name: "analytics", Image: "registry/analytics:2.0", Status: "stopped"},
@@ -292,7 +292,7 @@ func TestEntries_RoundTrip(t *testing.T) {
 	}
 }
 
-func TestEntries_Empty(t *testing.T) {
+func TestEntrySlice_Empty(t *testing.T) {
 	enc, err := containersCodec.Encode([]container{})
 	if err != nil {
 		t.Fatalf("Encode empty: %v", err)
@@ -306,7 +306,7 @@ func TestEntries_Empty(t *testing.T) {
 	}
 }
 
-func TestEntries_DecodeWrongType(t *testing.T) {
+func TestEntrySlice_DecodeWrongType(t *testing.T) {
 	_, err := containersCodec.Decode("not-an-object")
 	if err == nil {
 		t.Fatal("expected error for non-object input")
@@ -317,7 +317,7 @@ func TestEntries_DecodeWrongType(t *testing.T) {
 	}
 }
 
-func TestEntries_KeyError_Decode(t *testing.T) {
+func TestEntrySlice_KeyError_Decode(t *testing.T) {
 	// Key missing the required prefix → keyCodec.Decode fails.
 	raw := map[string]any{
 		"invalid-no-prefix": map[string]any{"image": "img:1", "status": "running"},
@@ -335,7 +335,7 @@ func TestEntries_KeyError_Decode(t *testing.T) {
 	}
 }
 
-func TestEntries_KeyError_Encode(t *testing.T) {
+func TestEntrySlice_KeyError_Encode(t *testing.T) {
 	// Container name contains underscore — fails containerNameConstraint.
 	bad := []container{{Name: "bad_name", Image: "img:1", Status: "running"}}
 	_, err := containersCodec.Encode(bad)
@@ -348,7 +348,7 @@ func TestEntries_KeyError_Encode(t *testing.T) {
 	}
 }
 
-func TestEntries_ValueError_Decode(t *testing.T) {
+func TestEntrySlice_ValueError_Decode(t *testing.T) {
 	// Value has an invalid status — valueCodec.Decode fails.
 	raw := map[string]any{
 		moduleKeyPrefix + "cv-writer": map[string]any{"image": "img:1", "status": "INVALID"},
@@ -366,7 +366,7 @@ func TestEntries_ValueError_Decode(t *testing.T) {
 	}
 }
 
-func TestEntries_Schema(t *testing.T) {
+func TestEntrySlice_Schema(t *testing.T) {
 	s := containersCodec.Schema
 	if s.Type != "object" {
 		t.Errorf("expected schema type=object, got %q", s.Type)
@@ -379,7 +379,7 @@ func TestEntries_Schema(t *testing.T) {
 	}
 }
 
-func TestEntries_WithYAML_RoundTrip(t *testing.T) {
+func TestEntrySlice_WithYAML_RoundTrip(t *testing.T) {
 	f := format.YAML(containersCodec)
 	input := []container{
 		{Name: "cv-writer", Image: "registry/cv-writer:1.0", Status: "running"},
@@ -397,7 +397,7 @@ func TestEntries_WithYAML_RoundTrip(t *testing.T) {
 	}
 }
 
-func TestEntries_WithTOML_RoundTrip(t *testing.T) {
+func TestEntrySlice_WithTOML_RoundTrip(t *testing.T) {
 	f := format.TOML(containersCodec)
 	input := []container{
 		{Name: "cv-writer", Image: "registry/cv-writer:1.0", Status: "running"},
@@ -415,7 +415,7 @@ func TestEntries_WithTOML_RoundTrip(t *testing.T) {
 	}
 }
 
-func ExampleEntries() {
+func ExampleEntrySlice() {
 	type ModuleConfig struct {
 		Image  string
 		Status string
@@ -442,7 +442,7 @@ func ExampleEntries() {
 			func(m *ModuleConfig, v string) { m.Status = v },
 		),
 	)
-	c := codex.Entries(
+	c := codex.EntrySlice(
 		keyCodec,
 		valueCodec,
 		func(name string, m ModuleConfig) Container {

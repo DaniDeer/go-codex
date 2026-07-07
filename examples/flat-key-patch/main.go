@@ -21,7 +21,7 @@
 //  6. Schema rendering — twinCodec, moduleCodec, modulePatchCodec as OpenAPI YAML.
 //  7. Error cases + structured logging — FileEncodeError, FileDecodeError, FileReadError.
 //  8. Observer summary — per-operation metrics collected by FileMetricsObserver.
-//  9. Key+value merge with [codex.Entries] — decode flat object into []Container where
+//  9. Key+value merge with [codex.EntrySlice] — decode flat object into []Container where
 //     container name is extracted from the key. Shows JSON, YAML, and TOML (quoted headers).
 //
 // Run with: go run ./examples/flat-key-patch
@@ -129,10 +129,10 @@ var modulePatchCodec = codex.Map[string, ModuleConfig](
 	moduleCodec,
 )
 
-// ── Section 9: codecs for Entries key+value merge ────────────────────────────
+// ── Section 9: codecs for EntrySlice key+value merge ────────────────────────────
 
 // Container combines the module name (from the key) with its config (from the value).
-// codex.Entries decodes the flat JSON/YAML/TOML object directly into []Container —
+// codex.EntrySlice decodes the flat JSON/YAML/TOML object directly into []Container —
 // no post-processing loop needed.
 type Container struct {
 	Name   string // extracted from wire key, e.g. "cv-writer-kvrocks"
@@ -172,7 +172,7 @@ var containerKeyCodec = codex.MapCodecValidated(
 // K = string (container name, after prefix stripping).
 // V = ModuleConfig (image + status).
 // merge injects K into Container.Name — no strings.TrimPrefix in merge/split.
-var containersCodec = codex.Entries(
+var containersCodec = codex.EntrySlice(
 	containerKeyCodec,
 	moduleCodec,
 	func(name string, m ModuleConfig) Container {
@@ -437,7 +437,7 @@ func main() {
 	fmt.Printf("failed writes:     %d\n", metrics.writeFails)
 	fmt.Printf("validation errors: %d\n", metrics.valErrors)
 
-	// ── 9. codex.Entries — key+value merge ─────────────────────────────────
+	// ── 9. codex.EntrySlice — key+value merge ─────────────────────────────────
 	runEntriesDemo()
 }
 
@@ -446,9 +446,9 @@ func readFile(path string) string {
 	return string(b)
 }
 
-// runEntriesDemo shows Section 9: key+value merge with codex.Entries.
+// runEntriesDemo shows Section 9: key+value merge with codex.EntrySlice.
 func runEntriesDemo() {
-	fmt.Println("\n=== 9. Key+value merge with codex.Entries ===")
+	fmt.Println("\n=== 9. Key+value merge with codex.EntrySlice ===")
 
 	// The flat JSON object — keys encode the container name.
 	rawJSON := map[string]any{

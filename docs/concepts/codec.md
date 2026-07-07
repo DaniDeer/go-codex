@@ -64,7 +64,7 @@ The following constructors accept another codec as an argument, letting you comp
 | `codex.TaggedUnion[T](tag, variants...)` | discriminated union — tag field selects variant | `TaggedUnion[Shape]("type", circleVariant, rectVariant)` |
 | `codex.UntaggedUnion[T](which, variants...)` | structural union — first-match decode | `UntaggedUnion[Shape](selector, variants...)` |
 | `codex.Either2(ca, cb)` | two-branch sum — `Either[A, B]` | `Either2(codex.String(), dbConfigCodec)` |
-| `codex.Entries(keyCodec, valCodec, merge, split)` | object → `[]R`, key merged into element | `Entries(containerKeyCodec, moduleCodec, merge, split)` |
+| `codex.EntrySlice(keyCodec, valCodec, merge, split)` | object → `[]R`, key merged into element | `EntrySlice(containerKeyCodec, moduleCodec, merge, split)` |
 | `codex.Nullable(SliceOf(inner))` | optional array | compose freely to any depth |
 
 Any of these can be used as the codec argument of `RequiredField` / `OptionalField`, so nesting is unlimited: `Struct` → `SliceOf(Struct)` → `Nullable(Struct)` → …
@@ -228,11 +228,11 @@ var orderCodec = codex.Struct[Order](
 
 See [`examples/order`](https://github.com/DaniDeer/go-codex/tree/main/examples/order) for a complete runnable demo with all four nesting patterns.
 
-## Merging key and value into one type (`Entries`)
+## Merging key and value into one type (`EntrySlice`)
 
-`Entries[K, V, R]` handles the case where the **object key itself carries domain meaning** that belongs inside the value struct. It decodes a JSON/YAML/TOML object into `[]R`, merging the decoded key and value into each element.
+`EntrySlice[K, V, R]` handles the case where the **object key itself carries domain meaning** that belongs inside the value struct. It decodes a JSON/YAML/TOML object into `[]R`, merging the decoded key and value into each element.
 
-**Use case:** Azure IoT Edge device twins, Kubernetes ConfigMaps, and similar formats use dotted keys like `"properties.desired.modules.cv-writer-kvrocks"` where the last segment is the container name. With `Entries`, this decodes directly into `[]Container` — no post-processing loop needed.
+**Use case:** Azure IoT Edge device twins, Kubernetes ConfigMaps, and similar formats use dotted keys like `"properties.desired.modules.cv-writer-kvrocks"` where the last segment is the container name. With `EntrySlice`, this decodes directly into `[]Container` — no post-processing loop needed.
 
 ### Recommended key codec: `MapCodecValidated` (Option B)
 
@@ -265,7 +265,7 @@ var containerKeyCodec = codex.MapCodecValidated(
     },
 )
 
-var containersCodec = codex.Entries(
+var containersCodec = codex.EntrySlice(
     containerKeyCodec,   // K = string (container name)
     moduleCodec,         // V = ModuleConfig
     func(name string, m ModuleConfig) Container {     // merge: name already extracted
