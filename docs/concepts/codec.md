@@ -454,6 +454,56 @@ var cvWriterCodec = codex.Struct[Container](
 
 See [`examples/flat-key-patch` Section 11](https://github.com/DaniDeer/go-codex/tree/main/examples/flat-key-patch) for the full runnable demo.
 
+### Schema generation and OpenAPI / AsyncAPI embedding
+
+`EntrySlice` emits the **same schema as `Map[K, V]`** — an object schema. The Go type is `[]R` (a slice), but the wire format is a JSON object, so the schema correctly documents what is on the wire:
+
+```yaml
+type: object
+propertyNames:           # key codec schema — validates each JSON key
+  type: string
+  title: ContainerName   # set via .WithTitle() on the key codec
+  minLength: 1
+additionalProperties:    # value codec schema — validates each JSON value
+  type: object
+  properties:
+    image:
+      type: string
+      minLength: 1
+    status:
+      type: string
+      enum: [running, stopped]
+  required: [image, status]
+```
+
+**It embeds transparently** into OpenAPI and AsyncAPI — use it anywhere you'd use any other `Codec[T]`:
+
+```go
+// OpenAPI — as a response body
+rest.NewRoute[GetReq, []Container]("GET", "/twins/{id}/modules",
+    reqCodec,
+    containersCodec,    // Codec[[]Container] — emits object schema in spec
+    rest.RouteMeta{OperationID: "listModules"},
+)
+
+// AsyncAPI — as a channel payload
+events.NewChannel[[]Container]("twins/{id}/modules", containersCodec,
+    events.Subscribe{Summary: "Module container list from device twin."},
+)
+```
+
+Both produce the same `type: object` schema in their respective specs.
+
+**`propertyNames.title` documents the key role.** Add `.WithTitle(...)` on the domain string codec in your key codec to give the key a readable name in the schema:
+
+```go
+codex.String().Refine(validate.NonEmptyString).
+    WithTitle("ContainerName").
+    WithDescription("Container name — appears as the JSON object key, not a value field.")
+```
+
+**What does NOT appear in the schema:** the `Name` field of `Container` — because `name` is not in `moduleCodec`. The schema documents the wire format (key = container name, value = `{image, status}`), not the Go struct. This is correct: on the wire, `name` IS the key.
+
 ## Cross-field constraints: RefineFunc
 
 `RefineFunc` wraps a `func(T) error` applied on both Encode and Decode. Use it to validate relationships between fields:
