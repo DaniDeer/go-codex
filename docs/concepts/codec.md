@@ -243,6 +243,22 @@ var dateRangeCodec = codex.Struct[DateRange](
 })
 ```
 
+## Unknown fields on decode
+
+The decode loop iterates only over the fields you declared. Keys present in the incoming object but not in the codec are **silently dropped** — they never touch the result struct and do not cause an error.
+
+```go
+// Wire JSON: {"name":"Alice","email":"alice@example.com","role":"admin","_internal":123}
+// Codec declares: "name", "email" only
+// Result: User{Name: "Alice", Email: "alice@example.com"}  ← "role", "_internal" dropped
+```
+
+The encode side is symmetric: `Encode` writes only declared fields. Any Go struct fields without a codec entry are absent from the output.
+
+This is intentional — it makes the codec resilient to API evolution. A producer can add new fields without breaking consumers that have not declared them yet.
+
+If you need to reject unknown fields, add a `RefineFunc` that compares incoming keys against the declared set. The generated schema does **not** emit `"additionalProperties": false` by default.
+
 ## Encode, Decode, and Validation
 
 | Direction | What runs | Rationale |
