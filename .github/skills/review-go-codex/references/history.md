@@ -1,6 +1,13 @@
-# go-codex Review History (R1–R28)
+# go-codex Review History (R1–R30)
 
 Do not re-report any of these findings. They have been implemented and tested.
+
+---
+
+## Round 30 (mcpgo ToolOutputError wrapping + stale test names)
+
+- **G1 — `adapters/mcpgo` ToolOutputError discarded in fmt.Errorf wrap**: `fmt.Errorf("...: %w", toe.Err)` at adapter.go:118 wrapped the inner codec error and discarded the `ToolOutputError` outer wrapper, making `errors.As(err, &mcp.ToolOutputError{})` fail; changed `toe.Err` → `err` so the typed sentinel stays in the error chain.
+- **G2 — `adapters/mqtt5/reqreply_test.go` stale test function names**: 21 test functions were still named `TestServeRequestReply_*` and `TestRequest_*` after the R29 rename of the API to `Serve`/`Call`; renamed all affected test functions and their string literals to match.
 
 ---
 

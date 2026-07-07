@@ -14,9 +14,9 @@ import (
 
 const validComputeJSON = `{"x":3,"y":4}`
 
-// ── ServeRequestReply tests ───────────────────────────────────────────────────
+// ── Serve tests ──────────────────────────────────────────────────────
 
-func TestServeRequestReply_ValidRoundTrip(t *testing.T) {
+func TestServe_ValidRoundTrip(t *testing.T) {
 	client := &mockClient{}
 	router := newMockRouter()
 
@@ -29,7 +29,7 @@ func TestServeRequestReply_ValidRoundTrip(t *testing.T) {
 		},
 		mqtt5.ServeOptions{})
 	if err != nil {
-		t.Fatalf("ServeRequestReply setup failed: %v", err)
+		t.Fatalf("Serve setup failed: %v", err)
 	}
 
 	// Dispatch a request message with ResponseTopic set.
@@ -57,7 +57,7 @@ func TestServeRequestReply_ValidRoundTrip(t *testing.T) {
 	}
 }
 
-func TestServeRequestReply_DecodeError(t *testing.T) {
+func TestServe_DecodeError(t *testing.T) {
 	client := &mockClient{}
 	router := newMockRouter()
 	var gotErr mqtt5.ServeError
@@ -87,7 +87,7 @@ func TestServeRequestReply_DecodeError(t *testing.T) {
 	}
 }
 
-func TestServeRequestReply_HandlerError(t *testing.T) {
+func TestServe_HandlerError(t *testing.T) {
 	client := &mockClient{}
 	router := newMockRouter()
 	var gotErr mqtt5.ServeError
@@ -120,7 +120,7 @@ func TestServeRequestReply_HandlerError(t *testing.T) {
 	}
 }
 
-func TestServeRequestReply_ObserverRecordRequestSuccess(t *testing.T) {
+func TestServe_ObserverRecordRequestSuccess(t *testing.T) {
 	obs := &testObserver{}
 	client := &mockClient{}
 	router := newMockRouter()
@@ -148,7 +148,7 @@ func TestServeRequestReply_ObserverRecordRequestSuccess(t *testing.T) {
 	}
 }
 
-func TestServeRequestReply_ObserverRecordRequestFailure(t *testing.T) {
+func TestServe_ObserverRecordRequestFailure(t *testing.T) {
 	obs := &testObserver{}
 	client := &mockClient{}
 	router := newMockRouter()
@@ -172,7 +172,7 @@ func TestServeRequestReply_ObserverRecordRequestFailure(t *testing.T) {
 	}
 }
 
-func TestServeRequestReply_TraceSpan(t *testing.T) {
+func TestServe_TraceSpan(t *testing.T) {
 	obs := &testObserver{}
 	client := &mockClient{}
 	router := newMockRouter()
@@ -217,7 +217,7 @@ func (c *brokerClient) Publish(ctx context.Context, p *pahomqtt5.Publish) (*paho
 	return resp, nil
 }
 
-func TestRequest_ValidRoundTrip(t *testing.T) {
+func TestCall_ValidRoundTrip(t *testing.T) {
 	router := newMockRouter()
 	client := &brokerClient{router: router}
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
@@ -245,7 +245,7 @@ func TestRequest_ValidRoundTrip(t *testing.T) {
 	}
 }
 
-func TestRequest_Timeout(t *testing.T) {
+func TestCall_Timeout(t *testing.T) {
 	// Client that never triggers the reply.
 	client := &mockClient{}
 	router := newMockRouter()
@@ -268,7 +268,7 @@ func TestRequest_Timeout(t *testing.T) {
 	}
 }
 
-func TestRequest_ObserverRecordRequestSuccess(t *testing.T) {
+func TestCall_ObserverRecordRequestSuccess(t *testing.T) {
 	obs := &testObserver{}
 	router := newMockRouter()
 	client := &brokerClient{router: router}
@@ -290,7 +290,7 @@ func TestRequest_ObserverRecordRequestSuccess(t *testing.T) {
 	}
 }
 
-func TestRequest_ObserverRecordRequestTimeout(t *testing.T) {
+func TestCall_ObserverRecordRequestTimeout(t *testing.T) {
 	obs := &testObserver{}
 	client := &mockClient{}
 	router := newMockRouter()
@@ -306,7 +306,7 @@ func TestRequest_ObserverRecordRequestTimeout(t *testing.T) {
 	}
 }
 
-func TestRequest_TraceSpan(t *testing.T) {
+func TestCall_TraceSpan(t *testing.T) {
 	obs := &testObserver{}
 	router := newMockRouter()
 	client := &brokerClient{router: router}
@@ -328,7 +328,7 @@ func TestRequest_TraceSpan(t *testing.T) {
 	}
 }
 
-func TestRequest_ContextCancelled(t *testing.T) {
+func TestCall_ContextCancelled(t *testing.T) {
 	client := &mockClient{}
 	router := newMockRouter()
 	ctx, cancel := context.WithCancel(context.Background())
@@ -346,7 +346,7 @@ func TestRequest_ContextCancelled(t *testing.T) {
 
 // ── Request with topic vars ───────────────────────────────────────────────────
 
-func TestRequest_WithVars_PublishesToResolvedTopic(t *testing.T) {
+func TestCall_WithVars_PublishesToResolvedTopic(t *testing.T) {
 	// Verifies that Request resolves the template topic before publishing.
 	// The resolved topic "compute/acme/add" must appear in the published message.
 	templateRoute := reqreply.NewRoute[computeReq, computeResp](
@@ -389,7 +389,7 @@ func TestRequest_WithVars_PublishesToResolvedTopic(t *testing.T) {
 	}
 }
 
-func TestRequest_WithVars_MissingVar_ReturnsRequestError(t *testing.T) {
+func TestCall_WithVars_MissingVar_ReturnsRequestError(t *testing.T) {
 	templateRoute := reqreply.NewRoute[computeReq, computeResp](
 		"compute/{tenantID}/add",
 		computeReqCodec, computeRespCodec,
@@ -419,7 +419,7 @@ func TestRequest_WithVars_MissingVar_ReturnsRequestError(t *testing.T) {
 	}
 }
 
-func TestRequest_WithVars_MissingVar_ReportsRequiredConstraintWithVarName(t *testing.T) {
+func TestCall_WithVars_MissingVar_ReportsRequiredConstraintWithVarName(t *testing.T) {
 	// Verifies that a missing topic variable is reported to the observer with
 	// constraint "required" and the variable name as the field — consistent with
 	// the mqtt adapter's reportMissingTopicVarErrors behaviour.
@@ -543,7 +543,7 @@ func TestSharedReplyTopic_DefaultPrefix(t *testing.T) {
 
 // ── Request integration tests for ReplyTopicBuilder ───────────────────────────
 
-func TestRequest_ReplyTopicBuilder_UsesReturnedResponseTopic(t *testing.T) {
+func TestCall_ReplyTopicBuilder_UsesReturnedResponseTopic(t *testing.T) {
 	// Verifies that the ResponseTopic property on the published request matches
 	// the responseTopic returned by the builder.
 	client := &mockClient{}
@@ -581,7 +581,7 @@ func TestRequest_ReplyTopicBuilder_UsesReturnedResponseTopic(t *testing.T) {
 	}
 }
 
-func TestRequest_ReplyTopicBuilder_UsesReturnedSubscribeFilter(t *testing.T) {
+func TestCall_ReplyTopicBuilder_UsesReturnedSubscribeFilter(t *testing.T) {
 	// Verifies that client.Subscribe is called with the subscribeFilter returned
 	// by the builder, not the responseTopic.
 	client := &mockClient{}
@@ -614,7 +614,7 @@ func TestRequest_ReplyTopicBuilder_UsesReturnedSubscribeFilter(t *testing.T) {
 	}
 }
 
-func TestRequest_ReplyTopicBuilder_EmptyResponseTopic_ReturnsRequestError(t *testing.T) {
+func TestCall_ReplyTopicBuilder_EmptyResponseTopic_ReturnsRequestError(t *testing.T) {
 	client := &mockClient{}
 	router := newMockRouter()
 	ctx := context.Background()
@@ -636,7 +636,7 @@ func TestRequest_ReplyTopicBuilder_EmptyResponseTopic_ReturnsRequestError(t *tes
 	}
 }
 
-func TestRequest_ReplyTopicBuilder_EmptyFilter_FallsBackToResponseTopic(t *testing.T) {
+func TestCall_ReplyTopicBuilder_EmptyFilter_FallsBackToResponseTopic(t *testing.T) {
 	// When subscribeFilter is empty, Request must fall back to responseTopic.
 	client := &mockClient{}
 	router := newMockRouter()
@@ -666,7 +666,7 @@ func TestRequest_ReplyTopicBuilder_EmptyFilter_FallsBackToResponseTopic(t *testi
 	}
 }
 
-func TestRequest_NilBuilder_UsesReplyTopicPrefix(t *testing.T) {
+func TestCall_NilBuilder_UsesReplyTopicPrefix(t *testing.T) {
 	client := &mockClient{}
 	router := newMockRouter()
 	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
@@ -695,7 +695,7 @@ func TestRequest_NilBuilder_UsesReplyTopicPrefix(t *testing.T) {
 	}
 }
 
-func TestRequest_NilBuilder_DefaultPrefix(t *testing.T) {
+func TestCall_NilBuilder_DefaultPrefix(t *testing.T) {
 	client := &mockClient{}
 	router := newMockRouter()
 	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)

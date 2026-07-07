@@ -115,7 +115,7 @@ func ToolHandler[In, Out any](
 			obs.RecordRequest("tool", handle.Name, 500, time.Since(start))
 			var toe apimcp.ToolOutputError
 			if errors.As(err, &toe) {
-				return nil, fmt.Errorf("tool %q: output contract violation: %w", handle.Name, toe.Err)
+				return nil, fmt.Errorf("tool %q: output contract violation: %w", handle.Name, err)
 			}
 			return nil, err
 		}
