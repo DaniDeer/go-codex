@@ -111,16 +111,52 @@ var UserCodec = codex.Struct[User](
 )
 ```
 
-Use `DefaultField` for an optional field with a declared default value — the default is visible in generated schemas:
+### Missing fields on decode
+
+When a field key is absent from the incoming object, the codec follows this decision tree:
+
+```
+field key absent from wire object?
+├─ DefaultField  → apply declared default, continue
+├─ RequiredField → return ErrMissingField (decode fails)
+└─ OptionalField → do nothing; Go zero value remains ("", 0, nil, …)
+```
+
+**`RequiredField`** — missing key → `ErrMissingField` sentinel, surfaced as `ValidationError{Field: "name", Err: ErrMissingField}` inside `ValidationErrors`. Check with `errors.Is(err, codex.ErrMissingField)`.
+
+**`OptionalField`** — missing key → the Go field retains its zero value. The `set` function is never called. There is no distinction between "key absent" and "key present with zero value" at the Go struct level — if you need that, use `Nullable`:
+
+```go
+// "note" absent  → Note == nil  (key was not in the object)
+// "note": null   → Note == nil  (key was present, value was null)
+// "note": "hi"   → Note == &"hi"
+codex.OptionalField("note", codex.Nullable(codex.String()),
+    func(u User) *string { return u.Note },
+    func(u *User, v *string) { u.Note = v },
+)
+```
+
+**`DefaultField`** — missing key → declared default applied via `set`. The default also appears in the generated OpenAPI/AsyncAPI schema as `"default": <value>`. A zero-value default is valid — `DefaultField` uses a pointer internally to distinguish "no default" from "default is zero":
 
 ```go
 codex.DefaultField("log_level",
     codex.String().Refine(validate.OneOf("debug", "info", "warn", "error")),
-    "info",
+    "info",   // applied when key absent; emitted as "default" in schema
     func(c Config) string { return c.LogLevel },
     func(c *Config, v string) { c.LogLevel = v },
 )
 ```
+
+### Missing fields — summary
+
+| Constructor | Field absent (decode) | Field absent (encode) | Schema |
+|---|---|---|---|
+| `RequiredField` | `ErrMissingField` → decode fails | always encoded | `required: [field]` |
+| `OptionalField` | Go zero value (`""`, `0`, `nil`, …) | always encoded | field not in `required` |
+| `DefaultField` | declared default applied | always encoded | field not in `required`; `default: <value>` |
+| `OptionalField` + `Nullable` | `nil` pointer (type-safe absent) | encoded as `null` | field not in `required`; `nullable: true` |
+
+> **Encode note:** there is no "omit if zero" logic on encode — every field is always written to the output object. If you want a field to be absent rather than `null` on encode, handle that outside the codec.
 
 ## Constraints with Refine
 
