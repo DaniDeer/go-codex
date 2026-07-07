@@ -11,7 +11,7 @@
 // This pattern is common in Azure IoT Edge device twins, Kubernetes ConfigMaps
 // with dot-separated keys, and flat namespaced configuration stores.
 //
-// The example shows nine patterns:
+// The example shows ten patterns:
 //
 //  1. Fixed dotted key — [codex.RequiredField] with a dotted Name literal.
 //  2. Dynamic key via [File.Patch] — build the key with string concatenation.
@@ -21,17 +21,23 @@
 //  6. Schema rendering — twinCodec, moduleCodec, modulePatchCodec as OpenAPI YAML.
 //  7. Error cases + structured logging — FileEncodeError, FileDecodeError, FileReadError.
 //  8. Observer summary — per-operation metrics collected by FileMetricsObserver.
-//  9. Key+value merge with [codex.EntrySlice] — decode flat object into []Container where
-//     container name is extracted from the key. Shows JSON, YAML, and TOML (quoted headers).
+//  9. Key+value merge with [codex.EntrySlice] (single field) — decode flat object into
+//     []Container where container name is extracted from the key.
+//  10. Multi-field key extraction — two segments (tenant + name) extracted from the key
+//     into a struct using a [codex.Struct] domain codec + [codex.MapCodecValidated].
+//  11. Static key — the container name is a compile-time constant, not a wire value.
+//     [codex.MapCodecSafe] injects the constant into the decoded struct; encode drops it.
 //
 // Run with: go run ./examples/flat-key-patch
 package main
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
 	"os"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -181,6 +187,141 @@ var containersCodec = codex.EntrySlice(
 	func(c Container) (string, ModuleConfig) {
 		return c.Name, ModuleConfig{Image: c.Image, Status: c.Status}
 	},
+)
+
+// ── Section 10: multi-field key extraction ────────────────────────────────────
+//
+// Key format: "properties.desired.modules.<tenant>.<container-name>"
+// Two segments are extracted into a ModuleKey struct.
+// K is a comparable struct — EntrySlice accepts any comparable K, not only string.
+
+// ModuleKey holds the two segments parsed from the flat dotted key.
+// Must be comparable (all fields are strings → Go structs are comparable).
+type ModuleKey struct {
+	Tenant string // e.g. "tenant-acme"
+	Name   string // e.g. "cv-writer-kvrocks"
+}
+
+// TenantContainer is the result type — all three domain fields in one struct.
+type TenantContainer struct {
+	Tenant string
+	Name   string
+	Image  string
+	Status string
+}
+
+const twoPartPrefix = "properties.desired.modules."
+
+// twoPartKeyConstraint validates the full two-segment key on the wire.
+var twoPartKeyConstraint = codex.Constraint[string]{
+	Name: "two-part-module-key",
+	Check: func(v string) bool {
+		rest := strings.TrimPrefix(v, twoPartPrefix)
+		parts := strings.SplitN(rest, ".", 2)
+		return strings.HasPrefix(v, twoPartPrefix) && len(parts) == 2 &&
+			len(parts[0]) > 0 && len(parts[1]) > 0
+	},
+	Message: func(v string) string {
+		return fmt.Sprintf("key %q must be %q<tenant>.<name>", v, twoPartPrefix)
+	},
+}
+
+// tenantConstraint validates the tenant segment of the key.
+var tenantConstraint = codex.Constraint[string]{
+	Name:  "tenant-name",
+	Check: func(v string) bool { return len(v) > 0 && !strings.ContainsAny(v, " /_") },
+	Message: func(v string) string {
+		return fmt.Sprintf("tenant %q must be non-empty with no spaces, slashes, or underscores", v)
+	},
+}
+
+// moduleKeyStructCodec validates each extracted field of ModuleKey independently.
+var moduleKeyStructCodec = codex.Struct[ModuleKey](
+	codex.RequiredField("tenant", codex.String().Refine(tenantConstraint),
+		func(k ModuleKey) string { return k.Tenant },
+		func(k *ModuleKey, v string) { k.Tenant = v },
+	),
+	codex.RequiredField("name", codex.String().Refine(containerNameConstraint),
+		func(k ModuleKey) string { return k.Name },
+		func(k *ModuleKey, v string) { k.Name = v },
+	),
+)
+
+// twoPartKeyCodec: wire validates the full key; domain validates each segment.
+//
+//	Decode: "properties.desired.modules.tenant-acme.cv-writer-kvrocks"
+//	      → split on first "." after prefix → ModuleKey{Tenant:"tenant-acme", Name:"cv-writer-kvrocks"}
+//	      → moduleKeyStructCodec validates each field
+//
+//	Encode: ModuleKey → validate fields → reassemble → validate full key.
+var twoPartKeyCodec = codex.MapCodecValidated(
+	codex.String().Refine(twoPartKeyConstraint),
+	moduleKeyStructCodec,
+	func(fullKey string) (ModuleKey, error) {
+		rest := strings.TrimPrefix(fullKey, twoPartPrefix)
+		parts := strings.SplitN(rest, ".", 2)
+		if len(parts) != 2 {
+			return ModuleKey{}, fmt.Errorf("key %q: expected <tenant>.<name> after prefix", fullKey)
+		}
+		return ModuleKey{Tenant: parts[0], Name: parts[1]}, nil
+	},
+	func(k ModuleKey) (string, error) {
+		return twoPartPrefix + k.Tenant + "." + k.Name, nil
+	},
+)
+
+// tenantContainersCodec: K = ModuleKey (struct), V = ModuleConfig.
+// EntrySlice accepts any comparable K — structs with only comparable fields qualify.
+var tenantContainersCodec = codex.EntrySlice(
+	twoPartKeyCodec,
+	moduleCodec,
+	func(k ModuleKey, m ModuleConfig) TenantContainer {
+		return TenantContainer{Tenant: k.Tenant, Name: k.Name, Image: m.Image, Status: m.Status}
+	},
+	func(c TenantContainer) (ModuleKey, ModuleConfig) {
+		return ModuleKey{Tenant: c.Tenant, Name: c.Name},
+			ModuleConfig{Image: c.Image, Status: c.Status}
+	},
+)
+
+// ── Section 11: static key — constant name injected via MapCodecSafe ──────────
+//
+// When the container name is known at compile time it is NOT present in the value
+// object on the wire. The full dotted key is the field name in the Struct codec;
+// the name is injected as a constant during decode and dropped on encode.
+//
+// Wire format:
+//   {
+//     "properties.desired.modules.cv-writer-kvrocks": {"image": "...", "status": "running"}
+//   }
+// Result type:  Container{Name:"cv-writer-kvrocks", Image:"...", Status:"running"}
+// Name appears ONLY as the struct field name literal — not in the value object.
+
+const (
+	cvWriterKeyName = "cv-writer-kvrocks"
+	cvWriterKey     = moduleKeyPrefix + cvWriterKeyName
+)
+
+// cvWriterValueCodec wraps moduleCodec to inject the constant name into Container.
+// On decode: ModuleConfig → Container{Name: cvWriterKeyName, ...}
+// On encode: Container → ModuleConfig (Name is dropped — it lives in the key, not the value)
+var cvWriterValueCodec = codex.MapCodecSafe(
+	moduleCodec,
+	func(m ModuleConfig) Container {
+		return Container{Name: cvWriterKeyName, Image: m.Image, Status: m.Status}
+	},
+	func(c Container) (ModuleConfig, error) {
+		return ModuleConfig{Image: c.Image, Status: c.Status}, nil
+	},
+)
+
+// cvWriterCodec: Struct[Container] where the field name is the full dotted key.
+// Dots are valid codec field names — the codec uses the literal string as the JSON key.
+var cvWriterCodec = codex.Struct[Container](
+	codex.RequiredField(cvWriterKey, cvWriterValueCodec,
+		func(c Container) Container { return c },
+		func(outer *Container, inner Container) { *outer = inner },
+	),
 )
 
 // ── Observer — metrics (counting) ─────────────────────────────────────────────
@@ -439,6 +580,12 @@ func main() {
 
 	// ── 9. codex.EntrySlice — key+value merge ─────────────────────────────────
 	runEntriesDemo()
+
+	// ── 10. Multi-field key extraction (struct key type) ───────────────────
+	runMultiFieldKeyDemo()
+
+	// ── 11. Static key — constant name injected via MapCodecSafe ───────────
+	runStaticKeyDemo()
 }
 
 func readFile(path string) string {
@@ -446,14 +593,41 @@ func readFile(path string) string {
 	return string(b)
 }
 
-// runEntriesDemo shows Section 9: key+value merge with codex.EntrySlice.
-func runEntriesDemo() {
-	fmt.Println("\n=== 9. Key+value merge with codex.EntrySlice ===")
+// printContainers prints a sorted, human-readable container list.
+// Sorting by name makes the output deterministic despite JSON object key order.
+func printContainers(label string, cs []Container) {
+	sort.Slice(cs, func(i, j int) bool { return cs[i].Name < cs[j].Name })
+	fmt.Printf("  %s (%d containers):\n", label, len(cs))
+	for _, c := range cs {
+		fmt.Printf("    %-30s  image=%-35s  status=%s\n", c.Name, c.Image, c.Status)
+	}
+}
 
-	// The flat JSON object — keys encode the container name.
+// runEntriesDemo shows Section 9: decoding a list of containers from a flat
+// dotted-key JSON object using codex.EntrySlice.
+//
+// Wire representation (Azure IoT Edge device twin style):
+//
+//	{
+//	  "properties.desired.modules.cv-writer-kvrocks":  {"image": "...", "status": "running"},
+//	  "properties.desired.modules.cv-writer-gateway":  {"image": "...", "status": "running"},
+//	  "properties.desired.modules.analytics-engine":   {"image": "...", "status": "stopped"},
+//	}
+//
+// Each key encodes the container name after the fixed prefix.
+// containersCodec (Codec[[]Container]) decodes this directly into a Go slice —
+// no post-processing loop, no manual prefix stripping.
+func runEntriesDemo() {
+	fmt.Println("\n=== 9. EntrySlice: flat object → []Container ===")
+
+	// Three containers as they arrive from the device twin API.
 	rawJSON := map[string]any{
 		moduleKeyPrefix + "cv-writer-kvrocks": map[string]any{
 			"image":  "myregistry/cv-writer:1.0",
+			"status": "running",
+		},
+		moduleKeyPrefix + "cv-writer-gateway": map[string]any{
+			"image":  "myregistry/gateway:3.1",
 			"status": "running",
 		},
 		moduleKeyPrefix + "analytics-engine": map[string]any{
@@ -462,67 +636,284 @@ func runEntriesDemo() {
 		},
 	}
 
-	// ── 9a. Decode JSON intermediate → []Container ─────────────────────────
-	fmt.Println("\n9a. Decode: flat object → []Container (name extracted from key)")
+	// ── 9a. Decode: flat object → []Container ──────────────────────────────
+	//
+	// containersCodec.Decode iterates every key, strips the prefix via
+	// containerKeyCodec, and builds a Container per entry. The name field
+	// comes from the key; image/status come from the value object.
+	fmt.Println()
 	containers, err := containersCodec.Decode(rawJSON)
 	if err != nil {
 		fmt.Println("  decode error:", err)
 		return
 	}
-	for _, c := range containers {
-		fmt.Printf("  Name=%-25s Image=%-35s Status=%s\n", c.Name, c.Image, c.Status)
-	}
+	printContainers("Decoded from JSON intermediate", containers)
 
-	// ── 9b. Encode []Container → flat object ───────────────────────────────
-	fmt.Println("\n9b. Encode: []Container → flat dotted-key object")
-	enc, err := containersCodec.Encode(containers)
+	// ── 9b. Encode: []Container → flat dotted-key JSON ─────────────────────
+	//
+	// containersCodec.Encode calls split(c) → (name, ModuleConfig), then
+	// containerKeyCodec.Encode(name) re-adds the prefix before writing to
+	// the output map. Each container becomes one key-value pair.
+	fmt.Println()
+	jsonFmt := format.JSON(containersCodec)
+	jsonBytes, err := jsonFmt.Marshal(containers)
 	if err != nil {
-		fmt.Println("  encode error:", err)
+		fmt.Println("  JSON marshal error:", err)
 		return
 	}
-	m := enc.(map[string]any)
-	for k := range m {
-		fmt.Printf("  key: %s\n", k)
+	// Pretty-print to show the flat dotted-key structure.
+	var pretty map[string]any
+	_ = json.Unmarshal(jsonBytes, &pretty)
+	fmt.Printf("  Encoded JSON keys (%d):\n", len(pretty))
+	keys := make([]string, 0, len(pretty))
+	for k := range pretty {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	for _, k := range keys {
+		fmt.Printf("    %s\n", k)
 	}
 
-	// ── 9c. YAML round-trip ─────────────────────────────────────────────────
-	fmt.Println("\n9c. YAML round-trip (quoted keys preserve dotted path)")
+	// ── 9c. Round-trip via JSON bytes ───────────────────────────────────────
+	fmt.Println()
+	roundtripped, err := jsonFmt.Unmarshal(jsonBytes)
+	if err != nil {
+		fmt.Println("  JSON unmarshal error:", err)
+		return
+	}
+	printContainers("Round-tripped through JSON bytes", roundtripped)
+
+	// ── 9d. YAML round-trip ─────────────────────────────────────────────────
+	//
+	// YAML quoted keys ("properties.desired.modules.cv-writer-kvrocks":)
+	// are preserved verbatim — the dotted path stays flat.
+	fmt.Println()
 	yamlFmt := format.YAML(containersCodec)
 	yamlBytes, err := yamlFmt.Marshal(containers)
 	if err != nil {
 		fmt.Println("  YAML marshal error:", err)
 		return
 	}
-	decoded, err := yamlFmt.Unmarshal(yamlBytes)
+	yamlDecoded, err := yamlFmt.Unmarshal(yamlBytes)
 	if err != nil {
 		fmt.Println("  YAML unmarshal error:", err)
 		return
 	}
-	fmt.Printf("  decoded %d container(s) from YAML\n", len(decoded))
+	printContainers("Round-tripped through YAML", yamlDecoded)
 
-	// ── 9d. TOML round-trip (quoted table headers) ──────────────────────────
-	fmt.Println("\n9d. TOML round-trip (quoted headers keep dotted key flat)")
+	// ── 9e. TOML round-trip (quoted table headers) ──────────────────────────
+	//
+	// TOML quoted table headers preserve the dotted key flat:
+	//   ["properties.desired.modules.cv-writer-kvrocks"]
+	//   image = "..."
+	//   status = "running"
+	//
+	// NOTE: bare dotted keys ([properties.desired.modules]) produce nested
+	// objects per the TOML spec and will NOT work with containersCodec.
+	fmt.Println()
 	tomlFmt := format.TOML(containersCodec)
 	tomlBytes, err := tomlFmt.Marshal(containers)
 	if err != nil {
 		fmt.Println("  TOML marshal error:", err)
 		return
 	}
-	decoded, err = tomlFmt.Unmarshal(tomlBytes)
+	tomlDecoded, err := tomlFmt.Unmarshal(tomlBytes)
 	if err != nil {
 		fmt.Println("  TOML unmarshal error:", err)
 		return
 	}
-	fmt.Printf("  decoded %d container(s) from TOML\n", len(decoded))
+	printContainers("Round-tripped through TOML", tomlDecoded)
 
-	// ── 9e. Encode validation: invalid container name ───────────────────────
-	fmt.Println("\n9e. Encode with invalid container name → KeyError")
-	bad := []Container{{Name: "bad_name", Image: "img:1", Status: "running"}}
+	// ── 9f. Encode validation: invalid container name ───────────────────────
+	//
+	// The key codec validates the container name before adding the prefix.
+	// "bad_name" contains an underscore → containerNameConstraint fails →
+	// KeyError{Key: "bad_name", Err: ConstraintError{Name: "container-name"}}.
+	fmt.Println()
+	bad := []Container{
+		{Name: "bad_name", Image: "img:1", Status: "running"}, // underscore → invalid
+	}
 	_, err = containersCodec.Encode(bad)
 	if err != nil {
 		var ke codex.KeyError
 		if errors.As(err, &ke) {
-			fmt.Printf("  KeyError: key=%q err=%v\n", ke.Key, ke.Err)
+			fmt.Printf("  Encode validation: KeyError{Key: %q, Err: %v}\n", ke.Key, ke.Err)
 		}
 	}
+}
+
+// runMultiFieldKeyDemo shows Section 10: two segments extracted from the key into
+// a comparable struct (ModuleKey), giving each element Tenant + Name + Image + Status.
+//
+// Wire format:
+//
+//	{
+//	  "properties.desired.modules.tenant-acme.cv-writer-kvrocks":  {"image":"...","status":"running"},
+//	  "properties.desired.modules.tenant-acme.cv-writer-gateway":  {"image":"...","status":"running"},
+//	  "properties.desired.modules.tenant-beta.analytics-engine":   {"image":"...","status":"stopped"},
+//	}
+//
+// K = ModuleKey{Tenant, Name} — struct key, not a plain string.
+// EntrySlice accepts any comparable K; structs with all-comparable fields qualify.
+func runMultiFieldKeyDemo() {
+	fmt.Println("\n=== 10. Multi-field key extraction (K = struct) ===")
+
+	raw := map[string]any{
+		twoPartPrefix + "tenant-acme.cv-writer-kvrocks": map[string]any{
+			"image":  "myregistry/cv-writer:1.0",
+			"status": "running",
+		},
+		twoPartPrefix + "tenant-acme.cv-writer-gateway": map[string]any{
+			"image":  "myregistry/gateway:3.1",
+			"status": "running",
+		},
+		twoPartPrefix + "tenant-beta.analytics-engine": map[string]any{
+			"image":  "myregistry/analytics:2.1",
+			"status": "stopped",
+		},
+	}
+
+	// ── 10a. Decode ─────────────────────────────────────────────────────────
+	//
+	// For each key "...tenant-acme.cv-writer-kvrocks":
+	//   twoPartKeyCodec.Decode strips prefix, splits on ".", validates each segment
+	//   → ModuleKey{Tenant:"tenant-acme", Name:"cv-writer-kvrocks"}
+	//   merge(ModuleKey, ModuleConfig) → TenantContainer with all four fields set.
+	fmt.Println()
+	containers, err := tenantContainersCodec.Decode(raw)
+	if err != nil {
+		fmt.Println("  decode error:", err)
+		return
+	}
+	sort.Slice(containers, func(i, j int) bool {
+		if containers[i].Tenant != containers[j].Tenant {
+			return containers[i].Tenant < containers[j].Tenant
+		}
+		return containers[i].Name < containers[j].Name
+	})
+	fmt.Printf("  Decoded %d TenantContainers:\n", len(containers))
+	for _, c := range containers {
+		fmt.Printf("    Tenant=%-15s Name=%-25s Image=%-30s Status=%s\n",
+			c.Tenant, c.Name, c.Image, c.Status)
+	}
+
+	// ── 10b. Encode ─────────────────────────────────────────────────────────
+	//
+	// For each TenantContainer:
+	//   split(c) → (ModuleKey{Tenant, Name}, ModuleConfig{Image, Status})
+	//   twoPartKeyCodec.Encode(ModuleKey) validates both fields, assembles full key.
+	fmt.Println()
+	enc, err := tenantContainersCodec.Encode(containers)
+	if err != nil {
+		fmt.Println("  encode error:", err)
+		return
+	}
+	m := enc.(map[string]any)
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	fmt.Printf("  Encoded %d wire keys:\n", len(keys))
+	for _, k := range keys {
+		fmt.Printf("    %s\n", k)
+	}
+
+	// ── 10c. Validation: bad tenant segment ─────────────────────────────────
+	//
+	// "tenant_acme" contains an underscore — fails tenantConstraint at the
+	// domain-field level, not just the full-key level. The error reports
+	// field "tenant" specifically, not just "the key is invalid".
+	// Error path: moduleKeyStructCodec validates ModuleKey →
+	//   ValidationErrors[{Field:"tenant", Err:ConstraintError{Name:"tenant-name"}}]
+	//   → wrapped in KeyError{Key: "{tenant_acme writer}", Err: ...}
+	fmt.Println()
+	bad := []TenantContainer{
+		{Tenant: "tenant_acme", Name: "writer", Image: "img:1", Status: "running"},
+	}
+	_, err = tenantContainersCodec.Encode(bad)
+	if err != nil {
+		var ke codex.KeyError
+		if errors.As(err, &ke) {
+			fmt.Printf("  Validation (bad tenant): KeyError{Key: %q, Err: %v}\n", ke.Key, ke.Err)
+		}
+	}
+}
+
+// runStaticKeyDemo shows Section 11: static key where the container name is a
+// compile-time constant, not decoded from the wire.
+//
+// Key insight: in the static case the name lives ONLY as the field name literal
+// in codex.Struct. It does not appear inside the JSON value object at all.
+// MapCodecSafe injects it as a constant during decode; encode drops it.
+//
+// Compare with EntrySlice (Section 9/10) which handles DYNAMIC keys where
+// the container name varies at runtime and must be decoded from the wire key.
+func runStaticKeyDemo() {
+	fmt.Println("\n=== 11. Static key — constant name injected via MapCodecSafe ===")
+
+	// Wire document: the key is always "properties.desired.modules.cv-writer-kvrocks".
+	// The name "cv-writer-kvrocks" appears as the JSON key — NOT inside the value object.
+	raw := map[string]any{
+		cvWriterKey: map[string]any{
+			"image":  "myregistry/cv-writer:1.0",
+			"status": "running",
+		},
+	}
+
+	// ── 11a. Decode ─────────────────────────────────────────────────────────
+	//
+	// cvWriterCodec.Decode:
+	//   1. Looks up field "properties.desired.modules.cv-writer-kvrocks" in the object.
+	//   2. Decodes the value {"image","status"} via moduleCodec → ModuleConfig.
+	//   3. cvWriterValueCodec.MapCodecSafe injects the constant name → Container.
+	fmt.Println()
+	container, err := cvWriterCodec.Decode(raw)
+	if err != nil {
+		fmt.Println("  decode error:", err)
+		return
+	}
+	fmt.Printf("  Decoded: Name=%-25s Image=%-30s Status=%s\n",
+		container.Name, container.Image, container.Status)
+	fmt.Printf("  Name came from: compile-time constant %q\n", cvWriterKeyName)
+
+	// ── 11b. Encode ─────────────────────────────────────────────────────────
+	//
+	// cvWriterCodec.Encode:
+	//   1. cvWriterValueCodec.MapCodecSafe.from(c) → ModuleConfig{Image,Status} (drops Name)
+	//   2. moduleCodec encodes ModuleConfig → {"image":"...","status":"..."}
+	//   3. Written under key "properties.desired.modules.cv-writer-kvrocks"
+	//
+	// The encoded value object does NOT contain a "name" key — Name is only in the
+	// outer JSON key, not in the value object.
+	fmt.Println()
+	enc, err := cvWriterCodec.Encode(container)
+	if err != nil {
+		fmt.Println("  encode error:", err)
+		return
+	}
+	encMap := enc.(map[string]any)
+	valObj := encMap[cvWriterKey].(map[string]any)
+	fmt.Printf("  Encoded wire key: %s\n", cvWriterKey)
+	fmt.Printf("  Encoded value: %v\n", valObj)
+	_, nameInValue := valObj["name"]
+	fmt.Printf("  'name' in value object: %v (correct — name lives in the key, not the value)\n",
+		nameInValue)
+
+	// ── 11c. Round-trip via JSON ─────────────────────────────────────────────
+	fmt.Println()
+	jsonFmt := format.JSON(cvWriterCodec)
+	jsonBytes, err := jsonFmt.Marshal(container)
+	if err != nil {
+		fmt.Println("  JSON marshal error:", err)
+		return
+	}
+	roundtripped, err := jsonFmt.Unmarshal(jsonBytes)
+	if err != nil {
+		fmt.Println("  JSON unmarshal error:", err)
+		return
+	}
+	fmt.Printf("  Round-trip: Name=%s Image=%s Status=%s\n",
+		roundtripped.Name, roundtripped.Image, roundtripped.Status)
+	fmt.Printf("  Wire JSON: %s\n", jsonBytes)
 }

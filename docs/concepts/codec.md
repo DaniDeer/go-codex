@@ -278,19 +278,38 @@ var containersCodec = codex.EntrySlice(
 // → Codec[[]Container]
 ```
 
-### Encode path walkthrough
+### Decode path — multiple containers
 
-For `Container{Name: "cv-writer", Image: "registry/cv-writer:1.0", Status: "running"}`:
+Given the wire object:
 
-1. `split(c)` → `("cv-writer", ModuleConfig{...})`
-2. `containerKeyCodec.Encode("cv-writer")`:
-   - `containerNameConstraint.Validate("cv-writer")` ✅
-   - adds prefix → `"properties.desired.modules.cv-writer"`
-   - `moduleKeyConstraint.Validate("properties.desired.modules.cv-writer")` ✅
-3. `moduleCodec.Encode(ModuleConfig{...})` → `{"image":"...","status":"running"}`
-4. Wire result: `{"properties.desired.modules.cv-writer": {"image":"...","status":"running"}}`
+```json
+{
+  "properties.desired.modules.cv-writer-kvrocks": {"image": "myregistry/cv-writer:1.0", "status": "running"},
+  "properties.desired.modules.cv-writer-gateway": {"image": "myregistry/gateway:3.1",  "status": "running"},
+  "properties.desired.modules.analytics-engine":  {"image": "myregistry/analytics:2.1", "status": "stopped"}
+}
+```
 
-For `Container{Name: "BAD NAME!"}`: step 2 fails at `containerNameConstraint` → `KeyError{Key: "BAD NAME!", Err: ConstraintError{...}}`.
+`containersCodec.Decode(rawJSON)` iterates every key-value pair:
+
+| Wire key | After `containerKeyCodec.Decode` | After `moduleCodec.Decode` | After `merge` |
+|---|---|---|---|
+| `"...cv-writer-kvrocks"` | `"cv-writer-kvrocks"` | `ModuleConfig{Image:"...", Status:"running"}` | `Container{Name:"cv-writer-kvrocks", Image:"...", Status:"running"}` |
+| `"...cv-writer-gateway"` | `"cv-writer-gateway"` | `ModuleConfig{Image:"...", Status:"running"}` | `Container{Name:"cv-writer-gateway", ...}` |
+| `"...analytics-engine"` | `"analytics-engine"` | `ModuleConfig{Image:"...", Status:"stopped"}` | `Container{Name:"analytics-engine", ...}` |
+
+Result: `[]Container` with 3 elements. **Sort after decode** if order matters — JSON object key order is not guaranteed.
+
+### Encode path — multiple containers
+
+`containersCodec.Encode(containers)` processes each element:
+
+1. `split(c)` → `(c.Name, ModuleConfig{c.Image, c.Status})`
+2. `containerKeyCodec.Encode(c.Name)` → validates name → `"properties.desired.modules." + c.Name`
+3. `moduleCodec.Encode(ModuleConfig{...})` → `{"image":"...","status":"..."}`
+4. Writes one key-value pair into the output map
+
+Result: the same flat dotted-key object as the input. All three containers are present. Key validation happens for every element — a single invalid name (e.g. one with an underscore) stops encoding and returns `KeyError{Key: "bad_name", Err: ConstraintError{Name:"container-name",...}}`.
 
 ### Format compatibility
 
@@ -301,7 +320,139 @@ For `Container{Name: "BAD NAME!"}`: step 2 fails at `containerNameConstraint` �
 | TOML (quoted headers) | ✅ | `["properties.desired.modules.cv-writer"]` → flat key |
 | TOML (bare dotted) | ⚠️ | `[properties.desired.modules]` → **nested** per TOML spec — use quoted headers |
 
-See [`examples/flat-key-patch`](https://github.com/DaniDeer/go-codex/tree/main/examples/flat-key-patch) for a runnable demo including JSON, YAML, and TOML variants.
+### Extracting multiple fields from a key
+
+K doesn't have to be `string`. Any `comparable` Go type works — including a struct. Use a `Struct[ModuleKey]` domain codec with `MapCodecValidated` to parse and validate each segment independently.
+
+**Key format:** `"properties.desired.modules.<tenant>.<container-name>"`  
+Two segments → `ModuleKey{Tenant, Name}` — extracted in one key codec, no parsing in `merge`/`split`.
+
+```go
+type ModuleKey struct {
+    Tenant string // "tenant-acme"
+    Name   string // "cv-writer-kvrocks"
+}
+
+type TenantContainer struct {
+    Tenant string
+    Name   string
+    Image  string
+    Status string
+}
+
+// Domain codec validates each field independently.
+var moduleKeyStructCodec = codex.Struct[ModuleKey](
+    codex.RequiredField("tenant", codex.String().Refine(tenantConstraint),
+        func(k ModuleKey) string { return k.Tenant },
+        func(k *ModuleKey, v string) { k.Tenant = v },
+    ),
+    codex.RequiredField("name", codex.String().Refine(containerNameConstraint),
+        func(k ModuleKey) string { return k.Name },
+        func(k *ModuleKey, v string) { k.Name = v },
+    ),
+)
+
+// Two-layer key codec:
+//   wire  — validates the full dotted key
+//   domain — validates each extracted segment via moduleKeyStructCodec
+var twoPartKeyCodec = codex.MapCodecValidated(
+    codex.String().Refine(twoPartKeyConstraint),  // "properties.desired.modules.t.n" ✓
+    moduleKeyStructCodec,                          // {Tenant:"t", Name:"n"} ✓
+    func(fullKey string) (ModuleKey, error) {      // decode: strip prefix + split
+        rest := strings.TrimPrefix(fullKey, prefix)
+        parts := strings.SplitN(rest, ".", 2)
+        return ModuleKey{Tenant: parts[0], Name: parts[1]}, nil
+    },
+    func(k ModuleKey) (string, error) {            // encode: reassemble
+        return prefix + k.Tenant + "." + k.Name, nil
+    },
+)
+
+// K = ModuleKey (comparable struct — all fields are strings)
+var tenantContainersCodec = codex.EntrySlice(
+    twoPartKeyCodec,
+    moduleCodec,
+    func(k ModuleKey, m ModuleConfig) TenantContainer {
+        return TenantContainer{Tenant: k.Tenant, Name: k.Name, Image: m.Image, Status: m.Status}
+    },
+    func(c TenantContainer) (ModuleKey, ModuleConfig) {
+        return ModuleKey{Tenant: c.Tenant, Name: c.Name},
+               ModuleConfig{Image: c.Image, Status: c.Status}
+    },
+)
+// → Codec[[]TenantContainer]
+```
+
+**Decode table — wire to Go:**
+
+| Wire key | `twoPartKeyCodec.Decode` | After `merge` |
+|---|---|---|
+| `"...tenant-acme.cv-writer-kvrocks"` | `ModuleKey{Tenant:"tenant-acme", Name:"cv-writer-kvrocks"}` | `TenantContainer{Tenant:"tenant-acme", Name:"cv-writer-kvrocks", ...}` |
+| `"...tenant-acme.cv-writer-gateway"` | `ModuleKey{Tenant:"tenant-acme", Name:"cv-writer-gateway"}` | `TenantContainer{...}` |
+| `"...tenant-beta.analytics-engine"` | `ModuleKey{Tenant:"tenant-beta", Name:"analytics-engine"}` | `TenantContainer{...}` |
+
+**Field-level validation on encode:** `TenantContainer{Tenant: "tenant_acme", ...}` (underscore in tenant) → `moduleKeyStructCodec.Validate` → `ValidationErrors[{Field:"tenant", Err:ConstraintError{Name:"tenant-name"}}]` → wrapped in `KeyError{Key:"{tenant_acme ...}", Err:...}`. The error identifies the failing *field*, not just "the key is invalid".
+
+**General rule:** for N segments in a key, use `K = struct` with N fields. Go structs are comparable when all fields are comparable types (strings, ints, etc.).
+
+See [`examples/flat-key-patch` Section 10](https://github.com/DaniDeer/go-codex/tree/main/examples/flat-key-patch) for the full runnable demo.
+
+### Static key — constant name injected via `MapCodecSafe`
+
+When the key is known at compile time (it never varies), the container name is **not on the wire** — it only exists as the field name literal in the codec. There is nothing to decode. Inject it as a constant.
+
+**Wire format** (the key is always exactly this):
+```json
+{
+  "properties.desired.modules.cv-writer-kvrocks": {"image": "myregistry/cv-writer:1.0", "status": "running"}
+}
+```
+
+**Goal:** `Container{Name: "cv-writer-kvrocks", Image: "...", Status: "running"}` — name comes from the key, which we know statically.
+
+**Pattern:** wrap the value codec with `MapCodecSafe` to inject the constant name during decode and strip it on encode (name is not serialized into the value object):
+
+```go
+const cvWriterKeyName = "cv-writer-kvrocks"
+const cvWriterKey     = "properties.desired.modules." + cvWriterKeyName
+
+// valueWithNameCodec: decodes ModuleConfig → Container{Name: constant, ...}
+//                     encodes Container     → ModuleConfig (drops Name — not on wire)
+var valueWithNameCodec = codex.MapCodecSafe(
+    moduleCodec,
+    func(m ModuleConfig) Container {          // decode: inject constant
+        return Container{Name: cvWriterKeyName, Image: m.Image, Status: m.Status}
+    },
+    func(c Container) (ModuleConfig, error) { // encode: drop name
+        return ModuleConfig{Image: c.Image, Status: c.Status}, nil
+    },
+)
+
+// Outer codec: the full dotted key is the field name. Dots are valid field names.
+var cvWriterCodec = codex.Struct[Container](
+    codex.RequiredField(cvWriterKey, valueWithNameCodec,
+        func(c Container) Container { return c },
+        func(outer *Container, inner Container) { *outer = inner },
+    ),
+)
+// Decode: {"properties.desired.modules.cv-writer-kvrocks": {"image":"...","status":"running"}}
+// Result: Container{Name:"cv-writer-kvrocks", Image:"...", Status:"running"}
+//
+// Encode: Container{Name:"cv-writer-kvrocks", Image:"...", Status:"running"}
+// Result: {"properties.desired.modules.cv-writer-kvrocks": {"image":"...","status":"running"}}
+//          ↑ Name is NOT in the value object — only the key encodes it
+```
+
+**When to use which pattern:**
+
+| Scenario | Key known at | Name on wire? | Use |
+|---|---|---|---|
+| Always the same container | Compile time | No | `codex.Struct` + `MapCodecSafe` to inject constant |
+| Any container name (1 entry) | Runtime | In key | `EntrySlice` + `MapCodecValidated` to unwrap `[]R` |
+| Multiple containers | Runtime | In keys | `EntrySlice` directly → `Codec[[]Container]` |
+| Multi-tenant containers | Runtime | In key (2 segments) | `EntrySlice` + `MapCodecValidated` key codec |
+
+See [`examples/flat-key-patch` Section 11](https://github.com/DaniDeer/go-codex/tree/main/examples/flat-key-patch) for the full runnable demo.
 
 ## Cross-field constraints: RefineFunc
 
