@@ -244,6 +244,99 @@ var ProfileCodec = codex.Struct[Profile](codex.RequiredField("email", emailField
 // Both carry the same constraint and description — no duplication.
 ```
 
+### Field factory functions — reusing field groups across structs
+
+When the same field (same name, same codec, same validation rules) appears in multiple structs, combine shared field codecs with a **field factory function**. A factory function bakes in the field name and codec rules and accepts only the getter/setter — the one thing that is unavoidably struct-specific.
+
+```go
+import "time"
+
+// ── Shared field codecs ───────────────────────────────────────────────────────
+
+var idCodec = codex.String().Refine(validate.UUID).
+    WithDescription("Unique identifier (UUID v4).")
+
+var createdAtCodec = codex.Time().
+    WithDescription("Creation timestamp (RFC 3339).")
+
+// ── Field factory functions ───────────────────────────────────────────────────
+// The type parameter T makes each factory work for any struct that has the
+// appropriate field, without repeating the field name or validation rules.
+
+func IDField[T any](get func(T) string, set func(*T, string)) codex.Field[T, string] {
+    return codex.RequiredField("id", idCodec, get, set)
+}
+
+func CreatedAtField[T any](get func(T) time.Time, set func(*T, time.Time)) codex.Field[T, time.Time] {
+    return codex.RequiredField("created_at", createdAtCodec, get, set)
+}
+
+// ── Structs using Go embedding for DRY field access ──────────────────────────
+
+type AuditBase struct {
+    ID        string
+    CreatedAt time.Time
+}
+
+type User struct {
+    AuditBase               // embedded — promotes ID and CreatedAt
+    Name  string
+    Email string
+}
+
+type Device struct {
+    AuditBase               // same embedding
+    Hostname string
+    IPAddr   string
+}
+
+// ── Codecs — each struct provides only its own getters/setters ───────────────
+
+var UserCodec = codex.Struct[User](
+    IDField(
+        func(u User) string  { return u.ID },
+        func(u *User, v string) { u.ID = v },
+    ),
+    CreatedAtField(
+        func(u User) time.Time  { return u.CreatedAt },
+        func(u *User, v time.Time) { u.CreatedAt = v },
+    ),
+    codex.RequiredField("name",
+        codex.String().Refine(validate.NonEmptyString),
+        func(u User) string { return u.Name },
+        func(u *User, v string) { u.Name = v },
+    ),
+    codex.RequiredField("email",
+        codex.String().Refine(validate.Email),
+        func(u User) string { return u.Email },
+        func(u *User, v string) { u.Email = v },
+    ),
+)
+
+var DeviceCodec = codex.Struct[Device](
+    IDField(
+        func(d Device) string  { return d.ID },
+        func(d *Device, v string) { d.ID = v },
+    ),
+    CreatedAtField(
+        func(d Device) time.Time  { return d.CreatedAt },
+        func(d *Device, v time.Time) { d.CreatedAt = v },
+    ),
+    codex.RequiredField("hostname",
+        codex.String().Refine(validate.Hostname),
+        func(d Device) string { return d.Hostname },
+        func(d *Device, v string) { d.Hostname = v },
+    ),
+    // ...
+)
+```
+
+**What is shared:** the field name (`"id"`), the codec (`idCodec`), and all its constraints and schema metadata. A change to `idCodec` propagates to every struct that uses `IDField` — one declaration, zero drift.
+
+**What is not shared:** the getter/setter functions — they are unavoidably struct-specific because Go's type system cannot derive `func(Device) string` from `func(User) string` automatically.
+
+**Why not a library feature:** Go does not have inheritance, and reflecting on struct fields to auto-derive getters/setters would violate the no-reflection, no-struct-tags design principle. Field factory functions achieve the same result with full type safety and zero magic.
+
 ## Nested structs
 
 A field codec can be any `Codec[F]` — including another `Struct[...]` codec. Nesting is unlimited and composes with `SliceOf`, `Nullable`, and `StringMap`:
