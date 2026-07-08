@@ -48,6 +48,31 @@
 //	    slog.Warn("encode failed", "error", encErr)  // structured output via LogValue()
 //	}
 //
+// # Embedded format codecs — JSON/YAML/TOML within a string field
+//
+// Some APIs and protocols store a serialised document inside a string field
+// (CloudEvents data-as-string, database JSONB via REST, Kafka message headers,
+// device-twin configuration). [EmbeddedJSON], [EmbeddedYAML], and [EmbeddedTOML]
+// return a [codex.Codec][T] that treats the wire string as a nested document:
+//
+//	// Wire: {"event":"user.created","payload":"{\"id\":\"123\",\"name\":\"Alice\"}"}
+//	var eventCodec = codex.Struct[Event](
+//	    codex.RequiredField("event",   codex.String(), ...),
+//	    codex.RequiredField("payload", format.EmbeddedJSON(userCodec), ...),
+//	)
+//
+//	// Compose with File[T] — the outer format handles the file bytes;
+//	// EmbeddedJSON handles the string-to-struct field conversion.
+//	var eventFile = format.NewFile("events/user.json", format.JSON(eventCodec))
+//	event, err := eventFile.Read(nil, format.FileOptions{})
+//
+// Decode: wire string → format unmarshal → inner.Decode → T
+// Encode: inner.Encode → format marshal → wire string
+//
+// Format parse failures return [EmbeddedDecodeError]{Format, Err};
+// marshal failures return [EmbeddedEncodeError]{Format, Err}.
+// Both implement [slog.LogValuer]. Inner codec validation errors propagate unchanged.
+//
 // # Built-in formats
 //
 // Text-based formats (JSON, YAML, TOML) pass through the map[string]any intermediate:
