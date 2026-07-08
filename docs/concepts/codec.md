@@ -170,6 +170,68 @@ var EmailCodec = codex.String().Refine(validate.Email)
 
 Constraints run symmetrically — on both Encode and Decode — ensuring the codec is the single source of truth for validity.
 
+### Stacking and combining constraints
+
+`.Refine(...)` is variadic and chainable. Every call wraps the previous codec, building a validation chain:
+
+```go
+// All three are equivalent — same chain, same execution order:
+codex.String().Refine(A, B, C)
+codex.String().Refine(A).Refine(B).Refine(C)
+codex.String().Refine(A).Refine(B, C)
+```
+
+Constraints run **in declaration order**. The first failure stops the chain — later constraints do not run.
+
+**Mix built-in and custom constraints freely:**
+
+```go
+var containerNameCodec = codex.String().
+    Refine(validate.NonEmptyString).           // built-in: non-empty
+    Refine(validate.MaxLen(63)).               // built-in: DNS label max length
+    Refine(codex.Constraint[string]{           // custom: no spaces/underscores/slashes
+        Name:  "container-name",
+        Check: func(v string) bool { return !strings.ContainsAny(v, " _/") },
+        Message: func(v string) string {
+            return fmt.Sprintf("container name %q must not contain spaces, underscores, or slashes", v)
+        },
+    }).
+    Refine(codex.Constraint[string]{           // custom: must start with a letter
+        Name:  "starts-with-letter",
+        Check: func(v string) bool { return len(v) > 0 && unicode.IsLetter(rune(v[0])) },
+        Message: func(v string) string {
+            return fmt.Sprintf("container name %q must start with a letter", v)
+        },
+    })
+```
+
+**Order matters:** put cheaper constraints first (length, empty check) so they short-circuit before expensive ones (regex, external lookup).
+
+### Schema annotation from custom constraints
+
+Set the optional `Constraint.Schema` function to propagate constraint metadata into the generated OpenAPI/AsyncAPI schema:
+
+```go
+var slugCodec = codex.String().
+    Refine(validate.NonEmptyString).
+    Refine(codex.Constraint[string]{
+        Name:  "slug",
+        Check: func(v string) bool { return slugPattern.MatchString(v) },
+        Message: func(v string) string {
+            return fmt.Sprintf("%q is not a valid slug (lowercase letters, digits, hyphens only)", v)
+        },
+        Schema: func(s schema.Schema) schema.Schema {
+            s.Pattern = `^[a-z0-9-]+$`   // emitted in the OpenAPI/AsyncAPI spec
+            return s
+        },
+    })
+// Schema: {type: string, minLength: 1, pattern: "^[a-z0-9-]+$"}
+```
+
+Each `Constraint.Schema` function receives the schema produced by all previous constraints and returns the augmented version — they compose without interfering.
+
+Built-in constraints in the `validate` package already set `Schema` where appropriate (e.g. `validate.Email` sets `format: email`, `validate.RangeInt` sets `minimum`/`maximum`). Custom constraints without a `Schema` function simply add runtime validation without changing the spec.
+
 ## Composition — shared field codecs
 
 Define field codecs once and reuse across struct codecs:
