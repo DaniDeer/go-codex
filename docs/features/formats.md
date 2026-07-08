@@ -266,7 +266,27 @@ err = format.PatchEncoded(configFile, nil, extendedPatchCodec,
 
 The file codec (`appConfigCodec`) validates `port` and `log_level`; the patch codec (`extendedPatchCodec`) validates `feature_flags`. Both sets of constraints run before the file is written.
 
-See [`examples/flat-key-patch`](https://github.com/DaniDeer/go-codex/tree/main/examples/flat-key-patch) for a complete demo using flat dotted-key JSON (IoT Edge device twin style), showing all four patterns: fixed key in struct codec, `File.Patch` with dynamic key concatenation, `PatchEncoded` with `StringMap`, and `PatchEncoded` with `Map` (key format + value both validated).
+See [`examples/flat-key-patch`](https://github.com/DaniDeer/go-codex/tree/main/examples/flat-key-patch) for a complete demo using flat dotted-key JSON (IoT Edge device twin style, e.g. Azure IoT Edge device twins). Sections covered:
+
+1. Fixed dotted key — `codex.Struct` with a dotted field name literal
+2. Dynamic key via `File.Patch` — string concatenation at call time
+3. Typed value validation via `PatchEncoded` + `codex.StringMap`
+4. Key format + value validation via `PatchEncoded` + `codex.Map`
+5. Adding new keys not in the file codec — field survival via patchCodec
+6. Schema rendering — OpenAPI YAML from twinCodec / moduleCodec
+7. Error cases + structured logging
+8. Observer summary (FileMetricsObserver)
+9. Key+value merge into `[]Container` via `codex.EntrySlice` (single-segment key)
+10. Multi-field key extraction — two segments (tenant + name) into a struct key
+11. Static key — constant name injected via `codex.MapCodecSafe`
+
+### Merging JSON object keys into decoded values (`codex.EntrySlice`)
+
+When the JSON object key carries domain meaning (e.g. a container name in `"properties.desired.modules.cv-writer-kvrocks"`), use `codex.EntrySlice` to decode the entire object directly into `[]R` — no post-processing loop needed. The key codec handles prefix stripping and per-segment validation; the value codec decodes the object value; `merge` combines them into a single element.
+
+`EntrySlice` works with any `format.File`-produced intermediate — JSON, YAML, and TOML (with quoted headers) all produce `map[string]any`, which `EntrySlice` iterates directly.
+
+→ See [Codec — EntrySlice](../concepts/codec.md#merging-key-and-value-into-one-type-entryslice) for the full API, encode path walkthrough, multi-field key extraction, static key pattern, and schema generation details.
 
 ### Static paths
 

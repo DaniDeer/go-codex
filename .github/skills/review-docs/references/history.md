@@ -4,6 +4,14 @@ Do not re-report any findings listed here. They have been implemented.
 
 ---
 
+## Round DR6 (format/file docs sync after EntrySlice additions)
+
+- **D1 — `docs/features/formats.md` flat-key-patch link described only "four patterns"**: Updated to enumerate all 11 current sections including EntrySlice single-segment key, multi-field key extraction, and static key injection added in this session.
+- **D2 — `docs/features/formats.md` missing `codex.EntrySlice` mention**: Added "Merging JSON object keys into decoded values" paragraph with a cross-link to the EntrySlice section in `docs/concepts/codec.md`.
+- **D3 — `format/file_test.go` missing `ExampleNewFile()`**: Added `ExampleNewFile()` with `// Output:` demonstrating static path, `Write`, and `Read` round-trip.
+
+---
+
 ## Round DR5 (docs sync after R28–R29: slog.LogValuer parity + reqreply rename)
 
 - **D1 — `docs/reference/index.md` mqtt5 row names `ServeRequestReply`+`Request`**: Updated to `Serve`+`Call` to match R29 rename.

@@ -3,6 +3,7 @@ package format_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -1259,4 +1260,37 @@ func TestFile_TraceObserver_ContextNilFallback(t *testing.T) {
 	if len(spy.ops) == 0 {
 		t.Error("want StartSpan call even with nil Context")
 	}
+}
+
+func ExampleNewFile() {
+	// Declare a typed file descriptor once — no I/O at declaration time.
+	// The format (JSON here) and path template are captured in the value.
+	type Config struct {
+		Host string
+		Port int
+	}
+
+	cfgCodec := codex.Struct[Config](
+		codex.RequiredField("host", codex.String(),
+			func(c Config) string { return c.Host },
+			func(c *Config, v string) { c.Host = v },
+		),
+		codex.RequiredField("port", codex.Int(),
+			func(c Config) int { return c.Port },
+			func(c *Config, v int) { c.Port = v },
+		),
+	)
+
+	// Static path — pass nil for vars on every call.
+	path := os.TempDir() + "/example-config.json"
+	cfgFile := format.NewFile(path, format.JSON(cfgCodec))
+
+	// Write — encodes + validates before writing.
+	_ = cfgFile.Write(nil, Config{Host: "localhost", Port: 8080}, format.FileOptions{})
+
+	// Read — reads + decodes + validates constraints.
+	cfg, _ := cfgFile.Read(nil, format.FileOptions{})
+	fmt.Printf("host=%s port=%d\n", cfg.Host, cfg.Port)
+	// Output:
+	// host=localhost port=8080
 }
