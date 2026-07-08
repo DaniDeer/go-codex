@@ -704,6 +704,96 @@ var celsiusCodec = codex.MapCodecValidated(
 
 **Rule:** use `MapCodecSafe` for newtypes and type-safe wrappers; use `MapCodecValidated` when both directions may fail and the target type carries its own constraints.
 
+### Encoding / decoding escaped or re-serialised fields
+
+A recurring pattern in APIs and event systems is a field whose wire value is itself a serialised string — JSON, YAML, or TOML encoded as a string, or URL-encoded, or HTML-escaped content. The `format` package provides built-in functions for all three serialisation formats:
+
+#### JSON-in-string, YAML-in-string, TOML-in-string
+
+Common in CloudEvents `data` as string, database JSONB stored via REST API, Kafka message headers, and device-twin configuration fields:
+
+```json
+{"event": "user.created", "payload": "{\"id\":\"123\",\"name\":\"Alice\"}"}
+```
+
+Use `format.EmbeddedJSON`, `format.EmbeddedYAML`, or `format.EmbeddedTOML`:
+
+```go
+import "github.com/DaniDeer/go-codex/format"
+
+// Wire: {"event":"user.created","payload":"{\"id\":\"123\",\"name\":\"Alice\"}"}
+// Go:   Event{Type:"user.created", Payload:User{ID:"123", Name:"Alice"}}
+var eventCodec = codex.Struct[Event](
+    codex.RequiredField("event",   codex.String(), ...),
+    codex.RequiredField("payload", format.EmbeddedJSON(userCodec), ...),
+)
+
+// YAML or TOML — same pattern, different format
+var configEventCodec = codex.Struct[ConfigEvent](
+    codex.RequiredField("config", format.EmbeddedYAML(configCodec), ...),
+)
+var twinFieldCodec = codex.Struct[TwinField](
+    codex.RequiredField("settings", format.EmbeddedTOML(settingsCodec), ...),
+)
+```
+
+**Decode path:** `format.EmbeddedJSON` (1) parses the string with `json.Unmarshal` → `map[string]any`, then (2) calls `inner.Decode` which applies the codec constraints. Passing the raw string directly to `inner.Decode` would fail — the codec expects an intermediate, not a byte slice.
+
+**Encode path:** (1) `inner.Encode` → `map[string]any`, (2) `json.Marshal` → JSON string.
+
+**Both paths covered:** encode and decode are symmetric; inner codec constraints run on both.
+
+**Error types** (both implement `slog.LogValuer`):
+- `format.EmbeddedDecodeError{Format, Err}` — when the string cannot be parsed as the expected format
+- `format.EmbeddedEncodeError{Format, Err}` — when the Go value cannot be marshalled to the format string
+- Codec validation errors from the inner codec propagate unchanged (they are not wrapped)
+
+**Format numeric type compatibility** — YAML integers unmarshal as `int`, TOML integers as `int64`. The built-in `codex.Int()`, `codex.Int64()` primitives handle all three (`int`, `int64`, `float64`) so existing codecs work without changes.
+
+#### URL-encoded and HTML-escaped fields
+
+The same pattern applies to other string encodings — only the mapping functions change:
+
+```go
+import (
+    "html"
+    "net/url"
+)
+
+// URL-encoded field (e.g. query parameters stored in a JSON field)
+var urlDecodedCodec = codex.MapCodecSafe(
+    codex.String(),
+    func(s string) string {
+        decoded, _ := url.QueryUnescape(s)
+        return decoded
+    },
+    func(s string) (string, error) {
+        return url.QueryEscape(s), nil
+    },
+)
+
+// HTML-escaped field (e.g. legacy API returning HTML entities in JSON strings)
+var htmlUnescapedCodec = codex.MapCodecSafe(
+    codex.String(),
+    func(s string) string { return html.UnescapeString(s) },
+    func(s string) (string, error) { return html.EscapeString(s), nil },
+)
+```
+
+`MapCodecSafe` is correct here because unescaping is infallible (any string is valid input) and escaping always succeeds.
+
+#### Summary
+
+| Wire value | Pattern | Function |
+|---|---|---|
+| `"{\"id\":\"123\"}"` | JSON-in-string | `format.EmbeddedJSON(innerCodec)` |
+| `"{name: alice, value: 42}"` | YAML-in-string | `format.EmbeddedYAML(innerCodec)` |
+| `"name = \"alice\"\nvalue = 42"` | TOML-in-string | `format.EmbeddedTOML(innerCodec)` |
+| `"user%3A123"` | URL-encoded | `MapCodecSafe` with `url.QueryUnescape`/`url.QueryEscape` |
+| `"&lt;b&gt;Hello&lt;/b&gt;"` | HTML-escaped | `MapCodecSafe` with `html.UnescapeString`/`html.EscapeString` |
+
+`format.EmbeddedJSON`, `format.EmbeddedYAML`, and `format.EmbeddedTOML` are library functions in the `format` package. On format parse failure they return `format.EmbeddedDecodeError{Format, Err}`; on marshal failure `format.EmbeddedEncodeError{Format, Err}` — both implement `slog.LogValuer`. Codec validation errors from the inner codec propagate unchanged.
+
 ## Schema metadata
 
 ```go
