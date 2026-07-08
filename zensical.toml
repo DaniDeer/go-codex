@@ -52,3 +52,8 @@ repo_name = "DaniDeer/go-codex"
 
 [nav.Reference]
 "Package Reference" = "reference/index.md"
+
+[nav.Roadmap]
+"Overview" = "roadmap/index.md"
+"— AMQP 0.9.1 Adapter" = "roadmap/amqp-adapter.md"
+"— TCP Adapter" = "roadmap/tcp-adapter.md"
