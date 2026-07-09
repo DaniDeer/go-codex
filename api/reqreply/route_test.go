@@ -9,6 +9,7 @@ import (
 
 	"github.com/DaniDeer/go-codex/api/reqreply"
 	"github.com/DaniDeer/go-codex/codex"
+	asyncapiv3 "github.com/DaniDeer/go-codex/render/asyncapi/v3"
 )
 
 // ── shared types and codecs ───────────────────────────────────────────────────
@@ -436,5 +437,58 @@ func TestRoute_ClientHandle_topicParamsPreserved(t *testing.T) {
 	}
 	if topic != "compute/acme/add" {
 		t.Errorf("expected %q, got %q", "compute/acme/add", topic)
+	}
+}
+
+// ── AppendTo ──────────────────────────────────────────────────────────────────
+
+func TestBuilder_AppendTo_writesChannelsToExternalBuilder(t *testing.T) {
+	b := newBuilder()
+	if _, err := computeRoute.Register(b); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+
+	db := asyncapiv3.NewDocumentBuilder(asyncapiv3.Info{Title: "Test", Version: "1.0.0"})
+	if err := b.AppendTo(db); err != nil {
+		t.Fatalf("AppendTo: %v", err)
+	}
+	doc, err := db.Build()
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	out, _ := doc.MarshalYAML()
+	for _, want := range []string{"computeAdd:", "computeAddReply:"} {
+		if !strings.Contains(string(out), want) {
+			t.Errorf("spec missing %q\nfull output:\n%s", want, string(out))
+		}
+	}
+}
+
+func TestBuilder_AppendTo_AsyncAPISpec_consistent(t *testing.T) {
+	// AppendTo then Build must produce the same channels as AsyncAPISpec.
+	b := newBuilder()
+	if _, err := computeRoute.Register(b); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+
+	specDirect, err := b.AsyncAPISpec()
+	if err != nil {
+		t.Fatalf("AsyncAPISpec: %v", err)
+	}
+
+	db := asyncapiv3.NewDocumentBuilder(asyncapiv3.Info{Title: "Compute API", Version: "1.0.0"})
+	db.AddServer("zmq", asyncapiv3.Server{URL: "tcp://localhost:5556", Protocol: "zmq"})
+	if err := b.AppendTo(db); err != nil {
+		t.Fatalf("AppendTo: %v", err)
+	}
+	specCombined, err := db.Build()
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+
+	direct, _ := specDirect.MarshalYAML()
+	combined, _ := specCombined.MarshalYAML()
+	if string(direct) != string(combined) {
+		t.Errorf("channels differ\ndirect:\n%s\ncombined:\n%s", direct, combined)
 	}
 }

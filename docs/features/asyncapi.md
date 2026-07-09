@@ -165,8 +165,29 @@ userCreated, _ := events.NewChannel[UserCreatedEvent]("user/created", codec,
 | `events.MissingTopicVarError{Name}` | Template variable absent from vars map |
 | `events.InvalidTopicParamError{Name, Topic}` | `TopicParams` entry names a variable not in the template |
 
+## Combining pub/sub and request-reply in one document
+
+`events.Builder` and `reqreply.Builder` each call `AsyncAPISpec()` separately by
+default. To produce a **single combined document**, use `AppendTo` on both:
+
+```go
+import asyncapi "github.com/DaniDeer/go-codex/render/asyncapi/v3"
+
+doc := asyncapi.NewDocumentBuilder(info)
+doc.AddServer("mqtt5", asyncapi.Server{URL: "mqtts://...", Protocol: "mqtt5"})
+
+eventsB.AppendTo(doc)    // pub/sub channels → doc
+reqreplyB.AppendTo(doc)  // request-reply channels → doc
+
+spec, _ := doc.Build()   // single AsyncAPI 3.0 document
+```
+
+`AppendTo` writes only **channels** into `doc` — servers, schemas, and security
+schemes are not copied. See the [AsyncAPI guide](../guides/asyncapi.md#combining-pubsub-and-request-reply-in-one-asyncapi-spec) for the full example.
+
 ## See also
 
 - [Guide: MQTT Events](../guides/mqtt.md) — Paho MQTT adapter + full pub/sub example
+- [Guide: AsyncAPI — combining pub/sub + request-reply](../guides/asyncapi.md#combining-pubsub-and-request-reply-in-one-asyncapi-spec)
 - [examples/api-events](https://github.com/DaniDeer/go-codex/tree/main/examples/api-events) — event channel builder + AsyncAPI spec
 - [examples/event-driven](https://github.com/DaniDeer/go-codex/tree/main/examples/event-driven) — full AsyncAPI 2.6 document

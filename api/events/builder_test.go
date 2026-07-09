@@ -10,6 +10,7 @@ import (
 	"github.com/DaniDeer/go-codex/api/events"
 	"github.com/DaniDeer/go-codex/codex"
 	"github.com/DaniDeer/go-codex/format"
+	asyncapiv3 "github.com/DaniDeer/go-codex/render/asyncapi/v3"
 	"github.com/DaniDeer/go-codex/route"
 	"github.com/DaniDeer/go-codex/validate"
 )
@@ -1151,4 +1152,154 @@ func ExampleNewChannel() {
 	}
 	fmt.Printf("sensor=%s value=%.1f\n", reading.SensorID, reading.Value)
 	// Output: sensor=s1 value=42.5
+}
+
+// ── AppendTo ──────────────────────────────────────────────────────────────────
+
+func TestBuilder_AppendTo_writesChannelsToExternalBuilder(t *testing.T) {
+	b := events.NewBuilder(testInfo)
+	if _, err := events.NewChannel("user/created", userEventCodec,
+		events.Subscribe{Summary: "A user was created"},
+	).Register(b); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+	if _, err := events.NewChannel("user/deleted", userEventCodec,
+		events.Subscribe{Summary: "A user was deleted"},
+	).Register(b); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+
+	asyncapiB := asyncapiv3.NewDocumentBuilder(testInfo)
+	if err := b.AppendTo(asyncapiB); err != nil {
+		t.Fatalf("AppendTo: %v", err)
+	}
+	doc, err := asyncapiB.Build()
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	out, _ := doc.MarshalYAML()
+	for _, want := range []string{"user/created:", "user/deleted:"} {
+		if !strings.Contains(string(out), want) {
+			t.Errorf("combined spec missing %q", want)
+		}
+	}
+}
+
+func TestBuilder_AppendTo_multipleChannels(t *testing.T) {
+	// Verify AppendTo correctly writes all registered channels.
+	b := events.NewBuilder(testInfo)
+	for _, topic := range []string{"sensor/temp", "sensor/humidity", "sensor/pressure"} {
+		if _, err := events.NewChannel(topic, userEventCodec,
+			events.Subscribe{Summary: "Sensor " + topic},
+		).Register(b); err != nil {
+			t.Fatalf("Register %s: %v", topic, err)
+		}
+	}
+
+	db := asyncapiv3.NewDocumentBuilder(testInfo)
+	if err := b.AppendTo(db); err != nil {
+		t.Fatalf("AppendTo: %v", err)
+	}
+	doc, err := db.Build()
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	out, _ := doc.MarshalYAML()
+	for _, want := range []string{"sensor/temp:", "sensor/humidity:", "sensor/pressure:"} {
+		if !strings.Contains(string(out), want) {
+			t.Errorf("spec missing channel %q", want)
+		}
+	}
+}
+
+func TestBuilder_AppendTo_channels_match_AsyncAPISpec(t *testing.T) {
+	// AppendTo writes channels into an external builder. The channel content
+	// must be the same as what AsyncAPISpec() emits. Servers are not copied —
+	// the caller controls those on the external builder — so we compare only
+	// the channel keys in the YAML output.
+	b := events.NewBuilder(testInfo)
+	if _, err := events.NewChannel("sensor/reading", userEventCodec,
+		events.Subscribe{Summary: "Sensor reading"},
+	).Register(b); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+
+	specDirect, err := b.AsyncAPISpec()
+	if err != nil {
+		t.Fatalf("AsyncAPISpec: %v", err)
+	}
+
+	db := asyncapiv3.NewDocumentBuilder(testInfo)
+	if err := b.AppendTo(db); err != nil {
+		t.Fatalf("AppendTo: %v", err)
+	}
+	specCombined, err := db.Build()
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+
+	// Both must contain the same channel key — channel content is identical;
+	// servers differ because AppendTo does not copy them (by design).
+	direct, _ := specDirect.MarshalYAML()
+	combined, _ := specCombined.MarshalYAML()
+	if !strings.Contains(string(combined), "sensor/reading:") {
+		t.Errorf("AppendTo output missing channel\ncombined:\n%s", combined)
+	}
+	if !strings.Contains(string(direct), "sensor/reading:") {
+		t.Errorf("AsyncAPISpec output missing channel\ndirect:\n%s", direct)
+	}
+}
+
+// ── Combined pub/sub + request-reply spec (integration) ───────────────────────
+
+func TestCombinedSpec_eventsAndReqReply(t *testing.T) {
+	// Pub/sub channels via events.Builder
+	eventsB := events.NewBuilder(testInfo)
+	if _, err := events.NewChannel("sensor/reading", userEventCodec,
+		events.Subscribe{OperationID: "receiveSensorReading"},
+	).Register(eventsB); err != nil {
+		t.Fatalf("Register pub/sub: %v", err)
+	}
+
+	// Request-reply channels — simulate with raw asyncapi to avoid importing reqreply
+	// (reqreply→events import would create a cycle; the integration is proven by
+	// TestBuilder_AppendTo_writesChannelsToExternalBuilder in both packages separately).
+	//
+	// Here we verify the plumbing: a pre-populated DocumentBuilder can receive
+	// channels from AppendTo and still Build() successfully.
+	doc := asyncapiv3.NewDocumentBuilder(testInfo)
+	doc.AddServer("mqtt5", asyncapiv3.Server{URL: "mqtts://broker.example.com:8883", Protocol: "mqtt5"})
+	doc.AddChannel("compute/add", asyncapiv3.ChannelItem{
+		Address: "compute/add",
+		Publish: &asyncapiv3.Operation{
+			OperationID: "sendComputeAdd",
+			Message:     asyncapiv3.Message{},
+			Reply:       &asyncapiv3.OperationReply{Channel: "computeAddReply"},
+		},
+	})
+	doc.AddReplyChannel("computeAddReply", asyncapiv3.ChannelItem{
+		Address:   "compute/add/reply",
+		Subscribe: &asyncapiv3.Operation{OperationID: "receiveComputeReply", Message: asyncapiv3.Message{}},
+	})
+
+	if err := eventsB.AppendTo(doc); err != nil {
+		t.Fatalf("AppendTo: %v", err)
+	}
+
+	spec, err := doc.Build()
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	out, _ := spec.MarshalYAML()
+	s := string(out)
+	for _, want := range []string{
+		"sensor/reading:",  // pub/sub channel from eventsB
+		"compute/add:",     // request channel
+		"computeAddReply:", // reply channel
+		"mqtt5",            // server
+	} {
+		if !strings.Contains(s, want) {
+			t.Errorf("combined spec missing %q\nfull:\n%s", want, s)
+		}
+	}
 }

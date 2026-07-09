@@ -86,6 +86,27 @@ func (b *Builder) AsyncAPISpec() (asyncapi.Document, error) {
 	return b.docBuilder.Build()
 }
 
+// AppendTo writes all request-reply channels registered on this Builder into
+// db. Servers and schemas owned by this Builder are NOT written — the caller
+// is responsible for configuring those on db.
+//
+// Use AppendTo to combine request-reply channels with pub/sub channels from
+// [api/events.Builder] in a single AsyncAPI 3.0 document:
+//
+//	import asyncapi "github.com/DaniDeer/go-codex/render/asyncapi/v3"
+//
+//	doc := asyncapi.NewDocumentBuilder(info)
+//	doc.AddServer("mqtt5", asyncapi.Server{URL: "mqtts://...", Protocol: "mqtt5"})
+//
+//	eventsB.AppendTo(doc)    // pub/sub channels
+//	reqreplyB.AppendTo(doc)  // request-reply channels
+//
+//	spec, err := doc.Build()
+func (b *Builder) AppendTo(db *asyncapi.DocumentBuilder) error {
+	b.docBuilder.AppendChannelsTo(db)
+	return nil
+}
+
 // topicToID converts a topic string like "compute/add" or "sensors/{id}/readings"
 // to a camelCase identifier like "computeAdd" or "sensorsIdReadings".
 func topicToID(topic string) string {

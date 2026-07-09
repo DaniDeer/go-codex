@@ -498,3 +498,66 @@ func TestOperationReply_JSONMarshal(t *testing.T) {
 		t.Errorf("expected 'reply' key in at least one operation in JSON output")
 	}
 }
+
+// ── AppendChannelsTo ──────────────────────────────────────────────────────────
+
+func TestDocumentBuilder_AppendChannelsTo_copiesChannels(t *testing.T) {
+	src := v3.NewDocumentBuilder(v3.Info{Title: "src", Version: "1.0.0"})
+	src.AddChannel("sensor/data", v3.ChannelItem{
+		Address: "sensor/data",
+		Subscribe: &v3.Operation{
+			OperationID: "receiveSensorData",
+			Message:     v3.Message{},
+		},
+	})
+	src.AddReplyChannel("compute/reply", v3.ChannelItem{
+		Address: "compute/reply",
+		Subscribe: &v3.Operation{
+			OperationID: "receiveComputeReply",
+			Message:     v3.Message{},
+		},
+	})
+
+	dst := v3.NewDocumentBuilder(v3.Info{Title: "dst", Version: "1.0.0"})
+	dst.AddChannel("alert/high", v3.ChannelItem{
+		Address: "alert/high",
+		Publish: &v3.Operation{
+			OperationID: "publishAlert",
+			Message:     v3.Message{},
+		},
+	})
+	src.AppendChannelsTo(dst)
+
+	doc, err := dst.Build()
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	out, _ := doc.MarshalYAML()
+	s := string(out)
+	for _, want := range []string{"sensor/data:", "compute/reply:", "alert/high:"} {
+		if !strings.Contains(s, want) {
+			t.Errorf("combined doc missing %q\nfull:\n%s", want, s)
+		}
+	}
+}
+
+func TestDocumentBuilder_AppendChannelsTo_doesNotCopyServers(t *testing.T) {
+	src := v3.NewDocumentBuilder(v3.Info{Title: "src", Version: "1.0.0"})
+	src.AddServer("broker", v3.Server{URL: "mqtt://broker.example.com", Protocol: "mqtt"})
+	src.AddChannel("ch", v3.ChannelItem{
+		Address:   "ch",
+		Subscribe: &v3.Operation{OperationID: "recv", Message: v3.Message{}},
+	})
+
+	dst := v3.NewDocumentBuilder(v3.Info{Title: "dst", Version: "1.0.0"})
+	src.AppendChannelsTo(dst)
+
+	doc, err := dst.Build()
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	out, _ := doc.MarshalYAML()
+	if strings.Contains(string(out), "broker") {
+		t.Error("AppendChannelsTo must not copy servers")
+	}
+}

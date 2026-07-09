@@ -685,9 +685,6 @@ func (c Channel[T]) Register(b *Builder) (*ChannelHandle[T], error) {
 // Returns an error if any non-empty SchemaName references a schema that will not
 // be present in components/schemas (a dangling $ref).
 func (b *Builder) AsyncAPISpec() (asyncapi.Document, error) {
-	if err := b.checkDanglingRefs(); err != nil {
-		return asyncapi.Document{}, err
-	}
 	ab := asyncapi.NewDocumentBuilder(b.info)
 	for _, ns := range b.servers {
 		ab.AddServer(ns.name, ns.server)
@@ -698,10 +695,42 @@ func (b *Builder) AsyncAPISpec() (asyncapi.Document, error) {
 	for name, s := range b.securitySchemes {
 		ab.AddSecurityScheme(name, s.SecurityScheme)
 	}
-	for _, e := range b.entries {
-		ab.AddChannel(e.topic(), e.descriptor())
+	if err := b.buildInto(ab); err != nil {
+		return asyncapi.Document{}, err
 	}
 	return ab.Build()
+}
+
+// AppendTo writes all channels registered on this Builder into db, which
+// must have been created by [asyncapi.NewDocumentBuilder]. Servers, schemas,
+// and security schemes owned by this Builder are NOT written — the caller is
+// responsible for configuring those on db.
+//
+// Use AppendTo to combine pub/sub channels with request-reply channels from
+// [api/reqreply.Builder] in a single AsyncAPI 3.0 document:
+//
+//	import asyncapi "github.com/DaniDeer/go-codex/render/asyncapi/v3"
+//
+//	doc := asyncapi.NewDocumentBuilder(info)
+//	doc.AddServer("mqtt5", asyncapi.Server{URL: "mqtts://...", Protocol: "mqtt5"})
+//
+//	eventsB.AppendTo(doc)    // pub/sub channels
+//	reqreplyB.AppendTo(doc)  // request-reply channels
+//
+//	spec, err := doc.Build()
+func (b *Builder) AppendTo(db *asyncapi.DocumentBuilder) error {
+	return b.buildInto(db)
+}
+
+// buildInto writes all registered channels into db.
+func (b *Builder) buildInto(db *asyncapi.DocumentBuilder) error {
+	if err := b.checkDanglingRefs(); err != nil {
+		return err
+	}
+	for _, e := range b.entries {
+		db.AddChannel(e.topic(), e.descriptor())
+	}
+	return nil
 }
 
 // checkDanglingRefs verifies that every non-empty SchemaName used in channels

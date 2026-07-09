@@ -200,6 +200,29 @@ func (b *DocumentBuilder) AddReplyChannel(name string, c ChannelItem) *DocumentB
 	return b
 }
 
+// AppendChannelsTo copies all channels registered on b into other.
+// Servers, schemas, and security schemes are NOT copied — the caller is
+// responsible for registering those on other directly. This method is
+// intended for combining two builders (e.g. one from [api/events] and one
+// from [api/reqreply]) into a single document:
+//
+//	doc := asyncapi.NewDocumentBuilder(info)
+//	doc.AddServer("mqtt5", server)
+//
+//	eventsBuilder.AppendTo(doc)   // pub/sub channels
+//	reqreplyBuilder.AppendTo(doc) // request-reply channels
+//
+//	spec, err := doc.Build()
+func (b *DocumentBuilder) AppendChannelsTo(other *DocumentBuilder) {
+	for name, ch := range b.channels {
+		if _, isReply := b.replyChannels[name]; isReply {
+			other.AddReplyChannel(name, ch)
+		} else {
+			other.AddChannel(name, ch)
+		}
+	}
+}
+
 // Build validates the accumulated channels and produces a Document.
 //
 // Validation:
