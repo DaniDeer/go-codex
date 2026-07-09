@@ -6,6 +6,7 @@ import (
 	"embed"
 	"errors"
 	"fmt"
+	"log/slog"
 	"testing"
 	"time"
 
@@ -178,16 +179,33 @@ func TestMigrator_Observer(t *testing.T) {
 // ── MigrationError LogValue ───────────────────────────────────────────────────
 
 func TestMigrationError_LogValue(t *testing.T) {
-	import_slog_for_test := func() {
-		// Only test the LogValue shape here; actual slog output is tested by
-		// the no-panic test above via LoggingObserver.
-	}
-	_ = import_slog_for_test
-
 	me := sqladapter.MigrationError{Op: "up", Version: 3, Err: fmt.Errorf("db error")}
 	lv := me.LogValue()
-	if lv.Kind().String() == "" {
-		t.Fatal("LogValue returned empty value")
+	if lv.Kind() != slog.KindGroup {
+		t.Fatalf("LogValue: want KindGroup, got %v", lv.Kind())
+	}
+	keys := make(map[string]bool)
+	for _, a := range lv.Group() {
+		keys[a.Key] = true
+	}
+	for _, want := range []string{"op", "version", "err"} {
+		if !keys[want] {
+			t.Errorf("LogValue missing attribute %q", want)
+		}
+	}
+}
+
+// ── MigrationError Unwrap ─────────────────────────────────────────────────────
+
+func TestMigrationError_Unwrap(t *testing.T) {
+	inner := fmt.Errorf("original goose error")
+	me := sqladapter.MigrationError{Op: "up", Version: 1, Err: inner}
+
+	if !errors.Is(me, inner) {
+		t.Error("errors.Is should reach the inner error via Unwrap")
+	}
+	if errors.Unwrap(me) != inner {
+		t.Errorf("Unwrap: want inner error, got %v", errors.Unwrap(me))
 	}
 }
 

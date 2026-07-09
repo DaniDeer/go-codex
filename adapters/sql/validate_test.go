@@ -223,6 +223,16 @@ func TestValidate_ObserverCalledOnFailure(t *testing.T) {
 	if spy.validations[0].err == nil {
 		t.Error("RecordValidation: want non-nil err on failure")
 	}
+	// RecordValidation must receive the context-enriched RowValidationError
+	// (with Table + Op fields set), not the raw codec error.
+	var rve sqladapter.RowValidationError
+	if !errors.As(spy.validations[0].err, &rve) {
+		t.Errorf("RecordValidation err: want RowValidationError, got %T", spy.validations[0].err)
+	}
+	if rve.Table != "users" || rve.Op != "insert_user" {
+		t.Errorf("RecordValidation err context: want table=%q op=%q, got table=%q op=%q",
+			"users", "insert_user", rve.Table, rve.Op)
+	}
 	if len(spy.valErrors) == 0 {
 		t.Error("RecordValidationError: want at least one field error reported")
 	}
