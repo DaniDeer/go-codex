@@ -247,6 +247,7 @@ func TestLoggingObserver_ImplementsAllInterfaces(t *testing.T) {
 	var _ stats.PipelineObserver = obs
 	var _ stats.SecurityObserver = obs
 	var _ stats.FileObserver = obs
+	var _ stats.SQLObserver = obs
 }
 
 func TestLoggingObserver_AllMethods_NoPanic(t *testing.T) {
@@ -259,6 +260,8 @@ func TestLoggingObserver_AllMethods_NoPanic(t *testing.T) {
 	obs.RecordSecurityRejection("/admin", "bearerAuth")
 	obs.RecordFileRead("/etc/config.toml", true, 1*time.Millisecond)
 	obs.RecordFileWrite("/etc/config.toml", false, 1*time.Millisecond)
+	obs.RecordValidation("users", "get_user", 1*time.Millisecond, nil)
+	obs.RecordMigration("up", "00001_create_users.sql", 1, 2*time.Millisecond, nil)
 }
 
 // ── NewFanout ─────────────────────────────────────────────────────────────────

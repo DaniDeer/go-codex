@@ -35,6 +35,7 @@ repo_name = "DaniDeer/go-codex"
 "OpenAPI Spec" = "features/openapi.md"
 "AsyncAPI Spec" = "features/asyncapi.md"
 "Config, CLI & Protobuf" = "features/config.md"
+"SQL Adapter" = "features/sql.md"
 
 [nav.Guides]
 "Enums, Unions & Sum Types" = "guides/enum-union-sum.md"
@@ -49,6 +50,7 @@ repo_name = "DaniDeer/go-codex"
 "OpenAPI Examples" = "guides/openapi.md"
 "AsyncAPI Examples" = "guides/asyncapi.md"
 "Config Examples" = "guides/config.md"
+"SQL Examples (goose + sqlc)" = "guides/sql.md"
 
 [nav.Reference]
 "Package Reference" = "reference/index.md"
@@ -57,4 +59,3 @@ repo_name = "DaniDeer/go-codex"
 "Overview" = "roadmap/index.md"
 "— AMQP 0.9.1 Adapter" = "roadmap/amqp-adapter.md"
 "— TCP Adapter" = "roadmap/tcp-adapter.md"
-"— SQL Adapter (goose + sqlc)" = "roadmap/sql-adapter.md"

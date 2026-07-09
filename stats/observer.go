@@ -153,9 +153,30 @@ type FileObserver interface {
 	RecordFileWrite(path string, success bool, duration time.Duration)
 }
 
+// SQLObserver is an optional extension to [Observer] for SQL adapter lifecycle
+// events. [adapters/sql.Validate] and [adapters/sql.Migrator] type-assert the
+// configured Observer to SQLObserver before calling its methods — existing
+// Observer implementations need not change.
+//
+//	type MyObserver struct{ ... }
+//	func (o *MyObserver) RecordValidation(table, op string, d time.Duration, err error) {
+//	    // record metrics, emit a log line, etc.
+//	}
+//	func (o *MyObserver) RecordMigration(op, name string, version int64, d time.Duration, err error) { ... }
+type SQLObserver interface {
+	// RecordValidation is called after every [adapters/sql.Validate] call,
+	// success or failure. table and op mirror ValidateOptions.Table/Op.
+	// err is nil on success.
+	RecordValidation(table, op string, duration time.Duration, err error)
+
+	// RecordMigration is called once per applied or rolled-back migration file
+	// during Migrator.Up or Migrator.Down. op is "up" or "down".
+	RecordMigration(op, name string, version int64, duration time.Duration, err error)
+}
+
 // LoggingObserver logs every observer event as a structured slog message.
-// It implements all five observer interfaces: [Observer] (embeds [ValidationObserver]),
-// [PipelineObserver], [SecurityObserver], and [FileObserver].
+// It implements all observer interfaces: [Observer] (embeds [ValidationObserver]),
+// [PipelineObserver], [SecurityObserver], [FileObserver], and [SQLObserver].
 //
 // Configure the logger's handler for your environment:
 //   - [slog.NewTextHandler] for development
@@ -212,6 +233,14 @@ func (o *LoggingObserver) RecordFileRead(path string, success bool, d time.Durat
 
 func (o *LoggingObserver) RecordFileWrite(path string, success bool, d time.Duration) {
 	o.logger.Debug("file write", "path", path, "success", success, "ms", d.Milliseconds())
+}
+
+func (o *LoggingObserver) RecordValidation(table, op string, d time.Duration, err error) {
+	o.logger.Debug("sql validate", "table", table, "op", op, "ms", d.Milliseconds(), "err", err)
+}
+
+func (o *LoggingObserver) RecordMigration(op, name string, version int64, d time.Duration, err error) {
+	o.logger.Info("sql migration", "op", op, "name", name, "version", version, "ms", d.Milliseconds(), "err", err)
 }
 
 // NewFanout returns an [Observer] that fans out all calls to each provided observer.
@@ -292,6 +321,24 @@ func (f *fanout) RecordApply(name, version string, success bool, d time.Duration
 	}
 }
 
+// RecordValidation implements [SQLObserver].
+func (f *fanout) RecordValidation(table, op string, d time.Duration, err error) {
+	for _, o := range f.observers {
+		if so, ok := o.(SQLObserver); ok {
+			so.RecordValidation(table, op, d, err)
+		}
+	}
+}
+
+// RecordMigration implements [SQLObserver].
+func (f *fanout) RecordMigration(op, name string, version int64, d time.Duration, err error) {
+	for _, o := range f.observers {
+		if so, ok := o.(SQLObserver); ok {
+			so.RecordMigration(op, name, version, d, err)
+		}
+	}
+}
+
 // StartSpan implements [TraceObserver].
 func (f *fanout) StartSpan(ctx context.Context, operation, name string) context.Context {
 	for _, o := range f.observers {
@@ -316,16 +363,18 @@ func (f *fanout) EndSpan(ctx context.Context, err error) {
 // when no observer is configured.
 type NoopObserver struct{}
 
-func (NoopObserver) RecordValidationError(_, _, _ string)                       {}
-func (NoopObserver) RecordRequest(_, _ string, _ int, _ time.Duration)          {}
-func (NoopObserver) RecordSubscribe(_ string, _ bool, _ time.Duration)          {}
-func (NoopObserver) RecordPublish(_ string, _ bool, _ time.Duration)            {}
-func (NoopObserver) RecordApply(_, _ string, _ bool, _ time.Duration)           {}
-func (NoopObserver) RecordSecurityRejection(_, _ string)                        {}
-func (NoopObserver) RecordFileRead(_ string, _ bool, _ time.Duration)           {}
-func (NoopObserver) RecordFileWrite(_ string, _ bool, _ time.Duration)          {}
-func (NoopObserver) StartSpan(ctx context.Context, _, _ string) context.Context { return ctx }
-func (NoopObserver) EndSpan(_ context.Context, _ error)                         {}
+func (NoopObserver) RecordValidationError(_, _, _ string)                           {}
+func (NoopObserver) RecordRequest(_, _ string, _ int, _ time.Duration)              {}
+func (NoopObserver) RecordSubscribe(_ string, _ bool, _ time.Duration)              {}
+func (NoopObserver) RecordPublish(_ string, _ bool, _ time.Duration)                {}
+func (NoopObserver) RecordApply(_, _ string, _ bool, _ time.Duration)               {}
+func (NoopObserver) RecordSecurityRejection(_, _ string)                            {}
+func (NoopObserver) RecordFileRead(_ string, _ bool, _ time.Duration)               {}
+func (NoopObserver) RecordFileWrite(_ string, _ bool, _ time.Duration)              {}
+func (NoopObserver) RecordValidation(_, _ string, _ time.Duration, _ error)         {}
+func (NoopObserver) RecordMigration(_, _ string, _ int64, _ time.Duration, _ error) {}
+func (NoopObserver) StartSpan(ctx context.Context, _, _ string) context.Context     { return ctx }
+func (NoopObserver) EndSpan(_ context.Context, _ error)                             {}
 
 // ReportErrors walks err and calls obs.RecordValidationError for every codec
 // validation failure it finds. location identifies the data source (e.g. "body",

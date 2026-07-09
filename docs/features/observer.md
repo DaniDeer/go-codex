@@ -4,11 +4,11 @@
 >
 > Runnable demos: [`examples/stats-observer`](https://github.com/DaniDeer/go-codex/tree/main/examples/stats-observer) · [`examples/adapters-nethttp`](https://github.com/DaniDeer/go-codex/tree/main/examples/adapters-nethttp) · [`examples/adapters-mqtt`](https://github.com/DaniDeer/go-codex/tree/main/examples/adapters-mqtt) · [`examples/flat-key-patch`](https://github.com/DaniDeer/go-codex/tree/main/examples/flat-key-patch)
 
-The observer pattern is go-codex's unified observability layer across **all four layers** of the library: codecs, adapters, formats (files), and forge. It provides structured hooks for three observability signals — **metrics, logging, and distributed tracing** — with no library dependency.
+The observer pattern is go-codex's unified observability layer across **all layers** of the library: codecs, adapters, formats (files), forge, and SQL. It provides structured hooks for three observability signals — **metrics, logging, and distributed tracing** — with no library dependency.
 
 The user decides which signals to use (any, all, or none) and implements the corresponding interfaces. Implementations are fully swappable between development stubs, Prometheus counters, OTel tracing, or any other backend.
 
-## The six observer interfaces
+## The seven observer interfaces
 
 | Interface | Signal | Methods | Layer |
 |---|---|---|---|
@@ -17,7 +17,8 @@ The user decides which signals to use (any, all, or none) and implements the cor
 | `stats.PipelineObserver` | metrics + logging | `RecordApply(name, version, success, dur)` | **Forge** — computation pipelines |
 | `stats.FileObserver` | metrics + logging | `RecordFileRead` · `RecordFileWrite` | **Formats** — file I/O |
 | `stats.SecurityObserver` | metrics + logging | `RecordSecurityRejection(location, scheme)` | **Adapters** — security rejection events |
-| `stats.TraceObserver` | distributed tracing | `StartSpan(ctx, operation, name) ctx` · `EndSpan(ctx, err)` | **Adapters, forge, file** — spans |
+| `stats.SQLObserver` | metrics + logging | `RecordValidation(table, op, dur, err)` · `RecordMigration(op, name, version, dur, err)` | **SQL Adapter** — row validation + migrations |
+| `stats.TraceObserver` | distributed tracing | `StartSpan(ctx, operation, name) ctx` · `EndSpan(ctx, err)` | **Adapters, forge, file, SQL** — spans |
 
 Every interface is optional. Implement only what you need.
 
@@ -25,9 +26,9 @@ Every interface is optional. Implement only what you need.
 
 | Type | Implements | Purpose |
 |---|---|---|
-| `stats.NoopObserver` | all six | Zero-cost default — every Option field defaults to this |
-| `stats.LoggingObserver` | all five **except** TraceObserver | Logs every event via slog — configure handler for dev/prod/OTel |
-| `stats.NewFanout(observers...)` | all six | Fans out to multiple observers — compose metrics + logging + tracing |
+| `stats.NoopObserver` | all seven | Zero-cost default — every Option field defaults to this |
+| `stats.LoggingObserver` | all six **except** TraceObserver | Logs every event via slog — configure handler for dev/prod/OTel |
+| `stats.NewFanout(observers...)` | all seven | Fans out to multiple observers — compose metrics + logging + tracing |
 
 ## Composition
 
