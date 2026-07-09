@@ -495,3 +495,50 @@ func TestNoopObserver_ImplementsTraceObserver(t *testing.T) {
 	to.EndSpan(ctx, nil)
 	to.EndSpan(ctx, errors.New("err"))
 }
+
+// ── SQLObserver fanout tests ──────────────────────────────────────────────────
+
+type sqlFanoutSpy struct {
+	stats.NoopObserver
+	validations int
+	migrations  int
+}
+
+func (s *sqlFanoutSpy) RecordValidation(_, _ string, _ time.Duration, _ error) { s.validations++ }
+func (s *sqlFanoutSpy) RecordMigration(_, _ string, _ int64, _ time.Duration, _ error) {
+	s.migrations++
+}
+
+func TestFanout_SQLObserver_OnlyToImplementors(t *testing.T) {
+	spy := &sqlFanoutSpy{}
+	plain := &fanoutSpy{} // does NOT implement SQLObserver
+	obs := stats.NewFanout(plain, spy)
+
+	so, ok := obs.(stats.SQLObserver)
+	if !ok {
+		t.Fatal("fanout must implement SQLObserver when any inner does")
+	}
+
+	so.RecordValidation("users", "get_user", time.Millisecond, nil)
+	if spy.validations != 1 {
+		t.Errorf("RecordValidation: want 1 call on spy, got %d", spy.validations)
+	}
+
+	so.RecordMigration("up", "00001_create_users.sql", 1, time.Millisecond, nil)
+	if spy.migrations != 1 {
+		t.Errorf("RecordMigration: want 1 call on spy, got %d", spy.migrations)
+	}
+}
+
+func TestFanout_SQLObserver_SkipsNonImplementors(t *testing.T) {
+	plain := &fanoutSpy{} // does NOT implement SQLObserver
+	obs := stats.NewFanout(plain)
+
+	so, ok := obs.(stats.SQLObserver)
+	if !ok {
+		t.Fatal("fanout must implement SQLObserver regardless of inner observers")
+	}
+	// Must not panic when no inner observer implements SQLObserver.
+	so.RecordValidation("orders", "insert_order", time.Millisecond, nil)
+	so.RecordMigration("down", "00002_add_status.sql", 2, time.Millisecond, nil)
+}

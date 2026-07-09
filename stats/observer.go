@@ -175,8 +175,13 @@ type SQLObserver interface {
 }
 
 // LoggingObserver logs every observer event as a structured slog message.
-// It implements all observer interfaces: [Observer] (embeds [ValidationObserver]),
-// [PipelineObserver], [SecurityObserver], [FileObserver], and [SQLObserver].
+// It implements all observer interfaces except [TraceObserver]:
+// [Observer] (embeds [ValidationObserver]), [PipelineObserver],
+// [SecurityObserver], [FileObserver], and [SQLObserver].
+//
+// [TraceObserver] is intentionally not implemented — slog has no concept of
+// distributed trace spans. Use [stats.NewFanout] to combine a LoggingObserver
+// with a separate [TraceObserver] implementation (e.g. OpenTelemetry).
 //
 // Configure the logger's handler for your environment:
 //   - [slog.NewTextHandler] for development
@@ -244,10 +249,10 @@ func (o *LoggingObserver) RecordMigration(op, name string, version int64, d time
 }
 
 // NewFanout returns an [Observer] that fans out all calls to each provided observer.
-// The returned value also implements [FileObserver], [SecurityObserver], and
-// [PipelineObserver] — delegating each to the inner observers that satisfy those
-// interfaces, so composing a metrics-only observer with a [LoggingObserver] works
-// without any type-assertion boilerplate.
+// The returned value also implements [FileObserver], [SecurityObserver],
+// [PipelineObserver], [SQLObserver], and [TraceObserver] — delegating each to
+// the inner observers that satisfy those interfaces, so composing a metrics-only
+// observer with a [LoggingObserver] works without any type-assertion boilerplate.
 //
 //	obs := stats.NewFanout(
 //	    metricsObserver,
@@ -358,9 +363,10 @@ func (f *fanout) EndSpan(ctx context.Context, err error) {
 	}
 }
 
-// NoopObserver discards all events. It satisfies [Observer], [ValidationObserver],
-// [PipelineObserver], and [SecurityObserver] and is the zero-cost default used
-// when no observer is configured.
+// NoopObserver discards all events. It satisfies all observer interfaces —
+// [Observer] (embeds [ValidationObserver]), [PipelineObserver],
+// [SecurityObserver], [FileObserver], [SQLObserver], and [TraceObserver] —
+// and is the zero-cost default used when no observer is configured.
 type NoopObserver struct{}
 
 func (NoopObserver) RecordValidationError(_, _, _ string)                           {}
