@@ -12,6 +12,7 @@ These are **living design documents** — they reflect the current best thinking
 |---------|---------|--------|---------|
 | [AMQP 0.9.1 Adapter](amqp-adapter.md) | `adapters/amqp` | Design complete | PUB/SUB + Request/Reply over RabbitMQ — exchange/queue topology, Ack/Nack, `ReplyTo`/`CorrelationId` RPC, structured errors, observer integration |
 | [TCP Adapter](tcp-adapter.md) | `adapters/tcp` | Design complete | Request/Reply + streaming over raw TCP — pluggable `FramedConn` framing, built-in length-prefix framer, stdlib-only, no CGO |
+| [SQL Adapter (goose + sqlc + codec refinements)](sql-adapter.md) | `adapters/sql` | Design complete | goose owns schema migrations, sqlc generates structs + compile-time-checked queries, go-codex `Codec[T]`/`Refine` adds business-rule validation on top — thin `Validate[T]` wrapper, structured errors, observer integration |
 
 ---
 
