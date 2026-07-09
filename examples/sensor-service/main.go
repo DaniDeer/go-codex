@@ -1,0 +1,725 @@
+// Package sensor-service demonstrates the three-layer codec pipeline pattern
+// across three transport adapters — HTTP, MQTT, and SQL — wired together with
+// a single shared observer for metrics and logging.
+//
+// # Three-layer model
+//
+// Layer 1 (Contracts): boundary codecs, each describing one wire format.
+//
+//	createReadingCodec  — HTTP POST /readings request body
+//	readingCodec        — HTTP GET response + SQL post-read validation
+//	insertParamsCodec   — SQL pre-insert validation (db.InsertReadingParams)
+//	mqttPayloadCodec    — MQTT subscribe payload (sensor publishes)
+//	alertCodec          — MQTT publish payload (alert events)
+//
+// Layer 2 (Domain): pure Go functions, zero IO.
+//
+//	buildInsertParams(CreateReadingReq) db.InsertReadingParams
+//	buildInsertParamsFromMQTT(MQTTPayload) db.InsertReadingParams
+//	shouldAlert(db.Reading) bool
+//	buildAlert(db.Reading) SensorAlert
+//
+// Layer 3 (Infrastructure): HTTP adapter, mock MQTT client, SQL store.
+//
+// # Field factory functions
+//
+// [db.Reading] and [db.InsertReadingParams] share the same columns. Field
+// factory functions — [sensorIDField], [valueField], [unitField] — capture the
+// shared [validate] rules once and are reused across both codecs. This is the
+// "field factory functions: reusing field groups across structs" pattern
+// documented in docs/concepts/codec.md.
+//
+// # Observer
+//
+// A single [stats.NewFanout] value is passed to every adapter call site:
+//
+//	obs := stats.NewFanout(counting, stats.NewLoggingObserver(logger))
+//
+// [CountingObserver] implements both [stats.Observer] and [stats.SQLObserver].
+// It records HTTP request counts by status, validation error counts by
+// location, SQL validation calls, and migration events — all in memory.
+// In production replace the counters with Prometheus / OpenTelemetry instruments;
+// the interface contract is identical.
+//
+// # Running
+//
+// go run ./examples/sensor-service
+//
+//go:generate sqlc generate
+package main
+
+import (
+	"bytes"
+	"context"
+	"database/sql"
+	"embed"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"log/slog"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"sync"
+	"time"
+
+	pahomqtt "github.com/eclipse/paho.mqtt.golang"
+	_ "modernc.org/sqlite"
+
+	adaptermqtt "github.com/DaniDeer/go-codex/adapters/mqtt"
+	nethttp "github.com/DaniDeer/go-codex/adapters/nethttp"
+	sqladapter "github.com/DaniDeer/go-codex/adapters/sql"
+	"github.com/DaniDeer/go-codex/api/events"
+	"github.com/DaniDeer/go-codex/api/rest"
+	"github.com/DaniDeer/go-codex/codex"
+	"github.com/DaniDeer/go-codex/examples/sensor-service/db"
+	"github.com/DaniDeer/go-codex/format"
+	"github.com/DaniDeer/go-codex/stats"
+	"github.com/DaniDeer/go-codex/validate"
+)
+
+// ── Embedded assets ───────────────────────────────────────────────────────────
+
+//go:embed migrations/*.sql
+var migrationsFS embed.FS
+
+// ── Observer ──────────────────────────────────────────────────────────────────
+
+// CountingObserver is an in-memory [stats.Observer] + [stats.SQLObserver].
+// In production replace the maps and counters with Prometheus CounterVecs or
+// OpenTelemetry instruments — the interface methods are identical.
+type CountingObserver struct {
+	mu             sync.Mutex
+	requests       map[int]int    // HTTP status code → request count
+	subscribes     int            // successful MQTT subscribe handler calls
+	publishes      int            // successful MQTT publish calls
+	valErrors      map[string]int // location → validation error count
+	sqlValidations int
+	migrations     int
+}
+
+func newCountingObserver() *CountingObserver {
+	return &CountingObserver{
+		requests:  make(map[int]int),
+		valErrors: make(map[string]int),
+	}
+}
+
+func (o *CountingObserver) RecordRequest(_ string, _ string, status int, _ time.Duration) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	o.requests[status]++
+}
+
+func (o *CountingObserver) RecordSubscribe(_ string, success bool, _ time.Duration) {
+	if success {
+		o.mu.Lock()
+		o.subscribes++
+		o.mu.Unlock()
+	}
+}
+
+func (o *CountingObserver) RecordPublish(_ string, success bool, _ time.Duration) {
+	if success {
+		o.mu.Lock()
+		o.publishes++
+		o.mu.Unlock()
+	}
+}
+
+func (o *CountingObserver) RecordValidationError(location, _, _ string) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	o.valErrors[location]++
+}
+
+// RecordValidation implements [stats.SQLObserver].
+func (o *CountingObserver) RecordValidation(_, _ string, _ time.Duration, _ error) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	o.sqlValidations++
+}
+
+// RecordMigration implements [stats.SQLObserver].
+func (o *CountingObserver) RecordMigration(_, _ string, _ int64, _ time.Duration, _ error) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	o.migrations++
+}
+
+func (o *CountingObserver) Print() {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	fmt.Println("\n── Observer summary ─────────────────────────────────────")
+	fmt.Printf("  HTTP requests by status : %v\n", o.requests)
+	fmt.Printf("  MQTT subscribes (ok)    : %d\n", o.subscribes)
+	fmt.Printf("  MQTT publishes  (ok)    : %d\n", o.publishes)
+	fmt.Printf("  SQL validations called  : %d\n", o.sqlValidations)
+	fmt.Printf("  Migrations applied      : %d\n", o.migrations)
+	if len(o.valErrors) > 0 {
+		fmt.Printf("  Validation errors       : %v\n", o.valErrors)
+	} else {
+		fmt.Println("  Validation errors       : none")
+	}
+	fmt.Println("─────────────────────────────────────────────────────────")
+}
+
+// ── Domain types ──────────────────────────────────────────────────────────────
+
+// CreateReadingReq is the HTTP POST /readings request body.
+// The server assigns ID and RecordedAt.
+type CreateReadingReq struct {
+	SensorID string
+	Value    float64
+	Unit     string
+}
+
+// MQTTPayload is what an external sensor publishes over MQTT.
+type MQTTPayload struct {
+	SensorID string
+	Value    float64
+	Unit     string
+}
+
+// SensorAlert is published over MQTT when a reading exceeds the threshold.
+type SensorAlert struct {
+	SensorID  string
+	Value     float64
+	Threshold float64
+	At        string // RFC3339
+}
+
+const alertThreshold = 50.0
+
+// ── Layer 1: Field factory functions ─────────────────────────────────────────
+//
+// Each factory captures one field's Refine rules and returns a [codex.Field]
+// bound to the concrete struct type T. Reusing factories across db.Reading and
+// db.InsertReadingParams ensures both types share identical validation rules
+// with no duplication.
+
+func sensorIDField[T any](
+	get func(T) string,
+	set func(*T, string),
+) codex.Field[T, string] {
+	return codex.RequiredField("sensor_id",
+		codex.String().Refine(validate.UUID),
+		get, set)
+}
+
+func valueField[T any](
+	get func(T) float64,
+	set func(*T, float64),
+) codex.Field[T, float64] {
+	return codex.RequiredField("value",
+		codex.Float64().Refine(validate.RangeFloat(-9999, 9999)),
+		get, set)
+}
+
+func unitField[T any](
+	get func(T) string,
+	set func(*T, string),
+) codex.Field[T, string] {
+	return codex.RequiredField("unit",
+		codex.String().Refine(validate.OneOf("C", "F", "pct", "Pa", "ms")),
+		get, set)
+}
+
+func recordedAtField[T any](
+	get func(T) string,
+	set func(*T, string),
+) codex.Field[T, string] {
+	return codex.RequiredField("recorded_at",
+		codex.String().Refine(validate.DateTime),
+		get, set)
+}
+
+// ── Layer 1: Codecs ───────────────────────────────────────────────────────────
+
+// createReadingCodec — HTTP POST /readings request body.
+var createReadingCodec = codex.Struct(
+	sensorIDField(
+		func(r CreateReadingReq) string { return r.SensorID },
+		func(r *CreateReadingReq, v string) { r.SensorID = v }),
+	valueField(
+		func(r CreateReadingReq) float64 { return r.Value },
+		func(r *CreateReadingReq, v float64) { r.Value = v }),
+	unitField(
+		func(r CreateReadingReq) string { return r.Unit },
+		func(r *CreateReadingReq, v string) { r.Unit = v }),
+)
+
+// readingCodec — HTTP GET response + SQL post-read validation.
+// Uses the same field factories as insertParamsCodec for identical Refine rules.
+var readingCodec = codex.Struct(
+	codex.RequiredField("id",
+		codex.String().Refine(validate.UUID),
+		func(r db.Reading) string { return r.ID },
+		func(r *db.Reading, v string) { r.ID = v }),
+	sensorIDField(
+		func(r db.Reading) string { return r.SensorID },
+		func(r *db.Reading, v string) { r.SensorID = v }),
+	valueField(
+		func(r db.Reading) float64 { return r.Value },
+		func(r *db.Reading, v float64) { r.Value = v }),
+	unitField(
+		func(r db.Reading) string { return r.Unit },
+		func(r *db.Reading, v string) { r.Unit = v }),
+	recordedAtField(
+		func(r db.Reading) string { return r.RecordedAt },
+		func(r *db.Reading, v string) { r.RecordedAt = v }),
+)
+
+// insertParamsCodec — SQL pre-insert validation.
+// Shares sensorIDField/valueField/unitField with readingCodec — same Refine
+// rules, different struct type T, zero duplication.
+var insertParamsCodec = codex.Struct(
+	codex.RequiredField("id",
+		codex.String().Refine(validate.UUID),
+		func(p db.InsertReadingParams) string { return p.ID },
+		func(p *db.InsertReadingParams, v string) { p.ID = v }),
+	sensorIDField(
+		func(p db.InsertReadingParams) string { return p.SensorID },
+		func(p *db.InsertReadingParams, v string) { p.SensorID = v }),
+	valueField(
+		func(p db.InsertReadingParams) float64 { return p.Value },
+		func(p *db.InsertReadingParams, v float64) { p.Value = v }),
+	unitField(
+		func(p db.InsertReadingParams) string { return p.Unit },
+		func(p *db.InsertReadingParams, v string) { p.Unit = v }),
+	recordedAtField(
+		func(p db.InsertReadingParams) string { return p.RecordedAt },
+		func(p *db.InsertReadingParams, v string) { p.RecordedAt = v }),
+)
+
+// mqttPayloadCodec — what external sensors publish over MQTT.
+var mqttPayloadCodec = codex.Struct(
+	sensorIDField(
+		func(p MQTTPayload) string { return p.SensorID },
+		func(p *MQTTPayload, v string) { p.SensorID = v }),
+	valueField(
+		func(p MQTTPayload) float64 { return p.Value },
+		func(p *MQTTPayload, v float64) { p.Value = v }),
+	unitField(
+		func(p MQTTPayload) string { return p.Unit },
+		func(p *MQTTPayload, v string) { p.Unit = v }),
+)
+
+// alertCodec — alert events published when a reading exceeds the threshold.
+var alertCodec = codex.Struct(
+	sensorIDField(
+		func(a SensorAlert) string { return a.SensorID },
+		func(a *SensorAlert, v string) { a.SensorID = v }),
+	valueField(
+		func(a SensorAlert) float64 { return a.Value },
+		func(a *SensorAlert, v float64) { a.Value = v }),
+	codex.RequiredField("threshold",
+		codex.Float64(),
+		func(a SensorAlert) float64 { return a.Threshold },
+		func(a *SensorAlert, v float64) { a.Threshold = v }),
+	codex.RequiredField("at",
+		codex.String().Refine(validate.DateTime),
+		func(a SensorAlert) string { return a.At },
+		func(a *SensorAlert, v string) { a.At = v }),
+)
+
+// ── Layer 1: API declarations ─────────────────────────────────────────────────
+//
+// Channel and route declarations are pure value expressions — no side effects,
+// no registration. They name and type every API surface of the service and can
+// be read as a compact spec independent of the infrastructure wiring in main().
+//
+// Register/ClientHandle calls (which produce *ChannelHandle and *RouteHandle)
+// happen in main() where a builder or mux is already available.
+
+var readingChannel = events.NewChannel(
+	"sensors/{sensorID}/data",
+	mqttPayloadCodec,
+	events.TopicParam{Name: "sensorID", Description: "UUID of the publishing sensor"},
+)
+
+var alertChannel = events.NewChannel(
+	"alerts/{sensorID}",
+	alertCodec,
+	events.TopicParam{Name: "sensorID", Description: "UUID of the sensor that triggered the alert"},
+)
+
+var createRoute = rest.NewRoute("POST", "/readings",
+	createReadingCodec, readingCodec,
+)
+
+var getRoute = rest.NewRoute("GET", "/readings/{id}",
+	codex.Struct[struct{}](), readingCodec,
+	rest.PathParam{Name: "id", Description: "Reading UUID"},
+)
+
+// ── Layer 2: Domain functions ─────────────────────────────────────────────────
+
+func newReadingID() string {
+	// Deterministic UUID-shaped ID from timestamp — avoids a uuid dependency.
+	t := time.Now().UnixNano()
+	return fmt.Sprintf("%08x-0001-4000-8000-%012x", t>>32, t&0xffffffffffff)
+}
+
+func buildInsertParams(req CreateReadingReq) db.InsertReadingParams {
+	return db.InsertReadingParams{
+		ID:         newReadingID(),
+		SensorID:   req.SensorID,
+		Value:      req.Value,
+		Unit:       req.Unit,
+		RecordedAt: time.Now().UTC().Format(time.RFC3339),
+	}
+}
+
+func buildInsertParamsFromMQTT(p MQTTPayload) db.InsertReadingParams {
+	return db.InsertReadingParams{
+		ID:         newReadingID(),
+		SensorID:   p.SensorID,
+		Value:      p.Value,
+		Unit:       p.Unit,
+		RecordedAt: time.Now().UTC().Format(time.RFC3339),
+	}
+}
+
+func shouldAlert(r db.Reading) bool { return r.Value > alertThreshold }
+
+func buildAlert(r db.Reading) SensorAlert {
+	return SensorAlert{
+		SensorID:  r.SensorID,
+		Value:     r.Value,
+		Threshold: alertThreshold,
+		At:        time.Now().UTC().Format(time.RFC3339),
+	}
+}
+
+// ── Layer 3: ReadingStore (SQL) ───────────────────────────────────────────────
+
+// ReadingStore wraps the sqlc-generated *db.Queries.
+//
+// Every write path calls sqladapter.Validate(insertParamsCodec, ...) before
+// reaching the DB — codec rejects invalid data so it never reaches SQL.
+//
+// Every read path calls sqladapter.Validate(readingCodec, ...) after the DB
+// returns a row — defence in depth against data written by other clients that
+// bypassed the codec.
+type ReadingStore struct {
+	queries *db.Queries
+}
+
+func (s *ReadingStore) Save(ctx context.Context, params db.InsertReadingParams, obs stats.Observer) error {
+	validated, err := sqladapter.Validate(insertParamsCodec, params, sqladapter.ValidateOptions{
+		Table: "readings", Op: "insert_reading", Observer: obs,
+	})
+	if err != nil {
+		return fmt.Errorf("pre-insert validation: %w", err)
+	}
+	return s.queries.InsertReading(ctx, validated)
+}
+
+func (s *ReadingStore) Get(ctx context.Context, id string, obs stats.Observer) (db.Reading, error) {
+	row, err := s.queries.GetReading(ctx, id)
+	if err != nil {
+		return db.Reading{}, err
+	}
+	return sqladapter.Validate(readingCodec, row, sqladapter.ValidateOptions{
+		Table: "readings", Op: "get_reading", Observer: obs,
+	})
+}
+
+// ── Layer 3: HTTP handlers ────────────────────────────────────────────────────
+
+func makeCreateHandler(store *ReadingStore, obs stats.Observer) nethttp.HandlerFunc[CreateReadingReq, db.Reading] {
+	return func(ctx context.Context, req CreateReadingReq) (db.Reading, error) {
+		params := buildInsertParams(req)
+		if err := store.Save(ctx, params, obs); err != nil {
+			return db.Reading{}, err
+		}
+		return store.Get(ctx, params.ID, obs)
+	}
+}
+
+func makeGetHandler(store *ReadingStore, obs stats.Observer) nethttp.HandlerFunc[struct{}, db.Reading] {
+	return func(ctx context.Context, _ struct{}) (db.Reading, error) {
+		r, _ := nethttp.RequestFromContext(ctx)
+		id := r.PathValue("id")
+		return store.Get(ctx, id, obs)
+	}
+}
+
+// ── Layer 3: Mock MQTT client ─────────────────────────────────────────────────
+
+type mockToken struct{ done chan struct{} }
+
+func newMockToken() *mockToken {
+	t := &mockToken{done: make(chan struct{})}
+	close(t.done)
+	return t
+}
+
+func (t *mockToken) Wait() bool                       { return true }
+func (t *mockToken) WaitTimeout(_ time.Duration) bool { return true }
+func (t *mockToken) Done() <-chan struct{}            { return t.done }
+func (t *mockToken) Error() error                     { return nil }
+
+type mockMessage struct {
+	topic   string
+	payload []byte
+}
+
+func (m *mockMessage) Duplicate() bool   { return false }
+func (m *mockMessage) Qos() byte         { return 0 }
+func (m *mockMessage) Retained() bool    { return false }
+func (m *mockMessage) Topic() string     { return m.topic }
+func (m *mockMessage) MessageID() uint16 { return 0 }
+func (m *mockMessage) Payload() []byte   { return m.payload }
+func (m *mockMessage) Ack()              {}
+
+type mockClient struct {
+	mu       sync.Mutex
+	handlers map[string]pahomqtt.MessageHandler
+}
+
+func newMockClient() *mockClient {
+	return &mockClient{handlers: make(map[string]pahomqtt.MessageHandler)}
+}
+
+func (c *mockClient) Publish(_ string, _ byte, _ bool, _ interface{}) pahomqtt.Token {
+	return newMockToken()
+}
+
+func (c *mockClient) Subscribe(topic string, _ byte, h pahomqtt.MessageHandler) pahomqtt.Token {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.handlers[topic] = h
+	return newMockToken()
+}
+
+func (c *mockClient) Unsubscribe(_ ...string) pahomqtt.Token { return newMockToken() }
+
+// deliver simulates a sensor publishing a message on topic.
+// It finds the first registered subscription filter that matches the topic,
+// supporting the MQTT '+' single-level wildcard.
+func (c *mockClient) deliver(topic string, payload []byte) {
+	c.mu.Lock()
+	var h pahomqtt.MessageHandler
+	for filter, handler := range c.handlers {
+		if mqttMatches(filter, topic) {
+			h = handler
+			break
+		}
+	}
+	c.mu.Unlock()
+	if h != nil {
+		h(c, &mockMessage{topic: topic, payload: payload})
+	}
+}
+
+// mqttMatches reports whether subscription filter matches concrete topic.
+// Supports '+' (single-level wildcard) and '#' (multi-level wildcard).
+func mqttMatches(filter, topic string) bool {
+	if filter == topic {
+		return true
+	}
+	fs := splitTopic(filter)
+	ts := splitTopic(topic)
+	for i, f := range fs {
+		if f == "#" {
+			return true
+		}
+		if i >= len(ts) {
+			return false
+		}
+		if f != "+" && f != ts[i] {
+			return false
+		}
+	}
+	return len(fs) == len(ts)
+}
+
+func splitTopic(t string) []string {
+	var parts []string
+	start := 0
+	for i := 0; i <= len(t); i++ {
+		if i == len(t) || t[i] == '/' {
+			parts = append(parts, t[start:i])
+			start = i + 1
+		}
+	}
+	return parts
+}
+
+func (c *mockClient) IsConnected() bool                            { return true }
+func (c *mockClient) IsConnectionOpen() bool                       { return true }
+func (c *mockClient) Connect() pahomqtt.Token                      { return newMockToken() }
+func (c *mockClient) Disconnect(_ uint)                            {}
+func (c *mockClient) AddRoute(_ string, _ pahomqtt.MessageHandler) {}
+func (c *mockClient) SubscribeMultiple(_ map[string]byte, _ pahomqtt.MessageHandler) pahomqtt.Token {
+	return newMockToken()
+}
+func (c *mockClient) OptionsReader() pahomqtt.ClientOptionsReader {
+	return pahomqtt.ClientOptionsReader{}
+}
+
+// ── main ──────────────────────────────────────────────────────────────────────
+
+func main() {
+	ctx := context.Background()
+
+	// ── Observability ──────────────────────────────────────────────────────
+	logger := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelInfo}))
+	counting := newCountingObserver()
+	obs := stats.NewFanout(counting, stats.NewLoggingObserver(logger))
+
+	// ── Database ───────────────────────────────────────────────────────────
+	sqlDB, err := sql.Open("sqlite", "file::memory:?cache=private")
+	must(err, "open db")
+	defer sqlDB.Close()
+
+	migrator, err := sqladapter.NewMigrator(sqlDB, migrationsFS, "migrations", "sqlite3")
+	must(err, "new migrator")
+	must(migrator.Up(ctx, sqladapter.MigrateOptions{Observer: obs}), "migrate up")
+	fmt.Println("✓ Migrations applied")
+
+	store := &ReadingStore{queries: db.New(sqlDB)}
+
+	// ── MQTT ───────────────────────────────────────────────────────────────
+	mqttClient := newMockClient()
+
+	// Register channels with a builder to get typed *ChannelHandle values.
+	eventsBuilder := events.NewBuilder(events.Info{Title: "sensor-service", Version: "1.0.0"})
+	readingHandle, err := readingChannel.Register(eventsBuilder)
+	must(err, "register reading channel")
+	alertHandle, err := alertChannel.Register(eventsBuilder)
+	must(err, "register alert channel")
+
+	// Subscribe to sensor readings — validate → save → alert?
+	sensorTopic := "sensors/+/data" // wildcard: one subscription for all sensors
+	mqttClient.Subscribe(sensorTopic, 0,
+		adaptermqtt.SubscribeHandler(
+			ctx, readingHandle,
+			func(ctx context.Context, payload MQTTPayload) error {
+				params := buildInsertParamsFromMQTT(payload)
+				if err := store.Save(ctx, params, obs); err != nil {
+					return err
+				}
+				reading, err := store.Get(ctx, params.ID, obs)
+				if err != nil {
+					return err
+				}
+				if shouldAlert(reading) {
+					alert := buildAlert(reading)
+					return adaptermqtt.Publish(
+						ctx, mqttClient, alertHandle,
+						0, false, alert,
+						map[string]string{"sensorID": alert.SensorID},
+						adaptermqtt.PublishOptions{Observer: obs},
+						format.JSON(alertCodec),
+					)
+				}
+				return nil
+			},
+			adaptermqtt.SubscribeOptions{Observer: obs},
+			format.JSON(mqttPayloadCodec),
+		),
+	)
+	fmt.Println("✓ MQTT subscription active on sensors/+/data")
+
+	// ── HTTP ───────────────────────────────────────────────────────────────
+	mux := http.NewServeMux()
+	nethttp.Register(mux, createRoute.ClientHandle(), makeCreateHandler(store, obs), nethttp.Options{Observer: obs})
+	nethttp.Register(mux, getRoute.ClientHandle(), makeGetHandler(store, obs), nethttp.Options{Observer: obs})
+
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+	fmt.Printf("✓ HTTP server started: %s\n\n", srv.URL)
+
+	// ── Demo: MQTT sensor messages ─────────────────────────────────────────
+	fmt.Println("── MQTT sensor events ───────────────────────────────────")
+
+	sensorA := "550e8400-e29b-41d4-a716-446655440001"
+	sensorB := "550e8400-e29b-41d4-a716-446655440002"
+
+	// Normal reading (below threshold — no alert).
+	normalPayload, _ := json.Marshal(map[string]any{
+		"sensor_id": sensorA,
+		"value":     23.5,
+		"unit":      "C",
+	})
+	mqttClient.deliver("sensors/"+sensorA+"/data", normalPayload)
+	fmt.Printf("  → sensor %s: 23.5 C  (below threshold, no alert)\n", sensorA[:8])
+
+	// High reading (above threshold → alert published).
+	highPayload, _ := json.Marshal(map[string]any{
+		"sensor_id": sensorB,
+		"value":     87.3,
+		"unit":      "C",
+	})
+	mqttClient.deliver("sensors/"+sensorB+"/data", highPayload)
+	fmt.Printf("  → sensor %s: 87.3 C  (above %.0f° threshold — alert published)\n\n",
+		sensorB[:8], alertThreshold)
+
+	// ── Demo: HTTP requests ────────────────────────────────────────────────
+	fmt.Println("── HTTP requests ────────────────────────────────────────")
+
+	sensorC := "550e8400-e29b-41d4-a716-446655440003"
+
+	// POST /readings — valid.
+	postBody, _ := json.Marshal(map[string]any{
+		"sensor_id": sensorC,
+		"value":     31.2,
+		"unit":      "C",
+	})
+	resp, err := http.Post(srv.URL+"/readings", "application/json", bytes.NewReader(postBody))
+	must(err, "POST /readings")
+	var created db.Reading
+	_ = json.NewDecoder(resp.Body).Decode(&created)
+	_ = resp.Body.Close()
+	fmt.Printf("  POST /readings         → %d  id=%s\n", resp.StatusCode, created.ID)
+
+	// POST /readings — invalid unit (codec rejects before DB).
+	badBody, _ := json.Marshal(map[string]any{
+		"sensor_id": sensorC,
+		"value":     10.0,
+		"unit":      "xyz", // not in OneOf list
+	})
+	resp2, err := http.Post(srv.URL+"/readings", "application/json", bytes.NewReader(badBody))
+	must(err, "POST /readings bad")
+	_ = resp2.Body.Close()
+	fmt.Printf("  POST /readings (bad unit) → %d  (codec rejected before DB)\n", resp2.StatusCode)
+
+	// GET /readings/{id}.
+	resp3, err := http.Get(srv.URL + "/readings/" + created.ID)
+	must(err, "GET /readings")
+	var fetched db.Reading
+	_ = json.NewDecoder(resp3.Body).Decode(&fetched)
+	_ = resp3.Body.Close()
+	fmt.Printf("  GET /readings/%s → %d  value=%.1f %s\n\n",
+		created.ID, resp3.StatusCode, fetched.Value, fetched.Unit)
+
+	// ── Observer summary ───────────────────────────────────────────────────
+	counting.Print()
+
+	// ── Demonstrate errors.As chain ────────────────────────────────────────
+	_, validateErr := sqladapter.Validate(insertParamsCodec,
+		db.InsertReadingParams{
+			ID: "not-a-uuid", SensorID: "also-bad",
+			Value: 0, Unit: "xyz", RecordedAt: "not-a-date",
+		},
+		sqladapter.ValidateOptions{Table: "readings", Op: "demo_error"},
+	)
+	var rve sqladapter.RowValidationError
+	if errors.As(validateErr, &rve) {
+		fmt.Printf("✓ errors.As → RowValidationError{table:%q, op:%q}\n", rve.Table, rve.Op)
+	}
+	var ve codex.ValidationErrors
+	if errors.As(validateErr, &ve) {
+		fmt.Printf("  inner ValidationErrors: %d field(s) failed\n", len(ve))
+	}
+}
+
+func must(err error, msg string) {
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "FATAL %s: %v\n", msg, err)
+		os.Exit(1)
+	}
+}

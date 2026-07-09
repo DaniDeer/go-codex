@@ -1,6 +1,8 @@
 # SQL Examples — goose + sqlc + codec refinements
 
 > See also: [`adapters/sql` on pkg.go.dev](https://pkg.go.dev/github.com/DaniDeer/go-codex/adapters/sql) · [Feature: SQL Adapter](../features/sql.md) · [Observer Examples](observer.md) · [Error Handling Examples](error-handling.md)
+>
+> Runnable demo: [`examples/sensor-service`](https://github.com/DaniDeer/go-codex/tree/main/examples/sensor-service) — end-to-end sensor service with `adapters/nethttp` (HTTP), `adapters/mqtt` (pub/sub), and `adapters/sql` (goose + sqlc + `Validate[T]`); run with `go run ./examples/sensor-service`.
 
 `adapters/sql` brings go-codex's codec-based validation to SQL databases by
 wiring three single-purpose tools together, each doing exactly what it's

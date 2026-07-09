@@ -1,6 +1,8 @@
 # SQL Adapter — `adapters/sql`
 
 > See also: [`adapters/sql` on pkg.go.dev](https://pkg.go.dev/github.com/DaniDeer/go-codex/adapters/sql) · [SQL Examples guide](../guides/sql.md) · [Observer Pattern](observer.md) · [Error Handling](error-handling.md)
+>
+> Runnable demo: [`examples/sensor-service`](https://github.com/DaniDeer/go-codex/tree/main/examples/sensor-service) — sensor readings service combining `adapters/nethttp`, `adapters/mqtt`, and `adapters/sql` with a shared `stats.NewFanout` observer; shows sqlc-generated structs, goose migrations, `Validate[T]` pre-insert and post-read, and field factory functions reusing `Refine` rules across `db.Reading` and `db.InsertReadingParams`.
 
 `adapters/sql` brings go-codex's codec-based validation to SQL databases by
 pairing three single-purpose tools, each doing exactly the job it is designed

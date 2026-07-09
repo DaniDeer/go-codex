@@ -148,9 +148,10 @@ go get github.com/DaniDeer/go-codex@latest
 | MCP server builder | `github.com/DaniDeer/go-codex/api/mcp` |
 | net/http adapter (server + client) | `github.com/DaniDeer/go-codex/adapters/nethttp` |
 | chi adapter | `github.com/DaniDeer/go-codex/adapters/chi` |
-| Paho MQTT adapter | `github.com/DaniDeer/go-codex/adapters/mqtt` |
-| ZeroMQ REQ/REP AsyncAPI spec builder | `github.com/DaniDeer/go-codex/api/zeromq` |
+| Paho MQTT 3.1.1 adapter | `github.com/DaniDeer/go-codex/adapters/mqtt` |
+| MQTT 5.0 adapter (paho.golang) | `github.com/DaniDeer/go-codex/adapters/mqtt5` |
 | ZeroMQ adapter (PUB/SUB, REQ/REP, DEALER/ROUTER) | `github.com/DaniDeer/go-codex/adapters/zeromq` |
+| SQL adapter (goose migrations + codec validation) | `github.com/DaniDeer/go-codex/adapters/sql` |
 | mark3labs/mcp-go adapter | `github.com/DaniDeer/go-codex/adapters/mcpgo` |
 | templ SSR format plug-in | `github.com/DaniDeer/go-codex/adapters/templ` |
 | OpenAPI 3.1 renderer | `github.com/DaniDeer/go-codex/render/openapi` |
@@ -179,178 +180,20 @@ examples/gob-contract/contract/             ← shared Gob format contract
 
 ## Project Structure
 
-```TEXT
-go-codex/
-├── go.mod
-├── README.md
+→ [Full annotated directory tree](https://zensical.org/docs/reference/project-structure) in the docs, or browse [docs/reference/project-structure.md](docs/reference/project-structure.md) in the repo.
 
-├── codex/                  # ⭐ PUBLIC API: codecs, primitives, struct, union, slice
-│   ├── codec.go            # Codec[T], WithDescription, WithTitle, WithExample, WithDeprecated, Validate, New
-│   ├── either.go           # Either[A,B] type, Either2 codec
-│   ├── errors.go           # ValidationError, ValidationErrors, EitherError
-│   ├── map.go              # MapCodecSafe, MapCodecValidated, Downcast
-│   ├── must.go             # Must[T] — generic panic-on-error helper
-│   ├── nullable.go         # Nullable[T]
-│   ├── object.go           # Field[T,F], RequiredField, OptionalField, DefaultField, Struct[T]
-│   ├── primitives.go       # Int, Int32, Int64, Uint, Uint64, Float32, Float64, String, Bool, Bytes, Base64, Any, Pure
-│   ├── refine.go           # Constraint[T], Refine, RefineFunc, Eq (Constraint.Schema for schema reflection)
-│   ├── slice.go            # SliceOf[T]
-│   ├── stringmap.go        # StringMap[V], Map[K, V]
-│   ├── time.go             # Time(), Date(), Duration()
-│   └── union.go            # TaggedUnion[T], UntaggedUnion[T], UntaggedVariant[T]
-│
-├── format/                 # format bridges: JSON, YAML, TOML, Gob, Binary (raw bytes), streaming; File I/O
-│   ├── format.go           # Format[T], JSON(), YAML(), TOML(), Gob(), Binary(), New(), NewTyped(), NewStreamed()
-│   ├── file.go             # NewFile, File[T], FilePathParam, FileOptions, PathParamSchemas,
-│   │                       #   FilePathParamError, MissingFilePathVarError, FileReadError,
-│   │                       #   FileDecodeError, FileEncodeError, FileWriteError
-│   └── env.go              # FromEnv[T], FromEnvVar[T], EnvVarError
-│
-├── route/                  # HTTP route descriptors (no renderer logic)
-│   └── route.go            # Route, Param, Body, Response, SecurityScheme, SecurityRequirement
-│
-├── api/                    # transport-agnostic API builders
-│   ├── internal/           # shared helpers (not public API)
-│   │   └── template.go     # ParseTemplateVars, BuildFromTemplate, StripTemplateVars
-│   ├── rest/               # REST API builder: typed Decode/Encode + OpenAPI spec
-│   │   └── builder.go      # Builder, Route[Req,Resp]/NewRoute, SSERoute[Req,Event]/NewSSERoute,
-│   │                       #   RouteHandle (Decode, Encode, EncodeRequest, DecodeResponse, ClientHandle),
-│   │                       #   SSERouteHandle, BuildPath, AddServer, AddSchema, AddSecurityScheme,
-│   │                       #   AddGlobalSecurity, PathParam, QueryParam, CookieParam, HeaderParam,
-│   │                       #   ResponseHeaderParam, ResponseCookieParam, RouteMeta, SecurityScheme
-│   ├── events/             # Event channel builder: typed Decode/Encode + AsyncAPI spec
-│   │   └── builder.go      # Builder, Channel[T]/NewChannel, ChannelHandle, BuildTopic,
-│   │                       #   AddServer, AddSchema, AddSecurityScheme, AddGlobalSecurity,
-│   │                       #   TopicParam, ChannelMeta, Subscribe, Publish, SecurityScheme
-│   ├── mcp/                # MCP server builder: Tools, Resources, Prompts
-│   │   ├── builder.go      # Builder, NewTool[In,Out], NewResource[T], NewPrompt,
-│   │   │                   #   ToolHandle, ResourceHandle, PromptHandle, MCPSpec
-│   │   └── errors.go       # ToolInputError, ToolOutputError, ResourceEncodeError,
-│   │                       #   ResourceParamError, MissingResourceVarError, PromptArgError, …
-│   └── zeromq/             # ZeroMQ REQ/REP AsyncAPI 3.0 spec builder
-│       ├── builder.go      # Builder, NewBuilder, Register[Req,Resp], AsyncAPISpec
-│       └── types.go        # ContractMeta, Info alias, Server alias
-│
-├── adapters/               # transport-specific adapters
-│   ├── nethttp/            # net/http adapter — server + client
-│   │   ├── adapter.go      # Handler, Register, SSEHandler, RegisterSSE, RequestFromContext,
-│   │   │                   #   WithResponseHeaders, ResponseHeadersFromContext,
-│   │   │                   #   WithResponseCookies, ResponseCookiesFromContext, Options
-│   │   ├── client.go       # Call[Req,Resp], CallOptions, UnexpectedStatusError,
-│   │   │                   #   RequestBuildError, RequestError, ResponseBodyError
-│   │   └── cookie.go       # SetCookie, CookieOptions, PendingCookie
-│   ├── chi/                # chi adapter for api/rest RouteHandles (github.com/go-chi/chi/v5)
-│   │   └── adapter.go      # Handler, Register, SSEHandler, RegisterSSE, RequestFromContext,
-│   │                       #   WithResponseHeaders, WithResponseCookies, SetCookie, CookieOptions, Options
-│   ├── mqtt/               # Paho MQTT adapter for api/events ChannelHandles
-│   │   ├── adapter.go      # SubscribeHandler, SubscribeOptions, Publish, PublishOptions,
-│   │   │                   #   SubscribeError, ErrorKind, MessageFromContext
-│   │   └── topicvars.go    # TopicVarsFromMessage, TopicMismatchError
-│   ├── zeromq/             # ZeroMQ adapter — PUB/SUB, REQ/REP, DEALER/ROUTER
-│   │   ├── adapter.go      # Subscribe, Publish, Serve, Call, ServeRouter, CallDealer
-│   │   ├── errors.go       # SubscribeError, PublishEncodeError, ServeError, CallError
-│   │   └── socket.go       # FramedSocket interface, ErrTimeout
-│   ├── mcpgo/              # mark3labs/mcp-go adapter for api/mcp handles
-│   │   └── adapter.go      # ToolHandler, ResourceHandler, PromptHandler,
-│   │                       #   RegisterTool, RegisterResource, RegisterPrompt, Options
-│   └── templ/              # templ SSR format plug-in for api/rest RouteHandles
-│       └── adapter.go      # Format[Props], StreamingFormat[Props], DecodeNotSupportedError
-│
-├── forge/                  # governed KPI computation pipeline (Layer 3)
-│   ├── forge.go            # Measured[T], MeasuredCodec[T], Function[In,Out], NewFunction,
-│   │                       #   Compose, Registry, PipelineSpec, PipelineInfo, FunctionMeta
-│   ├── collection.go       # Map, Filter, Reduce, MapValues, MapValuesK collection ops
-│   └── compose.go          # Compose — type-safe function chaining
-│
-├── render/                 # spec renderers (no runtime codec logic)
-│   ├── internal/
-│   │   └── schemarender/   # shared schema-to-map renderer (used by openapi + asyncapi)
-│   │       └── schemarender.go  # SchemaObject
-│   ├── openapi/            # OpenAPI 3.1 renderer
-│   │   ├── openapi.go      # SchemaObject, ComponentsSchemas, MarshalJSON, MarshalYAML
-│   │   └── document.go     # DocumentBuilder, Document, Info, Server — full 3.1 spec
-│   ├── asyncapi/
-│   │   ├── v2/             # AsyncAPI 2.6 renderer (frozen)
-│   │   │   └── document.go # DocumentBuilder, Document, ChannelItem, Operation, Message
-│   │   └── v3/             # AsyncAPI 3.0 renderer
-│   │       └── document.go # DocumentBuilder, Document, Server, Operation, ChannelItem (Address)
-│   ├── jsonschema/         # plain JSON Schema renderer (used by api/mcp)
-│   │   └── jsonschema.go   # Schema(s schema.Schema) json.RawMessage
-│   └── pipeline/           # pipeline YAML renderer (for forge.PipelineSpec)
-│       └── pipeline.go     # Render(spec) []byte
-│
-├── schema/                 # schema model (pure data, zero dependencies)
-│   └── schema.go           # Schema, Property, DiscriminatorSchema
-│
-├── validate/               # reusable constraints (reflect into schema automatically)
-│   ├── binary.go           # PNG, JPEG, GIF, WebP, PDF, ZIP — predefined magic-byte constraints
-│   ├── bytes.go            # MaxBytes(n), MinBytes(n), HasPrefix(prefix)
-│   ├── duration.go         # PositiveDuration, NonNegativeDuration, MinDuration, MaxDuration
-│   ├── float.go            # PositiveFloat, NegativeFloat, NonZeroFloat, MinFloat, MaxFloat, RangeFloat
-│   ├── format.go           # format constraints: Email, UUID, URL, URLWithSchemes, URI, Hostname,
-│   │                       #   IPv4, IPv6, IP, Date, Time, DateTime, SemVer, Slug, CIDR,
-│   │                       #   ContainerImage, MQTTTopic, MQTTPublishTopic, HTTPPath,
-│   │                       #   IntString, PositiveIntString, NonNegativeIntString,
-│   │                       #   IntStringInRange, BearerToken, JWT, EnvVarName, EnvVarPrefix
-│   ├── int.go              # PositiveInt, NegativeInt, NonZeroInt, MinInt, MaxInt, RangeInt; int32 + int64 variants
-│   ├── uint.go             # PositiveUint, MinUint, MaxUint, RangeUint; uint64 variants
-│   └── string.go           # string constraints: NonEmptyString, MinLen, MaxLen, Pattern, OneOf
-│
-├── stats/                  # dependency-free metrics observer interfaces
-│   └── observer.go         # ValidationObserver, Observer, PipelineObserver, SecurityObserver,
-│                           #   FileObserver, NoopObserver (satisfies all five interfaces)
-│
-└── examples/               # usage demonstrations — not importable by library packages
-    │
-    │   # ── Codec (Layer 1) ────────────────────────────────────────────────────
-    ├── construction/       # New + Must: construction-time validation demo
-    ├── decode-errors/      # multi-field ValidationErrors + errors.As demo
-    ├── error-types/        # every structured error type: ValidationError, TypeMismatch, etc.
-    ├── codec-mapping/      # shared field codecs, sub-codec reuse, MapCodecSafe, MapCodecValidated
-    ├── formats/            # builtin format constraints demo (Email, UUID, URL, …)
-    ├── html-sanitize/      # sanitizing untrusted HTML input with a codec
-    ├── multiformat/        # JSON / YAML / TOML with one codec
-    ├── order/              # nested structs, SliceOf, Time, Nullable, StringMap demo
-    ├── shape/              # tagged union + Downcast demo
-    └── validate/           # explicit Validate before marshal
-    │
-    │   # ── REST / HTTP (Layer 2) ───────────────────────────────────────────────
-    ├── api-rest/               # REST API builder: typed helpers + OpenAPI spec
-    ├── openapi/                # OpenAPI components/schemas generation from a Codec
-    ├── rest-api/               # full OpenAPI 3.1 document from route descriptors
-    ├── adapters-nethttp/       # net/http adapter: three-layer pipeline, multi-format bodies, observer
-    ├── adapters-nethttp-security/   # net/http adapter: bearer JWT, scopes, SecurityFunc, observer
-    ├── adapters-nethttp-client/     # codec-as-contract HTTP client: shared contract/, Call, CredentialFunc
-    │   └── contract/               #   shared Route specs, codecs, types (importable by both sides)
-    ├── adapters-chi/           # chi adapter: wiring api/rest to chi.Router
-    ├── adapters-chi-security/  # chi adapter: bearer JWT security, per-route scopes
-    ├── adapters-sse/           # SSE: NewSSERoute, SSEHandler, path codec, OpenAPI spec
-    ├── adapters-streaming-sse-templ/ # chunked streaming + SSE HTML fragments via templ components
-    ├── adapters-templ/         # templ SSR: same route serves HTML and JSON; observer wired
-    └── png-upload/             # binary payload upload + download: format.Binary, validate.PNG, codex.Bytes()
-    │
-    │   # ── Events / MQTT (Layer 2) ─────────────────────────────────────────────
-    ├── api-events/             # Event channel builder: typed helpers + AsyncAPI spec
-    ├── event-driven/           # full AsyncAPI 2.6 document from channel descriptors
-    ├── adapters-mqtt/          # Paho MQTT: three-layer pipeline, multi-format pub/sub, wildcard
-    ├── adapters-mqtt-security/ # Paho MQTT: security credentials, SecurityFunc, observer
-    ├── adapters-mqtt-contract/ # codec-as-contract MQTT: shared contract/, producer + consumer
-    │   └── contract/           #   shared Channel specs, codecs, types (importable by both sides)
-    └── gob-contract/           # Go library as contract: gob wire encoding, no code-gen
-        └── contract/           #   shared Channel, codec, Gob format — compiler-enforced contract
-    │
-    │   # ── MCP (Layer 2) ────────────────────────────────────────────────────────
-    └── adapters-mcp/           # MCP server: Tools, Resources, Prompts, MCPSpec, observer
-    │
-    │   # ── Forge / Pipeline (Layer 3) ──────────────────────────────────────────
-    ├── forge-oee/          # forge pipeline: OEE KPI computation, governance, Compose, MeasuredCodec
-    ├── forge-collection/   # forge collection ops: Map, Filter, Reduce, MapValues on MQTT sensor batches
-    └── oee-chain/          # full three-layer chain: codex + api/events + forge with AsyncAPI + pipeline spec
-    │
-    │   # ── Config / CLI ────────────────────────────────────────────────────────
-    ├── cli-config/         # CLI tool config: TOML file + env var overlay with codecs
-    ├── env-config/         # format.FromEnv: schema-driven env var loading with defaults
-    ├── file-io/            # format.File[T]: static + template files, Patch, PatchEncoded, FileObserver
-    ├── flat-key-patch/     # flat dotted-key JSON: Patch + PatchEncoded with Map key validation
-    └── stats-observer/     # stats.ValidationObserver wired to codecs directly (no adapter)
+Key top-level directories:
+
+```text
+codex/       — ⭐ PUBLIC API: Codec[T], primitives, struct, union, slice, constraints
+format/      — format bridges: JSON, YAML, TOML, Gob, Binary, File I/O, embedded formats
+api/         — transport-agnostic API builders (rest/, events/, mcp/, reqreply/)
+adapters/    — transport adapters (nethttp, chi, mqtt, mqtt5, zeromq, sql, mcpgo, templ)
+forge/       — governed KPI computation pipelines
+render/      — spec renderers (openapi/, asyncapi/v2, asyncapi/v3, jsonschema/, pipeline/)
+validate/    — reusable constraints (Email, UUID, URL, ranges, MQTT topics, …)
+stats/       — observer interfaces (ValidationObserver → SQLObserver, LoggingObserver, NewFanout)
+schema/      — schema model (pure data, zero dependencies)
+route/       — HTTP route descriptors
+examples/    — 40+ runnable demos (not importable by library packages)
 ```

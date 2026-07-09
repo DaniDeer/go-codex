@@ -26,6 +26,7 @@ go get github.com/DaniDeer/go-codex@latest
 | Paho MQTT 3.1.1 adapter | `github.com/DaniDeer/go-codex/adapters/mqtt` |
 | MQTT 5.0 adapter | `github.com/DaniDeer/go-codex/adapters/mqtt5` |
 | ZeroMQ adapter (PUB/SUB, REQ/REP, DEALER/ROUTER) | `github.com/DaniDeer/go-codex/adapters/zeromq` |
+| SQL adapter (goose migrations + codec validation) | `github.com/DaniDeer/go-codex/adapters/sql` |
 | mark3labs/mcp-go adapter | `github.com/DaniDeer/go-codex/adapters/mcpgo` |
 | templ SSR format plug-in | `github.com/DaniDeer/go-codex/adapters/templ` |
 | OpenAPI 3.1 renderer | `github.com/DaniDeer/go-codex/render/openapi` |
@@ -45,7 +46,7 @@ go get github.com/DaniDeer/go-codex@latest
 | `format` | Format bridges: JSON, YAML, TOML, Gob, Binary (raw bytes), streaming, env vars, File I/O | [→](https://pkg.go.dev/github.com/DaniDeer/go-codex/format) |
 | `schema` | Schema model (pure data, zero dependencies) | [→](https://pkg.go.dev/github.com/DaniDeer/go-codex/schema) |
 | `route` | HTTP route descriptors: `Route`, `Param`, `SecurityScheme` | [→](https://pkg.go.dev/github.com/DaniDeer/go-codex/route) |
-| `stats` | Observer interfaces: `ValidationObserver`, `Observer`, `PipelineObserver`, `SecurityObserver`, `FileObserver`, `TraceObserver`; `NoopObserver` + `LoggingObserver` + `NewFanout` | [→](https://pkg.go.dev/github.com/DaniDeer/go-codex/stats) |
+| `stats` | Observer interfaces: `ValidationObserver`, `Observer`, `PipelineObserver`, `SecurityObserver`, `FileObserver`, `SQLObserver`, `TraceObserver`; `NoopObserver` + `LoggingObserver` + `NewFanout` | [→](https://pkg.go.dev/github.com/DaniDeer/go-codex/stats) |
 
 ## API builders (Layer 2)
 
@@ -65,6 +66,7 @@ go get github.com/DaniDeer/go-codex@latest
 | `adapters/mqtt` | Paho MQTT 3.1.1: `SubscribeHandler` + `Publish`; uses `api/events` channel declarations | [→](https://pkg.go.dev/github.com/DaniDeer/go-codex/adapters/mqtt) |
 | `adapters/mqtt5` | MQTT 5.0 (paho.golang): `Subscribe` + `Publish` (PUB/SUB) + `Serve` + `Call` (request-reply); User Properties + ContentType auto-format; `UserPropertyParam.WithCodec` for property validation | [→](https://pkg.go.dev/github.com/DaniDeer/go-codex/adapters/mqtt5) |
 | `adapters/zeromq` | ZeroMQ (CGO-free `FramedSocket` interface): `Subscribe`/`Publish` (PUB/SUB) + `Serve`/`Call` (REQ/REP) + `ServeRouter`/`CallDealer` (DEALER/ROUTER concurrent); accepts `*reqreply.RouteHandle` | [→](https://pkg.go.dev/github.com/DaniDeer/go-codex/adapters/zeromq) |
+| `adapters/sql` | SQL adapter: `Validate[T]` (codec-level row validation, wraps codec encode→decode round trip) + `Migrator` (goose migrations wrapper); `RowValidationError`, `MigrationError` — both `slog.LogValuer` | [→](https://pkg.go.dev/github.com/DaniDeer/go-codex/adapters/sql) |
 | `adapters/mcpgo` | mark3labs/mcp-go adapter | [→](https://pkg.go.dev/github.com/DaniDeer/go-codex/adapters/mcpgo) |
 | `adapters/templ` | templ SSR format plug-in | [→](https://pkg.go.dev/github.com/DaniDeer/go-codex/adapters/templ) |
 

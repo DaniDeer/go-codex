@@ -54,6 +54,7 @@ repo_name = "DaniDeer/go-codex"
 
 [nav.Reference]
 "Package Reference" = "reference/index.md"
+"Project Structure" = "reference/project-structure.md"
 
 [nav.Roadmap]
 "Overview" = "roadmap/index.md"

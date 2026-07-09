@@ -143,8 +143,10 @@ A new package added without `doc.go` = `small` finding.
 
 | Check | Expected |
 |-------|----------|
-| Project Structure tree includes all directories with `.go` files | `find . -name "*.go" -not -path "*/examples/*"` → all dirs listed |
-| Project Structure tree does NOT include stale/removed packages | Cross-check vs actual filesystem |
+| README short summary lists all top-level package directories | One line per dir: `codex/`, `format/`, `api/`, `adapters/`, `forge/`, `render/`, `validate/`, `stats/`, `schema/`, `route/`, `examples/` |
+| Link to `docs/reference/project-structure.md` present | README contains `docs/reference/project-structure.md` link |
+| **Full tree in `docs/reference/project-structure.md`** includes all dirs with `.go` files | `find . -name "*.go" -not -path "*/examples/*"` → all dirs listed in the tree file |
+| Full tree does NOT include stale/removed packages | Cross-check vs actual filesystem |
 | Examples grouped correctly by layer (Codec / REST / Events / Forge) | Matches actual example directory purposes |
 | Link to Zensical docs site present and correct | `https://danideer.github.io/go-codex/` |
 | Link to pkg.go.dev present and correct | `https://pkg.go.dev/github.com/DaniDeer/go-codex` |

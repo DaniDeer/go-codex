@@ -23,7 +23,8 @@ Also keeps these files in sync with the codebase:
 
 | File | What to keep current |
 |------|---------------------|
-| `README.md` | Project Structure tree (matches actual directory layout) |
+| `README.md` | Short top-level directory summary + link to full tree |
+| `docs/reference/project-structure.md` | Full annotated directory tree (matches actual layout) |
 | `.github/instructions/go-codex.instructions.md` | Package Structure table + code examples |
 | `docs/reference/index.md` | Package reference links to pkg.go.dev |
 | `zensical.toml` | Nav entries (must match docs/*.md files) |
@@ -69,7 +70,8 @@ Read all of these before opening any finding:
 | `forge/doc.go` | forge overview |
 | `schema/doc.go` | schema model overview |
 | `validate/doc.go` | validate constraints overview |
-| `README.md` | Quick start + Project Structure tree + all links |
+| `README.md` | Quick start + short directory summary + all links |
+| `docs/reference/project-structure.md` | Full annotated directory tree — read when adding/removing packages or examples |
 | `.github/instructions/go-codex.instructions.md` | API surface truth (canonical source) |
 
 Also scan:
@@ -230,10 +232,13 @@ find docs/ -name "*.md" | sort
 
 ## README Sync Guardrail
 
-The Project Structure tree in `README.md` must match the actual directory layout:
-- Include every directory that contains at least one `.go` file
-- Preserve inline comments — update them to reflect current package responsibility
-- `examples/` belongs in the tree but annotated as non-importable demos
+`README.md` no longer contains the full project structure tree. It has a **short summary block** (10–12 lines, one line per top-level directory) and a link to `docs/reference/project-structure.md` for the full annotated tree.
+
+When reviewing README sync:
+- The short summary block in README must list all top-level package directories
+- The **full annotated tree** lives in `docs/reference/project-structure.md` — this is what must match the actual directory layout
+- When a new package or example directory is added, update **both** the short block in README (if it changes top-level dirs) and the full tree in `docs/reference/project-structure.md`
+- `examples/` appears in both but is annotated as non-importable demos
 
 ## instructions.md Sync Guardrail
 
@@ -251,7 +256,7 @@ The Package Structure table in `.github/instructions/go-codex.instructions.md` m
 - **Do not invent API.** If a guide describes a feature not yet in the codebase, flag it as `bug` — the guide is wrong, not the code.
 - **zensical.toml format is TOML.** The nav section uses `[nav]` and `[nav.Section]` table syntax.
 - **Module path is `github.com/DaniDeer/go-codex`.** All import paths in examples must use this prefix.
-- **`examples/` is not importable.** It appears in the README tree and must NOT appear in the Package Structure table in `go-codex.instructions.md`.
+- **`examples/` is not importable.** It appears in the README summary and the full tree in `docs/reference/project-structure.md`, but must NOT appear in the Package Structure table in `go-codex.instructions.md`.
 - **Preserve design-intent examples.** `go-codex.instructions.md` may contain examples for APIs not yet implemented. Keep those — they are design specifications.
 
 ## References
