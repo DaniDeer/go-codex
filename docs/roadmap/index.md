@@ -10,7 +10,7 @@ These are **living design documents** — they reflect the current best thinking
 
 | Feature | Package | Status | Summary |
 |---------|---------|--------|---------|
-| [Stream Adapter (reactive pipelines)](stream-adapter.md) | `adapters/stream` | Design complete | Reactive streaming via Go native channels — `Apply` wires `forge.Function[In,Out]` into push-based streams, `Buffer`/`Debounce`/`Throttle` time operators, MQTT/ZeroMQ source adapters; no RxGo dependency |
+| [Stream Adapter (reactive pipelines)](stream-adapter.md) | `stream` | **Implemented** | Reactive streaming via Go native channels — `Apply` wires `forge.Function[In,Out]` into push-based streams, `Buffer`/`Debounce`/`Throttle` time operators, MQTT/ZeroMQ source adapters; no RxGo dependency |
 | [AMQP 0.9.1 Adapter](amqp-adapter.md) | `adapters/amqp` | Design complete | PUB/SUB + Request/Reply over RabbitMQ — exchange/queue topology, Ack/Nack, `ReplyTo`/`CorrelationId` RPC, structured errors, observer integration |
 | [TCP Adapter](tcp-adapter.md) | `adapters/tcp` | Design complete | Request/Reply + streaming over raw TCP — pluggable `FramedConn` framing, built-in length-prefix framer, stdlib-only, no CGO |
 

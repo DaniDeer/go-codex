@@ -1,6 +1,6 @@
-# Stream Adapter — reactive pipelines over Go channels — `adapters/stream`
+# Reactive stream pipelines — `stream`
 
-> **Status:** Design complete — not yet implemented.
+> **Status:** Implemented — `github.com/DaniDeer/go-codex/stream` shipped.
 > [← Back to Roadmap](index.md)
 
 ## Motivation
@@ -23,7 +23,7 @@ go func() {
 }()
 ```
 
-`adapters/stream` provides a **declarative reactive pipeline** over typed Go channels:
+`stream` provides a **declarative reactive pipeline** over typed Go channels:
 - Codec-validated typed sources from MQTT/ZeroMQ
 - `forge.Function[In, Out]` applied per-item with validation
 - **Explicit error channels** — idiomatic Go, no panics, no silent drops
@@ -113,7 +113,7 @@ into the stream and react to domain values (a new OEE computed, a sensor alert
 triggered). This is what the user means by "observer listens to events in the
 application."
 
-In `adapters/stream` this is the `Tap` operator:
+In `stream` this is the `Tap` operator:
 
 ```go
 // Tap inserts an observer function on the value channel without transforming items.
@@ -129,39 +129,106 @@ on individual operators. The domain event observer (`Tap`) is a first-class oper
 
 ---
 
-## What forge already provides (and what needs no change)
+## forge vs stream — architectural evaluation
 
-Forge's batch/synchronous design is correct and complete for its purpose:
+This section documents the evaluation of whether `forge` and `stream` should be a
+single unified module.
 
-| forge today | Streaming role |
+### Why they are separate packages
+
+**`forge/` and `stream/` are complementary, not competing.** They serve different
+concerns with different execution models, and merging them would create a worse API
+for both use cases.
+
+| Concern | `forge/` | `stream/` |
+|---|---|---|
+| Execution model | Synchronous, pull-based: `Apply(In) (Out, error)` | Asynchronous, push-based: goroutine loops, `<-chan T` |
+| Composition unit | `[]T` slices (batch) | `<-chan T` channels (per-item, continuous) |
+| Governance | SHA-256 contract hash + Author/ApprovedBy/ApprovedAt — KPI audit trail | None |
+| Spec output | `Registry` → `PipelineSpec` → YAML (governance report) | `Topology` → `TopologySpec` → YAML via `render/stream` (shipped Phase 2) |
+| Use case | Governed KPI computation, industrial OEE, audit-traceable derivation chains | Real-time sensor pipelines, MQTT/ZeroMQ streams, time operators |
+
+### Why NOT to merge
+
+**1. Different execution models — not composable into one type**
+
+Forge's `Function[In, Out]` is synchronous. `stream.Apply` wraps it in a goroutine
+loop over a channel. A unified type would be either synchronous (losing reactive
+capability) or asynchronous (losing batch simplicity). There is no neutral ground.
+
+**2. Governance belongs on forge functions, not on stream operators**
+
+`Debounce`, `Throttle`, `CombineLatest2` have no business with SHA-256 hashes or
+`ApprovedBy` fields. Merging would make the governance model noisy and confusing.
+
+**3. Same names, different semantics**
+
+Both packages have `Map`/`Filter` — but forge's work over `[]T` slices, stream's work
+over `<-chan T` channels. Merging them into one package would create naming collisions
+requiring awkward disambiguation (`SliceMap` vs `ChanMap`).
+
+**4. Dependency direction is one-way and correct**
+
+```
+codex  ←  forge  ←  stream
+```
+
+`stream` imports `forge` (to call `forge.Function.ApplyContext` per item). If forge
+imported `stream` for an `ApplyStream` convenience method, it would create a circular
+dependency. The free function design (`stream.Apply(ctx, s, fn, opts)`) keeps the
+dependency acyclic.
+
+**5. Spec outputs serve different audiences**
+
+- `render/pipeline` YAML → KPI governance report (quality manager, auditor)
+- `render/stream` YAML (`stream.TopologySpec`) → system architecture doc (architect, operator) — shipped Phase 2
+
+### Where `stream` belongs in the module layout
+
+`stream/` is a **top-level package**, not an adapter. The `adapters/` directory convention
+in go-codex is for packages that bridge an external library (paho.mqtt, goose, mcp-go).
+`stream/` uses only go-codex packages and Go stdlib — no external dependency. It was
+initially placed in `adapters/stream/` and **moved to `stream/`** as part of this
+evaluation.
+
+**Conceptual model:**
+
+```
+codex/      Layer 1 — validated domain types
+  ↓
+forge/      Layer 3 — governed synchronous computation + KPI spec
+  ↓
+stream/     Layer 4 — reactive execution of forge functions over event streams
+  ↑
+adapters/mqtt, adapters/zeromq — supply source channels
+```
+
+- `forge/` = "what the computation **is**" (declarative, governed, signed)
+- `stream/` = "how computation **runs** continuously over time" (reactive, async)
+
+They compose: `stream.Apply(ctx, mqttStream, forgeFunction, opts)`.
+
+### What forge provides that stream uses
+
+| forge today | Stream usage |
 |---|---|
 | `Function[In, Out]` — validates In, runs compute, validates Out | The per-item operation inside `stream.Apply` |
-| `Apply(in In) (Out, error)` — synchronous, single item | Called once per item; `stream.Apply` wraps this in a goroutine loop |
-| `Compose[A, B, Out]` — chain two functions | Functions composed with Compose work transparently in `stream.Apply` |
+| `Apply(in In) (Out, error)` — synchronous single-item | Called once per item; `stream.Apply` wraps in a goroutine loop |
+| `Compose[A, B, Out]` — chains two functions | Composed functions work transparently in `stream.Apply` |
 | `Map`, `Filter`, `Reduce` over `[]T` slices | Use with `stream.Buffer` to process windowed batches |
-| `Registry` + `PipelineSpec` | Forge functions registered with the Registry also document the streaming pipeline's computation |
-| `PipelineObserver.RecordApply` | Fires inside `forge.Function.Apply` — already observable per-item |
+| `PipelineObserver.RecordApply` | Fires inside `forge.Function.Apply` — observable per-item in streams |
 
-**Forge itself does NOT need to change.** `adapters/stream` imports `forge` and wraps it:
-
-```
-codex  ←  forge  ←  adapters/stream
-```
-
-If forge imported `adapters/stream` for a streaming `ApplyStream` method, it would
-create a circular dependency (stream imports forge, forge imports stream). The free
-function design (`stream.Apply(ctx, s, fn, opts)`) avoids this entirely.
+**Forge itself does not need to change** for `stream` to work fully.
 
 ---
 
 ## Forge enhancements (Phase 2 consideration, not Phase 1)
 
-While forge needs no changes for the stream adapter to work, one enhancement would
-improve ergonomics for users building large reactive pipelines:
+One minor ergonomics improvement for users building large reactive pipelines:
 
 **`forge.Function.Spec.AsStreamPipelineStep()`** — returns a human-readable description
-of this function as a pipeline step, for use in stream topology YAML rendering (Phase 2).
-This is a documentation method only, not a runtime dependency.
+for stream topology YAML rendering (Phase 2). Documentation-only method; no runtime
+dependency from forge on stream.
 
 No runtime forge changes needed in Phase 1.
 
@@ -498,52 +565,85 @@ primary integration point between streaming and batch computation.
 The forge functions applied in the pipeline already appear in `PipelineSpec` via
 `forge.Registry`. `Tap` and operator calls are Go code, not AsyncAPI operations.
 
-**Phase 2:** A `stream.Topology` type could emit a YAML topology document analogous to
-`render/pipeline.Render(reg.Spec())`, listing sources, operators, and sinks. This
-would require forge functions to be registered with the stream topology before calling
-`Apply` — a small API addition deferred to Phase 2.
+**Phase 2 (shipped):** `stream.Topology` emits a YAML topology document via
+`render/stream.Render(topo.Spec())`, listing sources, operators, and sinks. Forge
+functions are registered via `stream.WithApply[In,Out](topo, fn)` which captures
+`forge.FunctionSpec.Hash` for auditability. See `stream/topology.go` and
+`render/stream/render.go`.
 
 ---
 
-## Files to create
+## Files created (shipped)
+
+Import path: **`github.com/DaniDeer/go-codex/stream`**
+
+> Package was initially placed at `adapters/stream/` and relocated to `stream/`
+> after the forge vs stream architectural evaluation confirmed it is not an adapter
+> (no external library dependency).
+
+### Phase 1 files
 
 | File | Responsibility |
 |---|---|
-| `adapters/stream/stream.go` | `Stream[T]` type, helper constructors |
-| `adapters/stream/errors.go` | `StreamDecodeError`, `StreamApplyError` — `Error()`, `Unwrap()`, `LogValue()` |
-| `adapters/stream/source.go` | `From[T]`, `FromCodec[T]`, `SourceOptions` |
-| `adapters/stream/transform.go` | `Apply[In,Out]`, `Filter[T]`, `Tap[T]`, `MapErr[T]`, `ApplyOptions` |
-| `adapters/stream/fanout.go` | `Merge[T]`, `Tee[T]` |
-| `adapters/stream/time.go` | `Buffer[T]`, `Debounce[T]`, `Throttle[T]` |
-| `adapters/stream/sink.go` | `Drain[T]`, `Collect[T]`, `DrainOptions` |
-| `adapters/stream/combine.go` | `CombineLatest2[A,B,Out]` |
-| `adapters/stream/doc.go` | Package overview: reactive paradigm, explicit error channels, forge integration |
-| `adapters/stream/errors_test.go` | `StreamDecodeError`/`StreamApplyError` LogValue, Unwrap, errors.As |
-| `adapters/stream/source_test.go` | `From`, `FromCodec` happy path + error propagation |
-| `adapters/stream/transform_test.go` | `Apply` happy/error/observer, `Filter`, `Tap` called, `MapErr` recovery |
-| `adapters/stream/time_test.go` | `Buffer`, `Debounce`, `Throttle` with fake time |
-| `adapters/stream/sink_test.go` | `Drain` both channels concurrent, `Collect`, ctx cancellation |
-| `adapters/stream/combine_test.go` | `Merge`, `Tee`, `CombineLatest2` |
-| `stats/observer.go` | Add `StreamObserver` interface; update `NoopObserver`, `LoggingObserver`, `fanout` |
-| `stats/observer_test.go` | Compile-time assertion + delegation test for `StreamObserver` |
-| `.github/instructions/go-codex.instructions.md` | Add `adapters/stream` row |
+| `stream/stream.go` | `Stream[T]{Values <-chan T, Errors <-chan error}` |
+| `stream/errors.go` | `StreamDecodeError{Source,Err}`, `StreamApplyError{Function,Err}` — `Error()`, `Unwrap()`, `LogValue()` |
+| `stream/source.go` | `From[T]`, `FromCodec[T](ctx, <-chan []byte, format.Format[T], SourceOptions)` — accepts any format (JSON, YAML, TOML, custom) |
+| `stream/transform.go` | `Apply[In,Out]` (with `TraceObserver` per-item span), `Filter[T]`, `Tap[T]`, `MapErr[T]`, `Retry[T]`, `ApplyOptions` |
+| `stream/fanout.go` | `Merge[T]`, `Tee[T]` |
+| `stream/time.go` | `Buffer[T]`, `Debounce[T]`, `Throttle[T]` |
+| `stream/sink.go` | `Drain[T]`, `Collect[T]`, `DrainOptions` |
+| `stream/combine.go` | `CombineLatest2[A,B,Out]` |
+| `stream/doc.go` | Package overview: reactive paradigm, forge integration, observer kinds |
+| `stream/*_test.go` | 60+ tests + `ExampleFrom`, `ExampleFromCodec`, `ExampleApply`, `ExampleTap`, `ExampleDrain` |
+| `stats/observer.go` | `StreamObserver` interface + `NoopObserver`/`LoggingObserver`/`fanout` implementations |
+| `stats/observer_test.go` | Compile-time assertion + delegation tests for `StreamObserver` |
+| `.github/instructions/go-codex.instructions.md` | `stream` + `render/stream` rows in Package Structure table |
 
-**No external dependencies.** `adapters/stream` imports: `codex`, `forge`, `stats`,
-`time`, `context`, `sync` — all already in the module.
+### Phase 2 files (added)
+
+| File | Responsibility |
+|---|---|
+| `stream/topology.go` | `Topology`, `TopologySpec`, `NewTopology`, `WithApply[In,Out]` (free function — captures `forge.FunctionSpec.Hash`), `StepKind*` constants |
+| `stream/topology_test.go` | Tests for topology builder: steps, WithApply hash capture, info fields |
+| `render/stream/render.go` | `Render(TopologySpec) ([]byte, error)` — YAML topology document with `streamTopology: 1.0` header |
+| `render/stream/render_test.go` | Render output tests |
+| `docs/features/stream.md` | Feature reference: forge vs stream, operator table, observer kinds, error types |
+| `docs/guides/stream.md` | 7-step workflow guide: source → apply → tap → filter → drain → CombineLatest2 → topology |
+
+**No external dependencies.** `stream` imports: `codex`, `format`, `forge`, `stats`,
+`context`, `time`, `sync` — all already in the module.
 
 ---
 
-## Out of scope (Phase 2)
+## Phase 2 — delivered
 
-- Stream topology YAML renderer (analogous to `render/pipeline`)
-- `Retry[T]` with exponential backoff and jitter
-- `Zip[A,B,Out]` — pair items by position (not latest value)
-- `CombineLatest3` and beyond — require separate generic functions
-- `Window[T]` — emit overlapping windows (sliding vs tumbling)
-- `FlatMap[In,Out]` — each In emits a Stream[Out] (concurrency control needed)
-- `GroupBy[T,K]` — split stream by key into sub-streams
-- Context propagation for per-item trace spans (each item gets a child span from the stream context)
-- Integration test with real MQTT broker in CI
+- ✅ **Stream topology YAML renderer** — `stream.Topology` + `render/stream.Render`; forge function hashes captured via `stream.WithApply[In,Out]`
+- ✅ **`Retry[T]`** — named alias for `MapErr` with caller-controlled timing/backoff logic
+- ✅ **Per-item `TraceObserver` span in `Apply`** — child span wraps each `forge.Function.ApplyContext` call when `opts.Observer` implements `stats.TraceObserver`
+- ✅ **`FromCodec` format flexibility** — accepts `format.Format[T]` (JSON, YAML, TOML, custom) instead of hardcoded JSON
+- ✅ **`Example()` functions** — 5 functions for pkg.go.dev (`ExampleFrom`, `ExampleFromCodec`, `ExampleApply`, `ExampleTap`, `ExampleDrain`)
+- ✅ **`docs/features/stream.md`** + **`docs/guides/stream.md`** — feature page and step-by-step guide
+- ✅ **`sensor-service` example** updated to use `stream.FromCodec` + `stream.Apply` + `stream.Tap` + `stream.Filter` + `stream.Drain` + `stream.Topology`
+
+## Phase 3 — delivered
+
+- ✅ **`Window[T]`** — fixed-interval tumbling windows via `time.NewTicker`; emits `[]T` per tick (even empty); complements `Buffer` for calendar-aligned time slot boundaries
+- ✅ **`SlidingWindow[T]`** — count-based overlapping windows: every `step` items, emit last `size` items; `step==size` = tumbling
+- ✅ **`FlatMapSlice[In,Out]`** — each In → `[]Out`; items emitted individually; empty slice acts as filter; no goroutine pool needed
+- ✅ **`CombineLatest3[A,B,C,Out]`** — 3-source CombineLatest; ideal for OEE (Availability × Performance × Quality on separate MQTT topics)
+- ✅ **`CombineLatest4[A,B,C,D,Out]`** — 4-source CombineLatest
+- ✅ **`Zip[A,B,Out]`** — pairs items by position from two streams; waits for matched n-th items (unlike CombineLatest which uses latest values)
+
+## Dropped from plan (Phase 3 evaluation)
+
+- **`RetryWithBackoff[T]`** — design incompatible with current error model: `Stream.Errors` carries `error`, not the original item, so retry can't re-invoke the computation. Correct pattern: wrap the forge function in a retry loop before passing to `stream.Apply`. Current `Retry[T]` with caller-controlled `time.Sleep` is sufficient.
+- **Integration test (real MQTT broker)** — CI infrastructure concern, not a library item.
+
+## Out of scope (Phase 4)
+
+- `FlatMap[In,Out]` (sub-stream variant) — each In emits a `Stream[Out]`; requires goroutine pool + concurrency limit; `FlatMapSlice` covers most cases
+- `GroupBy[T,K]` — dynamically created sub-streams have lifecycle ambiguity (when does a per-key stream close?); needs real-world use case validation before API design
+- `CombineLatest5+` — use nested `CombineLatest2` + struct intermediate for N>4
 
 ## Resolved design decisions
 
@@ -553,6 +653,16 @@ would require forge functions to be registered with the stream topology before c
 
 3. **Error propagation in Apply:** ✅ **Error to `Stream.Errors`, stream continues** — one bad sensor reading must not terminate a continuous monitoring pipeline. `MapErr` and `Drain`'s `onError` give the user full control over error handling.
 
-4. **Forge changes needed:** ✅ **None in Phase 1** — `adapters/stream` imports `forge` and wraps `Function.ApplyContext`. Circular dependency avoided. Forge stays as the governed synchronous computation layer.
+4. **Forge changes needed:** ✅ **None in Phase 1** — `stream` imports `forge` and wraps `Function.ApplyContext`. Circular dependency avoided. Forge stays as the governed synchronous computation layer.
 
 5. **Two observer kinds:** ✅ **`stats.StreamObserver` for infrastructure metrics + `Tap` for domain events** — orthogonal, composable, correct separation of concerns.
+
+6. **Package placement (`adapters/stream` vs `stream/`):** ✅ **Top-level `stream/`** — the `adapters/` convention requires an external library dependency (paho.mqtt, goose, mcp-go, etc.); `stream/` uses only go-codex packages and stdlib. Relocated from `adapters/stream` to `stream/` after post-implementation architectural review. Import path: `github.com/DaniDeer/go-codex/stream`.
+
+7. **Unify `forge` and `stream` into one module?** ✅ **No — keep separate** — different execution models (sync batch vs async push), different governance model (forge has SHA-256/Author/Approval, stream has none), overlapping names with different semantics (`Map`/`Filter` over `[]T` vs `<-chan T`). Full evaluation documented in the "forge vs stream" section above.
+
+8. **`FromCodec` format parameter type:** ✅ **`format.Format[T]` (not `codex.Codec[T]`)** — accepts any format (JSON, YAML, TOML, custom); consistent with MQTT adapters; caller wraps: `format.JSON(codec)`. Changed in Phase 2.
+
+9. **Stream topology API design:** ✅ **`Topology` builder + `WithApply[In,Out]` free function** — `WithApply` must be a free function (Go generics cannot add type params to methods); captures `forge.FunctionSpec.Hash` for auditability; `render/stream.Render(topo.Spec())` produces `streamTopology: 1.0` YAML.
+
+10. **`Retry[T]` vs `RetryWithBackoff[T]`:** ✅ **Simple `Retry[T]` alias for `MapErr`** — caller's retry closure controls timing and backoff; keeps the operator minimal; `RetryWithBackoff` deferred to Phase 3 if a common pattern emerges.

@@ -73,8 +73,10 @@ import (
 	"github.com/DaniDeer/go-codex/api/rest"
 	"github.com/DaniDeer/go-codex/codex"
 	"github.com/DaniDeer/go-codex/examples/sensor-service/db"
+	"github.com/DaniDeer/go-codex/forge"
 	"github.com/DaniDeer/go-codex/format"
 	"github.com/DaniDeer/go-codex/stats"
+	gstream "github.com/DaniDeer/go-codex/stream"
 	"github.com/DaniDeer/go-codex/validate"
 )
 
@@ -85,14 +87,16 @@ var migrationsFS embed.FS
 
 // ── Observer ──────────────────────────────────────────────────────────────────
 
-// CountingObserver is an in-memory [stats.Observer] + [stats.SQLObserver].
-// In production replace the maps and counters with Prometheus CounterVecs or
-// OpenTelemetry instruments — the interface methods are identical.
+// CountingObserver is an in-memory [stats.Observer] + [stats.SQLObserver] +
+// [stats.StreamObserver]. In production replace the maps and counters with
+// Prometheus CounterVecs or OpenTelemetry instruments — the interface methods
+// are identical.
 type CountingObserver struct {
 	mu             sync.Mutex
 	requests       map[int]int    // HTTP status code → request count
-	subscribes     int            // successful MQTT subscribe handler calls
+	subscribes     int            // MQTT RecordSubscribe calls (alert publishes via adaptermqtt.Publish)
 	publishes      int            // successful MQTT publish calls
+	streamItems    int            // stream.Apply RecordStreamItem calls (one per MQTT sensor reading)
 	valErrors      map[string]int // location → validation error count
 	sqlValidations int
 	migrations     int
@@ -147,13 +151,22 @@ func (o *CountingObserver) RecordMigration(_, _ string, _ int64, _ time.Duration
 	o.migrations++
 }
 
+// RecordStreamItem implements [stats.StreamObserver].
+func (o *CountingObserver) RecordStreamItem(_ string, success bool, _ time.Duration) {
+	if success {
+		o.mu.Lock()
+		o.streamItems++
+		o.mu.Unlock()
+	}
+}
+
 func (o *CountingObserver) Print() {
 	o.mu.Lock()
 	defer o.mu.Unlock()
 	fmt.Println("\n── Observer summary ─────────────────────────────────────")
 	fmt.Printf("  HTTP requests by status : %v\n", o.requests)
-	fmt.Printf("  MQTT subscribes (ok)    : %d\n", o.subscribes)
 	fmt.Printf("  MQTT publishes  (ok)    : %d\n", o.publishes)
+	fmt.Printf("  Stream items processed  : %d\n", o.streamItems)
 	fmt.Printf("  SQL validations called  : %d\n", o.sqlValidations)
 	fmt.Printf("  Migrations applied      : %d\n", o.migrations)
 	if len(o.valErrors) > 0 {
@@ -582,7 +595,7 @@ func main() {
 
 	store := &ReadingStore{queries: db.New(sqlDB)}
 
-	// ── MQTT ───────────────────────────────────────────────────────────────
+	// ── MQTT + stream pipeline ────────────────────────────────────────────
 	mqttClient := newMockClient()
 
 	// Register channels with a builder to get typed *ChannelHandle values.
@@ -592,37 +605,93 @@ func main() {
 	alertHandle, err := alertChannel.Register(eventsBuilder)
 	must(err, "register alert channel")
 
-	// Subscribe to sensor readings — validate → save → alert?
-	sensorTopic := "sensors/+/data" // wildcard: one subscription for all sensors
+	// rawCh buffers raw MQTT payloads for the stream pipeline.
+	// The SubscribeHandler writes bytes; stream.FromCodec decodes them.
+	rawCh := make(chan []byte, 64)
+
+	// MQTT subscription — feed raw payload bytes into the stream pipeline.
+	// All decoding, validation, computation, and alerting happen in the
+	// stream pipeline below. We use a raw MessageHandler here so that
+	// stream.FromCodec controls decoding (rather than SubscribeHandler).
+	sensorTopic := "sensors/+/data"
 	mqttClient.Subscribe(sensorTopic, 0,
-		adaptermqtt.SubscribeHandler(
-			ctx, readingHandle,
-			func(ctx context.Context, payload MQTTPayload) error {
-				params := buildInsertParamsFromMQTT(payload)
-				if err := store.Save(ctx, params, obs); err != nil {
-					return err
-				}
-				reading, err := store.Get(ctx, params.ID, obs)
-				if err != nil {
-					return err
-				}
-				if shouldAlert(reading) {
-					alert := buildAlert(reading)
-					return adaptermqtt.Publish(
-						ctx, mqttClient, alertHandle,
-						0, false, alert,
-						map[string]string{"sensorID": alert.SensorID},
-						adaptermqtt.PublishOptions{Observer: obs},
-						format.JSON(alertCodec),
-					)
-				}
-				return nil
-			},
-			adaptermqtt.SubscribeOptions{Observer: obs},
-			format.JSON(mqttPayloadCodec),
-		),
+		func(_ pahomqtt.Client, msg pahomqtt.Message) {
+			select {
+			case rawCh <- msg.Payload():
+			default: // drop if pipeline is saturated (backpressure)
+			}
+		},
 	)
-	fmt.Println("✓ MQTT subscription active on sensors/+/data")
+	_ = readingHandle // handle is still registered in eventsBuilder for AsyncAPI spec
+
+	// ── Stream pipeline: decode → save → tap → filter → drain (alert) ─────
+	//
+	// This is the reactive stream equivalent of the manual goroutine loop.
+	// Each operator is a typed free function — compose like Unix pipes.
+
+	// Forge function: MQTTPayload → db.Reading (save to DB, return stored row)
+	// This wraps the imperative save+get logic in a governed, signed function.
+	saveReadingFn := forge.NewFunction(
+		"saveReading", "1.0.0",
+		mqttPayloadCodec, readingCodec,
+		func(payload MQTTPayload) (db.Reading, error) {
+			params := buildInsertParamsFromMQTT(payload)
+			if err := store.Save(ctx, params, obs); err != nil {
+				return db.Reading{}, err
+			}
+			return store.Get(ctx, params.ID, obs)
+		},
+		forge.FunctionMeta{Description: "Save MQTT sensor payload to DB and return the stored row."},
+	)
+
+	// Source: decode raw MQTT bytes → typed MQTTPayload stream
+	sensors := gstream.FromCodec(ctx, rawCh, format.JSON(mqttPayloadCodec),
+		gstream.SourceOptions{Name: "mqtt/sensors/+/data", Observer: obs})
+
+	// Apply: save each reading to DB, get back the validated db.Reading
+	readings := gstream.Apply(ctx, sensors, saveReadingFn,
+		gstream.ApplyOptions{Observer: obs})
+
+	// Tap: domain event observation — log every computed reading
+	readings = gstream.Tap(ctx, readings, func(r db.Reading) {
+		logger.Info("reading saved", "sensor", r.SensorID, "value", r.Value, "unit", r.Unit)
+	})
+
+	// Filter: keep only readings that cross the alert threshold
+	alerts := gstream.Filter(ctx, readings, shouldAlert)
+
+	// Drain: publish alert for each above-threshold reading; log stream errors
+	pipelineDone := make(chan struct{})
+	go func() {
+		defer close(pipelineDone)
+		gstream.Drain(ctx, alerts,
+			func(drainCtx context.Context, r db.Reading) error {
+				alert := buildAlert(r)
+				return adaptermqtt.Publish(
+					drainCtx, mqttClient, alertHandle,
+					0, false, alert,
+					map[string]string{"sensorID": alert.SensorID},
+					adaptermqtt.PublishOptions{Observer: obs},
+					format.JSON(alertCodec),
+				)
+			},
+			func(err error) {
+				var sae gstream.StreamApplyError
+				var sde gstream.StreamDecodeError
+				switch {
+				case errors.As(err, &sae):
+					logger.Warn("stream apply error", "error", sae)
+				case errors.As(err, &sde):
+					logger.Warn("stream decode error", "error", sde)
+				default:
+					logger.Error("stream error", "error", err)
+				}
+			},
+			gstream.DrainOptions{Observer: obs},
+		)
+	}()
+
+	fmt.Println("✓ Stream pipeline active: MQTT → decode → save → filter → alert")
 
 	// ── HTTP ───────────────────────────────────────────────────────────────
 	mux := http.NewServeMux()
@@ -657,6 +726,10 @@ func main() {
 	mqttClient.deliver("sensors/"+sensorB+"/data", highPayload)
 	fmt.Printf("  → sensor %s: 87.3 C  (above %.0f° threshold — alert published)\n\n",
 		sensorB[:8], alertThreshold)
+
+	// Close the raw channel to signal the stream pipeline to drain and stop.
+	close(rawCh)
+	<-pipelineDone // wait for Drain to finish processing both messages
 
 	// ── Demo: HTTP requests ────────────────────────────────────────────────
 	fmt.Println("── HTTP requests ────────────────────────────────────────")
@@ -698,6 +771,29 @@ func main() {
 
 	// ── Observer summary ───────────────────────────────────────────────────
 	counting.Print()
+
+	// ── Stream topology documentation ──────────────────────────────────────
+	topo := gstream.NewTopology("Sensor Service MQTT Pipeline", "1.0.0").
+		WithDescription("Real-time sensor readings: decode → save → filter → alert.").
+		WithSource("mqtt/sensors/+/data", "Raw MQTT payloads from sensor network")
+	gstream.WithApply(topo, saveReadingFn)
+	topo.WithFilter(fmt.Sprintf("value > %.0f (alert threshold)", alertThreshold)).
+		WithSink("mqtt/alerts/{sensorID}", "Low-performance alert events")
+
+	fmt.Println("\n── Stream topology (stream.Topology) ────────────────────")
+	spec := topo.Spec()
+	for _, step := range spec.Steps {
+		if step.Function != nil {
+			fmt.Printf("  [%s] %s v%s  hash:%s...\n",
+				step.Kind, step.Function.Name, step.Function.Version, step.Function.Hash[:16])
+		} else {
+			name := step.Name
+			if name == "" {
+				name = step.Description
+			}
+			fmt.Printf("  [%s] %s\n", step.Kind, name)
+		}
+	}
 
 	// ── Demonstrate errors.As chain ────────────────────────────────────────
 	_, validateErr := sqladapter.Validate(insertParamsCodec,

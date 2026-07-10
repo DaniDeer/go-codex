@@ -156,7 +156,8 @@ go get github.com/DaniDeer/go-codex@latest
 | templ SSR format plug-in | `github.com/DaniDeer/go-codex/adapters/templ` |
 | OpenAPI 3.1 renderer | `github.com/DaniDeer/go-codex/render/openapi` |
 | AsyncAPI 3.0 renderer | `github.com/DaniDeer/go-codex/render/asyncapi/v3` |
-| Forge pipelines | `github.com/DaniDeer/go-codex/forge` |
+| Forge pipelines (governed, batch) | `github.com/DaniDeer/go-codex/forge` |
+| Reactive stream pipelines | `github.com/DaniDeer/go-codex/stream` |
 | HTTP route descriptors | `github.com/DaniDeer/go-codex/route` |
 | Schema model | `github.com/DaniDeer/go-codex/schema` |
 | Observer interfaces | `github.com/DaniDeer/go-codex/stats` |
@@ -189,7 +190,8 @@ codex/       — ⭐ PUBLIC API: Codec[T], primitives, struct, union, slice, con
 format/      — format bridges: JSON, YAML, TOML, Gob, Binary, File I/O, embedded formats
 api/         — transport-agnostic API builders (rest/, events/, mcp/, reqreply/)
 adapters/    — transport adapters (nethttp, chi, mqtt, mqtt5, zeromq, sql, mcpgo, templ)
-forge/       — governed KPI computation pipelines
+forge/       — governed KPI computation pipelines (synchronous, batch, signed, spec-generating)
+stream/      — reactive stream pipelines: From, Apply, Filter, Tap, Buffer, Merge, Drain over chan T
 render/      — spec renderers (openapi/, asyncapi/v2, asyncapi/v3, jsonschema/, pipeline/)
 validate/    — reusable constraints (Email, UUID, URL, ranges, MQTT topics, …)
 stats/       — observer interfaces (ValidationObserver → SQLObserver, LoggingObserver, NewFanout)

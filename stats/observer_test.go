@@ -248,6 +248,7 @@ func TestLoggingObserver_ImplementsAllInterfaces(t *testing.T) {
 	var _ stats.SecurityObserver = obs
 	var _ stats.FileObserver = obs
 	var _ stats.SQLObserver = obs
+	var _ stats.StreamObserver = obs
 }
 
 func TestLoggingObserver_AllMethods_NoPanic(t *testing.T) {
@@ -262,6 +263,7 @@ func TestLoggingObserver_AllMethods_NoPanic(t *testing.T) {
 	obs.RecordFileWrite("/etc/config.toml", false, 1*time.Millisecond)
 	obs.RecordValidation("users", "get_user", 1*time.Millisecond, nil)
 	obs.RecordMigration("up", "00001_create_users.sql", 1, 2*time.Millisecond, nil)
+	obs.RecordStreamItem("oeeCalc", true, 1*time.Millisecond)
 }
 
 // ── NewFanout ─────────────────────────────────────────────────────────────────
@@ -541,4 +543,40 @@ func TestFanout_SQLObserver_SkipsNonImplementors(t *testing.T) {
 	// Must not panic when no inner observer implements SQLObserver.
 	so.RecordValidation("orders", "insert_order", time.Millisecond, nil)
 	so.RecordMigration("down", "00002_add_status.sql", 2, time.Millisecond, nil)
+}
+
+// ── StreamObserver fanout tests ───────────────────────────────────────────────
+
+type streamFanoutSpy struct {
+	stats.NoopObserver
+	items int
+}
+
+func (s *streamFanoutSpy) RecordStreamItem(_ string, _ bool, _ time.Duration) { s.items++ }
+
+func TestFanout_StreamObserver_OnlyToImplementors(t *testing.T) {
+	spy := &streamFanoutSpy{}
+	plain := &fanoutSpy{} // does NOT implement StreamObserver
+	obs := stats.NewFanout(plain, spy)
+
+	so, ok := obs.(stats.StreamObserver)
+	if !ok {
+		t.Fatal("fanout must implement StreamObserver when any inner does")
+	}
+	so.RecordStreamItem("oeeCalc", true, time.Millisecond)
+	if spy.items != 1 {
+		t.Errorf("RecordStreamItem: want 1 call on spy, got %d", spy.items)
+	}
+}
+
+func TestFanout_StreamObserver_SkipsNonImplementors(t *testing.T) {
+	plain := &fanoutSpy{}
+	obs := stats.NewFanout(plain)
+
+	so, ok := obs.(stats.StreamObserver)
+	if !ok {
+		t.Fatal("fanout must implement StreamObserver regardless of inner observers")
+	}
+	// Must not panic when no inner observer implements StreamObserver.
+	so.RecordStreamItem("gradeCalc", false, time.Millisecond)
 }

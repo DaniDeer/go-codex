@@ -174,10 +174,26 @@ type SQLObserver interface {
 	RecordMigration(op, name string, version int64, duration time.Duration, err error)
 }
 
+// StreamObserver is an optional extension to [Observer] for stream-level throughput
+// metrics. [stream.Apply] type-asserts the configured Observer to
+// StreamObserver before calling its methods — existing Observer implementations
+// need not change.
+//
+//	type MyObserver struct{ ... }
+//	func (o *MyObserver) RecordStreamItem(function string, success bool, d time.Duration) {
+//	    // record per-item throughput, latency, etc.
+//	}
+type StreamObserver interface {
+	// RecordStreamItem is called for every item that passes through [stream.Apply],
+	// success or failure. function is the forge function name.
+	// success is false when forge.Function.Apply returned an error.
+	RecordStreamItem(function string, success bool, duration time.Duration)
+}
+
 // LoggingObserver logs every observer event as a structured slog message.
 // It implements all observer interfaces except [TraceObserver]:
 // [Observer] (embeds [ValidationObserver]), [PipelineObserver],
-// [SecurityObserver], [FileObserver], and [SQLObserver].
+// [SecurityObserver], [FileObserver], [SQLObserver], and [StreamObserver].
 //
 // [TraceObserver] is intentionally not implemented — slog has no concept of
 // distributed trace spans. Use [stats.NewFanout] to combine a LoggingObserver
@@ -248,11 +264,16 @@ func (o *LoggingObserver) RecordMigration(op, name string, version int64, d time
 	o.logger.Info("sql migration", "op", op, "name", name, "version", version, "ms", d.Milliseconds(), "err", err)
 }
 
+func (o *LoggingObserver) RecordStreamItem(function string, success bool, d time.Duration) {
+	o.logger.Debug("stream item", "function", function, "success", success, "ms", d.Milliseconds())
+}
+
 // NewFanout returns an [Observer] that fans out all calls to each provided observer.
 // The returned value also implements [FileObserver], [SecurityObserver],
-// [PipelineObserver], [SQLObserver], and [TraceObserver] — delegating each to
-// the inner observers that satisfy those interfaces, so composing a metrics-only
-// observer with a [LoggingObserver] works without any type-assertion boilerplate.
+// [PipelineObserver], [SQLObserver], [StreamObserver], and [TraceObserver] —
+// delegating each to the inner observers that satisfy those interfaces, so composing
+// a metrics-only observer with a [LoggingObserver] works without any
+// type-assertion boilerplate.
 //
 //	obs := stats.NewFanout(
 //	    metricsObserver,
@@ -344,6 +365,15 @@ func (f *fanout) RecordMigration(op, name string, version int64, d time.Duration
 	}
 }
 
+// RecordStreamItem implements [StreamObserver].
+func (f *fanout) RecordStreamItem(function string, success bool, d time.Duration) {
+	for _, o := range f.observers {
+		if so, ok := o.(StreamObserver); ok {
+			so.RecordStreamItem(function, success, d)
+		}
+	}
+}
+
 // StartSpan implements [TraceObserver].
 func (f *fanout) StartSpan(ctx context.Context, operation, name string) context.Context {
 	for _, o := range f.observers {
@@ -365,8 +395,8 @@ func (f *fanout) EndSpan(ctx context.Context, err error) {
 
 // NoopObserver discards all events. It satisfies all observer interfaces —
 // [Observer] (embeds [ValidationObserver]), [PipelineObserver],
-// [SecurityObserver], [FileObserver], [SQLObserver], and [TraceObserver] —
-// and is the zero-cost default used when no observer is configured.
+// [SecurityObserver], [FileObserver], [SQLObserver], [StreamObserver], and
+// [TraceObserver] — and is the zero-cost default used when no observer is configured.
 type NoopObserver struct{}
 
 func (NoopObserver) RecordValidationError(_, _, _ string)                           {}
@@ -379,6 +409,7 @@ func (NoopObserver) RecordFileRead(_ string, _ bool, _ time.Duration)           
 func (NoopObserver) RecordFileWrite(_ string, _ bool, _ time.Duration)              {}
 func (NoopObserver) RecordValidation(_, _ string, _ time.Duration, _ error)         {}
 func (NoopObserver) RecordMigration(_, _ string, _ int64, _ time.Duration, _ error) {}
+func (NoopObserver) RecordStreamItem(_ string, _ bool, _ time.Duration)             {}
 func (NoopObserver) StartSpan(ctx context.Context, _, _ string) context.Context     { return ctx }
 func (NoopObserver) EndSpan(_ context.Context, _ error)                             {}
 

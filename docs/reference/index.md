@@ -32,7 +32,8 @@ go get github.com/DaniDeer/go-codex@latest
 | OpenAPI 3.1 renderer | `github.com/DaniDeer/go-codex/render/openapi` |
 | AsyncAPI 3.0 renderer | `github.com/DaniDeer/go-codex/render/asyncapi/v3` |
 | AsyncAPI 2.6 renderer (frozen) | `github.com/DaniDeer/go-codex/render/asyncapi/v2` |
-| Forge pipelines | `github.com/DaniDeer/go-codex/forge` |
+| Forge pipelines (governed, batch) | `github.com/DaniDeer/go-codex/forge` |
+| Reactive stream pipelines | `github.com/DaniDeer/go-codex/stream` |
 | HTTP route descriptors | `github.com/DaniDeer/go-codex/route` |
 | Schema model | `github.com/DaniDeer/go-codex/schema` |
 | Observer interfaces | `github.com/DaniDeer/go-codex/stats` |
@@ -70,11 +71,12 @@ go get github.com/DaniDeer/go-codex@latest
 | `adapters/mcpgo` | mark3labs/mcp-go adapter | [→](https://pkg.go.dev/github.com/DaniDeer/go-codex/adapters/mcpgo) |
 | `adapters/templ` | templ SSR format plug-in | [→](https://pkg.go.dev/github.com/DaniDeer/go-codex/adapters/templ) |
 
-## Forge pipelines (Layer 3)
+## Forge pipelines (Layer 3) and Reactive streams
 
 | Package | Description | pkg.go.dev |
 |---------|-------------|-----------|
-| `forge` | Governed KPI functions: `NewFunction`, `Compose`, `Registry` | [→](https://pkg.go.dev/github.com/DaniDeer/go-codex/forge) |
+| `forge` | Governed KPI functions: `NewFunction`, `Compose`, `Registry`; synchronous batch computation with SHA-256 governance hashes and `PipelineSpec` YAML | [→](https://pkg.go.dev/github.com/DaniDeer/go-codex/forge) |
+| `stream` | Reactive stream pipelines over typed Go channels: `From`, `FromCodec`, `Apply` (wraps `forge.Function` per-item), `Filter`, `Tap`, `MapErr`, `Merge`, `Tee`, `CombineLatest2`, `Buffer`, `Debounce`, `Throttle`, `Drain`, `Collect`; `Stream[T]{Values, Errors}` explicit error channels | [→](https://pkg.go.dev/github.com/DaniDeer/go-codex/stream) |
 
 ## Renderers
 

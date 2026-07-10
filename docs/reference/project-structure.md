@@ -90,6 +90,17 @@ go-codex/
 │   └── templ/              # templ SSR format plug-in for api/rest RouteHandles
 │       └── adapter.go      # Format[Props], StreamingFormat[Props], DecodeNotSupportedError
 │
+├── stream/                 # reactive stream pipelines — bridges MQTT/ZeroMQ sources with forge functions
+│   ├── stream.go           # Stream[T]{Values <-chan T, Errors <-chan error}
+│   ├── errors.go           # StreamDecodeError, StreamApplyError — slog.LogValuer
+│   ├── source.go           # From[T], FromCodec[T](format.Format[T]), SourceOptions
+│   ├── transform.go        # Apply[In,Out], Filter[T], Tap[T], MapErr[T], Retry[T], ApplyOptions
+│   ├── fanout.go           # Merge[T], Tee[T]
+│   ├── combine.go          # CombineLatest2[A,B,Out]
+│   ├── time.go             # Buffer[T], Debounce[T], Throttle[T]
+│   ├── sink.go             # Drain[T], Collect[T], DrainOptions
+│   └── topology.go         # Topology, TopologySpec, NewTopology, WithApply[In,Out], StepKind*
+│
 ├── forge/                  # governed KPI computation pipeline (Layer 3)
 │   ├── forge.go            # Measured[T], MeasuredCodec[T], Function[In,Out], NewFunction,
 │   │                       #   Compose, Registry, PipelineSpec, PipelineInfo, FunctionMeta
@@ -110,8 +121,10 @@ go-codex/
 │   │       └── document.go # DocumentBuilder, Document, Server, Operation, ChannelItem (Address)
 │   ├── jsonschema/         # plain JSON Schema renderer (used by api/mcp)
 │   │   └── jsonschema.go   # Schema(s schema.Schema) json.RawMessage
-│   └── pipeline/           # pipeline YAML renderer (for forge.PipelineSpec)
-│       └── pipeline.go     # Render(spec) []byte
+│   ├── pipeline/           # pipeline YAML renderer (for forge.PipelineSpec)
+│   │   └── pipeline.go     # Render(spec) []byte
+│   └── stream/             # stream topology YAML renderer (for stream.TopologySpec)
+│       └── render.go       # Render(spec stream.TopologySpec) ([]byte, error)
 │
 ├── schema/                 # schema model (pure data, zero dependencies)
 │   └── schema.go           # Schema, Property, DiscriminatorSchema
@@ -196,5 +209,6 @@ go-codex/
     ├── flat-key-patch/     # flat dotted-key JSON: Patch + PatchEncoded with Map key validation
     ├── stats-observer/              # stats.ValidationObserver wired to codecs directly (no adapter)
     ├── http-trace-span-propagation/ # TraceObserver with OTel: parent span from traceparent header
-    └── sensor-service/              # multi-adapter demo: nethttp + MQTT + SQL (goose + sqlc + Validate[T]) + NewFanout observer
+    ├── stream-pipeline/             # stream operator showcase: From, Apply, CombineLatest2, Tee, Merge, FlatMapSlice, Buffer, Window, Debounce, Throttle, MapErr, Topology YAML
+    └── sensor-service/              # multi-adapter demo: nethttp + MQTT + SQL (goose + sqlc + Validate[T]) + stream pipeline + NewFanout observer
 ```

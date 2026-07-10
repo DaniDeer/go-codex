@@ -36,6 +36,7 @@ repo_name = "DaniDeer/go-codex"
 "AsyncAPI Spec" = "features/asyncapi.md"
 "Config, CLI & Protobuf" = "features/config.md"
 "SQL Adapter" = "features/sql.md"
+"Stream — Reactive Pipelines" = "features/stream.md"
 
 [nav.Guides]
 "Enums, Unions & Sum Types" = "guides/enum-union-sum.md"
@@ -51,6 +52,7 @@ repo_name = "DaniDeer/go-codex"
 "AsyncAPI Examples" = "guides/asyncapi.md"
 "Config Examples" = "guides/config.md"
 "SQL Examples (goose + sqlc)" = "guides/sql.md"
+"Stream Examples" = "guides/stream.md"
 
 [nav.Reference]
 "Package Reference" = "reference/index.md"
@@ -58,6 +60,6 @@ repo_name = "DaniDeer/go-codex"
 
 [nav.Roadmap]
 "Overview" = "roadmap/index.md"
-"— Stream Adapter (reactive)" = "roadmap/stream-adapter.md"
+"— Stream (reactive pipelines, implemented)" = "roadmap/stream-adapter.md"
 "— AMQP 0.9.1 Adapter" = "roadmap/amqp-adapter.md"
 "— TCP Adapter" = "roadmap/tcp-adapter.md"
