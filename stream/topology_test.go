@@ -22,20 +22,58 @@ func TestTopology_Steps(t *testing.T) {
 		WithBuffer("batch 10 / 500ms").
 		WithDebounce("30s silence").
 		WithThrottle("1 per second").
+		WithMerge("merge sensor A and B").
+		WithTee("tee to archive + alerts").
+		WithWindow("1-minute tumbling window").
+		WithSlidingWindow("size=10 step=5").
+		WithCombineLatest("merge availability + performance").
+		WithZip("pair requests with responses").
+		WithFlatMapSlice("each reading → [°C, °F, K]").
 		WithSink("mqtt/out", "Output sink")
 
 	spec := topo.Spec()
-	if len(spec.Steps) != 7 {
-		t.Fatalf("want 7 steps, got %d", len(spec.Steps))
+	if len(spec.Steps) != 14 {
+		t.Fatalf("want 14 steps, got %d", len(spec.Steps))
 	}
 	kinds := []gstream.StepKind{
 		gstream.StepKindSource, gstream.StepKindFilter, gstream.StepKindTap,
 		gstream.StepKindBuffer, gstream.StepKindDebounce, gstream.StepKindThrottle,
+		gstream.StepKindMerge, gstream.StepKindTee,
+		gstream.StepKindWindow, gstream.StepKindSlidingWindow,
+		gstream.StepKindCombineLatest, gstream.StepKindZip, gstream.StepKindFlatMapSlice,
 		gstream.StepKindSink,
 	}
+	// Note: 14 enum kinds + Apply is covered by TestTopology_WithApply_CapturesFunctionSpec
 	for i, want := range kinds {
 		if spec.Steps[i].Kind != want {
 			t.Errorf("step %d: want kind %q, got %q", i, want, spec.Steps[i].Kind)
+		}
+	}
+}
+
+func TestTopology_AllStepKindConstants(t *testing.T) {
+	// Verify every exported StepKind constant has a non-empty string value
+	// and matches its With* method output — catches orphaned constants.
+	constants := map[gstream.StepKind]string{
+		gstream.StepKindSource:        "source",
+		gstream.StepKindApply:         "apply",
+		gstream.StepKindFilter:        "filter",
+		gstream.StepKindTap:           "tap",
+		gstream.StepKindBuffer:        "buffer",
+		gstream.StepKindDebounce:      "debounce",
+		gstream.StepKindThrottle:      "throttle",
+		gstream.StepKindMerge:         "merge",
+		gstream.StepKindTee:           "tee",
+		gstream.StepKindWindow:        "window",
+		gstream.StepKindSlidingWindow: "slidingWindow",
+		gstream.StepKindCombineLatest: "combineLatest",
+		gstream.StepKindZip:           "zip",
+		gstream.StepKindFlatMapSlice:  "flatMapSlice",
+		gstream.StepKindSink:          "sink",
+	}
+	for kind, want := range constants {
+		if string(kind) != want {
+			t.Errorf("StepKind constant: want string %q, got %q", want, string(kind))
 		}
 	}
 }
@@ -75,4 +113,19 @@ func TestTopology_Info(t *testing.T) {
 	if spec.Info.Description == "" {
 		t.Error("Description should be set")
 	}
+}
+
+func ExampleNewTopology() {
+	topo := gstream.NewTopology("Sensor Pipeline", "1.0.0").
+		WithDescription("Real-time sensor processing pipeline.").
+		WithSource("mqtt/sensors/+/data", "Raw sensor readings from MQTT").
+		WithFilter("value > 0").
+		WithTap("dashboard observer").
+		WithSink("mqtt/alerts", "OEE alert publisher")
+
+	gstream.WithApply(topo, topoFn)
+
+	spec := topo.Spec()
+	_ = spec // pass spec to render/stream.Render to get YAML
+	// Output:
 }

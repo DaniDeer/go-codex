@@ -53,6 +53,22 @@ func TestRender_WithDescription(t *testing.T) {
 	}
 }
 
+func ExampleRender() {
+	topo := gstream.NewTopology("Sensor OEE Pipeline", "1.0.0").
+		WithDescription("Real-time OEE from MQTT sensor readings.").
+		WithSource("mqtt/sensors/+/data", "Raw sensor readings").
+		WithFilter("value > 0").
+		WithWindow("1-minute tumbling window").
+		WithSink("mqtt/alerts/oee", "OEE alert publisher")
+
+	yaml, err := streamrender.Render(topo.Spec())
+	if err != nil {
+		panic(err)
+	}
+	_ = yaml // yaml contains the stream topology as a YAML document
+	// Output:
+}
+
 func TestTopology_Spec_IsImmutable(t *testing.T) {
 	topo := gstream.NewTopology("P", "1.0.0").WithSource("ch", "")
 	spec := topo.Spec()

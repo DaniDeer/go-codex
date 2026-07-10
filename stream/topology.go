@@ -24,6 +24,16 @@ const (
 	StepKindMerge StepKind = "merge"
 	// StepKindTee splits a stream into two copies.
 	StepKindTee StepKind = "tee"
+	// StepKindWindow collects items into fixed-interval time windows.
+	StepKindWindow StepKind = "window"
+	// StepKindSlidingWindow collects items into overlapping count-based windows.
+	StepKindSlidingWindow StepKind = "slidingWindow"
+	// StepKindCombineLatest merges the latest values from multiple sources.
+	StepKindCombineLatest StepKind = "combineLatest"
+	// StepKindZip pairs items from two streams by position.
+	StepKindZip StepKind = "zip"
+	// StepKindFlatMapSlice expands each item into multiple output items.
+	StepKindFlatMapSlice StepKind = "flatMapSlice"
 	// StepKindSink consumes items and errors.
 	StepKindSink StepKind = "sink"
 )
@@ -136,6 +146,48 @@ func (t *Topology) WithDebounce(description string) *Topology {
 // WithThrottle records a throttle step.
 func (t *Topology) WithThrottle(description string) *Topology {
 	t.steps = append(t.steps, TopologyStep{Kind: StepKindThrottle, Description: description})
+	return t
+}
+
+// WithMerge records a merge (fan-in) step combining multiple source streams.
+func (t *Topology) WithMerge(description string) *Topology {
+	t.steps = append(t.steps, TopologyStep{Kind: StepKindMerge, Description: description})
+	return t
+}
+
+// WithTee records a tee (fan-out) step splitting one stream into two copies.
+func (t *Topology) WithTee(description string) *Topology {
+	t.steps = append(t.steps, TopologyStep{Kind: StepKindTee, Description: description})
+	return t
+}
+
+// WithWindow records a window step (fixed-interval tumbling time windows).
+func (t *Topology) WithWindow(description string) *Topology {
+	t.steps = append(t.steps, TopologyStep{Kind: StepKindWindow, Description: description})
+	return t
+}
+
+// WithSlidingWindow records a sliding window step (overlapping count-based windows).
+func (t *Topology) WithSlidingWindow(description string) *Topology {
+	t.steps = append(t.steps, TopologyStep{Kind: StepKindSlidingWindow, Description: description})
+	return t
+}
+
+// WithCombineLatest records a CombineLatest step (merges latest values from multiple sources).
+func (t *Topology) WithCombineLatest(description string) *Topology {
+	t.steps = append(t.steps, TopologyStep{Kind: StepKindCombineLatest, Description: description})
+	return t
+}
+
+// WithZip records a Zip step (pairs items from two streams by position).
+func (t *Topology) WithZip(description string) *Topology {
+	t.steps = append(t.steps, TopologyStep{Kind: StepKindZip, Description: description})
+	return t
+}
+
+// WithFlatMapSlice records a FlatMapSlice step (expands each item into multiple items).
+func (t *Topology) WithFlatMapSlice(description string) *Topology {
+	t.steps = append(t.steps, TopologyStep{Kind: StepKindFlatMapSlice, Description: description})
 	return t
 }
 
