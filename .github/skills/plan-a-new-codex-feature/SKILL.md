@@ -1,160 +1,317 @@
 ---
 name: plan-a-new-codex-feature
-description: 'Planning skill for new go-codex features. Preloads all mandatory requirements: structured errors with slog.LogValuer, Observer pattern for metrics, unit test coverage, three-surface documentation sync (instructions.md, docs/, doc.go), and example updates. Use when asked to "plan a new feature", "add to go-codex", "design a new API", "plan a codec feature", "implement X for go-codex", or before writing any new exported symbol in the library.'
+description: 'Planning skill for new go-codex features. Follows a roadmap-first workflow: every idea starts as docs/roadmap/<feature>.md and is refined before implementation. Covers structured errors with slog.LogValuer, Observer pattern for metrics/logging/tracing, unit test coverage, and three-surface documentation sync. Use when asked to "plan a new feature", "evaluate possibility of X", "add to go-codex", "design a new API", "plan a new adapter", or before writing any new exported symbol.'
 ---
 
 # plan-a-new-codex-feature
 
-Planning guide for new go-codex features. Every new feature must satisfy all
-five mandatory requirements before implementation is considered complete.
-
-## When to Use This Skill
-
-- User says "plan a new feature for go-codex"
-- User asks to design a new exported type, method, or package
-- User says "add X to go-codex" or "implement X for the format/file package"
-- Starting a new planning round for any Layer 1 (codec), Layer 2 (API), or Layer 3 (forge) addition
-
-## Step-by-Step Planning Workflow
-
-### Phase 1 — Understand the feature
-
-Read the relevant source files before writing a single line of the plan:
-
-1. The package(s) being extended (e.g. `format/file.go`, `api/rest/builder.go`)
-2. The cross-layer consistency checklist: `references/checklist.md` in this skill
-3. The design contract: `.github/instructions/go-codex.instructions.md`
-4. Existing similar features for API shape reference (e.g. how does `File.Update` relate to the proposed `File.Patch`)
-
-### Phase 2 — Design against the North Star
-
-Every API addition must answer yes to: **Does this make the library more declarative, simple, and consistent for the user?**
-
-The declare-once workflow must hold:
-```
-declare (NewX / NewFile / NewRoute) → compose → register / use
-```
-
-### Phase 3 — Write the plan
-
-Use `references/checklist.md` to verify all five mandatory requirements are addressed.
-The plan must include:
-
-1. **What it does** — one-paragraph summary with the concrete use case
-2. **API surface** — exact signatures, with godoc sketches
-3. **Structured errors** — every new error type listed with its `LogValue()` attributes
-4. **Observer hooks** — which Observer methods fire and when
-5. **Unit test matrix** — table of test IDs to be written
-6. **Files to change** — table of file → what changes
-7. **Usage example** — runnable code snippet
-
-### Phase 4 — Get plan approved before implementing
-
-Present the plan and wait for explicit approval ("start", "implement it").
+Planning guide for new go-codex features. Every feature starts as a **living design
+document** in `docs/roadmap/` and is refined over time before implementation.
+This separates exploration (cheap, reversible) from implementation (expensive,
+harder to change).
 
 ---
 
-## Mandatory Requirements (checklist)
+## When to Use This Skill
 
-Read `references/checklist.md` for the full checklist. Summary:
+Three distinct modes — identify which before proceeding:
 
-### 1. Structured Errors with `slog.LogValuer`
+| Trigger | Mode | Output |
+|---------|------|--------|
+| "evaluate X", "assess possibility", "plan a new adapter/feature", "can go-codex do X" | **Explore** | `docs/roadmap/<feature>.md` |
+| "review the X plan", "refine", "take Y into account", "update the roadmap doc" | **Refine** | Update existing `docs/roadmap/<feature>.md` |
+| "implement it", "start", "now implement what we planned in roadmap" | **Implement** | `plan.md` + todos + code (against mandatory requirements) |
 
-Every new error type **must** implement `LogValue() slog.Value`. Pattern from `codex/errors.go`:
+**Never skip the roadmap doc.** Even for features that will be implemented
+immediately, the roadmap doc captures design intent, rejected alternatives, and
+scope decisions — this is the institutional memory of why the API looks the way it does.
+
+---
+
+## Mode 1 — Explore: Write a Roadmap Doc
+
+### What a roadmap doc is
+
+`docs/roadmap/<feature>.md` is a **living design document**:
+- Not a spec frozen at a point in time — it is updated as the design evolves
+- Not a commit message — it captures the *why*, rejected alternatives, and scope
+- Not a TODO list — it captures API surface, error model, observer hooks, test plan
+- Survives across sessions: the next session can pick up where this one left off
+
+### Step-by-step
+
+**Phase 1 — Research**
+
+Read the relevant packages and how similar features are built:
+
+| What to read | Why |
+|---|---|
+| The adapter/package being extended | Current API surface and patterns |
+| `.github/instructions/go-codex.instructions.md` | Import rules, design constraints |
+| Similar existing adapter (e.g. `adapters/mqtt5` for a new transport) | Pattern to follow |
+| External library being wrapped (if any) | Capabilities and limitations |
+
+Background research agents are appropriate here for complex external libraries
+(e.g. RxGo, AMQP protocol, TCP framing). Always evaluate:
+- Is the external library actively maintained?
+- Does it preserve go-codex's type safety (no `interface{}` boxing)?
+- Does the proposed feature map naturally to the three-layer model?
+
+**Phase 2 — Write the roadmap doc**
+
+Create `docs/roadmap/<feature-name>.md` following this template:
+
+```markdown
+# <Feature Title> — `<package path>`
+
+> **Status:** Design complete — not yet implemented.
+> [← Back to Roadmap](index.md)
+
+## Motivation
+Why this feature belongs in go-codex. The concrete user problem it solves.
+One paragraph.
+
+## Scope decisions (what's in Phase 1, what's deferred)
+| In scope | Out of scope |
+|---|---|
+| ... | ... |
+
+## Toolchain / dependency decisions (if applicable)
+Why this library was chosen, what was rejected and why.
+
+## API surface
+Exact Go signatures — not pseudocode. Use correct generics syntax.
+Include godoc sketches for Options structs.
+
+## Structured errors (all implement `slog.LogValuer`)
+Every new error type with:
+- Fields (typed)
+- `Error() string` return value
+- `LogValue()` attribute group
+
+## Observer integration
+Which stats.Observer extension is used (FileObserver / SQLObserver / etc.)
+Which methods fire and when (success path, error paths).
+Type-assertion guard pattern.
+
+## Unit test plan
+Table of test IDs, names, and what each verifies.
+Minimum: happy path, error path, observer called, LogValue shape.
+
+## Files to create
+| File | Responsibility |
+|---|---|
+| ... | ... |
+
+## Out of scope (Phase 2)
+Deferred capabilities, with rationale.
+
+## Open design decisions (to resolve before/during implementation)
+Questions that remain open, with trade-offs noted.
+```
+
+**Phase 3 — Update index and nav**
+
+1. Add row to `docs/roadmap/index.md` table
+2. Add entry to `zensical.toml` under `[nav.Roadmap]`
+3. Verify `go build ./...` still passes (no Go code changed, but importing the page shouldn't break anything)
+
+**Phase 4 — Present and await direction**
+
+Present a concise summary. The user will either:
+- Say "looks good, keep it as a roadmap doc" → done for this session
+- Say "let's refine X" → update the roadmap doc
+- Say "implement it" → switch to **Mode 3 — Implement**
+
+---
+
+## Mode 2 — Refine an Existing Roadmap Doc
+
+1. Read `docs/roadmap/<feature>.md` fully
+2. Read any context the user provided (new requirements, constraints, patterns to include)
+3. Update the relevant sections — never delete; add to "Scope decisions" or "Open design decisions" if the change is significant
+4. Note what changed and why (a sentence in the relevant section)
+
+---
+
+## Mode 3 — Implement: Translate Roadmap to Code
+
+### Pre-implementation checklist
+
+Before writing any code:
+
+1. Read `docs/roadmap/<feature>.md` — this is the authoritative design
+2. Resolve any remaining "Open design decisions" — pick an answer and document it in the roadmap doc
+3. Check the roadmap doc's "Unit test plan" — use it to write the test matrix in `plan.md`
+4. Verify all **five mandatory requirements** (below) are addressed in the roadmap doc
+
+### Five mandatory requirements
+
+Every new feature implementation **must** satisfy all five before it is considered complete.
+
+#### 1. Structured Errors with `slog.LogValuer`
+
+Every new error type **must** implement `Error()`, `Unwrap()`, and `LogValue()`.
+Pattern from `codex/errors.go` and `format/embedded.go`:
 
 ```go
 type MyNewError struct {
-    Path string
-    Err  error
+    Boundary string  // the named boundary (table, path, topic, etc.)
+    Op       string  // the operation (insert_user, read, etc.)
+    Err      error
 }
 
-func (e MyNewError) Error() string { return fmt.Sprintf("...%q: %s", e.Path, e.Err) }
+func (e MyNewError) Error() string {
+    return fmt.Sprintf("pkg: %s (%s): %v", e.Boundary, e.Op, e.Err)
+}
+
 func (e MyNewError) Unwrap() error { return e.Err }
 
-// LogValue implements slog.LogValuer for structured logging.
+// LogValue implements [slog.LogValuer] for structured logging.
 func (e MyNewError) LogValue() slog.Value {
     return slog.GroupValue(
-        slog.String("path", e.Path),
-        slog.Any("cause", e.Err),
+        slog.String("boundary", e.Boundary),
+        slog.String("op", e.Op),
+        slog.Any("err", e.Err),
     )
 }
 ```
 
-Usage (users get structured logging for free):
+Users get structured logging for free:
 ```go
-slog.Warn("operation failed", "error", myErr)   // ← LogValue() fires automatically
+slog.Error("operation failed", "error", myErr)  // LogValue fires automatically
 ```
 
-### 2. Observer Pattern
+**`errors.As` chain**: callers must be able to reach the inner error. `Unwrap()` is
+mandatory whenever `Err error` is a field.
 
-Determine which Observer interface applies and where to fire it:
+#### 2. Observer Pattern
 
-| Layer | Interface | Methods | When |
-|-------|-----------|---------|------|
-| Format/File | `stats.FileObserver` | `RecordFileRead`, `RecordFileWrite` | After read phase, after write phase |
-| REST adapter | `stats.Observer` | `RecordRequest` | Every request path (success + error) |
-| MQTT adapter | `stats.Observer` | `RecordSubscribe`, `RecordPublish` | Every message path |
-| Forge | `stats.PipelineObserver` | `RecordApply` | Every Function.Apply call |
-| Security | `stats.SecurityObserver` (type-assert only) | `RecordSecurityRejection` | On rejection |
+Determine which `stats.Observer` extension applies:
 
-Rules:
-- Observer must fire on **every** code path — including early-exit error paths, not just the happy path
-- `SecurityObserver` must be type-asserted, never embedded: `if so, ok := obs.(stats.SecurityObserver); ok { ... }`
-- `FileObserver` must be type-asserted: `if fo, ok := obs.(stats.FileObserver); ok { ... }`
-- Use `stats.NoopObserver{}` as default when `opts.Observer == nil`
-- Call `stats.ReportErrors(obs, "location", err)` to propagate `ValidationErrors` to `RecordValidationError`
+| Layer | Interface | Methods | Type-assertion guard |
+|---|---|---|---|
+| Format / File I/O | `stats.FileObserver` | `RecordFileRead`, `RecordFileWrite` | ✅ always guard |
+| SQL adapter | `stats.SQLObserver` | `RecordValidation`, `RecordMigration` | ✅ always guard |
+| REST / MQTT / ZeroMQ | `stats.Observer` | `RecordRequest`, `RecordSubscribe`, `RecordPublish` | embedded — no guard |
+| Forge pipelines | `stats.PipelineObserver` | `RecordApply` | type-asserted in `Registry.WithObserver` |
+| Security rejection | `stats.SecurityObserver` | `RecordSecurityRejection` | ✅ always guard |
+| Distributed tracing | `stats.TraceObserver` | `StartSpan`, `EndSpan` | ✅ always guard |
 
-### 3. Unit Tests
+**New observer extension for new adapters:** If the feature introduces a new kind of
+lifecycle event not covered by existing interfaces, add a new optional extension to
+`stats/observer.go` following the `SQLObserver` pattern:
+- Interface goes in `stats/observer.go`
+- `NoopObserver`, `LoggingObserver`, `fanout` all implement it
+- Compile-time assertion in `stats/observer_test.go`
 
-For every new exported symbol, write at minimum:
+Rules (non-negotiable):
+- `if obs == nil { obs = stats.NoopObserver{} }` at the top of every Options-using method
+- Observer fires on **every** code path — success AND every error branch
+- `stats.ReportErrors(obs, "location", err)` propagates `ValidationErrors` per-field
+- Location string convention: `"sql_row"`, `"file"`, `"body"`, `"payload"`, `"topic_var"`, `"input"`, `"env"`
 
-| Test category | Required |
-|--------------|---------|
-| Happy path | ✓ |
-| Error path → correct typed error | ✓ |
-| `errors.As` navigable | ✓ for all error types |
-| `slog.LogValuer` fires correctly | ✓ for all new error types |
-| Observer fired on success | ✓ |
-| Observer fired on failure | ✓ |
-| `IsMergeable`/`IsPatchable`/`IsStreamable` per format | ✓ if applicable |
+#### 3. Unit Tests
 
-Use `codex.RequiredField(...)` and `codex.OptionalField(...)` in test codecs — never `codex.Field[T,V]{...}` struct literals.
+For every new exported symbol:
 
-### 4. Documentation (three surfaces)
+| Test | Required |
+|---|---|
+| Happy path (valid input → expected output) | ✓ |
+| Error path (invalid input → typed error, correct fields) | ✓ |
+| `errors.As` chain reaches inner error | ✓ for all error types |
+| `LogValue()` returns `slog.KindGroup` with correct keys | ✓ for all error types |
+| Observer called on success (correct args) | ✓ |
+| Observer called on failure (correct error type passed) | ✓ |
+| `nil` Observer → no panic | ✓ |
+| Plain Observer (not implementing extension) → graceful fallback | ✓ |
+| Round-trip encode/decode | ✓ for codec types |
+| Example function (`Example...()`) for pkg.go.dev | ✓ for key new symbols |
 
-All three documentation surfaces must be updated:
+**Test helper rule:** Use `codex.RequiredField(...)` / `codex.OptionalField(...)` in
+test codecs — never `codex.Field[T,V]{...}` struct literals.
 
-| Surface | File | When |
-|---------|------|------|
-| API instructions | `.github/instructions/go-codex.instructions.md` | Every code change — mandatory |
-| Zensical site | `docs/features/*.md` or `docs/guides/*.md` | Major user-facing features |
-| pkg.go.dev | `*/doc.go` and `Example...()` in `*_test.go` | New packages or major API additions |
+**Test quality rule:** Error type tests must check `slog.KindGroup` AND all field
+keys — not just `Kind().String() != ""`. See `TestValidate_LogValue` in
+`adapters/sql/validate_test.go` as the reference pattern.
 
-`go-codex.instructions.md` must always be updated. The other two surfaces depend on significance.
+#### 4. Documentation (three surfaces)
 
-### 5. Example Update
+| Surface | File(s) | When required |
+|---|---|---|
+| **API instructions** | `.github/instructions/go-codex.instructions.md` | Every code change — mandatory, no exceptions |
+| **Zensical feature page** | `docs/features/<feature>.md` | All user-facing features |
+| **Zensical guide** | `docs/guides/<feature>.md` | Features with a step-by-step workflow |
+| **pkg.go.dev** | `*/doc.go` + `Example...()` in `*_test.go` | New packages or major API additions |
+| **Project structure** | `docs/reference/project-structure.md` | New directories / packages |
+| **Roadmap index** | `docs/roadmap/index.md` | Remove row when feature ships |
+| **Nav** | `zensical.toml` | Remove roadmap entry; add feature/guide entries |
 
-If the feature touches an existing example area:
-- Update the relevant `examples/*/main.go` to demonstrate the new API
-- The example must run without errors: `go run ./examples/X/`
-- Comment on "why" (use case), not just "what" (API call)
+When a feature ships:
+- Remove `docs/roadmap/<feature>.md` (or keep as design history — user decides)
+- Remove from `docs/roadmap/index.md` table
+- Remove from `zensical.toml` roadmap nav
+- Add to `docs/features/` and `docs/guides/` and `zensical.toml` features/guides nav
+
+#### 5. Example Update
+
+If the feature is significant enough for the Zensical site, it should also have a
+runnable example or be demonstrated in an existing example:
+
+- Update or create `examples/<feature>/main.go`
+- The example must run without errors: `go run ./examples/<feature>/`
+- Comments must explain *why* (use case), not just *what* (API call)
+- All examples must pass: `for d in examples/*/; do go run ./$d; done`
+
+---
+
+## Roadmap Doc → Implementation Checklist
+
+When moving from roadmap to implementation, use this transition checklist:
+
+| Step | Action |
+|---|---|
+| Resolve open design decisions | Pick an answer, update roadmap doc |
+| Map roadmap "Unit test plan" → plan.md todos | One todo per test block |
+| Map roadmap "Files to create" → plan.md todos | One todo per file |
+| Check roadmap "Out of scope" is still current | Mark anything that crept in |
+| Remove `> Status: Design complete — not yet implemented` from roadmap doc | Or delete the file entirely when shipped |
+
+---
+
+## Verification (after implementation)
+
+Run in order — all must pass before the feature is considered done:
+
+```bash
+go fmt ./...           # format; no diff must remain
+go build ./...         # zero compile errors
+go test ./...          # all packages pass
+just check             # staticcheck + gosec; no new suppressions
+for d in examples/*/; do go run ./$d; done   # all examples exit 0
+```
 
 ---
 
 ## Gotchas
 
-- **Never invent API during a review.** `plan-a-new-codex-feature` is for new feature planning, not for inventing features that don't exist yet. Findings fix inconsistencies; new features have explicit user requests.
-- **File errors have no `slog.LogValuer` yet (pre-R22+).** When adding any new file error, also add `LogValue()` to all existing file error types in the same pass to maintain consistency.
-- **`FileObserver` is type-asserted.** `format.File[T]` uses `if fo, ok := obs.(stats.FileObserver); ok` — it does NOT embed `FileObserver` in `Observer`. Existing `Observer` implementations work unchanged.
-- **`map[string]any` patch semantics follow RFC 7396** (JSON Merge Patch): patch keys win over existing; absent keys are preserved; `null` in patch removes keys in JSON (go-codex does not handle `null` removal unless explicitly noted).
-- **`format.Binary` and `format.Gob` are not patchable** — they use typed marshal/unmarshal paths that bypass `map[string]any`. Always return `FilePatchNotSupportedError` before any I/O.
-- **`just check` must pass clean.** After every implementation: `go fmt ./...` → `go build ./...` → `go test ./...` → `just check`. Do not suppress new staticcheck/gosec warnings.
-- **All examples must exit 0.** `for d in examples/*/; do go run ./$d; done` — every example.
+- **Never invent API without a user request.** This skill is for planning requested features, not for proposing new ones.
+- **Roadmap docs are living documents.** Updating them later is expected and encouraged — don't over-engineer the first draft.
+- **Type-assertion guards are non-negotiable.** `FileObserver`, `SQLObserver`, `SecurityObserver`, `TraceObserver` must always be type-asserted. Never embed them in `Observer`.
+- **`just check` must pass clean.** Never add `//nolint` or `//gosec` suppressions to silence new findings.
+- **All Examples must exit 0.** Fix stale patterns in existing examples if your change affects their API.
+- **Go generics methods cannot introduce new type params.** Use free functions (`forge.NewFunction[In, Out]`) when a second type parameter is needed on a generic type.
+- **Observer location strings are shared vocabulary** — use existing strings (`"sql_row"`, `"file"`, `"payload"`) before inventing new ones. New ones only when genuinely different.
+
+---
 
 ## References
 
-- [`references/checklist.md`](references/checklist.md) — full per-feature planning checklist
+- [`docs/roadmap/`](../../../docs/roadmap/) — existing roadmap docs as format reference
+- [`references/checklist.md`](references/checklist.md) — detailed per-feature planning checklist
 - [`.github/instructions/go-codex.instructions.md`](../../instructions/go-codex.instructions.md) — design contract
-- [`codex/errors.go`](../../../codex/errors.go) — reference implementation for `slog.LogValuer` on error types
+- [`codex/errors.go`](../../../codex/errors.go) — reference implementation for error types with `slog.LogValuer`
 - [`stats/observer.go`](../../../stats/observer.go) — all Observer interfaces
-- [`.github/skills/review-go-codex/references/checklist.md`](../review-go-codex/references/checklist.md) — consistency checklist (cross-layer parity, param types, etc.)
+- [`adapters/sql/validate.go`](../../../adapters/sql/validate.go) — reference: type-assertion guard + ReportErrors pattern
+- [`adapters/sql/validate_test.go`](../../../adapters/sql/validate_test.go) — reference: LogValue test quality
+- [`.github/skills/review-go-codex/references/checklist.md`](../review-go-codex/references/checklist.md) — cross-layer consistency checklist

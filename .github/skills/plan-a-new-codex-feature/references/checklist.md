@@ -1,142 +1,137 @@
 # go-codex New Feature Planning Checklist
 
-Run every section when planning a new feature. Each section must have an
-explicit answer in the plan before implementation starts.
+Two phases: **Explore** (roadmap doc) and **Implement** (code). Run the relevant
+sections. Both must be addressed before implementation is considered done.
 
 ---
 
-## 1. API Shape — Declarative, Simple, Consistent
+## Phase A — Explore: Roadmap Doc Quality
+
+Use this when writing or reviewing `docs/roadmap/<feature>.md`.
+
+### A1. Roadmap Doc Completeness
+
+| Section | Required |
+|---------|---------|
+| Motivation — concrete user problem | ✓ |
+| Scope decisions — what's in Phase 1, what's deferred | ✓ |
+| API surface — exact Go signatures (generics correct, not pseudocode) | ✓ |
+| Structured errors — every error type with fields + `LogValue()` attributes | ✓ |
+| Observer integration — which interface, which methods, type-assertion guard | ✓ |
+| Unit test plan — table of test IDs, names, what each verifies | ✓ |
+| Files to create — table of file → responsibility | ✓ |
+| Out of scope (Phase 2) — explicit list | ✓ |
+| Open design decisions — questions still to resolve | ✓ if any exist |
+
+### A2. Roadmap Doc Navigation
+
+| Check | Expected |
+|-------|---------|
+| Row in `docs/roadmap/index.md` | `| [Title](file.md) | pkg | Status | Summary |` |
+| Entry in `zensical.toml` `[nav.Roadmap]` | `"— Feature Name" = "roadmap/<file>.md"` |
+| Status header at top of doc | `> **Status:** Design complete — not yet implemented.` |
+| Back-link to index | `> [← Back to Roadmap](index.md)` |
+| `go build ./...` still passes | No Go code changed, but verify |
+
+---
+
+## Phase B — Implement: Code Quality
+
+Use this when implementing an approved roadmap feature.
+
+### B1. API Shape — Declarative, Simple, Consistent
 
 | Check | Question to answer |
 |-------|-------------------|
 | Declare-once pattern | Can the new type be declared once and passed around as a value? |
 | Naming parity | Does the name follow existing layer conventions? (`NewX`, `XHandle`, `XOpt`, `XMeta`) |
-| Method vs function | Is this a method on an existing type, or a new constructor? Go methods on generic types cannot introduce new type parameters — use a free function (like `PatchEncoded[T, P any]`, `forge.NewFunction[In, Out]`) when a second type parameter is required. |
+| Method vs free function | Go methods on generic types cannot introduce new type parameters — use a free function when a second type parameter is needed |
 | Opt interface | Does the new option type implement the sealed `XOpt` interface? |
-| Pointer-free ergonomics | Does it use `.WithCodec(c)` instead of `Codec: &c`? |
-| No `Required` on template vars | Path/topic/file/URI template vars are always required — no `Required` field |
+| Pointer-free ergonomics | `.WithCodec(c)` not `Codec: &c` |
+| No `Required` on template vars | Path/topic/file/URI template vars always required — no `Required` field |
 
----
+### B2. Structured Errors with `slog.LogValuer`
 
-## 2. Structured Errors with `slog.LogValuer`
-
-For every new error type, verify:
+For every new error type:
 
 | Check | Expected |
 |-------|---------|
-| Implements `error` | `Error() string` |
-| Implements `Unwrap()` | `Unwrap() error` — when the error wraps another |
-| Implements `slog.LogValuer` | `LogValue() slog.Value` — always |
-| Uses `slog.GroupValue(...)` | Returns `slog.GroupValue(slog.String("field", ...), ...)` |
-| `errors.As`-navigable | Can be extracted via `errors.As` from wrapper errors |
+| `Error() string` | Descriptive, includes boundary context (`"pkg: boundary (op): cause"`) |
+| `Unwrap() error` | Present whenever error wraps another; enables `errors.As` |
+| `LogValue() slog.Value` | Always present; returns `slog.GroupValue(...)` |
+| Group attributes match fields | `slog.String("boundary", ...)`, `slog.Any("err", ...)` |
+| `errors.As`-navigable | Can be extracted from wrapper errors |
 
-**`LogValue()` attribute naming:**
-- `path` — file path (string)
-- `param` — parameter name (string)
-- `value` — the value that failed (string)
-- `cause` — the underlying error (any)
-- `constraint` — constraint name (string)
-- `message` — constraint message (string)
+**Standard attribute names:**
+- `table`, `op` — SQL adapter context
+- `path` — file path
+- `param`, `value` — parameter name and failing value
+- `err`, `cause` — underlying error (use `err` when it's the only error field)
+- `function`, `input`, `output` — forge context
+- `topic`, `op` — MQTT/ZeroMQ context
 
----
-
-## 3. Observer Pattern
+### B3. Observer Pattern
 
 | Check | Expected |
 |-------|---------|
-| Observer default | `if obs == nil { obs = stats.NoopObserver{} }` at top of method |
-| Happy path fires | Observer called with `success=true` on success |
-| Every error path fires | Observer called with `success=false` on **every** error branch |
-| No bare success-only | Never add observer call only on the happy path — all branches must call it |
-| `ValidationErrors` propagated | `stats.ReportErrors(obs, "location", err)` before observer call on error |
-| `FileObserver` type-asserted | `if fo, ok := obs.(stats.FileObserver); ok { fo.RecordFileRead(...) }` |
-| `SecurityObserver` type-asserted | `if so, ok := obs.(stats.SecurityObserver); ok { so.RecordSecurityRejection(...) }` |
-| Godoc updated | `stats.FileObserver.RecordFileRead` / `RecordFileWrite` godoc lists the new method |
+| Default observer | `if obs == nil { obs = stats.NoopObserver{} }` at top of method |
+| Happy path fires | Observer called with success on happy path |
+| Every error path fires | Observer called with failure on **every** error branch — no gaps |
+| `ValidationErrors` propagated | `stats.ReportErrors(obs, "location", err)` before observer call |
+| New extension interface | Added to `stats/observer.go`; `NoopObserver`+`LoggingObserver`+`fanout` implement it |
+| Type-assertion guard | `if fo, ok := obs.(stats.XObserver); ok { fo.RecordX(...) }` — never embedded |
+| `stats/observer_test.go` updated | Compile-time assertion + delegation test for new extension interface |
 
-**Observer location strings:**
-- `"file"` — format.File read/write errors
-- `"body"` — HTTP request/response body
-- `"path"` — HTTP/file path param
-- `"query"` — HTTP query param
-- `"cookie"` — HTTP cookie
-- `"header"` — HTTP header
-- `"payload"` — MQTT payload
-- `"input"` / `"output"` — forge function input/output
-- `"env"` — environment variable
+**Observer location strings (use existing where possible):**
+`"sql_row"` · `"file"` · `"body"` · `"path"` · `"query"` · `"cookie"` · `"header"` · `"payload"` · `"topic_var"` · `"user_property"` · `"input"` · `"output"` · `"env"`
 
----
-
-## 4. Unit Test Coverage
-
-For every new exported type, method, or function:
+### B4. Unit Test Coverage
 
 | Test | Required |
 |------|---------|
-| Happy path (valid input → expected output) | ✓ |
-| Error path (invalid input → correct typed error) | ✓ |
-| `errors.As` chain traversal | ✓ for all error types |
-| `LogValue()` returns `slog.GroupValue` with correct attrs | ✓ for all new error types |
-| Observer called on success | ✓ |
-| Observer called with `success=false` on error | ✓ |
-| Pre-flight (no I/O) for unsupported operation | ✓ when applicable |
-| Round-trip (encode + decode) | ✓ for codec types |
-| Schema fields set correctly | ✓ for codec/constraint types with schema annotation |
+| Happy path — valid input → expected output | ✓ |
+| Error path — invalid input → correct typed error with correct fields | ✓ |
+| `errors.As` chain traversal reaches inner error | ✓ for all error types |
+| `LogValue()` returns `slog.KindGroup` + all field keys present | ✓ for all error types |
+| Observer called on success (args verified) | ✓ |
+| Observer called on failure (error type verified — not just `!= nil`) | ✓ |
+| `nil` Observer → no panic | ✓ |
+| Plain Observer (no extension interface) → graceful fallback | ✓ |
+| Round-trip encode/decode | ✓ for codec types |
+| `Example...()` function with `// Output:` | ✓ for key new public symbols |
 
-**Test naming convention:** `Test_functionName_scenario` or `TestTypeName_MethodName_scenario`
+**Test helper rule:** `codex.RequiredField(...)` / `codex.OptionalField(...)` — never `codex.Field[T,V]{...}`.
 
-**Test codec helpers:** use `codex.RequiredField(...)` / `codex.OptionalField(...)` — never `codex.Field[T,V]{...}` struct literals.
+**LogValue test quality:** Assert `slog.KindGroup` AND presence of all individual attribute keys. Do not check only `Kind().String() != ""`.
 
----
+### B5. Documentation (three surfaces)
 
-## 5. Documentation (three surfaces)
+| Surface | File | Required |
+|---------|------|---------|
+| API instructions | `.github/instructions/go-codex.instructions.md` | ✓ always |
+| Feature page | `docs/features/<feature>.md` | ✓ all user-facing features |
+| Guide | `docs/guides/<feature>.md` | ✓ if step-by-step workflow |
+| Package doc | `*/doc.go` | ✓ for new packages |
+| Example function | `*_test.go` `Example...()` | ✓ for new packages, major symbols |
+| Project structure | `docs/reference/project-structure.md` | ✓ for new packages/dirs |
+| Roadmap cleanup | Remove from `docs/roadmap/index.md` + `zensical.toml` roadmap nav | ✓ when feature ships |
+| Nav additions | Add feature/guide to `zensical.toml` | ✓ |
 
-### 5a. `go-codex.instructions.md` (mandatory for every code change)
-
-| Check | Expected |
-|-------|---------|
-| New type in Package Structure table | Row added or updated |
-| New method listed in package entry | `File.Patch`, `Format.IsPatchable`, etc. |
-| New error type listed | `FilePatchNotSupportedError{Path}` |
-| `slog.LogValuer` note | "— implements `slog.LogValuer`" next to error types |
-| Import graph unchanged | "Imports allowed from" column not widened without justification |
-
-### 5b. `docs/` Zensical site (for major user-facing features)
-
-| Check | Expected |
-|-------|---------|
-| Feature page updated | `docs/features/*.md` mentions new API |
-| Guide updated | `docs/guides/*.md` shows new pattern if relevant |
-| Code examples compile | All fenced Go blocks use current API (`WithCodec`, not `Codec: &`) |
-| Cross-links correct | Internal `../` links resolve; no broken anchors |
-
-### 5c. `*/doc.go` + `Example...()` functions
+### B6. Example Update
 
 | Check | Expected |
 |-------|---------|
-| `doc.go` updated | Package doc mentions new major symbol |
-| `Example...()` added if key workflow | `ExampleFile_Patch()` for major new methods |
-| `// Output:` comment present | Every `Example...()` has matching output comment |
-
----
-
-## 6. Example Update
-
-| Check | Expected |
-|-------|---------|
-| Relevant example updated | The example most closely related to the new feature |
-| New section added | Numbered section (e.g., "Section 6: Patch") |
-| Comments explain "why" | Not just what the API call does, but the use case |
+| Existing or new example demonstrates feature | The example closest to the new feature |
+| Comments explain "why" (use case) | Not just what the API call does |
 | `go run ./examples/X/` exits 0 | No panics, no unexpected errors |
 | No stale patterns | `.WithCodec(c)` not `Codec: &c`; `RequiredField` not `Field[T,V]{...}` |
 
----
+### B7. Verification
 
-## 7. Verification
-
-Run in order — all must pass before the plan is considered done:
+Run in order — all must pass:
 
 ```bash
-go fmt ./...           # format; no diff should remain
+go fmt ./...           # format; no diff must remain
 go build ./...         # zero compile errors
 go test ./...          # all packages pass
 just check             # staticcheck + gosec; no new suppressions
