@@ -156,3 +156,39 @@ if errors.As(err, &sae) {
     }
 }
 ```
+
+---
+
+## Design rationale — why `forge` and `stream` are separate packages
+
+`forge/` and `stream/` were deliberately kept separate after an architectural
+evaluation during development. The key arguments:
+
+| Concern | `forge/` | `stream/` |
+|---|---|---|
+| Execution | Synchronous `Apply(In) → (Out, error)` — pull/batch | Async goroutine loops — push/reactive |
+| Composition unit | `[]T` slices | `<-chan T` channels (per-item, continuous) |
+| Governance | SHA-256 hash + Author/ApprovedBy — KPI audit trail | None |
+| Spec output | `PipelineSpec` → YAML via `render/pipeline` | `TopologySpec` → YAML via `render/stream` |
+| Same-named ops | `Map`/`Filter` over `[]T` | `Filter`/`FlatMapSlice` over `<-chan T` |
+
+**Why not merge:**
+1. Different execution models — a unified type would lose either batch simplicity or reactive capability
+2. Governance belongs on forge functions (signed computations), not on stream operators (`Debounce`, `Throttle`)
+3. Same names, different semantics — merging would require awkward disambiguation
+4. Dependency direction is one-way and correct: `stream` imports `forge`; the reverse would create a circular dependency
+
+**The correct conceptual model:**
+
+```
+codex/      Layer 1 — validated domain types
+forge/      Layer 3 — governed synchronous computation + KPI spec
+stream/     Layer 4 — reactive execution of forge functions over event streams
+adapters/   Transport bridges (MQTT, ZeroMQ) supply source channels to stream/
+```
+
+- `forge/` = "what the computation **is**" (declarative, governed, signed)
+- `stream/` = "how computation **runs** continuously over time" (reactive, async)
+
+They compose: `stream.Apply(ctx, mqttStream, forgeFunction, opts)` — the forge function's
+governed computation runs per-item inside the reactive pipeline.
