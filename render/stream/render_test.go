@@ -69,6 +69,31 @@ func ExampleRender() {
 	// Output:
 }
 
+func TestRender_WithPhase3StepKinds(t *testing.T) {
+	topo := gstream.NewTopology("Full Pipeline", "1.0.0").
+		WithMerge("merge sensor A + B").
+		WithTee("tee to archive + alerts").
+		WithWindow("1-minute tumbling window").
+		WithSlidingWindow("size=10 step=5").
+		WithCombineLatest("merge availability + performance").
+		WithZip("pair requests with responses").
+		WithFlatMapSlice("each reading → multiple metrics")
+
+	out, err := streamrender.Render(topo.Spec())
+	if err != nil {
+		t.Fatalf("Render: %v", err)
+	}
+	s := string(out)
+	for _, want := range []string{
+		"merge", "tee", "window", "slidingWindow",
+		"combineLatest", "zip", "flatMapSlice",
+	} {
+		if !strings.Contains(s, want) {
+			t.Errorf("output missing step kind %q\nfull:\n%s", want, s)
+		}
+	}
+}
+
 func TestTopology_Spec_IsImmutable(t *testing.T) {
 	topo := gstream.NewTopology("P", "1.0.0").WithSource("ch", "")
 	spec := topo.Spec()

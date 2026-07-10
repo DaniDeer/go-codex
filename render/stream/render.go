@@ -6,9 +6,9 @@
 //
 //	topo := stream.NewTopology("Sensor OEE Pipeline", "1.0.0").
 //	    WithSource("mqtt/sensors/+", "Raw sensor readings").
-//	    WithApply(oeeCalcFn).  // captures forge function hash for auditability
 //	    WithFilter("oee < 0.65").
 //	    WithSink("mqtt/alerts/oee", "Low-OEE alerts")
+//	stream.WithApply(topo, oeeCalcFn) // captures forge function hash for auditability
 //
 //	yamlBytes, err := streamrender.Render(topo.Spec())
 package stream

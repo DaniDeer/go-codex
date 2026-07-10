@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"testing"
 
+	"github.com/DaniDeer/go-codex/codex"
 	stream "github.com/DaniDeer/go-codex/stream"
 )
 
@@ -84,6 +85,32 @@ func TestDrain_ContextCancel_Stops(t *testing.T) {
 	}()
 	cancel()
 	<-done // must complete after cancel
+}
+
+func TestDrain_ObserverCalledOnValueError(t *testing.T) {
+	// Verify stats.ReportErrors fires RecordValidationError when onValue returns
+	// a codex.ValidationErrors (the only error type that triggers the observer).
+	ctx := context.Background()
+	valErr := codex.ValidationErrors{
+		{Field: "sensor", Err: fmt.Errorf("must be non-empty")},
+	}
+
+	src := stream.From(ctx, chanOf(42))
+	spy := &recordingObserver{}
+
+	var drainErrs []error
+	stream.Drain(ctx, src,
+		func(_ context.Context, _ int) error { return valErr },
+		func(e error) { drainErrs = append(drainErrs, e) },
+		stream.DrainOptions{Observer: spy},
+	)
+
+	if len(drainErrs) != 1 {
+		t.Fatalf("want 1 error from onValue, got %d", len(drainErrs))
+	}
+	if len(spy.valErrors) == 0 {
+		t.Error("observer should receive RecordValidationError for codex.ValidationErrors from onValue")
+	}
 }
 
 // ── Collect ───────────────────────────────────────────────────────────────────

@@ -14,7 +14,7 @@
 //
 // Pipelines are composed by passing [Stream] values between free functions:
 //
-//	sensors  := stream.FromCodec(ctx, rawCh, sensorCodec, stream.SourceOptions{Observer: obs})
+//	sensors  := stream.FromCodec(ctx, rawCh, format.JSON(sensorCodec), stream.SourceOptions{Observer: obs})
 //	oeeData  := stream.Apply(ctx, sensors, oeeCalcFn, stream.ApplyOptions{Observer: obs})
 //	oeeData   = stream.Tap(ctx, oeeData, func(oee OEE) { dashboard.Publish(oee) })
 //	alerts   := stream.Filter(ctx, oeeData, func(o OEE) bool { return float64(o) < 0.65 })

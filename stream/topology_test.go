@@ -5,7 +5,7 @@ import (
 
 	"github.com/DaniDeer/go-codex/codex"
 	"github.com/DaniDeer/go-codex/forge"
-	gstream "github.com/DaniDeer/go-codex/stream"
+	stream "github.com/DaniDeer/go-codex/stream"
 )
 
 var topoFn = forge.NewFunction("oeeCalc", "1.0.0",
@@ -15,7 +15,7 @@ var topoFn = forge.NewFunction("oeeCalc", "1.0.0",
 )
 
 func TestTopology_Steps(t *testing.T) {
-	topo := gstream.NewTopology("Pipeline", "1.0.0").
+	topo := stream.NewTopology("Pipeline", "1.0.0").
 		WithSource("mqtt/sensors", "Sensor source").
 		WithFilter("value > 0").
 		WithTap("dashboard event").
@@ -35,13 +35,13 @@ func TestTopology_Steps(t *testing.T) {
 	if len(spec.Steps) != 14 {
 		t.Fatalf("want 14 steps, got %d", len(spec.Steps))
 	}
-	kinds := []gstream.StepKind{
-		gstream.StepKindSource, gstream.StepKindFilter, gstream.StepKindTap,
-		gstream.StepKindBuffer, gstream.StepKindDebounce, gstream.StepKindThrottle,
-		gstream.StepKindMerge, gstream.StepKindTee,
-		gstream.StepKindWindow, gstream.StepKindSlidingWindow,
-		gstream.StepKindCombineLatest, gstream.StepKindZip, gstream.StepKindFlatMapSlice,
-		gstream.StepKindSink,
+	kinds := []stream.StepKind{
+		stream.StepKindSource, stream.StepKindFilter, stream.StepKindTap,
+		stream.StepKindBuffer, stream.StepKindDebounce, stream.StepKindThrottle,
+		stream.StepKindMerge, stream.StepKindTee,
+		stream.StepKindWindow, stream.StepKindSlidingWindow,
+		stream.StepKindCombineLatest, stream.StepKindZip, stream.StepKindFlatMapSlice,
+		stream.StepKindSink,
 	}
 	// Note: 14 enum kinds + Apply is covered by TestTopology_WithApply_CapturesFunctionSpec
 	for i, want := range kinds {
@@ -54,22 +54,22 @@ func TestTopology_Steps(t *testing.T) {
 func TestTopology_AllStepKindConstants(t *testing.T) {
 	// Verify every exported StepKind constant has a non-empty string value
 	// and matches its With* method output — catches orphaned constants.
-	constants := map[gstream.StepKind]string{
-		gstream.StepKindSource:        "source",
-		gstream.StepKindApply:         "apply",
-		gstream.StepKindFilter:        "filter",
-		gstream.StepKindTap:           "tap",
-		gstream.StepKindBuffer:        "buffer",
-		gstream.StepKindDebounce:      "debounce",
-		gstream.StepKindThrottle:      "throttle",
-		gstream.StepKindMerge:         "merge",
-		gstream.StepKindTee:           "tee",
-		gstream.StepKindWindow:        "window",
-		gstream.StepKindSlidingWindow: "slidingWindow",
-		gstream.StepKindCombineLatest: "combineLatest",
-		gstream.StepKindZip:           "zip",
-		gstream.StepKindFlatMapSlice:  "flatMapSlice",
-		gstream.StepKindSink:          "sink",
+	constants := map[stream.StepKind]string{
+		stream.StepKindSource:        "source",
+		stream.StepKindApply:         "apply",
+		stream.StepKindFilter:        "filter",
+		stream.StepKindTap:           "tap",
+		stream.StepKindBuffer:        "buffer",
+		stream.StepKindDebounce:      "debounce",
+		stream.StepKindThrottle:      "throttle",
+		stream.StepKindMerge:         "merge",
+		stream.StepKindTee:           "tee",
+		stream.StepKindWindow:        "window",
+		stream.StepKindSlidingWindow: "slidingWindow",
+		stream.StepKindCombineLatest: "combineLatest",
+		stream.StepKindZip:           "zip",
+		stream.StepKindFlatMapSlice:  "flatMapSlice",
+		stream.StepKindSink:          "sink",
 	}
 	for kind, want := range constants {
 		if string(kind) != want {
@@ -79,14 +79,14 @@ func TestTopology_AllStepKindConstants(t *testing.T) {
 }
 
 func TestTopology_WithApply_CapturesFunctionSpec(t *testing.T) {
-	topo := gstream.NewTopology("P", "1.0.0")
-	gstream.WithApply(topo, topoFn)
+	topo := stream.NewTopology("P", "1.0.0")
+	stream.WithApply(topo, topoFn)
 	spec := topo.Spec()
 	if len(spec.Steps) != 1 {
 		t.Fatalf("want 1 step, got %d", len(spec.Steps))
 	}
 	s := spec.Steps[0]
-	if s.Kind != gstream.StepKindApply {
+	if s.Kind != stream.StepKindApply {
 		t.Errorf("kind: want apply, got %q", s.Kind)
 	}
 	if s.Name != "oeeCalc" {
@@ -101,7 +101,7 @@ func TestTopology_WithApply_CapturesFunctionSpec(t *testing.T) {
 }
 
 func TestTopology_Info(t *testing.T) {
-	spec := gstream.NewTopology("My Pipeline", "2.1.0").
+	spec := stream.NewTopology("My Pipeline", "2.1.0").
 		WithDescription("Real-time OEE pipeline.").
 		Spec()
 	if spec.Info.Title != "My Pipeline" {
@@ -116,14 +116,14 @@ func TestTopology_Info(t *testing.T) {
 }
 
 func ExampleNewTopology() {
-	topo := gstream.NewTopology("Sensor Pipeline", "1.0.0").
+	topo := stream.NewTopology("Sensor Pipeline", "1.0.0").
 		WithDescription("Real-time sensor processing pipeline.").
 		WithSource("mqtt/sensors/+/data", "Raw sensor readings from MQTT").
 		WithFilter("value > 0").
 		WithTap("dashboard observer").
 		WithSink("mqtt/alerts", "OEE alert publisher")
 
-	gstream.WithApply(topo, topoFn)
+	stream.WithApply(topo, topoFn)
 
 	spec := topo.Spec()
 	_ = spec // pass spec to render/stream.Render to get YAML

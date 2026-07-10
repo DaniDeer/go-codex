@@ -79,9 +79,9 @@ type TopologySpec struct {
 //	topo := stream.NewTopology("Sensor OEE Pipeline", "1.0.0").
 //	    WithDescription("Real-time OEE from MQTT sensor readings.").
 //	    WithSource("mqtt/sensors/+/data", "Decoded sensor readings").
-//	    WithApply(oeeCalcFn).
 //	    WithFilter("oee < 0.65").
 //	    WithSink("mqtt/alerts/oee", "Low-OEE alerts")
+//	stream.WithApply(topo, oeeCalcFn) // free function — Go generics cannot add type params to methods
 //
 //	yaml, _ := streamrender.Render(topo.Spec())
 type Topology struct {

@@ -1,6 +1,17 @@
-# go-codex Review History (R1–R33)
+# go-codex Review History (R1–R34)
 
 Do not re-report any of these findings. They have been implemented and tested.
+
+---
+
+## Round 34 (stream doc and test correctness)
+
+- **G1 — `stream/doc.go` stale `FromCodec` example**: Package-level pipeline example passed raw `sensorCodec` (a `codex.Codec[T]`) directly to `FromCodec` but the signature requires `format.Format[T]`; corrected to `format.JSON(sensorCodec)`.
+- **G2 — `stream/topology.go` Topology godoc stale `WithApply` chain**: Example showed `.WithApply(oeeCalcFn)` as a chained method call but `WithApply` is a free function; restructured example to show `stream.WithApply(topo, oeeCalcFn)` as a separate statement with an explanatory comment.
+- **G3 — `render/stream/render.go` package doc stale `WithApply` chain**: Same `.WithApply(oeeCalcFn)` method-call bug in the render package doc; fixed with same restructure.
+- **G4 — `stream/topology_test.go` inconsistent import alias**: All other files in the `stream_test` package use `stream` as the alias for `github.com/DaniDeer/go-codex/stream`; `topology_test.go` used `gstream`; renamed alias to `stream` for consistency.
+- **G5 — `render/stream/render_test.go` missing coverage for R33 step kinds**: `TestRender_WithSteps` only covered source/filter/sink; added `TestRender_WithPhase3StepKinds` exercising all seven step kinds added in R33 (merge, tee, window, slidingWindow, combineLatest, zip, flatMapSlice).
+- **G6 — `stream/sink_test.go` `DrainOptions.Observer` path untested**: No test verified that `stats.ReportErrors` fires `RecordValidationError` when `onValue` returns a `codex.ValidationErrors`; added `TestDrain_ObserverCalledOnValueError`.
 
 ---
 
