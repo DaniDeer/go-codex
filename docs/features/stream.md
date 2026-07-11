@@ -1,11 +1,11 @@
 # Reactive Stream Pipelines — `stream`
 
-> See also: [`stream` on pkg.go.dev](https://pkg.go.dev/github.com/DaniDeer/go-codex/stream) · [Stream Guide](../guides/stream.md) · [Observer Pattern](observer.md) · [Forge Pipelines](../concepts/pipelines.md)
+> See also: [`stream` on pkg.go.dev](https://pkg.go.dev/github.com/DaniDeer/go-codex/stream) · [Stream Guide](../guides/stream.md) · [Stream Bridge Guide](../guides/stream-bridges.md) · [Observer Pattern](observer.md) · [Forge Pipelines](../concepts/pipelines.md)
 >
 > **Runnable demos:**
 > - [`examples/stream-pipeline`](https://github.com/DaniDeer/go-codex/tree/main/examples/stream-pipeline) — all operators showcased: `From`, `Apply`, `Tap`, `Filter`, `CombineLatest2`, `Tee`, `Merge`, `FlatMapSlice`, `Debounce`, `Throttle`, `Buffer`, `Window`, `MapErr`, `Topology` + YAML render
 > - [`examples/stream-oee`](https://github.com/DaniDeer/go-codex/tree/main/examples/stream-oee) — forge + stream integration: governed OEE from machine events (Window → governed forge chain → alert); governance YAML with SHA-256 hashes per function
-> - [`examples/sensor-service`](https://github.com/DaniDeer/go-codex/tree/main/examples/sensor-service) — multi-adapter integration (MQTT + SQL + HTTP) using `stream.FromCodec` + `stream.Apply` + `stream.Drain`
+> - [`examples/sensor-service`](https://github.com/DaniDeer/go-codex/tree/main/examples/sensor-service) — **stream bridge showcase**: `mqtt.SubscribeStream`, `mqtt.DrainPublish`, `nethttp.HandlerLatest` (reactive cache GET /readings/latest), and `sql.QueryStream` — all wired together with a single shared observer
 
 The `stream` package provides a declarative reactive pipeline over typed Go channels,
 bridging push-based transport adapters (MQTT, ZeroMQ) with governed
@@ -193,3 +193,119 @@ adapters/   Transport bridges (MQTT, ZeroMQ) supply source channels to stream/
 
 They compose: `stream.Apply(ctx, mqttStream, forgeFunction, opts)` — the forge function's
 governed computation runs per-item inside the reactive pipeline.
+
+---
+
+## Stream bridge helpers
+
+Each adapter package provides bridge helpers that connect the transport directly to a
+`Stream[T]` — eliminating the boilerplate of creating raw channels, registering handlers,
+and wiring `FromCodec`.
+
+> Full examples and patterns: **[Stream Bridge Guide](../guides/stream-bridges.md)**
+
+### `stream.Single[T]` — one-shot source
+
+```go
+s := stream.Single(ctx, req)    // emits req once, closes
+```
+
+Used as the entry point for per-request pipelines inside [`PipelineHandlerFunc`](#http-pipeline-handler).
+
+### HTTP — `adapters/nethttp` and `adapters/chi`
+
+Three patterns bridge HTTP and the stream pipeline:
+
+| Helper | Direction | Use case |
+|--------|-----------|----------|
+| `HandlerLatest[Req,Resp]` | stream → HTTP | GET returns latest value from a running pipeline ("get current OEE") |
+| `HandlerIngest[Req]` | HTTP → stream | POST/PUT feeds a channel → `stream.From` pipeline (webhook receiver) |
+| `PipelineHandler[Req,Resp]` | per-request pipeline | Handler body uses `Tap`, `Apply`, `MapErr` — same mental model as background pipelines |
+
+`PipelineHandlerFunc[Req,Resp]` is the handler type for `PipelineHandler`:
+
+```go
+nethttp.RegisterPipeline(mux, handle,
+    func(ctx context.Context, req SensorReq) stream.Stream[OEEResult] {
+        s := stream.Single(ctx, req)
+        s = stream.Apply(ctx, s, validateFn, opts)
+        s = stream.Tap(ctx, s, func(v ValidatedReq) { slog.Info("validated", "id", v.ID) })
+        return stream.Apply(ctx, s, oeeCalcFn, opts)
+    }, nethttp.Options{Observer: obs})
+```
+
+New error types: `NoLatestValueError{Path}` (503), `PipelineFullError{Path,Capacity}` (503),
+`PipelineNoResponseError{Path}` (500) — all implement `slog.LogValuer`.
+
+### MQTT — `adapters/mqtt` and `adapters/mqtt5`
+
+```go
+// Source bridge: returns stream + handler to register with MQTT client
+s, handler := mqtt.SubscribeStream(ctx, handle, format.JSON(codec), srcOpts, subOpts)
+client.Subscribe(handle.Topic, 1, handler)
+
+// Sink bridge: publish each stream item
+mqtt.DrainPublish(ctx, client, handle, src, format.JSON(codec), opts)
+
+// Pipeline handler for MQTT5 Serve (declarative handler with Tap)
+mqtt5.Serve(ctx, client, router, handle,
+    mqtt5.AsPipelineFunc(func(ctx context.Context, req Req) stream.Stream[Resp] {
+        s := stream.Single(ctx, req)
+        return stream.Apply(ctx, s, computeFn, opts)
+    }), serveOpts)
+
+// Client streaming: drive a request/reply service with a stream of requests
+responses := mqtt5.CallStream(ctx, client, router, handle, requestStream, callOpts)
+```
+
+### ZeroMQ — `adapters/zeromq`
+
+```go
+// Source / sink
+s := zeromq.SubscribeStream(ctx, sock, handle, format.JSON(codec), srcOpts)
+zeromq.DrainPublish(ctx, sock, handle, src, format.JSON(codec), opts)
+
+// Pipeline handler for Serve / ServeRouter
+zeromq.Serve(ctx, sock, handle, zeromq.AsPipelineFunc(fn), serveOpts)
+
+// Client streaming
+responses := zeromq.CallStream(ctx, sock, handle, requestStream, opts)
+
+// Reactive cache server: reply with latest pipeline value
+zeromq.ServeLatest(ctx, sock, handle, oeeStream, serveLatestOpts)
+```
+
+### MCP — `adapters/mcpgo`
+
+```go
+// Tool that returns the latest stream value to every LLM call
+tool, handler := mcpgo.ToolLatestHandler(getOEEHandle, oeeStream, opts)
+s.AddTool(tool, handler)
+```
+
+### SQL — `adapters/sql`
+
+```go
+// Source: poll DB at interval, validate each row
+s := sql.QueryStream(ctx, rowCodec, func(ctx context.Context) ([]Row, error) {
+    return db.ListReadingsSince(ctx, time.Now().Add(-interval))
+}, 30*time.Second, sql.QueryStreamOptions{Table: "readings", Op: "list"})
+
+// Sink: validate + insert each stream item
+sql.DrainInsert(ctx, rowCodec, src, db.InsertReading,
+    sql.DrainInsertOptions{Table: "readings", Op: "insert", OnError: logErr})
+```
+
+### File — `adapters/file`
+
+```go
+// Source: decode NDJSON file line-by-line (bounded stream)
+s, err := file.ScanStream(ctx, "readings.ndjson", format.JSON(codec), srcOpts)
+
+// Source: watch directory, emit new file paths
+paths := file.WatchStream(ctx, "/data/uploads", 500*time.Millisecond, srcOpts)
+
+// Sink: write each item as a NDJSON line
+file.DrainWrite(ctx, outFile, src, format.JSON(codec),
+    file.DrainWriteOptions{Path: "out.ndjson", OnError: logErr})
+```

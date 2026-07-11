@@ -1,10 +1,10 @@
 # Stream Guide — reactive pipelines
 
-> See also: [`stream` on pkg.go.dev](https://pkg.go.dev/github.com/DaniDeer/go-codex/stream) · [Feature: Reactive Streams](../features/stream.md) · [Forge Pipelines](../concepts/pipelines.md) · [Observer Examples](observer.md)
+> See also: [`stream` on pkg.go.dev](https://pkg.go.dev/github.com/DaniDeer/go-codex/stream) · [Feature: Reactive Streams](../features/stream.md) · [Stream Bridge Guide](stream-bridges.md) · [Forge Pipelines](../concepts/pipelines.md) · [Observer Examples](observer.md)
 >
 > **Runnable demos:**
 > - [`examples/stream-pipeline`](https://github.com/DaniDeer/go-codex/tree/main/examples/stream-pipeline) — comprehensive showcase of all operators (8 sections); run with `go run ./examples/stream-pipeline`
-> - [`examples/sensor-service`](https://github.com/DaniDeer/go-codex/tree/main/examples/sensor-service) — multi-adapter integration (MQTT + SQL + HTTP)
+> - [`examples/sensor-service`](https://github.com/DaniDeer/go-codex/tree/main/examples/sensor-service) — bridge showcase: `mqtt.SubscribeStream`, `nethttp.HandlerLatest`, `mqtt.DrainPublish`, `sql.QueryStream`
 
 The `stream` package turns `forge.Function[In,Out]` computations into continuous
 reactive pipelines over typed Go channels. Each operator is a free function that takes
@@ -151,10 +151,10 @@ Emits whenever either source emits (after both have emitted at least once).
 topo := stream.NewTopology("Sensor OEE Pipeline", "1.0.0").
     WithDescription("Real-time OEE from MQTT sensor readings.").
     WithSource("mqtt/sensors/+/data", "Decoded sensor readings").
-    WithApply(oeeCalcFn).  // captures forge function hash for auditability
     WithFilter("oee < 0.65 — low-OEE threshold").
     WithDebounce("30s — alert rate limit").
     WithSink("mqtt/alerts/oee", "Low-OEE alerts")
+stream.WithApply(topo, oeeCalcFn) // free function — captures forge function hash for auditability
 
 yamlBytes, err := streamrender.Render(topo.Spec())
 // → YAML describing the complete pipeline topology
@@ -212,3 +212,19 @@ sensors  := stream.FromCodec(ctx, rawCh, format.JSON(codec), stream.SourceOption
 oeeData  := stream.Apply(ctx, sensors, oeeCalcFn, stream.ApplyOptions{Observer: obs})
 stream.Drain(ctx, oeeData, publish, logErr, stream.DrainOptions{Observer: obs})
 ```
+
+---
+
+## Next: connecting adapters to streams
+
+The examples above use raw channels as sources. For production use, each adapter
+provides bridge helpers that eliminate the channel boilerplate:
+
+- **MQTT / MQTT5:** `SubscribeStream` returns a stream + handler; `DrainPublish` publishes each item
+- **ZeroMQ:** `SubscribeStream`, `DrainPublish`, `ServeLatest` (reactive cache), `AsPipelineFunc` for Serve
+- **HTTP (nethttp / chi):** `HandlerLatest` (GET returns latest value), `HandlerIngest` (POST feeds pipeline), `PipelineHandler` (declarative handler body with Tap)
+- **MCP:** `ToolLatestHandler` (LLM tool backed by latest stream value)
+- **SQL:** `QueryStream` (poll DB), `DrainInsert` (validate + insert)
+- **File:** `ScanStream` (NDJSON), `WatchStream` (directory), `DrainWrite`
+
+→ **[Stream Bridge Guide](stream-bridges.md)**

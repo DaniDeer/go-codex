@@ -43,6 +43,62 @@ func (e RowValidationError) LogValue() slog.Value {
 	)
 }
 
+// QueryStreamError is sent to [Stream.Errors] by [QueryStream] when the user's
+// queryFn returns a database or application-level error. Distinct from
+// [RowValidationError] (codec validation failure).
+type QueryStreamError struct {
+	// Table names the table being queried. Matches [QueryStreamOptions.Table].
+	Table string
+	// Op names the query operation. Matches [QueryStreamOptions.Op].
+	Op string
+	// Err is the underlying database or application error.
+	Err error
+}
+
+func (e QueryStreamError) Error() string {
+	return fmt.Sprintf("sql: query_stream %s (%s): %v", e.Table, e.Op, e.Err)
+}
+
+// Unwrap allows errors.Is and errors.As to traverse the underlying error.
+func (e QueryStreamError) Unwrap() error { return e.Err }
+
+// LogValue implements [slog.LogValuer] for structured logging.
+func (e QueryStreamError) LogValue() slog.Value {
+	return slog.GroupValue(
+		slog.String("table", e.Table),
+		slog.String("op", e.Op),
+		slog.Any("err", e.Err),
+	)
+}
+
+// InsertStreamError is passed to [DrainInsertOptions.OnError] by [DrainInsert]
+// when the user's insertFn returns a database or application-level error after
+// successful codec validation. Distinct from [RowValidationError].
+type InsertStreamError struct {
+	// Table names the table being written. Matches [DrainInsertOptions.Table].
+	Table string
+	// Op names the insert operation. Matches [DrainInsertOptions.Op].
+	Op string
+	// Err is the underlying database or application error.
+	Err error
+}
+
+func (e InsertStreamError) Error() string {
+	return fmt.Sprintf("sql: drain_insert %s (%s): %v", e.Table, e.Op, e.Err)
+}
+
+// Unwrap allows errors.Is and errors.As to traverse the underlying error.
+func (e InsertStreamError) Unwrap() error { return e.Err }
+
+// LogValue implements [slog.LogValuer] for structured logging.
+func (e InsertStreamError) LogValue() slog.Value {
+	return slog.GroupValue(
+		slog.String("table", e.Table),
+		slog.String("op", e.Op),
+		slog.Any("err", e.Err),
+	)
+}
+
 // MigrationError is returned by [Migrator.Up], [Migrator.Down], and
 // [Migrator.Status] when goose fails. It wraps the original goose error and
 // carries the operation name and version (when applicable) for structured

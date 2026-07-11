@@ -177,6 +177,53 @@ func ExampleFrom() {
 	// 30
 }
 
+// ── Single ────────────────────────────────────────────────────────────────────
+
+func TestSingle_EmitsOneValue(t *testing.T) {
+	ctx := context.Background()
+	s := stream.Single(ctx, 42)
+	vals, errs := stream.Collect(ctx, s)
+	if len(vals) != 1 || vals[0] != 42 {
+		t.Errorf("want [42], got %v", vals)
+	}
+	if len(errs) != 0 {
+		t.Errorf("want 0 errors, got %d", len(errs))
+	}
+}
+
+func TestSingle_ErrorsChannelNeverWritten(t *testing.T) {
+	ctx := context.Background()
+	s := stream.Single(ctx, "hello")
+	// Drain both channels — if Errors is never written, errs must be empty.
+	_, errs := stream.Collect(ctx, s)
+	if len(errs) != 0 {
+		t.Errorf("Single must never write to Errors; got %d error(s)", len(errs))
+	}
+}
+
+func TestSingle_ContextCancel(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // cancel before Single can emit
+	s := stream.Single(ctx, 99)
+	vals, errs := stream.Collect(ctx, s)
+	// Cancelled context: may get 0 or 1 values (race between send and cancel).
+	// Must never error.
+	if len(errs) != 0 {
+		t.Errorf("want 0 errors on cancel, got %d", len(errs))
+	}
+	_ = vals
+}
+
+func ExampleSingle() {
+	ctx := context.Background()
+
+	s := stream.Single(ctx, 7)
+	vals, _ := stream.Collect(ctx, s)
+	fmt.Println(vals[0])
+	// Output:
+	// 7
+}
+
 func ExampleFromCodec() {
 	ctx := context.Background()
 	rawCh := make(chan []byte, 2)

@@ -188,3 +188,88 @@ func (e SocketError) LogValue() slog.Value {
 		slog.Any("err", e.Err),
 	)
 }
+
+// ── Stream bridge errors ──────────────────────────────────────────────────────
+
+// ServeLatestError is passed to [ServeLatestOptions.OnError] when a socket,
+// decode, or encode operation fails during the [ServeLatest] serve loop.
+//
+// Op values: "recv" (socket read), "decode" (request decode),
+// "encode" (response encode), "send" (socket write).
+type ServeLatestError struct {
+	Op  string
+	Err error
+}
+
+func (e ServeLatestError) Error() string {
+	return fmt.Sprintf("zeromq serve_latest %s: %v", e.Op, e.Err)
+}
+
+// Unwrap allows [errors.Is] and [errors.As] to traverse the underlying error.
+func (e ServeLatestError) Unwrap() error { return e.Err }
+
+// LogValue implements [slog.LogValuer] for structured logging.
+func (e ServeLatestError) LogValue() slog.Value {
+	return slog.GroupValue(
+		slog.String("op", e.Op),
+		slog.Any("err", e.Err),
+	)
+}
+
+// NoLatestValueError is passed to [ServeLatestOptions.OnError] when a request
+// arrives before the source stream has produced any value. The REP socket sends
+// an error reply; this error is informational for the server operator.
+type NoLatestValueError struct {
+	// Topic is the route topic (from the RouteHandle).
+	Topic string
+}
+
+func (e NoLatestValueError) Error() string {
+	return fmt.Sprintf("zeromq serve_latest %s: no value yet", e.Topic)
+}
+
+// LogValue implements [slog.LogValuer] for structured logging.
+func (e NoLatestValueError) LogValue() slog.Value {
+	return slog.GroupValue(slog.String("topic", e.Topic))
+}
+
+// CorrelationError is sent to [Stream.Errors] by [CallDealerStream] when a
+// response frame arrives with a sequence number that does not match any pending
+// request — typically a stale reply from a previous session.
+type CorrelationError struct {
+	// Seq is the unmatched sequence number from the response frame.
+	Seq uint64
+	Err error
+}
+
+func (e CorrelationError) Error() string {
+	return fmt.Sprintf("zeromq dealer: unmatched sequence %d: %v", e.Seq, e.Err)
+}
+
+// Unwrap allows [errors.Is] and [errors.As] to traverse the underlying error.
+func (e CorrelationError) Unwrap() error { return e.Err }
+
+// LogValue implements [slog.LogValuer] for structured logging.
+func (e CorrelationError) LogValue() slog.Value {
+	return slog.GroupValue(
+		slog.Uint64("seq", e.Seq),
+		slog.Any("err", e.Err),
+	)
+}
+
+// PipelineNoResponseError is returned by [AsPipelineFunc] when [stream.Collect]
+// returns without any value — either the pipeline emitted nothing, or the request
+// context was cancelled before the pipeline produced a result.
+type PipelineNoResponseError struct {
+	// Topic is the route topic (from the RouteHandle).
+	Topic string
+}
+
+func (e PipelineNoResponseError) Error() string {
+	return fmt.Sprintf("zeromq pipeline %s: no response produced", e.Topic)
+}
+
+// LogValue implements [slog.LogValuer] for structured logging.
+func (e PipelineNoResponseError) LogValue() slog.Value {
+	return slog.GroupValue(slog.String("topic", e.Topic))
+}

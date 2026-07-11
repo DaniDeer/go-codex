@@ -234,6 +234,23 @@ func (e BrokerError) LogValue() slog.Value {
 	)
 }
 
+// PipelineNoResponseError is returned by [AsPipelineFunc] when [stream.Collect]
+// returns without any value — either the pipeline emitted nothing, or the request
+// context was cancelled before the pipeline produced a result.
+type PipelineNoResponseError struct {
+	// Topic is the route topic (from the RouteHandle).
+	Topic string
+}
+
+func (e PipelineNoResponseError) Error() string {
+	return fmt.Sprintf("mqtt5 pipeline %s: no response produced", e.Topic)
+}
+
+// LogValue implements [slog.LogValuer] for structured logging.
+func (e PipelineNoResponseError) LogValue() slog.Value {
+	return slog.GroupValue(slog.String("topic", e.Topic))
+}
+
 // MissingUserPropertyError is returned when a required [UserPropertyParam] is
 // absent from an incoming MQTT 5 message. It mirrors [events.MissingTopicVarError].
 //

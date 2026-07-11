@@ -21,6 +21,22 @@ type SourceOptions struct {
 	Buffer int
 }
 
+// Single wraps a single value as a [Stream] that emits v once, then terminates.
+// The Stream.Errors channel is never written.
+//
+// Use Single to start a per-request pipeline inside a [PipelineHandlerFunc] or
+// [AsPipelineFunc], or any time you need a bounded one-shot stream source:
+//
+//	s := stream.Single(ctx, req)
+//	out := stream.Apply(ctx, s, computeFn, stream.ApplyOptions{Observer: obs})
+//	out = stream.Tap(ctx, out, func(v Out) { slog.Info("computed", "v", v) })
+func Single[T any](ctx context.Context, v T) Stream[T] {
+	ch := make(chan T, 1)
+	ch <- v
+	close(ch)
+	return From(ctx, ch)
+}
+
 // From wraps a typed channel as a [Stream].
 // Each value received from src becomes a value item. When src is closed or ctx is
 // cancelled, both Stream channels are closed.

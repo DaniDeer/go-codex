@@ -1,0 +1,210 @@
+package mqtt5
+
+import (
+	"context"
+
+	pahomqtt5 "github.com/eclipse/paho.golang/paho"
+
+	"github.com/DaniDeer/go-codex/api/events"
+	"github.com/DaniDeer/go-codex/api/reqreply"
+	"github.com/DaniDeer/go-codex/format"
+	"github.com/DaniDeer/go-codex/stats"
+	gstream "github.com/DaniDeer/go-codex/stream"
+)
+
+// ── SubscribeStream ───────────────────────────────────────────────────────────
+
+// SubscribeStream creates a bridge from an MQTT 5 subscription to a typed stream.
+// It returns both the stream and the raw message handler to register with the
+// MQTTRouter (via [Subscribe] or router.RegisterHandler). The caller must register
+// the handler before messages can flow:
+//
+//	s, rawHandler := mqtt5.SubscribeStream(ctx, sensorHandle, format.JSON(sensorCodec),
+//	    gstream.SourceOptions{Name: "mqtt5/sensors/+", Observer: obs},
+//	    mqtt5.SubscribeOptions{Observer: obs})
+//	// Register with the router so Subscribe can be called:
+//	router.RegisterHandler(sensorHandle.Topic, rawHandler)
+//	oeeStream := gstream.Apply(ctx, s, oeeCalcFn, gstream.ApplyOptions{Observer: obs})
+//
+// Decode or validation failures are sent to [gstream.Stream.Errors] as
+// [gstream.StreamDecodeError]. The stream terminates when ctx is cancelled.
+func SubscribeStream[T any](
+	ctx context.Context,
+	handle *events.ChannelHandle[T],
+	fmt format.Format[T],
+	srcOpts gstream.SourceOptions,
+	subOpts SubscribeOptions,
+) (gstream.Stream[T], func(*pahomqtt5.Publish)) {
+	rawCh := make(chan []byte, srcOpts.Buffer)
+	if srcOpts.Name == "" {
+		srcOpts.Name = handle.Topic
+	}
+
+	obs := subOpts.Observer
+	if obs == nil {
+		obs = stats.NoopObserver{}
+	}
+
+	handler := func(msg *pahomqtt5.Publish) {
+		select {
+		case rawCh <- msg.Payload:
+			obs.RecordSubscribe(handle.Topic, true, 0)
+		case <-ctx.Done():
+		default:
+		}
+	}
+
+	src := gstream.FromCodec(ctx, rawCh, fmt, srcOpts)
+	return src, handler
+}
+
+// ── DrainPublish ──────────────────────────────────────────────────────────────
+
+// MQTT5DrainPublishOptions configures [DrainPublish].
+type MQTT5DrainPublishOptions struct {
+	// QoS is the MQTT quality of service level (0, 1, or 2). Default 0.
+	QoS byte
+	// Retained, when true, publishes each item as a retained message.
+	Retained bool
+	// Vars, when non-nil, substitutes {varName} placeholders in the topic template.
+	Vars map[string]string
+	// OnError, when non-nil, is called for encode failures or upstream stream errors.
+	OnError func(error)
+	// Observer receives per-publish lifecycle events.
+	Observer stats.Observer
+}
+
+// DrainPublish publishes each value item from src to the MQTT 5 broker using handle.
+// Encode failures are delivered to opts.OnError as [PublishEncodeError].
+// Upstream stream errors are forwarded to opts.OnError unchanged.
+// Blocks until src terminates or ctx is cancelled.
+func DrainPublish[T any](
+	ctx context.Context,
+	client MQTTClient,
+	handle *events.ChannelHandle[T],
+	src gstream.Stream[T],
+	fmt format.Format[T],
+	opts MQTT5DrainPublishOptions,
+) {
+	onErr := opts.OnError
+	pubOpts := PublishOptions{Observer: opts.Observer}
+
+	gstream.Drain(ctx, src,
+		func(ctx context.Context, v T) error {
+			if err := Publish(ctx, client, handle, opts.QoS, opts.Retained, v, opts.Vars, pubOpts, fmt); err != nil {
+				if onErr != nil {
+					onErr(err)
+				}
+			}
+			return nil
+		},
+		func(e error) {
+			if onErr != nil {
+				onErr(e)
+			}
+		},
+		gstream.DrainOptions{},
+	)
+}
+
+// ── AsPipelineFunc ────────────────────────────────────────────────────────────
+
+// AsPipelineFunc converts a pipeline handler function into the plain handler
+// function signature accepted by [Serve].
+//
+// Internally: calls fn(ctx, req) to build the pipeline, then collects the result
+// via [gstream.Collect]. Errors take precedence over values. If the pipeline emits
+// no value, [PipelineNoResponseError] is returned.
+//
+// Use AsPipelineFunc when the [Serve] handler body benefits from [gstream.Tap]
+// for declarative intermediate observation, [gstream.Apply] for multi-step forge
+// function composition, or [gstream.MapErr] for per-step typed error recovery:
+//
+//	mqtt5.Serve(ctx, client, router, oeeHandle,
+//	    mqtt5.AsPipelineFunc(func(ctx context.Context, req SensorReq) gstream.Stream[OEEResult] {
+//	        s  := gstream.Single(ctx, req)
+//	        s   = gstream.Apply(ctx, s, validateFn, gstream.ApplyOptions{Observer: obs})
+//	        s   = gstream.Tap(ctx, s, func(v ValidatedReq) { slog.Info("request", "id", v.ID) })
+//	        out := gstream.Apply(ctx, s, oeeCalcFn, gstream.ApplyOptions{Observer: obs})
+//	        return gstream.Tap(ctx, out, func(r OEEResult) { auditLog.Write(r) })
+//	    }),
+//	    mqtt5.ServeOptions{Observer: obs})
+//
+// For simple single-step handlers, use a plain fn directly with [Serve].
+func AsPipelineFunc[Req, Resp any](
+	fn func(context.Context, Req) gstream.Stream[Resp],
+) func(context.Context, Req) (Resp, error) {
+	return func(ctx context.Context, req Req) (Resp, error) {
+		pipeline := fn(ctx, req)
+		vals, errs := gstream.Collect(ctx, pipeline)
+		var zero Resp
+		if len(errs) > 0 {
+			return zero, errs[0]
+		}
+		if len(vals) == 0 {
+			return zero, PipelineNoResponseError{Topic: "mqtt5"}
+		}
+		return vals[0], nil
+	}
+}
+
+// ── CallStream ────────────────────────────────────────────────────────────────
+
+// CallStream sends each request item from src to handle using [Call], emitting
+// each decoded response to the returned [gstream.Stream]. Protocol errors or
+// decode failures are sent to [gstream.Stream.Errors] as [CallError].
+// Requests are issued sequentially. The stream terminates when src closes or
+// ctx is cancelled.
+func CallStream[Req, Resp any](
+	ctx context.Context,
+	client MQTTClient,
+	router MQTTRouter,
+	handle *reqreply.RouteHandle[Req, Resp],
+	src gstream.Stream[Req],
+	opts CallOptions,
+) gstream.Stream[Resp] {
+	values := make(chan Resp)
+	errs := make(chan error)
+	go func() {
+		defer close(values)
+		defer close(errs)
+		valCh := src.Values
+		errCh := src.Errors
+		for valCh != nil || errCh != nil {
+			select {
+			case <-ctx.Done():
+				return
+			case req, ok := <-valCh:
+				if !ok {
+					valCh = nil
+					continue
+				}
+				resp, err := Call(ctx, client, router, handle, req, opts)
+				if err != nil {
+					select {
+					case errs <- err:
+					case <-ctx.Done():
+						return
+					}
+					continue
+				}
+				select {
+				case values <- resp:
+				case <-ctx.Done():
+					return
+				}
+			case e, ok := <-errCh:
+				if !ok {
+					errCh = nil
+					continue
+				}
+				select {
+				case errs <- e:
+				case <-ctx.Done():
+					return
+				}
+			}
+		}
+	}()
+	return gstream.Stream[Resp]{Values: values, Errors: errs}
+}

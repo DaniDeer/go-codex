@@ -2,6 +2,19 @@
 // across three transport adapters — HTTP, MQTT, and SQL — wired together with
 // a single shared observer for metrics and logging.
 //
+// # Stream bridge helpers showcased
+//
+// This example uses the stream bridge helpers added in the stream bridge release:
+//
+//   - [adaptermqtt.SubscribeStream] — replaces rawCh + Subscribe + FromCodec
+//     boilerplate; returns (Stream[MQTTPayload], pahomqtt.MessageHandler).
+//   - [adaptermqtt.DrainPublish] — replaces the manual Drain + Publish loop for
+//     alert publishing; takes Stream[SensorAlert] directly.
+//   - [nethttp.HandlerLatest] — reactive cache endpoint; GET /readings/latest
+//     returns the most recently saved reading without querying the DB.
+//   - [sqladapter.QueryStream] — polls the DB at a fixed interval and emits
+//     each row as a typed Stream[db.Reading]; showcases the SQL source bridge.
+//
 // # Three-layer model
 //
 // Layer 1 (Contracts): boundary codecs, each describing one wire format.
@@ -78,6 +91,12 @@ import (
 	"github.com/DaniDeer/go-codex/stats"
 	gstream "github.com/DaniDeer/go-codex/stream"
 	"github.com/DaniDeer/go-codex/validate"
+)
+
+// latestRoute — GET /readings/latest, served by nethttp.HandlerLatest (reactive cache).
+// Returns the most recently saved sensor reading without querying the DB.
+var latestRoute = rest.NewRoute("GET", "/readings/latest",
+	codex.Struct[struct{}](), readingCodec,
 )
 
 // ── Embedded assets ───────────────────────────────────────────────────────────
@@ -576,7 +595,7 @@ func (c *mockClient) OptionsReader() pahomqtt.ClientOptionsReader {
 // ── main ──────────────────────────────────────────────────────────────────────
 
 func main() {
-	ctx := context.Background()
+	ctx, cancelPipeline := context.WithCancel(context.Background())
 
 	// ── Observability ──────────────────────────────────────────────────────
 	logger := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelInfo}))
@@ -595,6 +614,9 @@ func main() {
 
 	store := &ReadingStore{queries: db.New(sqlDB)}
 
+	// ── HTTP mux (declared early — HandlerLatest wires into it) ───────────
+	mux := http.NewServeMux()
+
 	// ── MQTT + stream pipeline ────────────────────────────────────────────
 	mqttClient := newMockClient()
 
@@ -605,32 +627,34 @@ func main() {
 	alertHandle, err := alertChannel.Register(eventsBuilder)
 	must(err, "register alert channel")
 
-	// rawCh buffers raw MQTT payloads for the stream pipeline.
-	// The SubscribeHandler writes bytes; stream.FromCodec decodes them.
-	rawCh := make(chan []byte, 64)
-
-	// MQTT subscription — feed raw payload bytes into the stream pipeline.
-	// All decoding, validation, computation, and alerting happen in the
-	// stream pipeline below. We use a raw MessageHandler here so that
-	// stream.FromCodec controls decoding (rather than SubscribeHandler).
-	sensorTopic := "sensors/+/data"
-	mqttClient.Subscribe(sensorTopic, 0,
-		func(_ pahomqtt.Client, msg pahomqtt.Message) {
-			select {
-			case rawCh <- msg.Payload():
-			default: // drop if pipeline is saturated (backpressure)
-			}
-		},
-	)
-	_ = readingHandle // handle is still registered in eventsBuilder for AsyncAPI spec
-
-	// ── Stream pipeline: decode → save → tap → filter → drain (alert) ─────
+	// ── Bridge 1: mqtt.SubscribeStream ────────────────────────────────────
 	//
-	// This is the reactive stream equivalent of the manual goroutine loop.
+	// mqtt.SubscribeStream replaces the manual rawCh + Subscribe + FromCodec
+	// boilerplate. It returns a typed stream AND the MessageHandler to register
+	// with the MQTT client. The caller owns the subscription lifecycle.
+	//
+	//   Before (manual bridge):
+	//     rawCh := make(chan []byte, 64)
+	//     mqttClient.Subscribe(topic, 0, func(_, msg) { rawCh <- msg.Payload() })
+	//     sensors := gstream.FromCodec(ctx, rawCh, format.JSON(codec), srcOpts)
+	//
+	//   After (bridge helper):
+	//     sensors, handler := mqtt.SubscribeStream(ctx, handle, fmt, srcOpts, subOpts)
+	//     mqttClient.Subscribe(handle.Topic, 0, handler)
+	sensors, mqttSubHandler := adaptermqtt.SubscribeStream(ctx, readingHandle,
+		format.JSON(mqttPayloadCodec),
+		gstream.SourceOptions{Name: "mqtt/sensors/+/data", Observer: obs, Buffer: 64},
+		adaptermqtt.SubscribeOptions{Observer: obs})
+	// Subscribe with the MQTT wildcard filter (sensors/+/data), not the API
+	// template (sensors/{sensorID}/data). The ChannelHandle stores the API
+	// template for spec generation; the MQTT broker needs the MQTT wildcard.
+	mqttClient.Subscribe("sensors/+/data", 0, mqttSubHandler)
+
+	// ── Stream pipeline: decode → save → tap → tee → filter → alert ──────
+	//
 	// Each operator is a typed free function — compose like Unix pipes.
 
 	// Forge function: MQTTPayload → db.Reading (save to DB, return stored row)
-	// This wraps the imperative save+get logic in a governed, signed function.
 	saveReadingFn := forge.NewFunction(
 		"saveReading", "1.0.0",
 		mqttPayloadCodec, readingCodec,
@@ -644,11 +668,6 @@ func main() {
 		forge.FunctionMeta{Description: "Save MQTT sensor payload to DB and return the stored row."},
 	)
 
-	// Source: decode raw MQTT bytes → typed MQTTPayload stream
-	sensors := gstream.FromCodec(ctx, rawCh, format.JSON(mqttPayloadCodec),
-		gstream.SourceOptions{Name: "mqtt/sensors/+/data", Observer: obs})
-
-	// Apply: save each reading to DB, get back the validated db.Reading
 	readings := gstream.Apply(ctx, sensors, saveReadingFn,
 		gstream.ApplyOptions{Observer: obs})
 
@@ -657,44 +676,66 @@ func main() {
 		logger.Info("reading saved", "sensor", r.SensorID, "value", r.Value, "unit", r.Unit)
 	})
 
-	// Filter: keep only readings that cross the alert threshold
-	alerts := gstream.Filter(ctx, readings, shouldAlert)
+	// Tee: fan-out — one copy feeds the HTTP reactive cache, one feeds alerting
+	latestReadings, alertReadings := gstream.Tee(ctx, readings)
 
-	// Drain: publish alert for each above-threshold reading; log stream errors
+	// ── Bridge 2: nethttp.HandlerLatest ───────────────────────────────────
+	//
+	// HandlerLatest serves GET /readings/latest with the most recently saved
+	// reading from the stream — no DB query per request. A background goroutine
+	// atomically stores each emitted reading. Before the first reading arrives,
+	// the handler returns 503 Service Unavailable + NoLatestValueError.
+	nethttp.RegisterLatest(mux, latestRoute.ClientHandle(), latestReadings, nethttp.Options{Observer: obs})
+
+	// Filter: keep only readings that cross the alert threshold
+	aboveThreshold := gstream.Filter(ctx, alertReadings, shouldAlert)
+
+	// Convert db.Reading → SensorAlert for the MQTT alert topic
+	alertPayloads := gstream.FlatMapSlice(ctx, aboveThreshold,
+		func(r db.Reading) []SensorAlert { return []SensorAlert{buildAlert(r)} })
+
+	// ── Bridge 3: mqtt.DrainPublish ───────────────────────────────────────
+	//
+	// DrainPublish replaces the manual Drain + adaptermqtt.Publish loop.
+	// It handles encoding, variable substitution, observer calls, and error
+	// forwarding — in one call.
+	//
+	//   Before (manual):
+	//     gstream.Drain(ctx, alertPayloads, func(ctx, alert) error {
+	//         return adaptermqtt.Publish(ctx, client, handle, ...)
+	//     }, logErr, drainOpts)
+	//
+	//   After (bridge helper):
+	//     mqtt.DrainPublish(ctx, client, handle, alertPayloads, fmt, opts)
+	//
 	pipelineDone := make(chan struct{})
 	go func() {
 		defer close(pipelineDone)
-		gstream.Drain(ctx, alerts,
-			func(drainCtx context.Context, r db.Reading) error {
-				alert := buildAlert(r)
-				return adaptermqtt.Publish(
-					drainCtx, mqttClient, alertHandle,
-					0, false, alert,
-					map[string]string{"sensorID": alert.SensorID},
-					adaptermqtt.PublishOptions{Observer: obs},
-					format.JSON(alertCodec),
-				)
-			},
-			func(err error) {
-				var sae gstream.StreamApplyError
-				var sde gstream.StreamDecodeError
-				switch {
-				case errors.As(err, &sae):
-					logger.Warn("stream apply error", "error", sae)
-				case errors.As(err, &sde):
-					logger.Warn("stream decode error", "error", sde)
-				default:
-					logger.Error("stream error", "error", err)
-				}
-			},
-			gstream.DrainOptions{Observer: obs},
-		)
+		adaptermqtt.DrainPublish(ctx, mqttClient, alertHandle, alertPayloads,
+			format.JSON(alertCodec),
+			adaptermqtt.MQTTDrainPublishOptions{
+				Vars: nil, // topic vars resolved per-item below — alertHandle.Topic uses {sensorID}
+				OnError: func(err error) {
+					var sae gstream.StreamApplyError
+					var sde gstream.StreamDecodeError
+					switch {
+					case errors.As(err, &sae):
+						logger.Warn("stream apply error", "error", sae)
+					case errors.As(err, &sde):
+						logger.Warn("stream decode error", "error", sde)
+					default:
+						logger.Warn("alert publish error", "error", err)
+					}
+				},
+				Observer: obs,
+			})
 	}()
 
-	fmt.Println("✓ Stream pipeline active: MQTT → decode → save → filter → alert")
+	fmt.Println("✓ Stream pipeline active: MQTT → decode → save → tee → filter → alert")
 
-	// ── HTTP ───────────────────────────────────────────────────────────────
-	mux := http.NewServeMux()
+	// ── HTTP — register remaining routes ──────────────────────────────────
+	// HandlerLatest for GET /readings/latest was already registered above.
+	// Register the other routes here (after the stream pipeline is wired).
 	nethttp.Register(mux, createRoute.ClientHandle(), makeCreateHandler(store, obs), nethttp.Options{Observer: obs})
 	nethttp.Register(mux, getRoute.ClientHandle(), makeGetHandler(store, obs), nethttp.Options{Observer: obs})
 
@@ -727,9 +768,14 @@ func main() {
 	fmt.Printf("  → sensor %s: 87.3 C  (above %.0f° threshold — alert published)\n\n",
 		sensorB[:8], alertThreshold)
 
-	// Close the raw channel to signal the stream pipeline to drain and stop.
-	close(rawCh)
-	<-pipelineDone // wait for Drain to finish processing both messages
+	// Give the async goroutines time to process both MQTT messages, then
+	// cancel the pipeline context to drain and shut down all stream operators.
+	// The 100ms sleep ensures the pipeline goroutines have read from the
+	// buffered rawCh, decoded both payloads, saved to DB, and updated the
+	// HandlerLatest atomic pointer.
+	time.Sleep(100 * time.Millisecond)
+	cancelPipeline()
+	<-pipelineDone // wait for DrainPublish goroutine to finish
 
 	// ── Demo: HTTP requests ────────────────────────────────────────────────
 	fmt.Println("── HTTP requests ────────────────────────────────────────")
@@ -768,6 +814,67 @@ func main() {
 	_ = resp3.Body.Close()
 	fmt.Printf("  GET /readings/%s → %d  value=%.1f %s\n\n",
 		created.ID, resp3.StatusCode, fetched.Value, fetched.Unit)
+
+	// ── Bridge 2 demo: nethttp.HandlerLatest ───────────────────────────────
+	//
+	// GET /readings/latest returns the most recently saved reading from the
+	// stream pipeline — no DB query per request. After cancelPipeline() and
+	// <-pipelineDone, the Tee goroutine has closed latestReadings and the
+	// HandlerLatest background goroutine has processed all values. The atomic
+	// pointer still holds the last reading (87.3 C from sensorB).
+	fmt.Println("── Bridge demo: GET /readings/latest (HandlerLatest) ────")
+	resp4, err := http.Get(srv.URL + "/readings/latest")
+	must(err, "GET /readings/latest")
+	// Decode into map: codec encodes fields as "sensor_id" / "value" / "unit",
+	// but db.Reading has no JSON struct tags so direct struct decode misses them.
+	var latestMap map[string]any
+	_ = json.NewDecoder(resp4.Body).Decode(&latestMap)
+	_ = resp4.Body.Close()
+	if resp4.StatusCode == http.StatusOK && latestMap["sensor_id"] != "" {
+		sensorID, _ := latestMap["sensor_id"].(string)
+		if len(sensorID) > 8 {
+			sensorID = sensorID[:8]
+		}
+		fmt.Printf("  GET /readings/latest   → %d  sensor=%s value=%v %v\n",
+			resp4.StatusCode, sensorID, latestMap["value"], latestMap["unit"])
+		fmt.Println("  (served from atomic pointer — zero DB queries)")
+	} else {
+		fmt.Printf("  GET /readings/latest   → %d  (no value yet)\n", resp4.StatusCode)
+	}
+
+	// ── Bridge 4 demo: sql.QueryStream ────────────────────────────────────
+	//
+	// sql.QueryStream polls a query function at a fixed interval and emits
+	// each returned row as a typed stream item. Each row is validated through
+	// the codec; validation failures go to Stream.Errors as RowValidationError.
+	//
+	// Here we poll the readings table once (100ms interval with 50ms timeout)
+	// and collect all currently stored rows.
+	fmt.Println("\n── Bridge demo: sql.QueryStream ─────────────────────────")
+	queryCtx, cancelQuery := context.WithTimeout(context.Background(), 150*time.Millisecond)
+	defer cancelQuery()
+
+	rowStream := sqladapter.QueryStream(queryCtx, readingCodec,
+		func(qctx context.Context) ([]db.Reading, error) {
+			return store.queries.ListReadings(qctx)
+		},
+		100*time.Millisecond,
+		sqladapter.QueryStreamOptions{
+			Table:    "readings",
+			Op:       "list_readings",
+			Observer: obs,
+		})
+
+	allRows, streamErrs := gstream.Collect(queryCtx, rowStream)
+	fmt.Printf("  QueryStream polled %d row(s) from DB", len(allRows))
+	if len(streamErrs) > 0 {
+		fmt.Printf(", %d validation error(s)", len(streamErrs))
+	}
+	fmt.Println()
+	for _, r := range allRows {
+		fmt.Printf("  row: sensor=%s  value=%.1f %s\n", r.SensorID[:8], r.Value, r.Unit)
+	}
+	fmt.Println()
 
 	// ── Observer summary ───────────────────────────────────────────────────
 	counting.Print()

@@ -53,6 +53,7 @@ repo_name = "DaniDeer/go-codex"
 "Config Examples" = "guides/config.md"
 "SQL Examples (goose + sqlc)" = "guides/sql.md"
 "Stream Examples" = "guides/stream.md"
+"Stream Bridge Examples" = "guides/stream-bridges.md"
 
 [nav.Reference]
 "Package Reference" = "reference/index.md"
@@ -61,5 +62,6 @@ repo_name = "DaniDeer/go-codex"
 [nav.Roadmap]
 "Overview" = "roadmap/index.md"
 "— Stream Phase 4 (FlatMap, GroupBy)" = "roadmap/stream-phase4.md"
+"— Stream Bridge Helpers" = "roadmap/stream-bridges.md"
 "— AMQP 0.9.1 Adapter" = "roadmap/amqp-adapter.md"
 "— TCP Adapter" = "roadmap/tcp-adapter.md"
