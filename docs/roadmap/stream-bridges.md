@@ -46,6 +46,235 @@ The bridge helpers described below eliminate the boilerplate while preserving th
 
 ---
 
+## HTTP request/response bridges (nethttp + chi)
+
+HTTP request/response is synchronous: one request yields exactly one response. Three patterns make
+sense as stream bridges:
+
+| Pattern | Rationale |
+|---------|-----------|
+| `HandlerLatest` — GET returns latest stream value | Reactive cache: continuous pipeline, HTTP polls current state |
+| `HandlerIngest` — POST/PUT feeds stream pipeline | Stream source: ingestion endpoint → `stream.From` |
+| `PipelineHandler` — handler body implemented with stream operators | Declarative: Tap intermediate stages; same mental model as streaming pipelines |
+
+The fourth possibility — "wrap a plain function call in channels per-request with no observation"
+— is **not** a bridge: adds goroutine overhead with zero benefit over a direct function call.
+
+### API shape — all bridge helpers follow the same pattern as `Handler`
+
+For consistency, all three bridge helpers:
+- Return `http.Handler` in `nethttp` / `http.HandlerFunc` in `chi` (matching their existing `Handler`)
+- Take the same `Options` struct — no new option structs
+- Have a `Register*` convenience variant that wires directly onto the mux/router
+
+This mirrors the existing adapter API: `Handler(handle, fn, opts)` / `Register(mux, handle, fn, opts)`.
+
+```
+Handler          →  fn: func(ctx, Req)(Resp, error)          → http.Handler / HandlerFunc
+HandlerLatest    →  src: stream.Stream[Resp]                  → http.Handler / HandlerFunc
+HandlerIngest    →  dst: chan<- Req                           → http.Handler / HandlerFunc
+PipelineHandler  →  fn: func(ctx, Req) stream.Stream[Resp]   → http.Handler / HandlerFunc
+```
+
+### `HandlerLatest` — reactive cache
+
+Returns the **most recently computed value from a running stream pipeline** as an HTTP response.
+A background goroutine reads from `src.Values` and atomically stores each value.
+
+```go
+// adapters/nethttp/stream.go
+func HandlerLatest[Req, Resp any](
+    handle *rest.RouteHandle[Req, Resp],
+    src stream.Stream[Resp],
+    opts Options, // reuses existing Options (Observer, ErrorHandler, SecurityFunc…)
+) http.Handler
+
+func RegisterLatest[Req, Resp any](
+    mux *http.ServeMux,
+    handle *rest.RouteHandle[Req, Resp],
+    src stream.Stream[Resp],
+    opts Options,
+)
+
+// adapters/chi/stream.go — identical API, returns http.HandlerFunc
+func HandlerLatest[Req, Resp any](handle, src, opts) http.HandlerFunc
+func RegisterLatest[Req, Resp any](r gochi.Router, handle, src, opts)
+```
+
+When no value is available yet, the handler calls `opts.ErrorHandler(w, r, 503, NoLatestValueError{Path: handle.Descriptor.Path})`.
+The existing `ErrorHandler` in `Options` controls the response shape — no special option needed.
+
+Errors from `src.Errors` are reported to `opts.Observer` via `stats.ReportErrors` but do not
+affect the response (the background goroutine simply skips errored items).
+
+**Usage:**
+```go
+oeeStream := stream.Apply(ctx, sensorStream, oeeCalcFn, stream.ApplyOptions{Observer: obs})
+
+nethttp.RegisterLatest(mux, oeeHandle, oeeStream, nethttp.Options{Observer: obs})
+// GET /oee/current → {"availability":0.94,"performance":0.82,"quality":0.97,"oee":0.75}
+// (before first value: 503 with NoLatestValueError body)
+```
+
+### `HandlerIngest` — stream source via HTTP
+
+Decodes and validates each POST/PUT request body, then **writes the decoded value to a channel**
+feeding a stream pipeline. Response is always the route's configured 2xx status with a `{}`
+JSON body (`struct{}` response type).
+
+```go
+// adapters/nethttp/stream.go
+//
+// HandlerIngest decodes and validates each request body, then writes the decoded
+// value to dst. If dst is full (non-blocking send fails), the handler calls
+// opts.ErrorHandler with 503 and PipelineFullError{Path, Capacity}.
+// The caller owns dst — HandlerIngest never closes it.
+//
+// Configure the route with a 202 Accepted response using a struct{} codec:
+//   ingestHandle, _ := rest.NewRoute[SensorReading, struct{}]("POST", "/sensors/readings",
+//       readingCodec, codex.Struct[struct{}](), rest.RouteMeta{}).Register(b)
+func HandlerIngest[Req any](
+    handle *rest.RouteHandle[Req, struct{}],
+    dst chan<- Req,
+    opts Options,
+) http.Handler
+
+func RegisterIngest[Req any](
+    mux *http.ServeMux,
+    handle *rest.RouteHandle[Req, struct{}],
+    dst chan<- Req,
+    opts Options,
+)
+
+// chi variants return http.HandlerFunc
+func HandlerIngest[Req any](handle, dst, opts) http.HandlerFunc
+func RegisterIngest[Req any](r gochi.Router, handle, dst, opts)
+```
+
+**Usage:**
+```go
+ingestCh := make(chan SensorReading, 256)
+
+nethttp.RegisterIngest(mux, ingestHandle, ingestCh, nethttp.Options{Observer: obs})
+// POST /sensors/readings → 202 {}  (or 503 PipelineFullError if channel full)
+
+sensorStream := stream.From(ctx, ingestCh)
+oeeStream := stream.Apply(ctx, sensorStream, oeeCalcFn, stream.ApplyOptions{Observer: obs})
+```
+
+### `PipelineHandler` — declarative handler with intermediate observation
+
+The handler function returns a `stream.Stream[Resp]` instead of `(Resp, error)`. This lets the
+body be expressed with stream operators, enabling `Tap` to observe **intermediate computation
+stages** declaratively — the same API as background streaming pipelines.
+
+**Why not a plain function?**
+
+```go
+// Plain handler — observers buried inline
+func(ctx, req SensorReq) (OEEResult, error) {
+    norm, err := normalizeFn.ApplyContext(ctx, req)
+    if err != nil { return zero, err }
+    slog.Info("normalized", "v", norm)   // observer buried in logic
+    result, err := oeeCalcFn.ApplyContext(ctx, norm)
+    if err != nil { return zero, err }
+    auditLog.Write(result)               // observer buried in logic
+    return result, nil
+}
+
+// PipelineHandler — observers explicit via Tap
+func(ctx, req SensorReq) stream.Stream[OEEResult] {
+    s := stream.Single(ctx, req)
+    s  = stream.Apply(ctx, s, normalizeFn, applyOpts)
+    s  = stream.Tap(ctx, s, func(v Normalized) { slog.Info("normalized", "v", v) })
+    out := stream.Apply(ctx, s, oeeCalcFn, applyOpts)
+    return stream.Tap(ctx, out, func(r OEEResult) { auditLog.Write(r) })
+}
+```
+
+```go
+// adapters/nethttp/stream.go
+
+// PipelineHandlerFunc is the handler function type for PipelineHandler.
+// It must use stream.Single(ctx, req) to wrap req as the pipeline source.
+// The pipeline must emit exactly one value. If it emits zero, PipelineNoResponseError
+// is returned to the ErrorHandler. If it emits more than one, only the first is used.
+// Errors take precedence: if Stream.Errors fires, the first error becomes the response.
+type PipelineHandlerFunc[Req, Resp any] func(ctx context.Context, req Req) stream.Stream[Resp]
+
+// PipelineHandler wraps a PipelineHandlerFunc into an http.Handler.
+// Internally adapts PipelineHandlerFunc → HandlerFunc via stream.Collect, then calls Handler.
+// All codec, param, security, and observer integration is unchanged from Handler.
+func PipelineHandler[Req, Resp any](
+    handle *rest.RouteHandle[Req, Resp],
+    fn PipelineHandlerFunc[Req, Resp],
+    opts Options,
+) http.Handler
+
+func RegisterPipeline[Req, Resp any](
+    mux *http.ServeMux,
+    handle *rest.RouteHandle[Req, Resp],
+    fn PipelineHandlerFunc[Req, Resp],
+    opts Options,
+)
+
+// chi variants — return http.HandlerFunc, take gochi.Router
+```
+
+**Implementation sketch** — thin wrapper over `Handler`:
+
+```go
+func PipelineHandler[Req, Resp any](handle *rest.RouteHandle[Req, Resp],
+    fn PipelineHandlerFunc[Req, Resp], opts Options) http.Handler {
+    return Handler(handle, func(ctx context.Context, req Req) (Resp, error) {
+        pipeline := fn(ctx, req)
+        vals, errs := stream.Collect(ctx, pipeline)
+        // Error takes precedence over values.
+        if len(errs) > 0 {
+            var zero Resp
+            return zero, errs[0]
+        }
+        if len(vals) == 0 {
+            var zero Resp
+            return zero, PipelineNoResponseError{Path: handle.Descriptor.Path}
+        }
+        return vals[0], nil // multiple values: only first is used; extras silently discarded
+    }, opts)
+}
+```
+
+**Behaviour clarifications:**
+- **Error vs value precedence:** `errs[0]` is returned regardless of whether `vals` is also non-empty.
+- **Multiple values:** only `vals[0]` is used; excess values are silently discarded. Not an error.
+- **Context cancellation mid-pipeline:** `stream.Collect` returns early → `PipelineNoResponseError`.
+- **When to use:** multi-step handlers with forge functions + intermediate Tap. Use plain `Handler` for simple one-step handlers.
+
+**Usage:**
+```go
+nethttp.RegisterPipeline(mux, oeeHandle,
+    func(ctx context.Context, req SensorReq) stream.Stream[OEEResult] {
+        s   := stream.Single(ctx, req)
+        s    = stream.Apply(ctx, s, validateFn, stream.ApplyOptions{Observer: obs})
+        s    = stream.Tap(ctx, s, func(v ValidatedReq) { slog.Info("request", "sensor", v.SensorID) })
+        out := stream.Apply(ctx, s, oeeCalcFn, stream.ApplyOptions{Observer: obs})
+        return stream.Tap(ctx, out, func(r OEEResult) { auditLog.Write(r) })
+    },
+    nethttp.Options{Observer: obs})
+```
+
+### `stream.Single[T]` — new stream primitive (prerequisite)
+
+```go
+// stream/source.go
+
+// Single wraps a single value as a Stream[T] that emits v once, then closes.
+// The Stream.Errors channel is never written. Use as the entry point into a
+// per-request pipeline inside a PipelineHandlerFunc or AsPipelineFunc.
+func Single[T any](ctx context.Context, v T) Stream[T]
+```
+
+---
+
 ## HTTP SSE bridges (nethttp + chi)
 
 Both `adapters/nethttp` and `adapters/chi` already provide server-side `SSEHandler[Req, Event]` and
@@ -316,9 +545,84 @@ s.AddTool(tool, handler)
 
 ## MQTT5 request/reply bridge
 
-MQTT5 `Serve[Req, Resp]` already accepts any handler function — the server side needs no special
-stream bridge. The interesting case is the **client side**: streaming many requests through a
-request/reply service and collecting responses.
+MQTT5 `Serve[Req, Resp]` takes `fn func(context.Context, Req) (Resp, error)` — the same shape as
+`nethttp.HandlerFunc`. The **same declarative pipeline pattern** applies: use `AsPipelineFunc` to
+implement the handler body as a stream pipeline with intermediate `Tap` observation, then pass the
+result to `Serve` without changing its API.
+
+### Server-side — `mqtt5.AsPipelineFunc`
+
+```go
+// adapters/mqtt5/stream.go
+
+// AsPipelineFunc converts a pipeline handler function into the plain handler
+// function signature accepted by [Serve]. Internally, it calls stream.Single
+// to wrap the incoming req as a one-shot stream, runs the pipeline, and
+// collects the first value/error via stream.Collect.
+//
+// Use AsPipelineFunc when the Serve handler body benefits from Tap (intermediate
+// observation), MapErr (per-step error recovery), or a composition of multiple
+// forge functions with the same stream API used in background pipelines.
+//
+// Use a plain func(ctx, req)(Resp, error) for simple single-step handlers.
+//
+//  mqtt5.Serve(ctx, client, router, oeeHandle,
+//      mqtt5.AsPipelineFunc(func(ctx context.Context, req SensorReq) stream.Stream[OEEResult] {
+//          s := stream.Single(ctx, req)
+//          s = stream.Apply(ctx, s, validateFn, opts)
+//          s = stream.Tap(ctx, s, func(v ValidatedReq) { slog.Info("validated", "id", v.ID) })
+//          out := stream.Apply(ctx, s, oeeCalcFn, opts)
+//          return stream.Tap(ctx, out, func(r OEEResult) { auditLog.Write(r) })
+//      }),
+//      mqtt5.ServeOptions{Observer: obs})
+func AsPipelineFunc[Req, Resp any](
+    fn func(context.Context, Req) stream.Stream[Resp],
+) func(context.Context, Req) (Resp, error)
+```
+
+**Implementation sketch:**
+```go
+func AsPipelineFunc[Req, Resp any](fn func(context.Context, Req) stream.Stream[Resp]) func(context.Context, Req) (Resp, error) {
+    return func(ctx context.Context, req Req) (Resp, error) {
+        src := stream.Single(ctx, req)   // wrap req as single-item stream source
+        pipeline := fn(ctx, req)         // build the pipeline (operators run lazily)
+        _ = src // fn uses stream.Single internally
+        vals, errs := stream.Collect(ctx, pipeline)
+        if len(errs) > 0 {
+            var zero Resp
+            return zero, errs[0]
+        }
+        if len(vals) == 0 {
+            var zero Resp
+            return zero, fmt.Errorf("pipeline handler: no response produced")
+        }
+        return vals[0], nil
+    }
+}
+```
+
+> **Note:** `AsPipelineFunc` does not wrap `Serve` — it wraps the *handler function* passed to
+> `Serve`. This keeps the `Serve` API unchanged and avoids duplicating its parameter handling,
+> codec validation, observer calls, and error reply logic.
+
+**Usage:**
+```go
+mqtt5.Serve(ctx, client, router, oeeHandle,
+    mqtt5.AsPipelineFunc(func(ctx context.Context, req SensorReq) stream.Stream[OEEResult] {
+        s := stream.Single(ctx, req)
+        s = stream.Apply(ctx, s, validateFn, opts)
+        s = stream.Tap(ctx, s, func(v ValidatedReq) {
+            slog.Info("request", "sensor", v.SensorID) // observe decoded request
+        })
+        out := stream.Apply(ctx, s, oeeCalcFn, opts)
+        return stream.Tap(ctx, out, func(r OEEResult) {
+            auditLog.Write(r) // observe reply before it is sent
+        })
+    }),
+    mqtt5.ServeOptions{Observer: obs})
+```
+
+### Client-side — `mqtt5.CallStream`
 
 ### Client-side — `mqtt5.CallStream`
 
@@ -483,6 +787,47 @@ type DrainPublishOptions struct {
 alerts, metrics := stream.Tee(ctx, oeeStream)
 go zeromq.DrainPublish(ctx, pubSock, alertHandle, alerts, format.JSON(alertCodec),
     zeromq.DrainPublishOptions{Observer: obs})
+```
+
+### Server-side — `zeromq.AsPipelineFunc`
+
+Same pattern as `mqtt5.AsPipelineFunc`. ZeroMQ's `Serve[Req, Resp]` and `ServeRouter[Req, Resp]`
+both accept `fn func(context.Context, Req) (Resp, error)` — identical to the MQTT5 server handler shape.
+
+```go
+// adapters/zeromq/stream.go
+
+// AsPipelineFunc converts a pipeline handler function into the plain handler
+// function signature accepted by [Serve] and [ServeRouter].
+// Same semantics as mqtt5.AsPipelineFunc: wraps req as stream.Single, runs the
+// pipeline, collects first value/error via stream.Collect.
+//
+//  zeromq.Serve(ctx, repSock, oeeHandle,
+//      zeromq.AsPipelineFunc(func(ctx context.Context, req SensorReq) stream.Stream[OEEResult] {
+//          s := stream.Single(ctx, req)
+//          s = stream.Apply(ctx, s, validateFn, opts)
+//          s = stream.Tap(ctx, s, func(v ValidatedReq) { slog.Info("request", "id", v.ID) })
+//          out := stream.Apply(ctx, s, oeeCalcFn, opts)
+//          return stream.Tap(ctx, out, func(r OEEResult) { auditLog.Write(r) })
+//      }),
+//      zeromq.ServeOptions{Observer: obs})
+func AsPipelineFunc[Req, Resp any](
+    fn func(context.Context, Req) stream.Stream[Resp],
+) func(context.Context, Req) (Resp, error)
+```
+
+**Usage:**
+```go
+go zeromq.Serve(ctx, repSock, oeeHandle,
+    zeromq.AsPipelineFunc(func(ctx context.Context, req SensorReq) stream.Stream[OEEResult] {
+        s := stream.Single(ctx, req)
+        s = stream.Apply(ctx, s, validateFn, opts)
+        s = stream.Tap(ctx, s, func(v ValidatedReq) {
+            slog.Info("request", "sensor", v.SensorID)
+        })
+        return stream.Apply(ctx, s, oeeCalcFn, opts)
+    }),
+    zeromq.ServeOptions{Observer: obs})
 ```
 
 ### Client-side — `zeromq.CallStream` and `zeromq.CallDealerStream`
@@ -892,6 +1237,59 @@ Every bridge helper must return typed, `errors.As`-navigable errors that impleme
 
 ### New error types
 
+#### `adapters/nethttp` and `adapters/chi` (request/response + SSE bridges)
+
+Three new error types — all implement `slog.LogValuer`; none implement `Unwrap()` (no inner cause):
+
+```go
+// NoLatestValueError is passed to opts.ErrorHandler (status 503) by HandlerLatest
+// when the background stream has not yet produced a value.
+type NoLatestValueError struct {
+    Path string // route path (from RouteHandle.Descriptor.Path)
+}
+
+func (e NoLatestValueError) Error() string {
+    return fmt.Sprintf("http latest %s: no value yet", e.Path)
+}
+func (e NoLatestValueError) LogValue() slog.Value {
+    return slog.GroupValue(slog.String("path", e.Path))
+}
+
+// PipelineFullError is passed to opts.ErrorHandler (status 503) by HandlerIngest
+// when the destination channel is full and the incoming request cannot be enqueued.
+type PipelineFullError struct {
+    Path     string // route path (from RouteHandle.Descriptor.Path)
+    Capacity int    // cap(dst) — helps callers tune buffer sizing
+}
+
+func (e PipelineFullError) Error() string {
+    return fmt.Sprintf("http ingest %s: pipeline full (capacity %d)", e.Path, e.Capacity)
+}
+func (e PipelineFullError) LogValue() slog.Value {
+    return slog.GroupValue(
+        slog.String("path", e.Path),
+        slog.Int("capacity", e.Capacity),
+    )
+}
+
+// PipelineNoResponseError is returned by PipelineHandler when stream.Collect
+// returns with no values — either the pipeline emitted nothing, or the request
+// context was cancelled before the pipeline produced a result.
+type PipelineNoResponseError struct {
+    Path string // route path (from RouteHandle.Descriptor.Path)
+}
+
+func (e PipelineNoResponseError) Error() string {
+    return fmt.Sprintf("http pipeline %s: no response produced", e.Path)
+}
+func (e PipelineNoResponseError) LogValue() slog.Value {
+    return slog.GroupValue(slog.String("path", e.Path))
+}
+```
+
+> All three live in both `adapters/nethttp` and `adapters/chi` — identical type definitions,
+> different package paths.
+
 #### `adapters/nethttp` and `adapters/chi` (SSE bridges)
 
 ```go
@@ -948,6 +1346,29 @@ func (e SSEParseError) LogValue() slog.Value {
     )
 }
 ```
+
+#### `adapters/mqtt5` and `adapters/zeromq` (AsPipelineFunc)
+
+```go
+// PipelineNoResponseError is returned by AsPipelineFunc when stream.Collect
+// returns with no values — either the pipeline emitted nothing, or the request
+// context was cancelled.
+// In MQTT5 it is passed to ServeOptions.OnError wrapped in ServeError.
+// In ZeroMQ it is passed to ServeOptions.OnError wrapped in ServeError.
+type PipelineNoResponseError struct {
+    Topic string // route topic (from RouteHandle.Topic)
+}
+
+func (e PipelineNoResponseError) Error() string {
+    return fmt.Sprintf("pipeline %s: no response produced", e.Topic)
+}
+func (e PipelineNoResponseError) LogValue() slog.Value {
+    return slog.GroupValue(slog.String("topic", e.Topic))
+}
+```
+
+> The mqtt5 version lives in `adapters/mqtt5`, the zeromq version in `adapters/zeromq`.
+> Both have identical shape but different `Topic`-vs-`Path` field names to match the adapter vocabulary.
 
 #### `adapters/mcpgo`
 
@@ -1136,6 +1557,19 @@ If the SSE endpoint serves HTML fragments via Templ, the route's `ResponseFormat
 | `CallDealerStream` uses sequence numbers for correlation | DEALER socket is async; responses arrive out-of-order. A sequence number frame (added by the bridge) correlates each response to its request without per-call UUIDs. |
 | Existing errors are reused where sufficient | `SocketError`, `CallError`, `PublishEncodeError`, `RowValidationError`, `StreamDecodeError` cover most bridge failure modes without new types. New types are added only when no existing type carries the required context. |
 | All new error types implement `slog.LogValuer` | Consistent with go-codex error contract: every error must be structurally loggable, `errors.As`-navigable, and carry `Unwrap()`. |
+| HTTP req/resp: three bridge patterns | `HandlerLatest` (reactive cache), `HandlerIngest` (pipeline source), `PipelineHandler` (declarative per-request computation with Tap). "Wrap plain function in channels with no observation" is explicitly not a bridge. |
+| All HTTP bridge helpers reuse existing `Options` | No new option structs for `HandlerLatest` or `HandlerIngest`. Bridge-specific errors (`NoLatestValueError`, `PipelineFullError`, `PipelineNoResponseError`) are passed through the existing `ErrorHandler` in `Options`. Consistent API shape. |
+| `HandlerLatest`/`HandlerIngest`/`PipelineHandler` all return `http.Handler` (nethttp) or `http.HandlerFunc` (chi) | Matches the existing `Handler` return type per adapter. Register variants mirror `Register`. |
+| `HandlerIngest` rejects on full channel (503, not block) | Blocking inside an HTTP handler starves the Go HTTP server goroutine. Non-blocking send with `PipelineFullError{Path, Capacity}` lets callers tune buffer size via `Capacity` field. |
+| `HandlerLatest` is Req-agnostic for the computation | Request is decoded and validated (codec runs) but not used to compute the response — always the latest stream value. Use `PipelineHandler` for per-request parameterized computation. |
+| `HandlerIngest` route handle is `RouteHandle[Req, struct{}]` | The response type is `struct{}` — encodes as JSON `{}`. Route should be configured as POST/PUT returning 202 Accepted. Callers who need a different body shape configure `opts.ErrorHandler` or return a typed struct. |
+| `PipelineHandler` is thin wrapper over `Handler` via `stream.Collect` | All codec, param, security, and observer integration comes from `Handler`. `PipelineHandler` only adapts the function signature. |
+| Error vs value precedence in `stream.Collect` | `errs[0]` takes precedence over `vals` — if both are non-empty, error is returned. Multiple values: only `vals[0]` used; extras silently discarded. Zero values before ctx cancel → `PipelineNoResponseError`. |
+| `PipelineHandler` is appropriate for multi-step observable handlers | Plain `HandlerFunc` is clearer for simple one-step handlers. Use `PipelineHandler` when multiple forge functions, intermediate Tap, or `MapErr` per-step recovery justify the declarative style. |
+| `stream.Single[T]` is a new export in the `stream` package | Wraps a single value as a `Stream[T]` source. Used as the per-request pipeline entry point. Also useful for testing any stream operator with a single known input. |
+| `AsPipelineFunc` wraps the handler fn, not `Serve` | Keeps `Serve`/`ServeRouter` unchanged — all codec validation, observer calls, and error reply logic remain in the adapter. No API duplication. |
+| `PipelineHandler` pattern applies uniformly to all req/reply servers | HTTP (nethttp, chi), MQTT5 (`Serve`), ZeroMQ (`Serve`, `ServeRouter`) all have `fn func(ctx, Req)(Resp, error)`. Same `stream.Single + stream.Collect` approach — only adapter surface differs. |
+| New error types all implement `slog.LogValuer`, none implement `Unwrap()` | All new errors (`NoLatestValueError`, `PipelineFullError`, `PipelineNoResponseError`) have no inner cause to chain — `Unwrap()` would return nil, which is misleading. Only errors that wrap a cause implement `Unwrap()`. |
 
 ---
 
@@ -1169,21 +1603,26 @@ No circular dependencies. `stream` does not import any adapter package.
 - Tests: concurrent subscriber lifecycle, slow subscriber backpressure, hub close
 
 ### Phase 1 — ZeroMQ bridge
-- `adapters/zeromq/stream.go` — `SubscribeStream`, `DrainPublish`, `CallStream`, `CallDealerStream`, `ServeLatest`
-- `adapters/zeromq/errors.go` additions — `ServeLatestError`, `NoLatestValueError`, `CorrelationError`
+- `adapters/zeromq/stream.go` — `SubscribeStream`, `DrainPublish`, `AsPipelineFunc`, `CallStream`, `CallDealerStream`, `ServeLatest`
+- `adapters/zeromq/errors.go` additions — `ServeLatestError`, `NoLatestValueError`, `CorrelationError`, `PipelineNoResponseError{Topic string}`
 - Tests: `adapters/zeromq/stream_test.go` with in-process test socket pair
 
-### Phase 2 — HTTP SSE bridges (nethttp + chi, both directions)
-- `adapters/nethttp/stream.go` — `SSEFromStream`, `SSEFromHub`, `SSEClientStream`, `PollStream`, `DrainCall`
-- `adapters/chi/stream.go` — `SSEFromStream`, `SSEFromHub`
-- `adapters/nethttp/errors.go` additions — `SSEWriteError`, `SSEConnectError`, `SSEParseError`
-- `adapters/chi/errors.go` addition — `SSEWriteError`
-- Depends on Phase 0 for `SSEFromHub`
+### Phase 1.5 — `stream.Single[T]` (prerequisite for PipelineHandler and AsPipelineFunc)
+- `stream/source.go` addition — `Single[T](ctx context.Context, v T) Stream[T]`
+- `stream/source_test.go` additions — `TestSingle_EmitsOneValue`, `TestSingle_ContextCancel`, `TestSingle_ErrorsChannelNeverWritten`, `ExampleSingle`
 
-### Phase 3 — MQTT pub/sub bridge (both mqtt and mqtt5)
+### Phase 2 — HTTP bridges (nethttp + chi): reqresp + SSE, both directions
+- `adapters/nethttp/stream.go` — `HandlerLatest`, `RegisterLatest`, `HandlerIngest`, `RegisterIngest`, `PipelineHandlerFunc`, `PipelineHandler`, `RegisterPipeline`, `SSEFromStream`, `SSEFromHub`, `SSEClientStream`, `PollStream`, `DrainCall`
+- `adapters/chi/stream.go` — `HandlerLatest`, `RegisterLatest`, `HandlerIngest`, `RegisterIngest`, `PipelineHandlerFunc`, `PipelineHandler`, `RegisterPipeline`, `SSEFromStream`, `SSEFromHub`
+- `adapters/nethttp/errors.go` additions — `NoLatestValueError`, `PipelineFullError`, `PipelineNoResponseError`, `SSEWriteError`, `SSEConnectError`, `SSEParseError`
+- `adapters/chi/errors.go` additions — `NoLatestValueError`, `PipelineFullError`, `PipelineNoResponseError`, `SSEWriteError`
+- Depends on Phase 0 (`stream.BroadcastHub`) for `SSEFromHub`; depends on Phase 1.5 (`stream.Single`) for `PipelineHandler`
+
+### Phase 3 — MQTT pub/sub bridge (both mqtt and mqtt5) + MQTT5 reqreply pipeline
 - `adapters/mqtt/stream.go` — `SubscribeStream`, `DrainPublish`
-- `adapters/mqtt5/stream.go` — `SubscribeStream`, `DrainPublish`, `CallStream` (reqreply)
-- No new error types (reuses existing `PublishEncodeError`, `BrokerError`, `SubscribeError`)
+- `adapters/mqtt5/stream.go` — `SubscribeStream`, `DrainPublish`, `AsPipelineFunc`, `CallStream`
+- `adapters/mqtt5/errors.go` addition — `PipelineNoResponseError{Topic string}` with `slog.LogValuer`
+- Reuses existing `PublishEncodeError`, `BrokerError`, `SubscribeError` for all other failures
 
 ### Phase 4 — MCP bridge
 - `adapters/mcpgo/stream.go` — `ToolLatestHandler`, `RegisterToolLatest`
