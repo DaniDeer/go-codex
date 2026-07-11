@@ -278,9 +278,17 @@ zeromq.ServeLatest(ctx, sock, handle, oeeStream, serveLatestOpts)
 ### MCP — `adapters/mcpgo`
 
 ```go
-// Tool that returns the latest stream value to every LLM call
-tool, handler := mcpgo.ToolLatestHandler(getOEEHandle, oeeStream, opts)
-s.AddTool(tool, handler)
+// Reactive cache: returns the latest stream value to every LLM call
+mcpgo.RegisterToolLatest(s, getOEEHandle, oeeStream, opts)
+
+// Reactive trigger: each tool call runs a fresh pipeline (MCP ≡ nethttp.PipelineHandler)
+mcpgo.RegisterToolPipeline(s, analyzeHandle,
+    func(ctx context.Context, in OEEQuery) stream.Stream[OEEResult] {
+        s  := stream.Single(ctx, in)
+        s   = stream.Apply(ctx, s, validateFn, opts)
+        s   = stream.Tap(ctx, s, func(v ValidatedQuery) { auditLog.Write(v) })
+        return stream.Apply(ctx, s, oeeCalcFn, opts)
+    }, opts)
 ```
 
 ### SQL — `adapters/sql`

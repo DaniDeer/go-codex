@@ -453,8 +453,15 @@ New error types: `ServeLatestError{Op,Err}`, `NoLatestValueError{Topic}`,
 
 ## MCP bridge — `adapters/mcpgo`
 
-Connects a running stream pipeline to an MCP tool so LLM agents can query the latest
-computed value.
+Two patterns connect stream pipelines to MCP tools. Both expose the computation to
+LLM agents; they differ in WHEN the pipeline runs:
+
+| | `ToolLatestHandler` | `ToolPipelineHandler` |
+|---|---|---|
+| Pattern | Reactive CACHE | Reactive TRIGGER |
+| Pipeline lifecycle | Runs continuously in background | Fresh run per tool call |
+| Response | Latest pre-computed value | Value produced by this call's pipeline |
+| Use case | "get current OEE" | "compute OEE for this specific input" |
 
 ### `ToolLatestHandler` — reactive cache tool
 
@@ -463,9 +470,7 @@ computed value.
 oeeStream := stream.Apply(ctx, sensorStream, oeeCalcFn, applyOpts)
 
 // Expose as an MCP tool:
-tool, handler := mcpgo.ToolLatestHandler(getOEEHandle, oeeStream,
-    mcpgo.Options{Observer: obs})
-s.AddTool(tool, handler)
+mcpgo.RegisterToolLatest(s, getOEEHandle, oeeStream, mcpgo.Options{Observer: obs})
 
 // LLM call result:
 // {"availability":0.94,"performance":0.82,"quality":0.97,"oee":0.75}
@@ -475,6 +480,71 @@ s.AddTool(tool, handler)
 The "no value yet" response uses `mcp.NewToolResultError` (`IsError: true`) — the LLM
 sees the message in the tool result, consistent with how `ToolHandler` reports input
 errors. Not a Go error.
+
+### `ToolPipelineHandler` — reactive trigger tool
+
+The MCP equivalent of [`PipelineHandler`](#pattern-3----pipelinehandler--registerpipeline)
+for HTTP. Each tool call **triggers a fresh pipeline run**: the tool arguments flow
+through stream operators, and the first emitted value becomes the tool response.
+
+**Why not a plain `ToolHandler`?** Same reason as `PipelineHandler` for HTTP: in a plain
+handler, observers are inline side effects mixed with computation. With
+`ToolPipelineHandler`, `Tap` calls are structurally separated:
+
+```go
+// Plain ToolHandler — observers buried in logic
+mcpgo.RegisterTool(s, analyzeHandle, func(ctx context.Context, in OEEQuery) (OEEResult, error) {
+    validated, err := validateFn.ApplyContext(ctx, in)
+    if err != nil { return zero, err }
+    slog.Info("validated", "query", validated) // observer buried in logic
+    result, err := oeeCalcFn.ApplyContext(ctx, validated)
+    auditLog.Write(result)                     // observer buried in logic
+    return result, nil
+}, opts)
+
+// ToolPipelineHandler — observers explicit via Tap
+mcpgo.RegisterToolPipeline(s, analyzeHandle,
+    func(ctx context.Context, in OEEQuery) stream.Stream[OEEResult] {
+        s  := stream.Single(ctx, in)
+        s   = stream.Apply(ctx, s, validateFn, applyOpts)
+        s   = stream.Tap(ctx, s, func(v ValidatedQuery) { slog.Info("validated", "query", v) })
+        out := stream.Apply(ctx, s, oeeCalcFn, applyOpts)
+        return stream.Tap(ctx, out, func(r OEEResult) { auditLog.Write(r) })
+    }, mcpgo.Options{Observer: obs})
+```
+
+**Semantics:**
+- Error from `Stream.Errors` → `mcp.NewToolResultError(err.Error())` with `IsError: true`
+- No value produced → `mcp.NewToolResultError("tool pipeline produced no result")`
+- Multiple values → only the first is used; extras silently discarded
+- Input validation by `handle.Decode` runs before `fn` is called (same as `ToolHandler`)
+
+**Cross-transport symmetry:** the same `func(ctx, In) stream.Stream[Out]` pipeline fn
+works for HTTP via `nethttp.PipelineHandler`, for MQTT5 via `AsPipelineFunc`, for ZeroMQ
+via `AsPipelineFunc`, and for MCP via `ToolPipelineHandler`:
+
+```go
+// One pipeline fn — same Tap observers for all transports
+pipeline := func(ctx context.Context, in OEEQuery) stream.Stream[OEEResult] {
+    s  := stream.Single(ctx, in)
+    s   = stream.Apply(ctx, s, validateFn, applyOpts)
+    s   = stream.Tap(ctx, s, func(v ValidatedQuery) { auditLog.Write(v) })
+    return stream.Apply(ctx, s, oeeCalcFn, applyOpts)
+}
+
+// HTTP endpoint: POST /oee/compute
+nethttp.RegisterPipeline(mux, httpHandle, pipeline, nethttp.Options{Observer: obs})
+
+// MCP tool: "compute_oee"
+mcpgo.RegisterToolPipeline(s, mcpHandle, pipeline, mcpgo.Options{Observer: obs})
+
+// MQTT5: for each incoming request, run the pipeline and reply
+mqtt5.Serve(ctx, client, router, mqtt5Handle,
+    mqtt5.AsPipelineFunc(pipeline), mqtt5.ServeOptions{Observer: obs})
+```
+
+The forge function `oeeCalcFn`, Tap observers, and error handling are identical
+across all three transports. Only the transport wrapper differs.
 
 ---
 

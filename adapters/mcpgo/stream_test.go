@@ -2,6 +2,7 @@ package mcpgo_test
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -11,6 +12,164 @@ import (
 	mcpgo "github.com/DaniDeer/go-codex/adapters/mcpgo"
 	gstream "github.com/DaniDeer/go-codex/stream"
 )
+
+// ── ToolPipelineHandler ───────────────────────────────────────────────────────
+
+func TestToolPipelineHandler_ReturnsFirstValue(t *testing.T) {
+	handle := buildHandle(addInputCodec, addOutputCodec)
+	_, handler := mcpgo.ToolPipelineHandler(handle,
+		func(ctx context.Context, in addInput) gstream.Stream[addOutput] {
+			return gstream.Single(ctx, addOutput{Sum: in.A + in.B})
+		}, mcpgo.Options{})
+
+	req := mcp.CallToolRequest{
+		Params: mcp.CallToolParams{
+			Name:      handle.Name,
+			Arguments: map[string]any{"a": 3.0, "b": 4.0},
+		},
+	}
+	result, err := handler(context.Background(), req)
+	if err != nil {
+		t.Fatalf("unexpected protocol error: %v", err)
+	}
+	if result.IsError {
+		t.Fatalf("want success, got IsError=true: %+v", result.Content)
+	}
+	var foundSum bool
+	for _, c := range result.Content {
+		if ct, ok := c.(mcp.TextContent); ok && strings.Contains(ct.Text, "7") {
+			foundSum = true
+		}
+	}
+	if !foundSum {
+		t.Errorf("expected Sum=7 in result, got: %+v", result.Content)
+	}
+}
+
+func TestToolPipelineHandler_PipelineErrorIsToolError(t *testing.T) {
+	handle := buildHandle(addInputCodec, addOutputCodec)
+	_, handler := mcpgo.ToolPipelineHandler(handle,
+		func(ctx context.Context, in addInput) gstream.Stream[addOutput] {
+			errCh := make(chan error, 1)
+			valCh := make(chan addOutput)
+			errCh <- fmt.Errorf("compute failed")
+			close(errCh)
+			close(valCh)
+			return gstream.Stream[addOutput]{Values: valCh, Errors: errCh}
+		}, mcpgo.Options{})
+
+	req := mcp.CallToolRequest{
+		Params: mcp.CallToolParams{
+			Name:      handle.Name,
+			Arguments: map[string]any{"a": 1.0, "b": 2.0},
+		},
+	}
+	result, err := handler(context.Background(), req)
+	if err != nil {
+		t.Fatalf("unexpected protocol error: %v", err)
+	}
+	if !result.IsError {
+		t.Fatal("want IsError=true for pipeline error, got IsError=false")
+	}
+}
+
+func TestToolPipelineHandler_NoValueIsToolError(t *testing.T) {
+	handle := buildHandle(addInputCodec, addOutputCodec)
+	_, handler := mcpgo.ToolPipelineHandler(handle,
+		func(ctx context.Context, in addInput) gstream.Stream[addOutput] {
+			errCh := make(chan error)
+			valCh := make(chan addOutput)
+			close(errCh)
+			close(valCh)
+			return gstream.Stream[addOutput]{Values: valCh, Errors: errCh}
+		}, mcpgo.Options{})
+
+	req := mcp.CallToolRequest{
+		Params: mcp.CallToolParams{
+			Name:      handle.Name,
+			Arguments: map[string]any{"a": 1.0, "b": 2.0},
+		},
+	}
+	result, err := handler(context.Background(), req)
+	if err != nil {
+		t.Fatalf("unexpected protocol error: %v", err)
+	}
+	if !result.IsError {
+		t.Fatal("want IsError=true when no value produced, got IsError=false")
+	}
+}
+
+func TestToolPipelineHandler_TapObservationFires(t *testing.T) {
+	handle := buildHandle(addInputCodec, addOutputCodec)
+	var tapFired bool
+	_, handler := mcpgo.ToolPipelineHandler(handle,
+		func(ctx context.Context, in addInput) gstream.Stream[addOutput] {
+			s := gstream.Single(ctx, in)
+			s = gstream.Tap(ctx, s, func(v addInput) { tapFired = true })
+			return gstream.FlatMapSlice(ctx, s, func(v addInput) []addOutput {
+				return []addOutput{{Sum: v.A + v.B}}
+			})
+		}, mcpgo.Options{})
+
+	req := mcp.CallToolRequest{
+		Params: mcp.CallToolParams{
+			Name:      handle.Name,
+			Arguments: map[string]any{"a": 2.0, "b": 3.0},
+		},
+	}
+	result, err := handler(context.Background(), req)
+	if err != nil || result.IsError {
+		t.Fatalf("unexpected error: err=%v isError=%v", err, result != nil && result.IsError)
+	}
+	if !tapFired {
+		t.Error("Tap should have fired during pipeline execution")
+	}
+}
+
+func TestToolPipelineHandler_InputValidationStillRuns(t *testing.T) {
+	handle := buildHandle(constrainedInputCodec, addOutputCodec)
+	_, handler := mcpgo.ToolPipelineHandler(handle,
+		func(ctx context.Context, in addInput) gstream.Stream[addOutput] {
+			return gstream.Single(ctx, addOutput{Sum: in.A + in.B})
+		}, mcpgo.Options{})
+
+	req := mcp.CallToolRequest{
+		Params: mcp.CallToolParams{
+			Name:      handle.Name,
+			Arguments: map[string]any{"a": -1.0, "b": 2.0}, // fails MinFloat(0)
+		},
+	}
+	result, err := handler(context.Background(), req)
+	if err != nil {
+		t.Fatalf("unexpected protocol error: %v", err)
+	}
+	if !result.IsError {
+		t.Error("want IsError=true for invalid input (a < 0), got IsError=false")
+	}
+}
+
+func TestToolPipelineHandler_ObserverReceivesRequest(t *testing.T) {
+	handle := buildHandle(addInputCodec, addOutputCodec)
+	obs := &recordingObserver{}
+	_, handler := mcpgo.ToolPipelineHandler(handle,
+		func(ctx context.Context, in addInput) gstream.Stream[addOutput] {
+			return gstream.Single(ctx, addOutput{Sum: in.A + in.B})
+		}, mcpgo.Options{Observer: obs})
+
+	req := mcp.CallToolRequest{
+		Params: mcp.CallToolParams{
+			Name:      handle.Name,
+			Arguments: map[string]any{"a": 1.0, "b": 2.0},
+		},
+	}
+	result, err := handler(context.Background(), req)
+	if err != nil || result.IsError {
+		t.Fatalf("unexpected error: err=%v isError=%v", err, result != nil && result.IsError)
+	}
+	if len(obs.calls) != 1 || obs.calls[0].statusCode != 200 {
+		t.Errorf("want 1 observer call with status 200, got %+v", obs.calls)
+	}
+}
 
 // ── ToolLatestHandler ─────────────────────────────────────────────────────────
 
