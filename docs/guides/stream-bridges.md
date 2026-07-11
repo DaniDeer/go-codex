@@ -1,6 +1,6 @@
 # Stream Bridge Guide
 
-> See also: [Feature: Reactive Streams](../features/stream.md) · [Stream Guide](stream.md) · [Observer Pattern](observer.md)
+> See also: [Feature: Reactive Streams](../features/stream.md) · [Stream Guide](stream.md) · [Observer Pattern](observer.md) · [Remaining bridge work](../roadmap/stream-bridges.md)
 >
 > **Runnable demos:**
 > - [`examples/sensor-service`](https://github.com/DaniDeer/go-codex/tree/main/examples/sensor-service) — **primary bridge showcase** — `mqtt.SubscribeStream`, `mqtt.DrainPublish`, `nethttp.HandlerLatest`, `sql.QueryStream` all in one service; run with `go run ./examples/sensor-service`
