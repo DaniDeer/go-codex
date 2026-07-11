@@ -8,10 +8,39 @@ import (
 	"time"
 
 	"github.com/mark3labs/mcp-go/mcp"
+	"github.com/mark3labs/mcp-go/server"
 
 	mcpgo "github.com/DaniDeer/go-codex/adapters/mcpgo"
 	gstream "github.com/DaniDeer/go-codex/stream"
 )
+
+// ── RegisterToolPipeline ──────────────────────────────────────────────────────
+
+func TestRegisterToolPipeline_AddsTool(t *testing.T) {
+	// RegisterToolPipeline is a convenience wrapper over ToolPipelineHandler
+	// + s.AddTool. Verify it registers without panic and the tool is accessible.
+	handle := buildHandle(addInputCodec, addOutputCodec)
+	s := server.NewMCPServer("test", "1.0.0")
+	mcpgo.RegisterToolPipeline(s, handle,
+		func(ctx context.Context, in addInput) gstream.Stream[addOutput] {
+			return gstream.Single(ctx, addOutput{Sum: in.A + in.B})
+		}, mcpgo.Options{})
+	// If registration succeeded, we can call the tool via a request.
+	// (No panic = registration worked correctly.)
+}
+
+func TestRegisterToolLatest_AddsTool(t *testing.T) {
+	handle := buildHandle(addInputCodec, addOutputCodec)
+	valCh := make(chan addOutput)
+	errCh := make(chan error)
+	close(valCh)
+	close(errCh)
+	src := gstream.Stream[addOutput]{Values: valCh, Errors: errCh}
+
+	s := server.NewMCPServer("test", "1.0.0")
+	mcpgo.RegisterToolLatest(s, handle, src, mcpgo.Options{})
+	// No panic = registration worked correctly.
+}
 
 // ── ToolPipelineHandler ───────────────────────────────────────────────────────
 

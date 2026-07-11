@@ -12,8 +12,7 @@ import (
 	gstream "github.com/DaniDeer/go-codex/stream"
 )
 
-// errNoResult is returned by ToolPipelineHandler when the pipeline emits no value.
-var errNoResult = errors.New("tool pipeline produced no result")
+// ── ToolLatestHandler ─────────────────────────────────────────────────────────
 
 // errNoLatestValue is the sentinel returned by ToolLatestHandler when the
 // background stream has not yet produced a value. ToolHandler converts any
@@ -80,6 +79,9 @@ func ToolLatestHandler[In, Out any](
 }
 
 // ── ToolPipelineHandler ───────────────────────────────────────────────────────
+
+// errNoResult is returned by ToolPipelineHandler when the pipeline emits no value.
+var errNoResult = errors.New("tool pipeline produced no result")
 
 // ToolPipelineHandlerFunc is a handler function that implements an MCP tool's
 // logic as a [gstream.Stream]. It must emit exactly one value (the tool
@@ -157,8 +159,6 @@ func RegisterToolPipeline[In, Out any](
 	tool, handler := ToolPipelineHandler(handle, fn, opts)
 	s.AddTool(tool, handler)
 }
-
-// ── ToolLatestHandler ─────────────────────────────────────────────────────────
 
 // RegisterToolLatest wires [ToolLatestHandler] onto an MCPServer. Mirrors [RegisterTool].
 func RegisterToolLatest[In, Out any](

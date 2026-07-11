@@ -79,7 +79,7 @@ Read all of these before opening any finding:
 | `adapters/mqtt5/stream.go`                      | MQTT5 stream bridges: SubscribeStream, DrainPublish, AsPipelineFunc, CallStream |
 | `adapters/zeromq/stream.go`                     | ZeroMQ stream bridges: SubscribeStream, DrainPublish, AsPipelineFunc, CallStream, ServeLatest |
 | `adapters/mcpgo/adapter.go`                     | MCP adapter: ToolHandler/ResourceHandler/PromptHandler, observer, errors |
-| `adapters/mcpgo/stream.go`                      | MCP stream bridges: ToolLatestHandler                                    |
+| `adapters/mcpgo/stream.go`                      | MCP stream bridges: ToolLatestHandler, ToolPipelineHandler               |
 | `adapters/sql/stream.go`                        | SQL stream bridges: QueryStream, DrainInsert                             |
 | `adapters/file/stream.go`                       | File stream bridges: ScanStream, WatchStream, DrainWrite (new package)  |
 | `.github/instructions/go-codex.instructions.md` | Design contract and prior decisions                                      |
@@ -328,6 +328,7 @@ Every source bridge must apply the **same validation pipeline** as the underlyin
 | `chi.*` | Same as nethttp equivalents | Must call chi `Handler(...)` |
 | `sql.QueryStream` | `Validate(codec, row, opts)` called per row | Must use `adapters/sql.Validate` |
 | `mcpgo.ToolLatestHandler` | `ToolHandler(handle, fn, opts)` wrapping — input schema validation runs | Must call `ToolHandler(...)` |
+| `mcpgo.ToolPipelineHandler` | `ToolHandler(handle, fn, opts)` wrapping — input schema validation runs; each call starts a fresh stream pipeline | Must call `ToolHandler(...)` |
 
 **If a source bridge hand-rolls validation logic** instead of delegating to the underlying adapter function, file a `bug` finding.
 
@@ -425,6 +426,7 @@ Used correctly in: `PipelineHandlerFunc`, `AsPipelineFunc`. Do not flag `Single`
 - **Static `Vars` in `DrainPublish`.** Same map applied to every item. Per-item topic var substitution requires `stream.Drain` + `Publish` directly. Do not flag as bug — documented limitation.
 - **`stream.Single` uses a size-1 buffered channel.** This allows `deliver(handler, payload); cancel()` test patterns to work without goroutine leaks. Do not flag the buffered channel as inconsistency with `From` (which is unbuffered).
 - **`PipelineHandler` response headers are reference-type safe for sequential pipelines.** `WithResponseHeaders(ctx, ...)` mutates the map stored in `ctx` — writes happen-before `stream.Collect` returns, so `Handler` reads correct values. Concurrent writes from parallel operators (CombineLatest, Merge) could race — documented limitation.
+- **`mcpgo.ToolPipelineHandler` is the per-call trigger; `ToolLatestHandler` is the reactive cache.** Both wrap `ToolHandler`. `ToolPipelineHandler` runs a fresh stream per tool call (`stream.Single → Collect`); `ToolLatestHandler` runs a background stream and returns the latest value. Do not flag either as missing the other's pattern.
 - **`nethttp.HandlerLatest` validates `Req` even though it's discarded.** All codec layers run (body decode, query/cookie/header/path params, security). This ensures only well-formed requests receive cached responses. Do not flag as waste.
 
 ## References

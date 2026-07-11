@@ -1,6 +1,14 @@
-# go-codex Review History (R1–R37)
+# go-codex Review History (R1–R38)
 
 Do not re-report any of these findings. They have been implemented and tested.
+
+---
+
+## Round 38 (mcpgo bridge layout and SKILL maintenance)
+
+- **G1 [trivial] — `SKILL.md` missing `ToolPipelineHandler` in Phase 1 table and Rule B1**: Phase 1 file description listed only `ToolLatestHandler`; Rule B1 table had no row for `ToolPipelineHandler`; updated both to include `ToolPipelineHandler` and added Gotcha explaining the distinction between the two patterns.
+- **G2 [trivial] — `RegisterToolPipeline` and `RegisterToolLatest` had no tests**: Added `TestRegisterToolPipeline_AddsTool` and `TestRegisterToolLatest_AddsTool` verifying both convenience wrappers register without panic.
+- **G3 [trivial] — `mcpgo/stream.go` layout: `RegisterToolLatest` separated from `ToolLatestHandler`; stale section comment**: A stale `// ── ToolLatestHandler` section comment appeared before `RegisterToolLatest` instead of before `ToolLatestHandler`; `errNoResult` was declared at the top with `errNoLatestValue` instead of adjacent to `ToolPipelineHandler`; restructured by adding `// ── ToolLatestHandler` before `ToolLatestHandler`, moving `errNoResult` adjacent to `ToolPipelineHandler`, and removing the stale comment before `RegisterToolLatest`.
 
 ---
 
