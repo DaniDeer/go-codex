@@ -1,6 +1,16 @@
-# go-codex Review History (R1–R38)
+# go-codex Review History (R1–R39)
 
 Do not re-report any of these findings. They have been implemented and tested.
+
+---
+
+## Round 39 (gap implementation — BroadcastHub, SSE bridges, tests)
+
+- **G1 [bug] — `SSEClientStream` signature used `*rest.SSERouteHandle[struct{}, Event]` — too restrictive**: The `struct{}` Req constraint prevented using any typed request handle with `SSEClientStream`; changed the signature to `SSEClientStream[Req, Event any](..., *rest.SSERouteHandle[Req, Event], ...)` to accept any Req type.
+- **G2 [bug] — `TestSSEFromHub_BroadcastsToAllClients` deadlocked due to sequential `Do()` calls**: `SSEHandler` commits `WriteHeader(200)` on first `send` (not on connection); sequential `makeClient()` calls blocked waiting for headers — first client could never unblock until events were sent, which required both clients to be connected first; rewrote test to connect both clients via goroutines so the first event emission unblocks both `Do()` calls.
+- **G3 [small] — `TestPollStream_EmitsResponsePerTick` used route with `{id}` path var but `getReq` is empty struct**: `Call` pre-flight validation for path variables found `{id}` unresolvable and returned `MissingPathVarError`; changed test route to `/users/latest` (no path params) so polling works.
+- **G4 [trivial] — `stream/broadcast_test.go` unnecessary blank identifier assignment**: `_ = <-done1` / `_ = <-done2` triggered staticcheck S1005; changed to `<-done1` / `<-done2`.
+- **G5 [small] — `adapters/nethttp/stream.go` unhandled `resp.Body.Close()` errors flagged by gosec G104**: Two `resp.Body.Close()` calls on error paths in `SSEClientStream` had unhandled errors; changed to `_ = resp.Body.Close()` (no useful error recovery on connection teardown).
 
 ---
 

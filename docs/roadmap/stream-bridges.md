@@ -1,6 +1,6 @@
 # Stream Bridge Helpers — Remaining Work
 
-**Status:** Mostly implemented. Three gaps remain.
+**Status:** All planned gaps implemented. One item remains deferred (protocol change required).
 
 > **Implemented features** are documented in the user guide:
 > [Stream Bridge Guide](../guides/stream-bridges.md)
@@ -9,15 +9,12 @@
 
 ## What has been implemented
 
-All bridge helpers from the original design are shipped **except** those listed in
-the remaining work section below.
-
 | Adapter | Implemented |
 |---------|-------------|
-| `stream` | `Single[T]` |
+| `stream` | `Single[T]`, `BroadcastHub[T]` |
 | `adapters/zeromq` | `SubscribeStream`, `DrainPublish`, `AsPipelineFunc`, `CallStream`, `ServeLatest` |
-| `adapters/nethttp` | `HandlerLatest` / `RegisterLatest`, `HandlerIngest` / `RegisterIngest`, `PipelineHandler` / `RegisterPipeline` |
-| `adapters/chi` | Same as nethttp |
+| `adapters/nethttp` | `HandlerLatest` / `RegisterLatest`, `HandlerIngest` / `RegisterIngest`, `PipelineHandler` / `RegisterPipeline`, `SSEFromStream`, `SSEFromHub`, `PollStream`, `DrainCall`, `SSEClientStream` |
+| `adapters/chi` | `HandlerLatest`, `HandlerIngest`, `PipelineHandler`, `SSEFromStream`, `SSEFromHub` |
 | `adapters/mqtt` | `SubscribeStream`, `DrainPublish` |
 | `adapters/mqtt5` | `SubscribeStream`, `DrainPublish`, `AsPipelineFunc`, `CallStream` |
 | `adapters/mcpgo` | `ToolLatestHandler` / `RegisterToolLatest`, `ToolPipelineHandler` / `RegisterToolPipeline` |
@@ -30,7 +27,7 @@ the remaining work section below.
 
 ### Gap 1 — `stream.BroadcastHub[T]` (prerequisite)
 
-**Status:** Deferred — no implementation yet.
+**Status:** ✅ Implemented — `stream/broadcast.go`.
 
 An N-subscriber fan-out primitive. Every subscriber gets its own buffered channel;
 the hub fans out each item from the source stream to all subscribers independently.
@@ -57,7 +54,7 @@ func (h *BroadcastHub[T]) Unsubscribe(s Stream[T])
 
 ### Gap 2 — HTTP SSE bridges (nethttp + chi)
 
-**Status:** Deferred — error types exist, implementations missing.
+**Status:** ✅ Implemented — `adapters/nethttp/stream.go` and `adapters/chi/stream.go`.
 
 Two server-side patterns and one client-side consumer:
 

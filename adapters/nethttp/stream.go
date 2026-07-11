@@ -1,12 +1,19 @@
 package nethttp
 
 import (
+	"bufio"
 	"context"
 	"errors"
+	"fmt"
+	"io"
 	"net/http"
+	"strings"
 	"sync/atomic"
+	"time"
 
 	"github.com/DaniDeer/go-codex/api/rest"
+	"github.com/DaniDeer/go-codex/format"
+	"github.com/DaniDeer/go-codex/stats"
 	gstream "github.com/DaniDeer/go-codex/stream"
 )
 
@@ -263,6 +270,413 @@ func RegisterPipeline[Req, Resp any](
 ) {
 	mux.Handle(handle.Descriptor.Method+" "+handle.Descriptor.Path,
 		PipelineHandler(handle, fn, opts))
+}
+
+// ── SSEFromStream / SSEFromHub ────────────────────────────────────────────────
+
+// SSEStreamOptions configures [SSEFromStream] and [SSEFromHub].
+type SSEStreamOptions struct {
+	// Topic is the SSE route path used for observer reporting and error context.
+	// Set this to handle.Descriptor.Path when wiring via SSEHandler/RegisterSSE.
+	Topic string
+
+	// OnError, when non-nil, is called for write failures ([SSEWriteError]) and
+	// any errors forwarded from the upstream stream.
+	OnError func(error)
+
+	// Observer receives per-event lifecycle events.
+	// [stats.Observer.RecordSubscribe] is called with success=true on each
+	// emitted event and success=false on write or stream errors.
+	// [stats.TraceObserver] spans wrap each send attempt when implemented.
+	Observer stats.Observer
+}
+
+// SSEFromStream returns an [SSEHandlerFunc] where streamFactory is called once
+// per connecting SSE client with the decoded Req. The resulting
+// [gstream.Stream] is consumed for that connection only.
+//
+// Use SSEFromStream when each client receives a personalised or filtered stream:
+//
+//	nethttp.RegisterSSE(mux, dashboardRoute,
+//	    nethttp.SSEFromStream(func(_ context.Context, req DashboardReq) gstream.Stream[OEEResult] {
+//	        return stream.Filter(ctx, sharedOEEStream, req.MatchesMachine)
+//	    }, nethttp.SSEStreamOptions{Topic: dashboardRoute.Descriptor.Path, Observer: obs}),
+//	    nethttp.Options{Observer: obs})
+//
+// When the client disconnects, ctx is cancelled and the returned fn exits,
+// terminating the per-connection pipeline.
+func SSEFromStream[Req, Event any](
+	streamFactory func(context.Context, Req) gstream.Stream[Event],
+	opts SSEStreamOptions,
+) SSEHandlerFunc[Req, Event] {
+	obs := opts.Observer
+	if obs == nil {
+		obs = stats.NoopObserver{}
+	}
+	return func(ctx context.Context, req Req, send func(Event) error) error {
+		src := streamFactory(ctx, req)
+		valCh := src.Values
+		errCh := src.Errors
+		for valCh != nil || errCh != nil {
+			select {
+			case <-ctx.Done():
+				return nil
+			case v, ok := <-valCh:
+				if !ok {
+					valCh = nil
+					continue
+				}
+				start := time.Now()
+				var spanCtx = ctx
+				if to, ok2 := obs.(stats.TraceObserver); ok2 {
+					spanCtx = to.StartSpan(ctx, "sse.send", opts.Topic)
+				}
+				sendErr := send(v)
+				if to, ok2 := obs.(stats.TraceObserver); ok2 {
+					to.EndSpan(spanCtx, sendErr)
+				}
+				if sendErr != nil {
+					obs.RecordSubscribe(opts.Topic, false, time.Since(start))
+					we := SSEWriteError{Path: opts.Topic, Err: sendErr}
+					if opts.OnError != nil {
+						opts.OnError(we)
+					}
+					return sendErr // client disconnected — terminate
+				}
+				obs.RecordSubscribe(opts.Topic, true, time.Since(start))
+			case e, ok := <-errCh:
+				if !ok {
+					errCh = nil
+					continue
+				}
+				obs.RecordSubscribe(opts.Topic, false, 0)
+				if opts.OnError != nil {
+					opts.OnError(e)
+				}
+			}
+		}
+		return nil
+	}
+}
+
+// SSEFromHub returns an [SSEHandlerFunc] backed by a shared [gstream.BroadcastHub].
+// Each connecting client subscribes to the hub and receives items from that
+// moment forward; subscriptions are cleaned up on disconnect.
+//
+// Use SSEFromHub for live dashboards broadcasting the same stream to all users:
+//
+//	hub := stream.NewBroadcastHub(ctx, oeeStream, 32)
+//	nethttp.RegisterSSE(mux, dashboardRoute,
+//	    nethttp.SSEFromHub[struct{}, OEEResult](hub,
+//	        nethttp.SSEStreamOptions{Topic: dashboardRoute.Descriptor.Path, Observer: obs}),
+//	    nethttp.Options{Observer: obs})
+func SSEFromHub[Req, Event any](
+	hub *gstream.BroadcastHub[Event],
+	opts SSEStreamOptions,
+) SSEHandlerFunc[Req, Event] {
+	return func(ctx context.Context, req Req, send func(Event) error) error {
+		sub := hub.Subscribe()
+		defer hub.Unsubscribe(sub)
+		return SSEFromStream[Req, Event](func(_ context.Context, _ Req) gstream.Stream[Event] {
+			return sub
+		}, opts)(ctx, req, send)
+	}
+}
+
+// ── PollStream / DrainCall ────────────────────────────────────────────────────
+
+// PollStreamOptions configures [PollStream].
+type PollStreamOptions struct {
+	// Observer receives per-poll lifecycle events via the internal [Call] call.
+	// [stats.Observer.RecordRequest] fires for every poll attempt.
+	Observer stats.Observer
+
+	// Buffer is the output stream channel buffer size. Default 0.
+	Buffer int
+}
+
+// PollStream polls handle at interval by calling [Call] with req and emitting
+// each response to the returned [gstream.Stream]. Call errors go to
+// [gstream.Stream.Errors] as-is (all typed: [UnexpectedStatusError], etc.).
+// The stream terminates when ctx is cancelled.
+//
+// Use PollStream to turn a periodic REST fetch into a continuous stream source.
+func PollStream[Req, Resp any](
+	ctx context.Context,
+	client *http.Client,
+	baseURL string,
+	handle *rest.RouteHandle[Req, Resp],
+	req Req,
+	interval time.Duration,
+	opts PollStreamOptions,
+) gstream.Stream[Resp] {
+	obs := opts.Observer
+	if obs == nil {
+		obs = stats.NoopObserver{}
+	}
+	values := make(chan Resp, opts.Buffer)
+	errs := make(chan error, opts.Buffer)
+	go func() {
+		defer close(values)
+		defer close(errs)
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				resp, err := Call(ctx, client, baseURL, handle, req, nil,
+					CallOptions{Observer: obs})
+				if err != nil {
+					select {
+					case errs <- err:
+					case <-ctx.Done():
+						return
+					}
+					continue
+				}
+				select {
+				case values <- resp:
+				case <-ctx.Done():
+					return
+				}
+			}
+		}
+	}()
+	return gstream.Stream[Resp]{Values: values, Errors: errs}
+}
+
+// DrainCallOptions configures [DrainCall].
+type DrainCallOptions struct {
+	// OnError, when non-nil, is called for [Call] errors and upstream stream errors.
+	OnError func(error)
+
+	// CallOpts are passed to [Call] for each item — including Observer, credential
+	// func, and param maps. [stats.Observer.RecordRequest] fires for every call.
+	CallOpts CallOptions
+}
+
+// DrainCall posts each item from src to handle using [Call], discarding the
+// response. Call errors and upstream stream errors are forwarded to opts.OnError.
+// Blocks until src terminates or ctx is cancelled.
+func DrainCall[Req, Resp any](
+	ctx context.Context,
+	client *http.Client,
+	baseURL string,
+	handle *rest.RouteHandle[Req, Resp],
+	src gstream.Stream[Req],
+	opts DrainCallOptions,
+) {
+	onErr := opts.OnError
+	gstream.Drain(ctx, src,
+		func(ctx context.Context, item Req) error {
+			if _, err := Call(ctx, client, baseURL, handle, item, nil, opts.CallOpts); err != nil {
+				if onErr != nil {
+					onErr(err)
+				}
+			}
+			return nil
+		},
+		func(e error) {
+			if onErr != nil {
+				onErr(e)
+			}
+		},
+		gstream.DrainOptions{},
+	)
+}
+
+// ── SSEClientStream ───────────────────────────────────────────────────────────
+
+// SSEClientOptions configures [SSEClientStream].
+type SSEClientOptions struct {
+	// RetryDelay is the initial reconnect wait after a dropped connection (default 1s).
+	RetryDelay time.Duration
+	// MaxRetryDelay caps the exponential backoff (default 30s).
+	MaxRetryDelay time.Duration
+
+	// Observer receives per-connect lifecycle events:
+	//   [stats.Observer.RecordRequest] is called for every connect attempt.
+	//   [stats.TraceObserver] spans wrap each connection session.
+	Observer stats.Observer
+
+	// Buffer is the output stream channel buffer size. Default 0.
+	Buffer int
+}
+
+// SSEClientStream connects to an SSE endpoint and emits each decoded event as a
+// stream item. The stream reconnects automatically with exponential backoff when
+// the connection drops. It terminates when ctx is cancelled.
+//
+// Connection failures are sent to Stream.Errors as [SSEConnectError].
+// Data line decode failures are sent to Stream.Errors as [SSEParseError].
+//
+// Use SSEClientStream to consume a server-sent events feed from another service:
+//
+//	events := nethttp.SSEClientStream(ctx, httpClient, baseURL, eventHandle,
+//	    format.JSON(eventCodec),
+//	    nethttp.SSEClientOptions{RetryDelay: 2*time.Second, Observer: obs})
+//	oeeStream := stream.Apply(ctx, events, oeeCalcFn, opts)
+func SSEClientStream[Req, Event any](
+	ctx context.Context,
+	client *http.Client,
+	baseURL string,
+	handle *rest.SSERouteHandle[Req, Event],
+	fmt format.Format[Event],
+	opts SSEClientOptions,
+) gstream.Stream[Event] {
+	if opts.RetryDelay <= 0 {
+		opts.RetryDelay = time.Second
+	}
+	if opts.MaxRetryDelay <= 0 {
+		opts.MaxRetryDelay = 30 * time.Second
+	}
+	obs := opts.Observer
+	if obs == nil {
+		obs = stats.NoopObserver{}
+	}
+
+	values := make(chan Event, opts.Buffer)
+	errs := make(chan error, opts.Buffer)
+
+	go func() {
+		defer close(values)
+		defer close(errs)
+
+		url := baseURL + handle.Descriptor.Path
+		delay := opts.RetryDelay
+		attempt := 0
+
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			default:
+			}
+
+			attempt++
+			start := time.Now()
+
+			req, reqErr := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+			if reqErr != nil {
+				obs.RecordRequest(http.MethodGet, handle.Descriptor.Path, 0, time.Since(start))
+				select {
+				case errs <- SSEConnectError{URL: url, Attempt: attempt, Err: reqErr}:
+				case <-ctx.Done():
+					return
+				}
+				return // context error — no retry
+			}
+			req.Header.Set("Accept", "text/event-stream")
+			req.Header.Set("Cache-Control", "no-cache")
+
+			resp, doErr := client.Do(req)
+			if doErr != nil {
+				obs.RecordRequest(http.MethodGet, handle.Descriptor.Path, 0, time.Since(start))
+				select {
+				case errs <- SSEConnectError{URL: url, Attempt: attempt, Err: doErr}:
+				case <-ctx.Done():
+					return
+				}
+			} else if resp.StatusCode != http.StatusOK {
+				_ = resp.Body.Close()
+				obs.RecordRequest(http.MethodGet, handle.Descriptor.Path, resp.StatusCode, time.Since(start))
+				connErr := SSEConnectError{URL: url, Attempt: attempt,
+					Err: fmt2.Errorf("unexpected status %d", resp.StatusCode)}
+				select {
+				case errs <- connErr:
+				case <-ctx.Done():
+					return
+				}
+			} else {
+				// Connected — read events until disconnect
+				obs.RecordRequest(http.MethodGet, handle.Descriptor.Path, resp.StatusCode, time.Since(start))
+				disconnect := sseReadEvents(ctx, resp.Body, url, fmt, obs, values, errs)
+				_ = resp.Body.Close()
+				if !disconnect {
+					return // ctx cancelled
+				}
+				// Connection dropped — retry after backoff
+				delay = resetDelay(delay, opts.RetryDelay, opts.MaxRetryDelay)
+				select {
+				case <-time.After(delay):
+				case <-ctx.Done():
+					return
+				}
+				continue
+			}
+
+			// Back-off before retry
+			delay = resetDelay(delay, opts.RetryDelay, opts.MaxRetryDelay)
+			select {
+			case <-time.After(delay):
+			case <-ctx.Done():
+				return
+			}
+		}
+	}()
+	return gstream.Stream[Event]{Values: values, Errors: errs}
+}
+
+// sseReadEvents reads SSE data lines from body, decodes each, and sends to
+// values/errs. Returns true if the connection dropped (caller should retry),
+// false if ctx was cancelled.
+func sseReadEvents[Event any](
+	ctx context.Context,
+	body io.Reader,
+	url string,
+	fmt format.Format[Event],
+	obs stats.Observer,
+	values chan<- Event,
+	errs chan<- error,
+) bool {
+	scanner := bufio.NewScanner(body)
+	for scanner.Scan() {
+		select {
+		case <-ctx.Done():
+			return false
+		default:
+		}
+		line := scanner.Text()
+		if !strings.HasPrefix(line, "data: ") {
+			continue // skip comment/retry/id lines
+		}
+		data := strings.TrimPrefix(line, "data: ")
+		event, decErr := fmt.Unmarshal([]byte(data))
+		if decErr != nil {
+			stats.ReportErrors(obs, "sse_data", decErr)
+			select {
+			case errs <- SSEParseError{URL: url, Line: data, Err: decErr}:
+			case <-ctx.Done():
+				return false
+			}
+			continue
+		}
+		select {
+		case values <- event:
+		case <-ctx.Done():
+			return false
+		}
+	}
+	return true // scanner.Scan() returned false → connection dropped
+}
+
+func resetDelay(current, initial, max time.Duration) time.Duration {
+	next := current * 2
+	if next > max {
+		next = max
+	}
+	if next < initial {
+		next = initial
+	}
+	return next
+}
+
+// fmt2 is an alias for the standard fmt package to avoid shadowing the fmt
+// parameter in SSEClientStream.
+var fmt2 = struct{ Errorf func(string, ...any) error }{
+	Errorf: fmt.Errorf,
 }
 
 // ── internal helpers ──────────────────────────────────────────────────────────

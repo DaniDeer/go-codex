@@ -5,10 +5,12 @@ import (
 	"errors"
 	"net/http"
 	"sync/atomic"
+	"time"
 
 	gochi "github.com/go-chi/chi/v5"
 
 	"github.com/DaniDeer/go-codex/api/rest"
+	"github.com/DaniDeer/go-codex/stats"
 	gstream "github.com/DaniDeer/go-codex/stream"
 )
 
@@ -215,6 +217,99 @@ func RegisterPipeline[Req, Resp any](
 ) {
 	r.Method(handle.Descriptor.Method, handle.Descriptor.Path,
 		PipelineHandler(handle, fn, opts))
+}
+
+// ── SSEFromStream / SSEFromHub ────────────────────────────────────────────────
+
+// SSEStreamOptions configures [SSEFromStream] and [SSEFromHub].
+// Mirrors [nethttp.SSEStreamOptions].
+type SSEStreamOptions struct {
+	// Topic is the SSE route path used for observer reporting and error context.
+	Topic string
+
+	// OnError, when non-nil, is called for write failures ([SSEWriteError]) and
+	// upstream stream errors.
+	OnError func(error)
+
+	// Observer receives per-event lifecycle events.
+	// [stats.Observer.RecordSubscribe] fires for each emitted event (success=true)
+	// or error (success=false). [stats.TraceObserver] spans wrap each send.
+	Observer stats.Observer
+}
+
+// SSEFromStream returns an [SSEHandlerFunc] where streamFactory is called once
+// per connecting SSE client with the decoded Req. Each client gets its own stream.
+//
+// Use SSEFromStream when each client receives a personalised or filtered stream.
+func SSEFromStream[Req, Event any](
+	streamFactory func(context.Context, Req) gstream.Stream[Event],
+	opts SSEStreamOptions,
+) SSEHandlerFunc[Req, Event] {
+	obs := opts.Observer
+	if obs == nil {
+		obs = stats.NoopObserver{}
+	}
+	return func(ctx context.Context, req Req, send func(Event) error) error {
+		src := streamFactory(ctx, req)
+		valCh := src.Values
+		errCh := src.Errors
+		for valCh != nil || errCh != nil {
+			select {
+			case <-ctx.Done():
+				return nil
+			case v, ok := <-valCh:
+				if !ok {
+					valCh = nil
+					continue
+				}
+				start := time.Now()
+				var spanCtx = ctx
+				if to, ok2 := obs.(stats.TraceObserver); ok2 {
+					spanCtx = to.StartSpan(ctx, "sse.send", opts.Topic)
+				}
+				sendErr := send(v)
+				if to, ok2 := obs.(stats.TraceObserver); ok2 {
+					to.EndSpan(spanCtx, sendErr)
+				}
+				if sendErr != nil {
+					obs.RecordSubscribe(opts.Topic, false, time.Since(start))
+					we := SSEWriteError{Path: opts.Topic, Err: sendErr}
+					if opts.OnError != nil {
+						opts.OnError(we)
+					}
+					return sendErr
+				}
+				obs.RecordSubscribe(opts.Topic, true, time.Since(start))
+			case e, ok := <-errCh:
+				if !ok {
+					errCh = nil
+					continue
+				}
+				obs.RecordSubscribe(opts.Topic, false, 0)
+				if opts.OnError != nil {
+					opts.OnError(e)
+				}
+			}
+		}
+		return nil
+	}
+}
+
+// SSEFromHub returns an [SSEHandlerFunc] backed by a shared [gstream.BroadcastHub].
+// All connecting SSE clients share the same event stream.
+//
+// Use SSEFromHub for live dashboards broadcasting the same stream to all users.
+func SSEFromHub[Req, Event any](
+	hub *gstream.BroadcastHub[Event],
+	opts SSEStreamOptions,
+) SSEHandlerFunc[Req, Event] {
+	return func(ctx context.Context, req Req, send func(Event) error) error {
+		sub := hub.Subscribe()
+		defer hub.Unsubscribe(sub)
+		return SSEFromStream[Req, Event](func(_ context.Context, _ Req) gstream.Stream[Event] {
+			return sub
+		}, opts)(ctx, req, send)
+	}
 }
 
 // ── internal helpers ──────────────────────────────────────────────────────────
