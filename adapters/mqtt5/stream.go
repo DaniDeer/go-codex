@@ -170,7 +170,9 @@ func AsPipelineFunc[Req, Resp any](
 			return zero, errs[0]
 		}
 		if len(vals) == 0 {
-			return zero, PipelineNoResponseError{Topic: "mqtt5"}
+			// Topic is left empty because AsPipelineFunc wraps the fn, not the handle;
+			// the actual MQTT topic is not available at this level.
+			return zero, PipelineNoResponseError{Topic: ""}
 		}
 		return vals[0], nil
 	}

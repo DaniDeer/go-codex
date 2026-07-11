@@ -1,6 +1,17 @@
-# go-codex Review History (R1–R36)
+# go-codex Review History (R1–R37)
 
 Do not re-report any of these findings. They have been implemented and tested.
+
+---
+
+## Round 37 (stream bridge review — bugs, errors, test coverage)
+
+- **G1 [small] — `zeromq.ServeLatest` double-calls `opts.OnError` for no-value case**: When the latest pointer was nil, the fn body called `onErr(NoLatestValueError{...})` directly AND `Serve` then called `serveOpts.OnError(ServeError{KindHandler, ...})`, so `opts.OnError` fired twice; fixed by removing the direct call from fn and detecting `NoLatestValueError` via `errors.As` in the `serveOpts.OnError` wrapper, delivering the typed error without double-firing.
+- **G2 [trivial] — `mqtt5` bridge functions had no tests**: `mqtt5.SubscribeStream`, `mqtt5.DrainPublish`, `mqtt5.AsPipelineFunc`, and `mqtt5.CallStream` had no dedicated tests; added `adapters/mqtt5/stream_test.go` covering happy path, decode errors routed to `Stream.Errors`, error precedence, `PipelineNoResponseError`, and upstream error forwarding.
+- **G3 [trivial] — `chi` bridge helpers had no behavioral tests**: `chi.HandlerLatest`, `chi.HandlerIngest`, and `chi.PipelineHandler` had only error-type tests; added `adapters/chi/stream_test.go` covering latest value return, 503 before first value, ingest push + full channel 503, pipeline value + error + Tap observation + no-value `PipelineNoResponseError`.
+- **G4 [trivial] — `mcpgo.ToolLatestHandler` had no tests**: Added `adapters/mcpgo/stream_test.go` covering: latest value returned (success), no-value case `IsError=true` with "no value computed yet" message, input validation still runs (constrainedInputCodec rejects negative input), observer receives `RecordRequest(200)` on success.
+- **G5 [trivial] — `AsPipelineFunc` used hardcoded transport name in `PipelineNoResponseError.Topic`**: `mqtt5.AsPipelineFunc` returned `PipelineNoResponseError{Topic: "mqtt5"}` and `zeromq.AsPipelineFunc` returned `{Topic: "zeromq"}` — misleading since the actual topic is unknown; changed both to `Topic: ""` with a godoc comment explaining the empty value.
+- **G6 [trivial] — `mcpgo.ToolLatestHandler` used wrong error type for no-value state**: Returned `apimcp.ToolInputError{Name: ..., Err: errNoLatestValue}` when no value was available, producing `"tool getOEE input: no value computed yet"` — the "input:" prefix is semantically wrong (not an input problem); changed to return `errNoLatestValue` directly so `ToolHandler` produces `mcp.NewToolResultError("no value computed yet")`.
 
 ---
 

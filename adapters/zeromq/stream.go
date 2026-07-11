@@ -2,6 +2,7 @@ package zeromq
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sync/atomic"
 
@@ -158,7 +159,9 @@ func AsPipelineFunc[Req, Resp any](
 			return zero, errs[0]
 		}
 		if len(vals) == 0 {
-			return zero, PipelineNoResponseError{Topic: "zeromq"}
+			// Topic is left empty because AsPipelineFunc wraps the fn, not the handle;
+			// the actual ZeroMQ topic is not available at this level.
+			return zero, PipelineNoResponseError{Topic: ""}
 		}
 		return vals[0], nil
 	}
@@ -309,18 +312,26 @@ func ServeLatest[Req, Resp any](
 		Observer: opts.Observer,
 	}
 	if onErr != nil {
-		serveOpts.OnError = func(se ServeError) { onErr(se) }
+		// Unwrap NoLatestValueError from ServeError so callers receive the specific
+		// typed error rather than the generic wrapper. This avoids double-calling onErr
+		// (once directly and once via Serve's OnError path).
+		serveOpts.OnError = func(se ServeError) {
+			var nv NoLatestValueError
+			if errors.As(se.Err, &nv) {
+				onErr(nv) // deliver NoLatestValueError directly
+			} else {
+				onErr(se)
+			}
+		}
 	}
 
 	return Serve(ctx, sock, handle, func(ctx context.Context, _ Req) (Resp, error) {
 		ptr := latest.Load()
 		if ptr == nil {
-			noVal := NoLatestValueError{Topic: handle.Topic}
-			if onErr != nil {
-				onErr(noVal)
-			}
 			var zero Resp
-			return zero, fmt.Errorf("%w", noVal)
+			// Return wrapped so Serve can send an error reply frame to the caller.
+			// serveOpts.OnError will unwrap and deliver NoLatestValueError to opts.OnError.
+			return zero, fmt.Errorf("%w", NoLatestValueError{Topic: handle.Topic})
 		}
 		return *ptr, nil
 	}, serveOpts)

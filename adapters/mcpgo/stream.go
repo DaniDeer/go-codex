@@ -12,6 +12,10 @@ import (
 	gstream "github.com/DaniDeer/go-codex/stream"
 )
 
+// errNoLatestValue is the sentinel returned by ToolLatestHandler when the
+// background stream has not yet produced a value. ToolHandler converts any
+// Go error from fn to mcp.NewToolResultError(err.Error()) — the LLM sees
+// "no value computed yet" as a tool error result with IsError: true.
 var errNoLatestValue = errors.New("no value computed yet")
 
 // ToolLatestHandler creates an MCP tool handler that replies to every LLM tool
@@ -63,9 +67,10 @@ func ToolLatestHandler[In, Out any](
 		ptr := latest.Load()
 		var zero Out
 		if ptr == nil {
-			// Return as tool error (not Go error) per MCP protocol contract.
-			// ToolHandler converts Go errors to mcp.NewToolResultError(...) with IsError:true.
-			return zero, apimcp.ToolInputError{Name: handle.Name, Err: errNoLatestValue}
+			// Return a plain error — ToolHandler converts any fn error to
+			// mcp.NewToolResultError(err.Error()) with IsError:true (status 500).
+			// The LLM sees "no value computed yet" without any misleading prefix.
+			return zero, errNoLatestValue
 		}
 		return *ptr, nil
 	}, opts)
