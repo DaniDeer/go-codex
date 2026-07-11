@@ -16,18 +16,23 @@ import (
 
 // SubscribeStream creates a bridge from an MQTT 5 subscription to a typed stream.
 // It returns both the stream and the raw message handler to register with the
-// MQTTRouter (via [Subscribe] or router.RegisterHandler). The caller must register
-// the handler before messages can flow:
+// MQTTRouter (via router.RegisterHandler). The caller must register the handler
+// before messages can flow:
 //
 //	s, rawHandler := mqtt5.SubscribeStream(ctx, sensorHandle, format.JSON(sensorCodec),
 //	    gstream.SourceOptions{Name: "mqtt5/sensors/+", Observer: obs},
 //	    mqtt5.SubscribeOptions{Observer: obs})
-//	// Register with the router so Subscribe can be called:
+//	// Register with the router so messages are delivered:
 //	router.RegisterHandler(sensorHandle.Topic, rawHandler)
 //	oeeStream := gstream.Apply(ctx, s, oeeCalcFn, gstream.ApplyOptions{Observer: obs})
 //
-// Decode or validation failures are sent to [gstream.Stream.Errors] as
-// [gstream.StreamDecodeError]. The stream terminates when ctx is cancelled.
+// The returned handler applies the full mqtt5 validation pipeline, identical to
+// [Subscribe]: ContentType negotiation, UserPropertyParams validation, security
+// enforcement, observer calls, and TraceObserver spans. All validation failures
+// are sent to [gstream.Stream.Errors] as [SubscribeError] so they can be handled
+// by stream operators like [gstream.MapErr].
+//
+// The stream terminates when ctx is cancelled.
 func SubscribeStream[T any](
 	ctx context.Context,
 	handle *events.ChannelHandle[T],
@@ -35,27 +40,48 @@ func SubscribeStream[T any](
 	srcOpts gstream.SourceOptions,
 	subOpts SubscribeOptions,
 ) (gstream.Stream[T], func(*pahomqtt5.Publish)) {
-	rawCh := make(chan []byte, srcOpts.Buffer)
-	if srcOpts.Name == "" {
-		srcOpts.Name = handle.Topic
-	}
+	typedCh := make(chan T, srcOpts.Buffer)
+	errCh := make(chan error, srcOpts.Buffer)
 
 	obs := subOpts.Observer
 	if obs == nil {
 		obs = stats.NoopObserver{}
 	}
 
-	handler := func(msg *pahomqtt5.Publish) {
+	// Format priority: call-time fmt > handle.SubscribeFormats > handle.Formats > handle.Decode
+	// Call-time fmt always takes priority (same as Subscribe's variadic formats parameter).
+	effectiveFmts := []format.Format[T]{fmt}
+
+	// Override OnError: route adapter errors (decode, security, user properties)
+	// to Stream.Errors so callers can handle them with stream operators.
+	innerOpts := subOpts
+	innerOpts.OnError = func(e SubscribeError) {
 		select {
-		case rawCh <- msg.Payload:
-			obs.RecordSubscribe(handle.Topic, true, 0)
+		case errCh <- e:
 		case <-ctx.Done():
-		default:
+		default: // drop on full buffer
 		}
 	}
 
-	src := gstream.FromCodec(ctx, rawCh, fmt, srcOpts)
-	return src, handler
+	// makeSubscribeMessageHandler applies ContentType negotiation,
+	// UserPropertyParams validation, security, observer calls — identical to Subscribe.
+	handler := makeSubscribeMessageHandler(ctx, handle, effectiveFmts,
+		func(_ context.Context, v T) error {
+			select {
+			case typedCh <- v:
+			case <-ctx.Done():
+			default: // drop on full buffer
+			}
+			return nil
+		}, obs, innerOpts)
+
+	go func() {
+		<-ctx.Done()
+		close(typedCh)
+		close(errCh)
+	}()
+
+	return gstream.Stream[T]{Values: typedCh, Errors: errCh}, handler
 }
 
 // ── DrainPublish ──────────────────────────────────────────────────────────────
@@ -67,6 +93,8 @@ type MQTT5DrainPublishOptions struct {
 	// Retained, when true, publishes each item as a retained message.
 	Retained bool
 	// Vars, when non-nil, substitutes {varName} placeholders in the topic template.
+	// The same map is used for every item in the stream (static topic vars only).
+	// For per-item topic var substitution, use [gstream.Drain] with [Publish] directly.
 	Vars map[string]string
 	// OnError, when non-nil, is called for encode failures or upstream stream errors.
 	OnError func(error)

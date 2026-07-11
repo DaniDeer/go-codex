@@ -366,3 +366,86 @@ Verify `examples/adapters-mcp/main.go` demonstrates:
 - Observer (CountingObserver) wired and printed at end
 - Structured error handling (`errors.As` on `ResourceParamError`, `MissingPromptArgError`)
 - Transport options comment block (stdio / streamable HTTP / SSE)
+
+---
+
+## 11. Stream Bridge Consistency
+
+Stream bridges connect adapters to `stream.Stream[T]`. Apply these checks after any addition or change to `adapters/*/stream.go` or `adapters/file/`.
+
+### Source bridge validation pipeline (Rule B1)
+
+Every source bridge must delegate to the underlying adapter function rather than rolling its own validation:
+
+| Bridge | Check | Bug if |
+|--------|-------|--------|
+| `mqtt.SubscribeStream` | Uses `SubscribeHandler(ctx, handle, fn, innerOpts, fmt)` internally | Raw handler pushes `msg.Payload()` without calling `SubscribeHandler` |
+| `mqtt5.SubscribeStream` | Uses `makeSubscribeMessageHandler(ctx, handle, effectiveFmts, fn, obs, innerOpts)` | Raw handler pushes `msg.Payload` without going through `makeSubscribeMessageHandler` |
+| `zeromq.SubscribeStream` | Calls `sock.SetSubscription(handle.Topic)` before loop; decodes via `stream.FromCodec` | SetSubscription not called, or raw payload pushed without decode |
+| `nethttp.HandlerLatest` | Returns `Handler(handle, fn, wrappedOpts)` | Implements its own `http.HandlerFunc` that skips any codec layer |
+| `nethttp.HandlerIngest` | Returns `Handler(handle, handlerIngestFn(handle, dst), wrappedOpts)` | Same |
+| `nethttp.PipelineHandler` | Returns `Handler(handle, fn, opts)` | Same |
+| `chi.*` bridges | Same as nethttp equivalents, using chi `Handler` | Same |
+| `sql.QueryStream` | Calls `Validate(codec, row, opts)` per row | Rows pushed without `Validate` call |
+| `mcpgo.ToolLatestHandler` | Returns `ToolHandler(handle, fn, opts)` wrapping | Direct `server.ToolHandlerFunc` that skips `handle.Decode`/`handle.Encode` |
+
+### Error routing to `Stream.Errors` (Rule B2)
+
+Check each source bridge: errors must reach `Stream.Errors` as typed errors, not be silently discarded.
+
+| Bridge | How errors reach Stream.Errors | Error type |
+|--------|-------------------------------|------------|
+| `mqtt.SubscribeStream` | `innerOpts.OnError = func(e SubscribeError) { select { case errCh <- e: ... } }` | `mqtt.SubscribeError` |
+| `mqtt5.SubscribeStream` | Same `innerOpts.OnError` override pattern | `mqtt5.SubscribeError` |
+| `sql.QueryStream` | `QueryStreamError` emitted to `errCh` on `queryFn` failure; `RowValidationError` on codec failure | `sql.QueryStreamError`, `sql.RowValidationError` |
+| `zeromq.SubscribeStream` | Payload errors routed via `stream.FromCodec` → `StreamDecodeError` in `Stream.Errors` | `gstream.StreamDecodeError` |
+
+Missing error routing (errors dropped to `default` only without `errCh <- e`) = `bug` finding.
+
+### Sink bridge documentation (Rule B3)
+
+Check `DrainPublish` options in `mqtt`, `mqtt5`, and `zeromq`. Godoc for the `Vars` field must say:
+> "The same map is used for every item (static topic vars only). For per-item topic var substitution, use [stream.Drain] with [Publish] directly."
+
+Missing note = `trivial` finding.
+
+### AsPipelineFunc pattern (Rule B4)
+
+`AsPipelineFunc` in `mqtt5` and `zeromq` must:
+1. Return `func(context.Context, Req) (Resp, error)` — the fn signature for `Serve`/`ServeRouter`
+2. Use `stream.Single(ctx, req)` to build the per-request source
+3. Call `stream.Collect(ctx, pipeline)` to extract the result
+4. Return `PipelineNoResponseError{Topic}` when `vals` is empty
+5. Return `errs[0]` (not `vals[0]`) when both `errs` and `vals` are non-empty
+
+Deviation from any of these = `small` finding.
+
+### Bridge error type completeness
+
+Verify every error type listed in the Structured Errors Guardrail for each bridge package:
+
+| Package | Error types that must exist and implement `slog.LogValuer` |
+|---------|----------------------------------------------------------|
+| `adapters/nethttp` | `NoLatestValueError{Path}`, `PipelineFullError{Path,Capacity}`, `PipelineNoResponseError{Path}`, `SSEWriteError{Path,Err}`, `SSEConnectError{URL,Attempt,Err}`, `SSEParseError{URL,Line,Err}` |
+| `adapters/chi` | `NoLatestValueError{Path}`, `PipelineFullError{Path,Capacity}`, `PipelineNoResponseError{Path}`, `SSEWriteError{Path,Err}` |
+| `adapters/zeromq` (bridge additions) | `ServeLatestError{Op,Err}`, `NoLatestValueError{Topic}`, `CorrelationError{Seq,Err}`, `PipelineNoResponseError{Topic}` |
+| `adapters/mqtt5` (bridge addition) | `PipelineNoResponseError{Topic}` |
+| `adapters/sql` (bridge additions) | `QueryStreamError{Table,Op,Err}`, `InsertStreamError{Table,Op,Err}` |
+| `adapters/file` (all new) | `ScanError{Path,Err}`, `WatchError{Dir,Err}`, `WriteError{Path,Err}` |
+
+Errors with inner `Err` field must implement `Unwrap()`. Terminal errors (no inner cause) must NOT implement `Unwrap()`. Violation = `small` finding.
+
+### `HandlerIngest` param value gap (documented design)
+
+`HandlerIngest` pushes only the body-decoded `Req` to the channel — path/query/cookie/header param values are validated but discarded. **Do not flag this as a bug** — it is documented design. Check only that the godoc note is present in `HandlerIngest` explaining this and providing the `Handler`-direct workaround.
+
+Missing godoc note = `trivial` finding.
+
+### HTTP bridge codec coverage documentation
+
+`HandlerLatest`, `HandlerIngest`, and `PipelineHandler` godoc should include a "Codec coverage" section listing all HTTP codec layers. If it is missing:
+- `HandlerLatest`: must note that Req is validated even though discarded
+- `HandlerIngest`: must note body-only channel push + param value gap + workaround
+- `PipelineHandler`: must document `RequestFromContext(ctx)` for param access + response header/cookie pattern
+
+Missing section = `trivial` finding per handler.

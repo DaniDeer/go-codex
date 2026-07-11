@@ -44,6 +44,33 @@ Three bridge patterns cover the full HTTP ↔ stream lifecycle. All helpers take
 existing `Options` struct — no new option structs — and return `http.Handler`
 (nethttp) or `http.HandlerFunc` (chi), matching the existing `Handler` API.
 
+### Codec coverage — all HTTP layers applied by every bridge
+
+All three bridges wrap the existing `Handler` function. Before calling the bridge fn,
+`Handler` runs the full HTTP codec validation stack in this order:
+
+| Layer | Codec applied | Error response |
+|-------|--------------|----------------|
+| Request body | `handle.Decode(body)` — body codec | 400 Bad Request |
+| Query params | `ValidateQuery` — per-`QueryParam.Codec[string]` | 400 |
+| Cookie params | `ValidateCookies` — per-`CookieParam.Codec[string]` | 400 |
+| Header params | `ValidateHeaders` — per-`HeaderParam.Codec[string]` | 400 |
+| Path params | `ValidatePathParams` — per-`PathParam.Codec[string]` | 400 |
+| Security | credential codec + `SecurityFunc` | 401 |
+| Response body | `handle.Encode(resp)` | 500 |
+| Response headers | `ValidateResponseHeaders` | 500 |
+| Response cookies | `ValidateResponseCookies` | 500 |
+
+**All codec validation errors produce the correct HTTP status** regardless of which bridge is used.
+
+**Accessing param values inside the bridge fn:**
+
+| Bridge | Body `Req` | Path/query/cookie/header VALUES |
+|--------|-----------|--------------------------------|
+| `HandlerLatest` | Decoded + validated, then **discarded** | Not needed — fn returns cached value |
+| `HandlerIngest` | Decoded + validated, **pushed to channel** | Validated but **not in channel item** — see below |
+| `PipelineHandler` | Decoded + validated, **passed to fn** | Via `RequestFromContext(ctx)` inside fn |
+
 ### Pattern 1 — `HandlerLatest` / `RegisterLatest`
 
 **Direction:** running `stream.Stream[Resp]` → every HTTP request
@@ -112,6 +139,33 @@ if the channel is at capacity, the handler calls `opts.ErrorHandler` with HTTP *
 and `nethttp.PipelineFullError{Path, Capacity}`. Tune buffer size based on `Capacity`
 from the error log.
 
+**Including path/query/cookie/header param values in the channel item:**
+
+`HandlerIngest` pushes only the body-decoded `Req` to the channel. Path params, query
+params, cookies, and headers are codec-validated (errors produce 400) but their values
+are not included in what's pushed. For a route like `POST /sensors/{sensorID}/readings`
+where `sensorID` must reach the pipeline, use `Handler` directly with a custom fn:
+
+```go
+// Use Handler when param values must be included in the channel item:
+nethttp.Register(mux, ingestHandle,
+    func(ctx context.Context, body SensorBody) (struct{}, error) {
+        r, _ := nethttp.RequestFromContext(ctx)
+        sensorID := r.PathValue("sensorID") // already codec-validated by Handler
+        select {
+        case ingestCh <- SensorReading{SensorID: sensorID, Value: body.Value}:
+            return struct{}{}, nil
+        default:
+            return struct{}{}, nethttp.PipelineFullError{
+                Path:     ingestHandle.Descriptor.Path,
+                Capacity: cap(ingestCh),
+            }
+        }
+    }, nethttp.Options{Observer: obs})
+```
+
+`HandlerIngest` is the convenience shortcut for body-only ingestion.
+
 ### Pattern 3 — `PipelineHandler` / `RegisterPipeline`
 
 **Direction:** per-request pipeline (each HTTP request builds and runs a mini-stream)
@@ -154,6 +208,42 @@ validation, security enforcement, and observer calls follow the same path as a p
 - Error takes precedence over values (`Stream.Errors` first → HTTP 500).
 - Multiple emitted values: only the first is used; extras silently discarded.
 - Context cancelled before any value: `PipelineNoResponseError{Path}` → HTTP 500.
+
+**Accessing path/query/cookie/header param values inside the pipeline:**
+
+The fn receives `(ctx, req)`. The body `req` is fully decoded. To access path, query,
+cookie, or header param values (all already codec-validated by `Handler`), call
+`RequestFromContext(ctx)` anywhere in the fn — including inside `Tap` or forge functions:
+
+```go
+nethttp.RegisterPipeline(mux, handle,
+    func(ctx context.Context, body SensorBody) stream.Stream[OEEResult] {
+        r, _ := nethttp.RequestFromContext(ctx)
+        sensorID := r.PathValue("sensorID") // already validated as UUID by PathParam codec
+
+        s := stream.Single(ctx, body)
+        s = stream.Tap(ctx, s, func(v SensorBody) {
+            slog.Info("request", "sensor", sensorID, "value", v.Value)
+        })
+        return stream.Apply(ctx, s, oeeCalcFn, applyOpts)
+    }, nethttp.Options{Observer: obs})
+```
+
+**Setting response headers/cookies from within the pipeline:**
+
+Call `nethttp.WithResponseHeaders(ctx, h)` or `nethttp.WithResponseCookies(ctx, ...)` anywhere
+inside the pipeline fn. The maps stored in `ctx` are reference types — writes from stream
+goroutines are visible to `Handler` after `stream.Collect` returns. Safe for sequential
+pipelines (`Single` → `Apply` chain). Avoid concurrent writes to response headers from
+parallel operators (`CombineLatest`, `Merge`).
+
+```go
+return stream.Tap(ctx, resultStream, func(r OEEResult) {
+    h := make(http.Header)
+    h.Set("X-OEE-Sensor", r.SensorID) // set response header from pipeline
+    nethttp.WithResponseHeaders(ctx, h)
+})
+```
 
 ### HTTP bridge error types
 

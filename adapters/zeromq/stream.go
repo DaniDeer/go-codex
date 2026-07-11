@@ -76,6 +76,8 @@ func SubscribeStream[T any](
 type DrainPublishOptions struct {
 	// Vars, when non-nil, substitutes {varName} placeholders in the channel
 	// handle's topic template. Validated per [events.ChannelHandle.BuildTopic].
+	// The same map is used for every item (static topic vars only).
+	// For per-item topic var substitution, use [gstream.Drain] with [Publish] directly.
 	Vars map[string]string
 
 	// OnError, when non-nil, is called for encode failures ([PublishEncodeError]),
@@ -166,6 +168,15 @@ func AsPipelineFunc[Req, Resp any](
 
 // CallStreamOptions configures [CallStream].
 type CallStreamOptions struct {
+	// Vars, when non-nil, substitutes {varName} placeholders in the route topic
+	// template before encoding each request. The same Vars map is used for every
+	// request item in the stream. For per-item topic var substitution, use
+	// [gstream.Drain] with [Call] directly.
+	//
+	// Each variable value is validated against its registered [reqreply.RouteParam]
+	// codec (if any) before the first request is sent.
+	Vars map[string]string
+
 	// Observer receives per-call lifecycle events.
 	Observer stats.Observer
 	// Buffer is the output Stream channel buffer size. Default 0.
@@ -191,7 +202,7 @@ func CallStream[Req, Resp any](
 	go func() {
 		defer close(values)
 		defer close(errs)
-		callOpts := CallOptions{Observer: opts.Observer}
+		callOpts := CallOptions{Observer: opts.Observer, Vars: opts.Vars}
 		valCh := src.Values
 		errCh := src.Errors
 		for valCh != nil || errCh != nil {

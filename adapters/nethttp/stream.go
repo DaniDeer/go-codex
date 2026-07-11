@@ -23,9 +23,13 @@ import (
 // Use HandlerLatest for "get current OEE", "get latest sensor reading", or any
 // "current state" REST endpoint backed by a continuously running stream pipeline.
 //
-// The Req body is decoded and validated per the route handle's codec before the
-// handler fires (standard [Handler] behaviour). Req is not used for computation —
-// the response is always the latest stream value.
+// # Codec coverage — all HTTP layers validated
+//
+// [Handler] validates all codec layers before the fn fires: body codec, query
+// params, cookie params, header params, path params, and security. The decoded
+// [Req] value and all param values are validated but not used for computation —
+// the response is always the latest stream value. This ensures only well-formed
+// requests receive a cached response; invalid requests produce the standard 400.
 func HandlerLatest[Req, Resp any](
 	handle *rest.RouteHandle[Req, Resp],
 	src gstream.Stream[Resp],
@@ -101,6 +105,30 @@ func RegisterLatest[Req, Resp any](
 //	ingestHandle, _ := rest.NewRoute[SensorReading, struct{}]("POST", "/ingest",
 //	    readingCodec, codex.Struct[struct{}](), rest.RouteMeta{}).Register(b)
 //
+// # Codec coverage
+//
+// All HTTP codec layers are validated before the item is pushed to dst: body
+// codec, query params, cookie params, header params, path params, and security.
+// Validation errors produce the standard HTTP 400/401 responses.
+//
+// However, only the body-decoded [Req] value is pushed to dst. Path, query,
+// cookie, and header param VALUES (though validated) are NOT included in the
+// channel item. For routes where param values must accompany the body (e.g.
+// POST /sensors/{sensorID}/readings where sensorID must reach the pipeline),
+// use [Handler] directly with a custom [HandlerFunc] that calls
+// [RequestFromContext] to extract path values:
+//
+//	nethttp.Register(mux, ingestHandle, func(ctx context.Context, body SensorBody) (struct{}, error) {
+//	    r, _ := nethttp.RequestFromContext(ctx)
+//	    sensorID := r.PathValue("sensorID") // already codec-validated by Handler
+//	    select {
+//	    case dst <- SensorReading{SensorID: sensorID, Value: body.Value}:
+//	        return struct{}{}, nil
+//	    default:
+//	        return struct{}{}, nethttp.PipelineFullError{Path: handle.Descriptor.Path, Capacity: cap(dst)}
+//	    }
+//	}, opts)
+//
 // The caller owns dst — HandlerIngest never closes it.
 func HandlerIngest[Req any](
 	handle *rest.RouteHandle[Req, struct{}],
@@ -169,6 +197,43 @@ type PipelineHandlerFunc[Req, Resp any] func(ctx context.Context, req Req) gstre
 //   - [gstream.MapErr] for per-step typed error recovery
 //
 // For simple one-step handlers, use plain [Handler] for lower overhead.
+//
+// # Codec coverage — all HTTP layers
+//
+// Before fn is called, [Handler] has already validated and decoded:
+//   - Request body (→ req Req)
+//   - Query, cookie, header, path params (all registered [rest.Param] codecs)
+//   - Security credentials + SecurityFunc
+//
+// After fn returns, [Handler] validates:
+//   - Response body (handle.Encode)
+//   - Response header and cookie params (ValidateResponseHeaders / ValidateResponseCookies)
+//
+// # Accessing path/query/cookie/header param values inside the pipeline
+//
+// The decoded [Req] value (body) is passed directly to fn. To access path,
+// query, cookie, or header param values inside the pipeline (already codec-
+// validated by [Handler]), call [RequestFromContext] on the ctx passed to fn:
+//
+//	nethttp.RegisterPipeline(mux, handle,
+//	    func(ctx context.Context, body SensorBody) stream.Stream[OEEResult] {
+//	        r, _ := nethttp.RequestFromContext(ctx)
+//	        sensorID := r.PathValue("sensorID") // already validated
+//	        s := stream.Single(ctx, body)
+//	        s = stream.Tap(ctx, s, func(v SensorBody) {
+//	            slog.Info("request", "sensor", sensorID, "value", v.Value)
+//	        })
+//	        return stream.Apply(ctx, s, oeeCalcFn, opts)
+//	    }, opts)
+//
+// # Response headers and cookies inside the pipeline
+//
+// Call [WithResponseHeaders] or [WithResponseCookies] anywhere inside the
+// pipeline fn (including within [gstream.Tap] or forge functions). The maps
+// are reference types stored in ctx — writes in the pipeline goroutines are
+// visible to [Handler] after [gstream.Collect] returns. This is safe for
+// sequential pipelines (Single → Apply chain). Parallel pipelines that write
+// to response headers concurrently should use a mutex or avoid this pattern.
 func PipelineHandler[Req, Resp any](
 	handle *rest.RouteHandle[Req, Resp],
 	fn PipelineHandlerFunc[Req, Resp],

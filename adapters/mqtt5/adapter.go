@@ -164,30 +164,22 @@ type PublishOptions struct {
 // broker — call client.Unsubscribe explicitly if needed.
 //
 // The optional formats parameter specifies payload formats for decoding.
-func Subscribe[T any](
+// makeSubscribeMessageHandler builds the *pahomqtt5.Publish message handler used
+// by Subscribe and SubscribeStream. It applies ContentType negotiation,
+// UserPropertyParams validation, security enforcement, observer calls, and
+// tracing, then delivers the decoded value to fn.
+//
+// Separating handler creation from broker subscription lets SubscribeStream
+// reuse the same validation logic without calling the broker.
+func makeSubscribeMessageHandler[T any](
 	ctx context.Context,
-	client MQTTClient,
-	router MQTTRouter,
 	handle *events.ChannelHandle[T],
-	qos byte,
+	effectiveFmts []format.Format[T],
 	fn func(context.Context, T) error,
+	obs stats.Observer,
 	opts SubscribeOptions,
-	formats ...format.Format[T],
-) error {
-	obs := opts.Observer
-	if obs == nil {
-		obs = stats.NoopObserver{}
-	}
-
-	effectiveFmts := formats
-	if len(effectiveFmts) == 0 {
-		effectiveFmts = handle.SubscribeFormats
-	}
-	if len(effectiveFmts) == 0 {
-		effectiveFmts = handle.Formats
-	}
-
-	router.RegisterHandler(handle.Topic, func(msg *pahomqtt5.Publish) {
+) func(*pahomqtt5.Publish) {
+	return func(msg *pahomqtt5.Publish) {
 		start := time.Now()
 		msgCtx := context.WithValue(ctx, contextKey{}, msg)
 		if msg.Properties != nil && len(msg.Properties.User) > 0 {
@@ -274,7 +266,34 @@ func Subscribe[T any](
 			return
 		}
 		obs.RecordSubscribe(msg.Topic, true, time.Since(start))
-	})
+	}
+}
+
+func Subscribe[T any](
+	ctx context.Context,
+	client MQTTClient,
+	router MQTTRouter,
+	handle *events.ChannelHandle[T],
+	qos byte,
+	fn func(context.Context, T) error,
+	opts SubscribeOptions,
+	formats ...format.Format[T],
+) error {
+	obs := opts.Observer
+	if obs == nil {
+		obs = stats.NoopObserver{}
+	}
+
+	effectiveFmts := formats
+	if len(effectiveFmts) == 0 {
+		effectiveFmts = handle.SubscribeFormats
+	}
+	if len(effectiveFmts) == 0 {
+		effectiveFmts = handle.Formats
+	}
+
+	router.RegisterHandler(handle.Topic,
+		makeSubscribeMessageHandler(ctx, handle, effectiveFmts, fn, obs, opts))
 
 	_, err := client.Subscribe(ctx, &pahomqtt5.Subscribe{
 		Subscriptions: []pahomqtt5.SubscribeOptions{

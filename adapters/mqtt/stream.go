@@ -20,16 +20,18 @@ import (
 //	s, handler := mqtt.SubscribeStream(ctx, sensorHandle, format.JSON(sensorCodec),
 //	    gstream.SourceOptions{Name: "mqtt/sensors/+", Observer: obs},
 //	    mqtt.SubscribeOptions{Observer: obs})
-//	client.Subscribe(sensorHandle.Topic, 1, handler)
+//	client.Subscribe("sensors/+/data", 1, handler) // use MQTT wildcard, not API template
 //	oeeStream := gstream.Apply(ctx, s, oeeCalcFn, gstream.ApplyOptions{Observer: obs})
 //
-// Decode or validation failures are sent to [gstream.Stream.Errors] as
-// [gstream.StreamDecodeError]. The stream terminates when ctx is cancelled.
-// The caller owns the MQTT client subscription lifecycle — SubscribeStream
-// never calls client.Unsubscribe.
+// The returned handler is built by [SubscribeHandler] and applies the full adapter
+// validation pipeline: security enforcement, payload decode with format priority
+// (call-time > SubscribeFormats > Formats > handle.Decode), topic var error reporting,
+// and all observer calls. Decode, security, and handler errors are sent to
+// [gstream.Stream.Errors] as [SubscribeError] — callers can use [gstream.MapErr]
+// to recover or reclassify them.
 //
-// Observer calls from subOpts (RecordSubscribe, RecordValidationError) fire for
-// every incoming message, independent from the per-item stream observer in srcOpts.
+// The stream terminates when ctx is cancelled. The caller owns the MQTT client
+// subscription lifecycle — SubscribeStream never calls client.Unsubscribe.
 func SubscribeStream[T any](
 	ctx context.Context,
 	handle *events.ChannelHandle[T],
@@ -37,32 +39,39 @@ func SubscribeStream[T any](
 	srcOpts gstream.SourceOptions,
 	subOpts SubscribeOptions,
 ) (gstream.Stream[T], pahomqtt.MessageHandler) {
-	rawCh := make(chan []byte, srcOpts.Buffer)
-	if srcOpts.Name == "" {
-		srcOpts.Name = handle.Topic
-	}
+	typedCh := make(chan T, srcOpts.Buffer)
+	errCh := make(chan error, srcOpts.Buffer)
 
-	// The MQTT handler writes raw payloads to rawCh; security and observer calls
-	// from subOpts fire here. The application fn is a no-op — stream operators
-	// take over once FromCodec emits decoded items.
-	obs := subOpts.Observer
-	if obs == nil {
-		obs = stats.NoopObserver{}
-	}
-	handler := func(_ pahomqtt.Client, msg pahomqtt.Message) {
-		payload := msg.Payload()
-		topic := msg.Topic()
-		_ = topic // used for observer reporting
+	// Override OnError: route adapter errors (decode, security, topic vars)
+	// to Stream.Errors so callers can handle them with stream operators.
+	innerOpts := subOpts
+	innerOpts.OnError = func(e SubscribeError) {
 		select {
-		case rawCh <- payload:
-			obs.RecordSubscribe(topic, true, 0)
+		case errCh <- e:
 		case <-ctx.Done():
-		default: // drop when buffer is full
+		default: // drop on full buffer
 		}
 	}
 
-	src := gstream.FromCodec(ctx, rawCh, fmt, srcOpts)
-	return src, pahomqtt.MessageHandler(handler)
+	// SubscribeHandler applies format priority chain, security enforcement,
+	// topic var error reporting, and all observer calls — identical to direct usage.
+	handler := SubscribeHandler(ctx, handle,
+		func(_ context.Context, v T) error {
+			select {
+			case typedCh <- v:
+			case <-ctx.Done():
+			default: // drop on full buffer
+			}
+			return nil
+		}, innerOpts, fmt)
+
+	go func() {
+		<-ctx.Done()
+		close(typedCh)
+		close(errCh)
+	}()
+
+	return gstream.Stream[T]{Values: typedCh, Errors: errCh}, handler
 }
 
 // ── DrainPublish ──────────────────────────────────────────────────────────────
@@ -74,6 +83,9 @@ type MQTTDrainPublishOptions struct {
 	// Retained, when true, publishes each item as a retained message.
 	Retained bool
 	// Vars, when non-nil, substitutes {varName} placeholders in the topic template.
+	// The same map is used for every item in the stream (static topic vars only).
+	// For per-item topic var substitution (e.g. {sensorID} from each payload),
+	// use [gstream.Drain] with [Publish] directly and build the vars map per item.
 	Vars map[string]string
 	// OnError, when non-nil, is called for encode failures ([PublishEncodeError])
 	// or upstream stream errors.

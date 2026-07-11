@@ -22,8 +22,12 @@ import (
 // opts.ErrorHandler with HTTP 503 and [NoLatestValueError].
 // Errors from src.Errors are silently dropped — latest value is unaffected.
 //
-// The Req body is decoded and validated per the route handle's codec (standard
-// [Handler] behaviour). Req is not used for computation.
+// # Codec coverage — all HTTP layers validated
+//
+// [Handler] validates all codec layers before fn fires: body codec, query
+// params, cookie params, header params, path params, and security. Decoded Req
+// and all param values are validated but not used — response is always from src.
+// Invalid requests produce the standard 400; only well-formed requests get the cached value.
 func HandlerLatest[Req, Resp any](
 	handle *rest.RouteHandle[Req, Resp],
 	src gstream.Stream[Resp],
@@ -87,6 +91,26 @@ func RegisterLatest[Req, Resp any](
 //
 // If dst is full (non-blocking send fails), the handler calls opts.ErrorHandler
 // with HTTP 503 and [PipelineFullError].
+//
+// # Codec coverage
+//
+// All HTTP codec layers are validated before the item is pushed: body codec,
+// query params, cookie params, header params, path params, and security.
+// Only the body-decoded [Req] value is pushed to dst. Path, query, cookie, and
+// header param VALUES (though validated) are NOT included in the channel item.
+// For routes where param values must accompany the body, use [Handler] directly:
+//
+//	r.Method("POST", "/sensors/{sensorID}/readings", http.HandlerFunc(
+//	    chi.Handler(handle, func(ctx context.Context, body SensorBody) (struct{}, error) {
+//	        sensorID := gochi.URLParam(r, "sensorID") // already validated
+//	        select {
+//	        case dst <- SensorReading{SensorID: sensorID, Value: body.Value}:
+//	            return struct{}{}, nil
+//	        default:
+//	            return struct{}{}, chi.PipelineFullError{Path: "/...", Capacity: cap(dst)}
+//	        }
+//	    }, opts)))
+//
 // The caller owns dst — HandlerIngest never closes it.
 func HandlerIngest[Req any](
 	handle *rest.RouteHandle[Req, struct{}],
@@ -145,6 +169,24 @@ type PipelineHandlerFunc[Req, Resp any] func(ctx context.Context, req Req) gstre
 // Use PipelineHandler when the handler body benefits from [gstream.Tap] for
 // declarative intermediate observation, multi-step [gstream.Apply], or
 // [gstream.MapErr] for per-step typed error recovery.
+//
+// # Codec coverage — all HTTP layers
+//
+// Before fn is called, [Handler] validates body codec, all param codecs
+// (query, cookie, header, path), and security. After fn returns, Handler
+// validates response body, response header, and response cookie codecs.
+//
+// To access path/query/cookie/header param VALUES inside the pipeline, call
+// [RequestFromContext] on the ctx passed to fn (params are already validated):
+//
+//	chi.RegisterPipeline(r, handle,
+//	    func(ctx context.Context, body SensorBody) stream.Stream[OEEResult] {
+//	        sensorID := gochi.URLParam(chi.MustGetRouteContext(ctx), "sensorID")
+//	        s := stream.Single(ctx, body)
+//	        return stream.Tap(ctx, s, func(v SensorBody) {
+//	            slog.Info("request", "sensor", sensorID)
+//	        })
+//	    }, opts)
 func PipelineHandler[Req, Resp any](
 	handle *rest.RouteHandle[Req, Resp],
 	fn PipelineHandlerFunc[Req, Resp],

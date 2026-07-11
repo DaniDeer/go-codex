@@ -1,6 +1,25 @@
-# go-codex Review History (R1–R34)
+# go-codex Review History (R1–R36)
 
 Do not re-report any of these findings. They have been implemented and tested.
+
+---
+
+## Round 36 (HTTP bridge codec-layer review — documentation)
+
+- **G1 — `HandlerIngest` missing "Codec coverage" godoc**: All 9 HTTP codec layers run (body, query, cookie, header, path, security, response body, response headers, response cookies) but the godoc didn't document this; added "Codec coverage" section noting that only body `Req` is pushed to the channel and that path/query/cookie/header param VALUES (though validated) are not included; added `Handler`-direct workaround with `RequestFromContext(ctx)` example.
+- **G2 — `PipelineHandler` missing param-access and response-header documentation**: No godoc explained how to access path/query/cookie/header param values inside the pipeline via `RequestFromContext(ctx)`, or how `WithResponseHeaders(ctx, ...)` works in sequential pipelines; added "Codec coverage — all HTTP layers" and usage examples for both.
+- **G3 — `HandlerLatest` missing "Codec coverage" godoc**: All request codec layers validate even though `Req` is discarded (intentional — ensures well-formed requests receive cached responses); documented with a note in godoc.
+- **G4 — `stream-bridges.md` missing codec coverage table**: The guides chapter lacked a table showing all 9 HTTP codec layers and how each bridge exposes param values; added comprehensive "Codec coverage" table and per-pattern param-access documentation.
+- **G5 — `review-go-codex` skill missing stream bridge checks**: The skill's Phase 1 file list, checklist (Section 11), and guardrails did not cover stream bridges; added bridge files to Phase 1 read list, added `Stream Bridge Consistency` as checklist Section 11, added `Stream Bridge Guardrail` with B1–B4 rules, and added bridge-specific Gotchas.
+
+---
+
+## Round 35 (stream bridge codec bypass fixes)
+
+- **G1 [bug] — `mqtt.SubscribeStream` bypassed `SubscribeHandler`**: The bridge used a hand-rolled handler that pushed raw `msg.Payload()` bytes to a channel, skipping security enforcement, format priority chain (`SubscribeFormats`/`Formats`), topic-var error reporting, and proper observer calls; replaced with `SubscribeHandler(ctx, handle, fn, innerOpts, fmt)` + typed channel, routing all adapter errors to `Stream.Errors` as `mqtt.SubscribeError`.
+- **G2 [bug] — `mqtt5.SubscribeStream` bypassed `makeSubscribeMessageHandler`**: Same root cause as G1 — raw handler skipped ContentType negotiation, `UserPropertyParams` validation, security enforcement, and observer calls; extracted `makeSubscribeMessageHandler` from `Subscribe` (removing code duplication) and used it in `SubscribeStream` with `innerOpts.OnError` overriding to route errors to `Stream.Errors`.
+- **G3 [small] — `zeromq.CallStream` missing `Vars` in options**: `CallStreamOptions` had no `Vars` field even though the underlying `Call` function supports topic variable codec validation via `Vars map[string]string`; added `Vars map[string]string` to `CallStreamOptions` and passed it to each `Call` invocation.
+- **G4 [small] — `mqtt.DrainPublish` / `mqtt5.DrainPublish` / `zeromq.DrainPublish` static-Vars limitation undocumented**: The `Vars` field applies the same map to every item — per-item topic var substitution is impossible; added godoc note explaining the limitation and directing users to `stream.Drain` + `Publish` for per-item vars.
 
 ---
 
