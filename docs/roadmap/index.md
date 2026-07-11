@@ -11,9 +11,14 @@ These are **living design documents** — they reflect the current best thinking
 | Feature | Package | Status | Summary |
 |---------|---------|--------|---------|
 | [Stream — Phase 4 (FlatMap, GroupBy, CombineLatestN)](stream-phase4.md) | `stream` | Design needed | FlatMap sub-stream variant (goroutine pool), GroupBy (per-key sub-streams), CombineLatest5+ (code-gen or nested composition) |
-| [Stream Bridges — Remaining Work](stream-bridges.md) | `stream`, `adapters/*` | Mostly shipped — 3 gaps remain | **Implemented:** all reqresp bridges (nethttp, chi), MQTT pub/sub, MQTT5 reqreply, ZeroMQ (except CallDealerStream), MCP (ToolLatestHandler + ToolPipelineHandler), SQL, file. **Remaining:** `stream.BroadcastHub[T]`, `SSEFromStream/Hub/ClientStream`, `PollStream`, `DrainCall`, `zeromq.CallDealerStream` |
 | [AMQP 0.9.1 Adapter](amqp-adapter.md) | `adapters/amqp` | Design complete | PUB/SUB + Request/Reply over RabbitMQ — exchange/queue topology, Ack/Nack, `ReplyTo`/`CorrelationId` RPC, structured errors, observer integration |
 | [TCP Adapter](tcp-adapter.md) | `adapters/tcp` | Design complete | Request/Reply + streaming over raw TCP — pluggable `FramedConn` framing, built-in length-prefix framer, stdlib-only, no CGO |
+
+### Deferred — not planned for immediate implementation
+
+| Feature | Package | Why deferred |
+|---------|---------|-------------|
+| `zeromq.CallDealerStream` | `adapters/zeromq` | Requires adding correlation-ID frames (`[seq_bytes, payload]`) to DEALER framing AND matching changes to `ServeRouter` — protocol-level breaking change, not a standalone stream bridge addition. The sequential `CallStream` (REQ socket) covers most use cases. |
 
 ---
 

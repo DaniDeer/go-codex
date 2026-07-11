@@ -1,6 +1,6 @@
 # Stream Bridge Guide
 
-> See also: [Feature: Reactive Streams](../features/stream.md) · [Stream Guide](stream.md) · [Observer Pattern](observer.md) · [Remaining bridge work](../roadmap/stream-bridges.md)
+> See also: [Feature: Reactive Streams](../features/stream.md) · [Stream Guide](stream.md) · [Observer Pattern](observer.md) · [Roadmap](../roadmap/index.md)
 >
 > **Runnable demos:**
 > - [`examples/sensor-service`](https://github.com/DaniDeer/go-codex/tree/main/examples/sensor-service) — **primary bridge showcase** — `mqtt.SubscribeStream`, `mqtt.DrainPublish`, `nethttp.HandlerLatest`, `sql.QueryStream` all in one service; run with `go run ./examples/sensor-service`
@@ -245,6 +245,157 @@ return stream.Tap(ctx, resultStream, func(r OEEResult) {
 })
 ```
 
+### Pattern 4 — `SSEFromStream` / `SSEFromHub`
+
+**Direction:** `stream.Stream[Event]` → streaming SSE response (server → browser/client)
+
+**Use case:** live dashboards, real-time feeds, streaming computation results to browser
+clients. The SSE helper adapts a Go stream into the `SSEHandlerFunc` type accepted by
+`SSEHandler` and `RegisterSSE`.
+
+#### Per-client personalised stream — `SSEFromStream`
+
+Each connecting SSE client calls `streamFactory(ctx, req)` — the fn receives the decoded
+`Req` so each client can get a filtered or personalised view:
+
+```go
+// Each client gets OEE filtered to the machines they own:
+nethttp.RegisterSSE(mux, dashboardRoute,
+    nethttp.SSEFromStream(
+        func(ctx context.Context, req DashboardReq) stream.Stream[OEEResult] {
+            return stream.Filter(ctx, sharedOEEStream, req.MatchesMachine)
+        },
+        nethttp.SSEStreamOptions{
+            Topic:    dashboardRoute.Descriptor.Path,
+            Observer: obs,
+            OnError:  logErr,
+        }),
+    nethttp.Options{Observer: obs})
+```
+
+When the client disconnects, `ctx` is cancelled and the factory's stream goroutines
+terminate.
+
+#### Shared broadcast hub — `SSEFromHub`
+
+All clients share one `stream.BroadcastHub[T]`. Each client subscribes on connect and
+is automatically unsubscribed on disconnect. Non-blocking fan-out: slow clients drop
+items rather than blocking the hub.
+
+```go
+// Create the hub once from the shared OEE stream:
+hub := stream.NewBroadcastHub(ctx, oeeStream, 32)
+
+// Wire the hub to the SSE endpoint — all clients receive every event:
+nethttp.RegisterSSE(mux, dashboardRoute,
+    nethttp.SSEFromHub[struct{}, OEEResult](hub,
+        nethttp.SSEStreamOptions{
+            Topic:    dashboardRoute.Descriptor.Path,
+            Observer: obs,
+        }),
+    nethttp.Options{Observer: obs})
+```
+
+`SSEStreamOptions` configures both helpers:
+
+| Field | Purpose |
+|-------|---------|
+| `Topic string` | SSE route path — used in observer calls and `SSEWriteError` context |
+| `OnError func(error)` | Called for `SSEWriteError` (client disconnect) and upstream stream errors |
+| `Observer stats.Observer` | `RecordSubscribe` per event; `TraceObserver` spans wrap each send |
+
+**`SSEHandler` header timing:** response headers (`WriteHeader(200)`) are committed on
+the **first `send` call**, not at connection time. Staged response headers/cookies
+(`WithResponseHeaders`, `WithResponseCookies`) must be set BEFORE calling `send`. When
+writing integration tests that connect multiple SSE clients sequentially, connect them
+in goroutines so the first event unblocks all `Do()` calls simultaneously.
+
+Both `nethttp` and `chi` provide identical `SSEFromStream` and `SSEFromHub` helpers.
+
+### Pattern 5 — `PollStream`
+
+**Direction:** periodic HTTP GET → `stream.Stream[Resp]`
+
+**Use case:** turn a polling REST endpoint into a continuous stream source without
+external triggers.
+
+```go
+// Poll GET /sensors/latest every 30 seconds:
+sensorStream := nethttp.PollStream(ctx, httpClient, "http://sensor-api:8080",
+    sensorHandle,
+    sensorReq{},
+    30*time.Second,
+    nethttp.PollStreamOptions{
+        Vars:     map[string]string{"sensorID": "s-001"}, // static path vars
+        Observer: obs,
+        Buffer:   8,
+    })
+
+oeeStream := stream.Apply(ctx, sensorStream, oeeCalcFn, applyOpts)
+```
+
+`Call` errors (network, non-2xx status, codec failure) go to `Stream.Errors` as typed
+errors (`UnexpectedStatusError`, `RequestError`, etc.). The stream runs indefinitely
+until `ctx` is cancelled.
+
+**`Vars` field:** `PollStreamOptions.Vars` substitutes `{varName}` placeholders in the
+route path template (same static-vars limitation as `DrainPublish` — one map for all
+polls). For routes without path vars, omit `Vars`.
+
+### Pattern 6 — `DrainCall`
+
+**Direction:** `stream.Stream[Req]` → HTTP POST/PUT (client sink)
+
+**Use case:** publish each computed stream item to an external HTTP endpoint — the
+stream equivalent of a manual `Call` loop.
+
+```go
+// Post each OEE result to an external aggregation service:
+nethttp.DrainCall(ctx, httpClient, "http://aggregator:9090",
+    oeePostHandle,
+    oeeStream,
+    nethttp.DrainCallOptions{
+        Vars:    map[string]string{"tenantID": "acme"},
+        OnError: logErr,
+        CallOpts: nethttp.CallOptions{Observer: obs},
+    })
+```
+
+`Vars` is static — same map applied to every item. For per-item path var substitution
+(e.g. `{sensorID}` extracted from each payload), use `stream.Drain` with `Call` directly.
+
+### Pattern 7 — `SSEClientStream`
+
+**Direction:** external SSE endpoint → `stream.Stream[Event]` (client source)
+
+**Use case:** consume a server-sent events feed from another service — the stream
+receives every decoded event and reconnects automatically on disconnect.
+
+```go
+events := nethttp.SSEClientStream(ctx, httpClient,
+    "http://upstream-service:8080",
+    eventHandle,
+    format.JSON(eventCodec),
+    nethttp.SSEClientOptions{
+        Vars:          map[string]string{"machineID": "m-42"},
+        RetryDelay:    2 * time.Second,   // initial reconnect wait (default 1s)
+        MaxRetryDelay: 30 * time.Second,  // exponential backoff cap (default 30s)
+        Observer:      obs,
+        Buffer:        16,
+    })
+
+oeeStream := stream.Apply(ctx, events, oeeCalcFn, applyOpts)
+```
+
+The URL is built using `handle.BuildPath(opts.Vars)` — `{varName}` placeholders in the
+SSE route path are substituted before connecting. A build failure emits
+`SSEConnectError` immediately and terminates the stream.
+
+Reconnect behaviour:
+- On connection drop: exponential backoff from `RetryDelay`, capped at `MaxRetryDelay`
+- Each connect attempt increments the `Attempt` counter in `SSEConnectError`
+- `ctx` cancellation terminates the stream cleanly
+
 ### HTTP bridge error types
 
 All implement `slog.LogValuer`. Use `errors.As` in a custom `ErrorHandler`:
@@ -254,9 +405,38 @@ All implement `slog.LogValuer`. Use `errors.As` in a custom `ErrorHandler`:
 | `NoLatestValueError{Path}` | 503 | `HandlerLatest` before first value |
 | `PipelineFullError{Path, Capacity}` | 503 | `HandlerIngest` channel full |
 | `PipelineNoResponseError{Path}` | 500 | `PipelineHandler` no value produced |
-| `SSEWriteError{Path, Err}` | — | SSE write to disconnected client |
-| `SSEConnectError{URL, Attempt, Err}` | — | `SSEClientStream` reconnect failure |
-| `SSEParseError{URL, Line, Err}` | — | `SSEClientStream` decode failure |
+| `SSEWriteError{Path, Err}` | — | `SSEFromStream`/`SSEFromHub` write to disconnected client |
+| `SSEConnectError{URL, Attempt, Err}` | — | `SSEClientStream` connect failure or path build error |
+| `SSEParseError{URL, Line, Err}` | — | `SSEClientStream` SSE data line decode failure |
+
+---
+
+## `stream.BroadcastHub[T]`
+
+`BroadcastHub[T]` fans out one source `Stream[T]` to N independent subscribers. Each
+subscriber gets its own buffered channel — slow subscribers drop items rather than
+blocking each other or the hub goroutine.
+
+```go
+hub := stream.NewBroadcastHub(ctx, oeeStream, 32) // 32-item buffer per subscriber
+
+sub1 := hub.Subscribe() // returns Stream[T] — call before hub emits
+sub2 := hub.Subscribe()
+
+// Subscribe on disconnect:
+defer hub.Unsubscribe(sub1)
+```
+
+| Concept | Behaviour |
+|---------|-----------|
+| Fan-out | Non-blocking: full subscriber buffer → item dropped silently |
+| Error fan-out | Both `Values` and `Errors` are fanned out to all subscribers |
+| Hub exit | `ctx` cancel or source closes → hub closes all subscriber channels |
+| Subscribe after hub exits | Returns already-closed channels — safe to use |
+
+`SSEFromHub` uses `BroadcastHub` internally: one `Subscribe()` per SSE client,
+`Unsubscribe()` on disconnect. The hub is independent of the SSE layer and can back
+any fan-out scenario.
 
 ---
 

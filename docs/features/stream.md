@@ -58,6 +58,8 @@ default sink — it handles both in a single select loop.
 |---|---|
 | `From[T](ctx, <-chan T) Stream[T]` | Wraps a typed channel. Errors channel is always empty. |
 | `FromCodec[T](ctx, <-chan []byte, format.Format[T], opts) Stream[T]` | Decodes raw bytes using any format (JSON, YAML, TOML, custom). Decode/validation failures → `StreamDecodeError` on `Errors`. |
+| `Single[T](ctx, v T) Stream[T]` | Emits `v` once and closes. Never writes to `Errors`. Used as per-request pipeline entry point in `PipelineHandlerFunc` and `AsPipelineFunc`. |
+| `BroadcastHub[T]` | N-subscriber fan-out. `NewBroadcastHub(ctx, src, bufPerSubscriber)` starts the hub. Each `Subscribe()` returns a new `Stream[T]` with a private buffered channel; `Unsubscribe(s)` removes the subscriber. Non-blocking fan-out: slow subscribers drop items. Hub closes all subscriber channels when `ctx` is cancelled or `src` closes. Used internally by `SSEFromHub` and any fan-out scenario. |
 
 ### Transforms
 
@@ -214,17 +216,24 @@ Used as the entry point for per-request pipelines inside [`PipelineHandlerFunc`]
 
 ### HTTP — `adapters/nethttp` and `adapters/chi`
 
-Three patterns bridge HTTP and the stream pipeline:
+Seven patterns bridge HTTP and the stream pipeline:
 
 | Helper | Direction | Use case |
 |--------|-----------|----------|
-| `HandlerLatest[Req,Resp]` | stream → HTTP | GET returns latest value from a running pipeline ("get current OEE") |
-| `HandlerIngest[Req]` | HTTP → stream | POST/PUT feeds a channel → `stream.From` pipeline (webhook receiver) |
-| `PipelineHandler[Req,Resp]` | per-request pipeline | Handler body uses `Tap`, `Apply`, `MapErr` — same mental model as background pipelines |
+| `HandlerLatest[Req,Resp]` | stream → every HTTP GET | Returns latest value from a running pipeline ("get current OEE") |
+| `HandlerIngest[Req]` | HTTP POST/PUT → stream | Feeds a channel → `stream.From` pipeline (webhook receiver) |
+| `PipelineHandler[Req,Resp]` | per-request pipeline | Handler body uses `Tap`, `Apply`, `MapErr` |
+| `SSEFromStream[Req,Event]` | stream → SSE (server) | Each client gets its own stream from a factory fn |
+| `SSEFromHub[Req,Event]` | BroadcastHub → SSE (server) | All clients share one hub — live dashboard broadcast |
+| `PollStream[Req,Resp]` | periodic HTTP GET → stream | Turns a polling endpoint into a continuous stream source |
+| `DrainCall[Req,Resp]` | stream → HTTP POST/PUT | Posts each stream item to an external endpoint |
+| `SSEClientStream[Req,Event]` | external SSE → stream | Consumes an upstream SSE feed; reconnects automatically |
 
-`PipelineHandlerFunc[Req,Resp]` is the handler type for `PipelineHandler`:
+`nethttp` returns `http.Handler`; `chi` returns `http.HandlerFunc`. Both packages provide
+all helpers. `SSEClientStream`, `PollStream`, and `DrainCall` are nethttp-only (client-side).
 
 ```go
+// Per-request pipeline
 nethttp.RegisterPipeline(mux, handle,
     func(ctx context.Context, req SensorReq) stream.Stream[OEEResult] {
         s := stream.Single(ctx, req)
@@ -232,10 +241,28 @@ nethttp.RegisterPipeline(mux, handle,
         s = stream.Tap(ctx, s, func(v ValidatedReq) { slog.Info("validated", "id", v.ID) })
         return stream.Apply(ctx, s, oeeCalcFn, opts)
     }, nethttp.Options{Observer: obs})
+
+// SSE broadcast to all clients via hub
+hub := stream.NewBroadcastHub(ctx, oeeStream, 32)
+nethttp.RegisterSSE(mux, dashRoute,
+    nethttp.SSEFromHub[struct{}, OEEResult](hub,
+        nethttp.SSEStreamOptions{Topic: "/dashboard/sse", Observer: obs}),
+    nethttp.Options{Observer: obs})
+
+// Poll external service every 30s
+sensorStream := nethttp.PollStream(ctx, httpClient, "http://sensor-api",
+    sensorHandle, sensorReq{}, 30*time.Second,
+    nethttp.PollStreamOptions{Vars: map[string]string{"id": "s-001"}, Observer: obs})
+
+// Consume external SSE feed
+events := nethttp.SSEClientStream(ctx, httpClient, "http://upstream",
+    eventHandle, format.JSON(eventCodec),
+    nethttp.SSEClientOptions{RetryDelay: 2*time.Second, Observer: obs})
 ```
 
 New error types: `NoLatestValueError{Path}` (503), `PipelineFullError{Path,Capacity}` (503),
-`PipelineNoResponseError{Path}` (500) — all implement `slog.LogValuer`.
+`PipelineNoResponseError{Path}` (500), `SSEWriteError{Path,Err}`, `SSEConnectError{URL,Attempt,Err}`,
+`SSEParseError{URL,Line,Err}` — all implement `slog.LogValuer`.
 
 ### MQTT — `adapters/mqtt` and `adapters/mqtt5`
 
