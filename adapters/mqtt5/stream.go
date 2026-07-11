@@ -48,8 +48,10 @@ func SubscribeStream[T any](
 		obs = stats.NoopObserver{}
 	}
 
-	// Format priority: call-time fmt > handle.SubscribeFormats > handle.Formats > handle.Decode
-	// Call-time fmt always takes priority (same as Subscribe's variadic formats parameter).
+	// fmt is always used as the sole format for content-type matching and decoding.
+	// handle.SubscribeFormats and handle.Formats are not consulted — unlike
+	// Subscribe's variadic formats, SubscribeStream requires a single explicit
+	// format and does not fall back to handle-level format lists.
 	effectiveFmts := []format.Format[T]{fmt}
 
 	// Override OnError: route adapter errors (decode, security, user properties)

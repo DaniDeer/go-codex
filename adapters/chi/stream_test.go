@@ -1,6 +1,7 @@
 package chi_test
 
 import (
+	"bufio"
 	"context"
 	"errors"
 	"fmt"
@@ -280,5 +281,179 @@ func TestChiPipelineHandler_NoValueReturnsPipelineNoResponseError(t *testing.T) 
 	var pnr chiadapter.PipelineNoResponseError
 	if !errors.As(capturedErr, &pnr) {
 		t.Errorf("want PipelineNoResponseError, got %T", capturedErr)
+	}
+}
+
+// ── SSEFromStream / SSEFromHub ────────────────────────────────────────────────
+
+func newChiSSEHandle(t *testing.T) *rest.SSERouteHandle[getReq, userResp] {
+	t.Helper()
+	b := rest.NewBuilder(testInfo)
+	h, err := rest.NewSSERoute[getReq, userResp]("/events",
+		getReqCodec, userRespCodec, rest.RouteMeta{OperationID: "chiStreamEvents"}).Register(b)
+	if err != nil {
+		t.Fatalf("register SSE route: %v", err)
+	}
+	return h
+}
+
+func readChiSSEEvents(t *testing.T, resp *http.Response, want int) []string {
+	t.Helper()
+	var lines []string
+	scanner := bufio.NewScanner(resp.Body)
+	for scanner.Scan() {
+		line := scanner.Text()
+		if strings.HasPrefix(line, "data: ") {
+			lines = append(lines, strings.TrimPrefix(line, "data: "))
+		}
+		if len(lines) >= want {
+			break
+		}
+	}
+	return lines
+}
+
+func TestChiSSEFromStream_EmitsStreamItems(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	handle := newChiSSEHandle(t)
+
+	fn := chiadapter.SSEFromStream(
+		func(ctx context.Context, _ getReq) gstream.Stream[userResp] {
+			ch := make(chan userResp, 2)
+			ch <- userResp{ID: "u1", Name: "Alice"}
+			ch <- userResp{ID: "u2", Name: "Bob"}
+			close(ch)
+			return gstream.From(ctx, ch)
+		},
+		chiadapter.SSEStreamOptions{Topic: "/events"},
+	)
+
+	h := chiadapter.SSEHandler(handle, fn, chiadapter.Options{})
+	srv := httptest.NewServer(h)
+	defer srv.Close()
+
+	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, srv.URL+"/events", nil)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("GET /events: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("want 200, got %d", resp.StatusCode)
+	}
+
+	events := readChiSSEEvents(t, resp, 2)
+	if len(events) < 2 {
+		t.Errorf("want 2 SSE events, got %d", len(events))
+	}
+}
+
+func TestChiSSEFromStream_StreamErrorCallsOnError(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	handle := newChiSSEHandle(t)
+	sentinel := errors.New("stream failure")
+
+	var gotErr error
+	fn := chiadapter.SSEFromStream(
+		func(ctx context.Context, _ getReq) gstream.Stream[userResp] {
+			errCh := make(chan error, 1)
+			valCh := make(chan userResp)
+			errCh <- sentinel
+			close(errCh)
+			close(valCh)
+			return gstream.Stream[userResp]{Values: valCh, Errors: errCh}
+		},
+		chiadapter.SSEStreamOptions{
+			Topic:   "/events",
+			OnError: func(e error) { gotErr = e },
+		},
+	)
+
+	h := chiadapter.SSEHandler(handle, fn, chiadapter.Options{})
+	srv := httptest.NewServer(h)
+	defer srv.Close()
+
+	ch := make(chan *http.Response, 1)
+	go func() {
+		req, _ := http.NewRequestWithContext(ctx, http.MethodGet, srv.URL+"/events", nil)
+		r, _ := http.DefaultClient.Do(req)
+		ch <- r
+	}()
+
+	time.Sleep(50 * time.Millisecond)
+	cancel()
+
+	if r := <-ch; r != nil {
+		r.Body.Close()
+	}
+
+	if gotErr == nil {
+		t.Error("want OnError called for stream error, got nil")
+	}
+}
+
+func TestChiSSEFromHub_BroadcastsToAllClients(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	handle := newChiSSEHandle(t)
+
+	valCh := make(chan userResp, 3)
+	src := gstream.From(ctx, valCh)
+	hub := gstream.NewBroadcastHub(ctx, src, 8)
+
+	fn := chiadapter.SSEFromHub[getReq, userResp](hub,
+		chiadapter.SSEStreamOptions{Topic: "/events"})
+
+	h := chiadapter.SSEHandler(handle, fn, chiadapter.Options{})
+	srv := httptest.NewServer(h)
+	defer srv.Close()
+
+	// Connect both clients concurrently — SSEHandler commits headers on first send.
+	type result struct {
+		resp *http.Response
+		err  error
+	}
+	ch1 := make(chan result, 1)
+	ch2 := make(chan result, 1)
+	connect := func(dst chan<- result) {
+		req, _ := http.NewRequestWithContext(ctx, http.MethodGet, srv.URL+"/events", nil)
+		r, e := http.DefaultClient.Do(req)
+		dst <- result{r, e}
+	}
+	go connect(ch1)
+	go connect(ch2)
+
+	// Give both goroutines time to subscribe before emitting.
+	time.Sleep(50 * time.Millisecond)
+
+	valCh <- userResp{ID: "u1", Name: "Alice"}
+	close(valCh)
+
+	res1 := <-ch1
+	if res1.err != nil {
+		t.Fatalf("client 1: %v", res1.err)
+	}
+	defer res1.resp.Body.Close()
+
+	res2 := <-ch2
+	if res2.err != nil {
+		t.Fatalf("client 2: %v", res2.err)
+	}
+	defer res2.resp.Body.Close()
+
+	ev1 := readChiSSEEvents(t, res1.resp, 1)
+	ev2 := readChiSSEEvents(t, res2.resp, 1)
+
+	if len(ev1) != 1 {
+		t.Errorf("client1: want 1 event, got %d", len(ev1))
+	}
+	if len(ev2) != 1 {
+		t.Errorf("client2: want 1 event, got %d", len(ev2))
 	}
 }

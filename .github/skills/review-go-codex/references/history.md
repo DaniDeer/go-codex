@@ -1,6 +1,16 @@
-# go-codex Review History (R1–R39)
+# go-codex Review History (R1–R40)
 
 Do not re-report any of these findings. They have been implemented and tested.
+
+---
+
+## Round 40 (stream bridge — Vars gap in HTTP client bridges, chi SSE tests)
+
+- **G1 [small] — `PollStreamOptions` missing `Vars map[string]string`**: `PollStream` passed `nil` for the `vars` parameter to `Call`, making routes with path params (e.g. `/metrics/{sensorID}`) silently fail with `MissingPathVarError` on every poll; added `Vars map[string]string` to `PollStreamOptions` and passed `opts.Vars` to `Call`, matching the pattern used by `mqtt`, `mqtt5`, and `zeromq` `DrainPublish` options.
+- **G2 [small] — `DrainCallOptions` missing `Vars map[string]string`**: Same issue — `DrainCall` passed `nil` for `vars`, leaving callers with no way to specify path vars for parameterised sink routes; added `Vars map[string]string` to `DrainCallOptions` (static map per item, documented limitation identical to `DrainPublish`).
+- **G3 [small] — `SSEClientStream` URL built from raw path template without var substitution**: `url := baseURL + handle.Descriptor.Path` would produce a malformed URL for SSE routes with path vars (e.g. `/events/{machineID}`); added `Vars map[string]string` to `SSEClientOptions` and replaced the concatenation with `handle.BuildPath(opts.Vars)` — a `BuildPath` failure emits `SSEConnectError` and terminates the stream.
+- **G4 [trivial] — `mqtt5.SubscribeStream` comment incorrectly stated `handle.SubscribeFormats`/`handle.Formats` are consulted**: `effectiveFmts = [fmt]` is always non-empty so neither field is ever read; updated comment to accurately state the provided `fmt` is always used exclusively.
+- **G5 [trivial] — `chi.SSEFromStream` and `chi.SSEFromHub` had no tests**: Added `TestChiSSEFromStream_EmitsStreamItems`, `TestChiSSEFromStream_StreamErrorCallsOnError`, and `TestChiSSEFromHub_BroadcastsToAllClients` to `adapters/chi/stream_test.go`, mirroring the nethttp SSE bridge tests.
 
 ---
 

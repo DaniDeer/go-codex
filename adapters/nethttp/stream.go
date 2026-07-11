@@ -387,6 +387,12 @@ func SSEFromHub[Req, Event any](
 
 // PollStreamOptions configures [PollStream].
 type PollStreamOptions struct {
+	// Vars, when non-nil, substitutes {varName} placeholders in the route's
+	// path template via [rest.RouteHandle.BuildPath]. The same map is used for
+	// every poll (static path vars only). For routes with no path params, omit Vars.
+	// For per-poll path var substitution, use [gstream.Drain] with [Call] directly.
+	Vars map[string]string
+
 	// Observer receives per-poll lifecycle events via the internal [Call] call.
 	// [stats.Observer.RecordRequest] fires for every poll attempt.
 	Observer stats.Observer
@@ -426,7 +432,7 @@ func PollStream[Req, Resp any](
 			case <-ctx.Done():
 				return
 			case <-ticker.C:
-				resp, err := Call(ctx, client, baseURL, handle, req, nil,
+				resp, err := Call(ctx, client, baseURL, handle, req, opts.Vars,
 					CallOptions{Observer: obs})
 				if err != nil {
 					select {
@@ -449,6 +455,13 @@ func PollStream[Req, Resp any](
 
 // DrainCallOptions configures [DrainCall].
 type DrainCallOptions struct {
+	// Vars, when non-nil, substitutes {varName} placeholders in the route's
+	// path template via [rest.RouteHandle.BuildPath]. The same map is applied
+	// to every item (static path vars only). For routes with no path params,
+	// omit Vars. For per-item path var substitution (e.g. {sensorID} from each
+	// payload), use [gstream.Drain] with [Call] directly.
+	Vars map[string]string
+
 	// OnError, when non-nil, is called for [Call] errors and upstream stream errors.
 	OnError func(error)
 
@@ -471,7 +484,7 @@ func DrainCall[Req, Resp any](
 	onErr := opts.OnError
 	gstream.Drain(ctx, src,
 		func(ctx context.Context, item Req) error {
-			if _, err := Call(ctx, client, baseURL, handle, item, nil, opts.CallOpts); err != nil {
+			if _, err := Call(ctx, client, baseURL, handle, item, opts.Vars, opts.CallOpts); err != nil {
 				if onErr != nil {
 					onErr(err)
 				}
@@ -491,6 +504,12 @@ func DrainCall[Req, Resp any](
 
 // SSEClientOptions configures [SSEClientStream].
 type SSEClientOptions struct {
+	// Vars, when non-nil, substitutes {varName} placeholders in the SSE route's
+	// path template via [rest.SSERouteHandle.BuildPath]. The same map is used
+	// for every reconnect attempt (static path vars only). For SSE routes with
+	// no path params, omit Vars.
+	Vars map[string]string
+
 	// RetryDelay is the initial reconnect wait after a dropped connection (default 1s).
 	RetryDelay time.Duration
 	// MaxRetryDelay caps the exponential backoff (default 30s).
@@ -544,7 +563,15 @@ func SSEClientStream[Req, Event any](
 		defer close(values)
 		defer close(errs)
 
-		url := baseURL + handle.Descriptor.Path
+		path, pathErr := handle.BuildPath(opts.Vars)
+		if pathErr != nil {
+			select {
+			case errs <- SSEConnectError{URL: baseURL, Attempt: 1, Err: pathErr}:
+			default:
+			}
+			return
+		}
+		url := baseURL + path
 		delay := opts.RetryDelay
 		attempt := 0
 
