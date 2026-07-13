@@ -15,6 +15,7 @@ import (
 	fileadapter "github.com/DaniDeer/go-codex/adapters/file"
 	"github.com/DaniDeer/go-codex/codex"
 	"github.com/DaniDeer/go-codex/format"
+	"github.com/DaniDeer/go-codex/stats"
 	gstream "github.com/DaniDeer/go-codex/stream"
 	"github.com/DaniDeer/go-codex/validate"
 )
@@ -202,6 +203,79 @@ func TestDrainWrite_WriteErrorGoesToOnError(t *testing.T) {
 	var we fileadapter.WriteError
 	if !errors.As(gotErr, &we) {
 		t.Errorf("want WriteError, got %T", gotErr)
+	}
+}
+
+// TestDrainWrite_ObserverReceivesEncodeError verifies that the Observer set on
+// DrainWriteOptions receives RecordValidationError when the codec rejects an item.
+func TestDrainWrite_ObserverReceivesEncodeError(t *testing.T) {
+	ctx := context.Background()
+
+	// A codec that rejects negative values — causes Marshal to fail.
+	type item struct{ V float64 }
+	c := codex.Struct[item](
+		codex.RequiredField("v", codex.Float64().Refine(validate.PositiveFloat),
+			func(x item) float64 { return x.V },
+			func(x *item, v float64) { x.V = v },
+		),
+	)
+	ch := make(chan item, 1)
+	ch <- item{V: -1} // negative → fails PositiveFloat constraint on Marshal
+	close(ch)
+	src := gstream.From(ctx, ch)
+
+	var valErrCount int
+	spy := &fileValidationSpy{onValErr: func() { valErrCount++ }}
+
+	var buf bytes.Buffer
+	fileadapter.DrainWrite(ctx, &buf, src, format.JSON(c),
+		fileadapter.DrainWriteOptions{
+			Observer: spy,
+			OnError:  func(_ error) {}, // absorb the WriteError
+		})
+
+	if valErrCount == 0 {
+		t.Error("want RecordValidationError called for codec-rejected item, got 0 calls")
+	}
+}
+
+// TestDrainWrite_ContextObserver verifies that the observer stored in ctx via
+// stats.WithObserver is used when DrainWriteOptions.Observer is nil.
+func TestDrainWrite_ContextObserver(t *testing.T) {
+	type item struct{ V float64 }
+	c := codex.Struct[item](
+		codex.RequiredField("v", codex.Float64().Refine(validate.PositiveFloat),
+			func(x item) float64 { return x.V },
+			func(x *item, v float64) { x.V = v },
+		),
+	)
+	ch := make(chan item, 1)
+	ch <- item{V: -1}
+	close(ch)
+
+	var valErrCount int
+	spy := &fileValidationSpy{onValErr: func() { valErrCount++ }}
+	ctx := stats.WithObserver(context.Background(), spy)
+
+	src := gstream.From(ctx, ch)
+	var buf bytes.Buffer
+	fileadapter.DrainWrite(ctx, &buf, src, format.JSON(c),
+		fileadapter.DrainWriteOptions{}) // no explicit Observer — resolved from ctx
+
+	if valErrCount == 0 {
+		t.Error("want context observer RecordValidationError called, got 0 calls")
+	}
+}
+
+// fileValidationSpy is a minimal stats.Observer that counts RecordValidationError calls.
+type fileValidationSpy struct {
+	stats.NoopObserver
+	onValErr func()
+}
+
+func (s *fileValidationSpy) RecordValidationError(_, _, _ string) {
+	if s.onValErr != nil {
+		s.onValErr()
 	}
 }
 

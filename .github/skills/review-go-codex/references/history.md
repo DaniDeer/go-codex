@@ -1,6 +1,12 @@
-# go-codex Review History (R1–R40)
+# go-codex Review History (R1–R41)
 
 Do not re-report any of these findings. They have been implemented and tested.
+
+---
+
+## Round 41 (DrainWriteOptions.Observer test coverage)
+
+- **G1 [trivial] — `DrainWriteOptions.Observer` field had no test**: The `Observer` field added to `DrainWriteOptions` in Phase 0 had no test verifying that `stats.ReportErrors` fires on codec-rejected items; added `TestDrainWrite_ObserverReceivesEncodeError` (explicit observer receives `RecordValidationError` on encode failure) and `TestDrainWrite_ContextObserver` (observer resolved from ctx via `stats.WithObserver` when `Options.Observer` is nil).
 
 ---
 
