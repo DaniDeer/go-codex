@@ -166,6 +166,45 @@ See [Feature: Observer Pattern — Default observer via context](../features/obs
 
 ---
 
+## When to use which observer wiring mechanism
+
+Three mechanisms exist. Choose based on scope and lifecycle:
+
+| Mechanism | How | Scope | When to use |
+|-----------|-----|-------|-------------|
+| `Options{Observer: obs}` | Pass per-call | Per-call or per-component | When different components need different observers (e.g. audit observer for one route, metrics observer for another) |
+| `forge.Registry.WithObserver(obs)` | Builder at startup | Registry lifetime — all functions registered in that registry | Wiring the PipelineObserver for a governed forge pipeline |
+| `stats.WithObserver(ctx, obs)` | Context | ctx lifetime — all adapter calls that receive this ctx | Service-wide default at startup; or per-request via HTTP middleware |
+
+**Use `Options{Observer: obs}`** when you need a per-call override or when the
+function call has no `ctx` (e.g. `sql.Validate`, `format.FromEnv`).
+
+**Use `Registry.WithObserver(obs)`** when wiring a forge pipeline. The Registry is
+the natural "set once" point for governed computations.
+
+**Use `stats.WithObserver(ctx, obs)`** for everything else — it is the simplest
+"set once at startup" approach and eliminates the need to pass `Observer: obs`
+on every MQTT/ZeroMQ/stream call. For HTTP servers, pair with a middleware that
+injects it per-request:
+
+```go
+// At startup:
+obs := stats.NewFanout(metrics, stats.NewLoggingObserver(slog.Default()))
+ctx := stats.WithObserver(context.Background(), obs)
+
+// For forge — explicit builder (no context integration):
+reg := forge.NewRegistry("P", "1.0.0").WithObserver(obs)
+
+// For HTTP — per-request via middleware:
+mux.Handle("/", observerMiddleware(obs)(mux))
+// or keep nethttp.Options{Observer: obs} — both work
+```
+
+These three mechanisms cover different layers of the same service and can all
+be active simultaneously with the same `obs` value.
+
+---
+
 ## Per-adapter usage
 
 ### Codec-level (ValidationObserver)
@@ -582,6 +621,90 @@ obs := stats.NewFanout(metrics, stats.NewLoggingObserver(logger.With("component"
 ```
 
 Every log line carries `service=order-api env=prod build.version=...` automatically. Omitting `defer cleanup()` risks losing buffered lines on exit.
+
+## Domain events vs infrastructure metrics
+
+go-codex makes a deliberate distinction between two kinds of observation:
+
+| | Infrastructure metrics | Domain event observation |
+|--|----------------------|------------------------|
+| **What** | Request counts, latencies, error rates | Business-significant values (OEE computed, alert triggered, reading saved) |
+| **Mechanism** | `stats.Observer` interfaces + `RecordRequest` / `RecordApply` / etc. | `stream.Tap(ctx, src, func(v T) {...})` |
+| **Type safety** | Fixed method signatures per interface | Full generic type — `func(r OEEResult)` sees the actual domain type |
+| **Concerns** | Infrastructure — transport and computation health | Domain — business rules, thresholds, dashboards |
+| **Where it fires** | Adapter layer, forge registry | Stream pipeline, between operators |
+
+### Infrastructure metrics — observer interfaces
+
+These fire automatically at each layer boundary:
+
+```go
+obs := stats.NewFanout(
+    metricsObserver,                            // RecordRequest, RecordApply, etc.
+    stats.NewLoggingObserver(slog.Default()),
+)
+// Wire once — fires on every request, subscribe, publish, apply
+```
+
+### Domain event observation — stream.Tap
+
+`Tap` is for business-level observation of values flowing through the pipeline.
+It receives the fully typed, validated domain value — not a status code or duration:
+
+```go
+oeeResults = stream.Tap(ctx, oeeResults, func(r OEEResult) {
+    // Business logic observation — full type safety
+    if r.OEE < 0.75 {
+        slog.Warn("OEE below threshold", "oee", r.OEE, "sensor", r.SensorID)
+        dashboard.Publish(r)
+    }
+})
+```
+
+`Tap` does not transform the stream — items pass through unchanged.
+Use it wherever you want to observe values without mixing with computation.
+
+### Error observation — stream.MapErr + typed errors
+
+Errors from forge functions are typed (`forge.ApplyError`, `forge.InputError`, etc.)
+and implement `slog.LogValuer` — they carry structured context automatically.
+Use `stream.MapErr` or the `Drain` error callback to observe them:
+
+```go
+stream.Drain(ctx, results,
+    func(ctx context.Context, r OEEResult) error {
+        return publish(ctx, r)
+    },
+    func(err error) {
+        // Every error is typed and slog-compatible:
+        var sae stream.StreamApplyError
+        if errors.As(err, &sae) {
+            // sae.LogValue() returns structured attributes
+            slog.Error("OEE computation failed", "error", sae)
+            customMetrics.RecordForgeFailure(sae.Function)
+        }
+    },
+    stream.DrainOptions{},
+)
+```
+
+This keeps the observation concern in the caller (stream pipeline wiring), not in
+the forge function body. Forge functions remain pure: they return typed errors; the
+pipeline layer decides how to observe them.
+
+```go
+// Want to recover and emit a sentinel instead of dropping the item?
+results = stream.MapErr(ctx, results, func(err error) (OEEResult, bool, error) {
+    var ae forge.ApplyError
+    if errors.As(err, &ae) {
+        customObs.RecordComputeFailure(ae.Function)   // custom domain observation
+        return OEEResult{OEE: 0}, true, nil            // emit zero-OEE sentinel
+    }
+    return OEEResult{}, false, err                    // re-emit other errors
+})
+```
+
+---
 
 ## See also
 

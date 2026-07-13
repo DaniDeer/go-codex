@@ -45,6 +45,39 @@
 - `codex.Map*` answers: "How do I represent `float64` as `PlannedTime`?" — structural, bidirectional, anonymous.
 - `forge.Function` answers: "What named computation derives `Availability` from `AvailabilityIn`?" — business logic, unidirectional, governed.
 
+## Why Function is a value, not a bare closure
+
+A bare `func(In) (Out, error)` closure cannot participate in governance. The
+`*forge.Function[In, Out]` value is a thin wrapper that adds **identity** to the closure:
+
+| What the value carries | Why a closure can't provide it |
+|------------------------|-------------------------------|
+| `Spec.Name`, `Spec.Version` | Go closures have no name at runtime |
+| `Spec.Hash` (SHA-256) | Go functions are not comparable; hashing a closure is impossible. The hash is computed from the **codec schemas** — the contract, not the bytecode. |
+| `inputCodec` / `outputCodec` | Input/output schema for pipeline YAML, OpenAPI, AsyncAPI |
+| `observer` (injected by `Register`) | Inversion of control — the Registry wires the observer, not the function |
+
+The bare `func(In) (Out, error)` lives inside `Function.apply` — it IS a free function.
+The `Function` value is the governance envelope around it.
+
+**Composition is always via free functions.** The caller composes, the value carries identity:
+
+```
+Free function operators:    stream.Apply, stream.Filter, forge.Compose
+        ↓ compose over ↓
+Identified values:          *forge.Function[In, Out]
+        ↓ registered in ↓
+Registry:                   forge.NewRegistry(...).WithObserver(obs)
+```
+
+`stream.Apply(ctx, src, oeeCalcFn, opts)` — free function at the composition layer,
+`*forge.Function[In, Out]` at the identity layer. Both are needed; neither alone is sufficient.
+
+**Forge functions are pure domain computations.** They receive typed inputs, return typed
+outputs and errors, and have no knowledge of observers, transports, or streams. The
+`stream.Apply` operator and the `Registry` are where observability (PipelineObserver,
+StreamObserver) attaches. Functions neither call nor require an observer in their body.
+
 ## Defining a function
 
 ```go

@@ -67,17 +67,43 @@ runs per item. Failures go to `Stream.Errors` as `StreamApplyError`.
 
 ## Step 3 — Observe domain events with Tap
 
-`Tap` is for business logic observation — distinct from infrastructure metrics:
+Two observation mechanisms exist in a stream pipeline, and they serve different concerns:
+
+| | `stream.Tap` | `ApplyOptions.Observer` |
+|--|-------------|------------------------|
+| **What** | Business-significant values — typed, per-item domain events | Infrastructure metrics — counts, latencies, spans |
+| **Type** | Full generic type (`func(oee OEE)`) | `stats.Observer` interfaces — fixed signatures |
+| **Where** | Explicit Tap call in pipeline | Wired at startup via opts or context |
+| **Fires when** | Every value emitted by the upstream stream | Every `stream.Apply` item (RecordStreamItem) and forge apply (RecordApply) |
+
+**`stream.Tap` — domain event observation:**
 
 ```go
 oeeStream = stream.Tap(ctx, oeeStream, func(oee OEE) {
+    // Business logic observation — full type safety, no interface
     slog.Info("OEE computed", "value", float64(oee))
     dashboard.Publish(oee)   // real-time business event
+    if float64(oee) < 0.65 {
+        alertBus.Send(OEEAlert{Value: oee}) // domain rule, not infrastructure
+    }
 })
 ```
 
-Pass the infrastructure observer via `ApplyOptions.Observer` — it fires
-`stats.StreamObserver.RecordStreamItem` and trace spans per item.
+`Tap` does not transform the stream — items pass through unchanged.
+
+**`ApplyOptions.Observer` — infrastructure observation:**
+
+```go
+// RecordStreamItem fires per item in stream.Apply
+// RecordApply fires inside each forge function call
+// TraceObserver spans wrap the apply per-item
+oeeStream := stream.Apply(ctx, sensors, oeeCalcFn,
+    stream.ApplyOptions{}) // observer from ctx — RecordStreamItem + RecordApply
+```
+
+Pass the infrastructure observer via `ApplyOptions.Observer` (or via context —
+see Observer Integration below). It fires `stats.StreamObserver.RecordStreamItem`
+and, inside the forge function, `stats.PipelineObserver.RecordApply`.
 
 ---
 
@@ -199,19 +225,40 @@ stream.MapErr(ctx, oeeStream, func(err error) (OEE, bool, error) {
 
 ## Observer integration
 
+**Option A — set once via context (recommended for new services):**
+
 ```go
-// Full observer: infrastructure metrics + logging + tracing
 obs := stats.NewFanout(
     metrics,                                          // stats.StreamObserver.RecordStreamItem
     stats.NewLoggingObserver(slog.Default()),          // logs every event via slog
     otelTracer,                                       // stats.TraceObserver per item in Apply
 )
+// All stream operators resolve obs automatically when Options.Observer is nil:
+ctx := stats.WithObserver(context.Background(), obs)
 
-// Pass to every operator:
+sensors  := stream.FromCodec(ctx, rawCh, format.JSON(codec), stream.SourceOptions{})
+oeeData  := stream.Apply(ctx, sensors, oeeCalcFn, stream.ApplyOptions{})
+stream.Drain(ctx, oeeData, publish, logErr, stream.DrainOptions{})
+```
+
+**Option B — pass explicitly per operator:**
+
+```go
 sensors  := stream.FromCodec(ctx, rawCh, format.JSON(codec), stream.SourceOptions{Observer: obs})
 oeeData  := stream.Apply(ctx, sensors, oeeCalcFn, stream.ApplyOptions{Observer: obs})
 stream.Drain(ctx, oeeData, publish, logErr, stream.DrainOptions{Observer: obs})
 ```
+
+**For forge.Registry — always explicit (no context integration):**
+
+```go
+// Registry is long-lived startup config; explicit builder is the right API:
+reg := forge.NewRegistry("OEE Pipeline", "1.0.0").WithObserver(obs)
+```
+
+`forge.Function.ApplyContext(ctx, in)` uses the forge observer (wired via
+`Register(reg)`), not the context observer — two independent observers can be active
+simultaneously on the same apply call.
 
 ---
 

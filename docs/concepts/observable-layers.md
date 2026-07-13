@@ -58,6 +58,53 @@ go-codex has three codec layers — domain types, API contracts, and forge pipel
 
 `TraceObserver` is the one cross-cutting interface — it participates in every layer and provides distributed tracing spans without any changes to codec, adapter, or forge code.
 
+## The four observation layers
+
+Each layer has a different observation mechanism and a different concept of "what is observed":
+
+| Layer | What is observed | Mechanism | Observer interface | When to use |
+|-------|-----------------|-----------|-------------------|------------|
+| **Transport** | Request lifecycle — one event per HTTP request, MQTT message, ZeroMQ call | `Options{Observer: obs}` or `stats.WithObserver(ctx, obs)` | `stats.Observer` | Infrastructure metrics per transport boundary |
+| **Stream item** | Each item flowing through a reactive pipeline operator | `stream.ApplyOptions{Observer: obs}` or context | `stats.StreamObserver` | Throughput, latency per stream operator |
+| **Computation** | Each forge function apply — success/failure/duration | `forge.Registry.WithObserver(obs)` | `stats.PipelineObserver` | Governed KPI computation telemetry |
+| **Domain event** | Business-significant values in the stream — typed, per-value | `stream.Tap(ctx, src, func(v T) {...})` | User callback (no interface) | Domain-level observation: dashboards, audit logs, alerts |
+
+The four layers compose: a single `stream.Apply` call fires **both** `PipelineObserver.RecordApply`
+(from the forge layer) **and** `StreamObserver.RecordStreamItem` (from the stream layer)
+if both are present.
+
+### Forge functions are pure — observer calls belong in the adapter/stream layer
+
+Forge functions (`func(In) (Out, error)`) are pure domain computations: they receive
+typed inputs, return typed outputs or structured errors, and have no knowledge of
+observers, transports, or streams. **Do not call observer methods inside a forge
+function body.**
+
+Observer calls attach at the layers that surround the function:
+
+```
+stream.Apply(ctx, src, oeeCalcFn, opts)
+    ↑ RecordStreamItem fires here (stream layer)
+        oeeCalcFn.ApplyContext(ctx, in)
+            ↑ RecordApply fires here (forge/registry layer)
+                func(in OEEIn) (OEEResult, error) { ... }
+                    ↑ pure — no observer, no ctx dependency
+```
+
+For domain-level observation of results, use `stream.Tap` after `stream.Apply`:
+
+```go
+results = stream.Tap(ctx, results, func(r OEEResult) {
+    if r.OEE < 0.75 {
+        slog.Warn("OEE below threshold", "oee", r.OEE)  // domain event — typed value
+    }
+})
+```
+
+For structured error observation, use `stream.MapErr` or the `Drain` error callback —
+errors are typed (`forge.InputError`, `forge.ApplyError`, etc.) and implement
+`slog.LogValuer` for zero-effort structured logging.
+
 ## Observer interface summary
 
 | Interface | Signals | Methods | Layer |
