@@ -258,6 +258,8 @@ func main() {
 		metrics,
 		stats.NewLoggingObserver(logger),
 	)
+	// Store obs in ctx once — Subscribe/Publish resolve it automatically.
+	ctx = stats.WithObserver(ctx, obs)
 	client := newMockClient()
 
 	// ── Consumer service: register channels ───────────────────────────────────
@@ -326,10 +328,10 @@ func main() {
 					routingSensorID, r.Value, alertThreshold)
 				return adaptermqtt.Publish(ctx, client, alertsHandle, 1, false, alert,
 					map[string]string{"sensorID": routingSensorID}, // routing key, not payload field
-					adaptermqtt.PublishOptions{Observer: obs})
+					adaptermqtt.PublishOptions{})                   // observer from ctx
 			},
 			adaptermqtt.SubscribeOptions{
-				Observer: obs,
+				// observer from ctx (resolved automatically)
 				OnError: func(e adaptermqtt.SubscribeError) {
 					switch e.Kind {
 					case adaptermqtt.KindDecode:
@@ -389,7 +391,7 @@ func main() {
 	for _, r := range readings {
 		if err := adaptermqtt.Publish(ctx, client, producerReadingsHandle, 1, false, r,
 			map[string]string{"sensorID": sensorA},
-			adaptermqtt.PublishOptions{Observer: obs}); err != nil {
+			adaptermqtt.PublishOptions{}); /* observer from ctx */ err != nil {
 			logger.Error("producer: publish failed", "error", err)
 		}
 	}
@@ -406,7 +408,7 @@ func main() {
 	}
 	err = adaptermqtt.Publish(ctx, client, producerReadingsHandle, 1, false, badReading,
 		map[string]string{"sensorID": sensorB},
-		adaptermqtt.PublishOptions{Observer: obs})
+		adaptermqtt.PublishOptions{}) // observer from ctx
 	if err != nil {
 		var valErrs codex.ValidationErrors
 		if errors.As(err, &valErrs) {
@@ -428,7 +430,7 @@ func main() {
 			Timestamp: "2024-01-15T10:34:00Z",
 		},
 		map[string]string{"sensorID": "not-a-uuid"}, // fails UUID codec
-		adaptermqtt.PublishOptions{Observer: obs},
+		adaptermqtt.PublishOptions{},                // observer from ctx
 	)
 	if err != nil {
 		var paramErr events.TopicParamError
@@ -470,7 +472,7 @@ func main() {
 				return nil
 			},
 			adaptermqtt.SubscribeOptions{
-				Observer: obs,
+				// observer from ctx (resolved automatically)
 				OnError: func(e adaptermqtt.SubscribeError) {
 					var paramErr events.TopicParamError
 					if errors.As(e.Err, &paramErr) {
@@ -495,7 +497,7 @@ func main() {
 				Unit: "celsius", Timestamp: "2024-01-15T11:00:00Z",
 			},
 			map[string]string{"sensorID": sID},
-			adaptermqtt.PublishOptions{Observer: obs})
+			adaptermqtt.PublishOptions{}) // observer from ctx
 	}
 	// Non-UUID sensorID — wildcard handler receives it, TopicVarsFromMessage rejects.
 	if len("sensors/not-a-uuid/readings") > 0 {

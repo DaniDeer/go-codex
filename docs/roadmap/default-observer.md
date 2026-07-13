@@ -1,6 +1,6 @@
 # Default Observer — `stats`
 
-> **Status:** Phase 0 (pre-flight fixes) ready to implement. Phase 1 (context observer) design complete.
+> **Status:** ✅ Fully implemented — Phase 0 fixes + Phase 1 context observer shipped.
 > [← Back to Roadmap](index.md)
 
 ---
@@ -230,7 +230,7 @@ func ObserverFromContext(ctx context.Context) Observer
 
 ### Adapter nil-guard update
 
-Every adapter currently has this guard at the top of each function:
+Every adapter previously had this guard at the top of each function:
 
 ```go
 obs := opts.Observer
@@ -239,7 +239,7 @@ if obs == nil {
 }
 ```
 
-It changes to:
+**Implemented as:** Functions that receive a direct `ctx context.Context` parameter:
 
 ```go
 obs := opts.Observer
@@ -247,6 +247,32 @@ if obs == nil {
     obs = stats.ObserverFromContext(ctx)
 }
 ```
+
+**Special cases — resolved per-request/per-call inside closure:**
+
+HTTP adapters (`nethttp.Handler`, `nethttp.SSEHandler`, `chi.Handler`, `chi.SSEHandler`)
+and MCP adapters (`mcpgo.ToolHandler`, `mcpgo.ResourceHandler`, `mcpgo.PromptHandler`)
+are **constructor functions** that return a closure. The closure's `ctx` (from
+`r.Context()` or the MCP framework call ctx) is only available at request time, not at
+construction time. These resolve the observer per-request/per-call inside the closure:
+
+```go
+// Inside the returned http.HandlerFunc closure:
+obs := opts.Observer
+if obs == nil {
+    obs = stats.ObserverFromContext(r.Context())  // per-request
+}
+```
+
+This enables per-request injection via a server middleware:
+```go
+r = r.WithContext(stats.WithObserver(r.Context(), obs))
+```
+
+**Exception — `sql.Validate`:** Has no `ctx` parameter. Falls back to
+`NoopObserver{}` only. Use explicit `ValidateOptions{Observer: obs}` when observability
+is required, or pass `stats.ObserverFromContext(ctx)` directly if ctx is available
+in the calling scope.
 
 `ObserverFromContext` returns `NoopObserver{}` when no context observer is set, so
 the behaviour is **identical** when neither `opts.Observer` is set nor a context
@@ -264,15 +290,12 @@ concurrent test isolation.
 
 ### Functions without `ctx` in options
 
-A small number of call sites receive an observer through `opts` without a `ctx`
-parameter (e.g. `format.FileOptions` where `Context` is optional). These are handled
-by using `opts.Context` when present, or leaving the nil-guard unchanged (no context
-to pull from). The roadmap for these is:
-
 - `format.FileOptions` — already has an optional `Context context.Context` field;
-  use `ObserverFromContext(opts.Context)` as the fallback.
+  the nil-guard uses `ObserverFromContext(opts.Context)` as the fallback before
+  falling through to `NoopObserver{}`.
 - `forge.Registry.WithObserver` — `Registry` is set up before serving; it already
-  has an explicit API. No change needed.
+  has an explicit API. No change needed (context integration not appropriate for
+  long-lived startup-time configuration).
 
 ### Usage — "set once, forget everywhere"
 
@@ -428,32 +451,35 @@ it does not add new methods or hooks.
 
 ---
 
-## Files to create / modify
+## Files created / modified
 
 | File | Change |
 |---|---|
 | `stats/context.go` | **New** — `WithObserver`, `ObserverFromContext`, `observerKey` |
-| `stats/context_test.go` | **New** — T1–T4, T10 |
-| `adapters/nethttp/adapter.go` | Modify 2 nil-guards |
-| `adapters/nethttp/client.go` | Modify 1 nil-guard |
-| `adapters/nethttp/stream.go` | Modify 3 nil-guards (SSEFromStream, PollStream, SSEClientStream) |
-| `adapters/chi/adapter.go` | Modify 2 nil-guards |
-| `adapters/chi/stream.go` | Modify 1 nil-guard (SSEFromStream) |
-| `adapters/mqtt/adapter.go` | Modify 2 nil-guards |
-| `adapters/mqtt5/adapter.go` | Modify 2 nil-guards |
-| `adapters/mqtt5/reqreply.go` | Modify 1 nil-guard |
-| `adapters/mqtt5/stream.go` | Modify 1 nil-guard |
-| `adapters/zeromq/adapter.go` | Modify 6 nil-guards |
-| `adapters/zeromq/stream.go` | Modify 3 nil-guards |
-| `adapters/mcpgo/adapter.go` | Modify 3 nil-guards |
-| `adapters/sql/validate.go` | Modify 1 nil-guard |
-| `adapters/sql/stream.go` | Modify 2 nil-guards |
-| `stream/transform.go` | Modify 1 nil-guard (`Apply`) |
-| `stream/source.go` | Modify 1 nil-guard (`FromCodec`) |
-| `stream/sink.go` | Modify 1 nil-guard (`Drain`) |
-| `format/file.go` | Modify 3 nil-guards (Read, Write, Update) using `opts.Context` |
-| `.github/instructions/go-codex.instructions.md` | Document new `stats.WithObserver` / `ObserverFromContext` API |
-| `docs/features/observability.md` (or relevant page) | Add "default observer" section |
+| `stats/context_test.go` | **New** — T1–T4, T5 (Example) |
+| `adapters/nethttp/adapter.go` | obs moved inside closures (`Handler`, `SSEHandler`) → per-request from `r.Context()` |
+| `adapters/nethttp/client.go` | Nil-guard → `ObserverFromContext(ctx)` |
+| `adapters/nethttp/stream.go` | SSEFromStream: obs moved inside closure; PollStream, SSEClientStream: nil-guard → `ObserverFromContext(ctx)` |
+| `adapters/chi/adapter.go` | obs moved inside closures → per-request from `r.Context()` |
+| `adapters/chi/stream.go` | SSEFromStream: obs moved inside closure |
+| `adapters/mqtt/adapter.go` | Nil-guards → `ObserverFromContext(ctx)` |
+| `adapters/mqtt5/adapter.go` | Nil-guards → `ObserverFromContext(ctx)` |
+| `adapters/mqtt5/reqreply.go` | Nil-guards → `ObserverFromContext(ctx)` |
+| `adapters/mqtt5/stream.go` | Nil-guard → `ObserverFromContext(ctx)` |
+| `adapters/zeromq/adapter.go` | Nil-guards → `ObserverFromContext(ctx)` |
+| `adapters/zeromq/stream.go` | Nil-guards → `ObserverFromContext(ctx)` |
+| `adapters/mcpgo/adapter.go` | obs moved inside closures (ToolHandler, ResourceHandler, PromptHandler) → per-call from call ctx |
+| `adapters/sql/validate.go` | **Unchanged** — no ctx parameter; stays `NoopObserver{}` |
+| `adapters/sql/migrate.go` | Nil-guards → `ObserverFromContext(ctx)` |
+| `adapters/sql/stream.go` | Nil-guards → `ObserverFromContext(ctx)` |
+| `stream/transform.go` | Nil-guard → `ObserverFromContext(ctx)` (`Apply`) |
+| `stream/source.go` | Nil-guard → `ObserverFromContext(ctx)` (`FromCodec`) |
+| `stream/sink.go` | Nil-guard → `ObserverFromContext(ctx)` (`Drain`) |
+| `format/file.go` | Two-step nil-guard: `ObserverFromContext(opts.Context)` then `NoopObserver{}` fallback (4 sites) |
+| `.github/instructions/go-codex.instructions.md` | Documented `stats.WithObserver` / `ObserverFromContext` API and per-layer resolution |
+| `docs/features/observer.md` | Added "Default observer via context" section |
+| `docs/guides/observer.md` | Added "Set once, use everywhere" section + per-adapter notes |
+| `docs/concepts/observable-layers.md` | Added context observer subsection in Composition |
 
 ---
 
@@ -471,11 +497,13 @@ it does not add new methods or hooks.
 
 ---
 
-## Open design decisions
+## Design decisions — resolved
 
-| Decision | Options | Current preference |
-|----------|---------|-------------------|
-| **Stream sink: `Drain` nil-guard** | `Drain` takes `ctx` but `DrainOptions.Observer` is the hook; change nil-guard to context lookup | ✅ Change the nil-guard — consistent with all other adapters |
-| **`forge.Registry` nil-guard** | `WithObserver` is a builder method on `Registry`; no `ctx` is passed at setup time. Change? | ❌ Leave unchanged — registry is set up once at startup; explicit `WithObserver` is the correct API there |
-| **`stream.Apply` context lookup** | `Apply` receives `ctx` from the caller's pipeline context — use it | ✅ Yes — `ApplyOptions.Observer` nil → `ObserverFromContext(ctx)` |
-| **Test isolation** | Context observer is per-context, so tests that pass `context.Background()` without a context observer are unaffected | ✅ No test isolation risk — context-scoped not global |
+| Decision | Resolution |
+|----------|-----------|
+| **Stream sink: `Drain` nil-guard** | ✅ Changed to `ObserverFromContext(ctx)` — consistent with all other adapters |
+| **`forge.Registry` nil-guard** | ❌ Left unchanged — registry is long-lived startup config; explicit `WithObserver` is correct |
+| **`stream.Apply` context lookup** | ✅ `ApplyOptions.Observer` nil → `ObserverFromContext(ctx)` |
+| **Test isolation** | ✅ Context-scoped (not global) — tests with `context.Background()` are unaffected |
+| **HTTP/MCP handler closures** | ✅ obs resolved inside closure per-request/per-call from `r.Context()`/call ctx |
+| **`sql.Validate` no-ctx** | ✅ Left as `NoopObserver{}` — no ctx parameter; callers pass explicit observer or `stats.ObserverFromContext(ctx)` manually |

@@ -257,7 +257,7 @@ func Call[Req, Resp any](
 
 	obs := opts.Observer
 	if obs == nil {
-		obs = stats.NoopObserver{}
+		obs = stats.ObserverFromContext(ctx)
 	}
 
 	method := strings.ToUpper(handle.Descriptor.Method)

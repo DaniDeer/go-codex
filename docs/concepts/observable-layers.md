@@ -190,6 +190,31 @@ forge.NewRegistry("P", "1.0.0").WithObserver(obs)            // forge
 
 Each inner observer only sees the calls that match its interfaces. There is no boilerplate, no configuration file, and no changes to any existing business logic.
 
+### Context-scoped default observer
+
+As an alternative to per-call-site injection, attach the observer to a
+`context.Context` once and have every adapter pick it up automatically:
+
+```go
+obs := stats.NewFanout(metricsObserver, stats.NewLoggingObserver(slog.Default()))
+ctx := stats.WithObserver(context.Background(), obs)
+
+// Adapters resolve obs from ctx when Options.Observer is nil:
+mqtt.Subscribe(ctx, client, handle, 1, fn, mqtt.SubscribeOptions{})     // uses obs
+stream.Apply(ctx, s, fn, stream.ApplyOptions{})                         // uses obs
+file.Read(vars, format.FileOptions{Context: ctx})                       // uses obs
+forge.NewRegistry("P", "1.0.0").WithObserver(obs)                       // explicit — no ctx
+```
+
+**Precedence:** explicit `opts.Observer` > context observer > `NoopObserver{}`.
+
+HTTP adapters (`nethttp.Handler`, `chi.Handler`) resolve the observer per-request
+from `r.Context()`, enabling per-request injection via a server middleware.
+`forge.Registry` uses the explicit `.WithObserver(obs)` builder — no context
+integration by design.
+
+See [Feature: Observer Pattern — Default observer via context](../features/observer.md#default-observer-via-context) for the full API and per-layer resolution table.
+
 ## Distributed tracing across layers
 
 When an HTTP request arrives carrying a `traceparent` header (propagated by OTel middleware), the adapter passes the incoming `context.Context` to `StartSpan`. The OTel SDK detects the parent span automatically and creates a child:

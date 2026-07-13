@@ -42,7 +42,7 @@ func Apply[In, Out any](
 ) Stream[Out] {
 	obs := opts.Observer
 	if obs == nil {
-		obs = stats.NoopObserver{}
+		obs = stats.ObserverFromContext(ctx)
 	}
 	values := make(chan Out, opts.Buffer)
 	errs := make(chan error, opts.Buffer)

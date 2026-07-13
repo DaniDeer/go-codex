@@ -23,6 +23,7 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -177,15 +178,15 @@ var _ stats.FileObserver = (*CountingObserver)(nil)
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
 // loadConfig reads config from the given TOML path using a runtime-pathed File.
-func loadConfig(path string, obs stats.Observer) (ServiceConfig, error) {
+func loadConfig(ctx context.Context, path string) (ServiceConfig, error) {
 	f := format.NewFile(path, format.TOML(configCodec))
-	return f.Read(nil, format.FileOptions{Observer: obs})
+	return f.Read(nil, format.FileOptions{Context: ctx}) // observer from ctx
 }
 
 // writeConfig writes config to the given path.
-func writeConfig(path string, cfg ServiceConfig, obs stats.Observer) error {
+func writeConfig(ctx context.Context, path string, cfg ServiceConfig) error {
 	f := format.NewFile(path, format.TOML(configCodec))
-	return f.Write(nil, cfg, format.FileOptions{Observer: obs, Perm: 0600})
+	return f.Write(nil, cfg, format.FileOptions{Context: ctx, Perm: 0600}) // observer from ctx
 }
 
 // ── main ──────────────────────────────────────────────────────────────────────
@@ -196,6 +197,9 @@ func main() {
 
 	metrics := &CountingObserver{}
 	obs := stats.NewFanout(metrics, stats.NewLoggingObserver(logger.With("component", "file-io")))
+	// Store obs in a context — format.File.Read/Write/Update/Patch all resolve it
+	// automatically via FileOptions.Context when FileOptions.Observer is nil.
+	ctx := stats.WithObserver(context.Background(), obs)
 
 	// ── Section 1: Static config file ─────────────────────────────────────────
 
@@ -205,7 +209,7 @@ func main() {
 	cfgPath := writeTempConfig()
 	defer os.Remove(cfgPath)
 
-	cfg, err := loadConfig(cfgPath, obs)
+	cfg, err := loadConfig(ctx, cfgPath)
 	if err != nil {
 		slog.Error("failed to load config", "err", err)
 		os.Exit(1)
@@ -240,15 +244,15 @@ func main() {
 	if err := f.Update(nil, func(c ServiceConfig) ServiceConfig {
 		c.RetentionDays += 10
 		return c
-	}, format.FileOptions{Observer: obs}); err != nil {
+	}, format.FileOptions{Context: ctx}); err != nil {
 		slog.Error("config update failed", "err", err)
 	} else {
-		updated, _ := loadConfig(cfgPath, obs)
+		updated, _ := loadConfig(ctx, cfgPath)
 		fmt.Printf("  after Update: retention_days=%d\n", updated.RetentionDays)
 
 		// writeConfig demonstrates writing a config value directly.
 		// It uses the same TOML codec and file path — same contract, different helper.
-		if err := writeConfig(cfgPath, updated, obs); err != nil {
+		if err := writeConfig(ctx, cfgPath, updated); err != nil {
 			slog.Error("writeConfig failed", "err", err)
 		}
 	}
@@ -303,14 +307,14 @@ func main() {
 		Value:     23.7,
 		Unit:      "celsius",
 	}
-	if err := sensorFile.Write(vars, m, format.FileOptions{Observer: obs}); err != nil {
+	if err := sensorFile.Write(vars, m, format.FileOptions{Context: ctx}); err != nil {
 		slog.Error("Write failed", "err", err)
 	} else {
 		fmt.Printf("  written: sensor=%s value=%.1f%s\n", m.SensorID, m.Value, m.Unit)
 	}
 
 	// Read it back.
-	got, err := sensorFile.Read(vars, format.FileOptions{Observer: obs})
+	got, err := sensorFile.Read(vars, format.FileOptions{Context: ctx})
 	if err != nil {
 		slog.Error("Read failed", "err", err)
 	} else {
@@ -342,7 +346,7 @@ func main() {
 
 	// File not found → FileReadError.
 	absent := format.NewFile("/nonexistent/dir/item.json", format.JSON(measurementCodec))
-	_, err = absent.Read(nil, format.FileOptions{Observer: obs})
+	_, err = absent.Read(nil, format.FileOptions{Context: ctx})
 	if err != nil {
 		var readErr format.FileReadError
 		if errors.As(err, &readErr) {
@@ -389,14 +393,14 @@ func main() {
 	pngVars := map[string]string{"name": "chart"}
 
 	// Write — FileObserver.RecordFileWrite is called after the write.
-	if err := pngFile.Write(pngVars, validPNG, format.FileOptions{Observer: obs}); err != nil {
+	if err := pngFile.Write(pngVars, validPNG, format.FileOptions{Context: ctx}); err != nil {
 		slog.Error("PNG write failed", "err", err)
 	} else {
 		fmt.Printf("  written PNG: %d bytes\n", len(validPNG))
 	}
 
 	// Read — FileObserver.RecordFileRead is called after the read.
-	data, err := pngFile.Read(pngVars, format.FileOptions{Observer: obs})
+	data, err := pngFile.Read(pngVars, format.FileOptions{Context: ctx})
 	if err != nil {
 		slog.Error("PNG read failed", "err", err)
 	} else {
@@ -405,7 +409,7 @@ func main() {
 
 	// Write invalid data (missing PNG magic bytes) — constraint failure.
 	notPNG := []byte("this is not a PNG file")
-	if err := pngFile.Write(pngVars, notPNG, format.FileOptions{Observer: obs}); err != nil {
+	if err := pngFile.Write(pngVars, notPNG, format.FileOptions{Context: ctx}); err != nil {
 		var encErr format.FileEncodeError
 		if errors.As(err, &encErr) {
 			fmt.Printf("  FileEncodeError (constraint): path=%q\n", encErr.Path)
@@ -444,7 +448,7 @@ func main() {
 	appCfgFile := format.NewFile(dataDir+"/app-config.json", format.JSON(appCfgCodec))
 
 	initial := appCfg{Port: 8080, LogLevel: "info", MaxWorkers: 4}
-	if err := appCfgFile.Write(nil, initial, format.FileOptions{Observer: obs}); err != nil {
+	if err := appCfgFile.Write(nil, initial, format.FileOptions{Context: ctx}); err != nil {
 		slog.Error("Write initial config failed", "err", err)
 		os.Exit(1)
 	}
@@ -456,7 +460,7 @@ func main() {
 	if err := appCfgFile.Patch(nil, map[string]any{
 		"port":      9090,
 		"log_level": "debug",
-	}, format.FileOptions{Observer: obs}); err != nil {
+	}, format.FileOptions{Context: ctx}); err != nil {
 		slog.Error("Patch failed", "err", err)
 	} else {
 		after, _ := appCfgFile.Read(nil, format.FileOptions{})
@@ -498,7 +502,7 @@ func main() {
 	// not in appCfgCodec. After this call, "debug_mode" will be in the JSON file.
 	if err := format.PatchEncoded(appCfgFile, nil, appCfgPatchCodec,
 		appCfgPatch{Port: 7777, LogLevel: "warn", NewDebugMode: true},
-		format.FileOptions{Observer: obs}); err != nil {
+		format.FileOptions{Context: ctx}); err != nil {
 		slog.Error("PatchEncoded failed", "err", err)
 	} else {
 		after, _ := appCfgFile.Read(nil, format.FileOptions{})
@@ -513,8 +517,8 @@ func main() {
 	// If you've already decoded the struct and modified it, Write is the right choice.
 	// Update re-reads unnecessarily if you already have the value in memory.
 	decoded, _ := appCfgFile.Read(nil, format.FileOptions{})
-	decoded.Port = 5050                                                   // modify in memory
-	_ = appCfgFile.Write(nil, decoded, format.FileOptions{Observer: obs}) // Write directly — no re-read
+	decoded.Port = 5050                                                  // modify in memory
+	_ = appCfgFile.Write(nil, decoded, format.FileOptions{Context: ctx}) // Write directly — no re-read
 	fmt.Printf("  after Write (decoded→modified): port=%d\n", decoded.Port)
 
 	// ── FilePatchNotSupportedError for Gob ────────────────────────────────────

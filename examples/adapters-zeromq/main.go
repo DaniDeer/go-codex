@@ -106,6 +106,8 @@ func main() {
 
 	// Layer 2: register channel with builder — builder generates AsyncAPI spec.
 	builder := events.NewBuilder(events.Info{Title: "Sensor Network", Version: "1.0.0"})
+	// Store obs once in the context — every adapter call that receives this ctx
+	// will pick it up automatically when Options.Observer is nil.
 	builder.AddServer("zmq", events.Server{
 		URL:         "tcp://broker:5555",
 		Protocol:    "zmq",
@@ -127,6 +129,7 @@ func main() {
 
 	// Layer 3: subscriber — runs in background goroutine.
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	ctx = stats.WithObserver(ctx, obs) // default observer for all adapter calls
 	defer cancel()
 
 	received := make(chan SensorReading, 4)
@@ -137,7 +140,7 @@ func main() {
 				received <- r
 				return nil
 			},
-			zeromq.SubscribeOptions{Observer: obs},
+			zeromq.SubscribeOptions{}, // observer resolved from ctx
 		)
 	}()
 
@@ -151,7 +154,7 @@ func main() {
 	for _, r := range readings {
 		if err := zeromq.Publish(ctx, pipe, pubHandle, r,
 			map[string]string{"sensorID": sensorID},
-			zeromq.PublishOptions{Observer: obs},
+			zeromq.PublishOptions{}, // observer resolved from ctx
 		); err != nil {
 			fmt.Fprintf(os.Stderr, "publish: %v\n", err)
 			os.Exit(1)

@@ -45,7 +45,7 @@ func SubscribeStream[T any](
 
 	obs := subOpts.Observer
 	if obs == nil {
-		obs = stats.NoopObserver{}
+		obs = stats.ObserverFromContext(ctx)
 	}
 
 	// fmt is always used as the sole format for content-type matching and decoding.

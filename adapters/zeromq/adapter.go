@@ -128,7 +128,7 @@ func Subscribe[T any](
 ) error {
 	obs := opts.Observer
 	if obs == nil {
-		obs = stats.NoopObserver{}
+		obs = stats.ObserverFromContext(ctx)
 	}
 	if err := sock.SetSubscription(handle.Topic); err != nil {
 		return SocketError{Op: "set_subscription", Err: err}
@@ -230,7 +230,7 @@ func Publish[T any](
 ) error {
 	obs := opts.Observer
 	if obs == nil {
-		obs = stats.NoopObserver{}
+		obs = stats.ObserverFromContext(ctx)
 	}
 	start := time.Now()
 	var err error
@@ -311,7 +311,7 @@ func Serve[Req, Resp any](
 ) error {
 	obs := opts.Observer
 	if obs == nil {
-		obs = stats.NoopObserver{}
+		obs = stats.ObserverFromContext(ctx)
 	}
 	if err := sock.SetRecvTimeout(recvPollInterval); err != nil {
 		return SocketError{Op: "set_recv_timeout", Err: err}
@@ -450,7 +450,7 @@ func Call[Req, Resp any](
 ) (Resp, error) {
 	obs := opts.Observer
 	if obs == nil {
-		obs = stats.NoopObserver{}
+		obs = stats.ObserverFromContext(ctx)
 	}
 	var zero Resp
 	start := time.Now()
@@ -603,7 +603,7 @@ func ServeRouter[Req, Resp any](
 ) error {
 	obs := opts.Observer
 	if obs == nil {
-		obs = stats.NoopObserver{}
+		obs = stats.ObserverFromContext(ctx)
 	}
 	if err := sock.SetRecvTimeout(recvPollInterval); err != nil {
 		return SocketError{Op: "set_recv_timeout", Err: err}
@@ -765,7 +765,7 @@ func CallDealer[Req, Resp any](
 ) (Resp, error) {
 	obs := opts.Observer
 	if obs == nil {
-		obs = stats.NoopObserver{}
+		obs = stats.ObserverFromContext(ctx)
 	}
 	var zero Resp
 	start := time.Now()

@@ -10,7 +10,7 @@ These are **living design documents** — they reflect the current best thinking
 
 | Feature | Package | Status | Summary |
 |---------|---------|--------|---------|
-| [Default Observer via Context](default-observer.md) | `stats` + all adapters | **Phase 0 ready** — pre-flight fixes before context observer | Phase 0: fix 3 observer wiring gaps (`DrainWrite` missing Observer, sink bridges not threading observer to `gstream.Drain`, misleading `stats.Observer` godoc). Phase 1: `stats.WithObserver(ctx, obs)` context-scoped default observer |
+| ~~Default Observer via Context~~ ✅ | `stats` + all adapters | **Shipped** | `stats.WithObserver(ctx, obs)` + `ObserverFromContext(ctx)` — see [design doc](default-observer.md) for rationale and scope |
 | [Stream — Phase 4 (FlatMap, GroupBy, CombineLatestN)](stream-phase4.md) | `stream` | Design needed | FlatMap sub-stream variant (goroutine pool), GroupBy (per-key sub-streams), CombineLatest5+ (code-gen or nested composition) |
 | [AMQP 0.9.1 Adapter](amqp-adapter.md) | `adapters/amqp` | Design complete | PUB/SUB + Request/Reply over RabbitMQ — exchange/queue topology, Ack/Nack, `ReplyTo`/`CorrelationId` RPC, structured errors, observer integration |
 | [TCP Adapter](tcp-adapter.md) | `adapters/tcp` | Design complete | Request/Reply + streaming over raw TCP — pluggable `FramedConn` framing, built-in length-prefix framer, stdlib-only, no CGO |

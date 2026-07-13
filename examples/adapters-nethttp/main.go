@@ -571,29 +571,45 @@ func main() {
 
 	metrics := &CountingObserver{}
 	obs := stats.NewFanout(metrics, stats.NewLoggingObserver(baseLogger.With("component", "http")))
-	opts := nethttp.Options{ErrorHandler: errorHandler, Observer: obs}
+
+	// HTTP adapters resolve the observer per-request from r.Context() when
+	// Options.Observer is nil. Wrap the mux with a middleware that injects obs
+	// into every request's context — a clean alternative to Options{Observer: obs}
+	// on every nethttp.Register call.
+	//
+	// This enables per-request observer injection (e.g. per-tenant observers via
+	// middleware) while keeping handler registration free of explicit wiring.
+	observerMiddleware := func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			next.ServeHTTP(w, r.WithContext(stats.WithObserver(r.Context(), obs)))
+		})
+	}
+
+	// Base options for all routes — ErrorHandler only; Observer comes from ctx via middleware.
+	baseOpts := nethttp.Options{ErrorHandler: errorHandler}
 
 	// Wire infrastructure handlers to HTTP routes with custom error handling + domain logging decorator.
 	mux := http.NewServeMux()
 	nethttp.Register(mux, createUserRoute,
 		withDomainLogging("user.create", makeCreateUserHandler(store), domainLogger, extractUserAttrs),
-		opts)
+		baseOpts)
 	nethttp.Register(mux, getUserRoute,
 		withDomainLogging("user.get", makeGetUserHandler(store), domainLogger, extractGetUserAttrs),
-		opts)
+		baseOpts)
 	nethttp.Register(mux, listUsersRoute,
 		withDomainLogging("user.list", makeListUsersHandler(), domainLogger,
 			func(_ struct{}, _ PagedUsersResp) []slog.Attr { return nil }),
-		opts)
+		baseOpts)
 	nethttp.Register(mux, profileRoute,
 		func(_ context.Context, _ struct{}) (User, error) {
 			// Handler only runs when both cookie and header are valid.
 			return User{ID: "f47ac10b-58cc-4372-a567-0e02b2c3d479", Name: "Alice", Email: "alice@example.com"}, nil
 		},
-		opts)
+		baseOpts)
 
 	// Demo requests against an in-process test server.
-	srv := httptest.NewServer(mux)
+	// observerMiddleware injects obs into every request's r.Context().
+	srv := httptest.NewServer(observerMiddleware(mux))
 	defer srv.Close()
 
 	fmt.Println("=== POST /users ===")
@@ -761,6 +777,10 @@ func main() {
 	// A separate server uses a handler that:
 	//   (a) deposits an empty Location value → fails NonEmptyString codec → adapter returns 500
 	//   (b) deposits a too-short session value → fails MinLen(8) codec → adapter returns 500
+	// The violation demo uses a separate mux (no middleware).
+	// Explicit Options{Observer: obs} demonstrates the override: when opts.Observer
+	// is non-nil it always wins over any context observer — even if the request
+	// context carried a different one via stats.WithObserver.
 	violationMux := http.NewServeMux()
 	nethttp.Register(violationMux, createUserRoute,
 		func(ctx context.Context, req CreateUserReq) (User, error) {
@@ -774,7 +794,7 @@ func main() {
 			})
 			return buildUserResponse(buildUserRecord(req)), nil
 		},
-		nethttp.Options{Observer: obs})
+		nethttp.Options{Observer: obs}) // explicit override — explicit beats context observer
 	violationSrv := httptest.NewServer(violationMux)
 	defer violationSrv.Close()
 
@@ -803,7 +823,7 @@ func main() {
 				Email: "not-an-email", // fails Email constraint
 			}, nil
 		},
-		nethttp.Options{Observer: obs})
+		nethttp.Options{Observer: obs}) // explicit override
 	bodyViolSrv := httptest.NewServer(bodyViolMux)
 	defer bodyViolSrv.Close()
 

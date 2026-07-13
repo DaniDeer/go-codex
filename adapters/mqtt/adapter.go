@@ -183,7 +183,7 @@ func SubscribeHandler[T any](
 ) pahomqtt.MessageHandler {
 	obs := opts.Observer
 	if obs == nil {
-		obs = stats.NoopObserver{}
+		obs = stats.ObserverFromContext(ctx)
 	}
 	// Priority: call-time formats > handle.SubscribeFormats > handle.Formats > JSON fallback (handle.Decode).
 	effectiveFmts := formats
@@ -359,7 +359,7 @@ type PublishOptions struct {
 func Publish[T any](ctx context.Context, client pahomqtt.Client, handle *events.ChannelHandle[T], qos byte, retained bool, msg T, vars map[string]string, opts PublishOptions, formats ...format.Format[T]) error {
 	obs := opts.Observer
 	if obs == nil {
-		obs = stats.NoopObserver{}
+		obs = stats.ObserverFromContext(ctx)
 	}
 	start := time.Now()
 	var err error

@@ -496,3 +496,70 @@ func TestFlatMapSlice_ErrorsForwarded(t *testing.T) {
 		t.Errorf("FlatMapSlice: error should be forwarded, got %d", len(errs))
 	}
 }
+
+// ── T9: context observer ──────────────────────────────────────────────────────
+
+func TestApply_ContextObserver_UsedWhenApplyOptsNil(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	intCodec := codex.Int()
+	fn := forge.NewFunction("identity", "1.0", intCodec, intCodec, func(v int) (int, error) { return v, nil })
+
+	var streamItemCalled bool
+	spy := &applyStreamObserverSpy{onStreamItem: func() { streamItemCalled = true }}
+	ctx = stats.WithObserver(ctx, spy)
+
+	ch := make(chan int, 1)
+	ch <- 42
+	close(ch)
+	s := stream.From(ctx, ch)
+	out := stream.Apply(ctx, s, fn, stream.ApplyOptions{}) // no explicit Observer
+
+	vals, errs := stream.Collect(ctx, out)
+	if len(errs) != 0 || len(vals) != 1 || vals[0] != 42 {
+		t.Fatalf("unexpected result: vals=%v errs=%v", vals, errs)
+	}
+	if !streamItemCalled {
+		t.Error("want StreamObserver.RecordStreamItem called from context observer, got nothing")
+	}
+}
+
+func TestApply_ExplicitObserver_BeatsContextObserver(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	intCodec := codex.Int()
+	fn := forge.NewFunction("identity", "1.0", intCodec, intCodec, func(v int) (int, error) { return v, nil })
+
+	var explicitCalled, contextCalled bool
+	explicit := &applyStreamObserverSpy{onStreamItem: func() { explicitCalled = true }}
+	ctxObs := &applyStreamObserverSpy{onStreamItem: func() { contextCalled = true }}
+	ctx = stats.WithObserver(ctx, ctxObs)
+
+	ch := make(chan int, 1)
+	ch <- 1
+	close(ch)
+	s := stream.From(ctx, ch)
+	out := stream.Apply(ctx, s, fn, stream.ApplyOptions{Observer: explicit})
+
+	stream.Collect(ctx, out)
+
+	if !explicitCalled {
+		t.Error("want explicit observer called")
+	}
+	if contextCalled {
+		t.Error("want context observer NOT called when explicit is set")
+	}
+}
+
+type applyStreamObserverSpy struct {
+	stats.NoopObserver
+	onStreamItem func()
+}
+
+func (s *applyStreamObserverSpy) RecordStreamItem(_ string, _ bool, _ time.Duration) {
+	if s.onStreamItem != nil {
+		s.onStreamItem()
+	}
+}

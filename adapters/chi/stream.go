@@ -245,11 +245,12 @@ func SSEFromStream[Req, Event any](
 	streamFactory func(context.Context, Req) gstream.Stream[Event],
 	opts SSEStreamOptions,
 ) SSEHandlerFunc[Req, Event] {
-	obs := opts.Observer
-	if obs == nil {
-		obs = stats.NoopObserver{}
-	}
 	return func(ctx context.Context, req Req, send func(Event) error) error {
+		// Resolve observer per-connection: explicit opts.Observer beats context observer.
+		obs := opts.Observer
+		if obs == nil {
+			obs = stats.ObserverFromContext(ctx)
+		}
 		src := streamFactory(ctx, req)
 		valCh := src.Values
 		errCh := src.Errors

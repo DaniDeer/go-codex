@@ -216,10 +216,6 @@ func Handler[Req, Resp any](handle *rest.RouteHandle[Req, Resp], fn HandlerFunc[
 	if errFn == nil {
 		errFn = defaultErrorHandler
 	}
-	obs := opts.Observer
-	if obs == nil {
-		obs = stats.NoopObserver{}
-	}
 	maxBody := opts.MaxBodyBytes
 	if maxBody <= 0 {
 		maxBody = maxRequestBodyBytes
@@ -232,6 +228,11 @@ func Handler[Req, Resp any](handle *rest.RouteHandle[Req, Resp], fn HandlerFunc[
 	path := handle.Descriptor.Path
 
 	return func(w http.ResponseWriter, r *http.Request) {
+		// Resolve observer per-request: explicit opts.Observer beats context observer.
+		obs := opts.Observer
+		if obs == nil {
+			obs = stats.ObserverFromContext(r.Context())
+		}
 		start := time.Now()
 		sw := &statusResponseWriter{ResponseWriter: w, code: http.StatusOK}
 		defer func() {
@@ -503,12 +504,12 @@ func SSEHandler[Req, Event any](handle *rest.SSERouteHandle[Req, Event], fn SSEH
 	if opts.ErrorHandler == nil {
 		opts.ErrorHandler = defaultErrorHandler
 	}
-	obs := opts.Observer
-	if obs == nil {
-		obs = stats.NoopObserver{}
-	}
-
 	return func(w http.ResponseWriter, r *http.Request) {
+		// Resolve observer per-request: explicit opts.Observer beats context observer.
+		obs := opts.Observer
+		if obs == nil {
+			obs = stats.ObserverFromContext(r.Context())
+		}
 		start := time.Now()
 		sw := &statusResponseWriter{ResponseWriter: w, code: http.StatusOK}
 

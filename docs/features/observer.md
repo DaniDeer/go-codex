@@ -91,4 +91,81 @@ To propagate into forge and file:
 | **Format (file I/O)** | `FileOptions{Observer: obs}` | `RecordFileRead`/`RecordFileWrite`, validation errors, trace spans |
 | **Forge** | `Registry.WithObserver(obs)` | `RecordApply` per function call, trace spans |
 
+## Default observer via context
+
+Instead of passing `Observer: obs` on every call site, attach an observer once to a
+`context.Context` and let every adapter pick it up automatically when no explicit
+observer is configured:
+
+```go
+obs := stats.NewFanout(metricsObserver, stats.NewLoggingObserver(slog.Default()))
+ctx := stats.WithObserver(context.Background(), obs)
+
+// All adapters now use obs when Options.Observer is nil:
+mqtt.Subscribe(ctx, client, handle, 1, fn, mqtt.SubscribeOptions{})
+stream.Apply(ctx, s, fn, stream.ApplyOptions{})
+nethttp.Register(mux, handle, fn, nethttp.Options{}) // resolved per-request (see below)
+```
+
+### API
+
+```go
+// WithObserver returns a copy of ctx carrying obs as the default observer.
+func stats.WithObserver(ctx context.Context, obs Observer) context.Context
+
+// ObserverFromContext retrieves the stored observer, or returns NoopObserver{} if none.
+func stats.ObserverFromContext(ctx context.Context) Observer
+```
+
+### Precedence
+
+```
+opts.Observer != nil  →  use opts.Observer                (explicit — highest priority)
+opts.Observer == nil  →  use stats.ObserverFromContext(ctx) (context default)
+                      →  returns NoopObserver{} if nothing stored
+```
+
+Explicit always wins. Per-component overrides continue to work:
+
+```go
+nethttp.Handler(handle, fn, nethttp.Options{Observer: auditObserver}) // explicit, no lookup
+```
+
+### How each layer resolves the context observer
+
+| Layer | ctx source | Resolution |
+|-------|-----------|------------|
+| **HTTP adapters** (`nethttp.Handler`, `chi.Handler`, `SSEHandler`) | `r.Context()` per-request | Resolved inside the request closure — a server middleware can inject per-request observers |
+| **SSE stream bridges** (`SSEFromStream`, `SSEFromHub`) | ctx from each SSE connection | Resolved inside the per-connection closure |
+| **MQTT adapters** (`Subscribe`, `Publish`) | ctx passed to function | Resolved at call time |
+| **ZeroMQ adapters** (`Subscribe`, `Publish`, `Serve`, `Call`) | ctx passed to function | Resolved at call time |
+| **MCP adapters** (`ToolHandler`, `ResourceHandler`, `PromptHandler`) | ctx from each tool/resource/prompt call | Resolved inside the per-call closure |
+| **Stream bridges** (`stream.Apply`, `stream.FromCodec`, `stream.Drain`) | ctx passed to function | Resolved at call time |
+| **`format.File`** (`Read`, `Write`, `Update`) | `FileOptions.Context` | Resolved from `opts.Context` when non-nil |
+| **`forge.Registry`** | not applicable | No context integration — uses explicit `.WithObserver(obs)` builder |
+| **`sql.Validate`** | not applicable | No ctx parameter — falls back to `NoopObserver{}` only |
+
+### HTTP middleware pattern
+
+For HTTP servers, set the observer per-request via a middleware:
+
+```go
+// Server-side middleware — injects obs into every request's context:
+func ObserverMiddleware(obs stats.Observer) func(http.Handler) http.Handler {
+    return func(next http.Handler) http.Handler {
+        return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+            ctx := stats.WithObserver(r.Context(), obs)
+            next.ServeHTTP(w, r.WithContext(ctx))
+        })
+    }
+}
+
+// Wire:
+mux := http.NewServeMux()
+nethttp.Register(mux, handle, fn, nethttp.Options{}) // no explicit Observer
+http.ListenAndServe(":8080", ObserverMiddleware(obs)(mux))
+```
+
+For per-service (not per-request) wiring, pass `nethttp.Options{Observer: obs}` directly — this is simpler and slightly cheaper (no per-request context lookup).
+
 For per-adapter code examples, OpenTelemetry tracing, Prometheus wiring, location values, and a full end-to-end walk-through, see the [Guide: Using the Observer Pattern](../guides/observer.md).

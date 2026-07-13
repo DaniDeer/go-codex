@@ -31,7 +31,7 @@ func Drain[T any](
 ) {
 	obs := opts.Observer
 	if obs == nil {
-		obs = stats.NoopObserver{}
+		obs = stats.ObserverFromContext(ctx)
 	}
 	valCh := src.Values
 	errCh := src.Errors

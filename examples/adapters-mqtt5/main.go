@@ -294,20 +294,23 @@ func main() {
 	obs := stats.NewFanout(counter, stats.NewLoggingObserver(logger))
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	// Store obs in ctx once — Subscribe/Publish/Serve/Call all resolve it
+	// automatically from ctx when Options.Observer is nil.
+	ctx = stats.WithObserver(ctx, obs)
 	defer cancel()
 
 	fmt.Println("═══════════════════════════════════════════════════════")
 	fmt.Println(" MQTT 5 adapter — features specific to MQTT 5.0")
 	fmt.Println("═══════════════════════════════════════════════════════")
 
-	runPubSubDemo(ctx, obs, logger)
-	runRequestReplyDemo(ctx, obs, logger)
+	runPubSubDemo(ctx, logger)
+	runRequestReplyDemo(ctx, logger)
 	printSpecs(logger)
 }
 
 // ── Demo 1: PUB/SUB with User Properties, ContentType, UserPropertyParam ─────
 
-func runPubSubDemo(ctx context.Context, obs stats.Observer, logger *slog.Logger) {
+func runPubSubDemo(ctx context.Context, logger *slog.Logger) {
 	fmt.Println("\n── Demo 1: PUB/SUB (User Properties + ContentType + UserPropertyParam) ──")
 
 	broker, router := newMockBroker()
@@ -340,8 +343,7 @@ func runPubSubDemo(ctx context.Context, obs stats.Observer, logger *slog.Logger)
 			}
 			return nil
 		},
-		mqtt5adapter.SubscribeOptions{
-			Observer: obs,
+		mqtt5adapter.SubscribeOptions{ // Observer resolved from ctx
 			OnError: func(e mqtt5adapter.SubscribeError) {
 				logger.Warn("subscribe error", "error", e)
 			},
@@ -363,8 +365,7 @@ func runPubSubDemo(ctx context.Context, obs stats.Observer, logger *slog.Logger)
 	_ = mqtt5adapter.Publish(ctx, broker, pubHandle, 1, false,
 		SensorReading{SensorID: sensorID, Value: 22.5},
 		map[string]string{"sensorID": sensorID},
-		mqtt5adapter.PublishOptions{
-			Observer:    obs,
+		mqtt5adapter.PublishOptions{ // Observer resolved from ctx
 			ContentType: "application/json", // ← MQTT 5 feature 3: ContentType property
 			UserProperties: []mqtt5adapter.UserProperty{
 				{Key: "TenantID", Value: "acme"},
@@ -406,7 +407,7 @@ func runPubSubDemo(ctx context.Context, obs stats.Observer, logger *slog.Logger)
 
 // ── Demo 2: Request-Reply (ResponseTopic + CorrelationData) ───────────────────
 
-func runRequestReplyDemo(ctx context.Context, obs stats.Observer, logger *slog.Logger) {
+func runRequestReplyDemo(ctx context.Context, logger *slog.Logger) {
 	fmt.Println("\n── Demo 2: Request-Reply (ResponseTopic + CorrelationData) ──")
 	fmt.Println("  (No equivalent in MQTT 3.1.1 — MQTT 5.0 only)")
 
@@ -424,17 +425,16 @@ func runRequestReplyDemo(ctx context.Context, obs stats.Observer, logger *slog.L
 		func(_ context.Context, req ComputeReq) (ComputeResp, error) {
 			return ComputeResp{Sum: req.X + req.Y}, nil
 		},
-		mqtt5adapter.ServeOptions{Observer: obs},
+		mqtt5adapter.ServeOptions{}, // Observer resolved from ctx
 	)
 
 	// Requester: publishes with ResponseTopic + CorrelationData; waits for reply.
 	reqs := []ComputeReq{{X: 3, Y: 4}, {X: 10, Y: 20}, {X: -5, Y: 5}}
 	for _, req := range reqs {
 		resp, err := mqtt5adapter.Call(ctx, broker, router, handle, req,
-			mqtt5adapter.CallOptions{
+			mqtt5adapter.CallOptions{ // Observer resolved from ctx
 				ReplyTopicPrefix: "replies",
 				Timeout:          2 * time.Second,
-				Observer:         obs,
 			})
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "request error: %v\n", err)

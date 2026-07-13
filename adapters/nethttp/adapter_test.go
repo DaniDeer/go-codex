@@ -2040,3 +2040,98 @@ func TestSSEHandler_PathParam_codecValidated(t *testing.T) {
 		t.Errorf("want 200 for valid path param, got %d", rec2.Code)
 	}
 }
+
+// ── Context observer integration ──────────────────────────────────────────────
+
+// T5: Handler with empty Options picks up context observer from r.Context().
+// The context observer is server-side (set on the incoming request context);
+// HTTP is stateless so client-side contexts do not propagate to the server.
+// The typical integration is via server middleware: r.WithContext(stats.WithObserver(r.Context(), obs)).
+func TestHandler_ContextObserver_UsedWhenOptsNil(t *testing.T) {
+	b := rest.NewBuilder(testInfo)
+	handle, _ := rest.NewRoute[getReq, userResp]("GET", "/users",
+		getReqCodec, userRespCodec, rest.RouteMeta{}).Register(b)
+
+	var recorded bool
+	spy := &testSpyObserver{onRequest: func() { recorded = true }}
+
+	h := nethttp.Handler(handle, func(_ context.Context, _ getReq) (userResp, error) {
+		return userResp{ID: "u1", Name: "Alice"}, nil
+	}, nethttp.Options{}) // no explicit Observer
+
+	// Simulate server-side middleware injecting the observer into r.Context().
+	withObsMiddleware := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		r = r.WithContext(stats.WithObserver(r.Context(), spy))
+		h.ServeHTTP(w, r)
+	})
+
+	rec := httptest.NewRecorder()
+	withObsMiddleware.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/users", nil))
+
+	if rec.Code != http.StatusOK {
+		t.Errorf("want 200, got %d", rec.Code)
+	}
+	if !recorded {
+		t.Error("want context observer RecordRequest called via middleware, got nothing")
+	}
+}
+
+// T6: Explicit opts.Observer beats context observer
+func TestHandler_ExplicitObserverBeatsContext(t *testing.T) {
+	b := rest.NewBuilder(testInfo)
+	handle, _ := rest.NewRoute[getReq, userResp]("GET", "/users",
+		getReqCodec, userRespCodec, rest.RouteMeta{}).Register(b)
+
+	var explicitCalled, contextCalled bool
+	explicit := &testSpyObserver{onRequest: func() { explicitCalled = true }}
+	ctxObs := &testSpyObserver{onRequest: func() { contextCalled = true }}
+
+	h := nethttp.Handler(handle, func(_ context.Context, _ getReq) (userResp, error) {
+		return userResp{}, nil
+	}, nethttp.Options{Observer: explicit}) // explicit wins
+
+	// Even if context observer is present, explicit wins.
+	withObsMiddleware := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		r = r.WithContext(stats.WithObserver(r.Context(), ctxObs))
+		h.ServeHTTP(w, r)
+	})
+
+	rec := httptest.NewRecorder()
+	withObsMiddleware.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/users", nil))
+
+	if !explicitCalled {
+		t.Error("want explicit observer called")
+	}
+	if contextCalled {
+		t.Error("want context observer NOT called when explicit is set")
+	}
+}
+
+// T7: No opts.Observer, no context observer → noop, no panic
+func TestHandler_NoObserver_NoContextObserver_IsNoop(t *testing.T) {
+	b := rest.NewBuilder(testInfo)
+	handle, _ := rest.NewRoute[getReq, userResp]("GET", "/noop",
+		getReqCodec, userRespCodec, rest.RouteMeta{}).Register(b)
+
+	h := nethttp.Handler(handle, func(_ context.Context, _ getReq) (userResp, error) {
+		return userResp{ID: "ok"}, nil
+	}, nethttp.Options{}) // no observer, no context observer
+
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/noop", nil))
+	if rec.Code != http.StatusOK {
+		t.Errorf("want 200, got %d", rec.Code)
+	}
+}
+
+// testSpyObserver captures whether RecordRequest was called.
+type testSpyObserver struct {
+	stats.NoopObserver
+	onRequest func()
+}
+
+func (s *testSpyObserver) RecordRequest(_, _ string, _ int, _ time.Duration) {
+	if s.onRequest != nil {
+		s.onRequest()
+	}
+}

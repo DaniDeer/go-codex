@@ -615,6 +615,9 @@ func main() {
 	client := newMockClient()
 	metrics := &CountingObserver{}
 	obs := stats.NewFanout(metrics, stats.NewLoggingObserver(baseLogger.With("component", "mqtt")))
+	// Store obs in the context once — Subscribe and Publish all resolve it
+	// automatically from ctx when Options.Observer is nil.
+	ctx = stats.WithObserver(ctx, obs)
 
 	// BuildTopic substitutes {sensorID} and validates it against the UUID codec.
 	// The concrete topic is needed for client.Subscribe and client.deliver.
@@ -628,7 +631,7 @@ func main() {
 	// Pass nil for static topics (no template variables).
 	publishAlert := func(ctx context.Context, alert AlertEvent) error {
 		return adaptermqtt.Publish(ctx, client, alertChannel, 1, false, alert,
-			map[string]string{"sensorID": sensorUUID}, adaptermqtt.PublishOptions{Observer: obs})
+			map[string]string{"sensorID": sensorUUID}, adaptermqtt.PublishOptions{}) // observer from ctx
 	}
 
 	// Attribute extractor for domain logging — extract business-relevant fields from requests.
@@ -649,7 +652,6 @@ func main() {
 	client.Subscribe(measurementTopic, 1,
 		adaptermqtt.SubscribeHandler(ctx, measurementChannel, handler,
 			adaptermqtt.SubscribeOptions{
-				Observer: obs,
 				OnError: func(e adaptermqtt.SubscribeError) {
 					// Use mqttLogger for transport-level errors.
 					// Switch on Kind to distinguish decode vs handler failures.
@@ -734,7 +736,6 @@ func main() {
 			return nil
 		},
 		adaptermqtt.SubscribeOptions{
-			Observer: obs,
 			OnError: func(e adaptermqtt.SubscribeError) {
 				// KindHandler covers TopicVarsFromMessage errors (mismatch, topic codec,
 				// param codec). Distinguish all three for structured log fields.
@@ -814,7 +815,7 @@ func main() {
 			Timestamp: "2024-01-15T11:10:00Z",
 		},
 		map[string]string{"sensorID": "not-a-uuid"},
-		adaptermqtt.PublishOptions{Observer: obs},
+		adaptermqtt.PublishOptions{}, // observer from ctx
 	)
 	if err != nil {
 		var paramErr events.TopicParamError
@@ -841,7 +842,8 @@ func main() {
 		Timestamp: "2024-01-15T11:10:00Z",
 	}
 	if err := adaptermqtt.Publish(ctx, client, alertChannel, 1, false, badAlert,
-		map[string]string{"sensorID": "f47ac10b-58cc-4372-a567-0e02b2c3d479"}, adaptermqtt.PublishOptions{Observer: obs}); err != nil {
+		map[string]string{"sensorID": "f47ac10b-58cc-4372-a567-0e02b2c3d479"},
+		adaptermqtt.PublishOptions{}); /* observer from ctx */ err != nil {
 		var validationErrs codex.ValidationErrors
 		if errors.As(err, &validationErrs) {
 			mqttLogger.Warn("publish failed: payload encode validation",
@@ -892,7 +894,7 @@ func main() {
 	}
 	if err := adaptermqtt.Publish(ctx, client, yamlAlertChannel, 1, false, yamlAlert,
 		map[string]string{"sensorID": "f47ac10b-58cc-4372-a567-0e02b2c3d479"},
-		adaptermqtt.PublishOptions{Observer: obs},
+		adaptermqtt.PublishOptions{}, // observer from ctx
 		// no format arg needed — YAML is set on the handle
 	); err != nil {
 		fmt.Fprintf(os.Stderr, "YAML publish error: %v\n", err)

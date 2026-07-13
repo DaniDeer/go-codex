@@ -281,7 +281,7 @@ func Subscribe[T any](
 ) error {
 	obs := opts.Observer
 	if obs == nil {
-		obs = stats.NoopObserver{}
+		obs = stats.ObserverFromContext(ctx)
 	}
 
 	effectiveFmts := formats
@@ -330,7 +330,7 @@ func Publish[T any](
 ) error {
 	obs := opts.Observer
 	if obs == nil {
-		obs = stats.NoopObserver{}
+		obs = stats.ObserverFromContext(ctx)
 	}
 	start := time.Now()
 	var err error

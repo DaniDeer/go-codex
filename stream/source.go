@@ -103,7 +103,7 @@ func From[T any](ctx context.Context, src <-chan T) Stream[T] {
 func FromCodec[T any](ctx context.Context, src <-chan []byte, fmt format.Format[T], opts SourceOptions) Stream[T] {
 	obs := opts.Observer
 	if obs == nil {
-		obs = stats.NoopObserver{}
+		obs = stats.ObserverFromContext(ctx)
 	}
 	name := opts.Name
 	if name == "" {

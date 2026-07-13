@@ -154,6 +154,7 @@ func main() {
 	obs := stats.NoopObserver{}
 
 	// Register with reqreply.Builder for AsyncAPI spec.
+	// obs is stored in the context once — all adapter calls resolve it automatically.
 	zmqBuilder := reqreply.NewBuilder(reqreply.Info{Title: "Compute API (DEALER/ROUTER)", Version: "1.0.0"})
 	zmqBuilder.AddServer("zmq", reqreply.Server{URL: "tcp://localhost:5557", Protocol: "zmq"})
 	// Route.Register(builder) — consistent with rest.Route.Register and events.Channel.Register.
@@ -164,6 +165,7 @@ func main() {
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	ctx = stats.WithObserver(ctx, obs) // default observer for all adapter calls
 	defer cancel()
 
 	// In-process ROUTER/DEALER pairs (one per client).
@@ -183,8 +185,7 @@ func main() {
 				time.Sleep(10 * time.Millisecond)
 				return ComputeResp{Sum: req.X + req.Y}, nil
 			},
-			zeromq.ServeOptions{
-				Observer: obs,
+			zeromq.ServeOptions{ // Observer resolved from ctx
 				OnError: func(e zeromq.ServeError) {
 					fmt.Fprintf(os.Stderr, "serve error: %v\n", e)
 				},
@@ -203,7 +204,7 @@ func main() {
 
 	for _, req := range reqs {
 		resp, err := zeromq.CallDealer(ctx, dealer1, clientHandle, req,
-			zeromq.CallOptions{Observer: obs})
+			zeromq.CallOptions{}) // observer from ctx
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "call error: %v\n", err)
 			os.Exit(1)

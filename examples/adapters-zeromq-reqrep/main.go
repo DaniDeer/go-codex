@@ -113,6 +113,8 @@ func main() {
 	obs := stats.NoopObserver{}
 
 	// Layer 2: register route with the ZMQ builder to get an AsyncAPI spec.
+	// obs is stored in the context once — all adapter calls that receive ctx
+	// resolve it automatically when Options.Observer is nil.
 	// The returned handle is a *reqreply.RouteHandle — same type used by both server and client adapters.
 	zmqBuilder := reqreply.NewBuilder(reqreply.Info{Title: "Compute API", Version: "1.0.0"})
 	zmqBuilder.AddServer("zmq", reqreply.Server{
@@ -135,6 +137,7 @@ func main() {
 	reqSock, repSock := newSocketPair()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	ctx = stats.WithObserver(ctx, obs) // default observer for all adapter calls
 	defer cancel()
 
 	// Layer 3: REP server — blocking, run in a goroutine.
@@ -144,9 +147,8 @@ func main() {
 			func(_ context.Context, req ComputeReq) (ComputeResp, error) {
 				return ComputeResp{Sum: req.X + req.Y}, nil
 			},
-			zeromq.ServeOptions{
-				Observer: obs,
-				OnError:  func(e zeromq.ServeError) { fmt.Fprintf(os.Stderr, "serve error: %v\n", e) },
+			zeromq.ServeOptions{ // Observer resolved from ctx
+				OnError: func(e zeromq.ServeError) { fmt.Fprintf(os.Stderr, "serve error: %v\n", e) },
 			},
 		); err != nil {
 			fmt.Fprintf(os.Stderr, "serve stopped: %v\n", err)
@@ -160,7 +162,7 @@ func main() {
 		{X: -5, Y: 5},
 	}
 	for _, req := range reqs {
-		resp, err := zeromq.Call(ctx, reqSock, clientHandle, req, zeromq.CallOptions{Observer: obs})
+		resp, err := zeromq.Call(ctx, reqSock, clientHandle, req, zeromq.CallOptions{}) // observer from ctx
 		if err != nil {
 			var callErr zeromq.CallError
 			if errors.As(err, &callErr) {

@@ -1294,3 +1294,68 @@ func ExampleNewFile() {
 	// Output:
 	// host=localhost port=8080
 }
+
+// ── T8: context observer ──────────────────────────────────────────────────────
+
+func TestFileRead_ContextObserver_UsedWhenOptsNil(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "data.json")
+	type item struct{ V int }
+	codec := codex.Struct[item](
+		codex.RequiredField("v", codex.Int(), func(x item) int { return x.V }, func(x *item, v int) { x.V = v }),
+	)
+	f := format.NewFile(path, format.JSON(codec))
+	if err := f.Write(nil, item{V: 42}, format.FileOptions{}); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+
+	var fileCalled bool
+	spy := &fileObsSpy{onFileRead: func() { fileCalled = true }}
+	ctx := stats.WithObserver(context.Background(), spy)
+
+	_, err := f.Read(nil, format.FileOptions{Context: ctx})
+	if err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	if !fileCalled {
+		t.Error("want FileObserver.RecordFileRead called from context observer, got nothing")
+	}
+}
+
+func TestFileRead_ExplicitObserver_BeatsContext(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "data.json")
+	type item struct{ V int }
+	codec := codex.Struct[item](
+		codex.RequiredField("v", codex.Int(), func(x item) int { return x.V }, func(x *item, v int) { x.V = v }),
+	)
+	f := format.NewFile(path, format.JSON(codec))
+	_ = f.Write(nil, item{V: 1}, format.FileOptions{})
+
+	var explicitCalled, contextCalled bool
+	explicit := &fileObsSpy{onFileRead: func() { explicitCalled = true }}
+	ctxSpy := &fileObsSpy{onFileRead: func() { contextCalled = true }}
+	ctx := stats.WithObserver(context.Background(), ctxSpy)
+
+	_, err := f.Read(nil, format.FileOptions{Context: ctx, Observer: explicit})
+	if err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	if !explicitCalled {
+		t.Error("want explicit observer called")
+	}
+	if contextCalled {
+		t.Error("want context observer NOT called when explicit is set")
+	}
+}
+
+type fileObsSpy struct {
+	stats.NoopObserver
+	onFileRead func()
+}
+
+func (s *fileObsSpy) RecordFileRead(_ string, _ bool, _ time.Duration) {
+	if s.onFileRead != nil {
+		s.onFileRead()
+	}
+}

@@ -50,7 +50,7 @@ func QueryStream[T any](
 ) gstream.Stream[T] {
 	obs := opts.Observer
 	if obs == nil {
-		obs = stats.NoopObserver{}
+		obs = stats.ObserverFromContext(ctx)
 	}
 	values := make(chan T, opts.Buffer)
 	errs := make(chan error, opts.Buffer)

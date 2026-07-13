@@ -171,4 +171,50 @@ func main() {
 	}
 
 	fmt.Printf("  TraceObserver: operations=%v errors=%d\n", traceObs.operations, traceObs.errCount)
+
+	// ── Default observer via context ───────────────────────────────────────────
+	//
+	// stats.WithObserver stores an observer in a context.Context. Adapters,
+	// stream bridges, and format.File read it automatically via
+	// stats.ObserverFromContext(ctx) when Options.Observer is nil.
+	//
+	// This example is codec-only (stats.ReportErrors, codex.Codec — no adapters),
+	// so there is no ctx-carrying adapter call to demonstrate here. The pattern
+	// lives at the adapter layer.
+	//
+	// But the stats API itself can be demonstrated directly:
+	fmt.Println("\n=== Default observer via context ===")
+
+	// Establish a default observer in a context:
+	defaultObs := &ConfigObserver{}
+	ctxWithObs := stats.WithObserver(context.Background(), defaultObs)
+
+	// Retrieve it anywhere downstream — adapters do this internally:
+	retrieved := stats.ObserverFromContext(ctxWithObs)
+	_, validRaw2 := appConfigCodec.Decode(map[string]any{
+		"server_url": "not-a-url", "max_workers": 0, "api_key": "x",
+	})
+	stats.ReportErrors(retrieved, "config", validRaw2)
+	fmt.Printf("  default observer recorded %d error(s)\n", len(defaultObs.errors))
+
+	// Override: explicit observer beats the context default.
+	// Create an overriding observer for a sensitive sub-operation:
+	overrideObs := &ConfigObserver{}
+	// Even though ctxWithObs carries defaultObs, passing overrideObs explicitly
+	// to ReportErrors uses overrideObs — explicit always wins.
+	stats.ReportErrors(overrideObs, "config", validRaw2) // explicit
+	fmt.Printf("  override observer recorded %d error(s) (explicit beats context)\n",
+		len(overrideObs.errors))
+	// defaultObs is unaffected by the explicit call above.
+	fmt.Printf("  default observer still at %d error(s) (not called for override)\n",
+		len(defaultObs.errors))
+
+	// No context observer set → ObserverFromContext returns NoopObserver:
+	noop := stats.ObserverFromContext(context.Background())
+	_, isNoop := noop.(stats.NoopObserver)
+	fmt.Printf("  ObserverFromContext(context.Background()) is NoopObserver: %v\n", isNoop)
+
+	// For the full adapter-level context observer pattern, see:
+	// - examples/adapters-nethttp — ObserverMiddleware injects obs per HTTP request
+	// - examples/sensor-service   — ctx = stats.WithObserver(ctx, obs) for MQTT + stream + SQL
 }

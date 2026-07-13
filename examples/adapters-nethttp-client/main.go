@@ -145,6 +145,9 @@ func main() {
 		metrics,
 		stats.NewLoggingObserver(logger),
 	)
+	// Store obs in the context once — every nethttp.Call that receives this ctx
+	// picks it up automatically when CallOptions.Observer is nil.
+	clientCtx := stats.WithObserver(context.Background(), obs)
 
 	db := &userStore{users: make(map[string]contract.User)}
 
@@ -246,10 +249,10 @@ func main() {
 		os.Exit(1)
 	}
 
-	alice, err := nethttp.Call(context.Background(), srv.Client(), srv.URL,
+	alice, err := nethttp.Call(clientCtx, srv.Client(), srv.URL,
 		clientCreate,
 		contract.CreateUserReq{Name: "Alice", Email: "alice@example.com"},
-		nil, nethttp.CallOptions{Observer: obs})
+		nil, nethttp.CallOptions{}) // observer from clientCtx
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "create alice:", err)
 		os.Exit(1)
@@ -262,10 +265,10 @@ func main() {
 	// ClientHandle() — no builder needed for client-only usage.
 	clientGet := contract.GetUser.ClientHandle()
 
-	fetched, err := nethttp.Call(context.Background(), srv.Client(), srv.URL,
+	fetched, err := nethttp.Call(clientCtx, srv.Client(), srv.URL,
 		clientGet, struct{}{},
 		map[string]string{"id": alice.ID},
-		nethttp.CallOptions{Observer: obs})
+		nethttp.CallOptions{}) // observer from clientCtx
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "get alice:", err)
 		os.Exit(1)
@@ -273,10 +276,10 @@ func main() {
 	fmt.Printf("fetched: %+v\n", fetched)
 
 	// Path param validation happens client-side before any HTTP call is sent.
-	_, err = nethttp.Call(context.Background(), srv.Client(), srv.URL,
+	_, err = nethttp.Call(clientCtx, srv.Client(), srv.URL,
 		clientGet, struct{}{},
 		map[string]string{"id": ""}, // empty — fails NonEmptyString codec
-		nethttp.CallOptions{Observer: obs})
+		nethttp.CallOptions{})       // observer from clientCtx
 	if err != nil {
 		var pathErr rest.PathParamError
 		if errors.As(err, &pathErr) {
@@ -299,7 +302,7 @@ func main() {
 	clientProfile := contract.GetProfile.ClientHandle()
 
 	// Happy path: valid session_token cookie and X-Request-Id header.
-	profile, err := nethttp.Call(context.Background(), srv.Client(), srv.URL,
+	profile, err := nethttp.Call(clientCtx, srv.Client(), srv.URL,
 		clientProfile, struct{}{}, nil,
 		nethttp.CallOptions{
 			CookieParams: map[string]string{
@@ -308,7 +311,7 @@ func main() {
 			HeaderParams: map[string]string{
 				"X-Request-Id": "f47ac10b-58cc-4372-a567-0e02b2c3d479",
 			},
-			Observer: obs,
+			// observer from clientCtx
 		})
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "get profile:", err)
@@ -317,12 +320,11 @@ func main() {
 	fmt.Printf("profile: %+v\n", profile)
 
 	// Cookie validation failure: empty session_token fails NonEmptyString codec.
-	_, err = nethttp.Call(context.Background(), srv.Client(), srv.URL,
+	_, err = nethttp.Call(clientCtx, srv.Client(), srv.URL,
 		clientProfile, struct{}{}, nil,
 		nethttp.CallOptions{
 			CookieParams: map[string]string{"session_token": ""}, // invalid
 			HeaderParams: map[string]string{"X-Request-Id": "f47ac10b-58cc-4372-a567-0e02b2c3d479"},
-			Observer:     obs,
 		})
 	if err != nil {
 		var cookieErr rest.CookieParamError
@@ -336,12 +338,11 @@ func main() {
 	}
 
 	// Header validation failure: non-UUID value fails UUID codec.
-	_, err = nethttp.Call(context.Background(), srv.Client(), srv.URL,
+	_, err = nethttp.Call(clientCtx, srv.Client(), srv.URL,
 		clientProfile, struct{}{}, nil,
 		nethttp.CallOptions{
 			CookieParams: map[string]string{"session_token": "my-valid-session-abc123"},
 			HeaderParams: map[string]string{"X-Request-Id": "not-a-uuid"}, // invalid
-			Observer:     obs,
 		})
 	if err != nil {
 		var headerErr rest.HeaderParamError
@@ -366,7 +367,7 @@ func main() {
 	clientSecured := contract.GetSecuredData.ClientHandle()
 
 	// Happy path: CredentialFunc injects the bearer token.
-	data, err := nethttp.Call(context.Background(), srv.Client(), srv.URL,
+	data, err := nethttp.Call(clientCtx, srv.Client(), srv.URL,
 		clientSecured, struct{}{}, nil,
 		nethttp.CallOptions{
 			CredentialFunc: func(_ context.Context, reqs []route.SecurityRequirement) (http.Header, error) {
@@ -376,7 +377,7 @@ func main() {
 				h.Set("Authorization", "Bearer "+validToken)
 				return h, nil
 			},
-			Observer: obs,
+			// observer from clientCtx
 		})
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "get secured data:", err)
@@ -385,9 +386,9 @@ func main() {
 	fmt.Printf("secured data: %+v\n", data)
 
 	// No CredentialFunc: request is sent without Authorization → server returns 401.
-	_, err = nethttp.Call(context.Background(), srv.Client(), srv.URL,
+	_, err = nethttp.Call(clientCtx, srv.Client(), srv.URL,
 		clientSecured, struct{}{}, nil,
-		nethttp.CallOptions{Observer: obs}) // no CredentialFunc
+		nethttp.CallOptions{}) // observer from clientCtx // no CredentialFunc
 	if err != nil {
 		var statusErr nethttp.UnexpectedStatusError
 		if errors.As(err, &statusErr) {
@@ -401,13 +402,13 @@ func main() {
 
 	// CredentialFunc returning an error: aborts the call client-side.
 	tokenExpiredErr := fmt.Errorf("token expired")
-	_, err = nethttp.Call(context.Background(), srv.Client(), srv.URL,
+	_, err = nethttp.Call(clientCtx, srv.Client(), srv.URL,
 		clientSecured, struct{}{}, nil,
 		nethttp.CallOptions{
 			CredentialFunc: func(_ context.Context, _ []route.SecurityRequirement) (http.Header, error) {
 				return nil, tokenExpiredErr
 			},
-			Observer: obs,
+			// observer from clientCtx
 		})
 	if err != nil {
 		if errors.Is(err, tokenExpiredErr) {

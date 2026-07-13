@@ -66,17 +66,17 @@ func ToolHandler[In, Out any](
 	fn HandlerFunc[In, Out],
 	opts Options,
 ) (mcp.Tool, server.ToolHandlerFunc) {
-	obs := opts.Observer
-	if obs == nil {
-		obs = stats.NoopObserver{}
-	}
-
 	tool := mcp.NewTool(handle.Name, mcp.WithDescription(handle.Description))
 	if len(handle.InputSchema) > 0 {
 		tool.RawInputSchema = handle.InputSchema
 	}
 
 	handler := func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		// Resolve observer per-call: explicit opts.Observer beats context observer.
+		obs := opts.Observer
+		if obs == nil {
+			obs = stats.ObserverFromContext(ctx)
+		}
 		start := time.Now()
 		var err error
 		if to, ok := obs.(stats.TraceObserver); ok {
@@ -162,14 +162,14 @@ func ResourceHandler[T any](
 	fn ResourceHandlerFunc[T],
 	opts Options,
 ) (resource mcp.Resource, template mcp.ResourceTemplate, isTemplate bool, handler server.ResourceHandlerFunc) {
-	obs := opts.Observer
-	if obs == nil {
-		obs = stats.NoopObserver{}
-	}
-
 	isTemplate = len(handle.URITemplate) > 0 && containsPlaceholder(handle.URITemplate)
 
 	handlerFn := func(ctx context.Context, req mcp.ReadResourceRequest) ([]mcp.ResourceContents, error) {
+		// Resolve observer per-call: explicit opts.Observer beats context observer.
+		obs := opts.Observer
+		if obs == nil {
+			obs = stats.ObserverFromContext(ctx)
+		}
 		start := time.Now()
 		var err error
 		if to, ok := obs.(stats.TraceObserver); ok {
@@ -247,11 +247,6 @@ func PromptHandler(
 	fn PromptHandlerFunc,
 	opts Options,
 ) (mcp.Prompt, server.PromptHandlerFunc) {
-	obs := opts.Observer
-	if obs == nil {
-		obs = stats.NoopObserver{}
-	}
-
 	promptOpts := []mcp.PromptOption{mcp.WithPromptDescription(handle.Description)}
 	for _, arg := range handle.Args {
 		argOpts := []mcp.ArgumentOption{mcp.ArgumentDescription(arg.Description)}
@@ -263,6 +258,11 @@ func PromptHandler(
 	prompt := mcp.NewPrompt(handle.Name, promptOpts...)
 
 	handler := func(ctx context.Context, req mcp.GetPromptRequest) (*mcp.GetPromptResult, error) {
+		// Resolve observer per-call: explicit opts.Observer beats context observer.
+		obs := opts.Observer
+		if obs == nil {
+			obs = stats.ObserverFromContext(ctx)
+		}
 		start := time.Now()
 		var err error
 		if to, ok := obs.(stats.TraceObserver); ok {

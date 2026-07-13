@@ -74,7 +74,7 @@ func NewMigrator(db *sql.DB, migrations fs.FS, dir string, dialect string) (*Mig
 func (m *Migrator) Up(ctx context.Context, opts MigrateOptions) error {
 	obs := opts.Observer
 	if obs == nil {
-		obs = stats.NoopObserver{}
+		obs = stats.ObserverFromContext(ctx)
 	}
 
 	provider, err := m.newProvider()
@@ -101,7 +101,7 @@ func (m *Migrator) Up(ctx context.Context, opts MigrateOptions) error {
 func (m *Migrator) Down(ctx context.Context, opts MigrateOptions) error {
 	obs := opts.Observer
 	if obs == nil {
-		obs = stats.NoopObserver{}
+		obs = stats.ObserverFromContext(ctx)
 	}
 
 	provider, err := m.newProvider()

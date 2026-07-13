@@ -169,7 +169,7 @@ func DrainWrite[T any](
 	onErr := opts.OnError
 	obs := opts.Observer
 	if obs == nil {
-		obs = stats.NoopObserver{}
+		obs = stats.ObserverFromContext(ctx)
 	}
 
 	gstream.Drain(ctx, src,

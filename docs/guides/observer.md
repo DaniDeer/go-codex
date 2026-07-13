@@ -102,6 +102,70 @@ func main() {
 }
 ```
 
+## Default observer: set once, use everywhere
+
+Instead of passing `Observer: obs` on every call site, use
+`stats.WithObserver(ctx, obs)` to store an observer in a context. Adapters,
+stream bridges, and `format.File` consult `stats.ObserverFromContext(ctx)` when
+their `Options.Observer` field is nil — so one line at startup covers all
+components that share the same context:
+
+```go
+obs := stats.NewFanout(metrics, stats.NewLoggingObserver(slog.Default()))
+ctx := stats.WithObserver(context.Background(), obs)
+
+// All of the below use obs because Options.Observer is nil:
+mqtt.Subscribe(ctx, client, handle, 1, fn, mqtt.SubscribeOptions{})
+stream.Apply(ctx, s, fn, stream.ApplyOptions{})
+zeromq.Call(ctx, sock, handle, req, zeromq.CallOptions{})
+```
+
+**Explicit always wins:** if `opts.Observer` is non-nil, the context observer is
+never consulted. Per-component overrides still work:
+
+```go
+nethttp.Handler(handle, fn, nethttp.Options{Observer: auditObs}) // explicit, no lookup
+```
+
+**For HTTP servers** — the context observer is resolved *per-request* from
+`r.Context()`, not at handler-construction time. Inject it via middleware:
+
+```go
+mux.Handle("/api/", ObserverMiddleware(obs)(apiHandler))
+
+func ObserverMiddleware(obs stats.Observer) func(http.Handler) http.Handler {
+    return func(next http.Handler) http.Handler {
+        return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+            next.ServeHTTP(w, r.WithContext(stats.WithObserver(r.Context(), obs)))
+        })
+    }
+}
+```
+
+Alternatively, pass `nethttp.Options{Observer: obs}` directly for service-level
+(not per-request) wiring — simpler and slightly cheaper.
+
+**For `format.File`** — set `FileOptions.Context` to the context carrying the observer:
+
+```go
+value, err := configFile.Read(nil, format.FileOptions{Context: ctx})
+// observer resolved from ctx via FileOptions.Context
+```
+
+**forge.Registry** uses the explicit `.WithObserver(obs)` builder — no context
+integration by design (registry is long-lived, set up at startup):
+
+```go
+reg := forge.NewRegistry("P", "1.0.0").WithObserver(obs) // explicit, no context
+```
+
+**`sql.Validate`** has no `ctx` parameter and falls back to `NoopObserver{}` only —
+pass `ValidateOptions{Observer: obs}` directly.
+
+See [Feature: Observer Pattern — Default observer via context](../features/observer.md#default-observer-via-context) for the full API reference and per-layer resolution table.
+
+---
+
 ## Per-adapter usage
 
 ### Codec-level (ValidationObserver)
@@ -161,6 +225,11 @@ obs := stats.NewFanout(&CountingObserver{}, stats.NewLoggingObserver(logger))
 nethttp.Register(mux, createUser, handler, nethttp.Options{Observer: obs})
 ```
 
+> **Context observer:** `nethttp.Handler` and `nethttp.SSEHandler` resolve the observer
+> per-request from `r.Context()` when `opts.Observer` is nil. Use the middleware pattern above
+> to inject `obs` at request time, or pass `nethttp.Options{Observer: obs}` directly for
+> service-level wiring.
+
 ### MQTT adapter
 
 ```go
@@ -168,6 +237,11 @@ amqtt.SubscribeHandler(ctx, channel, handler, amqtt.SubscribeOptions{Observer: o
 amqtt.Publish(ctx, client, channel, qos, retained, msg, vars,
     amqtt.PublishOptions{Observer: obs})
 ```
+
+> **Context observer:** `mqtt.Subscribe`, `mqtt.Publish`, `mqtt5.Subscribe`, `mqtt5.Publish`,
+> `mqtt5.Serve`, `mqtt5.Call`, and all ZeroMQ adapter functions resolve the observer from
+> `ctx` when `opts.Observer` is nil. Pass a context from `stats.WithObserver(ctx, obs)` at the
+> call site to use the context observer.
 
 ### Forge pipeline (PipelineObserver)
 
@@ -188,6 +262,9 @@ func (l *PipelineCounts) RecordApply(name, version string, ok bool, d time.Durat
 obs := stats.NewFanout(&PipelineCounts{}, stats.NewLoggingObserver(logger))
 reg := forge.NewRegistry("Pipeline", "1.0.0").WithObserver(obs)
 ```
+
+> **Context observer:** `forge.Registry` uses the explicit `.WithObserver(obs)` builder — no
+> context integration by design. The registry is long-lived and configured once at startup.
 
 ### FileObserver (format.File)
 
@@ -216,6 +293,10 @@ cfg, err := configFile.Read(nil, opts)
 ```
 
 `path` is the concrete path after template substitution, never the template string.
+
+> **Context observer:** `format.File.Read/Write/Update/Patch` resolve the observer from
+> `opts.Context` when `opts.Observer` is nil. Set `FileOptions{Context: ctx}` where `ctx`
+> carries the observer via `stats.WithObserver`.
 
 ### SecurityObserver
 

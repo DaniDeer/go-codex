@@ -309,11 +309,12 @@ func SSEFromStream[Req, Event any](
 	streamFactory func(context.Context, Req) gstream.Stream[Event],
 	opts SSEStreamOptions,
 ) SSEHandlerFunc[Req, Event] {
-	obs := opts.Observer
-	if obs == nil {
-		obs = stats.NoopObserver{}
-	}
 	return func(ctx context.Context, req Req, send func(Event) error) error {
+		// Resolve observer per-connection: explicit opts.Observer beats context observer.
+		obs := opts.Observer
+		if obs == nil {
+			obs = stats.ObserverFromContext(ctx)
+		}
 		src := streamFactory(ctx, req)
 		valCh := src.Values
 		errCh := src.Errors
@@ -418,7 +419,7 @@ func PollStream[Req, Resp any](
 ) gstream.Stream[Resp] {
 	obs := opts.Observer
 	if obs == nil {
-		obs = stats.NoopObserver{}
+		obs = stats.ObserverFromContext(ctx)
 	}
 	values := make(chan Resp, opts.Buffer)
 	errs := make(chan error, opts.Buffer)
@@ -553,7 +554,7 @@ func SSEClientStream[Req, Event any](
 	}
 	obs := opts.Observer
 	if obs == nil {
-		obs = stats.NoopObserver{}
+		obs = stats.ObserverFromContext(ctx)
 	}
 
 	values := make(chan Event, opts.Buffer)

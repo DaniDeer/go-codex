@@ -268,6 +268,52 @@ Rules:
   - No `SecurityObserver` at the mcpgo adapter level — MCP security is handled outside the adapter (no `SecurityFunc` field on `mcpgo.Options`)
   - Observer location values: `"input"` for tool argument decode/validation; `"prompt.args"` for prompt arg codec failures
 
+### Default observer via context
+
+Adapters use `stats.WithObserver(ctx, obs)` and `stats.ObserverFromContext(ctx)` to
+allow a single observer to be set once for all components. When reviewing:
+
+- **Nil-guard pattern for direct-ctx functions** (Subscribe, Publish, Apply, Drain, etc.):
+  ```go
+  obs := opts.Observer
+  if obs == nil {
+      obs = stats.ObserverFromContext(ctx)  // ← correct
+  }
+  ```
+  **Do NOT flag `ObserverFromContext(ctx)` as wrong.** It returns `NoopObserver{}` when no
+  context observer is stored — identical behaviour to the old `NoopObserver{}` default.
+
+- **HTTP/MCP handler closures** (`nethttp.Handler`, `chi.Handler`, `mcpgo.ToolHandler`, etc.)
+  are constructor functions that return closures. obs is resolved **inside the closure**,
+  not at construction time:
+  ```go
+  // Inside the returned closure — per-request/per-call:
+  obs := opts.Observer
+  if obs == nil {
+      obs = stats.ObserverFromContext(r.Context())
+  }
+  ```
+  This is **correct** — it enables per-request observer injection via `ObserverMiddleware`.
+  Do NOT flag as inconsistency with functions that resolve at call time.
+
+- **`sql.Validate` exception**: has no `ctx` parameter → stays `NoopObserver{}`. This is
+  by design. Do not flag as inconsistency.
+
+- **`forge.Registry.WithObserver`**: explicit builder API by design — no context integration.
+  Do not flag as missing context observer.
+
+- **`format.File` two-step guard**: uses `opts.Context` (not a direct `ctx` param):
+  ```go
+  obs := opts.Observer
+  if obs == nil && opts.Context != nil {
+      obs = stats.ObserverFromContext(opts.Context)
+  }
+  if obs == nil {
+      obs = stats.NoopObserver{}
+  }
+  ```
+  This is correct — `FileOptions.Context` is optional.
+
 ## Unit Test Coverage
 
 For each exported type or method added, there must be at least one test covering:
@@ -428,6 +474,11 @@ Used correctly in: `PipelineHandlerFunc`, `AsPipelineFunc`. Do not flag `Single`
 - **`PipelineHandler` response headers are reference-type safe for sequential pipelines.** `WithResponseHeaders(ctx, ...)` mutates the map stored in `ctx` — writes happen-before `stream.Collect` returns, so `Handler` reads correct values. Concurrent writes from parallel operators (CombineLatest, Merge) could race — documented limitation.
 - **`mcpgo.ToolPipelineHandler` is the per-call trigger; `ToolLatestHandler` is the reactive cache.** Both wrap `ToolHandler`. `ToolPipelineHandler` runs a fresh stream per tool call (`stream.Single → Collect`); `ToolLatestHandler` runs a background stream and returns the latest value. Do not flag either as missing the other's pattern.
 - **`nethttp.HandlerLatest` validates `Req` even though it's discarded.** All codec layers run (body decode, query/cookie/header/path params, security). This ensures only well-formed requests receive cached responses. Do not flag as waste.
+- **`ObserverFromContext(ctx)` in nil-guards is correct — do not flag.** The nil-guard pattern was updated from `obs = stats.NoopObserver{}` to `obs = stats.ObserverFromContext(ctx)` as part of the default context observer feature. `ObserverFromContext` returns `NoopObserver{}` when no context observer is stored, so behaviour is identical when no context observer is present. This is not an inconsistency — it is the correct implementation.
+- **HTTP/MCP handler closures resolve observer inside closure, not at construction.** `nethttp.Handler`, `chi.Handler`, `mcpgo.ToolHandler`, etc. are constructor functions. obs is resolved per-request/per-call from `r.Context()`/call ctx inside the returned closure. This is intentional (enables per-request middleware injection). Do not flag as inconsistency with functions that resolve at call time.
+- **`sql.Validate` keeps `NoopObserver{}` fallback.** It has no `ctx` parameter and cannot participate in the context observer lookup. Do not flag as missing `ObserverFromContext`. Pass `ValidateOptions{Observer: stats.ObserverFromContext(ctx)}` explicitly when observability is required.
+- **`forge.Registry.WithObserver` keeps explicit builder API.** No context integration — registry is long-lived startup configuration. This is by design and must not be changed.
+- **`format.File` uses two-step guard with `opts.Context`.** `FileOptions` has no direct `ctx` param but has an optional `Context` field. The nil-guard is `if obs == nil && opts.Context != nil { obs = ObserverFromContext(opts.Context) }` followed by `if obs == nil { obs = NoopObserver{} }`. This is correct and intentional — do not flag as inconsistent.
 
 ## References
 

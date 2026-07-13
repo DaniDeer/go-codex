@@ -215,6 +215,9 @@ func (fh File[T]) PathParamSchemas() map[string]schema.Schema {
 func (fh File[T]) Read(vars map[string]string, opts FileOptions) (T, error) {
 	var zero T
 	obs := opts.Observer
+	if obs == nil && opts.Context != nil {
+		obs = stats.ObserverFromContext(opts.Context)
+	}
 	if obs == nil {
 		obs = stats.NoopObserver{}
 	}
@@ -263,6 +266,9 @@ func (fh File[T]) Read(vars map[string]string, opts FileOptions) (T, error) {
 //   - [FileWriteError] — os.WriteFile failure
 func (fh File[T]) Write(vars map[string]string, v T, opts FileOptions) error {
 	obs := opts.Observer
+	if obs == nil && opts.Context != nil {
+		obs = stats.ObserverFromContext(opts.Context)
+	}
 	if obs == nil {
 		obs = stats.NoopObserver{}
 	}
@@ -389,6 +395,9 @@ func PatchEncoded[T, P any](fh File[T], vars map[string]string, patchCodec codex
 	}
 
 	obs := opts.Observer
+	if obs == nil && opts.Context != nil {
+		obs = stats.ObserverFromContext(opts.Context)
+	}
 	if obs == nil {
 		obs = stats.NoopObserver{}
 	}
@@ -511,6 +520,9 @@ func PatchEncoded[T, P any](fh File[T], vars map[string]string, patchCodec codex
 //   - [FileWriteError] — os.WriteFile failure
 func (fh File[T]) Patch(vars map[string]string, patch map[string]any, opts FileOptions) error {
 	obs := opts.Observer
+	if obs == nil && opts.Context != nil {
+		obs = stats.ObserverFromContext(opts.Context)
+	}
 	if obs == nil {
 		obs = stats.NoopObserver{}
 	}

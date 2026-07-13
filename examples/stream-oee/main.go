@@ -468,9 +468,11 @@ func buildShift(runTime, downTime time.Duration, goodParts, defects int) []Machi
 // ── main ──────────────────────────────────────────────────────────────────────
 
 func main() {
-	ctx := context.Background()
 	logger := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelInfo}))
 	obs := stats.NewFanout(stats.NoopObserver{}, stats.NewLoggingObserver(logger))
+	// Store obs in the context once — stream.Apply, stream.FromCodec, and stream.Drain
+	// all resolve it automatically when Options.Observer is nil.
+	ctx := stats.WithObserver(context.Background(), obs)
 
 	fmt.Println("═══════════════════════════════════════════════════════════════")
 	fmt.Println("  stream-oee — governed OEE from reactive machine event stream")
@@ -484,7 +486,7 @@ func main() {
 		WithDescription("Governed OEE from machine event stream; window-based computation.").
 		WithAuthor("OT Engineering").
 		WithApproval("Quality Manager", "2024-06-01").
-		WithObserver(obs)
+		WithObserver(obs) // forge.Registry uses explicit WithObserver — no context integration
 	eventsToAvailIn.Register(reg)
 	eventsToPerfIn.Register(reg)
 	eventsToQual.Register(reg)
@@ -510,7 +512,7 @@ func main() {
 
 	// Source: decode raw MQTT bytes → typed MachineEvent stream
 	events := stream.FromCodec(ctx, rawCh, format.JSON(machineEventCodec),
-		stream.SourceOptions{Name: "machine-control-system", Observer: obs})
+		stream.SourceOptions{Name: "machine-control-system"}) // observer from ctx
 
 	// Window: collect events per time slot; emit []MachineEvent batches
 	// Empty windows (between shifts) are filtered below.
@@ -524,7 +526,7 @@ func main() {
 	// Apply: run all six governed forge functions on each window batch.
 	// Returns Stream[OEEResult] — all intermediate values are now observable.
 	results := stream.Apply(ctx, nonEmptyWindows, computeOEEFromWindow,
-		stream.ApplyOptions{Observer: obs})
+		stream.ApplyOptions{}) // observer from ctx
 
 	// ── Tap into PARTIAL calculations ─────────────────────────────────────
 	//
@@ -592,7 +594,7 @@ func main() {
 				return nil
 			},
 			func(err error) { fmt.Println("  alert stream error:", err) },
-			stream.DrainOptions{Observer: obs},
+			stream.DrainOptions{}, // observer from ctx
 		)
 	}()
 

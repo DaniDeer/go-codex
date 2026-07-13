@@ -118,7 +118,7 @@ func Serve[Req, Resp any](
 ) error {
 	obs := opts.Observer
 	if obs == nil {
-		obs = stats.NoopObserver{}
+		obs = stats.ObserverFromContext(ctx)
 	}
 	path := handle.Topic
 
@@ -259,7 +259,7 @@ func Call[Req, Resp any](
 	var zero Resp
 	obs := opts.Observer
 	if obs == nil {
-		obs = stats.NoopObserver{}
+		obs = stats.ObserverFromContext(ctx)
 	}
 	start := time.Now()
 	var callErr error

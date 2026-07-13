@@ -438,9 +438,10 @@ type ReadingStore struct {
 	queries *db.Queries
 }
 
-func (s *ReadingStore) Save(ctx context.Context, params db.InsertReadingParams, obs stats.Observer) error {
+func (s *ReadingStore) Save(ctx context.Context, params db.InsertReadingParams) error {
 	validated, err := sqladapter.Validate(insertParamsCodec, params, sqladapter.ValidateOptions{
-		Table: "readings", Op: "insert_reading", Observer: obs,
+		Table: "readings", Op: "insert_reading",
+		Observer: stats.ObserverFromContext(ctx), // sql.Validate has no ctx; read from ctx
 	})
 	if err != nil {
 		return fmt.Errorf("pre-insert validation: %w", err)
@@ -448,33 +449,34 @@ func (s *ReadingStore) Save(ctx context.Context, params db.InsertReadingParams, 
 	return s.queries.InsertReading(ctx, validated)
 }
 
-func (s *ReadingStore) Get(ctx context.Context, id string, obs stats.Observer) (db.Reading, error) {
+func (s *ReadingStore) Get(ctx context.Context, id string) (db.Reading, error) {
 	row, err := s.queries.GetReading(ctx, id)
 	if err != nil {
 		return db.Reading{}, err
 	}
 	return sqladapter.Validate(readingCodec, row, sqladapter.ValidateOptions{
-		Table: "readings", Op: "get_reading", Observer: obs,
+		Table: "readings", Op: "get_reading",
+		Observer: stats.ObserverFromContext(ctx), // sql.Validate has no ctx; read from ctx
 	})
 }
 
 // ── Layer 3: HTTP handlers ────────────────────────────────────────────────────
 
-func makeCreateHandler(store *ReadingStore, obs stats.Observer) nethttp.HandlerFunc[CreateReadingReq, db.Reading] {
+func makeCreateHandler(store *ReadingStore) nethttp.HandlerFunc[CreateReadingReq, db.Reading] {
 	return func(ctx context.Context, req CreateReadingReq) (db.Reading, error) {
 		params := buildInsertParams(req)
-		if err := store.Save(ctx, params, obs); err != nil {
+		if err := store.Save(ctx, params); err != nil {
 			return db.Reading{}, err
 		}
-		return store.Get(ctx, params.ID, obs)
+		return store.Get(ctx, params.ID)
 	}
 }
 
-func makeGetHandler(store *ReadingStore, obs stats.Observer) nethttp.HandlerFunc[struct{}, db.Reading] {
+func makeGetHandler(store *ReadingStore) nethttp.HandlerFunc[struct{}, db.Reading] {
 	return func(ctx context.Context, _ struct{}) (db.Reading, error) {
 		r, _ := nethttp.RequestFromContext(ctx)
 		id := r.PathValue("id")
-		return store.Get(ctx, id, obs)
+		return store.Get(ctx, id)
 	}
 }
 
@@ -601,6 +603,9 @@ func main() {
 	logger := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelInfo}))
 	counting := newCountingObserver()
 	obs := stats.NewFanout(counting, stats.NewLoggingObserver(logger))
+	// Store obs in the context once — MQTT, stream, sql, and HTTP adapters
+	// all resolve it automatically when Options.Observer is nil.
+	ctx = stats.WithObserver(ctx, obs)
 
 	// ── Database ───────────────────────────────────────────────────────────
 	sqlDB, err := sql.Open("sqlite", "file::memory:?cache=private")
@@ -609,7 +614,7 @@ func main() {
 
 	migrator, err := sqladapter.NewMigrator(sqlDB, migrationsFS, "migrations", "sqlite3")
 	must(err, "new migrator")
-	must(migrator.Up(ctx, sqladapter.MigrateOptions{Observer: obs}), "migrate up")
+	must(migrator.Up(ctx, sqladapter.MigrateOptions{}), "migrate up") // observer from ctx
 	fmt.Println("✓ Migrations applied")
 
 	store := &ReadingStore{queries: db.New(sqlDB)}
@@ -643,8 +648,8 @@ func main() {
 	//     mqttClient.Subscribe(handle.Topic, 0, handler)
 	sensors, mqttSubHandler := adaptermqtt.SubscribeStream(ctx, readingHandle,
 		format.JSON(mqttPayloadCodec),
-		gstream.SourceOptions{Name: "mqtt/sensors/+/data", Observer: obs, Buffer: 64},
-		adaptermqtt.SubscribeOptions{Observer: obs})
+		gstream.SourceOptions{Name: "mqtt/sensors/+/data", Buffer: 64}, // observer from ctx
+		adaptermqtt.SubscribeOptions{})                                 // observer from ctx
 	// Subscribe with the MQTT wildcard filter (sensors/+/data), not the API
 	// template (sensors/{sensorID}/data). The ChannelHandle stores the API
 	// template for spec generation; the MQTT broker needs the MQTT wildcard.
@@ -660,16 +665,16 @@ func main() {
 		mqttPayloadCodec, readingCodec,
 		func(payload MQTTPayload) (db.Reading, error) {
 			params := buildInsertParamsFromMQTT(payload)
-			if err := store.Save(ctx, params, obs); err != nil {
+			if err := store.Save(ctx, params); err != nil {
 				return db.Reading{}, err
 			}
-			return store.Get(ctx, params.ID, obs)
+			return store.Get(ctx, params.ID)
 		},
 		forge.FunctionMeta{Description: "Save MQTT sensor payload to DB and return the stored row."},
 	)
 
 	readings := gstream.Apply(ctx, sensors, saveReadingFn,
-		gstream.ApplyOptions{Observer: obs})
+		gstream.ApplyOptions{}) // observer from ctx
 
 	// Tap: domain event observation — log every computed reading
 	readings = gstream.Tap(ctx, readings, func(r db.Reading) {
@@ -685,7 +690,7 @@ func main() {
 	// reading from the stream — no DB query per request. A background goroutine
 	// atomically stores each emitted reading. Before the first reading arrives,
 	// the handler returns 503 Service Unavailable + NoLatestValueError.
-	nethttp.RegisterLatest(mux, latestRoute.ClientHandle(), latestReadings, nethttp.Options{Observer: obs})
+	nethttp.RegisterLatest(mux, latestRoute.ClientHandle(), latestReadings, nethttp.Options{}) // observer via ObserverMiddleware
 
 	// Filter: keep only readings that cross the alert threshold
 	aboveThreshold := gstream.Filter(ctx, alertReadings, shouldAlert)
@@ -727,7 +732,7 @@ func main() {
 						logger.Warn("alert publish error", "error", err)
 					}
 				},
-				Observer: obs,
+				// observer from ctx
 			})
 	}()
 
@@ -736,10 +741,16 @@ func main() {
 	// ── HTTP — register remaining routes ──────────────────────────────────
 	// HandlerLatest for GET /readings/latest was already registered above.
 	// Register the other routes here (after the stream pipeline is wired).
-	nethttp.Register(mux, createRoute.ClientHandle(), makeCreateHandler(store, obs), nethttp.Options{Observer: obs})
-	nethttp.Register(mux, getRoute.ClientHandle(), makeGetHandler(store, obs), nethttp.Options{Observer: obs})
+	nethttp.Register(mux, createRoute.ClientHandle(), makeCreateHandler(store), nethttp.Options{}) // observer via ObserverMiddleware
+	nethttp.Register(mux, getRoute.ClientHandle(), makeGetHandler(store), nethttp.Options{})       // observer via ObserverMiddleware
 
-	srv := httptest.NewServer(mux)
+	// Wrap with ObserverMiddleware so every HTTP request gets obs injected into
+	// r.Context(). HTTP handler resolves observer per-request from r.Context().
+	srvHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		r = r.WithContext(stats.WithObserver(r.Context(), obs))
+		mux.ServeHTTP(w, r)
+	})
+	srv := httptest.NewServer(srvHandler)
 	defer srv.Close()
 	fmt.Printf("✓ HTTP server started: %s\n\n", srv.URL)
 
@@ -860,9 +871,8 @@ func main() {
 		},
 		100*time.Millisecond,
 		sqladapter.QueryStreamOptions{
-			Table:    "readings",
-			Op:       "list_readings",
-			Observer: obs,
+			Table: "readings",
+			Op:    "list_readings",
 		})
 
 	allRows, streamErrs := gstream.Collect(queryCtx, rowStream)
