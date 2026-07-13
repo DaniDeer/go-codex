@@ -25,6 +25,8 @@ type QueryStreamOptions struct {
 	Buffer int
 }
 
+// Deprecated: Use [QueryAdapter] with [ports.SourcePort] instead.
+//
 // QueryStream polls queryFn at interval, validates each returned row with codec,
 // and emits each validated row to the returned [gstream.Stream].
 //
@@ -116,6 +118,8 @@ type DrainInsertOptions struct {
 	Observer stats.Observer
 }
 
+// Deprecated: Use [DrainInsertAdapter] with [ports.SinkPort] instead.
+//
 // DrainInsert validates each value item from src with codec, then calls insertFn.
 // Codec validation failures are sent to opts.OnError as [RowValidationError].
 // insertFn errors are sent to opts.OnError as [InsertStreamError].
@@ -176,6 +180,8 @@ type QueryEachStreamOptions struct {
 	Buffer int
 }
 
+// Deprecated: Use [QueryEachAdapter] with [ports.IOPort] instead.
+//
 // QueryEachStream calls queryFn for each item in src, validates each returned
 // row via codec, and emits validated rows to the returned [gstream.Stream[T]].
 //

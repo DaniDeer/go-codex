@@ -1,6 +1,15 @@
-# go-codex Review History (R1–R43)
+# go-codex Review History (R1–R44)
 
 Do not re-report any of these findings. They have been implemented and tested.
+
+---
+
+## Round 44 (inside-out pipeline wiring — `ports` package + adapter bindings)
+
+- **`ports` package** — new `github.com/DaniDeer/go-codex/ports` package providing protocol-agnostic IO enforcement points: `SourcePort[T]` (inbound, fan-in), `SinkPort[T]` (outbound, fan-out), `IOPort[Req,Resp]` (intermediate 1:N transform); `IOParam{Name,Description,Codec,Required}.WithCodec(c)` for protocol-agnostic param declarations; `PortOptions{Params, Buffer, Observer}`; `SourceAdapter[T]`, `SinkAdapter[T]`, `IOAdapter[Req,Resp]` interfaces; `ChanSourceAdapter`, `ChanSinkAdapter`, `FuncIOAdapter` test helpers; `PortBindError{Port,Adapter,Err}` + `PortNoAdapterError{Port}` — both `slog.LogValuer`; 17 tests covering fan-in, fan-out, IOPort, error types.
+- **Adapter binding constructors** — `binding.go` added to every adapter package wrapping existing stream bridge machinery as `SourceAdapter`/`SinkAdapter`/`IOAdapter` implementations: `mqtt5.SubscribeAdapter/PublishAdapter/CallAdapter`, `mqtt.SubscribeAdapter/PublishAdapter`, `nethttp.IngestAdapter/SSEAdapter/CallAdapter/PollAdapter/DrainCallAdapter`, `zeromq.SubscribeAdapter/PublishAdapter/CallAdapter`, `file.ScanAdapter/WatchAdapter/ReadEachAdapter/DrainWriteAdapter/DrainWriteFileAdapter`, `sql.QueryAdapter/QueryEachAdapter/DrainInsertAdapter`.
+- **Stream bridge helpers deprecated** — all `SubscribeStream`, `DrainPublish`, `CallStream`, `HandlerIngest`, `ScanStream`, `WatchStream`, `QueryStream`, etc. marked with `//Deprecated:` godoc; non-stream functions (`Subscribe`, `Publish`, `Call`, `Serve`, `Handler`) kept as-is.
+- **`examples/sensor-service`** updated — replaced 3 deprecated bridge calls with `ports.SourcePort.Bind(mqtt.SubscribeAdapter(...))`, `ports.SinkPort.Bind(mqtt.PublishAdapter(...))`, `ports.SourcePort.Bind(sql.QueryAdapter(...))`.
 
 ---
 

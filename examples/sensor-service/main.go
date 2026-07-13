@@ -88,6 +88,7 @@ import (
 	"github.com/DaniDeer/go-codex/examples/sensor-service/db"
 	"github.com/DaniDeer/go-codex/forge"
 	"github.com/DaniDeer/go-codex/format"
+	"github.com/DaniDeer/go-codex/ports"
 	"github.com/DaniDeer/go-codex/stats"
 	gstream "github.com/DaniDeer/go-codex/stream"
 	"github.com/DaniDeer/go-codex/validate"
@@ -632,24 +633,25 @@ func main() {
 	alertHandle, err := alertChannel.Register(eventsBuilder)
 	must(err, "register alert channel")
 
-	// ── Bridge 1: mqtt.SubscribeStream ────────────────────────────────────
+	// ── Bridge 1: ports.SourcePort + mqtt.SubscribeAdapter ───────────────
 	//
-	// mqtt.SubscribeStream replaces the manual rawCh + Subscribe + FromCodec
-	// boilerplate. It returns a typed stream AND the MessageHandler to register
-	// with the MQTT client. The caller owns the subscription lifecycle.
+	// Declare a protocol-agnostic SourcePort in the pipeline; bind the MQTT
+	// adapter in the wiring layer (here, just below). The pipeline code
+	// (gstream.Apply etc.) never imports adaptermqtt — it only sees a typed stream.
 	//
-	//   Before (manual bridge):
-	//     rawCh := make(chan []byte, 64)
-	//     mqttClient.Subscribe(topic, 0, func(_, msg) { rawCh <- msg.Payload() })
-	//     sensors := gstream.FromCodec(ctx, rawCh, format.JSON(codec), srcOpts)
+	//   Domain code (no adapter import):
+	//     sensorsPort := ports.NewSourcePort[MQTTPayload]("sensors", codec, opts)
+	//     sensors := sensorsPort.Stream(ctx)
+	//     readings := gstream.Apply(ctx, sensors, saveReadingFn, ...)
 	//
-	//   After (bridge helper, now fully declarative):
-	//     sensors := mqtt.SubscribeStream(ctx, client, handle, qos, fmt, srcOpts, subOpts)
-	//     // bridge subscribes internally — no handler registration needed
-	sensors := adaptermqtt.SubscribeStream(ctx, mqttClient, readingHandle, 0,
+	//   Wiring (main.go / adapter layer):
+	//     sensorsPort.Bind(ctx, mqtt.SubscribeAdapter(client, handle, qos, fmt, opts))
+	sensorsPort := ports.NewSourcePort[MQTTPayload]("mqtt/sensors/+/data", mqttPayloadCodec,
+		ports.PortOptions{Buffer: 64})
+	sensorsPort.Bind(ctx, adaptermqtt.SubscribeAdapter(mqttClient, readingHandle, 0,
 		format.JSON(mqttPayloadCodec),
-		gstream.SourceOptions{Name: "mqtt/sensors/+/data", Buffer: 64},
-		adaptermqtt.SubscribeOptions{TopicFilter: "sensors/+/data"}) // wildcard for broker
+		adaptermqtt.SubscribeAdapterOptions{TopicFilter: "sensors/+/data"}))
+	sensors := sensorsPort.Stream(ctx)
 
 	// ── Stream pipeline: decode → save → tap → tee → filter → alert ──────
 	//
@@ -695,41 +697,36 @@ func main() {
 	alertPayloads := gstream.FlatMapSlice(ctx, aboveThreshold,
 		func(r db.Reading) []SensorAlert { return []SensorAlert{buildAlert(r)} })
 
-	// ── Bridge 3: mqtt.DrainPublish ───────────────────────────────────────
+	// ── Bridge 3: ports.SinkPort + mqtt.PublishAdapter ───────────────────
 	//
-	// DrainPublish replaces the manual Drain + adaptermqtt.Publish loop.
-	// It handles encoding, variable substitution, observer calls, and error
-	// forwarding — in one call.
+	// Declare a protocol-agnostic SinkPort; bind the MQTT publish adapter.
+	// Fan-out to additional sinks (e.g. SSE, file) requires only additional
+	// Bind calls — no pipeline changes.
 	//
-	//   Before (manual):
-	//     gstream.Drain(ctx, alertPayloads, func(ctx, alert) error {
-	//         return adaptermqtt.Publish(ctx, client, handle, ...)
-	//     }, logErr, drainOpts)
-	//
-	//   After (bridge helper):
-	//     mqtt.DrainPublish(ctx, client, handle, alertPayloads, fmt, opts)
-	//
+	//   alertsPort.Bind(ctx, mqtt.PublishAdapter(...))   // MQTT
+	//   alertsPort.Bind(ctx, file.DrainWriteAdapter(...)) // also write to file
+	alertsPort := ports.NewSinkPort[SensorAlert]("mqtt/alerts", alertCodec, ports.PortOptions{})
+	alertsPort.Bind(ctx, adaptermqtt.PublishAdapter(mqttClient, alertHandle,
+		format.JSON(alertCodec),
+		adaptermqtt.MQTTDrainPublishOptions{
+			Vars: nil, // topic vars resolved per-item below — alertHandle.Topic uses {sensorID}
+			OnError: func(err error) {
+				var sae gstream.StreamApplyError
+				var sde gstream.StreamDecodeError
+				switch {
+				case errors.As(err, &sae):
+					logger.Warn("stream apply error", "error", sae)
+				case errors.As(err, &sde):
+					logger.Warn("stream decode error", "error", sde)
+				default:
+					logger.Warn("alert publish error", "error", err)
+				}
+			},
+		}))
 	pipelineDone := make(chan struct{})
 	go func() {
 		defer close(pipelineDone)
-		adaptermqtt.DrainPublish(ctx, mqttClient, alertHandle, alertPayloads,
-			format.JSON(alertCodec),
-			adaptermqtt.MQTTDrainPublishOptions{
-				Vars: nil, // topic vars resolved per-item below — alertHandle.Topic uses {sensorID}
-				OnError: func(err error) {
-					var sae gstream.StreamApplyError
-					var sde gstream.StreamDecodeError
-					switch {
-					case errors.As(err, &sae):
-						logger.Warn("stream apply error", "error", sae)
-					case errors.As(err, &sde):
-						logger.Warn("stream decode error", "error", sde)
-					default:
-						logger.Warn("alert publish error", "error", err)
-					}
-				},
-				// observer from ctx
-			})
+		alertsPort.Feed(ctx, alertPayloads)
 	}()
 
 	fmt.Println("✓ Stream pipeline active: MQTT → decode → save → tee → filter → alert")
@@ -861,7 +858,8 @@ func main() {
 	queryCtx, cancelQuery := context.WithTimeout(context.Background(), 150*time.Millisecond)
 	defer cancelQuery()
 
-	rowStream := sqladapter.QueryStream(queryCtx, readingCodec,
+	rowPort := ports.NewSourcePort[db.Reading]("sql/readings", readingCodec, ports.PortOptions{})
+	rowPort.Bind(queryCtx, sqladapter.QueryAdapter(readingCodec,
 		func(qctx context.Context) ([]db.Reading, error) {
 			return store.queries.ListReadings(qctx)
 		},
@@ -869,7 +867,8 @@ func main() {
 		sqladapter.QueryStreamOptions{
 			Table: "readings",
 			Op:    "list_readings",
-		})
+		}))
+	rowStream := rowPort.Stream(queryCtx)
 
 	allRows, streamErrs := gstream.Collect(queryCtx, rowStream)
 	fmt.Printf("  QueryStream polled %d row(s) from DB", len(allRows))

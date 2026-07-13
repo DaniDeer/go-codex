@@ -99,6 +99,8 @@ func RegisterLatest[Req, Resp any](
 
 // ── HandlerIngest / RegisterIngest ───────────────────────────────────────────
 
+// Deprecated: Use [IngestAdapter] with [ports.SourcePort] instead.
+//
 // HandlerIngest returns an [http.Handler] that decodes and validates each
 // incoming request body, then writes the decoded value to dst without blocking.
 //
@@ -169,6 +171,8 @@ func handlerIngestFn[Req any](handle *rest.RouteHandle[Req, struct{}], dst chan<
 	}
 }
 
+// Deprecated: Use [IngestAdapter] with [ports.SourcePort] instead.
+//
 // RegisterIngest wires [HandlerIngest] onto mux. Mirrors [Register].
 func RegisterIngest[Req any](
 	mux *http.ServeMux,
@@ -291,6 +295,8 @@ type SSEStreamOptions struct {
 	Observer stats.Observer
 }
 
+// Deprecated: Use [SSEAdapter] with [ports.SinkPort] instead.
+//
 // SSEFromStream returns an [SSEHandlerFunc] where streamFactory is called once
 // per connecting SSE client with the decoded Req. The resulting
 // [gstream.Stream] is consumed for that connection only.
@@ -402,6 +408,8 @@ type PollStreamOptions struct {
 	Buffer int
 }
 
+// Deprecated: Use [PollAdapter] with [ports.SourcePort] instead.
+//
 // PollStream polls handle at interval by calling [Call] with req and emitting
 // each response to the returned [gstream.Stream]. Call errors go to
 // [gstream.Stream.Errors] as-is (all typed: [UnexpectedStatusError], etc.).
@@ -471,6 +479,8 @@ type DrainCallOptions struct {
 	CallOpts CallOptions
 }
 
+// Deprecated: Use [DrainCallAdapter] with [ports.SinkPort] instead.
+//
 // DrainCall posts each item from src to handle using [Call], discarding the
 // response. Call errors and upstream stream errors are forwarded to opts.OnError.
 // Blocks until src terminates or ctx is cancelled.
@@ -522,6 +532,8 @@ type CallStreamOptions struct {
 	Buffer int
 }
 
+// Deprecated: Use [CallAdapter] with [ports.IOPort] instead.
+//
 // CallStream sends each request item from src to handle using [Call], emitting
 // each decoded response to the returned [gstream.Stream]. This is the HTTP
 // equivalent of [zeromq.CallStream] and [mqtt5.CallStream] — a declarative

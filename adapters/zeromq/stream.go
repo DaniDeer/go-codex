@@ -15,6 +15,8 @@ import (
 
 // ── SubscribeStream ───────────────────────────────────────────────────────────
 
+// Deprecated: Use [SubscribeAdapter] with [ports.SourcePort] instead.
+//
 // SubscribeStream bridges a ZeroMQ SUB or PULL socket into a typed stream.
 // A goroutine reads [topic, payload] frame pairs from sock; each payload is
 // decoded by fmt and forwarded to the returned [gstream.Stream]. Decode or
@@ -89,6 +91,8 @@ type DrainPublishOptions struct {
 	Observer stats.Observer
 }
 
+// Deprecated: Use [PublishAdapter] with [ports.SinkPort] instead.
+//
 // DrainPublish publishes each value item from src to sock using handle's codec.
 // Encode failures are delivered to opts.OnError as [PublishEncodeError].
 // Socket send failures are delivered to opts.OnError as [SocketError].
@@ -186,6 +190,8 @@ type CallStreamOptions struct {
 	Buffer int
 }
 
+// Deprecated: Use [CallAdapter] with [ports.IOPort] instead.
+//
 // CallStream sends each request item from src to handle using a REQ socket,
 // emitting each decoded response to the returned [gstream.Stream]. Protocol
 // errors, encode failures, or decode failures are sent to Stream.Errors as

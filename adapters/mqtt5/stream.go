@@ -14,6 +14,8 @@ import (
 
 // ── SubscribeStream ───────────────────────────────────────────────────────────
 
+// Deprecated: Use [SubscribeAdapter] with [ports.SourcePort] instead.
+//
 // SubscribeStream creates a bridge from an MQTT 5 subscription to a typed stream.
 // It subscribes to the broker and registers the handler with the router internally —
 // no handler registration is needed by the caller:
@@ -128,6 +130,8 @@ type MQTT5DrainPublishOptions struct {
 	Observer stats.Observer
 }
 
+// Deprecated: Use [PublishAdapter] with [ports.SinkPort] instead.
+//
 // DrainPublish publishes each value item from src to the MQTT 5 broker using handle.
 // Encode failures are delivered to opts.OnError as [PublishEncodeError].
 // Upstream stream errors are forwarded to opts.OnError unchanged.
@@ -206,6 +210,8 @@ func AsPipelineFunc[Req, Resp any](
 
 // ── CallStream ────────────────────────────────────────────────────────────────
 
+// Deprecated: Use [CallAdapter] with [ports.IOPort] instead.
+//
 // CallStream sends each request item from src to handle using [Call], emitting
 // each decoded response to the returned [gstream.Stream]. Protocol errors or
 // decode failures are sent to [gstream.Stream.Errors] as [CallError].

@@ -1,6 +1,6 @@
 # Inside-Out Pipeline Wiring — Protocol-Agnostic IO Ports
 
-> **Status:** Design evaluation — not yet implemented.
+> **Status:** ✅ Phase 1 implemented. `ports` package + adapter bindings for all transports. Stream bridge helpers deprecated.
 > [← Back to Roadmap](index.md)
 
 ---

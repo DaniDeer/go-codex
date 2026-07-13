@@ -27,6 +27,8 @@ import (
 
 // ── ScanStream ────────────────────────────────────────────────────────────────
 
+// Deprecated: Use [ScanAdapter] with [ports.SourcePort] instead.
+//
 // ScanStream opens path and emits each newline-terminated line as a decoded T.
 // Decode or validation failures are sent to [gstream.Stream.Errors] as
 // [gstream.StreamDecodeError]. I/O errors (open, read) are sent as [ScanError].
@@ -68,6 +70,8 @@ func ScanStream[T any](
 
 // ── WatchStream ───────────────────────────────────────────────────────────────
 
+// Deprecated: Use [WatchAdapter] with [ports.SourcePort] instead.
+//
 // WatchStream emits the absolute path of each new file created in dir.
 // It polls dir using [os.ReadDir] at interval — no external inotify dependency.
 // [WatchError] is sent to Stream.Errors on each failed ReadDir but the stream
@@ -143,6 +147,8 @@ type DrainWriteOptions struct {
 	Observer stats.Observer
 }
 
+// Deprecated: Use [DrainWriteAdapter] with [ports.SinkPort] instead.
+//
 // DrainWrite encodes each value item from src using fmt and writes it to w,
 // followed by opts.Separator (default "\n"). Encode or write failures are
 // passed to opts.OnError as [WriteError]. Upstream stream errors are forwarded
@@ -219,6 +225,8 @@ type ReadEachStreamOptions struct {
 	Buffer int
 }
 
+// Deprecated: Use [ReadEachAdapter] with [ports.IOPort] instead.
+//
 // ReadEachStream reads a complete typed file for each item in src and combines
 // the result using combine. This is the enrichment bridge: for each upstream In
 // item, varsFor derives the file path variables, the file is read and decoded,
@@ -347,6 +355,8 @@ type TapWriteFileOptions struct {
 	FileOptions format.FileOptions
 }
 
+// Deprecated: Use [DrainWriteFileAdapter] with [ports.SinkPort] or [DrainWriteFile] instead.
+//
 // TapWriteFile writes each stream item as a complete typed file on every item
 // using [format.File.Write]. The stream continues flowing after each write —
 // use TapWriteFile when file write is one of multiple side-effects (publish,
@@ -400,6 +410,8 @@ type DrainWriteFileOptions struct {
 	FileOptions format.FileOptions
 }
 
+// Deprecated: Use [DrainWriteFileAdapter] with [ports.SinkPort] instead.
+//
 // DrainWriteFile writes each stream item as a complete typed file (terminal sink)
 // using [format.File.Write]. Blocks until src terminates or ctx is cancelled.
 //

@@ -13,6 +13,8 @@ import (
 
 // ── SubscribeStream ───────────────────────────────────────────────────────────
 
+// Deprecated: Use [SubscribeAdapter] with [ports.SourcePort] instead.
+//
 // SubscribeStream creates a bridge from an MQTT subscription to a typed stream.
 // It subscribes to the broker internally and returns only the stream — no
 // handler registration is needed by the caller:
@@ -110,6 +112,8 @@ type MQTTDrainPublishOptions struct {
 	Observer stats.Observer
 }
 
+// Deprecated: Use [PublishAdapter] with [ports.SinkPort] instead.
+//
 // DrainPublish publishes each value item from src to the MQTT broker using handle.
 // Encode failures are delivered to opts.OnError as [PublishEncodeError].
 // Upstream stream errors are forwarded to opts.OnError unchanged.
