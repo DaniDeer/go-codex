@@ -54,6 +54,24 @@ func (e WatchError) LogValue() slog.Value {
 	)
 }
 
+// ReadError is sent to [Stream.Errors] by [ReadEachStream] when reading or
+// decoding a file fails for an upstream stream item. It wraps the underlying
+// error (typically [format.FileReadError] or [format.FileDecodeError]).
+type ReadError struct {
+	// Err is the underlying error from [format.File.Read].
+	Err error
+}
+
+func (e ReadError) Error() string { return fmt.Sprintf("file read: %v", e.Err) }
+
+// Unwrap allows [errors.Is] and [errors.As] to traverse the underlying error.
+func (e ReadError) Unwrap() error { return e.Err }
+
+// LogValue implements [slog.LogValuer] for structured logging.
+func (e ReadError) LogValue() slog.Value {
+	return slog.GroupValue(slog.Any("err", e.Err))
+}
+
 // WriteError is passed to [DrainWriteOptions.OnError] by [DrainWrite] when
 // encoding or writing an item to the writer fails.
 type WriteError struct {

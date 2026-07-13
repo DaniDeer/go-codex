@@ -643,17 +643,13 @@ func main() {
 	//     mqttClient.Subscribe(topic, 0, func(_, msg) { rawCh <- msg.Payload() })
 	//     sensors := gstream.FromCodec(ctx, rawCh, format.JSON(codec), srcOpts)
 	//
-	//   After (bridge helper):
-	//     sensors, handler := mqtt.SubscribeStream(ctx, handle, fmt, srcOpts, subOpts)
-	//     mqttClient.Subscribe(handle.Topic, 0, handler)
-	sensors, mqttSubHandler := adaptermqtt.SubscribeStream(ctx, readingHandle,
+	//   After (bridge helper, now fully declarative):
+	//     sensors := mqtt.SubscribeStream(ctx, client, handle, qos, fmt, srcOpts, subOpts)
+	//     // bridge subscribes internally — no handler registration needed
+	sensors := adaptermqtt.SubscribeStream(ctx, mqttClient, readingHandle, 0,
 		format.JSON(mqttPayloadCodec),
-		gstream.SourceOptions{Name: "mqtt/sensors/+/data", Buffer: 64}, // observer from ctx
-		adaptermqtt.SubscribeOptions{})                                 // observer from ctx
-	// Subscribe with the MQTT wildcard filter (sensors/+/data), not the API
-	// template (sensors/{sensorID}/data). The ChannelHandle stores the API
-	// template for spec generation; the MQTT broker needs the MQTT wildcard.
-	mqttClient.Subscribe("sensors/+/data", 0, mqttSubHandler)
+		gstream.SourceOptions{Name: "mqtt/sensors/+/data", Buffer: 64},
+		adaptermqtt.SubscribeOptions{TopicFilter: "sensors/+/data"}) // wildcard for broker
 
 	// ── Stream pipeline: decode → save → tap → tee → filter → alert ──────
 	//

@@ -35,19 +35,26 @@ func newMsg(topic string, payload []byte) *pahomqtt5.Publish {
 
 // ── SubscribeStream ───────────────────────────────────────────────────────────
 
+func subscribeStreamMqtt5(ctx context.Context, handle *events.ChannelHandle[sensorReading]) (gstream.Stream[sensorReading], *mockRouter) {
+	broker := &mockClient{}
+	router := newMockRouter()
+	s := mqtt5.SubscribeStream(ctx, broker, router, handle, 0,
+		format.JSON(sensorCodec),
+		gstream.SourceOptions{Buffer: 8},
+		mqtt5.SubscribeOptions{})
+	return s, router
+}
+
 func TestMQTT5SubscribeStream_ValidPayload(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	handle := newSensorHandle()
-
-	s, handler := mqtt5.SubscribeStream(ctx, handle, format.JSON(sensorCodec),
-		gstream.SourceOptions{Buffer: 4},
-		mqtt5.SubscribeOptions{})
+	s, router := subscribeStreamMqtt5(ctx, handle)
 
 	payload, _ := json.Marshal(map[string]any{
 		"sensor_id": "550e8400-e29b-41d4-a716-446655440000",
 		"value":     42.0,
 	})
-	handler(newMsg("sensors/data", payload))
+	router.dispatch("sensors/data", newMsg("sensors/data", payload))
 	cancel()
 
 	vals, errs := gstream.Collect(context.Background(), s)
@@ -62,12 +69,9 @@ func TestMQTT5SubscribeStream_ValidPayload(t *testing.T) {
 func TestMQTT5SubscribeStream_DecodeErrorGoesToStreamErrors(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	handle := newSensorHandle()
+	s, router := subscribeStreamMqtt5(ctx, handle)
 
-	s, handler := mqtt5.SubscribeStream(ctx, handle, format.JSON(sensorCodec),
-		gstream.SourceOptions{Buffer: 4},
-		mqtt5.SubscribeOptions{})
-
-	handler(newMsg("sensors/data", []byte("not-json")))
+	router.dispatch("sensors/data", newMsg("sensors/data", []byte("not-json")))
 	cancel()
 
 	_, errs := gstream.Collect(context.Background(), s)
@@ -86,15 +90,12 @@ func TestMQTT5SubscribeStream_DecodeErrorGoesToStreamErrors(t *testing.T) {
 func TestMQTT5SubscribeStream_MultipleMessages(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	handle := newSensorHandle()
-
-	s, handler := mqtt5.SubscribeStream(ctx, handle, format.JSON(sensorCodec),
-		gstream.SourceOptions{Buffer: 8},
-		mqtt5.SubscribeOptions{})
+	s, router := subscribeStreamMqtt5(ctx, handle)
 
 	good, _ := json.Marshal(map[string]any{"sensor_id": "550e8400-e29b-41d4-a716-446655440000", "value": 1.0})
-	handler(newMsg("sensors/data", []byte("bad")))
-	handler(newMsg("sensors/data", good))
-	handler(newMsg("sensors/data", []byte("also-bad")))
+	router.dispatch("sensors/data", newMsg("sensors/data", []byte("bad")))
+	router.dispatch("sensors/data", newMsg("sensors/data", good))
+	router.dispatch("sensors/data", newMsg("sensors/data", []byte("also-bad")))
 	cancel()
 
 	vals, errs := gstream.Collect(context.Background(), s)

@@ -6,6 +6,83 @@
 
 `forge` is the third layer of go-codex. It adds **named, versioned, and governance-tracked computation** on top of the validated domain types from Layer 1 and the event/REST channels from Layer 2.
 
+## Programming model: inside-out development
+
+go-codex is designed for **inside-out development**: you start from the domain and
+work outward to the application boundary, not the other way around.
+
+```
+Step 1 — Domain core (inside)
+    codex.Codec[T]                    ← validated domain types
+    forge.NewFunction[In, Out](...)   ← governed pure computation
+    stream.Apply(ctx, s, fn, opts)    ← reactive pipeline
+
+Step 2 — Application boundary (outside)
+    transport.SubscribeStream(...)    ← connect external trigger
+    transport.CallStream(...)         ← connect external enrichment
+    transport.DrainPublish(...)       ← connect external sink
+```
+
+**Why this order matters:**
+
+The domain core is **transport-independent**. The same forge function can be wired
+to MQTT messages, HTTP requests, ZeroMQ frames, or a plain Go channel in a test —
+without changing a single line of domain logic:
+
+```go
+// Domain function — defined once, wired anywhere:
+oeeCalcFn := forge.NewFunction("oeeCalc", "1.0.0", oeeInCodec, oeeCodec,
+    func(in OEEIn) (OEE, error) {
+        return OEE(float64(in.Availability) * float64(in.Performance) * float64(in.Quality)), nil
+    },
+)
+
+// Wire A: MQTT source → domain pipeline → MQTT sink
+sensorStream, handler := mqtt.SubscribeStream(ctx, mqttHandle, ...)
+oeeStream := stream.Apply(ctx, sensorStream, oeeCalcFn, opts)
+mqtt.DrainPublish(ctx, client, alertHandle, oeeStream, ...)
+
+// Wire B: HTTP trigger → domain pipeline → HTTP response
+nethttp.RegisterPipeline(mux, httpHandle,
+    func(ctx context.Context, req OEEIn) stream.Stream[OEE] {
+        return stream.Apply(ctx, stream.Single(ctx, req), oeeCalcFn, opts)
+    }, nethttp.Options{})
+
+// Wire C: test — plain Go channel
+ch := make(chan OEEIn, 1)
+ch <- OEEIn{Availability: 0.9, Performance: 0.85, Quality: 0.95}
+close(ch)
+result := stream.Apply(ctx, stream.From(ctx, ch), oeeCalcFn, opts)
+vals, _ := stream.Collect(ctx, result)
+```
+
+**The application boundary** is where the domain meets the outside world. go-codex
+stream bridges define this boundary using **three positions**:
+
+| Position | Declarative pattern | Direction |
+|----------|-------------------|-----------|
+| **Source/Trigger** | `transport.SubscribeStream(ctx, client, handle, opts)` | External world → domain pipeline |
+| **Intermediate I/O** | `transport.CallStream(ctx, client, handle, src, opts)` | Domain pipeline ↔ external service |
+| **Sink/Drain** | `transport.DrainPublish(ctx, client, handle, src, opts)` | Domain pipeline → external world |
+
+Each position is declared using a typed **handle** (route, channel, or file descriptor)
+that carries the schema — codec, params, security requirements. The bridge handles
+codec validation, error routing, and observer calls automatically.
+
+**Development order in practice:**
+
+```
+1. Define domain types:        var oeeCalcFn = forge.NewFunction("oeeCalc", ...)
+2. Test in isolation:          stream.Apply(ctx, stream.From(ctx, testCh), oeeCalcFn, opts)
+3. Connect to triggers:        mqtt.SubscribeStream(ctx, sensorHandle, ...)
+4. Connect to sinks:           mqtt.DrainPublish(ctx, alertHandle, ...)
+5. Add intermediate I/O:       nethttp.CallStream(ctx, enrichmentHandle, ...)
+6. Expose as API:              nethttp.RegisterLatest(mux, latestOEEHandle, oeeStream, opts)
+```
+
+Steps 1–2 require no transport dependencies at all. Steps 3–6 plug the domain core
+into the outside world declaratively, without changing the forge functions.
+
 ## Three-layer architecture
 
 ```
@@ -77,6 +154,56 @@ Registry:                   forge.NewRegistry(...).WithObserver(obs)
 outputs and errors, and have no knowledge of observers, transports, or streams. The
 `stream.Apply` operator and the `Registry` are where observability (PipelineObserver,
 StreamObserver) attaches. Functions neither call nor require an observer in their body.
+
+**Zero I/O inside forge functions.** A forge function body must not perform I/O:
+
+```go
+// ✅ Correct: pure transformation
+func(in OEEIn) (OEE, error) {
+    return OEE(float64(in.Availability) * float64(in.Performance) * float64(in.Quality)), nil
+}
+
+// ❌ Wrong: I/O inside forge function violates the design
+// func(in InputData) (Out, error) {
+//     cfg, _ := configFile.Read(...)  ← file I/O
+//     resp, _ := nethttp.Call(...)    ← HTTP call
+//     row, _ := db.Query(...)         ← database query
+//     return combine(in, cfg, resp), nil
+// }
+```
+
+If a forge function needs data from an external source (config, lookup table, enrichment
+service), that data must arrive as a **typed input** in the input codec — loaded by the
+stream layer (via `WatchStream`, `QueryStream`, `CombineLatest2`) before the function
+is called:
+
+```go
+// ✅ Correct: external data flows IN as typed input
+type EnrichInput struct {
+    Sensor SensorReading   // from MQTT stream
+    Config ThresholdConfig // from config file stream
+}
+
+enrichFn := forge.NewFunction("applyThresholds", "1.0.0",
+    enrichInputCodec, alertCodec,
+    func(in EnrichInput) (Alert, error) {
+        // Pure: both inputs are already validated and available
+        if float64(in.Sensor.Value) > in.Config.MaxValue {
+            return Alert{Sensor: in.Sensor.ID, Exceeded: true}, nil
+        }
+        return Alert{}, nil
+    },
+)
+
+// I/O stays in the stream layer — forge function receives the result:
+configs := /* file.WatchStream + FlatMapSlice + format.File.Read */
+combined := stream.CombineLatest2(ctx, sensorStream, configs,
+    func(s SensorReading, c ThresholdConfig) EnrichInput { return EnrichInput{s, c} })
+alerts := stream.Apply(ctx, combined, enrichFn, stream.ApplyOptions{})
+```
+
+This separation is the design intent: **adapters and stream bridges handle I/O; forge
+functions handle computation.** The stream layer wires them together.
 
 ## Defining a function
 

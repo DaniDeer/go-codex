@@ -215,3 +215,104 @@ func TestInsertStreamError_LogValue(t *testing.T) {
 		}
 	}
 }
+
+// ── QueryEachStream ───────────────────────────────────────────────────────────
+
+func TestQueryEachStream_EmitsRowsPerItem(t *testing.T) {
+	ctx := context.Background()
+
+	// "database": given a sensor ID, return its readings
+	db := map[string][]testRow{
+		"s1": {{ID: "r1", Value: 1.0}, {ID: "r2", Value: 2.0}},
+		"s2": {{ID: "r3", Value: 3.0}},
+	}
+
+	ch := make(chan testRow, 2)
+	ch <- testRow{ID: "s1", Value: 10.0}
+	ch <- testRow{ID: "s2", Value: 20.0}
+	close(ch)
+
+	s := adaptersql.QueryEachStream(ctx, testRowCodec,
+		gstream.From(ctx, ch),
+		func(ctx context.Context, in testRow) ([]testRow, error) {
+			return db[in.ID], nil
+		},
+		adaptersql.QueryEachStreamOptions{Table: "readings", Op: "get_by_sensor", Buffer: 4})
+
+	vals, errs := gstream.Collect(ctx, s)
+	if len(errs) != 0 {
+		t.Errorf("want 0 errors, got %d: %v", len(errs), errs)
+	}
+	if len(vals) != 3 { // s1→2 rows + s2→1 row
+		t.Errorf("want 3 rows total, got %d", len(vals))
+	}
+}
+
+func TestQueryEachStream_DatabaseErrorGoesToErrors(t *testing.T) {
+	ctx := context.Background()
+
+	ch := make(chan testRow, 1)
+	ch <- testRow{ID: "s1", Value: 5.0}
+	close(ch)
+
+	s := adaptersql.QueryEachStream(ctx, testRowCodec,
+		gstream.From(ctx, ch),
+		func(ctx context.Context, in testRow) ([]testRow, error) {
+			return nil, fmt.Errorf("db connection lost")
+		},
+		adaptersql.QueryEachStreamOptions{Table: "readings", Op: "get_by_sensor"})
+
+	_, errs := gstream.Collect(ctx, s)
+	if len(errs) == 0 {
+		t.Error("want QueryStreamError, got 0 errors")
+	}
+	var qse adaptersql.QueryStreamError
+	if !errors.As(errs[0], &qse) {
+		t.Errorf("want QueryStreamError, got %T", errs[0])
+	}
+}
+
+func TestQueryEachStream_ValidationErrorGoesToErrors(t *testing.T) {
+	ctx := context.Background()
+
+	// Row with empty ID violates NonEmptyString
+	badRow := testRow{ID: "", Value: 1.0}
+
+	ch := make(chan testRow, 1)
+	ch <- testRow{ID: "s1", Value: 5.0}
+	close(ch)
+
+	s := adaptersql.QueryEachStream(ctx, testRowCodec,
+		gstream.From(ctx, ch),
+		func(ctx context.Context, in testRow) ([]testRow, error) {
+			return []testRow{badRow}, nil
+		},
+		adaptersql.QueryEachStreamOptions{Table: "readings", Op: "get_by_sensor"})
+
+	_, errs := gstream.Collect(ctx, s)
+	if len(errs) == 0 {
+		t.Error("want RowValidationError, got 0 errors")
+	}
+}
+
+func TestQueryEachStream_UpstreamErrorsForwarded(t *testing.T) {
+	ctx := context.Background()
+
+	valCh := make(chan testRow)
+	errCh := make(chan error, 1)
+	errCh <- fmt.Errorf("upstream failure")
+	close(errCh)
+	close(valCh)
+
+	s := adaptersql.QueryEachStream(ctx, testRowCodec,
+		gstream.Stream[testRow]{Values: valCh, Errors: errCh},
+		func(ctx context.Context, in testRow) ([]testRow, error) {
+			return nil, nil
+		},
+		adaptersql.QueryEachStreamOptions{})
+
+	_, errs := gstream.Collect(ctx, s)
+	if len(errs) == 0 {
+		t.Error("want upstream error forwarded, got 0")
+	}
+}

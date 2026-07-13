@@ -501,6 +501,105 @@ func DrainCall[Req, Resp any](
 	)
 }
 
+// ── CallStream ────────────────────────────────────────────────────────────────
+
+// CallStreamOptions configures [CallStream].
+type CallStreamOptions struct {
+	// Vars, when non-nil, substitutes {varName} placeholders in the route's
+	// path template via [rest.RouteHandle.BuildPath]. The same map is used for
+	// every request (static path vars only). For routes with no path vars,
+	// omit Vars. For per-item path var substitution, encode the path variable
+	// into the Req body codec and use a route without path params.
+	Vars map[string]string
+
+	// CallOpts are forwarded to [Call] for each item — including Observer,
+	// CredentialFunc, QueryParams, CookieParams, HeaderParams, and ExtraHeaders.
+	// [stats.Observer.RecordRequest] fires for every call attempt.
+	// If CallOpts.Observer is nil, the observer is resolved from ctx.
+	CallOpts CallOptions
+
+	// Buffer is the output Stream channel buffer size. Default 0.
+	Buffer int
+}
+
+// CallStream sends each request item from src to handle using [Call], emitting
+// each decoded response to the returned [gstream.Stream]. This is the HTTP
+// equivalent of [zeromq.CallStream] and [mqtt5.CallStream] — a declarative
+// intermediate I/O step that keeps forge functions pure (no nethttp.Call inside
+// a forge function body).
+//
+// All codec validation runs per item via [Call]: path vars, query/cookie/header
+// params, security credentials, request body encode, response body decode.
+// Call errors ([UnexpectedStatusError], [RequestError], [ResponseBodyError], etc.)
+// are sent to [gstream.Stream.Errors]. The stream terminates when src closes or
+// ctx is cancelled.
+//
+// Requests are issued sequentially. Use multiple parallel pipelines feeding the
+// same handle for concurrent throughput.
+//
+// Usage:
+//
+//	enrichHandle, _ := rest.NewRoute[IntermediaryData, EnrichedData](
+//	    "POST", "/enrich", intermediaryCodec, enrichedCodec, rest.RouteMeta{},
+//	).Register(b)
+//
+//	enriched := nethttp.CallStream(ctx, httpClient, "http://enrichment-svc:8080",
+//	    enrichHandle, intermediaryStream,
+//	    nethttp.CallStreamOptions{CallOpts: nethttp.CallOptions{Observer: obs}})
+func CallStream[Req, Resp any](
+	ctx context.Context,
+	client *http.Client,
+	baseURL string,
+	handle *rest.RouteHandle[Req, Resp],
+	src gstream.Stream[Req],
+	opts CallStreamOptions,
+) gstream.Stream[Resp] {
+	values := make(chan Resp, opts.Buffer)
+	errs := make(chan error, opts.Buffer)
+	go func() {
+		defer close(values)
+		defer close(errs)
+		valCh := src.Values
+		errCh := src.Errors
+		for valCh != nil || errCh != nil {
+			select {
+			case <-ctx.Done():
+				return
+			case req, ok := <-valCh:
+				if !ok {
+					valCh = nil
+					continue
+				}
+				resp, err := Call(ctx, client, baseURL, handle, req, opts.Vars, opts.CallOpts)
+				if err != nil {
+					select {
+					case errs <- err:
+					case <-ctx.Done():
+						return
+					}
+					continue
+				}
+				select {
+				case values <- resp:
+				case <-ctx.Done():
+					return
+				}
+			case e, ok := <-errCh:
+				if !ok {
+					errCh = nil
+					continue
+				}
+				select {
+				case errs <- e:
+				case <-ctx.Done():
+					return
+				}
+			}
+		}
+	}()
+	return gstream.Stream[Resp]{Values: values, Errors: errs}
+}
+
 // ── SSEClientStream ───────────────────────────────────────────────────────────
 
 // SSEClientOptions configures [SSEClientStream].

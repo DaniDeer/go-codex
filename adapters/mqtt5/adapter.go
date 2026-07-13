@@ -95,6 +95,15 @@ func (p UserPropertyParam) WithCodec(c codex.Codec[string]) UserPropertyParam {
 
 // SubscribeOptions configures [Subscribe].
 type SubscribeOptions struct {
+	// TopicFilter is the MQTT subscription filter for [pahomqtt5.Subscribe].
+	// Use this when the handle's topic template uses {varName} placeholders
+	// (e.g. "sensors/{sensorID}/data") but the broker requires MQTT wildcard
+	// syntax (e.g. "sensors/+/data"). When empty, handle.Topic is used.
+	//
+	// Only used by [SubscribeStream] — direct [Subscribe] callers provide
+	// the filter in the pahomqtt5.Subscribe struct themselves.
+	TopicFilter string
+
 	// OnError, when non-nil, is called with a typed [SubscribeError] on decode,
 	// handler, or security failure. If nil, errors are silently discarded.
 	OnError func(SubscribeError)

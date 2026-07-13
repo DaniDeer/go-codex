@@ -344,3 +344,114 @@ paths := file.WatchStream(ctx, "/data/uploads", 500*time.Millisecond, srcOpts)
 file.DrainWrite(ctx, outFile, src, format.JSON(codec),
     file.DrainWriteOptions{Path: "out.ndjson", OnError: logErr})
 ```
+
+---
+
+## I/O role taxonomy — source, intermediate, sink
+
+Every I/O operation in a stream pipeline has a role. Recognising the role guides which
+API to use:
+
+| Role | Character | API pattern | Examples |
+|------|-----------|------------|---------|
+| **Source** | Emits items FROM an external system into the stream | `transport.SubscribeStream` / `QueryStream` / `PollStream` / `ScanStream` | MQTT messages, SQL rows, SSE feed, NDJSON file |
+| **Intermediate** (transform) | Sends each item AS a request; receives a response; emits the response | `transport.CallStream` | ZeroMQ REQ/REP, MQTT5 request-reply |
+| **Side-effect I/O** | Fires I/O alongside the pipeline WITHOUT consuming a response | `stream.Tap` + `Publish`/`Write`/`Patch` | MQTT alert publish, JSON file write, audit log |
+| **Sink** | Consumes items FROM the stream into an external system | `transport.DrainPublish` / `DrainInsert` / `DrainWrite` / `DrainCall` | MQTT publish, SQL insert, HTTP POST, NDJSON append |
+| **Pure computation** | Transforms items with zero I/O | `stream.Apply` + `forge.Function[In,Out]` | OEE calculation, normalisation, validation |
+
+### The fundamental rule: forge functions are pure — zero I/O
+
+`stream.Apply` accepts `*forge.Function[In, Out]`. These functions are **governed domain
+computations** — their only job is to transform typed inputs into typed outputs. They
+must have no I/O.
+
+```go
+// ✅ Correct: forge function is pure
+oeeCalcFn := forge.NewFunction("oeeCalc", "1.0.0", oeeInCodec, oeeCodec,
+    func(in OEEIn) (OEE, error) {
+        // Pure calculation — no file reads, no HTTP calls, no database queries
+        return OEE(float64(in.Availability) * float64(in.Performance) * float64(in.Quality)), nil
+    })
+
+// ❌ Wrong: I/O inside a forge function violates the design principle
+// func(in InputData) (Out, error) {
+//     cfg, _ := configFile.Read(...)  // ← I/O inside forge
+//     return combine(in, cfg), nil
+// }
+```
+
+I/O that a forge function needs (e.g. a config lookup) must arrive as **typed input** —
+declared in the input codec and flowing from the stream layer:
+
+```go
+// Config is an explicit input — loaded by the stream layer, not by the function:
+type EnrichInput struct {
+    Data   InputData
+    Config ThresholdConfig   // explicit input — arrives via CombineLatest2
+}
+
+enrichFn := forge.NewFunction("enrich", "1.0.0", enrichInputCodec, outputCodec,
+    func(in EnrichInput) (Out, error) {
+        return combine(in.Data, in.Config), nil // pure: all inputs explicit
+    })
+
+// I/O stays in the stream layer:
+configs := stream.Single(ctx, preloadedConfig)  // or WatchStream for dynamic reload
+combined := stream.CombineLatest2(ctx, dataStream, configs,
+    func(d InputData, c ThresholdConfig) EnrichInput { return EnrichInput{d, c} })
+enriched := stream.Apply(ctx, combined, enrichFn, stream.ApplyOptions{})
+```
+
+### When to use each I/O container
+
+**Use `transport.CallStream`** when the step's whole purpose is an I/O call — send a
+request, receive a response, forward the response:
+
+```go
+// ZeroMQ/MQTT5 — already available:
+validated := zeromq.CallStream(ctx, sock, validationHandle, rawStream, opts)
+enriched  := mqtt5.CallStream(ctx, client, router, enrichHandle, validated, opts)
+```
+
+I/O is explicit in the pipeline declaration. Errors are transport-typed, not wrapped in
+`forge.ApplyError`.
+
+**Use `stream.Tap`** for side-effect I/O that produces no value for the pipeline —
+publishing, writing, logging:
+
+```go
+results = stream.Tap(ctx, results, func(r OEEResult) {
+    mqtt.Publish(ctx, client, alertHandle, ...)     // fire-and-forget
+    resultFile.Write(nil, r, format.FileOptions{}) // whole-file write
+})</p>
+```
+
+**Use `stream.FlatMapSlice`** for ad-hoc transforms that have I/O and are not governed
+(no forge hash, no schema validation — use when governance is not required):
+
+```go
+// I/O in stream.FlatMapSlice is in the stream layer, not forge:
+enriched := stream.FlatMapSlice(ctx, ids, func(id string) []Data {
+    v, err := someFile.Read(map[string]string{"id": id}, opts)
+    if err != nil { return nil } // errors silently dropped — use bridge operator for typed errors
+    return []Data{v}
+})</p>
+```
+
+### Gap — `nethttp.CallStream`
+
+HTTP is the only transport missing an intermediate transform operator. ZeroMQ and MQTT5
+both have `CallStream`; HTTP has `PollStream` (periodic GET source) and `DrainCall`
+(HTTP sink) but no per-item request→response transform:
+
+```
+zeromq.CallStream  ✅  — send each item as REQ, emit each REP response
+mqtt5.CallStream   ✅  — send each item as MQTT5 request-reply, emit responses
+nethttp.CallStream ❌  — do NOT put nethttp.Call inside a forge function; use interim goroutine transform
+```
+
+`nethttp.CallStream` is the correct design — it would pass a `*rest.RouteHandle[Req, Resp]`
+and apply the full HTTP codec machinery (path vars, query/cookie/header params, security,
+structured errors) per item. Full API design and transport matrix:
+[Declarative I/O Steps](../roadmap/declarative-io-steps.md)

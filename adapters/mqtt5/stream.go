@@ -15,31 +15,33 @@ import (
 // ── SubscribeStream ───────────────────────────────────────────────────────────
 
 // SubscribeStream creates a bridge from an MQTT 5 subscription to a typed stream.
-// It returns both the stream and the raw message handler to register with the
-// MQTTRouter (via router.RegisterHandler). The caller must register the handler
-// before messages can flow:
+// It subscribes to the broker and registers the handler with the router internally —
+// no handler registration is needed by the caller:
 //
-//	s, rawHandler := mqtt5.SubscribeStream(ctx, sensorHandle, format.JSON(sensorCodec),
-//	    gstream.SourceOptions{Name: "mqtt5/sensors/+", Observer: obs},
-//	    mqtt5.SubscribeOptions{Observer: obs})
-//	// Register with the router so messages are delivered:
-//	router.RegisterHandler(sensorHandle.Topic, rawHandler)
-//	oeeStream := gstream.Apply(ctx, s, oeeCalcFn, gstream.ApplyOptions{Observer: obs})
+//	s := mqtt5.SubscribeStream(ctx, client, router, sensorHandle, 1,
+//	    format.JSON(sensorCodec),
+//	    gstream.SourceOptions{Name: "mqtt5/sensors/+"},
+//	    mqtt5.SubscribeOptions{TopicFilter: "sensors/+/data"})
+//	oeeStream := gstream.Apply(ctx, s, oeeCalcFn, gstream.ApplyOptions{})
 //
-// The returned handler applies the full mqtt5 validation pipeline, identical to
-// [Subscribe]: ContentType negotiation, UserPropertyParams validation, security
-// enforcement, observer calls, and TraceObserver spans. All validation failures
-// are sent to [gstream.Stream.Errors] as [SubscribeError] so they can be handled
-// by stream operators like [gstream.MapErr].
+// The subscription filter for [pahomqtt5.Subscribe] and [MQTTRouter.RegisterHandler]
+// is [SubscribeOptions.TopicFilter] when set, otherwise [events.ChannelHandle.Topic].
+//
+// The full mqtt5 validation pipeline runs: ContentType negotiation, UserPropertyParams
+// validation, security enforcement, observer calls, and TraceObserver spans. All
+// validation failures are sent to [gstream.Stream.Errors] as [SubscribeError].
 //
 // The stream terminates when ctx is cancelled.
 func SubscribeStream[T any](
 	ctx context.Context,
+	client MQTTClient,
+	router MQTTRouter,
 	handle *events.ChannelHandle[T],
+	qos byte,
 	fmt format.Format[T],
 	srcOpts gstream.SourceOptions,
 	subOpts SubscribeOptions,
-) (gstream.Stream[T], func(*pahomqtt5.Publish)) {
+) gstream.Stream[T] {
 	typedCh := make(chan T, srcOpts.Buffer)
 	errCh := make(chan error, srcOpts.Buffer)
 
@@ -77,13 +79,35 @@ func SubscribeStream[T any](
 			return nil
 		}, obs, innerOpts)
 
+	// Register handler and subscribe internally.
+	filter := subOpts.TopicFilter
+	if filter == "" {
+		filter = handle.Topic
+	}
+	router.RegisterHandler(filter, handler)
+	if _, err := client.Subscribe(ctx, &pahomqtt5.Subscribe{
+		Subscriptions: []pahomqtt5.SubscribeOptions{{Topic: filter, QoS: qos}},
+	}); err != nil {
+		router.UnregisterHandler(filter)
+		be := BrokerError{Op: "subscribe", Err: err}
+		go func() {
+			select {
+			case errCh <- be:
+			case <-ctx.Done():
+			}
+			close(typedCh)
+			close(errCh)
+		}()
+		return gstream.Stream[T]{Values: typedCh, Errors: errCh}
+	}
+
 	go func() {
 		<-ctx.Done()
 		close(typedCh)
 		close(errCh)
 	}()
 
-	return gstream.Stream[T]{Values: typedCh, Errors: errCh}, handler
+	return gstream.Stream[T]{Values: typedCh, Errors: errCh}
 }
 
 // ── DrainPublish ──────────────────────────────────────────────────────────────

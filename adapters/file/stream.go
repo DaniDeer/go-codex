@@ -6,6 +6,7 @@
 // Sources:
 //   - [ScanStream] — decodes a newline-delimited file (NDJSON, CSV, etc.) line by line
 //   - [WatchStream] — emits file paths for new files created in a directory
+//   - [ReadEachStream] — reads a complete typed file for each upstream item (enrichment)
 //
 // Sinks:
 //   - [DrainWrite] — encodes each stream item and writes it as a line to an io.Writer
@@ -187,6 +188,247 @@ func DrainWrite[T any](
 				we := WriteError{Path: opts.Path, Err: err}
 				if onErr != nil {
 					onErr(we)
+				}
+			}
+			return nil
+		},
+		func(e error) {
+			if onErr != nil {
+				onErr(e)
+			}
+		},
+		gstream.DrainOptions{Observer: obs},
+	)
+}
+
+// ── ReadEachStream ────────────────────────────────────────────────────────────
+
+// ReadEachStreamOptions configures [ReadEachStream].
+type ReadEachStreamOptions struct {
+	// OnError, when non-nil, is called for file read errors ([ReadEachError])
+	// and upstream stream errors. When nil, errors are only sent to Stream.Errors.
+	OnError func(error)
+	// Observer receives per-read lifecycle events.
+	// Resolved from ctx when nil.
+	Observer stats.Observer
+	// FileOptions configures permission, context, and observer for each read.
+	// Observer and Context within FileOptions are set automatically from this
+	// option's Observer and ctx if not already set.
+	FileOptions format.FileOptions
+	// Buffer sets the channel buffer size for the output stream.
+	Buffer int
+}
+
+// ReadEachStream reads a complete typed file for each item in src and combines
+// the result using combine. This is the enrichment bridge: for each upstream In
+// item, varsFor derives the file path variables, the file is read and decoded,
+// and combine pairs the original item with the file content to produce Out.
+//
+// Read failures are sent to [gstream.Stream.Errors] as [ReadError] and
+// also passed to opts.OnError when set. The upstream item that triggered the
+// failure is dropped. Upstream stream errors are forwarded to Stream.Errors.
+//
+// Example — enrich sensor readings with calibration data stored per-sensor:
+//
+//	calibrated := file.ReadEachStream(ctx, calibrationFile, sensorStream,
+//	    func(r SensorReading) map[string]string { return map[string]string{"sensorID": r.SensorID} },
+//	    func(r SensorReading, c CalibrationData) CalibratedReading {
+//	        return CalibratedReading{Reading: r, Offset: c.Offset}
+//	    },
+//	    file.ReadEachStreamOptions{})
+func ReadEachStream[In, T, Out any](
+	ctx context.Context,
+	f format.File[T],
+	src gstream.Stream[In],
+	varsFor func(In) map[string]string,
+	combine func(In, T) Out,
+	opts ReadEachStreamOptions,
+) gstream.Stream[Out] {
+	outCh := make(chan Out, opts.Buffer)
+	errCh := make(chan error, opts.Buffer)
+
+	obs := opts.Observer
+	if obs == nil {
+		obs = stats.ObserverFromContext(ctx)
+	}
+
+	fileOpts := opts.FileOptions
+	if fileOpts.Observer == nil {
+		fileOpts.Observer = obs
+	}
+	if fileOpts.Context == nil {
+		fileOpts.Context = ctx
+	}
+	onErr := opts.OnError
+
+	go func() {
+		defer close(outCh)
+		defer close(errCh)
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case v, ok := <-src.Values:
+				if !ok {
+					// Values exhausted — drain remaining errors before closing.
+					for {
+						select {
+						case e, ok := <-src.Errors:
+							if !ok {
+								return
+							}
+							if onErr != nil {
+								onErr(e)
+							}
+							select {
+							case errCh <- e:
+							case <-ctx.Done():
+								return
+							}
+						case <-ctx.Done():
+							return
+						}
+					}
+				}
+				t, err := f.Read(varsFor(v), fileOpts)
+				if err != nil {
+					re := ReadError{Err: err}
+					if onErr != nil {
+						onErr(re)
+					}
+					select {
+					case errCh <- re:
+					case <-ctx.Done():
+						return
+					}
+					continue
+				}
+				select {
+				case outCh <- combine(v, t):
+				case <-ctx.Done():
+					return
+				}
+			case e, ok := <-src.Errors:
+				if !ok {
+					return
+				}
+				if onErr != nil {
+					onErr(e)
+				}
+				select {
+				case errCh <- e:
+				case <-ctx.Done():
+					return
+				}
+			}
+		}
+	}()
+
+	return gstream.Stream[Out]{Values: outCh, Errors: errCh}
+}
+
+// ── TapWriteFile / DrainWriteFile ─────────────────────────────────────────────
+
+// TapWriteFileOptions configures [TapWriteFile].
+type TapWriteFileOptions struct {
+	// OnError, when non-nil, is called for write or encode failures.
+	// Errors are typed: [format.FileWriteError], [format.FileEncodeError],
+	// [format.FilePathParamError], [format.MissingFilePathVarError].
+	OnError func(error)
+
+	// Observer receives per-write lifecycle events via the [format.File]
+	// observer integration ([stats.FileObserver.RecordFileWrite]).
+	// Resolved from ctx when nil.
+	Observer stats.Observer
+
+	// FileOptions configures permission, context, and observer for each write.
+	// Observer and Context within FileOptions are set automatically from this
+	// option's Observer and ctx if not already set.
+	FileOptions format.FileOptions
+}
+
+// TapWriteFile writes each stream item as a complete typed file on every item
+// using [format.File.Write]. The stream continues flowing after each write —
+// use TapWriteFile when file write is one of multiple side-effects (publish,
+// dashboard, file).
+//
+// Use [DrainWriteFile] when the file write is the terminal step and the stream
+// should be fully consumed.
+//
+// Errors from [format.File.Write] are passed to opts.OnError and are typed
+// ([format.FileWriteError], [format.FileEncodeError]) — use [errors.As] for
+// structured handling.
+func TapWriteFile[T any](
+	ctx context.Context,
+	f format.File[T],
+	src gstream.Stream[T],
+	vars map[string]string,
+	opts TapWriteFileOptions,
+) gstream.Stream[T] {
+	fileOpts := opts.FileOptions
+	if fileOpts.Observer == nil {
+		obs := opts.Observer
+		if obs == nil {
+			obs = stats.ObserverFromContext(ctx)
+		}
+		fileOpts.Observer = obs
+	}
+	if fileOpts.Context == nil {
+		fileOpts.Context = ctx
+	}
+	onErr := opts.OnError
+	return gstream.Tap(ctx, src, func(v T) {
+		if err := f.Write(vars, v, fileOpts); err != nil {
+			if onErr != nil {
+				onErr(err)
+			}
+		}
+	})
+}
+
+// DrainWriteFileOptions configures [DrainWriteFile].
+type DrainWriteFileOptions struct {
+	// OnError, when non-nil, is called for write or encode failures and
+	// upstream stream errors.
+	OnError func(error)
+
+	// Observer receives per-write lifecycle events.
+	// Resolved from ctx when nil.
+	Observer stats.Observer
+
+	// FileOptions configures permission, context, and observer for each write.
+	FileOptions format.FileOptions
+}
+
+// DrainWriteFile writes each stream item as a complete typed file (terminal sink)
+// using [format.File.Write]. Blocks until src terminates or ctx is cancelled.
+//
+// Use [TapWriteFile] when the file write is one of multiple side-effects and the
+// stream should keep flowing.
+func DrainWriteFile[T any](
+	ctx context.Context,
+	f format.File[T],
+	src gstream.Stream[T],
+	vars map[string]string,
+	opts DrainWriteFileOptions,
+) {
+	obs := opts.Observer
+	if obs == nil {
+		obs = stats.ObserverFromContext(ctx)
+	}
+	fileOpts := opts.FileOptions
+	if fileOpts.Observer == nil {
+		fileOpts.Observer = obs
+	}
+	if fileOpts.Context == nil {
+		fileOpts.Context = ctx
+	}
+	onErr := opts.OnError
+	gstream.Drain(ctx, src,
+		func(_ context.Context, v T) error {
+			if err := f.Write(vars, v, fileOpts); err != nil {
+				if onErr != nil {
+					onErr(err)
 				}
 			}
 			return nil

@@ -14,31 +14,39 @@ import (
 // ── SubscribeStream ───────────────────────────────────────────────────────────
 
 // SubscribeStream creates a bridge from an MQTT subscription to a typed stream.
-// It returns both the stream and the [pahomqtt.MessageHandler] to register with
-// the MQTT client. The caller must register the handler before messages can flow:
+// It subscribes to the broker internally and returns only the stream — no
+// handler registration is needed by the caller:
 //
-//	s, handler := mqtt.SubscribeStream(ctx, sensorHandle, format.JSON(sensorCodec),
-//	    gstream.SourceOptions{Name: "mqtt/sensors/+", Observer: obs},
-//	    mqtt.SubscribeOptions{Observer: obs})
-//	client.Subscribe("sensors/+/data", 1, handler) // use MQTT wildcard, not API template
-//	oeeStream := gstream.Apply(ctx, s, oeeCalcFn, gstream.ApplyOptions{Observer: obs})
+//	s := mqtt.SubscribeStream(ctx, client, sensorHandle, 1,
+//	    format.JSON(sensorCodec),
+//	    gstream.SourceOptions{Name: "mqtt/sensors/+"},
+//	    mqtt.SubscribeOptions{TopicFilter: "sensors/+/data"}) // MQTT wildcard
+//	oeeStream := gstream.Apply(ctx, s, oeeCalcFn, gstream.ApplyOptions{})
 //
-// The returned handler is built by [SubscribeHandler] and applies the full adapter
-// validation pipeline: security enforcement, payload decode with format priority
-// (call-time > SubscribeFormats > Formats > handle.Decode), topic var error reporting,
-// and all observer calls. Decode, security, and handler errors are sent to
-// [gstream.Stream.Errors] as [SubscribeError] — callers can use [gstream.MapErr]
-// to recover or reclassify them.
+// The subscription filter passed to [pahomqtt.Client.Subscribe] is
+// [SubscribeOptions.TopicFilter] when set, otherwise [events.ChannelHandle.Topic].
+// Use TopicFilter when the handle stores an API template topic
+// (e.g. "sensors/{sensorID}/data") but the broker requires MQTT wildcard syntax
+// (e.g. "sensors/+/data").
 //
-// The stream terminates when ctx is cancelled. The caller owns the MQTT client
-// subscription lifecycle — SubscribeStream never calls client.Unsubscribe.
+// The full adapter validation pipeline runs: security enforcement, payload decode
+// with format priority (call-time > SubscribeFormats > Formats > handle.Decode),
+// topic var error reporting, and all observer calls. Decode, security, and handler
+// errors are sent to [gstream.Stream.Errors] as [SubscribeError] — callers can
+// use [gstream.MapErr] to recover or reclassify them.
+//
+// The stream terminates when ctx is cancelled. SubscribeStream calls
+// [pahomqtt.Client.Subscribe] but never calls [pahomqtt.Client.Unsubscribe] —
+// the caller owns the MQTT client lifecycle.
 func SubscribeStream[T any](
 	ctx context.Context,
+	client pahomqtt.Client,
 	handle *events.ChannelHandle[T],
+	qos byte,
 	fmt format.Format[T],
 	srcOpts gstream.SourceOptions,
 	subOpts SubscribeOptions,
-) (gstream.Stream[T], pahomqtt.MessageHandler) {
+) gstream.Stream[T] {
 	typedCh := make(chan T, srcOpts.Buffer)
 	errCh := make(chan error, srcOpts.Buffer)
 
@@ -65,13 +73,21 @@ func SubscribeStream[T any](
 			return nil
 		}, innerOpts, fmt)
 
+	// Subscribe internally — use TopicFilter when set (MQTT wildcard syntax
+	// may differ from the API template topic stored in handle.Topic).
+	filter := subOpts.TopicFilter
+	if filter == "" {
+		filter = handle.Topic
+	}
+	client.Subscribe(filter, qos, handler)
+
 	go func() {
 		<-ctx.Done()
 		close(typedCh)
 		close(errCh)
 	}()
 
-	return gstream.Stream[T]{Values: typedCh, Errors: errCh}, handler
+	return gstream.Stream[T]{Values: typedCh, Errors: errCh}
 }
 
 // ── DrainPublish ──────────────────────────────────────────────────────────────

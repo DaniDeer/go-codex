@@ -16,28 +16,56 @@ import (
 
 // ── SubscribeStream ───────────────────────────────────────────────────────────
 
-func deliver(handler pahomqtt.MessageHandler, payload []byte) {
-	handler(nil, &mockMessage{payload: payload})
+// deliverableClient is a minimal pahomqtt.Client that captures the Subscribe
+// handler so tests can inject messages via deliver().
+type deliverableClient struct {
+	handler pahomqtt.MessageHandler
 }
 
-func subscribeStreamWithCancel(t *testing.T) (gstream.Stream[userEvent], pahomqtt.MessageHandler, context.CancelFunc) {
+func (c *deliverableClient) Subscribe(_ string, _ byte, h pahomqtt.MessageHandler) pahomqtt.Token {
+	c.handler = h
+	return newCompletedToken(nil)
+}
+func (c *deliverableClient) deliver(payload []byte) {
+	if c.handler != nil {
+		c.handler(nil, &mockMessage{payload: payload})
+	}
+}
+func (c *deliverableClient) IsConnected() bool       { return true }
+func (c *deliverableClient) IsConnectionOpen() bool  { return true }
+func (c *deliverableClient) Connect() pahomqtt.Token { return newCompletedToken(nil) }
+func (c *deliverableClient) Disconnect(_ uint)       {}
+func (c *deliverableClient) Publish(_ string, _ byte, _ bool, _ interface{}) pahomqtt.Token {
+	return newCompletedToken(nil)
+}
+func (c *deliverableClient) SubscribeMultiple(_ map[string]byte, _ pahomqtt.MessageHandler) pahomqtt.Token {
+	return newCompletedToken(nil)
+}
+func (c *deliverableClient) Unsubscribe(_ ...string) pahomqtt.Token       { return newCompletedToken(nil) }
+func (c *deliverableClient) AddRoute(_ string, _ pahomqtt.MessageHandler) {}
+func (c *deliverableClient) OptionsReader() pahomqtt.ClientOptionsReader {
+	return pahomqtt.ClientOptionsReader{}
+}
+
+func subscribeStreamWithCancel(t *testing.T) (gstream.Stream[userEvent], *deliverableClient, context.CancelFunc) {
 	t.Helper()
 	ctx, cancel := context.WithCancel(context.Background())
 	handle := newHandle()
-	s, handler := adaptermqtt.SubscribeStream(ctx, handle, format.JSON(userEventCodec),
+	client := &deliverableClient{}
+	s := adaptermqtt.SubscribeStream(ctx, client, handle, 0, format.JSON(userEventCodec),
 		gstream.SourceOptions{Buffer: 8},
 		adaptermqtt.SubscribeOptions{})
-	return s, handler, cancel
+	return s, client, cancel
 }
 
 func TestSubscribeStream_ValidPayload(t *testing.T) {
-	s, handler, cancel := subscribeStreamWithCancel(t)
+	s, client, cancel := subscribeStreamWithCancel(t)
 
 	payload, _ := json.Marshal(map[string]any{
 		"id":    "550e8400-e29b-41d4-a716-446655440000",
 		"email": "alice@example.com",
 	})
-	deliver(handler, payload)
+	client.deliver(payload)
 	cancel() // close stream
 
 	vals, errs := gstream.Collect(context.Background(), s)
@@ -53,9 +81,9 @@ func TestSubscribeStream_ValidPayload(t *testing.T) {
 }
 
 func TestSubscribeStream_DecodeErrorGoesToStreamErrors(t *testing.T) {
-	s, handler, cancel := subscribeStreamWithCancel(t)
+	s, client, cancel := subscribeStreamWithCancel(t)
 
-	deliver(handler, []byte("not-json"))
+	client.deliver([]byte("not-json"))
 	cancel()
 
 	_, errs := gstream.Collect(context.Background(), s)
@@ -73,13 +101,13 @@ func TestSubscribeStream_DecodeErrorGoesToStreamErrors(t *testing.T) {
 }
 
 func TestSubscribeStream_ValidationErrorGoesToStreamErrors(t *testing.T) {
-	s, handler, cancel := subscribeStreamWithCancel(t)
+	s, client, cancel := subscribeStreamWithCancel(t)
 
 	payload, _ := json.Marshal(map[string]any{
 		"id":    "550e8400-e29b-41d4-a716-446655440000",
 		"email": "not-an-email", // fails validate.Email
 	})
-	deliver(handler, payload)
+	client.deliver(payload)
 	cancel()
 
 	_, errs := gstream.Collect(context.Background(), s)
@@ -95,7 +123,8 @@ func TestSubscribeStream_ValidationErrorGoesToStreamErrors(t *testing.T) {
 func TestSubscribeStream_SecurityFuncRejectsToStreamErrors(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	handle := newHandle()
-	s, handler := adaptermqtt.SubscribeStream(ctx, handle, format.JSON(userEventCodec),
+	mc := &deliverableClient{}
+	s := adaptermqtt.SubscribeStream(ctx, mc, handle, 0, format.JSON(userEventCodec),
 		gstream.SourceOptions{Buffer: 4},
 		adaptermqtt.SubscribeOptions{
 			// No SecurityFunc set — security not enforced. This test just verifies
@@ -105,7 +134,7 @@ func TestSubscribeStream_SecurityFuncRejectsToStreamErrors(t *testing.T) {
 	payload, _ := json.Marshal(map[string]any{
 		"id": "550e8400-e29b-41d4-a716-446655440000", "email": "a@b.com",
 	})
-	deliver(handler, payload)
+	mc.deliver(payload)
 	cancel()
 
 	vals, _ := gstream.Collect(context.Background(), s)
@@ -117,9 +146,9 @@ func TestSubscribeStream_SecurityFuncRejectsToStreamErrors(t *testing.T) {
 func TestSubscribeStream_ErrorsGoToStreamNotCallback(t *testing.T) {
 	// Verify errors go to Stream.Errors — not a separate OnError callback
 	// (the bridge overrides OnError internally).
-	s, handler, cancel := subscribeStreamWithCancel(t)
+	s, client, cancel := subscribeStreamWithCancel(t)
 
-	deliver(handler, []byte("bad"))
+	client.deliver([]byte("bad"))
 	cancel()
 
 	_, errs := gstream.Collect(context.Background(), s)
@@ -129,12 +158,12 @@ func TestSubscribeStream_ErrorsGoToStreamNotCallback(t *testing.T) {
 }
 
 func TestSubscribeStream_MultipleMessages(t *testing.T) {
-	s, handler, cancel := subscribeStreamWithCancel(t)
+	s, client, cancel := subscribeStreamWithCancel(t)
 
 	good, _ := json.Marshal(map[string]any{"id": "550e8400-e29b-41d4-a716-446655440000", "email": "a@b.com"})
-	deliver(handler, []byte("bad"))      // decode error
-	deliver(handler, good)               // valid
-	deliver(handler, []byte("also-bad")) // decode error
+	client.deliver([]byte("bad"))      // decode error
+	client.deliver(good)               // valid
+	client.deliver([]byte("also-bad")) // decode error
 	cancel()
 
 	vals, errs := gstream.Collect(context.Background(), s)

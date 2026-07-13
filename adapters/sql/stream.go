@@ -159,3 +159,110 @@ func DrainInsert[T any](
 		gstream.DrainOptions{Observer: opts.Observer},
 	)
 }
+
+// ── QueryEachStream ───────────────────────────────────────────────────────────
+
+// QueryEachStreamOptions configures [QueryEachStream].
+type QueryEachStreamOptions struct {
+	// Table names the table being queried. Used in [QueryStreamError] context.
+	Table string
+	// Op names the query operation. Used in [QueryStreamError] context.
+	Op string
+	// Observer receives per-row lifecycle events. If it also implements
+	// [stats.SQLObserver], RecordValidation is called after each row validate.
+	// Per-field failures are reported via RecordValidationError with location "sql_row".
+	Observer stats.Observer
+	// Buffer is the output stream channel buffer size. Default 0.
+	Buffer int
+}
+
+// QueryEachStream calls queryFn for each item in src, validates each returned
+// row via codec, and emits validated rows to the returned [gstream.Stream[T]].
+//
+// For each item in src.Values, queryFn is called and its results are validated
+// row by row. Database-level errors go to Stream.Errors as [QueryStreamError].
+// Row codec validation failures go to Stream.Errors as [RowValidationError].
+//
+// Use QueryEachStream for per-item parameterized lookups — e.g. fetch the
+// threshold configuration row for each sensor ID arriving in the stream:
+//
+//	thresholds := sql.QueryEachStream(ctx, thresholdCodec, sensorStream,
+//	    func(ctx context.Context, s Sensor) ([]Threshold, error) {
+//	        return db.GetThresholdBySensor(ctx, s.ID)
+//	    },
+//	    sql.QueryEachStreamOptions{Table: "thresholds", Op: "get_by_sensor"})
+//
+// Upstream errors from src.Errors are forwarded to Stream.Errors unchanged.
+// The stream terminates when src closes or ctx is cancelled.
+func QueryEachStream[In, T any](
+	ctx context.Context,
+	c codex.Codec[T],
+	src gstream.Stream[In],
+	queryFn func(context.Context, In) ([]T, error),
+	opts QueryEachStreamOptions,
+) gstream.Stream[T] {
+	obs := opts.Observer
+	if obs == nil {
+		obs = stats.ObserverFromContext(ctx)
+	}
+	values := make(chan T, opts.Buffer)
+	errs := make(chan error, opts.Buffer)
+	go func() {
+		defer close(values)
+		defer close(errs)
+		valCh := src.Values
+		errCh := src.Errors
+		for valCh != nil || errCh != nil {
+			select {
+			case <-ctx.Done():
+				return
+			case item, ok := <-valCh:
+				if !ok {
+					valCh = nil
+					continue
+				}
+				rows, err := queryFn(ctx, item)
+				if err != nil {
+					qse := QueryStreamError{Table: opts.Table, Op: opts.Op, Err: err}
+					select {
+					case errs <- qse:
+					case <-ctx.Done():
+						return
+					}
+					continue
+				}
+				for _, row := range rows {
+					validated, valErr := Validate(c, row, ValidateOptions{
+						Table:    opts.Table,
+						Op:       opts.Op,
+						Observer: obs,
+					})
+					if valErr != nil {
+						select {
+						case errs <- valErr:
+						case <-ctx.Done():
+							return
+						}
+						continue
+					}
+					select {
+					case values <- validated:
+					case <-ctx.Done():
+						return
+					}
+				}
+			case e, ok := <-errCh:
+				if !ok {
+					errCh = nil
+					continue
+				}
+				select {
+				case errs <- e:
+				case <-ctx.Done():
+					return
+				}
+			}
+		}
+	}()
+	return gstream.Stream[T]{Values: values, Errors: errs}
+}

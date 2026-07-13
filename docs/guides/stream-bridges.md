@@ -245,6 +245,44 @@ return stream.Tap(ctx, resultStream, func(r OEEResult) {
 })
 ```
 
+**Calling an external HTTP service mid-pipeline — `nethttp.CallStream`:**
+
+`nethttp.CallStream` is the declarative intermediate I/O step for HTTP enrichment
+pipelines. It is the HTTP equivalent of `zeromq.CallStream` and `mqtt5.CallStream`:
+send each stream item as a typed HTTP request, emit each decoded response.
+
+```go
+// Declare the enrichment route once (same handle for server AND client stream step):
+enrichHandle, _ := rest.NewRoute[IntermediaryData, EnrichedData](
+    "POST", "/enrich", intermediaryCodec, enrichedCodec, rest.RouteMeta{},
+).Register(builder)
+
+// Declarative I/O step — forge functions stay pure:
+nethttp.RegisterPipeline(mux, incomingHandle,
+    func(ctx context.Context, req IncomingReq) stream.Stream[FinalResp] {
+        s  := stream.Single(ctx, req)
+        s1 := stream.Apply(ctx, s,  initialCalcFn, stream.ApplyOptions{}) // pure computation
+        s2 := nethttp.CallStream(ctx, httpClient, "http://enrichment-svc",
+            enrichHandle, s1,
+            nethttp.CallStreamOptions{CallOpts: nethttp.CallOptions{}})    // explicit I/O step
+        return stream.Apply(ctx, s2, computeFinalFn, stream.ApplyOptions{}) // pure computation
+    },
+    nethttp.Options{})
+```
+
+All codec validation runs per item: path vars, query/cookie/header params, security,
+request body encode, response body decode. Errors go to `Stream.Errors` as typed
+errors (`UnexpectedStatusError`, `RequestError`, `ResponseBodyError`).
+
+**Options:**
+```go
+nethttp.CallStreamOptions{
+    Vars:     map[string]string{...}, // static path vars (same limitation as DrainPublish.Vars)
+    CallOpts: nethttp.CallOptions{Observer: obs, CredentialFunc: ...},
+    Buffer:   4,
+}
+```
+
 ### Pattern 4 — `SSEFromStream` / `SSEFromHub`
 
 **Direction:** `stream.Stream[Event]` → streaming SSE response (server → browser/client)
@@ -775,6 +813,32 @@ sql.DrainInsert(ctx, oeeResultCodec, oeeStream,
 
 New error types: `QueryStreamError{Table,Op,Err}`, `InsertStreamError{Table,Op,Err}`.
 
+### Intermediate — `QueryEachStream`
+
+For per-item parameterized lookups — e.g. fetch the config row for each sensor ID in
+the stream. Calls `queryFn` for each item, validates each returned row via codec.
+
+```go
+// For each sensor in the stream, fetch its threshold config:
+thresholds := sql.QueryEachStream(ctx, thresholdCodec, sensorStream,
+    func(ctx context.Context, s Sensor) ([]Threshold, error) {
+        return db.GetThresholdBySensor(ctx, s.ID)
+    },
+    sql.QueryEachStreamOptions{
+        Table:    "thresholds",
+        Op:       "get_by_sensor",
+        Observer: obs,
+        Buffer:   4,
+    })
+// thresholds: Stream[Threshold] — emits each validated row
+```
+
+Database errors go to `Stream.Errors` as `QueryStreamError`. Row codec validation
+failures go to `Stream.Errors` as `RowValidationError`. Upstream errors are forwarded.
+
+To combine the original item with its query results, use `stream.CombineLatest2` or
+combine them in the `queryFn` by returning a combined struct.
+
 ---
 
 ## File bridge — `adapters/file`
@@ -823,6 +887,40 @@ parsed := stream.FlatMapSlice(ctx, newFiles, func(path string) []Reading {
 `WatchError{Dir,Err}` is sent to `Stream.Errors` on `ReadDir` failure; the stream
 continues on the next poll interval.
 
+**Reloading a typed config file when it changes:** combine `WatchStream` with
+`stream.FlatMapSlice` + `format.File.Read` to re-read the complete typed file on
+every modification:
+
+```go
+configDir := "/config/machines"
+configFile := format.NewFile(configDir+"/{machineID}.json", format.JSON(configCodec),
+    format.FilePathParam{Name: "machineID"},
+)
+
+// Emit a new Config every time any file in /config/machines/ changes:
+changes := file.WatchStream(ctx, configDir, 500*time.Millisecond, stream.SourceOptions{})
+configs := stream.FlatMapSlice(ctx, changes, func(path string) []MachineConfig {
+    machineID := strings.TrimSuffix(filepath.Base(path), ".json")
+    cfg, err := configFile.Read(
+        map[string]string{"machineID": machineID},
+        format.FileOptions{Context: ctx},
+    )
+    if err != nil {
+        slog.Warn("failed to reload config", "path", path, "err", err)
+        return nil
+    }
+    return []MachineConfig{cfg}
+})
+
+// configs: Stream[MachineConfig] — emits a fresh MachineConfig on every file change
+configs = stream.Tap(ctx, configs, func(c MachineConfig) {
+    slog.Info("config reloaded", "machine", c.MachineID)
+})
+```
+
+The `format.File` declaration is made once and reused for every reload. No dedicated
+"reload bridge" is needed — `WatchStream` + `FlatMapSlice` is the correct composition.
+
 ### Sink — `DrainWrite`
 
 Encodes each stream item and writes it as a line to any `io.Writer`. Default separator
@@ -838,6 +936,155 @@ file.DrainWrite(ctx, outFile, oeeStream, format.JSON(oeeCodec),
         OnError: logErr,
     })
 ```
+
+### `format.File` — typed whole-file read, write, and patch
+
+`adapters/file.DrainWrite` appends each stream item **as a line** (NDJSON / CSV).
+For operations on a **complete typed file** — read the whole file, overwrite it, or patch
+specific fields — use `format.File[T]` directly inside a pipeline step:
+
+| Operation | API | Stream placement |
+|-----------|-----|-----------------|
+| Read whole JSON/YAML/TOML file (static, loaded once) | `format.File[T].Read(vars, opts)` | At startup, captured by forge function closure — NOT called per-item inside the function body |
+| Read whole file reloading on change | `file.WatchStream` + `stream.FlatMapSlice` + `format.File.Read` | Stream layer — I/O stays outside forge |
+| Overwrite whole file (stream continues) | `file.TapWriteFile(ctx, f, src, vars, opts)` | `TapWriteFileOptions{OnError, Observer, FileOptions}` |
+| Overwrite whole file (terminal sink) | `file.DrainWriteFile(ctx, f, src, vars, opts)` | `DrainWriteFileOptions{OnError, Observer, FileOptions}` |
+| Partial update (JSON Merge Patch) | `format.File[T].Patch(vars, patch, opts)` | `stream.Tap` |
+| Typed partial update | `format.PatchEncoded(file, vars, patchCodec, patch, opts)` | `stream.Tap` |
+
+#### Read a typed config file as pipeline data — two correct patterns
+
+**Forge functions must be pure** — `format.File.Read` must NOT be called inside a forge
+function body at execution time (that is I/O, not computation). There are two clean
+patterns depending on whether the config is static or dynamic:
+
+**Pattern A — static config: load once at startup, pass via forge function input**
+
+The cleanest approach: load the config at startup, make it an explicit INPUT to the
+forge function. The config flows IN as typed data through the codec contract:
+
+```go
+// Load config once at startup (outside the stream pipeline):
+thresholdFile := format.NewFile("/config/thresholds.json", format.JSON(thresholdCodec))
+thresholds, err := thresholdFile.Read(nil, format.FileOptions{})
+if err != nil { ... }
+
+// Define the forge input struct to include the config:
+type EnrichInput struct {
+    Data       InputData
+    Thresholds ThresholdConfig
+}
+
+// Pure forge function — receives config AS AN INPUT, no I/O:
+enrichFn := forge.NewFunction("enrichWithThresholds", "1.0.0",
+    enrichInputCodec, enrichedCodec,
+    func(in EnrichInput) (EnrichedData, error) {
+        return EnrichedData{Data: in.Data, Applied: applyThresholds(in.Data, in.Thresholds)}, nil
+    },
+)
+
+// Combine sensor stream with the pre-loaded config using CombineLatest2:
+combined := stream.CombineLatest2(ctx, sensorStream, stream.Single(ctx, thresholds),
+    func(d InputData, t ThresholdConfig) EnrichInput { return EnrichInput{d, t} })
+enriched := stream.Apply(ctx, combined, enrichFn, stream.ApplyOptions{})
+```
+
+**Pattern B — dynamic config: reload on file change, combine via CombineLatest2**
+
+For config that changes at runtime, `WatchStream` produces a config-change stream; the
+latest config is always combined with the latest sensor data:
+
+```go
+// Config reload stream (already documented in WatchStream section above):
+configs := /* file.WatchStream + FlatMapSlice + format.File.Read */
+
+// Combine: sensor + latest config → pure forge function receives both as inputs
+combined := stream.CombineLatest2(ctx, sensorStream, configs,
+    func(d InputData, t ThresholdConfig) EnrichInput { return EnrichInput{d, t} })
+enriched := stream.Apply(ctx, combined, enrichFn, stream.ApplyOptions{})
+```
+
+The forge function `enrichFn` is identical in both patterns — pure, no I/O.
+
+#### Write a whole JSON file as a sink
+
+Two declarative bridge helpers exist for whole-file writes:
+
+- **`file.TapWriteFile`** — stream continues flowing (use when file write is one of multiple side-effects)
+- **`file.DrainWriteFile`** — terminal sink (use when file write is the final step)
+
+```go
+resultFile := format.NewFile("/results/latest.json", format.JSON(resultCodec))
+
+// TapWriteFile — stream continues; also send to dashboard:
+results = file.TapWriteFile(ctx, resultFile, results, nil,
+    file.TapWriteFileOptions{OnError: logErr})
+results = stream.Tap(ctx, results, func(r OEEResult) { dashboard.Publish(r) })
+
+// DrainWriteFile — terminal sink:
+file.DrainWriteFile(ctx, resultFile, src, nil,
+    file.DrainWriteFileOptions{OnError: logErr})
+```
+
+Both options structs carry `OnError func(error)`, `Observer stats.Observer`, and
+`FileOptions format.FileOptions` (for file permission and context). The observer is
+resolved from `ctx` when nil. `Write` validates each item via codec before writing.
+
+For `stream.Tap` + manual write (more control over error handling):
+
+```go
+results = stream.Tap(ctx, results, func(r OEEResult) {
+    if err := resultFile.Write(nil, r, format.FileOptions{Context: ctx}); err != nil {
+        slog.Error("write result", "error", err)
+    }
+})
+```
+
+#### Patch specific fields in a JSON file
+
+Use `format.File.Patch` to update only named fields (JSON Merge Patch — absent keys
+are preserved):
+
+```go
+results = stream.Tap(ctx, results, func(r OEEResult) {
+    err := resultFile.Patch(nil, map[string]any{
+        "oee":           r.OEE,
+        "computed_at":   r.ComputedAt.Format(time.RFC3339),
+    }, format.FileOptions{Context: ctx})
+    if err != nil {
+        slog.Error("patch result", "error", err)
+    }
+})
+```
+
+For a typed partial update (where the patch struct is itself codec-validated):
+
+```go
+type OEEPatch struct { OEE float64; ComputedAt string }
+var oeePathCodec = codex.Struct[OEEPatch](...)
+
+results = stream.Tap(ctx, results, func(r OEEResult) {
+    err := format.PatchEncoded(resultFile, nil, oeePathCodec,
+        OEEPatch{OEE: float64(r.OEE), ComputedAt: r.ComputedAt.Format(time.RFC3339)},
+        format.FileOptions{Context: ctx})
+    if err != nil {
+        slog.Error("typed patch", "error", err)
+    }
+})
+```
+
+**Note:** `Patch` requires a patchable format (JSON, YAML, TOML). It is not supported
+for `format.Gob` or `format.Binary`. Use `format.File.Write` for those.
+
+#### DrainWrite vs format.File.Write
+
+| | `adapters/file.DrainWrite` | `format.File.Write` |
+|--|---------------------------|---------------------|
+| **Granularity** | One LINE per stream item (NDJSON / CSV) | One COMPLETE FILE per write |
+| **Accumulation** | Appends to an open `io.Writer` — each item is a new line | Overwrites the whole file — only the latest value is kept |
+| **Concurrent access** | Sequential writes to the writer | Each write is atomic (temp file + rename on most OS) |
+| **Patch support** | No | Yes — `Patch` / `PatchEncoded` / `Update` |
+| **Use case** | Log files, archives, streaming ingest | Config files, "current state" snapshots |
 
 ---
 

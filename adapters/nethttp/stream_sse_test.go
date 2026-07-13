@@ -294,6 +294,102 @@ func TestDrainCall_PostsEachItem(t *testing.T) {
 	_ = received // server received both — test completes without error
 }
 
+// ── CallStream ────────────────────────────────────────────────────────────────
+
+func TestCallStream_EmitsResponsePerItem(t *testing.T) {
+	ctx := context.Background()
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("POST /enrich", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprintf(w, `{"id":"enriched","name":"result"}`)
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	b := rest.NewBuilder(testInfo)
+	h, _ := rest.NewRoute[createReq, userResp]("POST", "/enrich",
+		createReqCodec, userRespCodec, rest.RouteMeta{}).Register(b)
+
+	ch := make(chan createReq, 2)
+	ch <- createReq{Name: "Alice"}
+	ch <- createReq{Name: "Bob"}
+	close(ch)
+
+	results := nethttp.CallStream(ctx, http.DefaultClient, srv.URL, h,
+		gstream.From(ctx, ch),
+		nethttp.CallStreamOptions{})
+
+	vals, errs := gstream.Collect(ctx, results)
+	if len(errs) != 0 {
+		t.Errorf("want 0 errors, got %d: %v", len(errs), errs)
+	}
+	if len(vals) != 2 {
+		t.Errorf("want 2 responses, got %d", len(vals))
+	}
+}
+
+func TestCallStream_ErrorsGoToStreamErrors(t *testing.T) {
+	ctx := context.Background()
+
+	// Server returns 500 for all calls
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer srv.Close()
+
+	b := rest.NewBuilder(testInfo)
+	h, _ := rest.NewRoute[createReq, userResp]("POST", "/enrich",
+		createReqCodec, userRespCodec, rest.RouteMeta{}).Register(b)
+
+	ch := make(chan createReq, 1)
+	ch <- createReq{Name: "Alice"}
+	close(ch)
+
+	results := nethttp.CallStream(ctx, http.DefaultClient, srv.URL, h,
+		gstream.From(ctx, ch),
+		nethttp.CallStreamOptions{})
+
+	_, errs := gstream.Collect(ctx, results)
+	if len(errs) == 0 {
+		t.Error("want at least 1 error for 500 response, got 0")
+	}
+	var ue nethttp.UnexpectedStatusError
+	if !errors.As(errs[0], &ue) {
+		t.Errorf("want UnexpectedStatusError, got %T", errs[0])
+	}
+}
+
+func TestCallStream_UpstreamErrorsForwarded(t *testing.T) {
+	ctx := context.Background()
+
+	// Server that succeeds
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprintf(w, `{"id":"u1","name":"Alice"}`)
+	}))
+	defer srv.Close()
+
+	b := rest.NewBuilder(testInfo)
+	h, _ := rest.NewRoute[createReq, userResp]("POST", "/enrich",
+		createReqCodec, userRespCodec, rest.RouteMeta{}).Register(b)
+
+	// Inject an upstream error
+	valCh := make(chan createReq)
+	errCh := make(chan error, 1)
+	errCh <- fmt.Errorf("upstream failure")
+	close(errCh)
+	close(valCh)
+	src := gstream.Stream[createReq]{Values: valCh, Errors: errCh}
+
+	results := nethttp.CallStream(ctx, http.DefaultClient, srv.URL, h,
+		src, nethttp.CallStreamOptions{})
+
+	_, errs := gstream.Collect(ctx, results)
+	if len(errs) == 0 {
+		t.Error("want upstream error forwarded, got 0")
+	}
+}
+
 // ── SSEClientStream ───────────────────────────────────────────────────────────
 
 func TestSSEClientStream_DecodesEvents(t *testing.T) {

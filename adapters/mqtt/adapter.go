@@ -108,6 +108,15 @@ type contextKey struct{}
 
 // SubscribeOptions configures [SubscribeHandler].
 type SubscribeOptions struct {
+	// TopicFilter is the MQTT subscription filter passed to [pahomqtt.Client.Subscribe].
+	// Use this when the handle's topic template uses {varName} placeholders (e.g.
+	// "sensors/{sensorID}/data") but the MQTT broker requires MQTT wildcard syntax
+	// (e.g. "sensors/+/data"). When empty, handle.Topic is used directly.
+	//
+	// Only used by [SubscribeStream] — direct [Subscribe] and [SubscribeHandler]
+	// callers pass the filter to [pahomqtt.Client.Subscribe] themselves.
+	TopicFilter string
+
 	// OnError, when non-nil, is called with a typed [SubscribeError] on decode
 	// or application handler failure. If nil, errors are silently discarded.
 	OnError func(SubscribeError)

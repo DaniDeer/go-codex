@@ -336,3 +336,206 @@ func TestWriteError_LogValue(t *testing.T) {
 type errWriter struct{ err error }
 
 func (w *errWriter) Write([]byte) (int, error) { return 0, w.err }
+
+// ── TapWriteFile / DrainWriteFile ─────────────────────────────────────────────
+
+func TestTapWriteFile_WritesEachItem(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	path := filepath.Join(dir, "result.json")
+
+	type item struct{ V int }
+	c := codex.Struct[item](
+		codex.RequiredField("v", codex.Int(), func(x item) int { return x.V }, func(x *item, v int) { x.V = v }),
+	)
+	f := format.NewFile(path, format.JSON(c))
+
+	ch := make(chan item, 2)
+	ch <- item{V: 1}
+	ch <- item{V: 2}
+	close(ch)
+	src := gstream.From(ctx, ch)
+
+	out := fileadapter.TapWriteFile(ctx, f, src, nil, fileadapter.TapWriteFileOptions{})
+	// Drain the output stream to let Tap fire
+	vals, _ := gstream.Collect(ctx, out)
+	if len(vals) != 2 {
+		t.Errorf("want 2 items through Tap, got %d", len(vals))
+	}
+
+	// Last write wins — file contains item{V:2}
+	got, err := f.Read(nil, format.FileOptions{})
+	if err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	if got.V != 2 {
+		t.Errorf("want V=2 (last write), got V=%d", got.V)
+	}
+}
+
+func TestTapWriteFile_ErrorCallsOnError(t *testing.T) {
+	ctx := context.Background()
+
+	type item struct{ V int }
+	c := codex.Struct[item](
+		codex.RequiredField("v", codex.Int().Refine(validate.MinInt(1)),
+			func(x item) int { return x.V }, func(x *item, v int) { x.V = v }),
+	)
+	// Use a path that doesn't exist and can't be created:
+	f := format.NewFile("/nonexistent/dir/result.json", format.JSON(c))
+
+	ch := make(chan item, 1)
+	ch <- item{V: 1} // positive, valid
+	close(ch)
+
+	var gotErr error
+	out := fileadapter.TapWriteFile(ctx, f, gstream.From(ctx, ch), nil,
+		fileadapter.TapWriteFileOptions{OnError: func(e error) { gotErr = e }})
+	gstream.Collect(ctx, out)
+
+	if gotErr == nil {
+		t.Error("want write error for nonexistent dir, got nil")
+	}
+}
+
+func TestDrainWriteFile_ConsumesStream(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	path := filepath.Join(dir, "result.json")
+
+	type item struct{ V int }
+	c := codex.Struct[item](
+		codex.RequiredField("v", codex.Int(), func(x item) int { return x.V }, func(x *item, v int) { x.V = v }),
+	)
+	f := format.NewFile(path, format.JSON(c))
+
+	ch := make(chan item, 3)
+	ch <- item{V: 10}
+	ch <- item{V: 20}
+	ch <- item{V: 30}
+	close(ch)
+
+	fileadapter.DrainWriteFile(ctx, f, gstream.From(ctx, ch), nil,
+		fileadapter.DrainWriteFileOptions{})
+
+	// Last write wins — file contains item{V:30}
+	got, err := f.Read(nil, format.FileOptions{})
+	if err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	if got.V != 30 {
+		t.Errorf("want V=30 (last write), got V=%d", got.V)
+	}
+}
+
+// ── ReadEachStream ─────────────────────────────────────────────────────────────
+
+func TestReadEachStream_HappyPath(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+
+	type config struct{ Factor float64 }
+	c := codex.Struct[config](
+		codex.RequiredField("factor", codex.Float64(), func(x config) float64 { return x.Factor }, func(x *config, v float64) { x.Factor = v }),
+	)
+
+	// Write two config files.
+	for id, factor := range map[string]float64{"a": 2.0, "b": 3.0} {
+		f := format.NewFile(filepath.Join(dir, id+".json"), format.JSON(c))
+		if err := f.Write(nil, config{Factor: factor}, format.FileOptions{}); err != nil {
+			t.Fatalf("write: %v", err)
+		}
+	}
+
+	type reading struct{ ID string }
+	configFile := format.NewFile(filepath.Join(dir, "{id}.json"), format.JSON(c))
+
+	src := gstream.From(ctx, func() <-chan reading {
+		ch := make(chan reading, 2)
+		ch <- reading{ID: "a"}
+		ch <- reading{ID: "b"}
+		close(ch)
+		return ch
+	}())
+
+	out := fileadapter.ReadEachStream(ctx, configFile, src,
+		func(r reading) map[string]string { return map[string]string{"id": r.ID} },
+		func(r reading, cfg config) float64 { return cfg.Factor },
+		fileadapter.ReadEachStreamOptions{})
+
+	vals, errs := gstream.Collect(context.Background(), out)
+	if len(errs) != 0 {
+		t.Fatalf("want 0 errors, got %v", errs)
+	}
+	if len(vals) != 2 {
+		t.Errorf("want 2 values, got %d", len(vals))
+	}
+}
+
+func TestReadEachStream_ReadErrorGoesToStreamErrors(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+
+	type config struct{ Factor float64 }
+	c := codex.Struct[config](
+		codex.RequiredField("factor", codex.Float64(), func(x config) float64 { return x.Factor }, func(x *config, v float64) { x.Factor = v }),
+	)
+	configFile := format.NewFile(filepath.Join(dir, "{id}.json"), format.JSON(c))
+
+	type reading struct{ ID string }
+	src := gstream.From(ctx, func() <-chan reading {
+		ch := make(chan reading, 1)
+		ch <- reading{ID: "missing"}
+		close(ch)
+		return ch
+	}())
+
+	var gotErr error
+	out := fileadapter.ReadEachStream(ctx, configFile, src,
+		func(r reading) map[string]string { return map[string]string{"id": r.ID} },
+		func(r reading, cfg config) float64 { return cfg.Factor },
+		fileadapter.ReadEachStreamOptions{OnError: func(e error) { gotErr = e }})
+
+	_, errs := gstream.Collect(context.Background(), out)
+	if len(errs) == 0 {
+		t.Fatal("want error in Stream.Errors, got none")
+	}
+	var re fileadapter.ReadError
+	if !errors.As(errs[0], &re) {
+		t.Errorf("want ReadError, got %T: %v", errs[0], errs[0])
+	}
+	if gotErr == nil {
+		t.Error("want OnError called, got nil")
+	}
+}
+
+func TestReadEachStream_UpstreamErrorForwarded(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+
+	type config struct{ V int }
+	c := codex.Struct[config](
+		codex.RequiredField("v", codex.Int(), func(x config) int { return x.V }, func(x *config, v int) { x.V = v }),
+	)
+	configFile := format.NewFile(filepath.Join(dir, "{id}.json"), format.JSON(c))
+
+	type reading struct{ ID string }
+
+	valCh := make(chan reading)
+	errCh := make(chan error, 1)
+	errCh <- fmt.Errorf("upstream failure")
+	close(errCh)
+	close(valCh)
+
+	src := gstream.Stream[reading]{Values: valCh, Errors: errCh}
+
+	out := fileadapter.ReadEachStream(ctx, configFile, src,
+		func(r reading) map[string]string { return nil },
+		func(r reading, cfg config) int { return cfg.V },
+		fileadapter.ReadEachStreamOptions{})
+
+	_, errs := gstream.Collect(context.Background(), out)
+	if len(errs) == 0 {
+		t.Fatal("want upstream error forwarded to Stream.Errors")
+	}
+}

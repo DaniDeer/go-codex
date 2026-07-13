@@ -1,6 +1,23 @@
-# go-codex Review History (R1–R41)
+# go-codex Review History (R1–R43)
 
 Do not re-report any of these findings. They have been implemented and tested.
+
+---
+
+## Round 43 (stream bridge completeness — MQTT/MQTT5 SubscribeStream ergonomic fix, file.ReadEachStream)
+
+- **`mqtt.SubscribeStream` ergonomic fix** — breaking change: old signature returned `(Stream[T], pahomqtt.MessageHandler)`, forcing caller to call `client.Subscribe(filter, qos, handler)` manually; new signature takes `client pahomqtt.Client` + `qos byte`, subscribes internally, returns `Stream[T]` only; added `TopicFilter string` to `SubscribeOptions` (MQTT wildcard filter, e.g. `"sensors/+/data"`; falls back to `handle.Topic` when empty); updated `examples/sensor-service/main.go`; test refactored to `deliverableClient` mock that captures the Subscribe handler internally.
+- **`mqtt5.SubscribeStream` ergonomic fix** — same breaking change: old signature returned `(Stream[T], func(*paho.Publish))`, forcing caller to register handler with router; new signature takes `client MQTTClient` + `router MQTTRouter` + `qos byte`, calls `router.RegisterHandler` + `client.Subscribe` internally, returns `Stream[T]` only; added `TopicFilter string` to `mqtt5.SubscribeOptions`; tests updated to use `mockBroker` + `mockRouter` (already in package).
+- **`file.ReadEachStream`** — new enrichment bridge: `ReadEachStream[In,T,Out](ctx, format.File[T], src Stream[In], varsFor func(In)map[string]string, combine func(In,T)Out, ReadEachStreamOptions) Stream[Out]`; reads a complete typed file for each upstream item; `varsFor` maps item → path template vars; `combine` pairs original item with file content; read errors → `ReadError{Err}` in `Stream.Errors` + `OnError`; upstream errors forwarded; when `src.Values` closes, remaining items in `src.Errors` are drained before the output stream closes; `ReadError{Err}` added to `adapters/file/errors.go` (implements `Unwrap()` + `slog.LogValuer`); 3 tests.
+
+---
+
+## Round 42 (stream bridge completeness — nethttp.CallStream, file write bridges, sql.QueryEachStream)
+
+- **`nethttp.CallStream`** — HTTP was the only transport missing a `CallStream` intermediate I/O operator; added `CallStream[Req,Resp](ctx, client, baseURL, handle, src, opts)` + `CallStreamOptions{Vars, CallOpts, Buffer}` mirroring `zeromq.CallStream`/`mqtt5.CallStream`; full codec validation per item; errors go to `Stream.Errors` as typed `UnexpectedStatusError`/`RequestError` etc.; 3 tests.
+- **`file.TapWriteFile`** — declarative whole-file write as a stream tap (stream continues); `TapWriteFileOptions{OnError, Observer, FileOptions}`; observer resolved from ctx when nil; 2 tests.
+- **`file.DrainWriteFile`** — declarative whole-file write as a terminal drain sink; `DrainWriteFileOptions{OnError, Observer, FileOptions}`; 1 test.
+- **`sql.QueryEachStream`** — per-item parameterized SQL lookup; `QueryEachStream[In,T](ctx, codec, src, queryFn, QueryEachStreamOptions)`; calls queryFn for each stream item, validates each row via codec; database errors → `QueryStreamError`; validation errors → `RowValidationError`; 4 tests.
 
 ---
 
