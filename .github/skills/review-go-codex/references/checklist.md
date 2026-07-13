@@ -266,7 +266,19 @@ doesn't wrap a typed sentinel is a finding.
 - `TraceObserver` must be guarded: `if to, ok := obs.(stats.TraceObserver); ok { ... }` — **never** embedded in `Observer`; `LoggingObserver` does NOT implement `TraceObserver`
 - `PipelineObserver.RecordApply` must be called for every function in a pipeline, including `Map`/`Filter`/etc.
 - Adapters must call `Observer` on every code path — including early-exit error paths — not just the happy path
-- `NoopObserver` satisfies all five interfaces; use as default when no observer provided
+- `NoopObserver` satisfies all five interfaces; returned by `ObserverFromContext` when no context observer is set
+- **Nil-guard pattern (direct-ctx functions)** — `ObserverFromContext(ctx)` not `NoopObserver{}`:
+  ```go
+  obs := opts.Observer
+  if obs == nil {
+      obs = stats.ObserverFromContext(ctx)  // ← correct since default-observer feature
+  }
+  ```
+  `NoopObserver{}` in a nil-guard is a finding unless the function has no `ctx` parameter.
+- **HTTP/MCP closure exception**: `nethttp.Handler`, `chi.Handler`, `mcpgo.ToolHandler` etc. are constructors that return closures. obs is resolved inside the closure from `r.Context()` / call ctx — NOT at construction time. This is correct.
+- **`sql.Validate` exception**: no `ctx` parameter → `NoopObserver{}` is correct. Do not flag.
+- **`forge.Registry`**: explicit `.WithObserver(obs)` builder. No context integration by design.
+- **`format.File` two-step guard**: uses `opts.Context` (optional) → `ObserverFromContext(opts.Context)` then `NoopObserver{}` fallback. This is correct.
 - **`adapters/nethttp` client (`Call`) observer rules**:
   - `RecordRequest(method, routePathTemplate, statusCode, duration)` — called on **every** code path; status 0 = pre-flight failure (no HTTP call reached the network)
   - `stats.ReportErrors(obs, location, err)` called before `RecordRequest` for param validation failures (location: `"path"`, `"query"`, `"cookie"`, `"header"`, `"body"`)

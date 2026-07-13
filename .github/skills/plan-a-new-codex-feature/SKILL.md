@@ -206,10 +206,14 @@ lifecycle event not covered by existing interfaces, add a new optional extension
 - Compile-time assertion in `stats/observer_test.go`
 
 Rules (non-negotiable):
-- `if obs == nil { obs = stats.NoopObserver{} }` at the top of every Options-using method
+- **For functions with a direct `ctx context.Context` parameter**: `if obs == nil { obs = stats.ObserverFromContext(ctx) }` — NOT `NoopObserver{}`. `ObserverFromContext` returns `NoopObserver{}` automatically when no context observer is stored, so behaviour is identical for callers that don't use `stats.WithObserver`.
+- **For constructor functions that return closures** (e.g. an `http.Handler` factory): resolve `obs` inside the closure from the request/call context (`r.Context()` for HTTP, the tool-call ctx for MCP). This enables per-request observer injection via middleware.
+- **Exception — functions without `ctx`**: use `NoopObserver{}` directly (e.g. `sql.Validate`). Document the limitation.
+- **`format.File`**: use two-step guard: `if obs == nil && opts.Context != nil { obs = stats.ObserverFromContext(opts.Context) }` then `if obs == nil { obs = stats.NoopObserver{} }`.
 - Observer fires on **every** code path — success AND every error branch
 - `stats.ReportErrors(obs, "location", err)` propagates `ValidationErrors` per-field
 - Location string convention: `"sql_row"`, `"file"`, `"body"`, `"payload"`, `"topic_var"`, `"input"`, `"env"`
+- **`forge.Registry.WithObserver`** — explicit builder API; do not add context observer integration to Registry
 
 #### 3. Unit Tests
 
