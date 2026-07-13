@@ -28,30 +28,47 @@ type ValidationObserver interface {
 
 // Observer receives lifecycle events emitted by codec adapters.
 // It embeds [ValidationObserver] for per-field validation errors and adds
-// transport-specific hooks for HTTP and MQTT.
+// transport hooks for request/response cycles, subscriptions, and publishes.
 // All methods must be safe for concurrent use.
 type Observer interface {
 	ValidationObserver
 
-	// RecordRequest is called after every HTTP request completes.
-	// method is uppercase (GET, POST, …), path is the route pattern (e.g.
-	// "/users/{id}", not the concrete URL), statusCode is the HTTP status
-	// written, duration is the total handler time including encode/decode.
+	// RecordRequest is called after every request/response cycle completes,
+	// regardless of transport. method describes the transport and operation;
+	// values vary by adapter:
+	//   - HTTP adapters (nethttp, chi): uppercase HTTP method ("GET", "POST", …)
+	//   - ZeroMQ adapters: "ZMQ-REP", "ZMQ-REQ", "ZMQ-ROUTER", "ZMQ-DEALER"
+	//   - MCP adapter (mcpgo): "tool", "resource", "prompt"
+	//   - MQTT5 request/reply: "MQTT5-REQ" (caller), "MQTT5-REP" (server)
+	//
+	// path is the route pattern or topic template (e.g. "/users/{id}",
+	// "sensors/{sensorID}/data"), not the concrete URL or resolved topic.
+	// statusCode follows HTTP conventions: 200 success, 400 client error,
+	// 500 server/encode error; 0 means no request reached the transport (e.g.
+	// pre-flight validation failure or context already cancelled).
+	// duration is the total round-trip time including encode/decode.
 	RecordRequest(method, path string, statusCode int, duration time.Duration)
 
-	// RecordSubscribe is called after every MQTT message is fully processed
-	// by a SubscribeHandler. topic is the concrete incoming topic (not a
-	// template), success is false when decode or the application handler
-	// failed, duration is total processing time.
+	// RecordSubscribe is called after every inbound message or event is fully
+	// processed. topic is the concrete incoming value (not a template).
+	// success is false when decode or the application handler failed.
+	// duration is the total processing time.
+	//
+	// Used by:
+	//   - MQTT adapters (mqtt, mqtt5): called per incoming message
+	//   - SSE stream bridges (nethttp, chi): called per emitted SSE event
+	//     (success=true on send, success=false on write error or stream error)
 	RecordSubscribe(topic string, success bool, duration time.Duration)
 
-	// RecordPublish is called after every Publish call completes.
-	// topic is the resolved publish topic (after BuildTopic if vars were
-	// provided), success is false when encode failed, the broker returned an
-	// error, or the context was cancelled. duration covers encode + broker
-	// acknowledgement wait.
-	// Note: RecordPublish is not called when BuildTopic itself fails (the
-	// message never reached the encode/publish stage).
+	// RecordPublish is called after every outbound message is sent.
+	// topic is the resolved publish topic (after template substitution).
+	// success is false when encode failed, the broker returned an error, or
+	// the context was cancelled. duration covers encode + broker acknowledgement.
+	//
+	// Note: RecordPublish is not called when topic template substitution itself
+	// fails — the message never reached the encode/publish stage in that case.
+	//
+	// Used by: MQTT adapters (mqtt, mqtt5), ZeroMQ Publish.
 	RecordPublish(topic string, success bool, duration time.Duration)
 }
 

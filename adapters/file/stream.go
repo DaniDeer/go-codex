@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"github.com/DaniDeer/go-codex/format"
+	"github.com/DaniDeer/go-codex/stats"
 	gstream "github.com/DaniDeer/go-codex/stream"
 )
 
@@ -134,6 +135,11 @@ type DrainWriteOptions struct {
 	Path string
 	// Separator is written after each item. Defaults to "\n" when empty.
 	Separator string
+	// Observer receives per-item encode/write lifecycle events.
+	// [stats.Observer.RecordValidationError] fires for encode failures (per-field
+	// codec constraint violations reported via [stats.ReportErrors]).
+	// Defaults to [stats.NoopObserver] when nil.
+	Observer stats.Observer
 }
 
 // DrainWrite encodes each value item from src using fmt and writes it to w,
@@ -161,11 +167,16 @@ func DrainWrite[T any](
 		sep = "\n"
 	}
 	onErr := opts.OnError
+	obs := opts.Observer
+	if obs == nil {
+		obs = stats.NoopObserver{}
+	}
 
 	gstream.Drain(ctx, src,
 		func(_ context.Context, v T) error {
 			data, err := fmt.Marshal(v)
 			if err != nil {
+				stats.ReportErrors(obs, "file", err)
 				we := WriteError{Path: opts.Path, Err: err}
 				if onErr != nil {
 					onErr(we)
@@ -185,6 +196,6 @@ func DrainWrite[T any](
 				onErr(e)
 			}
 		},
-		gstream.DrainOptions{},
+		gstream.DrainOptions{Observer: obs},
 	)
 }

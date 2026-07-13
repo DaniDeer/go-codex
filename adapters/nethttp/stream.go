@@ -496,7 +496,7 @@ func DrainCall[Req, Resp any](
 				onErr(e)
 			}
 		},
-		gstream.DrainOptions{},
+		gstream.DrainOptions{Observer: opts.CallOpts.Observer},
 	)
 }
 

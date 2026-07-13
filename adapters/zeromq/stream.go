@@ -120,7 +120,7 @@ func DrainPublish[T any](
 				onErr(e)
 			}
 		},
-		gstream.DrainOptions{},
+		gstream.DrainOptions{Observer: opts.Observer},
 	)
 }
 
