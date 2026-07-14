@@ -202,3 +202,35 @@ func TestDrainCallAdapter_PostsEachItem(t *testing.T) {
 		t.Errorf("want 2 POST calls, got %d", len(received))
 	}
 }
+
+// ── PipelineAdapter ───────────────────────────────────────────────────────────
+
+func TestPipelineAdapter_RegistersAndHandlesRequests(t *testing.T) {
+	ctx := context.Background()
+
+	mux := http.NewServeMux()
+	b := rest.NewBuilder(testInfo)
+	handle, _ := rest.NewRoute[createReq, userResp]("POST", "/pipeline",
+		createReqCodec, userRespCodec, rest.RouteMeta{OperationID: "pipeline"}).Register(b)
+
+	p := ports.NewToolPort[createReq, userResp]("pipeline-tool", createReqCodec, userRespCodec, ports.PortOptions{})
+	p.SetPipeline(func(_ context.Context, req createReq) gstream.Stream[userResp] {
+		return gstream.Single(context.Background(), userResp{ID: "u1", Name: req.Name})
+	})
+
+	if err := p.Bind(ctx, nethttp.PipelineAdapter(mux, handle, nethttp.PipelineAdapterOptions{})); err != nil {
+		t.Fatalf("Bind: %v", err)
+	}
+
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	resp, err := http.Post(srv.URL+"/pipeline", "application/json", strings.NewReader(`{"name":"Alice"}`))
+	if err != nil {
+		t.Fatalf("POST: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusCreated {
+		t.Errorf("want 201, got %d", resp.StatusCode)
+	}
+}

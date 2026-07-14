@@ -246,3 +246,35 @@ func (a *zmqCallAdapter[Req, Resp]) Transform(ctx context.Context, src gstream.S
 	}()
 	return gstream.Stream[Resp]{Values: values, Errors: errs}
 }
+
+// ── ServeAdapter ──────────────────────────────────────────────────────────────
+
+// ServeAdapter returns a [ports.ToolAdapter] that registers the pipeline
+// function as a ZeroMQ REP server via [Serve]. When [ports.ToolPort.Bind] is
+// called, the pipeline function is wrapped as an [AsPipelineFunc] handler and
+// [Serve] is started in a background goroutine. Use with [ports.ToolPort.Bind]:
+//
+//	domain.OEEToolPort.Bind(ctx, zeromq.ServeAdapter(repSock, handle, zeromq.ServeOptions{}))
+func ServeAdapter[Req, Resp any](
+	sock FramedSocket,
+	handle *reqreply.RouteHandle[Req, Resp],
+	opts ServeOptions,
+) ports.ToolAdapter[Req, Resp] {
+	return &zmqServeAdapter[Req, Resp]{sock: sock, handle: handle, opts: opts}
+}
+
+type zmqServeAdapter[Req, Resp any] struct {
+	sock   FramedSocket
+	handle *reqreply.RouteHandle[Req, Resp]
+	opts   ServeOptions
+}
+
+func (a *zmqServeAdapter[Req, Resp]) AdapterName() string { return "zeromq.ServeAdapter" }
+
+func (a *zmqServeAdapter[Req, Resp]) Bind(
+	ctx context.Context,
+	fn func(context.Context, Req) gstream.Stream[Resp],
+) error {
+	go Serve(ctx, a.sock, a.handle, AsPipelineFunc(fn), a.opts) //nolint:errcheck
+	return nil
+}

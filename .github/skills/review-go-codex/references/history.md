@@ -1,6 +1,16 @@
-# go-codex Review History (R1–R45)
+# go-codex Review History (R1–R46)
 
 Do not re-report any of these findings. They have been implemented and tested.
+
+---
+
+## Round 46 (inside-out pipeline wiring — Phase 2: ToolPort, chi bindings, mcpgo bindings, server-side ToolAdapters)
+
+- **`ports.ToolPort[In,Out]`** — new server-side request/response port; `NewToolPort`, `SetPipeline(fn)`, `Bind(ctx, ToolAdapter) error`; multiple Bind calls expose the same pipeline on multiple transports; `PortNoPipelineError{Port}` returned when Bind called before SetPipeline; 5 tests.
+- **`ports.ToolAdapter[In,Out]` interface** — `Bind(ctx, fn func(ctx,In)Stream[Out]) error` + `AdapterName() string`; complement of `SourceAdapter`/`SinkAdapter`/`IOAdapter` for server-side request/response.
+- **`adapters/chi/binding.go`** — `IngestAdapter[T]`, `SSEAdapter[Event]`, `PipelineAdapter[Req,Resp]` using chi router; `binding_test.go` added.
+- **`adapters/mcpgo/binding.go`** — `ToolPipelineAdapter[In,Out]` (wraps `RegisterToolPipeline`) and `ToolLatestAdapter[In,Out]` (wraps `RegisterToolLatest`); `binding_test.go` added.
+- **Server-side ToolAdapters added** to existing binding.go files: `nethttp.PipelineAdapter[Req,Resp]` (wraps `PipelineHandler`), `chi.PipelineAdapter[Req,Resp]`, `zeromq.ServeAdapter[Req,Resp]` (wraps `Serve` in goroutine), `mqtt5.ServeAdapter[Req,Resp]` (wraps `Serve` in goroutine).
 
 ---
 

@@ -1,6 +1,6 @@
 # Inside-Out Pipeline Wiring — Protocol-Agnostic IO Ports
 
-> **Status:** ✅ Phase 1 complete. `ports` package shipped; all transport bindings implemented; stream bridge helpers fully removed (not just deprecated). Phase 2 designed — see below.
+> **Status:** ✅ Phase 1 + Phase 2 complete. `ports` package (SourcePort, SinkPort, IOPort, ToolPort) + all transport bindings (mqtt, mqtt5, nethttp, chi, zeromq, file, sql, mcpgo). Stream bridge helpers fully removed.
 > [← Back to Roadmap](index.md)
 
 ---
@@ -737,11 +737,11 @@ Observer fires at:
 
 | Priority | Item | Complexity | Status |
 |----------|------|-----------|--------|
-| **P1** | `adapters/chi/binding.go` | Low — same pattern as nethttp | Not started |
-| **P1** | `adapters/mcpgo/binding.go` + `ports.ToolPort[In,Out]` | Medium — new port type needed | Designed below |
-| **P2** | `adapters/nethttp/binding.go` server-side (`PipelineAdapter`) | Low — wraps `PipelineHandler` | Not started |
-| **P2** | `adapters/zeromq/binding.go` server-side (`ServeAdapter`) | Low — wraps `Serve`/`ServeRouter` | Not started |
-| **P2** | `adapters/mqtt5/binding.go` server-side (`ServeAdapter`) | Low — wraps `Serve` | Not started |
+| **P1** ✅ | `adapters/chi/binding.go` | Low | Implemented: `IngestAdapter`, `SSEAdapter`, `PipelineAdapter` |
+| **P1** ✅ | `adapters/mcpgo/binding.go` + `ports.ToolPort[In,Out]` | Medium | Implemented: `ToolPort`, `ToolPipelineAdapter`, `ToolLatestAdapter` |
+| **P2** ✅ | `adapters/nethttp/binding.go` server-side | Low | Implemented: `PipelineAdapter` |
+| **P2** ✅ | `adapters/zeromq/binding.go` server-side | Low | Implemented: `ServeAdapter` |
+| **P2** ✅ | `adapters/mqtt5/binding.go` server-side | Low | Implemented: `ServeAdapter` |
 | **Deferred** | `forge.App` lifecycle manager | High | Not designed |
 | **Deferred** | Cache ports (`HandlerLatest`/`ServeLatest` → `CachePort[T]`) | Medium | Not designed |
 | **Deferred** | Auto spec generation from ports | High | Not designed |

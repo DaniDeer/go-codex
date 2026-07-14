@@ -49,3 +49,20 @@ func (e PortNoAdapterError) Error() string {
 func (e PortNoAdapterError) LogValue() slog.Value {
 	return slog.GroupValue(slog.String("port", e.Port))
 }
+
+// PortNoPipelineError is returned by [ToolPort.Bind] when [ToolPort.SetPipeline]
+// was not called before Bind. This is a programming error — set the pipeline
+// function before binding to any transport.
+type PortNoPipelineError struct {
+	// Port is the name passed to [NewToolPort].
+	Port string
+}
+
+func (e PortNoPipelineError) Error() string {
+	return fmt.Sprintf("port %q: no pipeline set — call SetPipeline before Bind", e.Port)
+}
+
+// LogValue implements [slog.LogValuer] for structured logging.
+func (e PortNoPipelineError) LogValue() slog.Value {
+	return slog.GroupValue(slog.String("port", e.Port))
+}

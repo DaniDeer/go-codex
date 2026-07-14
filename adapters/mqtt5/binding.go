@@ -250,3 +250,38 @@ func (a *mqtt5CallAdapter[Req, Resp]) Transform(ctx context.Context, src gstream
 	}()
 	return gstream.Stream[Resp]{Values: values, Errors: errs}
 }
+
+// ── ServeAdapter ──────────────────────────────────────────────────────────────
+
+// ServeAdapter returns a [ports.ToolAdapter] that registers the pipeline
+// function as an MQTT 5 request/reply server via [Serve]. When
+// [ports.ToolPort.Bind] is called, the pipeline function is wrapped as an
+// [AsPipelineFunc] handler and [Serve] is started in a background goroutine.
+// Use with [ports.ToolPort.Bind]:
+//
+//	domain.OEEToolPort.Bind(ctx, mqtt5.ServeAdapter(client, router, handle, opts))
+func ServeAdapter[Req, Resp any](
+	client MQTTClient,
+	router MQTTRouter,
+	handle *reqreply.RouteHandle[Req, Resp],
+	opts ServeOptions,
+) ports.ToolAdapter[Req, Resp] {
+	return &mqtt5ServeAdapter[Req, Resp]{client: client, router: router, handle: handle, opts: opts}
+}
+
+type mqtt5ServeAdapter[Req, Resp any] struct {
+	client MQTTClient
+	router MQTTRouter
+	handle *reqreply.RouteHandle[Req, Resp]
+	opts   ServeOptions
+}
+
+func (a *mqtt5ServeAdapter[Req, Resp]) AdapterName() string { return "mqtt5.ServeAdapter" }
+
+func (a *mqtt5ServeAdapter[Req, Resp]) Bind(
+	ctx context.Context,
+	fn func(context.Context, Req) gstream.Stream[Resp],
+) error {
+	go Serve(ctx, a.client, a.router, a.handle, AsPipelineFunc(fn), a.opts) //nolint:errcheck
+	return nil
+}

@@ -364,3 +364,113 @@ func TestIOParam_WithCodec(t *testing.T) {
 		t.Error("WithCodec must preserve other fields")
 	}
 }
+
+// ── ToolPort ──────────────────────────────────────────────────────────────────
+
+// mockToolAdapter is a test ToolAdapter that stores the bound fn.
+type mockToolAdapter struct {
+	name string
+	fn   func(context.Context, int) gstream.Stream[string]
+	err  error
+}
+
+func (a *mockToolAdapter) AdapterName() string { return a.name }
+func (a *mockToolAdapter) Bind(_ context.Context, fn func(context.Context, int) gstream.Stream[string]) error {
+	if a.err != nil {
+		return a.err
+	}
+	a.fn = fn
+	return nil
+}
+
+func TestToolPort_HappyPath(t *testing.T) {
+	ctx := context.Background()
+	p := ports.NewToolPort[int, string]("test", intCodec, strCodec, ports.PortOptions{})
+	p.SetPipeline(func(_ context.Context, v int) gstream.Stream[string] {
+		return gstream.Single(context.Background(), fmt.Sprintf("%d", v))
+	})
+
+	adapter := &mockToolAdapter{name: "mock.ToolAdapter"}
+	if err := p.Bind(ctx, adapter); err != nil {
+		t.Fatalf("Bind: unexpected error: %v", err)
+	}
+	if adapter.fn == nil {
+		t.Fatal("Bind should have set fn on adapter")
+	}
+
+	out := adapter.fn(ctx, 42)
+	vals, _ := gstream.Collect(ctx, out)
+	if len(vals) != 1 || vals[0] != "42" {
+		t.Errorf("want [42], got %v", vals)
+	}
+}
+
+func TestToolPort_NoPipelineError(t *testing.T) {
+	ctx := context.Background()
+	p := ports.NewToolPort[int, string]("test", intCodec, strCodec, ports.PortOptions{})
+	// No SetPipeline call
+
+	adapter := &mockToolAdapter{name: "mock.ToolAdapter"}
+	err := p.Bind(ctx, adapter)
+	if err == nil {
+		t.Fatal("want error when pipeline not set, got nil")
+	}
+	var pbe ports.PortBindError
+	if !errors.As(err, &pbe) {
+		t.Errorf("want PortBindError, got %T: %v", err, err)
+	}
+	var npe ports.PortNoPipelineError
+	if !errors.As(err, &npe) {
+		t.Errorf("want PortNoPipelineError wrapped in PortBindError, got %T", err)
+	}
+}
+
+func TestToolPort_MultipleBind(t *testing.T) {
+	ctx := context.Background()
+	p := ports.NewToolPort[int, string]("test", intCodec, strCodec, ports.PortOptions{})
+	p.SetPipeline(func(_ context.Context, v int) gstream.Stream[string] {
+		return gstream.Single(context.Background(), fmt.Sprintf("%d", v))
+	})
+
+	a1 := &mockToolAdapter{name: "adapter1"}
+	a2 := &mockToolAdapter{name: "adapter2"}
+	if err := p.Bind(ctx, a1); err != nil {
+		t.Fatalf("first Bind: %v", err)
+	}
+	if err := p.Bind(ctx, a2); err != nil {
+		t.Fatalf("second Bind: %v", err)
+	}
+	if a1.fn == nil || a2.fn == nil {
+		t.Error("both adapters should have fn set")
+	}
+}
+
+func TestToolPort_AdapterError(t *testing.T) {
+	ctx := context.Background()
+	p := ports.NewToolPort[int, string]("test", intCodec, strCodec, ports.PortOptions{})
+	p.SetPipeline(func(_ context.Context, _ int) gstream.Stream[string] {
+		return gstream.Single(context.Background(), "")
+	})
+
+	adapter := &mockToolAdapter{name: "failing", err: errors.New("route conflict")}
+	err := p.Bind(ctx, adapter)
+	if err == nil {
+		t.Fatal("want error from failing adapter, got nil")
+	}
+	var pbe ports.PortBindError
+	if !errors.As(err, &pbe) {
+		t.Errorf("want PortBindError, got %T", err)
+	}
+}
+
+func TestPortNoPipelineError_LogValue(t *testing.T) {
+	e := ports.PortNoPipelineError{Port: "oee-tool"}
+	v := e.LogValue()
+	if v.Kind() != slog.KindGroup {
+		t.Fatalf("want KindGroup, got %v", v.Kind())
+	}
+	attrs := v.Group()
+	if len(attrs) == 0 || attrs[0].Key != "port" {
+		t.Errorf("want 'port' attribute, got %v", attrs)
+	}
+}

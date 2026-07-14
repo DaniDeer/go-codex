@@ -372,3 +372,42 @@ func (a *nethttpDrainCallAdapter[Req, Resp]) Activate(ctx context.Context, src g
 		gstream.DrainOptions{Observer: a.opts.CallOpts.Observer},
 	)
 }
+
+// ── PipelineAdapter ───────────────────────────────────────────────────────────
+
+// PipelineAdapterOptions configures [PipelineAdapter].
+type PipelineAdapterOptions struct {
+	Options Options
+}
+
+// PipelineAdapter returns a [ports.ToolAdapter] that registers the pipeline
+// function as an HTTP endpoint via [PipelineHandler]. When [ports.ToolPort.Bind]
+// is called it registers the handler with mux. Use with [ports.ToolPort.Bind]:
+//
+//	domain.OEEToolPort.Bind(ctx, nethttp.PipelineAdapter(mux, httpHandle,
+//	    nethttp.PipelineAdapterOptions{}))
+func PipelineAdapter[Req, Resp any](
+	mux *http.ServeMux,
+	handle *rest.RouteHandle[Req, Resp],
+	opts PipelineAdapterOptions,
+) ports.ToolAdapter[Req, Resp] {
+	return &nethttpPipelineAdapter[Req, Resp]{mux: mux, handle: handle, opts: opts}
+}
+
+type nethttpPipelineAdapter[Req, Resp any] struct {
+	mux    *http.ServeMux
+	handle *rest.RouteHandle[Req, Resp]
+	opts   PipelineAdapterOptions
+}
+
+func (a *nethttpPipelineAdapter[Req, Resp]) AdapterName() string { return "nethttp.PipelineAdapter" }
+
+func (a *nethttpPipelineAdapter[Req, Resp]) Bind(
+	_ context.Context,
+	fn func(context.Context, Req) gstream.Stream[Resp],
+) error {
+	RegisterPipeline(a.mux, a.handle, func(ctx context.Context, req Req) gstream.Stream[Resp] {
+		return fn(ctx, req)
+	}, a.opts.Options)
+	return nil
+}
