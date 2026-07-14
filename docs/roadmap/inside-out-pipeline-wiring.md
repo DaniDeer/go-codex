@@ -737,7 +737,7 @@ Observer fires at:
 
 | Priority | Item | Complexity | Status |
 |----------|------|-----------|--------|
-| **P1** ✅ | `adapters/chi/binding.go` | Low | Implemented: `IngestAdapter`, `SSEAdapter`, `PipelineAdapter` |
+| **P1** ✅ | `adapters/chi/binding.go` | Low | Implemented: `IngestAdapter`, `SSEAdapter`, `PipelineAdapter` ← added beyond original plan |
 | **P1** ✅ | `adapters/mcpgo/binding.go` + `ports.ToolPort[In,Out]` | Medium | Implemented: `ToolPort`, `ToolPipelineAdapter`, `ToolLatestAdapter` |
 | **P2** ✅ | `adapters/nethttp/binding.go` server-side | Low | Implemented: `PipelineAdapter` |
 | **P2** ✅ | `adapters/zeromq/binding.go` server-side | Low | Implemented: `ServeAdapter` |
@@ -783,6 +783,19 @@ func SSEAdapter[Event any](
     handle *rest.SSERouteHandle[struct{}, Event],
     opts   SSEAdapterOptions,
 ) ports.SinkAdapter[Event]
+
+// PipelineAdapterOptions configures [chi.PipelineAdapter].
+type PipelineAdapterOptions struct {
+    Options Options
+}
+
+// PipelineAdapter returns a [ports.ToolAdapter] that registers the pipeline
+// function as an HTTP endpoint via chi router. Use with [ports.ToolPort.Bind].
+func PipelineAdapter[Req, Resp any](
+    r      chi.Router,
+    handle *rest.RouteHandle[Req, Resp],
+    opts   PipelineAdapterOptions,
+) ports.ToolAdapter[Req, Resp]
 ```
 
 ---
@@ -892,19 +905,24 @@ Each server adapter wraps the existing `PipelineHandler`/`Serve` pattern:
 ```go
 // adapters/nethttp/binding.go (addition)
 
+// PipelineAdapterOptions configures [PipelineAdapter].
+type PipelineAdapterOptions struct {
+    Options Options
+}
+
 // PipelineAdapter returns a [ports.ToolAdapter] that registers the pipeline
 // function as an HTTP endpoint via [PipelineHandler]. When Bind is called it
 // registers the handler with mux.
 func PipelineAdapter[Req, Resp any](
     mux    *http.ServeMux,
     handle *rest.RouteHandle[Req, Resp],
-    opts   Options,
+    opts   PipelineAdapterOptions,
 ) ports.ToolAdapter[Req, Resp]
 
 // adapters/zeromq/binding.go (addition)
 
 // ServeAdapter returns a [ports.ToolAdapter] that registers the pipeline
-// function as a ZeroMQ REP server via [Serve] or [ServeRouter].
+// function as a ZeroMQ REP server via [Serve]. Runs in a background goroutine.
 func ServeAdapter[Req, Resp any](
     sock FramedSocket,
     handle *reqreply.RouteHandle[Req, Resp],
@@ -939,9 +957,14 @@ func init() {
 
 // main.go — serve on all three transports with one line each
 domain.OEECalcTool.Bind(ctx, mcpgo.ToolPipelineAdapter(mcpServer, mcpToolHandle, mcpgo.Options{}))
-domain.OEECalcTool.Bind(ctx, nethttp.PipelineAdapter(mux, httpHandle, nethttp.Options{}))
+domain.OEECalcTool.Bind(ctx, nethttp.PipelineAdapter(mux, httpHandle, nethttp.PipelineAdapterOptions{}))
 domain.OEECalcTool.Bind(ctx, zeromq.ServeAdapter(repSock, zmqHandle, zeromq.ServeOptions{}))
 // Same pipeline logic served on MCP, HTTP, and ZeroMQ — zero domain code changes.
+//
+// Note: ToolLatestAdapter ignores the pipeline fn (response comes from src).
+// SetPipeline is still required before Bind — ToolPort enforces this.
+// domain.OEEToolPort.Bind(ctx, mcpgo.ToolLatestAdapter(server, handle, oeeStream, opts))
+// ↑ Returns cached value from oeeStream, not from the pipeline fn.
 ```
 
 ---
