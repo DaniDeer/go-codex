@@ -1,6 +1,6 @@
 # Inside-Out Pipeline Wiring — Protocol-Agnostic IO Ports
 
-> **Status:** ✅ Phase 1 implemented. `ports` package + adapter bindings for all transports. Stream bridge helpers deprecated.
+> **Status:** ✅ Phase 1 complete. `ports` package shipped; all transport bindings implemented; stream bridge helpers fully removed (not just deprecated). Phase 2 designed — see below.
 > [← Back to Roadmap](index.md)
 
 ---
@@ -21,7 +21,7 @@ sensorHandle, _ := events.NewChannel[SensorReading](
     events.TopicParam{Name: "sensorID", Description: "Sensor ID"}.WithCodec(sensorIDCodec),
 ).Register(b)  // ← must exist before any pipeline code
 
-sensorStream := mqtt5.SubscribeStream(ctx, client, router, sensorHandle, 0, ...)
+sensorStream := mqtt5.SubscribeAdapter(client, router, sensorHandle, 0, ...) // via SourcePort.Bind
 oeeStream    := gstream.Apply(ctx, sensorStream, oeeCalcFn, opts)
 // ↑ pipeline code — but it already carries a hard MQTT5 dependency
 ```
@@ -60,21 +60,21 @@ var OEECalc = forge.NewFunction("oeeCalc", "1.0.0", oeeInCodec, OEECodec, ...)
 // ── domain/pipeline.go — no adapter/transport imports ───────────────────────
 
 // IO enforcement points — declared with full schema; protocol decided at wiring time.
-var SensorReadings = forge.NewSourcePort[SensorReading]("sensor-readings", ReadingCodec,
-    forge.Params(
-        forge.IOParam{Name: "sensorID", Description: "Sensor identifier"}.WithCodec(SensorIDCodec),
-    ))
+var SensorReadings = ports.NewSourcePort[SensorReading]("sensor-readings", ReadingCodec,
+    ports.PortOptions{
+        Params: []ports.IOParam{{Name: "sensorID", Description: "Sensor identifier", Required: true}.WithCodec(SensorIDCodec)},
+    })
 
-var Calibration = forge.NewIOPort[SensorReading, CalibratedReading](
+var Calibration = ports.NewIOPort[SensorReading, CalibratedReading](
     "calibration", ReadingCodec, calibratedCodec,
-    forge.Params(
-        forge.IOParam{Name: "sensorID"}.WithCodec(SensorIDCodec),
-    ))
+    ports.PortOptions{
+        Params: []ports.IOParam{{Name: "sensorID"}.WithCodec(SensorIDCodec)},
+    })
 
-var OEEResults = forge.NewSinkPort[OEE]("oee-results", OEECodec,
-    forge.Params(
-        forge.IOParam{Name: "machineID"}.WithCodec(machineIDCodec),
-    ))
+var OEEResults = ports.NewSinkPort[OEE]("oee-results", OEECodec,
+    ports.PortOptions{
+        Params: []ports.IOParam{{Name: "machineID"}.WithCodec(machineIDCodec)},
+    })
 
 func StartOEEPipeline(ctx context.Context) {
     raw         := SensorReadings.Stream(ctx)
@@ -90,38 +90,31 @@ func main() {
 
     // SensorReadings: accept from MQTT5 AND HTTP ingest (fan-in)
     domain.SensorReadings.Bind(ctx, mqtt5.SubscribeAdapter(
-        client, router,
-        "sensors/{sensorID}/data", 0,
+        client, router, sensorHandle, 0,
         format.JSON(domain.ReadingCodec),
-        mqtt5.SubscribeAdapterOptions{},
+        mqtt5.SubscribeAdapterOptions{TopicFilter: "sensors/+/data"},
     ))
     domain.SensorReadings.Bind(ctx, nethttp.IngestAdapter(
-        mux,
-        "POST", "/sensors/{sensorID}/readings",
-        domain.ReadingCodec,
-        nethttp.IngestAdapterOptions{},
+        mux, ingestHandle, nethttp.IngestAdapterOptions{},
     ))
 
     // Calibration: HTTP enrichment call (swap for SQL with one line change)
     domain.Calibration.Bind(ctx, nethttp.CallAdapter(
         httpClient, "http://calibration-svc:8080",
         calibrationRouteHandle,
-        nethttp.CallAdapterOptions{},
+        nethttp.CallStreamOptions{},
     ))
     // OR: domain.Calibration.Bind(ctx, sql.QueryEachAdapter(...))
     // OR: domain.Calibration.Bind(ctx, file.ReadEachAdapter(...))
 
     // OEEResults: publish to MQTT5 AND SSE clients (fan-out)
     domain.OEEResults.Bind(ctx, mqtt5.PublishAdapter(
-        client,
-        "machines/{machineID}/oee",
+        client, alertHandle,
         format.JSON(domain.OEECodec),
-        mqtt5.PublishAdapterOptions{},
+        mqtt5.MQTT5DrainPublishOptions{},
     ))
     domain.OEEResults.Bind(ctx, nethttp.SSEAdapter(
-        mux, "/machines/oee/stream",
-        domain.OEECodec,
-        nethttp.SSEAdapterOptions{},
+        mux, sseHandle, nethttp.SSEAdapterOptions{},
     ))
 
     domain.StartOEEPipeline(ctx)
@@ -135,7 +128,7 @@ func main() {
 - Swapping SQL for HTTP enrichment only touches `main.go`
 - Adding a second source (HTTP ingest) is one `Bind` call
 - Adding a second sink (SSE + MQTT publish) is one `Bind` call
-- Testing the pipeline uses `forge.ChanSourceAdapter` / `forge.ChanSinkAdapter` — no broker
+- Testing the pipeline uses `ports.ChanSourceAdapter` / `ports.ChanSinkAdapter` — no broker
 
 ---
 
@@ -143,14 +136,14 @@ func main() {
 
 | In scope — Phase 1 | Out of scope (deferred) |
 |--------------------|------------------------|
-| `forge.IOParam` — protocol-agnostic parameter with codec | `forge.App` lifecycle manager |
-| `forge.SourcePort[T]` — inbound boundary | Cache ports (`HandlerLatest`, `ServeLatest`) — different pattern |
-| `forge.SinkPort[T]` — outbound boundary | `AsPipelineFunc` adapter bindings — non-stream server pattern |
-| `forge.IOPort[Req, Resp]` — intermediate transform | `adapters/chi` bindings — same API as nethttp, add after |
-| `forge.SourceAdapter[T]`, `SinkAdapter[T]`, `IOAdapter[Req,Resp]` interfaces | `adapters/mcpgo` bindings — request-response, different pattern |
+| `ports.IOParam` — protocol-agnostic parameter with codec | `forge.App` lifecycle manager |
+| `ports.SourcePort[T]` — inbound boundary | Cache ports (`HandlerLatest`, `ServeLatest`) — different pattern |
+| `ports.SinkPort[T]` — outbound boundary | `AsPipelineFunc` adapter bindings — non-stream server pattern |
+| `ports.IOPort[Req, Resp]` — intermediate transform | `adapters/chi` bindings — same API as nethttp, add after |
+| `ports.SourceAdapter[T]`, `SinkAdapter[T]`, `IOAdapter[Req,Resp]` interfaces | `adapters/mcpgo` bindings — request-response, different pattern |
 | Fan-in (multiple SourceAdapters → merged stream) | Dynamic rebinding at runtime |
 | Fan-out (SinkPort broadcasts to all SinkAdapters) | Auto OpenAPI/AsyncAPI spec from ports alone |
-| `forge.ChanSourceAdapter[T]`, `forge.ChanSinkAdapter[T]` — test helpers | IOParam ↔ adapter template cross-validation (advisory only in Phase 1) |
+| `ports.ChanSourceAdapter[T]`, `ports.ChanSinkAdapter[T]`, `ports.FuncIOAdapter[Req,Resp]` — test helpers | IOParam ↔ adapter template cross-validation (advisory only in Phase 1) |
 | `adapters/mqtt5/binding.go` — SubscribeAdapter, PublishAdapter, CallAdapter | — |
 | `adapters/mqtt/binding.go` — SubscribeAdapter, PublishAdapter | — |
 | `adapters/nethttp/binding.go` — IngestAdapter, SSEAdapter, PollAdapter, CallAdapter, DrainCallAdapter | — |
@@ -213,24 +206,22 @@ func Params(params ...IOParam) PortOpt { return portParams(params) }
 
 ---
 
-## API surface — `forge` package
+## API surface — `ports` package (as implemented)
 
-### Port options (sealed option interface)
+### Port options
+
+> **Implementation note:** The final implementation uses a plain struct `PortOptions` instead of the planned sealed `PortOpt` interface — simpler and zero boilerplate.
 
 ```go
-// PortOpt is the sealed option interface for port constructors.
-// Accepted by NewSourcePort, NewSinkPort, NewIOPort.
-type PortOpt interface { applyPort(*portConfig) }
-
-// Params adds IOParam declarations. Each param is validated by bound adapters.
-func Params(params ...IOParam) PortOpt
-
-// PortBuffer sets the internal channel buffer size. Default 0.
-func PortBuffer(n int) PortOpt
-
-// PortObserver sets the observer for port lifecycle events (bind/activate).
-// When nil, resolved from ctx at Bind time.
-func PortObserver(obs stats.Observer) PortOpt
+// PortOptions configures a port constructor (NewSourcePort, NewSinkPort, NewIOPort).
+type PortOptions struct {
+    // Params declares the protocol-agnostic IO parameters for this port.
+    Params []IOParam
+    // Buffer sets the internal channel buffer size. Default 0.
+    Buffer int
+    // Observer receives port lifecycle events. Resolved from ctx when nil.
+    Observer stats.Observer
+}
 ```
 
 ### SourcePort[T]
@@ -251,12 +242,12 @@ type SourcePort[T any] struct { /* unexported */ }
 
 // NewSourcePort creates a SourcePort with the given name and payload codec.
 // name is used for observability, error context, and spec generation.
-func NewSourcePort[T any](name string, codec codex.Codec[T], opts ...PortOpt) *SourcePort[T]
+func NewSourcePort[T any](name string, codec codex.Codec[T], opts PortOptions) *SourcePort[T]
 
 // Bind activates a SourceAdapter, merging its output into this port's stream.
-// Returns PortBindError when the adapter's Activate call fails.
+// Multiple Bind calls produce fan-in: items from all adapters are merged.
 // Bind must be called before Stream.
-func (p *SourcePort[T]) Bind(ctx context.Context, a SourceAdapter[T]) error
+func (p *SourcePort[T]) Bind(ctx context.Context, a SourceAdapter[T])
 
 // Stream returns the merged gstream.Stream[T] from all bound adapters.
 // Items are validated by the port's payload codec before entering the stream.
@@ -275,7 +266,7 @@ func (p *SourcePort[T]) Stream(ctx context.Context) gstream.Stream[T]
 type SinkPort[T any] struct { /* unexported */ }
 
 // NewSinkPort creates a SinkPort with the given name and payload codec.
-func NewSinkPort[T any](name string, codec codex.Codec[T], opts ...PortOpt) *SinkPort[T]
+func NewSinkPort[T any](name string, codec codex.Codec[T], opts PortOptions) *SinkPort[T]
 
 // Bind registers a SinkAdapter to receive items from this port.
 // Multiple Bind calls produce fan-out.
@@ -312,10 +303,10 @@ type IOPort[Req, Resp any] struct { /* unexported */ }
 
 // NewIOPort creates an IOPort with the given name, request codec, and response codec.
 func NewIOPort[Req, Resp any](
-    name     string,
+    name      string,
     reqCodec  codex.Codec[Req],
     respCodec codex.Codec[Resp],
-    opts     ...PortOpt,
+    opts      PortOptions,
 ) *IOPort[Req, Resp]
 
 // Bind sets the IOAdapter for this port. Returns PortBindError if called
@@ -706,64 +697,290 @@ Observer fires at:
 
 ---
 
-## Files to create / modify
+## Files created / modified (Phase 1 — complete)
 
-| File | Action | Responsibility |
+> All items below have been implemented. Package location changed from `forge` → `ports` during implementation (better dependency graph).
+
+| File | Status | Responsibility |
 |------|--------|----------------|
-| `forge/io_param.go` | Create | `IOParam`, `Params(...)`, `PortOpt` interface, `PortBuffer`, `PortObserver` |
-| `forge/port_errors.go` | Create | `PortBindError`, `PortNoAdapterError` |
-| `forge/source_port.go` | Create | `SourcePort[T]`, `SourceAdapter[T]` interface |
-| `forge/sink_port.go` | Create | `SinkPort[T]`, `SinkAdapter[T]` interface |
-| `forge/io_port.go` | Create | `IOPort[Req,Resp]`, `IOAdapter[Req,Resp]` interface |
-| `forge/test_adapters.go` | Create | `ChanSourceAdapter[T]`, `ChanSinkAdapter[T]`, `FuncIOAdapter[Req,Resp]` |
-| `forge/port_test.go` | Create | Tests T01–T16 |
-| `forge/doc.go` | Modify | Add ports to package overview |
-| `adapters/mqtt5/binding.go` | Create | `SubscribeAdapter`, `PublishAdapter`, `CallAdapter` |
-| `adapters/mqtt5/binding_test.go` | Create | Tests T17–T18 |
-| `adapters/mqtt/binding.go` | Create | `SubscribeAdapter`, `PublishAdapter` |
-| `adapters/nethttp/binding.go` | Create | `IngestAdapter`, `SSEAdapter`, `PollAdapter`, `CallAdapter`, `DrainCallAdapter` |
-| `adapters/zeromq/binding.go` | Create | `SubscribeAdapter`, `PublishAdapter`, `CallAdapter` |
-| `adapters/file/binding.go` | Create | `ScanAdapter`, `WatchAdapter`, `ReadEachAdapter`, `DrainWriteAdapter`, `DrainWriteFileAdapter` |
-| `adapters/file/binding_test.go` | Create | Test T19 |
-| `adapters/sql/binding.go` | Create | `QueryAdapter`, `QueryEachAdapter`, `DrainInsertAdapter` |
-| `adapters/sql/binding_test.go` | Create | Test T20 |
-| `adapters/mqtt5/stream.go` | Modify | Mark `SubscribeStream`, `DrainPublish`, `CallStream` as deprecated |
-| `adapters/mqtt/stream.go` | Modify | Mark `SubscribeStream`, `DrainPublish` as deprecated |
-| `adapters/nethttp/stream.go` | Modify | Mark ingest/SSE/poll/call bridges as deprecated |
-| `adapters/zeromq/stream.go` | Modify | Mark `SubscribeStream`, `DrainPublish`, `CallStream` as deprecated |
-| `adapters/file/stream.go` | Modify | Mark `ScanStream`, `WatchStream`, `ReadEachStream`, `DrainWrite`, file write bridges as deprecated |
-| `adapters/sql/stream.go` | Modify | Mark `QueryStream`, `DrainInsert`, `QueryEachStream` as deprecated |
+| `ports/io_param.go` | ✅ Created | `IOParam`, `PortOptions` |
+| `ports/port_errors.go` | ✅ Created | `PortBindError`, `PortNoAdapterError` |
+| `ports/source_port.go` | ✅ Created | `SourcePort[T]`, `SourceAdapter[T]` interface |
+| `ports/sink_port.go` | ✅ Created | `SinkPort[T]`, `SinkAdapter[T]` interface |
+| `ports/io_port.go` | ✅ Created | `IOPort[Req,Resp]`, `IOAdapter[Req,Resp]` interface |
+| `ports/test_adapters.go` | ✅ Created | `ChanSourceAdapter[T]`, `ChanSinkAdapter[T]`, `FuncIOAdapter[Req,Resp]` |
+| `ports/port_test.go` | ✅ Created | Tests T01–T17 |
+| `ports/doc.go` | ✅ Created | Package overview |
+| `adapters/mqtt5/binding.go` | ✅ Created | `SubscribeAdapter`, `PublishAdapter`, `CallAdapter` |
+| `adapters/mqtt5/binding_test.go` | ✅ Created | SubscribeAdapter, PublishAdapter, AsPipelineFunc, CallAdapter tests |
+| `adapters/mqtt/binding.go` | ✅ Created | `SubscribeAdapter`, `PublishAdapter` |
+| `adapters/nethttp/binding.go` | ✅ Created | `IngestAdapter`, `SSEAdapter`, `PollAdapter`, `CallAdapter`, `DrainCallAdapter` |
+| `adapters/nethttp/binding_test.go` | ✅ Created | Binding adapter tests |
+| `adapters/zeromq/binding.go` | ✅ Created | `SubscribeAdapter`, `PublishAdapter`, `CallAdapter` |
+| `adapters/zeromq/binding_test.go` | ✅ Created | `CallAdapter` tests |
+| `adapters/file/binding.go` | ✅ Created | `ScanAdapter`, `WatchAdapter`, `ReadEachAdapter`, `DrainWriteAdapter`, `DrainWriteFileAdapter` |
+| `adapters/file/binding_test.go` | ✅ Created | All binding adapter tests |
+| `adapters/sql/binding.go` | ✅ Created | `QueryAdapter`, `QueryEachAdapter`, `DrainInsertAdapter` |
+| `adapters/sql/binding_test.go` | ✅ Created | All binding adapter tests |
+| `adapters/mqtt5/stream.go` | ✅ Trimmed | `SubscribeStream`/`DrainPublish`/`CallStream` **removed** (not deprecated — fully deleted) |
+| `adapters/mqtt/stream.go` | ✅ Deleted | Was empty after bridge removal |
+| `adapters/nethttp/stream.go` | ✅ Trimmed | Bridge functions removed; `HandlerLatest`, `PipelineHandler`, `SSEFromHub` kept |
+| `adapters/zeromq/stream.go` | ✅ Trimmed | Bridge functions removed; `AsPipelineFunc`, `ServeLatest` kept |
+| `adapters/file/stream.go` | ✅ Deleted | Was doc-only; doc moved to `binding.go` |
+| `adapters/sql/stream.go` | ✅ Deleted | Was doc-only; doc moved to `binding.go` |
 
 ---
 
-## Out of scope — Phase 2
+## Phase 2 — Design
 
-- **`forge.App`** — lifecycle manager that tracks all ports, ensures all ports are
-  bound before Start, provides graceful shutdown and port dependency graph.
-- **Cache ports** — `HandlerLatest` / `ServeLatest` are reactive cache patterns
-  (not a stream-to-stream transform); they need a separate `CachePort[T]` concept.
-- **`adapters/chi/binding.go`** — same API as nethttp; add after nethttp bindings.
-- **`adapters/mcpgo/binding.go`** — MCP is request/response (not pub/sub stream);
-  needs separate design for `ToolPort[In,Out]`.
-- **`zeromq.AsPipelineFunc`** / **`mqtt5.AsPipelineFunc`** — adapts forge functions
-  for server loops; not a port pattern.
-- **Auto spec generation from ports** — `port.RegisterToBuilder(b)` to produce
-  AsyncAPI/OpenAPI spec from port IOParams + adapter topic/path templates without
-  a separately declared Channel/Route.
-- **IOParam ↔ adapter cross-validation** — verify that `{name}` placeholders in
-  adapter templates match port IOParam names at Bind time.
-- **Dynamic rebinding** — hot-swap adapter on a running port.
-- **Port introspection / pipeline visualisation**.
+### Phase 2 scope
+
+| Priority | Item | Complexity | Status |
+|----------|------|-----------|--------|
+| **P1** | `adapters/chi/binding.go` | Low — same pattern as nethttp | Not started |
+| **P1** | `adapters/mcpgo/binding.go` + `ports.ToolPort[In,Out]` | Medium — new port type needed | Designed below |
+| **P2** | `adapters/nethttp/binding.go` server-side (`PipelineAdapter`) | Low — wraps `PipelineHandler` | Not started |
+| **P2** | `adapters/zeromq/binding.go` server-side (`ServeAdapter`) | Low — wraps `Serve`/`ServeRouter` | Not started |
+| **P2** | `adapters/mqtt5/binding.go` server-side (`ServeAdapter`) | Low — wraps `Serve` | Not started |
+| **Deferred** | `forge.App` lifecycle manager | High | Not designed |
+| **Deferred** | Cache ports (`HandlerLatest`/`ServeLatest` → `CachePort[T]`) | Medium | Not designed |
+| **Deferred** | Auto spec generation from ports | High | Not designed |
+| **Deferred** | IOParam ↔ adapter cross-validation at Bind time | Medium | Not designed |
 
 ---
 
-## Open design decisions
+### P1 — `adapters/chi/binding.go`
 
-| Question | Options | Current preference |
-|----------|---------|-------------------|
-| **Adapter interface sealed or open?** | Sealed (unexported methods) — prevents external implementations | Open (exported methods) — user can write custom adapters | **Open** — extensibility wins; document that constructors are preferred |
-| **Where do adapter interfaces live?** | `forge` package (current proposal) | `stream` package (lower in dep graph) | New `wire` package | **`forge`** — ports and interfaces are application-composition concerns |
-| **Fan-out error policy** | One sink failure → log + continue (OnError callback) | One sink failure → terminate all sinks | **Log + continue** — a broken MQTT connection should not stop SSE delivery |
-| **TapWriteFile deprecation** | Deprecate — `DrainWriteFileAdapter` with `stream.Tap` pattern replaces it | Keep as convenience | **Deprecate** — `DrainWriteFileAdapter` covers the pattern cleanly |
-| **`adapterName()` method** | Unexported (seals interface) | Return string constant for error context | **Exported `AdapterName() string`** if interfaces are open; name used in PortBindError |
-| **IOParam validation timing** | At Bind time (advisory: warn if template mismatches params) | At Connect/Stream time (per item) | At Bind time for template mismatch; per-item for value codec validation |
+Chi is a server-only router — it only needs server-side source and sink adapters. No client-side adapters (no `PollAdapter`, `CallAdapter`, `DrainCallAdapter`).
+
+```go
+// adapters/chi/binding.go
+
+// IngestAdapterOptions configures [IngestAdapter].
+type IngestAdapterOptions struct {
+    Options Options
+    Buffer  int
+}
+
+// IngestAdapter returns a [ports.SourceAdapter] that accepts HTTP requests as
+// pipeline items via chi router. When Activate is called it registers a handler.
+func IngestAdapter[T any](
+    r      chi.Router,
+    handle *rest.RouteHandle[T, struct{}],
+    opts   IngestAdapterOptions,
+) ports.SourceAdapter[T]
+
+// SSEAdapterOptions configures [SSEAdapter].
+type SSEAdapterOptions struct {
+    Options          Options
+    SSEStreamOptions SSEStreamOptions
+}
+
+// SSEAdapter returns a [ports.SinkAdapter] that serves each SinkPort item as
+// an SSE event to all connected clients via chi router.
+func SSEAdapter[Event any](
+    r      chi.Router,
+    handle *rest.SSERouteHandle[struct{}, Event],
+    opts   SSEAdapterOptions,
+) ports.SinkAdapter[Event]
+```
+
+---
+
+### P1 — `ports.ToolPort[In,Out]` + `adapters/mcpgo/binding.go`
+
+#### The ToolPort concept
+
+MCP tools are server-side request/response: the LLM triggers a call, the pipeline
+processes it, a response returns. This is the inverse of `IOPort` (which is client-side).
+
+A `ToolPort[In,Out]` declares the request/response shape; the transport that
+receives calls (MCP server, HTTP POST endpoint, ZeroMQ REP, MQTT5 Serve) is
+bound in `main.go`. The pipeline function (domain logic) is provided once via
+`SetPipeline` before binding.
+
+```go
+// ports/tool_port.go
+
+// ToolAdapter[In, Out] is an adapter that receives requests and routes them
+// through the pipeline function, delivering responses to the caller.
+//
+// Implemented by: mcpgo.ToolPipelineAdapter, nethttp.PipelineAdapter,
+// zeromq.ServeAdapter, mqtt5.ServeAdapter.
+type ToolAdapter[In, Out any] interface {
+    // Bind registers fn as the handler for this transport backend.
+    // fn is the pipeline function set on ToolPort.
+    Bind(ctx context.Context, fn func(context.Context, In) gstream.Stream[Out]) error
+    AdapterName() string
+}
+
+// ToolPort[In, Out] is a typed, protocol-agnostic server-side request/response
+// IO enforcement point. It represents the "handle this request" boundary.
+//
+// Declare in domain/pipeline code. Set the pipeline function with SetPipeline.
+// Bind to one or more transports in main.go.
+//
+//   // domain/pipeline.go — no adapter imports
+//   var OEEToolPort = ports.NewToolPort[OEEIn, OEEResult]("oee-calc", inCodec, outCodec, ports.PortOptions{})
+//
+//   func init() {
+//       OEEToolPort.SetPipeline(func(ctx context.Context, req OEEIn) gstream.Stream[OEEResult] {
+//           return gstream.Apply(ctx, gstream.Single(ctx, req), oeeCalcFn, gstream.ApplyOptions{})
+//       })
+//   }
+//
+//   // main.go — bind to MCP AND HTTP (serve same logic on both transports)
+//   domain.OEEToolPort.Bind(ctx, mcpgo.ToolPipelineAdapter(mcpServer, toolHandle, mcpgo.Options{}))
+//   domain.OEEToolPort.Bind(ctx, nethttp.PipelineAdapter(mux, httpHandle, nethttp.Options{}))
+type ToolPort[In, Out any] struct { /* unexported */ }
+
+// NewToolPort creates a ToolPort with the given name, request codec, and response codec.
+func NewToolPort[In, Out any](
+    name      string,
+    inCodec   codex.Codec[In],
+    outCodec  codex.Codec[Out],
+    opts      PortOptions,
+) *ToolPort[In, Out]
+
+// SetPipeline sets the domain pipeline function that handles each request.
+// Must be called before Bind. Call once at startup (init or main.go).
+func (p *ToolPort[In, Out]) SetPipeline(fn func(context.Context, In) gstream.Stream[Out])
+
+// Bind registers the pipeline with a transport adapter. Can be called multiple
+// times to expose the same pipeline on multiple transports (MCP + HTTP).
+// Returns PortBindError if SetPipeline was not called, or if the adapter's
+// Bind call fails.
+func (p *ToolPort[In, Out]) Bind(ctx context.Context, a ToolAdapter[In, Out]) error
+```
+
+#### `adapters/mcpgo/binding.go`
+
+```go
+// adapters/mcpgo/binding.go
+
+// ToolPipelineAdapter returns a [ports.ToolAdapter] that registers the pipeline
+// function as an MCP tool. When Bind is called it calls [RegisterToolPipeline].
+//
+//   domain.OEEToolPort.Bind(ctx, mcpgo.ToolPipelineAdapter(server, toolHandle,
+//       mcpgo.Options{Observer: obs}))
+func ToolPipelineAdapter[In, Out any](
+    server *server.MCPServer,
+    handle *apimcp.ToolHandle[In, Out],
+    opts   Options,
+) ports.ToolAdapter[In, Out]
+
+// ToolLatestAdapter returns a [ports.ToolAdapter] backed by a reactive cache stream.
+// When Bind is called it calls [RegisterToolLatest] with src.
+// Each MCP tool call returns the most recently emitted value from src.
+//
+//   domain.OEEToolPort.Bind(ctx, mcpgo.ToolLatestAdapter(server, toolHandle, oeeStream, mcpgo.Options{}))
+//
+// Note: ToolLatestAdapter ignores the pipeline function set on ToolPort (the
+// response comes from src, not the pipeline fn). This overrides SetPipeline.
+func ToolLatestAdapter[In, Out any](
+    server *server.MCPServer,
+    handle *apimcp.ToolHandle[In, Out],
+    src    gstream.Stream[Out],
+    opts   Options,
+) ports.ToolAdapter[In, Out]
+```
+
+#### Server-side adapters for nethttp, zeromq, mqtt5
+
+Each server adapter wraps the existing `PipelineHandler`/`Serve` pattern:
+
+```go
+// adapters/nethttp/binding.go (addition)
+
+// PipelineAdapter returns a [ports.ToolAdapter] that registers the pipeline
+// function as an HTTP endpoint via [PipelineHandler]. When Bind is called it
+// registers the handler with mux.
+func PipelineAdapter[Req, Resp any](
+    mux    *http.ServeMux,
+    handle *rest.RouteHandle[Req, Resp],
+    opts   Options,
+) ports.ToolAdapter[Req, Resp]
+
+// adapters/zeromq/binding.go (addition)
+
+// ServeAdapter returns a [ports.ToolAdapter] that registers the pipeline
+// function as a ZeroMQ REP server via [Serve] or [ServeRouter].
+func ServeAdapter[Req, Resp any](
+    sock FramedSocket,
+    handle *reqreply.RouteHandle[Req, Resp],
+    opts   ServeOptions,
+) ports.ToolAdapter[Req, Resp]
+
+// adapters/mqtt5/binding.go (addition)
+
+// ServeAdapter returns a [ports.ToolAdapter] that registers the pipeline
+// function as an MQTT5 request/reply server via [Serve].
+func ServeAdapter[Req, Resp any](
+    client MQTTClient,
+    router MQTTRouter,
+    handle *reqreply.RouteHandle[Req, Resp],
+    opts   ServeOptions,
+) ports.ToolAdapter[Req, Resp]
+```
+
+#### What this enables
+
+```go
+// domain/pipeline.go — zero transport imports
+var OEECalcTool = ports.NewToolPort[OEEIn, OEEResult](
+    "oee-calc", oeeInCodec, oeeResultCodec, ports.PortOptions{})
+
+func init() {
+    OEECalcTool.SetPipeline(func(ctx context.Context, req OEEIn) gstream.Stream[OEEResult] {
+        s := gstream.Single(ctx, req)
+        return gstream.Apply(ctx, s, oeeCalcFn, gstream.ApplyOptions{})
+    })
+}
+
+// main.go — serve on all three transports with one line each
+domain.OEECalcTool.Bind(ctx, mcpgo.ToolPipelineAdapter(mcpServer, mcpToolHandle, mcpgo.Options{}))
+domain.OEECalcTool.Bind(ctx, nethttp.PipelineAdapter(mux, httpHandle, nethttp.Options{}))
+domain.OEECalcTool.Bind(ctx, zeromq.ServeAdapter(repSock, zmqHandle, zeromq.ServeOptions{}))
+// Same pipeline logic served on MCP, HTTP, and ZeroMQ — zero domain code changes.
+```
+
+---
+
+### Structured errors (Phase 2 additions)
+
+```go
+// PortNoPipelineError is returned by ToolPort.Bind when SetPipeline was not called.
+type PortNoPipelineError struct {
+    Port string
+}
+func (e PortNoPipelineError) Error() string {
+    return fmt.Sprintf("port %q: no pipeline set — call SetPipeline before Bind", e.Port)
+}
+func (e PortNoPipelineError) LogValue() slog.Value {
+    return slog.GroupValue(slog.String("port", e.Port))
+}
+```
+
+---
+
+### Deferred (not in Phase 2)
+
+- **`forge.App`** — lifecycle manager with graceful shutdown and port dependency graph
+- **Cache ports** (`CachePort[T]` backed by `HandlerLatest`/`ServeLatest`) — different pattern
+- **Auto spec generation from ports** — ports register to AsyncAPI/OpenAPI builders
+- **IOParam ↔ adapter cross-validation** — advisory check at Bind time
+- **Dynamic rebinding** — hot-swap adapter on a running port
+
+---
+
+## Design decisions — resolved
+
+| Question | Resolution |
+|----------|-----------|
+| **Adapter interface sealed or open?** | **Open** — `SourceAdapter[T]`, `SinkAdapter[T]`, `IOAdapter[Req,Resp]` have exported `AdapterName() string` + `Activate`/`Transform` methods. Users can implement custom adapters. |
+| **Where do adapter interfaces live?** | **`ports` package** (not `forge`) — avoids import cycle (`stream` imports `forge`; `forge` imports `stream`). `ports` has no such cycle. |
+| **Fan-out error policy** | **Log + continue** — a broken MQTT sink does not stop SSE delivery. `SinkPort.Feed` catches per-adapter errors via OnError; no adapter termination propagates to others. |
+| **TapWriteFile deprecation** | **Removed** — `file.DrainWriteFileAdapter` + `ports.SinkPort` replaces both `TapWriteFile` and `DrainWriteFile`. |
+| **`adapterName()` method** | **`AdapterName() string`** — exported, used in `PortBindError.Adapter` field for observability. |
+| **IOParam validation timing** | **Per-item only** — adapters validate at message/request time using the IOParam codec. No Bind-time cross-validation in Phase 1. |
+| **Port options shape** | **`PortOptions` struct** — simpler than a sealed `PortOpt` interface; zero boilerplate for callers. |
