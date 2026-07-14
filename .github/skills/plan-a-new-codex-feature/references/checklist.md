@@ -49,6 +49,7 @@ Use this when implementing an approved roadmap feature.
 | Opt interface | Does the new option type implement the sealed `XOpt` interface? |
 | Pointer-free ergonomics | `.WithCodec(c)` not `Codec: &c` |
 | No `Required` on template vars | Path/topic/file/URI template vars always required — no `Required` field |
+| New transports use port adapters | New transport adapter must implement `ports.SourceAdapter[T]`, `ports.SinkAdapter[T]`, `ports.IOAdapter[Req,Resp]` in `adapters/<transport>/binding.go` — NOT standalone `XxxStream` functions |
 
 ### B2. Structured Errors with `slog.LogValuer`
 
@@ -112,6 +113,7 @@ For every new error type:
 | Feature page | `docs/features/<feature>.md` | ✓ all user-facing features |
 | Guide | `docs/guides/<feature>.md` | ✓ if step-by-step workflow |
 | Package doc | `*/doc.go` | ✓ for new packages |
+| Binding file | `adapters/<transport>/binding.go` | ✓ for new transport adapters (SourceAdapter, SinkAdapter, IOAdapter) |
 | Example function | `*_test.go` `Example...()` | ✓ for new packages, major symbols |
 | Project structure | `docs/reference/project-structure.md` | ✓ for new packages/dirs |
 | Roadmap cleanup | Remove from `docs/roadmap/index.md` + `zensical.toml` roadmap nav | ✓ when feature ships |

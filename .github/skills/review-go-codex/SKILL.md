@@ -353,98 +353,83 @@ wait
 
 If an example panics or uses a stale pattern, file a finding.
 
-## Stream Bridge Guardrail
+## Port Adapter Guardrail
 
-Stream bridges connect adapters to `stream.Stream[T]`. Every bridge must be checked against these rules.
+Pipelines are connected to transports via **port adapters** — `ports.SourceAdapter[T]`,
+`ports.SinkAdapter[T]`, and `ports.IOAdapter[Req,Resp]` implementations in each adapter
+package's `binding.go`. Every adapter must be checked against these rules.
 
-### Source bridges (adapter → `stream.Stream[T]`)
+### Rule B1 — Adapter must use the underlying adapter function, not hand-roll IO
 
-#### Rule B1 — Full validation pipeline must run
+Every `SourceAdapter.Activate` must call the same underlying machinery as the non-stream
+adapter function (`SubscribeHandler`, `makeSubscribeMessageHandler`, `gstream.FromCodec`, etc.).
+Do not bypass param codecs, security, or observer calls.
 
-Every source bridge must apply the **same validation pipeline** as the underlying non-stream adapter function. Do not bypass param codecs, security, or observer calls to speed up the bridge.
+| Adapter | Required machinery |
+|---------|-------------------|
+| `mqtt.SubscribeAdapter` | Must call `SubscribeHandler(ctx, handle, fn, innerOpts, fmt)` |
+| `mqtt5.SubscribeAdapter` | Must call `makeSubscribeMessageHandler(ctx, handle, fmts, fn, obs, opts)` |
+| `zeromq.SubscribeAdapter` | Must call `sock.SetSubscription`, `sock.RecvFrames`, `gstream.FromCodec` |
+| `nethttp.IngestAdapter` | Must call `Handler(handle, fn, opts)` via internal ingest logic |
+| `sql.QueryAdapter` | Must call `Validate(codec, row, opts)` per row |
+| `mcpgo.ToolLatestHandler` | Must call `ToolHandler(handle, fn, opts)` |
+| `mcpgo.ToolPipelineHandler` | Must call `ToolHandler(handle, fn, opts)` |
 
-| Bridge | Required validation | How to verify |
-|--------|--------------------|-|
-| `mqtt.SubscribeStream` | `SubscribeHandler` called internally (format priority, security, payload decode, observer, topic-var errors) | Must use `SubscribeHandler(ctx, handle, fn, innerOpts, fmt)` — not a hand-rolled handler |
-| `mqtt5.SubscribeStream` | `makeSubscribeMessageHandler` called internally (ContentType, UserPropertyParams, security, payload decode, observer) | Must use `makeSubscribeMessageHandler(...)` — not a raw `msg.Payload` handler |
-| `zeromq.SubscribeStream` | `SetSubscription(handle.Topic)` called; `ErrTimeout` loop with ctx-check | ZMQ filters at socket level — no per-message topic codec needed |
-| `nethttp.HandlerLatest` | Full `Handler(handle, fn, opts)` wrapping — all 9 HTTP codec layers run | Must call `Handler(...)` not `http.HandlerFunc(func(...){...})` directly |
-| `nethttp.HandlerIngest` | Full `Handler(handle, fn, opts)` wrapping | Must call `Handler(...)` |
-| `nethttp.PipelineHandler` | Full `Handler(handle, fn, opts)` wrapping | Must call `Handler(...)` |
-| `chi.*` | Same as nethttp equivalents | Must call chi `Handler(...)` |
-| `sql.QueryStream` | `Validate(codec, row, opts)` called per row | Must use `adapters/sql.Validate` |
-| `mcpgo.ToolLatestHandler` | `ToolHandler(handle, fn, opts)` wrapping — input schema validation runs | Must call `ToolHandler(...)` |
-| `mcpgo.ToolPipelineHandler` | `ToolHandler(handle, fn, opts)` wrapping — input schema validation runs; each call starts a fresh stream pipeline | Must call `ToolHandler(...)` |
+### Rule B2 — Errors from validation must reach `Stream.Errors` (source adapters) or `OnError` (sink adapters)
 
-**If a source bridge hand-rolls validation logic** instead of delegating to the underlying adapter function, file a `bug` finding.
+Source adapter errors must be routed to the `errs chan<- error` passed to `Activate`:
 
-#### Rule B2 — Errors from validation must reach `Stream.Errors`
+| Adapter | Error routing |
+|---------|--------------|
+| `mqtt.SubscribeAdapter` | `innerOpts.OnError → errs channel` → `PortBindError` via BrokerError |
+| `mqtt5.SubscribeAdapter` | Same via `innerOpts.OnError` |
+| `zeromq.SubscribeAdapter` | Socket errors terminate goroutine → channels close |
+| `sql.QueryAdapter` | `QueryStreamError` → `errs` channel |
+| `file.ScanAdapter` | `ScanError` → `errs` channel |
 
-Source bridge errors must be routed to `Stream.Errors` as typed errors so callers can use `stream.MapErr` / `stream.Retry` to handle them. Do not silently discard errors.
+### Rule B3 — `AsPipelineFunc` wraps the fn, not the serve loop
 
-| Bridge | Error routing | Error types expected |
-|--------|--------------|---------------------|
-| `mqtt.SubscribeStream` | `innerOpts.OnError = func(e SubscribeError) { errCh <- e }` | `mqtt.SubscribeError{Kind, Topic, Err}` |
-| `mqtt5.SubscribeStream` | Same pattern via `innerOpts.OnError` | `mqtt5.SubscribeError{Kind, Topic, Err}` |
-| `zeromq.SubscribeStream` | Socket errors terminate goroutine → channels close → stream ends | `gstream.StreamDecodeError` for payload errors |
-| HTTP bridges | Error handler called (400/503/500) — errors do NOT go to a stream channel | HTTP response is the error signal |
-| `sql.QueryStream` | `QueryStreamError` → `Stream.Errors` | `sql.QueryStreamError{Table, Op, Err}` |
-
-**If a source bridge discards errors** (drops to `default` only, no `errCh <- e`) without routing to `Stream.Errors`, file a `bug` finding.
-
-### Sink bridges (`stream.Stream[T]` → adapter)
-
-#### Rule B3 — Static vs per-item Vars limitation must be documented
-
-`Vars map[string]string` in sink bridge options applies the **same map to every item**. Per-item topic var substitution (e.g., `{sensorID}` from each payload) is not supported. Callers who need per-item vars must use `stream.Drain` with `Publish` directly.
-
-Check: `DrainPublish` options in `mqtt`, `mqtt5`, `zeromq` must have a godoc note explaining the static-only limitation. Missing note = `trivial` finding.
-
-#### Rule B4 — `AsPipelineFunc` wraps the fn, not the serve loop
-
-`AsPipelineFunc` in `mqtt5` and `zeromq` must wrap the **handler function** passed to `Serve`/`ServeRouter`, not add a new `Serve` variant. This keeps all codec validation, observer calls, and error reply logic in the existing adapter. Verify:
-- `mqtt5.AsPipelineFunc` returns `func(context.Context, Req) (Resp, error)` wrapping `stream.Single + stream.Collect`
-- `zeromq.AsPipelineFunc` same pattern
+`AsPipelineFunc` in `mqtt5` and `zeromq` must wrap the **handler function** passed to `Serve`/`ServeRouter`. Verify:
+- Returns `func(context.Context, Req) (Resp, error)` wrapping `stream.Collect`
 - `PipelineNoResponseError{Topic}` returned when pipeline emits zero values
+- No new `Serve` variant added
 
 ### HTTP codec layer verification
 
-All HTTP bridge helpers must apply **all 9 codec layers** by delegating to `Handler`. Verify the exact call path:
+All HTTP server stream helpers must apply **all 9 codec layers** by delegating to `Handler`:
 
 ```
 Request:  body codec → ValidateQuery → ValidateCookies → ValidateHeaders → ValidatePathParams → security
 Response: handle.Encode → ValidateResponseHeaders → ValidateResponseCookies
 ```
 
-Special case — `HandlerIngest` param value gap (by design, not a bug):
-- Path/query/cookie/header param VALUES are validated (errors → 400) but NOT included in the channel item
-- Only the body-decoded `Req` is pushed to `dst`
-- **Do not flag as a bug** — documented design limitation
-- Check that the godoc note is present: "For routes where param values must reach the pipeline, use `Handler` directly with `RequestFromContext(ctx)`"
+`nethttp.IngestAdapter` uses `Handler` internally. Path/query/cookie/header param VALUES are
+validated but NOT included in the channel item — design limitation, not a bug.
 
-### New error types in stream bridges
+### Error types in port adapters
 
-All new stream bridge error types must implement `slog.LogValuer`. Verify for each package:
+All adapter error types must implement `slog.LogValuer`. Verify for each package:
 
-| Package | Bridge error types |
-|---------|-------------------|
-| `adapters/nethttp` | `NoLatestValueError{Path}`, `PipelineFullError{Path,Capacity}`, `PipelineNoResponseError{Path}`, `SSEWriteError{Path,Err}`, `SSEConnectError{URL,Attempt,Err}`, `SSEParseError{URL,Line,Err}` |
-| `adapters/chi` | `NoLatestValueError{Path}`, `PipelineFullError{Path,Capacity}`, `PipelineNoResponseError{Path}`, `SSEWriteError{Path,Err}` |
+| Package | Error types |
+|---------|-------------|
+| `adapters/nethttp` | `NoLatestValueError{Path}`, `PipelineFullError{Path,Capacity}`, `PipelineNoResponseError{Path}`, `SSEWriteError{Path,Err}` |
+| `adapters/chi` | Same as nethttp |
 | `adapters/zeromq` | `ServeLatestError{Op,Err}`, `NoLatestValueError{Topic}`, `CorrelationError{Seq,Err}`, `PipelineNoResponseError{Topic}` |
-| `adapters/mqtt5` | `PipelineNoResponseError{Topic}` |
-| `adapters/sql` | `QueryStreamError{Table,Op,Err}`, `InsertStreamError{Table,Op,Err}` |
-| `adapters/file` | `ScanError{Path,Err}`, `WatchError{Dir,Err}`, `WriteError{Path,Err}` |
+| `adapters/mqtt5` | `PipelineNoResponseError{Topic}`, `BrokerError{Op,Err}` |
+| `adapters/sql` | `QueryStreamError{Table,Op,Err}`, `InsertStreamError{Table,Op,Err}`, `RowValidationError{Table,Op,Err}` |
+| `adapters/file` | `ScanError{Path,Err}`, `WatchError{Dir,Err}`, `WriteError{Path,Err}`, `ReadError{Err}` |
+| `ports` | `PortBindError{Port,Adapter,Err}`, `PortNoAdapterError{Port}` |
 
-Rule: errors with an inner `Err` field implement `Unwrap()`; terminal errors (no inner cause) do not. Violation = `small` finding.
+Rule: errors with an inner `Err` field implement `Unwrap()`; terminal errors do not.
 
 ### `stream.Single[T]` usage pattern
 
-`stream.Single(ctx, v T) Stream[T]` is the canonical per-request pipeline entry point. It must:
-- Emit `v` exactly once, then close
-- Never write to `Stream.Errors`
-- Use a buffered channel of size 1 internally (not unbuffered, to avoid goroutine leak on ctx cancel before consumer reads)
+`stream.Single(ctx, v T) Stream[T]` is the canonical per-request pipeline entry point:
+- Emits `v` exactly once, then closes
+- Never writes to `Stream.Errors`
+- Uses a buffered channel of size 1 internally
 
-Used correctly in: `PipelineHandlerFunc`, `AsPipelineFunc`. Do not flag `Single` as an issue in these contexts.
+Used correctly in: `PipelineHandlerFunc`, `AsPipelineFunc`. Do not flag as an issue.
 
 ---
 
@@ -463,11 +448,12 @@ Used correctly in: `PipelineHandlerFunc`, `AsPipelineFunc`. Do not flag `Single`
 - **`api/mcp` has no security methods.** No `AddSecurityScheme`, `AddGlobalSecurity`, or `SecurityFunc` — MCP security is handled separately and not part of the core `api/mcp` builder. This is by design.
 - **Do not invent new API surface** during a review. Findings should fix inconsistencies in existing API, not design new features.
 - **Update `go-codex.instructions.md` after every code change.** The instructions file is the single source of design truth — it must stay in sync.
-- **`HandlerIngest` only pushes body `Req` to channel.** Path/query/cookie/header param values are validated (errors → 400) but not included in the channel item. This is documented design, not a bug. Do not flag.
-- **`mqtt.SubscribeStream` is fully declarative — takes client + qos, subscribes internally, returns `Stream[T]` only.** Fixed in R43 (breaking change). Old signature returned `(Stream[T], pahomqtt.MessageHandler)` — caller had to register. If you see the old two-return pattern, it is stale. The bridge must use `SubscribeHandler(ctx, handle, fn, innerOpts, fmt)` internally — not a hand-rolled handler.
-- **`mqtt5.SubscribeStream` is fully declarative — takes client + router + qos, subscribes + registers internally, returns `Stream[T]` only.** Fixed in R43 (breaking change). Old signature returned `(Stream[T], func(*paho.Publish))` — caller had to register. Bridge must use `makeSubscribeMessageHandler(...)` internally — not a raw `msg.Payload` handler. `SubscribeOptions.TopicFilter` overrides `handle.Topic` for the MQTT broker subscribe filter (needed when handle stores template but broker needs wildcard).
-- **`zeromq.CallStream` must include `Vars` in `CallStreamOptions`.** Fixed in R35. Without `Vars`, topic var codec validation is silently skipped per call.
+- **Stream bridge helpers (`SubscribeStream`, `DrainPublish`, `CallStream`, `HandlerIngest`, etc.) have been removed.** Replaced by port adapters in `binding.go` files. If you see calls to these removed functions, they are stale code — replace with `ports.SourcePort.Bind(mqtt.SubscribeAdapter(...))` etc.
+- **Port adapter wiring belongs in main.go / application layer, not pipeline code.** `domain/pipeline.go` must have zero imports from `adapters/*`. Only `ports`, `stream`, `forge`, `codex`, `format` are allowed in pipeline code.
+- **`nethttp.IngestAdapter` only delivers body `Req` to the port.** Path/query/cookie/header param values are validated (errors → HTTP 400) but not included in the pipeline item. Design limitation, not a bug.
+- **`zeromq.CallAdapter`/`mqtt5.CallAdapter` carry `Vars` in `CallStreamOptions`.** These are static vars (same map for every item). For per-item var substitution use `gstream.Drain` + `Call` directly.
 - **`AsPipelineFunc` does NOT add a new `Serve` variant.** It wraps the `fn` argument only. `Serve` API is unchanged. This is correct by design.
+- **`ports.IOPort` accepts exactly one adapter.** A second `Bind` call returns `PortBindError`. Only `SourcePort` supports fan-in; only `SinkPort` supports fan-out.
 - **Stream bridge errors go to `Stream.Errors`, not a separate callback.** In source bridges, `subOpts.OnError` is overridden internally to route errors to the error channel. Callers who set `OnError` in `subOpts` before calling `SubscribeStream` will have it overridden — documented in godoc.
 - **Static `Vars` in `DrainPublish`.** Same map applied to every item. Per-item topic var substitution requires `stream.Drain` + `Publish` directly. Do not flag as bug — documented limitation.
 - **`stream.Single` uses a size-1 buffered channel.** This allows `deliver(handler, payload); cancel()` test patterns to work without goroutine leaks. Do not flag the buffered channel as inconsistency with `From` (which is unbuffered).

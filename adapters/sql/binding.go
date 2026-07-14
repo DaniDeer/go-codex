@@ -1,3 +1,17 @@
+// Package sql provides protocol-agnostic SQL adapter bindings for the ports package.
+//
+// All adapters implement the [ports.SourceAdapter], [ports.SinkAdapter], and
+// [ports.IOAdapter] interfaces and are wired to pipelines via
+// [ports.SourcePort.Bind], [ports.SinkPort.Bind], and [ports.IOPort.Bind].
+//
+// Sources (use with [ports.SourcePort]):
+//   - [QueryAdapter] — polls a SQL query at interval, emitting each validated row
+//
+// Intermediate (use with [ports.IOPort]):
+//   - [QueryEachAdapter] — per-item parameterized SQL query (1:N rows per item)
+//
+// Sinks (use with [ports.SinkPort]):
+//   - [DrainInsertAdapter] — validates and inserts each item via insertFn
 package sql
 
 import (
@@ -6,13 +20,26 @@ import (
 
 	"github.com/DaniDeer/go-codex/codex"
 	"github.com/DaniDeer/go-codex/ports"
+	"github.com/DaniDeer/go-codex/stats"
 	gstream "github.com/DaniDeer/go-codex/stream"
 )
 
 // ── QueryAdapter ──────────────────────────────────────────────────────────────
 
+// QueryStreamOptions configures [QueryAdapter].
+type QueryStreamOptions struct {
+	// Table names the table being queried. Used in [QueryStreamError] context.
+	Table string
+	// Op names the query operation. Used in [QueryStreamError] context.
+	Op string
+	// Observer receives per-row lifecycle events.
+	Observer stats.Observer
+	// Buffer is the output stream channel buffer size. Default 0.
+	Buffer int
+}
+
 // QueryAdapter returns a [ports.SourceAdapter] that polls a SQL query at interval,
-// emitting each row. Use with [ports.SourcePort.Bind]:
+// emitting each validated row. Use with [ports.SourcePort.Bind]:
 //
 //	domain.Configs.Bind(ctx, sql.QueryAdapter(configCodec,
 //	    func(ctx context.Context) ([]Config, error) { return db.ListConfigs(ctx) },
@@ -36,32 +63,46 @@ type sqlQueryAdapter[T any] struct {
 func (a *sqlQueryAdapter[T]) AdapterName() string { return "sql.QueryAdapter" }
 
 func (a *sqlQueryAdapter[T]) Activate(ctx context.Context, dst chan<- T, errs chan<- error) {
-	s := QueryStream(ctx, a.codec, a.queryFn, a.interval, a.opts)
-	valCh := s.Values
-	errCh := s.Errors
-	for valCh != nil || errCh != nil {
+	obs := a.opts.Observer
+	if obs == nil {
+		obs = stats.ObserverFromContext(ctx)
+	}
+	ticker := time.NewTicker(a.interval)
+	defer ticker.Stop()
+	for {
 		select {
 		case <-ctx.Done():
 			return
-		case v, ok := <-valCh:
-			if !ok {
-				valCh = nil
+		case <-ticker.C:
+			rows, err := a.queryFn(ctx)
+			if err != nil {
+				qse := QueryStreamError{Table: a.opts.Table, Op: a.opts.Op, Err: err}
+				select {
+				case errs <- qse:
+				case <-ctx.Done():
+					return
+				}
 				continue
 			}
-			select {
-			case dst <- v:
-			case <-ctx.Done():
-				return
-			}
-		case e, ok := <-errCh:
-			if !ok {
-				errCh = nil
-				continue
-			}
-			select {
-			case errs <- e:
-			case <-ctx.Done():
-				return
+			for _, row := range rows {
+				validated, valErr := Validate(a.codec, row, ValidateOptions{
+					Table:    a.opts.Table,
+					Op:       a.opts.Op,
+					Observer: obs,
+				})
+				if valErr != nil {
+					select {
+					case errs <- valErr:
+					case <-ctx.Done():
+						return
+					}
+					continue
+				}
+				select {
+				case dst <- validated:
+				case <-ctx.Done():
+					return
+				}
 			}
 		}
 	}
@@ -69,8 +110,16 @@ func (a *sqlQueryAdapter[T]) Activate(ctx context.Context, dst chan<- T, errs ch
 
 // ── DrainInsertAdapter ────────────────────────────────────────────────────────
 
-// DrainInsertAdapter returns a [ports.SinkAdapter] that inserts each item via
-// insertFn. Use with [ports.SinkPort.Bind]:
+// DrainInsertOptions configures [DrainInsertAdapter].
+type DrainInsertOptions struct {
+	Table    string
+	Op       string
+	OnError  func(error)
+	Observer stats.Observer
+}
+
+// DrainInsertAdapter returns a [ports.SinkAdapter] that validates and inserts
+// each item via insertFn. Use with [ports.SinkPort.Bind]:
 //
 //	domain.Readings.Bind(ctx, sql.DrainInsertAdapter(readingCodec,
 //	    func(ctx context.Context, r Reading) error { return db.Insert(ctx, r) },
@@ -92,10 +141,50 @@ type sqlDrainInsertAdapter[T any] struct {
 func (a *sqlDrainInsertAdapter[T]) AdapterName() string { return "sql.DrainInsertAdapter" }
 
 func (a *sqlDrainInsertAdapter[T]) Activate(ctx context.Context, src gstream.Stream[T]) {
-	DrainInsert(ctx, a.codec, src, a.insertFn, a.opts)
+	obs := a.opts.Observer
+	if obs == nil {
+		obs = stats.ObserverFromContext(ctx)
+	}
+	onErr := a.opts.OnError
+	gstream.Drain(ctx, src,
+		func(ctx context.Context, v T) error {
+			validated, valErr := Validate(a.codec, v, ValidateOptions{
+				Table:    a.opts.Table,
+				Op:       a.opts.Op,
+				Observer: obs,
+			})
+			if valErr != nil {
+				if onErr != nil {
+					onErr(valErr)
+				}
+				return nil
+			}
+			if err := a.insertFn(ctx, validated); err != nil {
+				ise := InsertStreamError{Table: a.opts.Table, Op: a.opts.Op, Err: err}
+				if onErr != nil {
+					onErr(ise)
+				}
+			}
+			return nil
+		},
+		func(e error) {
+			if onErr != nil {
+				onErr(e)
+			}
+		},
+		gstream.DrainOptions{Observer: obs},
+	)
 }
 
 // ── QueryEachAdapter ──────────────────────────────────────────────────────────
+
+// QueryEachStreamOptions configures [QueryEachAdapter].
+type QueryEachStreamOptions struct {
+	Table    string
+	Op       string
+	Observer stats.Observer
+	Buffer   int
+}
 
 // QueryEachAdapter returns a [ports.IOAdapter] that performs a parameterized SQL
 // query for each In item, emitting each result row as a T item (1:N). Use with
@@ -105,8 +194,6 @@ func (a *sqlDrainInsertAdapter[T]) Activate(ctx context.Context, src gstream.Str
 //	    func(ctx context.Context, s SensorReading) ([]Threshold, error) {
 //	        return db.GetThresholdBySensor(ctx, s.SensorID)
 //	    }, sql.QueryEachStreamOptions{Table: "thresholds", Op: "get_by_sensor"}))
-//
-// One In item may produce N T items. Use [ports.IOPort] with [ports.NewIOPort][In, T].
 func QueryEachAdapter[In, T any](
 	codec codex.Codec[T],
 	queryFn func(context.Context, In) ([]T, error),
@@ -124,5 +211,68 @@ type sqlQueryEachAdapter[In, T any] struct {
 func (a *sqlQueryEachAdapter[In, T]) AdapterName() string { return "sql.QueryEachAdapter" }
 
 func (a *sqlQueryEachAdapter[In, T]) Transform(ctx context.Context, src gstream.Stream[In]) gstream.Stream[T] {
-	return QueryEachStream(ctx, a.codec, src, a.queryFn, a.opts)
+	obs := a.opts.Observer
+	if obs == nil {
+		obs = stats.ObserverFromContext(ctx)
+	}
+	values := make(chan T, a.opts.Buffer)
+	errs := make(chan error, a.opts.Buffer)
+	go func() {
+		defer close(values)
+		defer close(errs)
+		valCh := src.Values
+		errCh := src.Errors
+		for valCh != nil || errCh != nil {
+			select {
+			case <-ctx.Done():
+				return
+			case item, ok := <-valCh:
+				if !ok {
+					valCh = nil
+					continue
+				}
+				rows, err := a.queryFn(ctx, item)
+				if err != nil {
+					qse := QueryStreamError{Table: a.opts.Table, Op: a.opts.Op, Err: err}
+					select {
+					case errs <- qse:
+					case <-ctx.Done():
+						return
+					}
+					continue
+				}
+				for _, row := range rows {
+					validated, valErr := Validate(a.codec, row, ValidateOptions{
+						Table:    a.opts.Table,
+						Op:       a.opts.Op,
+						Observer: obs,
+					})
+					if valErr != nil {
+						select {
+						case errs <- valErr:
+						case <-ctx.Done():
+							return
+						}
+						continue
+					}
+					select {
+					case values <- validated:
+					case <-ctx.Done():
+						return
+					}
+				}
+			case e, ok := <-errCh:
+				if !ok {
+					errCh = nil
+					continue
+				}
+				select {
+				case errs <- e:
+				case <-ctx.Done():
+					return
+				}
+			}
+		}
+	}()
+	return gstream.Stream[T]{Values: values, Errors: errs}
 }

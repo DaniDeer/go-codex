@@ -1,6 +1,7 @@
 package nethttp_test
 
 import (
+	"bufio"
 	"context"
 	"errors"
 	"fmt"
@@ -12,7 +13,6 @@ import (
 
 	nethttp "github.com/DaniDeer/go-codex/adapters/nethttp"
 	"github.com/DaniDeer/go-codex/api/rest"
-	"github.com/DaniDeer/go-codex/codex"
 	gstream "github.com/DaniDeer/go-codex/stream"
 )
 
@@ -84,78 +84,6 @@ func TestHandlerLatest_NoValueReturns503(t *testing.T) {
 	var nlv nethttp.NoLatestValueError
 	if !errors.As(capturedErr, &nlv) {
 		t.Errorf("want NoLatestValueError, got %T", capturedErr)
-	}
-}
-
-// ── HandlerIngest ─────────────────────────────────────────────────────────────
-
-func newIngestHandle() (*rest.RouteHandle[createReq, struct{}], error) {
-	b := rest.NewBuilder(testInfo)
-	return rest.NewRoute[createReq, struct{}]("POST", "/ingest",
-		createReqCodec, codex.Struct[struct{}](), rest.RouteMeta{OperationID: "ingest"}).Register(b)
-}
-
-func TestHandlerIngest_WritesToChannel(t *testing.T) {
-	handle, err := newIngestHandle()
-	if err != nil {
-		t.Fatalf("build route: %v", err)
-	}
-
-	dst := make(chan createReq, 1)
-	h := nethttp.HandlerIngest(handle, dst, nethttp.Options{})
-
-	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodPost, "/ingest",
-		strings.NewReader(`{"name":"Alice"}`))
-	req.Header.Set("Content-Type", "application/json")
-	h.ServeHTTP(rec, req)
-
-	// POST routes default to 201 Created.
-	if rec.Code != http.StatusCreated {
-		t.Errorf("want 201, got %d: %s", rec.Code, rec.Body.String())
-	}
-	select {
-	case got := <-dst:
-		if got.Name != "Alice" {
-			t.Errorf("want Alice, got %q", got.Name)
-		}
-	default:
-		t.Error("want item in channel, got empty")
-	}
-}
-
-func TestHandlerIngest_FullChannelReturns503(t *testing.T) {
-	handle, err := newIngestHandle()
-	if err != nil {
-		t.Fatalf("build route: %v", err)
-	}
-
-	dst := make(chan createReq, 1)
-	dst <- createReq{Name: "existing"} // fill the channel
-
-	var capturedErr error
-	h := nethttp.HandlerIngest(handle, dst, nethttp.Options{
-		ErrorHandler: func(w http.ResponseWriter, _ *http.Request, status int, e error) {
-			capturedErr = e
-			http.Error(w, e.Error(), status)
-		},
-	})
-
-	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodPost, "/ingest",
-		strings.NewReader(`{"name":"Bob"}`))
-	req.Header.Set("Content-Type", "application/json")
-	h.ServeHTTP(rec, req)
-
-	if rec.Code != http.StatusServiceUnavailable {
-		t.Errorf("want 503, got %d", rec.Code)
-	}
-	var pfe nethttp.PipelineFullError
-	if !errors.As(capturedErr, &pfe) {
-		t.Errorf("want PipelineFullError, got %T", capturedErr)
-	}
-	if pfe.Capacity != 1 {
-		t.Errorf("Capacity: want 1, got %d", pfe.Capacity)
 	}
 }
 
@@ -285,5 +213,87 @@ func TestPipelineHandler_WithTapObservation(t *testing.T) {
 	}
 	if tapped != "Carol" {
 		t.Errorf("tapped: want Carol, got %q", tapped)
+	}
+}
+
+// ── SSEFromHub ────────────────────────────────────────────────────────────────
+
+func newSSEHandle(t *testing.T) *rest.SSERouteHandle[getReq, userResp] {
+	t.Helper()
+	b := rest.NewBuilder(testInfo)
+	h, err := rest.NewSSERoute[getReq, userResp]("/events",
+		getReqCodec, userRespCodec, rest.RouteMeta{OperationID: "streamEvents"}).Register(b)
+	if err != nil {
+		t.Fatalf("register SSE route: %v", err)
+	}
+	return h
+}
+
+func readSSEEvents(t *testing.T, resp *http.Response, want int) []string {
+	t.Helper()
+	var lines []string
+	scanner := bufio.NewScanner(resp.Body)
+	for scanner.Scan() {
+		line := scanner.Text()
+		if strings.HasPrefix(line, "data: ") {
+			lines = append(lines, strings.TrimPrefix(line, "data: "))
+		}
+		if len(lines) >= want {
+			break
+		}
+	}
+	return lines
+}
+
+func TestSSEFromHub_BroadcastsToAllClients(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	handle := newSSEHandle(t)
+
+	valCh := make(chan userResp, 3)
+	src := gstream.From(ctx, valCh)
+	hub := gstream.NewBroadcastHub(ctx, src, 8)
+
+	fn := nethttp.SSEFromHub[getReq, userResp](hub, nethttp.SSEStreamOptions{Topic: "/events"})
+	h := nethttp.SSEHandler(handle, fn, nethttp.Options{})
+	srv := httptest.NewServer(h)
+	defer srv.Close()
+
+	type result struct {
+		resp *http.Response
+		err  error
+	}
+	ch1 := make(chan result, 1)
+	ch2 := make(chan result, 1)
+	connect := func(dst chan<- result) {
+		req, _ := http.NewRequestWithContext(ctx, http.MethodGet, srv.URL+"/events", nil)
+		r, e := http.DefaultClient.Do(req)
+		dst <- result{r, e}
+	}
+	go connect(ch1)
+	go connect(ch2)
+
+	time.Sleep(50 * time.Millisecond)
+	valCh <- userResp{ID: "u1", Name: "Alice"}
+	close(valCh)
+
+	res1 := <-ch1
+	if res1.err != nil {
+		t.Fatalf("client 1: %v", res1.err)
+	}
+	defer res1.resp.Body.Close()
+
+	res2 := <-ch2
+	if res2.err != nil {
+		t.Fatalf("client 2: %v", res2.err)
+	}
+	defer res2.resp.Body.Close()
+
+	if ev1 := readSSEEvents(t, res1.resp, 1); len(ev1) != 1 {
+		t.Errorf("client1: want 1 event, got %d", len(ev1))
+	}
+	if ev2 := readSSEEvents(t, res2.resp, 1); len(ev2) != 1 {
+		t.Errorf("client2: want 1 event, got %d", len(ev2))
 	}
 }

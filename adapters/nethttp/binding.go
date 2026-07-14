@@ -7,6 +7,7 @@ import (
 
 	"github.com/DaniDeer/go-codex/api/rest"
 	"github.com/DaniDeer/go-codex/ports"
+	"github.com/DaniDeer/go-codex/stats"
 	gstream "github.com/DaniDeer/go-codex/stream"
 )
 
@@ -14,15 +15,13 @@ import (
 
 // IngestAdapterOptions configures [IngestAdapter].
 type IngestAdapterOptions struct {
-	// Options are passed to [HandlerIngest] (observer, security, error handler).
 	Options Options
-	// Buffer is the per-port ingest channel buffer size. Default 0.
-	Buffer int
+	Buffer  int
 }
 
 // IngestAdapter returns a [ports.SourceAdapter] that accepts HTTP requests as
-// pipeline items. When Activate is called it registers a handler with mux and
-// runs until ctx is cancelled. Use with [ports.SourcePort.Bind]:
+// pipeline items. When Activate is called it registers a handler with mux.
+// Use with [ports.SourcePort.Bind]:
 //
 //	domain.SensorReadings.Bind(ctx, nethttp.IngestAdapter(
 //	    mux, ingestHandle, nethttp.IngestAdapterOptions{Buffer: 8}))
@@ -44,11 +43,28 @@ func (a *nethttpIngestAdapter[T]) AdapterName() string { return "nethttp.IngestA
 
 func (a *nethttpIngestAdapter[T]) Activate(ctx context.Context, dst chan<- T, errs chan<- error) {
 	ch := make(chan T, a.opts.Buffer)
-	h := HandlerIngest(a.handle, ch, a.opts.Options)
-	key := a.handle.Descriptor.Method + " " + a.handle.Descriptor.Path
-	a.mux.Handle(key, h)
+	// Inline HandlerIngest logic: wrap opts.ErrorHandler for PipelineFullError → 503.
+	wrappedOpts := a.opts.Options
+	wrappedOpts.ErrorHandler = remapStatus(a.opts.Options.ErrorHandler, func(err error) int {
+		var pfe PipelineFullError
+		if isErrorAs(err, &pfe) {
+			return http.StatusServiceUnavailable
+		}
+		return 0
+	})
+	h := Handler(a.handle, func(_ context.Context, req T) (struct{}, error) {
+		select {
+		case ch <- req:
+			return struct{}{}, nil
+		default:
+			return struct{}{}, PipelineFullError{
+				Path:     a.handle.Descriptor.Path,
+				Capacity: cap(ch),
+			}
+		}
+	}, wrappedOpts)
+	a.mux.Handle(a.handle.Descriptor.Method+" "+a.handle.Descriptor.Path, h)
 
-	// relay from the handler channel to the port's dst
 	go func() {
 		for {
 			select {
@@ -69,22 +85,27 @@ func (a *nethttpIngestAdapter[T]) Activate(ctx context.Context, dst chan<- T, er
 	<-ctx.Done()
 }
 
+// isErrorAs is a type-assert helper used by binding.go only.
+func isErrorAs[T any](err error, target *T) bool {
+	if v, ok := err.(T); ok {
+		*target = v
+		return true
+	}
+	return false
+}
+
 // ── SSEAdapter ────────────────────────────────────────────────────────────────
 
 // SSEAdapterOptions configures [SSEAdapter].
 type SSEAdapterOptions struct {
-	// Options are passed to [RegisterSSE].
-	Options Options
-	// SSEStreamOptions configure the per-connection stream handler.
+	Options          Options
 	SSEStreamOptions SSEStreamOptions
 }
 
 // SSEAdapter returns a [ports.SinkAdapter] that serves each item from the SinkPort
-// as an SSE event to all connected clients. When Activate is called it registers
-// an SSEFromHub-backed handler with mux. Use with [ports.SinkPort.Bind]:
+// as an SSE event to all connected clients. Use with [ports.SinkPort.Bind]:
 //
-//	domain.OEEResults.Bind(ctx, nethttp.SSEAdapter(mux, sseHandle,
-//	    nethttp.SSEAdapterOptions{}))
+//	domain.OEEResults.Bind(ctx, nethttp.SSEAdapter(mux, sseHandle, nethttp.SSEAdapterOptions{}))
 func SSEAdapter[Event any](
 	mux *http.ServeMux,
 	handle *rest.SSERouteHandle[struct{}, Event],
@@ -109,18 +130,26 @@ func (a *nethttpSSEAdapter[Event]) Activate(ctx context.Context, src gstream.Str
 	}
 	fn := SSEFromHub[struct{}, Event](hub, sseOpts)
 	RegisterSSE(a.mux, a.handle, fn, a.opts.Options)
-	// Block until src terminates (hub runs the stream goroutine).
 	<-ctx.Done()
 }
 
 // ── CallAdapter ───────────────────────────────────────────────────────────────
 
+// CallStreamOptions configures [CallAdapter].
+type CallStreamOptions struct {
+	// Vars, when non-nil, substitutes {varName} placeholders in the route's path template.
+	// The same map is used for every request (static path vars only).
+	Vars     map[string]string
+	CallOpts CallOptions
+	// Buffer is the output Stream channel buffer size. Default 0.
+	Buffer int
+}
+
 // CallAdapter returns a [ports.IOAdapter] that sends each item as an HTTP request,
 // emitting responses downstream. Use with [ports.IOPort.Bind]:
 //
 //	domain.Calibration.Bind(ctx, nethttp.CallAdapter(
-//	    httpClient, "http://svc:8080", calibHandle,
-//	    nethttp.CallAdapterOptions{}))
+//	    httpClient, "http://svc:8080", calibHandle, nethttp.CallStreamOptions{}))
 func CallAdapter[Req, Resp any](
 	client *http.Client,
 	baseURL string,
@@ -140,17 +169,68 @@ type nethttpCallAdapter[Req, Resp any] struct {
 func (a *nethttpCallAdapter[Req, Resp]) AdapterName() string { return "nethttp.CallAdapter" }
 
 func (a *nethttpCallAdapter[Req, Resp]) Transform(ctx context.Context, src gstream.Stream[Req]) gstream.Stream[Resp] {
-	return CallStream(ctx, a.client, a.baseURL, a.handle, src, a.opts)
+	values := make(chan Resp, a.opts.Buffer)
+	errs := make(chan error, a.opts.Buffer)
+	go func() {
+		defer close(values)
+		defer close(errs)
+		valCh := src.Values
+		errCh := src.Errors
+		for valCh != nil || errCh != nil {
+			select {
+			case <-ctx.Done():
+				return
+			case req, ok := <-valCh:
+				if !ok {
+					valCh = nil
+					continue
+				}
+				resp, err := Call(ctx, a.client, a.baseURL, a.handle, req, a.opts.Vars, a.opts.CallOpts)
+				if err != nil {
+					select {
+					case errs <- err:
+					case <-ctx.Done():
+						return
+					}
+					continue
+				}
+				select {
+				case values <- resp:
+				case <-ctx.Done():
+					return
+				}
+			case e, ok := <-errCh:
+				if !ok {
+					errCh = nil
+					continue
+				}
+				select {
+				case errs <- e:
+				case <-ctx.Done():
+					return
+				}
+			}
+		}
+	}()
+	return gstream.Stream[Resp]{Values: values, Errors: errs}
 }
 
 // ── PollAdapter ───────────────────────────────────────────────────────────────
+
+// PollStreamOptions configures [PollAdapter].
+type PollStreamOptions struct {
+	// Vars, when non-nil, substitutes {varName} placeholders in the route's path template.
+	// The same map is used for every poll (static path vars only).
+	Vars     map[string]string
+	Observer stats.Observer
+	Buffer   int
+}
 
 // PollAdapter returns a [ports.SourceAdapter] that polls an HTTP endpoint at
 // interval, emitting each response. Use with [ports.SourcePort.Bind]:
 //
 //	domain.Configs.Bind(ctx, nethttp.PollAdapter(
-//	    client, "http://config-svc", configHandle, ConfigReq{},
-//	    5*time.Minute, nethttp.PollAdapterOptions{}))
+//	    client, "http://config-svc", configHandle, ConfigReq{}, 5*time.Minute, nethttp.PollStreamOptions{}))
 func PollAdapter[Req, Resp any](
 	client *http.Client,
 	baseURL string,
@@ -177,9 +257,41 @@ type nethttpPollAdapter[Req, Resp any] struct {
 func (a *nethttpPollAdapter[Req, Resp]) AdapterName() string { return "nethttp.PollAdapter" }
 
 func (a *nethttpPollAdapter[Req, Resp]) Activate(ctx context.Context, dst chan<- Resp, errs chan<- error) {
-	s := PollStream(ctx, a.client, a.baseURL, a.handle, a.req, a.interval, a.opts)
-	valCh := s.Values
-	errCh := s.Errors
+	obs := a.opts.Observer
+	if obs == nil {
+		obs = stats.ObserverFromContext(ctx)
+	}
+	values := make(chan Resp, a.opts.Buffer)
+	errChan := make(chan error, a.opts.Buffer)
+	go func() {
+		defer close(values)
+		defer close(errChan)
+		ticker := time.NewTicker(a.interval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				resp, err := Call(ctx, a.client, a.baseURL, a.handle, a.req, a.opts.Vars, CallOptions{Observer: obs})
+				if err != nil {
+					select {
+					case errChan <- err:
+					case <-ctx.Done():
+						return
+					}
+					continue
+				}
+				select {
+				case values <- resp:
+				case <-ctx.Done():
+					return
+				}
+			}
+		}
+	}()
+	valCh := values
+	errCh := errChan
 	for valCh != nil || errCh != nil {
 		select {
 		case <-ctx.Done():
@@ -210,12 +322,19 @@ func (a *nethttpPollAdapter[Req, Resp]) Activate(ctx context.Context, dst chan<-
 
 // ── DrainCallAdapter ──────────────────────────────────────────────────────────
 
+// DrainCallOptions configures [DrainCallAdapter].
+type DrainCallOptions struct {
+	// Vars, when non-nil, substitutes {varName} placeholders in the route's path template.
+	Vars     map[string]string
+	OnError  func(error)
+	CallOpts CallOptions
+}
+
 // DrainCallAdapter returns a [ports.SinkAdapter] that calls an HTTP endpoint
-// for each item (fire-and-forget; response is discarded). Use with [ports.SinkPort.Bind]:
+// for each item (fire-and-forget; response discarded). Use with [ports.SinkPort.Bind]:
 //
 //	domain.Events.Bind(ctx, nethttp.DrainCallAdapter(
-//	    client, "http://audit-svc", auditHandle,
-//	    nethttp.DrainCallOptions{}))
+//	    client, "http://audit-svc", auditHandle, nethttp.DrainCallOptions{}))
 func DrainCallAdapter[Req, Resp any](
 	client *http.Client,
 	baseURL string,
@@ -235,5 +354,21 @@ type nethttpDrainCallAdapter[Req, Resp any] struct {
 func (a *nethttpDrainCallAdapter[Req, Resp]) AdapterName() string { return "nethttp.DrainCallAdapter" }
 
 func (a *nethttpDrainCallAdapter[Req, Resp]) Activate(ctx context.Context, src gstream.Stream[Req]) {
-	DrainCall(ctx, a.client, a.baseURL, a.handle, src, a.opts)
+	onErr := a.opts.OnError
+	gstream.Drain(ctx, src,
+		func(ctx context.Context, item Req) error {
+			if _, err := Call(ctx, a.client, a.baseURL, a.handle, item, a.opts.Vars, a.opts.CallOpts); err != nil {
+				if onErr != nil {
+					onErr(err)
+				}
+			}
+			return nil
+		},
+		func(e error) {
+			if onErr != nil {
+				onErr(e)
+			}
+		},
+		gstream.DrainOptions{Observer: a.opts.CallOpts.Observer},
+	)
 }

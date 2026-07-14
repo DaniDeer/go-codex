@@ -142,6 +142,19 @@ func (r *mockRouter) UnregisterHandler(topic string) {
 	r.mu.Unlock()
 }
 
+// waitHandler blocks until the handler for topic is registered or 1 second passes.
+func (r *mockRouter) waitHandler(topic string) {
+	for i := 0; i < 200; i++ {
+		r.mu.Lock()
+		_, ok := r.handlers[topic]
+		r.mu.Unlock()
+		if ok {
+			return
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+}
+
 func (r *mockRouter) dispatch(topic string, msg *pahomqtt5.Publish) {
 	r.mu.Lock()
 	h := r.handlers[topic]

@@ -48,7 +48,9 @@ Read the relevant packages and how similar features are built:
 |---|---|
 | The adapter/package being extended | Current API surface and patterns |
 | `.github/instructions/go-codex.instructions.md` | Import rules, design constraints |
-| Similar existing adapter (e.g. `adapters/mqtt5` for a new transport) | Pattern to follow |
+| `adapters/mqtt5/binding.go` — reference binding pattern | Pattern for new transport adapters (SourceAdapter, SinkAdapter, IOAdapter) |
+| `adapters/mqtt5/adapter.go` — non-stream adapter functions | Standalone functions to keep; binding.go wraps these |
+| `ports/` package | Adapter interfaces and port types that bindings must implement |
 | External library being wrapped (if any) | Capabilities and limitations |
 
 Background research agents are appropriate here for complex external libraries
@@ -102,6 +104,7 @@ Minimum: happy path, error path, observer called, LogValue shape.
 | File | Responsibility |
 |---|---|
 | ... | ... |
+| `adapters/<transport>/binding.go` | Port adapter bindings: `SourceAdapter`, `SinkAdapter`, `IOAdapter` implementations; all transport-to-port wiring |
 
 ## Out of scope (Phase 2)
 Deferred capabilities, with rationale.
@@ -301,6 +304,8 @@ for d in examples/*/; do go run ./$d; done   # all examples exit 0
 
 - **Never invent API without a user request.** This skill is for planning requested features, not for proposing new ones.
 - **Roadmap docs are living documents.** Updating them later is expected and encouraged — don't over-engineer the first draft.
+- **New adapters implement port interfaces, not stream bridge functions.** Every new transport adapter must implement `ports.SourceAdapter[T]`, `ports.SinkAdapter[T]`, and/or `ports.IOAdapter[Req,Resp]` in a `binding.go` file. Do NOT add `SubscribeStream`, `DrainPublish`, or `CallStream` functions — those patterns have been removed. Non-stream functions (`Subscribe`, `Publish`, `Call`, `Serve`) remain for standalone use.
+- **Adapter binding constructors belong in `adapters/<transport>/binding.go`.** The adapter's `Activate`/`Transform` methods call the underlying non-stream adapter functions (`SubscribeHandler`, `Publish`, `Call`, etc.) — never implement transport IO from scratch.
 - **Type-assertion guards are non-negotiable.** `FileObserver`, `SQLObserver`, `SecurityObserver`, `TraceObserver` must always be type-asserted. Never embed them in `Observer`.
 - **`just check` must pass clean.** Never add `//nolint` or `//gosec` suppressions to silence new findings.
 - **All Examples must exit 0.** Fix stale patterns in existing examples if your change affects their API.

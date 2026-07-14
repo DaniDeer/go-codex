@@ -86,72 +86,6 @@ func RegisterLatest[Req, Resp any](
 		HandlerLatest(handle, src, opts))
 }
 
-// ── HandlerIngest / RegisterIngest ───────────────────────────────────────────
-
-// HandlerIngest returns an [http.HandlerFunc] that decodes and validates each
-// incoming request body, then writes the decoded value to dst without blocking.
-//
-// If dst is full (non-blocking send fails), the handler calls opts.ErrorHandler
-// with HTTP 503 and [PipelineFullError].
-//
-// # Codec coverage
-//
-// All HTTP codec layers are validated before the item is pushed: body codec,
-// query params, cookie params, header params, path params, and security.
-// Only the body-decoded [Req] value is pushed to dst. Path, query, cookie, and
-// header param VALUES (though validated) are NOT included in the channel item.
-// For routes where param values must accompany the body, use [Handler] directly:
-//
-//	r.Method("POST", "/sensors/{sensorID}/readings", http.HandlerFunc(
-//	    chi.Handler(handle, func(ctx context.Context, body SensorBody) (struct{}, error) {
-//	        sensorID := gochi.URLParam(r, "sensorID") // already validated
-//	        select {
-//	        case dst <- SensorReading{SensorID: sensorID, Value: body.Value}:
-//	            return struct{}{}, nil
-//	        default:
-//	            return struct{}{}, chi.PipelineFullError{Path: "/...", Capacity: cap(dst)}
-//	        }
-//	    }, opts)))
-//
-// The caller owns dst — HandlerIngest never closes it.
-func HandlerIngest[Req any](
-	handle *rest.RouteHandle[Req, struct{}],
-	dst chan<- Req,
-	opts Options,
-) http.HandlerFunc {
-	wrappedOpts := opts
-	wrappedOpts.ErrorHandler = chiRemapStatus(opts.ErrorHandler,
-		func(err error) int {
-			var pfe PipelineFullError
-			if errors.As(err, &pfe) {
-				return http.StatusServiceUnavailable
-			}
-			return 0
-		})
-	return Handler(handle, func(_ context.Context, req Req) (struct{}, error) {
-		select {
-		case dst <- req:
-			return struct{}{}, nil
-		default:
-			return struct{}{}, PipelineFullError{
-				Path:     handle.Descriptor.Path,
-				Capacity: cap(dst),
-			}
-		}
-	}, wrappedOpts)
-}
-
-// RegisterIngest wires [HandlerIngest] onto a chi router. Mirrors [Register].
-func RegisterIngest[Req any](
-	r gochi.Router,
-	handle *rest.RouteHandle[Req, struct{}],
-	dst chan<- Req,
-	opts Options,
-) {
-	r.Method(handle.Descriptor.Method, handle.Descriptor.Path,
-		HandlerIngest(handle, dst, opts))
-}
-
 // ── PipelineHandler / RegisterPipeline ───────────────────────────────────────
 
 // PipelineHandlerFunc is a handler function that implements its logic as a
@@ -219,7 +153,7 @@ func RegisterPipeline[Req, Resp any](
 		PipelineHandler(handle, fn, opts))
 }
 
-// ── SSEFromStream / SSEFromHub ────────────────────────────────────────────────
+// ── SSEFromHub ───────────────────────────────────────────────────────────────────
 
 // SSEStreamOptions configures [SSEFromStream] and [SSEFromHub].
 // Mirrors [nethttp.SSEStreamOptions].
@@ -241,7 +175,7 @@ type SSEStreamOptions struct {
 // per connecting SSE client with the decoded Req. Each client gets its own stream.
 //
 // Use SSEFromStream when each client receives a personalised or filtered stream.
-func SSEFromStream[Req, Event any](
+func sseFromStream[Req, Event any](
 	streamFactory func(context.Context, Req) gstream.Stream[Event],
 	opts SSEStreamOptions,
 ) SSEHandlerFunc[Req, Event] {
@@ -307,7 +241,7 @@ func SSEFromHub[Req, Event any](
 	return func(ctx context.Context, req Req, send func(Event) error) error {
 		sub := hub.Subscribe()
 		defer hub.Unsubscribe(sub)
-		return SSEFromStream[Req, Event](func(_ context.Context, _ Req) gstream.Stream[Event] {
+		return sseFromStream[Req, Event](func(_ context.Context, _ Req) gstream.Stream[Event] {
 			return sub
 		}, opts)(ctx, req, send)
 	}

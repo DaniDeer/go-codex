@@ -6,129 +6,10 @@ import (
 	"fmt"
 	"sync/atomic"
 
-	"github.com/DaniDeer/go-codex/api/events"
 	"github.com/DaniDeer/go-codex/api/reqreply"
-	"github.com/DaniDeer/go-codex/format"
 	"github.com/DaniDeer/go-codex/stats"
 	gstream "github.com/DaniDeer/go-codex/stream"
 )
-
-// ── SubscribeStream ───────────────────────────────────────────────────────────
-
-// Deprecated: Use [SubscribeAdapter] with [ports.SourcePort] instead.
-//
-// SubscribeStream bridges a ZeroMQ SUB or PULL socket into a typed stream.
-// A goroutine reads [topic, payload] frame pairs from sock; each payload is
-// decoded by fmt and forwarded to the returned [gstream.Stream]. Decode or
-// validation failures are sent to Stream.Errors as [gstream.StreamDecodeError].
-//
-// The stream closes when ctx is cancelled or a socket error occurs. Socket
-// errors are not delivered to Stream.Errors — they terminate the goroutine
-// silently so the caller can restart the subscription with a fresh socket.
-//
-// opts.Buffer controls the internal channel buffer size (default 0).
-func SubscribeStream[T any](
-	ctx context.Context,
-	sock FramedSocket,
-	handle *events.ChannelHandle[T],
-	fmt format.Format[T],
-	opts gstream.SourceOptions,
-) gstream.Stream[T] {
-	rawCh := make(chan []byte, opts.Buffer)
-	go func() {
-		defer close(rawCh)
-		if err := sock.SetSubscription(handle.Topic); err != nil {
-			return
-		}
-		if err := sock.SetRecvTimeout(recvPollInterval); err != nil {
-			return
-		}
-		for {
-			select {
-			case <-ctx.Done():
-				return
-			default:
-			}
-			frames, err := sock.RecvFrames()
-			if err != nil {
-				// ErrTimeout is the poll signal; any other error terminates.
-				if !isTimeout(err) {
-					return
-				}
-				continue
-			}
-			if len(frames) < 2 {
-				continue // malformed: expect [topic, payload]
-			}
-			select {
-			case rawCh <- frames[1]:
-			case <-ctx.Done():
-				return
-			}
-		}
-	}()
-	if opts.Name == "" {
-		opts.Name = handle.Topic
-	}
-	return gstream.FromCodec(ctx, rawCh, fmt, opts)
-}
-
-// ── DrainPublish ──────────────────────────────────────────────────────────────
-
-// DrainPublishOptions configures [DrainPublish].
-type DrainPublishOptions struct {
-	// Vars, when non-nil, substitutes {varName} placeholders in the channel
-	// handle's topic template. Validated per [events.ChannelHandle.BuildTopic].
-	// The same map is used for every item (static topic vars only).
-	// For per-item topic var substitution, use [gstream.Drain] with [Publish] directly.
-	Vars map[string]string
-
-	// OnError, when non-nil, is called for encode failures ([PublishEncodeError]),
-	// socket send failures ([SocketError]), or upstream stream errors.
-	OnError func(error)
-
-	// Observer receives per-publish lifecycle events via [stats.Observer.RecordPublish].
-	Observer stats.Observer
-}
-
-// Deprecated: Use [PublishAdapter] with [ports.SinkPort] instead.
-//
-// DrainPublish publishes each value item from src to sock using handle's codec.
-// Encode failures are delivered to opts.OnError as [PublishEncodeError].
-// Socket send failures are delivered to opts.OnError as [SocketError].
-// Items from Stream.Errors are forwarded to opts.OnError unchanged.
-// Blocks until src terminates or ctx is cancelled.
-func DrainPublish[T any](
-	ctx context.Context,
-	sock FramedSocket,
-	handle *events.ChannelHandle[T],
-	src gstream.Stream[T],
-	fmt format.Format[T],
-	opts DrainPublishOptions,
-) {
-	onErr := opts.OnError
-	pubOpts := PublishOptions{Observer: opts.Observer}
-
-	gstream.Drain(ctx, src,
-		func(ctx context.Context, v T) error {
-			if err := Publish(ctx, sock, handle, v, opts.Vars, pubOpts, fmt); err != nil {
-				if onErr != nil {
-					onErr(err)
-				}
-				return nil // Drain onError already called
-			}
-			return nil
-		},
-		func(e error) {
-			if onErr != nil {
-				onErr(e)
-			}
-		},
-		gstream.DrainOptions{Observer: opts.Observer},
-	)
-}
-
-// ── AsPipelineFunc ────────────────────────────────────────────────────────────
 
 // AsPipelineFunc converts a pipeline handler function into the plain handler
 // function signature accepted by [Serve] and [ServeRouter].
@@ -163,104 +44,16 @@ func AsPipelineFunc[Req, Resp any](
 			return zero, errs[0]
 		}
 		if len(vals) == 0 {
-			// Topic is left empty because AsPipelineFunc wraps the fn, not the handle;
-			// the actual ZeroMQ topic is not available at this level.
 			return zero, PipelineNoResponseError{Topic: ""}
 		}
 		return vals[0], nil
 	}
 }
 
-// ── CallStream ────────────────────────────────────────────────────────────────
-
-// CallStreamOptions configures [CallStream].
-type CallStreamOptions struct {
-	// Vars, when non-nil, substitutes {varName} placeholders in the route topic
-	// template before encoding each request. The same Vars map is used for every
-	// request item in the stream. For per-item topic var substitution, use
-	// [gstream.Drain] with [Call] directly.
-	//
-	// Each variable value is validated against its registered [reqreply.RouteParam]
-	// codec (if any) before the first request is sent.
-	Vars map[string]string
-
-	// Observer receives per-call lifecycle events.
-	Observer stats.Observer
-	// Buffer is the output Stream channel buffer size. Default 0.
-	Buffer int
-}
-
-// Deprecated: Use [CallAdapter] with [ports.IOPort] instead.
-//
-// CallStream sends each request item from src to handle using a REQ socket,
-// emitting each decoded response to the returned [gstream.Stream]. Protocol
-// errors, encode failures, or decode failures are sent to Stream.Errors as
-// [CallError]. The stream terminates when src closes or ctx is cancelled.
-//
-// Requests are issued sequentially — REQ sockets are inherently synchronous.
-// Use [CallDealerStream] for concurrent pipelining with a DEALER socket.
-func CallStream[Req, Resp any](
-	ctx context.Context,
-	sock FramedSocket,
-	handle *reqreply.RouteHandle[Req, Resp],
-	src gstream.Stream[Req],
-	opts CallStreamOptions,
-) gstream.Stream[Resp] {
-	values := make(chan Resp, opts.Buffer)
-	errs := make(chan error, opts.Buffer)
-	go func() {
-		defer close(values)
-		defer close(errs)
-		callOpts := CallOptions{Observer: opts.Observer, Vars: opts.Vars}
-		valCh := src.Values
-		errCh := src.Errors
-		for valCh != nil || errCh != nil {
-			select {
-			case <-ctx.Done():
-				return
-			case req, ok := <-valCh:
-				if !ok {
-					valCh = nil
-					continue
-				}
-				resp, err := Call(ctx, sock, handle, req, callOpts)
-				if err != nil {
-					select {
-					case errs <- err:
-					case <-ctx.Done():
-						return
-					}
-					continue
-				}
-				select {
-				case values <- resp:
-				case <-ctx.Done():
-					return
-				}
-			case e, ok := <-errCh:
-				if !ok {
-					errCh = nil
-					continue
-				}
-				select {
-				case errs <- e:
-				case <-ctx.Done():
-					return
-				}
-			}
-		}
-	}()
-	return gstream.Stream[Resp]{Values: values, Errors: errs}
-}
-
-// ── ServeLatest ───────────────────────────────────────────────────────────────
-
 // ServeLatestOptions configures [ServeLatest].
 type ServeLatestOptions struct {
 	// OnError, when non-nil, is called for socket errors ([ServeLatestError]),
 	// no-value conditions ([NoLatestValueError]), or encode failures.
-	// The underlying [Serve] loop errors (decode, handler, encode) are
-	// delivered through this same callback.
 	OnError func(error)
 
 	// Observer receives per-request lifecycle events via [stats.Observer.RecordRequest].
@@ -288,7 +81,6 @@ func ServeLatest[Req, Resp any](
 	src gstream.Stream[Resp],
 	opts ServeLatestOptions,
 ) error {
-	// Store the latest value from src atomically.
 	var latest atomic.Pointer[Resp]
 	go func() {
 		valCh := src.Values
@@ -308,23 +100,17 @@ func ServeLatest[Req, Resp any](
 				if !ok {
 					errCh = nil
 				}
-				// errors from src are silently dropped — latest value is unaffected
 			}
 		}
 	}()
 
 	onErr := opts.OnError
-	serveOpts := ServeOptions{
-		Observer: opts.Observer,
-	}
+	serveOpts := ServeOptions{Observer: opts.Observer}
 	if onErr != nil {
-		// Unwrap NoLatestValueError from ServeError so callers receive the specific
-		// typed error rather than the generic wrapper. This avoids double-calling onErr
-		// (once directly and once via Serve's OnError path).
 		serveOpts.OnError = func(se ServeError) {
 			var nv NoLatestValueError
 			if errors.As(se.Err, &nv) {
-				onErr(nv) // deliver NoLatestValueError directly
+				onErr(nv)
 			} else {
 				onErr(se)
 			}
@@ -335,14 +121,10 @@ func ServeLatest[Req, Resp any](
 		ptr := latest.Load()
 		if ptr == nil {
 			var zero Resp
-			// Return wrapped so Serve can send an error reply frame to the caller.
-			// serveOpts.OnError will unwrap and deliver NoLatestValueError to opts.OnError.
 			return zero, fmt.Errorf("%w", NoLatestValueError{Topic: handle.Topic})
 		}
 		return *ptr, nil
 	}, serveOpts)
 }
-
-// ── helpers ───────────────────────────────────────────────────────────────────
 
 func isTimeout(err error) bool { return err == ErrTimeout }

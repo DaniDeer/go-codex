@@ -108,6 +108,23 @@ func (a *mqttSubscribeAdapter[T]) Activate(ctx context.Context, dst chan<- T, er
 
 // ── PublishAdapter ────────────────────────────────────────────────────────────
 
+// MQTTDrainPublishOptions configures [PublishAdapter] publish behaviour.
+type MQTTDrainPublishOptions struct {
+	// QoS is the MQTT quality of service level (0, 1, or 2). Default 0.
+	QoS byte
+	// Retained, when true, publishes each item as a retained message.
+	Retained bool
+	// Vars, when non-nil, substitutes {varName} placeholders in the topic template.
+	// The same map is used for every item (static topic vars only).
+	// For per-item substitution, call [Publish] directly inside [gstream.Drain].
+	Vars map[string]string
+	// OnError, when non-nil, is called for encode failures ([PublishEncodeError])
+	// or upstream stream errors.
+	OnError func(error)
+	// Observer receives per-publish lifecycle events.
+	Observer stats.Observer
+}
+
 // PublishAdapter returns a [ports.SinkAdapter] that publishes each item via MQTT.
 // Use with [ports.SinkPort.Bind]:
 //
@@ -132,5 +149,23 @@ type mqttPublishAdapter[T any] struct {
 func (a *mqttPublishAdapter[T]) AdapterName() string { return "mqtt.PublishAdapter" }
 
 func (a *mqttPublishAdapter[T]) Activate(ctx context.Context, src gstream.Stream[T]) {
-	DrainPublish(ctx, a.client, a.handle, src, a.fmt, a.opts)
+	onErr := a.opts.OnError
+	pubOpts := PublishOptions{Observer: a.opts.Observer}
+	gstream.Drain(ctx, src,
+		func(ctx context.Context, v T) error {
+			if err := Publish(ctx, a.client, a.handle, a.opts.QoS, a.opts.Retained, v,
+				a.opts.Vars, pubOpts, a.fmt); err != nil {
+				if onErr != nil {
+					onErr(err)
+				}
+			}
+			return nil
+		},
+		func(e error) {
+			if onErr != nil {
+				onErr(e)
+			}
+		},
+		gstream.DrainOptions{Observer: a.opts.Observer},
+	)
 }

@@ -1,0 +1,250 @@
+package file_test
+
+import (
+	"bytes"
+	"context"
+	"errors"
+	"log/slog"
+	"os"
+	"path/filepath"
+	"testing"
+	"time"
+
+	fileadapter "github.com/DaniDeer/go-codex/adapters/file"
+	"github.com/DaniDeer/go-codex/codex"
+	"github.com/DaniDeer/go-codex/format"
+	"github.com/DaniDeer/go-codex/ports"
+	gstream "github.com/DaniDeer/go-codex/stream"
+)
+
+// ── shared helpers ─────────────────────────────────────────────────────────────
+
+type item struct{ V int }
+
+var itemCodec = codex.Struct[item](
+	codex.RequiredField("v", codex.Int(), func(x item) int { return x.V }, func(x *item, v int) { x.V = v }),
+)
+
+// ── ScanAdapter ───────────────────────────────────────────────────────────────
+
+func TestScanAdapter_DecodesLines(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "data.ndjson")
+	if err := os.WriteFile(path, []byte(`{"v":1}`+"\n"+`{"v":2}`+"\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	ctx := context.Background()
+	p := ports.NewSourcePort[item]("scan", itemCodec, ports.PortOptions{Buffer: 4})
+	p.Bind(ctx, fileadapter.ScanAdapter(path, format.JSON(itemCodec), fileadapter.ScanAdapterOptions{}))
+	vals, errs := gstream.Collect(ctx, p.Stream(ctx))
+	if len(errs) != 0 {
+		t.Fatalf("want 0 errors, got %d: %v", len(errs), errs)
+	}
+	if len(vals) != 2 {
+		t.Errorf("want 2 values, got %d", len(vals))
+	}
+}
+
+func TestScanAdapter_InvalidPathError(t *testing.T) {
+	ctx := context.Background()
+	p := ports.NewSourcePort[item]("scan", itemCodec, ports.PortOptions{Buffer: 4})
+	p.Bind(ctx, fileadapter.ScanAdapter("/nonexistent/path.ndjson", format.JSON(itemCodec), fileadapter.ScanAdapterOptions{}))
+	_, errs := gstream.Collect(ctx, p.Stream(ctx))
+	if len(errs) == 0 {
+		t.Fatal("want error for missing file, got none")
+	}
+	var se fileadapter.ScanError
+	if !errors.As(errs[0], &se) {
+		t.Errorf("want ScanError, got %T", errs[0])
+	}
+}
+
+// ── WatchAdapter ──────────────────────────────────────────────────────────────
+
+func TestWatchAdapter_EmitsNewFiles(t *testing.T) {
+	dir := t.TempDir()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	p := ports.NewSourcePort[string]("watch", codex.String(), ports.PortOptions{Buffer: 4})
+	p.Bind(ctx, fileadapter.WatchAdapter(dir, 20*time.Millisecond, fileadapter.WatchAdapterOptions{}))
+	s := p.Stream(ctx)
+
+	// Create a file after watch starts.
+	time.Sleep(30 * time.Millisecond)
+	if err := os.WriteFile(filepath.Join(dir, "a.txt"), []byte("hi"), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	var got string
+	select {
+	case v := <-s.Values:
+		got = v
+	case <-time.After(200 * time.Millisecond):
+		t.Fatal("timeout waiting for file event")
+	}
+	cancel()
+	if filepath.Base(got) != "a.txt" {
+		t.Errorf("want a.txt, got %q", got)
+	}
+}
+
+// ── DrainWriteAdapter ─────────────────────────────────────────────────────────
+
+func TestDrainWriteAdapter_EncodesAndWrites(t *testing.T) {
+	ctx := context.Background()
+	var buf bytes.Buffer
+
+	ch := make(chan item, 2)
+	ch <- item{V: 1}
+	ch <- item{V: 2}
+	close(ch)
+
+	p := ports.NewSinkPort[item]("write", itemCodec, ports.PortOptions{Buffer: 4})
+	p.Bind(ctx, fileadapter.DrainWriteAdapter(&buf, format.JSON(itemCodec), fileadapter.DrainWriteAdapterOptions{}))
+	p.Feed(ctx, gstream.From(ctx, ch))
+
+	out := buf.String()
+	if out == "" {
+		t.Error("want non-empty output, got empty")
+	}
+}
+
+// ── ReadEachAdapter ───────────────────────────────────────────────────────────
+
+func TestReadEachAdapter_HappyPath(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+
+	type config struct{ Factor float64 }
+	c := codex.Struct[config](
+		codex.RequiredField("factor", codex.Float64(), func(x config) float64 { return x.Factor }, func(x *config, v float64) { x.Factor = v }),
+	)
+	for id, factor := range map[string]float64{"a": 2.0, "b": 3.0} {
+		f := format.NewFile(filepath.Join(dir, id+".json"), format.JSON(c))
+		if err := f.Write(nil, config{Factor: factor}, format.FileOptions{}); err != nil {
+			t.Fatalf("write: %v", err)
+		}
+	}
+
+	type reading struct{ ID string }
+	configFile := format.NewFile(filepath.Join(dir, "{id}.json"), format.JSON(c))
+
+	inCh := make(chan reading, 2)
+	inCh <- reading{ID: "a"}
+	inCh <- reading{ID: "b"}
+	close(inCh)
+
+	adapter := fileadapter.ReadEachAdapter(configFile,
+		func(r reading) map[string]string { return map[string]string{"id": r.ID} },
+		func(r reading, cfg config) float64 { return cfg.Factor },
+		fileadapter.ReadEachAdapterOptions{})
+
+	src := gstream.From(ctx, inCh)
+	out := adapter.Transform(ctx, src)
+	vals, errs := gstream.Collect(ctx, out)
+	if len(errs) != 0 {
+		t.Fatalf("want 0 errors, got %v", errs)
+	}
+	if len(vals) != 2 {
+		t.Errorf("want 2 values, got %d", len(vals))
+	}
+}
+
+func TestReadEachAdapter_ReadErrorGoesToStreamErrors(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+
+	type config struct{ Factor float64 }
+	c := codex.Struct[config](
+		codex.RequiredField("factor", codex.Float64(), func(x config) float64 { return x.Factor }, func(x *config, v float64) { x.Factor = v }),
+	)
+	configFile := format.NewFile(filepath.Join(dir, "{id}.json"), format.JSON(c))
+
+	type reading struct{ ID string }
+	inCh := make(chan reading, 1)
+	inCh <- reading{ID: "missing"}
+	close(inCh)
+
+	adapter := fileadapter.ReadEachAdapter(configFile,
+		func(r reading) map[string]string { return map[string]string{"id": r.ID} },
+		func(r reading, cfg config) float64 { return cfg.Factor },
+		fileadapter.ReadEachAdapterOptions{})
+
+	out := adapter.Transform(ctx, gstream.From(ctx, inCh))
+	_, errs := gstream.Collect(ctx, out)
+	if len(errs) == 0 {
+		t.Fatal("want error in Stream.Errors, got none")
+	}
+	var re fileadapter.ReadError
+	if !errors.As(errs[0], &re) {
+		t.Errorf("want ReadError, got %T: %v", errs[0], errs[0])
+	}
+}
+
+// ── Error type LogValue tests ─────────────────────────────────────────────────
+
+func TestScanError_LogValue(t *testing.T) {
+	e := fileadapter.ScanError{Path: "/some/file.csv", Err: errors.New("io error")}
+	v := e.LogValue()
+	if v.Kind() != slog.KindGroup {
+		t.Fatalf("want KindGroup, got %v", v.Kind())
+	}
+	keys := groupKeys(v)
+	for _, k := range []string{"path", "err"} {
+		if !keys[k] {
+			t.Errorf("missing attribute %q", k)
+		}
+	}
+	if errors.Unwrap(e) == nil {
+		t.Error("Unwrap must return inner error")
+	}
+}
+
+func TestWatchError_LogValue(t *testing.T) {
+	e := fileadapter.WatchError{Dir: "/watched", Err: errors.New("perm denied")}
+	v := e.LogValue()
+	if v.Kind() != slog.KindGroup {
+		t.Fatalf("want KindGroup, got %v", v.Kind())
+	}
+	keys := groupKeys(v)
+	for _, k := range []string{"dir", "err"} {
+		if !keys[k] {
+			t.Errorf("missing attribute %q", k)
+		}
+	}
+}
+
+func TestWriteError_LogValue(t *testing.T) {
+	e := fileadapter.WriteError{Path: "/out.json", Err: errors.New("disk full")}
+	v := e.LogValue()
+	if v.Kind() != slog.KindGroup {
+		t.Fatalf("want KindGroup, got %v", v.Kind())
+	}
+	keys := groupKeys(v)
+	for _, k := range []string{"path", "err"} {
+		if !keys[k] {
+			t.Errorf("missing attribute %q", k)
+		}
+	}
+}
+
+func TestReadError_LogValue(t *testing.T) {
+	e := fileadapter.ReadError{Err: errors.New("file not found")}
+	v := e.LogValue()
+	if v.Kind() != slog.KindGroup {
+		t.Fatalf("want KindGroup, got %v", v.Kind())
+	}
+	if errors.Unwrap(e) == nil {
+		t.Error("Unwrap must return inner error")
+	}
+}
+
+func groupKeys(v slog.Value) map[string]bool {
+	keys := map[string]bool{}
+	for _, a := range v.Group() {
+		keys[a.Key] = true
+	}
+	return keys
+}

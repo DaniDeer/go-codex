@@ -120,19 +120,20 @@ func (a *mqtt5SubscribeAdapter[T]) Activate(ctx context.Context, dst chan<- T, e
 
 // ── PublishAdapter ────────────────────────────────────────────────────────────
 
-// PublishAdapterOptions configures [PublishAdapter].
-type PublishAdapterOptions struct {
-	// VarsFor derives topic template vars from each stream item.
-	// Required for handles with {name} placeholders in the topic.
-	VarsFor func(T any) map[string]string
-	// QoS is the MQTT 5 quality of service level (0, 1, or 2). Default 0.
+// MQTT5DrainPublishOptions configures [PublishAdapter] publish behaviour.
+type MQTT5DrainPublishOptions struct {
+	// QoS is the MQTT quality of service level (0, 1, or 2). Default 0.
 	QoS byte
-	// Retain, when true, publishes each item as a retained message.
-	Retain bool
+	// Retained, when true, publishes each item as a retained message.
+	Retained bool
+	// Vars, when non-nil, substitutes {varName} placeholders in the topic template.
+	// The same map is used for every item (static topic vars only).
+	// For per-item substitution, call [Publish] directly inside [gstream.Drain].
+	Vars map[string]string
+	// OnError, when non-nil, is called for encode failures or upstream stream errors.
+	OnError func(error)
 	// Observer receives per-publish lifecycle events.
 	Observer stats.Observer
-	// OnError, when non-nil, is called for encode or publish failures.
-	OnError func(error)
 }
 
 // PublishAdapter returns a [ports.SinkAdapter] that publishes each item via MQTT 5.
@@ -159,7 +160,24 @@ type mqtt5PublishAdapter[T any] struct {
 func (a *mqtt5PublishAdapter[T]) AdapterName() string { return "mqtt5.PublishAdapter" }
 
 func (a *mqtt5PublishAdapter[T]) Activate(ctx context.Context, src gstream.Stream[T]) {
-	DrainPublish(ctx, a.client, a.handle, src, a.fmt, a.opts)
+	onErr := a.opts.OnError
+	pubOpts := PublishOptions{Observer: a.opts.Observer}
+	gstream.Drain(ctx, src,
+		func(ctx context.Context, v T) error {
+			if err := Publish(ctx, a.client, a.handle, a.opts.QoS, a.opts.Retained, v, a.opts.Vars, pubOpts, a.fmt); err != nil {
+				if onErr != nil {
+					onErr(err)
+				}
+			}
+			return nil
+		},
+		func(e error) {
+			if onErr != nil {
+				onErr(e)
+			}
+		},
+		gstream.DrainOptions{Observer: a.opts.Observer},
+	)
 }
 
 // ── CallAdapter ───────────────────────────────────────────────────────────────
@@ -187,5 +205,48 @@ type mqtt5CallAdapter[Req, Resp any] struct {
 func (a *mqtt5CallAdapter[Req, Resp]) AdapterName() string { return "mqtt5.CallAdapter" }
 
 func (a *mqtt5CallAdapter[Req, Resp]) Transform(ctx context.Context, src gstream.Stream[Req]) gstream.Stream[Resp] {
-	return CallStream(ctx, a.client, a.router, a.handle, src, a.opts)
+	values := make(chan Resp)
+	errs := make(chan error)
+	go func() {
+		defer close(values)
+		defer close(errs)
+		valCh := src.Values
+		errCh := src.Errors
+		for valCh != nil || errCh != nil {
+			select {
+			case <-ctx.Done():
+				return
+			case req, ok := <-valCh:
+				if !ok {
+					valCh = nil
+					continue
+				}
+				resp, err := Call(ctx, a.client, a.router, a.handle, req, a.opts)
+				if err != nil {
+					select {
+					case errs <- err:
+					case <-ctx.Done():
+						return
+					}
+					continue
+				}
+				select {
+				case values <- resp:
+				case <-ctx.Done():
+					return
+				}
+			case e, ok := <-errCh:
+				if !ok {
+					errCh = nil
+					continue
+				}
+				select {
+				case errs <- e:
+				case <-ctx.Done():
+					return
+				}
+			}
+		}
+	}()
+	return gstream.Stream[Resp]{Values: values, Errors: errs}
 }

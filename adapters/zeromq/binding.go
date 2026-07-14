@@ -7,10 +7,16 @@ import (
 	"github.com/DaniDeer/go-codex/api/reqreply"
 	"github.com/DaniDeer/go-codex/format"
 	"github.com/DaniDeer/go-codex/ports"
+	"github.com/DaniDeer/go-codex/stats"
 	gstream "github.com/DaniDeer/go-codex/stream"
 )
 
 // ── SubscribeAdapter ──────────────────────────────────────────────────────────
+
+// SubscribeAdapterOptions configures [SubscribeAdapter].
+type SubscribeAdapterOptions struct {
+	Buffer int
+}
 
 // SubscribeAdapter returns a [ports.SourceAdapter] backed by the ZeroMQ PUB/SUB
 // receive loop. Use with [ports.SourcePort.Bind]:
@@ -20,8 +26,6 @@ import (
 //	    format.JSON(ReadingCodec),
 //	    zeromq.SubscribeAdapterOptions{Buffer: 8},
 //	))
-//
-// Internally calls [SubscribeStream] and relays items to the port's channels.
 func SubscribeAdapter[T any](
 	sock FramedSocket,
 	handle *events.ChannelHandle[T],
@@ -29,11 +33,6 @@ func SubscribeAdapter[T any](
 	opts SubscribeAdapterOptions,
 ) ports.SourceAdapter[T] {
 	return &zmqSubscribeAdapter[T]{sock: sock, handle: handle, fmt: fmt, opts: opts}
-}
-
-// SubscribeAdapterOptions configures [SubscribeAdapter].
-type SubscribeAdapterOptions struct {
-	Buffer int
 }
 
 type zmqSubscribeAdapter[T any] struct {
@@ -46,7 +45,39 @@ type zmqSubscribeAdapter[T any] struct {
 func (a *zmqSubscribeAdapter[T]) AdapterName() string { return "zeromq.SubscribeAdapter" }
 
 func (a *zmqSubscribeAdapter[T]) Activate(ctx context.Context, dst chan<- T, errs chan<- error) {
-	s := SubscribeStream(ctx, a.sock, a.handle, a.fmt, gstream.SourceOptions{Buffer: a.opts.Buffer})
+	rawCh := make(chan []byte, a.opts.Buffer)
+	go func() {
+		defer close(rawCh)
+		if err := a.sock.SetSubscription(a.handle.Topic); err != nil {
+			return
+		}
+		if err := a.sock.SetRecvTimeout(recvPollInterval); err != nil {
+			return
+		}
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			default:
+			}
+			frames, err := a.sock.RecvFrames()
+			if err != nil {
+				if !isTimeout(err) {
+					return
+				}
+				continue
+			}
+			if len(frames) < 2 {
+				continue
+			}
+			select {
+			case rawCh <- frames[1]:
+			case <-ctx.Done():
+				return
+			}
+		}
+	}()
+	s := gstream.FromCodec(ctx, rawCh, a.fmt, gstream.SourceOptions{Buffer: a.opts.Buffer, Name: a.handle.Topic})
 	valCh := s.Values
 	errCh := s.Errors
 	for valCh != nil || errCh != nil {
@@ -79,6 +110,18 @@ func (a *zmqSubscribeAdapter[T]) Activate(ctx context.Context, dst chan<- T, err
 
 // ── PublishAdapter ────────────────────────────────────────────────────────────
 
+// DrainPublishOptions configures [PublishAdapter] publish behaviour.
+type DrainPublishOptions struct {
+	// Vars, when non-nil, substitutes {varName} placeholders in the channel
+	// handle's topic template. The same map is used for every item (static only).
+	Vars map[string]string
+	// OnError, when non-nil, is called for encode failures ([PublishEncodeError]),
+	// socket send failures ([SocketError]), or upstream stream errors.
+	OnError func(error)
+	// Observer receives per-publish lifecycle events.
+	Observer stats.Observer
+}
+
 // PublishAdapter returns a [ports.SinkAdapter] that publishes each item via ZeroMQ.
 // Use with [ports.SinkPort.Bind]:
 //
@@ -103,10 +146,38 @@ type zmqPublishAdapter[T any] struct {
 func (a *zmqPublishAdapter[T]) AdapterName() string { return "zeromq.PublishAdapter" }
 
 func (a *zmqPublishAdapter[T]) Activate(ctx context.Context, src gstream.Stream[T]) {
-	DrainPublish(ctx, a.sock, a.handle, src, a.fmt, a.opts)
+	onErr := a.opts.OnError
+	pubOpts := PublishOptions{Observer: a.opts.Observer}
+	gstream.Drain(ctx, src,
+		func(ctx context.Context, v T) error {
+			if err := Publish(ctx, a.sock, a.handle, v, a.opts.Vars, pubOpts, a.fmt); err != nil {
+				if onErr != nil {
+					onErr(err)
+				}
+			}
+			return nil
+		},
+		func(e error) {
+			if onErr != nil {
+				onErr(e)
+			}
+		},
+		gstream.DrainOptions{Observer: a.opts.Observer},
+	)
 }
 
 // ── CallAdapter ───────────────────────────────────────────────────────────────
+
+// CallStreamOptions configures [CallAdapter].
+type CallStreamOptions struct {
+	// Vars, when non-nil, substitutes {varName} placeholders in the route topic
+	// template. The same Vars map is used for every request item in the stream.
+	Vars map[string]string
+	// Observer receives per-call lifecycle events.
+	Observer stats.Observer
+	// Buffer is the output Stream channel buffer size. Default 0.
+	Buffer int
+}
 
 // CallAdapter returns a [ports.IOAdapter] that performs ZeroMQ request-reply
 // for each upstream item. Use with [ports.IOPort.Bind]:
@@ -129,5 +200,49 @@ type zmqCallAdapter[Req, Resp any] struct {
 func (a *zmqCallAdapter[Req, Resp]) AdapterName() string { return "zeromq.CallAdapter" }
 
 func (a *zmqCallAdapter[Req, Resp]) Transform(ctx context.Context, src gstream.Stream[Req]) gstream.Stream[Resp] {
-	return CallStream(ctx, a.sock, a.handle, src, a.opts)
+	values := make(chan Resp, a.opts.Buffer)
+	errs := make(chan error, a.opts.Buffer)
+	go func() {
+		defer close(values)
+		defer close(errs)
+		callOpts := CallOptions{Observer: a.opts.Observer, Vars: a.opts.Vars}
+		valCh := src.Values
+		errCh := src.Errors
+		for valCh != nil || errCh != nil {
+			select {
+			case <-ctx.Done():
+				return
+			case req, ok := <-valCh:
+				if !ok {
+					valCh = nil
+					continue
+				}
+				resp, err := Call(ctx, a.sock, a.handle, req, callOpts)
+				if err != nil {
+					select {
+					case errs <- err:
+					case <-ctx.Done():
+						return
+					}
+					continue
+				}
+				select {
+				case values <- resp:
+				case <-ctx.Done():
+					return
+				}
+			case e, ok := <-errCh:
+				if !ok {
+					errCh = nil
+					continue
+				}
+				select {
+				case errs <- e:
+				case <-ctx.Done():
+					return
+				}
+			}
+		}
+	}()
+	return gstream.Stream[Resp]{Values: values, Errors: errs}
 }

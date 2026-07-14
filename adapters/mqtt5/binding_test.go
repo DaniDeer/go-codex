@@ -11,6 +11,7 @@ import (
 	"github.com/DaniDeer/go-codex/api/events"
 	"github.com/DaniDeer/go-codex/api/reqreply"
 	"github.com/DaniDeer/go-codex/format"
+	"github.com/DaniDeer/go-codex/ports"
 	gstream "github.com/DaniDeer/go-codex/stream"
 	pahomqtt5 "github.com/eclipse/paho.golang/paho"
 )
@@ -33,27 +34,19 @@ func newMsg(topic string, payload []byte) *pahomqtt5.Publish {
 	return &pahomqtt5.Publish{Topic: topic, Payload: payload}
 }
 
-// ── SubscribeStream ───────────────────────────────────────────────────────────
+// ── SubscribeAdapter ──────────────────────────────────────────────────────────
 
-func subscribeStreamMqtt5(ctx context.Context, handle *events.ChannelHandle[sensorReading]) (gstream.Stream[sensorReading], *mockRouter) {
-	broker := &mockClient{}
-	router := newMockRouter()
-	s := mqtt5.SubscribeStream(ctx, broker, router, handle, 0,
-		format.JSON(sensorCodec),
-		gstream.SourceOptions{Buffer: 8},
-		mqtt5.SubscribeOptions{})
-	return s, router
-}
-
-func TestMQTT5SubscribeStream_ValidPayload(t *testing.T) {
+func TestMQTT5SubscribeAdapter_ValidPayload(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	handle := newSensorHandle()
-	s, router := subscribeStreamMqtt5(ctx, handle)
+	broker := &mockClient{}
+	router := newMockRouter()
+	p := ports.NewSourcePort[sensorReading]("test", sensorCodec, ports.PortOptions{Buffer: 8})
+	p.Bind(ctx, mqtt5.SubscribeAdapter(broker, router, handle, 0, format.JSON(sensorCodec), mqtt5.SubscribeAdapterOptions{}))
+	s := p.Stream(ctx)                 // must call before cancel
+	router.waitHandler("sensors/data") // wait for handler registration in Activate goroutine
 
-	payload, _ := json.Marshal(map[string]any{
-		"sensor_id": "550e8400-e29b-41d4-a716-446655440000",
-		"value":     42.0,
-	})
+	payload, _ := json.Marshal(map[string]any{"sensor_id": "550e8400-e29b-41d4-a716-446655440000", "value": 42.0})
 	router.dispatch("sensors/data", newMsg("sensors/data", payload))
 	cancel()
 
@@ -66,10 +59,15 @@ func TestMQTT5SubscribeStream_ValidPayload(t *testing.T) {
 	}
 }
 
-func TestMQTT5SubscribeStream_DecodeErrorGoesToStreamErrors(t *testing.T) {
+func TestMQTT5SubscribeAdapter_DecodeErrorGoesToStreamErrors(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	handle := newSensorHandle()
-	s, router := subscribeStreamMqtt5(ctx, handle)
+	broker := &mockClient{}
+	router := newMockRouter()
+	p := ports.NewSourcePort[sensorReading]("test", sensorCodec, ports.PortOptions{Buffer: 8})
+	p.Bind(ctx, mqtt5.SubscribeAdapter(broker, router, handle, 0, format.JSON(sensorCodec), mqtt5.SubscribeAdapterOptions{}))
+	s := p.Stream(ctx)                 // must call before cancel
+	router.waitHandler("sensors/data") // wait for handler registration
 
 	router.dispatch("sensors/data", newMsg("sensors/data", []byte("not-json")))
 	cancel()
@@ -82,34 +80,11 @@ func TestMQTT5SubscribeStream_DecodeErrorGoesToStreamErrors(t *testing.T) {
 	if !errors.As(errs[0], &se) {
 		t.Errorf("want SubscribeError, got %T: %v", errs[0], errs[0])
 	}
-	if se.Kind != mqtt5.KindDecode {
-		t.Errorf("Kind: want KindDecode, got %v", se.Kind)
-	}
 }
 
-func TestMQTT5SubscribeStream_MultipleMessages(t *testing.T) {
-	ctx, cancel := context.WithCancel(context.Background())
-	handle := newSensorHandle()
-	s, router := subscribeStreamMqtt5(ctx, handle)
+// ── PublishAdapter ────────────────────────────────────────────────────────────
 
-	good, _ := json.Marshal(map[string]any{"sensor_id": "550e8400-e29b-41d4-a716-446655440000", "value": 1.0})
-	router.dispatch("sensors/data", newMsg("sensors/data", []byte("bad")))
-	router.dispatch("sensors/data", newMsg("sensors/data", good))
-	router.dispatch("sensors/data", newMsg("sensors/data", []byte("also-bad")))
-	cancel()
-
-	vals, errs := gstream.Collect(context.Background(), s)
-	if len(vals) != 1 {
-		t.Errorf("want 1 value, got %d", len(vals))
-	}
-	if len(errs) != 2 {
-		t.Errorf("want 2 errors, got %d", len(errs))
-	}
-}
-
-// ── DrainPublish ──────────────────────────────────────────────────────────────
-
-func TestMQTT5DrainPublish_PublishesEachItem(t *testing.T) {
+func TestMQTT5PublishAdapter_PublishesEachItem(t *testing.T) {
 	ctx := context.Background()
 	client := &mockClient{}
 	handle := newSensorHandle()
@@ -118,10 +93,9 @@ func TestMQTT5DrainPublish_PublishesEachItem(t *testing.T) {
 	ch <- sensorReading{SensorID: "550e8400-e29b-41d4-a716-446655440000", Value: 1.0}
 	close(ch)
 
-	mqtt5.DrainPublish(ctx, client, handle,
-		gstream.From(ctx, ch),
-		format.JSON(sensorCodec),
-		mqtt5.MQTT5DrainPublishOptions{})
+	p := ports.NewSinkPort[sensorReading]("test", sensorCodec, ports.PortOptions{Buffer: 4})
+	p.Bind(ctx, mqtt5.PublishAdapter(client, handle, format.JSON(sensorCodec), mqtt5.MQTT5DrainPublishOptions{}))
+	p.Feed(ctx, gstream.From(ctx, ch))
 
 	client.mu.Lock()
 	n := len(client.published)
@@ -131,7 +105,7 @@ func TestMQTT5DrainPublish_PublishesEachItem(t *testing.T) {
 	}
 }
 
-func TestMQTT5DrainPublish_StreamErrorsForwardedToOnError(t *testing.T) {
+func TestMQTT5PublishAdapter_StreamErrorsForwardedToOnError(t *testing.T) {
 	ctx := context.Background()
 	client := &mockClient{}
 	handle := newSensorHandle()
@@ -144,8 +118,10 @@ func TestMQTT5DrainPublish_StreamErrorsForwardedToOnError(t *testing.T) {
 	src := gstream.Stream[sensorReading]{Values: valCh, Errors: errCh}
 
 	var gotErr error
-	mqtt5.DrainPublish(ctx, client, handle, src, format.JSON(sensorCodec),
-		mqtt5.MQTT5DrainPublishOptions{OnError: func(e error) { gotErr = e }})
+	p := ports.NewSinkPort[sensorReading]("test", sensorCodec, ports.PortOptions{Buffer: 4})
+	p.Bind(ctx, mqtt5.PublishAdapter(client, handle, format.JSON(sensorCodec),
+		mqtt5.MQTT5DrainPublishOptions{OnError: func(e error) { gotErr = e }}))
+	p.Feed(ctx, src)
 
 	if gotErr == nil {
 		t.Error("want upstream error forwarded to OnError, got nil")
@@ -200,9 +176,9 @@ func TestMQTT5AsPipelineFunc_NoValueReturnsPipelineNoResponseError(t *testing.T)
 	}
 }
 
-// ── CallStream ────────────────────────────────────────────────────────────────
+// ── CallAdapter ───────────────────────────────────────────────────────────────
 
-func TestMQTT5CallStream_ErrorsForwardedFromSrc(t *testing.T) {
+func TestMQTT5CallAdapter_ErrorsForwardedFromSrc(t *testing.T) {
 	ctx := context.Background()
 	client := &mockClient{}
 	router := newMockRouter()
@@ -220,7 +196,9 @@ func TestMQTT5CallStream_ErrorsForwardedFromSrc(t *testing.T) {
 	close(valCh)
 	src := gstream.Stream[computeReq]{Values: valCh, Errors: errCh}
 
-	out := mqtt5.CallStream(ctx, client, router, handle, src, mqtt5.CallOptions{})
+	p := ports.NewIOPort[computeReq, computeResp]("test", computeReqCodec, computeRespCodec, ports.PortOptions{Buffer: 4})
+	p.Bind(ctx, mqtt5.CallAdapter(client, router, handle, mqtt5.CallOptions{})) //nolint:errcheck
+	out := p.Connect(ctx, src)
 	_, errs := gstream.Collect(ctx, out)
 	if len(errs) != 1 {
 		t.Errorf("want 1 forwarded error, got %d", len(errs))

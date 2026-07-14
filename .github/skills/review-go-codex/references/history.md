@@ -1,6 +1,19 @@
-# go-codex Review History (R1–R44)
+# go-codex Review History (R1–R45)
 
 Do not re-report any of these findings. They have been implemented and tested.
+
+---
+
+## Round 45 (remove deprecated stream bridge helpers; update plan-a-new-codex-feature skill)
+
+- **Deleted all deprecated stream bridge functions** — `SubscribeStream`, `DrainPublish`, `CallStream`, `HandlerIngest`, `RegisterIngest`, `SSEFromStream`, `PollStream`, `DrainCall`, `SSEClientStream`, `ScanStream`, `WatchStream`, `DrainWrite`, `ReadEachStream`, `TapWriteFile`, `DrainWriteFile`, `QueryStream`, `DrainInsert`, `QueryEachStream` removed from all adapter packages. Option types exclusively used by deleted functions also removed (e.g. `SSEClientOptions`). Shared option types reused by binding.go (`CallStreamOptions`, `DrainPublishOptions`, etc.) moved into binding.go.
+- **Binding.go files updated to inline implementations** — each `ports.XxxAdapter.Activate`/`Transform` method now directly contains the implementation (was delegating to the now-deleted bridge functions); logic is unchanged.
+- **Test files converted to adapter pattern** — `mqtt5/stream_test.go`, `zeromq/stream_test.go`, `nethttp/stream_test.go`, `nethttp/stream_sse_test.go`, `chi/stream_test.go`, `file/stream_test.go`, `sql/stream_test.go` rewritten to test via port adapters; `mqtt/stream_test.go` deleted (only tested removed functions).
+- **sensor-service example updated** — stale bridge doc comments replaced with ports language; `QueryStream` → `QueryAdapter`, remaining comment cleanup.
+- **`plan-a-new-codex-feature` skill updated** — added binding.go file pattern to research table, Files to create template, and Gotchas; new adapters must implement port interfaces not write stream bridge functions.
+- **`review-go-codex` SKILL.md + checklist updated** — Stream Bridge Guardrail → Port Adapter Guardrail; B1 check for port interface; Gotchas updated.
+- **docs/guides/stream-bridges.md rewritten** — new guide describes port adapter pattern, three port types, available adapters, IOParam, test adapters.
+- **`go-codex.instructions.md` updated** — all adapter rows updated to describe binding.go constructors instead of deprecated stream bridges.
 
 ---
 

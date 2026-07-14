@@ -2,18 +2,18 @@
 // across three transport adapters — HTTP, MQTT, and SQL — wired together with
 // a single shared observer for metrics and logging.
 //
-// # Stream bridge helpers showcased
+// # Inside-out pipeline wiring
 //
-// This example uses the stream bridge helpers added in the stream bridge release:
+// This example wires the pipeline using the ports package (inside-out pattern):
 //
-//   - [adaptermqtt.SubscribeStream] — replaces rawCh + Subscribe + FromCodec
-//     boilerplate; returns (Stream[MQTTPayload], pahomqtt.MessageHandler).
-//   - [adaptermqtt.DrainPublish] — replaces the manual Drain + Publish loop for
-//     alert publishing; takes Stream[SensorAlert] directly.
+//   - [ports.SourcePort] + [adaptermqtt.SubscribeAdapter] — MQTT subscription
+//     wired to a protocol-agnostic SourcePort; pipeline code has no MQTT import.
+//   - [ports.SinkPort] + [adaptermqtt.PublishAdapter] — MQTT alert publishing
+//     wired to a SinkPort; supports fan-out to additional sinks.
+//   - [ports.SourcePort] + [sqladapter.QueryAdapter] — SQL row polling wired
+//     to a SourcePort; protocol-agnostic in the pipeline.
 //   - [nethttp.HandlerLatest] — reactive cache endpoint; GET /readings/latest
 //     returns the most recently saved reading without querying the DB.
-//   - [sqladapter.QueryStream] — polls the DB at a fixed interval and emits
-//     each row as a typed Stream[db.Reading]; showcases the SQL source bridge.
 //
 // # Three-layer model
 //
@@ -779,7 +779,7 @@ func main() {
 	// HandlerLatest atomic pointer.
 	time.Sleep(100 * time.Millisecond)
 	cancelPipeline()
-	<-pipelineDone // wait for DrainPublish goroutine to finish
+	<-pipelineDone // wait for PublishAdapter goroutine to finish
 
 	// ── Demo: HTTP requests ────────────────────────────────────────────────
 	fmt.Println("── HTTP requests ────────────────────────────────────────")
@@ -846,15 +846,15 @@ func main() {
 		fmt.Printf("  GET /readings/latest   → %d  (no value yet)\n", resp4.StatusCode)
 	}
 
-	// ── Bridge 4 demo: sql.QueryStream ────────────────────────────────────
+	// ── Port demo: ports.SourcePort + sql.QueryAdapter ───────────────────
 	//
-	// sql.QueryStream polls a query function at a fixed interval and emits
-	// each returned row as a typed stream item. Each row is validated through
-	// the codec; validation failures go to Stream.Errors as RowValidationError.
+	// sql.QueryAdapter polls a query function at a fixed interval and emits
+	// each returned row as a typed stream item via a SourcePort. Each row is
+	// validated through the codec; validation failures go to Stream.Errors.
 	//
 	// Here we poll the readings table once (100ms interval with 50ms timeout)
 	// and collect all currently stored rows.
-	fmt.Println("\n── Bridge demo: sql.QueryStream ─────────────────────────")
+	fmt.Println("\n── Port demo: sql.QueryAdapter ───────────────────────────")
 	queryCtx, cancelQuery := context.WithTimeout(context.Background(), 150*time.Millisecond)
 	defer cancelQuery()
 
@@ -871,7 +871,7 @@ func main() {
 	rowStream := rowPort.Stream(queryCtx)
 
 	allRows, streamErrs := gstream.Collect(queryCtx, rowStream)
-	fmt.Printf("  QueryStream polled %d row(s) from DB", len(allRows))
+	fmt.Printf("  QueryAdapter polled %d row(s) from DB", len(allRows))
 	if len(streamErrs) > 0 {
 		fmt.Printf(", %d validation error(s)", len(streamErrs))
 	}

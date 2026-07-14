@@ -13,7 +13,6 @@ import (
 
 	chiadapter "github.com/DaniDeer/go-codex/adapters/chi"
 	"github.com/DaniDeer/go-codex/api/rest"
-	"github.com/DaniDeer/go-codex/codex"
 	gstream "github.com/DaniDeer/go-codex/stream"
 )
 
@@ -23,12 +22,6 @@ func newChiGetHandle() (*rest.RouteHandle[getReq, userResp], error) {
 	b := rest.NewBuilder(testInfo)
 	return rest.NewRoute[getReq, userResp]("GET", "/latest",
 		getReqCodec, userRespCodec, rest.RouteMeta{OperationID: "chiGetLatest"}).Register(b)
-}
-
-func newChiIngestHandle() (*rest.RouteHandle[createReq, struct{}], error) {
-	b := rest.NewBuilder(testInfo)
-	return rest.NewRoute[createReq, struct{}]("POST", "/ingest",
-		createReqCodec, codex.Struct[struct{}](), rest.RouteMeta{OperationID: "chiIngest"}).Register(b)
 }
 
 func newChiPipelineHandle() (*rest.RouteHandle[createReq, userResp], error) {
@@ -100,70 +93,33 @@ func TestChiHandlerLatest_NoValueReturns503(t *testing.T) {
 	}
 }
 
-// ── HandlerIngest ─────────────────────────────────────────────────────────────
+// ── SSE helpers ──────────────────────────────────────────────────────────────
 
-func TestChiHandlerIngest_WritesToChannel(t *testing.T) {
-	handle, err := newChiIngestHandle()
+func newChiSSEHandle(t *testing.T) *rest.SSERouteHandle[getReq, userResp] {
+	t.Helper()
+	b := rest.NewBuilder(testInfo)
+	h, err := rest.NewSSERoute[getReq, userResp]("/events",
+		getReqCodec, userRespCodec, rest.RouteMeta{OperationID: "streamEvents"}).Register(b)
 	if err != nil {
-		t.Fatalf("build route: %v", err)
+		t.Fatalf("register SSE route: %v", err)
 	}
-
-	dst := make(chan createReq, 1)
-	h := chiadapter.HandlerIngest(handle, dst, chiadapter.Options{})
-
-	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodPost, "/ingest",
-		strings.NewReader(`{"name":"Bob"}`))
-	req.Header.Set("Content-Type", "application/json")
-	h.ServeHTTP(rec, req)
-
-	// POST defaults to 201 Created
-	if rec.Code != http.StatusCreated {
-		t.Errorf("want 201, got %d: %s", rec.Code, rec.Body.String())
-	}
-	select {
-	case got := <-dst:
-		if got.Name != "Bob" {
-			t.Errorf("Name: want Bob, got %q", got.Name)
-		}
-	default:
-		t.Error("want item in channel, got empty")
-	}
+	return h
 }
 
-func TestChiHandlerIngest_FullChannelReturns503(t *testing.T) {
-	handle, err := newChiIngestHandle()
-	if err != nil {
-		t.Fatalf("build route: %v", err)
+func readChiSSEEvents(t *testing.T, resp *http.Response, want int) []string {
+	t.Helper()
+	var lines []string
+	scanner := bufio.NewScanner(resp.Body)
+	for scanner.Scan() {
+		line := scanner.Text()
+		if strings.HasPrefix(line, "data: ") {
+			lines = append(lines, strings.TrimPrefix(line, "data: "))
+		}
+		if len(lines) >= want {
+			break
+		}
 	}
-
-	dst := make(chan createReq, 1)
-	dst <- createReq{Name: "existing"} // fill the channel
-
-	var capturedErr error
-	h := chiadapter.HandlerIngest(handle, dst, chiadapter.Options{
-		ErrorHandler: func(w http.ResponseWriter, _ *http.Request, status int, e error) {
-			capturedErr = e
-			http.Error(w, e.Error(), status)
-		},
-	})
-
-	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodPost, "/ingest",
-		strings.NewReader(`{"name":"Carol"}`))
-	req.Header.Set("Content-Type", "application/json")
-	h.ServeHTTP(rec, req)
-
-	if rec.Code != http.StatusServiceUnavailable {
-		t.Errorf("want 503, got %d", rec.Code)
-	}
-	var pfe chiadapter.PipelineFullError
-	if !errors.As(capturedErr, &pfe) {
-		t.Errorf("want PipelineFullError, got %T", capturedErr)
-	}
-	if pfe.Capacity != 1 {
-		t.Errorf("Capacity: want 1, got %d", pfe.Capacity)
-	}
+	return lines
 }
 
 // ── PipelineHandler ───────────────────────────────────────────────────────────
@@ -281,119 +237,6 @@ func TestChiPipelineHandler_NoValueReturnsPipelineNoResponseError(t *testing.T) 
 	var pnr chiadapter.PipelineNoResponseError
 	if !errors.As(capturedErr, &pnr) {
 		t.Errorf("want PipelineNoResponseError, got %T", capturedErr)
-	}
-}
-
-// ── SSEFromStream / SSEFromHub ────────────────────────────────────────────────
-
-func newChiSSEHandle(t *testing.T) *rest.SSERouteHandle[getReq, userResp] {
-	t.Helper()
-	b := rest.NewBuilder(testInfo)
-	h, err := rest.NewSSERoute[getReq, userResp]("/events",
-		getReqCodec, userRespCodec, rest.RouteMeta{OperationID: "chiStreamEvents"}).Register(b)
-	if err != nil {
-		t.Fatalf("register SSE route: %v", err)
-	}
-	return h
-}
-
-func readChiSSEEvents(t *testing.T, resp *http.Response, want int) []string {
-	t.Helper()
-	var lines []string
-	scanner := bufio.NewScanner(resp.Body)
-	for scanner.Scan() {
-		line := scanner.Text()
-		if strings.HasPrefix(line, "data: ") {
-			lines = append(lines, strings.TrimPrefix(line, "data: "))
-		}
-		if len(lines) >= want {
-			break
-		}
-	}
-	return lines
-}
-
-func TestChiSSEFromStream_EmitsStreamItems(t *testing.T) {
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
-	handle := newChiSSEHandle(t)
-
-	fn := chiadapter.SSEFromStream(
-		func(ctx context.Context, _ getReq) gstream.Stream[userResp] {
-			ch := make(chan userResp, 2)
-			ch <- userResp{ID: "u1", Name: "Alice"}
-			ch <- userResp{ID: "u2", Name: "Bob"}
-			close(ch)
-			return gstream.From(ctx, ch)
-		},
-		chiadapter.SSEStreamOptions{Topic: "/events"},
-	)
-
-	h := chiadapter.SSEHandler(handle, fn, chiadapter.Options{})
-	srv := httptest.NewServer(h)
-	defer srv.Close()
-
-	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, srv.URL+"/events", nil)
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		t.Fatalf("GET /events: %v", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("want 200, got %d", resp.StatusCode)
-	}
-
-	events := readChiSSEEvents(t, resp, 2)
-	if len(events) < 2 {
-		t.Errorf("want 2 SSE events, got %d", len(events))
-	}
-}
-
-func TestChiSSEFromStream_StreamErrorCallsOnError(t *testing.T) {
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
-	handle := newChiSSEHandle(t)
-	sentinel := errors.New("stream failure")
-
-	var gotErr error
-	fn := chiadapter.SSEFromStream(
-		func(ctx context.Context, _ getReq) gstream.Stream[userResp] {
-			errCh := make(chan error, 1)
-			valCh := make(chan userResp)
-			errCh <- sentinel
-			close(errCh)
-			close(valCh)
-			return gstream.Stream[userResp]{Values: valCh, Errors: errCh}
-		},
-		chiadapter.SSEStreamOptions{
-			Topic:   "/events",
-			OnError: func(e error) { gotErr = e },
-		},
-	)
-
-	h := chiadapter.SSEHandler(handle, fn, chiadapter.Options{})
-	srv := httptest.NewServer(h)
-	defer srv.Close()
-
-	ch := make(chan *http.Response, 1)
-	go func() {
-		req, _ := http.NewRequestWithContext(ctx, http.MethodGet, srv.URL+"/events", nil)
-		r, _ := http.DefaultClient.Do(req)
-		ch <- r
-	}()
-
-	time.Sleep(50 * time.Millisecond)
-	cancel()
-
-	if r := <-ch; r != nil {
-		r.Body.Close()
-	}
-
-	if gotErr == nil {
-		t.Error("want OnError called for stream error, got nil")
 	}
 }
 
