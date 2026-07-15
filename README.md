@@ -21,6 +21,15 @@ Write the codec once — derive JSON, YAML, OpenAPI, AsyncAPI, and more from the
 | **Examples** | [examples/](./examples/) — 35+ runnable demos |
 | **Get started** | [docs/get-started.md](./docs/get-started.md) |
 
+> **⭐ Flagship example: [`examples/sensor-service`](./examples/sensor-service/)** —
+> everything go-codex is trying to achieve, in one runnable service: declare
+> codecs, ports, and routes once, and get validation, typed pipelines, and
+> OpenAPI/AsyncAPI specs from the same declarations. MQTT ingest → SQL persist →
+> env-configured alerting → REST time series → auth-guarded file export, every
+> IO hop a protocol-agnostic port, structured as a real project
+> (domain / pipeline / ioports / adapters / observability).
+> `go run ./examples/sensor-service`
+
 ---
 
 ## The three layers

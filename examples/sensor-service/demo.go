@@ -148,12 +148,37 @@ func runDemo(env demoEnv) {
 	// typed JSON file. The response path comes from the SAME FilePattern
 	// declaration that writes the file (FileHandle.BuildPath).
 	fmt.Println("── 4. POST /export (ExportQuery + Exports file port) ────")
-	resp5, err := http.Post(env.srvURL+"/export", "application/json", bytes.NewReader([]byte(`{}`)))
-	must(err, "POST /export")
+
+	// The X-Api-Key header codec (domain.APIKeyCodec) was declared on the
+	// port's RESTPattern — the adapter validates it BEFORE the pipeline runs.
+	postExport := func(apiKey string) *http.Response {
+		req, err := http.NewRequest(http.MethodPost, env.srvURL+"/export", bytes.NewReader([]byte(`{}`)))
+		must(err, "build POST /export")
+		req.Header.Set("Content-Type", "application/json")
+		if apiKey != "" {
+			req.Header.Set("X-Api-Key", apiKey)
+		}
+		resp, err := http.DefaultClient.Do(req)
+		must(err, "POST /export")
+		return resp
+	}
+
+	// No API key → 400: required header missing, pipeline never runs.
+	respNoKey := postExport("")
+	_ = respNoKey.Body.Close()
+	fmt.Printf("  POST /export (no key)     → %d  (required X-Api-Key missing)\n", respNoKey.StatusCode)
+
+	// Malformed key → 400: header codec constraint failed, pipeline never runs.
+	respBadKey := postExport("wrong-key")
+	_ = respBadKey.Body.Close()
+	fmt.Printf("  POST /export (bad key)    → %d  (X-Api-Key failed api-key-format constraint)\n", respBadKey.StatusCode)
+
+	// Valid key → 201: export runs.
+	resp5 := postExport("sk-demo-key-123")
 	var exported domain.ExportResult
 	_ = json.NewDecoder(resp5.Body).Decode(&exported)
 	_ = resp5.Body.Close()
-	fmt.Printf("  POST /export              → %d  count=%d\n", resp5.StatusCode, exported.Count)
+	fmt.Printf("  POST /export (valid key)  → %d  count=%d\n", resp5.StatusCode, exported.Count)
 	fmt.Printf("  file: …/%s\n", filepathBase(exported.File))
 
 	// The file write happens asynchronously through the sink port — wait

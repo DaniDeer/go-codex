@@ -111,6 +111,11 @@ three artifacts from them, without any separate spec-authoring step:
   ports register internally at port construction, and the three classic
   routes register explicitly next to their declarations
   (`CreateHandle = codex.Must(CreateRoute.Register(RESTBuilder))`).
+  Header fields declared with codecs ride along: `ExportTool`'s
+  `rest.HeaderParam{Name: "X-Api-Key", Required: true}.WithCodec(domain.APIKeyCodec)`
+  is enforced by the adapter *before* the pipeline runs (400 +
+  `rest.HeaderParamError`, observer location `"header"`) **and** appears in
+  the spec as an `in: header` parameter — one declaration, both behaviors.
 - **Stream topology** (`pipeline.Topology(...).Spec()`) — the MQTT pipeline
   shape as a machine-readable spec, including the pure forge functions'
   governance metadata (name, version, content hash).
@@ -127,7 +132,7 @@ writes the file (`FileHandle.BuildPath`).
 | `GET /readings/{id}` | Fetch one reading |
 | `GET /readings/latest` | Most recent reading — served from the stream's reactive cache, zero DB queries |
 | `GET /sensors/{sensorID}/readings` | Time series of one sensor, queried from the DB through the `History` port |
-| `POST /export` | Export all readings to a typed JSON file through the `Exports` port |
+| `POST /export` | Export all readings to a typed JSON file through the `Exports` port. Requires the codec-validated `X-Api-Key` header (`sk-` prefix, `domain.APIKeyCodec`) — missing or malformed keys get 400 before the pipeline runs |
 
 ## Configuration
 

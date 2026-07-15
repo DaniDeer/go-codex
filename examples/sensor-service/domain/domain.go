@@ -298,6 +298,23 @@ var SensorTopicConstraint = codex.Constraint[string]{
 	},
 }
 
+// APIKeyConstraint enforces the demo API-key shape: "sk-" prefix and at
+// least 8 characters after it. A real service would replace Check with a
+// lookup — the declaration point (a header codec on the port's RESTPattern)
+// stays the same.
+var APIKeyConstraint = codex.Constraint[string]{
+	Name: "api-key-format",
+	Check: func(v string) bool {
+		return strings.HasPrefix(v, "sk-") && len(v) >= 11
+	},
+	Message: func(string) string {
+		return `API key must start with "sk-" and be at least 11 characters`
+	},
+}
+
+// APIKeyCodec validates the X-Api-Key request header (see ioports.ExportTool).
+var APIKeyCodec = codex.String().Refine(APIKeyConstraint)
+
 // ── Pure business rules ───────────────────────────────────────────────────────
 
 // NewReadingID returns a deterministic UUID-shaped ID from the current

@@ -185,6 +185,13 @@ var HistoryTool = codex.Must(ports.NewToolPort[struct{}, domain.TimeSeries](
 // ExportTool exposes the export pipeline as POST /export: query all readings
 // through ExportQuery, write the snapshot file through the Exports sink, and
 // respond with the deterministic file path + reading count.
+//
+// The X-Api-Key header is a codec-validated auth header declared HERE, on
+// the port's RESTPattern — the exact same rest.HeaderParam vocabulary a
+// hand-declared route uses. The nethttp adapter validates it BEFORE the
+// pipeline runs (missing/invalid → 400 + rest.HeaderParamError; the request
+// never reaches the pipeline), and the codec's schema appears in the OpenAPI
+// spec's parameter entry. No wiring change in main.go.
 var ExportTool = codex.Must(ports.NewToolPort[domain.ExportRequest, domain.ExportResult](
 	"rest/export", domain.ExportRequestCodec, domain.ExportResultCodec,
 	ports.PortOptions{
@@ -194,6 +201,11 @@ var ExportTool = codex.Must(ports.NewToolPort[domain.ExportRequest, domain.Expor
 				Path:   "/export",
 				Opts: []rest.RouteOpt{
 					rest.RouteMeta{OperationID: "exportReadings", Description: "Export all stored readings to a typed JSON file."},
+					rest.HeaderParam{
+						Name:        "X-Api-Key",
+						Description: `API key authorizing the export ("sk-" prefix).`,
+						Required:    true,
+					}.WithCodec(domain.APIKeyCodec),
 				},
 			},
 		},
