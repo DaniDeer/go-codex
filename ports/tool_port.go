@@ -112,29 +112,32 @@ func (p *ToolPort[In, Out]) Bind(ctx context.Context, a ToolAdapter[In, Out]) er
 	if obs == nil {
 		obs = stats.ObserverFromContext(ctx)
 	}
-	_ = obs
 
 	p.mu.Lock()
 	fn := p.fn
 	p.mu.Unlock()
 
 	if fn == nil {
-		return PortBindError{
+		err := PortBindError{
 			Port:    p.name,
 			Adapter: a.AdapterName(),
 			Err:     PortNoPipelineError{Port: p.name},
 		}
+		obs.RecordRequest("port.bind", p.name+"/"+a.AdapterName(), 500, 0)
+		return err
 	}
 
-	if err := a.Bind(ctx, fn); err != nil {
-		if errors.As(err, new(PortBindError)) {
-			return err
+	return bindWithObserver(WithParams(ctx, p.params), obs, p.name, a.AdapterName(), func(spanCtx context.Context) error {
+		if err := a.Bind(spanCtx, fn); err != nil {
+			if errors.As(err, new(PortBindError)) {
+				return err
+			}
+			return PortBindError{
+				Port:    p.name,
+				Adapter: a.AdapterName(),
+				Err:     err,
+			}
 		}
-		return PortBindError{
-			Port:    p.name,
-			Adapter: a.AdapterName(),
-			Err:     err,
-		}
-	}
-	return nil
+		return nil
+	})
 }

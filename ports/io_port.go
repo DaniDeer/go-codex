@@ -95,17 +95,23 @@ func (p *IOPort[Req, Resp]) RespCodec() codex.Codec[Resp] { return p.respCodec }
 // calling Bind a second time returns [PortBindError]. Bind must be called
 // before [Connect].
 func (p *IOPort[Req, Resp]) Bind(ctx context.Context, a IOAdapter[Req, Resp]) error {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	if p.adapter != nil {
-		return PortBindError{
-			Port:    p.name,
-			Adapter: a.AdapterName(),
-			Err:     errors.New("IOPort already has an adapter bound; only one adapter is allowed"),
-		}
+	obs := p.obs
+	if obs == nil {
+		obs = stats.ObserverFromContext(ctx)
 	}
-	p.adapter = a
-	return nil
+	return bindWithObserver(ctx, obs, p.name, a.AdapterName(), func(_ context.Context) error {
+		p.mu.Lock()
+		defer p.mu.Unlock()
+		if p.adapter != nil {
+			return PortBindError{
+				Port:    p.name,
+				Adapter: a.AdapterName(),
+				Err:     errors.New("IOPort already has an adapter bound; only one adapter is allowed"),
+			}
+		}
+		p.adapter = a
+		return nil
+	})
 }
 
 // Connect transforms each item from src through the bound adapter, returning
@@ -115,12 +121,6 @@ func (p *IOPort[Req, Resp]) Bind(ctx context.Context, a IOAdapter[Req, Resp]) er
 // Call after [Bind]. The returned stream terminates when src terminates or ctx
 // is cancelled.
 func (p *IOPort[Req, Resp]) Connect(ctx context.Context, src gstream.Stream[Req]) gstream.Stream[Resp] {
-	obs := p.obs
-	if obs == nil {
-		obs = stats.ObserverFromContext(ctx)
-	}
-	_ = obs
-
 	p.mu.Lock()
 	a := p.adapter
 	p.mu.Unlock()
@@ -134,5 +134,5 @@ func (p *IOPort[Req, Resp]) Connect(ctx context.Context, src gstream.Stream[Req]
 		return gstream.Stream[Resp]{Values: valCh, Errors: errCh}
 	}
 
-	return a.Transform(ctx, src)
+	return a.Transform(WithParams(ctx, p.params), src)
 }

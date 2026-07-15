@@ -192,6 +192,10 @@ type ReadEachAdapterOptions struct {
 //	    func(r SensorReading) map[string]string { return map[string]string{"id": r.SensorID} },
 //	    func(r SensorReading, c CalibrationData) CalibratedReading { return ... },
 //	    file.ReadEachAdapterOptions{}))
+//
+// When the bound [ports.IOPort] declares Params, each varsFor result is validated
+// with [ports.ValidateParams] before the file read; a validation failure is
+// delivered as [ReadError] wrapping [codex.ValidationErrors].
 func ReadEachAdapter[In, T, Resp any](
 	f format.File[T],
 	varsFor func(In) map[string]string,
@@ -222,6 +226,7 @@ func (a *fileReadEachAdapter[In, T, Resp]) Transform(ctx context.Context, src gs
 	if fileOpts.Context == nil {
 		fileOpts.Context = ctx
 	}
+	params := ports.ParamsFromContext(ctx)
 
 	outCh := make(chan Resp, a.opts.Buffer)
 	errCh := make(chan error, a.opts.Buffer)
@@ -240,7 +245,17 @@ func (a *fileReadEachAdapter[In, T, Resp]) Transform(ctx context.Context, src gs
 					valCh = nil
 					continue
 				}
-				t, err := a.f.Read(a.varsFor(v), fileOpts)
+				vars := a.varsFor(v)
+				if err := ports.ValidateParams(params, vars); err != nil {
+					re := ReadError{Err: err}
+					select {
+					case errCh <- re:
+					case <-ctx.Done():
+						return
+					}
+					continue
+				}
+				t, err := a.f.Read(vars, fileOpts)
 				if err != nil {
 					re := ReadError{Err: err}
 					select {
@@ -356,6 +371,11 @@ type DrainWriteFileAdapterOptions struct {
 //	domain.OEEResults.Bind(ctx, file.DrainWriteFileAdapter(resultFile,
 //	    func(oee OEE) map[string]string { return map[string]string{"machineID": oee.MachineID} },
 //	    file.DrainWriteFileAdapterOptions{}))
+//
+// When the bound [ports.SinkPort] declares Params, each varsFor result is
+// validated with [ports.ValidateParams] before the file write; a validation
+// failure is reported to Options.OnError as [WriteError] wrapping
+// [codex.ValidationErrors] and the item is otherwise skipped (not written).
 func DrainWriteFileAdapter[T any](
 	f format.File[T],
 	varsFor func(T) map[string]string,
@@ -385,11 +405,18 @@ func (a *fileDrainWriteFileAdapter[T]) Activate(ctx context.Context, src gstream
 		fileOpts.Context = ctx
 	}
 	onErr := a.opts.OnError
+	params := ports.ParamsFromContext(ctx)
 	gstream.Drain(ctx, src,
 		func(_ context.Context, v T) error {
 			var vars map[string]string
 			if a.varsFor != nil {
 				vars = a.varsFor(v)
+			}
+			if err := ports.ValidateParams(params, vars); err != nil {
+				if onErr != nil {
+					onErr(WriteError{Err: err})
+				}
+				return nil
 			}
 			if err := a.f.Write(vars, v, fileOpts); err != nil {
 				if onErr != nil {

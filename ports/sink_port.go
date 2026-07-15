@@ -96,10 +96,19 @@ func (p *SinkPort[T]) Bind(ctx context.Context, a SinkAdapter[T]) {
 	p.sinks = append(p.sinks, bs)
 	p.mu.Unlock()
 
+	obs := p.obs
+	if obs == nil {
+		obs = stats.ObserverFromContext(ctx)
+	}
+	adapterCtx := WithParams(ctx, p.params)
+
 	p.wg.Add(1)
 	go func() {
 		defer p.wg.Done()
-		a.Activate(ctx, gstream.Stream[T]{Values: ch, Errors: errCh})
+		_ = bindWithObserver(adapterCtx, obs, p.name, a.AdapterName(), func(spanCtx context.Context) error {
+			a.Activate(spanCtx, gstream.Stream[T]{Values: ch, Errors: errCh})
+			return nil
+		})
 	}()
 }
 

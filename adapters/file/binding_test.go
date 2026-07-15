@@ -183,6 +183,80 @@ func TestReadEachAdapter_ReadErrorGoesToStreamErrors(t *testing.T) {
 	}
 }
 
+func TestReadEachAdapter_ParamValidationError(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+
+	type config struct{ Factor float64 }
+	c := codex.Struct[config](
+		codex.RequiredField("factor", codex.Float64(), func(x config) float64 { return x.Factor }, func(x *config, v float64) { x.Factor = v }),
+	)
+	configFile := format.NewFile(filepath.Join(dir, "{id}.json"), format.JSON(c))
+
+	type reading struct{ ID string }
+	inCh := make(chan reading, 1)
+	inCh <- reading{ID: ""} // missing required "id" value
+	close(inCh)
+
+	adapter := fileadapter.ReadEachAdapter(configFile,
+		func(r reading) map[string]string { return map[string]string{"id": r.ID} },
+		func(r reading, cfg config) float64 { return cfg.Factor },
+		fileadapter.ReadEachAdapterOptions{})
+
+	params := []ports.IOParam{{Name: "id", Required: true}}
+	ctx = ports.WithParams(ctx, params)
+
+	out := adapter.Transform(ctx, gstream.From(ctx, inCh))
+	_, errs := gstream.Collect(ctx, out)
+	if len(errs) == 0 {
+		t.Fatal("want param validation error in Stream.Errors, got none")
+	}
+	var re fileadapter.ReadError
+	if !errors.As(errs[0], &re) {
+		t.Fatalf("want ReadError, got %T: %v", errs[0], errs[0])
+	}
+	var ve codex.ValidationErrors
+	if !errors.As(re, &ve) {
+		t.Errorf("want ReadError to wrap codex.ValidationErrors, got %v", re.Err)
+	}
+}
+
+func TestDrainWriteFileAdapter_ParamValidationError(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	resultFile := format.NewFile(filepath.Join(dir, "{machineID}.json"), format.JSON(itemCodec))
+
+	ch := make(chan item, 1)
+	ch <- item{V: 1}
+	close(ch)
+
+	var caught error
+	adapter := fileadapter.DrainWriteFileAdapter(resultFile,
+		func(item) map[string]string { return map[string]string{} }, // missing "machineID"
+		fileadapter.DrainWriteFileAdapterOptions{OnError: func(e error) { caught = e }})
+
+	params := []ports.IOParam{{Name: "machineID", Required: true}}
+	p := ports.NewSinkPort[item]("write-file", itemCodec, ports.PortOptions{Buffer: 4, Params: params})
+	p.Bind(ctx, adapter)
+	p.Feed(ctx, gstream.From(ctx, ch))
+
+	if caught == nil {
+		t.Fatal("want OnError to be called with a param validation error")
+	}
+	var we fileadapter.WriteError
+	if !errors.As(caught, &we) {
+		t.Fatalf("want WriteError, got %T: %v", caught, caught)
+	}
+	var ve codex.ValidationErrors
+	if !errors.As(we, &ve) {
+		t.Errorf("want WriteError to wrap codex.ValidationErrors, got %v", we.Err)
+	}
+	// The file must not have been written since validation failed.
+	if _, err := os.Stat(filepath.Join(dir, ".json")); err == nil {
+		t.Error("want no file written when param validation fails")
+	}
+}
+
 // ── Error type LogValue tests ─────────────────────────────────────────────────
 
 func TestScanError_LogValue(t *testing.T) {

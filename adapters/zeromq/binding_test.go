@@ -60,3 +60,53 @@ func TestCallAdapter_ErrorsForwardedFromSrc(t *testing.T) {
 		t.Errorf("want 1 forwarded error, got %d", len(errs))
 	}
 }
+
+// ── ServeAdapter ──────────────────────────────────────────────────────────────
+
+func TestServeAdapter_HandlesRequestViaToolPort(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+	defer cancel()
+
+	sock := &mockSocket{inFrames: [][][]byte{{[]byte(validComputeJSON)}}}
+	handle := newRouteHandle()
+
+	p := ports.NewToolPort[computeReq, computeResp]("compute", computeReqCodec, computeRespCodec, ports.PortOptions{})
+	p.SetPipeline(func(_ context.Context, req computeReq) gstream.Stream[computeResp] {
+		return gstream.Single(context.Background(), computeResp{Sum: req.X + req.Y})
+	})
+
+	if err := p.Bind(ctx, zeromq.ServeAdapter(sock, handle, zeromq.ServeOptions{})); err != nil {
+		t.Fatalf("Bind: %v", err)
+	}
+
+	// Wait for the background Serve goroutine to process the one queued message.
+	deadline := time.Now().Add(400 * time.Millisecond)
+	for len(sock.sentFrames) == 0 && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if len(sock.sentFrames) == 0 {
+		t.Fatal("timeout waiting for Serve to respond")
+	}
+
+	if string(sock.sentFrames[0][0]) != "ok" {
+		t.Fatalf("want status frame 'ok', got %q", sock.sentFrames[0][0])
+	}
+	var resp computeResp
+	if err := json.Unmarshal(sock.sentFrames[0][1], &resp); err != nil {
+		t.Fatalf("unmarshal response: %v", err)
+	}
+	if resp.Sum != 7 {
+		t.Errorf("want Sum=7, got %d", resp.Sum)
+	}
+}
+
+func TestServeAdapter_NoPipelineError(t *testing.T) {
+	ctx := context.Background()
+	sock := &mockSocket{}
+	handle := newRouteHandle()
+
+	p := ports.NewToolPort[computeReq, computeResp]("compute-nopipeline", computeReqCodec, computeRespCodec, ports.PortOptions{})
+	if err := p.Bind(ctx, zeromq.ServeAdapter(sock, handle, zeromq.ServeOptions{})); err == nil {
+		t.Fatal("want error when no pipeline set")
+	}
+}

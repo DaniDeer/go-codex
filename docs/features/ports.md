@@ -142,8 +142,19 @@ called first.
 
 ## `IOParam` — protocol-agnostic parameters
 
-Ports declare routing parameters once; adapters map them to protocol-specific types
-(`PathParam`, `TopicParam`, `FilePathParam`, `UserPropertyParam`, …) at `Bind` time.
+Ports declare routing parameters once via `PortOptions.Params`. Enforcement depends
+on the bound adapter:
+
+- **Adapters with their own protocol-level builder** — `rest.Route` (`PathParam`,
+  `QueryParam`, `HeaderParam`), `events.ChannelHandle` (`TopicParam`), MQTT 5
+  (`UserPropertyParam`) — already validate their own declarations at that layer.
+  `Params` is descriptive only here (available for future spec generation).
+- **Adapters with no such builder** — `file.ReadEachAdapter`, `file.DrainWriteFileAdapter`
+  (their `varsFor` function extracts a `map[string]string`) — get real runtime
+  enforcement: the port propagates `Params` via context (`ports.WithParams`), and
+  the adapter calls `ports.ValidateParams(ports.ParamsFromContext(ctx), vars)`
+  before using the extracted values. A validation failure surfaces as `ReadError`/
+  `WriteError` wrapping `codex.ValidationErrors`.
 
 ```go
 ports.IOParam{Name: "sensorID", Description: "Sensor identifier", Required: true}.WithCodec(sensorIDCodec)
@@ -151,10 +162,13 @@ ports.IOParam{Name: "sensorID", Description: "Sensor identifier", Required: true
 
 | IOParam role | REST (HTTP) | Events (MQTT/ZeroMQ) | MQTT5 extra | File |
 |--------------|-------------|----------------------|-------------|------|
-| Routing var  | `PathParam {name}` | `TopicParam {name}` | — | `FilePathParam {name}` |
-| Metadata     | `HeaderParam`, `QueryParam` | — | `UserPropertyParam` | — |
+| Routing var  | `PathParam {name}` (builder-validated) | `TopicParam {name}` (builder-validated) | — | `FilePathParam {name}` (`ports.ValidateParams`-validated) |
+| Metadata     | `HeaderParam`, `QueryParam` (builder-validated) | — | `UserPropertyParam` (builder-validated) | — |
 
 `PortOptions{Params, Buffer, Observer}` configures all four port constructors.
+`Buffer` only applies to `SourcePort`/`SinkPort` (`IOPort`/`ToolPort` have no
+internal channel to buffer). `Observer` receives a `"port.bind"` `RecordRequest`
+call (and `TraceObserver` span, when supported) wrapping every `Bind` call.
 
 ---
 

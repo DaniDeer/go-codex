@@ -93,10 +93,19 @@ func (p *SourcePort[T]) Codec() codex.Codec[T] { return p.codec }
 // Bind is non-blocking — the adapter runs in its own goroutine. Bind must be
 // called before [Stream].
 func (p *SourcePort[T]) Bind(ctx context.Context, a SourceAdapter[T]) {
+	obs := p.obs
+	if obs == nil {
+		obs = stats.ObserverFromContext(ctx)
+	}
+	adapterCtx := WithParams(ctx, p.params)
+
 	p.wg.Add(1)
 	go func() {
 		defer p.wg.Done()
-		a.Activate(ctx, p.ch, p.errCh)
+		_ = bindWithObserver(adapterCtx, obs, p.name, a.AdapterName(), func(spanCtx context.Context) error {
+			a.Activate(spanCtx, p.ch, p.errCh)
+			return nil
+		})
 	}()
 }
 
@@ -107,12 +116,6 @@ func (p *SourcePort[T]) Bind(ctx context.Context, a SourceAdapter[T]) {
 //
 // Stream should be called at most once.
 func (p *SourcePort[T]) Stream(ctx context.Context) gstream.Stream[T] {
-	obs := p.obs
-	if obs == nil {
-		obs = stats.ObserverFromContext(ctx)
-	}
-	_ = obs
-
 	go func() {
 		p.wg.Wait()
 		close(p.ch)

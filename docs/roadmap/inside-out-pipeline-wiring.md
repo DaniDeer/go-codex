@@ -216,18 +216,21 @@ func Params(params ...IOParam) PortOpt { return portParams(params) }
 // PortOptions configures a port constructor (NewSourcePort, NewSinkPort, NewIOPort, NewToolPort).
 type PortOptions struct {
     // Params declares the protocol-agnostic IO parameters for this port.
-    // NOTE (known gap, see "Known gaps" below): stored and exposed via Params(),
-    // but no adapter binding currently reads or validates against it — purely
-    // descriptive today, not enforced at runtime.
+    // Propagated to bound adapters via ParamsFromContext(ctx). Adapters with no
+    // protocol-level param builder of their own (file.ReadEachAdapter,
+    // file.DrainWriteFileAdapter) call ValidateParams for real runtime
+    // enforcement. Adapters backed by rest.Route / events.ChannelHandle /
+    // mqtt5.UserPropertyParam already validate their own declarations and do
+    // not consult Params.
     Params []IOParam
     // Buffer sets the internal channel buffer size. Default 0.
-    // NOTE (known gap): only honored by SourcePort and SinkPort; IOPort and
-    // ToolPort ignore this field entirely.
+    // Only SourcePort and SinkPort honor Buffer — IOPort and ToolPort have no
+    // internal channel (Connect/Bind delegate directly to the adapter's
+    // Transform/Bind call) and ignore this field.
     Buffer int
-    // Observer receives port lifecycle events. Resolved from ctx when nil.
-    // NOTE (known gap): only SinkPort.Feed actually forwards obs to its
-    // underlying stream operation today; SourcePort.Stream, IOPort.Connect,
-    // and ToolPort.Bind resolve obs but do not yet emit any events with it.
+    // Observer receives port lifecycle events: every Bind call wraps its
+    // adapter's Activate/Transform/Bind with a "port.bind" RecordRequest call
+    // (and TraceObserver span, when supported). Resolved from ctx when nil.
     Observer stats.Observer
 }
 ```
@@ -627,45 +630,50 @@ func (e PortNoAdapterError) LogValue() slog.Value {
 
 ## Observer integration
 
-> **Status vs. implementation (Phase 3 review): partially implemented.** The design
-> below was the Phase 1/2 intent. As built, only `SinkPort.Feed` actually forwards
-> its resolved `obs` into the underlying `gstream.Drain` call. `SourcePort.Stream`,
-> `IOPort.Connect`, and `ToolPort.Bind` resolve `obs` (nil-guarded from ctx) but then
-> discard it — no `RecordRequest`/`TraceObserver` calls exist yet for those three
-> port types. See "Known gaps" below (`phase3-port-observer-integration`).
+Ports use `stats.Observer` (same as adapters). Resolved from ctx at `Bind` time
+(standard nil-guard: port's own `Observer` field first, then `stats.ObserverFromContext(ctx)`).
 
-Ports use `stats.Observer` (same as adapters). Resolved from ctx at `Bind`/`Stream`/
-`Connect` time when nil (standard nil-guard pattern).
+Every port's `Bind` call (`SourcePort.Bind`, `SinkPort.Bind`, `IOPort.Bind`,
+`ToolPort.Bind`) wraps its adapter's Activate/Transform/Bind call with
+`ports.bindWithObserver`, which:
+- Calls `obs.RecordRequest("port.bind", "<portName>/<adapterName>", 200|500, duration)`
+  once the wrapped call returns. For `SourcePort`/`SinkPort` the wrapped call is the
+  adapter's entire `Activate` lifetime (the background goroutine that runs until
+  `ctx` is cancelled); for `IOPort`/`ToolPort` it wraps the synchronous `Bind` call.
+- When `obs` implements `stats.TraceObserver`, brackets the call in a `"port.bind"`
+  span (`StartSpan`/`EndSpan`), passed via context to the adapter for span
+  propagation.
 
-Design intent (not yet fully implemented — see above):
-- `Bind` / `Activate`: `RecordRequest("port.bind", portName, 200/500, duration)`
-- Per-item through IOPort: adapters retain their existing observer calls — no double-calling
-
-`stats.TraceObserver` type-asserted for port lifecycle spans: `"port.bind"`,
-`"port.activate"`. Adapter-internal spans unchanged. **Not yet implemented** for
-any port type.
+Per-item events remain the adapter's responsibility — adapters retain their
+existing `RecordSubscribe`/`RecordPublish`/`RecordRequest` calls for individual
+messages; ports do not double-record per item.
 
 ---
 
-## Known gaps (found in Phase 3 review)
+## Known gaps (found in Phase 3 review) — resolved
 
-A code-vs-docs audit found the following items were **documented as implemented
-but are not enforced/wired in code**. These are tracked as SQL todos for a future
-implementation pass — listed here so the gap isn't silently lost.
+A code-vs-docs audit found several items documented as implemented but not
+enforced/wired in code. All were fixed in the Phase 3 follow-up:
 
-| Gap | What the docs/API promise | What actually happens | Todo |
-|-----|---------------------------|------------------------|------|
-| **IOParam runtime enforcement** | Adapter validates routing/topic/path param values against the `IOParam.Codec` at bind/message time | `Params()` is a pure getter; **no adapter binding anywhere calls `.Params()`** — zero runtime enforcement | `phase3-ioparam-enforcement` |
-| **Port-level Observer events** | `Bind`/`Stream`/`Connect` emit `RecordRequest("port.bind", …)` and `TraceObserver` spans | `SourcePort.Stream`, `IOPort.Connect`, `ToolPort.Bind` resolve `obs` then discard it (`_ = obs`); only `SinkPort.Feed` forwards `obs` to `gstream.Drain` | `phase3-port-observer-integration` |
-| **`T05 TestSourcePort_CodecValidation`** | Unit test plan lists a test asserting invalid items surface as errors via codec validation | No such test exists — consistent with the IOParam gap above (nothing to test) | `phase3-sourceport-codec-validation-test` |
-| **`PortOptions.Buffer` on all port types** | Buffer configures the internal channel size for any port constructor | Only `SourcePort`/`SinkPort` have a `buffer` field; `IOPort`/`ToolPort` silently ignore `Buffer` | `phase3-portoptions-buffer-ioport-toolport` |
+| Gap | What the docs/API promised | Fix applied |
+|-----|------------------------------|-------------|
+| **IOParam runtime enforcement** | Adapter validates routing/topic/path param values against the `IOParam.Codec` | Added `ports.ValidateParams`, `ports.WithParams`/`ports.ParamsFromContext` (context-propagated by every port's `Bind`). Wired into `file.ReadEachAdapter` and `file.DrainWriteFileAdapter` — the two adapters with no protocol-level param builder of their own (`ReadError`/`WriteError` now wrap `codex.ValidationErrors` on failure). Adapters backed by `rest.Route`/`events.ChannelHandle`/`mqtt5.UserPropertyParam` already validate via their own builder-time mechanism and intentionally do not consult `Params` (documented on `IOParam` and `PortOptions.Params`). |
+| **Port-level Observer events** | `Bind`/`Stream`/`Connect` emit `RecordRequest("port.bind", …)` and `TraceObserver` spans | Added `ports.bindWithObserver` helper; wired into `SourcePort.Bind`, `SinkPort.Bind`, `IOPort.Bind`, `ToolPort.Bind`. Each now emits `RecordRequest("port.bind", "<port>/<adapter>", 200\|500, duration)` and, when the observer implements `stats.TraceObserver`, a `"port.bind"` span bracketing the adapter's Activate/Transform/Bind call. |
+| **`T05 TestSourcePort_CodecValidation`** | Test asserting invalid items surface as errors via codec validation | Superseded by `ports.ValidateParams` tests (`TestValidateParams_*`) plus `file` adapter param-validation tests (`TestReadEachAdapter_ParamValidationError`, `TestDrainWriteFileAdapter_ParamValidationError`) — SourcePort/SinkPort's own payload `Codec()` remains descriptive-only (payload decode/validate happens in the format/adapter layer, not redundantly in the port). |
+| **`PortOptions.Buffer` on all port types** | Buffer configures the internal channel size for any port constructor | Documented as intentional: `IOPort`/`ToolPort` have no internal channel (`Connect`/`Bind` delegate directly to the adapter's `Transform`/`Bind` call), so there is nothing to buffer. `PortOptions.Buffer` and `NewIOPort`/`NewToolPort` godoc now state this explicitly instead of silently ignoring the field. |
 
-Additional test-coverage gaps found (not doc/API mismatches, just missing tests):
-`chi.PipelineAdapter`, `zeromq.ServeAdapter`, `mqtt5.ServeAdapter` (zero tests each),
-and `mcpgo.ToolLatestAdapter` (test only asserts `Bind` doesn't error, never verifies
-the cached tool response). Tracked as `phase3-test-chi-pipelineadapter`,
-`phase3-test-zeromq-serveadapter`, `phase3-test-mqtt5-serveadapter`,
-`phase3-strengthen-toollatestadapter-test`.
+Test-coverage gaps also closed: `chi.PipelineAdapter`, `zeromq.ServeAdapter`,
+`mqtt5.ServeAdapter` each gained tests exercising the full `ports.ToolPort.Bind`
+round-trip; `mcpgo.ToolLatestAdapter` gained `TestToolLatestAdapter_ReturnsCachedValue`
+(polls for the background cache-store goroutine, then asserts the tool response
+contains the cached value) and `TestToolLatestAdapter_NoValueYet_ReturnsIsError`.
+
+Remaining backlog from the Phase 3 review (design work, not doc/code mismatches):
+`forge.App` lifecycle manager, `CachePort[T]`, auto spec generation from ports,
+IOParam↔adapter template cross-validation at Bind time, dynamic adapter
+rebinding, and reconsidering whether `ToolPort.Bind` should require
+`SetPipeline` for cache-only adapters like `mcpgo.ToolLatestAdapter`. These stay
+tracked as SQL todos pending design decisions.
 
 ---
 

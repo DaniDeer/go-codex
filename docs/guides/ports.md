@@ -190,18 +190,25 @@ domain.Calibration.Bind(ctx, ports.FuncIOAdapter(func(ctx context.Context, r Sen
 
 ## `IOParam` — protocol-agnostic parameters
 
-Ports carry `IOParam` declarations that document routing parameters. Adapters map
-IOParam names to their protocol-specific types at binding time:
+Ports carry `IOParam` declarations for routing parameters. What happens with them
+at `Bind` time depends on the adapter:
 
 | IOParam role | REST | MQTT/ZeroMQ | MQTT5 extra | File |
 |---|---|---|---|---|
-| Routing var | `PathParam {name}` | `TopicParam {name}` | — | `FilePathParam {name}` |
-| Metadata | `HeaderParam`, `QueryParam` | — | `UserPropertyParam` | — |
+| Routing var | `PathParam {name}` (builder-validated) | `TopicParam {name}` (builder-validated) | — | `FilePathParam {name}` (`ports.ValidateParams`-validated) |
+| Metadata | `HeaderParam`, `QueryParam` (builder-validated) | — | `UserPropertyParam` (builder-validated) | — |
 
 ```go
 // Declare once on the port — adapters map names automatically
 ports.IOParam{Name: "sensorID", Required: true}.WithCodec(sensorIDCodec)
 ```
+
+Adapters backed by a protocol-level builder (`rest.Route`, `events.ChannelHandle`,
+MQTT 5's `UserPropertyParam`) validate their own declarations at that layer — the
+port's `Params` is descriptive there. `file.ReadEachAdapter` and
+`file.DrainWriteFileAdapter` have no such builder: the port propagates `Params` via
+context (`ports.WithParams`) and the adapter calls `ports.ValidateParams` against
+each item's extracted `varsFor` map, surfacing failures as `ReadError`/`WriteError`.
 
 ## Cache patterns (not port-based)
 

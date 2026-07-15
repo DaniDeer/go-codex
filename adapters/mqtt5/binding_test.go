@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"testing"
+	"time"
 
 	mqtt5 "github.com/DaniDeer/go-codex/adapters/mqtt5"
 	"github.com/DaniDeer/go-codex/api/events"
@@ -202,5 +203,77 @@ func TestMQTT5CallAdapter_ErrorsForwardedFromSrc(t *testing.T) {
 	_, errs := gstream.Collect(ctx, out)
 	if len(errs) != 1 {
 		t.Errorf("want 1 forwarded error, got %d", len(errs))
+	}
+}
+
+// ── ServeAdapter ──────────────────────────────────────────────────────────────
+
+func TestMQTT5ServeAdapter_HandlesRequestViaToolPort(t *testing.T) {
+	client := &mockClient{}
+	router := newMockRouter()
+
+	rb := reqreply.NewBuilder(reqreply.Info{Title: "Test", Version: "1.0.0"})
+	handle, err := computeRoute.Register(rb)
+	if err != nil {
+		t.Fatalf("register route: %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+
+	p := ports.NewToolPort[computeReq, computeResp]("compute", computeReqCodec, computeRespCodec, ports.PortOptions{})
+	p.SetPipeline(func(_ context.Context, req computeReq) gstream.Stream[computeResp] {
+		return gstream.Single(context.Background(), computeResp{Sum: req.X + req.Y})
+	})
+
+	if err := p.Bind(ctx, mqtt5.ServeAdapter(client, router, handle, mqtt5.ServeOptions{})); err != nil {
+		t.Fatalf("Bind: %v", err)
+	}
+
+	// Bind spawns Serve in a background goroutine; give it time to register
+	// its subscription with the router before dispatching.
+	time.Sleep(20 * time.Millisecond)
+
+	router.dispatch("compute/add", &pahomqtt5.Publish{
+		Topic:   "compute/add",
+		Payload: []byte(validComputeJSON),
+		Properties: &pahomqtt5.PublishProperties{
+			ResponseTopic:   "replies/client-1",
+			CorrelationData: []byte("corr-42"),
+		},
+	})
+
+	// Give the async Serve goroutine time to process the dispatched message.
+	time.Sleep(50 * time.Millisecond)
+
+	pub := client.lastPublished()
+	if pub == nil {
+		t.Fatal("expected reply to be published")
+	}
+	if pub.Topic != "replies/client-1" {
+		t.Fatalf("expected reply to 'replies/client-1', got %q", pub.Topic)
+	}
+	var resp computeResp
+	if err := json.Unmarshal(pub.Payload, &resp); err != nil {
+		t.Fatalf("unmarshal reply payload: %v", err)
+	}
+	if resp.Sum != 7 {
+		t.Errorf("want Sum=7, got %d", resp.Sum)
+	}
+}
+
+func TestMQTT5ServeAdapter_NoPipelineError(t *testing.T) {
+	client := &mockClient{}
+	router := newMockRouter()
+	rb := reqreply.NewBuilder(reqreply.Info{Title: "Test", Version: "1.0.0"})
+	handle, err := computeRoute.Register(rb)
+	if err != nil {
+		t.Fatalf("register route: %v", err)
+	}
+
+	ctx := context.Background()
+	p := ports.NewToolPort[computeReq, computeResp]("compute-nopipeline", computeReqCodec, computeRespCodec, ports.PortOptions{})
+	if err := p.Bind(ctx, mqtt5.ServeAdapter(client, router, handle, mqtt5.ServeOptions{})); err == nil {
+		t.Fatal("want error when no pipeline set")
 	}
 }

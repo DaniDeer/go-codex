@@ -3,7 +3,9 @@ package mcpgo_test
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
@@ -124,4 +126,76 @@ func TestToolLatestAdapter_RegistersTool(t *testing.T) {
 	}
 	// Registration succeeded — tool is on the server.
 	// (Value availability is timing-dependent; we don't poll in the test.)
+}
+
+// TestToolLatestAdapter_ReturnsCachedValue verifies the cached stream value is
+// actually returned by the tool — not just that Bind succeeds without error.
+// It calls the tool handler directly (built via [mcpgo.ToolLatestHandler], the
+// same underlying constructor [mcpgo.ToolLatestAdapter] delegates to via
+// [mcpgo.RegisterToolLatest]), polling briefly for the background cache-store
+// goroutine to consume the queued value.
+func TestToolLatestAdapter_ReturnsCachedValue(t *testing.T) {
+	ctx := context.Background()
+	handle := newAddHandle()
+
+	valCh := make(chan addOutput, 1)
+	valCh <- addOutput{Sum: 99}
+	close(valCh)
+	src := gstream.From(ctx, valCh)
+
+	_, toolHandler := mcpgo.ToolLatestHandler(handle, src, mcpgo.Options{})
+
+	req := mcp.CallToolRequest{Params: mcp.CallToolParams{
+		Name:      handle.Name,
+		Arguments: map[string]any{"a": 1.0, "b": 1.0}, // ignored by ToolLatestHandler
+	}}
+
+	deadline := time.Now().Add(500 * time.Millisecond)
+	var result *mcp.CallToolResult
+	var err error
+	for {
+		result, err = toolHandler(ctx, req)
+		if err != nil {
+			t.Fatalf("tool handler: %v", err)
+		}
+		if !result.IsError {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("timeout waiting for cached value; last result: %v", result.Content)
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+
+	text, ok := mcp.AsTextContent(result.Content[0])
+	if !ok {
+		t.Fatalf("want TextContent, got %T", result.Content[0])
+	}
+	if !strings.Contains(text.Text, "99") {
+		t.Errorf("want cached value 99 in result, got %q", text.Text)
+	}
+}
+
+func TestToolLatestAdapter_NoValueYet_ReturnsIsError(t *testing.T) {
+	ctx := context.Background()
+	handle := newAddHandle()
+
+	// Empty, already-closed source — no value ever produced.
+	valCh := make(chan addOutput)
+	close(valCh)
+	src := gstream.From(ctx, valCh)
+
+	_, toolHandler := mcpgo.ToolLatestHandler(handle, src, mcpgo.Options{})
+	req := mcp.CallToolRequest{Params: mcp.CallToolParams{
+		Name:      handle.Name,
+		Arguments: map[string]any{"a": 1.0, "b": 1.0},
+	}}
+
+	result, err := toolHandler(ctx, req)
+	if err != nil {
+		t.Fatalf("tool handler: %v", err)
+	}
+	if !result.IsError {
+		t.Fatal("want IsError true when no value has been computed yet")
+	}
 }

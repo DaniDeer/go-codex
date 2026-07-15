@@ -138,6 +138,73 @@ func TestChiSSEAdapter_ServesItemsToClients(t *testing.T) {
 	cancel()
 }
 
+// ── PipelineAdapter ───────────────────────────────────────────────────────────
+
+func TestChiPipelineAdapter_RegistersAndHandlesRequests(t *testing.T) {
+	ctx := context.Background()
+
+	r := gochi.NewRouter()
+	b := rest.NewBuilder(testInfo)
+	handle, _ := rest.NewRoute[createReq, userResp]("POST", "/pipeline",
+		createReqCodec, userRespCodec, rest.RouteMeta{OperationID: "pipeline"}).Register(b)
+
+	p := ports.NewToolPort[createReq, userResp]("pipeline-tool", createReqCodec, userRespCodec, ports.PortOptions{})
+	p.SetPipeline(func(_ context.Context, req createReq) gstream.Stream[userResp] {
+		return gstream.Single(context.Background(), userResp{ID: "u1", Name: req.Name})
+	})
+
+	if err := p.Bind(ctx, chiadapter.PipelineAdapter(r, handle, chiadapter.PipelineAdapterOptions{})); err != nil {
+		t.Fatalf("Bind: %v", err)
+	}
+
+	srv := httptest.NewServer(r)
+	defer srv.Close()
+
+	resp, err := http.Post(srv.URL+"/pipeline", "application/json", strings.NewReader(`{"name":"Alice"}`))
+	if err != nil {
+		t.Fatalf("POST: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusCreated {
+		t.Errorf("want 201, got %d", resp.StatusCode)
+	}
+}
+
+func TestChiPipelineAdapter_MultipleBind_ExposesOnAllRouters(t *testing.T) {
+	ctx := context.Background()
+
+	r1 := gochi.NewRouter()
+	r2 := gochi.NewRouter()
+	b := rest.NewBuilder(testInfo)
+	handle, _ := rest.NewRoute[createReq, userResp]("POST", "/pipeline",
+		createReqCodec, userRespCodec, rest.RouteMeta{OperationID: "pipeline-multi"}).Register(b)
+
+	p := ports.NewToolPort[createReq, userResp]("pipeline-tool-multi", createReqCodec, userRespCodec, ports.PortOptions{})
+	p.SetPipeline(func(_ context.Context, req createReq) gstream.Stream[userResp] {
+		return gstream.Single(context.Background(), userResp{ID: "u1", Name: req.Name})
+	})
+
+	if err := p.Bind(ctx, chiadapter.PipelineAdapter(r1, handle, chiadapter.PipelineAdapterOptions{})); err != nil {
+		t.Fatalf("Bind r1: %v", err)
+	}
+	if err := p.Bind(ctx, chiadapter.PipelineAdapter(r2, handle, chiadapter.PipelineAdapterOptions{})); err != nil {
+		t.Fatalf("Bind r2: %v", err)
+	}
+
+	for _, r := range []http.Handler{r1, r2} {
+		srv := httptest.NewServer(r)
+		resp, err := http.Post(srv.URL+"/pipeline", "application/json", strings.NewReader(`{"name":"Alice"}`))
+		if err != nil {
+			t.Fatalf("POST: %v", err)
+		}
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusCreated {
+			t.Errorf("want 201, got %d", resp.StatusCode)
+		}
+		srv.Close()
+	}
+}
+
 // ── PollAdapter (smoke test via standard HTTP) ─────────────────────────────────
 
 func TestChiBinding_IngestAdapter_FullChannelReturns503(t *testing.T) {

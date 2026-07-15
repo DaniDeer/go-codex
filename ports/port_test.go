@@ -6,9 +6,11 @@ import (
 	"fmt"
 	"log/slog"
 	"testing"
+	"time"
 
 	"github.com/DaniDeer/go-codex/codex"
 	"github.com/DaniDeer/go-codex/ports"
+	"github.com/DaniDeer/go-codex/stats"
 	gstream "github.com/DaniDeer/go-codex/stream"
 )
 
@@ -362,6 +364,197 @@ func TestIOParam_WithCodec(t *testing.T) {
 	}
 	if updated.Name != "sensorID" {
 		t.Error("WithCodec must preserve other fields")
+	}
+}
+
+// ── ValidateParams / WithParams / ParamsFromContext ──────────────────────────
+
+func TestValidateParams_MissingRequired(t *testing.T) {
+	params := []ports.IOParam{{Name: "sensorID", Required: true}}
+	err := ports.ValidateParams(params, map[string]string{})
+	if err == nil {
+		t.Fatal("want error for missing required param")
+	}
+	var ve codex.ValidationErrors
+	if !errors.As(err, &ve) {
+		t.Fatalf("want codex.ValidationErrors, got %T", err)
+	}
+	if len(ve) != 1 || ve[0].Field != "sensorID" {
+		t.Errorf("want single error for field sensorID, got %v", ve)
+	}
+	if !errors.Is(ve[0].Err, ports.ErrParamMissing) {
+		t.Errorf("want ErrParamMissing, got %v", ve[0].Err)
+	}
+}
+
+func TestValidateParams_CodecFailure(t *testing.T) {
+	uuidCodec := codex.String()
+	uuidCodec.Decode = func(v any) (string, error) {
+		s, _ := v.(string)
+		if len(s) != 36 {
+			return "", fmt.Errorf("not a uuid: %q", s)
+		}
+		return s, nil
+	}
+	sensorIDParam := ports.IOParam{Name: "sensorID"}.WithCodec(uuidCodec)
+	params := []ports.IOParam{sensorIDParam}
+
+	if err := ports.ValidateParams(params, map[string]string{"sensorID": "not-a-uuid"}); err == nil {
+		t.Fatal("want codec validation error")
+	} else {
+		var ve codex.ValidationErrors
+		if !errors.As(err, &ve) || len(ve) != 1 || ve[0].Field != "sensorID" {
+			t.Errorf("want single ValidationError for sensorID, got %v", err)
+		}
+	}
+
+	valid := "123456789012345678901234567890123456" // 36 chars
+	if err := ports.ValidateParams(params, map[string]string{"sensorID": valid}); err != nil {
+		t.Errorf("want nil for valid value, got %v", err)
+	}
+}
+
+func TestValidateParams_OptionalMissingIsOK(t *testing.T) {
+	params := []ports.IOParam{{Name: "sensorID", Required: false}}
+	if err := ports.ValidateParams(params, map[string]string{}); err != nil {
+		t.Errorf("want nil for missing optional param, got %v", err)
+	}
+}
+
+func TestValidateParams_AllSatisfied(t *testing.T) {
+	params := []ports.IOParam{{Name: "sensorID", Required: true}}
+	if err := ports.ValidateParams(params, map[string]string{"sensorID": "abc"}); err != nil {
+		t.Errorf("want nil, got %v", err)
+	}
+}
+
+func TestWithParams_ParamsFromContext(t *testing.T) {
+	params := []ports.IOParam{{Name: "sensorID", Required: true}}
+	ctx := ports.WithParams(context.Background(), params)
+	got := ports.ParamsFromContext(ctx)
+	if len(got) != 1 || got[0].Name != "sensorID" {
+		t.Errorf("want stored params, got %v", got)
+	}
+}
+
+func TestParamsFromContext_NoneStored(t *testing.T) {
+	got := ports.ParamsFromContext(context.Background())
+	if got != nil {
+		t.Errorf("want nil when nothing stored, got %v", got)
+	}
+}
+
+// ── Observer integration (RecordRequest("port.bind", ...)) ───────────────────
+
+type bindSpyObserver struct {
+	requests []spyBindRequest
+}
+
+type spyBindRequest struct {
+	method     string
+	path       string
+	statusCode int
+}
+
+func (s *bindSpyObserver) RecordValidationError(_, _, _ string)              {}
+func (s *bindSpyObserver) RecordSubscribe(_ string, _ bool, _ time.Duration) {}
+func (s *bindSpyObserver) RecordPublish(_ string, _ bool, _ time.Duration)   {}
+func (s *bindSpyObserver) RecordRequest(method, path string, statusCode int, _ time.Duration) {
+	s.requests = append(s.requests, spyBindRequest{method: method, path: path, statusCode: statusCode})
+}
+
+func TestSourcePort_Bind_RecordsObserverEvent(t *testing.T) {
+	spy := &bindSpyObserver{}
+	ctx := stats.WithObserver(context.Background(), spy)
+	p := intPort("obs-source", 4)
+	p.Bind(ctx, ports.ChanSourceAdapter(feedChan(1, 2)))
+	_, _ = collectStream(ctx, p.Stream(ctx))
+
+	if len(spy.requests) != 1 {
+		t.Fatalf("want 1 RecordRequest call, got %d: %v", len(spy.requests), spy.requests)
+	}
+	if spy.requests[0].method != "port.bind" {
+		t.Errorf("want method 'port.bind', got %q", spy.requests[0].method)
+	}
+	if spy.requests[0].statusCode != 200 {
+		t.Errorf("want statusCode 200, got %d", spy.requests[0].statusCode)
+	}
+}
+
+func TestSinkPort_Bind_RecordsObserverEvent(t *testing.T) {
+	spy := &bindSpyObserver{}
+	ctx := stats.WithObserver(context.Background(), spy)
+	p := intSinkPort("obs-sink", 4)
+	out := make(chan int, 4)
+	p.Bind(ctx, ports.ChanSinkAdapter(out))
+	errCh := make(chan error)
+	close(errCh)
+	p.Feed(ctx, gstream.Stream[int]{Values: feedChan(1, 2), Errors: errCh})
+
+	if len(spy.requests) != 1 || spy.requests[0].method != "port.bind" {
+		t.Fatalf("want 1 'port.bind' RecordRequest call, got %v", spy.requests)
+	}
+}
+
+func TestIOPort_Bind_RecordsObserverEvent(t *testing.T) {
+	spy := &bindSpyObserver{}
+	ctx := stats.WithObserver(context.Background(), spy)
+	p := ports.NewIOPort[int, string]("obs-io", intCodec, strCodec, ports.PortOptions{})
+	if err := p.Bind(ctx, ports.FuncIOAdapter(func(_ context.Context, v int) (string, error) {
+		return fmt.Sprint(v), nil
+	})); err != nil {
+		t.Fatalf("Bind: %v", err)
+	}
+
+	if len(spy.requests) != 1 || spy.requests[0].method != "port.bind" || spy.requests[0].statusCode != 200 {
+		t.Fatalf("want 1 successful 'port.bind' RecordRequest call, got %v", spy.requests)
+	}
+}
+
+func TestIOPort_Bind_RecordsObserverEvent_OnError(t *testing.T) {
+	spy := &bindSpyObserver{}
+	ctx := stats.WithObserver(context.Background(), spy)
+	p := ports.NewIOPort[int, string]("obs-io-err", intCodec, strCodec, ports.PortOptions{})
+	fn := ports.FuncIOAdapter(func(_ context.Context, v int) (string, error) { return "", nil })
+	_ = p.Bind(ctx, fn)
+	_ = p.Bind(ctx, fn) // second Bind fails — adapter already bound
+
+	if len(spy.requests) != 2 {
+		t.Fatalf("want 2 RecordRequest calls, got %d", len(spy.requests))
+	}
+	if spy.requests[1].statusCode != 500 {
+		t.Errorf("want statusCode 500 for failed bind, got %d", spy.requests[1].statusCode)
+	}
+}
+
+func TestToolPort_Bind_RecordsObserverEvent(t *testing.T) {
+	spy := &bindSpyObserver{}
+	ctx := stats.WithObserver(context.Background(), spy)
+	p := ports.NewToolPort[int, string]("obs-tool", intCodec, strCodec, ports.PortOptions{})
+	p.SetPipeline(func(_ context.Context, v int) gstream.Stream[string] {
+		return gstream.Stream[string]{}
+	})
+	adapter := &mockToolAdapter{}
+	if err := p.Bind(ctx, adapter); err != nil {
+		t.Fatalf("Bind: %v", err)
+	}
+
+	if len(spy.requests) != 1 || spy.requests[0].method != "port.bind" || spy.requests[0].statusCode != 200 {
+		t.Fatalf("want 1 successful 'port.bind' RecordRequest call, got %v", spy.requests)
+	}
+}
+
+func TestToolPort_Bind_RecordsObserverEvent_NoPipeline(t *testing.T) {
+	spy := &bindSpyObserver{}
+	ctx := stats.WithObserver(context.Background(), spy)
+	p := ports.NewToolPort[int, string]("obs-tool-nopipeline", intCodec, strCodec, ports.PortOptions{})
+	adapter := &mockToolAdapter{}
+	if err := p.Bind(ctx, adapter); err == nil {
+		t.Fatal("want PortNoPipelineError")
+	}
+
+	if len(spy.requests) != 1 || spy.requests[0].statusCode != 500 {
+		t.Fatalf("want 1 failed 'port.bind' RecordRequest call, got %v", spy.requests)
 	}
 }
 
