@@ -127,7 +127,10 @@ func TestCallAdapter_EmitsResponsePerItem(t *testing.T) {
 	close(ch)
 	src := gstream.From(ctx, ch)
 
-	p := ports.NewIOPort[createReq, userResp]("call", createReqCodec, userRespCodec, ports.PortOptions{Buffer: 4})
+	p, err := ports.NewIOPort[createReq, userResp]("call", createReqCodec, userRespCodec, ports.PortOptions{Buffer: 4})
+	if err != nil {
+		t.Fatalf("construct port: %v", err)
+	}
 	p.Bind(ctx, nethttp.CallAdapter(http.DefaultClient, srv.URL, h, nethttp.CallStreamOptions{})) //nolint:errcheck
 	out := p.Connect(ctx, src)
 	vals, errs := gstream.Collect(ctx, out)
@@ -155,7 +158,10 @@ func TestCallAdapter_ErrorsGoToStreamErrors(t *testing.T) {
 	ch <- createReq{Name: "Bob"}
 	close(ch)
 
-	p := ports.NewIOPort[createReq, userResp]("call", createReqCodec, userRespCodec, ports.PortOptions{Buffer: 4})
+	p, err := ports.NewIOPort[createReq, userResp]("call", createReqCodec, userRespCodec, ports.PortOptions{Buffer: 4})
+	if err != nil {
+		t.Fatalf("construct port: %v", err)
+	}
 	p.Bind(ctx, nethttp.CallAdapter(http.DefaultClient, srv.URL, h, nethttp.CallStreamOptions{})) //nolint:errcheck
 	out := p.Connect(ctx, gstream.From(ctx, ch))
 	_, errs := gstream.Collect(ctx, out)
@@ -213,7 +219,10 @@ func TestPipelineAdapter_RegistersAndHandlesRequests(t *testing.T) {
 	handle, _ := rest.NewRoute[createReq, userResp]("POST", "/pipeline",
 		createReqCodec, userRespCodec, rest.RouteMeta{OperationID: "pipeline"}).Register(b)
 
-	p := ports.NewToolPort[createReq, userResp]("pipeline-tool", createReqCodec, userRespCodec, ports.PortOptions{})
+	p, err := ports.NewToolPort[createReq, userResp]("pipeline-tool", createReqCodec, userRespCodec, ports.PortOptions{})
+	if err != nil {
+		t.Fatalf("construct port: %v", err)
+	}
 	p.SetPipeline(func(_ context.Context, req createReq) gstream.Stream[userResp] {
 		return gstream.Single(context.Background(), userResp{ID: "u1", Name: req.Name})
 	})

@@ -84,6 +84,63 @@ func TestTool_Register_happyPath(t *testing.T) {
 	}
 }
 
+// ── ClientHandle tests ────────────────────────────────────────────────────────
+
+func TestTool_ClientHandle_returnsWorkingHandle(t *testing.T) {
+	handle, err := newCalcTool().ClientHandle()
+	if err != nil {
+		t.Fatalf("ClientHandle: %v", err)
+	}
+	if handle.Name != "calculate" {
+		t.Errorf("Name: got %q, want %q", handle.Name, "calculate")
+	}
+	if len(handle.InputSchema) == 0 || len(handle.OutputSchema) == 0 {
+		t.Error("InputSchema/OutputSchema must be non-empty")
+	}
+}
+
+func TestTool_ClientHandle_noBuilderRequired(t *testing.T) {
+	handle, err := newCalcTool().ClientHandle()
+	if err != nil {
+		t.Fatalf("ClientHandle: %v", err)
+	}
+	if handle.Decode == nil || handle.Encode == nil {
+		t.Fatal("ClientHandle fields must not be nil")
+	}
+}
+
+func TestTool_ClientHandle_encodeDecodeRoundTrip(t *testing.T) {
+	handle, err := newCalcTool().ClientHandle()
+	if err != nil {
+		t.Fatalf("ClientHandle: %v", err)
+	}
+	in, err := handle.Decode(map[string]any{"a": 3.0, "b": 4.0})
+	if err != nil {
+		t.Fatalf("Decode: %v", err)
+	}
+	if in.A != 3 || in.B != 4 {
+		t.Errorf("Decode mismatch: got %+v", in)
+	}
+	data, err := handle.Encode(calcOutput{Result: 7})
+	if err != nil {
+		t.Fatalf("Encode: %v", err)
+	}
+	var decoded map[string]float64
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		t.Fatalf("json.Unmarshal: %v", err)
+	}
+	if decoded["result"] != 7 {
+		t.Errorf("Encode round-trip mismatch: got %v", decoded)
+	}
+}
+
+func TestTool_ClientHandle_emptyNameFails(t *testing.T) {
+	tool := apimcp.NewTool[calcInput, calcOutput]("", calcInputCodec, calcOutputCodec)
+	if _, err := tool.ClientHandle(); err == nil {
+		t.Fatal("expected error for empty name")
+	}
+}
+
 func TestTool_Register_emptyNameFails(t *testing.T) {
 	b := newBuilder()
 	tool := apimcp.NewTool[calcInput, calcOutput]("", calcInputCodec, calcOutputCodec)

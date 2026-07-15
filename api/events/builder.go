@@ -681,6 +681,45 @@ func (c Channel[T]) Register(b *Builder) (*ChannelHandle[T], error) {
 	return h, nil
 }
 
+// ClientHandle returns a [ChannelHandle] for client-side use without registering
+// with a [Builder]. No spec registration occurs (SecuritySchemes and
+// GlobalSecurity are left empty).
+//
+// Use ClientHandle when only the codec and topic definitions are needed (no
+// AsyncAPI spec, no server), or when sharing a [Channel] definition between
+// publisher and subscriber in the same binary without a builder registration.
+//
+// The returned handle has the same Decode / Encode helpers and BuildTopic /
+// ValidateTopicVars methods as a handle returned by [Channel.Register].
+//
+// Example — client-only usage (no builder required):
+//
+//	var SensorChannel = events.NewChannel[SensorReading]("sensors/{sensorID}/data",
+//	    sensorCodec, events.TopicParam{Name: "sensorID"}.WithCodec(sensorIDCodec),
+//	)
+//
+//	handle := SensorChannel.ClientHandle()
+//	domain.SensorReadings.Bind(ctx, mqtt5.SubscribeAdapter(client, router, handle, 0, fmt, opts))
+//
+// Mirrors [rest.Route.ClientHandle] and [reqreply.Route.ClientHandle].
+func (c Channel[T]) ClientHandle() *ChannelHandle[T] {
+	var cb channelBuilder
+	for _, opt := range c.opts {
+		opt.applyChannel(&cb)
+	}
+
+	frozen := buildChannelItem(c.topic, c.codec, cb)
+	jsonFmt := format.JSON(c.codec)
+
+	return &ChannelHandle[T]{
+		Topic:       c.topic,
+		Descriptor:  frozen,
+		Decode:      func(payload []byte) (T, error) { return jsonFmt.Unmarshal(payload) },
+		Encode:      func(msg T) ([]byte, error) { return jsonFmt.Marshal(msg) },
+		topicParams: cb.topicParams,
+	}
+}
+
 // AsyncAPISpec builds a complete AsyncAPI 3.0 document from all registered channels.
 // Returns an error if any non-empty SchemaName references a schema that will not
 // be present in components/schemas (a dangling $ref).

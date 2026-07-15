@@ -28,7 +28,10 @@ func TestCallAdapter_EmitsResponses(t *testing.T) {
 	close(reqCh)
 	src := gstream.From(ctx, reqCh)
 
-	p := ports.NewIOPort[computeReq, computeResp]("test", computeReqCodec, computeRespCodec, ports.PortOptions{Buffer: 4})
+	p, err := ports.NewIOPort[computeReq, computeResp]("test", computeReqCodec, computeRespCodec, ports.PortOptions{Buffer: 4})
+	if err != nil {
+		t.Fatalf("construct port: %v", err)
+	}
 	p.Bind(ctx, zeromq.CallAdapter(sock, handle, zeromq.CallStreamOptions{})) //nolint:errcheck
 	out := p.Connect(ctx, src)
 	vals, errs := gstream.Collect(ctx, out)
@@ -52,7 +55,10 @@ func TestCallAdapter_ErrorsForwardedFromSrc(t *testing.T) {
 	close(valCh)
 	src := gstream.Stream[computeReq]{Values: valCh, Errors: errCh}
 
-	p := ports.NewIOPort[computeReq, computeResp]("test", computeReqCodec, computeRespCodec, ports.PortOptions{Buffer: 4})
+	p, err := ports.NewIOPort[computeReq, computeResp]("test", computeReqCodec, computeRespCodec, ports.PortOptions{Buffer: 4})
+	if err != nil {
+		t.Fatalf("construct port: %v", err)
+	}
 	p.Bind(ctx, zeromq.CallAdapter(sock, handle, zeromq.CallStreamOptions{})) //nolint:errcheck
 	out := p.Connect(ctx, src)
 	_, errs := gstream.Collect(ctx, out)
@@ -70,7 +76,10 @@ func TestServeAdapter_HandlesRequestViaToolPort(t *testing.T) {
 	sock := &mockSocket{inFrames: [][][]byte{{[]byte(validComputeJSON)}}}
 	handle := newRouteHandle()
 
-	p := ports.NewToolPort[computeReq, computeResp]("compute", computeReqCodec, computeRespCodec, ports.PortOptions{})
+	p, err := ports.NewToolPort[computeReq, computeResp]("compute", computeReqCodec, computeRespCodec, ports.PortOptions{})
+	if err != nil {
+		t.Fatalf("construct port: %v", err)
+	}
 	p.SetPipeline(func(_ context.Context, req computeReq) gstream.Stream[computeResp] {
 		return gstream.Single(context.Background(), computeResp{Sum: req.X + req.Y})
 	})
@@ -105,7 +114,10 @@ func TestServeAdapter_NoPipelineError(t *testing.T) {
 	sock := &mockSocket{}
 	handle := newRouteHandle()
 
-	p := ports.NewToolPort[computeReq, computeResp]("compute-nopipeline", computeReqCodec, computeRespCodec, ports.PortOptions{})
+	p, err := ports.NewToolPort[computeReq, computeResp]("compute-nopipeline", computeReqCodec, computeRespCodec, ports.PortOptions{})
+	if err != nil {
+		t.Fatalf("construct port: %v", err)
+	}
 	if err := p.Bind(ctx, zeromq.ServeAdapter(sock, handle, zeromq.ServeOptions{})); err == nil {
 		t.Fatal("want error when no pipeline set")
 	}

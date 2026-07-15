@@ -53,11 +53,13 @@ type SourceAdapter[T any] interface {
 //  2. [Bind] — register adapters (fan-in sources). All Bind calls before Stream.
 //  3. [Stream] — obtain the merged stream; pass to pipeline operators.
 type SourcePort[T any] struct {
-	name   string
-	codec  codex.Codec[T]
-	params []IOParam
-	obs    stats.Observer
-	buffer int
+	name    string
+	codec   codex.Codec[T]
+	params  []IOParam
+	handles map[string]any
+	specs   map[string]any
+	obs     stats.Observer
+	buffer  int
 
 	ch    chan T
 	errCh chan error
@@ -65,17 +67,37 @@ type SourcePort[T any] struct {
 }
 
 // NewSourcePort creates a SourcePort with the given name and payload codec.
-// opts configures IO params, buffer size, and observer.
+// opts configures Patterns, IO params, buffer size, and observer. Any
+// [EventPattern] in opts.Patterns is built eagerly into a handle retrievable
+// via [EventHandle] — fail-fast, matching [events.Channel.Register]'s
+// philosophy (though construction here is builder-free and infallible).
 func NewSourcePort[T any](name string, codec codex.Codec[T], opts PortOptions) *SourcePort[T] {
+	handles, specs := buildEventPatternHandles(opts.Patterns, codec)
 	return &SourcePort[T]{
-		name:   name,
-		codec:  codec,
-		params: opts.Params,
-		obs:    opts.Observer,
-		buffer: opts.Buffer,
-		ch:     make(chan T, opts.Buffer),
-		errCh:  make(chan error, opts.Buffer),
+		name:    name,
+		codec:   codec,
+		params:  opts.Params,
+		handles: handles,
+		specs:   specs,
+		obs:     opts.Observer,
+		buffer:  opts.Buffer,
+		ch:      make(chan T, opts.Buffer),
+		errCh:   make(chan error, opts.Buffer),
 	}
+}
+
+// patternHandle implements the unexported patternHolder interface used by
+// [RESTHandle], [EventHandle], [ReqReplyHandle], and [MCPHandle].
+func (p *SourcePort[T]) patternHandle(kind string) (any, bool) {
+	v, ok := p.handles[kind]
+	return v, ok
+}
+
+// patternSpec implements the unexported patternHolder interface used by
+// [RegisterREST], [RegisterEvent], [RegisterReqReply], and [RegisterMCP].
+func (p *SourcePort[T]) patternSpec(kind string) (any, bool) {
+	v, ok := p.specs[kind]
+	return v, ok
 }
 
 // Name returns the port's declared name.

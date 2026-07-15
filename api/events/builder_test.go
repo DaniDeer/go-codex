@@ -1303,3 +1303,59 @@ func TestCombinedSpec_eventsAndReqReply(t *testing.T) {
 		}
 	}
 }
+
+// ── ClientHandle tests ────────────────────────────────────────────────────────
+
+func TestChannel_ClientHandle_returnsNonNilHandle(t *testing.T) {
+	h := events.NewChannel[userEvent]("user/created", userEventCodec,
+		events.Subscribe{Summary: "User created"}).ClientHandle()
+	if h == nil {
+		t.Fatal("ClientHandle returned nil")
+	}
+}
+
+func TestChannel_ClientHandle_topicMatches(t *testing.T) {
+	h := events.NewChannel[userEvent]("user/created", userEventCodec).ClientHandle()
+	if h.Topic != "user/created" {
+		t.Errorf("expected topic %q, got %q", "user/created", h.Topic)
+	}
+}
+
+func TestChannel_ClientHandle_encodeDecodeRoundTrip(t *testing.T) {
+	h := events.NewChannel[userEvent]("user/created", userEventCodec).ClientHandle()
+
+	payload, err := h.Encode(userEvent{ID: "u1", Name: "Alice"})
+	if err != nil {
+		t.Fatalf("Encode: %v", err)
+	}
+	decoded, err := h.Decode(payload)
+	if err != nil {
+		t.Fatalf("Decode: %v", err)
+	}
+	if decoded.Name != "Alice" {
+		t.Errorf("round-trip mismatch: got %+v", decoded)
+	}
+}
+
+func TestChannel_ClientHandle_noBuilderRequired(t *testing.T) {
+	// ClientHandle must not panic and must produce a usable handle
+	// even when no Builder is created.
+	h := events.NewChannel[userEvent]("user/created", userEventCodec).ClientHandle()
+	if h.Decode == nil || h.Encode == nil {
+		t.Fatal("ClientHandle fields must not be nil")
+	}
+}
+
+func TestChannel_ClientHandle_topicParamsPreserved(t *testing.T) {
+	uuidCodec := codex.String()
+	templateChannel := events.NewChannel[userEvent]("sensors/{sensorID}/data", userEventCodec,
+		events.TopicParam{Name: "sensorID"}.WithCodec(uuidCodec))
+	h := templateChannel.ClientHandle()
+	topic, err := h.BuildTopic(map[string]string{"sensorID": "acme"})
+	if err != nil {
+		t.Fatalf("BuildTopic: %v", err)
+	}
+	if topic != "sensors/acme/data" {
+		t.Errorf("expected %q, got %q", "sensors/acme/data", topic)
+	}
+}

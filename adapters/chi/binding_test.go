@@ -148,7 +148,10 @@ func TestChiPipelineAdapter_RegistersAndHandlesRequests(t *testing.T) {
 	handle, _ := rest.NewRoute[createReq, userResp]("POST", "/pipeline",
 		createReqCodec, userRespCodec, rest.RouteMeta{OperationID: "pipeline"}).Register(b)
 
-	p := ports.NewToolPort[createReq, userResp]("pipeline-tool", createReqCodec, userRespCodec, ports.PortOptions{})
+	p, err := ports.NewToolPort[createReq, userResp]("pipeline-tool", createReqCodec, userRespCodec, ports.PortOptions{})
+	if err != nil {
+		t.Fatalf("construct port: %v", err)
+	}
 	p.SetPipeline(func(_ context.Context, req createReq) gstream.Stream[userResp] {
 		return gstream.Single(context.Background(), userResp{ID: "u1", Name: req.Name})
 	})
@@ -179,7 +182,10 @@ func TestChiPipelineAdapter_MultipleBind_ExposesOnAllRouters(t *testing.T) {
 	handle, _ := rest.NewRoute[createReq, userResp]("POST", "/pipeline",
 		createReqCodec, userRespCodec, rest.RouteMeta{OperationID: "pipeline-multi"}).Register(b)
 
-	p := ports.NewToolPort[createReq, userResp]("pipeline-tool-multi", createReqCodec, userRespCodec, ports.PortOptions{})
+	p, err := ports.NewToolPort[createReq, userResp]("pipeline-tool-multi", createReqCodec, userRespCodec, ports.PortOptions{})
+	if err != nil {
+		t.Fatalf("construct port: %v", err)
+	}
 	p.SetPipeline(func(_ context.Context, req createReq) gstream.Stream[userResp] {
 		return gstream.Single(context.Background(), userResp{ID: "u1", Name: req.Name})
 	})

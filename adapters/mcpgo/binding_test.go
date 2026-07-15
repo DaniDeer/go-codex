@@ -33,7 +33,10 @@ func TestToolPipelineAdapter_RegistersAndCallsTool(t *testing.T) {
 	s := newMCPServer()
 	handle := newAddHandle()
 
-	toolPort := ports.NewToolPort[addInput, addOutput]("add", addInputCodec, addOutputCodec, ports.PortOptions{})
+	toolPort, err := ports.NewToolPort[addInput, addOutput]("add", addInputCodec, addOutputCodec, ports.PortOptions{})
+	if err != nil {
+		t.Fatalf("construct port: %v", err)
+	}
 	toolPort.SetPipeline(func(_ context.Context, in addInput) gstream.Stream[addOutput] {
 		return gstream.Single(context.Background(), addOutput{Sum: in.A + in.B})
 	})
@@ -65,10 +68,13 @@ func TestToolPipelineAdapter_NoPipelineError(t *testing.T) {
 	s := newMCPServer()
 	handle := newAddHandle()
 
-	toolPort := ports.NewToolPort[addInput, addOutput]("add", addInputCodec, addOutputCodec, ports.PortOptions{})
+	toolPort, err := ports.NewToolPort[addInput, addOutput]("add", addInputCodec, addOutputCodec, ports.PortOptions{})
+	if err != nil {
+		t.Fatalf("construct port: %v", err)
+	}
 	// No SetPipeline call
 
-	err := toolPort.Bind(ctx, mcpgo.ToolPipelineAdapter(s, handle, mcpgo.Options{}))
+	err = toolPort.Bind(ctx, mcpgo.ToolPipelineAdapter(s, handle, mcpgo.Options{}))
 	if err == nil {
 		t.Fatal("want error, got nil")
 	}
@@ -88,7 +94,10 @@ func TestToolPipelineAdapter_MultipleBind(t *testing.T) {
 	s2 := newMCPServer()
 	handle := newAddHandle()
 
-	toolPort := ports.NewToolPort[addInput, addOutput]("add", addInputCodec, addOutputCodec, ports.PortOptions{})
+	toolPort, err := ports.NewToolPort[addInput, addOutput]("add", addInputCodec, addOutputCodec, ports.PortOptions{})
+	if err != nil {
+		t.Fatalf("construct port: %v", err)
+	}
 	toolPort.SetPipeline(func(_ context.Context, in addInput) gstream.Stream[addOutput] {
 		return gstream.Single(context.Background(), addOutput{Sum: in.A + in.B})
 	})
@@ -116,7 +125,10 @@ func TestToolLatestAdapter_RegistersTool(t *testing.T) {
 	close(valCh)
 	src := gstream.From(ctx, valCh)
 
-	toolPort := ports.NewToolPort[addInput, addOutput]("add", addInputCodec, addOutputCodec, ports.PortOptions{})
+	toolPort, err := ports.NewToolPort[addInput, addOutput]("add", addInputCodec, addOutputCodec, ports.PortOptions{})
+	if err != nil {
+		t.Fatalf("construct port: %v", err)
+	}
 	toolPort.SetPipeline(func(_ context.Context, _ addInput) gstream.Stream[addOutput] {
 		return gstream.Single(context.Background(), addOutput{Sum: 0}) // not used by ToolLatestAdapter
 	})

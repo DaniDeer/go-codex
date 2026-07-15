@@ -57,26 +57,53 @@ type IOPort[Req, Resp any] struct {
 	reqCodec  codex.Codec[Req]
 	respCodec codex.Codec[Resp]
 	params    []IOParam
+	handles   map[string]any
+	specs     map[string]any
 	obs       stats.Observer
 
 	mu      sync.Mutex
 	adapter IOAdapter[Req, Resp]
 }
 
-// NewIOPort creates an IOPort with the given name, request codec, and response codec.
+// NewIOPort creates an IOPort with the given name, request codec, and response
+// codec. opts configures Patterns, IO params, and observer. Any [RESTPattern]
+// or [ReqReplyPattern] in opts.Patterns is built eagerly into a handle
+// retrievable via [RESTHandle]/[ReqReplyHandle]. Returns
+// [PatternRegisterError] if a declared Pattern fails to build (fail-fast,
+// matching [rest.Route.Register]'s philosophy).
 func NewIOPort[Req, Resp any](
 	name string,
 	reqCodec codex.Codec[Req],
 	respCodec codex.Codec[Resp],
 	opts PortOptions,
-) *IOPort[Req, Resp] {
+) (*IOPort[Req, Resp], error) {
+	handles, specs, err := buildDualCodecPatternHandles(name, opts.Patterns, reqCodec, respCodec)
+	if err != nil {
+		return nil, err
+	}
 	return &IOPort[Req, Resp]{
 		name:      name,
 		reqCodec:  reqCodec,
 		respCodec: respCodec,
 		params:    opts.Params,
+		handles:   handles,
+		specs:     specs,
 		obs:       opts.Observer,
-	}
+	}, nil
+}
+
+// patternHandle implements the unexported patternHolder interface used by
+// [RESTHandle], [EventHandle], [ReqReplyHandle], and [MCPHandle].
+func (p *IOPort[Req, Resp]) patternHandle(kind string) (any, bool) {
+	v, ok := p.handles[kind]
+	return v, ok
+}
+
+// patternSpec implements the unexported patternHolder interface used by
+// [RegisterREST], [RegisterEvent], [RegisterReqReply], and [RegisterMCP].
+func (p *IOPort[Req, Resp]) patternSpec(kind string) (any, bool) {
+	v, ok := p.specs[kind]
+	return v, ok
 }
 
 // Name returns the port's declared name.

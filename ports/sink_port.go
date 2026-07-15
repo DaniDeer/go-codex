@@ -53,11 +53,13 @@ type boundSink[T any] struct {
 //  3. [Feed] — connect the upstream stream; blocks until src terminates AND
 //     all adapter goroutines have finished draining their per-adapter channels.
 type SinkPort[T any] struct {
-	name   string
-	codec  codex.Codec[T]
-	params []IOParam
-	obs    stats.Observer
-	buffer int
+	name    string
+	codec   codex.Codec[T]
+	params  []IOParam
+	handles map[string]any
+	specs   map[string]any
+	obs     stats.Observer
+	buffer  int
 
 	mu    sync.Mutex
 	sinks []*boundSink[T]
@@ -65,14 +67,34 @@ type SinkPort[T any] struct {
 }
 
 // NewSinkPort creates a SinkPort with the given name and payload codec.
+// opts configures Patterns, IO params, buffer size, and observer. Any
+// [EventPattern] in opts.Patterns is built eagerly into a handle retrievable
+// via [EventHandle].
 func NewSinkPort[T any](name string, codec codex.Codec[T], opts PortOptions) *SinkPort[T] {
+	handles, specs := buildEventPatternHandles(opts.Patterns, codec)
 	return &SinkPort[T]{
-		name:   name,
-		codec:  codec,
-		params: opts.Params,
-		obs:    opts.Observer,
-		buffer: opts.Buffer,
+		name:    name,
+		codec:   codec,
+		params:  opts.Params,
+		handles: handles,
+		specs:   specs,
+		obs:     opts.Observer,
+		buffer:  opts.Buffer,
 	}
+}
+
+// patternHandle implements the unexported patternHolder interface used by
+// [RESTHandle], [EventHandle], [ReqReplyHandle], and [MCPHandle].
+func (p *SinkPort[T]) patternHandle(kind string) (any, bool) {
+	v, ok := p.handles[kind]
+	return v, ok
+}
+
+// patternSpec implements the unexported patternHolder interface used by
+// [RegisterREST], [RegisterEvent], [RegisterReqReply], and [RegisterMCP].
+func (p *SinkPort[T]) patternSpec(kind string) (any, bool) {
+	v, ok := p.specs[kind]
+	return v, ok
 }
 
 // Name returns the port's declared name.

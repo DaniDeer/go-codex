@@ -1,6 +1,6 @@
 # Wiring Pipelines with Ports
 
-> See also: [`ports` package on pkg.go.dev](https://pkg.go.dev/github.com/DaniDeer/go-codex/ports) · [`examples/sensor-service`](https://github.com/DaniDeer/go-codex/tree/main/examples/sensor-service)
+> See also: [`ports` package on pkg.go.dev](https://pkg.go.dev/github.com/DaniDeer/go-codex/ports) · [`examples/sensor-service`](https://github.com/DaniDeer/go-codex/tree/main/examples/sensor-service) · [Ports feature page](../features/ports.md) · [Roadmap: Inside-Out Pipeline Wiring](../roadmap/inside-out-pipeline-wiring.md)
 
 go-codex pipelines are wired to the outside world using **port adapters** — a declarative,
 protocol-agnostic binding pattern that keeps domain/pipeline code free of transport imports.
@@ -25,13 +25,16 @@ Step 2 — Wiring (main.go only)
 ### `SourcePort[T]` — inbound boundary
 
 ```go
-// domain/pipeline.go — no adapter imports
+// domain/pipeline.go — no adapter imports; topic + params declared once, here
 var SensorReadings = ports.NewSourcePort[SensorReading]("sensor-readings", ReadingCodec,
     ports.PortOptions{
-        Params: []ports.IOParam{
-            {Name: "sensorID", Required: true}.WithCodec(sensorIDCodec),
-        },
         Buffer: 8,
+        Patterns: []ports.Pattern{
+            ports.EventPattern{
+                Topic: "sensors/{sensorID}/data",
+                Opts:  []events.ChannelOpt{events.TopicParam{Name: "sensorID"}.WithCodec(sensorIDCodec)},
+            },
+        },
     })
 
 func StartPipeline(ctx context.Context) {
@@ -40,13 +43,15 @@ func StartPipeline(ctx context.Context) {
     go OEEResults.Feed(ctx, oeeStream)
 }
 
-// main.go — all protocol decisions here
+// main.go — all protocol decisions here; handle derived from the port, not hand-built
+sensorHandle, _ := ports.EventHandle[SensorReading](domain.SensorReadings)
 domain.SensorReadings.Bind(ctx,
     mqtt5.SubscribeAdapter(client, router, sensorHandle, 0,
         format.JSON(domain.ReadingCodec),
         mqtt5.SubscribeAdapterOptions{TopicFilter: "sensors/+/data"}))
 
 // Fan-in: add a second source without touching pipeline code
+// (REST ingest still takes a hand-built handle — see the "Pattern" section below)
 domain.SensorReadings.Bind(ctx,
     nethttp.IngestAdapter(mux, ingestHandle, nethttp.IngestAdapterOptions{Buffer: 8}))
 ```
@@ -55,9 +60,15 @@ domain.SensorReadings.Bind(ctx,
 
 ```go
 // domain/pipeline.go
-var OEEResults = ports.NewSinkPort[OEE]("oee-results", OEECodec, ports.PortOptions{Buffer: 8})
+var OEEResults = ports.NewSinkPort[OEE]("oee-results", OEECodec, ports.PortOptions{
+    Buffer: 8,
+    Patterns: []ports.Pattern{
+        ports.EventPattern{Topic: "alerts/{sensorID}"},
+    },
+})
 
 // main.go — fan-out: both adapters receive every item
+alertHandle, _ := ports.EventHandle[OEE](domain.OEEResults)
 domain.OEEResults.Bind(ctx,
     mqtt5.PublishAdapter(client, alertHandle,
         format.JSON(domain.OEECodec), mqtt5.MQTT5DrainPublishOptions{}))
@@ -70,10 +81,14 @@ domain.OEEResults.Bind(ctx,
 Swap the enrichment source without changing pipeline code:
 
 ```go
-// domain/pipeline.go
-var Calibration = ports.NewIOPort[SensorReading, CalibratedReading](
+// domain/pipeline.go — declare the call pattern once; NewIOPort returns (port, error)
+var Calibration, calibErr = ports.NewIOPort[SensorReading, CalibratedReading](
     "calibration", ReadingCodec, calibratedCodec,
-    ports.PortOptions{Params: []ports.IOParam{{Name: "sensorID"}.WithCodec(sensorIDCodec)}})
+    ports.PortOptions{
+        Patterns: []ports.Pattern{
+            ports.RESTPattern{Method: "GET", Path: "/calibration/{sensorID}"},
+        },
+    })
 
 func StartPipeline(ctx context.Context) {
     raw        := SensorReadings.Stream(ctx)
@@ -82,12 +97,13 @@ func StartPipeline(ctx context.Context) {
     go OEEResults.Feed(ctx, oeeStream)
 }
 
-// main.go — choose ONE enrichment source:
+// main.go — choose ONE enrichment source; REST handle is derived from the port:
+handle, _ := ports.RESTHandle[SensorReading, CalibratedReading](domain.Calibration)
 domain.Calibration.Bind(ctx, nethttp.CallAdapter(httpClient, "http://calib-svc", handle, callOpts))
-// domain.Calibration.Bind(ctx, sql.QueryEachAdapter(db, calibCodec, queryFn, opts))
+// domain.Calibration.Bind(ctx, sql.QueryEachAdapter(db, calibCodec, queryFn, opts))       // no Pattern — file/sql use Params instead
 // domain.Calibration.Bind(ctx, file.ReadEachAdapter(calibFile, varsFor, combine, opts))
-// domain.Calibration.Bind(ctx, mqtt5.CallAdapter(client, router, handle, callOpts))
-// domain.Calibration.Bind(ctx, zeromq.CallAdapter(sock, handle, opts))
+// domain.Calibration.Bind(ctx, mqtt5.CallAdapter(client, router, reqReplyHandle, callOpts)) // ports.ReqReplyPattern + ports.ReqReplyHandle
+// domain.Calibration.Bind(ctx, zeromq.CallAdapter(sock, reqReplyHandle, opts))
 ```
 
 ### `ToolPort[In, Out]` — server-side request/response
@@ -98,8 +114,15 @@ triggers the pipeline and waits for a response. Set the pipeline function once w
 can serve MCP, HTTP, and ZeroMQ simultaneously.
 
 ```go
-// domain/pipeline.go — no adapter imports
-var OEETool = ports.NewToolPort[OEEIn, OEEResult]("oee-calc", oeeInCodec, oeeResultCodec, ports.PortOptions{})
+// domain/pipeline.go — no adapter imports; declare all three transport patterns once
+var OEETool, toolErr = ports.NewToolPort[OEEIn, OEEResult]("oee-calc", oeeInCodec, oeeResultCodec,
+    ports.PortOptions{
+        Patterns: []ports.Pattern{
+            ports.RESTPattern{Method: "POST", Path: "/oee/calc"},
+            ports.ReqReplyPattern{Topic: "oee/calc"},
+            ports.MCPPattern{Name: "oee-calc"},
+        },
+    })
 
 func init() {
     OEETool.SetPipeline(func(ctx context.Context, req OEEIn) gstream.Stream[OEEResult] {
@@ -107,7 +130,10 @@ func init() {
     })
 }
 
-// main.go — serve the same pipeline on three transports:
+// main.go — serve the same pipeline on three transports; handles derived from the port:
+mcpToolHandle, _ := ports.MCPHandle[OEEIn, OEEResult](domain.OEETool)
+httpHandle, _ := ports.RESTHandle[OEEIn, OEEResult](domain.OEETool)
+zmqHandle, _ := ports.ReqReplyHandle[OEEIn, OEEResult](domain.OEETool)
 domain.OEETool.Bind(ctx, mcpgo.ToolPipelineAdapter(mcpServer, mcpToolHandle, mcpgo.Options{}))
 domain.OEETool.Bind(ctx, nethttp.PipelineAdapter(mux, httpHandle, nethttp.PipelineAdapterOptions{}))
 domain.OEETool.Bind(ctx, zeromq.ServeAdapter(repSock, zmqHandle, zeromq.ServeOptions{}))
@@ -188,27 +214,70 @@ domain.Calibration.Bind(ctx, ports.FuncIOAdapter(func(ctx context.Context, r Sen
 }))
 ```
 
-## `IOParam` — protocol-agnostic parameters
+## `Pattern` — declare the wire shape once
 
-Ports carry `IOParam` declarations for routing parameters. What happens with them
-at `Bind` time depends on the adapter:
+Every example above declares its communication pattern via `PortOptions.Patterns` —
+this is the primary, recommended way to wire a handle-backed port (REST, events,
+reqreply, MCP). It reuses the exact vocabulary you already know from
+`rest.NewRoute`/`events.NewChannel`/`reqreply.NewRoute`/`apimcp.NewTool`
+(`PathParam`, `QueryParam`, `TopicParam`, `RouteMeta`, …) — declared once, directly
+on the port, instead of in a separate `Route`/`Channel`/`Tool` value that then has to
+be `.Register()`ed with a builder and threaded into the adapter constructor by hand.
 
-| IOParam role | REST | MQTT/ZeroMQ | MQTT5 extra | File |
-|---|---|---|---|---|
-| Routing var | `PathParam {name}` (builder-validated) | `TopicParam {name}` (builder-validated) | — | `FilePathParam {name}` (`ports.ValidateParams`-validated) |
-| Metadata | `HeaderParam`, `QueryParam` (builder-validated) | — | `UserPropertyParam` (builder-validated) | — |
+| Pattern | Protocol family |
+|---------|------------------|
+| `ports.RESTPattern{Method, Path, Opts}` | HTTP (nethttp, chi) |
+| `ports.EventPattern{Topic, Opts}` | pub/sub (mqtt, mqtt5, zeromq) |
+| `ports.ReqReplyPattern{Topic, Opts}` | request/reply (mqtt5, zeromq) |
+| `ports.MCPPattern{Name, Opts}` | MCP tool (mcpgo) |
+
+Derive the handle the adapter needs with the matching accessor — `(nil, false)`, not
+a panic, when the port declared no matching `Pattern`:
 
 ```go
-// Declare once on the port — adapters map names automatically
+handle, ok := ports.RESTHandle[Req, Resp](domain.SomePort)     // *rest.RouteHandle[Req, Resp]
+handle, ok := ports.EventHandle[T](domain.SomePort)            // *events.ChannelHandle[T]
+handle, ok := ports.ReqReplyHandle[Req, Resp](domain.SomePort) // *reqreply.RouteHandle[Req, Resp]
+handle, ok := ports.MCPHandle[In, Out](domain.SomePort)        // *apimcp.ToolHandle[In, Out]
+```
+
+Build the OpenAPI/AsyncAPI/MCP spec **from the binding**, whenever you want one —
+no separate spec-first declaration step:
+
+```go
+b := rest.NewBuilder(rest.Info{Title: "OEE Service", Version: "1.0.0"})
+ports.RegisterREST[OEEIn, OEEResult](b, domain.OEETool) //nolint:errcheck
+spec, _ := b.OpenAPISpec()
+```
+
+`RegisterEvent`, `RegisterReqReply`, and `RegisterMCP` do the same for their builders.
+
+`NewIOPort`/`NewToolPort` return `(*Port, error)` — a `Pattern` is built eagerly at
+construction time (fail-fast) and can fail (e.g. an unknown param name via
+`PatternRegisterError`). `NewSourcePort`/`NewSinkPort` stay infallible since
+`EventPattern` construction never errors.
+
+> REST ingest (`SourcePort`) and SSE (`SinkPort`) need an asymmetric `Req`/`Resp`
+> shape a single-codec port can't express directly with `RESTPattern` yet — these
+> still take a hand-built handle. See the roadmap doc's Phase 4 section for the
+> full design and this open item.
+
+## `IOParam` — protocol-agnostic parameters (handle-less adapters)
+
+`PortOptions.Params` is the enforcement mechanism for adapters with **no**
+`Pattern`/handle of their own — `file.ReadEachAdapter` and `file.DrainWriteFileAdapter`
+(their `varsFor` function extracts a `map[string]string`):
+
+```go
+// Declare once on the port — the adapter validates via context, not a hand-built handle
 ports.IOParam{Name: "sensorID", Required: true}.WithCodec(sensorIDCodec)
 ```
 
-Adapters backed by a protocol-level builder (`rest.Route`, `events.ChannelHandle`,
-MQTT 5's `UserPropertyParam`) validate their own declarations at that layer — the
-port's `Params` is descriptive there. `file.ReadEachAdapter` and
-`file.DrainWriteFileAdapter` have no such builder: the port propagates `Params` via
-context (`ports.WithParams`) and the adapter calls `ports.ValidateParams` against
-each item's extracted `varsFor` map, surfacing failures as `ReadError`/`WriteError`.
+The port propagates `Params` via context (`ports.WithParams`) and the adapter calls
+`ports.ValidateParams` against each item's extracted `varsFor` map, surfacing
+failures as `ReadError`/`WriteError` wrapping `codex.ValidationErrors`. For
+handle-backed adapters, use `Pattern` instead — `Params` is not consulted there
+since the derived handle already validates fully.
 
 ## Cache patterns (not port-based)
 

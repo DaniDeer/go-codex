@@ -54,28 +54,56 @@ type ToolPort[In, Out any] struct {
 	inCodec  codex.Codec[In]
 	outCodec codex.Codec[Out]
 	params   []IOParam
+	handles  map[string]any
+	specs    map[string]any
 	obs      stats.Observer
 
 	mu sync.Mutex
 	fn func(context.Context, In) gstream.Stream[Out]
 }
 
-// NewToolPort creates a ToolPort with the given name, request codec, and response codec.
-// name is used for observability, error context, and future spec generation.
-// opts configures IO params and observer.
+// NewToolPort creates a ToolPort with the given name, request codec, and
+// response codec. name is used for observability, error context, and spec
+// generation. opts configures Patterns, IO params, and observer. Any
+// [RESTPattern], [ReqReplyPattern], or [MCPPattern] in opts.Patterns is built
+// eagerly into a handle retrievable via [RESTHandle]/[ReqReplyHandle]/
+// [MCPHandle] — a ToolPort exposed over multiple transports (e.g. HTTP + MQTT 5
+// + MCP) declares one Pattern per transport. Returns [PatternRegisterError] if
+// a declared Pattern fails to build (fail-fast, matching
+// [rest.Route.Register]'s philosophy).
 func NewToolPort[In, Out any](
 	name string,
 	inCodec codex.Codec[In],
 	outCodec codex.Codec[Out],
 	opts PortOptions,
-) *ToolPort[In, Out] {
+) (*ToolPort[In, Out], error) {
+	handles, specs, err := buildDualCodecPatternHandles(name, opts.Patterns, inCodec, outCodec)
+	if err != nil {
+		return nil, err
+	}
 	return &ToolPort[In, Out]{
 		name:     name,
 		inCodec:  inCodec,
 		outCodec: outCodec,
 		params:   opts.Params,
+		handles:  handles,
+		specs:    specs,
 		obs:      opts.Observer,
-	}
+	}, nil
+}
+
+// patternHandle implements the unexported patternHolder interface used by
+// [RESTHandle], [EventHandle], [ReqReplyHandle], and [MCPHandle].
+func (p *ToolPort[In, Out]) patternHandle(kind string) (any, bool) {
+	v, ok := p.handles[kind]
+	return v, ok
+}
+
+// patternSpec implements the unexported patternHolder interface used by
+// [RegisterREST], [RegisterEvent], [RegisterReqReply], and [RegisterMCP].
+func (p *ToolPort[In, Out]) patternSpec(kind string) (any, bool) {
+	v, ok := p.specs[kind]
+	return v, ok
 }
 
 // Name returns the port's declared name.

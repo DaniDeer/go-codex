@@ -8,6 +8,9 @@
 //
 //   - [ports.SourcePort] + [adaptermqtt.SubscribeAdapter] — MQTT subscription
 //     wired to a protocol-agnostic SourcePort; pipeline code has no MQTT import.
+//     The topic + params are declared once via [ports.EventPattern] on the port
+//     itself; [ports.EventHandle] derives the *ChannelHandle for the adapter —
+//     no separate events.NewChannel/Register step or events.Builder needed.
 //   - [ports.SinkPort] + [adaptermqtt.PublishAdapter] — MQTT alert publishing
 //     wired to a SinkPort; supports fan-out to additional sinks.
 //   - [ports.SourcePort] + [sqladapter.QueryAdapter] — SQL row polling wired
@@ -358,24 +361,17 @@ var alertCodec = codex.Struct(
 
 // ── Layer 1: API declarations ─────────────────────────────────────────────────
 //
-// Channel and route declarations are pure value expressions — no side effects,
-// no registration. They name and type every API surface of the service and can
+// Route declarations are pure value expressions — no side effects, no
+// registration. They name and type every API surface of the service and can
 // be read as a compact spec independent of the infrastructure wiring in main().
 //
 // Register/ClientHandle calls (which produce *ChannelHandle and *RouteHandle)
 // happen in main() where a builder or mux is already available.
-
-var readingChannel = events.NewChannel(
-	"sensors/{sensorID}/data",
-	mqttPayloadCodec,
-	events.TopicParam{Name: "sensorID", Description: "UUID of the publishing sensor"},
-)
-
-var alertChannel = events.NewChannel(
-	"alerts/{sensorID}",
-	alertCodec,
-	events.TopicParam{Name: "sensorID", Description: "UUID of the sensor that triggered the alert"},
-)
+//
+// The MQTT sensor-reading and alert channels are declared directly on their
+// ports below (ports.EventPattern), not as separate events.Channel vars —
+// see sensorsPort / alertsPort in main() — so the topic/params are declared
+// exactly once and the *ChannelHandle is derived via ports.EventHandle.
 
 var createRoute = rest.NewRoute("POST", "/readings",
 	createReadingCodec, readingCodec,
@@ -626,28 +622,38 @@ func main() {
 	// ── MQTT + stream pipeline ────────────────────────────────────────────
 	mqttClient := newMockClient()
 
-	// Register channels with a builder to get typed *ChannelHandle values.
-	eventsBuilder := events.NewBuilder(events.Info{Title: "sensor-service", Version: "1.0.0"})
-	readingHandle, err := readingChannel.Register(eventsBuilder)
-	must(err, "register reading channel")
-	alertHandle, err := alertChannel.Register(eventsBuilder)
-	must(err, "register alert channel")
-
 	// ── Bridge 1: ports.SourcePort + mqtt.SubscribeAdapter ───────────────
 	//
-	// Declare a protocol-agnostic SourcePort in the pipeline; bind the MQTT
-	// adapter in the wiring layer (here, just below). The pipeline code
-	// (gstream.Apply etc.) never imports adaptermqtt — it only sees a typed stream.
+	// Declare the pattern (topic + params) once, directly on the SourcePort,
+	// via ports.EventPattern — no separate events.NewChannel/Register step
+	// and no events.Builder needed just to get a working *ChannelHandle.
+	// ports.EventHandle derives it, builder-free, for the adapter below.
 	//
 	//   Domain code (no adapter import):
-	//     sensorsPort := ports.NewSourcePort[MQTTPayload]("sensors", codec, opts)
+	//     sensorsPort := ports.NewSourcePort[MQTTPayload]("sensors", codec,
+	//         ports.PortOptions{Patterns: []ports.Pattern{ports.EventPattern{...}}})
 	//     sensors := sensorsPort.Stream(ctx)
 	//     readings := gstream.Apply(ctx, sensors, saveReadingFn, ...)
 	//
 	//   Wiring (main.go / adapter layer):
+	//     handle, _ := ports.EventHandle[MQTTPayload](sensorsPort)
 	//     sensorsPort.Bind(ctx, mqtt.SubscribeAdapter(client, handle, qos, fmt, opts))
 	sensorsPort := ports.NewSourcePort[MQTTPayload]("mqtt/sensors/+/data", mqttPayloadCodec,
-		ports.PortOptions{Buffer: 64})
+		ports.PortOptions{
+			Buffer: 64,
+			Patterns: []ports.Pattern{
+				ports.EventPattern{
+					Topic: "sensors/{sensorID}/data",
+					Opts: []events.ChannelOpt{
+						events.TopicParam{Name: "sensorID", Description: "UUID of the publishing sensor"},
+					},
+				},
+			},
+		})
+	readingHandle, ok := ports.EventHandle[MQTTPayload](sensorsPort)
+	if !ok {
+		must(errors.New("sensorsPort: no EventPattern declared"), "derive reading channel handle")
+	}
 	sensorsPort.Bind(ctx, adaptermqtt.SubscribeAdapter(mqttClient, readingHandle, 0,
 		format.JSON(mqttPayloadCodec),
 		adaptermqtt.SubscribeAdapterOptions{TopicFilter: "sensors/+/data"}))
@@ -705,7 +711,20 @@ func main() {
 	//
 	//   alertsPort.Bind(ctx, mqtt.PublishAdapter(...))   // MQTT
 	//   alertsPort.Bind(ctx, file.DrainWriteAdapter(...)) // also write to file
-	alertsPort := ports.NewSinkPort[SensorAlert]("mqtt/alerts", alertCodec, ports.PortOptions{})
+	alertsPort := ports.NewSinkPort[SensorAlert]("mqtt/alerts", alertCodec, ports.PortOptions{
+		Patterns: []ports.Pattern{
+			ports.EventPattern{
+				Topic: "alerts/{sensorID}",
+				Opts: []events.ChannelOpt{
+					events.TopicParam{Name: "sensorID", Description: "UUID of the sensor that triggered the alert"},
+				},
+			},
+		},
+	})
+	alertHandle, ok := ports.EventHandle[SensorAlert](alertsPort)
+	if !ok {
+		must(errors.New("alertsPort: no EventPattern declared"), "derive alert channel handle")
+	}
 	alertsPort.Bind(ctx, adaptermqtt.PublishAdapter(mqttClient, alertHandle,
 		format.JSON(alertCodec),
 		adaptermqtt.MQTTDrainPublishOptions{

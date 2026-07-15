@@ -266,6 +266,64 @@ func (t Tool[In, Out]) Register(b *Builder) (*ToolHandle[In, Out], error) {
 	return h, nil
 }
 
+// ClientHandle returns a [ToolHandle] without registering with a [Builder].
+// No duplicate-name check and no spec registration occur.
+//
+// Use ClientHandle when only the codec-backed Decode/Encode helpers and
+// rendered schemas are needed (no MCP spec document), or when constructing a
+// tool handle outside of a [Builder]-managed registration flow.
+//
+// Mirrors [rest.Route.ClientHandle], [events.Channel.ClientHandle], and
+// [reqreply.Route.ClientHandle].
+func (t Tool[In, Out]) ClientHandle() (*ToolHandle[In, Out], error) {
+	if t.name == "" {
+		return nil, fmt.Errorf("mcp: tool name must not be empty")
+	}
+
+	inputSchema, err := jsonschema.Schema(t.inputCodec.Schema)
+	if err != nil {
+		return nil, fmt.Errorf("mcp: tool %q: render input schema: %w", t.name, err)
+	}
+	outputSchema, err := jsonschema.Schema(t.outputCodec.Schema)
+	if err != nil {
+		return nil, fmt.Errorf("mcp: tool %q: render output schema: %w", t.name, err)
+	}
+
+	name := t.name
+	inputCodec := t.inputCodec
+	outputCodec := t.outputCodec
+	meta := t.tb.meta
+
+	return &ToolHandle[In, Out]{
+		Name:         name,
+		Description:  meta.Description,
+		Tags:         meta.Tags,
+		InputSchema:  inputSchema,
+		OutputSchema: outputSchema,
+
+		Decode: func(args any) (In, error) {
+			var zero In
+			result, err := inputCodec.Decode(args)
+			if err != nil {
+				return zero, ToolInputError{Name: name, Err: err}
+			}
+			return result, nil
+		},
+
+		Encode: func(out Out) ([]byte, error) {
+			intermediate, err := outputCodec.Encode(out)
+			if err != nil {
+				return nil, ToolOutputError{Name: name, Err: err}
+			}
+			data, err := json.Marshal(intermediate)
+			if err != nil {
+				return nil, ToolOutputError{Name: name, Err: fmt.Errorf("json: %w", err)}
+			}
+			return data, nil
+		},
+	}, nil
+}
+
 // ---------------------------------------------------------------------------
 // Resource
 // ---------------------------------------------------------------------------

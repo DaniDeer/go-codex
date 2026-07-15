@@ -197,7 +197,10 @@ func TestMQTT5CallAdapter_ErrorsForwardedFromSrc(t *testing.T) {
 	close(valCh)
 	src := gstream.Stream[computeReq]{Values: valCh, Errors: errCh}
 
-	p := ports.NewIOPort[computeReq, computeResp]("test", computeReqCodec, computeRespCodec, ports.PortOptions{Buffer: 4})
+	p, err := ports.NewIOPort[computeReq, computeResp]("test", computeReqCodec, computeRespCodec, ports.PortOptions{Buffer: 4})
+	if err != nil {
+		t.Fatalf("construct port: %v", err)
+	}
 	p.Bind(ctx, mqtt5.CallAdapter(client, router, handle, mqtt5.CallOptions{})) //nolint:errcheck
 	out := p.Connect(ctx, src)
 	_, errs := gstream.Collect(ctx, out)
@@ -221,7 +224,10 @@ func TestMQTT5ServeAdapter_HandlesRequestViaToolPort(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
 
-	p := ports.NewToolPort[computeReq, computeResp]("compute", computeReqCodec, computeRespCodec, ports.PortOptions{})
+	p, err := ports.NewToolPort[computeReq, computeResp]("compute", computeReqCodec, computeRespCodec, ports.PortOptions{})
+	if err != nil {
+		t.Fatalf("construct port: %v", err)
+	}
 	p.SetPipeline(func(_ context.Context, req computeReq) gstream.Stream[computeResp] {
 		return gstream.Single(context.Background(), computeResp{Sum: req.X + req.Y})
 	})
@@ -272,7 +278,10 @@ func TestMQTT5ServeAdapter_NoPipelineError(t *testing.T) {
 	}
 
 	ctx := context.Background()
-	p := ports.NewToolPort[computeReq, computeResp]("compute-nopipeline", computeReqCodec, computeRespCodec, ports.PortOptions{})
+	p, err := ports.NewToolPort[computeReq, computeResp]("compute-nopipeline", computeReqCodec, computeRespCodec, ports.PortOptions{})
+	if err != nil {
+		t.Fatalf("construct port: %v", err)
+	}
 	if err := p.Bind(ctx, mqtt5.ServeAdapter(client, router, handle, mqtt5.ServeOptions{})); err == nil {
 		t.Fatal("want error when no pipeline set")
 	}

@@ -108,13 +108,21 @@ func ParamsFromContext(ctx context.Context) []IOParam {
 // PortOptions configures a port constructor ([NewSourcePort], [NewSinkPort],
 // [NewIOPort], [NewToolPort]).
 type PortOptions struct {
-	// Params declares the protocol-agnostic IO parameters for this port. Each
-	// param carries a name, description, optional codec, and required flag.
-	// Made available to bound adapters via [ParamsFromContext]; adapters that
-	// extract routing values from vars (e.g. file.ReadEachAdapter's varsFor)
-	// call [ValidateParams] to enforce them. Adapters backed by a protocol-level
-	// builder (rest.Route, events.ChannelHandle) already validate their own
-	// PathParam/TopicParam declarations and do not consult Params.
+	// Patterns declares the port's communication pattern(s) — one entry per
+	// protocol family the port will be bound to ([RESTPattern], [EventPattern],
+	// [ReqReplyPattern], [MCPPattern]). The port builds its own handle from
+	// each Pattern at construction time (builder-free — see the Pattern doc),
+	// retrievable via [RESTHandle], [EventHandle], [ReqReplyHandle], [MCPHandle].
+	// This is the primary declaration surface for handle-backed adapters.
+	Patterns []Pattern
+
+	// Params declares the protocol-agnostic IO parameters for this port. Only
+	// meaningful for adapters with no [Pattern] of their own — i.e. handle-less
+	// adapters (file.ReadEachAdapter, file.DrainWriteFileAdapter). Made
+	// available to bound adapters via [ParamsFromContext]; those adapters call
+	// [ValidateParams] to enforce them. Adapters backed by a [Pattern] (or,
+	// pre-Pattern, a hand-built rest.RouteHandle/events.ChannelHandle) validate
+	// through that handle instead and do not consult Params.
 	Params []IOParam
 
 	// Buffer sets the internal channel buffer size. Default 0 (unbuffered).

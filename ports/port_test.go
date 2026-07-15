@@ -5,9 +5,14 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"strings"
 	"testing"
 	"time"
 
+	"github.com/DaniDeer/go-codex/api/events"
+	apimcp "github.com/DaniDeer/go-codex/api/mcp"
+	"github.com/DaniDeer/go-codex/api/reqreply"
+	"github.com/DaniDeer/go-codex/api/rest"
 	"github.com/DaniDeer/go-codex/codex"
 	"github.com/DaniDeer/go-codex/ports"
 	"github.com/DaniDeer/go-codex/stats"
@@ -177,7 +182,10 @@ func TestSinkPort_FanOut(t *testing.T) {
 
 func TestIOPort_HappyPath(t *testing.T) {
 	ctx := context.Background()
-	p := ports.NewIOPort[int, string]("double-str", intCodec, strCodec, ports.PortOptions{Buffer: 4})
+	p, err := ports.NewIOPort[int, string]("double-str", intCodec, strCodec, ports.PortOptions{Buffer: 4})
+	if err != nil {
+		t.Fatalf("construct port: %v", err)
+	}
 	if err := p.Bind(ctx, ports.FuncIOAdapter(func(_ context.Context, v int) (string, error) {
 		return fmt.Sprintf("%d", v*2), nil
 	})); err != nil {
@@ -202,7 +210,10 @@ func TestIOPort_HappyPath(t *testing.T) {
 
 func TestIOPort_NoAdapterError(t *testing.T) {
 	ctx := context.Background()
-	p := ports.NewIOPort[int, string]("test", intCodec, strCodec, ports.PortOptions{Buffer: 4})
+	p, err := ports.NewIOPort[int, string]("test", intCodec, strCodec, ports.PortOptions{Buffer: 4})
+	if err != nil {
+		t.Fatalf("construct port: %v", err)
+	}
 	// No Bind
 
 	src := gstream.From(ctx, feedChan(1))
@@ -224,13 +235,16 @@ func TestIOPort_NoAdapterError(t *testing.T) {
 
 func TestIOPort_DoubleBind(t *testing.T) {
 	ctx := context.Background()
-	p := ports.NewIOPort[int, string]("test", intCodec, strCodec, ports.PortOptions{})
+	p, err := ports.NewIOPort[int, string]("test", intCodec, strCodec, ports.PortOptions{})
+	if err != nil {
+		t.Fatalf("construct port: %v", err)
+	}
 	fn := ports.FuncIOAdapter(func(_ context.Context, v int) (string, error) { return "", nil })
 
 	if err := p.Bind(ctx, fn); err != nil {
 		t.Fatalf("first Bind: unexpected error: %v", err)
 	}
-	err := p.Bind(ctx, fn)
+	err = p.Bind(ctx, fn)
 	if err == nil {
 		t.Fatal("second Bind: want PortBindError, got nil")
 	}
@@ -244,7 +258,10 @@ func TestIOPort_DoubleBind(t *testing.T) {
 
 func TestIOPort_AdapterErrorInStreamErrors(t *testing.T) {
 	ctx := context.Background()
-	p := ports.NewIOPort[int, string]("test", intCodec, strCodec, ports.PortOptions{Buffer: 4})
+	p, err := ports.NewIOPort[int, string]("test", intCodec, strCodec, ports.PortOptions{Buffer: 4})
+	if err != nil {
+		t.Fatalf("construct port: %v", err)
+	}
 	p.Bind(ctx, ports.FuncIOAdapter(func(_ context.Context, _ int) (string, error) { //nolint:errcheck
 		return "", errors.New("enrichment failure")
 	}))
@@ -499,7 +516,10 @@ func TestSinkPort_Bind_RecordsObserverEvent(t *testing.T) {
 func TestIOPort_Bind_RecordsObserverEvent(t *testing.T) {
 	spy := &bindSpyObserver{}
 	ctx := stats.WithObserver(context.Background(), spy)
-	p := ports.NewIOPort[int, string]("obs-io", intCodec, strCodec, ports.PortOptions{})
+	p, err := ports.NewIOPort[int, string]("obs-io", intCodec, strCodec, ports.PortOptions{})
+	if err != nil {
+		t.Fatalf("construct port: %v", err)
+	}
 	if err := p.Bind(ctx, ports.FuncIOAdapter(func(_ context.Context, v int) (string, error) {
 		return fmt.Sprint(v), nil
 	})); err != nil {
@@ -514,7 +534,10 @@ func TestIOPort_Bind_RecordsObserverEvent(t *testing.T) {
 func TestIOPort_Bind_RecordsObserverEvent_OnError(t *testing.T) {
 	spy := &bindSpyObserver{}
 	ctx := stats.WithObserver(context.Background(), spy)
-	p := ports.NewIOPort[int, string]("obs-io-err", intCodec, strCodec, ports.PortOptions{})
+	p, err := ports.NewIOPort[int, string]("obs-io-err", intCodec, strCodec, ports.PortOptions{})
+	if err != nil {
+		t.Fatalf("construct port: %v", err)
+	}
 	fn := ports.FuncIOAdapter(func(_ context.Context, v int) (string, error) { return "", nil })
 	_ = p.Bind(ctx, fn)
 	_ = p.Bind(ctx, fn) // second Bind fails — adapter already bound
@@ -530,7 +553,10 @@ func TestIOPort_Bind_RecordsObserverEvent_OnError(t *testing.T) {
 func TestToolPort_Bind_RecordsObserverEvent(t *testing.T) {
 	spy := &bindSpyObserver{}
 	ctx := stats.WithObserver(context.Background(), spy)
-	p := ports.NewToolPort[int, string]("obs-tool", intCodec, strCodec, ports.PortOptions{})
+	p, err := ports.NewToolPort[int, string]("obs-tool", intCodec, strCodec, ports.PortOptions{})
+	if err != nil {
+		t.Fatalf("construct port: %v", err)
+	}
 	p.SetPipeline(func(_ context.Context, v int) gstream.Stream[string] {
 		return gstream.Stream[string]{}
 	})
@@ -547,7 +573,10 @@ func TestToolPort_Bind_RecordsObserverEvent(t *testing.T) {
 func TestToolPort_Bind_RecordsObserverEvent_NoPipeline(t *testing.T) {
 	spy := &bindSpyObserver{}
 	ctx := stats.WithObserver(context.Background(), spy)
-	p := ports.NewToolPort[int, string]("obs-tool-nopipeline", intCodec, strCodec, ports.PortOptions{})
+	p, err := ports.NewToolPort[int, string]("obs-tool-nopipeline", intCodec, strCodec, ports.PortOptions{})
+	if err != nil {
+		t.Fatalf("construct port: %v", err)
+	}
 	adapter := &mockToolAdapter{}
 	if err := p.Bind(ctx, adapter); err == nil {
 		t.Fatal("want PortNoPipelineError")
@@ -578,7 +607,10 @@ func (a *mockToolAdapter) Bind(_ context.Context, fn func(context.Context, int) 
 
 func TestToolPort_HappyPath(t *testing.T) {
 	ctx := context.Background()
-	p := ports.NewToolPort[int, string]("test", intCodec, strCodec, ports.PortOptions{})
+	p, err := ports.NewToolPort[int, string]("test", intCodec, strCodec, ports.PortOptions{})
+	if err != nil {
+		t.Fatalf("construct port: %v", err)
+	}
 	p.SetPipeline(func(_ context.Context, v int) gstream.Stream[string] {
 		return gstream.Single(context.Background(), fmt.Sprintf("%d", v))
 	})
@@ -600,11 +632,14 @@ func TestToolPort_HappyPath(t *testing.T) {
 
 func TestToolPort_NoPipelineError(t *testing.T) {
 	ctx := context.Background()
-	p := ports.NewToolPort[int, string]("test", intCodec, strCodec, ports.PortOptions{})
+	p, err := ports.NewToolPort[int, string]("test", intCodec, strCodec, ports.PortOptions{})
+	if err != nil {
+		t.Fatalf("construct port: %v", err)
+	}
 	// No SetPipeline call
 
 	adapter := &mockToolAdapter{name: "mock.ToolAdapter"}
-	err := p.Bind(ctx, adapter)
+	err = p.Bind(ctx, adapter)
 	if err == nil {
 		t.Fatal("want error when pipeline not set, got nil")
 	}
@@ -620,7 +655,10 @@ func TestToolPort_NoPipelineError(t *testing.T) {
 
 func TestToolPort_MultipleBind(t *testing.T) {
 	ctx := context.Background()
-	p := ports.NewToolPort[int, string]("test", intCodec, strCodec, ports.PortOptions{})
+	p, err := ports.NewToolPort[int, string]("test", intCodec, strCodec, ports.PortOptions{})
+	if err != nil {
+		t.Fatalf("construct port: %v", err)
+	}
 	p.SetPipeline(func(_ context.Context, v int) gstream.Stream[string] {
 		return gstream.Single(context.Background(), fmt.Sprintf("%d", v))
 	})
@@ -640,13 +678,16 @@ func TestToolPort_MultipleBind(t *testing.T) {
 
 func TestToolPort_AdapterError(t *testing.T) {
 	ctx := context.Background()
-	p := ports.NewToolPort[int, string]("test", intCodec, strCodec, ports.PortOptions{})
+	p, err := ports.NewToolPort[int, string]("test", intCodec, strCodec, ports.PortOptions{})
+	if err != nil {
+		t.Fatalf("construct port: %v", err)
+	}
 	p.SetPipeline(func(_ context.Context, _ int) gstream.Stream[string] {
 		return gstream.Single(context.Background(), "")
 	})
 
 	adapter := &mockToolAdapter{name: "failing", err: errors.New("route conflict")}
-	err := p.Bind(ctx, adapter)
+	err = p.Bind(ctx, adapter)
 	if err == nil {
 		t.Fatal("want error from failing adapter, got nil")
 	}
@@ -665,5 +706,283 @@ func TestPortNoPipelineError_LogValue(t *testing.T) {
 	attrs := v.Group()
 	if len(attrs) == 0 || attrs[0].Key != "port" {
 		t.Errorf("want 'port' attribute, got %v", attrs)
+	}
+}
+
+// ── MissingPatternError / PatternRegisterError ───────────────────────────────
+
+func TestMissingPatternError_LogValue(t *testing.T) {
+	e := ports.MissingPatternError{Port: "sensor-readings", Kind: "rest"}
+	v := e.LogValue()
+	if v.Kind() != slog.KindGroup {
+		t.Fatalf("want KindGroup, got %v", v.Kind())
+	}
+	attrs := v.Group()
+	if len(attrs) != 2 || attrs[0].Key != "port" || attrs[1].Key != "kind" {
+		t.Errorf("want port+kind attributes, got %v", attrs)
+	}
+	if e.Error() == "" {
+		t.Error("want non-empty Error() message")
+	}
+}
+
+func TestPatternRegisterError_LogValue(t *testing.T) {
+	inner := errors.New("unknown param name")
+	e := ports.PatternRegisterError{Port: "sensor-readings", Kind: "event", Err: inner}
+	v := e.LogValue()
+	if v.Kind() != slog.KindGroup {
+		t.Fatalf("want KindGroup, got %v", v.Kind())
+	}
+	attrs := v.Group()
+	if len(attrs) != 3 {
+		t.Errorf("want 3 attributes (port, kind, err), got %v", attrs)
+	}
+	if !errors.Is(e, inner) {
+		t.Error("want errors.Is to reach the wrapped error via Unwrap")
+	}
+}
+
+// ── Pattern → handle construction (Phase 4) ──────────────────────────────────
+
+func TestRESTPattern_BuildsClientHandle(t *testing.T) {
+	p, err := ports.NewIOPort[int, string]("call", intCodec, strCodec, ports.PortOptions{
+		Patterns: []ports.Pattern{
+			ports.RESTPattern{Method: "POST", Path: "/double", Opts: []rest.RouteOpt{
+				rest.RouteMeta{OperationID: "double"},
+			}},
+		},
+	})
+	if err != nil {
+		t.Fatalf("construct port: %v", err)
+	}
+	handle, ok := ports.RESTHandle[int, string](p)
+	if !ok {
+		t.Fatal("want RESTHandle to be present")
+	}
+	if handle.Descriptor.Path != "/double" || handle.Descriptor.Method != "POST" {
+		t.Errorf("want method=POST path=/double, got %+v", handle.Descriptor)
+	}
+}
+
+func TestEventPattern_BuildsClientHandle(t *testing.T) {
+	p := ports.NewSourcePort[int]("readings", intCodec, ports.PortOptions{
+		Patterns: []ports.Pattern{
+			ports.EventPattern{Topic: "sensors/{sensorID}/data", Opts: []events.ChannelOpt{
+				events.Subscribe{Summary: "sensor reading"},
+			}},
+		},
+	})
+	handle, ok := ports.EventHandle[int](p)
+	if !ok {
+		t.Fatal("want EventHandle to be present")
+	}
+	if handle.Topic != "sensors/{sensorID}/data" {
+		t.Errorf("want topic %q, got %q", "sensors/{sensorID}/data", handle.Topic)
+	}
+}
+
+func TestReqReplyPattern_BuildsClientHandle(t *testing.T) {
+	p, err := ports.NewIOPort[int, string]("compute", intCodec, strCodec, ports.PortOptions{
+		Patterns: []ports.Pattern{
+			ports.ReqReplyPattern{Topic: "compute/add"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("construct port: %v", err)
+	}
+	handle, ok := ports.ReqReplyHandle[int, string](p)
+	if !ok {
+		t.Fatal("want ReqReplyHandle to be present")
+	}
+	if handle.Topic != "compute/add" {
+		t.Errorf("want topic %q, got %q", "compute/add", handle.Topic)
+	}
+}
+
+func TestMCPPattern_BuildsClientHandle(t *testing.T) {
+	p, err := ports.NewToolPort[int, string]("compute-tool", intCodec, strCodec, ports.PortOptions{
+		Patterns: []ports.Pattern{
+			ports.MCPPattern{Name: "compute", Opts: []apimcp.ToolOpt{
+				apimcp.ToolMeta{Description: "computes a thing"},
+			}},
+		},
+	})
+	if err != nil {
+		t.Fatalf("construct port: %v", err)
+	}
+	handle, ok := ports.MCPHandle[int, string](p)
+	if !ok {
+		t.Fatal("want MCPHandle to be present")
+	}
+	if handle.Name != "compute" {
+		t.Errorf("want name %q, got %q", "compute", handle.Name)
+	}
+}
+
+func TestHandleAccessor_MissingPattern_ReturnsFalse(t *testing.T) {
+	p, err := ports.NewToolPort[int, string]("no-patterns", intCodec, strCodec, ports.PortOptions{})
+	if err != nil {
+		t.Fatalf("construct port: %v", err)
+	}
+	if _, ok := ports.RESTHandle[int, string](p); ok {
+		t.Error("want RESTHandle to be absent")
+	}
+	if _, ok := ports.ReqReplyHandle[int, string](p); ok {
+		t.Error("want ReqReplyHandle to be absent")
+	}
+	if _, ok := ports.MCPHandle[int, string](p); ok {
+		t.Error("want MCPHandle to be absent")
+	}
+}
+
+func TestHandleAccessor_NonPatternHolder_ReturnsFalse(t *testing.T) {
+	if _, ok := ports.RESTHandle[int, string]("not a port"); ok {
+		t.Error("want false for a value that does not implement patternHolder")
+	}
+}
+
+func TestPort_MultiplePatterns_BothHandlesAvailable(t *testing.T) {
+	p, err := ports.NewToolPort[int, string]("multi-transport", intCodec, strCodec, ports.PortOptions{
+		Patterns: []ports.Pattern{
+			ports.RESTPattern{Method: "POST", Path: "/compute"},
+			ports.ReqReplyPattern{Topic: "compute/add"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("construct port: %v", err)
+	}
+	if _, ok := ports.RESTHandle[int, string](p); !ok {
+		t.Error("want RESTHandle to be present")
+	}
+	if _, ok := ports.ReqReplyHandle[int, string](p); !ok {
+		t.Error("want ReqReplyHandle to be present")
+	}
+}
+
+func TestMCPPattern_InvalidTool_ReturnsPatternRegisterError(t *testing.T) {
+	_, err := ports.NewToolPort[int, string]("bad-mcp-tool", intCodec, strCodec, ports.PortOptions{
+		Patterns: []ports.Pattern{
+			ports.MCPPattern{Name: ""}, // empty tool name is rejected by apimcp.Tool.ClientHandle
+		},
+	})
+	if err == nil {
+		t.Fatal("want PatternRegisterError, got nil")
+	}
+	var pre ports.PatternRegisterError
+	if !errors.As(err, &pre) {
+		t.Errorf("want PatternRegisterError, got %T: %v", err, err)
+	}
+	if pre.Kind != "mcp" {
+		t.Errorf("want Kind=mcp, got %q", pre.Kind)
+	}
+}
+
+// ── RegisterREST / RegisterEvent / RegisterReqReply / RegisterMCP ────────────
+
+func TestRegisterREST_AddsRouteToBuilder(t *testing.T) {
+	p, err := ports.NewIOPort[int, string]("call", intCodec, strCodec, ports.PortOptions{
+		Patterns: []ports.Pattern{
+			ports.RESTPattern{Method: "POST", Path: "/double", Opts: []rest.RouteOpt{
+				rest.RouteMeta{OperationID: "double"},
+			}},
+		},
+	})
+	if err != nil {
+		t.Fatalf("construct port: %v", err)
+	}
+	b := rest.NewBuilder(rest.Info{Title: "Test", Version: "1.0.0"})
+	if err := ports.RegisterREST[int, string](b, p); err != nil {
+		t.Fatalf("RegisterREST: %v", err)
+	}
+	spec, err := b.OpenAPISpec()
+	if err != nil {
+		t.Fatalf("OpenAPISpec: %v", err)
+	}
+	out, err := spec.MarshalYAML()
+	if err != nil {
+		t.Fatalf("MarshalYAML: %v", err)
+	}
+	if !strings.Contains(string(out), "/double") {
+		t.Errorf("want spec to contain /double, got:\n%s", out)
+	}
+}
+
+func TestRegisterREST_MissingPattern(t *testing.T) {
+	p, err := ports.NewIOPort[int, string]("no-rest", intCodec, strCodec, ports.PortOptions{})
+	if err != nil {
+		t.Fatalf("construct port: %v", err)
+	}
+	b := rest.NewBuilder(rest.Info{Title: "Test", Version: "1.0.0"})
+	err = ports.RegisterREST[int, string](b, p)
+	var mpe ports.MissingPatternError
+	if !errors.As(err, &mpe) {
+		t.Fatalf("want MissingPatternError, got %v", err)
+	}
+	if mpe.Port != "no-rest" || mpe.Kind != "rest" {
+		t.Errorf("want Port=no-rest Kind=rest, got %+v", mpe)
+	}
+}
+
+func TestRegisterEvent_AddsChannelToBuilder(t *testing.T) {
+	p := ports.NewSourcePort[int]("readings", intCodec, ports.PortOptions{
+		Patterns: []ports.Pattern{
+			ports.EventPattern{Topic: "sensors/data", Opts: []events.ChannelOpt{
+				events.Subscribe{Summary: "sensor reading"},
+			}},
+		},
+	})
+	b := events.NewBuilder(events.Info{Title: "Test", Version: "1.0.0"})
+	if err := ports.RegisterEvent[int](b, p); err != nil {
+		t.Fatalf("RegisterEvent: %v", err)
+	}
+	spec, err := b.AsyncAPISpec()
+	if err != nil {
+		t.Fatalf("AsyncAPISpec: %v", err)
+	}
+	out, err := spec.MarshalYAML()
+	if err != nil {
+		t.Fatalf("MarshalYAML: %v", err)
+	}
+	if !strings.Contains(string(out), "sensors/data") {
+		t.Errorf("want spec to contain sensors/data, got:\n%s", out)
+	}
+}
+
+func TestRegisterReqReply_AddsRouteToBuilder(t *testing.T) {
+	p, err := ports.NewToolPort[int, string]("compute", intCodec, strCodec, ports.PortOptions{
+		Patterns: []ports.Pattern{
+			ports.ReqReplyPattern{Topic: "compute/add"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("construct port: %v", err)
+	}
+	b := reqreply.NewBuilder(reqreply.Info{Title: "Test", Version: "1.0.0"})
+	if err := ports.RegisterReqReply[int, string](b, p); err != nil {
+		t.Fatalf("RegisterReqReply: %v", err)
+	}
+}
+
+func TestRegisterMCP_AddsToolToBuilder(t *testing.T) {
+	p, err := ports.NewToolPort[int, string]("compute-tool", intCodec, strCodec, ports.PortOptions{
+		Patterns: []ports.Pattern{
+			ports.MCPPattern{Name: "compute", Opts: []apimcp.ToolOpt{
+				apimcp.ToolMeta{Description: "computes a thing"},
+			}},
+		},
+	})
+	if err != nil {
+		t.Fatalf("construct port: %v", err)
+	}
+	b := apimcp.NewBuilder(apimcp.Info{Name: "Test", Version: "1.0.0"})
+	if err := ports.RegisterMCP[int, string](b, p); err != nil {
+		t.Fatalf("RegisterMCP: %v", err)
+	}
+	spec, err := b.MCPSpec()
+	if err != nil {
+		t.Fatalf("MCPSpec: %v", err)
+	}
+	if len(spec.Tools) != 1 || spec.Tools[0].Name != "compute" {
+		t.Errorf("want 1 tool named compute, got %+v", spec.Tools)
 	}
 }
