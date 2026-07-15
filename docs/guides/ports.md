@@ -1,6 +1,6 @@
 # Wiring Pipelines with Ports
 
-> See also: [`ports` package on pkg.go.dev](https://pkg.go.dev/github.com/DaniDeer/go-codex/ports) · [`examples/sensor-service`](https://github.com/DaniDeer/go-codex/tree/main/examples/sensor-service) · [Ports feature page](../features/ports.md) · [Roadmap: Inside-Out Pipeline Wiring](../roadmap/inside-out-pipeline-wiring.md)
+> See also: [`ports` package on pkg.go.dev](https://pkg.go.dev/github.com/DaniDeer/go-codex/ports) · [`examples/sensor-service`](https://github.com/DaniDeer/go-codex/tree/main/examples/sensor-service) · [Ports feature page](../features/ports.md) · [Roadmap: Ports — Post-Phase-6 Gaps](../roadmap/ports-post-phase6-gaps.md)
 
 go-codex pipelines are wired to the outside world using **port adapters** — a declarative,
 protocol-agnostic binding pattern that keeps domain/pipeline code free of transport imports.
@@ -308,8 +308,8 @@ for package-level declarations, as shown throughout this guide.
 
 > REST ingest (`SourcePort`) and SSE (`SinkPort`) need an asymmetric `Req`/`Resp`
 > shape a single-codec port can't express directly with `RESTPattern` yet — these
-> still take a hand-built handle. See the roadmap doc's Phase 4/5 sections for the
-> full design and this open item.
+> still take a hand-built handle. Tracked as gap G3 in
+> [Ports — Post-Phase-6 Gaps](../roadmap/ports-post-phase6-gaps.md).
 
 ### `FilePattern` — file as sink or intermediate IO step
 

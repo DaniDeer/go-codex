@@ -1,6 +1,6 @@
 # Protocol-Agnostic Pipeline Wiring — `ports`
 
-> See also: [`ports` package on pkg.go.dev](https://pkg.go.dev/github.com/DaniDeer/go-codex/ports) · [Forge Pipelines concept](../concepts/pipelines.md) · [Wiring Guide](../guides/ports.md) · [Roadmap: Inside-Out Pipeline Wiring](../roadmap/inside-out-pipeline-wiring.md)
+> See also: [`ports` package on pkg.go.dev](https://pkg.go.dev/github.com/DaniDeer/go-codex/ports) · [Forge Pipelines concept](../concepts/pipelines.md) · [Wiring Guide](../guides/ports.md) · [Roadmap: Ports — Post-Phase-6 Gaps](../roadmap/ports-post-phase6-gaps.md)
 >
 > Runnable demo: [`examples/sensor-service`](https://github.com/DaniDeer/go-codex/tree/main/examples/sensor-service) — one coherent use case wiring MQTT, SQL, file, and HTTP adapters to all four port types (`SourcePort`/`SinkPort`/`IOPort`/`ToolPort`), each declared with its `Pattern`; see its README for the full data-flow diagram.
 
@@ -94,7 +94,7 @@ sensors := domain.SensorReadings.Stream(ctx) // gstream.Stream[SensorReading]
 
 > `ports.EventPattern` covers pub/sub (MQTT/ZeroMQ). REST ingest (`nethttp.IngestAdapter`)
 > still takes a hand-built `*rest.RouteHandle[Req, struct{}]` — REST ingest/SSE Pattern
-> support is tracked as follow-up work (see the roadmap doc's Phase 4 section).
+> support is tracked as gap G3 in [Ports — Post-Phase-6 Gaps](../roadmap/ports-post-phase6-gaps.md).
 
 `Stream(ctx)` must be called after all `Bind` calls. It returns the merged stream;
 adapter and codec validation errors are routed to `Stream.Errors`.
@@ -300,8 +300,9 @@ spec, _ := b.OpenAPISpec()
 
 > **Scope note:** `RESTPattern` for `SourcePort`/`SinkPort` (HTTP ingest/SSE, which
 > need an asymmetric `Req`/`Resp` shape a single-codec port can't express directly)
-> is a documented open item — see the roadmap doc's Phase 4/5 sections for the
-> full design and rationale. `NewIOPort`/`NewToolPort`/`NewSourcePort`/`NewSinkPort`
+> is a documented open item — tracked as gap G3 in
+> [Ports — Post-Phase-6 Gaps](../roadmap/ports-post-phase6-gaps.md).
+> `NewIOPort`/`NewToolPort`/`NewSourcePort`/`NewSinkPort`
 > all now return `(*Port, error)` — `Register` is fallible (unknown param names,
 > path/topic constraint failures, duplicate names on `reqreply`/`mcp`) in ways the
 > old builder-free construction wasn't.
