@@ -1,11 +1,11 @@
 # Reactive Stream Pipelines — `stream`
 
-> See also: [`stream` on pkg.go.dev](https://pkg.go.dev/github.com/DaniDeer/go-codex/stream) · [Stream Guide](../guides/stream.md) · [Stream Bridge Guide](../guides/stream-bridges.md) · [Observer Pattern](observer.md) · [Forge Pipelines](../concepts/pipelines.md)
+> See also: [`stream` on pkg.go.dev](https://pkg.go.dev/github.com/DaniDeer/go-codex/stream) · [Stream Guide](../guides/stream.md) · [Ports Guide](../guides/ports.md) · [Ports Feature](ports.md) · [Observer Pattern](observer.md) · [Forge Pipelines](../concepts/pipelines.md)
 >
 > **Runnable demos:**
 > - [`examples/stream-pipeline`](https://github.com/DaniDeer/go-codex/tree/main/examples/stream-pipeline) — all operators showcased: `From`, `Apply`, `Tap`, `Filter`, `CombineLatest2`, `Tee`, `Merge`, `FlatMapSlice`, `Debounce`, `Throttle`, `Buffer`, `Window`, `MapErr`, `Topology` + YAML render
 > - [`examples/stream-oee`](https://github.com/DaniDeer/go-codex/tree/main/examples/stream-oee) — forge + stream integration: governed OEE from machine events (Window → governed forge chain → alert); governance YAML with SHA-256 hashes per function
-> - [`examples/sensor-service`](https://github.com/DaniDeer/go-codex/tree/main/examples/sensor-service) — **stream bridge showcase**: `mqtt.SubscribeStream`, `mqtt.DrainPublish`, `nethttp.HandlerLatest` (reactive cache GET /readings/latest), and `sql.QueryStream` — all wired together with a single shared observer
+> - [`examples/sensor-service`](https://github.com/DaniDeer/go-codex/tree/main/examples/sensor-service) — **port adapter showcase**: `mqtt.SubscribeAdapter`, `mqtt.PublishAdapter`, `nethttp.HandlerLatest` (reactive cache GET /readings/latest), and `sql.QueryAdapter` — all wired via `ports.SourcePort`/`SinkPort` with a single shared observer
 
 The `stream` package provides a declarative reactive pipeline over typed Go channels,
 bridging push-based transport adapters (MQTT, ZeroMQ) with governed
@@ -198,13 +198,14 @@ governed computation runs per-item inside the reactive pipeline.
 
 ---
 
-## Stream bridge helpers
+## Connecting streams to transports — the `ports` package
 
-Each adapter package provides bridge helpers that connect the transport directly to a
-`Stream[T]` — eliminating the boilerplate of creating raw channels, registering handlers,
-and wiring `FromCodec`.
+Rather than importing a transport package directly into pipeline code, go-codex wires
+streams to the outside world through **[`ports`](ports.md)** — a protocol-agnostic
+binding layer. A pipeline declares a typed port; the transport is bound separately
+(typically in `main.go`), so swapping MQTT for HTTP never touches domain logic.
 
-> Full examples and patterns: **[Stream Bridge Guide](../guides/stream-bridges.md)**
+> Full patterns and adapter catalogue: **[Ports Guide](../guides/ports.md)** · **[Ports Feature](ports.md)**
 
 ### `stream.Single[T]` — one-shot source
 
@@ -212,138 +213,61 @@ and wiring `FromCodec`.
 s := stream.Single(ctx, req)    // emits req once, closes
 ```
 
-Used as the entry point for per-request pipelines inside [`PipelineHandlerFunc`](#http-pipeline-handler).
+Used as the entry point for per-request pipelines inside a `ports.ToolPort` pipeline
+function, or any `AsPipelineFunc`-wrapped handler.
 
-### HTTP — `adapters/nethttp` and `adapters/chi`
+### The four port types, in one line each
 
-Seven patterns bridge HTTP and the stream pipeline:
-
-| Helper | Direction | Use case |
-|--------|-----------|----------|
-| `HandlerLatest[Req,Resp]` | stream → every HTTP GET | Returns latest value from a running pipeline ("get current OEE") |
-| `HandlerIngest[Req]` | HTTP POST/PUT → stream | Feeds a channel → `stream.From` pipeline (webhook receiver) |
-| `PipelineHandler[Req,Resp]` | per-request pipeline | Handler body uses `Tap`, `Apply`, `MapErr` |
-| `SSEFromStream[Req,Event]` | stream → SSE (server) | Each client gets its own stream from a factory fn |
-| `SSEFromHub[Req,Event]` | BroadcastHub → SSE (server) | All clients share one hub — live dashboard broadcast |
-| `PollStream[Req,Resp]` | periodic HTTP GET → stream | Turns a polling endpoint into a continuous stream source |
-| `DrainCall[Req,Resp]` | stream → HTTP POST/PUT | Posts each stream item to an external endpoint |
-| `SSEClientStream[Req,Event]` | external SSE → stream | Consumes an upstream SSE feed; reconnects automatically |
-
-`nethttp` returns `http.Handler`; `chi` returns `http.HandlerFunc`. Both packages provide
-all helpers. `SSEClientStream`, `PollStream`, and `DrainCall` are nethttp-only (client-side).
+| Port | Direction | Example adapters |
+|------|-----------|------------------|
+| `ports.SourcePort[T]` | external → stream (fan-in) | `mqtt5.SubscribeAdapter`, `nethttp.IngestAdapter`, `sql.QueryAdapter`, `file.ScanAdapter`/`WatchAdapter` |
+| `ports.SinkPort[T]` | stream → external (fan-out) | `mqtt5.PublishAdapter`, `nethttp.SSEAdapter`, `sql.DrainInsertAdapter`, `file.DrainWriteAdapter` |
+| `ports.IOPort[Req,Resp]` | stream ↔ external (1 adapter) | `nethttp.CallAdapter`, `mqtt5.CallAdapter`, `sql.QueryEachAdapter`, `file.ReadEachAdapter` |
+| `ports.ToolPort[In,Out]` | external request → pipeline → response (N adapters) | `mcpgo.ToolPipelineAdapter`, `nethttp.PipelineAdapter`, `zeromq.ServeAdapter`, `mqtt5.ServeAdapter` |
 
 ```go
-// Per-request pipeline
-nethttp.RegisterPipeline(mux, handle,
-    func(ctx context.Context, req SensorReq) stream.Stream[OEEResult] {
+// domain/pipeline.go — no adapter imports
+var SensorReadings = ports.NewSourcePort[SensorReading]("sensor-readings", sensorCodec, ports.PortOptions{})
+var OEEResults = ports.NewSinkPort[OEE]("oee-results", oeeCodec, ports.PortOptions{})
+
+func StartPipeline(ctx context.Context) {
+    sensors := SensorReadings.Stream(ctx)
+    oeeStream := stream.Apply(ctx, sensors, oeeCalcFn, stream.ApplyOptions{})
+    go OEEResults.Feed(ctx, oeeStream)
+}
+
+// main.go — bind concrete transports here
+domain.SensorReadings.Bind(ctx, mqtt5.SubscribeAdapter(client, router, sensorHandle, 0, format.JSON(sensorCodec), opts))
+domain.OEEResults.Bind(ctx, mqtt5.PublishAdapter(client, alertHandle, format.JSON(oeeCodec), publishOpts))
+domain.OEEResults.Bind(ctx, nethttp.SSEAdapter(mux, sseHandle, nethttp.SSEAdapterOptions{})) // fan-out
+```
+
+### Request/response pipelines with `ToolPort`
+
+`ToolPort[In,Out]` sets the pipeline function once and can bind it to multiple transports
+simultaneously — the same domain logic serves MCP, HTTP, and ZeroMQ:
+
+```go
+var OEETool = ports.NewToolPort[OEEIn, OEEResult]("oee-calc", oeeInCodec, oeeCodec, ports.PortOptions{})
+
+func init() {
+    OEETool.SetPipeline(func(ctx context.Context, req OEEIn) stream.Stream[OEEResult] {
         s := stream.Single(ctx, req)
-        s = stream.Apply(ctx, s, validateFn, opts)
+        s = stream.Apply(ctx, s, validateFn, stream.ApplyOptions{})
         s = stream.Tap(ctx, s, func(v ValidatedReq) { slog.Info("validated", "id", v.ID) })
-        return stream.Apply(ctx, s, oeeCalcFn, opts)
-    }, nethttp.Options{Observer: obs})
+        return stream.Apply(ctx, s, oeeCalcFn, stream.ApplyOptions{})
+    })
+}
 
-// SSE broadcast to all clients via hub
-hub := stream.NewBroadcastHub(ctx, oeeStream, 32)
-nethttp.RegisterSSE(mux, dashRoute,
-    nethttp.SSEFromHub[struct{}, OEEResult](hub,
-        nethttp.SSEStreamOptions{Topic: "/dashboard/sse", Observer: obs}),
-    nethttp.Options{Observer: obs})
-
-// Poll external service every 30s
-sensorStream := nethttp.PollStream(ctx, httpClient, "http://sensor-api",
-    sensorHandle, sensorReq{}, 30*time.Second,
-    nethttp.PollStreamOptions{Vars: map[string]string{"id": "s-001"}, Observer: obs})
-
-// Consume external SSE feed
-events := nethttp.SSEClientStream(ctx, httpClient, "http://upstream",
-    eventHandle, format.JSON(eventCodec),
-    nethttp.SSEClientOptions{RetryDelay: 2*time.Second, Observer: obs})
+domain.OEETool.Bind(ctx, mcpgo.ToolPipelineAdapter(mcpServer, mcpToolHandle, mcpgo.Options{}))
+domain.OEETool.Bind(ctx, nethttp.PipelineAdapter(mux, httpHandle, nethttp.PipelineAdapterOptions{}))
+domain.OEETool.Bind(ctx, zeromq.ServeAdapter(repSock, zmqHandle, zeromq.ServeOptions{}))
 ```
 
-New error types: `NoLatestValueError{Path}` (503), `PipelineFullError{Path,Capacity}` (503),
-`PipelineNoResponseError{Path}` (500), `SSEWriteError{Path,Err}`, `SSEConnectError{URL,Attempt,Err}`,
-`SSEParseError{URL,Line,Err}` — all implement `slog.LogValuer`.
-
-### MQTT — `adapters/mqtt` and `adapters/mqtt5`
-
-```go
-// Source bridge: returns stream + handler to register with MQTT client
-s, handler := mqtt.SubscribeStream(ctx, handle, format.JSON(codec), srcOpts, subOpts)
-client.Subscribe(handle.Topic, 1, handler)
-
-// Sink bridge: publish each stream item
-mqtt.DrainPublish(ctx, client, handle, src, format.JSON(codec), opts)
-
-// Pipeline handler for MQTT5 Serve (declarative handler with Tap)
-mqtt5.Serve(ctx, client, router, handle,
-    mqtt5.AsPipelineFunc(func(ctx context.Context, req Req) stream.Stream[Resp] {
-        s := stream.Single(ctx, req)
-        return stream.Apply(ctx, s, computeFn, opts)
-    }), serveOpts)
-
-// Client streaming: drive a request/reply service with a stream of requests
-responses := mqtt5.CallStream(ctx, client, router, handle, requestStream, callOpts)
-```
-
-### ZeroMQ — `adapters/zeromq`
-
-```go
-// Source / sink
-s := zeromq.SubscribeStream(ctx, sock, handle, format.JSON(codec), srcOpts)
-zeromq.DrainPublish(ctx, sock, handle, src, format.JSON(codec), opts)
-
-// Pipeline handler for Serve / ServeRouter
-zeromq.Serve(ctx, sock, handle, zeromq.AsPipelineFunc(fn), serveOpts)
-
-// Client streaming
-responses := zeromq.CallStream(ctx, sock, handle, requestStream, opts)
-
-// Reactive cache server: reply with latest pipeline value
-zeromq.ServeLatest(ctx, sock, handle, oeeStream, serveLatestOpts)
-```
-
-### MCP — `adapters/mcpgo`
-
-```go
-// Reactive cache: returns the latest stream value to every LLM call
-mcpgo.RegisterToolLatest(s, getOEEHandle, oeeStream, opts)
-
-// Reactive trigger: each tool call runs a fresh pipeline (MCP ≡ nethttp.PipelineHandler)
-mcpgo.RegisterToolPipeline(s, analyzeHandle,
-    func(ctx context.Context, in OEEQuery) stream.Stream[OEEResult] {
-        s  := stream.Single(ctx, in)
-        s   = stream.Apply(ctx, s, validateFn, opts)
-        s   = stream.Tap(ctx, s, func(v ValidatedQuery) { auditLog.Write(v) })
-        return stream.Apply(ctx, s, oeeCalcFn, opts)
-    }, opts)
-```
-
-### SQL — `adapters/sql`
-
-```go
-// Source: poll DB at interval, validate each row
-s := sql.QueryStream(ctx, rowCodec, func(ctx context.Context) ([]Row, error) {
-    return db.ListReadingsSince(ctx, time.Now().Add(-interval))
-}, 30*time.Second, sql.QueryStreamOptions{Table: "readings", Op: "list"})
-
-// Sink: validate + insert each stream item
-sql.DrainInsert(ctx, rowCodec, src, db.InsertReading,
-    sql.DrainInsertOptions{Table: "readings", Op: "insert", OnError: logErr})
-```
-
-### File — `adapters/file`
-
-```go
-// Source: decode NDJSON file line-by-line (bounded stream)
-s, err := file.ScanStream(ctx, "readings.ndjson", format.JSON(codec), srcOpts)
-
-// Source: watch directory, emit new file paths
-paths := file.WatchStream(ctx, "/data/uploads", 500*time.Millisecond, srcOpts)
-
-// Sink: write each item as a NDJSON line
-file.DrainWrite(ctx, outFile, src, format.JSON(codec),
-    file.DrainWriteOptions{Path: "out.ndjson", OnError: logErr})
-```
+New error types: `ports.PortBindError{Port,Adapter,Err}`, `ports.PortNoAdapterError{Port}`,
+`ports.PortNoPipelineError{Port}` — all implement `slog.LogValuer`. Transport-level errors
+(`NoLatestValueError`, `PipelineFullError`, `SSEWriteError`, …) are unchanged and still
+surface through the same adapters.
 
 ---
 
@@ -354,10 +278,11 @@ API to use:
 
 | Role | Character | API pattern | Examples |
 |------|-----------|------------|---------|
-| **Source** | Emits items FROM an external system into the stream | `transport.SubscribeStream` / `QueryStream` / `PollStream` / `ScanStream` | MQTT messages, SQL rows, SSE feed, NDJSON file |
-| **Intermediate** (transform) | Sends each item AS a request; receives a response; emits the response | `transport.CallStream` | ZeroMQ REQ/REP, MQTT5 request-reply |
+| **Source** | Emits items FROM an external system into the stream | `ports.SourcePort[T]` + `transport.XxxAdapter` (fan-in) | MQTT messages, SQL rows, HTTP ingest, NDJSON file |
+| **Intermediate** (transform) | Sends each item AS a request; receives a response; emits the response | `ports.IOPort[Req,Resp]` + `transport.CallAdapter`/`QueryEachAdapter`/`ReadEachAdapter` | ZeroMQ REQ/REP, MQTT5 request-reply, HTTP call, per-item SQL/file lookup |
 | **Side-effect I/O** | Fires I/O alongside the pipeline WITHOUT consuming a response | `stream.Tap` + `Publish`/`Write`/`Patch` | MQTT alert publish, JSON file write, audit log |
-| **Sink** | Consumes items FROM the stream into an external system | `transport.DrainPublish` / `DrainInsert` / `DrainWrite` / `DrainCall` | MQTT publish, SQL insert, HTTP POST, NDJSON append |
+| **Sink** | Consumes items FROM the stream into an external system | `ports.SinkPort[T]` + `transport.XxxAdapter` (fan-out) | MQTT publish, SQL insert, HTTP SSE/POST, NDJSON append |
+| **Request/response** | External request triggers the pipeline; a response is returned | `ports.ToolPort[In,Out]` + `transport.XxxAdapter` (N transports) | MCP tool call, HTTP endpoint, ZeroMQ REP, MQTT5 request-reply server |
 | **Pure computation** | Transforms items with zero I/O | `stream.Apply` + `forge.Function[In,Out]` | OEE calculation, normalisation, validation |
 
 ### The fundamental rule: forge functions are pure — zero I/O
@@ -397,7 +322,7 @@ enrichFn := forge.NewFunction("enrich", "1.0.0", enrichInputCodec, outputCodec,
     })
 
 // I/O stays in the stream layer:
-configs := stream.Single(ctx, preloadedConfig)  // or WatchStream for dynamic reload
+configs := stream.Single(ctx, preloadedConfig)  // or a SourcePort bound to file.WatchAdapter for dynamic reload
 combined := stream.CombineLatest2(ctx, dataStream, configs,
     func(d InputData, c ThresholdConfig) EnrichInput { return EnrichInput{d, c} })
 enriched := stream.Apply(ctx, combined, enrichFn, stream.ApplyOptions{})
@@ -405,13 +330,20 @@ enriched := stream.Apply(ctx, combined, enrichFn, stream.ApplyOptions{})
 
 ### When to use each I/O container
 
-**Use `transport.CallStream`** when the step's whole purpose is an I/O call — send a
-request, receive a response, forward the response:
+**Use `ports.IOPort[Req,Resp]`** when the step's whole purpose is an I/O call — send a
+request, receive a response, forward the response. Bind exactly one adapter; swapping
+the adapter (HTTP → SQL → file) never touches the pipeline:
 
 ```go
-// ZeroMQ/MQTT5 — already available:
-validated := zeromq.CallStream(ctx, sock, validationHandle, rawStream, opts)
-enriched  := mqtt5.CallStream(ctx, client, router, enrichHandle, validated, opts)
+var Enrichment = ports.NewIOPort[Raw, Enriched]("enrichment", rawCodec, enrichedCodec, ports.PortOptions{})
+
+// main.go — pick one:
+domain.Enrichment.Bind(ctx, zeromq.CallAdapter(sock, enrichHandle, zeromq.CallStreamOptions{}))
+// domain.Enrichment.Bind(ctx, mqtt5.CallAdapter(client, router, enrichHandle, mqtt5.CallOptions{}))
+// domain.Enrichment.Bind(ctx, nethttp.CallAdapter(httpClient, baseURL, enrichHandle, nethttp.CallStreamOptions{}))
+// domain.Enrichment.Bind(ctx, sql.QueryEachAdapter(enrichedCodec, queryFn, sql.QueryEachStreamOptions{}))
+
+enriched := domain.Enrichment.Connect(ctx, rawStream)
 ```
 
 I/O is explicit in the pipeline declaration. Errors are transport-typed, not wrapped in
@@ -422,9 +354,9 @@ publishing, writing, logging:
 
 ```go
 results = stream.Tap(ctx, results, func(r OEEResult) {
-    mqtt.Publish(ctx, client, alertHandle, ...)     // fire-and-forget
-    resultFile.Write(nil, r, format.FileOptions{}) // whole-file write
-})</p>
+    mqtt.Publish(ctx, client, alertHandle, 0, false, r, nil, mqtt.PublishOptions{}) // fire-and-forget
+    resultFile.Write(nil, r, format.FileOptions{})                                 // whole-file write
+})
 ```
 
 **Use `stream.FlatMapSlice`** for ad-hoc transforms that have I/O and are not governed
@@ -434,24 +366,23 @@ results = stream.Tap(ctx, results, func(r OEEResult) {
 // I/O in stream.FlatMapSlice is in the stream layer, not forge:
 enriched := stream.FlatMapSlice(ctx, ids, func(id string) []Data {
     v, err := someFile.Read(map[string]string{"id": id}, opts)
-    if err != nil { return nil } // errors silently dropped — use bridge operator for typed errors
+    if err != nil { return nil } // errors silently dropped — use ports.IOPort for typed errors
     return []Data{v}
-})</p>
+})
 ```
 
-### Gap — `nethttp.CallStream`
+### All transports have an intermediate transform operator
 
-HTTP is the only transport missing an intermediate transform operator. ZeroMQ and MQTT5
-both have `CallStream`; HTTP has `PollStream` (periodic GET source) and `DrainCall`
-(HTTP sink) but no per-item request→response transform:
+Every transport with a request/response protocol provides an `IOAdapter` for
+`ports.IOPort` — HTTP, ZeroMQ, MQTT5, SQL, and File all support per-item enrichment:
 
 ```
-zeromq.CallStream  ✅  — send each item as REQ, emit each REP response
-mqtt5.CallStream   ✅  — send each item as MQTT5 request-reply, emit responses
-nethttp.CallStream ❌  — do NOT put nethttp.Call inside a forge function; use interim goroutine transform
+zeromq.CallAdapter      ✅  — send each item as REQ, emit each REP response
+mqtt5.CallAdapter       ✅  — send each item as MQTT5 request-reply, emit responses
+nethttp.CallAdapter     ✅  — full HTTP codec machinery (path vars, query/cookie/header
+                              params, security, structured errors) per item
+sql.QueryEachAdapter    ✅  — parameterized SQL query per item (1:N rows)
+file.ReadEachAdapter    ✅  — per-item file read with path template vars
 ```
 
-`nethttp.CallStream` is the correct design — it would pass a `*rest.RouteHandle[Req, Resp]`
-and apply the full HTTP codec machinery (path vars, query/cookie/header params, security,
-structured errors) per item. Full API design and transport matrix:
-[Declarative I/O Steps](../roadmap/declarative-io-steps.md)
+See the [Ports Guide](../guides/ports.md) for the complete adapter catalogue.

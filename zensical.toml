@@ -37,6 +37,7 @@ repo_name = "DaniDeer/go-codex"
 "Config, CLI & Protobuf" = "features/config.md"
 "SQL Adapter" = "features/sql.md"
 "Stream — Reactive Pipelines" = "features/stream.md"
+"Ports — Protocol-Agnostic Wiring" = "features/ports.md"
 
 [nav.Guides]
 "Enums, Unions & Sum Types" = "guides/enum-union-sum.md"
@@ -53,7 +54,7 @@ repo_name = "DaniDeer/go-codex"
 "Config Examples" = "guides/config.md"
 "SQL Examples (goose + sqlc)" = "guides/sql.md"
 "Stream Examples" = "guides/stream.md"
-"Stream Bridge Examples" = "guides/stream-bridges.md"
+"Ports Examples" = "guides/ports.md"
 
 [nav.Reference]
 "Package Reference" = "reference/index.md"
@@ -63,6 +64,5 @@ repo_name = "DaniDeer/go-codex"
 "Overview" = "roadmap/index.md"
 "— Inside-Out Pipeline Wiring" = "roadmap/inside-out-pipeline-wiring.md"
 "— Stream Phase 4 (FlatMap, GroupBy)" = "roadmap/stream-phase4.md"
-"— Stream Bridges (remaining work)" = "roadmap/stream-bridges.md"
 "— AMQP 0.9.1 Adapter" = "roadmap/amqp-adapter.md"
 "— TCP Adapter" = "roadmap/tcp-adapter.md"

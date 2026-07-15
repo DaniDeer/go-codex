@@ -1,10 +1,10 @@
 # Stream Guide — reactive pipelines
 
-> See also: [`stream` on pkg.go.dev](https://pkg.go.dev/github.com/DaniDeer/go-codex/stream) · [Feature: Reactive Streams](../features/stream.md) · [Stream Bridge Guide](stream-bridges.md) · [Forge Pipelines](../concepts/pipelines.md) · [Observer Examples](observer.md)
+> See also: [`stream` on pkg.go.dev](https://pkg.go.dev/github.com/DaniDeer/go-codex/stream) · [Feature: Reactive Streams](../features/stream.md) · [Ports Guide](ports.md) · [Forge Pipelines](../concepts/pipelines.md) · [Observer Examples](observer.md)
 >
 > **Runnable demos:**
 > - [`examples/stream-pipeline`](https://github.com/DaniDeer/go-codex/tree/main/examples/stream-pipeline) — comprehensive showcase of all operators (8 sections); run with `go run ./examples/stream-pipeline`
-> - [`examples/sensor-service`](https://github.com/DaniDeer/go-codex/tree/main/examples/sensor-service) — bridge showcase: `mqtt.SubscribeStream`, `nethttp.HandlerLatest`, `mqtt.DrainPublish`, `sql.QueryStream`
+> - [`examples/sensor-service`](https://github.com/DaniDeer/go-codex/tree/main/examples/sensor-service) — port adapter showcase: `mqtt.SubscribeAdapter`, `nethttp.HandlerLatest`, `mqtt.PublishAdapter`, `sql.QueryAdapter`
 
 The `stream` package turns `forge.Function[In,Out]` computations into continuous
 reactive pipelines over typed Go channels. Each operator is a free function that takes
@@ -42,6 +42,10 @@ sensors := stream.FromCodec(ctx, rawCh, format.JSON(sensorCodec),
 ```
 
 Decode failures go to `Stream.Errors` as `StreamDecodeError`; the stream continues.
+
+> This manual channel-wiring pattern is what `ports.SourcePort` + `mqtt.SubscribeAdapter`
+> do internally. For production pipelines, prefer the `ports` package — it also keeps
+> the transport choice out of your pipeline code. See the [Ports Guide](ports.md).
 
 ---
 
@@ -264,14 +268,13 @@ simultaneously on the same apply call.
 
 ## Next: connecting adapters to streams
 
-The examples above use raw channels as sources. For production use, each adapter
-provides bridge helpers that eliminate the channel boilerplate:
+The examples above use raw channels as sources. For production use, wire pipelines to
+transports through the **[`ports`](../features/ports.md)** package — a protocol-agnostic
+binding layer that keeps transport imports out of pipeline code:
 
-- **MQTT / MQTT5:** `SubscribeStream` returns a stream + handler; `DrainPublish` publishes each item
-- **ZeroMQ:** `SubscribeStream`, `DrainPublish`, `ServeLatest` (reactive cache), `AsPipelineFunc` for Serve
-- **HTTP (nethttp / chi):** `HandlerLatest` (GET returns latest value), `HandlerIngest` (POST feeds pipeline), `PipelineHandler` (declarative handler body with Tap)
-- **MCP:** `ToolLatestHandler` (LLM tool backed by latest stream value)
-- **SQL:** `QueryStream` (poll DB), `DrainInsert` (validate + insert)
-- **File:** `ScanStream` (NDJSON), `WatchStream` (directory), `DrainWrite`
+- **`ports.SourcePort[T]`** (fan-in): `mqtt5.SubscribeAdapter`, `mqtt.SubscribeAdapter`, `nethttp.IngestAdapter`/`PollAdapter`, `chi.IngestAdapter`, `zeromq.SubscribeAdapter`, `sql.QueryAdapter`, `file.ScanAdapter`/`WatchAdapter`
+- **`ports.SinkPort[T]`** (fan-out): `mqtt5.PublishAdapter`, `mqtt.PublishAdapter`, `nethttp.SSEAdapter`/`DrainCallAdapter`, `chi.SSEAdapter`, `zeromq.PublishAdapter`, `sql.DrainInsertAdapter`, `file.DrainWriteAdapter`/`DrainWriteFileAdapter`
+- **`ports.IOPort[Req,Resp]`** (one adapter, request/response transform): `nethttp.CallAdapter`, `mqtt5.CallAdapter`, `zeromq.CallAdapter`, `sql.QueryEachAdapter`, `file.ReadEachAdapter`
+- **`ports.ToolPort[In,Out]`** (one pipeline, N transports): `mcpgo.ToolPipelineAdapter`/`ToolLatestAdapter`, `nethttp.PipelineAdapter`, `chi.PipelineAdapter`, `zeromq.ServeAdapter`, `mqtt5.ServeAdapter`
 
-→ **[Stream Bridge Guide](stream-bridges.md)**
+→ **[Ports Guide](ports.md)**

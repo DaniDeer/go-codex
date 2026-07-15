@@ -96,9 +96,34 @@
 //   - [codex.Base64] — use when Measured is published via JSON (REST, MQTT JSON),
 //     making the base64 encoding explicit and round-trip correct.
 //
+// # Wiring Function values into pipelines
+//
+// A [Function] is a pure computation value — it has no transport dependency and
+// does not know how its input arrives or where its output goes. The [ports]
+// package provides the protocol-agnostic wiring layer that connects a Function
+// to the outside world:
+//
+//	oeeCalcFn := forge.NewFunction("oeeCalc", "1.0.0", oeeInCodec, oeeCodec, computeOEE)
+//
+//	// domain/pipeline.go — still zero transport imports
+//	var SensorReadings = ports.NewSourcePort[OEEIn]("sensor-readings", oeeInCodec, ports.PortOptions{})
+//	var OEEResults = ports.NewSinkPort[OEE]("oee-results", oeeCodec, ports.PortOptions{})
+//
+//	func StartPipeline(ctx context.Context) {
+//	    sensors := SensorReadings.Stream(ctx)
+//	    oeeStream := stream.Apply(ctx, sensors, oeeCalcFn, stream.ApplyOptions{})
+//	    go OEEResults.Feed(ctx, oeeStream)
+//	}
+//
+// The transport decision (MQTT, HTTP, ZeroMQ, …) is bound to the ports in main.go
+// only — see [ports] and the "Programming model: inside-out development" section
+// of the pipelines concept doc for the full pattern.
+//
 // # Further reading
 //
 //   - [render/pipeline] — renders a [PipelineSpec] to YAML
+//   - [ports] — protocol-agnostic pipeline wiring (SourcePort, SinkPort, IOPort, ToolPort)
+//   - [stream] — reactive stream operators (Apply, Filter, Tap, …) that run Function values per item
 //   - [codex] — codec primitives used for input/output contracts
 //   - [validate.PNG], [validate.JPEG], [validate.PDF] — built-in binary format constraints
 package forge

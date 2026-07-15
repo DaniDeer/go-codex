@@ -63,32 +63,69 @@ go-codex/
 │   │   │                   #   WithResponseCookies, ResponseCookiesFromContext, Options
 │   │   ├── client.go       # Call[Req,Resp], CallOptions, UnexpectedStatusError,
 │   │   │                   #   RequestBuildError, RequestError, ResponseBodyError
-│   │   └── cookie.go       # SetCookie, CookieOptions, PendingCookie
+│   │   ├── cookie.go       # SetCookie, CookieOptions, PendingCookie
+│   │   ├── stream.go       # HandlerLatest, RegisterLatest, PipelineHandler, RegisterPipeline,
+│   │   │                   #   SSEFromHub, PipelineHandlerFunc
+│   │   └── binding.go      # ports.SourceAdapter/SinkAdapter/IOAdapter/ToolAdapter constructors:
+│   │                       #   IngestAdapter, PollAdapter, SSEAdapter, DrainCallAdapter,
+│   │                       #   CallAdapter, PipelineAdapter
 │   ├── chi/                # chi adapter for api/rest RouteHandles (github.com/go-chi/chi/v5)
-│   │   └── adapter.go      # Handler, Register, SSEHandler, RegisterSSE, RequestFromContext,
-│   │                       #   WithResponseHeaders, WithResponseCookies, SetCookie, CookieOptions, Options
+│   │   ├── adapter.go      # Handler, Register, SSEHandler, RegisterSSE, RequestFromContext,
+│   │   │                   #   WithResponseHeaders, WithResponseCookies, SetCookie, CookieOptions, Options
+│   │   ├── stream.go       # HandlerLatest, RegisterLatest, PipelineHandler, RegisterPipeline, SSEFromHub
+│   │   └── binding.go      # IngestAdapter, SSEAdapter, PipelineAdapter (ports.SourceAdapter/
+│   │                       #   SinkAdapter/ToolAdapter constructors — chi is server-only)
 │   ├── mqtt/               # Paho MQTT 3.1.1 adapter for api/events ChannelHandles
 │   │   ├── adapter.go      # SubscribeHandler, SubscribeOptions, Publish, PublishOptions,
 │   │   │                   #   SubscribeError, ErrorKind, MessageFromContext
-│   │   └── topicvars.go    # TopicVarsFromMessage, TopicMismatchError
+│   │   ├── topicvars.go    # TopicVarsFromMessage, TopicMismatchError
+│   │   └── binding.go      # SubscribeAdapter, PublishAdapter (ports.SourceAdapter/SinkAdapter)
 │   ├── mqtt5/              # MQTT 5.0 adapter (paho.golang) — PUB/SUB + request-reply
 │   │   ├── adapter.go      # Subscribe, Publish, SubscribeOptions, PublishOptions,
 │   │   │                   #   UserPropertyParam, ReplyTopicBuilder, UUIDReplyTopic, SharedReplyTopic
-│   │   └── reqreply.go     # Serve[Req,Resp], Call[Req,Resp], ServeOptions, CallOptions,
-│   │                       #   ServeError, CallError, BrokerError, UserPropertyError
+│   │   ├── reqreply.go     # Serve[Req,Resp], Call[Req,Resp], ServeOptions, CallOptions,
+│   │   │                   #   ServeError, CallError, BrokerError, UserPropertyError
+│   │   ├── stream.go       # AsPipelineFunc
+│   │   └── binding.go      # SubscribeAdapter, PublishAdapter, CallAdapter, ServeAdapter
+│   │                       #   (ports.SourceAdapter/SinkAdapter/IOAdapter/ToolAdapter)
 │   ├── zeromq/             # ZeroMQ adapter — PUB/SUB, REQ/REP, DEALER/ROUTER
 │   │   ├── adapter.go      # Subscribe, Publish, Serve, Call, ServeRouter, CallDealer
 │   │   ├── errors.go       # SubscribeError, PublishEncodeError, ServeError, CallError
-│   │   └── socket.go       # FramedSocket interface, ErrTimeout
+│   │   ├── socket.go       # FramedSocket interface, ErrTimeout
+│   │   ├── stream.go       # AsPipelineFunc, ServeLatest
+│   │   └── binding.go      # SubscribeAdapter, PublishAdapter, CallAdapter, ServeAdapter
+│   │                       #   (ports.SourceAdapter/SinkAdapter/IOAdapter/ToolAdapter)
+│   ├── file/               # stdlib-only file IO adapter (no external dependencies)
+│   │   ├── errors.go       # ScanError, WatchError, WriteError, ReadError — all slog.LogValuer
+│   │   └── binding.go      # package doc + ScanAdapter, WatchAdapter, ReadEachAdapter,
+│   │                       #   DrainWriteAdapter, DrainWriteFileAdapter
+│   │                       #   (ports.SourceAdapter/IOAdapter/SinkAdapter)
 │   ├── sql/                # SQL adapter — goose migrations + codec-level row validation
+│   │   ├── doc.go          # package overview
 │   │   ├── validate.go     # Validate[T], ValidateOptions
 │   │   ├── migrate.go      # Migrator, NewMigrator, Up, Down, Status, MigrationStatus, MigrateOptions
-│   │   └── errors.go       # RowValidationError, MigrationError — both slog.LogValuer
+│   │   ├── errors.go       # RowValidationError, MigrationError, QueryStreamError,
+│   │   │                   #   InsertStreamError — all slog.LogValuer
+│   │   └── binding.go      # QueryAdapter, DrainInsertAdapter, QueryEachAdapter
+│   │                       #   (ports.SourceAdapter/SinkAdapter/IOAdapter)
 │   ├── mcpgo/              # mark3labs/mcp-go adapter for api/mcp handles
-│   │   └── adapter.go      # ToolHandler, ResourceHandler, PromptHandler,
-│   │                       #   RegisterTool, RegisterResource, RegisterPrompt, Options
+│   │   ├── adapter.go      # ToolHandler, ResourceHandler, PromptHandler,
+│   │   │                   #   RegisterTool, RegisterResource, RegisterPrompt, Options
+│   │   ├── stream.go       # ToolLatestHandler, ToolPipelineHandler, RegisterToolLatest,
+│   │   │                   #   RegisterToolPipeline
+│   │   └── binding.go      # ToolPipelineAdapter, ToolLatestAdapter (ports.ToolAdapter)
 │   └── templ/              # templ SSR format plug-in for api/rest RouteHandles
 │       └── adapter.go      # Format[Props], StreamingFormat[Props], DecodeNotSupportedError
+│
+├── ports/                  # protocol-agnostic IO enforcement points — inside-out pipeline wiring
+│   ├── doc.go              # package overview
+│   ├── io_param.go         # IOParam, PortOptions
+│   ├── port_errors.go      # PortBindError, PortNoAdapterError, PortNoPipelineError — slog.LogValuer
+│   ├── source_port.go      # SourcePort[T], SourceAdapter[T], NewSourcePort — fan-in
+│   ├── sink_port.go        # SinkPort[T], SinkAdapter[T], NewSinkPort — fan-out
+│   ├── io_port.go          # IOPort[Req,Resp], IOAdapter[Req,Resp], NewIOPort — 1 adapter only
+│   ├── tool_port.go        # ToolPort[In,Out], ToolAdapter[In,Out], NewToolPort — request/response
+│   └── test_adapters.go    # ChanSourceAdapter[T], ChanSinkAdapter[T], FuncIOAdapter[Req,Resp]
 │
 ├── stream/                 # reactive stream pipelines — bridges MQTT/ZeroMQ sources with forge functions
 │   ├── stream.go           # Stream[T]{Values <-chan T, Errors <-chan error}

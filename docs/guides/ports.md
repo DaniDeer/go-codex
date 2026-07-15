@@ -13,13 +13,14 @@ Define domain logic first; connect to transports last:
 Step 1 — Domain core (no adapter imports)
     codex.Codec[T]                       ← validated domain types
     forge.NewFunction[In, Out](...)      ← governed pure computation
-    ports.NewSourcePort / SinkPort / IOPort  ← IO enforcement points
+    ports.NewSourcePort / SinkPort /     ← IO enforcement points
+        IOPort / ToolPort
 
 Step 2 — Wiring (main.go only)
     port.Bind(ctx, transport.XxxAdapter(...))  ← connect to real transport
 ```
 
-## Three port types
+## Four port types
 
 ### `SourcePort[T]` — inbound boundary
 
@@ -89,6 +90,33 @@ domain.Calibration.Bind(ctx, nethttp.CallAdapter(httpClient, "http://calib-svc",
 // domain.Calibration.Bind(ctx, zeromq.CallAdapter(sock, handle, opts))
 ```
 
+### `ToolPort[In, Out]` — server-side request/response
+
+The complement of `IOPort`: instead of the pipeline calling out, an external caller
+triggers the pipeline and waits for a response. Set the pipeline function once with
+`SetPipeline`, then bind it to one or more transports — the **same pipeline logic**
+can serve MCP, HTTP, and ZeroMQ simultaneously.
+
+```go
+// domain/pipeline.go — no adapter imports
+var OEETool = ports.NewToolPort[OEEIn, OEEResult]("oee-calc", oeeInCodec, oeeResultCodec, ports.PortOptions{})
+
+func init() {
+    OEETool.SetPipeline(func(ctx context.Context, req OEEIn) gstream.Stream[OEEResult] {
+        return gstream.Apply(ctx, gstream.Single(ctx, req), oeeCalcFn, gstream.ApplyOptions{})
+    })
+}
+
+// main.go — serve the same pipeline on three transports:
+domain.OEETool.Bind(ctx, mcpgo.ToolPipelineAdapter(mcpServer, mcpToolHandle, mcpgo.Options{}))
+domain.OEETool.Bind(ctx, nethttp.PipelineAdapter(mux, httpHandle, nethttp.PipelineAdapterOptions{}))
+domain.OEETool.Bind(ctx, zeromq.ServeAdapter(repSock, zmqHandle, zeromq.ServeOptions{}))
+```
+
+`Bind` returns `PortBindError` wrapping `PortNoPipelineError` if `SetPipeline` was not
+called first. Multiple `Bind` calls are allowed — each exposes the same pipeline on a
+different transport concurrently.
+
 ## Available adapters
 
 ### Source adapters (for `SourcePort`)
@@ -97,7 +125,8 @@ domain.Calibration.Bind(ctx, nethttp.CallAdapter(httpClient, "http://calib-svc",
 |-----------|-------------|-------------|
 | MQTT5 | `mqtt5.SubscribeAdapter` | Subscribes to broker + router; full validation pipeline |
 | MQTT | `mqtt.SubscribeAdapter` | MQTT v3/v3.1.1 subscription |
-| HTTP (ingest) | `nethttp.IngestAdapter` | Accepts POST requests as stream items |
+| HTTP (ingest, nethttp) | `nethttp.IngestAdapter` | Accepts POST requests as stream items |
+| HTTP (ingest, chi) | `chi.IngestAdapter` | Same, via chi router |
 | HTTP (poll) | `nethttp.PollAdapter` | Polls an endpoint at interval |
 | ZeroMQ | `zeromq.SubscribeAdapter` | PUB/SUB or PULL socket receive loop |
 | File (scan) | `file.ScanAdapter` | Reads a file line-by-line (NDJSON, CSV) |
@@ -110,7 +139,8 @@ domain.Calibration.Bind(ctx, nethttp.CallAdapter(httpClient, "http://calib-svc",
 |-----------|-------------|-------------|
 | MQTT5 | `mqtt5.PublishAdapter` | Publishes each item via MQTT5 |
 | MQTT | `mqtt.PublishAdapter` | Publishes each item via MQTT |
-| HTTP (SSE) | `nethttp.SSEAdapter` | Serves each item as an SSE event to all connected clients |
+| HTTP (SSE, nethttp) | `nethttp.SSEAdapter` | Serves each item as an SSE event to all connected clients |
+| HTTP (SSE, chi) | `chi.SSEAdapter` | Same, via chi router |
 | HTTP (drain) | `nethttp.DrainCallAdapter` | POSTs each item; response discarded |
 | ZeroMQ | `zeromq.PublishAdapter` | Publishes each item to a PUB/PUSH socket |
 | File (line) | `file.DrainWriteAdapter` | Encodes each item as a line (NDJSON) |
@@ -126,6 +156,17 @@ domain.Calibration.Bind(ctx, nethttp.CallAdapter(httpClient, "http://calib-svc",
 | ZeroMQ | `zeromq.CallAdapter` | 1→1 | ZeroMQ REQ/REP per item |
 | SQL | `sql.QueryEachAdapter` | 1→N | Parameterized SQL query per item |
 | File | `file.ReadEachAdapter` | 1→1 | File read per item with path template vars |
+
+### Tool adapters (for `ToolPort`)
+
+| Transport | Constructor | Description |
+|-----------|-------------|-------------|
+| MCP | `mcpgo.ToolPipelineAdapter` | Registers the pipeline as an MCP tool; fresh run per call |
+| MCP (cache) | `mcpgo.ToolLatestAdapter` | Registers an MCP tool backed by a reactive cache stream (ignores the pipeline fn — response comes from the stream) |
+| HTTP (nethttp) | `nethttp.PipelineAdapter` | Registers the pipeline as an HTTP endpoint |
+| HTTP (chi) | `chi.PipelineAdapter` | Same, via chi router |
+| ZeroMQ | `zeromq.ServeAdapter` | Starts a REP loop running the pipeline (background goroutine) |
+| MQTT5 | `mqtt5.ServeAdapter` | Starts a request/reply server running the pipeline (background goroutine) |
 
 ## Test adapters
 
@@ -162,17 +203,28 @@ IOParam names to their protocol-specific types at binding time:
 ports.IOParam{Name: "sensorID", Required: true}.WithCodec(sensorIDCodec)
 ```
 
-## Server patterns (unchanged)
+## Cache patterns (not port-based)
 
-These patterns are not port-based — they are the inbound HTTP/MCP server side:
+These patterns are a different shape from `ToolPort` — they serve the **most recently
+computed value** rather than running the pipeline per call. Use them directly (not via
+`ports`) when the response should not block on a fresh computation:
 
 | Pattern | Where it lives |
 |---------|---------------|
 | `nethttp.HandlerLatest` / `RegisterLatest` | HTTP GET endpoint serving latest stream value |
-| `nethttp.PipelineHandler` / `RegisterPipeline` | HTTP trigger → pipeline → response |
-| `nethttp.SSEFromHub` | SSE server backed by a shared BroadcastHub |
+| `chi.HandlerLatest` / `RegisterLatest` | Same, via chi router |
 | `zeromq.ServeLatest` | ZMQ REP loop serving latest stream value |
+| `mcpgo.ToolLatestHandler` / `RegisterToolLatest` | MCP tool serving latest stream value (also available as `mcpgo.ToolLatestAdapter` for `ToolPort.Bind`) |
+
+## Underlying handler functions (used internally by Tool adapters)
+
+`ToolPort`'s Tool adapters wrap these functions — use them directly only for standalone
+(non-`ports`) wiring:
+
+| Pattern | Where it lives |
+|---------|---------------|
+| `nethttp.PipelineHandler` / `RegisterPipeline` | HTTP trigger → pipeline → response |
+| `chi.PipelineHandler` / `RegisterPipeline` | Same, via chi router |
 | `zeromq.AsPipelineFunc` | Wraps a forge pipeline fn for `Serve`/`ServeRouter` |
 | `mqtt5.AsPipelineFunc` | Wraps a forge pipeline fn for `Serve` |
-| `mcpgo.ToolLatestHandler` | MCP tool serving latest stream value |
-| `mcpgo.ToolPipelineHandler` | MCP tool trigger → pipeline → response |
+| `mcpgo.ToolPipelineHandler` / `RegisterToolPipeline` | MCP tool trigger → pipeline → response |

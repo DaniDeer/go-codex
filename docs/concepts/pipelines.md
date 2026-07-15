@@ -12,76 +12,91 @@ go-codex is designed for **inside-out development**: you start from the domain a
 work outward to the application boundary, not the other way around.
 
 ```
-Step 1 — Domain core (inside)
-    codex.Codec[T]                    ← validated domain types
-    forge.NewFunction[In, Out](...)   ← governed pure computation
-    stream.Apply(ctx, s, fn, opts)    ← reactive pipeline
+Step 1 — Domain core (inside, zero adapter imports)
+    codex.Codec[T]                       ← validated domain types
+    forge.NewFunction[In, Out](...)      ← governed pure computation
+    ports.NewSourcePort / SinkPort /     ← protocol-agnostic IO enforcement points
+        IOPort / ToolPort
 
-Step 2 — Application boundary (outside)
-    transport.SubscribeStream(...)    ← connect external trigger
-    transport.CallStream(...)         ← connect external enrichment
-    transport.DrainPublish(...)       ← connect external sink
+Step 2 — Application boundary (outside, main.go only)
+    domain.SomePort.Bind(ctx, transport.SomeAdapter(...))  ← wire to a concrete transport
 ```
 
 **Why this order matters:**
 
-The domain core is **transport-independent**. The same forge function can be wired
-to MQTT messages, HTTP requests, ZeroMQ frames, or a plain Go channel in a test —
-without changing a single line of domain logic:
+The domain core is **transport-independent**. Ports are declared with a codec and a
+name — no transport import required. The same pipeline can be bound to MQTT messages,
+HTTP requests, ZeroMQ frames, or a plain Go channel in a test — without changing a
+single line of domain logic. See [`ports` package documentation](../features/ports.md)
+for the complete API.
 
 ```go
-// Domain function — defined once, wired anywhere:
-oeeCalcFn := forge.NewFunction("oeeCalc", "1.0.0", oeeInCodec, oeeCodec,
+// domain/pipeline.go — zero adapter imports
+var oeeCalcFn = forge.NewFunction("oeeCalc", "1.0.0", oeeInCodec, oeeCodec,
     func(in OEEIn) (OEE, error) {
         return OEE(float64(in.Availability) * float64(in.Performance) * float64(in.Quality)), nil
     },
 )
 
+var SensorReadings = ports.NewSourcePort[OEEIn]("sensor-readings", oeeInCodec, ports.PortOptions{})
+var OEEResults = ports.NewSinkPort[OEE]("oee-results", oeeCodec, ports.PortOptions{})
+
+func StartPipeline(ctx context.Context) {
+    sensors := SensorReadings.Stream(ctx)
+    oeeStream := gstream.Apply(ctx, sensors, oeeCalcFn, gstream.ApplyOptions{})
+    go OEEResults.Feed(ctx, oeeStream)
+}
+
+// main.go — all transport decisions here
+
 // Wire A: MQTT source → domain pipeline → MQTT sink
-sensorStream, handler := mqtt.SubscribeStream(ctx, mqttHandle, ...)
-oeeStream := stream.Apply(ctx, sensorStream, oeeCalcFn, opts)
-mqtt.DrainPublish(ctx, client, alertHandle, oeeStream, ...)
+domain.SensorReadings.Bind(ctx, mqtt5.SubscribeAdapter(client, router, sensorHandle, 0, fmt, opts))
+domain.OEEResults.Bind(ctx, mqtt5.PublishAdapter(client, alertHandle, fmt, publishOpts))
 
-// Wire B: HTTP trigger → domain pipeline → HTTP response
-nethttp.RegisterPipeline(mux, httpHandle,
-    func(ctx context.Context, req OEEIn) stream.Stream[OEE] {
-        return stream.Apply(ctx, stream.Single(ctx, req), oeeCalcFn, opts)
-    }, nethttp.Options{})
+// Wire B: HTTP trigger → domain pipeline → HTTP response (ToolPort, request/response)
+var OEETool = ports.NewToolPort[OEEIn, OEE]("oee-tool", oeeInCodec, oeeCodec, ports.PortOptions{})
+OEETool.SetPipeline(func(ctx context.Context, req OEEIn) gstream.Stream[OEE] {
+    return gstream.Apply(ctx, gstream.Single(ctx, req), oeeCalcFn, gstream.ApplyOptions{})
+})
+domain.OEETool.Bind(ctx, nethttp.PipelineAdapter(mux, httpHandle, nethttp.PipelineAdapterOptions{}))
 
-// Wire C: test — plain Go channel
+// Wire C: test — plain Go channel, no transport at all
 ch := make(chan OEEIn, 1)
 ch <- OEEIn{Availability: 0.9, Performance: 0.85, Quality: 0.95}
 close(ch)
-result := stream.Apply(ctx, stream.From(ctx, ch), oeeCalcFn, opts)
-vals, _ := stream.Collect(ctx, result)
+domain.SensorReadings.Bind(ctx, ports.ChanSourceAdapter(ch))
+out := make(chan OEE, 1)
+domain.OEEResults.Bind(ctx, ports.ChanSinkAdapter(out))
 ```
 
 **The application boundary** is where the domain meets the outside world. go-codex
-stream bridges define this boundary using **three positions**:
+ports define this boundary using **four positions**:
 
 | Position | Declarative pattern | Direction |
 |----------|-------------------|-----------|
-| **Source/Trigger** | `transport.SubscribeStream(ctx, client, handle, opts)` | External world → domain pipeline |
-| **Intermediate I/O** | `transport.CallStream(ctx, client, handle, src, opts)` | Domain pipeline ↔ external service |
-| **Sink/Drain** | `transport.DrainPublish(ctx, client, handle, src, opts)` | Domain pipeline → external world |
+| **Source** | `ports.NewSourcePort[T](...)` + `.Bind(ctx, transport.XxxAdapter(...))` | External world → domain pipeline (fan-in: multiple adapters merge) |
+| **Sink** | `ports.NewSinkPort[T](...)` + `.Bind(ctx, transport.XxxAdapter(...))` | Domain pipeline → external world (fan-out: broadcast to all adapters) |
+| **Intermediate I/O** | `ports.NewIOPort[Req,Resp](...)` + `.Bind(ctx, transport.XxxAdapter(...))` | Domain pipeline ↔ external service/store (exactly one adapter) |
+| **Tool (request/response)** | `ports.NewToolPort[In,Out](...)` + `.SetPipeline(fn)` + `.Bind(ctx, transport.XxxAdapter(...))` | External request → pipeline → response; same pipeline can serve MCP + HTTP + ZeroMQ simultaneously |
 
-Each position is declared using a typed **handle** (route, channel, or file descriptor)
-that carries the schema — codec, params, security requirements. The bridge handles
-codec validation, error routing, and observer calls automatically.
+Each port carries the payload codec (and optional `IOParam` routing parameters). Adapters
+map the port to protocol-specific concerns (topic, path, security) at `Bind` time. The
+adapter handles codec validation, error routing, and observer calls automatically.
 
 **Development order in practice:**
 
 ```
 1. Define domain types:        var oeeCalcFn = forge.NewFunction("oeeCalc", ...)
-2. Test in isolation:          stream.Apply(ctx, stream.From(ctx, testCh), oeeCalcFn, opts)
-3. Connect to triggers:        mqtt.SubscribeStream(ctx, sensorHandle, ...)
-4. Connect to sinks:           mqtt.DrainPublish(ctx, alertHandle, ...)
-5. Add intermediate I/O:       nethttp.CallStream(ctx, enrichmentHandle, ...)
-6. Expose as API:              nethttp.RegisterLatest(mux, latestOEEHandle, oeeStream, opts)
+2. Test in isolation:          domain.SensorReadings.Bind(ctx, ports.ChanSourceAdapter(testCh))
+3. Connect to triggers:        domain.SensorReadings.Bind(ctx, mqtt5.SubscribeAdapter(...))
+4. Connect to sinks:           domain.OEEResults.Bind(ctx, mqtt5.PublishAdapter(...))
+5. Add intermediate I/O:       domain.Calibration.Bind(ctx, nethttp.CallAdapter(...))
+6. Expose as request/response: domain.OEETool.Bind(ctx, mcpgo.ToolPipelineAdapter(...))
 ```
 
 Steps 1–2 require no transport dependencies at all. Steps 3–6 plug the domain core
-into the outside world declaratively, without changing the forge functions.
+into the outside world declaratively, without changing the forge functions. See the
+[ports feature guide](../features/ports.md) for the full adapter catalogue.
 
 ## Three-layer architecture
 
