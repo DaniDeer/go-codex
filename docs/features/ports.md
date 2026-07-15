@@ -34,7 +34,7 @@ its own handle, builder-free — no separate `events.NewChannel`/`Register` step
 
 ```go
 // domain/pipeline.go — no adapter imports; pattern declared once, here
-var SensorReadings = ports.NewSourcePort[SensorReading]("sensor-readings", ReadingCodec,
+var SensorReadings = codex.Must(ports.NewSourcePort[SensorReading]("sensor-readings", ReadingCodec,
     ports.PortOptions{
         Patterns: []ports.Pattern{
             ports.EventPattern{
@@ -42,7 +42,7 @@ var SensorReadings = ports.NewSourcePort[SensorReading]("sensor-readings", Readi
                 Opts:  []events.ChannelOpt{events.TopicParam{Name: "sensorID"}.WithCodec(sensorIDCodec)},
             },
         },
-    })
+    }))
 
 func StartPipeline(ctx context.Context) {
     sensors := SensorReadings.Stream(ctx)
@@ -74,7 +74,7 @@ Declares an inbound boundary. Bind one or more `SourceAdapter[T]` implementation
 outputs are merged (fan-in) into a single stream.
 
 ```go
-var SensorReadings = ports.NewSourcePort[SensorReading]("sensor-readings", ReadingCodec,
+var SensorReadings = codex.Must(ports.NewSourcePort[SensorReading]("sensor-readings", ReadingCodec,
     ports.PortOptions{
         Buffer: 8,
         Patterns: []ports.Pattern{
@@ -82,7 +82,7 @@ var SensorReadings = ports.NewSourcePort[SensorReading]("sensor-readings", Readi
                 events.TopicParam{Name: "sensorID"}.WithCodec(sensorIDCodec),
             }},
         },
-    })
+    }))
 
 // main.go — derive handles from the port, bind one adapter or several for fan-in:
 eventHandle, _ := ports.EventHandle[SensorReading](domain.SensorReadings)
@@ -106,14 +106,14 @@ item fed into the port is broadcast (fan-out) to all bound adapters. A failure i
 adapter does not stop delivery to the others.
 
 ```go
-var OEEResults = ports.NewSinkPort[OEE]("oee-results", OEECodec, ports.PortOptions{
+var OEEResults = codex.Must(ports.NewSinkPort[OEE]("oee-results", OEECodec, ports.PortOptions{
     Buffer: 8,
     Patterns: []ports.Pattern{
         ports.EventPattern{Topic: "alerts/{sensorID}", Opts: []events.ChannelOpt{
             events.TopicParam{Name: "sensorID"},
         }},
     },
-})
+}))
 
 alertHandle, _ := ports.EventHandle[OEE](domain.OEEResults)
 domain.OEEResults.Bind(ctx, mqtt5.PublishAdapter(client, alertHandle, fmt, publishOpts))
@@ -129,12 +129,12 @@ receives a `Resp` back. Exactly one `IOAdapter[Req,Resp]` may be bound; swapping
 adapter (HTTP → SQL → file) never touches pipeline code.
 
 ```go
-var Calibration, err = ports.NewIOPort[SensorReading, CalibratedReading](
+var Calibration = codex.Must(ports.NewIOPort[SensorReading, CalibratedReading](
     "calibration", ReadingCodec, calibratedCodec, ports.PortOptions{
         Patterns: []ports.Pattern{
             ports.RESTPattern{Method: "GET", Path: "/calibration/{sensorID}"},
         },
-    })
+    }))
 
 calibrated := domain.Calibration.Connect(ctx, sensors) // gstream.Stream[CalibratedReading]
 
@@ -145,9 +145,11 @@ domain.Calibration.Bind(ctx, nethttp.CallAdapter(httpClient, baseURL, calibHandl
 // domain.Calibration.Bind(ctx, file.ReadEachAdapter(calibFile, varsFor, combine, opts))
 ```
 
-`NewIOPort` and `NewToolPort` return `(*Port, error)` — a declared `Pattern` is built
-eagerly (fail-fast) and can fail (e.g. an unknown param name); `NewSourcePort`/
-`NewSinkPort` stay infallible since `EventPattern` construction never errors.
+`NewSourcePort`, `NewSinkPort`, `NewIOPort`, and `NewToolPort` all return
+`(*Port, error)` — a declared `Pattern` is built eagerly via `Register` (fail-fast)
+and can fail (unknown param name, path/topic constraint failure, duplicate name on
+a shared `reqreply`/`mcp` builder). Wrap with `codex.Must(...)` for package-level
+declarations, as shown throughout this page.
 
 `Connect` returns a stream carrying `PortNoAdapterError` in `Stream.Errors` if no
 adapter was bound before the pipeline started.
@@ -159,7 +161,7 @@ client-side). Set the pipeline function once with `SetPipeline`, then bind it to
 more transports. The **same pipeline logic** can serve MCP, HTTP, and ZeroMQ simultaneously.
 
 ```go
-var OEETool, err = ports.NewToolPort[OEEIn, OEEResult]("oee-calc", oeeInCodec, oeeResultCodec,
+var OEETool = codex.Must(ports.NewToolPort[OEEIn, OEEResult]("oee-calc", oeeInCodec, oeeResultCodec,
     ports.PortOptions{
         Patterns: []ports.Pattern{
             ports.RESTPattern{Method: "POST", Path: "/oee/calc"},
@@ -168,7 +170,7 @@ var OEETool, err = ports.NewToolPort[OEEIn, OEEResult]("oee-calc", oeeInCodec, o
                 apimcp.ToolMeta{Description: "Calculates OEE from sensor data"},
             }},
         },
-    })
+    }))
 
 func init() {
     OEETool.SetPipeline(func(ctx context.Context, req OEEIn) gstream.Stream[OEEResult] {
@@ -201,8 +203,8 @@ called first.
 method+path, topic, or MCP tool name, plus routing params — directly on the port,
 reusing the exact same option vocabulary as `rest.NewRoute`/`events.NewChannel`/
 `reqreply.NewRoute`/`apimcp.NewTool` (`PathParam`, `QueryParam`, `TopicParam`, …).
-No new param types, no separate `events.NewChannel(...).Register(builder)` step:
-the port builds its own handle **builder-free**, retrievable via a typed accessor.
+No new param types, no separate `events.NewChannel(...).Register(builder)` call
+written by hand: the port makes that call **internally**.
 
 | Pattern | Protocol family | Wraps |
 |---------|------------------|-------|
@@ -226,8 +228,63 @@ retrieved with the matching accessor:
 Each accessor returns `(nil, false)` — not an error, not a panic — when the port
 declared no matching `Pattern`.
 
-Build the spec **from the binding**, after the fact, instead of declaring the route
-separately beforehand:
+### One construction path — `Register`, always
+
+Internally, a `Pattern` is turned into a handle via **exactly the same**
+`Route`/`Channel`/`Tool.Register(builder)` call a hand-declared route makes —
+`ports` never calls the weaker, builder-free `ClientHandle()`. This makes a
+`Pattern`-derived handle **indistinguishable** from one built by calling
+`Register` directly: `ports.EventHandle[T](someSourcePort)` and
+`events.NewChannel[T](topic, codec, opts...).Register(myBuilder)` produce the
+same `*events.ChannelHandle[T]`, and any adapter (`mqtt5.SubscribeAdapter`, etc.)
+that receives either cannot tell which one it got.
+
+Supply your own `*Builder` via `PortOptions` to get full parity with a
+hand-registered route — security schemes, global security, and whole-path/topic
+format constraints all become available, and the port's route/channel/tool
+accumulates directly into *your* spec document:
+
+```go
+restBuilder := rest.NewBuilder(rest.Info{Title: "OEE Service", Version: "1.0.0"})
+restBuilder.AddSecurityScheme("bearerAuth", rest.SecurityScheme{SecurityScheme: route.BearerScheme("JWT")})
+restBuilder.AddGlobalSecurity(route.SecurityRequirement{"bearerAuth": {}})
+
+domain.OEETool, err := ports.NewToolPort[OEEIn, OEEResult]("oee-calc", oeeInCodec, oeeResultCodec,
+    ports.PortOptions{
+        Patterns:    []ports.Pattern{ports.RESTPattern{Method: "POST", Path: "/oee/calc"}},
+        RESTBuilder: restBuilder, // <- full parity: security schemes now enforced
+    })
+
+// spec already contains /oee/calc — no separate registration needed:
+spec, _ := restBuilder.OpenAPISpec()
+```
+
+When no `Builder` is supplied (the common case), `ports` registers against a
+private, single-use `Builder` with zero `Info` for that one call — the same
+zero-ceremony default as before, through the **identical** `Register` code path
+(there's no separate "simple" construction — just an auto-created `Builder`
+instead of a shared one).
+
+| `PortOptions` field | Applies to | Gives you |
+|---|---|---|
+| `RESTBuilder *rest.Builder` | `RESTPattern` | Security schemes, global security, `rest.WithPathConstraints`, shared OpenAPI spec |
+| `EventBuilder *events.Builder` | `EventPattern` | Security schemes, global security, `events.WithTopicConstraints`, shared AsyncAPI spec |
+| `ReqReplyBuilder *reqreply.Builder` | `ReqReplyPattern` | Duplicate-topic detection, shared registration |
+| `MCPBuilder *apimcp.Builder` | `MCPPattern` | Duplicate-name detection, shared MCP spec |
+
+> **Correctness note:** before this, every `Pattern`-derived handle had an empty
+> `SecuritySchemes` map and `nil` `GlobalSecurity` — any `RouteMeta.Security`/
+> `Subscribe.Security`/`Publish.Security` requirement on a `Pattern`-based port was
+> silently unenforced (the credential check simply skips unknown scheme names).
+> Supplying a `Builder` with `AddSecurityScheme`/`AddGlobalSecurity` fixes this.
+
+**If you already supplied a `Builder`**, the port's route/channel/tool is already
+registered with it — calling `RegisterREST`/`RegisterEvent`/`RegisterReqReply`/
+`RegisterMCP` with that *same* builder afterward is redundant (harmless for
+`rest`/`events`, which don't detect duplicates; returns a duplicate error for
+`reqreply`/`mcp`, which do). Use `Register*` only when you did **not** supply a
+`Builder` up front and want to add the already-bound port to a *different* spec
+document afterward:
 
 ```go
 b := rest.NewBuilder(rest.Info{Title: "OEE Service", Version: "1.0.0"})
@@ -237,14 +294,13 @@ if err := ports.RegisterREST[OEEIn, OEEResult](b, domain.OEETool); err != nil {
 spec, _ := b.OpenAPISpec()
 ```
 
-`RegisterEvent`, `RegisterReqReply`, and `RegisterMCP` work the same way for their
-respective `Builder` types.
-
 > **Scope note:** `RESTPattern` for `SourcePort`/`SinkPort` (HTTP ingest/SSE, which
 > need an asymmetric `Req`/`Resp` shape a single-codec port can't express directly)
-> and `NewIOPort`/`NewToolPort`'s `Pattern` construction failing eagerly (fail-fast,
-> matching `rest.Route.Register`) are documented open items — see the roadmap doc's
-> Phase 4 section for the full design and rationale.
+> is a documented open item — see the roadmap doc's Phase 4/5 sections for the
+> full design and rationale. `NewIOPort`/`NewToolPort`/`NewSourcePort`/`NewSinkPort`
+> all now return `(*Port, error)` — `Register` is fallible (unknown param names,
+> path/topic constraint failures, duplicate names on `reqreply`/`mcp`) in ways the
+> old builder-free construction wasn't.
 
 ---
 

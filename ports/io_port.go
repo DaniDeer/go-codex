@@ -66,18 +66,21 @@ type IOPort[Req, Resp any] struct {
 }
 
 // NewIOPort creates an IOPort with the given name, request codec, and response
-// codec. opts configures Patterns, IO params, and observer. Any [RESTPattern]
-// or [ReqReplyPattern] in opts.Patterns is built eagerly into a handle
-// retrievable via [RESTHandle]/[ReqReplyHandle]. Returns
-// [PatternRegisterError] if a declared Pattern fails to build (fail-fast,
-// matching [rest.Route.Register]'s philosophy).
+// codec. opts configures Patterns, IO params, observer, and (optionally) shared
+// [PortOptions.RESTBuilder]/[PortOptions.ReqReplyBuilder]/[PortOptions.MCPBuilder]
+// builders. Any [RESTPattern]/[ReqReplyPattern]/[MCPPattern] in opts.Patterns is
+// built eagerly into a handle retrievable via [RESTHandle]/[ReqReplyHandle]/
+// [MCPHandle] via Register — fail-fast, and identical to a hand-registered
+// route/tool when the matching builder option is supplied. Returns
+// [PatternRegisterError] if a declared Pattern fails to build.
 func NewIOPort[Req, Resp any](
 	name string,
 	reqCodec codex.Codec[Req],
 	respCodec codex.Codec[Resp],
 	opts PortOptions,
 ) (*IOPort[Req, Resp], error) {
-	handles, specs, err := buildDualCodecPatternHandles(name, opts.Patterns, reqCodec, respCodec)
+	handles, specs, err := buildDualCodecPatternHandles(name, opts.Patterns, reqCodec, respCodec,
+		opts.RESTBuilder, opts.ReqReplyBuilder, opts.MCPBuilder)
 	if err != nil {
 		return nil, err
 	}

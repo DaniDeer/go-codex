@@ -87,17 +87,27 @@ func MCPHandle[In, Out any](port any) (*apimcp.ToolHandle[In, Out], bool) {
 }
 
 // buildEventPatternHandles scans patterns for an [EventPattern] and builds a
-// *events.ChannelHandle[T], builder-free, via [events.Channel.ClientHandle].
-// Used by [SourcePort] (subscribe) and [SinkPort] (publish) construction —
-// both are single-codec ports, matching EventPattern's single payload type.
+// *events.ChannelHandle[T] via [events.Channel.Register] — the SAME call a
+// hand-declared channel makes. Used by [SourcePort] (subscribe) and [SinkPort]
+// (publish) construction — both are single-codec ports, matching EventPattern's
+// single payload type.
+//
+// builder is used when non-nil (giving the handle full parity with a
+// hand-registered channel: security schemes, global security, topic
+// constraints, shared spec accumulation). When nil, a private, single-use
+// *events.Builder is created for this one Register call — the same
+// zero-ceremony default as before, through the identical Register code path
+// (there is no separate, weaker construction path — see [PortOptions.EventBuilder]).
 //
 // Returns both the built handles (for [EventHandle]) and the original
 // [events.Channel] spec values (for [RegisterEvent] to later replay against a
-// real [events.Builder]).
-//
-// Infallible — [events.Channel.ClientHandle] never errors — so
-// [NewSourcePort]/[NewSinkPort] do not need an error-returning signature.
-func buildEventPatternHandles[T any](patterns []Pattern, codec codex.Codec[T]) (handles map[string]any, specs map[string]any) {
+// different real [events.Builder]).
+func buildEventPatternHandles[T any](
+	portName string,
+	patterns []Pattern,
+	codec codex.Codec[T],
+	builder *events.Builder,
+) (handles map[string]any, specs map[string]any, err error) {
 	handles = make(map[string]any, len(patterns))
 	specs = make(map[string]any, len(patterns))
 	for _, p := range patterns {
@@ -106,26 +116,43 @@ func buildEventPatternHandles[T any](patterns []Pattern, codec codex.Codec[T]) (
 			continue
 		}
 		channel := events.NewChannel[T](ep.Topic, codec, ep.Opts...)
-		handles[patternKindEvent] = channel.ClientHandle()
+		b := builder
+		if b == nil {
+			b = events.NewBuilder(events.Info{})
+		}
+		handle, err := channel.Register(b)
+		if err != nil {
+			return nil, nil, PatternRegisterError{Port: portName, Kind: patternKindEvent, Err: err}
+		}
+		handles[patternKindEvent] = handle
 		specs[patternKindEvent] = channel
 	}
-	return handles, specs
+	return handles, specs, nil
 }
 
 // buildDualCodecPatternHandles scans patterns for a [RESTPattern],
 // [ReqReplyPattern], and [MCPPattern] and builds the corresponding handle for
-// each found, builder-free. Used by [IOPort] (client call) and [ToolPort]
-// (server pipeline) construction — both are dual-codec ports.
+// each found via Register — the SAME call a hand-declared route/tool makes.
+// Used by [IOPort] (client call) and [ToolPort] (server pipeline) construction
+// — both are dual-codec ports.
+//
+// restBuilder/reqReplyBuilder/mcpBuilder are used when non-nil (full parity
+// with a hand-registered route/tool); when nil, a private, single-use Builder
+// is created for that one Register call — see [buildEventPatternHandles] and
+// [PortOptions.RESTBuilder]/[PortOptions.ReqReplyBuilder]/[PortOptions.MCPBuilder].
 //
 // Returns both the built handles (for [RESTHandle]/[ReqReplyHandle]/[MCPHandle])
 // and the original rest.Route/reqreply.Route/apimcp.Tool spec values (for
 // [RegisterREST]/[RegisterReqReply]/[RegisterMCP] to later replay against a
-// real Builder).
+// different real Builder).
 func buildDualCodecPatternHandles[Req, Resp any](
 	portName string,
 	patterns []Pattern,
 	reqCodec codex.Codec[Req],
 	respCodec codex.Codec[Resp],
+	restBuilder *rest.Builder,
+	reqReplyBuilder *reqreply.Builder,
+	mcpBuilder *apimcp.Builder,
 ) (handles map[string]any, specs map[string]any, err error) {
 	handles = make(map[string]any, len(patterns))
 	specs = make(map[string]any, len(patterns))
@@ -133,15 +160,35 @@ func buildDualCodecPatternHandles[Req, Resp any](
 		switch pat := p.(type) {
 		case RESTPattern:
 			route := rest.NewRoute[Req, Resp](pat.Method, pat.Path, reqCodec, respCodec, pat.Opts...)
-			handles[patternKindREST] = route.ClientHandle()
+			b := restBuilder
+			if b == nil {
+				b = rest.NewBuilder(rest.Info{})
+			}
+			handle, err := route.Register(b)
+			if err != nil {
+				return nil, nil, PatternRegisterError{Port: portName, Kind: patternKindREST, Err: err}
+			}
+			handles[patternKindREST] = handle
 			specs[patternKindREST] = route
 		case ReqReplyPattern:
 			route := reqreply.NewRoute[Req, Resp](pat.Topic, reqCodec, respCodec, pat.Opts...)
-			handles[patternKindReqReply] = route.ClientHandle()
+			b := reqReplyBuilder
+			if b == nil {
+				b = reqreply.NewBuilder(reqreply.Info{})
+			}
+			handle, err := route.Register(b)
+			if err != nil {
+				return nil, nil, PatternRegisterError{Port: portName, Kind: patternKindReqReply, Err: err}
+			}
+			handles[patternKindReqReply] = handle
 			specs[patternKindReqReply] = route
 		case MCPPattern:
 			tool := apimcp.NewTool[Req, Resp](pat.Name, reqCodec, respCodec, pat.Opts...)
-			handle, err := tool.ClientHandle()
+			b := mcpBuilder
+			if b == nil {
+				b = apimcp.NewBuilder(apimcp.Info{})
+			}
+			handle, err := tool.Register(b)
 			if err != nil {
 				return nil, nil, PatternRegisterError{Port: portName, Kind: patternKindMCP, Err: err}
 			}

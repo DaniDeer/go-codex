@@ -67,11 +67,17 @@ type SinkPort[T any] struct {
 }
 
 // NewSinkPort creates a SinkPort with the given name and payload codec.
-// opts configures Patterns, IO params, buffer size, and observer. Any
-// [EventPattern] in opts.Patterns is built eagerly into a handle retrievable
-// via [EventHandle].
-func NewSinkPort[T any](name string, codec codex.Codec[T], opts PortOptions) *SinkPort[T] {
-	handles, specs := buildEventPatternHandles(opts.Patterns, codec)
+// opts configures Patterns, IO params, buffer size, observer, and (optionally)
+// a shared [PortOptions.EventBuilder]. Any [EventPattern] in opts.Patterns is
+// built eagerly into a handle retrievable via [EventHandle] via
+// events.Channel.Register — fail-fast, and identical to a hand-registered
+// channel when opts.EventBuilder is supplied. Returns [PatternRegisterError]
+// if a declared Pattern fails to build.
+func NewSinkPort[T any](name string, codec codex.Codec[T], opts PortOptions) (*SinkPort[T], error) {
+	handles, specs, err := buildEventPatternHandles(name, opts.Patterns, codec, opts.EventBuilder)
+	if err != nil {
+		return nil, err
+	}
 	return &SinkPort[T]{
 		name:    name,
 		codec:   codec,
@@ -80,7 +86,7 @@ func NewSinkPort[T any](name string, codec codex.Codec[T], opts PortOptions) *Si
 		specs:   specs,
 		obs:     opts.Observer,
 		buffer:  opts.Buffer,
-	}
+	}, nil
 }
 
 // patternHandle implements the unexported patternHolder interface used by

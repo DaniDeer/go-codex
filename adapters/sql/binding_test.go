@@ -40,7 +40,10 @@ func TestQueryAdapter_EmitsRows(t *testing.T) {
 	rows := []testRow{{ID: "r1", Value: 1.0}, {ID: "r2", Value: 2.0}}
 	queryFn := func(_ context.Context) ([]testRow, error) { return rows, nil }
 
-	p := ports.NewSourcePort[testRow]("test", testRowCodec, ports.PortOptions{Buffer: 8})
+	p, err := ports.NewSourcePort[testRow]("test", testRowCodec, ports.PortOptions{Buffer: 8})
+	if err != nil {
+		t.Fatalf("construct port: %v", err)
+	}
 	p.Bind(ctx, adaptersql.QueryAdapter(testRowCodec, queryFn, 30*time.Millisecond,
 		adaptersql.QueryStreamOptions{Table: "rows", Op: "list"}))
 	vals, errs := gstream.Collect(ctx, p.Stream(ctx))
@@ -60,7 +63,10 @@ func TestQueryAdapter_DatabaseErrorGoesToErrors(t *testing.T) {
 		return nil, fmt.Errorf("connection refused")
 	}
 
-	p := ports.NewSourcePort[testRow]("test", testRowCodec, ports.PortOptions{Buffer: 4})
+	p, err := ports.NewSourcePort[testRow]("test", testRowCodec, ports.PortOptions{Buffer: 4})
+	if err != nil {
+		t.Fatalf("construct port: %v", err)
+	}
 	p.Bind(ctx, adaptersql.QueryAdapter(testRowCodec, queryFn, 20*time.Millisecond,
 		adaptersql.QueryStreamOptions{Table: "rows", Op: "list"}))
 	_, errs := gstream.Collect(ctx, p.Stream(ctx))
@@ -82,7 +88,10 @@ func TestQueryAdapter_ValidationErrorGoesToErrors(t *testing.T) {
 		return []testRow{{ID: "", Value: 1.0}}, nil
 	}
 
-	p := ports.NewSourcePort[testRow]("test", testRowCodec, ports.PortOptions{Buffer: 4})
+	p, err := ports.NewSourcePort[testRow]("test", testRowCodec, ports.PortOptions{Buffer: 4})
+	if err != nil {
+		t.Fatalf("construct port: %v", err)
+	}
 	p.Bind(ctx, adaptersql.QueryAdapter(testRowCodec, queryFn, 20*time.Millisecond,
 		adaptersql.QueryStreamOptions{Table: "rows", Op: "list"}))
 	_, errs := gstream.Collect(ctx, p.Stream(ctx))
@@ -106,7 +115,10 @@ func TestDrainInsertAdapter_InsertsValidRows(t *testing.T) {
 	ch <- testRow{ID: "b", Value: 2.0}
 	close(ch)
 
-	p := ports.NewSinkPort[testRow]("test", testRowCodec, ports.PortOptions{Buffer: 4})
+	p, err := ports.NewSinkPort[testRow]("test", testRowCodec, ports.PortOptions{Buffer: 4})
+	if err != nil {
+		t.Fatalf("construct port: %v", err)
+	}
 	p.Bind(ctx, adaptersql.DrainInsertAdapter(testRowCodec, insertFn, adaptersql.DrainInsertOptions{}))
 	p.Feed(ctx, gstream.From(ctx, ch))
 
@@ -124,7 +136,10 @@ func TestDrainInsertAdapter_ValidationFailureGoesToOnError(t *testing.T) {
 	ch <- testRow{ID: "", Value: 1.0} // invalid: empty ID
 	close(ch)
 
-	p := ports.NewSinkPort[testRow]("test", testRowCodec, ports.PortOptions{Buffer: 4})
+	p, err := ports.NewSinkPort[testRow]("test", testRowCodec, ports.PortOptions{Buffer: 4})
+	if err != nil {
+		t.Fatalf("construct port: %v", err)
+	}
 	p.Bind(ctx, adaptersql.DrainInsertAdapter(testRowCodec, insertFn,
 		adaptersql.DrainInsertOptions{OnError: func(e error) { gotErr = e }}))
 	p.Feed(ctx, gstream.From(ctx, ch))

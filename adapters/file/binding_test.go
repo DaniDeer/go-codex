@@ -35,7 +35,10 @@ func TestScanAdapter_DecodesLines(t *testing.T) {
 	}
 
 	ctx := context.Background()
-	p := ports.NewSourcePort[item]("scan", itemCodec, ports.PortOptions{Buffer: 4})
+	p, err := ports.NewSourcePort[item]("scan", itemCodec, ports.PortOptions{Buffer: 4})
+	if err != nil {
+		t.Fatalf("construct port: %v", err)
+	}
 	p.Bind(ctx, fileadapter.ScanAdapter(path, format.JSON(itemCodec), fileadapter.ScanAdapterOptions{}))
 	vals, errs := gstream.Collect(ctx, p.Stream(ctx))
 	if len(errs) != 0 {
@@ -48,7 +51,10 @@ func TestScanAdapter_DecodesLines(t *testing.T) {
 
 func TestScanAdapter_InvalidPathError(t *testing.T) {
 	ctx := context.Background()
-	p := ports.NewSourcePort[item]("scan", itemCodec, ports.PortOptions{Buffer: 4})
+	p, err := ports.NewSourcePort[item]("scan", itemCodec, ports.PortOptions{Buffer: 4})
+	if err != nil {
+		t.Fatalf("construct port: %v", err)
+	}
 	p.Bind(ctx, fileadapter.ScanAdapter("/nonexistent/path.ndjson", format.JSON(itemCodec), fileadapter.ScanAdapterOptions{}))
 	_, errs := gstream.Collect(ctx, p.Stream(ctx))
 	if len(errs) == 0 {
@@ -67,7 +73,10 @@ func TestWatchAdapter_EmitsNewFiles(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	p := ports.NewSourcePort[string]("watch", codex.String(), ports.PortOptions{Buffer: 4})
+	p, err := ports.NewSourcePort[string]("watch", codex.String(), ports.PortOptions{Buffer: 4})
+	if err != nil {
+		t.Fatalf("construct port: %v", err)
+	}
 	p.Bind(ctx, fileadapter.WatchAdapter(dir, 20*time.Millisecond, fileadapter.WatchAdapterOptions{}))
 	s := p.Stream(ctx)
 
@@ -101,7 +110,10 @@ func TestDrainWriteAdapter_EncodesAndWrites(t *testing.T) {
 	ch <- item{V: 2}
 	close(ch)
 
-	p := ports.NewSinkPort[item]("write", itemCodec, ports.PortOptions{Buffer: 4})
+	p, err := ports.NewSinkPort[item]("write", itemCodec, ports.PortOptions{Buffer: 4})
+	if err != nil {
+		t.Fatalf("construct port: %v", err)
+	}
 	p.Bind(ctx, fileadapter.DrainWriteAdapter(&buf, format.JSON(itemCodec), fileadapter.DrainWriteAdapterOptions{}))
 	p.Feed(ctx, gstream.From(ctx, ch))
 
@@ -236,7 +248,10 @@ func TestDrainWriteFileAdapter_ParamValidationError(t *testing.T) {
 		fileadapter.DrainWriteFileAdapterOptions{OnError: func(e error) { caught = e }})
 
 	params := []ports.IOParam{{Name: "machineID", Required: true}}
-	p := ports.NewSinkPort[item]("write-file", itemCodec, ports.PortOptions{Buffer: 4, Params: params})
+	p, err := ports.NewSinkPort[item]("write-file", itemCodec, ports.PortOptions{Buffer: 4, Params: params})
+	if err != nil {
+		t.Fatalf("construct port: %v", err)
+	}
 	p.Bind(ctx, adapter)
 	p.Feed(ctx, gstream.From(ctx, ch))
 

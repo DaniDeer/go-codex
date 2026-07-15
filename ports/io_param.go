@@ -4,6 +4,10 @@ import (
 	"context"
 	"errors"
 
+	"github.com/DaniDeer/go-codex/api/events"
+	apimcp "github.com/DaniDeer/go-codex/api/mcp"
+	"github.com/DaniDeer/go-codex/api/reqreply"
+	"github.com/DaniDeer/go-codex/api/rest"
 	"github.com/DaniDeer/go-codex/codex"
 	"github.com/DaniDeer/go-codex/stats"
 )
@@ -110,10 +114,12 @@ func ParamsFromContext(ctx context.Context) []IOParam {
 type PortOptions struct {
 	// Patterns declares the port's communication pattern(s) — one entry per
 	// protocol family the port will be bound to ([RESTPattern], [EventPattern],
-	// [ReqReplyPattern], [MCPPattern]). The port builds its own handle from
-	// each Pattern at construction time (builder-free — see the Pattern doc),
-	// retrievable via [RESTHandle], [EventHandle], [ReqReplyHandle], [MCPHandle].
-	// This is the primary declaration surface for handle-backed adapters.
+	// [ReqReplyPattern], [MCPPattern]). The port builds its own handle from each
+	// Pattern at construction time via Register (against RESTBuilder/EventBuilder/
+	// ReqReplyBuilder/MCPBuilder, or a private single-use Builder when the
+	// matching field is nil), retrievable via [RESTHandle], [EventHandle],
+	// [ReqReplyHandle], [MCPHandle]. This is the primary declaration surface for
+	// handle-backed adapters.
 	Patterns []Pattern
 
 	// Params declares the protocol-agnostic IO parameters for this port. Only
@@ -138,4 +144,26 @@ type PortOptions struct {
 	// [SinkPort] only) per-item stream draining via [stats.Observer].
 	// When nil, resolved from ctx at Bind/Stream/Connect time.
 	Observer stats.Observer
+
+	// RESTBuilder registers each [RESTPattern]'s Route against b via
+	// rest.Route.Register(b) — the SAME call a hand-declared route makes. Supply
+	// the *rest.Builder your application already uses (with rest.WithPathConstraints,
+	// b.AddSecurityScheme, b.AddGlobalSecurity already configured) to get full
+	// parity with hand-declared routes: the resulting handle is indistinguishable
+	// from one built by calling rest.NewRoute(...).Register(b) directly.
+	//
+	// When nil, ports registers against a private, single-use *rest.Builder with
+	// zero [rest.Info] — the same zero-ceremony default as a builder-free
+	// construction, through the identical Register code path (there is no
+	// separate, weaker construction path).
+	RESTBuilder *rest.Builder
+
+	// EventBuilder — same idea as RESTBuilder, for [EventPattern] / events.Builder.
+	EventBuilder *events.Builder
+
+	// ReqReplyBuilder — same idea as RESTBuilder, for [ReqReplyPattern] / reqreply.Builder.
+	ReqReplyBuilder *reqreply.Builder
+
+	// MCPBuilder — same idea as RESTBuilder, for [MCPPattern] / apimcp.Builder.
+	MCPBuilder *apimcp.Builder
 }

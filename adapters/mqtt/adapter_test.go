@@ -97,9 +97,11 @@ func (t *pendingToken) Error() error                     { return nil }
 
 // mockClient implements pahomqtt.Client (only Publish is exercised in tests).
 type mockClient struct {
-	publishedTopic   string
-	publishedPayload []byte
-	token            pahomqtt.Token
+	publishedTopic    string
+	publishedPayload  []byte
+	subscribedTopic   string
+	subscribedHandler pahomqtt.MessageHandler
+	token             pahomqtt.Token
 }
 
 func (c *mockClient) IsConnected() bool       { return true }
@@ -113,7 +115,9 @@ func (c *mockClient) Publish(topic string, _ byte, _ bool, payload interface{}) 
 	}
 	return c.token
 }
-func (c *mockClient) Subscribe(_ string, _ byte, _ pahomqtt.MessageHandler) pahomqtt.Token {
+func (c *mockClient) Subscribe(topic string, _ byte, handler pahomqtt.MessageHandler) pahomqtt.Token {
+	c.subscribedTopic = topic
+	c.subscribedHandler = handler
 	return newCompletedToken(nil)
 }
 func (c *mockClient) SubscribeMultiple(_ map[string]byte, _ pahomqtt.MessageHandler) pahomqtt.Token {

@@ -76,6 +76,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"strings"
 	"sync"
 	"time"
 
@@ -359,6 +360,31 @@ var alertCodec = codex.Struct(
 		func(a *SensorAlert, v string) { a.At = v }),
 )
 
+// sensorTopicConstraint is a custom Constraint[string] enforcing the two known
+// topic shapes registered against the shared events.Builder below:
+// "sensors/<id>/data" (3 segments) and "alerts/<id>" (2 segments). Mirrors
+// examples/adapters-mqtt's sensorTopicConstraint, composed the same way via
+// events.WithTopicConstraints — but here it is applied to Patterns declared
+// directly on ports.SourcePort/SinkPort (see sensorsPort/alertsPort in
+// main()) rather than to a hand-built events.Channel.
+var sensorTopicConstraint = codex.Constraint[string]{
+	Name: "sensor-service-topic-format",
+	Check: func(v string) bool {
+		parts := strings.Split(v, "/")
+		switch len(parts) {
+		case 3:
+			return parts[0] == "sensors" && parts[2] == "data"
+		case 2:
+			return parts[0] == "alerts"
+		default:
+			return false
+		}
+	},
+	Message: func(v string) string {
+		return fmt.Sprintf("topic must follow sensors/<id>/data or alerts/<id> format, got %q", v)
+	},
+}
+
 // ── Layer 1: API declarations ─────────────────────────────────────────────────
 //
 // Route declarations are pure value expressions — no side effects, no
@@ -622,12 +648,29 @@ func main() {
 	// ── MQTT + stream pipeline ────────────────────────────────────────────
 	mqttClient := newMockClient()
 
+	// eventsBuilder is shared by every EventPattern-based port below via
+	// PortOptions.EventBuilder. Configuring WithTopicConstraints here — exactly
+	// the same call examples/adapters-mqtt makes on its own events.NewBuilder —
+	// means every port's Register call (run internally by ports, not by hand)
+	// enforces sensorTopicConstraint too: an invalid topic on any EventPattern
+	// declared with EventBuilder: eventsBuilder fails port construction
+	// immediately (PatternRegisterError wrapping events.InvalidTopicError),
+	// exactly as it would if declared by hand via
+	// events.NewChannel(...).Register(eventsBuilder).
+	eventsBuilder := events.NewBuilder(events.Info{Title: "sensor-service", Version: "1.0.0"},
+		events.WithTopicConstraints(validate.MQTTPublishTopic, sensorTopicConstraint),
+	)
+
 	// ── Bridge 1: ports.SourcePort + mqtt.SubscribeAdapter ───────────────
 	//
 	// Declare the pattern (topic + params) once, directly on the SourcePort,
-	// via ports.EventPattern — no separate events.NewChannel/Register step
-	// and no events.Builder needed just to get a working *ChannelHandle.
-	// ports.EventHandle derives it, builder-free, for the adapter below.
+	// via ports.EventPattern — no separate events.NewChannel/Register call
+	// written by hand. The port registers it internally, against the SHARED
+	// eventsBuilder above (via PortOptions.EventBuilder) — giving this
+	// Pattern-derived handle full parity with a hand-registered channel:
+	// the same topic-format constraints AND accumulation into the same
+	// AsyncAPI spec document. ports.EventHandle derives the resulting
+	// *ChannelHandle for the adapter below.
 	//
 	//   Domain code (no adapter import):
 	//     sensorsPort := ports.NewSourcePort[MQTTPayload]("sensors", codec,
@@ -638,18 +681,22 @@ func main() {
 	//   Wiring (main.go / adapter layer):
 	//     handle, _ := ports.EventHandle[MQTTPayload](sensorsPort)
 	//     sensorsPort.Bind(ctx, mqtt.SubscribeAdapter(client, handle, qos, fmt, opts))
-	sensorsPort := ports.NewSourcePort[MQTTPayload]("mqtt/sensors/+/data", mqttPayloadCodec,
+	sensorsPort, err := ports.NewSourcePort[MQTTPayload]("mqtt/sensors/+/data", mqttPayloadCodec,
 		ports.PortOptions{
 			Buffer: 64,
 			Patterns: []ports.Pattern{
 				ports.EventPattern{
 					Topic: "sensors/{sensorID}/data",
 					Opts: []events.ChannelOpt{
+						events.ChannelMeta{Description: "Sensor readings published by the sensor network."},
+						events.Subscribe{Summary: "Receive sensor reading"},
 						events.TopicParam{Name: "sensorID", Description: "UUID of the publishing sensor"},
 					},
 				},
 			},
+			EventBuilder: eventsBuilder,
 		})
+	must(err, "construct sensorsPort")
 	readingHandle, ok := ports.EventHandle[MQTTPayload](sensorsPort)
 	if !ok {
 		must(errors.New("sensorsPort: no EventPattern declared"), "derive reading channel handle")
@@ -711,16 +758,20 @@ func main() {
 	//
 	//   alertsPort.Bind(ctx, mqtt.PublishAdapter(...))   // MQTT
 	//   alertsPort.Bind(ctx, file.DrainWriteAdapter(...)) // also write to file
-	alertsPort := ports.NewSinkPort[SensorAlert]("mqtt/alerts", alertCodec, ports.PortOptions{
+	alertsPort, err := ports.NewSinkPort[SensorAlert]("mqtt/alerts", alertCodec, ports.PortOptions{
 		Patterns: []ports.Pattern{
 			ports.EventPattern{
 				Topic: "alerts/{sensorID}",
 				Opts: []events.ChannelOpt{
+					events.ChannelMeta{Description: "Threshold-breach alerts."},
+					events.Publish{Summary: "Publish threshold-breach alert"},
 					events.TopicParam{Name: "sensorID", Description: "UUID of the sensor that triggered the alert"},
 				},
 			},
 		},
+		EventBuilder: eventsBuilder,
 	})
+	must(err, "construct alertsPort")
 	alertHandle, ok := ports.EventHandle[SensorAlert](alertsPort)
 	if !ok {
 		must(errors.New("alertsPort: no EventPattern declared"), "derive alert channel handle")
@@ -877,7 +928,8 @@ func main() {
 	queryCtx, cancelQuery := context.WithTimeout(context.Background(), 150*time.Millisecond)
 	defer cancelQuery()
 
-	rowPort := ports.NewSourcePort[db.Reading]("sql/readings", readingCodec, ports.PortOptions{})
+	rowPort, err := ports.NewSourcePort[db.Reading]("sql/readings", readingCodec, ports.PortOptions{})
+	must(err, "construct rowPort")
 	rowPort.Bind(queryCtx, sqladapter.QueryAdapter(readingCodec,
 		func(qctx context.Context) ([]db.Reading, error) {
 			return store.queries.ListReadings(qctx)
@@ -925,6 +977,19 @@ func main() {
 			fmt.Printf("  [%s] %s\n", step.Kind, name)
 		}
 	}
+
+	// ── AsyncAPI spec built FROM the port bindings ─────────────────────────
+	//
+	// sensorsPort and alertsPort registered their EventPatterns against the
+	// SAME eventsBuilder above (via PortOptions.EventBuilder) — the spec below
+	// reflects both channels without any separate events.NewChannel(...).Register
+	// call: the port declaration IS the channel declaration.
+	fmt.Println("\n── AsyncAPI spec (built from the ports.EventPattern bindings) ──")
+	asyncDoc, err := eventsBuilder.AsyncAPISpec()
+	must(err, "build AsyncAPI spec")
+	asyncYAML, err := asyncDoc.MarshalYAML()
+	must(err, "marshal AsyncAPI spec")
+	fmt.Println(string(asyncYAML))
 
 	// ── Demonstrate errors.As chain ────────────────────────────────────────
 	_, validateErr := sqladapter.Validate(insertParamsCodec,

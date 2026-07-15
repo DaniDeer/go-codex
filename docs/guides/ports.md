@@ -26,7 +26,7 @@ Step 2 — Wiring (main.go only)
 
 ```go
 // domain/pipeline.go — no adapter imports; topic + params declared once, here
-var SensorReadings = ports.NewSourcePort[SensorReading]("sensor-readings", ReadingCodec,
+var SensorReadings = codex.Must(ports.NewSourcePort[SensorReading]("sensor-readings", ReadingCodec,
     ports.PortOptions{
         Buffer: 8,
         Patterns: []ports.Pattern{
@@ -35,7 +35,7 @@ var SensorReadings = ports.NewSourcePort[SensorReading]("sensor-readings", Readi
                 Opts:  []events.ChannelOpt{events.TopicParam{Name: "sensorID"}.WithCodec(sensorIDCodec)},
             },
         },
-    })
+    }))
 
 func StartPipeline(ctx context.Context) {
     readings := SensorReadings.Stream(ctx)
@@ -60,12 +60,12 @@ domain.SensorReadings.Bind(ctx,
 
 ```go
 // domain/pipeline.go
-var OEEResults = ports.NewSinkPort[OEE]("oee-results", OEECodec, ports.PortOptions{
+var OEEResults = codex.Must(ports.NewSinkPort[OEE]("oee-results", OEECodec, ports.PortOptions{
     Buffer: 8,
     Patterns: []ports.Pattern{
         ports.EventPattern{Topic: "alerts/{sensorID}"},
     },
-})
+}))
 
 // main.go — fan-out: both adapters receive every item
 alertHandle, _ := ports.EventHandle[OEE](domain.OEEResults)
@@ -82,13 +82,13 @@ Swap the enrichment source without changing pipeline code:
 
 ```go
 // domain/pipeline.go — declare the call pattern once; NewIOPort returns (port, error)
-var Calibration, calibErr = ports.NewIOPort[SensorReading, CalibratedReading](
+var Calibration = codex.Must(ports.NewIOPort[SensorReading, CalibratedReading](
     "calibration", ReadingCodec, calibratedCodec,
     ports.PortOptions{
         Patterns: []ports.Pattern{
             ports.RESTPattern{Method: "GET", Path: "/calibration/{sensorID}"},
         },
-    })
+    }))
 
 func StartPipeline(ctx context.Context) {
     raw        := SensorReadings.Stream(ctx)
@@ -115,14 +115,14 @@ can serve MCP, HTTP, and ZeroMQ simultaneously.
 
 ```go
 // domain/pipeline.go — no adapter imports; declare all three transport patterns once
-var OEETool, toolErr = ports.NewToolPort[OEEIn, OEEResult]("oee-calc", oeeInCodec, oeeResultCodec,
+var OEETool = codex.Must(ports.NewToolPort[OEEIn, OEEResult]("oee-calc", oeeInCodec, oeeResultCodec,
     ports.PortOptions{
         Patterns: []ports.Pattern{
             ports.RESTPattern{Method: "POST", Path: "/oee/calc"},
             ports.ReqReplyPattern{Topic: "oee/calc"},
             ports.MCPPattern{Name: "oee-calc"},
         },
-    })
+    }))
 
 func init() {
     OEETool.SetPipeline(func(ctx context.Context, req OEEIn) gstream.Stream[OEEResult] {
@@ -241,8 +241,51 @@ handle, ok := ports.ReqReplyHandle[Req, Resp](domain.SomePort) // *reqreply.Rout
 handle, ok := ports.MCPHandle[In, Out](domain.SomePort)        // *apimcp.ToolHandle[In, Out]
 ```
 
-Build the OpenAPI/AsyncAPI/MCP spec **from the binding**, whenever you want one —
-no separate spec-first declaration step:
+### One construction path, whether you supply a `Builder` or not
+
+Internally, a `Pattern` always becomes a handle via the **same**
+`Route`/`Channel`/`Tool.Register(builder)` call a hand-declared route makes —
+never the weaker, builder-free `ClientHandle()`. Supply your own `*Builder` via
+`PortOptions` to get full parity with a hand-registered route (security schemes,
+global security, path/topic format constraints, shared spec accumulation); when
+you don't, `ports` registers against a private, single-use `Builder` instead —
+same zero-ceremony default, identical code path:
+
+```go
+restBuilder := rest.NewBuilder(rest.Info{Title: "OEE Service", Version: "1.0.0"})
+restBuilder.AddSecurityScheme("bearerAuth", rest.SecurityScheme{SecurityScheme: route.BearerScheme("JWT")})
+restBuilder.AddGlobalSecurity(route.SecurityRequirement{"bearerAuth": {}})
+
+domain.OEETool := codex.Must(ports.NewToolPort[OEEIn, OEEResult]("oee-calc", oeeInCodec, oeeResultCodec,
+    ports.PortOptions{
+        Patterns:    []ports.Pattern{ports.RESTPattern{Method: "POST", Path: "/oee/calc"}},
+        RESTBuilder: restBuilder, // <- security scheme now actually enforced
+    }))
+
+// restBuilder already has /oee/calc registered — spec generation needs no
+// separate step:
+spec, _ := restBuilder.OpenAPISpec()
+```
+
+| `PortOptions` field | Pattern | Gives you |
+|---|---|---|
+| `RESTBuilder *rest.Builder` | `RESTPattern` | Security schemes, global security, `rest.WithPathConstraints` |
+| `EventBuilder *events.Builder` | `EventPattern` | Security schemes, global security, `events.WithTopicConstraints` |
+| `ReqReplyBuilder *reqreply.Builder` | `ReqReplyPattern` | Duplicate-topic detection |
+| `MCPBuilder *apimcp.Builder` | `MCPPattern` | Duplicate-name detection |
+
+> **Before this, every `Pattern`-derived handle silently had no security
+> enforcement** — `SecuritySchemes` was always an empty map (the credential check
+> skips unknown scheme names rather than rejecting), so any `RouteMeta.Security`/
+> `Subscribe.Security`/`Publish.Security` requirement declared on a `Pattern`-based
+> port had no effect. Supply a `Builder` with `AddSecurityScheme`/`AddGlobalSecurity`
+> to fix this for a given port.
+
+If you already supplied a `Builder`, the port's route/channel/tool is already
+registered with it — calling `RegisterREST`/etc. with that *same* builder
+afterward is redundant. Use `Register*` only when you did **not** supply a
+`Builder` up front and want to add the already-bound port to a *different* spec
+document after the fact:
 
 ```go
 b := rest.NewBuilder(rest.Info{Title: "OEE Service", Version: "1.0.0"})
@@ -252,14 +295,15 @@ spec, _ := b.OpenAPISpec()
 
 `RegisterEvent`, `RegisterReqReply`, and `RegisterMCP` do the same for their builders.
 
-`NewIOPort`/`NewToolPort` return `(*Port, error)` — a `Pattern` is built eagerly at
-construction time (fail-fast) and can fail (e.g. an unknown param name via
-`PatternRegisterError`). `NewSourcePort`/`NewSinkPort` stay infallible since
-`EventPattern` construction never errors.
+`NewSourcePort`, `NewSinkPort`, `NewIOPort`, and `NewToolPort` all return
+`(*Port, error)` — a `Pattern` is built eagerly at construction time via `Register`
+(fail-fast) and can fail (unknown param name, path/topic constraint failure,
+duplicate name on a shared `reqreply`/`mcp` builder) — wrap with `codex.Must(...)`
+for package-level declarations, as shown throughout this guide.
 
 > REST ingest (`SourcePort`) and SSE (`SinkPort`) need an asymmetric `Req`/`Resp`
 > shape a single-codec port can't express directly with `RESTPattern` yet — these
-> still take a hand-built handle. See the roadmap doc's Phase 4 section for the
+> still take a hand-built handle. See the roadmap doc's Phase 4/5 sections for the
 > full design and this open item.
 
 ## `IOParam` — protocol-agnostic parameters (handle-less adapters)

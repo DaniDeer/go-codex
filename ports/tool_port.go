@@ -64,20 +64,21 @@ type ToolPort[In, Out any] struct {
 
 // NewToolPort creates a ToolPort with the given name, request codec, and
 // response codec. name is used for observability, error context, and spec
-// generation. opts configures Patterns, IO params, and observer. Any
-// [RESTPattern], [ReqReplyPattern], or [MCPPattern] in opts.Patterns is built
-// eagerly into a handle retrievable via [RESTHandle]/[ReqReplyHandle]/
-// [MCPHandle] — a ToolPort exposed over multiple transports (e.g. HTTP + MQTT 5
-// + MCP) declares one Pattern per transport. Returns [PatternRegisterError] if
-// a declared Pattern fails to build (fail-fast, matching
-// [rest.Route.Register]'s philosophy).
+// generation. opts configures Patterns, IO params, observer, and (optionally)
+// shared [PortOptions.RESTBuilder]/[PortOptions.ReqReplyBuilder]/
+// [PortOptions.MCPBuilder] builders. Any [RESTPattern], [ReqReplyPattern], or
+// [MCPPattern] in opts.Patterns is built eagerly into a handle retrievable via
+// [RESTHandle]/[ReqReplyHandle]/[MCPHandle] via Register — a ToolPort exposed
+// over multiple transports (e.g. HTTP + MQTT 5 + MCP) declares one Pattern per
+// transport. Returns [PatternRegisterError] if a declared Pattern fails to build.
 func NewToolPort[In, Out any](
 	name string,
 	inCodec codex.Codec[In],
 	outCodec codex.Codec[Out],
 	opts PortOptions,
 ) (*ToolPort[In, Out], error) {
-	handles, specs, err := buildDualCodecPatternHandles(name, opts.Patterns, inCodec, outCodec)
+	handles, specs, err := buildDualCodecPatternHandles(name, opts.Patterns, inCodec, outCodec,
+		opts.RESTBuilder, opts.ReqReplyBuilder, opts.MCPBuilder)
 	if err != nil {
 		return nil, err
 	}

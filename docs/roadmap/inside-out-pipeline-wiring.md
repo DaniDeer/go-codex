@@ -1318,7 +1318,7 @@ Shipped, with all "Files to create/modify" items complete except examples (only
 
 ## Phase 5 — Full `api` module parity in `Pattern` + adapter option review
 
-> **Status:** Design complete — not yet implemented.
+> **Status:** Implemented — see "Implementation notes" at the end of this section.
 >
 > **Trigger:** asked to show topic-format constraints (`examples/adapters-mqtt`'s
 > `sensorTopicConstraint` via `events.WithTopicConstraints`) on sensor-service's
@@ -1401,13 +1401,15 @@ exactly one point in the library where a `Pattern` becomes a handle, full stop.*
 does — `Register` performs every check `ClientHandle` performs (decode/encode
 closures, per-variable param wiring) *plus* the builder-tracked ones `ClientHandle`
 skips (`InvalidPathParamError`/`InvalidTopicParamError` for a param name with no
-matching `{var}` placeholder, duplicate-route/topic/tool-name detection, path/topic
-codec validation, security scheme/global security population). There is no runtime
-behavior `ClientHandle` provides that `Register` doesn't already provide as a
-superset — so `Pattern` construction should **always call `Register`**, never
-`ClientHandle`. When the caller doesn't supply a `*Builder`, `ports` creates a
-private, single-use one with zero `Info` and uses it for that one `Register` call —
-functionally identical to the old builder-free default, but through the *exact same*
+matching `{var}` placeholder, path/topic codec validation, security scheme/global
+security population, and — for `reqreply`/`mcp` only — duplicate-topic/tool-name
+detection; `rest`/`events` do not detect duplicate routes/topics at all, in either
+`Register` or `ClientHandle`). There is no runtime behavior `ClientHandle` provides
+that `Register` doesn't already provide as a superset — so `Pattern` construction
+should **always call `Register`**, never `ClientHandle`. When the caller doesn't
+supply a `*Builder`, `ports` creates a private, single-use one with zero `Info` and
+uses it for that one `Register` call — functionally identical to the old
+builder-free default, but through the *exact same*
 code path used when a real, shared, security/constraint-configured `Builder` is
 supplied:
 
@@ -1463,12 +1465,12 @@ and *where* that `Register` call happens (inside the port constructor instead of
 by hand in `main.go`) — never *what* it does.
 
 Because `Register` is fallible in ways the old `ClientHandle()` path wasn't
-(`DuplicateRouteError`/`DuplicateTopicError`, `InvalidPathParamError`/
-`InvalidTopicParamError`, `InvalidPathError`/`InvalidTopicError` from a configured
-path/topic codec) — and is now used unconditionally, not just when a `Builder` is
-supplied — **`NewSourcePort`/`NewSinkPort` must also become `(*Port, error)`**,
-completing the same consistency change already made to `NewIOPort`/`NewToolPort`
-in Phase 4.
+(`InvalidPathParamError`/`InvalidTopicParamError`, `InvalidPathError`/
+`InvalidTopicError` from a configured path/topic codec, and — for `reqreply`/`mcp`
+only — `DuplicateRouteError`/an "already registered" error) — and is now used
+unconditionally, not just when a `Builder` is supplied — **`NewSourcePort`/
+`NewSinkPort` must also become `(*Port, error)`**, completing the same consistency
+change already made to `NewIOPort`/`NewToolPort` in Phase 4.
 
 **Consequence for `RegisterREST`/`RegisterEvent`/`RegisterReqReply`/`RegisterMCP`
 (Phase 4's spec-replay functions):** if the caller already supplied a `Builder` via
@@ -1476,19 +1478,24 @@ in Phase 4.
 `Register*` family exists only for the case where no `Builder` was supplied up
 front (the port used its private, throwaway one) and the caller wants to add the
 already-bound port to a *different*, real spec `Builder` after the fact. Calling
-`RegisterREST(b, port)` with the *same* `b` already passed via `PortOptions.RESTBuilder`
-returns `DuplicateRouteError` — document this explicitly.
+`RegisterREST(b, port)`/`RegisterEvent(b, port)` with the *same* `b` already passed
+via `PortOptions.RESTBuilder`/`EventBuilder` does **not** error — `rest`/`events`
+don't detect duplicate routes/topics at all, so it just adds a second, identical
+entry to the spec. Calling `RegisterReqReply`/`RegisterMCP` the same way **does**
+error (`DuplicateRouteError` / an "already registered" error), since `reqreply`/`mcp`
+do detect duplicates. Document this asymmetry explicitly.
 
 ### Unit test plan
 
 | Test | Verifies |
 |---|---|
-| `TestEventPattern_WithBuilder_MatchesHandBuiltRegister` | A `Pattern`-derived handle built via `PortOptions.EventBuilder` is behaviorally identical (`SecuritySchemes`, `GlobalSecurity`, `Descriptor`) to calling `events.NewChannel(...).Register(b)` directly with the same builder and options |
-| `TestRESTPattern_NilBuilder_StillRegisters` | No `RESTBuilder` supplied → still goes through `Register` (against a private builder), not `ClientHandle` — verify via a check that only `Register` catches (e.g. an unknown `PathParam` name → `InvalidPathParamError`, which `ClientHandle` used to silently ignore) |
-| `TestRESTPattern_WithBuilder_TopicConstraintFailure_ReturnsPatternRegisterError` | `rest.WithPathConstraints` failure surfaces as `PatternRegisterError` |
-| `TestRESTPattern_WithBuilder_DuplicateRoute_ReturnsPatternRegisterError` | Registering the same path twice against one shared `RESTBuilder` fails correctly |
-| `TestRegisterREST_SameBuilderAlreadyUsed_ReturnsDuplicateRouteError` | Calling `RegisterREST(b, port)` with the same `b` already passed via `PortOptions.RESTBuilder` fails as documented |
-| Security enforcement end-to-end (nethttp adapter test) | A `Pattern`-based port with `EventBuilder`/`RESTBuilder` + a real security scheme now actually rejects bad credentials (previously silently passed) |
+| `TestEventPattern_WithBuilder_PopulatesSecuritySchemes` | A `Pattern`-derived handle built via `PortOptions.EventBuilder` (with `AddSecurityScheme`/`AddGlobalSecurity` configured) carries real `SecuritySchemes`/`GlobalSecurity` |
+| `TestEventPattern_NilBuilder_NoSecuritySchemes` | Regression — no `EventBuilder` supplied still constructs successfully but carries no security schemes |
+| `TestRESTPattern_NilBuilder_StillGoesThroughRegister` | No `RESTBuilder` supplied → still goes through `Register` (against a private builder), not `ClientHandle` — verified via an unknown `PathParam` name → `InvalidPathParamError`, which the old `ClientHandle` path silently ignored |
+| `TestRESTPattern_WithBuilder_PathConstraintFailure_ReturnsPatternRegisterError` | `rest.WithPathConstraints` failure surfaces as `PatternRegisterError` wrapping `InvalidPathError` |
+| `TestRegisterReqReply_SameBuilderAlreadyUsed_ReturnsDuplicateRouteError` | `reqreply`'s real duplicate-topic detection fires when replaying against the same builder already used at construction |
+| `TestRegisterMCP_SameBuilderAlreadyUsed_ReturnsError` | Same for `mcp`'s duplicate-name detection |
+| `TestRESTPattern_WithBuilder_UsesSharedBuilderForSpec` | A `RESTBuilder`-backed port's route is already present in that builder's `OpenAPISpec()` output — no separate `RegisterREST` replay needed |
 | TopicFilter auto-derivation (mqtt5/mqtt adapter tests) | Empty `TopicFilter` + `{var}` topic → correct MQTT wildcard subscription, no manual restatement needed |
 
 ### Files to create/modify
@@ -1511,3 +1518,52 @@ returns `DuplicateRouteError` — document this explicitly.
 | Should `ReqReplyBuilder`/`MCPBuilder` exist even though `reqreply`/`mcp` have no `BuilderOption` mechanism (no constraints/security to gain today)? | **Yes, for consistency and future-proofing** — `Register` still gives duplicate-name/topic detection across ports sharing one builder, for free, today. If `reqreply`/`mcp` later grow `BuilderOption`s, `Pattern` gains them automatically. |
 | Should `PortOptions` gain a single `Builders` bundle struct instead of 4 separate fields? | **4 separate typed fields** — matches the existing `RESTHandle`/`EventHandle`/`ReqReplyHandle`/`MCPHandle` one-function-per-kind idiom; a bundle struct would just move the same 4 fields one level deeper with no real benefit. |
 | Is creating a throwaway `Builder` for every `Pattern`-based port with no supplied `Builder` wasteful? | No — a `Builder` is a small struct with a few empty maps/slices; the cost is negligible and this is exactly what makes the "one construction path" guarantee possible. |
+
+### Implementation notes
+
+Shipped as designed, with one correction found during implementation:
+**`rest.Route.Register` and `events.Channel.Register` do not detect duplicate
+routes/topics** (only `reqreply.Route.Register` and `apimcp.Tool.Register` do,
+via `DuplicateRouteError` and a plain "already registered" error respectively) —
+calling `RegisterREST`/`RegisterEvent` with the same builder a `Pattern` already
+registered against does **not** error for REST/events, it just adds a second,
+duplicate entry to the spec. Only `RegisterReqReply`/`RegisterMCP` reject the
+redundant call. Tests and docs were adjusted to reflect this actual behavior
+rather than the originally assumed uniform duplicate-detection story.
+
+- `PortOptions.RESTBuilder`/`EventBuilder`/`ReqReplyBuilder`/`MCPBuilder` added
+  (`ports/io_param.go`).
+- `ports/handle.go`'s `buildEventPatternHandles`/`buildDualCodecPatternHandles`
+  rewritten to always call `Register` (private single-use builder when the
+  matching field is nil) — `ClientHandle()` is no longer called anywhere inside
+  `ports`. `rest`/`events`/`reqreply`/`apimcp`'s `ClientHandle()` methods
+  themselves are unchanged and remain available for standalone (non-`ports`)
+  client-only usage.
+- `NewSourcePort`/`NewSinkPort` changed to `(*Port, error)` (breaking, joining
+  `NewIOPort`/`NewToolPort` from Phase 4) — ~27 call sites updated across
+  `ports/port_test.go`, `examples/sensor-service/main.go`, and 5 adapter
+  `binding_test.go` files, using the same mechanical transform as Phase 4.
+- Fixed the confirmed security-scheme silent-bypass gap: a `Pattern`-derived
+  handle now carries real `SecuritySchemes`/`GlobalSecurity` when a `Builder` is
+  supplied, verified end-to-end with a dedicated test
+  (`TestEventPattern_WithBuilder_PopulatesSecuritySchemes`) plus a regression
+  test proving the nil-builder default still has none
+  (`TestEventPattern_NilBuilder_NoSecuritySchemes`).
+- `adapters/mqtt5` and `adapters/mqtt` `SubscribeAdapterOptions.TopicFilter` now
+  auto-derives an MQTT wildcard filter (`{var}` → `+`) from the handle's topic
+  when empty, instead of subscribing with the raw, brace-containing topic
+  string — the one confirmed adapter-option redundancy found during the review.
+  `adapters/mqtt` gained its first `binding_test.go` in the process (previously
+  zero test coverage for `mqtt.SubscribeAdapter`).
+- `examples/sensor-service` updated: `sensorsPort`/`alertsPort` now share one
+  `events.Builder` (via `PortOptions.EventBuilder`) configured with
+  `events.WithTopicConstraints(validate.MQTTPublishTopic, sensorTopicConstraint)`
+  — directly mirroring `examples/adapters-mqtt`'s builder-level constraint style,
+  but enforced through the port's `Pattern` instead of a hand-built
+  `events.Channel`. The example also now prints the AsyncAPI spec built directly
+  from the two ports' bindings (`eventsBuilder.AsyncAPISpec()`), demonstrating
+  "build the spec from the binding" end-to-end.
+- Full verification: `go build ./...`, `go vet ./...` (pre-existing unrelated
+  `adapters/chi/adapter_test.go:1206` note, untouched), `go test ./...` (all
+  packages pass), `just check` (staticcheck+gosec, 0 issues), all `examples/*/`
+  exit 0.

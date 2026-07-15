@@ -37,7 +37,10 @@ func TestIngestAdapter_DeliversToPipelineSource(t *testing.T) {
 	mux := http.NewServeMux()
 	handle := newIngestRoute(t)
 
-	p := ports.NewSourcePort[createReq]("ingest", createReqCodec, ports.PortOptions{Buffer: 4})
+	p, err := ports.NewSourcePort[createReq]("ingest", createReqCodec, ports.PortOptions{Buffer: 4})
+	if err != nil {
+		t.Fatalf("construct port: %v", err)
+	}
 	p.Bind(ctx, nethttp.IngestAdapter(mux, handle, nethttp.IngestAdapterOptions{Buffer: 4}))
 	s := p.Stream(ctx)
 
@@ -88,7 +91,10 @@ func TestPollAdapter_EmitsResponsePerTick(t *testing.T) {
 	h, _ := rest.NewRoute[getReq, userResp]("GET", "/users/latest",
 		getReqCodec, userRespCodec, rest.RouteMeta{}).Register(b)
 
-	p := ports.NewSourcePort[userResp]("poll", userRespCodec, ports.PortOptions{Buffer: 4})
+	p, err := ports.NewSourcePort[userResp]("poll", userRespCodec, ports.PortOptions{Buffer: 4})
+	if err != nil {
+		t.Fatalf("construct port: %v", err)
+	}
 	p.Bind(ctx, nethttp.PollAdapter(http.DefaultClient, srv.URL, h, getReq{}, 30*time.Millisecond, nethttp.PollStreamOptions{Buffer: 4}))
 	s := p.Stream(ctx)
 
@@ -200,7 +206,10 @@ func TestDrainCallAdapter_PostsEachItem(t *testing.T) {
 	ch <- createReq{Name: "B"}
 	close(ch)
 
-	p := ports.NewSinkPort[createReq]("drain", createReqCodec, ports.PortOptions{Buffer: 4})
+	p, err := ports.NewSinkPort[createReq]("drain", createReqCodec, ports.PortOptions{Buffer: 4})
+	if err != nil {
+		t.Fatalf("construct port: %v", err)
+	}
 	p.Bind(ctx, nethttp.DrainCallAdapter(http.DefaultClient, srv.URL, h, nethttp.DrainCallOptions{}))
 	p.Feed(ctx, gstream.From(ctx, ch))
 

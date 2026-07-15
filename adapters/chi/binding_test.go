@@ -38,7 +38,10 @@ func TestChiIngestAdapter_DeliversToPipelineSource(t *testing.T) {
 	r := gochi.NewRouter()
 	handle := newChiIngestRoute(t)
 
-	p := ports.NewSourcePort[createReq]("ingest", createReqCodec, ports.PortOptions{Buffer: 4})
+	p, err := ports.NewSourcePort[createReq]("ingest", createReqCodec, ports.PortOptions{Buffer: 4})
+	if err != nil {
+		t.Fatalf("construct port: %v", err)
+	}
 	p.Bind(ctx, chiadapter.IngestAdapter(r, handle, chiadapter.IngestAdapterOptions{Buffer: 4}))
 	s := p.Stream(ctx)
 
@@ -94,7 +97,10 @@ func TestChiSSEAdapter_ServesItemsToClients(t *testing.T) {
 	valCh := make(chan userResp, 1)
 	src := gstream.From(ctx, valCh)
 
-	p := ports.NewSinkPort[userResp]("sse", userRespCodec, ports.PortOptions{Buffer: 4})
+	p, err := ports.NewSinkPort[userResp]("sse", userRespCodec, ports.PortOptions{Buffer: 4})
+	if err != nil {
+		t.Fatalf("construct port: %v", err)
+	}
 	p.Bind(ctx, chiadapter.SSEAdapter(r, handle, chiadapter.SSEAdapterOptions{}))
 
 	srv := httptest.NewServer(r)
@@ -221,7 +227,10 @@ func TestChiBinding_IngestAdapter_FullChannelReturns503(t *testing.T) {
 	handle := newChiIngestRoute(t)
 
 	// Buffer=0 → channel immediately full
-	p := ports.NewSourcePort[createReq]("ingest", createReqCodec, ports.PortOptions{Buffer: 0})
+	p, err := ports.NewSourcePort[createReq]("ingest", createReqCodec, ports.PortOptions{Buffer: 0})
+	if err != nil {
+		t.Fatalf("construct port: %v", err)
+	}
 	p.Bind(ctx, chiadapter.IngestAdapter(r, handle, chiadapter.IngestAdapterOptions{Buffer: 0}))
 	p.Stream(ctx) // start the stream goroutine
 

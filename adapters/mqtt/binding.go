@@ -2,6 +2,7 @@ package mqtt
 
 import (
 	"context"
+	"regexp"
 
 	pahomqtt "github.com/eclipse/paho.mqtt.golang"
 
@@ -13,12 +14,28 @@ import (
 	gstream "github.com/DaniDeer/go-codex/stream"
 )
 
+// templateVarRe matches {varName} placeholders in a topic template.
+var templateVarRe = regexp.MustCompile(`\{[^}]+\}`)
+
+// deriveWildcardFilter replaces each {varName} placeholder segment in topic
+// with the MQTT single-level wildcard "+", producing a broker subscription
+// filter usable directly when no explicit TopicFilter was configured (e.g.
+// "sensors/{sensorID}/data" -> "sensors/+/data"). A topic with no placeholders
+// is returned unchanged.
+func deriveWildcardFilter(topic string) string {
+	return templateVarRe.ReplaceAllString(topic, "+")
+}
+
 // ── SubscribeAdapter ──────────────────────────────────────────────────────────
 
 // SubscribeAdapterOptions configures [SubscribeAdapter].
 type SubscribeAdapterOptions struct {
 	// TopicFilter is the MQTT broker subscription filter (e.g. "sensors/+/data").
-	// When empty, [events.ChannelHandle.Topic] is used.
+	// When empty, derived automatically from [events.ChannelHandle.Topic] by
+	// replacing each {varName} placeholder with the MQTT wildcard "+" (e.g.
+	// "sensors/{sensorID}/data" -> "sensors/+/data") — the common case needs no
+	// manual restatement. Set explicitly only for a filter that differs from
+	// this derivation (e.g. a multi-level "#" wildcard).
 	TopicFilter string
 	// SecurityFunc enforces security requirements on each incoming message.
 	SecurityFunc func(context.Context, pahomqtt.Message, []route.SecurityRequirement) error
@@ -92,7 +109,7 @@ func (a *mqttSubscribeAdapter[T]) Activate(ctx context.Context, dst chan<- T, er
 
 	filter := a.opts.TopicFilter
 	if filter == "" {
-		filter = a.handle.Topic
+		filter = deriveWildcardFilter(a.handle.Topic)
 	}
 	token := a.client.Subscribe(filter, a.qos, handler)
 	token.Wait()

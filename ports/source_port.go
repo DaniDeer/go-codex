@@ -67,12 +67,18 @@ type SourcePort[T any] struct {
 }
 
 // NewSourcePort creates a SourcePort with the given name and payload codec.
-// opts configures Patterns, IO params, buffer size, and observer. Any
-// [EventPattern] in opts.Patterns is built eagerly into a handle retrievable
-// via [EventHandle] — fail-fast, matching [events.Channel.Register]'s
-// philosophy (though construction here is builder-free and infallible).
-func NewSourcePort[T any](name string, codec codex.Codec[T], opts PortOptions) *SourcePort[T] {
-	handles, specs := buildEventPatternHandles(opts.Patterns, codec)
+// opts configures Patterns, IO params, buffer size, observer, and (optionally)
+// a shared [PortOptions.EventBuilder]. Any [EventPattern] in opts.Patterns is
+// built eagerly into a handle retrievable via [EventHandle] via
+// events.Channel.Register — fail-fast, and identical to a hand-registered
+// channel when opts.EventBuilder is supplied. Returns [PatternRegisterError]
+// if a declared Pattern fails to build (e.g. a duplicate topic on a shared
+// EventBuilder, or a topic/param mismatch).
+func NewSourcePort[T any](name string, codec codex.Codec[T], opts PortOptions) (*SourcePort[T], error) {
+	handles, specs, err := buildEventPatternHandles(name, opts.Patterns, codec, opts.EventBuilder)
+	if err != nil {
+		return nil, err
+	}
 	return &SourcePort[T]{
 		name:    name,
 		codec:   codec,
@@ -83,7 +89,7 @@ func NewSourcePort[T any](name string, codec codex.Codec[T], opts PortOptions) *
 		buffer:  opts.Buffer,
 		ch:      make(chan T, opts.Buffer),
 		errCh:   make(chan error, opts.Buffer),
-	}
+	}, nil
 }
 
 // patternHandle implements the unexported patternHolder interface used by

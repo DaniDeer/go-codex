@@ -35,14 +35,57 @@ func newMsg(topic string, payload []byte) *pahomqtt5.Publish {
 	return &pahomqtt5.Publish{Topic: topic, Payload: payload}
 }
 
+func newTemplatedSensorHandle() *events.ChannelHandle[sensorReading] {
+	b := events.NewBuilder(events.Info{Title: "Test", Version: "1.0.0"})
+	h, err := events.NewChannel[sensorReading]("sensors/{sensorID}/data", sensorCodec,
+		events.Subscribe{Summary: "Sensor reading"},
+		events.TopicParam{Name: "sensorID"},
+	).Register(b)
+	if err != nil {
+		panic(err)
+	}
+	return h
+}
+
 // ── SubscribeAdapter ──────────────────────────────────────────────────────────
+
+// TestMQTT5SubscribeAdapter_AutoDerivesWildcardFilter verifies that when
+// TopicFilter is empty and the handle's topic has {var} placeholders, the
+// adapter subscribes using the derived MQTT wildcard filter
+// ("sensors/{sensorID}/data" -> "sensors/+/data") instead of the raw,
+// brace-containing topic string.
+func TestMQTT5SubscribeAdapter_AutoDerivesWildcardFilter(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	handle := newTemplatedSensorHandle()
+	broker := &mockClient{}
+	router := newMockRouter()
+	p, err := ports.NewSourcePort[sensorReading]("test", sensorCodec, ports.PortOptions{Buffer: 8})
+	if err != nil {
+		t.Fatalf("construct port: %v", err)
+	}
+	p.Bind(ctx, mqtt5.SubscribeAdapter(broker, router, handle, 0, format.JSON(sensorCodec), mqtt5.SubscribeAdapterOptions{}))
+	s := p.Stream(ctx)
+	router.waitHandler("sensors/+/data") // derived wildcard filter, not "sensors/{sensorID}/data"
+
+	payload, _ := json.Marshal(map[string]any{"sensor_id": "550e8400-e29b-41d4-a716-446655440000", "value": 42.0})
+	router.dispatch("sensors/+/data", newMsg("sensors/f47ac10b-58cc-4372-a567-0e02b2c3d479/data", payload))
+	cancel()
+
+	vals, errs := gstream.Collect(context.Background(), s)
+	if len(vals) != 1 {
+		t.Errorf("want 1 value, got %d: errs=%v", len(vals), errs)
+	}
+}
 
 func TestMQTT5SubscribeAdapter_ValidPayload(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	handle := newSensorHandle()
 	broker := &mockClient{}
 	router := newMockRouter()
-	p := ports.NewSourcePort[sensorReading]("test", sensorCodec, ports.PortOptions{Buffer: 8})
+	p, err := ports.NewSourcePort[sensorReading]("test", sensorCodec, ports.PortOptions{Buffer: 8})
+	if err != nil {
+		t.Fatalf("construct port: %v", err)
+	}
 	p.Bind(ctx, mqtt5.SubscribeAdapter(broker, router, handle, 0, format.JSON(sensorCodec), mqtt5.SubscribeAdapterOptions{}))
 	s := p.Stream(ctx)                 // must call before cancel
 	router.waitHandler("sensors/data") // wait for handler registration in Activate goroutine
@@ -65,7 +108,10 @@ func TestMQTT5SubscribeAdapter_DecodeErrorGoesToStreamErrors(t *testing.T) {
 	handle := newSensorHandle()
 	broker := &mockClient{}
 	router := newMockRouter()
-	p := ports.NewSourcePort[sensorReading]("test", sensorCodec, ports.PortOptions{Buffer: 8})
+	p, err := ports.NewSourcePort[sensorReading]("test", sensorCodec, ports.PortOptions{Buffer: 8})
+	if err != nil {
+		t.Fatalf("construct port: %v", err)
+	}
 	p.Bind(ctx, mqtt5.SubscribeAdapter(broker, router, handle, 0, format.JSON(sensorCodec), mqtt5.SubscribeAdapterOptions{}))
 	s := p.Stream(ctx)                 // must call before cancel
 	router.waitHandler("sensors/data") // wait for handler registration
@@ -94,7 +140,10 @@ func TestMQTT5PublishAdapter_PublishesEachItem(t *testing.T) {
 	ch <- sensorReading{SensorID: "550e8400-e29b-41d4-a716-446655440000", Value: 1.0}
 	close(ch)
 
-	p := ports.NewSinkPort[sensorReading]("test", sensorCodec, ports.PortOptions{Buffer: 4})
+	p, err := ports.NewSinkPort[sensorReading]("test", sensorCodec, ports.PortOptions{Buffer: 4})
+	if err != nil {
+		t.Fatalf("construct port: %v", err)
+	}
 	p.Bind(ctx, mqtt5.PublishAdapter(client, handle, format.JSON(sensorCodec), mqtt5.MQTT5DrainPublishOptions{}))
 	p.Feed(ctx, gstream.From(ctx, ch))
 
@@ -119,7 +168,10 @@ func TestMQTT5PublishAdapter_StreamErrorsForwardedToOnError(t *testing.T) {
 	src := gstream.Stream[sensorReading]{Values: valCh, Errors: errCh}
 
 	var gotErr error
-	p := ports.NewSinkPort[sensorReading]("test", sensorCodec, ports.PortOptions{Buffer: 4})
+	p, err := ports.NewSinkPort[sensorReading]("test", sensorCodec, ports.PortOptions{Buffer: 4})
+	if err != nil {
+		t.Fatalf("construct port: %v", err)
+	}
 	p.Bind(ctx, mqtt5.PublishAdapter(client, handle, format.JSON(sensorCodec),
 		mqtt5.MQTT5DrainPublishOptions{OnError: func(e error) { gotErr = e }}))
 	p.Feed(ctx, src)

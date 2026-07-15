@@ -2,6 +2,7 @@ package mqtt5
 
 import (
 	"context"
+	"regexp"
 
 	pahomqtt5 "github.com/eclipse/paho.golang/paho"
 
@@ -14,12 +15,28 @@ import (
 	gstream "github.com/DaniDeer/go-codex/stream"
 )
 
+// templateVarRe matches {varName} placeholders in a topic template.
+var templateVarRe = regexp.MustCompile(`\{[^}]+\}`)
+
+// deriveWildcardFilter replaces each {varName} placeholder segment in topic
+// with the MQTT single-level wildcard "+", producing a broker subscription
+// filter usable directly when no explicit TopicFilter was configured (e.g.
+// "sensors/{sensorID}/data" -> "sensors/+/data"). A topic with no placeholders
+// is returned unchanged.
+func deriveWildcardFilter(topic string) string {
+	return templateVarRe.ReplaceAllString(topic, "+")
+}
+
 // ── SubscribeAdapter ──────────────────────────────────────────────────────────
 
 // SubscribeAdapterOptions configures [SubscribeAdapter].
 type SubscribeAdapterOptions struct {
 	// TopicFilter is the MQTT 5 broker subscription filter (e.g. "sensors/+/data").
-	// When empty, [events.ChannelHandle.Topic] is used.
+	// When empty, derived automatically from [events.ChannelHandle.Topic] by
+	// replacing each {varName} placeholder with the MQTT wildcard "+" (e.g.
+	// "sensors/{sensorID}/data" -> "sensors/+/data") — the common case needs no
+	// manual restatement. Set explicitly only for a filter that differs from
+	// this derivation (e.g. a multi-level "#" wildcard).
 	TopicFilter string
 	// UserPropertyParams validates MQTT 5 User Properties on each message.
 	UserPropertyParams []UserPropertyParam
@@ -101,7 +118,7 @@ func (a *mqtt5SubscribeAdapter[T]) Activate(ctx context.Context, dst chan<- T, e
 
 	filter := a.opts.TopicFilter
 	if filter == "" {
-		filter = a.handle.Topic
+		filter = deriveWildcardFilter(a.handle.Topic)
 	}
 	a.router.RegisterHandler(filter, handler)
 

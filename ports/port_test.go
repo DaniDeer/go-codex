@@ -15,6 +15,7 @@ import (
 	"github.com/DaniDeer/go-codex/api/rest"
 	"github.com/DaniDeer/go-codex/codex"
 	"github.com/DaniDeer/go-codex/ports"
+	"github.com/DaniDeer/go-codex/route"
 	"github.com/DaniDeer/go-codex/stats"
 	gstream "github.com/DaniDeer/go-codex/stream"
 )
@@ -25,11 +26,19 @@ var intCodec = codex.Int()
 var strCodec = codex.String()
 
 func intPort(name string, buf int) *ports.SourcePort[int] {
-	return ports.NewSourcePort[int](name, intCodec, ports.PortOptions{Buffer: buf})
+	p, err := ports.NewSourcePort[int](name, intCodec, ports.PortOptions{Buffer: buf})
+	if err != nil {
+		panic(err) // never happens for a Patterns-less port
+	}
+	return p
 }
 
 func intSinkPort(name string, buf int) *ports.SinkPort[int] {
-	return ports.NewSinkPort[int](name, intCodec, ports.PortOptions{Buffer: buf})
+	p, err := ports.NewSinkPort[int](name, intCodec, ports.PortOptions{Buffer: buf})
+	if err != nil {
+		panic(err) // never happens for a Patterns-less port
+	}
+	return p
 }
 
 func feedChan(vals ...int) <-chan int {
@@ -765,13 +774,16 @@ func TestRESTPattern_BuildsClientHandle(t *testing.T) {
 }
 
 func TestEventPattern_BuildsClientHandle(t *testing.T) {
-	p := ports.NewSourcePort[int]("readings", intCodec, ports.PortOptions{
+	p, err := ports.NewSourcePort[int]("readings", intCodec, ports.PortOptions{
 		Patterns: []ports.Pattern{
 			ports.EventPattern{Topic: "sensors/{sensorID}/data", Opts: []events.ChannelOpt{
 				events.Subscribe{Summary: "sensor reading"},
 			}},
 		},
 	})
+	if err != nil {
+		t.Fatalf("construct port: %v", err)
+	}
 	handle, ok := ports.EventHandle[int](p)
 	if !ok {
 		t.Fatal("want EventHandle to be present")
@@ -924,13 +936,16 @@ func TestRegisterREST_MissingPattern(t *testing.T) {
 }
 
 func TestRegisterEvent_AddsChannelToBuilder(t *testing.T) {
-	p := ports.NewSourcePort[int]("readings", intCodec, ports.PortOptions{
+	p, err := ports.NewSourcePort[int]("readings", intCodec, ports.PortOptions{
 		Patterns: []ports.Pattern{
 			ports.EventPattern{Topic: "sensors/data", Opts: []events.ChannelOpt{
 				events.Subscribe{Summary: "sensor reading"},
 			}},
 		},
 	})
+	if err != nil {
+		t.Fatalf("construct port: %v", err)
+	}
 	b := events.NewBuilder(events.Info{Title: "Test", Version: "1.0.0"})
 	if err := ports.RegisterEvent[int](b, p); err != nil {
 		t.Fatalf("RegisterEvent: %v", err)
@@ -984,5 +999,169 @@ func TestRegisterMCP_AddsToolToBuilder(t *testing.T) {
 	}
 	if len(spec.Tools) != 1 || spec.Tools[0].Name != "compute" {
 		t.Errorf("want 1 tool named compute, got %+v", spec.Tools)
+	}
+}
+
+// ── Phase 5: Builder-backed Pattern construction (single construction path) ──
+
+func TestEventPattern_WithBuilder_PopulatesSecuritySchemes(t *testing.T) {
+	scheme := events.SecurityScheme{SecurityScheme: route.BearerScheme("JWT")}
+
+	b := events.NewBuilder(events.Info{Title: "Test", Version: "1.0.0"})
+	b.AddSecurityScheme("bearerAuth", scheme)
+	b.AddGlobalSecurity(route.SecurityRequirement{"bearerAuth": {}})
+
+	p, err := ports.NewSourcePort[int]("secured-readings", intCodec, ports.PortOptions{
+		Patterns: []ports.Pattern{
+			ports.EventPattern{Topic: "sensors/data"},
+		},
+		EventBuilder: b,
+	})
+	if err != nil {
+		t.Fatalf("construct port: %v", err)
+	}
+	handle, ok := ports.EventHandle[int](p)
+	if !ok {
+		t.Fatal("want EventHandle to be present")
+	}
+	if len(handle.SecuritySchemes) != 1 {
+		t.Errorf("want 1 security scheme propagated from EventBuilder, got %d", len(handle.SecuritySchemes))
+	}
+	if len(handle.GlobalSecurity) != 1 {
+		t.Errorf("want GlobalSecurity propagated from EventBuilder, got %v", handle.GlobalSecurity)
+	}
+}
+
+func TestEventPattern_NilBuilder_NoSecuritySchemes(t *testing.T) {
+	// Regression: without an EventBuilder, the port still constructs successfully
+	// (via a private, single-use builder) but carries no security schemes —
+	// documents the "supply your own Builder to get security" contract.
+	p, err := ports.NewSourcePort[int]("unsecured-readings", intCodec, ports.PortOptions{
+		Patterns: []ports.Pattern{ports.EventPattern{Topic: "sensors/data"}},
+	})
+	if err != nil {
+		t.Fatalf("construct port: %v", err)
+	}
+	handle, ok := ports.EventHandle[int](p)
+	if !ok {
+		t.Fatal("want EventHandle to be present")
+	}
+	if len(handle.SecuritySchemes) != 0 || handle.GlobalSecurity != nil {
+		t.Errorf("want no security schemes without an EventBuilder, got schemes=%v global=%v",
+			handle.SecuritySchemes, handle.GlobalSecurity)
+	}
+}
+
+func TestRESTPattern_NilBuilder_StillGoesThroughRegister(t *testing.T) {
+	// Proves ports always calls Register (never the weaker ClientHandle): an
+	// unknown PathParam name (not a {var} placeholder in Path) is only caught
+	// by Register, via rest.InvalidPathParamError.
+	_, err := ports.NewIOPort[int, string]("bad-path-param", intCodec, strCodec, ports.PortOptions{
+		Patterns: []ports.Pattern{
+			ports.RESTPattern{
+				Method: "GET",
+				Path:   "/things",
+				Opts:   []rest.RouteOpt{rest.PathParam{Name: "id"}}, // "id" has no {id} placeholder in "/things"
+			},
+		},
+	})
+	if err == nil {
+		t.Fatal("want PatternRegisterError wrapping InvalidPathParamError, got nil")
+	}
+	var pre ports.PatternRegisterError
+	if !errors.As(err, &pre) {
+		t.Fatalf("want PatternRegisterError, got %T: %v", err, err)
+	}
+	var ipe rest.InvalidPathParamError
+	if !errors.As(err, &ipe) {
+		t.Errorf("want InvalidPathParamError wrapped inside, got %v", err)
+	}
+}
+
+func TestRegisterReqReply_SameBuilderAlreadyUsed_ReturnsDuplicateRouteError(t *testing.T) {
+	b := reqreply.NewBuilder(reqreply.Info{Title: "Test", Version: "1.0.0"})
+	p, err := ports.NewToolPort[int, string]("compute-dup", intCodec, strCodec, ports.PortOptions{
+		Patterns:        []ports.Pattern{ports.ReqReplyPattern{Topic: "compute/dup"}},
+		ReqReplyBuilder: b,
+	})
+	if err != nil {
+		t.Fatalf("construct port: %v", err)
+	}
+	// The port already registered "compute/dup" with b at construction time —
+	// registering it again with the SAME builder must fail.
+	err = ports.RegisterReqReply[int, string](b, p)
+	var dre reqreply.DuplicateRouteError
+	if !errors.As(err, &dre) {
+		t.Fatalf("want DuplicateRouteError, got %v", err)
+	}
+}
+
+func TestRegisterMCP_SameBuilderAlreadyUsed_ReturnsError(t *testing.T) {
+	b := apimcp.NewBuilder(apimcp.Info{Name: "Test", Version: "1.0.0"})
+	p, err := ports.NewToolPort[int, string]("compute-dup-tool", intCodec, strCodec, ports.PortOptions{
+		Patterns:   []ports.Pattern{ports.MCPPattern{Name: "compute-dup-tool"}},
+		MCPBuilder: b,
+	})
+	if err != nil {
+		t.Fatalf("construct port: %v", err)
+	}
+	// The port already registered "compute-dup-tool" with b at construction time.
+	if err := ports.RegisterMCP[int, string](b, p); err == nil {
+		t.Fatal("want error registering the same tool name twice with the same builder, got nil")
+	}
+}
+
+func TestRESTPattern_WithBuilder_UsesSharedBuilderForSpec(t *testing.T) {
+	// A RESTPattern built with a shared RESTBuilder accumulates directly into
+	// that builder's spec — no separate RegisterREST replay needed.
+	b := rest.NewBuilder(rest.Info{Title: "Test", Version: "1.0.0"})
+	_, err := ports.NewIOPort[int, string]("shared-builder-route", intCodec, strCodec, ports.PortOptions{
+		Patterns: []ports.Pattern{
+			ports.RESTPattern{Method: "GET", Path: "/shared", Opts: []rest.RouteOpt{
+				rest.RouteMeta{OperationID: "sharedRoute"},
+			}},
+		},
+		RESTBuilder: b,
+	})
+	if err != nil {
+		t.Fatalf("construct port: %v", err)
+	}
+	spec, err := b.OpenAPISpec()
+	if err != nil {
+		t.Fatalf("OpenAPISpec: %v", err)
+	}
+	out, err := spec.MarshalYAML()
+	if err != nil {
+		t.Fatalf("MarshalYAML: %v", err)
+	}
+	if !strings.Contains(string(out), "/shared") {
+		t.Errorf("want spec to contain /shared (registered at construction time), got:\n%s", out)
+	}
+}
+
+func TestRESTPattern_WithBuilder_PathConstraintFailure_ReturnsPatternRegisterError(t *testing.T) {
+	noDigits := codex.Constraint[string]{
+		Name:    "no-digits-in-path",
+		Check:   func(v string) bool { return !strings.ContainsAny(v, "0123456789") },
+		Message: func(v string) string { return "path must not contain digits: " + v },
+	}
+	b := rest.NewBuilder(rest.Info{Title: "Test", Version: "1.0.0"}, rest.WithPathConstraints(noDigits))
+
+	_, err := ports.NewIOPort[int, string]("bad-path-shape", intCodec, strCodec, ports.PortOptions{
+		Patterns: []ports.Pattern{
+			ports.RESTPattern{Method: "GET", Path: "/v2/things"}, // contains "2" -> violates noDigits
+		},
+		RESTBuilder: b,
+	})
+	if err == nil {
+		t.Fatal("want PatternRegisterError from path constraint failure, got nil")
+	}
+	var pre ports.PatternRegisterError
+	if !errors.As(err, &pre) {
+		t.Fatalf("want PatternRegisterError, got %T: %v", err, err)
+	}
+	var ipe rest.InvalidPathError
+	if !errors.As(err, &ipe) {
+		t.Errorf("want InvalidPathError wrapped inside, got %v", err)
 	}
 }
