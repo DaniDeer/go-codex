@@ -1,687 +1,118 @@
-// Package sensor-service demonstrates the three-layer codec pipeline pattern
-// across three transport adapters — HTTP, MQTT, and SQL — wired together with
-// a single shared observer for metrics and logging.
+// Command sensor-service is the go-codex flagship example: a small but
+// complete sensor-readings service structured as a real project, with each
+// concern in its own package:
 //
-// # Inside-out pipeline wiring
+//	domain/         — Layer 1+2: models, codecs, field factories, constraints,
+//	                  pure business rules (validated-config factories included)
+//	pipeline/       — business logic: forge functions + stream topology,
+//	                  parameterized by the consumer-defined Store interface
+//	ioports/        — the service's complete IO surface: protocol-agnostic
+//	                  ports (EventPattern/SQLPattern/FilePattern) + REST routes
+//	observability/  — cross-cutting CountingObserver (fanned out with a
+//	                  LoggingObserver, stored once in the context)
+//	adapters/       — infrastructure edge: mock MQTT client, SQL ReadingStore,
+//	                  HTTP handler factories
+//	db/             — sqlc-generated queries + goose migrations
+//	main.go         — wiring ONLY: config, DB, observer, adapter binds, server
+//	demo.go         — the runnable demo scenario
 //
-// This example wires the pipeline using the ports package (inside-out pattern):
+// Import direction is strictly acyclic: main → {ioports, pipeline, adapters,
+// observability, domain}; pipeline → domain; ioports → domain;
+// adapters → domain; domain → nothing internal but db.
 //
-//   - [ports.SourcePort] + [adaptermqtt.SubscribeAdapter] — MQTT subscription
+// # What it demonstrates
+//
+//   - [ports.SourcePort] + [adaptermqtt.SubscribeAdapter] — MQTT ingestion
 //     wired to a protocol-agnostic SourcePort; pipeline code has no MQTT import.
 //     The topic + params are declared once via [ports.EventPattern] on the port
-//     itself; [ports.EventHandle] derives the *ChannelHandle for the adapter —
-//     no separate events.NewChannel/Register step or events.Builder needed.
+//     itself (ioports.Sensors); [ports.EventHandle] derives the *ChannelHandle
+//     for the adapter — no separate events.NewChannel/Register step needed.
 //   - [ports.SinkPort] + [adaptermqtt.PublishAdapter] — MQTT alert publishing
-//     wired to a SinkPort; supports fan-out to additional sinks.
-//   - [ports.SourcePort] + [sqladapter.QueryAdapter] — SQL row polling wired
-//     to a SourcePort; protocol-agnostic in the pipeline. Table/Op metadata is
-//     declared once via [ports.SQLPattern] on the port — the adapter defaults
-//     its options from it (error context + observer location strings).
-//   - [ports.IOPort] + [fileadapter.ReadAdapter] — per-item calibration file
-//     lookup as an intermediate IO step INSIDE the pipeline. The file (path
-//     template + JSON format + path-param codec) is declared once via
-//     [ports.FilePattern]; [ports.FileHandle] derives the format.File for the
-//     adapter — swap to an HTTP or SQL enrichment adapter without touching
-//     pipeline code.
+//     wired to a SinkPort (ioports.Alerts); supports fan-out to additional sinks.
+//   - [ports.IOPort] + [sqladapter.QueryEachAdapter] — persistence as an
+//     explicit intermediate IO step (ioports.Readings): the pipeline's forge
+//     function stays PURE (payload → insert params); the save happens through
+//     the port, whose adapter is chosen here. Table/Op metadata declared once
+//     via [ports.SQLPattern].
+//   - [ports.ToolPort] + [nethttp.PipelineAdapter] — GET /sensors/{sensorID}/readings
+//     (ioports.HistoryTool, [ports.RESTPattern]): the tool pipeline Connects
+//     through ioports.History (IOPort, SQLPattern) — REST layer and database
+//     never meet directly.
+//   - [ports.SinkPort] + [fileadapter.DrainWriteFileAdapter] — POST /export
+//     (ioports.ExportTool): query through ioports.ExportQuery (SQLPattern),
+//     write the snapshot through ioports.NewExportsPort's [ports.FilePattern]
+//     ({exportID}.json); the response path comes from the SAME declaration
+//     via [ports.FileHandle].BuildPath.
 //   - [nethttp.HandlerLatest] — reactive cache endpoint; GET /readings/latest
 //     returns the most recently saved reading without querying the DB.
+//   - Validated-config factory pattern — main() loads domain.AlertConfig once
+//     via format.FromEnv (APP_ALERT_THRESHOLD, default 50.0); the pipeline
+//     functions close over the typed, validated config (see domain.NewShouldAlert).
+//   - One [stats.NewFanout] observer across HTTP, MQTT, SQL, file, and stream.
 //
-// # Three-layer model
+// Run:
 //
-// Layer 1 (Contracts): boundary codecs, each describing one wire format.
-//
-//	createReadingCodec  — HTTP POST /readings request body
-//	readingCodec        — HTTP GET response + SQL post-read validation
-//	insertParamsCodec   — SQL pre-insert validation (db.InsertReadingParams)
-//	mqttPayloadCodec    — MQTT subscribe payload (sensor publishes)
-//	alertCodec          — MQTT publish payload (alert events)
-//
-// Layer 2 (Domain): pure Go functions, zero IO.
-//
-//	buildInsertParams(CreateReadingReq) db.InsertReadingParams
-//	buildInsertParamsFromMQTT(MQTTPayload) db.InsertReadingParams
-//	newShouldAlert(AlertConfig) func(db.Reading) bool    — validated-config factory
-//	newBuildAlert(AlertConfig) func(db.Reading) SensorAlert
-//
-// The alert factories demonstrate the recommended way to pass env vars into
-// pipeline functions: main() loads AlertConfig once via format.FromEnv
-// (APP_ALERT_THRESHOLD, default 50.0), and the factories close over the typed,
-// validated config — no os.Getenv in domain code, fully testable.
-//
-// Layer 3 (Infrastructure): HTTP adapter, mock MQTT client, SQL store.
-//
-// # Field factory functions
-//
-// [db.Reading] and [db.InsertReadingParams] share the same columns. Field
-// factory functions — [sensorIDField], [valueField], [unitField] — capture the
-// shared [validate] rules once and are reused across both codecs. This is the
-// "field factory functions: reusing field groups across structs" pattern
-// documented in docs/concepts/codec.md.
-//
-// # Observer
-//
-// A single [stats.NewFanout] value is passed to every adapter call site:
-//
-//	obs := stats.NewFanout(counting, stats.NewLoggingObserver(logger))
-//
-// [CountingObserver] implements both [stats.Observer] and [stats.SQLObserver].
-// It records HTTP request counts by status, validation error counts by
-// location, SQL validation calls, and migration events — all in memory.
-// In production replace the counters with Prometheus / OpenTelemetry instruments;
-// the interface contract is identical.
-//
-// # Running
-//
-// go run ./examples/sensor-service
-//
-//go:generate sqlc generate
+//	go run ./examples/sensor-service
+//	APP_ALERT_THRESHOLD=90 go run ./examples/sensor-service
 package main
 
 import (
-	"bytes"
 	"context"
 	"database/sql"
 	"embed"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"os"
-	"strings"
-	"sync"
-	"time"
+	"path/filepath"
+	"runtime"
 
-	pahomqtt "github.com/eclipse/paho.mqtt.golang"
 	_ "modernc.org/sqlite"
 
 	fileadapter "github.com/DaniDeer/go-codex/adapters/file"
 	adaptermqtt "github.com/DaniDeer/go-codex/adapters/mqtt"
 	nethttp "github.com/DaniDeer/go-codex/adapters/nethttp"
 	sqladapter "github.com/DaniDeer/go-codex/adapters/sql"
-	"github.com/DaniDeer/go-codex/api/events"
-	"github.com/DaniDeer/go-codex/api/rest"
-	"github.com/DaniDeer/go-codex/codex"
+	"github.com/DaniDeer/go-codex/examples/sensor-service/adapters"
 	"github.com/DaniDeer/go-codex/examples/sensor-service/db"
-	"github.com/DaniDeer/go-codex/forge"
+	"github.com/DaniDeer/go-codex/examples/sensor-service/domain"
+	"github.com/DaniDeer/go-codex/examples/sensor-service/ioports"
+	"github.com/DaniDeer/go-codex/examples/sensor-service/observability"
+	"github.com/DaniDeer/go-codex/examples/sensor-service/pipeline"
 	"github.com/DaniDeer/go-codex/format"
 	"github.com/DaniDeer/go-codex/ports"
 	"github.com/DaniDeer/go-codex/stats"
 	gstream "github.com/DaniDeer/go-codex/stream"
-	"github.com/DaniDeer/go-codex/validate"
 )
 
-// latestRoute — GET /readings/latest, served by nethttp.HandlerLatest (reactive cache).
-// Returns the most recently saved sensor reading without querying the DB.
-var latestRoute = rest.NewRoute("GET", "/readings/latest",
-	codex.Struct[struct{}](), readingCodec,
-)
-
-// ── Embedded assets ───────────────────────────────────────────────────────────
-
+// migrations are embedded here — embed paths are package-relative and the
+// migrations directory sits at the example root, next to main.go.
+//
 //go:embed migrations/*.sql
 var migrationsFS embed.FS
-
-// ── Observer ──────────────────────────────────────────────────────────────────
-
-// CountingObserver is an in-memory [stats.Observer] + [stats.SQLObserver] +
-// [stats.StreamObserver]. In production replace the maps and counters with
-// Prometheus CounterVecs or OpenTelemetry instruments — the interface methods
-// are identical.
-type CountingObserver struct {
-	mu             sync.Mutex
-	requests       map[int]int    // HTTP status code → request count
-	subscribes     int            // MQTT RecordSubscribe calls (alert publishes via adaptermqtt.Publish)
-	publishes      int            // successful MQTT publish calls
-	streamItems    int            // stream.Apply RecordStreamItem calls (one per MQTT sensor reading)
-	valErrors      map[string]int // location → validation error count
-	sqlValidations int
-	migrations     int
-}
-
-func newCountingObserver() *CountingObserver {
-	return &CountingObserver{
-		requests:  make(map[int]int),
-		valErrors: make(map[string]int),
-	}
-}
-
-func (o *CountingObserver) RecordRequest(_ string, _ string, status int, _ time.Duration) {
-	o.mu.Lock()
-	defer o.mu.Unlock()
-	o.requests[status]++
-}
-
-func (o *CountingObserver) RecordSubscribe(_ string, success bool, _ time.Duration) {
-	if success {
-		o.mu.Lock()
-		o.subscribes++
-		o.mu.Unlock()
-	}
-}
-
-func (o *CountingObserver) RecordPublish(_ string, success bool, _ time.Duration) {
-	if success {
-		o.mu.Lock()
-		o.publishes++
-		o.mu.Unlock()
-	}
-}
-
-func (o *CountingObserver) RecordValidationError(location, _, _ string) {
-	o.mu.Lock()
-	defer o.mu.Unlock()
-	o.valErrors[location]++
-}
-
-// RecordValidation implements [stats.SQLObserver].
-func (o *CountingObserver) RecordValidation(_, _ string, _ time.Duration, _ error) {
-	o.mu.Lock()
-	defer o.mu.Unlock()
-	o.sqlValidations++
-}
-
-// RecordMigration implements [stats.SQLObserver].
-func (o *CountingObserver) RecordMigration(_, _ string, _ int64, _ time.Duration, _ error) {
-	o.mu.Lock()
-	defer o.mu.Unlock()
-	o.migrations++
-}
-
-// RecordStreamItem implements [stats.StreamObserver].
-func (o *CountingObserver) RecordStreamItem(_ string, success bool, _ time.Duration) {
-	if success {
-		o.mu.Lock()
-		o.streamItems++
-		o.mu.Unlock()
-	}
-}
-
-func (o *CountingObserver) Print() {
-	o.mu.Lock()
-	defer o.mu.Unlock()
-	fmt.Println("\n── Observer summary ─────────────────────────────────────")
-	fmt.Printf("  HTTP requests by status : %v\n", o.requests)
-	fmt.Printf("  MQTT publishes  (ok)    : %d\n", o.publishes)
-	fmt.Printf("  Stream items processed  : %d\n", o.streamItems)
-	fmt.Printf("  SQL validations called  : %d\n", o.sqlValidations)
-	fmt.Printf("  Migrations applied      : %d\n", o.migrations)
-	if len(o.valErrors) > 0 {
-		fmt.Printf("  Validation errors       : %v\n", o.valErrors)
-	} else {
-		fmt.Println("  Validation errors       : none")
-	}
-	fmt.Println("─────────────────────────────────────────────────────────")
-}
-
-// ── Domain types ──────────────────────────────────────────────────────────────
-
-// CreateReadingReq is the HTTP POST /readings request body.
-// The server assigns ID and RecordedAt.
-type CreateReadingReq struct {
-	SensorID string
-	Value    float64
-	Unit     string
-}
-
-// MQTTPayload is what an external sensor publishes over MQTT.
-type MQTTPayload struct {
-	SensorID string
-	Value    float64
-	Unit     string
-}
-
-// SensorAlert is published over MQTT when a reading exceeds the threshold.
-type SensorAlert struct {
-	SensorID  string
-	Value     float64
-	Threshold float64
-	At        string // RFC3339
-}
-
-// AlertConfig parameterizes the alerting pipeline functions. Loaded from env
-// vars in main() via format.FromEnv — the codec below is the single source of
-// truth for the env contract (name, type, constraint, default, docs):
-//
-//	APP_ALERT_THRESHOLD=80 go run ./examples/sensor-service
-//
-// When unset, DefaultField supplies 50.0 — the example runs with zero env setup.
-type AlertConfig struct {
-	Threshold float64
-}
-
-var alertConfigCodec = codex.Struct[AlertConfig](
-	codex.DefaultField("threshold",
-		codex.Float64().Refine(validate.MinFloat(0)).WithDescription("Alert when a reading's value exceeds this threshold."),
-		50.0,
-		func(c AlertConfig) float64 { return c.Threshold },
-		func(c *AlertConfig, v float64) { c.Threshold = v }),
-)
-
-// ── Layer 1: Field factory functions ─────────────────────────────────────────
-//
-// Each factory captures one field's Refine rules and returns a [codex.Field]
-// bound to the concrete struct type T. Reusing factories across db.Reading and
-// db.InsertReadingParams ensures both types share identical validation rules
-// with no duplication.
-
-func sensorIDField[T any](
-	get func(T) string,
-	set func(*T, string),
-) codex.Field[T, string] {
-	return codex.RequiredField("sensor_id",
-		codex.String().Refine(validate.UUID),
-		get, set)
-}
-
-func valueField[T any](
-	get func(T) float64,
-	set func(*T, float64),
-) codex.Field[T, float64] {
-	return codex.RequiredField("value",
-		codex.Float64().Refine(validate.RangeFloat(-9999, 9999)),
-		get, set)
-}
-
-func unitField[T any](
-	get func(T) string,
-	set func(*T, string),
-) codex.Field[T, string] {
-	return codex.RequiredField("unit",
-		codex.String().Refine(validate.OneOf("C", "F", "pct", "Pa", "ms")),
-		get, set)
-}
-
-func recordedAtField[T any](
-	get func(T) string,
-	set func(*T, string),
-) codex.Field[T, string] {
-	return codex.RequiredField("recorded_at",
-		codex.String().Refine(validate.DateTime),
-		get, set)
-}
-
-// ── Layer 1: Codecs ───────────────────────────────────────────────────────────
-
-// createReadingCodec — HTTP POST /readings request body.
-var createReadingCodec = codex.Struct(
-	sensorIDField(
-		func(r CreateReadingReq) string { return r.SensorID },
-		func(r *CreateReadingReq, v string) { r.SensorID = v }),
-	valueField(
-		func(r CreateReadingReq) float64 { return r.Value },
-		func(r *CreateReadingReq, v float64) { r.Value = v }),
-	unitField(
-		func(r CreateReadingReq) string { return r.Unit },
-		func(r *CreateReadingReq, v string) { r.Unit = v }),
-)
-
-// readingCodec — HTTP GET response + SQL post-read validation.
-// Uses the same field factories as insertParamsCodec for identical Refine rules.
-var readingCodec = codex.Struct(
-	codex.RequiredField("id",
-		codex.String().Refine(validate.UUID),
-		func(r db.Reading) string { return r.ID },
-		func(r *db.Reading, v string) { r.ID = v }),
-	sensorIDField(
-		func(r db.Reading) string { return r.SensorID },
-		func(r *db.Reading, v string) { r.SensorID = v }),
-	valueField(
-		func(r db.Reading) float64 { return r.Value },
-		func(r *db.Reading, v float64) { r.Value = v }),
-	unitField(
-		func(r db.Reading) string { return r.Unit },
-		func(r *db.Reading, v string) { r.Unit = v }),
-	recordedAtField(
-		func(r db.Reading) string { return r.RecordedAt },
-		func(r *db.Reading, v string) { r.RecordedAt = v }),
-)
-
-// insertParamsCodec — SQL pre-insert validation.
-// Shares sensorIDField/valueField/unitField with readingCodec — same Refine
-// rules, different struct type T, zero duplication.
-var insertParamsCodec = codex.Struct(
-	codex.RequiredField("id",
-		codex.String().Refine(validate.UUID),
-		func(p db.InsertReadingParams) string { return p.ID },
-		func(p *db.InsertReadingParams, v string) { p.ID = v }),
-	sensorIDField(
-		func(p db.InsertReadingParams) string { return p.SensorID },
-		func(p *db.InsertReadingParams, v string) { p.SensorID = v }),
-	valueField(
-		func(p db.InsertReadingParams) float64 { return p.Value },
-		func(p *db.InsertReadingParams, v float64) { p.Value = v }),
-	unitField(
-		func(p db.InsertReadingParams) string { return p.Unit },
-		func(p *db.InsertReadingParams, v string) { p.Unit = v }),
-	recordedAtField(
-		func(p db.InsertReadingParams) string { return p.RecordedAt },
-		func(p *db.InsertReadingParams, v string) { p.RecordedAt = v }),
-)
-
-// mqttPayloadCodec — what external sensors publish over MQTT.
-var mqttPayloadCodec = codex.Struct(
-	sensorIDField(
-		func(p MQTTPayload) string { return p.SensorID },
-		func(p *MQTTPayload, v string) { p.SensorID = v }),
-	valueField(
-		func(p MQTTPayload) float64 { return p.Value },
-		func(p *MQTTPayload, v float64) { p.Value = v }),
-	unitField(
-		func(p MQTTPayload) string { return p.Unit },
-		func(p *MQTTPayload, v string) { p.Unit = v }),
-)
-
-// alertCodec — alert events published when a reading exceeds the threshold.
-var alertCodec = codex.Struct(
-	sensorIDField(
-		func(a SensorAlert) string { return a.SensorID },
-		func(a *SensorAlert, v string) { a.SensorID = v }),
-	valueField(
-		func(a SensorAlert) float64 { return a.Value },
-		func(a *SensorAlert, v float64) { a.Value = v }),
-	codex.RequiredField("threshold",
-		codex.Float64(),
-		func(a SensorAlert) float64 { return a.Threshold },
-		func(a *SensorAlert, v float64) { a.Threshold = v }),
-	codex.RequiredField("at",
-		codex.String().Refine(validate.DateTime),
-		func(a SensorAlert) string { return a.At },
-		func(a *SensorAlert, v string) { a.At = v }),
-)
-
-// sensorTopicConstraint is a custom Constraint[string] enforcing the two known
-// topic shapes registered against the shared events.Builder below:
-// "sensors/<id>/data" (3 segments) and "alerts/<id>" (2 segments). Mirrors
-// examples/adapters-mqtt's sensorTopicConstraint, composed the same way via
-// events.WithTopicConstraints — but here it is applied to Patterns declared
-// directly on ports.SourcePort/SinkPort (see sensorsPort/alertsPort in
-// main()) rather than to a hand-built events.Channel.
-var sensorTopicConstraint = codex.Constraint[string]{
-	Name: "sensor-service-topic-format",
-	Check: func(v string) bool {
-		parts := strings.Split(v, "/")
-		switch len(parts) {
-		case 3:
-			return parts[0] == "sensors" && parts[2] == "data"
-		case 2:
-			return parts[0] == "alerts"
-		default:
-			return false
-		}
-	},
-	Message: func(v string) string {
-		return fmt.Sprintf("topic must follow sensors/<id>/data or alerts/<id> format, got %q", v)
-	},
-}
-
-// ── Layer 1: API declarations ─────────────────────────────────────────────────
-//
-// Route declarations are pure value expressions — no side effects, no
-// registration. They name and type every API surface of the service and can
-// be read as a compact spec independent of the infrastructure wiring in main().
-//
-// Register/ClientHandle calls (which produce *ChannelHandle and *RouteHandle)
-// happen in main() where a builder or mux is already available.
-//
-// The MQTT sensor-reading and alert channels are declared directly on their
-// ports below (ports.EventPattern), not as separate events.Channel vars —
-// see sensorsPort / alertsPort in main() — so the topic/params are declared
-// exactly once and the *ChannelHandle is derived via ports.EventHandle.
-
-var createRoute = rest.NewRoute("POST", "/readings",
-	createReadingCodec, readingCodec,
-)
-
-var getRoute = rest.NewRoute("GET", "/readings/{id}",
-	codex.Struct[struct{}](), readingCodec,
-	rest.PathParam{Name: "id", Description: "Reading UUID"},
-)
-
-// ── Layer 2: Domain functions ─────────────────────────────────────────────────
-
-func newReadingID() string {
-	// Deterministic UUID-shaped ID from timestamp — avoids a uuid dependency.
-	t := time.Now().UnixNano()
-	return fmt.Sprintf("%08x-0001-4000-8000-%012x", t>>32, t&0xffffffffffff)
-}
-
-func buildInsertParams(req CreateReadingReq) db.InsertReadingParams {
-	return db.InsertReadingParams{
-		ID:         newReadingID(),
-		SensorID:   req.SensorID,
-		Value:      req.Value,
-		Unit:       req.Unit,
-		RecordedAt: time.Now().UTC().Format(time.RFC3339),
-	}
-}
-
-func buildInsertParamsFromMQTT(p MQTTPayload) db.InsertReadingParams {
-	return db.InsertReadingParams{
-		ID:         newReadingID(),
-		SensorID:   p.SensorID,
-		Value:      p.Value,
-		Unit:       p.Unit,
-		RecordedAt: time.Now().UTC().Format(time.RFC3339),
-	}
-}
-
-// newShouldAlert and newBuildAlert are validated-config factories: they take
-// TYPED, already-validated config and close over it — the returned pipeline
-// functions stay pure and testable (tests pass any AlertConfig directly, no
-// env manipulation needed). Zero env access in this layer; loading and
-// validation happen once in main() via format.FromEnv.
-
-func newShouldAlert(cfg AlertConfig) func(db.Reading) bool {
-	return func(r db.Reading) bool { return r.Value > cfg.Threshold }
-}
-
-func newBuildAlert(cfg AlertConfig) func(db.Reading) SensorAlert {
-	return func(r db.Reading) SensorAlert {
-		return SensorAlert{
-			SensorID:  r.SensorID,
-			Value:     r.Value,
-			Threshold: cfg.Threshold,
-			At:        time.Now().UTC().Format(time.RFC3339),
-		}
-	}
-}
-
-// ── Layer 3: ReadingStore (SQL) ───────────────────────────────────────────────
-
-// ReadingStore wraps the sqlc-generated *db.Queries.
-//
-// Every write path calls sqladapter.Validate(insertParamsCodec, ...) before
-// reaching the DB — codec rejects invalid data so it never reaches SQL.
-//
-// Every read path calls sqladapter.Validate(readingCodec, ...) after the DB
-// returns a row — defence in depth against data written by other clients that
-// bypassed the codec.
-type ReadingStore struct {
-	queries *db.Queries
-}
-
-func (s *ReadingStore) Save(ctx context.Context, params db.InsertReadingParams) error {
-	validated, err := sqladapter.Validate(insertParamsCodec, params, sqladapter.ValidateOptions{
-		Table: "readings", Op: "insert_reading",
-		Observer: stats.ObserverFromContext(ctx), // sql.Validate has no ctx; read from ctx
-	})
-	if err != nil {
-		return fmt.Errorf("pre-insert validation: %w", err)
-	}
-	return s.queries.InsertReading(ctx, validated)
-}
-
-func (s *ReadingStore) Get(ctx context.Context, id string) (db.Reading, error) {
-	row, err := s.queries.GetReading(ctx, id)
-	if err != nil {
-		return db.Reading{}, err
-	}
-	return sqladapter.Validate(readingCodec, row, sqladapter.ValidateOptions{
-		Table: "readings", Op: "get_reading",
-		Observer: stats.ObserverFromContext(ctx), // sql.Validate has no ctx; read from ctx
-	})
-}
-
-// ── Layer 3: HTTP handlers ────────────────────────────────────────────────────
-
-func makeCreateHandler(store *ReadingStore) nethttp.HandlerFunc[CreateReadingReq, db.Reading] {
-	return func(ctx context.Context, req CreateReadingReq) (db.Reading, error) {
-		params := buildInsertParams(req)
-		if err := store.Save(ctx, params); err != nil {
-			return db.Reading{}, err
-		}
-		return store.Get(ctx, params.ID)
-	}
-}
-
-func makeGetHandler(store *ReadingStore) nethttp.HandlerFunc[struct{}, db.Reading] {
-	return func(ctx context.Context, _ struct{}) (db.Reading, error) {
-		r, _ := nethttp.RequestFromContext(ctx)
-		id := r.PathValue("id")
-		return store.Get(ctx, id)
-	}
-}
-
-// ── Layer 3: Mock MQTT client ─────────────────────────────────────────────────
-
-type mockToken struct{ done chan struct{} }
-
-func newMockToken() *mockToken {
-	t := &mockToken{done: make(chan struct{})}
-	close(t.done)
-	return t
-}
-
-func (t *mockToken) Wait() bool                       { return true }
-func (t *mockToken) WaitTimeout(_ time.Duration) bool { return true }
-func (t *mockToken) Done() <-chan struct{}            { return t.done }
-func (t *mockToken) Error() error                     { return nil }
-
-type mockMessage struct {
-	topic   string
-	payload []byte
-}
-
-func (m *mockMessage) Duplicate() bool   { return false }
-func (m *mockMessage) Qos() byte         { return 0 }
-func (m *mockMessage) Retained() bool    { return false }
-func (m *mockMessage) Topic() string     { return m.topic }
-func (m *mockMessage) MessageID() uint16 { return 0 }
-func (m *mockMessage) Payload() []byte   { return m.payload }
-func (m *mockMessage) Ack()              {}
-
-type mockClient struct {
-	mu       sync.Mutex
-	handlers map[string]pahomqtt.MessageHandler
-}
-
-func newMockClient() *mockClient {
-	return &mockClient{handlers: make(map[string]pahomqtt.MessageHandler)}
-}
-
-func (c *mockClient) Publish(_ string, _ byte, _ bool, _ interface{}) pahomqtt.Token {
-	return newMockToken()
-}
-
-func (c *mockClient) Subscribe(topic string, _ byte, h pahomqtt.MessageHandler) pahomqtt.Token {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	c.handlers[topic] = h
-	return newMockToken()
-}
-
-func (c *mockClient) Unsubscribe(_ ...string) pahomqtt.Token { return newMockToken() }
-
-// deliver simulates a sensor publishing a message on topic.
-// It finds the first registered subscription filter that matches the topic,
-// supporting the MQTT '+' single-level wildcard.
-func (c *mockClient) deliver(topic string, payload []byte) {
-	c.mu.Lock()
-	var h pahomqtt.MessageHandler
-	for filter, handler := range c.handlers {
-		if mqttMatches(filter, topic) {
-			h = handler
-			break
-		}
-	}
-	c.mu.Unlock()
-	if h != nil {
-		h(c, &mockMessage{topic: topic, payload: payload})
-	}
-}
-
-// mqttMatches reports whether subscription filter matches concrete topic.
-// Supports '+' (single-level wildcard) and '#' (multi-level wildcard).
-func mqttMatches(filter, topic string) bool {
-	if filter == topic {
-		return true
-	}
-	fs := splitTopic(filter)
-	ts := splitTopic(topic)
-	for i, f := range fs {
-		if f == "#" {
-			return true
-		}
-		if i >= len(ts) {
-			return false
-		}
-		if f != "+" && f != ts[i] {
-			return false
-		}
-	}
-	return len(fs) == len(ts)
-}
-
-func splitTopic(t string) []string {
-	var parts []string
-	start := 0
-	for i := 0; i <= len(t); i++ {
-		if i == len(t) || t[i] == '/' {
-			parts = append(parts, t[start:i])
-			start = i + 1
-		}
-	}
-	return parts
-}
-
-func (c *mockClient) IsConnected() bool                            { return true }
-func (c *mockClient) IsConnectionOpen() bool                       { return true }
-func (c *mockClient) Connect() pahomqtt.Token                      { return newMockToken() }
-func (c *mockClient) Disconnect(_ uint)                            {}
-func (c *mockClient) AddRoute(_ string, _ pahomqtt.MessageHandler) {}
-func (c *mockClient) SubscribeMultiple(_ map[string]byte, _ pahomqtt.MessageHandler) pahomqtt.Token {
-	return newMockToken()
-}
-func (c *mockClient) OptionsReader() pahomqtt.ClientOptionsReader {
-	return pahomqtt.ClientOptionsReader{}
-}
-
-// ── main ──────────────────────────────────────────────────────────────────────
 
 func main() {
 	ctx, cancelPipeline := context.WithCancel(context.Background())
 
-	// ── Observability ──────────────────────────────────────────────────────
+	// ── Observability (cross-cutting) ─────────────────────────────────────
 	logger := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelInfo}))
-	counting := newCountingObserver()
+	counting := observability.NewCountingObserver()
 	obs := stats.NewFanout(counting, stats.NewLoggingObserver(logger))
-	// Store obs in the context once — MQTT, stream, sql, and HTTP adapters
-	// all resolve it automatically when Options.Observer is nil.
+	// Store obs in the context once — MQTT, stream, sql, file, and HTTP
+	// adapters all resolve it automatically when Options.Observer is nil.
 	ctx = stats.WithObserver(ctx, obs)
 
-	// ── Env config → pipeline functions (validated-config factory pattern) ─
+	// ── Env config (validated-config factory pattern) ─────────────────────
 	//
 	// Load + validate config from env vars ONCE, here — the same place ports
-	// and adapters are wired. alertConfigCodec is the env contract: name
-	// (APP_ALERT_THRESHOLD), type coercion, MinFloat(0) constraint, and the
-	// 50.0 default when unset. The factories below close over the typed
-	// config — pipeline code never touches os.Getenv.
-	alertCfg, err := format.FromEnv(alertConfigCodec, "APP_ALERT_")
+	// and adapters are wired. domain.AlertConfigCodec is the env contract:
+	// name (APP_ALERT_THRESHOLD), type coercion, MinFloat(0) constraint, and
+	// the 50.0 default when unset. The pipeline factories close over the
+	// typed config — pipeline code never touches os.Getenv.
+	alertCfg, err := format.FromEnv(domain.AlertConfigCodec, "APP_ALERT_")
 	must(err, "load alert config from env")
-	shouldAlert := newShouldAlert(alertCfg)
-	buildAlert := newBuildAlert(alertCfg)
 
 	// ── Database ───────────────────────────────────────────────────────────
 	sqlDB, err := sql.Open("sqlite", "file::memory:?cache=private")
@@ -693,146 +124,82 @@ func main() {
 	must(migrator.Up(ctx, sqladapter.MigrateOptions{}), "migrate up") // observer from ctx
 	fmt.Println("✓ Migrations applied")
 
-	store := &ReadingStore{queries: db.New(sqlDB)}
+	store := adapters.NewReadingStore(db.New(sqlDB))
 
 	// ── HTTP mux (declared early — HandlerLatest wires into it) ───────────
 	mux := http.NewServeMux()
 
-	// ── MQTT + stream pipeline ────────────────────────────────────────────
-	mqttClient := newMockClient()
-
-	// eventsBuilder is shared by every EventPattern-based port below via
-	// PortOptions.EventBuilder. Configuring WithTopicConstraints here — exactly
-	// the same call examples/adapters-mqtt makes on its own events.NewBuilder —
-	// means every port's Register call (run internally by ports, not by hand)
-	// enforces sensorTopicConstraint too: an invalid topic on any EventPattern
-	// declared with EventBuilder: eventsBuilder fails port construction
-	// immediately (PatternRegisterError wrapping events.InvalidTopicError),
-	// exactly as it would if declared by hand via
-	// events.NewChannel(...).Register(eventsBuilder).
-	eventsBuilder := events.NewBuilder(events.Info{Title: "sensor-service", Version: "1.0.0"},
-		events.WithTopicConstraints(validate.MQTTPublishTopic, sensorTopicConstraint),
-	)
-
-	// ── Bridge 1: ports.SourcePort + mqtt.SubscribeAdapter ───────────────
+	// ── MQTT ingestion: bind the Sensors port ─────────────────────────────
 	//
-	// Declare the pattern (topic + params) once, directly on the SourcePort,
-	// via ports.EventPattern — no separate events.NewChannel/Register call
-	// written by hand. The port registers it internally, against the SHARED
-	// eventsBuilder above (via PortOptions.EventBuilder) — giving this
-	// Pattern-derived handle full parity with a hand-registered channel:
-	// the same topic-format constraints AND accumulation into the same
-	// AsyncAPI spec document. ports.EventHandle derives the resulting
-	// *ChannelHandle for the adapter below.
-	//
-	//   Domain code (no adapter import):
-	//     sensorsPort := ports.NewSourcePort[MQTTPayload]("sensors", codec,
-	//         ports.PortOptions{Patterns: []ports.Pattern{ports.EventPattern{...}}})
-	//     sensors := sensorsPort.Stream(ctx)
-	//     readings := gstream.Apply(ctx, sensors, saveReadingFn, ...)
-	//
-	//   Wiring (main.go / adapter layer):
-	//     handle, _ := ports.EventHandle[MQTTPayload](sensorsPort)
-	//     sensorsPort.Bind(ctx, mqtt.SubscribeAdapter(client, handle, qos, fmt, opts))
-	sensorsPort, err := ports.NewSourcePort[MQTTPayload]("mqtt/sensors/+/data", mqttPayloadCodec,
-		ports.PortOptions{
-			Buffer: 64,
-			Patterns: []ports.Pattern{
-				ports.EventPattern{
-					Topic: "sensors/{sensorID}/data",
-					Opts: []events.ChannelOpt{
-						events.ChannelMeta{Description: "Sensor readings published by the sensor network."},
-						events.Subscribe{Summary: "Receive sensor reading"},
-						events.TopicParam{Name: "sensorID", Description: "UUID of the publishing sensor"},
-					},
-				},
-			},
-			EventBuilder: eventsBuilder,
-		})
-	must(err, "construct sensorsPort")
-	readingHandle, ok := ports.EventHandle[MQTTPayload](sensorsPort)
+	// ioports.Sensors declared the topic + params once (ports.EventPattern,
+	// registered internally against ioports.EventsBuilder). Here we derive
+	// the handle and pick the transport — the ONLY place MQTT appears on the
+	// inbound path.
+	mqttClient := adapters.NewMockMQTTClient()
+	readingHandle, ok := ports.EventHandle[domain.MQTTPayload](ioports.Sensors)
 	if !ok {
-		must(errors.New("sensorsPort: no EventPattern declared"), "derive reading channel handle")
+		must(errors.New("ioports.Sensors: no EventPattern declared"), "derive reading channel handle")
 	}
-	sensorsPort.Bind(ctx, adaptermqtt.SubscribeAdapter(mqttClient, readingHandle, 0,
-		format.JSON(mqttPayloadCodec),
+	ioports.Sensors.Bind(ctx, adaptermqtt.SubscribeAdapter(mqttClient, readingHandle, 0,
+		format.JSON(domain.MQTTPayloadCodec),
 		adaptermqtt.SubscribeAdapterOptions{TopicFilter: "sensors/+/data"}))
-	sensors := sensorsPort.Stream(ctx)
+	sensors := ioports.Sensors.Stream(ctx)
 
-	// ── Stream pipeline: decode → save → tap → tee → filter → alert ──────
+	// ── Persistence: bind the Readings IO port ────────────────────────────
 	//
-	// Each operator is a typed free function — compose like Unix pipes.
-
-	// Forge function: MQTTPayload → db.Reading (save to DB, return stored row)
-	saveReadingFn := forge.NewFunction(
-		"saveReading", "1.0.0",
-		mqttPayloadCodec, readingCodec,
-		func(payload MQTTPayload) (db.Reading, error) {
-			params := buildInsertParamsFromMQTT(payload)
-			if err := store.Save(ctx, params); err != nil {
-				return db.Reading{}, err
+	// The pipeline maps payloads to insert params with a PURE forge function
+	// and persists through ioports.Readings — an IOPort whose adapter is
+	// chosen HERE. sql.QueryEachAdapter runs the save closure per item and
+	// validates each returned row through domain.ReadingCodec (the post-read
+	// check); Table/Op default from the port's SQLPattern via context.
+	must(ioports.Readings.Bind(ctx, sqladapter.QueryEachAdapter(domain.ReadingCodec,
+		func(qctx context.Context, params db.InsertReadingParams) ([]db.Reading, error) {
+			if err := store.Save(qctx, params); err != nil {
+				return nil, err
 			}
-			return store.Get(ctx, params.ID)
+			row, err := store.Queries().GetReading(qctx, params.ID)
+			if err != nil {
+				return nil, err
+			}
+			return []db.Reading{row}, nil
 		},
-		forge.FunctionMeta{Description: "Save MQTT sensor payload to DB and return the stored row."},
-	)
+		sqladapter.QueryEachStreamOptions{}, // Table/Op default from the port's SQLPattern
+	)), "bind readings persistence port")
 
-	readings := gstream.Apply(ctx, sensors, saveReadingFn,
-		gstream.ApplyOptions{}) // observer from ctx
-
-	// Tap: domain event observation — log every computed reading
-	readings = gstream.Tap(ctx, readings, func(r db.Reading) {
-		logger.Info("reading saved", "sensor", r.SensorID, "value", r.Value, "unit", r.Unit)
+	// ── Business logic: assemble the stream pipeline ──────────────────────
+	//
+	// pipeline.Build composes decode → map (pure) → persist (port) → tap →
+	// tee → filter → alert over the port's stream. It sees only ports and the
+	// validated config — zero adapter imports.
+	res := pipeline.Build(ctx, sensors, pipeline.Deps{
+		Persist: ioports.Readings,
+		Cfg:     alertCfg,
+		Logger:  logger,
 	})
 
-	// Tee: fan-out — one copy feeds the HTTP reactive cache, one feeds alerting
-	latestReadings, alertReadings := gstream.Tee(ctx, readings)
-
-	// ── Bridge 2: nethttp.HandlerLatest ───────────────────────────────────
+	// ── HTTP reactive cache: GET /readings/latest ─────────────────────────
 	//
-	// HandlerLatest serves GET /readings/latest with the most recently saved
-	// reading from the stream — no DB query per request. A background goroutine
-	// atomically stores each emitted reading. Before the first reading arrives,
-	// the handler returns 503 Service Unavailable + NoLatestValueError.
-	nethttp.RegisterLatest(mux, latestRoute.ClientHandle(), latestReadings, nethttp.Options{}) // observer via ObserverMiddleware
+	// HandlerLatest serves the most recently saved reading from the stream —
+	// no DB query per request. A background goroutine atomically stores each
+	// emitted reading. Before the first reading arrives, the handler returns
+	// 503 Service Unavailable + NoLatestValueError.
+	nethttp.RegisterLatest(mux, ioports.LatestHandle, res.LatestReadings,
+		nethttp.Options{}) // observer via ObserverMiddleware
 
-	// Filter: keep only readings that cross the alert threshold
-	aboveThreshold := gstream.Filter(ctx, alertReadings, shouldAlert)
-
-	// Convert db.Reading → SensorAlert for the MQTT alert topic
-	alertPayloads := gstream.FlatMapSlice(ctx, aboveThreshold,
-		func(r db.Reading) []SensorAlert { return []SensorAlert{buildAlert(r)} })
-
-	// ── Bridge 3: ports.SinkPort + mqtt.PublishAdapter ───────────────────
+	// ── MQTT alert publishing: bind the Alerts port ────────────────────────
 	//
-	// Declare a protocol-agnostic SinkPort; bind the MQTT publish adapter.
 	// Fan-out to additional sinks (e.g. SSE, file) requires only additional
-	// Bind calls — no pipeline changes.
+	// Bind calls — no pipeline changes:
 	//
-	//   alertsPort.Bind(ctx, mqtt.PublishAdapter(...))   // MQTT
-	//   alertsPort.Bind(ctx, file.DrainWriteAdapter(...)) // also write to file
-	alertsPort, err := ports.NewSinkPort[SensorAlert]("mqtt/alerts", alertCodec, ports.PortOptions{
-		Patterns: []ports.Pattern{
-			ports.EventPattern{
-				Topic: "alerts/{sensorID}",
-				Opts: []events.ChannelOpt{
-					events.ChannelMeta{Description: "Threshold-breach alerts."},
-					events.Publish{Summary: "Publish threshold-breach alert"},
-					events.TopicParam{Name: "sensorID", Description: "UUID of the sensor that triggered the alert"},
-				},
-			},
-		},
-		EventBuilder: eventsBuilder,
-	})
-	must(err, "construct alertsPort")
-	alertHandle, ok := ports.EventHandle[SensorAlert](alertsPort)
+	//	ioports.Alerts.Bind(ctx, file.DrainWriteAdapter(...)) // also write to file
+	alertHandle, ok := ports.EventHandle[domain.SensorAlert](ioports.Alerts)
 	if !ok {
-		must(errors.New("alertsPort: no EventPattern declared"), "derive alert channel handle")
+		must(errors.New("ioports.Alerts: no EventPattern declared"), "derive alert channel handle")
 	}
-	alertsPort.Bind(ctx, adaptermqtt.PublishAdapter(mqttClient, alertHandle,
-		format.JSON(alertCodec),
+	ioports.Alerts.Bind(ctx, adaptermqtt.PublishAdapter(mqttClient, alertHandle,
+		format.JSON(domain.AlertCodec),
 		adaptermqtt.MQTTDrainPublishOptions{
-			Vars: nil, // topic vars resolved per-item below — alertHandle.Topic uses {sensorID}
+			Vars: nil, // topic vars resolved per-item — alertHandle.Topic uses {sensorID}
 			OnError: func(err error) {
 				var sae gstream.StreamApplyError
 				var sde gstream.StreamDecodeError
@@ -849,19 +216,107 @@ func main() {
 	pipelineDone := make(chan struct{})
 	go func() {
 		defer close(pipelineDone)
-		alertsPort.Feed(ctx, alertPayloads)
+		ioports.Alerts.Feed(ctx, res.AlertPayloads)
 	}()
 
-	fmt.Println("✓ Stream pipeline active: MQTT → decode → save → tee → filter → alert")
+	fmt.Println("✓ Stream pipeline active: MQTT → decode → map (pure) → persist (port) → tee → filter → alert")
+
+	// ── Time series: bind the History port + tool port ────────────────────
+	//
+	// GET /sensors/{sensorID}/readings is a ToolPort whose pipeline Connects
+	// through the History SQL port — REST layer and database never meet
+	// directly. The route was declared once (ports.RESTPattern on
+	// ioports.HistoryTool, registered against ioports.RESTBuilder); the SQL
+	// metadata once (ports.SQLPattern on ioports.History).
+	must(ioports.History.Bind(ctx, sqladapter.QueryEachAdapter(domain.TimeSeriesCodec,
+		func(qctx context.Context, q domain.SensorQuery) ([]domain.TimeSeries, error) {
+			rows, err := store.Queries().ListReadingsBySensor(qctx, q.SensorID)
+			if err != nil {
+				return nil, err
+			}
+			return []domain.TimeSeries{{SensorID: q.SensorID, Readings: rows}}, nil
+		},
+		sqladapter.QueryEachStreamOptions{}, // Table/Op default from the port's SQLPattern
+	)), "bind history port")
+
+	ioports.HistoryTool.SetPipeline(pipeline.NewTimeSeriesPipeline(ioports.History,
+		func(ctx context.Context) string {
+			r, _ := nethttp.RequestFromContext(ctx)
+			return r.PathValue("sensorID") // already codec-validated by the RESTPattern's PathParam
+		}))
+	historyHandle, ok := ports.RESTHandle[struct{}, domain.TimeSeries](ioports.HistoryTool)
+	if !ok {
+		must(errors.New("ioports.HistoryTool: no RESTPattern declared"), "derive history route handle")
+	}
+	must(ioports.HistoryTool.Bind(ctx, nethttp.PipelineAdapter(mux, historyHandle,
+		nethttp.PipelineAdapterOptions{})), "bind history tool port")
+
+	// ── Export: SQL query port → file sink port → tool port ───────────────
+	//
+	// POST /export: query all readings (ExportQuery, SQLPattern), hand the
+	// snapshot to the Exports SinkPort (FilePattern {exportID}.json +
+	// file.DrainWriteFileAdapter), and answer with the deterministic path
+	// from the SAME FilePattern declaration (FileHandle.BuildPath).
+	// Exports land in ./exports next to this example's README so the file
+	// output is inspectable after a run (wiped and recreated per run;
+	// gitignored). Resolved from this source file's location — independent
+	// of the working directory `go run` was started from.
+	exportDir := exportsDir()
+	must(os.RemoveAll(exportDir), "clean export dir")
+	must(os.MkdirAll(exportDir, 0o750), "create export dir")
+
+	must(ioports.ExportQuery.Bind(ctx, sqladapter.QueryEachAdapter(domain.ExportSnapshotCodec,
+		func(qctx context.Context, _ domain.ExportRequest) ([]domain.ExportSnapshot, error) {
+			rows, err := store.Queries().ListReadings(qctx)
+			if err != nil {
+				return nil, err
+			}
+			return []domain.ExportSnapshot{domain.NewExportSnapshot(rows)}, nil
+		},
+		sqladapter.QueryEachStreamOptions{}, // Table/Op default from the port's SQLPattern
+	)), "bind export query port")
+
+	exportsPort, err := ioports.NewExportsPort(exportDir)
+	must(err, "construct exports port")
+	exportFile, ok := ports.FileHandle[domain.ExportSnapshot](exportsPort)
+	if !ok {
+		must(errors.New("exports port: no FilePattern declared"), "derive export file handle")
+	}
+	// exportCtx is independent of the MQTT pipeline ctx (which the demo
+	// cancels early) — the export sink must outlive it. Same observer.
+	exportCtx := stats.WithObserver(context.Background(), obs)
+
+	exportVars := func(s domain.ExportSnapshot) map[string]string {
+		return map[string]string{"exportID": s.ExportID}
+	}
+	exportsPort.Bind(exportCtx, fileadapter.DrainWriteFileAdapter(exportFile, exportVars,
+		fileadapter.DrainWriteFileAdapterOptions{}))
+
+	// Long-lived feed: the export tool pipeline submits snapshots into this
+	// channel; the sink port drains it into the file adapter.
+	exportCh := make(chan domain.ExportSnapshot, 4)
+	exportsDone := make(chan struct{})
+	go func() {
+		defer close(exportsDone)
+		exportsPort.Feed(exportCtx, gstream.From(exportCtx, exportCh))
+	}()
+
+	ioports.ExportTool.SetPipeline(pipeline.NewExportPipeline(ioports.ExportQuery,
+		func(s domain.ExportSnapshot) { exportCh <- s },
+		func(s domain.ExportSnapshot) (string, error) { return exportFile.BuildPath(exportVars(s)) }))
+	exportHandle, ok := ports.RESTHandle[domain.ExportRequest, domain.ExportResult](ioports.ExportTool)
+	if !ok {
+		must(errors.New("ioports.ExportTool: no RESTPattern declared"), "derive export route handle")
+	}
+	must(ioports.ExportTool.Bind(ctx, nethttp.PipelineAdapter(mux, exportHandle,
+		nethttp.PipelineAdapterOptions{})), "bind export tool port")
 
 	// ── HTTP — register remaining routes ──────────────────────────────────
-	// HandlerLatest for GET /readings/latest was already registered above.
-	// Register the other routes here (after the stream pipeline is wired).
-	nethttp.Register(mux, createRoute.ClientHandle(), makeCreateHandler(store), nethttp.Options{}) // observer via ObserverMiddleware
-	nethttp.Register(mux, getRoute.ClientHandle(), makeGetHandler(store), nethttp.Options{})       // observer via ObserverMiddleware
+	nethttp.Register(mux, ioports.CreateHandle, adapters.NewCreateHandler(store), nethttp.Options{})
+	nethttp.Register(mux, ioports.GetHandle, adapters.NewGetHandler(store), nethttp.Options{})
 
-	// Wrap with ObserverMiddleware so every HTTP request gets obs injected into
-	// r.Context(). HTTP handler resolves observer per-request from r.Context().
+	// Wrap with ObserverMiddleware so every HTTP request gets obs injected
+	// into r.Context() — handlers resolve the observer per-request.
 	srvHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		r = r.WithContext(stats.WithObserver(r.Context(), obs))
 		mux.ServeHTTP(w, r)
@@ -870,275 +325,32 @@ func main() {
 	defer srv.Close()
 	fmt.Printf("✓ HTTP server started: %s\n\n", srv.URL)
 
-	// ── Demo: MQTT sensor messages ─────────────────────────────────────────
-	fmt.Println("── MQTT sensor events ───────────────────────────────────")
-
-	sensorA := "550e8400-e29b-41d4-a716-446655440001"
-	sensorB := "550e8400-e29b-41d4-a716-446655440002"
-
-	// Normal reading (below threshold — no alert).
-	normalPayload, _ := json.Marshal(map[string]any{
-		"sensor_id": sensorA,
-		"value":     23.5,
-		"unit":      "C",
+	// ── Run the demo scenario ──────────────────────────────────────────────
+	runDemo(demoEnv{
+		ctx:            ctx,
+		cancelPipeline: cancelPipeline,
+		pipelineDone:   pipelineDone,
+		mqttClient:     mqttClient,
+		srvURL:         srv.URL,
+		cfg:            alertCfg,
+		counting:       counting,
+		buildParams:    res.BuildParams,
 	})
-	mqttClient.deliver("sensors/"+sensorA+"/data", normalPayload)
-	fmt.Printf("  → sensor %s: 23.5 C  (below threshold, no alert)\n", sensorA[:8])
 
-	// High reading (above threshold → alert published).
-	highPayload, _ := json.Marshal(map[string]any{
-		"sensor_id": sensorB,
-		"value":     87.3,
-		"unit":      "C",
-	})
-	mqttClient.deliver("sensors/"+sensorB+"/data", highPayload)
-	if shouldAlert(db.Reading{Value: 87.3}) {
-		fmt.Printf("  → sensor %s: 87.3 C  (above %.0f° threshold — alert published)\n\n",
-			sensorB[:8], alertCfg.Threshold)
-	} else {
-		fmt.Printf("  → sensor %s: 87.3 C  (below %.0f° threshold, no alert)\n\n",
-			sensorB[:8], alertCfg.Threshold)
-	}
+	// Shut down the export sink: close the feed channel and wait for the
+	// file adapter to drain.
+	close(exportCh)
+	<-exportsDone
+}
 
-	// Give the async goroutines time to process both MQTT messages, then
-	// cancel the pipeline context to drain and shut down all stream operators.
-	// The 100ms sleep ensures the pipeline goroutines have read from the
-	// buffered rawCh, decoded both payloads, saved to DB, and updated the
-	// HandlerLatest atomic pointer.
-	time.Sleep(100 * time.Millisecond)
-	cancelPipeline()
-	<-pipelineDone // wait for PublishAdapter goroutine to finish
-
-	// ── Demo: HTTP requests ────────────────────────────────────────────────
-	fmt.Println("── HTTP requests ────────────────────────────────────────")
-
-	sensorC := "550e8400-e29b-41d4-a716-446655440003"
-
-	// POST /readings — valid.
-	postBody, _ := json.Marshal(map[string]any{
-		"sensor_id": sensorC,
-		"value":     31.2,
-		"unit":      "C",
-	})
-	resp, err := http.Post(srv.URL+"/readings", "application/json", bytes.NewReader(postBody))
-	must(err, "POST /readings")
-	var created db.Reading
-	_ = json.NewDecoder(resp.Body).Decode(&created)
-	_ = resp.Body.Close()
-	fmt.Printf("  POST /readings         → %d  id=%s\n", resp.StatusCode, created.ID)
-
-	// POST /readings — invalid unit (codec rejects before DB).
-	badBody, _ := json.Marshal(map[string]any{
-		"sensor_id": sensorC,
-		"value":     10.0,
-		"unit":      "xyz", // not in OneOf list
-	})
-	resp2, err := http.Post(srv.URL+"/readings", "application/json", bytes.NewReader(badBody))
-	must(err, "POST /readings bad")
-	_ = resp2.Body.Close()
-	fmt.Printf("  POST /readings (bad unit) → %d  (codec rejected before DB)\n", resp2.StatusCode)
-
-	// GET /readings/{id}.
-	resp3, err := http.Get(srv.URL + "/readings/" + created.ID)
-	must(err, "GET /readings")
-	var fetched db.Reading
-	_ = json.NewDecoder(resp3.Body).Decode(&fetched)
-	_ = resp3.Body.Close()
-	fmt.Printf("  GET /readings/%s → %d  value=%.1f %s\n\n",
-		created.ID, resp3.StatusCode, fetched.Value, fetched.Unit)
-
-	// ── Bridge 2 demo: nethttp.HandlerLatest ───────────────────────────────
-	//
-	// GET /readings/latest returns the most recently saved reading from the
-	// stream pipeline — no DB query per request. After cancelPipeline() and
-	// <-pipelineDone, the Tee goroutine has closed latestReadings and the
-	// HandlerLatest background goroutine has processed all values. The atomic
-	// pointer still holds the last reading (87.3 C from sensorB).
-	fmt.Println("── Bridge demo: GET /readings/latest (HandlerLatest) ────")
-	resp4, err := http.Get(srv.URL + "/readings/latest")
-	must(err, "GET /readings/latest")
-	// Decode into map: codec encodes fields as "sensor_id" / "value" / "unit",
-	// but db.Reading has no JSON struct tags so direct struct decode misses them.
-	var latestMap map[string]any
-	_ = json.NewDecoder(resp4.Body).Decode(&latestMap)
-	_ = resp4.Body.Close()
-	if resp4.StatusCode == http.StatusOK && latestMap["sensor_id"] != "" {
-		sensorID, _ := latestMap["sensor_id"].(string)
-		if len(sensorID) > 8 {
-			sensorID = sensorID[:8]
-		}
-		fmt.Printf("  GET /readings/latest   → %d  sensor=%s value=%v %v\n",
-			resp4.StatusCode, sensorID, latestMap["value"], latestMap["unit"])
-		fmt.Println("  (served from atomic pointer — zero DB queries)")
-	} else {
-		fmt.Printf("  GET /readings/latest   → %d  (no value yet)\n", resp4.StatusCode)
-	}
-
-	// ── Port demo: ports.SourcePort + sql.QueryAdapter ───────────────────
-	//
-	// sql.QueryAdapter polls a query function at a fixed interval and emits
-	// each returned row as a typed stream item via a SourcePort. Each row is
-	// validated through the codec; validation failures go to Stream.Errors.
-	//
-	// The SQL metadata (table + operation name) is declared ONCE on the port
-	// via ports.SQLPattern — the adapter picks it up from context at Bind
-	// time, so QueryStreamOptions no longer repeats it. The metadata feeds
-	// error context (QueryStreamError.Table/Op) and observer location strings.
-	//
-	// Here we poll the readings table once (100ms interval with 50ms timeout)
-	// and collect all currently stored rows.
-	fmt.Println("\n── Port demo: sql.QueryAdapter ───────────────────────────")
-	queryCtx, cancelQuery := context.WithTimeout(context.Background(), 150*time.Millisecond)
-	defer cancelQuery()
-
-	rowPort, err := ports.NewSourcePort[db.Reading]("sql/readings", readingCodec, ports.PortOptions{
-		Patterns: []ports.Pattern{
-			ports.SQLPattern{Table: "readings", Op: "list_readings"},
-		},
-	})
-	must(err, "construct rowPort")
-	rowPort.Bind(queryCtx, sqladapter.QueryAdapter(readingCodec,
-		func(qctx context.Context) ([]db.Reading, error) {
-			return store.queries.ListReadings(qctx)
-		},
-		100*time.Millisecond,
-		sqladapter.QueryStreamOptions{})) // Table/Op default from the port's SQLPattern
-	rowStream := rowPort.Stream(queryCtx)
-
-	allRows, streamErrs := gstream.Collect(queryCtx, rowStream)
-	fmt.Printf("  QueryAdapter polled %d row(s) from DB", len(allRows))
-	if len(streamErrs) > 0 {
-		fmt.Printf(", %d validation error(s)", len(streamErrs))
-	}
-	fmt.Println()
-	for _, r := range allRows {
-		fmt.Printf("  row: sensor=%s  value=%.1f %s\n", r.SensorID[:8], r.Value, r.Unit)
-	}
-	fmt.Println()
-
-	// ── Port demo: ports.IOPort + file.ReadAdapter (FilePattern) ─────────
-	//
-	// Intermediate IO INSIDE a pipeline: for each DB row, look up that
-	// sensor's calibration file and emit the calibrated value. The file is
-	// declared ONCE on the port via ports.FilePattern (path template + JSON
-	// format derived from the port's response codec); ports.FileHandle
-	// derives the format.File for the adapter — the pipeline itself has no
-	// file import and would look identical with an HTTP or SQL enrichment
-	// adapter bound instead.
-	fmt.Println("\n── Port demo: file.ReadAdapter (FilePattern) ─────────────")
-	// Main pipeline ctx is already cancelled — fresh ctx, same default observer.
-	fileCtx := stats.WithObserver(context.Background(), obs)
-
-	calibDir, err := os.MkdirTemp("", "calib")
-	must(err, "create calibration dir")
-	defer os.RemoveAll(calibDir)
-
-	type Calibration struct{ Offset float64 }
-	calibrationCodec := codex.Struct[Calibration](
-		codex.RequiredField("offset", codex.Float64(),
-			func(c Calibration) float64 { return c.Offset },
-			func(c *Calibration, v float64) { c.Offset = v }),
-	)
-
-	calibPort, err := ports.NewIOPort[db.Reading, Calibration](
-		"file/calibration", readingCodec, calibrationCodec,
-		ports.PortOptions{
-			Patterns: []ports.Pattern{
-				ports.FilePattern{ // JSON is the default FileFormatKind
-					Path: calibDir + "/{sensorID}.json",
-					Opts: []format.FileOpt{
-						format.FilePathParam{Name: "sensorID"}.WithCodec(codex.String().Refine(validate.UUID)),
-					},
-				},
-			},
-		})
-	must(err, "construct calibPort")
-
-	// The handle built from the FilePattern — reused here to seed the demo
-	// calibration file for our sensor (same declaration, no duplication).
-	calibFile, ok := ports.FileHandle[Calibration](calibPort)
+// exportsDir returns <this source file's directory>/exports, so the demo's
+// file output sits next to the README regardless of the caller's cwd.
+func exportsDir() string {
+	_, thisFile, _, ok := runtime.Caller(0)
 	if !ok {
-		must(errors.New("no FilePattern declared"), "derive calibration file handle")
+		return "exports" // fallback: relative to cwd
 	}
-	for _, r := range allRows {
-		vars := map[string]string{"sensorID": r.SensorID}
-		must(calibFile.Write(vars, Calibration{Offset: 1.5}, format.FileOptions{}), "seed calibration file")
-	}
-
-	must(calibPort.Bind(fileCtx, fileadapter.ReadAdapter(calibFile,
-		func(r db.Reading) map[string]string {
-			return map[string]string{"sensorID": r.SensorID}
-		},
-		fileadapter.ReadEachAdapterOptions{})), "bind calibPort")
-
-	rowCh := make(chan db.Reading, len(allRows))
-	for _, r := range allRows {
-		rowCh <- r
-	}
-	close(rowCh)
-	calibs, calibErrs := gstream.Collect(fileCtx, calibPort.Connect(fileCtx, gstream.From(fileCtx, rowCh)))
-	fmt.Printf("  read %d calibration file(s), %d error(s)\n", len(calibs), len(calibErrs))
-	for i, c := range calibs {
-		fmt.Printf("  row %d: value=%.1f  offset=%.1f  calibrated=%.1f\n",
-			i, allRows[i].Value, c.Offset, allRows[i].Value+c.Offset)
-	}
-	fmt.Println()
-
-	// ── Observer summary ───────────────────────────────────────────────────
-	counting.Print()
-
-	// ── Stream topology documentation ──────────────────────────────────────
-	topo := gstream.NewTopology("Sensor Service MQTT Pipeline", "1.0.0").
-		WithDescription("Real-time sensor readings: decode → save → filter → alert.").
-		WithSource("mqtt/sensors/+/data", "Raw MQTT payloads from sensor network")
-	gstream.WithApply(topo, saveReadingFn)
-	topo.WithFilter(fmt.Sprintf("value > %.0f (alert threshold)", alertCfg.Threshold)).
-		WithSink("mqtt/alerts/{sensorID}", "Low-performance alert events")
-
-	fmt.Println("\n── Stream topology (stream.Topology) ────────────────────")
-	spec := topo.Spec()
-	for _, step := range spec.Steps {
-		if step.Function != nil {
-			fmt.Printf("  [%s] %s v%s  hash:%s...\n",
-				step.Kind, step.Function.Name, step.Function.Version, step.Function.Hash[:16])
-		} else {
-			name := step.Name
-			if name == "" {
-				name = step.Description
-			}
-			fmt.Printf("  [%s] %s\n", step.Kind, name)
-		}
-	}
-
-	// ── AsyncAPI spec built FROM the port bindings ─────────────────────────
-	//
-	// sensorsPort and alertsPort registered their EventPatterns against the
-	// SAME eventsBuilder above (via PortOptions.EventBuilder) — the spec below
-	// reflects both channels without any separate events.NewChannel(...).Register
-	// call: the port declaration IS the channel declaration.
-	fmt.Println("\n── AsyncAPI spec (built from the ports.EventPattern bindings) ──")
-	asyncDoc, err := eventsBuilder.AsyncAPISpec()
-	must(err, "build AsyncAPI spec")
-	asyncYAML, err := asyncDoc.MarshalYAML()
-	must(err, "marshal AsyncAPI spec")
-	fmt.Println(string(asyncYAML))
-
-	// ── Demonstrate errors.As chain ────────────────────────────────────────
-	_, validateErr := sqladapter.Validate(insertParamsCodec,
-		db.InsertReadingParams{
-			ID: "not-a-uuid", SensorID: "also-bad",
-			Value: 0, Unit: "xyz", RecordedAt: "not-a-date",
-		},
-		sqladapter.ValidateOptions{Table: "readings", Op: "demo_error"},
-	)
-	var rve sqladapter.RowValidationError
-	if errors.As(validateErr, &rve) {
-		fmt.Printf("✓ errors.As → RowValidationError{table:%q, op:%q}\n", rve.Table, rve.Op)
-	}
-	var ve codex.ValidationErrors
-	if errors.As(validateErr, &ve) {
-		fmt.Printf("  inner ValidationErrors: %d field(s) failed\n", len(ve))
-	}
+	return filepath.Join(filepath.Dir(thisFile), "exports")
 }
 
 func must(err error, msg string) {

@@ -248,5 +248,5 @@ go-codex/
     ├── http-trace-span-propagation/ # TraceObserver with OTel: parent span from traceparent header
     ├── stream-pipeline/             # stream operator showcase: From, Apply, CombineLatest2, Tee, Merge, FlatMapSlice, Buffer, Window, Debounce, Throttle, MapErr, Topology YAML
     ├── stream-oee/                  # forge + stream integration: governed OEE (Availability×Performance×Quality) from machine events; Window→Apply(computeOEEFromWindow)→Filter→Drain; governance + topology YAML
-    └── sensor-service/              # multi-adapter demo: nethttp + MQTT + SQL (goose + sqlc + Validate[T]) + stream pipeline + NewFanout observer
+    └── sensor-service/              # flagship: one coherent use case (MQTT ingest → SQL persist → env-configured alert → REST time series → REST-triggered file export) structured as a real project — domain/, pipeline/, ioports/, observability/, adapters/, db/, main.go (wiring) + demo.go + README.md
 ```

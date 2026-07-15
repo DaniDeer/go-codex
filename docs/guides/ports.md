@@ -364,8 +364,13 @@ var Readings = codex.Must(ports.NewSinkPort[db.Reading]("sql/readings", readingC
 domain.Readings.Bind(ctx, sql.DrainInsertAdapter(readingCodec, insertFn, sql.DrainInsertOptions{}))
 ```
 
-Both patterns are demonstrated live in `examples/sensor-service` (`SQLPattern` on
-the polling `rowPort`, `FilePattern` on the calibration `IOPort`).
+Both patterns are demonstrated live in `examples/sensor-service` (see its
+`ioports` package: `SQLPattern` on the `Readings` persistence, `History`
+time-series, and `ExportQuery` `IOPort`s; `FilePattern` on the `Exports`
+`SinkPort` — the REST export response path comes from the same declaration via
+`FileHandle.BuildPath`). The same example also shows the recommended project
+structure: pure forge functions in `pipeline/`, persistence and queries as
+explicit port steps, adapters bound only in `main()`.
 
 ## `IOParam` — protocol-agnostic parameters (handle-less adapters)
 

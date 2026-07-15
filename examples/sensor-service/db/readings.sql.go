@@ -86,3 +86,39 @@ func (q *Queries) ListReadings(ctx context.Context) ([]Reading, error) {
 	}
 	return items, nil
 }
+
+const listReadingsBySensor = `-- name: ListReadingsBySensor :many
+SELECT id, sensor_id, value, unit, recorded_at
+FROM readings
+WHERE sensor_id = ?
+ORDER BY recorded_at ASC, id ASC
+`
+
+func (q *Queries) ListReadingsBySensor(ctx context.Context, sensorID string) ([]Reading, error) {
+	rows, err := q.db.QueryContext(ctx, listReadingsBySensor, sensorID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []Reading
+	for rows.Next() {
+		var i Reading
+		if err := rows.Scan(
+			&i.ID,
+			&i.SensorID,
+			&i.Value,
+			&i.Unit,
+			&i.RecordedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}

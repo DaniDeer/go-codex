@@ -4,7 +4,7 @@
 >
 > **Runnable demos:**
 > - [`examples/stream-pipeline`](https://github.com/DaniDeer/go-codex/tree/main/examples/stream-pipeline) — comprehensive showcase of all operators (8 sections); run with `go run ./examples/stream-pipeline`
-> - [`examples/sensor-service`](https://github.com/DaniDeer/go-codex/tree/main/examples/sensor-service) — port adapter showcase: `mqtt.SubscribeAdapter`, `nethttp.HandlerLatest`, `mqtt.PublishAdapter`, `sql.QueryAdapter`
+> - [`examples/sensor-service`](https://github.com/DaniDeer/go-codex/tree/main/examples/sensor-service) — flagship port showcase: `mqtt.SubscribeAdapter`/`PublishAdapter`, `sql.QueryEachAdapter`, `file.DrainWriteFileAdapter`, `nethttp.PipelineAdapter`, `nethttp.HandlerLatest` in one coherent use case
 
 The `stream` package turns `forge.Function[In,Out]` computations into continuous
 reactive pipelines over typed Go channels. Each operator is a free function that takes

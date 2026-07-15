@@ -5,7 +5,7 @@
 > **Runnable demos:**
 > - [`examples/stream-pipeline`](https://github.com/DaniDeer/go-codex/tree/main/examples/stream-pipeline) — all operators showcased: `From`, `Apply`, `Tap`, `Filter`, `CombineLatest2`, `Tee`, `Merge`, `FlatMapSlice`, `Debounce`, `Throttle`, `Buffer`, `Window`, `MapErr`, `Topology` + YAML render
 > - [`examples/stream-oee`](https://github.com/DaniDeer/go-codex/tree/main/examples/stream-oee) — forge + stream integration: governed OEE from machine events (Window → governed forge chain → alert); governance YAML with SHA-256 hashes per function
-> - [`examples/sensor-service`](https://github.com/DaniDeer/go-codex/tree/main/examples/sensor-service) — **port adapter showcase**: `mqtt.SubscribeAdapter`, `mqtt.PublishAdapter`, `nethttp.HandlerLatest` (reactive cache GET /readings/latest), and `sql.QueryAdapter` — all wired via `ports.SourcePort`/`SinkPort` with a single shared observer
+> - [`examples/sensor-service`](https://github.com/DaniDeer/go-codex/tree/main/examples/sensor-service) — **flagship port showcase**: one coherent use case (MQTT ingest → SQL persist → threshold alert → REST time series → REST-triggered file export) where every IO hop is a port — `mqtt.SubscribeAdapter`/`PublishAdapter`, `sql.QueryEachAdapter`, `file.DrainWriteFileAdapter`, `nethttp.PipelineAdapter`, `nethttp.HandlerLatest` — with a single shared observer
 
 The `stream` package provides a declarative reactive pipeline over typed Go channels,
 bridging push-based transport adapters (MQTT, ZeroMQ) with governed
