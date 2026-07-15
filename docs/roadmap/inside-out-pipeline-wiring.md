@@ -213,13 +213,21 @@ func Params(params ...IOParam) PortOpt { return portParams(params) }
 > **Implementation note:** The final implementation uses a plain struct `PortOptions` instead of the planned sealed `PortOpt` interface — simpler and zero boilerplate.
 
 ```go
-// PortOptions configures a port constructor (NewSourcePort, NewSinkPort, NewIOPort).
+// PortOptions configures a port constructor (NewSourcePort, NewSinkPort, NewIOPort, NewToolPort).
 type PortOptions struct {
     // Params declares the protocol-agnostic IO parameters for this port.
+    // NOTE (known gap, see "Known gaps" below): stored and exposed via Params(),
+    // but no adapter binding currently reads or validates against it — purely
+    // descriptive today, not enforced at runtime.
     Params []IOParam
     // Buffer sets the internal channel buffer size. Default 0.
+    // NOTE (known gap): only honored by SourcePort and SinkPort; IOPort and
+    // ToolPort ignore this field entirely.
     Buffer int
     // Observer receives port lifecycle events. Resolved from ctx when nil.
+    // NOTE (known gap): only SinkPort.Feed actually forwards obs to its
+    // underlying stream operation today; SourcePort.Stream, IOPort.Connect,
+    // and ToolPort.Bind resolve obs but do not yet emit any events with it.
     Observer stats.Observer
 }
 ```
@@ -619,15 +627,45 @@ func (e PortNoAdapterError) LogValue() slog.Value {
 
 ## Observer integration
 
+> **Status vs. implementation (Phase 3 review): partially implemented.** The design
+> below was the Phase 1/2 intent. As built, only `SinkPort.Feed` actually forwards
+> its resolved `obs` into the underlying `gstream.Drain` call. `SourcePort.Stream`,
+> `IOPort.Connect`, and `ToolPort.Bind` resolve `obs` (nil-guarded from ctx) but then
+> discard it — no `RecordRequest`/`TraceObserver` calls exist yet for those three
+> port types. See "Known gaps" below (`phase3-port-observer-integration`).
+
 Ports use `stats.Observer` (same as adapters). Resolved from ctx at `Bind`/`Stream`/
 `Connect` time when nil (standard nil-guard pattern).
 
-Observer fires at:
+Design intent (not yet fully implemented — see above):
 - `Bind` / `Activate`: `RecordRequest("port.bind", portName, 200/500, duration)`
 - Per-item through IOPort: adapters retain their existing observer calls — no double-calling
 
 `stats.TraceObserver` type-asserted for port lifecycle spans: `"port.bind"`,
-`"port.activate"`. Adapter-internal spans unchanged.
+`"port.activate"`. Adapter-internal spans unchanged. **Not yet implemented** for
+any port type.
+
+---
+
+## Known gaps (found in Phase 3 review)
+
+A code-vs-docs audit found the following items were **documented as implemented
+but are not enforced/wired in code**. These are tracked as SQL todos for a future
+implementation pass — listed here so the gap isn't silently lost.
+
+| Gap | What the docs/API promise | What actually happens | Todo |
+|-----|---------------------------|------------------------|------|
+| **IOParam runtime enforcement** | Adapter validates routing/topic/path param values against the `IOParam.Codec` at bind/message time | `Params()` is a pure getter; **no adapter binding anywhere calls `.Params()`** — zero runtime enforcement | `phase3-ioparam-enforcement` |
+| **Port-level Observer events** | `Bind`/`Stream`/`Connect` emit `RecordRequest("port.bind", …)` and `TraceObserver` spans | `SourcePort.Stream`, `IOPort.Connect`, `ToolPort.Bind` resolve `obs` then discard it (`_ = obs`); only `SinkPort.Feed` forwards `obs` to `gstream.Drain` | `phase3-port-observer-integration` |
+| **`T05 TestSourcePort_CodecValidation`** | Unit test plan lists a test asserting invalid items surface as errors via codec validation | No such test exists — consistent with the IOParam gap above (nothing to test) | `phase3-sourceport-codec-validation-test` |
+| **`PortOptions.Buffer` on all port types** | Buffer configures the internal channel size for any port constructor | Only `SourcePort`/`SinkPort` have a `buffer` field; `IOPort`/`ToolPort` silently ignore `Buffer` | `phase3-portoptions-buffer-ioport-toolport` |
+
+Additional test-coverage gaps found (not doc/API mismatches, just missing tests):
+`chi.PipelineAdapter`, `zeromq.ServeAdapter`, `mqtt5.ServeAdapter` (zero tests each),
+and `mcpgo.ToolLatestAdapter` (test only asserts `Bind` doesn't error, never verifies
+the cached tool response). Tracked as `phase3-test-chi-pipelineadapter`,
+`phase3-test-zeromq-serveadapter`, `phase3-test-mqtt5-serveadapter`,
+`phase3-strengthen-toollatestadapter-test`.
 
 ---
 
@@ -1002,7 +1040,7 @@ func (e PortNoPipelineError) LogValue() slog.Value {
 |----------|-----------|
 | **Adapter interface sealed or open?** | **Open** — `SourceAdapter[T]`, `SinkAdapter[T]`, `IOAdapter[Req,Resp]` have exported `AdapterName() string` + `Activate`/`Transform` methods. Users can implement custom adapters. |
 | **Where do adapter interfaces live?** | **`ports` package** (not `forge`) — avoids import cycle (`stream` imports `forge`; `forge` imports `stream`). `ports` has no such cycle. |
-| **Fan-out error policy** | **Log + continue** — a broken MQTT sink does not stop SSE delivery. `SinkPort.Feed` catches per-adapter errors via OnError; no adapter termination propagates to others. |
+| **Fan-out error policy** | **Continue per-adapter** — a broken MQTT sink does not stop SSE delivery. `SinkPort` has no single `OnError` field of its own; each bound `SinkAdapter` receives errors on its own error channel/callback (e.g. via `gstream.Drain`'s per-adapter error path), so one adapter erroring does not halt or terminate delivery to the others. |
 | **TapWriteFile deprecation** | **Removed** — `file.DrainWriteFileAdapter` + `ports.SinkPort` replaces both `TapWriteFile` and `DrainWriteFile`. |
 | **`adapterName()` method** | **`AdapterName() string`** — exported, used in `PortBindError.Adapter` field for observability. |
 | **IOParam validation timing** | **Per-item only** — adapters validate at message/request time using the IOParam codec. No Bind-time cross-validation in Phase 1. |
