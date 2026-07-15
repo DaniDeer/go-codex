@@ -164,5 +164,5 @@ func (p *IOPort[Req, Resp]) Connect(ctx context.Context, src gstream.Stream[Req]
 		return gstream.Stream[Resp]{Values: valCh, Errors: errCh}
 	}
 
-	return a.Transform(WithParams(ctx, p.params), src)
+	return a.Transform(adapterContext(ctx, p.params, p.handles), src)
 }

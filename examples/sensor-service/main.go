@@ -14,7 +14,15 @@
 //   - [ports.SinkPort] + [adaptermqtt.PublishAdapter] — MQTT alert publishing
 //     wired to a SinkPort; supports fan-out to additional sinks.
 //   - [ports.SourcePort] + [sqladapter.QueryAdapter] — SQL row polling wired
-//     to a SourcePort; protocol-agnostic in the pipeline.
+//     to a SourcePort; protocol-agnostic in the pipeline. Table/Op metadata is
+//     declared once via [ports.SQLPattern] on the port — the adapter defaults
+//     its options from it (error context + observer location strings).
+//   - [ports.IOPort] + [fileadapter.ReadAdapter] — per-item calibration file
+//     lookup as an intermediate IO step INSIDE the pipeline. The file (path
+//     template + JSON format + path-param codec) is declared once via
+//     [ports.FilePattern]; [ports.FileHandle] derives the format.File for the
+//     adapter — swap to an HTTP or SQL enrichment adapter without touching
+//     pipeline code.
 //   - [nethttp.HandlerLatest] — reactive cache endpoint; GET /readings/latest
 //     returns the most recently saved reading without querying the DB.
 //
@@ -88,6 +96,7 @@ import (
 	pahomqtt "github.com/eclipse/paho.mqtt.golang"
 	_ "modernc.org/sqlite"
 
+	fileadapter "github.com/DaniDeer/go-codex/adapters/file"
 	adaptermqtt "github.com/DaniDeer/go-codex/adapters/mqtt"
 	nethttp "github.com/DaniDeer/go-codex/adapters/nethttp"
 	sqladapter "github.com/DaniDeer/go-codex/adapters/sql"
@@ -971,23 +980,29 @@ func main() {
 	// each returned row as a typed stream item via a SourcePort. Each row is
 	// validated through the codec; validation failures go to Stream.Errors.
 	//
+	// The SQL metadata (table + operation name) is declared ONCE on the port
+	// via ports.SQLPattern — the adapter picks it up from context at Bind
+	// time, so QueryStreamOptions no longer repeats it. The metadata feeds
+	// error context (QueryStreamError.Table/Op) and observer location strings.
+	//
 	// Here we poll the readings table once (100ms interval with 50ms timeout)
 	// and collect all currently stored rows.
 	fmt.Println("\n── Port demo: sql.QueryAdapter ───────────────────────────")
 	queryCtx, cancelQuery := context.WithTimeout(context.Background(), 150*time.Millisecond)
 	defer cancelQuery()
 
-	rowPort, err := ports.NewSourcePort[db.Reading]("sql/readings", readingCodec, ports.PortOptions{})
+	rowPort, err := ports.NewSourcePort[db.Reading]("sql/readings", readingCodec, ports.PortOptions{
+		Patterns: []ports.Pattern{
+			ports.SQLPattern{Table: "readings", Op: "list_readings"},
+		},
+	})
 	must(err, "construct rowPort")
 	rowPort.Bind(queryCtx, sqladapter.QueryAdapter(readingCodec,
 		func(qctx context.Context) ([]db.Reading, error) {
 			return store.queries.ListReadings(qctx)
 		},
 		100*time.Millisecond,
-		sqladapter.QueryStreamOptions{
-			Table: "readings",
-			Op:    "list_readings",
-		}))
+		sqladapter.QueryStreamOptions{})) // Table/Op default from the port's SQLPattern
 	rowStream := rowPort.Stream(queryCtx)
 
 	allRows, streamErrs := gstream.Collect(queryCtx, rowStream)
@@ -998,6 +1013,74 @@ func main() {
 	fmt.Println()
 	for _, r := range allRows {
 		fmt.Printf("  row: sensor=%s  value=%.1f %s\n", r.SensorID[:8], r.Value, r.Unit)
+	}
+	fmt.Println()
+
+	// ── Port demo: ports.IOPort + file.ReadAdapter (FilePattern) ─────────
+	//
+	// Intermediate IO INSIDE a pipeline: for each DB row, look up that
+	// sensor's calibration file and emit the calibrated value. The file is
+	// declared ONCE on the port via ports.FilePattern (path template + JSON
+	// format derived from the port's response codec); ports.FileHandle
+	// derives the format.File for the adapter — the pipeline itself has no
+	// file import and would look identical with an HTTP or SQL enrichment
+	// adapter bound instead.
+	fmt.Println("\n── Port demo: file.ReadAdapter (FilePattern) ─────────────")
+	// Main pipeline ctx is already cancelled — fresh ctx, same default observer.
+	fileCtx := stats.WithObserver(context.Background(), obs)
+
+	calibDir, err := os.MkdirTemp("", "calib")
+	must(err, "create calibration dir")
+	defer os.RemoveAll(calibDir)
+
+	type Calibration struct{ Offset float64 }
+	calibrationCodec := codex.Struct[Calibration](
+		codex.RequiredField("offset", codex.Float64(),
+			func(c Calibration) float64 { return c.Offset },
+			func(c *Calibration, v float64) { c.Offset = v }),
+	)
+
+	calibPort, err := ports.NewIOPort[db.Reading, Calibration](
+		"file/calibration", readingCodec, calibrationCodec,
+		ports.PortOptions{
+			Patterns: []ports.Pattern{
+				ports.FilePattern{ // JSON is the default FileFormatKind
+					Path: calibDir + "/{sensorID}.json",
+					Opts: []format.FileOpt{
+						format.FilePathParam{Name: "sensorID"}.WithCodec(codex.String().Refine(validate.UUID)),
+					},
+				},
+			},
+		})
+	must(err, "construct calibPort")
+
+	// The handle built from the FilePattern — reused here to seed the demo
+	// calibration file for our sensor (same declaration, no duplication).
+	calibFile, ok := ports.FileHandle[Calibration](calibPort)
+	if !ok {
+		must(errors.New("no FilePattern declared"), "derive calibration file handle")
+	}
+	for _, r := range allRows {
+		vars := map[string]string{"sensorID": r.SensorID}
+		must(calibFile.Write(vars, Calibration{Offset: 1.5}, format.FileOptions{}), "seed calibration file")
+	}
+
+	must(calibPort.Bind(fileCtx, fileadapter.ReadAdapter(calibFile,
+		func(r db.Reading) map[string]string {
+			return map[string]string{"sensorID": r.SensorID}
+		},
+		fileadapter.ReadEachAdapterOptions{})), "bind calibPort")
+
+	rowCh := make(chan db.Reading, len(allRows))
+	for _, r := range allRows {
+		rowCh <- r
+	}
+	close(rowCh)
+	calibs, calibErrs := gstream.Collect(fileCtx, calibPort.Connect(fileCtx, gstream.From(fileCtx, rowCh)))
+	fmt.Printf("  read %d calibration file(s), %d error(s)\n", len(calibs), len(calibErrs))
+	for i, c := range calibs {
+		fmt.Printf("  row %d: value=%.1f  offset=%.1f  calibrated=%.1f\n",
+			i, allRows[i].Value, c.Offset, allRows[i].Value+c.Offset)
 	}
 	fmt.Println()
 

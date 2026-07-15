@@ -181,7 +181,8 @@ different transport concurrently.
 | MQTT5 | `mqtt5.CallAdapter` | 1→1 | MQTT5 request-reply per item |
 | ZeroMQ | `zeromq.CallAdapter` | 1→1 | ZeroMQ REQ/REP per item |
 | SQL | `sql.QueryEachAdapter` | 1→N | Parameterized SQL query per item |
-| File | `file.ReadEachAdapter` | 1→1 | File read per item with path template vars |
+| File | `file.ReadAdapter` | 1→1 | File read per item — the file content **is** the response (pairs with `FilePattern`) |
+| File | `file.ReadEachAdapter` | 1→1 | File read per item with independent content type + `combine` func (enrichment; handle-first) |
 
 ### Tool adapters (for `ToolPort`)
 
@@ -230,6 +231,8 @@ be `.Register()`ed with a builder and threaded into the adapter constructor by h
 | `ports.EventPattern{Topic, Opts}` | pub/sub (mqtt, mqtt5, zeromq) |
 | `ports.ReqReplyPattern{Topic, Opts}` | request/reply (mqtt5, zeromq) |
 | `ports.MCPPattern{Name, Opts}` | MCP tool (mcpgo) |
+| `ports.FilePattern{Path, Format, Opts}` | typed files (file) |
+| `ports.SQLPattern{Table, Op}` | SQL (sql) — metadata-only |
 
 Derive the handle the adapter needs with the matching accessor — `(nil, false)`, not
 a panic, when the port declared no matching `Pattern`:
@@ -239,6 +242,8 @@ handle, ok := ports.RESTHandle[Req, Resp](domain.SomePort)     // *rest.RouteHan
 handle, ok := ports.EventHandle[T](domain.SomePort)            // *events.ChannelHandle[T]
 handle, ok := ports.ReqReplyHandle[Req, Resp](domain.SomePort) // *reqreply.RouteHandle[Req, Resp]
 handle, ok := ports.MCPHandle[In, Out](domain.SomePort)        // *apimcp.ToolHandle[In, Out]
+file,   ok := ports.FileHandle[T](domain.SomePort)             // format.File[T]
+meta,   ok := ports.SQLMeta(domain.SomePort)                   // ports.SQLPattern
 ```
 
 ### One construction path, whether you supply a `Builder` or not
@@ -305,6 +310,62 @@ for package-level declarations, as shown throughout this guide.
 > shape a single-codec port can't express directly with `RESTPattern` yet — these
 > still take a hand-built handle. See the roadmap doc's Phase 4/5 sections for the
 > full design and this open item.
+
+### `FilePattern` — file as sink or intermediate IO step
+
+Declare the file (path template + wire format + path-param codecs) once on the
+port; retrieve the built `format.File` with `ports.FileHandle`. `Format` is a
+`ports.FileFormatKind` enum — `FileFormatJSON` (default), `FileFormatYAML`,
+`FileFormatTOML` — applied to the port's own codec. On a `SinkPort[T]` the
+handle is `format.File[T]` (pairs with `file.DrainWriteFileAdapter`); on an
+`IOPort[Req,Resp]` it is `format.File[Resp]` — the file's content *is* the
+port's response — pairing with the 2-type `file.ReadAdapter`:
+
+```go
+// domain — intermediate IO step: read a calibration file per reading
+var Calibration = codex.Must(ports.NewIOPort[SensorReading, CalibrationData](
+    "calibration", readingCodec, calibrationCodec,
+    ports.PortOptions{Patterns: []ports.Pattern{
+        ports.FilePattern{
+            Path: "data/{sensorID}/calibration.json",
+            Opts: []format.FileOpt{format.FilePathParam{Name: "sensorID"}.WithCodec(uuidCodec)},
+        },
+    }}))
+
+// main.go
+calibFile, _ := ports.FileHandle[CalibrationData](domain.Calibration)
+domain.Calibration.Bind(ctx, file.ReadAdapter(calibFile,
+    func(r SensorReading) map[string]string { return map[string]string{"sensorID": r.SensorID} },
+    file.ReadEachAdapterOptions{}))
+
+// pipeline — identical whether the enrichment comes from a file, SQL, or HTTP
+calibrated := domain.Calibration.Connect(ctx, readings)
+```
+
+For a custom `format.Format[T]` beyond JSON/YAML/TOML, or for the 3-type
+enrichment shape (`file.ReadEachAdapter` with a `combine` func), build the
+`format.File` by hand — same as before.
+
+### `SQLPattern` — declare table/op metadata once
+
+SQL has no template to parse — queries stay typed, driver-specific closures.
+`SQLPattern{Table, Op}` declares just the error/observability metadata on the
+port; the sql adapters (`QueryAdapter`, `QueryEachAdapter`, `DrainInsertAdapter`)
+default their options' `Table`/`Op` from it via context when the explicit fields
+are empty (explicit values win):
+
+```go
+var Readings = codex.Must(ports.NewSinkPort[db.Reading]("sql/readings", readingCodec,
+    ports.PortOptions{Patterns: []ports.Pattern{
+        ports.SQLPattern{Table: "readings", Op: "insert_reading"},
+    }}))
+
+// main.go — no Table/Op repetition
+domain.Readings.Bind(ctx, sql.DrainInsertAdapter(readingCodec, insertFn, sql.DrainInsertOptions{}))
+```
+
+Both patterns are demonstrated live in `examples/sensor-service` (`SQLPattern` on
+the polling `rowPort`, `FilePattern` on the calibration `IOPort`).
 
 ## `IOParam` — protocol-agnostic parameters (handle-less adapters)
 

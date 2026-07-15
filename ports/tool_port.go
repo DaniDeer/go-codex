@@ -156,7 +156,7 @@ func (p *ToolPort[In, Out]) Bind(ctx context.Context, a ToolAdapter[In, Out]) er
 		return err
 	}
 
-	return bindWithObserver(WithParams(ctx, p.params), obs, p.name, a.AdapterName(), func(spanCtx context.Context) error {
+	return bindWithObserver(adapterContext(ctx, p.params, p.handles), obs, p.name, a.AdapterName(), func(spanCtx context.Context) error {
 		if err := a.Bind(spanCtx, fn); err != nil {
 			if errors.As(err, new(PortBindError)) {
 				return err

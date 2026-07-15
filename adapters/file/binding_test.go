@@ -337,3 +337,129 @@ func groupKeys(v slog.Value) map[string]bool {
 	}
 	return keys
 }
+
+// ── ReadAdapter (2-type, FilePattern pairing) ─────────────────────────────────
+
+func TestReadAdapter_HappyPath_ViaFilePattern(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+
+	type config struct{ Factor float64 }
+	c := codex.Struct[config](
+		codex.RequiredField("factor", codex.Float64(), func(x config) float64 { return x.Factor }, func(x *config, v float64) { x.Factor = v }),
+	)
+	for id, factor := range map[string]float64{"a": 2.0, "b": 3.0} {
+		f := format.NewFile(filepath.Join(dir, id+".json"), format.JSON(c))
+		if err := f.Write(nil, config{Factor: factor}, format.FileOptions{}); err != nil {
+			t.Fatalf("write: %v", err)
+		}
+	}
+
+	type reading struct{ ID string }
+	readingCodec := codex.Struct[reading](
+		codex.RequiredField("id", codex.String(), func(x reading) string { return x.ID }, func(x *reading, v string) { x.ID = v }),
+	)
+
+	// Declare the file on the port itself — FilePattern with the port's
+	// RESPONSE codec; the handle comes back out via FileHandle.
+	p, err := ports.NewIOPort[reading, config]("calibration", readingCodec, c, ports.PortOptions{
+		Patterns: []ports.Pattern{
+			ports.FilePattern{Path: filepath.Join(dir, "{id}.json")},
+		},
+	})
+	if err != nil {
+		t.Fatalf("construct port: %v", err)
+	}
+	f, ok := ports.FileHandle[config](p)
+	if !ok {
+		t.Fatal("want FileHandle to be present")
+	}
+	if err := p.Bind(ctx, fileadapter.ReadAdapter(f,
+		func(r reading) map[string]string { return map[string]string{"id": r.ID} },
+		fileadapter.ReadEachAdapterOptions{})); err != nil {
+		t.Fatalf("bind: %v", err)
+	}
+
+	inCh := make(chan reading, 2)
+	inCh <- reading{ID: "a"}
+	inCh <- reading{ID: "b"}
+	close(inCh)
+
+	vals, errs := gstream.Collect(ctx, p.Connect(ctx, gstream.From(ctx, inCh)))
+	if len(errs) != 0 {
+		t.Fatalf("want 0 errors, got %v", errs)
+	}
+	if len(vals) != 2 {
+		t.Fatalf("want 2 values, got %d", len(vals))
+	}
+	sum := vals[0].Factor + vals[1].Factor
+	if sum != 5.0 {
+		t.Errorf("want file contents 2.0+3.0, got sum %v", sum)
+	}
+}
+
+func TestReadAdapter_ReadErrorGoesToStreamErrors(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+
+	type config struct{ Factor float64 }
+	c := codex.Struct[config](
+		codex.RequiredField("factor", codex.Float64(), func(x config) float64 { return x.Factor }, func(x *config, v float64) { x.Factor = v }),
+	)
+	configFile := format.NewFile(filepath.Join(dir, "{id}.json"), format.JSON(c))
+
+	type reading struct{ ID string }
+	inCh := make(chan reading, 1)
+	inCh <- reading{ID: "missing"}
+	close(inCh)
+
+	adapter := fileadapter.ReadAdapter(configFile,
+		func(r reading) map[string]string { return map[string]string{"id": r.ID} },
+		fileadapter.ReadEachAdapterOptions{})
+	if got := adapter.AdapterName(); got != "file.ReadAdapter" {
+		t.Errorf("want AdapterName file.ReadAdapter, got %q", got)
+	}
+
+	_, errs := gstream.Collect(ctx, adapter.Transform(ctx, gstream.From(ctx, inCh)))
+	if len(errs) == 0 {
+		t.Fatal("want error in Stream.Errors, got none")
+	}
+	var re fileadapter.ReadError
+	if !errors.As(errs[0], &re) {
+		t.Errorf("want ReadError, got %T: %v", errs[0], errs[0])
+	}
+}
+
+func TestReadAdapter_ParamValidationError(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+
+	type config struct{ Factor float64 }
+	c := codex.Struct[config](
+		codex.RequiredField("factor", codex.Float64(), func(x config) float64 { return x.Factor }, func(x *config, v float64) { x.Factor = v }),
+	)
+	configFile := format.NewFile(filepath.Join(dir, "{id}.json"), format.JSON(c))
+
+	type reading struct{ ID string }
+	inCh := make(chan reading, 1)
+	inCh <- reading{ID: ""} // missing required "id" value
+	close(inCh)
+
+	adapter := fileadapter.ReadAdapter(configFile,
+		func(r reading) map[string]string { return map[string]string{"id": r.ID} },
+		fileadapter.ReadEachAdapterOptions{})
+
+	ctx = ports.WithParams(ctx, []ports.IOParam{{Name: "id", Required: true}})
+	_, errs := gstream.Collect(ctx, adapter.Transform(ctx, gstream.From(ctx, inCh)))
+	if len(errs) == 0 {
+		t.Fatal("want param validation error in Stream.Errors, got none")
+	}
+	var re fileadapter.ReadError
+	if !errors.As(errs[0], &re) {
+		t.Fatalf("want ReadError, got %T: %v", errs[0], errs[0])
+	}
+	var ve codex.ValidationErrors
+	if !errors.As(re, &ve) {
+		t.Errorf("want ReadError to wrap codex.ValidationErrors, got %v", re.Err)
+	}
+}

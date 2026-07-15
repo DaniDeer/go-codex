@@ -257,3 +257,95 @@ func groupKeys(v slog.Value) map[string]bool {
 	}
 	return keys
 }
+
+// ── SQLPattern context defaulting ─────────────────────────────────────────────
+
+func TestQueryEachAdapter_DefaultsTableOpFromContext(t *testing.T) {
+	ctx := context.Background()
+
+	p, err := ports.NewIOPort[string, testRow]("sql-io", codex.String(), testRowCodec, ports.PortOptions{
+		Patterns: []ports.Pattern{ports.SQLPattern{Table: "thresholds", Op: "get_by_sensor"}},
+	})
+	if err != nil {
+		t.Fatalf("construct port: %v", err)
+	}
+	dbErr := errors.New("db down")
+	// Empty Table/Op in the adapter options — must default from the port's SQLPattern.
+	if err := p.Bind(ctx, adaptersql.QueryEachAdapter(testRowCodec,
+		func(_ context.Context, _ string) ([]testRow, error) { return nil, dbErr },
+		adaptersql.QueryEachStreamOptions{})); err != nil {
+		t.Fatalf("bind: %v", err)
+	}
+
+	src := make(chan string, 1)
+	src <- "s1"
+	close(src)
+	_, errs := gstream.Collect(ctx, p.Connect(ctx, gstream.From(ctx, src)))
+	if len(errs) != 1 {
+		t.Fatalf("want 1 error, got %d: %v", len(errs), errs)
+	}
+	var qse adaptersql.QueryStreamError
+	if !errors.As(errs[0], &qse) {
+		t.Fatalf("want QueryStreamError, got %T", errs[0])
+	}
+	if qse.Table != "thresholds" || qse.Op != "get_by_sensor" {
+		t.Errorf("want table/op from SQLPattern, got %q/%q", qse.Table, qse.Op)
+	}
+}
+
+func TestQueryEachAdapter_ExplicitTableOpWins(t *testing.T) {
+	ctx := ports.WithSQLMeta(context.Background(), ports.SQLPattern{Table: "ctx_table", Op: "ctx_op"})
+	dbErr := errors.New("db down")
+	a := adaptersql.QueryEachAdapter(testRowCodec,
+		func(_ context.Context, _ string) ([]testRow, error) { return nil, dbErr },
+		adaptersql.QueryEachStreamOptions{Table: "explicit", Op: "exp_op"})
+
+	src := make(chan string, 1)
+	src <- "s1"
+	close(src)
+	_, errs := gstream.Collect(ctx, a.Transform(ctx, gstream.From(ctx, src)))
+	if len(errs) != 1 {
+		t.Fatalf("want 1 error, got %d", len(errs))
+	}
+	var qse adaptersql.QueryStreamError
+	if !errors.As(errs[0], &qse) {
+		t.Fatalf("want QueryStreamError, got %T", errs[0])
+	}
+	if qse.Table != "explicit" || qse.Op != "exp_op" {
+		t.Errorf("explicit options must win over context, got %q/%q", qse.Table, qse.Op)
+	}
+}
+
+func TestDrainInsertAdapter_DefaultsTableOpFromContext(t *testing.T) {
+	ctx := context.Background()
+
+	p, err := ports.NewSinkPort[testRow]("sql-sink", testRowCodec, ports.PortOptions{
+		Patterns: []ports.Pattern{ports.SQLPattern{Table: "readings", Op: "insert_reading"}},
+	})
+	if err != nil {
+		t.Fatalf("construct port: %v", err)
+	}
+	insErr := errors.New("insert failed")
+	errCh := make(chan error, 1)
+	p.Bind(ctx, adaptersql.DrainInsertAdapter(testRowCodec,
+		func(_ context.Context, _ testRow) error { return insErr },
+		adaptersql.DrainInsertOptions{OnError: func(e error) { errCh <- e }}))
+
+	src := make(chan testRow, 1)
+	src <- testRow{ID: "r1", Value: 1.0}
+	close(src)
+	p.Feed(ctx, gstream.From(ctx, src))
+
+	select {
+	case e := <-errCh:
+		var ise adaptersql.InsertStreamError
+		if !errors.As(e, &ise) {
+			t.Fatalf("want InsertStreamError, got %T", e)
+		}
+		if ise.Table != "readings" || ise.Op != "insert_reading" {
+			t.Errorf("want table/op from SQLPattern, got %q/%q", ise.Table, ise.Op)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timeout waiting for OnError")
+	}
+}

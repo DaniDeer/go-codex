@@ -6,6 +6,7 @@ import (
 	"github.com/DaniDeer/go-codex/api/reqreply"
 	"github.com/DaniDeer/go-codex/api/rest"
 	"github.com/DaniDeer/go-codex/codex"
+	"github.com/DaniDeer/go-codex/format"
 )
 
 // pattern kind keys — internal bookkeeping for the handles map.
@@ -14,6 +15,8 @@ const (
 	patternKindEvent    = "event"
 	patternKindReqReply = "reqreply"
 	patternKindMCP      = "mcp"
+	patternKindFile     = "file"
+	patternKindSQL      = "sql"
 )
 
 // patternHolder is implemented by every port type that supports [Pattern]
@@ -86,11 +89,58 @@ func MCPHandle[In, Out any](port any) (*apimcp.ToolHandle[In, Out], bool) {
 	return h, ok
 }
 
+// FileHandle returns the [format.File] built from port's declared
+// [FilePattern], or (zero, false) if the port declared no [FilePattern].
+// On a [SinkPort], T is the port's payload type; on an [IOPort], T is the
+// port's response type (the file's content is the port's response).
+func FileHandle[T any](port any) (format.File[T], bool) {
+	ph, ok := port.(patternHolder)
+	if !ok {
+		return format.File[T]{}, false
+	}
+	v, ok := ph.patternHandle(patternKindFile)
+	if !ok {
+		return format.File[T]{}, false
+	}
+	h, ok := v.(format.File[T])
+	return h, ok
+}
+
+// SQLMeta returns the [SQLPattern] metadata declared on port, or
+// (zero, false) if the port declared no [SQLPattern].
+func SQLMeta(port any) (SQLPattern, bool) {
+	ph, ok := port.(patternHolder)
+	if !ok {
+		return SQLPattern{}, false
+	}
+	v, ok := ph.patternHandle(patternKindSQL)
+	if !ok {
+		return SQLPattern{}, false
+	}
+	m, ok := v.(SQLPattern)
+	return m, ok
+}
+
+// fileFormatFor maps a [FileFormatKind] to a concrete [format.Format] built
+// from the port's codec. JSON is the default (zero value).
+func fileFormatFor[T any](kind FileFormatKind, codec codex.Codec[T]) format.Format[T] {
+	switch kind {
+	case FileFormatYAML:
+		return format.YAML(codec)
+	case FileFormatTOML:
+		return format.TOML(codec)
+	default:
+		return format.JSON(codec)
+	}
+}
+
 // buildEventPatternHandles scans patterns for an [EventPattern] and builds a
 // *events.ChannelHandle[T] via [events.Channel.Register] — the SAME call a
 // hand-declared channel makes. Used by [SourcePort] (subscribe) and [SinkPort]
 // (publish) construction — both are single-codec ports, matching EventPattern's
-// single payload type.
+// single payload type. It also handles [FilePattern] (building a
+// format.File[T] from the port's codec, infallible) and [SQLPattern]
+// (metadata-only, stored for [SQLMeta] / [WithSQLMeta] propagation).
 //
 // builder is used when non-nil (giving the handle full parity with a
 // hand-registered channel: security schemes, global security, topic
@@ -111,21 +161,30 @@ func buildEventPatternHandles[T any](
 	handles = make(map[string]any, len(patterns))
 	specs = make(map[string]any, len(patterns))
 	for _, p := range patterns {
-		ep, ok := p.(EventPattern)
-		if !ok {
-			continue
+		switch pat := p.(type) {
+		case EventPattern:
+			channel := events.NewChannel[T](pat.Topic, codec, pat.Opts...)
+			b := builder
+			if b == nil {
+				b = events.NewBuilder(events.Info{})
+			}
+			handle, err := channel.Register(b)
+			if err != nil {
+				return nil, nil, PatternRegisterError{Port: portName, Kind: patternKindEvent, Err: err}
+			}
+			handles[patternKindEvent] = handle
+			specs[patternKindEvent] = channel
+		case FilePattern:
+			// format.NewFile is infallible — spec-capture only.
+			f := format.NewFile(pat.Path, fileFormatFor(pat.Format, codec), pat.Opts...)
+			handles[patternKindFile] = f
+			specs[patternKindFile] = f
+		case SQLPattern:
+			// Metadata-only: no handle to build, no spec document. Stored for
+			// [SQLMeta] and propagated to adapters via [WithSQLMeta] at Bind.
+			handles[patternKindSQL] = pat
+			specs[patternKindSQL] = pat
 		}
-		channel := events.NewChannel[T](ep.Topic, codec, ep.Opts...)
-		b := builder
-		if b == nil {
-			b = events.NewBuilder(events.Info{})
-		}
-		handle, err := channel.Register(b)
-		if err != nil {
-			return nil, nil, PatternRegisterError{Port: portName, Kind: patternKindEvent, Err: err}
-		}
-		handles[patternKindEvent] = handle
-		specs[patternKindEvent] = channel
 	}
 	return handles, specs, nil
 }
@@ -134,7 +193,9 @@ func buildEventPatternHandles[T any](
 // [ReqReplyPattern], and [MCPPattern] and builds the corresponding handle for
 // each found via Register — the SAME call a hand-declared route/tool makes.
 // Used by [IOPort] (client call) and [ToolPort] (server pipeline) construction
-// — both are dual-codec ports.
+// — both are dual-codec ports. It also handles [FilePattern] (building a
+// format.File[Resp] from the port's RESPONSE codec, infallible) and
+// [SQLPattern] (metadata-only).
 //
 // restBuilder/reqReplyBuilder/mcpBuilder are used when non-nil (full parity
 // with a hand-registered route/tool); when nil, a private, single-use Builder
@@ -194,6 +255,16 @@ func buildDualCodecPatternHandles[Req, Resp any](
 			}
 			handles[patternKindMCP] = handle
 			specs[patternKindMCP] = tool
+		case FilePattern:
+			// The file's content is the port's RESPONSE type — a per-item
+			// retrieval reads a format.File[Resp]. format.NewFile is infallible.
+			f := format.NewFile(pat.Path, fileFormatFor(pat.Format, respCodec), pat.Opts...)
+			handles[patternKindFile] = f
+			specs[patternKindFile] = f
+		case SQLPattern:
+			// Metadata-only — see buildEventPatternHandles.
+			handles[patternKindSQL] = pat
+			specs[patternKindSQL] = pat
 		}
 	}
 	return handles, specs, nil

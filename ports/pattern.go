@@ -5,6 +5,7 @@ import (
 	apimcp "github.com/DaniDeer/go-codex/api/mcp"
 	"github.com/DaniDeer/go-codex/api/reqreply"
 	"github.com/DaniDeer/go-codex/api/rest"
+	"github.com/DaniDeer/go-codex/format"
 )
 
 // Pattern is the sealed interface for a port's declared communication pattern.
@@ -17,12 +18,17 @@ import (
 //   - [EventPattern] — topic-shaped pub/sub (mqtt, mqtt5, zeromq)
 //   - [ReqReplyPattern] — topic-shaped request/reply (mqtt5, zeromq)
 //   - [MCPPattern] — MCP tool (mcpgo)
+//   - [FilePattern] — typed-file-shaped (file)
+//   - [SQLPattern] — SQL metadata (sql)
 //
-// Each Pattern is a thin wrapper around the existing rest/events/reqreply/mcp
-// declarative option vocabulary — no new param types are introduced. A port
-// builds its own handle from the Pattern at construction time, builder-free
-// (via each Route/Channel/Tool type's ClientHandle method), retrievable with
-// [RESTHandle], [EventHandle], [ReqReplyHandle], and [MCPHandle].
+// Each Pattern is a thin wrapper around the existing rest/events/reqreply/mcp/
+// format declarative option vocabulary — no new param types are introduced. A
+// port builds its own handle from the Pattern at construction time via
+// Route/Channel/Tool.Register (against the matching [PortOptions] builder
+// field, or a private single-use builder when nil), retrievable with
+// [RESTHandle], [EventHandle], [ReqReplyHandle], [MCPHandle], and
+// [FileHandle]. [SQLPattern] builds no handle — its metadata is retrievable
+// with [SQLMeta] and propagated to adapters via [WithSQLMeta].
 type Pattern interface{ isPortPattern() }
 
 // RESTPattern declares an HTTP-shaped communication pattern for a port bound
@@ -110,3 +116,68 @@ type MCPPattern struct {
 }
 
 func (MCPPattern) isPortPattern() {}
+
+// FileFormatKind selects the wire format a [FilePattern]-built [format.File]
+// uses, applied to the port's own codec. [FileFormatJSON] is the zero value
+// and default.
+type FileFormatKind int
+
+const (
+	// FileFormatJSON encodes/decodes the file as JSON (default).
+	FileFormatJSON FileFormatKind = iota
+	// FileFormatYAML encodes/decodes the file as YAML.
+	FileFormatYAML
+	// FileFormatTOML encodes/decodes the file as TOML.
+	FileFormatTOML
+)
+
+// FilePattern declares a typed-file-shaped pattern for a port bound to the
+// file adapter. Path and Opts mirror [format.NewFile]'s first and third
+// arguments; the [format.Format] argument is derived from the port's codec
+// and the Format kind ([format.JSON] of the codec by default). For a custom
+// Format beyond JSON/YAML/TOML, fall back to handle-first wiring
+// ([format.NewFile] by hand).
+//
+// On a [SinkPort], the built handle is a format.File of the port's payload
+// type — pairs with file.DrainWriteFileAdapter. On an [IOPort], the built
+// handle is a format.File of the port's response type (the file's content is
+// the port's response) — pairs with file.ReadAdapter. Retrieve it with
+// [FileHandle].
+//
+//	ports.FilePattern{
+//	    Path: "data/{sensorID}/calibration.json",
+//	    Opts: []format.FileOpt{
+//	        format.FilePathParam{Name: "sensorID"}.WithCodec(sensorIDCodec),
+//	    },
+//	}
+type FilePattern struct {
+	// Path is the file path template (e.g. "data/{sensorID}/calibration.json").
+	Path string
+	// Format selects JSON (default), YAML, or TOML.
+	Format FileFormatKind
+	// Opts carries the same variadic options [format.NewFile] accepts.
+	Opts []format.FileOpt
+}
+
+func (FilePattern) isPortPattern() {}
+
+// SQLPattern declares SQL metadata for a port bound to a sql adapter. Unlike
+// the handle-building patterns, SQLPattern is deliberately metadata-only: SQL
+// query text and bind-parameter syntax are driver-specific and stay in the
+// caller's typed queryFn/insertFn closures — there is no template for go-codex
+// to parse, no handle, and no spec document.
+//
+// Table and Op are declared once on the port and propagated to the bound
+// adapter via context ([WithSQLMeta] / [SQLMetaFromContext]); the sql
+// adapters default their options' Table/Op fields from it when the explicit
+// fields are empty. Retrieve the declared metadata with [SQLMeta].
+//
+//	ports.SQLPattern{Table: "readings", Op: "insert_reading"}
+type SQLPattern struct {
+	// Table names the table the port reads from / writes to.
+	Table string
+	// Op names the operation (e.g. "insert_reading", "list_calibrations").
+	Op string
+}
+
+func (SQLPattern) isPortPattern() {}

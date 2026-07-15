@@ -24,13 +24,35 @@ import (
 	gstream "github.com/DaniDeer/go-codex/stream"
 )
 
+// resolveTableOp defaults table and op from the bound port's declared
+// [ports.SQLPattern] (via [ports.SQLMetaFromContext]) when the explicit
+// option fields are empty. Explicit values always win.
+func resolveTableOp(ctx context.Context, table, op string) (string, string) {
+	if table != "" && op != "" {
+		return table, op
+	}
+	m, ok := ports.SQLMetaFromContext(ctx)
+	if !ok {
+		return table, op
+	}
+	if table == "" {
+		table = m.Table
+	}
+	if op == "" {
+		op = m.Op
+	}
+	return table, op
+}
+
 // ── QueryAdapter ──────────────────────────────────────────────────────────────
 
 // QueryStreamOptions configures [QueryAdapter].
 type QueryStreamOptions struct {
 	// Table names the table being queried. Used in [QueryStreamError] context.
+	// When empty, defaults from the bound port's [ports.SQLPattern] declaration.
 	Table string
 	// Op names the query operation. Used in [QueryStreamError] context.
+	// When empty, defaults from the bound port's [ports.SQLPattern] declaration.
 	Op string
 	// Observer receives per-row lifecycle events.
 	Observer stats.Observer
@@ -67,6 +89,7 @@ func (a *sqlQueryAdapter[T]) Activate(ctx context.Context, dst chan<- T, errs ch
 	if obs == nil {
 		obs = stats.ObserverFromContext(ctx)
 	}
+	table, op := resolveTableOp(ctx, a.opts.Table, a.opts.Op)
 	ticker := time.NewTicker(a.interval)
 	defer ticker.Stop()
 	for {
@@ -76,7 +99,7 @@ func (a *sqlQueryAdapter[T]) Activate(ctx context.Context, dst chan<- T, errs ch
 		case <-ticker.C:
 			rows, err := a.queryFn(ctx)
 			if err != nil {
-				qse := QueryStreamError{Table: a.opts.Table, Op: a.opts.Op, Err: err}
+				qse := QueryStreamError{Table: table, Op: op, Err: err}
 				select {
 				case errs <- qse:
 				case <-ctx.Done():
@@ -86,8 +109,8 @@ func (a *sqlQueryAdapter[T]) Activate(ctx context.Context, dst chan<- T, errs ch
 			}
 			for _, row := range rows {
 				validated, valErr := Validate(a.codec, row, ValidateOptions{
-					Table:    a.opts.Table,
-					Op:       a.opts.Op,
+					Table:    table,
+					Op:       op,
 					Observer: obs,
 				})
 				if valErr != nil {
@@ -112,6 +135,8 @@ func (a *sqlQueryAdapter[T]) Activate(ctx context.Context, dst chan<- T, errs ch
 
 // DrainInsertOptions configures [DrainInsertAdapter].
 type DrainInsertOptions struct {
+	// Table and Op provide error/observability context. When empty, they
+	// default from the bound port's [ports.SQLPattern] declaration.
 	Table    string
 	Op       string
 	OnError  func(error)
@@ -146,11 +171,12 @@ func (a *sqlDrainInsertAdapter[T]) Activate(ctx context.Context, src gstream.Str
 		obs = stats.ObserverFromContext(ctx)
 	}
 	onErr := a.opts.OnError
+	table, op := resolveTableOp(ctx, a.opts.Table, a.opts.Op)
 	gstream.Drain(ctx, src,
 		func(ctx context.Context, v T) error {
 			validated, valErr := Validate(a.codec, v, ValidateOptions{
-				Table:    a.opts.Table,
-				Op:       a.opts.Op,
+				Table:    table,
+				Op:       op,
 				Observer: obs,
 			})
 			if valErr != nil {
@@ -160,7 +186,7 @@ func (a *sqlDrainInsertAdapter[T]) Activate(ctx context.Context, src gstream.Str
 				return nil
 			}
 			if err := a.insertFn(ctx, validated); err != nil {
-				ise := InsertStreamError{Table: a.opts.Table, Op: a.opts.Op, Err: err}
+				ise := InsertStreamError{Table: table, Op: op, Err: err}
 				if onErr != nil {
 					onErr(ise)
 				}
@@ -180,6 +206,8 @@ func (a *sqlDrainInsertAdapter[T]) Activate(ctx context.Context, src gstream.Str
 
 // QueryEachStreamOptions configures [QueryEachAdapter].
 type QueryEachStreamOptions struct {
+	// Table and Op provide error/observability context. When empty, they
+	// default from the bound port's [ports.SQLPattern] declaration.
 	Table    string
 	Op       string
 	Observer stats.Observer
@@ -215,6 +243,7 @@ func (a *sqlQueryEachAdapter[In, T]) Transform(ctx context.Context, src gstream.
 	if obs == nil {
 		obs = stats.ObserverFromContext(ctx)
 	}
+	table, op := resolveTableOp(ctx, a.opts.Table, a.opts.Op)
 	values := make(chan T, a.opts.Buffer)
 	errs := make(chan error, a.opts.Buffer)
 	go func() {
@@ -233,7 +262,7 @@ func (a *sqlQueryEachAdapter[In, T]) Transform(ctx context.Context, src gstream.
 				}
 				rows, err := a.queryFn(ctx, item)
 				if err != nil {
-					qse := QueryStreamError{Table: a.opts.Table, Op: a.opts.Op, Err: err}
+					qse := QueryStreamError{Table: table, Op: op, Err: err}
 					select {
 					case errs <- qse:
 					case <-ctx.Done():
@@ -243,8 +272,8 @@ func (a *sqlQueryEachAdapter[In, T]) Transform(ctx context.Context, src gstream.
 				}
 				for _, row := range rows {
 					validated, valErr := Validate(a.codec, row, ValidateOptions{
-						Table:    a.opts.Table,
-						Op:       a.opts.Op,
+						Table:    table,
+						Op:       op,
 						Observer: obs,
 					})
 					if valErr != nil {

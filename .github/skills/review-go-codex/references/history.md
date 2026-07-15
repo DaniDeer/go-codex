@@ -1,8 +1,17 @@
-# go-codex Review History (R1–R49)
+# go-codex Review History (R1–R50)
 
 Do not re-report any of these findings. They have been implemented and tested.
 
 ---
+
+## Round 50 (inside-out pipeline wiring — Phase 6: `FilePattern` + `SQLPattern`)
+
+- **`ports.FilePattern{Path, Format FileFormatKind, Opts []format.FileOpt}`** — declares a typed file on the port. `FileFormatKind` (`FileFormatJSON` default/`FileFormatYAML`/`FileFormatTOML`) is applied to the port's own codec inside the build fns — a generic `format.Format[T]` cannot sit in the non-generic `Pattern` struct; custom formats stay handle-first. On `SinkPort[T]` the handle is `format.File[T]` (payload codec); on `IOPort[Req,Resp]` it is `format.File[Resp]` (**response** codec — the file content IS the port's response). Accessor: `ports.FileHandle[T](port) (format.File[T], bool)`. Construction is infallible (`format.NewFile` returns a value) — no constructor signature changes. No `RegisterFile` — files have no spec document concept. `ports` now imports `format` (no cycle).
+- **`ports.SQLPattern{Table, Op string}` is metadata-only BY DESIGN — do not flag the asymmetry with the handle-building patterns.** SQL query text/placeholders are driver-specific typed closures owned by the adapter constructor; there is no template to parse, no handle, no spec. Propagation: `WithSQLMeta(ctx, m)`/`SQLMetaFromContext(ctx) (SQLPattern, bool)` mirror `WithParams`; the unexported `adapterContext` helper (ports/sql_meta.go) wraps ctx in `SourcePort.Bind`/`SinkPort.Bind`/`ToolPort.Bind`/`IOPort.Connect` (IOPort's adapter sees ctx at `Transform`, not `Bind`). Accessor: `ports.SQLMeta(port)`.
+- **All three sql adapters default `Table`/`Op` from context** via `resolveTableOp(ctx, table, op)` — explicit option values always win; resolved once per `Activate`/`Transform`, not per item.
+- **`file.ReadAdapter[In,Resp]`** — new 2-type per-item read pairing with `FilePattern` (file content = response). Thin wrapper delegating to `fileReadEachAdapter[In,Resp,Resp]` with identity `combine`; own `AdapterName() == "file.ReadAdapter"`. The 3-type `ReadEachAdapter[In,T,Resp]` stays handle-first for enrichment — both existing is intentional, not duplication.
+- **Out of scope, intentional**: `FilePattern` on `SourcePort` (`ScanAdapter` is line-oriented with a plain path, `WatchAdapter` emits paths — nothing to declare) and on `ToolPort` (file/SQL are storage, not serving transports).
+- **`examples/sensor-service`** demonstrates both: `SQLPattern` on the polling `rowPort` (empty `QueryStreamOptions`), `FilePattern` calibration-lookup `IOPort` with `file.ReadAdapter`.
 
 ## Round 49 (inside-out pipeline wiring — Phase 5: full `api` module parity in `Pattern`, one construction path)
 

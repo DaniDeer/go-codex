@@ -212,6 +212,8 @@ written by hand: the port makes that call **internally**.
 | `EventPattern{Topic, Opts}` | pub/sub (mqtt, mqtt5, zeromq) | `events.ChannelOpt` |
 | `ReqReplyPattern{Topic, Opts}` | request/reply (mqtt5, zeromq) | `reqreply.RouteOpt` |
 | `MCPPattern{Name, Opts}` | MCP tool (mcpgo) | `apimcp.ToolOpt` |
+| `FilePattern{Path, Format, Opts}` | typed files (file) | `format.FileOpt` |
+| `SQLPattern{Table, Op}` | SQL (sql) | — (metadata-only) |
 
 A port declares one `Pattern` entry **per protocol family** it will be bound to — a
 `ToolPort` exposed over HTTP + MQTT 5 + MCP simultaneously (as in the `OEETool`
@@ -224,6 +226,8 @@ retrieved with the matching accessor:
 | `ports.EventHandle[T](port)` | `(*events.ChannelHandle[T], bool)` |
 | `ports.ReqReplyHandle[Req,Resp](port)` | `(*reqreply.RouteHandle[Req,Resp], bool)` |
 | `ports.MCPHandle[In,Out](port)` | `(*apimcp.ToolHandle[In,Out], bool)` |
+| `ports.FileHandle[T](port)` | `(format.File[T], bool)` |
+| `ports.SQLMeta(port)` | `(ports.SQLPattern, bool)` |
 
 Each accessor returns `(nil, false)` — not an error, not a panic — when the port
 declared no matching `Pattern`.
@@ -301,6 +305,70 @@ spec, _ := b.OpenAPISpec()
 > all now return `(*Port, error)` — `Register` is fallible (unknown param names,
 > path/topic constraint failures, duplicate names on `reqreply`/`mcp`) in ways the
 > old builder-free construction wasn't.
+
+### `FilePattern` — typed files as sink or intermediate IO
+
+`FilePattern` gives the file adapter the same declare-once story: the path
+template, wire format, and path-param codecs live on the port; the built
+`format.File` handle comes back out via `ports.FileHandle`. `Format` is a
+`FileFormatKind` enum — `FileFormatJSON` (default), `FileFormatYAML`, or
+`FileFormatTOML` — applied to the port's own codec (a custom `format.Format[T]`
+can't sit in a non-generic struct; for those, build the `format.File` by hand).
+
+- On a **`SinkPort[T]`** the handle is a `format.File[T]` of the payload type —
+  pairs with `file.DrainWriteFileAdapter`.
+- On an **`IOPort[Req,Resp]`** the handle is a `format.File[Resp]` of the
+  **response** type (the file's content *is* the port's response) — pairs with
+  `file.ReadAdapter`, the 2-type per-item read. (The 3-type
+  `file.ReadEachAdapter`, with its independent file-content type and `combine`
+  func, stays handle-first for enrichment cases.)
+
+```go
+// domain — per-item calibration lookup as intermediate IO, zero adapter imports
+var Calibration = codex.Must(ports.NewIOPort[SensorReading, CalibrationData](
+    "calibration", readingCodec, calibrationCodec,
+    ports.PortOptions{Patterns: []ports.Pattern{
+        ports.FilePattern{
+            Path: "data/{sensorID}/calibration.json", // JSON is the default Format
+            Opts: []format.FileOpt{format.FilePathParam{Name: "sensorID"}.WithCodec(uuidCodec)},
+        },
+    }}))
+
+// main.go — handle derived from the port; swap file → SQL → HTTP freely
+calibFile, _ := ports.FileHandle[CalibrationData](domain.Calibration)
+domain.Calibration.Bind(ctx, file.ReadAdapter(calibFile,
+    func(r SensorReading) map[string]string { return map[string]string{"sensorID": r.SensorID} },
+    file.ReadEachAdapterOptions{}))
+```
+
+There is no `RegisterFile` — files have no spec document concept
+(`File.PathParamSchemas()` already serves doc tooling), and `format.NewFile` is
+infallible, so a `FilePattern` never causes the port constructor to error.
+
+### `SQLPattern` — metadata-only, by design
+
+SQL has no path/topic template: query text and bind-parameter syntax are
+driver-specific and stay in your typed `queryFn`/`insertFn` closures. The
+declarative surface is therefore just **`Table` and `Op`**, declared once on
+the port instead of repeated in every adapter options struct. They feed error
+context (`QueryStreamError`/`InsertStreamError`/`SQLValidationError`) and
+observer location strings.
+
+Propagation mirrors `Params`: every `Bind` (and `IOPort.Connect`) wraps the
+adapter context via `ports.WithSQLMeta`; `sql.QueryAdapter`,
+`sql.QueryEachAdapter`, and `sql.DrainInsertAdapter` default their options'
+`Table`/`Op` from `ports.SQLMetaFromContext` when the explicit fields are
+empty — explicit values always win.
+
+```go
+var Readings = codex.Must(ports.NewSinkPort[db.Reading]("sql/readings", readingCodec,
+    ports.PortOptions{Patterns: []ports.Pattern{
+        ports.SQLPattern{Table: "readings", Op: "insert_reading"},
+    }}))
+
+// main.go — Table/Op no longer repeated in the options struct
+domain.Readings.Bind(ctx, sql.DrainInsertAdapter(readingCodec, insertFn, sql.DrainInsertOptions{}))
+```
 
 ---
 

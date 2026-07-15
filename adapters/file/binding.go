@@ -286,6 +286,50 @@ func (a *fileReadEachAdapter[In, T, Resp]) Transform(ctx context.Context, src gs
 	return gstream.Stream[Resp]{Values: outCh, Errors: errCh}
 }
 
+// ── ReadAdapter ───────────────────────────────────────────────────────────────
+
+// ReadAdapter returns a [ports.IOAdapter] that reads a complete typed file for
+// each In item and emits the file content directly as the response — the
+// 2-type complement of [ReadEachAdapter] (whose independent file-content type
+// and combine func serve enrichment). Pairs with a [ports.FilePattern]
+// declared on a ports.IOPort[In, Resp], where the file content IS the port's
+// response type:
+//
+//	calibFile, _ := ports.FileHandle[CalibrationData](domain.Calibration)
+//	domain.Calibration.Bind(ctx, file.ReadAdapter(calibFile,
+//	    func(r SensorReading) map[string]string {
+//	        return map[string]string{"sensorID": r.SensorID}
+//	    },
+//	    file.ReadEachAdapterOptions{}))
+//
+// When the bound [ports.IOPort] declares Params, each varsFor result is
+// validated with [ports.ValidateParams] before the file read; a validation
+// failure is delivered as [ReadError] wrapping [codex.ValidationErrors].
+func ReadAdapter[In, Resp any](
+	f format.File[Resp],
+	varsFor func(In) map[string]string,
+	opts ReadEachAdapterOptions,
+) ports.IOAdapter[In, Resp] {
+	return &fileReadAdapter[In, Resp]{
+		inner: &fileReadEachAdapter[In, Resp, Resp]{
+			f:       f,
+			varsFor: varsFor,
+			combine: func(_ In, t Resp) Resp { return t },
+			opts:    opts,
+		},
+	}
+}
+
+type fileReadAdapter[In, Resp any] struct {
+	inner *fileReadEachAdapter[In, Resp, Resp]
+}
+
+func (a *fileReadAdapter[In, Resp]) AdapterName() string { return "file.ReadAdapter" }
+
+func (a *fileReadAdapter[In, Resp]) Transform(ctx context.Context, src gstream.Stream[In]) gstream.Stream[Resp] {
+	return a.inner.Transform(ctx, src)
+}
+
 // ── DrainWriteAdapter ─────────────────────────────────────────────────────────
 
 // DrainWriteAdapterOptions configures [DrainWriteAdapter].

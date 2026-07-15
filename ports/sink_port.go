@@ -128,7 +128,7 @@ func (p *SinkPort[T]) Bind(ctx context.Context, a SinkAdapter[T]) {
 	if obs == nil {
 		obs = stats.ObserverFromContext(ctx)
 	}
-	adapterCtx := WithParams(ctx, p.params)
+	adapterCtx := adapterContext(ctx, p.params, p.handles)
 
 	p.wg.Add(1)
 	go func() {

@@ -125,7 +125,7 @@ func (p *SourcePort[T]) Bind(ctx context.Context, a SourceAdapter[T]) {
 	if obs == nil {
 		obs = stats.ObserverFromContext(ctx)
 	}
-	adapterCtx := WithParams(ctx, p.params)
+	adapterCtx := adapterContext(ctx, p.params, p.handles)
 
 	p.wg.Add(1)
 	go func() {

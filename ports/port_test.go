@@ -14,6 +14,7 @@ import (
 	"github.com/DaniDeer/go-codex/api/reqreply"
 	"github.com/DaniDeer/go-codex/api/rest"
 	"github.com/DaniDeer/go-codex/codex"
+	"github.com/DaniDeer/go-codex/format"
 	"github.com/DaniDeer/go-codex/ports"
 	"github.com/DaniDeer/go-codex/route"
 	"github.com/DaniDeer/go-codex/stats"
@@ -1163,5 +1164,200 @@ func TestRESTPattern_WithBuilder_PathConstraintFailure_ReturnsPatternRegisterErr
 	var ipe rest.InvalidPathError
 	if !errors.As(err, &ipe) {
 		t.Errorf("want InvalidPathError wrapped inside, got %v", err)
+	}
+}
+
+// ── Phase 6: FilePattern / SQLPattern ─────────────────────────────────────────
+
+type cfgItem struct{ V int }
+
+var cfgCodec = codex.Struct[cfgItem](
+	codex.RequiredField("v", codex.Int(), func(x cfgItem) int { return x.V }, func(x *cfgItem, v int) { x.V = v }),
+)
+
+func TestFilePattern_SinkPort_BuildsFileHandle(t *testing.T) {
+	p, err := ports.NewSinkPort[cfgItem]("file-sink", cfgCodec, ports.PortOptions{
+		Patterns: []ports.Pattern{
+			ports.FilePattern{
+				Path: "data/{id}/item.json",
+				Opts: []format.FileOpt{format.FilePathParam{Name: "id"}},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("construct port: %v", err)
+	}
+	f, ok := ports.FileHandle[cfgItem](p)
+	if !ok {
+		t.Fatal("want FileHandle to be present")
+	}
+	if f.Template != "data/{id}/item.json" {
+		t.Errorf("want template preserved, got %q", f.Template)
+	}
+	path, err := f.BuildPath(map[string]string{"id": "abc"})
+	if err != nil {
+		t.Fatalf("BuildPath: %v", err)
+	}
+	if path != "data/abc/item.json" {
+		t.Errorf("want data/abc/item.json, got %q", path)
+	}
+}
+
+func TestFilePattern_IOPort_UsesRespCodec(t *testing.T) {
+	p, err := ports.NewIOPort[int, cfgItem]("file-io", intCodec, cfgCodec, ports.PortOptions{
+		Patterns: []ports.Pattern{
+			ports.FilePattern{Path: "item.json"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("construct port: %v", err)
+	}
+	// The handle is a format.File of the RESPONSE type…
+	if _, ok := ports.FileHandle[cfgItem](p); !ok {
+		t.Error("want FileHandle[cfgItem] (response type) to be present")
+	}
+	// …not of the request type.
+	if _, ok := ports.FileHandle[int](p); ok {
+		t.Error("want FileHandle[int] (request type) to be absent")
+	}
+}
+
+func TestFilePattern_FormatKinds(t *testing.T) {
+	kinds := []struct {
+		name string
+		kind ports.FileFormatKind
+		file string
+	}{
+		{"json", ports.FileFormatJSON, "item.json"},
+		{"yaml", ports.FileFormatYAML, "item.yaml"},
+		{"toml", ports.FileFormatTOML, "item.toml"},
+	}
+	for _, k := range kinds {
+		t.Run(k.name, func(t *testing.T) {
+			dir := t.TempDir()
+			p, err := ports.NewSinkPort[cfgItem]("fmt-"+k.name, cfgCodec, ports.PortOptions{
+				Patterns: []ports.Pattern{
+					ports.FilePattern{Path: dir + "/" + k.file, Format: k.kind},
+				},
+			})
+			if err != nil {
+				t.Fatalf("construct port: %v", err)
+			}
+			f, ok := ports.FileHandle[cfgItem](p)
+			if !ok {
+				t.Fatal("want FileHandle to be present")
+			}
+			if err := f.Write(nil, cfgItem{V: 7}, format.FileOptions{}); err != nil {
+				t.Fatalf("write: %v", err)
+			}
+			got, err := f.Read(nil, format.FileOptions{})
+			if err != nil {
+				t.Fatalf("read: %v", err)
+			}
+			if got.V != 7 {
+				t.Errorf("round-trip: want V=7, got %d", got.V)
+			}
+		})
+	}
+}
+
+func TestFileHandle_MissingPattern_ReturnsFalse(t *testing.T) {
+	p := intSinkPort("no-file-pattern", 0)
+	if _, ok := ports.FileHandle[int](p); ok {
+		t.Error("want FileHandle to be absent")
+	}
+	if _, ok := ports.FileHandle[int](struct{}{}); ok {
+		t.Error("want FileHandle to be absent for non-port value")
+	}
+}
+
+func TestSQLPattern_MetaAccessor(t *testing.T) {
+	p, err := ports.NewSinkPort[int]("sql-sink", intCodec, ports.PortOptions{
+		Patterns: []ports.Pattern{
+			ports.SQLPattern{Table: "readings", Op: "insert_reading"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("construct port: %v", err)
+	}
+	m, ok := ports.SQLMeta(p)
+	if !ok {
+		t.Fatal("want SQLMeta to be present")
+	}
+	if m.Table != "readings" || m.Op != "insert_reading" {
+		t.Errorf("want {readings insert_reading}, got %+v", m)
+	}
+	if _, ok := ports.SQLMeta(intSinkPort("plain", 0)); ok {
+		t.Error("want SQLMeta to be absent on a port without SQLPattern")
+	}
+}
+
+func TestWithSQLMeta_FromContext(t *testing.T) {
+	ctx := ports.WithSQLMeta(context.Background(), ports.SQLPattern{Table: "t", Op: "o"})
+	m, ok := ports.SQLMetaFromContext(ctx)
+	if !ok || m.Table != "t" || m.Op != "o" {
+		t.Errorf("want {t o}, got %+v ok=%v", m, ok)
+	}
+	if _, ok := ports.SQLMetaFromContext(context.Background()); ok {
+		t.Error("want no SQLMeta in a fresh context")
+	}
+}
+
+func TestSQLMeta_PropagatedOnBindAndConnect(t *testing.T) {
+	ctx := context.Background()
+
+	// IOPort: adapter Transform ctx (via Connect) must carry the metadata.
+	iop, err := ports.NewIOPort[int, int]("sql-io", intCodec, intCodec, ports.PortOptions{
+		Patterns: []ports.Pattern{ports.SQLPattern{Table: "calib", Op: "get"}},
+	})
+	if err != nil {
+		t.Fatalf("construct port: %v", err)
+	}
+	var got ports.SQLPattern
+	var gotOK bool
+	if err := iop.Bind(ctx, ports.FuncIOAdapter(func(c context.Context, v int) (int, error) {
+		got, gotOK = ports.SQLMetaFromContext(c)
+		return v, nil
+	})); err != nil {
+		t.Fatalf("bind: %v", err)
+	}
+	vals, errs := collectStream(ctx, iop.Connect(ctx, gstream.From(ctx, feedChan(1))))
+	if len(errs) != 0 || len(vals) != 1 {
+		t.Fatalf("want 1 value 0 errors, got %d/%d", len(vals), len(errs))
+	}
+	if !gotOK || got.Table != "calib" || got.Op != "get" {
+		t.Errorf("want {calib get} in adapter ctx, got %+v ok=%v", got, gotOK)
+	}
+
+	// SinkPort: adapter Activate ctx (via Bind) must carry the metadata.
+	sp, err := ports.NewSinkPort[int]("sql-sink2", intCodec, ports.PortOptions{
+		Patterns: []ports.Pattern{ports.SQLPattern{Table: "rd", Op: "ins"}},
+	})
+	if err != nil {
+		t.Fatalf("construct port: %v", err)
+	}
+	metaCh := make(chan ports.SQLPattern, 1)
+	sp.Bind(ctx, sinkCtxProbe{metaCh: metaCh})
+	sp.Feed(ctx, gstream.From(ctx, feedChan(1)))
+	select {
+	case m := <-metaCh:
+		if m.Table != "rd" || m.Op != "ins" {
+			t.Errorf("want {rd ins}, got %+v", m)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timeout waiting for sink adapter ctx probe")
+	}
+}
+
+type sinkCtxProbe struct{ metaCh chan ports.SQLPattern }
+
+func (s sinkCtxProbe) AdapterName() string { return "test.sinkCtxProbe" }
+
+func (s sinkCtxProbe) Activate(ctx context.Context, src gstream.Stream[int]) {
+	m, _ := ports.SQLMetaFromContext(ctx)
+	s.metaCh <- m
+	for range src.Values {
+	}
+	for range src.Errors {
 	}
 }
