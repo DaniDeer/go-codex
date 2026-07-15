@@ -66,3 +66,52 @@ if err != nil {
 ```
 
 See [Config, CLI & Protobuf — Single env var](../features/config.md#single-env-var-fromenvvar) for full details.
+
+## Passing env config into pipeline functions
+
+Pipeline functions (`forge.NewFunction` apply funcs, `gstream.Filter`/`FlatMapSlice`
+predicates, …) are deliberately pure — no `ctx`, no side channels. The clean way to
+parameterize them from env vars is the **validated-config factory pattern**: load and
+validate config once in `main()`, then pass the typed struct into a factory that
+closes over it.
+
+```go
+// domain layer — TYPED, already-validated config; zero env access here.
+type AlertConfig struct{ Threshold float64 }
+
+var alertConfigCodec = codex.Struct[AlertConfig](
+    codex.DefaultField("threshold",
+        codex.Float64().Refine(validate.MinFloat(0)).WithDescription("Alert threshold."),
+        50.0, // used when APP_ALERT_THRESHOLD is unset — also visible in the schema
+        func(c AlertConfig) float64 { return c.Threshold },
+        func(c *AlertConfig, v float64) { c.Threshold = v }),
+)
+
+// Factory closes over the config — the returned function stays pure and testable
+// (tests pass any AlertConfig directly; no env manipulation needed).
+func newShouldAlert(cfg AlertConfig) func(db.Reading) bool {
+    return func(r db.Reading) bool { return r.Value > cfg.Threshold }
+}
+
+// main() — load + validate ONCE, at the same place ports and adapters are wired.
+alertCfg, err := format.FromEnv(alertConfigCodec, "APP_ALERT_") // APP_ALERT_THRESHOLD
+must(err, "load alert config from env")
+shouldAlert := newShouldAlert(alertCfg)
+
+aboveThreshold := gstream.Filter(ctx, readings, shouldAlert)
+```
+
+The codec **is** the env contract: variable names, type coercion, constraints,
+defaults (`codex.DefaultField`), and documentation all live in one declaration —
+the same declare-once philosophy `ports.Pattern` applies to wire contracts.
+
+Why this and not the alternatives:
+
+| Alternative | Verdict |
+|---|---|
+| `os.Getenv` inside the pipeline function | **Anti-pattern** — unvalidated string, hidden dependency, untestable, re-read per call |
+| Context value (like `stats.WithObserver`) | Wrong tool — context is for *per-request* values (observer, trace span), not static config; loses compile-time typing |
+| An env `ports.SourceAdapter` | Synthetic fit — env vars are a construction-time concern, not a runtime stream a pipeline continuously reads |
+| Validated-config factory (above) | **Recommended** — validated once, typed everywhere, testable |
+
+→ [examples/sensor-service](https://github.com/DaniDeer/go-codex/tree/main/examples/sensor-service) — live demonstration: `APP_ALERT_THRESHOLD=90 go run ./examples/sensor-service` changes the alert filter and the printed stream topology; unset, the `DefaultField` value 50.0 applies.

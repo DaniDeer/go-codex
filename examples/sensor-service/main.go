@@ -32,8 +32,13 @@
 //
 //	buildInsertParams(CreateReadingReq) db.InsertReadingParams
 //	buildInsertParamsFromMQTT(MQTTPayload) db.InsertReadingParams
-//	shouldAlert(db.Reading) bool
-//	buildAlert(db.Reading) SensorAlert
+//	newShouldAlert(AlertConfig) func(db.Reading) bool    — validated-config factory
+//	newBuildAlert(AlertConfig) func(db.Reading) SensorAlert
+//
+// The alert factories demonstrate the recommended way to pass env vars into
+// pipeline functions: main() loads AlertConfig once via format.FromEnv
+// (APP_ALERT_THRESHOLD, default 50.0), and the factories close over the typed,
+// validated config — no os.Getenv in domain code, fully testable.
 //
 // Layer 3 (Infrastructure): HTTP adapter, mock MQTT client, SQL store.
 //
@@ -226,7 +231,24 @@ type SensorAlert struct {
 	At        string // RFC3339
 }
 
-const alertThreshold = 50.0
+// AlertConfig parameterizes the alerting pipeline functions. Loaded from env
+// vars in main() via format.FromEnv — the codec below is the single source of
+// truth for the env contract (name, type, constraint, default, docs):
+//
+//	APP_ALERT_THRESHOLD=80 go run ./examples/sensor-service
+//
+// When unset, DefaultField supplies 50.0 — the example runs with zero env setup.
+type AlertConfig struct {
+	Threshold float64
+}
+
+var alertConfigCodec = codex.Struct[AlertConfig](
+	codex.DefaultField("threshold",
+		codex.Float64().Refine(validate.MinFloat(0)).WithDescription("Alert when a reading's value exceeds this threshold."),
+		50.0,
+		func(c AlertConfig) float64 { return c.Threshold },
+		func(c *AlertConfig, v float64) { c.Threshold = v }),
+)
 
 // ── Layer 1: Field factory functions ─────────────────────────────────────────
 //
@@ -436,14 +458,24 @@ func buildInsertParamsFromMQTT(p MQTTPayload) db.InsertReadingParams {
 	}
 }
 
-func shouldAlert(r db.Reading) bool { return r.Value > alertThreshold }
+// newShouldAlert and newBuildAlert are validated-config factories: they take
+// TYPED, already-validated config and close over it — the returned pipeline
+// functions stay pure and testable (tests pass any AlertConfig directly, no
+// env manipulation needed). Zero env access in this layer; loading and
+// validation happen once in main() via format.FromEnv.
 
-func buildAlert(r db.Reading) SensorAlert {
-	return SensorAlert{
-		SensorID:  r.SensorID,
-		Value:     r.Value,
-		Threshold: alertThreshold,
-		At:        time.Now().UTC().Format(time.RFC3339),
+func newShouldAlert(cfg AlertConfig) func(db.Reading) bool {
+	return func(r db.Reading) bool { return r.Value > cfg.Threshold }
+}
+
+func newBuildAlert(cfg AlertConfig) func(db.Reading) SensorAlert {
+	return func(r db.Reading) SensorAlert {
+		return SensorAlert{
+			SensorID:  r.SensorID,
+			Value:     r.Value,
+			Threshold: cfg.Threshold,
+			At:        time.Now().UTC().Format(time.RFC3339),
+		}
 	}
 }
 
@@ -629,6 +661,18 @@ func main() {
 	// Store obs in the context once — MQTT, stream, sql, and HTTP adapters
 	// all resolve it automatically when Options.Observer is nil.
 	ctx = stats.WithObserver(ctx, obs)
+
+	// ── Env config → pipeline functions (validated-config factory pattern) ─
+	//
+	// Load + validate config from env vars ONCE, here — the same place ports
+	// and adapters are wired. alertConfigCodec is the env contract: name
+	// (APP_ALERT_THRESHOLD), type coercion, MinFloat(0) constraint, and the
+	// 50.0 default when unset. The factories below close over the typed
+	// config — pipeline code never touches os.Getenv.
+	alertCfg, err := format.FromEnv(alertConfigCodec, "APP_ALERT_")
+	must(err, "load alert config from env")
+	shouldAlert := newShouldAlert(alertCfg)
+	buildAlert := newBuildAlert(alertCfg)
 
 	// ── Database ───────────────────────────────────────────────────────────
 	sqlDB, err := sql.Open("sqlite", "file::memory:?cache=private")
@@ -839,8 +883,13 @@ func main() {
 		"unit":      "C",
 	})
 	mqttClient.deliver("sensors/"+sensorB+"/data", highPayload)
-	fmt.Printf("  → sensor %s: 87.3 C  (above %.0f° threshold — alert published)\n\n",
-		sensorB[:8], alertThreshold)
+	if shouldAlert(db.Reading{Value: 87.3}) {
+		fmt.Printf("  → sensor %s: 87.3 C  (above %.0f° threshold — alert published)\n\n",
+			sensorB[:8], alertCfg.Threshold)
+	} else {
+		fmt.Printf("  → sensor %s: 87.3 C  (below %.0f° threshold, no alert)\n\n",
+			sensorB[:8], alertCfg.Threshold)
+	}
 
 	// Give the async goroutines time to process both MQTT messages, then
 	// cancel the pipeline context to drain and shut down all stream operators.
@@ -960,7 +1009,7 @@ func main() {
 		WithDescription("Real-time sensor readings: decode → save → filter → alert.").
 		WithSource("mqtt/sensors/+/data", "Raw MQTT payloads from sensor network")
 	gstream.WithApply(topo, saveReadingFn)
-	topo.WithFilter(fmt.Sprintf("value > %.0f (alert threshold)", alertThreshold)).
+	topo.WithFilter(fmt.Sprintf("value > %.0f (alert threshold)", alertCfg.Threshold)).
 		WithSink("mqtt/alerts/{sensorID}", "Low-performance alert events")
 
 	fmt.Println("\n── Stream topology (stream.Topology) ────────────────────")

@@ -1567,3 +1567,34 @@ rather than the originally assumed uniform duplicate-detection story.
   `adapters/chi/adapter_test.go:1206` note, untouched), `go test ./...` (all
   packages pass), `just check` (staticcheck+gosec, 0 issues), all `examples/*/`
   exit 0.
+
+---
+
+## Phase 6 (candidate) — extending `Pattern` to SQL and file
+
+> **Status:** Analysis only — not yet planned in detail or implemented. Written up
+> in response to: *"Can this pattern approach in the ports be adapted to SQL DB
+> adapter, file (e.g. filesystem), and environment variables? … What is the
+> current approach for these IO types after implementation of phase 5?"*
+>
+> Env vars were part of the original question but are **resolved and removed from
+> this phase**: they are a construction-time concern, not an IO enforcement point —
+> no new `ports` API needed. The recommended approach (validated-config factory
+> pattern: `format.FromEnv` once in `main()`, factory closes over the typed config)
+> is documented in
+> [Config guide — Passing env config into pipeline functions](../guides/config.md#passing-env-config-into-pipeline-functions)
+> and demonstrated live in `examples/sensor-service` (`APP_ALERT_THRESHOLD`).
+
+### Current state per IO type (post Phase 5)
+
+| IO type | Has an `api/*`-style declarative builder? | Current declaration story | `Pattern` fit |
+|---|---|---|---|
+| **File** | **Yes** — `format.File[T]`, built via `format.NewFile[T](template, format.Format[T], ...FileOpt)`. `FilePathParam{Name,Description,Codec}.WithCodec(c)` mirrors `rest.PathParam` exactly. Always builder-free (there is no `format.Builder`/spec concept to register with — `NewFile` returns a usable `File[T]` directly, no `.Register()` step). | `file.ReadEachAdapter`/`file.DrainWriteFileAdapter` take a hand-built `format.File[T]` value directly — still "handle-first" (pre-`Pattern`) style. `file.ScanAdapter`/`WatchAdapter`/`DrainWriteAdapter` take a raw path string + `format.Format[T]` (no template, no params — nothing to declare). | **Good fit for `SinkPort[T]`** (`DrainWriteFileAdapter[T]`'s `T` matches `SinkPort[T]`'s `T` exactly — same shape as `EventPattern`). **Does not fit `IOPort[Req,Resp]`** (`ReadEachAdapter[In,T,Resp]` has a *third*, independent file-content type `T` distinct from `Req`/`Resp` — same category of mismatch as the already-documented REST ingest/SSE gap). |
+| **SQL** | **No** — and structurally can't, without inventing a fake spec layer. Query text and bind-parameter syntax (`?`, `$1`, named params) are driver/dialect-specific and are deliberately left to the caller's own `queryFn`/`insertFn` closures (`sql.QueryAdapter(codec, queryFn, interval, opts)`, `sql.DrainInsertAdapter(codec, insertFn, opts)`, `sql.QueryEachAdapter(codec, queryFn, opts)`). There is no `{var}` template string for go-codex to parse or validate — SQL placeholders are resolved by the driver, not by go-codex. | The "declaration" today *is* the codec (declared once, passed to the adapter constructor) plus free-text `QueryStreamOptions{Table,Op}`/`DrainInsertOptions{Table,Op}` metadata — used only for error/observability context (`SQLValidationError`, `RecordRequest` location strings), not for validation or routing. | **Only a lightweight, metadata-only fit** — a `SQLPattern{Table, Op string}` could let `Table`/`Op` be declared once on the port instead of repeated in the adapter's options struct, removing a small, real duplication. No param parsing, no handle, no `Register`, no spec — fundamentally different in kind from `RESTPattern`/`EventPattern`/etc. |
+
+### Recommendation
+
+- **File**: propose a `ports.FilePattern{Path string, Fmt format.Format[T]-equivalent, Opts []format.FileOpt}` usable from `PortOptions.Patterns` for **`SinkPort[T]`** only (mirrors `EventPattern`'s single-codec shape). Needs a design decision on how the `Format[T]` is supplied — either require it explicitly in `FilePattern` (since `format.File[T]` needs a concrete `Format[T]`, not just a `codex.Codec[T]`) or default to `format.JSON(port's codec)` when unspecified. `IOPort` enrichment (`ReadEachAdapter`) stays out of scope for the same structural reason `RESTPattern` doesn't cover REST ingest/SSE — track as a matching pair of "asymmetric-shape" open items.
+- **SQL**: propose a minimal `ports.SQLPattern{Table, Op string}` — pure metadata, no template/param parsing, no handle, no builder. `buildEventPatternHandles`-style plumbing doesn't apply; instead, thread `Table`/`Op` to the adapter the same way `Params` is threaded today (`ports.WithParams`-style context propagation, or a new small `ports.SQLMetaFromContext(ctx) (table, op string, ok bool)` helper) so `sql.QueryAdapter`/etc. can default their `QueryStreamOptions.Table`/`.Op` from the port's declaration instead of requiring the caller to repeat it. Low complexity, low risk, but also low-to-moderate value — confirm this is worth doing before implementing (it saves repeating two strings, not a validation/spec win).
+
+This phase is **not yet scoped into SQL todos** — the above is presented for direction before committing to an implementation plan (mirroring the earlier "IOParam-first vs. Pattern-first" decision point, since `SQLPattern`'s metadata-only shape is a genuinely different kind of thing from `RESTPattern`/`EventPattern`/`ReqReplyPattern`/`MCPPattern` and deserves an explicit "yes, still worth it" before writing code).

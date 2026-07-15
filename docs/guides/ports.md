@@ -323,6 +323,19 @@ failures as `ReadError`/`WriteError` wrapping `codex.ValidationErrors`. For
 handle-backed adapters, use `Pattern` instead — `Params` is not consulted there
 since the derived handle already validates fully.
 
+## Configuring pipeline functions from env vars
+
+Env vars are **not** an IO boundary in the `ports` sense — they are a
+construction-time concern. To parameterize a pipeline function (an alert
+threshold, a batch size, …) from the environment, use the **validated-config
+factory pattern**: load a typed config struct once in `main()` via
+`format.FromEnv` (the codec is the env contract — names, coercion, constraints,
+defaults), then pass it into a factory that closes over it. Zero `os.Getenv` in
+pipeline code, fully testable. See
+[Config guide — Passing env config into pipeline functions](config.md#passing-env-config-into-pipeline-functions)
+and the live demonstration in `examples/sensor-service`
+(`APP_ALERT_THRESHOLD=90 go run ./examples/sensor-service`).
+
 ## Cache patterns (not port-based)
 
 These patterns are a different shape from `ToolPort` — they serve the **most recently
