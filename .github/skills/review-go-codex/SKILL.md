@@ -356,8 +356,23 @@ If an example panics or uses a stale pattern, file a finding.
 ## Port Adapter Guardrail
 
 Pipelines are connected to transports via **port adapters** — `ports.SourceAdapter[T]`,
-`ports.SinkAdapter[T]`, and `ports.IOAdapter[Req,Resp]` implementations in each adapter
-package's `binding.go`. Every adapter must be checked against these rules.
+`ports.SinkAdapter[T]`, `ports.IOAdapter[Req,Resp]`, and `ports.ToolAdapter[In,Out]`
+(server-side request/response, complement of `IOAdapter`) implementations in each
+adapter package's `binding.go`. Every adapter must be checked against these rules.
+
+**`Pattern` is the primary declaration surface** (Phase 4/5) for handle-backed
+adapters — `ports.RESTPattern`/`EventPattern`/`ReqReplyPattern`/`MCPPattern`, set via
+`PortOptions.Patterns`. A port builds its own handle internally by always calling
+`Route`/`Channel`/`Tool.Register(builder)` — never the weaker `ClientHandle()` — so a
+`Pattern`-derived handle is indistinguishable from one built by hand with the same
+builder. `PortOptions.RESTBuilder`/`EventBuilder`/`ReqReplyBuilder`/`MCPBuilder` let
+the caller supply a shared `*Builder` for security schemes/global security/path-topic
+constraints/spec accumulation; nil uses a private single-use builder (same
+zero-ceremony default). Do not flag `NewSourcePort`/`NewSinkPort`/`NewIOPort`/
+`NewToolPort` returning `(*Port, error)` as an inconsistency — this is intentional
+(`Register` is fallible in ways the old builder-free construction wasn't). `Params`/
+`IOParam` remain the enforcement mechanism only for handle-less adapters (`file`) —
+do not expect `Pattern`-backed adapters to also consult `Params`.
 
 ### Rule B1 — Adapter must use the underlying adapter function, not hand-roll IO
 
@@ -454,6 +469,9 @@ Used correctly in: `PipelineHandlerFunc`, `AsPipelineFunc`. Do not flag as an is
 - **`zeromq.CallAdapter`/`mqtt5.CallAdapter` carry `Vars` in `CallStreamOptions`.** These are static vars (same map for every item). For per-item var substitution use `gstream.Drain` + `Call` directly.
 - **`AsPipelineFunc` does NOT add a new `Serve` variant.** It wraps the `fn` argument only. `Serve` API is unchanged. This is correct by design.
 - **`ports.IOPort` accepts exactly one adapter.** A second `Bind` call returns `PortBindError`. Only `SourcePort` supports fan-in; only `SinkPort` supports fan-out.
+- **`ports` calling `Register` instead of `ClientHandle` is intentional, not a missed optimization.** `Register` is a strict superset of `ClientHandle` (adds duplicate-name checks for `reqreply`/`mcp`, unknown-param-name checks, path/topic codec validation, security scheme/global security population) — there is no case where `ClientHandle` would be preferable inside `ports`. Do not suggest reverting to `ClientHandle` for a "simpler" default path.
+- **`rest.Route.Register`/`events.Channel.Register` do NOT detect duplicate routes/topics** — only `reqreply.Route.Register`/`apimcp.Tool.Register` do. Calling `ports.RegisterREST`/`RegisterEvent` twice with the same builder silently adds a duplicate spec entry (not an error); `RegisterReqReply`/`RegisterMCP` do error. This asymmetry is a property of the underlying `api/*` packages, not a `ports` bug.
+- **REST ingest (`SourcePort`) and SSE (`SinkPort`) have no `RESTPattern` support yet.** They need an asymmetric `Req`/`Resp` shape (`rest.RouteHandle[T, struct{}]` for ingest, `rest.SSERouteHandle[struct{}, Event]` for SSE) that today's `RESTPattern{Method, Path, Opts}` (single `Req`/`Resp` pair) can't express. This is a documented open item (roadmap Phase 4/5), not an oversight to flag as a new finding.
 - **Stream bridge errors go to `Stream.Errors`, not a separate callback.** In source bridges, `subOpts.OnError` is overridden internally to route errors to the error channel. Callers who set `OnError` in `subOpts` before calling `SubscribeStream` will have it overridden — documented in godoc.
 - **Static `Vars` in `DrainPublish`.** Same map applied to every item. Per-item topic var substitution requires `stream.Drain` + `Publish` directly. Do not flag as bug — documented limitation.
 - **`stream.Single` uses a size-1 buffered channel.** This allows `deliver(handler, payload); cancel()` test patterns to work without goroutine leaks. Do not flag the buffered channel as inconsistency with `From` (which is unbuffered).

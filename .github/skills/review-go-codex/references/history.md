@@ -1,6 +1,35 @@
-# go-codex Review History (R1–R46)
+# go-codex Review History (R1–R49)
 
 Do not re-report any of these findings. They have been implemented and tested.
+
+---
+
+## Round 49 (inside-out pipeline wiring — Phase 5: full `api` module parity in `Pattern`, one construction path)
+
+- **`ports` always calls `Register`, never `ClientHandle`, internally.** `Route`/`Channel`/`Tool.Register(builder)` is a strict superset of `ClientHandle()` — same decode/encode/param wiring, plus unknown-param-name checks, path/topic codec validation, security scheme/global security population, and (for `reqreply`/`mcp` only) duplicate-name detection. When no `Builder` is supplied, `ports` creates a private, single-use one with zero `Info` for that one `Register` call — same zero-ceremony default, identical code path. This makes a `Pattern`-derived handle indistinguishable from one hand-built via `Register` — adapters cannot tell the difference.
+- **`PortOptions.RESTBuilder`/`EventBuilder`/`ReqReplyBuilder`/`MCPBuilder`** (`*rest.Builder`/`*events.Builder`/`*reqreply.Builder`/`*apimcp.Builder`) — supply your own (with `AddSecurityScheme`/`AddGlobalSecurity`/`rest.WithPathConstraints`/`events.WithTopicConstraints` already configured) to get full parity with a hand-registered route; the port's route/channel/tool accumulates directly into that builder's spec.
+- **`NewSourcePort`/`NewSinkPort` now return `(*Port, error)`** (breaking, joining `NewIOPort`/`NewToolPort` from Phase 4) — `Register` is fallible in ways the old builder-free construction wasn't (unknown param names, path/topic constraint failures, duplicate names on `reqreply`/`mcp`). ~27 call sites updated across `ports/port_test.go`, `examples/sensor-service/main.go`, and 5 adapter `binding_test.go` files.
+- **Fixed a real correctness bug found during the review**: `Pattern`-derived handles previously always had an empty `SecuritySchemes` map and `nil` `GlobalSecurity` (never populated by `ClientHandle`), meaning any `RouteMeta.Security`/`Subscribe.Security`/`Publish.Security` requirement on a `Pattern`-based port was silently unenforced (`validateSecurityCredentials` skips unknown scheme names rather than rejecting). Fixed by always registering against a real or private `Builder`.
+- **`mqtt5`/`mqtt` `SubscribeAdapterOptions.TopicFilter`** now auto-derives an MQTT wildcard filter (`{var}` → `+`, e.g. `"sensors/{id}/data"` → `"sensors/+/data"`) from the handle's topic when empty, instead of subscribing with the raw, brace-containing topic string — the one confirmed adapter-option redundancy found during a full audit of every adapter's `XxxAdapterOptions` against what the `Pattern`-derived handle already carries (all other option fields — `SecurityFunc`, `Observer`, poll intervals, buffer sizes — are genuine protocol-specific glue, not redundant). `adapters/mqtt` gained its first `binding_test.go` in the process (previously zero coverage for `SubscribeAdapter`).
+- **Correction discovered during implementation**: `rest.Route.Register` and `events.Channel.Register` do **not** detect duplicate routes/topics (only `reqreply.Route.Register` and `apimcp.Tool.Register` do, via `DuplicateRouteError`/an "already registered" error). Calling `ports.RegisterREST`/`RegisterEvent` with the same builder a `Pattern` already registered against does not error — it just adds a duplicate spec entry. Only `RegisterReqReply`/`RegisterMCP` reject the redundant call.
+- **`examples/sensor-service`** updated: `sensorsPort`/`alertsPort` now share one `events.Builder` (via `PortOptions.EventBuilder`) configured with `events.WithTopicConstraints(validate.MQTTPublishTopic, sensorTopicConstraint)`, mirroring `examples/adapters-mqtt`'s builder-level constraint style but enforced through the port's `Pattern`; the example also prints the AsyncAPI spec built directly from the two ports' bindings.
+
+## Round 48 (inside-out pipeline wiring — Phase 4: `Pattern` — ports as the primary declaration surface)
+
+- **`ports.Pattern` sealed interface** + `RESTPattern{Method,Path,Opts []rest.RouteOpt}`, `EventPattern{Topic,Opts []events.ChannelOpt}`, `ReqReplyPattern{Topic,Opts []reqreply.RouteOpt}`, `MCPPattern{Name,Opts []apimcp.ToolOpt}` — thin wrappers reusing the *exact* `rest`/`events`/`reqreply`/`apimcp` option vocabulary (no new param types). `PortOptions.Patterns []Pattern` — one entry per protocol family a port binds to.
+- **`RESTHandle[Req,Resp]`/`EventHandle[T]`/`ReqReplyHandle[Req,Resp]`/`MCPHandle[In,Out]`** accessor functions — return `(handle, false)` (not an error/panic) when the port declared no matching `Pattern`.
+- **`RegisterREST`/`RegisterEvent`/`RegisterReqReply`/`RegisterMCP`** — replay a port's stored `Pattern` against a real spec `Builder`, building the OpenAPI/AsyncAPI/MCP doc *from* the binding.
+- **`events.Channel[T].ClientHandle()`** and **`apimcp.Tool[In,Out].ClientHandle()`** added — mirror `rest.Route.ClientHandle()`/`reqreply.Route.ClientHandle()` (builder-free handle construction, no spec side effects).
+- **`NewIOPort`/`NewToolPort` changed to `(*Port, error)`** — fail-fast `PatternRegisterError` on malformed `Pattern` (unknown param name, empty MCP tool name). `NewSourcePort`/`NewSinkPort` stayed infallible at this point (revisited/changed in Phase 5 above).
+- **Scope note**: `RESTPattern` for `SourcePort` (HTTP ingest) and `SinkPort` (SSE) is not implemented — both need an asymmetric `Req`/`Resp` shape a single-codec port can't express with `RESTPattern{Method,Path,Opts}`.
+- **`examples/sensor-service`** migrated: `sensorsPort`/`alertsPort` declare `ports.EventPattern` directly instead of building `events.Channel` + `Builder.Register` separately.
+
+## Round 47 (inside-out pipeline wiring — Phase 3: gap analysis and fixes)
+
+- **`ports.ValidateParams` + `ports.WithParams`/`ParamsFromContext`** added — real `IOParam` enforcement wired into `file.ReadEachAdapter`/`file.DrainWriteFileAdapter` (the only handle-less adapters). Handle-backed adapters (REST/events/MQTT5) already fully validate via their own handle mechanism — `IOParam`/`Params` is decorative there (this fact directly motivated Phase 4/5's `Pattern` design above).
+- **`ports.bindWithObserver` helper** — real `RecordRequest("port.bind", "<port>/<adapter>", 200|500, duration)` + `TraceObserver` spans now fire from all 4 port `Bind` methods (previously dead `_ = obs` code in `SourcePort.Stream`/`IOPort.Connect`/`ToolPort.Bind` — only `SinkPort.Feed` actually used the observer before this fix).
+- **`PortOptions.Buffer` on `IOPort`/`ToolPort`** confirmed as intentional, not a bug — neither has an internal channel to buffer (`Connect`/`Bind` delegate directly to the adapter's `Transform`/`Bind` call).
+- **Test coverage added**: `chi.PipelineAdapter`, `zeromq.ServeAdapter`, `mqtt5.ServeAdapter` (zero tests before), `mcpgo.ToolLatestAdapter` strengthened (previous test only asserted `Bind` didn't error, never verified the cached value actually flows through a tool call).
 
 ---
 

@@ -49,7 +49,8 @@ Use this when implementing an approved roadmap feature.
 | Opt interface | Does the new option type implement the sealed `XOpt` interface? |
 | Pointer-free ergonomics | `.WithCodec(c)` not `Codec: &c` |
 | No `Required` on template vars | Path/topic/file/URI template vars always required — no `Required` field |
-| New transports use port adapters | New transport adapter must implement `ports.SourceAdapter[T]`, `ports.SinkAdapter[T]`, `ports.IOAdapter[Req,Resp]` in `adapters/<transport>/binding.go` — NOT standalone `XxxStream` functions |
+| New transports use port adapters | New transport adapter must implement `ports.SourceAdapter[T]`, `ports.SinkAdapter[T]`, `ports.IOAdapter[Req,Resp]`, and/or `ports.ToolAdapter[In,Out]` in `adapters/<transport>/binding.go` — NOT standalone `XxxStream` functions |
+| `Pattern` support for handle-backed transports | If the transport has an `api/*` builder, the matching `ports.RESTPattern`/`EventPattern`/`ReqReplyPattern`/`MCPPattern` + `RESTHandle`/`EventHandle`/`ReqReplyHandle`/`MCPHandle` accessors should already work with no new code — `ports` always registers via `Route`/`Channel`/`Tool.Register(builder)`, never `ClientHandle()` |
 
 ### B2. Structured Errors with `slog.LogValuer`
 
