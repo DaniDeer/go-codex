@@ -1053,3 +1053,223 @@ func (e PortNoPipelineError) LogValue() slog.Value {
 | **`adapterName()` method** | **`AdapterName() string`** — exported, used in `PortBindError.Adapter` field for observability. |
 | **IOParam validation timing** | **Per-item only** — adapters validate at message/request time using the IOParam codec. No Bind-time cross-validation in Phase 1. |
 | **Port options shape** | **`PortOptions` struct** — simpler than a sealed `PortOpt` interface; zero boilerplate for callers. |
+
+---
+
+## Phase 4 — Ports as the primary pattern declaration surface
+
+> **Status:** Design in progress — not yet implemented. This is a breaking change
+> by explicit user decision (single-user library; correctness of design takes
+> priority over compatibility).
+
+### Motivation
+
+Phase 1–3 solved *wiring* (bind an adapter to a port without importing adapters in
+domain code) but not *declaration*. Today, declaring a REST/event/reqreply-backed
+port still requires two separate, redundant steps:
+
+1. Build a `rest.RouteHandle` / `events.ChannelHandle` / `reqreply.RouteHandle` via
+   `rest.NewRoute(...).Register(builder)` — declaring method/path/topic, params
+   (`PathParam`, `QueryParam`, `TopicParam`, …), and codecs.
+2. Separately declare a `ports.SourcePort`/`SinkPort`/`IOPort`/`ToolPort` with its
+   own `PortOptions.Params []IOParam` — a second, weaker, disconnected copy of the
+   same param names, often with no codec at all because the "real" validation
+   already happens through the handle in step 1.
+
+Verified during the Phase 3 review: for any adapter backed by a handle (REST,
+events, MQTT 5, reqreply), the adapter's `Handler`/`Subscribe`/`Serve` already
+validates body, path, query, cookie, header, and topic params **fully** through
+the handle — `ports.IOParam` contributes nothing for these adapters; it is pure,
+disconnected documentation. Only handle-less adapters (`file`, `sql`) benefit from
+`IOParam` as real enforcement (Phase 3 already wired this — see "Known gaps" above).
+
+The user's target workflow: **declare the communication pattern once, on the
+port** (source = REST request / MQTT subscribe; sink = REST response / MQTT
+publish / file write; io = REST call / MQTT5 request-reply call; tool = REST
+pipeline / MQTT5 serve / MCP tool), **bind it to a concrete adapter with no
+re-declaration**, and **optionally build the OpenAPI/AsyncAPI spec from that same
+binding afterwards** — reversing today's "spec first, pipeline second" order.
+
+### Scope decisions
+
+| In scope | Out of scope (this phase) |
+|---|---|
+| `ports.Pattern` sealed interface + `RESTPattern`, `EventPattern`, `ReqReplyPattern`, `MCPPattern` structs, each a thin wrapper reusing the existing `rest.RouteOpt` / `events.ChannelOpt` / `reqreply.RouteOpt` / `apimcp.ToolOpt` vocabulary (no new param types — `PathParam`, `QueryParam`, `TopicParam`, etc. are reused as-is) | Reinventing param/codec types — `rest.PathParam` etc. remain the one definition |
+| Ports construct their own `*rest.RouteHandle` / `*events.ChannelHandle` / `*reqreply.RouteHandle` / `*apimcp.ToolHandle` internally at construction time, **builder-free** (via `ClientHandle()` — see below) | Adapter interface signatures (`SourceAdapter[T].Activate`, etc.) — unchanged |
+| Typed accessor functions (`ports.RESTHandle[Req,Resp](port)`, `ports.EventHandle[T](port)`, …) so adapter constructors keep their existing `handle` parameter, now filled from the port instead of hand-built | Removing the `handle` parameter from adapter constructors — kept for now to minimize blast radius across 8 adapter packages |
+| `events.Channel[T].ClientHandle()` — new, mirrors the existing `rest.Route.ClientHandle()` / `reqreply.Route.ClientHandle()` (builder-free handle, no spec side effects) | Changing `rest.Route.ClientHandle()` / `reqreply.Route.ClientHandle()` — already correct, reused as-is |
+| `ports.RegisterSpec(builder, port)` (or per-kind `RegisterREST`/`RegisterEvent`/`RegisterReqReply`/`RegisterMCP`) — replays the port's stored `Pattern` against a real `*rest.Builder`/`*events.Builder`/`*reqreply.Builder`/`*apimcp.Builder` to produce spec entries, **after** the port has already been declared and bound | A generic cross-protocol spec format — OpenAPI and AsyncAPI documents remain separate, protocol-specific outputs |
+| Migrate `PortOptions.Params` to be derived automatically from a `RESTPattern`/`EventPattern`/`ReqReplyPattern`'s own param options when a Pattern is set; `Params` remains the primary (and only) declaration for handle-less adapters (`file`, `sql`) | Removing `PortOptions.Params` — still needed for `file`/`sql` |
+| Update all `examples/*` that construct ports + adapters to the new pattern-first style | Bridges / old stream helpers — already fully removed, nothing to migrate there |
+
+### API surface (sketch)
+
+```go
+// ports/pattern.go
+
+// Pattern is the sealed interface for a port's declared communication pattern.
+// Exactly one Pattern implementation applies per protocol family a port is
+// bound to; a ToolPort exposed over both HTTP and MQTT5 declares both a
+// RESTPattern and a ReqReplyPattern.
+type Pattern interface{ isPortPattern() }
+
+// RESTPattern declares an HTTP-shaped pattern, reusing rest.RouteOpt vocabulary
+// (rest.PathParam, rest.QueryParam, rest.HeaderParam, rest.CookieParam,
+// rest.RouteMeta, rest.ResponseMeta) unchanged.
+type RESTPattern struct {
+    Method string        // "GET", "POST", … — required for SourcePort ingest / IOPort call / ToolPort pipeline
+    Path   string        // "/sensors/{sensorID}/data"
+    Opts   []rest.RouteOpt
+}
+func (RESTPattern) isPortPattern() {}
+
+// EventPattern declares a topic-shaped pattern, reusing events.ChannelOpt
+// vocabulary (events.TopicParam, events.ChannelMeta, events.Subscribe, events.Publish).
+type EventPattern struct {
+    Topic string
+    Opts  []events.ChannelOpt
+}
+func (EventPattern) isPortPattern() {}
+
+// ReqReplyPattern declares a request/reply-shaped pattern (MQTT5 reqreply,
+// ZeroMQ REQ/REP), reusing reqreply.RouteOpt vocabulary.
+type ReqReplyPattern struct {
+    Topic string
+    Opts  []reqreply.RouteOpt
+}
+func (ReqReplyPattern) isPortPattern() {}
+
+// MCPPattern declares an MCP tool pattern, reusing apimcp.ToolOpt vocabulary.
+type MCPPattern struct {
+    Name string
+    Opts []apimcp.ToolOpt
+}
+func (MCPPattern) isPortPattern() {}
+```
+
+```go
+// ports/io_param.go — PortOptions gains Patterns; Params stays for handle-less adapters.
+type PortOptions struct {
+    Patterns []Pattern   // NEW — one entry per protocol family this port will bind to
+    Params   []IOParam   // unchanged — real enforcement only for handle-less adapters (file, sql)
+    Buffer   int
+    Observer stats.Observer
+}
+```
+
+```go
+// ports/handle.go — typed accessors; each constructs (once, cached) the
+// corresponding *Handle via <Route|Channel>.ClientHandle() — no Builder needed.
+
+func RESTHandle[Req, Resp any](p interface{ patterns() []Pattern }) (*rest.RouteHandle[Req, Resp], bool)
+func EventHandle[T any](p interface{ patterns() []Pattern }) (*events.ChannelHandle[T], bool)
+func ReqReplyHandle[Req, Resp any](p interface{ patterns() []Pattern }) (*reqreply.RouteHandle[Req, Resp], bool)
+func MCPHandle[In, Out any](p interface{ patterns() []Pattern }) (*apimcp.ToolHandle[In, Out], bool)
+```
+
+```go
+// Usage — declare once, bind directly, no separate Route/Channel/Register call:
+
+// domain/pipeline.go — zero adapter imports, one declaration
+var SensorReadings = ports.NewSourcePort[SensorReading]("sensor-readings", ReadingCodec,
+    ports.PortOptions{
+        Patterns: []ports.Pattern{
+            ports.EventPattern{
+                Topic: "sensors/{sensorID}/data",
+                Opts: []events.ChannelOpt{
+                    events.Subscribe{Summary: "Sensor reading received"},
+                    events.TopicParam{Name: "sensorID"}.WithCodec(sensorIDCodec),
+                },
+            },
+        },
+    })
+
+// main.go — bind directly; handle is derived from the port, not hand-built
+handle, _ := ports.EventHandle[SensorReading](SensorReadings)
+domain.SensorReadings.Bind(ctx, mqtt5.SubscribeAdapter(client, router, handle, 0, format.JSON(ReadingCodec), mqtt5.SubscribeAdapterOptions{}))
+
+// later, optionally, build the AsyncAPI spec from the same binding:
+b := events.NewBuilder(events.Info{Title: "Sensors", Version: "1.0.0"})
+ports.RegisterEvent(b, SensorReadings) //nolint:errcheck
+doc := b.Build()
+```
+
+```go
+// events/builder.go — new, mirrors rest.Route.ClientHandle() / reqreply.Route.ClientHandle()
+func (c Channel[T]) ClientHandle() *ChannelHandle[T]
+```
+
+### Structured errors
+
+| Error | Returned by | Fields |
+|---|---|---|
+| `MissingPatternError` | `RESTHandle`/`EventHandle`/`ReqReplyHandle`/`MCPHandle` accessors, when the port declares no matching `Pattern` kind | `Port string`, `Kind string` (`"rest"`, `"event"`, `"reqreply"`, `"mcp"`) |
+| `PatternRegisterError` | Port constructor, when `ClientHandle()`-equivalent construction fails (invalid path/topic template, unknown param name) — wraps the underlying `rest.InvalidPathParamError` / `events` equivalent | `Port string`, `Err error` |
+
+Both implement `Error() string`, `Unwrap() error` (where applicable), and
+`LogValue() slog.Value` per the mandatory error contract.
+
+### Observer integration
+
+No new observer hooks — pattern construction happens at `NewSourcePort`/etc.
+construction time (not a request-scoped operation), so it is out of scope for
+`stats.Observer`. `RegisterSpec`/`RegisterEvent`/etc. are one-shot document-build
+calls, also not per-request — no observer hook needed there either.
+
+### Unit test plan
+
+| Test | Verifies |
+|---|---|
+| `TestRESTPattern_BuildsClientHandle` | `RESTHandle[Req,Resp](port)` returns a working handle when `RESTPattern` declared |
+| `TestEventPattern_BuildsClientHandle` | `EventHandle[T](port)` returns a working handle when `EventPattern` declared |
+| `TestReqReplyPattern_BuildsClientHandle` | `ReqReplyHandle[Req,Resp](port)` returns a working handle when `ReqReplyPattern` declared |
+| `TestMCPPattern_BuildsClientHandle` | `MCPHandle[In,Out](port)` returns a working handle when `MCPPattern` declared |
+| `TestHandleAccessor_MissingPattern_ReturnsFalse` | Accessor returns `(nil, false)` — no panic — when the port has no matching Pattern kind |
+| `TestPort_MultiplePatterns_BothHandlesAvailable` | A `ToolPort` with both `RESTPattern` and `ReqReplyPattern` exposes both `RESTHandle` and `ReqReplyHandle` |
+| `TestChannel_ClientHandle_NoBuilderRequired` | `events.Channel[T].ClientHandle()` works without a `Builder`, mirrors `rest.Route.ClientHandle()` test shape |
+| `TestRegisterEvent_AddsChannelToBuilder` | `ports.RegisterEvent(b, port)` adds the port's declared channel to the builder's document |
+| `TestRegisterREST_AddsRouteToBuilder` | `ports.RegisterREST(b, port)` adds the port's declared route to the builder's document |
+| `TestPatternRegisterError_LogValue` / `TestMissingPatternError_LogValue` | Structured error contract |
+| End-to-end: existing `SubscribeAdapter`/`IngestAdapter`/`CallAdapter`/`ServeAdapter` tests re-run with pattern-derived handles instead of hand-built ones — same assertions, new construction path | No regression in per-message validation behavior |
+
+### Files to create / modify
+
+| File | Responsibility |
+|---|---|
+| `ports/pattern.go` | `Pattern` interface, `RESTPattern`, `EventPattern`, `ReqReplyPattern`, `MCPPattern` |
+| `ports/handle.go` | `RESTHandle`, `EventHandle`, `ReqReplyHandle`, `MCPHandle` accessors + internal handle cache |
+| `ports/pattern_errors.go` | `MissingPatternError`, `PatternRegisterError` |
+| `ports/spec.go` | `RegisterREST`, `RegisterEvent`, `RegisterReqReply`, `RegisterMCP` |
+| `ports/io_param.go` | `PortOptions.Patterns` field added |
+| `ports/source_port.go`, `sink_port.go`, `io_port.go`, `tool_port.go` | Construct handle(s) from `Patterns` at `New*Port` time; store for accessor use |
+| `api/events/builder.go` | New `Channel[T].ClientHandle()` |
+| `examples/*` (event-driven, adapters-mqtt5, sensor-service, forge-oee, …) | Migrate to pattern-first port declarations |
+| `docs/features/ports.md`, `docs/guides/ports.md` | Document the new pattern-first workflow as primary; keep handle-first as an documented alternative for advanced/shared-handle cases |
+
+### Open design decisions
+
+| Question | Options | Recommendation |
+|---|---|---|
+| Does `ports.Pattern` replace `PortOptions.Params` entirely, or coexist? | (a) Coexist: `Params` stays for handle-less adapters only, as scoped above. (b) Deprecate `Params` entirely, require a `FilePattern`/`SQLPattern` too. | (a) — `file`/`sql` have no natural "route/channel" shape; forcing a `Pattern` there adds ceremony without benefit. |
+| Should handle construction be eager (at `New*Port` time) or lazy (first accessor call)? | Eager: fail fast on bad pattern (unknown param name, invalid template) at declaration time — matches `rest.Route.Register`'s fail-fast philosophy. Lazy: defer cost until actually bound. | Eager — consistent with the "fail fast, at declaration" principle already used elsewhere (e.g. `rest.NewRoute(...).Register` validates path immediately). |
+| Should `RegisterREST`/`RegisterEvent`/etc. be free functions or `AnyPort` methods? | Free functions (as sketched) avoid adding spec-building methods to every port type; `AnyPort` interface centralizes but adds surface. | Free functions, generic over the concrete port type — mirrors `ports.RESTHandle[Req,Resp](port)`'s shape. |
+| Multi-pattern ports (e.g. `ToolPort` bound to both HTTP and MQTT5) — one `Patterns` slice mixing kinds, or separate typed fields? | Single `[]Pattern` slice (sketched) keeps `PortOptions` uniform across all 4 port types. Separate fields (`RESTPattern *RESTPattern`, `EventPattern *EventPattern`, …) are more discoverable via autocomplete but bloat `PortOptions` for ports that only ever use one. | `[]Pattern` slice — matches `rest.NewRoute`'s existing variadic-opts idiom (`RouteOpt`, `ChannelOpt`) already used throughout go-codex. |
+| Do the now-largely-redundant Phase 3 `IOParam`-on-REST/Event/ReqReply-backed ports get removed, or kept as a fallback? | Remove `Params` usage recommendation for handle-backed adapters in docs (still technically settable, just inert) vs. hard-error if both `Patterns` and `Params` set for the same protocol family. | Soft: keep `Params` settable (backward compatible with Phase 3 `file`/`sql` usage) but update docs to state it is ignored once a matching `Pattern` handle exists for that protocol family. |
+
+### Relationship to previously deferred items
+
+This phase **absorbs and resolves**:
+- `phase3-ioparam-cross-validation` — cross-validation becomes unnecessary once the
+  port's own `Pattern` *is* the single source of the param declarations used to
+  build the handle; there is nothing left to cross-validate against.
+- `phase3-auto-spec-from-ports` (`Design auto AsyncAPI/OpenAPI spec generation
+  from ports`) — resolved by `RegisterREST`/`RegisterEvent`/`RegisterReqReply`/`RegisterMCP`.
+
+This phase is **orthogonal to and does not resolve**:
+- `phase3-forge-app-lifecycle` — a lifecycle/dependency-graph manager is still a
+  separate concern from pattern declaration.
+- `phase3-cacheport-design` — the cache-pattern unification is unrelated to how a
+  port declares its wire pattern.
+- `phase3-dynamic-rebinding` — hot-swap is unrelated to declaration.
+- `phase3-toolport-optional-pipeline` — still an open ergonomics question for
+  `mcpgo.ToolLatestAdapter`-style cache tools, independent of pattern declaration.
