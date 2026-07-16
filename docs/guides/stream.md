@@ -47,6 +47,23 @@ Decode failures go to `Stream.Errors` as `StreamDecodeError`; the stream continu
 > do internally. For production pipelines, prefer the `ports` package — it also keeps
 > the transport choice out of your pipeline code. See the [Ports Guide](ports.md).
 
+### One-shot / per-request source
+
+`Single` emits one value and closes — the entry point for running a single
+request through the same operators as a continuous pipeline:
+
+```go
+s := stream.Single(ctx, req)                   // req → 1-item stream
+out := stream.Apply(ctx, s, computeFn, opts)   // same governed operators
+resp, errs := stream.Collect(ctx, out)         // stream ends after one item
+```
+
+`Single` takes a value you already have — nothing can fail, so `Stream.Errors`
+is never written (same reasoning as `From`; only `FromCodec` has an error
+path, because bytes→T decode can fail). If producing the value can fail, do
+that *before* calling `Single`. This is how `PipelineHandlerFunc` and
+`AsPipelineFunc` turn HTTP request/response handling into a stream pipeline.
+
 ---
 
 ## Step 2 — Apply a forge function
