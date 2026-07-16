@@ -76,7 +76,7 @@ type LatestPort[T any] struct {
 func NewLatestPort[T any](name string, codec codex.Codec[T], opts PortOptions) (*LatestPort[T], error) {
 	handles, specs, err := buildDualCodecPatternHandles(name, opts.Patterns,
 		codex.Struct[struct{}](), codec,
-		opts.RESTBuilder, opts.ReqReplyBuilder, opts.MCPBuilder)
+		opts.RESTBuilder, opts.ReqReplyBuilder, opts.MCPBuilder, true)
 	if err != nil {
 		return nil, err
 	}

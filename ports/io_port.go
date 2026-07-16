@@ -20,7 +20,8 @@ import (
 // Implemented by transport binding constructors:
 //
 //	nethttp.CallAdapter, mqtt5.CallAdapter, zeromq.CallAdapter,
-//	sql.QueryEachAdapter, file.ReadEachAdapter
+//	sql.QueryEachAdapter, file.ReadEachAdapter, redis.GetAdapter,
+//	redis.SetAdapter
 type IOAdapter[Req, Resp any] interface {
 	// Transform applies the adapter's IO operation to each item in src.
 	// May emit 0..N Resp values per Req item. The stream terminates when
@@ -80,7 +81,7 @@ func NewIOPort[Req, Resp any](
 	opts PortOptions,
 ) (*IOPort[Req, Resp], error) {
 	handles, specs, err := buildDualCodecPatternHandles(name, opts.Patterns, reqCodec, respCodec,
-		opts.RESTBuilder, opts.ReqReplyBuilder, opts.MCPBuilder)
+		opts.RESTBuilder, opts.ReqReplyBuilder, opts.MCPBuilder, true)
 	if err != nil {
 		return nil, err
 	}

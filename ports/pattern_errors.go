@@ -56,3 +56,24 @@ func (e PatternRegisterError) LogValue() slog.Value {
 		slog.Any("err", e.Err),
 	)
 }
+
+// CacheKeyError is returned by [Cache.BuildKey] when the key template names
+// a {var} placeholder that is missing from the supplied vars map.
+type CacheKeyError struct {
+	// Key is the declared key template (e.g. "user:{id}").
+	Key string
+	// Var is the placeholder name that has no entry in vars.
+	Var string
+}
+
+func (e CacheKeyError) Error() string {
+	return fmt.Sprintf("cache key %q: missing var %q", e.Key, e.Var)
+}
+
+// LogValue implements [slog.LogValuer] for structured logging.
+func (e CacheKeyError) LogValue() slog.Value {
+	return slog.GroupValue(
+		slog.String("key", e.Key),
+		slog.String("var", e.Var),
+	)
+}

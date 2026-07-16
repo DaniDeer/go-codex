@@ -282,6 +282,7 @@ be `.Register()`ed with a builder and threaded into the adapter constructor by h
 | `ports.MCPPattern{Name, Opts}` | MCP tool (mcpgo) |
 | `ports.FilePattern{Path, Format, Opts}` | typed files (file) |
 | `ports.SQLPattern{Table, Op}` | SQL (sql) — metadata-only |
+| `ports.CachePattern{Key, TTL, Format}` | key/value cache (redis) — key template + TTL |
 
 Derive the handle the adapter needs with the matching accessor — `(nil, false)`, not
 a panic, when the port declared no matching `Pattern`:
@@ -293,6 +294,7 @@ handle, ok := ports.ReqReplyHandle[Req, Resp](domain.SomePort) // *reqreply.Rout
 handle, ok := ports.MCPHandle[In, Out](domain.SomePort)        // *apimcp.ToolHandle[In, Out]
 file,   ok := ports.FileHandle[T](domain.SomePort)             // format.File[T]
 meta,   ok := ports.SQLMeta(domain.SomePort)                   // ports.SQLPattern
+cache,  ok := ports.CacheHandle[T](domain.SomePort)            // ports.Cache[T]
 ```
 
 ### One construction path, whether you supply a `Builder` or not

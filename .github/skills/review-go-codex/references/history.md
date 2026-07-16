@@ -1,8 +1,19 @@
-# go-codex Review History (R1–R55)
+# go-codex Review History (R1–R56)
 
 Do not re-report any of these findings. They have been implemented and tested.
 
 ---
+
+## Round 56 (Redis cache adapter — `adapters/redis`, `ports.CachePattern`, `stats.CacheObserver`)
+
+- **`Commands` narrow interface BY DESIGN** — constructors accept the three-method `Commands`, never `*redis.Client`; `NewCommands` (commands.go) is the ONLY go-redis import; unit tests + example use hand-written fakes. Do not flag the shim as unnecessary indirection.
+- **`GetAdapter` miss SKIPS the item by default** — the IOAdapter 0..N contract; `MissIsError` opts into `CacheError` wrapping `ErrCacheMiss`. Not a silent-data-loss bug.
+- **`SetAdapter` passes the item through even when the cache write FAILS** — a cache failure must never drop pipeline data; the error still goes to Stream.Errors. Intentional.
+- **There is deliberately NO `redis.LatestAdapter`** — `ports.LatestAdapter.Serve(ctx, latest)` is read-only (serves, cannot inject). Durable LatestPort = `SetAdapter` tee on the feeding stream + `Seed` (warm-restart read, `(zero,false,nil)` on miss) merged as first item. Do not propose a LatestAdapter.
+- **`CachePattern` rejected on `SourcePort`/`ToolPort`** with `PatternRegisterError{Kind:"cache"}` at construction — first pattern with explicit port-type rejection (others are silently ignored where not applicable); intentional strictness for a pattern with no meaningful fallback.
+- **`ports.Cache[T].BuildKey` treats an unbalanced `{` as literal** — not an error; only a missing var for a well-formed placeholder errors (`CacheKeyError`, no Unwrap — no inner error).
+- **`CacheObserver` is a new stats extension** (hit/miss/write is a genuinely new lifecycle event) — type-asserted like SQLObserver; Noop/Logging/fanout implement it.
+- Cache key vars are plain strings (no per-var codecs) in Phase 1 — mirror of `varsFor` in file adapters, revisit only with a use case. Redis pub/sub deferred (fire-and-forget, closer to ZeroMQ than MQTT).
 
 ## Round 55 (stream routing operators — `stream/route.go`: GroupBy, Switch, SwitchKey, OfType, SwitchType2/3, SplitEither)
 

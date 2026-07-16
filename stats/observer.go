@@ -191,6 +191,28 @@ type SQLObserver interface {
 	RecordMigration(op, name string, version int64, duration time.Duration, err error)
 }
 
+// CacheObserver is an optional extension to [Observer] for cache adapter
+// lifecycle events (adapters/redis). Cache adapters type-assert the configured
+// Observer to CacheObserver before calling its methods — existing Observer
+// implementations need not change.
+//
+//	type MyObserver struct{ ... }
+//	func (o *MyObserver) RecordCacheHit(key string, d time.Duration)  { hits.Inc() }
+//	func (o *MyObserver) RecordCacheMiss(key string, d time.Duration) { misses.Inc() }
+//	func (o *MyObserver) RecordCacheWrite(key, op string, success bool, d time.Duration) { ... }
+type CacheObserver interface {
+	// RecordCacheHit is called for every cache lookup that found and decoded
+	// a value. key is the expanded cache key (e.g. "user:42").
+	RecordCacheHit(key string, duration time.Duration)
+
+	// RecordCacheMiss is called for every cache lookup that found no value.
+	RecordCacheMiss(key string, duration time.Duration)
+
+	// RecordCacheWrite is called for every cache write or delete, success or
+	// failure. op is "set" or "del".
+	RecordCacheWrite(key, op string, success bool, duration time.Duration)
+}
+
 // StreamObserver is an optional extension to [Observer] for stream-level throughput
 // metrics. [stream.Apply] type-asserts the configured Observer to
 // StreamObserver before calling its methods — existing Observer implementations
@@ -210,7 +232,8 @@ type StreamObserver interface {
 // LoggingObserver logs every observer event as a structured slog message.
 // It implements all observer interfaces except [TraceObserver]:
 // [Observer] (embeds [ValidationObserver]), [PipelineObserver],
-// [SecurityObserver], [FileObserver], [SQLObserver], and [StreamObserver].
+// [SecurityObserver], [FileObserver], [SQLObserver], [StreamObserver], and
+// [CacheObserver].
 //
 // [TraceObserver] is intentionally not implemented — slog has no concept of
 // distributed trace spans. Use [stats.NewFanout] to combine a LoggingObserver
@@ -285,10 +308,23 @@ func (o *LoggingObserver) RecordStreamItem(function string, success bool, d time
 	o.logger.Debug("stream item", "function", function, "success", success, "ms", d.Milliseconds())
 }
 
+func (o *LoggingObserver) RecordCacheHit(key string, d time.Duration) {
+	o.logger.Debug("cache hit", "key", key, "ms", d.Milliseconds())
+}
+
+func (o *LoggingObserver) RecordCacheMiss(key string, d time.Duration) {
+	o.logger.Debug("cache miss", "key", key, "ms", d.Milliseconds())
+}
+
+func (o *LoggingObserver) RecordCacheWrite(key, op string, success bool, d time.Duration) {
+	o.logger.Debug("cache write", "key", key, "op", op, "success", success, "ms", d.Milliseconds())
+}
+
 // NewFanout returns an [Observer] that fans out all calls to each provided observer.
 // The returned value also implements [FileObserver], [SecurityObserver],
-// [PipelineObserver], [SQLObserver], [StreamObserver], and [TraceObserver] —
-// delegating each to the inner observers that satisfy those interfaces, so composing
+// [PipelineObserver], [SQLObserver], [StreamObserver], [CacheObserver], and
+// [TraceObserver] — delegating each to the inner observers that satisfy those
+// interfaces, so composing
 // a metrics-only observer with a [LoggingObserver] works without any
 // type-assertion boilerplate.
 //
@@ -391,6 +427,33 @@ func (f *fanout) RecordStreamItem(function string, success bool, d time.Duration
 	}
 }
 
+// RecordCacheHit implements [CacheObserver].
+func (f *fanout) RecordCacheHit(key string, d time.Duration) {
+	for _, o := range f.observers {
+		if co, ok := o.(CacheObserver); ok {
+			co.RecordCacheHit(key, d)
+		}
+	}
+}
+
+// RecordCacheMiss implements [CacheObserver].
+func (f *fanout) RecordCacheMiss(key string, d time.Duration) {
+	for _, o := range f.observers {
+		if co, ok := o.(CacheObserver); ok {
+			co.RecordCacheMiss(key, d)
+		}
+	}
+}
+
+// RecordCacheWrite implements [CacheObserver].
+func (f *fanout) RecordCacheWrite(key, op string, success bool, d time.Duration) {
+	for _, o := range f.observers {
+		if co, ok := o.(CacheObserver); ok {
+			co.RecordCacheWrite(key, op, success, d)
+		}
+	}
+}
+
 // StartSpan implements [TraceObserver].
 func (f *fanout) StartSpan(ctx context.Context, operation, name string) context.Context {
 	for _, o := range f.observers {
@@ -412,8 +475,9 @@ func (f *fanout) EndSpan(ctx context.Context, err error) {
 
 // NoopObserver discards all events. It satisfies all observer interfaces —
 // [Observer] (embeds [ValidationObserver]), [PipelineObserver],
-// [SecurityObserver], [FileObserver], [SQLObserver], [StreamObserver], and
-// [TraceObserver] — and is the zero-cost default used when no observer is configured.
+// [SecurityObserver], [FileObserver], [SQLObserver], [StreamObserver],
+// [CacheObserver], and [TraceObserver] — and is the zero-cost default used
+// when no observer is configured.
 type NoopObserver struct{}
 
 func (NoopObserver) RecordValidationError(_, _, _ string)                           {}
@@ -427,6 +491,9 @@ func (NoopObserver) RecordFileWrite(_ string, _ bool, _ time.Duration)          
 func (NoopObserver) RecordValidation(_, _ string, _ time.Duration, _ error)         {}
 func (NoopObserver) RecordMigration(_, _ string, _ int64, _ time.Duration, _ error) {}
 func (NoopObserver) RecordStreamItem(_ string, _ bool, _ time.Duration)             {}
+func (NoopObserver) RecordCacheHit(_ string, _ time.Duration)                       {}
+func (NoopObserver) RecordCacheMiss(_ string, _ time.Duration)                      {}
+func (NoopObserver) RecordCacheWrite(_, _ string, _ bool, _ time.Duration)          {}
 func (NoopObserver) StartSpan(ctx context.Context, _, _ string) context.Context     { return ctx }
 func (NoopObserver) EndSpan(_ context.Context, _ error)                             {}
 

@@ -277,6 +277,7 @@ written by hand: the port makes that call **internally**.
 | `MCPPattern{Name, Opts}` | MCP tool (mcpgo) | `apimcp.ToolOpt` |
 | `FilePattern{Path, Format, Opts}` | typed files (file) | `format.FileOpt` |
 | `SQLPattern{Table, Op}` | SQL (sql) | — (metadata-only) |
+| `CachePattern{Key, TTL, Format}` | key/value cache (redis) | — (key template + TTL) |
 
 A port declares one `Pattern` entry **per protocol family** it will be bound to — a
 `ToolPort` exposed over HTTP + MQTT 5 + MCP simultaneously (as in the `OEETool`
@@ -291,6 +292,7 @@ retrieved with the matching accessor:
 | `ports.MCPHandle[In,Out](port)` | `(*apimcp.ToolHandle[In,Out], bool)` |
 | `ports.FileHandle[T](port)` | `(format.File[T], bool)` |
 | `ports.SQLMeta(port)` | `(ports.SQLPattern, bool)` |
+| `ports.CacheHandle[T](port)` | `(ports.Cache[T], bool)` |
 
 Each accessor returns `(nil, false)` — not an error, not a panic — when the port
 declared no matching `Pattern`.

@@ -90,7 +90,7 @@ Decision criteria for how the adapter participates in `ports.Pattern`:
 |---|---|---|
 | Reuse existing Pattern | boundary is HTTP-shaped, topic-shaped, or file-shaped | `RESTPattern`, `EventPattern`, `FilePattern` |
 | Metadata-only Pattern | per-call text/closures are driver-specific; nothing templatable | `SQLPattern` (Table/Op via context propagation) |
-| New Pattern type | boundary has a declarable addressing template (key/queue/frame shape) + options that belong on the port | `CachePattern` (roadmap), AMQP exchange/queue topology |
+| New Pattern type | boundary has a declarable addressing template (key/queue/frame shape) + options that belong on the port | `CachePattern` (redis), AMQP exchange/queue topology |
 
 A new Pattern type requires, in `ports/`:
 - struct + `isPortPattern()` in `pattern.go`

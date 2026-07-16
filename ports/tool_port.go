@@ -81,7 +81,7 @@ func NewToolPort[In, Out any](
 	opts PortOptions,
 ) (*ToolPort[In, Out], error) {
 	handles, specs, err := buildDualCodecPatternHandles(name, opts.Patterns, inCodec, outCodec,
-		opts.RESTBuilder, opts.ReqReplyBuilder, opts.MCPBuilder)
+		opts.RESTBuilder, opts.ReqReplyBuilder, opts.MCPBuilder, false)
 	if err != nil {
 		return nil, err
 	}

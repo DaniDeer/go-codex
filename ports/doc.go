@@ -36,10 +36,10 @@
 // # Pattern — the primary declaration surface
 //
 // [RESTPattern], [EventPattern], [ReqReplyPattern], [MCPPattern],
-// [FilePattern], and [SQLPattern] reuse the exact rest/events/reqreply/mcp/
-// format option vocabulary. Handles come back out with [RESTHandle],
-// [EventHandle], [ReqReplyHandle], [MCPHandle], [FileHandle], [SSEHandle];
-// SQL metadata with [SQLMeta]. Supply [PortOptions] builders to accumulate
+// [FilePattern], [SQLPattern], and [CachePattern] reuse the exact
+// rest/events/reqreply/mcp/format option vocabulary. Handles come back out
+// with [RESTHandle], [EventHandle], [ReqReplyHandle], [MCPHandle],
+// [FileHandle], [SSEHandle], [CacheHandle]; SQL metadata with [SQLMeta]. Supply [PortOptions] builders to accumulate
 // OpenAPI/AsyncAPI specs straight from the port declarations.
 //
 // # IOParam — protocol-agnostic parameters

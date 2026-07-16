@@ -108,6 +108,12 @@ go-codex/
 │   │   │                   #   InsertStreamError — all slog.LogValuer
 │   │   └── binding.go      # QueryAdapter, DrainInsertAdapter, QueryEachAdapter
 │   │                       #   (ports.SourceAdapter/SinkAdapter/IOAdapter)
+│   ├── redis/              # typed cache adapter (github.com/redis/go-redis/v9 behind a narrow interface)
+│   │   ├── doc.go          # package overview
+│   │   ├── commands.go     # Commands (narrow client interface), NewCommands (go-redis shim)
+│   │   ├── errors.go       # ErrCacheMiss, CacheError — slog.LogValuer
+│   │   └── binding.go      # GetAdapter, SetAdapter (ports.IOAdapter),
+│   │                       #   DrainSetAdapter (ports.SinkAdapter), Seed (warm restart)
 │   ├── mcpgo/              # mark3labs/mcp-go adapter for api/mcp handles
 │   │   ├── adapter.go      # ToolHandler, ResourceHandler, PromptHandler,
 │   │   │                   #   RegisterTool, RegisterResource, RegisterPrompt, Options
@@ -247,7 +253,8 @@ go-codex/
     ├── flat-key-patch/     # flat dotted-key JSON: Patch + PatchEncoded with Map key validation
     ├── stats-observer/              # stats.ValidationObserver wired to codecs directly (no adapter)
     ├── http-trace-span-propagation/ # TraceObserver with OTel: parent span from traceparent header
-    ├── stream-pipeline/             # stream operator showcase: From, Apply, CombineLatest2, Tee, Merge, FlatMapSlice, Buffer, Window, Debounce, Throttle, MapErr, Topology YAML
+    ├── redis-cache/                 # typed cache boundary: CachePattern + GetAdapter/SetAdapter/Seed against an in-memory Commands fake (no live Redis)
+    ├── stream-pipeline/             # stream operator showcase: From, Apply, CombineLatest2, Tee, Merge, FlatMapSlice, Buffer, Window, Debounce, Throttle, MapErr, Switch, GroupBy, Topology YAML
     ├── stream-oee/                  # forge + stream integration: governed OEE (Availability×Performance×Quality) from machine events; Window→Apply(computeOEEFromWindow)→Filter→Drain; governance + topology YAML
     └── sensor-service/              # flagship: one coherent use case (MQTT ingest → SQL persist → env-configured alert → REST time series → REST-triggered file export) structured as a real project — domain/, pipeline/, ioports/, observability/, adapters/, db/, main.go (wiring) + demo.go + README.md
 ```

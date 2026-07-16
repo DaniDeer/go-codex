@@ -19,6 +19,7 @@ const (
 	patternKindMCP      = "mcp"
 	patternKindFile     = "file"
 	patternKindSQL      = "sql"
+	patternKindCache    = "cache"
 )
 
 // patternHolder is implemented by every port type that supports [Pattern]
@@ -121,6 +122,23 @@ func SSEHandle[Event any](port any) (*rest.SSERouteHandle[struct{}, Event], bool
 		return nil, false
 	}
 	h, ok := v.(*rest.SSERouteHandle[struct{}, Event])
+	return h, ok
+}
+
+// CacheHandle returns the [Cache] built from port's declared [CachePattern],
+// or (zero, false) if the port declared no [CachePattern]. On a [SinkPort]
+// or [LatestPort], T is the port's value type; on an [IOPort], T is the
+// port's response type (the cached value is the port's response).
+func CacheHandle[T any](port any) (Cache[T], bool) {
+	ph, ok := port.(patternHolder)
+	if !ok {
+		return Cache[T]{}, false
+	}
+	v, ok := ph.patternHandle(patternKindCache)
+	if !ok {
+		return Cache[T]{}, false
+	}
+	h, ok := v.(Cache[T])
 	return h, ok
 }
 
@@ -252,6 +270,18 @@ func buildEventPatternHandles[T any](
 			// [SQLMeta] and propagated to adapters via [WithSQLMeta] at Bind.
 			handles[patternKindSQL] = pat
 			specs[patternKindSQL] = pat
+		case CachePattern:
+			// A cache does not produce a stream — reject on sources.
+			if role == roleSource {
+				return nil, nil, PatternRegisterError{
+					Port: portName, Kind: patternKindCache,
+					Err: fmt.Errorf("CachePattern is not supported on a SourcePort — a cache does not produce a stream"),
+				}
+			}
+			// Write-through sink: the cached value is the port's payload.
+			c := Cache[T]{Key: pat.Key, TTL: pat.TTL, Format: fileFormatFor(pat.Format, codec)}
+			handles[patternKindCache] = c
+			specs[patternKindCache] = pat
 		}
 	}
 	return handles, specs, nil
@@ -282,6 +312,7 @@ func buildDualCodecPatternHandles[Req, Resp any](
 	restBuilder *rest.Builder,
 	reqReplyBuilder *reqreply.Builder,
 	mcpBuilder *apimcp.Builder,
+	cacheAllowed bool,
 ) (handles map[string]any, specs map[string]any, err error) {
 	handles = make(map[string]any, len(patterns))
 	specs = make(map[string]any, len(patterns))
@@ -333,6 +364,19 @@ func buildDualCodecPatternHandles[Req, Resp any](
 			// Metadata-only — see buildEventPatternHandles.
 			handles[patternKindSQL] = pat
 			specs[patternKindSQL] = pat
+		case CachePattern:
+			// Accepted on IOPort/LatestPort; rejected on ToolPort — a cache
+			// is not a tool surface.
+			if !cacheAllowed {
+				return nil, nil, PatternRegisterError{
+					Port: portName, Kind: patternKindCache,
+					Err: fmt.Errorf("CachePattern is not supported on a ToolPort — a cache is not a tool surface"),
+				}
+			}
+			// The cached value is the port's RESPONSE type — mirrors FilePattern.
+			c := Cache[Resp]{Key: pat.Key, TTL: pat.TTL, Format: fileFormatFor(pat.Format, respCodec)}
+			handles[patternKindCache] = c
+			specs[patternKindCache] = pat
 		}
 	}
 	return handles, specs, nil

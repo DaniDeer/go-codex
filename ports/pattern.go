@@ -1,6 +1,9 @@
 package ports
 
 import (
+	"strings"
+	"time"
+
 	"github.com/DaniDeer/go-codex/api/events"
 	apimcp "github.com/DaniDeer/go-codex/api/mcp"
 	"github.com/DaniDeer/go-codex/api/reqreply"
@@ -20,6 +23,7 @@ import (
 //   - [MCPPattern] — MCP tool (mcpgo)
 //   - [FilePattern] — typed-file-shaped (file)
 //   - [SQLPattern] — SQL metadata (sql)
+//   - [CachePattern] — key/value-cache-shaped (redis)
 //
 // Each Pattern is a thin wrapper around the existing rest/events/reqreply/mcp/
 // format declarative option vocabulary — no new param types are introduced. A
@@ -197,3 +201,80 @@ type SQLPattern struct {
 }
 
 func (SQLPattern) isPortPattern() {}
+
+// CachePattern declares a key/value-cache-shaped pattern for a port bound to
+// a cache adapter (redis). Key is a template with {var} placeholders —
+// cache keys are shaped like topics and paths, so they are declared the same
+// way. The built handle is a [Cache] of the port's value type, retrievable
+// with [CacheHandle].
+//
+// Port-type acceptance:
+//
+//   - [IOPort]: cache read-through/write-through step — the cached value is
+//     the port's RESPONSE type (mirrors [FilePattern]); pairs with
+//     redis.GetAdapter / redis.SetAdapter.
+//   - [SinkPort]: terminal write-through — the cached value is the port's
+//     payload type; pairs with redis.DrainSetAdapter.
+//   - [LatestPort]: durable current state — the cached value is the port's
+//     value type; pairs with redis.Seed + a write-through feed.
+//   - [SourcePort] and [ToolPort]: rejected at construction with
+//     [PatternRegisterError] — a cache does not produce a stream and is not
+//     a tool surface.
+//
+// Key vars are plain strings in this phase (no per-var codecs — mirror the
+// explicit varsFor-function style of file.DrainWriteFileAdapter):
+//
+//	ports.CachePattern{Key: "user:{id}", TTL: 15 * time.Minute}
+type CachePattern struct {
+	// Key is the key template (e.g. "user:{id}"). Placeholders are expanded
+	// per item with [Cache.BuildKey]. A var-free key addresses a single
+	// value (the LatestPort case).
+	Key string
+	// TTL is the default time-to-live applied on writes. Zero = no expiry.
+	TTL time.Duration
+	// Format selects the value wire format applied to the port's codec:
+	// JSON (default), YAML, or TOML. Same enum and same reasoning as
+	// [FilePattern.Format] — a generic format.Format cannot live in the
+	// non-generic Pattern struct.
+	Format FileFormatKind
+}
+
+func (CachePattern) isPortPattern() {}
+
+// Cache is the handle built from a [CachePattern]: the key template, the
+// default TTL, and the value [format.Format] bound to the port's codec.
+// Retrieve it from a port with [CacheHandle] and pass it to a cache adapter
+// constructor (redis.GetAdapter, redis.SetAdapter, redis.DrainSetAdapter,
+// redis.Seed).
+type Cache[T any] struct {
+	// Key is the declared key template (e.g. "user:{id}").
+	Key string
+	// TTL is the declared default time-to-live. Zero = no expiry.
+	TTL time.Duration
+	// Format encodes/decodes cached values through the port's codec —
+	// every cache read and write is codec-validated.
+	Format format.Format[T]
+}
+
+// BuildKey expands the key template's {var} placeholders from vars.
+// A template without placeholders ignores vars. Returns [CacheKeyError]
+// when a placeholder has no entry in vars.
+func (c Cache[T]) BuildKey(vars map[string]string) (string, error) {
+	key := c.Key
+	for {
+		start := strings.IndexByte(key, '{')
+		if start < 0 {
+			return key, nil
+		}
+		end := strings.IndexByte(key[start:], '}')
+		if end < 0 {
+			return key, nil // unbalanced brace: treat the rest as literal
+		}
+		name := key[start+1 : start+end]
+		val, ok := vars[name]
+		if !ok {
+			return "", CacheKeyError{Key: c.Key, Var: name}
+		}
+		key = key[:start] + val + key[start+end+1:]
+	}
+}

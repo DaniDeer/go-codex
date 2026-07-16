@@ -249,6 +249,7 @@ func TestLoggingObserver_ImplementsAllInterfaces(t *testing.T) {
 	var _ stats.FileObserver = obs
 	var _ stats.SQLObserver = obs
 	var _ stats.StreamObserver = obs
+	var _ stats.CacheObserver = obs
 }
 
 func TestLoggingObserver_AllMethods_NoPanic(t *testing.T) {
@@ -579,4 +580,54 @@ func TestFanout_StreamObserver_SkipsNonImplementors(t *testing.T) {
 	}
 	// Must not panic when no inner observer implements StreamObserver.
 	so.RecordStreamItem("gradeCalc", false, time.Millisecond)
+}
+
+// ── CacheObserver fanout tests ────────────────────────────────────────────────
+
+type cacheFanoutSpy struct {
+	stats.NoopObserver
+	hits, misses, writes int
+}
+
+func (s *cacheFanoutSpy) RecordCacheHit(_ string, _ time.Duration)  { s.hits++ }
+func (s *cacheFanoutSpy) RecordCacheMiss(_ string, _ time.Duration) { s.misses++ }
+func (s *cacheFanoutSpy) RecordCacheWrite(_, _ string, _ bool, _ time.Duration) {
+	s.writes++
+}
+
+func TestNoopObserver_ImplementsCacheObserver(t *testing.T) {
+	var noop stats.NoopObserver
+	var obs stats.Observer = noop
+	if _, ok := obs.(stats.CacheObserver); !ok {
+		t.Fatal("NoopObserver must implement CacheObserver")
+	}
+}
+
+func TestFanout_CacheObserver_OnlyToImplementors(t *testing.T) {
+	spy := &cacheFanoutSpy{}
+	plain := &fanoutSpy{} // does NOT implement CacheObserver
+	obs := stats.NewFanout(plain, spy)
+
+	co, ok := obs.(stats.CacheObserver)
+	if !ok {
+		t.Fatal("fanout must implement CacheObserver when any inner does")
+	}
+	co.RecordCacheHit("user:42", time.Millisecond)
+	co.RecordCacheMiss("user:43", time.Millisecond)
+	co.RecordCacheWrite("user:42", "set", true, time.Millisecond)
+	if spy.hits != 1 || spy.misses != 1 || spy.writes != 1 {
+		t.Errorf("want 1/1/1 calls on spy, got %d/%d/%d", spy.hits, spy.misses, spy.writes)
+	}
+}
+
+func TestFanout_CacheObserver_SkipsNonImplementors(t *testing.T) {
+	plain := &fanoutSpy{}
+	obs := stats.NewFanout(plain)
+
+	co, ok := obs.(stats.CacheObserver)
+	if !ok {
+		t.Fatal("fanout must implement CacheObserver regardless of inner observers")
+	}
+	// Must not panic when no inner observer implements CacheObserver.
+	co.RecordCacheMiss("user:42", time.Millisecond)
 }
