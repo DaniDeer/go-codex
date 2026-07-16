@@ -1,8 +1,10 @@
 # Reactive stream pipelines — Phase 4 — `stream`
 
-> **Status:** Awaiting use case — `FlatMap` and `GroupBy` stay deferred until
-> a concrete driver appears; the third original item (`CombineLatest5+`) is
-> **resolved** via nested composition, now documented in the
+> **Status:** Awaiting use case — `FlatMap` stays deferred until a concrete
+> driver appears. `GroupBy`'s design moved to
+> [Stream — GroupBy & Switch routing](stream-groupby-switch.md) (design
+> complete); `CombineLatest5+` is **resolved** via nested composition, now
+> documented in the
 > [stream guide](../guides/stream.md#step-6--multi-source-with-combinelatest2)
 > (review pass, 2026-07-16).
 > [← Back to Roadmap](index.md)
@@ -75,7 +77,12 @@ buffering. **Default: unordered (first sub-stream to produce wins).**
 
 ## 2. `GroupBy[T, K]` — split stream by key into sub-streams
 
-### Why deferred
+> **Design moved (2026-07-16):** GroupBy's two open questions are resolved in
+> [Stream — GroupBy & Switch routing](stream-groupby-switch.md) (callback
+> exposure, parent-close lifetime), alongside the new static-case `Switch`
+> operator family. The section below is kept as the original question record.
+
+### Why it was deferred
 
 `GroupBy` needs to expose dynamically-created sub-streams when new keys are first seen.
 Two unresolved design questions block implementation:

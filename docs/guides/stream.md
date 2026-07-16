@@ -1,6 +1,6 @@
 # Stream Guide — reactive pipelines
 
-> See also: [`stream` on pkg.go.dev](https://pkg.go.dev/github.com/DaniDeer/go-codex/stream) · [Feature: Reactive Streams](../features/stream.md) · [Ports Guide](ports.md) · [Forge Pipelines](../concepts/pipelines.md) · [Observer Examples](observer.md)
+> See also: [`stream` on pkg.go.dev](https://pkg.go.dev/github.com/DaniDeer/go-codex/stream) · [Feature: Reactive Streams](../features/stream.md) · [Ports Guide](ports.md) · [Constraints & Refinements](validation.md) · [Forge Pipelines](../concepts/pipelines.md) · [Observer Examples](observer.md)
 >
 > **Runnable demos:**
 > - [`examples/stream-pipeline`](https://github.com/DaniDeer/go-codex/tree/main/examples/stream-pipeline) — comprehensive showcase of all operators (8 sections); run with `go run ./examples/stream-pipeline`
@@ -118,6 +118,11 @@ and, inside the forge function, `stats.PipelineObserver.RecordApply`.
 alerts := stream.Filter(ctx, oeeStream, func(oee OEE) bool {
     return float64(oee) < 0.65
 })
+
+// Better: reuse a named codex.Constraint as the predicate — the same value
+// can refine a codec, document itself in the spec, and label the topology.
+// See the Constraints & Refinements guide (validation.md).
+// alerts := stream.Filter(ctx, oeeStream, domain.LowOEE.Check)
 
 // Rate-limit alerts to one per 30 seconds:
 debounced := stream.Debounce(ctx, alerts, 30*time.Second)
