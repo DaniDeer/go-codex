@@ -2,9 +2,9 @@
 
 > **Status:** Phases A + B + C ✅ **implemented** (G1 `LatestPort`, G2
 > `SinkPort.Push`, G3 role-aware `RESTPattern` for ingest/SSE, G5 topology
-> port step, G6 `stream.Map`). Remaining: Phase D (G4 `forge.App`, needs its
-> own design pass); G7 stays deferred. See
-> [Implementation phases](#implementation-phases).
+> port step, G6 `stream.Map`). Phase D (G4 `app.App`) — **design complete,
+> not yet implemented** (all open decisions resolved; see the G4 section).
+> G7 stays deferred. See [Implementation phases](#implementation-phases).
 >
 > Implementation deviations from the design: `mcpgo.ToolLatestAdapter` was
 > **removed** outright (breaking change approved) rather than deprecated;
@@ -41,7 +41,7 @@ tracked and designed.
 | G1 | Cache port (`LatestPort[T]`) | Deferred since Phase 1 (`phase3-cacheport-design`), plus `phase3-toolport-optional-pipeline` | **High** | `GET /readings/latest` is the ONLY HTTP endpoint not wired through a port — `nethttp.RegisterLatest(mux, ioports.LatestHandle, res.LatestReadings, …)` takes a raw handle + stream |
 | G2 | Request-scoped sink submission (`SinkPort.Push`) | Discovered during export flow | **High** | main.go hand-rolls `exportCh` + a `Feed` goroutine + `close(exportCh)`/`<-exportsDone` shutdown, and hit a real footgun: binding the sink with the pipeline ctx killed the file adapter before the demo reached it |
 | G3 | REST ingest (`SourcePort`) / SSE (`SinkPort`) `RESTPattern` support | Documented open item since Phase 4/5 | Medium | Not exercised (MQTT is the ingest transport), but `nethttp.IngestAdapter`/`SSEAdapter` remain the only stream adapters that cannot be declared via a `Pattern` |
-| G4 | `forge.App` lifecycle manager | Deferred since Phase 1 (`phase3-forge-app-lifecycle`) | Medium | main.go manages two contexts (pipeline ctx cancelled mid-run, independent `exportCtx`), two done-channels, and a precise close ordering by hand |
+| G4 | `app.App` lifecycle manager (originally sketched as `forge.App`) | Deferred since Phase 1 (`phase3-forge-app-lifecycle`) | Medium | main.go manages two contexts (pipeline ctx cancelled mid-run, independent `exportCtx`), two done-channels, and a precise close ordering by hand |
 | G5 | Topology port-step kind | Discovered during pipeline extraction | Medium | `pipeline.Topology` mis-labels the persistence port hop as `[tap]` (`WithTap("persist via sql/readings/save IOPort …")`) — no honest `StepKind` exists for an IO-port step |
 | G6 | `stream.Map[In,Out]` value-transform operator | Discovered during export flow | Low | `ExportSnapshot → ExportResult` needed a full `forge.Function` because no typed 1→1 map with an error path exists (`MapErr` maps *errors*, `FlatMapSlice` has no error path) |
 | G7 | Dynamic rebinding (hot-swap adapters) | Deferred since Phase 1 (`phase3-dynamic-rebinding`) | Deferred | No use case has demanded it in six phases — keep deferred |
@@ -195,7 +195,7 @@ func (p *SinkPort[T]) Close() error
 | Question | Resolution |
 |---|---|
 | `Push` blocking vs best-effort with buffer overflow error | **Blocking with ctx** — honors backpressure, consistent with `Feed`'s Drain semantics; `PortOptions.Buffer` gives headroom |
-| Should G4 (`forge.App`) own `Start`/`Close` ordering instead? | **Independent** — `Push` is useful without App; App integration is opt-in later via `OnShutdown(exports.Close)` |
+| Should G4 (`app.App`) own `Start`/`Close` ordering instead? | **Independent** — `Push` is useful without App; App integration is opt-in later via `OnShutdown(exports.Close)` |
 
 ---
 
@@ -316,7 +316,12 @@ response codec on `IOPort`):
 
 ---
 
-## G4 — `forge.App` lifecycle manager
+## G4 — `app.App` lifecycle manager
+
+> **Phase D design — complete (2026-07-16; revised same day: moved from
+> `forge.App` to a NEW top-level package `app`).** All former open decisions
+> resolved below. The package imports only `stats` + stdlib — no cycle risk
+> anywhere.
 
 ### Problem
 
@@ -325,30 +330,164 @@ shutdown ordering, and done-channel choreography by hand. The flagship
 example needs two independent contexts and four synchronization points for a
 five-boundary service; every additional long-lived port multiplies that.
 
-### Design sketch (minimal viable scope)
-
-Not a framework — a shutdown-ordering helper:
+### Design — a shutdown-ordering helper, not a framework
 
 ```go
-// forge/app.go
-type App struct { … }
+// app/app.go
 
-func NewApp(opts AppOptions) *App                      // AppOptions{Observer, Logger}
-func (a *App) Context() context.Context               // root ctx, observer pre-injected
-func (a *App) Go(name string, run func(ctx context.Context) error) // supervised goroutine
-func (a *App) OnShutdown(name string, fn func(ctx context.Context) error) // LIFO hooks
-func (a *App) Run(ctx context.Context) error           // blocks; SIGINT/SIGTERM → ordered shutdown
+// Options configures [New].
+type Options struct {
+    // Observer is injected into App.Context() via stats.WithObserver, so
+    // every port/adapter bound with that ctx resolves it automatically.
+    // Nil means no injection (ports fall back to NoopObserver as usual).
+    Observer stats.Observer
+    // Logger receives lifecycle events (goroutine exits, hook results).
+    // Nil means slog.Default().
+    Logger *slog.Logger
+    // ShutdownTimeout bounds the ctx passed to shutdown hooks.
+    // Zero means 10 seconds.
+    ShutdownTimeout time.Duration
+}
+
+func New(opts Options) *App
+
+// Context returns the app's root context: cancelable, observer pre-injected.
+// Use it for every Bind/Feed/Start call. It is cancelled when Run begins
+// shutdown (signal, supervised-goroutine failure, or parent ctx done).
+func (a *App) Context() context.Context
+
+// Go runs fn in a supervised goroutine. A non-nil return CANCELS the app
+// (fail-fast, errgroup-style) and becomes part of Run's returned error.
+// A nil return just logs completion. name feeds logs, observer events, and
+// GoroutineError.
+func (a *App) Go(name string, fn func(ctx context.Context) error)
+
+// OnShutdown registers a hook run during shutdown in LIFO order (last
+// registered, first run — matching defer semantics: close what you opened
+// last, first). Hook errors are collected, logged, and joined into Run's
+// returned error — a failing hook never stops later hooks.
+func (a *App) OnShutdown(name string, fn func(ctx context.Context) error)
+
+// Run blocks until SIGINT/SIGTERM, parent ctx cancellation, or the first
+// supervised-goroutine failure — then cancels App.Context(), waits for all
+// Go goroutines, runs the OnShutdown hooks (LIFO, bounded by
+// ShutdownTimeout), and returns errors.Join of goroutine + hook errors
+// (nil on a clean shutdown).
+func (a *App) Run(parent context.Context) error
+
+// Shutdown triggers the same ordered teardown without signal-waiting: cancel,
+// wait for goroutines, run hooks. For demos/tests and callers that own their
+// own run loop. Idempotent; concurrent calls share one execution.
+func (a *App) Shutdown() error
 ```
 
-- Ports/adapters do **not** know about App (no coupling) — App just owns the
-  ctx and runs the `close(exportCh)`-style hooks in LIFO order.
-- Explicitly out of scope for the first cut: dependency graphs between ports,
-  health checks, restart policies.
+- **Ports/adapters do NOT know about App** (zero coupling, no new imports in
+  `ports`) — App owns the ctx and runs `exports.Close()`-style hooks; wiring
+  stays explicit:
 
-### Open decision
+  ```go
+  a := app.New(app.Options{Observer: obs, Logger: logger})
+  ctx := a.Context()
 
-Whether G2's `SinkPort.Close` registration should be automatic when the Bind
-ctx is `App.Context()` — leaning **no** (explicit `OnShutdown` beats magic).
+  exportsPort.Bind(ctx, file.DrainWriteFileAdapter(…))
+  exportsPort.Start(ctx)
+  a.OnShutdown("exports", func(context.Context) error { return exportsPort.Close() })
+
+  a.Go("mqtt-feed", func(ctx context.Context) error {
+      ioports.Alerts.Feed(ctx, res.AlertPayloads) // returns on ctx cancel
+      return nil
+  })
+
+  return a.Run(context.Background()) // SIGINT/SIGTERM → ordered teardown
+  ```
+
+- **`Shutdown()` exists because the flagship demo is not signal-driven** — it
+  runs scenes and exits; `Run` would block forever. Demos/tests call
+  `app.Shutdown()` where `main()` of a real service calls `app.Run(ctx)`.
+- **Signal handling**: `signal.NotifyContext(parent, os.Interrupt,
+  syscall.SIGTERM)` inside `Run` only — constructing an App never installs
+  signal handlers (test-friendly).
+
+### Structured errors (all implement `slog.LogValuer`)
+
+```go
+// app/errors.go
+
+// GoroutineError wraps a supervised goroutine's non-nil return.
+type GoroutineError struct {
+    Name string // the name passed to App.Go
+    Err  error
+}
+func (e GoroutineError) Error() string  // "app: goroutine %q failed: %v"
+func (e GoroutineError) Unwrap() error
+func (e GoroutineError) LogValue() slog.Value // group{name, err}
+
+// HookError wraps a shutdown hook's non-nil return (incl. ctx.DeadlineExceeded
+// when the hook exceeded ShutdownTimeout).
+type HookError struct {
+    Name string // the name passed to App.OnShutdown
+    Err  error
+}
+func (e HookError) Error() string  // "app: shutdown hook %q failed: %v"
+func (e HookError) Unwrap() error
+func (e HookError) LogValue() slog.Value // group{name, err}
+```
+
+`Run`/`Shutdown` return `errors.Join(goroutineErrs..., hookErrs...)` —
+callers reach individual failures via `errors.As`.
+
+### Observer integration
+
+- `Options.Observer` is stored in `App.Context()` via `stats.WithObserver`
+  — the single place the whole service's observer is injected (replaces the
+  hand-written `ctx = stats.WithObserver(ctx, obs)` line in main()).
+- App itself emits two event families via `Observer.RecordRequest` (plain
+  Observer — no type-assertion needed): `("app.go", name, 200|500, duration)`
+  when a supervised goroutine exits, and `("app.shutdown", name, 200|500,
+  duration)` per hook — mirroring the `"port.bind"` convention. Nil observer
+  → `stats.NoopObserver{}`.
+- No `TraceObserver` spans in the first cut — app lifecycle is not a
+  request-scoped operation (same rationale as pattern construction in
+  Phase 4).
+
+### Decisions (resolved during Phase D design)
+
+| Question | Resolution |
+|---|---|
+| Supervised-goroutine error policy: fail-fast vs collect | **Fail-fast, errgroup-style** — first non-nil `Go` return cancels the app; all errors (goroutines + hooks) are still **collected** into `errors.Join`. A long-running service losing one supervised boundary should shut down in an orderly way, not limp; adapters that should survive errors handle them internally (per-adapter `OnError`) and return nil. |
+| Auto-register `SinkPort.Close` when Bind ctx is `App.Context()`? | **No** — explicit `OnShutdown` beats ctx-sniffing magic (confirmed from the G2 design pass). Zero coupling between `ports` and `forge`. |
+| Hook order | **LIFO** — matches `defer` semantics; close what you opened last, first. Failing hooks never stop later hooks. |
+| Package placement | **New top-level package `app`** (revised after review — the original `forge.App` name was backlog inertia). forge is Layer-2 computation governance (named/versioned functions); App is process lifecycle — a different concern that would muddy forge's identity. A top-level package per concern matches the repo architecture (`codex`/`format`/`forge`/`stream`/`ports`/`stats`); `app` imports only `stats` + stdlib. Not a separate Go module — versioning overhead, no consumer benefit. Not `ports`: App is transport-agnostic lifecycle, not an IO boundary. |
+| `Run` vs demo-friendly teardown | Both: `Run(parent)` (signal-driven, blocks) and `Shutdown()` (direct, idempotent). `Run` calls the same shutdown path. |
+| Restart policies / health / dependency graphs | Out of scope (unchanged from the sketch) — this is a shutdown-ordering helper. |
+
+### Unit test plan (Phase D)
+
+| ID | Test | Verifies |
+|----|------|----------|
+| D1 | `TestApp_ShutdownRunsHooksLIFO` | 3 hooks run in reverse registration order |
+| D2 | `TestApp_HookErrorDoesNotStopLaterHooks` | failing hook → later hooks still run; error in `errors.Join`, `HookError` via `errors.As` |
+| D3 | `TestApp_GoFailureCancelsApp` | `Go` fn returns error → `Context()` cancelled; `Run` returns `GoroutineError` (fail-fast) |
+| D4 | `TestApp_RunParentCancelTriggersShutdown` | cancel parent → orderly shutdown, nil error when clean |
+| D5 | `TestApp_ShutdownIdempotent` | second `Shutdown` returns the same (memoized) result; concurrent calls share one execution |
+| D6 | `TestApp_ShutdownTimeoutBoundsHooks` | slow hook → `HookError` wrapping `context.DeadlineExceeded`; later hooks still run |
+| D7 | `TestApp_ContextCarriesObserver` | `stats.ObserverFromContext(app.Context())` returns the injected observer |
+| D8 | `TestApp_ObserverEvents` | `app.go` + `app.shutdown` `RecordRequest` events with 200/500 statuses |
+| D9 | `TestGoroutineError_LogValue` / `TestHookError_LogValue` | `slog.KindGroup` + name/err keys; `Unwrap` chains |
+| D10 | `TestApp_GoAfterShutdown_NoPanic` | `Go`/`OnShutdown` after shutdown are safe no-ops (logged) |
+
+### Files to create / modify (Phase D)
+
+| File | Change |
+|---|---|
+| `app/app.go` (+ `app/doc.go`) | `App`, `Options`, `New`, `Context`, `Go`, `OnShutdown`, `Run`, `Shutdown` |
+| `app/errors.go` | `GoroutineError`, `HookError` |
+| `app/app_test.go` | D1–D10 (+ `Example` function for pkg.go.dev) |
+| `examples/sensor-service/main.go` | Adopt App: `app.Context()` replaces the hand-built observer ctx; export sink `Close` + HTTP server close as `OnShutdown` hooks; demo calls `app.Shutdown()` |
+| new `docs/features/app.md` + wiring note in `docs/guides/ports.md` | Feature docs (own page — new package) + `docs/reference/project-structure.md` row |
+| `.github/instructions/go-codex.instructions.md` | NEW `app` package row + import tables |
+| `.github/skills/review-go-codex/*` | history entry + known-facts (fail-fast policy, LIFO hooks, no ports coupling) |
+| Roadmap | G4 → implemented; this doc likely retires (all gaps closed except deferred G7) |
 
 ---
 
@@ -452,7 +591,7 @@ both keys (see `TestValidate_LogValue` reference pattern).
 | **A** | G2 (`SinkPort.Push`/`Start`/`Close`), then G1 (`LatestPort`) | The two High gaps. G2 first: small, `ports`-only, no new port type, and immediately deletes the sensor-service export boilerplate. G1 second: new port type + 3 adapter constructors + example rewiring that touches the same main.go region G2 just simplified | — |
 | **B** | G5 (topology `StepKindPort` + `WithPort`), G6 (`stream.Map`) | Small, independent `stream`-package items with no port coupling; each fixes a concrete sensor-service dishonesty (`[tap]` mislabel; forge-fn ceremony for a trivial map) | — (parallel to A) |
 | **C** | G3 (REST ingest / SSE `RESTPattern` support) — ✅ **implemented** | Extends the single-codec build function (the Phase-6 mechanism) to the last two pattern-less adapters: ingest = `RouteHandle[T, struct{}]` on `SourcePort` (existing `RESTHandle` accessor), SSE = `SSERouteHandle[struct{}, T]` on `SinkPort` (new `SSEHandle` accessor + `RegisterSSE` replay); zero adapter-side changes | A ✅ (shipped) |
-| **D** | G4 (`forge.App`) | Needs its own roadmap-level design pass before code (signal handling, supervised-goroutine error policy); G2's `Close` must exist so App has something to order | A (G2) |
+| **D** | G4 (`app.App`) — **design complete** | Shutdown-ordering helper in a NEW top-level `app` package (stats + stdlib only): `Context()` with injected observer, `Go` supervised goroutines (fail-fast, errgroup-style), `OnShutdown` LIFO hooks, `Run` (signal-driven) + `Shutdown` (direct, idempotent); `GoroutineError`/`HookError`; zero coupling to `ports`/`forge` | A ✅ (G2's `Close` shipped) |
 | — | G7 (dynamic rebinding) | Stays deferred — no demand after six phases | n/a |
 
 Each phase follows the standard ship checklist: tests per the plan below,
@@ -493,7 +632,7 @@ sync, example update, full verification (`gofmt`, `go build/test ./...`,
 | B (G6) | `stream/transform.go` (+ tests) | `Map[In, Out]` with error path |
 | B | `examples/sensor-service/pipeline` | `Topology` uses `WithPort`; export result mapping optionally via `stream.Map` (keep the forge fn — it demonstrates governance — but reference `Map` in docs) |
 | C (G3) | `ports/handle.go`, `adapters/nethttp/binding.go` | Single-codec build fn gains `RESTPattern`; ingest/SSE adapter constructors accept pattern-derived handles |
-| D (G4) | `forge/app.go` (+ own design pass first) | `App`, `AppOptions`, `Go`, `OnShutdown`, `Run` |
+| D (G4) | `app/app.go` + `app/errors.go` (design complete — see G4 section) | `App`, `Options`, `New`, `Go`, `OnShutdown`, `Run`, `Shutdown` |
 | all | Docs + instructions | `features/ports.md`, `guides/ports.md`, instructions `ports` row, review-skill known-facts — per maintenance rules, every phase |
 
 ## Out of scope
@@ -514,7 +653,7 @@ Both former blockers are **resolved** (review pass, 2026-07-16):
    mechanically). Additional finding folded in: zeromq requires
    `ReqReplyPattern` support, and `Bind` must run `Serve` in a supervised
    goroutine because lifetimes differ per transport.
-2. ✅ G2/G4 boundary: `Push` lifecycle stays port-local; `forge.App`
+2. ✅ G2/G4 boundary: `Push` lifecycle stays port-local; `app.App`
    integration is opt-in later via `OnShutdown(exports.Close)` — no magic
    ctx-based auto-registration.
 
@@ -524,5 +663,11 @@ Remaining open (non-blocking, resolve during the owning phase):
   `SSERouteHandle[struct{}, Event]` via new `SSEHandle` accessor; ingest keeps
   today's `struct{}` response semantics (200 empty body / 503 on full buffer);
   same `RESTPattern` struct, port type disambiguates; `RegisterSSE` replay.
-- G4: supervised-goroutine error policy (fail-fast vs collect) — Phase D
-  design pass.
+- ✅ G4: resolved in the Phase D design pass (2026-07-16) — **fail-fast**
+  (first supervised-goroutine error cancels the app, errgroup-style) with all
+  errors still **collected** via `errors.Join`; LIFO hooks that never stop on
+  failure; `Run` (signal-driven) + `Shutdown` (direct) share one teardown
+  path; `forge` placement confirmed cycle-free.
+
+No open decisions remain — every gap is either implemented (G1/G2/G3/G5/G6),
+design-complete (G4), or deferred (G7).
