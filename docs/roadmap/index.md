@@ -16,6 +16,7 @@ These are **living design documents** — they reflect the current best thinking
 | [Stream — FlatMap](stream-flatmap.md) | `stream` | Awaiting use case | FlatMap sub-stream variant (semaphore pool, unordered merge; main IO driver now covered by `ports.IOPort` + 1→N adapters) — deferred until a concrete driver appears. Also records will-not-implement decisions (`RetryWithBackoff`). GroupBy/Switch routing SHIPPED in `stream/route.go`; CombineLatest5+ resolved via nested composition (stream guide) |
 | [AMQP 0.9.1 Adapter](amqp-adapter.md) | `adapters/amqp` | Design complete | PUB/SUB + Request/Reply over RabbitMQ — exchange/queue topology, Ack/Nack, `ReplyTo`/`CorrelationId` RPC, structured errors, observer integration |
 | [TCP Adapter](tcp-adapter.md) | `adapters/tcp` | Design complete | Request/Reply + streaming over raw TCP — pluggable `FramedConn` framing, built-in length-prefix framer, stdlib-only, no CGO |
+| [Redis Cache Adapter](redis-adapter.md) | `adapters/redis` | **Design complete** | Typed cache boundary via go-redis/v9 behind a narrow `Commands` interface (fake-based tests, no live Redis in CI) — `GetAdapter`/`SetAdapter` (IOPort read/write-through), `DrainSetAdapter` (SinkPort), `LatestAdapter` (durable LatestPort, warm restart); new `ports.CachePattern` (key template `"user:{id}"`, TTL, format kind); `CacheError` + `ErrCacheMiss`; new `stats.CacheObserver` (hit/miss/write). Pub/sub deferred to Phase 2 |
 
 ### Deferred — not planned for immediate implementation
 
