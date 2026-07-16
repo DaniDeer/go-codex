@@ -173,6 +173,21 @@ oeeStream := stream.Apply(ctx, oeeInputs, oeeCalcFn, opts)
 
 Emits whenever either source emits (after both have emitted at least once).
 
+`CombineLatest3` and `CombineLatest4` cover three and four heterogeneous
+sources. **For more than 4 sources, compose the combinators** — Go generics
+cannot express variadic type parameters, and nesting is type-safe with no
+new API:
+
+```go
+// Six sources: combine 3 + 3, then merge the two intermediates.
+left := stream.CombineLatest3(ctx, a, b, c,
+    func(a A, b B, c C) Left { return Left{a, b, c} })
+right := stream.CombineLatest3(ctx, d, e, f,
+    func(d D, e E, f F) Right { return Right{d, e, f} })
+combined := stream.CombineLatest2(ctx, left, right,
+    func(l Left, r Right) Combined { return Combined{l, r} })
+```
+
 ---
 
 ## Step 7 — Document the pipeline with Topology

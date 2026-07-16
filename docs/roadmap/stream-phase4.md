@@ -1,16 +1,21 @@
 # Reactive stream pipelines — Phase 4 — `stream`
 
-> **Status:** Design needed — deferred from Phase 3 evaluation.
+> **Status:** Awaiting use case — `FlatMap` and `GroupBy` stay deferred until
+> a concrete driver appears; the third original item (`CombineLatest5+`) is
+> **resolved** via nested composition, now documented in the
+> [stream guide](../guides/stream.md#step-6--multi-source-with-combinelatest2)
+> (review pass, 2026-07-16).
 > [← Back to Roadmap](index.md)
 >
 > See also: [Feature: Reactive Streams](../features/stream.md) · [`stream` on pkg.go.dev](https://pkg.go.dev/github.com/DaniDeer/go-codex/stream)
 
-Phase 4 contains three operators that were deferred because they require either
+Phase 4 contains operators that were deferred because they require either
 concurrency infrastructure design or a validated real-world API shape before
-implementation. The existing stream package (`From`, `Apply`, `Filter`, `Tap`,
-`MapErr`, `Retry`, `FlatMapSlice`, `Merge`, `Tee`, `CombineLatest2/3/4`, `Zip`,
-`Buffer`, `Window`, `SlidingWindow`, `Debounce`, `Throttle`, `Drain`, `Collect`)
-covers the vast majority of real-world reactive pipeline use cases.
+implementation. The existing stream package (`From`, `FromCodec`, `Single`,
+`Apply`, `Map`, `Filter`, `Tap`, `MapErr`, `Retry`, `FlatMapSlice`, `Merge`,
+`Tee`, `BroadcastHub`, `CombineLatest2/3/4`, `Zip`, `Buffer`, `Window`,
+`SlidingWindow`, `Debounce`, `Throttle`, `Drain`, `Collect`) covers the vast
+majority of real-world reactive pipeline use cases.
 
 ---
 
@@ -21,6 +26,13 @@ covers the vast majority of real-world reactive pipeline use cases.
 `FlatMapSlice[In,Out]` (Phase 3) covers the common case: one input item expands
 synchronously into `[]Out`. The sub-stream variant is different: each input item
 spawns a `Stream[Out]` that may emit items over time, potentially concurrently.
+
+The main real-world driver has since been absorbed elsewhere: **"per item,
+produce N results through IO" is now `ports.IOPort` + a 1→N adapter**
+(`sql.QueryEachAdapter`, `file.ReadAdapter`, `nethttp.CallAdapter`, …) —
+sequential per item, with codec validation and observer integration built in.
+What remains for FlatMap is the narrower "concurrent sub-streams of pure
+computation" case, which no example or user has needed yet.
 
 This requires:
 - A goroutine pool or concurrency limit (unbounded goroutines = resource leak)
@@ -114,9 +126,14 @@ functions per key, revisit this API with a real example to validate the callback
 
 ---
 
-## 3. `CombineLatest5+` and variadic `CombineLatestN`
+## 3. `CombineLatest5+` and variadic `CombineLatestN` — ✅ resolved
 
-### Why deferred
+> **Resolved (2026-07-16):** Option B (nested composition) adopted and
+> documented in the [stream guide](../guides/stream.md#step-6--multi-source-with-combinelatest2)
+> with a six-source example. Code-generated `CombineLatest5/6` remain a
+> possibility ONLY if a concrete use case demands them — none has.
+
+### Why it was deferred
 
 Go generics cannot express variadic type parameters. `CombineLatest2`, `CombineLatest3`,
 and `CombineLatest4` are implemented (Phase 3). For N > 4:

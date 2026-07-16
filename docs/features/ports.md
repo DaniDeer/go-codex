@@ -1,6 +1,6 @@
 # Protocol-Agnostic Pipeline Wiring — `ports`
 
-> See also: [`ports` package on pkg.go.dev](https://pkg.go.dev/github.com/DaniDeer/go-codex/ports) · [Forge Pipelines concept](../concepts/pipelines.md) · [Wiring Guide](../guides/ports.md) · [Roadmap: Ports — Post-Phase-6 Gaps](../roadmap/ports-post-phase6-gaps.md)
+> See also: [`ports` package on pkg.go.dev](https://pkg.go.dev/github.com/DaniDeer/go-codex/ports) · [Forge Pipelines concept](../concepts/pipelines.md) · [Wiring Guide](../guides/ports.md) · [App — Application Lifecycle](app.md)
 >
 > Runnable demo: [`examples/sensor-service`](https://github.com/DaniDeer/go-codex/tree/main/examples/sensor-service) — one coherent use case wiring MQTT, SQL, file, and HTTP adapters to all four port types (`SourcePort`/`SinkPort`/`IOPort`/`ToolPort`), each declared with its `Pattern`; see its README for the full data-flow diagram.
 

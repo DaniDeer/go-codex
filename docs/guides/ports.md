@@ -1,6 +1,6 @@
 # Wiring Pipelines with Ports
 
-> See also: [`ports` package on pkg.go.dev](https://pkg.go.dev/github.com/DaniDeer/go-codex/ports) · [`examples/sensor-service`](https://github.com/DaniDeer/go-codex/tree/main/examples/sensor-service) · [Ports feature page](../features/ports.md) · [Roadmap: Ports — Post-Phase-6 Gaps](../roadmap/ports-post-phase6-gaps.md)
+> See also: [`ports` package on pkg.go.dev](https://pkg.go.dev/github.com/DaniDeer/go-codex/ports) · [`examples/sensor-service`](https://github.com/DaniDeer/go-codex/tree/main/examples/sensor-service) · [Ports feature page](../features/ports.md) · [App — Application Lifecycle](../features/app.md)
 
 go-codex pipelines are wired to the outside world using **port adapters** — a declarative,
 protocol-agnostic binding pattern that keeps domain/pipeline code free of transport imports.

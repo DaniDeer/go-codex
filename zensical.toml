@@ -63,7 +63,6 @@ repo_name = "DaniDeer/go-codex"
 
 [nav.Roadmap]
 "Overview" = "roadmap/index.md"
-"— Ports: Post-Phase-6 Gaps" = "roadmap/ports-post-phase6-gaps.md"
 "— Stream Phase 4 (FlatMap, GroupBy)" = "roadmap/stream-phase4.md"
 "— AMQP 0.9.1 Adapter" = "roadmap/amqp-adapter.md"
 "— TCP Adapter" = "roadmap/tcp-adapter.md"
