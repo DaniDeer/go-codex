@@ -7,6 +7,21 @@
 > rebinding). This document is kept as the design record for the post-ports
 > feature set.
 >
+> **Post-ship review (2026-07-16)** closed six completion items the phases
+> skipped: M1 `ports/doc.go` rewritten (was "Three port types" — five exist;
+> now Pattern-first with `codex.Must`); M2 `stream/doc.go` gained `Map`; M3
+> `ports` gained Example functions (`ExampleNewSourcePort`,
+> `ExampleSinkPort_Push`, `ExampleNewLatestPort`); M4 `chi.LatestAdapter`
+> added (G1 had skipped chi despite its "same surface as nethttp" contract) —
+> and the `-race` run for it exposed TWO pre-existing latent bugs, both
+> fixed: chi's Mux is not safe for registration concurrent with serving →
+> all three chi port adapters now register a `swapHandler` at constructor
+> time and install the real handler atomically from Activate/Serve; and both
+> chi's AND nethttp's `IngestAdapter.Activate` returned without waiting for
+> their forwarding goroutine (send racing the port's channel close) → now
+> joined via a done channel. M5 sensor-service README documents the `app`
+> lifecycle. M6 this note.
+>
 > Implementation deviations from the design: `mcpgo.ToolLatestAdapter` was
 > **removed** outright (breaking change approved) rather than deprecated;
 > `PortNotStartedError` also covers `Push` on a Feed-driven port; a

@@ -240,6 +240,7 @@ must(exports.Close(), "close exports") // waits for in-flight Push + adapter dra
 | Transport | Constructor | Description |
 |-----------|-------------|-------------|
 | HTTP | `nethttp.LatestAdapter` | GET endpoint served from the port's cache cell (503 before first value) |
+| HTTP (chi) | `chi.LatestAdapter` | Same semantics, on a chi router |
 | ZeroMQ | `zeromq.LatestAdapter` | Blocking REP loop answering from the cell (error reply before first value) |
 | MCP | `mcpgo.LatestAdapter` | MCP tool answering from the cell (error result before first value) |
 

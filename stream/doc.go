@@ -7,7 +7,7 @@
 // Every operator in this package follows the same model:
 //
 //   - Source: [From], [FromCodec] (accepts any [format.Format])
-//   - Transform: [Apply] (forge.Function per-item), [Filter], [Tap], [MapErr], [Retry], [FlatMapSlice]
+//   - Transform: [Apply] (forge.Function per-item), [Map] (typed 1→1 with error path), [Filter], [Tap], [MapErr], [Retry], [FlatMapSlice]
 //   - Fan-in/out: [Merge], [Tee], [CombineLatest2], [CombineLatest3], [CombineLatest4], [Zip]
 //   - Time: [Buffer] (count/timeout), [Window] (fixed ticker), [SlidingWindow], [Debounce], [Throttle]
 //   - Sink: [Drain] (safe — drains both channels), [Collect]

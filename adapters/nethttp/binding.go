@@ -66,7 +66,9 @@ func (a *nethttpIngestAdapter[T]) Activate(ctx context.Context, dst chan<- T, er
 	}, wrappedOpts)
 	a.mux.Handle(a.handle.Descriptor.Method+" "+a.handle.Descriptor.Path, h)
 
+	forwardDone := make(chan struct{})
 	go func() {
+		defer close(forwardDone)
 		for {
 			select {
 			case <-ctx.Done():
@@ -84,6 +86,9 @@ func (a *nethttpIngestAdapter[T]) Activate(ctx context.Context, dst chan<- T, er
 		}
 	}()
 	<-ctx.Done()
+	// Wait for the forwarding goroutine: Activate returning signals the port
+	// that dst may be closed — a send racing with that close would panic.
+	<-forwardDone
 }
 
 // isErrorAs is a type-assert helper used by binding.go only.

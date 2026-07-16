@@ -3,6 +3,7 @@ package chi
 import (
 	"context"
 	"net/http"
+	"sync/atomic"
 
 	gochi "github.com/go-chi/chi/v5"
 
@@ -30,11 +31,13 @@ func IngestAdapter[T any](
 	handle *rest.RouteHandle[T, struct{}],
 	opts IngestAdapterOptions,
 ) ports.SourceAdapter[T] {
-	return &chiIngestAdapter[T]{r: r, handle: handle, opts: opts}
+	sh := &swapHandler{}
+	r.Method(handle.Descriptor.Method, handle.Descriptor.Path, sh) // constructor-time: race-free
+	return &chiIngestAdapter[T]{sh: sh, handle: handle, opts: opts}
 }
 
 type chiIngestAdapter[T any] struct {
-	r      gochi.Router
+	sh     *swapHandler
 	handle *rest.RouteHandle[T, struct{}]
 	opts   IngestAdapterOptions
 }
@@ -62,9 +65,11 @@ func (a *chiIngestAdapter[T]) Activate(ctx context.Context, dst chan<- T, errs c
 			}
 		}
 	}, wrappedOpts)
-	a.r.Method(a.handle.Descriptor.Method, a.handle.Descriptor.Path, h)
+	a.sh.h.Store(h) // atomically activate the route registered at construction
 
+	forwardDone := make(chan struct{})
 	go func() {
+		defer close(forwardDone)
 		for {
 			select {
 			case <-ctx.Done():
@@ -82,9 +87,32 @@ func (a *chiIngestAdapter[T]) Activate(ctx context.Context, dst chan<- T, errs c
 		}
 	}()
 	<-ctx.Done()
+	// Wait for the forwarding goroutine: Activate returning signals the port
+	// that dst may be closed — a send racing with that close would panic.
+	<-forwardDone
+}
+
+// swapHandler is a registration indirection: chi's Mux is NOT safe for
+// route registration concurrent with serving (unlike net/http.ServeMux,
+// which locks internally), and port Bind runs adapters in background
+// goroutines. Adapters therefore register a swapHandler at CONSTRUCTOR time
+// (caller's goroutine, before the server starts) and atomically install the
+// real handler from Activate/Serve. Requests arriving before installation
+// get 503.
+type swapHandler struct {
+	h atomic.Value // http.Handler
+}
+
+func (s *swapHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	if h, ok := s.h.Load().(http.Handler); ok {
+		h.ServeHTTP(w, r)
+		return
+	}
+	http.Error(w, "service unavailable: handler not active yet", http.StatusServiceUnavailable)
 }
 
 // chiIsErrorAs is a type-assert helper used only within binding.go.
+
 func chiIsErrorAs[T any](err error, target *T) bool {
 	if v, ok := err.(T); ok {
 		*target = v
@@ -111,11 +139,13 @@ func SSEAdapter[Event any](
 	handle *rest.SSERouteHandle[struct{}, Event],
 	opts SSEAdapterOptions,
 ) ports.SinkAdapter[Event] {
-	return &chiSSEAdapter[Event]{r: r, handle: handle, opts: opts}
+	sh := &swapHandler{}
+	r.Method("GET", handle.Descriptor.Path, sh) // constructor-time: race-free
+	return &chiSSEAdapter[Event]{sh: sh, handle: handle, opts: opts}
 }
 
 type chiSSEAdapter[Event any] struct {
-	r      gochi.Router
+	sh     *swapHandler
 	handle *rest.SSERouteHandle[struct{}, Event]
 	opts   SSEAdapterOptions
 }
@@ -129,7 +159,7 @@ func (a *chiSSEAdapter[Event]) Activate(ctx context.Context, src gstream.Stream[
 		sseOpts.Topic = a.handle.Descriptor.Path
 	}
 	fn := SSEFromHub[struct{}, Event](hub, sseOpts)
-	RegisterSSE(a.r, a.handle, fn, a.opts.Options)
+	a.sh.h.Store(SSEHandler(a.handle, fn, a.opts.Options)) // activate the route registered at construction
 	<-ctx.Done()
 }
 
@@ -170,4 +200,58 @@ func (a *chiPipelineAdapter[Req, Resp]) Bind(
 	}, a.opts.Options)
 	a.r.Method(a.handle.Descriptor.Method, a.handle.Descriptor.Path, h)
 	return nil
+}
+
+// ── LatestAdapter ─────────────────────────────────────────────────────────────
+
+// LatestAdapter returns a [ports.LatestAdapter] that serves a
+// [ports.LatestPort]'s cached value as a GET endpoint on a chi router — the
+// port-based successor to [HandlerLatest]/[RegisterLatest] (which own their
+// own cache cell; the port owns it here). Mirrors nethttp.LatestAdapter.
+// Use with [ports.LatestPort.Bind]:
+//
+//	handle, _ := ports.RESTHandle[struct{}, db.Reading](domain.Latest)
+//	must(domain.Latest.Bind(ctx, chi.LatestAdapter(r, handle, chi.Options{})))
+//	go domain.Latest.Feed(ctx, readings)
+//
+// Before the first value arrives the handler responds 503 Service Unavailable
+// with [NoLatestValueError].
+func LatestAdapter[Resp any](
+	r gochi.Router,
+	handle *rest.RouteHandle[struct{}, Resp],
+	opts Options,
+) ports.LatestAdapter[Resp] {
+	sh := &swapHandler{}
+	r.Method(handle.Descriptor.Method, handle.Descriptor.Path, sh) // constructor-time: race-free
+	return &chiLatestAdapter[Resp]{sh: sh, handle: handle, opts: opts}
+}
+
+type chiLatestAdapter[Resp any] struct {
+	sh     *swapHandler
+	handle *rest.RouteHandle[struct{}, Resp]
+	opts   Options
+}
+
+func (a *chiLatestAdapter[Resp]) AdapterName() string { return "chi.LatestAdapter" }
+
+func (a *chiLatestAdapter[Resp]) Serve(_ context.Context, latest func() (Resp, bool)) error {
+	wrappedOpts := a.opts
+	wrappedOpts.ErrorHandler = chiRemapStatus(a.opts.ErrorHandler,
+		func(err error) int {
+			var nlv NoLatestValueError
+			if chiIsErrorAs(err, &nlv) {
+				return http.StatusServiceUnavailable
+			}
+			return 0
+		})
+	h := Handler(a.handle, func(_ context.Context, _ struct{}) (Resp, error) {
+		v, ok := latest()
+		if !ok {
+			var zero Resp
+			return zero, NoLatestValueError{Path: a.handle.Descriptor.Path}
+		}
+		return v, nil
+	}, wrappedOpts)
+	a.sh.h.Store(h) // atomically activate the route registered at construction
+	return nil      // registration-style Serve: returns immediately
 }

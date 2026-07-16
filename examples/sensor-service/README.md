@@ -68,7 +68,7 @@ SQL → HTTP changes only `main.go`.
 | `observability/` | Cross-cutting `CountingObserver` — one instance, fanned out with a `LoggingObserver`, stored once in the context | — |
 | `adapters/`      | Infrastructure edge: mock MQTT client, SQL `ReadingStore`, HTTP handler factories | `domain`, `db` |
 | `db/`            | sqlc-generated queries + goose migrations | — |
-| `main.go`        | **Wiring only**: config, DB, observer, adapter binds, HTTP server | everything above |
+| `main.go`        | **Wiring only**: `app.New` owns the root context (observer pre-injected) and the LIFO teardown (`OnShutdown` hooks for the exports port and HTTP server); config, DB, adapter binds | everything above |
 | `demo.go`        | The runnable demo scenario (drives the wired service, prints the specs) | everything above |
 
 Import direction is strictly acyclic; `domain` imports nothing internal but `db`.
@@ -151,7 +151,10 @@ APP_ALERT_THRESHOLD=90 go run ./examples/sensor-service
 
 The demo runs the full story in-process (mock MQTT client, in-memory SQLite,
 httptest server) and prints each scene, the observer summary, the stream
-topology, and the AsyncAPI/OpenAPI specs.
+topology, and the AsyncAPI/OpenAPI specs. Lifecycle is managed by
+[`app.New`](../../docs/features/app.md): the demo ends with `a.Shutdown()`
+(ordered LIFO teardown); a real service would call `a.Run(ctx)` and get
+SIGINT/SIGTERM handling on the same teardown path.
 
 After a run, the exported snapshot sits right here in
 [`exports/`](exports/) (`{exportID}.json`, per the `FilePattern` declaration)

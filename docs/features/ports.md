@@ -486,7 +486,7 @@ All four interfaces additionally require `AdapterName() string` for observabilit
 | MQTT5 | `SubscribeAdapter` | `PublishAdapter` | `CallAdapter` | `ServeAdapter` | — |
 | MQTT | `SubscribeAdapter` | `PublishAdapter` | — | — | — |
 | HTTP (nethttp) | `IngestAdapter`, `PollAdapter` | `SSEAdapter`, `DrainCallAdapter` | `CallAdapter` | `PipelineAdapter` | `LatestAdapter` |
-| HTTP (chi) | `IngestAdapter` | `SSEAdapter` | — | `PipelineAdapter` | — |
+| HTTP (chi) | `IngestAdapter` | `SSEAdapter` | — | `PipelineAdapter` | `LatestAdapter` |
 | ZeroMQ | `SubscribeAdapter` | `PublishAdapter` | `CallAdapter` | `ServeAdapter` | `LatestAdapter` |
 | File | `ScanAdapter`, `WatchAdapter` | `DrainWriteAdapter`, `DrainWriteFileAdapter` | `ReadAdapter`, `ReadEachAdapter` | — | — |
 | SQL | `QueryAdapter` | `DrainInsertAdapter` | `QueryEachAdapter` | — | — |

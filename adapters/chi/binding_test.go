@@ -250,3 +250,61 @@ func TestChiBinding_IngestAdapter_FullChannelReturns503(t *testing.T) {
 	}
 	cancel()
 }
+
+// ── LatestAdapter (LatestPort) ────────────────────────────────────────────────
+
+func TestChiLatestAdapter_ServesLatest(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	r := gochi.NewRouter()
+	port, err := ports.NewLatestPort[createReq]("latest", createReqCodec, ports.PortOptions{
+		Patterns: []ports.Pattern{
+			ports.RESTPattern{Method: "GET", Path: "/latest"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("construct: %v", err)
+	}
+	handle, ok := ports.RESTHandle[struct{}, createReq](port)
+	if !ok {
+		t.Fatal("want RESTHandle[struct{}, createReq] present")
+	}
+	if err := port.Bind(ctx, chiadapter.LatestAdapter(r, handle, chiadapter.Options{})); err != nil {
+		t.Fatalf("bind: %v", err)
+	}
+
+	srv := httptest.NewServer(r)
+	defer srv.Close()
+	time.Sleep(20 * time.Millisecond) // supervised Serve registers the route
+
+	// Empty cache → 503.
+	resp, err := http.Get(srv.URL + "/latest")
+	if err != nil {
+		t.Fatalf("GET: %v", err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusServiceUnavailable {
+		t.Errorf("want 503 before first value, got %d", resp.StatusCode)
+	}
+
+	// Feed one value → 200 with the cached value.
+	src := make(chan createReq, 1)
+	src <- createReq{Name: "Zoe"}
+	close(src)
+	port.Feed(ctx, gstream.From(ctx, src))
+
+	resp2, err := http.Get(srv.URL + "/latest")
+	if err != nil {
+		t.Fatalf("GET 2: %v", err)
+	}
+	body := make([]byte, 256)
+	n, _ := resp2.Body.Read(body)
+	resp2.Body.Close()
+	if resp2.StatusCode != http.StatusOK {
+		t.Errorf("want 200, got %d", resp2.StatusCode)
+	}
+	if !strings.Contains(string(body[:n]), "Zoe") {
+		t.Errorf("want cached value Zoe, got %q", body[:n])
+	}
+}

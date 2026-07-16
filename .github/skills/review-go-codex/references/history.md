@@ -1,8 +1,17 @@
-# go-codex Review History (R1–R53)
+# go-codex Review History (R1–R54)
 
 Do not re-report any of these findings. They have been implemented and tested.
 
 ---
+
+## Round 54 (post-ship review of the gaps phases — doc.go sync, ports Examples, chi.LatestAdapter, two latent race fixes)
+
+- **`ports/doc.go` rewritten** (was severely stale: "Three port types", error-less constructors, no Pattern) — now Pattern-first with `codex.Must`, five port types, Push lifecycle, accessors. `stream/doc.go` transform list gained `Map`.
+- **`ports` package gained Example functions** (`ExampleNewSourcePort` Pattern-first + ChanSourceAdapter, `ExampleSinkPort_Push`, `ExampleNewLatestPort`) — deterministic, test adapters only.
+- **`chi.LatestAdapter` added** (G1 had skipped chi despite the "same API surface as nethttp" contract; chi already had `HandlerLatest`/`RegisterLatest`).
+- **chi port adapters use a `swapHandler` constructor-time registration — do not flag the indirection.** chi's Mux is NOT safe for route registration concurrent with serving (no internal lock, unlike `net/http.ServeMux`), and port `Bind` runs adapters in background goroutines. All three chi port adapters (`IngestAdapter`/`SSEAdapter`/`LatestAdapter`) register a `swapHandler` at CONSTRUCTOR time (caller's goroutine, before the server starts) and atomically install the real handler from `Activate`/`Serve`; requests before installation get 503. This fixed a pre-existing data race exposed by the first `-race` run against chi's binding tests.
+- **`IngestAdapter.Activate` (chi AND nethttp) now waits for its forwarding goroutine** via a done channel before returning — previously a send to `dst` could race the port's channel close after ctx cancellation (latent crash, caught by `-race`).
+- **sensor-service README** documents the `app` lifecycle wiring (main.go row + run-section note).
 
 ## Round 53 (ports post-Phase-6 gaps — Phase D: `app` lifecycle package)
 
