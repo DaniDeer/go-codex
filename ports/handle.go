@@ -1,6 +1,8 @@
 package ports
 
 import (
+	"fmt"
+
 	"github.com/DaniDeer/go-codex/api/events"
 	apimcp "github.com/DaniDeer/go-codex/api/mcp"
 	"github.com/DaniDeer/go-codex/api/reqreply"
@@ -106,6 +108,22 @@ func FileHandle[T any](port any) (format.File[T], bool) {
 	return h, ok
 }
 
+// SSEHandle returns the [rest.SSERouteHandle] built from a [SinkPort]'s
+// declared [RESTPattern] (SSE shape: events are the port's payload, requests
+// carry no body), or (nil, false) if the port declared no [RESTPattern].
+func SSEHandle[Event any](port any) (*rest.SSERouteHandle[struct{}, Event], bool) {
+	ph, ok := port.(patternHolder)
+	if !ok {
+		return nil, false
+	}
+	v, ok := ph.patternHandle(patternKindREST)
+	if !ok {
+		return nil, false
+	}
+	h, ok := v.(*rest.SSERouteHandle[struct{}, Event])
+	return h, ok
+}
+
 // SQLMeta returns the [SQLPattern] metadata declared on port, or
 // (zero, false) if the port declared no [SQLPattern].
 func SQLMeta(port any) (SQLPattern, bool) {
@@ -134,34 +152,84 @@ func fileFormatFor[T any](kind FileFormatKind, codec codex.Codec[T]) format.Form
 	}
 }
 
+// portRole distinguishes which single-codec port type a pattern is built for
+// — the same [RESTPattern] builds different handle shapes per role (ingest
+// route on a source, SSE route on a sink).
+type portRole int
+
+const (
+	roleSource portRole = iota
+	roleSink
+)
+
 // buildEventPatternHandles scans patterns for an [EventPattern] and builds a
 // *events.ChannelHandle[T] via [events.Channel.Register] — the SAME call a
 // hand-declared channel makes. Used by [SourcePort] (subscribe) and [SinkPort]
 // (publish) construction — both are single-codec ports, matching EventPattern's
-// single payload type. It also handles [FilePattern] (building a
-// format.File[T] from the port's codec, infallible) and [SQLPattern]
-// (metadata-only, stored for [SQLMeta] / [WithSQLMeta] propagation).
+// single payload type. It also handles [RESTPattern] (role-dependent: HTTP
+// ingest rest.Route[T, struct{}] on a source, SSE rest.SSERoute[struct{}, T]
+// on a sink), [FilePattern] (building a format.File[T] from the port's codec,
+// infallible), and [SQLPattern] (metadata-only, stored for [SQLMeta] /
+// [WithSQLMeta] propagation).
 //
-// builder is used when non-nil (giving the handle full parity with a
-// hand-registered channel: security schemes, global security, topic
-// constraints, shared spec accumulation). When nil, a private, single-use
-// *events.Builder is created for this one Register call — the same
-// zero-ceremony default as before, through the identical Register code path
-// (there is no separate, weaker construction path — see [PortOptions.EventBuilder]).
+// eventBuilder/restBuilder are used when non-nil (giving the handle full
+// parity with a hand-registered channel/route: security schemes, global
+// security, topic/path constraints, shared spec accumulation). When nil, a
+// private, single-use Builder is created for that one Register call — the
+// same zero-ceremony default as before, through the identical Register code
+// path (there is no separate, weaker construction path — see
+// [PortOptions.EventBuilder]/[PortOptions.RESTBuilder]).
 //
-// Returns both the built handles (for [EventHandle]) and the original
-// [events.Channel] spec values (for [RegisterEvent] to later replay against a
-// different real [events.Builder]).
+// Returns both the built handles (for [EventHandle]/[RESTHandle]/[SSEHandle])
+// and the original spec values (for [RegisterEvent]/[RegisterREST]/
+// [RegisterSSE] to later replay against a different real Builder).
 func buildEventPatternHandles[T any](
 	portName string,
 	patterns []Pattern,
 	codec codex.Codec[T],
+	role portRole,
 	builder *events.Builder,
+	restBuilder *rest.Builder,
 ) (handles map[string]any, specs map[string]any, err error) {
 	handles = make(map[string]any, len(patterns))
 	specs = make(map[string]any, len(patterns))
 	for _, p := range patterns {
 		switch pat := p.(type) {
+		case RESTPattern:
+			b := restBuilder
+			if b == nil {
+				b = rest.NewBuilder(rest.Info{})
+			}
+			switch role {
+			case roleSource:
+				// HTTP ingest: request body is the port's payload; the
+				// response is empty (200 with empty body; the adapter maps a
+				// full buffer to 503 + PipelineFullError).
+				route := rest.NewRoute[T, struct{}](pat.Method, pat.Path, codec, codex.Struct[struct{}](), pat.Opts...)
+				handle, err := route.Register(b)
+				if err != nil {
+					return nil, nil, PatternRegisterError{Port: portName, Kind: patternKindREST, Err: err}
+				}
+				handles[patternKindREST] = handle
+				specs[patternKindREST] = route
+			case roleSink:
+				// SSE: events are the port's payload. SSE routes are always
+				// GET (rest.NewSSERoute hardcodes it) — reject any other
+				// declared method instead of silently ignoring it.
+				if pat.Method != "" && pat.Method != "GET" {
+					return nil, nil, PatternRegisterError{
+						Port: portName, Kind: patternKindREST,
+						Err: fmt.Errorf("RESTPattern on a SinkPort declares an SSE route, which is always GET; got method %q", pat.Method),
+					}
+				}
+				route := rest.NewSSERoute[struct{}, T](pat.Path, codex.Struct[struct{}](), codec, pat.Opts...)
+				handle, err := route.Register(b)
+				if err != nil {
+					return nil, nil, PatternRegisterError{Port: portName, Kind: patternKindREST, Err: err}
+				}
+				handles[patternKindREST] = handle
+				specs[patternKindREST] = route
+			}
 		case EventPattern:
 			channel := events.NewChannel[T](pat.Topic, codec, pat.Opts...)
 			b := builder

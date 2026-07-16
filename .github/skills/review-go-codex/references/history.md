@@ -1,8 +1,15 @@
-# go-codex Review History (R1–R51)
+# go-codex Review History (R1–R52)
 
 Do not re-report any of these findings. They have been implemented and tested.
 
 ---
+
+## Round 52 (ports post-Phase-6 gaps — Phase C: role-aware RESTPattern for HTTP ingest + SSE)
+
+- **`RESTPattern` on single-codec ports is role-aware**: `buildEventPatternHandles` gained an unexported `portRole` param (`roleSource`/`roleSink`, passed by `NewSourcePort`/`NewSinkPort`) and a `RESTPattern` case. `SourcePort[T]` → ingest `rest.NewRoute[T, struct{}](Method, Path, codec, codex.Struct[struct{}](), Opts…)` — handle via the EXISTING `RESTHandle[T, struct{}]` accessor (type params express the shape; no new accessor). `SinkPort[T]` → SSE `rest.NewSSERoute[struct{}, T](Path, struct{} codec, codec, Opts…)` — always GET; non-GET `Method` fails construction with `PatternRegisterError`; NEW accessor `SSEHandle[Event](port) (*rest.SSERouteHandle[struct{}, Event], bool)` (distinct handle type — `RESTHandle`'s assertion can never match it) + NEW replay `RegisterSSE[Event](b, port) error`.
+- **Zero adapter-side changes** — `nethttp/chi.IngestAdapter` and `SSEAdapter` already accept exactly these handle shapes; pattern-derived handles slot straight in. Ingest response semantics unchanged (200 empty body / 503 `PipelineFullError`).
+- **`nethttp.DrainCallAdapter` stays handle-first BY DESIGN** — needs an independent response codec the single-codec port can't supply; do not flag as missing pattern support.
+- **Test gotcha recorded**: `SSEHandler` commits response headers on the FIRST event, so an SSE e2e test must pump events in the background BEFORE `http.Client.Do` returns — a client that connects first and feeds later deadlocks the test.
 
 ## Round 51 (ports post-Phase-6 gaps — Phases A+B: LatestPort, SinkPort.Push, topology port step, stream.Map)
 

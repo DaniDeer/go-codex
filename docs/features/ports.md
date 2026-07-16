@@ -93,9 +93,10 @@ domain.SensorReadings.Bind(ctx, nethttp.IngestAdapter(mux, ingestHandle, opts)) 
 sensors := domain.SensorReadings.Stream(ctx) // gstream.Stream[SensorReading]
 ```
 
-> `ports.EventPattern` covers pub/sub (MQTT/ZeroMQ). REST ingest (`nethttp.IngestAdapter`)
-> still takes a hand-built `*rest.RouteHandle[Req, struct{}]` — REST ingest/SSE Pattern
-> support is tracked as gap G3 in [Ports — Post-Phase-6 Gaps](../roadmap/ports-post-phase6-gaps.md).
+> `ports.EventPattern` covers pub/sub (MQTT/ZeroMQ). HTTP ingest is covered by
+> `ports.RESTPattern` on the `SourcePort`: it builds a `RouteHandle[T, struct{}]`
+> (request body = payload, empty response) — retrieve with
+> `ports.RESTHandle[T, struct{}]` and pass to `nethttp.IngestAdapter` unchanged.
 
 `Stream(ctx)` must be called after all `Bind` calls. It returns the merged stream;
 adapter and codec validation errors are routed to `Stream.Errors`.
@@ -360,10 +361,13 @@ if err := ports.RegisterREST[OEEIn, OEEResult](b, domain.OEETool); err != nil {
 spec, _ := b.OpenAPISpec()
 ```
 
-> **Scope note:** `RESTPattern` for `SourcePort`/`SinkPort` (HTTP ingest/SSE, which
-> need an asymmetric `Req`/`Resp` shape a single-codec port can't express directly)
-> is a documented open item — tracked as gap G3 in
-> [Ports — Post-Phase-6 Gaps](../roadmap/ports-post-phase6-gaps.md).
+> **Shape note:** `RESTPattern` is role-aware on single-codec ports:
+> `SourcePort[T]` builds the HTTP-ingest shape `RouteHandle[T, struct{}]`
+> (retrieve with `RESTHandle[T, struct{}]`); `SinkPort[T]` builds the SSE
+> shape `SSERouteHandle[struct{}, T]` (always GET — any other `Method` fails
+> construction; retrieve with `SSEHandle[T]`, replay with `RegisterSSE`).
+> The outbound-client sink (`nethttp.DrainCallAdapter`) needs an independent
+> response codec the single-codec port can't supply and stays handle-first.
 > `NewIOPort`/`NewToolPort`/`NewSourcePort`/`NewSinkPort`
 > all now return `(*Port, error)` — `Register` is fallible (unknown param names,
 > path/topic constraint failures, duplicate names on `reqreply`/`mcp`) in ways the

@@ -90,7 +90,7 @@ const (
 // channel when opts.EventBuilder is supplied. Returns [PatternRegisterError]
 // if a declared Pattern fails to build.
 func NewSinkPort[T any](name string, codec codex.Codec[T], opts PortOptions) (*SinkPort[T], error) {
-	handles, specs, err := buildEventPatternHandles(name, opts.Patterns, codec, opts.EventBuilder)
+	handles, specs, err := buildEventPatternHandles(name, opts.Patterns, codec, roleSink, opts.EventBuilder, opts.RESTBuilder)
 	if err != nil {
 		return nil, err
 	}

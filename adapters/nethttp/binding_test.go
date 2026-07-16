@@ -252,3 +252,137 @@ func TestPipelineAdapter_RegistersAndHandlesRequests(t *testing.T) {
 		t.Errorf("want 201, got %d", resp.StatusCode)
 	}
 }
+
+// ── Phase C: pattern-derived ingest + SSE handles ─────────────────────────────
+
+// TestIngestAdapter_ViaRESTPattern is the ingest end-to-end proof: the route
+// is declared ONCE on the SourcePort (ports.RESTPattern); ports.RESTHandle
+// derives the RouteHandle[T, struct{}] the existing adapter accepts unchanged.
+func TestIngestAdapter_ViaRESTPattern(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	mux := http.NewServeMux()
+	p, err := ports.NewSourcePort[createReq]("ingest-pattern", createReqCodec, ports.PortOptions{
+		Buffer: 4,
+		Patterns: []ports.Pattern{
+			ports.RESTPattern{Method: "POST", Path: "/ingest2", Opts: []rest.RouteOpt{
+				rest.RouteMeta{OperationID: "ingestPattern"},
+			}},
+		},
+	})
+	if err != nil {
+		t.Fatalf("construct port: %v", err)
+	}
+	handle, ok := ports.RESTHandle[createReq, struct{}](p)
+	if !ok {
+		t.Fatal("want pattern-derived ingest handle")
+	}
+	p.Bind(ctx, nethttp.IngestAdapter(mux, handle, nethttp.IngestAdapterOptions{Buffer: 4}))
+	s := p.Stream(ctx)
+
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+	time.Sleep(20 * time.Millisecond)
+
+	// Valid body → 201 + item on the stream.
+	resp, err := http.Post(srv.URL+"/ingest2", "application/json", strings.NewReader(`{"name":"Bob"}`))
+	if err != nil {
+		t.Fatalf("POST: %v", err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusCreated {
+		t.Errorf("want 201, got %d", resp.StatusCode)
+	}
+	select {
+	case v := <-s.Values:
+		if v.Name != "Bob" {
+			t.Errorf("want Bob, got %q", v.Name)
+		}
+	case <-time.After(200 * time.Millisecond):
+		t.Fatal("timeout waiting for ingested item")
+	}
+
+	// Invalid body → 400, never reaches the stream.
+	resp2, err := http.Post(srv.URL+"/ingest2", "application/json", strings.NewReader(`{"name":""}`))
+	if err != nil {
+		t.Fatalf("POST bad: %v", err)
+	}
+	resp2.Body.Close()
+	if resp2.StatusCode != http.StatusBadRequest {
+		t.Errorf("want 400 for invalid body, got %d", resp2.StatusCode)
+	}
+	cancel()
+}
+
+// TestSSEAdapter_ViaRESTPattern is the SSE end-to-end proof: the SSE route is
+// declared ONCE on the SinkPort (ports.RESTPattern, always GET);
+// ports.SSEHandle derives the SSERouteHandle[struct{}, Event] the existing
+// adapter accepts unchanged.
+func TestSSEAdapter_ViaRESTPattern(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	mux := http.NewServeMux()
+	p, err := ports.NewSinkPort[createReq]("sse-pattern", createReqCodec, ports.PortOptions{
+		Buffer: 4,
+		Patterns: []ports.Pattern{
+			ports.RESTPattern{Path: "/events2", Opts: []rest.RouteOpt{
+				rest.RouteMeta{OperationID: "ssePattern"},
+			}},
+		},
+	})
+	if err != nil {
+		t.Fatalf("construct port: %v", err)
+	}
+	handle, ok := ports.SSEHandle[createReq](p)
+	if !ok {
+		t.Fatal("want pattern-derived SSE handle")
+	}
+	p.Bind(ctx, nethttp.SSEAdapter(mux, handle, nethttp.SSEAdapterOptions{}))
+
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+	time.Sleep(20 * time.Millisecond)
+
+	// Pump events through the port's Push lifecycle in the background —
+	// SSEHandler commits response headers on the FIRST event, so the client's
+	// Do() below only returns once an event has been broadcast.
+	p.Start(ctx)
+	go func() {
+		for i := 0; ; i++ {
+			if err := p.Push(ctx, createReq{Name: "Eve"}); err != nil {
+				return
+			}
+			time.Sleep(20 * time.Millisecond)
+		}
+	}()
+
+	reqCtx, cancelReq := context.WithTimeout(ctx, 3*time.Second)
+	defer cancelReq()
+	req, _ := http.NewRequestWithContext(reqCtx, http.MethodGet, srv.URL+"/events2", nil)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("GET: %v", err)
+	}
+	defer resp.Body.Close()
+	if ct := resp.Header.Get("Content-Type"); !strings.Contains(ct, "text/event-stream") {
+		t.Errorf("want SSE content type, got %q", ct)
+	}
+
+	buf := make([]byte, 256)
+	var received string
+	for !strings.Contains(received, "Eve") {
+		n, err := resp.Body.Read(buf) // bounded by reqCtx timeout
+		if n > 0 {
+			received += string(buf[:n])
+		}
+		if err != nil {
+			break
+		}
+	}
+	if !strings.Contains(received, "Eve") {
+		t.Errorf("want event containing Eve, got %q", received)
+	}
+	cancel()
+}

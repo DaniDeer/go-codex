@@ -51,7 +51,7 @@ domain.SensorReadings.Bind(ctx,
         mqtt5.SubscribeAdapterOptions{TopicFilter: "sensors/+/data"}))
 
 // Fan-in: add a second source without touching pipeline code
-// (REST ingest still takes a hand-built handle — see the "Pattern" section below)
+// (HTTP ingest: declare ports.RESTPattern{Method: "POST", Path: ...} instead)
 domain.SensorReadings.Bind(ctx,
     nethttp.IngestAdapter(mux, ingestHandle, nethttp.IngestAdapterOptions{Buffer: 8}))
 ```
@@ -354,10 +354,13 @@ spec, _ := b.OpenAPISpec()
 duplicate name on a shared `reqreply`/`mcp` builder) — wrap with `codex.Must(...)`
 for package-level declarations, as shown throughout this guide.
 
-> REST ingest (`SourcePort`) and SSE (`SinkPort`) need an asymmetric `Req`/`Resp`
-> shape a single-codec port can't express directly with `RESTPattern` yet — these
-> still take a hand-built handle. Tracked as gap G3 in
-> [Ports — Post-Phase-6 Gaps](../roadmap/ports-post-phase6-gaps.md).
+> `RESTPattern` is role-aware on single-codec ports: on a `SourcePort[T]` it
+> declares HTTP ingest (`RouteHandle[T, struct{}]` via `RESTHandle[T, struct{}]`,
+> pairs with `nethttp/chi.IngestAdapter`); on a `SinkPort[T]` it declares SSE
+> (`SSERouteHandle[struct{}, T]` via `SSEHandle[T]`, always GET, pairs with
+> `nethttp/chi.SSEAdapter`; replay with `RegisterSSE`). Both register against
+> `PortOptions.RESTBuilder` — ingest and SSE endpoints appear in the shared
+> OpenAPI spec.
 
 ### `FilePattern` — file as sink or intermediate IO step
 

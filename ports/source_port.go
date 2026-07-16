@@ -75,7 +75,7 @@ type SourcePort[T any] struct {
 // if a declared Pattern fails to build (e.g. a duplicate topic on a shared
 // EventBuilder, or a topic/param mismatch).
 func NewSourcePort[T any](name string, codec codex.Codec[T], opts PortOptions) (*SourcePort[T], error) {
-	handles, specs, err := buildEventPatternHandles(name, opts.Patterns, codec, opts.EventBuilder)
+	handles, specs, err := buildEventPatternHandles(name, opts.Patterns, codec, roleSource, opts.EventBuilder, opts.RESTBuilder)
 	if err != nil {
 		return nil, err
 	}

@@ -1,9 +1,9 @@
 # Ports — Post-Phase-6 Gaps — `ports`, `stream`, `forge`, adapters
 
-> **Status:** Phases A + B ✅ **implemented** (G1 `LatestPort`, G2
-> `SinkPort.Push`, G5 topology port step, G6 `stream.Map`). Remaining: Phase C
-> (G3 REST ingest/SSE patterns) and Phase D (G4 `forge.App`, needs its own
-> design pass); G7 stays deferred. See
+> **Status:** Phases A + B + C ✅ **implemented** (G1 `LatestPort`, G2
+> `SinkPort.Push`, G3 role-aware `RESTPattern` for ingest/SSE, G5 topology
+> port step, G6 `stream.Map`). Remaining: Phase D (G4 `forge.App`, needs its
+> own design pass); G7 stays deferred. See
 > [Implementation phases](#implementation-phases).
 >
 > Implementation deviations from the design: `mcpgo.ToolLatestAdapter` was
@@ -201,6 +201,14 @@ func (p *SinkPort[T]) Close() error
 
 ## G3 — REST ingest / SSE `Pattern` support
 
+> **Phase C — ✅ implemented (2026-07-16)** exactly as designed below.
+> Implementation notes: the C2/C8 end-to-end tests live in
+> `adapters/nethttp/binding_test.go` (adapter e2e tests belong to adapter
+> packages); the SSE e2e test must pump events in the background before the
+> client connects — `SSEHandler` commits headers on the first event; the
+> example decision fell to "doc snippets suffice" (sensor-service's ingest
+> transport is MQTT; no example currently wires ingest/SSE adapters).
+
 ### Problem
 
 `nethttp.IngestAdapter` (POST body → `SourcePort[T]`) and
@@ -208,32 +216,103 @@ func (p *SinkPort[T]) Close() error
 whose routes cannot be declared on the port: `RESTPattern{Method, Path, Opts}`
 builds a `rest.RouteHandle[Req, Resp]` from the port's **pair** of codecs, but
 a single-codec port needs the asymmetric shapes `RouteHandle[T, struct{}]`
-(ingest) and SSE's event-typed handle. Documented as an open item since
-Phase 4; Phase 6 did not change the situation.
+(ingest) and `SSERouteHandle[struct{}, Event]` (SSE). Documented as an open
+item since Phase 4; Phase 6 did not change the situation.
 
-### Design sketch
+### Design
 
-Reuse `RESTPattern` (no new pattern kind) and let the **single-codec** build
-function handle it, mirroring how Phase 6 made `buildEventPatternHandles`
-multi-kind:
+Reuse `RESTPattern` (no new pattern kind); the **port type** disambiguates the
+shape — exactly the precedent `FilePattern` set (payload codec on `SinkPort`,
+response codec on `IOPort`):
 
-- On `SourcePort[T]`: `RESTPattern` builds `rest.NewRoute[T, struct{}](method,
-  path, codec, codex.Struct[struct{}](), opts…).Register(b)` → handle
-  retrievable via `ports.RESTHandle[T, struct{}]`. `IngestAdapter` gains a
-  constructor accepting that shape.
-- On `SinkPort[T]`: builds the SSE route shape (`rest.SSERoute`/
-  `SSERouteHandle` — exact type per current `adapters/nethttp` SSE API) from
-  the port's codec.
-- OpenAPI: both register against `PortOptions.RESTBuilder` like every other
-  `RESTPattern` — closing the "classic routes bypass the spec" class of
-  drift for ingest/SSE too.
+- **`SourcePort[T]` + `RESTPattern`** → HTTP **ingest**:
+  `rest.NewRoute[T, struct{}](pat.Method, pat.Path, codec,
+  codex.Struct[struct{}](), pat.Opts…).Register(b)`. Handle retrievable via
+  the **existing** accessor `ports.RESTHandle[T, struct{}]` — no new accessor
+  needed (the type parameters express the ingest shape). `Method` is required
+  (typically `"POST"`).
+- **`SinkPort[T]` + `RESTPattern`** → **SSE**:
+  `rest.NewSSERoute[struct{}, T](pat.Path, codex.Struct[struct{}](), codec,
+  pat.Opts…).Register(b)`. SSE routes are always GET (`NewSSERoute` hardcodes
+  it, Content-Type `text/event-stream` in the spec) — a non-empty
+  `pat.Method` other than `"GET"` fails construction with
+  `PatternRegisterError` wrapping a descriptive error. New accessor:
 
-### Open decisions
+  ```go
+  // ports/handle.go
+  // SSEHandle returns the *rest.SSERouteHandle built from a SinkPort's
+  // declared RESTPattern, or (nil, false) if none was declared.
+  func SSEHandle[Event any](port any) (*rest.SSERouteHandle[struct{}, Event], bool)
+  ```
 
-| Question | Trade-off |
+  A new accessor (rather than reusing `RESTHandle`) because
+  `SSERouteHandle` is a distinct type — `RESTHandle`'s type assertion can
+  never match it.
+- **Why SSE is the only REST shape on `SinkPort`**: the other REST sink,
+  `nethttp.DrainCallAdapter[Req, Resp]` (outbound client POST per item),
+  needs a full `RouteHandle[Req, Resp]` with an **independent response codec**
+  the single-codec port cannot supply — same asymmetric-shape category as
+  `file.ReadEachAdapter`'s enrichment type. DrainCall stays handle-first;
+  documented, not papered over.
+- **Build-function wiring**: `buildEventPatternHandles` (the single-codec
+  build fn) gains a `role` parameter distinguishing source/sink (an
+  unexported enum, passed by `NewSourcePort`/`NewSinkPort`), because the same
+  `RESTPattern` struct builds different handle types per role. Handles/specs
+  stored under `patternKindREST`.
+- **Spec replay**: `RegisterREST` works for ingest (spec value is
+  `rest.Route[T, struct{}]`). SSE needs a matching new replay function:
+
+  ```go
+  // ports/spec.go
+  // RegisterSSE replays a SinkPort's RESTPattern-declared SSE route against b.
+  func RegisterSSE[Event any](b *rest.Builder, port any) error
+  ```
+- **Adapters unchanged**: `nethttp.IngestAdapter` already accepts
+  `*rest.RouteHandle[T, struct{}]` and `nethttp.SSEAdapter` already accepts
+  `*rest.SSERouteHandle[struct{}, Event]` — the pattern-derived handles slot
+  straight in. Same for `chi.IngestAdapter`/`chi.SSEAdapter` (identical handle
+  types). Zero adapter-side changes.
+- **OpenAPI**: both register against `PortOptions.RESTBuilder` like every
+  other `RESTPattern` — ingest and SSE endpoints appear in the shared spec
+  (SSE with `text/event-stream`), closing the last "stream adapters bypass
+  the spec" drift.
+
+### Decisions (resolved during Phase C design)
+
+| Question | Resolution |
 |---|---|
-| Same `RESTPattern` struct or a dedicated `SSEPattern`? | Same struct is consistent with Phase 6's "one pattern kind per protocol family"; the port type disambiguates the shape (as `FilePattern` already does: payload codec on SinkPort, resp codec on IOPort) |
-| Response body for ingest (`struct{}` vs 202 + receipt type) | `struct{}` (204/202, empty body) for Phase 1 — receipt types would need a second codec on SourcePort, which is exactly the asymmetry being avoided |
+| Same `RESTPattern` struct or a dedicated `SSEPattern`? | **Same struct** — one pattern kind per protocol family (Phase 6 rule); the port type disambiguates, as `FilePattern` already does. `Method` validation ("" or "GET" on SinkPort) catches the one honest mistake. |
+| Response body for ingest | **`struct{}` exactly as today** — `nethttp.IngestAdapter` already wraps `Handler` with a `struct{}` response (200 + empty JSON body; 503 + `PipelineFullError` when the buffer is full). The pattern changes route *declaration*, not response semantics. Receipt types would need a second codec on SourcePort — the asymmetry being avoided. |
+| New accessor vs reuse | **`SSEHandle[Event]`** new (distinct handle type); **`RESTHandle[T, struct{}]` reused** for ingest (type params already express it). |
+| Replay | **`RegisterSSE[Event](b, port)`** new, mirroring `RegisterREST`; `RegisterREST[T, struct{}]` covers ingest. |
+| `RESTPattern` on `LatestPort`? | Already shipped in Phase A (GET + `struct{}` req) — G3 does not touch it. |
+
+### Unit test plan (Phase C)
+
+| ID | Test | Verifies |
+|----|------|----------|
+| C1 | `TestRESTPattern_SourcePort_BuildsIngestHandle` | `RESTHandle[T, struct{}]` present; Descriptor method/path correct |
+| C2 | `TestRESTPattern_SourcePort_IngestEndToEnd` | httptest POST through `IngestAdapter(pattern handle)` → item arrives on `Stream`; bad body → 400 |
+| C3 | `TestRESTPattern_SinkPort_BuildsSSEHandle` | `SSEHandle[T]` present; GET + `text/event-stream` in Descriptor |
+| C4 | `TestRESTPattern_SinkPort_MethodValidation` | `Method: "POST"` on SinkPort → `PatternRegisterError` |
+| C5 | `TestRESTPattern_InSharedSpec_IngestAndSSE` | both routes appear in `RESTBuilder.OpenAPISpec()` |
+| C6 | `TestSSEHandle_MissingPattern_ReturnsFalse` | `(nil, false)` cases incl. non-port values |
+| C7 | `TestRegisterSSE_ReplaysSpec` | replay against a fresh builder; `MissingPatternError` when absent |
+| C8 | `TestRESTPattern_SinkPort_SSEEndToEnd` | httptest GET streams events fed through the port (existing `SSEAdapter` + pattern handle) |
+
+### Files to create / modify (Phase C)
+
+| File | Change |
+|---|---|
+| `ports/handle.go` | `buildEventPatternHandles` gains role param + `RESTPattern` case (ingest/SSE per role); `SSEHandle[Event]` accessor |
+| `ports/source_port.go`, `ports/sink_port.go` | pass role to the build fn |
+| `ports/pattern.go` | `RESTPattern` doc: SourcePort/SinkPort semantics |
+| `ports/spec.go` | `RegisterSSE[Event]` |
+| `ports/port_test.go` | C1–C8 |
+| `docs/features/ports.md`, `docs/guides/ports.md` | pattern table rows + ingest/SSE sections; remove the open-item notes |
+| `.github/instructions/go-codex.instructions.md` | `ports` row: RESTPattern on SourcePort/SinkPort, SSEHandle, RegisterSSE; drop the open-item sentence |
+| `.github/skills/review-go-codex/SKILL.md` | retire the "no RESTPattern support yet" known-fact |
+| Example | `examples/sensor-service` gains no new scene (MQTT is its ingest transport); `examples/stream-pipeline` or a nethttp example demonstrates ingest/SSE patterns if one already wires those adapters — otherwise doc snippets suffice (decide at implementation) |
 
 ---
 
@@ -372,7 +451,7 @@ both keys (see `TestValidate_LogValue` reference pattern).
 |-------|------|-----------|------------|
 | **A** | G2 (`SinkPort.Push`/`Start`/`Close`), then G1 (`LatestPort`) | The two High gaps. G2 first: small, `ports`-only, no new port type, and immediately deletes the sensor-service export boilerplate. G1 second: new port type + 3 adapter constructors + example rewiring that touches the same main.go region G2 just simplified | — |
 | **B** | G5 (topology `StepKindPort` + `WithPort`), G6 (`stream.Map`) | Small, independent `stream`-package items with no port coupling; each fixes a concrete sensor-service dishonesty (`[tap]` mislabel; forge-fn ceremony for a trivial map) | — (parallel to A) |
-| **C** | G3 (REST ingest / SSE `RESTPattern` support) | Extends the single-codec build function (the Phase-6 mechanism) to the last two pattern-less adapters; SSE needs the `SSERouteHandle[struct{}, Event]` shape on `SinkPort` | A (shares `ports/handle.go` surface; avoid parallel edits) |
+| **C** | G3 (REST ingest / SSE `RESTPattern` support) — ✅ **implemented** | Extends the single-codec build function (the Phase-6 mechanism) to the last two pattern-less adapters: ingest = `RouteHandle[T, struct{}]` on `SourcePort` (existing `RESTHandle` accessor), SSE = `SSERouteHandle[struct{}, T]` on `SinkPort` (new `SSEHandle` accessor + `RegisterSSE` replay); zero adapter-side changes | A ✅ (shipped) |
 | **D** | G4 (`forge.App`) | Needs its own roadmap-level design pass before code (signal handling, supervised-goroutine error policy); G2's `Close` must exist so App has something to order | A (G2) |
 | — | G7 (dynamic rebinding) | Stays deferred — no demand after six phases | n/a |
 
@@ -441,7 +520,9 @@ Both former blockers are **resolved** (review pass, 2026-07-16):
 
 Remaining open (non-blocking, resolve during the owning phase):
 
-- G3: exact SSE handle shape on `SinkPort` (`SSERouteHandle[struct{}, Event]`)
-  and whether ingest responds 202 or 204 — Phase C.
+- ✅ G3: resolved in the Phase C design pass (2026-07-16) — SSE handle is
+  `SSERouteHandle[struct{}, Event]` via new `SSEHandle` accessor; ingest keeps
+  today's `struct{}` response semantics (200 empty body / 503 on full buffer);
+  same `RESTPattern` struct, port type disambiguates; `RegisterSSE` replay.
 - G4: supervised-goroutine error policy (fail-fast vs collect) — Phase D
   design pass.

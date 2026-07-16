@@ -1685,3 +1685,145 @@ func TestLatestPort_FanOut(t *testing.T) {
 		t.Errorf("adapter2 (blocking Serve): want (9,true), got (%d,%v)", v, ok)
 	}
 }
+
+// ── Phase C: RESTPattern on SourcePort (ingest) and SinkPort (SSE) ───────────
+
+func TestRESTPattern_SourcePort_BuildsIngestHandle(t *testing.T) {
+	p, err := ports.NewSourcePort[int]("ingest", intCodec, ports.PortOptions{
+		Patterns: []ports.Pattern{
+			ports.RESTPattern{Method: "POST", Path: "/readings", Opts: []rest.RouteOpt{
+				rest.RouteMeta{OperationID: "ingestReading"},
+			}},
+		},
+	})
+	if err != nil {
+		t.Fatalf("construct: %v", err)
+	}
+	handle, ok := ports.RESTHandle[int, struct{}](p)
+	if !ok {
+		t.Fatal("want ingest RESTHandle[int, struct{}] present")
+	}
+	if handle.Descriptor.Method != "POST" || handle.Descriptor.Path != "/readings" {
+		t.Errorf("want POST /readings, got %+v", handle.Descriptor)
+	}
+}
+
+func TestRESTPattern_SinkPort_BuildsSSEHandle(t *testing.T) {
+	p, err := ports.NewSinkPort[int]("sse", intCodec, ports.PortOptions{
+		Patterns: []ports.Pattern{
+			ports.RESTPattern{Path: "/events", Opts: []rest.RouteOpt{
+				rest.RouteMeta{OperationID: "streamEvents"},
+			}}, // Method empty — SSE is always GET
+		},
+	})
+	if err != nil {
+		t.Fatalf("construct: %v", err)
+	}
+	handle, ok := ports.SSEHandle[int](p)
+	if !ok {
+		t.Fatal("want SSEHandle[int] present")
+	}
+	if handle.Descriptor.Method != "GET" || handle.Descriptor.Path != "/events" {
+		t.Errorf("want GET /events, got %+v", handle.Descriptor)
+	}
+}
+
+func TestRESTPattern_SinkPort_MethodValidation(t *testing.T) {
+	_, err := ports.NewSinkPort[int]("sse-bad", intCodec, ports.PortOptions{
+		Patterns: []ports.Pattern{
+			ports.RESTPattern{Method: "POST", Path: "/events"},
+		},
+	})
+	var pre ports.PatternRegisterError
+	if !errors.As(err, &pre) {
+		t.Fatalf("want PatternRegisterError for POST SSE, got %v", err)
+	}
+	if pre.Kind != "rest" {
+		t.Errorf("want kind rest, got %q", pre.Kind)
+	}
+	// Explicit GET is accepted.
+	if _, err := ports.NewSinkPort[int]("sse-get", intCodec, ports.PortOptions{
+		Patterns: []ports.Pattern{ports.RESTPattern{Method: "GET", Path: "/events"}},
+	}); err != nil {
+		t.Errorf("explicit GET must be accepted, got %v", err)
+	}
+}
+
+func TestRESTPattern_InSharedSpec_IngestAndSSE(t *testing.T) {
+	b := rest.NewBuilder(rest.Info{Title: "t", Version: "1"})
+	_, err := ports.NewSourcePort[int]("ingest-spec", intCodec, ports.PortOptions{
+		Patterns: []ports.Pattern{
+			ports.RESTPattern{Method: "POST", Path: "/in", Opts: []rest.RouteOpt{rest.RouteMeta{OperationID: "opIngest"}}},
+		},
+		RESTBuilder: b,
+	})
+	if err != nil {
+		t.Fatalf("source: %v", err)
+	}
+	_, err = ports.NewSinkPort[int]("sse-spec", intCodec, ports.PortOptions{
+		Patterns: []ports.Pattern{
+			ports.RESTPattern{Path: "/out", Opts: []rest.RouteOpt{rest.RouteMeta{OperationID: "opSSE"}}},
+		},
+		RESTBuilder: b,
+	})
+	if err != nil {
+		t.Fatalf("sink: %v", err)
+	}
+	doc, err := b.OpenAPISpec()
+	if err != nil {
+		t.Fatalf("spec: %v", err)
+	}
+	raw, _ := doc.MarshalJSON()
+	for _, want := range []string{"/in", "opIngest", "/out", "opSSE", "text/event-stream"} {
+		if !strings.Contains(string(raw), want) {
+			t.Errorf("want %q in shared OpenAPI spec", want)
+		}
+	}
+}
+
+func TestSSEHandle_MissingPattern_ReturnsFalse(t *testing.T) {
+	if _, ok := ports.SSEHandle[int](intSinkPort("no-pattern", 0)); ok {
+		t.Error("want SSEHandle absent on a pattern-less port")
+	}
+	if _, ok := ports.SSEHandle[int](struct{}{}); ok {
+		t.Error("want SSEHandle absent for non-port value")
+	}
+	// A SourcePort's RESTPattern builds an ingest handle, not an SSE handle.
+	src, err := ports.NewSourcePort[int]("ingest-not-sse", intCodec, ports.PortOptions{
+		Patterns: []ports.Pattern{ports.RESTPattern{Method: "POST", Path: "/in"}},
+	})
+	if err != nil {
+		t.Fatalf("construct: %v", err)
+	}
+	if _, ok := ports.SSEHandle[int](src); ok {
+		t.Error("want SSEHandle absent on a SourcePort (ingest shape)")
+	}
+}
+
+func TestRegisterSSE_ReplaysSpec(t *testing.T) {
+	p, err := ports.NewSinkPort[int]("sse-replay", intCodec, ports.PortOptions{
+		Patterns: []ports.Pattern{
+			ports.RESTPattern{Path: "/replay", Opts: []rest.RouteOpt{rest.RouteMeta{OperationID: "opReplay"}}},
+		},
+	})
+	if err != nil {
+		t.Fatalf("construct: %v", err)
+	}
+	b := rest.NewBuilder(rest.Info{Title: "t", Version: "1"})
+	if err := ports.RegisterSSE[int](b, p); err != nil {
+		t.Fatalf("RegisterSSE: %v", err)
+	}
+	doc, err := b.OpenAPISpec()
+	if err != nil {
+		t.Fatalf("spec: %v", err)
+	}
+	raw, _ := doc.MarshalJSON()
+	if !strings.Contains(string(raw), "/replay") {
+		t.Error("want replayed SSE route in spec")
+	}
+
+	var mpe ports.MissingPatternError
+	if err := ports.RegisterSSE[int](b, intSinkPort("plain", 0)); !errors.As(err, &mpe) {
+		t.Errorf("want MissingPatternError, got %v", err)
+	}
+}

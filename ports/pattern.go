@@ -38,14 +38,30 @@ type Pattern interface{ isPortPattern() }
 // [rest.CookieParam], [rest.ResponseMeta], [rest.ResponseHeaderParam],
 // [rest.ResponseCookieParam]).
 //
-//	ports.RESTPattern{
-//	    Method: "POST",
-//	    Path:   "/sensors/{sensorID}/data",
-//	    Opts: []rest.RouteOpt{
-//	        rest.RouteMeta{OperationID: "ingestSensorData"},
-//	        rest.PathParam{Name: "sensorID"}.WithCodec(sensorIDCodec),
-//	    },
-//	}
+// The port type determines the handle shape built from the pattern:
+//
+//   - [IOPort]/[ToolPort]: rest.RouteHandle[Req, Resp] from the port's codec
+//     pair — retrieve with [RESTHandle].
+//
+//   - [LatestPort]: rest.RouteHandle[struct{}, T] (GET, cached response) —
+//     retrieve with [RESTHandle].
+//
+//   - [SourcePort]: HTTP ingest — rest.RouteHandle[T, struct{}] (request body
+//     is the payload, empty response; pairs with nethttp/chi.IngestAdapter) —
+//     retrieve with [RESTHandle].
+//
+//   - [SinkPort]: SSE — rest.SSERouteHandle[struct{}, T] (events are the
+//     payload; always GET — any other Method fails construction; pairs with
+//     nethttp/chi.SSEAdapter) — retrieve with [SSEHandle].
+//
+//     ports.RESTPattern{
+//     Method: "POST",
+//     Path:   "/sensors/{sensorID}/data",
+//     Opts: []rest.RouteOpt{
+//     rest.RouteMeta{OperationID: "ingestSensorData"},
+//     rest.PathParam{Name: "sensorID"}.WithCodec(sensorIDCodec),
+//     },
+//     }
 type RESTPattern struct {
 	// Method is the HTTP method ("GET", "POST", …). Required for SourcePort
 	// ingest, IOPort call, and ToolPort pipeline patterns.

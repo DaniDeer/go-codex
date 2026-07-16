@@ -44,6 +44,30 @@ func RegisterREST[Req, Resp any](b *rest.Builder, port any) error {
 	return err
 }
 
+// RegisterSSE replays a [SinkPort]'s declared [RESTPattern] (SSE shape)
+// against b, adding the SSE route to b's OpenAPI document. Call after the
+// port has already been declared and bound to an adapter.
+//
+// Returns [MissingPatternError] if the port declared no [RESTPattern] (or the
+// pattern was built for a different port role/type), or the underlying
+// rest error if b rejects the route.
+func RegisterSSE[Event any](b *rest.Builder, port any) error {
+	ph, ok := port.(patternHolder)
+	if !ok {
+		return MissingPatternError{Port: portName(port), Kind: patternKindREST}
+	}
+	v, ok := ph.patternSpec(patternKindREST)
+	if !ok {
+		return MissingPatternError{Port: portName(port), Kind: patternKindREST}
+	}
+	route, ok := v.(rest.SSERoute[struct{}, Event])
+	if !ok {
+		return MissingPatternError{Port: portName(port), Kind: patternKindREST}
+	}
+	_, err := route.Register(b)
+	return err
+}
+
 // RegisterEvent replays port's declared [EventPattern] against b, adding it to
 // b's AsyncAPI document. Call after the port has already been declared and
 // bound to an adapter.
