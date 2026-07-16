@@ -3,7 +3,7 @@
 > See also: [`stream` on pkg.go.dev](https://pkg.go.dev/github.com/DaniDeer/go-codex/stream) · [Stream Guide](../guides/stream.md) · [Ports Guide](../guides/ports.md) · [Ports Feature](ports.md) · [Observer Pattern](observer.md) · [Forge Pipelines](../concepts/pipelines.md)
 >
 > **Runnable demos:**
-> - [`examples/stream-pipeline`](https://github.com/DaniDeer/go-codex/tree/main/examples/stream-pipeline) — all operators showcased: `From`, `Apply`, `Tap`, `Filter`, `CombineLatest2`, `Tee`, `Merge`, `FlatMapSlice`, `Debounce`, `Throttle`, `Buffer`, `Window`, `MapErr`, `Topology` + YAML render
+> - [`examples/stream-pipeline`](https://github.com/DaniDeer/go-codex/tree/main/examples/stream-pipeline) — all operators showcased: `From`, `Apply`, `Tap`, `Filter`, `CombineLatest2`, `Tee`, `Merge`, `FlatMapSlice`, `Debounce`, `Throttle`, `Buffer`, `Window`, `MapErr`, `Switch`, `GroupBy`, `Topology` + YAML render
 > - [`examples/stream-oee`](https://github.com/DaniDeer/go-codex/tree/main/examples/stream-oee) — forge + stream integration: governed OEE from machine events (Window → governed forge chain → alert); governance YAML with SHA-256 hashes per function
 > - [`examples/sensor-service`](https://github.com/DaniDeer/go-codex/tree/main/examples/sensor-service) — **flagship port showcase**: one coherent use case (MQTT ingest → SQL persist → threshold alert → REST time series → REST-triggered file export) where every IO hop is a port — `mqtt.SubscribeAdapter`/`PublishAdapter`, `sql.QueryEachAdapter`, `file.DrainWriteFileAdapter`, `nethttp.PipelineAdapter`, `nethttp.HandlerLatest` — with a single shared observer
 
@@ -68,6 +68,7 @@ default sink — it handles both in a single select loop.
 | `Apply[In,Out](ctx, Stream[In], *forge.Function[In,Out], opts) Stream[Out]` | Applies a forge function per-item. Validation/compute failures → `StreamApplyError` on `Errors`. Fires `stats.StreamObserver.RecordStreamItem` + `stats.TraceObserver` span per item. |
 | `Filter[T](ctx, Stream[T], pred func(T) bool) Stream[T]` | Drops items where pred returns false. Errors pass through. |
 | `Tap[T](ctx, Stream[T], onValue func(T)) Stream[T]` | Domain event observation — calls `onValue` without transforming. Distinct from infrastructure metrics. |
+| `Map[In,Out](ctx, Stream[In], fn func(In) (Out, error), opts) Stream[Out]` | Typed 1→1 transform with an error path — lighter than `Apply` when no forge governance is needed. Failures → `StreamMapError` on `Errors`. |
 | `MapErr[T](ctx, Stream[T], fn func(error) (T, bool, error)) Stream[T]` | Recover / reclassify / silence errors. |
 | `Retry[T](ctx, Stream[T], fn func(error) (T, bool, error)) Stream[T]` | Alias for `MapErr` with a descriptive name for the retry pattern. |
 | `FlatMapSlice[In,Out](ctx, Stream[In], func(In) []Out) Stream[Out]` | Each value maps to a slice; elements emitted individually. Empty slice = filter. |
@@ -82,6 +83,20 @@ default sink — it handles both in a single select loop.
 | `CombineLatest3[A,B,C,Out]` | 3-source variant — ideal for OEE (Availability × Performance × Quality). |
 | `CombineLatest4[A,B,C,D,Out]` | 4-source variant. |
 | `Zip[A,B,Out](ctx, Stream[A], Stream[B], func(A,B) Out) Stream[Out]` | Pairs items by position: (a[0],b[0]), (a[1],b[1]), ... — unlike CombineLatest, waits for matched pairs. |
+
+More than 4 sources: nest CombineLatest calls (see the [stream guide](../guides/stream.md)).
+
+### Routing
+
+| Operator | What it does |
+|---|---|
+| `Switch[T](ctx, Stream[T], []Case[T], opts) ([]Stream[T], Stream[T])` | Routes each item to the FIRST matching named case (`out[i]` ↔ `cases[i]`); non-matches and src errors go ONLY to the rest stream. Panics on malformed cases (empty/duplicate `Name`, nil `When`) — a programming error, not a runtime failure. |
+| `Case[T]{Name, When}` / `CaseConstraint[T](name, codex.Constraint[T])` | Named predicate case; `CaseConstraint` reuses a codec constraint's `Check` as the predicate — validation vocabulary doubles as routing vocabulary. |
+| `SwitchKey[T,K](ctx, Stream[T], keys []K, keyOf func(T) K, opts)` | Keyed static variant — share a `TaggedUnion`'s named discriminator function so wire format, spec, and routing use ONE declaration. |
+| `GroupBy[T,K](ctx, Stream[T], key func(T) K, onKey, opts)` | Dynamic per-key sub-streams; `onKey(k, sub)` fires once per new key on the dispatch goroutine (start consumers, don't run them inline). Blocks until src closes; sub-streams close with the parent. Keys are unbounded. Errors fan out non-blocking to all active keys. |
+| `OfType[U,T](ctx, Stream[T]) Stream[U]` | Typed filter over an interface (sum-typed) stream; other types dropped silently, errors forwarded. Observer from ctx, location `"oftype"`. |
+| `SwitchType2[A,B,T]` / `SwitchType3[A,B,C,T]` | Typed multi-case routing over a sum-typed stream: typed case streams + untyped rest. First match wins; errors → rest. |
+| `SplitEither[A,B](ctx, Stream[codex.Either[A,B]], opts) (Stream[A], Stream[B])` | TOTAL split of a codec-native binary union — no rest stream (closed sum); errors fan out to both branches. |
 
 ### Time operators
 
@@ -106,6 +121,7 @@ default sink — it handles both in a single select loop.
 |---|---|
 | `Topology` | Declarative pipeline descriptor — `NewTopology(...).WithSource().WithApply(fn).WithSink()` |
 | `WithApply[In,Out](topo, fn)` | Free function (required for generic type params) — captures forge function hash |
+| `Topology.WithSwitch(desc)` / `Topology.WithGroupBy(desc)` | Document routing steps (`StepKindSwitch` / `StepKindGroupBy`) |
 | `TopologySpec` | Machine-readable pipeline description |
 | `render/stream.Render(spec)` | Serialises `TopologySpec` as YAML |
 

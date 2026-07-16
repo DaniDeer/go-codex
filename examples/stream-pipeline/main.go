@@ -1,5 +1,5 @@
 // Package stream-pipeline demonstrates the go-codex stream package across
-// eight sections, each showcasing a different group of operators.
+// ten sections, each showcasing a different group of operators.
 //
 // # Domain
 //
@@ -14,6 +14,7 @@
 //   - Sources:      From, FromCodec
 //   - Transforms:   Apply (forge.Function), Filter, Tap, MapErr, FlatMapSlice
 //   - Fan-in/out:   Merge, Tee, CombineLatest2
+//   - Routing:      Switch (named cases + rest), GroupBy (per-key sub-streams)
 //   - Time:         Buffer, Window, Debounce, Throttle
 //   - Sinks:        Drain, Collect
 //   - Observer:     stats.StreamObserver (infrastructure metrics) + Tap (domain events) + stats.NewFanout
@@ -31,6 +32,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"sync"
 	"time"
 
 	"github.com/DaniDeer/go-codex/codex"
@@ -438,6 +440,80 @@ func main() {
 		return
 	}
 	fmt.Println(string(yamlBytes))
+
+	// ── Section 10: Routing (Switch + GroupBy) ────────────────────────────
+	//
+	// Switch routes each item to the FIRST matching named case; non-matches
+	// and stream errors land on the rest stream. GroupBy splits the stream
+	// into per-key sub-streams, one per distinct key.
+	fmt.Println("\n─── Section 10: Routing (Switch by severity + GroupBy per sensor)")
+
+	routeIn := make(chan TempReading, 6)
+	for _, r := range []TempReading{
+		{SensorID: "roof", Celsius: 52},
+		{SensorID: "lab", Celsius: 41},
+		{SensorID: "roof", Celsius: 23},
+		{SensorID: "lab", Celsius: 55},
+		{SensorID: "yard", Celsius: 19},
+	} {
+		routeIn <- r
+	}
+	close(routeIn)
+
+	outs, rest := stream.Switch(ctx, stream.From(ctx, routeIn),
+		[]stream.Case[TempReading]{
+			{Name: "alert", When: func(r TempReading) bool { return r.Celsius >= 50 }},
+			{Name: "warning", When: func(r TempReading) bool { return r.Celsius >= 40 }},
+		},
+		stream.SwitchOptions{Buffer: 6})
+
+	alerts, _ := stream.Collect(ctx, outs[0])
+	warnings, _ := stream.Collect(ctx, outs[1])
+	archived, _ := stream.Collect(ctx, rest)
+	fmt.Printf("  switch: %d alerts (≥50°C), %d warnings (≥40°C), %d archived\n",
+		len(alerts), len(warnings), len(archived))
+
+	groupIn := make(chan TempReading, 4)
+	for _, r := range []TempReading{
+		{SensorID: "roof", Celsius: 52},
+		{SensorID: "lab", Celsius: 41},
+		{SensorID: "roof", Celsius: 23},
+		{SensorID: "lab", Celsius: 55},
+	} {
+		groupIn <- r
+	}
+	close(groupIn)
+
+	type keyCount struct {
+		key string
+		n   int
+	}
+	counts := make(chan keyCount, 4)
+	var consumers sync.WaitGroup
+	stream.GroupBy(ctx, stream.From(ctx, groupIn),
+		func(r TempReading) string { return r.SensorID },
+		func(sensorID string, s stream.Stream[TempReading]) {
+			consumers.Add(1)
+			go func() {
+				defer consumers.Done()
+				n := 0
+				for range s.Values {
+					n++
+				}
+				for range s.Errors {
+				}
+				counts <- keyCount{sensorID, n}
+			}()
+		},
+		stream.GroupByOptions{Buffer: 4})
+	consumers.Wait() // GroupBy returned → sub-streams closed; wait for consumers
+	close(counts)
+
+	got := map[string]int{}
+	for kc := range counts {
+		got[kc.key] = kc.n
+	}
+	fmt.Printf("  groupby: roof=%d readings, lab=%d readings\n", got["roof"], got["lab"])
 }
 
 func mustMarshal(v any) []byte {

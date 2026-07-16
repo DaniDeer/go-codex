@@ -70,6 +70,8 @@ func TestTopology_AllStepKindConstants(t *testing.T) {
 		stream.StepKindZip:           "zip",
 		stream.StepKindFlatMapSlice:  "flatMapSlice",
 		stream.StepKindPort:          "port",
+		stream.StepKindSwitch:        "switch",
+		stream.StepKindGroupBy:       "groupBy",
 		stream.StepKindSink:          "sink",
 	}
 	for kind, want := range constants {

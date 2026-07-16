@@ -150,8 +150,8 @@ predicate shape. What you gain over an anonymous closure:
 | Invisible in the spec | `Schema` effect documents the rule in OpenAPI/AsyncAPI |
 | Drifts from boundary validation | Boundary and pipeline share the same `Check` |
 
-The planned routing operators take this further
-([Stream — GroupBy & Switch roadmap](../roadmap/stream-groupby-switch.md)):
+The routing operators take this further (see
+[routing in the stream guide](stream.md#step-4b--route-with-switch-and-groupby)):
 `stream.CaseConstraint(name, c)` turns a constraint directly into a `Switch`
 case, so an alert/warning/archive router is three constraint declarations —
 each of which can *also* refine a codec and appear in the spec.

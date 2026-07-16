@@ -37,6 +37,10 @@ const (
 	// StepKindPort is an IO hop through a ports port (e.g. persistence or
 	// enrichment via an IOPort, submission to a SinkPort).
 	StepKindPort StepKind = "port"
+	// StepKindSwitch routes items into static named cases ([Switch]/[SwitchKey]).
+	StepKindSwitch StepKind = "switch"
+	// StepKindGroupBy splits the stream into dynamic per-key sub-streams ([GroupBy]).
+	StepKindGroupBy StepKind = "groupBy"
 	// StepKindSink consumes items and errors.
 	StepKindSink StepKind = "sink"
 )
@@ -200,6 +204,20 @@ func (t *Topology) WithFlatMapSlice(description string) *Topology {
 // explains the hop.
 func (t *Topology) WithPort(name, description string) *Topology {
 	t.steps = append(t.steps, TopologyStep{Kind: StepKindPort, Name: name, Description: description})
+	return t
+}
+
+// WithSwitch records a static case-routing step ([Switch]/[SwitchKey]) with a
+// human-readable description of the cases (e.g. "alert | warning | archive").
+func (t *Topology) WithSwitch(description string) *Topology {
+	t.steps = append(t.steps, TopologyStep{Kind: StepKindSwitch, Description: description})
+	return t
+}
+
+// WithGroupBy records a dynamic per-key split step ([GroupBy]) with a
+// human-readable description of the key (e.g. "by sensorID").
+func (t *Topology) WithGroupBy(description string) *Topology {
+	t.steps = append(t.steps, TopologyStep{Kind: StepKindGroupBy, Description: description})
 	return t
 }
 

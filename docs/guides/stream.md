@@ -134,6 +134,75 @@ batchOEE := stream.Apply(ctx, batchStream, batchOEECalc, opts)
 
 ---
 
+## Step 4b — Route with Switch and GroupBy
+
+`Switch` routes each item to the FIRST matching named case. Outputs are
+positional (`out[i]` pairs with `cases[i]`); non-matches and source errors
+go only to the rest stream — single error ownership, no duplicate handling:
+
+```go
+outs, rest := stream.Switch(ctx, readings,
+    []stream.Case[Reading]{
+        {Name: "alert",   When: func(r Reading) bool { return r.Value >= 50 }},
+        {Name: "warning", When: func(r Reading) bool { return r.Value >= 40 }},
+    },
+    stream.SwitchOptions{})
+
+alerts, warnings, archive := outs[0], outs[1], rest
+```
+
+Reuse a named `codex.Constraint` as a case — the routing predicate, the codec
+refinement, and the spec documentation are then ONE declaration (see the
+[Constraints & Refinements guide](validation.md)):
+
+```go
+outs, rest := stream.Switch(ctx, readings,
+    []stream.Case[Reading]{
+        stream.CaseConstraint("hot", domain.HotReading(cfg.Threshold)),
+    },
+    stream.SwitchOptions{})
+```
+
+Malformed cases (empty or duplicate `Name`, nil `When`) panic — they are
+programming errors, caught at wiring time, not runtime failures.
+
+`SwitchKey` is the keyed variant. Share a `TaggedUnion`'s named discriminator
+function so the wire format and the router can never drift:
+
+```go
+kindOf := func(e Event) string { return e.Kind } // also TaggedUnion's selectVariant
+outs, rest := stream.SwitchKey(ctx, events,
+    []string{"created", "cancelled"}, kindOf, stream.SwitchOptions{})
+```
+
+`GroupBy` splits a stream into dynamic per-key sub-streams. The callback runs
+on the dispatch goroutine — start consumers there, don't run them inline:
+
+```go
+stream.GroupBy(ctx, readings,
+    func(r Reading) string { return r.SensorID },
+    func(sensorID string, sub stream.Stream[Reading]) {
+        go consumeSensor(sensorID, sub) // start, don't run
+    },
+    stream.GroupByOptions{Buffer: 16})
+// GroupBy blocks until readings closes; sub-streams close with the parent.
+```
+
+Keys are unbounded — one goroutine + channel pair per distinct key lives
+until the parent closes. Bound cardinality upstream if keys are attacker- or
+user-controlled.
+
+For sum-typed (interface) streams, `OfType`/`SwitchType2`/`SwitchType3` route
+by dynamic type, and `SplitEither` totally splits a `Stream[codex.Either[A,B]]`
+into two typed branches with no rest stream (closed sum):
+
+```go
+created  := stream.OfType[OrderCreated](ctx, events)
+lefts, rights := stream.SplitEither(ctx, unionStream, stream.SwitchOptions{})
+```
+
+---
+
 ## Step 5 — Drain with explicit error handling
 
 `Drain` is the safe default sink. It drains both `Values` and `Errors` channels

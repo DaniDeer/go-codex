@@ -1,8 +1,19 @@
-# go-codex Review History (R1–R54)
+# go-codex Review History (R1–R55)
 
 Do not re-report any of these findings. They have been implemented and tested.
 
 ---
+
+## Round 55 (stream routing operators — `stream/route.go`: GroupBy, Switch, SwitchKey, OfType, SwitchType2/3, SplitEither)
+
+- **`Switch` sends non-matches AND src errors ONLY to the rest stream BY DESIGN** — single error ownership; case streams carry values only. Do not flag missing per-case error channels.
+- **`Switch`/`SwitchKey` PANIC on malformed cases (empty/duplicate `Name`, nil `When`, duplicate keys) BY DESIGN** — programming errors caught at wiring time; keeps the two-value return signature. Not a missing-error-return bug.
+- **`GroupBy` blocks until src closes (like `SinkPort.Feed`); `onKey` runs on the dispatch goroutine** — "start, don't run" contract. Keys are unbounded by design (documented); errors fan out NON-BLOCKING to all active keys (`select`/`default` drop is intentional).
+- **`OfType` drops non-matching types silently and takes NO Options struct** — observer resolved from ctx (`stats.ObserverFromContext`), location `"oftype"`. Intentional minimal signature.
+- **`SwitchType3` is direct dispatch, NOT composed from `SwitchType2`+`OfType`** — composition would put two concurrent readers on one channel and steal items. Do not suggest the composition "simplification".
+- **`SplitEither` has no rest stream** — `codex.Either[A,B]` is a closed sum; errors fan out to BOTH branches non-blocking.
+- **Routing adds NO new error types** — routing introduces no failure modes; `Stream.Errors` passthrough only. Observer locations: `"groupby"`, case `Name`, `"rest"`, `"oftype"`, `"switchtype.N"`/`"switchtype.rest"`, `"either.left"`/`"either.right"`.
+- Topology gained `StepKindSwitch`/`StepKindGroupBy` + `Topology.WithSwitch`/`WithGroupBy`.
 
 ## Round 54 (post-ship review of the gaps phases — doc.go sync, ports Examples, chi.LatestAdapter, two latent race fixes)
 

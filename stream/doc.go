@@ -9,6 +9,7 @@
 //   - Source: [From], [FromCodec] (accepts any [format.Format])
 //   - Transform: [Apply] (forge.Function per-item), [Map] (typed 1→1 with error path), [Filter], [Tap], [MapErr], [Retry], [FlatMapSlice]
 //   - Fan-in/out: [Merge], [Tee], [CombineLatest2], [CombineLatest3], [CombineLatest4], [Zip]
+//   - Routing: [Switch]/[SwitchKey] (static named cases + rest), [GroupBy] (dynamic per-key sub-streams), [OfType]/[SwitchType2]/[SwitchType3] (sum-type routing), [SplitEither] (total split of [codex.Either])
 //   - Time: [Buffer] (count/timeout), [Window] (fixed ticker), [SlidingWindow], [Debounce], [Throttle]
 //   - Sink: [Drain] (safe — drains both channels), [Collect]
 //
