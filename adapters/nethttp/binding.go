@@ -2,6 +2,7 @@ package nethttp
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"time"
 
@@ -410,4 +411,56 @@ func (a *nethttpPipelineAdapter[Req, Resp]) Bind(
 		return fn(ctx, req)
 	}, a.opts.Options)
 	return nil
+}
+
+// ── LatestAdapter ─────────────────────────────────────────────────────────────
+
+// LatestAdapter returns a [ports.LatestAdapter] that serves a
+// [ports.LatestPort]'s cached value as a GET endpoint — the port-based
+// successor to [HandlerLatest]/[RegisterLatest] (which own their own cache
+// cell; the port owns it here). Use with [ports.LatestPort.Bind]:
+//
+//	handle, _ := ports.RESTHandle[struct{}, db.Reading](domain.Latest)
+//	must(domain.Latest.Bind(ctx, nethttp.LatestAdapter(mux, handle, nethttp.Options{})))
+//	go domain.Latest.Feed(ctx, readings)
+//
+// Before the first value arrives the handler responds 503 Service Unavailable
+// with [NoLatestValueError] (same semantics as HandlerLatest). All codec
+// layers (params, security) validate exactly as with [Handler].
+func LatestAdapter[Resp any](
+	mux *http.ServeMux,
+	handle *rest.RouteHandle[struct{}, Resp],
+	opts Options,
+) ports.LatestAdapter[Resp] {
+	return &nethttpLatestAdapter[Resp]{mux: mux, handle: handle, opts: opts}
+}
+
+type nethttpLatestAdapter[Resp any] struct {
+	mux    *http.ServeMux
+	handle *rest.RouteHandle[struct{}, Resp]
+	opts   Options
+}
+
+func (a *nethttpLatestAdapter[Resp]) AdapterName() string { return "nethttp.LatestAdapter" }
+
+func (a *nethttpLatestAdapter[Resp]) Serve(_ context.Context, latest func() (Resp, bool)) error {
+	wrappedOpts := a.opts
+	wrappedOpts.ErrorHandler = remapStatus(a.opts.ErrorHandler,
+		func(err error) int {
+			var nlv NoLatestValueError
+			if errors.As(err, &nlv) {
+				return http.StatusServiceUnavailable
+			}
+			return 0
+		})
+	h := Handler(a.handle, func(_ context.Context, _ struct{}) (Resp, error) {
+		v, ok := latest()
+		if !ok {
+			var zero Resp
+			return zero, NoLatestValueError{Path: a.handle.Descriptor.Path}
+		}
+		return v, nil
+	}, wrappedOpts)
+	a.mux.Handle(a.handle.Descriptor.Method+" "+a.handle.Descriptor.Path, h)
+	return nil // registration-style Serve: returns immediately
 }

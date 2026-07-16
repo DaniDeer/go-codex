@@ -2,6 +2,8 @@ package zeromq
 
 import (
 	"context"
+	"errors"
+	"fmt"
 
 	"github.com/DaniDeer/go-codex/api/events"
 	"github.com/DaniDeer/go-codex/api/reqreply"
@@ -277,4 +279,60 @@ func (a *zmqServeAdapter[Req, Resp]) Bind(
 ) error {
 	go Serve(ctx, a.sock, a.handle, AsPipelineFunc(fn), a.opts) //nolint:errcheck
 	return nil
+}
+
+// ── LatestAdapter ─────────────────────────────────────────────────────────────
+
+// LatestAdapter returns a [ports.LatestAdapter] that serves a
+// [ports.LatestPort]'s cached value over a blocking REP loop — the
+// port-based successor to [ServeLatest] (which owns its own cache cell; the
+// port owns it here). Use with [ports.LatestPort.Bind]; the port runs the
+// blocking Serve in a supervised goroutine:
+//
+//	handle, _ := ports.ReqReplyHandle[struct{}, OEE](domain.Latest)
+//	must(domain.Latest.Bind(ctx, zeromq.LatestAdapter(sock, handle, zeromq.ServeLatestOptions{})))
+//	go domain.Latest.Feed(ctx, oeeStream)
+//
+// When a request arrives before the first value, the REP socket sends an
+// error reply and opts.OnError receives [NoLatestValueError] (same semantics
+// as ServeLatest).
+func LatestAdapter[Resp any](
+	sock FramedSocket,
+	handle *reqreply.RouteHandle[struct{}, Resp],
+	opts ServeLatestOptions,
+) ports.LatestAdapter[Resp] {
+	return &zmqLatestAdapter[Resp]{sock: sock, handle: handle, opts: opts}
+}
+
+type zmqLatestAdapter[Resp any] struct {
+	sock   FramedSocket
+	handle *reqreply.RouteHandle[struct{}, Resp]
+	opts   ServeLatestOptions
+}
+
+func (a *zmqLatestAdapter[Resp]) AdapterName() string { return "zeromq.LatestAdapter" }
+
+func (a *zmqLatestAdapter[Resp]) Serve(ctx context.Context, latest func() (Resp, bool)) error {
+	onErr := a.opts.OnError
+	serveOpts := ServeOptions{Observer: a.opts.Observer}
+	if onErr != nil {
+		serveOpts.OnError = func(se ServeError) {
+			var nv NoLatestValueError
+			if errors.As(se.Err, &nv) {
+				onErr(nv)
+			} else {
+				onErr(se)
+			}
+		}
+	}
+	// Blocking REP loop until ctx is done — the port's supervised goroutine
+	// accommodates this Serve shape.
+	return Serve(ctx, a.sock, a.handle, func(_ context.Context, _ struct{}) (Resp, error) {
+		v, ok := latest()
+		if !ok {
+			var zero Resp
+			return zero, fmt.Errorf("%w", NoLatestValueError{Topic: a.handle.Topic})
+		}
+		return v, nil
+	}, serveOpts)
 }

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"sync"
 	"testing"
 	"time"
 
@@ -59,6 +60,9 @@ var computeRespCodec = codex.Struct[computeResp](
 
 // mockSocket implements FramedSocket for testing without a real ZMQ library.
 type mockSocket struct {
+	// mu guards all fields — Serve loops run in background goroutines while
+	// tests poll sentFrames.
+	mu sync.Mutex
 	// inFrames is the queue of multi-frame messages to return from RecvFrames.
 	inFrames [][][]byte
 	// sentFrames records every SendFrames call in order.
@@ -74,6 +78,8 @@ type mockSocket struct {
 }
 
 func (m *mockSocket) SendFrames(frames [][]byte) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	if m.sendErr != nil {
 		return m.sendErr
 	}
@@ -86,6 +92,8 @@ func (m *mockSocket) SendFrames(frames [][]byte) error {
 }
 
 func (m *mockSocket) RecvFrames() ([][]byte, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	if m.timeoutCount > 0 {
 		m.timeoutCount--
 		return nil, zeromq.ErrTimeout
@@ -102,8 +110,19 @@ func (m *mockSocket) RecvFrames() ([][]byte, error) {
 }
 
 func (m *mockSocket) SetSubscription(topic string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	m.subTopic = topic
 	return nil
+}
+
+// sentSnapshot returns a copy of sentFrames for race-free polling.
+func (m *mockSocket) sentSnapshot() [][][]byte {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	out := make([][][]byte, len(m.sentFrames))
+	copy(out, m.sentFrames)
+	return out
 }
 
 func (m *mockSocket) SetRecvTimeout(_ time.Duration) error { return nil }

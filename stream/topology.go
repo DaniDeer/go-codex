@@ -34,6 +34,9 @@ const (
 	StepKindZip StepKind = "zip"
 	// StepKindFlatMapSlice expands each item into multiple output items.
 	StepKindFlatMapSlice StepKind = "flatMapSlice"
+	// StepKindPort is an IO hop through a ports port (e.g. persistence or
+	// enrichment via an IOPort, submission to a SinkPort).
+	StepKindPort StepKind = "port"
 	// StepKindSink consumes items and errors.
 	StepKindSink StepKind = "sink"
 )
@@ -188,6 +191,15 @@ func (t *Topology) WithZip(description string) *Topology {
 // WithFlatMapSlice records a FlatMapSlice step (expands each item into multiple items).
 func (t *Topology) WithFlatMapSlice(description string) *Topology {
 	t.steps = append(t.steps, TopologyStep{Kind: StepKindFlatMapSlice, Description: description})
+	return t
+}
+
+// WithPort records an IO-port step: an IO hop through a ports port inside
+// the pipeline (persistence or enrichment via an IOPort, submission to a
+// SinkPort). Name is the port name (e.g. "sql/readings/save"); description
+// explains the hop.
+func (t *Topology) WithPort(name, description string) *Topology {
+	t.steps = append(t.steps, TopologyStep{Kind: StepKindPort, Name: name, Description: description})
 	return t
 }
 

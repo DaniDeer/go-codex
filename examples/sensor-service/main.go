@@ -177,14 +177,20 @@ func main() {
 		Logger:  logger,
 	})
 
-	// ── HTTP reactive cache: GET /readings/latest ─────────────────────────
+	// ── HTTP reactive cache: bind the Latest port ─────────────────────────
 	//
-	// HandlerLatest serves the most recently saved reading from the stream —
-	// no DB query per request. A background goroutine atomically stores each
-	// emitted reading. Before the first reading arrives, the handler returns
-	// 503 Service Unavailable + NoLatestValueError.
-	nethttp.RegisterLatest(mux, ioports.LatestHandle, res.LatestReadings,
-		nethttp.Options{}) // observer via ObserverMiddleware
+	// ioports.Latest is a ports.LatestPort: Feed drains the stream into the
+	// port's atomic cell; the bound adapter answers every GET from that cell —
+	// no DB query per request. Before the first reading arrives the endpoint
+	// returns 503 + NoLatestValueError. The cache outlives the stream, so the
+	// endpoint keeps serving after the MQTT pipeline shuts down.
+	latestHandle, ok := ports.RESTHandle[struct{}, db.Reading](ioports.Latest)
+	if !ok {
+		must(errors.New("ioports.Latest: no RESTPattern declared"), "derive latest route handle")
+	}
+	must(ioports.Latest.Bind(ctx, nethttp.LatestAdapter(mux, latestHandle, nethttp.Options{})),
+		"bind latest port")
+	go ioports.Latest.Feed(ctx, res.LatestReadings)
 
 	// ── MQTT alert publishing: bind the Alerts port ────────────────────────
 	//
@@ -292,17 +298,14 @@ func main() {
 	exportsPort.Bind(exportCtx, fileadapter.DrainWriteFileAdapter(exportFile, exportVars,
 		fileadapter.DrainWriteFileAdapterOptions{}))
 
-	// Long-lived feed: the export tool pipeline submits snapshots into this
-	// channel; the sink port drains it into the file adapter.
-	exportCh := make(chan domain.ExportSnapshot, 4)
-	exportsDone := make(chan struct{})
-	go func() {
-		defer close(exportsDone)
-		exportsPort.Feed(exportCtx, gstream.From(exportCtx, exportCh))
-	}()
+	// Request-driven feed: Start owns the channel and drain goroutine that
+	// used to be hand-rolled here; the export tool pipeline submits snapshots
+	// with Push, and Close (deferred below) waits for the file adapter to
+	// finish draining.
+	exportsPort.Start(exportCtx)
 
 	ioports.ExportTool.SetPipeline(pipeline.NewExportPipeline(ioports.ExportQuery,
-		func(s domain.ExportSnapshot) { exportCh <- s },
+		func(s domain.ExportSnapshot) { _ = exportsPort.Push(exportCtx, s) },
 		func(s domain.ExportSnapshot) (string, error) { return exportFile.BuildPath(exportVars(s)) }))
 	exportHandle, ok := ports.RESTHandle[domain.ExportRequest, domain.ExportResult](ioports.ExportTool)
 	if !ok {
@@ -337,10 +340,9 @@ func main() {
 		buildParams:    res.BuildParams,
 	})
 
-	// Shut down the export sink: close the feed channel and wait for the
-	// file adapter to drain.
-	close(exportCh)
-	<-exportsDone
+	// Shut down the export sink: Close waits for in-flight Push calls and
+	// for the file adapter to finish draining.
+	must(exportsPort.Close(), "close exports port")
 }
 
 // exportsDir returns <this source file's directory>/exports, so the demo's

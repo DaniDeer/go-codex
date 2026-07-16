@@ -47,44 +47,45 @@ func (a *mcpToolPipelineAdapter[In, Out]) Bind(
 	return nil
 }
 
-// ── ToolLatestAdapter ─────────────────────────────────────────────────────────
+// ── LatestAdapter ─────────────────────────────────────────────────────────────
 
-// ToolLatestAdapter returns a [ports.ToolAdapter] backed by a reactive cache
-// stream. When [ports.ToolPort.Bind] is called, the tool is registered with
-// the MCP server via [RegisterToolLatest]. Each tool call from the LLM returns
-// the most recently emitted value from src.
+// LatestAdapter returns a [ports.LatestAdapter] that serves a
+// [ports.LatestPort]'s cached value as an MCP tool — the port-based successor
+// to the removed ToolLatestAdapter (which ignored the ToolPort pipeline
+// function and owned its own cache cell; the port owns it here, and no
+// pipeline argument exists to ignore). Use with [ports.LatestPort.Bind]:
 //
-// Note: ToolLatestAdapter ignores the pipeline function set on [ports.ToolPort]
-// via [ports.ToolPort.SetPipeline] — the response always comes from src.
-// The [ports.ToolPort.SetPipeline] call is still required (ToolPort validates
-// it before Bind), but the fn is not used by this adapter.
+//	handle, _ := ports.MCPHandle[struct{}, OEE](domain.Latest)
+//	must(domain.Latest.Bind(ctx, mcpgo.LatestAdapter(srv, handle, mcpgo.Options{})))
+//	go domain.Latest.Feed(ctx, oeeStream)
 //
-// Use with [ports.ToolPort.Bind]:
-//
-//	domain.OEEToolPort.Bind(ctx,
-//	    mcpgo.ToolLatestAdapter(mcpServer, toolHandle, oeeStream, mcpgo.Options{}))
-func ToolLatestAdapter[In, Out any](
+// Before the first value arrives, tool calls return an MCP error result
+// ("no value computed yet") — same semantics as [ToolLatestHandler].
+func LatestAdapter[Out any](
 	s *server.MCPServer,
-	handle *apimcp.ToolHandle[In, Out],
-	src gstream.Stream[Out],
+	handle *apimcp.ToolHandle[struct{}, Out],
 	opts Options,
-) ports.ToolAdapter[In, Out] {
-	return &mcpToolLatestAdapter[In, Out]{s: s, handle: handle, src: src, opts: opts}
+) ports.LatestAdapter[Out] {
+	return &mcpLatestAdapter[Out]{s: s, handle: handle, opts: opts}
 }
 
-type mcpToolLatestAdapter[In, Out any] struct {
+type mcpLatestAdapter[Out any] struct {
 	s      *server.MCPServer
-	handle *apimcp.ToolHandle[In, Out]
-	src    gstream.Stream[Out]
+	handle *apimcp.ToolHandle[struct{}, Out]
 	opts   Options
 }
 
-func (a *mcpToolLatestAdapter[In, Out]) AdapterName() string { return "mcpgo.ToolLatestAdapter" }
+func (a *mcpLatestAdapter[Out]) AdapterName() string { return "mcpgo.LatestAdapter" }
 
-func (a *mcpToolLatestAdapter[In, Out]) Bind(
-	ctx context.Context,
-	_ func(context.Context, In) gstream.Stream[Out], // ignored — response comes from src
-) error {
-	RegisterToolLatest(a.s, a.handle, a.src, a.opts)
-	return nil
+func (a *mcpLatestAdapter[Out]) Serve(_ context.Context, latest func() (Out, bool)) error {
+	tool, handler := ToolHandler(a.handle, func(_ context.Context, _ struct{}) (Out, error) {
+		v, ok := latest()
+		if !ok {
+			var zero Out
+			return zero, errNoLatestValue
+		}
+		return v, nil
+	}, a.opts)
+	a.s.AddTool(tool, handler)
+	return nil // registration-style Serve: returns immediately
 }

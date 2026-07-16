@@ -66,3 +66,25 @@ func (e PortNoPipelineError) Error() string {
 func (e PortNoPipelineError) LogValue() slog.Value {
 	return slog.GroupValue(slog.String("port", e.Port))
 }
+
+// PortNotStartedError is returned by [SinkPort.Push] before [SinkPort.Start],
+// after [SinkPort.Close], or when the port is Feed-driven — the stream-fed
+// (Feed) and request-fed (Start/Push/Close) lifecycles are mutually exclusive.
+type PortNotStartedError struct {
+	// Port is the name passed to [NewSinkPort].
+	Port string
+	// Op is the rejected call ("push").
+	Op string
+}
+
+func (e PortNotStartedError) Error() string {
+	return fmt.Sprintf("port %q: %s rejected — port not started (call Start before Push; not after Close or on a Feed-driven port)", e.Port, e.Op)
+}
+
+// LogValue implements [slog.LogValuer] for structured logging.
+func (e PortNotStartedError) LogValue() slog.Value {
+	return slog.GroupValue(
+		slog.String("port", e.Port),
+		slog.String("op", e.Op),
+	)
+}

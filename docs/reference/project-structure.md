@@ -113,7 +113,7 @@ go-codex/
 │   │   │                   #   RegisterTool, RegisterResource, RegisterPrompt, Options
 │   │   ├── stream.go       # ToolLatestHandler, ToolPipelineHandler, RegisterToolLatest,
 │   │   │                   #   RegisterToolPipeline
-│   │   └── binding.go      # ToolPipelineAdapter, ToolLatestAdapter (ports.ToolAdapter)
+│   │   └── binding.go      # ToolPipelineAdapter (ports.ToolAdapter), LatestAdapter (ports.LatestAdapter)
 │   └── templ/              # templ SSR format plug-in for api/rest RouteHandles
 │       └── adapter.go      # Format[Props], StreamingFormat[Props], DecodeNotSupportedError
 │

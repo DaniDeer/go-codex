@@ -3,11 +3,14 @@ package zeromq_test
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 
 	zeromq "github.com/DaniDeer/go-codex/adapters/zeromq"
+	"github.com/DaniDeer/go-codex/codex"
 	"github.com/DaniDeer/go-codex/ports"
 	gstream "github.com/DaniDeer/go-codex/stream"
 )
@@ -90,18 +93,20 @@ func TestServeAdapter_HandlesRequestViaToolPort(t *testing.T) {
 
 	// Wait for the background Serve goroutine to process the one queued message.
 	deadline := time.Now().Add(400 * time.Millisecond)
-	for len(sock.sentFrames) == 0 && time.Now().Before(deadline) {
+	var sent [][][]byte
+	for len(sent) == 0 && time.Now().Before(deadline) {
+		sent = sock.sentSnapshot()
 		time.Sleep(10 * time.Millisecond)
 	}
-	if len(sock.sentFrames) == 0 {
+	if len(sent) == 0 {
 		t.Fatal("timeout waiting for Serve to respond")
 	}
 
-	if string(sock.sentFrames[0][0]) != "ok" {
-		t.Fatalf("want status frame 'ok', got %q", sock.sentFrames[0][0])
+	if string(sent[0][0]) != "ok" {
+		t.Fatalf("want status frame 'ok', got %q", sent[0][0])
 	}
 	var resp computeResp
-	if err := json.Unmarshal(sock.sentFrames[0][1], &resp); err != nil {
+	if err := json.Unmarshal(sent[0][1], &resp); err != nil {
 		t.Fatalf("unmarshal response: %v", err)
 	}
 	if resp.Sum != 7 {
@@ -121,4 +126,87 @@ func TestServeAdapter_NoPipelineError(t *testing.T) {
 	if err := p.Bind(ctx, zeromq.ServeAdapter(sock, handle, zeromq.ServeOptions{})); err == nil {
 		t.Fatal("want error when no pipeline set")
 	}
+}
+
+// ── LatestAdapter (LatestPort) ────────────────────────────────────────────────
+
+func TestZeromqLatestAdapter_ServesLatest(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+	defer cancel()
+
+	port, err := ports.NewLatestPort[computeResp]("latest", respCodec(), ports.PortOptions{
+		Patterns: []ports.Pattern{
+			ports.ReqReplyPattern{Topic: "compute/latest"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("construct: %v", err)
+	}
+	handle, ok := ports.ReqReplyHandle[struct{}, computeResp](port)
+	if !ok {
+		t.Fatal("want ReqReplyHandle[struct{}, computeResp] present")
+	}
+
+	// Seed the cache first, then bind — the REP loop answers from the cell.
+	seed := make(chan computeResp, 1)
+	seed <- computeResp{Sum: 42}
+	close(seed)
+	port.Feed(ctx, gstream.From(ctx, seed))
+
+	sock := &mockSocket{inFrames: [][][]byte{{[]byte(`{}`)}}}
+	if err := port.Bind(ctx, zeromq.LatestAdapter(sock, handle, zeromq.ServeLatestOptions{})); err != nil {
+		t.Fatalf("bind: %v", err)
+	}
+
+	deadline := time.Now().Add(400 * time.Millisecond)
+	var sent [][][]byte
+	for len(sent) == 0 && time.Now().Before(deadline) {
+		sent = sock.sentSnapshot()
+		time.Sleep(5 * time.Millisecond)
+	}
+	if len(sent) == 0 {
+		t.Fatal("want a reply frame, got none")
+	}
+	if !strings.Contains(string(sent[0][len(sent[0])-1]), "42") {
+		t.Errorf("want reply containing 42, got %q", sent[0])
+	}
+}
+
+func TestZeromqLatestAdapter_EmptyCache_ErrorReply(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+	defer cancel()
+
+	port, err := ports.NewLatestPort[computeResp]("latest-empty", respCodec(), ports.PortOptions{
+		Patterns: []ports.Pattern{ports.ReqReplyPattern{Topic: "compute/latest"}},
+	})
+	if err != nil {
+		t.Fatalf("construct: %v", err)
+	}
+	handle, _ := ports.ReqReplyHandle[struct{}, computeResp](port)
+
+	errCh := make(chan error, 1)
+	sock := &mockSocket{inFrames: [][][]byte{{[]byte(`{}`)}}}
+	if err := port.Bind(ctx, zeromq.LatestAdapter(sock, handle, zeromq.ServeLatestOptions{
+		OnError: func(e error) { errCh <- e },
+	})); err != nil {
+		t.Fatalf("bind: %v", err)
+	}
+
+	select {
+	case e := <-errCh:
+		var nv zeromq.NoLatestValueError
+		if !errors.As(e, &nv) {
+			t.Errorf("want NoLatestValueError, got %T: %v", e, e)
+		}
+	case <-time.After(400 * time.Millisecond):
+		t.Fatal("timeout waiting for NoLatestValueError")
+	}
+}
+
+func respCodec() codex.Codec[computeResp] {
+	return codex.Struct[computeResp](
+		codex.RequiredField("sum", codex.Int(),
+			func(r computeResp) int { return r.Sum },
+			func(r *computeResp, v int) { r.Sum = v }),
+	)
 }

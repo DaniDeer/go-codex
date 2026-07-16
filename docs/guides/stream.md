@@ -275,6 +275,7 @@ binding layer that keeps transport imports out of pipeline code:
 - **`ports.SourcePort[T]`** (fan-in): `mqtt5.SubscribeAdapter`, `mqtt.SubscribeAdapter`, `nethttp.IngestAdapter`/`PollAdapter`, `chi.IngestAdapter`, `zeromq.SubscribeAdapter`, `sql.QueryAdapter`, `file.ScanAdapter`/`WatchAdapter`
 - **`ports.SinkPort[T]`** (fan-out): `mqtt5.PublishAdapter`, `mqtt.PublishAdapter`, `nethttp.SSEAdapter`/`DrainCallAdapter`, `chi.SSEAdapter`, `zeromq.PublishAdapter`, `sql.DrainInsertAdapter`, `file.DrainWriteAdapter`/`DrainWriteFileAdapter`
 - **`ports.IOPort[Req,Resp]`** (one adapter, request/response transform): `nethttp.CallAdapter`, `mqtt5.CallAdapter`, `zeromq.CallAdapter`, `sql.QueryEachAdapter`, `file.ReadEachAdapter`
-- **`ports.ToolPort[In,Out]`** (one pipeline, N transports): `mcpgo.ToolPipelineAdapter`/`ToolLatestAdapter`, `nethttp.PipelineAdapter`, `chi.PipelineAdapter`, `zeromq.ServeAdapter`, `mqtt5.ServeAdapter`
+- **`ports.ToolPort[In,Out]`** (one pipeline, N transports): `mcpgo.ToolPipelineAdapter`, `nethttp.PipelineAdapter`, `chi.PipelineAdapter`, `zeromq.ServeAdapter`, `mqtt5.ServeAdapter`
+- **`ports.LatestPort[T]`** (one cache, N serving transports): `nethttp.LatestAdapter`, `zeromq.LatestAdapter`, `mcpgo.LatestAdapter` — "current state" endpoints served from a continuously updated atomic cell
 
 → **[Ports Guide](ports.md)**

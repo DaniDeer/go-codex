@@ -69,6 +69,7 @@ func TestTopology_AllStepKindConstants(t *testing.T) {
 		stream.StepKindCombineLatest: "combineLatest",
 		stream.StepKindZip:           "zip",
 		stream.StepKindFlatMapSlice:  "flatMapSlice",
+		stream.StepKindPort:          "port",
 		stream.StepKindSink:          "sink",
 	}
 	for kind, want := range constants {
@@ -128,4 +129,28 @@ func ExampleNewTopology() {
 	spec := topo.Spec()
 	_ = spec // pass spec to render/stream.Render to get YAML
 	// Output:
+}
+
+func TestTopology_WithPort(t *testing.T) {
+	topo := stream.NewTopology("t", "1").
+		WithSource("in", "src").
+		WithPort("sql/readings/save", "persist via IOPort — stored row re-emitted").
+		WithSink("out", "sink")
+	spec := topo.Spec()
+	if len(spec.Steps) != 3 {
+		t.Fatalf("want 3 steps, got %d", len(spec.Steps))
+	}
+	step := spec.Steps[1]
+	if step.Kind != stream.StepKindPort {
+		t.Errorf("want kind port, got %q", step.Kind)
+	}
+	if step.Name != "sql/readings/save" {
+		t.Errorf("want port name preserved, got %q", step.Name)
+	}
+	if step.Description == "" {
+		t.Error("want description preserved")
+	}
+	if step.Function != nil {
+		t.Error("port step must carry no function spec")
+	}
 }

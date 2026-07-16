@@ -239,13 +239,25 @@ var GetRoute = rest.NewRoute("GET", "/readings/{id}",
 // GetHandle is GetRoute registered against RESTBuilder.
 var GetHandle = codex.Must(GetRoute.Register(RESTBuilder))
 
-// LatestRoute — GET /readings/latest, served by nethttp.HandlerLatest
-// (reactive cache). Returns the most recently saved sensor reading without
-// querying the DB.
-var LatestRoute = rest.NewRoute("GET", "/readings/latest",
-	codex.Struct[struct{}](), domain.ReadingCodec,
-	rest.RouteMeta{OperationID: "getLatestReading", Description: "Most recent reading, served from the stream's reactive cache — no DB query."},
-)
+// ── Cache port ────────────────────────────────────────────────────────────────
 
-// LatestHandle is LatestRoute registered against RESTBuilder.
-var LatestHandle = codex.Must(LatestRoute.Register(RESTBuilder))
+// Latest is the reactive-cache boundary: GET /readings/latest serves the most
+// recently saved reading straight from the stream — no DB query per request.
+// Declared as a ports.LatestPort with a RESTPattern, like every other
+// boundary; main() derives the handle via ports.RESTHandle and binds
+// nethttp.LatestAdapter. The cache outlives the stream: after the MQTT
+// pipeline shuts down, the port keeps serving the last value.
+var Latest = codex.Must(ports.NewLatestPort[db.Reading](
+	"rest/latest", domain.ReadingCodec,
+	ports.PortOptions{
+		Patterns: []ports.Pattern{
+			ports.RESTPattern{
+				Method: "GET",
+				Path:   "/readings/latest",
+				Opts: []rest.RouteOpt{
+					rest.RouteMeta{OperationID: "getLatestReading", Description: "Most recent reading, served from the stream's reactive cache — no DB query."},
+				},
+			},
+		},
+		RESTBuilder: RESTBuilder,
+	}))

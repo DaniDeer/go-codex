@@ -1,8 +1,16 @@
 # Ports — Post-Phase-6 Gaps — `ports`, `stream`, `forge`, adapters
 
-> **Status:** Reviewed and phased — G1/G2 design complete (blocking decisions
-> resolved against the existing implementations), G3/G5/G6 sketched, G4 scoped.
-> Not yet implemented. See [Implementation phases](#implementation-phases).
+> **Status:** Phases A + B ✅ **implemented** (G1 `LatestPort`, G2
+> `SinkPort.Push`, G5 topology port step, G6 `stream.Map`). Remaining: Phase C
+> (G3 REST ingest/SSE patterns) and Phase D (G4 `forge.App`, needs its own
+> design pass); G7 stays deferred. See
+> [Implementation phases](#implementation-phases).
+>
+> Implementation deviations from the design: `mcpgo.ToolLatestAdapter` was
+> **removed** outright (breaking change approved) rather than deprecated;
+> `PortNotStartedError` also covers `Push` on a Feed-driven port; a
+> pre-existing data race in the zeromq test mock (`mockSocket`) was fixed
+> along the way (mutex + `sentSnapshot()` polling).
 > [← Back to Roadmap](index.md)
 >
 > Successor to the inside-out-pipeline-wiring plan, whose Phases 1–6 all
@@ -103,8 +111,9 @@ func (p *LatestPort[T]) Latest() (T, bool)                                  // p
   shapes are correct under the same contract: "Serve runs the endpoint; it
   MAY return immediately after registration or block until ctx is done."
 - **Resolves `phase3-toolport-optional-pipeline`**: `mcpgo.ToolLatestAdapter`
-  is deprecated in favor of `mcpgo.LatestAdapter` for the new port — no
-  ignored pipeline argument.
+  was removed in favor of `mcpgo.LatestAdapter` for the new port — no
+  ignored pipeline argument. (`ToolLatestHandler`/`RegisterToolLatest`, the
+  non-port functions, remain.)
 
 ### Sensor-service after
 

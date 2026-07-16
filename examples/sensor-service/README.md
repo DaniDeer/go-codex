@@ -82,9 +82,10 @@ Import direction is strictly acyclic; `domain` imports nothing internal but `db`
 | `Alerts` | `SinkPort[SensorAlert]` | `EventPattern` `alerts/{sensorID}` | `mqtt.PublishAdapter` |
 | `History` | `IOPort[SensorQuery, TimeSeries]` | `SQLPattern{readings, list_by_sensor}` | `sql.QueryEachAdapter` |
 | `ExportQuery` | `IOPort[ExportRequest, ExportSnapshot]` | `SQLPattern{readings, list_readings}` | `sql.QueryEachAdapter` |
-| `NewExportsPort(dir)` | `SinkPort[ExportSnapshot]` | `FilePattern` `{exportID}.json` | `file.DrainWriteFileAdapter` |
+| `NewExportsPort(dir)` | `SinkPort[ExportSnapshot]` | `FilePattern` `{exportID}.json` | `file.DrainWriteFileAdapter` (request-fed via `Start`/`Push`/`Close`) |
 | `HistoryTool` | `ToolPort[struct{}, TimeSeries]` | `RESTPattern` `GET /sensors/{sensorID}/readings` | `nethttp.PipelineAdapter` |
 | `ExportTool` | `ToolPort[ExportRequest, ExportResult]` | `RESTPattern` `POST /export` | `nethttp.PipelineAdapter` |
+| `Latest` | `LatestPort[db.Reading]` | `RESTPattern` `GET /readings/latest` | `nethttp.LatestAdapter` |
 
 Alongside the ports, `ioports` declares the three classic REST routes and
 registers them against the same shared builder at declaration time:
@@ -93,7 +94,6 @@ registers them against the same shared builder at declaration time:
 |-------|--------|----------|---------------------|
 | `CreateRoute` | `CreateHandle` | `POST /readings` | `nethttp.Register` + handler factory |
 | `GetRoute` | `GetHandle` | `GET /readings/{id}` | `nethttp.Register` + handler factory |
-| `LatestRoute` | `LatestHandle` | `GET /readings/latest` | `nethttp.RegisterLatest` (reactive cache) |
 
 ## Spec generation — the declarations are the spec
 
@@ -130,7 +130,7 @@ writes the file (`FileHandle.BuildPath`).
 |----------|---------|
 | `POST /readings` | Create a reading (codec-validated before the DB) |
 | `GET /readings/{id}` | Fetch one reading |
-| `GET /readings/latest` | Most recent reading — served from the stream's reactive cache, zero DB queries |
+| `GET /readings/latest` | Most recent reading — served from the `Latest` cache port's atomic cell, zero DB queries |
 | `GET /sensors/{sensorID}/readings` | Time series of one sensor, queried from the DB through the `History` port |
 | `POST /export` | Export all readings to a typed JSON file through the `Exports` port. Requires the codec-validated `X-Api-Key` header (`sk-` prefix, `domain.APIKeyCodec`) — missing or malformed keys get 400 before the pipeline runs |
 

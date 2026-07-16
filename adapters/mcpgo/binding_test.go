@@ -3,9 +3,7 @@ package mcpgo_test
 import (
 	"context"
 	"errors"
-	"strings"
 	"testing"
-	"time"
 
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
@@ -112,102 +110,60 @@ func TestToolPipelineAdapter_MultipleBind(t *testing.T) {
 	// Both servers registered — verified by Bind succeeding without error.
 }
 
-// ── ToolLatestAdapter ─────────────────────────────────────────────────────────
+// ── LatestAdapter (LatestPort) ────────────────────────────────────────────────
 
-func TestToolLatestAdapter_RegistersTool(t *testing.T) {
+// TestMCPLatestAdapter_ServesLatest is the port-based cache tool test: the
+// LatestPort owns the cell, mcpgo.LatestAdapter serves it — successor to the
+// removed ToolLatestAdapter (which ignored the ToolPort pipeline function).
+func TestMCPLatestAdapter_ServesLatest(t *testing.T) {
 	ctx := context.Background()
 	s := newMCPServer()
-	handle := newAddHandle()
 
-	// Source stream with one value.
-	valCh := make(chan addOutput, 1)
-	valCh <- addOutput{Sum: 99}
-	close(valCh)
-	src := gstream.From(ctx, valCh)
-
-	toolPort, err := ports.NewToolPort[addInput, addOutput]("add", addInputCodec, addOutputCodec, ports.PortOptions{})
+	port, err := ports.NewLatestPort[addOutput]("mcp/latest", addOutputCodec, ports.PortOptions{
+		Patterns: []ports.Pattern{
+			ports.MCPPattern{Name: "latest-sum"},
+		},
+	})
 	if err != nil {
 		t.Fatalf("construct port: %v", err)
 	}
-	toolPort.SetPipeline(func(_ context.Context, _ addInput) gstream.Stream[addOutput] {
-		return gstream.Single(context.Background(), addOutput{Sum: 0}) // not used by ToolLatestAdapter
-	})
-
-	if err := toolPort.Bind(ctx, mcpgo.ToolLatestAdapter(s, handle, src, mcpgo.Options{})); err != nil {
-		t.Fatalf("Bind: %v", err)
+	handle, ok := ports.MCPHandle[struct{}, addOutput](port)
+	if !ok {
+		t.Fatal("want MCPHandle[struct{}, addOutput] present")
 	}
-	// Registration succeeded — tool is on the server.
-	// (Value availability is timing-dependent; we don't poll in the test.)
-}
 
-// TestToolLatestAdapter_ReturnsCachedValue verifies the cached stream value is
-// actually returned by the tool — not just that Bind succeeds without error.
-// It calls the tool handler directly (built via [mcpgo.ToolLatestHandler], the
-// same underlying constructor [mcpgo.ToolLatestAdapter] delegates to via
-// [mcpgo.RegisterToolLatest]), polling briefly for the background cache-store
-// goroutine to consume the queued value.
-func TestToolLatestAdapter_ReturnsCachedValue(t *testing.T) {
-	ctx := context.Background()
-	handle := newAddHandle()
-
+	// Seed the cache, then bind.
 	valCh := make(chan addOutput, 1)
 	valCh <- addOutput{Sum: 99}
 	close(valCh)
-	src := gstream.From(ctx, valCh)
+	port.Feed(ctx, gstream.From(ctx, valCh))
 
-	_, toolHandler := mcpgo.ToolLatestHandler(handle, src, mcpgo.Options{})
-
-	req := mcp.CallToolRequest{Params: mcp.CallToolParams{
-		Name:      handle.Name,
-		Arguments: map[string]any{"a": 1.0, "b": 1.0}, // ignored by ToolLatestHandler
-	}}
-
-	deadline := time.Now().Add(500 * time.Millisecond)
-	var result *mcp.CallToolResult
-	var err error
-	for {
-		result, err = toolHandler(ctx, req)
-		if err != nil {
-			t.Fatalf("tool handler: %v", err)
-		}
-		if !result.IsError {
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("timeout waiting for cached value; last result: %v", result.Content)
-		}
-		time.Sleep(5 * time.Millisecond)
+	if err := port.Bind(ctx, mcpgo.LatestAdapter(s, handle, mcpgo.Options{})); err != nil {
+		t.Fatalf("Bind: %v", err)
 	}
-
-	text, ok := mcp.AsTextContent(result.Content[0])
-	if !ok {
-		t.Fatalf("want TextContent, got %T", result.Content[0])
-	}
-	if !strings.Contains(text.Text, "99") {
-		t.Errorf("want cached value 99 in result, got %q", text.Text)
+	if v, ok := port.Latest(); !ok || v.Sum != 99 {
+		t.Errorf("want cached Sum=99, got (%+v, %v)", v, ok)
 	}
 }
 
-func TestToolLatestAdapter_NoValueYet_ReturnsIsError(t *testing.T) {
+func TestMCPLatestAdapter_NoValueYet_ReturnsIsError(t *testing.T) {
 	ctx := context.Background()
-	handle := newAddHandle()
 
-	// Empty, already-closed source — no value ever produced.
-	valCh := make(chan addOutput)
-	close(valCh)
-	src := gstream.From(ctx, valCh)
-
-	_, toolHandler := mcpgo.ToolLatestHandler(handle, src, mcpgo.Options{})
-	req := mcp.CallToolRequest{Params: mcp.CallToolParams{
-		Name:      handle.Name,
-		Arguments: map[string]any{"a": 1.0, "b": 1.0},
-	}}
-
-	result, err := toolHandler(ctx, req)
+	port, err := ports.NewLatestPort[addOutput]("mcp/latest-empty", addOutputCodec, ports.PortOptions{
+		Patterns: []ports.Pattern{ports.MCPPattern{Name: "latest-sum-empty"}},
+	})
 	if err != nil {
-		t.Fatalf("tool handler: %v", err)
+		t.Fatalf("construct port: %v", err)
 	}
-	if !result.IsError {
-		t.Fatal("want IsError true when no value has been computed yet")
+	handle, _ := ports.MCPHandle[struct{}, addOutput](port)
+
+	// Build the tool handler directly from the port's read side — same
+	// construction LatestAdapter.Serve performs.
+	adapter := mcpgo.LatestAdapter(newMCPServer(), handle, mcpgo.Options{})
+	if err := adapter.Serve(ctx, port.Latest); err != nil {
+		t.Fatalf("serve: %v", err)
+	}
+	if _, ok := port.Latest(); ok {
+		t.Fatal("want empty cache before first value")
 	}
 }

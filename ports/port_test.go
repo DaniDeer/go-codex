@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -1359,5 +1360,328 @@ func (s sinkCtxProbe) Activate(ctx context.Context, src gstream.Stream[int]) {
 	for range src.Values {
 	}
 	for range src.Errors {
+	}
+}
+
+// ── SinkPort Push lifecycle (G2) ──────────────────────────────────────────────
+
+func TestSinkPortPush_DeliversToAdapters(t *testing.T) {
+	ctx := context.Background()
+	p := intSinkPort("push-port", 4)
+	out := make(chan int, 8)
+	p.Bind(ctx, ports.ChanSinkAdapter(out))
+
+	p.Start(ctx)
+	for i := 1; i <= 3; i++ {
+		if err := p.Push(ctx, i); err != nil {
+			t.Fatalf("push %d: %v", i, err)
+		}
+	}
+	if err := p.Close(); err != nil {
+		t.Fatalf("close: %v", err)
+	}
+	close(out)
+	var got []int
+	for v := range out {
+		got = append(got, v)
+	}
+	if len(got) != 3 || got[0] != 1 || got[1] != 2 || got[2] != 3 {
+		t.Errorf("want [1 2 3] in order, got %v", got)
+	}
+}
+
+func TestSinkPortPush_BeforeStart_Error(t *testing.T) {
+	p := intSinkPort("not-started", 0)
+	err := p.Push(context.Background(), 1)
+	var nse ports.PortNotStartedError
+	if !errors.As(err, &nse) {
+		t.Fatalf("want PortNotStartedError, got %v", err)
+	}
+	if nse.Port != "not-started" || nse.Op != "push" {
+		t.Errorf("want {not-started push}, got %+v", nse)
+	}
+	v := nse.LogValue()
+	if v.Kind() != slog.KindGroup {
+		t.Fatalf("want KindGroup, got %v", v.Kind())
+	}
+	keys := map[string]bool{}
+	for _, a := range v.Group() {
+		keys[a.Key] = true
+	}
+	if !keys["port"] || !keys["op"] {
+		t.Errorf("want port+op keys, got %v", keys)
+	}
+}
+
+func TestSinkPortPush_AfterClose_Error(t *testing.T) {
+	ctx := context.Background()
+	p := intSinkPort("closed-port", 4)
+	out := make(chan int, 4)
+	p.Bind(ctx, ports.ChanSinkAdapter(out))
+	p.Start(ctx)
+	if err := p.Push(ctx, 1); err != nil {
+		t.Fatalf("push: %v", err)
+	}
+	if err := p.Close(); err != nil {
+		t.Fatalf("close: %v", err)
+	}
+	// Close waited for the drain: the item must already be in out.
+	if len(out) != 1 {
+		t.Errorf("want 1 item drained by Close, got %d", len(out))
+	}
+	var nse ports.PortNotStartedError
+	if err := p.Push(ctx, 2); !errors.As(err, &nse) {
+		t.Errorf("want PortNotStartedError after Close, got %v", err)
+	}
+	if err := p.Close(); err != nil {
+		t.Errorf("double Close must be a no-op, got %v", err)
+	}
+}
+
+func TestSinkPort_FeedAndPush_MutuallyExclusive(t *testing.T) {
+	ctx := context.Background()
+	p := intSinkPort("feed-driven", 4)
+	out := make(chan int, 4)
+	p.Bind(ctx, ports.ChanSinkAdapter(out))
+
+	src := make(chan int, 1)
+	src <- 7
+	close(src)
+	p.Feed(ctx, gstream.From(ctx, src))
+
+	var nse ports.PortNotStartedError
+	if err := p.Push(ctx, 1); !errors.As(err, &nse) {
+		t.Errorf("want PortNotStartedError on a Feed-driven port, got %v", err)
+	}
+	// Start on a Feed-driven port is a no-op; Push still rejected.
+	p.Start(ctx)
+	if err := p.Push(ctx, 1); !errors.As(err, &nse) {
+		t.Errorf("want PortNotStartedError after no-op Start, got %v", err)
+	}
+}
+
+func TestSinkPortPush_CtxCancelUnblocks(t *testing.T) {
+	ctx := context.Background()
+	// No adapter bound and zero buffer: the drain goroutine broadcast loop has
+	// nowhere to put items... adapters absent means broadcast is instant. To
+	// block Push we use a full port-owned channel: buffer 0 and a slow start.
+	p := intSinkPort("blocked-port", 0)
+	blocker := make(chan int) // unbuffered, never read
+	p.Bind(ctx, sinkBlockAdapter{ch: blocker})
+	p.Start(ctx)
+	// First Push is accepted into the drain pipeline and blocks the drain on
+	// the adapter; subsequent Push blocks on the port-owned channel.
+	pushCtx, cancel := context.WithTimeout(ctx, 50*time.Millisecond)
+	defer cancel()
+	var err error
+	for i := 0; i < 4; i++ { // fill any internal slack, then block
+		if err = p.Push(pushCtx, i); err != nil {
+			break
+		}
+	}
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Errorf("want DeadlineExceeded from blocked Push, got %v", err)
+	}
+}
+
+type sinkBlockAdapter struct{ ch chan int }
+
+func (s sinkBlockAdapter) AdapterName() string { return "test.sinkBlockAdapter" }
+
+func (s sinkBlockAdapter) Activate(ctx context.Context, src gstream.Stream[int]) {
+	for v := range src.Values {
+		select {
+		case s.ch <- v: // never proceeds — blocks the drain
+		case <-ctx.Done():
+			return
+		}
+	}
+}
+
+func TestSinkPortPush_ConcurrentSafe(t *testing.T) {
+	ctx := context.Background()
+	p := intSinkPort("concurrent-port", 8)
+	out := make(chan int, 200)
+	p.Bind(ctx, ports.ChanSinkAdapter(out))
+	p.Start(ctx)
+
+	var wg sync.WaitGroup
+	for g := 0; g < 10; g++ {
+		wg.Add(1)
+		go func(base int) {
+			defer wg.Done()
+			for i := 0; i < 10; i++ {
+				if err := p.Push(ctx, base*100+i); err != nil {
+					t.Errorf("push: %v", err)
+				}
+			}
+		}(g)
+	}
+	wg.Wait()
+	if err := p.Close(); err != nil {
+		t.Fatalf("close: %v", err)
+	}
+	close(out)
+	n := 0
+	for range out {
+		n++
+	}
+	if n != 100 {
+		t.Errorf("want 100 items, got %d", n)
+	}
+}
+
+func TestSinkPortPush_FanOut(t *testing.T) {
+	ctx := context.Background()
+	p := intSinkPort("fanout-port", 4)
+	out1 := make(chan int, 8)
+	out2 := make(chan int, 8)
+	p.Bind(ctx, ports.ChanSinkAdapter(out1))
+	p.Bind(ctx, ports.ChanSinkAdapter(out2))
+	p.Start(ctx)
+	for i := 1; i <= 3; i++ {
+		if err := p.Push(ctx, i); err != nil {
+			t.Fatalf("push: %v", err)
+		}
+	}
+	if err := p.Close(); err != nil {
+		t.Fatalf("close: %v", err)
+	}
+	if len(out1) != 3 || len(out2) != 3 {
+		t.Errorf("want 3 items in BOTH adapters, got %d/%d", len(out1), len(out2))
+	}
+}
+
+// ── LatestPort (G1) ───────────────────────────────────────────────────────────
+
+// funcLatestAdapter captures the latest func for direct test inspection.
+type funcLatestAdapter[T any] struct {
+	got   chan func() (T, bool)
+	block bool
+}
+
+func (a *funcLatestAdapter[T]) AdapterName() string { return "test.funcLatestAdapter" }
+
+func (a *funcLatestAdapter[T]) Serve(ctx context.Context, latest func() (T, bool)) error {
+	a.got <- latest
+	if a.block {
+		<-ctx.Done() // zeromq-style blocking Serve
+	}
+	return nil
+}
+
+func TestLatestPort_ServesLatestValue(t *testing.T) {
+	ctx := context.Background()
+	p, err := ports.NewLatestPort[int]("latest", intCodec, ports.PortOptions{})
+	if err != nil {
+		t.Fatalf("construct: %v", err)
+	}
+	ad := &funcLatestAdapter[int]{got: make(chan func() (int, bool), 1)}
+	if err := p.Bind(ctx, ad); err != nil {
+		t.Fatalf("bind: %v", err)
+	}
+	latest := <-ad.got
+
+	src := make(chan int, 2)
+	src <- 1
+	src <- 2
+	close(src)
+	p.Feed(ctx, gstream.From(ctx, src))
+
+	if v, ok := p.Latest(); !ok || v != 2 {
+		t.Errorf("port.Latest: want (2,true), got (%d,%v)", v, ok)
+	}
+	if v, ok := latest(); !ok || v != 2 {
+		t.Errorf("adapter latest: want (2,true), got (%d,%v)", v, ok)
+	}
+}
+
+func TestLatestPort_EmptyBeforeFirstValue(t *testing.T) {
+	p, err := ports.NewLatestPort[int]("empty", intCodec, ports.PortOptions{})
+	if err != nil {
+		t.Fatalf("construct: %v", err)
+	}
+	if v, ok := p.Latest(); ok || v != 0 {
+		t.Errorf("want (0,false) before first value, got (%d,%v)", v, ok)
+	}
+}
+
+func TestLatestPort_SurvivesStreamTermination(t *testing.T) {
+	ctx := context.Background()
+	p, err := ports.NewLatestPort[int]("survive", intCodec, ports.PortOptions{})
+	if err != nil {
+		t.Fatalf("construct: %v", err)
+	}
+	src := make(chan int, 1)
+	src <- 42
+	close(src)
+	p.Feed(ctx, gstream.From(ctx, src)) // returns when src terminates
+	// The cache outlives the stream.
+	if v, ok := p.Latest(); !ok || v != 42 {
+		t.Errorf("want (42,true) after src end, got (%d,%v)", v, ok)
+	}
+}
+
+func TestLatestPort_RESTPattern_InSpec(t *testing.T) {
+	b := rest.NewBuilder(rest.Info{Title: "t", Version: "1"})
+	p, err := ports.NewLatestPort[int]("latest-rest", intCodec, ports.PortOptions{
+		Patterns: []ports.Pattern{
+			ports.RESTPattern{Method: "GET", Path: "/latest", Opts: []rest.RouteOpt{
+				rest.RouteMeta{OperationID: "getLatest"},
+			}},
+		},
+		RESTBuilder: b,
+	})
+	if err != nil {
+		t.Fatalf("construct: %v", err)
+	}
+	handle, ok := ports.RESTHandle[struct{}, int](p)
+	if !ok {
+		t.Fatal("want RESTHandle[struct{}, int] present")
+	}
+	if handle.Descriptor.Method != "GET" || handle.Descriptor.Path != "/latest" {
+		t.Errorf("want GET /latest, got %+v", handle.Descriptor)
+	}
+	doc, err := b.OpenAPISpec()
+	if err != nil {
+		t.Fatalf("spec: %v", err)
+	}
+	raw, err := doc.MarshalJSON()
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if !strings.Contains(string(raw), "/latest") || !strings.Contains(string(raw), "getLatest") {
+		t.Error("want /latest + getLatest in OpenAPI spec")
+	}
+}
+
+func TestLatestPort_FanOut(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	p, err := ports.NewLatestPort[int]("fanout-latest", intCodec, ports.PortOptions{})
+	if err != nil {
+		t.Fatalf("construct: %v", err)
+	}
+	a1 := &funcLatestAdapter[int]{got: make(chan func() (int, bool), 1)}
+	a2 := &funcLatestAdapter[int]{got: make(chan func() (int, bool), 1), block: true} // blocking Serve shape
+	if err := p.Bind(ctx, a1); err != nil {
+		t.Fatalf("bind a1: %v", err)
+	}
+	if err := p.Bind(ctx, a2); err != nil {
+		t.Fatalf("bind a2: %v", err)
+	}
+	l1 := <-a1.got
+	l2 := <-a2.got
+
+	src := make(chan int, 1)
+	src <- 9
+	close(src)
+	p.Feed(ctx, gstream.From(ctx, src))
+
+	if v, ok := l1(); !ok || v != 9 {
+		t.Errorf("adapter1: want (9,true), got (%d,%v)", v, ok)
+	}
+	if v, ok := l2(); !ok || v != 9 {
+		t.Errorf("adapter2 (blocking Serve): want (9,true), got (%d,%v)", v, ok)
 	}
 }

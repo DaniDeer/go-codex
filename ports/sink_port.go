@@ -64,7 +64,23 @@ type SinkPort[T any] struct {
 	mu    sync.Mutex
 	sinks []*boundSink[T]
 	wg    sync.WaitGroup
+
+	// Push lifecycle (Start/Push/Close) — mutually exclusive with Feed.
+	feedMu   sync.RWMutex
+	feedMode feedMode
+	pushCh   chan T
+	pushDone chan struct{}
 }
+
+// feedMode tracks which feed style owns the port.
+type feedMode int
+
+const (
+	feedModeNone   feedMode = iota
+	feedModeStream          // Feed(ctx, src) — one-shot, stream-driven
+	feedModePush            // Start/Push/Close — long-lived, request-driven
+	feedModeClosed          // Close called
+)
 
 // NewSinkPort creates a SinkPort with the given name and payload codec.
 // opts configures Patterns, IO params, buffer size, observer, and (optionally)
@@ -150,7 +166,21 @@ func (p *SinkPort[T]) Bind(ctx context.Context, a SinkAdapter[T]) {
 //
 // When Feed returns it closes all per-adapter channels, signalling each
 // adapter's Activate to stop.
+//
+// Feed is mutually exclusive with the [SinkPort.Start]/[SinkPort.Push]/
+// [SinkPort.Close] lifecycle: a port is either stream-fed (Feed) or
+// request-fed (Push), never both.
 func (p *SinkPort[T]) Feed(ctx context.Context, src gstream.Stream[T]) {
+	p.feedMu.Lock()
+	if p.feedMode == feedModeNone {
+		p.feedMode = feedModeStream
+	}
+	p.feedMu.Unlock()
+	p.feed(ctx, src)
+}
+
+// feed is the shared broadcast/drain path used by both Feed and Start.
+func (p *SinkPort[T]) feed(ctx context.Context, src gstream.Stream[T]) {
 	p.mu.Lock()
 	sinks := p.sinks
 	p.mu.Unlock()
@@ -189,4 +219,78 @@ func (p *SinkPort[T]) Feed(ctx context.Context, src gstream.Stream[T]) {
 	// Wait for all adapter goroutines to finish draining their channels.
 	// This ensures Feed blocks until all items have been delivered end-to-end.
 	p.wg.Wait()
+}
+
+// Start begins the request-driven feed lifecycle: it creates a port-owned
+// channel and drains it through the same broadcast path as [SinkPort.Feed],
+// in a background goroutine. Items are submitted with [SinkPort.Push] and the
+// lifecycle ends with [SinkPort.Close].
+//
+// Start replaces the hand-rolled pattern of a channel + go Feed(ctx,
+// gstream.From(ctx, ch)) + done-channel. ctx should be a long-lived context
+// (it bounds the drain goroutine, not any single Push).
+//
+// Start is mutually exclusive with Feed and must be called at most once;
+// violations are reported via [PortNotStartedError] from Push (Start itself
+// is a no-op if the port is already owned).
+func (p *SinkPort[T]) Start(ctx context.Context) {
+	p.feedMu.Lock()
+	if p.feedMode != feedModeNone {
+		p.feedMu.Unlock()
+		return
+	}
+	p.feedMode = feedModePush
+	p.pushCh = make(chan T, p.buffer)
+	p.pushDone = make(chan struct{})
+	ch, done := p.pushCh, p.pushDone
+	p.feedMu.Unlock()
+
+	go func() {
+		defer close(done)
+		p.feed(ctx, gstream.From(ctx, ch))
+	}()
+}
+
+// Push submits one item to all bound adapters through the running Start
+// lifecycle. It blocks until the item is accepted (backpressure, consistent
+// with Feed's Drain semantics) or ctx is cancelled.
+//
+// Returns [PortNotStartedError] before [SinkPort.Start], after
+// [SinkPort.Close], or when the port is Feed-driven; returns ctx.Err() when
+// cancelled while blocked.
+func (p *SinkPort[T]) Push(ctx context.Context, v T) error {
+	// Hold the read lock for the duration of the send: Close takes the write
+	// lock, so it waits for in-flight Push calls before closing the channel —
+	// no send-on-closed-channel race. The drain goroutine keeps consuming, so
+	// a blocked Push always progresses (or unblocks via ctx).
+	p.feedMu.RLock()
+	defer p.feedMu.RUnlock()
+	if p.feedMode != feedModePush {
+		return PortNotStartedError{Port: p.name, Op: "push"}
+	}
+	select {
+	case p.pushCh <- v:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+// Close ends the Start lifecycle: it waits for in-flight [SinkPort.Push]
+// calls, closes the port-owned channel, and blocks until the drain goroutine
+// and all bound adapters have finished. Push calls after Close return
+// [PortNotStartedError]. Close is a no-op if Start was never called.
+func (p *SinkPort[T]) Close() error {
+	p.feedMu.Lock()
+	if p.feedMode != feedModePush {
+		p.feedMu.Unlock()
+		return nil
+	}
+	p.feedMode = feedModeClosed
+	close(p.pushCh)
+	done := p.pushDone
+	p.feedMu.Unlock()
+
+	<-done
+	return nil
 }

@@ -16,9 +16,12 @@ import (
 //
 // Implemented by transport binding constructors:
 //
-//	mcpgo.ToolPipelineAdapter, mcpgo.ToolLatestAdapter,
+//	mcpgo.ToolPipelineAdapter,
 //	nethttp.PipelineAdapter, chi.PipelineAdapter,
 //	zeromq.ServeAdapter, mqtt5.ServeAdapter
+//
+// (For cache-serving tools — answer from a continuously updated value instead
+// of running the pipeline per call — use [LatestPort] + mcpgo.LatestAdapter.)
 type ToolAdapter[In, Out any] interface {
 	// Bind registers fn as the handler for this transport backend.
 	// fn is the pipeline function set on the [ToolPort] via [ToolPort.SetPipeline].

@@ -57,7 +57,7 @@ domain.SensorReadings.Bind(ctx, mqtt5.SubscribeAdapter(client, router, handle, 0
 
 ---
 
-## Four port types
+## Five port types
 
 | Port | Direction | Cardinality | Use for |
 |------|-----------|-------------|---------|
@@ -65,6 +65,7 @@ domain.SensorReadings.Bind(ctx, mqtt5.SubscribeAdapter(client, router, handle, 0
 | [`SinkPort[T]`](#sinkportt) | Pipeline → external | Fan-out (broadcast to all adapters) | MQTT publish, SSE, file write, SQL insert |
 | [`IOPort[Req,Resp]`](#ioportreqresp) | Pipeline ↔ external | Exactly one adapter | HTTP call, SQL per-item query, file per-item read, MQTT5/ZeroMQ request-reply |
 | [`ToolPort[In,Out]`](#toolportinout) | External request → pipeline → response | Exactly one pipeline fn, N adapters | MCP tool, HTTP endpoint, ZeroMQ REP, MQTT5 request-reply server |
+| [`LatestPort[T]`](#latestportt) | Stream → cache → external request | One cache, N serving adapters | "Current state" endpoints: latest reading over HTTP GET, ZeroMQ REP, MCP tool — no per-request pipeline run |
 
 ---
 
@@ -194,6 +195,67 @@ ports.RegisterREST[OEEIn, OEEResult](restBuilder, domain.OEETool) //nolint:errch
 
 `Bind` returns `PortBindError` wrapping `PortNoPipelineError` if `SetPipeline` was not
 called first.
+
+---
+
+## `LatestPort[T]`
+
+Declares a reactive-cache boundary: `Feed` drains a stream into an atomic
+cell; bound `LatestAdapter[T]` implementations answer every request from that
+cell — no per-request pipeline run, no DB query. The cache outlives the
+stream: when the source terminates, adapters keep serving the last value.
+
+```go
+// domain — declared like every other boundary
+var Latest = codex.Must(ports.NewLatestPort[db.Reading]("rest/latest", readingCodec,
+    ports.PortOptions{Patterns: []ports.Pattern{
+        ports.RESTPattern{Method: "GET", Path: "/readings/latest"},
+    }}))
+
+// main.go — wiring only
+handle, _ := ports.RESTHandle[struct{}, db.Reading](domain.Latest)
+must(domain.Latest.Bind(ctx, nethttp.LatestAdapter(mux, handle, nethttp.Options{})))
+go domain.Latest.Feed(ctx, readings)
+
+// programmatic read side
+v, ok := domain.Latest.Latest()
+```
+
+Patterns use the request codec `codex.Struct[struct{}]()` automatically —
+requests carry no payload; the response is always the cached value.
+`RESTPattern` (HTTP GET), `ReqReplyPattern` (ZeroMQ REP), and `MCPPattern`
+(MCP tool) are supported; retrieve handles with `RESTHandle[struct{}, T]`,
+`ReqReplyHandle[struct{}, T]`, `MCPHandle[struct{}, T]`.
+
+Empty-cache behavior is per-transport: HTTP responds 503 +
+`NoLatestValueError`, ZeroMQ sends an error reply, MCP returns an error
+result. Serving adapters: `nethttp.LatestAdapter`, `zeromq.LatestAdapter`,
+`mcpgo.LatestAdapter`. (The stream-owning `nethttp.HandlerLatest`/
+`zeromq.ServeLatest` functions remain for non-port use; the former
+`mcpgo.ToolLatestAdapter` has been removed in favor of this port.)
+
+---
+
+## `SinkPort` Push — request-scoped submission
+
+`Feed` is stream-driven and one-shot. When a request/response pipeline needs
+to drop individual items into a sink (e.g. a REST-triggered export writing a
+file), use the port-owned lifecycle instead of hand-rolling a channel + Feed
+goroutine:
+
+```go
+exports.Bind(appCtx, file.DrainWriteFileAdapter(exportFile, varsFor, opts))
+exports.Start(appCtx)                    // port-owned channel + drain goroutine
+…
+_ = exports.Push(ctx, snapshot)          // from anywhere; blocks with backpressure
+…
+must(exports.Close(), "close exports")   // waits for in-flight Push + adapter drain
+```
+
+`Push` returns `PortNotStartedError` before `Start`, after `Close`, or on a
+`Feed`-driven port (the two lifecycles are mutually exclusive); it returns
+`ctx.Err()` when cancelled while blocked. `Start` on an already-owned port is
+a no-op; `Close` is idempotent.
 
 ---
 
@@ -415,16 +477,16 @@ All four interfaces additionally require `AdapterName() string` for observabilit
 
 ### Available adapters by transport
 
-| Transport | Source | Sink | IO | Tool |
-|-----------|--------|------|-----|------|
-| MQTT5 | `SubscribeAdapter` | `PublishAdapter` | `CallAdapter` | `ServeAdapter` |
-| MQTT | `SubscribeAdapter` | `PublishAdapter` | — | — |
-| HTTP (nethttp) | `IngestAdapter`, `PollAdapter` | `SSEAdapter`, `DrainCallAdapter` | `CallAdapter` | `PipelineAdapter` |
-| HTTP (chi) | `IngestAdapter` | `SSEAdapter` | — | `PipelineAdapter` |
-| ZeroMQ | `SubscribeAdapter` | `PublishAdapter` | `CallAdapter` | `ServeAdapter` |
-| File | `ScanAdapter`, `WatchAdapter` | `DrainWriteAdapter`, `DrainWriteFileAdapter` | `ReadEachAdapter` | — |
-| SQL | `QueryAdapter` | `DrainInsertAdapter` | `QueryEachAdapter` | — |
-| MCP (mcpgo) | — | — | — | `ToolPipelineAdapter`, `ToolLatestAdapter` |
+| Transport | Source | Sink | IO | Tool | Latest |
+|-----------|--------|------|-----|------|--------|
+| MQTT5 | `SubscribeAdapter` | `PublishAdapter` | `CallAdapter` | `ServeAdapter` | — |
+| MQTT | `SubscribeAdapter` | `PublishAdapter` | — | — | — |
+| HTTP (nethttp) | `IngestAdapter`, `PollAdapter` | `SSEAdapter`, `DrainCallAdapter` | `CallAdapter` | `PipelineAdapter` | `LatestAdapter` |
+| HTTP (chi) | `IngestAdapter` | `SSEAdapter` | — | `PipelineAdapter` | — |
+| ZeroMQ | `SubscribeAdapter` | `PublishAdapter` | `CallAdapter` | `ServeAdapter` | `LatestAdapter` |
+| File | `ScanAdapter`, `WatchAdapter` | `DrainWriteAdapter`, `DrainWriteFileAdapter` | `ReadAdapter`, `ReadEachAdapter` | — | — |
+| SQL | `QueryAdapter` | `DrainInsertAdapter` | `QueryEachAdapter` | — | — |
+| MCP (mcpgo) | — | — | — | `ToolPipelineAdapter` | `LatestAdapter` |
 
 ---
 

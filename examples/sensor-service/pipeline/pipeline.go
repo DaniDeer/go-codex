@@ -173,7 +173,7 @@ func Topology(cfg domain.AlertConfig, buildParams *forge.Function[domain.MQTTPay
 		WithDescription("Real-time sensor readings: decode → map → persist → filter → alert.").
 		WithSource("mqtt/sensors/+/data", "Raw MQTT payloads from sensor network")
 	gstream.WithApply(topo, buildParams)
-	topo.WithTap("persist via sql/readings/save IOPort — stored row re-emitted (1→1)").
+	topo.WithPort("sql/readings/save", "persist via IOPort — stored row re-emitted (1→1)").
 		WithFilter(fmt.Sprintf("value > %.0f (alert threshold)", cfg.Threshold)).
 		WithSink("mqtt/alerts/{sensorID}", "Low-performance alert events")
 	return topo

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"testing"
 	"time"
 
@@ -561,5 +562,91 @@ type applyStreamObserverSpy struct {
 func (s *applyStreamObserverSpy) RecordStreamItem(_ string, _ bool, _ time.Duration) {
 	if s.onStreamItem != nil {
 		s.onStreamItem()
+	}
+}
+
+// ── Map ───────────────────────────────────────────────────────────────────────
+
+func TestMap_HappyPath(t *testing.T) {
+	ctx := context.Background()
+	src := make(chan int, 3)
+	src <- 1
+	src <- 2
+	src <- 3
+	close(src)
+
+	out := stream.Map(ctx, stream.From(ctx, src),
+		func(v int) (string, error) { return fmt.Sprintf("v%d", v), nil },
+		stream.MapOptions{})
+	vals, errs := stream.Collect(ctx, out)
+	if len(errs) != 0 {
+		t.Fatalf("want 0 errors, got %v", errs)
+	}
+	if len(vals) != 3 || vals[0] != "v1" || vals[2] != "v3" {
+		t.Errorf("want [v1 v2 v3], got %v", vals)
+	}
+}
+
+func TestMap_ErrorGoesToStreamErrors(t *testing.T) {
+	ctx := context.Background()
+	src := make(chan int, 2)
+	src <- 1
+	src <- 2
+	close(src)
+
+	boom := errors.New("boom")
+	out := stream.Map(ctx, stream.From(ctx, src),
+		func(v int) (int, error) {
+			if v == 2 {
+				return 0, boom
+			}
+			return v * 10, nil
+		},
+		stream.MapOptions{Name: "tenX"})
+	vals, errs := stream.Collect(ctx, out)
+	if len(vals) != 1 || vals[0] != 10 {
+		t.Errorf("want [10], got %v", vals)
+	}
+	if len(errs) != 1 {
+		t.Fatalf("want 1 error, got %d", len(errs))
+	}
+	var sme stream.StreamMapError
+	if !errors.As(errs[0], &sme) {
+		t.Fatalf("want StreamMapError, got %T", errs[0])
+	}
+	if sme.Name != "tenX" || !errors.Is(sme, boom) {
+		t.Errorf("want name=tenX wrapping boom, got %+v", sme)
+	}
+}
+
+func TestMap_UpstreamErrorsForwarded(t *testing.T) {
+	ctx := context.Background()
+	valCh := make(chan int)
+	errCh := make(chan error, 1)
+	upErr := errors.New("upstream")
+	errCh <- upErr
+	close(valCh)
+	close(errCh)
+
+	out := stream.Map(ctx, stream.Stream[int]{Values: valCh, Errors: errCh},
+		func(v int) (int, error) { return v, nil }, stream.MapOptions{})
+	_, errs := stream.Collect(ctx, out)
+	if len(errs) != 1 || !errors.Is(errs[0], upErr) {
+		t.Errorf("want upstream error forwarded unchanged, got %v", errs)
+	}
+}
+
+func TestStreamMapError_LogValue(t *testing.T) {
+	e := stream.StreamMapError{Name: "m", Err: errors.New("x")}
+	v := e.LogValue()
+	if v.Kind() != slog.KindGroup {
+		t.Fatalf("want KindGroup, got %v", v.Kind())
+	}
+	keys := map[string]bool{}
+	for _, a := range v.Group() {
+		keys[a.Key] = true
+	}
+	if !keys["name"] || !keys["err"] {
+		t.Errorf("want name+err keys, got %v", keys)
 	}
 }

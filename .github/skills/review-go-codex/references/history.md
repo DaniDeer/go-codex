@@ -1,8 +1,18 @@
-# go-codex Review History (R1–R50)
+# go-codex Review History (R1–R51)
 
 Do not re-report any of these findings. They have been implemented and tested.
 
 ---
+
+## Round 51 (ports post-Phase-6 gaps — Phases A+B: LatestPort, SinkPort.Push, topology port step, stream.Map)
+
+- **`ports.LatestPort[T]` — the FIFTH port type** (reactive cache): `NewLatestPort(name, codec, PortOptions) (*LatestPort[T], error)`; `Feed(ctx, src)` drains a stream into a port-owned `atomic.Pointer[T]` cell (src errors dropped; the cache OUTLIVES the stream — adapters keep serving after src terminates); `Bind(ctx, LatestAdapter[T]) error` fan-out (many transports, one cell), runs `Serve` in a supervised goroutine via `bindWithObserver` (`"port.bind"`); `Latest() (T, bool)` programmatic read. `LatestAdapter[T]` contract: `Serve(ctx, latest func() (T, bool)) error` — MAY return immediately after registration (nethttp, mcpgo) or block until ctx done (zeromq REP loop); both shapes correct by contract. Patterns build with request codec `codex.Struct[struct{}]()`: `RESTPattern`/`ReqReplyPattern`/`MCPPattern`. No new error types (reuses `PatternRegisterError`; empty-cache stays per-adapter `NoLatestValueError`/error result).
+- **`mcpgo.ToolLatestAdapter` REMOVED** (breaking change, user-approved) — `mcpgo.LatestAdapter[Out](server, handle *apimcp.ToolHandle[struct{},Out], opts)` replaces it with no ignored pipeline argument. `ToolLatestHandler`/`RegisterToolLatest` (non-port functions) remain, as do `nethttp.HandlerLatest`/`RegisterLatest` and `zeromq.ServeLatest`. New serving constructors: `nethttp.LatestAdapter[Resp](mux, handle *rest.RouteHandle[struct{},Resp], Options)`, `zeromq.LatestAdapter[Resp](sock, handle *reqreply.RouteHandle[struct{},Resp], ServeLatestOptions)`.
+- **`SinkPort` request-fed lifecycle**: `Start(ctx)` (port-owned channel + drain goroutine through the SAME broadcast path as `Feed`), `Push(ctx, v) error` (blocking with backpressure; `ctx.Err()` when cancelled), `Close() error` (waits for in-flight Push + adapter drain; idempotent). Mutually exclusive with `Feed` — `PortNotStartedError{Port, Op}` (Error+LogValue, NO Unwrap — no inner error) on violations. Internally a `feedMode` enum guarded by an RWMutex; Push holds RLock during the send so Close (write lock) waits for in-flight pushes — no send-on-closed-channel race.
+- **`stream.StepKindPort` + `Topology.WithPort(name, description)`** — honest topology step for IO-port hops (sensor-service's persist step was previously mislabeled `[tap]`).
+- **`stream.Map[In,Out](ctx, src, fn func(In)(Out,error), MapOptions{Name,Observer,Buffer})`** — typed 1→1 transform WITH error path; errors wrapped in `StreamMapError{Name, Err}` (Unwrap + LogValue) to Stream.Errors; `RecordStreamItem` per item. Positioned as the non-governed alternative to `forge.Function` + `Apply` — do not flag the overlap; Apply stays for governed steps.
+- **Fixed a pre-existing data race in zeromq tests**: `mockSocket` was unsynchronized while background Serve goroutines write `sentFrames` and tests poll it — added mutex + `sentSnapshot()`; three poll sites converted. The race predated this round (exposed once `-race` ran against the new background-Serve tests).
+- **`examples/sensor-service`**: `ioports.Latest` is now a LatestPort (RESTPattern; replaced `LatestRoute`/`LatestHandle` + `RegisterLatest`); export flow uses `Start`/`Push`/`Close` (deleted the hand-rolled exportCh + goroutine + done-channel); `pipeline.Topology` uses `WithPort` for the persist hop.
 
 ## Round 50 (inside-out pipeline wiring — Phase 6: `FilePattern` + `SQLPattern`)
 

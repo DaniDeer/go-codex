@@ -20,7 +20,7 @@ Step 2 — Wiring (main.go only)
     port.Bind(ctx, transport.XxxAdapter(...))  ← connect to real transport
 ```
 
-## Four port types
+## Five port types
 
 ### `SourcePort[T]` — inbound boundary
 
@@ -143,6 +143,47 @@ domain.OEETool.Bind(ctx, zeromq.ServeAdapter(repSock, zmqHandle, zeromq.ServeOpt
 called first. Multiple `Bind` calls are allowed — each exposes the same pipeline on a
 different transport concurrently.
 
+### `LatestPort[T]` — reactive-cache boundary
+
+Serves a continuously updated "current state" value to request/response
+clients — no per-request pipeline run. `Feed` drains a stream into the port's
+atomic cell; bound adapters answer from the cell, and keep answering after the
+stream terminates (the cache outlives the pipeline).
+
+```go
+// domain — declared like every other boundary
+var Latest = codex.Must(ports.NewLatestPort[db.Reading]("rest/latest", readingCodec,
+    ports.PortOptions{Patterns: []ports.Pattern{
+        ports.RESTPattern{Method: "GET", Path: "/readings/latest"},
+    }}))
+
+// main.go
+handle, _ := ports.RESTHandle[struct{}, db.Reading](domain.Latest)
+must(domain.Latest.Bind(ctx, nethttp.LatestAdapter(mux, handle, nethttp.Options{})))
+go domain.Latest.Feed(ctx, readings)
+```
+
+Patterns use `codex.Struct[struct{}]()` as the request codec automatically —
+`RESTPattern`, `ReqReplyPattern`, and `MCPPattern` are supported. Empty-cache
+behavior is per-transport (HTTP 503 + `NoLatestValueError`, ZeroMQ error
+reply, MCP error result).
+
+### `SinkPort` Push — request-scoped submission
+
+When a request/response pipeline needs to drop individual items into a sink
+(e.g. a REST-triggered export writing a file), use the port-owned lifecycle
+instead of hand-rolling a channel + `Feed` goroutine:
+
+```go
+exports.Bind(appCtx, file.DrainWriteFileAdapter(exportFile, varsFor, opts))
+exports.Start(appCtx)                  // port-owned channel + drain goroutine
+_ = exports.Push(ctx, snapshot)        // from anywhere; blocks with backpressure
+must(exports.Close(), "close exports") // waits for in-flight Push + adapter drain
+```
+
+`Push` returns `PortNotStartedError` before `Start`, after `Close`, or on a
+`Feed`-driven port — the two lifecycles are mutually exclusive.
+
 ## Available adapters
 
 ### Source adapters (for `SourcePort`)
@@ -189,11 +230,18 @@ different transport concurrently.
 | Transport | Constructor | Description |
 |-----------|-------------|-------------|
 | MCP | `mcpgo.ToolPipelineAdapter` | Registers the pipeline as an MCP tool; fresh run per call |
-| MCP (cache) | `mcpgo.ToolLatestAdapter` | Registers an MCP tool backed by a reactive cache stream (ignores the pipeline fn — response comes from the stream) |
 | HTTP (nethttp) | `nethttp.PipelineAdapter` | Registers the pipeline as an HTTP endpoint |
 | HTTP (chi) | `chi.PipelineAdapter` | Same, via chi router |
 | ZeroMQ | `zeromq.ServeAdapter` | Starts a REP loop running the pipeline (background goroutine) |
 | MQTT5 | `mqtt5.ServeAdapter` | Starts a request/reply server running the pipeline (background goroutine) |
+
+### Latest adapters (for `LatestPort`)
+
+| Transport | Constructor | Description |
+|-----------|-------------|-------------|
+| HTTP | `nethttp.LatestAdapter` | GET endpoint served from the port's cache cell (503 before first value) |
+| ZeroMQ | `zeromq.LatestAdapter` | Blocking REP loop answering from the cell (error reply before first value) |
+| MCP | `mcpgo.LatestAdapter` | MCP tool answering from the cell (error result before first value) |
 
 ## Test adapters
 
@@ -413,7 +461,7 @@ computed value** rather than running the pipeline per call. Use them directly (n
 | `nethttp.HandlerLatest` / `RegisterLatest` | HTTP GET endpoint serving latest stream value |
 | `chi.HandlerLatest` / `RegisterLatest` | Same, via chi router |
 | `zeromq.ServeLatest` | ZMQ REP loop serving latest stream value |
-| `mcpgo.ToolLatestHandler` / `RegisterToolLatest` | MCP tool serving latest stream value (also available as `mcpgo.ToolLatestAdapter` for `ToolPort.Bind`) |
+| `mcpgo.ToolLatestHandler` / `RegisterToolLatest` | MCP tool serving latest stream value (for port-based wiring use `LatestPort` + `mcpgo.LatestAdapter`) |
 
 ## Underlying handler functions (used internally by Tool adapters)
 

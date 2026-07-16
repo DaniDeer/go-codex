@@ -343,3 +343,88 @@ func FlatMapSlice[In, Out any](ctx context.Context, src Stream[In], fn func(In) 
 	}()
 	return Stream[Out]{Values: values, Errors: errs}
 }
+
+// MapOptions configures [Map].
+type MapOptions struct {
+	// Name identifies the mapping step in [StreamMapError] and observer
+	// events. Default "map".
+	Name string
+	// Observer receives per-item [stats.StreamObserver.RecordStreamItem]
+	// events. When nil, resolved from ctx.
+	Observer stats.Observer
+	// Buffer is the output channel buffer size. Default 0.
+	Buffer int
+}
+
+// Map transforms each value item with fn — the typed 1→1 counterpart of
+// [FlatMapSlice] with an error path. When fn returns an error, the item is
+// dropped and a [StreamMapError] is sent to [Stream.Errors]; upstream errors
+// are forwarded unchanged.
+//
+// Use Map for plain typed transformations that need error handling but not
+// the governance ceremony of a [forge.Function] + [Apply] (name, version,
+// contract hash). For governed pipeline steps, keep using Apply.
+func Map[In, Out any](
+	ctx context.Context,
+	src Stream[In],
+	fn func(In) (Out, error),
+	opts MapOptions,
+) Stream[Out] {
+	obs := opts.Observer
+	if obs == nil {
+		obs = stats.ObserverFromContext(ctx)
+	}
+	name := opts.Name
+	if name == "" {
+		name = "map"
+	}
+	values := make(chan Out, opts.Buffer)
+	errs := make(chan error, opts.Buffer)
+	go func() {
+		defer close(values)
+		defer close(errs)
+		valCh := src.Values
+		errCh := src.Errors
+		for valCh != nil || errCh != nil {
+			select {
+			case <-ctx.Done():
+				return
+			case v, ok := <-valCh:
+				if !ok {
+					valCh = nil
+					continue
+				}
+				start := time.Now()
+				out, err := fn(v)
+				if so, ok2 := obs.(stats.StreamObserver); ok2 {
+					so.RecordStreamItem(name, err == nil, time.Since(start))
+				}
+				if err != nil {
+					sme := StreamMapError{Name: name, Err: err}
+					select {
+					case errs <- sme:
+					case <-ctx.Done():
+						return
+					}
+					continue
+				}
+				select {
+				case values <- out:
+				case <-ctx.Done():
+					return
+				}
+			case e, ok := <-errCh:
+				if !ok {
+					errCh = nil
+					continue
+				}
+				select {
+				case errs <- e:
+				case <-ctx.Done():
+					return
+				}
+			}
+		}
+	}()
+	return Stream[Out]{Values: values, Errors: errs}
+}

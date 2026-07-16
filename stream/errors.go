@@ -67,3 +67,33 @@ func (e StreamApplyError) LogValue() slog.Value {
 		slog.Any("err", e.Err),
 	)
 }
+
+// StreamMapError is sent to [Stream.Errors] by [Map] when the mapping
+// function returns an error. Name is the [MapOptions.Name] (default "map").
+//
+// StreamMapError implements [slog.LogValuer] for structured logging:
+//
+//	slog.Warn("map failed", "error", sme)
+//	// → {name:"buildResult", err:{...}}
+type StreamMapError struct {
+	// Name identifies the mapping step (from [MapOptions.Name]).
+	Name string
+
+	// Err is the error returned by the mapping function.
+	Err error
+}
+
+func (e StreamMapError) Error() string {
+	return fmt.Sprintf("stream: map %q: %v", e.Name, e.Err)
+}
+
+// Unwrap allows [errors.Is] and [errors.As] to traverse the inner error.
+func (e StreamMapError) Unwrap() error { return e.Err }
+
+// LogValue implements [slog.LogValuer] for structured logging.
+func (e StreamMapError) LogValue() slog.Value {
+	return slog.GroupValue(
+		slog.String("name", e.Name),
+		slog.Any("err", e.Err),
+	)
+}
