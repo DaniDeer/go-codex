@@ -453,6 +453,31 @@ pipeline code, fully testable. See
 and the live demonstration in `examples/sensor-service`
 (`APP_ALERT_THRESHOLD=90 go run ./examples/sensor-service`).
 
+## Lifecycle wiring with `app.App`
+
+For services with several long-lived ports, let [`app`](../features/app.md)
+own the root context and the teardown ordering instead of hand-rolling
+context trees and done-channels in `main()`:
+
+```go
+a := app.New(app.Options{Observer: obs, Logger: logger})
+ctx := a.Context() // observer pre-injected
+
+exports.Bind(ctx, file.DrainWriteFileAdapter(exportFile, varsFor, opts))
+exports.Start(ctx)
+a.OnShutdown("exports", func(context.Context) error { return exports.Close() })
+
+a.Go("alerts-feed", func(ctx context.Context) error {
+    alerts.Feed(ctx, alertPayloads)
+    return nil
+})
+
+return a.Run(context.Background()) // SIGINT/SIGTERM → hooks run LIFO
+```
+
+`examples/sensor-service` demonstrates this live (demo variant: it calls
+`a.Shutdown()` directly instead of the signal-driven `Run`).
+
 ## Cache patterns (not port-based)
 
 These patterns are a different shape from `ToolPort` — they serve the **most recently

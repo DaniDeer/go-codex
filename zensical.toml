@@ -38,6 +38,7 @@ repo_name = "DaniDeer/go-codex"
 "SQL Adapter" = "features/sql.md"
 "Stream — Reactive Pipelines" = "features/stream.md"
 "Ports — Protocol-Agnostic Wiring" = "features/ports.md"
+"App — Application Lifecycle" = "features/app.md"
 
 [nav.Guides]
 "Enums, Unions & Sum Types" = "guides/enum-union-sum.md"

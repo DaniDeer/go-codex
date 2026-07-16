@@ -117,6 +117,7 @@ go-codex/
 │   └── templ/              # templ SSR format plug-in for api/rest RouteHandles
 │       └── adapter.go      # Format[Props], StreamingFormat[Props], DecodeNotSupportedError
 │
+├── app/                    # application lifecycle: root ctx + observer injection, supervised goroutines (fail-fast), LIFO shutdown hooks (Run/Shutdown)
 ├── ports/                  # protocol-agnostic IO enforcement points — inside-out pipeline wiring
 │   ├── doc.go              # package overview
 │   ├── io_param.go         # IOParam, PortOptions

@@ -1,10 +1,11 @@
 # Ports — Post-Phase-6 Gaps — `ports`, `stream`, `forge`, adapters
 
-> **Status:** Phases A + B + C ✅ **implemented** (G1 `LatestPort`, G2
-> `SinkPort.Push`, G3 role-aware `RESTPattern` for ingest/SSE, G5 topology
-> port step, G6 `stream.Map`). Phase D (G4 `app.App`) — **design complete,
-> not yet implemented** (all open decisions resolved; see the G4 section).
-> G7 stays deferred. See [Implementation phases](#implementation-phases).
+> **Status:** ✅ **All phases implemented** (A: G1 `LatestPort` + G2
+> `SinkPort.Push`; B: G5 topology port step + G6 `stream.Map`; C: G3
+> role-aware `RESTPattern` for ingest/SSE; D: G4 `app` lifecycle package).
+> The only remaining item is the deliberately deferred G7 (dynamic
+> rebinding). This document is kept as the design record for the post-ports
+> feature set.
 >
 > Implementation deviations from the design: `mcpgo.ToolLatestAdapter` was
 > **removed** outright (breaking change approved) rather than deprecated;
@@ -318,10 +319,11 @@ response codec on `IOPort`):
 
 ## G4 — `app.App` lifecycle manager
 
-> **Phase D design — complete (2026-07-16; revised same day: moved from
-> `forge.App` to a NEW top-level package `app`).** All former open decisions
-> resolved below. The package imports only `stats` + stdlib — no cycle risk
-> anywhere.
+> **Phase D — ✅ implemented (2026-07-16; design revised same day: moved from
+> `forge.App` to a NEW top-level package `app`).** Shipped exactly as
+> designed below (tests D1–D10 + Example; sensor-service adopted — its MQTT
+> pipeline runs on a cancelable CHILD of `app.Context()` because the demo
+> cancels it mid-run while HTTP ports keep serving).
 
 ### Problem
 
@@ -591,7 +593,7 @@ both keys (see `TestValidate_LogValue` reference pattern).
 | **A** | G2 (`SinkPort.Push`/`Start`/`Close`), then G1 (`LatestPort`) | The two High gaps. G2 first: small, `ports`-only, no new port type, and immediately deletes the sensor-service export boilerplate. G1 second: new port type + 3 adapter constructors + example rewiring that touches the same main.go region G2 just simplified | — |
 | **B** | G5 (topology `StepKindPort` + `WithPort`), G6 (`stream.Map`) | Small, independent `stream`-package items with no port coupling; each fixes a concrete sensor-service dishonesty (`[tap]` mislabel; forge-fn ceremony for a trivial map) | — (parallel to A) |
 | **C** | G3 (REST ingest / SSE `RESTPattern` support) — ✅ **implemented** | Extends the single-codec build function (the Phase-6 mechanism) to the last two pattern-less adapters: ingest = `RouteHandle[T, struct{}]` on `SourcePort` (existing `RESTHandle` accessor), SSE = `SSERouteHandle[struct{}, T]` on `SinkPort` (new `SSEHandle` accessor + `RegisterSSE` replay); zero adapter-side changes | A ✅ (shipped) |
-| **D** | G4 (`app.App`) — **design complete** | Shutdown-ordering helper in a NEW top-level `app` package (stats + stdlib only): `Context()` with injected observer, `Go` supervised goroutines (fail-fast, errgroup-style), `OnShutdown` LIFO hooks, `Run` (signal-driven) + `Shutdown` (direct, idempotent); `GoroutineError`/`HookError`; zero coupling to `ports`/`forge` | A ✅ (G2's `Close` shipped) |
+| **D** | G4 (`app.App`) — ✅ **implemented** | Shutdown-ordering helper in a NEW top-level `app` package (stats + stdlib only): `Context()` with injected observer, `Go` supervised goroutines (fail-fast, errgroup-style), `OnShutdown` LIFO hooks, `Run` (signal-driven) + `Shutdown` (direct, idempotent); `GoroutineError`/`HookError`; zero coupling to `ports`/`forge` | A ✅ (G2's `Close` shipped) |
 | — | G7 (dynamic rebinding) | Stays deferred — no demand after six phases | n/a |
 
 Each phase follows the standard ship checklist: tests per the plan below,

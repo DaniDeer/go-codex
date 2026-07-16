@@ -1,8 +1,17 @@
-# go-codex Review History (R1–R52)
+# go-codex Review History (R1–R53)
 
 Do not re-report any of these findings. They have been implemented and tested.
 
 ---
+
+## Round 53 (ports post-Phase-6 gaps — Phase D: `app` lifecycle package)
+
+- **NEW top-level package `app`** (NOT `forge.App` — the original backlog name was inertia; forge is Layer-2 computation governance, App is process lifecycle; one top-level package per concern is the repo convention; imports only `stats` + stdlib). `app.New(app.Options{Observer, Logger, ShutdownTimeout /*default 10s*/}) *app.App`.
+- **`Context()`** — cancelable root with Observer pre-injected via `stats.WithObserver`: the SINGLE observer-injection point for a service (replaces the hand-written `ctx = stats.WithObserver(ctx, obs)` line in main).
+- **`Go(name, fn)` is fail-fast, errgroup-style BY DESIGN** — first non-nil return cancels the app; all goroutine + hook errors still collected via `errors.Join`. Do not flag fail-fast as fragile: adapters that should survive errors handle them internally (per-adapter `OnError`) and return nil.
+- **`OnShutdown(name, fn)` runs LIFO** (defer semantics); a failing hook never stops later hooks; each hook ctx bounded by ShutdownTimeout (`HookError` wraps `context.DeadlineExceeded`). **`Run(parent)`** installs signal handlers inside Run ONLY (constructing App installs none — test-friendly); **`Shutdown()`** is the direct/idempotent/memoized teardown for demos/tests — both share one path.
+- **Zero coupling to `ports`/`forge`** — teardown registration is explicit `OnShutdown`, never inferred from ctx identity (ctx-sniffing rejected in the design pass). Errors: `GoroutineError{Name,Err}`/`HookError{Name,Err}` (Error/Unwrap/LogValue). Observer events `"app.go"`/`"app.shutdown"` via plain `RecordRequest` (no TraceObserver spans — lifecycle is not request-scoped).
+- **`examples/sensor-service`** adopted: `app.New` owns the root ctx (MQTT pipeline runs on a cancelable CHILD ctx — the demo cancels it mid-run while HTTP ports keep serving); exports-port `Close` + httptest-server close are `OnShutdown` hooks; demo ends with `a.Shutdown()` (LIFO: http-server → exports-port).
 
 ## Round 52 (ports post-Phase-6 gaps — Phase C: role-aware RESTPattern for HTTP ingest + SSE)
 

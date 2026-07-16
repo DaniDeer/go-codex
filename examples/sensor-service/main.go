@@ -75,6 +75,7 @@ import (
 	adaptermqtt "github.com/DaniDeer/go-codex/adapters/mqtt"
 	nethttp "github.com/DaniDeer/go-codex/adapters/nethttp"
 	sqladapter "github.com/DaniDeer/go-codex/adapters/sql"
+	"github.com/DaniDeer/go-codex/app"
 	"github.com/DaniDeer/go-codex/examples/sensor-service/adapters"
 	"github.com/DaniDeer/go-codex/examples/sensor-service/db"
 	"github.com/DaniDeer/go-codex/examples/sensor-service/domain"
@@ -94,15 +95,23 @@ import (
 var migrationsFS embed.FS
 
 func main() {
-	ctx, cancelPipeline := context.WithCancel(context.Background())
-
-	// ── Observability (cross-cutting) ─────────────────────────────────────
+	// ── Observability + lifecycle (cross-cutting) ──────────────────────────
 	logger := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelInfo}))
 	counting := observability.NewCountingObserver()
 	obs := stats.NewFanout(counting, stats.NewLoggingObserver(logger))
-	// Store obs in the context once — MQTT, stream, sql, file, and HTTP
-	// adapters all resolve it automatically when Options.Observer is nil.
-	ctx = stats.WithObserver(ctx, obs)
+
+	// app.New owns the root context (observer pre-injected — MQTT, stream,
+	// sql, file, and HTTP adapters all resolve it automatically when their
+	// Options.Observer is nil) and the ordered teardown: hooks registered
+	// with a.OnShutdown run LIFO when the demo calls a.Shutdown() at the end.
+	// A real service would call a.Run(ctx) instead and get SIGINT/SIGTERM
+	// handling for free — same teardown path.
+	a := app.New(app.Options{Observer: obs, Logger: logger})
+
+	// The MQTT pipeline gets its own child context: the demo cancels it
+	// mid-run (after scene 1) while the HTTP ports keep serving on the
+	// app context.
+	ctx, cancelPipeline := context.WithCancel(a.Context())
 
 	// ── Env config (validated-config factory pattern) ─────────────────────
 	//
@@ -288,9 +297,9 @@ func main() {
 	if !ok {
 		must(errors.New("exports port: no FilePattern declared"), "derive export file handle")
 	}
-	// exportCtx is independent of the MQTT pipeline ctx (which the demo
-	// cancels early) — the export sink must outlive it. Same observer.
-	exportCtx := stats.WithObserver(context.Background(), obs)
+	// The export sink lives on the APP context — independent of the MQTT
+	// pipeline ctx (which the demo cancels early); it must outlive it.
+	exportCtx := a.Context()
 
 	exportVars := func(s domain.ExportSnapshot) map[string]string {
 		return map[string]string{"exportID": s.ExportID}
@@ -303,6 +312,9 @@ func main() {
 	// with Push, and Close (deferred below) waits for the file adapter to
 	// finish draining.
 	exportsPort.Start(exportCtx)
+	// Teardown is declared right where the lifecycle starts: Close waits for
+	// in-flight Push calls and the file adapter's drain.
+	a.OnShutdown("exports-port", func(context.Context) error { return exportsPort.Close() })
 
 	ioports.ExportTool.SetPipeline(pipeline.NewExportPipeline(ioports.ExportQuery,
 		func(s domain.ExportSnapshot) { _ = exportsPort.Push(exportCtx, s) },
@@ -325,7 +337,7 @@ func main() {
 		mux.ServeHTTP(w, r)
 	})
 	srv := httptest.NewServer(srvHandler)
-	defer srv.Close()
+	a.OnShutdown("http-server", func(context.Context) error { srv.Close(); return nil })
 	fmt.Printf("✓ HTTP server started: %s\n\n", srv.URL)
 
 	// ── Run the demo scenario ──────────────────────────────────────────────
@@ -340,9 +352,11 @@ func main() {
 		buildParams:    res.BuildParams,
 	})
 
-	// Shut down the export sink: Close waits for in-flight Push calls and
-	// for the file adapter to finish draining.
-	must(exportsPort.Close(), "close exports port")
+	// Ordered teardown: hooks run LIFO (http-server, then exports-port —
+	// exports Close waits for in-flight Push calls and the file adapter's
+	// drain). A real service would reach this line via a.Run(ctx) on
+	// SIGINT/SIGTERM instead.
+	must(a.Shutdown(), "app shutdown")
 }
 
 // exportsDir returns <this source file's directory>/exports, so the demo's
