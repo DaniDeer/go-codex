@@ -1,6 +1,8 @@
 # Ports — Post-Phase-6 Gaps — `ports`, `stream`, `forge`, adapters
 
-> **Status:** Gap analysis + design sketches — not yet implemented.
+> **Status:** Reviewed and phased — G1/G2 design complete (blocking decisions
+> resolved against the existing implementations), G3/G5/G6 sketched, G4 scoped.
+> Not yet implemented. See [Implementation phases](#implementation-phases).
 > [← Back to Roadmap](index.md)
 >
 > Successor to the inside-out-pipeline-wiring plan, whose Phases 1–6 all
@@ -78,13 +80,28 @@ func (p *LatestPort[T]) Feed(ctx context.Context, src gstream.Stream[T])    // d
 func (p *LatestPort[T]) Latest() (T, bool)                                  // programmatic read side
 ```
 
-- `Patterns` support: `RESTPattern` (GET route, `Resp = T`, `Req = struct{}`)
-  and `MCPPattern` — both already single-value response shapes; the dual-codec
-  build function applies with `reqCodec = codex.Struct[struct{}]()`.
+- `Patterns` support — one per serving transport family, mirroring `ToolPort`:
+  `RESTPattern` (GET route, `Resp = T`, `Req = struct{}`), **`ReqReplyPattern`**
+  (zeromq `ServeLatest` serves through a `reqreply.RouteHandle[Req, Resp]` —
+  review finding: the original sketch omitted this), and `MCPPattern`. All
+  three reuse the dual-codec build function with
+  `reqCodec = codex.Struct[struct{}]()` and `respCodec` = the port's codec.
 - Existing `HandlerLatest`/`ServeLatest`/`ToolLatestAdapter` become the
   internals of the new `LatestAdapter` constructors; the old exported
   functions stay (non-stream surface stays supported, as with `Subscribe`/
   `Publish`).
+- **Verified against all three implementations** (`nethttp.HandlerLatest`,
+  `zeromq.ServeLatest`, `mcpgo.ToolLatestAdapter`/`RegisterToolLatest`): each
+  embeds its own `atomic.Pointer[Resp]` plus an identical drain goroutine
+  (values stored, src errors dropped). Centralizing the cell in `LatestPort`
+  and handing adapters `latest func() (T, bool)` removes that triplication —
+  the request-side closures adapt mechanically (`ptr == nil` ⇔ `!ok`).
+- **`Serve` lifetime semantics differ per transport** — nethttp/mcpgo register
+  on a mux/server and return immediately; zeromq's REP loop blocks until ctx
+  cancel. `Bind` therefore runs `Serve` in a supervised goroutine wrapped in
+  `bindWithObserver` (exactly how `SourcePort.Bind` runs `Activate`) — both
+  shapes are correct under the same contract: "Serve runs the endpoint; it
+  MAY return immediately after registration or block until ctx is done."
 - **Resolves `phase3-toolport-optional-pipeline`**: `mcpgo.ToolLatestAdapter`
   is deprecated in favor of `mcpgo.LatestAdapter` for the new port — no
   ignored pipeline argument.
@@ -106,13 +123,14 @@ go ioports.Latest.Feed(ctx, res.LatestReadings)
 Every HTTP endpoint is then port-declared — the README's "every hop is a
 port" claim becomes unconditionally true.
 
-### Open decisions
+### Decisions (resolved during review)
 
-| Question | Trade-off |
+| Question | Resolution |
 |---|---|
-| `Serve(ctx, latest func() (T, bool))` vs handing the adapter the atomic cell | Function keeps the cell unexported and the adapter contract minimal |
-| Does `Feed` return when src terminates (SinkPort semantics) or keep serving? | Keep serving — the cache outlives the stream by design (sensor-service serves 87.3 °C after pipeline cancel today) |
-| Empty-cache behavior per transport | Keep today's per-adapter semantics (HTTP 503 + `NoLatestValueError`, MCP error result) — documented, not unified |
+| `Serve(ctx, latest func() (T, bool))` vs handing the adapter the atomic cell | **Function** — verified compatible with all three existing implementations; keeps the cell unexported and the adapter contract minimal |
+| Does `Feed` return when src terminates (SinkPort semantics) or keep serving? | **Keep serving** — the cache outlives the stream by design (sensor-service serves 87.3 °C after pipeline cancel today); `Feed` returns when src terminates, adapters keep answering from the cell |
+| Empty-cache behavior per transport | **Keep today's per-adapter semantics** (HTTP 503 + `NoLatestValueError`, zeromq error reply + `NoLatestValueError`, MCP error result) — documented, not unified |
+| Which `Pattern` kinds? | **REST + ReqReply + MCP** (all three serving transports have a latest implementation today); `EventPattern` is not a request/response shape — excluded |
 
 ---
 
@@ -163,12 +181,12 @@ func (p *SinkPort[T]) Close() error
 - The pipeline side then shrinks to `submit := func(s ExportSnapshot) { _ = exports.Push(ctx, s) }`
   — no channel, no goroutine, no done-channel in user code.
 
-### Open decisions
+### Decisions (resolved during review)
 
-| Question | Trade-off |
+| Question | Resolution |
 |---|---|
-| `Push` blocking vs best-effort with buffer overflow error | Blocking with ctx honors backpressure (consistent with `Feed`'s Drain semantics) |
-| Should G4 (`forge.App`) own `Start`/`Close` ordering instead? | Independent: `Push` is useful without App; App would call `Close` in dependency order |
+| `Push` blocking vs best-effort with buffer overflow error | **Blocking with ctx** — honors backpressure, consistent with `Feed`'s Drain semantics; `PortOptions.Buffer` gives headroom |
+| Should G4 (`forge.App`) own `Start`/`Close` ordering instead? | **Independent** — `Push` is useful without App; App integration is opt-in later via `OnShutdown(exports.Close)` |
 
 ---
 
@@ -285,6 +303,75 @@ right for `buildExportResult`, wrong as the only option). Small, orthogonal,
 
 ---
 
+## Structured errors (all implement `slog.LogValuer`)
+
+**G1 (`LatestPort`) introduces no new error types.** Construction reuses
+`PatternRegisterError{Port, Kind, Err}`; `Bind` reuses `PortBindError{Port,
+Adapter, Err}`; empty-cache conditions keep each adapter's existing
+`NoLatestValueError` (nethttp and zeromq each already define one, with
+`LogValue`).
+
+**G2 adds one:**
+
+```go
+// ports/port_errors.go
+// PortNotStartedError is returned by SinkPort.Push before Start or after
+// Close, and by Start/Push when the port is already Feed-driven (the two
+// feed modes are mutually exclusive).
+type PortNotStartedError struct {
+    Port string // port name
+    Op   string // "push", "start" — which call was rejected
+}
+
+func (e PortNotStartedError) Error() string {
+    return fmt.Sprintf("ports: %s: %s rejected: port not started (call Start before Push, and not after Close or Feed)", e.Port, e.Op)
+}
+
+// LogValue implements [slog.LogValuer].
+func (e PortNotStartedError) LogValue() slog.Value {
+    return slog.GroupValue(
+        slog.String("port", e.Port),
+        slog.String("op", e.Op),
+    )
+}
+```
+
+No `Unwrap` — there is no inner error. Tests must assert `slog.KindGroup` and
+both keys (see `TestValidate_LogValue` reference pattern).
+
+## Observer integration
+
+- **`LatestPort.Bind`** wraps the supervised `Serve` goroutine in
+  `bindWithObserver` — the same `"port.bind"` `RecordRequest` (+
+  `TraceObserver` span) every other port emits. Observer resolution:
+  `PortOptions.Observer`, else `stats.ObserverFromContext(ctx)` at Bind time.
+- **Request-side observers stay per-adapter** — `nethttp.Options.Observer`,
+  `zeromq.ServeLatestOptions.Observer`, `mcpgo.Options` already report
+  per-request events; `LatestPort` adds nothing on that path (ports never
+  intercept per-item adapter traffic — consistent with all existing ports).
+- **`LatestPort.Feed`** drains values into the cell without per-item observer
+  calls (matches today's `HandlerLatest` drain goroutine, which reports
+  nothing per item); src errors are dropped, as today — documented.
+- **`SinkPort.Push`/`Start`** reuse the existing `Feed`/`gstream.Drain`
+  observer path unchanged — `Start` internally feeds the port-owned channel
+  through the same code that `Feed` uses, so per-item `RecordStreamItem`
+  behavior is identical in both modes.
+
+## Implementation phases
+
+| Phase | Gaps | Rationale | Depends on |
+|-------|------|-----------|------------|
+| **A** | G2 (`SinkPort.Push`/`Start`/`Close`), then G1 (`LatestPort`) | The two High gaps. G2 first: small, `ports`-only, no new port type, and immediately deletes the sensor-service export boilerplate. G1 second: new port type + 3 adapter constructors + example rewiring that touches the same main.go region G2 just simplified | — |
+| **B** | G5 (topology `StepKindPort` + `WithPort`), G6 (`stream.Map`) | Small, independent `stream`-package items with no port coupling; each fixes a concrete sensor-service dishonesty (`[tap]` mislabel; forge-fn ceremony for a trivial map) | — (parallel to A) |
+| **C** | G3 (REST ingest / SSE `RESTPattern` support) | Extends the single-codec build function (the Phase-6 mechanism) to the last two pattern-less adapters; SSE needs the `SSERouteHandle[struct{}, Event]` shape on `SinkPort` | A (shares `ports/handle.go` surface; avoid parallel edits) |
+| **D** | G4 (`forge.App`) | Needs its own roadmap-level design pass before code (signal handling, supervised-goroutine error policy); G2's `Close` must exist so App has something to order | A (G2) |
+| — | G7 (dynamic rebinding) | Stays deferred — no demand after six phases | n/a |
+
+Each phase follows the standard ship checklist: tests per the plan below,
+`docs/features/ports.md` + `docs/guides/ports.md` + instructions `ports` row
+sync, example update, full verification (`gofmt`, `go build/test ./...`,
+`just check`, all examples).
+
 ## Unit test plan (for the two High-priority gaps)
 
 | ID | Test | Verifies |
@@ -294,22 +381,32 @@ right for `buildExportResult`, wrong as the only option). Small, orthogonal,
 | L3 | `TestLatestPort_SurvivesStreamTermination` | src closes → adapter still serves last value |
 | L4 | `TestLatestPort_RESTPattern_InSpec` | `RESTPattern` + shared builder → route in OpenAPI spec |
 | L5 | `TestLatestPort_FanOut` | two bound adapters, one cache |
+| L6 | `TestZeromqLatestAdapter_ServesLatest` | zeromq `LatestAdapter` (ReqReply-shaped) answers with the cell value; empty cell → error reply + `NoLatestValueError` |
+| L7 | `TestMCPLatestAdapter_ServesLatest` | mcpgo `LatestAdapter` serves the cell; deprecated `ToolLatestAdapter` still passes its existing tests unchanged |
 | P1 | `TestSinkPortPush_DeliversToAdapters` | `Start` → `Push` × n → adapter receives all, order preserved |
 | P2 | `TestSinkPortPush_BeforeStart_Error` | `PortNotStartedError` (+ `LogValue` group/keys) |
 | P3 | `TestSinkPortPush_AfterClose_Error` | same error after `Close`; `Close` waits for drain |
 | P4 | `TestSinkPort_FeedAndPush_MutuallyExclusive` | structured error on mixing |
 | P5 | `TestSinkPortPush_CtxCancelUnblocks` | blocked `Push` returns `ctx.Err()` |
+| P6 | `TestSinkPortPush_ConcurrentSafe` | parallel `Push` from N goroutines under `-race` — no lost items, no panic |
+| P7 | `TestSinkPortPush_FanOut` | `Push` reaches ALL bound adapters (broadcast parity with `Feed`) |
 
-## Files to create / modify (High-priority gaps)
+## Files to create / modify
 
-| File | Change |
-|---|---|
-| `ports/latest_port.go` (+`_test.go`) | `LatestPort`, `LatestAdapter`, pattern build reuse |
-| `adapters/nethttp/binding.go` | `LatestAdapter` constructor wrapping `HandlerLatest` internals |
-| `adapters/zeromq/binding.go`, `adapters/mcpgo/binding.go` | `LatestAdapter` constructors; deprecate `ToolLatestAdapter` |
-| `ports/sink_port.go` (+ tests) | `Push`/`Start`/`Close`, `PortNotStartedError` |
-| `examples/sensor-service` | `Latest` port declaration; export flow via `Push` (deletes the channel plumbing) |
-| Docs + instructions | `features/ports.md`, `guides/ports.md`, instructions `ports` row — per maintenance rules |
+| Phase | File | Change |
+|-------|------|--------|
+| A (G2) | `ports/sink_port.go` + `ports/port_errors.go` (+ tests) | `Push`/`Start`/`Close`, `PortNotStartedError` (Error/LogValue, no Unwrap) |
+| A (G2) | `examples/sensor-service/main.go` | Export flow via `Start`/`Push`/`Close` — deletes `exportCh` + goroutine + done-channel plumbing |
+| A (G1) | `ports/latest_port.go` (+`_test.go`) | `LatestPort`, `LatestAdapter`, dual-codec pattern build reuse (REST/ReqReply/MCP with `struct{}` req codec), supervised `Serve` via `bindWithObserver` |
+| A (G1) | `adapters/nethttp/binding.go` | `LatestAdapter` constructor wrapping `HandlerLatest` internals (cell moves to port) |
+| A (G1) | `adapters/zeromq/binding.go` (+ test), `adapters/mcpgo/binding.go` (+ test) | `LatestAdapter` constructors; deprecate `mcpgo.ToolLatestAdapter` |
+| A (G1) | `examples/sensor-service` | `ioports.Latest` port declaration; README "every hop is a port" becomes unconditional |
+| B (G5) | `stream/topology.go` (+ test, + `render/stream` fixture) | `StepKindPort`, `WithPort(name, description)` |
+| B (G6) | `stream/transform.go` (+ tests) | `Map[In, Out]` with error path |
+| B | `examples/sensor-service/pipeline` | `Topology` uses `WithPort`; export result mapping optionally via `stream.Map` (keep the forge fn — it demonstrates governance — but reference `Map` in docs) |
+| C (G3) | `ports/handle.go`, `adapters/nethttp/binding.go` | Single-codec build fn gains `RESTPattern`; ingest/SSE adapter constructors accept pattern-derived handles |
+| D (G4) | `forge/app.go` (+ own design pass first) | `App`, `AppOptions`, `Go`, `OnShutdown`, `Run` |
+| all | Docs + instructions | `features/ports.md`, `guides/ports.md`, instructions `ports` row, review-skill known-facts — per maintenance rules, every phase |
 
 ## Out of scope
 
@@ -321,9 +418,21 @@ right for `buildExportResult`, wrong as the only option). Small, orthogonal,
 
 ## Open design decisions (summary)
 
-Collected above per gap; the two that block implementation start:
+Both former blockers are **resolved** (review pass, 2026-07-16):
 
-1. G1 adapter contract: `Serve(ctx, latest func() (T, bool))` — confirm against
-   all three existing latest-implementations before freezing.
-2. G2/G4 boundary: `Push` lifecycle stays port-local; App integration is
-   opt-in via `OnShutdown` — confirm when G4 is picked up.
+1. ✅ G1 adapter contract: `Serve(ctx, latest func() (T, bool))` — confirmed
+   against all three existing latest-implementations (each embeds the same
+   atomic-pointer cell + drain goroutine; the request-side closures adapt
+   mechanically). Additional finding folded in: zeromq requires
+   `ReqReplyPattern` support, and `Bind` must run `Serve` in a supervised
+   goroutine because lifetimes differ per transport.
+2. ✅ G2/G4 boundary: `Push` lifecycle stays port-local; `forge.App`
+   integration is opt-in later via `OnShutdown(exports.Close)` — no magic
+   ctx-based auto-registration.
+
+Remaining open (non-blocking, resolve during the owning phase):
+
+- G3: exact SSE handle shape on `SinkPort` (`SSERouteHandle[struct{}, Event]`)
+  and whether ingest responds 202 or 204 — Phase C.
+- G4: supervised-goroutine error policy (fail-fast vs collect) — Phase D
+  design pass.
