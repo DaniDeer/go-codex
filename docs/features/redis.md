@@ -70,65 +70,61 @@ validation without building the key string; `Cache.KeySchemas()` returns each
 codec-bearing var's `schema.Schema` (forward-compatible plumbing for future
 spec tooling).
 
-### Standalone use — zero port/pipeline involved
+### Standalone use — building without the pipeline features
 
-`ports.Cache[T]` is a plain declarative descriptor, the same way
-`format.File[T]` is — every `adapters/redis` constructor
-(`GetAdapter`/`SetAdapter`/`DrainSetAdapter`/`Seed`) takes a `ports.Cache[T]`
-value directly, never a port. Building the cache with `ports.NewCache`
-instead of a `CachePattern` gets you the exact same codec-validated
-behavior — value encode/decode AND key-variable validation — with **no
-`ports.NewIOPort`/`SinkPort`/`Pattern`/`Bind` anywhere in the call path**:
+If your application doesn't use `ports`/`stream` pipelines at all, `Get` and
+`Set` are the cache's equivalent of `format.File.Read`/`.Write` or
+`adapters/sql.Validate` — plain functions, full codec validation (key vars
+AND value), **no `ports.IOAdapter`, no `stream.Stream`, no port anywhere in
+the call path**:
 
 ```go
 userCache := ports.NewCache("user:{id}", format.JSON(userCodec),
     ports.CacheKeyParam{Name: "id"}.WithCodec(codex.String().Refine(validate.UUID)))
 userCache.TTL = 15 * time.Minute
-```
 
-#### Single-value read — `Seed`
-
-`Seed` is the purest form: a plain function call, no `stream.Stream`
-involved at all. Use it whenever you just need "the current value for a
-var-free key" (config, session, last-known-state):
-
-```go
-v, ok, err := redis.Seed(ctx, client, userCache, redis.SeedOptions{})
+v, ok, err := redis.Get(ctx, client, userCache, map[string]string{"id": userID}, redis.GetOptions{})
 // v is fully decoded AND codec-validated; (zero, false, nil) on a miss
+
+err = redis.Set(ctx, client, userCache, map[string]string{"id": user.ID}, user, redis.SetOptions{})
+// key-var codec rejection (CacheKeyParamError) happens before any network call
 ```
 
-#### Single-value get/set — `GetAdapter`/`SetAdapter` via `stream.Single`
+`ports.Cache[T]` (via `NewCache`) is the declarative descriptor — the same
+role `RouteHandle`/`ChannelHandle` play via `route.ClientHandle()`/
+`channel.ClientHandle()`. `Get`/`Set` are the concrete redis implementation
+against it, the same role `nethttp.Call`/`mqtt.Publish` play against a
+route/channel handle. This mirrors every other non-pipeline building block
+in go-codex:
 
-`GetAdapter` and `SetAdapter` are shaped as `ports.IOAdapter[Req,Resp]` (a
-`Transform(ctx, stream.Stream[Req]) stream.Stream[Resp]` method) because
-that is the one interface every port-bound and standalone caller shares —
-but calling `.Transform` directly needs nothing but a `stream.Stream[T]`
-value, and `stream.Single` builds one from a single value with zero
-pipeline ceremony (no channel, no goroutine wiring, no port):
+| Building block | Declarative descriptor | Plain-function implementation |
+|---|---|---|
+| File | `format.NewFile(path, fmt, opts...)` | `File.Read`/`.Write`/`.Update`/`.Patch` |
+| SQL | codec + `ValidateOptions{Table,Op}` | `sql.Validate[T](codec, v, opts)` |
+| REST | `route.ClientHandle()` | `nethttp.Call(ctx, client, baseURL, handle, req, vars, opts)` |
+| Events | `channel.ClientHandle()` | `mqtt.Publish(ctx, client, handle, ...)` |
+| **Cache** | **`ports.NewCache(key, fmt, opts...)`** | **`redis.Get`/`redis.Set`** |
+
+`Seed` is a thin wrapper around `Get` with nil vars — the one case that
+must run before any stream exists (a `LatestPort`'s warm restart, before the
+feeding stream is even constructed), so it stays a dedicated zero-vars
+function rather than asking every caller to pass an empty map. It only
+applies to a **var-free** key (e.g. `"latest-user"`, not `"user:{id}"`):
 
 ```go
-// Read-through get for one query — same codec validation as the pipeline path.
-out := redis.GetAdapter[UserQuery, User](client, userCache,
-    func(q UserQuery) map[string]string { return map[string]string{"id": q.ID} },
-    redis.GetAdapterOptions{},
-).Transform(ctx, stream.Single(ctx, UserQuery{ID: "f47ac10b-58cc-4372-a567-0e02b2c3d479"}))
-
-users, errs := stream.Collect(ctx, out) // 0 or 1 value: hit or miss
-
-// Write-through set for one value — same codec validation, same key-var
-// rejection (CacheKeyParamError) before any network call.
-out = redis.SetAdapter[User](client, userCache,
-    func(u User) map[string]string { return map[string]string{"id": u.ID} },
-    redis.SetAdapterOptions{},
-).Transform(ctx, stream.Single(ctx, User{ID: "f47ac10b-58cc-4372-a567-0e02b2c3d479", Name: "Ada"}))
-
-written, errs := stream.Collect(ctx, out) // the item, passed through unchanged
+latestCache := ports.NewCache("latest-user", format.JSON(userCodec))
+v, ok, err := redis.Seed(ctx, client, latestCache, redis.SeedOptions{})
 ```
 
-`stream.Single`/`stream.Collect` are from the `stream` package (not `ports`)
-— they exist independently of any port declaration; this is the same
-"declare a handle by hand, drive it with the lowest-ceremony helper"
-pattern `format.File` uses for standalone reads/writes.
+#### Pipeline use — same functions, delegated to
+
+`GetAdapter`/`SetAdapter`/`DrainSetAdapter` (the `ports.IOAdapter`/
+`SinkAdapter` implementations bound via `port.Bind`) delegate to `Get`/`Set`
+internally per item — calling `Get`/`Set` directly and driving a
+fully-bound port produce **identical behavior** (same codec validation,
+same errors, same observer events). Use the adapters when you have an
+actual pipeline (`ports.NewIOPort`/`SinkPort` + `Bind`); use `Get`/`Set`
+directly everywhere else.
 
 #### Port-type acceptance (when you DO use a port)
 
@@ -175,10 +171,12 @@ dependencies, no broker in CI.
 
 | Constructor | Port | What it does |
 |---|---|---|
+| `Get[T](ctx, client, cache, vars, opts) (T, bool, error)` | — | Plain-function standalone read; `GetAdapter` delegates to it per item |
+| `Set[T](ctx, client, cache, vars, v, opts) error` | — | Plain-function standalone write; `SetAdapter`/`DrainSetAdapter` delegate to it per item |
 | `GetAdapter[Req,Resp](client, cache, keyFn, opts) ports.IOAdapter[Req,Resp]` | `IOPort` | Read-through: key from `keyFn(Req)`, hit → decoded+validated Resp downstream. Miss → item skipped (default) or `CacheError` wrapping `ErrCacheMiss` when `MissIsError` |
 | `SetAdapter[T](client, cache, keyFn, opts) ports.IOAdapter[T,T]` | `IOPort` | Write-through transform: writes each item, passes it through UNCHANGED — a cache write failure goes to `Stream.Errors` but never drops pipeline data |
 | `DrainSetAdapter[T](client, cache, keyFn, opts) ports.SinkAdapter[T]` | `SinkPort` | Terminal write-through; errors → `SetAdapterOptions.OnError` |
-| `Seed[T](ctx, client, cache, opts) (T, bool, error)` | — | Warm-restart read of a var-free key; `(zero, false, nil)` on miss — an empty cache is not an error |
+| `Seed[T](ctx, client, cache, opts) (T, bool, error)` | — | Warm-restart read of a var-free key; a thin wrapper around `Get` with nil vars; `(zero, false, nil)` on miss — an empty cache is not an error |
 
 ### Durable LatestPort — the Feed-tee pattern
 

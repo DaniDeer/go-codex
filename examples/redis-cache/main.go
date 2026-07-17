@@ -1,6 +1,8 @@
 // Package redis-cache demonstrates the typed cache boundary of
 // adapters/redis: an IOPort declared with a CachePattern, a read-through
-// GetAdapter, a write-through SetAdapter, a per-key-variable codec
+// GetAdapter, a write-through SetAdapter, the standalone Get/Set plain
+// functions (no ports.IOAdapter, no stream — the non-pipeline entrypoint
+// GetAdapter/SetAdapter delegate to), a per-key-variable codec
 // (CacheKeyParam) rejecting a malformed key var, the Seed warm-restart
 // helper, and the standalone ports.NewCache constructor (no port/pipeline
 // involved).
@@ -181,24 +183,32 @@ func main() {
 		fmt.Printf("  hit: %s → %s\n", u.ID, u.Name)
 	}
 
-	// ── Section 3: per-key-variable codec rejects a malformed key var ────
-	fmt.Println("\n─── Section 3: Per-key-variable codec (CacheKeyParam)")
+	// ── Section 3: standalone Get/Set — no port/pipeline involved ────────
+	fmt.Println("\n─── Section 3: Standalone Get/Set (no ports.IOAdapter, no stream)")
 
-	malformed := make(chan UserQuery, 1)
-	malformed <- UserQuery{ID: "abc"} // not all-digits — rejected before any Redis call
-	close(malformed)
-
-	rejected := adapterredis.GetAdapter[UserQuery, User](client, cache,
-		func(q UserQuery) map[string]string { return map[string]string{"id": q.ID} },
-		adapterredis.GetAdapterOptions{},
-	).Transform(ctx, stream.From(ctx, malformed))
-	_, errs := stream.Collect(ctx, rejected)
-	for _, e := range errs {
-		fmt.Println("  rejected malformed id:", e)
+	// Get/Set are plain functions — the building block for an application
+	// that doesn't use ports/stream pipelines at all, mirroring
+	// format.File.Read/.Write and adapters/sql.Validate. GetAdapter/
+	// SetAdapter (Sections 1-2) delegate to these exact functions per item.
+	if err := adapterredis.Set(ctx, client, cache, map[string]string{"id": "99"},
+		User{ID: "99", Name: "Turing"}, adapterredis.SetOptions{}); err != nil {
+		panic(err)
+	}
+	if v, ok, err := adapterredis.Get(ctx, client, cache, map[string]string{"id": "99"},
+		adapterredis.GetOptions{}); err == nil && ok {
+		fmt.Printf("  standalone get/set round-trip: %s → %s\n", v.ID, v.Name)
 	}
 
-	// ── Section 4: warm restart with Seed + standalone ports.NewCache ────
-	fmt.Println("\n─── Section 4: Warm restart (Seed, standalone ports.NewCache)")
+	// ── Section 4: per-key-variable codec rejects a malformed key var ────
+	fmt.Println("\n─── Section 4: Per-key-variable codec (CacheKeyParam)")
+
+	if _, _, err := adapterredis.Get(ctx, client, cache, map[string]string{"id": "abc"},
+		adapterredis.GetOptions{}); err != nil {
+		fmt.Println("  rejected malformed id:", err)
+	}
+
+	// ── Section 5: warm restart with Seed + standalone ports.NewCache ────
+	fmt.Println("\n─── Section 5: Warm restart (Seed, standalone ports.NewCache)")
 
 	// ports.NewCache builds a Cache[T] with no port/pipeline involved — the
 	// same declarative descriptor a CachePattern builds internally, usable

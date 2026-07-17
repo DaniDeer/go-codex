@@ -314,6 +314,177 @@ func TestSetAdapter_TTL(t *testing.T) {
 	}
 }
 
+// ── Get / Set — plain-function standalone entrypoints ─────────────────────────
+
+// G1: Get hit — same behavior as GetAdapter, no ports.IOAdapter/stream involved.
+func TestGet_Hit(t *testing.T) {
+	ctx := context.Background()
+	fake := newFake()
+	fake.store["user:42"] = []byte(`{"id":"42","name":"Ada"}`)
+
+	v, ok, err := adapterredis.Get(ctx, fake, userCache(), map[string]string{"id": "42"}, adapterredis.GetOptions{})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !ok || v.Name != "Ada" {
+		t.Errorf("want hit with Name=Ada, got ok=%v v=%+v", ok, v)
+	}
+}
+
+// G2: Get miss, default — (zero, false, nil), not an error.
+func TestGet_Miss_Default(t *testing.T) {
+	obs := &cacheObserverSpy{}
+	ctx := stats.WithObserver(context.Background(), obs)
+	fake := newFake()
+
+	v, ok, err := adapterredis.Get(ctx, fake, userCache(), map[string]string{"id": "42"}, adapterredis.GetOptions{})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if ok || v != (user{}) {
+		t.Errorf("want (zero, false), got (%+v, %v)", v, ok)
+	}
+	if obs.misses != 1 {
+		t.Errorf("want 1 RecordCacheMiss, got %d", obs.misses)
+	}
+}
+
+// G3: Get miss, MissIsError — CacheError wrapping ErrCacheMiss.
+func TestGet_Miss_AsError(t *testing.T) {
+	ctx := context.Background()
+	fake := newFake()
+
+	_, ok, err := adapterredis.Get(ctx, fake, userCache(), map[string]string{"id": "42"},
+		adapterredis.GetOptions{MissIsError: true})
+	if ok {
+		t.Error("want ok=false on miss")
+	}
+	if !errors.Is(err, adapterredis.ErrCacheMiss) {
+		t.Errorf("want errors.Is(ErrCacheMiss), got %v", err)
+	}
+	var ce adapterredis.CacheError
+	if !errors.As(err, &ce) || ce.Op != "get" {
+		t.Errorf("want CacheError{op get}, got %v", err)
+	}
+}
+
+// G4: Get decode/validation failure.
+func TestGet_DecodeFailure(t *testing.T) {
+	ctx := context.Background()
+	fake := newFake()
+	fake.store["user:42"] = []byte(`{"id":"42","name":""}`) // fails minLength(1)
+
+	_, ok, err := adapterredis.Get(ctx, fake, userCache(), map[string]string{"id": "42"}, adapterredis.GetOptions{})
+	if ok {
+		t.Error("want ok=false on decode failure")
+	}
+	var ce adapterredis.CacheError
+	if !errors.As(err, &ce) || ce.Op != "get" {
+		t.Errorf("want CacheError{op get}, got %v", err)
+	}
+}
+
+// G5: Get missing key var — CacheKeyError, no I/O.
+func TestGet_MissingKeyVar(t *testing.T) {
+	ctx := context.Background()
+	fake := newFake()
+
+	_, _, err := adapterredis.Get(ctx, fake, userCache(), map[string]string{}, adapterredis.GetOptions{})
+	var ke ports.CacheKeyError
+	if !errors.As(err, &ke) || ke.Var != "id" {
+		t.Errorf("want CacheKeyError{Var: id}, got %v", err)
+	}
+}
+
+// G6: Set writes a single value — no ports.IOAdapter/stream involved.
+func TestSet_WritesValue(t *testing.T) {
+	obs := &cacheObserverSpy{}
+	ctx := stats.WithObserver(context.Background(), obs)
+	fake := newFake()
+
+	err := adapterredis.Set(ctx, fake, userCache(), map[string]string{"id": "42"},
+		user{ID: "42", Name: "Ada"}, adapterredis.SetOptions{})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if string(fake.store["user:42"]) == "" {
+		t.Error("want value written to store")
+	}
+	if obs.writes[true] != 1 {
+		t.Errorf("want 1 successful RecordCacheWrite, got %d", obs.writes[true])
+	}
+}
+
+// G7: Set TTL — cache default, then option override.
+func TestSet_TTL(t *testing.T) {
+	ctx := context.Background()
+	fake := newFake()
+
+	if err := adapterredis.Set(ctx, fake, userCache(), map[string]string{"id": "1"},
+		user{ID: "1", Name: "A"}, adapterredis.SetOptions{}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if fake.ttls["user:1"] != 15*time.Minute {
+		t.Errorf("want pattern TTL 15m, got %v", fake.ttls["user:1"])
+	}
+
+	if err := adapterredis.Set(ctx, fake, userCache(), map[string]string{"id": "2"},
+		user{ID: "2", Name: "B"}, adapterredis.SetOptions{TTL: time.Hour}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if fake.ttls["user:2"] != time.Hour {
+		t.Errorf("want option TTL 1h override, got %v", fake.ttls["user:2"])
+	}
+}
+
+// G8: Set write failure — CacheError from the underlying client.
+func TestSet_WriteFailure(t *testing.T) {
+	ctx := context.Background()
+	fake := newFake()
+	fake.setErr = errors.New("connection refused")
+
+	err := adapterredis.Set(ctx, fake, userCache(), map[string]string{"id": "42"},
+		user{ID: "42", Name: "Ada"}, adapterredis.SetOptions{})
+	var ce adapterredis.CacheError
+	if !errors.As(err, &ce) || ce.Op != "set" {
+		t.Errorf("want CacheError{op set}, got %v", err)
+	}
+}
+
+// G9: GetAdapter/SetAdapter delegation regression — pipeline behavior is
+// byte-identical to calling Get/Set directly (same observer counts, same
+// stored bytes), proving the Rule B1 refactor didn't change behavior.
+func TestGetSetAdapter_DelegatesToGetSet_SameBehavior(t *testing.T) {
+	ctx := context.Background()
+	fakeDirect := newFake()
+	fakeAdapter := newFake()
+
+	// Direct calls.
+	if err := adapterredis.Set(ctx, fakeDirect, userCache(), map[string]string{"id": "42"},
+		user{ID: "42", Name: "Ada"}, adapterredis.SetOptions{}); err != nil {
+		t.Fatalf("Set: %v", err)
+	}
+	direct, ok, err := adapterredis.Get(ctx, fakeDirect, userCache(), map[string]string{"id": "42"}, adapterredis.GetOptions{})
+	if err != nil || !ok {
+		t.Fatalf("Get: ok=%v err=%v", ok, err)
+	}
+
+	// Same sequence via the pipeline adapters.
+	setOut := adapterredis.SetAdapter[user](fakeAdapter, userCache(), keyByUser,
+		adapterredis.SetAdapterOptions{}).Transform(ctx, userStream(user{ID: "42", Name: "Ada"}))
+	stream.Collect(ctx, setOut)
+	getOut := adapterredis.GetAdapter[userQuery, user](fakeAdapter, userCache(), keyByID,
+		adapterredis.GetAdapterOptions{}).Transform(ctx, queryStream(userQuery{ID: "42"}))
+	viaAdapter, _ := stream.Collect(ctx, getOut)
+
+	if len(viaAdapter) != 1 || viaAdapter[0] != direct {
+		t.Errorf("want identical result via adapter and direct call, got %+v vs %+v", viaAdapter, direct)
+	}
+	if string(fakeDirect.store["user:42"]) != string(fakeAdapter.store["user:42"]) {
+		t.Errorf("want identical stored bytes, got %q vs %q", fakeDirect.store["user:42"], fakeAdapter.store["user:42"])
+	}
+}
+
 // ── C8: key template expansion + missing var ──────────────────────────────────
 
 func TestCache_BuildKey(t *testing.T) {
