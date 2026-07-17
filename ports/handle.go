@@ -20,6 +20,7 @@ const (
 	patternKindFile     = "file"
 	patternKindSQL      = "sql"
 	patternKindCache    = "cache"
+	patternKindSocket   = "socket"
 )
 
 // patternHolder is implemented by every port type that supports [Pattern]
@@ -140,6 +141,84 @@ func CacheHandle[T any](port any) (Cache[T], bool) {
 	}
 	h, ok := v.(Cache[T])
 	return h, ok
+}
+
+// SocketHandle returns the [Socket] built from port's declared
+// [SocketPattern], or (zero, false) if the port declared no [SocketPattern].
+// On a [DuplexPort], In/Out are the port's codec pair; on a [SourcePort]
+// use Socket[T, struct{}], on a [SinkPort] Socket[struct{}, T].
+func SocketHandle[In, Out any](port any) (Socket[In, Out], bool) {
+	ph, ok := port.(patternHolder)
+	if !ok {
+		return Socket[In, Out]{}, false
+	}
+	v, ok := ph.patternHandle(patternKindSocket)
+	if !ok {
+		return Socket[In, Out]{}, false
+	}
+	h, ok := v.(Socket[In, Out])
+	return h, ok
+}
+
+// buildSocket constructs a Socket handle: the upgrade-validation route (GET,
+// empty req/resp codecs — only path/header/security opts matter) plus the
+// frame formats.
+func buildSocket[In, Out any](
+	portName string,
+	pat SocketPattern,
+	inCodec codex.Codec[In],
+	outCodec codex.Codec[Out],
+	restBuilder *rest.Builder,
+) (Socket[In, Out], error) {
+	b := restBuilder
+	if b == nil {
+		b = rest.NewBuilder(rest.Info{})
+	}
+	route := rest.NewRoute[struct{}, struct{}]("GET", pat.Path,
+		codex.Struct[struct{}](), codex.Struct[struct{}](), pat.Opts...)
+	handle, err := route.Register(b)
+	if err != nil {
+		return Socket[In, Out]{}, PatternRegisterError{Port: portName, Kind: patternKindSocket, Err: err}
+	}
+	return Socket[In, Out]{
+		Path:         pat.Path,
+		Subprotocols: pat.Subprotocols,
+		Route:        handle,
+		InFormat:     fileFormatFor(pat.Format, inCodec),
+		OutFormat:    fileFormatFor(pat.Format, outCodec),
+	}, nil
+}
+
+// buildDuplexPatternHandles scans patterns for a [DuplexPort] — currently
+// [SocketPattern] is the only pattern a duplex port accepts; any other
+// declared pattern kind is rejected (a duplex boundary is not HTTP-, topic-,
+// file-, SQL-, or cache-shaped).
+func buildDuplexPatternHandles[In, Out any](
+	portName string,
+	patterns []Pattern,
+	inCodec codex.Codec[In],
+	outCodec codex.Codec[Out],
+	restBuilder *rest.Builder,
+) (handles map[string]any, specs map[string]any, err error) {
+	handles = make(map[string]any, len(patterns))
+	specs = make(map[string]any, len(patterns))
+	for _, p := range patterns {
+		switch pat := p.(type) {
+		case SocketPattern:
+			s, err := buildSocket(portName, pat, inCodec, outCodec, restBuilder)
+			if err != nil {
+				return nil, nil, err
+			}
+			handles[patternKindSocket] = s
+			specs[patternKindSocket] = pat
+		default:
+			return nil, nil, PatternRegisterError{
+				Port: portName, Kind: patternKindSocket,
+				Err: fmt.Errorf("DuplexPort accepts only SocketPattern; got %T", p),
+			}
+		}
+	}
+	return handles, specs, nil
 }
 
 // SQLMeta returns the [SQLPattern] metadata declared on port, or
@@ -282,6 +361,25 @@ func buildEventPatternHandles[T any](
 			c := Cache[T]{Key: pat.Key, TTL: pat.TTL, Format: fileFormatFor(pat.Format, codec)}
 			handles[patternKindCache] = c
 			specs[patternKindCache] = pat
+		case SocketPattern:
+			switch role {
+			case roleSource:
+				// Inbound-only socket: clients send T frames.
+				s, err := buildSocket[T, struct{}](portName, pat, codec, codex.Struct[struct{}](), restBuilder)
+				if err != nil {
+					return nil, nil, err
+				}
+				handles[patternKindSocket] = s
+				specs[patternKindSocket] = pat
+			case roleSink:
+				// Broadcast-only socket: server pushes T frames (WS sibling of SSE).
+				s, err := buildSocket[struct{}, T](portName, pat, codex.Struct[struct{}](), codec, restBuilder)
+				if err != nil {
+					return nil, nil, err
+				}
+				handles[patternKindSocket] = s
+				specs[patternKindSocket] = pat
+			}
 		}
 	}
 	return handles, specs, nil
@@ -377,6 +475,14 @@ func buildDualCodecPatternHandles[Req, Resp any](
 			c := Cache[Resp]{Key: pat.Key, TTL: pat.TTL, Format: fileFormatFor(pat.Format, respCodec)}
 			handles[patternKindCache] = c
 			specs[patternKindCache] = pat
+		case SocketPattern:
+			// Sockets carry uncorrelated frame streams — per-message
+			// request/reply is ReqReplyPattern territory. Rejected on
+			// IOPort, LatestPort, and ToolPort.
+			return nil, nil, PatternRegisterError{
+				Port: portName, Kind: patternKindSocket,
+				Err: fmt.Errorf("SocketPattern is only supported on SourcePort, SinkPort, and DuplexPort"),
+			}
 		}
 	}
 	return handles, specs, nil

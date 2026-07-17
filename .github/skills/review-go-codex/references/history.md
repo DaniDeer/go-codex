@@ -1,8 +1,21 @@
-# go-codex Review History (R1–R56)
+# go-codex Review History (R1–R57)
 
 Do not re-report any of these findings. They have been implemented and tested.
 
 ---
+
+## Round 57 (WebSocket adapter — `adapters/websocket`, sixth port type `ports.DuplexPort`, `ports.SocketPattern`)
+
+- **`DuplexPort[In,Out]` binds exactly ONE adapter BY DESIGN** (IOPort precedent) — session identity across multiple transports is unresolved; do not propose multi-adapter fan-in/out.
+- **`DuplexAdapter.Activate` takes the outbound stream as a direct `src` parameter** (not an `outbound func()` closure as an early sketch had) — the port owns all four channels; `Feed` closes the outbound pair to signal completion.
+- **Slow-client policy: DROP the frame for that session only** (`SocketError` wrapping `ErrFrameDropped`; per-session queue default 16, BroadcastHub precedent). Not silent data loss — reported per drop. Do not suggest blocking or disconnecting instead.
+- **Frame decode failure keeps the connection OPEN** — one bad frame ≠ disconnect; error goes to the port's Errors channel with "payload" reports.
+- **`SocketPattern` rejected on IOPort/LatestPort/ToolPort** (`PatternRegisterError{Kind:"socket"}`) — per-message req/reply over a socket is an RPC discipline (ReqReplyPattern territory). `DuplexPort` accepts ONLY SocketPattern — any other kind fails construction.
+- **Upgrade validation extracts ALL `{var}` template vars** (regex on the path template) for `Hub.SessionInfo`, then validates only DECLARED PathParam codecs via the handle's `rest.RouteHandle[struct{},struct{}]` — `PathParamNames()` alone would miss undeclared template vars (real bug found in test iteration).
+- **Keepalive is shim-owned** (`NewUpgrader`: ping 30s, pong wait 2×, read limit 1 MiB; gorilla is imported ONLY in socket.go); `Hub` is an explicit main-constructed collaborator so `SessionInfo` is reachable without widening the adapter interfaces.
+- **NO `ConnectionObserver` extension** — transport hooks suffice (`RecordRequest` per upgrade, `RecordSubscribe`/`RecordPublish` per frame); connect/disconnect metrics wait for a use case (recorded in websocket-phase2 roadmap).
+- **NOT an MQTT broker** — MQTT-over-WS is the MQTT client's transport option (ws:// broker URL to paho); permanently out of scope.
+- The "universal StreamPattern" idea was evaluated and REJECTED — WebSocket (path-addressed, at-most-once) and Redis Streams (key-addressed, at-least-once, XACK) need separate declarations.
 
 ## Round 56 (Redis cache adapter — `adapters/redis`, `ports.CachePattern`, `stats.CacheObserver`)
 

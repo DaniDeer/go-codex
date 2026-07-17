@@ -24,6 +24,7 @@ import (
 //   - [FilePattern] — typed-file-shaped (file)
 //   - [SQLPattern] — SQL metadata (sql)
 //   - [CachePattern] — key/value-cache-shaped (redis)
+//   - [SocketPattern] — path-addressed duplex socket (websocket)
 //
 // Each Pattern is a thin wrapper around the existing rest/events/reqreply/mcp/
 // format declarative option vocabulary — no new param types are introduced. A
@@ -240,6 +241,63 @@ type CachePattern struct {
 }
 
 func (CachePattern) isPortPattern() {}
+
+// SocketPattern declares a path-addressed duplex socket endpoint for a port
+// bound to a websocket adapter. Path mirrors [RESTPattern.Path] (same {var}
+// placeholders); Opts carries [rest.RouteOpt] entries validated once per
+// connection at upgrade time (path params, header params, security
+// requirements) — not per frame.
+//
+// Port-type acceptance:
+//
+//   - [SourcePort]: inbound-only socket (clients send, server never pushes).
+//
+//   - [SinkPort]: broadcast-only socket (the WebSocket sibling of SSE).
+//
+//   - [DuplexPort]: full duplex — In decodes inbound, Out encodes outbound.
+//
+//   - [IOPort], [LatestPort], [ToolPort]: rejected at construction with
+//     [PatternRegisterError] — per-message request/reply over a socket is an
+//     RPC discipline (ReqReplyPattern territory), not a socket property.
+//
+//     ports.SocketPattern{Path: "/live/{room}"}
+type SocketPattern struct {
+	// Path is the HTTP upgrade path template (e.g. "/live/{room}").
+	Path string
+	// Subprotocols lists acceptable Sec-WebSocket-Protocol values.
+	// Empty = accept any.
+	Subprotocols []string
+	// Format selects the frame wire format applied to the port's codec(s):
+	// JSON (default), YAML, or TOML — same enum as [FilePattern.Format].
+	Format FileFormatKind
+	// Opts carries the same variadic options [rest.NewRoute] accepts,
+	// validated once per connection at upgrade time.
+	Opts []rest.RouteOpt
+}
+
+func (SocketPattern) isPortPattern() {}
+
+// Socket is the handle built from a [SocketPattern]: the upgrade-request
+// validator plus the frame formats bound to the port's codec(s). Retrieve it
+// with [SocketHandle] and pass it to a websocket adapter constructor.
+//
+// One-directional ports use struct{} for the unused side: a [SourcePort]
+// builds Socket[T, struct{}], a [SinkPort] builds Socket[struct{}, T]
+// (the same convention as rest.SSERouteHandle[struct{}, T]).
+type Socket[In, Out any] struct {
+	// Path is the declared upgrade path template.
+	Path string
+	// Subprotocols lists acceptable Sec-WebSocket-Protocol values.
+	Subprotocols []string
+	// Route validates the upgrade request (path vars, headers, security) —
+	// built from the pattern's Opts via the rest machinery, once per
+	// connection.
+	Route *rest.RouteHandle[struct{}, struct{}]
+	// InFormat decodes inbound frames through the port's In codec.
+	InFormat format.Format[In]
+	// OutFormat encodes outbound frames through the port's Out codec.
+	OutFormat format.Format[Out]
+}
 
 // Cache is the handle built from a [CachePattern]: the key template, the
 // default TTL, and the value [format.Format] bound to the port's codec.

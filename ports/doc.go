@@ -18,7 +18,7 @@
 //	handle, _ := ports.EventHandle[SensorReading](domain.SensorReadings)
 //	domain.SensorReadings.Bind(ctx, mqtt.SubscribeAdapter(client, handle, 0, fmt, opts))
 //
-// # Five port types
+// # Six port types
 //
 //   - [SourcePort] — inbound boundary (external → pipeline). Multiple adapters = fan-in merge.
 //   - [SinkPort] — outbound boundary (pipeline → external). Multiple adapters = fan-out
@@ -28,6 +28,9 @@
 //   - [ToolPort] — server-side request/response: one pipeline function, exposed on N transports.
 //   - [LatestPort] — reactive cache: [LatestPort.Feed] drains a stream into an atomic
 //     cell; bound adapters serve every request from it (the cache outlives the stream).
+//   - [DuplexPort] — bidirectional session boundary (external ↔ pipeline): peers send
+//     In frames and receive Out frames over persistent, identified sessions
+//     ([Framed] values tag each frame with its [Session]). One adapter.
 //
 // All constructors return (*Port, error) — a declared [Pattern] is built
 // eagerly via Register and can fail; wrap package-level declarations with
@@ -36,10 +39,11 @@
 // # Pattern — the primary declaration surface
 //
 // [RESTPattern], [EventPattern], [ReqReplyPattern], [MCPPattern],
-// [FilePattern], [SQLPattern], and [CachePattern] reuse the exact
-// rest/events/reqreply/mcp/format option vocabulary. Handles come back out
-// with [RESTHandle], [EventHandle], [ReqReplyHandle], [MCPHandle],
-// [FileHandle], [SSEHandle], [CacheHandle]; SQL metadata with [SQLMeta]. Supply [PortOptions] builders to accumulate
+// [FilePattern], [SQLPattern], [CachePattern], and [SocketPattern] reuse the
+// exact rest/events/reqreply/mcp/format option vocabulary. Handles come back
+// out with [RESTHandle], [EventHandle], [ReqReplyHandle], [MCPHandle],
+// [FileHandle], [SSEHandle], [CacheHandle], [SocketHandle]; SQL metadata
+// with [SQLMeta]. Supply [PortOptions] builders to accumulate
 // OpenAPI/AsyncAPI specs straight from the port declarations.
 //
 // # IOParam — protocol-agnostic parameters

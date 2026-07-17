@@ -18,7 +18,7 @@ import (
 //
 //	mqtt5.SubscribeAdapter, mqtt.SubscribeAdapter, nethttp.IngestAdapter,
 //	nethttp.PollAdapter, zeromq.SubscribeAdapter, file.ScanAdapter,
-//	file.WatchAdapter, sql.QueryAdapter
+//	file.WatchAdapter, sql.QueryAdapter, websocket.IngestSocketAdapter
 type SourceAdapter[T any] interface {
 	// Activate runs the adapter until ctx is cancelled, writing items to dst
 	// and errors to errs. Must not close either channel.

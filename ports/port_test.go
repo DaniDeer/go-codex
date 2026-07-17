@@ -1827,3 +1827,148 @@ func TestRegisterSSE_ReplaysSpec(t *testing.T) {
 		t.Errorf("want MissingPatternError, got %v", err)
 	}
 }
+
+// ── SocketPattern + DuplexPort ────────────────────────────────────────────────
+
+func TestSocketPattern_PortAcceptance(t *testing.T) {
+	pat := ports.SocketPattern{Path: "/live/{room}"}
+
+	// SourcePort: accepted — Socket[T, struct{}].
+	src, err := ports.NewSourcePort[int]("ws-src", intCodec, ports.PortOptions{
+		Patterns: []ports.Pattern{pat},
+	})
+	if err != nil {
+		t.Fatalf("SourcePort: %v", err)
+	}
+	if _, ok := ports.SocketHandle[int, struct{}](src); !ok {
+		t.Error("SourcePort: want socket handle")
+	}
+
+	// SinkPort: accepted — Socket[struct{}, T].
+	sink, err := ports.NewSinkPort[int]("ws-sink", intCodec, ports.PortOptions{
+		Patterns: []ports.Pattern{pat},
+	})
+	if err != nil {
+		t.Fatalf("SinkPort: %v", err)
+	}
+	if _, ok := ports.SocketHandle[struct{}, int](sink); !ok {
+		t.Error("SinkPort: want socket handle")
+	}
+
+	// DuplexPort: accepted — Socket[In, Out].
+	dup, err := ports.NewDuplexPort[int, string]("ws-dup", intCodec, strCodec, ports.PortOptions{
+		Patterns: []ports.Pattern{pat},
+	})
+	if err != nil {
+		t.Fatalf("DuplexPort: %v", err)
+	}
+	h, ok := ports.SocketHandle[int, string](dup)
+	if !ok {
+		t.Fatal("DuplexPort: want socket handle")
+	}
+	if h.Path != "/live/{room}" || h.Route == nil {
+		t.Errorf("handle incomplete: %+v", h)
+	}
+
+	// IOPort / LatestPort / ToolPort: rejected.
+	var pre ports.PatternRegisterError
+	if _, err := ports.NewIOPort[int, string]("ws-io", intCodec, strCodec,
+		ports.PortOptions{Patterns: []ports.Pattern{pat}}); !errors.As(err, &pre) || pre.Kind != "socket" {
+		t.Errorf("IOPort: want PatternRegisterError{socket}, got %v", err)
+	}
+	if _, err := ports.NewLatestPort[int]("ws-latest", intCodec,
+		ports.PortOptions{Patterns: []ports.Pattern{pat}}); !errors.As(err, &pre) || pre.Kind != "socket" {
+		t.Errorf("LatestPort: want PatternRegisterError{socket}, got %v", err)
+	}
+	if _, err := ports.NewToolPort[int, string]("ws-tool", intCodec, strCodec,
+		ports.PortOptions{Patterns: []ports.Pattern{pat}}); !errors.As(err, &pre) || pre.Kind != "socket" {
+		t.Errorf("ToolPort: want PatternRegisterError{socket}, got %v", err)
+	}
+
+	// DuplexPort with a non-socket pattern: rejected.
+	if _, err := ports.NewDuplexPort[int, string]("ws-dup2", intCodec, strCodec,
+		ports.PortOptions{Patterns: []ports.Pattern{ports.SQLPattern{Table: "t"}}}); !errors.As(err, &pre) {
+		t.Errorf("DuplexPort+SQLPattern: want PatternRegisterError, got %v", err)
+	}
+}
+
+type fakeDuplexAdapter struct {
+	sent []ports.Framed[string] // outbound frames the adapter delivered
+	mu   sync.Mutex
+	done chan struct{}
+}
+
+func (f *fakeDuplexAdapter) AdapterName() string { return "test.DuplexAdapter" }
+
+func (f *fakeDuplexAdapter) Activate(ctx context.Context, dst chan<- ports.Framed[int], errs chan<- error, src gstream.Stream[ports.Framed[string]]) error {
+	defer close(f.done)
+	// Emit two inbound frames from two sessions.
+	dst <- ports.Framed[int]{Session: "s1", Payload: 1}
+	dst <- ports.Framed[int]{Session: "s2", Payload: 2}
+	// Drain outbound.
+	valCh, errCh := src.Values, src.Errors
+	for valCh != nil || errCh != nil {
+		select {
+		case <-ctx.Done():
+			return nil
+		case v, ok := <-valCh:
+			if !ok {
+				valCh = nil
+				continue
+			}
+			f.mu.Lock()
+			f.sent = append(f.sent, v)
+			f.mu.Unlock()
+		case _, ok := <-errCh:
+			if !ok {
+				errCh = nil
+			}
+		}
+	}
+	return nil
+}
+
+func TestDuplexPort_Lifecycle(t *testing.T) {
+	ctx := context.Background()
+	port, err := ports.NewDuplexPort[int, string]("dup", intCodec, strCodec, ports.PortOptions{Buffer: 4})
+	if err != nil {
+		t.Fatalf("construct: %v", err)
+	}
+
+	fake := &fakeDuplexAdapter{done: make(chan struct{})}
+	if err := port.Bind(ctx, fake); err != nil {
+		t.Fatalf("bind: %v", err)
+	}
+
+	// Second bind rejected.
+	var pbe ports.PortBindError
+	if err := port.Bind(ctx, &fakeDuplexAdapter{done: make(chan struct{})}); !errors.As(err, &pbe) {
+		t.Errorf("second Bind: want PortBindError, got %v", err)
+	}
+
+	// Feed two outbound frames (one targeted, one broadcast) and close.
+	outVals := make(chan ports.Framed[string], 2)
+	outVals <- ports.Framed[string]{Session: "s1", Payload: "reply"}
+	outVals <- ports.Framed[string]{Payload: "broadcast"}
+	close(outVals)
+	outErrs := make(chan error)
+	close(outErrs)
+	port.Feed(ctx, gstream.Stream[ports.Framed[string]]{Values: outVals, Errors: outErrs})
+
+	<-fake.done // adapter drained outbound and returned
+
+	inbound := port.Inbound(ctx)
+	vals, errs := gstream.Collect(ctx, inbound)
+	if len(errs) != 0 || len(vals) != 2 {
+		t.Fatalf("inbound: want 2 frames, got %v / %v", vals, errs)
+	}
+	if vals[0].Session != "s1" || vals[1].Session != "s2" {
+		t.Errorf("session tags wrong: %v", vals)
+	}
+
+	fake.mu.Lock()
+	defer fake.mu.Unlock()
+	if len(fake.sent) != 2 || fake.sent[0].Session != "s1" || fake.sent[1].Session != "" {
+		t.Errorf("outbound delivery wrong: %+v", fake.sent)
+	}
+}

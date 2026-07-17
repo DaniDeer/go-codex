@@ -21,7 +21,7 @@ conventions once approved. Existing roadmap examples:
 
 ## Step 1 — Classify the boundary → port types
 
-Decide which of the five port types the adapter serves. This drives the whole
+Decide which of the six port types the adapter serves. This drives the whole
 API surface — each supported port type means one `ports.XxxAdapter` interface
 implementation exposed as a constructor function.
 
@@ -32,6 +32,7 @@ implementation exposed as a constructor function.
 | `IOPort[Req,Resp]` | `IOAdapter[Req,Resp]` — `Transform(ctx, src Stream[Req]) Stream[Resp]` | pipeline ↔ external | per-item request/response or 1→N lookup (HTTP call, SQL query, cache get) |
 | `LatestPort[T]` | `LatestAdapter[T]` — `Serve(ctx, latest func() (T, bool)) error` | pipeline → query | serves the current cached value to request/response clients |
 | `ToolPort` | (MCP-specific) | tool call | the boundary is an MCP tool surface |
+| `DuplexPort[In,Out]` | `DuplexAdapter[In,Out]` — `Activate(ctx, dst chan<- Framed[In], errs chan<- error, src Stream[Framed[Out]]) error` | external ↔ pipeline (sessions) | persistent bidirectional session boundary (WebSocket, framed TCP) |
 
 Rules:
 - **Adapter interface contracts are strict**: `SourceAdapter.Activate` must

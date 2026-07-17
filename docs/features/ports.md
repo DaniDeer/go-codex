@@ -57,15 +57,16 @@ domain.SensorReadings.Bind(ctx, mqtt5.SubscribeAdapter(client, router, handle, 0
 
 ---
 
-## Five port types
+## Six port types
 
 | Port | Direction | Cardinality | Use for |
 |------|-----------|-------------|---------|
-| [`SourcePort[T]`](#sourceportt) | External → pipeline | Fan-in (many adapters merge) | MQTT subscribe, HTTP ingest, SQL poll, file scan/watch |
-| [`SinkPort[T]`](#sinkportt) | Pipeline → external | Fan-out (broadcast to all adapters) | MQTT publish, SSE, file write, SQL insert |
-| [`IOPort[Req,Resp]`](#ioportreqresp) | Pipeline ↔ external | Exactly one adapter | HTTP call, SQL per-item query, file per-item read, MQTT5/ZeroMQ request-reply |
+| [`SourcePort[T]`](#sourceportt) | External → pipeline | Fan-in (many adapters merge) | MQTT subscribe, HTTP ingest, SQL poll, file scan/watch, WS ingest |
+| [`SinkPort[T]`](#sinkportt) | Pipeline → external | Fan-out (broadcast to all adapters) | MQTT publish, SSE, file write, SQL insert, cache write, WS broadcast |
+| [`IOPort[Req,Resp]`](#ioportreqresp) | Pipeline ↔ external | Exactly one adapter | HTTP call, SQL per-item query, file per-item read, cache get/set, MQTT5/ZeroMQ request-reply |
 | [`ToolPort[In,Out]`](#toolportinout) | External request → pipeline → response | Exactly one pipeline fn, N adapters | MCP tool, HTTP endpoint, ZeroMQ REP, MQTT5 request-reply server |
 | [`LatestPort[T]`](#latestportt) | Stream → cache → external request | One cache, N serving adapters | "Current state" endpoints: latest reading over HTTP GET, ZeroMQ REP, MCP tool — no per-request pipeline run |
+| [`DuplexPort[In,Out]`](#duplexportinout) | External ↔ pipeline (sessions) | Exactly one adapter | WebSocket endpoints: session-tagged inbound commands, targeted replies + broadcast |
 
 ---
 
@@ -237,6 +238,42 @@ result. Serving adapters: `nethttp.LatestAdapter`, `zeromq.LatestAdapter`,
 
 ---
 
+## `DuplexPort[In,Out]`
+
+Declares a bidirectional session boundary: external peers send `In` frames
+and receive `Out` frames over persistent, identified sessions. Every frame
+is a `Framed[T]{Session, Payload}` — inbound frames carry the sender's
+session; outbound frames target one session, or broadcast when `Session` is
+zero. Exactly one adapter (like `IOPort`).
+
+```go
+// domain — declared like every other boundary
+var Live = codex.Must(ports.NewDuplexPort[Command, Update]("live",
+    commandCodec, updateCodec, ports.PortOptions{
+        Patterns: []ports.Pattern{ports.SocketPattern{Path: "/live/{room}"}},
+        Buffer:   8,
+    }))
+
+// main.go — wiring only
+hub := websocket.NewHub(0)
+handle, _ := ports.SocketHandle[Command, Update](domain.Live)
+must0(domain.Live.Bind(ctx, websocket.DuplexSocketAdapter(mux, hub, upgrader, handle, opts)))
+
+// pipeline: session-preserving Map yields targeted replies
+replies := stream.Map(ctx, domain.Live.Inbound(ctx),
+    func(f ports.Framed[Command]) (ports.Framed[Update], error) {
+        return ports.Framed[Update]{Session: f.Session, Payload: process(f.Payload)}, nil
+    }, stream.MapOptions{Name: "ack"})
+go domain.Live.Feed(ctx, replies)
+```
+
+Session routing composes with the stream operators — `stream.GroupBy` by
+`Framed.Session` yields per-client sub-streams. Only [`SocketPattern`](#socketpattern--path-addressed-duplex-sockets)
+is accepted; any other pattern kind fails construction. See the
+[WebSocket adapter](websocket.md) for the transport side.
+
+---
+
 ## `SinkPort` Push — request-scoped submission
 
 `Feed` is stream-driven and one-shot. When a request/response pipeline needs
@@ -278,6 +315,7 @@ written by hand: the port makes that call **internally**.
 | `FilePattern{Path, Format, Opts}` | typed files (file) | `format.FileOpt` |
 | `SQLPattern{Table, Op}` | SQL (sql) | — (metadata-only) |
 | `CachePattern{Key, TTL, Format}` | key/value cache (redis) | — (key template + TTL) |
+| `SocketPattern{Path, Subprotocols, Format, Opts}` | duplex socket (websocket) | `rest.RouteOpt` (upgrade-time) |
 
 A port declares one `Pattern` entry **per protocol family** it will be bound to — a
 `ToolPort` exposed over HTTP + MQTT 5 + MCP simultaneously (as in the `OEETool`
@@ -293,6 +331,7 @@ retrieved with the matching accessor:
 | `ports.FileHandle[T](port)` | `(format.File[T], bool)` |
 | `ports.SQLMeta(port)` | `(ports.SQLPattern, bool)` |
 | `ports.CacheHandle[T](port)` | `(ports.Cache[T], bool)` |
+| `ports.SocketHandle[In,Out](port)` | `(ports.Socket[In,Out], bool)` |
 
 Each accessor returns `(nil, false)` — not an error, not a panic — when the port
 declared no matching `Pattern`.

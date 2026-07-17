@@ -20,7 +20,7 @@ Step 2 — Wiring (main.go only)
     port.Bind(ctx, transport.XxxAdapter(...))  ← connect to real transport
 ```
 
-## Five port types
+## Six port types
 
 ### `SourcePort[T]` — inbound boundary
 
@@ -168,6 +168,34 @@ Patterns use `codex.Struct[struct{}]()` as the request codec automatically —
 behavior is per-transport (HTTP 503 + `NoLatestValueError`, ZeroMQ error
 reply, MCP error result).
 
+### `DuplexPort[In, Out]` — bidirectional session boundary
+
+External peers send `In` frames and receive `Out` frames over persistent,
+identified sessions (WebSocket connections). Frames are session-tagged
+`ports.Framed[T]` values — echo the inbound `Session` on an outbound frame
+for a targeted reply, or leave it zero to broadcast. Exactly one adapter.
+
+```go
+// domain
+var Live = codex.Must(ports.NewDuplexPort[Command, Update]("live",
+    commandCodec, updateCodec, ports.PortOptions{
+        Patterns: []ports.Pattern{ports.SocketPattern{Path: "/live/{room}"}},
+    }))
+
+// main.go
+hub := websocket.NewHub(0)
+handle, _ := ports.SocketHandle[Command, Update](domain.Live)
+must0(domain.Live.Bind(ctx, websocket.DuplexSocketAdapter(mux, hub, upgrader, handle, opts)))
+
+// pipeline
+replies := stream.Map(ctx, domain.Live.Inbound(ctx), ack, stream.MapOptions{Name: "ack"})
+go domain.Live.Feed(ctx, replies)
+```
+
+`hub.SessionInfo(session)` exposes upgrade-time path vars (which `{room}` a
+session joined); `stream.GroupBy` by `Framed.Session` gives per-client
+sub-streams. See [`examples/websocket-duplex`](https://github.com/DaniDeer/go-codex/tree/main/examples/websocket-duplex).
+
 ### `SinkPort` Push — request-scoped submission
 
 When a request/response pipeline needs to drop individual items into a sink
@@ -283,6 +311,7 @@ be `.Register()`ed with a builder and threaded into the adapter constructor by h
 | `ports.FilePattern{Path, Format, Opts}` | typed files (file) |
 | `ports.SQLPattern{Table, Op}` | SQL (sql) — metadata-only |
 | `ports.CachePattern{Key, TTL, Format}` | key/value cache (redis) — key template + TTL |
+| `ports.SocketPattern{Path, Subprotocols, Format, Opts}` | duplex socket (websocket) — upgrade-time validation |
 
 Derive the handle the adapter needs with the matching accessor — `(nil, false)`, not
 a panic, when the port declared no matching `Pattern`:
@@ -295,6 +324,7 @@ handle, ok := ports.MCPHandle[In, Out](domain.SomePort)        // *apimcp.ToolHa
 file,   ok := ports.FileHandle[T](domain.SomePort)             // format.File[T]
 meta,   ok := ports.SQLMeta(domain.SomePort)                   // ports.SQLPattern
 cache,  ok := ports.CacheHandle[T](domain.SomePort)            // ports.Cache[T]
+socket, ok := ports.SocketHandle[In, Out](domain.SomePort)     // ports.Socket[In, Out]
 ```
 
 ### One construction path, whether you supply a `Builder` or not
