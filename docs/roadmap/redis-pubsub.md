@@ -25,6 +25,7 @@ observer events, different transport semantics.
 | Persistence / retained | none | retained messages | none |
 | Offline subscribers | messages LOST | QoS 1+ queued | lost |
 | Wildcards | glob via `PSUBSCRIBE` (`*`, `?`, `[...]`) | `+`/`#` | prefix match |
+| Wildcard scope | `*` matches ACROSS `/` (multi-segment) | `+` single-level only | n/a |
 | Ack | none | per-QoS | none |
 
 Consequences to document loudly on every constructor:
@@ -33,6 +34,13 @@ Consequences to document loudly on every constructor:
   candidate) when at-least-once matters.
 - No retained value: a late subscriber sees nothing until the next publish —
   pair with a Phase 1 `Seed`/`LatestPort` for "current state on connect".
+- **Glob `*` is broader than MQTT `+`**: the derived pattern
+  `"sensors/*/data"` also matches `"sensors/a/b/data"`. The subscribe
+  adapter MUST re-match each inbound `Message.Channel` against the
+  `{var}` template and silently DROP channels that don't fit the segment
+  structure (mirrors MQTT's topic re-match before var extraction) —
+  otherwise var extraction mis-parses. Literal `*`, `?`, `[` in a topic
+  template must be escaped (`\*`) when deriving the PSUBSCRIBE pattern.
 
 ## Scope decisions
 
@@ -111,10 +119,6 @@ func SubscribeAdapter[T any](
 
 // PublishAdapterOptions configures [PublishAdapter].
 type PublishAdapterOptions struct {
-    // Vars supplies static topic-template vars (same limitation as
-    // mqtt.DrainPublish had: one map for all items — per-item vars need a
-    // keyFn-style extractor, open decision 2).
-    Vars map[string]string
     // OnError receives publish/encode errors (fire-and-forget transport —
     // there is no delivery error, only connection/encode errors).
     OnError func(error)
@@ -124,9 +128,17 @@ type PublishAdapterOptions struct {
 
 // PublishAdapter returns a [ports.SinkAdapter] that encodes each item through
 // the handle's format and publishes it to the EventPattern-derived channel.
+//
+// varsFor extracts per-item topic-template vars (open decision 2, leaning
+// ADOPTED: a constructor argument like Phase 1's keyFn and the file
+// adapters' varsFor — a func(T) field cannot live in the non-generic
+// options struct, and per-item vars beat the static Vars map that
+// mqtt.MQTTDrainPublishOptions still carries as a documented limitation).
+// Nil is valid for var-free topics.
 func PublishAdapter[T any](
     client PubSubCommands,
     handle *events.ChannelHandle[T],
+    varsFor func(T) map[string]string,
     fmt format.Format[T],
     opts PublishAdapterOptions,
 ) ports.SinkAdapter[T]
@@ -139,7 +151,9 @@ var Alerts = codex.Must(ports.NewSinkPort[Alert]("alerts", alertCodec,
     ports.PortOptions{Patterns: []ports.Pattern{
         ports.EventPattern{Topic: "alerts/{severity}"},
     }}))
-// main.go: Alerts.Bind(ctx, redis.PublishAdapter(pubsub, handle, format.JSON(alertCodec), opts))
+// main.go: Alerts.Bind(ctx, redis.PublishAdapter(pubsub, handle,
+//     func(a Alert) map[string]string { return map[string]string{"severity": a.Severity} },
+//     format.JSON(alertCodec), opts))
 ```
 
 ## Structured errors
@@ -167,7 +181,10 @@ transport-agnostic):
 
 - `RecordSubscribe(channel, success, duration)` per inbound message
 - `RecordPublish(channel, success, duration)` per outbound message
-- Validation failures → `stats.ReportErrors(obs, "payload", err)`
+- Payload validation failures → `stats.ReportErrors(obs, "payload", err)`
+- Inbound topic-var failures (`ChannelHandle.ValidateTopicVars` after
+  extraction from `Message.Channel`) → location `"topic_var"` — same split
+  as the mqtt adapter
 - Nil observer → `stats.ObserverFromContext(ctx)`
 
 ## Unit test plan (fake `PubSubCommands`, no live Redis)
@@ -176,7 +193,9 @@ transport-agnostic):
 |---|---|---|
 | P1 | Subscribe → decode → port stream | happy path, full validation pipeline |
 | P2 | Glob derivation | `"a/{x}/b"` → `"a/*/b"`; explicit ChannelPattern wins |
-| P3 | Decode failure → Errors channel | typed error, per-field ReportErrors |
+| P3 | Decode failure → Errors channel | typed error, per-field ReportErrors location `"payload"` |
+| P3b | Topic-var extraction + validation | vars from `Message.Channel` via the template; codec failure → `"topic_var"` report + Errors channel |
+| P3c | Multi-segment glob over-match dropped | `"sensors/*/data"` delivery on `"sensors/a/b/data"` silently dropped (template re-match) |
 | P4 | Subscription closed → adapter returns | no goroutine leak, channels NOT closed by adapter (SourceAdapter contract) |
 | P5 | Publish encodes + sends | fake captures channel + payload |
 | P6 | Publish failure → OnError | PubSubError{Op:"publish"}, errors.As chain |
@@ -203,12 +222,21 @@ transport-agnostic):
    the adapter surface reconnect events (e.g. a `PubSubError{Op:"subscribe"}`
    on the Errors channel per drop) so consumers KNOW a gap happened?
    Leaning: yes — silent gaps are the worst failure mode of at-most-once.
-2. **Per-item topic vars on publish** — static `Vars` map (Phase 2 minimum,
-   mirrors the old mqtt.DrainPublish limitation) vs `varsFor func(T)
-   map[string]string` (mirrors Phase 1 `keyFn` and file adapters). Leaning:
-   `varsFor` from the start — the Phase 1 keyFn precedent settled this shape.
+   **Interface implication**: the `Subscription` sketch carries only
+   `Messages()` — surfacing gaps needs either an `Events() <-chan error`
+   channel on `Subscription` or go-redis's typed `*redis.Subscription`
+   control messages mapped in the shim. Resolve together with this decision;
+   the two-method sketch is the no-gap-visibility variant.
+2. ~~Per-item topic vars on publish~~ — **RESOLVED (review pass, 2026-07-17)**:
+   `varsFor func(T) map[string]string` as a CONSTRUCTOR argument (a generic
+   func field cannot live in the non-generic options struct — same
+   constraint that shaped Phase 1's `keyFn`). API surface updated above.
 3. **One `Commands` or two interfaces** — keep `PubSubCommands` separate
    (leaning: yes — cache-only users shouldn't fake pub/sub methods) or merge
    into a single grown interface.
 4. **Sharded pub/sub option** — add `Sharded bool` to options now (SSUBSCRIBE
    under cluster) or wait. Leaning: wait for a cluster use case.
+5. **Glob escaping ownership** — escape literal `*?[` during pattern
+   derivation in the adapter (leaning: yes, adapter-owned — templates are
+   protocol-agnostic and must not know PSUBSCRIBE syntax), or reject such
+   topics at Bind with a `PubSubError`.
