@@ -2,15 +2,12 @@ package ports_test
 
 import (
 	"context"
-	"errors"
 	"fmt"
 
 	"github.com/DaniDeer/go-codex/api/events"
 	"github.com/DaniDeer/go-codex/codex"
-	"github.com/DaniDeer/go-codex/format"
 	"github.com/DaniDeer/go-codex/ports"
 	gstream "github.com/DaniDeer/go-codex/stream"
-	"github.com/DaniDeer/go-codex/validate"
 )
 
 // ExampleNewSourcePort shows the inside-out workflow: the port declares its
@@ -102,25 +99,4 @@ func ExampleNewLatestPort() {
 	// Output:
 	// empty before first value
 	// cached: 87.3 true
-}
-
-// ExampleNewCache shows the standalone cache descriptor — build a [ports.Cache]
-// directly (no port/pipeline involved) and pass it straight to a cache
-// adapter constructor (e.g. redis.GetAdapter/SetAdapter/Seed). A declared
-// [ports.CacheKeyParam] codec-validates key variables before every key is
-// built, exactly as it would if declared via [ports.CachePattern.Opts] on a
-// port.
-func ExampleNewCache() {
-	userCache := ports.NewCache("user:{id}", format.JSON(cfgCodec),
-		ports.CacheKeyParam{Name: "id"}.WithCodec(codex.String().Refine(validate.UUID)))
-
-	key, err := userCache.BuildKey(map[string]string{"id": "f47ac10b-58cc-4372-a567-0e02b2c3d479"})
-	fmt.Println("key:", key, "err:", err)
-
-	_, err = userCache.BuildKey(map[string]string{"id": "not-a-uuid"})
-	var paramErr ports.CacheKeyParamError
-	fmt.Println("rejected invalid id:", errors.As(err, &paramErr))
-	// Output:
-	// key: user:f47ac10b-58cc-4372-a567-0e02b2c3d479 err: <nil>
-	// rejected invalid id: true
 }
