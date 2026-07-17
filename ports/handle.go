@@ -297,9 +297,10 @@ const (
 // (publish) construction — both are single-codec ports, matching EventPattern's
 // single payload type. It also handles [RESTPattern] (role-dependent: HTTP
 // ingest rest.Route[T, struct{}] on a source, SSE rest.SSERoute[struct{}, T]
-// on a sink), [FilePattern] (building a format.File[T] from the port's codec,
-// infallible), and [SQLPattern] (metadata-only, stored for [SQLMeta] /
-// [WithSQLMeta] propagation).
+// on a sink), [FilePattern] (building a format.File[T] from the port's codec
+// — infallible on the enum-only path; a declared CustomFormat type mismatch
+// returns [PatternRegisterError]), and [SQLPattern] (metadata-only, stored
+// for [SQLMeta] / [WithSQLMeta] propagation).
 //
 // eventBuilder/restBuilder are used when non-nil (giving the handle full
 // parity with a hand-registered channel/route: security schemes, global
@@ -429,8 +430,9 @@ func buildEventPatternHandles[T any](
 // each found via Register — the SAME call a hand-declared route/tool makes.
 // Used by [IOPort] (client call) and [ToolPort] (server pipeline) construction
 // — both are dual-codec ports. It also handles [FilePattern] (building a
-// format.File[Resp] from the port's RESPONSE codec, infallible) and
-// [SQLPattern] (metadata-only).
+// format.File[Resp] from the port's RESPONSE codec — infallible on the
+// enum-only path; a declared CustomFormat type mismatch returns
+// [PatternRegisterError]) and [SQLPattern] (metadata-only).
 //
 // restBuilder/reqReplyBuilder/mcpBuilder are used when non-nil (full parity
 // with a hand-registered route/tool); when nil, a private, single-use Builder

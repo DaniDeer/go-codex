@@ -1,6 +1,18 @@
-# go-codex Review History (R1–R60)
+# go-codex Review History (R1–R61)
 
 Do not re-report any of these findings. They have been implemented and tested.
+
+---
+
+## Round 61 (custom-format consistency audit across all 8 `ports.Pattern` types — docs/comments only, zero behavior change)
+
+- **G1 — `Pattern` interface accessor list stale**: `ports/pattern.go`'s top-level doc was missing `[CacheHandle]`/`[SocketHandle]` from its accessor list (already correct in `ports/doc.go`, missed when those two were added). Fixed; also added a new "Custom wire formats" section explaining the two mechanisms (`CustomFormat` field vs. inline `RouteOpt`/`ChannelOpt`) and which patterns use which.
+- **G2/G3 — stale "infallible" claims for `FilePattern` building**: `buildEventPatternHandles` and `buildDualCodecPatternHandles` doc comments in `ports/handle.go` both still called `FilePattern`'s `format.File` construction "infallible" — false since `CustomFormat` (R59) can fail a type assertion. Both updated to "infallible on the enum-only path; a CustomFormat type mismatch returns PatternRegisterError."
+- **G4 — `PatternRegisterError` doc incomplete**: the `Kind` field godoc enumerated only `"rest"/"event"/"reqreply"/"mcp"`, missing `"file"/"cache"/"socket"` (added by R59/R60); the type-level "wraps rest/events/reqreply/mcp" sentence also didn't mention `CustomFormat` mismatches or port-type rejection errors. Both updated. Instructions file's parallel sentence synced too.
+- **G5 — `MCPPattern`/`SQLPattern` silent on format**: of the 8 patterns, only these two said nothing about wire-format customization, with no explanation why. Added one clarifying sentence each (MCP: protocol-structured, no wire-format layer; SQL: driver-native rows, never encoded through `format.Format[T]`).
+- **G6 — no unifying format-mechanism note**: added a paragraph to the `Pattern` interface doc (see G1) cross-referencing all three format stories (CustomFormat / inline RouteOpt-ChannelOpt / no format at all) in one place.
+- **G7 — `SocketPattern.Opts` misuse trap undocumented**: `rest.RequestFormats`/`rest.Formats` silently fail their type assertion if placed in `SocketPattern.Opts` (the upgrade route's Req/Resp are always `struct{}` internally) — added a warning pointing to `Format`/`CustomFormat` instead.
+- **G8 — review-skill checklist doc drift**: `references/checklist.md` §5 "Format API Parity" predated R59 (`CustomFormat`) and R60 (format `RouteOpt`/`ChannelOpt` constructors) — added two rows.
 
 ---
 

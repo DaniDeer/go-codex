@@ -31,9 +31,30 @@ import (
 // port builds its own handle from the Pattern at construction time via
 // Route/Channel/Tool.Register (against the matching [PortOptions] builder
 // field, or a private single-use builder when nil), retrievable with
-// [RESTHandle], [EventHandle], [ReqReplyHandle], [MCPHandle], and
-// [FileHandle]. [SQLPattern] builds no handle — its metadata is retrievable
-// with [SQLMeta] and propagated to adapters via [WithSQLMeta].
+// [RESTHandle], [EventHandle], [ReqReplyHandle], [MCPHandle], [FileHandle],
+// [CacheHandle], and [SocketHandle]. [SQLPattern] builds no handle — its
+// metadata is retrievable with [SQLMeta] and propagated to adapters via
+// [WithSQLMeta].
+//
+// # Custom wire formats
+//
+// Two mechanisms cover binary/custom formats, depending on which pattern:
+//
+//   - [FilePattern], [CachePattern], [SocketPattern] carry a `CustomFormat any`
+//     field — a pre-built format.Format[T] value, since these patterns bake
+//     the format into a single handle at construction time. See
+//     [FilePattern.CustomFormat].
+//   - [RESTPattern], [EventPattern], [ReqReplyPattern] need no such field:
+//     their built handles already support content negotiation across
+//     multiple formats. Declare formats inline via [rest.RequestFormats]/
+//     [rest.Formats], [events.Formats]/[events.SubscribeFormats]/
+//     [events.PublishFormats], or [reqreply.RequestFormats]/[reqreply.Formats]
+//     — these implement [rest.RouteOpt]/[events.ChannelOpt]/[reqreply.RouteOpt]
+//     and slot directly into the pattern's Opts field.
+//   - [MCPPattern] and [SQLPattern] have no format story at all: MCP tool
+//     arguments/results are always structured (protocol-level, not a wire
+//     format go-codex controls); SQL rows are driver-native Go values, never
+//     wire bytes.
 type Pattern interface{ isPortPattern() }
 
 // RESTPattern declares an HTTP-shaped communication pattern for a port bound
@@ -125,6 +146,11 @@ func (ReqReplyPattern) isPortPattern() {}
 // the mcpgo adapter. Name mirrors [apimcp.NewTool]'s first argument; Opts
 // accepts the same option vocabulary ([apimcp.ToolMeta]).
 //
+// MCPPattern has no wire-format concept (no Format/CustomFormat field, no
+// RouteOpt-style format constructor): MCP tool arguments and results are
+// always structured JSON-shaped values handled by the MCP protocol itself —
+// there is no binary/content-negotiation layer for go-codex to configure.
+//
 //	ports.MCPPattern{
 //	    Name: "compute-add",
 //	    Opts: []apimcp.ToolOpt{apimcp.ToolMeta{Description: "Adds two numbers"}},
@@ -204,6 +230,11 @@ func (FilePattern) isPortPattern() {}
 // adapter via context ([WithSQLMeta] / [SQLMetaFromContext]); the sql
 // adapters default their options' Table/Op fields from it when the explicit
 // fields are empty. Retrieve the declared metadata with [SQLMeta].
+//
+// SQLPattern has no wire-format concept either: SQL rows are driver-native
+// Go values produced by sqlc-generated scan code, never encoded/decoded
+// through a format.Format[T] — there is nothing for Format/CustomFormat to
+// select.
 //
 //	ports.SQLPattern{Table: "readings", Op: "insert_reading"}
 type SQLPattern struct {
@@ -297,6 +328,12 @@ type SocketPattern struct {
 	CustomFormat any
 	// Opts carries the same variadic options [rest.NewRoute] accepts,
 	// validated once per connection at upgrade time.
+	//
+	// [rest.RequestFormats]/[rest.Formats] do NOT configure frame formats
+	// here — the upgrade route's request/response types are always
+	// struct{} internally, so those options will fail their type assertion
+	// with [rest.FormatOptError] if placed in this slice. Use Format or
+	// CustomFormat above to declare frame formats.
 	Opts []rest.RouteOpt
 }
 

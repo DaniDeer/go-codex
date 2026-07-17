@@ -129,6 +129,8 @@ Deviation from this pattern = trivial finding.
 | `Format` struct godoc | Must list `Binary` alongside JSON, YAML, TOML, Gob: "Use JSON, YAML, TOML, Gob, or Binary to construct one" |
 | Binary file format constraints | `validate.PNG`, `validate.JPEG`, `validate.GIF`, `validate.WebP`, `validate.PDF`, `validate.ZIP` — predefined `Constraint[[]byte]` values, no Schema annotation, produce `ConstraintError` |
 | `validate.HasPrefix(prefix []byte)` | General magic-byte check; prefer built-in constants for known formats; use HasPrefix for custom/proprietary formats |
+| `ports.FilePattern`/`CachePattern`/`SocketPattern` `CustomFormat any` | Pre-built `format.Format[T]` escape hatch for binary/custom formats — overrides `Format` enum when non-nil; type-asserted at build time via `resolveFormat`; mismatch → `PatternRegisterError` |
+| `rest.RequestFormats[Req]`/`Formats[Resp]`, `events.Formats[T]`/`SubscribeFormats[T]`/`PublishFormats[T]`, `reqreply.RequestFormats[Req]`/`Formats[Resp]` | Inline `RouteOpt`/`ChannelOpt` constructors — the `RESTPattern`/`EventPattern`/`ReqReplyPattern` equivalent of `CustomFormat` (these 3 patterns need no struct field since their handles already support format negotiation); mismatch → package-local `FormatOptError` |
 
 ---
 

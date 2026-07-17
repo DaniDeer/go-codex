@@ -28,16 +28,23 @@ func (e MissingPatternError) LogValue() slog.Value {
 }
 
 // PatternRegisterError is returned by a port constructor when building a
-// handle from a declared [Pattern] fails — e.g. a [RESTPattern.Opts] entry
-// names a path variable that is not a {varName} placeholder in Path, or the
-// equivalent for [EventPattern]/[ReqReplyPattern]/[MCPPattern]. Wraps the
-// underlying rest/events/reqreply/mcp error.
+// handle from a declared [Pattern] fails. Common causes: a [RESTPattern.Opts]
+// entry names a path variable that is not a {varName} placeholder in Path
+// (or the equivalent for [EventPattern]/[ReqReplyPattern]/[MCPPattern]); a
+// declared CustomFormat on [FilePattern]/[CachePattern]/[SocketPattern] holds
+// the wrong format.Format[T] type; or a pattern is declared on a port type
+// that doesn't support it (e.g. [CachePattern] on a [SourcePort],
+// [SocketPattern] on an [IOPort]). Wraps the underlying error — from
+// rest/events/reqreply/mcp package Register calls, a format type-mismatch
+// (rest/events/reqreply's FormatOptError), or a plain descriptive error for
+// port-type rejections.
 type PatternRegisterError struct {
 	// Port is the name passed to the port constructor.
 	Port string
-	// Kind identifies the pattern kind that failed to build: "rest", "event", "reqreply", or "mcp".
+	// Kind identifies the pattern kind that failed to build: "rest", "event",
+	// "reqreply", "mcp", "file", "cache", or "socket".
 	Kind string
-	// Err is the underlying error from the rest/events/reqreply/mcp package.
+	// Err is the underlying error.
 	Err error
 }
 
