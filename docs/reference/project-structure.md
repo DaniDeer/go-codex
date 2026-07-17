@@ -268,6 +268,7 @@ go-codex/
     ├── http-trace-span-propagation/ # TraceObserver with OTel: parent span from traceparent header
     ├── redis-cache/                 # typed cache boundary: CachePattern + GetAdapter/SetAdapter/Seed against an in-memory Commands fake (no live Redis)
     ├── websocket-duplex/            # DuplexPort over a real loopback WebSocket: typed commands in, targeted replies out, app-supervised Feed, observer via app.Options.Observer (upgrade/frame/validation metrics)
+    ├── pattern-custom-format/       # ports.Pattern CustomFormat escape hatch: FilePattern+format.Binary (raw PNG) and CachePattern+format.Gob (typed binary cache entry)
     ├── websocket-client/            # client-side DialDuplexAdapter: two go-codex processes over one WS connection, reconnect gap semantics, RegisterSocket AsyncAPI spec
     ├── stream-pipeline/             # stream operator showcase: From, Apply, CombineLatest2, Tee, Merge, FlatMapSlice, Buffer, Window, Debounce, Throttle, MapErr, Switch, GroupBy, Topology YAML
     ├── stream-oee/                  # forge + stream integration: governed OEE (Availability×Performance×Quality) from machine events; Window→Apply(computeOEEFromWindow)→Filter→Drain; governance + topology YAML

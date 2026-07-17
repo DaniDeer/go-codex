@@ -1,8 +1,17 @@
-# go-codex Review History (R1–R58)
+# go-codex Review History (R1–R59)
 
 Do not re-report any of these findings. They have been implemented and tested.
 
 ---
+
+## Round 59 (`ports.Pattern` `CustomFormat` escape hatch — `FilePattern`/`CachePattern`/`SocketPattern`)
+
+- **No dedicated `FileFormatGob` enum value BY DESIGN** — J/Y/T share one construction shape (`map[string]any` intermediate via codec Encode/Decode); Gob is `NewTyped`-style (direct typed value, no intermediate) and architecturally does not belong in that closed enum. `CustomFormat` is the one path for Gob and every future binary/custom format (protobuf, msgpack, CBOR) — do not propose growing `FileFormatKind` for new binary formats.
+- **`CustomFormat` stores a pre-built `format.Format[T]` value, NOT a factory closure.** The caller already has the concrete codec at `Pattern`-declaration time (same codec passed to the port constructor moments earlier) — nothing to defer. Do not suggest `func(codex.Codec[T]) format.Format[T]`.
+- **`fileFormatFor` intentionally became fallible** (new `resolveFormat` wrapper returns `(format.Format[T], error)`) — a `CustomFormat` type mismatch returns `PatternRegisterError`; the enum-only path remains infallible. This is correct, not a regression of the "construction is infallible" claim (that claim now only covers the enum-only path).
+- **`SocketPattern.CustomFormat`'s unused `struct{}` side is EXEMPT from the type assertion** — a one-directional port (`SourcePort`→`Socket[T,struct{}]`, `SinkPort`→`Socket[struct{},T]`) builds BOTH `InFormat` and `OutFormat` internally; asserting a real-type `CustomFormat` against the unused `struct{}` side would wrongly fail. `resolveFormat` checks `any(*new(T)).(struct{})` and skips the assertion when T is `struct{}`, silently defaulting to JSON (never used functionally). Do not flag this as inconsistent — it's the fix for a real bug caught during test-writing.
+- **Precedence: `CustomFormat` wins when non-nil, `Format` is silently ignored** — no error when both are set (documented, since `Format`'s zero value is `FileFormatJSON` and would almost always be "set" incidentally alongside `CustomFormat`).
+- Asymmetric `SocketPattern` formats (different `CustomFormat` for In vs Out on a `DuplexPort`) remain DEFERRED (no `CustomInFormat`/`CustomOutFormat` split) — no use case yet, recorded in the roadmap doc.
 
 ## Round 58 (websocket Phase 2 — client-side dial adapters, chi socket variants, `ports.RegisterSocket` AsyncAPI)
 

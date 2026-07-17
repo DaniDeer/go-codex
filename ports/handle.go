@@ -180,12 +180,20 @@ func buildSocket[In, Out any](
 	if err != nil {
 		return Socket[In, Out]{}, PatternRegisterError{Port: portName, Kind: patternKindSocket, Err: err}
 	}
+	inFmt, err := resolveFormat(portName, patternKindSocket, pat.Format, pat.CustomFormat, inCodec)
+	if err != nil {
+		return Socket[In, Out]{}, err
+	}
+	outFmt, err := resolveFormat(portName, patternKindSocket, pat.Format, pat.CustomFormat, outCodec)
+	if err != nil {
+		return Socket[In, Out]{}, err
+	}
 	return Socket[In, Out]{
 		Path:         pat.Path,
 		Subprotocols: pat.Subprotocols,
 		Route:        handle,
-		InFormat:     fileFormatFor(pat.Format, inCodec),
-		OutFormat:    fileFormatFor(pat.Format, outCodec),
+		InFormat:     inFmt,
+		OutFormat:    outFmt,
 	}, nil
 }
 
@@ -247,6 +255,30 @@ func fileFormatFor[T any](kind FileFormatKind, codec codex.Codec[T]) format.Form
 	default:
 		return format.JSON(codec)
 	}
+}
+
+// resolveFormat is the CustomFormat-aware counterpart of fileFormatFor,
+// used by [FilePattern], [CachePattern], and [SocketPattern] builds.
+// customFormat, when non-nil, must hold a format.Format[T] value matching
+// T — a mismatch returns [PatternRegisterError]. The struct{} side of a
+// one-directional [SocketPattern] (Socket[T,struct{}]/Socket[struct{},T])
+// is exempt: customFormat is never asserted against T == struct{}, since
+// that side carries no real frames — it always gets the JSON default,
+// which is built but never used.
+func resolveFormat[T any](portName, kind string, fileKind FileFormatKind, customFormat any, codec codex.Codec[T]) (format.Format[T], error) {
+	if customFormat != nil {
+		if _, isUnused := any(*new(T)).(struct{}); !isUnused {
+			f, ok := customFormat.(format.Format[T])
+			if !ok {
+				return format.Format[T]{}, PatternRegisterError{
+					Port: portName, Kind: kind,
+					Err: fmt.Errorf("CustomFormat: want format.Format[%T], got %T", *new(T), customFormat),
+				}
+			}
+			return f, nil
+		}
+	}
+	return fileFormatFor(fileKind, codec), nil
 }
 
 // portRole distinguishes which single-codec port type a pattern is built for
@@ -340,8 +372,11 @@ func buildEventPatternHandles[T any](
 			handles[patternKindEvent] = handle
 			specs[patternKindEvent] = channel
 		case FilePattern:
-			// format.NewFile is infallible — spec-capture only.
-			f := format.NewFile(pat.Path, fileFormatFor(pat.Format, codec), pat.Opts...)
+			fFmt, err := resolveFormat(portName, patternKindFile, pat.Format, pat.CustomFormat, codec)
+			if err != nil {
+				return nil, nil, err
+			}
+			f := format.NewFile(pat.Path, fFmt, pat.Opts...)
 			handles[patternKindFile] = f
 			specs[patternKindFile] = f
 		case SQLPattern:
@@ -358,7 +393,11 @@ func buildEventPatternHandles[T any](
 				}
 			}
 			// Write-through sink: the cached value is the port's payload.
-			c := Cache[T]{Key: pat.Key, TTL: pat.TTL, Format: fileFormatFor(pat.Format, codec)}
+			cFmt, err := resolveFormat(portName, patternKindCache, pat.Format, pat.CustomFormat, codec)
+			if err != nil {
+				return nil, nil, err
+			}
+			c := Cache[T]{Key: pat.Key, TTL: pat.TTL, Format: cFmt}
 			handles[patternKindCache] = c
 			specs[patternKindCache] = pat
 		case SocketPattern:
@@ -454,8 +493,12 @@ func buildDualCodecPatternHandles[Req, Resp any](
 			specs[patternKindMCP] = tool
 		case FilePattern:
 			// The file's content is the port's RESPONSE type — a per-item
-			// retrieval reads a format.File[Resp]. format.NewFile is infallible.
-			f := format.NewFile(pat.Path, fileFormatFor(pat.Format, respCodec), pat.Opts...)
+			// retrieval reads a format.File[Resp].
+			fFmt, err := resolveFormat(portName, patternKindFile, pat.Format, pat.CustomFormat, respCodec)
+			if err != nil {
+				return nil, nil, err
+			}
+			f := format.NewFile(pat.Path, fFmt, pat.Opts...)
 			handles[patternKindFile] = f
 			specs[patternKindFile] = f
 		case SQLPattern:
@@ -472,7 +515,11 @@ func buildDualCodecPatternHandles[Req, Resp any](
 				}
 			}
 			// The cached value is the port's RESPONSE type — mirrors FilePattern.
-			c := Cache[Resp]{Key: pat.Key, TTL: pat.TTL, Format: fileFormatFor(pat.Format, respCodec)}
+			cFmt, err := resolveFormat(portName, patternKindCache, pat.Format, pat.CustomFormat, respCodec)
+			if err != nil {
+				return nil, nil, err
+			}
+			c := Cache[Resp]{Key: pat.Key, TTL: pat.TTL, Format: cFmt}
 			handles[patternKindCache] = c
 			specs[patternKindCache] = pat
 		case SocketPattern:

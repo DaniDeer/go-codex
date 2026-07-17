@@ -312,10 +312,10 @@ written by hand: the port makes that call **internally**.
 | `EventPattern{Topic, Opts}` | pub/sub (mqtt, mqtt5, zeromq) | `events.ChannelOpt` |
 | `ReqReplyPattern{Topic, Opts}` | request/reply (mqtt5, zeromq) | `reqreply.RouteOpt` |
 | `MCPPattern{Name, Opts}` | MCP tool (mcpgo) | `apimcp.ToolOpt` |
-| `FilePattern{Path, Format, Opts}` | typed files (file) | `format.FileOpt` |
+| `FilePattern{Path, Format, CustomFormat, Opts}` | typed files (file) | `format.FileOpt` |
 | `SQLPattern{Table, Op}` | SQL (sql) | — (metadata-only) |
-| `CachePattern{Key, TTL, Format}` | key/value cache (redis) | — (key template + TTL) |
-| `SocketPattern{Path, Subprotocols, Format, Opts}` | duplex socket (websocket) | `rest.RouteOpt` (upgrade-time) |
+| `CachePattern{Key, TTL, Format, CustomFormat}` | key/value cache (redis) | — (key template + TTL) |
+| `SocketPattern{Path, Subprotocols, Format, CustomFormat, Opts}` | duplex socket (websocket) | `rest.RouteOpt` (upgrade-time) |
 
 A port declares one `Pattern` entry **per protocol family** it will be bound to — a
 `ToolPort` exposed over HTTP + MQTT 5 + MCP simultaneously (as in the `OEETool`
@@ -420,8 +420,31 @@ spec, _ := b.OpenAPISpec()
 template, wire format, and path-param codecs live on the port; the built
 `format.File` handle comes back out via `ports.FileHandle`. `Format` is a
 `FileFormatKind` enum — `FileFormatJSON` (default), `FileFormatYAML`, or
-`FileFormatTOML` — applied to the port's own codec (a custom `format.Format[T]`
-can't sit in a non-generic struct; for those, build the `format.File` by hand).
+`FileFormatTOML` — applied to the port's own codec.
+
+For binary or custom formats the enum can't express (Gob, raw `[]byte`
+blobs like PNG/PDF, protobuf, msgpack, anything built with `format.NewTyped`/
+`format.NewStreamed`), set **`CustomFormat`** instead — a pre-built
+`format.Format[T]` value (matching the port's payload/response type),
+stored type-erased and resolved generically at build time. `CustomFormat`
+overrides `Format` entirely when non-nil:
+
+```go
+ports.FilePattern{
+    Path:         "images/{id}.png",
+    CustomFormat: format.Binary(pngCodec).WithContentType("image/png"),
+}
+ports.FilePattern{
+    Path:         "cache/{id}.bin",
+    CustomFormat: format.Gob(myStructCodec), // no map[string]any intermediate
+}
+```
+
+A type mismatch (`CustomFormat` holding the wrong `format.Format[T]`) returns
+`PatternRegisterError` at construction — the same error `SocketPattern`'s
+port-role rejection already uses. `CachePattern` and `SocketPattern` carry
+the identical `CustomFormat` field with the same precedence rule; see
+[`examples/pattern-custom-format`](https://github.com/DaniDeer/go-codex/tree/main/examples/pattern-custom-format).
 
 - On a **`SinkPort[T]`** the handle is a `format.File[T]` of the payload type —
   pairs with `file.DrainWriteFileAdapter`.
@@ -450,8 +473,10 @@ domain.Calibration.Bind(ctx, file.ReadAdapter(calibFile,
 ```
 
 There is no `RegisterFile` — files have no spec document concept
-(`File.PathParamSchemas()` already serves doc tooling), and `format.NewFile` is
-infallible, so a `FilePattern` never causes the port constructor to error.
+(`File.PathParamSchemas()` already serves doc tooling). `format.NewFile`
+itself is infallible, but a `FilePattern` CAN now cause the port constructor
+to error — a `CustomFormat` type mismatch returns `PatternRegisterError`
+(the enum-only path — no `CustomFormat` — remains infallible).
 
 ### `SQLPattern` — metadata-only, by design
 

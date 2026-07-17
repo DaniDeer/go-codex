@@ -46,6 +46,7 @@ var Live = codex.Must(ports.NewDuplexPort[Command, Update]("live",
 | `Path` | HTTP upgrade path template (`{var}` placeholders, validated once per connection through the rest machinery) |
 | `Subprotocols` | Acceptable `Sec-WebSocket-Protocol` values (empty = any) |
 | `Format` | Frame wire format from the port's codec: JSON (default), YAML, TOML |
+| `CustomFormat` | Escape hatch for binary/custom frame formats (Gob, protobuf, …) — a pre-built `format.Format[T]`, overrides `Format` when non-nil. Applies to whichever side(s) carry the real payload type; the unused `struct{}` side of a one-directional port is unaffected. See [`ports.FilePattern.CustomFormat`](ports.md#filepattern--typed-files-as-sink-or-intermediate-io) for the full contract |
 | `Opts` | `rest.RouteOpt` entries — `PathParam{...}.WithCodec(...)` etc., upgrade-time |
 
 Port-type acceptance: `SourcePort` (inbound-only), `SinkPort`

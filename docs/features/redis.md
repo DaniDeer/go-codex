@@ -36,6 +36,7 @@ cache, _ := ports.CacheHandle[User](UserCache) // ports.Cache[User]
 | `Key` | Key template with `{var}` placeholders, expanded per item via `Cache.BuildKey` (missing var → `ports.CacheKeyError`) |
 | `TTL` | Default time-to-live on writes; zero = no expiry; overridable per adapter via `SetAdapterOptions.TTL` |
 | `Format` | Value wire format applied to the port's codec: JSON (default), YAML, TOML — same enum as `FilePattern` |
+| `CustomFormat` | Escape hatch for binary/custom formats (Gob, protobuf, …) — a pre-built `format.Format[T]`, overrides `Format` when non-nil. See [`ports.FilePattern.CustomFormat`](ports.md#filepattern--typed-files-as-sink-or-intermediate-io) |
 
 Port-type acceptance (wrong combinations fail at construction with
 `PatternRegisterError`):

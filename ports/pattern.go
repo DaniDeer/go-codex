@@ -155,9 +155,8 @@ const (
 // FilePattern declares a typed-file-shaped pattern for a port bound to the
 // file adapter. Path and Opts mirror [format.NewFile]'s first and third
 // arguments; the [format.Format] argument is derived from the port's codec
-// and the Format kind ([format.JSON] of the codec by default). For a custom
-// Format beyond JSON/YAML/TOML, fall back to handle-first wiring
-// ([format.NewFile] by hand).
+// and the Format kind ([format.JSON] of the codec by default), or from
+// CustomFormat when set (see below).
 //
 // On a [SinkPort], the built handle is a format.File of the port's payload
 // type — pairs with file.DrainWriteFileAdapter. On an [IOPort], the built
@@ -174,8 +173,21 @@ const (
 type FilePattern struct {
 	// Path is the file path template (e.g. "data/{sensorID}/calibration.json").
 	Path string
-	// Format selects JSON (default), YAML, or TOML.
+	// Format selects JSON (default), YAML, or TOML. Ignored when
+	// CustomFormat is non-nil.
 	Format FileFormatKind
+	// CustomFormat, when non-nil, overrides Format entirely: it must hold a
+	// format.Format[T] value matching the port's payload/response type T
+	// (a type mismatch returns [PatternRegisterError] at construction).
+	// This is the escape hatch for binary and custom formats FileFormatKind
+	// cannot express — [format.Gob], [format.Binary] (PNG, PDF, any opaque
+	// blob), or any [format.NewTyped]/[format.NewStreamed] format:
+	//
+	//	ports.FilePattern{
+	//	    Path: "images/{id}.png",
+	//	    CustomFormat: format.Binary(pngCodec).WithContentType("image/png"),
+	//	}
+	CustomFormat any
 	// Opts carries the same variadic options [format.NewFile] accepts.
 	Opts []format.FileOpt
 }
@@ -236,8 +248,13 @@ type CachePattern struct {
 	// Format selects the value wire format applied to the port's codec:
 	// JSON (default), YAML, or TOML. Same enum and same reasoning as
 	// [FilePattern.Format] — a generic format.Format cannot live in the
-	// non-generic Pattern struct.
+	// non-generic Pattern struct. Ignored when CustomFormat is non-nil.
 	Format FileFormatKind
+	// CustomFormat, when non-nil, overrides Format entirely — the escape
+	// hatch for binary/custom formats (see [FilePattern.CustomFormat] for
+	// the full contract: type must match the port's value type, mismatch
+	// returns [PatternRegisterError]).
+	CustomFormat any
 }
 
 func (CachePattern) isPortPattern() {}
@@ -269,7 +286,15 @@ type SocketPattern struct {
 	Subprotocols []string
 	// Format selects the frame wire format applied to the port's codec(s):
 	// JSON (default), YAML, or TOML — same enum as [FilePattern.Format].
+	// Ignored when CustomFormat is non-nil.
 	Format FileFormatKind
+	// CustomFormat, when non-nil, overrides Format entirely — the escape
+	// hatch for binary/custom frame formats (see [FilePattern.CustomFormat]
+	// for the full contract). Applies to whichever side(s) carry the port's
+	// real payload type; the unused struct{} side of a one-directional
+	// port (SourcePort/SinkPort) is unaffected — CustomFormat is only
+	// asserted against non-struct{} types.
+	CustomFormat any
 	// Opts carries the same variadic options [rest.NewRoute] accepts,
 	// validated once per connection at upgrade time.
 	Opts []rest.RouteOpt

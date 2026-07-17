@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"os"
 	"strings"
 	"sync"
 	"testing"
@@ -20,6 +21,7 @@ import (
 	"github.com/DaniDeer/go-codex/route"
 	"github.com/DaniDeer/go-codex/stats"
 	gstream "github.com/DaniDeer/go-codex/stream"
+	"github.com/DaniDeer/go-codex/validate"
 )
 
 // ── shared helpers ────────────────────────────────────────────────────────────
@@ -2026,5 +2028,249 @@ func TestRegisterSocket_MissingPattern(t *testing.T) {
 	var mpe ports.MissingPatternError
 	if err := ports.RegisterSocket[int, string](b, port); !errors.As(err, &mpe) || mpe.Kind != "socket" {
 		t.Errorf("want MissingPatternError{socket}, got %v", err)
+	}
+}
+
+// ── CustomFormat escape hatch ──────────────────────────────────────────────────
+
+// CF1: FilePattern + CustomFormat(Gob) on an IOPort round-trips via the
+// response codec.
+func TestFilePattern_CustomFormat_Gob(t *testing.T) {
+	dir := t.TempDir()
+	p, err := ports.NewIOPort[int, cfgItem]("file-gob", intCodec, cfgCodec, ports.PortOptions{
+		Patterns: []ports.Pattern{
+			ports.FilePattern{Path: dir + "/item.gob", CustomFormat: format.Gob(cfgCodec)},
+		},
+	})
+	if err != nil {
+		t.Fatalf("construct port: %v", err)
+	}
+	f, ok := ports.FileHandle[cfgItem](p)
+	if !ok {
+		t.Fatal("want FileHandle to be present")
+	}
+	if err := f.Write(nil, cfgItem{V: 42}, format.FileOptions{}); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	got, err := f.Read(nil, format.FileOptions{})
+	if err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	if got.V != 42 {
+		t.Errorf("want V=42, got %d", got.V)
+	}
+}
+
+// CF2: FilePattern + CustomFormat(Binary) on a SinkPort passes raw bytes
+// through unchanged and enforces the PNG constraint.
+func TestFilePattern_CustomFormat_BinaryPNG(t *testing.T) {
+	dir := t.TempDir()
+	pngCodec := codex.Bytes().Refine(validate.PNG)
+	p, err := ports.NewSinkPort[[]byte]("file-png", pngCodec, ports.PortOptions{
+		Patterns: []ports.Pattern{
+			ports.FilePattern{Path: dir + "/img.png",
+				CustomFormat: format.Binary(pngCodec).WithContentType("image/png")},
+		},
+	})
+	if err != nil {
+		t.Fatalf("construct port: %v", err)
+	}
+	f, ok := ports.FileHandle[[]byte](p)
+	if !ok {
+		t.Fatal("want FileHandle to be present")
+	}
+	pngSig := []byte{0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 0x00}
+	if err := f.Write(nil, pngSig, format.FileOptions{}); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	got, err := f.Read(nil, format.FileOptions{})
+	if err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	if string(got) != string(pngSig) {
+		t.Errorf("bytes not preserved: %v", got)
+	}
+	// Non-PNG bytes rejected by the constraint on write.
+	if err := f.Write(nil, []byte("not a png"), format.FileOptions{}); err == nil {
+		t.Error("want PNG constraint to reject non-PNG bytes")
+	}
+}
+
+// CF3: CachePattern + CustomFormat(Gob) round-trips through the cache handle.
+func TestCachePattern_CustomFormat_Gob(t *testing.T) {
+	p, err := ports.NewIOPort[int, cfgItem]("cache-gob", intCodec, cfgCodec, ports.PortOptions{
+		Patterns: []ports.Pattern{
+			ports.CachePattern{Key: "item:{id}", CustomFormat: format.Gob(cfgCodec)},
+		},
+	})
+	if err != nil {
+		t.Fatalf("construct port: %v", err)
+	}
+	c, ok := ports.CacheHandle[cfgItem](p)
+	if !ok {
+		t.Fatal("want CacheHandle to be present")
+	}
+	data, err := c.Format.Marshal(cfgItem{V: 9})
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	got, err := c.Format.Unmarshal(data)
+	if err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if got.V != 9 {
+		t.Errorf("want V=9, got %d", got.V)
+	}
+}
+
+// CF4: SocketPattern + CustomFormat(Gob) applies to both directions on a
+// DuplexPort (same type both sides in this test — asymmetric is Phase 2).
+func TestSocketPattern_CustomFormat_Gob(t *testing.T) {
+	p, err := ports.NewDuplexPort[cfgItem, cfgItem]("socket-gob", cfgCodec, cfgCodec, ports.PortOptions{
+		Patterns: []ports.Pattern{
+			ports.SocketPattern{Path: "/live", CustomFormat: format.Gob(cfgCodec)},
+		},
+	})
+	if err != nil {
+		t.Fatalf("construct port: %v", err)
+	}
+	h, ok := ports.SocketHandle[cfgItem, cfgItem](p)
+	if !ok {
+		t.Fatal("want SocketHandle to be present")
+	}
+	data, err := h.InFormat.Marshal(cfgItem{V: 3})
+	if err != nil {
+		t.Fatalf("marshal in: %v", err)
+	}
+	if _, err := h.InFormat.Unmarshal(data); err != nil {
+		t.Fatalf("unmarshal in: %v", err)
+	}
+	data, err = h.OutFormat.Marshal(cfgItem{V: 5})
+	if err != nil {
+		t.Fatalf("marshal out: %v", err)
+	}
+	if _, err := h.OutFormat.Unmarshal(data); err != nil {
+		t.Fatalf("unmarshal out: %v", err)
+	}
+}
+
+// CF4b: SocketPattern + CustomFormat on a one-directional port (SourcePort)
+// must NOT fail when trying to build the unused struct{} side.
+func TestSocketPattern_CustomFormat_OneDirectional(t *testing.T) {
+	p, err := ports.NewSourcePort[cfgItem]("socket-gob-src", cfgCodec, ports.PortOptions{
+		Patterns: []ports.Pattern{
+			ports.SocketPattern{Path: "/in", CustomFormat: format.Gob(cfgCodec)},
+		},
+	})
+	if err != nil {
+		t.Fatalf("construct port: %v", err)
+	}
+	h, ok := ports.SocketHandle[cfgItem, struct{}](p)
+	if !ok {
+		t.Fatal("want SocketHandle to be present")
+	}
+	data, err := h.InFormat.Marshal(cfgItem{V: 11})
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	got, err := h.InFormat.Unmarshal(data)
+	if err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if got.V != 11 {
+		t.Errorf("want V=11, got %d", got.V)
+	}
+}
+
+// CF5: type mismatch returns PatternRegisterError with errors.As + LogValue.
+func TestCustomFormat_TypeMismatch(t *testing.T) {
+	_, err := ports.NewIOPort[int, cfgItem]("cf-mismatch", intCodec, cfgCodec, ports.PortOptions{
+		Patterns: []ports.Pattern{
+			ports.FilePattern{Path: "item.bin", CustomFormat: format.Gob(intCodec)}, // wrong type: Format[int] not Format[cfgItem]
+		},
+	})
+	var pre ports.PatternRegisterError
+	if !errors.As(err, &pre) || pre.Kind != "file" {
+		t.Fatalf("want PatternRegisterError{file}, got %v", err)
+	}
+	v := pre.LogValue()
+	if v.Kind() != slog.KindGroup {
+		t.Fatalf("want KindGroup, got %v", v.Kind())
+	}
+	keys := map[string]bool{}
+	for _, a := range v.Group() {
+		keys[a.Key] = true
+	}
+	for _, want := range []string{"port", "kind", "err"} {
+		if !keys[want] {
+			t.Errorf("missing LogValue key %q", want)
+		}
+	}
+}
+
+// CF6: CustomFormat nil, Format set — unchanged existing behavior (regression).
+func TestCustomFormat_Nil_RegressionGuard(t *testing.T) {
+	dir := t.TempDir()
+	p, err := ports.NewSinkPort[cfgItem]("cf-nil", cfgCodec, ports.PortOptions{
+		Patterns: []ports.Pattern{
+			ports.FilePattern{Path: dir + "/item.yaml", Format: ports.FileFormatYAML},
+		},
+	})
+	if err != nil {
+		t.Fatalf("construct port: %v", err)
+	}
+	f, ok := ports.FileHandle[cfgItem](p)
+	if !ok {
+		t.Fatal("want FileHandle to be present")
+	}
+	if err := f.Write(nil, cfgItem{V: 1}, format.FileOptions{}); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	got, err := f.Read(nil, format.FileOptions{})
+	if err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	if got.V != 1 {
+		t.Errorf("want V=1, got %d", got.V)
+	}
+}
+
+// CF7: CustomFormat non-nil AND Format also set — CustomFormat wins.
+func TestCustomFormat_PrecedenceOverFormat(t *testing.T) {
+	dir := t.TempDir()
+	p, err := ports.NewSinkPort[cfgItem]("cf-precedence", cfgCodec, ports.PortOptions{
+		Patterns: []ports.Pattern{
+			ports.FilePattern{
+				Path:         dir + "/item.gob",
+				Format:       ports.FileFormatYAML, // would produce YAML text if honored
+				CustomFormat: format.Gob(cfgCodec), // must win — binary Gob instead
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("construct port: %v", err)
+	}
+	f, ok := ports.FileHandle[cfgItem](p)
+	if !ok {
+		t.Fatal("want FileHandle to be present")
+	}
+	if err := f.Write(nil, cfgItem{V: 77}, format.FileOptions{}); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	raw, err := os.ReadFile(dir + "/item.gob")
+	if err != nil {
+		t.Fatalf("read raw file: %v", err)
+	}
+	// Gob output is not valid YAML/UTF-8 text starting with "v:" — a cheap
+	// but effective way to confirm CustomFormat (not Format) was used.
+	if strings.HasPrefix(string(raw), "v:") {
+		t.Error("want binary Gob output, got what looks like YAML — CustomFormat did not win")
+	}
+	got, err := f.Read(nil, format.FileOptions{})
+	if err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	if got.V != 77 {
+		t.Errorf("want V=77, got %d", got.V)
 	}
 }

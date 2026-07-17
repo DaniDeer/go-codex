@@ -308,10 +308,25 @@ be `.Register()`ed with a builder and threaded into the adapter constructor by h
 | `ports.EventPattern{Topic, Opts}` | pub/sub (mqtt, mqtt5, zeromq) |
 | `ports.ReqReplyPattern{Topic, Opts}` | request/reply (mqtt5, zeromq) |
 | `ports.MCPPattern{Name, Opts}` | MCP tool (mcpgo) |
-| `ports.FilePattern{Path, Format, Opts}` | typed files (file) |
+| `ports.FilePattern{Path, Format, CustomFormat, Opts}` | typed files (file) |
 | `ports.SQLPattern{Table, Op}` | SQL (sql) — metadata-only |
-| `ports.CachePattern{Key, TTL, Format}` | key/value cache (redis) — key template + TTL |
-| `ports.SocketPattern{Path, Subprotocols, Format, Opts}` | duplex socket (websocket) — upgrade-time validation |
+| `ports.CachePattern{Key, TTL, Format, CustomFormat}` | key/value cache (redis) — key template + TTL |
+| `ports.SocketPattern{Path, Subprotocols, Format, CustomFormat, Opts}` | duplex socket (websocket) — upgrade-time validation |
+
+`CustomFormat` (on `FilePattern`/`CachePattern`/`SocketPattern`) is the
+escape hatch for binary/custom wire formats the `Format` enum
+(JSON/YAML/TOML) can't express — a pre-built `format.Format[T]` (`format.Gob`,
+`format.Binary` for PNG/PDF, or any custom format), overriding `Format` when
+non-nil:
+
+```go
+ports.FilePattern{Path: "images/{id}.png",
+    CustomFormat: format.Binary(pngCodec).WithContentType("image/png")}
+ports.CachePattern{Key: "session:{id}", CustomFormat: format.Gob(sessionCodec)}
+```
+
+A type mismatch returns `PatternRegisterError` at construction. See
+[`examples/pattern-custom-format`](https://github.com/DaniDeer/go-codex/tree/main/examples/pattern-custom-format).
 
 Derive the handle the adapter needs with the matching accessor — `(nil, false)`, not
 a panic, when the port declared no matching `Pattern`:
