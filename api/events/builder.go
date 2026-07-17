@@ -720,6 +720,32 @@ func (c Channel[T]) ClientHandle() *ChannelHandle[T] {
 	}
 }
 
+// rawChannelEntry stores a pre-built ChannelItem — used by channels whose
+// two directions carry DIFFERENT payload types (e.g. a duplex WebSocket
+// endpoint registered via ports.RegisterSocket), which the single-codec
+// [Channel] cannot express.
+type rawChannelEntry struct {
+	topicStr string
+	item     asyncapi.ChannelItem
+}
+
+func (e *rawChannelEntry) topic() string                    { return e.topicStr }
+func (e *rawChannelEntry) descriptor() asyncapi.ChannelItem { return e.item }
+
+// AddChannelItem registers a pre-built [asyncapi.ChannelItem] under topic.
+// Use this for channels the single-codec [Channel] declaration cannot
+// express — a duplex socket whose inbound and outbound frames are different
+// types (ports.RegisterSocket builds the item from a SocketPattern).
+//
+// The builder-level topic codec is NOT applied — the topic may be an HTTP
+// upgrade path (e.g. "/live/{room}") rather than an MQTT-style topic.
+// SchemaName references in the item's operations participate in the usual
+// dangling-$ref validation at [Builder.AsyncAPISpec] time.
+func (b *Builder) AddChannelItem(topic string, item asyncapi.ChannelItem) *Builder {
+	b.entries = append(b.entries, &rawChannelEntry{topicStr: topic, item: item})
+	return b
+}
+
 // AsyncAPISpec builds a complete AsyncAPI 3.0 document from all registered channels.
 // Returns an error if any non-empty SchemaName references a schema that will not
 // be present in components/schemas (a dangling $ref).

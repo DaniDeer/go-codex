@@ -589,9 +589,11 @@ ports **build those handles internally** (builder-free, via each type's `ClientH
 method) from a declaration made once on the port — pipeline code never needs to import
 the handle's owning transport package directly, and there is no second, separate
 `NewRoute`/`NewChannel`/`Register` step. When you also want an OpenAPI/AsyncAPI/MCP
-spec document, `RegisterREST`/`RegisterEvent`/`RegisterReqReply`/`RegisterMCP` replay
-the same declared `Pattern` against a real `Builder` — building the spec **from** the
-binding rather than the other way around.
+spec document, `RegisterREST`/`RegisterEvent`/`RegisterReqReply`/`RegisterMCP`/
+`RegisterSocket` replay the same declared `Pattern` against a real `Builder` —
+building the spec **from** the binding rather than the other way around
+(`RegisterSocket` renders a `SocketPattern` as an AsyncAPI channel; see the
+[WebSocket adapter](websocket.md)).
 
 Declaring a route/channel/tool directly via the builders (`rest.NewRoute(...).Register(b)`,
 etc.) and passing the resulting handle straight into an adapter constructor remains fully

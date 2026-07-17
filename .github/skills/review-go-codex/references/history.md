@@ -1,8 +1,19 @@
-# go-codex Review History (R1–R57)
+# go-codex Review History (R1–R58)
 
 Do not re-report any of these findings. They have been implemented and tested.
 
 ---
+
+## Round 58 (websocket Phase 2 — client-side dial adapters, chi socket variants, `ports.RegisterSocket` AsyncAPI)
+
+- **Dial adapters auto-reconnect with gap SocketErrors BY DESIGN** — exponential backoff 250ms→MaxBackoff (default 30s), reset after a connection that carried traffic; EVERY failed dial (`Op:"dial"`) and EVERY drop (`Op:"read"`) is emitted to the port's Errors channel. Do not suggest silent reconnect or fail-fast.
+- **Session GENERATIONS (`c1`,`c2`,…) mark reconnects** on dial adapters — a generation change in inbound `Framed` values is the visible gap marker. Not a bug that the "session" changes.
+- **Outbound frames while the dialed connection is down are DROPPED with `ErrFrameDropped` — INCLUDING during initial connection establishment.** Consumers that need the first frames must pump or buffer upstream (tests/examples pump on a ticker until the echo arrives). Consistent with the server slow-client policy; do not propose queueing.
+- **chi socket adapters DELEGATE to adapters/websocket** via a constructor-time `swapHandler` satisfying `websocket.Mux` (`Handle` = atomic install) — zero duplicated frame/upgrade logic; tiny naming shims override `AdapterName` to `"chi.*"`. Do not flag the delegation as indirection; do not suggest chi-side reimplementation.
+- **`events.Builder.AddChannelItem` intentionally skips the builder topic codec** — the topic may be an HTTP upgrade path (`"/live/{room}"`), not an MQTT topic. SchemaName refs still hit dangling-$ref validation.
+- **`RegisterSocket` direction mapping follows the renderer's struct comments**: Subscribe = frames the application RECEIVES (In), Publish = frames it SENDS (Out); one-directional ports skip the `struct{}` side by a type assertion on the zero value.
+- **`DialSinkAdapter` gaps surface only via `RecordPublish(success=false)`** — SinkAdapter has no error channel; documented, not an oversight.
+- ConnectionObserver and dynamic subprotocol negotiation remain DEFERRED (websocket-deferred roadmap) — do not propose implementing them without a use case.
 
 ## Round 57 (WebSocket adapter — `adapters/websocket`, sixth port type `ports.DuplexPort`, `ports.SocketPattern`)
 
@@ -13,7 +24,7 @@ Do not re-report any of these findings. They have been implemented and tested.
 - **`SocketPattern` rejected on IOPort/LatestPort/ToolPort** (`PatternRegisterError{Kind:"socket"}`) — per-message req/reply over a socket is an RPC discipline (ReqReplyPattern territory). `DuplexPort` accepts ONLY SocketPattern — any other kind fails construction.
 - **Upgrade validation extracts ALL `{var}` template vars** (regex on the path template) for `Hub.SessionInfo`, then validates only DECLARED PathParam codecs via the handle's `rest.RouteHandle[struct{},struct{}]` — `PathParamNames()` alone would miss undeclared template vars (real bug found in test iteration).
 - **Keepalive is shim-owned** (`NewUpgrader`: ping 30s, pong wait 2×, read limit 1 MiB; gorilla is imported ONLY in socket.go); `Hub` is an explicit main-constructed collaborator so `SessionInfo` is reachable without widening the adapter interfaces.
-- **NO `ConnectionObserver` extension** — transport hooks suffice (`RecordRequest` per upgrade, `RecordSubscribe`/`RecordPublish` per frame); connect/disconnect metrics wait for a use case (recorded in websocket-phase2 roadmap).
+- **NO `ConnectionObserver` extension** — transport hooks suffice (`RecordRequest` per upgrade, `RecordSubscribe`/`RecordPublish` per frame); connect/disconnect metrics wait for a use case (recorded in websocket-deferred roadmap).
 - **NOT an MQTT broker** — MQTT-over-WS is the MQTT client's transport option (ws:// broker URL to paho); permanently out of scope.
 - The "universal StreamPattern" idea was evaluated and REJECTED — WebSocket (path-addressed, at-most-once) and Redis Streams (key-addressed, at-least-once, XACK) need separate declarations.
 

@@ -88,6 +88,74 @@ go Live.Feed(ctx, replies)                // zero Session = broadcast
 
 ---
 
+## Client-side — dial adapters
+
+The `Dial*` family connects OUT to an external WebSocket endpoint (another
+go-codex service, a partner API, a feed) and bridges it into the same ports:
+
+| Constructor | Port | Use |
+|---|---|---|
+| `DialSourceAdapter[T](dialer, baseURL, vars, handle, opts)` | `SourcePort` | consume an external feed |
+| `DialSinkAdapter[T](…)` | `SinkPort` | publish outbound frames |
+| `DialDuplexAdapter[In,Out](…)` | `DuplexPort` | full duplex client |
+
+`NewDialer(DialerOptions{…})` is the gorilla dial shim (same keepalive story
+as the server side); the URL is `baseURL` + the handle's path template
+expanded with `vars` (declared `PathParam` codecs validate each value).
+
+**Reconnect semantics — no silent loss (by design):**
+
+- Auto-reconnect with exponential backoff (250ms → 30s cap, reset after a
+  connection that delivered traffic).
+- EVERY failed dial and EVERY drop emits a `SocketError` (`Op` `"dial"` /
+  `"read"`) on the port's Errors channel — consumers KNOW a gap happened
+  and frames may have been missed.
+- The session generation (`c1`, `c2`, …) advances per connection — a
+  generation change in inbound frames is the visible reconnect marker.
+- Outbound frames while the connection is down are DROPPED with
+  `ErrFrameDropped` (consistent with the server slow-client policy) —
+  including during initial connection establishment: pump or buffer
+  upstream if the first frames matter.
+
+---
+
+## AsyncAPI spec — `ports.RegisterSocket`
+
+OpenAPI cannot express WebSocket frames; **AsyncAPI can**. `RegisterSocket`
+replays a port's `SocketPattern` against an `events.Builder` as a channel:
+
+```go
+b := events.NewBuilder(events.Info{Title: "Live Ops Socket", Version: "1.0.0"})
+b.AddServer("prod", events.Server{URL: "live.example.com", Protocol: "ws"})
+_ = ports.RegisterSocket[Command, Update](b, Live)
+doc, _ := b.AsyncAPISpec()
+```
+
+- Channel name = the socket path template; `{var}` placeholders become
+  channel parameters.
+- Subscribe operation = frames the application RECEIVES (`In`); Publish
+  operation = frames it SENDS (`Out`). One-directional ports emit only
+  their live direction (the `struct{}` side is skipped).
+- Built on `events.Builder.AddChannelItem` — the escape hatch for channels
+  whose two directions carry different payload types.
+
+(Supplying `PortOptions.RESTBuilder` still incidentally documents the
+upgrade route in OpenAPI as a bare GET — harmless endpoint documentation,
+nothing about frames.)
+
+---
+
+## chi variants
+
+`adapters/chi` mirrors all three server adapters with chi-safe registration
+(`chi.IngestSocketAdapter` / `chi.BroadcastSocketAdapter` /
+`chi.DuplexSocketAdapter`): the swap handler is registered at CONSTRUCTOR
+time (chi's Mux cannot register routes while serving) and the real handler
+installs atomically at `Activate` — requests before that get 503. Behaviour
+is identical; the implementations delegate to the websocket package.
+
+---
+
 ## Narrow client interface
 
 Adapters accept `Upgrader`/`Socket` — small interfaces — never a gorilla
@@ -137,6 +205,7 @@ not an MQTT broker.
 
 ## Scope
 
-Server-side only. Client-side WS (dialing external feeds), chi variants,
-and a `ConnectionObserver` extension are recorded in the
-[Phase 2 roadmap](../roadmap/websocket-phase2.md).
+Server-side + client-side + chi + AsyncAPI spec are shipped. Still
+deferred (awaiting use cases): a `ConnectionObserver` stats extension and
+dynamic subprotocol negotiation — recorded in the
+[deferred roadmap](../roadmap/websocket-deferred.md).

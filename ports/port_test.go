@@ -1972,3 +1972,59 @@ func TestDuplexPort_Lifecycle(t *testing.T) {
 		t.Errorf("outbound delivery wrong: %+v", fake.sent)
 	}
 }
+
+// ── RegisterSocket (AsyncAPI ws spec) ─────────────────────────────────────────
+
+func TestRegisterSocket_DuplexBothOperations(t *testing.T) {
+	port, err := ports.NewDuplexPort[int, string]("spec-dup", intCodec, strCodec,
+		ports.PortOptions{Patterns: []ports.Pattern{ports.SocketPattern{Path: "/live/{room}"}}})
+	if err != nil {
+		t.Fatalf("port: %v", err)
+	}
+	b := events.NewBuilder(events.Info{Title: "t", Version: "1"})
+	b.AddServer("prod", events.Server{URL: "example.com", Protocol: "ws"})
+	if err := ports.RegisterSocket[int, string](b, port); err != nil {
+		t.Fatalf("RegisterSocket: %v", err)
+	}
+	doc, err := b.AsyncAPISpec()
+	if err != nil {
+		t.Fatalf("spec: %v", err)
+	}
+	raw, _ := doc.MarshalJSON()
+	s := string(raw)
+	for _, want := range []string{"/live/{room}", "room", "Inbound socket frames", "Outbound socket frames", `"ws"`} {
+		if !strings.Contains(s, want) {
+			t.Errorf("spec missing %q", want)
+		}
+	}
+}
+
+func TestRegisterSocket_OneDirectional(t *testing.T) {
+	src, _ := ports.NewSourcePort[int]("spec-src", intCodec,
+		ports.PortOptions{Patterns: []ports.Pattern{ports.SocketPattern{Path: "/in"}}})
+	b := events.NewBuilder(events.Info{Title: "t", Version: "1"})
+	if err := ports.RegisterSocket[int, struct{}](b, src); err != nil {
+		t.Fatalf("RegisterSocket source: %v", err)
+	}
+	doc, err := b.AsyncAPISpec()
+	if err != nil {
+		t.Fatalf("spec: %v", err)
+	}
+	raw, _ := doc.MarshalJSON()
+	s := string(raw)
+	if !strings.Contains(s, "Inbound socket frames") {
+		t.Error("source port: want inbound op")
+	}
+	if strings.Contains(s, "Outbound socket frames") {
+		t.Error("source port: must NOT emit outbound op (struct{} side)")
+	}
+}
+
+func TestRegisterSocket_MissingPattern(t *testing.T) {
+	port, _ := ports.NewDuplexPort[int, string]("spec-none", intCodec, strCodec, ports.PortOptions{})
+	b := events.NewBuilder(events.Info{})
+	var mpe ports.MissingPatternError
+	if err := ports.RegisterSocket[int, string](b, port); !errors.As(err, &mpe) || mpe.Kind != "socket" {
+		t.Errorf("want MissingPatternError{socket}, got %v", err)
+	}
+}

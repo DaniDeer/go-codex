@@ -73,8 +73,10 @@ go-codex/
 │   │   ├── adapter.go      # Handler, Register, SSEHandler, RegisterSSE, RequestFromContext,
 │   │   │                   #   WithResponseHeaders, WithResponseCookies, SetCookie, CookieOptions, Options
 │   │   ├── stream.go       # HandlerLatest, RegisterLatest, PipelineHandler, RegisterPipeline, SSEFromHub
-│   │   └── binding.go      # IngestAdapter, SSEAdapter, PipelineAdapter (ports.SourceAdapter/
-│   │                       #   SinkAdapter/ToolAdapter constructors — chi is server-only)
+│   │   ├── binding.go      # IngestAdapter, SSEAdapter, PipelineAdapter (ports.SourceAdapter/
+│   │   │                   #   SinkAdapter/ToolAdapter constructors — chi is server-only)
+│   │   └── socket.go       # IngestSocketAdapter, BroadcastSocketAdapter, DuplexSocketAdapter
+│   │                       #   (chi-safe swap-handler variants of adapters/websocket)
 │   ├── mqtt/               # Paho MQTT 3.1.1 adapter for api/events ChannelHandles
 │   │   ├── adapter.go      # SubscribeHandler, SubscribeOptions, Publish, PublishOptions,
 │   │   │                   #   SubscribeError, ErrorKind, MessageFromContext
@@ -113,8 +115,10 @@ go-codex/
 │   │   ├── socket.go       # Socket, Upgrader, NewUpgrader (gorilla shim — keepalive, read limits)
 │   │   ├── hub.go          # Hub, NewHub — session registry (SessionInfo, targeted send, broadcast, drop-on-full)
 │   │   ├── errors.go       # SocketError, ErrFrameDropped — slog.LogValuer
-│   │   └── binding.go      # IngestSocketAdapter (ports.SourceAdapter), BroadcastSocketAdapter
-│   │                       #   (ports.SinkAdapter), DuplexSocketAdapter (ports.DuplexAdapter)
+│   │   ├── binding.go      # IngestSocketAdapter (ports.SourceAdapter), BroadcastSocketAdapter
+│   │   │                   #   (ports.SinkAdapter), DuplexSocketAdapter (ports.DuplexAdapter)
+│   │   └── client.go       # Dialer, NewDialer, DialSourceAdapter, DialSinkAdapter,
+│   │                       #   DialDuplexAdapter — auto-reconnect w/ backoff, gap SocketErrors
 │   ├── redis/              # typed cache adapter (github.com/redis/go-redis/v9 behind a narrow interface)
 │   │   ├── doc.go          # package overview
 │   │   ├── commands.go     # Commands (narrow client interface), NewCommands (go-redis shim)
@@ -264,6 +268,7 @@ go-codex/
     ├── http-trace-span-propagation/ # TraceObserver with OTel: parent span from traceparent header
     ├── redis-cache/                 # typed cache boundary: CachePattern + GetAdapter/SetAdapter/Seed against an in-memory Commands fake (no live Redis)
     ├── websocket-duplex/            # DuplexPort over a real loopback WebSocket: typed commands in, targeted replies out, app-supervised Feed, observer via app.Options.Observer (upgrade/frame/validation metrics)
+    ├── websocket-client/            # client-side DialDuplexAdapter: two go-codex processes over one WS connection, reconnect gap semantics, RegisterSocket AsyncAPI spec
     ├── stream-pipeline/             # stream operator showcase: From, Apply, CombineLatest2, Tee, Merge, FlatMapSlice, Buffer, Window, Debounce, Throttle, MapErr, Switch, GroupBy, Topology YAML
     ├── stream-oee/                  # forge + stream integration: governed OEE (Availability×Performance×Quality) from machine events; Window→Apply(computeOEEFromWindow)→Filter→Drain; governance + topology YAML
     └── sensor-service/              # flagship: one coherent use case (MQTT ingest → SQL persist → env-configured alert → REST time series → REST-triggered file export) structured as a real project — domain/, pipeline/, ioports/, observability/, adapters/, db/, main.go (wiring) + demo.go + README.md

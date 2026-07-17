@@ -379,7 +379,11 @@ ports.RegisterREST[OEEIn, OEEResult](b, domain.OEETool) //nolint:errcheck
 spec, _ := b.OpenAPISpec()
 ```
 
-`RegisterEvent`, `RegisterReqReply`, and `RegisterMCP` do the same for their builders.
+`RegisterEvent`, `RegisterReqReply`, and `RegisterMCP` do the same for their
+builders. `RegisterSocket[In,Out](b *events.Builder, port)` renders a
+`SocketPattern` as an AsyncAPI channel (Subscribe = In frames the app
+receives, Publish = Out frames it sends) — the WebSocket spec story, since
+OpenAPI cannot express socket frames.
 
 `NewSourcePort`, `NewSinkPort`, `NewIOPort`, and `NewToolPort` all return
 `(*Port, error)` — a `Pattern` is built eagerly at construction time via `Register`

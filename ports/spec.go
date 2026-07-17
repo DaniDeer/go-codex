@@ -1,10 +1,13 @@
 package ports
 
 import (
+	"strings"
+
 	"github.com/DaniDeer/go-codex/api/events"
 	apimcp "github.com/DaniDeer/go-codex/api/mcp"
 	"github.com/DaniDeer/go-codex/api/reqreply"
 	"github.com/DaniDeer/go-codex/api/rest"
+	asyncapi "github.com/DaniDeer/go-codex/render/asyncapi/v3"
 )
 
 // namedPort is implemented by every port type ([SourcePort], [SinkPort],
@@ -132,4 +135,77 @@ func RegisterMCP[In, Out any](b *apimcp.Builder, port any) error {
 	}
 	_, err := tool.Register(b)
 	return err
+}
+
+// RegisterSocket replays port's declared [SocketPattern] against b as an
+// AsyncAPI channel — the WebSocket spec story (OpenAPI cannot express
+// socket frames). The channel name is the socket path template; the {var}
+// placeholders become channel parameters.
+//
+// Frame direction mapping (application perspective, matching the asyncapi
+// renderer's convention):
+//
+//   - Subscribe operation — frames the application RECEIVES: the port's In
+//     type (clients send these).
+//   - Publish operation — frames the application SENDS: the port's Out
+//     type (targeted replies / broadcasts).
+//
+// One-directional ports emit only their live direction: a [SourcePort]
+// (In only) produces just the Subscribe operation, a [SinkPort] (Out only)
+// just the Publish operation — pass struct{} for the unused side, exactly
+// as with [SocketHandle]. Declare an events server with Protocol "ws" on b
+// for a complete document.
+//
+// Returns [MissingPatternError] if the port declared no [SocketPattern].
+func RegisterSocket[In, Out any](b *events.Builder, port any) error {
+	handle, ok := SocketHandle[In, Out](port)
+	if !ok {
+		return MissingPatternError{Port: portName(port), Kind: patternKindSocket}
+	}
+
+	item := asyncapi.ChannelItem{
+		Description: "WebSocket endpoint (duplex frame stream)",
+	}
+	vars := templateVars(handle.Path)
+	if len(vars) > 0 {
+		item.Parameters = make(map[string]asyncapi.Parameter, len(vars))
+		for _, name := range vars {
+			item.Parameters[name] = asyncapi.Parameter{
+				Description: "socket path variable {" + name + "}",
+			}
+		}
+	}
+	// In frames: application receives (clients send) — Subscribe op.
+	if _, isEmpty := any(*new(In)).(struct{}); !isEmpty {
+		item.Subscribe = &asyncapi.Operation{
+			Summary: "Inbound socket frames",
+			Message: asyncapi.Message{Schema: handle.InFormat.Schema()},
+		}
+	}
+	// Out frames: application sends — Publish op.
+	if _, isEmpty := any(*new(Out)).(struct{}); !isEmpty {
+		item.Publish = &asyncapi.Operation{
+			Summary: "Outbound socket frames",
+			Message: asyncapi.Message{Schema: handle.OutFormat.Schema()},
+		}
+	}
+	b.AddChannelItem(handle.Path, item)
+	return nil
+}
+
+// templateVars extracts the {var} placeholder names from a path template.
+func templateVars(path string) []string {
+	var names []string
+	for {
+		start := strings.IndexByte(path, '{')
+		if start < 0 {
+			return names
+		}
+		end := strings.IndexByte(path[start:], '}')
+		if end < 0 {
+			return names
+		}
+		names = append(names, path[start+1:start+end])
+		path = path[start+end+1:]
+	}
 }
