@@ -328,6 +328,26 @@ ports.CachePattern{Key: "session:{id}", CustomFormat: format.Gob(sessionCodec)}
 A type mismatch returns `PatternRegisterError` at construction. See
 [`examples/pattern-custom-format`](https://github.com/DaniDeer/go-codex/tree/main/examples/pattern-custom-format).
 
+`RESTPattern`/`EventPattern`/`ReqReplyPattern` don't need a `CustomFormat`
+field — their built handles already accept **any** `format.Format[T]`
+(with real multi-format content negotiation, not a single fixed format) via
+`WithRequestFormats`/`WithFormats`/`WithSubscribeFormats`/`WithPublishFormats`.
+Declare them inline in `Opts` — `rest.RequestFormats(...)`/`rest.Formats(...)`
+and `events.Formats(...)`/`SubscribeFormats(...)`/`PublishFormats(...)` and
+`reqreply.RequestFormats(...)`/`Formats(...)` are `RouteOpt`/`ChannelOpt`
+values, same interface `PathParam`/`TopicParam` implement, so `ports` needs
+no changes to support them:
+
+```go
+ports.RESTPattern{Method: "PUT", Path: "/images/{id}",
+    Opts: []rest.RouteOpt{rest.RequestFormats(format.Binary(pngCodec).WithContentType("image/png"))}}
+```
+
+A type mismatch returns `rest.FormatOptError`/`events.FormatOptError`/
+`reqreply.FormatOptError` from `Register` (surfaces as `PatternRegisterError`
+from the port constructor). See the [HTTP Server Examples](http-server.md#same-thing-declared-through-portsrestpattern)
+and [MQTT Examples](mqtt.md#same-thing-declared-through-portseventpattern) guides.
+
 Derive the handle the adapter needs with the matching accessor — `(nil, false)`, not
 a panic, when the port declared no matching `Pattern`:
 

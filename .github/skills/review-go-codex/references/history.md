@@ -1,8 +1,16 @@
-# go-codex Review History (R1–R59)
+# go-codex Review History (R1–R60)
 
 Do not re-report any of these findings. They have been implemented and tested.
 
 ---
+
+## Round 60 (`api/rest`/`api/events`/`api/reqreply` — inline format `RouteOpt`/`ChannelOpt` constructors: `RequestFormats`, `Formats`, `SubscribeFormats`, `PublishFormats`)
+
+- **This is API SYMMETRY with the `CustomFormat` escape hatch (R59), NOT a duplicate mechanism** — `RESTPattern`/`EventPattern`/`ReqReplyPattern` never needed a `CustomFormat` field: their built handles already accepted any `format.Format[T]` (with real multi-format negotiation) via `WithRequestFormats`/`WithFormats`/`WithSubscribeFormats`/`WithPublishFormats`; the gap was ergonomics — declaring the format required a POST-Register handle mutation, not a `Pattern.Opts` entry. Do not propose a `CustomFormat` field on these three patterns.
+- **Zero `ports` package changes** — `RequestFormats`/`Formats`/etc. just implement the EXISTING `rest.RouteOpt`/`events.ChannelOpt`/`reqreply.RouteOpt` interfaces; `RESTPattern.Opts`/`EventPattern.Opts`/`ReqReplyPattern.Opts` already accept them. Confirmed via `ports/format_opt_test.go` (3 zero-ports-change regression tests). Do not suggest touching `ports/pattern.go`/`handle.go` for this feature.
+- **Type-erased `any` storage on `routeBuilder`/`channelBuilder`, resolved generically in `Register`** — same pattern as `CustomFormat`'s `resolveFormat`; a caller declaring formats for the wrong type only fails at `Register` time (`FormatOptError`), not at the `RequestFormats[Req](...)` call site (Go generics can't link a `RouteOpt` value back to the route's type params at compile time). This is intentional, not a missed compile-time check.
+- **New `FormatOptError{Direction, Err}` type ADDED WITH `LogValue`** to `api/rest`, `api/events`, `api/reqreply` — even though sibling pre-existing error types in the SAME files (`PathParamError`, `TopicParamError`, etc.) lack `LogValue` in `api/rest`/`api/events`. This is a deliberate improvement (mandatory 5-requirements rule), not an inconsistency to "fix" by removing LogValue — do not flag, and do not retrofit LogValue onto the older sibling errors as part of unrelated work (separate concern).
+- **`events.Formats`/`SubscribeFormats`/`PublishFormats` naming mirrors the handle setter names exactly** (`WithFormats`→`Formats`, `WithSubscribeFormats`→`SubscribeFormats`, etc.) — same convention in `api/reqreply` (`WithFormats`→`Formats`, `WithRequestFormats`→`RequestFormats`). Do not suggest renaming for "clarity" — the 1:1 mapping to the handle method IS the clarity.
 
 ## Round 59 (`ports.Pattern` `CustomFormat` escape hatch — `FilePattern`/`CachePattern`/`SocketPattern`)
 

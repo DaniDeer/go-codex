@@ -9,7 +9,9 @@ import (
 
 	"github.com/DaniDeer/go-codex/api/reqreply"
 	"github.com/DaniDeer/go-codex/codex"
+	"github.com/DaniDeer/go-codex/format"
 	asyncapiv3 "github.com/DaniDeer/go-codex/render/asyncapi/v3"
+	"github.com/DaniDeer/go-codex/validate"
 )
 
 // ── shared types and codecs ───────────────────────────────────────────────────
@@ -490,5 +492,87 @@ func TestBuilder_AppendTo_AsyncAPISpec_consistent(t *testing.T) {
 	combined, _ := specCombined.MarshalYAML()
 	if string(direct) != string(combined) {
 		t.Errorf("channels differ\ndirect:\n%s\ncombined:\n%s", direct, combined)
+	}
+}
+
+// ── RequestFormats / Formats RouteOpt ─────────────────────────────────────────
+
+var reqreplyPngCodec = codex.Bytes().Refine(validate.PNG)
+
+// TestRequestFormats_AppliesInline verifies reqreply.RequestFormats declared
+// inline in NewRoute's opts is equivalent to calling WithRequestFormats
+// after Register.
+func TestRequestFormats_AppliesInline(t *testing.T) {
+	b := reqreply.NewBuilder(reqreply.Info{})
+	route := reqreply.NewRoute[[]byte, computeResp]("images/upload", reqreplyPngCodec, respCodec,
+		reqreply.RequestFormats(format.Binary(reqreplyPngCodec).WithContentType("image/png")),
+	)
+	handle, err := route.Register(b)
+	if err != nil {
+		t.Fatalf("register: %v", err)
+	}
+	if len(handle.RequestFormats) != 1 || handle.RequestFormats[0].ContentType() != "image/png" {
+		t.Errorf("want 1 RequestFormats entry with image/png, got %+v", handle.RequestFormats)
+	}
+}
+
+// TestFormats_AppliesInline verifies reqreply.Formats declared inline is
+// equivalent to calling WithFormats after Register.
+func TestFormats_AppliesInline(t *testing.T) {
+	b := reqreply.NewBuilder(reqreply.Info{})
+	route := reqreply.NewRoute[computeReq, []byte]("images/download", reqCodec, reqreplyPngCodec,
+		reqreply.Formats(format.Binary(reqreplyPngCodec).WithContentType("image/png")),
+	)
+	handle, err := route.Register(b)
+	if err != nil {
+		t.Fatalf("register: %v", err)
+	}
+	if len(handle.Formats) != 1 || handle.Formats[0].ContentType() != "image/png" {
+		t.Errorf("want 1 Formats entry with image/png, got %+v", handle.Formats)
+	}
+}
+
+// TestRequestFormats_TypeMismatch verifies a wrong-typed RequestFormats
+// option returns FormatOptError, reachable via errors.As, with a
+// structured LogValue.
+func TestRequestFormats_TypeMismatch(t *testing.T) {
+	b := reqreply.NewBuilder(reqreply.Info{})
+	route := reqreply.NewRoute[computeReq, computeResp]("compute/add", reqCodec, respCodec,
+		reqreply.RequestFormats(format.Binary(reqreplyPngCodec)),
+	)
+	_, err := route.Register(b)
+	var fe reqreply.FormatOptError
+	if !errors.As(err, &fe) || fe.Direction != "request" {
+		t.Fatalf("want FormatOptError{request}, got %v", err)
+	}
+	if fe.Unwrap() == nil {
+		t.Error("want non-nil Unwrap")
+	}
+	v := fe.LogValue()
+	if v.Kind() != slog.KindGroup {
+		t.Fatalf("want KindGroup, got %v", v.Kind())
+	}
+	keys := map[string]bool{}
+	for _, a := range v.Group() {
+		keys[a.Key] = true
+	}
+	for _, want := range []string{"direction", "err"} {
+		if !keys[want] {
+			t.Errorf("missing LogValue key %q", want)
+		}
+	}
+}
+
+// TestFormats_TypeMismatch mirrors TestRequestFormats_TypeMismatch for the
+// response direction.
+func TestFormats_TypeMismatch(t *testing.T) {
+	b := reqreply.NewBuilder(reqreply.Info{})
+	route := reqreply.NewRoute[computeReq, computeResp]("compute/sub", reqCodec, respCodec,
+		reqreply.Formats(format.Binary(reqreplyPngCodec)),
+	)
+	_, err := route.Register(b)
+	var fe reqreply.FormatOptError
+	if !errors.As(err, &fe) || fe.Direction != "response" {
+		t.Fatalf("want FormatOptError{response}, got %v", err)
 	}
 }

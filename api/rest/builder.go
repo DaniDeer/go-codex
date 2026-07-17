@@ -3,6 +3,7 @@ package rest
 import (
 	"errors"
 	"fmt"
+	"log/slog"
 	"slices"
 	"sort"
 	"strings"
@@ -51,6 +52,65 @@ func (p PathParam) applyRoute(rb *routeBuilder) { rb.pathParams = append(rb.path
 
 // WithCodec sets the validation codec and returns the updated PathParam.
 func (p PathParam) WithCodec(c codex.Codec[string]) PathParam { p.Codec = &c; return p }
+
+// requestFormatsOpt / formatsOpt are unexported RouteOpt implementations
+// backing [RequestFormats] and [Formats] — see those constructors.
+type requestFormatsOpt[Req any] struct{ fmts []format.Format[Req] }
+
+func (o requestFormatsOpt[Req]) applyRoute(rb *routeBuilder) { rb.requestFormats = o.fmts }
+
+// RequestFormats declares the formats a route accepts for request body
+// decoding — the [RouteOpt] equivalent of calling
+// [RouteHandle.WithRequestFormats] after [Route.Register]. Declarable inline
+// in [NewRoute]'s variadic opts, which means it also works through
+// ports.RESTPattern.Opts with zero changes to the ports package:
+//
+//	rest.NewRoute[UploadReq, ImageMeta]("PUT", "/images/{id}", reqCodec, respCodec,
+//	    rest.RequestFormats(format.Binary(pngCodec).WithContentType("image/png")),
+//	)
+//
+// A mismatched type (fmts holding format.Format[X] where the route's request
+// type is not X) is only detectable once Req is concrete — [Route.Register]
+// returns [FormatOptError] in that case.
+func RequestFormats[Req any](fmts ...format.Format[Req]) RouteOpt {
+	return requestFormatsOpt[Req]{fmts: fmts}
+}
+
+type formatsOpt[Resp any] struct{ fmts []format.Format[Resp] }
+
+func (o formatsOpt[Resp]) applyRoute(rb *routeBuilder) { rb.respFormats = o.fmts }
+
+// Formats declares the formats a route can produce for response content
+// negotiation — the [RouteOpt] equivalent of calling [RouteHandle.WithFormats]
+// after [Route.Register]. See [RequestFormats] for the inline-declaration
+// rationale; [Route.Register] returns [FormatOptError] on a type mismatch.
+func Formats[Resp any](fmts ...format.Format[Resp]) RouteOpt {
+	return formatsOpt[Resp]{fmts: fmts}
+}
+
+// FormatOptError is returned by [Route.Register] when [RequestFormats] or
+// [Formats] was declared with formats for a type that does not match the
+// route's actual request/response type parameter.
+type FormatOptError struct {
+	// Direction is "request" (from [RequestFormats]) or "response" (from [Formats]).
+	Direction string
+	Err       error
+}
+
+func (e FormatOptError) Error() string {
+	return fmt.Sprintf("api/rest: %s format option: %v", e.Direction, e.Err)
+}
+
+// Unwrap allows [errors.Is] and [errors.As] to reach the underlying error.
+func (e FormatOptError) Unwrap() error { return e.Err }
+
+// LogValue implements [slog.LogValuer] for structured logging.
+func (e FormatOptError) LogValue() slog.Value {
+	return slog.GroupValue(
+		slog.String("direction", e.Direction),
+		slog.Any("err", e.Err),
+	)
+}
 
 // ResponseMeta describes one additional response entry for a route (errors,
 // redirects, etc.). The primary success response is derived from the response
@@ -123,6 +183,11 @@ type routeBuilder struct {
 	respHeaders  []ResponseHeaderParam
 	respCookies  []ResponseCookieParam
 	extraResps   []ResponseMeta
+	// requestFormats/respFormats hold []format.Format[Req]/[]format.Format[Resp]
+	// type-erased (any) — set by [RequestFormats]/[Formats], resolved generically
+	// in [Route.Register] where Req/Resp are concrete. See [FormatOptError].
+	requestFormats any
+	respFormats    any
 }
 
 // RouteHandle is returned by [Route.Register]. It holds the spec descriptor
@@ -1211,6 +1276,23 @@ func (r Route[Req, Resp]) Register(b *Builder) (*RouteHandle[Req, Resp], error) 
 		SecuritySchemes:      schemes,
 		GlobalSecurity:       slices.Clone(b.globalSecurity),
 	}
+	if rb.requestFormats != nil {
+		fmts, ok := rb.requestFormats.([]format.Format[Req])
+		if !ok {
+			return nil, FormatOptError{Direction: "request",
+				Err: fmt.Errorf("want []format.Format[%T], got %T", *new(Req), rb.requestFormats)}
+		}
+		h.WithRequestFormats(fmts...)
+	}
+	if rb.respFormats != nil {
+		fmts, ok := rb.respFormats.([]format.Format[Resp])
+		if !ok {
+			return nil, FormatOptError{Direction: "response",
+				Err: fmt.Errorf("want []format.Format[%T], got %T", *new(Resp), rb.respFormats)}
+		}
+		h.WithFormats(fmts...)
+	}
+
 	entry := &typedRouteEntry[Req, Resp]{handle: h}
 	b.entries = append(b.entries, entry)
 	return h, nil

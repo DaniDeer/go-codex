@@ -414,6 +414,30 @@ spec, _ := b.OpenAPISpec()
 > path/topic constraint failures, duplicate names on `reqreply`/`mcp`) in ways the
 > old builder-free construction wasn't.
 
+**Binary/custom formats, declared inline:** `rest.RequestFormats(...)` and
+`rest.Formats(...)` are `RouteOpt`s — the same interface `PathParam`/`RouteMeta`
+implement — so they slot directly into `RESTPattern.Opts` with zero changes to
+the `ports` package:
+
+```go
+ports.RESTPattern{
+    Method: "GET", Path: "/images/{id}",
+    Opts: []rest.RouteOpt{
+        rest.Formats(format.Binary(pngCodec).WithContentType("image/png")),
+    },
+}
+```
+
+This is the one-step equivalent of retrieving the handle and calling
+`handle.WithFormats(...)` afterward — both work, `Opts` is just declarable
+alongside the rest of the pattern. A type mismatch (formats for a type that
+doesn't match the port's codec) returns `rest.FormatOptError` from
+`Route.Register` (surfacing as `PatternRegisterError` from the port
+constructor). `events.Formats`/`SubscribeFormats`/`PublishFormats` and
+`reqreply.RequestFormats`/`Formats` are the `EventPattern`/`ReqReplyPattern`
+equivalents — see [`docs/guides/mqtt.md`](../guides/mqtt.md) for a worked
+MQTT example.
+
 ### `FilePattern` — typed files as sink or intermediate IO
 
 `FilePattern` gives the file adapter the same declare-once story: the path

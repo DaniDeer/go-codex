@@ -55,6 +55,59 @@ func (p TopicParam) applyRoute(rb *routeBuilder) {
 	rb.topicParams = append(rb.topicParams, p)
 }
 
+// requestFormatsOpt / formatsOpt are unexported RouteOpt implementations
+// backing [RequestFormats] and [Formats] — see those constructors.
+type requestFormatsOpt[Req any] struct{ fmts []format.Format[Req] }
+
+func (o requestFormatsOpt[Req]) applyRoute(rb *routeBuilder) { rb.requestFormats = o.fmts }
+
+// RequestFormats declares the formats a request-reply route accepts for
+// request decoding — the [RouteOpt] equivalent of calling
+// [RouteHandle.WithRequestFormats] after [Route.Register]. Declarable
+// inline in [NewRoute]'s variadic opts, which means it also works through
+// ports.ReqReplyPattern.Opts with zero changes to the ports package.
+//
+// A mismatched type is only detectable once Req is concrete —
+// [Route.Register] returns [FormatOptError] in that case.
+func RequestFormats[Req any](fmts ...format.Format[Req]) RouteOpt {
+	return requestFormatsOpt[Req]{fmts: fmts}
+}
+
+type formatsOpt[Resp any] struct{ fmts []format.Format[Resp] }
+
+func (o formatsOpt[Resp]) applyRoute(rb *routeBuilder) { rb.formats = o.fmts }
+
+// Formats declares the formats a request-reply route can produce for
+// response encoding — the [RouteOpt] equivalent of calling
+// [RouteHandle.WithFormats] after [Route.Register]. See [RequestFormats].
+func Formats[Resp any](fmts ...format.Format[Resp]) RouteOpt {
+	return formatsOpt[Resp]{fmts: fmts}
+}
+
+// FormatOptError is returned by [Route.Register] when [RequestFormats] or
+// [Formats] was declared with formats for a type that does not match the
+// route's actual request/response type parameter.
+type FormatOptError struct {
+	// Direction is "request" (from [RequestFormats]) or "response" (from [Formats]).
+	Direction string
+	Err       error
+}
+
+func (e FormatOptError) Error() string {
+	return fmt.Sprintf("api/reqreply: %s format option: %v", e.Direction, e.Err)
+}
+
+// Unwrap allows [errors.Is] and [errors.As] to reach the underlying error.
+func (e FormatOptError) Unwrap() error { return e.Err }
+
+// LogValue implements [slog.LogValuer] for structured logging.
+func (e FormatOptError) LogValue() slog.Value {
+	return slog.GroupValue(
+		slog.String("direction", e.Direction),
+		slog.Any("err", e.Err),
+	)
+}
+
 // WithCodec sets the validation codec and returns the updated TopicParam.
 func (p TopicParam) WithCodec(c codex.Codec[string]) TopicParam { p.Codec = &c; return p }
 
@@ -93,6 +146,12 @@ func (m RouteMeta) applyRoute(rb *routeBuilder) { rb.meta = m }
 type routeBuilder struct {
 	meta        RouteMeta
 	topicParams []TopicParam
+	// requestFormats/formats hold []format.Format[Req]/[]format.Format[Resp]
+	// type-erased (any) — set by [RequestFormats]/[Formats], resolved
+	// generically in [Route.Register] where Req/Resp are concrete. See
+	// [FormatOptError].
+	requestFormats any
+	formats        any
 }
 
 // Route[Req,Resp] is a typed request-reply route for async transports (ZeroMQ,
@@ -213,6 +272,23 @@ func (r Route[Req, Resp]) Register(b *Builder) (*RouteHandle[Req, Resp], error) 
 		EncodeRequest:  func(v Req) ([]byte, error) { return jsonReq.Marshal(v) },
 		DecodeResponse: func(p []byte) (Resp, error) { return jsonResp.Unmarshal(p) },
 		topicParams:    rb.topicParams,
+	}
+
+	if rb.requestFormats != nil {
+		fmts, ok := rb.requestFormats.([]format.Format[Req])
+		if !ok {
+			return nil, FormatOptError{Direction: "request",
+				Err: fmt.Errorf("want []format.Format[%T], got %T", *new(Req), rb.requestFormats)}
+		}
+		h.WithRequestFormats(fmts...)
+	}
+	if rb.formats != nil {
+		fmts, ok := rb.formats.([]format.Format[Resp])
+		if !ok {
+			return nil, FormatOptError{Direction: "response",
+				Err: fmt.Errorf("want []format.Format[%T], got %T", *new(Resp), rb.formats)}
+		}
+		h.WithFormats(fmts...)
 	}
 
 	b.registerRoute(r.topic, r.reqCodec.Schema, r.respCodec.Schema, rb.meta)

@@ -2,6 +2,7 @@ package events
 
 import (
 	"fmt"
+	"log/slog"
 	"slices"
 	"sort"
 	"strings"
@@ -148,6 +149,77 @@ func (p TopicParam) applyChannel(cb *channelBuilder) {
 	cb.topicParams = append(cb.topicParams, p)
 }
 
+// formatsOpt / subscribeFormatsOpt / publishFormatsOpt are unexported
+// ChannelOpt implementations backing [Formats]/[SubscribeFormats]/
+// [PublishFormats] — see those constructors.
+type formatsOpt[T any] struct{ fmts []format.Format[T] }
+
+func (o formatsOpt[T]) applyChannel(cb *channelBuilder) { cb.formats = o.fmts }
+
+// Formats declares the default payload format for a channel — the
+// [ChannelOpt] equivalent of calling [ChannelHandle.WithFormats] after
+// [Channel.Register]. Declarable inline in [NewChannel]'s variadic opts,
+// which means it also works through ports.EventPattern.Opts with zero
+// changes to the ports package:
+//
+//	events.NewChannel[Image]("images/{id}", imageCodec,
+//	    events.Formats(format.Binary(pngCodec).WithContentType("image/png")),
+//	)
+//
+// A mismatched type (fmts holding format.Format[X] where the channel's
+// payload type is not X) is only detectable once T is concrete —
+// [Channel.Register] returns [FormatOptError] in that case.
+func Formats[T any](fmts ...format.Format[T]) ChannelOpt {
+	return formatsOpt[T]{fmts: fmts}
+}
+
+type subscribeFormatsOpt[T any] struct{ fmts []format.Format[T] }
+
+func (o subscribeFormatsOpt[T]) applyChannel(cb *channelBuilder) { cb.subscribeFormats = o.fmts }
+
+// SubscribeFormats declares the payload format for the subscribe (receive)
+// direction only — the [ChannelOpt] equivalent of
+// [ChannelHandle.WithSubscribeFormats]. Use for asymmetric channels (e.g.
+// YAML in, JSON out) alongside [PublishFormats].
+func SubscribeFormats[T any](fmts ...format.Format[T]) ChannelOpt {
+	return subscribeFormatsOpt[T]{fmts: fmts}
+}
+
+type publishFormatsOpt[T any] struct{ fmts []format.Format[T] }
+
+func (o publishFormatsOpt[T]) applyChannel(cb *channelBuilder) { cb.publishFormats = o.fmts }
+
+// PublishFormats declares the payload format for the publish (send)
+// direction only — the [ChannelOpt] equivalent of
+// [ChannelHandle.WithPublishFormats]. See [SubscribeFormats].
+func PublishFormats[T any](fmts ...format.Format[T]) ChannelOpt {
+	return publishFormatsOpt[T]{fmts: fmts}
+}
+
+// FormatOptError is returned by [Channel.Register] when [Formats],
+// [SubscribeFormats], or [PublishFormats] was declared with formats for a
+// type that does not match the channel's actual payload type parameter.
+type FormatOptError struct {
+	// Direction is "both" ([Formats]), "subscribe", or "publish".
+	Direction string
+	Err       error
+}
+
+func (e FormatOptError) Error() string {
+	return fmt.Sprintf("api/events: %s format option: %v", e.Direction, e.Err)
+}
+
+// Unwrap allows [errors.Is] and [errors.As] to reach the underlying error.
+func (e FormatOptError) Unwrap() error { return e.Err }
+
+// LogValue implements [slog.LogValuer] for structured logging.
+func (e FormatOptError) LogValue() slog.Value {
+	return slog.GroupValue(
+		slog.String("direction", e.Direction),
+		slog.Any("err", e.Err),
+	)
+}
+
 // WithCodec sets the validation codec and returns the updated TopicParam.
 func (p TopicParam) WithCodec(c codex.Codec[string]) TopicParam { p.Codec = &c; return p }
 
@@ -166,6 +238,13 @@ type channelBuilder struct {
 	subscribe   *Subscribe
 	publish     *Publish
 	topicParams []TopicParam
+	// formats/subscribeFormats/publishFormats hold []format.Format[T]
+	// type-erased (any) — set by [Formats]/[SubscribeFormats]/[PublishFormats],
+	// resolved generically in [Channel.Register] where T is concrete. See
+	// [FormatOptError].
+	formats          any
+	subscribeFormats any
+	publishFormats   any
 }
 
 // ChannelHandle is returned by [Channel.Register]. It holds the spec
@@ -676,6 +755,31 @@ func (c Channel[T]) Register(b *Builder) (*ChannelHandle[T], error) {
 		SecuritySchemes: schemes,
 		GlobalSecurity:  slices.Clone(b.globalSecurity),
 	}
+	if cb.formats != nil {
+		fmts, ok := cb.formats.([]format.Format[T])
+		if !ok {
+			return nil, FormatOptError{Direction: "both",
+				Err: fmt.Errorf("want []format.Format[%T], got %T", *new(T), cb.formats)}
+		}
+		h.WithFormats(fmts...)
+	}
+	if cb.subscribeFormats != nil {
+		fmts, ok := cb.subscribeFormats.([]format.Format[T])
+		if !ok {
+			return nil, FormatOptError{Direction: "subscribe",
+				Err: fmt.Errorf("want []format.Format[%T], got %T", *new(T), cb.subscribeFormats)}
+		}
+		h.WithSubscribeFormats(fmts...)
+	}
+	if cb.publishFormats != nil {
+		fmts, ok := cb.publishFormats.([]format.Format[T])
+		if !ok {
+			return nil, FormatOptError{Direction: "publish",
+				Err: fmt.Errorf("want []format.Format[%T], got %T", *new(T), cb.publishFormats)}
+		}
+		h.WithPublishFormats(fmts...)
+	}
+
 	entry := &typedChannelEntry[T]{topicStr: c.topic, handle: h}
 	b.entries = append(b.entries, entry)
 	return h, nil

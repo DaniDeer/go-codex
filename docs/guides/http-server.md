@@ -93,6 +93,29 @@ downloadRoute.WithFormats(format.Binary(pngCodec).WithContentType("image/png"))
 
 `Accept: */*` (or no Accept header — browsers, curl) matches the first registered format.
 
+### Same thing, declared through `ports.RESTPattern`
+
+`rest.RequestFormats(...)` and `rest.Formats(...)` are `RouteOpt`s — they slot
+directly into `RESTPattern.Opts`, giving the same one-step declaration when
+the route is a `ports`-wired boundary instead of a hand-built route:
+
+```go
+var Images = codex.Must(ports.NewIOPort[[]byte, ImageMeta]("images",
+    pngCodec, imageMetaCodec, ports.PortOptions{
+        Patterns: []ports.Pattern{
+            ports.RESTPattern{
+                Method: "PUT", Path: "/images/{id}",
+                Opts: []rest.RouteOpt{
+                    rest.RequestFormats(format.Binary(pngCodec).WithContentType("image/png")),
+                },
+            },
+        },
+    }))
+```
+
+A type mismatch (formats declared for the wrong type) returns
+`rest.FormatOptError` from the port constructor.
+
 ### `MaxBodyBytes` and `validate.MaxBytes`
 
 The adapter applies `opts.MaxBodyBytes` via `http.MaxBytesReader` **before** the codec runs:

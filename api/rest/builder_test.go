@@ -4,11 +4,13 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"strings"
 	"testing"
 
 	"github.com/DaniDeer/go-codex/api/rest"
 	"github.com/DaniDeer/go-codex/codex"
+	"github.com/DaniDeer/go-codex/format"
 	"github.com/DaniDeer/go-codex/route"
 	"github.com/DaniDeer/go-codex/schema"
 	"github.com/DaniDeer/go-codex/validate"
@@ -1665,4 +1667,88 @@ func ExampleNewRoute() {
 	}
 	fmt.Println(req.Name)
 	// Output: Alice
+}
+
+// ── RequestFormats / Formats RouteOpt ─────────────────────────────────────────
+
+var pngCodec = codex.Bytes().Refine(validate.PNG)
+
+// TestRequestFormats_AppliesInline verifies rest.RequestFormats declared
+// inline in NewRoute's opts is equivalent to calling WithRequestFormats
+// after Register.
+func TestRequestFormats_AppliesInline(t *testing.T) {
+	b := rest.NewBuilder(testInfo)
+	route := rest.NewRoute[[]byte, userResp]("PUT", "/images/{id}", pngCodec, userCodec,
+		rest.RequestFormats(format.Binary(pngCodec).WithContentType("image/png")),
+	)
+	handle, err := route.Register(b)
+	if err != nil {
+		t.Fatalf("register: %v", err)
+	}
+	if len(handle.RequestFormats) != 1 || handle.RequestFormats[0].ContentType() != "image/png" {
+		t.Errorf("want 1 RequestFormats entry with image/png, got %+v", handle.RequestFormats)
+	}
+}
+
+// TestFormats_AppliesInline verifies rest.Formats declared inline is
+// equivalent to calling WithFormats after Register.
+func TestFormats_AppliesInline(t *testing.T) {
+	b := rest.NewBuilder(testInfo)
+	route := rest.NewRoute[createReq, []byte]("GET", "/images/{id}", createReqCodec, pngCodec,
+		rest.Formats(format.Binary(pngCodec).WithContentType("image/png")),
+	)
+	handle, err := route.Register(b)
+	if err != nil {
+		t.Fatalf("register: %v", err)
+	}
+	if len(handle.Formats) != 1 || handle.Formats[0].ContentType() != "image/png" {
+		t.Errorf("want 1 Formats entry with image/png, got %+v", handle.Formats)
+	}
+}
+
+// TestRequestFormats_TypeMismatch verifies a wrong-typed RequestFormats
+// option returns FormatOptError, reachable via errors.As, with a structured
+// LogValue.
+func TestRequestFormats_TypeMismatch(t *testing.T) {
+	b := rest.NewBuilder(testInfo)
+	// Route's request type is createReq, but RequestFormats is declared
+	// for []byte — a caller mistake only detectable once Req is concrete.
+	route := rest.NewRoute[createReq, userResp]("POST", "/users", createReqCodec, userCodec,
+		rest.RequestFormats(format.Binary(pngCodec)),
+	)
+	_, err := route.Register(b)
+	var fe rest.FormatOptError
+	if !errors.As(err, &fe) || fe.Direction != "request" {
+		t.Fatalf("want FormatOptError{request}, got %v", err)
+	}
+	if fe.Unwrap() == nil {
+		t.Error("want non-nil Unwrap")
+	}
+	v := fe.LogValue()
+	if v.Kind() != slog.KindGroup {
+		t.Fatalf("want KindGroup, got %v", v.Kind())
+	}
+	keys := map[string]bool{}
+	for _, a := range v.Group() {
+		keys[a.Key] = true
+	}
+	for _, want := range []string{"direction", "err"} {
+		if !keys[want] {
+			t.Errorf("missing LogValue key %q", want)
+		}
+	}
+}
+
+// TestFormats_TypeMismatch mirrors TestRequestFormats_TypeMismatch for the
+// response direction.
+func TestFormats_TypeMismatch(t *testing.T) {
+	b := rest.NewBuilder(testInfo)
+	route := rest.NewRoute[createReq, userResp]("POST", "/users", createReqCodec, userCodec,
+		rest.Formats(format.Binary(pngCodec)),
+	)
+	_, err := route.Register(b)
+	var fe rest.FormatOptError
+	if !errors.As(err, &fe) || fe.Direction != "response" {
+		t.Fatalf("want FormatOptError{response}, got %v", err)
+	}
 }

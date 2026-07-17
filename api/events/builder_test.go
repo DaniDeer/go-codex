@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"strings"
 	"testing"
 
@@ -1357,5 +1358,94 @@ func TestChannel_ClientHandle_topicParamsPreserved(t *testing.T) {
 	}
 	if topic != "sensors/acme/data" {
 		t.Errorf("expected %q, got %q", "sensors/acme/data", topic)
+	}
+}
+
+// ── Formats / SubscribeFormats / PublishFormats ChannelOpt ────────────────────
+
+var eventPngCodec = codex.Bytes().Refine(validate.PNG)
+
+// TestFormats_AppliesInline verifies events.Formats declared inline in
+// NewChannel's opts is equivalent to calling WithFormats after Register.
+func TestFormats_AppliesInline(t *testing.T) {
+	b := events.NewBuilder(testInfo)
+	ch := events.NewChannel[[]byte]("images/{id}", eventPngCodec,
+		events.Formats(format.Binary(eventPngCodec).WithContentType("image/png")),
+	)
+	handle, err := ch.Register(b)
+	if err != nil {
+		t.Fatalf("register: %v", err)
+	}
+	if len(handle.Formats) != 1 || handle.Formats[0].ContentType() != "image/png" {
+		t.Errorf("want 1 Formats entry with image/png, got %+v", handle.Formats)
+	}
+}
+
+// TestSubscribeFormats_PublishFormats_Asymmetric verifies the two
+// direction-specific ChannelOpts apply independently.
+func TestSubscribeFormats_PublishFormats_Asymmetric(t *testing.T) {
+	b := events.NewBuilder(testInfo)
+	ch := events.NewChannel[userEvent]("users/{id}", userEventCodec,
+		events.SubscribeFormats(format.YAML(userEventCodec)),
+		events.PublishFormats(format.JSON(userEventCodec)),
+	)
+	handle, err := ch.Register(b)
+	if err != nil {
+		t.Fatalf("register: %v", err)
+	}
+	if len(handle.SubscribeFormats) != 1 || handle.SubscribeFormats[0].ContentType() != "application/yaml" {
+		t.Errorf("want SubscribeFormats=YAML, got %+v", handle.SubscribeFormats)
+	}
+	if len(handle.PublishFormats) != 1 || handle.PublishFormats[0].ContentType() != "application/json" {
+		t.Errorf("want PublishFormats=JSON, got %+v", handle.PublishFormats)
+	}
+}
+
+// TestFormats_TypeMismatch verifies a wrong-typed Formats option returns
+// FormatOptError, reachable via errors.As, with a structured LogValue.
+func TestFormats_TypeMismatch(t *testing.T) {
+	b := events.NewBuilder(testInfo)
+	ch := events.NewChannel[userEvent]("users/{id}", userEventCodec,
+		events.Formats(format.Binary(eventPngCodec)),
+	)
+	_, err := ch.Register(b)
+	var fe events.FormatOptError
+	if !errors.As(err, &fe) || fe.Direction != "both" {
+		t.Fatalf("want FormatOptError{both}, got %v", err)
+	}
+	if fe.Unwrap() == nil {
+		t.Error("want non-nil Unwrap")
+	}
+	v := fe.LogValue()
+	if v.Kind() != slog.KindGroup {
+		t.Fatalf("want KindGroup, got %v", v.Kind())
+	}
+}
+
+// TestSubscribeFormats_TypeMismatch mirrors TestFormats_TypeMismatch for
+// the subscribe-only direction.
+func TestSubscribeFormats_TypeMismatch(t *testing.T) {
+	b := events.NewBuilder(testInfo)
+	ch := events.NewChannel[userEvent]("users/{id}", userEventCodec,
+		events.SubscribeFormats(format.Binary(eventPngCodec)),
+	)
+	_, err := ch.Register(b)
+	var fe events.FormatOptError
+	if !errors.As(err, &fe) || fe.Direction != "subscribe" {
+		t.Fatalf("want FormatOptError{subscribe}, got %v", err)
+	}
+}
+
+// TestPublishFormats_TypeMismatch mirrors TestFormats_TypeMismatch for
+// the publish-only direction.
+func TestPublishFormats_TypeMismatch(t *testing.T) {
+	b := events.NewBuilder(testInfo)
+	ch := events.NewChannel[userEvent]("users/{id}", userEventCodec,
+		events.PublishFormats(format.Binary(eventPngCodec)),
+	)
+	_, err := ch.Register(b)
+	var fe events.FormatOptError
+	if !errors.As(err, &fe) || fe.Direction != "publish" {
+		t.Fatalf("want FormatOptError{publish}, got %v", err)
 	}
 }

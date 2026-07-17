@@ -84,6 +84,26 @@ handler := adaptermqtt.SubscribeHandler(ctx, imageCh,
 )
 ```
 
+### Same thing, declared through `ports.EventPattern`
+
+`events.Formats(...)`/`SubscribeFormats(...)`/`PublishFormats(...)` are
+`ChannelOpt`s — they slot directly into `EventPattern.Opts`, so a
+`ports`-wired channel gets the same one-step declaration:
+
+```go
+ports.EventPattern{
+    Topic: "cameras/{id}/snapshot",
+    Opts: []events.ChannelOpt{
+        events.TopicParam{Name: "id"},
+        events.Formats(format.Binary(pngCodec).WithContentType("image/png")),
+    },
+}
+```
+
+Use `SubscribeFormats`/`PublishFormats` instead of `Formats` for asymmetric
+channels (different formats per direction — e.g. YAML in, JSON out). A type
+mismatch returns `events.FormatOptError` from the port constructor.
+
 For JPEG or other formats, swap in the matching constraint:
 
 ```go
