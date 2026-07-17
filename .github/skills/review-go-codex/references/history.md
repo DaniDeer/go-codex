@@ -1,6 +1,12 @@
-# go-codex Review History (R1–R61)
+# go-codex Review History (R1–R62)
 
 Do not re-report any of these findings. They have been implemented and tested.
+
+---
+
+## Round 62 (checklist.md §11 rewrite — port-adapter architecture sync, docs-only, zero behavior change)
+
+- **G1 — checklist §11 "Stream Bridge Consistency" described deleted APIs**: the section still instructed reviewers to check `mqtt.SubscribeStream`, `mqtt5.SubscribeStream`, `zeromq.SubscribeStream`, `sql.QueryStream`, `nethttp.HandlerIngest`, and `DrainPublish`-as-bridge — all removed in Round 45 and replaced by port adapters (`SubscribeAdapter`, `QueryAdapter`, `IngestAdapter`, etc.), already covered correctly by SKILL.md's own "Port Adapter Guardrail" (B1–B3). Rewrote the section (renamed "Port Adapter Consistency") with live function names for every rule (B1 validation-pipeline delegation, B2 error routing to `errs`/`Stream.Errors`, B3 static-`Vars` godoc, B4 `AsPipelineFunc` shape, adapter error-type completeness, `IngestAdapter` param-value gap, HTTP codec-coverage docs) and added the missing `ReadError{Err}` to the `adapters/file` error-type row (already correct in SKILL.md's parallel table). Cross-references SKILL.md explicitly as the authoritative source if the two ever diverge again.
 
 ---
 
