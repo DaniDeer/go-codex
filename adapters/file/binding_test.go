@@ -134,14 +134,14 @@ func TestReadEachAdapter_HappyPath(t *testing.T) {
 		codex.RequiredField("factor", codex.Float64(), func(x config) float64 { return x.Factor }, func(x *config, v float64) { x.Factor = v }),
 	)
 	for id, factor := range map[string]float64{"a": 2.0, "b": 3.0} {
-		f := format.NewFile(filepath.Join(dir, id+".json"), format.JSON(c))
-		if err := f.Write(nil, config{Factor: factor}, format.FileOptions{}); err != nil {
+		f := ports.NewFile(filepath.Join(dir, id+".json"), format.JSON(c))
+		if err := f.Write(nil, config{Factor: factor}, ports.FileOptions{}); err != nil {
 			t.Fatalf("write: %v", err)
 		}
 	}
 
 	type reading struct{ ID string }
-	configFile := format.NewFile(filepath.Join(dir, "{id}.json"), format.JSON(c))
+	configFile := ports.NewFile(filepath.Join(dir, "{id}.json"), format.JSON(c))
 
 	inCh := make(chan reading, 2)
 	inCh <- reading{ID: "a"}
@@ -172,7 +172,7 @@ func TestReadEachAdapter_ReadErrorGoesToStreamErrors(t *testing.T) {
 	c := codex.Struct[config](
 		codex.RequiredField("factor", codex.Float64(), func(x config) float64 { return x.Factor }, func(x *config, v float64) { x.Factor = v }),
 	)
-	configFile := format.NewFile(filepath.Join(dir, "{id}.json"), format.JSON(c))
+	configFile := ports.NewFile(filepath.Join(dir, "{id}.json"), format.JSON(c))
 
 	type reading struct{ ID string }
 	inCh := make(chan reading, 1)
@@ -203,7 +203,7 @@ func TestReadEachAdapter_ParamValidationError(t *testing.T) {
 	c := codex.Struct[config](
 		codex.RequiredField("factor", codex.Float64(), func(x config) float64 { return x.Factor }, func(x *config, v float64) { x.Factor = v }),
 	)
-	configFile := format.NewFile(filepath.Join(dir, "{id}.json"), format.JSON(c))
+	configFile := ports.NewFile(filepath.Join(dir, "{id}.json"), format.JSON(c))
 
 	type reading struct{ ID string }
 	inCh := make(chan reading, 1)
@@ -236,7 +236,7 @@ func TestReadEachAdapter_ParamValidationError(t *testing.T) {
 func TestDrainWriteFileAdapter_ParamValidationError(t *testing.T) {
 	ctx := context.Background()
 	dir := t.TempDir()
-	resultFile := format.NewFile(filepath.Join(dir, "{machineID}.json"), format.JSON(itemCodec))
+	resultFile := ports.NewFile(filepath.Join(dir, "{machineID}.json"), format.JSON(itemCodec))
 
 	ch := make(chan item, 1)
 	ch <- item{V: 1}
@@ -278,8 +278,8 @@ func TestDrainPatchAdapter_AppliesPartialUpdate(t *testing.T) {
 	ctx := context.Background()
 	dir := t.TempDir()
 	path := filepath.Join(dir, "config.json")
-	f := format.NewFile(path, format.JSON(itemCodec))
-	if err := f.Write(nil, item{V: 1}, format.FileOptions{}); err != nil {
+	f := ports.NewFile(path, format.JSON(itemCodec))
+	if err := f.Write(nil, item{V: 1}, ports.FileOptions{}); err != nil {
 		t.Fatalf("seed file: %v", err)
 	}
 
@@ -301,7 +301,7 @@ func TestDrainPatchAdapter_AppliesPartialUpdate(t *testing.T) {
 	if caught != nil {
 		t.Fatalf("unexpected error: %v", caught)
 	}
-	got, err := f.Read(nil, format.FileOptions{})
+	got, err := f.Read(nil, ports.FileOptions{})
 	if err != nil {
 		t.Fatalf("read patched file: %v", err)
 	}
@@ -314,8 +314,8 @@ func TestDrainPatchAdapter_NotSupportedForGob(t *testing.T) {
 	ctx := context.Background()
 	dir := t.TempDir()
 	path := filepath.Join(dir, "config.gob")
-	f := format.NewFile(path, format.Gob(itemCodec))
-	if err := f.Write(nil, item{V: 1}, format.FileOptions{}); err != nil {
+	f := ports.NewFile(path, format.Gob(itemCodec))
+	if err := f.Write(nil, item{V: 1}, ports.FileOptions{}); err != nil {
 		t.Fatalf("seed file: %v", err)
 	}
 
@@ -334,7 +334,7 @@ func TestDrainPatchAdapter_NotSupportedForGob(t *testing.T) {
 		fileadapter.DrainPatchAdapterOptions{OnError: func(e error) { caught = e }}))
 	p.Feed(ctx, gstream.From(ctx, ch))
 
-	var pe format.FilePatchNotSupportedError
+	var pe ports.FilePatchNotSupportedError
 	if !errors.As(caught, &pe) {
 		t.Fatalf("want FilePatchNotSupportedError passed through unwrapped, got %T: %v", caught, caught)
 	}
@@ -343,7 +343,7 @@ func TestDrainPatchAdapter_NotSupportedForGob(t *testing.T) {
 func TestDrainPatchAdapter_ParamValidationError(t *testing.T) {
 	ctx := context.Background()
 	dir := t.TempDir()
-	f := format.NewFile(filepath.Join(dir, "{machineID}.json"), format.JSON(itemCodec))
+	f := ports.NewFile(filepath.Join(dir, "{machineID}.json"), format.JSON(itemCodec))
 
 	ch := make(chan map[string]any, 1)
 	ch <- map[string]any{"v": 2}
@@ -388,8 +388,8 @@ func TestDrainPatchEncodedAdapter_AppliesTypedPartialUpdate(t *testing.T) {
 	ctx := context.Background()
 	dir := t.TempDir()
 	path := filepath.Join(dir, "config.json")
-	f := format.NewFile(path, format.JSON(itemCodec))
-	if err := f.Write(nil, item{V: 1}, format.FileOptions{}); err != nil {
+	f := ports.NewFile(path, format.JSON(itemCodec))
+	if err := f.Write(nil, item{V: 1}, ports.FileOptions{}); err != nil {
 		t.Fatalf("seed file: %v", err)
 	}
 
@@ -410,7 +410,7 @@ func TestDrainPatchEncodedAdapter_AppliesTypedPartialUpdate(t *testing.T) {
 	if caught != nil {
 		t.Fatalf("unexpected error: %v", caught)
 	}
-	got, err := f.Read(nil, format.FileOptions{})
+	got, err := f.Read(nil, ports.FileOptions{})
 	if err != nil {
 		t.Fatalf("read patched file: %v", err)
 	}
@@ -422,7 +422,7 @@ func TestDrainPatchEncodedAdapter_AppliesTypedPartialUpdate(t *testing.T) {
 func TestDrainPatchEncodedAdapter_ParamValidationError(t *testing.T) {
 	ctx := context.Background()
 	dir := t.TempDir()
-	f := format.NewFile(filepath.Join(dir, "{machineID}.json"), format.JSON(itemCodec))
+	f := ports.NewFile(filepath.Join(dir, "{machineID}.json"), format.JSON(itemCodec))
 
 	ch := make(chan itemPatch, 1)
 	ch <- itemPatch{V: 3}
@@ -531,8 +531,8 @@ func TestReadAdapter_HappyPath_ViaFilePattern(t *testing.T) {
 		codex.RequiredField("factor", codex.Float64(), func(x config) float64 { return x.Factor }, func(x *config, v float64) { x.Factor = v }),
 	)
 	for id, factor := range map[string]float64{"a": 2.0, "b": 3.0} {
-		f := format.NewFile(filepath.Join(dir, id+".json"), format.JSON(c))
-		if err := f.Write(nil, config{Factor: factor}, format.FileOptions{}); err != nil {
+		f := ports.NewFile(filepath.Join(dir, id+".json"), format.JSON(c))
+		if err := f.Write(nil, config{Factor: factor}, ports.FileOptions{}); err != nil {
 			t.Fatalf("write: %v", err)
 		}
 	}
@@ -588,7 +588,7 @@ func TestReadAdapter_ReadErrorGoesToStreamErrors(t *testing.T) {
 	c := codex.Struct[config](
 		codex.RequiredField("factor", codex.Float64(), func(x config) float64 { return x.Factor }, func(x *config, v float64) { x.Factor = v }),
 	)
-	configFile := format.NewFile(filepath.Join(dir, "{id}.json"), format.JSON(c))
+	configFile := ports.NewFile(filepath.Join(dir, "{id}.json"), format.JSON(c))
 
 	type reading struct{ ID string }
 	inCh := make(chan reading, 1)
@@ -620,7 +620,7 @@ func TestReadAdapter_ParamValidationError(t *testing.T) {
 	c := codex.Struct[config](
 		codex.RequiredField("factor", codex.Float64(), func(x config) float64 { return x.Factor }, func(x *config, v float64) { x.Factor = v }),
 	)
-	configFile := format.NewFile(filepath.Join(dir, "{id}.json"), format.JSON(c))
+	configFile := ports.NewFile(filepath.Join(dir, "{id}.json"), format.JSON(c))
 
 	type reading struct{ ID string }
 	inCh := make(chan reading, 1)

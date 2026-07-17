@@ -371,7 +371,7 @@ publishing, writing, logging:
 ```go
 results = stream.Tap(ctx, results, func(r OEEResult) {
     mqtt.Publish(ctx, client, alertHandle, 0, false, r, nil, mqtt.PublishOptions{}) // fire-and-forget
-    resultFile.Write(nil, r, format.FileOptions{})                                 // whole-file write
+    resultFile.Write(nil, r, ports.FileOptions{})                                 // whole-file write
 })
 ```
 

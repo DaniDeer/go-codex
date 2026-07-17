@@ -9,12 +9,12 @@
 //
 // Two scenes:
 //   - DrainPatchAdapter: untyped map[string]any patches (JSON Merge Patch
-//     semantics via [format.File.Patch]) — a SinkPort[map[string]any].
+//     semantics via [ports.File.Patch]) — a SinkPort[map[string]any].
 //   - DrainPatchEncodedAdapter: a typed patch struct via a dedicated patch
-//     codec (via [format.PatchEncoded]) — a SinkPort[ConfigPatch]; fields in
+//     codec (via [ports.PatchEncoded]) — a SinkPort[ConfigPatch]; fields in
 //     the patch codec but NOT in the file's own codec are still persisted.
 //
-// Both adapters stay handle-first (a hand-built [format.File][T] passed
+// Both adapters stay handle-first (a hand-built [ports.File][T] passed
 // directly, not declared via [ports.FilePattern]) because the patch item's
 // type is deliberately different from the file's own whole-record type — the
 // same reason [file.ReadEachAdapter] stays handle-first for its independent
@@ -73,10 +73,10 @@ func main() {
 	defer os.RemoveAll(dir)
 
 	path := filepath.Join(dir, "config.json")
-	configFile := format.NewFile(path, format.JSON(appConfigCodec))
+	configFile := ports.NewFile(path, format.JSON(appConfigCodec))
 
 	// Seed the file with a whole record before any patches arrive.
-	if err := configFile.Write(nil, AppConfig{Port: 8080, LogLevel: "info"}, format.FileOptions{}); err != nil {
+	if err := configFile.Write(nil, AppConfig{Port: 8080, LogLevel: "info"}, ports.FileOptions{}); err != nil {
 		panic(err)
 	}
 	fmt.Println("─── Scene 1: DrainPatchAdapter (untyped map[string]any patch)")
@@ -98,7 +98,7 @@ func main() {
 	close(ch)
 	patches.Feed(ctx, gstream.From(ctx, ch))
 
-	got, err := configFile.Read(nil, format.FileOptions{})
+	got, err := configFile.Read(nil, ports.FileOptions{})
 	if err != nil {
 		panic(err)
 	}
@@ -122,7 +122,7 @@ func main() {
 	close(tch)
 	typedPatches.Feed(ctx, gstream.From(ctx, tch))
 
-	got, err = configFile.Read(nil, format.FileOptions{})
+	got, err = configFile.Read(nil, ports.FileOptions{})
 	if err != nil {
 		panic(err)
 	}
@@ -131,8 +131,8 @@ func main() {
 	// ── Constraint: Gob (not map-based) rejects Patch entirely ────────────
 	fmt.Println("\n─── Format restriction: Patch requires a map-based format")
 	gobPath := filepath.Join(dir, "config.gob")
-	gobFile := format.NewFile(gobPath, format.Gob(appConfigCodec))
-	if err := gobFile.Write(nil, AppConfig{Port: 9090, LogLevel: "info"}, format.FileOptions{}); err != nil {
+	gobFile := ports.NewFile(gobPath, format.Gob(appConfigCodec))
+	if err := gobFile.Write(nil, AppConfig{Port: 9090, LogLevel: "info"}, ports.FileOptions{}); err != nil {
 		panic(err)
 	}
 	gobPatches, err := ports.NewSinkPort[map[string]any]("gob-patches", mapCodec, ports.PortOptions{Buffer: 4})

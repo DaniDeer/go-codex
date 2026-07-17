@@ -211,7 +211,7 @@ enrichFn := forge.NewFunction("applyThresholds", "1.0.0",
 )
 
 // I/O stays in the stream layer — forge function receives the result:
-configs := /* file.WatchStream + FlatMapSlice + format.File.Read */
+configs := /* file.WatchStream + FlatMapSlice + ports.File.Read */
 combined := stream.CombineLatest2(ctx, sensorStream, configs,
     func(s SensorReading, c ThresholdConfig) EnrichInput { return EnrichInput{s, c} })
 alerts := stream.Apply(ctx, combined, enrichFn, stream.ApplyOptions{})

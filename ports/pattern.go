@@ -166,7 +166,7 @@ type MCPPattern struct {
 
 func (MCPPattern) isPortPattern() {}
 
-// FileFormatKind selects the wire format a [FilePattern]-built [format.File]
+// FileFormatKind selects the wire format a [FilePattern]-built [File]
 // uses, applied to the port's own codec. [FileFormatJSON] is the zero value
 // and default.
 type FileFormatKind int
@@ -181,19 +181,19 @@ const (
 )
 
 // FilePattern declares a typed-file-shaped pattern for a port bound to the
-// file adapter. Path and Opts mirror [format.NewFile]'s first and third
+// file adapter. Path and Opts mirror [NewFile]'s first and third
 // arguments; the [format.Format] argument is derived from the port's codec
 // and the Format kind ([format.JSON] of the codec by default), or from
 // CustomFormat when set (see below).
 //
-// On a [SinkPort], the built handle is a format.File of the port's payload
+// On a [SinkPort], the built handle is a File of the port's payload
 // type — pairs with file.DrainWriteFileAdapter (whole-file overwrite). On an
-// [IOPort], the built handle is a format.File of the port's response type
+// [IOPort], the built handle is a File of the port's response type
 // (the file's content is the port's response) — pairs with
 // file.ReadAdapter. Retrieve it with [FileHandle].
 //
 // For partial updates (patch semantics) instead of a whole-file overwrite,
-// pair a hand-built format.File[T] with file.DrainPatchAdapter or
+// pair a hand-built File[T] with file.DrainPatchAdapter or
 // file.DrainPatchEncodedAdapter — these stay handle-first because the
 // patch item's type is deliberately different from the port's own payload
 // type (map[string]any or a narrow patch struct, vs. the file's whole
@@ -202,8 +202,8 @@ const (
 //
 //	ports.FilePattern{
 //	    Path: "data/{sensorID}/calibration.json",
-//	    Opts: []format.FileOpt{
-//	        format.FilePathParam{Name: "sensorID"}.WithCodec(sensorIDCodec),
+//	    Opts: []ports.FileOpt{
+//	        ports.FilePathParam{Name: "sensorID"}.WithCodec(sensorIDCodec),
 //	    },
 //	}
 type FilePattern struct {
@@ -224,8 +224,8 @@ type FilePattern struct {
 	//	    CustomFormat: format.Binary(pngCodec).WithContentType("image/png"),
 	//	}
 	CustomFormat any
-	// Opts carries the same variadic options [format.NewFile] accepts.
-	Opts []format.FileOpt
+	// Opts carries the same variadic options [NewFile] accepts.
+	Opts []FileOpt
 }
 
 func (FilePattern) isPortPattern() {}
@@ -277,7 +277,7 @@ func (SQLPattern) isPortPattern() {}
 //
 // Key vars are plain strings by default — declare a [CacheKeyParam] in Opts
 // to validate a var's value with a [codex.Codec] before substitution
-// (mirrors [format.FilePathParam]/[format.NewFile]):
+// (mirrors [FilePathParam]/[NewFile]):
 //
 //	ports.CachePattern{
 //	    Key: "user:{id}", TTL: 15 * time.Minute,
@@ -303,8 +303,8 @@ type CachePattern struct {
 	// returns [PatternRegisterError]).
 	CustomFormat any
 	// Opts carries [CacheKeyParam] values declaring per-var codecs for
-	// Key's {var} placeholders — mirrors [format.NewFile]'s variadic
-	// [format.FileOpt] arguments. A var with no matching CacheKeyParam (or
+	// Key's {var} placeholders — mirrors [NewFile]'s variadic
+	// [FileOpt] arguments. A var with no matching CacheKeyParam (or
 	// one with a nil Codec) is substituted without validation.
 	Opts []CacheOpt
 }
@@ -317,11 +317,11 @@ type cacheBuilder struct {
 }
 
 // CacheOpt is the sealed option interface for [CachePattern.Opts]. Currently
-// only [CacheKeyParam] implements it (mirrors [format.FileOpt]/[format.FilePathParam]).
+// only [CacheKeyParam] implements it (mirrors [FileOpt]/[FilePathParam]).
 type CacheOpt interface{ applyCache(*cacheBuilder) }
 
 // CacheKeyParam describes a {varName} placeholder in a [CachePattern.Key]
-// template. It mirrors [format.FilePathParam] — no Required field because
+// template. It mirrors [FilePathParam] — no Required field because
 // every template variable must always be present.
 //
 // CacheKeyParam implements the [CacheOpt] interface: pass it directly in
@@ -424,10 +424,10 @@ type Socket[In, Out any] struct {
 // Cache is a declarative typed cache descriptor: a key template, a default
 // TTL, a value [format.Format], and optional per-key-variable codecs. It
 // bundles everything a cache adapter (redis.GetAdapter, redis.SetAdapter,
-// redis.DrainSetAdapter, redis.Seed) needs, the same way [format.File]
+// redis.DrainSetAdapter, redis.Seed) needs, the same way [File]
 // bundles everything a file adapter needs.
 //
-// Cache mirrors [format.File]'s two construction paths:
+// Cache mirrors [File]'s two construction paths:
 //
 //   - Declared on a port via [CachePattern] and retrieved with [CacheHandle]
 //     — the pipeline-integrated path.
@@ -454,7 +454,7 @@ type Cache[T any] struct {
 // [format.Format], and optional [CacheKeyParam] values — the standalone
 // constructor for using a cache adapter (redis.GetAdapter, redis.SetAdapter,
 // redis.DrainSetAdapter, redis.Seed) directly, with no port/pipeline
-// involved. Mirrors [format.NewFile].
+// involved. Mirrors [NewFile].
 //
 // NewCache is infallible — it only captures the spec. Key-variable
 // validation runs at [Cache.BuildKey]/[Cache.ValidateKeyVars] time. TTL is
@@ -518,7 +518,7 @@ func (c Cache[T]) BuildKey(vars map[string]string) (string, error) {
 }
 
 // ValidateKeyVars validates vars against declared [CacheKeyParam] codecs
-// without building the concrete key. Mirrors [format.File.ValidatePathVars].
+// without building the concrete key. Mirrors [File.ValidatePathVars].
 //
 // Returns the first codec failure as a [CacheKeyParamError], or
 // [CacheKeyError] for vars referenced by a declared CacheKeyParam but
@@ -543,7 +543,7 @@ func (c Cache[T]) ValidateKeyVars(vars map[string]string) error {
 // KeySchemas returns a map from key template variable name to the codec's
 // [schema.Schema], for each [CacheKeyParam] with a non-nil Codec. Parameters
 // without a codec are omitted. Returns an empty map when no params have
-// codecs registered. Mirrors [format.File.PathParamSchemas].
+// codecs registered. Mirrors [File.PathParamSchemas].
 func (c Cache[T]) KeySchemas() map[string]schema.Schema {
 	out := make(map[string]schema.Schema, len(c.params))
 	for _, p := range c.params {

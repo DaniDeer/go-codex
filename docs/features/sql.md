@@ -97,7 +97,7 @@ internally (no duplicated logic). Unlike bare `Validate` — which has no
 `Observer` is left nil. `DecorateOutput` passes `fn`'s own error (e.g.
 `sql.ErrNoRows`) through unchanged — validation only runs on success.
 
-This is the SQL equivalent of declaring a `ports.Cache`/`format.File` once
+This is the SQL equivalent of declaring a `ports.Cache`/`ports.File` once
 and reusing it — see [Design pattern: declarative descriptor + plain
 function](ports.md#design-pattern-declarative-descriptor--plain-function)
 for the full picture across `file`/`sql`/`rest`/`events`/cache. SQL has no

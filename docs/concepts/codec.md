@@ -887,9 +887,9 @@ var htmlUnescapedCodec = codex.MapCodecSafe(
 
 `format.EmbeddedJSON`, `format.EmbeddedYAML`, and `format.EmbeddedTOML` are library functions in the `format` package. On format parse failure they return `format.EmbeddedDecodeError{Format, Err}`; on marshal failure `format.EmbeddedEncodeError{Format, Err}` — both implement `slog.LogValuer`. Codec validation errors from the inner codec propagate unchanged.
 
-#### Composing with `format.File[T]`
+#### Composing with `ports.File[T]`
 
-Because `EmbeddedJSON` is just a `Codec[T]`, it composes transparently with `format.File[T]` which means `EmbeddedJSON` codec participates in the decode pass exactly like any other field codec. The outer file format (JSON/YAML/TOML) handles the file bytes; the inner `EmbeddedJSON` field codec handles the string-to-struct conversion — no special wiring needed.
+Because `EmbeddedJSON` is just a `Codec[T]`, it composes transparently with `ports.File[T]` which means `EmbeddedJSON` codec participates in the decode pass exactly like any other field codec. The outer file format (JSON/YAML/TOML) handles the file bytes; the inner `EmbeddedJSON` field codec handles the string-to-struct conversion — no special wiring needed.
 
 ```go
 // File: events/user-created.json
@@ -902,13 +902,13 @@ var eventCodec = codex.Struct[Event](
     codex.RequiredField("event",   codex.String(), ...),
     codex.RequiredField("payload", format.EmbeddedJSON(userCodec), ...),
 )
-var eventFile = format.NewFile("events/user-created.json", format.JSON(eventCodec))
+var eventFile = ports.NewFile("events/user-created.json", format.JSON(eventCodec))
 
-event, err := eventFile.Read(nil, format.FileOptions{})
+event, err := eventFile.Read(nil, ports.FileOptions{})
 // event.Payload == User{ID:"123", Name:"Alice"}
 
 // Write — EmbeddedJSON encodes User → JSON string on the way out
-err = eventFile.Write(nil, event, format.FileOptions{Perm: 0644})
+err = eventFile.Write(nil, event, ports.FileOptions{Perm: 0644})
 // Writes: {"event":"user.created","payload":"{\"id\":\"123\",\"name\":\"Alice\"}"}
 ```
 
@@ -918,14 +918,14 @@ This works identically with `format.YAML(eventCodec)` and `format.TOML(eventCode
 
 ```go
 // Template path with codec-validated path variable
-var userEventFile = format.NewFile(
+var userEventFile = ports.NewFile(
     "events/{userID}/latest.json",
     format.JSON(eventCodec),
-    format.FilePathParam{Name: "userID"}.WithCodec(codex.String().Refine(validate.UUID)),
+    ports.FilePathParam{Name: "userID"}.WithCodec(codex.String().Refine(validate.UUID)),
 )
 event, err = userEventFile.Read(
     map[string]string{"userID": "f47ac10b-58cc-4372-a567-0e02b2c3d479"},
-    format.FileOptions{},
+    ports.FileOptions{},
 )
 ```
 

@@ -44,7 +44,7 @@ cache, _ := ports.CacheHandle[User](UserCache) // ports.Cache[User]
 By default, key vars are plain strings — `Cache.BuildKey` only checks that
 every `{var}` has an entry in `vars` (`CacheKeyError` on a missing var).
 Declare a `CacheKeyParam` to also validate the *value*, the same way
-`rest.PathParam`/`events.TopicParam`/`format.FilePathParam` validate their
+`rest.PathParam`/`events.TopicParam`/`ports.FilePathParam` validate their
 templated variables:
 
 ```go
@@ -73,7 +73,7 @@ spec tooling).
 ### Standalone use — building without the pipeline features
 
 If your application doesn't use `ports`/`stream` pipelines at all, `Get` and
-`Set` are the cache's equivalent of `format.File.Read`/`.Write` or
+`Set` are the cache's equivalent of `ports.File.Read`/`.Write` or
 `adapters/sql.Validate` — plain functions, full codec validation (key vars
 AND value), **no `ports.IOAdapter`, no `stream.Stream`, no port anywhere in
 the call path**:

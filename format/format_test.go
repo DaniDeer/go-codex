@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"os"
 	"strings"
 	"testing"
 
@@ -388,92 +387,8 @@ func TestBinary_IsNotStreamable(t *testing.T) {
 	}
 }
 
-// ── Binary + File integration (Observer) ─────────────────────────────────────
-
-func TestBinary_FileObserver_WriteSuccess(t *testing.T) {
-	dir := t.TempDir()
-	path := dir + "/out.bin"
-	spy := &fileObserverSpy{}
-
-	f := format.NewFile(path, format.Binary(codex.Bytes()))
-	err := f.Write(nil, []byte{0x01, 0x02, 0x03}, format.FileOptions{Observer: spy})
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if len(spy.writes) != 1 || !spy.writes[0].success {
-		t.Errorf("expected 1 successful write, got %+v", spy.writes)
-	}
-}
-
-func TestBinary_FileObserver_WriteConstraintFail(t *testing.T) {
-	dir := t.TempDir()
-	path := dir + "/out.bin"
-	spy := &fileObserverSpy{}
-
-	prefix := []byte{0xAA, 0xBB}
-	f := format.NewFile(path, format.Binary(codex.Bytes().Refine(validate.HasPrefix(prefix))))
-	err := f.Write(nil, []byte{0x00, 0x01}, format.FileOptions{Observer: spy})
-	if err == nil {
-		t.Fatal("expected error, got nil")
-	}
-	var encErr format.FileEncodeError
-	if !errors.As(err, &encErr) {
-		t.Fatalf("expected FileEncodeError, got %T: %v", err, err)
-	}
-	if len(spy.writes) != 1 || spy.writes[0].success {
-		t.Errorf("expected 1 failed write callback, got %+v", spy.writes)
-	}
-}
-
-func TestBinary_FileObserver_ReadSuccess(t *testing.T) {
-	dir := t.TempDir()
-	path := dir + "/data.bin"
-	data := []byte{0x10, 0x20, 0x30}
-	if err := writeRawFile(path, data); err != nil {
-		t.Fatal(err)
-	}
-	spy := &fileObserverSpy{}
-
-	f := format.NewFile(path, format.Binary(codex.Bytes()))
-	got, err := f.Read(nil, format.FileOptions{Observer: spy})
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if !bytes.Equal(got, data) {
-		t.Errorf("read mismatch: want %v, got %v", data, got)
-	}
-	if len(spy.reads) != 1 || !spy.reads[0].success {
-		t.Errorf("expected 1 successful read, got %+v", spy.reads)
-	}
-}
-
-func TestBinary_FileObserver_ReadConstraintFail(t *testing.T) {
-	dir := t.TempDir()
-	path := dir + "/data.bin"
-	if err := writeRawFile(path, []byte{0x00, 0x01, 0x02}); err != nil {
-		t.Fatal(err)
-	}
-	spy := &fileObserverSpy{}
-
-	prefix := []byte{0xAA, 0xBB}
-	f := format.NewFile(path, format.Binary(codex.Bytes().Refine(validate.HasPrefix(prefix))))
-	_, err := f.Read(nil, format.FileOptions{Observer: spy})
-	if err == nil {
-		t.Fatal("expected error, got nil")
-	}
-	var decErr format.FileDecodeError
-	if !errors.As(err, &decErr) {
-		t.Fatalf("expected FileDecodeError, got %T: %v", err, err)
-	}
-	if len(spy.reads) != 1 || spy.reads[0].success {
-		t.Errorf("expected 1 failed read callback, got %+v", spy.reads)
-	}
-}
-
-// writeRawFile writes raw bytes to path.
-func writeRawFile(path string, data []byte) error {
-	return os.WriteFile(path, data, 0644)
-}
+// Binary + File integration (Observer) tests moved to ports/file_test.go —
+// File[T] now lives in the ports package (file-to-ports migration).
 
 // --- Example functions (shown on pkg.go.dev as runnable snippets) ---
 

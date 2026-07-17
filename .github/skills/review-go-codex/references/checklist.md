@@ -222,13 +222,13 @@ All must be `errors.As`-navigable. Bare `fmt.Errorf` in `client.go` without a ty
 
 | Error type | When to use |
 |------------|-------------|
-| `format.FilePathParamError{Name, Value, Err}` | path variable fails its codec constraint in `BuildPath`/`Read`/`Write`/`Update` |
-| `format.MissingFilePathVarError{Name}` | path variable absent from the `vars` map |
-| `format.FileReadError{Path, Err}` | `os.ReadFile` fails |
-| `format.FileDecodeError{Path, Err}` | codec decode or constraint validation fails on read |
-| `format.FileEncodeError{Path, Err}` | codec encode fails on write |
-| `format.FileWriteError{Path, Err}` | `os.WriteFile` fails |
-| `format.FilePatchNotSupportedError{Path}` | `Patch`/`PatchEncoded` called on a Gob or Binary format |
+| `ports.FilePathParamError{Name, Value, Err}` | path variable fails its codec constraint in `BuildPath`/`Read`/`Write`/`Update` |
+| `ports.MissingFilePathVarError{Name}` | path variable absent from the `vars` map |
+| `ports.FileReadError{Path, Err}` | `os.ReadFile` fails |
+| `ports.FileDecodeError{Path, Err}` | codec decode or constraint validation fails on read |
+| `ports.FileEncodeError{Path, Err}` | codec encode fails on write |
+| `ports.FileWriteError{Path, Err}` | `os.WriteFile` fails |
+| `ports.FilePatchNotSupportedError{Path}` | `Patch`/`PatchEncoded` called on a Gob or Binary format |
 
 All 7 file error types implement `Unwrap()` **and** `slog.LogValuer`. Callers can pass any file error directly to `slog.Any(...)` for nested structured attributes.
 
@@ -258,7 +258,7 @@ doesn't wrap a typed sentinel is a finding.
 | `Observer` | embeds `ValidationObserver` + transport hooks | adapters (nethttp, chi, mqtt, mcpgo) |
 | `PipelineObserver` | `RecordApply(name, version string, success bool, duration time.Duration)` | forge Registry |
 | `SecurityObserver` | `RecordSecurityRejection(location, scheme string)` | adapters (type-asserted, not mcpgo) |
-| `FileObserver` | `RecordFileRead(path string, success bool, d time.Duration)` · `RecordFileWrite(path string, success bool, d time.Duration)` | `format.File[T]` (type-asserted, never embedded) |
+| `FileObserver` | `RecordFileRead(path string, success bool, d time.Duration)` · `RecordFileWrite(path string, success bool, d time.Duration)` | `ports.File[T]` (type-asserted, never embedded) |
 | `TraceObserver` | `StartSpan(ctx, operation, name string) context.Context` · `EndSpan(ctx, err error)` | all adapters (type-asserted, never embedded) |
 
 ### Rules
@@ -280,7 +280,7 @@ doesn't wrap a typed sentinel is a finding.
 - **HTTP/MCP closure exception**: `nethttp.Handler`, `chi.Handler`, `mcpgo.ToolHandler` etc. are constructors that return closures. obs is resolved inside the closure from `r.Context()` / call ctx — NOT at construction time. This is correct.
 - **`sql.Validate` exception**: no `ctx` parameter → `NoopObserver{}` is correct. Do not flag.
 - **`forge.Registry`**: explicit `.WithObserver(obs)` builder. No context integration by design.
-- **`format.File` two-step guard**: uses `opts.Context` (optional) → `ObserverFromContext(opts.Context)` then `NoopObserver{}` fallback. This is correct.
+- **`ports.File` two-step guard**: uses `opts.Context` (optional) → `ObserverFromContext(opts.Context)` then `NoopObserver{}` fallback. This is correct.
 - **`adapters/nethttp` client (`Call`) observer rules**:
   - `RecordRequest(method, routePathTemplate, statusCode, duration)` — called on **every** code path; status 0 = pre-flight failure (no HTTP call reached the network)
   - `stats.ReportErrors(obs, location, err)` called before `RecordRequest` for param validation failures (location: `"path"`, `"query"`, `"cookie"`, `"header"`, `"body"`)

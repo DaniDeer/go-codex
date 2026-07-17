@@ -5,7 +5,7 @@ import "context"
 type observerKey struct{}
 
 // WithObserver returns a copy of ctx carrying obs as the default observer.
-// Adapters, stream bridges, and [format.File] operations that receive this
+// Adapters, stream bridges, and [ports.File] operations that receive this
 // context will use obs automatically when no explicit Observer is set in their
 // options struct — without passing Observer: obs on every call site.
 //

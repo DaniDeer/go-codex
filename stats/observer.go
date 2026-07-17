@@ -148,7 +148,7 @@ type TraceObserver interface {
 }
 
 // FileObserver is an optional extension to [Observer] for file I/O lifecycle
-// events. [format.File] type-asserts the configured observer to FileObserver
+// events. [ports.File] type-asserts the configured observer to FileObserver
 // before calling its methods, so implementing this interface is purely additive
 // — existing Observer implementations need not change.
 //
@@ -158,14 +158,14 @@ type TraceObserver interface {
 //	}
 //	func (o *MyObserver) RecordFileWrite(path string, success bool, d time.Duration) { ... }
 type FileObserver interface {
-	// RecordFileRead is called after every [format.File.Read], [format.File.Update],
-	// or [format.File.Patch] attempt (read phase). path is the concrete file path
+	// RecordFileRead is called after every [ports.File.Read], [ports.File.Update],
+	// or [ports.File.Patch] attempt (read phase). path is the concrete file path
 	// (after template substitution), success is false on any error including
 	// decode/validation failures.
 	RecordFileRead(path string, success bool, duration time.Duration)
 
-	// RecordFileWrite is called after every [format.File.Write], [format.File.Update],
-	// or [format.File.Patch] attempt (write phase). success is false on any
+	// RecordFileWrite is called after every [ports.File.Write], [ports.File.Update],
+	// or [ports.File.Patch] attempt (write phase). success is false on any
 	// encode or filesystem error.
 	RecordFileWrite(path string, success bool, duration time.Duration)
 }

@@ -93,20 +93,20 @@ func MCPHandle[In, Out any](port any) (*apimcp.ToolHandle[In, Out], bool) {
 	return h, ok
 }
 
-// FileHandle returns the [format.File] built from port's declared
+// FileHandle returns the [File] built from port's declared
 // [FilePattern], or (zero, false) if the port declared no [FilePattern].
 // On a [SinkPort], T is the port's payload type; on an [IOPort], T is the
 // port's response type (the file's content is the port's response).
-func FileHandle[T any](port any) (format.File[T], bool) {
+func FileHandle[T any](port any) (File[T], bool) {
 	ph, ok := port.(patternHolder)
 	if !ok {
-		return format.File[T]{}, false
+		return File[T]{}, false
 	}
 	v, ok := ph.patternHandle(patternKindFile)
 	if !ok {
-		return format.File[T]{}, false
+		return File[T]{}, false
 	}
-	h, ok := v.(format.File[T])
+	h, ok := v.(File[T])
 	return h, ok
 }
 
@@ -297,7 +297,7 @@ const (
 // (publish) construction — both are single-codec ports, matching EventPattern's
 // single payload type. It also handles [RESTPattern] (role-dependent: HTTP
 // ingest rest.Route[T, struct{}] on a source, SSE rest.SSERoute[struct{}, T]
-// on a sink), [FilePattern] (building a format.File[T] from the port's codec
+// on a sink), [FilePattern] (building a File[T] from the port's codec
 // — infallible on the enum-only path; a declared CustomFormat type mismatch
 // returns [PatternRegisterError]), and [SQLPattern] (metadata-only, stored
 // for [SQLMeta] / [WithSQLMeta] propagation).
@@ -377,7 +377,7 @@ func buildEventPatternHandles[T any](
 			if err != nil {
 				return nil, nil, err
 			}
-			f := format.NewFile(pat.Path, fFmt, pat.Opts...)
+			f := NewFile(pat.Path, fFmt, pat.Opts...)
 			handles[patternKindFile] = f
 			specs[patternKindFile] = f
 		case SQLPattern:
@@ -434,7 +434,7 @@ func buildEventPatternHandles[T any](
 // each found via Register — the SAME call a hand-declared route/tool makes.
 // Used by [IOPort] (client call) and [ToolPort] (server pipeline) construction
 // — both are dual-codec ports. It also handles [FilePattern] (building a
-// format.File[Resp] from the port's RESPONSE codec — infallible on the
+// File[Resp] from the port's RESPONSE codec — infallible on the
 // enum-only path; a declared CustomFormat type mismatch returns
 // [PatternRegisterError]) and [SQLPattern] (metadata-only).
 //
@@ -499,12 +499,12 @@ func buildDualCodecPatternHandles[Req, Resp any](
 			specs[patternKindMCP] = tool
 		case FilePattern:
 			// The file's content is the port's RESPONSE type — a per-item
-			// retrieval reads a format.File[Resp].
+			// retrieval reads a File[Resp].
 			fFmt, err := resolveFormat(portName, patternKindFile, pat.Format, pat.CustomFormat, respCodec)
 			if err != nil {
 				return nil, nil, err
 			}
-			f := format.NewFile(pat.Path, fFmt, pat.Opts...)
+			f := NewFile(pat.Path, fFmt, pat.Opts...)
 			handles[patternKindFile] = f
 			specs[patternKindFile] = f
 		case SQLPattern:

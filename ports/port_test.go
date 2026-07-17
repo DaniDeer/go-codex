@@ -1183,7 +1183,7 @@ func TestFilePattern_SinkPort_BuildsFileHandle(t *testing.T) {
 		Patterns: []ports.Pattern{
 			ports.FilePattern{
 				Path: "data/{id}/item.json",
-				Opts: []format.FileOpt{format.FilePathParam{Name: "id"}},
+				Opts: []ports.FileOpt{ports.FilePathParam{Name: "id"}},
 			},
 		},
 	})
@@ -1215,7 +1215,7 @@ func TestFilePattern_IOPort_UsesRespCodec(t *testing.T) {
 	if err != nil {
 		t.Fatalf("construct port: %v", err)
 	}
-	// The handle is a format.File of the RESPONSE type…
+	// The handle is a ports.File of the RESPONSE type…
 	if _, ok := ports.FileHandle[cfgItem](p); !ok {
 		t.Error("want FileHandle[cfgItem] (response type) to be present")
 	}
@@ -1250,10 +1250,10 @@ func TestFilePattern_FormatKinds(t *testing.T) {
 			if !ok {
 				t.Fatal("want FileHandle to be present")
 			}
-			if err := f.Write(nil, cfgItem{V: 7}, format.FileOptions{}); err != nil {
+			if err := f.Write(nil, cfgItem{V: 7}, ports.FileOptions{}); err != nil {
 				t.Fatalf("write: %v", err)
 			}
-			got, err := f.Read(nil, format.FileOptions{})
+			got, err := f.Read(nil, ports.FileOptions{})
 			if err != nil {
 				t.Fatalf("read: %v", err)
 			}
@@ -2049,10 +2049,10 @@ func TestFilePattern_CustomFormat_Gob(t *testing.T) {
 	if !ok {
 		t.Fatal("want FileHandle to be present")
 	}
-	if err := f.Write(nil, cfgItem{V: 42}, format.FileOptions{}); err != nil {
+	if err := f.Write(nil, cfgItem{V: 42}, ports.FileOptions{}); err != nil {
 		t.Fatalf("write: %v", err)
 	}
-	got, err := f.Read(nil, format.FileOptions{})
+	got, err := f.Read(nil, ports.FileOptions{})
 	if err != nil {
 		t.Fatalf("read: %v", err)
 	}
@@ -2080,10 +2080,10 @@ func TestFilePattern_CustomFormat_BinaryPNG(t *testing.T) {
 		t.Fatal("want FileHandle to be present")
 	}
 	pngSig := []byte{0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 0x00}
-	if err := f.Write(nil, pngSig, format.FileOptions{}); err != nil {
+	if err := f.Write(nil, pngSig, ports.FileOptions{}); err != nil {
 		t.Fatalf("write: %v", err)
 	}
-	got, err := f.Read(nil, format.FileOptions{})
+	got, err := f.Read(nil, ports.FileOptions{})
 	if err != nil {
 		t.Fatalf("read: %v", err)
 	}
@@ -2091,7 +2091,7 @@ func TestFilePattern_CustomFormat_BinaryPNG(t *testing.T) {
 		t.Errorf("bytes not preserved: %v", got)
 	}
 	// Non-PNG bytes rejected by the constraint on write.
-	if err := f.Write(nil, []byte("not a png"), format.FileOptions{}); err == nil {
+	if err := f.Write(nil, []byte("not a png"), ports.FileOptions{}); err == nil {
 		t.Error("want PNG constraint to reject non-PNG bytes")
 	}
 }
@@ -2465,10 +2465,10 @@ func TestCustomFormat_Nil_RegressionGuard(t *testing.T) {
 	if !ok {
 		t.Fatal("want FileHandle to be present")
 	}
-	if err := f.Write(nil, cfgItem{V: 1}, format.FileOptions{}); err != nil {
+	if err := f.Write(nil, cfgItem{V: 1}, ports.FileOptions{}); err != nil {
 		t.Fatalf("write: %v", err)
 	}
-	got, err := f.Read(nil, format.FileOptions{})
+	got, err := f.Read(nil, ports.FileOptions{})
 	if err != nil {
 		t.Fatalf("read: %v", err)
 	}
@@ -2496,7 +2496,7 @@ func TestCustomFormat_PrecedenceOverFormat(t *testing.T) {
 	if !ok {
 		t.Fatal("want FileHandle to be present")
 	}
-	if err := f.Write(nil, cfgItem{V: 77}, format.FileOptions{}); err != nil {
+	if err := f.Write(nil, cfgItem{V: 77}, ports.FileOptions{}); err != nil {
 		t.Fatalf("write: %v", err)
 	}
 	raw, err := os.ReadFile(dir + "/item.gob")
@@ -2508,7 +2508,7 @@ func TestCustomFormat_PrecedenceOverFormat(t *testing.T) {
 	if strings.HasPrefix(string(raw), "v:") {
 		t.Error("want binary Gob output, got what looks like YAML — CustomFormat did not win")
 	}
-	got, err := f.Read(nil, format.FileOptions{})
+	got, err := f.Read(nil, ports.FileOptions{})
 	if err != nil {
 		t.Fatalf("read: %v", err)
 	}

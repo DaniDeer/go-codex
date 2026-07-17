@@ -56,9 +56,9 @@ func (e WatchError) LogValue() slog.Value {
 
 // ReadError is sent to [Stream.Errors] by [ReadEachStream] when reading or
 // decoding a file fails for an upstream stream item. It wraps the underlying
-// error (typically [format.FileReadError] or [format.FileDecodeError]).
+// error (typically [ports.FileReadError] or [ports.FileDecodeError]).
 type ReadError struct {
-	// Err is the underlying error from [format.File.Read].
+	// Err is the underlying error from [ports.File.Read].
 	Err error
 }
 

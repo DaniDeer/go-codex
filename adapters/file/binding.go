@@ -16,10 +16,10 @@
 //   - [DrainWriteAdapter] — encodes each item and writes it as a line to an [io.Writer]
 //   - [DrainWriteFileAdapter] — writes each item as a complete typed file (whole-file overwrite)
 //   - [DrainPatchAdapter] — applies each item as an untyped map[string]any partial
-//     update (JSON Merge Patch semantics) via [format.File.Patch]; map-based formats
+//     update (JSON Merge Patch semantics) via [ports.File.Patch]; map-based formats
 //     (JSON/YAML/TOML/[format.New]) only
 //   - [DrainPatchEncodedAdapter] — applies each item as a typed partial update via
-//     [format.PatchEncoded]; same map-based-format restriction
+//     [ports.PatchEncoded]; same map-based-format restriction
 package file
 
 import (
@@ -187,7 +187,7 @@ func (a *fileWatchAdapter) Activate(ctx context.Context, dst chan<- string, errs
 // ReadEachAdapterOptions configures [ReadEachAdapter].
 type ReadEachAdapterOptions struct {
 	Observer    stats.Observer
-	FileOptions format.FileOptions
+	FileOptions ports.FileOptions
 	Buffer      int
 }
 
@@ -203,7 +203,7 @@ type ReadEachAdapterOptions struct {
 // with [ports.ValidateParams] before the file read; a validation failure is
 // delivered as [ReadError] wrapping [codex.ValidationErrors].
 func ReadEachAdapter[In, T, Resp any](
-	f format.File[T],
+	f ports.File[T],
 	varsFor func(In) map[string]string,
 	combine func(In, T) Resp,
 	opts ReadEachAdapterOptions,
@@ -212,7 +212,7 @@ func ReadEachAdapter[In, T, Resp any](
 }
 
 type fileReadEachAdapter[In, T, Resp any] struct {
-	f       format.File[T]
+	f       ports.File[T]
 	varsFor func(In) map[string]string
 	combine func(In, T) Resp
 	opts    ReadEachAdapterOptions
@@ -312,7 +312,7 @@ func (a *fileReadEachAdapter[In, T, Resp]) Transform(ctx context.Context, src gs
 // validated with [ports.ValidateParams] before the file read; a validation
 // failure is delivered as [ReadError] wrapping [codex.ValidationErrors].
 func ReadAdapter[In, Resp any](
-	f format.File[Resp],
+	f ports.File[Resp],
 	varsFor func(In) map[string]string,
 	opts ReadEachAdapterOptions,
 ) ports.IOAdapter[In, Resp] {
@@ -411,7 +411,7 @@ func (a *fileDrainWriteAdapter[T]) Activate(ctx context.Context, src gstream.Str
 // DrainWriteFileAdapterOptions configures [DrainWriteFileAdapter].
 type DrainWriteFileAdapterOptions struct {
 	Observer    stats.Observer
-	FileOptions format.FileOptions
+	FileOptions ports.FileOptions
 	OnError     func(error)
 }
 
@@ -427,7 +427,7 @@ type DrainWriteFileAdapterOptions struct {
 // failure is reported to Options.OnError as [WriteError] wrapping
 // [codex.ValidationErrors] and the item is otherwise skipped (not written).
 func DrainWriteFileAdapter[T any](
-	f format.File[T],
+	f ports.File[T],
 	varsFor func(T) map[string]string,
 	opts DrainWriteFileAdapterOptions,
 ) ports.SinkAdapter[T] {
@@ -435,7 +435,7 @@ func DrainWriteFileAdapter[T any](
 }
 
 type fileDrainWriteFileAdapter[T any] struct {
-	f       format.File[T]
+	f       ports.File[T]
 	varsFor func(T) map[string]string
 	opts    DrainWriteFileAdapterOptions
 }
@@ -489,13 +489,13 @@ func (a *fileDrainWriteFileAdapter[T]) Activate(ctx context.Context, src gstream
 // DrainPatchAdapterOptions configures [DrainPatchAdapter].
 type DrainPatchAdapterOptions struct {
 	Observer    stats.Observer
-	FileOptions format.FileOptions
+	FileOptions ports.FileOptions
 	OnError     func(error)
 }
 
 // DrainPatchAdapter returns a [ports.SinkAdapter] that applies each item as a
 // partial update (JSON Merge Patch semantics) to an existing typed file via
-// [format.File.Patch], instead of overwriting the whole file like
+// [ports.File.Patch], instead of overwriting the whole file like
 // [DrainWriteFileAdapter]. f is built by hand (not via [ports.FilePattern]):
 // the stream's item type (map[string]any) is deliberately different from f's
 // own type T, the same way [ReadEachAdapter] takes an independent content
@@ -506,18 +506,18 @@ type DrainPatchAdapterOptions struct {
 //	    file.DrainPatchAdapterOptions{}))
 //
 // f's format must be map-based (JSON, YAML, TOML, or [format.New]); otherwise
-// every item fails with [format.FilePatchNotSupportedError] (passed through
+// every item fails with [ports.FilePatchNotSupportedError] (passed through
 // to Options.OnError unchanged — see below).
 //
 // When the bound [ports.SinkPort] declares Params, each varsFor result is
 // validated with [ports.ValidateParams] before the patch; a validation
 // failure is reported to Options.OnError as [WriteError] wrapping
 // [codex.ValidationErrors] and the item is otherwise skipped (not patched).
-// A [format.File.Patch] failure (including [format.FilePatchNotSupportedError])
+// A [ports.File.Patch] failure (including [ports.FilePatchNotSupportedError])
 // is passed to Options.OnError unchanged, mirroring [DrainWriteFileAdapter]'s
-// treatment of [format.File.Write] failures.
+// treatment of [ports.File.Write] failures.
 func DrainPatchAdapter[T any](
-	f format.File[T],
+	f ports.File[T],
 	varsFor func(map[string]any) map[string]string,
 	opts DrainPatchAdapterOptions,
 ) ports.SinkAdapter[map[string]any] {
@@ -525,7 +525,7 @@ func DrainPatchAdapter[T any](
 }
 
 type fileDrainPatchAdapter[T any] struct {
-	f       format.File[T]
+	f       ports.File[T]
 	varsFor func(map[string]any) map[string]string
 	opts    DrainPatchAdapterOptions
 }
@@ -579,13 +579,13 @@ func (a *fileDrainPatchAdapter[T]) Activate(ctx context.Context, src gstream.Str
 // DrainPatchEncodedAdapterOptions configures [DrainPatchEncodedAdapter].
 type DrainPatchEncodedAdapterOptions struct {
 	Observer    stats.Observer
-	FileOptions format.FileOptions
+	FileOptions ports.FileOptions
 	OnError     func(error)
 }
 
 // DrainPatchEncodedAdapter returns a [ports.SinkAdapter] that applies each
 // item as a typed partial update to an existing typed file via
-// [format.PatchEncoded]. Unlike [DrainPatchAdapter]'s untyped map[string]any
+// [ports.PatchEncoded]. Unlike [DrainPatchAdapter]'s untyped map[string]any
 // patches, patchCodec fields not present in f's own codec are still
 // persisted — the right choice for intentionally adding new fields to a file.
 // f is built by hand (not via [ports.FilePattern]): the stream's item type P
@@ -597,18 +597,18 @@ type DrainPatchEncodedAdapterOptions struct {
 //	    file.DrainPatchEncodedAdapterOptions{}))
 //
 // f's format must be map-based (JSON, YAML, TOML, or [format.New]); otherwise
-// every item fails with [format.FilePatchNotSupportedError] (passed through
+// every item fails with [ports.FilePatchNotSupportedError] (passed through
 // to Options.OnError unchanged — see below).
 //
 // When the bound [ports.SinkPort] declares Params, each varsFor result is
 // validated with [ports.ValidateParams] before the patch; a validation
 // failure is reported to Options.OnError as [WriteError] wrapping
 // [codex.ValidationErrors] and the item is otherwise skipped (not patched).
-// A [format.PatchEncoded] failure (including [format.FilePatchNotSupportedError])
+// A [ports.PatchEncoded] failure (including [ports.FilePatchNotSupportedError])
 // is passed to Options.OnError unchanged, mirroring [DrainWriteFileAdapter]'s
-// treatment of [format.File.Write] failures.
+// treatment of [ports.File.Write] failures.
 func DrainPatchEncodedAdapter[T, P any](
-	f format.File[T],
+	f ports.File[T],
 	patchCodec codex.Codec[P],
 	varsFor func(P) map[string]string,
 	opts DrainPatchEncodedAdapterOptions,
@@ -617,7 +617,7 @@ func DrainPatchEncodedAdapter[T, P any](
 }
 
 type fileDrainPatchEncodedAdapter[T, P any] struct {
-	f          format.File[T]
+	f          ports.File[T]
 	patchCodec codex.Codec[P]
 	varsFor    func(P) map[string]string
 	opts       DrainPatchEncodedAdapterOptions
@@ -653,7 +653,7 @@ func (a *fileDrainPatchEncodedAdapter[T, P]) Activate(ctx context.Context, src g
 				}
 				return nil
 			}
-			if err := format.PatchEncoded(a.f, vars, a.patchCodec, v, fileOpts); err != nil {
+			if err := ports.PatchEncoded(a.f, vars, a.patchCodec, v, fileOpts); err != nil {
 				if onErr != nil {
 					onErr(err)
 				}

@@ -1,4 +1,4 @@
-package format
+package ports
 
 import (
 	"context"
@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/DaniDeer/go-codex/codex"
+	"github.com/DaniDeer/go-codex/format"
 	"github.com/DaniDeer/go-codex/schema"
 	"github.com/DaniDeer/go-codex/stats"
 )
@@ -38,7 +39,7 @@ type FilePathParam struct {
 // WithCodec sets the validation codec and returns the updated FilePathParam.
 // Use this instead of setting Codec directly:
 //
-//	format.FilePathParam{Name: "date"}.WithCodec(codex.String().Refine(validate.Date))
+//	ports.FilePathParam{Name: "date"}.WithCodec(codex.String().Refine(validate.Date))
 func (p FilePathParam) WithCodec(c codex.Codec[string]) FilePathParam {
 	p.Codec = &c
 	return p
@@ -91,22 +92,22 @@ type FileOptions struct {
 // Typical usage:
 //
 //	// Declare once — share across functions and packages.
-//	var configFile = format.NewFile("config.toml", format.TOML(configCodec))
+//	var configFile = ports.NewFile("config.toml", format.TOML(configCodec))
 //
 //	// Read
-//	cfg, err := configFile.Read(nil, format.FileOptions{Observer: obs})
+//	cfg, err := configFile.Read(nil, ports.FileOptions{Observer: obs})
 //
 //	// Update (read-modify-write)
 //	err = configFile.Update(nil, func(c Config) Config {
 //		c.Port = 9090
 //		return c
-//	}, format.FileOptions{Observer: obs})
+//	}, ports.FileOptions{Observer: obs})
 //
 //	// Template path with variable validation
-//	var measurementFile = format.NewFile("data/{date}/{sensorID}.json",
+//	var measurementFile = ports.NewFile("data/{date}/{sensorID}.json",
 //	    format.JSON(measurementCodec),
-//	    format.FilePathParam{Name: "date"}.WithCodec(codex.String().Refine(validate.Date)),
-//	    format.FilePathParam{Name: "sensorID"}.WithCodec(codex.String().Refine(validate.UUID)),
+//	    ports.FilePathParam{Name: "date"}.WithCodec(codex.String().Refine(validate.Date)),
+//	    ports.FilePathParam{Name: "sensorID"}.WithCodec(codex.String().Refine(validate.UUID)),
 //	)
 //
 //	path, err := measurementFile.BuildPath(map[string]string{
@@ -118,7 +119,7 @@ type File[T any] struct {
 	// Template is the original path template (with {varName} placeholders).
 	Template string
 
-	format Format[T]
+	format format.Format[T]
 	params []FilePathParam
 }
 
@@ -134,7 +135,7 @@ type FileOpt interface{ applyFile(*fileBuilder) }
 //
 // NewFile is infallible — it only captures the spec. Validation of template
 // variable names against registered params runs at [File.BuildPath] time.
-func NewFile[T any](template string, f Format[T], opts ...FileOpt) File[T] {
+func NewFile[T any](template string, f format.Format[T], opts ...FileOpt) File[T] {
 	var fb fileBuilder
 	for _, opt := range opts {
 		opt.applyFile(&fb)
@@ -349,7 +350,7 @@ func (fh File[T]) Update(vars map[string]string, fn func(T) T, opts FileOptions)
 // Declare separate codecs for the file type and the patch type:
 //
 //	type AppConfig struct { Port int; LogLevel string; MaxWorkers int }
-//	var configFile = format.NewFile("config.json", format.JSON(appConfigCodec))
+//	var configFile = ports.NewFile("config.json", format.JSON(appConfigCodec))
 //
 //	// Patch type — only patchable fields; may include fields not in AppConfig
 //	type AppConfigPatch struct { Port int; LogLevel string; NewFeatureFlag bool }
@@ -372,9 +373,9 @@ func (fh File[T]) Update(vars map[string]string, fn func(T) T, opts FileOptions)
 //	)
 //
 //	// new_feature_flag is not in AppConfig but IS in patchCodec — it will be written
-//	err = format.PatchEncoded(configFile, nil, configPatchCodec,
+//	err = ports.PatchEncoded(configFile, nil, configPatchCodec,
 //	    AppConfigPatch{Port: 9090, LogLevel: "debug", NewFeatureFlag: true},
-//	    format.FileOptions{Observer: obs},
+//	    ports.FileOptions{Observer: obs},
 //	)
 //
 // PatchEncoded returns [FilePatchNotSupportedError] when the encoded
@@ -444,7 +445,7 @@ func PatchEncoded[T, P any](fh File[T], vars map[string]string, patchCodec codex
 	}
 
 	// 3. Unmarshal existing bytes to intermediate map.
-	raw, err := fh.format.unmarshal(data)
+	raw, err := fh.format.UnmarshalRaw(data)
 	if err != nil {
 		opErr = FileDecodeError{Path: path, Err: err}
 		recordFileRead(obs, path, false, time.Since(readStart))
@@ -458,12 +459,12 @@ func PatchEncoded[T, P any](fh File[T], vars map[string]string, patchCodec codex
 	}
 
 	// 4. Deep-merge patchMap into existingMap.
-	deepMerge(existingMap, patchMap)
+	format.DeepMerge(existingMap, patchMap)
 
 	// 5. Validate the file codec's known fields in the merged map.
 	//    Unknown fields (from patchCodec or the existing file outside either codec)
 	//    are ignored by Decode and are NOT dropped here — they survive in existingMap.
-	if _, err := fh.format.codec.Decode(existingMap); err != nil {
+	if _, err := fh.format.Codec().Decode(existingMap); err != nil {
 		stats.ReportErrors(obs, "file", err)
 		opErr = FileDecodeError{Path: path, Err: err}
 		recordFileRead(obs, path, false, time.Since(readStart))
@@ -474,7 +475,7 @@ func PatchEncoded[T, P any](fh File[T], vars map[string]string, patchCodec codex
 	// 6. Marshal the merged map directly — NOT re-encode T.
 	//    This preserves fields declared in patchCodec even if they are absent
 	//    from the file codec (T).
-	out, err := fh.format.marshal(existingMap)
+	out, err := fh.format.MarshalRaw(existingMap)
 	if err != nil {
 		opErr = FileEncodeError{Path: path, Err: err}
 		recordFileWrite(obs, path, false, 0)
@@ -557,7 +558,7 @@ func (fh File[T]) Patch(vars map[string]string, patch map[string]any, opts FileO
 	}
 
 	// Parse existing bytes, apply patch, validate through codec.
-	patched, err := fh.format.patchInto(data, patch)
+	patched, err := fh.format.PatchInto(data, patch)
 	if err != nil {
 		opErr = FileDecodeError{Path: path, Err: err}
 		stats.ReportErrors(obs, "file", err)
@@ -578,7 +579,7 @@ func (fh File[T]) Patch(vars map[string]string, patch map[string]any, opts FileO
 //
 // Use [errors.As] to extract the path:
 //
-//	var patchErr format.FilePatchNotSupportedError
+//	var patchErr ports.FilePatchNotSupportedError
 //	if errors.As(err, &patchErr) {
 //	    slog.Warn("patch not supported", "error", patchErr)
 //	}
@@ -656,7 +657,7 @@ func buildFromFileTemplate(
 //
 // Use [errors.As] to extract the failing variable name and value:
 //
-//	var paramErr format.FilePathParamError
+//	var paramErr ports.FilePathParamError
 //	if errors.As(err, &paramErr) {
 //	    slog.Warn("file path var rejected",
 //	        "param", paramErr.Name,
@@ -691,7 +692,7 @@ func (e FilePathParamError) LogValue() slog.Value {
 //
 // Use [errors.As] to extract the missing variable name:
 //
-//	var missingErr format.MissingFilePathVarError
+//	var missingErr ports.MissingFilePathVarError
 //	if errors.As(err, &missingErr) {
 //	    slog.Warn("missing file path variable", "param", missingErr.Name)
 //	}

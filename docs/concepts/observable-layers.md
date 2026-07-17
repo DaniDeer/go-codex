@@ -33,16 +33,16 @@ go-codex has three codec layers — domain types, API contracts, and forge pipel
 │               mqtt.SubscribeOptions{Observer: obs}                          │
 │               mcpgo.Options{Observer: obs}                                  │
 ├─────────────────────────────────────────────────────────────────────────────┤
-│  LAYER 2b — FILE I/O (format.File)                                          │
+│  LAYER 2b — FILE I/O (ports.File)                                          │
 │                                                                             │
-│  format.NewFile(template, fmt)  ·  file.Read · Write · Update · Patch       │
+│  ports.NewFile(template, fmt)  ·  file.Read · Write · Update · Patch       │
 │                                                                             │
 │  Observable:  stats.FileObserver (optional extension)                       │
 │  Signal:      metrics / logging / distributed tracing                       │
 │  Events:      RecordFileRead(path, success, duration)                       │
 │               RecordFileWrite(path, success, duration)                      │
 │               StartSpan / EndSpan   ← via stats.TraceObserver               │
-│  Inject via:  format.FileOptions{Observer: obs}                             │
+│  Inject via:  ports.FileOptions{Observer: obs}                             │
 ├─────────────────────────────────────────────────────────────────────────────┤
 │  LAYER 3 — FORGE PIPELINES (forge/)                                         │
 │                                                                             │
@@ -211,8 +211,8 @@ func (t *OTelTracer) EndSpan(ctx context.Context, err error) {
 | `"mcp.resource"` | `adapters/mcpgo` |
 | `"mcp.prompt"` | `adapters/mcpgo` |
 | `"forge.apply"` | `forge` |
-| `"file.read"` | `format.File` |
-| `"file.write"` | `format.File` |
+| `"file.read"` | `ports.File` |
+| `"file.write"` | `ports.File` |
 
 `name` is the concrete identifier — route path template, MQTT topic, forge function name, or file path.
 
@@ -231,7 +231,7 @@ obs := stats.NewFanout(
 stats.ReportErrors(obs, "config", err)                        // codec layer
 nethttp.Register(mux, route, handler, nethttp.Options{Observer: obs})  // adapter
 mqtt.SubscribeHandler(ctx, handle, fn, mqtt.SubscribeOptions{Observer: obs})
-file.Read(vars, format.FileOptions{Observer: obs})            // file I/O
+file.Read(vars, ports.FileOptions{Observer: obs})            // file I/O
 forge.NewRegistry("P", "1.0.0").WithObserver(obs)            // forge
 ```
 
@@ -249,7 +249,7 @@ ctx := stats.WithObserver(context.Background(), obs)
 // Adapters resolve obs from ctx when Options.Observer is nil:
 mqtt.Subscribe(ctx, client, handle, 1, fn, mqtt.SubscribeOptions{})     // uses obs
 stream.Apply(ctx, s, fn, stream.ApplyOptions{})                         // uses obs
-file.Read(vars, format.FileOptions{Context: ctx})                       // uses obs
+file.Read(vars, ports.FileOptions{Context: ctx})                       // uses obs
 forge.NewRegistry("P", "1.0.0").WithObserver(obs)                       // explicit — no ctx
 ```
 
@@ -285,7 +285,7 @@ func handleOrder(ctx context.Context, req OrderReq) (OrderResp, error) {
     avail, err := availabilityCalc.ApplyContext(ctx, req.Input)
 
     // file: pass ctx via FileOptions
-    record, err := orderFile.Read(vars, format.FileOptions{
+    record, err := orderFile.Read(vars, ports.FileOptions{
         Context:  ctx,
         Observer: obs,
     })

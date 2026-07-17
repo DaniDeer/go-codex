@@ -22,11 +22,10 @@ go-codex/
 │   ├── time.go             # Time(), Date(), Duration()
 │   └── union.go            # TaggedUnion[T], UntaggedUnion[T], UntaggedVariant[T]
 │
-├── format/                 # format bridges: JSON, YAML, TOML, Gob, Binary (raw bytes), streaming; File I/O
-│   ├── format.go           # Format[T], JSON(), YAML(), TOML(), Gob(), Binary(), New(), NewTyped(), NewStreamed()
-│   ├── file.go             # NewFile, File[T], FilePathParam, FileOptions, PathParamSchemas,
-│   │                       #   FilePathParamError, MissingFilePathVarError, FileReadError,
-│   │                       #   FileDecodeError, FileEncodeError, FileWriteError
+├── format/                 # format bridges: JSON, YAML, TOML, Gob, Binary (raw bytes), streaming
+│   ├── format.go           # Format[T], JSON(), YAML(), TOML(), Gob(), Binary(), New(), NewTyped(), NewStreamed(),
+│   │                       #   Codec(), UnmarshalRaw(), MarshalRaw(), PatchInto(), DeepMerge() — low-level
+│   │                       #   primitives ports.File.Patch/ports.PatchEncoded are built on
 │   ├── embedded.go         # EmbeddedJSON[T], EmbeddedYAML[T], EmbeddedTOML[T],
 │   │                       #   EmbeddedDecodeError, EmbeddedEncodeError
 │   └── env.go              # FromEnv[T], FromEnvVar[T], EnvVarError
@@ -146,6 +145,10 @@ go-codex/
 │   ├── tool_port.go        # ToolPort[In,Out], ToolAdapter[In,Out], NewToolPort — request/response
 │   ├── latest_port.go      # LatestPort[T], LatestAdapter[T], NewLatestPort — reactive cache
 │   ├── duplex_port.go      # DuplexPort[In,Out], DuplexAdapter[In,Out], Framed[T], Session — bidirectional sessions
+│   ├── file.go             # NewFile, File[T], FilePathParam, FileOptions, PatchEncoded, PathParamSchemas,
+│   │                       #   FilePathParamError, MissingFilePathVarError, FileReadError,
+│   │                       #   FileDecodeError, FileEncodeError, FileWriteError, FilePatchNotSupportedError
+│   │                       #   (moved from format — protocol-agnostic addressing descriptor, mirrors Cache[T])
 │   └── test_adapters.go    # ChanSourceAdapter[T], ChanSinkAdapter[T], FuncIOAdapter[Req,Resp]
 │
 ├── stream/                 # reactive stream pipelines — bridges MQTT/ZeroMQ sources with forge functions
@@ -263,7 +266,7 @@ go-codex/
     │   # ── Config / CLI / Observability ─────────────────────────────────────────
     ├── cli-config/         # CLI tool config: TOML file + env var overlay with codecs
     ├── env-config/         # format.FromEnv: schema-driven env var loading with defaults
-    ├── file-io/            # format.File[T]: static + template files, Patch, PatchEncoded, FileObserver
+    ├── file-io/            # ports.File[T]: static + template files, Patch, PatchEncoded, FileObserver
     ├── flat-key-patch/     # flat dotted-key JSON: Patch + PatchEncoded with Map key validation
     ├── stats-observer/              # stats.ValidationObserver wired to codecs directly (no adapter)
     ├── http-trace-span-propagation/ # TraceObserver with OTel: parent span from traceparent header

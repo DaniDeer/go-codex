@@ -40,7 +40,7 @@ obs := stats.NewFanout(metrics, stats.NewLoggingObserver(logger), tracer)
 // Same value — works on every layer:
 stats.ReportErrors(obs, "config", err)          // codec
 nethttp.Register(mux, route, handler, nethttp.Options{Observer: obs}) // adapter
-configFile.Read(nil, format.FileOptions{Observer: obs})                // format/file
+configFile.Read(nil, ports.FileOptions{Observer: obs})                // format/file
 forge.NewRegistry("P", "1.0.0").WithObserver(obs)                      // forge
 ```
 
@@ -80,7 +80,7 @@ All adapter entry points accept `context.Context`:
 
 To propagate into forge and file:
 - Use **`forge.Function.ApplyContext(ctx, in)`** instead of `Apply(in)`
-- Set **`format.FileOptions.Context`** to the handler's context
+- Set **`ports.FileOptions.Context`** to the handler's context
 
 ## Per-layer behavior
 
@@ -141,7 +141,7 @@ nethttp.Handler(handle, fn, nethttp.Options{Observer: auditObserver}) // explici
 | **ZeroMQ adapters** (`Subscribe`, `Publish`, `Serve`, `Call`) | ctx passed to function | Resolved at call time |
 | **MCP adapters** (`ToolHandler`, `ResourceHandler`, `PromptHandler`) | ctx from each tool/resource/prompt call | Resolved inside the per-call closure |
 | **Stream bridges** (`stream.Apply`, `stream.FromCodec`, `stream.Drain`) | ctx passed to function | Resolved at call time |
-| **`format.File`** (`Read`, `Write`, `Update`) | `FileOptions.Context` | Resolved from `opts.Context` when non-nil |
+| **`ports.File`** (`Read`, `Write`, `Update`) | `FileOptions.Context` | Resolved from `opts.Context` when non-nil |
 | **`forge.Registry`** | not applicable | No context integration — uses explicit `.WithObserver(obs)` builder |
 | **`sql.Validate`** | not applicable | No ctx parameter — falls back to `NoopObserver{}` only |
 

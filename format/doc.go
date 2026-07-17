@@ -4,49 +4,17 @@
 // is format-agnostic. Format wraps that intermediate layer so the same codec can
 // read and write multiple wire formats without any changes to the codec itself.
 //
-// # File I/O — Read, Write, Update, Patch, PatchEncoded
+// # File I/O has moved
 //
-// [File][T] is a declarative typed file descriptor. It supports five operations:
-//
-//   - [File.Read]   — full decode (reads entire file into T)
-//   - [File.Write]  — full encode (overwrites file with T); use when you already have the decoded value
-//   - [File.Update] — typed read-modify-write: fn(T) T; use when you need the latest file state first
-//   - [File.Patch]  — partial field update (map[string]any); unknown fields dropped
-//   - [PatchEncoded] — typed partial update via a separate patch codec (free function);
-//     fields in patchCodec but NOT in the file codec are preserved in the output
-//
-// # Field survival rules for Patch and PatchEncoded
-//
-// Every write operation filters output through its codec. The rules differ:
-//
-//	// Patch: only file-codec fields survive; unknown keys in the patch map are dropped
-//	configFile.Patch(nil, map[string]any{"port": 9090}, opts)
-//	// → file codec fields updated/re-written; "port" updated; unknown keys dropped
-//
-//	// PatchEncoded: patchCodec fields survive even if not in the file codec
-//	format.PatchEncoded(configFile, nil, patchCodec, patchValue, opts)
-//	// → file codec fields updated/re-written; patchCodec fields written (even extra ones)
-//
-// Field survival summary:
-//
-//	Field in file codec + field in patch map/patchCodec   → updated ✓
-//	Field in file codec + absent from patch               → preserved ✓
-//	Field in patchCodec only (not in file codec)          → written by PatchEncoded ✓
-//	Field in neither codec                                → dropped by both Patch and PatchEncoded
-//
-// Key rule: use [PatchEncoded] to intentionally add new fields to a file by
-// declaring them in the patch codec. Use [File.Patch] with an explicit
-// map[string]any when unknown keys should be silently discarded.
-//
-// Patch and PatchEncoded are supported only for map-based formats (JSON, YAML, TOML, New).
-// Check [Format.IsPatchable] before calling either when the format is not known at compile time.
-//
-// All file error types implement [slog.LogValuer] for structured logging:
-//
-//	var encErr format.FileEncodeError
-//	if errors.As(err, &encErr) {
-//	    slog.Warn("encode failed", "error", encErr)  // structured output via LogValue()
-//	}
+// The declarative typed file descriptor (File[T], NewFile, Read/Write/Update/
+// Patch, PatchEncoded, FilePathParam, and the file error types) now lives in
+// the ports package — see [ports.File] — since it is a protocol-agnostic
+// addressing descriptor bound via [ports.FilePattern] to adapters/file, the
+// same role [ports.Cache] plays for adapters/redis. This package still
+// provides [Format.IsPatchable], [Format.PatchInto], [Format.Codec],
+// [Format.UnmarshalRaw], [Format.MarshalRaw], and [DeepMerge] — the
+// lower-level primitives [ports.File.Patch]/[ports.PatchEncoded] are built
+// on.
 //
 // # Embedded format codecs — JSON/YAML/TOML within a string field
 //
@@ -61,10 +29,10 @@
 //	    codex.RequiredField("payload", format.EmbeddedJSON(userCodec), ...),
 //	)
 //
-//	// Compose with File[T] — the outer format handles the file bytes;
+//	// Compose with ports.File[T] — the outer format handles the file bytes;
 //	// EmbeddedJSON handles the string-to-struct field conversion.
-//	var eventFile = format.NewFile("events/user.json", format.JSON(eventCodec))
-//	event, err := eventFile.Read(nil, format.FileOptions{})
+//	var eventFile = ports.NewFile("events/user.json", format.JSON(eventCodec))
+//	event, err := eventFile.Read(nil, ports.FileOptions{})
 //
 // Decode: wire string → format unmarshal → inner.Decode → T
 // Encode: inner.Encode → format marshal → wire string

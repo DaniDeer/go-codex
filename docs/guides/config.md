@@ -25,25 +25,25 @@ Full `format.FromEnv` demo including:
 
 → [examples/env-config](https://github.com/DaniDeer/go-codex/tree/main/examples/env-config)
 
-## Declarative file I/O (format.File)
+## Declarative file I/O (ports.File)
 
-`format.File[T]` reads and writes typed, validated config files using any wire format (JSON, YAML, TOML). Declare the file descriptor once and reuse it across the application:
+`ports.File[T]` reads and writes typed, validated config files using any wire format (JSON, YAML, TOML). Declare the file descriptor once and reuse it across the application:
 
 ```go
-var configFile = format.NewFile("config.toml", format.TOML(configCodec))
+var configFile = ports.NewFile("config.toml", format.TOML(configCodec))
 
 // Read + validate in one call
-cfg, err := configFile.Read(nil, format.FileOptions{Observer: obs})
+cfg, err := configFile.Read(nil, ports.FileOptions{Observer: obs})
 
 // Write after mutation — use Write directly when you already have the decoded value
 cfg.LogLevel = "debug"
-err = configFile.Write(nil, cfg, format.FileOptions{Perm: 0600})
+err = configFile.Write(nil, cfg, ports.FileOptions{Perm: 0600})
 
 // Atomic update (read → transform → write) — use when you need the latest file state
 err = configFile.Update(nil, func(c Config) Config {
     c.Port = 9090
     return c
-}, format.FileOptions{})
+}, ports.FileOptions{})
 ```
 
 For partial updates (`Patch`, `PatchEncoded`) and the field survival rules, see [Formats & Serialization — Choosing the right write operation](../features/formats.md#choosing-the-right-write-operation).

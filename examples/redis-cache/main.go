@@ -188,7 +188,7 @@ func main() {
 
 	// Get/Set are plain functions — the building block for an application
 	// that doesn't use ports/stream pipelines at all, mirroring
-	// format.File.Read/.Write and adapters/sql.Validate. GetAdapter/
+	// ports.File.Read/.Write and adapters/sql.Validate. GetAdapter/
 	// SetAdapter (Sections 1-2) delegate to these exact functions per item.
 	if err := adapterredis.Set(ctx, client, cache, map[string]string{"id": "99"},
 		User{ID: "99", Name: "Turing"}, adapterredis.SetOptions{}); err != nil {

@@ -30,6 +30,7 @@ import (
 	"github.com/DaniDeer/go-codex/codex"
 	"github.com/DaniDeer/go-codex/forge"
 	"github.com/DaniDeer/go-codex/format"
+	"github.com/DaniDeer/go-codex/ports"
 	"github.com/DaniDeer/go-codex/stats"
 	"github.com/DaniDeer/go-codex/validate"
 )
@@ -207,8 +208,8 @@ func main() {
 
 		// 2. File — child of HTTP span.
 		filePath := filepath.Join(outputDir, in.Name+".txt")
-		f := format.NewFile(filePath, format.JSON(codex.String()))
-		if err := f.Write(nil, result, format.FileOptions{Observer: obs, Context: ctx}); err != nil {
+		f := ports.NewFile(filePath, format.JSON(codex.String()))
+		if err := f.Write(nil, result, ports.FileOptions{Observer: obs, Context: ctx}); err != nil {
 			return GreetOut{}, err
 		}
 

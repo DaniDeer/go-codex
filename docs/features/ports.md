@@ -312,7 +312,7 @@ written by hand: the port makes that call **internally**.
 | `EventPattern{Topic, Opts}` | pub/sub (mqtt, mqtt5, zeromq) | `events.ChannelOpt` |
 | `ReqReplyPattern{Topic, Opts}` | request/reply (mqtt5, zeromq) | `reqreply.RouteOpt` |
 | `MCPPattern{Name, Opts}` | MCP tool (mcpgo) | `apimcp.ToolOpt` |
-| `FilePattern{Path, Format, CustomFormat, Opts}` | typed files (file) | `format.FileOpt` |
+| `FilePattern{Path, Format, CustomFormat, Opts}` | typed files (file) | `ports.FileOpt` |
 | `SQLPattern{Table, Op}` | SQL (sql) | — (metadata-only) |
 | `CachePattern{Key, TTL, Format, CustomFormat, Opts}` | key/value cache (redis) | `ports.CacheOpt` (`CacheKeyParam` — per-key-var codecs) |
 | `SocketPattern{Path, Subprotocols, Format, CustomFormat, Opts}` | duplex socket (websocket) | `rest.RouteOpt` (upgrade-time) |
@@ -328,7 +328,7 @@ retrieved with the matching accessor:
 | `ports.EventHandle[T](port)` | `(*events.ChannelHandle[T], bool)` |
 | `ports.ReqReplyHandle[Req,Resp](port)` | `(*reqreply.RouteHandle[Req,Resp], bool)` |
 | `ports.MCPHandle[In,Out](port)` | `(*apimcp.ToolHandle[In,Out], bool)` |
-| `ports.FileHandle[T](port)` | `(format.File[T], bool)` |
+| `ports.FileHandle[T](port)` | `(ports.File[T], bool)` |
 | `ports.SQLMeta(port)` | `(ports.SQLPattern, bool)` |
 | `ports.CacheHandle[T](port)` | `(ports.Cache[T], bool)` |
 | `ports.SocketHandle[In,Out](port)` | `(ports.Socket[In,Out], bool)` |
@@ -442,7 +442,7 @@ MQTT example.
 
 `FilePattern` gives the file adapter the same declare-once story: the path
 template, wire format, and path-param codecs live on the port; the built
-`format.File` handle comes back out via `ports.FileHandle`. `Format` is a
+`ports.File` handle comes back out via `ports.FileHandle`. `Format` is a
 `FileFormatKind` enum — `FileFormatJSON` (default), `FileFormatYAML`, or
 `FileFormatTOML` — applied to the port's own codec.
 
@@ -470,23 +470,23 @@ port-role rejection already uses. `CachePattern` and `SocketPattern` carry
 the identical `CustomFormat` field with the same precedence rule; see
 [`examples/pattern-custom-format`](https://github.com/DaniDeer/go-codex/tree/main/examples/pattern-custom-format).
 
-- On a **`SinkPort[T]`** the handle is a `format.File[T]` of the payload type —
+- On a **`SinkPort[T]`** the handle is a `ports.File[T]` of the payload type —
   pairs with `file.DrainWriteFileAdapter`.
-- On an **`IOPort[Req,Resp]`** the handle is a `format.File[Resp]` of the
+- On an **`IOPort[Req,Resp]`** the handle is a `ports.File[Resp]` of the
   **response** type (the file's content *is* the port's response) — pairs with
   `file.ReadAdapter`, the 2-type per-item read. (The 3-type
   `file.ReadEachAdapter`, with its independent file-content type and `combine`
   func, stays handle-first for enrichment cases.)
 
 For **partial updates** (patch semantics) instead of a whole-file overwrite,
-pair a hand-built `format.File[T]` with `file.DrainPatchAdapter` (untyped
-`map[string]any` patch, JSON Merge Patch semantics via `format.File.Patch`)
+pair a hand-built `ports.File[T]` with `file.DrainPatchAdapter` (untyped
+`map[string]any` patch, JSON Merge Patch semantics via `ports.File.Patch`)
 or `file.DrainPatchEncodedAdapter` (typed partial update via
-`format.PatchEncoded`, so patch-codec-only fields still persist). Both stay
+`ports.PatchEncoded`, so patch-codec-only fields still persist). Both stay
 handle-first — the patch item's type is deliberately different from the
 port's own payload type, the same reason `file.ReadEachAdapter` stays
 handle-first for its independent content type. Both require a map-based
-format (JSON/YAML/TOML/`format.New`); `format.FilePatchNotSupportedError` is
+format (JSON/YAML/TOML/`format.New`); `ports.FilePatchNotSupportedError` is
 passed through to `OnError` unchanged for Gob/Binary/`NewTyped`/`NewStreamed`.
 
 ```go
@@ -496,7 +496,7 @@ var Calibration = codex.Must(ports.NewIOPort[SensorReading, CalibrationData](
     ports.PortOptions{Patterns: []ports.Pattern{
         ports.FilePattern{
             Path: "data/{sensorID}/calibration.json", // JSON is the default Format
-            Opts: []format.FileOpt{format.FilePathParam{Name: "sensorID"}.WithCodec(uuidCodec)},
+            Opts: []ports.FileOpt{ports.FilePathParam{Name: "sensorID"}.WithCodec(uuidCodec)},
         },
     }}))
 
@@ -508,7 +508,7 @@ domain.Calibration.Bind(ctx, file.ReadAdapter(calibFile,
 ```
 
 There is no `RegisterFile` — files have no spec document concept
-(`File.PathParamSchemas()` already serves doc tooling). `format.NewFile`
+(`File.PathParamSchemas()` already serves doc tooling). `ports.NewFile`
 itself is infallible, but a `FilePattern` CAN now cause the port constructor
 to error — a `CustomFormat` type mismatch returns `PatternRegisterError`
 (the enum-only path — no `CustomFormat` — remains infallible).
@@ -683,23 +683,28 @@ use follows the same two-part shape, for the same three reasons:
 
 | Package | Declarative descriptor | Plain-function implementation | Key-var codec validation |
 |---|---|---|---|
-| `format` (file) | `format.NewFile(path, fmt, opts...)` | `File.Read`/`.Write`/`.Update`/`.Patch` | `format.FilePathParam.WithCodec` |
+| `ports` + `adapters/file` (file) | `ports.NewFile(path, fmt, opts...)` | `File.Read`/`.Write`/`.Update`/`.Patch` | `ports.FilePathParam.WithCodec` |
 | `ports` + `adapters/redis` (cache) | `ports.NewCache(key, fmt, opts...)` | `redis.Get`/`redis.Set`/`redis.Seed` | `ports.CacheKeyParam.WithCodec` |
 | `api/rest` | `route.ClientHandle()` | `nethttp.Call` | `rest.PathParam.WithCodec` |
 | `api/events` | `channel.ClientHandle()` | `mqtt.Publish`/`Subscribe` | `events.TopicParam.WithCodec` |
 | `adapters/sql` | `codex.Codec[T]` (the codec itself — no wrapper needed) | `sql.Validate`, or declared once via `sql.DecorateInput`/`DecorateOutput` | **N/A — no templated key exists** (see below) |
 
-**Neither `format.NewFile` nor `ports.NewCache` requires a `ports.NewIOPort`/
-`SinkPort`/`Bind` anywhere in the call path** — this is easy to miss for
-the cache case specifically, since `ports.Cache[T]` lives in the `ports`
-package even though it needs no actual `*ports.Port` object. Both are
-plain, standalone values you can build and use in an application that
-never touches the `ports`/`stream` packages at all:
+`ports.File[T]` and `ports.Cache[T]` both "have a" `format.Format[T]` field
+but ARE themselves protocol-agnostic addressing descriptors — bound to a
+port via `FilePattern`/`CachePattern`, used by exactly one adapter family
+(`adapters/file`/`adapters/redis`) — which is why both live in `ports`
+rather than `format` (only `format.Format[T]` itself, plus `JSON`/`YAML`/
+`TOML`/`Gob`/`Binary`/`New`/`NewTyped`/`NewStreamed`, stay in `format`).
+
+**Neither `ports.NewFile` nor `ports.NewCache` requires a `ports.NewIOPort`/
+`SinkPort`/`Bind` anywhere in the call path** — both are protocol-agnostic
+descriptor VALUES, not ports themselves; you import `ports` for the type,
+but never declare an actual port or touch the `stream` package to use them:
 
 ```go
-// File — no ports.NewIOPort anywhere.
-cfgFile := format.NewFile("config.json", format.JSON(configCodec))
-cfg, err := cfgFile.Read(nil, format.FileOptions{})
+// File — no ports.NewIOPort, no Bind, no stream.Stream anywhere.
+cfgFile := ports.NewFile("config.json", format.JSON(configCodec))
+cfg, err := cfgFile.Read(nil, ports.FileOptions{})
 
 // Cache — no ports.NewIOPort anywhere, even though Cache[T] lives in `ports`.
 userCache := ports.NewCache("user:{id}", format.JSON(userCodec),

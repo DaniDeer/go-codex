@@ -175,7 +175,7 @@ func main() {
 	// ── Default observer via context ───────────────────────────────────────────
 	//
 	// stats.WithObserver stores an observer in a context.Context. Adapters,
-	// stream bridges, and format.File read it automatically via
+	// stream bridges, and ports.File read it automatically via
 	// stats.ObserverFromContext(ctx) when Options.Observer is nil.
 	//
 	// This example is codec-only (stats.ReportErrors, codex.Codec — no adapters),

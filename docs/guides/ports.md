@@ -358,7 +358,7 @@ handle, ok := ports.RESTHandle[Req, Resp](domain.SomePort)     // *rest.RouteHan
 handle, ok := ports.EventHandle[T](domain.SomePort)            // *events.ChannelHandle[T]
 handle, ok := ports.ReqReplyHandle[Req, Resp](domain.SomePort) // *reqreply.RouteHandle[Req, Resp]
 handle, ok := ports.MCPHandle[In, Out](domain.SomePort)        // *apimcp.ToolHandle[In, Out]
-file,   ok := ports.FileHandle[T](domain.SomePort)             // format.File[T]
+file,   ok := ports.FileHandle[T](domain.SomePort)             // ports.File[T]
 meta,   ok := ports.SQLMeta(domain.SomePort)                   // ports.SQLPattern
 cache,  ok := ports.CacheHandle[T](domain.SomePort)            // ports.Cache[T]
 socket, ok := ports.SocketHandle[In, Out](domain.SomePort)     // ports.Socket[In, Out]
@@ -439,15 +439,15 @@ for package-level declarations, as shown throughout this guide.
 ### `FilePattern` — file as sink or intermediate IO step
 
 Declare the file (path template + wire format + path-param codecs) once on the
-port; retrieve the built `format.File` with `ports.FileHandle`. `Format` is a
+port; retrieve the built `ports.File` with `ports.FileHandle`. `Format` is a
 `ports.FileFormatKind` enum — `FileFormatJSON` (default), `FileFormatYAML`,
 `FileFormatTOML` — applied to the port's own codec. On a `SinkPort[T]` the
-handle is `format.File[T]` (pairs with `file.DrainWriteFileAdapter`); on an
-`IOPort[Req,Resp]` it is `format.File[Resp]` — the file's content *is* the
+handle is `ports.File[T]` (pairs with `file.DrainWriteFileAdapter`); on an
+`IOPort[Req,Resp]` it is `ports.File[Resp]` — the file's content *is* the
 port's response — pairing with the 2-type `file.ReadAdapter`:
 
 For partial updates instead of a whole-file overwrite, pair a hand-built
-`format.File[T]` with `file.DrainPatchAdapter` (untyped `map[string]any`
+`ports.File[T]` with `file.DrainPatchAdapter` (untyped `map[string]any`
 patch) or `file.DrainPatchEncodedAdapter` (typed patch via a patch codec) —
 both stay handle-first since the patch item's type deliberately differs from
 the port's own payload type; both require a map-based format (JSON/YAML/TOML).
@@ -459,7 +459,7 @@ var Calibration = codex.Must(ports.NewIOPort[SensorReading, CalibrationData](
     ports.PortOptions{Patterns: []ports.Pattern{
         ports.FilePattern{
             Path: "data/{sensorID}/calibration.json",
-            Opts: []format.FileOpt{format.FilePathParam{Name: "sensorID"}.WithCodec(uuidCodec)},
+            Opts: []ports.FileOpt{ports.FilePathParam{Name: "sensorID"}.WithCodec(uuidCodec)},
         },
     }}))
 
@@ -475,7 +475,7 @@ calibrated := domain.Calibration.Connect(ctx, readings)
 
 For a custom `format.Format[T]` beyond JSON/YAML/TOML, or for the 3-type
 enrichment shape (`file.ReadEachAdapter` with a `combine` func), build the
-`format.File` by hand — same as before.
+`ports.File` by hand — same as before.
 
 ### `SQLPattern` — declare table/op metadata once
 

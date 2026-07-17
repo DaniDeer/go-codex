@@ -134,10 +134,10 @@ type GetOptions struct {
 // Get looks up a single value in the cache — full codec validation (key
 // vars AND value), no [ports.IOAdapter], no [gstream.Stream] involved. This
 // is the plain-function standalone entrypoint for a non-pipeline
-// application, mirroring [format.File.Read]/[adapters/sql.Validate]:
+// application, mirroring [ports.File.Read]/[adapters/sql.Validate]:
 // [ports.Cache] is the declarative descriptor (built via [ports.NewCache] or
 // a [ports.CachePattern]), and Get is the concrete redis implementation of
-// a read against it — the same relationship [format.File] has to its
+// a read against it — the same relationship [ports.File] has to its
 // Read/Write methods, or a route handle has to [adapters/nethttp.Call].
 //
 //	v, ok, err := redis.Get(ctx, client, userCache,
@@ -332,7 +332,7 @@ type SetOptions struct {
 // Set writes a single value to the cache — full codec validation (key vars
 // AND value), no [ports.IOAdapter], no [gstream.Stream] involved. This is
 // the plain-function standalone entrypoint for a non-pipeline application,
-// mirroring [format.File.Write]/[adapters/sql.Validate]: [ports.Cache] is
+// mirroring [ports.File.Write]/[adapters/sql.Validate]: [ports.Cache] is
 // the declarative descriptor, and Set is the concrete redis implementation
 // of a write against it.
 //

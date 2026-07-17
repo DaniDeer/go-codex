@@ -17,7 +17,6 @@ import (
 	"github.com/DaniDeer/go-codex/codex"
 	"github.com/DaniDeer/go-codex/examples/sensor-service/db"
 	"github.com/DaniDeer/go-codex/examples/sensor-service/domain"
-	"github.com/DaniDeer/go-codex/format"
 	"github.com/DaniDeer/go-codex/ports"
 	"github.com/DaniDeer/go-codex/validate"
 )
@@ -137,7 +136,7 @@ var ExportQuery = codex.Must(ports.NewIOPort[domain.ExportRequest, domain.Export
 // NewExportsPort declares the export file boundary: each ExportSnapshot fed
 // into this sink is written as one typed JSON file. The file (path template +
 // JSON format derived from the port's codec + path-param codec) is declared
-// ONCE here via ports.FilePattern; main() derives the format.File via
+// ONCE here via ports.FilePattern; main() derives the ports.File via
 // ports.FileHandle and binds file.DrainWriteFileAdapter. The export tool
 // pipeline computes the response path from the SAME declaration
 // (FileHandle.BuildPath) — one source of truth for where exports live.
@@ -151,8 +150,8 @@ func NewExportsPort(dir string) (*ports.SinkPort[domain.ExportSnapshot], error) 
 			Patterns: []ports.Pattern{
 				ports.FilePattern{ // JSON is the default FileFormatKind
 					Path: dir + "/{exportID}.json",
-					Opts: []format.FileOpt{
-						format.FilePathParam{Name: "exportID"}.WithCodec(domain.SensorIDCodec),
+					Opts: []ports.FileOpt{
+						ports.FilePathParam{Name: "exportID"}.WithCodec(domain.SensorIDCodec),
 					},
 				},
 			},

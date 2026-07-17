@@ -111,7 +111,7 @@ func main() {
 	fakePNG := append(append([]byte{}, pngSignature...), []byte("...pixels...")...)
 
 	vars := map[string]string{"id": "avatar"}
-	fileOpts := format.FileOptions{}
+	fileOpts := ports.FileOptions{}
 	if err := imgHandle.Write(vars, fakePNG, fileOpts); err != nil {
 		panic(err)
 	}

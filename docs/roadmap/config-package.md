@@ -3,7 +3,7 @@
 > **Status:** Design evaluation — not yet implemented.
 > [← Back to Roadmap](index.md)
 >
-> See also: [Formats & Serialization](../features/formats.md) · [Config guide](../guides/config.md) · [File → Ports Migration (companion roadmap)](file-to-ports-migration.md)
+> See also: [Formats & Serialization](../features/formats.md) · [Config guide](../guides/config.md)
 
 ## Motivation
 
@@ -13,8 +13,8 @@ use `format.Format[T]` internally at all: no marshal/unmarshal, no wire
 bytes, just `codex.Codec[T]` + `os.LookupEnv` + schema-driven string
 coercion. They were correctly identified as "not really a format."
 
-But unlike `format.File[T]` (see the companion
-[File → Ports Migration](file-to-ports-migration.md) roadmap), they also
+But unlike `ports.File[T]` (already migrated from `format` — see
+`docs/features/ports.md`'s "Design pattern" section for the rationale), they also
 have **no `ports.Pattern` counterpart and no adapter family** binds to them
 — there is no `EnvPattern`, nothing in `adapters/*` ever calls them, they
 never participate in pipeline wiring. `ports`' identity is specifically
@@ -32,7 +32,7 @@ pipeline/port wiring (`ports`).
 
 | In scope | Out of scope |
 |---|---|
-| New package `config` (name TBD — see Open design decisions) hosting `FromEnv[T]`, `FromEnvVar[T]`, `EnvVarError` | `format.File`/`FilePathParam`/etc. — separate roadmap ([File → Ports Migration](file-to-ports-migration.md)) |
+| New package `config` (name TBD — see Open design decisions) hosting `FromEnv[T]`, `FromEnvVar[T]`, `EnvVarError` | `ports.File`/`FilePathParam`/etc. — already migrated (see `docs/features/ports.md`) |
 | Update the ~19 files referencing `format.FromEnv`/`FromEnvVar`/`EnvVarError` | Changing `FromEnv`/`FromEnvVar`'s behavior, schema coercion rules, or error shape — pure relocation |
 | Doc pass: `docs/guides/config.md`, `docs/features/config.md` (already config-focused — likely just an import-path update), `docs/features/formats.md` (remove the section, cross-reference the new page) | Adding new config-loading capabilities (e.g. `.env` file support, flag-parsing integration) — no user request for this |
 

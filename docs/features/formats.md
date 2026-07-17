@@ -59,31 +59,31 @@ Gob is ideal for internal Go-to-Go communication where binary efficiency matters
 
 ```go
 // Declare once — the file descriptor validates format on every read and write.
-var pngFile = format.NewFile(
+var pngFile = ports.NewFile(
     "images/{name}.png",
     format.Binary(
         codex.Bytes().
             Refine(validate.MaxBytes(5*1024*1024)).
             Refine(validate.PNG),
     ).WithContentType("image/png"),
-    format.FilePathParam{Name: "name"},
+    ports.FilePathParam{Name: "name"},
 )
 
 // Write — validate.PNG runs before the file is written.
 err := pngFile.Write(
     map[string]string{"name": "chart"},
     pngBytes,
-    format.FileOptions{Observer: obs},
+    ports.FileOptions{Observer: obs},
 )
 
 // Read — validate.PNG runs after the file is read.
 data, err := pngFile.Read(
     map[string]string{"name": "chart"},
-    format.FileOptions{Observer: obs},
+    ports.FileOptions{Observer: obs},
 )
 ```
 
-Constraint failures surface as `format.FileEncodeError` (write) or `format.FileDecodeError` (read), both implementing `Unwrap()` and navigable via `errors.As`. The `FileObserver` callbacks fire on every path — success and failure alike.
+Constraint failures surface as `ports.FileEncodeError` (write) or `ports.FileDecodeError` (read), both implementing `Unwrap()` and navigable via `errors.As`. The `FileObserver` callbacks fire on every path — success and failure alike.
 
 ### Built-in binary format constraints
 
@@ -131,34 +131,37 @@ avatarField := codex.Base64().Refine(validate.MaxBytes(65536)).
 
 ## File I/O — declarative typed file access
 
-`format.File[T]` is a declarative typed file descriptor: declare a path template, wire format, and optional per-variable codecs once — then read, write, and update files with full codec validation. No `ports.NewIOPort`/`SinkPort` or any pipeline machinery is needed for this — `Read`/`Write`/`Update`/`Patch` are plain methods, usable in an application that never touches `ports`/`stream` at all.
+`ports.File[T]` is a declarative typed file descriptor: declare a path template, wire format, and optional per-variable codecs once — then read, write, and update files with full codec validation. It lives in the `ports` package (alongside `ports.Cache[T]`) because it's a protocol-agnostic addressing descriptor, not a wire format — but using it needs **no pipeline machinery**: no `ports.NewIOPort`/`SinkPort`, no `Bind`, no `stream.Stream`. `Read`/`Write`/`Update`/`Patch` are plain methods you can call in an application that never declares a port at all.
 
 It mirrors the declare-once pattern of `rest.Route` and `events.Channel` — and is the original blueprint `ports.Cache[T]`/`ports.CacheKeyParam` were designed to mirror for `adapters/redis`. See [Design pattern: declarative descriptor + plain function](ports.md#design-pattern-declarative-descriptor--plain-function) for the full comparison across `file`/`cache`/`rest`/`events`/`sql`.
 
 ```go
-import "github.com/DaniDeer/go-codex/format"
+import (
+    "github.com/DaniDeer/go-codex/format"
+    "github.com/DaniDeer/go-codex/ports"
+)
 
 // Declare once — no side effects
-var measurementFile = format.NewFile(
+var measurementFile = ports.NewFile(
     "data/{date}/{sensor}.json",
     format.JSON(measurementCodec),
-    format.FilePathParam{Name: "date", Description: "ISO date (YYYY-MM-DD)"}.
+    ports.FilePathParam{Name: "date", Description: "ISO date (YYYY-MM-DD)"}.
         WithCodec(codex.String().Refine(validate.Date)),
-    format.FilePathParam{Name: "sensor", Description: "Sensor ID"},
+    ports.FilePathParam{Name: "sensor", Description: "Sensor ID"},
 )
 
 // Read a file (validates path vars + decodes + runs constraints)
 vars := map[string]string{"date": "2024-01-15", "sensor": "sensor-42"}
-m, err := measurementFile.Read(vars, format.FileOptions{Observer: obs})
+m, err := measurementFile.Read(vars, ports.FileOptions{Observer: obs})
 
 // Write a file (validates path vars + encodes + writes)
-err = measurementFile.Write(vars, measurement, format.FileOptions{Perm: 0644})
+err = measurementFile.Write(vars, measurement, ports.FileOptions{Perm: 0644})
 
 // Update a file (read → transform → write in one call)
 err = measurementFile.Update(vars, func(m Measurement) Measurement {
     m.Value += 1.0
     return m
-}, format.FileOptions{Observer: obs})
+}, ports.FileOptions{Observer: obs})
 ```
 
 ### Choosing the right write operation
@@ -168,7 +171,7 @@ err = measurementFile.Update(vars, func(m Measurement) Measurement {
 | `Write(vars, T, opts)` | Full value `T` | Full overwrite — no re-read. **Use this when you already have the decoded value.** |
 | `Update(vars, func(T)T, opts)` | Transform function | Need the latest file state before deciding what to write (e.g. increment a counter). |
 | `Patch(vars, map[string]any, opts)` | Explicit field map | Partial update: only the keys in the map change; unknown fields dropped. |
-| `format.PatchEncoded(file, vars, Codec[P], P, opts)` | Patch struct + codec | Typed partial update; fields declared in patchCodec but not in file codec are also written. |
+| `ports.PatchEncoded(file, vars, Codec[P], P, opts)` | Patch struct + codec | Typed partial update; fields declared in patchCodec but not in file codec are also written. |
 
 > **If you already have a decoded struct in memory, use `Write` directly.** `Update` performs an unnecessary re-read when you already hold the current value.
 
@@ -193,10 +196,10 @@ Key rule: **a field is written only if at least one codec knows about it**. `Pat
 err = configFile.Patch(nil, map[string]any{
     "port":      9090,
     "log_level": "debug",
-}, format.FileOptions{Observer: obs})
+}, ports.FileOptions{Observer: obs})
 ```
 
-#### `format.PatchEncoded` — typed patch via a separate codec
+#### `ports.PatchEncoded` — typed patch via a separate codec
 
 `PatchEncoded` is a free function (not a method) because Go methods cannot introduce new type parameters. Declare a dedicated patch struct and codec containing only the fields you want to be patchable.
 
@@ -205,7 +208,7 @@ err = configFile.Patch(nil, map[string]any{
 ```go
 // Full file type and codec
 type AppConfig struct { Port int; LogLevel string; MaxWorkers int }
-var configFile = format.NewFile("config.json", format.JSON(appConfigCodec))
+var configFile = ports.NewFile("config.json", format.JSON(appConfigCodec))
 
 // Patch type — only patchable fields; MaxWorkers cannot be patched via this codec
 type AppConfigPatch struct { Port int; LogLevel string }
@@ -223,9 +226,9 @@ var appConfigPatchCodec = codex.Struct[AppConfigPatch](
 )
 
 // MaxWorkers preserved — it is not in the patch type
-err = format.PatchEncoded(configFile, nil, appConfigPatchCodec,
+err = ports.PatchEncoded(configFile, nil, appConfigPatchCodec,
     AppConfigPatch{Port: 9090, LogLevel: "debug"},
-    format.FileOptions{Observer: obs},
+    ports.FileOptions{Observer: obs},
 )
 ```
 
@@ -236,7 +239,7 @@ Fields declared in the patch codec but absent from the file codec are **written 
 ```go
 // Existing file type — does not include FeatureFlags
 type AppConfig struct { Port int; LogLevel string }
-var configFile = format.NewFile("config.json", format.JSON(appConfigCodec))
+var configFile = ports.NewFile("config.json", format.JSON(appConfigCodec))
 
 // Patch type adds FeatureFlags — a new field the file codec doesn't know about
 type AppConfigPatch struct {
@@ -257,9 +260,9 @@ var extendedPatchCodec = codex.Struct[AppConfigPatch](
 )
 
 // After this call, config.json contains both AppConfig fields AND feature_flags
-err = format.PatchEncoded(configFile, nil, extendedPatchCodec,
+err = ports.PatchEncoded(configFile, nil, extendedPatchCodec,
     AppConfigPatch{Port: 9090, FeatureFlags: map[string]bool{"dark_mode": true}},
-    format.FileOptions{Observer: obs},
+    ports.FileOptions{Observer: obs},
 )
 // config.json: {"port":9090,"log_level":"info","feature_flags":{"dark_mode":true}}
 ```
@@ -284,7 +287,7 @@ See [`examples/flat-key-patch`](https://github.com/DaniDeer/go-codex/tree/main/e
 
 When the JSON object key carries domain meaning (e.g. a container name in `"properties.desired.modules.cv-writer-kvrocks"`), use `codex.EntrySlice` to decode the entire object directly into `[]R` — no post-processing loop needed. The key codec handles prefix stripping and per-segment validation; the value codec decodes the object value; `merge` combines them into a single element.
 
-`EntrySlice` works with any `format.File`-produced intermediate — JSON, YAML, and TOML (with quoted headers) all produce `map[string]any`, which `EntrySlice` iterates directly.
+`EntrySlice` works with any `ports.File`-produced intermediate — JSON, YAML, and TOML (with quoted headers) all produce `map[string]any`, which `EntrySlice` iterates directly.
 
 → See [Codec — EntrySlice](../concepts/codec.md#merging-key-and-value-into-one-type-entryslice) for the full API, encode path walkthrough, multi-field key extraction, static key pattern, and schema generation details.
 
@@ -293,10 +296,10 @@ When the JSON object key carries domain meaning (e.g. a container name in `"prop
 For static paths (no template variables), pass `nil` for vars:
 
 ```go
-var configFile = format.NewFile("config.toml", format.TOML(configCodec))
+var configFile = ports.NewFile("config.toml", format.TOML(configCodec))
 
-cfg, err := configFile.Read(nil, format.FileOptions{})
-err = configFile.Write(nil, cfg, format.FileOptions{Perm: 0600})
+cfg, err := configFile.Read(nil, ports.FileOptions{})
+err = configFile.Write(nil, cfg, ports.FileOptions{Perm: 0600})
 ```
 
 ### Pre-flight path validation and introspection
@@ -337,7 +340,7 @@ schemas := measurementFile.PathParamSchemas()
 All errors implement `Unwrap()` for `errors.As`/`errors.Is` traversal and `slog.LogValuer` for structured logging:
 
 ```go
-var encErr format.FileEncodeError
+var encErr ports.FileEncodeError
 if errors.As(err, &encErr) {
     slog.Warn("encode failed", "error", encErr) // → error.path=..., error.cause=...
 }

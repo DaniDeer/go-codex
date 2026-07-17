@@ -1,22 +1,22 @@
-// Package main demonstrates [format.File]: the declarative typed file descriptor
+// Package main demonstrates [ports.File]: the declarative typed file descriptor
 // for reading, writing, and updating files with full codec validation.
 //
 // Scenario: an IoT sensor data pipeline that:
-//   - Loads a TOML service config on startup using a static [format.File]
+//   - Loads a TOML service config on startup using a static [ports.File]
 //   - Applies a single env var override via [format.FromEnvVar]
 //   - Writes and reads per-sensor JSON measurement files using a template path
-//   - Validates path variables (date format) with a [format.FilePathParam] codec
+//   - Validates path variables (date format) with a [ports.FilePathParam] codec
 //   - Handles all typed file errors with [errors.As]
 //   - Wires a [stats.FileObserver] for per-operation metrics + slog for structured errors
 //   - Writes and reads raw binary (PNG) files using [format.Binary] + [validate.PNG]
 //
 // Key patterns shown:
-//   - [format.NewFile] — declare once, use anywhere (mirrors rest.Route / events.Channel)
-//   - [format.File.BuildPath] — pre-flight path validation without any I/O
-//   - [format.File.Update] — atomic read-modify-write in one call
-//   - [format.FileOptions] — wiring observer + custom file permission
-//   - [format.FilePathParamError], [format.MissingFilePathVarError],
-//     [format.FileReadError] — navigate via [errors.As]
+//   - [ports.NewFile] — declare once, use anywhere (mirrors rest.Route / events.Channel)
+//   - [ports.File.BuildPath] — pre-flight path validation without any I/O
+//   - [ports.File.Update] — atomic read-modify-write in one call
+//   - [ports.FileOptions] — wiring observer + custom file permission
+//   - [ports.FilePathParamError], [ports.MissingFilePathVarError],
+//     [ports.FileReadError] — navigate via [errors.As]
 //   - [format.Binary] — raw binary file I/O with magic-byte validation
 //
 // Run with: go run ./examples/file-io
@@ -34,6 +34,7 @@ import (
 
 	"github.com/DaniDeer/go-codex/codex"
 	"github.com/DaniDeer/go-codex/format"
+	"github.com/DaniDeer/go-codex/ports"
 	"github.com/DaniDeer/go-codex/stats"
 	"github.com/DaniDeer/go-codex/validate"
 )
@@ -105,21 +106,21 @@ var measurementCodec = codex.Struct[Measurement](
 
 // configFile is a static-path TOML file descriptor. No template variables.
 // Declare at package level; pass to Read/Write/Update across the whole service.
-var configFile = format.NewFile(
+var configFile = ports.NewFile(
 	"", // path set at runtime via a wrapper — see loadConfig below
 	format.TOML(configCodec),
 )
 
 // measurementFile is a template-path JSON file descriptor. The {date} variable
 // is validated against the ISO date format; {sensor} has no codec (any string).
-var measurementFile = format.NewFile(
+var measurementFile = ports.NewFile(
 	"data/{date}/{sensor}.json",
 	format.JSON(measurementCodec),
-	format.FilePathParam{
+	ports.FilePathParam{
 		Name:        "date",
 		Description: "ISO date (YYYY-MM-DD). Validated against the date format.",
 	}.WithCodec(codex.String().Refine(validate.Date)),
-	format.FilePathParam{
+	ports.FilePathParam{
 		Name:        "sensor",
 		Description: "Sensor identifier (any non-empty string).",
 	},
@@ -179,14 +180,14 @@ var _ stats.FileObserver = (*CountingObserver)(nil)
 
 // loadConfig reads config from the given TOML path using a runtime-pathed File.
 func loadConfig(ctx context.Context, path string) (ServiceConfig, error) {
-	f := format.NewFile(path, format.TOML(configCodec))
-	return f.Read(nil, format.FileOptions{Context: ctx}) // observer from ctx
+	f := ports.NewFile(path, format.TOML(configCodec))
+	return f.Read(nil, ports.FileOptions{Context: ctx}) // observer from ctx
 }
 
 // writeConfig writes config to the given path.
 func writeConfig(ctx context.Context, path string, cfg ServiceConfig) error {
-	f := format.NewFile(path, format.TOML(configCodec))
-	return f.Write(nil, cfg, format.FileOptions{Context: ctx, Perm: 0600}) // observer from ctx
+	f := ports.NewFile(path, format.TOML(configCodec))
+	return f.Write(nil, cfg, ports.FileOptions{Context: ctx, Perm: 0600}) // observer from ctx
 }
 
 // ── main ──────────────────────────────────────────────────────────────────────
@@ -197,7 +198,7 @@ func main() {
 
 	metrics := &CountingObserver{}
 	obs := stats.NewFanout(metrics, stats.NewLoggingObserver(logger.With("component", "file-io")))
-	// Store obs in a context — format.File.Read/Write/Update/Patch all resolve it
+	// Store obs in a context — ports.File.Read/Write/Update/Patch all resolve it
 	// automatically via FileOptions.Context when FileOptions.Observer is nil.
 	ctx := stats.WithObserver(context.Background(), obs)
 
@@ -240,11 +241,11 @@ func main() {
 	}
 
 	// Update: bump retention_days by 10 via atomic read-modify-write.
-	f := format.NewFile(cfgPath, format.TOML(configCodec))
+	f := ports.NewFile(cfgPath, format.TOML(configCodec))
 	if err := f.Update(nil, func(c ServiceConfig) ServiceConfig {
 		c.RetentionDays += 10
 		return c
-	}, format.FileOptions{Context: ctx}); err != nil {
+	}, ports.FileOptions{Context: ctx}); err != nil {
 		slog.Error("config update failed", "err", err)
 	} else {
 		updated, _ := loadConfig(ctx, cfgPath)
@@ -280,11 +281,11 @@ func main() {
 	}
 
 	// sensorFile uses the temp dir prefix for actual I/O in this example.
-	sensorFile := format.NewFile(
+	sensorFile := ports.NewFile(
 		dataDir+"/data/{date}/{sensor}.json",
 		format.JSON(measurementCodec),
-		format.FilePathParam{Name: "date"}.WithCodec(codex.String().Refine(validate.Date)),
-		format.FilePathParam{Name: "sensor"},
+		ports.FilePathParam{Name: "date"}.WithCodec(codex.String().Refine(validate.Date)),
+		ports.FilePathParam{Name: "sensor"},
 	)
 
 	vars := map[string]string{
@@ -307,14 +308,14 @@ func main() {
 		Value:     23.7,
 		Unit:      "celsius",
 	}
-	if err := sensorFile.Write(vars, m, format.FileOptions{Context: ctx}); err != nil {
+	if err := sensorFile.Write(vars, m, ports.FileOptions{Context: ctx}); err != nil {
 		slog.Error("Write failed", "err", err)
 	} else {
 		fmt.Printf("  written: sensor=%s value=%.1f%s\n", m.SensorID, m.Value, m.Unit)
 	}
 
 	// Read it back.
-	got, err := sensorFile.Read(vars, format.FileOptions{Context: ctx})
+	got, err := sensorFile.Read(vars, ports.FileOptions{Context: ctx})
 	if err != nil {
 		slog.Error("Read failed", "err", err)
 	} else {
@@ -327,9 +328,9 @@ func main() {
 	fmt.Println("\n── Section 3: Typed error handling ────────────────────────────")
 
 	// Missing path variable → MissingFilePathVarError.
-	_, err = sensorFile.Read(map[string]string{"date": "2024-01-15"}, format.FileOptions{})
+	_, err = sensorFile.Read(map[string]string{"date": "2024-01-15"}, ports.FileOptions{})
 	if err != nil {
-		var missingErr format.MissingFilePathVarError
+		var missingErr ports.MissingFilePathVarError
 		if errors.As(err, &missingErr) {
 			fmt.Printf("  MissingFilePathVarError: param=%q\n", missingErr.Name)
 		}
@@ -338,17 +339,17 @@ func main() {
 	// Invalid path variable → FilePathParamError (date codec rejects this).
 	_, err = sensorFile.BuildPath(map[string]string{"date": "not-a-date", "sensor": "s1"})
 	if err != nil {
-		var paramErr format.FilePathParamError
+		var paramErr ports.FilePathParamError
 		if errors.As(err, &paramErr) {
 			fmt.Printf("  FilePathParamError: param=%q value=%q\n", paramErr.Name, paramErr.Value)
 		}
 	}
 
 	// File not found → FileReadError.
-	absent := format.NewFile("/nonexistent/dir/item.json", format.JSON(measurementCodec))
-	_, err = absent.Read(nil, format.FileOptions{Context: ctx})
+	absent := ports.NewFile("/nonexistent/dir/item.json", format.JSON(measurementCodec))
+	_, err = absent.Read(nil, ports.FileOptions{Context: ctx})
 	if err != nil {
-		var readErr format.FileReadError
+		var readErr ports.FileReadError
 		if errors.As(err, &readErr) {
 			fmt.Printf("  FileReadError: path=%q\n", readErr.Path)
 			slog.Warn("file not found", "path", readErr.Path, "cause", readErr.Err)
@@ -362,14 +363,14 @@ func main() {
 	// pngFile is a typed file descriptor for raw PNG data.
 	// format.Binary writes and reads []byte as-is (unlike Gob, which adds framing).
 	// validate.PNG checks the 8-byte PNG magic bytes on every read and write.
-	pngFile := format.NewFile(
+	pngFile := ports.NewFile(
 		dataDir+"/images/{name}.png",
 		format.Binary(
 			codex.Bytes().
 				Refine(validate.MaxBytes(10*1024*1024)).
 				Refine(validate.PNG),
 		).WithContentType("image/png"),
-		format.FilePathParam{Name: "name", Description: "Image name (no extension)."},
+		ports.FilePathParam{Name: "name", Description: "Image name (no extension)."},
 	)
 
 	if err := os.MkdirAll(dataDir+"/images", 0755); err != nil {
@@ -393,14 +394,14 @@ func main() {
 	pngVars := map[string]string{"name": "chart"}
 
 	// Write — FileObserver.RecordFileWrite is called after the write.
-	if err := pngFile.Write(pngVars, validPNG, format.FileOptions{Context: ctx}); err != nil {
+	if err := pngFile.Write(pngVars, validPNG, ports.FileOptions{Context: ctx}); err != nil {
 		slog.Error("PNG write failed", "err", err)
 	} else {
 		fmt.Printf("  written PNG: %d bytes\n", len(validPNG))
 	}
 
 	// Read — FileObserver.RecordFileRead is called after the read.
-	data, err := pngFile.Read(pngVars, format.FileOptions{Context: ctx})
+	data, err := pngFile.Read(pngVars, ports.FileOptions{Context: ctx})
 	if err != nil {
 		slog.Error("PNG read failed", "err", err)
 	} else {
@@ -409,8 +410,8 @@ func main() {
 
 	// Write invalid data (missing PNG magic bytes) — constraint failure.
 	notPNG := []byte("this is not a PNG file")
-	if err := pngFile.Write(pngVars, notPNG, format.FileOptions{Context: ctx}); err != nil {
-		var encErr format.FileEncodeError
+	if err := pngFile.Write(pngVars, notPNG, ports.FileOptions{Context: ctx}); err != nil {
+		var encErr ports.FileEncodeError
 		if errors.As(err, &encErr) {
 			fmt.Printf("  FileEncodeError (constraint): path=%q\n", encErr.Path)
 			slog.Warn("PNG write rejected", "path", encErr.Path, "cause", encErr.Err)
@@ -426,7 +427,7 @@ func main() {
 	//   Write(vars, T, opts)                      — full overwrite, no re-read
 	//   Update(vars, func(T)T, opts)              — read current → transform → write
 	//   Patch(vars, map[string]any, opts)         — explicit partial field update (RFC 7396)
-	//   format.PatchEncoded(file, vars, Codec[P], P, opts) — typed partial update via patch codec
+	//   ports.PatchEncoded(file, vars, Codec[P], P, opts) — typed partial update via patch codec
 	//
 	// If you already have the decoded value and want to write it back: use Write.
 	// Update re-reads the file — only use it when you need the latest file state.
@@ -445,10 +446,10 @@ func main() {
 		codex.RequiredField("max_workers", codex.Int().Refine(validate.RangeInt(1, 256)),
 			func(c appCfg) int { return c.MaxWorkers }, func(c *appCfg, v int) { c.MaxWorkers = v }),
 	)
-	appCfgFile := format.NewFile(dataDir+"/app-config.json", format.JSON(appCfgCodec))
+	appCfgFile := ports.NewFile(dataDir+"/app-config.json", format.JSON(appCfgCodec))
 
 	initial := appCfg{Port: 8080, LogLevel: "info", MaxWorkers: 4}
-	if err := appCfgFile.Write(nil, initial, format.FileOptions{Context: ctx}); err != nil {
+	if err := appCfgFile.Write(nil, initial, ports.FileOptions{Context: ctx}); err != nil {
 		slog.Error("Write initial config failed", "err", err)
 		os.Exit(1)
 	}
@@ -460,10 +461,10 @@ func main() {
 	if err := appCfgFile.Patch(nil, map[string]any{
 		"port":      9090,
 		"log_level": "debug",
-	}, format.FileOptions{Context: ctx}); err != nil {
+	}, ports.FileOptions{Context: ctx}); err != nil {
 		slog.Error("Patch failed", "err", err)
 	} else {
-		after, _ := appCfgFile.Read(nil, format.FileOptions{})
+		after, _ := appCfgFile.Read(nil, ports.FileOptions{})
 		fmt.Printf("  after Patch: port=%d log_level=%q max_workers=%d (unchanged)\n",
 			after.Port, after.LogLevel, after.MaxWorkers)
 	}
@@ -494,18 +495,18 @@ func main() {
 	)
 
 	// Reset to initial values.
-	_ = appCfgFile.Write(nil, initial, format.FileOptions{})
+	_ = appCfgFile.Write(nil, initial, ports.FileOptions{})
 	fmt.Printf("  reset: port=%d log_level=%q max_workers=%d\n",
 		initial.Port, initial.LogLevel, initial.MaxWorkers)
 
 	// PatchEncoded writes all patchCodec fields — including debug_mode which is
 	// not in appCfgCodec. After this call, "debug_mode" will be in the JSON file.
-	if err := format.PatchEncoded(appCfgFile, nil, appCfgPatchCodec,
+	if err := ports.PatchEncoded(appCfgFile, nil, appCfgPatchCodec,
 		appCfgPatch{Port: 7777, LogLevel: "warn", NewDebugMode: true},
-		format.FileOptions{Context: ctx}); err != nil {
+		ports.FileOptions{Context: ctx}); err != nil {
 		slog.Error("PatchEncoded failed", "err", err)
 	} else {
-		after, _ := appCfgFile.Read(nil, format.FileOptions{})
+		after, _ := appCfgFile.Read(nil, ports.FileOptions{})
 		fmt.Printf("  after PatchEncoded: port=%d log_level=%q max_workers=%d (always unchanged)\n",
 			after.Port, after.LogLevel, after.MaxWorkers)
 		// Read raw bytes to show debug_mode was persisted despite not being in appCfgCodec
@@ -516,15 +517,15 @@ func main() {
 	// ── Caveat: already decoded struct → use Write ────────────────────────────
 	// If you've already decoded the struct and modified it, Write is the right choice.
 	// Update re-reads unnecessarily if you already have the value in memory.
-	decoded, _ := appCfgFile.Read(nil, format.FileOptions{})
-	decoded.Port = 5050                                                  // modify in memory
-	_ = appCfgFile.Write(nil, decoded, format.FileOptions{Context: ctx}) // Write directly — no re-read
+	decoded, _ := appCfgFile.Read(nil, ports.FileOptions{})
+	decoded.Port = 5050                                                 // modify in memory
+	_ = appCfgFile.Write(nil, decoded, ports.FileOptions{Context: ctx}) // Write directly — no re-read
 	fmt.Printf("  after Write (decoded→modified): port=%d\n", decoded.Port)
 
 	// ── FilePatchNotSupportedError for Gob ────────────────────────────────────
-	gobFile := format.NewFile("/tmp/example.gob", format.Gob(appCfgCodec))
-	if err := gobFile.Patch(nil, map[string]any{"port": 1234}, format.FileOptions{}); err != nil {
-		var patchErr format.FilePatchNotSupportedError
+	gobFile := ports.NewFile("/tmp/example.gob", format.Gob(appCfgCodec))
+	if err := gobFile.Patch(nil, map[string]any{"port": 1234}, ports.FileOptions{}); err != nil {
+		var patchErr ports.FilePatchNotSupportedError
 		if errors.As(err, &patchErr) {
 			fmt.Printf("  FilePatchNotSupportedError: %s\n", patchErr.Error())
 			slog.Warn("patch not supported", "error", patchErr) // slog.LogValuer fires

@@ -340,7 +340,7 @@ type stats.SQLObserver interface {
 
 Per-field validation failures are additionally reported via the existing
 `stats.Observer.RecordValidationError("sql_row", constraint, field)` hook —
-consistent with how `format.File` uses location `"file"` and MQTT adapters
+consistent with how `ports.File` uses location `"file"` and MQTT adapters
 use `"payload"`.
 
 ```go

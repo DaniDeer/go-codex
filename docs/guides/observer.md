@@ -75,8 +75,8 @@ func main() {
 
     // ── 5. File read (FileObserver + TraceObserver) ────────────────────────
 
-    f := format.NewFile("/tmp/test.json", format.JSON(codex.String()))
-    _, err = f.Read(nil, format.FileOptions{Observer: obs})
+    f := ports.NewFile("/tmp/test.json", format.JSON(codex.String()))
+    _, err = f.Read(nil, ports.FileOptions{Observer: obs})
     // LoggingObserver: level=DEBUG msg="file read" path=... success=false
     // TraceObserver:   StartSpan("file.read", "/tmp/test.json")
     // Metrics:         fileReads++
@@ -106,7 +106,7 @@ func main() {
 
 Instead of passing `Observer: obs` on every call site, use
 `stats.WithObserver(ctx, obs)` to store an observer in a context. Adapters,
-stream bridges, and `format.File` consult `stats.ObserverFromContext(ctx)` when
+stream bridges, and `ports.File` consult `stats.ObserverFromContext(ctx)` when
 their `Options.Observer` field is nil — so one line at startup covers all
 components that share the same context:
 
@@ -145,10 +145,10 @@ func ObserverMiddleware(obs stats.Observer) func(http.Handler) http.Handler {
 Alternatively, pass `nethttp.Options{Observer: obs}` directly for service-level
 (not per-request) wiring — simpler and slightly cheaper.
 
-**For `format.File`** — set `FileOptions.Context` to the context carrying the observer:
+**For `ports.File`** — set `FileOptions.Context` to the context carrying the observer:
 
 ```go
-value, err := configFile.Read(nil, format.FileOptions{Context: ctx})
+value, err := configFile.Read(nil, ports.FileOptions{Context: ctx})
 // observer resolved from ctx via FileOptions.Context
 ```
 
@@ -305,9 +305,9 @@ reg := forge.NewRegistry("Pipeline", "1.0.0").WithObserver(obs)
 > **Context observer:** `forge.Registry` uses the explicit `.WithObserver(obs)` builder — no
 > context integration by design. The registry is long-lived and configured once at startup.
 
-### FileObserver (format.File)
+### FileObserver (ports.File)
 
-`format.File[T]` type-asserts the observer in `FileOptions` to `stats.FileObserver`:
+`ports.File[T]` type-asserts the observer in `FileOptions` to `stats.FileObserver`:
 
 ```go
 type FileMetrics struct {
@@ -327,13 +327,13 @@ func (o *FileMetrics) RecordFileWrite(path string, ok bool, d time.Duration) {
 var _ stats.FileObserver = (*FileMetrics)(nil)
 
 obs := stats.NewFanout(&FileMetrics{}, stats.NewLoggingObserver(logger))
-opts := format.FileOptions{Observer: obs}
+opts := ports.FileOptions{Observer: obs}
 cfg, err := configFile.Read(nil, opts)
 ```
 
 `path` is the concrete path after template substitution, never the template string.
 
-> **Context observer:** `format.File.Read/Write/Update/Patch` resolve the observer from
+> **Context observer:** `ports.File.Read/Write/Update/Patch` resolve the observer from
 > `opts.Context` when `opts.Observer` is nil. Set `FileOptions{Context: ctx}` where `ctx`
 > carries the observer via `stats.WithObserver`.
 
@@ -429,7 +429,7 @@ enable context propagation without breaking existing callers.
 ### File I/O (set FileOptions.Context)
 
 ```go
-opts := format.FileOptions{
+opts := ports.FileOptions{
     Observer: metrics,
     Context:  ctx,  // file.read span is child of HTTP handler span
 }
@@ -455,7 +455,7 @@ func handler(ctx context.Context, req MyRequest) (MyResponse, error) {
     }
 
     // Step 2: write result to file as child span
-    err = resultFile.Write(nil, result, format.FileOptions{
+    err = resultFile.Write(nil, result, ports.FileOptions{
         Observer: obs,
         Context:  ctx,
     })
@@ -475,8 +475,8 @@ func handler(ctx context.Context, req MyRequest) (MyResponse, error) {
 | `"mqtt.subscribe"` | mqtt — `SubscribeHandler`                        |
 | `"mqtt.publish"`   | mqtt — `Publish`                                 |
 | `"forge.apply"`    | forge — `Apply`                                  |
-| `"file.read"`      | format.File — `Read` / `Update`                  |
-| `"file.write"`     | format.File — `Write` / `Patch` / `PatchEncoded` |
+| `"file.read"`      | ports.File — `Read` / `Update`                  |
+| `"file.write"`     | ports.File — `Write` / `Patch` / `PatchEncoded` |
 | `"mcp.tool"`       | mcpgo — `ToolHandler`                            |
 | `"mcp.resource"`   | mcpgo — `ResourceHandler`                        |
 | `"mcp.prompt"`     | mcpgo — `PromptHandler`                          |
@@ -497,7 +497,7 @@ func handler(ctx context.Context, req MyRequest) (MyResponse, error) {
 | `"topic"`           | mqtt — topic-level codec failure                                |
 | `"input"`           | mcpgo — tool argument decode/validation                         |
 | `"prompt.args"`     | mcpgo — prompt argument codec failure                           |
-| `"file"`            | format.File — per-field codec failure during read/write         |
+| `"file"`            | ports.File — per-field codec failure during read/write         |
 | any string          | codec-only: choose your own label (`"config"`, `"input"`, etc.) |
 
 ## Prometheus example
@@ -562,7 +562,7 @@ obs := stats.NewFanout(metrics, stats.NewLoggingObserver(logger), &OTelTracer{})
 
 // The same obs propagates traces across every layer:
 nethttp.Register(mux, route, handler, nethttp.Options{Observer: obs})
-configFile.Read(nil, format.FileOptions{Observer: obs})
+configFile.Read(nil, ports.FileOptions{Observer: obs})
 forge.NewRegistry("Pipeline", "1.0.0").WithObserver(obs)
 ```
 

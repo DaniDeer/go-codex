@@ -1,6 +1,7 @@
-package format_test
+package ports_test
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -14,6 +15,7 @@ import (
 
 	"github.com/DaniDeer/go-codex/codex"
 	"github.com/DaniDeer/go-codex/format"
+	"github.com/DaniDeer/go-codex/ports"
 	"github.com/DaniDeer/go-codex/stats"
 	"github.com/DaniDeer/go-codex/validate"
 )
@@ -54,14 +56,14 @@ var fileItemPatchCodec = codex.Struct[fileItemPatch](
 	),
 )
 
-var staticFile = format.NewFile("item.json", format.JSON(fileItemCodec))
+var staticFile = ports.NewFile("item.json", format.JSON(fileItemCodec))
 
-var templateFile = format.NewFile(
+var templateFile = ports.NewFile(
 	"data/{category}/{id}.json",
 	format.JSON(fileItemCodec),
-	format.FilePathParam{Name: "category", Description: "Item category"}.
+	ports.FilePathParam{Name: "category", Description: "Item category"}.
 		WithCodec(codex.String().Refine(validate.NonEmptyString)),
-	format.FilePathParam{Name: "id", Description: "Item ID (numeric)"},
+	ports.FilePathParam{Name: "id", Description: "Item ID (numeric)"},
 )
 
 // fileObserverSpy captures FileObserver callbacks for assertions.
@@ -92,7 +94,7 @@ var _ stats.FileObserver = (*fileObserverSpy)(nil)
 
 func TestFilePathParam_WithCodec_SetsCodec(t *testing.T) {
 	c := codex.String().Refine(validate.NonEmptyString)
-	p := format.FilePathParam{Name: "sensor"}.WithCodec(c)
+	p := ports.FilePathParam{Name: "sensor"}.WithCodec(c)
 	if p.Codec == nil {
 		t.Fatal("expected Codec to be set, got nil")
 	}
@@ -114,11 +116,11 @@ func TestBuildPath_StaticPath_NilVars(t *testing.T) {
 }
 
 func TestBuildPath_TemplateVars_NoCodec(t *testing.T) {
-	f := format.NewFile(
+	f := ports.NewFile(
 		"data/{category}/{id}.json",
 		format.JSON(fileItemCodec),
-		format.FilePathParam{Name: "category"},
-		format.FilePathParam{Name: "id"},
+		ports.FilePathParam{Name: "category"},
+		ports.FilePathParam{Name: "id"},
 	)
 	path, err := f.BuildPath(map[string]string{"category": "sensors", "id": "42"})
 	if err != nil {
@@ -144,7 +146,7 @@ func TestBuildPath_MissingVar_ReturnsMissingError(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}
-	var missing format.MissingFilePathVarError
+	var missing ports.MissingFilePathVarError
 	if !errors.As(err, &missing) {
 		t.Fatalf("expected MissingFilePathVarError, got %T: %v", err, err)
 	}
@@ -159,7 +161,7 @@ func TestBuildPath_InvalidVar_ReturnsFilePathParamError(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}
-	var paramErr format.FilePathParamError
+	var paramErr ports.FilePathParamError
 	if !errors.As(err, &paramErr) {
 		t.Fatalf("expected FilePathParamError, got %T: %v", err, err)
 	}
@@ -175,7 +177,7 @@ func TestBuildPath_InvalidVar_ReturnsFilePathParamError(t *testing.T) {
 }
 
 func TestBuildPath_FilePathParamError_ErrorString(t *testing.T) {
-	e := format.FilePathParamError{Name: "date", Value: "bad", Err: errors.New("invalid")}
+	e := ports.FilePathParamError{Name: "date", Value: "bad", Err: errors.New("invalid")}
 	s := e.Error()
 	if !strings.Contains(s, "date") || !strings.Contains(s, "bad") {
 		t.Errorf("Error() missing param name or value: %q", s)
@@ -183,7 +185,7 @@ func TestBuildPath_FilePathParamError_ErrorString(t *testing.T) {
 }
 
 func TestBuildPath_MissingFilePathVarError_ErrorString(t *testing.T) {
-	e := format.MissingFilePathVarError{Name: "date"}
+	e := ports.MissingFilePathVarError{Name: "date"}
 	s := e.Error()
 	if !strings.Contains(s, "date") {
 		t.Errorf("Error() missing param name: %q", s)
@@ -206,7 +208,7 @@ func TestValidatePathVars_MissingVar_ReturnsMissingError(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}
-	var missing format.MissingFilePathVarError
+	var missing ports.MissingFilePathVarError
 	if !errors.As(err, &missing) {
 		t.Fatalf("expected MissingFilePathVarError, got %T", err)
 	}
@@ -217,16 +219,16 @@ func TestValidatePathVars_InvalidVar_ReturnsParamError(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}
-	var paramErr format.FilePathParamError
+	var paramErr ports.FilePathParamError
 	if !errors.As(err, &paramErr) {
 		t.Fatalf("expected FilePathParamError, got %T", err)
 	}
 }
 
 func TestValidatePathVars_NoCodecs_AlwaysNil(t *testing.T) {
-	f := format.NewFile("data/{a}/{b}.json", format.JSON(fileItemCodec),
-		format.FilePathParam{Name: "a"},
-		format.FilePathParam{Name: "b"},
+	f := ports.NewFile("data/{a}/{b}.json", format.JSON(fileItemCodec),
+		ports.FilePathParam{Name: "a"},
+		ports.FilePathParam{Name: "b"},
 	)
 	// Even missing vars are fine — ValidatePathVars only validates codecs
 	err := f.ValidatePathVars(map[string]string{})
@@ -249,9 +251,9 @@ func TestPathParamSchemas_ReturnsSchemaForParamsWithCodec(t *testing.T) {
 }
 
 func TestPathParamSchemas_EmptyWhenNoCodecs(t *testing.T) {
-	f := format.NewFile("data/{a}/{b}.json", format.JSON(fileItemCodec),
-		format.FilePathParam{Name: "a"},
-		format.FilePathParam{Name: "b"},
+	f := ports.NewFile("data/{a}/{b}.json", format.JSON(fileItemCodec),
+		ports.FilePathParam{Name: "a"},
+		ports.FilePathParam{Name: "b"},
 	)
 	schemas := f.PathParamSchemas()
 	if len(schemas) != 0 {
@@ -273,8 +275,8 @@ func TestRead_HappyPath(t *testing.T) {
 	path := filepath.Join(dir, "item.json")
 	_ = os.WriteFile(path, []byte(`{"name":"widget","value":42}`), 0644)
 
-	f := format.NewFile(path, format.JSON(fileItemCodec))
-	item, err := f.Read(nil, format.FileOptions{})
+	f := ports.NewFile(path, format.JSON(fileItemCodec))
+	item, err := f.Read(nil, ports.FileOptions{})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -287,12 +289,12 @@ func TestRead_PathVarError_NoIO(t *testing.T) {
 	spy := &fileObserverSpy{}
 	_, err := templateFile.Read(
 		map[string]string{"category": "", "id": "1"},
-		format.FileOptions{Observer: spy},
+		ports.FileOptions{Observer: spy},
 	)
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}
-	var paramErr format.FilePathParamError
+	var paramErr ports.FilePathParamError
 	if !errors.As(err, &paramErr) {
 		t.Fatalf("expected FilePathParamError, got %T", err)
 	}
@@ -303,12 +305,12 @@ func TestRead_PathVarError_NoIO(t *testing.T) {
 }
 
 func TestRead_FileNotFound_ReturnsFileReadError(t *testing.T) {
-	f := format.NewFile("/nonexistent/path/item.json", format.JSON(fileItemCodec))
-	_, err := f.Read(nil, format.FileOptions{})
+	f := ports.NewFile("/nonexistent/path/item.json", format.JSON(fileItemCodec))
+	_, err := f.Read(nil, ports.FileOptions{})
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}
-	var readErr format.FileReadError
+	var readErr ports.FileReadError
 	if !errors.As(err, &readErr) {
 		t.Fatalf("expected FileReadError, got %T: %v", err, err)
 	}
@@ -326,12 +328,12 @@ func TestRead_InvalidContent_ReturnsFileDecodeError(t *testing.T) {
 	// value 9999 exceeds RangeInt(0, 1000)
 	_ = os.WriteFile(path, []byte(`{"name":"widget","value":9999}`), 0644)
 
-	f := format.NewFile(path, format.JSON(fileItemCodec))
-	_, err := f.Read(nil, format.FileOptions{})
+	f := ports.NewFile(path, format.JSON(fileItemCodec))
+	_, err := f.Read(nil, ports.FileOptions{})
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}
-	var decErr format.FileDecodeError
+	var decErr ports.FileDecodeError
 	if !errors.As(err, &decErr) {
 		t.Fatalf("expected FileDecodeError, got %T: %v", err, err)
 	}
@@ -345,9 +347,9 @@ func TestRead_InvalidContent_ReturnsFileDecodeError(t *testing.T) {
 func TestWrite_HappyPath(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "item.json")
-	f := format.NewFile(path, format.JSON(fileItemCodec))
+	f := ports.NewFile(path, format.JSON(fileItemCodec))
 
-	err := f.Write(nil, fileItem{Name: "gadget", Value: 7}, format.FileOptions{})
+	err := f.Write(nil, fileItem{Name: "gadget", Value: 7}, ports.FileOptions{})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -362,12 +364,12 @@ func TestWrite_PathVarError_NoIO(t *testing.T) {
 	err := templateFile.Write(
 		map[string]string{"category": "", "id": "1"},
 		fileItem{Name: "x", Value: 1},
-		format.FileOptions{Observer: spy},
+		ports.FileOptions{Observer: spy},
 	)
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}
-	var paramErr format.FilePathParamError
+	var paramErr ports.FilePathParamError
 	if !errors.As(err, &paramErr) {
 		t.Fatalf("expected FilePathParamError, got %T", err)
 	}
@@ -379,14 +381,14 @@ func TestWrite_PathVarError_NoIO(t *testing.T) {
 func TestWrite_EncodeFailure_ReturnsFileEncodeError(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "item.json")
-	f := format.NewFile(path, format.JSON(fileItemCodec))
+	f := ports.NewFile(path, format.JSON(fileItemCodec))
 
 	// value 9999 violates RangeInt(0,1000) — encode/marshal should fail constraint
-	err := f.Write(nil, fileItem{Name: "x", Value: 9999}, format.FileOptions{})
+	err := f.Write(nil, fileItem{Name: "x", Value: 9999}, ports.FileOptions{})
 	if err == nil {
 		t.Fatal("expected error for out-of-range value, got nil")
 	}
-	var encErr format.FileEncodeError
+	var encErr ports.FileEncodeError
 	if !errors.As(err, &encErr) {
 		t.Fatalf("expected FileEncodeError, got %T: %v", err, err)
 	}
@@ -397,12 +399,12 @@ func TestWrite_EncodeFailure_ReturnsFileEncodeError(t *testing.T) {
 
 func TestWrite_IOFailure_ReturnsFileWriteError(t *testing.T) {
 	// Write to non-existent directory
-	f := format.NewFile("/nonexistent/dir/item.json", format.JSON(fileItemCodec))
-	err := f.Write(nil, fileItem{Name: "x", Value: 1}, format.FileOptions{})
+	f := ports.NewFile("/nonexistent/dir/item.json", format.JSON(fileItemCodec))
+	err := f.Write(nil, fileItem{Name: "x", Value: 1}, ports.FileOptions{})
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}
-	var writeErr format.FileWriteError
+	var writeErr ports.FileWriteError
 	if !errors.As(err, &writeErr) {
 		t.Fatalf("expected FileWriteError, got %T: %v", err, err)
 	}
@@ -414,9 +416,9 @@ func TestWrite_IOFailure_ReturnsFileWriteError(t *testing.T) {
 func TestWrite_CustomPerm_SetOnFile(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "item.json")
-	f := format.NewFile(path, format.JSON(fileItemCodec))
+	f := ports.NewFile(path, format.JSON(fileItemCodec))
 
-	err := f.Write(nil, fileItem{Name: "x", Value: 1}, format.FileOptions{Perm: 0600})
+	err := f.Write(nil, fileItem{Name: "x", Value: 1}, ports.FileOptions{Perm: 0600})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -434,10 +436,10 @@ func TestWrite_CustomPerm_SetOnFile(t *testing.T) {
 func TestUpdate_RoundTrip(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "item.json")
-	f := format.NewFile(path, format.JSON(fileItemCodec))
+	f := ports.NewFile(path, format.JSON(fileItemCodec))
 
 	// Write initial value
-	if err := f.Write(nil, fileItem{Name: "widget", Value: 10}, format.FileOptions{}); err != nil {
+	if err := f.Write(nil, fileItem{Name: "widget", Value: 10}, ports.FileOptions{}); err != nil {
 		t.Fatalf("Write: %v", err)
 	}
 
@@ -445,12 +447,12 @@ func TestUpdate_RoundTrip(t *testing.T) {
 	if err := f.Update(nil, func(item fileItem) fileItem {
 		item.Value += 5
 		return item
-	}, format.FileOptions{}); err != nil {
+	}, ports.FileOptions{}); err != nil {
 		t.Fatalf("Update: %v", err)
 	}
 
 	// Read back and verify
-	result, err := f.Read(nil, format.FileOptions{})
+	result, err := f.Read(nil, ports.FileOptions{})
 	if err != nil {
 		t.Fatalf("Read: %v", err)
 	}
@@ -463,12 +465,12 @@ func TestUpdate_RoundTrip(t *testing.T) {
 }
 
 func TestUpdate_ReadFailure_Propagates(t *testing.T) {
-	f := format.NewFile("/nonexistent/item.json", format.JSON(fileItemCodec))
-	err := f.Update(nil, func(item fileItem) fileItem { return item }, format.FileOptions{})
+	f := ports.NewFile("/nonexistent/item.json", format.JSON(fileItemCodec))
+	err := f.Update(nil, func(item fileItem) fileItem { return item }, ports.FileOptions{})
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}
-	var readErr format.FileReadError
+	var readErr ports.FileReadError
 	if !errors.As(err, &readErr) {
 		t.Fatalf("expected FileReadError, got %T", err)
 	}
@@ -480,10 +482,10 @@ func TestFileObserver_ReadSuccess_CallsRecordFileRead(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "item.json")
 	_ = os.WriteFile(path, []byte(`{"name":"x","value":1}`), 0644)
-	f := format.NewFile(path, format.JSON(fileItemCodec))
+	f := ports.NewFile(path, format.JSON(fileItemCodec))
 
 	spy := &fileObserverSpy{}
-	_, err := f.Read(nil, format.FileOptions{Observer: spy})
+	_, err := f.Read(nil, ports.FileOptions{Observer: spy})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -499,9 +501,9 @@ func TestFileObserver_ReadSuccess_CallsRecordFileRead(t *testing.T) {
 }
 
 func TestFileObserver_ReadFileNotFound_CallsRecordFileReadFalse(t *testing.T) {
-	f := format.NewFile("/nonexistent/item.json", format.JSON(fileItemCodec))
+	f := ports.NewFile("/nonexistent/item.json", format.JSON(fileItemCodec))
 	spy := &fileObserverSpy{}
-	_, _ = f.Read(nil, format.FileOptions{Observer: spy})
+	_, _ = f.Read(nil, ports.FileOptions{Observer: spy})
 	if len(spy.reads) != 1 {
 		t.Fatalf("expected 1 read callback, got %d", len(spy.reads))
 	}
@@ -514,10 +516,10 @@ func TestFileObserver_ReadDecodeFailure_CallsRecordFileReadFalse(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "item.json")
 	_ = os.WriteFile(path, []byte(`{"name":"x","value":9999}`), 0644)
-	f := format.NewFile(path, format.JSON(fileItemCodec))
+	f := ports.NewFile(path, format.JSON(fileItemCodec))
 
 	spy := &fileObserverSpy{}
-	_, _ = f.Read(nil, format.FileOptions{Observer: spy})
+	_, _ = f.Read(nil, ports.FileOptions{Observer: spy})
 	if len(spy.reads) != 1 {
 		t.Fatalf("expected 1 read callback, got %d", len(spy.reads))
 	}
@@ -529,10 +531,10 @@ func TestFileObserver_ReadDecodeFailure_CallsRecordFileReadFalse(t *testing.T) {
 func TestFileObserver_WriteSuccess_CallsRecordFileWrite(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "item.json")
-	f := format.NewFile(path, format.JSON(fileItemCodec))
+	f := ports.NewFile(path, format.JSON(fileItemCodec))
 
 	spy := &fileObserverSpy{}
-	_ = f.Write(nil, fileItem{Name: "x", Value: 1}, format.FileOptions{Observer: spy})
+	_ = f.Write(nil, fileItem{Name: "x", Value: 1}, ports.FileOptions{Observer: spy})
 	if len(spy.writes) != 1 {
 		t.Fatalf("expected 1 write callback, got %d", len(spy.writes))
 	}
@@ -547,10 +549,10 @@ func TestFileObserver_WriteSuccess_CallsRecordFileWrite(t *testing.T) {
 func TestFileObserver_WriteEncodeFailure_CallsRecordFileWriteFalse(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "item.json")
-	f := format.NewFile(path, format.JSON(fileItemCodec))
+	f := ports.NewFile(path, format.JSON(fileItemCodec))
 
 	spy := &fileObserverSpy{}
-	_ = f.Write(nil, fileItem{Name: "x", Value: 9999}, format.FileOptions{Observer: spy})
+	_ = f.Write(nil, fileItem{Name: "x", Value: 9999}, ports.FileOptions{Observer: spy})
 	if len(spy.writes) != 1 {
 		t.Fatalf("expected 1 write callback, got %d", len(spy.writes))
 	}
@@ -560,9 +562,9 @@ func TestFileObserver_WriteEncodeFailure_CallsRecordFileWriteFalse(t *testing.T)
 }
 
 func TestFileObserver_WriteIOFailure_CallsRecordFileWriteFalse(t *testing.T) {
-	f := format.NewFile("/nonexistent/dir/item.json", format.JSON(fileItemCodec))
+	f := ports.NewFile("/nonexistent/dir/item.json", format.JSON(fileItemCodec))
 	spy := &fileObserverSpy{}
-	_ = f.Write(nil, fileItem{Name: "x", Value: 1}, format.FileOptions{Observer: spy})
+	_ = f.Write(nil, fileItem{Name: "x", Value: 1}, ports.FileOptions{Observer: spy})
 	if len(spy.writes) != 1 {
 		t.Fatalf("expected 1 write callback, got %d", len(spy.writes))
 	}
@@ -574,18 +576,18 @@ func TestFileObserver_WriteIOFailure_CallsRecordFileWriteFalse(t *testing.T) {
 func TestFileObserver_NilObserver_NoPanic(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "item.json")
-	f := format.NewFile(path, format.JSON(fileItemCodec))
+	f := ports.NewFile(path, format.JSON(fileItemCodec))
 
 	// No panic on nil observer
-	_ = f.Write(nil, fileItem{Name: "x", Value: 1}, format.FileOptions{Observer: nil})
-	_, _ = f.Read(nil, format.FileOptions{Observer: nil})
+	_ = f.Write(nil, fileItem{Name: "x", Value: 1}, ports.FileOptions{Observer: nil})
+	_, _ = f.Read(nil, ports.FileOptions{Observer: nil})
 }
 
 // ── Error type surfaces ───────────────────────────────────────────────────────
 
 func TestFileReadError_ErrorAndUnwrap(t *testing.T) {
 	inner := errors.New("permission denied")
-	e := format.FileReadError{Path: "/a/b.json", Err: inner}
+	e := ports.FileReadError{Path: "/a/b.json", Err: inner}
 	if !strings.Contains(e.Error(), "/a/b.json") {
 		t.Errorf("Error() missing path: %q", e.Error())
 	}
@@ -596,7 +598,7 @@ func TestFileReadError_ErrorAndUnwrap(t *testing.T) {
 
 func TestFileDecodeError_ErrorAndUnwrap(t *testing.T) {
 	inner := errors.New("invalid json")
-	e := format.FileDecodeError{Path: "/a/b.json", Err: inner}
+	e := ports.FileDecodeError{Path: "/a/b.json", Err: inner}
 	if !strings.Contains(e.Error(), "/a/b.json") {
 		t.Errorf("Error() missing path: %q", e.Error())
 	}
@@ -607,7 +609,7 @@ func TestFileDecodeError_ErrorAndUnwrap(t *testing.T) {
 
 func TestFileEncodeError_ErrorAndUnwrap(t *testing.T) {
 	inner := errors.New("marshal failed")
-	e := format.FileEncodeError{Path: "/a/b.json", Err: inner}
+	e := ports.FileEncodeError{Path: "/a/b.json", Err: inner}
 	if !strings.Contains(e.Error(), "/a/b.json") {
 		t.Errorf("Error() missing path: %q", e.Error())
 	}
@@ -618,7 +620,7 @@ func TestFileEncodeError_ErrorAndUnwrap(t *testing.T) {
 
 func TestFileWriteError_ErrorAndUnwrap(t *testing.T) {
 	inner := errors.New("disk full")
-	e := format.FileWriteError{Path: "/a/b.json", Err: inner}
+	e := ports.FileWriteError{Path: "/a/b.json", Err: inner}
 	if !strings.Contains(e.Error(), "/a/b.json") {
 		t.Errorf("Error() missing path: %q", e.Error())
 	}
@@ -630,7 +632,7 @@ func TestFileWriteError_ErrorAndUnwrap(t *testing.T) {
 // ── slog.LogValuer on file error types ────────────────────────────────────────
 
 func TestFilePathParamError_LogValue(t *testing.T) {
-	e := format.FilePathParamError{Name: "date", Value: "bad", Err: errors.New("invalid")}
+	e := ports.FilePathParamError{Name: "date", Value: "bad", Err: errors.New("invalid")}
 	v := e.LogValue()
 	if v.Kind() != slog.KindGroup {
 		t.Fatalf("expected GroupValue, got %v", v.Kind())
@@ -648,7 +650,7 @@ func TestFilePathParamError_LogValue(t *testing.T) {
 }
 
 func TestMissingFilePathVarError_LogValue(t *testing.T) {
-	e := format.MissingFilePathVarError{Name: "sensor"}
+	e := ports.MissingFilePathVarError{Name: "sensor"}
 	v := e.LogValue()
 	if v.Kind() != slog.KindGroup {
 		t.Fatalf("expected GroupValue, got %v", v.Kind())
@@ -660,7 +662,7 @@ func TestMissingFilePathVarError_LogValue(t *testing.T) {
 }
 
 func TestFileReadError_LogValue(t *testing.T) {
-	e := format.FileReadError{Path: "/a/b.json", Err: errors.New("not found")}
+	e := ports.FileReadError{Path: "/a/b.json", Err: errors.New("not found")}
 	v := e.LogValue()
 	if v.Kind() != slog.KindGroup {
 		t.Fatalf("expected GroupValue, got %v", v.Kind())
@@ -677,7 +679,7 @@ func TestFileReadError_LogValue(t *testing.T) {
 }
 
 func TestFileDecodeError_LogValue(t *testing.T) {
-	e := format.FileDecodeError{Path: "/a/b.json", Err: errors.New("bad json")}
+	e := ports.FileDecodeError{Path: "/a/b.json", Err: errors.New("bad json")}
 	v := e.LogValue()
 	if v.Kind() != slog.KindGroup {
 		t.Fatalf("expected GroupValue, got %v", v.Kind())
@@ -685,7 +687,7 @@ func TestFileDecodeError_LogValue(t *testing.T) {
 }
 
 func TestFileEncodeError_LogValue(t *testing.T) {
-	e := format.FileEncodeError{Path: "/a/b.json", Err: errors.New("constraint")}
+	e := ports.FileEncodeError{Path: "/a/b.json", Err: errors.New("constraint")}
 	v := e.LogValue()
 	if v.Kind() != slog.KindGroup {
 		t.Fatalf("expected GroupValue, got %v", v.Kind())
@@ -693,7 +695,7 @@ func TestFileEncodeError_LogValue(t *testing.T) {
 }
 
 func TestFileWriteError_LogValue(t *testing.T) {
-	e := format.FileWriteError{Path: "/a/b.json", Err: errors.New("disk full")}
+	e := ports.FileWriteError{Path: "/a/b.json", Err: errors.New("disk full")}
 	v := e.LogValue()
 	if v.Kind() != slog.KindGroup {
 		t.Fatalf("expected GroupValue, got %v", v.Kind())
@@ -701,7 +703,7 @@ func TestFileWriteError_LogValue(t *testing.T) {
 }
 
 func TestFilePatchNotSupportedError_LogValue(t *testing.T) {
-	e := format.FilePatchNotSupportedError{Path: "/a/b.gob"}
+	e := ports.FilePatchNotSupportedError{Path: "/a/b.gob"}
 	v := e.LogValue()
 	if v.Kind() != slog.KindGroup {
 		t.Fatalf("expected GroupValue, got %v", v.Kind())
@@ -712,7 +714,7 @@ func TestFilePatchNotSupportedError_LogValue(t *testing.T) {
 }
 
 func TestFilePatchNotSupportedError_ErrorAndUnwrap(t *testing.T) {
-	e := format.FilePatchNotSupportedError{Path: "/a/b.gob"}
+	e := ports.FilePatchNotSupportedError{Path: "/a/b.gob"}
 	if !strings.Contains(e.Error(), "/a/b.gob") {
 		t.Errorf("Error() missing path: %q", e.Error())
 	}
@@ -760,19 +762,19 @@ func TestIsPatchable_Binary_False(t *testing.T) {
 func TestPatch_JSON_OnlyPatchedFieldChanges(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "item.json")
-	f := format.NewFile(path, format.JSON(fileItemCodec))
+	f := ports.NewFile(path, format.JSON(fileItemCodec))
 
 	// Write initial value
-	if err := f.Write(nil, fileItem{Name: "original", Value: 42}, format.FileOptions{}); err != nil {
+	if err := f.Write(nil, fileItem{Name: "original", Value: 42}, ports.FileOptions{}); err != nil {
 		t.Fatalf("Write: %v", err)
 	}
 
 	// Patch only Value — Name must survive unchanged
-	if err := f.Patch(nil, map[string]any{"value": 99}, format.FileOptions{}); err != nil {
+	if err := f.Patch(nil, map[string]any{"value": 99}, ports.FileOptions{}); err != nil {
 		t.Fatalf("Patch: %v", err)
 	}
 
-	got, err := f.Read(nil, format.FileOptions{})
+	got, err := f.Read(nil, ports.FileOptions{})
 	if err != nil {
 		t.Fatalf("Read: %v", err)
 	}
@@ -787,17 +789,17 @@ func TestPatch_JSON_OnlyPatchedFieldChanges(t *testing.T) {
 func TestPatch_YAML_HappyPath(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "item.yaml")
-	f := format.NewFile(path, format.YAML(fileItemCodec))
+	f := ports.NewFile(path, format.YAML(fileItemCodec))
 
-	if err := f.Write(nil, fileItem{Name: "yaml-item", Value: 10}, format.FileOptions{}); err != nil {
+	if err := f.Write(nil, fileItem{Name: "yaml-item", Value: 10}, ports.FileOptions{}); err != nil {
 		t.Fatalf("Write: %v", err)
 	}
 
-	if err := f.Patch(nil, map[string]any{"value": 20}, format.FileOptions{}); err != nil {
+	if err := f.Patch(nil, map[string]any{"value": 20}, ports.FileOptions{}); err != nil {
 		t.Fatalf("Patch: %v", err)
 	}
 
-	got, _ := f.Read(nil, format.FileOptions{})
+	got, _ := f.Read(nil, ports.FileOptions{})
 	if got.Name != "yaml-item" || got.Value != 20 {
 		t.Errorf("unexpected result: %+v", got)
 	}
@@ -814,18 +816,18 @@ func TestPatch_TOML_HappyPath(t *testing.T) {
 	)
 	dir := t.TempDir()
 	path := filepath.Join(dir, "config.toml")
-	f := format.NewFile(path, format.TOML(cfgCodec))
+	f := ports.NewFile(path, format.TOML(cfgCodec))
 
-	if err := f.Write(nil, cfg{Port: 8080, Host: "localhost"}, format.FileOptions{}); err != nil {
+	if err := f.Write(nil, cfg{Port: 8080, Host: "localhost"}, ports.FileOptions{}); err != nil {
 		t.Fatalf("Write: %v", err)
 	}
 
 	// Patch only port; host must survive
-	if err := f.Patch(nil, map[string]any{"port": int64(9090)}, format.FileOptions{}); err != nil {
+	if err := f.Patch(nil, map[string]any{"port": int64(9090)}, ports.FileOptions{}); err != nil {
 		t.Fatalf("Patch: %v", err)
 	}
 
-	got, _ := f.Read(nil, format.FileOptions{})
+	got, _ := f.Read(nil, ports.FileOptions{})
 	if got.Host != "localhost" {
 		t.Errorf("Host changed: want localhost, got %q", got.Host)
 	}
@@ -838,24 +840,24 @@ func TestPatch_TOML_HappyPath(t *testing.T) {
 
 func TestPatch_Gob_ReturnsPatchNotSupportedError_NoIO(t *testing.T) {
 	// Use a non-existent path — error must come before I/O
-	f := format.NewFile("/nonexistent/item.gob", format.Gob(fileItemCodec))
-	err := f.Patch(nil, map[string]any{"name": "x"}, format.FileOptions{})
+	f := ports.NewFile("/nonexistent/item.gob", format.Gob(fileItemCodec))
+	err := f.Patch(nil, map[string]any{"name": "x"}, ports.FileOptions{})
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}
-	var patchErr format.FilePatchNotSupportedError
+	var patchErr ports.FilePatchNotSupportedError
 	if !errors.As(err, &patchErr) {
 		t.Fatalf("expected FilePatchNotSupportedError, got %T: %v", err, err)
 	}
 }
 
 func TestPatch_Binary_ReturnsPatchNotSupportedError_NoIO(t *testing.T) {
-	f := format.NewFile("/nonexistent/img.png", format.Binary(codex.Bytes()))
-	err := f.Patch(nil, map[string]any{}, format.FileOptions{})
+	f := ports.NewFile("/nonexistent/img.png", format.Binary(codex.Bytes()))
+	err := f.Patch(nil, map[string]any{}, ports.FileOptions{})
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}
-	var patchErr format.FilePatchNotSupportedError
+	var patchErr ports.FilePatchNotSupportedError
 	if !errors.As(err, &patchErr) {
 		t.Fatalf("expected FilePatchNotSupportedError, got %T: %v", err, err)
 	}
@@ -866,18 +868,18 @@ func TestPatch_Binary_ReturnsPatchNotSupportedError_NoIO(t *testing.T) {
 func TestPatch_ConstraintViolation_ReturnsFileDecodeError(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "item.json")
-	f := format.NewFile(path, format.JSON(fileItemCodec))
+	f := ports.NewFile(path, format.JSON(fileItemCodec))
 
-	if err := f.Write(nil, fileItem{Name: "widget", Value: 10}, format.FileOptions{}); err != nil {
+	if err := f.Write(nil, fileItem{Name: "widget", Value: 10}, ports.FileOptions{}); err != nil {
 		t.Fatalf("Write: %v", err)
 	}
 
 	// value 9999 violates RangeInt(0, 1000)
-	err := f.Patch(nil, map[string]any{"value": 9999}, format.FileOptions{})
+	err := f.Patch(nil, map[string]any{"value": 9999}, ports.FileOptions{})
 	if err == nil {
 		t.Fatal("expected error for out-of-range value, got nil")
 	}
-	var decErr format.FileDecodeError
+	var decErr ports.FileDecodeError
 	if !errors.As(err, &decErr) {
 		t.Fatalf("expected FileDecodeError, got %T: %v", err, err)
 	}
@@ -886,12 +888,12 @@ func TestPatch_ConstraintViolation_ReturnsFileDecodeError(t *testing.T) {
 // ── Patch — FileReadError when file absent ────────────────────────────────────
 
 func TestPatch_FileNotFound_ReturnsFileReadError(t *testing.T) {
-	f := format.NewFile("/nonexistent/item.json", format.JSON(fileItemCodec))
-	err := f.Patch(nil, map[string]any{"name": "x"}, format.FileOptions{})
+	f := ports.NewFile("/nonexistent/item.json", format.JSON(fileItemCodec))
+	err := f.Patch(nil, map[string]any{"name": "x"}, ports.FileOptions{})
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}
-	var readErr format.FileReadError
+	var readErr ports.FileReadError
 	if !errors.As(err, &readErr) {
 		t.Fatalf("expected FileReadError, got %T: %v", err, err)
 	}
@@ -902,16 +904,16 @@ func TestPatch_FileNotFound_ReturnsFileReadError(t *testing.T) {
 func TestPatch_Observer_ReadAndWriteBothCalled(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "item.json")
-	f := format.NewFile(path, format.JSON(fileItemCodec))
+	f := ports.NewFile(path, format.JSON(fileItemCodec))
 	spy := &fileObserverSpy{}
 
-	if err := f.Write(nil, fileItem{Name: "x", Value: 1}, format.FileOptions{}); err != nil {
+	if err := f.Write(nil, fileItem{Name: "x", Value: 1}, ports.FileOptions{}); err != nil {
 		t.Fatalf("Write: %v", err)
 	}
 	spy.reads = nil
 	spy.writes = nil
 
-	if err := f.Patch(nil, map[string]any{"value": 2}, format.FileOptions{Observer: spy}); err != nil {
+	if err := f.Patch(nil, map[string]any{"value": 2}, ports.FileOptions{Observer: spy}); err != nil {
 		t.Fatalf("Patch: %v", err)
 	}
 	if len(spy.reads) != 1 || !spy.reads[0].success {
@@ -923,9 +925,9 @@ func TestPatch_Observer_ReadAndWriteBothCalled(t *testing.T) {
 }
 
 func TestPatch_Observer_ReadFailure_CallsRecordFileReadFalse(t *testing.T) {
-	f := format.NewFile("/nonexistent/item.json", format.JSON(fileItemCodec))
+	f := ports.NewFile("/nonexistent/item.json", format.JSON(fileItemCodec))
 	spy := &fileObserverSpy{}
-	_ = f.Patch(nil, map[string]any{"name": "x"}, format.FileOptions{Observer: spy})
+	_ = f.Patch(nil, map[string]any{"name": "x"}, ports.FileOptions{Observer: spy})
 	if len(spy.reads) != 1 || spy.reads[0].success {
 		t.Errorf("expected 1 failed read callback, got %+v", spy.reads)
 	}
@@ -941,12 +943,12 @@ func TestPatch_PathVarError_NoIO(t *testing.T) {
 	err := templateFile.Patch(
 		map[string]string{"category": "", "id": "1"},
 		map[string]any{"name": "x"},
-		format.FileOptions{Observer: spy},
+		ports.FileOptions{Observer: spy},
 	)
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}
-	var paramErr format.FilePathParamError
+	var paramErr ports.FilePathParamError
 	if !errors.As(err, &paramErr) {
 		t.Fatalf("expected FilePathParamError, got %T: %v", err, err)
 	}
@@ -955,7 +957,7 @@ func TestPatch_PathVarError_NoIO(t *testing.T) {
 	}
 }
 
-// ── format.PatchEncoded (free function) ──────────────────────────────────────
+// ── ports.PatchEncoded (free function) ──────────────────────────────────────
 //
 // PatchEncoded is a free function because Go methods cannot introduce new type
 // parameters. The patch type P is separate from the file type T.
@@ -963,20 +965,20 @@ func TestPatch_PathVarError_NoIO(t *testing.T) {
 func TestPatchEncoded_HappyPath_OnlyPatchCodecFieldsChange(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "item.json")
-	f := format.NewFile(path, format.JSON(fileItemCodec))
+	f := ports.NewFile(path, format.JSON(fileItemCodec))
 
-	if err := f.Write(nil, fileItem{Name: "original", Value: 10}, format.FileOptions{}); err != nil {
+	if err := f.Write(nil, fileItem{Name: "original", Value: 10}, ports.FileOptions{}); err != nil {
 		t.Fatalf("Write: %v", err)
 	}
 
 	// fileItemPatchCodec only encodes "value" — "name" is NOT in the patch type.
 	// Name must survive unchanged.
-	if err := format.PatchEncoded(f, nil, fileItemPatchCodec,
-		fileItemPatch{Value: 99}, format.FileOptions{}); err != nil {
+	if err := ports.PatchEncoded(f, nil, fileItemPatchCodec,
+		fileItemPatch{Value: 99}, ports.FileOptions{}); err != nil {
 		t.Fatalf("PatchEncoded: %v", err)
 	}
 
-	got, err := f.Read(nil, format.FileOptions{})
+	got, err := f.Read(nil, ports.FileOptions{})
 	if err != nil {
 		t.Fatalf("Read: %v", err)
 	}
@@ -991,20 +993,20 @@ func TestPatchEncoded_HappyPath_OnlyPatchCodecFieldsChange(t *testing.T) {
 func TestPatchEncoded_FieldNotInPatchCodec_PreservedInFile(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "item.json")
-	f := format.NewFile(path, format.JSON(fileItemCodec))
+	f := ports.NewFile(path, format.JSON(fileItemCodec))
 
-	if err := f.Write(nil, fileItem{Name: "widget", Value: 42}, format.FileOptions{}); err != nil {
+	if err := f.Write(nil, fileItem{Name: "widget", Value: 42}, ports.FileOptions{}); err != nil {
 		t.Fatalf("Write: %v", err)
 	}
 
 	// Patch with Value=0 via patch codec — 0 is valid (RangeInt(0,1000) passes).
 	// "name" is NOT in fileItemPatchCodec, so it is always preserved.
-	if err := format.PatchEncoded(f, nil, fileItemPatchCodec,
-		fileItemPatch{Value: 0}, format.FileOptions{}); err != nil {
+	if err := ports.PatchEncoded(f, nil, fileItemPatchCodec,
+		fileItemPatch{Value: 0}, ports.FileOptions{}); err != nil {
 		t.Fatalf("PatchEncoded: %v", err)
 	}
 
-	got, _ := f.Read(nil, format.FileOptions{})
+	got, _ := f.Read(nil, ports.FileOptions{})
 	if got.Name != "widget" {
 		t.Errorf("Name changed: want %q, got %q", "widget", got.Name)
 	}
@@ -1016,19 +1018,19 @@ func TestPatchEncoded_FieldNotInPatchCodec_PreservedInFile(t *testing.T) {
 func TestPatchEncoded_EncodeFailure_ReturnsFileEncodeError(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "item.json")
-	f := format.NewFile(path, format.JSON(fileItemCodec))
+	f := ports.NewFile(path, format.JSON(fileItemCodec))
 
-	if err := f.Write(nil, fileItem{Name: "x", Value: 1}, format.FileOptions{}); err != nil {
+	if err := f.Write(nil, fileItem{Name: "x", Value: 1}, ports.FileOptions{}); err != nil {
 		t.Fatalf("Write: %v", err)
 	}
 
 	// Value 9999 violates RangeInt(0, 1000) in the patch codec — encode fails before I/O.
-	err := format.PatchEncoded(f, nil, fileItemPatchCodec,
-		fileItemPatch{Value: 9999}, format.FileOptions{})
+	err := ports.PatchEncoded(f, nil, fileItemPatchCodec,
+		fileItemPatch{Value: 9999}, ports.FileOptions{})
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}
-	var encErr format.FileEncodeError
+	var encErr ports.FileEncodeError
 	if !errors.As(err, &encErr) {
 		t.Fatalf("expected FileEncodeError, got %T: %v", err, err)
 	}
@@ -1038,18 +1040,18 @@ func TestPatchEncoded_NonMapIntermediate_ReturnsPatchNotSupportedError(t *testin
 	// Use a scalar patch codec — Encode returns int, not map[string]any.
 	dir := t.TempDir()
 	path := filepath.Join(dir, "item.json")
-	f := format.NewFile(path, format.JSON(fileItemCodec))
+	f := ports.NewFile(path, format.JSON(fileItemCodec))
 
-	if err := f.Write(nil, fileItem{Name: "x", Value: 1}, format.FileOptions{}); err != nil {
+	if err := f.Write(nil, fileItem{Name: "x", Value: 1}, ports.FileOptions{}); err != nil {
 		t.Fatalf("Write: %v", err)
 	}
 
 	// Scalar codec — intermediate is int, not map[string]any.
-	err := format.PatchEncoded(f, nil, codex.Int(), 99, format.FileOptions{})
+	err := ports.PatchEncoded(f, nil, codex.Int(), 99, ports.FileOptions{})
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}
-	var patchErr format.FilePatchNotSupportedError
+	var patchErr ports.FilePatchNotSupportedError
 	if !errors.As(err, &patchErr) {
 		t.Fatalf("expected FilePatchNotSupportedError, got %T: %v", err, err)
 	}
@@ -1058,17 +1060,17 @@ func TestPatchEncoded_NonMapIntermediate_ReturnsPatchNotSupportedError(t *testin
 func TestPatchEncoded_Observer_ReadAndWriteBothCalled(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "item.json")
-	f := format.NewFile(path, format.JSON(fileItemCodec))
+	f := ports.NewFile(path, format.JSON(fileItemCodec))
 	spy := &fileObserverSpy{}
 
-	if err := f.Write(nil, fileItem{Name: "x", Value: 1}, format.FileOptions{}); err != nil {
+	if err := f.Write(nil, fileItem{Name: "x", Value: 1}, ports.FileOptions{}); err != nil {
 		t.Fatalf("Write: %v", err)
 	}
 	spy.reads = nil
 	spy.writes = nil
 
-	if err := format.PatchEncoded(f, nil, fileItemPatchCodec,
-		fileItemPatch{Value: 5}, format.FileOptions{Observer: spy}); err != nil {
+	if err := ports.PatchEncoded(f, nil, fileItemPatchCodec,
+		fileItemPatch{Value: 5}, ports.FileOptions{Observer: spy}); err != nil {
 		t.Fatalf("PatchEncoded: %v", err)
 	}
 	// PatchEncoded → Patch → RecordFileRead + RecordFileWrite both called
@@ -1081,13 +1083,13 @@ func TestPatchEncoded_Observer_ReadAndWriteBothCalled(t *testing.T) {
 }
 
 func TestPatchEncoded_GobFile_ReturnsPatchNotSupportedError(t *testing.T) {
-	f := format.NewFile("/tmp/x.gob", format.Gob(fileItemCodec))
-	err := format.PatchEncoded(f, nil, fileItemPatchCodec,
-		fileItemPatch{Value: 1}, format.FileOptions{})
+	f := ports.NewFile("/tmp/x.gob", format.Gob(fileItemCodec))
+	err := ports.PatchEncoded(f, nil, fileItemPatchCodec,
+		fileItemPatch{Value: 1}, ports.FileOptions{})
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}
-	var patchErr format.FilePatchNotSupportedError
+	var patchErr ports.FilePatchNotSupportedError
 	if !errors.As(err, &patchErr) {
 		t.Fatalf("expected FilePatchNotSupportedError, got %T: %v", err, err)
 	}
@@ -1119,17 +1121,17 @@ var fileItemWithTagCodec = codex.Struct[fileItemWithTag](
 func TestPatchEncoded_PatchCodecFieldNotInFileCodec_WrittenToFile(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "item.json")
-	f := format.NewFile(path, format.JSON(fileItemCodec))
+	f := ports.NewFile(path, format.JSON(fileItemCodec))
 
-	if err := f.Write(nil, fileItem{Name: "widget", Value: 10}, format.FileOptions{}); err != nil {
+	if err := f.Write(nil, fileItem{Name: "widget", Value: 10}, ports.FileOptions{}); err != nil {
 		t.Fatalf("Write: %v", err)
 	}
 
 	// fileItemWithTagCodec has "tag" which is NOT in fileItemCodec.
 	// After PatchEncoded, "tag" must appear in the JSON file.
-	if err := format.PatchEncoded(f, nil, fileItemWithTagCodec,
+	if err := ports.PatchEncoded(f, nil, fileItemWithTagCodec,
 		fileItemWithTag{Value: 20, Tag: "featured"},
-		format.FileOptions{}); err != nil {
+		ports.FileOptions{}); err != nil {
 		t.Fatalf("PatchEncoded: %v", err)
 	}
 
@@ -1143,7 +1145,7 @@ func TestPatchEncoded_PatchCodecFieldNotInFileCodec_WrittenToFile(t *testing.T) 
 	}
 
 	// File codec fields are also correctly updated.
-	got, err := f.Read(nil, format.FileOptions{})
+	got, err := f.Read(nil, ports.FileOptions{})
 	if err != nil {
 		t.Fatalf("Read: %v", err)
 	}
@@ -1166,8 +1168,8 @@ func TestPatch_UnknownFieldInExistingFile_Dropped(t *testing.T) {
 		t.Fatalf("WriteFile: %v", err)
 	}
 
-	f := format.NewFile(path, format.JSON(fileItemCodec))
-	if err := f.Patch(nil, map[string]any{"value": 99}, format.FileOptions{}); err != nil {
+	f := ports.NewFile(path, format.JSON(fileItemCodec))
+	if err := f.Patch(nil, map[string]any{"value": 99}, ports.FileOptions{}); err != nil {
 		t.Fatalf("Patch: %v", err)
 	}
 
@@ -1183,14 +1185,14 @@ func TestPatch_UnknownFieldInExistingFile_Dropped(t *testing.T) {
 func TestPatch_UnknownFieldInPatchMap_Dropped(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "item.json")
-	f := format.NewFile(path, format.JSON(fileItemCodec))
+	f := ports.NewFile(path, format.JSON(fileItemCodec))
 
-	if err := f.Write(nil, fileItem{Name: "x", Value: 1}, format.FileOptions{}); err != nil {
+	if err := f.Write(nil, fileItem{Name: "x", Value: 1}, ports.FileOptions{}); err != nil {
 		t.Fatalf("Write: %v", err)
 	}
 
 	// Patch with a key not in fileItemCodec — should be silently dropped.
-	if err := f.Patch(nil, map[string]any{"value": 5, "ghost_field": "nope"}, format.FileOptions{}); err != nil {
+	if err := f.Patch(nil, map[string]any{"value": 5, "ghost_field": "nope"}, ports.FileOptions{}); err != nil {
 		t.Fatalf("Patch: %v", err)
 	}
 
@@ -1198,7 +1200,7 @@ func TestPatch_UnknownFieldInPatchMap_Dropped(t *testing.T) {
 	if strings.Contains(string(raw), "ghost_field") {
 		t.Errorf("unknown patch field written — should be dropped: %s", raw)
 	}
-	got, _ := f.Read(nil, format.FileOptions{})
+	got, _ := f.Read(nil, ports.FileOptions{})
 	if got.Value != 5 {
 		t.Errorf("value not patched: want 5, got %d", got.Value)
 	}
@@ -1227,11 +1229,11 @@ func TestFile_TraceObserver_ContextPropagation(t *testing.T) {
 	spy := &fileTraceSpy{}
 	dir := t.TempDir()
 	path := filepath.Join(dir, "test.txt")
-	f := format.NewFile(path, format.JSON(codex.String()))
+	f := ports.NewFile(path, format.JSON(codex.String()))
 
 	parentCtx := context.Background()
 	parentCtx = context.WithValue(parentCtx, parentKey{}, "value")
-	opts := format.FileOptions{Observer: spy, Context: parentCtx}
+	opts := ports.FileOptions{Observer: spy, Context: parentCtx}
 	f.Read(nil, opts)
 	// file doesn't exist — TraceObserver guard fires before the read error
 
@@ -1249,10 +1251,10 @@ func TestFile_TraceObserver_ContextNilFallback(t *testing.T) {
 	spy := &fileTraceSpy{}
 	dir := t.TempDir()
 	path := filepath.Join(dir, "test.txt")
-	f := format.NewFile(path, format.JSON(codex.String()))
+	f := ports.NewFile(path, format.JSON(codex.String()))
 
 	// No Context in FileOptions — should use context.Background()
-	f.Read(nil, format.FileOptions{Observer: spy})
+	f.Read(nil, ports.FileOptions{Observer: spy})
 	// file doesn't exist — still fires TraceObserver
 
 	spy.mu.Lock()
@@ -1283,13 +1285,13 @@ func ExampleNewFile() {
 
 	// Static path — pass nil for vars on every call.
 	path := os.TempDir() + "/example-config.json"
-	cfgFile := format.NewFile(path, format.JSON(cfgCodec))
+	cfgFile := ports.NewFile(path, format.JSON(cfgCodec))
 
 	// Write — encodes + validates before writing.
-	_ = cfgFile.Write(nil, Config{Host: "localhost", Port: 8080}, format.FileOptions{})
+	_ = cfgFile.Write(nil, Config{Host: "localhost", Port: 8080}, ports.FileOptions{})
 
 	// Read — reads + decodes + validates constraints.
-	cfg, _ := cfgFile.Read(nil, format.FileOptions{})
+	cfg, _ := cfgFile.Read(nil, ports.FileOptions{})
 	fmt.Printf("host=%s port=%d\n", cfg.Host, cfg.Port)
 	// Output:
 	// host=localhost port=8080
@@ -1304,8 +1306,8 @@ func TestFileRead_ContextObserver_UsedWhenOptsNil(t *testing.T) {
 	codec := codex.Struct[item](
 		codex.RequiredField("v", codex.Int(), func(x item) int { return x.V }, func(x *item, v int) { x.V = v }),
 	)
-	f := format.NewFile(path, format.JSON(codec))
-	if err := f.Write(nil, item{V: 42}, format.FileOptions{}); err != nil {
+	f := ports.NewFile(path, format.JSON(codec))
+	if err := f.Write(nil, item{V: 42}, ports.FileOptions{}); err != nil {
 		t.Fatalf("write: %v", err)
 	}
 
@@ -1313,7 +1315,7 @@ func TestFileRead_ContextObserver_UsedWhenOptsNil(t *testing.T) {
 	spy := &fileObsSpy{onFileRead: func() { fileCalled = true }}
 	ctx := stats.WithObserver(context.Background(), spy)
 
-	_, err := f.Read(nil, format.FileOptions{Context: ctx})
+	_, err := f.Read(nil, ports.FileOptions{Context: ctx})
 	if err != nil {
 		t.Fatalf("read: %v", err)
 	}
@@ -1329,15 +1331,15 @@ func TestFileRead_ExplicitObserver_BeatsContext(t *testing.T) {
 	codec := codex.Struct[item](
 		codex.RequiredField("v", codex.Int(), func(x item) int { return x.V }, func(x *item, v int) { x.V = v }),
 	)
-	f := format.NewFile(path, format.JSON(codec))
-	_ = f.Write(nil, item{V: 1}, format.FileOptions{})
+	f := ports.NewFile(path, format.JSON(codec))
+	_ = f.Write(nil, item{V: 1}, ports.FileOptions{})
 
 	var explicitCalled, contextCalled bool
 	explicit := &fileObsSpy{onFileRead: func() { explicitCalled = true }}
 	ctxSpy := &fileObsSpy{onFileRead: func() { contextCalled = true }}
 	ctx := stats.WithObserver(context.Background(), ctxSpy)
 
-	_, err := f.Read(nil, format.FileOptions{Context: ctx, Observer: explicit})
+	_, err := f.Read(nil, ports.FileOptions{Context: ctx, Observer: explicit})
 	if err != nil {
 		t.Fatalf("read: %v", err)
 	}
@@ -1358,4 +1360,91 @@ func (s *fileObsSpy) RecordFileRead(_ string, _ bool, _ time.Duration) {
 	if s.onFileRead != nil {
 		s.onFileRead()
 	}
+}
+
+// ── Binary + File integration (Observer) ─────────────────────────────────────
+
+func TestBinary_FileObserver_WriteSuccess(t *testing.T) {
+	dir := t.TempDir()
+	path := dir + "/out.bin"
+	spy := &fileObserverSpy{}
+
+	f := ports.NewFile(path, format.Binary(codex.Bytes()))
+	err := f.Write(nil, []byte{0x01, 0x02, 0x03}, ports.FileOptions{Observer: spy})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(spy.writes) != 1 || !spy.writes[0].success {
+		t.Errorf("expected 1 successful write, got %+v", spy.writes)
+	}
+}
+
+func TestBinary_FileObserver_WriteConstraintFail(t *testing.T) {
+	dir := t.TempDir()
+	path := dir + "/out.bin"
+	spy := &fileObserverSpy{}
+
+	prefix := []byte{0xAA, 0xBB}
+	f := ports.NewFile(path, format.Binary(codex.Bytes().Refine(validate.HasPrefix(prefix))))
+	err := f.Write(nil, []byte{0x00, 0x01}, ports.FileOptions{Observer: spy})
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	var encErr ports.FileEncodeError
+	if !errors.As(err, &encErr) {
+		t.Fatalf("expected FileEncodeError, got %T: %v", err, err)
+	}
+	if len(spy.writes) != 1 || spy.writes[0].success {
+		t.Errorf("expected 1 failed write callback, got %+v", spy.writes)
+	}
+}
+
+func TestBinary_FileObserver_ReadSuccess(t *testing.T) {
+	dir := t.TempDir()
+	path := dir + "/data.bin"
+	data := []byte{0x10, 0x20, 0x30}
+	if err := writeRawFile(path, data); err != nil {
+		t.Fatal(err)
+	}
+	spy := &fileObserverSpy{}
+
+	f := ports.NewFile(path, format.Binary(codex.Bytes()))
+	got, err := f.Read(nil, ports.FileOptions{Observer: spy})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !bytes.Equal(got, data) {
+		t.Errorf("read mismatch: want %v, got %v", data, got)
+	}
+	if len(spy.reads) != 1 || !spy.reads[0].success {
+		t.Errorf("expected 1 successful read, got %+v", spy.reads)
+	}
+}
+
+func TestBinary_FileObserver_ReadConstraintFail(t *testing.T) {
+	dir := t.TempDir()
+	path := dir + "/data.bin"
+	if err := writeRawFile(path, []byte{0x00, 0x01, 0x02}); err != nil {
+		t.Fatal(err)
+	}
+	spy := &fileObserverSpy{}
+
+	prefix := []byte{0xAA, 0xBB}
+	f := ports.NewFile(path, format.Binary(codex.Bytes().Refine(validate.HasPrefix(prefix))))
+	_, err := f.Read(nil, ports.FileOptions{Observer: spy})
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	var decErr ports.FileDecodeError
+	if !errors.As(err, &decErr) {
+		t.Fatalf("expected FileDecodeError, got %T: %v", err, err)
+	}
+	if len(spy.reads) != 1 || spy.reads[0].success {
+		t.Errorf("expected 1 failed read callback, got %+v", spy.reads)
+	}
+}
+
+// writeRawFile writes raw bytes to path.
+func writeRawFile(path string, data []byte) error {
+	return os.WriteFile(path, data, 0644)
 }

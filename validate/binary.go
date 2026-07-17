@@ -22,10 +22,10 @@ import (
 //	    Refine(validate.MaxBytes(5 * 1024 * 1024)). // size check first
 //	    Refine(validate.PNG)                         // then format check
 //
-//	var pngFile = format.NewFile(
+//	var pngFile = ports.NewFile(
 //	    "images/{name}.png",
 //	    format.Binary(pngCodec).WithContentType("image/png"),
-//	    format.FilePathParam{Name: "name"},
+//	    ports.FilePathParam{Name: "name"},
 //	)
 //
 // All constraints produce a [codex.ConstraintError] navigable via [errors.As].

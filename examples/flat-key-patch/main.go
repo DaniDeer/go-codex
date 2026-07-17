@@ -44,6 +44,7 @@ import (
 
 	"github.com/DaniDeer/go-codex/codex"
 	"github.com/DaniDeer/go-codex/format"
+	"github.com/DaniDeer/go-codex/ports"
 	"github.com/DaniDeer/go-codex/render/openapi"
 	"github.com/DaniDeer/go-codex/schema"
 	"github.com/DaniDeer/go-codex/stats"
@@ -129,7 +130,7 @@ var moduleKeyConstraint = codex.Constraint[string]{
 
 // modulePatchCodec validates both the key format (must start with the module
 // namespace prefix) and the ModuleConfig value for each entry.
-// Use this with format.PatchEncoded for strict typed module patching.
+// Use this with ports.PatchEncoded for strict typed module patching.
 var modulePatchCodec = codex.Map[string, ModuleConfig](
 	codex.String().Refine(moduleKeyConstraint),
 	moduleCodec,
@@ -389,10 +390,10 @@ func main() {
 
 	// Fanout: delegates to both metrics and the library-provided logging observer.
 	obs := stats.NewFanout(metrics, stats.NewLoggingObserver(fileLogger))
-	opts := format.FileOptions{Observer: obs}
+	opts := ports.FileOptions{Observer: obs}
 
 	twinPath := dir + "/device-twin.json"
-	twinFile := format.NewFile(twinPath, format.JSON(twinCodec))
+	twinFile := ports.NewFile(twinPath, format.JSON(twinCodec))
 
 	initial := DeviceTwin{
 		MyContainer:    ModuleConfig{Image: "registry.io/my-app:v1", Status: "running"},
@@ -438,7 +439,7 @@ func main() {
 
 	// codex.StringMap(moduleCodec) validates each ModuleConfig value;
 	// any string key is accepted (no key format enforcement).
-	if err := format.PatchEncoded(twinFile, nil, codex.StringMap(moduleCodec),
+	if err := ports.PatchEncoded(twinFile, nil, codex.StringMap(moduleCodec),
 		map[string]ModuleConfig{
 			moduleKeyPrefix + "my-container": {Image: "registry.io/my-app:v3", Status: "running"},
 		}, opts); err != nil {
@@ -455,7 +456,7 @@ func main() {
 	// modulePatchCodec validates:
 	//   key:   must start with moduleKeyPrefix + non-empty module name
 	//   value: full ModuleConfig validation (image non-empty, status oneOf)
-	if err := format.PatchEncoded(twinFile, nil, modulePatchCodec,
+	if err := ports.PatchEncoded(twinFile, nil, modulePatchCodec,
 		map[string]ModuleConfig{
 			moduleKeyPrefix + "my-container": {Image: "registry.io/my-app:v4", Status: "running"},
 		}, opts); err != nil {
@@ -473,7 +474,7 @@ func main() {
 	// PatchEncoded marshals the MERGED MAP directly (not re-encodes T), so
 	// "new-module" survives in the file. Field survival rule:
 	//   field in patchCodec but not in file codec → WRITTEN.
-	if err := format.PatchEncoded(twinFile, nil, modulePatchCodec,
+	if err := ports.PatchEncoded(twinFile, nil, modulePatchCodec,
 		map[string]ModuleConfig{
 			moduleKeyPrefix + "new-module": {Image: "registry.io/new:v1", Status: "running"},
 		}, opts); err != nil {
@@ -509,12 +510,12 @@ func main() {
 
 	// 7a. Bad value: status "restarting" not in OneOf("running","stopped").
 	//     FileEncodeError implements slog.LogValuer — slog outputs structured attrs.
-	err = format.PatchEncoded(twinFile, nil, modulePatchCodec,
+	err = ports.PatchEncoded(twinFile, nil, modulePatchCodec,
 		map[string]ModuleConfig{
 			moduleKeyPrefix + "my-container": {Image: "img:v1", Status: "restarting"},
 		}, opts)
 	if err != nil {
-		var encErr format.FileEncodeError
+		var encErr ports.FileEncodeError
 		if errors.As(err, &encErr) {
 			slog.Warn("patch rejected — bad status",
 				"error", encErr, // LogValue(): error.path + error.cause
@@ -525,12 +526,12 @@ func main() {
 	}
 
 	// 7b. Bad key: wrong namespace prefix — rejected by modulePatchCodec key codec.
-	err = format.PatchEncoded(twinFile, nil, modulePatchCodec,
+	err = ports.PatchEncoded(twinFile, nil, modulePatchCodec,
 		map[string]ModuleConfig{
 			"wrong.namespace.my-container": {Image: "img:v1", Status: "running"},
 		}, opts)
 	if err != nil {
-		var encErr format.FileEncodeError
+		var encErr ports.FileEncodeError
 		if errors.As(err, &encErr) {
 			slog.Warn("patch rejected — bad key prefix", "error", encErr)
 			fmt.Printf("FileEncodeError.Err: %v\n\n", encErr.Err)
@@ -544,7 +545,7 @@ func main() {
 		keyMyContainer: map[string]any{"status": "restarting"},
 	}, opts)
 	if err != nil {
-		var decErr format.FileDecodeError
+		var decErr ports.FileDecodeError
 		if errors.As(err, &decErr) {
 			slog.Warn("patch produced invalid state",
 				"error", decErr, // LogValue(): error.path + error.cause
@@ -554,10 +555,10 @@ func main() {
 	}
 
 	// 7d. FileReadError: Patch on a non-existent file.
-	missingFile := format.NewFile(dir+"/missing.json", format.JSON(twinCodec))
+	missingFile := ports.NewFile(dir+"/missing.json", format.JSON(twinCodec))
 	err = missingFile.Patch(nil, map[string]any{keySchema: "2.0"}, opts)
 	if err != nil {
-		var readErr format.FileReadError
+		var readErr ports.FileReadError
 		if errors.As(err, &readErr) {
 			slog.Warn("patch failed — file not found",
 				"error", readErr, // LogValue(): error.path + error.cause
