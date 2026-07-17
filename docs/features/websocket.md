@@ -2,7 +2,7 @@
 
 > See also: [`adapters/websocket` on pkg.go.dev](https://pkg.go.dev/github.com/DaniDeer/go-codex/adapters/websocket) · [Ports — Protocol-Agnostic Wiring](ports.md) · [Metrics Observer](observer.md) · [Error Handling](error-handling.md)
 >
-> Runnable demo: [`examples/websocket-duplex`](https://github.com/DaniDeer/go-codex/tree/main/examples/websocket-duplex) — a `DuplexPort` served over a real loopback WebSocket: typed commands in, targeted typed replies out, `app`-supervised lifecycle.
+> Runnable demo: [`examples/websocket-duplex`](https://github.com/DaniDeer/go-codex/tree/main/examples/websocket-duplex) — a `DuplexPort` served over a real loopback WebSocket: typed commands in, targeted typed replies out, `app`-supervised lifecycle, observer metrics (upgrade/frame counts + validation failures) injected once via `app.Options.Observer`.
 
 `adapters/websocket` serves **typed, codec-validated frame streams** over
 persistent bidirectional connections — completing the HTTP story
