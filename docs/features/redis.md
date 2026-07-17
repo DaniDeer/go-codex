@@ -37,9 +37,103 @@ cache, _ := ports.CacheHandle[User](UserCache) // ports.Cache[User]
 | `TTL` | Default time-to-live on writes; zero = no expiry; overridable per adapter via `SetAdapterOptions.TTL` |
 | `Format` | Value wire format applied to the port's codec: JSON (default), YAML, TOML — same enum as `FilePattern` |
 | `CustomFormat` | Escape hatch for binary/custom formats (Gob, protobuf, …) — a pre-built `format.Format[T]`, overrides `Format` when non-nil. See [`ports.FilePattern.CustomFormat`](ports.md#filepattern--typed-files-as-sink-or-intermediate-io) |
+| `Opts` | `[]ports.CacheOpt` — currently only `ports.CacheKeyParam{Name, Description, Codec}.WithCodec(c)`, validating a key var's **value** (not just its presence) before every key is built. Fails fast — a codec-validated key var is rejected before the Redis round-trip, not after |
 
-Port-type acceptance (wrong combinations fail at construction with
-`PatternRegisterError`):
+### Per-key-variable codecs — `ports.CacheKeyParam`
+
+By default, key vars are plain strings — `Cache.BuildKey` only checks that
+every `{var}` has an entry in `vars` (`CacheKeyError` on a missing var).
+Declare a `CacheKeyParam` to also validate the *value*, the same way
+`rest.PathParam`/`events.TopicParam`/`format.FilePathParam` validate their
+templated variables:
+
+```go
+var UserCache = codex.Must(ports.NewIOPort[UserQuery, User]("user-cache",
+    queryCodec, userCodec, ports.PortOptions{
+        Patterns: []ports.Pattern{
+            ports.CachePattern{
+                Key: "user:{id}", TTL: 15 * time.Minute,
+                Opts: []ports.CacheOpt{
+                    ports.CacheKeyParam{Name: "id"}.WithCodec(codex.String().Refine(validate.UUID)),
+                },
+            },
+        },
+    }))
+```
+
+A non-UUID `id` now returns `ports.CacheKeyParamError{Key, Var, Value, Err}`
+from `Cache.BuildKey` (and from `redis.GetAdapter`/`SetAdapter`, wrapped in
+their existing `CacheError`) — before any network call. A var with no
+matching `CacheKeyParam` (or one with a nil `Codec`) substitutes unvalidated,
+exactly as before this feature. `Cache.ValidateKeyVars(vars)` runs the same
+validation without building the key string; `Cache.KeySchemas()` returns each
+codec-bearing var's `schema.Schema` (forward-compatible plumbing for future
+spec tooling).
+
+### Standalone use — zero port/pipeline involved
+
+`ports.Cache[T]` is a plain declarative descriptor, the same way
+`format.File[T]` is — every `adapters/redis` constructor
+(`GetAdapter`/`SetAdapter`/`DrainSetAdapter`/`Seed`) takes a `ports.Cache[T]`
+value directly, never a port. Building the cache with `ports.NewCache`
+instead of a `CachePattern` gets you the exact same codec-validated
+behavior — value encode/decode AND key-variable validation — with **no
+`ports.NewIOPort`/`SinkPort`/`Pattern`/`Bind` anywhere in the call path**:
+
+```go
+userCache := ports.NewCache("user:{id}", format.JSON(userCodec),
+    ports.CacheKeyParam{Name: "id"}.WithCodec(codex.String().Refine(validate.UUID)))
+userCache.TTL = 15 * time.Minute
+```
+
+#### Single-value read — `Seed`
+
+`Seed` is the purest form: a plain function call, no `stream.Stream`
+involved at all. Use it whenever you just need "the current value for a
+var-free key" (config, session, last-known-state):
+
+```go
+v, ok, err := redis.Seed(ctx, client, userCache, redis.SeedOptions{})
+// v is fully decoded AND codec-validated; (zero, false, nil) on a miss
+```
+
+#### Single-value get/set — `GetAdapter`/`SetAdapter` via `stream.Single`
+
+`GetAdapter` and `SetAdapter` are shaped as `ports.IOAdapter[Req,Resp]` (a
+`Transform(ctx, stream.Stream[Req]) stream.Stream[Resp]` method) because
+that is the one interface every port-bound and standalone caller shares —
+but calling `.Transform` directly needs nothing but a `stream.Stream[T]`
+value, and `stream.Single` builds one from a single value with zero
+pipeline ceremony (no channel, no goroutine wiring, no port):
+
+```go
+// Read-through get for one query — same codec validation as the pipeline path.
+out := redis.GetAdapter[UserQuery, User](client, userCache,
+    func(q UserQuery) map[string]string { return map[string]string{"id": q.ID} },
+    redis.GetAdapterOptions{},
+).Transform(ctx, stream.Single(ctx, UserQuery{ID: "f47ac10b-58cc-4372-a567-0e02b2c3d479"}))
+
+users, errs := stream.Collect(ctx, out) // 0 or 1 value: hit or miss
+
+// Write-through set for one value — same codec validation, same key-var
+// rejection (CacheKeyParamError) before any network call.
+out = redis.SetAdapter[User](client, userCache,
+    func(u User) map[string]string { return map[string]string{"id": u.ID} },
+    redis.SetAdapterOptions{},
+).Transform(ctx, stream.Single(ctx, User{ID: "f47ac10b-58cc-4372-a567-0e02b2c3d479", Name: "Ada"}))
+
+written, errs := stream.Collect(ctx, out) // the item, passed through unchanged
+```
+
+`stream.Single`/`stream.Collect` are from the `stream` package (not `ports`)
+— they exist independently of any port declaration; this is the same
+"declare a handle by hand, drive it with the lowest-ceremony helper"
+pattern `format.File` uses for standalone reads/writes.
+
+#### Port-type acceptance (when you DO use a port)
+
+Port-type acceptance for `CachePattern`-declared caches (wrong combinations
+fail at construction with `PatternRegisterError`):
 
 | Port type | Meaning |
 |---|---|

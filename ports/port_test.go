@@ -2123,6 +2123,248 @@ func TestCachePattern_CustomFormat_Gob(t *testing.T) {
 	}
 }
 
+// ── CachePattern key codecs (CacheKeyParam) ────────────────────────────────────
+
+// CK1: CacheKeyParam.WithCodec returns an updated value; value semantics.
+func TestCacheKeyParam_WithCodec(t *testing.T) {
+	base := ports.CacheKeyParam{Name: "id"}
+	withCodec := base.WithCodec(codex.String())
+	if base.Codec != nil {
+		t.Error("want original CacheKeyParam unmodified")
+	}
+	if withCodec.Codec == nil {
+		t.Error("want returned CacheKeyParam to have Codec set")
+	}
+	if withCodec.Name != "id" {
+		t.Errorf("want Name preserved, got %q", withCodec.Name)
+	}
+}
+
+// CK2: no CacheKeyParam declared — BuildKey is byte-identical to pre-feature
+// behavior (regression guard).
+func TestCache_BuildKey_NoParams_Unchanged(t *testing.T) {
+	c := ports.NewCache("user:{id}", format.JSON(cfgCodec))
+	got, err := c.BuildKey(map[string]string{"id": "anything-goes"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got != "user:anything-goes" {
+		t.Errorf("want %q, got %q", "user:anything-goes", got)
+	}
+}
+
+// CK3: a declared codec accepts a valid value and substitutes it.
+func TestCache_BuildKey_ValidatesDeclaredCodec_HappyPath(t *testing.T) {
+	c := ports.NewCache("user:{id}", format.JSON(cfgCodec),
+		ports.CacheKeyParam{Name: "id"}.WithCodec(codex.String().Refine(validate.UUID)))
+	got, err := c.BuildKey(map[string]string{"id": "f47ac10b-58cc-4372-a567-0e02b2c3d479"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	want := "user:f47ac10b-58cc-4372-a567-0e02b2c3d479"
+	if got != want {
+		t.Errorf("want %q, got %q", want, got)
+	}
+}
+
+// CK4: a declared codec rejects an invalid value with CacheKeyParamError.
+func TestCache_BuildKey_CodecRejectsValue(t *testing.T) {
+	c := ports.NewCache("user:{id}", format.JSON(cfgCodec),
+		ports.CacheKeyParam{Name: "id"}.WithCodec(codex.String().Refine(validate.UUID)))
+	_, err := c.BuildKey(map[string]string{"id": "not-a-uuid"})
+	if err == nil {
+		t.Fatal("want error for invalid UUID")
+	}
+	var paramErr ports.CacheKeyParamError
+	if !errors.As(err, &paramErr) {
+		t.Fatalf("want CacheKeyParamError, got %T: %v", err, err)
+	}
+	if paramErr.Key != "user:{id}" || paramErr.Var != "id" || paramErr.Value != "not-a-uuid" {
+		t.Errorf("unexpected fields: %+v", paramErr)
+	}
+	if paramErr.Err == nil {
+		t.Error("want wrapped cause")
+	}
+	v := paramErr.LogValue()
+	if v.Kind() != slog.KindGroup {
+		t.Fatalf("want slog.KindGroup, got %v", v.Kind())
+	}
+	attrs := v.Group()
+	keys := make(map[string]bool, len(attrs))
+	for _, a := range attrs {
+		keys[a.Key] = true
+	}
+	for _, want := range []string{"key", "var", "value", "cause"} {
+		if !keys[want] {
+			t.Errorf("want LogValue key %q present, got %v", want, keys)
+		}
+	}
+}
+
+// CK5: a declared CacheKeyParam for a var absent from vars still returns
+// CacheKeyError (not CacheKeyParamError) — can't codec-validate an absent value.
+func TestCache_BuildKey_MissingVar_StillCacheKeyError(t *testing.T) {
+	c := ports.NewCache("user:{id}", format.JSON(cfgCodec),
+		ports.CacheKeyParam{Name: "id"}.WithCodec(codex.String().Refine(validate.UUID)))
+	_, err := c.BuildKey(map[string]string{})
+	var keyErr ports.CacheKeyError
+	if !errors.As(err, &keyErr) {
+		t.Fatalf("want CacheKeyError, got %T: %v", err, err)
+	}
+	var paramErr ports.CacheKeyParamError
+	if errors.As(err, &paramErr) {
+		t.Error("want CacheKeyError, not CacheKeyParamError, for a missing var")
+	}
+}
+
+// CK6: ValidateKeyVars mirrors BuildKey's validation without building the key.
+func TestCache_ValidateKeyVars_HappyAndError(t *testing.T) {
+	c := ports.NewCache("user:{id}", format.JSON(cfgCodec),
+		ports.CacheKeyParam{Name: "id"}.WithCodec(codex.String().Refine(validate.UUID)))
+
+	if err := c.ValidateKeyVars(map[string]string{"id": "f47ac10b-58cc-4372-a567-0e02b2c3d479"}); err != nil {
+		t.Errorf("unexpected error: %v", err)
+	}
+
+	err := c.ValidateKeyVars(map[string]string{"id": "not-a-uuid"})
+	var paramErr ports.CacheKeyParamError
+	if !errors.As(err, &paramErr) {
+		t.Fatalf("want CacheKeyParamError, got %T: %v", err, err)
+	}
+
+	err = c.ValidateKeyVars(map[string]string{})
+	var keyErr ports.CacheKeyError
+	if !errors.As(err, &keyErr) {
+		t.Fatalf("want CacheKeyError for missing var, got %T: %v", err, err)
+	}
+}
+
+// CK7: KeySchemas omits params without a codec; empty map when none declared.
+func TestCache_KeySchemas_OmitsParamsWithoutCodec(t *testing.T) {
+	c := ports.NewCache("thing:{id}:{tag}", format.JSON(cfgCodec),
+		ports.CacheKeyParam{Name: "id"}.WithCodec(codex.String().Refine(validate.UUID)),
+		ports.CacheKeyParam{Name: "tag"}, // no codec
+	)
+	schemas := c.KeySchemas()
+	if _, ok := schemas["id"]; !ok {
+		t.Error("want schema for \"id\" (has codec)")
+	}
+	if _, ok := schemas["tag"]; ok {
+		t.Error("want no schema for \"tag\" (no codec)")
+	}
+
+	noParams := ports.NewCache("static", format.JSON(cfgCodec))
+	if len(noParams.KeySchemas()) != 0 {
+		t.Error("want empty map when no params declared")
+	}
+}
+
+// CK8: CachePattern.Opts wired through an IOPort — end-to-end validation.
+func TestCachePattern_Opts_WiredThroughIOPort(t *testing.T) {
+	p, err := ports.NewIOPort[int, cfgItem]("cache-keyparam-io", intCodec, cfgCodec, ports.PortOptions{
+		Patterns: []ports.Pattern{
+			ports.CachePattern{
+				Key: "item:{id}",
+				Opts: []ports.CacheOpt{
+					ports.CacheKeyParam{Name: "id"}.WithCodec(codex.String().Refine(validate.UUID)),
+				},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("construct port: %v", err)
+	}
+	c, ok := ports.CacheHandle[cfgItem](p)
+	if !ok {
+		t.Fatal("want CacheHandle to be present")
+	}
+	if _, err := c.BuildKey(map[string]string{"id": "not-a-uuid"}); err == nil {
+		t.Error("want invalid UUID rejected end-to-end")
+	}
+	if _, err := c.BuildKey(map[string]string{"id": "f47ac10b-58cc-4372-a567-0e02b2c3d479"}); err != nil {
+		t.Errorf("want valid UUID accepted end-to-end, got %v", err)
+	}
+}
+
+// CK9: CachePattern.Opts wired through a SinkPort.
+func TestCachePattern_Opts_WiredThroughSinkPort(t *testing.T) {
+	p, err := ports.NewSinkPort[cfgItem]("cache-keyparam-sink", cfgCodec, ports.PortOptions{
+		Patterns: []ports.Pattern{
+			ports.CachePattern{
+				Key: "item:{id}",
+				Opts: []ports.CacheOpt{
+					ports.CacheKeyParam{Name: "id"}.WithCodec(codex.String().Refine(validate.UUID)),
+				},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("construct port: %v", err)
+	}
+	c, ok := ports.CacheHandle[cfgItem](p)
+	if !ok {
+		t.Fatal("want CacheHandle to be present")
+	}
+	if _, err := c.BuildKey(map[string]string{"id": "not-a-uuid"}); err == nil {
+		t.Error("want invalid UUID rejected end-to-end")
+	}
+}
+
+// CK10: CachePattern.Opts wired through a LatestPort — a var-free key with
+// Opts declared is a no-op, not an error.
+func TestCachePattern_Opts_WiredThroughLatestPort(t *testing.T) {
+	p, err := ports.NewLatestPort[cfgItem]("cache-keyparam-latest", cfgCodec, ports.PortOptions{
+		Patterns: []ports.Pattern{
+			ports.CachePattern{
+				Key: "current", // var-free
+				Opts: []ports.CacheOpt{
+					ports.CacheKeyParam{Name: "id"}.WithCodec(codex.String().Refine(validate.UUID)),
+				},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("construct port: %v", err)
+	}
+	c, ok := ports.CacheHandle[cfgItem](p)
+	if !ok {
+		t.Fatal("want CacheHandle to be present")
+	}
+	got, err := c.BuildKey(nil)
+	if err != nil {
+		t.Fatalf("want var-free key with unused CacheKeyParam to be a no-op, got %v", err)
+	}
+	if got != "current" {
+		t.Errorf("want %q, got %q", "current", got)
+	}
+}
+
+// CK11: NewCache builds a standalone Cache[T] usable with a cache adapter
+// with no port/pipeline involved — same codec validation either way.
+func TestNewCache_Standalone(t *testing.T) {
+	c := ports.NewCache("user:{id}", format.JSON(cfgCodec),
+		ports.CacheKeyParam{Name: "id"}.WithCodec(codex.String().Refine(validate.UUID)))
+	c.TTL = 15 * time.Minute
+
+	if c.TTL != 15*time.Minute {
+		t.Errorf("want TTL settable via field assignment, got %v", c.TTL)
+	}
+	if _, err := c.BuildKey(map[string]string{"id": "not-a-uuid"}); err == nil {
+		t.Error("want standalone Cache to enforce the same key codec validation")
+	}
+	data, err := c.Format.Marshal(cfgItem{V: 1})
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	got, err := c.Format.Unmarshal(data)
+	if err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if got.V != 1 {
+		t.Errorf("want V=1, got %d", got.V)
+	}
+}
+
 // CF4: SocketPattern + CustomFormat(Gob) applies to both directions on a
 // DuplexPort (same type both sides in this test — asymmetric is Phase 2).
 func TestSocketPattern_CustomFormat_Gob(t *testing.T) {

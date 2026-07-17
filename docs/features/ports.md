@@ -314,7 +314,7 @@ written by hand: the port makes that call **internally**.
 | `MCPPattern{Name, Opts}` | MCP tool (mcpgo) | `apimcp.ToolOpt` |
 | `FilePattern{Path, Format, CustomFormat, Opts}` | typed files (file) | `format.FileOpt` |
 | `SQLPattern{Table, Op}` | SQL (sql) | — (metadata-only) |
-| `CachePattern{Key, TTL, Format, CustomFormat}` | key/value cache (redis) | — (key template + TTL) |
+| `CachePattern{Key, TTL, Format, CustomFormat, Opts}` | key/value cache (redis) | `ports.CacheOpt` (`CacheKeyParam` — per-key-var codecs) |
 | `SocketPattern{Path, Subprotocols, Format, CustomFormat, Opts}` | duplex socket (websocket) | `rest.RouteOpt` (upgrade-time) |
 
 A port declares one `Pattern` entry **per protocol family** it will be bound to — a

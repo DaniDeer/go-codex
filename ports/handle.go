@@ -398,7 +398,11 @@ func buildEventPatternHandles[T any](
 			if err != nil {
 				return nil, nil, err
 			}
-			c := Cache[T]{Key: pat.Key, TTL: pat.TTL, Format: cFmt}
+			var cb cacheBuilder
+			for _, opt := range pat.Opts {
+				opt.applyCache(&cb)
+			}
+			c := Cache[T]{Key: pat.Key, TTL: pat.TTL, Format: cFmt, params: cb.params}
 			handles[patternKindCache] = c
 			specs[patternKindCache] = pat
 		case SocketPattern:
@@ -521,7 +525,11 @@ func buildDualCodecPatternHandles[Req, Resp any](
 			if err != nil {
 				return nil, nil, err
 			}
-			c := Cache[Resp]{Key: pat.Key, TTL: pat.TTL, Format: cFmt}
+			var cb cacheBuilder
+			for _, opt := range pat.Opts {
+				opt.applyCache(&cb)
+			}
+			c := Cache[Resp]{Key: pat.Key, TTL: pat.TTL, Format: cFmt, params: cb.params}
 			handles[patternKindCache] = c
 			specs[patternKindCache] = pat
 		case SocketPattern:

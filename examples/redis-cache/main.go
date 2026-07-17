@@ -1,6 +1,9 @@
 // Package redis-cache demonstrates the typed cache boundary of
 // adapters/redis: an IOPort declared with a CachePattern, a read-through
-// GetAdapter, a write-through SetAdapter, and the Seed warm-restart helper.
+// GetAdapter, a write-through SetAdapter, a per-key-variable codec
+// (CacheKeyParam) rejecting a malformed key var, the Seed warm-restart
+// helper, and the standalone ports.NewCache constructor (no port/pipeline
+// involved).
 //
 // # Why a fake client?
 //
@@ -21,11 +24,13 @@ package main
 import (
 	"context"
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 
 	adapterredis "github.com/DaniDeer/go-codex/adapters/redis"
 	"github.com/DaniDeer/go-codex/codex"
+	"github.com/DaniDeer/go-codex/format"
 	"github.com/DaniDeer/go-codex/ports"
 	"github.com/DaniDeer/go-codex/stats"
 	"github.com/DaniDeer/go-codex/stream"
@@ -60,6 +65,17 @@ var queryCodec = codex.Struct[UserQuery](
 		func(q *UserQuery, v string) { q.ID = v },
 	),
 )
+
+// numericIDCodec validates that a cache key's "id" variable is all-digits —
+// declared on CachePattern.Opts via ports.CacheKeyParam, it rejects a
+// malformed key var before any Redis round-trip.
+var numericIDCodec = codex.String().Refine(codex.Constraint[string]{
+	Name: "numeric",
+	Check: func(v string) bool {
+		return v != "" && strings.IndexFunc(v, func(r rune) bool { return r < '0' || r > '9' }) < 0
+	},
+	Message: func(v string) string { return fmt.Sprintf("must be all-digits, got %q", v) },
+})
 
 // ── In-memory Commands fake (stands in for a real Redis) ─────────────────────
 
@@ -113,10 +129,17 @@ func main() {
 	client := &memoryCache{store: map[string][]byte{}}
 
 	// ── Declare the port ONCE: key template, TTL, wire format ────────────
+	// Opts declares a per-key-variable codec: "id" must be all-digits —
+	// Cache.BuildKey rejects malformed values BEFORE any Redis round-trip.
 	userPort, err := ports.NewIOPort[UserQuery, User]("user-cache",
 		queryCodec, userCodec, ports.PortOptions{
 			Patterns: []ports.Pattern{
-				ports.CachePattern{Key: "user:{id}", TTL: 15 * time.Minute},
+				ports.CachePattern{
+					Key: "user:{id}", TTL: 15 * time.Minute,
+					Opts: []ports.CacheOpt{
+						ports.CacheKeyParam{Name: "id"}.WithCodec(numericIDCodec),
+					},
+				},
 			},
 		})
 	if err != nil {
@@ -158,10 +181,29 @@ func main() {
 		fmt.Printf("  hit: %s → %s\n", u.ID, u.Name)
 	}
 
-	// ── Section 3: warm restart with Seed ────────────────────────────────
-	fmt.Println("\n─── Section 3: Warm restart (Seed a LatestPort-style value)")
+	// ── Section 3: per-key-variable codec rejects a malformed key var ────
+	fmt.Println("\n─── Section 3: Per-key-variable codec (CacheKeyParam)")
 
-	latestCache := ports.Cache[User]{Key: "latest-user", Format: cache.Format}
+	malformed := make(chan UserQuery, 1)
+	malformed <- UserQuery{ID: "abc"} // not all-digits — rejected before any Redis call
+	close(malformed)
+
+	rejected := adapterredis.GetAdapter[UserQuery, User](client, cache,
+		func(q UserQuery) map[string]string { return map[string]string{"id": q.ID} },
+		adapterredis.GetAdapterOptions{},
+	).Transform(ctx, stream.From(ctx, malformed))
+	_, errs := stream.Collect(ctx, rejected)
+	for _, e := range errs {
+		fmt.Println("  rejected malformed id:", e)
+	}
+
+	// ── Section 4: warm restart with Seed + standalone ports.NewCache ────
+	fmt.Println("\n─── Section 4: Warm restart (Seed, standalone ports.NewCache)")
+
+	// ports.NewCache builds a Cache[T] with no port/pipeline involved — the
+	// same declarative descriptor a CachePattern builds internally, usable
+	// directly with any adapters/redis constructor.
+	latestCache := ports.NewCache("latest-user", format.JSON(userCodec))
 	_ = client.Set(ctx, "latest-user", []byte(`{"id":"42","name":"Ada"}`), 0)
 
 	if v, ok, err := adapterredis.Seed(ctx, client, latestCache, adapterredis.SeedOptions{}); err == nil && ok {

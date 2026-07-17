@@ -312,7 +312,7 @@ be `.Register()`ed with a builder and threaded into the adapter constructor by h
 | `ports.MCPPattern{Name, Opts}` | MCP tool (mcpgo) |
 | `ports.FilePattern{Path, Format, CustomFormat, Opts}` | typed files (file) |
 | `ports.SQLPattern{Table, Op}` | SQL (sql) — metadata-only |
-| `ports.CachePattern{Key, TTL, Format, CustomFormat}` | key/value cache (redis) — key template + TTL |
+| `ports.CachePattern{Key, TTL, Format, CustomFormat, Opts}` | key/value cache (redis) — key template + TTL; `Opts` = `CacheKeyParam` per-key-var codecs |
 | `ports.SocketPattern{Path, Subprotocols, Format, CustomFormat, Opts}` | duplex socket (websocket) — upgrade-time validation |
 
 `CustomFormat` (on `FilePattern`/`CachePattern`/`SocketPattern`) is the
