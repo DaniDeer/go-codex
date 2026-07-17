@@ -95,15 +95,9 @@ role `RouteHandle`/`ChannelHandle` play via `route.ClientHandle()`/
 `channel.ClientHandle()`. `Get`/`Set` are the concrete redis implementation
 against it, the same role `nethttp.Call`/`mqtt.Publish` play against a
 route/channel handle. This mirrors every other non-pipeline building block
-in go-codex:
-
-| Building block | Declarative descriptor | Plain-function implementation |
-|---|---|---|
-| File | `format.NewFile(path, fmt, opts...)` | `File.Read`/`.Write`/`.Update`/`.Patch` |
-| SQL | codec + `ValidateOptions{Table,Op}` | `sql.Validate[T](codec, v, opts)` |
-| REST | `route.ClientHandle()` | `nethttp.Call(ctx, client, baseURL, handle, req, vars, opts)` |
-| Events | `channel.ClientHandle()` | `mqtt.Publish(ctx, client, handle, ...)` |
-| **Cache** | **`ports.NewCache(key, fmt, opts...)`** | **`redis.Get`/`redis.Set`** |
+in go-codex — see [Design pattern: declarative descriptor + plain
+function](ports.md#design-pattern-declarative-descriptor--plain-function)
+for the full comparison table across `file`/`cache`/`rest`/`events`/`sql`.
 
 `Seed` is a thin wrapper around `Get` with nil vars — the one case that
 must run before any stream exists (a `LatestPort`'s warm restart, before the

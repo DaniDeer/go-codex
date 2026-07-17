@@ -664,3 +664,62 @@ adapters like `file`/`sql` use `Params` instead; see below).
 
 Standalone (non-pipeline) use of adapters — `mqtt5.Subscribe`, `nethttp.Call`,
 `zeromq.Serve`, etc. — remains fully supported and unaffected by `ports`.
+
+## Design pattern: declarative descriptor + plain function
+
+Every building block in go-codex that supports standalone (non-pipeline)
+use follows the same two-part shape, for the same three reasons:
+
+1. **Reuse** — declare the shape/address/format once, call it from many
+   places, instead of repeating the same parameters at every call site.
+2. **Consistency** — the exact same declared value works whether you're
+   building a full pipeline or writing a handler with no `ports`/`stream`
+   involvement at all; switching between the two doesn't change your
+   declaration.
+3. **Key-var codec validation** — when the descriptor addresses something
+   via a `{var}` template (a path, a topic, a cache key), each variable can
+   carry its own `codex.Codec[string]` that validates the substituted value
+   before use — not just checks that it's present.
+
+| Package | Declarative descriptor | Plain-function implementation | Key-var codec validation |
+|---|---|---|---|
+| `format` (file) | `format.NewFile(path, fmt, opts...)` | `File.Read`/`.Write`/`.Update`/`.Patch` | `format.FilePathParam.WithCodec` |
+| `ports` + `adapters/redis` (cache) | `ports.NewCache(key, fmt, opts...)` | `redis.Get`/`redis.Set`/`redis.Seed` | `ports.CacheKeyParam.WithCodec` |
+| `api/rest` | `route.ClientHandle()` | `nethttp.Call` | `rest.PathParam.WithCodec` |
+| `api/events` | `channel.ClientHandle()` | `mqtt.Publish`/`Subscribe` | `events.TopicParam.WithCodec` |
+| `adapters/sql` | `codex.Codec[T]` (the codec itself — no wrapper needed) | `sql.Validate`, or declared once via `sql.DecorateInput`/`DecorateOutput` | **N/A — no templated key exists** (see below) |
+
+**Neither `format.NewFile` nor `ports.NewCache` requires a `ports.NewIOPort`/
+`SinkPort`/`Bind` anywhere in the call path** — this is easy to miss for
+the cache case specifically, since `ports.Cache[T]` lives in the `ports`
+package even though it needs no actual `*ports.Port` object. Both are
+plain, standalone values you can build and use in an application that
+never touches the `ports`/`stream` packages at all:
+
+```go
+// File — no ports.NewIOPort anywhere.
+cfgFile := format.NewFile("config.json", format.JSON(configCodec))
+cfg, err := cfgFile.Read(nil, format.FileOptions{})
+
+// Cache — no ports.NewIOPort anywhere, even though Cache[T] lives in `ports`.
+userCache := ports.NewCache("user:{id}", format.JSON(userCodec),
+    ports.CacheKeyParam{Name: "id"}.WithCodec(codex.String().Refine(validate.UUID)))
+u, ok, err := redis.Get(ctx, client, userCache, map[string]string{"id": userID}, redis.GetOptions{})
+```
+
+**Why `sql` doesn't have a `CacheKeyParam`/`FilePathParam` equivalent.**
+Cache/File/REST/Events all address a resource via a **templated string**
+(`"user:{id}"`, `"data/{date}/{sensor}.json"`, `"/users/{id}"`,
+`"sensors/{id}/data"`) that needs per-`{var}` validation before
+substitution. SQL has no templated key at all — `sqlc`'s generated methods
+take strongly-typed Go parameters directly (`queries.GetUser(ctx, id)`),
+and those parameters are already validated by the exact same
+`codec.Validate` mechanism as the row itself (pre-query validation, see
+[SQL Adapter](sql.md#two-usage-modes)). `Table`/`Op` — the closest thing SQL
+has to "key" metadata — are plain descriptive labels for error/observer
+context only, never parsed or expanded, so there is nothing for a per-var
+codec to attach to. `sql.DecorateInput`/`DecorateOutput` (see
+[SQL Adapter](sql.md#declare-once--decorateinputdecorateoutput)) still give
+SQL the "reuse" half of this pattern — declare a validated function once
+instead of repeating `Table`/`Op`/`Validate()` at every call site — just
+without a key-var codec, because there's no key to have one.

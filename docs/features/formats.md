@@ -131,9 +131,9 @@ avatarField := codex.Base64().Refine(validate.MaxBytes(65536)).
 
 ## File I/O — declarative typed file access
 
-`format.File[T]` is a declarative typed file descriptor: declare a path template, wire format, and optional per-variable codecs once — then read, write, and update files with full codec validation.
+`format.File[T]` is a declarative typed file descriptor: declare a path template, wire format, and optional per-variable codecs once — then read, write, and update files with full codec validation. No `ports.NewIOPort`/`SinkPort` or any pipeline machinery is needed for this — `Read`/`Write`/`Update`/`Patch` are plain methods, usable in an application that never touches `ports`/`stream` at all.
 
-It mirrors the declare-once pattern of `rest.Route` and `events.Channel`:
+It mirrors the declare-once pattern of `rest.Route` and `events.Channel` — and is the original blueprint `ports.Cache[T]`/`ports.CacheKeyParam` were designed to mirror for `adapters/redis`. See [Design pattern: declarative descriptor + plain function](ports.md#design-pattern-declarative-descriptor--plain-function) for the full comparison across `file`/`cache`/`rest`/`events`/`sql`.
 
 ```go
 import "github.com/DaniDeer/go-codex/format"

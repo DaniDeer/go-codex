@@ -68,6 +68,44 @@ type ValidateOptions struct {
 }
 ```
 
+### Declare once — `DecorateInput`/`DecorateOutput`
+
+Calling `Validate` by hand around every sqlc call (above) means repeating
+`Table`/`Op` — and remembering to call it at all — at every call site.
+`DecorateInput`/`DecorateOutput` wrap an sqlc-generated function **once**
+and return a drop-in replacement with the identical signature, callable in
+place of the sqlc method everywhere:
+
+```go
+// Pre-query validation, declared once — mirrors the manual pattern above.
+insertUser := sqladapter.DecorateInput(queries.InsertUser, insertParamsCodec,
+    sqladapter.ValidateOptions{Table: "users", Op: "insert_user"})
+
+err := insertUser(ctx, params) // validated automatically; sqlc never called on invalid input
+
+// Post-query validation, declared once.
+getUser := sqladapter.DecorateOutput(queries.GetUser, userCodec,
+    sqladapter.ValidateOptions{Table: "users", Op: "get_user"})
+
+u, err := getUser(ctx, id) // validated automatically before the caller sees it
+```
+
+Both reuse `ValidateOptions` (no new option type) and call `Validate`
+internally (no duplicated logic). Unlike bare `Validate` — which has no
+`ctx` parameter — the returned closures DO have `ctx` in scope (they wrap
+`func(ctx, ...)`), so they resolve `stats.ObserverFromContext(ctx)` when
+`Observer` is left nil. `DecorateOutput` passes `fn`'s own error (e.g.
+`sql.ErrNoRows`) through unchanged — validation only runs on success.
+
+This is the SQL equivalent of declaring a `ports.Cache`/`format.File` once
+and reusing it — see [Design pattern: declarative descriptor + plain
+function](ports.md#design-pattern-declarative-descriptor--plain-function)
+for the full picture across `file`/`sql`/`rest`/`events`/cache. SQL has no
+templated key/path to attach a per-var codec to (`sqlc`'s typed parameters
+already fill that role, validated the same way as the row itself) — the
+decorator's reusable value is the codec + `Table`/`Op` bundle, not a key
+template.
+
 ---
 
 ## Migrator
