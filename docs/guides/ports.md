@@ -240,6 +240,8 @@ must(exports.Close(), "close exports") // waits for in-flight Push + adapter dra
 | ZeroMQ | `zeromq.PublishAdapter` | Publishes each item to a PUB/PUSH socket |
 | File (line) | `file.DrainWriteAdapter` | Encodes each item as a line (NDJSON) |
 | File (whole) | `file.DrainWriteFileAdapter` | Writes each item as a complete typed file |
+| File (patch) | `file.DrainPatchAdapter` | Applies each item as an untyped `map[string]any` partial update |
+| File (patch, typed) | `file.DrainPatchEncodedAdapter` | Applies each item as a typed partial update via a patch codec |
 | SQL | `sql.DrainInsertAdapter` | Validates and inserts each item via insertFn |
 
 ### IO adapters (for `IOPort`)
@@ -444,6 +446,12 @@ handle is `format.File[T]` (pairs with `file.DrainWriteFileAdapter`); on an
 `IOPort[Req,Resp]` it is `format.File[Resp]` — the file's content *is* the
 port's response — pairing with the 2-type `file.ReadAdapter`:
 
+For partial updates instead of a whole-file overwrite, pair a hand-built
+`format.File[T]` with `file.DrainPatchAdapter` (untyped `map[string]any`
+patch) or `file.DrainPatchEncodedAdapter` (typed patch via a patch codec) —
+both stay handle-first since the patch item's type deliberately differs from
+the port's own payload type; both require a map-based format (JSON/YAML/TOML).
+
 ```go
 // domain — intermediate IO step: read a calibration file per reading
 var Calibration = codex.Must(ports.NewIOPort[SensorReading, CalibrationData](
@@ -498,8 +506,9 @@ explicit port steps, adapters bound only in `main()`.
 ## `IOParam` — protocol-agnostic parameters (handle-less adapters)
 
 `PortOptions.Params` is the enforcement mechanism for adapters with **no**
-`Pattern`/handle of their own — `file.ReadEachAdapter` and `file.DrainWriteFileAdapter`
-(their `varsFor` function extracts a `map[string]string`):
+`Pattern`/handle of their own — `file.ReadEachAdapter`, `file.DrainWriteFileAdapter`,
+`file.DrainPatchAdapter`, and `file.DrainPatchEncodedAdapter` (their `varsFor`
+function extracts a `map[string]string`):
 
 ```go
 // Declare once on the port — the adapter validates via context, not a hand-built handle

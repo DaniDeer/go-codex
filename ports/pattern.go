@@ -185,10 +185,18 @@ const (
 // CustomFormat when set (see below).
 //
 // On a [SinkPort], the built handle is a format.File of the port's payload
-// type — pairs with file.DrainWriteFileAdapter. On an [IOPort], the built
-// handle is a format.File of the port's response type (the file's content is
-// the port's response) — pairs with file.ReadAdapter. Retrieve it with
-// [FileHandle].
+// type — pairs with file.DrainWriteFileAdapter (whole-file overwrite). On an
+// [IOPort], the built handle is a format.File of the port's response type
+// (the file's content is the port's response) — pairs with
+// file.ReadAdapter. Retrieve it with [FileHandle].
+//
+// For partial updates (patch semantics) instead of a whole-file overwrite,
+// pair a hand-built format.File[T] with file.DrainPatchAdapter or
+// file.DrainPatchEncodedAdapter — these stay handle-first because the
+// patch item's type is deliberately different from the port's own payload
+// type (map[string]any or a narrow patch struct, vs. the file's whole
+// shape), the same way file.ReadEachAdapter stays handle-first for its
+// independent content type.
 //
 //	ports.FilePattern{
 //	    Path: "data/{sensorID}/calibration.json",

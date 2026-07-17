@@ -272,6 +272,188 @@ func TestDrainWriteFileAdapter_ParamValidationError(t *testing.T) {
 	}
 }
 
+// ── DrainPatchAdapter ─────────────────────────────────────────────────────────
+
+func TestDrainPatchAdapter_AppliesPartialUpdate(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.json")
+	f := format.NewFile(path, format.JSON(itemCodec))
+	if err := f.Write(nil, item{V: 1}, format.FileOptions{}); err != nil {
+		t.Fatalf("seed file: %v", err)
+	}
+
+	ch := make(chan map[string]any, 1)
+	ch <- map[string]any{"v": 2}
+	close(ch)
+
+	mapCodec := codex.Map(codex.String(), codex.Any())
+	p, err := ports.NewSinkPort[map[string]any]("patch", mapCodec, ports.PortOptions{Buffer: 4})
+	if err != nil {
+		t.Fatalf("construct port: %v", err)
+	}
+	var caught error
+	p.Bind(ctx, fileadapter.DrainPatchAdapter(f,
+		func(map[string]any) map[string]string { return nil },
+		fileadapter.DrainPatchAdapterOptions{OnError: func(e error) { caught = e }}))
+	p.Feed(ctx, gstream.From(ctx, ch))
+
+	if caught != nil {
+		t.Fatalf("unexpected error: %v", caught)
+	}
+	got, err := f.Read(nil, format.FileOptions{})
+	if err != nil {
+		t.Fatalf("read patched file: %v", err)
+	}
+	if got.V != 2 {
+		t.Errorf("want V=2 after patch, got %d", got.V)
+	}
+}
+
+func TestDrainPatchAdapter_NotSupportedForGob(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.gob")
+	f := format.NewFile(path, format.Gob(itemCodec))
+	if err := f.Write(nil, item{V: 1}, format.FileOptions{}); err != nil {
+		t.Fatalf("seed file: %v", err)
+	}
+
+	ch := make(chan map[string]any, 1)
+	ch <- map[string]any{"v": 2}
+	close(ch)
+
+	mapCodec := codex.Map(codex.String(), codex.Any())
+	p, err := ports.NewSinkPort[map[string]any]("patch-gob", mapCodec, ports.PortOptions{Buffer: 4})
+	if err != nil {
+		t.Fatalf("construct port: %v", err)
+	}
+	var caught error
+	p.Bind(ctx, fileadapter.DrainPatchAdapter(f,
+		func(map[string]any) map[string]string { return nil },
+		fileadapter.DrainPatchAdapterOptions{OnError: func(e error) { caught = e }}))
+	p.Feed(ctx, gstream.From(ctx, ch))
+
+	var pe format.FilePatchNotSupportedError
+	if !errors.As(caught, &pe) {
+		t.Fatalf("want FilePatchNotSupportedError passed through unwrapped, got %T: %v", caught, caught)
+	}
+}
+
+func TestDrainPatchAdapter_ParamValidationError(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	f := format.NewFile(filepath.Join(dir, "{machineID}.json"), format.JSON(itemCodec))
+
+	ch := make(chan map[string]any, 1)
+	ch <- map[string]any{"v": 2}
+	close(ch)
+
+	var caught error
+	adapter := fileadapter.DrainPatchAdapter(f,
+		func(map[string]any) map[string]string { return map[string]string{} }, // missing "machineID"
+		fileadapter.DrainPatchAdapterOptions{OnError: func(e error) { caught = e }})
+
+	mapCodec := codex.Map(codex.String(), codex.Any())
+	params := []ports.IOParam{{Name: "machineID", Required: true}}
+	p, err := ports.NewSinkPort[map[string]any]("patch-validate", mapCodec, ports.PortOptions{Buffer: 4, Params: params})
+	if err != nil {
+		t.Fatalf("construct port: %v", err)
+	}
+	p.Bind(ctx, adapter)
+	p.Feed(ctx, gstream.From(ctx, ch))
+
+	if caught == nil {
+		t.Fatal("want OnError to be called with a param validation error")
+	}
+	var we fileadapter.WriteError
+	if !errors.As(caught, &we) {
+		t.Fatalf("want WriteError, got %T: %v", caught, caught)
+	}
+	var ve codex.ValidationErrors
+	if !errors.As(we, &ve) {
+		t.Errorf("want WriteError to wrap codex.ValidationErrors, got %v", we.Err)
+	}
+}
+
+// ── DrainPatchEncodedAdapter ──────────────────────────────────────────────────
+
+type itemPatch struct{ V int }
+
+var itemPatchCodec = codex.Struct[itemPatch](
+	codex.RequiredField("v", codex.Int(), func(x itemPatch) int { return x.V }, func(x *itemPatch, v int) { x.V = v }),
+)
+
+func TestDrainPatchEncodedAdapter_AppliesTypedPartialUpdate(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.json")
+	f := format.NewFile(path, format.JSON(itemCodec))
+	if err := f.Write(nil, item{V: 1}, format.FileOptions{}); err != nil {
+		t.Fatalf("seed file: %v", err)
+	}
+
+	ch := make(chan itemPatch, 1)
+	ch <- itemPatch{V: 3}
+	close(ch)
+
+	p, err := ports.NewSinkPort[itemPatch]("patch-encoded", itemPatchCodec, ports.PortOptions{Buffer: 4})
+	if err != nil {
+		t.Fatalf("construct port: %v", err)
+	}
+	var caught error
+	p.Bind(ctx, fileadapter.DrainPatchEncodedAdapter(f, itemPatchCodec,
+		func(itemPatch) map[string]string { return nil },
+		fileadapter.DrainPatchEncodedAdapterOptions{OnError: func(e error) { caught = e }}))
+	p.Feed(ctx, gstream.From(ctx, ch))
+
+	if caught != nil {
+		t.Fatalf("unexpected error: %v", caught)
+	}
+	got, err := f.Read(nil, format.FileOptions{})
+	if err != nil {
+		t.Fatalf("read patched file: %v", err)
+	}
+	if got.V != 3 {
+		t.Errorf("want V=3 after patch, got %d", got.V)
+	}
+}
+
+func TestDrainPatchEncodedAdapter_ParamValidationError(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	f := format.NewFile(filepath.Join(dir, "{machineID}.json"), format.JSON(itemCodec))
+
+	ch := make(chan itemPatch, 1)
+	ch <- itemPatch{V: 3}
+	close(ch)
+
+	var caught error
+	adapter := fileadapter.DrainPatchEncodedAdapter(f, itemPatchCodec,
+		func(itemPatch) map[string]string { return map[string]string{} }, // missing "machineID"
+		fileadapter.DrainPatchEncodedAdapterOptions{OnError: func(e error) { caught = e }})
+
+	params := []ports.IOParam{{Name: "machineID", Required: true}}
+	p, err := ports.NewSinkPort[itemPatch]("patch-encoded-validate", itemPatchCodec, ports.PortOptions{Buffer: 4, Params: params})
+	if err != nil {
+		t.Fatalf("construct port: %v", err)
+	}
+	p.Bind(ctx, adapter)
+	p.Feed(ctx, gstream.From(ctx, ch))
+
+	if caught == nil {
+		t.Fatal("want OnError to be called with a param validation error")
+	}
+	var we fileadapter.WriteError
+	if !errors.As(caught, &we) {
+		t.Fatalf("want WriteError, got %T: %v", caught, caught)
+	}
+	var ve codex.ValidationErrors
+	if !errors.As(we, &ve) {
+		t.Errorf("want WriteError to wrap codex.ValidationErrors, got %v", we.Err)
+	}
+}
+
 // ── Error type LogValue tests ─────────────────────────────────────────────────
 
 func TestScanError_LogValue(t *testing.T) {

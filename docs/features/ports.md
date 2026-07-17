@@ -478,6 +478,17 @@ the identical `CustomFormat` field with the same precedence rule; see
   `file.ReadEachAdapter`, with its independent file-content type and `combine`
   func, stays handle-first for enrichment cases.)
 
+For **partial updates** (patch semantics) instead of a whole-file overwrite,
+pair a hand-built `format.File[T]` with `file.DrainPatchAdapter` (untyped
+`map[string]any` patch, JSON Merge Patch semantics via `format.File.Patch`)
+or `file.DrainPatchEncodedAdapter` (typed partial update via
+`format.PatchEncoded`, so patch-codec-only fields still persist). Both stay
+handle-first — the patch item's type is deliberately different from the
+port's own payload type, the same reason `file.ReadEachAdapter` stays
+handle-first for its independent content type. Both require a map-based
+format (JSON/YAML/TOML/`format.New`); `format.FilePatchNotSupportedError` is
+passed through to `OnError` unchanged for Gob/Binary/`NewTyped`/`NewStreamed`.
+
 ```go
 // domain — per-item calibration lookup as intermediate IO, zero adapter imports
 var Calibration = codex.Must(ports.NewIOPort[SensorReading, CalibrationData](
@@ -532,7 +543,8 @@ domain.Readings.Bind(ctx, sql.DrainInsertAdapter(readingCodec, insertFn, sql.Dra
 ## `IOParam` — protocol-agnostic parameters (handle-less adapters)
 
 `PortOptions.Params` is the enforcement mechanism for adapters with **no** protocol-level
-builder of their own — `file.ReadEachAdapter`, `file.DrainWriteFileAdapter` (their
+builder of their own — `file.ReadEachAdapter`, `file.DrainWriteFileAdapter`,
+`file.DrainPatchAdapter`, `file.DrainPatchEncodedAdapter` (their
 `varsFor` function extracts a `map[string]string`). The port propagates `Params` via
 context (`ports.WithParams`), and the adapter calls
 `ports.ValidateParams(ports.ParamsFromContext(ctx), vars)` before using the extracted
@@ -578,7 +590,7 @@ All four interfaces additionally require `AdapterName() string` for observabilit
 | HTTP (nethttp) | `IngestAdapter`, `PollAdapter` | `SSEAdapter`, `DrainCallAdapter` | `CallAdapter` | `PipelineAdapter` | `LatestAdapter` |
 | HTTP (chi) | `IngestAdapter` | `SSEAdapter` | — | `PipelineAdapter` | `LatestAdapter` |
 | ZeroMQ | `SubscribeAdapter` | `PublishAdapter` | `CallAdapter` | `ServeAdapter` | `LatestAdapter` |
-| File | `ScanAdapter`, `WatchAdapter` | `DrainWriteAdapter`, `DrainWriteFileAdapter` | `ReadAdapter`, `ReadEachAdapter` | — | — |
+| File | `ScanAdapter`, `WatchAdapter` | `DrainWriteAdapter`, `DrainWriteFileAdapter`, `DrainPatchAdapter`, `DrainPatchEncodedAdapter` | `ReadAdapter`, `ReadEachAdapter` | — | — |
 | SQL | `QueryAdapter` | `DrainInsertAdapter` | `QueryEachAdapter` | — | — |
 | MCP (mcpgo) | — | — | — | `ToolPipelineAdapter` | `LatestAdapter` |
 

@@ -100,7 +100,8 @@ go-codex/
 │   ├── file/               # stdlib-only file IO adapter (no external dependencies)
 │   │   ├── errors.go       # ScanError, WatchError, WriteError, ReadError — all slog.LogValuer
 │   │   └── binding.go      # package doc + ScanAdapter, WatchAdapter, ReadEachAdapter,
-│   │                       #   DrainWriteAdapter, DrainWriteFileAdapter
+│   │                       #   DrainWriteAdapter, DrainWriteFileAdapter,
+│   │                       #   DrainPatchAdapter, DrainPatchEncodedAdapter
 │   │                       #   (ports.SourceAdapter/IOAdapter/SinkAdapter)
 │   ├── sql/                # SQL adapter — goose migrations + codec-level row validation
 │   │   ├── doc.go          # package overview

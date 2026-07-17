@@ -15,6 +15,11 @@
 // Sinks (use with [ports.SinkPort]):
 //   - [DrainWriteAdapter] — encodes each item and writes it as a line to an [io.Writer]
 //   - [DrainWriteFileAdapter] — writes each item as a complete typed file (whole-file overwrite)
+//   - [DrainPatchAdapter] — applies each item as an untyped map[string]any partial
+//     update (JSON Merge Patch semantics) via [format.File.Patch]; map-based formats
+//     (JSON/YAML/TOML/[format.New]) only
+//   - [DrainPatchEncodedAdapter] — applies each item as a typed partial update via
+//     [format.PatchEncoded]; same map-based-format restriction
 package file
 
 import (
@@ -25,6 +30,7 @@ import (
 	"path/filepath"
 	"time"
 
+	"github.com/DaniDeer/go-codex/codex"
 	"github.com/DaniDeer/go-codex/format"
 	"github.com/DaniDeer/go-codex/ports"
 	"github.com/DaniDeer/go-codex/stats"
@@ -463,6 +469,191 @@ func (a *fileDrainWriteFileAdapter[T]) Activate(ctx context.Context, src gstream
 				return nil
 			}
 			if err := a.f.Write(vars, v, fileOpts); err != nil {
+				if onErr != nil {
+					onErr(err)
+				}
+			}
+			return nil
+		},
+		func(e error) {
+			if onErr != nil {
+				onErr(e)
+			}
+		},
+		gstream.DrainOptions{Observer: obs},
+	)
+}
+
+// ── DrainPatchAdapter ──────────────────────────────────────────────────────────
+
+// DrainPatchAdapterOptions configures [DrainPatchAdapter].
+type DrainPatchAdapterOptions struct {
+	Observer    stats.Observer
+	FileOptions format.FileOptions
+	OnError     func(error)
+}
+
+// DrainPatchAdapter returns a [ports.SinkAdapter] that applies each item as a
+// partial update (JSON Merge Patch semantics) to an existing typed file via
+// [format.File.Patch], instead of overwriting the whole file like
+// [DrainWriteFileAdapter]. f is built by hand (not via [ports.FilePattern]):
+// the stream's item type (map[string]any) is deliberately different from f's
+// own type T, the same way [ReadEachAdapter] takes an independent content
+// type. Use with [ports.SinkPort.Bind]:
+//
+//	domain.ConfigUpdates.Bind(ctx, file.DrainPatchAdapter(configFile,
+//	    func(_ map[string]any) map[string]string { return nil },
+//	    file.DrainPatchAdapterOptions{}))
+//
+// f's format must be map-based (JSON, YAML, TOML, or [format.New]); otherwise
+// every item fails with [format.FilePatchNotSupportedError] (passed through
+// to Options.OnError unchanged — see below).
+//
+// When the bound [ports.SinkPort] declares Params, each varsFor result is
+// validated with [ports.ValidateParams] before the patch; a validation
+// failure is reported to Options.OnError as [WriteError] wrapping
+// [codex.ValidationErrors] and the item is otherwise skipped (not patched).
+// A [format.File.Patch] failure (including [format.FilePatchNotSupportedError])
+// is passed to Options.OnError unchanged, mirroring [DrainWriteFileAdapter]'s
+// treatment of [format.File.Write] failures.
+func DrainPatchAdapter[T any](
+	f format.File[T],
+	varsFor func(map[string]any) map[string]string,
+	opts DrainPatchAdapterOptions,
+) ports.SinkAdapter[map[string]any] {
+	return &fileDrainPatchAdapter[T]{f: f, varsFor: varsFor, opts: opts}
+}
+
+type fileDrainPatchAdapter[T any] struct {
+	f       format.File[T]
+	varsFor func(map[string]any) map[string]string
+	opts    DrainPatchAdapterOptions
+}
+
+func (a *fileDrainPatchAdapter[T]) AdapterName() string { return "file.DrainPatchAdapter" }
+
+func (a *fileDrainPatchAdapter[T]) Activate(ctx context.Context, src gstream.Stream[map[string]any]) {
+	obs := a.opts.Observer
+	if obs == nil {
+		obs = stats.ObserverFromContext(ctx)
+	}
+	fileOpts := a.opts.FileOptions
+	if fileOpts.Observer == nil {
+		fileOpts.Observer = obs
+	}
+	if fileOpts.Context == nil {
+		fileOpts.Context = ctx
+	}
+	onErr := a.opts.OnError
+	params := ports.ParamsFromContext(ctx)
+	gstream.Drain(ctx, src,
+		func(_ context.Context, v map[string]any) error {
+			var vars map[string]string
+			if a.varsFor != nil {
+				vars = a.varsFor(v)
+			}
+			if err := ports.ValidateParams(params, vars); err != nil {
+				if onErr != nil {
+					onErr(WriteError{Err: err})
+				}
+				return nil
+			}
+			if err := a.f.Patch(vars, v, fileOpts); err != nil {
+				if onErr != nil {
+					onErr(err)
+				}
+			}
+			return nil
+		},
+		func(e error) {
+			if onErr != nil {
+				onErr(e)
+			}
+		},
+		gstream.DrainOptions{Observer: obs},
+	)
+}
+
+// ── DrainPatchEncodedAdapter ───────────────────────────────────────────────────
+
+// DrainPatchEncodedAdapterOptions configures [DrainPatchEncodedAdapter].
+type DrainPatchEncodedAdapterOptions struct {
+	Observer    stats.Observer
+	FileOptions format.FileOptions
+	OnError     func(error)
+}
+
+// DrainPatchEncodedAdapter returns a [ports.SinkAdapter] that applies each
+// item as a typed partial update to an existing typed file via
+// [format.PatchEncoded]. Unlike [DrainPatchAdapter]'s untyped map[string]any
+// patches, patchCodec fields not present in f's own codec are still
+// persisted — the right choice for intentionally adding new fields to a file.
+// f is built by hand (not via [ports.FilePattern]): the stream's item type P
+// is deliberately different from f's own type T. Use with
+// [ports.SinkPort.Bind]:
+//
+//	domain.ConfigUpdates.Bind(ctx, file.DrainPatchEncodedAdapter(configFile, configPatchCodec,
+//	    func(_ AppConfigPatch) map[string]string { return nil },
+//	    file.DrainPatchEncodedAdapterOptions{}))
+//
+// f's format must be map-based (JSON, YAML, TOML, or [format.New]); otherwise
+// every item fails with [format.FilePatchNotSupportedError] (passed through
+// to Options.OnError unchanged — see below).
+//
+// When the bound [ports.SinkPort] declares Params, each varsFor result is
+// validated with [ports.ValidateParams] before the patch; a validation
+// failure is reported to Options.OnError as [WriteError] wrapping
+// [codex.ValidationErrors] and the item is otherwise skipped (not patched).
+// A [format.PatchEncoded] failure (including [format.FilePatchNotSupportedError])
+// is passed to Options.OnError unchanged, mirroring [DrainWriteFileAdapter]'s
+// treatment of [format.File.Write] failures.
+func DrainPatchEncodedAdapter[T, P any](
+	f format.File[T],
+	patchCodec codex.Codec[P],
+	varsFor func(P) map[string]string,
+	opts DrainPatchEncodedAdapterOptions,
+) ports.SinkAdapter[P] {
+	return &fileDrainPatchEncodedAdapter[T, P]{f: f, patchCodec: patchCodec, varsFor: varsFor, opts: opts}
+}
+
+type fileDrainPatchEncodedAdapter[T, P any] struct {
+	f          format.File[T]
+	patchCodec codex.Codec[P]
+	varsFor    func(P) map[string]string
+	opts       DrainPatchEncodedAdapterOptions
+}
+
+func (a *fileDrainPatchEncodedAdapter[T, P]) AdapterName() string {
+	return "file.DrainPatchEncodedAdapter"
+}
+
+func (a *fileDrainPatchEncodedAdapter[T, P]) Activate(ctx context.Context, src gstream.Stream[P]) {
+	obs := a.opts.Observer
+	if obs == nil {
+		obs = stats.ObserverFromContext(ctx)
+	}
+	fileOpts := a.opts.FileOptions
+	if fileOpts.Observer == nil {
+		fileOpts.Observer = obs
+	}
+	if fileOpts.Context == nil {
+		fileOpts.Context = ctx
+	}
+	onErr := a.opts.OnError
+	params := ports.ParamsFromContext(ctx)
+	gstream.Drain(ctx, src,
+		func(_ context.Context, v P) error {
+			var vars map[string]string
+			if a.varsFor != nil {
+				vars = a.varsFor(v)
+			}
+			if err := ports.ValidateParams(params, vars); err != nil {
+				if onErr != nil {
+					onErr(WriteError{Err: err})
+				}
+				return nil
+			}
+			if err := format.PatchEncoded(a.f, vars, a.patchCodec, v, fileOpts); err != nil {
 				if onErr != nil {
 					onErr(err)
 				}
