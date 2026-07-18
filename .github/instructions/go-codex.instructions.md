@@ -148,6 +148,23 @@ var guestUser = codex.Must(usernameCodec.New(Username("guest")))
 got := codex.Must(emailCodec.Decode("user@example.com"))
 ```
 
+**Named per-field constructors for struct codecs**: `Codec[T].New` is the only smart-constructor primitive — there is no separate reflection-based or codegen "derive a `NewUser(field1, field2, ...)` from the codec" feature, and there will not be one (go-codex has no reflection, no struct tags for codec logic — see the design rule above — and Go generics cannot express a variadic-arity constructor that works for any `codex.Struct[T]`). The idiomatic pattern is a 3-line hand-written wrapper that takes positional field values and delegates to `Codec.New`:
+
+```go
+var UserCodec = codex.Struct[User](
+    codex.RequiredField("name", nameCodec, func(u User) string { return u.Name }, func(u *User, v string) { u.Name = v }),
+    codex.RequiredField("age", ageCodec, func(u User) int { return u.Age }, func(u *User, v int) { u.Age = v }),
+)
+
+// NewUser is a named constructor: positional args in, validated User or error out.
+// It is a thin wrapper — all validation still runs through UserCodec.New/Validate.
+func NewUser(name string, age int) (User, error) {
+    return UserCodec.New(User{Name: name, Age: age})
+}
+```
+
+See `examples/construction/main.go` for a runnable example.
+
 **When to use each:**
 
 |               | `Validate`              | `New`             | `Must`           |

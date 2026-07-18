@@ -725,6 +725,42 @@ if err != nil { return err }
 var guestUser = codex.Must(usernameCodec.New(Username("guest")))
 ```
 
+### Named per-field constructors for struct codecs
+
+`Codec[T].New` is the one smart-constructor primitive — go-codex does not
+(and will not) auto-derive a `NewUser(field1, field2, ...)` constructor from
+a `codex.Struct[T]` codec. Two hard constraints rule that out: go-codex has
+no reflection and no struct-tag codec wiring (all field wiring is explicit
+Go code via `Field`/`RequiredField`/`OptionalField`/`DefaultField`), and Go
+generics cannot express a variadic-arity type parameter list, so one generic
+helper can't cover struct codecs of every arity.
+
+The idiomatic pattern is a thin, hand-written wrapper that takes positional
+field values and delegates to `Codec.New` — the full codec validation
+(every field's `Refine` constraints) still runs on every call:
+
+```go
+var UserCodec = codex.Struct[User](
+    codex.RequiredField("name", nameCodec,
+        func(u User) string { return u.Name },
+        func(u *User, v string) { u.Name = v }),
+    codex.RequiredField("age", ageCodec,
+        func(u User) int { return u.Age },
+        func(u *User, v int) { u.Age = v }),
+)
+
+func NewUser(name string, age int) (User, error) {
+    return UserCodec.New(User{Name: name, Age: age})
+}
+
+u, err := NewUser("alice", 30)
+if err != nil { return err }
+// u.Name and u.Age both passed their Refine constraints
+```
+
+See `examples/construction/main.go` (`Profile`/`NewProfile`) for a runnable
+version.
+
 ## Either — typed sum type
 
 `Either2` tries codec A first; if decode fails, tries codec B. Encode uses whichever branch is non-nil:
