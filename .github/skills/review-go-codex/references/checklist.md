@@ -232,7 +232,7 @@ All must be `errors.As`-navigable. Bare `fmt.Errorf` in `client.go` without a ty
 
 All 7 file error types implement `Unwrap()` **and** `slog.LogValuer`. Callers can pass any file error directly to `slog.Any(...)` for nested structured attributes.
 
-Also: `format.EnvVarError{Key, Err}` — returned by `FromEnvVar[T]` when coercion or constraint fails. `Unwrap()` exposes `codex.ValidationErrors`.
+Also: `config.EnvVarError{Key, Err}` — returned by `config.FromEnvVar[T]` when coercion or constraint fails. `Unwrap()` exposes `codex.ValidationErrors`; also implements `slog.LogValuer`.
 
 ### forge package
 

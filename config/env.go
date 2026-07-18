@@ -1,8 +1,9 @@
-package format
+package config
 
 import (
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"os"
 	"strconv"
 	"strings"
@@ -58,9 +59,9 @@ func FromEnv[T any](c codex.Codec[T], prefix string) (T, error) {
 // constraint validation fails. Returns the zero value of T when the variable is
 // not set. Use [errors.As] to inspect the structured error:
 //
-//	port, err := format.FromEnvVar("APP_PORT", codex.Int().Refine(validate.RangeInt(1, 65535)))
+//	port, err := config.FromEnvVar("APP_PORT", codex.Int().Refine(validate.RangeInt(1, 65535)))
 //	if err != nil {
-//	    var envErr format.EnvVarError
+//	    var envErr config.EnvVarError
 //	    if errors.As(err, &envErr) {
 //	        slog.Warn("env var invalid", "key", envErr.Key, "cause", envErr.Err)
 //	    }
@@ -90,7 +91,7 @@ func FromEnvVar[T any](key string, c codex.Codec[T]) (T, error) {
 //
 // Use [errors.As] to extract the key and structured cause:
 //
-//	var envErr format.EnvVarError
+//	var envErr config.EnvVarError
 //	if errors.As(err, &envErr) {
 //	    slog.Warn("env var invalid", "key", envErr.Key, "cause", envErr.Err)
 //	    stats.ReportErrors(obs, "env", envErr.Err)
@@ -109,6 +110,14 @@ func (e EnvVarError) Error() string {
 
 // Unwrap allows [errors.Is] and [errors.As] to traverse the underlying error.
 func (e EnvVarError) Unwrap() error { return e.Err }
+
+// LogValue implements [slog.LogValuer] for structured logging.
+func (e EnvVarError) LogValue() slog.Value {
+	return slog.GroupValue(
+		slog.String("key", e.Key),
+		slog.Any("err", e.Err),
+	)
+}
 
 // buildEnvIntermediate walks the schema, reads matching env vars, coerces their
 // string values to the expected types, and returns the intermediate map that

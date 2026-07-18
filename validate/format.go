@@ -387,7 +387,7 @@ var reEnvVar = regexp.MustCompile(`^[A-Z_][A-Z0-9_]*$`)
 // Use this constraint when environment variable names arrive from external input
 // (configuration files, CLI flags, user-provided overrides) rather than as
 // Go code literals, so that programming errors are caught before the name is
-// passed to [format.FromEnvVar] or [os.LookupEnv].
+// passed to [config.FromEnvVar] or [os.LookupEnv].
 //
 // Compose with [EnvVarPrefix] to enforce both format and namespace:
 //

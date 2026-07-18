@@ -177,7 +177,7 @@ Three mechanisms exist. Choose based on scope and lifecycle:
 | `stats.WithObserver(ctx, obs)` | Context | ctx lifetime — all adapter calls that receive this ctx | Service-wide default at startup; or per-request via HTTP middleware |
 
 **Use `Options{Observer: obs}`** when you need a per-call override or when the
-function call has no `ctx` (e.g. `sql.Validate`, `format.FromEnv`).
+function call has no `ctx` (e.g. `sql.Validate`, `config.FromEnv`).
 
 **Use `Registry.WithObserver(obs)`** when wiring a forge pipeline. The Registry is
 the natural "set once" point for governed computations.

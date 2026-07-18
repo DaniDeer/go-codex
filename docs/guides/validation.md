@@ -160,11 +160,11 @@ each of which can *also* refine a codec and appear in the spec.
 
 Constraints often carry tunable parameters. Combine with the
 [validated-config factory pattern](config.md#passing-env-config-into-pipeline-functions):
-load typed config once via `format.FromEnv`, build the constraint from it,
+load typed config once via `config.FromEnv`, build the constraint from it,
 then hand the same value to the boundary and the pipeline:
 
 ```go
-cfg, _ := format.FromEnv(domain.AlertConfigCodec, "APP_ALERT_") // threshold validated here
+cfg, _ := config.FromEnv(domain.AlertConfigCodec, "APP_ALERT_") // threshold validated here
 hot := domain.HotReading(cfg.Threshold)
 
 alerts := stream.Filter(ctx, readings, hot.Check)               // pipeline

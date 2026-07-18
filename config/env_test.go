@@ -1,11 +1,13 @@
-package format_test
+package config_test
 
 import (
 	"errors"
+	"fmt"
+	"log/slog"
 	"testing"
 
 	"github.com/DaniDeer/go-codex/codex"
-	"github.com/DaniDeer/go-codex/format"
+	"github.com/DaniDeer/go-codex/config"
 	"github.com/DaniDeer/go-codex/validate"
 )
 
@@ -113,7 +115,7 @@ func TestFromEnv_FlatValid(t *testing.T) {
 	t.Setenv("APP_DEBUG", "true")
 	t.Setenv("APP_TIMEOUT", "30.5")
 
-	cfg, err := format.FromEnv(flatCodec, "APP_")
+	cfg, err := config.FromEnv(flatCodec, "APP_")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -133,7 +135,7 @@ func TestFromEnv_FlatValid(t *testing.T) {
 
 func TestFromEnv_MissingRequired(t *testing.T) {
 	// No env vars set; host, port, timeout are required.
-	_, err := format.FromEnv(flatCodec, "APP_")
+	_, err := config.FromEnv(flatCodec, "APP_")
 	if err == nil {
 		t.Fatal("expected error for missing required fields, got nil")
 	}
@@ -151,7 +153,7 @@ func TestFromEnv_ParseError_Int(t *testing.T) {
 	t.Setenv("APP_PORT", "notanumber")
 	t.Setenv("APP_TIMEOUT", "30.5")
 
-	_, err := format.FromEnv(flatCodec, "APP_")
+	_, err := config.FromEnv(flatCodec, "APP_")
 	if err == nil {
 		t.Fatal("expected parse error for bad int, got nil")
 	}
@@ -176,7 +178,7 @@ func TestFromEnv_ParseError_Bool(t *testing.T) {
 	t.Setenv("APP_TIMEOUT", "30.0")
 	t.Setenv("APP_DEBUG", "notabool")
 
-	_, err := format.FromEnv(flatCodec, "APP_")
+	_, err := config.FromEnv(flatCodec, "APP_")
 	if err == nil {
 		t.Fatal("expected parse error for bad bool, got nil")
 	}
@@ -200,7 +202,7 @@ func TestFromEnv_ConstraintViolation(t *testing.T) {
 	t.Setenv("APP_PORT", "99999") // violates RangeInt(1,65535)
 	t.Setenv("APP_TIMEOUT", "30.0")
 
-	_, err := format.FromEnv(flatCodec, "APP_")
+	_, err := config.FromEnv(flatCodec, "APP_")
 	if err == nil {
 		t.Fatal("expected constraint error, got nil")
 	}
@@ -211,7 +213,7 @@ func TestFromEnv_NestedStruct(t *testing.T) {
 	t.Setenv("APP_SERVER_TLS", "true")
 	t.Setenv("APP_PORT", "443")
 
-	cfg, err := format.FromEnv(nestedCodec, "APP_")
+	cfg, err := config.FromEnv(nestedCodec, "APP_")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -229,7 +231,7 @@ func TestFromEnv_NestedStruct(t *testing.T) {
 func TestFromEnv_SliceOfStrings(t *testing.T) {
 	t.Setenv("APP_TAGS", "web,api,v2")
 
-	cfg, err := format.FromEnv(sliceCodec, "APP_")
+	cfg, err := config.FromEnv(sliceCodec, "APP_")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -244,7 +246,7 @@ func TestFromEnv_SliceOfStrings(t *testing.T) {
 func TestFromEnv_SliceOfInts(t *testing.T) {
 	t.Setenv("APP_PORTS", "8080, 9090, 9091")
 
-	cfg, err := format.FromEnv(sliceCodec, "APP_")
+	cfg, err := config.FromEnv(sliceCodec, "APP_")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -259,14 +261,14 @@ func TestFromEnv_SliceOfInts(t *testing.T) {
 func TestFromEnv_SliceParseError(t *testing.T) {
 	t.Setenv("APP_PORTS", "8080,notanumber")
 
-	_, err := format.FromEnv(sliceCodec, "APP_")
+	_, err := config.FromEnv(sliceCodec, "APP_")
 	if err == nil {
 		t.Fatal("expected parse error for bad slice element, got nil")
 	}
 }
 
 func TestFromEnv_NullableAbsent(t *testing.T) {
-	cfg, err := format.FromEnv(nullableCodec, "APP_")
+	cfg, err := config.FromEnv(nullableCodec, "APP_")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -278,7 +280,7 @@ func TestFromEnv_NullableAbsent(t *testing.T) {
 func TestFromEnv_NullablePresent(t *testing.T) {
 	t.Setenv("APP_NOTE", "hello")
 
-	cfg, err := format.FromEnv(nullableCodec, "APP_")
+	cfg, err := config.FromEnv(nullableCodec, "APP_")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -295,7 +297,7 @@ func TestFromEnv_EmptyPrefix(t *testing.T) {
 	t.Setenv("PORT", "3000")
 	t.Setenv("TIMEOUT", "5.0")
 
-	cfg, err := format.FromEnv(flatCodec, "")
+	cfg, err := config.FromEnv(flatCodec, "")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -328,7 +330,7 @@ func TestFromEnv_NestedStructAsJSON(t *testing.T) {
 	t.Setenv("APP_SERVER", `{"host":"api.example.com","tls":true}`)
 	t.Setenv("APP_PORT", "443")
 
-	cfg, err := format.FromEnv(nestedCodec, "APP_")
+	cfg, err := config.FromEnv(nestedCodec, "APP_")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -349,7 +351,7 @@ func TestFromEnv_JSONWinsOverPrefixExpansion(t *testing.T) {
 	t.Setenv("APP_SERVER_HOST", "from-prefix") // should be ignored
 	t.Setenv("APP_PORT", "80")
 
-	cfg, err := format.FromEnv(nestedCodec, "APP_")
+	cfg, err := config.FromEnv(nestedCodec, "APP_")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -362,7 +364,7 @@ func TestFromEnv_SliceAsJSONArray(t *testing.T) {
 	t.Setenv("APP_TAGS", `["web","api","v2"]`)
 	t.Setenv("APP_PORTS", `[8080,9090]`)
 
-	cfg, err := format.FromEnv(sliceCodec, "APP_")
+	cfg, err := config.FromEnv(sliceCodec, "APP_")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -377,7 +379,7 @@ func TestFromEnv_SliceAsJSONArray(t *testing.T) {
 func TestFromEnv_StringMapAsJSON(t *testing.T) {
 	t.Setenv("APP_LABELS", `{"env":"prod","team":"platform"}`)
 
-	cfg, err := format.FromEnv(stringMapCodec, "APP_")
+	cfg, err := config.FromEnv(stringMapCodec, "APP_")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -390,7 +392,7 @@ func TestFromEnv_MalformedJSONObject_ReturnsError(t *testing.T) {
 	t.Setenv("APP_SERVER", `{"host":"unclosed`)
 	t.Setenv("APP_PORT", "443")
 
-	_, err := format.FromEnv(nestedCodec, "APP_")
+	_, err := config.FromEnv(nestedCodec, "APP_")
 	if err == nil {
 		t.Fatal("expected parse error for malformed JSON, got nil")
 	}
@@ -412,18 +414,18 @@ func TestFromEnv_MalformedJSONObject_ReturnsError(t *testing.T) {
 func TestFromEnv_MalformedJSONArray_ReturnsError(t *testing.T) {
 	t.Setenv("APP_TAGS", `["unclosed`)
 
-	_, err := format.FromEnv(sliceCodec, "APP_")
+	_, err := config.FromEnv(sliceCodec, "APP_")
 	if err == nil {
 		t.Fatal("expected parse error for malformed JSON array, got nil")
 	}
 }
 
-// ── FromEnvVar ────────────────────────────────────────────────────────────────
+// ── config.FromEnvVar ────────────────────────────────────────────────────────────────
 
 func TestFromEnvVar_HappyPath_Int(t *testing.T) {
 	t.Setenv("TEST_PORT", "8080")
 
-	port, err := format.FromEnvVar("TEST_PORT",
+	port, err := config.FromEnvVar("TEST_PORT",
 		codex.Int().Refine(validate.RangeInt(1, 65535)))
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -436,7 +438,7 @@ func TestFromEnvVar_HappyPath_Int(t *testing.T) {
 func TestFromEnvVar_HappyPath_String(t *testing.T) {
 	t.Setenv("TEST_LEVEL", "debug")
 
-	level, err := format.FromEnvVar("TEST_LEVEL",
+	level, err := config.FromEnvVar("TEST_LEVEL",
 		codex.String().Refine(validate.OneOf("debug", "info", "warn", "error")))
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -451,7 +453,7 @@ func TestFromEnvVar_NotSet_ReturnsZero(t *testing.T) {
 	t.Setenv("TEST_ABSENT_VAR_XYZ", "")
 	// Use a key that is definitely not set — t.Setenv always sets, so use a
 	// unique key and then unset it via t.Cleanup (simpler: just don't set it).
-	port, err := format.FromEnvVar("TEST_TRULY_ABSENT_VAR_12345",
+	port, err := config.FromEnvVar("TEST_TRULY_ABSENT_VAR_12345",
 		codex.Int().Refine(validate.RangeInt(1, 65535)))
 	if err != nil {
 		t.Fatalf("expected nil error for unset var, got: %v", err)
@@ -464,46 +466,67 @@ func TestFromEnvVar_NotSet_ReturnsZero(t *testing.T) {
 func TestFromEnvVar_InvalidValue_ReturnsEnvVarError(t *testing.T) {
 	t.Setenv("TEST_PORT_BAD", "99999") // out of range
 
-	_, err := format.FromEnvVar("TEST_PORT_BAD",
+	_, err := config.FromEnvVar("TEST_PORT_BAD",
 		codex.Int().Refine(validate.RangeInt(1, 65535)))
 	if err == nil {
 		t.Fatal("expected error for out-of-range port, got nil")
 	}
-	var envErr format.EnvVarError
+	var envErr config.EnvVarError
 	if !errors.As(err, &envErr) {
-		t.Fatalf("expected EnvVarError, got %T: %v", err, err)
+		t.Fatalf("expected config.EnvVarError, got %T: %v", err, err)
 	}
 	if envErr.Key != "TEST_PORT_BAD" {
 		t.Errorf("expected Key=TEST_PORT_BAD, got %q", envErr.Key)
 	}
 	if envErr.Err == nil {
-		t.Error("expected non-nil Err inside EnvVarError")
+		t.Error("expected non-nil Err inside config.EnvVarError")
 	}
 }
 
 func TestFromEnvVar_InvalidType_ReturnsEnvVarError(t *testing.T) {
 	t.Setenv("TEST_PORT_STR", "not-a-number")
 
-	_, err := format.FromEnvVar("TEST_PORT_STR", codex.Int())
+	_, err := config.FromEnvVar("TEST_PORT_STR", codex.Int())
 	if err == nil {
 		t.Fatal("expected error for non-integer value, got nil")
 	}
-	var envErr format.EnvVarError
+	var envErr config.EnvVarError
 	if !errors.As(err, &envErr) {
-		t.Fatalf("expected EnvVarError, got %T: %v", err, err)
+		t.Fatalf("expected config.EnvVarError, got %T: %v", err, err)
 	}
 }
 
 func TestFromEnvVar_Unwrap_ExposesInnerError(t *testing.T) {
 	t.Setenv("TEST_PORT_INNER", "bad")
 
-	_, err := format.FromEnvVar("TEST_PORT_INNER", codex.Int())
+	_, err := config.FromEnvVar("TEST_PORT_INNER", codex.Int())
 
-	var envErr format.EnvVarError
+	var envErr config.EnvVarError
 	if !errors.As(err, &envErr) {
-		t.Fatalf("expected EnvVarError, got %T", err)
+		t.Fatalf("expected config.EnvVarError, got %T", err)
 	}
 	if envErr.Unwrap() == nil {
 		t.Error("Unwrap() must return non-nil inner error")
+	}
+}
+
+func TestEnvVarError_LogValue(t *testing.T) {
+	envErr := config.EnvVarError{
+		Key: "APP_PORT",
+		Err: fmt.Errorf("bad value"),
+	}
+	lv := envErr.LogValue()
+	if lv.Kind() != slog.KindGroup {
+		t.Fatalf("LogValue: want KindGroup, got %v", lv.Kind())
+	}
+	attrs := lv.Group()
+	keys := make(map[string]bool, len(attrs))
+	for _, a := range attrs {
+		keys[a.Key] = true
+	}
+	for _, want := range []string{"key", "err"} {
+		if !keys[want] {
+			t.Errorf("LogValue missing attribute %q", want)
+		}
 	}
 }

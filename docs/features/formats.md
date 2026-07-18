@@ -361,21 +361,12 @@ See [Metrics Observer](observer.md) for the full observer interface table.
 
 ## Loading from environment variables
 
-`format.FromEnv` loads a typed struct from environment variables using the codec's schema:
-
-```go
-// Env var names: strings.ToUpper(prefix + field_name)
-// "port"      + "APP_" → APP_PORT
-// "log_level" + "APP_" → APP_LOG_LEVEL
-cfg, err := format.FromEnv(configCodec, "APP_")
-```
-
-Nested structs expand the prefix (`db.host` → `APP_DB_HOST`). Slices use comma separation. Complex fields accept JSON:
-
-```sh
-APP_DB='{"host":"localhost","port":5432,"name":"mydb"}'
-APP_TAGS='["web","api","v2"]'
-```
+Environment-variable config loading lives in the standalone [`config`](config.md#environment-variables-12-factor-containers)
+package (`config.FromEnv`/`config.FromEnvVar`), not `format` — it never used
+`format.Format[T]` internally (no marshal/unmarshal, no wire bytes; just a
+codec + schema-driven `os.LookupEnv` coercion), so it doesn't belong here.
+See [Config, CLI & Protobuf — Environment variables](config.md#environment-variables-12-factor-containers)
+for the full guide.
 
 ## Custom formats
 

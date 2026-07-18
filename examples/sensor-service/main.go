@@ -46,7 +46,7 @@
 //   - [nethttp.HandlerLatest] — reactive cache endpoint; GET /readings/latest
 //     returns the most recently saved reading without querying the DB.
 //   - Validated-config factory pattern — main() loads domain.AlertConfig once
-//     via format.FromEnv (APP_ALERT_THRESHOLD, default 50.0); the pipeline
+//     via config.FromEnv (APP_ALERT_THRESHOLD, default 50.0); the pipeline
 //     functions close over the typed, validated config (see domain.NewShouldAlert).
 //   - One [stats.NewFanout] observer across HTTP, MQTT, SQL, file, and stream.
 //
@@ -76,6 +76,7 @@ import (
 	nethttp "github.com/DaniDeer/go-codex/adapters/nethttp"
 	sqladapter "github.com/DaniDeer/go-codex/adapters/sql"
 	"github.com/DaniDeer/go-codex/app"
+	"github.com/DaniDeer/go-codex/config"
 	"github.com/DaniDeer/go-codex/examples/sensor-service/adapters"
 	"github.com/DaniDeer/go-codex/examples/sensor-service/db"
 	"github.com/DaniDeer/go-codex/examples/sensor-service/domain"
@@ -120,7 +121,7 @@ func main() {
 	// name (APP_ALERT_THRESHOLD), type coercion, MinFloat(0) constraint, and
 	// the 50.0 default when unset. The pipeline factories close over the
 	// typed config — pipeline code never touches os.Getenv.
-	alertCfg, err := format.FromEnv(domain.AlertConfigCodec, "APP_ALERT_")
+	alertCfg, err := config.FromEnv(domain.AlertConfigCodec, "APP_ALERT_")
 	must(err, "load alert config from env")
 
 	// ── Database ───────────────────────────────────────────────────────────

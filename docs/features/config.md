@@ -39,13 +39,15 @@ The same codec works with JSON, YAML, and TOML — swap `format.TOML` for `forma
 
 ## Environment variables (12-factor / containers)
 
-`format.FromEnv` loads config from environment variables. The codec's schema drives string-to-type coercion — no per-field `strconv` code:
+`config.FromEnv` loads config from environment variables. The codec's schema drives string-to-type coercion — no per-field `strconv` code:
 
 ```go
+import "github.com/DaniDeer/go-codex/config"
+
 // Env var names: strings.ToUpper(prefix + field_name)
 // "port"      + "APP_" → APP_PORT
 // "log_level" + "APP_" → APP_LOG_LEVEL
-cfg, err := format.FromEnv(configCodec, "APP_")
+cfg, err := config.FromEnv(configCodec, "APP_")
 if err != nil {
     // err is codex.ValidationErrors
     log.Fatal(err)
@@ -69,16 +71,16 @@ JSON takes precedence when the value starts with `{` or `[`.
 
 ## Single env var (FromEnvVar)
 
-`format.FromEnvVar[T]` loads a single typed value from one environment variable. The codec's schema drives coercion; all `Refine` constraints run after:
+`config.FromEnvVar[T]` loads a single typed value from one environment variable. The codec's schema drives coercion; all `Refine` constraints run after:
 
 ```go
-import "github.com/DaniDeer/go-codex/format"
+import "github.com/DaniDeer/go-codex/config"
 
 // Load a typed port number — returns zero value when APP_PORT is not set
-port, err := format.FromEnvVar("APP_PORT",
+port, err := config.FromEnvVar("APP_PORT",
     codex.Int().Refine(validate.RangeInt(1, 65535)))
 if err != nil {
-    var envErr format.EnvVarError
+    var envErr config.EnvVarError
     if errors.As(err, &envErr) {
         slog.Warn("env var invalid", "key", envErr.Key, "cause", envErr.Err)
         stats.ReportErrors(obs, "env", envErr.Err)
@@ -87,16 +89,16 @@ if err != nil {
 }
 
 // Load a typed log level — falls back to default when not set
-level, err := format.FromEnvVar("LOG_LEVEL",
+level, err := config.FromEnvVar("LOG_LEVEL",
     codex.String().Refine(validate.OneOf("debug", "info", "warn", "error")))
 if level == "" {
     level = "info" // caller decides the default
 }
 ```
 
-`FromEnvVar` returns `format.EnvVarError{Key, Err}` when the variable is present but fails coercion or constraint validation. It returns the zero value of T (no error) when the variable is not set — the caller decides whether the variable is required.
+`FromEnvVar` returns `config.EnvVarError{Key, Err}` when the variable is present but fails coercion or constraint validation. It returns the zero value of T (no error) when the variable is not set — the caller decides whether the variable is required.
 
-Use `FromEnvVar` for ad-hoc overrides of individual settings. Use `format.FromEnv` when loading an entire config struct from environment variables.
+Use `FromEnvVar` for ad-hoc overrides of individual settings. Use `config.FromEnv` when loading an entire config struct from environment variables.
 
 ## Config file + env var overrides
 

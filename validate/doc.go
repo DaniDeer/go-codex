@@ -37,7 +37,7 @@
 // # Environment variable name constraints
 //
 // Validate environment variable names from external input (config files, CLI flags,
-// user-supplied overrides) before passing them to [format.FromEnvVar] or [os.LookupEnv]:
+// user-supplied overrides) before passing them to [config.FromEnvVar] or [os.LookupEnv]:
 //
 //	// POSIX format: [A-Z_][A-Z0-9_]*
 //	codex.String().Refine(validate.EnvVarName)

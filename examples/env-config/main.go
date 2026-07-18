@@ -1,4 +1,4 @@
-// Package main demonstrates format.FromEnv: loading application configuration
+// Package main demonstrates config.FromEnv: loading application configuration
 // exclusively from environment variables using the codec as the single source
 // of truth for field names, types, validations, and documentation.
 //
@@ -6,8 +6,8 @@
 // env var strings are converted to the correct Go types before decoding.
 //
 // One codec, all input formats — the same configCodec defined below is used
-// for every format.FromEnv call. Whether env vars are plain strings ("8080"),
-// comma-separated lists ("web,api"), or full JSON objects/arrays, format.FromEnv
+// for every config.FromEnv call. Whether env vars are plain strings ("8080"),
+// comma-separated lists ("web,api"), or full JSON objects/arrays, config.FromEnv
 // parses the raw string and builds an intermediate map[string]any, then calls
 // configCodec.Decode — the exact same Decode path used by format.JSON, format.TOML,
 // and format.YAML. No special codec is needed for JSON-formatted env vars.
@@ -30,7 +30,7 @@ import (
 	"os"
 
 	"github.com/DaniDeer/go-codex/codex"
-	"github.com/DaniDeer/go-codex/format"
+	"github.com/DaniDeer/go-codex/config"
 	"github.com/DaniDeer/go-codex/render/openapi"
 	"github.com/DaniDeer/go-codex/schema"
 	"github.com/DaniDeer/go-codex/validate"
@@ -78,7 +78,7 @@ var configCodec = codex.Struct[AppConfig](
 	codex.OptionalField("tags", codex.SliceOf(codex.String()).WithDescription("Optional deployment tags (comma-separated)."), func(c AppConfig) []string { return c.Tags }, func(c *AppConfig, v []string) { c.Tags = v }),
 	codex.OptionalField("labels", codex.StringMap(codex.String()).WithDescription("Arbitrary key-value labels (JSON object)."), func(c AppConfig) map[string]string { return c.Labels }, func(c *AppConfig, v map[string]string) { c.Labels = v }),
 	// Any(): Extensions passes the raw value through without type enforcement.
-	// format.FromEnv parses JSON-prefixed strings into map[string]any automatically,
+	// config.FromEnv parses JSON-prefixed strings into map[string]any automatically,
 	// so APP_EXTENSIONS='{"flag":true}' arrives as map[string]any after env loading.
 	// Any() accepts it as-is with no further schema constraint.
 	codex.OptionalField("extensions", codex.Any().WithDescription("Arbitrary extension config (raw JSON object or nil)."), func(c AppConfig) any { return c.Extensions }, func(c *AppConfig, v any) { c.Extensions = v }),
@@ -112,7 +112,7 @@ func main() {
 		}
 	}()
 
-	cfg, err := format.FromEnv(configCodec, "APP_")
+	cfg, err := config.FromEnv(configCodec, "APP_")
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "error:", err)
 		os.Exit(1)
@@ -132,7 +132,7 @@ func main() {
 	mustSetenv("APP_PORT", "notanumber")
 	mustSetenv("APP_WORKERS", "toomanythreads")
 
-	_, err = format.FromEnv(configCodec, "APP_")
+	_, err = config.FromEnv(configCodec, "APP_")
 	if err != nil {
 		fmt.Println("errors:", err)
 	}
@@ -145,7 +145,7 @@ func main() {
 	os.Unsetenv("APP_DB_HOST")
 	os.Unsetenv("APP_DB_NAME")
 
-	_, err = format.FromEnv(configCodec, "APP_")
+	_, err = config.FromEnv(configCodec, "APP_")
 	if err != nil {
 		fmt.Println("errors:", err)
 	}
@@ -159,7 +159,7 @@ func main() {
 	mustSetenv("APP_LOG_LEVEL", "verbose") // not in OneOf list
 	mustSetenv("APP_WORKERS", "512")       // exceeds RangeInt(1, 256)
 
-	_, err = format.FromEnv(configCodec, "APP_")
+	_, err = config.FromEnv(configCodec, "APP_")
 	if err != nil {
 		fmt.Println("errors:", err)
 	}
@@ -172,7 +172,7 @@ func main() {
 	// keys or comma-separated lists.
 	//
 	// No new codec is needed — configCodec is the same definition above.
-	// format.FromEnv detects the JSON prefix ('{' or '['), unmarshals the
+	// config.FromEnv detects the JSON prefix ('{' or '['), unmarshals the
 	// string into a map[string]any or []any, then calls configCodec.Decode
 	// with that intermediate value — identical to what format.TOML or
 	// format.JSON would do when parsing the same structure from a file.
@@ -185,7 +185,7 @@ func main() {
 	mustSetenv("APP_TAGS", `["production","web","v2"]`)
 	mustSetenv("APP_LABELS", `{"env":"prod","team":"platform","version":"2.0"}`)
 
-	cfg, err = format.FromEnv(configCodec, "APP_")
+	cfg, err = config.FromEnv(configCodec, "APP_")
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "error:", err)
 		os.Exit(1)
@@ -208,7 +208,7 @@ func main() {
 
 	os.Unsetenv("APP_LOG_LEVEL")
 
-	cfg, err = format.FromEnv(configCodec, "APP_")
+	cfg, err = config.FromEnv(configCodec, "APP_")
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "error:", err)
 		os.Exit(1)
@@ -216,7 +216,7 @@ func main() {
 	fmt.Printf("log_level (not set): %q  ← default applied\n", cfg.LogLevel)
 
 	mustSetenv("APP_LOG_LEVEL", "debug")
-	cfg, err = format.FromEnv(configCodec, "APP_")
+	cfg, err = config.FromEnv(configCodec, "APP_")
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "error:", err)
 		os.Exit(1)
@@ -225,14 +225,14 @@ func main() {
 	mustSetenv("APP_LOG_LEVEL", "info")
 
 	// ── 7. Any() field — raw extension config passthrough ────────────────────
-	// Extensions is declared with Any(). format.FromEnv detects the JSON prefix
+	// Extensions is declared with Any(). config.FromEnv detects the JSON prefix
 	// and parses the env var string into map[string]any before calling Decode.
 	// Any() accepts the resulting value as-is — no schema constraint applied.
 	fmt.Println("\n=== 7. Any() field — extensions as raw JSON object ===")
 
 	mustSetenv("APP_EXTENSIONS", `{"feature_flags":{"dark_mode":true},"max_upload_mb":50}`)
 
-	cfg, err = format.FromEnv(configCodec, "APP_")
+	cfg, err = config.FromEnv(configCodec, "APP_")
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "error:", err)
 		os.Exit(1)
@@ -243,7 +243,7 @@ func main() {
 
 	// ── 9. Validate env var names from external input ────────────────────────
 	// When env var names come from outside Go code (a config file, CLI flag, or
-	// user form), validate them before passing to format.FromEnvVar or os.LookupEnv.
+	// user form), validate them before passing to config.FromEnvVar or os.LookupEnv.
 	//
 	// Two composable constraints:
 	//   validate.EnvVarName         — POSIX format: [A-Z_][A-Z0-9_]*
@@ -290,7 +290,7 @@ func main() {
 		fmt.Printf("  invalid key %q: %v\n", userKey, err)
 	} else {
 		// Safe to use: name is both valid POSIX format and in the APP_ namespace
-		port, err := format.FromEnvVar(userKey, codex.Int().Refine(validate.RangeInt(1, 65535)))
+		port, err := config.FromEnvVar(userKey, codex.Int().Refine(validate.RangeInt(1, 65535)))
 		if err != nil {
 			fmt.Printf("  APP_PORT read error: %v\n", err)
 		} else {

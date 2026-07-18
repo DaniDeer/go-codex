@@ -16,7 +16,7 @@ Demonstrates TOML config file loading with env var overlay:
 
 ## examples/env-config
 
-Full `format.FromEnv` demo including:
+Full `config.FromEnv` demo including:
 - `DefaultField` with default value visible in schema
 - Nested struct expansion (`APP_DB_HOST`)
 - Slice from comma-separated values (`APP_TAGS=web,api`)
@@ -50,16 +50,16 @@ For partial updates (`Patch`, `PatchEncoded`) and the field survival rules, see 
 
 → [examples/file-io](https://github.com/DaniDeer/go-codex/tree/main/examples/file-io) — full demo: static config + template paths + Patch + PatchEncoded + error handling + `CountingObserver`
 
-## Single env var (format.FromEnvVar)
+## Single env var (config.FromEnvVar)
 
-`format.FromEnvVar[T]` replaces manual `os.LookupEnv` + `strconv` for individual settings:
+`config.FromEnvVar[T]` replaces manual `os.LookupEnv` + `strconv` for individual settings:
 
 ```go
 // Returns zero value when not set — no error
-port, err := format.FromEnvVar("APP_PORT",
+port, err := config.FromEnvVar("APP_PORT",
     codex.Int().Refine(validate.RangeInt(1, 65535)))
 if err != nil {
-    var envErr format.EnvVarError
+    var envErr config.EnvVarError
     errors.As(err, &envErr)
     slog.Error("env var invalid", "key", envErr.Key, "err", envErr.Err)
 }
@@ -94,7 +94,7 @@ func newShouldAlert(cfg AlertConfig) func(db.Reading) bool {
 }
 
 // main() — load + validate ONCE, at the same place ports and adapters are wired.
-alertCfg, err := format.FromEnv(alertConfigCodec, "APP_ALERT_") // APP_ALERT_THRESHOLD
+alertCfg, err := config.FromEnv(alertConfigCodec, "APP_ALERT_") // APP_ALERT_THRESHOLD
 must(err, "load alert config from env")
 shouldAlert := newShouldAlert(alertCfg)
 

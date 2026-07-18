@@ -340,7 +340,7 @@ func float64ptr(v float64) *float64 { return &v }
 //
 // Typical uses: extension fields, opaque config blobs, dynamic JSON passed through.
 //
-// Note: format.FromEnv has no type hints for any-typed fields and will pass the
+// Note: config.FromEnv has no type hints for any-typed fields and will pass the
 // raw env var string through as-is.
 func Any() Codec[any] {
 	return Codec[any]{

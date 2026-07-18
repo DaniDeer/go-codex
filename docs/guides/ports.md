@@ -527,7 +527,7 @@ Env vars are **not** an IO boundary in the `ports` sense — they are a
 construction-time concern. To parameterize a pipeline function (an alert
 threshold, a batch size, …) from the environment, use the **validated-config
 factory pattern**: load a typed config struct once in `main()` via
-`format.FromEnv` (the codec is the env contract — names, coercion, constraints,
+`config.FromEnv` (the codec is the env contract — names, coercion, constraints,
 defaults), then pass it into a factory that closes over it. Zero `os.Getenv` in
 pipeline code, fully testable. See
 [Config guide — Passing env config into pipeline functions](config.md#passing-env-config-into-pipeline-functions)

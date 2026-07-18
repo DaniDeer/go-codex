@@ -73,7 +73,7 @@ type ExportResult struct {
 }
 
 // AlertConfig parameterizes the alerting pipeline functions. Loaded from env
-// vars in main() via format.FromEnv — AlertConfigCodec is the single source of
+// vars in main() via config.FromEnv — AlertConfigCodec is the single source of
 // truth for the env contract (name, type, constraint, default, docs):
 //
 //	APP_ALERT_THRESHOLD=80 go run ./examples/sensor-service
@@ -370,7 +370,7 @@ func NewExportSnapshot(rows []db.Reading) ExportSnapshot {
 // TYPED, already-validated config and close over it — the returned pipeline
 // functions stay pure and testable (tests pass any AlertConfig directly, no
 // env manipulation needed). Zero env access in this layer; loading and
-// validation happen once in main() via format.FromEnv.
+// validation happen once in main() via config.FromEnv.
 
 // NewShouldAlert returns the alert filter predicate for cfg.
 func NewShouldAlert(cfg AlertConfig) func(db.Reading) bool {

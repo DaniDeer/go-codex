@@ -124,4 +124,4 @@ All built-in `validate.*` constraints use this mechanism — `MinLen`, `MaxLen`,
 - [Concept: Codec](../concepts/codec.md) — full codec reference including all schema annotation methods
 - [Guide: OpenAPI Spec](../guides/openapi.md) — how schema metadata flows into OpenAPI output
 - [examples/formats](https://github.com/DaniDeer/go-codex/tree/main/examples/formats) — `WithExample` and `WithDeprecated` in context
-- [examples/env-config](https://github.com/DaniDeer/go-codex/tree/main/examples/env-config) — `DefaultField` with `format.FromEnv`
+- [examples/env-config](https://github.com/DaniDeer/go-codex/tree/main/examples/env-config) — `DefaultField` with `config.FromEnv`

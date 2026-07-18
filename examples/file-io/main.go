@@ -3,7 +3,7 @@
 //
 // Scenario: an IoT sensor data pipeline that:
 //   - Loads a TOML service config on startup using a static [ports.File]
-//   - Applies a single env var override via [format.FromEnvVar]
+//   - Applies a single env var override via [config.FromEnvVar]
 //   - Writes and reads per-sensor JSON measurement files using a template path
 //   - Validates path variables (date format) with a [ports.FilePathParam] codec
 //   - Handles all typed file errors with [errors.As]
@@ -33,6 +33,7 @@ import (
 	"time"
 
 	"github.com/DaniDeer/go-codex/codex"
+	"github.com/DaniDeer/go-codex/config"
 	"github.com/DaniDeer/go-codex/format"
 	"github.com/DaniDeer/go-codex/ports"
 	"github.com/DaniDeer/go-codex/stats"
@@ -221,10 +222,10 @@ func main() {
 	// FromEnvVar: single env var override for log level.
 	// Returns zero value (no error) when the variable is not set.
 	if v := os.Getenv("LOG_LEVEL"); v != "" {
-		level, err := format.FromEnvVar("LOG_LEVEL",
+		level, err := config.FromEnvVar("LOG_LEVEL",
 			codex.String().Refine(validate.OneOf("debug", "info", "warn", "error")))
 		if err != nil {
-			var envErr format.EnvVarError
+			var envErr config.EnvVarError
 			if errors.As(err, &envErr) {
 				slog.Warn("LOG_LEVEL env var invalid",
 					"key", envErr.Key,

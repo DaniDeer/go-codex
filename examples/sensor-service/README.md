@@ -138,7 +138,7 @@ writes the file (`FileHandle.BuildPath`).
 
 | Env var | Default | Contract |
 |---------|---------|----------|
-| `APP_ALERT_THRESHOLD` | `50.0` | `domain.AlertConfigCodec` — `float64`, `MinFloat(0)`; loaded once in `main()` via `format.FromEnv`, pipeline functions close over the typed config |
+| `APP_ALERT_THRESHOLD` | `50.0` | `domain.AlertConfigCodec` — `float64`, `MinFloat(0)`; loaded once in `main()` via `config.FromEnv`, pipeline functions close over the typed config |
 
 ## Run
 

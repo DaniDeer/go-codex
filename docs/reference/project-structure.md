@@ -26,8 +26,11 @@ go-codex/
 │   ├── format.go           # Format[T], JSON(), YAML(), TOML(), Gob(), Binary(), New(), NewTyped(), NewStreamed(),
 │   │                       #   Codec(), UnmarshalRaw(), MarshalRaw(), PatchInto(), DeepMerge() — low-level
 │   │                       #   primitives ports.File.Patch/ports.PatchEncoded are built on
-│   ├── embedded.go         # EmbeddedJSON[T], EmbeddedYAML[T], EmbeddedTOML[T],
-│   │                       #   EmbeddedDecodeError, EmbeddedEncodeError
+│   └── embedded.go         # EmbeddedJSON[T], EmbeddedYAML[T], EmbeddedTOML[T],
+│                           #   EmbeddedDecodeError, EmbeddedEncodeError
+│
+├── config/                 # standalone env-var config loading (no Pattern, no adapter)
+│   ├── doc.go              # package overview — why config is not format or ports
 │   └── env.go              # FromEnv[T], FromEnvVar[T], EnvVarError
 │
 ├── route/                  # HTTP route descriptors (no renderer logic)
@@ -265,7 +268,7 @@ go-codex/
     │
     │   # ── Config / CLI / Observability ─────────────────────────────────────────
     ├── cli-config/         # CLI tool config: TOML file + env var overlay with codecs
-    ├── env-config/         # format.FromEnv: schema-driven env var loading with defaults
+    ├── env-config/         # config.FromEnv: schema-driven env var loading with defaults
     ├── file-io/            # ports.File[T]: static + template files, Patch, PatchEncoded, FileObserver
     ├── flat-key-patch/     # flat dotted-key JSON: Patch + PatchEncoded with Map key validation
     ├── stats-observer/              # stats.ValidationObserver wired to codecs directly (no adapter)
