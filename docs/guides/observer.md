@@ -624,6 +624,11 @@ Every log line carries `service=order-api env=prod build.version=...` automatica
 
 ## Domain events vs infrastructure metrics
 
+> This section assumes a stream pipeline (`stream.Tap`, `stream.MapErr`).
+> For plain business functions with no pipeline at all, see
+> [Business logic without pipelines](#business-logic-without-pipelines) below —
+> same observer, same custom-interface pattern, no `stream` dependency.
+
 go-codex makes a deliberate distinction between two kinds of observation:
 
 | | Infrastructure metrics | Domain event observation |
@@ -706,9 +711,147 @@ results = stream.MapErr(ctx, results, func(err error) (OEEResult, bool, error) {
 
 ---
 
+## Business logic without pipelines
+
+Everything above wires the observer into an adapter, a `forge.Function`, or a
+`stream` operator — but plain business/domain functions (no pipeline, no
+adapter, just a regular Go function you call directly) can use the exact same
+`obs` value with no new API. This section covers that path — the direct
+counterpart to "Domain events vs infrastructure metrics" above, which assumes
+a stream pipeline.
+
+### Resolve the context observer directly
+
+Any function with a `ctx context.Context` parameter can call
+`stats.ObserverFromContext(ctx)` itself — this is not an adapter-only
+mechanism, it's the same call every adapter makes internally:
+
+```go
+func placeOrder(ctx context.Context, order Order) error {
+    obs := stats.ObserverFromContext(ctx) // same lookup adapters use
+    // ... business logic ...
+}
+```
+
+### Wrap the operation in a manual span
+
+Use the `TraceObserver` type-assertion guard — the same idiom adapters use —
+directly in your business function:
+
+```go
+func placeOrder(ctx context.Context, order Order) (err error) {
+    obs := stats.ObserverFromContext(ctx)
+    if to, ok := obs.(stats.TraceObserver); ok {
+        ctx = to.StartSpan(ctx, "business.op", "placeOrder")
+        defer func() { to.EndSpan(ctx, err) }()
+    }
+    // ... business logic; assign to the named `err` return so EndSpan sees it ...
+    return nil
+}
+```
+
+### Defining your own domain observer interface
+
+None of the nine built-in interfaces (see [Metrics Observer](../features/observer.md#the-nine-observer-interfaces))
+are meant to carry business-specific events (`order placed`, `alert
+triggered`, `OEE below threshold`) — those are yours to define, following the
+same shape as the built-in optional extensions (`SQLObserver`,
+`CacheObserver`): a small interface, `RecordXxx` method naming, implemented
+optionally, type-asserted at the call site:
+
+```go
+// OrderObserver is a domain-specific extension — not part of the stats
+// package. Define it next to the business logic that uses it.
+type OrderObserver interface {
+    RecordOrderPlaced(orderID string, amount float64, d time.Duration)
+}
+
+func placeOrder(ctx context.Context, order Order) error {
+    start := time.Now()
+    obs := stats.ObserverFromContext(ctx)
+    // ... business logic ...
+    if oo, ok := obs.(OrderObserver); ok {
+        oo.RecordOrderPlaced(order.ID, order.Amount, time.Since(start))
+    }
+    return nil
+}
+```
+
+Implement `OrderObserver` on your own metrics/logging type exactly like any
+other observer:
+
+```go
+type OrderMetrics struct{ stats.NoopObserver; placed int }
+
+func (m *OrderMetrics) RecordOrderPlaced(id string, amount float64, d time.Duration) {
+    m.placed++
+    // e.g. prometheus.CounterVec.With(...).Inc(); histogram.Observe(amount)
+}
+```
+
+### `stats.NewFanout` does NOT forward custom interfaces
+
+**This is the one gotcha that catches everyone who tries this pattern for
+the first time.** `stats.NewFanout(...)` returns a value that implements
+exactly the nine built-in interfaces — the fan-out logic for each one is
+hardcoded inside the `stats` package. A custom interface like `OrderObserver`
+is invisible to it:
+
+```go
+orderMetrics := &OrderMetrics{}
+obs := stats.NewFanout(orderMetrics, stats.NewLoggingObserver(slog.Default()))
+
+// This ALWAYS fails — NewFanout's return value never implements your
+// custom interface, even though orderMetrics (one of the fanned-out
+// observers) does:
+if oo, ok := obs.(OrderObserver); ok { // ok is always false here
+    oo.RecordOrderPlaced(...)
+}
+```
+
+Two safe patterns:
+
+**(a) Type-assert against the concrete observer directly** — keep a
+reference to your domain-observer instance alongside the fanout, and use it
+directly for custom events while still passing the fanout everywhere else:
+
+```go
+orderMetrics := &OrderMetrics{} // keep this reference
+obs := stats.NewFanout(orderMetrics, stats.NewLoggingObserver(slog.Default()))
+
+ctx := stats.WithObserver(context.Background(), obs) // fanout for standard events
+
+// For custom events, use orderMetrics directly — not obs:
+orderMetrics.RecordOrderPlaced(order.ID, order.Amount, d)
+```
+
+**(b) Roll your own tiny multi-observer for the custom interface** — the
+same one-line pattern `NewFanout` uses internally, scoped to your interface:
+
+```go
+type orderObservers []OrderObserver
+
+func (os orderObservers) RecordOrderPlaced(id string, amount float64, d time.Duration) {
+    for _, o := range os {
+        o.RecordOrderPlaced(id, amount, d)
+    }
+}
+
+var orderObs OrderObserver = orderObservers{orderMetrics, orderLogger}
+```
+
+Choose (a) when only one component needs the custom interface; choose (b)
+when several domain observers need to fan out together, mirroring how
+`stats.NewFanout` itself is built.
+
+See `examples/stats-observer` for a runnable version of this whole section
+(`placeOrder`/`OrderObserver`).
+
+---
+
 ## See also
 
-- [`examples/stats-observer`](https://github.com/DaniDeer/go-codex/tree/main/examples/stats-observer) — codec-only `ValidationObserver`
+- [`examples/stats-observer`](https://github.com/DaniDeer/go-codex/tree/main/examples/stats-observer) — codec-only `ValidationObserver`; business logic without pipelines (ctx-resolved observer, manual `TraceObserver` span, custom `OrderObserver` interface, `NewFanout` limitation)
 - [`examples/adapters-nethttp`](https://github.com/DaniDeer/go-codex/tree/main/examples/adapters-nethttp) — HTTP metrics via `NewFanout`
 - [`examples/adapters-mqtt`](https://github.com/DaniDeer/go-codex/tree/main/examples/adapters-mqtt) — MQTT metrics via `NewFanout`
 - [`examples/flat-key-patch`](https://github.com/DaniDeer/go-codex/tree/main/examples/flat-key-patch) — `FileObserver` with `NewFanout`

@@ -8,7 +8,7 @@ The observer pattern is go-codex's unified observability layer across **all laye
 
 The user decides which signals to use (any, all, or none) and implements the corresponding interfaces. Implementations are fully swappable between development stubs, Prometheus counters, OTel tracing, or any other backend.
 
-## The seven observer interfaces
+## The nine observer interfaces
 
 | Interface | Signal | Methods | Layer |
 |---|---|---|---|
@@ -18,7 +18,9 @@ The user decides which signals to use (any, all, or none) and implements the cor
 | `stats.FileObserver` | metrics + logging | `RecordFileRead` · `RecordFileWrite` | **Formats** — file I/O |
 | `stats.SecurityObserver` | metrics + logging | `RecordSecurityRejection(location, scheme)` | **Adapters** — security rejection events |
 | `stats.SQLObserver` | metrics + logging | `RecordValidation(table, op, dur, err)` · `RecordMigration(op, name, version, dur, err)` | **SQL Adapter** — row validation + migrations |
-| `stats.TraceObserver` | distributed tracing | `StartSpan(ctx, operation, name) ctx` · `EndSpan(ctx, err)` | **Adapters, forge, file, SQL** — spans |
+| `stats.StreamObserver` | metrics + logging | `RecordStreamItem(function, success, dur)` | **Stream** — per-item throughput via `stream.Apply` |
+| `stats.CacheObserver` | metrics + logging | `RecordCacheHit(key, dur)` · `RecordCacheMiss(key, dur)` · `RecordCacheWrite(key, op, success, dur)` | **Redis Adapter** — cache lifecycle events |
+| `stats.TraceObserver` | distributed tracing | `StartSpan(ctx, operation, name) ctx` · `EndSpan(ctx, err)` | **Adapters, forge, file, SQL, stream** — spans |
 
 Every interface is optional. Implement only what you need.
 
@@ -26,9 +28,9 @@ Every interface is optional. Implement only what you need.
 
 | Type | Implements | Purpose |
 |---|---|---|
-| `stats.NoopObserver` | all seven | Zero-cost default — every Option field defaults to this |
-| `stats.LoggingObserver` | all six **except** TraceObserver | Logs every event via slog — configure handler for dev/prod/OTel |
-| `stats.NewFanout(observers...)` | all seven | Fans out to multiple observers — compose metrics + logging + tracing |
+| `stats.NoopObserver` | all nine | Zero-cost default — every Option field defaults to this |
+| `stats.LoggingObserver` | all eight **except** TraceObserver | Logs every event via slog — configure handler for dev/prod/OTel |
+| `stats.NewFanout(observers...)` | all nine | Fans out to multiple observers — compose metrics + logging + tracing |
 
 ## Composition
 
@@ -90,6 +92,9 @@ To propagate into forge and file:
 | **Adapter (HTTP/MQTT/MCP)** | `Options{Observer: obs}` | `RecordRequest`/`RecordSubscribe`/`RecordPublish`, validation errors, security rejections, trace spans |
 | **Format (file I/O)** | `FileOptions{Observer: obs}` | `RecordFileRead`/`RecordFileWrite`, validation errors, trace spans |
 | **Forge** | `Registry.WithObserver(obs)` | `RecordApply` per function call, trace spans |
+| **Stream** | `ApplyOptions{Observer: obs}` (or ctx default) | `RecordStreamItem` per item via `stream.Apply`, trace spans |
+| **SQL Adapter** | `ValidateOptions{Observer: obs}` (or ctx default) | `RecordValidation`, `RecordMigration`, trace spans |
+| **Redis Adapter (cache)** | ctx default (`stats.ObserverFromContext`) | `RecordCacheHit`/`RecordCacheMiss`/`RecordCacheWrite` |
 
 ## Default observer via context
 
