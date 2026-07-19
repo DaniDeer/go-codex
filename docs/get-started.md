@@ -6,7 +6,7 @@
 go get github.com/DaniDeer/go-codex
 ```
 
-**Go version required:** 1.21+
+**Go version required:** 1.26+
 
 ## Hello World codec
 
@@ -56,9 +56,25 @@ func main() {
 }
 ```
 
+## The three layers
+
+The codec above is **Layer 1** — it works standalone, with no other go-codex
+package involved. go-codex grows with your system from there; use only what
+you need:
+
+| Layer | Packages | What you get |
+|-------|---------|-------------|
+| **1 — Codec** | `codex`, `format`, `validate`, `schema` | Encode, decode, validate, schema — what you just saw above |
+| **2 — API contract** | `api/rest`, `api/events`, `api/reqreply`, `api/mcp` | Typed routes/channels/tools + generated OpenAPI/AsyncAPI/MCP spec |
+| **3 — Application foundation** | `ports`, `app`, `stream`, `forge`, `adapters/*` | Protocol-agnostic IO boundaries, supervised lifecycle, governed pipelines, transport bindings |
+
+See the [README's "three layers" section](../README.md#the-three-layers) for
+a side-by-side code sample of all three, or jump straight into a guide below.
+
 ## Next steps
 
 - [Concepts: Codec](concepts/codec.md) — understand `Codec[T]` deeply
 - [Guide: HTTP Server](guides/http-server.md) — build a typed REST API
 - [Guide: HTTP Client](guides/http-client.md) — call APIs with full codec validation
 - [Guide: MQTT Events](guides/mqtt.md) — publish and subscribe typed events
+- [Guide: Ports](guides/ports.md) — declare protocol-agnostic IO boundaries with zero transport imports in domain code

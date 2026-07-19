@@ -18,7 +18,7 @@ Write the codec once — derive JSON, YAML, OpenAPI, AsyncAPI, and more from the
 |---|---|
 | **Full docs** | [danideer.github.io/go-codex](https://danideer.github.io/go-codex/) |
 | **API reference** | [pkg.go.dev/github.com/DaniDeer/go-codex](https://pkg.go.dev/github.com/DaniDeer/go-codex) |
-| **Examples** | [examples/](./examples/) — 35+ runnable demos |
+| **Examples** | [examples/](./examples/) — 50+ runnable demos |
 | **Get started** | [docs/get-started.md](./docs/get-started.md) |
 
 > **⭐ Flagship example: [`examples/sensor-service`](./examples/sensor-service/)** —
@@ -34,13 +34,14 @@ Write the codec once — derive JSON, YAML, OpenAPI, AsyncAPI, and more from the
 
 ## The three layers
 
-go-codex grows with your system. Use only what you need:
+go-codex grows with your system. Pick the layer you need — each one builds on
+the last, but none requires the next:
 
-| Layer | Package | What you declare | What you get |
+| Layer | Packages | What you declare | What you get |
 |-------|---------|-----------------|-------------|
-| **1 — Codec** | `codex/` | Shape + constraints | Encode, decode, validate, schema — once, for free |
-| **2 — API contract** | `api/rest`, `api/events`, `api/mcp` | Routes and channels | Typed helpers + OpenAPI / AsyncAPI / MCP spec |
-| **3 — Pipeline** | `forge/` | Computation contract | Governed, signed, self-documenting KPI functions |
+| **1 — Codec** | `codex/`, `format/`, `validate/`, `schema/` | Shape + constraints | Encode, decode, validate, schema — once, for free |
+| **2 — API contract** | `api/rest`, `api/events`, `api/reqreply`, `api/mcp`, `render/*` | Routes, channels, tools | Typed helpers + OpenAPI / AsyncAPI / MCP spec |
+| **3 — Application foundation** | `ports/`, `app/`, `stream/`, `forge/`, `adapters/*` | IO boundaries + computation contracts | Protocol-agnostic ports, supervised lifecycle, governed/signed pipelines — bind concrete transports only in `main()` |
 
 All three follow the same pattern: **declare → register → handle**.
 
@@ -63,6 +64,16 @@ req, _    := handle.Decode(body)           // validates automatically
 
 // Layer 2 (client) — reuse the same route spec on the client side
 user, _ := nethttp.Call(ctx, http.DefaultClient, serverURL, handle, req, nil, opts)
+
+// Layer 3 — declare an IO boundary with zero transport imports in domain code;
+// bind the concrete adapter only in main()
+var SensorReadings = codex.Must(ports.NewSourcePort[SensorReading]("sensors", readingCodec,
+    ports.PortOptions{Patterns: []ports.Pattern{
+        ports.EventPattern{Topic: "sensors/{sensorID}/data"},
+    }}))
+// main.go:
+handle, _ := ports.EventHandle[SensorReading](SensorReadings)
+SensorReadings.Bind(ctx, mqtt5.SubscribeAdapter(client, handle, opts))
 
 // Layer 3 — governed computation with automatic input/output validation
 fn := forge.NewFunction[OEEInput, OEEResult]("oee", "1.0.0",
@@ -138,6 +149,8 @@ func main() {
 - **MCP server** — Tools, Resources, and Prompts follow the same declare → register → handle pattern; codec drives the `inputSchema` automatically
 - **SSE + templ SSR** — codec-validated event streams; same route serves HTML and JSON via content negotiation
 - **Forge pipelines** — named, versioned, governed KPI computation with SHA-256 contract hash and pipeline YAML spec
+- **Ports — protocol-agnostic IO boundaries** — declare a `SourcePort`/`SinkPort`/`IOPort`/`LatestPort`/`ToolPort` with zero transport imports in domain code; bind a concrete adapter (MQTT, HTTP, SQL, Redis, file, ZeroMQ, WebSocket, …) only in `main()`
+- **App lifecycle** — one root context with the observer pre-injected, supervised goroutines with fail-fast semantics, ordered (LIFO) shutdown hooks — not a framework, just the choreography `main()` would otherwise hand-roll
 
 ---
 
@@ -150,10 +163,14 @@ go get github.com/DaniDeer/go-codex@latest
 | What | Import path |
 |------|------------|
 | Core codecs | `github.com/DaniDeer/go-codex/codex` |
-| Format bridges (JSON, YAML, TOML, Gob) | `github.com/DaniDeer/go-codex/format` |
+| Format bridges (JSON, YAML, TOML, Gob, Binary) | `github.com/DaniDeer/go-codex/format` |
+| Env-var config loading (`FromEnv`/`FromEnvVar`) | `github.com/DaniDeer/go-codex/config` |
 | Built-in constraints | `github.com/DaniDeer/go-codex/validate` |
+| Protocol-agnostic IO ports (Source/Sink/IO/Latest/Tool) | `github.com/DaniDeer/go-codex/ports` |
+| Application lifecycle (context, supervised goroutines, shutdown) | `github.com/DaniDeer/go-codex/app` |
 | REST API builder | `github.com/DaniDeer/go-codex/api/rest` |
 | Event channel builder | `github.com/DaniDeer/go-codex/api/events` |
+| Request/reply builder (async request-reply over pub/sub transports) | `github.com/DaniDeer/go-codex/api/reqreply` |
 | MCP server builder | `github.com/DaniDeer/go-codex/api/mcp` |
 | net/http adapter (server + client) | `github.com/DaniDeer/go-codex/adapters/nethttp` |
 | chi adapter | `github.com/DaniDeer/go-codex/adapters/chi` |
@@ -161,10 +178,15 @@ go get github.com/DaniDeer/go-codex@latest
 | MQTT 5.0 adapter (paho.golang) | `github.com/DaniDeer/go-codex/adapters/mqtt5` |
 | ZeroMQ adapter (PUB/SUB, REQ/REP, DEALER/ROUTER) | `github.com/DaniDeer/go-codex/adapters/zeromq` |
 | SQL adapter (goose migrations + codec validation) | `github.com/DaniDeer/go-codex/adapters/sql` |
+| Redis adapter (typed cache) | `github.com/DaniDeer/go-codex/adapters/redis` |
+| WebSocket adapter (server + client, duplex sessions) | `github.com/DaniDeer/go-codex/adapters/websocket` |
 | mark3labs/mcp-go adapter | `github.com/DaniDeer/go-codex/adapters/mcpgo` |
 | templ SSR format plug-in | `github.com/DaniDeer/go-codex/adapters/templ` |
 | OpenAPI 3.1 renderer | `github.com/DaniDeer/go-codex/render/openapi` |
-| AsyncAPI 3.0 renderer | `github.com/DaniDeer/go-codex/render/asyncapi/v3` |
+| AsyncAPI 3.0 renderer (2.6 also supported) | `github.com/DaniDeer/go-codex/render/asyncapi/v3` |
+| JSON Schema renderer | `github.com/DaniDeer/go-codex/render/jsonschema` |
+| Forge pipeline YAML renderer | `github.com/DaniDeer/go-codex/render/pipeline` |
+| Stream topology YAML renderer | `github.com/DaniDeer/go-codex/render/stream` |
 | Forge pipelines (governed, batch) | `github.com/DaniDeer/go-codex/forge` |
 | Reactive stream pipelines | `github.com/DaniDeer/go-codex/stream` |
 | HTTP route descriptors | `github.com/DaniDeer/go-codex/route` |
@@ -196,15 +218,18 @@ Key top-level directories:
 
 ```text
 codex/       — ⭐ PUBLIC API: Codec[T], primitives, struct, union, slice, constraints
-format/      — format bridges: JSON, YAML, TOML, Gob, Binary, File I/O, embedded formats
-api/         — transport-agnostic API builders (rest/, events/, mcp/, reqreply/)
-adapters/    — transport adapters (nethttp, chi, mqtt, mqtt5, zeromq, sql, mcpgo, templ)
+format/      — format bridges: JSON, YAML, TOML, Gob, Binary, embedded formats
+config/      — standalone env-var config loading (FromEnv, FromEnvVar) — no Pattern, no adapter
+ports/       — protocol-agnostic IO ports: SourcePort, SinkPort, IOPort, LatestPort, ToolPort, DuplexPort
+app/         — application lifecycle: context + observer, supervised goroutines, shutdown hooks
+api/         — transport-agnostic API builders (rest/, events/, reqreply/, mcp/)
+adapters/    — transport adapters (nethttp, chi, mqtt, mqtt5, zeromq, sql, redis, websocket, mcpgo, templ, file)
 forge/       — governed KPI computation pipelines (synchronous, batch, signed, spec-generating)
 stream/      — reactive stream pipelines: From, Apply, Filter, Tap, Buffer, Merge, Drain over chan T
-render/      — spec renderers (openapi/, asyncapi/v2, asyncapi/v3, jsonschema/, pipeline/)
+render/      — spec renderers (openapi/, asyncapi/v2, asyncapi/v3, jsonschema/, pipeline/, stream/)
 validate/    — reusable constraints (Email, UUID, URL, ranges, MQTT topics, …)
-stats/       — observer interfaces (ValidationObserver → SQLObserver, LoggingObserver, NewFanout)
+stats/       — observer interfaces (ValidationObserver → SQLObserver, CacheObserver, LoggingObserver, NewFanout)
 schema/      — schema model (pure data, zero dependencies)
-route/       — HTTP route descriptors
-examples/    — 40+ runnable demos (not importable by library packages)
+route/       — HTTP route descriptors + shared security-scheme vocabulary (OpenAPI + AsyncAPI)
+examples/    — 50+ runnable demos (not importable by library packages)
 ```
