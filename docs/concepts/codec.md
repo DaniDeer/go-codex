@@ -38,6 +38,7 @@ go-codex collapses all three into a single `Codec[T]` that you define once and p
 | `codex.Time()` | `time.Time` | RFC 3339 string | `{type:string,format:date-time}` |
 | `codex.Date()` | `time.Time` | `YYYY-MM-DD` | `{type:string,format:date}` |
 | `codex.Duration()` | `time.Duration` | duration string | `{type:string,format:duration}` |
+| `codex.HexColor()` | `codex.Color` | hex string (`#RGB`/`#RRGGBB`/`#RGBA`/`#RRGGBBAA`) | `{type:string,pattern:...}` |
 | `codex.Nullable(inner)` | `*T` | value or `null` | inner schema + `nullable:true` |
 | `codex.SliceOf(elem)` | `[]T` | array | `{type:array,items:{...}}` |
 | `codex.StringMap(value)` | `map[string]V` | object | `{type:object,additionalProperties:{...}}` |
