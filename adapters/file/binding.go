@@ -202,6 +202,12 @@ type ReadEachAdapterOptions struct {
 // When the bound [ports.IOPort] declares Params, each varsFor result is validated
 // with [ports.ValidateParams] before the file read; a validation failure is
 // delivered as [ReadError] wrapping [codex.ValidationErrors].
+//
+// The file is read via [ports.File.ReadMerged] — when f declares
+// merge-capable path params (via [ports.NewFilePathParam]), the vars
+// derived from varsFor(In) are ADDITIONALLY merged into the decoded T
+// (e.g. a path-derived sensorID is populated onto T automatically).
+// Identical to a bare [ports.File.Read] when f declares no merge fields.
 func ReadEachAdapter[In, T, Resp any](
 	f ports.File[T],
 	varsFor func(In) map[string]string,
@@ -261,7 +267,7 @@ func (a *fileReadEachAdapter[In, T, Resp]) Transform(ctx context.Context, src gs
 					}
 					continue
 				}
-				t, err := a.f.Read(vars, fileOpts)
+				t, err := a.f.ReadMerged(vars, fileOpts)
 				if err != nil {
 					re := ReadError{Err: err}
 					select {
@@ -311,6 +317,10 @@ func (a *fileReadEachAdapter[In, T, Resp]) Transform(ctx context.Context, src gs
 // When the bound [ports.IOPort] declares Params, each varsFor result is
 // validated with [ports.ValidateParams] before the file read; a validation
 // failure is delivered as [ReadError] wrapping [codex.ValidationErrors].
+//
+// Reads via [ports.File.ReadMerged] (inherited from [ReadEachAdapter]) —
+// merge-capable path params declared via [ports.NewFilePathParam] are
+// merged into the returned Resp automatically.
 func ReadAdapter[In, Resp any](
 	f ports.File[Resp],
 	varsFor func(In) map[string]string,
@@ -422,6 +432,14 @@ type DrainWriteFileAdapterOptions struct {
 //	    func(oee OEE) map[string]string { return map[string]string{"machineID": oee.MachineID} },
 //	    file.DrainWriteFileAdapterOptions{}))
 //
+// varsFor may be nil when f declares merge-capable path params (via
+// [ports.NewFilePathParam]): vars are then derived PER-ITEM from each
+// item's own merge fields automatically via [ports.WriteHandle] — the
+// same "one struct, one call" convenience [mqtt5.PublishHandle] provides.
+// Pass a non-nil varsFor to keep building the map yourself (e.g. no merge
+// fields declared, or vars come from a field the file's own type doesn't
+// have).
+//
 // When the bound [ports.SinkPort] declares Params, each varsFor result is
 // validated with [ports.ValidateParams] before the file write; a validation
 // failure is reported to Options.OnError as [WriteError] wrapping
@@ -461,6 +479,15 @@ func (a *fileDrainWriteFileAdapter[T]) Activate(ctx context.Context, src gstream
 			var vars map[string]string
 			if a.varsFor != nil {
 				vars = a.varsFor(v)
+			} else if mergeFields := a.f.MergeFields(); len(mergeFields) > 0 {
+				derived, err := codex.EncodeVars(v, mergeFields...)
+				if err != nil {
+					if onErr != nil {
+						onErr(WriteError{Err: err})
+					}
+					return nil
+				}
+				vars = derived
 			}
 			if err := ports.ValidateParams(params, vars); err != nil {
 				if onErr != nil {

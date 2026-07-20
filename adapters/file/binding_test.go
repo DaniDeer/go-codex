@@ -645,3 +645,114 @@ func TestReadAdapter_ParamValidationError(t *testing.T) {
 		t.Errorf("want ReadError to wrap codex.ValidationErrors, got %v", re.Err)
 	}
 }
+
+// ── G1: file merge-field convenience (ReadMerged / WriteHandle wiring) ───────
+
+// sensorConfig is a merge-capable type: SensorID comes from the path
+// (declared via ports.NewFilePathParam), Factor comes from the JSON body.
+type sensorConfig struct {
+	SensorID string
+	Factor   float64
+}
+
+var sensorConfigCodec = codex.Struct[sensorConfig](
+	codex.RequiredField("factor", codex.Float64(),
+		func(c sensorConfig) float64 { return c.Factor },
+		func(c *sensorConfig, v float64) { c.Factor = v }),
+)
+
+func newSensorConfigFile(dir string) ports.File[sensorConfig] {
+	return ports.NewFile(filepath.Join(dir, "{sensorID}.json"), format.JSON(sensorConfigCodec),
+		ports.NewFilePathParam("sensorID", codex.String(),
+			func(c sensorConfig) string { return c.SensorID },
+			func(c *sensorConfig, v string) { c.SensorID = v }),
+	)
+}
+
+// G1: ReadEachAdapter merges path vars into the decoded value via
+// ports.File.ReadMerged — the sensorID extracted for the file lookup is
+// ALSO populated onto the returned struct automatically.
+func TestReadEachAdapter_MergesPathVarsIntoDecodedValue(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	configFile := newSensorConfigFile(dir)
+	// Body JSON deliberately carries ONLY "factor" — SensorID must come
+	// exclusively from the path-var merge.
+	if err := os.WriteFile(filepath.Join(dir, "sensor-1.json"), []byte(`{"factor":2.0}`), 0600); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+
+	type reading struct{ ID string }
+	inCh := make(chan reading, 1)
+	inCh <- reading{ID: "sensor-1"}
+	close(inCh)
+
+	adapter := fileadapter.ReadEachAdapter(configFile,
+		func(r reading) map[string]string { return map[string]string{"sensorID": r.ID} },
+		func(_ reading, cfg sensorConfig) sensorConfig { return cfg },
+		fileadapter.ReadEachAdapterOptions{})
+
+	vals, errs := gstream.Collect(ctx, adapter.Transform(ctx, gstream.From(ctx, inCh)))
+	if len(errs) != 0 {
+		t.Fatalf("want 0 errors, got %v", errs)
+	}
+	if len(vals) != 1 || vals[0].SensorID != "sensor-1" || vals[0].Factor != 2.0 {
+		t.Errorf("want merged SensorID+Factor, got %v", vals)
+	}
+}
+
+// G1: DrainWriteFileAdapter derives path vars PER-ITEM from each item's own
+// merge fields when varsFor is nil — two items with different SensorIDs
+// must write to two different concrete paths.
+func TestDrainWriteFileAdapter_DerivesVarsPerItem_WhenVarsForNil(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	configFile := newSensorConfigFile(dir)
+
+	ch := make(chan sensorConfig, 2)
+	ch <- sensorConfig{SensorID: "sensor-a", Factor: 1.5}
+	ch <- sensorConfig{SensorID: "sensor-b", Factor: 2.5}
+	close(ch)
+
+	p, err := ports.NewSinkPort[sensorConfig]("write-file", sensorConfigCodec, ports.PortOptions{Buffer: 4})
+	if err != nil {
+		t.Fatalf("construct port: %v", err)
+	}
+	// varsFor left nil -> per-item derivation via ports.WriteHandle.
+	p.Bind(ctx, fileadapter.DrainWriteFileAdapter(configFile, nil, fileadapter.DrainWriteFileAdapterOptions{}))
+	p.Feed(ctx, gstream.From(ctx, ch))
+
+	for _, name := range []string{"sensor-a.json", "sensor-b.json"} {
+		if _, err := os.Stat(filepath.Join(dir, name)); err != nil {
+			t.Errorf("want file %q to exist, got: %v", name, err)
+		}
+	}
+}
+
+// Explicit (non-nil) varsFor still wins — regression guard matching
+// today's behavior when set.
+func TestDrainWriteFileAdapter_ExplicitVarsForStillWins(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	configFile := newSensorConfigFile(dir)
+
+	ch := make(chan sensorConfig, 1)
+	ch <- sensorConfig{SensorID: "ignored", Factor: 1.5}
+	close(ch)
+
+	p, err := ports.NewSinkPort[sensorConfig]("write-file-static", sensorConfigCodec, ports.PortOptions{Buffer: 4})
+	if err != nil {
+		t.Fatalf("construct port: %v", err)
+	}
+	p.Bind(ctx, fileadapter.DrainWriteFileAdapter(configFile,
+		func(sensorConfig) map[string]string { return map[string]string{"sensorID": "static-id"} },
+		fileadapter.DrainWriteFileAdapterOptions{}))
+	p.Feed(ctx, gstream.From(ctx, ch))
+
+	if _, err := os.Stat(filepath.Join(dir, "static-id.json")); err != nil {
+		t.Errorf("want static path used, got: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "ignored.json")); err == nil {
+		t.Error("want derived path NOT used when varsFor is explicit")
+	}
+}

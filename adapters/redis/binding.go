@@ -5,6 +5,7 @@ import (
 	"errors"
 	"time"
 
+	"github.com/DaniDeer/go-codex/codex"
 	"github.com/DaniDeer/go-codex/ports"
 	"github.com/DaniDeer/go-codex/stats"
 	gstream "github.com/DaniDeer/go-codex/stream"
@@ -39,6 +40,12 @@ type GetAdapterOptions struct {
 // Hit → decoded Resp downstream + RecordCacheHit. Miss → skip (or
 // [CacheError] wrapping [ErrCacheMiss] when MissIsError) + RecordCacheMiss.
 // Key-build, transport, and decode failures → [CacheError] on Stream.Errors.
+//
+// Looks up via [GetMerged] — when cache declares merge-capable key params
+// (via [ports.NewCacheKeyParam]), the vars derived from keyFn(Req) are
+// ADDITIONALLY merged into the decoded Resp (e.g. a key-derived id is
+// populated onto Resp automatically). Identical to a bare [Get] when cache
+// declares no merge fields.
 func GetAdapter[Req, Resp any](
 	client Commands,
 	cache ports.Cache[Resp],
@@ -90,7 +97,7 @@ func (a *redisGetAdapter[Req, Resp]) Transform(ctx context.Context, src gstream.
 					valCh = nil
 					continue
 				}
-				resp, hit, err := Get(ctx, a.client, a.cache, a.keyFn(v), getOpts)
+				resp, hit, err := GetMerged(ctx, a.client, a.cache, a.keyFn(v), getOpts)
 				if err != nil {
 					if !emitErr(err) {
 						return
@@ -186,6 +193,37 @@ func Get[T any](ctx context.Context, client Commands, cache ports.Cache[T], vars
 	return v, true, nil
 }
 
+// GetMerged is the decode-merge convenience: it looks up exactly like [Get],
+// then ADDITIONALLY merges vars into the SAME returned value via
+// [codex.DecodeVars], using the merge-capable fields registered via
+// [ports.NewCacheKeyParam] — mirrors [ports.File.ReadMerged]/
+// [events.ChannelHandle.DecodeMerged] for the cache boundary.
+//
+// Additive — [Get] is unchanged; GetMerged behaves identically to a bare
+// Get when the cache declares no merge-capable key params
+// ([ports.Cache.MergeFields] is empty) or on a miss (nothing to merge into).
+//
+// Example — key template "user:{id}" declared with [ports.NewCacheKeyParam],
+// so the extracted id is merged into the returned struct's own field:
+//
+//	user, ok, err := redis.GetMerged(ctx, client, userCache, map[string]string{"id": id}, redis.GetOptions{})
+//	// ok && user.ID == id, no manual assignment needed.
+func GetMerged[T any](ctx context.Context, client Commands, cache ports.Cache[T], vars map[string]string, opts GetOptions) (T, bool, error) {
+	v, hit, err := Get(ctx, client, cache, vars, opts)
+	if err != nil || !hit {
+		return v, hit, err
+	}
+	mergeFields := cache.MergeFields()
+	if len(mergeFields) == 0 {
+		return v, hit, nil
+	}
+	if err := codex.DecodeVars(&v, vars, mergeFields...); err != nil {
+		var zero T
+		return zero, false, err
+	}
+	return v, true, nil
+}
+
 // ── SetAdapter ────────────────────────────────────────────────────────────────
 
 // SetAdapterOptions configures [SetAdapter] and [DrainSetAdapter].
@@ -210,6 +248,13 @@ type SetAdapterOptions struct {
 //	port.Bind(ctx, redis.SetAdapter(client, cacheHandle,
 //	    func(u User) map[string]string { return map[string]string{"id": u.ID} },
 //	    redis.SetAdapterOptions{}))
+//
+// keyFn may be nil when cache declares merge-capable key params (via
+// [ports.NewCacheKeyParam]): vars are then derived PER-ITEM from each
+// item's own merge fields automatically via [SetHandle] — the same "one
+// struct, one call" convenience [mqtt5.PublishHandle] provides. Pass a
+// non-nil keyFn to keep building the map yourself (e.g. no merge fields
+// declared, or vars come from a field the cached type doesn't have).
 func SetAdapter[T any](
 	client Commands,
 	cache ports.Cache[T],
@@ -251,7 +296,14 @@ func (a *redisSetAdapter[T]) Transform(ctx context.Context, src gstream.Stream[T
 					valCh = nil
 					continue
 				}
-				if err := writeThrough(ctx, a.client, a.cache, a.keyFn(v), a.opts.TTL, obs, v); err != nil {
+				vars, err := keyVarsFor(a.keyFn, a.cache, v)
+				if err != nil {
+					select {
+					case errCh <- CacheError{Key: a.cache.Key, Op: "set", Err: err}:
+					case <-ctx.Done():
+						return
+					}
+				} else if err := writeThrough(ctx, a.client, a.cache, vars, a.opts.TTL, obs, v); err != nil {
 					select {
 					case errCh <- err:
 					case <-ctx.Done():
@@ -278,6 +330,25 @@ func (a *redisSetAdapter[T]) Transform(ctx context.Context, src gstream.Stream[T
 		}
 	}()
 	return gstream.Stream[T]{Values: outCh, Errors: errCh}
+}
+
+// keyVarsFor resolves the vars map for a [SetAdapter]/[DrainSetAdapter] item:
+// keyFn(v) when non-nil (today's behavior, unchanged); otherwise derives
+// vars automatically via [codex.EncodeVars] using cache's merge-capable key
+// params (the [SetHandle] convenience, inlined here to avoid a redundant
+// BuildKey/Marshal round-trip through [Set]).
+func keyVarsFor[T any](keyFn func(T) map[string]string, cache ports.Cache[T], v T) (map[string]string, error) {
+	if keyFn != nil {
+		return keyFn(v), nil
+	}
+	vars, err := codex.EncodeVars(v, cache.MergeFields()...)
+	if err != nil {
+		return nil, err
+	}
+	if len(vars) == 0 {
+		return nil, nil
+	}
+	return vars, nil
 }
 
 // writeThrough builds the key, encodes v, and writes it with the effective
@@ -352,6 +423,29 @@ func Set[T any](ctx context.Context, client Commands, cache ports.Cache[T], vars
 	return writeThrough(ctx, client, cache, vars, opts.TTL, obs, v)
 }
 
+// SetHandle is the single-call convenience wrapper around [Set]: it derives
+// the key vars from v automatically via [codex.EncodeVars](v,
+// [ports.Cache.MergeFields]()...) — one struct in, no manual vars map —
+// mirroring [mqtt5.PublishHandle]/[ports.WriteHandle]'s convenience for the
+// cache boundary.
+//
+// [Set] remains available as the lower-level escape hatch for callers that
+// build the vars map themselves (e.g. no merge-capable key params
+// declared, or vars come from a non-struct source).
+//
+//	err := redis.SetHandle(ctx, client, userCache, user, redis.SetOptions{})
+//	// key derived from user's own ID field — no manual vars map.
+func SetHandle[T any](ctx context.Context, client Commands, cache ports.Cache[T], v T, opts SetOptions) error {
+	vars, err := codex.EncodeVars(v, cache.MergeFields()...)
+	if err != nil {
+		return err
+	}
+	if len(vars) == 0 {
+		vars = nil
+	}
+	return Set(ctx, client, cache, vars, v, opts)
+}
+
 // ── DrainSetAdapter ───────────────────────────────────────────────────────────
 
 // DrainSetAdapter returns a [ports.SinkAdapter] that writes every item to the
@@ -362,6 +456,9 @@ func Set[T any](ctx context.Context, client Commands, cache ports.Cache[T], vars
 //	sinkPort.Bind(ctx, redis.DrainSetAdapter(client, cacheHandle,
 //	    func(u User) map[string]string { return map[string]string{"id": u.ID} },
 //	    redis.SetAdapterOptions{}))
+//
+// keyFn may be nil under the same conditions as [SetAdapter] — vars are
+// then derived PER-ITEM from each item's own merge-capable key fields.
 func DrainSetAdapter[T any](
 	client Commands,
 	cache ports.Cache[T],
@@ -388,7 +485,14 @@ func (a *redisDrainSetAdapter[T]) Activate(ctx context.Context, src gstream.Stre
 	onErr := a.opts.OnError
 	gstream.Drain(ctx, src,
 		func(ctx context.Context, v T) error {
-			if err := writeThrough(ctx, a.client, a.cache, a.keyFn(v), a.opts.TTL, obs, v); err != nil && onErr != nil {
+			vars, err := keyVarsFor(a.keyFn, a.cache, v)
+			if err != nil {
+				if onErr != nil {
+					onErr(CacheError{Key: a.cache.Key, Op: "set", Err: err})
+				}
+				return nil
+			}
+			if err := writeThrough(ctx, a.client, a.cache, vars, a.opts.TTL, obs, v); err != nil && onErr != nil {
 				onErr(err)
 			}
 			return nil

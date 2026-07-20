@@ -1,6 +1,17 @@
-# go-codex Review History (R1–R62)
+# go-codex Review History (R1–R63)
 
 Do not re-report any of these findings. They have been implemented and tested.
+
+---
+
+## Round 63 (extending "one struct, one call" to `ports.File`/`ports.Cache` — full adapter/port audit)
+
+- **G1 — `ports.File`/`adapters/file` had the declare-once constructor (`NewFilePathParam`) and `MergeFields()` accessor but ZERO single-call convenience**: added `File.ReadMerged` (decode-merge, mirrors `events.ChannelHandle.DecodeMerged`) and `ports.WriteHandle` (encode-side single-call convenience, mirrors `mqtt5.PublishHandle`). Wired `adapters/file`'s `ReadEachAdapter`/`ReadAdapter` to read via `ReadMerged` automatically (merges vars already known from `varsFor(In)` into the decoded file content); `DrainWriteFileAdapter`'s `varsFor` may now be `nil` when the file declares merge fields, deriving vars per-item automatically instead of requiring a mandatory hand-written closure.
+- **G2 — `ports.Cache`/`adapters/redis` had the same gap, with a doc comment explicitly (and incorrectly) claiming no bundling convenience was needed**: added `redis.GetMerged` (decode-merge) and `redis.SetHandle` (encode-side convenience). Wired `GetAdapter` to look up via `GetMerged` automatically; `SetAdapter`/`DrainSetAdapter`'s `keyFn` may now be `nil` when the cache declares merge fields, deriving key vars per-item automatically via a new shared `keyVarsFor` helper.
+- **G2 (bonus, found while implementing)** — a real, pre-existing bug: BOTH `CachePattern` build paths in `ports/handle.go` (`buildEventPatternHandles` for `SinkPort`/`LatestPort`, `buildDualCodecPatternHandles` for `IOPort`) reconstructed `Cache[T]`/`Cache[Resp]` field-by-field and silently dropped `NewCacheKeyParam`-registered merge fields (only `cb.params`, the plain validate-only params, were copied) — every `CachePattern`-built cache had an EMPTY `MergeFields()` regardless of `NewCacheKeyParam` usage. Fixed by delegating to `NewCache` (mirrors `FilePattern`'s existing delegation to `NewFile`, which never had this bug). New regression tests: `TestCachePattern_NewCacheKeyParam_WiredThroughIOPort`/`_WiredThroughSinkPort`.
+- **G3 (deferred, tracked not fixed)** — `adapters/websocket`'s upgrade path uses validate-only `rest.PathParam` for connection-level vars; same open "per-connection vs. per-message merge" question already deferred for SSE. No use case, not actioned.
+- **G4 — checklist §12 table had no `ports.File`/`ports.Cache` rows**: added both, reflecting the G1/G2 shipped status.
+- Full design in `docs/roadmap/file-cache-merge-field-gaps.md` (now marked SHIPPED for G1/G2/G4; G3 remains deferred).
 
 ---
 

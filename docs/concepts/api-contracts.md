@@ -83,6 +83,38 @@ had first. See
 for the remaining low-priority backlog (SSE merge support, a shared
 non-wildcard topic-template core).
 
+### Where this convenience is shipped
+
+Every boundary below has (1) a declare-once constructor that registers
+BOTH a spec Param/key/path-var AND a merge field in one call, and (2) a
+single-call convenience wrapper on the encode side, with automatic merge
+wiring on the decode side. This is the reference matrix — every NEW
+adapter/port should match this shape (see the `add-a-new-adapter` skill's
+Step 5b).
+
+| Boundary | Declare-once constructor | Single-call convenience | Reference |
+|---|---|---|---|
+| REST (`api/rest` + `adapters/nethttp`/`chi`) | `rest.NewPathParam[T]`/`NewRequiredQueryParam[T]`/etc. + `NewRequiredResponseHeaderParam[Resp]`/etc. | `nethttp.CallHandle` (client) + `Handler` auto-merge (server) | [Feature: REST API](../features/rest-api.md#one-line-client-calls-callhandle) |
+| Events pub/sub (`api/events` + `adapters/mqtt`/`mqtt5`/`zeromq`) | `events.NewTopicParam[T]` | `mqtt5.PublishHandle`/`zeromq.PublishHandle`/`mqtt.PublishHandle` (publish) + `Subscribe`/`SubscribeHandler` auto-merge (subscribe) | [Feature: Event Channels & MQTT](../features/events.md#topic-vars-with-automatic-merge-newtopicparam) |
+| Req/reply (`api/reqreply` + `adapters/mqtt5`/`zeromq`) | `reqreply.NewTopicParam[T]` (Req-side only) | `mqtt5.CallHandle`/`zeromq.CallHandle` (client) + `mqtt5.Serve` auto-merge (server) | [MQTT 5 Guide — Request/Reply](../guides/mqtt5.md) |
+| `ports.Pattern` binding layer (`nethttp`/`mqtt5`/`zeromq`/`mqtt`) | n/a — delegates to the underlying transport's constructors above | `DrainCallAdapter`/`PublishAdapter`/`CallAdapter` derive vars per-item when `Vars` is left `nil` | [Feature: Ports](../features/ports.md#available-adapters-by-transport) |
+| MCP Resources (`api/mcp` + `adapters/mcpgo`) | URI `{varName}` template (validate-only `ResourceParam`, not merge-capable — see below) | `ResourceHandle.ExtractURIVars` + `mcpgo.RegisterResourceWithVars`/`ResourceHandlerWithVars` (additive; `RegisterResource`/`ResourceHandlerFunc` unchanged) | [Feature: MCP Server](../features/mcp.md#automatic-uri-var-extraction-extracturivars-registerresourcewithvars) |
+| File I/O (`ports.File` + `adapters/file`) | `ports.NewFilePathParam[T]` | `ports.WriteHandle` (write) + `File.ReadMerged` auto-merge (read, wired into `ReadEachAdapter`/`ReadAdapter`; `DrainWriteFileAdapter`'s `varsFor` may be `nil`) | [Feature: Ports](../features/ports.md) |
+| Cache (`ports.Cache` + `adapters/redis`) | `ports.NewCacheKeyParam[T]` | `redis.SetHandle` (write) + `redis.GetMerged` auto-merge (read, wired into `GetAdapter`; `SetAdapter`/`DrainSetAdapter`'s `keyFn` may be `nil`) | [Feature: Redis Cache Adapter](../features/redis.md) |
+
+**Not (yet) merge-capable, by explicit design decision — not a gap**:
+MCP Resources' URI vars use validate-only `ResourceParam` (no getter/setter
+merge into the resource's output type — `T` is application-produced, not
+wire-decoded, so "merge after the handler runs" is a narrower win than
+elsewhere); MCP Prompts' args are validated (`ValidateArgs`) but handed to
+the app as a raw `map[string]string`, not a merged struct; `rest.SSERouteHandle`
+(`Event` payload) and `adapters/websocket`'s per-connection path vars raise
+the same "does repeating one connection's vars into every message actually
+help" open question — none of these has a demonstrated use case yet. See
+[Roadmap: Merge-Field Remaining Gaps](../roadmap/merge-field-remaining-gaps.md)
+and [Roadmap: File & Cache Merge-Field Gaps](../roadmap/file-cache-merge-field-gaps.md)
+for the full history and reasoning.
+
 ## REST routes (`api/rest`)
 
 ```go

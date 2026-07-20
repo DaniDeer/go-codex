@@ -256,6 +256,82 @@ func TestCachePattern_Opts_WiredThroughLatestPort(t *testing.T) {
 	}
 }
 
+// mergedCacheItem is used to verify NewCacheKeyParam (merge-capable, unlike
+// plain CacheKeyParam above) is correctly wired through CachePattern.Opts —
+// regression guard for a bug where the Pattern-build path only copied
+// cb.params, silently dropping cb.mergeFields for every Pattern-built Cache.
+type mergedCacheItem struct {
+	ID    string
+	Value int
+}
+
+var mergedCacheItemCodec = codex.Struct[mergedCacheItem](
+	codex.RequiredField("value", codex.Int(),
+		func(c mergedCacheItem) int { return c.Value },
+		func(c *mergedCacheItem, v int) { c.Value = v }),
+)
+
+// CachePattern.Opts' NewCacheKeyParam merge fields are wired through an
+// IOPort's built Cache[Resp] handle.
+func TestCachePattern_NewCacheKeyParam_WiredThroughIOPort(t *testing.T) {
+	p, err := ports.NewIOPort[int, mergedCacheItem]("cache-mergefield-io", intCodec, mergedCacheItemCodec, ports.PortOptions{
+		Patterns: []ports.Pattern{
+			ports.CachePattern{
+				Key: "item:{id}",
+				Opts: []ports.CacheOpt{
+					ports.NewCacheKeyParam("id", codex.String(),
+						func(c mergedCacheItem) string { return c.ID },
+						func(c *mergedCacheItem, v string) { c.ID = v }),
+				},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("construct port: %v", err)
+	}
+	c, ok := ports.CacheHandle[mergedCacheItem](p)
+	if !ok {
+		t.Fatal("want CacheHandle to be present")
+	}
+	if len(c.MergeFields()) != 1 {
+		t.Fatalf("want 1 merge field wired through CachePattern.Opts, got %d", len(c.MergeFields()))
+	}
+	var got mergedCacheItem
+	if err := codex.DecodeVars(&got, map[string]string{"id": "abc"}, c.MergeFields()...); err != nil {
+		t.Fatalf("DecodeVars: %v", err)
+	}
+	if got.ID != "abc" {
+		t.Errorf("want merged ID, got %q", got.ID)
+	}
+}
+
+// Same regression guard, wired through a SinkPort (the other Pattern-build
+// path with the same historical bug).
+func TestCachePattern_NewCacheKeyParam_WiredThroughSinkPort(t *testing.T) {
+	p, err := ports.NewSinkPort[mergedCacheItem]("cache-mergefield-sink", mergedCacheItemCodec, ports.PortOptions{
+		Patterns: []ports.Pattern{
+			ports.CachePattern{
+				Key: "item:{id}",
+				Opts: []ports.CacheOpt{
+					ports.NewCacheKeyParam("id", codex.String(),
+						func(c mergedCacheItem) string { return c.ID },
+						func(c *mergedCacheItem, v string) { c.ID = v }),
+				},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("construct port: %v", err)
+	}
+	c, ok := ports.CacheHandle[mergedCacheItem](p)
+	if !ok {
+		t.Fatal("want CacheHandle to be present")
+	}
+	if len(c.MergeFields()) != 1 {
+		t.Fatalf("want 1 merge field wired through CachePattern.Opts, got %d", len(c.MergeFields()))
+	}
+}
+
 // CK11: NewCache builds a standalone Cache[T] usable with a cache adapter
 // with no port/pipeline involved — same codec validation either way.
 func TestNewCache_Standalone(t *testing.T) {

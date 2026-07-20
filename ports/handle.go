@@ -398,11 +398,14 @@ func buildEventPatternHandles[T any](
 			if err != nil {
 				return nil, nil, err
 			}
-			var cb cacheBuilder
-			for _, opt := range pat.Opts {
-				opt.applyCache(&cb)
-			}
-			c := Cache[T]{Key: pat.Key, TTL: pat.TTL, Format: cFmt, params: cb.params}
+			// Delegate to NewCache (same constructor hand-built Cache[T]
+			// values use) rather than reconstructing the struct field-by-field
+			// — this is what correctly type-asserts pat.Opts' NewCacheKeyParam
+			// merge fields into []codex.FieldCodec[T]; a prior version of this
+			// build path only copied cb.params, silently dropping merge fields
+			// registered via NewCacheKeyParam for every CachePattern-built Cache.
+			c := NewCache[T](pat.Key, cFmt, pat.Opts...)
+			c.TTL = pat.TTL
 			handles[patternKindCache] = c
 			specs[patternKindCache] = pat
 		case SocketPattern:
@@ -525,11 +528,11 @@ func buildDualCodecPatternHandles[Req, Resp any](
 			if err != nil {
 				return nil, nil, err
 			}
-			var cb cacheBuilder
-			for _, opt := range pat.Opts {
-				opt.applyCache(&cb)
-			}
-			c := Cache[Resp]{Key: pat.Key, TTL: pat.TTL, Format: cFmt, params: cb.params}
+			// Delegate to NewCache (same constructor hand-built Cache[Resp]
+			// values use) rather than reconstructing the struct field-by-field
+			// — see buildEventPatternHandles's CachePattern case for why.
+			c := NewCache[Resp](pat.Key, cFmt, pat.Opts...)
+			c.TTL = pat.TTL
 			handles[patternKindCache] = c
 			specs[patternKindCache] = pat
 		case SocketPattern:

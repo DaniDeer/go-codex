@@ -142,6 +142,35 @@ func userCache() ports.Cache[user] {
 	return c
 }
 
+// userCacheMerged mirrors userCache but declares "id" as a merge-capable key
+// param via [ports.NewCacheKeyParam] — used for GetMerged/SetHandle tests.
+func userCacheMerged() ports.Cache[user] {
+	port, err := ports.NewIOPort[userQuery, user]("user-cache-merged", codex.Struct[userQuery](
+		codex.RequiredField("id", codex.String(),
+			func(q userQuery) string { return q.ID },
+			func(q *userQuery, v string) { q.ID = v },
+		),
+	), userCodec, ports.PortOptions{
+		Patterns: []ports.Pattern{
+			ports.CachePattern{Key: "user:{id}", TTL: 15 * time.Minute,
+				Opts: []ports.CacheOpt{
+					ports.NewCacheKeyParam("id", codex.String(),
+						func(u user) string { return u.ID },
+						func(u *user, v string) { u.ID = v }),
+				},
+			},
+		},
+	})
+	if err != nil {
+		panic(err)
+	}
+	c, ok := ports.CacheHandle[user](port)
+	if !ok {
+		panic("no cache handle")
+	}
+	return c
+}
+
 func queryStream(qs ...userQuery) stream.Stream[userQuery] {
 	ch := make(chan userQuery, len(qs))
 	for _, q := range qs {
@@ -724,4 +753,183 @@ func ExampleSeed() {
 	v, ok, err := adapterredis.Seed(ctx, fake, cache, adapterredis.SeedOptions{})
 	fmt.Println(ok, err == nil, v.Name)
 	// Output: true true 0.87
+}
+
+// ── G2: cache merge-field convenience (GetMerged / SetHandle wiring) ────────
+
+// G2-1: GetMerged merges key vars into the decoded value when the cache
+// declares merge-capable key params.
+func TestGetMerged_MergesKeyVarsIntoDecodedValue(t *testing.T) {
+	ctx := context.Background()
+	fake := newFake()
+	// Stored body JSON deliberately carries a DIFFERENT id — merge must
+	// OVERWRITE it with the value extracted from the key vars.
+	fake.store["user:42"] = []byte(`{"id":"stale","name":"Ada"}`)
+
+	v, ok, err := adapterredis.GetMerged(ctx, fake, userCacheMerged(), map[string]string{"id": "42"}, adapterredis.GetOptions{})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !ok {
+		t.Fatal("want hit")
+	}
+	if v.ID != "42" {
+		t.Errorf("ID: want merged from key vars, got %q", v.ID)
+	}
+	if v.Name != "Ada" {
+		t.Errorf("Name: want Ada, got %q", v.Name)
+	}
+}
+
+// G2-1 (regression guard): a cache with NO merge-capable key params behaves
+// identically to a bare Get.
+func TestGetMerged_NoMergeFields_MatchesPlainGet(t *testing.T) {
+	ctx := context.Background()
+	fake := newFake()
+	fake.store["user:42"] = []byte(`{"id":"42","name":"Ada"}`)
+
+	viaGet, _, err := adapterredis.Get(ctx, fake, userCache(), map[string]string{"id": "42"}, adapterredis.GetOptions{})
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	viaGetMerged, _, err := adapterredis.GetMerged(ctx, fake, userCache(), map[string]string{"id": "42"}, adapterredis.GetOptions{})
+	if err != nil {
+		t.Fatalf("GetMerged: %v", err)
+	}
+	if viaGet != viaGetMerged {
+		t.Errorf("GetMerged should match plain Get when no merge fields declared: %+v vs %+v", viaGet, viaGetMerged)
+	}
+}
+
+// GetMerged on a miss behaves like Get — no merge attempted, no error.
+func TestGetMerged_Miss_NoMergeAttempted(t *testing.T) {
+	ctx := context.Background()
+	fake := newFake()
+	_, ok, err := adapterredis.GetMerged(ctx, fake, userCacheMerged(), map[string]string{"id": "404"}, adapterredis.GetOptions{})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if ok {
+		t.Error("want miss, got hit")
+	}
+}
+
+// G2-2: SetHandle derives key vars from v's own merge-field-declared struct
+// fields — no manual vars map needed.
+func TestSetHandle_DerivesVarsFromValue(t *testing.T) {
+	ctx := context.Background()
+	fake := newFake()
+
+	if err := adapterredis.SetHandle(ctx, fake, userCacheMerged(), user{ID: "77", Name: "Grace"}, adapterredis.SetOptions{}); err != nil {
+		t.Fatalf("SetHandle: %v", err)
+	}
+	if _, ok := fake.store["user:77"]; !ok {
+		t.Error("want value stored under key derived from user.ID")
+	}
+}
+
+// G2-2 (regression guard): SetHandle with no merge fields declared behaves
+// identically to a bare Set with an explicit vars map... actually SetHandle
+// with no merge fields derives an EMPTY vars map, so it only matches a Set
+// call with no {var} placeholders in the key template (a var-free key).
+func TestSetHandle_NoMergeFields_VarFreeKey(t *testing.T) {
+	ctx := context.Background()
+	fake := newFake()
+	cache := ports.Cache[user]{Key: "singleton-user", Format: userCache().Format}
+
+	if err := adapterredis.SetHandle(ctx, fake, cache, user{ID: "1", Name: "Ada"}, adapterredis.SetOptions{}); err != nil {
+		t.Fatalf("SetHandle: %v", err)
+	}
+	if _, ok := fake.store["singleton-user"]; !ok {
+		t.Error("want value stored under the var-free key")
+	}
+}
+
+// G2-1 (adapter wiring): GetAdapter merges key vars into the decoded Resp
+// via GetMerged automatically.
+func TestGetAdapter_MergesKeyVarsIntoDecodedValue(t *testing.T) {
+	ctx := context.Background()
+	fake := newFake()
+	fake.store["user:42"] = []byte(`{"id":"stale","name":"Ada"}`)
+
+	adapter := adapterredis.GetAdapter[userQuery, user](fake, userCacheMerged(), keyByID, adapterredis.GetAdapterOptions{})
+	out := adapter.Transform(ctx, queryStream(userQuery{ID: "42"}))
+	vals, errs := stream.Collect(ctx, out)
+	if len(errs) != 0 {
+		t.Fatalf("want 0 errors, got %v", errs)
+	}
+	if len(vals) != 1 || vals[0].ID != "42" {
+		t.Errorf("want merged ID, got %v", vals)
+	}
+}
+
+// G2-3: SetAdapter derives key vars PER-ITEM from each item's own merge
+// fields when keyFn is nil — two items with different IDs must write to
+// two different concrete keys.
+func TestSetAdapter_DerivesVarsPerItem_WhenKeyFnNil(t *testing.T) {
+	ctx := context.Background()
+	fake := newFake()
+
+	// keyFn left nil -> per-item derivation via SetHandle.
+	adapter := adapterredis.SetAdapter[user](fake, userCacheMerged(), nil, adapterredis.SetAdapterOptions{})
+	out := adapter.Transform(ctx, userStream(
+		user{ID: "1", Name: "Ada"},
+		user{ID: "2", Name: "Grace"},
+	))
+	vals, errs := stream.Collect(ctx, out)
+	if len(errs) != 0 {
+		t.Fatalf("want 0 errors, got %v", errs)
+	}
+	if len(vals) != 2 {
+		t.Fatalf("want 2 passthrough values, got %d", len(vals))
+	}
+	if _, ok := fake.store["user:1"]; !ok {
+		t.Error("want value stored under user:1")
+	}
+	if _, ok := fake.store["user:2"]; !ok {
+		t.Error("want value stored under user:2")
+	}
+}
+
+// G2-3: DrainSetAdapter derives key vars PER-ITEM when keyFn is nil.
+func TestDrainSetAdapter_DerivesVarsPerItem_WhenKeyFnNil(t *testing.T) {
+	ctx := context.Background()
+	fake := newFake()
+
+	adapter := adapterredis.DrainSetAdapter[user](fake, userCacheMerged(), nil, adapterredis.SetAdapterOptions{})
+	p, err := ports.NewSinkPort[user]("drain-set-merged", userCodec, ports.PortOptions{Buffer: 4})
+	if err != nil {
+		t.Fatalf("construct port: %v", err)
+	}
+	p.Bind(ctx, adapter)
+	p.Feed(ctx, userStream(user{ID: "1", Name: "Ada"}, user{ID: "2", Name: "Grace"}))
+
+	if _, ok := fake.store["user:1"]; !ok {
+		t.Error("want value stored under user:1")
+	}
+	if _, ok := fake.store["user:2"]; !ok {
+		t.Error("want value stored under user:2")
+	}
+}
+
+// Explicit (non-nil) keyFn still wins — regression guard matching today's
+// behavior when set.
+func TestSetAdapter_ExplicitKeyFnStillWins(t *testing.T) {
+	ctx := context.Background()
+	fake := newFake()
+
+	adapter := adapterredis.SetAdapter[user](fake, userCacheMerged(),
+		func(user) map[string]string { return map[string]string{"id": "static-id"} },
+		adapterredis.SetAdapterOptions{})
+	out := adapter.Transform(ctx, userStream(user{ID: "ignored", Name: "Ada"}))
+	_, errs := stream.Collect(ctx, out)
+	if len(errs) != 0 {
+		t.Fatalf("want 0 errors, got %v", errs)
+	}
+	if _, ok := fake.store["user:static-id"]; !ok {
+		t.Error("want static key used")
+	}
+	if _, ok := fake.store["user:ignored"]; ok {
+		t.Error("want derived key NOT used when keyFn is explicit")
+	}
 }

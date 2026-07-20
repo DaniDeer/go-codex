@@ -1,6 +1,7 @@
 # File & Cache Merge-Field Gaps — extending "one struct, one call" to `ports.File`/`ports.Cache`
 
-> **Status:** Design complete — not yet implemented.
+> **Status:** G1, G2, G4 SHIPPED. G3 remains deferred — no concrete use
+> case has appeared, same as SSE's already-deferred equivalent question.
 > [← Back to Roadmap](index.md)
 >
 > Produced by a `review-go-codex` skill audit of every adapter and every
@@ -71,12 +72,12 @@ fixing alongside the code (see G4).
 
 ## Scope decisions
 
-| Gap | Boundary | Severity | In scope this round |
-|---|---|---|---|
-| G1 | `ports.File`/`adapters/file` never got single-call convenience (`ReadMerged`/`WriteHandle`-equivalent) despite having `NewFilePathParam`+`MergeFields()` | `ports/file.go`, `adapters/file/binding.go` | **bug** — a shipped, declare-once constructor with no convenience wrapper is an incomplete implementation of the documented pattern | Design only this round |
-| G2 | `ports.Cache`/`adapters/redis` never got single-call convenience (`GetMerged`/`SetHandle`-equivalent) despite having `NewCacheKeyParam`+`MergeFields()`; existing doc comment's rationale for skipping it doesn't hold | `ports/cache.go`, `adapters/redis/binding.go` | **bug** — same category as G1 | Design only this round |
-| G3 | `adapters/websocket`'s upgrade path uses `rest.PathParam`/`ValidatePathParams` (validate-only) for the CONNECTION's path vars — same "per-connection vs. per-message merge" open question already deferred for SSE (`merge-field-remaining-gaps.md`'s G1) | `adapters/websocket` | Low — same open question as SSE, no concrete use case | Not actioned — track alongside SSE's G1, revisit together if a use case appears for either |
-| G4 | `review-go-codex/references/checklist.md`'s section-12 boundary-symmetry table has no `ports.File`/`ports.Cache` rows — the audit process itself doesn't check these two ports | `.github/skills/review-go-codex/references/checklist.md` | Low — process/doc gap, not a code bug | Yes — trivial, add two rows once G1/G2 land (or immediately with "❌ not yet" status, updated when shipped) |
+| Gap | Boundary | Severity | In scope this round | Status |
+|---|---|---|---|---|
+| G1 | `ports.File`/`adapters/file` never got single-call convenience (`ReadMerged`/`WriteHandle`-equivalent) despite having `NewFilePathParam`+`MergeFields()` | `ports/file.go`, `adapters/file/binding.go` | **bug** — a shipped, declare-once constructor with no convenience wrapper is an incomplete implementation of the documented pattern | Yes | ✅ SHIPPED |
+| G2 | `ports.Cache`/`adapters/redis` never got single-call convenience (`GetMerged`/`SetHandle`-equivalent) despite having `NewCacheKeyParam`+`MergeFields()`; existing doc comment's rationale for skipping it doesn't hold | `ports/cache.go`, `adapters/redis/binding.go` | **bug** — same category as G1 | Yes | ✅ SHIPPED — plus a real, pre-existing bug found and fixed while implementing (see "Implementation notes") |
+| G3 | `adapters/websocket`'s upgrade path uses `rest.PathParam`/`ValidatePathParams` (validate-only) for the CONNECTION's path vars — same "per-connection vs. per-message merge" open question already deferred for SSE (`merge-field-remaining-gaps.md`'s G1) | `adapters/websocket` | Low — same open question as SSE, no concrete use case | Not actioned — track alongside SSE's G1, revisit together if a use case appears for either | Deferred |
+| G4 | `review-go-codex/references/checklist.md`'s section-12 boundary-symmetry table has no `ports.File`/`ports.Cache` rows — the audit process itself doesn't check these two ports | `.github/skills/review-go-codex/references/checklist.md` | Low — process/doc gap, not a code bug | Yes — trivial, add two rows once G1/G2 land (or immediately with "❌ not yet" status, updated when shipped) | ✅ SHIPPED |
 
 ## API surface
 
@@ -156,67 +157,89 @@ changes (derived vs. caller-supplied).
 
 ## Unit test plan
 
-| ID | Test |
-|---|---|
-| G1-1 | `File.ReadMerged` merges path vars into the decoded value when the file declares merge fields (regression guard: identical to `Read` when none declared) |
-| G1-2 | `WriteHandle` derives vars from v's own merge-field-declared struct fields — two values with different path-var fields write to two different concrete paths |
-| G1-3 | `file.DrainWriteFileAdapter`/`ReadAdapter` per-item derivation when `varsFor` is nil (mirrors the prior round's G1-1/G1-2 test shape exactly) |
-| G2-1 | `Cache.GetMerged` merges key vars into the returned value (regression guard: identical to `Get` when no merge fields declared) |
-| G2-2 | `SetHandle` derives key vars from v's own merge-field-declared struct fields |
-| G2-3 | `redis.SetAdapter`/`DrainSetAdapter` per-item derivation when `keyFn` is nil |
-| G4 | (no test — doc-only checklist correction) |
+All implemented — see `ports/file_test.go`, `adapters/file/binding_test.go`,
+`adapters/redis/binding_test.go`, `ports/cache_test.go`.
+
+| ID | Test | Status |
+|---|---|---|
+| G1-1 | `File.ReadMerged` merges path vars into the decoded value when the file declares merge fields (regression guard: identical to `Read` when none declared) | ✅ |
+| G1-2 | `WriteHandle` derives vars from v's own merge-field-declared struct fields — two values with different path-var fields write to two different concrete paths | ✅ |
+| G1-3 | `file.DrainWriteFileAdapter`/`ReadEachAdapter` per-item derivation when `varsFor` is nil, plus decode-merge wiring | ✅ |
+| G2-1 | `redis.GetMerged` merges key vars into the returned value (regression guard: identical to `Get` when no merge fields declared; miss behaves like a miss) | ✅ |
+| G2-2 | `redis.SetHandle` derives key vars from v's own merge-field-declared struct fields | ✅ |
+| G2-3 | `redis.SetAdapter`/`DrainSetAdapter` per-item derivation when `keyFn` is nil; `GetAdapter` decode-merge wiring; explicit-`keyFn`-still-wins regression | ✅ |
+| G2-bonus | `CachePattern.Opts`' `NewCacheKeyParam` merge fields wired through `IOPort`/`SinkPort` (regression guard for the found-and-fixed bug) | ✅ |
+| G4 | (no test — doc-only checklist correction) | ✅ |
 
 ## Files to create/change
 
 | File | Responsibility |
 |---|---|
-| `ports/file.go` + `_test.go` | G1: `ReadMerged`, `WriteHandle` (+ `UpdateHandle` if resolved) |
-| `adapters/file/binding.go` + `_test.go` | G1: `varsFor`-nil derivation path for same-type adapters |
-| `ports/cache.go` + `_test.go` | G2: `GetMerged`, `SetHandle` |
-| `adapters/redis/binding.go` + `_test.go` | G2: `keyFn`-nil derivation path for `SetAdapter`/`DrainSetAdapter` |
-| `.github/skills/review-go-codex/references/checklist.md` | G4: add `ports.File`/`ports.Cache` rows to the section-12 table |
-| `docs/features/file.md`, `docs/features/redis.md` (if they exist) | Document the new convenience once shipped |
-| this doc | mark SHIPPED once complete |
+| `ports/file.go` + `_test.go` | ✅ G1: `File.ReadMerged`, `ports.WriteHandle` (`UpdateHandle` deferred) |
+| `adapters/file/binding.go` + `_test.go` | ✅ G1: `ReadEachAdapter`/`ReadAdapter` wired to `ReadMerged`; `DrainWriteFileAdapter`'s `varsFor`-nil derivation |
+| `adapters/redis/binding.go` + `_test.go` | ✅ G2: `GetMerged`, `SetHandle`, `keyVarsFor` helper; `GetAdapter` wired to `GetMerged`; `SetAdapter`/`DrainSetAdapter`'s `keyFn`-nil derivation |
+| `ports/handle.go` + `ports/cache_test.go` | ✅ G2 (bonus fix): both `CachePattern` build paths now delegate to `NewCache`, fixing the dropped-merge-fields bug; new regression tests |
+| `.github/skills/review-go-codex/references/checklist.md` | ✅ G4: added `ports.File`/`ports.Cache` rows to the section-12 table |
+| `.github/skills/review-go-codex/references/history.md` | ✅ Round 63 entry appended |
+| this doc | marked SHIPPED for G1/G2/G4; G3 remains deferred |
 
-## Open design decisions (to resolve before implementation)
+## Open design decisions (resolved during implementation)
 
-1. **G1 — `ReadMerged` naming and placement**: should it be a method on
-   `File[T]` (mirrors `Read`/`Write`) or a free function (mirrors
-   `WriteHandle`/`PublishHandle`'s free-function shape, needed because Go
-   methods can't introduce new type params)? `ReadMerged` needs no new
-   type param, so a method is natural; `WriteHandle` doesn't need one
-   either here (unlike `forge.NewFunction`), so BOTH could be methods —
-   confirm no naming collision with existing `File[T]` methods first.
-2. **G1 — is `UpdateHandle` in scope, or just `ReadMerged`+`WriteHandle`?**
-   `Update` already composes `Read`+`Write`; an `UpdateHandle` would need
-   to decide whether vars are derived ONCE (from the pre-update value) or
-   RE-derived after `fn` runs (from the updated value, in case `fn`
-   changes a merge-field-declared field, e.g. renaming the ID) — this
-   needs its own resolution, likely "re-derive after fn" to match
-   `PublishHandle`'s "vars always reflect the value being written" model.
-3. **G2 — where does `GetMerged` live given `Get` is a free function
-   (`redis.Get(ctx, client, cache, vars, opts)`), not a `Cache[T]`
-   method?** `Cache[T].MergeFields()` lives on the port type, but the
-   actual lookup is a free function taking a `Commands` client — mirrors
-   `zeromq.Call`/`CallHandle`'s split (`Call` needs a socket, so lives in
-   the adapter package, not on `RouteHandle`). `GetMerged`/`SetHandle`
-   likely belong in `adapters/redis` (alongside `Get`/`Set`), not
-   `ports/cache.go` — needs confirming against the exact precedent
-   (`mqtt5.PublishHandle` lives in `adapters/mqtt5`, not `api/events`).
-4. **G1/G2 — should the port-binding adapters' `varsFor`/`keyFn`-nil
-   derivation apply ONLY to same-type (`T`→`T`) adapters
-   (`DrainWriteFileAdapter[T]`, `SetAdapter[T]`) or attempt it for the
-   enrichment adapters too (`ReadEachAdapter[In,T,Resp]`,
-   `GetAdapter[Req,Resp]`)?** Leaning: same-type only — the enrichment
-   adapters' `In`/`Req` type is independent of the cached/file `T`/`Resp`
-   type, so there is no single struct to derive vars from (same rationale
-   already established for `ReadEachAdapter` in the existing gotchas).
-5. **G3 — should websocket's per-connection path-var question be resolved
-   together with SSE's, or kept as two separate open items?** Leaning:
-   together — both are "one Req at connection/subscribe time, many
-   messages after" shapes with the identical "is repeating vars into every
-   message useful" question. Revisit both if EITHER gets a concrete use
-   case.
+1. **G1 — `ReadMerged` naming and placement**: RESOLVED as leaned — both
+   `File[T].ReadMerged` and `ports.WriteHandle` implemented; `ReadMerged`
+   as a method (no new type param, matches `Read`/`Write`'s shape),
+   `WriteHandle` as a free function (matches `PublishHandle`'s naming
+   precedent, though it needs no new type param here either — kept as a
+   free function for naming/discoverability symmetry with the encode-side
+   convenience across every other boundary).
+2. **G1 — is `UpdateHandle` in scope?** RESOLVED as deferred — NOT
+   implemented this round. `Update`'s "read current, apply fn, write back"
+   shape raises a genuine re-derivation question (vars from the pre- or
+   post-`fn` value) that has no existing precedent to lean on; left as a
+   future addition if a concrete need appears. `Update` itself is
+   unchanged and remains the escape hatch.
+3. **G2 — where does `GetMerged` live?** RESOLVED as leaned —
+   `redis.GetMerged`/`redis.SetHandle` live in `adapters/redis` (alongside
+   `Get`/`Set`), not `ports/cache.go` — mirrors `mqtt5.PublishHandle`'s
+   placement in the adapter package, not `api/events`.
+4. **G1/G2 — same-type-only derivation for port-binding adapters?**
+   RESOLVED as leaned — `DrainWriteFileAdapter[T]`/`SetAdapter[T]`/
+   `DrainSetAdapter[T]` gained `varsFor`/`keyFn`-nil automatic derivation;
+   `ReadEachAdapter[In,T,Resp]`/`ReadAdapter[In,Resp]`/`GetAdapter[Req,Resp]`
+   keep their closures mandatory (enrichment shape, independent types) —
+   BUT both `ReadEachAdapter`/`ReadAdapter` and `GetAdapter` were ADDITIONALLY
+   wired to call `ReadMerged`/`GetMerged` internally, so the DECODE-side
+   convenience (merging the already-known vars into the returned value)
+   applies uniformly even where the ENCODE-side automatic derivation
+   doesn't — a refinement found and implemented beyond the original sketch.
+5. **G3 — resolve together with SSE?** RESOLVED as leaned — tracked
+   together, both deferred, no concrete use case for either.
+
+## Implementation notes (found during implementation, not anticipated in the design above)
+
+- **A real, pre-existing bug in `ports/handle.go`'s `CachePattern` handling**
+  was found while wiring G2's tests: BOTH build paths
+  (`buildEventPatternHandles` for `SinkPort`/`LatestPort`,
+  `buildDualCodecPatternHandles` for `IOPort`) reconstructed `Cache[T]`
+  field-by-field (`Cache[T]{Key: ..., TTL: ..., Format: ..., params:
+  cb.params}`) instead of delegating to `NewCache` — silently dropping
+  `cb.mergeFields` entirely. This meant `NewCacheKeyParam` registered via
+  `CachePattern.Opts` was COMPLETELY INERT for every Pattern-built cache
+  (only hand-built `ports.NewCache(...)` calls ever got working merge
+  fields) — a significant, previously-unnoticed regression relative to
+  `FilePattern`, which correctly delegates to `NewFile` and never had this
+  bug. Fixed by replacing both field-by-field reconstructions with
+  `NewCache[T](pat.Key, cFmt, pat.Opts...)` + `c.TTL = pat.TTL`. New
+  regression tests (`TestCachePattern_NewCacheKeyParam_WiredThroughIOPort`/
+  `_WiredThroughSinkPort`) lock this in.
+- **`ReadEachAdapter`/`ReadAdapter`/`GetAdapter` get the decode-merge
+  convenience even without encode-side automatic derivation** — since the
+  vars used to look up the file/cache entry are already known (from
+  `varsFor(In)`/`keyFn(Req)`) by the time the value is decoded, merging
+  those SAME vars back into the returned value via `ReadMerged`/`GetMerged`
+  is valid regardless of whether `In`/`Req` matches the file/cache's own
+  type. This closes a decode-side gap uniformly across ALL file/cache read
+  paths, not just the same-type write paths the original sketch focused on.
 
 ## Verification
 

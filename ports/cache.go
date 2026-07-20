@@ -135,10 +135,12 @@ type Cache[T any] struct {
 
 // MergeFields returns the merge-capable fields registered via
 // [NewCacheKeyParam] — feed them directly into [codex.DecodeVars]/
-// [codex.EncodeVars]. No bundling convenience method exists for Cache
-// (unlike [rest.RouteHandle.DecodeMerged]/[events.ChannelHandle.DecodeMerged])
-// since [Cache.Get]/[Cache.Set] already take vars directly — there is no
-// "body vs. vars" split to coordinate.
+// [codex.EncodeVars], or use the bundling convenience built on top:
+// `redis.GetMerged` (decode-merge, mirrors
+// [events.ChannelHandle.DecodeMerged]) and `redis.SetHandle` (encode-side
+// single-call convenience, mirrors [mqtt5.PublishHandle]) — both live in
+// `adapters/redis` since, like `zeromq.Call`/`CallHandle`, the actual
+// lookup/write needs a [Commands] client Cache itself doesn't have.
 func (c Cache[T]) MergeFields() []codex.FieldCodec[T] {
 	return c.mergeFields
 }

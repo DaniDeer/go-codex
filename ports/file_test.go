@@ -1637,3 +1637,111 @@ func TestFile_NewFilePathParam_TypeMismatchPanics(t *testing.T) {
 			func(r *readingMeta, v string) { r.SensorID = v }),
 	)
 }
+
+// ── ReadMerged / WriteHandle (one struct, one call for ports.File) ───────────
+
+// G1-1: File.ReadMerged merges path vars into the decoded value when the
+// file declares merge-capable path params — regression guard included via
+// G1-2 below (identical to Read when none declared).
+func TestReadMerged_MergesPathVarsIntoDecodedValue(t *testing.T) {
+	dir := t.TempDir()
+	f := ports.NewFile(filepath.Join(dir, "readings/{sensorID}/{date}.json"), format.JSON(readingValueCodec),
+		ports.NewFilePathParam("sensorID", codex.String().Refine(validate.NonEmptyString),
+			func(r readingMeta) string { return r.SensorID },
+			func(r *readingMeta, v string) { r.SensorID = v }),
+		ports.NewFilePathParam("date", codex.String().Refine(validate.Date),
+			func(r readingMeta) string { return r.Date },
+			func(r *readingMeta, v string) { r.Date = v }),
+	)
+	path, err := f.BuildPath(map[string]string{"sensorID": "sensor-42", "date": "2024-01-15"})
+	if err != nil {
+		t.Fatalf("BuildPath: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	// Body JSON deliberately carries ONLY "value" — SensorID/Date must come
+	// exclusively from the path-var merge.
+	if err := os.WriteFile(path, []byte(`{"value":22.5}`), 0644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	reading, err := f.ReadMerged(map[string]string{"sensorID": "sensor-42", "date": "2024-01-15"}, ports.FileOptions{})
+	if err != nil {
+		t.Fatalf("ReadMerged: %v", err)
+	}
+	if reading.SensorID != "sensor-42" || reading.Date != "2024-01-15" {
+		t.Errorf("want merged path vars, got %+v", reading)
+	}
+	if reading.Value != 22.5 {
+		t.Errorf("Value: want 22.5, got %v", reading.Value)
+	}
+}
+
+// G1-1 (regression guard): a file with NO merge-capable path params behaves
+// identically to a bare Read.
+func TestReadMerged_NoMergeFields_MatchesPlainRead(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "item.json")
+	_ = os.WriteFile(path, []byte(`{"name":"widget","value":42}`), 0644)
+
+	f := ports.NewFile(path, format.JSON(fileItemCodec))
+	viaRead, err := f.Read(nil, ports.FileOptions{})
+	if err != nil {
+		t.Fatalf("Read: %v", err)
+	}
+	viaReadMerged, err := f.ReadMerged(nil, ports.FileOptions{})
+	if err != nil {
+		t.Fatalf("ReadMerged: %v", err)
+	}
+	if viaRead != viaReadMerged {
+		t.Errorf("ReadMerged should match plain Read when no merge fields declared: %+v vs %+v", viaRead, viaReadMerged)
+	}
+}
+
+// G1-2: WriteHandle derives path vars from v's own merge-field-declared
+// struct fields — no manual vars map needed.
+func TestWriteHandle_DerivesVarsFromValue(t *testing.T) {
+	dir := t.TempDir()
+	f := ports.NewFile(filepath.Join(dir, "readings/{sensorID}/{date}.json"), format.JSON(readingValueCodec),
+		ports.NewFilePathParam("sensorID", codex.String().Refine(validate.NonEmptyString),
+			func(r readingMeta) string { return r.SensorID },
+			func(r *readingMeta, v string) { r.SensorID = v }),
+		ports.NewFilePathParam("date", codex.String().Refine(validate.Date),
+			func(r readingMeta) string { return r.Date },
+			func(r *readingMeta, v string) { r.Date = v }),
+	)
+
+	if err := os.MkdirAll(filepath.Join(dir, "readings/sensor-99"), 0755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	reading := readingMeta{SensorID: "sensor-99", Date: "2024-02-01", Value: 3.5}
+	if err := ports.WriteHandle(f, reading, ports.FileOptions{}); err != nil {
+		t.Fatalf("WriteHandle: %v", err)
+	}
+
+	wantPath := filepath.Join(dir, "readings/sensor-99/2024-02-01.json")
+	if _, err := os.Stat(wantPath); err != nil {
+		t.Fatalf("want file at derived path %q, got: %v", wantPath, err)
+	}
+}
+
+// G1-2 (regression guard): WriteHandle with no merge fields declared behaves
+// identically to a bare Write(nil, v, opts) call.
+func TestWriteHandle_NoMergeFields_MatchesPlainWrite(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "item.json")
+	f := ports.NewFile(path, format.JSON(fileItemCodec))
+
+	item := fileItem{Name: "widget", Value: 42}
+	if err := ports.WriteHandle(f, item, ports.FileOptions{}); err != nil {
+		t.Fatalf("WriteHandle: %v", err)
+	}
+	got, err := f.Read(nil, ports.FileOptions{})
+	if err != nil {
+		t.Fatalf("Read: %v", err)
+	}
+	if got != item {
+		t.Errorf("want %+v, got %+v", item, got)
+	}
+}

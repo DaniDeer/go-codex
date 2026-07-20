@@ -557,9 +557,10 @@ vars, err := readingFile.MatchPath("readings/sensor-42/2024-01-15.json")
 ```
 
 `ports.NewFilePathParam[T]` declares BOTH the `FilePathParam` (spec/
-validation, unchanged) AND a merge field in one call — pass the result of
-`File.MergeFields()` directly to `codex.DecodeVars` to merge the extracted
-vars straight into a typed struct:
+validation, unchanged) AND a merge field in one call. `File.ReadMerged`
+and `ports.WriteHandle` are the single-call convenience built on top —
+mirroring `events.ChannelHandle.DecodeMerged`/`mqtt5.PublishHandle` for
+the file boundary:
 
 ```go
 var readingFile = ports.NewFile("readings/{sensorID}/{date}.json", format.JSON(valueCodec),
@@ -571,14 +572,24 @@ var readingFile = ports.NewFile("readings/{sensorID}/{date}.json", format.JSON(v
         func(r *ReadingMeta, v string) { r.Date = v }),
 )
 
-for _, path := range discoveredPaths {
-    vars, err := readingFile.MatchPath(path)
-    var meta ReadingMeta
-    err = codex.DecodeVars(&meta, vars, readingFile.MergeFields()...)
-    content, err := readingFile.Read(vars, ports.FileOptions{}) // body-only fields
-    meta.Value = content.Value // distinct struct shapes — manual merge stays explicit
-}
+// Write: derive the path from meta's own fields — no manual vars map.
+err := ports.WriteHandle(readingFile, meta, ports.FileOptions{})
+
+// Read: given a discovered path's extracted vars, ReadMerged decodes the
+// body AND merges the SAME vars into the returned struct in one call.
+vars, err := readingFile.MatchPath(discoveredPath)
+meta, err := readingFile.ReadMerged(vars, ports.FileOptions{})
+// meta.SensorID/meta.Date are populated from the path; meta.Value from the body.
 ```
+
+`File.Read`/`File.Write` remain available as the lower-level escape hatch
+for callers that build the vars map themselves (e.g. no merge-capable
+path params declared, or vars come from a non-struct source).
+`adapters/file`'s `ReadEachAdapter`/`ReadAdapter` call `ReadMerged`
+internally (merging vars already known from their `varsFor(In)` closure);
+`DrainWriteFileAdapter`'s `varsFor` may be left `nil` when the file
+declares merge fields, deriving vars per-item automatically via
+`WriteHandle`.
 
 `NewFilePathParam` is the PRIMARY, recommended way to declare a path
 variable — but not the sole way: the plain `FilePathParam{...}.WithCodec(...)`
@@ -593,10 +604,9 @@ for the shared mechanism (`codex.DecodeVars`/`EncodeVars`) this builds on.
 
 `ports.NewCacheKeyParam[T]` mirrors `ports.NewFilePathParam[T]` exactly —
 it declares BOTH the `CacheKeyParam` (spec/validation, unchanged) AND a
-merge field in one call. Unlike File, Cache has no `MatchKey` inverse
-(cache keys are built FROM known values via `Cache.BuildKey`, never
-reverse-matched from a discovered key) — the merge-field constructor is
-the only addition Cache needs:
+merge field in one call. `redis.GetMerged` and `redis.SetHandle` are the
+single-call convenience built on top, mirroring `File.ReadMerged`/
+`ports.WriteHandle` for the cache boundary:
 
 ```go
 var userCache = ports.NewCache("user:{id}", format.JSON(userCodec),
@@ -605,16 +615,19 @@ var userCache = ports.NewCache("user:{id}", format.JSON(userCodec),
         func(u *User, v string) { u.ID = v }),
 )
 
-vars, err := codex.EncodeVars(user, userCache.MergeFields()...)
-key, err := userCache.BuildKey(vars)
+// Set: derive the key from user's own ID field — no manual vars map.
+err := redis.SetHandle(ctx, client, userCache, user, redis.SetOptions{})
+
+// Get: GetMerged looks up like Get, then merges the SAME key vars into
+// the returned value — the id used to look it up is populated for free.
+user, ok, err := redis.GetMerged(ctx, client, userCache, map[string]string{"id": userID}, redis.GetOptions{})
 ```
 
-`Cache.MergeFields()` feeds directly into `codex.DecodeVars`/`EncodeVars` —
-there is no `DecodeMerged`-style bundling convenience for Cache (unlike
-`rest.RouteHandle.DecodeMerged`/`events.ChannelHandle.DecodeMerged`), since
-cache adapters (`redis.GetAdapter`/`SetAdapter`) already take the value and
-vars together at each call site — there is no separate "body vs. vars"
-split to coordinate the way REST/events do.
+`redis.Get`/`redis.Set` remain available as the lower-level escape hatch
+for callers that build the vars map themselves. `adapters/redis`'s
+`GetAdapter` calls `GetMerged` internally; `SetAdapter`/`DrainSetAdapter`'s
+`keyFn` may be left `nil` when the cache declares merge fields, deriving
+key vars per-item automatically via `SetHandle`.
 
 ---
 

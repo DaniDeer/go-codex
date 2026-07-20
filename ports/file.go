@@ -221,11 +221,14 @@ func NewFile[T any](template string, f format.Format[T], opts ...FileOpt) File[T
 
 // MergeFields returns the merge-capable fields registered via
 // [NewFilePathParam] — feed them directly into [codex.DecodeVars] /
-// [codex.EncodeVars]:
+// [codex.EncodeVars], or use the bundling convenience built on top:
+// [File.ReadMerged] (decode-merge) and [WriteHandle] (encode-side
+// single-call convenience):
 //
 //	vars, _ := readingFile.MatchPath(path)
 //	var meta ReadingMeta
 //	err := codex.DecodeVars(&meta, vars, readingFile.MergeFields()...)
+//	// or, in one call: meta, err := readingFile.ReadMerged(vars, opts)
 func (fh File[T]) MergeFields() []codex.FieldCodec[T] {
 	return fh.mergeFields
 }
@@ -379,6 +382,37 @@ func (fh File[T]) Read(vars map[string]string, opts FileOptions) (T, error) {
 	return v, nil
 }
 
+// ReadMerged is the decode-merge convenience: it reads and decodes exactly
+// like [File.Read], then ADDITIONALLY merges vars into the SAME returned
+// value via [codex.DecodeVars], using the merge-capable fields registered
+// via [NewFilePathParam] — mirrors [events.ChannelHandle.DecodeMerged]/
+// [reqreply.RouteHandle.DecodeMerged] for the file boundary.
+//
+// Additive — [File.Read] is unchanged; ReadMerged behaves identically to a
+// bare Read when the file declares no merge-capable path params
+// ([File.MergeFields] is empty).
+//
+// Example — template path "readings/{sensorID}/data.json" declared with
+// [NewFilePathParam], so the extracted sensorID is merged into the
+// returned struct's own field:
+//
+//	reading, err := readingFile.ReadMerged(map[string]string{"sensorID": id}, ports.FileOptions{})
+//	// reading.SensorID == id, no manual assignment needed.
+func (fh File[T]) ReadMerged(vars map[string]string, opts FileOptions) (T, error) {
+	v, err := fh.Read(vars, opts)
+	if err != nil {
+		return v, err
+	}
+	if len(fh.mergeFields) == 0 {
+		return v, nil
+	}
+	if err := codex.DecodeVars(&v, vars, fh.mergeFields...); err != nil {
+		var zero T
+		return zero, err
+	}
+	return v, nil
+}
+
 // Write builds the concrete path from vars, encodes v, and writes it to the file.
 // The file is created if it does not exist, or truncated and overwritten if it does.
 //
@@ -431,6 +465,29 @@ func (fh File[T]) Write(vars map[string]string, v T, opts FileOptions) error {
 
 	recordFileWrite(obs, path, true, time.Since(start))
 	return nil
+}
+
+// WriteHandle is the single-call convenience wrapper around [File.Write]:
+// it derives the path vars from v automatically via
+// [codex.EncodeVars](v, [File.MergeFields]()...) — one struct in, no
+// manual vars map — mirroring [mqtt5.PublishHandle]/[nethttp.CallHandle]'s
+// convenience for MQTT 5 events / REST clients.
+//
+// [File.Write] remains available as the lower-level escape hatch for
+// callers that build the vars map themselves (e.g. no merge-capable path
+// params declared, or vars come from a non-struct source).
+//
+//	err := ports.WriteHandle(readingFile, reading, ports.FileOptions{})
+//	// path derived from reading's own SensorID field — no manual vars map.
+func WriteHandle[T any](fh File[T], v T, opts FileOptions) error {
+	vars, err := codex.EncodeVars(v, fh.mergeFields...)
+	if err != nil {
+		return err
+	}
+	if len(vars) == 0 {
+		vars = nil
+	}
+	return fh.Write(vars, v, opts)
 }
 
 // Update reads the file at the path built from vars, applies fn to the decoded
