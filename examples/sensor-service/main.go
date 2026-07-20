@@ -257,8 +257,17 @@ func main() {
 
 	ioports.HistoryTool.SetPipeline(pipeline.NewTimeSeriesPipeline(ioports.History,
 		func(ctx context.Context) string {
+			// ToolPort's Req here is struct{} (the pipeline input function
+			// derives sensorID from the request context directly, not from
+			// a decoded Req field), so rest.NewPathParam's automatic merge
+			// doesn't apply to this ToolPort/pipeline shape — it requires a
+			// typed Req struct field to merge into. r.PathValue("sensorID")
+			// is still codec-validated by the RESTPattern's PathParam
+			// before this closure runs. See examples/adapters-nethttp's
+			// makeGetUserHandler for the automatic-merge pattern on a
+			// typed Req.
 			r, _ := nethttp.RequestFromContext(ctx)
-			return r.PathValue("sensorID") // already codec-validated by the RESTPattern's PathParam
+			return r.PathValue("sensorID")
 		}))
 	historyHandle, ok := ports.RESTHandle[struct{}, domain.TimeSeries](ioports.HistoryTool)
 	if !ok {

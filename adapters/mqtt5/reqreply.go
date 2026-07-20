@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/DaniDeer/go-codex/api/reqreply"
+	"github.com/DaniDeer/go-codex/codex"
 	"github.com/DaniDeer/go-codex/stats"
 	pahomqtt5 "github.com/eclipse/paho.golang/paho"
 	"github.com/google/uuid"
@@ -172,6 +173,36 @@ func Serve[Req, Resp any](
 				opts.OnError(ServeError{Kind: KindDecode, Err: serveErr})
 			}
 			return
+		}
+
+		// Merge topic variables declared via reqreply.NewTopicParam into
+		// the SAME decoded req — additive, only runs when the route has
+		// merge-capable topic params (backward compatible: identical
+		// behavior to today when none are declared). Mirrors Subscribe's
+		// request-merge wiring in adapter.go.
+		if mergeFields := handle.MergeFields(); len(mergeFields) > 0 {
+			vars, varErr := matchTopicTemplate(path, msg.Topic)
+			if varErr == nil {
+				varErr = handle.ValidateTopicVars(vars)
+			}
+			if varErr != nil {
+				stats.ReportErrors(obs, "topic_var", varErr)
+				obs.RecordRequest("MQTT5-REP", path, 0, time.Since(start))
+				publishErrorReply(spanCtx, client, responseTopic, correlationData, varErr)
+				if opts.OnError != nil {
+					opts.OnError(ServeError{Kind: KindDecode, Err: varErr})
+				}
+				return
+			}
+			if mergeErr := codex.DecodeVars(&req, vars, mergeFields...); mergeErr != nil {
+				stats.ReportErrors(obs, "topic_var", mergeErr)
+				obs.RecordRequest("MQTT5-REP", path, 0, time.Since(start))
+				publishErrorReply(spanCtx, client, responseTopic, correlationData, mergeErr)
+				if opts.OnError != nil {
+					opts.OnError(ServeError{Kind: KindDecode, Err: mergeErr})
+				}
+				return
+			}
 		}
 
 		// call handler
@@ -423,6 +454,50 @@ func Call[Req, Resp any](
 		obs.RecordRequest("MQTT5-REQ", path, 200, time.Since(start))
 		return resp, nil
 	}
+}
+
+// CallHandle is the single-call convenience wrapper around [Call]: it
+// derives [CallOptions.Vars] from req automatically, using the route's
+// merge-capable topic params ([reqreply.RouteHandle.MergeFields] +
+// [codex.EncodeVars]) — one struct in, no manual vars map, mirroring
+// [nethttp.CallHandle]'s client-side convenience for REST.
+//
+// An explicit [CallOptions.Vars] takes PRECEDENCE over the derived value —
+// this lets a caller override a struct field's value without losing the
+// one-line convenience for the common case. [Call] remains available as
+// the lower-level escape hatch for callers that build the vars map
+// themselves.
+//
+//	resp, err := mqtt5.CallHandle(ctx, client, router, computeRoute, req, mqtt5.CallOptions{})
+func CallHandle[Req, Resp any](
+	ctx context.Context,
+	client MQTTClient,
+	router MQTTRouter,
+	handle *reqreply.RouteHandle[Req, Resp],
+	req Req,
+	opts CallOptions,
+) (Resp, error) {
+	var zero Resp
+	derived, err := codex.EncodeVars(req, handle.MergeFields()...)
+	if err != nil {
+		return zero, err
+	}
+	if len(derived) == 0 {
+		derived = nil
+	}
+	if opts.Vars != nil {
+		merged := make(map[string]string, len(derived)+len(opts.Vars))
+		for k, v := range derived {
+			merged[k] = v
+		}
+		for k, v := range opts.Vars {
+			merged[k] = v
+		}
+		opts.Vars = merged
+	} else {
+		opts.Vars = derived
+	}
+	return Call(ctx, client, router, handle, req, opts)
 }
 
 // isErrorReply checks whether an incoming reply was sent as an error by the responder.

@@ -55,6 +55,55 @@ func (p TopicParam) applyRoute(rb *routeBuilder) {
 	rb.topicParams = append(rb.topicParams, p)
 }
 
+// MergedTopicParam is returned by [NewTopicParam]. It is the reqreply
+// mirror of [rest.MergedPathParam]/[events.MergedTopicParam]: the
+// registered field's setter merges the extracted topic variable into the
+// decoded Req via [RouteHandle.DecodeMerged]; the getter extracts the
+// topic variable's value from Req for the client-side single-call
+// convenience (adapter-specific `CallHandle`, e.g. `mqtt5.CallHandle`/
+// `zeromq.CallHandle`). Request-side only — see [routeBuilder.mergeFields].
+type MergedTopicParam[Req any] struct {
+	TopicParam
+	field codex.FieldCodec[Req]
+}
+
+// NewTopicParam declares a topic variable that is BOTH validated against
+// codec AND automatically merged into Req by [RouteHandle.DecodeMerged] —
+// one declaration instead of a TopicParam plus a separate codex.Field. All
+// topic variables are always required, matching plain [TopicParam]'s
+// existing "no Required field" rationale.
+//
+//	reqreply.NewRoute[ComputeReq, ComputeResp]("compute/{tenantID}/add",
+//	    computeReqCodec, computeRespCodec,
+//	    reqreply.NewTopicParam("tenantID", codex.String().Refine(validate.NonEmptyString),
+//	        func(r ComputeReq) string { return r.TenantID },
+//	        func(r *ComputeReq, v string) { r.TenantID = v },
+//	    ),
+//	)
+func NewTopicParam[Req any](
+	name string,
+	codec codex.Codec[string],
+	get func(Req) string,
+	set func(*Req, string),
+) MergedTopicParam[Req] {
+	return MergedTopicParam[Req]{
+		TopicParam: TopicParam{Name: name, Codec: &codec},
+		field:      codex.RequiredField(name, codec, get, set),
+	}
+}
+
+// WithDescription sets the PARAMETER-level description and returns the
+// updated value.
+func (p MergedTopicParam[Req]) WithDescription(desc string) MergedTopicParam[Req] {
+	p.Description = desc
+	return p
+}
+
+func (p MergedTopicParam[Req]) applyRoute(rb *routeBuilder) {
+	rb.topicParams = append(rb.topicParams, p.TopicParam)
+	rb.mergeFields = append(rb.mergeFields, p.field)
+}
+
 // requestFormatsOpt / formatsOpt are unexported RouteOpt implementations
 // backing [RequestFormats] and [Formats] — see those constructors.
 type requestFormatsOpt[Req any] struct{ fmts []format.Format[Req] }
@@ -108,6 +157,54 @@ func (e FormatOptError) LogValue() slog.Value {
 	)
 }
 
+// MergeFieldTypeError is returned by [Route.Register] when a merge field
+// registered via [NewTopicParam] has the wrong type parameter for the
+// route's Req type — mirrors [rest.MergeFieldTypeError] exactly.
+type MergeFieldTypeError struct {
+	Err error
+}
+
+func (e MergeFieldTypeError) Error() string {
+	return fmt.Sprintf("api/reqreply: merge field: %v", e.Err)
+}
+
+// Unwrap allows [errors.Is] and [errors.As] to reach the underlying error.
+func (e MergeFieldTypeError) Unwrap() error { return e.Err }
+
+// LogValue implements [slog.LogValuer] for structured logging.
+func (e MergeFieldTypeError) LogValue() slog.Value {
+	return slog.GroupValue(slog.Any("err", e.Err))
+}
+
+// assertMergeFields type-asserts each element of raw (declared as []any on
+// routeBuilder to keep the builder non-generic) against
+// codex.FieldCodec[Req]. Returns MergeFieldTypeError on the first mismatch.
+func assertMergeFields[Req any](raw []any) ([]codex.FieldCodec[Req], error) {
+	if len(raw) == 0 {
+		return nil, nil
+	}
+	out := make([]codex.FieldCodec[Req], len(raw))
+	for i, mf := range raw {
+		fc, ok := mf.(codex.FieldCodec[Req])
+		if !ok {
+			return nil, MergeFieldTypeError{
+				Err: fmt.Errorf("want codex.FieldCodec[%T], got %T", *new(Req), mf)}
+		}
+		out[i] = fc
+	}
+	return out, nil
+}
+
+// mustAssertMergeFields is assertMergeFields for infallible callers
+// (ClientHandle has no error return) — panics on a type mismatch.
+func mustAssertMergeFields[Req any](caller string, raw []any) []codex.FieldCodec[Req] {
+	fields, err := assertMergeFields[Req](raw)
+	if err != nil {
+		panic(fmt.Sprintf("api/reqreply: %s: %s", caller, err.Error()))
+	}
+	return fields
+}
+
 // WithCodec sets the validation codec and returns the updated TopicParam.
 func (p TopicParam) WithCodec(c codex.Codec[string]) TopicParam { p.Codec = &c; return p }
 
@@ -152,6 +249,14 @@ type routeBuilder struct {
 	// [FormatOptError].
 	requestFormats any
 	formats        any
+	// mergeFields holds type-erased codex.FieldCodec[Req] values registered
+	// via [NewTopicParam] — resolved to []codex.FieldCodec[Req] in
+	// [Route.Register]/[Route.ClientHandle]. Request-side only: reqreply
+	// uses ONE shared topic template for both request and reply, and the
+	// reply is correlated by the underlying transport (not by re-encoding
+	// topic vars into Resp) — see docs/roadmap/vars-codec-merge.md's Phase
+	// 2 Open design decisions for the full rationale.
+	mergeFields []any
 }
 
 // Route[Req,Resp] is a typed request-reply route for async transports (ZeroMQ,
@@ -242,6 +347,7 @@ func (r Route[Req, Resp]) ClientHandle() *RouteHandle[Req, Resp] {
 		EncodeRequest:  func(v Req) ([]byte, error) { return jsonReq.Marshal(v) },
 		DecodeResponse: func(p []byte) (Resp, error) { return jsonResp.Unmarshal(p) },
 		topicParams:    rb.topicParams,
+		mergeFields:    mustAssertMergeFields[Req]("ClientHandle", rb.mergeFields),
 	}
 }
 
@@ -290,6 +396,11 @@ func (r Route[Req, Resp]) Register(b *Builder) (*RouteHandle[Req, Resp], error) 
 		}
 		h.WithFormats(fmts...)
 	}
+	var mergeErr error
+	h.mergeFields, mergeErr = assertMergeFields[Req](rb.mergeFields)
+	if mergeErr != nil {
+		return nil, mergeErr
+	}
 
 	b.registerRoute(r.topic, r.reqCodec.Schema, r.respCodec.Schema, rb.meta)
 	return h, nil
@@ -333,6 +444,49 @@ type RouteHandle[Req, Resp any] struct {
 
 	// topicParams holds per-variable params registered via [TopicParam] options.
 	topicParams []TopicParam
+
+	// mergeFields holds the merge-capable fields registered via
+	// [NewTopicParam] — see [MergeFields] and [DecodeMerged]. Request-side
+	// only (see [routeBuilder.mergeFields] for the rationale).
+	mergeFields []codex.FieldCodec[Req]
+}
+
+// MergeFields returns the merge-capable fields registered via
+// [NewTopicParam] — feed them directly into [codex.DecodeVars]/
+// [codex.EncodeVars], or use [RouteHandle.DecodeMerged] for the
+// closed-loop convenience method.
+func (h *RouteHandle[Req, Resp]) MergeFields() []codex.FieldCodec[Req] {
+	return h.mergeFields
+}
+
+// DecodeMerged decodes the request payload (via the route's registered
+// format) AND merges every [NewTopicParam]-registered topic variable into
+// the SAME Req value, using [codex.DecodeVars] internally — the reqreply
+// mirror of [rest.RouteHandle.DecodeMerged]/[events.ChannelHandle.DecodeMerged].
+// Additive — [RouteHandle.Decode] is unchanged; DecodeMerged behaves
+// identically to a bare Decode when the route declares no merge-capable
+// topic params (MergeFields() is empty).
+//
+// The payload decode error (if any) is returned FIRST, before the
+// topic-var merge step runs — matching the REST/events precedent. The
+// merge step itself collects every field's failure via [codex.DecodeVars]
+// (never stops at the first one).
+func (h *RouteHandle[Req, Resp]) DecodeMerged(payload []byte, topicVars map[string]string) (Req, error) {
+	var req Req
+	var err error
+	if len(payload) > 0 {
+		req, err = h.Decode(payload)
+		if err != nil {
+			return req, err
+		}
+	}
+	if len(h.mergeFields) == 0 {
+		return req, nil
+	}
+	if err := codex.DecodeVars(&req, topicVars, h.mergeFields...); err != nil {
+		return req, err
+	}
+	return req, nil
 }
 
 // WithRequestFormats sets the formats the route accepts for request body decoding

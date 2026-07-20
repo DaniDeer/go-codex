@@ -1086,3 +1086,71 @@ func TestCall_Vars_InvalidVar_ReturnsCallError(t *testing.T) {
 		t.Fatalf("expected RouteParamError inside CallError, got %T", callErr.Err)
 	}
 }
+
+// ── Phase 2: zeromq.CallHandle (client-side only, no server-side merge) ──────
+
+type tenantComputeReq struct {
+	TenantID string
+	X, Y     int
+}
+
+var tenantComputeReqCodec = codex.Struct[tenantComputeReq](
+	codex.RequiredField("x", codex.Int(),
+		func(r tenantComputeReq) int { return r.X },
+		func(r *tenantComputeReq, v int) { r.X = v }),
+	codex.RequiredField("y", codex.Int(),
+		func(r tenantComputeReq) int { return r.Y },
+		func(r *tenantComputeReq, v int) { r.Y = v }),
+)
+
+func newMergeRouteHandle() *reqreply.RouteHandle[tenantComputeReq, computeResp] {
+	return reqreply.NewRoute[tenantComputeReq, computeResp](
+		"compute/{tenantID}/add",
+		tenantComputeReqCodec, computeRespCodec,
+		reqreply.NewTopicParam("tenantID", codex.String().Refine(validate.NonEmptyString),
+			func(r tenantComputeReq) string { return r.TenantID },
+			func(r *tenantComputeReq, v string) { r.TenantID = v }),
+	).ClientHandle()
+}
+
+// EV/C: zeromq.CallHandle derives topic vars from req automatically — one
+// struct in, no manual vars map needed. Note: zeromq has no server-side
+// decode-merge (Serve carries no per-message topic string) — this
+// convenience is client-side only, verified here via the observer-reported
+// resolved path (mirrors TestCall_Vars_ObserverPathIsResolved).
+func TestCallHandle_DerivesVarsFromReq(t *testing.T) {
+	obs := &testObserver{}
+	sock := &mockSocket{
+		inFrames: [][][]byte{
+			{[]byte("ok"), []byte(`{"sum":3}`)},
+		},
+	}
+
+	_, _ = zeromq.CallHandle(context.Background(), sock, newMergeRouteHandle(),
+		tenantComputeReq{TenantID: "acme", X: 1, Y: 2},
+		zeromq.CallOptions{Observer: obs})
+
+	wantPath := "compute/acme/add"
+	if len(obs.paths) == 0 || obs.paths[0] != wantPath {
+		t.Errorf("expected observer path %q, got %v", wantPath, obs.paths)
+	}
+}
+
+// CallHandle explicit opts.Vars takes precedence over the derived value.
+func TestCallHandle_ExplicitVarsOverridePrecedence(t *testing.T) {
+	obs := &testObserver{}
+	sock := &mockSocket{
+		inFrames: [][][]byte{
+			{[]byte("ok"), []byte(`{"sum":3}`)},
+		},
+	}
+
+	_, _ = zeromq.CallHandle(context.Background(), sock, newMergeRouteHandle(),
+		tenantComputeReq{TenantID: "acme", X: 1, Y: 2},
+		zeromq.CallOptions{Observer: obs, Vars: map[string]string{"tenantID": "overridden"}})
+
+	wantPath := "compute/overridden/add"
+	if len(obs.paths) == 0 || obs.paths[0] != wantPath {
+		t.Errorf("expected observer path %q (explicit override), got %v", wantPath, obs.paths)
+	}
+}

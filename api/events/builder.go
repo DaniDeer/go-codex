@@ -149,6 +149,55 @@ func (p TopicParam) applyChannel(cb *channelBuilder) {
 	cb.topicParams = append(cb.topicParams, p)
 }
 
+// MergedTopicParam is returned by [NewTopicParam]. It is the events-boundary
+// mirror of [rest.MergedPathParam]: on subscribe, the registered field's
+// setter merges the extracted topic variable into the decoded payload via
+// [ChannelHandle.DecodeMerged]; on publish, the field's getter extracts the
+// topic variable's value from the payload via [ChannelHandle.MergeFields]
+// + [codex.EncodeVars] (or [PublishHandle] in adapters/mqtt5, which does
+// this automatically).
+type MergedTopicParam[T any] struct {
+	TopicParam
+	field codex.FieldCodec[T]
+}
+
+// NewTopicParam declares a topic variable that is BOTH validated against
+// codec AND automatically merged into T by [ChannelHandle.DecodeMerged] —
+// one declaration instead of a TopicParam plus a separate codex.Field. All
+// topic variables are always required (a template cannot be resolved
+// without every {varName} placeholder present), matching plain
+// [TopicParam]'s existing "no Required field" rationale.
+//
+//	events.NewChannel[SensorReading]("sensors/{sensorID}/readings", sensorReadingCodec,
+//	    events.NewTopicParam("sensorID", codex.String().Refine(validate.UUID),
+//	        func(r SensorReading) string { return r.SensorID },
+//	        func(r *SensorReading, v string) { r.SensorID = v },
+//	    ),
+//	)
+func NewTopicParam[T any](
+	name string,
+	codec codex.Codec[string],
+	get func(T) string,
+	set func(*T, string),
+) MergedTopicParam[T] {
+	return MergedTopicParam[T]{
+		TopicParam: TopicParam{Name: name, Codec: &codec},
+		field:      codex.RequiredField(name, codec, get, set),
+	}
+}
+
+// WithDescription sets the PARAMETER-level description and returns the
+// updated value.
+func (p MergedTopicParam[T]) WithDescription(desc string) MergedTopicParam[T] {
+	p.Description = desc
+	return p
+}
+
+func (p MergedTopicParam[T]) applyChannel(cb *channelBuilder) {
+	cb.topicParams = append(cb.topicParams, p.TopicParam)
+	cb.mergeFields = append(cb.mergeFields, p.field)
+}
+
 // formatsOpt / subscribeFormatsOpt / publishFormatsOpt are unexported
 // ChannelOpt implementations backing [Formats]/[SubscribeFormats]/
 // [PublishFormats] — see those constructors.
@@ -220,6 +269,57 @@ func (e FormatOptError) LogValue() slog.Value {
 	)
 }
 
+// MergeFieldTypeError is returned by [Channel.Register] when a merge field
+// registered via [NewTopicParam] has the wrong type parameter for the
+// channel's payload type — mirrors [rest.MergeFieldTypeError] exactly.
+type MergeFieldTypeError struct {
+	Err error
+}
+
+func (e MergeFieldTypeError) Error() string {
+	return fmt.Sprintf("api/events: merge field: %v", e.Err)
+}
+
+// Unwrap allows [errors.Is] and [errors.As] to reach the underlying error.
+func (e MergeFieldTypeError) Unwrap() error { return e.Err }
+
+// LogValue implements [slog.LogValuer] for structured logging.
+func (e MergeFieldTypeError) LogValue() slog.Value {
+	return slog.GroupValue(slog.Any("err", e.Err))
+}
+
+// assertMergeFields type-asserts each element of raw (declared as []any on
+// channelBuilder to keep the builder non-generic) against
+// codex.FieldCodec[T]. Returns MergeFieldTypeError on the first mismatch —
+// a caller programming error (mixing a merge field built for one payload
+// type into a Channel declared with another).
+func assertMergeFields[T any](raw []any) ([]codex.FieldCodec[T], error) {
+	if len(raw) == 0 {
+		return nil, nil
+	}
+	out := make([]codex.FieldCodec[T], len(raw))
+	for i, mf := range raw {
+		fc, ok := mf.(codex.FieldCodec[T])
+		if !ok {
+			return nil, MergeFieldTypeError{
+				Err: fmt.Errorf("want codex.FieldCodec[%T], got %T", *new(T), mf)}
+		}
+		out[i] = fc
+	}
+	return out, nil
+}
+
+// mustAssertMergeFields is assertMergeFields for infallible callers
+// (ClientHandle has no error return) — panics on a type mismatch, same
+// class as ports.NewFile's panic-on-misuse precedent.
+func mustAssertMergeFields[T any](caller string, raw []any) []codex.FieldCodec[T] {
+	fields, err := assertMergeFields[T](raw)
+	if err != nil {
+		panic(fmt.Sprintf("api/events: %s: %s", caller, err.Error()))
+	}
+	return fields
+}
+
 // WithCodec sets the validation codec and returns the updated TopicParam.
 func (p TopicParam) WithCodec(c codex.Codec[string]) TopicParam { p.Codec = &c; return p }
 
@@ -245,6 +345,14 @@ type channelBuilder struct {
 	formats          any
 	subscribeFormats any
 	publishFormats   any
+	// mergeFields holds type-erased codex.FieldCodec[T] values registered
+	// via [NewTopicParam] — resolved to []codex.FieldCodec[T] in
+	// [Channel.Register]/[Channel.ClientHandle]. Unlike REST's four
+	// path/query/header/cookie roles, events has exactly ONE var
+	// destination (topic), so a single flat slice is always safe for both
+	// the decode (subscribe) and encode (publish) directions — no
+	// role-aware split is needed here (see [ChannelHandle.MergeFields]).
+	mergeFields []any
 }
 
 // ChannelHandle is returned by [Channel.Register]. It holds the spec
@@ -303,6 +411,50 @@ type ChannelHandle[T any] struct {
 	//   if reqs == nil { reqs = handle.GlobalSecurity }
 	// Set via [Builder.AddGlobalSecurity]. nil when no global security is declared.
 	GlobalSecurity []route.SecurityRequirement
+
+	// mergeFields holds the merge-capable fields registered via
+	// [NewTopicParam] — see [MergeFields] and [DecodeMerged].
+	mergeFields []codex.FieldCodec[T]
+}
+
+// MergeFields returns the merge-capable fields registered via
+// [NewTopicParam] — feed them directly into [codex.DecodeVars]/
+// [codex.EncodeVars], or use [ChannelHandle.DecodeMerged] for the
+// closed-loop convenience method. Unlike REST's role-scoped
+// PathMergeFields/QueryMergeFields/etc., there is only ONE var
+// destination for events (the topic), so this single flat slice is safe
+// for both directions — no cross-role leak risk exists here.
+func (h *ChannelHandle[T]) MergeFields() []codex.FieldCodec[T] {
+	return h.mergeFields
+}
+
+// DecodeMerged decodes payload (via the channel's registered format) AND
+// merges every [NewTopicParam]-registered topic variable into the SAME T
+// value, using [codex.DecodeVars] internally — the events-boundary mirror
+// of [rest.RouteHandle.DecodeMerged]. Additive — [ChannelHandle.Decode] is
+// unchanged; DecodeMerged behaves identically to a bare Decode when the
+// channel declares no merge-capable topic params (MergeFields() is empty).
+//
+// The payload decode error (if any) is returned FIRST, before the
+// topic-var merge step runs — matching [rest.RouteHandle.DecodeMerged]'s
+// precedent. The merge step itself collects every field's failure via
+// [codex.DecodeVars] (never stops at the first one).
+func (h *ChannelHandle[T]) DecodeMerged(payload []byte, topicVars map[string]string) (T, error) {
+	var msg T
+	var err error
+	if len(payload) > 0 {
+		msg, err = h.Decode(payload)
+		if err != nil {
+			return msg, err
+		}
+	}
+	if len(h.mergeFields) == 0 {
+		return msg, nil
+	}
+	if err := codex.DecodeVars(&msg, topicVars, h.mergeFields...); err != nil {
+		return msg, err
+	}
+	return msg, nil
 }
 
 // BuildTopic substitutes {varName} placeholders in the channel's topic template
@@ -779,6 +931,11 @@ func (c Channel[T]) Register(b *Builder) (*ChannelHandle[T], error) {
 		}
 		h.WithPublishFormats(fmts...)
 	}
+	var mergeErr error
+	h.mergeFields, mergeErr = assertMergeFields[T](cb.mergeFields)
+	if mergeErr != nil {
+		return nil, mergeErr
+	}
 
 	entry := &typedChannelEntry[T]{topicStr: c.topic, handle: h}
 	b.entries = append(b.entries, entry)
@@ -821,6 +978,7 @@ func (c Channel[T]) ClientHandle() *ChannelHandle[T] {
 		Decode:      func(payload []byte) (T, error) { return jsonFmt.Unmarshal(payload) },
 		Encode:      func(msg T) ([]byte, error) { return jsonFmt.Marshal(msg) },
 		topicParams: cb.topicParams,
+		mergeFields: mustAssertMergeFields[T]("ClientHandle", cb.mergeFields),
 	}
 }
 

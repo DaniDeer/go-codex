@@ -777,8 +777,32 @@ New error types: `codex.VarEncodeTypeError{Field, Got}`,
 `FormatOptError`, returned by `Route.Register` on a merge-field/`Req`/`Resp`
 type mismatch — reused for both request- and response-side merge fields).
 
-Round 2 (not yet shipped): `events.NewTopicParam[T]`/`ChannelHandle.MergeFields()`,
-`reqreply.NewTopicParam[T]`, `ports.NewCacheKeyParam[T]`/`Cache.MergeFields()`.
+**Phase 2 SHIPPED**: `events.NewTopicParam[T]`/`ChannelHandle.MergeFields()`/
+`DecodeMerged(payload, topicVars) (T, error)` — events has exactly ONE var
+destination (topic), so a single flat merge-field slice is always safe for
+both directions (no role-aware split needed, unlike REST).
+`adapters/mqtt5.TopicVarsFromMessage[T]` (new prerequisite — mirrors
+`adapters/mqtt`'s existing v3 version) + `Subscribe` auto-merge wiring +
+`mqtt5.PublishHandle[T]` (single-call convenience, mirrors
+`nethttp.CallHandle`). `reqreply.NewTopicParam[T]` (Req-side only —
+reqreply shares ONE topic template for both directions; the reply is
+correlated by the transport, not by re-encoding topic vars into `Resp`) +
+`RouteHandle.MergeFields()`/`DecodeMerged` + `adapters/mqtt5.Serve` merge
+wiring + new `mqtt5.CallHandle[Req,Resp]`/`zeromq.CallHandle[Req,Resp]`.
+`ports.NewCacheKeyParam[T]`/`Cache.MergeFields()` — simplest boundary, no
+role symmetry, no `DecodeMerged`/single-call wrapper needed (`Cache`
+adapters already take value+vars together at each call site).
+
+**`adapters/zeromq` limitation (by design, not a gap)**: ZMQ REQ/REP
+routing is socket-based — `Serve`'s incoming messages carry NO per-message
+topic string to extract vars FROM (unlike MQTT's broker-routed topics), so
+zeromq has NO server-side decode-merge equivalent. `zeromq.CallHandle` is
+client-side only; the resolved topic is used solely for codec validation
+and observer reporting (matches `CallOptions.Vars`'s existing documented
+behavior).
+
+New error types: `events.MergeFieldTypeError{Err}`/`reqreply.MergeFieldTypeError{Err}`
+(both mirror `rest.MergeFieldTypeError` exactly).
 
 ### Nullable Codec
 

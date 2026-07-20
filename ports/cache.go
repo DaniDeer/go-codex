@@ -14,6 +14,10 @@ import (
 // cacheBuilder accumulates [CacheKeyParam] values declared via [CacheOpt].
 type cacheBuilder struct {
 	params []CacheKeyParam
+	// mergeFields holds type-erased codex.FieldCodec[T] values registered
+	// via [NewCacheKeyParam]. T is asserted in [NewCache], where T is
+	// already known from the format.Format[T] argument.
+	mergeFields []any
 }
 
 // CacheOpt is the sealed option interface for [CachePattern.Opts]. Currently
@@ -50,6 +54,52 @@ func (p CacheKeyParam) WithCodec(c codex.Codec[string]) CacheKeyParam {
 
 func (p CacheKeyParam) applyCache(cb *cacheBuilder) { cb.params = append(cb.params, p) }
 
+// MergedCacheKeyParam is returned by [NewCacheKeyParam]. It embeds the
+// unchanged [CacheKeyParam] (spec/validation, exactly as before) plus a
+// merge field produced internally via [codex.RequiredField], mirroring
+// [MergedFilePathParam] exactly.
+type MergedCacheKeyParam[T any] struct {
+	CacheKeyParam
+	field codex.FieldCodec[T]
+}
+
+// NewCacheKeyParam declares a cache key template variable that is BOTH
+// validated against codec (exactly like plain [CacheKeyParam], unchanged
+// spec/validation behavior) AND merged into T by [Cache.MergeFields] /
+// [codex.DecodeVars] — one declaration instead of a CacheKeyParam plus a
+// separate codex.Field. Mirrors [ports.NewFilePathParam] exactly; unlike
+// File, Cache has no MatchKey inverse (cache keys are built FROM known
+// values via [Cache.BuildKey], never reverse-matched from a discovered
+// key), so this is the only merge-capable constructor Cache needs.
+//
+//	userCache := ports.NewCache("user:{id}", format.JSON(userCodec),
+//	    ports.NewCacheKeyParam("id", codex.String().Refine(validate.UUID),
+//	        func(u User) string { return u.ID },
+//	        func(u *User, v string) { u.ID = v }))
+func NewCacheKeyParam[T any](
+	name string,
+	codec codex.Codec[string],
+	get func(T) string,
+	set func(*T, string),
+) MergedCacheKeyParam[T] {
+	return MergedCacheKeyParam[T]{
+		CacheKeyParam: CacheKeyParam{Name: name, Codec: &codec},
+		field:         codex.RequiredField(name, codec, get, set),
+	}
+}
+
+// WithDescription sets the PARAMETER-level description and returns the
+// updated value, mirroring CacheKeyParam.WithCodec's existing chain style.
+func (p MergedCacheKeyParam[T]) WithDescription(desc string) MergedCacheKeyParam[T] {
+	p.Description = desc
+	return p
+}
+
+func (p MergedCacheKeyParam[T]) applyCache(cb *cacheBuilder) {
+	cb.params = append(cb.params, p.CacheKeyParam) // unchanged spec/validation path
+	cb.mergeFields = append(cb.mergeFields, p.field)
+}
+
 // Cache is a declarative typed cache descriptor: a key template, a default
 // TTL, a value [format.Format], and optional per-key-variable codecs. It
 // bundles everything a cache adapter (redis.GetAdapter, redis.SetAdapter,
@@ -77,6 +127,20 @@ type Cache[T any] struct {
 	// params holds any [CacheKeyParam] values declared via
 	// [CachePattern.Opts] or [NewCache]'s variadic options.
 	params []CacheKeyParam
+
+	// mergeFields holds the merge-capable fields registered via
+	// [NewCacheKeyParam] — see [MergeFields].
+	mergeFields []codex.FieldCodec[T]
+}
+
+// MergeFields returns the merge-capable fields registered via
+// [NewCacheKeyParam] — feed them directly into [codex.DecodeVars]/
+// [codex.EncodeVars]. No bundling convenience method exists for Cache
+// (unlike [rest.RouteHandle.DecodeMerged]/[events.ChannelHandle.DecodeMerged])
+// since [Cache.Get]/[Cache.Set] already take vars directly — there is no
+// "body vs. vars" split to coordinate.
+func (c Cache[T]) MergeFields() []codex.FieldCodec[T] {
+	return c.mergeFields
 }
 
 // NewCache creates a [Cache] descriptor from a key template, a value
@@ -96,12 +160,25 @@ type Cache[T any] struct {
 //
 //	// Use directly with a cache adapter — no ports.NewIOPort/CachePattern needed.
 //	resp, err := redis.Seed(ctx, client, userCache, redis.SeedOptions{})
+//
+// NewCache PANICS if a merge field registered via [NewCacheKeyParam] does
+// not match T — this can only happen if a caller manually constructs a
+// [MergedCacheKeyParam] with the wrong type parameter, a programming error
+// (mirrors [NewFile]'s panic-on-misuse precedent exactly).
 func NewCache[T any](key string, f format.Format[T], opts ...CacheOpt) Cache[T] {
 	var cb cacheBuilder
 	for _, opt := range opts {
 		opt.applyCache(&cb)
 	}
-	return Cache[T]{Key: key, Format: f, params: cb.params}
+	mergeFields := make([]codex.FieldCodec[T], len(cb.mergeFields))
+	for i, mf := range cb.mergeFields {
+		fc, ok := mf.(codex.FieldCodec[T])
+		if !ok {
+			panic(fmt.Sprintf("ports: NewCache[%T]: merge field %d has the wrong type parameter (got %T)", *new(T), i, mf))
+		}
+		mergeFields[i] = fc
+	}
+	return Cache[T]{Key: key, Format: f, params: cb.params, mergeFields: mergeFields}
 }
 
 // codecFor returns the codec declared for a key var name, or nil.

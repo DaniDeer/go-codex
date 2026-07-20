@@ -1,10 +1,8 @@
 # Declarative Var Extraction & Merge — `codex.DecodeVars`/`EncodeVars`
 
-> **Status:** Round 1 SHIPPED (REST + File request-side merge). Round 3
-> SHIPPED (REST response-side merge + client single-call convenience).
-> Round 4 SHIPPED (nested structs + binary body formats, proven and
-> mandated policy-wide). **Phase 2 (events/reqreply/cache) is the only
-> remaining work** — fully designed below, not yet implemented.
+> **Status:** ✅ FEATURE COMPLETE. Rounds 1, 3, 4 SHIPPED (REST — request+
+> response merge, role-aware client encode, single-call convenience, nested
+> structs, binary formats). **Phase 2 SHIPPED** (events/reqreply/cache).
 > [← Back to Roadmap](index.md)
 
 ## Shipped history (Rounds 1, 3, 4)
@@ -83,19 +81,60 @@ flat-struct-specific.
 `go build ./...`, `go test ./...`, `-race` on touched packages, `just
 check`, all 50+ examples exit 0.
 
-## Phase 2 — events, reqreply, cache (design complete, not yet implemented)
+## Phase 2 — events, reqreply, cache — ✅ SHIPPED (2026-07)
 
 > **Policy context:** the "one struct, one call" pattern Rounds 1/3/4
 > established for REST is a MANDATORY design contract for every `api/*`
 > builder-backed boundary with a request/response or duplex role shape —
 > see `.github/instructions/go-codex.instructions.md`'s "MANDATORY design
 > contract: one struct, one call" section and the `add-a-new-adapter`
-> skill's "Step 5b". Phase 2 below is exactly what closes that mandate for
-> `api/events`/`api/reqreply`/`ports.Cache`, designed against that
-> checklist (declare-once constructors, escape hatch, encode/decode
-> symmetry, role symmetry, single-call wrapper) AND the Round 4 mandate
-> (non-JSON payload formats, nested struct composition, from day one — not
-> retrofitted afterward).
+> skill's "Step 5b". Phase 2 closed that mandate for
+> `api/events`/`api/reqreply`/`ports.Cache`, against that checklist
+> (declare-once constructors, escape hatch, encode/decode symmetry, role
+> symmetry, single-call wrapper) AND the Round 4 mandate (non-JSON payload
+> formats, nested struct composition, from day one — not retrofitted
+> afterward).
+
+**Shipped:**
+- `api/events`: `NewTopicParam[T]`, `ChannelHandle.MergeFields()`/
+  `DecodeMerged` (single flat slice — events has only ONE var destination,
+  no role-split needed).
+- `adapters/mqtt5`: new `TopicVarsFromMessage[T]` prerequisite (mirrors
+  `adapters/mqtt`'s v3 version), `Subscribe` auto-merge wiring,
+  `PublishHandle[T]` single-call convenience.
+- `api/reqreply`: `NewTopicParam[T]` (Req-side only — resolved: the reply
+  is correlated by the transport, not by re-encoding topic vars into
+  `Resp`), `RouteHandle.MergeFields()`/`DecodeMerged`.
+- `adapters/mqtt5`: `Serve` auto-merge wiring, new `CallHandle[Req,Resp]`.
+- `adapters/zeromq`: new `CallHandle[Req,Resp]` — **client-side only**, a
+  genuine finding during implementation: `Serve` reads raw socket frames
+  with NO per-message topic string at all (routing is socket-based, the
+  topic is a static observer-reporting label only) — zeromq CANNOT support
+  server-side decode-merge for topic vars, documented as an intentional
+  transport limitation, not a gap.
+- `ports.Cache`: `NewCacheKeyParam[T]`, `Cache.MergeFields()` — simplest
+  boundary, no role symmetry, no single-call wrapper needed.
+- Tests: EV1–EV7 (events + mqtt5), RR1–RR7 (reqreply + mqtt5/zeromq), C1–C2
+  (cache) — all passing, including nested-struct + Gob-payload round trips
+  for both events and reqreply (mirrors Round 4's rigor for REST).
+- New example `examples/events-nested-binary` — transport-agnostic
+  demonstration of nested payload + topic merge + Gob body (via
+  `format.NewTyped` projection), mirroring `examples/rest-nested-binary`.
+- Docs: `docs/features/events.md` ("Topic vars with automatic merge" +
+  "Nested structs & non-JSON payloads"), `docs/features/ports.md` (new
+  Cache section), `.github/instructions/go-codex.instructions.md`.
+
+**Verification:** gofmt clean, `go build ./...` clean, full
+`go test ./...` clean, `-race` on `api/events`/`api/reqreply`/
+`adapters/mqtt5`/`adapters/zeromq`/`ports` clean, `just check` 0 issues,
+all 52 examples (including the new one) exit 0.
+
+### Design notes (as implemented)
+
+The sections below capture the pre-implementation design (motivation,
+scope, API surface, test plan) — kept for historical reference; all open
+design decisions listed at the end were resolved as noted in "Shipped"
+above.
 
 ### Motivation
 

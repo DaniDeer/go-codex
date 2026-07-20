@@ -227,6 +227,31 @@ func makeSubscribeMessageHandler[T any](
 			return
 		}
 
+		// Merge topic variables declared via events.NewTopicParam into the
+		// SAME decoded value — additive, only runs when the channel has
+		// merge-capable topic params (backward compatible: identical
+		// behavior to today when none are declared). Mirrors
+		// nethttp.Handler's request-merge wiring.
+		if mergeFields := handle.MergeFields(); len(mergeFields) > 0 {
+			vars, varErr := TopicVarsFromMessage(handle, msg)
+			if varErr != nil {
+				stats.ReportErrors(obs, "topic_var", varErr)
+				obs.RecordSubscribe(msg.Topic, false, time.Since(start))
+				if opts.OnError != nil {
+					opts.OnError(SubscribeError{Kind: KindDecode, Topic: msg.Topic, Err: varErr})
+				}
+				return
+			}
+			if mergeErr := codex.DecodeVars(&value, vars, mergeFields...); mergeErr != nil {
+				stats.ReportErrors(obs, "topic_var", mergeErr)
+				obs.RecordSubscribe(msg.Topic, false, time.Since(start))
+				if opts.OnError != nil {
+					opts.OnError(SubscribeError{Kind: KindDecode, Topic: msg.Topic, Err: mergeErr})
+				}
+				return
+			}
+		}
+
 		// User Property param validation (runs before SecurityFunc).
 		if propErr := validateUserProperties(msg, opts.UserPropertyParams); propErr != nil {
 			obs.RecordValidationError("user_property", stats.ConstraintName(propErr), userPropertyName(propErr))
@@ -402,6 +427,37 @@ func Publish[T any](
 	}
 	obs.RecordPublish(topic, true, time.Since(start))
 	return nil
+}
+
+// PublishHandle is the single-call convenience wrapper around [Publish]: it
+// derives the topic vars map from msg automatically, using the channel's
+// merge-capable topic params ([events.ChannelHandle.MergeFields] +
+// [codex.EncodeVars]) — one struct in, no manual vars map, mirroring
+// [nethttp.CallHandle]'s client-side convenience for REST.
+//
+// [Publish] remains available as the lower-level escape hatch for callers
+// that build the vars map themselves (e.g. no merge fields declared, or
+// vars come from a non-struct source).
+//
+//	err := mqtt5.PublishHandle(ctx, client, sensorChannel, 1, false, reading, mqtt5.PublishOptions{})
+func PublishHandle[T any](
+	ctx context.Context,
+	client MQTTClient,
+	handle *events.ChannelHandle[T],
+	qos byte,
+	retained bool,
+	msg T,
+	opts PublishOptions,
+	formats ...format.Format[T],
+) error {
+	vars, err := codex.EncodeVars(msg, handle.MergeFields()...)
+	if err != nil {
+		return err
+	}
+	if len(vars) == 0 {
+		vars = nil
+	}
+	return Publish(ctx, client, handle, qos, retained, msg, vars, opts, formats...)
 }
 
 // firstScheme returns the first scheme name from the security requirements.

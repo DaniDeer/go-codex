@@ -102,15 +102,42 @@ Use `FromEnvVar` for ad-hoc overrides of individual settings. Use `config.FromEn
 
 ## Config file + env var overrides
 
+Env vars are just another string-keyed source — the SAME
+`codex.DecodeVars` primitive used for HTTP path/query/header/cookie params
+and MQTT topic vars (see
+[Concept: Codec — Reusing Field declarations](../concepts/codec.md#reusing-field-declarations-for-pathtopicheaderquery-vars))
+applies here too, replacing the hand-rolled `os.Getenv`+`strconv.Atoi`+
+manual-assignment recipe:
+
 ```go
+// portField wraps codex.Int() through a string codec via MapCodecValidated
+// — DecodeVars requires a field's codec to accept a string (env vars, like
+// every other var source, are string-valued at the wire level), and the
+// string→int parse (strconv.Atoi) can fail on non-numeric input, so the
+// fallible-both-directions variant is needed (not MapCodecSafe, whose
+// decode direction is infallible).
+var portField = codex.OptionalField("port",
+    codex.MapCodecValidated(codex.String(), codex.Int(),
+        strconv.Atoi,
+        func(n int) (string, error) { return strconv.Itoa(n), nil }),
+    func(c Config) int { return c.Port },
+    func(c *Config, v int) { c.Port = v },
+)
+
 // Decode the config file
 data, _ := os.ReadFile("config.toml")
 cfg, _ := format.TOML(configCodec).Unmarshal(data)
 
-// Apply env var overrides
-if port := os.Getenv("APP_PORT"); port != "" {
-    portVal, _ := strconv.Atoi(port)
-    cfg.Port = portVal
+// Apply env var overrides — only include vars that are actually set;
+// OptionalField skips KEYS ABSENT from the map (an empty string VALUE for
+// a present key is not the same as "absent" — DecodeVars only checks
+// whether the map contains the key at all).
+vars := map[string]string{}
+if v := os.Getenv("APP_PORT"); v != "" {
+    vars["port"] = v
+}
+if err := codex.DecodeVars(&cfg, vars, portField); err != nil {
+    log.Fatal(err)
 }
 
 // Validate the merged config
@@ -118,6 +145,11 @@ if err := configCodec.Validate(cfg); err != nil {
     log.Fatal(err)
 }
 ```
+
+This scales cleanly to multiple override vars — declare one `FieldCodec`
+per overridable field and pass them all to the same `DecodeVars` call; an
+empty string value for an `OptionalField` is treated as absent (skipped),
+so unset env vars never overwrite the file-loaded default.
 
 ## JSON Schema for editor autocomplete
 

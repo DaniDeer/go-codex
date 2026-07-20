@@ -114,6 +114,87 @@ Validation chain (in order):
 2. Builder-level topic codec → `InvalidTopicError`
 3. `TopicParam.Codec` per variable → `TopicParamError`
 
+## Topic vars with automatic merge — `NewTopicParam`
+
+`TopicParam` above is validate-only — it checks a topic variable against a
+codec but leaves extracting it into your payload struct to hand-written
+code. `events.NewTopicParam` declares the SAME spec `TopicParam` AND a
+merge field in one call — the handler receives an already-merged,
+already-validated payload, no manual `TopicVarsFromMessage` extraction:
+
+```go
+type SensorReading struct {
+    SensorID string
+    Value    float64
+}
+
+var sensorChannel = events.NewChannel[SensorReading]("sensors/{sensorID}/readings", sensorCodec,
+    events.NewTopicParam("sensorID", codex.String().Refine(validate.UUID),
+        func(r SensorReading) string { return r.SensorID },
+        func(r *SensorReading, v string) { r.SensorID = v },
+    ),
+)
+handle, _ := sensorChannel.Register(builder)
+
+// adapters/mqtt5.Subscribe calls ChannelHandle.DecodeMerged automatically
+// whenever handle.MergeFields() is non-empty — the handler function just
+// receives a fully populated, validated SensorReading:
+func(ctx context.Context, r SensorReading) error {
+    store.Save(r) // r.SensorID already validated as a UUID
+    ...
+}
+```
+
+This is the PRIMARY, recommended way to declare a topic variable — but not
+the SOLE way: the plain `TopicParam` struct literal remains available for
+validate-only variables a handler never reads directly. A channel can
+freely mix both styles.
+
+`ChannelHandle.MergeFields()` returns the registered merge fields directly
+(no role-aware split needed — unlike REST's path/query/header/cookie,
+events has exactly ONE var destination, the topic, so a single flat slice
+is always safe for both directions). `ChannelHandle.DecodeMerged(payload,
+topicVars) (T, error)` closes the loop: decodes the payload (via
+`ChannelHandle.Decode`, JSON) AND merges every topic variable into the SAME
+value, in one call.
+
+`adapters/mqtt5.PublishHandle` is the single-call publisher convenience —
+mirrors `nethttp.CallHandle`: derives the topic vars from the payload
+struct automatically via `codex.EncodeVars(msg, handle.MergeFields()...)`,
+then delegates to `Publish`. `Publish` remains the lower-level escape
+hatch for callers building the vars map themselves.
+
+```go
+err := mqtt5.PublishHandle(ctx, client, sensorChannel, 1, false, reading, mqtt5.PublishOptions{})
+// topic + payload both derived from the SAME reading value — no manual vars map.
+```
+
+`adapters/mqtt5.TopicVarsFromMessage` is the mqtt5-specific equivalent of
+the (Paho MQTT 3.1.1) `mqtt.TopicVarsFromMessage` shown above — used
+internally by `Subscribe`'s auto-merge wiring, and directly usable by
+hand-rolled mqtt5 consumers.
+
+### Nested structs & non-JSON payloads
+
+The merge-field convenience is neither JSON-specific nor
+flat-struct-specific — the same guarantees documented for REST
+([Nested structs & binary body formats](rest-api.md#nested-structs-binary-body-formats))
+apply here:
+
+- Merge-field `get`/`set` are plain closures, so a topic variable can
+  target a NESTED sub-struct field (`func(r Reading) string { return
+  r.Meta.SensorID }`) with zero framework changes.
+- Payload decode/encode is orthogonal to topic-var merge, so `format.Gob`/
+  `format.Binary`/any custom format composes unchanged — but the SAME
+  `format.Gob(codec)` caveat applies: it serialises the WHOLE typed value
+  directly via `encoding/gob`'s reflection, bypassing the codec entirely
+  for the wire bytes. Use `format.NewTyped` with a custom marshal/
+  unmarshal to project the wire bytes onto ONLY a nested payload sub-field.
+
+See `examples/events-nested-binary` for the full runnable version (nested
+`Meta`/`Value` payload, Gob body projected via `format.NewTyped`, topic
+merge into the nested field).
+
 ## Multi-format MQTT payloads
 
 MQTT 3.1.1 carries no content-type metadata — format is agreed out-of-band. Configure the default format once on the handle; `WithFormats` also updates the AsyncAPI spec: the first format's content type is written to `message.contentType` on each registered operation.

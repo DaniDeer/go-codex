@@ -576,3 +576,80 @@ func TestFormats_TypeMismatch(t *testing.T) {
 		t.Fatalf("want FormatOptError{response}, got %v", err)
 	}
 }
+
+// ── Phase 2: reqreply.NewTopicParam / RouteHandle.DecodeMerged ────────────
+
+type tenantComputeReq struct {
+	TenantID string
+	X, Y     int
+}
+
+var tenantComputeReqCodec = codex.Struct[tenantComputeReq](
+	codex.RequiredField("x", codex.Int(),
+		func(r tenantComputeReq) int { return r.X },
+		func(r *tenantComputeReq, v int) { r.X = v }),
+	codex.RequiredField("y", codex.Int(),
+		func(r tenantComputeReq) int { return r.Y },
+		func(r *tenantComputeReq, v int) { r.Y = v }),
+)
+
+// RR1: reqreply.NewTopicParam registers both spec TopicParam and merge field.
+func TestNewTopicParam_RegistersSpecAndMergeField(t *testing.T) {
+	b := reqreply.NewBuilder(reqreply.Info{})
+	h, err := reqreply.NewRoute[tenantComputeReq, computeResp]("compute/{tenantID}/add",
+		tenantComputeReqCodec, respCodec,
+		reqreply.NewTopicParam("tenantID", codex.String().Refine(validate.NonEmptyString),
+			func(r tenantComputeReq) string { return r.TenantID },
+			func(r *tenantComputeReq, v string) { r.TenantID = v }),
+	).Register(b)
+	if err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+	if len(h.MergeFields()) != 1 {
+		t.Fatalf("MergeFields: want 1, got %d", len(h.MergeFields()))
+	}
+}
+
+// RR2: RouteHandle.DecodeMerged happy path — payload decoded AND topic var
+// merged into the SAME Req.
+func TestDecodeMerged_HappyPath(t *testing.T) {
+	b := reqreply.NewBuilder(reqreply.Info{})
+	h, err := reqreply.NewRoute[tenantComputeReq, computeResp]("compute/{tenantID}/add",
+		tenantComputeReqCodec, respCodec,
+		reqreply.NewTopicParam("tenantID", codex.String().Refine(validate.NonEmptyString),
+			func(r tenantComputeReq) string { return r.TenantID },
+			func(r *tenantComputeReq, v string) { r.TenantID = v }),
+	).Register(b)
+	if err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+	req, err := h.DecodeMerged([]byte(`{"x":1,"y":2}`), map[string]string{"tenantID": "acme"})
+	if err != nil {
+		t.Fatalf("DecodeMerged: %v", err)
+	}
+	if req.TenantID != "acme" || req.X != 1 || req.Y != 2 {
+		t.Errorf("unexpected merged req: %+v", req)
+	}
+}
+
+// RR3: RouteHandle.DecodeMerged with zero merge fields behaves like plain
+// Decode (regression guard).
+func TestDecodeMerged_NoMergeFieldsIsNoop(t *testing.T) {
+	b := reqreply.NewBuilder(reqreply.Info{})
+	h, err := reqreply.NewRoute[computeReq, computeResp]("compute/add", reqCodec, respCodec).Register(b)
+	if err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+	body := []byte(`{"x":1,"y":2}`)
+	viaDecode, err := h.Decode(body)
+	if err != nil {
+		t.Fatalf("Decode: %v", err)
+	}
+	viaMerged, err := h.DecodeMerged(body, nil)
+	if err != nil {
+		t.Fatalf("DecodeMerged: %v", err)
+	}
+	if viaDecode != viaMerged {
+		t.Errorf("DecodeMerged should match plain Decode when no merge fields declared: %+v vs %+v", viaDecode, viaMerged)
+	}
+}

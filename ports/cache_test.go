@@ -302,3 +302,54 @@ func ExampleNewCache() {
 	// key: user:f47ac10b-58cc-4372-a567-0e02b2c3d479 err: <nil>
 	// rejected invalid id: true
 }
+
+// ── Phase 2: ports.NewCacheKeyParam / Cache.MergeFields ────────────────────
+
+// C1: ports.NewCacheKeyParam registers both spec CacheKeyParam and merge field.
+func TestNewCacheKeyParam_RegistersSpecAndMergeField(t *testing.T) {
+	type user struct{ ID string }
+	userCodec := codex.Struct[user](
+		codex.RequiredField("id", codex.String(),
+			func(u user) string { return u.ID },
+			func(u *user, v string) { u.ID = v }),
+	)
+	c := ports.NewCache("user:{id}", format.JSON(userCodec),
+		ports.NewCacheKeyParam("id", codex.String().Refine(validate.UUID),
+			func(u user) string { return u.ID },
+			func(u *user, v string) { u.ID = v }),
+	)
+	if len(c.MergeFields()) != 1 {
+		t.Fatalf("MergeFields: want 1, got %d", len(c.MergeFields()))
+	}
+	if _, ok := c.KeySchemas()["id"]; !ok {
+		t.Fatalf("KeySchemas: want \"id\" present, got %+v", c.KeySchemas())
+	}
+}
+
+// C2: Cache.MergeFields() feeds directly into codex.EncodeVars/DecodeVars —
+// round trip. MergeFields() is already strongly typed as []codex.FieldCodec[T]
+// (T = user here), no type assertion needed at the call site.
+func TestCacheMergeFields_EncodeDecodeRoundTrip(t *testing.T) {
+	type user struct{ ID string }
+	userCodec := codex.Struct[user](
+		codex.RequiredField("id", codex.String(),
+			func(u user) string { return u.ID },
+			func(u *user, v string) { u.ID = v }),
+	)
+	c := ports.NewCache("user:{id}", format.JSON(userCodec),
+		ports.NewCacheKeyParam("id", codex.String().Refine(validate.NonEmptyString),
+			func(u user) string { return u.ID },
+			func(u *user, v string) { u.ID = v }),
+	)
+	vars, err := codex.EncodeVars(user{ID: "u1"}, c.MergeFields()...)
+	if err != nil {
+		t.Fatalf("EncodeVars: %v", err)
+	}
+	var decoded user
+	if err := codex.DecodeVars(&decoded, vars, c.MergeFields()...); err != nil {
+		t.Fatalf("DecodeVars: %v", err)
+	}
+	if decoded.ID != "u1" {
+		t.Errorf("round trip: want ID=u1, got %q", decoded.ID)
+	}
+}

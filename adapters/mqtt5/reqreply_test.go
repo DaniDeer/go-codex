@@ -9,6 +9,8 @@ import (
 
 	mqtt5 "github.com/DaniDeer/go-codex/adapters/mqtt5"
 	"github.com/DaniDeer/go-codex/api/reqreply"
+	"github.com/DaniDeer/go-codex/codex"
+	"github.com/DaniDeer/go-codex/validate"
 	pahomqtt5 "github.com/eclipse/paho.golang/paho"
 )
 
@@ -719,5 +721,203 @@ func TestCall_NilBuilder_DefaultPrefix(t *testing.T) {
 	}
 	if !found {
 		t.Errorf("expected default subscribe filter starting with %q, subscribed to: %v", "replies/", filters)
+	}
+}
+
+// ── Phase 2: reqreply.NewTopicParam merge fields — Serve/CallHandle ───────────
+
+type tenantReq struct {
+	TenantID string
+	X, Y     int
+}
+type tenantResp struct{ Sum int }
+
+var tenantReqCodec = codex.Struct[tenantReq](
+	codex.RequiredField("x", codex.Int(),
+		func(r tenantReq) int { return r.X },
+		func(r *tenantReq, v int) { r.X = v }),
+	codex.RequiredField("y", codex.Int(),
+		func(r tenantReq) int { return r.Y },
+		func(r *tenantReq, v int) { r.Y = v }),
+)
+
+var tenantRespCodec = codex.Struct[tenantResp](
+	codex.RequiredField("sum", codex.Int(),
+		func(r tenantResp) int { return r.Sum },
+		func(r *tenantResp, v int) { r.Sum = v }),
+)
+
+func newTenantRouteHandle() *reqreply.RouteHandle[tenantReq, tenantResp] {
+	b := reqreply.NewBuilder(reqreply.Info{Title: "Test", Version: "1.0.0"})
+	h, err := reqreply.NewRoute[tenantReq, tenantResp]("compute/{tenantID}/add",
+		tenantReqCodec, tenantRespCodec,
+		reqreply.NewTopicParam("tenantID", codex.String().Refine(validate.NonEmptyString),
+			func(r tenantReq) string { return r.TenantID },
+			func(r *tenantReq, v string) { r.TenantID = v }),
+	).Register(b)
+	if err != nil {
+		panic(err)
+	}
+	return h
+}
+
+// RR4: mqtt5.Serve auto-merges topic vars into the decoded req when the
+// route declares merge fields.
+func TestServe_MergeFields_AutoMergesTopicVars(t *testing.T) {
+	client := &mockClient{}
+	router := newMockRouter()
+	handle := newTenantRouteHandle()
+
+	var received tenantReq
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+
+	err := mqtt5.Serve(ctx, client, router, handle,
+		func(_ context.Context, req tenantReq) (tenantResp, error) {
+			received = req
+			return tenantResp{Sum: req.X + req.Y}, nil
+		},
+		mqtt5.ServeOptions{})
+	if err != nil {
+		t.Fatalf("Serve setup failed: %v", err)
+	}
+
+	router.dispatch("compute/{tenantID}/add", &pahomqtt5.Publish{
+		Topic:   "compute/acme/add",
+		Payload: []byte(`{"x":3,"y":4}`),
+		Properties: &pahomqtt5.PublishProperties{
+			ResponseTopic:   "replies/client-1",
+			CorrelationData: []byte("corr-1"),
+		},
+	})
+	time.Sleep(50 * time.Millisecond)
+
+	if received.TenantID != "acme" {
+		t.Errorf("TenantID: want merged from topic, got %q", received.TenantID)
+	}
+	if received.X != 3 || received.Y != 4 {
+		t.Errorf("unexpected req: %+v", received)
+	}
+}
+
+// RR5: mqtt5.CallHandle derives opts.Vars from req automatically — one
+// struct in, no manual vars map needed.
+func TestCallHandle_DerivesVarsFromReq(t *testing.T) {
+	client := &mockClient{}
+	router := newMockRouter()
+	handle := newTenantRouteHandle()
+	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	defer cancel()
+
+	_, _ = mqtt5.CallHandle(ctx, client, router, handle,
+		tenantReq{TenantID: "acme", X: 1, Y: 2},
+		mqtt5.CallOptions{Timeout: 100 * time.Millisecond})
+
+	pub := client.lastPublished()
+	if pub == nil {
+		t.Fatal("expected a request to be published")
+	}
+	if pub.Topic != "compute/acme/add" {
+		t.Errorf("Topic: want %q, got %q", "compute/acme/add", pub.Topic)
+	}
+}
+
+// RR6: mqtt5.CallHandle explicit opts.Vars takes precedence over the
+// derived value for the same key.
+func TestCallHandle_ExplicitVarsOverridePrecedence(t *testing.T) {
+	client := &mockClient{}
+	router := newMockRouter()
+	handle := newTenantRouteHandle()
+	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	defer cancel()
+
+	_, _ = mqtt5.CallHandle(ctx, client, router, handle,
+		tenantReq{TenantID: "acme", X: 1, Y: 2},
+		mqtt5.CallOptions{
+			Timeout: 100 * time.Millisecond,
+			Vars:    map[string]string{"tenantID": "overridden"},
+		})
+
+	pub := client.lastPublished()
+	if pub == nil {
+		t.Fatal("expected a request to be published")
+	}
+	if pub.Topic != "compute/overridden/add" {
+		t.Errorf("Topic: want explicit override %q, got %q", "compute/overridden/add", pub.Topic)
+	}
+}
+
+// RR7: full Serve/CallHandle round trip with a NESTED Req struct — proves
+// the Round 4 mandate holds for reqreply too, not just REST/events.
+func TestServeCallHandle_NestedReq_RoundTrip(t *testing.T) {
+	type meta struct {
+		TenantID string
+	}
+	type nestedReq struct {
+		Meta meta
+		X, Y int
+	}
+	nestedReqCodec := codex.Struct[nestedReq](
+		codex.RequiredField("x", codex.Int(),
+			func(r nestedReq) int { return r.X },
+			func(r *nestedReq, v int) { r.X = v }),
+		codex.RequiredField("y", codex.Int(),
+			func(r nestedReq) int { return r.Y },
+			func(r *nestedReq, v int) { r.Y = v }),
+	)
+
+	b := reqreply.NewBuilder(reqreply.Info{Title: "Test", Version: "1.0.0"})
+	handle, err := reqreply.NewRoute[nestedReq, tenantResp]("compute/{tenantID}/add",
+		nestedReqCodec, tenantRespCodec,
+		reqreply.NewTopicParam("tenantID", codex.String().Refine(validate.NonEmptyString),
+			func(r nestedReq) string { return r.Meta.TenantID },
+			func(r *nestedReq, v string) { r.Meta.TenantID = v }),
+	).Register(b)
+	if err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+
+	client := &mockClient{}
+	router := newMockRouter()
+	var received nestedReq
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+
+	if err := mqtt5.Serve(ctx, client, router, handle,
+		func(_ context.Context, req nestedReq) (tenantResp, error) {
+			received = req
+			return tenantResp{Sum: req.X + req.Y}, nil
+		},
+		mqtt5.ServeOptions{}); err != nil {
+		t.Fatalf("Serve setup failed: %v", err)
+	}
+
+	req := nestedReq{Meta: meta{TenantID: "acme"}, X: 5, Y: 6}
+	go func() {
+		_, _ = mqtt5.CallHandle(ctx, client, router, handle, req, mqtt5.CallOptions{Timeout: 500 * time.Millisecond})
+	}()
+
+	// Wait for the request to be published, then dispatch it to Serve's
+	// registered handler (mockRouter keys on the TEMPLATE topic).
+	deadline := time.Now().Add(time.Second)
+	var reqPub *pahomqtt5.Publish
+	for time.Now().Before(deadline) {
+		if pub := client.lastPublished(); pub != nil && pub.Properties != nil && pub.Properties.ResponseTopic != "" {
+			reqPub = pub
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	if reqPub == nil {
+		t.Fatal("expected CallHandle to publish a request")
+	}
+	router.dispatch("compute/{tenantID}/add", reqPub)
+	time.Sleep(50 * time.Millisecond)
+
+	if received.Meta.TenantID != "acme" {
+		t.Errorf("Meta.TenantID: want merged from topic, got %q", received.Meta.TenantID)
+	}
+	if received.X != 5 || received.Y != 6 {
+		t.Errorf("unexpected req: %+v", received)
 	}
 }

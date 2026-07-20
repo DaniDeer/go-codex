@@ -1449,3 +1449,82 @@ func TestPublishFormats_TypeMismatch(t *testing.T) {
 		t.Fatalf("want FormatOptError{publish}, got %v", err)
 	}
 }
+
+// ── Phase 2: events.NewTopicParam / ChannelHandle.DecodeMerged ────────────
+
+// EV1: events.NewTopicParam registers both spec TopicParam and merge field.
+func TestNewTopicParam_RegistersSpecAndMergeField(t *testing.T) {
+	b := events.NewBuilder(testInfo)
+	h, err := events.NewChannel[userEvent]("users/{id}", userEventCodec,
+		events.NewTopicParam("id", codex.String().Refine(validate.NonEmptyString),
+			func(e userEvent) string { return e.ID },
+			func(e *userEvent, v string) { e.ID = v }),
+	).Register(b)
+	if err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+	if len(h.Descriptor.Parameters) != 1 {
+		t.Fatalf("Descriptor.Parameters: want 1, got %d: %+v", len(h.Descriptor.Parameters), h.Descriptor.Parameters)
+	}
+	if len(h.MergeFields()) != 1 {
+		t.Fatalf("MergeFields: want 1, got %d", len(h.MergeFields()))
+	}
+}
+
+// nestedUserEvent demonstrates the Round 4 mandate: nested struct
+// composition also works for events, zero framework changes needed.
+type nestedUserEvent struct {
+	Meta struct {
+		ID string
+	}
+	Name string
+}
+
+// EV2: ChannelHandle.DecodeMerged happy path — payload decoded AND topic
+// var merged into a NESTED struct field.
+func TestDecodeMerged_HappyPath_Nested(t *testing.T) {
+	nestedCodec := codex.Struct[nestedUserEvent](
+		codex.RequiredField("name", codex.String().Refine(validate.NonEmptyString),
+			func(e nestedUserEvent) string { return e.Name },
+			func(e *nestedUserEvent, v string) { e.Name = v },
+		),
+	)
+	b := events.NewBuilder(testInfo)
+	h, err := events.NewChannel[nestedUserEvent]("users/{id}", nestedCodec,
+		events.NewTopicParam("id", codex.String().Refine(validate.NonEmptyString),
+			func(e nestedUserEvent) string { return e.Meta.ID },
+			func(e *nestedUserEvent, v string) { e.Meta.ID = v }),
+	).Register(b)
+	if err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+	msg, err := h.DecodeMerged([]byte(`{"name":"Alice"}`), map[string]string{"id": "u1"})
+	if err != nil {
+		t.Fatalf("DecodeMerged: %v", err)
+	}
+	if msg.Name != "Alice" || msg.Meta.ID != "u1" {
+		t.Errorf("unexpected merged msg: %+v", msg)
+	}
+}
+
+// EV3: ChannelHandle.DecodeMerged with zero merge fields behaves like
+// plain Decode (regression guard).
+func TestDecodeMerged_NoMergeFieldsIsNoop(t *testing.T) {
+	b := events.NewBuilder(testInfo)
+	h, err := events.NewChannel[userEvent]("users", userEventCodec).Register(b)
+	if err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+	body := []byte(`{"id":"u1","name":"Alice"}`)
+	viaDecode, err := h.Decode(body)
+	if err != nil {
+		t.Fatalf("Decode: %v", err)
+	}
+	viaMerged, err := h.DecodeMerged(body, nil)
+	if err != nil {
+		t.Fatalf("DecodeMerged: %v", err)
+	}
+	if viaDecode != viaMerged {
+		t.Errorf("DecodeMerged should match plain Decode when no merge fields declared: %+v vs %+v", viaDecode, viaMerged)
+	}
+}

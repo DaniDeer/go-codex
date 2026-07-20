@@ -1,7 +1,9 @@
 package mqtt5_test
 
 import (
+	"bytes"
 	"context"
+	"encoding/gob"
 	"errors"
 	"log/slog"
 	"sync"
@@ -12,6 +14,7 @@ import (
 	"github.com/DaniDeer/go-codex/api/events"
 	"github.com/DaniDeer/go-codex/api/reqreply"
 	"github.com/DaniDeer/go-codex/codex"
+	"github.com/DaniDeer/go-codex/format"
 	"github.com/DaniDeer/go-codex/validate"
 	pahomqtt5 "github.com/eclipse/paho.golang/paho"
 )
@@ -961,5 +964,181 @@ func TestPublish_Vars_CodecFailure_ReportsVarNameAsField(t *testing.T) {
 	}
 	if got.field != "sensorID" {
 		t.Errorf("expected field=%q (variable name), got %q", "sensorID", got.field)
+	}
+}
+
+// ── Phase 2: events.NewTopicParam merge fields — Subscribe/PublishHandle ──────
+
+// newMergeChannelHandle returns a channel whose sensorID topic var is
+// merge-capable (events.NewTopicParam), unlike newTemplateChannelHandle's
+// validate-only events.TopicParam.
+func newMergeChannelHandle() *events.ChannelHandle[sensorReading] {
+	uuidCodec := codex.String().Refine(validate.UUID)
+	b := events.NewBuilder(events.Info{Title: "Test", Version: "1.0.0"})
+	h, err := events.NewChannel[sensorReading](
+		"sensors/{sensorID}/readings",
+		sensorCodec,
+		events.NewTopicParam("sensorID", uuidCodec,
+			func(r sensorReading) string { return r.SensorID },
+			func(r *sensorReading, v string) { r.SensorID = v }),
+	).Register(b)
+	if err != nil {
+		panic(err)
+	}
+	return h
+}
+
+// EV5: mqtt5.Subscribe auto-merges topic vars into the payload when the
+// channel declares merge fields — no manual TopicVarsFromMessage call
+// needed in the handler function.
+func TestSubscribe_MergeFields_AutoMergesTopicVars(t *testing.T) {
+	client := &mockClient{}
+	router := newMockRouter()
+	var received sensorReading
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+
+	handle := newMergeChannelHandle()
+	if err := mqtt5.Subscribe(ctx, client, router, handle, 1,
+		func(_ context.Context, r sensorReading) error { received = r; return nil },
+		mqtt5.SubscribeOptions{}); err != nil {
+		t.Fatalf("Subscribe setup failed: %v", err)
+	}
+
+	// Payload JSON deliberately carries a DIFFERENT sensor_id — merge must
+	// OVERWRITE it with the value extracted from the concrete topic.
+	// mockRouter.RegisterHandler keys on the TEMPLATE topic (handle.Topic);
+	// the dispatched message's OWN .Topic field carries the CONCRETE topic
+	// used for var extraction.
+	router.dispatch("sensors/{sensorID}/readings", &pahomqtt5.Publish{
+		Topic:   "sensors/f47ac10b-58cc-4372-a567-0e02b2c3d479/readings",
+		Payload: []byte(`{"sensor_id":"00000000-0000-0000-0000-000000000000","value":22.5}`),
+	})
+
+	if received.SensorID != "f47ac10b-58cc-4372-a567-0e02b2c3d479" {
+		t.Errorf("SensorID: want merged from topic, got %q", received.SensorID)
+	}
+	if received.Value != 22.5 {
+		t.Errorf("Value: want 22.5, got %v", received.Value)
+	}
+}
+
+// EV5b: mqtt5.Subscribe route WITHOUT merge fields behaves identically to
+// today — regression guard (mirrors REST's P6).
+func TestSubscribe_NoMergeFieldsIsUnaffected(t *testing.T) {
+	client := &mockClient{}
+	router := newMockRouter()
+	var received sensorReading
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+
+	if err := mqtt5.Subscribe(ctx, client, router, newChannelHandle(), 1,
+		func(_ context.Context, r sensorReading) error { received = r; return nil },
+		mqtt5.SubscribeOptions{}); err != nil {
+		t.Fatalf("Subscribe setup failed: %v", err)
+	}
+
+	router.dispatch("sensors/readings", &pahomqtt5.Publish{
+		Topic:   "sensors/readings",
+		Payload: []byte(validSensorJSON),
+	})
+
+	if received.Value != 22.5 {
+		t.Fatalf("unexpected value: %v", received.Value)
+	}
+}
+
+// EV6: mqtt5.PublishHandle derives topic vars from msg automatically — one
+// struct in, no manual vars map needed.
+func TestPublishHandle_DerivesVarsFromMsg(t *testing.T) {
+	client := &mockClient{}
+	handle := newMergeChannelHandle()
+	reading := sensorReading{SensorID: "f47ac10b-58cc-4372-a567-0e02b2c3d479", Value: 22.5}
+
+	err := mqtt5.PublishHandle(context.Background(), client, handle, 1, false, reading, mqtt5.PublishOptions{})
+	if err != nil {
+		t.Fatalf("PublishHandle: %v", err)
+	}
+	if len(client.published) != 1 {
+		t.Fatalf("want 1 published message, got %d", len(client.published))
+	}
+	wantTopic := "sensors/f47ac10b-58cc-4372-a567-0e02b2c3d479/readings"
+	if client.published[0].Topic != wantTopic {
+		t.Errorf("Topic: want %q, got %q", wantTopic, client.published[0].Topic)
+	}
+}
+
+// EV7: full publish->subscribe round trip with a NESTED payload struct and
+// a non-JSON (Gob, via format.NewTyped projection) format — proves the
+// Round 4 mandate holds for events too, not just REST.
+func TestPublishHandleSubscribe_NestedGobPayload_RoundTrip(t *testing.T) {
+	type meta struct {
+		SensorID string
+	}
+	type reading struct {
+		Meta  meta
+		Value float64
+	}
+
+	readingCodec := codex.Struct[reading]()
+	gobFmt := format.NewTyped[reading](
+		readingCodec,
+		func(r reading) ([]byte, error) {
+			var buf bytes.Buffer
+			err := gob.NewEncoder(&buf).Encode(r.Value)
+			return buf.Bytes(), err
+		},
+		func(data []byte) (reading, error) {
+			var v float64
+			if err := gob.NewDecoder(bytes.NewReader(data)).Decode(&v); err != nil {
+				return reading{}, err
+			}
+			return reading{Value: v}, nil
+		},
+		"application/gob",
+	)
+
+	b := events.NewBuilder(events.Info{Title: "Test", Version: "1.0.0"})
+	handle, err := events.NewChannel[reading]("sensors/{sensorID}/readings", readingCodec,
+		events.NewTopicParam("sensorID", codex.String().Refine(validate.UUID),
+			func(r reading) string { return r.Meta.SensorID },
+			func(r *reading, v string) { r.Meta.SensorID = v }),
+	).Register(b)
+	if err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+	handle.WithFormats(gobFmt)
+
+	client := &mockClient{}
+	router := newMockRouter()
+	var received reading
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	if err := mqtt5.Subscribe(ctx, client, router, handle, 1,
+		func(_ context.Context, r reading) error { received = r; return nil },
+		mqtt5.SubscribeOptions{}); err != nil {
+		t.Fatalf("Subscribe setup failed: %v", err)
+	}
+
+	msg := reading{Meta: meta{SensorID: "f47ac10b-58cc-4372-a567-0e02b2c3d479"}, Value: 42.5}
+	if err := mqtt5.PublishHandle(ctx, client, handle, 1, false, msg, mqtt5.PublishOptions{}); err != nil {
+		t.Fatalf("PublishHandle: %v", err)
+	}
+	if len(client.published) != 1 {
+		t.Fatalf("want 1 published message, got %d", len(client.published))
+	}
+	// mockRouter.RegisterHandler keys on the TEMPLATE topic (handle.Topic);
+	// the published message's own .Topic field already carries the
+	// CONCRETE, resolved topic (used for var extraction on receive).
+	router.dispatch(handle.Topic, client.published[0])
+
+	if received.Meta.SensorID != "f47ac10b-58cc-4372-a567-0e02b2c3d479" {
+		t.Errorf("Meta.SensorID: want merged from topic, got %q", received.Meta.SensorID)
+	}
+	if received.Value != 42.5 {
+		t.Errorf("Value: want 42.5 (from Gob body), got %v", received.Value)
 	}
 }

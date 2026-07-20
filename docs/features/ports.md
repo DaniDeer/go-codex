@@ -589,6 +589,35 @@ for the shared mechanism (`codex.DecodeVars`/`EncodeVars`) this builds on.
 
 ---
 
+## Cache key vars with automatic merge — `NewCacheKeyParam`
+
+`ports.NewCacheKeyParam[T]` mirrors `ports.NewFilePathParam[T]` exactly —
+it declares BOTH the `CacheKeyParam` (spec/validation, unchanged) AND a
+merge field in one call. Unlike File, Cache has no `MatchKey` inverse
+(cache keys are built FROM known values via `Cache.BuildKey`, never
+reverse-matched from a discovered key) — the merge-field constructor is
+the only addition Cache needs:
+
+```go
+var userCache = ports.NewCache("user:{id}", format.JSON(userCodec),
+    ports.NewCacheKeyParam("id", codex.String().Refine(validate.UUID),
+        func(u User) string { return u.ID },
+        func(u *User, v string) { u.ID = v }),
+)
+
+vars, err := codex.EncodeVars(user, userCache.MergeFields()...)
+key, err := userCache.BuildKey(vars)
+```
+
+`Cache.MergeFields()` feeds directly into `codex.DecodeVars`/`EncodeVars` —
+there is no `DecodeMerged`-style bundling convenience for Cache (unlike
+`rest.RouteHandle.DecodeMerged`/`events.ChannelHandle.DecodeMerged`), since
+cache adapters (`redis.GetAdapter`/`SetAdapter`) already take the value and
+vars together at each call site — there is no separate "body vs. vars"
+split to coordinate the way REST/events do.
+
+---
+
 ## `IOParam` — protocol-agnostic parameters (handle-less adapters)
 
 `PortOptions.Params` is the enforcement mechanism for adapters with **no** protocol-level

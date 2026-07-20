@@ -9,6 +9,7 @@ import (
 
 	"github.com/DaniDeer/go-codex/api/events"
 	"github.com/DaniDeer/go-codex/api/reqreply"
+	"github.com/DaniDeer/go-codex/codex"
 	"github.com/DaniDeer/go-codex/format"
 	"github.com/DaniDeer/go-codex/stats"
 )
@@ -553,6 +554,53 @@ func Call[Req, Resp any](
 	}
 	obs.RecordRequest("ZMQ-REQ", path, 200, time.Since(start))
 	return resp, nil
+}
+
+// CallHandle is the single-call convenience wrapper around [Call]: it
+// derives [CallOptions.Vars] from req automatically, using the route's
+// merge-capable topic params ([reqreply.RouteHandle.MergeFields] +
+// [codex.EncodeVars]) — mirrors [nethttp.CallHandle]/[mqtt5.CallHandle].
+//
+// An explicit [CallOptions.Vars] takes PRECEDENCE over the derived value.
+// [Call] remains the lower-level escape hatch.
+//
+// Note: this convenience is CLIENT-SIDE only. ZMQ REQ/REP routing is
+// socket-based, not topic-based — [Serve]'s incoming messages carry no
+// per-message topic string to extract vars FROM (unlike MQTT's
+// broker-routed topics), so there is no server-side decode-merge
+// equivalent for zeromq. The resolved topic here is used only for codec
+// validation and observer reporting, matching [CallOptions.Vars]'s
+// existing documented behavior.
+//
+//	resp, err := zeromq.CallHandle(ctx, sock, computeRoute, req, zeromq.CallOptions{})
+func CallHandle[Req, Resp any](
+	ctx context.Context,
+	sock FramedSocket,
+	handle *reqreply.RouteHandle[Req, Resp],
+	req Req,
+	opts CallOptions,
+) (Resp, error) {
+	var zero Resp
+	derived, err := codex.EncodeVars(req, handle.MergeFields()...)
+	if err != nil {
+		return zero, err
+	}
+	if len(derived) == 0 {
+		derived = nil
+	}
+	if opts.Vars != nil {
+		merged := make(map[string]string, len(derived)+len(opts.Vars))
+		for k, v := range derived {
+			merged[k] = v
+		}
+		for k, v := range opts.Vars {
+			merged[k] = v
+		}
+		opts.Vars = merged
+	} else {
+		opts.Vars = derived
+	}
+	return Call(ctx, sock, handle, req, opts)
 }
 
 // sendErrorReply sends an error reply frame to the REQ peer.

@@ -101,7 +101,13 @@ func main() {
 		os.Exit(1)
 	}
 
-	// Path parameter is extracted at the HTTP layer (e.g. r.PathValue("id")).
+	// This route uses a body-less struct{} Req (spec/validation demo only,
+	// no live handler here) with plain rest.PathParam (validate-only). For
+	// a typed Req that wants the path value merged in automatically (no
+	// manual r.PathValue("id") extraction), use rest.NewPathParam instead
+	// — see examples/adapters-nethttp's makeGetUserHandler and
+	// docs/features/rest-api.md's "Path/query/header params with
+	// automatic merge" section for the full pattern.
 	getUser, err := rest.NewRoute[struct{}, User]("GET", "/users/{id}",
 		codex.Empty, userCodec,
 		rest.RouteMeta{

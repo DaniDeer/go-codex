@@ -13,6 +13,9 @@
 // Key patterns shown:
 //   - [ports.NewFile] — declare once, use anywhere (mirrors rest.Route / events.Channel)
 //   - [ports.File.BuildPath] — pre-flight path validation without any I/O
+//   - [ports.File.MatchPath] + [ports.NewFilePathParam] + [codex.DecodeVars] —
+//     the inverse of BuildPath: extracting filename-encoded metadata
+//     (date, sensor) into a typed struct, merged alongside the body
 //   - [ports.File.Update] — atomic read-modify-write in one call
 //   - [ports.FileOptions] — wiring observer + custom file permission
 //   - [ports.FilePathParamError], [ports.MissingFilePathVarError],
@@ -322,6 +325,71 @@ func main() {
 	} else {
 		fmt.Printf("  read back: sensor=%s value=%.1f%s at %s\n",
 			got.SensorID, got.Value, got.Unit, got.Timestamp.Format(time.RFC3339))
+	}
+
+	// ── Section 2b: MatchPath — the inverse of BuildPath ──────────────────────
+	//
+	// The original motivating scenario for this pattern: information is
+	// ENCODED IN THE FILENAME (date, sensor) rather than the file body —
+	// MatchPath is the missing inverse of BuildPath, extracting vars from
+	// an already-discovered path (the caller's own filepath.WalkDir/Glob;
+	// go-codex stays discovery-agnostic). NewFilePathParam declares BOTH
+	// the spec FilePathParam (validation, unchanged) AND a merge field in
+	// ONE call, so codex.DecodeVars can merge the extracted vars straight
+	// into a typed struct alongside the file's own body fields.
+	fmt.Println("\n── Section 2b: MatchPath — extracting metadata from the filename ──")
+
+	// ReadingMeta mirrors Measurement, but SensorID/Date come from the
+	// PATH (merge fields) while Value comes from the file BODY — two
+	// distinct sources merged into one struct.
+	type ReadingMeta struct {
+		SensorID string
+		Date     string
+		Value    float64
+	}
+
+	// metaFile is used ONLY for MatchPath/BuildPath in this section (no
+	// Read/Write) — its body codec is a placeholder empty Struct since
+	// MatchPath never touches the format, only the path template.
+	metaFile := ports.NewFile(
+		dataDir+"/data/{date}/{sensor}.json",
+		format.JSON(codex.Struct[ReadingMeta]()),
+		ports.NewFilePathParam("date", codex.String().Refine(validate.Date),
+			func(r ReadingMeta) string { return r.Date },
+			func(r *ReadingMeta, v string) { r.Date = v }),
+		ports.NewFilePathParam("sensor", codex.String().Refine(validate.NonEmptyString),
+			func(r ReadingMeta) string { return r.SensorID },
+			func(r *ReadingMeta, v string) { r.SensorID = v }),
+	)
+
+	// path is the concrete path sensorFile.Write already produced above.
+	discoveredVars, err := metaFile.MatchPath(path)
+	if err != nil {
+		slog.Error("MatchPath failed", "err", err)
+	} else {
+		fmt.Printf("  MatchPath extracted: %v\n", discoveredVars)
+	}
+
+	var meta ReadingMeta
+	if err := codex.DecodeVars(&meta, discoveredVars, metaFile.MergeFields()...); err != nil {
+		slog.Error("DecodeVars failed", "err", err)
+	} else {
+		fmt.Printf("  merged from path: sensor=%q date=%q\n", meta.SensorID, meta.Date)
+	}
+
+	// The body's own field (Value) is read separately and merged manually
+	// — File's body codec and path merge fields are DISTINCT struct
+	// shapes here (Measurement vs. ReadingMeta), so this last step stays
+	// explicit rather than automatic (unlike REST's DecodeMerged, which
+	// merges body+vars into the SAME struct in one call).
+	meta.Value = got.Value
+	fmt.Printf("  full merged metadata: %+v\n", meta)
+
+	// A path that doesn't match the template's structure → FilePathMismatchError.
+	_, err = metaFile.MatchPath(dataDir + "/data/2024-01-15/extra/segment.json")
+	var mismatchErr ports.FilePathMismatchError
+	if errors.As(err, &mismatchErr) {
+		fmt.Printf("  FilePathMismatchError: template=%q path=%q\n", mismatchErr.Template, mismatchErr.Path)
 	}
 
 	// ── Section 3: Error handling ─────────────────────────────────────────────
