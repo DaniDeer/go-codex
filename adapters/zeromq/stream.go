@@ -126,5 +126,3 @@ func ServeLatest[Req, Resp any](
 		return *ptr, nil
 	}, serveOpts)
 }
-
-func isTimeout(err error) bool { return err == ErrTimeout }

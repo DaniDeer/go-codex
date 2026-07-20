@@ -280,9 +280,14 @@ equivalent new one) that has a request/response shape or a duplex role pair
 The headline promise: a caller on EITHER side must be able to do the ENTIRE
 encode-or-decode direction with **one struct value in (or out), one call**
 — no manual map-building, no manual header/cookie/query/topic stitching, in
-the common case. REST (`api/rest` + `adapters/nethttp`/`chi`) is the
-reference implementation that satisfies this today; no other boundary does
-yet (tracked as "Round 2" in `docs/roadmap/vars-codec-merge.md`).
+the common case. `api/rest`, `api/events`, and `api/reqreply` all satisfy
+this at the CORE-API level, AND so does the `ports.Pattern` binding layer
+built on top of them: `DrainCallAdapter`/`PublishAdapter`/`CallAdapter`
+across `nethttp`/`mqtt5`/`zeromq`/`mqtt` delegate to
+`CallHandle`/`PublishHandle` and derive vars per-item whenever their `Vars`
+option is left `nil` — see `docs/roadmap/merge-field-remaining-gaps.md`
+for the remaining low-priority backlog (SSE merge support, a shared
+topic-template core).
 
 Use the `add-a-new-adapter` skill's **Step 5b** for the full checklist
 (declare-once constructors, escape hatch, encode/decode symmetry via

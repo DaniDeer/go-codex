@@ -293,6 +293,17 @@ escape hatch for anything that doesn't fit the struct-field model. See
 `examples/adapters-nethttp-client` (sections 2b/2c) for the full runnable
 version.
 
+This convenience also runs through the `ports` binding layer:
+`nethttp.DrainCallAdapter` (`ports.SinkAdapter`) and `nethttp.CallAdapter`
+(`ports.IOAdapter`) delegate to `CallHandle` and derive path/query/header/
+cookie vars PER-ITEM from each streamed item's own merge fields whenever
+their `Vars` option is left `nil` — every item may resolve to a different
+concrete request. Set `Vars` to a non-nil map to keep the same, static vars
+for every item in the stream instead (the pre-existing behavior). See
+[Ports: merge-field per-item vars derivation](ports.md#available-adapters-by-transport)
+for the same behavior across the other transport adapters (MQTT 5, MQTT,
+ZeroMQ).
+
 ### Nested structs & binary body formats
 
 The merge-field convenience is not JSON-specific or flat-struct-specific.

@@ -102,6 +102,12 @@ type mockClient struct {
 	subscribedTopic   string
 	subscribedHandler pahomqtt.MessageHandler
 	token             pahomqtt.Token
+
+	// publishedTopics/publishedPayloads accumulate EVERY Publish call (unlike
+	// publishedTopic/publishedPayload above, which only ever hold the LAST
+	// call) — used by multi-item per-item-vars-derivation tests (G1).
+	publishedTopics   []string
+	publishedPayloads [][]byte
 }
 
 func (c *mockClient) IsConnected() bool       { return true }
@@ -110,8 +116,10 @@ func (c *mockClient) Connect() pahomqtt.Token { return newCompletedToken(nil) }
 func (c *mockClient) Disconnect(_ uint)       {}
 func (c *mockClient) Publish(topic string, _ byte, _ bool, payload interface{}) pahomqtt.Token {
 	c.publishedTopic = topic
+	c.publishedTopics = append(c.publishedTopics, topic)
 	if b, ok := payload.([]byte); ok {
 		c.publishedPayload = b
+		c.publishedPayloads = append(c.publishedPayloads, b)
 	}
 	return c.token
 }
@@ -258,6 +266,104 @@ func newTemplateHandle() *events.ChannelHandle[userEvent] {
 		panic(err)
 	}
 	return h
+}
+
+// newMergeHandle returns a channel whose userID topic var is merge-capable
+// (events.NewTopicParam) — mirrors mqtt5/zeromq's newMergeChannelHandle,
+// used for G3 (SubscribeHandler auto-merge, PublishHandle) tests.
+func newMergeHandle() *events.ChannelHandle[userEvent] {
+	b := events.NewBuilder(events.Info{Title: "Test", Version: "1.0.0"})
+	uuidCodec := codex.String().Refine(validate.UUID)
+	h, err := events.NewChannel[userEvent]("users/{userID}/events", userEventCodec,
+		events.NewTopicParam("userID", uuidCodec,
+			func(e userEvent) string { return e.ID },
+			func(e *userEvent, v string) { e.ID = v }),
+	).Register(b)
+	if err != nil {
+		panic(err)
+	}
+	return h
+}
+
+// G3-1: SubscribeHandler auto-merges topic vars into the decoded value when
+// the channel declares merge fields — no manual TopicVarsFromMessage call
+// needed in the handler function. Mirrors mqtt5's equivalent EV5 test.
+func TestSubscribeHandler_MergeFields_AutoMergesTopicVars(t *testing.T) {
+	handle := newMergeHandle()
+	var received userEvent
+
+	handler := adaptermqtt.SubscribeHandler(context.Background(), handle,
+		func(_ context.Context, e userEvent) error {
+			received = e
+			return nil
+		}, adaptermqtt.SubscribeOptions{})
+
+	// Payload JSON deliberately carries a DIFFERENT id — merge must
+	// OVERWRITE it with the value extracted from the concrete topic.
+	handler(nil, &mockMessage{
+		topic:   "users/f47ac10b-58cc-4372-a567-0e02b2c3d479/events",
+		payload: []byte(`{"id":"00000000-0000-0000-0000-000000000000","email":"alice@example.com"}`),
+	})
+
+	if received.ID != "f47ac10b-58cc-4372-a567-0e02b2c3d479" {
+		t.Errorf("ID: want merged from topic, got %q", received.ID)
+	}
+	if received.Email != "alice@example.com" {
+		t.Errorf("Email: want alice@example.com, got %q", received.Email)
+	}
+}
+
+// G3-1 (regression guard): a channel WITHOUT merge fields behaves
+// identically to before — SubscribeHandler does not attempt any
+// topic-var merge.
+func TestSubscribeHandler_NoMergeFields_NoTopicVarMergeAttempted(t *testing.T) {
+	handle := newHandle()
+	var received userEvent
+
+	handler := adaptermqtt.SubscribeHandler(context.Background(), handle,
+		func(_ context.Context, e userEvent) error {
+			received = e
+			return nil
+		}, adaptermqtt.SubscribeOptions{})
+
+	handler(nil, &mockMessage{payload: []byte(validPayload)})
+
+	if received.Email != "alice@example.com" {
+		t.Fatalf("want alice@example.com, got %q", received.Email)
+	}
+}
+
+// G3-2: mqtt.PublishHandle single-call convenience — one struct in, no
+// manual vars map, derives the topic from msg's own merge fields.
+func TestPublishHandle_DerivesTopicFromMsg(t *testing.T) {
+	handle := newMergeHandle()
+	client := &mockClient{token: newCompletedToken(nil)}
+
+	event := userEvent{ID: "f47ac10b-58cc-4372-a567-0e02b2c3d479", Email: "alice@example.com"}
+	err := adaptermqtt.PublishHandle(context.Background(), client, handle, 1, false, event, adaptermqtt.PublishOptions{})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	wantTopic := "users/f47ac10b-58cc-4372-a567-0e02b2c3d479/events"
+	if client.publishedTopic != wantTopic {
+		t.Errorf("topic: want %q, got %q", wantTopic, client.publishedTopic)
+	}
+}
+
+// PublishHandle with no merge fields declared behaves identically to a bare
+// Publish(..., nil, ...) call (regression guard).
+func TestPublishHandle_NoMergeFields_MatchesPlainPublish(t *testing.T) {
+	handle := newHandle()
+	client := &mockClient{token: newCompletedToken(nil)}
+
+	event := userEvent{ID: "f47ac10b-58cc-4372-a567-0e02b2c3d479", Email: "alice@example.com"}
+	err := adaptermqtt.PublishHandle(context.Background(), client, handle, 1, false, event, adaptermqtt.PublishOptions{})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if client.publishedTopic != "user/created" {
+		t.Errorf("topic: want static, got %q", client.publishedTopic)
+	}
 }
 
 func TestPublish_TemplateVars(t *testing.T) {

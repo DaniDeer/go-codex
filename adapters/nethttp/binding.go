@@ -143,8 +143,13 @@ func (a *nethttpSSEAdapter[Event]) Activate(ctx context.Context, src gstream.Str
 
 // CallStreamOptions configures [CallAdapter].
 type CallStreamOptions struct {
-	// Vars, when non-nil, substitutes {varName} placeholders in the route's path template.
-	// The same map is used for every request (static path vars only).
+	// Vars substitutes {varName} placeholders in the route's path template.
+	//
+	// When nil, path/query/header/cookie vars are derived PER-ITEM from each
+	// item's own merge-field-declared struct fields (the same convenience
+	// [CallHandle] provides). When set to a non-nil map (including an
+	// explicitly empty one), that map is used as-is for every request
+	// (static vars only) — the escape hatch, unchanged from prior behavior.
 	Vars     map[string]string
 	CallOpts CallOptions
 	// Buffer is the output Stream channel buffer size. Default 0.
@@ -191,7 +196,13 @@ func (a *nethttpCallAdapter[Req, Resp]) Transform(ctx context.Context, src gstre
 					valCh = nil
 					continue
 				}
-				resp, err := Call(ctx, a.client, a.baseURL, a.handle, req, a.opts.Vars, a.opts.CallOpts)
+				var resp Resp
+				var err error
+				if a.opts.Vars == nil {
+					resp, err = CallHandle(ctx, a.client, a.baseURL, a.handle, req, a.opts.CallOpts)
+				} else {
+					resp, err = Call(ctx, a.client, a.baseURL, a.handle, req, a.opts.Vars, a.opts.CallOpts)
+				}
 				if err != nil {
 					select {
 					case errs <- err:
@@ -330,7 +341,16 @@ func (a *nethttpPollAdapter[Req, Resp]) Activate(ctx context.Context, dst chan<-
 
 // DrainCallOptions configures [DrainCallAdapter].
 type DrainCallOptions struct {
-	// Vars, when non-nil, substitutes {varName} placeholders in the route's path template.
+	// Vars substitutes {varName} placeholders in the route's path template.
+	//
+	// When nil, path/query/header/cookie vars are derived PER-ITEM from each
+	// item's own merge-field-declared struct fields (the same convenience
+	// [CallHandle] provides) — every item may resolve to a different
+	// concrete path/query/header/cookie set. When set to a non-nil map
+	// (including an explicitly empty one), that map is used as-is for every
+	// item (today's static-vars behavior, unchanged) — this remains the
+	// escape hatch for routes with no merge fields or a route shared across
+	// unrelated Req shapes.
 	Vars     map[string]string
 	OnError  func(error)
 	CallOpts CallOptions
@@ -363,7 +383,13 @@ func (a *nethttpDrainCallAdapter[Req, Resp]) Activate(ctx context.Context, src g
 	onErr := a.opts.OnError
 	gstream.Drain(ctx, src,
 		func(ctx context.Context, item Req) error {
-			if _, err := Call(ctx, a.client, a.baseURL, a.handle, item, a.opts.Vars, a.opts.CallOpts); err != nil {
+			var err error
+			if a.opts.Vars == nil {
+				_, err = CallHandle(ctx, a.client, a.baseURL, a.handle, item, a.opts.CallOpts)
+			} else {
+				_, err = Call(ctx, a.client, a.baseURL, a.handle, item, a.opts.Vars, a.opts.CallOpts)
+			}
+			if err != nil {
 				if onErr != nil {
 					onErr(err)
 				}

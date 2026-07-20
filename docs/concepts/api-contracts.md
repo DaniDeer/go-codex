@@ -62,14 +62,26 @@ format composes. See
 [REST API — Nested structs & binary body formats](../features/rest-api.md#nested-structs-binary-body-formats)
 and `examples/rest-nested-binary` for the full runnable version.
 
-**Not yet true everywhere**: `api/events` (pub/sub) and `api/reqreply`
-(req/reply) do not yet have equivalent merge-field constructors or a
-single-call convenience wrapper — a publisher/subscriber or
-requestor/replier still assembles topic variable maps by hand today. This
-is tracked as a forward-looking backlog item (see
-[Roadmap: Declarative Var Extraction & Merge](../roadmap/vars-codec-merge.md)),
-not a design choice — the intent is for every boundary to eventually reach
-REST's bar.
+**Shipped for `api/events` (pub/sub) and `api/reqreply` (req/reply) too**:
+`events.NewTopicParam[T]`/`ChannelHandle.DecodeMerged`/`mqtt5.PublishHandle`
+and `reqreply.NewTopicParam[T]`/`RouteHandle.DecodeMerged`/`mqtt5.CallHandle`
+close the same loop for MQTT pub/sub and request/reply — see
+[Feature: Event Channels & MQTT](../features/events.md#topic-vars-with-automatic-merge-newtopicparam).
+
+**Shipped for the `ports.Pattern` BINDING LAYER too**:
+`DrainCallAdapter`/`PublishAdapter`/`CallAdapter` across
+`nethttp`/`mqtt5`/`zeromq`/`mqtt` delegate to `CallHandle`/`PublishHandle`
+and derive vars PER-ITEM whenever their `Vars` option is left `nil` —
+streaming/port-based callers get the same one-struct convenience as
+calling the transport function directly. Set `Vars` to a non-nil map
+(even an empty one) to keep a single static vars map for every item in the
+stream instead — the escape hatch, unchanged from before this was added.
+`adapters/zeromq`'s own pub/sub `Subscribe`/`Publish` and `adapters/mqtt`
+(v3) events also received the same merge-field wiring `adapters/mqtt5`
+had first. See
+[Roadmap: Merge-Field Remaining Gaps](../roadmap/merge-field-remaining-gaps.md)
+for the remaining low-priority backlog (SSE merge support, a shared
+non-wildcard topic-template core).
 
 ## REST routes (`api/rest`)
 

@@ -143,9 +143,14 @@ type MQTT5DrainPublishOptions struct {
 	QoS byte
 	// Retained, when true, publishes each item as a retained message.
 	Retained bool
-	// Vars, when non-nil, substitutes {varName} placeholders in the topic template.
-	// The same map is used for every item (static topic vars only).
-	// For per-item substitution, call [Publish] directly inside [gstream.Drain].
+	// Vars substitutes {varName} placeholders in the topic template.
+	//
+	// When nil, topic vars are derived PER-ITEM from each item's own
+	// merge-field-declared struct fields (the same convenience
+	// [PublishHandle] provides) — every item may resolve to a different
+	// concrete topic. When set to a non-nil map (including an explicitly
+	// empty one), that map is used as-is for every item (static topic vars
+	// only) — the escape hatch, unchanged from prior behavior.
 	Vars map[string]string
 	// OnError, when non-nil, is called for encode failures or upstream stream errors.
 	OnError func(error)
@@ -181,7 +186,13 @@ func (a *mqtt5PublishAdapter[T]) Activate(ctx context.Context, src gstream.Strea
 	pubOpts := PublishOptions{Observer: a.opts.Observer}
 	gstream.Drain(ctx, src,
 		func(ctx context.Context, v T) error {
-			if err := Publish(ctx, a.client, a.handle, a.opts.QoS, a.opts.Retained, v, a.opts.Vars, pubOpts, a.fmt); err != nil {
+			var err error
+			if a.opts.Vars == nil {
+				err = PublishHandle(ctx, a.client, a.handle, a.opts.QoS, a.opts.Retained, v, pubOpts, a.fmt)
+			} else {
+				err = Publish(ctx, a.client, a.handle, a.opts.QoS, a.opts.Retained, v, a.opts.Vars, pubOpts, a.fmt)
+			}
+			if err != nil {
 				if onErr != nil {
 					onErr(err)
 				}
@@ -238,7 +249,13 @@ func (a *mqtt5CallAdapter[Req, Resp]) Transform(ctx context.Context, src gstream
 					valCh = nil
 					continue
 				}
-				resp, err := Call(ctx, a.client, a.router, a.handle, req, a.opts)
+				var resp Resp
+				var err error
+				if a.opts.Vars == nil {
+					resp, err = CallHandle(ctx, a.client, a.router, a.handle, req, a.opts)
+				} else {
+					resp, err = Call(ctx, a.client, a.router, a.handle, req, a.opts)
+				}
 				if err != nil {
 					select {
 					case errs <- err:

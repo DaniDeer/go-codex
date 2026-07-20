@@ -10,6 +10,7 @@ import (
 	pahomqtt "github.com/eclipse/paho.mqtt.golang"
 
 	"github.com/DaniDeer/go-codex/api/events"
+	"github.com/DaniDeer/go-codex/codex"
 	"github.com/DaniDeer/go-codex/format"
 	"github.com/DaniDeer/go-codex/route"
 	"github.com/DaniDeer/go-codex/stats"
@@ -220,6 +221,34 @@ func SubscribeHandler[T any](
 			}
 			return
 		}
+
+		// Merge topic variables declared via events.NewTopicParam into the
+		// SAME decoded value — additive, only runs when the channel has
+		// merge-capable topic params (backward compatible: identical
+		// behavior to today when none are declared). Mirrors mqtt5's
+		// makeSubscribeMessageHandler wiring.
+		if mergeFields := handle.MergeFields(); len(mergeFields) > 0 {
+			vars, varErr := TopicVarsFromMessage(handle, msg)
+			if varErr != nil {
+				reportTopicMismatchErrors(varErr, obs)
+				reportInvalidTopicErrors(varErr, obs)
+				reportTopicParamErrors(varErr, obs)
+				obs.RecordSubscribe(msg.Topic(), false, time.Since(start))
+				if opts.OnError != nil {
+					opts.OnError(SubscribeError{Kind: KindDecode, Topic: msg.Topic(), Err: varErr})
+				}
+				return
+			}
+			if mergeErr := codex.DecodeVars(&value, vars, mergeFields...); mergeErr != nil {
+				reportTopicParamErrors(mergeErr, obs)
+				obs.RecordSubscribe(msg.Topic(), false, time.Since(start))
+				if opts.OnError != nil {
+					opts.OnError(SubscribeError{Kind: KindDecode, Topic: msg.Topic(), Err: mergeErr})
+				}
+				return
+			}
+		}
+
 		// Enforce security: per-operation requirements take precedence; nil falls
 		// back to global security declared via Builder.AddGlobalSecurity.
 		var secReqs []route.SecurityRequirement
@@ -424,6 +453,37 @@ func Publish[T any](ctx context.Context, client pahomqtt.Client, handle *events.
 		obs.RecordPublish(topic, true, time.Since(start))
 		return nil
 	}
+}
+
+// PublishHandle is the single-call convenience wrapper around [Publish]: it
+// derives the topic vars map from msg automatically, using the channel's
+// merge-capable topic params ([events.ChannelHandle.MergeFields] +
+// [codex.EncodeVars]) — one struct in, no manual vars map, mirroring
+// [mqtt5.PublishHandle]'s convenience for MQTT 5 events.
+//
+// [Publish] remains available as the lower-level escape hatch for callers
+// that build the vars map themselves (e.g. no merge fields declared, or
+// vars come from a non-struct source).
+//
+//	err := mqtt.PublishHandle(ctx, client, sensorChannel, 1, false, reading, mqtt.PublishOptions{})
+func PublishHandle[T any](
+	ctx context.Context,
+	client pahomqtt.Client,
+	handle *events.ChannelHandle[T],
+	qos byte,
+	retained bool,
+	msg T,
+	opts PublishOptions,
+	formats ...format.Format[T],
+) error {
+	vars, err := codex.EncodeVars(msg, handle.MergeFields()...)
+	if err != nil {
+		return err
+	}
+	if len(vars) == 0 {
+		vars = nil
+	}
+	return Publish(ctx, client, handle, qos, retained, msg, vars, opts, formats...)
 }
 
 // validateSecurityCredentials checks registered SecurityScheme codecs against

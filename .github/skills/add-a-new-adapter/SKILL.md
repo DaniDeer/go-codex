@@ -180,11 +180,17 @@ nethttp.Register(mux, handle, func(ctx context.Context, req Req) (Resp, error) {
    function. This wrapper IS the one-struct-one-call promise made concrete
    — don't stop at the accessors/constructors, ship the wrapper too.
 
-**Do NOT treat `api/events`/`api/reqreply` as precedent** — as of this
-writing, neither has ANY of the five (no topic merge-field constructors, no
-response-side merge, no single-call wrapper). This is tracked as "Round 2"
-in `docs/roadmap/vars-codec-merge.md`, a known gap, not a design choice to
-replicate in a new adapter.
+**`api/rest`/`api/events`/`api/reqreply` all have the core API shipped, AND
+so does the `ports.Pattern` binding layer** —
+`DrainCallAdapter`/`PublishAdapter`/`CallAdapter` across
+`nethttp`/`mqtt5`/`zeromq`/`mqtt` all delegate to their transport's
+`CallHandle`/`PublishHandle` and derive vars PER-ITEM whenever their `Vars`
+option is left `nil`. Use any of these as precedent for a NEW
+boundary's declare-once constructors/`DecodeMerged`/single-call
+wrapper/binding-layer delegation — a new adapter's `SinkAdapter`/`IOAdapter`
+constructors should follow the SAME `Vars == nil` → delegate-to-Handle
+pattern from day one, not the old static-`Vars`-only shape that predated
+this fix.
 
 **Verify with a non-default format AND a nested struct, not just the
 flat/JSON happy path.** Body decode/encode is orthogonal to var-merge, so

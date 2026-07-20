@@ -46,42 +46,34 @@ type zmqSubscribeAdapter[T any] struct {
 
 func (a *zmqSubscribeAdapter[T]) AdapterName() string { return "zeromq.SubscribeAdapter" }
 
+// Activate delegates to [Subscribe] (rather than hand-rolling frame
+// reads + [gstream.FromCodec] as it did before merge-field support was
+// added) so that topic-var merging (when the channel declares merge-capable
+// [events.NewTopicParam] fields) is applied automatically — mirroring
+// mqtt5.SubscribeAdapter's wiring. An internal buffered pair of channels
+// preserves [SubscribeAdapterOptions.Buffer]'s existing sizing behavior.
 func (a *zmqSubscribeAdapter[T]) Activate(ctx context.Context, dst chan<- T, errs chan<- error) {
-	rawCh := make(chan []byte, a.opts.Buffer)
+	valCh := make(chan T, a.opts.Buffer)
+	errCh := make(chan error, a.opts.Buffer)
 	go func() {
-		defer close(rawCh)
-		if err := a.sock.SetSubscription(a.handle.Topic); err != nil {
-			return
-		}
-		if err := a.sock.SetRecvTimeout(recvPollInterval); err != nil {
-			return
-		}
-		for {
-			select {
-			case <-ctx.Done():
-				return
-			default:
-			}
-			frames, err := a.sock.RecvFrames()
-			if err != nil {
-				if !isTimeout(err) {
-					return
+		defer close(valCh)
+		defer close(errCh)
+		subOpts := SubscribeOptions{
+			OnError: func(se SubscribeError) {
+				select {
+				case errCh <- se:
+				case <-ctx.Done():
 				}
-				continue
-			}
-			if len(frames) < 2 {
-				continue
-			}
-			select {
-			case rawCh <- frames[1]:
-			case <-ctx.Done():
-				return
-			}
+			},
 		}
+		_ = Subscribe(ctx, a.sock, a.handle, func(_ context.Context, v T) error {
+			select {
+			case valCh <- v:
+			case <-ctx.Done():
+			}
+			return nil
+		}, subOpts, a.fmt)
 	}()
-	s := gstream.FromCodec(ctx, rawCh, a.fmt, gstream.SourceOptions{Buffer: a.opts.Buffer, Name: a.handle.Topic})
-	valCh := s.Values
-	errCh := s.Errors
 	for valCh != nil || errCh != nil {
 		select {
 		case <-ctx.Done():
@@ -114,8 +106,15 @@ func (a *zmqSubscribeAdapter[T]) Activate(ctx context.Context, dst chan<- T, err
 
 // DrainPublishOptions configures [PublishAdapter] publish behaviour.
 type DrainPublishOptions struct {
-	// Vars, when non-nil, substitutes {varName} placeholders in the channel
-	// handle's topic template. The same map is used for every item (static only).
+	// Vars substitutes {varName} placeholders in the channel handle's topic
+	// template.
+	//
+	// When nil, topic vars are derived PER-ITEM from each item's own
+	// merge-field-declared struct fields (the same convenience
+	// [PublishHandle] provides) — every item may resolve to a different
+	// concrete topic. When set to a non-nil map (including an explicitly
+	// empty one), that map is used as-is for every item (static topic vars
+	// only) — the escape hatch, unchanged from prior behavior.
 	Vars map[string]string
 	// OnError, when non-nil, is called for encode failures ([PublishEncodeError]),
 	// socket send failures ([SocketError]), or upstream stream errors.
@@ -152,7 +151,13 @@ func (a *zmqPublishAdapter[T]) Activate(ctx context.Context, src gstream.Stream[
 	pubOpts := PublishOptions{Observer: a.opts.Observer}
 	gstream.Drain(ctx, src,
 		func(ctx context.Context, v T) error {
-			if err := Publish(ctx, a.sock, a.handle, v, a.opts.Vars, pubOpts, a.fmt); err != nil {
+			var err error
+			if a.opts.Vars == nil {
+				err = PublishHandle(ctx, a.sock, a.handle, v, pubOpts, a.fmt)
+			} else {
+				err = Publish(ctx, a.sock, a.handle, v, a.opts.Vars, pubOpts, a.fmt)
+			}
+			if err != nil {
 				if onErr != nil {
 					onErr(err)
 				}
@@ -172,8 +177,13 @@ func (a *zmqPublishAdapter[T]) Activate(ctx context.Context, src gstream.Stream[
 
 // CallStreamOptions configures [CallAdapter].
 type CallStreamOptions struct {
-	// Vars, when non-nil, substitutes {varName} placeholders in the route topic
-	// template. The same Vars map is used for every request item in the stream.
+	// Vars substitutes {varName} placeholders in the route topic template.
+	//
+	// When nil, vars are derived PER-ITEM from each item's own
+	// merge-field-declared struct fields (the same convenience [CallHandle]
+	// provides). When set to a non-nil map (including an explicitly empty
+	// one), that map is used as-is for every request (static vars only) —
+	// the escape hatch, unchanged from prior behavior.
 	Vars map[string]string
 	// Observer receives per-call lifecycle events.
 	Observer stats.Observer
@@ -219,7 +229,13 @@ func (a *zmqCallAdapter[Req, Resp]) Transform(ctx context.Context, src gstream.S
 					valCh = nil
 					continue
 				}
-				resp, err := Call(ctx, a.sock, a.handle, req, callOpts)
+				var resp Resp
+				var err error
+				if a.opts.Vars == nil {
+					resp, err = CallHandle(ctx, a.sock, a.handle, req, callOpts)
+				} else {
+					resp, err = Call(ctx, a.sock, a.handle, req, callOpts)
+				}
 				if err != nil {
 					select {
 					case errs <- err:

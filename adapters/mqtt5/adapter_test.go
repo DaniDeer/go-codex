@@ -145,6 +145,14 @@ func (r *mockRouter) UnregisterHandler(topic string) {
 	r.mu.Unlock()
 }
 
+// hasHandler reports whether a handler is registered under the exact topic key.
+func (r *mockRouter) hasHandler(topic string) bool {
+	r.mu.Lock()
+	_, ok := r.handlers[topic]
+	r.mu.Unlock()
+	return ok
+}
+
 // waitHandler blocks until the handler for topic is registered or 1 second passes.
 func (r *mockRouter) waitHandler(topic string) {
 	for i := 0; i < 200; i++ {

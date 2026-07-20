@@ -85,9 +85,9 @@ func (e TopicMismatchError) LogValue() slog.Value {
 // topic against a go-codex topic template. Duplicated from adapters/mqtt's
 // unexported matchTopicTemplate (same MQTT wildcard semantics) rather than
 // shared, since api/internal.MatchTemplate deliberately has no wildcard
-// support (see docs/roadmap/vars-codec-merge.md's Open design decisions —
-// refactoring both mqtt/mqtt5 to share a wildcard-aware core remains a
-// deferred, low-risk follow-up, not a Phase 2 blocker).
+// support (see docs/roadmap/merge-field-remaining-gaps.md's G2 — refactoring
+// both mqtt/mqtt5 to share a wildcard-aware core remains a deferred,
+// low-risk follow-up, not a blocker).
 func matchTopicTemplate(template, topic string) (map[string]string, error) {
 	tmplParts := strings.Split(template, "/")
 	topicParts := strings.Split(topic, "/")

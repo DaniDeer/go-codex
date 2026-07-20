@@ -162,7 +162,11 @@ value, in one call.
 mirrors `nethttp.CallHandle`: derives the topic vars from the payload
 struct automatically via `codex.EncodeVars(msg, handle.MergeFields()...)`,
 then delegates to `Publish`. `Publish` remains the lower-level escape
-hatch for callers building the vars map themselves.
+hatch for callers building the vars map themselves. The same convenience
+exists for every transport with a pub/sub event surface:
+`adapters/mqtt.PublishHandle` (MQTT 3.1.1) and `adapters/zeromq.PublishHandle`
+(ZeroMQ PUB/SUB) — identical signature shape and semantics, one per
+transport package.
 
 ```go
 err := mqtt5.PublishHandle(ctx, client, sensorChannel, 1, false, reading, mqtt5.PublishOptions{})
@@ -172,7 +176,21 @@ err := mqtt5.PublishHandle(ctx, client, sensorChannel, 1, false, reading, mqtt5.
 `adapters/mqtt5.TopicVarsFromMessage` is the mqtt5-specific equivalent of
 the (Paho MQTT 3.1.1) `mqtt.TopicVarsFromMessage` shown above — used
 internally by `Subscribe`'s auto-merge wiring, and directly usable by
-hand-rolled mqtt5 consumers.
+hand-rolled mqtt5 consumers. `adapters/zeromq.TopicVarsFromMessage` is the
+ZeroMQ equivalent, adapted for zeromq's plain-string topic (the first frame
+of a `[topic, payload]` PUB/SUB message) rather than a message struct;
+`zeromq.Subscribe` calls it internally whenever the channel declares merge
+fields, exactly like `mqtt5.Subscribe`/`mqtt.SubscribeHandler` do.
+
+Every port-binding `SinkAdapter`/`IOAdapter` constructed for one of these
+transports (`nethttp.DrainCallAdapter`/`CallAdapter`,
+`mqtt5.PublishAdapter`/`CallAdapter`, `zeromq.PublishAdapter`/`CallAdapter`,
+`mqtt.PublishAdapter`) derives vars PER-ITEM automatically via the
+corresponding `*Handle` function whenever its `Vars` option is left `nil` —
+the "one struct, one call" convenience extends all the way through
+`ports.SinkPort`/`ports.IOPort`, not just the standalone functions. Set
+`Vars` explicitly (even to an empty, non-nil map) to keep today's static,
+same-vars-for-every-item behavior instead.
 
 ### Nested structs & non-JSON payloads
 

@@ -254,8 +254,7 @@ type routeBuilder struct {
 	// [Route.Register]/[Route.ClientHandle]. Request-side only: reqreply
 	// uses ONE shared topic template for both request and reply, and the
 	// reply is correlated by the underlying transport (not by re-encoding
-	// topic vars into Resp) — see docs/roadmap/vars-codec-merge.md's Phase
-	// 2 Open design decisions for the full rationale.
+	// topic vars into Resp) — resolved design decision.
 	mergeFields []any
 }
 

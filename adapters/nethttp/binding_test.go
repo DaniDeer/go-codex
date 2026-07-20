@@ -218,6 +218,121 @@ func TestDrainCallAdapter_PostsEachItem(t *testing.T) {
 	}
 }
 
+// ── G1: per-item vars derivation (shipped; see docs/roadmap/merge-field-remaining-gaps.md for follow-up items) ──────────
+
+// G1-1: DrainCallAdapter derives path vars PER-ITEM from each item's own
+// merge fields when opts.Vars is nil — two items with different IDs must
+// resolve to two different concrete paths.
+func TestDrainCallAdapter_DerivesVarsPerItem_WhenOptsVarsNil(t *testing.T) {
+	ctx := context.Background()
+	var gotPaths []string
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPaths = append(gotPaths, r.URL.Path)
+		w.Header().Set("X-Request-Id", "req-1")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"id":"u1","name":"Alice"}`))
+	}))
+	defer srv.Close()
+
+	handle := newClientActivityRoute()
+	ch := make(chan getUserActivityReq, 2)
+	ch <- getUserActivityReq{ID: "u1", Filter: "logins"}
+	ch <- getUserActivityReq{ID: "u2", Filter: "posts"}
+	close(ch)
+
+	p, err := ports.NewSinkPort[getUserActivityReq]("drain-merge", codex.Struct[getUserActivityReq](), ports.PortOptions{Buffer: 4})
+	if err != nil {
+		t.Fatalf("construct port: %v", err)
+	}
+	// opts.Vars left nil -> per-item derivation via CallHandle.
+	p.Bind(ctx, nethttp.DrainCallAdapter(srv.Client(), srv.URL, handle, nethttp.DrainCallOptions{}))
+	p.Feed(ctx, gstream.From(ctx, ch))
+
+	if len(gotPaths) != 2 {
+		t.Fatalf("want 2 requests, got %d: %v", len(gotPaths), gotPaths)
+	}
+	if gotPaths[0] != "/users/u1/activity" || gotPaths[1] != "/users/u2/activity" {
+		t.Errorf("want per-item resolved paths, got %v", gotPaths)
+	}
+}
+
+// G1-2: an explicit (non-nil) DrainCallOptions.Vars still wins — regression
+// guard matching today's static-vars behavior when set.
+func TestDrainCallAdapter_ExplicitVarsStillWins(t *testing.T) {
+	ctx := context.Background()
+	var gotPaths []string
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPaths = append(gotPaths, r.URL.Path)
+		w.Header().Set("X-Request-Id", "req-1")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"id":"u1","name":"Alice"}`))
+	}))
+	defer srv.Close()
+
+	handle := newClientActivityRoute()
+	ch := make(chan getUserActivityReq, 2)
+	ch <- getUserActivityReq{ID: "ignored-1", Filter: "logins"}
+	ch <- getUserActivityReq{ID: "ignored-2", Filter: "posts"}
+	close(ch)
+
+	p, err := ports.NewSinkPort[getUserActivityReq]("drain-static", codex.Struct[getUserActivityReq](), ports.PortOptions{Buffer: 4})
+	if err != nil {
+		t.Fatalf("construct port: %v", err)
+	}
+	// Explicit static Vars: every item resolves to the SAME path, regardless
+	// of the item's own ID field.
+	p.Bind(ctx, nethttp.DrainCallAdapter(srv.Client(), srv.URL, handle,
+		nethttp.DrainCallOptions{Vars: map[string]string{"id": "static-id"}}))
+	p.Feed(ctx, gstream.From(ctx, ch))
+
+	if len(gotPaths) != 2 {
+		t.Fatalf("want 2 requests, got %d: %v", len(gotPaths), gotPaths)
+	}
+	for _, p := range gotPaths {
+		if p != "/users/static-id/activity" {
+			t.Errorf("want static path for every item, got %q", p)
+		}
+	}
+}
+
+// G1-3 (nethttp side): CallAdapter (IOAdapter) derives vars PER-ITEM when
+// opts.Vars is nil, mirroring DrainCallAdapter's fix.
+func TestCallAdapter_DerivesVarsPerItem_WhenOptsVarsNil(t *testing.T) {
+	ctx := context.Background()
+	var gotPaths []string
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPaths = append(gotPaths, r.URL.Path)
+		w.Header().Set("X-Request-Id", "req-1")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"id":"u1","name":"Alice"}`))
+	}))
+	defer srv.Close()
+
+	handle := newClientActivityRoute()
+	ch := make(chan getUserActivityReq, 2)
+	ch <- getUserActivityReq{ID: "u1", Filter: "logins"}
+	ch <- getUserActivityReq{ID: "u2", Filter: "posts"}
+	close(ch)
+
+	p, err := ports.NewIOPort[getUserActivityReq, userRespWithMeta]("call-merge",
+		codex.Struct[getUserActivityReq](), userRespWithMetaBodyCodec, ports.PortOptions{Buffer: 4})
+	if err != nil {
+		t.Fatalf("construct port: %v", err)
+	}
+	p.Bind(ctx, nethttp.CallAdapter(srv.Client(), srv.URL, handle, nethttp.CallStreamOptions{})) //nolint:errcheck
+	out := p.Connect(ctx, gstream.From(ctx, ch))
+	_, errs := gstream.Collect(ctx, out)
+	if len(errs) != 0 {
+		t.Fatalf("want 0 errors, got %v", errs)
+	}
+	if len(gotPaths) != 2 || gotPaths[0] != "/users/u1/activity" || gotPaths[1] != "/users/u2/activity" {
+		t.Errorf("want per-item resolved paths, got %v", gotPaths)
+	}
+}
+
 // ── PipelineAdapter ───────────────────────────────────────────────────────────
 
 func TestPipelineAdapter_RegistersAndHandlesRequests(t *testing.T) {

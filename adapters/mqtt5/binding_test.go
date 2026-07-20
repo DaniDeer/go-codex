@@ -229,6 +229,145 @@ func TestMQTT5AsPipelineFunc_NoValueReturnsPipelineNoResponseError(t *testing.T)
 	}
 }
 
+// ── G1: per-item vars derivation (shipped; see docs/roadmap/merge-field-remaining-gaps.md for follow-up items) ──────────
+
+// G1-3: mqtt5.PublishAdapter derives topic vars PER-ITEM from each item's
+// own merge fields when opts.Vars is nil — two items with different sensor
+// IDs must publish to two different concrete topics.
+func TestMQTT5PublishAdapter_DerivesVarsPerItem_WhenOptsVarsNil(t *testing.T) {
+	ctx := context.Background()
+	client := &mockClient{}
+	handle := newMergeChannelHandle()
+
+	ch := make(chan sensorReading, 2)
+	ch <- sensorReading{SensorID: "f47ac10b-58cc-4372-a567-0e02b2c3d479", Value: 1.0}
+	ch <- sensorReading{SensorID: "550e8400-e29b-41d4-a716-446655440000", Value: 2.0}
+	close(ch)
+
+	p, err := ports.NewSinkPort[sensorReading]("test", sensorCodec, ports.PortOptions{Buffer: 4})
+	if err != nil {
+		t.Fatalf("construct port: %v", err)
+	}
+	// opts.Vars left nil -> per-item derivation via PublishHandle.
+	p.Bind(ctx, mqtt5.PublishAdapter(client, handle, format.JSON(sensorCodec), mqtt5.MQTT5DrainPublishOptions{}))
+	p.Feed(ctx, gstream.From(ctx, ch))
+
+	client.mu.Lock()
+	defer client.mu.Unlock()
+	if len(client.published) != 2 {
+		t.Fatalf("want 2 published, got %d", len(client.published))
+	}
+	if client.published[0].Topic != "sensors/f47ac10b-58cc-4372-a567-0e02b2c3d479/readings" ||
+		client.published[1].Topic != "sensors/550e8400-e29b-41d4-a716-446655440000/readings" {
+		t.Errorf("want per-item resolved topics, got %q, %q", client.published[0].Topic, client.published[1].Topic)
+	}
+}
+
+// G1-3: an explicit (non-nil) MQTT5DrainPublishOptions.Vars still wins —
+// regression guard matching today's static-vars behavior when set.
+func TestMQTT5PublishAdapter_ExplicitVarsStillWins(t *testing.T) {
+	ctx := context.Background()
+	client := &mockClient{}
+	handle := newMergeChannelHandle()
+
+	ch := make(chan sensorReading, 2)
+	ch <- sensorReading{SensorID: "f47ac10b-58cc-4372-a567-0e02b2c3d479", Value: 1.0}
+	ch <- sensorReading{SensorID: "550e8400-e29b-41d4-a716-446655440000", Value: 2.0}
+	close(ch)
+
+	p, err := ports.NewSinkPort[sensorReading]("test", sensorCodec, ports.PortOptions{Buffer: 4})
+	if err != nil {
+		t.Fatalf("construct port: %v", err)
+	}
+	p.Bind(ctx, mqtt5.PublishAdapter(client, handle, format.JSON(sensorCodec),
+		mqtt5.MQTT5DrainPublishOptions{Vars: map[string]string{"sensorID": "static-sensor"}}))
+	p.Feed(ctx, gstream.From(ctx, ch))
+
+	client.mu.Lock()
+	defer client.mu.Unlock()
+	for _, msg := range client.published {
+		if msg.Topic != "sensors/static-sensor/readings" {
+			t.Errorf("want static topic for every item, got %q", msg.Topic)
+		}
+	}
+}
+
+// templatedBrokerClient simulates a broker for a route with a TEMPLATE topic
+// (e.g. "compute/{tenantID}/add"): mockRouter.RegisterHandler keys handlers
+// by the raw template string (see mqtt5.Serve), while each concrete publish
+// carries the resolved topic (e.g. "compute/acme/add") — so dispatch must
+// use the fixed template key regardless of the concrete publish topic.
+type templatedBrokerClient struct {
+	mockClient
+	router   *mockRouter
+	template string
+}
+
+func (c *templatedBrokerClient) Publish(ctx context.Context, p *pahomqtt5.Publish) (*pahomqtt5.PublishResponse, error) {
+	resp, err := c.mockClient.Publish(ctx, p)
+	if err != nil {
+		return nil, err
+	}
+	// Reply publishes are registered under their own concrete topic
+	// (client.Subscribe -> router.RegisterHandler(concreteReplyTopic, ...));
+	// request publishes are registered under the raw template by mqtt5.Serve.
+	if c.router.hasHandler(p.Topic) {
+		go c.router.dispatch(p.Topic, p)
+	} else {
+		go c.router.dispatch(c.template, p)
+	}
+	return resp, nil
+}
+
+// G1-3: mqtt5.CallAdapter derives request-topic vars PER-ITEM from each
+// item's own merge fields when opts.Vars is nil — two items with different
+// tenant IDs must publish to two different concrete request topics.
+func TestMQTT5CallAdapter_DerivesVarsPerItem_WhenOptsVarsNil(t *testing.T) {
+	router := newMockRouter()
+	client := &templatedBrokerClient{router: router, template: "compute/{tenantID}/add"}
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+
+	handle := newTenantRouteHandle()
+	_ = mqtt5.Serve(ctx, client, router, handle,
+		func(_ context.Context, req tenantReq) (tenantResp, error) {
+			return tenantResp{Sum: req.X + req.Y}, nil
+		},
+		mqtt5.ServeOptions{})
+
+	ch := make(chan tenantReq, 2)
+	ch <- tenantReq{TenantID: "acme", X: 1, Y: 2}
+	ch <- tenantReq{TenantID: "globex", X: 3, Y: 4}
+	close(ch)
+
+	p, err := ports.NewIOPort[tenantReq, tenantResp]("test", tenantReqCodec, tenantRespCodec, ports.PortOptions{Buffer: 4})
+	if err != nil {
+		t.Fatalf("construct port: %v", err)
+	}
+	// opts.Vars left nil -> per-item derivation via CallHandle.
+	p.Bind(ctx, mqtt5.CallAdapter(client, router, handle, mqtt5.CallOptions{ReplyTopicPrefix: "replies"})) //nolint:errcheck
+	out := p.Connect(ctx, gstream.From(ctx, ch))
+	vals, errs := gstream.Collect(ctx, out)
+	if len(errs) != 0 {
+		t.Fatalf("want 0 errors, got %v", errs)
+	}
+	if len(vals) != 2 || vals[0].Sum != 3 || vals[1].Sum != 7 {
+		t.Errorf("want [Sum=3, Sum=7], got %v", vals)
+	}
+
+	client.mockClient.mu.Lock()
+	defer client.mockClient.mu.Unlock()
+	var reqTopics []string
+	for _, msg := range client.mockClient.published {
+		if msg.Topic == "compute/acme/add" || msg.Topic == "compute/globex/add" {
+			reqTopics = append(reqTopics, msg.Topic)
+		}
+	}
+	if len(reqTopics) != 2 {
+		t.Errorf("want 2 per-item resolved request topics, got %v", reqTopics)
+	}
+}
+
 // ── CallAdapter ───────────────────────────────────────────────────────────────
 
 func TestMQTT5CallAdapter_ErrorsForwardedFromSrc(t *testing.T) {

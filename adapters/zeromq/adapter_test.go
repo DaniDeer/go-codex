@@ -141,6 +141,26 @@ func newChannelHandle() *events.ChannelHandle[sensorReading] {
 	return h
 }
 
+// newMergeChannelHandle returns a channel whose sensorID topic var is
+// merge-capable (events.NewTopicParam) — mirrors mqtt5's
+// newMergeChannelHandle, used for zeromq's G2 (Subscribe auto-merge,
+// PublishHandle) and G1 (PublishAdapter per-item derivation) tests.
+func newMergeChannelHandle() *events.ChannelHandle[sensorReading] {
+	uuidCodec := codex.String().Refine(validate.UUID)
+	b := events.NewBuilder(events.Info{Title: "Test", Version: "1.0.0"})
+	h, err := events.NewChannel[sensorReading](
+		"sensors/{sensorID}/readings",
+		sensorCodec,
+		events.NewTopicParam("sensorID", uuidCodec,
+			func(r sensorReading) string { return r.SensorID },
+			func(r *sensorReading, v string) { r.SensorID = v }),
+	).Register(b)
+	if err != nil {
+		panic(err)
+	}
+	return h
+}
+
 func newRouteHandle() *reqreply.RouteHandle[computeReq, computeResp] {
 	b := reqreply.NewBuilder(reqreply.Info{Title: "Test", Version: "1.0.0"})
 	h, err := reqreply.NewRoute[computeReq, computeResp](

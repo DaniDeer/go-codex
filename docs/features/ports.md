@@ -672,6 +672,17 @@ All four interfaces additionally require `AdapterName() string` for observabilit
 | SQL | `QueryAdapter` | `DrainInsertAdapter` | `QueryEachAdapter` | — | — |
 | MCP (mcpgo) | — | — | — | `ToolPipelineAdapter` | `LatestAdapter` |
 
+> **Merge-field per-item vars derivation:** for every `Sink`/`IO` adapter
+> above whose options carry a `Vars map[string]string` field
+> (`nethttp.DrainCallAdapter`/`CallAdapter`, `mqtt5.PublishAdapter`/`CallAdapter`,
+> `zeromq.PublishAdapter`/`CallAdapter`, `mqtt.PublishAdapter`), leaving `Vars`
+> `nil` derives path/topic vars PER-ITEM from that item's own merge-field-declared
+> struct fields (via the transport's `CallHandle`/`PublishHandle`) — the "one
+> struct, one call" convenience applies through `ports.SinkPort`/`ports.IOPort`
+> just as it does calling the transport function directly. Set `Vars` to a
+> non-nil map (even an empty one) to keep the same, static vars for every
+> item instead — the escape hatch, unchanged from before this was added.
+
 ---
 
 ## Test adapters

@@ -185,6 +185,31 @@ func Subscribe[T any](
 			continue
 		}
 
+		// Merge topic variables declared via events.NewTopicParam into the
+		// SAME decoded value — additive, only runs when the channel has
+		// merge-capable topic params (backward compatible: identical
+		// behavior to today when none are declared). Mirrors mqtt5's
+		// makeSubscribeMessageHandler wiring.
+		if mergeFields := handle.MergeFields(); len(mergeFields) > 0 {
+			vars, varErr := TopicVarsFromMessage(handle, topic)
+			if varErr != nil {
+				stats.ReportErrors(obs, "topic_var", varErr)
+				obs.RecordSubscribe(topic, false, time.Since(start))
+				if opts.OnError != nil {
+					opts.OnError(SubscribeError{Kind: KindDecode, Topic: topic, Err: varErr})
+				}
+				continue
+			}
+			if mergeErr := codex.DecodeVars(&value, vars, mergeFields...); mergeErr != nil {
+				stats.ReportErrors(obs, "topic_var", mergeErr)
+				obs.RecordSubscribe(topic, false, time.Since(start))
+				if opts.OnError != nil {
+					opts.OnError(SubscribeError{Kind: KindDecode, Topic: topic, Err: mergeErr})
+				}
+				continue
+			}
+		}
+
 		var spanCtx = ctx
 		if to, ok := obs.(stats.TraceObserver); ok {
 			spanCtx = to.StartSpan(ctx, "zmq.subscribe", topic)
@@ -277,6 +302,35 @@ func Publish[T any](
 	}
 	obs.RecordPublish(topic, true, time.Since(start))
 	return nil
+}
+
+// PublishHandle is the single-call convenience wrapper around [Publish]: it
+// derives the topic vars map from msg automatically, using the channel's
+// merge-capable topic params ([events.ChannelHandle.MergeFields] +
+// [codex.EncodeVars]) — one struct in, no manual vars map, mirroring
+// [mqtt5.PublishHandle]'s convenience for MQTT 5 events.
+//
+// [Publish] remains available as the lower-level escape hatch for callers
+// that build the vars map themselves (e.g. no merge fields declared, or
+// vars come from a non-struct source).
+//
+//	err := zeromq.PublishHandle(ctx, sock, sensorChannel, reading, zeromq.PublishOptions{})
+func PublishHandle[T any](
+	ctx context.Context,
+	sock FramedSocket,
+	handle *events.ChannelHandle[T],
+	msg T,
+	opts PublishOptions,
+	formats ...format.Format[T],
+) error {
+	vars, err := codex.EncodeVars(msg, handle.MergeFields()...)
+	if err != nil {
+		return err
+	}
+	if len(vars) == 0 {
+		vars = nil
+	}
+	return Publish(ctx, sock, handle, msg, vars, opts, formats...)
 }
 
 // Serve runs a blocking REP loop: receives requests, calls fn, sends replies.

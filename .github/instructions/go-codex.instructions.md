@@ -644,14 +644,22 @@ nethttp.Register(mux, handle, func(ctx context.Context, req GetUserActivityReq) 
 }, nethttp.Options{})
 ```
 
-**Not yet true everywhere — be explicit, do not overclaim**: `api/events`
-(pub/sub) and `api/reqreply` (req/reply) do NOT yet satisfy this — no topic
-merge-field constructors exist there at all, so a publisher/subscriber or
-requestor/replier still hand-assembles topic var maps and there is no
-single-call convenience. This is tracked as "Round 2" in
-`docs/roadmap/vars-codec-merge.md` — a forward-looking backlog item, not
-precedent to copy when building something new. `adapters/mqtt5`/`zeromq`/
-`mcpgo` inherit the same gap (they bind to `ChannelHandle`/`RouteHandle`).
+**Now true everywhere, both the core API and the `ports.Pattern` binding
+layer**: `api/rest`, `api/events` (pub/sub), and `api/reqreply` (req/reply)
+satisfy this at the CORE-API level (declare-once constructors,
+`DecodeMerged`, single-call convenience), AND the `ports.Pattern` binding
+layer's `SinkAdapter`/`IOAdapter` constructors
+(`nethttp.DrainCallAdapter`/`CallAdapter`, `mqtt5.PublishAdapter`/
+`CallAdapter`, `zeromq.PublishAdapter`/`CallAdapter`,
+`mqtt.PublishAdapter`) delegate to `CallHandle`/`PublishHandle` and derive
+vars PER-ITEM whenever their `Vars` option is left `nil` — a single static
+`Vars` map remains available as the escape hatch when explicitly set.
+`adapters/zeromq`'s own pub/sub `Subscribe`/`Publish` and `adapters/mqtt`
+(v3) events also got the same merge-field wiring `adapters/mqtt5` already
+had. Remaining low-priority items (SSE merge support, a shared
+non-wildcard topic-template core across mqtt/mqtt5/zeromq/ports.File) are
+tracked in `docs/roadmap/merge-field-remaining-gaps.md` — forward-looking
+backlog, not blockers.
 
 **Every new or newly-touched Req/Resp-or-payload-shaped boundary must reach
 REST's bar** — see the `add-a-new-adapter` skill's "Step 5b" for the

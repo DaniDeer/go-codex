@@ -389,13 +389,19 @@ was just added or touched, verify all five:
    at the accessors/constructors without the wrapper is incomplete — the
    wrapper IS the promise made concrete.
 
-**Known, already-tracked gap — do NOT re-report as a new finding**:
-`api/events` (pub/sub) and `api/reqreply` (req/reply) currently satisfy
-NONE of the five — no topic merge-field constructors, no response-side
-merge, no single-call wrapper. This is tracked as "Round 2" in
-`docs/roadmap/vars-codec-merge.md`. Only flag these as findings if this
-skill's history shows Round 2 work was claimed complete but isn't, or if a
-NEW boundary reproduces the same gap instead of following REST's pattern.
+**`api/rest`/`api/events`/`api/reqreply` all SHIPPED the five above** (see
+`.github/instructions/go-codex.instructions.md`'s "Declarative Var
+Extraction & Merge" section), **AND so did the `ports.Pattern` binding
+layer**: `DrainCallAdapter`/`PublishAdapter`/`CallAdapter` across
+`nethttp`/`mqtt5`/`zeromq`/`mqtt` delegate to `CallHandle`/`PublishHandle`
+and derive vars PER-ITEM whenever their `Vars` option is left `nil` (a
+non-nil map remains the static-vars escape hatch). `adapters/zeromq`'s own
+pub/sub `Subscribe`/`Publish` and `adapters/mqtt` (v3) events also received
+merge-field wiring. Only flag a NEW port-binding adapter as a finding if it
+reproduces the OLD static-`Vars`-only gap instead of delegating to its own
+Handle-suffixed wrapper. Remaining low-priority backlog (SSE merge support,
+a shared topic-template-matching core) is tracked in
+`docs/roadmap/merge-field-remaining-gaps.md`.
 
 REST (`api/rest` + `adapters/nethttp`/`chi`) is the reference — use it to
 judge every other boundary's completeness. See `docs/concepts/api-contracts.md`
