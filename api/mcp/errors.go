@@ -148,6 +148,35 @@ func (e MissingResourceVarError) LogValue() slog.Value {
 	)
 }
 
+// ResourceURIMismatchError is returned by [ResourceHandle.ExtractURIVars]
+// when a received URI does not match the structure of the resource's URI
+// template (wrong number of segments, or a literal segment does not match).
+// Mirrors adapters/mqtt5.TopicMismatchError/adapters/mqtt.TopicMismatchError/
+// ports.FilePathMismatchError exactly.
+//
+// Use [errors.As] to inspect the mismatched URI:
+//
+//	var mm mcp.ResourceURIMismatchError
+//	if errors.As(err, &mm) {
+//	    log.Printf("URI %q does not match template %q", mm.URI, mm.Template)
+//	}
+type ResourceURIMismatchError struct {
+	Template string // the resource's URI template (e.g. "items://{id}")
+	URI      string // the received concrete URI (e.g. "items://abc-123/extra")
+}
+
+func (e ResourceURIMismatchError) Error() string {
+	return fmt.Sprintf("resource URI %q does not match template %q", e.URI, e.Template)
+}
+
+// LogValue implements [slog.LogValuer] for structured logging.
+func (e ResourceURIMismatchError) LogValue() slog.Value {
+	return slog.GroupValue(
+		slog.String("template", e.Template),
+		slog.String("uri", e.URI),
+	)
+}
+
 // PromptArgError is returned by [PromptHandle.ValidateArgs] when an argument
 // fails its registered codec constraint.
 //

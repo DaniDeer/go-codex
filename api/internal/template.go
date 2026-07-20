@@ -2,9 +2,9 @@ package internal
 
 import (
 	"regexp"
-	"strings"
 
 	"github.com/DaniDeer/go-codex/codex"
+	"github.com/DaniDeer/go-codex/internal/templatematch"
 )
 
 // TemplateVarRe matches {varName} placeholders in path or topic templates.
@@ -42,34 +42,17 @@ func StripTemplateVars(template string) string {
 // matchTopicTemplate keeps its own wildcard handling separately since file
 // paths and REST-shaped templates have no wildcard concept.
 //
+// Delegates to [templatematch.MatchNonWildcard] — the shared, module-internal
+// core also used by adapters/zeromq and ports/file.go, which cannot import
+// this api/internal package (Go's internal/ visibility rule restricts it to
+// code rooted at api/'s own subtree). See
+// docs/roadmap/merge-field-remaining-gaps.md (G2).
+//
 // Returns wrapMismatch(template, concrete) when the concrete string's
 // structure does not match the template (wrong segment count, or literal
 // text does not match).
 func MatchTemplate(template, concrete string, wrapMismatch func(template, concrete string) error) (map[string]string, error) {
-	var pattern strings.Builder
-	pattern.WriteString("^")
-	var names []string
-	lastEnd := 0
-	for _, loc := range TemplateVarRe.FindAllStringIndex(template, -1) {
-		start, end := loc[0], loc[1]
-		pattern.WriteString(regexp.QuoteMeta(template[lastEnd:start])) // literal text before the var
-		names = append(names, template[start+1:end-1])                 // strip { and }
-		pattern.WriteString("([^/]+)")                                 // captures the var; never crosses "/"
-		lastEnd = end
-	}
-	pattern.WriteString(regexp.QuoteMeta(template[lastEnd:]))
-	pattern.WriteString("$")
-
-	re := regexp.MustCompile(pattern.String())
-	m := re.FindStringSubmatch(concrete)
-	if m == nil {
-		return nil, wrapMismatch(template, concrete)
-	}
-	vars := make(map[string]string, len(names))
-	for i, name := range names {
-		vars[name] = m[i+1]
-	}
-	return vars, nil
+	return templatematch.MatchNonWildcard(template, concrete, wrapMismatch)
 }
 
 // from vars, validating each against the corresponding codec in paramCodecs.

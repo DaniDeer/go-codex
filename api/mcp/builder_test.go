@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"testing"
 
 	apimcp "github.com/DaniDeer/go-codex/api/mcp"
@@ -364,6 +365,97 @@ func TestResourceHandle_ValidateURIVars_validVars(t *testing.T) {
 	err := handle.ValidateURIVars(map[string]string{"id": "550e8400-e29b-41d4-a716-446655440000"})
 	if err != nil {
 		t.Errorf("unexpected error for valid UUID: %v", err)
+	}
+}
+
+// G4a: ResourceHandle.ExtractURIVars happy path — extracts AND validates in
+// one call.
+func TestResourceHandle_ExtractURIVars_happyPath(t *testing.T) {
+	b := newBuilder()
+	res := apimcp.NewResource[itemData]("items://{id}", itemCodec,
+		apimcp.ResourceParam{Name: "id"}.WithCodec(uuidCodec),
+	)
+	handle, _ := res.Register(b)
+
+	vars, err := handle.ExtractURIVars("items://550e8400-e29b-41d4-a716-446655440000")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if vars["id"] != "550e8400-e29b-41d4-a716-446655440000" {
+		t.Errorf("id: got %q", vars["id"])
+	}
+}
+
+// G4a: a mismatched URI structure (extra path segment) returns
+// ResourceURIMismatchError.
+func TestResourceHandle_ExtractURIVars_mismatch(t *testing.T) {
+	b := newBuilder()
+	res := apimcp.NewResource[itemData]("items://{id}", itemCodec,
+		apimcp.ResourceParam{Name: "id"},
+	)
+	handle, _ := res.Register(b)
+
+	_, err := handle.ExtractURIVars("items://abc/extra")
+	var mm apimcp.ResourceURIMismatchError
+	if !errors.As(err, &mm) {
+		t.Fatalf("expected ResourceURIMismatchError, got %T: %v", err, err)
+	}
+	if mm.Template != "items://{id}" {
+		t.Errorf("Template: got %q", mm.Template)
+	}
+	if mm.URI != "items://abc/extra" {
+		t.Errorf("URI: got %q", mm.URI)
+	}
+}
+
+// G4a: an extracted variable that fails its registered codec returns
+// ResourceParamError (via the internal ValidateURIVars call).
+func TestResourceHandle_ExtractURIVars_codecFailure(t *testing.T) {
+	b := newBuilder()
+	res := apimcp.NewResource[itemData]("items://{id}", itemCodec,
+		apimcp.ResourceParam{Name: "id"}.WithCodec(uuidCodec),
+	)
+	handle, _ := res.Register(b)
+
+	_, err := handle.ExtractURIVars("items://not-a-uuid")
+	var pe apimcp.ResourceParamError
+	if !errors.As(err, &pe) {
+		t.Fatalf("expected ResourceParamError, got %T: %v", err, err)
+	}
+	if pe.Name != "id" {
+		t.Errorf("Name: got %q, want %q", pe.Name, "id")
+	}
+}
+
+// G4a: a static (no {var}) resource template requires an exact URI match —
+// no vars extracted, no error for the identical URI.
+func TestResourceHandle_ExtractURIVars_staticTemplate(t *testing.T) {
+	b := newBuilder()
+	res := apimcp.NewResource[itemData]("items://catalog", itemCodec)
+	handle, _ := res.Register(b)
+
+	vars, err := handle.ExtractURIVars("items://catalog")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(vars) != 0 {
+		t.Errorf("expected empty vars, got %+v", vars)
+	}
+}
+
+func TestResourceURIMismatchError_LogValue(t *testing.T) {
+	err := apimcp.ResourceURIMismatchError{Template: "items://{id}", URI: "items://a/b"}
+	v := err.LogValue()
+	if v.Kind() != slog.KindGroup {
+		t.Fatalf("want KindGroup, got %v", v.Kind())
+	}
+	attrs := v.Group()
+	got := map[string]string{}
+	for _, a := range attrs {
+		got[a.Key] = a.Value.String()
+	}
+	if got["template"] != "items://{id}" || got["uri"] != "items://a/b" {
+		t.Errorf("unexpected attrs: %+v", got)
 	}
 }
 

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -96,7 +97,15 @@ func (t *pendingToken) Done() <-chan struct{}            { return t.done }
 func (t *pendingToken) Error() error                     { return nil }
 
 // mockClient implements pahomqtt.Client (only Publish is exercised in tests).
+//
+// mu guards every mutable field below — SubscribeAdapter's Activate
+// goroutine writes subscribedTopic/subscribedHandler concurrently with the
+// test goroutine's polling reads (see subscribedTopicSnapshot/
+// subscribedHandlerSnapshot), mirroring adapters/mqtt5's mockClient pattern.
+// This was a pre-existing, unrelated data race (found via `go test -race`)
+// fixed as part of docs/roadmap/merge-field-remaining-gaps.md's G3.
 type mockClient struct {
+	mu                sync.Mutex
 	publishedTopic    string
 	publishedPayload  []byte
 	subscribedTopic   string
@@ -115,18 +124,65 @@ func (c *mockClient) IsConnectionOpen() bool  { return true }
 func (c *mockClient) Connect() pahomqtt.Token { return newCompletedToken(nil) }
 func (c *mockClient) Disconnect(_ uint)       {}
 func (c *mockClient) Publish(topic string, _ byte, _ bool, payload interface{}) pahomqtt.Token {
+	c.mu.Lock()
 	c.publishedTopic = topic
 	c.publishedTopics = append(c.publishedTopics, topic)
 	if b, ok := payload.([]byte); ok {
 		c.publishedPayload = b
 		c.publishedPayloads = append(c.publishedPayloads, b)
 	}
+	c.mu.Unlock()
 	return c.token
 }
 func (c *mockClient) Subscribe(topic string, _ byte, handler pahomqtt.MessageHandler) pahomqtt.Token {
+	c.mu.Lock()
 	c.subscribedTopic = topic
 	c.subscribedHandler = handler
+	c.mu.Unlock()
 	return newCompletedToken(nil)
+}
+
+// subscribedTopicSnapshot returns the last subscribed topic under c.mu —
+// use this (not the bare field) from a goroutine that races with Subscribe.
+func (c *mockClient) subscribedTopicSnapshot() string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.subscribedTopic
+}
+
+// subscribedHandlerSnapshot returns the last registered handler under c.mu —
+// use this (not the bare field) from a goroutine that races with Subscribe.
+func (c *mockClient) subscribedHandlerSnapshot() pahomqtt.MessageHandler {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.subscribedHandler
+}
+
+// publishedTopicSnapshot returns the last published topic under c.mu — use
+// this (not the bare field) from a goroutine that races with Publish.
+func (c *mockClient) publishedTopicSnapshot() string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.publishedTopic
+}
+
+// publishedPayloadSnapshot returns the last published payload under c.mu —
+// use this (not the bare field) from a goroutine that races with Publish.
+func (c *mockClient) publishedPayloadSnapshot() []byte {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.publishedPayload
+}
+
+// publishedTopicsSnapshot returns a copy of every published topic under
+// c.mu — use this (not the bare field) from a goroutine that races with
+// Publish.
+func (c *mockClient) publishedTopicsSnapshot() []string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	out := make([]string, len(c.publishedTopics))
+	copy(out, c.publishedTopics)
+	return out
 }
 func (c *mockClient) SubscribeMultiple(_ map[string]byte, _ pahomqtt.MessageHandler) pahomqtt.Token {
 	return newCompletedToken(nil)
@@ -222,11 +278,11 @@ func TestPublish_Success(t *testing.T) {
 	if err != nil {
 		t.Fatalf("want nil error, got %v", err)
 	}
-	if client.publishedTopic != "user/created" {
-		t.Fatalf("want topic user/created, got %q", client.publishedTopic)
+	if client.publishedTopicSnapshot() != "user/created" {
+		t.Fatalf("want topic user/created, got %q", client.publishedTopicSnapshot())
 	}
-	if !strings.Contains(string(client.publishedPayload), "alice@example.com") {
-		t.Fatalf("want email in payload, got %s", client.publishedPayload)
+	if !strings.Contains(string(client.publishedPayloadSnapshot()), "alice@example.com") {
+		t.Fatalf("want email in payload, got %s", client.publishedPayloadSnapshot())
 	}
 }
 
@@ -345,8 +401,8 @@ func TestPublishHandle_DerivesTopicFromMsg(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	wantTopic := "users/f47ac10b-58cc-4372-a567-0e02b2c3d479/events"
-	if client.publishedTopic != wantTopic {
-		t.Errorf("topic: want %q, got %q", wantTopic, client.publishedTopic)
+	if client.publishedTopicSnapshot() != wantTopic {
+		t.Errorf("topic: want %q, got %q", wantTopic, client.publishedTopicSnapshot())
 	}
 }
 
@@ -361,8 +417,8 @@ func TestPublishHandle_NoMergeFields_MatchesPlainPublish(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if client.publishedTopic != "user/created" {
-		t.Errorf("topic: want static, got %q", client.publishedTopic)
+	if client.publishedTopicSnapshot() != "user/created" {
+		t.Errorf("topic: want static, got %q", client.publishedTopicSnapshot())
 	}
 }
 
@@ -376,8 +432,8 @@ func TestPublish_TemplateVars(t *testing.T) {
 	if err != nil {
 		t.Fatalf("want nil error, got %v", err)
 	}
-	if client.publishedTopic != "users/f47ac10b-58cc-4372-a567-0e02b2c3d479/events" {
-		t.Fatalf("want concrete topic, got %q", client.publishedTopic)
+	if client.publishedTopicSnapshot() != "users/f47ac10b-58cc-4372-a567-0e02b2c3d479/events" {
+		t.Fatalf("want concrete topic, got %q", client.publishedTopicSnapshot())
 	}
 }
 
@@ -746,12 +802,12 @@ func TestPublish_YAMLFormat(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if !strings.Contains(string(client.publishedPayload), "alice@example.com") {
-		t.Errorf("want YAML payload with alice@example.com, got %q", string(client.publishedPayload))
+	if !strings.Contains(string(client.publishedPayloadSnapshot()), "alice@example.com") {
+		t.Errorf("want YAML payload with alice@example.com, got %q", string(client.publishedPayloadSnapshot()))
 	}
 	// YAML payload should not be JSON.
-	if strings.HasPrefix(string(client.publishedPayload), "{") {
-		t.Errorf("want YAML payload, got JSON-like: %q", string(client.publishedPayload))
+	if strings.HasPrefix(string(client.publishedPayloadSnapshot()), "{") {
+		t.Errorf("want YAML payload, got JSON-like: %q", string(client.publishedPayloadSnapshot()))
 	}
 }
 
@@ -1058,7 +1114,7 @@ func ExamplePublish() {
 		adaptermqtt.PublishOptions{},
 	)
 	fmt.Println(err)
-	fmt.Println(client.publishedTopic)
+	fmt.Println(client.publishedTopicSnapshot())
 	// Output:
 	// <nil>
 	// alerts/sensor-01

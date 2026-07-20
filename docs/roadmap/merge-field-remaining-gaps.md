@@ -1,6 +1,8 @@
 # Merge-Field Remaining Gaps — SSE, shared template-matching core, MCP, test hygiene
 
-> **Status:** Design complete — not yet implemented.
+> **Status:** G2, G3, G4a SHIPPED. G1 and G4b remain deferred — no concrete
+> use case has appeared for either, per this round's resolved design
+> decisions (see "Open design decisions" below); do not build speculatively.
 > [← Back to Roadmap](index.md)
 >
 > This roadmap doc supersedes `docs/roadmap/merge-field-port-adapter-gaps.md`
@@ -44,12 +46,12 @@ while re-reading the implementation closely:
 
 ## Scope decisions
 
-| Gap | Boundary | Severity | In scope this round |
-|---|---|---|---|
-| G1 (was G5) | `rest.SSERouteHandle` has zero merge support (no `MergeFields`/`DecodeMerged` for the pushed `Event` type) | `api/rest` (SSE), `adapters/nethttp` | Low | Design only this round — no concrete SSE+query-param merge use case has appeared yet; see "Open design decisions" for why this needs a design decision BEFORE implementation, not just a mechanical port of the REST pattern |
-| G2 (was G6) | Four near-identical topic/path template-matching implementations (`adapters/mqtt`, `adapters/mqtt5`, `adapters/zeromq`, `ports/file.go`) — none can share `api/internal.MatchTemplate` (import-visibility) | `adapters/mqtt`, `adapters/mqtt5`, `adapters/zeromq`, `ports` | Low | Design only this round — low-risk, opportunistic; needs a location decision (see API surface) before any refactor |
-| G3 (new) | Pre-existing data race in `adapters/mqtt/binding_test.go`'s `TestSubscribeAdapter_AutoDerivesWildcardFilter` (mockClient fields read/written across goroutines without synchronization) | `adapters/mqtt` (test-only) | Low — test-only, does not affect production code correctness | Yes — trivial, mechanical fix (add a mutex to `mockClient`, mirroring the pattern `adapters/mqtt5`'s `mockClient` already uses) |
-| G4 (new — assessed) | `api/mcp` Resources have ZERO automatic URI-var extraction/validation (`ResourceHandlerFunc` receives only the raw `req.Params.URI` string; `ResourceHandle.ValidateURIVars` exists but is never called by `adapters/mcpgo`); `api/mcp` Prompts DO auto-validate (`PromptHandler` calls `ValidateArgs`) but hand the app a raw `map[string]string`, not a merged typed struct | `api/mcp`, `adapters/mcpgo` | **Medium for Resources** (a real, user-visible gap independent of merge-fields — apps must hand-roll URI parsing today); **Low for Prompts** (works today via the map, just one maturity level short of the merge-field convenience) | Design only this round — Resources' auto-extract fix is a concrete, scoped win; full merge-field parity for either Resources or Prompts is NOT recommended without a demonstrated use case (see "Open design decisions") |
+| Gap | Boundary | Severity | In scope this round | Status |
+|---|---|---|---|---|
+| G1 (was G5) | `rest.SSERouteHandle` has zero merge support (no `MergeFields`/`DecodeMerged` for the pushed `Event` type) | `api/rest` (SSE), `adapters/nethttp` | Low | Resolved as deferred — no concrete SSE+query-param merge use case has appeared; see "Open design decisions" (resolved) | Deferred, not implemented |
+| G2 (was G6) | Four near-identical topic/path template-matching implementations (`adapters/mqtt`, `adapters/mqtt5`, `adapters/zeromq`, `ports/file.go`) — none can share `api/internal.MatchTemplate` (import-visibility) | `adapters/mqtt`, `adapters/mqtt5`, `adapters/zeromq`, `ports` | Low | Yes | ✅ SHIPPED — new `internal/templatematch` package (`MatchNonWildcard`/`MatchMQTTWildcard`), all four duplicates (plus `api/internal.MatchTemplate` itself) now delegate to it |
+| G3 (new) | Pre-existing data race in `adapters/mqtt/binding_test.go`'s `TestSubscribeAdapter_AutoDerivesWildcardFilter` (mockClient fields read/written across goroutines without synchronization) | `adapters/mqtt` (test-only) | Low — test-only, does not affect production code correctness | Yes — trivial, mechanical fix (add a mutex to `mockClient`, mirroring the pattern `adapters/mqtt5`'s `mockClient` already uses) | ✅ SHIPPED — `mockClient` now has a `sync.Mutex` + snapshot accessor methods; `go test -race` clean |
+| G4 (new — assessed) | `api/mcp` Resources have ZERO automatic URI-var extraction/validation (`ResourceHandlerFunc` receives only the raw `req.Params.URI` string; `ResourceHandle.ValidateURIVars` exists but is never called by `adapters/mcpgo`); `api/mcp` Prompts DO auto-validate (`PromptHandler` calls `ValidateArgs`) but hand the app a raw `map[string]string`, not a merged typed struct | `api/mcp`, `adapters/mcpgo` | **Medium for Resources** (a real, user-visible gap independent of merge-fields — apps must hand-roll URI parsing today); **Low for Prompts** (works today via the map, just one maturity level short of the merge-field convenience) | G4a: yes (concrete, scoped win). G4b: resolved as deferred — not recommended without a demonstrated use case | G4a ✅ SHIPPED (`ResourceHandle.ExtractURIVars`, new `ResourceURIMismatchError`, `mcpgo.ResourceVarsHandlerFunc`/`ResourceHandlerWithVars`/`RegisterResourceWithVars` — additive, `ResourceHandlerFunc`/`ResourceHandler`/`RegisterResource` unchanged). G4b deferred, not implemented |
 
 ## API surface
 
@@ -179,70 +181,62 @@ new observer method. G4b, if pursued, would need no new error types either
 
 | File | Responsibility |
 |---|---|
-| `api/rest/builder.go` | G1 (if pursued): `SSERouteHandle.MergeFields`/`DecodeMerged` |
-| `adapters/nethttp/{adapter,binding}.go` | G1 (if pursued): per-connection vars merge into pushed Events |
-| `internal/templatematch/` (new, repo-root-level) | G2 (if pursued): shared matching core |
-| `adapters/mqtt/topicvars.go`, `adapters/mqtt5/topicvars.go`, `adapters/zeromq/topicvars.go`, `ports/file.go` | G2 (if pursued): delegate to the shared core, delete local duplicates |
-| `adapters/mqtt/adapter_test.go` | G3: add mutex to `mockClient` |
-| `api/mcp/builder.go`, `api/mcp/errors.go` | G4a (if pursued): `ResourceHandle.ExtractURIVars`, new `ResourceURIMismatchError` |
-| `adapters/mcpgo/adapter.go` | G4a (if pursued): new `ResourceHandlerFunc` signature (additive) wired to call `ExtractURIVars` before `fn` |
-| this doc | mark SHIPPED (or partially shipped, per item) once complete |
+| G1 | NOT implemented — deferred, no files touched |
+| `internal/templatematch/templatematch.go` + `_test.go` (new, repo-root-level) | ✅ G2: shared matching core (`MatchNonWildcard`, `MatchMQTTWildcard`) |
+| `api/internal/template.go` | ✅ G2: `MatchTemplate` now delegates to `templatematch.MatchNonWildcard` |
+| `ports/file.go` | ✅ G2: `matchFileTemplate` now delegates to `templatematch.MatchNonWildcard` |
+| `adapters/zeromq/topicvars.go` | ✅ G2: `matchTopicTemplate` now delegates to `templatematch.MatchNonWildcard` |
+| `adapters/mqtt/topicvars.go`, `adapters/mqtt5/topicvars.go` | ✅ G2: `matchTopicTemplate` now delegates to `templatematch.MatchMQTTWildcard` |
+| `adapters/mqtt/adapter_test.go` + `binding_test.go` | ✅ G3: `mockClient` mutex + snapshot accessors; all call sites updated |
+| `api/mcp/builder.go`, `api/mcp/errors.go` + `builder_test.go` | ✅ G4a: `ResourceHandle.ExtractURIVars`, new `ResourceURIMismatchError` |
+| `adapters/mcpgo/adapter.go` + `adapter_test.go` | ✅ G4a: new additive `ResourceVarsHandlerFunc`/`ResourceHandlerWithVars`/`RegisterResourceWithVars` |
+| `docs/features/mcp.md` | ✅ G4a: documented `ExtractURIVars`/`RegisterResourceWithVars` |
+| `docs/reference/project-structure.md` | ✅ G2: documented new `internal/templatematch` package |
+| G4b | NOT implemented — deferred, no files touched |
+| this doc | marked partially SHIPPED (G2/G3/G4a); G1/G4b remain deferred |
 
-## Open design decisions (must be resolved before implementation)
+## Open design decisions (resolved during implementation)
 
-1. **G1 — is per-CONNECTION merge (not per-event) actually useful?** SSE
-   pushes many `Event`s over one long-lived connection opened with one
-   `Req` (path/query params at subscribe time). Merging those vars into
-   every pushed `Event` means every event repeats the SAME value (e.g.
-   `machineID` from the path) — useful for a client that only cares about
-   the `Event` stream in isolation (e.g. logging, replay) but redundant for
-   a client that already knows what it subscribed to. Needs a concrete use
-   case before implementing — do not build speculatively.
+1. **G1 — is per-CONNECTION merge (not per-event) actually useful?**
+   RESOLVED as deferred — no concrete use case appeared; not implemented
+   this round.
 2. **G1 — Req-side merge for SSE already exists via `BuildPath`/
-   `ValidatePathParams`; is Event-side merge even the right feature, or
-   is a lighter-weight "expose the resolved Req to the event-producing
-   goroutine" pattern (already possible via closures today) sufficient?**
-   Lean toward the latter unless a real gap is demonstrated — SSE's
-   existing capabilities may already cover the practical need.
-3. **G2 — where should the shared core live?** `internal/templatematch` at
-   the repository root (importable everywhere in the module, unlike
-   `api/internal` which is `api/*`-only) is the leading candidate, but a
-   PUBLIC package (e.g. under `codex/` or a new top-level exported
-   package) is also viable if any external consumer ever needs it
-   (unlikely today — all four current consumers are in-repo). Prefer
-   `internal/` unless a concrete external-consumer need appears.
-4. **G2 — is the wildcard/non-wildcard split (`MatchMQTTWildcard` vs.
-   `MatchNonWildcard`) the right factoring, or should there be ONE
-   function with a wildcard-support flag?** Lean toward two functions —
-   matches the existing code's structure (mqtt/mqtt5 already branch on
-   `+`/`#` inline; zeromq/ports.file have no such branches at all) and
-   avoids a boolean-flag code smell.
-5. **G3 — is `sync.Mutex` + explicit lock/unlock the right fix, or should
-   `adapters/mqtt`'s `mockClient` be replaced entirely with `adapters/
-   mqtt5`'s more complete mock pattern (which already has accessor
-   methods like `subscribedFilters()`)?** Lean toward mirroring `mqtt5`'s
-   mock shape for consistency, but a minimal mutex-only fix is acceptable
-   if reshaping the whole mock is out of scope for a "trivial" fix.
-6. **G4a — is a NEW `ResourceHandlerFunc[T]` signature (additive, vars map
-   added as a third parameter) the right shape, or should
-   `mcp.ReadResourceRequest`'s existing `req.Params.URI` remain the ONLY
-   thing `fn` receives, with `ExtractURIVars` documented as a manual call
-   the app makes itself (status quo, just better-documented)?** Leaning
-   toward the additive new signature — it closes the actual gap (nobody
-   calls `ValidateURIVars` today) rather than just documenting a manual
-   workaround nobody currently uses. Needs confirmation there's no
-   backward-compatibility promise broken by adding a THIRD parameter
-   (check whether `ResourceHandlerFunc` is part of any currently-shipped
-   public contract other packages depend on positionally).
-7. **G4b — is full merge-field parity for Resources/Prompts worth
-   building at all, given neither has a natural Req/Resp struct pair the
-   way REST/events/reqreply do?** Leaning NO for Resources (the "merge
-   into app-produced T" shape is a narrower, more speculative win than
-   G4a's concrete extraction fix) and MAYBE for Prompts (a
-   `NewPromptArg`-merge closing map→struct is more directly analogous to
-   the shipped pattern) — but defer BOTH until a concrete user request
-   appears; do not build speculatively per this skill's own "never invent
-   API without a user request" rule.
+   `ValidatePathParams`; is Event-side merge even the right feature?**
+   RESOLVED as leaned — SSE's existing capabilities (closures exposing the
+   resolved `Req` to the event-producing goroutine) are sufficient; no new
+   API added.
+3. **G2 — where should the shared core live?** RESOLVED as leaned —
+   `internal/templatematch` at the repository root. `api/internal.MatchTemplate`,
+   `ports/file.go`'s `matchFileTemplate`, `adapters/zeromq`'s
+   `matchTopicTemplate`, `adapters/mqtt`'s `matchTopicTemplate`, and
+   `adapters/mqtt5`'s `matchTopicTemplate` all now delegate to it.
+4. **G2 — is the wildcard/non-wildcard split the right factoring?**
+   RESOLVED as leaned — implemented as two functions,
+   `MatchNonWildcard` (REST/file/MCP/ZeroMQ) and `MatchMQTTWildcard`
+   (mqtt/mqtt5), each preserving its consumers' EXACT prior algorithm
+   (regex-based partial-segment capture for the former, split-based
+   whole-segment-only capture with `+`/`#` support for the latter — these
+   are genuinely different algorithms, not just "the same thing plus
+   wildcards").
+5. **G3 — is `sync.Mutex` + explicit lock/unlock the right fix?** RESOLVED
+   as leaned — `adapters/mqtt`'s `mockClient` gained a `sync.Mutex` plus
+   snapshot accessor methods (`subscribedTopicSnapshot`,
+   `subscribedHandlerSnapshot`, `publishedTopicSnapshot`,
+   `publishedPayloadSnapshot`, `publishedTopicsSnapshot`), mirroring
+   `adapters/mqtt5`'s mock pattern; every test call site updated to use the
+   accessors instead of bare field reads. `go test -race` is clean,
+   confirmed stable across 5 repeated runs.
+6. **G4a — is a NEW `ResourceHandlerFunc[T]` signature the right shape?**
+   RESOLVED as leaned, but implemented as a NEW additive type +
+   functions rather than changing the existing signature in place:
+   `ResourceVarsHandlerFunc[T]` (new func type), `ResourceHandlerWithVars`/
+   `RegisterResourceWithVars` (new functions) — `ResourceHandlerFunc`/
+   `ResourceHandler`/`RegisterResource` are completely UNCHANGED, so no
+   backward-compatibility question needed resolving after all (both paths
+   coexist; callers choose per-resource).
+7. **G4b — is full merge-field parity for Resources/Prompts worth building
+   at all?** RESOLVED as leaned — deferred for BOTH Resources and Prompts;
+   not implemented this round. No concrete user request has appeared.
 
 ## Verification
 

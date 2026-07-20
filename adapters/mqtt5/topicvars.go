@@ -3,9 +3,9 @@ package mqtt5
 import (
 	"fmt"
 	"log/slog"
-	"strings"
 
 	"github.com/DaniDeer/go-codex/api/events"
+	"github.com/DaniDeer/go-codex/internal/templatematch"
 	pahomqtt5 "github.com/eclipse/paho.golang/paho"
 )
 
@@ -82,52 +82,14 @@ func (e TopicMismatchError) LogValue() slog.Value {
 }
 
 // matchTopicTemplate performs the level-by-level matching of a concrete MQTT
-// topic against a go-codex topic template. Duplicated from adapters/mqtt's
-// unexported matchTopicTemplate (same MQTT wildcard semantics) rather than
-// shared, since api/internal.MatchTemplate deliberately has no wildcard
-// support (see docs/roadmap/merge-field-remaining-gaps.md's G2 — refactoring
-// both mqtt/mqtt5 to share a wildcard-aware core remains a deferred,
-// low-risk follow-up, not a blocker).
+// topic against a go-codex topic template. Delegates to
+// [templatematch.MatchMQTTWildcard] — the shared, module-internal core also
+// used by adapters/mqtt (same MQTT wildcard semantics), since
+// api/internal.MatchTemplate deliberately has no wildcard support and
+// adapters/mqtt5 cannot import that api/*-only package anyway. See
+// docs/roadmap/merge-field-remaining-gaps.md (G2).
 func matchTopicTemplate(template, topic string) (map[string]string, error) {
-	tmplParts := strings.Split(template, "/")
-	topicParts := strings.Split(topic, "/")
-
-	vars := make(map[string]string)
-
-	for i, seg := range tmplParts {
-		// Multi-level wildcard — must be last segment; captures everything remaining.
-		if seg == "#" {
-			vars["#"] = strings.Join(topicParts[i:], "/")
-			return vars, nil
-		}
-
-		if i >= len(topicParts) {
-			return nil, TopicMismatchError{Template: template, Topic: topic}
-		}
-
-		concreteSeg := topicParts[i]
-
-		switch {
-		case len(seg) > 2 && seg[0] == '{' && seg[len(seg)-1] == '}':
-			// {varName} placeholder — capture the concrete segment value.
-			name := seg[1 : len(seg)-1]
-			vars[name] = concreteSeg
-
-		case seg == "+":
-			// Anonymous single-level wildcard — match any segment, no capture.
-
-		default:
-			// Literal segment — must match exactly.
-			if seg != concreteSeg {
-				return nil, TopicMismatchError{Template: template, Topic: topic}
-			}
-		}
-	}
-
-	// All template segments consumed; the concrete topic must have no extra segments.
-	if len(topicParts) != len(tmplParts) {
-		return nil, TopicMismatchError{Template: template, Topic: topic}
-	}
-
-	return vars, nil
+	return templatematch.MatchMQTTWildcard(template, topic, func(template, topic string) error {
+		return TopicMismatchError{Template: template, Topic: topic}
+	})
 }

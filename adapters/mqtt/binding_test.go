@@ -26,13 +26,14 @@ func TestSubscribeAdapter_ValidPayload(t *testing.T) {
 	s := p.Stream(ctx)
 
 	deadline := time.Now().Add(200 * time.Millisecond)
-	for client.subscribedHandler == nil && time.Now().Before(deadline) {
+	for client.subscribedHandlerSnapshot() == nil && time.Now().Before(deadline) {
 		time.Sleep(5 * time.Millisecond)
 	}
-	if client.subscribedHandler == nil {
+	handler := client.subscribedHandlerSnapshot()
+	if handler == nil {
 		t.Fatal("timeout waiting for Subscribe to register a handler")
 	}
-	client.subscribedHandler(client, &mockMessage{payload: []byte(validPayload)})
+	handler(client, &mockMessage{payload: []byte(validPayload)})
 	cancel()
 
 	vals, errs := gstream.Collect(context.Background(), s)
@@ -63,11 +64,11 @@ func TestSubscribeAdapter_AutoDerivesWildcardFilter(t *testing.T) {
 	p.Stream(ctx)
 
 	deadline := time.Now().Add(200 * time.Millisecond)
-	for client.subscribedTopic == "" && time.Now().Before(deadline) {
+	for client.subscribedTopicSnapshot() == "" && time.Now().Before(deadline) {
 		time.Sleep(5 * time.Millisecond)
 	}
-	if client.subscribedTopic != "users/+/events" {
-		t.Errorf("want derived wildcard filter %q, got %q", "users/+/events", client.subscribedTopic)
+	if got := client.subscribedTopicSnapshot(); got != "users/+/events" {
+		t.Errorf("want derived wildcard filter %q, got %q", "users/+/events", got)
 	}
 }
 
@@ -89,8 +90,9 @@ func TestPublishAdapter_PublishesEachItem(t *testing.T) {
 	p.Bind(ctx, adaptermqtt.PublishAdapter(client, handle, format.JSON(userEventCodec), adaptermqtt.MQTTDrainPublishOptions{}))
 	p.Feed(ctx, gstream.From(ctx, ch))
 
-	if len(client.publishedTopics) != 1 || client.publishedTopics[0] != "user/created" {
-		t.Errorf("want 1 publish to user/created, got %v", client.publishedTopics)
+	topics := client.publishedTopicsSnapshot()
+	if len(topics) != 1 || topics[0] != "user/created" {
+		t.Errorf("want 1 publish to user/created, got %v", topics)
 	}
 }
 
@@ -115,12 +117,13 @@ func TestPublishAdapter_DerivesVarsPerItem_WhenOptsVarsNil(t *testing.T) {
 	p.Bind(ctx, adaptermqtt.PublishAdapter(client, handle, format.JSON(userEventCodec), adaptermqtt.MQTTDrainPublishOptions{}))
 	p.Feed(ctx, gstream.From(ctx, ch))
 
-	if len(client.publishedTopics) != 2 {
-		t.Fatalf("want 2 published, got %d", len(client.publishedTopics))
+	topics := client.publishedTopicsSnapshot()
+	if len(topics) != 2 {
+		t.Fatalf("want 2 published, got %d", len(topics))
 	}
-	if client.publishedTopics[0] != "users/f47ac10b-58cc-4372-a567-0e02b2c3d479/events" ||
-		client.publishedTopics[1] != "users/550e8400-e29b-41d4-a716-446655440000/events" {
-		t.Errorf("want per-item resolved topics, got %v", client.publishedTopics)
+	if topics[0] != "users/f47ac10b-58cc-4372-a567-0e02b2c3d479/events" ||
+		topics[1] != "users/550e8400-e29b-41d4-a716-446655440000/events" {
+		t.Errorf("want per-item resolved topics, got %v", topics)
 	}
 }
 
@@ -143,7 +146,7 @@ func TestPublishAdapter_ExplicitVarsStillWins(t *testing.T) {
 		adaptermqtt.MQTTDrainPublishOptions{Vars: map[string]string{"userID": "static-user"}}))
 	p.Feed(ctx, gstream.From(ctx, ch))
 
-	for _, topic := range client.publishedTopics {
+	for _, topic := range client.publishedTopicsSnapshot() {
 		if topic != "users/static-user/events" {
 			t.Errorf("want static topic for every item, got %q", topic)
 		}

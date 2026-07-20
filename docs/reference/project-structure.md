@@ -36,9 +36,16 @@ go-codex/
 ├── route/                  # HTTP route descriptors (no renderer logic)
 │   └── route.go            # Route, Param, Body, Response, SecurityScheme, SecurityRequirement
 │
+├── internal/               # module-wide shared helpers (not public API; importable from
+│   │                       #   anywhere in the module, unlike api/internal below)
+│   └── templatematch/      # shared {varName}-template matching core
+│       └── templatematch.go  # MatchNonWildcard (REST/file/MCP/ZeroMQ), MatchMQTTWildcard (mqtt/mqtt5)
+│
 ├── api/                    # transport-agnostic API builders
-│   ├── internal/           # shared helpers (not public API)
-│   │   └── template.go     # ParseTemplateVars, BuildFromTemplate, StripTemplateVars
+│   ├── internal/           # shared helpers (not public API; api/*-only — see internal/ above
+│   │   │                   #   for the module-wide equivalent)
+│   │   └── template.go     # ParseTemplateVars, BuildFromTemplate, StripTemplateVars, MatchTemplate
+│   │                       #   (MatchTemplate delegates to internal/templatematch.MatchNonWildcard)
 │   ├── rest/               # REST API builder: typed Decode/Encode + OpenAPI spec
 │   │   └── builder.go      # Builder, Route[Req,Resp]/NewRoute, SSERoute[Req,Event]/NewSSERoute,
 │   │                       #   RouteHandle (Decode, Encode, EncodeRequest, DecodeResponse, ClientHandle),

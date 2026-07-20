@@ -546,6 +546,37 @@ func (h *ResourceHandle[T]) ValidateURIVars(vars map[string]string) error {
 	return nil
 }
 
+// ExtractURIVars is the inverse of [ResourceHandle.BuildURI]: it matches a
+// concrete, received URI against [ResourceHandle.URITemplate] and returns
+// the extracted {varName} placeholder values, ALREADY validated against
+// every registered [ResourceParam] codec via [ResourceHandle.ValidateURIVars]
+// — one call replaces "parse the URI yourself" + "remember to call
+// ValidateURIVars yourself" (adapters/mcpgo.ResourceHandler calls this
+// automatically; see [mcpgo.ResourceVarsHandlerFunc]).
+//
+// Returns [ResourceURIMismatchError] if uri does not match the template's
+// structure (wrong number of segments, or a literal segment does not
+// match). Returns [ResourceParamError]/[MissingResourceVarError] if an
+// extracted variable fails its registered codec (via
+// [ResourceHandle.ValidateURIVars]).
+//
+// Example:
+//
+//	vars, err := itemResource.ExtractURIVars("items://abc-123")
+//	// vars["id"] == "abc-123"
+func (h *ResourceHandle[T]) ExtractURIVars(uri string) (map[string]string, error) {
+	vars, err := internal.MatchTemplate(h.URITemplate, uri, func(template, uri string) error {
+		return ResourceURIMismatchError{Template: template, URI: uri}
+	})
+	if err != nil {
+		return nil, err
+	}
+	if err := h.ValidateURIVars(vars); err != nil {
+		return nil, err
+	}
+	return vars, nil
+}
+
 // ---------------------------------------------------------------------------
 // Prompt
 // ---------------------------------------------------------------------------

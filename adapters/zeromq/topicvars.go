@@ -3,14 +3,10 @@ package zeromq
 import (
 	"fmt"
 	"log/slog"
-	"regexp"
-	"strings"
 
 	"github.com/DaniDeer/go-codex/api/events"
+	"github.com/DaniDeer/go-codex/internal/templatematch"
 )
-
-// templateVarRe matches {varName} placeholders in a topic template.
-var templateVarRe = regexp.MustCompile(`\{([^}]+)\}`)
 
 // TopicVarsFromMessage is the inverse of [events.ChannelHandle.BuildTopic].
 // It matches a concrete ZeroMQ topic (the first frame of a [topic, payload]
@@ -77,35 +73,13 @@ func (e TopicMismatchError) LogValue() slog.Value {
 }
 
 // matchTopicTemplate matches a concrete zeromq topic against a go-codex
-// topic template ("{varName}" placeholders, no wildcard support). This is a
-// local copy rather than a shared core (adapters/zeromq cannot import the
-// internal-only api/internal package it would otherwise reuse; see
-// docs/roadmap/merge-field-remaining-gaps.md's G2 — a shared, non-wildcard
-// core across mqtt/mqtt5/zeromq/ports.File remains a deferred, low-risk
-// follow-up, not a blocker).
+// topic template ("{varName}" placeholders, no wildcard support).
+// Delegates to [templatematch.MatchNonWildcard] — the shared,
+// module-internal core also used by api/internal and ports/file.go, which
+// adapters/zeromq cannot import directly (api/internal is an api/*-only
+// internal package). See docs/roadmap/merge-field-remaining-gaps.md (G2).
 func matchTopicTemplate(template, topic string) (map[string]string, error) {
-	var pattern strings.Builder
-	pattern.WriteString("^")
-	var names []string
-	lastEnd := 0
-	for _, loc := range templateVarRe.FindAllStringIndex(template, -1) {
-		start, end := loc[0], loc[1]
-		pattern.WriteString(regexp.QuoteMeta(template[lastEnd:start]))
-		names = append(names, template[start+1:end-1])
-		pattern.WriteString("([^/]+)")
-		lastEnd = end
-	}
-	pattern.WriteString(regexp.QuoteMeta(template[lastEnd:]))
-	pattern.WriteString("$")
-
-	re := regexp.MustCompile(pattern.String())
-	m := re.FindStringSubmatch(topic)
-	if m == nil {
-		return nil, TopicMismatchError{Template: template, Topic: topic}
-	}
-	vars := make(map[string]string, len(names))
-	for i, name := range names {
-		vars[name] = m[i+1]
-	}
-	return vars, nil
+	return templatematch.MatchNonWildcard(template, topic, func(template, topic string) error {
+		return TopicMismatchError{Template: template, Topic: topic}
+	})
 }

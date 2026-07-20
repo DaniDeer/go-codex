@@ -335,6 +335,140 @@ func TestResourceHandler_observerRecordsSuccess(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
+// G4a: ResourceHandlerWithVars / RegisterResourceWithVars tests
+// ---------------------------------------------------------------------------
+
+// buildItemHandleWithIDParam registers a merge-capable {id} ResourceParam
+// with a UUID codec, used to exercise ExtractURIVars' validation step.
+func buildItemHandleWithIDParam(uriTemplate string) *apimcp.ResourceHandle[itemRes] {
+	b := apimcp.NewBuilder(apimcp.Info{Name: "test", Version: "1.0.0"})
+	res := apimcp.NewResource[itemRes](uriTemplate, itemResCodec,
+		apimcp.ResourceMeta{Name: "Item", MimeType: "application/json"},
+		apimcp.ResourceParam{Name: "id"}.WithCodec(codex.String().Refine(validate.UUID)),
+	)
+	h, err := res.Register(b)
+	if err != nil {
+		panic(err)
+	}
+	return h
+}
+
+func callResourceWithVars(t *testing.T, handle *apimcp.ResourceHandle[itemRes], fn mcpgo.ResourceVarsHandlerFunc[itemRes], opts mcpgo.Options, uri string) ([]mcp.ResourceContents, error) {
+	t.Helper()
+	_, _, _, handler := mcpgo.ResourceHandlerWithVars(handle, fn, opts)
+	req := mcp.ReadResourceRequest{}
+	req.Params.URI = uri
+	return handler(context.Background(), req)
+}
+
+// G4a-1: fn receives the extracted+validated vars map — no manual parsing
+// or ValidateURIVars call needed.
+func TestResourceHandlerWithVars_receivesExtractedVars(t *testing.T) {
+	handle := buildItemHandleWithIDParam("items://{id}")
+	var gotVars map[string]string
+	fn := func(_ context.Context, _ string, vars map[string]string) (itemRes, error) {
+		gotVars = vars
+		return itemRes{ID: vars["id"], Name: "Widget"}, nil
+	}
+	_, err := callResourceWithVars(t, handle, fn, mcpgo.Options{}, "items://550e8400-e29b-41d4-a716-446655440000")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if gotVars["id"] != "550e8400-e29b-41d4-a716-446655440000" {
+		t.Errorf("vars[id]: got %q", gotVars["id"])
+	}
+}
+
+// G4a-1: an extraction mismatch (extra path segment) surfaces
+// ResourceURIMismatchError WITHOUT calling fn.
+func TestResourceHandlerWithVars_mismatchNeverCallsFn(t *testing.T) {
+	handle := buildItemHandleWithIDParam("items://{id}")
+	called := false
+	fn := func(_ context.Context, _ string, _ map[string]string) (itemRes, error) {
+		called = true
+		return itemRes{}, nil
+	}
+	_, err := callResourceWithVars(t, handle, fn, mcpgo.Options{}, "items://abc/extra")
+	if err == nil {
+		t.Fatal("expected mismatch error")
+	}
+	var mm apimcp.ResourceURIMismatchError
+	if !errors.As(err, &mm) {
+		t.Fatalf("expected ResourceURIMismatchError, got %T: %v", err, err)
+	}
+	if called {
+		t.Error("fn must not be called on extraction mismatch")
+	}
+}
+
+// G4a-1: a codec-validation failure (not a UUID) surfaces ResourceParamError
+// WITHOUT calling fn.
+func TestResourceHandlerWithVars_codecFailureNeverCallsFn(t *testing.T) {
+	handle := buildItemHandleWithIDParam("items://{id}")
+	called := false
+	fn := func(_ context.Context, _ string, _ map[string]string) (itemRes, error) {
+		called = true
+		return itemRes{}, nil
+	}
+	_, err := callResourceWithVars(t, handle, fn, mcpgo.Options{}, "items://not-a-uuid")
+	if err == nil {
+		t.Fatal("expected codec validation error")
+	}
+	var pe apimcp.ResourceParamError
+	if !errors.As(err, &pe) {
+		t.Fatalf("expected ResourceParamError, got %T: %v", err, err)
+	}
+	if called {
+		t.Error("fn must not be called on codec validation failure")
+	}
+}
+
+// G4a-2: a template with NO {var} placeholders behaves identically to
+// ResourceHandler today (regression guard, empty vars map, fn still called).
+func TestResourceHandlerWithVars_noPlaceholders_emptyVarsRegressionGuard(t *testing.T) {
+	handle := buildItemHandle("items://featured")
+	var gotVars map[string]string
+	fn := func(_ context.Context, _ string, vars map[string]string) (itemRes, error) {
+		gotVars = vars
+		return itemRes{ID: "1", Name: "Widget"}, nil
+	}
+	contents, err := callResourceWithVars(t, handle, fn, mcpgo.Options{}, "items://featured")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(gotVars) != 0 {
+		t.Errorf("expected empty vars map, got %+v", gotVars)
+	}
+	if len(contents) != 1 {
+		t.Fatalf("expected 1 content item, got %d", len(contents))
+	}
+}
+
+func TestResourceHandlerWithVars_observerRecordsSuccess(t *testing.T) {
+	obs := &recordingObserver{}
+	handle := buildItemHandleWithIDParam("items://{id}")
+	fn := func(_ context.Context, _ string, _ map[string]string) (itemRes, error) {
+		return itemRes{ID: "1", Name: "Widget"}, nil
+	}
+	_, _ = callResourceWithVars(t, handle, fn, mcpgo.Options{Observer: obs}, "items://550e8400-e29b-41d4-a716-446655440000")
+	if len(obs.calls) != 1 || obs.calls[0].statusCode != 200 {
+		t.Errorf("expected 1 call with status 200, got %v", obs.calls)
+	}
+}
+
+func TestResourceHandlerWithVars_observerRecordsMismatchAs500(t *testing.T) {
+	obs := &recordingObserver{}
+	handle := buildItemHandleWithIDParam("items://{id}")
+	fn := func(_ context.Context, _ string, _ map[string]string) (itemRes, error) {
+		return itemRes{ID: "1", Name: "Widget"}, nil
+	}
+	_, _ = callResourceWithVars(t, handle, fn, mcpgo.Options{Observer: obs}, "items://abc/extra")
+	if len(obs.calls) != 1 || obs.calls[0].statusCode != 500 {
+		t.Errorf("expected 1 call with status 500, got %v", obs.calls)
+	}
+}
+
+// ---------------------------------------------------------------------------
 // PromptHandler tests
 // ---------------------------------------------------------------------------
 

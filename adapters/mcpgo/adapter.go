@@ -21,8 +21,12 @@ type HandlerFunc[In, Out any] func(ctx context.Context, in In) (Out, error)
 
 // ResourceHandlerFunc[T] is the typed application handler for MCP resources.
 // uri is the concrete resource URI from the client request (placeholders are
-// already substituted). Use [apimcp.ResourceHandle.ValidateURIVars] with
-// vars extracted from uri if additional per-variable validation is needed.
+// already substituted) — no URI variables are extracted or validated
+// automatically. Use [ResourceVarsHandlerFunc]/[ResourceHandlerWithVars] for
+// the convenience of automatic extraction+validation via
+// [apimcp.ResourceHandle.ExtractURIVars], or call
+// [apimcp.ResourceHandle.ValidateURIVars] manually with vars parsed from uri
+// yourself.
 type ResourceHandlerFunc[T any] func(ctx context.Context, uri string) (T, error)
 
 // PromptHandlerFunc is the application handler for MCP prompts.
@@ -224,6 +228,103 @@ func RegisterResource[T any](
 	opts Options,
 ) {
 	res, tmpl, isTemplate, handler := ResourceHandler(handle, fn, opts)
+	if isTemplate {
+		s.AddResourceTemplate(tmpl, server.ResourceTemplateHandlerFunc(handler))
+	} else {
+		s.AddResource(res, handler)
+	}
+}
+
+// ResourceVarsHandlerFunc[T] is the typed application handler for MCP
+// resources, ADDITIONALLY receiving the URI template variables already
+// extracted from uri AND validated against every registered
+// [apimcp.ResourceParam] codec (via [apimcp.ResourceHandle.ExtractURIVars]) —
+// no manual URI parsing or [apimcp.ResourceHandle.ValidateURIVars] call
+// needed. [ResourceHandlerFunc] remains available as the lower-level escape
+// hatch for handlers that parse uri themselves.
+type ResourceVarsHandlerFunc[T any] func(ctx context.Context, uri string, vars map[string]string) (T, error)
+
+// ResourceHandlerWithVars is [ResourceHandler]'s vars-aware counterpart: it
+// calls [apimcp.ResourceHandle.ExtractURIVars] on the incoming request URI
+// BEFORE invoking fn, routing extraction/validation failures
+// (ResourceURIMismatchError/ResourceParamError/MissingResourceVarError)
+// through the SAME RecordRequest(..., 500, ...) observer path decode/encode
+// errors already use.
+//
+// Use [RegisterResourceWithVars] to handle both template/literal cases
+// automatically.
+func ResourceHandlerWithVars[T any](
+	handle *apimcp.ResourceHandle[T],
+	fn ResourceVarsHandlerFunc[T],
+	opts Options,
+) (resource mcp.Resource, template mcp.ResourceTemplate, isTemplate bool, handler server.ResourceHandlerFunc) {
+	isTemplate = len(handle.URITemplate) > 0 && containsPlaceholder(handle.URITemplate)
+
+	handlerFn := func(ctx context.Context, req mcp.ReadResourceRequest) ([]mcp.ResourceContents, error) {
+		// Resolve observer per-call: explicit opts.Observer beats context observer.
+		obs := opts.Observer
+		if obs == nil {
+			obs = stats.ObserverFromContext(ctx)
+		}
+		start := time.Now()
+		var err error
+		if to, ok := obs.(stats.TraceObserver); ok {
+			ctx = to.StartSpan(ctx, "mcp.resource", handle.URITemplate)
+			defer func() { to.EndSpan(ctx, err) }()
+		}
+		vars, err := handle.ExtractURIVars(req.Params.URI)
+		if err != nil {
+			obs.RecordRequest("resource", handle.URITemplate, 500, time.Since(start))
+			return nil, err
+		}
+		result, err := fn(ctx, req.Params.URI, vars)
+		if err != nil {
+			obs.RecordRequest("resource", handle.URITemplate, 500, time.Since(start))
+			return nil, err
+		}
+		data, err := handle.Encode(result)
+		if err != nil {
+			obs.RecordRequest("resource", handle.URITemplate, 500, time.Since(start))
+			return nil, err
+		}
+		obs.RecordRequest("resource", handle.URITemplate, 200, time.Since(start))
+		return []mcp.ResourceContents{mcp.TextResourceContents{
+			URI:      req.Params.URI,
+			MIMEType: handle.MimeType,
+			Text:     string(data),
+		}}, nil
+	}
+
+	if isTemplate {
+		tmpl := mcp.NewResourceTemplate(
+			handle.URITemplate,
+			handle.Name,
+			mcp.WithTemplateDescription(handle.Description),
+			mcp.WithTemplateMIMEType(handle.MimeType),
+		)
+		return mcp.Resource{}, tmpl, true, handlerFn
+	}
+
+	res := mcp.NewResource(
+		handle.URITemplate,
+		handle.Name,
+		mcp.WithResourceDescription(handle.Description),
+		mcp.WithMIMEType(handle.MimeType),
+	)
+	return res, mcp.ResourceTemplate{}, false, handlerFn
+}
+
+// RegisterResourceWithVars is [RegisterResource]'s vars-aware counterpart —
+// wires a [apimcp.ResourceHandle] and [ResourceVarsHandlerFunc] to an
+// [server.MCPServer], with URI vars extracted and validated automatically
+// before every call.
+func RegisterResourceWithVars[T any](
+	s *server.MCPServer,
+	handle *apimcp.ResourceHandle[T],
+	fn ResourceVarsHandlerFunc[T],
+	opts Options,
+) {
+	res, tmpl, isTemplate, handler := ResourceHandlerWithVars(handle, fn, opts)
 	if isTemplate {
 		s.AddResourceTemplate(tmpl, server.ResourceTemplateHandlerFunc(handler))
 	} else {

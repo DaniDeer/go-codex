@@ -99,14 +99,46 @@ err = promptHandle.ValidateArgs(map[string]string{"style": "bullet"})
 // → mcp.MissingPromptArgError{Name: "content"} (required arg absent)
 ```
 
+### Automatic URI-var extraction — `ExtractURIVars` / `RegisterResourceWithVars`
+
+`mcpgo.RegisterResource`'s handler receives only the raw, concrete URI
+string — extracting `{varName}` values and validating them against each
+registered `ResourceParam` codec is left entirely to the application. Use
+`ResourceHandle.ExtractURIVars` (or the `mcpgo.RegisterResourceWithVars`
+wiring below) to close that gap in one call:
+
+```go
+// ResourceHandle.ExtractURIVars is the inverse of BuildURI: matches a
+// received URI against the template and returns the extracted vars,
+// ALREADY validated via ValidateURIVars.
+vars, err := resHandle.ExtractURIVars("items://item-123")
+// vars["id"] == "item-123"
+// err is mcp.ResourceURIMismatchError on a structural mismatch, or
+// mcp.ResourceParamError/MissingResourceVarError on a codec failure.
+
+// mcpgo.RegisterResourceWithVars wires ExtractURIVars automatically —
+// the handler receives the extracted+validated vars map as a third
+// argument, no manual parsing needed:
+mcpgo.RegisterResourceWithVars(s, resHandle, func(ctx context.Context, uri string, vars map[string]string) (Item, error) {
+    return svc.GetItem(ctx, vars["id"])
+}, mcpgo.Options{})
+```
+
+`mcpgo.RegisterResource`/`ResourceHandlerFunc` remain available unchanged
+— this is an ADDITIVE convenience (a new function/type pair), not a
+breaking change. Extraction/validation failures are routed through the
+same `RecordRequest(..., 500, ...)` observer path decode/encode errors
+already use.
+
 ## Structured errors
 
 | Error type | Returned by | When |
 |---|---|---|
 | `mcp.ToolInputError{Name, Err}` | `ToolHandle.Decode` | input codec validation failure |
 | `mcp.ToolOutputError{Name, Err}` | `ToolHandle.Encode` | output codec validation failure |
-| `mcp.ResourceParamError{Name, Value, Err}` | `ResourceHandle.BuildURI` / `ValidateURIVars` | URI var codec failure |
-| `mcp.MissingResourceVarError{Name}` | `ResourceHandle.BuildURI` / `ValidateURIVars` | required URI var absent |
+| `mcp.ResourceParamError{Name, Value, Err}` | `ResourceHandle.BuildURI` / `ValidateURIVars` / `ExtractURIVars` | URI var codec failure |
+| `mcp.MissingResourceVarError{Name}` | `ResourceHandle.BuildURI` / `ValidateURIVars` / `ExtractURIVars` | required URI var absent |
+| `mcp.ResourceURIMismatchError{Template, URI}` | `ResourceHandle.ExtractURIVars` | received URI doesn't match the template's structure |
 | `mcp.ResourceEncodeError{URI, Err}` | `ResourceHandle.Encode` | resource encode failure |
 | `mcp.PromptArgError{Name, Err}` | `PromptHandle.ValidateArgs` | arg codec failure |
 | `mcp.MissingPromptArgError{Name}` | `PromptHandle.ValidateArgs` | required arg absent |

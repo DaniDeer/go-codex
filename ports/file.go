@@ -11,6 +11,7 @@ import (
 
 	"github.com/DaniDeer/go-codex/codex"
 	"github.com/DaniDeer/go-codex/format"
+	"github.com/DaniDeer/go-codex/internal/templatematch"
 	"github.com/DaniDeer/go-codex/schema"
 	"github.com/DaniDeer/go-codex/stats"
 )
@@ -773,35 +774,15 @@ func buildFromFileTemplate(
 // matchFileTemplate is the inverse of buildFromFileTemplate: it matches a
 // concrete path against template, extracting {varName} placeholder values.
 // A placeholder captures everything up to the next "/" and may share a
-// segment with literal text (e.g. "{date}.json"). Mirrors
-// api/internal.MatchTemplate's algorithm — inlined here for the same
-// reason buildFromFileTemplate is inlined above: ports must not import
-// api/internal (an api/*-only internal package).
+// segment with literal text (e.g. "{date}.json"). Delegates to
+// [templatematch.MatchNonWildcard] — the shared, module-internal core also
+// used by api/internal and adapters/zeromq, which `ports` cannot import
+// directly (api/internal is an api/*-only internal package). See
+// docs/roadmap/merge-field-remaining-gaps.md (G2).
 func matchFileTemplate(template, path string) (map[string]string, error) {
-	var pattern strings.Builder
-	pattern.WriteString("^")
-	var names []string
-	lastEnd := 0
-	for _, loc := range fileTemplateVarRe.FindAllStringIndex(template, -1) {
-		start, end := loc[0], loc[1]
-		pattern.WriteString(regexp.QuoteMeta(template[lastEnd:start]))
-		names = append(names, template[start+1:end-1])
-		pattern.WriteString("([^/]+)")
-		lastEnd = end
-	}
-	pattern.WriteString(regexp.QuoteMeta(template[lastEnd:]))
-	pattern.WriteString("$")
-
-	re := regexp.MustCompile(pattern.String())
-	m := re.FindStringSubmatch(path)
-	if m == nil {
-		return nil, FilePathMismatchError{Template: template, Path: path}
-	}
-	vars := make(map[string]string, len(names))
-	for i, name := range names {
-		vars[name] = m[i+1]
-	}
-	return vars, nil
+	return templatematch.MatchNonWildcard(template, path, func(template, path string) error {
+		return FilePathMismatchError{Template: template, Path: path}
+	})
 }
 
 // ── Typed errors ──────────────────────────────────────────────────────────────
