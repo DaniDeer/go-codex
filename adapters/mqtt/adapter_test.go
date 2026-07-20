@@ -102,8 +102,8 @@ func (t *pendingToken) Error() error                     { return nil }
 // goroutine writes subscribedTopic/subscribedHandler concurrently with the
 // test goroutine's polling reads (see subscribedTopicSnapshot/
 // subscribedHandlerSnapshot), mirroring adapters/mqtt5's mockClient pattern.
-// This was a pre-existing, unrelated data race (found via `go test -race`)
-// fixed as part of docs/roadmap/merge-field-remaining-gaps.md's G3.
+// This was a pre-existing, unrelated data race, found via `go test -race`
+// and fixed in a prior round.
 type mockClient struct {
 	mu                sync.Mutex
 	publishedTopic    string

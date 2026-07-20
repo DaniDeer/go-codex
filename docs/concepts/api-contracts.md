@@ -78,10 +78,11 @@ calling the transport function directly. Set `Vars` to a non-nil map
 stream instead — the escape hatch, unchanged from before this was added.
 `adapters/zeromq`'s own pub/sub `Subscribe`/`Publish` and `adapters/mqtt`
 (v3) events also received the same merge-field wiring `adapters/mqtt5`
-had first. See
-[Roadmap: Merge-Field Remaining Gaps](../roadmap/merge-field-remaining-gaps.md)
-for the remaining low-priority backlog (SSE merge support, a shared
-non-wildcard topic-template core).
+had first. A shared, module-internal `internal/templatematch` package now
+backs the topic/path-matching core for `mqtt`/`mqtt5`/`zeromq`/`ports.File`.
+See [Roadmap: SSE & WebSocket Merge-Field Gaps](../roadmap/sse-websocket-merge-field-gaps.md)
+for the one remaining open question (connection-level merge for long-lived
+boundaries).
 
 ### Where this convenience is shipped
 
@@ -111,9 +112,8 @@ the app as a raw `map[string]string`, not a merged struct; `rest.SSERouteHandle`
 (`Event` payload) and `adapters/websocket`'s per-connection path vars raise
 the same "does repeating one connection's vars into every message actually
 help" open question — none of these has a demonstrated use case yet. See
-[Roadmap: Merge-Field Remaining Gaps](../roadmap/merge-field-remaining-gaps.md)
-and [Roadmap: File & Cache Merge-Field Gaps](../roadmap/file-cache-merge-field-gaps.md)
-for the full history and reasoning.
+[Roadmap: SSE & WebSocket Merge-Field Gaps](../roadmap/sse-websocket-merge-field-gaps.md)
+for the SSE/WebSocket question and design history.
 
 ## REST routes (`api/rest`)
 

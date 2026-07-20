@@ -84,8 +84,7 @@ func (e TopicMismatchError) LogValue() slog.Value {
 // matchTopicTemplate performs the level-by-level matching of a concrete MQTT topic
 // against a go-codex topic template. Delegates to
 // [templatematch.MatchMQTTWildcard] — the shared, module-internal core also
-// used by adapters/mqtt5 (same MQTT wildcard semantics). See
-// docs/roadmap/merge-field-remaining-gaps.md (G2).
+// used by adapters/mqtt5 (same MQTT wildcard semantics).
 func matchTopicTemplate(template, topic string) (map[string]string, error) {
 	return templatematch.MatchMQTTWildcard(template, topic, func(template, topic string) error {
 		return TopicMismatchError{Template: template, Topic: topic}

@@ -397,11 +397,14 @@ layer**: `DrainCallAdapter`/`PublishAdapter`/`CallAdapter` across
 and derive vars PER-ITEM whenever their `Vars` option is left `nil` (a
 non-nil map remains the static-vars escape hatch). `adapters/zeromq`'s own
 pub/sub `Subscribe`/`Publish` and `adapters/mqtt` (v3) events also received
-merge-field wiring. Only flag a NEW port-binding adapter as a finding if it
-reproduces the OLD static-`Vars`-only gap instead of delegating to its own
-Handle-suffixed wrapper. Remaining low-priority backlog (SSE merge support,
-a shared topic-template-matching core) is tracked in
-`docs/roadmap/merge-field-remaining-gaps.md`.
+merge-field wiring. `ports.File`/`adapters/file` and `ports.Cache`/
+`adapters/redis` also shipped the same convenience (`File.ReadMerged`/
+`ports.WriteHandle`, `redis.GetMerged`/`redis.SetHandle`). Only flag a NEW
+port-binding adapter as a finding if it reproduces the OLD
+static-`Vars`-only gap instead of delegating to its own Handle-suffixed
+wrapper. Remaining low-priority backlog (SSE/WebSocket connection-level
+merge — same open question for both) is tracked in
+`docs/roadmap/sse-websocket-merge-field-gaps.md`.
 
 REST (`api/rest` + `adapters/nethttp`/`chi`) is the reference — use it to
 judge every other boundary's completeness. See `docs/concepts/api-contracts.md`

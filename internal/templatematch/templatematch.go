@@ -12,9 +12,6 @@
 // internal/ directory is importable from anywhere in the module
 // (api/*, adapters/*, ports/, ...), which is why the shared core lives here
 // instead of under api/internal.
-//
-// See docs/roadmap/merge-field-remaining-gaps.md (G2) for the design
-// history.
 package templatematch
 
 import (

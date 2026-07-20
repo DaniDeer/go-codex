@@ -86,8 +86,7 @@ func (e TopicMismatchError) LogValue() slog.Value {
 // [templatematch.MatchMQTTWildcard] — the shared, module-internal core also
 // used by adapters/mqtt (same MQTT wildcard semantics), since
 // api/internal.MatchTemplate deliberately has no wildcard support and
-// adapters/mqtt5 cannot import that api/*-only package anyway. See
-// docs/roadmap/merge-field-remaining-gaps.md (G2).
+// adapters/mqtt5 cannot import that api/*-only package anyway.
 func matchTopicTemplate(template, topic string) (map[string]string, error) {
 	return templatematch.MatchMQTTWildcard(template, topic, func(template, topic string) error {
 		return TopicMismatchError{Template: template, Topic: topic}

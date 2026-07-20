@@ -71,7 +71,7 @@ func TestCallAdapter_ErrorsForwardedFromSrc(t *testing.T) {
 	}
 }
 
-// ── G1: per-item vars derivation (shipped; see docs/roadmap/merge-field-remaining-gaps.md for follow-up items) ──────────
+// ── G1: per-item vars derivation (shipped) ───────────────────────────────────
 
 // G1-3 (zeromq CallAdapter): derives request-topic vars PER-ITEM from each
 // item's own merge fields when opts.Vars is nil.

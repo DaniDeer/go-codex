@@ -77,7 +77,7 @@ func (e TopicMismatchError) LogValue() slog.Value {
 // Delegates to [templatematch.MatchNonWildcard] — the shared,
 // module-internal core also used by api/internal and ports/file.go, which
 // adapters/zeromq cannot import directly (api/internal is an api/*-only
-// internal package). See docs/roadmap/merge-field-remaining-gaps.md (G2).
+// internal package).
 func matchTopicTemplate(template, topic string) (map[string]string, error) {
 	return templatematch.MatchNonWildcard(template, topic, func(template, topic string) error {
 		return TopicMismatchError{Template: template, Topic: topic}

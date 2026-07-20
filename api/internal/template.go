@@ -46,7 +46,6 @@ func StripTemplateVars(template string) string {
 // core also used by adapters/zeromq and ports/file.go, which cannot import
 // this api/internal package (Go's internal/ visibility rule restricts it to
 // code rooted at api/'s own subtree). See
-// docs/roadmap/merge-field-remaining-gaps.md (G2).
 //
 // Returns wrapMismatch(template, concrete) when the concrete string's
 // structure does not match the template (wrong segment count, or literal

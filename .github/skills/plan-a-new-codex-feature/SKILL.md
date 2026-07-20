@@ -285,9 +285,10 @@ this at the CORE-API level, AND so does the `ports.Pattern` binding layer
 built on top of them: `DrainCallAdapter`/`PublishAdapter`/`CallAdapter`
 across `nethttp`/`mqtt5`/`zeromq`/`mqtt` delegate to
 `CallHandle`/`PublishHandle` and derive vars per-item whenever their `Vars`
-option is left `nil` — see `docs/roadmap/merge-field-remaining-gaps.md`
-for the remaining low-priority backlog (SSE merge support, a shared
-topic-template core).
+option is left `nil`. `ports.File`/`adapters/file` and `ports.Cache`/
+`adapters/redis` shipped the same convenience too — see
+`docs/roadmap/sse-websocket-merge-field-gaps.md` for the one remaining
+open question (connection-level merge for SSE/WebSocket).
 
 Use the `add-a-new-adapter` skill's **Step 5b** for the full checklist
 (declare-once constructors, escape hatch, encode/decode symmetry via

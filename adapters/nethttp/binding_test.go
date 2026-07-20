@@ -218,7 +218,7 @@ func TestDrainCallAdapter_PostsEachItem(t *testing.T) {
 	}
 }
 
-// ── G1: per-item vars derivation (shipped; see docs/roadmap/merge-field-remaining-gaps.md for follow-up items) ──────────
+// ── G1: per-item vars derivation (shipped) ───────────────────────────────────
 
 // G1-1: DrainCallAdapter derives path vars PER-ITEM from each item's own
 // merge fields when opts.Vars is nil — two items with different IDs must

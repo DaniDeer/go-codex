@@ -834,8 +834,7 @@ func buildFromFileTemplate(
 // segment with literal text (e.g. "{date}.json"). Delegates to
 // [templatematch.MatchNonWildcard] — the shared, module-internal core also
 // used by api/internal and adapters/zeromq, which `ports` cannot import
-// directly (api/internal is an api/*-only internal package). See
-// docs/roadmap/merge-field-remaining-gaps.md (G2).
+// directly (api/internal is an api/*-only internal package).
 func matchFileTemplate(template, path string) (map[string]string, error) {
 	return templatematch.MatchNonWildcard(template, path, func(template, path string) error {
 		return FilePathMismatchError{Template: template, Path: path}

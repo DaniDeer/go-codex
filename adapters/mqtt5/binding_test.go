@@ -229,7 +229,7 @@ func TestMQTT5AsPipelineFunc_NoValueReturnsPipelineNoResponseError(t *testing.T)
 	}
 }
 
-// ── G1: per-item vars derivation (shipped; see docs/roadmap/merge-field-remaining-gaps.md for follow-up items) ──────────
+// ── G1: per-item vars derivation (shipped) ───────────────────────────────────
 
 // G1-3: mqtt5.PublishAdapter derives topic vars PER-ITEM from each item's
 // own merge fields when opts.Vars is nil — two items with different sensor
