@@ -103,6 +103,7 @@ Work through `references/checklist.md` section by section:
 9. Unit test coverage
 10. Example correctness
 11. Stream bridge consistency
+12. Merge-field / boundary symmetry — one struct, one call
 
 ### Phase 3 — Record findings
 
@@ -352,6 +353,66 @@ wait
 ```
 
 If an example panics or uses a stale pattern, file a finding.
+
+## Boundary Symmetry Guardrail — one struct, one call
+
+For every `api/*` builder-backed boundary with a request/response shape or
+a duplex role pair (publisher/subscriber, requestor/replier, client/server),
+check whether a caller on EITHER side can do the ENTIRE encode-or-decode
+direction with **one struct value in (or out), one call** — this is the
+headline promise, not an optional nicety. When reviewing a boundary that
+was just added or touched, verify all five:
+
+1. **Declare-once constructors** exist for every var-boundary (path/topic/
+   query/header/cookie/key) mirroring `rest.NewPathParam[T]`/
+   `NewRequiredQueryParam[T]`/etc. — registering BOTH the spec Param AND a
+   `codex.FieldCodec[T]` merge field in one call.
+2. **Escape hatch preserved** — plain validate-only Param structs still
+   work unchanged, mixable with the merge-capable constructors on the same
+   route/channel/tool.
+3. **Encode/decode symmetry** — decode-side flat-union merge AND
+   encode-side role-aware accessors (`PathMergeFields()`/`QueryMergeFields()`/
+   etc., never one flat list) both exist. A boundary that only has
+   decode-merge (e.g. `DecodeMerged` with no `PathMergeFields`-style
+   accessors) is an INCOMPLETE implementation — file at least a `small`
+   finding.
+4. **Role symmetry** — both roles of the boundary have the convenience:
+   server AND client; publisher AND subscriber; requestor AND replier. A
+   response/reply direction with no merge-field support when the request
+   direction has it is an asymmetry — file a finding (severity depends on
+   how core the boundary is: `bug` for a shipped, documented-as-complete
+   feature; `small` for a boundary already flagged as a known gap in the
+   roadmap).
+5. **Single-call convenience wrapper** exists on the encode side
+   (`CallHandle`-equivalent) and the decode side is wired into the
+   adapter's `Handler`/`Register`-style entry point automatically. Stopping
+   at the accessors/constructors without the wrapper is incomplete — the
+   wrapper IS the promise made concrete.
+
+**Known, already-tracked gap — do NOT re-report as a new finding**:
+`api/events` (pub/sub) and `api/reqreply` (req/reply) currently satisfy
+NONE of the five — no topic merge-field constructors, no response-side
+merge, no single-call wrapper. This is tracked as "Round 2" in
+`docs/roadmap/vars-codec-merge.md`. Only flag these as findings if this
+skill's history shows Round 2 work was claimed complete but isn't, or if a
+NEW boundary reproduces the same gap instead of following REST's pattern.
+
+REST (`api/rest` + `adapters/nethttp`/`chi`) is the reference — use it to
+judge every other boundary's completeness. See `docs/concepts/api-contracts.md`
+("one struct, one call" design principle) and the `add-a-new-adapter`
+skill's Step 5b for the full checklist this section mirrors.
+
+**Not JSON-specific, not flat-struct-specific.** A boundary's merge-field
+example/test that ONLY covers JSON body + flat top-level fields is
+INCOMPLETE — file at least a `small` finding. Check that: (a) body
+decode/encode is treated as orthogonal to var-merge (any `format.Format[T]`
+should compose, not just JSON/YAML/TOML), and (b) at least one merge field
+demonstrates nested sub-struct access (`func(r Req) string { return r.Meta.X }`),
+not only top-level fields. `examples/rest-nested-binary` and
+`api/rest/builder_test.go`'s `TestGobBodyFormat_ComposesWithNestedMergeFields`/
+`TestNestedStructMergeFields_GetSetReachIntoSubstruct` are the reference
+pattern — a boundary lacking equivalent coverage when it claims to satisfy
+the "one struct, one call" mandate is an incomplete implementation.
 
 ## Port Adapter Guardrail
 

@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/DaniDeer/go-codex/api/rest"
+	"github.com/DaniDeer/go-codex/codex"
 	"github.com/DaniDeer/go-codex/route"
 	"github.com/DaniDeer/go-codex/stats"
 )
@@ -427,5 +428,110 @@ func Call[Req, Resp any](
 		reportBodyErrors(err, obs)
 		return zero, err
 	}
+
+	// 13. Merge response header/cookie values declared via
+	// rest.NewRequiredResponseHeaderParam/etc. into the SAME result value —
+	// the response-direction mirror of how request merge fields are
+	// applied server-side. Additive: only runs when the route has
+	// response merge-capable params; identical behavior otherwise.
+	headerFields := handle.ResponseHeaderMergeFields()
+	cookieFields := handle.ResponseCookieMergeFields()
+	if len(headerFields)+len(cookieFields) > 0 {
+		vars := make(map[string]string, len(headerFields)+len(cookieFields))
+		for _, c := range resp.Cookies() {
+			vars[c.Name] = c.Value
+		}
+		for k := range resp.Header {
+			vars[k] = resp.Header.Get(k)
+		}
+		mergeFields := make([]codex.FieldCodec[Resp], 0, len(headerFields)+len(cookieFields))
+		mergeFields = append(mergeFields, headerFields...)
+		mergeFields = append(mergeFields, cookieFields...)
+		if err := codex.DecodeVars(&result, vars, mergeFields...); err != nil {
+			reportBodyErrors(err, obs)
+			return zero, err
+		}
+	}
+
 	return result, nil
+}
+
+// CallHandle is the single-call convenience wrapper around [Call]: it
+// derives the path vars AND [CallOptions.QueryParams]/[HeaderParams]/
+// [CookieParams] from req automatically, using the route's role-aware
+// merge-field accessors ([rest.RouteHandle.PathMergeFields]/
+// [QueryMergeFields]/[HeaderMergeFields]/[CookieMergeFields]) and
+// [codex.EncodeVars] — one line instead of building each map by hand.
+//
+// Any entry already present in opts.QueryParams/HeaderParams/CookieParams
+// takes PRECEDENCE over the corresponding derived value for the same key —
+// this lets a caller override a struct field's value, or add ad-hoc
+// params the struct doesn't declare, without losing the one-line
+// convenience for the common case. opts fields left nil are populated
+// entirely from the derived values (or left nil if the route declares no
+// merge fields for that role).
+//
+// [Call] remains available as the lower-level escape hatch for callers
+// that build the maps themselves — e.g. no merge fields declared, path
+// vars from a non-struct source, or a route shared between multiple
+// unrelated Req shapes.
+//
+// Example:
+//
+//	handle := getUserActivity.ClientHandle()
+//	activity, err := nethttp.CallHandle(ctx, client, baseURL, handle,
+//	    GetUserActivityReq{ID: userID, Filter: "logins"}, nethttp.CallOptions{})
+func CallHandle[Req, Resp any](
+	ctx context.Context,
+	client *http.Client,
+	baseURL string,
+	handle *rest.RouteHandle[Req, Resp],
+	req Req,
+	opts CallOptions,
+) (Resp, error) {
+	var zero Resp
+
+	vars, err := codex.EncodeVars(req, handle.PathMergeFields()...)
+	if err != nil {
+		return zero, err
+	}
+	query, err := codex.EncodeVars(req, handle.QueryMergeFields()...)
+	if err != nil {
+		return zero, err
+	}
+	headers, err := codex.EncodeVars(req, handle.HeaderMergeFields()...)
+	if err != nil {
+		return zero, err
+	}
+	cookies, err := codex.EncodeVars(req, handle.CookieMergeFields()...)
+	if err != nil {
+		return zero, err
+	}
+
+	opts.QueryParams = overrideDerived(query, opts.QueryParams)
+	opts.HeaderParams = overrideDerived(headers, opts.HeaderParams)
+	opts.CookieParams = overrideDerived(cookies, opts.CookieParams)
+
+	return Call(ctx, client, baseURL, handle, req, vars, opts)
+}
+
+// overrideDerived merges derived (from codex.EncodeVars) and explicit (from
+// caller-supplied CallOptions) maps, with explicit taking precedence on key
+// collision. Returns nil when both inputs are empty (preserves Call's
+// existing nil-is-fine behavior for CallOptions map fields).
+func overrideDerived(derived, explicit map[string]string) map[string]string {
+	if len(derived) == 0 {
+		return explicit
+	}
+	if len(explicit) == 0 {
+		return derived
+	}
+	out := make(map[string]string, len(derived)+len(explicit))
+	for k, v := range derived {
+		out[k] = v
+	}
+	for k, v := range explicit {
+		out[k] = v
+	}
+	return out
 }

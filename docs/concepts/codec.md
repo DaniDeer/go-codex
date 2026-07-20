@@ -160,6 +160,77 @@ codex.DefaultField("log_level",
 
 > **Encode note:** there is no "omit if zero" logic on encode — every field is always written to the output object. If you want a field to be absent rather than `null` on encode, handle that outside the codec.
 
+### Reusing Field declarations for path/topic/header/query vars
+
+This is the mechanism behind a general library design principle: **one
+struct, one call** (see [API Contracts — Design principle](api-contracts.md#design-principle-one-struct-one-call)) —
+a caller on either side of a boundary should be able to do an entire
+encode-or-decode direction with one struct value and one call, not manual
+map assembly. `RequiredField`/`OptionalField`/`DefaultField` aren't just for
+JSON object keys — the same declarations work for any string-keyed source:
+HTTP path/query/header/cookie parameters, MQTT/event topic variables, and
+file path segments. `codex.DecodeVars`/`EncodeVars` decode/encode a
+`map[string]string` (instead of a JSON `map[string]any`) using those exact
+same `Field` declarations — no new declaration API to learn:
+
+```go
+var idField = codex.RequiredField("id", codex.String().Refine(validate.UUID),
+    func(r GetUserReq) string { return r.ID },
+    func(r *GetUserReq, v string) { r.ID = v })
+
+// Decode: partial merge into an existing struct (only "id" is touched).
+var req GetUserReq
+err := codex.DecodeVars(&req, map[string]string{"id": r.PathValue("id")}, idField)
+
+// Encode: extract field values into a vars map (replaces hand-written
+// varsFor func(T) map[string]string closures used by adapter constructors).
+vars, err := codex.EncodeVars(req, idField)
+```
+
+A field's codec must accept a string on `Decode` — plain `codex.String()`
+for string fields, or `codex.MapCodecSafe(codex.String()..., parse, format)`
+for typed fields like `int`/`time.Time` (vars are always string-valued at
+the wire level: path segments, topic segments, header/query/cookie values).
+
+**Per-boundary sugar**: `rest.NewPathParam[T]`/`NewRequiredQueryParam[T]`/
+`NewOptionalQueryParam[T]` (+ Header/Cookie equivalents) and
+`ports.NewFilePathParam[T]` declare BOTH the boundary's spec Param (for
+OpenAPI/AsyncAPI generation, unchanged) AND a merge field in ONE call — see
+[Ports feature — File](../features/ports.md) and
+[REST API feature](../features/rest-api.md) for the full per-boundary
+API. The plain `PathParam`/`QueryParam`/`FilePathParam` struct literals
+remain available as the low-level, validate-only alternative.
+
+A struct can mix BOTH sources at once — some fields decoded from the body,
+others merged from vars — as long as the body codec and the merge fields
+declare different field names (`RouteHandle.DecodeMerged` decodes the body
+first, then merges vars into the same value, touching only the declared
+merge fields). See [REST API — Mixing body fields and merged params](../features/rest-api.md#mixing-body-fields-and-merged-params-on-one-struct).
+
+The SAME mechanism applies in the RESPONSE direction —
+`rest.NewRequiredResponseHeaderParam[Resp]`/`NewOptionalResponseHeaderParam[Resp]`
+(+ Cookie equivalents) declare a response header/cookie merge field on
+`Resp`: the server sets it automatically from the returned struct's field,
+and the client merges the HTTP response back into the same field
+automatically. On top of the four merge-field roles (path/query/header/cookie),
+`nethttp.CallHandle` is the single-call client convenience that derives
+every request-side map from ONE struct automatically — this is the
+concrete "one struct, one call" experience end to end. See
+[REST API — Response merge fields](../features/rest-api.md#response-merge-fields)
+and [REST API — One-line client calls](../features/rest-api.md#one-line-client-calls-callhandle).
+
+This also means the pattern is neither JSON-specific nor
+flat-struct-specific: `get`/`set` on `RequiredField`/`OptionalField` (and
+every REST merge-field constructor built on them) are plain Go closures,
+not reflection over a struct's direct fields — a closure reaching into a
+NESTED sub-struct (`func(r Req) string { return r.Meta.X }`) works exactly
+like a top-level field, with zero framework changes. And since body
+decode/encode is completely orthogonal to var-merge, ANY `format.Format[T]`
+— JSON, YAML, TOML, `format.Gob`, `format.Binary`, or a custom
+`format.NewTyped` — composes with merge fields unchanged. See
+[REST API — Nested structs & binary body formats](../features/rest-api.md#nested-structs-binary-body-formats)
+and `examples/rest-nested-binary` for the full runnable version.
+
 ## Constraints with Refine
 
 ```go

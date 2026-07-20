@@ -615,6 +615,171 @@ existing `codex.TypeMismatchError`, matching `Time()`/`Date()`/`Duration()`.
 Schema is `{type: "string", pattern: ...}` — there is no standard JSON Schema
 `format` keyword for color, so `Pattern` documents the accepted shape instead.
 
+### MANDATORY design contract: one struct, one call (per boundary)
+
+For any API-contract boundary with a request/response shape or a duplex
+role pair (publisher/subscriber, requestor/replier, client/server), a
+caller on EITHER side must be able to do the ENTIRE encode-or-decode
+direction with exactly **one struct value in (or out) and one call** — no
+manual map-building, no manual header/cookie/query/topic stitching, in the
+common case. This is the headline user promise; the mechanics below
+(declare-once constructors, escape hatch, encode/decode symmetry, role
+symmetry) exist to make that promise safe, not to replace it.
+
+REST is the reference implementation and, as of this writing, the ONLY
+boundary that fully delivers it, both directions, both roles:
+
+```go
+// Client: ONE struct in, ONE struct out — no manual maps.
+handle := getUserActivity.ClientHandle()
+req := GetUserActivityReq{ID: userID, Filter: "logins"} // literal, or the caller's own New... factory
+resp, err := nethttp.CallHandle(ctx, client, baseURL, handle, req, nethttp.CallOptions{})
+// resp is fully decoded AND merged: body + response header/cookie fields, e.g. resp.RequestID.
+
+// Server: ONE struct in, ONE struct out — no manual r.PathValue()/w.Header().Set().
+nethttp.Register(mux, handle, func(ctx context.Context, req GetUserActivityReq) (User, error) {
+    u := lookup(req.ID)     // req arrives fully merged: path+query+header+cookie+body
+    u.RequestID = traceID() // just set the field
+    return u, nil           // adapter auto-encodes body AND response merge fields
+}, nethttp.Options{})
+```
+
+**Not yet true everywhere — be explicit, do not overclaim**: `api/events`
+(pub/sub) and `api/reqreply` (req/reply) do NOT yet satisfy this — no topic
+merge-field constructors exist there at all, so a publisher/subscriber or
+requestor/replier still hand-assembles topic var maps and there is no
+single-call convenience. This is tracked as "Round 2" in
+`docs/roadmap/vars-codec-merge.md` — a forward-looking backlog item, not
+precedent to copy when building something new. `adapters/mqtt5`/`zeromq`/
+`mcpgo` inherit the same gap (they bind to `ChannelHandle`/`RouteHandle`).
+
+**Every new or newly-touched Req/Resp-or-payload-shaped boundary must reach
+REST's bar** — see the `add-a-new-adapter` skill's "Step 5b" for the
+concrete checklist (declare-once constructors, escape hatch, encode/decode
+symmetry via role-aware accessors, role symmetry, a single-call wrapper).
+
+**Not JSON-specific, not flat-struct-specific** — do not assume either
+narrowing when implementing or reviewing this pattern:
+- Body decode/encode is completely orthogonal to var-merge
+  (`codex.DecodeVars`/`EncodeVars` only ever touch a `map[string]string`,
+  never body bytes), so ANY `format.Format[T]` (JSON, YAML, TOML,
+  `format.Gob`, `format.Binary`, a custom `format.NewTyped`) composes with
+  merge fields unchanged.
+- Merge-field `get`/`set` are plain Go closures, not reflection over a
+  struct's direct fields, so nested composition
+  (`func(r Req) string { return r.Meta.X }`) works with zero framework
+  changes.
+- One subtlety: whole-value binary formats (`format.Gob`, protobuf, custom
+  binary) serialise the typed value directly via reflection, bypassing the
+  codec's `Encode`/`Decode` for the wire bytes — `format.Gob(reqCodec)` on
+  a nested `Req` gob-encodes EVERY exported field, not just a nested
+  `Payload` sub-field (harmless — `DecodeMerged` always merges AFTER body
+  decode, so the authoritative HTTP values win — but wasteful). Use
+  `format.NewTyped` with a custom marshal/unmarshal projecting onto/from
+  the sub-field when the wire bytes should represent ONLY that sub-field.
+  See `examples/rest-nested-binary` for the full runnable version.
+
+### Declarative Var Extraction & Merge: `DecodeVars`/`EncodeVars` (mechanics)
+
+`codex.FieldCodec[T]` is the exported name for the interface `Struct[T]`
+composes internally (renamed from the previously-unexported `fieldCodec[T]`
+so other packages can name it in their own signatures) — `RequiredField`/
+`OptionalField`/`DefaultField` already produce values satisfying it.
+
+`codex.DecodeVars[T](target *T, vars map[string]string, fields ...FieldCodec[T]) error`
+decodes named vars (path/topic/header/query/cookie/filename values — always
+string-keyed) into a SUBSET of an existing struct's fields, using the SAME
+`Field`/`RequiredField`/`OptionalField`/`DefaultField` declarations already
+used for `Struct[T]` — a PARTIAL merge (unlike `Struct.Decode`, which builds
+an entirely new T from one JSON object). Reuses `codex.ValidationErrors`
+verbatim — no new error type for the decode direction.
+
+`codex.EncodeVars[T](v T, fields ...FieldCodec[T]) (map[string]string, error)`
+is the inverse — extracts field values into a `map[string]string`,
+replacing hand-written `varsFor func(T) map[string]string` closures used by
+every adapter's `SinkAdapter`/`IOAdapter`/`SourceAdapter` constructor.
+Returns `codex.VarEncodeTypeError{Field, Got}` if a field's codec doesn't
+produce a string (an unsuitable codec attached to a var field — caller
+error, not a runtime data error).
+
+```go
+var req GetUserReq
+err := codex.DecodeVars(&req, map[string]string{"id": r.PathValue("id")},
+    codex.RequiredField("id", codex.String().Refine(validate.UUID),
+        func(r GetUserReq) string { return r.ID },
+        func(r *GetUserReq, v string) { r.ID = v }))
+```
+
+**Per-boundary "declare once" sugar** — `rest.NewPathParam[T]`,
+`rest.NewRequiredQueryParam[T]`/`NewOptionalQueryParam[T]` (+ Header/Cookie
+equivalents), `ports.NewFilePathParam[T]` declare BOTH the existing spec
+Param (`PathParam`/`QueryParam`/etc. — unchanged, still validate-only when
+used directly) AND a merge field from ONE call, `T` inferred from `get`/
+`set` exactly like `RequiredField` infers `T`/`F`. Each `Merged*Param[T]`
+wrapper gets a `.WithDescription(string)` chain method (sets the
+PARAMETER-level description — rendered into the OpenAPI "parameter"
+object, distinct from the codec's own `Schema.Description`, rendered into
+the nested "schema" object). **Primary but not sole**: these constructors
+are the documented, recommended path; the plain `PathParam`/`QueryParam`/
+`FilePathParam` struct literals remain the low-level escape hatch for
+validate-only params with no merge need (avoids forcing a `get`/`set` pair
+on a param a handler never reads directly) — a route/file can freely mix
+both styles.
+
+`RouteHandle.MergeFields() []codex.FieldCodec[Req]` /
+`ports.File.MergeFields() []codex.FieldCodec[T]` collect the registered
+merge fields for direct use with `codex.DecodeVars`/`EncodeVars`.
+`RouteHandle.DecodeMerged(body, pathVars, query, headers, cookies) (Req, error)`
+closes the loop for REST — decodes the body (if any) AND merges every
+`MergeFields()`-registered value into the SAME `Req`, in one call;
+`adapters/nethttp`/`adapters/chi`'s `Handler` call it automatically whenever
+`handle.MergeFields()` is non-empty (byte-for-byte identical behavior
+otherwise). `ports.File.MatchPath(path string) (map[string]string, error)`
+is the missing inverse of `BuildPath` — matches a discovered file path
+against the template, extracting vars (mirrors `mqtt.TopicVarsFromMessage`'s
+existing pattern for MQTT topics); a `{var}` placeholder may share a
+segment with literal text (e.g. `{date}.json`).
+
+**Role-aware split (client encode direction)**: `RouteHandle.MergeFields()`
+is an AGGREGATE across all four roles — safe for DECODE (`DecodeMerged`,
+since the source vars map is already correctly scoped before merging) but
+NOT safe for ENCODE, since `nethttp.CallOptions.QueryParams`/`HeaderParams`/
+`CookieParams` each add every map entry to their HTTP location with no name
+filtering. Use `RouteHandle.PathMergeFields()`/`QueryMergeFields()`/
+`HeaderMergeFields()`/`CookieMergeFields()` instead — each returns ONLY
+that role's fields, safe to feed `codex.EncodeVars` independently per
+`nethttp.Call` parameter.
+
+**Response merge fields** (server encode / client decode, mirrors the
+request side): `rest.NewRequiredResponseHeaderParam[Resp]`/
+`NewOptionalResponseHeaderParam[Resp]` (+ Cookie equivalents) declare BOTH
+the spec `ResponseHeaderParam`/`ResponseCookieParam` AND a
+`codex.FieldCodec[Resp]` merge field, keyed on `Resp` instead of `Req`.
+`RouteHandle.ResponseHeaderMergeFields()`/`ResponseCookieMergeFields()`
+collect them; `RouteHandle.DecodeMergedResponse(body, headers, cookies) (Resp, error)`
+is the response-direction mirror of `DecodeMerged`. `adapters/nethttp`/
+`adapters/chi`'s `Handler` encode them into the actual HTTP response
+headers/cookies automatically after the handler returns (no
+`WithResponseHeaders`/`WithResponseCookies` call needed for struct-modeled
+fields — those calls remain the escape hatch for anything else);
+`nethttp.Call` decodes them back into the client's `Resp` automatically.
+
+**`nethttp.CallHandle[Req, Resp]`** — single-call client convenience:
+derives `vars`/`QueryParams`/`HeaderParams`/`CookieParams` from `req`
+automatically via the role-aware accessors + `codex.EncodeVars`, then
+delegates to `Call`. Explicit `opts.QueryParams`/`HeaderParams`/
+`CookieParams` entries win over the derived value for the same key. `Call`
+remains the lower-level escape hatch.
+
+New error types: `codex.VarEncodeTypeError{Field, Got}`,
+`ports.FilePathMismatchError{Template, Path}` (mirrors
+`mqtt.TopicMismatchError`), `rest.MergeFieldTypeError{Err}` (mirrors
+`FormatOptError`, returned by `Route.Register` on a merge-field/`Req`/`Resp`
+type mismatch — reused for both request- and response-side merge fields).
+
+Round 2 (not yet shipped): `events.NewTopicParam[T]`/`ChannelHandle.MergeFields()`,
+`reqreply.NewTopicParam[T]`, `ports.NewCacheKeyParam[T]`/`Cache.MergeFields()`.
+
 ### Nullable Codec
 
 Wraps any codec to handle pointer fields (`*T`). `nil` encodes as JSON null.

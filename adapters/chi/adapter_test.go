@@ -152,6 +152,75 @@ func TestHandler_PathParam_Chi(t *testing.T) {
 	}
 }
 
+// P5: chi's Handler for a route WITH merge fields — the handler function
+// receives an already-merged, validated req; no manual chi.URLParam needed.
+func TestHandler_MergeFields_AutomaticMerge_Chi(t *testing.T) {
+	type getUserReq struct{ ID string }
+	getUserReqCodec := codex.Struct[getUserReq]()
+
+	b := rest.NewBuilder(testInfo)
+	handle, err := rest.NewRoute[getUserReq, userResp]("GET", "/users/{id}",
+		getUserReqCodec, userRespCodec,
+		rest.NewPathParam("id", codex.String().Refine(validate.NonEmptyString),
+			func(r getUserReq) string { return r.ID },
+			func(r *getUserReq, v string) { r.ID = v }),
+	).Register(b)
+	if err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+
+	var gotID string
+	handler := chiadapter.Handler(handle, func(_ context.Context, r getUserReq) (userResp, error) {
+		gotID = r.ID // no chi.URLParam() call needed — already merged
+		return userResp{ID: r.ID, Name: "Alice"}, nil
+	}, chiadapter.Options{})
+
+	router := gochi.NewRouter()
+	router.Get("/users/{id}", handler)
+	srv := httptest.NewServer(router)
+	defer srv.Close()
+
+	resp, err := http.Get(srv.URL + "/users/42") //nolint:noctx
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("want 200, got %d", resp.StatusCode)
+	}
+	if gotID != "42" {
+		t.Errorf("handler did not receive merged ID: got %q", gotID)
+	}
+}
+
+// P6: chi's Handler for a route WITHOUT merge fields — byte-for-byte
+// identical behavior to before this feature (regression guard).
+func TestHandler_NoMergeFields_UnchangedBehavior_Chi(t *testing.T) {
+	h := newGetHandle("/users/{id}")
+	if len(h.MergeFields()) != 0 {
+		t.Fatalf("expected no merge fields for a plain route, got %d", len(h.MergeFields()))
+	}
+	handler := chiadapter.Handler(h, func(ctx context.Context, _ getReq) (userResp, error) {
+		r, _ := chiadapter.RequestFromContext(ctx)
+		id := gochi.URLParam(r, "id")
+		return userResp{ID: id, Name: "Alice"}, nil
+	}, chiadapter.Options{})
+
+	router := gochi.NewRouter()
+	router.Get("/users/{id}", handler)
+	srv := httptest.NewServer(router)
+	defer srv.Close()
+
+	resp, err := http.Get(srv.URL + "/users/42") //nolint:noctx
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("want 200, got %d", resp.StatusCode)
+	}
+}
+
 func TestRegister_WiresOntoRouter(t *testing.T) {
 	h := newGetHandle("/users/{id}")
 	r := gochi.NewRouter()
@@ -246,6 +315,97 @@ func TestHandler_ResponseCookies(t *testing.T) {
 	}
 	if !found {
 		t.Fatalf("Set-Cookie header with session=abcdefgh not found, got: %v", resp.Header["Set-Cookie"])
+	}
+}
+
+// userRespWithMeta carries response header/cookie merge fields alongside
+// the JSON body fields (Round 3 — response merge fields).
+type userRespWithMeta struct {
+	ID        string
+	Name      string
+	RequestID string
+	Session   string
+}
+
+var userRespWithMetaBodyCodec = codex.Struct[userRespWithMeta](
+	codex.RequiredField("id", codex.String(),
+		func(u userRespWithMeta) string { return u.ID },
+		func(u *userRespWithMeta, v string) { u.ID = v },
+	),
+	codex.RequiredField("name", codex.String(),
+		func(u userRespWithMeta) string { return u.Name },
+		func(u *userRespWithMeta, v string) { u.Name = v },
+	),
+)
+
+// R6 (chi): Handler route WITH response header/cookie merge fields — server
+// sets the header/cookie automatically from the handler's returned Resp, no
+// WithResponseHeaders/WithResponseCookies call needed.
+func TestHandler_ResponseMergeFields_AutoAppliesFromResp_Chi(t *testing.T) {
+	b := rest.NewBuilder(testInfo)
+	h, err := rest.NewRoute[createReq, userRespWithMeta]("POST", "/users", createReqCodec, userRespWithMetaBodyCodec,
+		rest.NewRequiredResponseHeaderParam("X-Request-Id", codex.String().Refine(validate.NonEmptyString),
+			func(u userRespWithMeta) string { return u.RequestID },
+			func(u *userRespWithMeta, v string) { u.RequestID = v }),
+		rest.NewOptionalResponseCookieParam("session", codex.String(),
+			func(u userRespWithMeta) string { return u.Session },
+			func(u *userRespWithMeta, v string) { u.Session = v }),
+	).Register(b)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	srv := httptest.NewServer(chiadapter.Handler(h, func(_ context.Context, req createReq) (userRespWithMeta, error) {
+		return userRespWithMeta{ID: "1", Name: req.Name, RequestID: "req-999", Session: "sess-xyz"}, nil
+	}, chiadapter.Options{}))
+	defer srv.Close()
+
+	body := strings.NewReader(`{"name":"Alice"}`)
+	resp, err := http.Post(srv.URL+"/users", "application/json", body) //nolint:noctx
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("want 201, got %d", resp.StatusCode)
+	}
+	if got := resp.Header.Get("X-Request-Id"); got != "req-999" {
+		t.Errorf("want X-Request-Id=req-999, got %q", got)
+	}
+	found := false
+	for _, c := range resp.Header["Set-Cookie"] {
+		if strings.Contains(c, "session=sess-xyz") {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("Set-Cookie session=sess-xyz not found, got: %v", resp.Header["Set-Cookie"])
+	}
+}
+
+// R7 (chi): Handler route WITHOUT response merge fields behaves
+// byte-for-byte identically to today — regression guard.
+func TestHandler_ResponseMergeFields_NoneDeclaredIsUnaffected_Chi(t *testing.T) {
+	b := rest.NewBuilder(testInfo)
+	h, err := rest.NewRoute[createReq, userResp]("POST", "/users", createReqCodec, userRespCodec).Register(b)
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv := httptest.NewServer(chiadapter.Handler(h, func(_ context.Context, req createReq) (userResp, error) {
+		return userResp{ID: "1", Name: req.Name}, nil
+	}, chiadapter.Options{}))
+	defer srv.Close()
+
+	body := strings.NewReader(`{"name":"Alice"}`)
+	resp, err := http.Post(srv.URL+"/users", "application/json", body) //nolint:noctx
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("want 201, got %d", resp.StatusCode)
 	}
 }
 

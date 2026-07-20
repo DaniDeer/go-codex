@@ -47,6 +47,57 @@ func (p FilePathParam) WithCodec(c codex.Codec[string]) FilePathParam {
 
 func (p FilePathParam) applyFile(fb *fileBuilder) { fb.params = append(fb.params, p) }
 
+// MergedFilePathParam is returned by [NewFilePathParam]. It embeds the
+// unchanged [FilePathParam] (spec/validation, exactly as before) plus a
+// merge field produced internally via [codex.RequiredField], so the same
+// declaration serves both [File.BuildPath]/[File.MatchPath] validation AND
+// [File.MergeFields] / [codex.DecodeVars] merging.
+type MergedFilePathParam[T any] struct {
+	FilePathParam
+	field codex.FieldCodec[T]
+}
+
+// NewFilePathParam declares a path template variable that is BOTH validated
+// against codec (exactly like plain [FilePathParam], unchanged spec/
+// validation behavior) AND merged into T by [File.MergeFields] /
+// [codex.DecodeVars] — one declaration instead of a FilePathParam plus a
+// separate codex.Field.
+//
+// NewFilePathParam is the PRIMARY, recommended way to declare a File path
+// variable. The plain [FilePathParam] struct literal remains available as
+// the low-level escape hatch for validate-only variables with no merge
+// need (avoids forcing a get/set pair on a variable the caller never reads
+// directly).
+//
+//	var readingFile = ports.NewFile("readings/{sensorID}/{date}.json", format.JSON(valueOnlyCodec),
+//	    ports.NewFilePathParam("sensorID", codex.String().Refine(validate.NonEmptyString),
+//	        func(r ReadingMeta) string { return r.SensorID },
+//	        func(r *ReadingMeta, v string) { r.SensorID = v }),
+//	)
+func NewFilePathParam[T any](
+	name string,
+	codec codex.Codec[string],
+	get func(T) string,
+	set func(*T, string),
+) MergedFilePathParam[T] {
+	return MergedFilePathParam[T]{
+		FilePathParam: FilePathParam{Name: name, Codec: &codec},
+		field:         codex.RequiredField(name, codec, get, set),
+	}
+}
+
+// WithDescription sets the PARAMETER-level description and returns the
+// updated value, mirroring FilePathParam.WithCodec's existing chain style.
+func (p MergedFilePathParam[T]) WithDescription(desc string) MergedFilePathParam[T] {
+	p.Description = desc
+	return p
+}
+
+func (p MergedFilePathParam[T]) applyFile(fb *fileBuilder) {
+	fb.params = append(fb.params, p.FilePathParam) // unchanged spec/validation path
+	fb.mergeFields = append(fb.mergeFields, p.field)
+}
+
 // ── FileOptions ───────────────────────────────────────────────────────────────
 
 // FileOptions configures the behaviour of [File.Read], [File.Write], and
@@ -119,12 +170,17 @@ type File[T any] struct {
 	// Template is the original path template (with {varName} placeholders).
 	Template string
 
-	format format.Format[T]
-	params []FilePathParam
+	format      format.Format[T]
+	params      []FilePathParam
+	mergeFields []codex.FieldCodec[T]
 }
 
 type fileBuilder struct {
 	params []FilePathParam
+	// mergeFields holds type-erased codex.FieldCodec[T] values registered
+	// via NewFilePathParam. T is asserted in NewFile[T], where T is already
+	// known from the format.Format[T] argument.
+	mergeFields []any
 }
 
 // FileOpt is the sealed option interface for [NewFile].
@@ -135,16 +191,42 @@ type FileOpt interface{ applyFile(*fileBuilder) }
 //
 // NewFile is infallible — it only captures the spec. Validation of template
 // variable names against registered params runs at [File.BuildPath] time.
+//
+// NewFile PANICS if a merge field registered via [NewFilePathParam] does
+// not match T — this can only happen if a caller manually constructs a
+// [MergedFilePathParam] with the wrong type parameter, a programming error
+// analogous to the ones [forge.NewFunction] already panics on (empty name/
+// version), not a runtime data error.
 func NewFile[T any](template string, f format.Format[T], opts ...FileOpt) File[T] {
 	var fb fileBuilder
 	for _, opt := range opts {
 		opt.applyFile(&fb)
 	}
-	return File[T]{
-		Template: template,
-		format:   f,
-		params:   fb.params,
+	mergeFields := make([]codex.FieldCodec[T], len(fb.mergeFields))
+	for i, mf := range fb.mergeFields {
+		fc, ok := mf.(codex.FieldCodec[T])
+		if !ok {
+			panic(fmt.Sprintf("ports: NewFile[%T]: merge field %d has the wrong type parameter (got %T)", *new(T), i, mf))
+		}
+		mergeFields[i] = fc
 	}
+	return File[T]{
+		Template:    template,
+		format:      f,
+		params:      fb.params,
+		mergeFields: mergeFields,
+	}
+}
+
+// MergeFields returns the merge-capable fields registered via
+// [NewFilePathParam] — feed them directly into [codex.DecodeVars] /
+// [codex.EncodeVars]:
+//
+//	vars, _ := readingFile.MatchPath(path)
+//	var meta ReadingMeta
+//	err := codex.DecodeVars(&meta, vars, readingFile.MergeFields()...)
+func (fh File[T]) MergeFields() []codex.FieldCodec[T] {
+	return fh.mergeFields
 }
 
 // BuildPath substitutes {varName} placeholders with the values in vars and
@@ -204,6 +286,44 @@ func (fh File[T]) PathParamSchemas() map[string]schema.Schema {
 		}
 	}
 	return out
+}
+
+// MatchPath is the inverse of [File.BuildPath]: it matches a concrete,
+// already-discovered file path (e.g. from the caller's own
+// filepath.WalkDir/filepath.Glob) against the File's path template and
+// returns the extracted variable values, validated against each
+// registered [FilePathParam.Codec] — mirrors [ports.File.BuildPath]'s
+// forward direction, and the same pattern used by adapters/mqtt's
+// TopicVarsFromMessage for MQTT topics.
+//
+// A {varName} placeholder captures everything up to the next "/" and MAY
+// share a segment with literal text — e.g. the template
+// "readings/{sensorID}/{date}.json" correctly extracts "2024-01-15" (not
+// "2024-01-15.json") from "readings/sensor-42/2024-01-15.json".
+//
+// Returns [FilePathMismatchError] if path does not match the template's
+// structure (wrong number of segments, or literal text does not match).
+// Returns [FilePathParamError] if an extracted variable fails its
+// registered codec.
+//
+//	vars, err := readingFile.MatchPath("readings/sensor-42/2024-01-15.json")
+//	// vars == map[string]string{"sensorID": "sensor-42", "date": "2024-01-15"}
+func (fh File[T]) MatchPath(path string) (map[string]string, error) {
+	vars, err := matchFileTemplate(fh.Template, path)
+	if err != nil {
+		return nil, err
+	}
+	for i := range fh.params {
+		p := &fh.params[i]
+		if p.Codec == nil {
+			continue
+		}
+		value := vars[p.Name]
+		if err := p.Codec.Validate(value); err != nil {
+			return nil, FilePathParamError{Name: p.Name, Value: value, Err: err}
+		}
+	}
+	return vars, nil
 }
 
 // Read builds the concrete path from vars, reads the file, and decodes its
@@ -650,6 +770,40 @@ func buildFromFileTemplate(
 	return result, nil
 }
 
+// matchFileTemplate is the inverse of buildFromFileTemplate: it matches a
+// concrete path against template, extracting {varName} placeholder values.
+// A placeholder captures everything up to the next "/" and may share a
+// segment with literal text (e.g. "{date}.json"). Mirrors
+// api/internal.MatchTemplate's algorithm — inlined here for the same
+// reason buildFromFileTemplate is inlined above: ports must not import
+// api/internal (an api/*-only internal package).
+func matchFileTemplate(template, path string) (map[string]string, error) {
+	var pattern strings.Builder
+	pattern.WriteString("^")
+	var names []string
+	lastEnd := 0
+	for _, loc := range fileTemplateVarRe.FindAllStringIndex(template, -1) {
+		start, end := loc[0], loc[1]
+		pattern.WriteString(regexp.QuoteMeta(template[lastEnd:start]))
+		names = append(names, template[start+1:end-1])
+		pattern.WriteString("([^/]+)")
+		lastEnd = end
+	}
+	pattern.WriteString(regexp.QuoteMeta(template[lastEnd:]))
+	pattern.WriteString("$")
+
+	re := regexp.MustCompile(pattern.String())
+	m := re.FindStringSubmatch(path)
+	if m == nil {
+		return nil, FilePathMismatchError{Template: template, Path: path}
+	}
+	vars := make(map[string]string, len(names))
+	for i, name := range names {
+		vars[name] = m[i+1]
+	}
+	return vars, nil
+}
+
 // ── Typed errors ──────────────────────────────────────────────────────────────
 
 // FilePathParamError is returned by [File.BuildPath] when a {varName} value
@@ -684,6 +838,28 @@ func (e FilePathParamError) LogValue() slog.Value {
 		slog.String("param", e.Name),
 		slog.String("value", e.Value),
 		slog.Any("cause", e.Err),
+	)
+}
+
+// FilePathMismatchError is returned by [File.MatchPath] when a concrete
+// path does not match the template's structure (wrong number of segments,
+// or literal text does not match). Mirrors adapters/mqtt's
+// TopicMismatchError exactly (same fields, same rationale) — no wrapped
+// cause, this is a self-contained structural mismatch.
+type FilePathMismatchError struct {
+	Template string
+	Path     string
+}
+
+func (e FilePathMismatchError) Error() string {
+	return fmt.Sprintf("file path %q does not match template %q", e.Path, e.Template)
+}
+
+// LogValue implements [slog.LogValuer] for structured logging.
+func (e FilePathMismatchError) LogValue() slog.Value {
+	return slog.GroupValue(
+		slog.String("template", e.Template),
+		slog.String("path", e.Path),
 	)
 }
 

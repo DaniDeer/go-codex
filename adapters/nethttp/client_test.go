@@ -523,6 +523,147 @@ func TestResponseBodyError_ErrorAndUnwrap(t *testing.T) {
 	}
 }
 
+// --- Response merge fields + CallHandle (Round 3) ---
+
+// getUserActivityReq declares BOTH a path merge field (id) and a query
+// merge field (filter) on Req — used by the CallHandle role-leakage tests.
+type getUserActivityReq struct {
+	ID     string
+	Filter string
+}
+
+// newClientActivityRoute returns a GET /users/{id}/activity route with a
+// path merge field, a query merge field, a required response header merge
+// field, and an optional response cookie merge field — exercising every
+// role in a single route for the R8-R11 test matrix.
+func newClientActivityRoute() *rest.RouteHandle[getUserActivityReq, userRespWithMeta] {
+	return rest.NewRoute[getUserActivityReq, userRespWithMeta]("GET", "/users/{id}/activity",
+		codex.Struct[getUserActivityReq](), userRespWithMetaBodyCodec,
+		rest.NewPathParam("id", codex.String().Refine(validate.NonEmptyString),
+			func(r getUserActivityReq) string { return r.ID },
+			func(r *getUserActivityReq, v string) { r.ID = v }),
+		rest.NewOptionalQueryParam("filter", codex.String(),
+			func(r getUserActivityReq) string { return r.Filter },
+			func(r *getUserActivityReq, v string) { r.Filter = v }),
+		rest.NewRequiredResponseHeaderParam("X-Request-Id", codex.String().Refine(validate.NonEmptyString),
+			func(u userRespWithMeta) string { return u.RequestID },
+			func(u *userRespWithMeta, v string) { u.RequestID = v }),
+		rest.NewOptionalResponseCookieParam("session", codex.String(),
+			func(u userRespWithMeta) string { return u.Session },
+			func(u *userRespWithMeta, v string) { u.Session = v }),
+	).ClientHandle()
+}
+
+// R8: nethttp.Call decodes response headers/cookies into Resp when response
+// merge fields are registered — round-trip: server sets header/cookie from
+// a fixed value, client reads it back into the SAME struct fields.
+func TestCall_ResponseMergeFields_DecodesIntoResp(t *testing.T) {
+	handle := newClientActivityRoute()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("X-Request-Id", "req-777")
+		http.SetCookie(w, &http.Cookie{Name: "session", Value: "sess-777"})
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"id":"u1","name":"Alice"}`))
+	}))
+	defer srv.Close()
+
+	resp, err := nethttp.Call(context.Background(), srv.Client(), srv.URL,
+		handle, getUserActivityReq{}, map[string]string{"id": "u1"}, nethttp.CallOptions{})
+	if err != nil {
+		t.Fatalf("Call: %v", err)
+	}
+	if resp.RequestID != "req-777" {
+		t.Errorf("RequestID: want %q, got %q", "req-777", resp.RequestID)
+	}
+	if resp.Session != "sess-777" {
+		t.Errorf("Session: want %q, got %q", "sess-777", resp.Session)
+	}
+}
+
+// R9: nethttp.CallHandle happy path — a route with path+query merge fields
+// on Req derives BOTH the path var and the query param from ONE call,
+// with no cross-role leakage (mirrors TestClientEncode_RoleAwareMergeFields_NoLeakage
+// in api/rest, extended here through the full client stack).
+func TestCallHandle_HappyPath_NoLeakage(t *testing.T) {
+	handle := newClientActivityRoute()
+	var gotPath, gotQuery string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		gotQuery = r.URL.Query().Get("filter")
+		if r.URL.Query().Get("id") != "" {
+			t.Errorf("path value leaked into query string: %q", r.URL.Query().Get("id"))
+		}
+		w.Header().Set("X-Request-Id", "req-1")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"id":"u1","name":"Alice"}`))
+	}))
+	defer srv.Close()
+
+	resp, err := nethttp.CallHandle(context.Background(), srv.Client(), srv.URL,
+		handle, getUserActivityReq{ID: "u1", Filter: "logins"}, nethttp.CallOptions{})
+	if err != nil {
+		t.Fatalf("CallHandle: %v", err)
+	}
+	if gotPath != "/users/u1/activity" {
+		t.Errorf("path: want %q, got %q", "/users/u1/activity", gotPath)
+	}
+	if gotQuery != "logins" {
+		t.Errorf("query filter: want %q, got %q", "logins", gotQuery)
+	}
+	if resp.RequestID != "req-1" {
+		t.Errorf("RequestID: want %q, got %q", "req-1", resp.RequestID)
+	}
+}
+
+// R10: explicit opts.QueryParams/etc. take precedence over the value
+// CallHandle derives from req for the same key.
+func TestCallHandle_ExplicitOptsOverridePrecedence(t *testing.T) {
+	handle := newClientActivityRoute()
+	var gotQuery string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotQuery = r.URL.Query().Get("filter")
+		w.Header().Set("X-Request-Id", "req-2")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"id":"u1","name":"Alice"}`))
+	}))
+	defer srv.Close()
+
+	_, err := nethttp.CallHandle(context.Background(), srv.Client(), srv.URL,
+		handle, getUserActivityReq{ID: "u1", Filter: "logins"},
+		nethttp.CallOptions{QueryParams: map[string]string{"filter": "overridden"}})
+	if err != nil {
+		t.Fatalf("CallHandle: %v", err)
+	}
+	if gotQuery != "overridden" {
+		t.Errorf("query filter: want explicit override %q, got %q", "overridden", gotQuery)
+	}
+}
+
+// R11: CallHandle with zero merge fields declared behaves like
+// Call(ctx, client, baseURL, handle, req, nil, opts) — regression guard.
+func TestCallHandle_NoMergeFieldsMatchesCall(t *testing.T) {
+	handle := newClientCreateRoute()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusCreated)
+		_, _ = w.Write([]byte(`{"id":"1","name":"Alice"}`))
+	}))
+	defer srv.Close()
+
+	viaCall, err := nethttp.Call(context.Background(), srv.Client(), srv.URL,
+		handle, createReq{Name: "Alice"}, nil, nethttp.CallOptions{})
+	if err != nil {
+		t.Fatalf("Call: %v", err)
+	}
+	viaCallHandle, err := nethttp.CallHandle(context.Background(), srv.Client(), srv.URL,
+		handle, createReq{Name: "Alice"}, nethttp.CallOptions{})
+	if err != nil {
+		t.Fatalf("CallHandle: %v", err)
+	}
+	if viaCall != viaCallHandle {
+		t.Errorf("CallHandle should match plain Call when no merge fields declared: %+v vs %+v", viaCall, viaCallHandle)
+	}
+}
+
 // --- Example functions (shown on pkg.go.dev as runnable snippets) ---
 
 func ExampleCall() {

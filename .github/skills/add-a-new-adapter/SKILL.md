@@ -124,6 +124,82 @@ additions:
   `.github/instructions/go-codex.instructions.md` (adapter table AND the
   ports "Implemented by" lists), review-skill history + known-facts.
 
+## Step 5b — Merge-field convenience (MANDATORY when the boundary is Req/Resp- or payload-shaped)
+
+**The user promise, stated first**: for any boundary with a request/response
+shape or a duplex role pair (publisher/subscriber, requestor/replier,
+client/server), a caller on EITHER side must be able to do the ENTIRE
+encode-or-decode direction with **one struct value in (or out), one call**
+— no manual map-building, no manual header/cookie/query/topic stitching, in
+the common case. Everything below exists to make that promise safe, not to
+replace it.
+
+REST (`api/rest` + `adapters/nethttp`/`chi`) is the reference
+implementation — mirror it exactly when the new adapter's boundary has this
+shape:
+
+```go
+// Client: ONE struct in, ONE struct out.
+resp, err := nethttp.CallHandle(ctx, client, baseURL, handle, req, nethttp.CallOptions{})
+
+// Server: ONE struct in, ONE struct out.
+nethttp.Register(mux, handle, func(ctx context.Context, req Req) (Resp, error) {
+    return resp, nil // adapter auto-decoded req, will auto-encode resp
+}, nethttp.Options{})
+```
+
+**Checklist — implement all five, both directions, both roles:**
+
+1. **Declare-once constructors** — `NewXxxParam[T]` that register BOTH the
+   boundary's spec Param (unchanged, still drives OpenAPI/AsyncAPI/MCP spec
+   generation) AND a `codex.FieldCodec[T]` merge field in one call. Mirror
+   `rest.NewPathParam[T]`/`NewRequiredQueryParam[T]`/`NewOptionalQueryParam[T]`
+   (+ Header/Cookie) for the request/inbound side, and
+   `rest.NewRequiredResponseHeaderParam[Resp]`/`NewOptionalResponseHeaderParam[Resp]`
+   (+ Cookie) for the response/outbound side when the boundary has one.
+2. **Escape hatch preserved** — the plain, validate-only Param struct
+   literals must remain fully supported, unchanged, for the rare param a
+   handler never reads/writes directly. A boundary must be able to freely
+   mix both styles on the same route/channel/tool.
+3. **Encode/decode symmetry** — decode (the side receiving several
+   pre-scoped string-keyed sources) is a safe flat union merge; encode (the
+   side decomposing one struct into several destinations) REQUIRES
+   role-aware accessors (e.g. `PathMergeFields()`/`QueryMergeFields()`/
+   `HeaderMergeFields()`/`CookieMergeFields()`, never one flat list) to
+   avoid leaking a value into the wrong destination. Both directions must
+   exist — do not ship decode-only.
+4. **Role symmetry** — implement for BOTH roles of the boundary: server AND
+   client for request/response transports; publisher AND subscriber for
+   pub/sub; requestor AND replier for req/reply. The one-struct promise
+   must hold on both sides of the wire, not just one.
+5. **Single-call convenience wrapper** — an encode-side wrapper
+   (`CallHandle`-equivalent) that derives every destination map from one
+   struct automatically, with explicit per-call overrides still winning on
+   key collision; the decode-side equivalent is the adapter's `Handler`/
+   `Register`-style entry point auto-merging before invoking the caller's
+   function. This wrapper IS the one-struct-one-call promise made concrete
+   — don't stop at the accessors/constructors, ship the wrapper too.
+
+**Do NOT treat `api/events`/`api/reqreply` as precedent** — as of this
+writing, neither has ANY of the five (no topic merge-field constructors, no
+response-side merge, no single-call wrapper). This is tracked as "Round 2"
+in `docs/roadmap/vars-codec-merge.md`, a known gap, not a design choice to
+replicate in a new adapter.
+
+**Verify with a non-default format AND a nested struct, not just the
+flat/JSON happy path.** Body decode/encode is orthogonal to var-merge, so
+ANY `format.Format[T]` (Gob, Binary, custom `format.NewTyped`) must compose
+with merge fields, not just JSON/YAML/TOML — and merge-field `get`/`set`
+are plain closures, so nested sub-struct access
+(`func(r Req) string { return r.Meta.X }`) must work, not just top-level
+fields. When the wire bytes for a whole-value binary format (Gob,
+protobuf) should represent ONLY a nested sub-field, use `format.NewTyped`
+with a custom marshal/unmarshal projecting onto/from that field — do NOT
+assume `format.Gob(reqCodec)` alone achieves this (it serialises the WHOLE
+typed value via reflection, bypassing the codec's Encode/Decode). See
+`api/rest/builder_test.go`'s `TestGobBodyFormat_ComposesWithNestedMergeFields`
+and `examples/rest-nested-binary` for the reference pattern to mirror.
+
 ## Step 6 — Use the checklist
 
 Work through [references/checklist.md](references/checklist.md) — a
@@ -158,8 +234,10 @@ verification ritual. Track progress with todos, one per checklist block.
 ## References
 
 - [references/checklist.md](references/checklist.md) — per-adapter checklist
-- `plan-a-new-codex-feature` skill — roadmap template + five mandatory requirements
-- `review-go-codex` skill — consistency checklist + history (do not re-introduce fixed issues)
+- `plan-a-new-codex-feature` skill — roadmap template + five mandatory requirements + the "boundary symmetry" 6th requirement
+- `review-go-codex` skill — consistency checklist + history (do not re-introduce fixed issues); checklist category 12 covers merge-field/boundary symmetry
 - `adapters/mqtt5/` — reference transport adapter (binding.go conventions)
 - `adapters/sql/` — reference store adapter (metadata Pattern, validate/observer patterns)
+- `api/rest/builder.go` + `adapters/nethttp/{adapter,client}.go` — reference implementation of Step 5b's one-struct-one-call pattern (`NewPathParam`/etc., `DecodeMerged`, role-aware `PathMergeFields`/etc., `NewRequiredResponseHeaderParam`/etc., `DecodeMergedResponse`, `CallHandle`)
+- `docs/concepts/api-contracts.md` — "one struct, one call" design principle, user-facing framing
 - `ports/pattern.go`, `ports/handle.go` — Pattern declaration + build machinery

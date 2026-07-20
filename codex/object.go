@@ -6,7 +6,15 @@ import (
 	"github.com/DaniDeer/go-codex/schema"
 )
 
-type fieldCodec[T any] interface {
+// FieldCodec is the sealed interface implemented by [Field] (via
+// [RequiredField]/[OptionalField]/[DefaultField]) that [Struct] composes to
+// build a full object codec. Its methods are unexported — only this
+// package can produce values satisfying it — but the interface NAME is
+// exported so other packages can name it in their own signatures (e.g. to
+// hold a slice of heterogeneous per-field declarations, as [DecodeVars] and
+// [EncodeVars] do, or as api/rest's merge-capable Param constructors do to
+// bridge a declared Field into a route's automatic request merge).
+type FieldCodec[T any] interface {
 	encode(T) (string, any, error)
 	decode(map[string]any, *T) error
 	schema() (string, schema.Schema, bool)
@@ -25,14 +33,14 @@ type Field[T any, F any] struct {
 	Default *F
 }
 
-//lint:ignore U1000 implements fieldCodec interface
+//lint:ignore U1000 implements FieldCodec interface
 func (f Field[T, F]) encode(v T) (string, any, error) {
 	val := f.Get(v)
 	enc, err := f.Codec.Encode(val)
 	return f.Name, enc, err
 }
 
-//lint:ignore U1000 implements fieldCodec interface
+//lint:ignore U1000 implements FieldCodec interface
 func (f Field[T, F]) decode(obj map[string]any, target *T) error {
 	raw, ok := obj[f.Name]
 	if !ok {
@@ -55,7 +63,7 @@ func (f Field[T, F]) decode(obj map[string]any, target *T) error {
 	return nil
 }
 
-//lint:ignore U1000 implements fieldCodec interface
+//lint:ignore U1000 implements FieldCodec interface
 func (f Field[T, F]) schema() (string, schema.Schema, bool) {
 	s := f.Codec.Schema
 	if f.Default != nil {
@@ -84,7 +92,7 @@ func DefaultField[T, F any](name string, codec Codec[F], defaultVal F, get func(
 }
 
 // Struct builds a Codec[T] by composing field codecs. Schema is built eagerly.
-func Struct[T any](fields ...fieldCodec[T]) Codec[T] {
+func Struct[T any](fields ...FieldCodec[T]) Codec[T] {
 	var props []schema.Property
 	var req []string
 	for _, f := range fields {

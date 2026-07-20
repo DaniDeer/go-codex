@@ -192,6 +192,17 @@ var userCodec = codex.Struct[User](
 	),
 )
 
+// GetUserReq carries the {id} path variable — merged in automatically by
+// rest.NewPathParam + chi's Handler's RouteHandle.DecodeMerged wiring (no
+// body: this route is a GET with no request payload).
+type GetUserReq struct {
+	ID string
+}
+
+// getUserReqCodec has no declared fields — GetUserReq.ID is populated
+// exclusively via the path-var merge, never from a JSON body.
+var getUserReqCodec = codex.Struct[GetUserReq]()
+
 // PagedUsersResp is the response for a paginated user list.
 type PagedUsersResp struct {
 	Page   int
@@ -326,14 +337,53 @@ func makeCreateUserHandler(store *UserStore) func(context.Context, CreateUserReq
 }
 
 // makeGetUserHandler orchestrates the get-user pipeline.
-// Chi path vars are extracted via chi.URLParam from the raw *http.Request.
-func makeGetUserHandler(store *UserStore) func(context.Context, struct{}) (User, error) {
-	return func(ctx context.Context, _ struct{}) (User, error) {
-		r, _ := chiadapter.RequestFromContext(ctx)
-		id := gochi.URLParam(r, "id") // L3: HTTP path parameter (chi-specific)
-		record, ok := store.Get(id)
+// GetUserReq.ID arrives ALREADY merged and codec-validated by chi's Handler
+// (via rest.NewPathParam + RouteHandle.DecodeMerged) — chi's Handler calls
+// DecodeMerged internally exactly like nethttp.Handler does, so no manual
+// chi.URLParam extraction is needed here.
+func makeGetUserHandler(store *UserStore) func(context.Context, GetUserReq) (User, error) {
+	return func(_ context.Context, req GetUserReq) (User, error) {
+		record, ok := store.Get(req.ID)
 		if !ok {
-			return User{}, fmt.Errorf("user %q not found", id)
+			return User{}, fmt.Errorf("user %q not found", req.ID)
+		}
+		return buildUserResponse(record), nil
+	}
+}
+
+// UpdateUserReq MIXES two sources on ONE struct: ID comes from the path
+// (merged automatically, like GetUserReq.ID above), Name/Email come from
+// the JSON body (decoded by updateUserReqCodec). RouteHandle.DecodeMerged
+// does body-decode THEN var-merge on the SAME value — a route can freely
+// combine both without any special handling, as long as the body codec and
+// the merge fields declare different field names.
+type UpdateUserReq struct {
+	ID    string // from path — merged, not declared in updateUserReqCodec
+	Name  string // from JSON body
+	Email string // from JSON body
+}
+
+// updateUserReqCodec deliberately does NOT declare "id" — ID is populated
+// exclusively via the path-var merge (see rest.NewPathParam in main()).
+var updateUserReqCodec = codex.Struct[UpdateUserReq](
+	codex.RequiredField("name", nameFieldCodec,
+		func(r UpdateUserReq) string { return r.Name },
+		func(r *UpdateUserReq, v string) { r.Name = v },
+	),
+	codex.RequiredField("email", emailFieldCodec,
+		func(r UpdateUserReq) string { return r.Email },
+		func(r *UpdateUserReq, v string) { r.Email = v },
+	),
+)
+
+// makeUpdateUserHandler orchestrates the update-user pipeline:
+//
+// req.ID (path, merged) + req.Name/req.Email (body, decoded) → Save (store IO) → buildUserResponse
+func makeUpdateUserHandler(store *UserStore) func(context.Context, UpdateUserReq) (User, error) {
+	return func(_ context.Context, req UpdateUserReq) (User, error) {
+		record := UserRecord(req)
+		if err := store.Save(record); err != nil {
+			return User{}, err
 		}
 		return buildUserResponse(record), nil
 	}
@@ -411,19 +461,21 @@ func main() {
 		format.YAML(createUserReqCodec),
 	)
 
-	uuidCodec := codex.String().Refine(validate.UUID)
-	getUserRoute, err := rest.NewRoute[struct{}, User]("GET", "/users/{id}",
-		codex.Empty, userCodec,
+	getUserRoute, err := rest.NewRoute[GetUserReq, User]("GET", "/users/{id}",
+		getUserReqCodec, userCodec,
 		rest.RouteMeta{
 			OperationID:    "getUser",
 			Summary:        "Get a user by ID",
 			RespSchemaName: "User",
 		},
-		rest.PathParam{
-			Name:        "id",
-			Description: "User UUID",
-			Codec:       &uuidCodec,
-		},
+		// NewPathParam declares BOTH the spec/validation Param AND a merge
+		// field — chi's Handler merges {id} into GetUserReq.ID
+		// automatically via RouteHandle.DecodeMerged.
+		rest.NewPathParam("id",
+			codex.String().Refine(validate.UUID),
+			func(r GetUserReq) string { return r.ID },
+			func(r *GetUserReq, v string) { r.ID = v },
+		).WithDescription("User UUID"),
 	).Register(b)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "route registration failed: %v\n", err)
@@ -433,6 +485,27 @@ func main() {
 		format.JSON(userCodec),
 		format.YAML(userCodec),
 	)
+
+	// PUT /users/{id} — MIXES a path field (ID) with body fields (Name,
+	// Email) on the SAME UpdateUserReq struct. DecodeMerged decodes the
+	// JSON body first, then merges {id} in.
+	updateUserRoute, err := rest.NewRoute[UpdateUserReq, User]("PUT", "/users/{id}",
+		updateUserReqCodec, userCodec,
+		rest.RouteMeta{
+			OperationID:    "updateUser",
+			Summary:        "Update a user by ID",
+			RespSchemaName: "User",
+		},
+		rest.NewPathParam("id",
+			codex.String().Refine(validate.UUID),
+			func(r UpdateUserReq) string { return r.ID },
+			func(r *UpdateUserReq, v string) { r.ID = v },
+		).WithDescription("User UUID"),
+	).Register(b)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "route registration failed: %v\n", err)
+		os.Exit(1)
+	}
 
 	qPageCodec := codex.String().Refine(validate.NonNegativeIntString)
 	listUsersRoute, err := rest.NewRoute[struct{}, PagedUsersResp]("GET", "/users",
@@ -516,7 +589,7 @@ func main() {
 			slog.String("email", u.Email),
 		}
 	}
-	extractGetUserAttrs := func(_ struct{}, u User) []slog.Attr {
+	extractGetUserAttrs := func(_ GetUserReq, u User) []slog.Attr {
 		return []slog.Attr{slog.String("id", u.ID)}
 	}
 
@@ -530,6 +603,12 @@ func main() {
 		opts)
 	chiadapter.Register(r, getUserRoute,
 		withDomainLogging("user.get", makeGetUserHandler(store), domainLogger, extractGetUserAttrs),
+		opts)
+	chiadapter.Register(r, updateUserRoute,
+		withDomainLogging("user.update", makeUpdateUserHandler(store), domainLogger,
+			func(req UpdateUserReq, u User) []slog.Attr {
+				return []slog.Attr{slog.String("id", req.ID), slog.String("name", u.Name)}
+			}),
 		opts)
 	chiadapter.Register(r, listUsersRoute,
 		withDomainLogging("user.list", makeListUsersHandler(), domainLogger,
@@ -642,6 +721,32 @@ func main() {
 		if _, err := getUserRoute.BuildPath(map[string]string{"id": "not-a-uuid"}); err != nil {
 			fmt.Printf("BuildPath(not-a-uuid) rejected: %v\n", err)
 		}
+	}()
+
+	fmt.Println("\n--- PUT /users/{id} — mixed body + path merge on ONE struct ---")
+	func() {
+		// UpdateUserReq.ID comes from the path (merged), Name/Email come
+		// from the JSON body (decoded) — DecodeMerged populates BOTH on
+		// the same struct in one call.
+		updatePath, err := updateUserRoute.BuildPath(map[string]string{"id": "f47ac10b-58cc-4372-a567-0e02b2c3d479"})
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "BuildPath error: %v\n", err)
+			return
+		}
+		body := strings.NewReader(`{"name":"Alice Updated","email":"alice.updated@example.com"}`)
+		req, err := http.NewRequest(http.MethodPut, srv.URL+updatePath, body)
+		if err != nil {
+			panic(err)
+		}
+		req.Header.Set("Content-Type", "application/json")
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			panic(err)
+		}
+		defer resp.Body.Close()
+		var updated User
+		_ = json.NewDecoder(resp.Body).Decode(&updated)
+		fmt.Printf("Status: %s\nUser:   %+v\n", resp.Status, updated)
 	}()
 
 	fmt.Println("\n--- GET /users?page=2&search=alice (query params) ---")

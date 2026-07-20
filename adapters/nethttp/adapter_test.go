@@ -993,6 +993,123 @@ func TestWithResponseCookies_codecViolationReturns500(t *testing.T) {
 	}
 }
 
+// --- Response merge fields (Round 3) ---
+
+// userRespWithMeta carries response header/cookie merge fields alongside
+// the JSON body fields.
+type userRespWithMeta struct {
+	ID        string
+	Name      string
+	RequestID string
+	Session   string
+}
+
+var userRespWithMetaBodyCodec = codex.Struct[userRespWithMeta](
+	codex.RequiredField("id", codex.String(),
+		func(u userRespWithMeta) string { return u.ID },
+		func(u *userRespWithMeta, v string) { u.ID = v },
+	),
+	codex.RequiredField("name", codex.String(),
+		func(u userRespWithMeta) string { return u.Name },
+		func(u *userRespWithMeta, v string) { u.Name = v },
+	),
+)
+
+// R6: nethttp.Handler route WITH response header/cookie merge fields —
+// server sets the header/cookie automatically from the handler's returned
+// Resp, no WithResponseHeaders/WithResponseCookies call needed.
+func TestHandler_ResponseMergeFields_AutoAppliesFromResp(t *testing.T) {
+	b := rest.NewBuilder(testInfo)
+	h, err := rest.NewRoute[createReq, userRespWithMeta]("POST", "/users", createReqCodec, userRespWithMetaBodyCodec,
+		rest.NewRequiredResponseHeaderParam("X-Request-Id", codex.String().Refine(validate.NonEmptyString),
+			func(u userRespWithMeta) string { return u.RequestID },
+			func(u *userRespWithMeta, v string) { u.RequestID = v }),
+		rest.NewOptionalResponseCookieParam("session", codex.String(),
+			func(u userRespWithMeta) string { return u.Session },
+			func(u *userRespWithMeta, v string) { u.Session = v }),
+	).Register(b)
+	if err != nil {
+		t.Fatal(err)
+	}
+	handler := nethttp.Handler(h, func(_ context.Context, req createReq) (userRespWithMeta, error) {
+		// No WithResponseHeaders/WithResponseCookies call — the adapter
+		// derives the header/cookie values from the returned struct fields.
+		return userRespWithMeta{ID: "1", Name: req.Name, RequestID: "req-999", Session: "sess-xyz"}, nil
+	}, nethttp.Options{})
+
+	rec := httptest.NewRecorder()
+	r := httptest.NewRequest(http.MethodPost, "/users", strings.NewReader(`{"name":"Alice"}`))
+	r.Header.Set("Content-Type", "application/json")
+	handler.ServeHTTP(rec, r)
+
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("want 201, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if got := rec.Header().Get("X-Request-Id"); got != "req-999" {
+		t.Errorf("want X-Request-Id=req-999, got %q", got)
+	}
+	var found bool
+	for _, c := range rec.Result().Cookies() {
+		if c.Name == "session" && c.Value == "sess-xyz" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("Set-Cookie session=sess-xyz not found; cookies: %v", rec.Result().Cookies())
+	}
+}
+
+// R6b: a required response header merge field that fails codec validation
+// returns 500, same as the validate-only ResponseHeaderParam path.
+func TestHandler_ResponseMergeFields_CodecViolationReturns500(t *testing.T) {
+	b := rest.NewBuilder(testInfo)
+	h, err := rest.NewRoute[createReq, userRespWithMeta]("POST", "/users", createReqCodec, userRespWithMetaBodyCodec,
+		rest.NewRequiredResponseHeaderParam("X-Request-Id", codex.String().Refine(validate.UUID),
+			func(u userRespWithMeta) string { return u.RequestID },
+			func(u *userRespWithMeta, v string) { u.RequestID = v }),
+	).Register(b)
+	if err != nil {
+		t.Fatal(err)
+	}
+	handler := nethttp.Handler(h, func(_ context.Context, req createReq) (userRespWithMeta, error) {
+		return userRespWithMeta{ID: "1", Name: req.Name, RequestID: "not-a-uuid"}, nil
+	}, nethttp.Options{})
+
+	rec := httptest.NewRecorder()
+	r := httptest.NewRequest(http.MethodPost, "/users", strings.NewReader(`{"name":"Alice"}`))
+	r.Header.Set("Content-Type", "application/json")
+	handler.ServeHTTP(rec, r)
+
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("want 500, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+// R7: nethttp.Handler route WITHOUT response merge fields behaves
+// byte-for-byte identically to today — regression guard.
+func TestHandler_ResponseMergeFields_NoneDeclaredIsUnaffected(t *testing.T) {
+	handle := newCreateRoute() // no response merge fields declared
+	h := nethttp.Handler(handle, func(_ context.Context, req createReq) (userResp, error) {
+		return userResp{ID: "1", Name: req.Name}, nil
+	}, nethttp.Options{})
+
+	rec := httptest.NewRecorder()
+	r := httptest.NewRequest(http.MethodPost, "/users", strings.NewReader(`{"name":"Alice"}`))
+	r.Header.Set("Content-Type", "application/json")
+	h.ServeHTTP(rec, r)
+
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("want 201, got %d: %s", rec.Code, rec.Body.String())
+	}
+	var got userResp
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if got.ID != "1" || got.Name != "Alice" {
+		t.Errorf("unexpected body: %+v", got)
+	}
+}
+
 // --- Content negotiation tests ---
 
 func TestContentNegotiation_acceptJSON(t *testing.T) {
@@ -2007,6 +2124,69 @@ func TestHandler_PathParam_codecValidated(t *testing.T) {
 	mux.ServeHTTP(rec2, httptest.NewRequest(http.MethodGet, "/users/550e8400-e29b-41d4-a716-446655440000", nil))
 	if rec2.Code != http.StatusOK {
 		t.Errorf("want 200 for valid path param, got %d: %s", rec2.Code, rec2.Body.String())
+	}
+}
+
+// P5: nethttp.Handler for a route WITH merge fields — the handler function
+// receives an already-merged, validated req; no manual r.PathValue needed.
+func TestHandler_MergeFields_AutomaticMerge(t *testing.T) {
+	type getUserReq struct{ ID string }
+	getUserReqCodec := codex.Struct[getUserReq]()
+
+	b := rest.NewBuilder(testInfo)
+	handle, err := rest.NewRoute[getUserReq, userResp]("GET", "/users/{id}",
+		getUserReqCodec, userRespCodec,
+		rest.NewPathParam("id", codex.String().Refine(validate.UUID),
+			func(r getUserReq) string { return r.ID },
+			func(r *getUserReq, v string) { r.ID = v }),
+	).Register(b)
+	if err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+
+	var gotID string
+	h := nethttp.Handler(handle, func(_ context.Context, r getUserReq) (userResp, error) {
+		gotID = r.ID // no r.PathValue() call needed — already merged
+		return userResp{ID: r.ID}, nil
+	}, nethttp.Options{})
+	mux := http.NewServeMux()
+	mux.Handle("GET /users/{id}", h)
+
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/users/550e8400-e29b-41d4-a716-446655440000", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("want 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if gotID != "550e8400-e29b-41d4-a716-446655440000" {
+		t.Errorf("handler did not receive merged ID: got %q", gotID)
+	}
+}
+
+// P6: nethttp.Handler for a route WITHOUT merge fields — byte-for-byte
+// identical behavior to before this feature (regression guard).
+func TestHandler_NoMergeFields_UnchangedBehavior(t *testing.T) {
+	b := rest.NewBuilder(testInfo)
+	uuidCodec := codex.String().Refine(validate.UUID)
+	handle, err := rest.NewRoute[getReq, userResp]("GET", "/users/{id}",
+		getReqCodec, userRespCodec,
+		rest.PathParam{Name: "id", Codec: &uuidCodec}, // plain, validate-only — no merge
+	).Register(b)
+	if err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+	if len(handle.MergeFields()) != 0 {
+		t.Fatalf("expected no merge fields for a plain PathParam route, got %d", len(handle.MergeFields()))
+	}
+	h := nethttp.Handler(handle, func(_ context.Context, r getReq) (userResp, error) {
+		return userResp{ID: "ok"}, nil
+	}, nethttp.Options{})
+	mux := http.NewServeMux()
+	mux.Handle("GET /users/{id}", h)
+
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/users/550e8400-e29b-41d4-a716-446655440000", nil))
+	if rec.Code != http.StatusOK {
+		t.Errorf("want 200, got %d: %s", rec.Code, rec.Body.String())
 	}
 }
 

@@ -18,6 +18,7 @@ The most comprehensive HTTP server demo. Shows the **three-layer codec pipeline*
 
 Key patterns:
 - `createUserRoute.WithRequestFormats(format.JSON(...), format.YAML(...))` — JSON + YAML bodies
+- `rest.NewPathParam` — declares the path param's spec/validation AND a merge field in one call; the handler receives an already-merged, validated request (`req.ID`) instead of manually calling `r.PathValue("id")` — see [REST API — Path/query/header params with automatic merge](../features/rest-api.md#pathqueryheader-params-with-automatic-merge)
 - `ResponseHeaderParam` + `ResponseCookieParam` — server-side contract validation on outgoing headers/cookies
 - `nethttp.SetCookie` with `.WithCodec()` — symmetric read/write validation using the same codec
 - `CountingObserver` — in-memory metrics (swap for Prometheus in production)
@@ -39,7 +40,10 @@ Demonstrates bearer JWT authentication with per-route scope enforcement:
 
 ## examples/adapters-chi
 
-Same patterns as `adapters-nethttp` but using chi router. Demonstrates path vars via `chi.URLParam(r, "id")`.
+Same patterns as `adapters-nethttp` but using chi router. Demonstrates both
+the low-level `chi.URLParam(r, "id")` extraction (for validate-only params)
+and `rest.NewPathParam`'s automatic merge (chi's `Handler` calls
+`RouteHandle.DecodeMerged` internally exactly like `nethttp.Handler` does).
 
 → [examples/adapters-chi](https://github.com/DaniDeer/go-codex/tree/main/examples/adapters-chi) · [examples/adapters-chi-security](https://github.com/DaniDeer/go-codex/tree/main/examples/adapters-chi-security)
 

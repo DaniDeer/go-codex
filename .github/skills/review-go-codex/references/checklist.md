@@ -481,3 +481,29 @@ section listing all HTTP codec layers. If it is missing:
 - `PipelineAdapter`: must document `RequestFromContext(ctx)` for param access + response header/cookie pattern
 
 Missing section = `trivial` finding per adapter.
+
+---
+
+## 12. Merge-field / Boundary Symmetry — one struct, one call
+
+See SKILL.md's "Boundary Symmetry Guardrail" for the full rationale — this section restates it as
+concrete per-boundary check rows. The headline check for any `api/*` builder-backed boundary with a
+request/response shape or a duplex role pair: **can a caller on either side do the entire
+encode-or-decode direction with one struct value in (or out), one call?**
+
+| Boundary | Declare-once constructors | Escape hatch | Encode/decode symmetry | Role symmetry | Single-call wrapper | Nested + non-JSON coverage | Status |
+|---|---|---|---|---|---|---|---|
+| `api/rest` (REST) | `NewPathParam[T]`/`NewRequiredQueryParam[T]`/etc. + `NewRequiredResponseHeaderParam[Resp]`/etc. | `PathParam`/`QueryParam`/etc. struct literals still work | `DecodeMerged` (decode) + `PathMergeFields()`/`QueryMergeFields()`/etc. (encode) | server (`Handler`/`Register`) + client (`Call`) both covered | `nethttp.CallHandle` (client) + `Handler` auto-merge (server) | ✅ `examples/rest-nested-binary` + `TestNestedStructMergeFields_GetSetReachIntoSubstruct`/`TestGobBodyFormat_ComposesWithNestedMergeFields` — nested `Meta`/`Payload` sub-structs, Gob body via `format.NewTyped` projection | ✅ Reference implementation — should pass all checks |
+| `api/events` (pub/sub) | none exist | n/a (no merge constructors to escape from) | none | none | none | n/a | ❌ Known gap — "Round 2" in `docs/roadmap/vars-codec-merge.md`. Do NOT file as a new finding; only flag if Round 2 was claimed complete without actually shipping |
+| `api/reqreply` (req/reply) | none exist | n/a | none | none | none | n/a | ❌ Same as events — known "Round 2" gap |
+| `adapters/mqtt5`/`zeromq`/`mcpgo` | inherit `ChannelHandle`/`RouteHandle` gaps above | n/a | n/a | n/a | n/a | n/a | ❌ Inherits events/reqreply gap — not an independent finding |
+| MCP `api/mcp` (Resources/Prompts) | `ResourceParam`/`PromptArg` exist (validate-only) | n/a | not assessed | not assessed | not assessed | not assessed | ⚠️ Assess case-by-case during an actual review pass — URI vars are simpler than REST's 4-role split; do not assume the same shape applies before investigating |
+
+If a boundary marked ❌/⚠️ above is touched by the change under review (i.e. someone is actively
+implementing Round 2 or a new boundary), re-verify it against all five checks in SKILL.md's
+"Boundary Symmetry Guardrail" AND the "Nested + non-JSON coverage" column and file findings for
+anything missing — at that point the "known gap" exemption no longer applies to the boundary being
+worked on. A boundary that passes the first five columns but only ever demonstrates JSON body + flat
+top-level fields is INCOMPLETE — file at least a `small` finding (see SKILL.md's "Boundary Symmetry
+Guardrail" for the rationale: body format is orthogonal to var-merge, and merge-field `get`/`set` are
+plain closures that must support nested access).

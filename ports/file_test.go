@@ -1448,3 +1448,192 @@ func TestBinary_FileObserver_ReadConstraintFail(t *testing.T) {
 func writeRawFile(path string, data []byte) error {
 	return os.WriteFile(path, data, 0644)
 }
+
+// ── MatchPath ─────────────────────────────────────────────────────────────────
+
+var matchPathFile = ports.NewFile("readings/{sensorID}/{date}.json", format.JSON(fileItemCodec),
+	ports.FilePathParam{Name: "sensorID"}.WithCodec(codex.String().Refine(validate.NonEmptyString)),
+	ports.FilePathParam{Name: "date"}.WithCodec(codex.String().Refine(validate.Date)),
+)
+
+func TestFile_MatchPath_HappyPath(t *testing.T) {
+	vars, err := matchPathFile.MatchPath("readings/sensor-42/2024-01-15.json")
+	if err != nil {
+		t.Fatalf("MatchPath: %v", err)
+	}
+	if vars["sensorID"] != "sensor-42" {
+		t.Errorf("vars[sensorID]: want %q, got %q", "sensor-42", vars["sensorID"])
+	}
+	if vars["date"] != "2024-01-15" {
+		t.Errorf("vars[date]: want %q, got %q", "2024-01-15", vars["date"])
+	}
+}
+
+func TestFile_MatchPath_SegmentCountMismatch(t *testing.T) {
+	_, err := matchPathFile.MatchPath("readings/sensor-42/extra/2024-01-15.json")
+	if err == nil {
+		t.Fatal("expected FilePathMismatchError")
+	}
+	var me ports.FilePathMismatchError
+	if !errors.As(err, &me) {
+		t.Fatalf("expected FilePathMismatchError, got %T: %v", err, err)
+	}
+}
+
+func TestFile_MatchPath_LiteralSegmentMismatch(t *testing.T) {
+	_, err := matchPathFile.MatchPath("wrong-prefix/sensor-42/2024-01-15.json")
+	if err == nil {
+		t.Fatal("expected FilePathMismatchError")
+	}
+	var me ports.FilePathMismatchError
+	if !errors.As(err, &me) {
+		t.Fatalf("expected FilePathMismatchError, got %T: %v", err, err)
+	}
+}
+
+func TestFile_MatchPath_ExtractedVarFailsCodec(t *testing.T) {
+	_, err := matchPathFile.MatchPath("readings/sensor-42/not-a-date.json")
+	if err == nil {
+		t.Fatal("expected FilePathParamError for invalid date")
+	}
+	var pe ports.FilePathParamError
+	if !errors.As(err, &pe) {
+		t.Fatalf("expected FilePathParamError, got %T: %v", err, err)
+	}
+	if pe.Name != "date" {
+		t.Errorf("FilePathParamError.Name: want %q, got %q", "date", pe.Name)
+	}
+}
+
+func TestFile_MatchPath_BuildPath_RoundTrip(t *testing.T) {
+	path := "readings/sensor-42/2024-01-15.json"
+	vars, err := matchPathFile.MatchPath(path)
+	if err != nil {
+		t.Fatalf("MatchPath: %v", err)
+	}
+	rebuilt, err := matchPathFile.BuildPath(vars)
+	if err != nil {
+		t.Fatalf("BuildPath: %v", err)
+	}
+	if rebuilt != path {
+		t.Errorf("round-trip: want %q, got %q", path, rebuilt)
+	}
+}
+
+func TestFilePathMismatchError_LogValue(t *testing.T) {
+	err := ports.FilePathMismatchError{Template: "a/{x}", Path: "a/b/c"}
+	lv := err.LogValue()
+	if lv.Kind() != slog.KindGroup {
+		t.Fatalf("LogValue: want KindGroup, got %v", lv.Kind())
+	}
+	attrs := lv.Group()
+	keys := make(map[string]bool, len(attrs))
+	for _, a := range attrs {
+		keys[a.Key] = true
+	}
+	for _, want := range []string{"template", "path"} {
+		if !keys[want] {
+			t.Errorf("LogValue missing attribute %q", want)
+		}
+	}
+}
+
+func ExampleFile_MatchPath() {
+	f := ports.NewFile("readings/{sensorID}/{date}.json", format.JSON(fileItemCodec),
+		ports.FilePathParam{Name: "sensorID"}.WithCodec(codex.String().Refine(validate.NonEmptyString)),
+		ports.FilePathParam{Name: "date"}.WithCodec(codex.String().Refine(validate.Date)),
+	)
+	vars, err := f.MatchPath("readings/sensor-42/2024-01-15.json")
+	if err != nil {
+		fmt.Println("error:", err)
+		return
+	}
+	fmt.Println(vars["sensorID"])
+	fmt.Println(vars["date"])
+	// Output:
+	// sensor-42
+	// 2024-01-15
+}
+
+// ── NewFilePathParam / MergeFields ────────────────────────────────────────────
+
+// readingMeta is File's declared type T for these tests: SensorID/Date come
+// from the path (merge fields), Value comes from the JSON body — both sides
+// share the SAME T, since File[T].MergeFields() returns []codex.FieldCodec[T].
+type readingMeta struct {
+	SensorID string
+	Date     string
+	Value    float64
+}
+
+// readingValueCodec only declares "value" — SensorID/Date are populated
+// exclusively via the path-var merge, never by the body codec.
+var readingValueCodec = codex.Struct[readingMeta](
+	codex.RequiredField("value", codex.Float64(),
+		func(r readingMeta) float64 { return r.Value },
+		func(r *readingMeta, v float64) { r.Value = v }),
+)
+
+func TestFile_NewFilePathParam_RegistersSpecAndMergeField(t *testing.T) {
+	f := ports.NewFile("readings/{sensorID}/{date}.json", format.JSON(readingValueCodec),
+		ports.NewFilePathParam("sensorID", codex.String().Refine(validate.NonEmptyString),
+			func(r readingMeta) string { return r.SensorID },
+			func(r *readingMeta, v string) { r.SensorID = v }),
+		ports.NewFilePathParam("date", codex.String().Refine(validate.Date),
+			func(r readingMeta) string { return r.Date },
+			func(r *readingMeta, v string) { r.Date = v }),
+	)
+
+	// Spec/validation path unchanged: BuildPath still works exactly as with
+	// plain FilePathParam.
+	path, err := f.BuildPath(map[string]string{"sensorID": "sensor-42", "date": "2024-01-15"})
+	if err != nil {
+		t.Fatalf("BuildPath: %v", err)
+	}
+	if path != "readings/sensor-42/2024-01-15.json" {
+		t.Errorf("BuildPath: got %q", path)
+	}
+
+	// Merge fields registered — usable with codex.DecodeVars.
+	if len(f.MergeFields()) != 2 {
+		t.Fatalf("MergeFields: want 2 fields, got %d", len(f.MergeFields()))
+	}
+
+	vars, err := f.MatchPath("readings/sensor-42/2024-01-15.json")
+	if err != nil {
+		t.Fatalf("MatchPath: %v", err)
+	}
+	var meta readingMeta
+	if err := codex.DecodeVars(&meta, vars, f.MergeFields()...); err != nil {
+		t.Fatalf("DecodeVars: %v", err)
+	}
+	if meta.SensorID != "sensor-42" || meta.Date != "2024-01-15" {
+		t.Errorf("unexpected merged meta: %+v", meta)
+	}
+}
+
+func TestFile_NewFilePathParam_WithDescription(t *testing.T) {
+	p := ports.NewFilePathParam("sensorID", codex.String(),
+		func(r readingMeta) string { return r.SensorID },
+		func(r *readingMeta, v string) { r.SensorID = v },
+	).WithDescription("Sensor identifier")
+	if p.Description != "Sensor identifier" {
+		t.Errorf("Description: want %q, got %q", "Sensor identifier", p.Description)
+	}
+}
+
+func TestFile_NewFilePathParam_TypeMismatchPanics(t *testing.T) {
+	defer func() {
+		if r := recover(); r == nil {
+			t.Fatal("expected NewFile to panic on merge-field type mismatch")
+		}
+	}()
+	// fileItem != readingMeta — a deliberate type mismatch between File's T
+	// (fileItem, from format.JSON(fileItemCodec)) and the merge field's T
+	// (readingMeta, from NewFilePathParam's get/set args).
+	_ = ports.NewFile("x/{sensorID}", format.JSON(fileItemCodec),
+		ports.NewFilePathParam("sensorID", codex.String(),
+			func(r readingMeta) string { return r.SensorID },
+			func(r *readingMeta, v string) { r.SensorID = v }),
+	)
+}

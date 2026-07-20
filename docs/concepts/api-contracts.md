@@ -13,6 +13,64 @@ NewRoute / NewChannel / NewTool
                          └──→ builder.Spec() ──→ OpenAPI / AsyncAPI / MCP JSON
 ```
 
+## Design principle: one struct, one call
+
+For any API-contract boundary with a request/response shape (or a duplex
+role pair — publisher/subscriber, requestor/replier, client/server), a
+caller on **either side** should be able to do the entire encode-or-decode
+direction with **one struct value in (or out), one call** — no manual
+map-building, no manual header/cookie/query/topic stitching, in the common
+case. The struct itself can be built however the caller likes: a plain
+literal, or their own `New...` constructor function — ordinary Go, no
+framework sugar required for that part.
+
+REST (`api/rest` + `adapters/nethttp`/`chi`) delivers this today, both
+directions, both roles:
+
+```go
+// Client: ONE struct in, ONE struct out.
+handle := getUserActivity.ClientHandle()
+req := GetUserActivityReq{ID: userID, Filter: "logins"} // literal, or a New... factory
+resp, err := nethttp.CallHandle(ctx, client, baseURL, handle, req, nethttp.CallOptions{})
+// resp is fully decoded AND merged — body + response header/cookie fields
+// (e.g. resp.RequestID) are all populated. Nothing else to do.
+
+// Server: ONE struct in, ONE struct out.
+nethttp.Register(mux, handle, func(ctx context.Context, req GetUserActivityReq) (User, error) {
+    u := lookup(req.ID)     // req arrives fully merged: path+query+header+cookie+body
+    u.RequestID = traceID() // just set the field — no w.Header().Set() call
+    return u, nil           // adapter auto-encodes body AND response merge fields
+}, nethttp.Options{})
+```
+
+This is made possible by declare-once constructors
+(`rest.NewPathParam[T]`/`NewRequiredQueryParam[T]`/etc. for the request,
+`NewRequiredResponseHeaderParam[Resp]`/etc. for the response) that register
+BOTH the spec Param (still driving OpenAPI generation) AND a merge field in
+one call — see [Concept: Codec — Reusing Field declarations](codec.md#reusing-field-declarations-for-pathtopicheaderquery-vars)
+for the underlying mechanism, and the [REST API feature](../features/rest-api.md)
+for the full reference. Plain, validate-only Param structs remain available
+as the escape hatch for params a handler never reads/writes directly — a
+route can freely mix both styles.
+
+The promise also holds for NESTED structs (`Req`/`Resp` composed from
+sub-structs like `Meta`/`Payload` instead of flat fields) and for non-JSON
+body formats (Gob, binary, or any custom `format.Format[T]`) — merge-field
+`get`/`set` are plain closures, not reflection, so nested access needs no
+framework change; and body decode/encode is orthogonal to var-merge, so any
+format composes. See
+[REST API — Nested structs & binary body formats](../features/rest-api.md#nested-structs-binary-body-formats)
+and `examples/rest-nested-binary` for the full runnable version.
+
+**Not yet true everywhere**: `api/events` (pub/sub) and `api/reqreply`
+(req/reply) do not yet have equivalent merge-field constructors or a
+single-call convenience wrapper — a publisher/subscriber or
+requestor/replier still assembles topic variable maps by hand today. This
+is tracked as a forward-looking backlog item (see
+[Roadmap: Declarative Var Extraction & Merge](../roadmap/vars-codec-merge.md)),
+not a design choice — the intent is for every boundary to eventually reach
+REST's bar.
+
 ## REST routes (`api/rest`)
 
 ```go

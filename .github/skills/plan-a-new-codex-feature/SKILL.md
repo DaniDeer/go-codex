@@ -146,11 +146,11 @@ Before writing any code:
 1. Read `docs/roadmap/<feature>.md` — this is the authoritative design
 2. Resolve any remaining "Open design decisions" — pick an answer and document it in the roadmap doc
 3. Check the roadmap doc's "Unit test plan" — use it to write the test matrix in `plan.md`
-4. Verify all **five mandatory requirements** (below) are addressed in the roadmap doc
+4. Verify all **six mandatory requirements** (below) are addressed in the roadmap doc
 
-### Five mandatory requirements
+### Six mandatory requirements
 
-Every new feature implementation **must** satisfy all five before it is considered complete.
+Every new feature implementation **must** satisfy all six before it is considered complete.
 
 #### 1. Structured Errors with `slog.LogValuer`
 
@@ -269,6 +269,29 @@ runnable example or be demonstrated in an existing example:
 - The example must run without errors: `go run ./examples/<feature>/`
 - Comments must explain *why* (use case), not just *what* (API call)
 - All examples must pass: `for d in examples/*/; do go run ./$d; done`
+
+#### 6. Boundary symmetry — one struct, one call
+
+**Applies whenever the feature adds or changes an `api/*` builder-backed
+boundary** (`api/rest`, `api/events`, `api/reqreply`, `api/mcp`, or an
+equivalent new one) that has a request/response shape or a duplex role pair
+(publisher/subscriber, requestor/replier, client/server).
+
+The headline promise: a caller on EITHER side must be able to do the ENTIRE
+encode-or-decode direction with **one struct value in (or out), one call**
+— no manual map-building, no manual header/cookie/query/topic stitching, in
+the common case. REST (`api/rest` + `adapters/nethttp`/`chi`) is the
+reference implementation that satisfies this today; no other boundary does
+yet (tracked as "Round 2" in `docs/roadmap/vars-codec-merge.md`).
+
+Use the `add-a-new-adapter` skill's **Step 5b** for the full checklist
+(declare-once constructors, escape hatch, encode/decode symmetry via
+role-aware accessors, role symmetry, single-call wrapper) — this is the
+single source of truth for the detailed requirements; do not duplicate it
+here. The pattern is neither JSON-specific nor flat-struct-specific: verify
+with a non-default body format (Gob/Binary/custom) and at least one nested
+struct field, not just the flat/JSON happy path — see
+`examples/rest-nested-binary`.
 
 ---
 

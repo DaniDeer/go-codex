@@ -52,6 +52,17 @@ handle, _ := contract.ReadingsChannel.Register(consumerBuilder)
 client.Subscribe(topic, 1, adaptermqtt.SubscribeHandler(ctx, handle, fn, opts))
 ```
 
+## One struct, one call — for free
+
+Because the merge-field mechanism lives in the codec+builder layer (not in
+the contract-sharing pattern itself), a shared contract package
+automatically gets the "one struct, one call" convenience on BOTH sides —
+producer and consumer, client and server — with zero extra code beyond
+declaring the route/channel once. See
+[API Contracts — Design principle: one struct, one call](api-contracts.md#design-principle-one-struct-one-call)
+for the underlying promise and its current REST-only status (events/reqreply
+contracts still assemble topic vars by hand today).
+
 ## When to use this pattern
 
 Use the shared Go contract when:

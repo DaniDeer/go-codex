@@ -12,6 +12,14 @@
 //
 //  1. Body — POST /users (request body codec, shared-contract pattern)
 //  2. Path params — GET /users/{id} (codec-validated path variable)
+//     2b. Client encode with role-aware merge fields — GET /users/{id}/activity
+//     (rest.NewPathParam/NewOptionalQueryParam + codex.EncodeVars via
+//     RouteHandle.PathMergeFields()/QueryMergeFields(), each scoped to its
+//     own HTTP location so values never leak across roles)
+//     2c. One-line client call — nethttp.CallHandle derives every request map
+//     from the SAME req automatically, and decodes a response header merge
+//     field (rest.NewRequiredResponseHeaderParam) straight into Resp — the
+//     full request+response, single-call story for one route
 //  3. Cookies + headers — GET /profile (CookieParam + HeaderParam validation)
 //  4. Security — GET /data (CredentialFunc injects bearer Authorization header)
 //  5. Structured error logging — errors.As + slog for all typed error types
@@ -184,6 +192,11 @@ func main() {
 		fmt.Fprintln(os.Stderr, "register getSecuredData:", err)
 		os.Exit(1)
 	}
+	activityHandle, err := contract.GetUserActivity.Register(b)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "register getUserActivity:", err)
+		os.Exit(1)
+	}
 
 	// SecurityFunc checks the Authorization header for the secured route.
 	// In production verify a signed JWT; here a fixed token suffices.
@@ -214,6 +227,22 @@ func main() {
 		if !ok {
 			return contract.User{}, fmt.Errorf("user not found")
 		}
+		return u, nil
+	}, nethttp.Options{})
+
+	// GET /users/{id}/activity?filter=... — id is decoded from the path AND
+	// filter from the query string, both merged into req by the adapter
+	// (rest.NewPathParam/NewOptionalQueryParam declared them). The
+	// X-Request-Id RESPONSE header is populated automatically from
+	// u.RequestID by the adapter (rest.NewRequiredResponseHeaderParam
+	// declared it) — no nethttp.WithResponseHeaders call needed here.
+	nethttp.Register(mux, activityHandle, func(_ context.Context, req contract.GetUserActivityReq) (contract.User, error) {
+		u, ok := db.get(req.ID)
+		if !ok {
+			return contract.User{}, fmt.Errorf("user not found")
+		}
+		u.Name = u.Name + " (filter=" + req.Filter + ")" // prove req.Filter reached the handler
+		u.RequestID = "f47ac10b-58cc-4372-a567-0e02b2c3d479"
 		return u, nil
 	}, nethttp.Options{})
 
@@ -291,6 +320,61 @@ func main() {
 		}
 	}
 	fmt.Println()
+
+	// ── 2b. Client-side encode with role-aware merge fields ───────────────────
+	//
+	// GetUserActivityReq declares BOTH a path merge field (id) and a query
+	// merge field (filter) via rest.NewPathParam/NewOptionalQueryParam. The
+	// client builds the URL vars and the query params SEPARATELY from the
+	// SAME request value via codex.EncodeVars + the role-specific accessors
+	// — RouteHandle.PathMergeFields()/QueryMergeFields() — instead of
+	// hand-writing two maps. Each accessor returns ONLY its own role's
+	// fields, so a path value can never leak into the query string (or vice
+	// versa) even when both are declared on the same route.
+	fmt.Println("=== 2b. Client encode: role-aware merge fields ===")
+
+	clientActivity := contract.GetUserActivity.ClientHandle()
+	activityReq := contract.GetUserActivityReq{ID: alice.ID, Filter: "logins"}
+
+	pathVars, err := codex.EncodeVars(activityReq, clientActivity.PathMergeFields()...)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "encode path vars:", err)
+		os.Exit(1)
+	}
+	queryParams, err := codex.EncodeVars(activityReq, clientActivity.QueryMergeFields()...)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "encode query params:", err)
+		os.Exit(1)
+	}
+
+	activity, err := nethttp.Call(clientCtx, srv.Client(), srv.URL,
+		clientActivity, activityReq, pathVars,
+		nethttp.CallOptions{QueryParams: queryParams})
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "get user activity:", err)
+		os.Exit(1)
+	}
+	fmt.Printf("path vars: %v, query params: %v\n", pathVars, queryParams)
+	fmt.Printf("activity: %+v\n\n", activity)
+
+	// ── 2c. One-line client call: CallHandle + response merge fields ──────────
+	//
+	// nethttp.CallHandle derives vars/QueryParams/HeaderParams/CookieParams
+	// from the SAME activityReq automatically — no codex.EncodeVars calls
+	// needed at all, unlike 2b above. It also decodes the response, and
+	// since GetUserActivity declares a response header merge field
+	// (User.RequestID via rest.NewRequiredResponseHeaderParam), the
+	// X-Request-Id header the server set is merged straight into
+	// activity2.RequestID — the full request+response, single-call story.
+	fmt.Println("=== 2c. One-line call: CallHandle + response merge fields ===")
+
+	activity2, err := nethttp.CallHandle(clientCtx, srv.Client(), srv.URL,
+		clientActivity, activityReq, nethttp.CallOptions{})
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "get user activity (CallHandle):", err)
+		os.Exit(1)
+	}
+	fmt.Printf("activity: %+v (X-Request-Id merged into RequestID)\n\n", activity2)
 
 	// ── 3. Cookies + headers — GET /profile ───────────────────────────────────
 	//

@@ -540,6 +540,55 @@ domain.Readings.Bind(ctx, sql.DrainInsertAdapter(readingCodec, insertFn, sql.Dra
 
 ---
 
+## Extracting information from a discovered path
+
+`File.BuildPath` only goes forward (known vars → concrete path). `File.MatchPath`
+is the missing inverse — given an already-discovered path (e.g. from your own
+`filepath.WalkDir`/`filepath.Glob`), it matches the path against the template
+and returns the extracted variable values, validated against each registered
+`FilePathParam.Codec` — mirroring `mqtt.TopicVarsFromMessage`'s existing
+pattern for MQTT topics. A `{varName}` placeholder may share a segment with
+literal text (e.g. `{date}.json` correctly extracts `2024-01-15`, not
+`2024-01-15.json`):
+
+```go
+vars, err := readingFile.MatchPath("readings/sensor-42/2024-01-15.json")
+// vars == map[string]string{"sensorID": "sensor-42", "date": "2024-01-15"}
+```
+
+`ports.NewFilePathParam[T]` declares BOTH the `FilePathParam` (spec/
+validation, unchanged) AND a merge field in one call — pass the result of
+`File.MergeFields()` directly to `codex.DecodeVars` to merge the extracted
+vars straight into a typed struct:
+
+```go
+var readingFile = ports.NewFile("readings/{sensorID}/{date}.json", format.JSON(valueCodec),
+    ports.NewFilePathParam("sensorID", codex.String().Refine(validate.NonEmptyString),
+        func(r ReadingMeta) string { return r.SensorID },
+        func(r *ReadingMeta, v string) { r.SensorID = v }),
+    ports.NewFilePathParam("date", codex.String().Refine(validate.Date),
+        func(r ReadingMeta) string { return r.Date },
+        func(r *ReadingMeta, v string) { r.Date = v }),
+)
+
+for _, path := range discoveredPaths {
+    vars, err := readingFile.MatchPath(path)
+    var meta ReadingMeta
+    err = codex.DecodeVars(&meta, vars, readingFile.MergeFields()...)
+    content, err := readingFile.Read(vars, ports.FileOptions{}) // body-only fields
+    meta.Value = content.Value // distinct struct shapes — manual merge stays explicit
+}
+```
+
+`NewFilePathParam` is the PRIMARY, recommended way to declare a path
+variable — but not the sole way: the plain `FilePathParam{...}.WithCodec(...)`
+struct literal remains available as the low-level escape hatch for
+validate-only variables with no merge need. See
+[Concepts: Codec — Reusing Field declarations](../concepts/codec.md#reusing-field-declarations-for-pathtopicheaderquery-vars)
+for the shared mechanism (`codex.DecodeVars`/`EncodeVars`) this builds on.
+
+---
+
 ## `IOParam` — protocol-agnostic parameters (handle-less adapters)
 
 `PortOptions.Params` is the enforcement mechanism for adapters with **no** protocol-level

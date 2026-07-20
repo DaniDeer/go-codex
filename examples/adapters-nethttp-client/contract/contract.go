@@ -31,10 +31,18 @@ type CreateUserReq struct {
 }
 
 // User is the domain type returned by the GetUser and CreateUser routes.
+//
+// RequestID is NOT part of the JSON body — UserCodec below deliberately
+// does not declare it. It exists purely for the GetUserActivity route's
+// response header merge field ([rest.NewRequiredResponseHeaderParam]): the
+// server sets it from this field automatically, and the client merges the
+// HTTP response header back into it automatically — no manual
+// w.Header().Set()/resp.Header.Get() needed on either side.
 type User struct {
-	ID    string
-	Name  string
-	Email string
+	ID        string
+	Name      string
+	Email     string
+	RequestID string
 }
 
 // Profile is the authenticated user's profile, returned by GetProfile and
@@ -147,6 +155,55 @@ var GetUser = rest.NewRoute[struct{}, User](
 	rest.PathParam{Name: "id", Description: "User ID"}.WithCodec(
 		codex.String().Refine(validate.NonEmptyString),
 	),
+)
+
+// GetUserActivityReq is the request for GetUserActivity — ID comes from the
+// URL path, Filter from a query parameter. Both are merge-capable
+// ([rest.NewPathParam]/[rest.NewRequiredQueryParam]), so the client can
+// build BOTH the URL vars AND the query params directly from one value via
+// [codex.EncodeVars] instead of hand-writing two separate maps.
+type GetUserActivityReq struct {
+	ID     string
+	Filter string
+}
+
+// GetUserActivity is the declarative route spec for
+// GET /users/{id}/activity?filter=... — demonstrates role-aware merge
+// fields on the CLIENT (encode) side: [rest.RouteHandle.PathMergeFields]
+// and [rest.RouteHandle.QueryMergeFields] each return only their own
+// role's field, so encoding one for the URL path and one for the query
+// string never leaks a value into the wrong HTTP location.
+//
+// It ALSO declares a response header merge field
+// ([rest.NewRequiredResponseHeaderParam]) on User.RequestID: the server
+// sets X-Request-Id automatically from the returned User value (no
+// nethttp.WithResponseHeaders call needed), and the client reads it back
+// into the SAME field automatically (no resp.Header.Get call needed) — the
+// response-direction half of the "single codec, every aspect, both
+// directions" story.
+var GetUserActivity = rest.NewRoute[GetUserActivityReq, User](
+	"GET", "/users/{id}/activity",
+	codex.Struct[GetUserActivityReq](), UserCodec,
+	rest.RouteMeta{
+		OperationID:    "getUserActivity",
+		Summary:        "Get a user's activity, filtered",
+		RespSchemaName: "User",
+	},
+	rest.NewPathParam("id",
+		codex.String().Refine(validate.NonEmptyString),
+		func(r GetUserActivityReq) string { return r.ID },
+		func(r *GetUserActivityReq, v string) { r.ID = v },
+	).WithDescription("User ID"),
+	rest.NewOptionalQueryParam("filter",
+		codex.String(),
+		func(r GetUserActivityReq) string { return r.Filter },
+		func(r *GetUserActivityReq, v string) { r.Filter = v },
+	).WithDescription("Activity filter"),
+	rest.NewRequiredResponseHeaderParam("X-Request-Id",
+		RequestIDCodec,
+		func(u User) string { return u.RequestID },
+		func(u *User, v string) { u.RequestID = v },
+	).WithDescription("Server-generated tracing ID for this activity lookup"),
 )
 
 // GetProfile is the route spec for GET /profile.

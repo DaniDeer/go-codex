@@ -1,13 +1,19 @@
 package rest_test
 
 import (
+	"bytes"
+	"context"
+	"encoding/gob"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 
+	"github.com/DaniDeer/go-codex/adapters/nethttp"
 	"github.com/DaniDeer/go-codex/api/rest"
 	"github.com/DaniDeer/go-codex/codex"
 	"github.com/DaniDeer/go-codex/format"
@@ -1750,5 +1756,608 @@ func TestFormats_TypeMismatch(t *testing.T) {
 	var fe rest.FormatOptError
 	if !errors.As(err, &fe) || fe.Direction != "response" {
 		t.Fatalf("want FormatOptError{response}, got %v", err)
+	}
+}
+
+// ── NewPathParam / NewRequiredQueryParam / NewOptionalQueryParam / MergeFields / DecodeMerged ──
+
+type getUserReq struct {
+	ID     string
+	Filter string
+}
+
+var getUserRespCodec = codex.Struct[userResp](
+	codex.OptionalField("id", codex.String(),
+		func(u userResp) string { return u.ID },
+		func(u *userResp, v string) { u.ID = v },
+	),
+)
+
+// P1: rest.NewPathParam registers both spec Param and merge field.
+func TestNewPathParam_RegistersSpecAndMergeField(t *testing.T) {
+	b := rest.NewBuilder(testInfo)
+	h, err := rest.NewRoute[getUserReq, userResp]("GET", "/users/{id}", codex.Struct[getUserReq](), getUserRespCodec,
+		rest.NewPathParam("id", codex.String().Refine(validate.NonEmptyString),
+			func(r getUserReq) string { return r.ID },
+			func(r *getUserReq, v string) { r.ID = v }),
+	).Register(b)
+	if err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+	if len(h.Descriptor.PathParams) != 1 || h.Descriptor.PathParams[0].Name != "id" {
+		t.Fatalf("Descriptor.PathParams: unexpected %+v", h.Descriptor.PathParams)
+	}
+	if len(h.MergeFields()) != 1 {
+		t.Fatalf("MergeFields: want 1 field, got %d", len(h.MergeFields()))
+	}
+}
+
+// P2: RouteHandle.DecodeMerged happy path.
+func TestDecodeMerged_HappyPath(t *testing.T) {
+	b := rest.NewBuilder(testInfo)
+	h, err := rest.NewRoute[getUserReq, userResp]("GET", "/users/{id}", codex.Struct[getUserReq](), getUserRespCodec,
+		rest.NewPathParam("id", codex.String().Refine(validate.NonEmptyString),
+			func(r getUserReq) string { return r.ID },
+			func(r *getUserReq, v string) { r.ID = v }),
+		rest.NewOptionalQueryParam("filter", codex.String(),
+			func(r getUserReq) string { return r.Filter },
+			func(r *getUserReq, v string) { r.Filter = v }),
+	).Register(b)
+	if err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+	req, err := h.DecodeMerged(nil,
+		map[string]string{"id": "abc-123"},
+		map[string]string{"filter": "active"},
+		nil, nil,
+	)
+	if err != nil {
+		t.Fatalf("DecodeMerged: %v", err)
+	}
+	if req.ID != "abc-123" || req.Filter != "active" {
+		t.Errorf("unexpected merged req: %+v", req)
+	}
+}
+
+// P3: RouteHandle.DecodeMerged merge failure.
+func TestDecodeMerged_MergeFailure(t *testing.T) {
+	b := rest.NewBuilder(testInfo)
+	h, err := rest.NewRoute[getUserReq, userResp]("GET", "/users/{id}", codex.Struct[getUserReq](), getUserRespCodec,
+		rest.NewPathParam("id", codex.String().Refine(validate.NonEmptyString),
+			func(r getUserReq) string { return r.ID },
+			func(r *getUserReq, v string) { r.ID = v }),
+	).Register(b)
+	if err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+	_, err = h.DecodeMerged(nil, map[string]string{}, nil, nil, nil)
+	if err == nil {
+		t.Fatal("expected error for missing required path var")
+	}
+	var ve codex.ValidationErrors
+	if !errors.As(err, &ve) {
+		t.Fatalf("expected ValidationErrors, got %T: %v", err, err)
+	}
+}
+
+// P4: RouteHandle.DecodeMerged with zero merge fields behaves like plain Decode.
+func TestDecodeMerged_NoMergeFieldsIsNoop(t *testing.T) {
+	b := rest.NewBuilder(testInfo)
+	h, err := rest.NewRoute[createReq, userResp]("POST", "/users", createReqCodec, userCodec).Register(b)
+	if err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+	body := []byte(`{"name":"Alice"}`)
+	viaDecode, err := h.Decode(body)
+	if err != nil {
+		t.Fatalf("Decode: %v", err)
+	}
+	viaMerged, err := h.DecodeMerged(body, nil, nil, nil, nil)
+	if err != nil {
+		t.Fatalf("DecodeMerged: %v", err)
+	}
+	if viaDecode != viaMerged {
+		t.Errorf("DecodeMerged should match plain Decode when no merge fields declared: %+v vs %+v", viaDecode, viaMerged)
+	}
+}
+
+// P8: codex.FieldCodec[T] export — confirms RequiredField remains assignable
+// and existing Struct callers are unaffected by the rename.
+func TestFieldCodecExport_CompileTimeCompat(t *testing.T) {
+	var _ codex.FieldCodec[getUserReq] = codex.RequiredField("id", codex.String(),
+		func(r getUserReq) string { return r.ID },
+		func(r *getUserReq, v string) { r.ID = v })
+}
+
+// P9: MergedPathParam.WithDescription sets the PARAM-level description,
+// distinct from the codec's schema-level description.
+func TestNewPathParam_WithDescription(t *testing.T) {
+	b := rest.NewBuilder(testInfo)
+	h, err := rest.NewRoute[getUserReq, userResp]("GET", "/users/{id}", codex.Struct[getUserReq](), getUserRespCodec,
+		rest.NewPathParam("id",
+			codex.String().Refine(validate.NonEmptyString).WithDescription("schema-level"),
+			func(r getUserReq) string { return r.ID },
+			func(r *getUserReq, v string) { r.ID = v },
+		).WithDescription("param-level"),
+	).Register(b)
+	if err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+	if len(h.Descriptor.PathParams) != 1 {
+		t.Fatalf("Descriptor.PathParams: unexpected %+v", h.Descriptor.PathParams)
+	}
+	p := h.Descriptor.PathParams[0]
+	if p.Description != "param-level" {
+		t.Errorf("PathParam.Description: want %q, got %q", "param-level", p.Description)
+	}
+	if p.Schema.Description != "schema-level" {
+		t.Errorf("PathParam.Schema.Description: want %q, got %q", "schema-level", p.Schema.Description)
+	}
+}
+
+// P10: mixing NewPathParam (merge-capable) and plain PathParam
+// (validate-only) on the same route.
+func TestMixedMergeAndValidateOnlyParams(t *testing.T) {
+	b := rest.NewBuilder(testInfo)
+	h, err := rest.NewRoute[getUserReq, userResp]("GET", "/users/{id}/{trace}", codex.Struct[getUserReq](), getUserRespCodec,
+		rest.NewPathParam("id", codex.String().Refine(validate.NonEmptyString),
+			func(r getUserReq) string { return r.ID },
+			func(r *getUserReq, v string) { r.ID = v }),
+		rest.PathParam{Name: "trace"}.WithCodec(codex.String()), // validate-only, no merge
+	).Register(b)
+	if err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+	if len(h.Descriptor.PathParams) != 2 {
+		t.Fatalf("Descriptor.PathParams: want 2, got %d: %+v", len(h.Descriptor.PathParams), h.Descriptor.PathParams)
+	}
+	if len(h.MergeFields()) != 1 {
+		t.Fatalf("MergeFields: want 1 (only the NewPathParam one), got %d", len(h.MergeFields()))
+	}
+	req, err := h.DecodeMerged(nil, map[string]string{"id": "abc", "trace": "xyz"}, nil, nil, nil)
+	if err != nil {
+		t.Fatalf("DecodeMerged: %v", err)
+	}
+	if req.ID != "abc" {
+		t.Errorf("req.ID: want %q, got %q", "abc", req.ID)
+	}
+}
+
+// P11: role-specific merge-field accessors each return only their own
+// subset, and MergeFields() aggregates all four.
+func TestRoleSpecificMergeFields_ReturnOnlyOwnRole(t *testing.T) {
+	type req struct {
+		ID     string
+		Filter string
+		Auth   string
+		Sess   string
+	}
+	respCodec := codex.Struct[userResp](
+		codex.OptionalField("id", codex.String(),
+			func(u userResp) string { return u.ID },
+			func(u *userResp, v string) { u.ID = v },
+		),
+	)
+	b := rest.NewBuilder(testInfo)
+	h, err := rest.NewRoute[req, userResp]("GET", "/users/{id}", codex.Struct[req](), respCodec,
+		rest.NewPathParam("id", codex.String(),
+			func(r req) string { return r.ID },
+			func(r *req, v string) { r.ID = v }),
+		rest.NewOptionalQueryParam("filter", codex.String(),
+			func(r req) string { return r.Filter },
+			func(r *req, v string) { r.Filter = v }),
+		rest.NewRequiredHeaderParam("Authorization", codex.String(),
+			func(r req) string { return r.Auth },
+			func(r *req, v string) { r.Auth = v }),
+		rest.NewOptionalCookieParam("session", codex.String(),
+			func(r req) string { return r.Sess },
+			func(r *req, v string) { r.Sess = v }),
+	).Register(b)
+	if err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+	if len(h.PathMergeFields()) != 1 {
+		t.Errorf("PathMergeFields: want 1, got %d", len(h.PathMergeFields()))
+	}
+	if len(h.QueryMergeFields()) != 1 {
+		t.Errorf("QueryMergeFields: want 1, got %d", len(h.QueryMergeFields()))
+	}
+	if len(h.HeaderMergeFields()) != 1 {
+		t.Errorf("HeaderMergeFields: want 1, got %d", len(h.HeaderMergeFields()))
+	}
+	if len(h.CookieMergeFields()) != 1 {
+		t.Errorf("CookieMergeFields: want 1, got %d", len(h.CookieMergeFields()))
+	}
+	if len(h.MergeFields()) != 4 {
+		t.Errorf("MergeFields (aggregate): want 4, got %d", len(h.MergeFields()))
+	}
+}
+
+// P12: client-side round-trip — a route with BOTH a path merge field AND a
+// query merge field encodes each role independently via codex.EncodeVars
+// and nethttp.Call routes them to the correct HTTP location, with no
+// cross-role leakage (the historical bug this role-aware split fixes).
+func TestClientEncode_RoleAwareMergeFields_NoLeakage(t *testing.T) {
+	type req struct {
+		ID     string
+		Filter string
+	}
+	respCodec := codex.Struct[userResp](
+		codex.OptionalField("id", codex.String(),
+			func(u userResp) string { return u.ID },
+			func(u *userResp, v string) { u.ID = v },
+		),
+	)
+	b := rest.NewBuilder(testInfo)
+	h, err := rest.NewRoute[req, userResp]("GET", "/users/{id}", codex.Struct[req](), respCodec,
+		rest.NewPathParam("id", codex.String(),
+			func(r req) string { return r.ID },
+			func(r *req, v string) { r.ID = v }),
+		rest.NewOptionalQueryParam("filter", codex.String(),
+			func(r req) string { return r.Filter },
+			func(r *req, v string) { r.Filter = v }),
+	).Register(b)
+	if err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+
+	var gotPath, gotQuery string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		gotQuery = r.URL.Query().Get("filter")
+		if r.URL.Query().Get("id") != "" {
+			t.Errorf("path value %q leaked into the query string", r.URL.Query().Get("id"))
+		}
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"id":"abc-123"}`))
+	}))
+	defer srv.Close()
+
+	item := req{ID: "abc-123", Filter: "active"}
+	pathVars, err := codex.EncodeVars(item, h.PathMergeFields()...)
+	if err != nil {
+		t.Fatalf("EncodeVars(path): %v", err)
+	}
+	query, err := codex.EncodeVars(item, h.QueryMergeFields()...)
+	if err != nil {
+		t.Fatalf("EncodeVars(query): %v", err)
+	}
+
+	_, err = nethttp.Call(t.Context(), srv.Client(), srv.URL, h, item, pathVars,
+		nethttp.CallOptions{QueryParams: query})
+	if err != nil {
+		t.Fatalf("Call: %v", err)
+	}
+	if gotPath != "/users/abc-123" {
+		t.Errorf("path: want %q, got %q", "/users/abc-123", gotPath)
+	}
+	if gotQuery != "active" {
+		t.Errorf("query filter: want %q, got %q", "active", gotQuery)
+	}
+}
+
+// ── Response merge fields (Round 3) ──────────────────────────────────────
+
+// userRespWithMeta carries response header/cookie merge fields alongside
+// the JSON body fields, for the response-merge test matrix (R1-R5).
+type userRespWithMeta struct {
+	ID        string
+	Name      string
+	RequestID string // response header
+	Session   string // response cookie
+}
+
+var userRespWithMetaBodyCodec = codex.Struct[userRespWithMeta](
+	codex.RequiredField("id", codex.String(),
+		func(u userRespWithMeta) string { return u.ID },
+		func(u *userRespWithMeta, v string) { u.ID = v },
+	),
+	codex.RequiredField("name", codex.String(),
+		func(u userRespWithMeta) string { return u.Name },
+		func(u *userRespWithMeta, v string) { u.Name = v },
+	),
+)
+
+// R1: NewRequiredResponseHeaderParam/NewOptionalResponseHeaderParam register
+// both spec ResponseHeaderParam and merge field.
+func TestResponseHeaderMergeParam_RegistersSpecAndMergeField(t *testing.T) {
+	b := rest.NewBuilder(testInfo)
+	h, err := rest.NewRoute[createReq, userRespWithMeta]("POST", "/users", createReqCodec, userRespWithMetaBodyCodec,
+		rest.NewRequiredResponseHeaderParam("X-Request-Id", codex.String().Refine(validate.NonEmptyString),
+			func(u userRespWithMeta) string { return u.RequestID },
+			func(u *userRespWithMeta, v string) { u.RequestID = v }),
+		rest.NewOptionalResponseHeaderParam("X-Trace", codex.String(),
+			func(u userRespWithMeta) string { return "" },
+			func(u *userRespWithMeta, v string) {}),
+	).Register(b)
+	if err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+	if len(h.Descriptor.Responses) == 0 || len(h.Descriptor.Responses[0].Headers) < 2 {
+		t.Fatalf("Descriptor.Responses[0].Headers: want >= 2, got %+v", h.Descriptor.Responses)
+	}
+	if len(h.ResponseHeaderMergeFields()) != 2 {
+		t.Fatalf("ResponseHeaderMergeFields: want 2, got %d", len(h.ResponseHeaderMergeFields()))
+	}
+}
+
+// R2: NewRequiredResponseCookieParam/NewOptionalResponseCookieParam register
+// both spec ResponseCookieParam and merge field.
+func TestResponseCookieMergeParam_RegistersSpecAndMergeField(t *testing.T) {
+	b := rest.NewBuilder(testInfo)
+	h, err := rest.NewRoute[createReq, userRespWithMeta]("POST", "/users", createReqCodec, userRespWithMetaBodyCodec,
+		rest.NewRequiredResponseCookieParam("session", codex.String().Refine(validate.NonEmptyString),
+			func(u userRespWithMeta) string { return u.Session },
+			func(u *userRespWithMeta, v string) { u.Session = v }),
+	).Register(b)
+	if err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+	if len(h.ResponseCookieMergeFields()) != 1 {
+		t.Fatalf("ResponseCookieMergeFields: want 1, got %d", len(h.ResponseCookieMergeFields()))
+	}
+}
+
+// R3: RouteHandle.DecodeMergedResponse happy path — body, response header,
+// and response cookie all merged into one Resp.
+func TestDecodeMergedResponse_HappyPath(t *testing.T) {
+	b := rest.NewBuilder(testInfo)
+	h, err := rest.NewRoute[createReq, userRespWithMeta]("POST", "/users", createReqCodec, userRespWithMetaBodyCodec,
+		rest.NewRequiredResponseHeaderParam("X-Request-Id", codex.String().Refine(validate.NonEmptyString),
+			func(u userRespWithMeta) string { return u.RequestID },
+			func(u *userRespWithMeta, v string) { u.RequestID = v }),
+		rest.NewOptionalResponseCookieParam("session", codex.String(),
+			func(u userRespWithMeta) string { return u.Session },
+			func(u *userRespWithMeta, v string) { u.Session = v }),
+	).Register(b)
+	if err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+	body := []byte(`{"id":"u1","name":"Alice"}`)
+	resp, err := h.DecodeMergedResponse(body,
+		map[string]string{"X-Request-Id": "req-123"},
+		map[string]string{"session": "sess-abc"},
+	)
+	if err != nil {
+		t.Fatalf("DecodeMergedResponse: %v", err)
+	}
+	if resp.ID != "u1" || resp.Name != "Alice" || resp.RequestID != "req-123" || resp.Session != "sess-abc" {
+		t.Errorf("unexpected merged resp: %+v", resp)
+	}
+}
+
+// R4: RouteHandle.DecodeMergedResponse merge failure — required response
+// header missing.
+func TestDecodeMergedResponse_MergeFailure(t *testing.T) {
+	b := rest.NewBuilder(testInfo)
+	h, err := rest.NewRoute[createReq, userRespWithMeta]("POST", "/users", createReqCodec, userRespWithMetaBodyCodec,
+		rest.NewRequiredResponseHeaderParam("X-Request-Id", codex.String().Refine(validate.NonEmptyString),
+			func(u userRespWithMeta) string { return u.RequestID },
+			func(u *userRespWithMeta, v string) { u.RequestID = v }),
+	).Register(b)
+	if err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+	body := []byte(`{"id":"u1","name":"Alice"}`)
+	_, err = h.DecodeMergedResponse(body, map[string]string{}, nil)
+	if err == nil {
+		t.Fatal("expected error for missing required response header")
+	}
+	var ve codex.ValidationErrors
+	if !errors.As(err, &ve) {
+		t.Fatalf("expected ValidationErrors, got %T: %v", err, err)
+	}
+}
+
+// R5: RouteHandle.DecodeMergedResponse with zero response merge fields
+// behaves like plain DecodeResponse.
+func TestDecodeMergedResponse_NoMergeFieldsIsNoop(t *testing.T) {
+	b := rest.NewBuilder(testInfo)
+	h, err := rest.NewRoute[createReq, userResp]("POST", "/users", createReqCodec, userCodec).Register(b)
+	if err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+	body := []byte(`{"id":"u1","name":"Alice"}`)
+	viaDecodeResponse, err := h.DecodeResponse(body)
+	if err != nil {
+		t.Fatalf("DecodeResponse: %v", err)
+	}
+	viaMerged, err := h.DecodeMergedResponse(body, nil, nil)
+	if err != nil {
+		t.Fatalf("DecodeMergedResponse: %v", err)
+	}
+	if viaDecodeResponse != viaMerged {
+		t.Errorf("DecodeMergedResponse should match plain DecodeResponse when no response merge fields declared: %+v vs %+v", viaDecodeResponse, viaMerged)
+	}
+}
+
+// ── Round 4: nested struct composition + non-JSON body formats ────────────
+
+// N1: merge-field get/set closures reach into a NESTED sub-struct exactly
+// as easily as a top-level field — no framework change needed, since
+// get/set are plain Go closures, not reflection over Req's direct fields.
+func TestNestedStructMergeFields_GetSetReachIntoSubstruct(t *testing.T) {
+	type meta struct {
+		ContentHash string
+		Compress    string
+	}
+	type req struct {
+		ID   string
+		Meta meta
+	}
+	respCodec := codex.Struct[userResp](
+		codex.OptionalField("id", codex.String(),
+			func(u userResp) string { return u.ID },
+			func(u *userResp, v string) { u.ID = v },
+		),
+	)
+	b := rest.NewBuilder(testInfo)
+	h, err := rest.NewRoute[req, userResp]("GET", "/things/{id}", codex.Struct[req](), respCodec,
+		rest.NewPathParam("id", codex.String(),
+			func(r req) string { return r.ID },
+			func(r *req, v string) { r.ID = v }),
+		rest.NewOptionalHeaderParam("X-Content-Hash", codex.String(),
+			func(r req) string { return r.Meta.ContentHash },
+			func(r *req, v string) { r.Meta.ContentHash = v }),
+		rest.NewOptionalQueryParam("compress", codex.String(),
+			func(r req) string { return r.Meta.Compress },
+			func(r *req, v string) { r.Meta.Compress = v }),
+	).Register(b)
+	if err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+
+	// Decode direction: server merges path/header/query into nested Meta fields.
+	decoded, err := h.DecodeMerged(nil,
+		map[string]string{"id": "abc"},
+		map[string]string{"compress": "gzip"},
+		map[string]string{"X-Content-Hash": "sha256:xyz"},
+		nil,
+	)
+	if err != nil {
+		t.Fatalf("DecodeMerged: %v", err)
+	}
+	if decoded.ID != "abc" || decoded.Meta.ContentHash != "sha256:xyz" || decoded.Meta.Compress != "gzip" {
+		t.Errorf("unexpected decoded nested req: %+v", decoded)
+	}
+
+	// Encode direction: client role-aware accessors read from nested Meta fields.
+	item := req{ID: "abc", Meta: meta{ContentHash: "sha256:xyz", Compress: "gzip"}}
+	pathVars, err := codex.EncodeVars(item, h.PathMergeFields()...)
+	if err != nil {
+		t.Fatalf("EncodeVars(path): %v", err)
+	}
+	headers, err := codex.EncodeVars(item, h.HeaderMergeFields()...)
+	if err != nil {
+		t.Fatalf("EncodeVars(header): %v", err)
+	}
+	query, err := codex.EncodeVars(item, h.QueryMergeFields()...)
+	if err != nil {
+		t.Fatalf("EncodeVars(query): %v", err)
+	}
+	if pathVars["id"] != "abc" || headers["X-Content-Hash"] != "sha256:xyz" || query["compress"] != "gzip" {
+		t.Errorf("unexpected encoded vars: path=%v headers=%v query=%v", pathVars, headers, query)
+	}
+}
+
+// N2: a non-JSON body format (format.NewTyped projecting Gob onto a nested
+// Payload sub-field) composes with header/query merge fields on the SAME
+// nested Req — full client-server round trip via CallHandle/Register, no
+// field collision between the Gob-encoded Payload and the merge-populated
+// Meta/ID fields.
+func TestGobBodyFormat_ComposesWithNestedMergeFields(t *testing.T) {
+	type payload struct {
+		Filename string
+		Data     []byte
+	}
+	type meta struct {
+		ContentHash string
+	}
+	type uploadReq struct {
+		ID      string
+		Meta    meta
+		Payload payload
+	}
+	type uploadResp struct {
+		Size int
+	}
+
+	reqCodec := codex.Struct[uploadReq]()
+	respCodec := codex.Struct[uploadResp](
+		codex.RequiredField("size", codex.Int(),
+			func(r uploadResp) int { return r.Size },
+			func(r *uploadResp, v int) { r.Size = v },
+		),
+	)
+
+	gobFormat := format.NewTyped[uploadReq](
+		reqCodec,
+		func(r uploadReq) ([]byte, error) {
+			var buf bytes.Buffer
+			if err := gob.NewEncoder(&buf).Encode(r.Payload); err != nil {
+				return nil, err
+			}
+			return buf.Bytes(), nil
+		},
+		func(data []byte) (uploadReq, error) {
+			var p payload
+			if err := gob.NewDecoder(bytes.NewReader(data)).Decode(&p); err != nil {
+				return uploadReq{}, err
+			}
+			return uploadReq{Payload: p}, nil
+		},
+		"application/gob",
+	)
+
+	route := rest.NewRoute[uploadReq, uploadResp]("POST", "/uploads/{id}", reqCodec, respCodec,
+		rest.NewPathParam("id", codex.String(),
+			func(r uploadReq) string { return r.ID },
+			func(r *uploadReq, v string) { r.ID = v }),
+		rest.NewOptionalHeaderParam("X-Content-Hash", codex.String(),
+			func(r uploadReq) string { return r.Meta.ContentHash },
+			func(r *uploadReq, v string) { r.Meta.ContentHash = v }),
+	)
+
+	b := rest.NewBuilder(testInfo)
+	serverHandle, err := route.Register(b)
+	if err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+	serverHandle.WithRequestFormats(gobFormat)
+
+	var gotID, gotHash string
+	var gotPayload payload
+	mux := http.NewServeMux()
+	nethttp.Register(mux, serverHandle, func(_ context.Context, req uploadReq) (uploadResp, error) {
+		gotID = req.ID
+		gotHash = req.Meta.ContentHash
+		gotPayload = req.Payload
+		return uploadResp{Size: len(req.Payload.Data)}, nil
+	}, nethttp.Options{})
+
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	clientHandle := route.ClientHandle()
+	clientHandle.WithRequestFormats(gobFormat)
+
+	item := uploadReq{
+		ID:      "f1",
+		Meta:    meta{ContentHash: "sha256:abc"},
+		Payload: payload{Filename: "x.bin", Data: []byte("hello world")},
+	}
+	resp, err := nethttp.CallHandle(context.Background(), srv.Client(), srv.URL, clientHandle, item, nethttp.CallOptions{})
+	if err != nil {
+		t.Fatalf("CallHandle: %v", err)
+	}
+	if gotID != "f1" {
+		t.Errorf("server req.ID: want %q, got %q", "f1", gotID)
+	}
+	if gotHash != "sha256:abc" {
+		t.Errorf("server req.Meta.ContentHash: want %q, got %q", "sha256:abc", gotHash)
+	}
+	if gotPayload.Filename != "x.bin" || string(gotPayload.Data) != "hello world" {
+		t.Errorf("server req.Payload: unexpected %+v", gotPayload)
+	}
+	if resp.Size != len("hello world") {
+		t.Errorf("resp.Size: want %d, got %d", len("hello world"), resp.Size)
+	}
+}
+
+// TestMergeFieldTypeError_LogValue mirrors the FormatOptError LogValue test
+// pattern above.
+func TestMergeFieldTypeError_LogValue(t *testing.T) {
+	err := rest.MergeFieldTypeError{Err: fmt.Errorf("boom")}
+	lv := err.LogValue()
+	if lv.Kind() != slog.KindGroup {
+		t.Fatalf("LogValue: want KindGroup, got %v", lv.Kind())
+	}
+	attrs := lv.Group()
+	keys := make(map[string]bool, len(attrs))
+	for _, a := range attrs {
+		keys[a.Key] = true
+	}
+	if !keys["err"] {
+		t.Error("missing LogValue key \"err\"")
 	}
 }

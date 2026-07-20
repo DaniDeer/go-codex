@@ -188,10 +188,18 @@ var userRecordCodec = codex.Struct[UserRecord](
 // ── HTTP response boundary ────────────────────────────────────────────────────
 
 // User is the domain entity returned to the HTTP client.
+//
+// Location is NOT part of the JSON body — userCodec below deliberately
+// does not declare it. It exists purely for createUserRoute's response
+// header merge field (rest.NewRequiredResponseHeaderParam): the handler
+// sets it like any other struct field and the adapter writes it as the
+// actual Location HTTP header automatically — no manual
+// nethttp.WithResponseHeaders call needed for it.
 type User struct {
-	ID    string
-	Name  string
-	Email string
+	ID       string
+	Name     string
+	Email    string
+	Location string
 }
 
 // userCodec describes what the HTTP client receives.
@@ -212,6 +220,17 @@ var userCodec = codex.Struct[User](
 		func(u *User, v string) { u.Email = v },
 	),
 )
+
+// GetUserReq carries the {id} path variable — merged in automatically by
+// rest.NewPathParam + nethttp.Handler's RouteHandle.DecodeMerged wiring
+// (no body: this route is a GET with no request payload).
+type GetUserReq struct {
+	ID string
+}
+
+// getUserReqCodec has no declared fields — GetUserReq.ID is populated
+// exclusively via the path-var merge, never from a JSON body.
+var getUserReqCodec = codex.Struct[GetUserReq]()
 
 // PagedUsersResp is the response for a paginated user list.
 type PagedUsersResp struct {
@@ -266,9 +285,11 @@ func buildUserRecord(req CreateUserReq) UserRecord {
 	}
 }
 
-// buildUserResponse projects a database record into the HTTP response entity.
+// buildUserResponse projects a database record into the HTTP response
+// entity. Location is deliberately left zero here — it is populated
+// per-route (only createUserRoute declares it as a response merge field).
 func buildUserResponse(record UserRecord) User {
-	return User(record)
+	return User{ID: record.ID, Name: record.Name, Email: record.Email}
 }
 
 // ── Layer 3: Infrastructure (HTTP + database + external services) ─────────────
@@ -356,11 +377,10 @@ func makeCreateUserHandler(store *UserStore) func(context.Context, CreateUserReq
 			return User{}, err
 		}
 		user := buildUserResponse(record) // L2: pure projection
-		// Deposit the Location header — validated by the adapter against the
-		// ResponseHeaderParam codec after this function returns.
-		h := make(http.Header)
-		h.Set("Location", "/users/"+user.ID)
-		nethttp.WithResponseHeaders(ctx, h)
+		// Location is a response header merge field (rest.NewRequiredResponseHeaderParam)
+		// — setting the struct field is enough, the adapter writes the
+		// actual Location HTTP header automatically after this returns.
+		user.Location = "/users/" + user.ID
 		// Deposit the session cookie — validated by the adapter against the
 		// ResponseCookieParam codec after this function returns.
 		nethttp.WithResponseCookies(ctx, nethttp.PendingCookie{
@@ -374,16 +394,54 @@ func makeCreateUserHandler(store *UserStore) func(context.Context, CreateUserReq
 
 // makeGetUserHandler orchestrates the get-user pipeline:
 //
-// path param (HTTP infra) → Get (store IO) → buildUserResponse (L2) → encode (codec)
-func makeGetUserHandler(store *UserStore) func(context.Context, struct{}) (User, error) {
-	return func(ctx context.Context, _ struct{}) (User, error) {
-		r, _ := nethttp.RequestFromContext(ctx)
-		id := r.PathValue("id") // L3: HTTP path parameter
-		record, ok := store.Get(id)
+// GetUserReq.ID arrives ALREADY merged and codec-validated by
+// nethttp.Handler (via rest.NewPathParam + RouteHandle.DecodeMerged) — no
+// manual r.PathValue("id") extraction needed here.
+func makeGetUserHandler(store *UserStore) func(context.Context, GetUserReq) (User, error) {
+	return func(_ context.Context, req GetUserReq) (User, error) {
+		record, ok := store.Get(req.ID)
 		if !ok {
-			return User{}, fmt.Errorf("user %q not found", id)
+			return User{}, fmt.Errorf("user %q not found", req.ID)
 		}
 		return buildUserResponse(record), nil // L2: pure projection
+	}
+}
+
+// UpdateUserReq MIXES two sources on ONE struct: ID comes from the path
+// (merged automatically, like GetUserReq.ID above), Name/Email come from
+// the JSON body (decoded by updateUserReqCodec). RouteHandle.DecodeMerged
+// does body-decode THEN var-merge on the SAME value — a route can freely
+// combine both without any special handling, as long as the body codec and
+// the merge fields declare different field names.
+type UpdateUserReq struct {
+	ID    string // from path — merged, not declared in updateUserReqCodec
+	Name  string // from JSON body
+	Email string // from JSON body
+}
+
+// updateUserReqCodec deliberately does NOT declare "id" — ID is populated
+// exclusively via the path-var merge (see rest.NewPathParam in main()).
+var updateUserReqCodec = codex.Struct[UpdateUserReq](
+	codex.RequiredField("name", nameFieldCodec,
+		func(r UpdateUserReq) string { return r.Name },
+		func(r *UpdateUserReq, v string) { r.Name = v },
+	),
+	codex.RequiredField("email", emailFieldCodec,
+		func(r UpdateUserReq) string { return r.Email },
+		func(r *UpdateUserReq, v string) { r.Email = v },
+	),
+)
+
+// makeUpdateUserHandler orchestrates the update-user pipeline:
+//
+// req.ID (path, merged) + req.Name/req.Email (body, decoded) → Save (store IO) → buildUserResponse (L2)
+func makeUpdateUserHandler(store *UserStore) func(context.Context, UpdateUserReq) (User, error) {
+	return func(_ context.Context, req UpdateUserReq) (User, error) {
+		record := UserRecord(req)
+		if err := store.Save(record); err != nil {
+			return User{}, err
+		}
+		return buildUserResponse(record), nil
 	}
 }
 
@@ -427,15 +485,16 @@ func main() {
 			ReqSchemaName:  "CreateUserRequest",
 			RespSchemaName: "User",
 		},
-		// ResponseHeaderParam declares the Location header returned on 201.
-		// The adapter validates it after the handler returns; a violation → 500.
-		// The codec schema flows into the OpenAPI response header spec automatically.
-		rest.ResponseHeaderParam{
-			Name:        "Location",
-			Description: "URL of the newly created user resource",
-			Required:    true,
-			Codec:       &locationCodec,
-		},
+		// NewRequiredResponseHeaderParam declares the Location header AND
+		// merges it from User.Location automatically: the adapter reads
+		// the field after the handler returns and writes it as the actual
+		// Location HTTP header — no manual nethttp.WithResponseHeaders
+		// call needed. The adapter still validates it; a violation → 500.
+		// The codec schema flows into the OpenAPI response header spec.
+		rest.NewRequiredResponseHeaderParam("Location", locationCodec,
+			func(u User) string { return u.Location },
+			func(u *User, v string) { u.Location = v },
+		).WithDescription("URL of the newly created user resource"),
 		// ResponseCookieParam declares the session cookie written on 201.
 		// The adapter validates the value after the handler returns; a violation → 500.
 		rest.ResponseCookieParam{
@@ -457,21 +516,45 @@ func main() {
 		format.YAML(createUserReqCodec),
 	)
 
-	uuidCodec := codex.String().Refine(validate.UUID)
-	getUserRoute, err := rest.NewRoute[struct{}, User]("GET", "/users/{id}",
-		codex.Empty, userCodec,
+	getUserRoute, err := rest.NewRoute[GetUserReq, User]("GET", "/users/{id}",
+		getUserReqCodec, userCodec,
 		rest.RouteMeta{
 			OperationID:    "getUser",
 			Summary:        "Get a user by ID",
 			RespSchemaName: "User",
 		},
-		// PathParam.Codec validates {id} as a UUID at BuildPath time and
-		// flows the UUID schema into the OpenAPI spec automatically.
-		rest.PathParam{
-			Name:        "id",
-			Description: "User UUID",
-			Codec:       &uuidCodec,
+		// NewPathParam declares BOTH the spec/validation Param (UUID schema
+		// flows into the OpenAPI spec automatically, exactly like plain
+		// PathParam) AND a merge field — nethttp.Handler merges {id} into
+		// GetUserReq.ID automatically via RouteHandle.DecodeMerged, so
+		// makeGetUserHandler never needs to call r.PathValue("id") itself.
+		rest.NewPathParam("id",
+			codex.String().Refine(validate.UUID).WithDescription("User UUID."),
+			func(r GetUserReq) string { return r.ID },
+			func(r *GetUserReq, v string) { r.ID = v },
+		).WithDescription("User UUID"),
+	).Register(b)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "route registration failed: %v\n", err)
+		os.Exit(1)
+	}
+
+	// PUT /users/{id} — MIXES a path field (ID) with body fields (Name,
+	// Email) on the SAME UpdateUserReq struct. DecodeMerged decodes the
+	// JSON body first, then merges {id} in — both populate one struct with
+	// zero manual wiring in the handler.
+	updateUserRoute, err := rest.NewRoute[UpdateUserReq, User]("PUT", "/users/{id}",
+		updateUserReqCodec, userCodec,
+		rest.RouteMeta{
+			OperationID:    "updateUser",
+			Summary:        "Update a user by ID",
+			RespSchemaName: "User",
 		},
+		rest.NewPathParam("id",
+			codex.String().Refine(validate.UUID).WithDescription("User UUID."),
+			func(r UpdateUserReq) string { return r.ID },
+			func(r *UpdateUserReq, v string) { r.ID = v },
+		).WithDescription("User UUID"),
 	).Register(b)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "route registration failed: %v\n", err)
@@ -565,7 +648,7 @@ func main() {
 			slog.String("email", u.Email),
 		}
 	}
-	extractGetUserAttrs := func(_ struct{}, u User) []slog.Attr {
+	extractGetUserAttrs := func(_ GetUserReq, u User) []slog.Attr {
 		return []slog.Attr{slog.String("id", u.ID)}
 	}
 
@@ -595,6 +678,12 @@ func main() {
 		baseOpts)
 	nethttp.Register(mux, getUserRoute,
 		withDomainLogging("user.get", makeGetUserHandler(store), domainLogger, extractGetUserAttrs),
+		baseOpts)
+	nethttp.Register(mux, updateUserRoute,
+		withDomainLogging("user.update", makeUpdateUserHandler(store), domainLogger,
+			func(req UpdateUserReq, u User) []slog.Attr {
+				return []slog.Attr{slog.String("id", req.ID), slog.String("name", u.Name)}
+			}),
 		baseOpts)
 	nethttp.Register(mux, listUsersRoute,
 		withDomainLogging("user.list", makeListUsersHandler(), domainLogger,
@@ -691,6 +780,32 @@ func main() {
 	if _, err := getUserRoute.BuildPath(map[string]string{"id": "not-a-uuid"}); err != nil {
 		fmt.Printf("BuildPath(not-a-uuid) rejected: %v\n\n", err)
 	}
+
+	fmt.Println("=== PUT /users/{id} — mixed body + path merge on ONE struct ===")
+	// UpdateUserReq.ID comes from the path (merged), Name/Email come from
+	// the JSON body (decoded) — RouteHandle.DecodeMerged populates BOTH on
+	// the same struct in one call; the handler never separates the sources.
+	updatePath, err := updateUserRoute.BuildPath(map[string]string{"id": created.ID})
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "BuildPath error: %v\n", err)
+		os.Exit(1)
+	}
+	updateBody := strings.NewReader(`{"name":"Alice Updated","email":"alice.updated@example.com"}`)
+	req, err := http.NewRequest(http.MethodPut, srv.URL+updatePath, updateBody)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "NewRequest error: %v\n", err)
+		os.Exit(1)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp3b, err := http.DefaultClient.Do(req)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "PUT error: %v\n", err)
+		os.Exit(1)
+	}
+	defer resp3b.Body.Close()
+	var updated User
+	_ = json.NewDecoder(resp3b.Body).Decode(&updated)
+	fmt.Printf("Status: %d\nUser:   %+v\n\n", resp3b.StatusCode, updated)
 
 	fmt.Println("=== GET /users?page=2&search=alice (query params) ===")
 	// ?page is validated against NonNegativeIntString by the nethttp adapter.

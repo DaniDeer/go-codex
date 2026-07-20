@@ -71,6 +71,300 @@ All param types have `.WithCodec(c codex.Codec[string])`:
 
 > **OpenAPI convention:** Do not declare `Accept`, `Content-Type`, or `Authorization` as `HeaderParam` entries — use request body and security schemes instead.
 
+## Path/query/header params with automatic merge
+
+The plain param types above are validate-only: they check a value against
+a codec but leave extracting it into your request struct to hand-written
+code (`r.PathValue("id")` + manual field assignment). `NewPathParam`/
+`NewRequiredQueryParam`/`NewOptionalQueryParam` (+ Header/Cookie
+equivalents) declare the SAME spec param AND a merge field in one call —
+the handler receives an already-merged, already-validated request, no
+manual extraction:
+
+```go
+type GetUserReq struct{ ID string }
+
+var getUser = rest.NewRoute[GetUserReq, User]("GET", "/users/{id}", reqCodec, userCodec,
+    rest.NewPathParam("id", codex.String().Refine(validate.UUID),
+        func(r GetUserReq) string { return r.ID },
+        func(r *GetUserReq, v string) { r.ID = v },
+    ),
+)
+handle, _ := getUser.Register(builder)
+
+// nethttp.Handler / chi's Handler call RouteHandle.DecodeMerged automatically
+// whenever handle.MergeFields() is non-empty — the handler function just
+// receives a fully populated, validated GetUserReq:
+func(ctx context.Context, req GetUserReq) (User, error) {
+    record, ok := store.Get(req.ID) // req.ID already validated as a UUID
+    ...
+}
+```
+
+This is the PRIMARY, recommended way to declare a param — but not the
+SOLE way: plain `PathParam`/`QueryParam`/`HeaderParam`/`CookieParam` struct
+literals remain available for validate-only params a handler never reads
+directly (avoids forcing a `get`/`set` pair with nothing to return). A
+route can freely mix both styles. Set the parameter-level description
+(distinct from the codec's own schema-level description) via
+`.WithDescription(...)`:
+
+```go
+rest.NewPathParam("id",
+    codex.String().Refine(validate.UUID).WithDescription("Must be a valid UUID v4"), // schema-level
+    func(r GetUserReq) string { return r.ID },
+    func(r *GetUserReq, v string) { r.ID = v },
+).WithDescription("The user's unique identifier") // param-level
+```
+
+For manual control (e.g. merging from a source other than the HTTP
+request, or reusing the SAME field declarations elsewhere), call
+`RouteHandle.MergeFields()` directly with `codex.DecodeVars`:
+
+```go
+var req GetUserReq
+vars := map[string]string{"id": r.PathValue("id")}
+err := codex.DecodeVars(&req, vars, handle.MergeFields()...)
+```
+
+### Mixing body fields and merged params on one struct
+
+A single `Req` struct can have SOME fields decoded from the JSON body and
+OTHER fields merged from path/query/header/cookie — `DecodeMerged` decodes
+the body first, then merges vars into the SAME value (a partial merge —
+only the declared merge fields are touched, everything the body decoded
+stays intact):
+
+```go
+type UpdateUserReq struct {
+    ID    string // from path — merged
+    Name  string // from JSON body
+    Email string // from JSON body
+}
+
+// updateUserReqCodec deliberately does NOT declare "id" — it's populated
+// exclusively via the path-var merge below.
+var updateUserReqCodec = codex.Struct[UpdateUserReq](
+    codex.RequiredField("name", nameFieldCodec,
+        func(r UpdateUserReq) string { return r.Name },
+        func(r *UpdateUserReq, v string) { r.Name = v }),
+    codex.RequiredField("email", emailFieldCodec,
+        func(r UpdateUserReq) string { return r.Email },
+        func(r *UpdateUserReq, v string) { r.Email = v }),
+)
+
+rest.NewRoute[UpdateUserReq, User]("PUT", "/users/{id}", updateUserReqCodec, userCodec,
+    rest.NewPathParam("id", codex.String().Refine(validate.UUID),
+        func(r UpdateUserReq) string { return r.ID },
+        func(r *UpdateUserReq, v string) { r.ID = v }),
+)
+// The handler receives req.ID (path), req.Name and req.Email (body) all
+// populated on the same UpdateUserReq — no manual merging in the handler.
+```
+
+The only rule: the body codec and the merge-field declarations must not
+declare the SAME field name — otherwise whichever runs second silently
+overwrites the first. See `examples/adapters-nethttp`/`examples/adapters-chi`
+(`PUT /users/{id}`) for the full runnable version.
+
+See [Concepts: Codec — Reusing Field declarations](../concepts/codec.md#reusing-field-declarations-for-pathtopicheaderquery-vars)
+for the underlying mechanism.
+
+### Client-side encode — role-aware merge fields
+
+The merge fields declared via `NewPathParam`/`NewRequiredQueryParam`/etc.
+also benefit the CLIENT (encode) direction: `nethttp.Call` needs a
+`vars map[string]string` for the URL path, plus separate
+`CallOptions.QueryParams`/`HeaderParams`/`CookieParams` maps — building
+these by hand from a request struct is the same friction the decode side
+solves for the server.
+
+`RouteHandle.MergeFields()` returns an AGGREGATE of every declared merge
+field across all four roles — safe for the decode direction (the source
+vars are already correctly scoped before merging), but **not** safe to
+reuse directly for encode: `CallOptions.QueryParams`/`HeaderParams`/
+`CookieParams` each add every map entry to their HTTP location with no name
+filtering, so one flat map built from all roles could leak a path value
+into the query string. Use the role-specific accessors instead —
+`RouteHandle.PathMergeFields()`, `QueryMergeFields()`, `HeaderMergeFields()`,
+`CookieMergeFields()` — each returns only that role's fields:
+
+```go
+type GetUserActivityReq struct {
+    ID     string // path
+    Filter string // query
+}
+
+var getUserActivity = rest.NewRoute[GetUserActivityReq, User](
+    "GET", "/users/{id}/activity", reqCodec, userCodec,
+    rest.NewPathParam("id", codex.String().Refine(validate.UUID),
+        func(r GetUserActivityReq) string { return r.ID },
+        func(r *GetUserActivityReq, v string) { r.ID = v }),
+    rest.NewOptionalQueryParam("filter", codex.String(),
+        func(r GetUserActivityReq) string { return r.Filter },
+        func(r *GetUserActivityReq, v string) { r.Filter = v }),
+)
+
+handle := getUserActivity.ClientHandle()
+req := GetUserActivityReq{ID: userID, Filter: "logins"}
+
+pathVars, _ := codex.EncodeVars(req, handle.PathMergeFields()...)
+queryParams, _ := codex.EncodeVars(req, handle.QueryMergeFields()...)
+
+user, err := nethttp.Call(ctx, client, baseURL, handle, req, pathVars,
+    nethttp.CallOptions{QueryParams: queryParams})
+```
+
+`pathVars` and `queryParams` never overlap — the path value can never end
+up in the query string, and vice versa, even though both come from the
+same `req`. See `examples/adapters-nethttp-client` (section 2b) for the
+full runnable version.
+
+### Response merge fields
+
+The merge-field pattern also applies to the RESPONSE side — response
+headers and Set-Cookie values can be declared as regular struct fields on
+`Resp` and flow automatically in BOTH directions, mirroring the request
+side:
+
+```go
+var getUserActivity = rest.NewRoute[GetUserActivityReq, User]("GET", "/users/{id}/activity", reqCodec, userCodec,
+    rest.NewPathParam("id", codex.String().Refine(validate.UUID),
+        func(r GetUserActivityReq) string { return r.ID },
+        func(r *GetUserActivityReq, v string) { r.ID = v }),
+    rest.NewRequiredResponseHeaderParam("X-Request-Id", codex.String().Refine(validate.UUID),
+        func(u User) string { return u.RequestID },
+        func(u *User, v string) { u.RequestID = v },
+    ),
+)
+```
+
+On the **server**, `nethttp`/`chi`'s `Handler`/`Register` automatically
+encode `User.RequestID` into the actual `X-Request-Id` HTTP response header
+after your handler returns — no `nethttp.WithResponseHeaders` call needed:
+
+```go
+nethttp.Register(mux, handle, func(ctx context.Context, req GetUserActivityReq) (User, error) {
+    u := lookup(req.ID)
+    u.RequestID = generateTraceID() // adapter sets the X-Request-Id header from this automatically
+    return u, nil
+}, nethttp.Options{})
+```
+
+On the **client**, `nethttp.Call` automatically merges the HTTP response's
+`X-Request-Id` header back into the decoded `User.RequestID` field — no
+`resp.Header.Get(...)` call needed. `NewRequiredResponseCookieParam`/
+`NewOptionalResponseCookieParam` work identically for Set-Cookie values.
+"Required"/"Optional" governs the DECODE (client) direction only — the
+server always encodes the field (the getter is always called).
+
+Merge-derived response cookies get default cookie attributes (no
+Path/Secure/SameSite override) — use `nethttp.WithResponseCookies`
+directly for custom attributes, the same escape hatch that remains for any
+field not modeled as a struct field.
+
+### One-line client calls — CallHandle
+
+`nethttp.CallHandle` derives `vars`/`QueryParams`/`HeaderParams`/
+`CookieParams` from `req` automatically, using the route's role-aware
+merge-field accessors — no `codex.EncodeVars` calls needed at the call
+site:
+
+```go
+handle := getUserActivity.ClientHandle()
+activity, err := nethttp.CallHandle(ctx, client, baseURL, handle,
+    GetUserActivityReq{ID: userID, Filter: "logins"}, nethttp.CallOptions{})
+// activity.RequestID is already populated from the response header.
+```
+
+Any entry explicitly set in `opts.QueryParams`/`HeaderParams`/`CookieParams`
+takes PRECEDENCE over the value `CallHandle` derives from `req` for the
+same key — this lets you override a field's value or add an ad-hoc param
+the struct doesn't declare, without losing the one-line convenience for
+the common case. `nethttp.Call` remains available as the lower-level
+escape hatch for callers that build the maps themselves.
+
+Together, this closes the full loop the merge-field feature set targets:
+one codec/route definition, a single `Req`/`Resp` struct per side, and
+every REST aspect (body, path, query, header, cookie) flows automatically
+in both directions on both client and server — manual `PathParam`/
+`QueryParam`/etc. and `ResponseHeadersFromContext` remain available as the
+escape hatch for anything that doesn't fit the struct-field model. See
+`examples/adapters-nethttp-client` (sections 2b/2c) for the full runnable
+version.
+
+### Nested structs & binary body formats
+
+The merge-field convenience is not JSON-specific or flat-struct-specific.
+Two things are worth calling out explicitly, since they're easy to assume
+don't work without checking:
+
+**Non-JSON body formats compose for free.** Body decode/encode is
+completely orthogonal to var-merge — `codex.DecodeVars`/`EncodeVars` only
+ever touch a `map[string]string`, never body bytes. `format.Gob[T]`/
+`format.Binary`/any custom `format.NewTyped`/`format.NewStreamed` format
+plug into `WithRequestFormats`/`WithFormats` exactly like JSON/YAML/TOML —
+merge fields keep working unchanged regardless of which format the body
+uses.
+
+**Nested struct composition works out of the box.** Every merge-field
+constructor takes plain `get`/`set` closures — there is no reflection over
+`Req`'s direct fields — so a closure can reach into a nested sub-struct
+exactly as easily as a top-level field:
+
+```go
+type UploadMeta struct {
+    ContentHash string
+    Compress    string
+}
+
+type UploadReq struct {
+    ID      string
+    Meta    UploadMeta    // header + query merge fields target THIS sub-struct
+    Payload UploadPayload // Gob body
+}
+
+rest.NewOptionalHeaderParam("X-Content-Hash", codex.String(),
+    func(r UploadReq) string { return r.Meta.ContentHash },   // nested — no framework change needed
+    func(r *UploadReq, v string) { r.Meta.ContentHash = v },
+)
+```
+
+**One subtlety for whole-value binary formats (Gob, protobuf, custom binary
+layouts):** `format.Gob(codec)` serialises the WHOLE typed value directly
+via `encoding/gob`'s own reflection, bypassing the codec's `Encode`/`Decode`
+entirely for the wire bytes (the codec is only used for `Validate`). That
+means `format.Gob(reqCodec)` on a nested `UploadReq` would gob-encode `ID`
+and `Meta` too, not just `Payload` — harmless (`DecodeMerged` always merges
+path/header/query AFTER body decode, so the authoritative HTTP values win
+regardless), but wasteful. When the wire bytes should represent ONLY the
+nested `Payload` sub-field, use `format.NewTyped` with a custom marshal/
+unmarshal that projects onto/from that sub-field manually:
+
+```go
+var uploadGobFormat = format.NewTyped[UploadReq](
+    reqCodec,
+    func(r UploadReq) ([]byte, error) {
+        var buf bytes.Buffer
+        err := gob.NewEncoder(&buf).Encode(r.Payload) // ONLY Payload on the wire
+        return buf.Bytes(), err
+    },
+    func(data []byte) (UploadReq, error) {
+        var p UploadPayload
+        err := gob.NewDecoder(bytes.NewReader(data)).Decode(&p)
+        return UploadReq{Payload: p}, err // ID/Meta populated by merge, not here
+    },
+    "application/gob",
+)
+```
+
+This is a general, already-existing primitive (`format.NewTyped`) — no new
+API. See `examples/rest-nested-binary` for the full runnable version:
+nested `Meta`/`Payload` sub-structs, Gob body projected onto `Payload`,
+header/query merged into `Meta`, and a response header merge field
+(`Resp.Meta.TraceID`) — one struct in, one struct out, on both
+`nethttp.CallHandle` (client) and `nethttp.Register` (server).
+
 ## BuildPath — type-safe URL construction
 
 ```go

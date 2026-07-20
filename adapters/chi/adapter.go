@@ -319,9 +319,35 @@ func Handler[Req, Resp any](handle *rest.RouteHandle[Req, Resp], fn HandlerFunc[
 		}
 
 		// Validate path parameters against their registered codecs (if any).
-		if names := handle.PathParamNames(); len(names) > 0 {
+		names := handle.PathParamNames()
+		if len(names) > 0 {
 			if err := handle.ValidatePathParams(pathValues(r, names)); err != nil {
 				reportPathErrors(err, obs)
+				errFn(sw, r, http.StatusBadRequest, err)
+				return
+			}
+		}
+
+		// Merge path/query/header/cookie values declared via
+		// rest.NewPathParam/NewRequiredQueryParam/etc. into req — additive,
+		// only runs when the route has merge-capable params (backward
+		// compatible: identical behavior to the block above when none are
+		// declared). Values were already validated by the block above;
+		// DecodeVars re-validates as a byproduct of decoding, which is
+		// harmless (same codec, same value).
+		if mergeFields := handle.MergeFields(); len(mergeFields) > 0 {
+			vars := pathValues(r, names)
+			for k, v := range queryValues(r) {
+				vars[k] = v
+			}
+			for k, v := range headerValues(r) {
+				vars[k] = v
+			}
+			for k, v := range cookieValues(r) {
+				vars[k] = v
+			}
+			if err := codex.DecodeVars(&req, vars, mergeFields...); err != nil {
+				reportBodyErrors(err, obs)
 				errFn(sw, r, http.StatusBadRequest, err)
 				return
 			}
@@ -366,6 +392,38 @@ func Handler[Req, Resp any](handle *rest.RouteHandle[Req, Resp], fn HandlerFunc[
 		if err != nil {
 			errFn(sw, r, http.StatusInternalServerError, err)
 			return
+		}
+
+		// Encode response header/cookie values declared via
+		// rest.NewRequiredResponseHeaderParam/etc. into the SAME
+		// respHeaders/pendingCookies values WithResponseHeaders/
+		// WithResponseCookies already write to — additive, only runs
+		// when the route has response merge-capable params. The
+		// existing ValidateResponseHeaders/ValidateResponseCookies +
+		// write loop below picks these up unchanged, exactly like the
+		// manual ResponseHeadersFromContext/WithResponseCookies escape
+		// hatch.
+		if headerFields := handle.ResponseHeaderMergeFields(); len(headerFields) > 0 {
+			values, encErr := codex.EncodeVars(resp, headerFields...)
+			if encErr != nil {
+				reportResponseHeaderErrors(encErr, obs)
+				errFn(sw, r, http.StatusInternalServerError, encErr)
+				return
+			}
+			for k, v := range values {
+				respHeaders.Set(k, v)
+			}
+		}
+		if cookieFields := handle.ResponseCookieMergeFields(); len(cookieFields) > 0 {
+			values, encErr := codex.EncodeVars(resp, cookieFields...)
+			if encErr != nil {
+				reportResponseCookieErrors(encErr, obs)
+				errFn(sw, r, http.StatusInternalServerError, encErr)
+				return
+			}
+			for k, v := range values {
+				pendingCookies = append(pendingCookies, PendingCookie{Name: k, Value: v})
+			}
 		}
 
 		var out []byte

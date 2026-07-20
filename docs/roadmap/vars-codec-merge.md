@@ -1,6 +1,9 @@
 # Declarative Var Extraction & Merge — `codex.DecodeVars`/`EncodeVars`
 
-> **Status:** Design complete — not yet implemented.
+> **Status:** Round 1 SHIPPED (REST + File request-side merge). Round 3
+> SHIPPED (REST response-side merge + client single-call convenience).
+> Round 2 (events/reqreply/cache request-side merge) not yet implemented —
+> see "Round 2 — next steps" near the end of this doc.
 > [← Back to Roadmap](index.md)
 >
 > **Revision note (2026-07):** refined after the user explicitly permitted
@@ -13,6 +16,41 @@
 > spec/validation AND a separate `codex.Field` for merge) is now resolved in
 > Phase 1 via new additive per-boundary constructors — see "Unifying the
 > declaration: additive per-boundary constructors" below.
+>
+> **Round 1 shipped (2026-07):** the foundation (`codex.FieldCodec[T]`
+> export, `DecodeVars`/`EncodeVars`), the original motivating use case
+> (`ports.File.MatchPath` + `NewFilePathParam[T]`/`File.MergeFields()`), and
+> the REST surface (`rest.NewPathParam[T]`/`NewRequiredQueryParam[T]`/
+> `NewOptionalQueryParam[T]` + Header/Cookie equivalents,
+> `RouteHandle.MergeFields()`/`DecodeMerged()`, `nethttp`/`chi` adapter
+> wiring) are all implemented, tested, documented, and demonstrated in
+> `examples/adapters-nethttp`/`examples/adapters-chi`. Events, reqreply, and
+> cache are deferred to Round 2 — see below.
+>
+> **Role-aware merge-field split shipped (2026-07, same cycle):** a gap was
+> found while investigating whether the HTTP client benefits from the new
+> constructors too: `RouteHandle.MergeFields()` was a single flat,
+> role-erased list. That's safe for the DECODE direction (`DecodeMerged`),
+> since the source vars map is already correctly scoped (built from four
+> separately-scoped sources) before the merge runs — but genuinely unsafe
+> for the ENCODE/client direction, since `nethttp.CallOptions.QueryParams`/
+> `HeaderParams`/`CookieParams` each add EVERY map entry to their HTTP
+> location with no name filtering. A flat `EncodeVars(req,
+> handle.MergeFields()...)` reused across `vars`/`QueryParams`/
+> `HeaderParams`/`CookieParams` could leak a path value into the query
+> string (etc.). Fixed by splitting `RouteHandle`'s internal storage into
+> four role-specific slices (mirroring how `pathParams`/`queryParams`/
+> `headerParams`/`cookieParams` were already kept separate for spec
+> purposes) and adding four new role-scoped accessors —
+> `RouteHandle.PathMergeFields()`/`QueryMergeFields()`/`HeaderMergeFields()`/
+> `CookieMergeFields()` — each returning ONLY that role's fields, safe to
+> feed to `codex.EncodeVars` independently per HTTP location.
+> `RouteHandle.MergeFields()` stays as a backward-compatible aggregate
+> (concatenation of all four) for the decode direction — no behavior change
+> there. See "Client-side encode — role-aware merge fields" in
+> `docs/features/rest-api.md` and `examples/adapters-nethttp-client`
+> (section 2b, `GetUserActivity` route) for the full runnable
+> demonstration.
 
 ## Motivation
 
@@ -444,6 +482,32 @@ func(ctx context.Context, req GetUserReq) (User, error) {
 }
 ```
 
+**Mixed body + path merge is fully supported and shipped** — a struct can
+have SOME fields decoded from the JSON body and OTHER fields merged from
+path/query/header/cookie, as long as the body codec and the merge fields
+declare different field names (`DecodeMerged` decodes the body first, then
+merges vars into the SAME value — a partial merge, only touching declared
+merge fields). Demonstrated end-to-end in both
+`examples/adapters-nethttp`/`examples/adapters-chi` via a `PUT /users/{id}`
+route (`UpdateUserReq{ID string; Name, Email string}` — `ID` from the path,
+`Name`/`Email` from the body):
+
+```go
+type UpdateUserReq struct {
+    ID    string // from path — merged
+    Name  string // from JSON body
+    Email string // from JSON body
+}
+var updateUserReqCodec = codex.Struct[UpdateUserReq](
+    codex.RequiredField("name", ..., func(r UpdateUserReq) string { return r.Name }, ...),
+    codex.RequiredField("email", ..., func(r UpdateUserReq) string { return r.Email }, ...),
+    // "id" is NOT declared here — populated exclusively via the path merge
+)
+rest.NewRoute[UpdateUserReq, User]("PUT", "/users/{id}", updateUserReqCodec, userCodec,
+    rest.NewPathParam("id", ..., func(r UpdateUserReq) string { return r.ID }, ...),
+)
+```
+
 Without `NewPathParam` (i.e. using the plain, unchanged `PathParam` for
 validate-only routes that don't want automatic merge), `codex.DecodeVars`
 remains directly usable exactly as shown in the File example above — the
@@ -571,13 +635,17 @@ neither of which have an observer today).
 | `docs/features/rest-api.md` | new subsection: "Path/query/header params with automatic merge" showing `NewPathParam`/`DecodeMerged` replacing manual `r.PathValue()` extraction |
 | `docs/guides/http-server.md` | update the path-param section to show `rest.NewPathParam` + automatic merge as the recommended pattern, with plain `PathParam` kept as the validate-only alternative |
 | `docs/features/config.md` | update "Config file + env var overrides" to replace the hand-rolled `os.Getenv`+`strconv.Atoi`+manual-assignment recipe with `codex.DecodeVars` — the fifth beneficiary found by inspection, needs no new `config`-specific code |
-| `docs/concepts/codec.md` | new subsection near "Struct codecs": "Reusing Field declarations for path/topic/header vars" — covers both the low-level `codex.DecodeVars`/`EncodeVars` primitive and the per-boundary `NewXxxParam` sugar |
-| `.github/instructions/go-codex.instructions.md` | new subsection documenting `DecodeVars`/`EncodeVars`/`FieldCodec[T]` under the `codex` package entry; `NewPathParam`/etc. + `MergeFields`/`DecodeMerged` under `api/rest`/`api/events`/`api/reqreply`/`ports` entries |
-| `examples/adapters-nethttp/main.go` | update `makeGetUserHandler` to use `rest.NewPathParam` + rely on automatic `DecodeMerged` instead of `r.PathValue("id")` |
-| `examples/adapters-chi/main.go` | same update for the chi-specific `chi.URLParam(r, "id")` path |
-| `examples/sensor-service/main.go` | update the `r.PathValue("sensorID")` comment/call site — this example's existing comment ("already codec-validated by the RESTPattern's PathParam") is the ideal place to show the FULL merge story, not just validation |
-| `examples/api-rest/main.go` | update the path-parameter comment/handling to reference the new pattern |
-| `examples/file-io/main.go` (or a new small example) | demonstrate filename-encoded metadata via `MatchPath` + `DecodeVars`, the original motivating scenario |
+| `docs/concepts/codec.md` | ✅ SHIPPED — new subsection near "Struct codecs": "Reusing Field declarations for path/topic/header vars" |
+| `.github/instructions/go-codex.instructions.md` | ✅ SHIPPED — new subsection documenting `DecodeVars`/`EncodeVars`/`FieldCodec[T]`, `NewPathParam`/etc., `MergeFields`/`DecodeMerged` |
+| `docs/features/rest-api.md` | ✅ SHIPPED — new "Path/query/header params with automatic merge" subsection |
+| `docs/guides/http-server.md` | ✅ SHIPPED — updated `adapters-nethttp`/`adapters-chi` sections to reference `NewPathParam` |
+| `docs/features/ports.md` | ✅ SHIPPED — new "Extracting information from a discovered path" subsection |
+| `examples/adapters-nethttp/main.go` | ✅ SHIPPED — `makeGetUserHandler` now uses `rest.NewPathParam` + automatic `DecodeMerged`, replacing `r.PathValue("id")` |
+| `examples/adapters-chi/main.go` | ✅ SHIPPED — same update for the chi-specific path |
+| `examples/sensor-service/main.go` | **Round 2** — update the `r.PathValue("sensorID")` comment/call site to show the full merge story |
+| `examples/api-rest/main.go` | **Round 2** — update the path-parameter comment/handling to reference the new pattern |
+| `examples/file-io/main.go` (or a new small example) | **Round 2** — demonstrate filename-encoded metadata via `MatchPath` + `DecodeVars` end-to-end in a runnable example (currently covered by `ports/file_test.go`'s `ExampleFile_MatchPath` + unit tests, but not a dedicated `examples/` walkthrough) |
+| `docs/features/config.md` | **Round 2** — replace the hand-rolled `os.Getenv`+`strconv.Atoi` "env var overrides" recipe with `codex.DecodeVars` (the fifth beneficiary, needs no new code, just a doc update) |
 
 ## Out of scope (Phase 2)
 
@@ -667,3 +735,245 @@ neither of which have an observer today).
    readers already call `Read`/decode-payload and merge-vars as two
    separate, already-well-understood steps, so a combined method would add
    a new method without removing any existing complexity.
+
+## Round 2 — next steps (not yet implemented)
+
+> **Policy note (2026-07):** the "one struct, one call" pattern this
+> feature establishes for REST (Rounds 1 + 3) is now a MANDATORY design
+> contract for every `api/*` builder-backed boundary with a request/response
+> or duplex role shape — see
+> `.github/instructions/go-codex.instructions.md`'s "MANDATORY design
+> contract: one struct, one call" section, the `add-a-new-adapter` skill's
+> "Step 5b", and `docs/concepts/api-contracts.md`'s "Design principle: one
+> struct, one call". Round 2 below is exactly what closes that mandate for
+> `api/events`/`api/reqreply`/`ports.Cache` — implement it against THAT
+> checklist (declare-once constructors, escape hatch, encode/decode
+> symmetry, role symmetry, single-call wrapper), not just the "mechanical
+> repeat" framing originally written here.
+>
+> **Round 4 addendum (2026-07):** the mandate is explicitly NOT
+> JSON-specific or flat-struct-specific — see "Round 4" below. Round 2's
+> `events.NewTopicParam[T]`/`reqreply.NewTopicParam[T]` work must also
+> support (a) non-JSON payload formats (Gob is the natural default for
+> MQTT-style transports — `examples/gob-contract` is prior art on the
+> events side, but currently has NO merge fields at all), and (b) nested
+> topic-var/payload struct composition, using the SAME
+> `format.NewTyped`-projection technique proven for REST in
+> `examples/rest-nested-binary`. Do not ship a JSON-only or
+> flat-struct-only Round 2 implementation and call it complete.
+
+Round 1 shipped the foundation and the two explicitly-requested surfaces
+(File path parsing, REST path/query/header/cookie params). Round 2 applies
+the SAME recipe — already proven correct and tested in Round 1 — to the
+remaining boundaries. Each item below is a mechanical repeat of a pattern
+Round 1 already established; no new design work is required, just
+implementation following the existing template.
+
+1. **`api/events`**: `events.NewTopicParam[T]` (mirrors `rest.NewPathParam[T]`
+   exactly — topic vars are always required, like path vars) +
+   `ChannelHandle.MergeFields() []codex.FieldCodec[T]`. `api/events` already
+   imports `codex`; no new cross-package plumbing needed. Template: copy
+   `MergedPathParam[T]`/`NewPathParam[T]` from `api/rest/builder.go` almost
+   verbatim, adjusting for `channelBuilder`'s field names
+   (`cb.topicParams`/`cb.mergeFields`).
+2. **`api/reqreply`**: `reqreply.NewTopicParam[T]` — same recipe, applied to
+   `api/reqreply/route.go`'s `routeBuilder`/`RouteHandle`.
+3. **`ports` (cache)**: `ports.NewCacheKeyParam[T]` (mirrors
+   `ports.NewFilePathParam[T]` from `ports/file.go` — same file, same
+   package, same `FieldCodec[T]` plumbing) + `Cache.MergeFields()`. Unlike
+   File, Cache has no `MatchPath`-equivalent need (cache keys are built
+   FROM known values via `Cache.BuildKey`, never reverse-matched from a
+   discovered key) — only the "declare once" constructor is needed, not a
+   new extraction primitive.
+4. **Optional**: refactor `adapters/mqtt/topicvars.go`'s `matchTopicTemplate`
+   to delegate its non-wildcard segment-matching core to
+   `api/internal.MatchTemplate` (Open design decision 1, still unresolved —
+   low-risk, do this once Round 2's events/reqreply work is underway and
+   the pattern has proven stable across a second consumer).
+5. **Docs/examples for the above**: `docs/features/asyncapi.md`
+   (events.NewTopicParam section), `docs/features/ports.md` (Cache section,
+   parallel to the File section Round 1 already added), `examples/`
+   updates showing the events/reqreply/cache pattern in a runnable demo.
+6. **Remaining Round 1 doc/example follow-ups** (see "Files to create"
+   table above, marked "Round 2"): `examples/sensor-service/main.go`,
+   `examples/api-rest/main.go`, a dedicated `MatchPath`+`DecodeVars`
+   example (filename-encoded metadata — the original motivating scenario),
+   and `docs/features/config.md`'s env-var-overrides recipe update (the
+   fifth beneficiary found during design discussion — needs no new code,
+   `codex.DecodeVars` already works for env vars since they're also
+   string-keyed).
+7. **`rest.SSERouteHandle` merge support** — `SSERouteHandle[Req,Event]` is a
+   SEPARATE type from `RouteHandle[Req,Resp]` (SSE routes have their own
+   handle type); it currently has no `MergeFields()`/`DecodeMerged`
+   equivalent. Deferred since SSE routes typically have simpler param needs
+   (mostly path-only) — revisit if a concrete SSE + query-param merge use
+   case appears.
+
+**Verification checklist for Round 2** (same ritual as Round 1): gofmt,
+`go build ./...`, `go test ./...`, `-race` on touched packages, `just
+check`, all 50+ examples exit 0.
+
+## Round 3 — REST response merge + single-call client convenience — ✅ SHIPPED (2026-07)
+
+**Motivation:** after the role-aware merge-field split (client request
+encode), the user asked for the FULL end-to-end picture: "define the route
+with codecs, provide the request struct, pass it to the call side, get
+everything validated and called on client-side... get the request struct,
+handle the request, create the response struct, pass it against the
+route, get everything validated, finished" — for EVERY REST aspect (body,
+path, query, header, cookie), on BOTH request and response, on BOTH client
+and server. Auditing the current state against that goal found two
+remaining gaps, both REST-only (other boundaries stay queued in Round 2
+above, independent of this work):
+
+1. Response header/cookie merge did not exist at all —
+   `ResponseHeaderParam`/`ResponseCookieParam` were validate-only (exactly
+   where request-side `PathParam`/`QueryParam`/etc. were before Round 1):
+   the server had to manually call `w.Header().Set(...)`/`SetCookie(...)`
+   via `ResponseHeadersFromContext`, and the client's `Call` only ever
+   decoded the response BODY into `Resp` — response headers/cookies were
+   invisible to the typed `Resp` value entirely.
+2. The client still assembled 3-4 maps by hand before calling `Call`, even
+   with the role-aware split from the previous round.
+
+Confirmed OUT of scope (explicitly asked and declined): constructing
+`Req`/`Resp` struct VALUES conveniently — that stays ordinary Go (the
+caller's own constructor function or struct literal); go-codex adds no
+struct-construction sugar.
+
+**Shipped API surface** (`api/rest/builder.go`):
+
+- `NewRequiredResponseHeaderParam[Resp]`/`NewOptionalResponseHeaderParam[Resp]`
+  and `NewRequiredResponseCookieParam[Resp]`/`NewOptionalResponseCookieParam[Resp]`
+  — mirror the request-side constructors exactly, keyed on `Resp` instead
+  of `Req`. Each registers spec `ResponseHeaderParam`/`ResponseCookieParam`
+  (OpenAPI + existing `ValidateResponseHeaders`/`ValidateResponseCookies`)
+  AND a `codex.FieldCodec[Resp]` merge field; supports `.WithDescription(...)`.
+- `RouteHandle.ResponseHeaderMergeFields()`/`ResponseCookieMergeFields()`
+  accessors.
+- `RouteHandle.DecodeMergedResponse(body, headers, cookies) (Resp, error)`
+  — the response-direction mirror of `DecodeMerged`. Body-decode error
+  returned first (if the response has a body), then the header/cookie
+  merge step's collected `ValidationErrors` — same precedent as
+  `DecodeMerged`.
+- No bundling `EncodeMergedResponse` method — the server adapter calls
+  `codex.EncodeVars(resp, handle.ResponseHeaderMergeFields()...)`/Cookie
+  directly (mirrors how request merge is wired directly into `Handler`
+  with `codex.DecodeVars`, avoiding duplication of `Handler`'s
+  multi-format/streaming body-encode logic in a new bundling method).
+
+**Server wiring** (`adapters/nethttp/adapter.go`, `adapters/chi/adapter.go`
+`Handler`): immediately after `resp, err = fn(ctx, req)` succeeds, if
+response merge fields are declared, `codex.EncodeVars` results are merged
+into the SAME `respHeaders`/`pendingCookies` values the
+`ResponseHeadersFromContext`/`WithResponseCookies` escape hatch already
+writes to — the existing `ValidateResponseHeaders`/`ValidateResponseCookies`
++ header/cookie-writing loop needed NO changes, it picks up the new value
+source unchanged. Both the streaming/multi-format write branch and the
+plain JSON write branch are covered since the merge step runs before the
+format-negotiation split.
+
+**Client wiring** (`adapters/nethttp/client.go`): `Call` now merges
+`resp.Header`/`resp.Cookies()` into the decoded `Resp` via
+`codex.DecodeVars` when response merge fields are registered — additive,
+identical behavior otherwise. New `nethttp.CallHandle[Req, Resp]`
+convenience wrapper derives `vars`/`QueryParams`/`HeaderParams`/
+`CookieParams` from `req` automatically via the role-aware accessors +
+`codex.EncodeVars`, then delegates to `Call`. Precedence: explicit
+`opts.QueryParams`/`HeaderParams`/`CookieParams` entries win over the
+derived value for the same key (lets callers override/add without
+touching the struct). `Call` remains the lower-level escape hatch.
+
+**Tests:** R1–R12 — response-side constructor registration (R1–R2),
+`DecodeMergedResponse` happy/error/no-op paths (R3–R5), server
+auto-apply + codec-violation + regression-guard (R6/R6b/R7, both
+`nethttp` and `chi`), client round-trip decode (R8), `CallHandle` happy
+path with no cross-role leakage (R9), explicit-opts override precedence
+(R10), zero-merge-fields regression guard (R11), and a full runnable
+example (R12).
+
+**Docs/examples:** `docs/features/rest-api.md` — new "Response merge
+fields" and "One-line client calls — CallHandle" subsections.
+`examples/adapters-nethttp-client`: `User.RequestID` + `GetUserActivity`
+route now also declares a response header merge field; new sections "2b.
+Client encode: role-aware merge fields" (existing, from the previous
+round) and "2c. One-line call: CallHandle + response merge fields"
+(new) — the full request+response, single-call story for one route.
+
+**Verification:** gofmt clean, `go build ./...` clean, full
+`go test ./...` clean, `-race` on `api/rest`/`adapters/nethttp`/`adapters/chi`
+clean, `just check` 0 issues, all 50+ examples exit 0.
+
+## Round 4 — nested structs & binary formats — ✅ SHIPPED (2026-07)
+
+**Motivation:** after mandating "one struct, one call" as policy (see the
+policy note above), the user asked to make sure the convenience actually
+works for (1) non-JSON body formats — Gob and other binaries — including
+mixed structs that hold both binary payload AND header/query fields, and
+(2) nested struct composition — a `Req`/`Resp` built from sub-structs
+(`Body`/`Header`/`Query`) rather than flat top-level fields. Also asked to
+carry both considerations into the Round 2 design and the docs/
+instructions/skills.
+
+**Investigation findings (no framework changes needed — both already work,
+just unproven/undocumented before this round):**
+
+1. Body decode/encode is completely orthogonal to var-merge
+   (`codex.DecodeVars`/`EncodeVars` only ever touch a `map[string]string`) —
+   `format.Gob[T]`/`format.Binary`/any custom `format.NewTyped` format
+   already composes with merge fields exactly like JSON/YAML/TOML.
+2. Merge-field `get`/`set` are plain Go closures, not reflection over a
+   struct's direct fields — nested sub-struct access
+   (`func(r Req) string { return r.Meta.X }`) already works with zero
+   framework changes.
+3. **Correction found during implementation**: `format.Gob(codec)` — the
+   convenience constructor — serialises the WHOLE typed value directly via
+   `encoding/gob`'s own reflection, bypassing the codec's `Encode`/`Decode`
+   entirely for the wire bytes (the codec is only used for `Validate`).
+   This means `format.Gob(reqCodec)` on a nested `Req` would gob-encode
+   EVERY exported field (e.g. `ID`, `Meta`, AND `Payload`), not just a
+   nested `Payload` sub-field — harmless (`DecodeMerged` always merges
+   path/header/query AFTER body decode, so the authoritative HTTP values
+   win regardless of what redundant bytes the body happened to carry), but
+   wasteful. An earlier draft of this round's plan assumed
+   `codex.MapCodecSafe` could project the Gob wire bytes onto just the
+   sub-field the same way it does for JSON/YAML/TOML (which DO route
+   through the codec's `Encode`/`Decode` for their wire representation) —
+   this is WRONG for whole-value binary formats. The correct,
+   already-existing primitive for "wire bytes represent ONLY a nested
+   sub-field" with Gob/protobuf/custom binary is `format.NewTyped` with a
+   custom marshal/unmarshal that manually projects onto/from that
+   sub-field — demonstrated in `examples/rest-nested-binary`.
+
+**Shipped:**
+- New example `examples/rest-nested-binary`: `UploadReq{ID string /*path*/;
+  Meta UploadMeta /*header+query merge, nested closures*/; Payload
+  UploadPayload /*Gob body via format.NewTyped projection*/}`,
+  `UploadResp{Status, Size /*JSON body*/; Meta RespMeta{TraceID string}
+  /*response header merge, nested*/}`. Full client (`nethttp.CallHandle`)
+  ↔ server (`nethttp.Register`) round trip, one struct in/out on both
+  sides, verified via `go run`.
+- New tests in `api/rest/builder_test.go`:
+  `TestNestedStructMergeFields_GetSetReachIntoSubstruct` (nested closure
+  get/set for path/header/query merge fields, both directions) and
+  `TestGobBodyFormat_ComposesWithNestedMergeFields` (full Gob-body +
+  nested-Meta round trip via `nethttp.CallHandle`/`Register`, no field
+  collision).
+- Docs: `docs/features/rest-api.md` new "Nested structs & binary body
+  formats" subsection (with the `format.NewTyped` projection pattern and
+  the `format.Gob` whole-value caveat spelled out precisely);
+  `docs/concepts/codec.md` and `docs/concepts/api-contracts.md` — both
+  extended to state the "one struct, one call" promise is not
+  JSON-specific or flat-struct-specific.
+- Instructions/skills: `.github/instructions/go-codex.instructions.md`'s
+  MANDATORY section, `add-a-new-adapter`'s Step 5b, `plan-a-new-codex-feature`'s
+  item 6, and `review-go-codex`'s Boundary Symmetry Guardrail + checklist
+  category 12 all now explicitly require verifying a non-default body
+  format AND at least one nested struct field, not just the flat/JSON
+  happy path.
+- This roadmap doc's "Round 2" policy note (above) now explicitly carries
+  the same non-JSON/nested requirement forward for `api/events`/`api/reqreply`.
+
+**Verification:** gofmt clean, `go build ./...` clean, full
+`go test ./...` clean, all 50+ examples exit 0 (including the new
+`examples/rest-nested-binary`).

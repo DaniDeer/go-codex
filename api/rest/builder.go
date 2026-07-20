@@ -53,6 +53,58 @@ func (p PathParam) applyRoute(rb *routeBuilder) { rb.pathParams = append(rb.path
 // WithCodec sets the validation codec and returns the updated PathParam.
 func (p PathParam) WithCodec(c codex.Codec[string]) PathParam { p.Codec = &c; return p }
 
+// MergedPathParam is returned by [NewPathParam]. It embeds the unchanged
+// [PathParam] (spec/validation, exactly as before) plus a merge field
+// produced internally via [codex.RequiredField], so the same declaration
+// serves both OpenAPI spec generation/validation AND automatic merge into
+// Req via [RouteHandle.DecodeMerged] / [RouteHandle.MergeFields].
+type MergedPathParam[T any] struct {
+	PathParam
+	field codex.FieldCodec[T]
+}
+
+// NewPathParam declares a path parameter that is BOTH validated against
+// codec (exactly like plain [PathParam], unchanged spec/validation
+// behavior) AND automatically merged into Req by [RouteHandle.DecodeMerged]
+// — one declaration instead of a PathParam plus a separate codex.Field.
+//
+// NewPathParam is the PRIMARY, recommended way to declare a path parameter.
+// The plain [PathParam] struct literal remains available as the low-level
+// escape hatch for validate-only parameters with no merge need (avoids
+// forcing a get/set pair on a parameter the handler never reads directly).
+//
+//	rest.NewRoute[GetUserReq, User]("GET", "/users/{id}", reqCodec, userCodec,
+//	    rest.NewPathParam("id", codex.String().Refine(validate.UUID),
+//	        func(r GetUserReq) string { return r.ID },
+//	        func(r *GetUserReq, v string) { r.ID = v },
+//	    ),
+//	)
+func NewPathParam[T any](
+	name string,
+	codec codex.Codec[string],
+	get func(T) string,
+	set func(*T, string),
+) MergedPathParam[T] {
+	return MergedPathParam[T]{
+		PathParam: PathParam{Name: name, Codec: &codec},
+		field:     codex.RequiredField(name, codec, get, set),
+	}
+}
+
+// WithDescription sets the PARAMETER-level description (rendered into the
+// OpenAPI "parameter" object, distinct from the codec's schema-level
+// description) and returns the updated value, mirroring PathParam.WithCodec's
+// existing chain style.
+func (p MergedPathParam[T]) WithDescription(desc string) MergedPathParam[T] {
+	p.Description = desc
+	return p
+}
+
+func (p MergedPathParam[T]) applyRoute(rb *routeBuilder) {
+	rb.pathParams = append(rb.pathParams, p.PathParam) // unchanged spec/validation path
+	rb.pathMergeFields = append(rb.pathMergeFields, p.field)
+}
+
 // requestFormatsOpt / formatsOpt are unexported RouteOpt implementations
 // backing [RequestFormats] and [Formats] — see those constructors.
 type requestFormatsOpt[Req any] struct{ fmts []format.Format[Req] }
@@ -108,6 +160,30 @@ func (e FormatOptError) Unwrap() error { return e.Err }
 func (e FormatOptError) LogValue() slog.Value {
 	return slog.GroupValue(
 		slog.String("direction", e.Direction),
+		slog.Any("err", e.Err),
+	)
+}
+
+// MergeFieldTypeError is returned by [Route.Register] when a merge field
+// registered via [NewPathParam]/[NewRequiredQueryParam]/etc. does not match
+// Req — a caller programming error (the get/set functions passed to the
+// constructor referenced the wrong type), discovered at Register time where
+// Req becomes concrete, mirroring [FormatOptError]'s existing handling of
+// the same class of problem for request/response formats.
+type MergeFieldTypeError struct {
+	Err error
+}
+
+func (e MergeFieldTypeError) Error() string {
+	return fmt.Sprintf("api/rest: merge field option: %v", e.Err)
+}
+
+// Unwrap allows [errors.Is] and [errors.As] to reach the underlying error.
+func (e MergeFieldTypeError) Unwrap() error { return e.Err }
+
+// LogValue implements [slog.LogValuer] for structured logging.
+func (e MergeFieldTypeError) LogValue() slog.Value {
+	return slog.GroupValue(
 		slog.Any("err", e.Err),
 	)
 }
@@ -188,6 +264,33 @@ type routeBuilder struct {
 	// in [Route.Register] where Req/Resp are concrete. See [FormatOptError].
 	requestFormats any
 	respFormats    any
+	// pathMergeFields/queryMergeFields/headerMergeFields/cookieMergeFields
+	// hold type-erased codex.FieldCodec[Req] values registered via
+	// NewPathParam/NewRequiredQueryParam/etc., kept SEPARATE per role.
+	// Role separation matters for the ENCODE direction (client-side
+	// nethttp.Call): CallOptions.QueryParams/HeaderParams/CookieParams each
+	// add EVERY map entry to their respective HTTP location with no name
+	// filtering, so a flat merge-field list would leak a path value into
+	// the query string (etc.) if reused across roles. The DECODE direction
+	// (DecodeMerged) is safe with a flat union since the four SOURCE maps
+	// are already correctly scoped before merging — see
+	// [RouteHandle.MergeFields] (aggregate, decode-side) vs
+	// [RouteHandle.PathMergeFields]/[QueryMergeFields]/[HeaderMergeFields]/
+	// [CookieMergeFields] (role-scoped, encode-side).
+	// Resolved to []codex.FieldCodec[Req] in [Route.Register]. See
+	// [MergeFieldTypeError].
+	pathMergeFields   []any
+	queryMergeFields  []any
+	headerMergeFields []any
+	cookieMergeFields []any
+
+	// responseHeaderMergeFields/responseCookieMergeFields hold type-erased
+	// codex.FieldCodec[Resp] values registered via
+	// NewRequiredResponseHeaderParam/etc. — the RESPONSE-direction mirror
+	// of pathMergeFields/etc. above. Resolved to []codex.FieldCodec[Resp]
+	// in [Route.Register]. See [MergeFieldTypeError].
+	responseHeaderMergeFields []any
+	responseCookieMergeFields []any
 }
 
 // RouteHandle is returned by [Route.Register]. It holds the spec descriptor
@@ -266,6 +369,202 @@ type RouteHandle[Req, Resp any] struct {
 	//   if reqs == nil { reqs = handle.GlobalSecurity }
 	// Set via [Builder.AddGlobalSecurity]. nil when no global security is declared.
 	GlobalSecurity []route.SecurityRequirement
+
+	// pathMergeFields/queryMergeFields/headerMergeFields/cookieMergeFields
+	// hold the merge-capable fields registered via NewPathParam/
+	// NewRequiredQueryParam/etc., kept SEPARATE per role — see
+	// [PathMergeFields]/[QueryMergeFields]/[HeaderMergeFields]/
+	// [CookieMergeFields] (role-scoped, for the ENCODE/client direction)
+	// and [MergeFields] (aggregate, for the DECODE/server direction via
+	// [DecodeMerged]).
+	pathMergeFields   []codex.FieldCodec[Req]
+	queryMergeFields  []codex.FieldCodec[Req]
+	headerMergeFields []codex.FieldCodec[Req]
+	cookieMergeFields []codex.FieldCodec[Req]
+
+	// responseHeaderMergeFields/responseCookieMergeFields hold the
+	// merge-capable fields registered via
+	// NewRequiredResponseHeaderParam/etc. — the RESPONSE-direction mirror
+	// of the four fields above. Unlike the request side, no role split is
+	// needed here: headers and cookies are always written to two DISTINCT
+	// destinations ([ResponseHeaderMergeFields] → HTTP headers,
+	// [ResponseCookieMergeFields] → Set-Cookie), so there is no
+	// leak-across-roles hazard analogous to nethttp.CallOptions'
+	// QueryParams/HeaderParams/CookieParams maps.
+	responseHeaderMergeFields []codex.FieldCodec[Resp]
+	responseCookieMergeFields []codex.FieldCodec[Resp]
+}
+
+// MergeFields returns ALL merge-capable fields registered via
+// [NewPathParam]/[NewRequiredQueryParam]/[NewOptionalQueryParam]/etc.,
+// aggregated across path/query/header/cookie. Safe for the DECODE
+// direction ([codex.DecodeVars], [RouteHandle.DecodeMerged]) because the
+// source vars map is already correctly scoped (built from four separate,
+// already-role-correct maps) before the merge runs.
+//
+// Do NOT use this aggregate for the ENCODE direction (building an outgoing
+// client request) — [CallOptions.QueryParams]/[HeaderParams]/[CookieParams]
+// each add EVERY map entry to their respective HTTP location with no name
+// filtering, so passing one flat map built from ALL merge fields would leak
+// a path value into the query string (etc.). Use [PathMergeFields]/
+// [QueryMergeFields]/[HeaderMergeFields]/[CookieMergeFields] instead —
+// each returns only that role's fields, safe to pass to
+// [codex.EncodeVars] independently and route to the matching [nethttp.Call]
+// parameter/option.
+func (h *RouteHandle[Req, Resp]) MergeFields() []codex.FieldCodec[Req] {
+	all := make([]codex.FieldCodec[Req], 0,
+		len(h.pathMergeFields)+len(h.queryMergeFields)+len(h.headerMergeFields)+len(h.cookieMergeFields))
+	all = append(all, h.pathMergeFields...)
+	all = append(all, h.queryMergeFields...)
+	all = append(all, h.headerMergeFields...)
+	all = append(all, h.cookieMergeFields...)
+	return all
+}
+
+// PathMergeFields returns the merge-capable fields registered via
+// [NewPathParam] — role-scoped, safe for both directions:
+//
+//	// Client (encode): build the vars map for nethttp.Call from req.
+//	vars, _ := codex.EncodeVars(req, handle.PathMergeFields()...)
+//	resp, err := nethttp.Call(ctx, client, baseURL, handle, req, vars, nethttp.CallOptions{})
+func (h *RouteHandle[Req, Resp]) PathMergeFields() []codex.FieldCodec[Req] {
+	return h.pathMergeFields
+}
+
+// QueryMergeFields returns the merge-capable fields registered via
+// [NewRequiredQueryParam]/[NewOptionalQueryParam] — role-scoped, safe for
+// both directions:
+//
+//	// Client (encode): build CallOptions.QueryParams from req.
+//	query, _ := codex.EncodeVars(req, handle.QueryMergeFields()...)
+//	resp, err := nethttp.Call(ctx, client, baseURL, handle, req, vars,
+//	    nethttp.CallOptions{QueryParams: query})
+func (h *RouteHandle[Req, Resp]) QueryMergeFields() []codex.FieldCodec[Req] {
+	return h.queryMergeFields
+}
+
+// HeaderMergeFields returns the merge-capable fields registered via
+// [NewRequiredHeaderParam]/[NewOptionalHeaderParam] — role-scoped, safe for
+// both directions (see [PathMergeFields] for the usage pattern; substitute
+// [CallOptions.HeaderParams]).
+func (h *RouteHandle[Req, Resp]) HeaderMergeFields() []codex.FieldCodec[Req] {
+	return h.headerMergeFields
+}
+
+// CookieMergeFields returns the merge-capable fields registered via
+// [NewRequiredCookieParam]/[NewOptionalCookieParam] — role-scoped, safe for
+// both directions (see [PathMergeFields] for the usage pattern; substitute
+// [CallOptions.CookieParams]).
+func (h *RouteHandle[Req, Resp]) CookieMergeFields() []codex.FieldCodec[Req] {
+	return h.cookieMergeFields
+}
+
+// DecodeMerged decodes body (if the route has a request body — pass nil
+// for body-less routes) AND merges every [MergeFields]-registered path/
+// query/header/cookie value into the SAME Req value, using
+// [codex.DecodeVars] internally. Additive — [RouteHandle.Decode] is
+// unchanged and keeps working exactly as today; DecodeMerged behaves
+// identically to a bare Decode when the route declares no merge-capable
+// params (MergeFields() is empty).
+//
+// On failure, the body decode error (if the route has a body) is returned
+// FIRST — matching Decode's existing "stop at first structural failure"
+// behavior — before the var-merge step runs. The var-merge step itself
+// collects every field's failure via [codex.DecodeVars] (never stops at
+// the first one).
+func (h *RouteHandle[Req, Resp]) DecodeMerged(
+	body []byte,
+	pathVars, query, headers, cookies map[string]string,
+) (Req, error) {
+	var req Req
+	var err error
+	if h.Descriptor.RequestBody != nil && len(body) > 0 {
+		req, err = h.Decode(body)
+		if err != nil {
+			return req, err
+		}
+	}
+	mergeFields := h.MergeFields()
+	if len(mergeFields) == 0 {
+		return req, nil
+	}
+	vars := make(map[string]string, len(pathVars)+len(query)+len(headers)+len(cookies))
+	for k, v := range pathVars {
+		vars[k] = v
+	}
+	for k, v := range query {
+		vars[k] = v
+	}
+	for k, v := range headers {
+		vars[k] = v
+	}
+	for k, v := range cookies {
+		vars[k] = v
+	}
+	if err := codex.DecodeVars(&req, vars, mergeFields...); err != nil {
+		return req, err
+	}
+	return req, nil
+}
+
+// ResponseHeaderMergeFields returns the merge-capable fields registered via
+// [NewRequiredResponseHeaderParam]/[NewOptionalResponseHeaderParam] — the
+// RESPONSE-direction mirror of [PathMergeFields]/etc. On the server, the
+// adapter encodes these from the handler's returned Resp via
+// [codex.EncodeVars] and sets them as actual HTTP response headers
+// automatically. On the client, [DecodeMergedResponse] merges the HTTP
+// response's headers back into the decoded Resp.
+func (h *RouteHandle[Req, Resp]) ResponseHeaderMergeFields() []codex.FieldCodec[Resp] {
+	return h.responseHeaderMergeFields
+}
+
+// ResponseCookieMergeFields returns the merge-capable fields registered via
+// [NewRequiredResponseCookieParam]/[NewOptionalResponseCookieParam] — same
+// as [ResponseHeaderMergeFields], for Set-Cookie instead of headers.
+func (h *RouteHandle[Req, Resp]) ResponseCookieMergeFields() []codex.FieldCodec[Resp] {
+	return h.responseCookieMergeFields
+}
+
+// DecodeMergedResponse decodes the response body (via [RouteHandle.DecodeResponse],
+// when body is non-empty) AND merges every registered response header/cookie
+// value into the SAME Resp value, using [codex.DecodeVars] internally. This
+// is the RESPONSE-direction mirror of [DecodeMerged] — used internally by
+// [nethttp.Call], and directly usable by any hand-rolled client. Behaves
+// identically to a bare DecodeResponse when the route declares no response
+// merge-capable params.
+//
+// On failure, the body decode error is returned FIRST (matching
+// [DecodeMerged]'s precedent) before the header/cookie merge step runs; the
+// merge step itself collects every field's failure via [codex.DecodeVars].
+func (h *RouteHandle[Req, Resp]) DecodeMergedResponse(
+	body []byte,
+	headers, cookies map[string]string,
+) (Resp, error) {
+	var resp Resp
+	var err error
+	if len(body) > 0 {
+		resp, err = h.DecodeResponse(body)
+		if err != nil {
+			return resp, err
+		}
+	}
+	mergeFields := make([]codex.FieldCodec[Resp], 0, len(h.responseHeaderMergeFields)+len(h.responseCookieMergeFields))
+	mergeFields = append(mergeFields, h.responseHeaderMergeFields...)
+	mergeFields = append(mergeFields, h.responseCookieMergeFields...)
+	if len(mergeFields) == 0 {
+		return resp, nil
+	}
+	vars := make(map[string]string, len(headers)+len(cookies))
+	for k, v := range headers {
+		vars[k] = v
+	}
+	for k, v := range cookies {
+		vars[k] = v
+	}
+	if err := codex.DecodeVars(&resp, vars, mergeFields...); err != nil {
+		return resp, err
+	}
+	return resp, nil
 }
 
 // WithRequestFormats registers the formats the route accepts for request body
@@ -720,6 +1019,60 @@ func (q QueryParam) applyRoute(rb *routeBuilder) { rb.queryParams = append(rb.qu
 // WithCodec sets the validation codec and returns the updated QueryParam.
 func (q QueryParam) WithCodec(c codex.Codec[string]) QueryParam { q.Codec = &c; return q }
 
+// MergedQueryParam is returned by [NewRequiredQueryParam]/[NewOptionalQueryParam].
+// It embeds the unchanged [QueryParam] plus a merge field, so one
+// declaration serves both spec/validation and automatic merge — see
+// [MergedPathParam] for the full rationale.
+type MergedQueryParam[T any] struct {
+	QueryParam
+	field codex.FieldCodec[T]
+}
+
+// NewRequiredQueryParam declares a REQUIRED query parameter that is BOTH
+// validated against codec AND automatically merged into Req by
+// [RouteHandle.DecodeMerged]. See [NewPathParam] for the full rationale;
+// this is the query-parameter equivalent, following [codex.RequiredField]'s
+// naming convention.
+func NewRequiredQueryParam[T any](
+	name string,
+	codec codex.Codec[string],
+	get func(T) string,
+	set func(*T, string),
+) MergedQueryParam[T] {
+	return MergedQueryParam[T]{
+		QueryParam: QueryParam{Name: name, Codec: &codec, Required: true},
+		field:      codex.RequiredField(name, codec, get, set),
+	}
+}
+
+// NewOptionalQueryParam declares an OPTIONAL query parameter that is BOTH
+// validated against codec (when present) AND automatically merged into Req
+// by [RouteHandle.DecodeMerged] (when present — absent values leave the
+// field untouched, following [codex.OptionalField]'s semantics).
+func NewOptionalQueryParam[T any](
+	name string,
+	codec codex.Codec[string],
+	get func(T) string,
+	set func(*T, string),
+) MergedQueryParam[T] {
+	return MergedQueryParam[T]{
+		QueryParam: QueryParam{Name: name, Codec: &codec, Required: false},
+		field:      codex.OptionalField(name, codec, get, set),
+	}
+}
+
+// WithDescription sets the PARAMETER-level description and returns the
+// updated value, mirroring QueryParam.WithCodec's existing chain style.
+func (q MergedQueryParam[T]) WithDescription(desc string) MergedQueryParam[T] {
+	q.Description = desc
+	return q
+}
+
+func (q MergedQueryParam[T]) applyRoute(rb *routeBuilder) {
+	rb.queryParams = append(rb.queryParams, q.QueryParam)
+	rb.queryMergeFields = append(rb.queryMergeFields, q.field)
+}
+
 // QueryParamError is returned by [RouteHandle.ValidateQuery] when a query
 // parameter value fails codec validation.
 //
@@ -760,6 +1113,55 @@ func (cp CookieParam) applyRoute(rb *routeBuilder) { rb.cookieParams = append(rb
 
 // WithCodec sets the validation codec and returns the updated CookieParam.
 func (cp CookieParam) WithCodec(c codex.Codec[string]) CookieParam { cp.Codec = &c; return cp }
+
+// MergedCookieParam is returned by [NewRequiredCookieParam]/[NewOptionalCookieParam].
+// See [MergedPathParam] for the full rationale.
+type MergedCookieParam[T any] struct {
+	CookieParam
+	field codex.FieldCodec[T]
+}
+
+// NewRequiredCookieParam declares a REQUIRED cookie parameter that is BOTH
+// validated against codec AND automatically merged into Req by
+// [RouteHandle.DecodeMerged]. See [NewPathParam] for the full rationale.
+func NewRequiredCookieParam[T any](
+	name string,
+	codec codex.Codec[string],
+	get func(T) string,
+	set func(*T, string),
+) MergedCookieParam[T] {
+	return MergedCookieParam[T]{
+		CookieParam: CookieParam{Name: name, Codec: &codec, Required: true},
+		field:       codex.RequiredField(name, codec, get, set),
+	}
+}
+
+// NewOptionalCookieParam declares an OPTIONAL cookie parameter that is BOTH
+// validated against codec (when present) AND automatically merged into Req
+// (when present) by [RouteHandle.DecodeMerged].
+func NewOptionalCookieParam[T any](
+	name string,
+	codec codex.Codec[string],
+	get func(T) string,
+	set func(*T, string),
+) MergedCookieParam[T] {
+	return MergedCookieParam[T]{
+		CookieParam: CookieParam{Name: name, Codec: &codec, Required: false},
+		field:       codex.OptionalField(name, codec, get, set),
+	}
+}
+
+// WithDescription sets the PARAMETER-level description and returns the
+// updated value.
+func (cp MergedCookieParam[T]) WithDescription(desc string) MergedCookieParam[T] {
+	cp.Description = desc
+	return cp
+}
+
+func (cp MergedCookieParam[T]) applyRoute(rb *routeBuilder) {
+	rb.cookieParams = append(rb.cookieParams, cp.CookieParam)
+	rb.cookieMergeFields = append(rb.cookieMergeFields, cp.field)
+}
 
 // CookieParamError is returned by [RouteHandle.ValidateCookies] when a cookie
 // parameter value fails codec validation.
@@ -805,6 +1207,55 @@ func (h HeaderParam) applyRoute(rb *routeBuilder) { rb.headerParams = append(rb.
 
 // WithCodec sets the validation codec and returns the updated HeaderParam.
 func (h HeaderParam) WithCodec(c codex.Codec[string]) HeaderParam { h.Codec = &c; return h }
+
+// MergedHeaderParam is returned by [NewRequiredHeaderParam]/[NewOptionalHeaderParam].
+// See [MergedPathParam] for the full rationale.
+type MergedHeaderParam[T any] struct {
+	HeaderParam
+	field codex.FieldCodec[T]
+}
+
+// NewRequiredHeaderParam declares a REQUIRED header parameter that is BOTH
+// validated against codec AND automatically merged into Req by
+// [RouteHandle.DecodeMerged]. See [NewPathParam] for the full rationale.
+func NewRequiredHeaderParam[T any](
+	name string,
+	codec codex.Codec[string],
+	get func(T) string,
+	set func(*T, string),
+) MergedHeaderParam[T] {
+	return MergedHeaderParam[T]{
+		HeaderParam: HeaderParam{Name: name, Codec: &codec, Required: true},
+		field:       codex.RequiredField(name, codec, get, set),
+	}
+}
+
+// NewOptionalHeaderParam declares an OPTIONAL header parameter that is BOTH
+// validated against codec (when present) AND automatically merged into Req
+// (when present) by [RouteHandle.DecodeMerged].
+func NewOptionalHeaderParam[T any](
+	name string,
+	codec codex.Codec[string],
+	get func(T) string,
+	set func(*T, string),
+) MergedHeaderParam[T] {
+	return MergedHeaderParam[T]{
+		HeaderParam: HeaderParam{Name: name, Codec: &codec, Required: false},
+		field:       codex.OptionalField(name, codec, get, set),
+	}
+}
+
+// WithDescription sets the PARAMETER-level description and returns the
+// updated value.
+func (h MergedHeaderParam[T]) WithDescription(desc string) MergedHeaderParam[T] {
+	h.Description = desc
+	return h
+}
+
+func (h MergedHeaderParam[T]) applyRoute(rb *routeBuilder) {
+	rb.headerParams = append(rb.headerParams, h.HeaderParam)
+	rb.headerMergeFields = append(rb.headerMergeFields, h.field)
+}
 
 // HeaderParamError is returned by [RouteHandle.ValidateHeaders] when a header
 // value fails codec validation.
@@ -930,6 +1381,121 @@ func (e ResponseCookieParamError) Error() string {
 
 // Unwrap allows errors.As and errors.Is to traverse the underlying constraint error.
 func (e ResponseCookieParamError) Unwrap() error { return e.Err }
+
+// MergedResponseHeaderParam is returned by
+// [NewRequiredResponseHeaderParam]/[NewOptionalResponseHeaderParam]. It is
+// the RESPONSE-direction mirror of [MergedHeaderParam]: on the server, the
+// registered field's getter extracts the header value from the handler's
+// returned Resp and the adapter sets it on the HTTP response automatically
+// (no manual [ResponseHeadersFromContext] call needed); on the client, the
+// field's setter merges the HTTP response header back into the decoded Resp
+// via [RouteHandle.DecodeMergedResponse]. See [MergedPathParam] for the
+// full request-direction rationale — this type applies the identical
+// pattern to the response side.
+type MergedResponseHeaderParam[Resp any] struct {
+	ResponseHeaderParam
+	field codex.FieldCodec[Resp]
+}
+
+// NewRequiredResponseHeaderParam declares a REQUIRED response header that is
+// BOTH validated against codec AND automatically merged: encoded from Resp
+// on the server (via the adapter, using get), and merged into Resp on the
+// client (via [RouteHandle.DecodeMergedResponse], using set). "Required"
+// governs the DECODE direction only — the client treats a missing header as
+// a merge failure; the server always encodes it (get is always called).
+func NewRequiredResponseHeaderParam[Resp any](
+	name string,
+	codec codex.Codec[string],
+	get func(Resp) string,
+	set func(*Resp, string),
+) MergedResponseHeaderParam[Resp] {
+	return MergedResponseHeaderParam[Resp]{
+		ResponseHeaderParam: ResponseHeaderParam{Name: name, Codec: &codec, Required: true},
+		field:               codex.RequiredField(name, codec, get, set),
+	}
+}
+
+// NewOptionalResponseHeaderParam declares an OPTIONAL response header that is
+// BOTH validated against codec (when present) AND automatically merged
+// (when present), for both the server encode and client decode directions.
+func NewOptionalResponseHeaderParam[Resp any](
+	name string,
+	codec codex.Codec[string],
+	get func(Resp) string,
+	set func(*Resp, string),
+) MergedResponseHeaderParam[Resp] {
+	return MergedResponseHeaderParam[Resp]{
+		ResponseHeaderParam: ResponseHeaderParam{Name: name, Codec: &codec, Required: false},
+		field:               codex.OptionalField(name, codec, get, set),
+	}
+}
+
+// WithDescription sets the PARAMETER-level description and returns the
+// updated value.
+func (p MergedResponseHeaderParam[Resp]) WithDescription(desc string) MergedResponseHeaderParam[Resp] {
+	p.Description = desc
+	return p
+}
+
+func (p MergedResponseHeaderParam[Resp]) applyRoute(rb *routeBuilder) {
+	rb.respHeaders = append(rb.respHeaders, p.ResponseHeaderParam)
+	rb.responseHeaderMergeFields = append(rb.responseHeaderMergeFields, p.field)
+}
+
+// MergedResponseCookieParam is returned by
+// [NewRequiredResponseCookieParam]/[NewOptionalResponseCookieParam]. See
+// [MergedResponseHeaderParam] for the full rationale — this is the
+// Set-Cookie equivalent.
+type MergedResponseCookieParam[Resp any] struct {
+	ResponseCookieParam
+	field codex.FieldCodec[Resp]
+}
+
+// NewRequiredResponseCookieParam declares a REQUIRED response cookie that is
+// BOTH validated against codec AND automatically merged: encoded from Resp
+// on the server, merged into Resp on the client via
+// [RouteHandle.DecodeMergedResponse]. Merge-derived cookies get default
+// [PendingCookie.Opts] (no Path/Secure/SameSite override) — use
+// [ResponseHeadersFromContext]'s cookie helper directly for custom cookie
+// attributes.
+func NewRequiredResponseCookieParam[Resp any](
+	name string,
+	codec codex.Codec[string],
+	get func(Resp) string,
+	set func(*Resp, string),
+) MergedResponseCookieParam[Resp] {
+	return MergedResponseCookieParam[Resp]{
+		ResponseCookieParam: ResponseCookieParam{Name: name, Codec: &codec, Required: true},
+		field:               codex.RequiredField(name, codec, get, set),
+	}
+}
+
+// NewOptionalResponseCookieParam declares an OPTIONAL response cookie that is
+// BOTH validated against codec (when present) AND automatically merged
+// (when present), for both the server encode and client decode directions.
+func NewOptionalResponseCookieParam[Resp any](
+	name string,
+	codec codex.Codec[string],
+	get func(Resp) string,
+	set func(*Resp, string),
+) MergedResponseCookieParam[Resp] {
+	return MergedResponseCookieParam[Resp]{
+		ResponseCookieParam: ResponseCookieParam{Name: name, Codec: &codec, Required: false},
+		field:               codex.OptionalField(name, codec, get, set),
+	}
+}
+
+// WithDescription sets the PARAMETER-level description and returns the
+// updated value.
+func (p MergedResponseCookieParam[Resp]) WithDescription(desc string) MergedResponseCookieParam[Resp] {
+	p.Description = desc
+	return p
+}
+
+func (p MergedResponseCookieParam[Resp]) applyRoute(rb *routeBuilder) {
+	rb.respCookies = append(rb.respCookies, p.ResponseCookieParam)
+	rb.responseCookieMergeFields = append(rb.responseCookieMergeFields, p.field)
+}
 
 // SecurityScheme combines [route.SecurityScheme] spec metadata with optional
 // runtime credential extraction and format validation.
@@ -1292,6 +1858,31 @@ func (r Route[Req, Resp]) Register(b *Builder) (*RouteHandle[Req, Resp], error) 
 		}
 		h.WithFormats(fmts...)
 	}
+	var err error
+	h.pathMergeFields, err = assertMergeFields[Req](rb.pathMergeFields)
+	if err != nil {
+		return nil, err
+	}
+	h.queryMergeFields, err = assertMergeFields[Req](rb.queryMergeFields)
+	if err != nil {
+		return nil, err
+	}
+	h.headerMergeFields, err = assertMergeFields[Req](rb.headerMergeFields)
+	if err != nil {
+		return nil, err
+	}
+	h.cookieMergeFields, err = assertMergeFields[Req](rb.cookieMergeFields)
+	if err != nil {
+		return nil, err
+	}
+	h.responseHeaderMergeFields, err = assertMergeFields[Resp](rb.responseHeaderMergeFields)
+	if err != nil {
+		return nil, err
+	}
+	h.responseCookieMergeFields, err = assertMergeFields[Resp](rb.responseCookieMergeFields)
+	if err != nil {
+		return nil, err
+	}
 
 	entry := &typedRouteEntry[Req, Resp]{handle: h}
 	b.entries = append(b.entries, entry)
@@ -1331,16 +1922,54 @@ func (r Route[Req, Resp]) ClientHandle() *RouteHandle[Req, Resp] {
 	jsonResp := format.JSON(r.respCodec)
 
 	return &RouteHandle[Req, Resp]{
-		Descriptor:     frozen,
-		Decode:         func(body []byte) (Req, error) { return jsonReq.Unmarshal(body) },
-		Encode:         func(resp Resp) ([]byte, error) { return jsonResp.Marshal(resp) },
-		EncodeRequest:  func(req Req) ([]byte, error) { return jsonReq.Marshal(req) },
-		DecodeResponse: func(body []byte) (Resp, error) { return jsonResp.Unmarshal(body) },
-		pathParams:     rb.pathParams,
-		queryParams:    rb.queryParams,
-		cookieParams:   rb.cookieParams,
-		headerParams:   rb.headerParams,
+		Descriptor:                frozen,
+		Decode:                    func(body []byte) (Req, error) { return jsonReq.Unmarshal(body) },
+		Encode:                    func(resp Resp) ([]byte, error) { return jsonResp.Marshal(resp) },
+		EncodeRequest:             func(req Req) ([]byte, error) { return jsonReq.Marshal(req) },
+		DecodeResponse:            func(body []byte) (Resp, error) { return jsonResp.Unmarshal(body) },
+		pathParams:                rb.pathParams,
+		queryParams:               rb.queryParams,
+		cookieParams:              rb.cookieParams,
+		headerParams:              rb.headerParams,
+		pathMergeFields:           mustAssertMergeFields[Req]("ClientHandle", rb.pathMergeFields),
+		queryMergeFields:          mustAssertMergeFields[Req]("ClientHandle", rb.queryMergeFields),
+		headerMergeFields:         mustAssertMergeFields[Req]("ClientHandle", rb.headerMergeFields),
+		cookieMergeFields:         mustAssertMergeFields[Req]("ClientHandle", rb.cookieMergeFields),
+		responseHeaderMergeFields: mustAssertMergeFields[Resp]("ClientHandle", rb.responseHeaderMergeFields),
+		responseCookieMergeFields: mustAssertMergeFields[Resp]("ClientHandle", rb.responseCookieMergeFields),
 	}
+}
+
+// assertMergeFields type-asserts each element of raw (declared as []any on
+// routeBuilder to keep the builder non-generic) against
+// codex.FieldCodec[Req]. Returns MergeFieldTypeError on the first mismatch —
+// a caller programming error (mixing a merge field built for one Req type
+// into a Route declared with another).
+func assertMergeFields[Req any](raw []any) ([]codex.FieldCodec[Req], error) {
+	if len(raw) == 0 {
+		return nil, nil
+	}
+	out := make([]codex.FieldCodec[Req], len(raw))
+	for i, mf := range raw {
+		fc, ok := mf.(codex.FieldCodec[Req])
+		if !ok {
+			return nil, MergeFieldTypeError{
+				Err: fmt.Errorf("want codex.FieldCodec[%T], got %T", *new(Req), mf)}
+		}
+		out[i] = fc
+	}
+	return out, nil
+}
+
+// mustAssertMergeFields is assertMergeFields for infallible callers
+// (ClientHandle has no error return) — panics on a type mismatch, same
+// class as ports.NewFile's panic-on-misuse precedent.
+func mustAssertMergeFields[Req any](caller string, raw []any) []codex.FieldCodec[Req] {
+	fields, err := assertMergeFields[Req](raw)
+	if err != nil {
+		panic(fmt.Sprintf("api/rest: %s: %s", caller, err.Error()))
+	}
+	return fields
 }
 
 // SSERouteHandle is returned by [SSERoute.Register]. It holds the route descriptor
