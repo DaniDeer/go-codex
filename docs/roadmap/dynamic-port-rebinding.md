@@ -9,6 +9,11 @@
 
 `ports` keeps pipeline code transport-agnostic, but adapter changes still require process restart. Some deployments need live transport cutover (broker failover, endpoint rotation, credential rollover, phased migration) without dropping long-lived streams or app-level availability. Dynamic rebinding adds explicit, typed adapter hot-swap on already-running ports while preserving existing static `Bind` behavior.
 
+**Operational baseline today:** fail-fast + process/container restart remains a
+valid default strategy and is intentionally simple. Dynamic rebinding is for
+cases where restart-based recovery is insufficient (strict availability
+targets, coordinated cutover windows, zero-restart operations).
+
 ---
 
 ## Scope decisions (Phase 1 vs deferred)
@@ -22,6 +27,11 @@
 | Compatibility-preserving path: existing `Bind` still valid and unchanged | Source/Sink multi-adapter weighted traffic shaping |
 
 Phase 2 extends to `SourcePort` and `SinkPort` with named binding sets (add/remove/replace by binding key).
+
+**Complexity note:** implementation is medium-high complexity (lifecycle state
+machine, race-free generation control, failure-phase semantics). Operation is
+low-medium for manual rebinding, higher only when/if automatic policies are
+introduced.
 
 ---
 
@@ -123,6 +133,14 @@ Payload conventions:
 - `metadata`: adapter name + generation + phase
 - error paths always report typed error (`PortRebindError`/`PortUnbindError`/`PortBindingStateError`)
 
+Recommended metrics/tracing to standardize in Phase 1:
+- `rebind_attempt_total{port,adapter,result,phase}`
+- `rebind_duration_seconds{port,adapter}`
+- `active_binding_generation{port,adapter}`
+- `unbind_stale_ref_total{port}`
+- trace spans: parent `port.rebind`, child spans per phase (`activate_new`,
+  `stop_old`, `commit_swap`)
+
 Optional Phase 2 extension (only if needed):
 ```go
 type PortObserver interface {
@@ -171,6 +189,8 @@ Type-assertion guard required if introduced.
 - `Bind` maps to current behavior (single static binding) and can internally call `BindRef` with ignored ref.
 - `Rebind` is opt-in; applications not needing live swap change nothing.
 - Spec generation unaffected (`Pattern` metadata unchanged); this feature is runtime lifecycle only.
+- Existing fail-fast/restart operational model remains first-class and
+  supported; dynamic rebinding is additive, not a replacement mandate.
 
 ---
 
@@ -195,4 +215,3 @@ Type-assertion guard required if introduced.
 2. For `DuplexPort`, what grace period semantics apply to active sessions during swap (drain vs immediate cut)?
 3. Should stale-ref `Unbind` be soft-success (idempotent) or hard error (`PortBindingStateError`)?
 4. Need new `stats.PortObserver`, or is `RecordRequest` metadata enough long-term?
-
