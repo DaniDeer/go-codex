@@ -130,25 +130,6 @@ func (h *Hub) send(sess ports.Session, data []byte) (ok, known bool) {
 	}
 }
 
-// broadcast queues data for every session, dropping per-session on full
-// queues. Returns the sessions whose frame was dropped.
-func (h *Hub) broadcast(data []byte) (dropped []ports.Session) {
-	h.mu.Lock()
-	targets := make(map[ports.Session]*hubEntry, len(h.entries))
-	for s, e := range h.entries {
-		targets[s] = e
-	}
-	h.mu.Unlock()
-	for s, e := range targets {
-		select {
-		case e.out <- data:
-		default:
-			dropped = append(dropped, s)
-		}
-	}
-	return dropped
-}
-
 // closeAll unregisters every session (close handshake per socket).
 func (h *Hub) closeAll() {
 	h.mu.Lock()
