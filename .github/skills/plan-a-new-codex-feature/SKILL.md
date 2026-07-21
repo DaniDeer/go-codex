@@ -287,9 +287,9 @@ across `nethttp`/`mqtt5`/`zeromq`/`mqtt` delegate to
 `CallHandle`/`PublishHandle` and derive vars per-item whenever their `Vars`
 option is left `nil`. `ports.File`/`adapters/file` and `ports.Cache`/
 `adapters/redis` shipped the same convenience too. SSE and WebSocket
-connection-level merge are now implemented as well; remaining work is
-hardening coverage and examples (see
-`docs/roadmap/sse-websocket-merge-hardening.md`).
+connection-level merge and hardening are also shipped; use
+`docs/features/sse-streaming.md` and `docs/features/websocket.md` as the
+current reference.
 
 Use the `add-a-new-adapter` skill's **Step 5b** for the full checklist
 (declare-once constructors, escape hatch, encode/decode symmetry via

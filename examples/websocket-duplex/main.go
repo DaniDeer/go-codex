@@ -4,7 +4,10 @@
 //   - ONE declaration: ports.NewDuplexPort + SocketPattern{Path: "/live/{room}"}
 //   - clients send typed Command frames, the pipeline replies with typed
 //     Update frames — TARGETED to the sender's session, plus a broadcast
-//   - session routing uses hub.SessionInfo (which {room} a session joined)
+//   - one-struct convenience: SocketPattern InOpts/OutOpts auto-merge {room}
+//     into inbound/outbound payload structs
+//   - escape hatch side-by-side: session routing still can use hub.SessionInfo
+//     directly (manual path), same payload, same adapter
 //   - lifecycle wired through the app package (supervised Feed goroutine)
 //   - observer pattern: app.Options.Observer pre-injects a stats.Observer
 //     into ctx; the adapter fires RecordRequest (upgrade), RecordSubscribe/
@@ -47,8 +50,13 @@ import (
 
 // Command is an inbound client frame.
 type Command struct {
-	Action string
-	Value  int
+	Action     string
+	Value      int
+	Connection ConnectionMeta
+}
+
+type ConnectionMeta struct {
+	Room string
 }
 
 var commandCodec = codex.Struct[Command](
@@ -60,18 +68,27 @@ var commandCodec = codex.Struct[Command](
 		func(c Command) int { return c.Value },
 		func(c *Command, v int) { c.Value = v },
 	),
+	codex.OptionalField("room", codex.String(),
+		func(c Command) string { return c.Connection.Room },
+		func(c *Command, v string) { c.Connection.Room = v },
+	),
 )
 
 // Update is an outbound server frame.
 type Update struct {
-	Room string
-	Text string
+	Connection ConnectionMeta
+	ManualRoom string
+	Text       string
 }
 
 var updateCodec = codex.Struct[Update](
 	codex.RequiredField("room", codex.String(),
-		func(u Update) string { return u.Room },
-		func(u *Update, v string) { u.Room = v },
+		func(u Update) string { return u.Connection.Room },
+		func(u *Update, v string) { u.Connection.Room = v },
+	),
+	codex.RequiredField("manual_room", codex.String(),
+		func(u Update) string { return u.ManualRoom },
+		func(u *Update, v string) { u.ManualRoom = v },
 	),
 	codex.RequiredField("text", codex.String(),
 		func(u Update) string { return u.Text },
@@ -83,8 +100,22 @@ var updateCodec = codex.Struct[Update](
 // in real domain code.
 var Live = codex.Must(ports.NewDuplexPort[Command, Update]("live",
 	commandCodec, updateCodec, ports.PortOptions{
-		Patterns: []ports.Pattern{ports.SocketPattern{Path: "/live/{room}"}},
-		Buffer:   8,
+		Patterns: []ports.Pattern{
+			ports.SocketPattern{
+				Path: "/live/{room}",
+				InOpts: []ports.SocketInOpt{
+					ports.NewRequiredSocketInParam("room", codex.String(),
+						func(c Command) string { return c.Connection.Room },
+						func(c *Command, v string) { c.Connection.Room = v }),
+				},
+				OutOpts: []ports.SocketOutOpt{
+					ports.NewRequiredSocketOutParam("room", codex.String(),
+						func(u Update) string { return u.Connection.Room },
+						func(u *Update, v string) { u.Connection.Room = v }),
+				},
+			},
+		},
+		Buffer: 8,
 	}))
 
 // ── Observer: pure counters over the transport-agnostic hooks ────────────────
@@ -173,8 +204,11 @@ func main() {
 			return ports.Framed[Update]{
 				Session: f.Session, // targeted reply to the sender
 				Payload: Update{
-					Room: info["room"],
-					Text: fmt.Sprintf("ack %s=%d", f.Payload.Action, f.Payload.Value),
+					// One-struct path: room comes from auto-merged inbound struct.
+					Connection: ConnectionMeta{Room: f.Payload.Connection.Room},
+					// Escape hatch path: the same value can be read manually.
+					ManualRoom: info["room"],
+					Text:       fmt.Sprintf("ack %s=%d", f.Payload.Action, f.Payload.Value),
 				},
 			}, nil
 		}, stream.MapOptions{Name: "ack"})

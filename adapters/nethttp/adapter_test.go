@@ -1,6 +1,7 @@
 package nethttp_test
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -2297,6 +2298,69 @@ func TestSSEHandler_EventMerge_MissingRequiredFailsSend(t *testing.T) {
 	mux.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/stream", nil))
 	if rec.Code != http.StatusInternalServerError {
 		t.Fatalf("want 500, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestSSEHandler_EventMerge_NestedGobFormat(t *testing.T) {
+	type evtMeta struct {
+		ID string
+	}
+	type evtPayload struct {
+		Blob []byte
+	}
+	type mergedEvent struct {
+		Meta    evtMeta
+		Payload evtPayload
+	}
+	evtCodec := codex.Struct[mergedEvent](
+		codex.OptionalField("id", codex.String(), func(e mergedEvent) string { return e.Meta.ID }, func(e *mergedEvent, v string) { e.Meta.ID = v }),
+		codex.RequiredField("blob", codex.Bytes(), func(e mergedEvent) []byte { return e.Payload.Blob }, func(e *mergedEvent, v []byte) { e.Payload.Blob = v }),
+	)
+	b := rest.NewBuilder(testInfo)
+	uuidCodec := codex.String().Refine(validate.UUID)
+	handle, err := rest.NewSSERoute[getReq, mergedEvent]("/stream/{id}",
+		getReqCodec, evtCodec,
+		rest.PathParam{Name: "id", Codec: &uuidCodec},
+		rest.NewRequiredSSEEventParam("id", codex.String(), func(e mergedEvent) string { return e.Meta.ID }, func(e *mergedEvent, v string) { e.Meta.ID = v }),
+	).Register(b)
+	if err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+	gobFmt := format.Gob(evtCodec)
+	handle = handle.WithFormats(gobFmt)
+	h := nethttp.SSEHandler(handle, func(_ context.Context, _ getReq, send func(mergedEvent) error) error {
+		return send(mergedEvent{
+			Meta:    evtMeta{ID: "wrong"},
+			Payload: evtPayload{Blob: []byte{0xCA, 0xFE, 0xBA, 0xBE}},
+		})
+	}, nethttp.Options{})
+	mux := http.NewServeMux()
+	mux.Handle("GET /stream/{id}", h)
+
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/stream/550e8400-e29b-41d4-a716-446655440000", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("want 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	body := rec.Body.Bytes()
+	prefix := []byte("data: ")
+	start := bytes.Index(body, prefix)
+	if start < 0 {
+		t.Fatalf("missing SSE data prefix in %q", string(body))
+	}
+	frame := body[start+len(prefix):]
+	if i := bytes.Index(frame, []byte("\n\n")); i >= 0 {
+		frame = frame[:i]
+	}
+	got, err := gobFmt.Unmarshal(frame)
+	if err != nil {
+		t.Fatalf("unmarshal gob frame: %v", err)
+	}
+	if got.Meta.ID != "550e8400-e29b-41d4-a716-446655440000" {
+		t.Fatalf("expected merged id, got %q", got.Meta.ID)
+	}
+	if !bytes.Equal(got.Payload.Blob, []byte{0xCA, 0xFE, 0xBA, 0xBE}) {
+		t.Fatalf("blob mismatch: %v", got.Payload.Blob)
 	}
 }
 

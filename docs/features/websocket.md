@@ -119,6 +119,9 @@ patterns := []ports.Pattern{
 
 Inbound decode and outbound encode keep the same escape hatch: if no
 `InOpts`/`OutOpts` are declared, payloads stay untouched.
+`examples/websocket-duplex` shows both approaches side-by-side:
+auto-merged room via `InOpts`/`OutOpts` and manual `hub.SessionInfo(session)`
+lookup.
 
 ---
 

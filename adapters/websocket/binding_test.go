@@ -16,6 +16,7 @@ import (
 	adapterws "github.com/DaniDeer/go-codex/adapters/websocket"
 	"github.com/DaniDeer/go-codex/api/rest"
 	"github.com/DaniDeer/go-codex/codex"
+	"github.com/DaniDeer/go-codex/format"
 	"github.com/DaniDeer/go-codex/ports"
 	"github.com/DaniDeer/go-codex/stats"
 	"github.com/DaniDeer/go-codex/stream"
@@ -516,6 +517,120 @@ func TestDuplex_OutboundMerge_TargetedAndBroadcast(t *testing.T) {
 	}
 	if !strings.Contains(string(b[0]), `"room":"lab"`) {
 		t.Fatalf("broadcast frame for session B should carry lab room: %s", b[0])
+	}
+}
+
+func TestDuplex_Merge_NestedGobFormat(t *testing.T) {
+	type meta struct {
+		Room   string
+		Tenant string
+		Trace  string
+	}
+	type msg struct {
+		Action string
+		Meta   meta
+		Blob   []byte
+	}
+	msgCodec := codex.Struct[msg](
+		codex.RequiredField("action", codex.String(), func(v msg) string { return v.Action }, func(v *msg, s string) { v.Action = s }),
+		codex.OptionalField("room", codex.String(), func(v msg) string { return v.Meta.Room }, func(v *msg, s string) { v.Meta.Room = s }),
+		codex.OptionalField("tenant", codex.String(), func(v msg) string { return v.Meta.Tenant }, func(v *msg, s string) { v.Meta.Tenant = s }),
+		codex.OptionalField("trace", codex.String(), func(v msg) string { return v.Meta.Trace }, func(v *msg, s string) { v.Meta.Trace = s }),
+		codex.RequiredField("blob", codex.Bytes(), func(v msg) []byte { return v.Blob }, func(v *msg, b []byte) { v.Blob = b }),
+	)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	mux := http.NewServeMux()
+	hub := adapterws.NewHub(0)
+	sock := newFakeSocket()
+	up := &fakeUpgrader{socks: []*fakeSocket{sock}}
+
+	nonEmpty := codex.String().Refine(validate.NonEmptyString)
+	port, err := ports.NewDuplexPort[msg, msg]("live-gob-merge", msgCodec, msgCodec, ports.PortOptions{
+		Patterns: []ports.Pattern{
+			ports.SocketPattern{
+				Path:         "/live/{room}",
+				CustomFormat: format.Gob(msgCodec),
+				Opts: []rest.RouteOpt{
+					rest.PathParam{Name: "room", Codec: &nonEmpty},
+					rest.QueryParam{Name: "tenant", Required: true, Codec: &nonEmpty},
+					rest.HeaderParam{Name: "X-Trace", Required: true, Codec: &nonEmpty},
+				},
+				InOpts: []ports.SocketInOpt{
+					ports.NewRequiredSocketInParam("room", codex.String(), func(v msg) string { return v.Meta.Room }, func(v *msg, s string) { v.Meta.Room = s }),
+					ports.NewRequiredSocketInParam("tenant", codex.String(), func(v msg) string { return v.Meta.Tenant }, func(v *msg, s string) { v.Meta.Tenant = s }),
+					ports.NewRequiredSocketInParam("X-Trace", codex.String(), func(v msg) string { return v.Meta.Trace }, func(v *msg, s string) { v.Meta.Trace = s }),
+				},
+				OutOpts: []ports.SocketOutOpt{
+					ports.NewRequiredSocketOutParam("room", codex.String(), func(v msg) string { return v.Meta.Room }, func(v *msg, s string) { v.Meta.Room = s }),
+					ports.NewRequiredSocketOutParam("tenant", codex.String(), func(v msg) string { return v.Meta.Tenant }, func(v *msg, s string) { v.Meta.Tenant = s }),
+					ports.NewRequiredSocketOutParam("X-Trace", codex.String(), func(v msg) string { return v.Meta.Trace }, func(v *msg, s string) { v.Meta.Trace = s }),
+				},
+			},
+		},
+		Buffer: 4,
+	})
+	if err != nil {
+		t.Fatalf("port: %v", err)
+	}
+	handle, _ := ports.SocketHandle[msg, msg](port)
+	if err := port.Bind(ctx, adapterws.DuplexSocketAdapter(mux, hub, up, handle, adapterws.DuplexSocketAdapterOptions{})); err != nil {
+		t.Fatalf("bind: %v", err)
+	}
+	time.Sleep(20 * time.Millisecond)
+
+	req := httptest.NewRequest(http.MethodGet, "/live/kitchen?tenant=acme", nil)
+	req.Header.Set("X-Trace", "trace-1")
+	mux.ServeHTTP(httptest.NewRecorder(), req)
+
+	rawIn, err := handle.InFormat.Marshal(msg{
+		Action: "on",
+		Meta:   meta{Room: "wrong", Tenant: "wrong", Trace: "wrong"},
+		Blob:   []byte{0x01, 0x02},
+	})
+	if err != nil {
+		t.Fatalf("marshal in: %v", err)
+	}
+	sock.inbound <- rawIn
+
+	inbound := port.Inbound(ctx)
+	var sess ports.Session
+	select {
+	case f := <-inbound.Values:
+		sess = f.Session
+		if f.Payload.Meta.Room != "kitchen" || f.Payload.Meta.Tenant != "acme" || f.Payload.Meta.Trace != "trace-1" {
+			t.Fatalf("want merged inbound vars, got %+v", f.Payload.Meta)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timeout waiting for inbound frame")
+	}
+
+	outVals := make(chan ports.Framed[msg], 1)
+	outVals <- ports.Framed[msg]{
+		Session: sess,
+		Payload: msg{
+			Action: "ack",
+			Meta:   meta{Room: "wrong", Tenant: "wrong", Trace: "wrong"},
+			Blob:   []byte{0x0A, 0x0B},
+		},
+	}
+	close(outVals)
+	outErrs := make(chan error)
+	close(outErrs)
+	go port.Feed(ctx, stream.Stream[ports.Framed[msg]]{Values: outVals, Errors: outErrs})
+
+	waitFor(t, func() bool { return len(sock.writtenFrames()) == 1 })
+	gotRaw := sock.writtenFrames()[0]
+	got, err := handle.OutFormat.Unmarshal(gotRaw)
+	if err != nil {
+		t.Fatalf("unmarshal out: %v", err)
+	}
+	if got.Meta.Room != "kitchen" || got.Meta.Tenant != "acme" || got.Meta.Trace != "trace-1" {
+		t.Fatalf("want merged outbound vars, got %+v", got.Meta)
+	}
+	if string(got.Blob) != string([]byte{0x0A, 0x0B}) {
+		t.Fatalf("blob mismatch: %v", got.Blob)
 	}
 }
 

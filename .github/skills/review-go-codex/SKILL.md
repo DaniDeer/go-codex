@@ -402,9 +402,9 @@ merge-field wiring. `ports.File`/`adapters/file` and `ports.Cache`/
 `ports.WriteHandle`, `redis.GetMerged`/`redis.SetHandle`). Only flag a NEW
 port-binding adapter as a finding if it reproduces the OLD
 static-`Vars`-only gap instead of delegating to its own Handle-suffixed
-wrapper. SSE/WebSocket connection-level merge is now shipped too; remaining
-follow-up is hardening coverage/examples tracked in
-`docs/roadmap/sse-websocket-merge-hardening.md`.
+wrapper. SSE/WebSocket connection-level merge and hardening are now shipped;
+use `docs/features/sse-streaming.md` and `docs/features/websocket.md` as
+reference coverage.
 
 REST (`api/rest` + `adapters/nethttp`/`chi`) is the reference — use it to
 judge every other boundary's completeness. See `docs/concepts/api-contracts.md`

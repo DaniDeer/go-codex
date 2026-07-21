@@ -32,6 +32,7 @@ import (
 	nethttp "github.com/DaniDeer/go-codex/adapters/nethttp"
 	"github.com/DaniDeer/go-codex/api/rest"
 	"github.com/DaniDeer/go-codex/codex"
+	"github.com/DaniDeer/go-codex/format"
 	"github.com/DaniDeer/go-codex/stats"
 	"github.com/DaniDeer/go-codex/validate"
 )
@@ -46,6 +47,20 @@ type sensorReading struct {
 	SensorID    string
 	Temperature float64
 	Unit        string
+}
+
+type readingMeta struct {
+	SensorID string
+}
+
+type readingPayload struct {
+	Temperature float64
+	Unit        string
+}
+
+type readingEvent struct {
+	Meta    readingMeta
+	Payload readingPayload
 }
 
 // ── Codecs ────────────────────────────────────────────────────────────────────
@@ -64,6 +79,12 @@ var sensorReadingCodec = codex.Struct[sensorReading](
 	codex.RequiredField("sensor_id", codex.String().Refine(validate.NonEmptyString), func(r sensorReading) string { return r.SensorID }, func(r *sensorReading, v string) { r.SensorID = v }),
 	codex.RequiredField("temperature", codex.Float64().Refine(temperatureConstraint), func(r sensorReading) float64 { return r.Temperature }, func(r *sensorReading, v float64) { r.Temperature = v }),
 	codex.RequiredField("unit", codex.String().Refine(validate.NonEmptyString), func(r sensorReading) string { return r.Unit }, func(r *sensorReading, v string) { r.Unit = v }),
+)
+
+var readingEventCodec = codex.Struct[readingEvent](
+	codex.RequiredField("sensor_id", codex.String().Refine(validate.NonEmptyString), func(r readingEvent) string { return r.Meta.SensorID }, func(r *readingEvent, v string) { r.Meta.SensorID = v }),
+	codex.RequiredField("temperature", codex.Float64().Refine(temperatureConstraint), func(r readingEvent) float64 { return r.Payload.Temperature }, func(r *readingEvent, v float64) { r.Payload.Temperature = v }),
+	codex.RequiredField("unit", codex.String().Refine(validate.NonEmptyString), func(r readingEvent) string { return r.Payload.Unit }, func(r *readingEvent, v string) { r.Payload.Unit = v }),
 )
 
 // sensorIDCodec validates that a sensor ID is in the "<word>-<word>" format.
@@ -155,6 +176,36 @@ func handleInvalid(_ context.Context, _ struct{}, send func(sensorReading) error
 	return nil
 }
 
+// handleSensorMergedConvenience sends events without setting SensorID.
+// NewRequiredSSEEventParam merges {id} into Meta.SensorID automatically.
+func handleSensorMergedConvenience(_ context.Context, _ struct{}, send func(readingEvent) error) error {
+	for _, temp := range []float64{21.0, 21.5} {
+		if err := send(readingEvent{Payload: readingPayload{Temperature: temp, Unit: "C"}}); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// handleSensorManualEscape demonstrates the escape hatch:
+// manually reading {id} and setting Meta.SensorID before send.
+func handleSensorManualEscape(ctx context.Context, _ struct{}, send func(readingEvent) error) error {
+	r, _ := nethttp.RequestFromContext(ctx)
+	sensorID := "unknown"
+	if r != nil {
+		sensorID = r.PathValue("id")
+	}
+	for _, temp := range []float64{21.0, 21.5} {
+		if err := send(readingEvent{
+			Meta:    readingMeta{SensorID: sensorID},
+			Payload: readingPayload{Temperature: temp, Unit: "C"},
+		}); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 // ── Helper: read all SSE data lines from a response ──────────────────────────
 
 func readSSELines(resp *http.Response) []string {
@@ -221,6 +272,27 @@ func main() {
 		log.Fatalf("AddSSERoute with-headers: %v", err)
 	}
 
+	mergedRoute, err := rest.NewSSERoute[struct{}, readingEvent]("/sse/merge/{id}",
+		codex.Empty, readingEventCodec,
+		rest.RouteMeta{OperationID: "streamMerged", Summary: "One-struct SSE merge convenience"},
+		rest.PathParam{Name: "id", Description: "Sensor ID (<word>-<word>)"}.WithCodec(sensorIDCodec),
+		rest.NewRequiredSSEEventParam("id", codex.String(), func(e readingEvent) string { return e.Meta.SensorID }, func(e *readingEvent, v string) { e.Meta.SensorID = v }),
+	).Register(b)
+	if err != nil {
+		log.Fatalf("AddSSERoute merge: %v", err)
+	}
+	mergedRoute = mergedRoute.WithFormats(format.YAML(readingEventCodec))
+
+	manualRoute, err := rest.NewSSERoute[struct{}, readingEvent]("/sse/manual/{id}",
+		codex.Empty, readingEventCodec,
+		rest.RouteMeta{OperationID: "streamManual", Summary: "SSE merge escape hatch"},
+		rest.PathParam{Name: "id", Description: "Sensor ID (<word>-<word>)"}.WithCodec(sensorIDCodec),
+	).Register(b)
+	if err != nil {
+		log.Fatalf("AddSSERoute manual: %v", err)
+	}
+	manualRoute = manualRoute.WithFormats(format.YAML(readingEventCodec))
+
 	// ── BuildPath codec validation ─────────────────────────────────────────
 	fmt.Println("=== BuildPath with sensorIDCodec ===")
 	if path, err := sensorRoute.BuildPath(map[string]string{"id": "room-42"}); err != nil {
@@ -237,6 +309,8 @@ func main() {
 	nethttp.RegisterSSE(mux, counterRoute, handleCounter, opts)
 	nethttp.RegisterSSE(mux, invalidRoute, handleInvalid, opts)
 	nethttp.RegisterSSE(mux, withHeadersRoute, handleWithHeaders, opts)
+	nethttp.RegisterSSE(mux, mergedRoute, handleSensorMergedConvenience, opts)
+	nethttp.RegisterSSE(mux, manualRoute, handleSensorManualEscape, opts)
 
 	r := gochi.NewRouter()
 	chiadapter.RegisterSSE(r, sensorRoute, handleSensor, chiOpts)
@@ -292,6 +366,26 @@ func main() {
 	for _, line := range readSSELines(resp4) {
 		fmt.Printf("  event: %s\n", line)
 	}
+	fmt.Println()
+
+	fmt.Println("=== Side-by-side: one-struct merge vs manual escape hatch (YAML) ===")
+	resp5, err := http.Get(srv.URL + "/sse/merge/room-42") //nolint:noctx
+	if err != nil {
+		log.Fatal(err)
+	}
+	fmt.Printf("  merge route Content-Type: %s\n", resp5.Header.Get("Content-Type"))
+	for _, line := range readSSELines(resp5) {
+		fmt.Printf("  merge event:  %s\n", line)
+	}
+	resp6, err := http.Get(srv.URL + "/sse/manual/room-42") //nolint:noctx
+	if err != nil {
+		log.Fatal(err)
+	}
+	fmt.Printf("  manual route Content-Type: %s\n", resp6.Header.Get("Content-Type"))
+	for _, line := range readSSELines(resp6) {
+		fmt.Printf("  manual event: %s\n", line)
+	}
+	fmt.Println("  both routes deliver same payload; merge route removes manual path-value stitching")
 	fmt.Println()
 
 	// ── Stats summary ──────────────────────────────────────────────────────

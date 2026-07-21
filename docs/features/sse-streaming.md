@@ -85,6 +85,10 @@ handle, _ := rest.NewSSERoute[struct{}, Event](
 nethttp.RegisterSSE(mux, handle, streamFn, nethttp.Options{})
 ```
 
+Escape hatch stays unchanged: skip `NewRequiredSSEEventParam` and set the
+field manually from request context before `send`. The runnable
+`examples/adapters-sse` now shows both paths side-by-side.
+
 ## Chunked streaming responses
 
 For routes that stream a response body (not SSE), use `format.NewStreamed`:
