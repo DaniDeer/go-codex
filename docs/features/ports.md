@@ -272,6 +272,12 @@ Session routing composes with the stream operators — `stream.GroupBy` by
 is accepted; any other pattern kind fails construction. See the
 [WebSocket adapter](websocket.md) for the transport side.
 
+For one-struct convenience on long-lived connections, add
+`SocketPattern.InOpts`/`OutOpts` with
+`ports.NewRequiredSocketInParam`/`NewOptionalSocketInParam` and
+`ports.NewRequiredSocketOutParam`/`NewOptionalSocketOutParam`. WebSocket
+adapters merge connection vars into each frame automatically.
+
 ---
 
 ## `SinkPort` Push — request-scoped submission
@@ -315,7 +321,7 @@ written by hand: the port makes that call **internally**.
 | `FilePattern{Path, Format, CustomFormat, Opts}` | typed files (file) | `ports.FileOpt` |
 | `SQLPattern{Table, Op}` | SQL (sql) | — (metadata-only) |
 | `CachePattern{Key, TTL, Format, CustomFormat, Opts}` | key/value cache (redis) | `ports.CacheOpt` (`CacheKeyParam` — per-key-var codecs) |
-| `SocketPattern{Path, Subprotocols, Format, CustomFormat, Opts}` | duplex socket (websocket) | `rest.RouteOpt` (upgrade-time) |
+| `SocketPattern{Path, Subprotocols, Format, CustomFormat, Opts, InOpts, OutOpts}` | duplex socket (websocket) | `rest.RouteOpt` (upgrade-time) + `SocketInOpt`/`SocketOutOpt` (connection-var merge into inbound/outbound payload structs) |
 
 A port declares one `Pattern` entry **per protocol family** it will be bound to — a
 `ToolPort` exposed over HTTP + MQTT 5 + MCP simultaneously (as in the `OEETool`

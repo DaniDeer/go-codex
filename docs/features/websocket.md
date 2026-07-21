@@ -48,6 +48,8 @@ var Live = codex.Must(ports.NewDuplexPort[Command, Update]("live",
 | `Format` | Frame wire format from the port's codec: JSON (default), YAML, TOML |
 | `CustomFormat` | Escape hatch for binary/custom frame formats (Gob, protobuf, …) — a pre-built `format.Format[T]`, overrides `Format` when non-nil. Applies to whichever side(s) carry the real payload type; the unused `struct{}` side of a one-directional port is unaffected. See [`ports.FilePattern.CustomFormat`](ports.md#filepattern--typed-files-as-sink-or-intermediate-io) for the full contract |
 | `Opts` | `rest.RouteOpt` entries — `PathParam{...}.WithCodec(...)` etc., upgrade-time |
+| `InOpts` | `ports.SocketInOpt` entries (`NewRequiredSocketInParam` / `NewOptionalSocketInParam`) — merge connection vars into inbound payloads |
+| `OutOpts` | `ports.SocketOutOpt` entries (`NewRequiredSocketOutParam` / `NewOptionalSocketOutParam`) — merge connection vars into outbound payloads |
 
 Port-type acceptance: `SourcePort` (inbound-only), `SinkPort`
 (broadcast-only — the WS sibling of SSE), `DuplexPort` (full duplex).
@@ -86,6 +88,37 @@ replies := stream.Map(ctx, Live.Inbound(ctx),
     }, stream.MapOptions{Name: "ack"})
 go Live.Feed(ctx, replies)                // zero Session = broadcast
 ```
+
+## One struct, one call with connection vars
+
+WebSocket now supports declare-once merge fields for both directions. Add
+`InOpts` and/or `OutOpts` on `SocketPattern`; adapters then merge
+connection vars (path/query/header from upgrade request) into payload structs
+automatically on each frame:
+
+```go
+patterns := []ports.Pattern{
+    ports.SocketPattern{
+        Path: "/live/{room}",
+        Opts: []rest.RouteOpt{
+            rest.PathParam{Name: "room"}.WithCodec(codex.String()),
+        },
+        InOpts: []ports.SocketInOpt{
+            ports.NewRequiredSocketInParam("room", codex.String(),
+                func(c Command) string { return c.Room },
+                func(c *Command, v string) { c.Room = v }),
+        },
+        OutOpts: []ports.SocketOutOpt{
+            ports.NewRequiredSocketOutParam("room", codex.String(),
+                func(u Update) string { return u.Room },
+                func(u *Update, v string) { u.Room = v }),
+        },
+    },
+}
+```
+
+Inbound decode and outbound encode keep the same escape hatch: if no
+`InOpts`/`OutOpts` are declared, payloads stay untouched.
 
 ---
 

@@ -626,8 +626,7 @@ common case. This is the headline user promise; the mechanics below
 (declare-once constructors, escape hatch, encode/decode symmetry, role
 symmetry) exist to make that promise safe, not to replace it.
 
-REST is the reference implementation and, as of this writing, the ONLY
-boundary that fully delivers it, both directions, both roles:
+REST is the reference implementation and the model every boundary follows:
 
 ```go
 // Client: ONE struct in, ONE struct out — no manual maps.
@@ -667,12 +666,13 @@ BOTH `ports.CachePattern` build paths silently dropped
 `NewCacheKeyParam`-registered merge fields entirely (fixed by delegating to
 `NewCache`, mirroring `FilePattern`'s existing delegation to `NewFile`).
 A shared, module-internal `internal/templatematch` package now backs the
-topic/path-matching core for `mqtt`/`mqtt5`/`zeromq`/`ports.File`. The one
-remaining open item — SSE merge support and `adapters/websocket`'s
-per-connection path vars raise the identical "does repeating one
-connection's vars into every message help" question — is tracked in
-`docs/roadmap/sse-websocket-merge-field-gaps.md`; design-only, not yet
-implemented, not a blocker.
+topic/path-matching core for `mqtt`/`mqtt5`/`zeromq`/`ports.File`. SSE and
+WebSocket now ship the same convenience for long-lived connections:
+`rest.NewRequiredSSEEventParam`/`NewOptionalSSEEventParam` +
+`SSERouteHandle.MergeEvent` (adapter auto-wired), and
+`ports.NewRequiredSocketInParam`/`NewOptionalSocketInParam` +
+`ports.NewRequiredSocketOutParam`/`NewOptionalSocketOutParam`
+(`SocketPattern.InOpts`/`OutOpts`, adapter auto-wired).
 
 **Every new or newly-touched Req/Resp-or-payload-shaped boundary must reach
 REST's bar** — see the `add-a-new-adapter` skill's "Step 5b" for the
@@ -1402,6 +1402,7 @@ Key contract rules:
 - `ctx.Done()` signals client disconnects; always respect it to avoid goroutine leaks.
 - `SSERouteHandle.BuildPath(vars)` validates path variables via per-param codecs and the builder-level path codec — same contract as `RouteHandle.BuildPath`.
 - `SSERouteHandle` accepts `ResponseHeaderParam` and `ResponseCookieParam` opts (same as `RouteHandle`). `ValidateResponseHeaders(map[string]string) error` / `ValidateResponseCookies(map[string]string) error` mirror the regular-route methods. Both adapters commit staged response headers/cookies on the **first** `send()` call (validate → write to wire) before any `data:` frame is emitted.
+- `rest.NewRequiredSSEEventParam` / `rest.NewOptionalSSEEventParam` declare connection-var merge fields for the pushed event type; adapters call `SSERouteHandle.MergeEvent` automatically on every `send`, merging path/query/header/cookie values into the event struct before encode.
 - `rest.NewSSERoute` accepts `...RouteOpt` as variadic trailing args (same as `NewRoute`). Configure event formats via `handle.WithFormats(fmts...)` after registration; the adapter uses the first format for event data serialisation (defaults to JSON when empty).
 - The route appears in the OpenAPI spec as a GET operation with `Content-Type: text/event-stream`.
 - Stats observer receives `RecordValidationError("response", constraint, "event")` for each rejected event.

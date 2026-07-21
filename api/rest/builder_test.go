@@ -1459,6 +1459,77 @@ func TestSSERouteHandle_BuildPath_invalidParam_returnsError(t *testing.T) {
 	}
 }
 
+type sseMergedEvent struct {
+	PathID string
+	Since  string
+	Tenant string
+	Trace  string
+}
+
+var sseMergedEventCodec = codex.Struct[sseMergedEvent](
+	codex.OptionalField("path_id", codex.String(), func(e sseMergedEvent) string { return e.PathID }, func(e *sseMergedEvent, v string) { e.PathID = v }),
+	codex.OptionalField("since", codex.String(), func(e sseMergedEvent) string { return e.Since }, func(e *sseMergedEvent, v string) { e.Since = v }),
+	codex.OptionalField("tenant", codex.String(), func(e sseMergedEvent) string { return e.Tenant }, func(e *sseMergedEvent, v string) { e.Tenant = v }),
+	codex.OptionalField("trace", codex.String(), func(e sseMergedEvent) string { return e.Trace }, func(e *sseMergedEvent, v string) { e.Trace = v }),
+)
+
+func TestSSERouteHandle_MergeEvent_HappyPath(t *testing.T) {
+	b := rest.NewBuilder(testInfo)
+	str := codex.String().Refine(validate.NonEmptyString)
+	h, err := rest.NewSSERoute[createReq, sseMergedEvent]("/stream/{path_id}",
+		createReqCodec, sseMergedEventCodec,
+		rest.NewRequiredSSEEventParam("path_id", str, func(e sseMergedEvent) string { return e.PathID }, func(e *sseMergedEvent, v string) { e.PathID = v }),
+		rest.NewOptionalSSEEventParam("since", str, func(e sseMergedEvent) string { return e.Since }, func(e *sseMergedEvent, v string) { e.Since = v }),
+		rest.NewOptionalSSEEventParam("tenant", str, func(e sseMergedEvent) string { return e.Tenant }, func(e *sseMergedEvent, v string) { e.Tenant = v }),
+		rest.NewOptionalSSEEventParam("trace", str, func(e sseMergedEvent) string { return e.Trace }, func(e *sseMergedEvent, v string) { e.Trace = v }),
+	).Register(b)
+	if err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+	got, err := h.MergeEvent(sseMergedEvent{},
+		map[string]string{"path_id": "machine-1"},
+		map[string]string{"since": "now"},
+		map[string]string{"tenant": "acme"},
+		map[string]string{"trace": "t-1"},
+	)
+	if err != nil {
+		t.Fatalf("MergeEvent: %v", err)
+	}
+	if got.PathID != "machine-1" || got.Since != "now" || got.Tenant != "acme" || got.Trace != "t-1" {
+		t.Fatalf("merged event mismatch: %+v", got)
+	}
+}
+
+func TestSSERouteHandle_MergeEvent_MissingRequired(t *testing.T) {
+	b := rest.NewBuilder(testInfo)
+	str := codex.String().Refine(validate.NonEmptyString)
+	h, err := rest.NewSSERoute[createReq, sseMergedEvent]("/stream/{path_id}",
+		createReqCodec, sseMergedEventCodec,
+		rest.NewRequiredSSEEventParam("path_id", str, func(e sseMergedEvent) string { return e.PathID }, func(e *sseMergedEvent, v string) { e.PathID = v }),
+	).Register(b)
+	if err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+	_, err = h.MergeEvent(sseMergedEvent{}, nil, nil, nil, nil)
+	if err == nil {
+		t.Fatal("want error")
+	}
+	var ve codex.ValidationErrors
+	if !errors.As(err, &ve) {
+		t.Fatalf("want ValidationErrors, got %T: %v", err, err)
+	}
+}
+
+func TestNewRequiredSSEEventParam_WithDescription(t *testing.T) {
+	p := rest.NewRequiredSSEEventParam("trace", codex.String(),
+		func(e sseMergedEvent) string { return e.Trace },
+		func(e *sseMergedEvent, v string) { e.Trace = v },
+	).WithDescription("trace id")
+	if p.Description != "trace id" {
+		t.Fatalf("want description set, got %q", p.Description)
+	}
+}
+
 func TestPathParam_WithCodec_setsCodecWithoutAddressOf(t *testing.T) {
 	uuidCodec := codex.String().Refine(validate.UUID)
 	p := rest.PathParam{Name: "id"}.WithCodec(uuidCodec)

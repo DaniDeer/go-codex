@@ -32,6 +32,8 @@ func upgradeAndValidate(
 	r *http.Request,
 	route interface {
 		ValidatePathParams(map[string]string) error
+		ValidateQuery(map[string]string) error
+		ValidateHeaders(map[string]string) error
 	},
 	path string,
 	upgrader Upgrader,
@@ -53,6 +55,26 @@ func upgradeAndValidate(
 		http.Error(w, err.Error(), http.StatusUnprocessableEntity)
 		return nil, nil, false
 	}
+	query := queryValues(r)
+	if err := route.ValidateQuery(query); err != nil {
+		stats.ReportErrors(obs, "query", err)
+		obs.RecordRequest(http.MethodGet, path, http.StatusUnprocessableEntity, time.Since(start))
+		http.Error(w, err.Error(), http.StatusUnprocessableEntity)
+		return nil, nil, false
+	}
+	headers := headerValues(r)
+	if err := route.ValidateHeaders(headers); err != nil {
+		stats.ReportErrors(obs, "header", err)
+		obs.RecordRequest(http.MethodGet, path, http.StatusUnprocessableEntity, time.Since(start))
+		http.Error(w, err.Error(), http.StatusUnprocessableEntity)
+		return nil, nil, false
+	}
+	for k, v := range query {
+		vars[k] = v
+	}
+	for k, v := range headers {
+		vars[k] = v
+	}
 	sock, err := upgrader.Upgrade(w, r)
 	if err != nil {
 		// gorilla writes its own error response on upgrade failure.
@@ -61,6 +83,26 @@ func upgradeAndValidate(
 	}
 	obs.RecordRequest(http.MethodGet, path, http.StatusSwitchingProtocols, time.Since(start))
 	return sock, vars, true
+}
+
+func queryValues(r *http.Request) map[string]string {
+	m := make(map[string]string, len(r.URL.Query()))
+	for k, vals := range r.URL.Query() {
+		if len(vals) > 0 {
+			m[k] = vals[0]
+		}
+	}
+	return m
+}
+
+func headerValues(r *http.Request) map[string]string {
+	m := make(map[string]string, len(r.Header))
+	for k, vals := range r.Header {
+		if len(vals) > 0 {
+			m[k] = vals[0]
+		}
+	}
+	return m
 }
 
 // muxPattern renders the Go 1.22 ServeMux pattern for the handle path.
@@ -130,6 +172,9 @@ func (a *wsIngestAdapter[T]) Activate(ctx context.Context, dst chan<- T, errs ch
 			defer wg.Done()
 			defer a.hub.unregister(sess)
 			readLoop(sock, a.handle.Path, sess, a.handle.InFormat, obs,
+				func(v T) (T, error) {
+					return a.handle.MergeInbound(v, vars)
+				},
 				func(v T) bool {
 					select {
 					case dst <- v:
@@ -162,6 +207,7 @@ func readLoop[T any](
 	sess ports.Session,
 	f interface{ Unmarshal([]byte) (T, error) },
 	obs stats.Observer,
+	merge func(T) (T, error),
 	emit func(T) bool,
 	emitErr func(error) bool,
 ) {
@@ -179,6 +225,17 @@ func readLoop[T any](
 				return
 			}
 			continue
+		}
+		if merge != nil {
+			v, err = merge(v)
+			if err != nil {
+				stats.ReportErrors(obs, "payload", err)
+				obs.RecordSubscribe(path, false, time.Since(start))
+				if !emitErr(SocketError{Path: path, Session: sess, Op: "read", Err: err}) {
+					return
+				}
+				continue
+			}
 		}
 		if !emit(v) {
 			return
@@ -266,17 +323,42 @@ func (a *wsBroadcastAdapter[T]) Activate(ctx context.Context, src gstream.Stream
 	gstream.Drain(ctx, src,
 		func(_ context.Context, v T) error {
 			start := time.Now()
-			data, err := a.handle.OutFormat.Marshal(v)
-			if err != nil {
-				stats.ReportErrors(obs, "payload", err)
-				obs.RecordPublish(a.handle.Path, false, time.Since(start))
-				onErr(SocketError{Path: a.handle.Path, Op: "write", Err: err})
-				return nil
+			success := true
+			for _, s := range a.hub.Sessions() {
+				out := v
+				if len(a.handle.OutMergeFields()) > 0 {
+					info, ok := a.hub.SessionInfo(s)
+					if !ok {
+						success = false
+						onErr(SocketError{Path: a.handle.Path, Session: s, Op: "write", Err: errUnknownSession})
+						continue
+					}
+					var err error
+					out, err = a.handle.MergeOutbound(out, info)
+					if err != nil {
+						success = false
+						stats.ReportErrors(obs, "payload", err)
+						onErr(SocketError{Path: a.handle.Path, Session: s, Op: "write", Err: err})
+						continue
+					}
+				}
+				data, err := a.handle.OutFormat.Marshal(out)
+				if err != nil {
+					success = false
+					stats.ReportErrors(obs, "payload", err)
+					onErr(SocketError{Path: a.handle.Path, Session: s, Op: "write", Err: err})
+					continue
+				}
+				if sent, known := a.hub.send(s, data); !sent {
+					success = false
+					err := ErrFrameDropped
+					if !known {
+						err = errUnknownSession
+					}
+					onErr(SocketError{Path: a.handle.Path, Session: s, Op: "write", Err: err})
+				}
 			}
-			for _, s := range a.hub.broadcast(data) {
-				onErr(SocketError{Path: a.handle.Path, Session: s, Op: "write", Err: ErrFrameDropped})
-			}
-			obs.RecordPublish(a.handle.Path, true, time.Since(start))
+			obs.RecordPublish(a.handle.Path, success, time.Since(start))
 			return nil
 		},
 		onErr,
@@ -360,6 +442,9 @@ func (a *wsDuplexAdapter[In, Out]) Activate(
 			defer wg.Done()
 			defer a.hub.unregister(sess)
 			readLoop(sock, a.handle.Path, sess, a.handle.InFormat, obs,
+				func(v In) (In, error) {
+					return a.handle.MergeInbound(v, vars)
+				},
 				func(v In) bool {
 					select {
 					case dst <- ports.Framed[In]{Session: sess, Payload: v}:
@@ -384,7 +469,80 @@ func (a *wsDuplexAdapter[In, Out]) Activate(
 				continue
 			}
 			start := time.Now()
-			data, err := a.handle.OutFormat.Marshal(frame.Payload)
+			if frame.Session == "" {
+				success := true
+				for _, s := range a.hub.Sessions() {
+					perSession := frame.Payload
+					if len(a.handle.OutMergeFields()) > 0 {
+						info, ok := a.hub.SessionInfo(s)
+						if !ok {
+							success = false
+							if !emitErr(SocketError{Path: a.handle.Path, Session: s, Op: "write", Err: errUnknownSession}) {
+								valCh, errCh = nil, nil
+								break
+							}
+							continue
+						}
+						var err error
+						perSession, err = a.handle.MergeOutbound(perSession, info)
+						if err != nil {
+							success = false
+							stats.ReportErrors(obs, "payload", err)
+							if !emitErr(SocketError{Path: a.handle.Path, Session: s, Op: "write", Err: err}) {
+								valCh, errCh = nil, nil
+								break
+							}
+							continue
+						}
+					}
+					encoded, err := a.handle.OutFormat.Marshal(perSession)
+					if err != nil {
+						success = false
+						stats.ReportErrors(obs, "payload", err)
+						if !emitErr(SocketError{Path: a.handle.Path, Session: s, Op: "write", Err: err}) {
+							valCh, errCh = nil, nil
+							break
+						}
+						continue
+					}
+					if sent, known := a.hub.send(s, encoded); !sent {
+						success = false
+						err := ErrFrameDropped
+						if !known {
+							err = errUnknownSession
+						}
+						if !emitErr(SocketError{Path: a.handle.Path, Session: s, Op: "write", Err: err}) {
+							valCh, errCh = nil, nil
+							break
+						}
+					}
+				}
+				obs.RecordPublish(a.handle.Path, success, time.Since(start))
+				continue
+			}
+
+			out := frame.Payload
+			if len(a.handle.OutMergeFields()) > 0 {
+				info, ok := a.hub.SessionInfo(frame.Session)
+				if !ok {
+					obs.RecordPublish(a.handle.Path, false, time.Since(start))
+					if !emitErr(SocketError{Path: a.handle.Path, Session: frame.Session, Op: "write", Err: errUnknownSession}) {
+						valCh, errCh = nil, nil
+					}
+					continue
+				}
+				merged, mergeErr := a.handle.MergeOutbound(out, info)
+				if mergeErr != nil {
+					stats.ReportErrors(obs, "payload", mergeErr)
+					obs.RecordPublish(a.handle.Path, false, time.Since(start))
+					if !emitErr(SocketError{Path: a.handle.Path, Session: frame.Session, Op: "write", Err: mergeErr}) {
+						valCh, errCh = nil, nil
+					}
+					continue
+				}
+				out = merged
+			}
+			data, err := a.handle.OutFormat.Marshal(out)
 			if err != nil {
 				stats.ReportErrors(obs, "payload", err)
 				obs.RecordPublish(a.handle.Path, false, time.Since(start))
@@ -393,13 +551,7 @@ func (a *wsDuplexAdapter[In, Out]) Activate(
 				}
 				continue
 			}
-			if frame.Session == "" {
-				for _, s := range a.hub.broadcast(data) {
-					if !emitErr(SocketError{Path: a.handle.Path, Session: s, Op: "write", Err: ErrFrameDropped}) {
-						break
-					}
-				}
-			} else if sent, known := a.hub.send(frame.Session, data); !sent {
+			if sent, known := a.hub.send(frame.Session, data); !sent {
 				err := ErrFrameDropped
 				if !known {
 					err = errUnknownSession

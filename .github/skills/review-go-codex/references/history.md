@@ -11,7 +11,7 @@ Do not re-report any of these findings. They have been implemented and tested.
 - **G2 (bonus, found while implementing)** — a real, pre-existing bug: BOTH `CachePattern` build paths in `ports/handle.go` (`buildEventPatternHandles` for `SinkPort`/`LatestPort`, `buildDualCodecPatternHandles` for `IOPort`) reconstructed `Cache[T]`/`Cache[Resp]` field-by-field and silently dropped `NewCacheKeyParam`-registered merge fields (only `cb.params`, the plain validate-only params, were copied) — every `CachePattern`-built cache had an EMPTY `MergeFields()` regardless of `NewCacheKeyParam` usage. Fixed by delegating to `NewCache` (mirrors `FilePattern`'s existing delegation to `NewFile`, which never had this bug). New regression tests: `TestCachePattern_NewCacheKeyParam_WiredThroughIOPort`/`_WiredThroughSinkPort`.
 - **G3 (deferred, tracked not fixed)** — `adapters/websocket`'s upgrade path uses validate-only `rest.PathParam` for connection-level vars; same open "per-connection vs. per-message merge" question already deferred for SSE. No use case, not actioned.
 - **G4 — checklist §12 table had no `ports.File`/`ports.Cache` rows**: added both, reflecting the G1/G2 shipped status.
-- Full design was in `docs/roadmap/file-cache-merge-field-gaps.md` (deleted after G1/G2/G4 shipped and G3 moved to `docs/roadmap/sse-websocket-merge-field-gaps.md`).
+- Full design was in `docs/roadmap/file-cache-merge-field-gaps.md` (deleted after G1/G2/G4 shipped; its G3 connection-merge item later shipped via the SSE/WebSocket merge round).
 
 ---
 

@@ -203,6 +203,7 @@ func TestDuplex_InboundFrame_SessionTagged(t *testing.T) {
 		adapterws.DuplexSocketAdapterOptions{})); err != nil {
 		t.Fatalf("bind: %v", err)
 	}
+
 	time.Sleep(20 * time.Millisecond) // adapter registers handler in Activate
 
 	connect(t, mux, "/live/kitchen")
@@ -221,6 +222,77 @@ func TestDuplex_InboundFrame_SessionTagged(t *testing.T) {
 		info, ok := hub.SessionInfo(f.Session)
 		if !ok || info["room"] != "kitchen" {
 			t.Errorf("SessionInfo: want room=kitchen, got %v %v", info, ok)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timeout waiting for inbound frame")
+	}
+}
+
+func TestDuplex_InboundMerge_FromConnectionVars(t *testing.T) {
+	type inMsg struct {
+		Action string
+		Room   string
+		Tenant string
+		Trace  string
+	}
+	inCodec := codex.Struct[inMsg](
+		codex.RequiredField("action", codex.String().Refine(validate.NonEmptyString),
+			func(v inMsg) string { return v.Action },
+			func(v *inMsg, s string) { v.Action = s }),
+		codex.OptionalField("room", codex.String(), func(v inMsg) string { return v.Room }, func(v *inMsg, s string) { v.Room = s }),
+		codex.OptionalField("tenant", codex.String(), func(v inMsg) string { return v.Tenant }, func(v *inMsg, s string) { v.Tenant = s }),
+		codex.OptionalField("trace", codex.String(), func(v inMsg) string { return v.Trace }, func(v *inMsg, s string) { v.Trace = s }),
+	)
+	type outMsg struct{ Text string }
+	outCodec := codex.Struct[outMsg](
+		codex.RequiredField("text", codex.String(), func(v outMsg) string { return v.Text }, func(v *outMsg, s string) { v.Text = s }),
+	)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	mux := http.NewServeMux()
+	hub := adapterws.NewHub(0)
+	sock := newFakeSocket()
+	up := &fakeUpgrader{socks: []*fakeSocket{sock}}
+
+	nonEmpty := codex.String().Refine(validate.NonEmptyString)
+	port, err := ports.NewDuplexPort[inMsg, outMsg]("live-in-merge", inCodec, outCodec, ports.PortOptions{
+		Patterns: []ports.Pattern{
+			ports.SocketPattern{
+				Path: "/live/{room}",
+				Opts: []rest.RouteOpt{
+					rest.PathParam{Name: "room", Codec: &nonEmpty},
+					rest.QueryParam{Name: "tenant", Required: true, Codec: &nonEmpty},
+					rest.HeaderParam{Name: "X-Trace", Required: true, Codec: &nonEmpty},
+				},
+				InOpts: []ports.SocketInOpt{
+					ports.NewRequiredSocketInParam("room", codex.String(), func(v inMsg) string { return v.Room }, func(v *inMsg, s string) { v.Room = s }),
+					ports.NewRequiredSocketInParam("tenant", codex.String(), func(v inMsg) string { return v.Tenant }, func(v *inMsg, s string) { v.Tenant = s }),
+					ports.NewRequiredSocketInParam("X-Trace", codex.String(), func(v inMsg) string { return v.Trace }, func(v *inMsg, s string) { v.Trace = s }),
+				},
+			},
+		},
+		Buffer: 4,
+	})
+	if err != nil {
+		t.Fatalf("port: %v", err)
+	}
+	handle, _ := ports.SocketHandle[inMsg, outMsg](port)
+	if err := port.Bind(ctx, adapterws.DuplexSocketAdapter(mux, hub, up, handle, adapterws.DuplexSocketAdapterOptions{})); err != nil {
+		t.Fatalf("bind: %v", err)
+	}
+	time.Sleep(20 * time.Millisecond)
+
+	req := httptest.NewRequest(http.MethodGet, "/live/kitchen?tenant=acme", nil)
+	req.Header.Set("X-Trace", "trace-1")
+	mux.ServeHTTP(httptest.NewRecorder(), req)
+	sock.inbound <- []byte(`{"action":"on","room":"wrong","tenant":"wrong","trace":"wrong"}`)
+
+	inbound := port.Inbound(ctx)
+	select {
+	case f := <-inbound.Values:
+		if f.Payload.Room != "kitchen" || f.Payload.Tenant != "acme" || f.Payload.Trace != "trace-1" {
+			t.Fatalf("want merged connection vars, got %+v", f.Payload)
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("timeout waiting for inbound frame")
@@ -365,6 +437,85 @@ func TestDuplex_TargetedAndBroadcast(t *testing.T) {
 	}
 	if !strings.Contains(string(b[0]), "everyone") {
 		t.Errorf("sockB frames wrong: %s", b)
+	}
+}
+
+func TestDuplex_OutboundMerge_TargetedAndBroadcast(t *testing.T) {
+	type inMsg struct{ Action string }
+	inCodec := codex.Struct[inMsg](
+		codex.RequiredField("action", codex.String(), func(v inMsg) string { return v.Action }, func(v *inMsg, s string) { v.Action = s }),
+	)
+	type outMsg struct {
+		Text string
+		Room string
+	}
+	outCodec := codex.Struct[outMsg](
+		codex.RequiredField("text", codex.String(), func(v outMsg) string { return v.Text }, func(v *outMsg, s string) { v.Text = s }),
+		codex.OptionalField("room", codex.String(), func(v outMsg) string { return v.Room }, func(v *outMsg, s string) { v.Room = s }),
+	)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	mux := http.NewServeMux()
+	hub := adapterws.NewHub(0)
+	sockA, sockB := newFakeSocket(), newFakeSocket()
+	up := &fakeUpgrader{socks: []*fakeSocket{sockA, sockB}}
+
+	nonEmpty := codex.String().Refine(validate.NonEmptyString)
+	port, err := ports.NewDuplexPort[inMsg, outMsg]("live-out-merge", inCodec, outCodec, ports.PortOptions{
+		Patterns: []ports.Pattern{
+			ports.SocketPattern{
+				Path: "/live/{room}",
+				Opts: []rest.RouteOpt{
+					rest.PathParam{Name: "room", Codec: &nonEmpty},
+				},
+				OutOpts: []ports.SocketOutOpt{
+					ports.NewRequiredSocketOutParam("room", codex.String(), func(v outMsg) string { return v.Room }, func(v *outMsg, s string) { v.Room = s }),
+				},
+			},
+		},
+		Buffer: 8,
+	})
+	if err != nil {
+		t.Fatalf("port: %v", err)
+	}
+	handle, _ := ports.SocketHandle[inMsg, outMsg](port)
+	if err := port.Bind(ctx, adapterws.DuplexSocketAdapter(mux, hub, up, handle, adapterws.DuplexSocketAdapterOptions{})); err != nil {
+		t.Fatalf("bind: %v", err)
+	}
+	time.Sleep(20 * time.Millisecond)
+
+	connect(t, mux, "/live/kitchen")
+	connect(t, mux, "/live/lab")
+
+	sockA.inbound <- []byte(`{"action":"a"}`)
+	inbound := port.Inbound(ctx)
+	var sessA ports.Session
+	select {
+	case f := <-inbound.Values:
+		sessA = f.Session
+	case <-time.After(2 * time.Second):
+		t.Fatal("timeout")
+	}
+
+	outVals := make(chan ports.Framed[outMsg], 2)
+	outVals <- ports.Framed[outMsg]{Session: sessA, Payload: outMsg{Text: "targeted", Room: "wrong"}}
+	outVals <- ports.Framed[outMsg]{Payload: outMsg{Text: "broadcast", Room: "wrong"}}
+	close(outVals)
+	outErrs := make(chan error)
+	close(outErrs)
+	go port.Feed(ctx, stream.Stream[ports.Framed[outMsg]]{Values: outVals, Errors: outErrs})
+
+	waitFor(t, func() bool { return len(sockA.writtenFrames()) == 2 && len(sockB.writtenFrames()) == 1 })
+	a, b := sockA.writtenFrames(), sockB.writtenFrames()
+	if !strings.Contains(string(a[0]), `"room":"kitchen"`) {
+		t.Fatalf("targeted frame should be merged for kitchen session: %s", a[0])
+	}
+	if !strings.Contains(string(a[1]), `"room":"kitchen"`) {
+		t.Fatalf("broadcast frame for session A should carry kitchen room: %s", a[1])
+	}
+	if !strings.Contains(string(b[0]), `"room":"lab"`) {
+		t.Fatalf("broadcast frame for session B should carry lab room: %s", b[0])
 	}
 }
 

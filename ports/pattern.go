@@ -7,6 +7,7 @@ import (
 	apimcp "github.com/DaniDeer/go-codex/api/mcp"
 	"github.com/DaniDeer/go-codex/api/reqreply"
 	"github.com/DaniDeer/go-codex/api/rest"
+	"github.com/DaniDeer/go-codex/codex"
 	"github.com/DaniDeer/go-codex/format"
 )
 
@@ -311,6 +312,123 @@ func (CachePattern) isPortPattern() {}
 // cacheBuilder, CacheOpt, and CacheKeyParam live in cache.go, alongside
 // Cache[T] itself.
 
+// SocketInOpt is the sealed option interface for SocketPattern.InOpts.
+type SocketInOpt interface{ applySocketIn(*socketMergeBuilder) }
+
+// SocketOutOpt is the sealed option interface for SocketPattern.OutOpts.
+type SocketOutOpt interface{ applySocketOut(*socketMergeBuilder) }
+
+type socketMergeBuilder struct {
+	inMergeFieldsRaw  []any
+	outMergeFieldsRaw []any
+}
+
+// MergedSocketInParam is returned by NewRequiredSocketInParam/
+// NewOptionalSocketInParam. It maps one connection var (path/query/header) to
+// one inbound payload field.
+type MergedSocketInParam[T any] struct {
+	Name        string
+	Description string
+	Required    bool
+	Codec       *codex.Codec[string]
+	field       codex.FieldCodec[T]
+}
+
+// NewRequiredSocketInParam declares a REQUIRED connection var merged into
+// inbound socket payloads.
+func NewRequiredSocketInParam[T any](
+	name string,
+	codec codex.Codec[string],
+	get func(T) string,
+	set func(*T, string),
+) MergedSocketInParam[T] {
+	return MergedSocketInParam[T]{
+		Name:     name,
+		Required: true,
+		Codec:    &codec,
+		field:    codex.RequiredField(name, codec, get, set),
+	}
+}
+
+// NewOptionalSocketInParam declares an OPTIONAL connection var merged into
+// inbound socket payloads when present.
+func NewOptionalSocketInParam[T any](
+	name string,
+	codec codex.Codec[string],
+	get func(T) string,
+	set func(*T, string),
+) MergedSocketInParam[T] {
+	return MergedSocketInParam[T]{
+		Name:     name,
+		Required: false,
+		Codec:    &codec,
+		field:    codex.OptionalField(name, codec, get, set),
+	}
+}
+
+// WithDescription sets the merge-field description and returns the updated value.
+func (p MergedSocketInParam[T]) WithDescription(desc string) MergedSocketInParam[T] {
+	p.Description = desc
+	return p
+}
+
+func (p MergedSocketInParam[T]) applySocketIn(sb *socketMergeBuilder) {
+	sb.inMergeFieldsRaw = append(sb.inMergeFieldsRaw, p.field)
+}
+
+// MergedSocketOutParam is returned by NewRequiredSocketOutParam/
+// NewOptionalSocketOutParam. It maps one connection var (path/query/header) to
+// one outbound payload field.
+type MergedSocketOutParam[T any] struct {
+	Name        string
+	Description string
+	Required    bool
+	Codec       *codex.Codec[string]
+	field       codex.FieldCodec[T]
+}
+
+// NewRequiredSocketOutParam declares a REQUIRED connection var merged into
+// outbound socket payloads.
+func NewRequiredSocketOutParam[T any](
+	name string,
+	codec codex.Codec[string],
+	get func(T) string,
+	set func(*T, string),
+) MergedSocketOutParam[T] {
+	return MergedSocketOutParam[T]{
+		Name:     name,
+		Required: true,
+		Codec:    &codec,
+		field:    codex.RequiredField(name, codec, get, set),
+	}
+}
+
+// NewOptionalSocketOutParam declares an OPTIONAL connection var merged into
+// outbound socket payloads when present.
+func NewOptionalSocketOutParam[T any](
+	name string,
+	codec codex.Codec[string],
+	get func(T) string,
+	set func(*T, string),
+) MergedSocketOutParam[T] {
+	return MergedSocketOutParam[T]{
+		Name:     name,
+		Required: false,
+		Codec:    &codec,
+		field:    codex.OptionalField(name, codec, get, set),
+	}
+}
+
+// WithDescription sets the merge-field description and returns the updated value.
+func (p MergedSocketOutParam[T]) WithDescription(desc string) MergedSocketOutParam[T] {
+	p.Description = desc
+	return p
+}
+
+func (p MergedSocketOutParam[T]) applySocketOut(sb *socketMergeBuilder) {
+	sb.outMergeFieldsRaw = append(sb.outMergeFieldsRaw, p.field)
+}
+
 // SocketPattern declares a path-addressed duplex socket endpoint for a port
 // bound to a websocket adapter. Path mirrors [RESTPattern.Path] (same {var}
 // placeholders); Opts carries [rest.RouteOpt] entries validated once per
@@ -356,6 +474,10 @@ type SocketPattern struct {
 	// with [rest.FormatOptError] if placed in this slice. Use Format or
 	// CustomFormat above to declare frame formats.
 	Opts []rest.RouteOpt
+	// InOpts declares connection-var merge fields for inbound frame payloads.
+	InOpts []SocketInOpt
+	// OutOpts declares connection-var merge fields for outbound frame payloads.
+	OutOpts []SocketOutOpt
 }
 
 func (SocketPattern) isPortPattern() {}
@@ -380,4 +502,40 @@ type Socket[In, Out any] struct {
 	InFormat format.Format[In]
 	// OutFormat encodes outbound frames through the port's Out codec.
 	OutFormat format.Format[Out]
+	// inMergeFields/outMergeFields hold merge-capable fields declared in
+	// SocketPattern.InOpts/OutOpts.
+	inMergeFields  []codex.FieldCodec[In]
+	outMergeFields []codex.FieldCodec[Out]
+}
+
+// InMergeFields returns connection-var merge fields for inbound payloads.
+func (s Socket[In, Out]) InMergeFields() []codex.FieldCodec[In] {
+	return s.inMergeFields
+}
+
+// OutMergeFields returns connection-var merge fields for outbound payloads.
+func (s Socket[In, Out]) OutMergeFields() []codex.FieldCodec[Out] {
+	return s.outMergeFields
+}
+
+// MergeInbound merges connection vars into one inbound payload.
+func (s Socket[In, Out]) MergeInbound(v In, vars map[string]string) (In, error) {
+	if len(s.inMergeFields) == 0 {
+		return v, nil
+	}
+	if err := codex.DecodeVars(&v, vars, s.inMergeFields...); err != nil {
+		return v, err
+	}
+	return v, nil
+}
+
+// MergeOutbound merges connection vars into one outbound payload.
+func (s Socket[In, Out]) MergeOutbound(v Out, vars map[string]string) (Out, error) {
+	if len(s.outMergeFields) == 0 {
+		return v, nil
+	}
+	if err := codex.DecodeVars(&v, vars, s.outMergeFields...); err != nil {
+		return v, err
+	}
+	return v, nil
 }

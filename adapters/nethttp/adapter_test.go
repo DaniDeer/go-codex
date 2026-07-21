@@ -2221,6 +2221,85 @@ func TestSSEHandler_PathParam_codecValidated(t *testing.T) {
 	}
 }
 
+func TestSSEHandler_EventMerge_FromConnectionVars(t *testing.T) {
+	type mergedEvent struct {
+		ID     string
+		Tenant string
+		Trace  string
+		SID    string
+	}
+	evtCodec := codex.Struct[mergedEvent](
+		codex.OptionalField("id", codex.String(), func(e mergedEvent) string { return e.ID }, func(e *mergedEvent, v string) { e.ID = v }),
+		codex.OptionalField("tenant", codex.String(), func(e mergedEvent) string { return e.Tenant }, func(e *mergedEvent, v string) { e.Tenant = v }),
+		codex.OptionalField("trace", codex.String(), func(e mergedEvent) string { return e.Trace }, func(e *mergedEvent, v string) { e.Trace = v }),
+		codex.OptionalField("sid", codex.String(), func(e mergedEvent) string { return e.SID }, func(e *mergedEvent, v string) { e.SID = v }),
+	)
+	b := rest.NewBuilder(testInfo)
+	uuidCodec := codex.String().Refine(validate.UUID)
+	nonEmpty := codex.String().Refine(validate.NonEmptyString)
+	handle, err := rest.NewSSERoute[getReq, mergedEvent]("/stream/{id}",
+		getReqCodec, evtCodec,
+		rest.PathParam{Name: "id", Codec: &uuidCodec},
+		rest.QueryParam{Name: "tenant", Required: true, Codec: &nonEmpty},
+		rest.HeaderParam{Name: "X-Trace", Required: true, Codec: &nonEmpty},
+		rest.CookieParam{Name: "sid", Required: true, Codec: &nonEmpty},
+		rest.NewRequiredSSEEventParam("id", codex.String(), func(e mergedEvent) string { return e.ID }, func(e *mergedEvent, v string) { e.ID = v }),
+		rest.NewRequiredSSEEventParam("tenant", codex.String(), func(e mergedEvent) string { return e.Tenant }, func(e *mergedEvent, v string) { e.Tenant = v }),
+		rest.NewRequiredSSEEventParam("X-Trace", codex.String(), func(e mergedEvent) string { return e.Trace }, func(e *mergedEvent, v string) { e.Trace = v }),
+		rest.NewRequiredSSEEventParam("sid", codex.String(), func(e mergedEvent) string { return e.SID }, func(e *mergedEvent, v string) { e.SID = v }),
+	).Register(b)
+	if err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+	h := nethttp.SSEHandler(handle, func(_ context.Context, _ getReq, send func(mergedEvent) error) error {
+		return send(mergedEvent{ID: "wrong", Tenant: "wrong", Trace: "wrong", SID: "wrong"})
+	}, nethttp.Options{})
+	mux := http.NewServeMux()
+	mux.Handle("GET /stream/{id}", h)
+
+	req := httptest.NewRequest(http.MethodGet, "/stream/550e8400-e29b-41d4-a716-446655440000?tenant=acme", nil)
+	req.Header.Set("X-Trace", "trace-1")
+	req.AddCookie(&http.Cookie{Name: "sid", Value: "sid-1"})
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("want 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	body := rec.Body.String()
+	if !strings.Contains(body, `"id":"550e8400-e29b-41d4-a716-446655440000"`) ||
+		!strings.Contains(body, `"tenant":"acme"`) ||
+		!strings.Contains(body, `"trace":"trace-1"`) ||
+		!strings.Contains(body, `"sid":"sid-1"`) {
+		t.Fatalf("expected merged event payload, got: %s", body)
+	}
+}
+
+func TestSSEHandler_EventMerge_MissingRequiredFailsSend(t *testing.T) {
+	type mergedEvent struct{ V string }
+	evtCodec := codex.Struct[mergedEvent](
+		codex.OptionalField("v", codex.String(), func(e mergedEvent) string { return e.V }, func(e *mergedEvent, v string) { e.V = v }),
+	)
+	b := rest.NewBuilder(testInfo)
+	handle, err := rest.NewSSERoute[getReq, mergedEvent]("/stream",
+		getReqCodec, evtCodec,
+		rest.NewRequiredSSEEventParam("missing", codex.String(), func(e mergedEvent) string { return e.V }, func(e *mergedEvent, v string) { e.V = v }),
+	).Register(b)
+	if err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+	h := nethttp.SSEHandler(handle, func(_ context.Context, _ getReq, send func(mergedEvent) error) error {
+		return send(mergedEvent{})
+	}, nethttp.Options{})
+	mux := http.NewServeMux()
+	mux.Handle("GET /stream", h)
+
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/stream", nil))
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("want 500, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
 // ── Context observer integration ──────────────────────────────────────────────
 
 // T5: Handler with empty Options picks up context observer from r.Context().

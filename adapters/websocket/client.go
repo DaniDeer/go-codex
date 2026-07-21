@@ -221,7 +221,7 @@ func (a *wsDialSourceAdapter[T]) Activate(ctx context.Context, dst chan<- T, err
 		func(sess ports.Session, sock Socket) bool {
 			traffic := false
 			closeOnCancel(ctx, sock, func() {
-				readLoop(sock, a.handle.Path, sess, a.handle.InFormat, obs,
+				readLoop(sock, a.handle.Path, sess, a.handle.InFormat, obs, nil,
 					func(v T) bool {
 						traffic = true
 						select {
@@ -386,7 +386,7 @@ func (a *wsDialDuplexAdapter[In, Out]) Activate(
 		defer close(inboundDone)
 		conn.readEach(func(sess ports.Session, sock Socket) bool {
 			traffic := false
-			readLoop(sock, a.handle.Path, sess, a.handle.InFormat, obs,
+			readLoop(sock, a.handle.Path, sess, a.handle.InFormat, obs, nil,
 				func(v In) bool {
 					traffic = true
 					select {

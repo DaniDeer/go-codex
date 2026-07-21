@@ -1894,6 +1894,83 @@ func TestSocketPattern_PortAcceptance(t *testing.T) {
 	}
 }
 
+func TestSocketPattern_MergeFields_Wired(t *testing.T) {
+	type inMsg struct {
+		V    int
+		Room string
+	}
+	type outMsg struct {
+		Text string
+		Room string
+	}
+	inCodec := codex.Struct[inMsg](
+		codex.RequiredField("v", codex.Int(), func(v inMsg) int { return v.V }, func(v *inMsg, n int) { v.V = n }),
+		codex.OptionalField("room", codex.String(), func(v inMsg) string { return v.Room }, func(v *inMsg, s string) { v.Room = s }),
+	)
+	outCodec := codex.Struct[outMsg](
+		codex.RequiredField("text", codex.String(), func(v outMsg) string { return v.Text }, func(v *outMsg, s string) { v.Text = s }),
+		codex.OptionalField("room", codex.String(), func(v outMsg) string { return v.Room }, func(v *outMsg, s string) { v.Room = s }),
+	)
+	p, err := ports.NewDuplexPort[inMsg, outMsg]("ws-merge", inCodec, outCodec, ports.PortOptions{
+		Patterns: []ports.Pattern{
+			ports.SocketPattern{
+				Path: "/live/{room}",
+				InOpts: []ports.SocketInOpt{
+					ports.NewRequiredSocketInParam("room", codex.String(), func(v inMsg) string { return v.Room }, func(v *inMsg, s string) { v.Room = s }),
+				},
+				OutOpts: []ports.SocketOutOpt{
+					ports.NewRequiredSocketOutParam("room", codex.String(), func(v outMsg) string { return v.Room }, func(v *outMsg, s string) { v.Room = s }),
+				},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("construct: %v", err)
+	}
+	h, ok := ports.SocketHandle[inMsg, outMsg](p)
+	if !ok {
+		t.Fatal("want SocketHandle")
+	}
+	if len(h.InMergeFields()) != 1 || len(h.OutMergeFields()) != 1 {
+		t.Fatalf("want in/out merge fields wired, got %d/%d", len(h.InMergeFields()), len(h.OutMergeFields()))
+	}
+	gotIn, err := h.MergeInbound(inMsg{V: 1, Room: "wrong"}, map[string]string{"room": "kitchen"})
+	if err != nil {
+		t.Fatalf("MergeInbound: %v", err)
+	}
+	if gotIn.Room != "kitchen" {
+		t.Fatalf("want merged room kitchen, got %q", gotIn.Room)
+	}
+	gotOut, err := h.MergeOutbound(outMsg{Text: "x", Room: "wrong"}, map[string]string{"room": "kitchen"})
+	if err != nil {
+		t.Fatalf("MergeOutbound: %v", err)
+	}
+	if gotOut.Room != "kitchen" {
+		t.Fatalf("want merged room kitchen, got %q", gotOut.Room)
+	}
+}
+
+func TestSocketPattern_MergeFieldTypeMismatch(t *testing.T) {
+	type inMsg struct{ Room string }
+	inCodec := codex.Struct[inMsg](
+		codex.OptionalField("room", codex.String(), func(v inMsg) string { return v.Room }, func(v *inMsg, s string) { v.Room = s }),
+	)
+	_, err := ports.NewDuplexPort[inMsg, string]("ws-merge-mismatch", inCodec, strCodec, ports.PortOptions{
+		Patterns: []ports.Pattern{
+			ports.SocketPattern{
+				Path: "/live/{room}",
+				InOpts: []ports.SocketInOpt{
+					ports.NewRequiredSocketInParam("room", codex.String(), func(v int) string { return fmt.Sprintf("%d", v) }, func(_ *int, _ string) {}),
+				},
+			},
+		},
+	})
+	var pre ports.PatternRegisterError
+	if !errors.As(err, &pre) || pre.Kind != "socket" {
+		t.Fatalf("want PatternRegisterError{socket}, got %v", err)
+	}
+}
+
 type fakeDuplexAdapter struct {
 	sent []ports.Framed[string] // outbound frames the adapter delivered
 	mu   sync.Mutex

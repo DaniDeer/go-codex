@@ -196,6 +196,11 @@ go domain.Live.Feed(ctx, replies)
 session joined); `stream.GroupBy` by `Framed.Session` gives per-client
 sub-streams. See [`examples/websocket-duplex`](https://github.com/DaniDeer/go-codex/tree/main/examples/websocket-duplex).
 
+For one-struct convenience, declare `SocketPattern.InOpts` / `OutOpts` with
+`ports.NewRequiredSocketInParam` / `ports.NewRequiredSocketOutParam` (or the
+optional variants). The WebSocket adapters then merge upgrade vars into each
+inbound/outbound payload automatically.
+
 ### `SinkPort` Push — request-scoped submission
 
 When a request/response pipeline needs to drop individual items into a sink
@@ -313,7 +318,7 @@ be `.Register()`ed with a builder and threaded into the adapter constructor by h
 | `ports.FilePattern{Path, Format, CustomFormat, Opts}` | typed files (file) |
 | `ports.SQLPattern{Table, Op}` | SQL (sql) — metadata-only |
 | `ports.CachePattern{Key, TTL, Format, CustomFormat, Opts}` | key/value cache (redis) — key template + TTL; `Opts` = `CacheKeyParam` per-key-var codecs |
-| `ports.SocketPattern{Path, Subprotocols, Format, CustomFormat, Opts}` | duplex socket (websocket) — upgrade-time validation |
+| `ports.SocketPattern{Path, Subprotocols, Format, CustomFormat, Opts, InOpts, OutOpts}` | duplex socket (websocket) — upgrade-time validation + connection-var merge for inbound/outbound payloads |
 
 `CustomFormat` (on `FilePattern`/`CachePattern`/`SocketPattern`) is the
 escape hatch for binary/custom wire formats the `Format` enum

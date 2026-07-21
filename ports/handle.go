@@ -170,6 +170,22 @@ func buildSocket[In, Out any](
 	outCodec codex.Codec[Out],
 	restBuilder *rest.Builder,
 ) (Socket[In, Out], error) {
+	var sb socketMergeBuilder
+	for _, opt := range pat.InOpts {
+		opt.applySocketIn(&sb)
+	}
+	for _, opt := range pat.OutOpts {
+		opt.applySocketOut(&sb)
+	}
+	inMergeFields, err := assertSocketMergeFields[In](sb.inMergeFieldsRaw)
+	if err != nil {
+		return Socket[In, Out]{}, PatternRegisterError{Port: portName, Kind: patternKindSocket, Err: err}
+	}
+	outMergeFields, err := assertSocketMergeFields[Out](sb.outMergeFieldsRaw)
+	if err != nil {
+		return Socket[In, Out]{}, PatternRegisterError{Port: portName, Kind: patternKindSocket, Err: err}
+	}
+
 	b := restBuilder
 	if b == nil {
 		b = rest.NewBuilder(rest.Info{})
@@ -189,12 +205,26 @@ func buildSocket[In, Out any](
 		return Socket[In, Out]{}, err
 	}
 	return Socket[In, Out]{
-		Path:         pat.Path,
-		Subprotocols: pat.Subprotocols,
-		Route:        handle,
-		InFormat:     inFmt,
-		OutFormat:    outFmt,
+		Path:           pat.Path,
+		Subprotocols:   pat.Subprotocols,
+		Route:          handle,
+		InFormat:       inFmt,
+		OutFormat:      outFmt,
+		inMergeFields:  inMergeFields,
+		outMergeFields: outMergeFields,
 	}, nil
+}
+
+func assertSocketMergeFields[T any](raw []any) ([]codex.FieldCodec[T], error) {
+	out := make([]codex.FieldCodec[T], 0, len(raw))
+	for i := range raw {
+		f, ok := raw[i].(codex.FieldCodec[T])
+		if !ok {
+			return nil, fmt.Errorf("socket merge field[%d]: want codex.FieldCodec[%T], got %T", i, *new(T), raw[i])
+		}
+		out = append(out, f)
+	}
+	return out, nil
 }
 
 // buildDuplexPatternHandles scans patterns for a [DuplexPort] — currently

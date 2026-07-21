@@ -291,6 +291,10 @@ type routeBuilder struct {
 	// in [Route.Register]. See [MergeFieldTypeError].
 	responseHeaderMergeFields []any
 	responseCookieMergeFields []any
+	// sseEventMergeFields holds type-erased codex.FieldCodec[Event] values
+	// registered via NewRequiredSSEEventParam/NewOptionalSSEEventParam.
+	// Resolved to []codex.FieldCodec[Event] in [SSERoute.Register].
+	sseEventMergeFields []any
 }
 
 // RouteHandle is returned by [Route.Register]. It holds the spec descriptor
@@ -1257,6 +1261,65 @@ func (h MergedHeaderParam[T]) applyRoute(rb *routeBuilder) {
 	rb.headerMergeFields = append(rb.headerMergeFields, h.field)
 }
 
+// MergedSSEEventParam is returned by [NewRequiredSSEEventParam]/
+// [NewOptionalSSEEventParam]. It declares a connection-level variable merge
+// for SSE events: each sent Event can be stamped with request-derived vars
+// (path/query/header/cookie) automatically.
+//
+// Unlike NewPathParam/NewRequiredQueryParam/etc., this option does NOT
+// register request parameters in the OpenAPI route spec; it only registers a
+// merge field for the pushed Event payload.
+type MergedSSEEventParam[T any] struct {
+	Name        string
+	Description string
+	Required    bool
+	Codec       *codex.Codec[string]
+	field       codex.FieldCodec[T]
+}
+
+// NewRequiredSSEEventParam declares a REQUIRED connection variable that is
+// merged into each pushed SSE event.
+func NewRequiredSSEEventParam[T any](
+	name string,
+	codec codex.Codec[string],
+	get func(T) string,
+	set func(*T, string),
+) MergedSSEEventParam[T] {
+	return MergedSSEEventParam[T]{
+		Name:     name,
+		Required: true,
+		Codec:    &codec,
+		field:    codex.RequiredField(name, codec, get, set),
+	}
+}
+
+// NewOptionalSSEEventParam declares an OPTIONAL connection variable that is
+// merged into each pushed SSE event when present.
+func NewOptionalSSEEventParam[T any](
+	name string,
+	codec codex.Codec[string],
+	get func(T) string,
+	set func(*T, string),
+) MergedSSEEventParam[T] {
+	return MergedSSEEventParam[T]{
+		Name:     name,
+		Required: false,
+		Codec:    &codec,
+		field:    codex.OptionalField(name, codec, get, set),
+	}
+}
+
+// WithDescription sets the merge-field description and returns the updated
+// value.
+func (p MergedSSEEventParam[T]) WithDescription(desc string) MergedSSEEventParam[T] {
+	p.Description = desc
+	return p
+}
+
+func (p MergedSSEEventParam[T]) applyRoute(rb *routeBuilder) {
+	rb.sseEventMergeFields = append(rb.sseEventMergeFields, p.field)
+}
+
 // HeaderParamError is returned by [RouteHandle.ValidateHeaders] when a header
 // value fails codec validation.
 //
@@ -2033,6 +2096,10 @@ type SSERouteHandle[Req, Event any] struct {
 
 	// responseCookieParams holds per-cookie entries registered via ResponseCookieParam options.
 	responseCookieParams []ResponseCookieParam
+
+	// mergeFields holds SSE event merge fields registered via
+	// NewRequiredSSEEventParam/NewOptionalSSEEventParam.
+	mergeFields []codex.FieldCodec[Event]
 }
 
 // BuildPath substitutes {varName} placeholders in the route's path template
@@ -2083,6 +2150,45 @@ func (h *SSERouteHandle[Req, Event]) WithFormats(fmts ...format.Format[Event]) *
 		h.Descriptor.Responses[0].ContentTypes = cts
 	}
 	return h
+}
+
+// MergeFields returns the merge-capable fields registered via
+// NewRequiredSSEEventParam/NewOptionalSSEEventParam.
+func (h *SSERouteHandle[Req, Event]) MergeFields() []codex.FieldCodec[Event] {
+	return h.mergeFields
+}
+
+// MergeEvent merges request-derived vars into one SSE event value using the
+// fields registered by NewRequiredSSEEventParam/NewOptionalSSEEventParam.
+// pathVars/query/headers/cookies are merged in that order; later maps override
+// earlier keys with the same name.
+func (h *SSERouteHandle[Req, Event]) MergeEvent(
+	ev Event,
+	pathVars map[string]string,
+	query map[string]string,
+	headers map[string]string,
+	cookies map[string]string,
+) (Event, error) {
+	if len(h.mergeFields) == 0 {
+		return ev, nil
+	}
+	vars := make(map[string]string, len(pathVars)+len(query)+len(headers)+len(cookies))
+	for k, v := range pathVars {
+		vars[k] = v
+	}
+	for k, v := range query {
+		vars[k] = v
+	}
+	for k, v := range headers {
+		vars[k] = v
+	}
+	for k, v := range cookies {
+		vars[k] = v
+	}
+	if err := codex.DecodeVars(&ev, vars, h.mergeFields...); err != nil {
+		return ev, err
+	}
+	return ev, nil
 }
 
 // ValidatePathParams validates path variable values against their registered codecs.
@@ -2312,6 +2418,10 @@ func (s SSERoute[Req, Event]) Register(b *Builder) (*SSERouteHandle[Req, Event],
 	for _, opt := range s.opts {
 		opt.applyRoute(&rb)
 	}
+	eventMergeFields, err := assertMergeFields[Event](rb.sseEventMergeFields)
+	if err != nil {
+		return nil, err
+	}
 
 	templateVars := internal.ParseTemplateVars(s.path)
 	for _, p := range rb.pathParams {
@@ -2344,6 +2454,7 @@ func (s SSERoute[Req, Event]) Register(b *Builder) (*SSERouteHandle[Req, Event],
 		GlobalSecurity:       slices.Clone(b.globalSecurity),
 		responseHeaderParams: rb.respHeaders,
 		responseCookieParams: rb.respCookies,
+		mergeFields:          eventMergeFields,
 	}
 	entry := &typedSSEEntry[Req, Event]{handle: h}
 	b.entries = append(b.entries, entry)

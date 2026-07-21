@@ -55,6 +55,36 @@ nethttp.RegisterSSE(mux, sensorRoute,
 - The stats observer receives `RecordValidationError("response", constraint, "event")` for each rejected event — use this to count codec validation failures per event type.
 - The stats observer receives `RecordValidationError("response", constraint, "event")` for each rejected event.
 
+## One struct, one call for SSE events
+
+SSE now supports the same declare-once merge pattern as REST requests and
+responses. Declare connection-level vars once with
+`rest.NewRequiredSSEEventParam` / `rest.NewOptionalSSEEventParam`; each
+`send(event)` call then auto-merges request path/query/header/cookie values
+into the event struct before encode:
+
+```go
+type Event struct {
+    MachineID string
+    Tenant    string
+    Payload   Reading
+}
+
+handle, _ := rest.NewSSERoute[struct{}, Event](
+    "/machines/{machineID}/events",
+    codex.Empty, eventCodec,
+    rest.NewRequiredSSEEventParam("machineID", codex.String(),
+        func(e Event) string { return e.MachineID },
+        func(e *Event, v string) { e.MachineID = v }),
+    rest.NewOptionalSSEEventParam("tenant", codex.String(),
+        func(e Event) string { return e.Tenant },
+        func(e *Event, v string) { e.Tenant = v }),
+).Register(b)
+
+// send(Event{Payload: ...}) -> machineID/tenant merged automatically.
+nethttp.RegisterSSE(mux, handle, streamFn, nethttp.Options{})
+```
+
 ## Chunked streaming responses
 
 For routes that stream a response body (not SSE), use `format.NewStreamed`:

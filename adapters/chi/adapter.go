@@ -618,6 +618,10 @@ func SSEHandler[Req, Event any](handle *rest.SSERouteHandle[Req, Event], fn SSEH
 				return
 			}
 		}
+		pathVars := pathValues(r, handle.PathParamNames())
+		queryVars := queryValues(r)
+		headerVars := headerValues(r)
+		cookieVars := cookieValues(r)
 
 		// Enforce security: per-route requirements take precedence; nil falls back
 		// to global security declared via Builder.AddGlobalSecurity.
@@ -682,6 +686,14 @@ func SSEHandler[Req, Event any](handle *rest.SSERouteHandle[Req, Event], fn SSEH
 
 		headersCommitted := false
 		send := func(e Event) error {
+			if len(handle.MergeFields()) > 0 {
+				var err error
+				e, err = handle.MergeEvent(e, pathVars, queryVars, headerVars, cookieVars)
+				if err != nil {
+					stats.ReportErrors(obs, "response", err)
+					return err
+				}
+			}
 			if !headersCommitted {
 				headersCommitted = true
 				// Commit staged response headers/cookies on first send, before
