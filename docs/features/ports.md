@@ -2,7 +2,7 @@
 
 > See also: [`ports` package on pkg.go.dev](https://pkg.go.dev/github.com/DaniDeer/go-codex/ports) · [Forge Pipelines concept](../concepts/pipelines.md) · [Wiring Guide](../guides/ports.md) · [App — Application Lifecycle](app.md)
 >
-> Runnable demo: [`examples/sensor-service`](https://github.com/DaniDeer/go-codex/tree/main/examples/sensor-service) — one coherent use case wiring MQTT, SQL, file, and HTTP adapters to all four port types (`SourcePort`/`SinkPort`/`IOPort`/`ToolPort`), each declared with its `Pattern`; see its README for the full data-flow diagram.
+> Runnable demo: [`examples/sensor-service`](https://github.com/DaniDeer/go-codex/tree/main/examples/sensor-service) — one coherent use case wiring MQTT, SQL, file, and HTTP adapters to all five port types (`PipePort`/`SourcePort`/`SinkPort`/`IOPort`/`ToolPort`), each declared with its `Pattern`; its MQTT ingestion/egress boundary is a `PipePort` (`InputPortWithPatterns`/`OutputPortWithPatterns`) doubling as the pipeline's first/last stage, with the SQL persistence hop modeled as its own `Chain`/`ChainStream` edge and the pipeline shape derived via `ports.PipelineSpec`; see its README for the full data-flow diagram.
 
 `ports` is the protocol-agnostic wiring layer for go-codex pipelines. It lets you write
 domain logic and pipeline composition with **zero adapter imports**, then decide the
@@ -377,10 +377,15 @@ Params, Observer}` only — no `Patterns` forwarded.
 
 For real protocol adapters bound as an IO/adapter fan-in or fan-out (mqtt5,
 nethttp SSE, etc.), use the fallible, Pattern-forwarding overloads instead:
-`InputPortWithPatterns(name, patterns...) (*SourcePort[T], error)` /
-`OutputPortWithPatterns(name, patterns...) (*SinkPort[T], error)`. Same
-name → same instance rule; returns `PatternRegisterError` if a supplied
-`Pattern` is invalid.
+`InputPortWithPatterns(name string, patterns []Pattern) (*SourcePort[T], error)` /
+`OutputPortWithPatterns(name string, patterns []Pattern) (*SinkPort[T], error)`.
+Same name → same instance rule; returns `PatternRegisterError` if a supplied
+`Pattern` is invalid. They also forward `NewPipePort`'s
+`PortOptions.{REST,Event,ReqReply,MCP}Builder` (stored on the pipe, unused
+until a sub-port is built) — a `Pattern` needing a shared, application-wide
+builder registers against THAT builder, so its route/channel shows up in
+the same `OpenAPISpec()`/`AsyncAPISpec()` output as every other
+hand-declared and port-declared boundary, not a private single-use one.
 
 **Observer + tracing on the `Connect` data path**: the Push-consumer
 goroutine calls `RecordSubscribe`; `fanOut` calls `RecordPublish` per

@@ -3,23 +3,53 @@
 // streams and depends only on domain + the go-codex core — no adapters, no
 // concrete clients, no IO of its own.
 //
-// Persistence is NOT hidden inside a forge function: forge functions stay
-// pure (payload → insert params), and the save happens through a
-// protocol-agnostic [ports.IOPort] (ioports.Readings) that main() binds to a
-// concrete adapter. The pipeline sees only the port.
+// The MQTT pipeline is segmented into named [ports.PipePort] stages wired by
+// [ports.Chain]/[ports.ChainStream] (Raw → Params → Saved → AlertStage).
+// Raw and AlertStage are declared in ioports (they carry the MQTT
+// EventPattern — the actual IO/adapter boundary); Params and Saved are
+// declared HERE, as pipeline-internal stages with no adapters of their own.
+// pipeline never imports ioports (see main.go's import-direction doc
+// comment: pipeline → domain only) — Build takes raw/alertStage as
+// parameters instead, exactly as it previously took a plain
+// gstream.Stream[MQTTPayload].
+//
+// Persistence is NOT hidden inside a forge function, and — per this
+// package's PipePort segmentation — NOT hidden inside a larger transform's
+// closure either: forge functions stay pure (payload → insert params), and
+// the save happens through a protocol-agnostic [ports.IOPort]
+// (ioports.Readings) Connected inside its OWN Params→Saved ChainStream edge,
+// visible to [ports.PipelineSpec] as a real edge between two named pipes —
+// never buried alongside unrelated taps/filters in one bigger stage.
 package pipeline
 
 import (
 	"context"
-	"fmt"
 	"log/slog"
 
+	"github.com/DaniDeer/go-codex/codex"
 	"github.com/DaniDeer/go-codex/examples/sensor-service/db"
 	"github.com/DaniDeer/go-codex/examples/sensor-service/domain"
 	"github.com/DaniDeer/go-codex/forge"
 	"github.com/DaniDeer/go-codex/ports"
 	gstream "github.com/DaniDeer/go-codex/stream"
 )
+
+// Params is the pipeline-internal stage between the pure
+// MQTTPayload→InsertReadingParams map and the SQL persistence hop. No
+// adapters bind to it directly — it exists purely to give the persistence
+// edge (Params → Saved) a real, named boundary on both sides, so
+// [ports.PipelineSpec] can describe it without hiding it inside a larger
+// transform's closure.
+var Params = codex.Must(ports.NewPipePort[db.InsertReadingParams](
+	"params", domain.InsertParamsCodec, ports.PortOptions{}))
+
+// Saved is the pipeline-internal stage AFTER persistence: the stored row,
+// re-emitted by ioports.Readings' IOPort.Connect call inside the
+// Params→Saved ChainStream transform. Feeds the HTTP reactive cache
+// (via Saved.Stream) and the alerting stage (via the Saved→AlertStage
+// ChainStream edge).
+var Saved = codex.Must(ports.NewPipePort[db.Reading](
+	"saved", domain.ReadingCodec, ports.PortOptions{}))
 
 // Deps carries everything the pipeline is parameterized by: the persistence
 // port (declared in ioports, bound to a concrete adapter in main()), the
@@ -49,58 +79,76 @@ func NewBuildInsertParams() *forge.Function[domain.MQTTPayload, db.InsertReading
 	)
 }
 
-// Result exposes the pipeline's two outbound streams plus the forge function
+// Result exposes the pipeline's HTTP-facing stream plus the forge function
 // used, for topology documentation.
 type Result struct {
 	// LatestReadings feeds the HTTP reactive cache (GET /readings/latest).
 	LatestReadings gstream.Stream[db.Reading]
-	// AlertPayloads feeds the alerts sink port.
-	AlertPayloads gstream.Stream[domain.SensorAlert]
 	// BuildParams is the pure forge function applied to every sensor payload —
-	// exposed for stream.Topology documentation.
+	// exposed for spec documentation (see [ports.PipelineSpec] usage in demo.go).
 	BuildParams *forge.Function[domain.MQTTPayload, db.InsertReadingParams]
 }
 
-// Build assembles the stream topology over an already-active sensors stream:
+// Build wires the segmented MQTT pipeline as three [ports.Chain]/
+// [ports.ChainStream] edges over already-declared PipePort stages:
 //
-//	sensors → Apply(buildInsertParams, pure) → Persist port (IO) → Tap(log)
-//	        → Tee ─→ LatestReadings
-//	              └→ Filter(shouldAlert) → FlatMap(buildAlert) → AlertPayloads
+//	raw (ioports.Raw) --Chain(buildParams, pure)--> Params
+//	Params --ChainStream(Persist.Connect + Tap(log))--> Saved
+//	Saved --ChainStream(Filter+FlatMap)--> alertStage (ioports.AlertStage)
 //
-// Each operator is a typed free function — compose like Unix pipes. The
-// observer is resolved from ctx by every operator (ApplyOptions.Observer nil).
-func Build(ctx context.Context, sensors gstream.Stream[domain.MQTTPayload], deps Deps) Result {
+// raw and alertStage are parameters, not package vars, so this package never
+// imports ioports (see the package doc comment on the import-direction
+// rule) — main() passes ioports.Raw/ioports.AlertStage in, exactly as it
+// previously passed a plain gstream.Stream[MQTTPayload].
+//
+// The persistence step (Params → Saved) is deliberately its OWN
+// ChainStream edge — not folded into the Raw→Params or Saved→AlertStage
+// transforms — so [ports.PipelineSpec] sees the SQL hop as a real edge
+// between two named pipes, never hidden inside a bigger transform's
+// closure (see the package doc comment).
+//
+// Caller must Connect raw, Params, Saved, and alertStage AFTER calling
+// Build (Chain/ChainStream registrations must precede the UPSTREAM pipe's
+// Connect — see [ports.Chain]'s ordering rule).
+func Build(
+	ctx context.Context,
+	raw *ports.PipePort[domain.MQTTPayload],
+	alertStage *ports.PipePort[domain.SensorAlert],
+	deps Deps,
+) Result {
 	buildParams := NewBuildInsertParams()
 	shouldAlert := domain.NewShouldAlert(deps.Cfg)
 	buildAlert := domain.NewBuildAlert(deps.Cfg)
 
-	// Pure transformation: payload → insert params. Zero IO.
-	params := gstream.Apply(ctx, sensors, buildParams,
-		gstream.ApplyOptions{}) // observer from ctx
+	// Stage 1: Raw → Params — pure transformation, zero IO.
+	ports.Chain(ctx, raw, buildParams.Apply, Params)
 
-	// Persistence as an explicit IO step THROUGH the port — the stored row
-	// comes back out. Swapping SQL → HTTP → test double changes only the
-	// Bind call in main().
-	readings := deps.Persist.Connect(ctx, params)
+	// Stage 2: Params → Saved — the persistence hop THROUGH the port, its
+	// own real edge. The stored row comes back out; swapping SQL → HTTP →
+	// test double changes only the Bind call in main(), same as before.
+	ports.ChainStream(ctx, Params, func(s gstream.Stream[db.InsertReadingParams]) gstream.Stream[db.Reading] {
+		saved := deps.Persist.Connect(ctx, s)
+		// Tap: domain event observation — log every stored reading.
+		return gstream.Tap(ctx, saved, func(r db.Reading) {
+			deps.Logger.Info("reading saved", "sensor", r.SensorID, "value", r.Value, "unit", r.Unit)
+		})
+	}, Saved)
 
-	// Tap: domain event observation — log every stored reading.
-	readings = gstream.Tap(ctx, readings, func(r db.Reading) {
-		deps.Logger.Info("reading saved", "sensor", r.SensorID, "value", r.Value, "unit", r.Unit)
-	})
+	// Stage 3: Saved → AlertStage — filter to threshold breaches, map to
+	// SensorAlert for the MQTT alert topic.
+	ports.ChainStream(ctx, Saved, func(s gstream.Stream[db.Reading]) gstream.Stream[domain.SensorAlert] {
+		aboveThreshold := gstream.Filter(ctx, s, shouldAlert)
+		return gstream.FlatMapSlice(ctx, aboveThreshold,
+			func(r db.Reading) []domain.SensorAlert { return []domain.SensorAlert{buildAlert(r)} })
+	}, alertStage)
 
-	// Tee: fan-out — one copy feeds the HTTP reactive cache, one feeds alerting.
-	latestReadings, alertReadings := gstream.Tee(ctx, readings)
-
-	// Filter: keep only readings that cross the alert threshold.
-	aboveThreshold := gstream.Filter(ctx, alertReadings, shouldAlert)
-
-	// Convert db.Reading → SensorAlert for the MQTT alert topic.
-	alertPayloads := gstream.FlatMapSlice(ctx, aboveThreshold,
-		func(r db.Reading) []domain.SensorAlert { return []domain.SensorAlert{buildAlert(r)} })
+	// The HTTP reactive cache taps Saved directly — a fourth, independent
+	// Stream() consumer registered on the SAME pipe (must precede Saved's
+	// own Connect, same ordering rule as Chain/ChainStream).
+	latestReadings := Saved.Stream(ctx)
 
 	return Result{
 		LatestReadings: latestReadings,
-		AlertPayloads:  alertPayloads,
 		BuildParams:    buildParams,
 	}
 }
@@ -166,15 +214,11 @@ func NewExportPipeline(
 	}
 }
 
-// Topology documents the pipeline shape as a stream.Topology spec — the same
-// structure Build assembles, described declaratively for printing/inspection.
-func Topology(cfg domain.AlertConfig, buildParams *forge.Function[domain.MQTTPayload, db.InsertReadingParams]) *gstream.Topology {
-	topo := gstream.NewTopology("Sensor Service MQTT Pipeline", "1.0.0").
-		WithDescription("Real-time sensor readings: decode → map → persist → filter → alert.").
-		WithSource("mqtt/sensors/+/data", "Raw MQTT payloads from sensor network")
-	gstream.WithApply(topo, buildParams)
-	topo.WithPort("sql/readings/save", "persist via IOPort — stored row re-emitted (1→1)").
-		WithFilter(fmt.Sprintf("value > %.0f (alert threshold)", cfg.Threshold)).
-		WithSink("mqtt/alerts/{sensorID}", "Low-performance alert events")
-	return topo
-}
+// Spec generation (Gap 4 of docs/roadmap/pipe-port-composition-hardening.md)
+// no longer lives here as a hand-typed pipeline.Topology function — it is
+// derived directly from the real wiring via [ports.PipelineSpec], called in
+// main.go/demo.go with (ioports.Raw, Params, Saved, ioports.AlertStage) —
+// see demo.go's spec-printing section. Params/Saved are declared in this
+// package; Raw/AlertStage live in ioports (see the package doc comment on
+// the import-direction rule), so the PipelineSpec call itself happens in a
+// package that imports both, not here.

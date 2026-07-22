@@ -15,19 +15,19 @@ import (
 	"github.com/DaniDeer/go-codex/examples/sensor-service/ioports"
 	"github.com/DaniDeer/go-codex/examples/sensor-service/observability"
 	"github.com/DaniDeer/go-codex/examples/sensor-service/pipeline"
-	"github.com/DaniDeer/go-codex/forge"
+	"github.com/DaniDeer/go-codex/ports"
+	streamrender "github.com/DaniDeer/go-codex/render/stream"
 )
 
 // demoEnv carries everything the demo scenario needs from the wired service.
 type demoEnv struct {
 	ctx            context.Context
 	cancelPipeline context.CancelFunc
-	pipelineDone   chan struct{}
+	pipelineDone   <-chan struct{}
 	mqttClient     *adapters.MockMQTTClient
 	srvURL         string
 	cfg            domain.AlertConfig
 	counting       *observability.CountingObserver
-	buildParams    *forge.Function[domain.MQTTPayload, db.InsertReadingParams]
 }
 
 // runDemo drives the wired service through ONE coherent story:
@@ -199,23 +199,24 @@ func runDemo(env demoEnv) {
 	// ── Observer summary ───────────────────────────────────────────────────
 	env.counting.Print()
 
-	// ── Stream topology documentation ──────────────────────────────────────
-	topo := pipeline.Topology(env.cfg, env.buildParams)
+	// ── Pipeline spec documentation — derived, not hand-typed ───────────────
+	//
+	// ports.PipelineSpec reads pipe names, buffer sizes, bound adapter
+	// identities, and every Chain/ChainStream edge (including each
+	// transform's real Go function identity via reflection) directly from
+	// the four PipePorts pipeline.Build wired — no separate,
+	// hand-maintained pipeline.Topology function to keep in sync (Gap 4 of
+	// docs/roadmap/pipe-port-composition-hardening.md). This package
+	// imports both ioports (for Raw/AlertStage) and pipeline (for
+	// Params/Saved), so it — not pipeline itself — is where the call
+	// belongs (pipeline never imports ioports).
+	pipelineSpec := ports.PipelineSpec("Sensor Service MQTT Pipeline", "1.0.0",
+		ioports.Raw, pipeline.Params, pipeline.Saved, ioports.AlertStage)
+	specYAML, err := streamrender.Render(pipelineSpec)
+	must(err, "render pipeline spec")
 
-	fmt.Println("\n── Stream topology (stream.Topology) ────────────────────")
-	spec := topo.Spec()
-	for _, step := range spec.Steps {
-		if step.Function != nil {
-			fmt.Printf("  [%s] %s v%s  hash:%s...\n",
-				step.Kind, step.Function.Name, step.Function.Version, step.Function.Hash[:16])
-		} else {
-			name := step.Name
-			if name == "" {
-				name = step.Description
-			}
-			fmt.Printf("  [%s] %s\n", step.Kind, name)
-		}
-	}
+	fmt.Println("\n── Pipeline spec (ports.PipelineSpec → render/stream.Render, fully derived) ──")
+	fmt.Println(string(specYAML))
 
 	// ── Specs built FROM the port declarations ─────────────────────────────
 	//

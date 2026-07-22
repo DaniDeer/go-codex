@@ -40,45 +40,61 @@ var EventsBuilder = events.NewBuilder(events.Info{Title: "sensor-service", Versi
 )
 
 // ── Event ports (MQTT in the demo — any pub/sub adapter fits) ────────────────
+//
+// Raw and AlertStage are [ports.PipePort]s, not plain Source/SinkPorts: the
+// MQTT ingestion/egress boundary IS the first/last stage of the segmented
+// computation pipeline (pipeline.Build wires Raw → Params → Saved →
+// AlertStage via Chain/ChainStream). Each pipe's EventPattern is declared
+// ONCE here as a package-level pattern slice; main() derives the concrete
+// sub-port via [ports.PipePort.InputPortWithPatterns]/
+// [ports.PipePort.OutputPortWithPatterns] (not plain InputPort/OutputPort,
+// which never forward Patterns) and binds the mqtt adapter to THAT sub-port.
 
-// Sensors is the inbound boundary: sensor readings published by the sensor
-// network. The topic + params are declared once here; main() derives the
-// *events.ChannelHandle via ports.EventHandle and binds mqtt.SubscribeAdapter.
-var Sensors = codex.Must(ports.NewSourcePort[domain.MQTTPayload](
+// SensorsPattern is Raw's EventPattern, declared once — the topic + params
+// main() needs to derive the *events.ChannelHandle via ports.EventHandle for
+// the sub-port InputPortWithPatterns returns.
+var SensorsPattern = []ports.Pattern{
+	ports.EventPattern{
+		Topic: "sensors/{sensorID}/data",
+		Opts: []events.ChannelOpt{
+			events.ChannelMeta{Description: "Sensor readings published by the sensor network."},
+			events.Subscribe{Summary: "Receive sensor reading"},
+			events.TopicParam{Name: "sensorID", Description: "UUID of the publishing sensor"},
+		},
+	},
+}
+
+// Raw is the inbound boundary AND the pipeline's first stage: sensor
+// readings published by the sensor network flow in through this PipePort's
+// "mqtt" InputPortWithPatterns sub-port, then through pipeline.Build's
+// Chain/ChainStream edges. Swapping MQTT → ZeroMQ changes only the Bind call
+// in main() — the EventBuilder registration (SensorsPattern) is unaffected.
+var Raw = codex.Must(ports.NewPipePort[domain.MQTTPayload](
 	"mqtt/sensors/+/data", domain.MQTTPayloadCodec,
-	ports.PortOptions{
-		Buffer: 64,
-		Patterns: []ports.Pattern{
-			ports.EventPattern{
-				Topic: "sensors/{sensorID}/data",
-				Opts: []events.ChannelOpt{
-					events.ChannelMeta{Description: "Sensor readings published by the sensor network."},
-					events.Subscribe{Summary: "Receive sensor reading"},
-					events.TopicParam{Name: "sensorID", Description: "UUID of the publishing sensor"},
-				},
-			},
-		},
-		EventBuilder: EventsBuilder,
-	}))
+	ports.PortOptions{Buffer: 64, EventBuilder: EventsBuilder}))
 
-// Alerts is the outbound boundary: threshold-breach alerts. Fan-out to
-// additional sinks (e.g. SSE, file) requires only additional Bind calls in
-// main() — no pipeline changes.
-var Alerts = codex.Must(ports.NewSinkPort[domain.SensorAlert](
-	"mqtt/alerts", domain.AlertCodec,
-	ports.PortOptions{
-		Patterns: []ports.Pattern{
-			ports.EventPattern{
-				Topic: "alerts/{sensorID}",
-				Opts: []events.ChannelOpt{
-					events.ChannelMeta{Description: "Threshold-breach alerts."},
-					events.Publish{Summary: "Publish threshold-breach alert"},
-					events.TopicParam{Name: "sensorID", Description: "UUID of the sensor that triggered the alert"},
-				},
-			},
+// AlertsPattern is AlertStage's EventPattern, declared once — same
+// declare-once story as SensorsPattern.
+var AlertsPattern = []ports.Pattern{
+	ports.EventPattern{
+		Topic: "alerts/{sensorID}",
+		Opts: []events.ChannelOpt{
+			events.ChannelMeta{Description: "Threshold-breach alerts."},
+			events.Publish{Summary: "Publish threshold-breach alert"},
+			events.TopicParam{Name: "sensorID", Description: "UUID of the sensor that triggered the alert"},
 		},
-		EventBuilder: EventsBuilder,
-	}))
+	},
+}
+
+// AlertStage is the outbound boundary AND the pipeline's last stage:
+// threshold-breach alerts computed by pipeline.Build's final ChainStream
+// edge flow out through this PipePort's "mqtt" OutputPortWithPatterns
+// sub-port. Fan-out to additional sinks (e.g. SSE, file) requires only
+// additional OutputPort(WithPatterns) + Bind calls in main() — no pipeline
+// changes.
+var AlertStage = codex.Must(ports.NewPipePort[domain.SensorAlert](
+	"mqtt/alerts", domain.AlertCodec,
+	ports.PortOptions{EventBuilder: EventsBuilder}))
 
 // ── Shared OpenAPI builder ────────────────────────────────────────────────────
 

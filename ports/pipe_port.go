@@ -4,6 +4,10 @@ import (
 	"context"
 	"sync"
 
+	"github.com/DaniDeer/go-codex/api/events"
+	apimcp "github.com/DaniDeer/go-codex/api/mcp"
+	"github.com/DaniDeer/go-codex/api/reqreply"
+	"github.com/DaniDeer/go-codex/api/rest"
 	"github.com/DaniDeer/go-codex/codex"
 	"github.com/DaniDeer/go-codex/stats"
 	gstream "github.com/DaniDeer/go-codex/stream"
@@ -60,6 +64,16 @@ type PipePort[T any] struct {
 	obs    stats.Observer
 	buffer int
 
+	// Builders are stored (not used eagerly — the pipe itself builds no
+	// handle) so [InputPortWithPatterns]/[OutputPortWithPatterns] can
+	// forward the SAME shared builder every other Pattern-carrying port in
+	// the service registers against, instead of silently falling back to a
+	// private single-use builder per sub-port.
+	restBuilder     *rest.Builder
+	eventBuilder    *events.Builder
+	reqReplyBuilder *reqreply.Builder
+	mcpBuilder      *apimcp.Builder
+
 	mu        sync.Mutex
 	in        map[string]*SourcePort[T]
 	out       map[string]*SinkPort[T]
@@ -80,21 +94,29 @@ type PipePort[T any] struct {
 // opts.Buffer defaults to 8 when <= 0. opts.Patterns are NOT built
 // eagerly (the pipe itself generates no schema — schema comes from the
 // individual SourcePort/SinkPort ports declared via InputPort/OutputPort).
+// opts.RESTBuilder/EventBuilder/ReqReplyBuilder/MCPBuilder ARE stored (even
+// though nothing is registered yet) so [InputPortWithPatterns]/
+// [OutputPortWithPatterns] can later forward the same shared builder every
+// other Pattern-carrying port in the service registers against.
 func NewPipePort[T any](name string, codec codex.Codec[T], opts PortOptions) (*PipePort[T], error) {
 	buf := opts.Buffer
 	if buf <= 0 {
 		buf = 8
 	}
 	return &PipePort[T]{
-		name:   name,
-		codec:  codec,
-		params: opts.Params,
-		obs:    opts.Observer,
-		buffer: buf,
-		in:     map[string]*SourcePort[T]{},
-		out:    map[string]*SinkPort[T]{},
-		pushCh: make(chan T, buf),
-		doneCh: make(chan struct{}),
+		name:            name,
+		codec:           codec,
+		params:          opts.Params,
+		obs:             opts.Observer,
+		buffer:          buf,
+		restBuilder:     opts.RESTBuilder,
+		eventBuilder:    opts.EventBuilder,
+		reqReplyBuilder: opts.ReqReplyBuilder,
+		mcpBuilder:      opts.MCPBuilder,
+		in:              map[string]*SourcePort[T]{},
+		out:             map[string]*SinkPort[T]{},
+		pushCh:          make(chan T, buf),
+		doneCh:          make(chan struct{}),
 	}, nil
 }
 
@@ -152,6 +174,13 @@ func (p *PipePort[T]) OutputPort(name string) *SinkPort[T] {
 // its sub-port with zero Patterns, so [EventHandle]/[RESTHandle]/
 // [ReqReplyHandle] on it always return (nil, false) — this is the fix.
 //
+// The sub-port is constructed with the SAME RESTBuilder/EventBuilder/
+// ReqReplyBuilder/MCPBuilder supplied to [NewPipePort]'s [PortOptions] (if
+// any) — a Pattern requiring a shared, application-wide builder (so its
+// channel/route appears in that builder's printed OpenAPI/AsyncAPI spec
+// alongside every other hand-declared and port-declared boundary) registers
+// against the SAME builder here, not a private single-use one.
+//
 // Same "same name, same instance" rule as InputPort: a name already
 // registered (by either InputPort or InputPortWithPatterns) returns the
 // existing port, and patterns is ignored on that call — declare patterns
@@ -169,6 +198,8 @@ func (p *PipePort[T]) InputPortWithPatterns(name string, patterns []Pattern) (*S
 	}
 	sp, err := NewSourcePort[T](p.name+"/in/"+name, p.codec, PortOptions{
 		Buffer: p.buffer, Params: p.params, Observer: p.obs, Patterns: patterns,
+		RESTBuilder: p.restBuilder, EventBuilder: p.eventBuilder,
+		ReqReplyBuilder: p.reqReplyBuilder, MCPBuilder: p.mcpBuilder,
 	})
 	if err != nil {
 		return nil, err
@@ -179,7 +210,8 @@ func (p *PipePort[T]) InputPortWithPatterns(name string, patterns []Pattern) (*S
 
 // OutputPortWithPatterns is [OutputPort], but the underlying [SinkPort] is
 // constructed with the given patterns — see [InputPortWithPatterns] for the
-// full rationale and same-name/error semantics (identical here).
+// full rationale (including shared-builder forwarding) and same-name/error
+// semantics (identical here).
 func (p *PipePort[T]) OutputPortWithPatterns(name string, patterns []Pattern) (*SinkPort[T], error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
@@ -188,6 +220,8 @@ func (p *PipePort[T]) OutputPortWithPatterns(name string, patterns []Pattern) (*
 	}
 	sp, err := NewSinkPort[T](p.name+"/out/"+name, p.codec, PortOptions{
 		Buffer: p.buffer, Params: p.params, Observer: p.obs, Patterns: patterns,
+		RESTBuilder: p.restBuilder, EventBuilder: p.eventBuilder,
+		ReqReplyBuilder: p.reqReplyBuilder, MCPBuilder: p.mcpBuilder,
 	})
 	if err != nil {
 		return nil, err

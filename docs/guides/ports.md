@@ -246,8 +246,12 @@ pipes). `Push(ctx, v)` feeds items into the pipe at any time — even before
 `InputPort(name)`/`OutputPort(name)` are for adapter wiring (no `Patterns`
 forwarding). For real protocol adapters (mqtt5, nethttp SSE, etc.) use the
 fallible, Pattern-forwarding overloads instead:
-`InputPortWithPatterns(name, patterns...) (*SourcePort[T], error)` /
-`OutputPortWithPatterns(name, patterns...) (*SinkPort[T], error)`.
+`InputPortWithPatterns(name string, patterns []Pattern) (*SourcePort[T], error)` /
+`OutputPortWithPatterns(name string, patterns []Pattern) (*SinkPort[T], error)`
+— these also forward any `RESTBuilder`/`EventBuilder`/`ReqReplyBuilder`/
+`MCPBuilder` supplied to `NewPipePort`'s `PortOptions`, so a Pattern needing
+a shared builder registers against the SAME builder every other
+Pattern-carrying port in the service uses, not a private one-off.
 
 `Connect`'s data path is fully instrumented: `RecordSubscribe` fires on the
 Push-consumer, `RecordPublish` fires per fan-out destination; `Chain`/

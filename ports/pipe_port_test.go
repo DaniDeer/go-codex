@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/DaniDeer/go-codex/api/rest"
 	"github.com/DaniDeer/go-codex/codex"
 	"github.com/DaniDeer/go-codex/format"
 	"github.com/DaniDeer/go-codex/ports"
@@ -954,6 +955,65 @@ func TestPipePort_InputPortWithPatterns_BuildsRealHandle(t *testing.T) {
 	}
 	if handle == nil {
 		t.Fatal("want non-nil handle")
+	}
+}
+
+// PCH-11: InputPortWithPatterns forwards NewPipePort's shared RESTBuilder —
+// the sub-port's route must land in the SAME builder's OpenAPISpec, not a
+// private single-use builder created ad hoc by buildEventPatternHandles.
+func TestPipePort_InputPortWithPatterns_UsesSharedRESTBuilder(t *testing.T) {
+	shared := rest.NewBuilder(rest.Info{Title: "shared", Version: "1.0.0"})
+	pp, err := ports.NewPipePort[cfgItem]("shared-builder-test", cfgCodec, ports.PortOptions{
+		Buffer: 8, RESTBuilder: shared,
+	})
+	if err != nil {
+		t.Fatalf("NewPipePort: %v", err)
+	}
+
+	if _, err := pp.InputPortWithPatterns("ingest", []ports.Pattern{
+		ports.RESTPattern{Method: "GET", Path: "/shared-in"},
+	}); err != nil {
+		t.Fatalf("InputPortWithPatterns: %v", err)
+	}
+
+	doc, err := shared.OpenAPISpec()
+	if err != nil {
+		t.Fatalf("OpenAPISpec: %v", err)
+	}
+	yamlBytes, err := doc.MarshalYAML()
+	if err != nil {
+		t.Fatalf("MarshalYAML: %v", err)
+	}
+	if !strings.Contains(string(yamlBytes), "/shared-in") {
+		t.Fatalf("want /shared-in registered in the shared builder's spec, got:\n%s", yamlBytes)
+	}
+}
+
+func TestPipePort_OutputPortWithPatterns_UsesSharedRESTBuilder(t *testing.T) {
+	shared := rest.NewBuilder(rest.Info{Title: "shared", Version: "1.0.0"})
+	pp, err := ports.NewPipePort[cfgItem]("shared-builder-out-test", cfgCodec, ports.PortOptions{
+		Buffer: 8, RESTBuilder: shared,
+	})
+	if err != nil {
+		t.Fatalf("NewPipePort: %v", err)
+	}
+
+	if _, err := pp.OutputPortWithPatterns("egress", []ports.Pattern{
+		ports.RESTPattern{Method: "GET", Path: "/shared-out"},
+	}); err != nil {
+		t.Fatalf("OutputPortWithPatterns: %v", err)
+	}
+
+	doc, err := shared.OpenAPISpec()
+	if err != nil {
+		t.Fatalf("OpenAPISpec: %v", err)
+	}
+	yamlBytes, err := doc.MarshalYAML()
+	if err != nil {
+		t.Fatalf("MarshalYAML: %v", err)
+	}
+	if !strings.Contains(string(yamlBytes), "/shared-out") {
+		t.Fatalf("want /shared-out registered in the shared builder's spec, got:\n%s", yamlBytes)
 	}
 }
 
