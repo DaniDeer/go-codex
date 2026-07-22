@@ -1,12 +1,14 @@
 package ports
 
 import (
+	"context"
 	"fmt"
 	"reflect"
 	"runtime"
 	"sort"
 	"strings"
 
+	"github.com/DaniDeer/go-codex/stats"
 	gstream "github.com/DaniDeer/go-codex/stream"
 )
 
@@ -49,6 +51,31 @@ func (p *PipePort[T]) recordEdge(e ChainEdge) {
 	p.mu.Lock()
 	p.edges = append(p.edges, e)
 	p.mu.Unlock()
+}
+
+// recordChainEdgeWithObserver is the shared setup-time observability path
+// for [Chain] and [ChainStream]: it resolves an observer (from's own, or
+// from ctx when unset — Chain/ChainStream previously resolved none at all),
+// brackets the edge recording in a "pipe.chain" [stats.TraceObserver] span
+// when the observer supports it (edge SETUP only, not a per-item span — a
+// Chain/ChainStream edge may carry unbounded traffic, so tracing every item
+// would be an unbounded tracing cost; this matches [bindWithObserver]'s
+// "port.bind" cost/benefit precedent), then calls [PipePort.recordEdge].
+func recordChainEdgeWithObserver[In, Out any](ctx context.Context, from *PipePort[In], to *PipePort[Out], edge ChainEdge) {
+	obs := from.obs
+	if obs == nil {
+		obs = stats.ObserverFromContext(ctx)
+	}
+	spanCtx := ctx
+	var tracer stats.TraceObserver
+	if t, ok := obs.(stats.TraceObserver); ok {
+		tracer = t
+		spanCtx = t.StartSpan(ctx, "pipe.chain", from.Name()+"->"+to.Name())
+	}
+	from.recordEdge(edge)
+	if tracer != nil {
+		tracer.EndSpan(spanCtx, nil)
+	}
 }
 
 // Buffer returns the pipe's configured channel buffer size.

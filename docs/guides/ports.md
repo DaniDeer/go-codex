@@ -243,7 +243,15 @@ ports.ChainStream(ctx, Valid, func(s gstream.Stream[Validated]) gstream.Stream[C
 (e.g. fanning one stream into several independently-wired downstream
 pipes). `Push(ctx, v)` feeds items into the pipe at any time — even before
 `Connect()` (items buffer until Connect starts draining).
-`InputPort(name)`/`OutputPort(name)` are for adapter wiring.
+`InputPort(name)`/`OutputPort(name)` are for adapter wiring (no `Patterns`
+forwarding). For real protocol adapters (mqtt5, nethttp SSE, etc.) use the
+fallible, Pattern-forwarding overloads instead:
+`InputPortWithPatterns(name, patterns...) (*SourcePort[T], error)` /
+`OutputPortWithPatterns(name, patterns...) (*SinkPort[T], error)`.
+
+`Connect`'s data path is fully instrumented: `RecordSubscribe` fires on the
+Push-consumer, `RecordPublish` fires per fan-out destination; `Chain`/
+`ChainStream` wrap edge-setup in a `"pipe.chain"` `TraceObserver` span.
 
 **Modular pipeline composition**: `Chain` and `ChainStream` calls compose
 identically inside one top-level pipeline builder:
@@ -285,6 +293,18 @@ pipes (different payload types per stage) can be passed to one call.
 
 See [`examples/pipeline-segmentation`](https://github.com/DaniDeer/go-codex/tree/main/examples/pipeline-segmentation)
 for a full 3-stage demo including derived spec generation.
+
+**Lifecycle supervision**: `Done() <-chan struct{}` closes only after
+`Connect`'s internal goroutines fully exit — pair it with
+[`app.App.Supervise`](app.md) instead of hand-rolling a fire-and-forget
+goroutine:
+
+```go
+app.Supervise("raw-pipe", func(ctx context.Context) <-chan struct{} {
+    Raw.Connect(ctx)
+    return Raw.Done()
+})
+```
 
 ### `SinkPort` Push — request-scoped submission
 

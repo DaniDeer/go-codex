@@ -46,6 +46,7 @@ both share the same teardown path.
 | `app.New(app.Options{Observer, Logger, ShutdownTimeout}) *app.App` | Construct; the root context is live immediately; **no signal handlers installed** (that happens inside `Run` only) |
 | `App.Context() context.Context` | Cancelable root context with `Options.Observer` pre-injected via `stats.WithObserver` — use for every `Bind`/`Feed`/`Start` call |
 | `App.Go(name, fn func(ctx) error)` | Supervised goroutine. **Fail-fast, errgroup-style**: the first non-nil return cancels the app; all errors are collected |
+| `App.Supervise(name, start func(ctx) (done <-chan struct{}))` | Supervises a **non-blocking** component: `start` is called once and returns immediately; "finished" is reported only when the returned `done` channel closes — deliberately does **not** race `ctx.Done()` against `done` (that would report completion before the component actually drains). Pairs with [`ports.PipePort.Done()`](ports.md#pipeportt) |
 | `App.OnShutdown(name, fn func(ctx) error)` | Shutdown hook, run **LIFO** (defer semantics: close what you opened last, first). A failing hook never stops later hooks. Each hook's ctx is bounded by `ShutdownTimeout` (default 10 s) |
 | `App.Run(parent) error` | Blocks until SIGINT/SIGTERM, parent cancellation, or the first goroutine failure — then cancels, waits for goroutines, runs hooks, returns `errors.Join` of everything (nil when clean) |
 | `App.Shutdown() error` | The same ordered teardown, directly — idempotent; concurrent calls share one execution |
@@ -79,5 +80,13 @@ Reach individual failures in the joined result with `errors.As`.
 - **Zero coupling** — `app` imports only `stats` + stdlib; `ports` and
   `forge` know nothing about it. Teardown registration is always explicit
   (`OnShutdown`), never inferred from context identity.
+- **`Supervise` exists to avoid a specific bug** — a naive
+  `a.Go(name, func(ctx) error { start(ctx); return nil })` for a
+  non-blocking component would report "finished" as soon as `start`
+  returns, not when the component actually stops. `Supervise` waits on the
+  component's own completion signal (e.g. `ports.PipePort.Done()`) instead.
+- `Go`/`OnShutdown`/`Supervise` calls made after shutdown has begun are
+  safe, logged no-ops — the goroutine/hook/`start` function is never
+  invoked.
 - **Out of scope** — dependency graphs between ports, health checks, restart
   policies.

@@ -311,3 +311,103 @@ func Example() {
 	// server closed
 	// storage closed
 }
+
+// PCH-06: Supervise reports "finished" only after done closes, not after
+// start returns — proving it doesn't race the real completion signal the
+// way a naive a.Go(name, func(ctx) error { start(ctx); return nil }) would.
+
+func TestApp_Supervise_WaitsForDoneNotStartReturn(t *testing.T) {
+	a := app.New(app.Options{})
+
+	doneCh := make(chan struct{})
+	startReturned := make(chan struct{})
+
+	a.Supervise("component", func(ctx context.Context) <-chan struct{} {
+		close(startReturned) // start() returns immediately...
+		return doneCh        // ...but completion is signalled separately, later
+	})
+
+	select {
+	case <-startReturned:
+		// expected: start() itself returned already
+	case <-time.After(time.Second):
+		t.Fatal("start was never called")
+	}
+
+	// Shutdown must block on doneCh, not complete just because start returned.
+	shutdownDone := make(chan error, 1)
+	go func() { shutdownDone <- a.Shutdown() }()
+
+	select {
+	case <-shutdownDone:
+		t.Fatal("Shutdown completed before Supervise's done channel closed")
+	case <-time.After(50 * time.Millisecond):
+		// expected: still blocked
+	}
+
+	close(doneCh) // now signal real completion
+
+	select {
+	case err := <-shutdownDone:
+		if err != nil {
+			t.Fatalf("want clean shutdown, got %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("Shutdown did not complete after doneCh closed")
+	}
+}
+
+func TestApp_Supervise_RecordsObserverEventOnlyAfterDone(t *testing.T) {
+	obs := &recordingObserver{}
+	a := app.New(app.Options{Observer: obs})
+
+	doneCh := make(chan struct{})
+	a.Supervise("traced-component", func(context.Context) <-chan struct{} {
+		return doneCh
+	})
+
+	// No app.go event yet — Supervise's wrapped goroutine is still blocked
+	// on doneCh (start already returned, but that must not count as done).
+	for _, c := range obs.snapshot() {
+		if c.method == "app.go" && c.path == "traced-component" {
+			t.Fatal("app.go event recorded before doneCh closed")
+		}
+	}
+
+	close(doneCh)
+	must0(a.Shutdown())
+
+	found := false
+	for _, c := range obs.snapshot() {
+		if c.method == "app.go" && c.path == "traced-component" && c.status == 200 {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("want app.go/traced-component/200 recorded after doneCh closed")
+	}
+}
+
+func TestApp_Supervise_AfterShutdown_NoPanic(t *testing.T) {
+	a := app.New(app.Options{})
+	must0(a.Shutdown())
+
+	// Calling Supervise after shutdown must be a safe no-op — start must
+	// not even be invoked.
+	called := false
+	a.Supervise("late", func(context.Context) <-chan struct{} {
+		called = true
+		ch := make(chan struct{})
+		close(ch)
+		return ch
+	})
+	if called {
+		t.Fatal("want start not called after shutdown")
+	}
+}
+
+func must0(err error) {
+	if err != nil {
+		panic(err)
+	}
+}

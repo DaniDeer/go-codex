@@ -372,8 +372,34 @@ happen before or after.
 **IO bridging** (secondary): `InputPort(name)` returns a `*SourcePort[T]`
 to bind input adapters. `OutputPort(name)` returns a `*SinkPort[T]` to bind
 output adapters. Same name → same instance; input/output names are scoped
-independently. PipePort carries no Patterns of its own — schema comes from
-the individual SourcePort/SinkPort ports.
+independently. These plain accessors build with `PortOptions{Buffer,
+Params, Observer}` only — no `Patterns` forwarded.
+
+For real protocol adapters bound as an IO/adapter fan-in or fan-out (mqtt5,
+nethttp SSE, etc.), use the fallible, Pattern-forwarding overloads instead:
+`InputPortWithPatterns(name, patterns...) (*SourcePort[T], error)` /
+`OutputPortWithPatterns(name, patterns...) (*SinkPort[T], error)`. Same
+name → same instance rule; returns `PatternRegisterError` if a supplied
+`Pattern` is invalid.
+
+**Observer + tracing on the `Connect` data path**: the Push-consumer
+goroutine calls `RecordSubscribe`; `fanOut` calls `RecordPublish` per
+destination (success and failure). `Chain`/`ChainStream` wrap their
+edge-setup (not per-item) in a `"pipe.chain"` `TraceObserver` span —
+matching the cost/benefit precedent of `port.bind`'s adapter-lifetime span.
+
+**Lifecycle supervision**: `Done() <-chan struct{}` closes only after
+`Connect`'s internal goroutines fully exit — a real teardown-complete
+signal (never closes if `Connect` was never called). Pairs with
+[`app.App.Supervise`](app.md) for supervising a fire-and-forget `PipePort`
+without racing `ctx.Done()` against actual completion:
+
+```go
+app.Supervise("raw-pipe", func(ctx context.Context) <-chan struct{} {
+    Raw.Connect(ctx)
+    return Raw.Done()
+})
+```
 
 **Pipeline spec generation — derived, not hand-typed**:
 `ports.PipelineSpec(title, version string, pipes ...PipeSpecSource) gstream.TopologySpec`

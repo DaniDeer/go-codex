@@ -2,11 +2,17 @@ package ports_test
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
+	"github.com/DaniDeer/go-codex/codex"
+	"github.com/DaniDeer/go-codex/format"
 	"github.com/DaniDeer/go-codex/ports"
+	"github.com/DaniDeer/go-codex/stats"
 	gstream "github.com/DaniDeer/go-codex/stream"
 )
 
@@ -708,5 +714,309 @@ func TestPipelineSpec_HeterogeneousTypes(t *testing.T) {
 	names := []string{spec.Steps[0].Name, spec.Steps[1].Name, spec.Steps[2].Name}
 	if names[0] != "het-a" || names[1] != "het-b" || names[2] != "het-c" {
 		t.Fatalf("want [het-a het-b het-c], got %v", names)
+	}
+}
+
+// ── PP-27: Push path calls RecordSubscribe (PCH-01) ─────────────────────────
+
+type pubSubSpy struct {
+	mu         sync.Mutex
+	subscribes []bool // true = success
+	publishes  []bool
+}
+
+func (s *pubSubSpy) RecordValidationError(_, _, _ string)              {}
+func (s *pubSubSpy) RecordRequest(_, _ string, _ int, _ time.Duration) {}
+func (s *pubSubSpy) RecordSubscribe(_ string, success bool, _ time.Duration) {
+	s.mu.Lock()
+	s.subscribes = append(s.subscribes, success)
+	s.mu.Unlock()
+}
+func (s *pubSubSpy) RecordPublish(_ string, success bool, _ time.Duration) {
+	s.mu.Lock()
+	s.publishes = append(s.publishes, success)
+	s.mu.Unlock()
+}
+func (s *pubSubSpy) counts() (subs, pubs int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return len(s.subscribes), len(s.publishes)
+}
+
+func TestPipePort_Push_RecordsSubscribe(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	spy := &pubSubSpy{}
+	ctx = stats.WithObserver(ctx, spy)
+
+	pp, _ := ports.NewPipePort[int]("obs-push", intCodec, ports.PortOptions{Buffer: 8})
+	out := pp.OutputPort("sink")
+	outCh := make(chan int, 8)
+	out.Bind(ctx, ports.ChanSinkAdapter(outCh))
+
+	pp.Connect(ctx)
+	if err := pp.Push(ctx, 42); err != nil {
+		t.Fatalf("Push: %v", err)
+	}
+	<-outCh
+
+	subs, _ := spy.counts()
+	if subs < 1 {
+		t.Fatalf("want at least 1 RecordSubscribe call for pushed item, got %d", subs)
+	}
+}
+
+// ── PP-28: fanOut calls RecordPublish per destination (PCH-02) ──────────────
+
+func TestPipePort_FanOut_RecordsPublishPerDestination(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	spy := &pubSubSpy{}
+	ctx = stats.WithObserver(ctx, spy)
+
+	pp, _ := ports.NewPipePort[int]("obs-fanout", intCodec, ports.PortOptions{Buffer: 8})
+	out1 := pp.OutputPort("sink1")
+	out2 := pp.OutputPort("sink2")
+	ch1 := make(chan int, 8)
+	ch2 := make(chan int, 8)
+	out1.Bind(ctx, ports.ChanSinkAdapter(ch1))
+	out2.Bind(ctx, ports.ChanSinkAdapter(ch2))
+
+	pp.Connect(ctx)
+	if err := pp.Push(ctx, 7); err != nil {
+		t.Fatalf("Push: %v", err)
+	}
+	<-ch1
+	<-ch2
+
+	_, pubs := spy.counts()
+	if pubs != 2 {
+		t.Fatalf("want 2 RecordPublish calls (one per destination), got %d", pubs)
+	}
+}
+
+// ── PP-29: fanOut records failure on ctx-done mid-delivery (PCH-03) ─────────
+
+func TestPipePort_FanOut_RecordsPublishFailureOnCtxDone(t *testing.T) {
+	spy := &pubSubSpy{}
+	ctx, cancel := context.WithCancel(stats.WithObserver(context.Background(), spy))
+
+	pp, _ := ports.NewPipePort[int]("obs-fanout-fail", intCodec, ports.PortOptions{Buffer: 1})
+	// Output with buffer 0-effective (Bind creates its own buffered channel
+	// sized p.buffer=1) — fill it, then cancel ctx to force a blocked send.
+	out := pp.OutputPort("sink")
+	blockedCh := make(chan int) // unbuffered — never drained, forces the send to block
+	out.Bind(ctx, ports.ChanSinkAdapter(blockedCh))
+
+	pp.Connect(ctx)
+	go func() {
+		_ = pp.Push(ctx, 1)
+	}()
+	// Give the push goroutine a moment to reach the blocked fan-out send,
+	// then cancel — the pending send must resolve via ctx.Done() and record
+	// a failed RecordPublish, not hang forever.
+	time.Sleep(20 * time.Millisecond)
+	cancel()
+	time.Sleep(20 * time.Millisecond)
+
+	_, pubs := spy.counts()
+	if pubs < 1 {
+		t.Fatal("want at least 1 RecordPublish call (failure) recorded on ctx-done mid-delivery")
+	}
+}
+
+// ── PP-30: TraceObserver span brackets Chain/ChainStream edge setup (PCH-04) ─
+
+type traceSpy struct {
+	pubSubSpy
+	spans []string // operation+name of each StartSpan call
+	ended int
+}
+
+type traceSpanKey struct{}
+
+func (s *traceSpy) StartSpan(ctx context.Context, operation, name string) context.Context {
+	s.spans = append(s.spans, operation+" "+name)
+	return context.WithValue(ctx, traceSpanKey{}, true)
+}
+func (s *traceSpy) EndSpan(ctx context.Context, _ error) {
+	if ctx.Value(traceSpanKey{}) != nil {
+		s.ended++
+	}
+}
+
+func TestPipePort_Chain_StartsTraceSpan(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	spy := &traceSpy{}
+	ctx = stats.WithObserver(ctx, spy)
+
+	from, _ := ports.NewPipePort[int]("trace-from", intCodec, ports.PortOptions{Buffer: 8})
+	to, _ := ports.NewPipePort[int]("trace-to", intCodec, ports.PortOptions{Buffer: 8})
+
+	ports.Chain(ctx, from, func(v int) (int, error) { return v, nil }, to)
+
+	if len(spy.spans) != 1 {
+		t.Fatalf("want 1 StartSpan call for the Chain edge, got %d: %v", len(spy.spans), spy.spans)
+	}
+	if spy.spans[0] != "pipe.chain trace-from->trace-to" {
+		t.Fatalf("want span 'pipe.chain trace-from->trace-to', got %q", spy.spans[0])
+	}
+	if spy.ended != 1 {
+		t.Fatalf("want 1 EndSpan call, got %d", spy.ended)
+	}
+}
+
+func TestPipePort_ChainStream_StartsTraceSpan(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	spy := &traceSpy{}
+	ctx = stats.WithObserver(ctx, spy)
+
+	from, _ := ports.NewPipePort[int]("trace-cs-from", intCodec, ports.PortOptions{Buffer: 8})
+	to, _ := ports.NewPipePort[int]("trace-cs-to", intCodec, ports.PortOptions{Buffer: 8})
+
+	ports.ChainStream(ctx, from, func(s gstream.Stream[int]) gstream.Stream[int] {
+		return gstream.Map(ctx, s, func(v int) (int, error) { return v, nil }, gstream.MapOptions{})
+	}, to)
+
+	if len(spy.spans) != 1 {
+		t.Fatalf("want 1 StartSpan call for the ChainStream edge, got %d: %v", len(spy.spans), spy.spans)
+	}
+	if spy.ended != 1 {
+		t.Fatalf("want 1 EndSpan call, got %d", spy.ended)
+	}
+}
+
+// ── PP-31: PipePort.Done() closes only after Connect's goroutines fully exit (PCH-05) ─
+
+func TestPipePort_Done_ClosesAfterGoroutinesExit(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+
+	pp, _ := ports.NewPipePort[int]("done-test", intCodec, ports.PortOptions{Buffer: 8})
+	in := pp.InputPort("src")
+	inCh := make(chan int, 8)
+	in.Bind(ctx, ports.ChanSourceAdapter(inCh))
+
+	out := pp.OutputPort("sink")
+	outCh := make(chan int, 8)
+	out.Bind(ctx, ports.ChanSinkAdapter(outCh))
+
+	pp.Connect(ctx)
+
+	select {
+	case <-pp.Done():
+		t.Fatal("Done() closed before Connect's goroutines had any reason to exit")
+	default:
+	}
+
+	inCh <- 1
+	<-outCh
+	cancel()
+
+	select {
+	case <-pp.Done():
+		// expected
+	case <-time.After(2 * time.Second):
+		t.Fatal("Done() did not close within 2s of ctx cancellation")
+	}
+}
+
+func TestPipePort_Done_NeverClosesWithoutConnect(t *testing.T) {
+	pp, _ := ports.NewPipePort[int]("done-no-connect", intCodec, ports.PortOptions{Buffer: 8})
+	select {
+	case <-pp.Done():
+		t.Fatal("Done() must not close when Connect was never called")
+	case <-time.After(50 * time.Millisecond):
+		// expected: still open
+	}
+}
+
+// ── PP-32/33: InputPortWithPatterns/OutputPortWithPatterns build real handles (PCH-09/10) ─
+
+func TestPipePort_InputPortWithPatterns_BuildsRealHandle(t *testing.T) {
+	pp, _ := ports.NewPipePort[cfgItem]("patterns-test", cfgCodec, ports.PortOptions{Buffer: 8})
+
+	in, err := pp.InputPortWithPatterns("configured", []ports.Pattern{
+		ports.RESTPattern{Method: "GET", Path: "/cfg"},
+	})
+	if err != nil {
+		t.Fatalf("InputPortWithPatterns: %v", err)
+	}
+
+	handle, ok := ports.RESTHandle[cfgItem, struct{}](in)
+	if !ok {
+		t.Fatal("want RESTHandle to find the declared RESTPattern, got (nil, false)")
+	}
+	if handle == nil {
+		t.Fatal("want non-nil handle")
+	}
+}
+
+func TestPipePort_OutputPortWithPatterns_BuildsRealHandle(t *testing.T) {
+	pp, _ := ports.NewPipePort[cfgItem]("patterns-out-test", cfgCodec, ports.PortOptions{Buffer: 8})
+
+	out, err := pp.OutputPortWithPatterns("configured", []ports.Pattern{
+		ports.RESTPattern{Method: "GET", Path: "/cfg-out"},
+	})
+	if err != nil {
+		t.Fatalf("OutputPortWithPatterns: %v", err)
+	}
+
+	handle, ok := ports.SSEHandle[cfgItem](out)
+	if !ok {
+		t.Fatal("want SSEHandle to find the declared RESTPattern (SinkPort SSE shape), got (nil, false)")
+	}
+	if handle == nil {
+		t.Fatal("want non-nil handle")
+	}
+}
+
+func TestPipePort_InputPortWithPatterns_SameNameReturnsExisting(t *testing.T) {
+	pp, _ := ports.NewPipePort[int]("patterns-same-name", intCodec, ports.PortOptions{Buffer: 8})
+
+	in1, err := pp.InputPortWithPatterns("x", nil)
+	if err != nil {
+		t.Fatalf("first call: %v", err)
+	}
+	in2, err := pp.InputPortWithPatterns("x", nil)
+	if err != nil {
+		t.Fatalf("second call: %v", err)
+	}
+	if in1 != in2 {
+		t.Fatal("want same instance for same name")
+	}
+
+	// Plain InputPort with the same name must also return the same instance.
+	in3 := pp.InputPort("x")
+	if in3 != in1 {
+		t.Fatal("want InputPort(\"x\") to return the same instance InputPortWithPatterns(\"x\", ...) created")
+	}
+}
+
+func TestPipePort_InputPortWithPatterns_InvalidPatternErrors(t *testing.T) {
+	pp, _ := ports.NewPipePort[int]("patterns-invalid", intCodec, ports.PortOptions{Buffer: 8})
+
+	// A CustomFormat type mismatch (format.Format[string] on an int-typed
+	// port) reliably fails FilePattern construction — proof
+	// InputPortWithPatterns surfaces the real PatternRegisterError instead
+	// of silently ignoring it the way plain InputPort would (InputPort has
+	// no way to declare Patterns at all, so there's nothing to fail).
+	_, err := pp.InputPortWithPatterns("bad", []ports.Pattern{
+		ports.FilePattern{
+			Path:         "/tmp/{id}.txt",
+			CustomFormat: format.JSON(codex.String()), // format.Format[string], not [int]
+		},
+	})
+	if err == nil {
+		t.Fatal("want PatternRegisterError for CustomFormat type mismatch, got nil")
+	}
+	var pre ports.PatternRegisterError
+	if !errors.As(err, &pre) {
+		t.Fatalf("want PatternRegisterError, got %T: %v", err, err)
 	}
 }

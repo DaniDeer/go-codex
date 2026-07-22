@@ -141,6 +141,49 @@ func (a *App) Go(name string, fn func(ctx context.Context) error) {
 	}()
 }
 
+// Supervise starts a non-blocking component (start is called once and
+// returns immediately) and supervises its ACTUAL completion the same way
+// [App.Go] supervises a blocking function: "finished" is reported only
+// once the returned done channel closes, not when start itself returns.
+//
+// Use this for components whose start call is fire-and-forget but expose a
+// completion signal — e.g. a [ports.PipePort]:
+//
+//	a.Supervise("sensor-pipeline", func(ctx context.Context) <-chan struct{} {
+//	    p.Connect(ctx)
+//	    return p.Done()
+//	})
+//
+// Without Supervise, wiring such a component through Go directly
+// (`a.Go(name, func(ctx) error { p.Connect(ctx); return nil })`) would
+// report "finished" the instant Connect returns — essentially immediately,
+// not when the component's internal goroutines have actually drained.
+//
+// Supervise delegates to Go for all status/duration/error bookkeeping —
+// the same "app.go" observer event, LIFO-independent fail-fast semantics,
+// and after-shutdown no-op behavior apply identically.
+func (a *App) Supervise(name string, start func(ctx context.Context) (done <-chan struct{})) {
+	select {
+	case <-a.ctx.Done():
+		a.logger.Warn("app: Supervise after shutdown ignored", "name", name)
+		return
+	default:
+	}
+	done := start(a.ctx)
+	a.Go(name, func(context.Context) error {
+		// Deliberately no ctx.Done() race here: waiting ONLY on done is the
+		// entire point — start's component is expected to close done once
+		// ITS OWN ctx-triggered teardown actually completes (e.g.
+		// ports.PipePort.Done() closes only after Connect's internal
+		// goroutines fully exit). Racing against ctx would let this
+		// goroutine "finish" before the component has really drained,
+		// recreating the exact premature-completion problem Supervise
+		// exists to fix.
+		<-done
+		return nil
+	})
+}
+
 // OnShutdown registers a hook run during shutdown in LIFO order (last
 // registered, first run — matching defer semantics: close what you opened
 // last, first). Each hook receives a context bounded by

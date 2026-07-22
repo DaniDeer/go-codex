@@ -1,6 +1,7 @@
 # PipePort Composition Hardening — `ports`, `app`
 
-> **Status:** Design draft — gaps identified against real code, fixes not yet decided.
+> **Status:** Gaps 1, 2, 5, 6 implemented and verified. Gaps 3, 4 remain
+> open/deferred (sensor-service rework — a future session).
 > [← Back to Roadmap](index.md)
 
 ## Motivation
@@ -83,6 +84,13 @@ Reuses the existing `stats.Observer` interface — no new extension needed.
 Location string convention: `p.name` matches what `InputPort`/`OutputPort`
 already report through, keeping one name per pipe in the observer summary.
 
+> **✅ Implemented.** `Connect`'s Push-consumer goroutine calls
+> `RecordSubscribe`; `fanOut` calls `RecordPublish` per destination on both
+> success and failure. No new `stats.Observer` extension — matches the plan
+> exactly. See `TestPipePort_Push_RecordsSubscribe`,
+> `TestPipePort_FanOut_RecordsPublishPerDestination`,
+> `TestPipePort_FanOut_RecordsPublishFailureOnCtxDone` in `ports/pipe_port_test.go`.
+
 ### Gap 2 — no `TraceObserver` span around a Chain/ChainStream edge
 
 `SourcePort.Bind`/`SinkPort.Bind` wrap adapter activation in a `"port.bind"`
@@ -103,6 +111,15 @@ transit** in a per-item span (inside `chainWire`'s Drain loop) gives
 genuine per-item traces but adds a span per item on what may be a
 high-throughput hot path — a real performance trade-off that needs a
 decision, not a default.
+
+> **✅ Implemented — edge-setup span only.** New shared
+> `recordChainEdgeWithObserver[In, Out]` helper (`ports/pipeline_spec.go`)
+> wraps `recordEdge` in a `"pipe.chain"` `TraceObserver` span, called from
+> both `Chain` and `ChainStream` at edge-setup time — not per-item. Matches
+> the `"port.bind"` cost/benefit precedent (brackets the whole edge
+> lifetime, not each item's transit). See
+> `TestPipePort_Chain_StartsTraceSpan`,
+> `TestPipePort_ChainStream_StartsTraceSpan`.
 
 ### Gap 3 — `PipelineSpec` cannot see an IOPort/ToolPort/LatestPort hop hidden inside a `ChainStream` transform closure
 
@@ -234,6 +251,21 @@ in a later shutdown hook) has no signal to wait on.
   deferring any `app`/`ports` API change until a second real use case
   demands it (YAGNI-leaning).
 
+> **✅ Implemented — both (a) and (b), as sketched.** `PipePort` gained a
+> `doneCh chan struct{}` field, closed at the end of `Connect`'s teardown
+> goroutine, exposed via `Done() <-chan struct{}`. `App.Supervise(name,
+> start)` added to `app/app.go`, delegating to the existing `Go` method.
+> **Critical correction made during implementation**: the wrapped goroutine
+> deliberately does **not** race `ctx.Done()` against `done` — it waits
+> ONLY on `done`, trusting the contract that `done` closes only after real
+> completion. An initial draft raced `ctx.Done()` too, which was caught
+> as recreating the exact premature-completion bug this gap exists to fix,
+> and removed. See `TestPipePort_Done_ClosesAfterGoroutinesExit`,
+> `TestPipePort_Done_NeverClosesWithoutConnect`,
+> `TestApp_Supervise_WaitsForDoneNotStartReturn`,
+> `TestApp_Supervise_RecordsObserverEventOnlyAfterDone`,
+> `TestApp_Supervise_AfterShutdown_NoPanic`.
+
 ### Gap 6 — `PipePort.InputPort`/`OutputPort` never forward `Patterns`, so Pattern-requiring protocol adapters can't be bound through them
 
 Found while verifying Gap 3/the OpenAPI-AsyncAPI question above. Re-reading
@@ -284,7 +316,20 @@ to avoid widening `InputPort`'s existing zero-arg signature for every
 caller. Needs a decision on which shape fits `ports`' existing
 `PortOptions`-based construction convention best.
 
-## API surface (draft — pending Open design decisions)
+> **✅ Implemented — the narrower, additive overload**, matching the
+> `PortOptions`-based construction convention: `InputPortWithPatterns(name,
+> patterns...) (*SourcePort[T], error)` / `OutputPortWithPatterns(name,
+> patterns...) (*SinkPort[T], error)`. Returns `(*Port, error)` (unlike
+> `InputPort`/`OutputPort`, which never fail) since a genuinely invalid
+> `Pattern` should fail loudly — matching every other Pattern-carrying
+> constructor in the codebase. `InputPort`/`OutputPort`'s existing
+> zero-arg signatures are untouched. See
+> `TestPipePort_InputPortWithPatterns_BuildsRealHandle`,
+> `TestPipePort_OutputPortWithPatterns_BuildsRealHandle`,
+> `TestPipePort_InputPortWithPatterns_SameNameReturnsExisting`,
+> `TestPipePort_InputPortWithPatterns_InvalidPatternErrors`.
+
+## API surface (as implemented for Gaps 1, 2, 5, 6)
 
 ```go
 // Gap 1/2 fix — no new exported symbols, existing stats.Observer calls added
@@ -357,16 +402,12 @@ existing type-assertion-guarded pattern.
 
 ## Open design decisions
 
-1. **Gap 1/2 scope**: implement both success (`RecordPublish`) and failure
-   instrumentation in the same pass, or ship success-path visibility first
-   and revisit failure-path separately? Leaning: same pass — both are small,
-   and shipping only success-path visibility would itself become a
-   "silent gap" of the kind this doc is trying to eliminate.
-2. **Gap 2 tracing granularity**: edge-setup span only, vs. per-item span
-   (opt-in via an option), vs. no tracing until a real user need appears.
-   Leaning: edge-setup span only for Phase 2, matching `"port.bind"`'s
-   existing cost/benefit balance; revisit per-item tracing only if a user
-   asks for it.
+1. **✅ Resolved — Gap 1/2 scope**: implemented both success
+   (`RecordPublish`) and failure instrumentation in the same pass, per the
+   leaning.
+2. **✅ Resolved — Gap 2 tracing granularity**: edge-setup span only, per
+   the leaning — matches `"port.bind"`'s cost/benefit balance. Per-item
+   tracing remains out of scope until a real user need appears.
 3. **Gap 3 resolution**: adopt the "real edge, not hidden hop" design rule
    as guidance (no new API), or add a caller-declared `IOHop` descriptor
    API. Leaning: guidance first — validate it actually works cleanly against
@@ -374,24 +415,11 @@ existing type-assertion-guarded pattern.
    `IOHop`-style API if the guidance proves insufficient in practice (e.g.
    if sensor-service's persistence step genuinely cannot be expressed as a
    standalone PipePort edge without awkward restructuring).
-4. **Gap 5 fix**: `PipePort.Done()` + `App.Supervise` (both), `Done()` alone
-   (caller hand-rolls the wait), or guidance-only with no code change.
-   Leaning: implement both — the friction is real and the fix is small and
-   consistent with `App`'s existing minimal-lifecycle-manager scope; a
-   guidance-only fix would leave every future PipePort+App user rediscovering
-   the same gap.
-5. **Sensor-service rework extent**: rework only the MQTT ingestion →
-   persistence → alert stream pipeline (the part `pipeline.Build` already
-   isolates), or also touch the History/Export tool pipelines? Leaning:
-   MQTT pipeline only for Phase 2 — it is the part with real multi-stage
-   PipePort structure; History/Export are already simple 1-hop IOPort
-   Connects that don't need PipePort segmentation.
-6. **Gap 6 API shape**: widen `InputPort`/`OutputPort` to accept optional
-   `PortOpt`s (touches every existing call site's signature, though
-   backward-compatible via variadic), or add narrower additive
-   `InputPortWithPatterns`/`OutputPortWithPatterns` overloads (new names,
-   zero risk to existing call sites, but two ways to call `InputPort`).
-   Leaning: additive overloads first — matches go-codex's general preference
-   for non-breaking additive API growth over widening existing signatures;
-   revisit consolidation only if the two-name split proves confusing in
-   practice.
+4. **✅ Resolved — Gap 5 fix**: implemented both `PipePort.Done()` and
+   `App.Supervise`, per the leaning.
+5. **Still open — Sensor-service rework extent**: deferred along with
+   Gaps 3/4 to a future session (not part of this round's chosen scope:
+   Gaps 1, 2, 5, 6 only).
+6. **✅ Resolved — Gap 6 API shape**: additive overloads
+   (`InputPortWithPatterns`/`OutputPortWithPatterns`), per the leaning —
+   `InputPort`/`OutputPort`'s existing zero-arg signatures untouched.

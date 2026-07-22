@@ -70,6 +70,10 @@ type PipePort[T any] struct {
 	// pushCh is allocated eagerly so Push works before Connect (buffers
 	// until Connect's consumer goroutine starts draining it).
 	pushCh chan T
+
+	// doneCh closes once Connect's internal goroutines have fully exited
+	// (after ctx is done AND in-flight items have drained) — see [Done].
+	doneCh chan struct{}
 }
 
 // NewPipePort creates a PipePort with the given name and payload codec.
@@ -90,8 +94,18 @@ func NewPipePort[T any](name string, codec codex.Codec[T], opts PortOptions) (*P
 		in:     map[string]*SourcePort[T]{},
 		out:    map[string]*SinkPort[T]{},
 		pushCh: make(chan T, buf),
+		doneCh: make(chan struct{}),
 	}, nil
 }
+
+// Done returns a channel that closes once this pipe's internal goroutines
+// have fully exited — after [Connect]'s ctx is done and all in-flight items
+// have drained, not merely after ctx cancellation begins. Use this to
+// supervise a PipePort's actual lifecycle (e.g. via [app.App.Supervise])
+// instead of treating [Connect]'s (non-blocking) return as "finished."
+//
+// Done returns a channel that never closes if [Connect] was never called.
+func (p *PipePort[T]) Done() <-chan struct{} { return p.doneCh }
 
 // Name returns the pipe's declared name.
 func (p *PipePort[T]) Name() string { return p.name }
@@ -128,6 +142,58 @@ func (p *PipePort[T]) OutputPort(name string) *SinkPort[T] {
 	sp, _ := NewSinkPort[T](p.name+"/out/"+name, p.codec, PortOptions{Buffer: p.buffer, Params: p.params, Observer: p.obs})
 	p.out[name] = sp
 	return sp
+}
+
+// InputPortWithPatterns is [InputPort], but the underlying [SourcePort] is
+// constructed with the given patterns — the only way to bind a protocol
+// adapter that needs a Pattern-derived handle (e.g. mqtt5.SubscribeAdapter
+// needing [EventHandle], nethttp's SSE/ingest adapters needing [RESTHandle])
+// through PipePort's IO-bridging use case. Plain [InputPort] always builds
+// its sub-port with zero Patterns, so [EventHandle]/[RESTHandle]/
+// [ReqReplyHandle] on it always return (nil, false) — this is the fix.
+//
+// Same "same name, same instance" rule as InputPort: a name already
+// registered (by either InputPort or InputPortWithPatterns) returns the
+// existing port, and patterns is ignored on that call — declare patterns
+// on the FIRST call for a given name.
+//
+// Unlike InputPort, this can fail: a malformed Pattern (bad path/topic
+// template, duplicate registration on a shared Builder, etc.) returns the
+// same [PatternRegisterError] [NewSourcePort] would — fail-fast, matching
+// every other Pattern-carrying port constructor in this package.
+func (p *PipePort[T]) InputPortWithPatterns(name string, patterns []Pattern) (*SourcePort[T], error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if sp, ok := p.in[name]; ok {
+		return sp, nil
+	}
+	sp, err := NewSourcePort[T](p.name+"/in/"+name, p.codec, PortOptions{
+		Buffer: p.buffer, Params: p.params, Observer: p.obs, Patterns: patterns,
+	})
+	if err != nil {
+		return nil, err
+	}
+	p.in[name] = sp
+	return sp, nil
+}
+
+// OutputPortWithPatterns is [OutputPort], but the underlying [SinkPort] is
+// constructed with the given patterns — see [InputPortWithPatterns] for the
+// full rationale and same-name/error semantics (identical here).
+func (p *PipePort[T]) OutputPortWithPatterns(name string, patterns []Pattern) (*SinkPort[T], error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if sp, ok := p.out[name]; ok {
+		return sp, nil
+	}
+	sp, err := NewSinkPort[T](p.name+"/out/"+name, p.codec, PortOptions{
+		Buffer: p.buffer, Params: p.params, Observer: p.obs, Patterns: patterns,
+	})
+	if err != nil {
+		return nil, err
+	}
+	p.out[name] = sp
+	return sp, nil
 }
 
 // Connect starts the internal hub goroutine that fans items from all input
@@ -189,12 +255,16 @@ func (p *PipePort[T]) Connect(ctx context.Context) {
 		allOut = append(allOut, sinkChan{ch: ch})
 	}
 
-	// fanOut sends v to all output channels.
+	// fanOut sends v to all output channels, reporting egress visibility on
+	// both success (delivered) and failure (ctx cancelled mid-delivery) —
+	// regardless of whether v arrived via a bound InputPort or via Push.
 	fanOut := func(v T) {
 		for _, oc := range allOut {
 			select {
 			case oc.ch <- v:
+				obs.RecordPublish(p.name, true, 0)
 			case <-ctx.Done():
+				obs.RecordPublish(p.name, false, 0)
 				return
 			}
 		}
@@ -242,7 +312,10 @@ func (p *PipePort[T]) Connect(ctx context.Context) {
 		}(sp)
 	}
 
-	// Listen for pushed items.
+	// Listen for pushed items — the primary Chain/ChainStream data path.
+	// RecordSubscribe here gives it the SAME ingress visibility bound
+	// InputPort adapters already get; without this, every item flowing
+	// through Chain/ChainStream was invisible to the observer.
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
@@ -254,6 +327,7 @@ func (p *PipePort[T]) Connect(ctx context.Context) {
 				if !ok {
 					return
 				}
+				obs.RecordSubscribe(p.name, true, 0)
 				fanOut(v)
 			}
 		}
@@ -268,6 +342,7 @@ func (p *PipePort[T]) Connect(ctx context.Context) {
 		for _, ch := range streamChs {
 			close(ch)
 		}
+		close(p.doneCh)
 	}()
 }
 
@@ -342,7 +417,9 @@ func chainWire[In, Out any](
 // ChainStream records a [ChainEdge] on from (Kind "chainStream", Func
 // derived from transform via reflection — a real, if sometimes
 // closure-opaque, Go function identity) so [PipelineSpec] can describe this
-// connection without a hand-typed description.
+// connection without a hand-typed description. This edge-recording call is
+// bracketed in a "pipe.chain" [stats.TraceObserver] span when the resolved
+// observer supports it (see [recordChainEdgeWithObserver]).
 //
 // Same ordering rule as Chain: must be called before from's [Connect] (it
 // registers a [Stream] consumer). It may be called before or after to's
@@ -356,7 +433,7 @@ func ChainStream[In, Out any](
 	transform func(gstream.Stream[In]) gstream.Stream[Out],
 	to *PipePort[Out],
 ) {
-	from.recordEdge(ChainEdge{Kind: "chainStream", To: to.Name(), Func: funcName(transform)})
+	recordChainEdgeWithObserver(ctx, from, to, ChainEdge{Kind: "chainStream", To: to.Name(), Func: funcName(transform)})
 	chainWire(ctx, from, transform, to)
 }
 
@@ -384,7 +461,7 @@ func ChainStream[In, Out any](
 // [PipePort.Connect] (registers a [Stream] consumer); may be called before
 // or after to's Connect (Push buffers either way).
 func Chain[In, Out any](ctx context.Context, from *PipePort[In], fn func(In) (Out, error), to *PipePort[Out]) {
-	from.recordEdge(ChainEdge{Kind: "chain", To: to.Name(), Func: funcName(fn)})
+	recordChainEdgeWithObserver(ctx, from, to, ChainEdge{Kind: "chain", To: to.Name(), Func: funcName(fn)})
 	chainWire(ctx, from, func(s gstream.Stream[In]) gstream.Stream[Out] {
 		return gstream.Map(ctx, s, fn, gstream.MapOptions{})
 	}, to)
