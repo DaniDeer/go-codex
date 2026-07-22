@@ -106,6 +106,27 @@ decision, not a default.
 
 ### Gap 3 — `PipelineSpec` cannot see an IOPort/ToolPort/LatestPort hop hidden inside a `ChainStream` transform closure
 
+> **Scope note (verified):** this gap applies **only** to the new, informal
+> `ports.PipelineSpec` documentation YAML — never to the real OpenAPI/AsyncAPI
+> contract specs. Confirmed by re-reading `buildDualCodecPatternHandles`
+> (used by `NewIOPort`/`NewToolPort`): a `RESTPattern`/`ReqReplyPattern`
+> declared on an `IOPort`/`ToolPort` builds its real `RouteHandle`/
+> `ReqReplyRouteHandle` and calls `Register(builder)` **at port construction
+> time** — before any pipeline wiring exists. `rest.Builder.OpenAPISpec()`,
+> `events.Builder.AsyncAPISpec()`, and `reqreply.Builder.AsyncAPISpec()`
+> (confirmed reqreply also renders a real AsyncAPI 3.0 document, same
+> mechanism as `events`) all render from that builder's accumulated
+> registrations — a pure function of what was `Register()`-ed, never of
+> runtime dataflow. `Chain`/`ChainStream`/`PipePort` operate entirely on
+> `gstream.Stream[T]` values and have zero knowledge of `Pattern`/`Builder`/
+> `Handle`. Whether an `IOPort.Connect(ctx, src)` call sits directly in a
+> hand-rolled pipeline or inside a `ChainStream` transform closure, the
+> OpenAPI/AsyncAPI document produced is **byte-identical either way**. So:
+> moving sensor-service's `HistoryTool`/`ExportTool` (RESTPattern-carrying
+> `ToolPort`s) or a hypothetical ReqReplyPattern-carrying `IOPort` inside a
+> `ChainStream` transform is completely safe for the formal specs — only the
+> informal `PipelineSpec` YAML documentation is affected, as detailed below.
+
 Sensor-service's real persistence step is
 `deps.Persist.Connect(ctx, params)` — an `IOPort[InsertReadingParams, db.Reading]`
 carrying a `SQLPattern{Table: "readings", Op: "insert_reading"}`. The natural
@@ -213,6 +234,56 @@ in a later shutdown hook) has no signal to wait on.
   deferring any `app`/`ports` API change until a second real use case
   demands it (YAGNI-leaning).
 
+### Gap 6 — `PipePort.InputPort`/`OutputPort` never forward `Patterns`, so Pattern-requiring protocol adapters can't be bound through them
+
+Found while verifying Gap 3/the OpenAPI-AsyncAPI question above. Re-reading
+`InputPort`/`OutputPort` exactly:
+
+```go
+func (p *PipePort[T]) InputPort(name string) *SourcePort[T] {
+    ...
+    sp, _ := NewSourcePort[T](p.name+"/in/"+name, p.codec,
+        PortOptions{Buffer: p.buffer, Params: p.params, Observer: p.obs})
+    ...
+}
+```
+
+`Patterns` is never forwarded — confirmed identical for `OutputPort`. Every
+`InputPort`/`OutputPort`-constructed `SourcePort`/`SinkPort` therefore has
+**zero** declared `Pattern`s, permanently. `ports.RESTHandle`/`EventHandle`/
+`ReqReplyHandle` on such a port always return `(nil, false)`.
+
+**Consequence:** the PipePort docs' own "secondary use: IO/adapter bridging"
+example —
+```go
+ingest := Broadcast.InputPort("from-mqtt")
+ingest.Bind(ctx, mqtt5.SubscribeAdapter(...))
+```
+— only works today for adapters that need **no** Pattern-derived handle
+(`ChanSourceAdapter`/`ChanSinkAdapter`, hand-rolled test/glue adapters). Any
+**real** protocol adapter needing a Pattern-derived handle —
+`mqtt5.SubscribeAdapter` (needs `ports.EventHandle`, exactly like
+`ioports.Sensors` in sensor-service today), `nethttp.SSEAdapter`/
+`IngestAdapter` (needs `ports.RESTHandle`), `zeromq`/`file`/`redis`/
+`websocket` equivalents — **cannot** be bound through `InputPort`/
+`OutputPort` without constructing the handle separately and out-of-band,
+which defeats the "declare once" convenience this exact PipePort doc section
+promises. This is unrelated to Chain/ChainStream or spec generation
+directly, but it means PipePort's secondary use case is currently narrower
+than its own documentation implies.
+
+**Proposed fix direction (open — see Open design decisions):** give
+`InputPort`/`OutputPort` a way to declare `Patterns` per named sub-port —
+e.g. an options parameter:
+```go
+// Proposed — exact shape TBD:
+func (p *PipePort[T]) InputPort(name string, opts ...PortOpt) *SourcePort[T]
+```
+or a narrower, additive overload (`InputPortWithPatterns(name string, patterns []Pattern) *SourcePort[T]`)
+to avoid widening `InputPort`'s existing zero-arg signature for every
+caller. Needs a decision on which shape fits `ports`' existing
+`PortOptions`-based construction convention best.
+
 ## API surface (draft — pending Open design decisions)
 
 ```go
@@ -224,6 +295,13 @@ func (p *PipePort[T]) Done() <-chan struct{}
 
 // Gap 5(b) — new App method:
 func (a *App) Supervise(name string, start func(ctx context.Context) (done <-chan struct{}))
+
+// Gap 6 — proposed, exact shape TBD (see Open design decisions):
+func (p *PipePort[T]) InputPort(name string, opts ...PortOpt) *SourcePort[T]
+func (p *PipePort[T]) OutputPort(name string, opts ...PortOpt) *SinkPort[T]
+// or, narrower/additive:
+func (p *PipePort[T]) InputPortWithPatterns(name string, patterns []Pattern) *SourcePort[T]
+func (p *PipePort[T]) OutputPortWithPatterns(name string, patterns []Pattern) *SinkPort[T]
 ```
 
 ## Structured errors
@@ -251,12 +329,14 @@ existing type-assertion-guarded pattern.
 | PCH-06 | `App.Supervise` reports "finished" only after `done` closes, not after `start` returns (if Gap 5(b) chosen) | `RecordRequest("app.go", ..., duration)` reflects real drain time, not `start`'s return time |
 | PCH-07 | Sensor-service rework: `PipelineSpec` derived spec includes the SQL persistence edge as a real PipePort→PipePort hop | rendered spec contains a port step for the persistence pipe with real `SQLPattern`-informed description |
 | PCH-08 | Sensor-service rework: OpenAPI/AsyncAPI specs unchanged after PipePort rework | `ioports.RESTBuilder.OpenAPISpec()`/`ioports.EventsBuilder.AsyncAPISpec()` byte-identical (or semantically identical) before/after the rework |
+| PCH-09 | `InputPort`/`OutputPort` with Patterns builds a real handle (if Gap 6 fix chosen) | `ports.EventHandle`/`ports.RESTHandle`/`ports.ReqReplyHandle` on the returned sub-port returns `(handle, true)`, not `(nil, false)` |
+| PCH-10 | A Pattern-requiring adapter binds successfully through `InputPort`/`OutputPort` (if Gap 6 fix chosen) | e.g. a fake `mqtt5`-shaped adapter requiring an `EventHandle` binds and activates without an out-of-band handle construction |
 
 ## Files likely touched (Phase 2 — not yet decided which subset)
 
 | File | Responsibility |
 |---|---|
-| `ports/pipe_port.go` | Gap 1/2 observer/tracing instrumentation; Gap 5(a) `Done()` method, if chosen |
+| `ports/pipe_port.go` | Gap 1/2 observer/tracing instrumentation; Gap 5(a) `Done()` method, if chosen; Gap 6 `InputPort`/`OutputPort` Patterns forwarding, if chosen |
 | `app/app.go` | Gap 5(b) `Supervise` helper, if chosen |
 | `examples/sensor-service/pipeline/pipeline.go` | Rework `Build`/`Topology` to use `PipePort`/`Chain`/`ChainStream`/`ports.PipelineSpec`, applying Gap 3's "real edge, not hidden hop" rule to the persistence step |
 | `examples/sensor-service/main.go` | Wiring changes to match the reworked pipeline shape; possible `app.Supervise`/`Done()` usage |
@@ -306,3 +386,12 @@ existing type-assertion-guarded pattern.
    MQTT pipeline only for Phase 2 — it is the part with real multi-stage
    PipePort structure; History/Export are already simple 1-hop IOPort
    Connects that don't need PipePort segmentation.
+6. **Gap 6 API shape**: widen `InputPort`/`OutputPort` to accept optional
+   `PortOpt`s (touches every existing call site's signature, though
+   backward-compatible via variadic), or add narrower additive
+   `InputPortWithPatterns`/`OutputPortWithPatterns` overloads (new names,
+   zero risk to existing call sites, but two ways to call `InputPort`).
+   Leaning: additive overloads first — matches go-codex's general preference
+   for non-breaking additive API growth over widening existing signatures;
+   revisit consolidation only if the two-name split proves confusing in
+   practice.
