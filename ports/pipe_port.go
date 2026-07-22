@@ -290,8 +290,9 @@ func (p *PipePort[T]) Push(ctx context.Context, v T) error {
 
 // Stream returns a [gstream.Stream] of all items flowing through the pipe —
 // the primary interface for connecting computation stages between PipePorts.
-// Must be called before [Connect]. Most callers should prefer [Chain], which
-// wraps Stream+Map+Drain+Push for the common one-transform-per-stage case.
+// Must be called before [Connect]. Most callers should prefer [Chain] or
+// [ChainStream], which wrap Stream+Drain+Push for the common cases of
+// wiring one PipePort's output into another's input.
 //
 //	validated := gstream.Map(ctx, Raw.Stream(ctx), validate, gstream.MapOptions{})
 func (p *PipePort[T]) Stream(ctx context.Context) gstream.Stream[T] {
@@ -302,11 +303,46 @@ func (p *PipePort[T]) Stream(ctx context.Context) gstream.Stream[T] {
 	return gstream.From(ctx, ch)
 }
 
-// Chain wires two PipePorts together through a transform function — the
-// primary tool for connecting pipeline stages. It is a convenience wrapper
-// over [PipePort.Stream], [gstream.Map], [gstream.Drain], and [PipePort.Push]
-// — nothing Chain does cannot be written by hand, it just removes the
-// boilerplate of repeating that composition once per stage:
+// ChainStream wires two PipePorts together through an arbitrary stream
+// transform — the GENERAL primitive for connecting pipeline stages, of
+// which [Chain] is the single-Map special case (see Chain's implementation
+// below). Where Chain wraps exactly one value-mapping function
+// func(In) (Out, error), ChainStream accepts any
+// gstream.Stream[In] -> gstream.Stream[Out] transform, so a multi-step
+// sub-pipeline (several Map/Filter/etc. calls) connects two PipePorts with
+// the SAME call shape as a single-step one — no need for a hand-written
+// wrapper function that reinvents Chain's (ctx, from, to) signature:
+//
+//	// A stage transition needing three sequential steps — build the
+//	// transform inline (or as a named func(Stream[In]) Stream[Out]),
+//	// using the stream module's own Map/Filter composition:
+//	ports.ChainStream(ctx, Valid, func(s gstream.Stream[Validated]) gstream.Stream[Calibrated] {
+//	    s2 := gstream.Map(ctx, s, calibrate, gstream.MapOptions{})
+//	    s3 := gstream.Map(ctx, s2, classify, gstream.MapOptions{})
+//	    return gstream.Map(ctx, s3, annotate, gstream.MapOptions{})
+//	}, Calibrated)
+//
+// Same ordering rule as Chain: must be called before from's [Connect] (it
+// registers a [Stream] consumer). It may be called before or after to's
+// Connect — items buffer in to's push channel until to.Connect starts
+// draining them. Errors from the drain loop are silently dropped, matching
+// [gstream.Drain]'s nil-onError behavior — surface transform failures on
+// the returned stream's Errors channel if that matters to your pipeline.
+func ChainStream[In, Out any](
+	ctx context.Context,
+	from *PipePort[In],
+	transform func(gstream.Stream[In]) gstream.Stream[Out],
+	to *PipePort[Out],
+) {
+	out := transform(from.Stream(ctx))
+	go gstream.Drain(ctx, out, func(_ context.Context, v Out) error {
+		return to.Push(ctx, v)
+	}, nil, gstream.DrainOptions{})
+}
+
+// Chain wires two PipePorts together through a single value-mapping
+// function — the common case of [ChainStream], for when a stage transition
+// needs exactly one transform:
 //
 //	// Without Chain:
 //	validated := gstream.Map(ctx, Raw.Stream(ctx), validate, gstream.MapOptions{})
@@ -317,15 +353,14 @@ func (p *PipePort[T]) Stream(ctx context.Context) gstream.Stream[T] {
 //	// With Chain:
 //	ports.Chain(ctx, Raw, validate, Clean)
 //
-// Chain must be called before from's [PipePort.Connect] (it registers a
-// [Stream] consumer). It may be called before or after to's Connect — items
-// buffer in to's push channel until to.Connect starts draining them. Errors
-// from fn or from the drain loop are silently dropped, matching
-// [gstream.Drain]'s nil-onError behavior; observe fn failures inside fn
-// itself if that matters to your pipeline.
+// When a stage needs more than one step, use [ChainStream] directly instead
+// — it accepts any stream transform, not just a single Map.
+//
+// Same ordering rule as [ChainStream]: must be called before from's
+// [PipePort.Connect] (registers a [Stream] consumer); may be called before
+// or after to's Connect (Push buffers either way).
 func Chain[In, Out any](ctx context.Context, from *PipePort[In], fn func(In) (Out, error), to *PipePort[Out]) {
-	mapped := gstream.Map(ctx, from.Stream(ctx), fn, gstream.MapOptions{})
-	go gstream.Drain(ctx, mapped, func(_ context.Context, v Out) error {
-		return to.Push(ctx, v)
-	}, nil, gstream.DrainOptions{})
+	ChainStream(ctx, from, func(s gstream.Stream[In]) gstream.Stream[Out] {
+		return gstream.Map(ctx, s, fn, gstream.MapOptions{})
+	}, to)
 }

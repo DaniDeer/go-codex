@@ -5,37 +5,34 @@
 //
 // Architecture:
 //
-//	SourcePort(sensors) ─→ PipePort("raw") ─Chain(validate)─→ PipePort("valid") ─sub-pipeline(3 stream.Map steps)─→ PipePort("enriched")
+//	SourcePort(sensors) ─→ PipePort("raw") ─Chain(validate)─→ PipePort("valid") ─ChainStream(3 Map steps)─→ PipePort("enriched")
 //	                             ↑ Tap(log)                        ↑ Tap(alerting) ↑ Tap(history)
 //
-// PipePort is the segmentation glue BETWEEN computation stages.
-// The raw→valid transition uses ports.Chain (the one-function convenience).
-// The valid→calibrated transition shows the general case: a multi-step
-// sub-pipeline built directly with the stream module's OWN composition
-// feature — chaining gstream.Map calls — then handed off into the next
-// PipePort with the same Stream()/Push() primitives Chain itself wraps.
-// Use this shape whenever a stage boundary needs more than one computation
-// step. IO/adapter wiring (InputPort/OutputPort with transport adapters) is
-// a supported convenience, not the primary use.
+// PipePort is the segmentation glue BETWEEN computation stages. Both stage
+// transitions below use the SAME primitive family:
 //
-// The topology is modular at two levels, both plain ctx-scoped functions:
+//   - ports.Chain(ctx, from, fn, to) — fn is a single value-mapping
+//     function. Used for raw→valid (one validation step).
+//   - ports.ChainStream(ctx, from, transform, to) — transform is any
+//     gstream.Stream[In] -> gstream.Stream[Out] function, so it can chain
+//     as many Map/Filter/etc. steps as a stage needs. Chain is IMPLEMENTED
+//     IN TERMS OF ChainStream (wrapping a single gstream.Map) — ChainStream
+//     is the general primitive, Chain its single-step convenience. Used
+//     for valid→calibrated (three sequential steps: calibrate → classify →
+//     annotate).
 //
-//   - buildCalibrationStage(ctx, in, out) is a STAGE builder — it wires one
-//     multi-step sub-pipeline between two PipePorts, with the same
-//     (ctx, from, to) shape as ports.Chain, so it slots into the pipeline
-//     exactly like Chain does.
-//   - BuildPipeline(ctx) is the PIPELINE builder — it wires the whole
-//     topology by composing ports.Chain calls and stage builders like
-//     buildCalibrationStage, adds observers, and starts every pipe.
+// Neither transition needs a hand-written wrapper function: a multi-step
+// sub-pipeline is just as first-class a ChainStream call as a single-step
+// one is a Chain call. IO/adapter wiring (InputPort/OutputPort with
+// transport adapters) is a supported convenience, not the primary use.
 //
-// The entire topology — every PipePort, every stage transition, every side
-// observer, every Connect — is declared once in [BuildPipeline] and never
-// touched again. main is a caller: it applies the already-declared pipeline
-// to one context, then feeds data in and reads results out. This mirrors
-// the "declare once, apply anywhere" shape used throughout go-codex for
-// REST routes, event channels, and forge functions — a pipeline topology,
-// and any sub-pipeline within it, is exactly as declarative and composable
-// as any other boundary.
+// The entire topology — every PipePort, every Chain/ChainStream call, every
+// side observer, every Connect — is declared once in [BuildPipeline] and
+// never touched again. main is a caller: it applies the already-declared
+// pipeline to one context, then feeds data in and reads results out. This
+// mirrors the "declare once, apply anywhere" shape used throughout
+// go-codex for REST routes, event channels, and forge functions — a
+// pipeline topology is exactly as declarative as any other boundary.
 //
 // Build: go build .
 // Run:   ./pipeline-segmentation
@@ -65,10 +62,10 @@ type ValidatedReading struct {
 	DegreesC float64
 }
 
-// CalibratedReading is the output of a 3-step stream sub-pipeline: calibrate
-// (correct for sensor offset), classify (assign a severity Status), and
-// annotate (produce a human-readable Message) — see main's Valid→Calibrated
-// wiring below, built with three chained gstream.Map calls.
+// CalibratedReading is the output of a 3-step ChainStream sub-pipeline:
+// calibrate (correct for sensor offset), classify (assign a severity
+// Status), and annotate (produce a human-readable Message) — see
+// BuildPipeline's Valid→Calibrated wiring below.
 type CalibratedReading struct {
 	SensorID    string
 	DegreesC    float64 // original raw value
@@ -173,10 +170,10 @@ func validateReading(r SensorReading) (ValidatedReading, error) {
 }
 
 // The valid→calibrated stage transition is a 3-step sub-pipeline: each
-// function below does ONE thing, is independently unit-testable, and is
-// wired as a separate gstream.Map stage in main (not composed by hand into
-// one function) — see the "Valid → Calibrated" section in main for how the
-// stream module's own Map chaining builds the sub-pipeline.
+// function below does ONE thing and is independently unit-testable. They
+// are wired together as three gstream.Map calls inside a single
+// ports.ChainStream transform in BuildPipeline — see its Valid→Calibrated
+// section below.
 
 // Step 1: calibrateReading corrects the raw value by a known sensor offset.
 func calibrateReading(v ValidatedReading) (CalibratedReading, error) {
@@ -210,43 +207,14 @@ func annotateReading(c CalibratedReading) (CalibratedReading, error) {
 
 // ── Pipeline (declared once, applied by main) ────────────────────────────────
 //
-// Two levels of builder function, both taking ctx + the PipePorts they
-// connect and returning nothing but their wiring effect:
+// BuildPipeline composes exactly two stage-connecting primitives from the
+// ports package — no hand-written wrapper function needed for the
+// multi-step transition, because ChainStream already accepts arbitrary
+// stream transforms:
 //
-//   - buildCalibrationStage(ctx, in, out) wires ONE stage transition — a
-//     3-step sub-pipeline. It has the exact same shape as [ports.Chain]
-//     (ctx, from, ..., to) but is hand-written because the transition needs
-//     more than one Map. Nothing about it is BuildPipeline-specific: it
-//     could live in its own file, package, or be unit-tested in isolation
-//     by wiring it between two throwaway PipePorts.
-//   - BuildPipeline(ctx) wires the WHOLE topology by calling ports.Chain for
-//     simple transitions and buildCalibrationStage for the complex one,
-//     then adds observers and starts every pipe. It composes stage
-//     builders the same way stage builders compose plain functions.
+//   - ports.Chain(ctx, from, fn, to)               — one value-mapping step
+//   - ports.ChainStream(ctx, from, transform, to)  — any Stream[In]->Stream[Out]
 //
-// This mirrors examples/sensor-service's own layering: small, ctx-scoped
-// builder functions assembled by one top-level Build/BuildPipeline function,
-// never one monolithic wiring block.
-
-// buildCalibrationStage wires the Valid → Calibrated sub-pipeline: three
-// sequential gstream.Map steps (calibrate → classify → annotate), then
-// hands the result to out via gstream.Drain + Push — the same primitives
-// [ports.Chain] uses internally, assembled by hand because Chain only
-// wraps a single Map. Each step function stays independently unit-testable;
-// this function only owns the WIRING between them.
-//
-// Call before in's Connect (it registers a Stream consumer); out's Connect
-// may happen before or after (Push buffers either way) — the same ordering
-// rule ports.Chain follows.
-func buildCalibrationStage(ctx context.Context, in *ports.PipePort[ValidatedReading], out *ports.PipePort[CalibratedReading]) {
-	calibrationStage := gstream.Map(ctx, in.Stream(ctx), calibrateReading, gstream.MapOptions{})
-	classifiedStage := gstream.Map(ctx, calibrationStage, classifyReading, gstream.MapOptions{})
-	annotatedStage := gstream.Map(ctx, classifiedStage, annotateReading, gstream.MapOptions{})
-	go gstream.Drain(ctx, annotatedStage, func(_ context.Context, v CalibratedReading) error {
-		return out.Push(ctx, v)
-	}, nil, gstream.DrainOptions{})
-}
-
 // PipelineIO is everything a caller needs to drive an already-wired
 // pipeline: one channel to feed input, and one channel per side observer to
 // read results from. BuildPipeline is the only place that knows how many
@@ -276,19 +244,23 @@ func BuildPipeline(ctx context.Context) PipelineIO {
 	// Connect (Push buffers either way).
 	ports.Chain(ctx, Raw, validateReading, Valid)
 
-	// ── Valid → Calibrated: multi-step sub-pipeline ───────────────────────
+	// ── Valid → Calibrated: multi-step sub-pipeline via ChainStream ───────
 	//
-	// This transition needs three sequential computations, so its wiring is
-	// factored into its own builder function, buildCalibrationStage, called
-	// here with the SAME (ctx, from, to) shape as ports.Chain above — a
-	// sub-pipeline slots into BuildPipeline exactly like a single-function
-	// stage does.
-	buildCalibrationStage(ctx, Valid, Calibrated)
+	// This transition needs three sequential computations. ports.ChainStream
+	// is the general form of Chain: instead of ONE value-mapping function,
+	// it takes ANY gstream.Stream[In] -> gstream.Stream[Out] transform — so
+	// the 3-step sub-pipeline below is wired with the SAME call shape as
+	// the single-step Chain above, no hand-written wrapper needed.
+	ports.ChainStream(ctx, Valid, func(s gstream.Stream[ValidatedReading]) gstream.Stream[CalibratedReading] {
+		calibrated := gstream.Map(ctx, s, calibrateReading, gstream.MapOptions{})
+		classified := gstream.Map(ctx, calibrated, classifyReading, gstream.MapOptions{})
+		return gstream.Map(ctx, classified, annotateReading, gstream.MapOptions{})
+	}, Calibrated)
 
 	// ── Side observers: tap into any stage ────────────────────────────────
 	//
 	// These are INDEPENDENT of the stage wiring above. Add or remove
-	// observers without touching either builder function.
+	// observers without touching either Chain/ChainStream call.
 
 	rawObserved := make(chan SensorReading, 8)
 	Raw.OutputPort("log").Bind(ctx, ports.ChanSinkAdapter(rawObserved))
@@ -367,7 +339,7 @@ func main() {
 		os.Exit(1)
 	}
 
-	fmt.Println("OK: 3-stage computation pipeline segmentation (with a 3-step stream.Map sub-pipeline) completed")
+	fmt.Println("OK: 3-stage computation pipeline segmentation (Chain + ChainStream) completed")
 }
 
 func must[T any](v T, err error) T {

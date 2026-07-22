@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/DaniDeer/go-codex/ports"
+	gstream "github.com/DaniDeer/go-codex/stream"
 )
 
 // ── PP-01: PipePort construction ────────────────────────────────────────────
@@ -387,5 +388,125 @@ func TestPipePort_Connect_DoubleInvocation_Safe(t *testing.T) {
 	case v := <-outCh:
 		t.Fatalf("unexpected duplicate delivery: %d", v)
 	default:
+	}
+}
+
+// ── PP-17: ChainStream wires a multi-step Map sub-pipeline ──────────────────
+
+func TestPipePort_ChainStream_MultiStepMap(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	from, _ := ports.NewPipePort[int]("cs-from", intCodec, ports.PortOptions{Buffer: 8})
+	to, _ := ports.NewPipePort[string]("cs-to", strCodec, ports.PortOptions{Buffer: 8})
+
+	outCh := make(chan string, 8)
+	to.OutputPort("sink").Bind(ctx, ports.ChanSinkAdapter(outCh))
+
+	// Three sequential steps: double, then add 1, then stringify — the
+	// general case ChainStream exists for, which a single Chain call
+	// (one func(In)(Out,error)) cannot express directly.
+	ports.ChainStream(ctx, from, func(s gstream.Stream[int]) gstream.Stream[string] {
+		doubled := gstream.Map(ctx, s, func(v int) (int, error) { return v * 2, nil }, gstream.MapOptions{})
+		incremented := gstream.Map(ctx, doubled, func(v int) (int, error) { return v + 1, nil }, gstream.MapOptions{})
+		return gstream.Map(ctx, incremented, func(v int) (string, error) { return fmt.Sprintf("%d", v), nil }, gstream.MapOptions{})
+	}, to)
+
+	inCh := make(chan int, 8)
+	from.InputPort("src").Bind(ctx, ports.ChanSourceAdapter(inCh))
+
+	from.Connect(ctx)
+	to.Connect(ctx)
+
+	inCh <- 5  // (5*2)+1 = 11
+	inCh <- 10 // (10*2)+1 = 21
+	close(inCh)
+
+	got1 := <-outCh
+	got2 := <-outCh
+	if got1 != "11" || got2 != "21" {
+		t.Fatalf("want [11 21], got [%s %s]", got1, got2)
+	}
+}
+
+// ── PP-18: ChainStream supports Filter + Map (not just Map chains) ──────────
+
+func TestPipePort_ChainStream_FilterThenMap(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	from, _ := ports.NewPipePort[int]("cs-filter-from", intCodec, ports.PortOptions{Buffer: 8})
+	to, _ := ports.NewPipePort[int]("cs-filter-to", intCodec, ports.PortOptions{Buffer: 8})
+
+	outCh := make(chan int, 8)
+	to.OutputPort("sink").Bind(ctx, ports.ChanSinkAdapter(outCh))
+
+	ports.ChainStream(ctx, from, func(s gstream.Stream[int]) gstream.Stream[int] {
+		evens := gstream.Filter(ctx, s, func(v int) bool { return v%2 == 0 })
+		return gstream.Map(ctx, evens, func(v int) (int, error) { return v * 10, nil }, gstream.MapOptions{})
+	}, to)
+
+	inCh := make(chan int, 8)
+	from.InputPort("src").Bind(ctx, ports.ChanSourceAdapter(inCh))
+
+	from.Connect(ctx)
+	to.Connect(ctx)
+
+	inCh <- 1 // filtered out (odd)
+	inCh <- 2 // 2*10 = 20
+	inCh <- 3 // filtered out (odd)
+	inCh <- 4 // 4*10 = 40
+	close(inCh)
+
+	got1 := <-outCh
+	got2 := <-outCh
+	if got1 != 20 || got2 != 40 {
+		t.Fatalf("want [20 40], got [%d %d]", got1, got2)
+	}
+}
+
+// ── PP-19: Chain is implemented in terms of ChainStream (behavior parity) ──
+
+func TestPipePort_Chain_IsChainStreamSpecialCase(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	// Two equivalent pipelines: one wired with Chain, one with ChainStream
+	// wrapping a single gstream.Map — results must be identical.
+	fromA, _ := ports.NewPipePort[int]("parity-a-from", intCodec, ports.PortOptions{Buffer: 8})
+	toA, _ := ports.NewPipePort[int]("parity-a-to", intCodec, ports.PortOptions{Buffer: 8})
+	fromB, _ := ports.NewPipePort[int]("parity-b-from", intCodec, ports.PortOptions{Buffer: 8})
+	toB, _ := ports.NewPipePort[int]("parity-b-to", intCodec, ports.PortOptions{Buffer: 8})
+
+	outA := make(chan int, 8)
+	outB := make(chan int, 8)
+	toA.OutputPort("sink").Bind(ctx, ports.ChanSinkAdapter(outA))
+	toB.OutputPort("sink").Bind(ctx, ports.ChanSinkAdapter(outB))
+
+	triple := func(v int) (int, error) { return v * 3, nil }
+	ports.Chain(ctx, fromA, triple, toA)
+	ports.ChainStream(ctx, fromB, func(s gstream.Stream[int]) gstream.Stream[int] {
+		return gstream.Map(ctx, s, triple, gstream.MapOptions{})
+	}, toB)
+
+	inA := make(chan int, 8)
+	inB := make(chan int, 8)
+	fromA.InputPort("src").Bind(ctx, ports.ChanSourceAdapter(inA))
+	fromB.InputPort("src").Bind(ctx, ports.ChanSourceAdapter(inB))
+
+	fromA.Connect(ctx)
+	toA.Connect(ctx)
+	fromB.Connect(ctx)
+	toB.Connect(ctx)
+
+	inA <- 7
+	inB <- 7
+	close(inA)
+	close(inB)
+
+	gotA := <-outA
+	gotB := <-outB
+	if gotA != gotB || gotA != 21 {
+		t.Fatalf("want both == 21, got Chain=%d ChainStream=%d", gotA, gotB)
 	}
 }

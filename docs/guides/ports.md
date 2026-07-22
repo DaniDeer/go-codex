@@ -204,11 +204,11 @@ inbound/outbound payload automatically.
 ### `PipePort[T]` — pipeline stage boundary
 
 A named waypoint between pipeline stages, declared flexibly at setup and
-never mutated at runtime. Use `ports.Chain` to connect stages; side
-observers tap into any stage without changing the logic. IO/adapter wiring
-(`InputPort`/`OutputPort`) is also supported but is secondary — PipePort
-wraps existing `SourcePort`/`SinkPort`/`gstream` primitives, it doesn't
-reinvent them.
+never mutated at runtime. Use `ports.Chain`/`ports.ChainStream` to connect
+stages; side observers tap into any stage without changing the logic.
+IO/adapter wiring (`InputPort`/`OutputPort`) is also supported but is
+secondary — PipePort wraps existing `SourcePort`/`SinkPort`/`gstream`
+primitives, it doesn't reinvent them.
 
 ```go
 var Raw   = codex.Must(ports.NewPipePort[SensorReading]("raw", readingCodec, ...))
@@ -222,48 +222,52 @@ Raw.Connect(ctx)
 Clean.Connect(ctx)
 ```
 
-`ports.Chain[In, Out](ctx, from, fn, to)` is the primary stage connector.
-`Stream()` is available directly for `Filter`/custom composition instead of
-a single `Map`. `Push(ctx, v)` feeds items into the pipe at any time — even
-before `Connect()` (items buffer until Connect starts draining).
-`InputPort(name)`/`OutputPort(name)` are for adapter wiring.
-
-**Modular composition — stage builders + a pipeline builder**: write a
-multi-step transition as its own function with the SAME `(ctx, from, to)`
-shape as `ports.Chain`, then have one top-level `BuildPipeline(ctx)`
-compose `Chain` calls and stage-builder calls identically:
+**`ports.ChainStream[In, Out](ctx, from, transform, to)` is the general
+stage connector — `ports.Chain` is its single-Map special case**, not a
+separate mechanism (`Chain` is implemented in terms of `ChainStream`
+internally). When a stage needs more than one step, call `ChainStream`
+directly instead of writing a hand-rolled wrapper function:
 
 ```go
-// Stage builder — same shape as ports.Chain(ctx, from, fn, to).
-func buildCalibrationStage(ctx context.Context, in *ports.PipePort[Validated], out *ports.PipePort[Calibrated]) {
-    s := gstream.Map(ctx, in.Stream(ctx), calibrate, gstream.MapOptions{})
-    s = gstream.Map(ctx, s, classify, gstream.MapOptions{})
-    s = gstream.Map(ctx, s, annotate, gstream.MapOptions{})
-    go gstream.Drain(ctx, s, func(_ context.Context, v Calibrated) error {
-        return out.Push(ctx, v)
-    }, nil, gstream.DrainOptions{})
-}
+// Multi-step transition — ChainStream accepts ANY stream transform,
+// so it takes as many Map/Filter calls as the stage needs, with the
+// SAME (ctx, from, to) call shape as the single-step Chain above.
+ports.ChainStream(ctx, Valid, func(s gstream.Stream[Validated]) gstream.Stream[Calibrated] {
+    s2 := gstream.Map(ctx, s, calibrate, gstream.MapOptions{})
+    s3 := gstream.Map(ctx, s2, classify, gstream.MapOptions{})
+    return gstream.Map(ctx, s3, annotate, gstream.MapOptions{})
+}, Calibrated)
+```
 
-// Pipeline builder — composes Chain and stage builders the same way.
+`Stream()` is available directly for cases `ChainStream` doesn't cover
+(e.g. fanning one stream into several independently-wired downstream
+pipes). `Push(ctx, v)` feeds items into the pipe at any time — even before
+`Connect()` (items buffer until Connect starts draining).
+`InputPort(name)`/`OutputPort(name)` are for adapter wiring.
+
+**Modular pipeline composition**: `Chain` and `ChainStream` calls compose
+identically inside one top-level pipeline builder:
+
+```go
 func BuildPipeline(ctx context.Context) PipelineIO {
     ports.Chain(ctx, Raw, validate, Valid)
-    buildCalibrationStage(ctx, Valid, Calibrated)
+    ports.ChainStream(ctx, Valid, calibrationTransform, Calibrated)
     // ... observers, adapter binding, Connect calls, return PipelineIO ...
 }
 ```
 
 `PipePort`/codec/type declarations stay package `var`s — they have no side
 effects, just like a `codex.Codec` or `rest.Route` declaration. Wiring
-(`Chain`, stage builders, `Connect`) stays in `ctx`-scoped functions — it
+(`Chain`, `ChainStream`, `Connect`) stays in `ctx`-scoped functions — it
 starts goroutines, so it needs a caller-supplied `ctx` and stays an
 explicit function call, never a `var`. This mirrors
 [`examples/sensor-service`](https://github.com/DaniDeer/go-codex/tree/main/examples/sensor-service)'s
 `pipeline.Build(ctx, ...)` convention exactly.
 
-**One ordering rule**: register `InputPort`/`OutputPort`/`Stream`/`Chain`
-for a pipe before that pipe's `Connect()`. `Push` has no ordering
-restriction. `Chain` (or a stage builder using `Stream()` internally) only
-needs to precede the upstream pipe's `Connect`.
+**One ordering rule**: register `InputPort`/`OutputPort`/`Stream`/`Chain`/
+`ChainStream` for a pipe before that pipe's `Connect()`. `Push` has no
+ordering restriction. `Chain`/`ChainStream` only need to precede the
+upstream pipe's `Connect`.
 
 See [`examples/pipeline-segmentation`](https://github.com/DaniDeer/go-codex/tree/main/examples/pipeline-segmentation)
 for a full 3-stage demo.

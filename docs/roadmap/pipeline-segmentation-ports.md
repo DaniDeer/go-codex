@@ -8,9 +8,10 @@
 `PipePort` is the primary tool for segmenting computation pipelines into
 named, observable stages, declared flexibly at setup time and never
 mutated at runtime — the same "declare, then start" lifecycle every other
-port type in this package follows. `ports.Chain` connects stages; side
-observers tap into any stage via `OutputPort().Bind(...)`. IO/adapter
-bridging (`InputPort`/`OutputPort` with transport adapters) is a supported
+port type in this package follows. `ports.ChainStream` connects stages
+(with `ports.Chain` as its single-step convenience); side observers tap
+into any stage via `OutputPort().Bind(...)`. IO/adapter bridging
+(`InputPort`/`OutputPort` with transport adapters) is a supported
 convenience wrapper, not the primary use — and PipePort itself is a thin
 wrapper over existing primitives (`SourcePort`, `SinkPort`,
 `gstream.Map`/`gstream.Drain`), not a new adapter model or a custom hub
@@ -22,33 +23,51 @@ reimplementation.
 pp, _ := ports.NewPipePort[T]("name", codec, ports.PortOptions{Buffer: 16})
 
 // Primary: computation stage segmentation
-ports.Chain(ctx, from, transformFn, to)       // wires from → transform → to in one call
-s := pp.Stream(ctx)                           // lower-level: gstream.Stream[T] for custom Map/Filter chains
-pp.Push(ctx, v)                               // feed items into the pipe — valid any time
+ports.Chain(ctx, from, fn, to)                 // ONE value-mapping function: from → fn → to
+ports.ChainStream(ctx, from, transform, to)    // ANY stream transform: from → transform → to
+                                                //   (the general primitive; Chain wraps a single
+                                                //   gstream.Map through ChainStream internally)
+s := pp.Stream(ctx)                            // lower-level: gstream.Stream[T], what Chain/ChainStream use
+pp.Push(ctx, v)                                // feed items into the pipe — valid any time
 
 // Secondary: IO/adapter bridging
-in := pp.InputPort("mqtt")                    // returns *SourcePort[T], fan-in
-out := pp.OutputPort("sse")                   // returns *SinkPort[T], fan-out
+in := pp.InputPort("mqtt")                     // returns *SourcePort[T], fan-in
+out := pp.OutputPort("sse")                    // returns *SinkPort[T], fan-out
 
-pp.Connect(ctx)                               // start the pipe; topology now fixed
+pp.Connect(ctx)                                // start the pipe; topology now fixed
 ```
 
 ## Key design decisions
 
-- **`Chain[In, Out](ctx, from, fn, to)` is the headline stage-connector.**
-  It wraps `from.Stream(ctx)` + `gstream.Map` + `gstream.Drain` + `to.Push`
-  — the composition every multi-stage pipeline needs, written once instead
-  of once per stage boundary. `Stream()` remains available directly for
-  callers who need `Filter`/custom composition instead of a single `Map`.
+- **`ChainStream[In, Out](ctx, from, transform, to)` is the general
+  stage-connector; `Chain` is its single-step special case, not a separate
+  mechanism.** `ChainStream` accepts any
+  `func(gstream.Stream[In]) gstream.Stream[Out]` — so a multi-step
+  sub-pipeline (several `Map`/`Filter` calls) connects two PipePorts with
+  the SAME `(ctx, from, to)` call shape as a single-step transition. `Chain`
+  is defined literally in terms of `ChainStream`:
+  ```go
+  func Chain[In, Out any](ctx context.Context, from *PipePort[In], fn func(In) (Out, error), to *PipePort[Out]) {
+      ChainStream(ctx, from, func(s gstream.Stream[In]) gstream.Stream[Out] {
+          return gstream.Map(ctx, s, fn, gstream.MapOptions{})
+      }, to)
+  }
+  ```
+  This was a design correction mid-implementation: the first draft required
+  a hand-written wrapper function (with an *invented* `(ctx, from, to)`
+  signature that happened to coincidentally match `Chain`'s) for any
+  multi-step transition. Recognizing that coincidence as a signal — not a
+  coincidence at all — led to generalizing `Chain` into `ChainStream`
+  instead of leaving multi-step composition as an unofficial convention.
 - **One ordering rule, not two.** Earlier drafts required `Stream()` before
   `Connect()` AND `Push()` after `Connect()` — two different, easy-to-invert
   rules. `Push` now works at any time (its channel is allocated eagerly in
   the constructor, not lazily in `Connect`) — items simply buffer until
   `Connect`'s consumer goroutine starts draining them. The only remaining
-  rule: register `InputPort`/`OutputPort`/`Stream`/`Chain` for a pipe
-  *before* that pipe's `Connect()`. `Chain` itself only needs to precede the
-  **upstream** pipe's `Connect` — the downstream pipe's `Connect` may happen
-  before or after `Chain` is set up.
+  rule: register `InputPort`/`OutputPort`/`Stream`/`Chain`/`ChainStream` for
+  a pipe *before* that pipe's `Connect()`. `Chain`/`ChainStream` themselves
+  only need to precede the **upstream** pipe's `Connect` — the downstream
+  pipe's `Connect` may happen before or after.
 - **No dynamic/runtime hot-add.** Confirmed scope: pipelines are segmented
   and wired at setup time, then run unchanged — matching `SourcePort`'s
   "Bind before Stream" and `SinkPort`'s "Bind before Feed" conventions
@@ -71,19 +90,17 @@ pp.Connect(ctx)                               // start the pipe; topology now fi
 - **Fan-in on input**: bind multiple `SourceAdapter`s to same input port.
 - **Fan-out on output**: bind multiple `SinkAdapter`s to same output port.
 - **Zero new adapter interfaces** — reuses `SourceAdapter` and `SinkAdapter`.
-- **Modular composition is a convention, not new API.** A multi-step stage
-  transition can be factored into its own function using the SAME
-  `(ctx, from, to)` shape as `Chain` — e.g.
-  `buildCalibrationStage(ctx, in, out)` in
-  `examples/pipeline-segmentation`. A top-level `BuildPipeline(ctx)` then
-  composes `Chain` calls and stage-builder calls identically; a
-  hand-written multi-step sub-pipeline is indistinguishable from a `Chain`
-  call to the pipeline builder that wires it in. This mirrors
-  `examples/sensor-service`'s own `pipeline.Build(ctx, ...)` layering: small
-  ctx-scoped builder functions assembled by one top-level builder. Structure
-  (`PipePort`/codec/type declarations) stays `var`s — no side effects;
-  wiring (`Chain`, stage builders, `Connect`) stays in functions taking
-  `ctx` — starting goroutines is an action, not a declaration.
+- **Modular pipeline composition, unchanged by the `ChainStream` addition.**
+  `BuildPipeline(ctx) PipelineIO` in `examples/pipeline-segmentation` still
+  composes stage-connecting calls (`Chain`, `ChainStream`) exactly like a
+  `forge`/`pipeline.Build(ctx, ...)`-style top-level builder composes pure
+  functions — the difference is that a multi-step transition is now a
+  direct `ChainStream` call instead of a hand-written wrapper function.
+  Structure (`PipePort`/codec/type declarations) stays `var`s — no side
+  effects; wiring (`Chain`, `ChainStream`, `Connect`) stays in functions
+  taking `ctx` — starting goroutines is an action, not a declaration. This
+  mirrors `examples/sensor-service`'s own `pipeline.Build(ctx, ...)`
+  layering.
 
 ## Observer integration
 
@@ -91,7 +108,7 @@ Reuses `stats.Observer`: `RecordSubscribe` on input events, `RecordPublish`
 on output fan-out, `RecordRequest("port.bind", ...)` on a rejected double
 `Connect`. Resolved from `PortOptions.Observer` or context.
 
-## Unit tests (16 tests)
+## Unit tests (19 tests)
 
 | ID | Test | Verifies |
 |---|---|---|
@@ -111,11 +128,14 @@ on output fan-out, `RecordRequest("port.bind", ...)` on a rejected double
 | PP-14 | Chain | two PipePorts wired through a transform deliver correctly |
 | PP-15 | Chain order-independent downstream Connect | `to.Connect` before `from.Connect` still works |
 | PP-16 | Connect double-invocation safe | second Connect call is a no-op, no duplicate delivery |
+| PP-17 | ChainStream multi-step Map | 3 chained `gstream.Map` calls inside one `ChainStream` transform deliver correctly |
+| PP-18 | ChainStream Filter + Map | `ChainStream` supports non-Map operators (`Filter` then `Map`), not just Map chains |
+| PP-19 | Chain is ChainStream's special case | `Chain` and an equivalent hand-written `ChainStream` call produce identical output — confirms `Chain`'s behavior is unchanged after the refactor |
 
 ## Files
 
 | File | Responsibility |
 |---|---|
-| `ports/pipe_port.go` | `PipePort`, `NewPipePort`, `InputPort`, `OutputPort`, `Stream`, `Push`, `Connect`, `Chain` |
-| `ports/pipe_port_test.go` | 16 tests (PP-01 through PP-16) |
-| `examples/pipeline-segmentation/main.go` | runnable 3-stage example: `ports.Chain` for a 1-function transition, a `buildCalibrationStage(ctx, in, out)` stage builder for a 3-step `gstream.Map` sub-pipeline, composed by one top-level `BuildPipeline(ctx) PipelineIO` that `main` calls once and then only feeds/reads channels |
+| `ports/pipe_port.go` | `PipePort`, `NewPipePort`, `InputPort`, `OutputPort`, `Stream`, `Push`, `Connect`, `ChainStream` (general primitive), `Chain` (single-Map convenience built on `ChainStream`) |
+| `ports/pipe_port_test.go` | 19 tests (PP-01 through PP-19) |
+| `examples/pipeline-segmentation/main.go` | runnable 3-stage example: `ports.Chain` for a 1-function transition, `ports.ChainStream` with an inline 3-step `gstream.Map` transform for the multi-step transition — both composed by one top-level `BuildPipeline(ctx) PipelineIO` that `main` calls once and then only feeds/reads channels |
