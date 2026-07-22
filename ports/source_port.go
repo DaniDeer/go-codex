@@ -64,6 +64,9 @@ type SourcePort[T any] struct {
 	ch    chan T
 	errCh chan error
 	wg    sync.WaitGroup
+
+	adaptersMu sync.Mutex
+	adapters   []string // AdapterName() of every bound SourceAdapter, in Bind order
 }
 
 // NewSourcePort creates a SourcePort with the given name and payload codec.
@@ -115,6 +118,18 @@ func (p *SourcePort[T]) Params() []IOParam { return p.params }
 // Codec returns the port's payload codec.
 func (p *SourcePort[T]) Codec() codex.Codec[T] { return p.codec }
 
+// BoundAdapters returns the [SourceAdapter.AdapterName] of every adapter
+// bound so far, in Bind order — the real, non-fabricated adapter identities
+// this port ingests from. Used by documentation/spec tooling (see
+// [PipelineSpec]) instead of hand-typed descriptions.
+func (p *SourcePort[T]) BoundAdapters() []string {
+	p.adaptersMu.Lock()
+	defer p.adaptersMu.Unlock()
+	out := make([]string, len(p.adapters))
+	copy(out, p.adapters)
+	return out
+}
+
 // Bind activates a [SourceAdapter] and merges its output into this port's stream.
 // Multiple Bind calls produce fan-in: items from all adapters are merged.
 //
@@ -126,6 +141,10 @@ func (p *SourcePort[T]) Bind(ctx context.Context, a SourceAdapter[T]) {
 		obs = stats.ObserverFromContext(ctx)
 	}
 	adapterCtx := adapterContext(ctx, p.params, p.handles)
+
+	p.adaptersMu.Lock()
+	p.adapters = append(p.adapters, a.AdapterName())
+	p.adaptersMu.Unlock()
 
 	p.wg.Add(1)
 	go func() {

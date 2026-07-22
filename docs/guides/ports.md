@@ -269,8 +269,22 @@ explicit function call, never a `var`. This mirrors
 ordering restriction. `Chain`/`ChainStream` only need to precede the
 upstream pipe's `Connect`.
 
+**Spec generation, derived not hand-typed**: `ports.PipelineSpec(title, version, pipes...)`
+reads pipe names, buffer sizes, bound adapter identities, and `Chain`/
+`ChainStream` edges (with the transform's real function name, via
+reflection) directly from the pipes — only `title`/`version`/ordering stay
+manual:
+
+```go
+spec := ports.PipelineSpec("Sensor Pipeline", "1.0.0", Raw, Valid, Calibrated)
+yamlBytes, _ := streamrender.Render(spec)
+```
+
+`*PipePort[T]` implements `PipeSpecSource` for any `T`, so heterogeneous
+pipes (different payload types per stage) can be passed to one call.
+
 See [`examples/pipeline-segmentation`](https://github.com/DaniDeer/go-codex/tree/main/examples/pipeline-segmentation)
-for a full 3-stage demo.
+for a full 3-stage demo including derived spec generation.
 
 ### `SinkPort` Push — request-scoped submission
 

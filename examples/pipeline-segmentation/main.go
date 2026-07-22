@@ -34,6 +34,16 @@
 // go-codex for REST routes, event channels, and forge functions — a
 // pipeline topology is exactly as declarative as any other boundary.
 //
+// main also demonstrates pipeline spec generation — fully DERIVED, not
+// hand-typed: ports.PipelineSpec reads pipe names, buffer sizes, bound
+// adapter identities, and Chain/ChainStream edges (including the real Go
+// function name behind each edge, captured via reflection) directly from
+// Raw/Valid/Calibrated. Only title, version, and pipe order stay
+// caller-supplied. Rendered via the existing render/stream machinery (see
+// examples/stream-pipeline) — proof that Chain/ChainStream introduced no
+// gap in spec generation, and that the spec cannot silently drift out of
+// sync with the actual wiring the way a hand-typed description could.
+//
 // Build: go build .
 // Run:   ./pipeline-segmentation
 package main
@@ -42,10 +52,13 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"strings"
 
 	"github.com/DaniDeer/go-codex/codex"
 	"github.com/DaniDeer/go-codex/ports"
+	streamrender "github.com/DaniDeer/go-codex/render/stream"
 	gstream "github.com/DaniDeer/go-codex/stream"
+	"gopkg.in/yaml.v3"
 )
 
 // ── Domain types and codecs ──────────────────────────────────────────────────
@@ -339,7 +352,56 @@ func main() {
 		os.Exit(1)
 	}
 
-	fmt.Println("OK: 3-stage computation pipeline segmentation (Chain + ChainStream) completed")
+	// ── Pipeline spec generation — DERIVED, not hand-typed ─────────────────
+	//
+	// ports.PipelineSpec reads pipe names, buffer sizes, bound adapter
+	// identities, and Chain/ChainStream edges (including the REAL Go
+	// function name, captured via reflection) directly from Raw/Valid/
+	// Calibrated themselves. Only the title/version and pipe ORDER are
+	// caller-supplied — everything else in the rendered spec below is a
+	// fact read back out of the actual wiring above, not a parallel
+	// description that could silently drift out of sync with it.
+	spec := ports.PipelineSpec("Pipeline Segmentation Demo", "1.0.0", Raw, Valid, Calibrated)
+
+	yamlBytes, err := streamrender.Render(spec)
+	if err != nil {
+		fmt.Println("FAIL: pipeline spec render error:", err)
+		os.Exit(1)
+	}
+
+	// Verify the rendered YAML is well-formed AND reflects the real wiring —
+	// proof that auto-derivation actually works, not just that Render
+	// returned no error. 3 PipePort steps + 2 Chain/ChainStream edges (Raw
+	// has 1 outgoing edge, Valid has 1, Calibrated has 0) = 5 steps.
+	var roundTrip map[string]any
+	if err := yaml.Unmarshal(yamlBytes, &roundTrip); err != nil {
+		fmt.Println("FAIL: rendered pipeline spec is not valid YAML:", err)
+		os.Exit(1)
+	}
+	if _, ok := roundTrip["streamTopology"]; !ok {
+		fmt.Println("FAIL: rendered pipeline spec missing streamTopology key")
+		os.Exit(1)
+	}
+	steps, ok := roundTrip["pipeline"].([]any)
+	if !ok || len(steps) != 5 {
+		fmt.Printf("FAIL: expected 5 derived pipeline steps, got %v\n", roundTrip["pipeline"])
+		os.Exit(1)
+	}
+	rawStep, _ := steps[0].(map[string]any)
+	if !strings.Contains(fmt.Sprint(rawStep["description"]), "ports.ChanSourceAdapter") {
+		fmt.Printf("FAIL: expected raw step description to derive real adapter name, got %v\n", rawStep["description"])
+		os.Exit(1)
+	}
+	applyStep, _ := steps[1].(map[string]any)
+	if !strings.Contains(fmt.Sprint(applyStep["name"]), "validateReading") {
+		fmt.Printf("FAIL: expected derived apply step to name the real validateReading function, got %v\n", applyStep["name"])
+		os.Exit(1)
+	}
+
+	fmt.Println("\n--- Pipeline spec (ports.PipelineSpec → render/stream.Render, fully derived) ---")
+	fmt.Println(string(yamlBytes))
+
+	fmt.Println("OK: 3-stage computation pipeline segmentation (Chain + ChainStream) completed, pipeline spec generation verified as derived, not hand-typed")
 }
 
 func must[T any](v T, err error) T {

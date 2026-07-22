@@ -3,6 +3,7 @@ package ports_test
 import (
 	"context"
 	"fmt"
+	"strings"
 	"testing"
 
 	"github.com/DaniDeer/go-codex/ports"
@@ -508,5 +509,204 @@ func TestPipePort_Chain_IsChainStreamSpecialCase(t *testing.T) {
 	gotB := <-outB
 	if gotA != gotB || gotA != 21 {
 		t.Fatalf("want both == 21, got Chain=%d ChainStream=%d", gotA, gotB)
+	}
+}
+
+// ── PP-20: SourcePort.BoundAdapters reports real bound adapter names ───────
+
+func TestSourcePort_BoundAdapters(t *testing.T) {
+	ctx := context.Background()
+	p := intPort("bound-adapters", 8)
+
+	if got := p.BoundAdapters(); len(got) != 0 {
+		t.Fatalf("want no bound adapters before Bind, got %v", got)
+	}
+
+	p.Bind(ctx, ports.ChanSourceAdapter(feedChan(1, 2)))
+	p.Bind(ctx, ports.ChanSourceAdapter(feedChan(3)))
+
+	got := p.BoundAdapters()
+	if len(got) != 2 || got[0] != "ports.ChanSourceAdapter" || got[1] != "ports.ChanSourceAdapter" {
+		t.Fatalf("want 2x ports.ChanSourceAdapter, got %v", got)
+	}
+}
+
+// ── PP-21: SinkPort.BoundAdapters reports real bound adapter names ─────────
+
+func TestSinkPort_BoundAdapters(t *testing.T) {
+	ctx := context.Background()
+	p := intSinkPort("bound-adapters-sink", 8)
+
+	if got := p.BoundAdapters(); len(got) != 0 {
+		t.Fatalf("want no bound adapters before Bind, got %v", got)
+	}
+
+	out1 := make(chan int, 8)
+	out2 := make(chan int, 8)
+	p.Bind(ctx, ports.ChanSinkAdapter(out1))
+	p.Bind(ctx, ports.ChanSinkAdapter(out2))
+
+	got := p.BoundAdapters()
+	if len(got) != 2 || got[0] != "ports.ChanSinkAdapter" || got[1] != "ports.ChanSinkAdapter" {
+		t.Fatalf("want 2x ports.ChanSinkAdapter, got %v", got)
+	}
+}
+
+// ── PP-22: Chain records a real ChainEdge (Kind, To, Func) ─────────────────
+
+func chainEdgeTestFn(v int) (string, error) { return fmt.Sprintf("%d", v), nil }
+
+func TestPipePort_Chain_RecordsEdge(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	from, _ := ports.NewPipePort[int]("edge-from", intCodec, ports.PortOptions{Buffer: 8})
+	to, _ := ports.NewPipePort[string]("edge-to", strCodec, ports.PortOptions{Buffer: 8})
+
+	if edges := from.OutEdges(); len(edges) != 0 {
+		t.Fatalf("want no edges before Chain, got %v", edges)
+	}
+
+	ports.Chain(ctx, from, chainEdgeTestFn, to)
+
+	edges := from.OutEdges()
+	if len(edges) != 1 {
+		t.Fatalf("want 1 recorded edge, got %d", len(edges))
+	}
+	e := edges[0]
+	if e.Kind != "chain" {
+		t.Fatalf("want Kind=chain, got %s", e.Kind)
+	}
+	if e.To != "edge-to" {
+		t.Fatalf("want To=edge-to, got %s", e.To)
+	}
+	if !strings.Contains(e.Func, "chainEdgeTestFn") {
+		t.Fatalf("want Func to contain real function name 'chainEdgeTestFn', got %s", e.Func)
+	}
+}
+
+// ── PP-23: ChainStream records a real ChainEdge with Kind=chainStream ──────
+
+func TestPipePort_ChainStream_RecordsEdge(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	from, _ := ports.NewPipePort[int]("edge-cs-from", intCodec, ports.PortOptions{Buffer: 8})
+	to, _ := ports.NewPipePort[int]("edge-cs-to", intCodec, ports.PortOptions{Buffer: 8})
+
+	ports.ChainStream(ctx, from, func(s gstream.Stream[int]) gstream.Stream[int] {
+		return gstream.Map(ctx, s, func(v int) (int, error) { return v, nil }, gstream.MapOptions{})
+	}, to)
+
+	edges := from.OutEdges()
+	if len(edges) != 1 {
+		t.Fatalf("want 1 recorded edge, got %d", len(edges))
+	}
+	if edges[0].Kind != "chainStream" {
+		t.Fatalf("want Kind=chainStream, got %s", edges[0].Kind)
+	}
+	if edges[0].To != "edge-cs-to" {
+		t.Fatalf("want To=edge-cs-to, got %s", edges[0].To)
+	}
+	if edges[0].Func == "" {
+		t.Fatal("want non-empty Func (real, if closure-opaque, function identity)")
+	}
+}
+
+// ── PP-24: PipePort.Buffer/InputAdapters/OutputAdapters reflect real state ──
+
+func TestPipePort_Buffer_InputAdapters_OutputAdapters(t *testing.T) {
+	ctx := context.Background()
+
+	pp, _ := ports.NewPipePort[int]("diag", intCodec, ports.PortOptions{Buffer: 16})
+	if pp.Buffer() != 16 {
+		t.Fatalf("want Buffer()=16, got %d", pp.Buffer())
+	}
+
+	if ins := pp.InputAdapters(); len(ins) != 0 {
+		t.Fatalf("want no input adapters before Bind, got %v", ins)
+	}
+	if outs := pp.OutputAdapters(); len(outs) != 0 {
+		t.Fatalf("want no output adapters before Bind, got %v", outs)
+	}
+
+	in := pp.InputPort("mqtt")
+	in.Bind(ctx, ports.ChanSourceAdapter(feedChan(1)))
+
+	out := pp.OutputPort("sse")
+	out.Bind(ctx, ports.ChanSinkAdapter(make(chan int, 8)))
+
+	ins := pp.InputAdapters()
+	if got := ins["mqtt"]; len(got) != 1 || got[0] != "ports.ChanSourceAdapter" {
+		t.Fatalf("want InputAdapters[mqtt]=[ports.ChanSourceAdapter], got %v", ins)
+	}
+	outs := pp.OutputAdapters()
+	if got := outs["sse"]; len(got) != 1 || got[0] != "ports.ChanSinkAdapter" {
+		t.Fatalf("want OutputAdapters[sse]=[ports.ChanSinkAdapter], got %v", outs)
+	}
+}
+
+// ── PP-25: PipelineSpec derives a full spec from real pipe wiring ──────────
+
+func TestPipelineSpec_DerivesRealData(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	from, _ := ports.NewPipePort[int]("spec-from", intCodec, ports.PortOptions{Buffer: 4})
+	to, _ := ports.NewPipePort[string]("spec-to", strCodec, ports.PortOptions{Buffer: 4})
+
+	from.InputPort("ingest").Bind(ctx, ports.ChanSourceAdapter(feedChan(1)))
+	sink := make(chan string, 8)
+	to.OutputPort("egress").Bind(ctx, ports.ChanSinkAdapter(sink))
+
+	ports.Chain(ctx, from, chainEdgeTestFn, to)
+
+	spec := ports.PipelineSpec("Test Pipeline", "1.0.0", from, to)
+
+	if spec.Info.Title != "Test Pipeline" || spec.Info.Version != "1.0.0" {
+		t.Fatalf("want Info={Test Pipeline, 1.0.0}, got %+v", spec.Info)
+	}
+	// Expect: [port(spec-from), apply(chainEdgeTestFn), port(spec-to)]
+	if len(spec.Steps) != 3 {
+		t.Fatalf("want 3 steps, got %d: %+v", len(spec.Steps), spec.Steps)
+	}
+	if spec.Steps[0].Kind != gstream.StepKindPort || spec.Steps[0].Name != "spec-from" {
+		t.Fatalf("want step 0 = port(spec-from), got %+v", spec.Steps[0])
+	}
+	if !strings.Contains(spec.Steps[0].Description, "Buffer=4") {
+		t.Fatalf("want step 0 description to contain real Buffer=4, got %q", spec.Steps[0].Description)
+	}
+	if !strings.Contains(spec.Steps[0].Description, "ports.ChanSourceAdapter") {
+		t.Fatalf("want step 0 description to contain real adapter name, got %q", spec.Steps[0].Description)
+	}
+	if spec.Steps[1].Kind != gstream.StepKindApply || !strings.Contains(spec.Steps[1].Name, "chainEdgeTestFn") {
+		t.Fatalf("want step 1 = apply(chainEdgeTestFn), got %+v", spec.Steps[1])
+	}
+	if spec.Steps[2].Kind != gstream.StepKindPort || spec.Steps[2].Name != "spec-to" {
+		t.Fatalf("want step 2 = port(spec-to), got %+v", spec.Steps[2])
+	}
+	if !strings.Contains(spec.Steps[2].Description, "ports.ChanSinkAdapter") {
+		t.Fatalf("want step 2 description to contain real adapter name, got %q", spec.Steps[2].Description)
+	}
+}
+
+// ── PP-26: PipelineSpec accepts heterogeneous PipePort[T] via PipeSpecSource ─
+
+func TestPipelineSpec_HeterogeneousTypes(t *testing.T) {
+	a, _ := ports.NewPipePort[int]("het-a", intCodec, ports.PortOptions{Buffer: 8})
+	b, _ := ports.NewPipePort[string]("het-b", strCodec, ports.PortOptions{Buffer: 8})
+	c, _ := ports.NewPipePort[cfgItem]("het-c", cfgCodec, ports.PortOptions{Buffer: 8})
+
+	// Compiles only if *PipePort[int], *PipePort[string], *PipePort[cfgItem]
+	// all satisfy ports.PipeSpecSource despite differing type parameters.
+	pipes := []ports.PipeSpecSource{a, b, c}
+	spec := ports.PipelineSpec("Heterogeneous", "1.0.0", pipes...)
+
+	if len(spec.Steps) != 3 {
+		t.Fatalf("want 3 port steps (no edges), got %d", len(spec.Steps))
+	}
+	names := []string{spec.Steps[0].Name, spec.Steps[1].Name, spec.Steps[2].Name}
+	if names[0] != "het-a" || names[1] != "het-b" || names[2] != "het-c" {
+		t.Fatalf("want [het-a het-b het-c], got %v", names)
 	}
 }

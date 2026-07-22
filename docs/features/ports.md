@@ -375,8 +375,31 @@ output adapters. Same name → same instance; input/output names are scoped
 independently. PipePort carries no Patterns of its own — schema comes from
 the individual SourcePort/SinkPort ports.
 
+**Pipeline spec generation — derived, not hand-typed**:
+`ports.PipelineSpec(title, version string, pipes ...PipeSpecSource) gstream.TopologySpec`
+builds a documentation spec by *reading* the actual wiring, not by
+re-describing it in parallel strings:
+
+```go
+spec := ports.PipelineSpec("Sensor Pipeline", "1.0.0", Raw, Valid, Calibrated)
+yamlBytes, err := streamrender.Render(spec)
+```
+
+Derived automatically: pipe names, `Buffer()`, every bound adapter's real
+`AdapterName()` (via `SourcePort.BoundAdapters()`/`SinkPort.BoundAdapters()`),
+and every `Chain`/`ChainStream` edge — including the transform's real Go
+function identity, captured via reflection (`"main.validateReading"` for a
+named function; an honestly closure-opaque `"main.BuildPipeline.func1"` for
+an inline `ChainStream` transform — never fabricated). Only `title`,
+`version`, and the pipes' *ordering* are caller-supplied.
+
+`*PipePort[T]` implements the `PipeSpecSource` interface for any `T`, so one
+`PipelineSpec` call accepts a heterogeneous pipeline
+(`PipePort[Raw]`, `PipePort[Validated]`, `PipePort[Calibrated]`, …) that a
+plain `[]*PipePort[T]` slice could never hold.
+
 > See [`examples/pipeline-segmentation`](https://github.com/DaniDeer/go-codex/tree/main/examples/pipeline-segmentation)
-> for a 3-stage computation pipeline with side observers.
+> for a 3-stage computation pipeline with side observers and derived spec generation.
 
 ---
 

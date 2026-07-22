@@ -62,9 +62,10 @@ type SinkPort[T any] struct {
 	obs     stats.Observer
 	buffer  int
 
-	mu    sync.Mutex
-	sinks []*boundSink[T]
-	wg    sync.WaitGroup
+	mu       sync.Mutex
+	sinks    []*boundSink[T]
+	adapters []string // AdapterName() of every bound SinkAdapter, in Bind order
+	wg       sync.WaitGroup
 
 	// Push lifecycle (Start/Push/Close) — mutually exclusive with Feed.
 	feedMu   sync.RWMutex
@@ -129,6 +130,18 @@ func (p *SinkPort[T]) Params() []IOParam { return p.params }
 // Codec returns the port's payload codec.
 func (p *SinkPort[T]) Codec() codex.Codec[T] { return p.codec }
 
+// BoundAdapters returns the [SinkAdapter.AdapterName] of every adapter bound
+// so far, in Bind order — the real, non-fabricated adapter identities this
+// port delivers to. Used by documentation/spec tooling (see [PipelineSpec])
+// instead of hand-typed descriptions.
+func (p *SinkPort[T]) BoundAdapters() []string {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	out := make([]string, len(p.adapters))
+	copy(out, p.adapters)
+	return out
+}
+
 // Bind registers a [SinkAdapter] to receive items from this port. The adapter's
 // Activate goroutine starts immediately. Multiple Bind calls produce fan-out.
 // Bind must be called before [Feed].
@@ -139,6 +152,7 @@ func (p *SinkPort[T]) Bind(ctx context.Context, a SinkAdapter[T]) {
 
 	p.mu.Lock()
 	p.sinks = append(p.sinks, bs)
+	p.adapters = append(p.adapters, a.AdapterName())
 	p.mu.Unlock()
 
 	obs := p.obs

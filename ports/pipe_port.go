@@ -63,8 +63,9 @@ type PipePort[T any] struct {
 	mu        sync.Mutex
 	in        map[string]*SourcePort[T]
 	out       map[string]*SinkPort[T]
-	streamChs []chan T // registered by Stream() calls before Connect
-	connected bool     // guards against double Connect
+	streamChs []chan T    // registered by Stream() calls before Connect
+	connected bool        // guards against double Connect
+	edges     []ChainEdge // outgoing Chain/ChainStream connections, recorded for PipelineSpec
 
 	// pushCh is allocated eagerly so Push works before Connect (buffers
 	// until Connect's consumer goroutine starts draining it).
@@ -303,12 +304,28 @@ func (p *PipePort[T]) Stream(ctx context.Context) gstream.Stream[T] {
 	return gstream.From(ctx, ch)
 }
 
+// chainWire is the shared internal engine behind [Chain] and [ChainStream]:
+// drain transform(from.Stream(ctx)) into to.Push. Both public functions
+// call this AFTER recording their own [ChainEdge] (with the correct Kind
+// and function identity for that entry point) — see [PipelineSpec], which
+// reads recorded edges back out via [PipeSpecSource].
+func chainWire[In, Out any](
+	ctx context.Context,
+	from *PipePort[In],
+	transform func(gstream.Stream[In]) gstream.Stream[Out],
+	to *PipePort[Out],
+) {
+	out := transform(from.Stream(ctx))
+	go gstream.Drain(ctx, out, func(_ context.Context, v Out) error {
+		return to.Push(ctx, v)
+	}, nil, gstream.DrainOptions{})
+}
+
 // ChainStream wires two PipePorts together through an arbitrary stream
 // transform — the GENERAL primitive for connecting pipeline stages, of
-// which [Chain] is the single-Map special case (see Chain's implementation
-// below). Where Chain wraps exactly one value-mapping function
-// func(In) (Out, error), ChainStream accepts any
-// gstream.Stream[In] -> gstream.Stream[Out] transform, so a multi-step
+// which [Chain] is the single-Map special case. Where Chain wraps exactly
+// one value-mapping function func(In) (Out, error), ChainStream accepts
+// any gstream.Stream[In] -> gstream.Stream[Out] transform, so a multi-step
 // sub-pipeline (several Map/Filter/etc. calls) connects two PipePorts with
 // the SAME call shape as a single-step one — no need for a hand-written
 // wrapper function that reinvents Chain's (ctx, from, to) signature:
@@ -322,6 +339,11 @@ func (p *PipePort[T]) Stream(ctx context.Context) gstream.Stream[T] {
 //	    return gstream.Map(ctx, s3, annotate, gstream.MapOptions{})
 //	}, Calibrated)
 //
+// ChainStream records a [ChainEdge] on from (Kind "chainStream", Func
+// derived from transform via reflection — a real, if sometimes
+// closure-opaque, Go function identity) so [PipelineSpec] can describe this
+// connection without a hand-typed description.
+//
 // Same ordering rule as Chain: must be called before from's [Connect] (it
 // registers a [Stream] consumer). It may be called before or after to's
 // Connect — items buffer in to's push channel until to.Connect starts
@@ -334,10 +356,8 @@ func ChainStream[In, Out any](
 	transform func(gstream.Stream[In]) gstream.Stream[Out],
 	to *PipePort[Out],
 ) {
-	out := transform(from.Stream(ctx))
-	go gstream.Drain(ctx, out, func(_ context.Context, v Out) error {
-		return to.Push(ctx, v)
-	}, nil, gstream.DrainOptions{})
+	from.recordEdge(ChainEdge{Kind: "chainStream", To: to.Name(), Func: funcName(transform)})
+	chainWire(ctx, from, transform, to)
 }
 
 // Chain wires two PipePorts together through a single value-mapping
@@ -353,6 +373,10 @@ func ChainStream[In, Out any](
 //	// With Chain:
 //	ports.Chain(ctx, Raw, validate, Clean)
 //
+// Chain records a [ChainEdge] on from (Kind "chain", Func derived from fn
+// via reflection) so [PipelineSpec] can describe this connection without a
+// hand-typed description.
+//
 // When a stage needs more than one step, use [ChainStream] directly instead
 // — it accepts any stream transform, not just a single Map.
 //
@@ -360,7 +384,8 @@ func ChainStream[In, Out any](
 // [PipePort.Connect] (registers a [Stream] consumer); may be called before
 // or after to's Connect (Push buffers either way).
 func Chain[In, Out any](ctx context.Context, from *PipePort[In], fn func(In) (Out, error), to *PipePort[Out]) {
-	ChainStream(ctx, from, func(s gstream.Stream[In]) gstream.Stream[Out] {
+	from.recordEdge(ChainEdge{Kind: "chain", To: to.Name(), Func: funcName(fn)})
+	chainWire(ctx, from, func(s gstream.Stream[In]) gstream.Stream[Out] {
 		return gstream.Map(ctx, s, fn, gstream.MapOptions{})
 	}, to)
 }

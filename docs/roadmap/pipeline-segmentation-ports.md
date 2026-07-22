@@ -108,7 +108,49 @@ Reuses `stats.Observer`: `RecordSubscribe` on input events, `RecordPublish`
 on output fan-out, `RecordRequest("port.bind", ...)` on a rejected double
 `Connect`. Resolved from `PortOptions.Observer` or context.
 
-## Unit tests (19 tests)
+## Pipeline spec generation — fully derived (`PipelineSpec`)
+
+A first pass proved `PipePort` could be *manually* documented with the
+existing `stream.Topology`/`render/stream` machinery (`Topology.WithPort`
+for each PipePort). That worked, but every name, buffer size, and adapter
+identity in the spec was a hand-typed string sitting next to the real code
+— nothing stopped it drifting out of sync if the wiring changed and the
+description wasn't updated.
+
+`ports.PipelineSpec(title, version string, pipes ...PipeSpecSource) gstream.TopologySpec`
+closes that gap: it builds the spec by *reading* the pipes' actual state,
+not by re-describing it:
+
+- **`SourcePort.BoundAdapters()` / `SinkPort.BoundAdapters()`** (new) —
+  every bound adapter's real `AdapterName()`, tracked at `Bind` time
+  (previously used transiently for observer/error events, then discarded).
+- **`ChainEdge{Kind, To, Func}`** (new) — recorded by `Chain`/`ChainStream`
+  on their `from` pipe. `Func` is the transform's real Go function identity
+  via `reflect.ValueOf(fn).Pointer()` + `runtime.FuncForPC` — e.g.
+  `"main.validateReading"` for a named function, or an honestly
+  closure-opaque `"main.BuildPipeline.func1"` for an inline `ChainStream`
+  transform. Never fabricated.
+- **`PipePort.Buffer()`, `InputAdapters()`, `OutputAdapters()`, `OutEdges()`**
+  (new accessors) — expose the above as real data.
+- **`PipeSpecSource` interface** (new) — `Name`/`Buffer`/`InputAdapters`/
+  `OutputAdapters`/`OutEdges`, none of which reference the pipe's payload
+  type `T`. `*PipePort[T]` satisfies it for any `T`, so a single
+  `PipelineSpec` call accepts a heterogeneous pipeline
+  (`PipePort[Raw]`, `PipePort[Validated]`, `PipePort[Calibrated]`, …) —
+  something a generic `[]*PipePort[T]` slice could never hold.
+
+Only `title`, `version`, and the pipes' *ordering* remain caller-supplied —
+there is no pipe field to read a pipeline-level title from, and ordering is
+a presentation choice, not a fact about any single pipe.
+
+`examples/pipeline-segmentation/main.go` demonstrates this end-to-end:
+`ports.PipelineSpec("Pipeline Segmentation Demo", "1.0.0", Raw, Valid, Calibrated)`
+replaces the earlier hand-typed `WithSource`/`WithPort`/`WithSink` block
+entirely. The rendered YAML shows real derived facts: `Buffer=8`, the exact
+bound `ports.ChanSourceAdapter`/`ports.ChanSinkAdapter` names per port, and
+`main.validateReading` as the real function behind the `Chain` edge.
+
+## Unit tests (26 tests)
 
 | ID | Test | Verifies |
 |---|---|---|
@@ -131,11 +173,21 @@ on output fan-out, `RecordRequest("port.bind", ...)` on a rejected double
 | PP-17 | ChainStream multi-step Map | 3 chained `gstream.Map` calls inside one `ChainStream` transform deliver correctly |
 | PP-18 | ChainStream Filter + Map | `ChainStream` supports non-Map operators (`Filter` then `Map`), not just Map chains |
 | PP-19 | Chain is ChainStream's special case | `Chain` and an equivalent hand-written `ChainStream` call produce identical output — confirms `Chain`'s behavior is unchanged after the refactor |
+| PP-20 | SourcePort.BoundAdapters | reports real bound adapter names, in Bind order |
+| PP-21 | SinkPort.BoundAdapters | reports real bound adapter names, in Bind order |
+| PP-22 | Chain records a real ChainEdge | Kind="chain", To=destination name, Func contains the real function name |
+| PP-23 | ChainStream records a real ChainEdge | Kind="chainStream", To=destination name, Func non-empty |
+| PP-24 | Buffer/InputAdapters/OutputAdapters | reflect real configured buffer and bound adapter names, keyed by port name |
+| PP-25 | PipelineSpec derives real data | rendered steps' Name/Description contain the real buffer, adapter names, and function identity — not placeholders |
+| PP-26 | PipelineSpec heterogeneous types | `[]PipeSpecSource` holds `PipePort[int]`, `PipePort[string]`, `PipePort[cfgItem]` together; compiles and produces correct per-pipe steps |
 
 ## Files
 
 | File | Responsibility |
 |---|---|
-| `ports/pipe_port.go` | `PipePort`, `NewPipePort`, `InputPort`, `OutputPort`, `Stream`, `Push`, `Connect`, `ChainStream` (general primitive), `Chain` (single-Map convenience built on `ChainStream`) |
-| `ports/pipe_port_test.go` | 19 tests (PP-01 through PP-19) |
-| `examples/pipeline-segmentation/main.go` | runnable 3-stage example: `ports.Chain` for a 1-function transition, `ports.ChainStream` with an inline 3-step `gstream.Map` transform for the multi-step transition — both composed by one top-level `BuildPipeline(ctx) PipelineIO` that `main` calls once and then only feeds/reads channels |
+| `ports/pipe_port.go` | `PipePort`, `NewPipePort`, `InputPort`, `OutputPort`, `Stream`, `Push`, `Connect`, `ChainStream` (general primitive), `Chain` (single-Map convenience), both recording a `ChainEdge` via the shared internal `chainWire` |
+| `ports/pipeline_spec.go` | `ChainEdge`, `PipeSpecSource`, `PipelineSpec`, `funcName` (reflection-based real function identity), `PipePort.Buffer/InputAdapters/OutputAdapters/OutEdges` |
+| `ports/source_port.go` | `SourcePort.BoundAdapters()` + tracking field, populated in `Bind` |
+| `ports/sink_port.go` | `SinkPort.BoundAdapters()` + tracking field (reuses existing `mu`), populated in `Bind` |
+| `ports/pipe_port_test.go` | 26 tests (PP-01 through PP-26) |
+| `examples/pipeline-segmentation/main.go` | runnable 3-stage example: `ports.Chain` for a 1-function transition, `ports.ChainStream` with an inline 3-step `gstream.Map` transform for the multi-step transition, composed by one top-level `BuildPipeline(ctx) PipelineIO`; spec generation via a single `ports.PipelineSpec(title, version, Raw, Valid, Calibrated)` call — verified to contain real derived data (buffer sizes, adapter names, real function identities), not hand-typed placeholders |
