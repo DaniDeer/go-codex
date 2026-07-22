@@ -155,6 +155,7 @@ go-codex/
 │   ├── tool_port.go        # ToolPort[In,Out], ToolAdapter[In,Out], NewToolPort — request/response
 │   ├── latest_port.go      # LatestPort[T], LatestAdapter[T], NewLatestPort — reactive cache
 │   ├── duplex_port.go      # DuplexPort[In,Out], DuplexAdapter[In,Out], Framed[T], Session — bidirectional sessions
+│   ├── pipe_port.go        # PipePort[T] — patch panel connecting named SourcePort inputs to named SinkPort outputs (fan-in + fan-out)
 │   ├── file.go             # NewFile, File[T], FilePathParam, FileOptions, PatchEncoded, PathParamSchemas,
 │   │                       #   FilePathParamError, MissingFilePathVarError, FileReadError,
 │   │                       #   FileDecodeError, FileEncodeError, FileWriteError, FilePatchNotSupportedError

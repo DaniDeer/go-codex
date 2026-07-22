@@ -14,13 +14,13 @@ Step 1 — Domain core (no adapter imports)
     codex.Codec[T]                       ← validated domain types
     forge.NewFunction[In, Out](...)      ← governed pure computation
     ports.NewSourcePort / SinkPort /     ← IO enforcement points
-        IOPort / ToolPort
+        IOPort / ToolPort / PipePort
 
 Step 2 — Wiring (main.go only)
     port.Bind(ctx, transport.XxxAdapter(...))  ← connect to real transport
 ```
 
-## Six port types
+## Seven port types
 
 ### `SourcePort[T]` — inbound boundary
 
@@ -200,6 +200,73 @@ For one-struct convenience, declare `SocketPattern.InOpts` / `OutOpts` with
 `ports.NewRequiredSocketInParam` / `ports.NewRequiredSocketOutParam` (or the
 optional variants). The WebSocket adapters then merge upgrade vars into each
 inbound/outbound payload automatically.
+
+### `PipePort[T]` — pipeline stage boundary
+
+A named waypoint between pipeline stages, declared flexibly at setup and
+never mutated at runtime. Use `ports.Chain` to connect stages; side
+observers tap into any stage without changing the logic. IO/adapter wiring
+(`InputPort`/`OutputPort`) is also supported but is secondary — PipePort
+wraps existing `SourcePort`/`SinkPort`/`gstream` primitives, it doesn't
+reinvent them.
+
+```go
+var Raw   = codex.Must(ports.NewPipePort[SensorReading]("raw", readingCodec, ...))
+var Clean = codex.Must(ports.NewPipePort[ValidatedReading]("clean", validCodec, ...))
+
+// Chain wraps Stream+Map+Drain+Push into one call — the common case.
+ports.Chain(ctx, Raw, validate, Clean)
+
+Raw.OutputPort("log").Bind(ctx, ports.ChanSinkAdapter(logCh)) // side observer
+Raw.Connect(ctx)
+Clean.Connect(ctx)
+```
+
+`ports.Chain[In, Out](ctx, from, fn, to)` is the primary stage connector.
+`Stream()` is available directly for `Filter`/custom composition instead of
+a single `Map`. `Push(ctx, v)` feeds items into the pipe at any time — even
+before `Connect()` (items buffer until Connect starts draining).
+`InputPort(name)`/`OutputPort(name)` are for adapter wiring.
+
+**Modular composition — stage builders + a pipeline builder**: write a
+multi-step transition as its own function with the SAME `(ctx, from, to)`
+shape as `ports.Chain`, then have one top-level `BuildPipeline(ctx)`
+compose `Chain` calls and stage-builder calls identically:
+
+```go
+// Stage builder — same shape as ports.Chain(ctx, from, fn, to).
+func buildCalibrationStage(ctx context.Context, in *ports.PipePort[Validated], out *ports.PipePort[Calibrated]) {
+    s := gstream.Map(ctx, in.Stream(ctx), calibrate, gstream.MapOptions{})
+    s = gstream.Map(ctx, s, classify, gstream.MapOptions{})
+    s = gstream.Map(ctx, s, annotate, gstream.MapOptions{})
+    go gstream.Drain(ctx, s, func(_ context.Context, v Calibrated) error {
+        return out.Push(ctx, v)
+    }, nil, gstream.DrainOptions{})
+}
+
+// Pipeline builder — composes Chain and stage builders the same way.
+func BuildPipeline(ctx context.Context) PipelineIO {
+    ports.Chain(ctx, Raw, validate, Valid)
+    buildCalibrationStage(ctx, Valid, Calibrated)
+    // ... observers, adapter binding, Connect calls, return PipelineIO ...
+}
+```
+
+`PipePort`/codec/type declarations stay package `var`s — they have no side
+effects, just like a `codex.Codec` or `rest.Route` declaration. Wiring
+(`Chain`, stage builders, `Connect`) stays in `ctx`-scoped functions — it
+starts goroutines, so it needs a caller-supplied `ctx` and stays an
+explicit function call, never a `var`. This mirrors
+[`examples/sensor-service`](https://github.com/DaniDeer/go-codex/tree/main/examples/sensor-service)'s
+`pipeline.Build(ctx, ...)` convention exactly.
+
+**One ordering rule**: register `InputPort`/`OutputPort`/`Stream`/`Chain`
+for a pipe before that pipe's `Connect()`. `Push` has no ordering
+restriction. `Chain` (or a stage builder using `Stream()` internally) only
+needs to precede the upstream pipe's `Connect`.
+
+See [`examples/pipeline-segmentation`](https://github.com/DaniDeer/go-codex/tree/main/examples/pipeline-segmentation)
+for a full 3-stage demo.
 
 ### `SinkPort` Push — request-scoped submission
 

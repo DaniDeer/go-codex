@@ -57,7 +57,7 @@ domain.SensorReadings.Bind(ctx, mqtt5.SubscribeAdapter(client, router, handle, 0
 
 ---
 
-## Six port types
+## Seven port types
 
 | Port | Direction | Cardinality | Use for |
 |------|-----------|-------------|---------|
@@ -67,6 +67,7 @@ domain.SensorReadings.Bind(ctx, mqtt5.SubscribeAdapter(client, router, handle, 0
 | [`ToolPort[In,Out]`](#toolportinout) | External request → pipeline → response | Exactly one pipeline fn, N adapters | MCP tool, HTTP endpoint, ZeroMQ REP, MQTT5 request-reply server |
 | [`LatestPort[T]`](#latestportt) | Stream → cache → external request | One cache, N serving adapters | "Current state" endpoints: latest reading over HTTP GET, ZeroMQ REP, MCP tool — no per-request pipeline run |
 | [`DuplexPort[In,Out]`](#duplexportinout) | External ↔ pipeline (sessions) | Exactly one adapter | WebSocket endpoints: session-tagged inbound commands, targeted replies + broadcast |
+| [`PipePort[T]`](#pipeportt) | Pipeline ↔ pipeline | Fan-in + fan-out (N input SourcePorts → M output SinkPorts) | Computation stage segmentation via `ports.Chain`; multi-consumer broadcast; convenience wrapper for IO/adapter fan-in/fan-out |
 
 ---
 
@@ -277,6 +278,111 @@ For one-struct convenience on long-lived connections, add
 `ports.NewRequiredSocketInParam`/`NewOptionalSocketInParam` and
 `ports.NewRequiredSocketOutParam`/`NewOptionalSocketOutParam`. WebSocket
 adapters merge connection vars into each frame automatically.
+
+---
+
+## `PipePort[T]`
+
+A named pipeline stage boundary — the primary tool for segmenting a
+computation pipeline into observable waypoints, declared flexibly at setup
+time and never mutated at runtime. `ports.Chain` connects stages; side
+observers tap into any stage without changing the pipeline logic.
+IO/adapter wiring (`InputPort`/`OutputPort` with transport adapters) is a
+supported convenience, not the primary use — PipePort is a thin wrapper
+over existing `SourcePort`/`SinkPort`/`gstream.Map`/`gstream.Drain`
+primitives, not a new adapter model.
+
+```go
+// Declare PipePorts as stage boundaries.
+var Raw   = codex.Must(ports.NewPipePort[SensorReading]("raw", readingCodec, ...))
+var Clean = codex.Must(ports.NewPipePort[ValidatedReading]("clean", validCodec, ...))
+
+// Chain wires Raw → validate → Clean in one call (Stream+Map+Drain+Push).
+ports.Chain(ctx, Raw, validate, Clean)
+
+// Side observers: tap into any stage
+Raw.OutputPort("log").Bind(ctx, ports.ChanSinkAdapter(logCh))
+
+Raw.Connect(ctx)
+Clean.Connect(ctx)
+```
+
+`ports.Chain[In, Out](ctx, from, fn, to)` is the primary stage connector —
+it wraps `from.Stream(ctx)` + `gstream.Map` + `gstream.Drain` + `to.Push`
+into one call, for the common case of ONE transform between two stages.
+
+**Multi-step sub-pipelines**: when a stage boundary needs more than one
+computation step, build the sub-pipeline directly with the stream module's
+own composition feature — chain multiple `gstream.Map`/`gstream.Filter`
+calls — then hand off the result with `gstream.Drain` + `Push`, the exact
+same primitives `Chain` wraps internally:
+
+```go
+// Valid → Calibrated needs three sequential steps: calibrate, classify,
+// annotate. Each stays independently visible and swappable as its own
+// gstream.Map stage — Chain only wraps a single Map, so build this one
+// by hand from the stream module's own building blocks:
+calibrated := gstream.Map(ctx, Valid.Stream(ctx), calibrateReading, gstream.MapOptions{})
+classified := gstream.Map(ctx, calibrated, classifyReading, gstream.MapOptions{})
+annotated  := gstream.Map(ctx, classified, annotateReading, gstream.MapOptions{})
+go gstream.Drain(ctx, annotated, func(_ context.Context, v CalibratedReading) error {
+    return Calibrated.Push(ctx, v)
+}, nil, gstream.DrainOptions{})
+```
+
+Use `Stream()` directly (instead of `Chain`) any time the stage transition
+is more than a single `Map` — multiple sequential transforms, a `Filter`
+step, or any other `gstream` composition.
+
+**Modular pipeline composition**: factor a multi-step transition into its
+own named function with the same `(ctx, from, to)` shape as `Chain`, so it
+slots into a larger pipeline builder exactly like a `Chain` call does:
+
+```go
+// A STAGE builder — same signature shape as ports.Chain(ctx, from, fn, to).
+func buildCalibrationStage(ctx context.Context, in *ports.PipePort[Validated], out *ports.PipePort[Calibrated]) {
+    calibrated := gstream.Map(ctx, in.Stream(ctx), calibrateReading, gstream.MapOptions{})
+    classified := gstream.Map(ctx, calibrated, classifyReading, gstream.MapOptions{})
+    annotated  := gstream.Map(ctx, classified, annotateReading, gstream.MapOptions{})
+    go gstream.Drain(ctx, annotated, func(_ context.Context, v Calibrated) error {
+        return out.Push(ctx, v)
+    }, nil, gstream.DrainOptions{})
+}
+
+// The PIPELINE builder composes ports.Chain calls and stage builders
+// identically — a sub-pipeline is just another stage from the outside.
+func BuildPipeline(ctx context.Context) PipelineIO {
+    ports.Chain(ctx, Raw, validateReading, Valid)
+    buildCalibrationStage(ctx, Valid, Calibrated)
+    // ... observers, adapter binding, Connect calls ...
+}
+```
+
+This two-level shape — a top-level `BuildPipeline(ctx)` composing smaller
+`(ctx, from, to)`-shaped stage builders — mirrors
+[`examples/sensor-service`](https://github.com/DaniDeer/go-codex/tree/main/examples/sensor-service)'s
+own `pipeline.Build(ctx, ...)` convention: small, independently testable,
+ctx-scoped wiring functions assembled by one top-level builder, never one
+monolithic wiring block. `PipePort`/codec/type declarations stay `var`s
+(no side effects); `BuildPipeline`/stage-builder functions stay functions
+(they start goroutines and need `ctx` — see the ordering rule below).
+
+**One ordering rule**: register all `InputPort`/`OutputPort`/`Stream`/`Chain`
+calls for a pipe before that pipe's `Connect()`. `Push(ctx, v)` has no such
+restriction — it works at any time, before or after `Connect()`; items
+simply buffer until `Connect()`'s consumer goroutine starts draining them.
+`Chain` (or a hand-built `Stream()` sub-pipeline) only needs to precede the
+**upstream** pipe's `Connect` — the downstream pipe's `Connect` may happen
+before or after.
+
+**IO bridging** (secondary): `InputPort(name)` returns a `*SourcePort[T]`
+to bind input adapters. `OutputPort(name)` returns a `*SinkPort[T]` to bind
+output adapters. Same name → same instance; input/output names are scoped
+independently. PipePort carries no Patterns of its own — schema comes from
+the individual SourcePort/SinkPort ports.
+
+> See [`examples/pipeline-segmentation`](https://github.com/DaniDeer/go-codex/tree/main/examples/pipeline-segmentation)
+> for a 3-stage computation pipeline with side observers.
 
 ---
 
