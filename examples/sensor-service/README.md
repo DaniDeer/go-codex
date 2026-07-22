@@ -23,8 +23,9 @@ SQL → HTTP changes only `main.go`.
                     MQTT sensors/{sensorID}/data
                                 │
                     ┌───────────▼───────────┐
-                    │ Raw      PipePort     │  InputPortWithPatterns("mqtt", EventPattern)
-                    └───────────┬───────────┘      → mqtt.SubscribeAdapter
+                    │ Sensors  SourcePort   │  EventPattern plugged in at wiring
+                    └───────────┬───────────┘  time (PluginEventPattern) →
+                                │              mqtt.SubscribeAdapter
                                 │ Chain(buildParams.Apply, pure)
                     ┌───────────▼───────────┐
                     │ Params   PipePort     │  pipeline-internal stage, no adapters
@@ -38,15 +39,15 @@ SQL → HTTP changes only `main.go`.
                                 │                          (reactive cache)
                      ChainStream(Filter(threshold) + FlatMap(buildAlert))
                     ┌───────────▼───────────┐
-                    │ AlertStage  PipePort  │  OutputPortWithPatterns("mqtt", EventPattern)
-                    └───────────┬───────────┘      → mqtt.PublishAdapter
-                                ▼
+                    │ Alerts     SinkPort   │  EventPattern plugged in at wiring
+                    └───────────┬───────────┘  time (PluginEventPattern) →
+                                ▼              mqtt.PublishAdapter
                     MQTT alerts/{sensorID}
 
   Readings  IOPort      SQLPattern{readings, insert_reading} → sql.QueryEachAdapter
   (Connected INSIDE the Params→Saved ChainStream transform above — the
   pipeline never hides an IO hop inside a bigger stage's closure; every
-  boundary, including this one, is a real, named PipePort edge)
+  boundary, including this one, is a real, named port edge)
 
   GET /sensors/{sensorID}/readings          POST /export
   ┌────────────────────────┐                ┌────────────────────────┐
@@ -69,8 +70,8 @@ SQL → HTTP changes only `main.go`.
 | Package          | Responsibility | Imports (internal) |
 |------------------|----------------|--------------------|
 | `domain/`        | Models, codecs, field factories, topic constraint, pure business rules (`BuildInsertParamsFromMQTT`, `NewShouldAlert`, `NewExportSnapshot`, …) | `db` |
-| `pipeline/`      | Business logic: pure forge functions + the segmented MQTT pipeline (`ports.PipePort`/`Chain`/`ChainStream`). Persistence and queries go through ports passed in as dependencies; never imports `ioports` — Raw/AlertStage are parameters to `Build`, not package vars | `domain`, `db` |
-| `ioports/`       | The service's complete IO surface: every port and route, declared once with its `Pattern` (`EventPattern`/`SQLPattern`/`FilePattern`/`RESTPattern`) + the shared `EventsBuilder`/`RESTBuilder`. `Raw`/`AlertStage` are `PipePort`s — the MQTT ingestion/egress boundary IS the pipeline's first/last stage | `domain`, `db` |
+| `pipeline/`      | Business logic: pure forge functions + the segmented MQTT pipeline (`ports.PipePort`/`Chain`/`ChainStream`). Persistence and queries go through ports passed in as dependencies; never imports `ioports` — Sensors/Alerts are parameters to `Build`, not package vars | `domain`, `db` |
+| `ioports/`       | The service's complete IO surface: every port declared once (structural shape + shared builder reference), each with a standalone `Pattern` value plugged in at wiring time via `PluginEventPattern`/`PluginRESTPattern`/etc. — declare, plug in, bind, the same three-step model uniformly across all port types | `domain`, `db` |
 | `observability/` | Cross-cutting `CountingObserver` — one instance, fanned out with a `LoggingObserver`, stored once in the context | — |
 | `adapters/`      | Infrastructure edge: mock MQTT client, SQL `ReadingStore`, HTTP handler factories | `domain`, `db` |
 | `db/`            | sqlc-generated queries + goose migrations | — |
@@ -83,9 +84,9 @@ Import direction is strictly acyclic; `domain` imports nothing internal but `db`
 
 | Port | Type | Pattern | Bound adapter (main.go) |
 |------|------|---------|-------------------------|
-| `Raw` | `PipePort[MQTTPayload]` | `EventPattern` `sensors/{sensorID}/data` (via `InputPortWithPatterns("mqtt", ...)`) | `mqtt.SubscribeAdapter` |
+| `Sensors` | `SourcePort[MQTTPayload]` | `EventPattern` `sensors/{sensorID}/data`, plugged in at wiring time (`PluginEventPattern(SensorsPattern)`) | `mqtt.SubscribeAdapter` |
 | `Readings` | `IOPort[InsertReadingParams, Reading]` | `SQLPattern{readings, insert_reading}` | `sql.QueryEachAdapter` |
-| `AlertStage` | `PipePort[SensorAlert]` | `EventPattern` `alerts/{sensorID}` (via `OutputPortWithPatterns("mqtt", ...)`) | `mqtt.PublishAdapter` |
+| `Alerts` | `SinkPort[SensorAlert]` | `EventPattern` `alerts/{sensorID}`, plugged in at wiring time (`PluginEventPattern(AlertsPattern)`) | `mqtt.PublishAdapter` |
 | `History` | `IOPort[SensorQuery, TimeSeries]` | `SQLPattern{readings, list_by_sensor}` | `sql.QueryEachAdapter` |
 | `ExportQuery` | `IOPort[ExportRequest, ExportSnapshot]` | `SQLPattern{readings, list_readings}` | `sql.QueryEachAdapter` |
 | `NewExportsPort(dir)` | `SinkPort[ExportSnapshot]` | `FilePattern` `{exportID}.json` | `file.DrainWriteFileAdapter` (request-fed via `Start`/`Push`/`Close`) |
@@ -122,15 +123,15 @@ three artifacts from them, without any separate spec-authoring step:
   is enforced by the adapter *before* the pipeline runs (400 +
   `rest.HeaderParamError`, observer location `"header"`) **and** appears in
   the spec as an `in: header` parameter — one declaration, both behaviors.
-- **Pipeline spec** (`ports.PipelineSpec("Sensor Service MQTT Pipeline", "1.0.0", ioports.Raw, pipeline.Params, pipeline.Saved, ioports.AlertStage)`)
-  — the MQTT pipeline shape derived directly from the real `PipePort`
-  wiring, not hand-typed: pipe names, buffer sizes, bound adapter identities,
-  and every `Chain`/`ChainStream` edge (including each transform's real Go
-  function identity via reflection — e.g. `forge.Function.Apply` for the
-  pure map, honestly closure-opaque for the SQL-persistence and
-  filter+alert transforms). No separate `pipeline.Topology` function to
-  keep in sync with the code — see
-  [`docs/features/ports.md`](../../docs/features/ports.md#pipeportt).
+- **Pipeline spec** (`ports.PipelineSpec("Sensor Service MQTT Pipeline", "1.0.0", ioports.Sensors, pipeline.Params, pipeline.Saved, ioports.Alerts)`)
+  — the MQTT pipeline shape derived directly from the real port/`PipePort`
+  wiring, not hand-typed: pipe/port names, buffer sizes, bound adapter
+  identities, and every `Chain`/`ChainStream` edge (including each
+  transform's real Go function identity via reflection — e.g.
+  `buildInsertParams` for the pure map, honestly closure-opaque for the
+  SQL-persistence and filter+alert transforms). No separate
+  `pipeline.Topology` function to keep in sync with the code — see
+  [`docs/features/ports.md`](../../docs/features/ports.md#pipeport).
 
 The same declare-once principle covers the file boundary: the export
 response's file path comes from the *same* `FilePattern` declaration that

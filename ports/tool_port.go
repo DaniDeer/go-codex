@@ -3,8 +3,12 @@ package ports
 import (
 	"context"
 	"errors"
+	"fmt"
 	"sync"
 
+	apimcp "github.com/DaniDeer/go-codex/api/mcp"
+	"github.com/DaniDeer/go-codex/api/reqreply"
+	"github.com/DaniDeer/go-codex/api/rest"
 	"github.com/DaniDeer/go-codex/codex"
 	"github.com/DaniDeer/go-codex/stats"
 	gstream "github.com/DaniDeer/go-codex/stream"
@@ -57,9 +61,19 @@ type ToolPort[In, Out any] struct {
 	inCodec  codex.Codec[In]
 	outCodec codex.Codec[Out]
 	params   []IOParam
-	handles  map[string]any
-	specs    map[string]any
 	obs      stats.Observer
+
+	// Builders are stored (not used eagerly) so PluginRESTPattern/
+	// PluginReqReplyPattern/PluginMCPPattern can register against the SAME
+	// shared builder every other Pattern-carrying declaration in the
+	// service uses.
+	restBuilder     *rest.Builder
+	reqReplyBuilder *reqreply.Builder
+	mcpBuilder      *apimcp.Builder
+
+	handlesMu sync.Mutex
+	handles   map[string]any
+	specs     map[string]any
 
 	mu sync.Mutex
 	fn func(context.Context, In) gstream.Stream[Out]
@@ -67,38 +81,142 @@ type ToolPort[In, Out any] struct {
 
 // NewToolPort creates a ToolPort with the given name, request codec, and
 // response codec. name is used for observability, error context, and spec
-// generation. opts configures Patterns, IO params, observer, and (optionally)
-// shared [PortOptions.RESTBuilder]/[PortOptions.ReqReplyBuilder]/
-// [PortOptions.MCPBuilder] builders. Any [RESTPattern], [ReqReplyPattern], or
-// [MCPPattern] in opts.Patterns is built eagerly into a handle retrievable via
-// [RESTHandle]/[ReqReplyHandle]/[MCPHandle] via Register — a ToolPort exposed
-// over multiple transports (e.g. HTTP + MQTT 5 + MCP) declares one Pattern per
-// transport. Returns [PatternRegisterError] if a declared Pattern fails to build.
+// generation. opts configures IO params, observer, and (optionally) shared
+// RESTBuilder/ReqReplyBuilder/MCPBuilder references for later
+// [PluginRESTPattern]/[PluginReqReplyPattern]/[PluginMCPPattern] calls — a
+// ToolPort exposed over multiple transports (e.g. HTTP + MCP) plugs in one
+// Pattern per transport. Use the protocol-named convenience constructors
+// ([NewRestToolPort], [NewMCPToolPort]) for the common single-Pattern case.
 func NewToolPort[In, Out any](
 	name string,
 	inCodec codex.Codec[In],
 	outCodec codex.Codec[Out],
 	opts PortOptions,
 ) (*ToolPort[In, Out], error) {
-	handles, specs, err := buildDualCodecPatternHandles(name, opts.Patterns, inCodec, outCodec,
-		opts.RESTBuilder, opts.ReqReplyBuilder, opts.MCPBuilder, false)
-	if err != nil {
-		return nil, err
-	}
 	return &ToolPort[In, Out]{
-		name:     name,
-		inCodec:  inCodec,
-		outCodec: outCodec,
-		params:   opts.Params,
-		handles:  handles,
-		specs:    specs,
-		obs:      opts.Observer,
+		name:            name,
+		inCodec:         inCodec,
+		outCodec:        outCodec,
+		params:          opts.Params,
+		obs:             opts.Observer,
+		restBuilder:     opts.RESTBuilder,
+		reqReplyBuilder: opts.ReqReplyBuilder,
+		mcpBuilder:      opts.MCPBuilder,
+		handles:         map[string]any{},
+		specs:           map[string]any{},
 	}, nil
 }
 
-// patternHandle implements the unexported patternHolder interface used by
-// [RESTHandle], [EventHandle], [ReqReplyHandle], and [MCPHandle].
+// pluginPattern is the shared engine behind every PluginXxxPattern method —
+// see [SourcePort.pluginPattern] for the full rationale. cacheAllowed is
+// always false for ToolPort (a cache is not a tool surface).
+func (p *ToolPort[In, Out]) pluginPattern(pattern Pattern, kind string) (any, error) {
+	p.handlesMu.Lock()
+	if _, exists := p.handles[kind]; exists {
+		p.handlesMu.Unlock()
+		return nil, PatternRegisterError{Port: p.name, Kind: kind, Err: fmt.Errorf("pattern of kind %q already plugged in", kind)}
+	}
+	p.handlesMu.Unlock()
+
+	handles, specs, err := buildDualCodecPatternHandles(p.name, []Pattern{pattern}, p.inCodec, p.outCodec,
+		p.restBuilder, p.reqReplyBuilder, p.mcpBuilder, false)
+	if err != nil {
+		return nil, err
+	}
+
+	p.handlesMu.Lock()
+	for k, v := range handles {
+		p.handles[k] = v
+	}
+	for k, v := range specs {
+		p.specs[k] = v
+	}
+	p.handlesMu.Unlock()
+	return handles[kind], nil
+}
+
+// PluginRESTPattern registers pattern and returns the resulting
+// [rest.RouteHandle] directly — bind e.g. nethttp.PipelineAdapter to it.
+func (p *ToolPort[In, Out]) PluginRESTPattern(pattern RESTPattern) (*rest.RouteHandle[In, Out], error) {
+	v, err := p.pluginPattern(pattern, patternKindREST)
+	if err != nil {
+		return nil, err
+	}
+	h, _ := v.(*rest.RouteHandle[In, Out])
+	return h, nil
+}
+
+// PluginReqReplyPattern registers pattern and returns the resulting
+// [reqreply.RouteHandle] directly.
+func (p *ToolPort[In, Out]) PluginReqReplyPattern(pattern ReqReplyPattern) (*reqreply.RouteHandle[In, Out], error) {
+	v, err := p.pluginPattern(pattern, patternKindReqReply)
+	if err != nil {
+		return nil, err
+	}
+	h, _ := v.(*reqreply.RouteHandle[In, Out])
+	return h, nil
+}
+
+// PluginMCPPattern registers pattern and returns the resulting
+// [apimcp.ToolHandle] directly — bind e.g. mcpgo.ToolPipelineAdapter to it.
+func (p *ToolPort[In, Out]) PluginMCPPattern(pattern MCPPattern) (*apimcp.ToolHandle[In, Out], error) {
+	v, err := p.pluginPattern(pattern, patternKindMCP)
+	if err != nil {
+		return nil, err
+	}
+	h, _ := v.(*apimcp.ToolHandle[In, Out])
+	return h, nil
+}
+
+// PluginFilePattern registers pattern and returns the resulting [File]
+// directly, built from the port's OUT codec (the file's content is the
+// port's response).
+func (p *ToolPort[In, Out]) PluginFilePattern(pattern FilePattern) (File[Out], error) {
+	v, err := p.pluginPattern(pattern, patternKindFile)
+	if err != nil {
+		return File[Out]{}, err
+	}
+	h, _ := v.(File[Out])
+	return h, nil
+}
+
+// NewRestToolPort is a thin convenience constructor: [NewToolPort] followed
+// immediately by [ToolPort.PluginRESTPattern] — see [NewRestPort] for the
+// full rationale (identical here).
+func NewRestToolPort[In, Out any](name string, inCodec codex.Codec[In], outCodec codex.Codec[Out],
+	pattern RESTPattern, opts PortOptions,
+) (*ToolPort[In, Out], *rest.RouteHandle[In, Out], error) {
+	p, err := NewToolPort[In, Out](name, inCodec, outCodec, opts)
+	if err != nil {
+		return nil, nil, err
+	}
+	h, err := p.PluginRESTPattern(pattern)
+	if err != nil {
+		return nil, nil, err
+	}
+	return p, h, nil
+}
+
+// NewMCPToolPort is [NewRestToolPort]'s MCPPattern counterpart.
+func NewMCPToolPort[In, Out any](name string, inCodec codex.Codec[In], outCodec codex.Codec[Out],
+	pattern MCPPattern, opts PortOptions,
+) (*ToolPort[In, Out], *apimcp.ToolHandle[In, Out], error) {
+	p, err := NewToolPort[In, Out](name, inCodec, outCodec, opts)
+	if err != nil {
+		return nil, nil, err
+	}
+	h, err := p.PluginMCPPattern(pattern)
+	if err != nil {
+		return nil, nil, err
+	}
+	return p, h, nil
+}
+
+// patternHandle implements the unexported patternHolder interface used
+// internally by [SQLMeta] (see [SourcePort.patternHandle] for rationale).
 func (p *ToolPort[In, Out]) patternHandle(kind string) (any, bool) {
+	p.handlesMu.Lock()
+	defer p.handlesMu.Unlock()
 	v, ok := p.handles[kind]
 	return v, ok
 }
@@ -106,6 +224,8 @@ func (p *ToolPort[In, Out]) patternHandle(kind string) (any, bool) {
 // patternSpec implements the unexported patternHolder interface used by
 // [RegisterREST], [RegisterEvent], [RegisterReqReply], and [RegisterMCP].
 func (p *ToolPort[In, Out]) patternSpec(kind string) (any, bool) {
+	p.handlesMu.Lock()
+	defer p.handlesMu.Unlock()
 	v, ok := p.specs[kind]
 	return v, ok
 }

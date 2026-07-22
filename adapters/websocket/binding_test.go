@@ -55,14 +55,13 @@ var updateCodec = codex.Struct[update](
 
 func duplexHandle(t *testing.T, path string, opts ...rest.RouteOpt) ports.Socket[command, update] {
 	t.Helper()
-	port, err := ports.NewDuplexPort[command, update]("live", commandCodec, updateCodec,
-		ports.PortOptions{Patterns: []ports.Pattern{ports.SocketPattern{Path: path, Opts: opts}}})
+	port, err := ports.NewDuplexPort[command, update]("live", commandCodec, updateCodec, ports.PortOptions{})
 	if err != nil {
 		t.Fatalf("port: %v", err)
 	}
-	h, ok := ports.SocketHandle[command, update](port)
-	if !ok {
-		t.Fatal("no socket handle")
+	h, err := port.PluginSocketPattern(ports.SocketPattern{Path: path, Opts: opts})
+	if err != nil {
+		t.Fatalf("PluginSocketPattern: %v", err)
 	}
 	return h
 }
@@ -197,8 +196,8 @@ func TestDuplex_InboundFrame_SessionTagged(t *testing.T) {
 	up := &fakeUpgrader{socks: []*fakeSocket{sock}}
 
 	port, _ := ports.NewDuplexPort[command, update]("live", commandCodec, updateCodec,
-		ports.PortOptions{Patterns: []ports.Pattern{ports.SocketPattern{Path: "/live/{room}"}}, Buffer: 4})
-	handle, _ := ports.SocketHandle[command, update](port)
+		ports.PortOptions{Buffer: 4})
+	handle, _ := port.PluginSocketPattern(ports.SocketPattern{Path: "/live/{room}"})
 
 	if err := port.Bind(ctx, adapterws.DuplexSocketAdapter(mux, hub, up, handle,
 		adapterws.DuplexSocketAdapterOptions{})); err != nil {
@@ -258,27 +257,27 @@ func TestDuplex_InboundMerge_FromConnectionVars(t *testing.T) {
 
 	nonEmpty := codex.String().Refine(validate.NonEmptyString)
 	port, err := ports.NewDuplexPort[inMsg, outMsg]("live-in-merge", inCodec, outCodec, ports.PortOptions{
-		Patterns: []ports.Pattern{
-			ports.SocketPattern{
-				Path: "/live/{room}",
-				Opts: []rest.RouteOpt{
-					rest.PathParam{Name: "room", Codec: &nonEmpty},
-					rest.QueryParam{Name: "tenant", Required: true, Codec: &nonEmpty},
-					rest.HeaderParam{Name: "X-Trace", Required: true, Codec: &nonEmpty},
-				},
-				InOpts: []ports.SocketInOpt{
-					ports.NewRequiredSocketInParam("room", codex.String(), func(v inMsg) string { return v.Room }, func(v *inMsg, s string) { v.Room = s }),
-					ports.NewRequiredSocketInParam("tenant", codex.String(), func(v inMsg) string { return v.Tenant }, func(v *inMsg, s string) { v.Tenant = s }),
-					ports.NewRequiredSocketInParam("X-Trace", codex.String(), func(v inMsg) string { return v.Trace }, func(v *inMsg, s string) { v.Trace = s }),
-				},
-			},
-		},
 		Buffer: 4,
 	})
 	if err != nil {
 		t.Fatalf("port: %v", err)
 	}
-	handle, _ := ports.SocketHandle[inMsg, outMsg](port)
+	handle, err := port.PluginSocketPattern(ports.SocketPattern{
+		Path: "/live/{room}",
+		Opts: []rest.RouteOpt{
+			rest.PathParam{Name: "room", Codec: &nonEmpty},
+			rest.QueryParam{Name: "tenant", Required: true, Codec: &nonEmpty},
+			rest.HeaderParam{Name: "X-Trace", Required: true, Codec: &nonEmpty},
+		},
+		InOpts: []ports.SocketInOpt{
+			ports.NewRequiredSocketInParam("room", codex.String(), func(v inMsg) string { return v.Room }, func(v *inMsg, s string) { v.Room = s }),
+			ports.NewRequiredSocketInParam("tenant", codex.String(), func(v inMsg) string { return v.Tenant }, func(v *inMsg, s string) { v.Tenant = s }),
+			ports.NewRequiredSocketInParam("X-Trace", codex.String(), func(v inMsg) string { return v.Trace }, func(v *inMsg, s string) { v.Trace = s }),
+		},
+	})
+	if err != nil {
+		t.Fatalf("PluginSocketPattern: %v", err)
+	}
 	if err := port.Bind(ctx, adapterws.DuplexSocketAdapter(mux, hub, up, handle, adapterws.DuplexSocketAdapterOptions{})); err != nil {
 		t.Fatalf("bind: %v", err)
 	}
@@ -351,8 +350,11 @@ func TestDuplex_DecodeFailure_ConnectionStaysOpen(t *testing.T) {
 	obs := &wsObserver{}
 
 	port, _ := ports.NewDuplexPort[command, update]("live3", commandCodec, updateCodec,
-		ports.PortOptions{Patterns: []ports.Pattern{ports.SocketPattern{Path: "/live"}}, Buffer: 4})
-	handle, _ := ports.SocketHandle[command, update](port)
+		ports.PortOptions{Buffer: 4})
+	handle, err := port.PluginSocketPattern(ports.SocketPattern{Path: "/live"})
+	if err != nil {
+		t.Fatalf("PluginSocketPattern: %v", err)
+	}
 	_ = port.Bind(ctx, adapterws.DuplexSocketAdapter(mux, hub, up, handle,
 		adapterws.DuplexSocketAdapterOptions{Observer: obs}))
 	time.Sleep(20 * time.Millisecond)
@@ -403,8 +405,11 @@ func TestDuplex_TargetedAndBroadcast(t *testing.T) {
 	up := &fakeUpgrader{socks: []*fakeSocket{sockA, sockB}}
 
 	port, _ := ports.NewDuplexPort[command, update]("live4", commandCodec, updateCodec,
-		ports.PortOptions{Patterns: []ports.Pattern{ports.SocketPattern{Path: "/live"}}, Buffer: 8})
-	handle, _ := ports.SocketHandle[command, update](port)
+		ports.PortOptions{Buffer: 8})
+	handle, err := port.PluginSocketPattern(ports.SocketPattern{Path: "/live"})
+	if err != nil {
+		t.Fatalf("PluginSocketPattern: %v", err)
+	}
 	_ = port.Bind(ctx, adapterws.DuplexSocketAdapter(mux, hub, up, handle,
 		adapterws.DuplexSocketAdapterOptions{}))
 	time.Sleep(20 * time.Millisecond)
@@ -464,23 +469,23 @@ func TestDuplex_OutboundMerge_TargetedAndBroadcast(t *testing.T) {
 
 	nonEmpty := codex.String().Refine(validate.NonEmptyString)
 	port, err := ports.NewDuplexPort[inMsg, outMsg]("live-out-merge", inCodec, outCodec, ports.PortOptions{
-		Patterns: []ports.Pattern{
-			ports.SocketPattern{
-				Path: "/live/{room}",
-				Opts: []rest.RouteOpt{
-					rest.PathParam{Name: "room", Codec: &nonEmpty},
-				},
-				OutOpts: []ports.SocketOutOpt{
-					ports.NewRequiredSocketOutParam("room", codex.String(), func(v outMsg) string { return v.Room }, func(v *outMsg, s string) { v.Room = s }),
-				},
-			},
-		},
 		Buffer: 8,
 	})
 	if err != nil {
 		t.Fatalf("port: %v", err)
 	}
-	handle, _ := ports.SocketHandle[inMsg, outMsg](port)
+	handle, err := port.PluginSocketPattern(ports.SocketPattern{
+		Path: "/live/{room}",
+		Opts: []rest.RouteOpt{
+			rest.PathParam{Name: "room", Codec: &nonEmpty},
+		},
+		OutOpts: []ports.SocketOutOpt{
+			ports.NewRequiredSocketOutParam("room", codex.String(), func(v outMsg) string { return v.Room }, func(v *outMsg, s string) { v.Room = s }),
+		},
+	})
+	if err != nil {
+		t.Fatalf("PluginSocketPattern: %v", err)
+	}
 	if err := port.Bind(ctx, adapterws.DuplexSocketAdapter(mux, hub, up, handle, adapterws.DuplexSocketAdapterOptions{})); err != nil {
 		t.Fatalf("bind: %v", err)
 	}
@@ -548,33 +553,33 @@ func TestDuplex_Merge_NestedGobFormat(t *testing.T) {
 
 	nonEmpty := codex.String().Refine(validate.NonEmptyString)
 	port, err := ports.NewDuplexPort[msg, msg]("live-gob-merge", msgCodec, msgCodec, ports.PortOptions{
-		Patterns: []ports.Pattern{
-			ports.SocketPattern{
-				Path:         "/live/{room}",
-				CustomFormat: format.Gob(msgCodec),
-				Opts: []rest.RouteOpt{
-					rest.PathParam{Name: "room", Codec: &nonEmpty},
-					rest.QueryParam{Name: "tenant", Required: true, Codec: &nonEmpty},
-					rest.HeaderParam{Name: "X-Trace", Required: true, Codec: &nonEmpty},
-				},
-				InOpts: []ports.SocketInOpt{
-					ports.NewRequiredSocketInParam("room", codex.String(), func(v msg) string { return v.Meta.Room }, func(v *msg, s string) { v.Meta.Room = s }),
-					ports.NewRequiredSocketInParam("tenant", codex.String(), func(v msg) string { return v.Meta.Tenant }, func(v *msg, s string) { v.Meta.Tenant = s }),
-					ports.NewRequiredSocketInParam("X-Trace", codex.String(), func(v msg) string { return v.Meta.Trace }, func(v *msg, s string) { v.Meta.Trace = s }),
-				},
-				OutOpts: []ports.SocketOutOpt{
-					ports.NewRequiredSocketOutParam("room", codex.String(), func(v msg) string { return v.Meta.Room }, func(v *msg, s string) { v.Meta.Room = s }),
-					ports.NewRequiredSocketOutParam("tenant", codex.String(), func(v msg) string { return v.Meta.Tenant }, func(v *msg, s string) { v.Meta.Tenant = s }),
-					ports.NewRequiredSocketOutParam("X-Trace", codex.String(), func(v msg) string { return v.Meta.Trace }, func(v *msg, s string) { v.Meta.Trace = s }),
-				},
-			},
-		},
 		Buffer: 4,
 	})
 	if err != nil {
 		t.Fatalf("port: %v", err)
 	}
-	handle, _ := ports.SocketHandle[msg, msg](port)
+	handle, err := port.PluginSocketPattern(ports.SocketPattern{
+		Path:         "/live/{room}",
+		CustomFormat: format.Gob(msgCodec),
+		Opts: []rest.RouteOpt{
+			rest.PathParam{Name: "room", Codec: &nonEmpty},
+			rest.QueryParam{Name: "tenant", Required: true, Codec: &nonEmpty},
+			rest.HeaderParam{Name: "X-Trace", Required: true, Codec: &nonEmpty},
+		},
+		InOpts: []ports.SocketInOpt{
+			ports.NewRequiredSocketInParam("room", codex.String(), func(v msg) string { return v.Meta.Room }, func(v *msg, s string) { v.Meta.Room = s }),
+			ports.NewRequiredSocketInParam("tenant", codex.String(), func(v msg) string { return v.Meta.Tenant }, func(v *msg, s string) { v.Meta.Tenant = s }),
+			ports.NewRequiredSocketInParam("X-Trace", codex.String(), func(v msg) string { return v.Meta.Trace }, func(v *msg, s string) { v.Meta.Trace = s }),
+		},
+		OutOpts: []ports.SocketOutOpt{
+			ports.NewRequiredSocketOutParam("room", codex.String(), func(v msg) string { return v.Meta.Room }, func(v *msg, s string) { v.Meta.Room = s }),
+			ports.NewRequiredSocketOutParam("tenant", codex.String(), func(v msg) string { return v.Meta.Tenant }, func(v *msg, s string) { v.Meta.Tenant = s }),
+			ports.NewRequiredSocketOutParam("X-Trace", codex.String(), func(v msg) string { return v.Meta.Trace }, func(v *msg, s string) { v.Meta.Trace = s }),
+		},
+	})
+	if err != nil {
+		t.Fatalf("PluginSocketPattern: %v", err)
+	}
 	if err := port.Bind(ctx, adapterws.DuplexSocketAdapter(mux, hub, up, handle, adapterws.DuplexSocketAdapterOptions{})); err != nil {
 		t.Fatalf("bind: %v", err)
 	}
@@ -660,8 +665,11 @@ func TestBroadcast_SlowClient_FrameDropped(t *testing.T) {
 	var mu sync.Mutex
 	var seen []error
 	port, _ := ports.NewSinkPort[update]("updates", updateCodec,
-		ports.PortOptions{Patterns: []ports.Pattern{ports.SocketPattern{Path: "/updates"}}})
-	handle, _ := ports.SocketHandle[struct{}, update](port)
+		ports.PortOptions{})
+	handle, err := port.PluginSocketPattern(ports.SocketPattern{Path: "/updates"})
+	if err != nil {
+		t.Fatalf("PluginSocketPattern: %v", err)
+	}
 
 	// Block the writer goroutine by pre-filling: use a socket whose
 	// WriteMessage blocks until released.
@@ -752,8 +760,11 @@ func TestDuplex_UnknownSession_Error(t *testing.T) {
 	up := &fakeUpgrader{}
 
 	port, _ := ports.NewDuplexPort[command, update]("live5", commandCodec, updateCodec,
-		ports.PortOptions{Patterns: []ports.Pattern{ports.SocketPattern{Path: "/live"}}, Buffer: 4})
-	handle, _ := ports.SocketHandle[command, update](port)
+		ports.PortOptions{Buffer: 4})
+	handle, err := port.PluginSocketPattern(ports.SocketPattern{Path: "/live"})
+	if err != nil {
+		t.Fatalf("PluginSocketPattern: %v", err)
+	}
 	_ = port.Bind(ctx, adapterws.DuplexSocketAdapter(mux, hub, up, handle,
 		adapterws.DuplexSocketAdapterOptions{}))
 
@@ -786,8 +797,11 @@ func TestIngest_CtxCancel_ClosesSessions(t *testing.T) {
 	up := &fakeUpgrader{socks: []*fakeSocket{sock}}
 
 	port, _ := ports.NewSourcePort[command]("cmds", commandCodec,
-		ports.PortOptions{Patterns: []ports.Pattern{ports.SocketPattern{Path: "/cmds"}}, Buffer: 4})
-	handle, _ := ports.SocketHandle[command, struct{}](port)
+		ports.PortOptions{Buffer: 4})
+	handle, err := port.PluginSocketPattern(ports.SocketPattern{Path: "/cmds"})
+	if err != nil {
+		t.Fatalf("PluginSocketPattern: %v", err)
+	}
 
 	done := make(chan struct{})
 	adapter := adapterws.IngestSocketAdapter(mux, hub, up, handle,
@@ -858,8 +872,11 @@ func TestGorillaLoopback_RoundTrip(t *testing.T) {
 	})
 
 	port, _ := ports.NewDuplexPort[command, update]("loop", commandCodec, updateCodec,
-		ports.PortOptions{Patterns: []ports.Pattern{ports.SocketPattern{Path: "/loop"}}, Buffer: 4})
-	handle, _ := ports.SocketHandle[command, update](port)
+		ports.PortOptions{Buffer: 4})
+	handle, err := port.PluginSocketPattern(ports.SocketPattern{Path: "/loop"})
+	if err != nil {
+		t.Fatalf("PluginSocketPattern: %v", err)
+	}
 	_ = port.Bind(ctx, adapterws.DuplexSocketAdapter(mux, hub, up, handle,
 		adapterws.DuplexSocketAdapterOptions{}))
 	time.Sleep(20 * time.Millisecond)
@@ -919,8 +936,8 @@ func ExampleDuplexSocketAdapter() {
 	up := &fakeUpgrader{socks: []*fakeSocket{sock}}
 
 	port, _ := ports.NewDuplexPort[command, update]("example", commandCodec, updateCodec,
-		ports.PortOptions{Patterns: []ports.Pattern{ports.SocketPattern{Path: "/live/{room}"}}, Buffer: 4})
-	handle, _ := ports.SocketHandle[command, update](port)
+		ports.PortOptions{Buffer: 4})
+	handle, _ := port.PluginSocketPattern(ports.SocketPattern{Path: "/live/{room}"})
 	_ = port.Bind(ctx, adapterws.DuplexSocketAdapter(mux, hub, up, handle,
 		adapterws.DuplexSocketAdapterOptions{}))
 	time.Sleep(20 * time.Millisecond)

@@ -3,8 +3,10 @@ package ports
 import (
 	"context"
 	"errors"
+	"fmt"
 	"sync"
 
+	"github.com/DaniDeer/go-codex/api/rest"
 	"github.com/DaniDeer/go-codex/codex"
 	"github.com/DaniDeer/go-codex/stats"
 	gstream "github.com/DaniDeer/go-codex/stream"
@@ -55,11 +57,10 @@ type DuplexAdapter[In, Out any] interface {
 //
 //	// domain — no adapter imports
 //	var Live = codex.Must(ports.NewDuplexPort[Command, Update]("live",
-//	    commandCodec, updateCodec, ports.PortOptions{
-//	        Patterns: []ports.Pattern{ports.SocketPattern{Path: "/live/{room}"}},
-//	    }))
+//	    commandCodec, updateCodec, ports.PortOptions{}))
 //
-//	// main.go
+//	// main.go — plug in the Pattern, get the handle, bind
+//	handle := codex.Must(domain.Live.PluginSocketPattern(ports.SocketPattern{Path: "/live/{room}"}))
 //	must0(domain.Live.Bind(ctx, websocket.DuplexSocketAdapter(mux, upgrader, handle, opts)))
 //	commands := domain.Live.Inbound(ctx)      // Stream[Framed[Command]]
 //	go app.Go("live-feed", func(ctx) error {  // targeted replies + broadcasts
@@ -81,10 +82,14 @@ type DuplexPort[In, Out any] struct {
 	inCodec  codex.Codec[In]
 	outCodec codex.Codec[Out]
 	params   []IOParam
-	handles  map[string]any
-	specs    map[string]any
 	obs      stats.Observer
 	buffer   int
+
+	restBuilder *rest.Builder
+
+	handlesMu sync.Mutex
+	handles   map[string]any
+	specs     map[string]any
 
 	mu      sync.Mutex
 	adapter DuplexAdapter[In, Out]
@@ -97,44 +102,73 @@ type DuplexPort[In, Out any] struct {
 }
 
 // NewDuplexPort creates a DuplexPort with the given name and codec pair:
-// inCodec validates inbound frames, outCodec outbound frames. Any
-// [SocketPattern] in opts.Patterns is built eagerly into a handle
-// retrievable via [SocketHandle]. Returns [PatternRegisterError] if a
-// declared Pattern fails to build or is not supported on a DuplexPort.
+// inCodec validates inbound frames, outCodec outbound frames. opts
+// configures observer, buffer, and (optionally) a shared RESTBuilder
+// reference for a later [PluginSocketPattern] call.
 func NewDuplexPort[In, Out any](
 	name string,
 	inCodec codex.Codec[In],
 	outCodec codex.Codec[Out],
 	opts PortOptions,
 ) (*DuplexPort[In, Out], error) {
-	handles, specs, err := buildDuplexPatternHandles(name, opts.Patterns, inCodec, outCodec, opts.RESTBuilder)
-	if err != nil {
-		return nil, err
-	}
 	return &DuplexPort[In, Out]{
-		name:     name,
-		inCodec:  inCodec,
-		outCodec: outCodec,
-		params:   opts.Params,
-		handles:  handles,
-		specs:    specs,
-		obs:      opts.Observer,
-		buffer:   opts.Buffer,
-		inCh:     make(chan Framed[In], opts.Buffer),
-		inErrCh:  make(chan error, opts.Buffer),
-		outCh:    make(chan Framed[Out], opts.Buffer),
-		outErr:   make(chan error, opts.Buffer),
+		name:        name,
+		inCodec:     inCodec,
+		outCodec:    outCodec,
+		params:      opts.Params,
+		obs:         opts.Observer,
+		buffer:      opts.Buffer,
+		restBuilder: opts.RESTBuilder,
+		handles:     map[string]any{},
+		specs:       map[string]any{},
+		inCh:        make(chan Framed[In], opts.Buffer),
+		inErrCh:     make(chan error, opts.Buffer),
+		outCh:       make(chan Framed[Out], opts.Buffer),
+		outErr:      make(chan error, opts.Buffer),
 	}, nil
 }
 
-// patternHandle implements the unexported patternHolder interface.
+// PluginSocketPattern registers pattern — the only Pattern kind a DuplexPort
+// accepts — and returns the resulting [Socket] directly. Returns
+// [PatternRegisterError] if pattern was already plugged in.
+func (p *DuplexPort[In, Out]) PluginSocketPattern(pattern SocketPattern) (Socket[In, Out], error) {
+	p.handlesMu.Lock()
+	if _, exists := p.handles[patternKindSocket]; exists {
+		p.handlesMu.Unlock()
+		return Socket[In, Out]{}, PatternRegisterError{Port: p.name, Kind: patternKindSocket, Err: fmt.Errorf("pattern of kind %q already plugged in", patternKindSocket)}
+	}
+	p.handlesMu.Unlock()
+
+	handles, specs, err := buildDuplexPatternHandles(p.name, []Pattern{pattern}, p.inCodec, p.outCodec, p.restBuilder)
+	if err != nil {
+		return Socket[In, Out]{}, err
+	}
+
+	p.handlesMu.Lock()
+	for k, v := range handles {
+		p.handles[k] = v
+	}
+	for k, v := range specs {
+		p.specs[k] = v
+	}
+	p.handlesMu.Unlock()
+	h, _ := handles[patternKindSocket].(Socket[In, Out])
+	return h, nil
+}
+
+// patternHandle implements the unexported patternHolder interface used
+// internally by [SQLMeta] (see [SourcePort.patternHandle] for rationale).
 func (p *DuplexPort[In, Out]) patternHandle(kind string) (any, bool) {
+	p.handlesMu.Lock()
+	defer p.handlesMu.Unlock()
 	v, ok := p.handles[kind]
 	return v, ok
 }
 
 // patternSpec implements the unexported patternHolder interface.
 func (p *DuplexPort[In, Out]) patternSpec(kind string) (any, bool) {
+	p.handlesMu.Lock()
+	defer p.handlesMu.Unlock()
 	v, ok := p.specs[kind]
 	return v, ok
 }

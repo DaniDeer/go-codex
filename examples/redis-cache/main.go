@@ -134,20 +134,19 @@ func main() {
 	// Opts declares a per-key-variable codec: "id" must be all-digits —
 	// Cache.BuildKey rejects malformed values BEFORE any Redis round-trip.
 	userPort, err := ports.NewIOPort[UserQuery, User]("user-cache",
-		queryCodec, userCodec, ports.PortOptions{
-			Patterns: []ports.Pattern{
-				ports.CachePattern{
-					Key: "user:{id}", TTL: 15 * time.Minute,
-					Opts: []ports.CacheOpt{
-						ports.CacheKeyParam{Name: "id"}.WithCodec(numericIDCodec),
-					},
-				},
-			},
-		})
+		queryCodec, userCodec, ports.PortOptions{})
 	if err != nil {
 		panic(err)
 	}
-	cache, _ := ports.CacheHandle[User](userPort)
+	cache, err := userPort.PluginCachePattern(ports.CachePattern{
+		Key: "user:{id}", TTL: 15 * time.Minute,
+		Opts: []ports.CacheOpt{
+			ports.CacheKeyParam{Name: "id"}.WithCodec(numericIDCodec),
+		},
+	})
+	if err != nil {
+		panic(err)
+	}
 	fmt.Printf("declared: key=%q ttl=%s\n", cache.Key, cache.TTL)
 
 	// ── Section 1: write-through with SetAdapter ─────────────────────────

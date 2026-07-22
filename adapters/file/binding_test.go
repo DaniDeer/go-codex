@@ -542,19 +542,16 @@ func TestReadAdapter_HappyPath_ViaFilePattern(t *testing.T) {
 		codex.RequiredField("id", codex.String(), func(x reading) string { return x.ID }, func(x *reading, v string) { x.ID = v }),
 	)
 
-	// Declare the file on the port itself — FilePattern with the port's
-	// RESPONSE codec; the handle comes back out via FileHandle.
-	p, err := ports.NewIOPort[reading, config]("calibration", readingCodec, c, ports.PortOptions{
-		Patterns: []ports.Pattern{
-			ports.FilePattern{Path: filepath.Join(dir, "{id}.json")},
-		},
-	})
+	// Declare the port's structural shape — the FilePattern (with the
+	// port's RESPONSE codec) is plugged in next, returning the handle
+	// directly.
+	p, err := ports.NewIOPort[reading, config]("calibration", readingCodec, c, ports.PortOptions{})
 	if err != nil {
 		t.Fatalf("construct port: %v", err)
 	}
-	f, ok := ports.FileHandle[config](p)
-	if !ok {
-		t.Fatal("want FileHandle to be present")
+	f, err := p.PluginFilePattern(ports.FilePattern{Path: filepath.Join(dir, "{id}.json")})
+	if err != nil {
+		t.Fatalf("PluginFilePattern: %v", err)
 	}
 	if err := p.Bind(ctx, fileadapter.ReadAdapter(f,
 		func(r reading) map[string]string { return map[string]string{"id": r.ID} },

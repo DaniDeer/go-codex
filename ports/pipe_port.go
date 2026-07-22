@@ -4,10 +4,6 @@ import (
 	"context"
 	"sync"
 
-	"github.com/DaniDeer/go-codex/api/events"
-	apimcp "github.com/DaniDeer/go-codex/api/mcp"
-	"github.com/DaniDeer/go-codex/api/reqreply"
-	"github.com/DaniDeer/go-codex/api/rest"
 	"github.com/DaniDeer/go-codex/codex"
 	"github.com/DaniDeer/go-codex/stats"
 	gstream "github.com/DaniDeer/go-codex/stream"
@@ -64,16 +60,6 @@ type PipePort[T any] struct {
 	obs    stats.Observer
 	buffer int
 
-	// Builders are stored (not used eagerly — the pipe itself builds no
-	// handle) so [InputPortWithPatterns]/[OutputPortWithPatterns] can
-	// forward the SAME shared builder every other Pattern-carrying port in
-	// the service registers against, instead of silently falling back to a
-	// private single-use builder per sub-port.
-	restBuilder     *rest.Builder
-	eventBuilder    *events.Builder
-	reqReplyBuilder *reqreply.Builder
-	mcpBuilder      *apimcp.Builder
-
 	mu        sync.Mutex
 	in        map[string]*SourcePort[T]
 	out       map[string]*SinkPort[T]
@@ -91,32 +77,26 @@ type PipePort[T any] struct {
 }
 
 // NewPipePort creates a PipePort with the given name and payload codec.
-// opts.Buffer defaults to 8 when <= 0. opts.Patterns are NOT built
-// eagerly (the pipe itself generates no schema — schema comes from the
-// individual SourcePort/SinkPort ports declared via InputPort/OutputPort).
-// opts.RESTBuilder/EventBuilder/ReqReplyBuilder/MCPBuilder ARE stored (even
-// though nothing is registered yet) so [InputPortWithPatterns]/
-// [OutputPortWithPatterns] can later forward the same shared builder every
-// other Pattern-carrying port in the service registers against.
+// opts.Buffer defaults to 8 when <= 0. The pipe itself carries no
+// communication Pattern and builds no handle — it is a computation-only
+// stage boundary (see the package doc comment); IO boundaries are plain
+// [SourcePort]/[SinkPort]/[IOPort]/[ToolPort] declarations plugged into a
+// pipeline via [Chain]/[ChainStream].
 func NewPipePort[T any](name string, codec codex.Codec[T], opts PortOptions) (*PipePort[T], error) {
 	buf := opts.Buffer
 	if buf <= 0 {
 		buf = 8
 	}
 	return &PipePort[T]{
-		name:            name,
-		codec:           codec,
-		params:          opts.Params,
-		obs:             opts.Observer,
-		buffer:          buf,
-		restBuilder:     opts.RESTBuilder,
-		eventBuilder:    opts.EventBuilder,
-		reqReplyBuilder: opts.ReqReplyBuilder,
-		mcpBuilder:      opts.MCPBuilder,
-		in:              map[string]*SourcePort[T]{},
-		out:             map[string]*SinkPort[T]{},
-		pushCh:          make(chan T, buf),
-		doneCh:          make(chan struct{}),
+		name:   name,
+		codec:  codec,
+		params: opts.Params,
+		obs:    opts.Observer,
+		buffer: buf,
+		in:     map[string]*SourcePort[T]{},
+		out:    map[string]*SinkPort[T]{},
+		pushCh: make(chan T, buf),
+		doneCh: make(chan struct{}),
 	}, nil
 }
 
@@ -166,68 +146,16 @@ func (p *PipePort[T]) OutputPort(name string) *SinkPort[T] {
 	return sp
 }
 
-// InputPortWithPatterns is [InputPort], but the underlying [SourcePort] is
-// constructed with the given patterns — the only way to bind a protocol
-// adapter that needs a Pattern-derived handle (e.g. mqtt5.SubscribeAdapter
-// needing [EventHandle], nethttp's SSE/ingest adapters needing [RESTHandle])
-// through PipePort's IO-bridging use case. Plain [InputPort] always builds
-// its sub-port with zero Patterns, so [EventHandle]/[RESTHandle]/
-// [ReqReplyHandle] on it always return (nil, false) — this is the fix.
-//
-// The sub-port is constructed with the SAME RESTBuilder/EventBuilder/
-// ReqReplyBuilder/MCPBuilder supplied to [NewPipePort]'s [PortOptions] (if
-// any) — a Pattern requiring a shared, application-wide builder (so its
-// channel/route appears in that builder's printed OpenAPI/AsyncAPI spec
-// alongside every other hand-declared and port-declared boundary) registers
-// against the SAME builder here, not a private single-use one.
-//
-// Same "same name, same instance" rule as InputPort: a name already
-// registered (by either InputPort or InputPortWithPatterns) returns the
-// existing port, and patterns is ignored on that call — declare patterns
-// on the FIRST call for a given name.
-//
-// Unlike InputPort, this can fail: a malformed Pattern (bad path/topic
-// template, duplicate registration on a shared Builder, etc.) returns the
-// same [PatternRegisterError] [NewSourcePort] would — fail-fast, matching
-// every other Pattern-carrying port constructor in this package.
-func (p *PipePort[T]) InputPortWithPatterns(name string, patterns []Pattern) (*SourcePort[T], error) {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	if sp, ok := p.in[name]; ok {
-		return sp, nil
-	}
-	sp, err := NewSourcePort[T](p.name+"/in/"+name, p.codec, PortOptions{
-		Buffer: p.buffer, Params: p.params, Observer: p.obs, Patterns: patterns,
-		RESTBuilder: p.restBuilder, EventBuilder: p.eventBuilder,
-		ReqReplyBuilder: p.reqReplyBuilder, MCPBuilder: p.mcpBuilder,
-	})
-	if err != nil {
-		return nil, err
-	}
-	p.in[name] = sp
-	return sp, nil
-}
-
-// OutputPortWithPatterns is [OutputPort], but the underlying [SinkPort] is
-// constructed with the given patterns — see [InputPortWithPatterns] for the
-// full rationale (including shared-builder forwarding) and same-name/error
-// semantics (identical here).
-func (p *PipePort[T]) OutputPortWithPatterns(name string, patterns []Pattern) (*SinkPort[T], error) {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	if sp, ok := p.out[name]; ok {
-		return sp, nil
-	}
-	sp, err := NewSinkPort[T](p.name+"/out/"+name, p.codec, PortOptions{
-		Buffer: p.buffer, Params: p.params, Observer: p.obs, Patterns: patterns,
-		RESTBuilder: p.restBuilder, EventBuilder: p.eventBuilder,
-		ReqReplyBuilder: p.reqReplyBuilder, MCPBuilder: p.mcpBuilder,
-	})
-	if err != nil {
-		return nil, err
-	}
-	p.out[name] = sp
-	return sp, nil
+// Feed drains src into this pipe's [Push] — the counterpart to [Stream],
+// giving PipePort the same Feed shape [SinkPort.Feed] has, so it satisfies
+// the [chainSink] interface [Chain]/[ChainStream] use for their `to`
+// parameter. BLOCKS until src terminates or ctx is cancelled — matching
+// [SinkPort.Feed]'s contract exactly; callers that need this non-blocking
+// (e.g. [Chain]/[ChainStream] themselves) run it in a goroutine.
+func (p *PipePort[T]) Feed(ctx context.Context, src gstream.Stream[T]) {
+	gstream.Drain(ctx, src, func(dctx context.Context, v T) error {
+		return p.Push(dctx, v)
+	}, nil, gstream.DrainOptions{})
 }
 
 // Connect starts the internal hub goroutine that fans items from all input
@@ -413,30 +341,57 @@ func (p *PipePort[T]) Stream(ctx context.Context) gstream.Stream[T] {
 	return gstream.From(ctx, ch)
 }
 
-// chainWire is the shared internal engine behind [Chain] and [ChainStream]:
-// drain transform(from.Stream(ctx)) into to.Push. Both public functions
-// call this AFTER recording their own [ChainEdge] (with the correct Kind
-// and function identity for that entry point) — see [PipelineSpec], which
-// reads recorded edges back out via [PipeSpecSource].
-func chainWire[In, Out any](
-	ctx context.Context,
-	from *PipePort[In],
-	transform func(gstream.Stream[In]) gstream.Stream[Out],
-	to *PipePort[Out],
-) {
-	out := transform(from.Stream(ctx))
-	go gstream.Drain(ctx, out, func(_ context.Context, v Out) error {
-		return to.Push(ctx, v)
-	}, nil, gstream.DrainOptions{})
+// chainSource is anything [Chain]/[ChainStream] can read a stream FROM —
+// satisfied by [*SourcePort[T]] (ingest a boundary directly into a
+// pipeline) and [*PipePort[T]] (chain two computation stages together);
+// both already implement Stream. Unexported: callers only ever pass an
+// existing port value, never implement this themselves.
+type chainSource[T any] interface {
+	Name() string
+	Stream(ctx context.Context) gstream.Stream[T]
 }
 
-// ChainStream wires two PipePorts together through an arbitrary stream
+// chainSink is anything [Chain]/[ChainStream] can drain a transformed
+// stream INTO — satisfied by [*SinkPort[T]] (deliver a pipeline's output
+// straight to an egress boundary) and [*PipePort[T]] (chain two computation
+// stages together); both already implement Feed. Unexported: callers only
+// ever pass an existing port value, never implement this themselves.
+type chainSink[T any] interface {
+	Name() string
+	Feed(ctx context.Context, src gstream.Stream[T])
+}
+
+// chainWire is the shared internal engine behind [Chain] and [ChainStream]:
+// run transform(from.Stream(ctx)) into to.Feed, in a background goroutine
+// (to.Feed blocks until the stream terminates — see [SinkPort.Feed]/
+// [PipePort.Feed] — so Chain/ChainStream themselves stay non-blocking,
+// registering the wiring and returning immediately). Both public functions
+// call this AFTER recording their own [ChainEdge] (with the correct Kind
+// and function identity for that entry point, when from is a *PipePort —
+// see [PipelineSpec], which reads recorded edges back out via
+// [PipeSpecSource]; a plain [SourcePort]/[SinkPort] boundary records no
+// edge, it just appears as its own port step, per [PipelineSpec]'s widened
+// [PipeSpecSource]).
+func chainWire[In, Out any](
+	ctx context.Context,
+	from chainSource[In],
+	transform func(gstream.Stream[In]) gstream.Stream[Out],
+	to chainSink[Out],
+) {
+	out := transform(from.Stream(ctx))
+	go to.Feed(ctx, out)
+}
+
+// ChainStream wires a [chainSource] (a [*SourcePort] boundary, ingesting
+// directly into a pipeline, or a [*PipePort] computation stage) into a
+// [chainSink] (a [*SinkPort] boundary, delivering a pipeline's output
+// straight out, or a [*PipePort] stage) through an arbitrary stream
 // transform — the GENERAL primitive for connecting pipeline stages, of
 // which [Chain] is the single-Map special case. Where Chain wraps exactly
 // one value-mapping function func(In) (Out, error), ChainStream accepts
 // any gstream.Stream[In] -> gstream.Stream[Out] transform, so a multi-step
-// sub-pipeline (several Map/Filter/etc. calls) connects two PipePorts with
-// the SAME call shape as a single-step one — no need for a hand-written
+// sub-pipeline (several Map/Filter/etc. calls) connects two stages with the
+// SAME call shape as a single-step one — no need for a hand-written
 // wrapper function that reinvents Chain's (ctx, from, to) signature:
 //
 //	// A stage transition needing three sequential steps — build the
@@ -448,54 +403,69 @@ func chainWire[In, Out any](
 //	    return gstream.Map(ctx, s3, annotate, gstream.MapOptions{})
 //	}, Calibrated)
 //
-// ChainStream records a [ChainEdge] on from (Kind "chainStream", Func
-// derived from transform via reflection — a real, if sometimes
-// closure-opaque, Go function identity) so [PipelineSpec] can describe this
-// connection without a hand-typed description. This edge-recording call is
-// bracketed in a "pipe.chain" [stats.TraceObserver] span when the resolved
-// observer supports it (see [recordChainEdgeWithObserver]).
+//	// A boundary port at either end reads the SAME way, making the entire
+//	// pipeline's data flow visible top-to-bottom in the declaration:
+//	ports.ChainStream(ctx, Sensors, decodeAndValidate, Params)     // SourcePort -> PipePort
+//	ports.ChainStream(ctx, Saved, filterAndAlert, Alerts)          // PipePort -> SinkPort
 //
-// Same ordering rule as Chain: must be called before from's [Connect] (it
+// When from is a *PipePort, ChainStream records a [ChainEdge] on it (Kind
+// "chainStream", Func derived from transform via reflection — a real, if
+// sometimes closure-opaque, Go function identity) so [PipelineSpec] can
+// describe this connection without a hand-typed description. This
+// edge-recording call is bracketed in a "pipe.chain" [stats.TraceObserver]
+// span when the resolved observer supports it (see
+// [recordChainEdgeWithObserver]). When from is a *SourcePort (no edges to
+// record — it is a boundary, not a chained stage), no edge is recorded;
+// [PipelineSpec] still describes it via its own Name()/BoundAdapters().
+//
+// Same ordering rule as Chain: must be called before from's Connect (it
 // registers a [Stream] consumer). It may be called before or after to's
-// Connect — items buffer in to's push channel until to.Connect starts
-// draining them. Errors from the drain loop are silently dropped, matching
-// [gstream.Drain]'s nil-onError behavior — surface transform failures on
-// the returned stream's Errors channel if that matters to your pipeline.
+// Connect — items buffer in to's push channel (PipePort) or block on Feed
+// (SinkPort/PipePort) either way. Errors from the drain loop are silently
+// dropped, matching [gstream.Drain]'s nil-onError behavior — surface
+// transform failures on the returned stream's Errors channel if that
+// matters to your pipeline.
 func ChainStream[In, Out any](
 	ctx context.Context,
-	from *PipePort[In],
+	from chainSource[In],
 	transform func(gstream.Stream[In]) gstream.Stream[Out],
-	to *PipePort[Out],
+	to chainSink[Out],
 ) {
-	recordChainEdgeWithObserver(ctx, from, to, ChainEdge{Kind: "chainStream", To: to.Name(), Func: funcName(transform)})
+	if fp, ok := any(from).(*PipePort[In]); ok {
+		recordChainEdgeWithObserver(ctx, fp, to, ChainEdge{Kind: "chainStream", To: to.Name(), Func: funcName(transform)})
+	}
 	chainWire(ctx, from, transform, to)
 }
 
-// Chain wires two PipePorts together through a single value-mapping
-// function — the common case of [ChainStream], for when a stage transition
-// needs exactly one transform:
+// Chain wires a [chainSource] into a [chainSink] through a single
+// value-mapping function — the common case of [ChainStream], for when a
+// stage transition needs exactly one transform:
 //
 //	// Without Chain:
 //	validated := gstream.Map(ctx, Raw.Stream(ctx), validate, gstream.MapOptions{})
-//	go gstream.Drain(ctx, validated, func(_ context.Context, v Validated) error {
-//	    return Clean.Push(ctx, v)
-//	}, nil, gstream.DrainOptions{})
+//	go Clean.Feed(ctx, validated)
 //
 //	// With Chain:
 //	ports.Chain(ctx, Raw, validate, Clean)
 //
-// Chain records a [ChainEdge] on from (Kind "chain", Func derived from fn
-// via reflection) so [PipelineSpec] can describe this connection without a
-// hand-typed description.
+//	// A boundary port works identically — the SAME call shape whether
+//	// from/to is a PipePort or a plain SourcePort/SinkPort:
+//	ports.Chain(ctx, Sensors, buildInsertParams, Params) // SourcePort -> PipePort
+//
+// When from is a *PipePort, Chain records a [ChainEdge] on it (Kind
+// "chain", Func derived from fn via reflection) so [PipelineSpec] can
+// describe this connection without a hand-typed description.
 //
 // When a stage needs more than one step, use [ChainStream] directly instead
 // — it accepts any stream transform, not just a single Map.
 //
 // Same ordering rule as [ChainStream]: must be called before from's
-// [PipePort.Connect] (registers a [Stream] consumer); may be called before
-// or after to's Connect (Push buffers either way).
-func Chain[In, Out any](ctx context.Context, from *PipePort[In], fn func(In) (Out, error), to *PipePort[Out]) {
-	recordChainEdgeWithObserver(ctx, from, to, ChainEdge{Kind: "chain", To: to.Name(), Func: funcName(fn)})
+// Connect (registers a [Stream] consumer); may be called before or after
+// to's Connect/Bind.
+func Chain[In, Out any](ctx context.Context, from chainSource[In], fn func(In) (Out, error), to chainSink[Out]) {
+	if fp, ok := any(from).(*PipePort[In]); ok {
+		recordChainEdgeWithObserver(ctx, fp, to, ChainEdge{Kind: "chain", To: to.Name(), Func: funcName(fn)})
+	}
 	chainWire(ctx, from, func(s gstream.Stream[In]) gstream.Stream[Out] {
 		return gstream.Map(ctx, s, fn, gstream.MapOptions{})
 	}, to)

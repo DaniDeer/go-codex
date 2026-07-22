@@ -15,17 +15,13 @@ import (
 
 // CF3: CachePattern + CustomFormat(Gob) round-trips through the cache handle.
 func TestCachePattern_CustomFormat_Gob(t *testing.T) {
-	p, err := ports.NewIOPort[int, cfgItem]("cache-gob", intCodec, cfgCodec, ports.PortOptions{
-		Patterns: []ports.Pattern{
-			ports.CachePattern{Key: "item:{id}", CustomFormat: format.Gob(cfgCodec)},
-		},
-	})
+	p, err := ports.NewIOPort[int, cfgItem]("cache-gob", intCodec, cfgCodec, ports.PortOptions{})
 	if err != nil {
 		t.Fatalf("construct port: %v", err)
 	}
-	c, ok := ports.CacheHandle[cfgItem](p)
-	if !ok {
-		t.Fatal("want CacheHandle to be present")
+	c, err := p.PluginCachePattern(ports.CachePattern{Key: "item:{id}", CustomFormat: format.Gob(cfgCodec)})
+	if err != nil {
+		t.Fatalf("PluginCachePattern: %v", err)
 	}
 	data, err := c.Format.Marshal(cfgItem{V: 9})
 	if err != nil {
@@ -178,22 +174,18 @@ func TestCache_KeySchemas_OmitsParamsWithoutCodec(t *testing.T) {
 
 // CK8: CachePattern.Opts wired through an IOPort — end-to-end validation.
 func TestCachePattern_Opts_WiredThroughIOPort(t *testing.T) {
-	p, err := ports.NewIOPort[int, cfgItem]("cache-keyparam-io", intCodec, cfgCodec, ports.PortOptions{
-		Patterns: []ports.Pattern{
-			ports.CachePattern{
-				Key: "item:{id}",
-				Opts: []ports.CacheOpt{
-					ports.CacheKeyParam{Name: "id"}.WithCodec(codex.String().Refine(validate.UUID)),
-				},
-			},
-		},
-	})
+	p, err := ports.NewIOPort[int, cfgItem]("cache-keyparam-io", intCodec, cfgCodec, ports.PortOptions{})
 	if err != nil {
 		t.Fatalf("construct port: %v", err)
 	}
-	c, ok := ports.CacheHandle[cfgItem](p)
-	if !ok {
-		t.Fatal("want CacheHandle to be present")
+	c, err := p.PluginCachePattern(ports.CachePattern{
+		Key: "item:{id}",
+		Opts: []ports.CacheOpt{
+			ports.CacheKeyParam{Name: "id"}.WithCodec(codex.String().Refine(validate.UUID)),
+		},
+	})
+	if err != nil {
+		t.Fatalf("PluginCachePattern: %v", err)
 	}
 	if _, err := c.BuildKey(map[string]string{"id": "not-a-uuid"}); err == nil {
 		t.Error("want invalid UUID rejected end-to-end")
@@ -205,22 +197,18 @@ func TestCachePattern_Opts_WiredThroughIOPort(t *testing.T) {
 
 // CK9: CachePattern.Opts wired through a SinkPort.
 func TestCachePattern_Opts_WiredThroughSinkPort(t *testing.T) {
-	p, err := ports.NewSinkPort[cfgItem]("cache-keyparam-sink", cfgCodec, ports.PortOptions{
-		Patterns: []ports.Pattern{
-			ports.CachePattern{
-				Key: "item:{id}",
-				Opts: []ports.CacheOpt{
-					ports.CacheKeyParam{Name: "id"}.WithCodec(codex.String().Refine(validate.UUID)),
-				},
-			},
-		},
-	})
+	p, err := ports.NewSinkPort[cfgItem]("cache-keyparam-sink", cfgCodec, ports.PortOptions{})
 	if err != nil {
 		t.Fatalf("construct port: %v", err)
 	}
-	c, ok := ports.CacheHandle[cfgItem](p)
-	if !ok {
-		t.Fatal("want CacheHandle to be present")
+	c, err := p.PluginCachePattern(ports.CachePattern{
+		Key: "item:{id}",
+		Opts: []ports.CacheOpt{
+			ports.CacheKeyParam{Name: "id"}.WithCodec(codex.String().Refine(validate.UUID)),
+		},
+	})
+	if err != nil {
+		t.Fatalf("PluginCachePattern: %v", err)
 	}
 	if _, err := c.BuildKey(map[string]string{"id": "not-a-uuid"}); err == nil {
 		t.Error("want invalid UUID rejected end-to-end")
@@ -230,22 +218,18 @@ func TestCachePattern_Opts_WiredThroughSinkPort(t *testing.T) {
 // CK10: CachePattern.Opts wired through a LatestPort — a var-free key with
 // Opts declared is a no-op, not an error.
 func TestCachePattern_Opts_WiredThroughLatestPort(t *testing.T) {
-	p, err := ports.NewLatestPort[cfgItem]("cache-keyparam-latest", cfgCodec, ports.PortOptions{
-		Patterns: []ports.Pattern{
-			ports.CachePattern{
-				Key: "current", // var-free
-				Opts: []ports.CacheOpt{
-					ports.CacheKeyParam{Name: "id"}.WithCodec(codex.String().Refine(validate.UUID)),
-				},
-			},
-		},
-	})
+	p, err := ports.NewLatestPort[cfgItem]("cache-keyparam-latest", cfgCodec, ports.PortOptions{})
 	if err != nil {
 		t.Fatalf("construct port: %v", err)
 	}
-	c, ok := ports.CacheHandle[cfgItem](p)
-	if !ok {
-		t.Fatal("want CacheHandle to be present")
+	c, err := p.PluginCachePattern(ports.CachePattern{
+		Key: "current", // var-free
+		Opts: []ports.CacheOpt{
+			ports.CacheKeyParam{Name: "id"}.WithCodec(codex.String().Refine(validate.UUID)),
+		},
+	})
+	if err != nil {
+		t.Fatalf("PluginCachePattern: %v", err)
 	}
 	got, err := c.BuildKey(nil)
 	if err != nil {
@@ -274,24 +258,20 @@ var mergedCacheItemCodec = codex.Struct[mergedCacheItem](
 // CachePattern.Opts' NewCacheKeyParam merge fields are wired through an
 // IOPort's built Cache[Resp] handle.
 func TestCachePattern_NewCacheKeyParam_WiredThroughIOPort(t *testing.T) {
-	p, err := ports.NewIOPort[int, mergedCacheItem]("cache-mergefield-io", intCodec, mergedCacheItemCodec, ports.PortOptions{
-		Patterns: []ports.Pattern{
-			ports.CachePattern{
-				Key: "item:{id}",
-				Opts: []ports.CacheOpt{
-					ports.NewCacheKeyParam("id", codex.String(),
-						func(c mergedCacheItem) string { return c.ID },
-						func(c *mergedCacheItem, v string) { c.ID = v }),
-				},
-			},
-		},
-	})
+	p, err := ports.NewIOPort[int, mergedCacheItem]("cache-mergefield-io", intCodec, mergedCacheItemCodec, ports.PortOptions{})
 	if err != nil {
 		t.Fatalf("construct port: %v", err)
 	}
-	c, ok := ports.CacheHandle[mergedCacheItem](p)
-	if !ok {
-		t.Fatal("want CacheHandle to be present")
+	c, err := p.PluginCachePattern(ports.CachePattern{
+		Key: "item:{id}",
+		Opts: []ports.CacheOpt{
+			ports.NewCacheKeyParam("id", codex.String(),
+				func(c mergedCacheItem) string { return c.ID },
+				func(c *mergedCacheItem, v string) { c.ID = v }),
+		},
+	})
+	if err != nil {
+		t.Fatalf("PluginCachePattern: %v", err)
 	}
 	if len(c.MergeFields()) != 1 {
 		t.Fatalf("want 1 merge field wired through CachePattern.Opts, got %d", len(c.MergeFields()))
@@ -308,24 +288,20 @@ func TestCachePattern_NewCacheKeyParam_WiredThroughIOPort(t *testing.T) {
 // Same regression guard, wired through a SinkPort (the other Pattern-build
 // path with the same historical bug).
 func TestCachePattern_NewCacheKeyParam_WiredThroughSinkPort(t *testing.T) {
-	p, err := ports.NewSinkPort[mergedCacheItem]("cache-mergefield-sink", mergedCacheItemCodec, ports.PortOptions{
-		Patterns: []ports.Pattern{
-			ports.CachePattern{
-				Key: "item:{id}",
-				Opts: []ports.CacheOpt{
-					ports.NewCacheKeyParam("id", codex.String(),
-						func(c mergedCacheItem) string { return c.ID },
-						func(c *mergedCacheItem, v string) { c.ID = v }),
-				},
-			},
-		},
-	})
+	p, err := ports.NewSinkPort[mergedCacheItem]("cache-mergefield-sink", mergedCacheItemCodec, ports.PortOptions{})
 	if err != nil {
 		t.Fatalf("construct port: %v", err)
 	}
-	c, ok := ports.CacheHandle[mergedCacheItem](p)
-	if !ok {
-		t.Fatal("want CacheHandle to be present")
+	c, err := p.PluginCachePattern(ports.CachePattern{
+		Key: "item:{id}",
+		Opts: []ports.CacheOpt{
+			ports.NewCacheKeyParam("id", codex.String(),
+				func(c mergedCacheItem) string { return c.ID },
+				func(c *mergedCacheItem, v string) { c.ID = v }),
+		},
+	})
+	if err != nil {
+		t.Fatalf("PluginCachePattern: %v", err)
 	}
 	if len(c.MergeFields()) != 1 {
 		t.Fatalf("want 1 merge field wired through CachePattern.Opts, got %d", len(c.MergeFields()))

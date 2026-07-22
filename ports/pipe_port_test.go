@@ -2,16 +2,12 @@ package ports_test
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
-	"github.com/DaniDeer/go-codex/api/rest"
-	"github.com/DaniDeer/go-codex/codex"
-	"github.com/DaniDeer/go-codex/format"
 	"github.com/DaniDeer/go-codex/ports"
 	"github.com/DaniDeer/go-codex/stats"
 	gstream "github.com/DaniDeer/go-codex/stream"
@@ -937,146 +933,10 @@ func TestPipePort_Done_NeverClosesWithoutConnect(t *testing.T) {
 	}
 }
 
-// ── PP-32/33: InputPortWithPatterns/OutputPortWithPatterns build real handles (PCH-09/10) ─
-
-func TestPipePort_InputPortWithPatterns_BuildsRealHandle(t *testing.T) {
-	pp, _ := ports.NewPipePort[cfgItem]("patterns-test", cfgCodec, ports.PortOptions{Buffer: 8})
-
-	in, err := pp.InputPortWithPatterns("configured", []ports.Pattern{
-		ports.RESTPattern{Method: "GET", Path: "/cfg"},
-	})
-	if err != nil {
-		t.Fatalf("InputPortWithPatterns: %v", err)
-	}
-
-	handle, ok := ports.RESTHandle[cfgItem, struct{}](in)
-	if !ok {
-		t.Fatal("want RESTHandle to find the declared RESTPattern, got (nil, false)")
-	}
-	if handle == nil {
-		t.Fatal("want non-nil handle")
-	}
-}
-
-// PCH-11: InputPortWithPatterns forwards NewPipePort's shared RESTBuilder —
-// the sub-port's route must land in the SAME builder's OpenAPISpec, not a
-// private single-use builder created ad hoc by buildEventPatternHandles.
-func TestPipePort_InputPortWithPatterns_UsesSharedRESTBuilder(t *testing.T) {
-	shared := rest.NewBuilder(rest.Info{Title: "shared", Version: "1.0.0"})
-	pp, err := ports.NewPipePort[cfgItem]("shared-builder-test", cfgCodec, ports.PortOptions{
-		Buffer: 8, RESTBuilder: shared,
-	})
-	if err != nil {
-		t.Fatalf("NewPipePort: %v", err)
-	}
-
-	if _, err := pp.InputPortWithPatterns("ingest", []ports.Pattern{
-		ports.RESTPattern{Method: "GET", Path: "/shared-in"},
-	}); err != nil {
-		t.Fatalf("InputPortWithPatterns: %v", err)
-	}
-
-	doc, err := shared.OpenAPISpec()
-	if err != nil {
-		t.Fatalf("OpenAPISpec: %v", err)
-	}
-	yamlBytes, err := doc.MarshalYAML()
-	if err != nil {
-		t.Fatalf("MarshalYAML: %v", err)
-	}
-	if !strings.Contains(string(yamlBytes), "/shared-in") {
-		t.Fatalf("want /shared-in registered in the shared builder's spec, got:\n%s", yamlBytes)
-	}
-}
-
-func TestPipePort_OutputPortWithPatterns_UsesSharedRESTBuilder(t *testing.T) {
-	shared := rest.NewBuilder(rest.Info{Title: "shared", Version: "1.0.0"})
-	pp, err := ports.NewPipePort[cfgItem]("shared-builder-out-test", cfgCodec, ports.PortOptions{
-		Buffer: 8, RESTBuilder: shared,
-	})
-	if err != nil {
-		t.Fatalf("NewPipePort: %v", err)
-	}
-
-	if _, err := pp.OutputPortWithPatterns("egress", []ports.Pattern{
-		ports.RESTPattern{Method: "GET", Path: "/shared-out"},
-	}); err != nil {
-		t.Fatalf("OutputPortWithPatterns: %v", err)
-	}
-
-	doc, err := shared.OpenAPISpec()
-	if err != nil {
-		t.Fatalf("OpenAPISpec: %v", err)
-	}
-	yamlBytes, err := doc.MarshalYAML()
-	if err != nil {
-		t.Fatalf("MarshalYAML: %v", err)
-	}
-	if !strings.Contains(string(yamlBytes), "/shared-out") {
-		t.Fatalf("want /shared-out registered in the shared builder's spec, got:\n%s", yamlBytes)
-	}
-}
-
-func TestPipePort_OutputPortWithPatterns_BuildsRealHandle(t *testing.T) {
-	pp, _ := ports.NewPipePort[cfgItem]("patterns-out-test", cfgCodec, ports.PortOptions{Buffer: 8})
-
-	out, err := pp.OutputPortWithPatterns("configured", []ports.Pattern{
-		ports.RESTPattern{Method: "GET", Path: "/cfg-out"},
-	})
-	if err != nil {
-		t.Fatalf("OutputPortWithPatterns: %v", err)
-	}
-
-	handle, ok := ports.SSEHandle[cfgItem](out)
-	if !ok {
-		t.Fatal("want SSEHandle to find the declared RESTPattern (SinkPort SSE shape), got (nil, false)")
-	}
-	if handle == nil {
-		t.Fatal("want non-nil handle")
-	}
-}
-
-func TestPipePort_InputPortWithPatterns_SameNameReturnsExisting(t *testing.T) {
-	pp, _ := ports.NewPipePort[int]("patterns-same-name", intCodec, ports.PortOptions{Buffer: 8})
-
-	in1, err := pp.InputPortWithPatterns("x", nil)
-	if err != nil {
-		t.Fatalf("first call: %v", err)
-	}
-	in2, err := pp.InputPortWithPatterns("x", nil)
-	if err != nil {
-		t.Fatalf("second call: %v", err)
-	}
-	if in1 != in2 {
-		t.Fatal("want same instance for same name")
-	}
-
-	// Plain InputPort with the same name must also return the same instance.
-	in3 := pp.InputPort("x")
-	if in3 != in1 {
-		t.Fatal("want InputPort(\"x\") to return the same instance InputPortWithPatterns(\"x\", ...) created")
-	}
-}
-
-func TestPipePort_InputPortWithPatterns_InvalidPatternErrors(t *testing.T) {
-	pp, _ := ports.NewPipePort[int]("patterns-invalid", intCodec, ports.PortOptions{Buffer: 8})
-
-	// A CustomFormat type mismatch (format.Format[string] on an int-typed
-	// port) reliably fails FilePattern construction — proof
-	// InputPortWithPatterns surfaces the real PatternRegisterError instead
-	// of silently ignoring it the way plain InputPort would (InputPort has
-	// no way to declare Patterns at all, so there's nothing to fail).
-	_, err := pp.InputPortWithPatterns("bad", []ports.Pattern{
-		ports.FilePattern{
-			Path:         "/tmp/{id}.txt",
-			CustomFormat: format.JSON(codex.String()), // format.Format[string], not [int]
-		},
-	})
-	if err == nil {
-		t.Fatal("want PatternRegisterError for CustomFormat type mismatch, got nil")
-	}
-	var pre ports.PatternRegisterError
-	if !errors.As(err, &pre) {
-		t.Fatalf("want PatternRegisterError, got %T: %v", err, err)
-	}
-}
+// NOTE: InputPortWithPatterns/OutputPortWithPatterns and their tests were
+// removed entirely — PipePort is now computation-only (no IO-bridging
+// overload); real communication Patterns are plugged into plain
+// SourcePort/SinkPort/IOPort/ToolPort via PluginXxxPattern methods instead
+// (see ports-pipeline-ergonomics roadmap). Plain InputPort/OutputPort (no
+// Patterns) remain for the side-observer-tap use case — see
+// TestPipePort_InputPort_SameNameReturnsExisting below.

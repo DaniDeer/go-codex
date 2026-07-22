@@ -110,18 +110,19 @@ func ParamsFromContext(ctx context.Context) []IOParam {
 }
 
 // PortOptions configures a port constructor ([NewSourcePort], [NewSinkPort],
-// [NewIOPort], [NewToolPort]).
+// [NewIOPort], [NewToolPort], [NewLatestPort], [NewDuplexPort]).
+//
+// Patterns are NOT part of PortOptions — declare the port with PortOptions
+// first (structural shape + shared builder references), then plug in each
+// communication Pattern via the port's PluginXxxPattern method (e.g.
+// [SourcePort.PluginEventPattern], [IOPort.PluginRESTPattern]) at whatever
+// point in your wiring code makes sense — often right before Bind, but
+// Patterns declared as standalone package-level values can be plugged in
+// anywhere. PluginXxxPattern registers the Pattern (against RESTBuilder/
+// EventBuilder/ReqReplyBuilder/MCPBuilder below, or a private single-use
+// Builder when the matching field is nil) AND returns the resulting typed
+// handle directly — no separate handle-lookup step.
 type PortOptions struct {
-	// Patterns declares the port's communication pattern(s) — one entry per
-	// protocol family the port will be bound to ([RESTPattern], [EventPattern],
-	// [ReqReplyPattern], [MCPPattern]). The port builds its own handle from each
-	// Pattern at construction time via Register (against RESTBuilder/EventBuilder/
-	// ReqReplyBuilder/MCPBuilder, or a private single-use Builder when the
-	// matching field is nil), retrievable via [RESTHandle], [EventHandle],
-	// [ReqReplyHandle], [MCPHandle]. This is the primary declaration surface for
-	// handle-backed adapters.
-	Patterns []Pattern
-
 	// Params declares the protocol-agnostic IO parameters for this port. Only
 	// meaningful for adapters with no [Pattern] of their own — i.e. handle-less
 	// adapters (file.ReadEachAdapter, file.DrainWriteFileAdapter). Made

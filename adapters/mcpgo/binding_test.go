@@ -119,17 +119,13 @@ func TestMCPLatestAdapter_ServesLatest(t *testing.T) {
 	ctx := context.Background()
 	s := newMCPServer()
 
-	port, err := ports.NewLatestPort[addOutput]("mcp/latest", addOutputCodec, ports.PortOptions{
-		Patterns: []ports.Pattern{
-			ports.MCPPattern{Name: "latest-sum"},
-		},
-	})
+	port, err := ports.NewLatestPort[addOutput]("mcp/latest", addOutputCodec, ports.PortOptions{})
 	if err != nil {
 		t.Fatalf("construct port: %v", err)
 	}
-	handle, ok := ports.MCPHandle[struct{}, addOutput](port)
-	if !ok {
-		t.Fatal("want MCPHandle[struct{}, addOutput] present")
+	handle, err := port.PluginMCPPattern(ports.MCPPattern{Name: "latest-sum"})
+	if err != nil {
+		t.Fatalf("PluginMCPPattern: %v", err)
 	}
 
 	// Seed the cache, then bind.
@@ -149,13 +145,14 @@ func TestMCPLatestAdapter_ServesLatest(t *testing.T) {
 func TestMCPLatestAdapter_NoValueYet_ReturnsIsError(t *testing.T) {
 	ctx := context.Background()
 
-	port, err := ports.NewLatestPort[addOutput]("mcp/latest-empty", addOutputCodec, ports.PortOptions{
-		Patterns: []ports.Pattern{ports.MCPPattern{Name: "latest-sum-empty"}},
-	})
+	port, err := ports.NewLatestPort[addOutput]("mcp/latest-empty", addOutputCodec, ports.PortOptions{})
 	if err != nil {
 		t.Fatalf("construct port: %v", err)
 	}
-	handle, _ := ports.MCPHandle[struct{}, addOutput](port)
+	handle, err := port.PluginMCPPattern(ports.MCPPattern{Name: "latest-sum-empty"})
+	if err != nil {
+		t.Fatalf("PluginMCPPattern: %v", err)
+	}
 
 	// Build the tool handler directly from the port's read side — same
 	// construction LatestAdapter.Serve performs.

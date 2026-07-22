@@ -380,18 +380,15 @@ func TestIngestAdapter_ViaRESTPattern(t *testing.T) {
 	mux := http.NewServeMux()
 	p, err := ports.NewSourcePort[createReq]("ingest-pattern", createReqCodec, ports.PortOptions{
 		Buffer: 4,
-		Patterns: []ports.Pattern{
-			ports.RESTPattern{Method: "POST", Path: "/ingest2", Opts: []rest.RouteOpt{
-				rest.RouteMeta{OperationID: "ingestPattern"},
-			}},
-		},
 	})
 	if err != nil {
 		t.Fatalf("construct port: %v", err)
 	}
-	handle, ok := ports.RESTHandle[createReq, struct{}](p)
-	if !ok {
-		t.Fatal("want pattern-derived ingest handle")
+	handle, err := p.PluginRESTPattern(ports.RESTPattern{Method: "POST", Path: "/ingest2", Opts: []rest.RouteOpt{
+		rest.RouteMeta{OperationID: "ingestPattern"},
+	}})
+	if err != nil {
+		t.Fatalf("want pattern-derived ingest handle, got err %v", err)
 	}
 	p.Bind(ctx, nethttp.IngestAdapter(mux, handle, nethttp.IngestAdapterOptions{Buffer: 4}))
 	s := p.Stream(ctx)
@@ -441,18 +438,15 @@ func TestSSEAdapter_ViaRESTPattern(t *testing.T) {
 	mux := http.NewServeMux()
 	p, err := ports.NewSinkPort[createReq]("sse-pattern", createReqCodec, ports.PortOptions{
 		Buffer: 4,
-		Patterns: []ports.Pattern{
-			ports.RESTPattern{Path: "/events2", Opts: []rest.RouteOpt{
-				rest.RouteMeta{OperationID: "ssePattern"},
-			}},
-		},
 	})
 	if err != nil {
 		t.Fatalf("construct port: %v", err)
 	}
-	handle, ok := ports.SSEHandle[createReq](p)
-	if !ok {
-		t.Fatal("want pattern-derived SSE handle")
+	handle, err := p.PluginRESTPattern(ports.RESTPattern{Path: "/events2", Opts: []rest.RouteOpt{
+		rest.RouteMeta{OperationID: "ssePattern"},
+	}})
+	if err != nil {
+		t.Fatalf("want pattern-derived SSE handle, got err %v", err)
 	}
 	p.Bind(ctx, nethttp.SSEAdapter(mux, handle, nethttp.SSEAdapterOptions{}))
 

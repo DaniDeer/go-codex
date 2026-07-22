@@ -258,17 +258,13 @@ func TestChiLatestAdapter_ServesLatest(t *testing.T) {
 	defer cancel()
 
 	r := gochi.NewRouter()
-	port, err := ports.NewLatestPort[createReq]("latest", createReqCodec, ports.PortOptions{
-		Patterns: []ports.Pattern{
-			ports.RESTPattern{Method: "GET", Path: "/latest"},
-		},
-	})
+	port, err := ports.NewLatestPort[createReq]("latest", createReqCodec, ports.PortOptions{})
 	if err != nil {
 		t.Fatalf("construct: %v", err)
 	}
-	handle, ok := ports.RESTHandle[struct{}, createReq](port)
-	if !ok {
-		t.Fatal("want RESTHandle[struct{}, createReq] present")
+	handle, err := port.PluginRESTPattern(ports.RESTPattern{Method: "GET", Path: "/latest"})
+	if err != nil {
+		t.Fatalf("PluginRESTPattern: %v", err)
 	}
 	if err := port.Bind(ctx, chiadapter.LatestAdapter(r, handle, chiadapter.Options{})); err != nil {
 		t.Fatalf("bind: %v", err)

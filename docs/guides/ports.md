@@ -25,17 +25,16 @@ Step 2 — Wiring (main.go only)
 ### `SourcePort[T]` — inbound boundary
 
 ```go
-// domain/pipeline.go — no adapter imports; topic + params declared once, here
+// domain/pipeline.go — no adapter imports; port declared with just its shape
 var SensorReadings = codex.Must(ports.NewSourcePort[SensorReading]("sensor-readings", ReadingCodec,
-    ports.PortOptions{
-        Buffer: 8,
-        Patterns: []ports.Pattern{
-            ports.EventPattern{
-                Topic: "sensors/{sensorID}/data",
-                Opts:  []events.ChannelOpt{events.TopicParam{Name: "sensorID"}.WithCodec(sensorIDCodec)},
-            },
-        },
-    }))
+    ports.PortOptions{Buffer: 8}))
+
+// SensorReadingsPattern is a standalone, reusable value — declared once,
+// independent of any specific port-construction call.
+var SensorReadingsPattern = ports.EventPattern{
+    Topic: "sensors/{sensorID}/data",
+    Opts:  []events.ChannelOpt{events.TopicParam{Name: "sensorID"}.WithCodec(sensorIDCodec)},
+}
 
 func StartPipeline(ctx context.Context) {
     readings := SensorReadings.Stream(ctx)
@@ -43,15 +42,16 @@ func StartPipeline(ctx context.Context) {
     go OEEResults.Feed(ctx, oeeStream)
 }
 
-// main.go — all protocol decisions here; handle derived from the port, not hand-built
-sensorHandle, _ := ports.EventHandle[SensorReading](domain.SensorReadings)
+// main.go — all protocol decisions here; PluginEventPattern registers the
+// pattern AND returns its typed handle in one call.
+sensorHandle, err := domain.SensorReadings.PluginEventPattern(domain.SensorReadingsPattern)
 domain.SensorReadings.Bind(ctx,
     mqtt5.SubscribeAdapter(client, router, sensorHandle, 0,
         format.JSON(domain.ReadingCodec),
         mqtt5.SubscribeAdapterOptions{TopicFilter: "sensors/+/data"}))
 
 // Fan-in: add a second source without touching pipeline code
-// (HTTP ingest: declare ports.RESTPattern{Method: "POST", Path: ...} instead)
+// (HTTP ingest: plug in ports.RESTPattern{Method: "POST", Path: ...} instead)
 domain.SensorReadings.Bind(ctx,
     nethttp.IngestAdapter(mux, ingestHandle, nethttp.IngestAdapterOptions{Buffer: 8}))
 ```
@@ -60,15 +60,12 @@ domain.SensorReadings.Bind(ctx,
 
 ```go
 // domain/pipeline.go
-var OEEResults = codex.Must(ports.NewSinkPort[OEE]("oee-results", OEECodec, ports.PortOptions{
-    Buffer: 8,
-    Patterns: []ports.Pattern{
-        ports.EventPattern{Topic: "alerts/{sensorID}"},
-    },
-}))
+var OEEResults = codex.Must(ports.NewSinkPort[OEE]("oee-results", OEECodec, ports.PortOptions{Buffer: 8}))
+
+var OEEResultsPattern = ports.EventPattern{Topic: "alerts/{sensorID}"}
 
 // main.go — fan-out: both adapters receive every item
-alertHandle, _ := ports.EventHandle[OEE](domain.OEEResults)
+alertHandle, err := domain.OEEResults.PluginEventPattern(domain.OEEResultsPattern)
 domain.OEEResults.Bind(ctx,
     mqtt5.PublishAdapter(client, alertHandle,
         format.JSON(domain.OEECodec), mqtt5.MQTT5DrainPublishOptions{}))
@@ -81,14 +78,11 @@ domain.OEEResults.Bind(ctx,
 Swap the enrichment source without changing pipeline code:
 
 ```go
-// domain/pipeline.go — declare the call pattern once; NewIOPort returns (port, error)
+// domain/pipeline.go — declare the port shape once; NewIOPort returns (port, error)
 var Calibration = codex.Must(ports.NewIOPort[SensorReading, CalibratedReading](
-    "calibration", ReadingCodec, calibratedCodec,
-    ports.PortOptions{
-        Patterns: []ports.Pattern{
-            ports.RESTPattern{Method: "GET", Path: "/calibration/{sensorID}"},
-        },
-    }))
+    "calibration", ReadingCodec, calibratedCodec, ports.PortOptions{}))
+
+var CalibrationPattern = ports.RESTPattern{Method: "GET", Path: "/calibration/{sensorID}"}
 
 func StartPipeline(ctx context.Context) {
     raw        := SensorReadings.Stream(ctx)
@@ -97,14 +91,17 @@ func StartPipeline(ctx context.Context) {
     go OEEResults.Feed(ctx, oeeStream)
 }
 
-// main.go — choose ONE enrichment source; REST handle is derived from the port:
-handle, _ := ports.RESTHandle[SensorReading, CalibratedReading](domain.Calibration)
+// main.go — choose ONE enrichment source; PluginRESTPattern returns the handle:
+handle, err := domain.Calibration.PluginRESTPattern(domain.CalibrationPattern)
 domain.Calibration.Bind(ctx, nethttp.CallAdapter(httpClient, "http://calib-svc", handle, callOpts))
 // domain.Calibration.Bind(ctx, sql.QueryEachAdapter(db, calibCodec, queryFn, opts))       // no Pattern — file/sql use Params instead
 // domain.Calibration.Bind(ctx, file.ReadEachAdapter(calibFile, varsFor, combine, opts))
-// domain.Calibration.Bind(ctx, mqtt5.CallAdapter(client, router, reqReplyHandle, callOpts)) // ports.ReqReplyPattern + ports.ReqReplyHandle
+// domain.Calibration.Bind(ctx, mqtt5.CallAdapter(client, router, reqReplyHandle, callOpts)) // via PluginReqReplyPattern
 // domain.Calibration.Bind(ctx, zeromq.CallAdapter(sock, reqReplyHandle, opts))
 ```
+
+Or, for a single-transport `IOPort`, use the convenience constructor that
+combines the two steps: `port, handle := codex.Must2(ports.NewRestPort(...))`.
 
 ### `ToolPort[In, Out]` — server-side request/response
 
@@ -114,15 +111,13 @@ triggers the pipeline and waits for a response. Set the pipeline function once w
 can serve MCP, HTTP, and ZeroMQ simultaneously.
 
 ```go
-// domain/pipeline.go — no adapter imports; declare all three transport patterns once
+// domain/pipeline.go — no adapter imports; declare the port shape once
 var OEETool = codex.Must(ports.NewToolPort[OEEIn, OEEResult]("oee-calc", oeeInCodec, oeeResultCodec,
-    ports.PortOptions{
-        Patterns: []ports.Pattern{
-            ports.RESTPattern{Method: "POST", Path: "/oee/calc"},
-            ports.ReqReplyPattern{Topic: "oee/calc"},
-            ports.MCPPattern{Name: "oee-calc"},
-        },
-    }))
+    ports.PortOptions{}))
+
+var OEERESTPattern = ports.RESTPattern{Method: "POST", Path: "/oee/calc"}
+var OEEReqReplyPattern = ports.ReqReplyPattern{Topic: "oee/calc"}
+var OEEMCPPattern = ports.MCPPattern{Name: "oee-calc"}
 
 func init() {
     OEETool.SetPipeline(func(ctx context.Context, req OEEIn) gstream.Stream[OEEResult] {
@@ -130,10 +125,11 @@ func init() {
     })
 }
 
-// main.go — serve the same pipeline on three transports; handles derived from the port:
-mcpToolHandle, _ := ports.MCPHandle[OEEIn, OEEResult](domain.OEETool)
-httpHandle, _ := ports.RESTHandle[OEEIn, OEEResult](domain.OEETool)
-zmqHandle, _ := ports.ReqReplyHandle[OEEIn, OEEResult](domain.OEETool)
+// main.go — serve the same pipeline on three transports; each Plugin call
+// registers its own Pattern and returns the typed handle:
+mcpToolHandle, err := domain.OEETool.PluginMCPPattern(domain.OEEMCPPattern)
+httpHandle, err := domain.OEETool.PluginRESTPattern(domain.OEERESTPattern)
+zmqHandle, err := domain.OEETool.PluginReqReplyPattern(domain.OEEReqReplyPattern)
 domain.OEETool.Bind(ctx, mcpgo.ToolPipelineAdapter(mcpServer, mcpToolHandle, mcpgo.Options{}))
 domain.OEETool.Bind(ctx, nethttp.PipelineAdapter(mux, httpHandle, nethttp.PipelineAdapterOptions{}))
 domain.OEETool.Bind(ctx, zeromq.ServeAdapter(repSock, zmqHandle, zeromq.ServeOptions{}))
@@ -153,12 +149,12 @@ stream terminates (the cache outlives the pipeline).
 ```go
 // domain — declared like every other boundary
 var Latest = codex.Must(ports.NewLatestPort[db.Reading]("rest/latest", readingCodec,
-    ports.PortOptions{Patterns: []ports.Pattern{
-        ports.RESTPattern{Method: "GET", Path: "/readings/latest"},
-    }}))
+    ports.PortOptions{}))
+
+var LatestPattern = ports.RESTPattern{Method: "GET", Path: "/readings/latest"}
 
 // main.go
-handle, _ := ports.RESTHandle[struct{}, db.Reading](domain.Latest)
+handle, err := domain.Latest.PluginRESTPattern(domain.LatestPattern)
 must(domain.Latest.Bind(ctx, nethttp.LatestAdapter(mux, handle, nethttp.Options{})))
 go domain.Latest.Feed(ctx, readings)
 ```
@@ -178,13 +174,13 @@ for a targeted reply, or leave it zero to broadcast. Exactly one adapter.
 ```go
 // domain
 var Live = codex.Must(ports.NewDuplexPort[Command, Update]("live",
-    commandCodec, updateCodec, ports.PortOptions{
-        Patterns: []ports.Pattern{ports.SocketPattern{Path: "/live/{room}"}},
-    }))
+    commandCodec, updateCodec, ports.PortOptions{}))
+
+var LivePattern = ports.SocketPattern{Path: "/live/{room}"}
 
 // main.go
 hub := websocket.NewHub(0)
-handle, _ := ports.SocketHandle[Command, Update](domain.Live)
+handle, err := domain.Live.PluginSocketPattern(domain.LivePattern)
 must0(domain.Live.Bind(ctx, websocket.DuplexSocketAdapter(mux, hub, upgrader, handle, opts)))
 
 // pipeline
@@ -203,24 +199,39 @@ inbound/outbound payload automatically.
 
 ### `PipePort[T]` — pipeline stage boundary
 
-A named waypoint between pipeline stages, declared flexibly at setup and
-never mutated at runtime. Use `ports.Chain`/`ports.ChainStream` to connect
-stages; side observers tap into any stage without changing the logic.
-IO/adapter wiring (`InputPort`/`OutputPort`) is also supported but is
-secondary — PipePort wraps existing `SourcePort`/`SinkPort`/`gstream`
-primitives, it doesn't reinvent them.
+A named waypoint for **computation segmentation only** — a thin wrapper
+over `gstream`, declared flexibly at setup and never mutated at runtime.
+Use `ports.Chain`/`ports.ChainStream` to connect stages; side observers
+tap into any stage without changing the logic.
 
 ```go
-var Raw   = codex.Must(ports.NewPipePort[SensorReading]("raw", readingCodec, ...))
-var Clean = codex.Must(ports.NewPipePort[ValidatedReading]("clean", validCodec, ...))
+var Raw   = codex.Must(ports.NewPipePort[SensorReading]("raw", readingCodec, ports.PortOptions{}))
+var Clean = codex.Must(ports.NewPipePort[ValidatedReading]("clean", validCodec, ports.PortOptions{}))
 
-// Chain wraps Stream+Map+Drain+Push into one call — the common case.
+// Chain wraps Stream+Map+Feed into one call — the common case.
 ports.Chain(ctx, Raw, validate, Clean)
 
 Raw.OutputPort("log").Bind(ctx, ports.ChanSinkAdapter(logCh)) // side observer
 Raw.Connect(ctx)
 Clean.Connect(ctx)
 ```
+
+**`Chain`/`ChainStream` are generalized to also accept boundary ports** —
+`from` can be a `*PipePort[In]` OR a `*SourcePort[In]`; `to` can be a
+`*PipePort[Out]` OR a `*SinkPort[Out]`. This is what makes the data flow
+directly visible from the declaration, top to bottom, using the exact
+same call shape for a real IO boundary and an internal stage alike:
+
+```go
+// SourcePort -> Chain -> PipePort -> ChainStream -> SinkPort, one
+// declaration, no separate IO-bridging sub-ports.
+ports.Chain(ctx, Sensors, buildInsertParams, Params)       // SourcePort -> PipePort
+ports.ChainStream(ctx, Params, persistAndFilterAlerts, Alerts) // PipePort -> SinkPort
+```
+
+`fn`/`transform` need not be wrapped in `forge.Function` — pass a plain Go
+function directly unless the step needs `forge`'s contract-hash/signing
+governance.
 
 **`ports.ChainStream[In, Out](ctx, from, transform, to)` is the general
 stage connector — `ports.Chain` is its single-Map special case**, not a
@@ -243,15 +254,10 @@ ports.ChainStream(ctx, Valid, func(s gstream.Stream[Validated]) gstream.Stream[C
 (e.g. fanning one stream into several independently-wired downstream
 pipes). `Push(ctx, v)` feeds items into the pipe at any time — even before
 `Connect()` (items buffer until Connect starts draining).
-`InputPort(name)`/`OutputPort(name)` are for adapter wiring (no `Patterns`
-forwarding). For real protocol adapters (mqtt5, nethttp SSE, etc.) use the
-fallible, Pattern-forwarding overloads instead:
-`InputPortWithPatterns(name string, patterns []Pattern) (*SourcePort[T], error)` /
-`OutputPortWithPatterns(name string, patterns []Pattern) (*SinkPort[T], error)`
-— these also forward any `RESTBuilder`/`EventBuilder`/`ReqReplyBuilder`/
-`MCPBuilder` supplied to `NewPipePort`'s `PortOptions`, so a Pattern needing
-a shared builder registers against the SAME builder every other
-Pattern-carrying port in the service uses, not a private one-off.
+`InputPort(name)`/`OutputPort(name)` build plain `SourcePort`/`SinkPort`
+sub-ports for side-observer taps only (no `Pattern` involved) — a real IO
+boundary should be its own `SourcePort`/`SinkPort`/`IOPort`/`ToolPort`,
+declared and Chain/ChainStream'd directly as shown above.
 
 `Connect`'s data path is fully instrumented: `RecordSubscribe` fires on the
 Push-consumer, `RecordPublish` fires per fan-out destination; `Chain`/
@@ -461,21 +467,21 @@ ports.RESTPattern{Method: "PUT", Path: "/images/{id}",
 
 A type mismatch returns `rest.FormatOptError`/`events.FormatOptError`/
 `reqreply.FormatOptError` from `Register` (surfaces as `PatternRegisterError`
-from the port constructor). See the [HTTP Server Examples](http-server.md#same-thing-declared-through-portsrestpattern)
+from the `PluginXxxPattern` call). See the [HTTP Server Examples](http-server.md#same-thing-declared-through-portsrestpattern)
 and [MQTT Examples](mqtt.md#same-thing-declared-through-portseventpattern) guides.
 
-Derive the handle the adapter needs with the matching accessor — `(nil, false)`, not
-a panic, when the port declared no matching `Pattern`:
+Plug in the Pattern the adapter needs with the matching method — registers
+AND returns the typed handle in one call:
 
 ```go
-handle, ok := ports.RESTHandle[Req, Resp](domain.SomePort)     // *rest.RouteHandle[Req, Resp]
-handle, ok := ports.EventHandle[T](domain.SomePort)            // *events.ChannelHandle[T]
-handle, ok := ports.ReqReplyHandle[Req, Resp](domain.SomePort) // *reqreply.RouteHandle[Req, Resp]
-handle, ok := ports.MCPHandle[In, Out](domain.SomePort)        // *apimcp.ToolHandle[In, Out]
-file,   ok := ports.FileHandle[T](domain.SomePort)             // ports.File[T]
-meta,   ok := ports.SQLMeta(domain.SomePort)                   // ports.SQLPattern
-cache,  ok := ports.CacheHandle[T](domain.SomePort)            // ports.Cache[T]
-socket, ok := ports.SocketHandle[In, Out](domain.SomePort)     // ports.Socket[In, Out]
+handle, err := domain.SomePort.PluginRESTPattern(pattern)     // *rest.RouteHandle[Req, Resp]
+handle, err := domain.SomePort.PluginEventPattern(pattern)    // *events.ChannelHandle[T]
+handle, err := domain.SomePort.PluginReqReplyPattern(pattern) // *reqreply.RouteHandle[Req, Resp]
+handle, err := domain.SomePort.PluginMCPPattern(pattern)      // *apimcp.ToolHandle[In, Out]
+file,   err := domain.SomePort.PluginFilePattern(pattern)     // ports.File[T]
+meta,   err := domain.SomePort.PluginSQLPattern(pattern)      // ports.SQLPattern
+cache,  err := domain.SomePort.PluginCachePattern(pattern)    // ports.Cache[T]
+socket, err := domain.SomePort.PluginSocketPattern(pattern)   // ports.Socket[In, Out]
 ```
 
 ### One construction path, whether you supply a `Builder` or not
@@ -537,28 +543,31 @@ receives, Publish = Out frames it sends) — the WebSocket spec story, since
 OpenAPI cannot express socket frames.
 
 `NewSourcePort`, `NewSinkPort`, `NewIOPort`, and `NewToolPort` all return
-`(*Port, error)` — a `Pattern` is built eagerly at construction time via `Register`
-(fail-fast) and can fail (unknown param name, path/topic constraint failure,
-duplicate name on a shared `reqreply`/`mcp` builder) — wrap with `codex.Must(...)`
-for package-level declarations, as shown throughout this guide.
+`(*Port, error)` — construction never involves a `Pattern` (just the port's
+structural shape). Every `PluginXxxPattern` call returns `(handle, error)`
+and can fail (unknown param name, path/topic constraint failure, duplicate
+name on a shared `reqreply`/`mcp` builder, or a duplicate Plugin call) —
+wrap `codex.Must(...)` around construction for package-level declarations,
+as shown throughout this guide.
 
 > `RESTPattern` is role-aware on single-codec ports: on a `SourcePort[T]` it
-> declares HTTP ingest (`RouteHandle[T, struct{}]` via `RESTHandle[T, struct{}]`,
+> declares HTTP ingest (`RouteHandle[T, struct{}]` via `PluginRESTPattern`,
 > pairs with `nethttp/chi.IngestAdapter`); on a `SinkPort[T]` it declares SSE
-> (`SSERouteHandle[struct{}, T]` via `SSEHandle[T]`, always GET, pairs with
+> (`SSERouteHandle[struct{}, T]`, always GET, pairs with
 > `nethttp/chi.SSEAdapter`; replay with `RegisterSSE`). Both register against
 > `PortOptions.RESTBuilder` — ingest and SSE endpoints appear in the shared
 > OpenAPI spec.
 
 ### `FilePattern` — file as sink or intermediate IO step
 
-Declare the file (path template + wire format + path-param codecs) once on the
-port; retrieve the built `ports.File` with `ports.FileHandle`. `Format` is a
-`ports.FileFormatKind` enum — `FileFormatJSON` (default), `FileFormatYAML`,
-`FileFormatTOML` — applied to the port's own codec. On a `SinkPort[T]` the
-handle is `ports.File[T]` (pairs with `file.DrainWriteFileAdapter`); on an
-`IOPort[Req,Resp]` it is `ports.File[Resp]` — the file's content *is* the
-port's response — pairing with the 2-type `file.ReadAdapter`:
+Declare the file (path template + wire format + path-param codecs) as a
+standalone `Pattern` value; plug it in with `PluginFilePattern` to get the
+built `ports.File`. `Format` is a `ports.FileFormatKind` enum —
+`FileFormatJSON` (default), `FileFormatYAML`, `FileFormatTOML` — applied to
+the port's own codec. On a `SinkPort[T]` the handle is `ports.File[T]`
+(pairs with `file.DrainWriteFileAdapter`); on an `IOPort[Req,Resp]` it is
+`ports.File[Resp]` — the file's content *is* the port's response —
+pairing with the 2-type `file.ReadAdapter`:
 
 For partial updates instead of a whole-file overwrite, pair a hand-built
 `ports.File[T]` with `file.DrainPatchAdapter` (untyped `map[string]any`
@@ -569,16 +578,15 @@ the port's own payload type; both require a map-based format (JSON/YAML/TOML).
 ```go
 // domain — intermediate IO step: read a calibration file per reading
 var Calibration = codex.Must(ports.NewIOPort[SensorReading, CalibrationData](
-    "calibration", readingCodec, calibrationCodec,
-    ports.PortOptions{Patterns: []ports.Pattern{
-        ports.FilePattern{
-            Path: "data/{sensorID}/calibration.json",
-            Opts: []ports.FileOpt{ports.FilePathParam{Name: "sensorID"}.WithCodec(uuidCodec)},
-        },
-    }}))
+    "calibration", readingCodec, calibrationCodec, ports.PortOptions{}))
+
+var CalibrationFilePattern = ports.FilePattern{
+    Path: "data/{sensorID}/calibration.json",
+    Opts: []ports.FileOpt{ports.FilePathParam{Name: "sensorID"}.WithCodec(uuidCodec)},
+}
 
 // main.go
-calibFile, _ := ports.FileHandle[CalibrationData](domain.Calibration)
+calibFile, err := domain.Calibration.PluginFilePattern(domain.CalibrationFilePattern)
 domain.Calibration.Bind(ctx, file.ReadAdapter(calibFile,
     func(r SensorReading) map[string]string { return map[string]string{"sensorID": r.SensorID} },
     file.ReadEachAdapterOptions{}))
@@ -594,18 +602,18 @@ enrichment shape (`file.ReadEachAdapter` with a `combine` func), build the
 ### `SQLPattern` — declare table/op metadata once
 
 SQL has no template to parse — queries stay typed, driver-specific closures.
-`SQLPattern{Table, Op}` declares just the error/observability metadata on the
-port; the sql adapters (`QueryAdapter`, `QueryEachAdapter`, `DrainInsertAdapter`)
-default their options' `Table`/`Op` from it via context when the explicit fields
-are empty (explicit values win):
+`SQLPattern{Table, Op}` declares just the error/observability metadata,
+plugged in with `PluginSQLPattern`; the sql adapters (`QueryAdapter`,
+`QueryEachAdapter`, `DrainInsertAdapter`) default their options' `Table`/`Op`
+from it via context when the explicit fields are empty (explicit values win):
 
 ```go
-var Readings = codex.Must(ports.NewSinkPort[db.Reading]("sql/readings", readingCodec,
-    ports.PortOptions{Patterns: []ports.Pattern{
-        ports.SQLPattern{Table: "readings", Op: "insert_reading"},
-    }}))
+var Readings = codex.Must(ports.NewSinkPort[db.Reading]("sql/readings", readingCodec, ports.PortOptions{}))
 
-// main.go — no Table/Op repetition
+var ReadingsSQLPattern = ports.SQLPattern{Table: "readings", Op: "insert_reading"}
+
+// main.go — plug in first, no Table/Op repetition afterward
+_, err := domain.Readings.PluginSQLPattern(domain.ReadingsSQLPattern)
 domain.Readings.Bind(ctx, sql.DrainInsertAdapter(readingCodec, insertFn, sql.DrainInsertOptions{}))
 ```
 

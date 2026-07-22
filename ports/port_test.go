@@ -758,19 +758,15 @@ func TestPatternRegisterError_LogValue(t *testing.T) {
 // ── Pattern → handle construction (Phase 4) ──────────────────────────────────
 
 func TestRESTPattern_BuildsClientHandle(t *testing.T) {
-	p, err := ports.NewIOPort[int, string]("call", intCodec, strCodec, ports.PortOptions{
-		Patterns: []ports.Pattern{
-			ports.RESTPattern{Method: "POST", Path: "/double", Opts: []rest.RouteOpt{
-				rest.RouteMeta{OperationID: "double"},
-			}},
-		},
-	})
+	p, err := ports.NewIOPort[int, string]("call", intCodec, strCodec, ports.PortOptions{})
 	if err != nil {
 		t.Fatalf("construct port: %v", err)
 	}
-	handle, ok := ports.RESTHandle[int, string](p)
-	if !ok {
-		t.Fatal("want RESTHandle to be present")
+	handle, err := p.PluginRESTPattern(ports.RESTPattern{Method: "POST", Path: "/double", Opts: []rest.RouteOpt{
+		rest.RouteMeta{OperationID: "double"},
+	}})
+	if err != nil {
+		t.Fatalf("PluginRESTPattern: %v", err)
 	}
 	if handle.Descriptor.Path != "/double" || handle.Descriptor.Method != "POST" {
 		t.Errorf("want method=POST path=/double, got %+v", handle.Descriptor)
@@ -778,19 +774,15 @@ func TestRESTPattern_BuildsClientHandle(t *testing.T) {
 }
 
 func TestEventPattern_BuildsClientHandle(t *testing.T) {
-	p, err := ports.NewSourcePort[int]("readings", intCodec, ports.PortOptions{
-		Patterns: []ports.Pattern{
-			ports.EventPattern{Topic: "sensors/{sensorID}/data", Opts: []events.ChannelOpt{
-				events.Subscribe{Summary: "sensor reading"},
-			}},
-		},
-	})
+	p, err := ports.NewSourcePort[int]("readings", intCodec, ports.PortOptions{})
 	if err != nil {
 		t.Fatalf("construct port: %v", err)
 	}
-	handle, ok := ports.EventHandle[int](p)
-	if !ok {
-		t.Fatal("want EventHandle to be present")
+	handle, err := p.PluginEventPattern(ports.EventPattern{Topic: "sensors/{sensorID}/data", Opts: []events.ChannelOpt{
+		events.Subscribe{Summary: "sensor reading"},
+	}})
+	if err != nil {
+		t.Fatalf("PluginEventPattern: %v", err)
 	}
 	if handle.Topic != "sensors/{sensorID}/data" {
 		t.Errorf("want topic %q, got %q", "sensors/{sensorID}/data", handle.Topic)
@@ -798,17 +790,13 @@ func TestEventPattern_BuildsClientHandle(t *testing.T) {
 }
 
 func TestReqReplyPattern_BuildsClientHandle(t *testing.T) {
-	p, err := ports.NewIOPort[int, string]("compute", intCodec, strCodec, ports.PortOptions{
-		Patterns: []ports.Pattern{
-			ports.ReqReplyPattern{Topic: "compute/add"},
-		},
-	})
+	p, err := ports.NewIOPort[int, string]("compute", intCodec, strCodec, ports.PortOptions{})
 	if err != nil {
 		t.Fatalf("construct port: %v", err)
 	}
-	handle, ok := ports.ReqReplyHandle[int, string](p)
-	if !ok {
-		t.Fatal("want ReqReplyHandle to be present")
+	handle, err := p.PluginReqReplyPattern(ports.ReqReplyPattern{Topic: "compute/add"})
+	if err != nil {
+		t.Fatalf("PluginReqReplyPattern: %v", err)
 	}
 	if handle.Topic != "compute/add" {
 		t.Errorf("want topic %q, got %q", "compute/add", handle.Topic)
@@ -816,71 +804,41 @@ func TestReqReplyPattern_BuildsClientHandle(t *testing.T) {
 }
 
 func TestMCPPattern_BuildsClientHandle(t *testing.T) {
-	p, err := ports.NewToolPort[int, string]("compute-tool", intCodec, strCodec, ports.PortOptions{
-		Patterns: []ports.Pattern{
-			ports.MCPPattern{Name: "compute", Opts: []apimcp.ToolOpt{
-				apimcp.ToolMeta{Description: "computes a thing"},
-			}},
-		},
-	})
+	p, err := ports.NewToolPort[int, string]("compute-tool", intCodec, strCodec, ports.PortOptions{})
 	if err != nil {
 		t.Fatalf("construct port: %v", err)
 	}
-	handle, ok := ports.MCPHandle[int, string](p)
-	if !ok {
-		t.Fatal("want MCPHandle to be present")
+	handle, err := p.PluginMCPPattern(ports.MCPPattern{Name: "compute", Opts: []apimcp.ToolOpt{
+		apimcp.ToolMeta{Description: "computes a thing"},
+	}})
+	if err != nil {
+		t.Fatalf("PluginMCPPattern: %v", err)
 	}
 	if handle.Name != "compute" {
 		t.Errorf("want name %q, got %q", "compute", handle.Name)
 	}
 }
 
-func TestHandleAccessor_MissingPattern_ReturnsFalse(t *testing.T) {
-	p, err := ports.NewToolPort[int, string]("no-patterns", intCodec, strCodec, ports.PortOptions{})
-	if err != nil {
-		t.Fatalf("construct port: %v", err)
-	}
-	if _, ok := ports.RESTHandle[int, string](p); ok {
-		t.Error("want RESTHandle to be absent")
-	}
-	if _, ok := ports.ReqReplyHandle[int, string](p); ok {
-		t.Error("want ReqReplyHandle to be absent")
-	}
-	if _, ok := ports.MCPHandle[int, string](p); ok {
-		t.Error("want MCPHandle to be absent")
-	}
-}
-
-func TestHandleAccessor_NonPatternHolder_ReturnsFalse(t *testing.T) {
-	if _, ok := ports.RESTHandle[int, string]("not a port"); ok {
-		t.Error("want false for a value that does not implement patternHolder")
-	}
-}
-
 func TestPort_MultiplePatterns_BothHandlesAvailable(t *testing.T) {
-	p, err := ports.NewToolPort[int, string]("multi-transport", intCodec, strCodec, ports.PortOptions{
-		Patterns: []ports.Pattern{
-			ports.RESTPattern{Method: "POST", Path: "/compute"},
-			ports.ReqReplyPattern{Topic: "compute/add"},
-		},
-	})
+	p, err := ports.NewToolPort[int, string]("multi-transport", intCodec, strCodec, ports.PortOptions{})
 	if err != nil {
 		t.Fatalf("construct port: %v", err)
 	}
-	if _, ok := ports.RESTHandle[int, string](p); !ok {
-		t.Error("want RESTHandle to be present")
+	if _, err := p.PluginRESTPattern(ports.RESTPattern{Method: "POST", Path: "/compute"}); err != nil {
+		t.Errorf("want RESTPattern to plug in, got %v", err)
 	}
-	if _, ok := ports.ReqReplyHandle[int, string](p); !ok {
-		t.Error("want ReqReplyHandle to be present")
+	if _, err := p.PluginReqReplyPattern(ports.ReqReplyPattern{Topic: "compute/add"}); err != nil {
+		t.Errorf("want ReqReplyPattern to plug in, got %v", err)
 	}
 }
 
 func TestMCPPattern_InvalidTool_ReturnsPatternRegisterError(t *testing.T) {
-	_, err := ports.NewToolPort[int, string]("bad-mcp-tool", intCodec, strCodec, ports.PortOptions{
-		Patterns: []ports.Pattern{
-			ports.MCPPattern{Name: ""}, // empty tool name is rejected by apimcp.Tool.ClientHandle
-		},
-	})
+	p, err := ports.NewToolPort[int, string]("bad-mcp-tool", intCodec, strCodec, ports.PortOptions{})
+	if err != nil {
+		t.Fatalf("construct port: %v", err)
+	}
+	// empty tool name is rejected by apimcp.Tool.ClientHandle
+	_, err = p.PluginMCPPattern(ports.MCPPattern{Name: ""})
 	if err == nil {
 		t.Fatal("want PatternRegisterError, got nil")
 	}
@@ -896,15 +854,14 @@ func TestMCPPattern_InvalidTool_ReturnsPatternRegisterError(t *testing.T) {
 // ── RegisterREST / RegisterEvent / RegisterReqReply / RegisterMCP ────────────
 
 func TestRegisterREST_AddsRouteToBuilder(t *testing.T) {
-	p, err := ports.NewIOPort[int, string]("call", intCodec, strCodec, ports.PortOptions{
-		Patterns: []ports.Pattern{
-			ports.RESTPattern{Method: "POST", Path: "/double", Opts: []rest.RouteOpt{
-				rest.RouteMeta{OperationID: "double"},
-			}},
-		},
-	})
+	p, err := ports.NewIOPort[int, string]("call", intCodec, strCodec, ports.PortOptions{})
 	if err != nil {
 		t.Fatalf("construct port: %v", err)
+	}
+	if _, err := p.PluginRESTPattern(ports.RESTPattern{Method: "POST", Path: "/double", Opts: []rest.RouteOpt{
+		rest.RouteMeta{OperationID: "double"},
+	}}); err != nil {
+		t.Fatalf("PluginRESTPattern: %v", err)
 	}
 	b := rest.NewBuilder(rest.Info{Title: "Test", Version: "1.0.0"})
 	if err := ports.RegisterREST[int, string](b, p); err != nil {
@@ -940,15 +897,14 @@ func TestRegisterREST_MissingPattern(t *testing.T) {
 }
 
 func TestRegisterEvent_AddsChannelToBuilder(t *testing.T) {
-	p, err := ports.NewSourcePort[int]("readings", intCodec, ports.PortOptions{
-		Patterns: []ports.Pattern{
-			ports.EventPattern{Topic: "sensors/data", Opts: []events.ChannelOpt{
-				events.Subscribe{Summary: "sensor reading"},
-			}},
-		},
-	})
+	p, err := ports.NewSourcePort[int]("readings", intCodec, ports.PortOptions{})
 	if err != nil {
 		t.Fatalf("construct port: %v", err)
+	}
+	if _, err := p.PluginEventPattern(ports.EventPattern{Topic: "sensors/data", Opts: []events.ChannelOpt{
+		events.Subscribe{Summary: "sensor reading"},
+	}}); err != nil {
+		t.Fatalf("PluginEventPattern: %v", err)
 	}
 	b := events.NewBuilder(events.Info{Title: "Test", Version: "1.0.0"})
 	if err := ports.RegisterEvent[int](b, p); err != nil {
@@ -968,13 +924,12 @@ func TestRegisterEvent_AddsChannelToBuilder(t *testing.T) {
 }
 
 func TestRegisterReqReply_AddsRouteToBuilder(t *testing.T) {
-	p, err := ports.NewToolPort[int, string]("compute", intCodec, strCodec, ports.PortOptions{
-		Patterns: []ports.Pattern{
-			ports.ReqReplyPattern{Topic: "compute/add"},
-		},
-	})
+	p, err := ports.NewToolPort[int, string]("compute", intCodec, strCodec, ports.PortOptions{})
 	if err != nil {
 		t.Fatalf("construct port: %v", err)
+	}
+	if _, err := p.PluginReqReplyPattern(ports.ReqReplyPattern{Topic: "compute/add"}); err != nil {
+		t.Fatalf("PluginReqReplyPattern: %v", err)
 	}
 	b := reqreply.NewBuilder(reqreply.Info{Title: "Test", Version: "1.0.0"})
 	if err := ports.RegisterReqReply[int, string](b, p); err != nil {
@@ -983,15 +938,14 @@ func TestRegisterReqReply_AddsRouteToBuilder(t *testing.T) {
 }
 
 func TestRegisterMCP_AddsToolToBuilder(t *testing.T) {
-	p, err := ports.NewToolPort[int, string]("compute-tool", intCodec, strCodec, ports.PortOptions{
-		Patterns: []ports.Pattern{
-			ports.MCPPattern{Name: "compute", Opts: []apimcp.ToolOpt{
-				apimcp.ToolMeta{Description: "computes a thing"},
-			}},
-		},
-	})
+	p, err := ports.NewToolPort[int, string]("compute-tool", intCodec, strCodec, ports.PortOptions{})
 	if err != nil {
 		t.Fatalf("construct port: %v", err)
+	}
+	if _, err := p.PluginMCPPattern(ports.MCPPattern{Name: "compute", Opts: []apimcp.ToolOpt{
+		apimcp.ToolMeta{Description: "computes a thing"},
+	}}); err != nil {
+		t.Fatalf("PluginMCPPattern: %v", err)
 	}
 	b := apimcp.NewBuilder(apimcp.Info{Name: "Test", Version: "1.0.0"})
 	if err := ports.RegisterMCP[int, string](b, p); err != nil {
@@ -1016,17 +970,14 @@ func TestEventPattern_WithBuilder_PopulatesSecuritySchemes(t *testing.T) {
 	b.AddGlobalSecurity(route.SecurityRequirement{"bearerAuth": {}})
 
 	p, err := ports.NewSourcePort[int]("secured-readings", intCodec, ports.PortOptions{
-		Patterns: []ports.Pattern{
-			ports.EventPattern{Topic: "sensors/data"},
-		},
 		EventBuilder: b,
 	})
 	if err != nil {
 		t.Fatalf("construct port: %v", err)
 	}
-	handle, ok := ports.EventHandle[int](p)
-	if !ok {
-		t.Fatal("want EventHandle to be present")
+	handle, err := p.PluginEventPattern(ports.EventPattern{Topic: "sensors/data"})
+	if err != nil {
+		t.Fatalf("PluginEventPattern: %v", err)
 	}
 	if len(handle.SecuritySchemes) != 1 {
 		t.Errorf("want 1 security scheme propagated from EventBuilder, got %d", len(handle.SecuritySchemes))
@@ -1040,15 +991,13 @@ func TestEventPattern_NilBuilder_NoSecuritySchemes(t *testing.T) {
 	// Regression: without an EventBuilder, the port still constructs successfully
 	// (via a private, single-use builder) but carries no security schemes —
 	// documents the "supply your own Builder to get security" contract.
-	p, err := ports.NewSourcePort[int]("unsecured-readings", intCodec, ports.PortOptions{
-		Patterns: []ports.Pattern{ports.EventPattern{Topic: "sensors/data"}},
-	})
+	p, err := ports.NewSourcePort[int]("unsecured-readings", intCodec, ports.PortOptions{})
 	if err != nil {
 		t.Fatalf("construct port: %v", err)
 	}
-	handle, ok := ports.EventHandle[int](p)
-	if !ok {
-		t.Fatal("want EventHandle to be present")
+	handle, err := p.PluginEventPattern(ports.EventPattern{Topic: "sensors/data"})
+	if err != nil {
+		t.Fatalf("PluginEventPattern: %v", err)
 	}
 	if len(handle.SecuritySchemes) != 0 || handle.GlobalSecurity != nil {
 		t.Errorf("want no security schemes without an EventBuilder, got schemes=%v global=%v",
@@ -1060,14 +1009,14 @@ func TestRESTPattern_NilBuilder_StillGoesThroughRegister(t *testing.T) {
 	// Proves ports always calls Register (never the weaker ClientHandle): an
 	// unknown PathParam name (not a {var} placeholder in Path) is only caught
 	// by Register, via rest.InvalidPathParamError.
-	_, err := ports.NewIOPort[int, string]("bad-path-param", intCodec, strCodec, ports.PortOptions{
-		Patterns: []ports.Pattern{
-			ports.RESTPattern{
-				Method: "GET",
-				Path:   "/things",
-				Opts:   []rest.RouteOpt{rest.PathParam{Name: "id"}}, // "id" has no {id} placeholder in "/things"
-			},
-		},
+	p, err := ports.NewIOPort[int, string]("bad-path-param", intCodec, strCodec, ports.PortOptions{})
+	if err != nil {
+		t.Fatalf("construct port: %v", err)
+	}
+	_, err = p.PluginRESTPattern(ports.RESTPattern{
+		Method: "GET",
+		Path:   "/things",
+		Opts:   []rest.RouteOpt{rest.PathParam{Name: "id"}}, // "id" has no {id} placeholder in "/things"
 	})
 	if err == nil {
 		t.Fatal("want PatternRegisterError wrapping InvalidPathParamError, got nil")
@@ -1085,13 +1034,15 @@ func TestRESTPattern_NilBuilder_StillGoesThroughRegister(t *testing.T) {
 func TestRegisterReqReply_SameBuilderAlreadyUsed_ReturnsDuplicateRouteError(t *testing.T) {
 	b := reqreply.NewBuilder(reqreply.Info{Title: "Test", Version: "1.0.0"})
 	p, err := ports.NewToolPort[int, string]("compute-dup", intCodec, strCodec, ports.PortOptions{
-		Patterns:        []ports.Pattern{ports.ReqReplyPattern{Topic: "compute/dup"}},
 		ReqReplyBuilder: b,
 	})
 	if err != nil {
 		t.Fatalf("construct port: %v", err)
 	}
-	// The port already registered "compute/dup" with b at construction time —
+	if _, err := p.PluginReqReplyPattern(ports.ReqReplyPattern{Topic: "compute/dup"}); err != nil {
+		t.Fatalf("PluginReqReplyPattern: %v", err)
+	}
+	// The port already registered "compute/dup" with b when plugged in —
 	// registering it again with the SAME builder must fail.
 	err = ports.RegisterReqReply[int, string](b, p)
 	var dre reqreply.DuplicateRouteError
@@ -1103,13 +1054,15 @@ func TestRegisterReqReply_SameBuilderAlreadyUsed_ReturnsDuplicateRouteError(t *t
 func TestRegisterMCP_SameBuilderAlreadyUsed_ReturnsError(t *testing.T) {
 	b := apimcp.NewBuilder(apimcp.Info{Name: "Test", Version: "1.0.0"})
 	p, err := ports.NewToolPort[int, string]("compute-dup-tool", intCodec, strCodec, ports.PortOptions{
-		Patterns:   []ports.Pattern{ports.MCPPattern{Name: "compute-dup-tool"}},
 		MCPBuilder: b,
 	})
 	if err != nil {
 		t.Fatalf("construct port: %v", err)
 	}
-	// The port already registered "compute-dup-tool" with b at construction time.
+	if _, err := p.PluginMCPPattern(ports.MCPPattern{Name: "compute-dup-tool"}); err != nil {
+		t.Fatalf("PluginMCPPattern: %v", err)
+	}
+	// The port already registered "compute-dup-tool" with b when plugged in.
 	if err := ports.RegisterMCP[int, string](b, p); err == nil {
 		t.Fatal("want error registering the same tool name twice with the same builder, got nil")
 	}
@@ -1119,16 +1072,16 @@ func TestRESTPattern_WithBuilder_UsesSharedBuilderForSpec(t *testing.T) {
 	// A RESTPattern built with a shared RESTBuilder accumulates directly into
 	// that builder's spec — no separate RegisterREST replay needed.
 	b := rest.NewBuilder(rest.Info{Title: "Test", Version: "1.0.0"})
-	_, err := ports.NewIOPort[int, string]("shared-builder-route", intCodec, strCodec, ports.PortOptions{
-		Patterns: []ports.Pattern{
-			ports.RESTPattern{Method: "GET", Path: "/shared", Opts: []rest.RouteOpt{
-				rest.RouteMeta{OperationID: "sharedRoute"},
-			}},
-		},
+	p, err := ports.NewIOPort[int, string]("shared-builder-route", intCodec, strCodec, ports.PortOptions{
 		RESTBuilder: b,
 	})
 	if err != nil {
 		t.Fatalf("construct port: %v", err)
+	}
+	if _, err := p.PluginRESTPattern(ports.RESTPattern{Method: "GET", Path: "/shared", Opts: []rest.RouteOpt{
+		rest.RouteMeta{OperationID: "sharedRoute"},
+	}}); err != nil {
+		t.Fatalf("PluginRESTPattern: %v", err)
 	}
 	spec, err := b.OpenAPISpec()
 	if err != nil {
@@ -1151,12 +1104,13 @@ func TestRESTPattern_WithBuilder_PathConstraintFailure_ReturnsPatternRegisterErr
 	}
 	b := rest.NewBuilder(rest.Info{Title: "Test", Version: "1.0.0"}, rest.WithPathConstraints(noDigits))
 
-	_, err := ports.NewIOPort[int, string]("bad-path-shape", intCodec, strCodec, ports.PortOptions{
-		Patterns: []ports.Pattern{
-			ports.RESTPattern{Method: "GET", Path: "/v2/things"}, // contains "2" -> violates noDigits
-		},
+	p, err := ports.NewIOPort[int, string]("bad-path-shape", intCodec, strCodec, ports.PortOptions{
 		RESTBuilder: b,
 	})
+	if err != nil {
+		t.Fatalf("construct port: %v", err)
+	}
+	_, err = p.PluginRESTPattern(ports.RESTPattern{Method: "GET", Path: "/v2/things"}) // contains "2" -> violates noDigits
 	if err == nil {
 		t.Fatal("want PatternRegisterError from path constraint failure, got nil")
 	}
@@ -1179,20 +1133,16 @@ var cfgCodec = codex.Struct[cfgItem](
 )
 
 func TestFilePattern_SinkPort_BuildsFileHandle(t *testing.T) {
-	p, err := ports.NewSinkPort[cfgItem]("file-sink", cfgCodec, ports.PortOptions{
-		Patterns: []ports.Pattern{
-			ports.FilePattern{
-				Path: "data/{id}/item.json",
-				Opts: []ports.FileOpt{ports.FilePathParam{Name: "id"}},
-			},
-		},
-	})
+	p, err := ports.NewSinkPort[cfgItem]("file-sink", cfgCodec, ports.PortOptions{})
 	if err != nil {
 		t.Fatalf("construct port: %v", err)
 	}
-	f, ok := ports.FileHandle[cfgItem](p)
-	if !ok {
-		t.Fatal("want FileHandle to be present")
+	f, err := p.PluginFilePattern(ports.FilePattern{
+		Path: "data/{id}/item.json",
+		Opts: []ports.FileOpt{ports.FilePathParam{Name: "id"}},
+	})
+	if err != nil {
+		t.Fatalf("PluginFilePattern: %v", err)
 	}
 	if f.Template != "data/{id}/item.json" {
 		t.Errorf("want template preserved, got %q", f.Template)
@@ -1207,21 +1157,14 @@ func TestFilePattern_SinkPort_BuildsFileHandle(t *testing.T) {
 }
 
 func TestFilePattern_IOPort_UsesRespCodec(t *testing.T) {
-	p, err := ports.NewIOPort[int, cfgItem]("file-io", intCodec, cfgCodec, ports.PortOptions{
-		Patterns: []ports.Pattern{
-			ports.FilePattern{Path: "item.json"},
-		},
-	})
+	p, err := ports.NewIOPort[int, cfgItem]("file-io", intCodec, cfgCodec, ports.PortOptions{})
 	if err != nil {
 		t.Fatalf("construct port: %v", err)
 	}
-	// The handle is a ports.File of the RESPONSE type…
-	if _, ok := ports.FileHandle[cfgItem](p); !ok {
-		t.Error("want FileHandle[cfgItem] (response type) to be present")
-	}
-	// …not of the request type.
-	if _, ok := ports.FileHandle[int](p); ok {
-		t.Error("want FileHandle[int] (request type) to be absent")
+	// PluginFilePattern's return type is File[Resp] — enforced at compile
+	// time now (was a runtime FileHandle[T] type-assertion check before).
+	if _, err := p.PluginFilePattern(ports.FilePattern{Path: "item.json"}); err != nil {
+		t.Fatalf("PluginFilePattern: %v", err)
 	}
 }
 
@@ -1238,17 +1181,13 @@ func TestFilePattern_FormatKinds(t *testing.T) {
 	for _, k := range kinds {
 		t.Run(k.name, func(t *testing.T) {
 			dir := t.TempDir()
-			p, err := ports.NewSinkPort[cfgItem]("fmt-"+k.name, cfgCodec, ports.PortOptions{
-				Patterns: []ports.Pattern{
-					ports.FilePattern{Path: dir + "/" + k.file, Format: k.kind},
-				},
-			})
+			p, err := ports.NewSinkPort[cfgItem]("fmt-"+k.name, cfgCodec, ports.PortOptions{})
 			if err != nil {
 				t.Fatalf("construct port: %v", err)
 			}
-			f, ok := ports.FileHandle[cfgItem](p)
-			if !ok {
-				t.Fatal("want FileHandle to be present")
+			f, err := p.PluginFilePattern(ports.FilePattern{Path: dir + "/" + k.file, Format: k.kind})
+			if err != nil {
+				t.Fatalf("PluginFilePattern: %v", err)
 			}
 			if err := f.Write(nil, cfgItem{V: 7}, ports.FileOptions{}); err != nil {
 				t.Fatalf("write: %v", err)
@@ -1264,24 +1203,13 @@ func TestFilePattern_FormatKinds(t *testing.T) {
 	}
 }
 
-func TestFileHandle_MissingPattern_ReturnsFalse(t *testing.T) {
-	p := intSinkPort("no-file-pattern", 0)
-	if _, ok := ports.FileHandle[int](p); ok {
-		t.Error("want FileHandle to be absent")
-	}
-	if _, ok := ports.FileHandle[int](struct{}{}); ok {
-		t.Error("want FileHandle to be absent for non-port value")
-	}
-}
-
 func TestSQLPattern_MetaAccessor(t *testing.T) {
-	p, err := ports.NewSinkPort[int]("sql-sink", intCodec, ports.PortOptions{
-		Patterns: []ports.Pattern{
-			ports.SQLPattern{Table: "readings", Op: "insert_reading"},
-		},
-	})
+	p, err := ports.NewSinkPort[int]("sql-sink", intCodec, ports.PortOptions{})
 	if err != nil {
 		t.Fatalf("construct port: %v", err)
+	}
+	if err := p.PluginSQLPattern(ports.SQLPattern{Table: "readings", Op: "insert_reading"}); err != nil {
+		t.Fatalf("PluginSQLPattern: %v", err)
 	}
 	m, ok := ports.SQLMeta(p)
 	if !ok {
@@ -1310,11 +1238,12 @@ func TestSQLMeta_PropagatedOnBindAndConnect(t *testing.T) {
 	ctx := context.Background()
 
 	// IOPort: adapter Transform ctx (via Connect) must carry the metadata.
-	iop, err := ports.NewIOPort[int, int]("sql-io", intCodec, intCodec, ports.PortOptions{
-		Patterns: []ports.Pattern{ports.SQLPattern{Table: "calib", Op: "get"}},
-	})
+	iop, err := ports.NewIOPort[int, int]("sql-io", intCodec, intCodec, ports.PortOptions{})
 	if err != nil {
 		t.Fatalf("construct port: %v", err)
+	}
+	if err := iop.PluginSQLPattern(ports.SQLPattern{Table: "calib", Op: "get"}); err != nil {
+		t.Fatalf("PluginSQLPattern: %v", err)
 	}
 	var got ports.SQLPattern
 	var gotOK bool
@@ -1333,11 +1262,12 @@ func TestSQLMeta_PropagatedOnBindAndConnect(t *testing.T) {
 	}
 
 	// SinkPort: adapter Activate ctx (via Bind) must carry the metadata.
-	sp, err := ports.NewSinkPort[int]("sql-sink2", intCodec, ports.PortOptions{
-		Patterns: []ports.Pattern{ports.SQLPattern{Table: "rd", Op: "ins"}},
-	})
+	sp, err := ports.NewSinkPort[int]("sql-sink2", intCodec, ports.PortOptions{})
 	if err != nil {
 		t.Fatalf("construct port: %v", err)
+	}
+	if err := sp.PluginSQLPattern(ports.SQLPattern{Table: "rd", Op: "ins"}); err != nil {
+		t.Fatalf("PluginSQLPattern: %v", err)
 	}
 	metaCh := make(chan ports.SQLPattern, 1)
 	sp.Bind(ctx, sinkCtxProbe{metaCh: metaCh})
@@ -1627,19 +1557,16 @@ func TestLatestPort_SurvivesStreamTermination(t *testing.T) {
 func TestLatestPort_RESTPattern_InSpec(t *testing.T) {
 	b := rest.NewBuilder(rest.Info{Title: "t", Version: "1"})
 	p, err := ports.NewLatestPort[int]("latest-rest", intCodec, ports.PortOptions{
-		Patterns: []ports.Pattern{
-			ports.RESTPattern{Method: "GET", Path: "/latest", Opts: []rest.RouteOpt{
-				rest.RouteMeta{OperationID: "getLatest"},
-			}},
-		},
 		RESTBuilder: b,
 	})
 	if err != nil {
 		t.Fatalf("construct: %v", err)
 	}
-	handle, ok := ports.RESTHandle[struct{}, int](p)
-	if !ok {
-		t.Fatal("want RESTHandle[struct{}, int] present")
+	handle, err := p.PluginRESTPattern(ports.RESTPattern{Method: "GET", Path: "/latest", Opts: []rest.RouteOpt{
+		rest.RouteMeta{OperationID: "getLatest"},
+	}})
+	if err != nil {
+		t.Fatalf("PluginRESTPattern: %v", err)
 	}
 	if handle.Descriptor.Method != "GET" || handle.Descriptor.Path != "/latest" {
 		t.Errorf("want GET /latest, got %+v", handle.Descriptor)
@@ -1691,19 +1618,15 @@ func TestLatestPort_FanOut(t *testing.T) {
 // ── Phase C: RESTPattern on SourcePort (ingest) and SinkPort (SSE) ───────────
 
 func TestRESTPattern_SourcePort_BuildsIngestHandle(t *testing.T) {
-	p, err := ports.NewSourcePort[int]("ingest", intCodec, ports.PortOptions{
-		Patterns: []ports.Pattern{
-			ports.RESTPattern{Method: "POST", Path: "/readings", Opts: []rest.RouteOpt{
-				rest.RouteMeta{OperationID: "ingestReading"},
-			}},
-		},
-	})
+	p, err := ports.NewSourcePort[int]("ingest", intCodec, ports.PortOptions{})
 	if err != nil {
 		t.Fatalf("construct: %v", err)
 	}
-	handle, ok := ports.RESTHandle[int, struct{}](p)
-	if !ok {
-		t.Fatal("want ingest RESTHandle[int, struct{}] present")
+	handle, err := p.PluginRESTPattern(ports.RESTPattern{Method: "POST", Path: "/readings", Opts: []rest.RouteOpt{
+		rest.RouteMeta{OperationID: "ingestReading"},
+	}})
+	if err != nil {
+		t.Fatalf("PluginRESTPattern: %v", err)
 	}
 	if handle.Descriptor.Method != "POST" || handle.Descriptor.Path != "/readings" {
 		t.Errorf("want POST /readings, got %+v", handle.Descriptor)
@@ -1711,19 +1634,16 @@ func TestRESTPattern_SourcePort_BuildsIngestHandle(t *testing.T) {
 }
 
 func TestRESTPattern_SinkPort_BuildsSSEHandle(t *testing.T) {
-	p, err := ports.NewSinkPort[int]("sse", intCodec, ports.PortOptions{
-		Patterns: []ports.Pattern{
-			ports.RESTPattern{Path: "/events", Opts: []rest.RouteOpt{
-				rest.RouteMeta{OperationID: "streamEvents"},
-			}}, // Method empty — SSE is always GET
-		},
-	})
+	p, err := ports.NewSinkPort[int]("sse", intCodec, ports.PortOptions{})
 	if err != nil {
 		t.Fatalf("construct: %v", err)
 	}
-	handle, ok := ports.SSEHandle[int](p)
-	if !ok {
-		t.Fatal("want SSEHandle[int] present")
+	// Method empty — SSE is always GET
+	handle, err := p.PluginRESTPattern(ports.RESTPattern{Path: "/events", Opts: []rest.RouteOpt{
+		rest.RouteMeta{OperationID: "streamEvents"},
+	}})
+	if err != nil {
+		t.Fatalf("PluginRESTPattern: %v", err)
 	}
 	if handle.Descriptor.Method != "GET" || handle.Descriptor.Path != "/events" {
 		t.Errorf("want GET /events, got %+v", handle.Descriptor)
@@ -1731,11 +1651,11 @@ func TestRESTPattern_SinkPort_BuildsSSEHandle(t *testing.T) {
 }
 
 func TestRESTPattern_SinkPort_MethodValidation(t *testing.T) {
-	_, err := ports.NewSinkPort[int]("sse-bad", intCodec, ports.PortOptions{
-		Patterns: []ports.Pattern{
-			ports.RESTPattern{Method: "POST", Path: "/events"},
-		},
-	})
+	p, err := ports.NewSinkPort[int]("sse-bad", intCodec, ports.PortOptions{})
+	if err != nil {
+		t.Fatalf("construct: %v", err)
+	}
+	_, err = p.PluginRESTPattern(ports.RESTPattern{Method: "POST", Path: "/events"})
 	var pre ports.PatternRegisterError
 	if !errors.As(err, &pre) {
 		t.Fatalf("want PatternRegisterError for POST SSE, got %v", err)
@@ -1744,32 +1664,34 @@ func TestRESTPattern_SinkPort_MethodValidation(t *testing.T) {
 		t.Errorf("want kind rest, got %q", pre.Kind)
 	}
 	// Explicit GET is accepted.
-	if _, err := ports.NewSinkPort[int]("sse-get", intCodec, ports.PortOptions{
-		Patterns: []ports.Pattern{ports.RESTPattern{Method: "GET", Path: "/events"}},
-	}); err != nil {
+	p2, err := ports.NewSinkPort[int]("sse-get", intCodec, ports.PortOptions{})
+	if err != nil {
+		t.Fatalf("construct: %v", err)
+	}
+	if _, err := p2.PluginRESTPattern(ports.RESTPattern{Method: "GET", Path: "/events"}); err != nil {
 		t.Errorf("explicit GET must be accepted, got %v", err)
 	}
 }
 
 func TestRESTPattern_InSharedSpec_IngestAndSSE(t *testing.T) {
 	b := rest.NewBuilder(rest.Info{Title: "t", Version: "1"})
-	_, err := ports.NewSourcePort[int]("ingest-spec", intCodec, ports.PortOptions{
-		Patterns: []ports.Pattern{
-			ports.RESTPattern{Method: "POST", Path: "/in", Opts: []rest.RouteOpt{rest.RouteMeta{OperationID: "opIngest"}}},
-		},
+	src, err := ports.NewSourcePort[int]("ingest-spec", intCodec, ports.PortOptions{
 		RESTBuilder: b,
 	})
 	if err != nil {
 		t.Fatalf("source: %v", err)
 	}
-	_, err = ports.NewSinkPort[int]("sse-spec", intCodec, ports.PortOptions{
-		Patterns: []ports.Pattern{
-			ports.RESTPattern{Path: "/out", Opts: []rest.RouteOpt{rest.RouteMeta{OperationID: "opSSE"}}},
-		},
+	if _, err := src.PluginRESTPattern(ports.RESTPattern{Method: "POST", Path: "/in", Opts: []rest.RouteOpt{rest.RouteMeta{OperationID: "opIngest"}}}); err != nil {
+		t.Fatalf("source PluginRESTPattern: %v", err)
+	}
+	sink, err := ports.NewSinkPort[int]("sse-spec", intCodec, ports.PortOptions{
 		RESTBuilder: b,
 	})
 	if err != nil {
 		t.Fatalf("sink: %v", err)
+	}
+	if _, err := sink.PluginRESTPattern(ports.RESTPattern{Path: "/out", Opts: []rest.RouteOpt{rest.RouteMeta{OperationID: "opSSE"}}}); err != nil {
+		t.Fatalf("sink PluginRESTPattern: %v", err)
 	}
 	doc, err := b.OpenAPISpec()
 	if err != nil {
@@ -1783,33 +1705,13 @@ func TestRESTPattern_InSharedSpec_IngestAndSSE(t *testing.T) {
 	}
 }
 
-func TestSSEHandle_MissingPattern_ReturnsFalse(t *testing.T) {
-	if _, ok := ports.SSEHandle[int](intSinkPort("no-pattern", 0)); ok {
-		t.Error("want SSEHandle absent on a pattern-less port")
-	}
-	if _, ok := ports.SSEHandle[int](struct{}{}); ok {
-		t.Error("want SSEHandle absent for non-port value")
-	}
-	// A SourcePort's RESTPattern builds an ingest handle, not an SSE handle.
-	src, err := ports.NewSourcePort[int]("ingest-not-sse", intCodec, ports.PortOptions{
-		Patterns: []ports.Pattern{ports.RESTPattern{Method: "POST", Path: "/in"}},
-	})
-	if err != nil {
-		t.Fatalf("construct: %v", err)
-	}
-	if _, ok := ports.SSEHandle[int](src); ok {
-		t.Error("want SSEHandle absent on a SourcePort (ingest shape)")
-	}
-}
-
 func TestRegisterSSE_ReplaysSpec(t *testing.T) {
-	p, err := ports.NewSinkPort[int]("sse-replay", intCodec, ports.PortOptions{
-		Patterns: []ports.Pattern{
-			ports.RESTPattern{Path: "/replay", Opts: []rest.RouteOpt{rest.RouteMeta{OperationID: "opReplay"}}},
-		},
-	})
+	p, err := ports.NewSinkPort[int]("sse-replay", intCodec, ports.PortOptions{})
 	if err != nil {
 		t.Fatalf("construct: %v", err)
+	}
+	if _, err := p.PluginRESTPattern(ports.RESTPattern{Path: "/replay", Opts: []rest.RouteOpt{rest.RouteMeta{OperationID: "opReplay"}}}); err != nil {
+		t.Fatalf("PluginRESTPattern: %v", err)
 	}
 	b := rest.NewBuilder(rest.Info{Title: "t", Version: "1"})
 	if err := ports.RegisterSSE[int](b, p); err != nil {
@@ -1836,62 +1738,39 @@ func TestSocketPattern_PortAcceptance(t *testing.T) {
 	pat := ports.SocketPattern{Path: "/live/{room}"}
 
 	// SourcePort: accepted — Socket[T, struct{}].
-	src, err := ports.NewSourcePort[int]("ws-src", intCodec, ports.PortOptions{
-		Patterns: []ports.Pattern{pat},
-	})
+	src, err := ports.NewSourcePort[int]("ws-src", intCodec, ports.PortOptions{})
 	if err != nil {
 		t.Fatalf("SourcePort: %v", err)
 	}
-	if _, ok := ports.SocketHandle[int, struct{}](src); !ok {
-		t.Error("SourcePort: want socket handle")
+	if _, err := src.PluginSocketPattern(pat); err != nil {
+		t.Errorf("SourcePort: want socket handle, got err %v", err)
 	}
 
 	// SinkPort: accepted — Socket[struct{}, T].
-	sink, err := ports.NewSinkPort[int]("ws-sink", intCodec, ports.PortOptions{
-		Patterns: []ports.Pattern{pat},
-	})
+	sink, err := ports.NewSinkPort[int]("ws-sink", intCodec, ports.PortOptions{})
 	if err != nil {
 		t.Fatalf("SinkPort: %v", err)
 	}
-	if _, ok := ports.SocketHandle[struct{}, int](sink); !ok {
-		t.Error("SinkPort: want socket handle")
+	if _, err := sink.PluginSocketPattern(pat); err != nil {
+		t.Errorf("SinkPort: want socket handle, got err %v", err)
 	}
 
 	// DuplexPort: accepted — Socket[In, Out].
-	dup, err := ports.NewDuplexPort[int, string]("ws-dup", intCodec, strCodec, ports.PortOptions{
-		Patterns: []ports.Pattern{pat},
-	})
+	dup, err := ports.NewDuplexPort[int, string]("ws-dup", intCodec, strCodec, ports.PortOptions{})
 	if err != nil {
 		t.Fatalf("DuplexPort: %v", err)
 	}
-	h, ok := ports.SocketHandle[int, string](dup)
-	if !ok {
-		t.Fatal("DuplexPort: want socket handle")
+	h, err := dup.PluginSocketPattern(pat)
+	if err != nil {
+		t.Fatalf("DuplexPort: want socket handle, got err %v", err)
 	}
 	if h.Path != "/live/{room}" || h.Route == nil {
 		t.Errorf("handle incomplete: %+v", h)
 	}
 
-	// IOPort / LatestPort / ToolPort: rejected.
-	var pre ports.PatternRegisterError
-	if _, err := ports.NewIOPort[int, string]("ws-io", intCodec, strCodec,
-		ports.PortOptions{Patterns: []ports.Pattern{pat}}); !errors.As(err, &pre) || pre.Kind != "socket" {
-		t.Errorf("IOPort: want PatternRegisterError{socket}, got %v", err)
-	}
-	if _, err := ports.NewLatestPort[int]("ws-latest", intCodec,
-		ports.PortOptions{Patterns: []ports.Pattern{pat}}); !errors.As(err, &pre) || pre.Kind != "socket" {
-		t.Errorf("LatestPort: want PatternRegisterError{socket}, got %v", err)
-	}
-	if _, err := ports.NewToolPort[int, string]("ws-tool", intCodec, strCodec,
-		ports.PortOptions{Patterns: []ports.Pattern{pat}}); !errors.As(err, &pre) || pre.Kind != "socket" {
-		t.Errorf("ToolPort: want PatternRegisterError{socket}, got %v", err)
-	}
-
-	// DuplexPort with a non-socket pattern: rejected.
-	if _, err := ports.NewDuplexPort[int, string]("ws-dup2", intCodec, strCodec,
-		ports.PortOptions{Patterns: []ports.Pattern{ports.SQLPattern{Table: "t"}}}); !errors.As(err, &pre) {
-		t.Errorf("DuplexPort+SQLPattern: want PatternRegisterError, got %v", err)
-	}
+	// IOPort / LatestPort / ToolPort have NO PluginSocketPattern method at
+	// all — a stronger, compile-time version of the old runtime rejection
+	// check (SocketPattern simply cannot be plugged into these port types).
 }
 
 func TestSocketPattern_MergeFields_Wired(t *testing.T) {
@@ -1911,25 +1790,21 @@ func TestSocketPattern_MergeFields_Wired(t *testing.T) {
 		codex.RequiredField("text", codex.String(), func(v outMsg) string { return v.Text }, func(v *outMsg, s string) { v.Text = s }),
 		codex.OptionalField("room", codex.String(), func(v outMsg) string { return v.Room }, func(v *outMsg, s string) { v.Room = s }),
 	)
-	p, err := ports.NewDuplexPort[inMsg, outMsg]("ws-merge", inCodec, outCodec, ports.PortOptions{
-		Patterns: []ports.Pattern{
-			ports.SocketPattern{
-				Path: "/live/{room}",
-				InOpts: []ports.SocketInOpt{
-					ports.NewRequiredSocketInParam("room", codex.String(), func(v inMsg) string { return v.Room }, func(v *inMsg, s string) { v.Room = s }),
-				},
-				OutOpts: []ports.SocketOutOpt{
-					ports.NewRequiredSocketOutParam("room", codex.String(), func(v outMsg) string { return v.Room }, func(v *outMsg, s string) { v.Room = s }),
-				},
-			},
-		},
-	})
+	p, err := ports.NewDuplexPort[inMsg, outMsg]("ws-merge", inCodec, outCodec, ports.PortOptions{})
 	if err != nil {
 		t.Fatalf("construct: %v", err)
 	}
-	h, ok := ports.SocketHandle[inMsg, outMsg](p)
-	if !ok {
-		t.Fatal("want SocketHandle")
+	h, err := p.PluginSocketPattern(ports.SocketPattern{
+		Path: "/live/{room}",
+		InOpts: []ports.SocketInOpt{
+			ports.NewRequiredSocketInParam("room", codex.String(), func(v inMsg) string { return v.Room }, func(v *inMsg, s string) { v.Room = s }),
+		},
+		OutOpts: []ports.SocketOutOpt{
+			ports.NewRequiredSocketOutParam("room", codex.String(), func(v outMsg) string { return v.Room }, func(v *outMsg, s string) { v.Room = s }),
+		},
+	})
+	if err != nil {
+		t.Fatalf("PluginSocketPattern: %v", err)
 	}
 	if len(h.InMergeFields()) != 1 || len(h.OutMergeFields()) != 1 {
 		t.Fatalf("want in/out merge fields wired, got %d/%d", len(h.InMergeFields()), len(h.OutMergeFields()))
@@ -1955,14 +1830,14 @@ func TestSocketPattern_MergeFieldTypeMismatch(t *testing.T) {
 	inCodec := codex.Struct[inMsg](
 		codex.OptionalField("room", codex.String(), func(v inMsg) string { return v.Room }, func(v *inMsg, s string) { v.Room = s }),
 	)
-	_, err := ports.NewDuplexPort[inMsg, string]("ws-merge-mismatch", inCodec, strCodec, ports.PortOptions{
-		Patterns: []ports.Pattern{
-			ports.SocketPattern{
-				Path: "/live/{room}",
-				InOpts: []ports.SocketInOpt{
-					ports.NewRequiredSocketInParam("room", codex.String(), func(v int) string { return fmt.Sprintf("%d", v) }, func(_ *int, _ string) {}),
-				},
-			},
+	p, err := ports.NewDuplexPort[inMsg, string]("ws-merge-mismatch", inCodec, strCodec, ports.PortOptions{})
+	if err != nil {
+		t.Fatalf("construct: %v", err)
+	}
+	_, err = p.PluginSocketPattern(ports.SocketPattern{
+		Path: "/live/{room}",
+		InOpts: []ports.SocketInOpt{
+			ports.NewRequiredSocketInParam("room", codex.String(), func(v int) string { return fmt.Sprintf("%d", v) }, func(_ *int, _ string) {}),
 		},
 	})
 	var pre ports.PatternRegisterError
@@ -2055,10 +1930,12 @@ func TestDuplexPort_Lifecycle(t *testing.T) {
 // ── RegisterSocket (AsyncAPI ws spec) ─────────────────────────────────────────
 
 func TestRegisterSocket_DuplexBothOperations(t *testing.T) {
-	port, err := ports.NewDuplexPort[int, string]("spec-dup", intCodec, strCodec,
-		ports.PortOptions{Patterns: []ports.Pattern{ports.SocketPattern{Path: "/live/{room}"}}})
+	port, err := ports.NewDuplexPort[int, string]("spec-dup", intCodec, strCodec, ports.PortOptions{})
 	if err != nil {
 		t.Fatalf("port: %v", err)
+	}
+	if _, err := port.PluginSocketPattern(ports.SocketPattern{Path: "/live/{room}"}); err != nil {
+		t.Fatalf("PluginSocketPattern: %v", err)
 	}
 	b := events.NewBuilder(events.Info{Title: "t", Version: "1"})
 	b.AddServer("prod", events.Server{URL: "example.com", Protocol: "ws"})
@@ -2079,8 +1956,8 @@ func TestRegisterSocket_DuplexBothOperations(t *testing.T) {
 }
 
 func TestRegisterSocket_OneDirectional(t *testing.T) {
-	src, _ := ports.NewSourcePort[int]("spec-src", intCodec,
-		ports.PortOptions{Patterns: []ports.Pattern{ports.SocketPattern{Path: "/in"}}})
+	src, _ := ports.NewSourcePort[int]("spec-src", intCodec, ports.PortOptions{})
+	_, _ = src.PluginSocketPattern(ports.SocketPattern{Path: "/in"})
 	b := events.NewBuilder(events.Info{Title: "t", Version: "1"})
 	if err := ports.RegisterSocket[int, struct{}](b, src); err != nil {
 		t.Fatalf("RegisterSocket source: %v", err)
@@ -2114,17 +1991,13 @@ func TestRegisterSocket_MissingPattern(t *testing.T) {
 // response codec.
 func TestFilePattern_CustomFormat_Gob(t *testing.T) {
 	dir := t.TempDir()
-	p, err := ports.NewIOPort[int, cfgItem]("file-gob", intCodec, cfgCodec, ports.PortOptions{
-		Patterns: []ports.Pattern{
-			ports.FilePattern{Path: dir + "/item.gob", CustomFormat: format.Gob(cfgCodec)},
-		},
-	})
+	p, err := ports.NewIOPort[int, cfgItem]("file-gob", intCodec, cfgCodec, ports.PortOptions{})
 	if err != nil {
 		t.Fatalf("construct port: %v", err)
 	}
-	f, ok := ports.FileHandle[cfgItem](p)
-	if !ok {
-		t.Fatal("want FileHandle to be present")
+	f, err := p.PluginFilePattern(ports.FilePattern{Path: dir + "/item.gob", CustomFormat: format.Gob(cfgCodec)})
+	if err != nil {
+		t.Fatalf("PluginFilePattern: %v", err)
 	}
 	if err := f.Write(nil, cfgItem{V: 42}, ports.FileOptions{}); err != nil {
 		t.Fatalf("write: %v", err)
@@ -2143,18 +2016,14 @@ func TestFilePattern_CustomFormat_Gob(t *testing.T) {
 func TestFilePattern_CustomFormat_BinaryPNG(t *testing.T) {
 	dir := t.TempDir()
 	pngCodec := codex.Bytes().Refine(validate.PNG)
-	p, err := ports.NewSinkPort[[]byte]("file-png", pngCodec, ports.PortOptions{
-		Patterns: []ports.Pattern{
-			ports.FilePattern{Path: dir + "/img.png",
-				CustomFormat: format.Binary(pngCodec).WithContentType("image/png")},
-		},
-	})
+	p, err := ports.NewSinkPort[[]byte]("file-png", pngCodec, ports.PortOptions{})
 	if err != nil {
 		t.Fatalf("construct port: %v", err)
 	}
-	f, ok := ports.FileHandle[[]byte](p)
-	if !ok {
-		t.Fatal("want FileHandle to be present")
+	f, err := p.PluginFilePattern(ports.FilePattern{Path: dir + "/img.png",
+		CustomFormat: format.Binary(pngCodec).WithContentType("image/png")})
+	if err != nil {
+		t.Fatalf("PluginFilePattern: %v", err)
 	}
 	pngSig := []byte{0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 0x00}
 	if err := f.Write(nil, pngSig, ports.FileOptions{}); err != nil {
@@ -2176,17 +2045,13 @@ func TestFilePattern_CustomFormat_BinaryPNG(t *testing.T) {
 // CF4: SocketPattern + CustomFormat(Gob) applies to both directions on a
 // DuplexPort (same type both sides in this test — asymmetric is Phase 2).
 func TestSocketPattern_CustomFormat_Gob(t *testing.T) {
-	p, err := ports.NewDuplexPort[cfgItem, cfgItem]("socket-gob", cfgCodec, cfgCodec, ports.PortOptions{
-		Patterns: []ports.Pattern{
-			ports.SocketPattern{Path: "/live", CustomFormat: format.Gob(cfgCodec)},
-		},
-	})
+	p, err := ports.NewDuplexPort[cfgItem, cfgItem]("socket-gob", cfgCodec, cfgCodec, ports.PortOptions{})
 	if err != nil {
 		t.Fatalf("construct port: %v", err)
 	}
-	h, ok := ports.SocketHandle[cfgItem, cfgItem](p)
-	if !ok {
-		t.Fatal("want SocketHandle to be present")
+	h, err := p.PluginSocketPattern(ports.SocketPattern{Path: "/live", CustomFormat: format.Gob(cfgCodec)})
+	if err != nil {
+		t.Fatalf("PluginSocketPattern: %v", err)
 	}
 	data, err := h.InFormat.Marshal(cfgItem{V: 3})
 	if err != nil {
@@ -2207,17 +2072,13 @@ func TestSocketPattern_CustomFormat_Gob(t *testing.T) {
 // CF4b: SocketPattern + CustomFormat on a one-directional port (SourcePort)
 // must NOT fail when trying to build the unused struct{} side.
 func TestSocketPattern_CustomFormat_OneDirectional(t *testing.T) {
-	p, err := ports.NewSourcePort[cfgItem]("socket-gob-src", cfgCodec, ports.PortOptions{
-		Patterns: []ports.Pattern{
-			ports.SocketPattern{Path: "/in", CustomFormat: format.Gob(cfgCodec)},
-		},
-	})
+	p, err := ports.NewSourcePort[cfgItem]("socket-gob-src", cfgCodec, ports.PortOptions{})
 	if err != nil {
 		t.Fatalf("construct port: %v", err)
 	}
-	h, ok := ports.SocketHandle[cfgItem, struct{}](p)
-	if !ok {
-		t.Fatal("want SocketHandle to be present")
+	h, err := p.PluginSocketPattern(ports.SocketPattern{Path: "/in", CustomFormat: format.Gob(cfgCodec)})
+	if err != nil {
+		t.Fatalf("PluginSocketPattern: %v", err)
 	}
 	data, err := h.InFormat.Marshal(cfgItem{V: 11})
 	if err != nil {
@@ -2234,11 +2095,12 @@ func TestSocketPattern_CustomFormat_OneDirectional(t *testing.T) {
 
 // CF5: type mismatch returns PatternRegisterError with errors.As + LogValue.
 func TestCustomFormat_TypeMismatch(t *testing.T) {
-	_, err := ports.NewIOPort[int, cfgItem]("cf-mismatch", intCodec, cfgCodec, ports.PortOptions{
-		Patterns: []ports.Pattern{
-			ports.FilePattern{Path: "item.bin", CustomFormat: format.Gob(intCodec)}, // wrong type: Format[int] not Format[cfgItem]
-		},
-	})
+	p, err := ports.NewIOPort[int, cfgItem]("cf-mismatch", intCodec, cfgCodec, ports.PortOptions{})
+	if err != nil {
+		t.Fatalf("construct port: %v", err)
+	}
+	// wrong type: Format[int] not Format[cfgItem]
+	_, err = p.PluginFilePattern(ports.FilePattern{Path: "item.bin", CustomFormat: format.Gob(intCodec)})
 	var pre ports.PatternRegisterError
 	if !errors.As(err, &pre) || pre.Kind != "file" {
 		t.Fatalf("want PatternRegisterError{file}, got %v", err)
@@ -2261,17 +2123,13 @@ func TestCustomFormat_TypeMismatch(t *testing.T) {
 // CF6: CustomFormat nil, Format set — unchanged existing behavior (regression).
 func TestCustomFormat_Nil_RegressionGuard(t *testing.T) {
 	dir := t.TempDir()
-	p, err := ports.NewSinkPort[cfgItem]("cf-nil", cfgCodec, ports.PortOptions{
-		Patterns: []ports.Pattern{
-			ports.FilePattern{Path: dir + "/item.yaml", Format: ports.FileFormatYAML},
-		},
-	})
+	p, err := ports.NewSinkPort[cfgItem]("cf-nil", cfgCodec, ports.PortOptions{})
 	if err != nil {
 		t.Fatalf("construct port: %v", err)
 	}
-	f, ok := ports.FileHandle[cfgItem](p)
-	if !ok {
-		t.Fatal("want FileHandle to be present")
+	f, err := p.PluginFilePattern(ports.FilePattern{Path: dir + "/item.yaml", Format: ports.FileFormatYAML})
+	if err != nil {
+		t.Fatalf("PluginFilePattern: %v", err)
 	}
 	if err := f.Write(nil, cfgItem{V: 1}, ports.FileOptions{}); err != nil {
 		t.Fatalf("write: %v", err)
@@ -2288,21 +2146,17 @@ func TestCustomFormat_Nil_RegressionGuard(t *testing.T) {
 // CF7: CustomFormat non-nil AND Format also set — CustomFormat wins.
 func TestCustomFormat_PrecedenceOverFormat(t *testing.T) {
 	dir := t.TempDir()
-	p, err := ports.NewSinkPort[cfgItem]("cf-precedence", cfgCodec, ports.PortOptions{
-		Patterns: []ports.Pattern{
-			ports.FilePattern{
-				Path:         dir + "/item.gob",
-				Format:       ports.FileFormatYAML, // would produce YAML text if honored
-				CustomFormat: format.Gob(cfgCodec), // must win — binary Gob instead
-			},
-		},
-	})
+	p, err := ports.NewSinkPort[cfgItem]("cf-precedence", cfgCodec, ports.PortOptions{})
 	if err != nil {
 		t.Fatalf("construct port: %v", err)
 	}
-	f, ok := ports.FileHandle[cfgItem](p)
-	if !ok {
-		t.Fatal("want FileHandle to be present")
+	f, err := p.PluginFilePattern(ports.FilePattern{
+		Path:         dir + "/item.gob",
+		Format:       ports.FileFormatYAML, // would produce YAML text if honored
+		CustomFormat: format.Gob(cfgCodec), // must win — binary Gob instead
+	})
+	if err != nil {
+		t.Fatalf("PluginFilePattern: %v", err)
 	}
 	if err := f.Write(nil, cfgItem{V: 77}, ports.FileOptions{}); err != nil {
 		t.Fatalf("write: %v", err)

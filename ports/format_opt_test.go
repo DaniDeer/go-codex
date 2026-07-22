@@ -21,20 +21,16 @@ import (
 
 func TestRESTPattern_FormatOptZeroPortsChanges(t *testing.T) {
 	png := codex.Bytes().Refine(validate.PNG)
-	p, err := ports.NewIOPort[int, []byte]("img-io", intCodec, png, ports.PortOptions{
-		Patterns: []ports.Pattern{
-			ports.RESTPattern{Method: "GET", Path: "/images/{id}",
-				Opts: []rest.RouteOpt{
-					rest.Formats(format.Binary(png).WithContentType("image/png")),
-				}},
-		},
-	})
+	p, err := ports.NewIOPort[int, []byte]("img-io", intCodec, png, ports.PortOptions{})
 	if err != nil {
 		t.Fatalf("construct: %v", err)
 	}
-	handle, ok := ports.RESTHandle[int, []byte](p)
-	if !ok {
-		t.Fatal("want handle")
+	handle, err := p.PluginRESTPattern(ports.RESTPattern{Method: "GET", Path: "/images/{id}",
+		Opts: []rest.RouteOpt{
+			rest.Formats(format.Binary(png).WithContentType("image/png")),
+		}})
+	if err != nil {
+		t.Fatalf("PluginRESTPattern: %v", err)
 	}
 	if len(handle.Formats) != 1 || handle.Formats[0].ContentType() != "image/png" {
 		t.Errorf("want Formats via Pattern.Opts, got %+v", handle.Formats)
@@ -43,20 +39,16 @@ func TestRESTPattern_FormatOptZeroPortsChanges(t *testing.T) {
 
 func TestEventPattern_FormatOptZeroPortsChanges(t *testing.T) {
 	png := codex.Bytes().Refine(validate.PNG)
-	p, err := ports.NewSinkPort[[]byte]("img-sink", png, ports.PortOptions{
-		Patterns: []ports.Pattern{
-			ports.EventPattern{Topic: "images/{id}",
-				Opts: []events.ChannelOpt{
-					events.PublishFormats(format.Binary(png).WithContentType("image/png")),
-				}},
-		},
-	})
+	p, err := ports.NewSinkPort[[]byte]("img-sink", png, ports.PortOptions{})
 	if err != nil {
 		t.Fatalf("construct: %v", err)
 	}
-	handle, ok := ports.EventHandle[[]byte](p)
-	if !ok {
-		t.Fatal("want handle")
+	handle, err := p.PluginEventPattern(ports.EventPattern{Topic: "images/{id}",
+		Opts: []events.ChannelOpt{
+			events.PublishFormats(format.Binary(png).WithContentType("image/png")),
+		}})
+	if err != nil {
+		t.Fatalf("PluginEventPattern: %v", err)
 	}
 	if len(handle.PublishFormats) != 1 || handle.PublishFormats[0].ContentType() != "image/png" {
 		t.Errorf("want PublishFormats via Pattern.Opts, got %+v", handle.PublishFormats)
@@ -65,20 +57,16 @@ func TestEventPattern_FormatOptZeroPortsChanges(t *testing.T) {
 
 func TestReqReplyPattern_FormatOptZeroPortsChanges(t *testing.T) {
 	png := codex.Bytes().Refine(validate.PNG)
-	p, err := ports.NewIOPort[int, []byte]("img-rr", intCodec, png, ports.PortOptions{
-		Patterns: []ports.Pattern{
-			ports.ReqReplyPattern{Topic: "images/get",
-				Opts: []reqreply.RouteOpt{
-					reqreply.Formats(format.Binary(png).WithContentType("image/png")),
-				}},
-		},
-	})
+	p, err := ports.NewIOPort[int, []byte]("img-rr", intCodec, png, ports.PortOptions{})
 	if err != nil {
 		t.Fatalf("construct: %v", err)
 	}
-	handle, ok := ports.ReqReplyHandle[int, []byte](p)
-	if !ok {
-		t.Fatal("want handle")
+	handle, err := p.PluginReqReplyPattern(ports.ReqReplyPattern{Topic: "images/get",
+		Opts: []reqreply.RouteOpt{
+			reqreply.Formats(format.Binary(png).WithContentType("image/png")),
+		}})
+	if err != nil {
+		t.Fatalf("PluginReqReplyPattern: %v", err)
 	}
 	if len(handle.Formats) != 1 || handle.Formats[0].ContentType() != "image/png" {
 		t.Errorf("want Formats via Pattern.Opts, got %+v", handle.Formats)

@@ -263,11 +263,12 @@ func groupKeys(v slog.Value) map[string]bool {
 func TestQueryEachAdapter_DefaultsTableOpFromContext(t *testing.T) {
 	ctx := context.Background()
 
-	p, err := ports.NewIOPort[string, testRow]("sql-io", codex.String(), testRowCodec, ports.PortOptions{
-		Patterns: []ports.Pattern{ports.SQLPattern{Table: "thresholds", Op: "get_by_sensor"}},
-	})
+	p, err := ports.NewIOPort[string, testRow]("sql-io", codex.String(), testRowCodec, ports.PortOptions{})
 	if err != nil {
 		t.Fatalf("construct port: %v", err)
+	}
+	if err := p.PluginSQLPattern(ports.SQLPattern{Table: "thresholds", Op: "get_by_sensor"}); err != nil {
+		t.Fatalf("PluginSQLPattern: %v", err)
 	}
 	dbErr := errors.New("db down")
 	// Empty Table/Op in the adapter options — must default from the port's SQLPattern.
@@ -319,11 +320,12 @@ func TestQueryEachAdapter_ExplicitTableOpWins(t *testing.T) {
 func TestDrainInsertAdapter_DefaultsTableOpFromContext(t *testing.T) {
 	ctx := context.Background()
 
-	p, err := ports.NewSinkPort[testRow]("sql-sink", testRowCodec, ports.PortOptions{
-		Patterns: []ports.Pattern{ports.SQLPattern{Table: "readings", Op: "insert_reading"}},
-	})
+	p, err := ports.NewSinkPort[testRow]("sql-sink", testRowCodec, ports.PortOptions{})
 	if err != nil {
 		t.Fatalf("construct port: %v", err)
+	}
+	if err := p.PluginSQLPattern(ports.SQLPattern{Table: "readings", Op: "insert_reading"}); err != nil {
+		t.Fatalf("PluginSQLPattern: %v", err)
 	}
 	insErr := errors.New("insert failed")
 	errCh := make(chan error, 1)

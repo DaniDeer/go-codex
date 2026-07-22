@@ -4,13 +4,14 @@
 //
 //	domain/         — Layer 1+2: models, codecs, field factories, constraints,
 //	                  pure business rules (validated-config factories included)
-//	pipeline/       — business logic: forge functions + the segmented MQTT
-//	                  pipeline (ports.PipePort/Chain/ChainStream), parameterized
-//	                  by the consumer-defined Store interface
-//	ioports/        — the service's complete IO surface: protocol-agnostic
-//	                  ports (EventPattern/SQLPattern/FilePattern) + REST routes;
-//	                  Raw/AlertStage are PipePorts — the MQTT ingestion/egress
-//	                  boundary IS the pipeline's first/last stage
+//	pipeline/       — business logic: pure mapping functions + the segmented
+//	                  MQTT pipeline (ports.Chain/ChainStream over boundary
+//	                  SourcePort/SinkPort + internal PipePort stages),
+//	                  parameterized by the consumer-defined Store interface
+//	ioports/        — the service's complete IO surface: every boundary
+//	                  follows the SAME three-step model (declare port shape →
+//	                  plug in a Pattern → bind an adapter); EventPattern/
+//	                  SQLPattern/FilePattern/RESTPattern + REST routes
 //	observability/  — cross-cutting CountingObserver (fanned out with a
 //	                  LoggingObserver, stored once in the context)
 //	adapters/       — infrastructure edge: mock MQTT client, SQL ReadingStore,
@@ -25,38 +26,43 @@
 //
 // # What it demonstrates
 //
-//   - [ports.PipePort] + [ports.PipePort.InputPortWithPatterns] +
-//     [adaptermqtt.SubscribeAdapter] — MQTT ingestion wired to the pipeline's
-//     first stage (ioports.Raw); pipeline code has no MQTT import. The topic
-//   - params are declared once via [ports.EventPattern]
-//     (ioports.SensorsPattern); InputPortWithPatterns derives the sub-port
-//     whose [ports.EventHandle] the adapter binds to — no separate
+//   - [ports.SourcePort] + [ports.SourcePort.PluginEventPattern] +
+//     [adaptermqtt.SubscribeAdapter] — MQTT ingestion wired to the
+//     pipeline's first stage (ioports.Sensors); pipeline code has no MQTT
+//     import. The topic + params are declared once as a standalone value
+//     (ioports.SensorsPattern), plugged in at wiring time — PluginEventPattern
+//     registers it AND returns the typed handle in one call, no separate
 //     events.NewChannel/Register step needed.
-//   - [ports.PipePort] + [ports.PipePort.OutputPortWithPatterns] +
+//   - [ports.SinkPort] + [ports.SinkPort.PluginEventPattern] +
 //     [adaptermqtt.PublishAdapter] — MQTT alert publishing wired to the
-//     pipeline's LAST stage (ioports.AlertStage); supports fan-out to
-//     additional sinks via additional OutputPort(WithPatterns) calls.
+//     pipeline's LAST stage (ioports.Alerts); supports fan-out to
+//     additional sinks via additional Bind calls.
 //   - [ports.Chain] + [ports.ChainStream] — pipeline.Build segments the MQTT
-//     pipeline into named PipePort stages (Raw → Params → Saved →
-//     AlertStage). Persistence is its OWN Params→Saved edge — [ports.IOPort]
-//   - [sqladapter.QueryEachAdapter] (ioports.Readings): the pipeline's
-//     forge function stays PURE (payload → insert params); the save happens
-//     through the port, whose adapter is chosen here, INSIDE that edge's
-//     transform — never buried inside a bigger, multi-purpose stage. Table/Op
-//     metadata declared once via [ports.SQLPattern].
-//   - [ports.PipelineSpec] — the MQTT pipeline's shape (pipe names, buffer
-//     sizes, bound adapter identities, every Chain/ChainStream edge with its
-//     transform's real Go function identity) derived directly from the four
-//     PipePorts, printed in demo.go — no hand-typed topology to keep in sync.
+//     pipeline into named stages (Sensors → Params → Saved → Alerts) using
+//     the SAME call shape whether the endpoint is a boundary SourcePort/
+//     SinkPort or an internal PipePort. Persistence is its OWN Params→Saved
+//     edge — [ports.IOPort] + [sqladapter.QueryEachAdapter] (ioports.Readings):
+//     the pipeline's mapping function stays PURE (payload → insert params);
+//     the save happens through the port, whose adapter is chosen here,
+//     INSIDE that edge's transform — never buried inside a bigger,
+//     multi-purpose stage. Table/Op metadata declared once via
+//     [ports.SQLPattern], plugged in via [ports.NewSQLPort] (ioports.Readings/
+//     History/ExportQuery are all declared this way — a thin convenience
+//     constructor combining "declare port" + "plug in SQLPattern").
+//   - [ports.PipelineSpec] — the MQTT pipeline's shape (pipe/port names,
+//     buffer sizes, bound adapter identities, every Chain/ChainStream edge
+//     with its transform's real Go function identity) derived directly from
+//     the four stages, printed in demo.go — no hand-typed topology to keep
+//     in sync.
 //   - [ports.ToolPort] + [nethttp.PipelineAdapter] — GET /sensors/{sensorID}/readings
-//     (ioports.HistoryTool, [ports.RESTPattern]): the tool pipeline Connects
-//     through ioports.History (IOPort, SQLPattern) — REST layer and database
-//     never meet directly.
+//     (ioports.HistoryTool, declared via [ports.NewRestToolPort]): the tool
+//     pipeline Connects through ioports.History (IOPort, SQLPattern) — REST
+//     layer and database never meet directly.
 //   - [ports.SinkPort] + [fileadapter.DrainWriteFileAdapter] — POST /export
 //     (ioports.ExportTool): query through ioports.ExportQuery (SQLPattern),
 //     write the snapshot through ioports.NewExportsPort's [ports.FilePattern]
 //     ({exportID}.json); the response path comes from the SAME declaration
-//     via [ports.FileHandle].BuildPath.
+//     via File.BuildPath.
 //   - [nethttp.HandlerLatest] — reactive cache endpoint; GET /readings/latest
 //     returns the most recently saved reading without querying the DB.
 //   - Validated-config factory pattern — main() loads domain.AlertConfig once
@@ -74,7 +80,6 @@ import (
 	"context"
 	"database/sql"
 	"embed"
-	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -90,6 +95,7 @@ import (
 	nethttp "github.com/DaniDeer/go-codex/adapters/nethttp"
 	sqladapter "github.com/DaniDeer/go-codex/adapters/sql"
 	"github.com/DaniDeer/go-codex/app"
+	"github.com/DaniDeer/go-codex/codex"
 	"github.com/DaniDeer/go-codex/config"
 	"github.com/DaniDeer/go-codex/examples/sensor-service/adapters"
 	"github.com/DaniDeer/go-codex/examples/sensor-service/db"
@@ -98,7 +104,6 @@ import (
 	"github.com/DaniDeer/go-codex/examples/sensor-service/observability"
 	"github.com/DaniDeer/go-codex/examples/sensor-service/pipeline"
 	"github.com/DaniDeer/go-codex/format"
-	"github.com/DaniDeer/go-codex/ports"
 	"github.com/DaniDeer/go-codex/stats"
 	gstream "github.com/DaniDeer/go-codex/stream"
 )
@@ -153,65 +158,43 @@ func main() {
 	// ── HTTP mux (declared early — HandlerLatest wires into it) ───────────
 	mux := http.NewServeMux()
 
-	// ── MQTT ingestion: bind ioports.Raw's "mqtt" InputPortWithPatterns ────
+	// ── MQTT ingestion: plug in Sensors' EventPattern, bind the adapter ────
 	//
-	// ioports.Raw is a PipePort — the pipeline's first stage AND the MQTT
-	// ingestion boundary. ioports.SensorsPattern declared the topic + params
-	// once; InputPortWithPatterns derives the sub-port whose EventHandle we
-	// bind the adapter to (forwarded to the SAME ioports.EventsBuilder the
-	// port was constructed with — its channel shows up in the same printed
-	// AsyncAPI spec as every hand-declared channel). This is the ONLY place
-	// MQTT appears on the inbound path.
+	// ioports.Sensors is a plain SourcePort — the pipeline's first stage AND
+	// the MQTT ingestion boundary. ioports.SensorsPattern declared the topic
+	// + params once, as a standalone value; PluginEventPattern registers it
+	// (against the SAME ioports.EventsBuilder the port was constructed with
+	// — its channel shows up in the same printed AsyncAPI spec as every
+	// hand-declared channel) AND returns the typed handle in one call. This
+	// is the ONLY place MQTT appears on the inbound path.
 	mqttClient := adapters.NewMockMQTTClient()
-	sensorsSrc, err := ioports.Raw.InputPortWithPatterns("mqtt", ioports.SensorsPattern)
-	must(err, "derive sensors sub-port")
-	readingHandle, ok := ports.EventHandle[domain.MQTTPayload](sensorsSrc)
-	if !ok {
-		must(errors.New("ioports.Raw: no EventPattern declared on sensors sub-port"), "derive reading channel handle")
-	}
-	sensorsSrc.Bind(ctx, adaptermqtt.SubscribeAdapter(mqttClient, readingHandle, 0,
+	readingHandle, err := ioports.Sensors.PluginEventPattern(ioports.SensorsPattern)
+	must(err, "plug in sensors EventPattern")
+	ioports.Sensors.Bind(ctx, adaptermqtt.SubscribeAdapter(mqttClient, readingHandle, 0,
 		format.JSON(domain.MQTTPayloadCodec),
 		adaptermqtt.SubscribeAdapterOptions{TopicFilter: "sensors/+/data"}))
 
-	// ── MQTT alert publishing: bind AlertStage's "mqtt" OutputPortWithPatterns
+	// ── MQTT alert publishing: plug in Alerts' EventPattern, bind adapter ──
 	//
-	// ioports.AlertStage is a PipePort — the pipeline's LAST stage AND the
-	// MQTT egress boundary. Registering its output sub-port + adapter here,
-	// BEFORE pipeline.Build/Connect, matches the ordering rule (OutputPort
-	// registrations must precede that pipe's own Connect). Fan-out to
-	// additional sinks (e.g. SSE, file) requires only additional
-	// OutputPort(WithPatterns) + Bind calls — no pipeline changes:
+	// ioports.Alerts is a plain SinkPort — the pipeline's LAST stage AND the
+	// MQTT egress boundary. Fan-out to additional sinks (e.g. SSE, file)
+	// requires only additional Bind calls — no pipeline changes:
 	//
-	//	ioports.AlertStage.OutputPort("file").Bind(ctx, file.DrainWriteAdapter(...))
-	alertSink, err := ioports.AlertStage.OutputPortWithPatterns("mqtt", ioports.AlertsPattern)
-	must(err, "derive alert sub-port")
-	alertHandle, ok := ports.EventHandle[domain.SensorAlert](alertSink)
-	if !ok {
-		must(errors.New("ioports.AlertStage: no EventPattern declared on alert sub-port"), "derive alert channel handle")
-	}
-	alertSink.Bind(ctx, adaptermqtt.PublishAdapter(mqttClient, alertHandle,
+	//	ioports.Alerts.Bind(ctx, file.DrainWriteAdapter(...))
+	alertHandle, err := ioports.Alerts.PluginEventPattern(ioports.AlertsPattern)
+	must(err, "plug in alerts EventPattern")
+	ioports.Alerts.Bind(ctx, adaptermqtt.PublishAdapter(mqttClient, alertHandle,
 		format.JSON(domain.AlertCodec),
 		adaptermqtt.MQTTDrainPublishOptions{
-			Vars: nil, // topic vars resolved per-item — alertHandle.Topic uses {sensorID}
-			OnError: func(err error) {
-				var sae gstream.StreamApplyError
-				var sde gstream.StreamDecodeError
-				switch {
-				case errors.As(err, &sae):
-					logger.Warn("stream apply error", "error", sae)
-				case errors.As(err, &sde):
-					logger.Warn("stream decode error", "error", sde)
-				default:
-					logger.Warn("alert publish error", "error", err)
-				}
-			},
+			Vars:    nil, // topic vars resolved per-item — alertHandle.Topic uses {sensorID}
+			OnError: gstream.LogOnError(logger, "alert publish"),
 		}))
 
 	// ── Persistence: bind the Readings IO port ────────────────────────────
 	//
-	// The pipeline maps payloads to insert params with a PURE forge function
-	// and persists through ioports.Readings — an IOPort whose adapter is
-	// chosen HERE. sql.QueryEachAdapter runs the save closure per item and
+	// The pipeline maps payloads to insert params with a PURE function and
+	// persists through ioports.Readings — an IOPort whose adapter is chosen
+	// HERE. sql.QueryEachAdapter runs the save closure per item and
 	// validates each returned row through domain.ReadingCodec (the post-read
 	// check); Table/Op default from the port's SQLPattern via context.
 	must(ioports.Readings.Bind(ctx, sqladapter.QueryEachAdapter(domain.ReadingCodec,
@@ -230,25 +213,23 @@ func main() {
 
 	// ── Business logic: assemble the segmented pipeline ───────────────────
 	//
-	// pipeline.Build registers Raw→Params (Chain, pure map), Params→Saved
+	// pipeline.Build registers Sensors→Params (Chain, pure map), Params→Saved
 	// (ChainStream, the SQL persistence hop through ioports.Readings — its
 	// own real edge, not hidden inside a bigger transform), and
-	// Saved→AlertStage (ChainStream, filter+alert) — all BEFORE any of the
-	// four pipes' Connect calls, per the ordering rule. It sees only ports
-	// and the validated config — zero adapter imports.
-	res := pipeline.Build(ctx, ioports.Raw, ioports.AlertStage, pipeline.Deps{
+	// Saved→Alerts (ChainStream, filter+alert) — all BEFORE Params/Saved's
+	// Connect calls, per the ordering rule. It sees only ports and the
+	// validated config — zero adapter imports.
+	res := pipeline.Build(ctx, ioports.Sensors, ioports.Alerts, pipeline.Deps{
 		Persist: ioports.Readings,
 		Cfg:     alertCfg,
 		Logger:  logger,
 	})
 
-	// Now that every Chain/ChainStream/Stream registration for these four
-	// pipes has happened (inside Build, above), start them. Order among
-	// them doesn't matter — only "registrations before Connect" does.
-	ioports.Raw.Connect(ctx)
+	// Params/Saved are the only two values here with their OWN Connect
+	// method (internal PipePort stages) — Sensors/Alerts (boundary ports)
+	// only needed their adapter Bind above, already done.
 	pipeline.Params.Connect(ctx)
 	pipeline.Saved.Connect(ctx)
-	ioports.AlertStage.Connect(ctx)
 
 	// ── HTTP reactive cache: bind the Latest port ─────────────────────────
 	//
@@ -257,20 +238,15 @@ func main() {
 	// no DB query per request. Before the first reading arrives the endpoint
 	// returns 503 + NoLatestValueError. The cache outlives the stream, so the
 	// endpoint keeps serving after the MQTT pipeline shuts down.
-	latestHandle, ok := ports.RESTHandle[struct{}, db.Reading](ioports.Latest)
-	if !ok {
-		must(errors.New("ioports.Latest: no RESTPattern declared"), "derive latest route handle")
-	}
-	must(ioports.Latest.Bind(ctx, nethttp.LatestAdapter(mux, latestHandle, nethttp.Options{})),
+	must(ioports.Latest.Bind(ctx, nethttp.LatestAdapter(mux, ioports.LatestHandle, nethttp.Options{})),
 		"bind latest port")
 	go ioports.Latest.Feed(ctx, res.LatestReadings)
 
-	// pipelineDone now comes straight from AlertStage.Done() — closes only
-	// after Connect's internal goroutines (which drain the Saved→AlertStage
-	// ChainStream edge and the "mqtt" OutputPortWithPatterns adapter) have
-	// fully exited, replacing the hand-rolled Feed-goroutine + close pattern
-	// this example used before PipePort's Done() existed (Gap 5).
-	pipelineDone := ioports.AlertStage.Done()
+	// pipelineDone comes from pipeline.Build's Result.Done — a lifecycle
+	// signal tracking the whole segmented pipeline's actual drain (see
+	// pipeline.Result's doc comment), since Sensors/Alerts (plain boundary
+	// ports) have no Done() of their own the way an internal PipePort does.
+	pipelineDone := res.Done
 
 	fmt.Println("✓ Stream pipeline active: MQTT → decode → map (pure) → persist (port) → tee → filter → alert")
 
@@ -278,9 +254,10 @@ func main() {
 	//
 	// GET /sensors/{sensorID}/readings is a ToolPort whose pipeline Connects
 	// through the History SQL port — REST layer and database never meet
-	// directly. The route was declared once (ports.RESTPattern on
-	// ioports.HistoryTool, registered against ioports.RESTBuilder); the SQL
-	// metadata once (ports.SQLPattern on ioports.History).
+	// directly. The route (ports.RESTPattern) and the SQL metadata
+	// (ports.SQLPattern) were both plugged in at declaration time in
+	// ioports.go via the NewRestToolPort/NewSQLPort convenience
+	// constructors; main() takes the already-derived handles directly.
 	must(ioports.History.Bind(ctx, sqladapter.QueryEachAdapter(domain.TimeSeriesCodec,
 		func(qctx context.Context, q domain.SensorQuery) ([]domain.TimeSeries, error) {
 			rows, err := store.Queries().ListReadingsBySensor(qctx, q.SensorID)
@@ -306,11 +283,7 @@ func main() {
 			r, _ := nethttp.RequestFromContext(ctx)
 			return r.PathValue("sensorID")
 		}))
-	historyHandle, ok := ports.RESTHandle[struct{}, domain.TimeSeries](ioports.HistoryTool)
-	if !ok {
-		must(errors.New("ioports.HistoryTool: no RESTPattern declared"), "derive history route handle")
-	}
-	must(ioports.HistoryTool.Bind(ctx, nethttp.PipelineAdapter(mux, historyHandle,
+	must(ioports.HistoryTool.Bind(ctx, nethttp.PipelineAdapter(mux, ioports.HistoryToolHandle,
 		nethttp.PipelineAdapterOptions{})), "bind history tool port")
 
 	// ── Export: SQL query port → file sink port → tool port ───────────────
@@ -338,12 +311,7 @@ func main() {
 		sqladapter.QueryEachStreamOptions{}, // Table/Op default from the port's SQLPattern
 	)), "bind export query port")
 
-	exportsPort, err := ioports.NewExportsPort(exportDir)
-	must(err, "construct exports port")
-	exportFile, ok := ports.FileHandle[domain.ExportSnapshot](exportsPort)
-	if !ok {
-		must(errors.New("exports port: no FilePattern declared"), "derive export file handle")
-	}
+	exportsPort, exportFile := codex.Must2(ioports.NewExportsPort(exportDir))
 	// The export sink lives on the APP context — independent of the MQTT
 	// pipeline ctx (which the demo cancels early); it must outlive it.
 	exportCtx := a.Context()
@@ -366,11 +334,7 @@ func main() {
 	ioports.ExportTool.SetPipeline(pipeline.NewExportPipeline(ioports.ExportQuery,
 		func(s domain.ExportSnapshot) { _ = exportsPort.Push(exportCtx, s) },
 		func(s domain.ExportSnapshot) (string, error) { return exportFile.BuildPath(exportVars(s)) }))
-	exportHandle, ok := ports.RESTHandle[domain.ExportRequest, domain.ExportResult](ioports.ExportTool)
-	if !ok {
-		must(errors.New("ioports.ExportTool: no RESTPattern declared"), "derive export route handle")
-	}
-	must(ioports.ExportTool.Bind(ctx, nethttp.PipelineAdapter(mux, exportHandle,
+	must(ioports.ExportTool.Bind(ctx, nethttp.PipelineAdapter(mux, ioports.ExportToolHandle,
 		nethttp.PipelineAdapterOptions{})), "bind export tool port")
 
 	// ── HTTP — register remaining routes ──────────────────────────────────

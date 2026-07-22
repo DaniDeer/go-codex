@@ -298,17 +298,13 @@ func TestZeromqLatestAdapter_ServesLatest(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
 	defer cancel()
 
-	port, err := ports.NewLatestPort[computeResp]("latest", respCodec(), ports.PortOptions{
-		Patterns: []ports.Pattern{
-			ports.ReqReplyPattern{Topic: "compute/latest"},
-		},
-	})
+	port, err := ports.NewLatestPort[computeResp]("latest", respCodec(), ports.PortOptions{})
 	if err != nil {
 		t.Fatalf("construct: %v", err)
 	}
-	handle, ok := ports.ReqReplyHandle[struct{}, computeResp](port)
-	if !ok {
-		t.Fatal("want ReqReplyHandle[struct{}, computeResp] present")
+	handle, err := port.PluginReqReplyPattern(ports.ReqReplyPattern{Topic: "compute/latest"})
+	if err != nil {
+		t.Fatalf("PluginReqReplyPattern: %v", err)
 	}
 
 	// Seed the cache first, then bind — the REP loop answers from the cell.
@@ -340,13 +336,14 @@ func TestZeromqLatestAdapter_EmptyCache_ErrorReply(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
 	defer cancel()
 
-	port, err := ports.NewLatestPort[computeResp]("latest-empty", respCodec(), ports.PortOptions{
-		Patterns: []ports.Pattern{ports.ReqReplyPattern{Topic: "compute/latest"}},
-	})
+	port, err := ports.NewLatestPort[computeResp]("latest-empty", respCodec(), ports.PortOptions{})
 	if err != nil {
 		t.Fatalf("construct: %v", err)
 	}
-	handle, _ := ports.ReqReplyHandle[struct{}, computeResp](port)
+	handle, err := port.PluginReqReplyPattern(ports.ReqReplyPattern{Topic: "compute/latest"})
+	if err != nil {
+		t.Fatalf("PluginReqReplyPattern: %v", err)
+	}
 
 	errCh := make(chan error, 1)
 	sock := &mockSocket{inFrames: [][][]byte{{[]byte(`{}`)}}}

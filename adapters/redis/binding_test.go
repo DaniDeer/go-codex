@@ -127,17 +127,13 @@ func userCache() ports.Cache[user] {
 			func(q userQuery) string { return q.ID },
 			func(q *userQuery, v string) { q.ID = v },
 		),
-	), userCodec, ports.PortOptions{
-		Patterns: []ports.Pattern{
-			ports.CachePattern{Key: "user:{id}", TTL: 15 * time.Minute},
-		},
-	})
+	), userCodec, ports.PortOptions{})
 	if err != nil {
 		panic(err)
 	}
-	c, ok := ports.CacheHandle[user](port)
-	if !ok {
-		panic("no cache handle")
+	c, err := port.PluginCachePattern(ports.CachePattern{Key: "user:{id}", TTL: 15 * time.Minute})
+	if err != nil {
+		panic(err)
 	}
 	return c
 }
@@ -150,23 +146,19 @@ func userCacheMerged() ports.Cache[user] {
 			func(q userQuery) string { return q.ID },
 			func(q *userQuery, v string) { q.ID = v },
 		),
-	), userCodec, ports.PortOptions{
-		Patterns: []ports.Pattern{
-			ports.CachePattern{Key: "user:{id}", TTL: 15 * time.Minute,
-				Opts: []ports.CacheOpt{
-					ports.NewCacheKeyParam("id", codex.String(),
-						func(u user) string { return u.ID },
-						func(u *user, v string) { u.ID = v }),
-				},
-			},
+	), userCodec, ports.PortOptions{})
+	if err != nil {
+		panic(err)
+	}
+	c, err := port.PluginCachePattern(ports.CachePattern{Key: "user:{id}", TTL: 15 * time.Minute,
+		Opts: []ports.CacheOpt{
+			ports.NewCacheKeyParam("id", codex.String(),
+				func(u user) string { return u.ID },
+				func(u *user, v string) { u.ID = v }),
 		},
 	})
 	if err != nil {
 		panic(err)
-	}
-	c, ok := ports.CacheHandle[user](port)
-	if !ok {
-		panic("no cache handle")
 	}
 	return c
 }
@@ -679,46 +671,27 @@ func (plainObserver) RecordPublish(_ string, _ bool, _ time.Duration)   {}
 func TestCachePattern_PortAcceptance(t *testing.T) {
 	pat := ports.CachePattern{Key: "k:{id}"}
 
-	// SourcePort: rejected.
-	_, err := ports.NewSourcePort[user]("src", userCodec, ports.PortOptions{
-		Patterns: []ports.Pattern{pat},
-	})
-	var pre ports.PatternRegisterError
-	if !errors.As(err, &pre) || pre.Kind != "cache" {
-		t.Errorf("SourcePort: want PatternRegisterError{cache}, got %v", err)
-	}
+	// SourcePort/ToolPort: rejected — neither type carries a
+	// PluginCachePattern method at all (compile-time absence, stronger
+	// than the old runtime PatternRegisterError check: "a cache does not
+	// produce a stream"/"a cache is not a tool surface").
 
 	// SinkPort: accepted, handle uses the payload codec.
-	sink, err := ports.NewSinkPort[user]("sink", userCodec, ports.PortOptions{
-		Patterns: []ports.Pattern{pat},
-	})
+	sink, err := ports.NewSinkPort[user]("sink", userCodec, ports.PortOptions{})
 	if err != nil {
 		t.Fatalf("SinkPort: %v", err)
 	}
-	if _, ok := ports.CacheHandle[user](sink); !ok {
-		t.Error("SinkPort: want cache handle")
+	if _, err := sink.PluginCachePattern(pat); err != nil {
+		t.Errorf("SinkPort: want cache handle, got err %v", err)
 	}
 
 	// LatestPort: accepted.
-	latest, err := ports.NewLatestPort[user]("latest", userCodec, ports.PortOptions{
-		Patterns: []ports.Pattern{ports.CachePattern{Key: "latest-user"}},
-	})
+	latest, err := ports.NewLatestPort[user]("latest", userCodec, ports.PortOptions{})
 	if err != nil {
 		t.Fatalf("LatestPort: %v", err)
 	}
-	if _, ok := ports.CacheHandle[user](latest); !ok {
-		t.Error("LatestPort: want cache handle")
-	}
-
-	// ToolPort: rejected.
-	_, err = ports.NewToolPort[userQuery, user]("tool", codex.Struct[userQuery](
-		codex.RequiredField("id", codex.String(),
-			func(q userQuery) string { return q.ID },
-			func(q *userQuery, v string) { q.ID = v },
-		),
-	), userCodec, ports.PortOptions{Patterns: []ports.Pattern{pat}})
-	if !errors.As(err, &pre) || pre.Kind != "cache" {
-		t.Errorf("ToolPort: want PatternRegisterError{cache}, got %v", err)
+	if _, err := latest.PluginCachePattern(ports.CachePattern{Key: "latest-user"}); err != nil {
+		t.Errorf("LatestPort: want cache handle, got err %v", err)
 	}
 
 	// IOPort: accepted — covered by userCache() used throughout.

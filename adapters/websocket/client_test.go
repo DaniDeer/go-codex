@@ -42,14 +42,13 @@ func (f *fakeDialer) Dial(_ context.Context, url string) (adapterws.Socket, erro
 
 func sourceHandle(t *testing.T, path string) ports.Socket[command, struct{}] {
 	t.Helper()
-	port, err := ports.NewSourcePort[command]("feed", commandCodec,
-		ports.PortOptions{Patterns: []ports.Pattern{ports.SocketPattern{Path: path}}})
+	port, err := ports.NewSourcePort[command]("feed", commandCodec, ports.PortOptions{})
 	if err != nil {
 		t.Fatalf("port: %v", err)
 	}
-	h, ok := ports.SocketHandle[command, struct{}](port)
-	if !ok {
-		t.Fatal("no handle")
+	h, err := port.PluginSocketPattern(ports.SocketPattern{Path: path})
+	if err != nil {
+		t.Fatalf("PluginSocketPattern: %v", err)
 	}
 	return h
 }
@@ -161,8 +160,11 @@ func TestDialDuplex_OutboundDuringGapDropped(t *testing.T) {
 	dialer := &fakeDialer{}
 
 	port, _ := ports.NewDuplexPort[command, update]("up", commandCodec, updateCodec,
-		ports.PortOptions{Patterns: []ports.Pattern{ports.SocketPattern{Path: "/up"}}, Buffer: 4})
-	handle, _ := ports.SocketHandle[command, update](port)
+		ports.PortOptions{Buffer: 4})
+	handle, err := port.PluginSocketPattern(ports.SocketPattern{Path: "/up"})
+	if err != nil {
+		t.Fatalf("PluginSocketPattern: %v", err)
+	}
 
 	if err := port.Bind(ctx, adapterws.DialDuplexAdapter(dialer, "ws://down", nil, handle,
 		adapterws.DialAdapterOptions{MaxBackoff: time.Millisecond})); err != nil {
@@ -200,8 +202,11 @@ func TestDialDuplex_RoundTrip(t *testing.T) {
 	dialer := &fakeDialer{script: []any{sock}}
 
 	port, _ := ports.NewDuplexPort[command, update]("up2", commandCodec, updateCodec,
-		ports.PortOptions{Patterns: []ports.Pattern{ports.SocketPattern{Path: "/up"}}, Buffer: 4})
-	handle, _ := ports.SocketHandle[command, update](port)
+		ports.PortOptions{Buffer: 4})
+	handle, err := port.PluginSocketPattern(ports.SocketPattern{Path: "/up"})
+	if err != nil {
+		t.Fatalf("PluginSocketPattern: %v", err)
+	}
 	_ = port.Bind(ctx, adapterws.DialDuplexAdapter(dialer, "ws://test", nil, handle,
 		adapterws.DialAdapterOptions{MaxBackoff: time.Millisecond}))
 
@@ -241,8 +246,11 @@ func TestGorillaDial_Loopback(t *testing.T) {
 	mux := http.NewServeMux()
 	hub := adapterws.NewHub(0)
 	serverPort, _ := ports.NewDuplexPort[command, update]("srv", commandCodec, updateCodec,
-		ports.PortOptions{Patterns: []ports.Pattern{ports.SocketPattern{Path: "/loop"}}, Buffer: 4})
-	sHandle, _ := ports.SocketHandle[command, update](serverPort)
+		ports.PortOptions{Buffer: 4})
+	sHandle, err := serverPort.PluginSocketPattern(ports.SocketPattern{Path: "/loop"})
+	if err != nil {
+		t.Fatalf("PluginSocketPattern: %v", err)
+	}
 	_ = serverPort.Bind(ctx, adapterws.DuplexSocketAdapter(mux, hub,
 		adapterws.NewUpgrader(adapterws.UpgraderOptions{CheckOrigin: func(*http.Request) bool { return true }}),
 		sHandle, adapterws.DuplexSocketAdapterOptions{}))
@@ -262,8 +270,11 @@ func TestGorillaDial_Loopback(t *testing.T) {
 	// Client side: dial adapter on a second duplex port (In/Out swapped:
 	// the client RECEIVES update frames and SENDS command frames).
 	clientPort, _ := ports.NewDuplexPort[update, command]("cli", updateCodec, commandCodec,
-		ports.PortOptions{Patterns: []ports.Pattern{ports.SocketPattern{Path: "/loop"}}, Buffer: 4})
-	cHandle, _ := ports.SocketHandle[update, command](clientPort)
+		ports.PortOptions{Buffer: 4})
+	cHandle, err := clientPort.PluginSocketPattern(ports.SocketPattern{Path: "/loop"})
+	if err != nil {
+		t.Fatalf("PluginSocketPattern: %v", err)
+	}
 	wsBase := "ws" + strings.TrimPrefix(srv.URL, "http")
 	_ = clientPort.Bind(ctx, adapterws.DialDuplexAdapter(
 		adapterws.NewDialer(adapterws.DialerOptions{}), wsBase, nil, cHandle,

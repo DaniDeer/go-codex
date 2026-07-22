@@ -22,13 +22,11 @@ as `"sensors/{sensorID}/data"`:
 
 ```go
 var UserCache = codex.Must(ports.NewIOPort[UserQuery, User]("user-cache",
-    queryCodec, userCodec, ports.PortOptions{
-        Patterns: []ports.Pattern{
-            ports.CachePattern{Key: "user:{id}", TTL: 15 * time.Minute},
-        },
-    }))
+    queryCodec, userCodec, ports.PortOptions{}))
 
-cache, _ := ports.CacheHandle[User](UserCache) // ports.Cache[User]
+var UserCachePattern = ports.CachePattern{Key: "user:{id}", TTL: 15 * time.Minute}
+
+cache, err := UserCache.PluginCachePattern(UserCachePattern) // ports.Cache[User]
 ```
 
 | `CachePattern` field | Meaning |
@@ -180,10 +178,8 @@ existing pieces instead of a new adapter: route the feeding stream through
 restart:
 
 ```go
-latest, _ := ports.NewLatestPort[OEE]("oee-latest", oeeCodec, ports.PortOptions{
-    Patterns: []ports.Pattern{ports.CachePattern{Key: "latest-oee"}},
-})
-cache, _ := ports.CacheHandle[OEE](latest)
+latest, _ := ports.NewLatestPort[OEE]("oee-latest", oeeCodec, ports.PortOptions{})
+cache, err := latest.PluginCachePattern(ports.CachePattern{Key: "latest-oee"})
 
 // Persist every update on the way to Feed:
 persisted := redis.SetAdapter[OEE](client, cache,

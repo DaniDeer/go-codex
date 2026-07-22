@@ -60,11 +60,14 @@ func TestChiDuplexSocket_SwapHandlerAndRoundTrip(t *testing.T) {
 	})
 
 	port, err := ports.NewDuplexPort[wsCmd, wsUpd]("chi-live", wsCmdCodec, wsUpdCodec,
-		ports.PortOptions{Patterns: []ports.Pattern{ports.SocketPattern{Path: "/live/{room}"}}, Buffer: 4})
+		ports.PortOptions{Buffer: 4})
 	if err != nil {
 		t.Fatalf("port: %v", err)
 	}
-	handle, _ := ports.SocketHandle[wsCmd, wsUpd](port)
+	handle, err := port.PluginSocketPattern(ports.SocketPattern{Path: "/live/{room}"})
+	if err != nil {
+		t.Fatalf("PluginSocketPattern: %v", err)
+	}
 
 	// Constructor registers the swap handler — BEFORE Activate/Bind.
 	adapter := adapterchi.DuplexSocketAdapter(router, hub, up, handle,

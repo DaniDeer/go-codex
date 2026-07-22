@@ -1,25 +1,32 @@
-// Package pipeline is the sensor service's business logic layer: forge
-// functions and the stream topology. It composes domain rules over typed
-// streams and depends only on domain + the go-codex core — no adapters, no
-// concrete clients, no IO of its own.
+// Package pipeline is the sensor service's business logic layer: pure
+// mapping functions and the stream topology. It composes domain rules over
+// typed streams and depends only on domain + the go-codex core — no
+// adapters, no concrete clients, no IO of its own.
 //
-// The MQTT pipeline is segmented into named [ports.PipePort] stages wired by
-// [ports.Chain]/[ports.ChainStream] (Raw → Params → Saved → AlertStage).
-// Raw and AlertStage are declared in ioports (they carry the MQTT
-// EventPattern — the actual IO/adapter boundary); Params and Saved are
-// declared HERE, as pipeline-internal stages with no adapters of their own.
-// pipeline never imports ioports (see main.go's import-direction doc
-// comment: pipeline → domain only) — Build takes raw/alertStage as
-// parameters instead, exactly as it previously took a plain
-// gstream.Stream[MQTTPayload].
+// The MQTT pipeline is segmented into named stages wired by
+// [ports.Chain]/[ports.ChainStream] (Sensors → Params → Saved → Alerts).
+// Sensors and Alerts are declared in ioports as plain [ports.SourcePort]/
+// [ports.SinkPort] (they carry the MQTT EventPattern — the actual IO/
+// adapter boundary, plugged in at wiring time); Params and Saved are
+// declared HERE, as pipeline-internal [ports.PipePort] stages with no
+// adapters of their own. pipeline never imports ioports (see main.go's
+// import-direction doc comment: pipeline → domain only) — Build takes
+// sensors/alerts as parameters instead, exactly as it previously took a
+// plain gstream.Stream[MQTTPayload].
 //
-// Persistence is NOT hidden inside a forge function, and — per this
-// package's PipePort segmentation — NOT hidden inside a larger transform's
-// closure either: forge functions stay pure (payload → insert params), and
-// the save happens through a protocol-agnostic [ports.IOPort]
+// Persistence is not hidden inside a pure mapping function, and — per this
+// package's stage segmentation — not hidden inside a larger transform's
+// closure either: mapping functions stay pure (payload → insert params),
+// and the save happens through a protocol-agnostic [ports.IOPort]
 // (ioports.Readings) Connected inside its OWN Params→Saved ChainStream edge,
 // visible to [ports.PipelineSpec] as a real edge between two named pipes —
 // never buried alongside unrelated taps/filters in one bigger stage.
+//
+// Pipeline-internal glue (buildInsertParams, buildExportResult below) is
+// plain Go functions, not [forge.Function] — forge's contract-hash/signing
+// governance is valuable for published KPI calculations, not ungoverned
+// per-item mapping; [ports.Chain]/[gstream.Apply] derive real function
+// identity via reflection regardless (see [ports.PipelineSpec]).
 package pipeline
 
 import (
@@ -29,7 +36,6 @@ import (
 	"github.com/DaniDeer/go-codex/codex"
 	"github.com/DaniDeer/go-codex/examples/sensor-service/db"
 	"github.com/DaniDeer/go-codex/examples/sensor-service/domain"
-	"github.com/DaniDeer/go-codex/forge"
 	"github.com/DaniDeer/go-codex/ports"
 	gstream "github.com/DaniDeer/go-codex/stream"
 )
@@ -64,64 +70,62 @@ type Deps struct {
 	Logger  *slog.Logger
 }
 
-// NewBuildInsertParams builds the PURE forge function
-// MQTTPayload → db.InsertReadingParams: map the payload to insert params
-// (domain rule — assigns ID + RecordedAt). No IO — persistence happens
-// through Deps.Persist, not inside the function.
-func NewBuildInsertParams() *forge.Function[domain.MQTTPayload, db.InsertReadingParams] {
-	return forge.NewFunction(
-		"buildInsertParams", "1.0.0",
-		domain.MQTTPayloadCodec, domain.InsertParamsCodec,
-		func(payload domain.MQTTPayload) (db.InsertReadingParams, error) {
-			return domain.BuildInsertParamsFromMQTT(payload), nil
-		},
-		forge.FunctionMeta{Description: "Map MQTT sensor payload to SQL insert params (assigns ID + RecordedAt)."},
-	)
+// buildInsertParams maps an MQTT payload to SQL insert params (domain rule
+// — assigns ID + RecordedAt). No IO — persistence happens through
+// Deps.Persist, not inside this function. A plain function — see the
+// package doc comment on why this isn't a [forge.Function].
+func buildInsertParams(payload domain.MQTTPayload) (db.InsertReadingParams, error) {
+	return domain.BuildInsertParamsFromMQTT(payload), nil
 }
 
-// Result exposes the pipeline's HTTP-facing stream plus the forge function
-// used, for topology documentation.
+// Result exposes the pipeline's HTTP-facing stream and a lifecycle signal.
 type Result struct {
 	// LatestReadings feeds the HTTP reactive cache (GET /readings/latest).
 	LatestReadings gstream.Stream[db.Reading]
-	// BuildParams is the pure forge function applied to every sensor payload —
-	// exposed for spec documentation (see [ports.PipelineSpec] usage in demo.go).
-	BuildParams *forge.Function[domain.MQTTPayload, db.InsertReadingParams]
+	// Done closes once every item Saved ever produced has been drained —
+	// a real, if slightly indirect, completion signal for the whole
+	// pipeline (Sensors/Alerts are plain boundary ports with no Done() of
+	// their own, unlike a PipePort; this is a THIRD independent Stream()
+	// consumer of Saved, purely for lifecycle tracking, draining alongside
+	// the Saved→Alerts edge and the reactive-cache Stream() above).
+	Done <-chan struct{}
 }
 
 // Build wires the segmented MQTT pipeline as three [ports.Chain]/
-// [ports.ChainStream] edges over already-declared PipePort stages:
+// [ports.ChainStream] edges — boundary ports at each end, PipePort stages
+// in between, all through the SAME call shape:
 //
-//	raw (ioports.Raw) --Chain(buildParams, pure)--> Params
+//	sensors (ioports.Sensors) --Chain(buildInsertParams, pure)--> Params
 //	Params --ChainStream(Persist.Connect + Tap(log))--> Saved
-//	Saved --ChainStream(Filter+FlatMap)--> alertStage (ioports.AlertStage)
+//	Saved --ChainStream(Filter+FlatMap)--> alerts (ioports.Alerts)
 //
-// raw and alertStage are parameters, not package vars, so this package never
-// imports ioports (see the package doc comment on the import-direction
-// rule) — main() passes ioports.Raw/ioports.AlertStage in, exactly as it
-// previously passed a plain gstream.Stream[MQTTPayload].
+// sensors and alerts are parameters, not package vars, so this package
+// never imports ioports (see the package doc comment on the
+// import-direction rule) — main() passes ioports.Sensors/ioports.Alerts
+// in, exactly as it previously passed a plain gstream.Stream[MQTTPayload].
 //
 // The persistence step (Params → Saved) is deliberately its OWN
-// ChainStream edge — not folded into the Raw→Params or Saved→AlertStage
+// ChainStream edge — not folded into the Sensors→Params or Saved→Alerts
 // transforms — so [ports.PipelineSpec] sees the SQL hop as a real edge
 // between two named pipes, never hidden inside a bigger transform's
 // closure (see the package doc comment).
 //
-// Caller must Connect raw, Params, Saved, and alertStage AFTER calling
-// Build (Chain/ChainStream registrations must precede the UPSTREAM pipe's
-// Connect — see [ports.Chain]'s ordering rule).
+// Caller must Connect sensors' upstream registration ordering: Chain/
+// ChainStream registrations must precede the UPSTREAM value's Connect/Bind
+// — see [ports.Chain]'s ordering rule. Params and Saved (both PipePorts)
+// need an explicit Connect call after Build; sensors/alerts (boundary
+// ports) only need their adapter Bind — no Connect method of their own.
 func Build(
 	ctx context.Context,
-	raw *ports.PipePort[domain.MQTTPayload],
-	alertStage *ports.PipePort[domain.SensorAlert],
+	sensors *ports.SourcePort[domain.MQTTPayload],
+	alerts *ports.SinkPort[domain.SensorAlert],
 	deps Deps,
 ) Result {
-	buildParams := NewBuildInsertParams()
 	shouldAlert := domain.NewShouldAlert(deps.Cfg)
 	buildAlert := domain.NewBuildAlert(deps.Cfg)
 
-	// Stage 1: Raw → Params — pure transformation, zero IO.
-	ports.Chain(ctx, raw, buildParams.Apply, Params)
+	// Stage 1: Sensors → Params — pure transformation, zero IO.
+	ports.Chain(ctx, sensors, buildInsertParams, Params)
 
 	// Stage 2: Params → Saved — the persistence hop THROUGH the port, its
 	// own real edge. The stored row comes back out; swapping SQL → HTTP →
@@ -134,22 +138,32 @@ func Build(
 		})
 	}, Saved)
 
-	// Stage 3: Saved → AlertStage — filter to threshold breaches, map to
+	// Stage 3: Saved → Alerts — filter to threshold breaches, map to
 	// SensorAlert for the MQTT alert topic.
 	ports.ChainStream(ctx, Saved, func(s gstream.Stream[db.Reading]) gstream.Stream[domain.SensorAlert] {
 		aboveThreshold := gstream.Filter(ctx, s, shouldAlert)
 		return gstream.FlatMapSlice(ctx, aboveThreshold,
 			func(r db.Reading) []domain.SensorAlert { return []domain.SensorAlert{buildAlert(r)} })
-	}, alertStage)
+	}, alerts)
 
 	// The HTTP reactive cache taps Saved directly — a fourth, independent
 	// Stream() consumer registered on the SAME pipe (must precede Saved's
 	// own Connect, same ordering rule as Chain/ChainStream).
 	latestReadings := Saved.Stream(ctx)
 
+	// A fifth, independent Stream() consumer purely for lifecycle
+	// tracking — drains until Saved's upstream (and therefore the whole
+	// pipeline) terminates, then closes done.
+	done := make(chan struct{})
+	doneSignal := Saved.Stream(ctx)
+	go func() {
+		gstream.Drain(ctx, doneSignal, func(context.Context, db.Reading) error { return nil }, nil, gstream.DrainOptions{})
+		close(done)
+	}()
+
 	return Result{
 		LatestReadings: latestReadings,
-		BuildParams:    buildParams,
+		Done:           done,
 	}
 }
 
@@ -170,55 +184,42 @@ func NewTimeSeriesPipeline(
 	}
 }
 
-// NewBuildExportResult builds the PURE forge function
-// ExportSnapshot → ExportResult. pathFor is pure computation (FilePattern
-// template substitution + path-param validation via FileHandle.BuildPath —
-// no IO): the SAME declaration that writes the file names the response path.
-func NewBuildExportResult(
-	pathFor func(domain.ExportSnapshot) (string, error),
-) *forge.Function[domain.ExportSnapshot, domain.ExportResult] {
-	return forge.NewFunction(
-		"buildExportResult", "1.0.0",
-		domain.ExportSnapshotCodec, domain.ExportResultCodec,
-		func(s domain.ExportSnapshot) (domain.ExportResult, error) {
-			path, err := pathFor(s)
-			if err != nil {
-				return domain.ExportResult{}, err
-			}
-			return domain.ExportResult{File: path, Count: int64(len(s.Readings))}, nil
-		},
-		forge.FunctionMeta{Description: "Map export snapshot to its response (file path from the FilePattern declaration + reading count)."},
-	)
-}
-
 // NewExportPipeline builds the POST /export tool pipeline:
 //
 //	ExportRequest → ExportQuery port (SQL: all readings → snapshot)
 //	             → submit (hand the snapshot to the Exports file sink)
-//	             → Apply(buildExportResult, pure)
+//	             → Map(buildExportResult, pure)
 //
 // submit decouples this package from the file adapter: main() wires it to
-// the channel feeding the Exports SinkPort.
+// the channel feeding the Exports SinkPort. pathFor is pure computation
+// (FilePattern template substitution + path-param validation via
+// File.BuildPath — no IO): the SAME declaration that writes the file names
+// the response path.
 func NewExportPipeline(
 	query *ports.IOPort[domain.ExportRequest, domain.ExportSnapshot],
 	submit func(domain.ExportSnapshot),
 	pathFor func(domain.ExportSnapshot) (string, error),
 ) func(ctx context.Context, req domain.ExportRequest) gstream.Stream[domain.ExportResult] {
-	buildResult := NewBuildExportResult(pathFor)
+	buildExportResult := func(s domain.ExportSnapshot) (domain.ExportResult, error) {
+		path, err := pathFor(s)
+		if err != nil {
+			return domain.ExportResult{}, err
+		}
+		return domain.ExportResult{File: path, Count: int64(len(s.Readings))}, nil
+	}
 	return func(ctx context.Context, req domain.ExportRequest) gstream.Stream[domain.ExportResult] {
 		snapshots := query.Connect(ctx, gstream.Single(ctx, req))
 		// Hand each snapshot to the file sink (async IO boundary).
 		snapshots = gstream.Tap(ctx, snapshots, submit)
-		return gstream.Apply(ctx, snapshots, buildResult,
-			gstream.ApplyOptions{}) // observer from ctx
+		return gstream.Map(ctx, snapshots, buildExportResult, gstream.MapOptions{Name: "buildExportResult"})
 	}
 }
 
-// Spec generation (Gap 4 of docs/roadmap/pipe-port-composition-hardening.md)
-// no longer lives here as a hand-typed pipeline.Topology function — it is
-// derived directly from the real wiring via [ports.PipelineSpec], called in
-// main.go/demo.go with (ioports.Raw, Params, Saved, ioports.AlertStage) —
+// Spec generation (Gap 4 of the now-shipped pipe-port-composition-hardening
+// roadmap) no longer lives here as a hand-typed pipeline.Topology function
+// — it is derived directly from the real wiring via [ports.PipelineSpec],
+// called in demo.go with (ioports.Sensors, Params, Saved, ioports.Alerts) —
 // see demo.go's spec-printing section. Params/Saved are declared in this
-// package; Raw/AlertStage live in ioports (see the package doc comment on
+// package; Sensors/Alerts live in ioports (see the package doc comment on
 // the import-direction rule), so the PipelineSpec call itself happens in a
 // package that imports both, not here.

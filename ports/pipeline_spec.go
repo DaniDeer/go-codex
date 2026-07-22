@@ -61,7 +61,7 @@ func (p *PipePort[T]) recordEdge(e ChainEdge) {
 // Chain/ChainStream edge may carry unbounded traffic, so tracing every item
 // would be an unbounded tracing cost; this matches [bindWithObserver]'s
 // "port.bind" cost/benefit precedent), then calls [PipePort.recordEdge].
-func recordChainEdgeWithObserver[In, Out any](ctx context.Context, from *PipePort[In], to *PipePort[Out], edge ChainEdge) {
+func recordChainEdgeWithObserver[In, Out any](ctx context.Context, from *PipePort[In], to chainSink[Out], edge ChainEdge) {
 	obs := from.obs
 	if obs == nil {
 		obs = stats.ObserverFromContext(ctx)
@@ -129,44 +129,78 @@ func (p *PipePort[T]) OutEdges() []ChainEdge {
 	return out
 }
 
-// PipeSpecSource is implemented by [PipePort] for ANY payload type — it
-// exposes a non-generic view of a pipe's actual structure for
-// documentation/spec tooling. A real pipeline chains different payload
-// types together (e.g. PipePort[Raw] -> PipePort[Validated] ->
-// PipePort[Calibrated]), so a common non-generic interface is what lets
-// heterogeneous PipePorts be described together in one [PipelineSpec] call.
+// PipeSpecSource is the minimal shape [PipelineSpec] requires — just a
+// name. [*PipePort[T]] (for ANY payload type) and boundary ports
+// ([*SourcePort[T]]/[*SinkPort[T]], for ANY payload type) all implement
+// this, since a real pipeline's edges are boundary ports feeding into (or
+// receiving from) computation stages — e.g. SourcePort -> Chain ->
+// PipePort -> ChainStream -> SinkPort — and a common non-generic interface
+// is what lets heterogeneous port types AND payload types be described
+// together in one [PipelineSpec] call.
+//
+// PipePort-specific detail (Buffer/InputAdapters/OutputAdapters/OutEdges)
+// and boundary-port detail (BoundAdapters, already implemented by
+// SourcePort/SinkPort) are OPTIONAL, type-asserted extras — the same
+// pattern [stats.Observer] extensions ([stats.TraceObserver], etc.) use
+// elsewhere in this codebase. A pipe/port that doesn't implement a given
+// extra simply doesn't contribute that detail to its spec line.
 type PipeSpecSource interface {
-	// Name returns the pipe's declared name.
+	// Name returns the port/pipe's declared name.
 	Name() string
-	// Buffer returns the pipe's configured channel buffer size.
+}
+
+// pipeSpecBuffered is an OPTIONAL [PipeSpecSource] extra — implemented by
+// [*PipePort[T]].
+type pipeSpecBuffered interface {
 	Buffer() int
-	// InputAdapters returns input-port-name -> bound SourceAdapter names.
+}
+
+// pipeSpecInputAdapters is an OPTIONAL [PipeSpecSource] extra — implemented
+// by [*PipePort[T]].
+type pipeSpecInputAdapters interface {
 	InputAdapters() map[string][]string
-	// OutputAdapters returns output-port-name -> bound SinkAdapter names.
+}
+
+// pipeSpecOutputAdapters is an OPTIONAL [PipeSpecSource] extra —
+// implemented by [*PipePort[T]].
+type pipeSpecOutputAdapters interface {
 	OutputAdapters() map[string][]string
-	// OutEdges returns the Chain/ChainStream connections made FROM this pipe.
+}
+
+// pipeSpecEdges is an OPTIONAL [PipeSpecSource] extra — implemented by
+// [*PipePort[T]].
+type pipeSpecEdges interface {
 	OutEdges() []ChainEdge
 }
 
+// pipeSpecBoundAdapters is an OPTIONAL [PipeSpecSource] extra — implemented
+// by [*SourcePort[T]]/[*SinkPort[T]] (already exposed via BoundAdapters for
+// other tooling).
+type pipeSpecBoundAdapters interface {
+	BoundAdapters() []string
+}
+
 // PipelineSpec builds a [gstream.TopologySpec] FROM the actual wiring of
-// pipes — pipe names, buffer sizes, bound adapter identities, and
-// Chain/ChainStream edges are all read from the pipes themselves via
-// [PipeSpecSource], not hand-typed. Call after all [InputPort]/[OutputPort]
-// Bind calls and [Chain]/[ChainStream] calls for every pipe passed in.
+// pipes/ports — names, buffer sizes, bound adapter identities, and
+// Chain/ChainStream edges are all read from the values themselves via
+// [PipeSpecSource] and its optional extras, not hand-typed. Call after all
+// adapter Bind calls and [Chain]/[ChainStream] calls for every value
+// passed in.
 //
-// title and version are pipeline-level metadata with no corresponding pipe
-// field to read them from — they, and pipes' ordering, are the only
+// title and version are pipeline-level metadata with no corresponding
+// field to read them from — they, and the values' ordering, are the only
 // caller-supplied inputs; everything else is derived:
 //
-//	spec := ports.PipelineSpec("Sensor Pipeline", "1.0.0", Raw, Valid, Calibrated)
+//	spec := ports.PipelineSpec("Sensor Pipeline", "1.0.0", Sensors, Params, Saved, Alerts)
 //	yamlBytes, err := streamrender.Render(spec)
 //
-// Emits one [gstream.StepKindPort] step per pipe (Description built from
-// Buffer/InputAdapters/OutputAdapters) followed by one
-// [gstream.StepKindApply] step per outgoing edge (Name = the edge's real
-// function identity, Description = "<kind>: <from> -> <to>") — in pipes'
-// given order. Pipes with no recorded structure still produce a step (an
-// empty Buffer/adapter set is real information, not an error).
+// Emits one [gstream.StepKindPort] step per value (Description built from
+// whichever optional extras it implements) followed by one
+// [gstream.StepKindApply] step per outgoing edge (only present on
+// *PipePort values — Name = the edge's real function identity,
+// Description = "<kind>: <from> -> <to>") — in the given order. A value
+// with no recorded structure still produces a step (an empty Buffer/
+// adapter set is real information, not an error).
 func PipelineSpec(title, version string, pipes ...PipeSpecSource) gstream.TopologySpec {
 	steps := make([]gstream.TopologyStep, 0, len(pipes)*2)
 	for _, p := range pipes {
@@ -175,12 +209,14 @@ func PipelineSpec(title, version string, pipes ...PipeSpecSource) gstream.Topolo
 			Name:        p.Name(),
 			Description: describePipe(p),
 		})
-		for _, e := range p.OutEdges() {
-			steps = append(steps, gstream.TopologyStep{
-				Kind:        gstream.StepKindApply,
-				Name:        e.Func,
-				Description: fmt.Sprintf("%s: %s → %s", e.Kind, p.Name(), e.To),
-			})
+		if pe, ok := p.(pipeSpecEdges); ok {
+			for _, e := range pe.OutEdges() {
+				steps = append(steps, gstream.TopologyStep{
+					Kind:        gstream.StepKindApply,
+					Name:        e.Func,
+					Description: fmt.Sprintf("%s: %s → %s", e.Kind, p.Name(), e.To),
+				})
+			}
 		}
 	}
 	return gstream.TopologySpec{
@@ -190,17 +226,44 @@ func PipelineSpec(title, version string, pipes ...PipeSpecSource) gstream.Topolo
 }
 
 // describePipe builds a human-readable, fully-derived description of p's
-// current structure — no hand-typed content.
+// current structure from whichever optional extras it implements — no
+// hand-typed content.
 func describePipe(p PipeSpecSource) string {
 	var sb strings.Builder
-	fmt.Fprintf(&sb, "Buffer=%d", p.Buffer())
-	if ins := p.InputAdapters(); len(ins) > 0 {
-		sb.WriteString("; inputs: ")
-		sb.WriteString(formatAdapterMap(ins))
+	wrote := false
+	if pb, ok := p.(pipeSpecBuffered); ok {
+		fmt.Fprintf(&sb, "Buffer=%d", pb.Buffer())
+		wrote = true
 	}
-	if outs := p.OutputAdapters(); len(outs) > 0 {
-		sb.WriteString("; outputs: ")
-		sb.WriteString(formatAdapterMap(outs))
+	if pi, ok := p.(pipeSpecInputAdapters); ok {
+		if ins := pi.InputAdapters(); len(ins) > 0 {
+			if wrote {
+				sb.WriteString("; ")
+			}
+			sb.WriteString("inputs: ")
+			sb.WriteString(formatAdapterMap(ins))
+			wrote = true
+		}
+	}
+	if po, ok := p.(pipeSpecOutputAdapters); ok {
+		if outs := po.OutputAdapters(); len(outs) > 0 {
+			if wrote {
+				sb.WriteString("; ")
+			}
+			sb.WriteString("outputs: ")
+			sb.WriteString(formatAdapterMap(outs))
+			wrote = true
+		}
+	}
+	if ba, ok := p.(pipeSpecBoundAdapters); ok {
+		if adapters := ba.BoundAdapters(); len(adapters) > 0 {
+			if wrote {
+				sb.WriteString("; ")
+			}
+			sb.WriteString("adapters: ")
+			sb.WriteString(strings.Join(adapters, "+"))
+			wrote = true
+		}
 	}
 	return sb.String()
 }

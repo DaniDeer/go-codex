@@ -2,9 +2,13 @@ package ports
 
 import (
 	"context"
+	"fmt"
 	"sync"
 	"sync/atomic"
 
+	apimcp "github.com/DaniDeer/go-codex/api/mcp"
+	"github.com/DaniDeer/go-codex/api/reqreply"
+	"github.com/DaniDeer/go-codex/api/rest"
 	"github.com/DaniDeer/go-codex/codex"
 	"github.com/DaniDeer/go-codex/stats"
 	gstream "github.com/DaniDeer/go-codex/stream"
@@ -38,61 +42,147 @@ type LatestAdapter[T any] interface {
 //
 //	// domain/ports — declared like every other boundary
 //	var Latest = codex.Must(ports.NewLatestPort[db.Reading]("rest/latest", readingCodec,
-//	    ports.PortOptions{Patterns: []ports.Pattern{
-//	        ports.RESTPattern{Method: "GET", Path: "/readings/latest"},
-//	    }}))
+//	    ports.PortOptions{RESTBuilder: RESTBuilder}))
 //
-//	// main.go — wiring only
-//	handle, _ := ports.RESTHandle[struct{}, db.Reading](domain.Latest)
+//	// main.go — wiring: plug in the Pattern, get the handle, bind
+//	handle := codex.Must(domain.Latest.PluginRESTPattern(ports.RESTPattern{
+//	    Method: "GET", Path: "/readings/latest",
+//	}))
 //	must(domain.Latest.Bind(ctx, nethttp.LatestAdapter(mux, handle, nethttp.Options{})))
 //	go domain.Latest.Feed(ctx, readings)
 //
 // Lifecycle:
-//  1. [NewLatestPort] — declare port with payload codec (+ Patterns).
-//  2. [Bind] — register serving adapters (fan-out: many transports, one cache).
-//  3. [Feed] — drain the stream into the cell (usually in a goroutine).
+//  1. [NewLatestPort] — declare port with payload codec.
+//  2. Plug in a Pattern via [LatestPort.PluginRESTPattern]/etc.
+//  3. [Bind] — register serving adapters (fan-out: many transports, one cache).
+//  4. [Feed] — drain the stream into the cell (usually in a goroutine).
 type LatestPort[T any] struct {
-	name    string
-	codec   codex.Codec[T]
-	params  []IOParam
-	handles map[string]any
-	specs   map[string]any
-	obs     stats.Observer
+	name   string
+	codec  codex.Codec[T]
+	params []IOParam
+	obs    stats.Observer
+
+	restBuilder     *rest.Builder
+	reqReplyBuilder *reqreply.Builder
+	mcpBuilder      *apimcp.Builder
+
+	handlesMu sync.Mutex
+	handles   map[string]any
+	specs     map[string]any
 
 	cell atomic.Pointer[T]
 	wg   sync.WaitGroup
 }
 
 // NewLatestPort creates a LatestPort with the given name and payload codec.
-// opts configures Patterns, observer, and (optionally) shared
-// [PortOptions.RESTBuilder]/[PortOptions.ReqReplyBuilder]/[PortOptions.MCPBuilder]
-// builders. Any [RESTPattern]/[ReqReplyPattern]/[MCPPattern] in opts.Patterns
-// is built eagerly with request codec codex.Struct[struct{}]() (requests
-// carry no payload — the response is always the cached value) and response
-// codec = the port's codec. Handles are retrievable via
-// [RESTHandle][struct{}, T], [ReqReplyHandle][struct{}, T], and
-// [MCPHandle][struct{}, T]. Returns [PatternRegisterError] if a declared
-// Pattern fails to build.
+// opts configures observer and (optionally) shared RESTBuilder/
+// ReqReplyBuilder/MCPBuilder references for later [PluginRESTPattern]/
+// [PluginReqReplyPattern]/[PluginMCPPattern] calls. Each plugs in with
+// request codec codex.Struct[struct{}]() (requests carry no payload — the
+// response is always the cached value) and response codec = the port's
+// codec, returning the resulting handle directly.
 func NewLatestPort[T any](name string, codec codex.Codec[T], opts PortOptions) (*LatestPort[T], error) {
-	handles, specs, err := buildDualCodecPatternHandles(name, opts.Patterns,
-		codex.Struct[struct{}](), codec,
-		opts.RESTBuilder, opts.ReqReplyBuilder, opts.MCPBuilder, true)
-	if err != nil {
-		return nil, err
-	}
 	return &LatestPort[T]{
-		name:    name,
-		codec:   codec,
-		params:  opts.Params,
-		handles: handles,
-		specs:   specs,
-		obs:     opts.Observer,
+		name:            name,
+		codec:           codec,
+		params:          opts.Params,
+		obs:             opts.Observer,
+		restBuilder:     opts.RESTBuilder,
+		reqReplyBuilder: opts.ReqReplyBuilder,
+		mcpBuilder:      opts.MCPBuilder,
+		handles:         map[string]any{},
+		specs:           map[string]any{},
 	}, nil
 }
 
-// patternHandle implements the unexported patternHolder interface used by
-// [RESTHandle], [ReqReplyHandle], and [MCPHandle].
+// pluginPattern is the shared engine behind every PluginXxxPattern method —
+// see [SourcePort.pluginPattern] for the full rationale. Request codec is
+// always codex.Struct[struct{}](); response codec is the port's own codec.
+func (p *LatestPort[T]) pluginPattern(pattern Pattern, kind string) (any, error) {
+	p.handlesMu.Lock()
+	if _, exists := p.handles[kind]; exists {
+		p.handlesMu.Unlock()
+		return nil, PatternRegisterError{Port: p.name, Kind: kind, Err: fmt.Errorf("pattern of kind %q already plugged in", kind)}
+	}
+	p.handlesMu.Unlock()
+
+	handles, specs, err := buildDualCodecPatternHandles(p.name, []Pattern{pattern},
+		codex.Struct[struct{}](), p.codec, p.restBuilder, p.reqReplyBuilder, p.mcpBuilder, true)
+	if err != nil {
+		return nil, err
+	}
+
+	p.handlesMu.Lock()
+	for k, v := range handles {
+		p.handles[k] = v
+	}
+	for k, v := range specs {
+		p.specs[k] = v
+	}
+	p.handlesMu.Unlock()
+	return handles[kind], nil
+}
+
+// PluginRESTPattern registers pattern and returns the resulting
+// [rest.RouteHandle][struct{}, T] directly.
+func (p *LatestPort[T]) PluginRESTPattern(pattern RESTPattern) (*rest.RouteHandle[struct{}, T], error) {
+	v, err := p.pluginPattern(pattern, patternKindREST)
+	if err != nil {
+		return nil, err
+	}
+	h, _ := v.(*rest.RouteHandle[struct{}, T])
+	return h, nil
+}
+
+// PluginReqReplyPattern registers pattern and returns the resulting
+// [reqreply.RouteHandle][struct{}, T] directly.
+func (p *LatestPort[T]) PluginReqReplyPattern(pattern ReqReplyPattern) (*reqreply.RouteHandle[struct{}, T], error) {
+	v, err := p.pluginPattern(pattern, patternKindReqReply)
+	if err != nil {
+		return nil, err
+	}
+	h, _ := v.(*reqreply.RouteHandle[struct{}, T])
+	return h, nil
+}
+
+// PluginMCPPattern registers pattern and returns the resulting
+// [apimcp.ToolHandle][struct{}, T] directly.
+func (p *LatestPort[T]) PluginMCPPattern(pattern MCPPattern) (*apimcp.ToolHandle[struct{}, T], error) {
+	v, err := p.pluginPattern(pattern, patternKindMCP)
+	if err != nil {
+		return nil, err
+	}
+	h, _ := v.(*apimcp.ToolHandle[struct{}, T])
+	return h, nil
+}
+
+// PluginFilePattern registers pattern and returns the resulting [File]
+// directly, built from the port's payload codec.
+func (p *LatestPort[T]) PluginFilePattern(pattern FilePattern) (File[T], error) {
+	v, err := p.pluginPattern(pattern, patternKindFile)
+	if err != nil {
+		return File[T]{}, err
+	}
+	h, _ := v.(File[T])
+	return h, nil
+}
+
+// PluginCachePattern registers pattern and returns the resulting [Cache]
+// directly — the cached value is the port's own reactive-cache cell.
+func (p *LatestPort[T]) PluginCachePattern(pattern CachePattern) (Cache[T], error) {
+	v, err := p.pluginPattern(pattern, patternKindCache)
+	if err != nil {
+		return Cache[T]{}, err
+	}
+	h, _ := v.(Cache[T])
+	return h, nil
+}
+
+// patternHandle implements the unexported patternHolder interface used
+// internally by [SQLMeta] (see [SourcePort.patternHandle] for rationale).
 func (p *LatestPort[T]) patternHandle(kind string) (any, bool) {
+	p.handlesMu.Lock()
+	defer p.handlesMu.Unlock()
 	v, ok := p.handles[kind]
 	return v, ok
 }
@@ -100,6 +190,8 @@ func (p *LatestPort[T]) patternHandle(kind string) (any, bool) {
 // patternSpec implements the unexported patternHolder interface used by
 // [RegisterREST], [RegisterReqReply], and [RegisterMCP].
 func (p *LatestPort[T]) patternSpec(kind string) (any, bool) {
+	p.handlesMu.Lock()
+	defer p.handlesMu.Unlock()
 	v, ok := p.specs[kind]
 	return v, ok
 }

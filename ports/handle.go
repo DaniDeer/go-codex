@@ -25,129 +25,24 @@ const (
 
 // patternHolder is implemented by every port type that supports [Pattern]
 // declarations. It is unexported — callers never implement or reference it
-// directly; they just pass their port value to [RESTHandle], [EventHandle],
-// [ReqReplyHandle], [MCPHandle], [RegisterREST], [RegisterEvent],
-// [RegisterReqReply], or [RegisterMCP].
+// directly. Only [SQLMeta] (metadata query, not a handle — SQLPattern
+// builds no handle to return synchronously from a Plugin call) and
+// [RegisterREST]/[RegisterEvent]/[RegisterReqReply]/[RegisterMCP] (replay a
+// declared spec against a different builder) still use it — the direct
+// handle-lookup family (RESTHandle/EventHandle/etc.) that used to live here
+// is superseded by each port's PluginXxxPattern methods, which return the
+// handle directly at the point of registration; there is no later "does
+// this port have a Handle of kind X?" question left to ask.
 type patternHolder interface {
 	patternHandle(kind string) (any, bool)
 	patternSpec(kind string) (any, bool)
 }
 
-// RESTHandle returns the [rest.RouteHandle] built from port's declared
-// [RESTPattern], or (nil, false) if the port declared no [RESTPattern].
-func RESTHandle[Req, Resp any](port any) (*rest.RouteHandle[Req, Resp], bool) {
-	ph, ok := port.(patternHolder)
-	if !ok {
-		return nil, false
-	}
-	v, ok := ph.patternHandle(patternKindREST)
-	if !ok {
-		return nil, false
-	}
-	h, ok := v.(*rest.RouteHandle[Req, Resp])
-	return h, ok
-}
-
-// EventHandle returns the [events.ChannelHandle] built from port's declared
-// [EventPattern], or (nil, false) if the port declared no [EventPattern].
-func EventHandle[T any](port any) (*events.ChannelHandle[T], bool) {
-	ph, ok := port.(patternHolder)
-	if !ok {
-		return nil, false
-	}
-	v, ok := ph.patternHandle(patternKindEvent)
-	if !ok {
-		return nil, false
-	}
-	h, ok := v.(*events.ChannelHandle[T])
-	return h, ok
-}
-
-// ReqReplyHandle returns the [reqreply.RouteHandle] built from port's declared
-// [ReqReplyPattern], or (nil, false) if the port declared no [ReqReplyPattern].
-func ReqReplyHandle[Req, Resp any](port any) (*reqreply.RouteHandle[Req, Resp], bool) {
-	ph, ok := port.(patternHolder)
-	if !ok {
-		return nil, false
-	}
-	v, ok := ph.patternHandle(patternKindReqReply)
-	if !ok {
-		return nil, false
-	}
-	h, ok := v.(*reqreply.RouteHandle[Req, Resp])
-	return h, ok
-}
-
-// MCPHandle returns the [apimcp.ToolHandle] built from port's declared
-// [MCPPattern], or (nil, false) if the port declared no [MCPPattern].
-func MCPHandle[In, Out any](port any) (*apimcp.ToolHandle[In, Out], bool) {
-	ph, ok := port.(patternHolder)
-	if !ok {
-		return nil, false
-	}
-	v, ok := ph.patternHandle(patternKindMCP)
-	if !ok {
-		return nil, false
-	}
-	h, ok := v.(*apimcp.ToolHandle[In, Out])
-	return h, ok
-}
-
-// FileHandle returns the [File] built from port's declared
-// [FilePattern], or (zero, false) if the port declared no [FilePattern].
-// On a [SinkPort], T is the port's payload type; on an [IOPort], T is the
-// port's response type (the file's content is the port's response).
-func FileHandle[T any](port any) (File[T], bool) {
-	ph, ok := port.(patternHolder)
-	if !ok {
-		return File[T]{}, false
-	}
-	v, ok := ph.patternHandle(patternKindFile)
-	if !ok {
-		return File[T]{}, false
-	}
-	h, ok := v.(File[T])
-	return h, ok
-}
-
-// SSEHandle returns the [rest.SSERouteHandle] built from a [SinkPort]'s
-// declared [RESTPattern] (SSE shape: events are the port's payload, requests
-// carry no body), or (nil, false) if the port declared no [RESTPattern].
-func SSEHandle[Event any](port any) (*rest.SSERouteHandle[struct{}, Event], bool) {
-	ph, ok := port.(patternHolder)
-	if !ok {
-		return nil, false
-	}
-	v, ok := ph.patternHandle(patternKindREST)
-	if !ok {
-		return nil, false
-	}
-	h, ok := v.(*rest.SSERouteHandle[struct{}, Event])
-	return h, ok
-}
-
-// CacheHandle returns the [Cache] built from port's declared [CachePattern],
-// or (zero, false) if the port declared no [CachePattern]. On a [SinkPort]
-// or [LatestPort], T is the port's value type; on an [IOPort], T is the
-// port's response type (the cached value is the port's response).
-func CacheHandle[T any](port any) (Cache[T], bool) {
-	ph, ok := port.(patternHolder)
-	if !ok {
-		return Cache[T]{}, false
-	}
-	v, ok := ph.patternHandle(patternKindCache)
-	if !ok {
-		return Cache[T]{}, false
-	}
-	h, ok := v.(Cache[T])
-	return h, ok
-}
-
-// SocketHandle returns the [Socket] built from port's declared
-// [SocketPattern], or (zero, false) if the port declared no [SocketPattern].
-// On a [DuplexPort], In/Out are the port's codec pair; on a [SourcePort]
-// use Socket[T, struct{}], on a [SinkPort] Socket[struct{}, T].
-func SocketHandle[In, Out any](port any) (Socket[In, Out], bool) {
+// socketHandleFor is the unexported counterpart of the removed public
+// SocketHandle — [RegisterSocket] is the one remaining internal caller that
+// needs the actual built [Socket] (InFormat/OutFormat/Path), not just the
+// original [SocketPattern] spec [patternSpec] would give it.
+func socketHandleFor[In, Out any](port any) (Socket[In, Out], bool) {
 	ph, ok := port.(patternHolder)
 	if !ok {
 		return Socket[In, Out]{}, false

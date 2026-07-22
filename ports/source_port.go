@@ -2,8 +2,11 @@ package ports
 
 import (
 	"context"
+	"fmt"
 	"sync"
 
+	"github.com/DaniDeer/go-codex/api/events"
+	"github.com/DaniDeer/go-codex/api/rest"
 	"github.com/DaniDeer/go-codex/codex"
 	"github.com/DaniDeer/go-codex/stats"
 	gstream "github.com/DaniDeer/go-codex/stream"
@@ -53,13 +56,22 @@ type SourceAdapter[T any] interface {
 //  2. [Bind] — register adapters (fan-in sources). All Bind calls before Stream.
 //  3. [Stream] — obtain the merged stream; pass to pipeline operators.
 type SourcePort[T any] struct {
-	name    string
-	codec   codex.Codec[T]
-	params  []IOParam
-	handles map[string]any
-	specs   map[string]any
-	obs     stats.Observer
-	buffer  int
+	name   string
+	codec  codex.Codec[T]
+	params []IOParam
+	obs    stats.Observer
+	buffer int
+
+	// eventBuilder/restBuilder are stored (not used eagerly — construction
+	// builds no handle) so PluginEventPattern/PluginRESTPattern/
+	// PluginFilePattern can register against the SAME shared builder every
+	// other Pattern-carrying declaration in the service uses.
+	eventBuilder *events.Builder
+	restBuilder  *rest.Builder
+
+	handlesMu sync.Mutex
+	handles   map[string]any
+	specs     map[string]any
 
 	ch    chan T
 	errCh chan error
@@ -70,34 +82,122 @@ type SourcePort[T any] struct {
 }
 
 // NewSourcePort creates a SourcePort with the given name and payload codec.
-// opts configures Patterns, IO params, buffer size, observer, and (optionally)
-// a shared [PortOptions.EventBuilder]. Any [EventPattern] in opts.Patterns is
-// built eagerly into a handle retrievable via [EventHandle] via
-// events.Channel.Register — fail-fast, and identical to a hand-registered
-// channel when opts.EventBuilder is supplied. Returns [PatternRegisterError]
-// if a declared Pattern fails to build (e.g. a duplicate topic on a shared
-// EventBuilder, or a topic/param mismatch).
+// opts configures IO params, buffer size, observer, and (optionally) shared
+// RESTBuilder/EventBuilder references for later [PluginEventPattern]/
+// [PluginRESTPattern]/[PluginFilePattern] calls — declare the port's
+// communication Pattern separately, at whatever point in your wiring code
+// makes sense (see [PortOptions]).
 func NewSourcePort[T any](name string, codec codex.Codec[T], opts PortOptions) (*SourcePort[T], error) {
-	handles, specs, err := buildEventPatternHandles(name, opts.Patterns, codec, roleSource, opts.EventBuilder, opts.RESTBuilder)
-	if err != nil {
-		return nil, err
-	}
 	return &SourcePort[T]{
-		name:    name,
-		codec:   codec,
-		params:  opts.Params,
-		handles: handles,
-		specs:   specs,
-		obs:     opts.Observer,
-		buffer:  opts.Buffer,
-		ch:      make(chan T, opts.Buffer),
-		errCh:   make(chan error, opts.Buffer),
+		name:         name,
+		codec:        codec,
+		params:       opts.Params,
+		obs:          opts.Observer,
+		buffer:       opts.Buffer,
+		eventBuilder: opts.EventBuilder,
+		restBuilder:  opts.RESTBuilder,
+		handles:      map[string]any{},
+		specs:        map[string]any{},
+		ch:           make(chan T, opts.Buffer),
+		errCh:        make(chan error, opts.Buffer),
 	}, nil
 }
 
-// patternHandle implements the unexported patternHolder interface used by
-// [RESTHandle], [EventHandle], [ReqReplyHandle], and [MCPHandle].
+// pluginPattern is the shared engine behind every PluginXxxPattern method:
+// build ONE pattern's handle via the existing multi-pattern dispatch (called
+// with a single-element slice), merge the result into this port's handle/spec
+// storage, and hand back the raw value for the specific kind just plugged
+// in. Returns [PatternRegisterError] if kind was already plugged in (a
+// second Plugin call for the same Pattern kind is a programming error, not a
+// runtime condition) or if the Pattern itself fails to build.
+func (p *SourcePort[T]) pluginPattern(pattern Pattern, kind string) (any, error) {
+	p.handlesMu.Lock()
+	if _, exists := p.handles[kind]; exists {
+		p.handlesMu.Unlock()
+		return nil, PatternRegisterError{Port: p.name, Kind: kind, Err: fmt.Errorf("pattern of kind %q already plugged in", kind)}
+	}
+	p.handlesMu.Unlock()
+
+	handles, specs, err := buildEventPatternHandles(p.name, []Pattern{pattern}, p.codec, roleSource, p.eventBuilder, p.restBuilder)
+	if err != nil {
+		return nil, err
+	}
+
+	p.handlesMu.Lock()
+	for k, v := range handles {
+		p.handles[k] = v
+	}
+	for k, v := range specs {
+		p.specs[k] = v
+	}
+	p.handlesMu.Unlock()
+	return handles[kind], nil
+}
+
+// PluginEventPattern registers pattern (against the EventBuilder supplied to
+// [NewSourcePort]'s [PortOptions], or a private single-use builder if none)
+// and returns the resulting [events.ChannelHandle] directly — bind a
+// [SourceAdapter] to it (e.g. mqtt5.SubscribeAdapter) immediately after.
+func (p *SourcePort[T]) PluginEventPattern(pattern EventPattern) (*events.ChannelHandle[T], error) {
+	v, err := p.pluginPattern(pattern, patternKindEvent)
+	if err != nil {
+		return nil, err
+	}
+	h, _ := v.(*events.ChannelHandle[T])
+	return h, nil
+}
+
+// PluginRESTPattern registers pattern as an HTTP ingest route (request body
+// = the port's payload, empty response) and returns the resulting
+// [rest.RouteHandle] directly — bind e.g. nethttp/chi's IngestAdapter to it.
+func (p *SourcePort[T]) PluginRESTPattern(pattern RESTPattern) (*rest.RouteHandle[T, struct{}], error) {
+	v, err := p.pluginPattern(pattern, patternKindREST)
+	if err != nil {
+		return nil, err
+	}
+	h, _ := v.(*rest.RouteHandle[T, struct{}])
+	return h, nil
+}
+
+// PluginFilePattern registers pattern and returns the resulting [File]
+// directly — bind e.g. file.ScanAdapter/file.WatchAdapter to it.
+func (p *SourcePort[T]) PluginFilePattern(pattern FilePattern) (File[T], error) {
+	v, err := p.pluginPattern(pattern, patternKindFile)
+	if err != nil {
+		return File[T]{}, err
+	}
+	h, _ := v.(File[T])
+	return h, nil
+}
+
+// PluginSQLPattern registers pattern's Table/Op metadata — SQLPattern builds
+// no handle (metadata-only; retrieve it later via [SQLMeta], or rely on
+// [Bind]'s automatic [WithSQLMeta] propagation to the bound adapter's
+// context). Returns an error only if pattern was already plugged in.
+func (p *SourcePort[T]) PluginSQLPattern(pattern SQLPattern) error {
+	_, err := p.pluginPattern(pattern, patternKindSQL)
+	return err
+}
+
+// PluginSocketPattern registers pattern as an inbound-only socket (clients
+// send T frames; the port never sends back) and returns the resulting
+// [Socket][T, struct{}] directly.
+func (p *SourcePort[T]) PluginSocketPattern(pattern SocketPattern) (Socket[T, struct{}], error) {
+	v, err := p.pluginPattern(pattern, patternKindSocket)
+	if err != nil {
+		return Socket[T, struct{}]{}, err
+	}
+	h, _ := v.(Socket[T, struct{}])
+	return h, nil
+}
+
+// patternHandle implements the unexported patternHolder interface used
+// internally by [SQLMeta] (SQLPattern metadata retrieval — the one
+// pattern-lookup accessor NOT superseded by the Plugin model, since
+// SQLPattern builds no handle to hand back synchronously).
 func (p *SourcePort[T]) patternHandle(kind string) (any, bool) {
+	p.handlesMu.Lock()
+	defer p.handlesMu.Unlock()
 	v, ok := p.handles[kind]
 	return v, ok
 }
@@ -105,6 +205,8 @@ func (p *SourcePort[T]) patternHandle(kind string) (any, bool) {
 // patternSpec implements the unexported patternHolder interface used by
 // [RegisterREST], [RegisterEvent], [RegisterReqReply], and [RegisterMCP].
 func (p *SourcePort[T]) patternSpec(kind string) (any, bool) {
+	p.handlesMu.Lock()
+	defer p.handlesMu.Unlock()
 	v, ok := p.specs[kind]
 	return v, ok
 }

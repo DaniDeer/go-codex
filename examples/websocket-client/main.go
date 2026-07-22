@@ -68,13 +68,10 @@ func main() {
 
 	// ── SERVER process: duplex port served over WS (Phase 1) ─────────────
 	serverPort := codex.Must(ports.NewDuplexPort[Command, Update]("server-live",
-		commandCodec, updateCodec, ports.PortOptions{
-			Patterns: []ports.Pattern{ports.SocketPattern{Path: "/live/{room}"}},
-			Buffer:   8,
-		}))
+		commandCodec, updateCodec, ports.PortOptions{Buffer: 8}))
 	mux := http.NewServeMux()
 	hub := adapterws.NewHub(0)
-	sHandle, _ := ports.SocketHandle[Command, Update](serverPort)
+	sHandle := codex.Must(serverPort.PluginSocketPattern(ports.SocketPattern{Path: "/live/{room}"}))
 	if err := serverPort.Bind(ctx, adapterws.DuplexSocketAdapter(mux, hub,
 		adapterws.NewUpgrader(adapterws.UpgraderOptions{CheckOrigin: func(*http.Request) bool { return true }}),
 		sHandle, adapterws.DuplexSocketAdapterOptions{})); err != nil {
@@ -98,11 +95,8 @@ func main() {
 	// ── CLIENT process: dial adapter on a mirrored duplex port ───────────
 	// Types are swapped: the client RECEIVES Update and SENDS Command.
 	clientPort := codex.Must(ports.NewDuplexPort[Update, Command]("client-live",
-		updateCodec, commandCodec, ports.PortOptions{
-			Patterns: []ports.Pattern{ports.SocketPattern{Path: "/live/{room}"}},
-			Buffer:   8,
-		}))
-	cHandle, _ := ports.SocketHandle[Update, Command](clientPort)
+		updateCodec, commandCodec, ports.PortOptions{Buffer: 8}))
+	cHandle := codex.Must(clientPort.PluginSocketPattern(ports.SocketPattern{Path: "/live/{room}"}))
 	wsBase := "ws" + strings.TrimPrefix(srv.URL, "http")
 	if err := clientPort.Bind(ctx, adapterws.DialDuplexAdapter(
 		adapterws.NewDialer(adapterws.DialerOptions{}),

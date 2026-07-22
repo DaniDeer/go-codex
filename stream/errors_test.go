@@ -1,6 +1,7 @@
 package stream_test
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -114,6 +115,51 @@ func attrKeys(lv slog.Value) map[string]bool {
 		keys[a.Key] = true
 	}
 	return keys
+}
+
+// ── LogOnError ────────────────────────────────────────────────────────────────
+
+func TestLogOnError_StreamApplyError_LogsDistinctly(t *testing.T) {
+	var buf bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&buf, nil))
+	onErr := stream.LogOnError(logger, "alert publish")
+
+	onErr(stream.StreamApplyError{Function: "buildAlert", Err: fmt.Errorf("boom")})
+
+	out := buf.String()
+	if !containsAll(out, "alert publish", "stream apply error", "buildAlert") {
+		t.Errorf("want context+kind+function in log line, got: %s", out)
+	}
+}
+
+func TestLogOnError_StreamDecodeError_LogsDistinctly(t *testing.T) {
+	var buf bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&buf, nil))
+	onErr := stream.LogOnError(logger, "sensor ingest")
+
+	onErr(stream.StreamDecodeError{Source: "mqtt/sensors", Err: fmt.Errorf("bad json")})
+
+	out := buf.String()
+	if !containsAll(out, "sensor ingest", "stream decode error", "mqtt/sensors") {
+		t.Errorf("want context+kind+source in log line, got: %s", out)
+	}
+}
+
+func TestLogOnError_GenericError_LogsFallback(t *testing.T) {
+	var buf bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&buf, nil))
+	onErr := stream.LogOnError(logger, "export")
+
+	onErr(errors.New("disk full"))
+
+	out := buf.String()
+	if !containsAll(out, "export", "error", "disk full") {
+		t.Errorf("want context+generic message+underlying error, got: %s", out)
+	}
+	// Must NOT be misclassified as apply/decode.
+	if containsAll(out, "stream apply error") || containsAll(out, "stream decode error") {
+		t.Errorf("generic error must not be logged as apply/decode kind, got: %s", out)
+	}
 }
 
 func containsAll(s string, subs ...string) bool {

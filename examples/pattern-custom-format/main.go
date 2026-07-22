@@ -54,14 +54,7 @@ var imageQueryCodec = codex.Struct[ImageQuery](
 // (base64) instead of writing them as-is.
 func newImagesPort(dir string) *ports.IOPort[ImageQuery, []byte] {
 	return codex.Must(ports.NewIOPort[ImageQuery, []byte]("images",
-		imageQueryCodec, pngCodec, ports.PortOptions{
-			Patterns: []ports.Pattern{
-				ports.FilePattern{
-					Path:         dir + "/{id}.png",
-					CustomFormat: format.Binary(pngCodec).WithContentType("image/png"),
-				},
-			},
-		}))
+		imageQueryCodec, pngCodec, ports.PortOptions{}))
 }
 
 // ── Scene 2: CachePattern + format.Gob (typed binary cache entry) ─────────────
@@ -87,14 +80,7 @@ var sessionCodec = codex.Struct[Session](
 // size than JSON, no map[string]any intermediate, still fully
 // codec-validated on every read and write.
 var Sessions = codex.Must(ports.NewIOPort[ImageQuery, Session]("sessions",
-	imageQueryCodec, sessionCodec, ports.PortOptions{
-		Patterns: []ports.Pattern{
-			ports.CachePattern{
-				Key:          "session:{id}",
-				CustomFormat: format.Gob(sessionCodec),
-			},
-		},
-	}))
+	imageQueryCodec, sessionCodec, ports.PortOptions{}))
 
 func main() {
 	// ── Scene 1: raw PNG through a Pattern-declared FilePattern ───────────
@@ -106,7 +92,10 @@ func main() {
 	}
 	defer os.RemoveAll(dir)
 
-	imgHandle, _ := ports.FileHandle[[]byte](newImagesPort(dir))
+	imgHandle := codex.Must(newImagesPort(dir).PluginFilePattern(ports.FilePattern{
+		Path:         dir + "/{id}.png",
+		CustomFormat: format.Binary(pngCodec).WithContentType("image/png"),
+	}))
 	pngSignature := []byte{0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A}
 	fakePNG := append(append([]byte{}, pngSignature...), []byte("...pixels...")...)
 
@@ -134,7 +123,10 @@ func main() {
 	// ── Scene 2: Gob-encoded cache entry through a Pattern-declared Cache ─
 	fmt.Println("\n─── Scene 2: CachePattern + format.Gob (typed binary cache)")
 
-	cacheHandle, _ := ports.CacheHandle[Session](Sessions)
+	cacheHandle := codex.Must(Sessions.PluginCachePattern(ports.CachePattern{
+		Key:          "session:{id}",
+		CustomFormat: format.Gob(sessionCodec),
+	}))
 	sess := Session{UserID: "u-42", Roles: []string{"admin", "billing"}}
 	encoded, err := cacheHandle.Format.Marshal(sess)
 	if err != nil {

@@ -16,19 +16,17 @@ import (
 func ExampleNewSourcePort() {
 	ctx := context.Background()
 
-	// domain/pipeline.go — zero adapter imports; the Pattern IS the declaration.
+	// domain/pipeline.go — zero adapter imports; the port declares its shape.
 	sensors := codex.Must(ports.NewSourcePort[int]("sensors", codex.Int(),
-		ports.PortOptions{
-			Buffer: 4,
-			Patterns: []ports.Pattern{
-				ports.EventPattern{Topic: "sensors/{sensorID}/data", Opts: []events.ChannelOpt{
-					events.TopicParam{Name: "sensorID"},
-				}},
-			},
-		}))
+		ports.PortOptions{Buffer: 4}))
 
-	// main.go — the handle comes FROM the port; swap the adapter freely.
-	handle, _ := ports.EventHandle[int](sensors)
+	// main.go — plug in the Pattern, get the handle back directly; swap the
+	// adapter freely.
+	handle := codex.Must(sensors.PluginEventPattern(ports.EventPattern{
+		Topic: "sensors/{sensorID}/data", Opts: []events.ChannelOpt{
+			events.TopicParam{Name: "sensorID"},
+		},
+	}))
 	fmt.Println("declared topic:", handle.Topic)
 
 	ch := make(chan int, 2)

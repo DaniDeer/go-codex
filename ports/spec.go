@@ -158,7 +158,7 @@ func RegisterMCP[In, Out any](b *apimcp.Builder, port any) error {
 //
 // Returns [MissingPatternError] if the port declared no [SocketPattern].
 func RegisterSocket[In, Out any](b *events.Builder, port any) error {
-	handle, ok := SocketHandle[In, Out](port)
+	handle, ok := socketHandleFor[In, Out](port)
 	if !ok {
 		return MissingPatternError{Port: portName(port), Kind: patternKindSocket}
 	}

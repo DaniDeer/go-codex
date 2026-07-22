@@ -97,26 +97,27 @@ var updateCodec = codex.Struct[Update](
 )
 
 // Live is the duplex boundary — declared once, no adapter imports needed
-// in real domain code.
+// in real domain code. The SocketPattern is plugged in separately (see
+// LivePattern below), at whatever point in the wiring code makes sense.
 var Live = codex.Must(ports.NewDuplexPort[Command, Update]("live",
-	commandCodec, updateCodec, ports.PortOptions{
-		Patterns: []ports.Pattern{
-			ports.SocketPattern{
-				Path: "/live/{room}",
-				InOpts: []ports.SocketInOpt{
-					ports.NewRequiredSocketInParam("room", codex.String(),
-						func(c Command) string { return c.Connection.Room },
-						func(c *Command, v string) { c.Connection.Room = v }),
-				},
-				OutOpts: []ports.SocketOutOpt{
-					ports.NewRequiredSocketOutParam("room", codex.String(),
-						func(u Update) string { return u.Connection.Room },
-						func(u *Update, v string) { u.Connection.Room = v }),
-				},
-			},
-		},
-		Buffer: 8,
-	}))
+	commandCodec, updateCodec, ports.PortOptions{Buffer: 8}))
+
+// LivePattern is Live's communication pattern, declared standalone — a
+// reusable, self-contained value, independent of the port-construction
+// call above.
+var LivePattern = ports.SocketPattern{
+	Path: "/live/{room}",
+	InOpts: []ports.SocketInOpt{
+		ports.NewRequiredSocketInParam("room", codex.String(),
+			func(c Command) string { return c.Connection.Room },
+			func(c *Command, v string) { c.Connection.Room = v }),
+	},
+	OutOpts: []ports.SocketOutOpt{
+		ports.NewRequiredSocketOutParam("room", codex.String(),
+			func(u Update) string { return u.Connection.Room },
+			func(u *Update, v string) { u.Connection.Room = v }),
+	},
+}
 
 // ── Observer: pure counters over the transport-agnostic hooks ────────────────
 //
@@ -187,7 +188,7 @@ func main() {
 	upgrader := adapterws.NewUpgrader(adapterws.UpgraderOptions{
 		CheckOrigin: func(*http.Request) bool { return true }, // demo only
 	})
-	handle, _ := ports.SocketHandle[Command, Update](Live)
+	handle := codex.Must(Live.PluginSocketPattern(LivePattern))
 	if err := Live.Bind(ctx, adapterws.DuplexSocketAdapter(mux, hub, upgrader, handle,
 		adapterws.DuplexSocketAdapterOptions{})); err != nil {
 		panic(err)

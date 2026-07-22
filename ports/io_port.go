@@ -3,8 +3,12 @@ package ports
 import (
 	"context"
 	"errors"
+	"fmt"
 	"sync"
 
+	apimcp "github.com/DaniDeer/go-codex/api/mcp"
+	"github.com/DaniDeer/go-codex/api/reqreply"
+	"github.com/DaniDeer/go-codex/api/rest"
 	"github.com/DaniDeer/go-codex/codex"
 	"github.com/DaniDeer/go-codex/stats"
 	gstream "github.com/DaniDeer/go-codex/stream"
@@ -58,47 +62,216 @@ type IOPort[Req, Resp any] struct {
 	reqCodec  codex.Codec[Req]
 	respCodec codex.Codec[Resp]
 	params    []IOParam
+	obs       stats.Observer
+
+	// Builders are stored (not used eagerly) so PluginRESTPattern/
+	// PluginReqReplyPattern/PluginMCPPattern/PluginSQLPattern/
+	// PluginCachePattern can register against the SAME shared builder
+	// every other Pattern-carrying declaration in the service uses.
+	restBuilder     *rest.Builder
+	reqReplyBuilder *reqreply.Builder
+	mcpBuilder      *apimcp.Builder
+
+	handlesMu sync.Mutex
 	handles   map[string]any
 	specs     map[string]any
-	obs       stats.Observer
 
 	mu      sync.Mutex
 	adapter IOAdapter[Req, Resp]
 }
 
 // NewIOPort creates an IOPort with the given name, request codec, and response
-// codec. opts configures Patterns, IO params, observer, and (optionally) shared
-// [PortOptions.RESTBuilder]/[PortOptions.ReqReplyBuilder]/[PortOptions.MCPBuilder]
-// builders. Any [RESTPattern]/[ReqReplyPattern]/[MCPPattern] in opts.Patterns is
-// built eagerly into a handle retrievable via [RESTHandle]/[ReqReplyHandle]/
-// [MCPHandle] via Register — fail-fast, and identical to a hand-registered
-// route/tool when the matching builder option is supplied. Returns
-// [PatternRegisterError] if a declared Pattern fails to build.
+// codec. opts configures IO params, observer, and (optionally) shared
+// RESTBuilder/ReqReplyBuilder/MCPBuilder references for later
+// [PluginRESTPattern]/[PluginReqReplyPattern]/[PluginMCPPattern]/
+// [PluginSQLPattern]/[PluginCachePattern] calls — declare the port's
+// communication Pattern separately (see [PortOptions]), or use one of the
+// protocol-named convenience constructors ([NewRestPort], [NewReqReplyPort],
+// [NewMCPPort], [NewSQLPort]) for the common single-Pattern case.
 func NewIOPort[Req, Resp any](
 	name string,
 	reqCodec codex.Codec[Req],
 	respCodec codex.Codec[Resp],
 	opts PortOptions,
 ) (*IOPort[Req, Resp], error) {
-	handles, specs, err := buildDualCodecPatternHandles(name, opts.Patterns, reqCodec, respCodec,
-		opts.RESTBuilder, opts.ReqReplyBuilder, opts.MCPBuilder, true)
-	if err != nil {
-		return nil, err
-	}
 	return &IOPort[Req, Resp]{
-		name:      name,
-		reqCodec:  reqCodec,
-		respCodec: respCodec,
-		params:    opts.Params,
-		handles:   handles,
-		specs:     specs,
-		obs:       opts.Observer,
+		name:            name,
+		reqCodec:        reqCodec,
+		respCodec:       respCodec,
+		params:          opts.Params,
+		obs:             opts.Observer,
+		restBuilder:     opts.RESTBuilder,
+		reqReplyBuilder: opts.ReqReplyBuilder,
+		mcpBuilder:      opts.MCPBuilder,
+		handles:         map[string]any{},
+		specs:           map[string]any{},
 	}, nil
 }
 
-// patternHandle implements the unexported patternHolder interface used by
-// [RESTHandle], [EventHandle], [ReqReplyHandle], and [MCPHandle].
+// pluginPattern is the shared engine behind every PluginXxxPattern method —
+// see [SourcePort.pluginPattern] for the full rationale. cacheAllowed is
+// always true for IOPort (an IOPort's response can be cached).
+func (p *IOPort[Req, Resp]) pluginPattern(pattern Pattern, kind string) (any, error) {
+	p.handlesMu.Lock()
+	if _, exists := p.handles[kind]; exists {
+		p.handlesMu.Unlock()
+		return nil, PatternRegisterError{Port: p.name, Kind: kind, Err: fmt.Errorf("pattern of kind %q already plugged in", kind)}
+	}
+	p.handlesMu.Unlock()
+
+	handles, specs, err := buildDualCodecPatternHandles(p.name, []Pattern{pattern}, p.reqCodec, p.respCodec,
+		p.restBuilder, p.reqReplyBuilder, p.mcpBuilder, true)
+	if err != nil {
+		return nil, err
+	}
+
+	p.handlesMu.Lock()
+	for k, v := range handles {
+		p.handles[k] = v
+	}
+	for k, v := range specs {
+		p.specs[k] = v
+	}
+	p.handlesMu.Unlock()
+	return handles[kind], nil
+}
+
+// PluginRESTPattern registers pattern and returns the resulting
+// [rest.RouteHandle] directly — bind e.g. nethttp.CallAdapter to it.
+func (p *IOPort[Req, Resp]) PluginRESTPattern(pattern RESTPattern) (*rest.RouteHandle[Req, Resp], error) {
+	v, err := p.pluginPattern(pattern, patternKindREST)
+	if err != nil {
+		return nil, err
+	}
+	h, _ := v.(*rest.RouteHandle[Req, Resp])
+	return h, nil
+}
+
+// PluginReqReplyPattern registers pattern and returns the resulting
+// [reqreply.RouteHandle] directly — bind e.g. mqtt5's ReqReply call adapter
+// to it.
+func (p *IOPort[Req, Resp]) PluginReqReplyPattern(pattern ReqReplyPattern) (*reqreply.RouteHandle[Req, Resp], error) {
+	v, err := p.pluginPattern(pattern, patternKindReqReply)
+	if err != nil {
+		return nil, err
+	}
+	h, _ := v.(*reqreply.RouteHandle[Req, Resp])
+	return h, nil
+}
+
+// PluginMCPPattern registers pattern and returns the resulting
+// [apimcp.ToolHandle] directly.
+func (p *IOPort[Req, Resp]) PluginMCPPattern(pattern MCPPattern) (*apimcp.ToolHandle[Req, Resp], error) {
+	v, err := p.pluginPattern(pattern, patternKindMCP)
+	if err != nil {
+		return nil, err
+	}
+	h, _ := v.(*apimcp.ToolHandle[Req, Resp])
+	return h, nil
+}
+
+// PluginFilePattern registers pattern and returns the resulting [File]
+// directly, built from the port's RESPONSE codec (the file's content is the
+// port's response — a per-item retrieval reads a File[Resp]).
+func (p *IOPort[Req, Resp]) PluginFilePattern(pattern FilePattern) (File[Resp], error) {
+	v, err := p.pluginPattern(pattern, patternKindFile)
+	if err != nil {
+		return File[Resp]{}, err
+	}
+	h, _ := v.(File[Resp])
+	return h, nil
+}
+
+// PluginSQLPattern registers pattern's Table/Op metadata — SQLPattern builds
+// no handle (metadata-only; retrieve it later via [SQLMeta], or rely on
+// [Bind]'s automatic [WithSQLMeta] propagation to the bound adapter's
+// context). Returns an error only if pattern was already plugged in.
+func (p *IOPort[Req, Resp]) PluginSQLPattern(pattern SQLPattern) error {
+	_, err := p.pluginPattern(pattern, patternKindSQL)
+	return err
+}
+
+// PluginCachePattern registers pattern and returns the resulting [Cache]
+// directly (cached value = the port's response) — bind e.g. redis's cache
+// adapter to it.
+func (p *IOPort[Req, Resp]) PluginCachePattern(pattern CachePattern) (Cache[Resp], error) {
+	v, err := p.pluginPattern(pattern, patternKindCache)
+	if err != nil {
+		return Cache[Resp]{}, err
+	}
+	h, _ := v.(Cache[Resp])
+	return h, nil
+}
+
+// NewRestPort is a thin convenience constructor: [NewIOPort] followed
+// immediately by [IOPort.PluginRESTPattern] — for the common case where
+// exactly one RESTPattern is known upfront. Always expressible by unwrapping
+// into the two separate calls; use those directly instead for late Pattern
+// binding or a port carrying more than one Pattern kind.
+func NewRestPort[Req, Resp any](name string, reqCodec codex.Codec[Req], respCodec codex.Codec[Resp],
+	pattern RESTPattern, opts PortOptions,
+) (*IOPort[Req, Resp], *rest.RouteHandle[Req, Resp], error) {
+	p, err := NewIOPort[Req, Resp](name, reqCodec, respCodec, opts)
+	if err != nil {
+		return nil, nil, err
+	}
+	h, err := p.PluginRESTPattern(pattern)
+	if err != nil {
+		return nil, nil, err
+	}
+	return p, h, nil
+}
+
+// NewReqReplyPort is [NewRestPort]'s ReqReplyPattern counterpart.
+func NewReqReplyPort[Req, Resp any](name string, reqCodec codex.Codec[Req], respCodec codex.Codec[Resp],
+	pattern ReqReplyPattern, opts PortOptions,
+) (*IOPort[Req, Resp], *reqreply.RouteHandle[Req, Resp], error) {
+	p, err := NewIOPort[Req, Resp](name, reqCodec, respCodec, opts)
+	if err != nil {
+		return nil, nil, err
+	}
+	h, err := p.PluginReqReplyPattern(pattern)
+	if err != nil {
+		return nil, nil, err
+	}
+	return p, h, nil
+}
+
+// NewMCPPort is [NewRestPort]'s MCPPattern counterpart.
+func NewMCPPort[Req, Resp any](name string, reqCodec codex.Codec[Req], respCodec codex.Codec[Resp],
+	pattern MCPPattern, opts PortOptions,
+) (*IOPort[Req, Resp], *apimcp.ToolHandle[Req, Resp], error) {
+	p, err := NewIOPort[Req, Resp](name, reqCodec, respCodec, opts)
+	if err != nil {
+		return nil, nil, err
+	}
+	h, err := p.PluginMCPPattern(pattern)
+	if err != nil {
+		return nil, nil, err
+	}
+	return p, h, nil
+}
+
+// NewSQLPort is [NewRestPort]'s SQLPattern counterpart — SQLPattern builds no
+// handle, so this returns just the port and error.
+func NewSQLPort[Req, Resp any](name string, reqCodec codex.Codec[Req], respCodec codex.Codec[Resp],
+	pattern SQLPattern, opts PortOptions,
+) (*IOPort[Req, Resp], error) {
+	p, err := NewIOPort[Req, Resp](name, reqCodec, respCodec, opts)
+	if err != nil {
+		return nil, err
+	}
+	if err := p.PluginSQLPattern(pattern); err != nil {
+		return nil, err
+	}
+	return p, nil
+}
+
+// patternHandle implements the unexported patternHolder interface used
+// internally by [SQLMeta] (see [SourcePort.patternHandle] for rationale).
 func (p *IOPort[Req, Resp]) patternHandle(kind string) (any, bool) {
+	p.handlesMu.Lock()
+	defer p.handlesMu.Unlock()
 	v, ok := p.handles[kind]
 	return v, ok
 }
@@ -106,6 +279,8 @@ func (p *IOPort[Req, Resp]) patternHandle(kind string) (any, bool) {
 // patternSpec implements the unexported patternHolder interface used by
 // [RegisterREST], [RegisterEvent], [RegisterReqReply], and [RegisterMCP].
 func (p *IOPort[Req, Resp]) patternSpec(kind string) (any, bool) {
+	p.handlesMu.Lock()
+	defer p.handlesMu.Unlock()
 	v, ok := p.specs[kind]
 	return v, ok
 }

@@ -207,11 +207,11 @@ func runDemo(env demoEnv) {
 	// the four PipePorts pipeline.Build wired — no separate,
 	// hand-maintained pipeline.Topology function to keep in sync (Gap 4 of
 	// docs/roadmap/pipe-port-composition-hardening.md). This package
-	// imports both ioports (for Raw/AlertStage) and pipeline (for
+	// imports both ioports (for Sensors/Alerts) and pipeline (for
 	// Params/Saved), so it — not pipeline itself — is where the call
 	// belongs (pipeline never imports ioports).
 	pipelineSpec := ports.PipelineSpec("Sensor Service MQTT Pipeline", "1.0.0",
-		ioports.Raw, pipeline.Params, pipeline.Saved, ioports.AlertStage)
+		ioports.Sensors, pipeline.Params, pipeline.Saved, ioports.Alerts)
 	specYAML, err := streamrender.Render(pipelineSpec)
 	must(err, "render pipeline spec")
 

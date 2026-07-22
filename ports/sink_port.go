@@ -2,8 +2,11 @@ package ports
 
 import (
 	"context"
+	"fmt"
 	"sync"
 
+	"github.com/DaniDeer/go-codex/api/events"
+	"github.com/DaniDeer/go-codex/api/rest"
 	"github.com/DaniDeer/go-codex/codex"
 	"github.com/DaniDeer/go-codex/stats"
 	gstream "github.com/DaniDeer/go-codex/stream"
@@ -54,13 +57,22 @@ type boundSink[T any] struct {
 //  3. [Feed] — connect the upstream stream; blocks until src terminates AND
 //     all adapter goroutines have finished draining their per-adapter channels.
 type SinkPort[T any] struct {
-	name    string
-	codec   codex.Codec[T]
-	params  []IOParam
-	handles map[string]any
-	specs   map[string]any
-	obs     stats.Observer
-	buffer  int
+	name   string
+	codec  codex.Codec[T]
+	params []IOParam
+	obs    stats.Observer
+	buffer int
+
+	// eventBuilder/restBuilder are stored (not used eagerly) so
+	// PluginEventPattern/PluginRESTPattern/PluginFilePattern/
+	// PluginCachePattern can register against the SAME shared builder
+	// every other Pattern-carrying declaration in the service uses.
+	eventBuilder *events.Builder
+	restBuilder  *rest.Builder
+
+	handlesMu sync.Mutex
+	handles   map[string]any
+	specs     map[string]any
 
 	mu       sync.Mutex
 	sinks    []*boundSink[T]
@@ -85,31 +97,124 @@ const (
 )
 
 // NewSinkPort creates a SinkPort with the given name and payload codec.
-// opts configures Patterns, IO params, buffer size, observer, and (optionally)
-// a shared [PortOptions.EventBuilder]. Any [EventPattern] in opts.Patterns is
-// built eagerly into a handle retrievable via [EventHandle] via
-// events.Channel.Register — fail-fast, and identical to a hand-registered
-// channel when opts.EventBuilder is supplied. Returns [PatternRegisterError]
-// if a declared Pattern fails to build.
+// opts configures IO params, buffer size, observer, and (optionally) shared
+// RESTBuilder/EventBuilder references for later [PluginEventPattern]/
+// [PluginRESTPattern]/[PluginFilePattern]/[PluginCachePattern] calls —
+// declare the port's communication Pattern separately (see [PortOptions]).
 func NewSinkPort[T any](name string, codec codex.Codec[T], opts PortOptions) (*SinkPort[T], error) {
-	handles, specs, err := buildEventPatternHandles(name, opts.Patterns, codec, roleSink, opts.EventBuilder, opts.RESTBuilder)
-	if err != nil {
-		return nil, err
-	}
 	return &SinkPort[T]{
-		name:    name,
-		codec:   codec,
-		params:  opts.Params,
-		handles: handles,
-		specs:   specs,
-		obs:     opts.Observer,
-		buffer:  opts.Buffer,
+		name:         name,
+		codec:        codec,
+		params:       opts.Params,
+		obs:          opts.Observer,
+		buffer:       opts.Buffer,
+		eventBuilder: opts.EventBuilder,
+		restBuilder:  opts.RESTBuilder,
+		handles:      map[string]any{},
+		specs:        map[string]any{},
 	}, nil
 }
 
-// patternHandle implements the unexported patternHolder interface used by
-// [RESTHandle], [EventHandle], [ReqReplyHandle], and [MCPHandle].
+// pluginPattern is the shared engine behind every PluginXxxPattern method —
+// see [SourcePort.pluginPattern] for the full rationale (identical here,
+// role fixed to roleSink).
+func (p *SinkPort[T]) pluginPattern(pattern Pattern, kind string) (any, error) {
+	p.handlesMu.Lock()
+	if _, exists := p.handles[kind]; exists {
+		p.handlesMu.Unlock()
+		return nil, PatternRegisterError{Port: p.name, Kind: kind, Err: fmt.Errorf("pattern of kind %q already plugged in", kind)}
+	}
+	p.handlesMu.Unlock()
+
+	handles, specs, err := buildEventPatternHandles(p.name, []Pattern{pattern}, p.codec, roleSink, p.eventBuilder, p.restBuilder)
+	if err != nil {
+		return nil, err
+	}
+
+	p.handlesMu.Lock()
+	for k, v := range handles {
+		p.handles[k] = v
+	}
+	for k, v := range specs {
+		p.specs[k] = v
+	}
+	p.handlesMu.Unlock()
+	return handles[kind], nil
+}
+
+// PluginEventPattern registers pattern (against the EventBuilder supplied to
+// [NewSinkPort]'s [PortOptions], or a private single-use builder if none)
+// and returns the resulting [events.ChannelHandle] directly — bind a
+// [SinkAdapter] to it (e.g. mqtt5.PublishAdapter) immediately after.
+func (p *SinkPort[T]) PluginEventPattern(pattern EventPattern) (*events.ChannelHandle[T], error) {
+	v, err := p.pluginPattern(pattern, patternKindEvent)
+	if err != nil {
+		return nil, err
+	}
+	h, _ := v.(*events.ChannelHandle[T])
+	return h, nil
+}
+
+// PluginRESTPattern registers pattern as an SSE route (events are the port's
+// payload, requests carry no body) and returns the resulting
+// [rest.SSERouteHandle] directly — bind e.g. nethttp.SSEAdapter to it.
+func (p *SinkPort[T]) PluginRESTPattern(pattern RESTPattern) (*rest.SSERouteHandle[struct{}, T], error) {
+	v, err := p.pluginPattern(pattern, patternKindREST)
+	if err != nil {
+		return nil, err
+	}
+	h, _ := v.(*rest.SSERouteHandle[struct{}, T])
+	return h, nil
+}
+
+// PluginFilePattern registers pattern and returns the resulting [File]
+// directly — bind e.g. file.DrainWriteFileAdapter to it.
+func (p *SinkPort[T]) PluginFilePattern(pattern FilePattern) (File[T], error) {
+	v, err := p.pluginPattern(pattern, patternKindFile)
+	if err != nil {
+		return File[T]{}, err
+	}
+	h, _ := v.(File[T])
+	return h, nil
+}
+
+// PluginCachePattern registers pattern and returns the resulting [Cache]
+// directly — bind e.g. redis's cache adapter to it.
+func (p *SinkPort[T]) PluginCachePattern(pattern CachePattern) (Cache[T], error) {
+	v, err := p.pluginPattern(pattern, patternKindCache)
+	if err != nil {
+		return Cache[T]{}, err
+	}
+	h, _ := v.(Cache[T])
+	return h, nil
+}
+
+// PluginSQLPattern registers pattern's Table/Op metadata — SQLPattern builds
+// no handle (metadata-only; retrieve it later via [SQLMeta], or rely on
+// [Bind]'s automatic [WithSQLMeta] propagation to the bound adapter's
+// context). Returns an error only if pattern was already plugged in.
+func (p *SinkPort[T]) PluginSQLPattern(pattern SQLPattern) error {
+	_, err := p.pluginPattern(pattern, patternKindSQL)
+	return err
+}
+
+// PluginSocketPattern registers pattern as an outbound-only socket (the
+// port sends T frames; it never receives) and returns the resulting
+// [Socket][struct{}, T] directly.
+func (p *SinkPort[T]) PluginSocketPattern(pattern SocketPattern) (Socket[struct{}, T], error) {
+	v, err := p.pluginPattern(pattern, patternKindSocket)
+	if err != nil {
+		return Socket[struct{}, T]{}, err
+	}
+	h, _ := v.(Socket[struct{}, T])
+	return h, nil
+}
+
+// patternHandle implements the unexported patternHolder interface used
+// internally by [SQLMeta] (see [SourcePort.patternHandle] for rationale).
 func (p *SinkPort[T]) patternHandle(kind string) (any, bool) {
+	p.handlesMu.Lock()
+	defer p.handlesMu.Unlock()
 	v, ok := p.handles[kind]
 	return v, ok
 }
@@ -117,6 +222,8 @@ func (p *SinkPort[T]) patternHandle(kind string) (any, bool) {
 // patternSpec implements the unexported patternHolder interface used by
 // [RegisterREST], [RegisterEvent], [RegisterReqReply], and [RegisterMCP].
 func (p *SinkPort[T]) patternSpec(kind string) (any, bool) {
+	p.handlesMu.Lock()
+	defer p.handlesMu.Unlock()
 	v, ok := p.specs[kind]
 	return v, ok
 }
