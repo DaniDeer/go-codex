@@ -273,8 +273,8 @@ func (m ErrorReplyMeta) applyRoute(rb *routeBuilder) {
 
 // routeBuilder accumulates RouteOpt values before building the route.
 type routeBuilder struct {
-	meta        RouteMeta
-	topicParams []TopicParam
+	meta         RouteMeta
+	topicParams  []TopicParam
 	errorReplies []ErrorReplyMeta
 	// requestFormats/formats hold []format.Format[Req]/[]format.Format[Resp]
 	// type-erased (any) — set by [RequestFormats]/[Formats], resolved
