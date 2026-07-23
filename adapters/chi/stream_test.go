@@ -16,6 +16,15 @@ import (
 	gstream "github.com/DaniDeer/go-codex/stream"
 )
 
+type chiPipelineConflictError struct{ msg string }
+
+func (e chiPipelineConflictError) Error() string {
+	if e.msg != "" {
+		return e.msg
+	}
+	return "pipeline conflict"
+}
+
 // ── shared helpers ────────────────────────────────────────────────────────────
 
 func newChiGetHandle() (*rest.RouteHandle[getReq, userResp], error) {
@@ -28,6 +37,24 @@ func newChiPipelineHandle() (*rest.RouteHandle[createReq, userResp], error) {
 	b := rest.NewBuilder(testInfo)
 	return rest.NewRoute[createReq, userResp]("POST", "/pipeline",
 		createReqCodec, userRespCodec, rest.RouteMeta{OperationID: "chiPipeline"}).Register(b)
+}
+
+func newChiPipelineHandleWithMappedErrorStatus() (*rest.RouteHandle[createReq, userResp], error) {
+	b := rest.NewBuilder(testInfo)
+	return rest.NewRoute[createReq, userResp]("POST", "/pipeline-mapped",
+		createReqCodec, userRespCodec,
+		rest.RouteMeta{OperationID: "chiPipelineMapped"},
+		rest.PipelineErrorStatus[chiPipelineConflictError](http.StatusConflict),
+	).Register(b)
+}
+
+func newChiPipelineHandleWithNoResponseOverride(status int) (*rest.RouteHandle[createReq, userResp], error) {
+	b := rest.NewBuilder(testInfo)
+	return rest.NewRoute[createReq, userResp]("POST", "/pipeline-noresp-override",
+		createReqCodec, userRespCodec,
+		rest.RouteMeta{OperationID: "chiPipelineNoRespOverride"},
+		rest.PipelineErrorStatus[chiadapter.PipelineNoResponseError](status),
+	).Register(b)
 }
 
 // ── HandlerLatest ─────────────────────────────────────────────────────────────
@@ -176,6 +203,32 @@ func TestChiPipelineHandler_PipelineErrorReturns500(t *testing.T) {
 	}
 }
 
+func TestChiPipelineHandler_PipelineErrorRouteMappingReturnsDeclaredStatus(t *testing.T) {
+	handle, err := newChiPipelineHandleWithMappedErrorStatus()
+	if err != nil {
+		t.Fatalf("build route: %v", err)
+	}
+	h := chiadapter.PipelineHandler(handle,
+		func(context.Context, createReq) gstream.Stream[userResp] {
+			errCh := make(chan error, 1)
+			valCh := make(chan userResp)
+			errCh <- chiPipelineConflictError{msg: "duplicate"}
+			close(errCh)
+			close(valCh)
+			return gstream.Stream[userResp]{Values: valCh, Errors: errCh}
+		}, chiadapter.Options{})
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/pipeline-mapped",
+		strings.NewReader(`{"name":"Eve"}`))
+	req.Header.Set("Content-Type", "application/json")
+	h.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusConflict {
+		t.Errorf("want 409, got %d", rec.Code)
+	}
+}
+
 func TestChiPipelineHandler_TapObservation(t *testing.T) {
 	handle, err := newChiPipelineHandle()
 	if err != nil {
@@ -237,6 +290,34 @@ func TestChiPipelineHandler_NoValueReturnsPipelineNoResponseError(t *testing.T) 
 	var pnr chiadapter.PipelineNoResponseError
 	if !errors.As(capturedErr, &pnr) {
 		t.Errorf("want PipelineNoResponseError, got %T", capturedErr)
+	}
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Errorf("want 503, got %d", rec.Code)
+	}
+}
+
+func TestChiPipelineHandler_NoValueRouteMappingOverridesDefault503(t *testing.T) {
+	handle, err := newChiPipelineHandleWithNoResponseOverride(http.StatusGatewayTimeout)
+	if err != nil {
+		t.Fatalf("build route: %v", err)
+	}
+	h := chiadapter.PipelineHandler(handle,
+		func(context.Context, createReq) gstream.Stream[userResp] {
+			errCh := make(chan error)
+			valCh := make(chan userResp)
+			close(errCh)
+			close(valCh)
+			return gstream.Stream[userResp]{Values: valCh, Errors: errCh}
+		}, chiadapter.Options{})
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/pipeline-noresp-override",
+		strings.NewReader(`{"name":"Grace"}`))
+	req.Header.Set("Content-Type", "application/json")
+	h.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusGatewayTimeout {
+		t.Errorf("want 504, got %d", rec.Code)
 	}
 }
 

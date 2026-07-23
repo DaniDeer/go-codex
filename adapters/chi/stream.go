@@ -128,6 +128,17 @@ func PipelineHandler[Req, Resp any](
 	fn PipelineHandlerFunc[Req, Resp],
 	opts Options,
 ) http.HandlerFunc {
+	wrappedOpts := opts
+	wrappedOpts.ErrorHandler = chiRemapStatus(opts.ErrorHandler, func(err error) int {
+		if status, ok := handle.PipelineErrorStatusFor(err); ok {
+			return status
+		}
+		var pnr PipelineNoResponseError
+		if errors.As(err, &pnr) {
+			return http.StatusServiceUnavailable
+		}
+		return 0
+	})
 	return Handler(handle, func(ctx context.Context, req Req) (Resp, error) {
 		pipeline := fn(ctx, req)
 		vals, errs := gstream.Collect(ctx, pipeline)
@@ -139,7 +150,7 @@ func PipelineHandler[Req, Resp any](
 			return zero, PipelineNoResponseError{Path: handle.Descriptor.Path}
 		}
 		return vals[0], nil
-	}, opts)
+	}, wrappedOpts)
 }
 
 // RegisterPipeline wires [PipelineHandler] onto a chi router. Mirrors [Register].

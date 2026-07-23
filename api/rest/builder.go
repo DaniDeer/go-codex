@@ -236,6 +236,43 @@ type RouteMeta struct {
 
 func (m RouteMeta) applyRoute(rb *routeBuilder) { rb.meta = m }
 
+// pipelineErrorStatusRule stores one per-route pipeline error-status mapping
+// declared via [PipelineErrorStatus].
+type pipelineErrorStatusRule struct {
+	status int
+	// typeName is used for doc/debug readability only.
+	typeName string
+	match    func(error) bool
+}
+
+func (r pipelineErrorStatusRule) applyRoute(rb *routeBuilder) {
+	rb.pipelineErrorStatusRules = append(rb.pipelineErrorStatusRules, r)
+}
+
+// PipelineErrorStatus declares a per-route mapping from a pipeline error type
+// to the HTTP status code the adapter should pass to Options.ErrorHandler.
+//
+// This mapping is consumed by pipeline-aware adapters (currently
+// nethttp.PipelineHandler and chi.PipelineHandler). It does not affect plain
+// Handler/Register behavior.
+//
+// Matching is type-only: the first declared mapping whose type matches via
+// [errors.As] wins.
+//
+//	rest.NewRoute[Req, Resp]("POST", "/jobs", reqCodec, respCodec,
+//	    rest.PipelineErrorStatus[domain.InvalidTransitionError](http.StatusConflict),
+//	)
+func PipelineErrorStatus[E error](status int) RouteOpt {
+	return pipelineErrorStatusRule{
+		status:   status,
+		typeName: fmt.Sprintf("%T", *new(E)),
+		match: func(err error) bool {
+			var target E
+			return errors.As(err, &target)
+		},
+	}
+}
+
 // RouteOpt is the sealed interface for variadic [NewRoute] and [NewSSERoute] options.
 //
 // The following types implement RouteOpt:
@@ -247,6 +284,7 @@ func (m RouteMeta) applyRoute(rb *routeBuilder) { rb.meta = m }
 //   - [ResponseHeaderParam] — response header with optional codec for server-side validation
 //   - [ResponseCookieParam] — response Set-Cookie with optional codec for server-side validation
 //   - [ResponseMeta] — additional response entries (error codes, redirects, etc.)
+//   - [PipelineErrorStatus] — per-route pipeline error type → HTTP status mapping
 type RouteOpt interface{ applyRoute(*routeBuilder) }
 
 // routeBuilder accumulates RouteOpt values before building the route descriptor.
@@ -295,6 +333,10 @@ type routeBuilder struct {
 	// registered via NewRequiredSSEEventParam/NewOptionalSSEEventParam.
 	// Resolved to []codex.FieldCodec[Event] in [SSERoute.Register].
 	sseEventMergeFields []any
+	// pipelineErrorStatusRules holds per-route pipeline error type -> HTTP status
+	// mappings declared via [PipelineErrorStatus]. Pipeline adapters use these
+	// rules to classify stream errors into route-specific statuses.
+	pipelineErrorStatusRules []pipelineErrorStatusRule
 }
 
 // RouteHandle is returned by [Route.Register]. It holds the spec descriptor
@@ -397,6 +439,23 @@ type RouteHandle[Req, Resp any] struct {
 	// QueryParams/HeaderParams/CookieParams maps.
 	responseHeaderMergeFields []codex.FieldCodec[Resp]
 	responseCookieMergeFields []codex.FieldCodec[Resp]
+	// pipelineErrorStatusRules are per-route mappings declared via
+	// [PipelineErrorStatus], consumed by pipeline adapters.
+	pipelineErrorStatusRules []pipelineErrorStatusRule
+}
+
+// PipelineErrorStatusFor returns the first declared per-route mapping status
+// for err (matching via [errors.As]), or (0, false) when none match.
+func (h *RouteHandle[Req, Resp]) PipelineErrorStatusFor(err error) (int, bool) {
+	if err == nil {
+		return 0, false
+	}
+	for _, rule := range h.pipelineErrorStatusRules {
+		if rule.match != nil && rule.match(err) {
+			return rule.status, true
+		}
+	}
+	return 0, false
 }
 
 // MergeFields returns ALL merge-capable fields registered via
@@ -1890,20 +1949,21 @@ func (r Route[Req, Resp]) Register(b *Builder) (*RouteHandle[Req, Resp], error) 
 		schemes[k] = v
 	}
 	h := &RouteHandle[Req, Resp]{
-		Descriptor:           frozen,
-		Decode:               func(body []byte) (Req, error) { return jsonReq.Unmarshal(body) },
-		Encode:               func(resp Resp) ([]byte, error) { return jsonResp.Marshal(resp) },
-		EncodeRequest:        func(req Req) ([]byte, error) { return jsonReq.Marshal(req) },
-		DecodeResponse:       func(body []byte) (Resp, error) { return jsonResp.Unmarshal(body) },
-		pathParams:           rb.pathParams,
-		queryParams:          rb.queryParams,
-		cookieParams:         rb.cookieParams,
-		headerParams:         rb.headerParams,
-		responseHeaderParams: rb.respHeaders,
-		responseCookieParams: rb.respCookies,
-		pathCodec:            b.pathCodec,
-		SecuritySchemes:      schemes,
-		GlobalSecurity:       slices.Clone(b.globalSecurity),
+		Descriptor:               frozen,
+		Decode:                   func(body []byte) (Req, error) { return jsonReq.Unmarshal(body) },
+		Encode:                   func(resp Resp) ([]byte, error) { return jsonResp.Marshal(resp) },
+		EncodeRequest:            func(req Req) ([]byte, error) { return jsonReq.Marshal(req) },
+		DecodeResponse:           func(body []byte) (Resp, error) { return jsonResp.Unmarshal(body) },
+		pathParams:               rb.pathParams,
+		queryParams:              rb.queryParams,
+		cookieParams:             rb.cookieParams,
+		headerParams:             rb.headerParams,
+		responseHeaderParams:     rb.respHeaders,
+		responseCookieParams:     rb.respCookies,
+		pathCodec:                b.pathCodec,
+		SecuritySchemes:          schemes,
+		GlobalSecurity:           slices.Clone(b.globalSecurity),
+		pipelineErrorStatusRules: slices.Clone(rb.pipelineErrorStatusRules),
 	}
 	if rb.requestFormats != nil {
 		fmts, ok := rb.requestFormats.([]format.Format[Req])
@@ -1994,6 +2054,7 @@ func (r Route[Req, Resp]) ClientHandle() *RouteHandle[Req, Resp] {
 		queryParams:               rb.queryParams,
 		cookieParams:              rb.cookieParams,
 		headerParams:              rb.headerParams,
+		pipelineErrorStatusRules:  slices.Clone(rb.pipelineErrorStatusRules),
 		pathMergeFields:           mustAssertMergeFields[Req]("ClientHandle", rb.pathMergeFields),
 		queryMergeFields:          mustAssertMergeFields[Req]("ClientHandle", rb.queryMergeFields),
 		headerMergeFields:         mustAssertMergeFields[Req]("ClientHandle", rb.headerMergeFields),

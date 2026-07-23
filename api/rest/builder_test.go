@@ -2432,3 +2432,78 @@ func TestMergeFieldTypeError_LogValue(t *testing.T) {
 		t.Error("missing LogValue key \"err\"")
 	}
 }
+
+type pipelineStatusConflictError struct{ msg string }
+
+func (e pipelineStatusConflictError) Error() string {
+	if e.msg != "" {
+		return e.msg
+	}
+	return "pipeline conflict"
+}
+
+type pipelineStatusOtherError struct{ msg string }
+
+func (e pipelineStatusOtherError) Error() string {
+	if e.msg != "" {
+		return e.msg
+	}
+	return "pipeline other"
+}
+
+func TestPipelineErrorStatusFor_TypeMatch(t *testing.T) {
+	b := rest.NewBuilder(testInfo)
+	h, err := rest.NewRoute[createReq, userResp]("POST", "/pipeline/status",
+		createReqCodec, userCodec,
+		rest.PipelineErrorStatus[pipelineStatusConflictError](409),
+	).Register(b)
+	if err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+	status, ok := h.PipelineErrorStatusFor(
+		fmt.Errorf("wrapped: %w", pipelineStatusConflictError{msg: "dup"}),
+	)
+	if !ok {
+		t.Fatal("want match, got no match")
+	}
+	if status != 409 {
+		t.Fatalf("want 409, got %d", status)
+	}
+}
+
+func TestPipelineErrorStatusFor_FirstMatchWins(t *testing.T) {
+	b := rest.NewBuilder(testInfo)
+	h, err := rest.NewRoute[createReq, userResp]("POST", "/pipeline/status-order",
+		createReqCodec, userCodec,
+		rest.PipelineErrorStatus[error](499),
+		rest.PipelineErrorStatus[pipelineStatusConflictError](409),
+	).Register(b)
+	if err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+	status, ok := h.PipelineErrorStatusFor(pipelineStatusConflictError{msg: "dup"})
+	if !ok {
+		t.Fatal("want match, got no match")
+	}
+	if status != 499 {
+		t.Fatalf("want first-match status 499, got %d", status)
+	}
+}
+
+func TestPipelineErrorStatusFor_NoMatch(t *testing.T) {
+	b := rest.NewBuilder(testInfo)
+	h, err := rest.NewRoute[createReq, userResp]("POST", "/pipeline/status-none",
+		createReqCodec, userCodec,
+		rest.PipelineErrorStatus[pipelineStatusConflictError](409),
+	).Register(b)
+	if err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+	status, ok := h.PipelineErrorStatusFor(pipelineStatusOtherError{msg: "x"})
+	if ok {
+		t.Fatalf("want no match, got status %d", status)
+	}
+	if status != 0 {
+		t.Fatalf("want status 0 when no match, got %d", status)
+	}
+}

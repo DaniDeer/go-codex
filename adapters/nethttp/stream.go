@@ -158,6 +158,17 @@ func PipelineHandler[Req, Resp any](
 	fn PipelineHandlerFunc[Req, Resp],
 	opts Options,
 ) http.Handler {
+	wrappedOpts := opts
+	wrappedOpts.ErrorHandler = remapStatus(opts.ErrorHandler, func(err error) int {
+		if status, ok := handle.PipelineErrorStatusFor(err); ok {
+			return status
+		}
+		var pnr PipelineNoResponseError
+		if errors.As(err, &pnr) {
+			return http.StatusServiceUnavailable
+		}
+		return 0
+	})
 	return Handler(handle, func(ctx context.Context, req Req) (Resp, error) {
 		pipeline := fn(ctx, req)
 		vals, errs := gstream.Collect(ctx, pipeline)
@@ -170,7 +181,7 @@ func PipelineHandler[Req, Resp any](
 			return zero, PipelineNoResponseError{Path: handle.Descriptor.Path}
 		}
 		return vals[0], nil // multiple values: only first used; extras silently discarded
-	}, opts)
+	}, wrappedOpts)
 }
 
 // RegisterPipeline wires [PipelineHandler] onto mux. Mirrors [Register].

@@ -35,10 +35,11 @@ WebSocket = both at once). Endpoints are declared once with
 
 ```go
 var Live = codex.Must(ports.NewDuplexPort[Command, Update]("live",
-    commandCodec, updateCodec, ports.PortOptions{
-        Patterns: []ports.Pattern{ports.SocketPattern{Path: "/live/{room}"}},
-        Buffer:   8,
-    }))
+    commandCodec, updateCodec, ports.PortOptions{Buffer: 8}))
+_, err := Live.PluginSocketPattern(ports.SocketPattern{Path: "/live/{room}"})
+if err != nil {
+    panic(err)
+}
 ```
 
 | Field | Meaning |

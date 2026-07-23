@@ -47,16 +47,17 @@ templated variables:
 
 ```go
 var UserCache = codex.Must(ports.NewIOPort[UserQuery, User]("user-cache",
-    queryCodec, userCodec, ports.PortOptions{
-        Patterns: []ports.Pattern{
-            ports.CachePattern{
-                Key: "user:{id}", TTL: 15 * time.Minute,
-                Opts: []ports.CacheOpt{
-                    ports.CacheKeyParam{Name: "id"}.WithCodec(codex.String().Refine(validate.UUID)),
-                },
-            },
-        },
-    }))
+    queryCodec, userCodec, ports.PortOptions{}))
+
+_, err := UserCache.PluginCachePattern(ports.CachePattern{
+    Key: "user:{id}", TTL: 15 * time.Minute,
+    Opts: []ports.CacheOpt{
+        ports.CacheKeyParam{Name: "id"}.WithCodec(codex.String().Refine(validate.UUID)),
+    },
+})
+if err != nil {
+    panic(err)
+}
 ```
 
 A non-UUID `id` now returns `ports.CacheKeyParamError{Key, Var, Value, Err}`

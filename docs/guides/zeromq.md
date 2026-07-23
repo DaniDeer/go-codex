@@ -353,6 +353,10 @@ zeromq.Call(ctx, sock, handle, req, zeromq.CallOptions{Observer: obs})
 
 All errors are `errors.As`-navigable and implement `slog.LogValuer`:
 
+Use this section for ZeroMQ-specific typed errors, and the unified map in
+[Guide: Error Handling](error-handling.md#where-to-handle-errors-adapters-ports-pipelines)
+for consistent placement of adapter vs port/pipeline error handling.
+
 ```go
 // Subscribe / Serve — errors delivered to OnError callback
 var subErr zeromq.SubscribeError

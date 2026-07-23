@@ -300,6 +300,10 @@ yamlBytes, err := streamrender.Render(topo.Spec())
 
 ## Error handling patterns
 
+This section covers stream-level recovery operators. For full placement
+(adapter hooks vs ports vs stream drain), use the unified map in
+[Guide: Error Handling](error-handling.md#where-to-handle-errors-adapters-ports-pipelines).
+
 ### Silence transient errors
 
 ```go

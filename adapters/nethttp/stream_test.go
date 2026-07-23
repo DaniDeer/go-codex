@@ -16,6 +16,15 @@ import (
 	gstream "github.com/DaniDeer/go-codex/stream"
 )
 
+type pipelineConflictError struct{ msg string }
+
+func (e pipelineConflictError) Error() string {
+	if e.msg != "" {
+		return e.msg
+	}
+	return "pipeline conflict"
+}
+
 // ── HandlerLatest ─────────────────────────────────────────────────────────────
 
 func newGetHandle() (*rest.RouteHandle[getReq, userResp], error) {
@@ -95,6 +104,24 @@ func newPipelineRoute() (*rest.RouteHandle[createReq, userResp], error) {
 		createReqCodec, userRespCodec, rest.RouteMeta{OperationID: "pipeline"}).Register(b)
 }
 
+func newPipelineRouteWithMappedErrorStatus() (*rest.RouteHandle[createReq, userResp], error) {
+	b := rest.NewBuilder(testInfo)
+	return rest.NewRoute[createReq, userResp]("POST", "/pipeline-mapped",
+		createReqCodec, userRespCodec,
+		rest.RouteMeta{OperationID: "pipelineMapped"},
+		rest.PipelineErrorStatus[pipelineConflictError](http.StatusConflict),
+	).Register(b)
+}
+
+func newPipelineRouteWithNoResponseOverride(status int) (*rest.RouteHandle[createReq, userResp], error) {
+	b := rest.NewBuilder(testInfo)
+	return rest.NewRoute[createReq, userResp]("POST", "/pipeline-noresp-override",
+		createReqCodec, userRespCodec,
+		rest.RouteMeta{OperationID: "pipelineNoRespOverride"},
+		rest.PipelineErrorStatus[nethttp.PipelineNoResponseError](status),
+	).Register(b)
+}
+
 func TestPipelineHandler_ReturnsFirstValue(t *testing.T) {
 	handle, err := newPipelineRoute()
 	if err != nil {
@@ -150,6 +177,33 @@ func TestPipelineHandler_PipelineErrorReturns500(t *testing.T) {
 	}
 }
 
+func TestPipelineHandler_PipelineErrorRouteMappingReturnsDeclaredStatus(t *testing.T) {
+	handle, err := newPipelineRouteWithMappedErrorStatus()
+	if err != nil {
+		t.Fatalf("build route: %v", err)
+	}
+	h := nethttp.PipelineHandler(handle,
+		func(context.Context, createReq) gstream.Stream[userResp] {
+			errCh := make(chan error, 1)
+			valCh := make(chan userResp)
+			errCh <- pipelineConflictError{msg: "duplicate"}
+			close(errCh)
+			close(valCh)
+			return gstream.Stream[userResp]{Values: valCh, Errors: errCh}
+		},
+		nethttp.Options{})
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/pipeline-mapped",
+		strings.NewReader(`{"name":"Alice"}`))
+	req.Header.Set("Content-Type", "application/json")
+	h.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusConflict {
+		t.Errorf("want 409, got %d", rec.Code)
+	}
+}
+
 func TestPipelineHandler_NoValueReturnsPipelineNoResponseError(t *testing.T) {
 	handle, err := newPipelineRoute()
 	if err != nil {
@@ -181,6 +235,35 @@ func TestPipelineHandler_NoValueReturnsPipelineNoResponseError(t *testing.T) {
 	var pnr nethttp.PipelineNoResponseError
 	if !errors.As(capturedErr, &pnr) {
 		t.Errorf("want PipelineNoResponseError, got %T", capturedErr)
+	}
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Errorf("want 503, got %d", rec.Code)
+	}
+}
+
+func TestPipelineHandler_NoValueRouteMappingOverridesDefault503(t *testing.T) {
+	handle, err := newPipelineRouteWithNoResponseOverride(http.StatusGatewayTimeout)
+	if err != nil {
+		t.Fatalf("build route: %v", err)
+	}
+	h := nethttp.PipelineHandler(handle,
+		func(context.Context, createReq) gstream.Stream[userResp] {
+			errCh := make(chan error)
+			valCh := make(chan userResp)
+			close(errCh)
+			close(valCh)
+			return gstream.Stream[userResp]{Values: valCh, Errors: errCh}
+		},
+		nethttp.Options{})
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/pipeline-noresp-override",
+		strings.NewReader(`{"name":"Alice"}`))
+	req.Header.Set("Content-Type", "application/json")
+	h.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusGatewayTimeout {
+		t.Errorf("want 504, got %d", rec.Code)
 	}
 }
 

@@ -60,6 +60,7 @@ import (
 	"github.com/DaniDeer/go-codex/codex"
 	"github.com/DaniDeer/go-codex/format"
 	"github.com/DaniDeer/go-codex/stats"
+	gstream "github.com/DaniDeer/go-codex/stream"
 	"github.com/DaniDeer/go-codex/validate"
 )
 
@@ -445,6 +446,49 @@ func makeUpdateUserHandler(store *UserStore) func(context.Context, UpdateUserReq
 	}
 }
 
+// domainConflictError is a shared business error used in both ergonomics routes.
+// The no-pipeline route maps it in ErrorHandler; the pipeline route maps it via
+// rest.PipelineErrorStatus.
+type domainConflictError struct {
+	Resource string
+	Value    string
+}
+
+func (e domainConflictError) Error() string {
+	return fmt.Sprintf("%s %q already exists", e.Resource, e.Value)
+}
+
+func makeErgonomicsNoPipelineHandler() func(context.Context, CreateUserReq) (User, error) {
+	return func(_ context.Context, req CreateUserReq) (User, error) {
+		if strings.EqualFold(req.Name, "conflict") {
+			return User{}, domainConflictError{Resource: "user name", Value: req.Name}
+		}
+		return User{
+			ID:    "de305d54-75b4-431b-adb2-eb6b9e546014",
+			Name:  req.Name,
+			Email: req.Email,
+		}, nil
+	}
+}
+
+func makeErgonomicsPipelineHandler() nethttp.PipelineHandlerFunc[CreateUserReq, User] {
+	return func(ctx context.Context, req CreateUserReq) gstream.Stream[User] {
+		if strings.EqualFold(req.Name, "conflict") {
+			errCh := make(chan error, 1)
+			valCh := make(chan User)
+			errCh <- domainConflictError{Resource: "user name", Value: req.Name}
+			close(errCh)
+			close(valCh)
+			return gstream.Stream[User]{Values: valCh, Errors: errCh}
+		}
+		return gstream.Single(ctx, User{
+			ID:    "de305d54-75b4-431b-adb2-eb6b9e546014",
+			Name:  req.Name,
+			Email: req.Email,
+		})
+	}
+}
+
 func main() {
 	baseLogger := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelDebug}))
 	slog.SetDefault(baseLogger)
@@ -618,6 +662,33 @@ func main() {
 		os.Exit(1)
 	}
 
+	noPipelineErrorRoute, err := rest.NewRoute[CreateUserReq, User]("POST", "/ergonomics/no-pipeline",
+		createUserReqCodec, userCodec,
+		rest.RouteMeta{
+			OperationID: "ergNoPipeline",
+			Summary:     "Ergonomics: no-pipeline conflict mapping",
+		},
+		rest.ResponseMeta{Status: "409", Description: "Business conflict."},
+	).Register(b)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "route registration failed: %v\n", err)
+		os.Exit(1)
+	}
+
+	pipelineErrorRoute, err := rest.NewRoute[CreateUserReq, User]("POST", "/ergonomics/pipeline",
+		createUserReqCodec, userCodec,
+		rest.RouteMeta{
+			OperationID: "ergPipeline",
+			Summary:     "Ergonomics: pipeline conflict mapping",
+		},
+		rest.PipelineErrorStatus[domainConflictError](http.StatusConflict),
+		rest.ResponseMeta{Status: "409", Description: "Business conflict."},
+	).Register(b)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "route registration failed: %v\n", err)
+		os.Exit(1)
+	}
+
 	// Distinguishes validation failures (400, Warn) from system errors (500, Error).
 	errorHandler := func(w http.ResponseWriter, r *http.Request, status int, err error) {
 		var validationErrs codex.ValidationErrors
@@ -638,6 +709,15 @@ func main() {
 		w.WriteHeader(status)
 		body, _ := json.Marshal(map[string]string{"error": err.Error()})
 		_, _ = w.Write(body)
+	}
+	// noPipelineErrorHandler shows one no-pipeline ergonomic: classify typed
+	// domain errors inside custom ErrorHandler.
+	noPipelineErrorHandler := func(w http.ResponseWriter, r *http.Request, status int, err error) {
+		var conflict domainConflictError
+		if errors.As(err, &conflict) {
+			status = http.StatusConflict
+		}
+		errorHandler(w, r, status, err)
 	}
 
 	// Attribute extractors for domain logging — extract business-relevant fields from responses.
@@ -694,6 +774,15 @@ func main() {
 			// Handler only runs when both cookie and header are valid.
 			return User{ID: "f47ac10b-58cc-4372-a567-0e02b2c3d479", Name: "Alice", Email: "alice@example.com"}, nil
 		},
+		baseOpts)
+	// No-pipeline path: map domainConflictError in custom ErrorHandler.
+	nethttp.Register(mux, noPipelineErrorRoute,
+		makeErgonomicsNoPipelineHandler(),
+		nethttp.Options{ErrorHandler: noPipelineErrorHandler})
+	// Pipeline path: map same domainConflictError at route declaration via
+	// rest.PipelineErrorStatus; custom ErrorHandler still shapes response body.
+	nethttp.RegisterPipeline(mux, pipelineErrorRoute,
+		makeErgonomicsPipelineHandler(),
 		baseOpts)
 
 	// Demo requests against an in-process test server.
@@ -758,6 +847,30 @@ func main() {
 	var errBody map[string]string
 	_ = json.NewDecoder(resp2.Body).Decode(&errBody)
 	fmt.Printf("Status: %d\nError:  %s\n\n", resp2.StatusCode, errBody["error"])
+
+	fmt.Println("=== Error ergonomics: no-pipeline vs pipeline (same domain error) ===")
+	conflictBody := `{"name":"conflict","email":"conflict@example.com"}`
+	noPipeResp, err := http.Post(srv.URL+"/ergonomics/no-pipeline", "application/json", //nolint:noctx
+		strings.NewReader(conflictBody))
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "POST error: %v\n", err)
+		os.Exit(1)
+	}
+	defer noPipeResp.Body.Close()
+	var noPipeErr map[string]string
+	_ = json.NewDecoder(noPipeResp.Body).Decode(&noPipeErr)
+	fmt.Printf("no-pipeline status: %d\nno-pipeline error:  %s\n", noPipeResp.StatusCode, noPipeErr["error"])
+
+	pipeResp, err := http.Post(srv.URL+"/ergonomics/pipeline", "application/json", //nolint:noctx
+		strings.NewReader(conflictBody))
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "POST error: %v\n", err)
+		os.Exit(1)
+	}
+	defer pipeResp.Body.Close()
+	var pipeErr map[string]string
+	_ = json.NewDecoder(pipeResp.Body).Decode(&pipeErr)
+	fmt.Printf("pipeline status:    %d\npipeline error:     %s\n\n", pipeResp.StatusCode, pipeErr["error"])
 
 	fmt.Println("=== GET /users/{id} — BuildPath validates UUID codec ===")
 	// BuildPath substitutes {id} and validates the value against the UUID codec.

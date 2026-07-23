@@ -552,11 +552,16 @@ restBuilder := rest.NewBuilder(rest.Info{Title: "OEE Service", Version: "1.0.0"}
 restBuilder.AddSecurityScheme("bearerAuth", rest.SecurityScheme{SecurityScheme: route.BearerScheme("JWT")})
 restBuilder.AddGlobalSecurity(route.SecurityRequirement{"bearerAuth": {}})
 
-domain.OEETool, err := ports.NewToolPort[OEEIn, OEEResult]("oee-calc", oeeInCodec, oeeResultCodec,
-    ports.PortOptions{
-        Patterns:    []ports.Pattern{ports.RESTPattern{Method: "POST", Path: "/oee/calc"}},
-        RESTBuilder: restBuilder, // <- full parity: security schemes now enforced
-    })
+oeeTool := codex.Must(ports.NewToolPort[OEEIn, OEEResult]("oee-calc", oeeInCodec, oeeResultCodec,
+    ports.PortOptions{RESTBuilder: restBuilder}))
+
+_, err := oeeTool.PluginRESTPattern(ports.RESTPattern{
+    Method: "POST",
+    Path:   "/oee/calc",
+})
+if err != nil {
+    panic(err)
+}
 
 // spec already contains /oee/calc — no separate registration needed:
 spec, _ := restBuilder.OpenAPISpec()

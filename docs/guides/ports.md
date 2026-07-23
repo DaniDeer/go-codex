@@ -22,6 +22,30 @@ Step 2 — Wiring (main.go only)
 
 ## Seven port types
 
+## Error surfaces and escape hatches
+
+Ports keep transport imports out of pipeline code, but error handling still has
+clear interception points. Use this matrix first:
+
+| Port/pipeline point | Error surface | Handle here |
+|---|---|---|
+| `SourcePort[T]` inbound adapters | `src := port.Stream(ctx)` then `src.Errors` | `stream.Drain(..., onErr, ...)` or explicit `for err := range src.Errors` |
+| `SinkPort[T]` outbound adapters | upstream `Feed` errors forwarded to each bound sink stream | adapter `OnError` hook (if adapter has one) + upstream drain handler |
+| `IOPort[Req,Resp]` call-style adapters | returned `error` from adapter transform path | `errors.As` for typed adapter/route errors |
+| `ToolPort[In,Out]` pipeline serving | bind/setup errors + adapter route errors | `Bind` error (`PortNoPipelineError` wrapped in `PortBindError`), then adapter-specific hooks (HTTP `ErrorHandler`, MQTT5/ZeroMQ `OnError`) |
+| `PipePort[T]` stage wiring | stream channel errors (`gstream.Stream.Errors`) | `stream.Drain`/`MapErr`/`Retry` in pipeline |
+
+Common bind/setup typed errors:
+- `PortBindError` (bind failure wrapper)
+- `PortNoAdapterError` (IO/Latest/Duplex connect without adapter)
+- `PortNoPipelineError` (ToolPort bind before `SetPipeline`)
+
+For adapter-specific hooks, see:
+- [HTTP server guide](http-server.md#pipeline-handlers-mapping-stream-errors-to-http-status)
+- [MQTT 5 guide](mqtt5.md#error-handling)
+- [ZeroMQ guide](zeromq.md#error-handling)
+- [Error handling guide](error-handling.md#where-to-handle-errors-adapters-ports-pipelines)
+
 ### `SourcePort[T]` — inbound boundary
 
 ```go
@@ -499,11 +523,15 @@ restBuilder := rest.NewBuilder(rest.Info{Title: "OEE Service", Version: "1.0.0"}
 restBuilder.AddSecurityScheme("bearerAuth", rest.SecurityScheme{SecurityScheme: route.BearerScheme("JWT")})
 restBuilder.AddGlobalSecurity(route.SecurityRequirement{"bearerAuth": {}})
 
-domain.OEETool := codex.Must(ports.NewToolPort[OEEIn, OEEResult]("oee-calc", oeeInCodec, oeeResultCodec,
-    ports.PortOptions{
-        Patterns:    []ports.Pattern{ports.RESTPattern{Method: "POST", Path: "/oee/calc"}},
-        RESTBuilder: restBuilder, // <- security scheme now actually enforced
-    }))
+oeeTool := codex.Must(ports.NewToolPort[OEEIn, OEEResult]("oee-calc", oeeInCodec, oeeResultCodec,
+    ports.PortOptions{RESTBuilder: restBuilder}))
+_, err := oeeTool.PluginRESTPattern(ports.RESTPattern{
+    Method: "POST",
+    Path:   "/oee/calc",
+})
+if err != nil {
+    panic(err)
+}
 
 // restBuilder already has /oee/calc registered — spec generation needs no
 // separate step:
@@ -706,3 +734,7 @@ computed value** rather than running the pipeline per call. Use them directly (n
 | `zeromq.AsPipelineFunc` | Wraps a forge pipeline fn for `Serve`/`ServeRouter` |
 | `mqtt5.AsPipelineFunc` | Wraps a forge pipeline fn for `Serve` |
 | `mcpgo.ToolPipelineHandler` / `RegisterToolPipeline` | MCP tool trigger → pipeline → response |
+
+`nethttp`/`chi` pipeline handlers support per-route stream-error status mapping
+via `rest.PipelineErrorStatus[...]`; `ToolPort + PipelineAdapter` inherits the
+same behavior because adapters delegate to those handlers.

@@ -385,6 +385,10 @@ mqtt5adapter.Call(ctx, client, router, handle, req, mqtt5adapter.CallOptions{Obs
 
 All errors implement `Unwrap()` and `slog.LogValuer`:
 
+Use this guide's section for MQTT5-specific typed errors, and the unified map in
+[Guide: Error Handling](error-handling.md#where-to-handle-errors-adapters-ports-pipelines)
+for when to handle at adapter callback vs port/stream drain points.
+
 ```go
 // Subscribe / Serve — delivered to OnError callback
 var subErr mqtt5.SubscribeError

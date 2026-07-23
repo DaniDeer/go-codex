@@ -38,8 +38,8 @@ var oeeCalcFn = forge.NewFunction("oeeCalc", "1.0.0", oeeInCodec, oeeCodec,
     },
 )
 
-var SensorReadings = ports.NewSourcePort[OEEIn]("sensor-readings", oeeInCodec, ports.PortOptions{})
-var OEEResults = ports.NewSinkPort[OEE]("oee-results", oeeCodec, ports.PortOptions{})
+var SensorReadings = codex.Must(ports.NewSourcePort[OEEIn]("sensor-readings", oeeInCodec, ports.PortOptions{}))
+var OEEResults = codex.Must(ports.NewSinkPort[OEE]("oee-results", oeeCodec, ports.PortOptions{}))
 
 func StartPipeline(ctx context.Context) {
     sensors := SensorReadings.Stream(ctx)
@@ -54,7 +54,7 @@ domain.SensorReadings.Bind(ctx, mqtt5.SubscribeAdapter(client, router, sensorHan
 domain.OEEResults.Bind(ctx, mqtt5.PublishAdapter(client, alertHandle, fmt, publishOpts))
 
 // Wire B: HTTP trigger → domain pipeline → HTTP response (ToolPort, request/response)
-var OEETool = ports.NewToolPort[OEEIn, OEE]("oee-tool", oeeInCodec, oeeCodec, ports.PortOptions{})
+var OEETool = codex.Must(ports.NewToolPort[OEEIn, OEE]("oee-tool", oeeInCodec, oeeCodec, ports.PortOptions{}))
 OEETool.SetPipeline(func(ctx context.Context, req OEEIn) gstream.Stream[OEE] {
     return gstream.Apply(ctx, gstream.Single(ctx, req), oeeCalcFn, gstream.ApplyOptions{})
 })

@@ -418,6 +418,27 @@ http.ListenAndServe(":8080", mux)
 | `MultiValueQueryParams` | false | Use `ValidateQueryMulti` for repeated keys |
 | `SecurityFunc` | nil | Called after credential codec validation |
 
+### Pipeline error channel → HTTP status (per-route)
+
+When using `PipelineHandler` / `RegisterPipeline`, the adapter takes the
+first `stream.Errors` entry as the handler error. You can map specific
+pipeline error types to HTTP status **per route**:
+
+```go
+route, _ := rest.NewRoute[CreateJobReq, JobResp]("POST", "/jobs", reqCodec, respCodec,
+    rest.PipelineErrorStatus[domain.ConflictError](http.StatusConflict), // 409
+).Register(b)
+```
+
+Rules:
+- First matching `PipelineErrorStatus[...]` rule wins (`errors.As` match).
+- If no rule matches, pipeline errors keep default `500`.
+- If pipeline emits no value, adapters return `PipelineNoResponseError` with
+  default `503 Service Unavailable` (you can override by declaring
+  `rest.PipelineErrorStatus[nethttp.PipelineNoResponseError](...)` on the route).
+- `Options.ErrorHandler` is still the escape hatch for response body/format;
+  route mapping only changes the status code passed to that handler.
+
 ## chi adapter
 
 ```go
@@ -469,6 +490,10 @@ createUser, _ = rest.NewRoute[CreateUserReq, User]("POST", "/users", ...,
     rest.ResponseHeaderParam{Name: "Location", Required: true}.WithCodec(locationCodec),
 ).Register(b)
 ```
+
+Redirect pattern: declare a 3xx `RespStatus` and set `Location` (via response
+merge fields or `WithResponseHeaders`). This is separate from
+`PipelineErrorStatus[...]`, which only applies to error-channel mapping.
 
 Secure cookie writes:
 

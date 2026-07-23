@@ -104,21 +104,102 @@ directly into `RESTPattern.Opts`, giving the same one-step declaration when
 the route is a `ports`-wired boundary instead of a hand-built route:
 
 ```go
-var Images = codex.Must(ports.NewIOPort[[]byte, ImageMeta]("images",
-    pngCodec, imageMetaCodec, ports.PortOptions{
-        Patterns: []ports.Pattern{
-            ports.RESTPattern{
-                Method: "PUT", Path: "/images/{id}",
-                Opts: []rest.RouteOpt{
-                    rest.RequestFormats(format.Binary(pngCodec).WithContentType("image/png")),
-                },
-            },
-        },
-    }))
+var Images = codex.Must(ports.NewIOPort[[]byte, ImageMeta]("images", pngCodec, imageMetaCodec, ports.PortOptions{
+    RESTBuilder: restBuilder,
+}))
+
+imageHandle, err := Images.PluginRESTPattern(ports.RESTPattern{
+    Method: "PUT", Path: "/images/{id}",
+    Opts: []rest.RouteOpt{
+        rest.RequestFormats(format.Binary(pngCodec).WithContentType("image/png")),
+    },
+})
+if err != nil {
+    panic(err)
+}
 ```
 
 A type mismatch (formats declared for the wrong type) returns
-`rest.FormatOptError` from the port constructor.
+`rest.FormatOptError` when the pattern is plugged in.
+
+## Pipeline handlers: mapping stream errors to HTTP status
+
+For `nethttp.PipelineHandler` / `chi.PipelineHandler`, declare per-route error
+status mapping once on the route:
+
+```go
+route, _ := rest.NewRoute[Req, Resp]("POST", "/jobs", reqCodec, respCodec,
+    rest.PipelineErrorStatus[domain.ConflictError](http.StatusConflict),
+).Register(b)
+```
+
+- First matching rule wins.
+- Unmatched pipeline errors stay `500`.
+- No pipeline value defaults to `503` (`PipelineNoResponseError`), overridable
+  with `PipelineErrorStatus[...](status)`.
+
+### Ergonomics: same domain error, no-pipeline vs pipeline
+
+Use one domain error type in both paths; only the mapping locus changes.
+
+```go
+type domainConflictError struct {
+    Resource string
+    Value    string
+}
+
+func (e domainConflictError) Error() string {
+    return fmt.Sprintf("%s %q already exists", e.Resource, e.Value)
+}
+
+baseErrorHandler := func(w http.ResponseWriter, _ *http.Request, status int, err error) {
+    w.Header().Set("Content-Type", "application/json")
+    w.WriteHeader(status)
+    _ = json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+}
+```
+
+No-pipeline (`Handler`): map status in custom `ErrorHandler`.
+
+```go
+noPipelineErrHandler := func(w http.ResponseWriter, r *http.Request, status int, err error) {
+    var conflict domainConflictError
+    if errors.As(err, &conflict) {
+        status = http.StatusConflict
+    }
+    baseErrorHandler(w, r, status, err)
+}
+
+nethttp.Register(mux, noPipelineRoute, noPipelineFn,
+    nethttp.Options{ErrorHandler: noPipelineErrHandler})
+```
+
+Pipeline (`PipelineHandler`): map status in route declaration; keep custom
+`ErrorHandler` for response-body shaping.
+
+```go
+pipelineRoute, _ := rest.NewRoute[Req, Resp]("POST", "/erg/pipeline", reqCodec, respCodec,
+    rest.PipelineErrorStatus[domainConflictError](http.StatusConflict),
+).Register(b)
+
+nethttp.RegisterPipeline(mux, pipelineRoute, pipelineFn,
+    nethttp.Options{ErrorHandler: baseErrorHandler})
+```
+
+### Current possibilities matrix (today)
+
+| Capability | No-pipeline (`Handler`) | Pipeline (`PipelineHandler`) |
+|-----------|--------------------------|------------------------------|
+| One-struct-one-call request/response | Yes (`Req` decode + `Resp` encode via route codecs) | Yes (same route codec path; pipeline fn gets typed `Req`, returns typed `Resp` stream) |
+| Custom error body/envelope | Yes (`Options.ErrorHandler`) | Yes (`Options.ErrorHandler`) |
+| Where status code mapping lives | `ErrorHandler` (or default adapter status) | Route declaration via `PipelineErrorStatus[...]` for stream errors; then `ErrorHandler` writes body |
+| Typed route-level error mapping | No (handled in `ErrorHandler`) | Yes (`rest.PipelineErrorStatus[E](status)`) |
+| No emitted pipeline value handling | N/A | `PipelineNoResponseError` default `503` (overridable by route mapping) |
+| Redirect success path (`3xx` + `Location`) | `RespStatus` + response header merge / `WithResponseHeaders` | Same (pipeline does not change redirect mechanics) |
+
+`examples/adapters-nethttp` now includes both routes (`/ergonomics/no-pipeline`
+and `/ergonomics/pipeline`) with the same domain error type so you can compare
+the two styles directly.
 
 ### `MaxBodyBytes` and `validate.MaxBytes`
 
