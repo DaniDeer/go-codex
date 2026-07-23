@@ -65,7 +65,10 @@ and `examples/rest-nested-binary` for the full runnable version.
 **Shipped for `api/events` (pub/sub) and `api/reqreply` (req/reply) too**:
 `events.NewTopicParam[T]`/`ChannelHandle.DecodeMerged`/`mqtt5.PublishHandle`
 and `reqreply.NewTopicParam[T]`/`RouteHandle.DecodeMerged`/`mqtt5.CallHandle`
-close the same loop for MQTT pub/sub and request/reply — see
+close the same loop for MQTT pub/sub and request/reply. Req/reply routes can
+also declare dedicated AsyncAPI error-reply channels via
+`reqreply.ErrorReplyMeta` on `NewRoute(...)` when the error path should be
+first-class in the contract — see
 [Feature: Event Channels & MQTT](../features/events.md#topic-vars-with-automatic-merge-newtopicparam).
 
 **Shipped for the `ports.Pattern` BINDING LAYER too**:

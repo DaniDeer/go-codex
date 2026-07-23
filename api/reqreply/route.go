@@ -7,6 +7,7 @@ import (
 	"github.com/DaniDeer/go-codex/api/internal"
 	"github.com/DaniDeer/go-codex/codex"
 	"github.com/DaniDeer/go-codex/format"
+	"github.com/DaniDeer/go-codex/schema"
 )
 
 // RouteOpt is the sealed interface for variadic [NewRoute] options.
@@ -14,6 +15,7 @@ import (
 // The following types implement RouteOpt:
 //   - [RouteMeta] — operation metadata (OperationID, Summary, Description, Tags, schema names)
 //   - [TopicParam] — topic template variable with optional codec and description
+//   - [ErrorReplyMeta] — additional AsyncAPI reply error channel/message declarations
 type RouteOpt interface{ applyRoute(*routeBuilder) }
 
 // TopicParam describes a {varName} placeholder in a topic template.
@@ -239,10 +241,41 @@ type RouteMeta struct {
 
 func (m RouteMeta) applyRoute(rb *routeBuilder) { rb.meta = m }
 
+// ErrorReplyMeta declares one additional reply error message for AsyncAPI rendering.
+//
+// It adds a dedicated reply-error channel+operation to the generated spec.
+// Runtime adapter behavior is unchanged: this option is documentation/contract
+// metadata only (same role as [RouteMeta]).
+//
+// Schema is required; when SchemaName is non-empty, the schema is emitted via
+// $ref in components/schemas.
+type ErrorReplyMeta struct {
+	// Code identifies the error variant (e.g. "conflict", "validation").
+	// It is used to derive channel/operation IDs when explicit IDs are not set.
+	Code string
+	// Description describes the error reply operation.
+	Description string
+	// Schema is the payload schema for this error reply message.
+	Schema schema.Schema
+	// SchemaName, when non-empty, emits a $ref and registers Schema in
+	// components/schemas.
+	SchemaName string
+	// OperationID, when non-empty, overrides the generated receive operation ID.
+	OperationID string
+	// ChannelAddress, when non-empty, overrides the generated reply-error
+	// channel address. Default: "<topic>/reply/error[/<code>]".
+	ChannelAddress string
+}
+
+func (m ErrorReplyMeta) applyRoute(rb *routeBuilder) {
+	rb.errorReplies = append(rb.errorReplies, m)
+}
+
 // routeBuilder accumulates RouteOpt values before building the route.
 type routeBuilder struct {
 	meta        RouteMeta
 	topicParams []TopicParam
+	errorReplies []ErrorReplyMeta
 	// requestFormats/formats hold []format.Format[Req]/[]format.Format[Resp]
 	// type-erased (any) — set by [RequestFormats]/[Formats], resolved
 	// generically in [Route.Register] where Req/Resp are concrete. See
@@ -401,7 +434,7 @@ func (r Route[Req, Resp]) Register(b *Builder) (*RouteHandle[Req, Resp], error) 
 		return nil, mergeErr
 	}
 
-	b.registerRoute(r.topic, r.reqCodec.Schema, r.respCodec.Schema, rb.meta)
+	b.registerRoute(r.topic, r.reqCodec.Schema, r.respCodec.Schema, rb.meta, rb.errorReplies)
 	return h, nil
 }
 

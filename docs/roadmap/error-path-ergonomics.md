@@ -1,6 +1,6 @@
 # Error Path Ergonomics Unification — `api/rest`, adapters, ports
 
-> **Status:** Design complete — not yet implemented.
+> **Status:** In progress — req/reply dedicated AsyncAPI error-reply channels implemented; remaining phases open.
 > [← Back to Roadmap](index.md)
 
 ## Motivation
@@ -162,4 +162,3 @@ All wrappers include:
 4. Ports ergonomics:
    - RouteOpt-only declaration through builders,
    - or dedicated ports helper wrappers.
-

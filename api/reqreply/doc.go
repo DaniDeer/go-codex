@@ -16,6 +16,12 @@
 //	    "compute/add",
 //	    computeReqCodec, computeRespCodec,
 //	    reqreply.RouteMeta{OperationID: "computeAdd", Summary: "Add two integers."},
+//	    reqreply.ErrorReplyMeta{
+//	        Code:        "conflict",
+//	        Description: "Business conflict.",
+//	        Schema:      codex.String().Schema,
+//	        SchemaName:  "ConflictError",
+//	    },
 //	)
 //
 //	// Register with a Builder to get a RouteHandle and an AsyncAPI 3.0 spec.

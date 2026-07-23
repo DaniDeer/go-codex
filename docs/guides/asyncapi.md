@@ -73,6 +73,28 @@ channels:
     ...
 ```
 
+### Declaring dedicated req/reply error channels
+
+For request-reply contracts, declare explicit error-path reply channels on the
+route with `reqreply.ErrorReplyMeta`:
+
+```go
+computeRoute := reqreply.NewRoute[ComputeReq, ComputeResp](
+    "compute/add", computeReqCodec, computeRespCodec,
+    reqreply.RouteMeta{OperationID: "computeAdd"},
+    reqreply.ErrorReplyMeta{
+        Code:        "conflict",
+        Description: "Business conflict reply.",
+        Schema:      codex.String().Schema,
+        SchemaName:  "ConflictError",
+    },
+)
+```
+
+Generated AsyncAPI then includes an additional dedicated reply-error channel and
+operation (for example `computeAddReplyErrorConflict` with address
+`compute/add/reply/error/conflict`) alongside the normal success reply channel.
+
 ### What `AppendTo` does and does NOT copy
 
 | Copied by `AppendTo` | Not copied (caller owns) |

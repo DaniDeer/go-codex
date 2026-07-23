@@ -42,6 +42,17 @@ var computeRoute = reqreply.NewRoute[computeReq, computeResp](
 	reqreply.RouteMeta{OperationID: "computeAdd", Summary: "Add two integers."},
 )
 
+var computeRouteWithErrorReply = reqreply.NewRoute[computeReq, computeResp](
+	"compute/add", reqCodec, respCodec,
+	reqreply.RouteMeta{OperationID: "computeAdd", Summary: "Add two integers."},
+	reqreply.ErrorReplyMeta{
+		Code:        "conflict",
+		Description: "Business conflict error reply.",
+		Schema:      codex.String().Schema,
+		SchemaName:  "ConflictError",
+	},
+)
+
 // ── helpers ───────────────────────────────────────────────────────────────────
 
 func newBuilder() *reqreply.Builder {
@@ -239,6 +250,46 @@ func TestRoute_AsyncAPISpec_MultipleRoutes(t *testing.T) {
 	}
 	if !strings.Contains(out, "computeMultiplyReply:") {
 		t.Errorf("want computeMultiplyReply channel:\n%s", out)
+	}
+}
+
+func TestRoute_AsyncAPISpec_ErrorReplyChannelAndOperation(t *testing.T) {
+	b := newBuilder()
+	_, _ = computeRouteWithErrorReply.Register(b)
+	out := mustSpec(t, b)
+	if !strings.Contains(out, "computeAddReplyErrorConflict:") {
+		t.Errorf("want error reply channel key in spec:\n%s", out)
+	}
+	if !strings.Contains(out, "address: compute/add/reply/error/conflict") {
+		t.Errorf("want error reply address in spec:\n%s", out)
+	}
+	if !strings.Contains(out, "receiveComputeAddReplyErrorConflict:") {
+		t.Errorf("want error reply operation id in spec:\n%s", out)
+	}
+	if !strings.Contains(out, "ConflictError:") {
+		t.Errorf("want error reply schema registered in components:\n%s", out)
+	}
+}
+
+func TestRoute_AsyncAPISpec_ErrorReplyCustomOperationAndAddress(t *testing.T) {
+	customErrRoute := reqreply.NewRoute[computeReq, computeResp](
+		"compute/add", reqCodec, respCodec,
+		reqreply.RouteMeta{OperationID: "computeAdd"},
+		reqreply.ErrorReplyMeta{
+			Code:           "validation",
+			Schema:         codex.String().Schema,
+			OperationID:    "receiveValidationErrorReply",
+			ChannelAddress: "compute/add/reply/validation",
+		},
+	)
+	b := newBuilder()
+	_, _ = customErrRoute.Register(b)
+	out := mustSpec(t, b)
+	if !strings.Contains(out, "receiveValidationErrorReply:") {
+		t.Errorf("want custom error operation id in spec:\n%s", out)
+	}
+	if !strings.Contains(out, "address: compute/add/reply/validation") {
+		t.Errorf("want custom error reply address in spec:\n%s", out)
 	}
 }
 

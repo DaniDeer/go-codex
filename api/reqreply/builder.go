@@ -1,6 +1,7 @@
 package reqreply
 
 import (
+	"fmt"
 	"strings"
 	"unicode"
 
@@ -37,7 +38,12 @@ func (b *Builder) AddServer(name string, s Server) *Builder {
 
 // registerRoute is called by [Route.Register] to record the two AsyncAPI
 // channels and operations for a route.
-func (b *Builder) registerRoute(topic string, reqSchema, respSchema schema.Schema, meta RouteMeta) {
+func (b *Builder) registerRoute(
+	topic string,
+	reqSchema, respSchema schema.Schema,
+	meta RouteMeta,
+	errorReplies []ErrorReplyMeta,
+) {
 	b.topics[topic] = struct{}{}
 
 	base := meta.OperationID
@@ -78,6 +84,38 @@ func (b *Builder) registerRoute(topic string, reqSchema, respSchema schema.Schem
 			},
 		},
 	})
+
+	for i, er := range errorReplies {
+		suffix := "Error"
+		if er.Code != "" {
+			suffix += capitalise(topicToID(er.Code))
+		} else {
+			suffix += fmt.Sprintf("%d", i+1)
+		}
+		errReplyChannelKey := replyChannelKey + suffix
+		errReplyAddress := topic + "/reply/error"
+		if er.Code != "" {
+			errReplyAddress += "/" + er.Code
+		}
+		if er.ChannelAddress != "" {
+			errReplyAddress = er.ChannelAddress
+		}
+		errRecvOpID := "receive" + capitalise(base) + "Reply" + suffix
+		if er.OperationID != "" {
+			errRecvOpID = er.OperationID
+		}
+		b.docBuilder.AddReplyChannel(errReplyChannelKey, asyncapi.ChannelItem{
+			Address: errReplyAddress,
+			Subscribe: &asyncapi.Operation{
+				OperationID: errRecvOpID,
+				Description: er.Description,
+				Message: asyncapi.Message{
+					Schema:     er.Schema,
+					SchemaName: er.SchemaName,
+				},
+			},
+		})
+	}
 }
 
 // AsyncAPISpec builds and returns the accumulated AsyncAPI 3.0 document.
