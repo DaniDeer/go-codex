@@ -31,7 +31,7 @@ implementation exposed as a constructor function.
 | `SinkPort[T]` | `SinkAdapter[T]` — `Activate(ctx, src stream.Stream[T])` | pipeline → external | consumes items (publish, insert, write, SSE out) |
 | `IOPort[Req,Resp]` | `IOAdapter[Req,Resp]` — `Transform(ctx, src Stream[Req]) Stream[Resp]` | pipeline ↔ external | per-item request/response or 1→N lookup (HTTP call, SQL query, cache get) |
 | `LatestPort[T]` | `LatestAdapter[T]` — `Serve(ctx, latest func() (T, bool)) error` | pipeline → query | serves the current cached value to request/response clients |
-| `ToolPort` | (MCP-specific) | tool call | the boundary is an MCP tool surface |
+| `ToolPort[In,Out]` | `ToolAdapter[In,Out]` — `Bind(ctx, fn func(ctx, In) stream.Stream[Out]) error` | external request → pipeline → response | exposes the same pipeline function over request/response boundaries (REST, req/reply, MCP) |
 | `DuplexPort[In,Out]` | `DuplexAdapter[In,Out]` — `Activate(ctx, dst chan<- Framed[In], errs chan<- error, src Stream[Framed[Out]]) error` | external ↔ pipeline (sessions) | persistent bidirectional session boundary (WebSocket, framed TCP) |
 
 Rules:
@@ -97,15 +97,16 @@ A new Pattern type requires, in `ports/`:
 - struct + `isPortPattern()` in `pattern.go`
 - build logic in `handle.go` (`buildPatterns` switch) — handle-building or
   metadata-stored, per the table above
-- accessor in `handle.go` (`XxxHandle`/`XxxMeta`) + `MissingPatternError` path
+- plugin/access path in `ports/*_port.go` (`PluginXxxPattern` + `patternSpec`
+  backing) + `MissingPatternError` path for `Register*` replay helpers
 - pattern-kind validation per port type (which port types accept it; reject
-  others at `New*Port` time with a `PatternError`)
+  others at `PluginXxxPattern` time with `PatternRegisterError`)
 - spec rendering consideration (`ports/spec.go`) — does the pattern appear in
   the generated spec document?
 
 ## Step 5 — Mandatory requirements (do not duplicate here)
 
-Follow the **five mandatory requirements** in the
+Follow the **six mandatory requirements** in the
 `plan-a-new-codex-feature` skill (structured errors with `slog.LogValuer`,
 observer integration incl. the `ObserverFromContext` nil-guard rules, unit
 test matrix, three-surface documentation, runnable example). Adapter-specific

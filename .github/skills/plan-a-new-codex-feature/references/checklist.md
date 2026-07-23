@@ -44,13 +44,13 @@ Use this when implementing an approved roadmap feature.
 | Check | Question to answer |
 |-------|-------------------|
 | Declare-once pattern | Can the new type be declared once and passed around as a value? |
-| Naming parity | Does the name follow existing layer conventions? (`NewX`, `XHandle`, `XOpt`, `XMeta`) |
+| Naming parity | Does the name follow existing layer conventions? (`NewX`, `PluginX`, `XOpt`, `XMeta`) |
 | Method vs free function | Go methods on generic types cannot introduce new type parameters — use a free function when a second type parameter is needed |
 | Opt interface | Does the new option type implement the sealed `XOpt` interface? |
 | Pointer-free ergonomics | `.WithCodec(c)` not `Codec: &c` |
 | No `Required` on template vars | Path/topic/file/URI template vars always required — no `Required` field |
 | New transports use port adapters | New transport adapter must implement `ports.SourceAdapter[T]`, `ports.SinkAdapter[T]`, `ports.IOAdapter[Req,Resp]`, and/or `ports.ToolAdapter[In,Out]` in `adapters/<transport>/binding.go` — NOT standalone `XxxStream` functions |
-| `Pattern` support for handle-backed transports | If the transport has an `api/*` builder, the matching `ports.RESTPattern`/`EventPattern`/`ReqReplyPattern`/`MCPPattern` + `RESTHandle`/`EventHandle`/`ReqReplyHandle`/`MCPHandle` accessors should already work with no new code — `ports` always registers via `Route`/`Channel`/`Tool.Register(builder)`, never `ClientHandle()` |
+| `Pattern` support for handle-backed transports | If the transport has an `api/*` builder, the matching `ports.RESTPattern`/`EventPattern`/`ReqReplyPattern`/`MCPPattern` + the port `PluginXxxPattern` methods should already work with no new code — `ports` always registers via `Route`/`Channel`/`Tool.Register(builder)`, never `ClientHandle()` |
 
 ### B2. Structured Errors with `slog.LogValuer`
 

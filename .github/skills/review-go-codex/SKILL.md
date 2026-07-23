@@ -431,8 +431,9 @@ Pipelines are connected to transports via **port adapters** — `ports.SourceAda
 adapter package's `binding.go`. Every adapter must be checked against these rules.
 
 **`Pattern` is the primary declaration surface** (Phase 4/5) for handle-backed
-adapters — `ports.RESTPattern`/`EventPattern`/`ReqReplyPattern`/`MCPPattern`, set via
-`PortOptions.Patterns`. A port builds its own handle internally by always calling
+adapters — `ports.RESTPattern`/`EventPattern`/`ReqReplyPattern`/`MCPPattern`,
+plugged in via `PluginXxxPattern` calls on each port type. A port builds its
+own handle internally by always calling
 `Route`/`Channel`/`Tool.Register(builder)` — never the weaker `ClientHandle()` — so a
 `Pattern`-derived handle is indistinguishable from one built by hand with the same
 builder. `PortOptions.RESTBuilder`/`EventBuilder`/`ReqReplyBuilder`/`MCPBuilder` let

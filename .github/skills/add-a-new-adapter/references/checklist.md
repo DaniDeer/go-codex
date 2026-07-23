@@ -30,9 +30,11 @@ Planning items happen first (roadmap doc); the rest only after approval.
 ## Ports integration
 
 - [ ] New Pattern type (if decided): struct + `isPortPattern()` in
-      `ports/pattern.go`; build/store logic in `ports/handle.go`; accessor +
-      `MissingPatternError` path; per-port-type acceptance validation;
-      spec rendering decision in `ports/spec.go`
+      `ports/pattern.go`; build/store logic in `ports/handle.go`; plugin/access
+      path in `ports/*_port.go` (`PluginXxxPattern` + `patternSpec`) +
+      `MissingPatternError` path (for `Register*` replay helpers);
+      per-port-type acceptance validation at Plugin time; spec rendering
+      decision in `ports/spec.go`
 - [ ] Constructor names added to the "Implemented by" lists in the
       `ports/*.go` adapter interface godocs
 
