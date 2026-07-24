@@ -235,14 +235,17 @@ No new stats extension — the transport-agnostic hooks fit:
 
 ## Error-path ergonomics — `ErrorFrame`
 
-`DuplexSocketAdapter` has no synchronous caller to respond to for upstream
-pipeline errors (received on the port's outbound stream `Errors` channel) —
-`websocket.ErrorFrame` is the duplex-socket analogue of
+`DuplexSocketAdapter` and `BroadcastSocketAdapter` have no synchronous caller
+to respond to for upstream pipeline errors (received on the port's stream
+`Errors` channel) — `websocket.ErrorFrame` is the duplex/broadcast-socket
+analogue of
 [`events.ErrorChannel`](events.md#error-path-ergonomics-errorchannel),
 adapted to a persistent multi-session transport: instead of publishing to a
 declared error topic, the mapped payload is **broadcast to every connected
 session** (there is no dedicated error-output channel on a socket — broadcast
-IS the notification path).
+IS the notification path). Both adapters share the exact same `ErrorFrame`/
+`ErrorFrameRule` declarative surface — `DuplexSocketAdapterOptions.ErrorFrames`
+and `BroadcastSocketAdapterOptions.ErrorFrames` are both `[]ErrorFrameRule`.
 
 `ErrorFrame` declares its **own codec-backed payload type** — independent of
 the socket's happy-path `Out` frame type — the same "one-struct-one-call"

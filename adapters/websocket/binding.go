@@ -250,8 +250,15 @@ func readLoop[T any](
 // BroadcastSocketAdapterOptions configures [BroadcastSocketAdapter].
 type BroadcastSocketAdapterOptions struct {
 	// OnError receives encode failures, dropped-frame notices
-	// ([ErrFrameDropped]), and upstream stream errors.
+	// ([ErrFrameDropped]), and unmatched/log-action upstream stream errors.
 	OnError func(error)
+	// ErrorFrames declares typed error patterns via [ErrorFrame] — same
+	// declarative surface [DuplexSocketAdapterOptions.ErrorFrames] uses.
+	// When a rule matches an error received on the port's stream Errors
+	// channel, the resolved action determines behaviour — see [ErrorFrame].
+	// Per-session write/encode failures (already [SocketError]-wrapped) are
+	// NOT matched against ErrorFrames — only upstream stream errors are.
+	ErrorFrames []ErrorFrameRule
 	// Observer receives per-connection RecordRequest and per-frame
 	// RecordPublish events. Resolved from ctx when nil.
 	Observer stats.Observer
@@ -298,6 +305,52 @@ func (a *wsBroadcastAdapter[T]) Activate(ctx context.Context, src gstream.Stream
 		if a.opts.OnError != nil {
 			a.opts.OnError(err)
 		}
+	}
+	// handleUpstreamError resolves declared ErrorFrame rules for errors
+	// received on src's Errors channel (upstream pipeline errors) — mirrors
+	// [DuplexSocketAdapter]'s handleUpstreamError exactly. Per-session
+	// write/encode failures (already SocketError-wrapped, reported via
+	// onErr directly inside the item-processing func below) are NOT routed
+	// through this — only upstream stream errors are eligible for
+	// ErrorFrame matching.
+	handleUpstreamError := func(e error) {
+		for _, rule := range a.opts.ErrorFrames {
+			if rule.match == nil {
+				continue
+			}
+			resp, matched, mapErr := rule.match(e)
+			if !matched {
+				continue
+			}
+			if mapErr != nil {
+				stats.ReportErrors(obs, "error_frame", mapErr)
+				onErr(mapErr)
+				return
+			}
+			switch resp.Action {
+			case events.ErrorHandle:
+				if rule.onMatch != nil {
+					rule.onMatch(e)
+				}
+				return
+			case events.ErrorLog:
+				onErr(e)
+				return
+			default: // events.ErrorRespond
+				start := time.Now()
+				success := true
+				for _, s := range a.hub.Sessions() {
+					if sent, _ := a.hub.send(s, resp.Body); !sent {
+						success = false
+						onErr(SocketError{Path: a.handle.Path, Session: s, Op: "write", Err: ErrFrameDropped})
+					}
+				}
+				obs.RecordPublish(a.handle.Path, success, time.Since(start))
+				return
+			}
+		}
+		// No declared rule matched — unchanged default behaviour.
+		onErr(e)
 	}
 	var wg sync.WaitGroup
 
@@ -362,7 +415,7 @@ func (a *wsBroadcastAdapter[T]) Activate(ctx context.Context, src gstream.Stream
 			obs.RecordPublish(a.handle.Path, success, time.Since(start))
 			return nil
 		},
-		onErr,
+		handleUpstreamError,
 		gstream.DrainOptions{Observer: obs})
 
 	a.hub.closeAll()

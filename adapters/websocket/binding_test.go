@@ -731,6 +731,170 @@ func TestBroadcast_SlowClient_FrameDropped(t *testing.T) {
 	}
 }
 
+// ── Broadcast ErrorFrame parity with DuplexSocketAdapter ──────────────────────
+
+func TestBroadcast_ErrorFrame_Match_BroadcastsToAllSessions(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	mux := http.NewServeMux()
+	hub := adapterws.NewHub(0)
+	sockA, sockB := newFakeSocket(), newFakeSocket()
+	up := &fakeUpgrader{socks: []*fakeSocket{sockA, sockB}}
+
+	port, _ := ports.NewSinkPort[update]("updates-errframe", updateCodec, ports.PortOptions{Buffer: 8})
+	handle, err := port.PluginSocketPattern(ports.SocketPattern{Path: "/updates"})
+	if err != nil {
+		t.Fatalf("PluginSocketPattern: %v", err)
+	}
+	port.Bind(ctx, adapterws.BroadcastSocketAdapter(mux, hub, up, handle,
+		adapterws.BroadcastSocketAdapterOptions{
+			ErrorFrames: []adapterws.ErrorFrameRule{
+				adapterws.ErrorFrame[duplexValidationErr, duplexErrPayload](duplexErrPayloadCodec,
+					func(e duplexValidationErr) (duplexErrPayload, error) {
+						return duplexErrPayload{Code: "validation", Message: e.msg}, nil
+					},
+				),
+			},
+		}))
+	time.Sleep(20 * time.Millisecond)
+
+	connectMux(mux, "/updates")
+	connectMux(mux, "/updates")
+	time.Sleep(20 * time.Millisecond)
+
+	outErrs := make(chan error, 1)
+	outVals := make(chan update)
+	outErrs <- duplexValidationErr{msg: "bad input"}
+	close(outErrs)
+	close(outVals)
+	go port.Feed(ctx, stream.Stream[update]{Values: outVals, Errors: outErrs})
+
+	waitFor(t, func() bool { return len(sockA.writtenFrames()) == 1 && len(sockB.writtenFrames()) == 1 })
+	var got duplexErrPayload
+	if err := json.Unmarshal(sockA.writtenFrames()[0], &got); err != nil {
+		t.Fatalf("decode broadcast frame: %v", err)
+	}
+	if got.Code != "validation" || got.Message != "bad input" {
+		t.Errorf("unexpected broadcast payload: %+v", got)
+	}
+}
+
+func TestBroadcast_ErrorFrame_NoMatch_FallsBackToOnError(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	mux := http.NewServeMux()
+	hub := adapterws.NewHub(0)
+	sockA := newFakeSocket()
+	up := &fakeUpgrader{socks: []*fakeSocket{sockA}}
+
+	var mu sync.Mutex
+	var gotOnError error
+	port, _ := ports.NewSinkPort[update]("updates-errframe-nomatch", updateCodec, ports.PortOptions{Buffer: 8})
+	handle, err := port.PluginSocketPattern(ports.SocketPattern{Path: "/updates"})
+	if err != nil {
+		t.Fatalf("PluginSocketPattern: %v", err)
+	}
+	port.Bind(ctx, adapterws.BroadcastSocketAdapter(mux, hub, up, handle,
+		adapterws.BroadcastSocketAdapterOptions{
+			ErrorFrames: []adapterws.ErrorFrameRule{
+				adapterws.ErrorFrame[duplexValidationErr, duplexErrPayload](duplexErrPayloadCodec,
+					func(e duplexValidationErr) (duplexErrPayload, error) {
+						return duplexErrPayload{Code: "validation", Message: e.msg}, nil
+					},
+				),
+			},
+			OnError: func(e error) {
+				mu.Lock()
+				gotOnError = e
+				mu.Unlock()
+			},
+		}))
+	time.Sleep(20 * time.Millisecond)
+
+	connectMux(mux, "/updates")
+	time.Sleep(20 * time.Millisecond)
+
+	outErrs := make(chan error, 1)
+	outVals := make(chan update)
+	outErrs <- fmt.Errorf("unrelated upstream error")
+	close(outErrs)
+	close(outVals)
+	go port.Feed(ctx, stream.Stream[update]{Values: outVals, Errors: outErrs})
+
+	waitFor(t, func() bool {
+		mu.Lock()
+		defer mu.Unlock()
+		return gotOnError != nil
+	})
+	mu.Lock()
+	got := gotOnError
+	mu.Unlock()
+	if !strings.Contains(got.Error(), "unrelated upstream error") {
+		t.Errorf("want unrelated error forwarded to OnError, got %v", got)
+	}
+	if len(sockA.writtenFrames()) != 0 {
+		t.Errorf("want no broadcast for unmatched error, got %d frames", len(sockA.writtenFrames()))
+	}
+}
+
+func TestBroadcast_ErrorFrame_HandleAction_NoBroadcast(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	mux := http.NewServeMux()
+	hub := adapterws.NewHub(0)
+	sockA := newFakeSocket()
+	up := &fakeUpgrader{socks: []*fakeSocket{sockA}}
+
+	var mu sync.Mutex
+	var handled error
+	port, _ := ports.NewSinkPort[update]("updates-errframe-handle", updateCodec, ports.PortOptions{Buffer: 8})
+	handle, err := port.PluginSocketPattern(ports.SocketPattern{Path: "/updates"})
+	if err != nil {
+		t.Fatalf("PluginSocketPattern: %v", err)
+	}
+	port.Bind(ctx, adapterws.BroadcastSocketAdapter(mux, hub, up, handle,
+		adapterws.BroadcastSocketAdapterOptions{
+			ErrorFrames: []adapterws.ErrorFrameRule{
+				adapterws.ErrorFrame[duplexValidationErr, duplexErrPayload](duplexErrPayloadCodec,
+					func(e duplexValidationErr) (duplexErrPayload, error) {
+						return duplexErrPayload{Code: "validation", Message: e.msg}, nil
+					},
+				).WithAction(events.ErrorHandle).WithHandle(func(e error) {
+					mu.Lock()
+					handled = e
+					mu.Unlock()
+				}),
+			},
+		}))
+	time.Sleep(20 * time.Millisecond)
+
+	connectMux(mux, "/updates")
+	time.Sleep(20 * time.Millisecond)
+
+	outErrs := make(chan error, 1)
+	outVals := make(chan update)
+	outErrs <- duplexValidationErr{msg: "bad input"}
+	close(outErrs)
+	close(outVals)
+	go port.Feed(ctx, stream.Stream[update]{Values: outVals, Errors: outErrs})
+
+	waitFor(t, func() bool {
+		mu.Lock()
+		defer mu.Unlock()
+		return handled != nil
+	})
+	mu.Lock()
+	gotHandled := handled
+	mu.Unlock()
+	var ve duplexValidationErr
+	if !errors.As(gotHandled, &ve) || ve.msg != "bad input" {
+		t.Errorf("want handled error duplexValidationErr{bad input}, got %v", gotHandled)
+	}
+	if len(sockA.writtenFrames()) != 0 {
+		t.Errorf("want no broadcast for handle action, got %d frames", len(sockA.writtenFrames()))
+	}
+}
+
 type blockingSocket struct {
 	*fakeSocket
 	gate chan struct{}

@@ -532,3 +532,49 @@ declaration mismatch is now a compile error, not a runtime one.
   (locks that a payload type different from `Out` broadcasts correctly) and
   `TestErrorFrame_MapperProducesInvalidPayload_ReturnsValidationError` (locks
   that a Refine-violating mapped payload is rejected, not silently broadcast).
+
+## Phase 2 follow-up fix #2 — `BroadcastSocketAdapter` / `DuplexSocketAdapter` `OnError` consistency
+
+A broader review asked: "does every adapter/port use `OnError` consistently
+for declaring a custom error handle?" Auditing every `OnError func(error)`
+site across the repo found the pattern consistent EXCEPT one asymmetry:
+`websocket.DuplexSocketAdapter` had gained a declarative `ErrorFrames`
+option, but its structurally-closest sibling `websocket.BroadcastSocketAdapter`
+(both own a `ports.Socket` handle, both loop over `hub.Sessions()` broadcasting,
+both drain an upstream `Stream[T]` via the same `gstream.Drain(..., onErr, ...)`
+shape) had only the generic `OnError` — no way to declare "broadcast this
+typed payload when a domain error occurs upstream."
+
+Every other `OnError` site was confirmed consistent:
+
+- **Direct (non-port) transport functions** (`mqtt`/`mqtt5`/`zeromq`
+  `SubscribeOptions`/`ServeOptions`) use a **typed** `OnError` carrying a
+  `Kind` classification — consistent across all three transports.
+- **Port-adapter sink/drain style** (no return channel: `PublishAdapter`,
+  `DrainInsertAdapter`, `SetAdapter`/`DrainSetAdapter`, all four `file`
+  Drain/Patch adapters, SSE helpers, `ServeLatest`) use untyped
+  `OnError func(error)` — consistent shape and doc phrasing.
+- SQL/Cache/File adapters correctly have NO declarative error-payload type
+  (by design — internal boundaries, composition pattern via `OnError` +
+  a companion `events.ErrorChannel.ErrorResponseFor` lookup).
+- `nethttp`/`chi` SSE helpers (`SSEFromStream`/`SSEFromHub`) correctly have
+  no declarative option either — they take no bound route handle at their
+  call site (the handle is bound later at `SSEHandler`), so there is nothing
+  to consult `ErrorResponseFor` against; not a gap, an architectural
+  difference from socket adapters which DO own a handle directly.
+- `zeromq.ServeAdapter`/`mqtt5.ServeAdapter` (ToolPort) and
+  `zeromq.ServeLatest`/`LatestAdapter` all delegate straight to the
+  underlying `Serve` function — which already consults
+  `reqreply.ErrorPattern` via `ErrorResponseFor` — so a declared
+  `reqreply.ErrorPattern[NoLatestValueError,B]` works for `ServeLatest`
+  today with zero additional wiring.
+
+**Fixed**: `BroadcastSocketAdapterOptions` gained `ErrorFrames []ErrorFrameRule`,
+wired identically to `DuplexSocketAdapter` — a `handleUpstreamError` closure
+resolves declared rules against errors received on the port's stream `Errors`
+channel (NOT per-session write/encode failures, which remain `SocketError`-
+wrapped via `OnError` directly, unchanged). 3 new tests mirror the
+`DuplexSocketAdapter` ErrorFrame test suite exactly:
+`TestBroadcast_ErrorFrame_Match_BroadcastsToAllSessions`,
+`TestBroadcast_ErrorFrame_NoMatch_FallsBackToOnError`,
+`TestBroadcast_ErrorFrame_HandleAction_NoBroadcast`.

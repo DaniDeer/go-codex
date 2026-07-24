@@ -1,6 +1,47 @@
-# go-codex Review History (R1–R64)
+# go-codex Review History (R1–R65)
 
 Do not re-report any of these findings. They have been implemented and tested.
+
+---
+
+## Round 65 (error-path ergonomics follow-up — `websocket.ErrorFrame` codec parity + `OnError`/declarative-handle consistency audit)
+
+Two follow-up reviews after Round 64 shipped error-path ergonomics.
+
+- **G1 — `websocket.ErrorFrame[E,Out]` had NO codec, reusing the socket's `Out` codec**: unlike
+  `rest.ErrorPattern`/`events.ErrorChannel`/`reqreply.ErrorPattern`/`mcp.ErrorPattern`, which all
+  declare an independent `codex.Codec[B]` for their error payload and validate it (Refine
+  constraints run via `Encode`), `ErrorFrame` had no codec parameter and encoded via
+  `a.handle.OutFormat.Marshal(frame)` — forcing the error struct to be the socket's happy-path
+  `Out` type. Fixed: `ErrorFrame[E,B](codec codex.Codec[B], mapFn...) ErrorFrameRule` now declares
+  its own codec; encoding happens inside the rule's `match` closure via `format.JSON(codec).Marshal`,
+  producing a pre-encoded `ErrorFrameResponse{Body, Value, Action}`. Side effect: `ErrorFrameRule`
+  is no longer generic (parameterized by `Out`), so `ErrorFrames` became a plain
+  `[]ErrorFrameRule` on both socket adapters — the old type-erasure (`any` field) and runtime
+  type-assertion (`ErrorFrameOptError`, now removed as unreachable) are both gone; a declaration
+  mismatch is now a compile error. `examples/websocket-duplex` updated to declare a dedicated
+  `ErrorPayload` struct+codec instead of reusing `Update`. New tests:
+  `TestDuplex_ErrorFrame_IndependentCodec_ValidatesAndBroadcasts`,
+  `TestErrorFrame_MapperProducesInvalidPayload_ReturnsValidationError`.
+- **G2 — `BroadcastSocketAdapter` lacked the `ErrorFrames` declarative option `DuplexSocketAdapter`
+  has**: a full audit of every `OnError func(error)` site in the repo (typed non-port
+  Subscribe/Serve callbacks, untyped port-adapter sink/drain callbacks, SQL/Cache/File composition
+  pattern, SSE helpers, `ServeLatest`) found this the ONE inconsistency — `BroadcastSocketAdapter`
+  is structurally the closest sibling to `DuplexSocketAdapter` (both own a `ports.Socket` handle,
+  both loop over `hub.Sessions()` broadcasting, both drain via the same `gstream.Drain(...,
+  onErr, ...)` shape) yet had no way to declare a typed broadcast-on-error payload. Fixed:
+  `BroadcastSocketAdapterOptions.ErrorFrames []ErrorFrameRule` added, wired identically to
+  `DuplexSocketAdapter` via a `handleUpstreamError` closure that matches ONLY errors from the
+  port's stream `Errors` channel (per-session write/encode failures remain `SocketError`-wrapped
+  via `OnError` directly, unchanged). New tests:
+  `TestBroadcast_ErrorFrame_Match_BroadcastsToAllSessions`,
+  `TestBroadcast_ErrorFrame_NoMatch_FallsBackToOnError`,
+  `TestBroadcast_ErrorFrame_HandleAction_NoBroadcast`.
+- Confirmed NOT gaps (audited, no changes needed): SQL/Cache/File Drain adapters' composition
+  pattern (by design); `nethttp`/`chi` SSE helpers lacking a declarative option (no bound handle
+  exists at their call site — architectural, not a gap); `zeromq.ServeAdapter`/`mqtt5.ServeAdapter`
+  and `zeromq.ServeLatest`/`LatestAdapter` — all delegate straight to `Serve`, which already
+  consults `reqreply.ErrorPattern`, so no additional wiring was needed.
 
 ---
 
