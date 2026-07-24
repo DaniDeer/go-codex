@@ -20,9 +20,15 @@ so future review rounds don't re-flag any of this as a gap. See checklist.md §1
   `events.ErrorChannel[E,B](topic, codec, mapFn...)` with a full three-way action model
   (`events.ErrorAction`: `ErrorRespond`/`ErrorHandle`/`ErrorLog` via `.WithAction`). Wired into
   `adapters/mqtt5.PublishAdapter` as the reference implementation. Added
-  `websocket.ErrorFrame[E,Out](mapFn...) ErrorFrameRule[Out]` on
-  `DuplexSocketAdapterOptions.ErrorFrames` — matched errors broadcast a typed frame to every
-  connected session (no dedicated error topic exists on a socket).
+  `websocket.ErrorFrame[E,B](codec, mapFn...) ErrorFrameRule` on
+  `DuplexSocketAdapterOptions.ErrorFrames []ErrorFrameRule` — matched errors broadcast a typed,
+  independently codec-validated frame to every connected session (no dedicated error topic exists
+  on a socket). *(Amended after a later parity review: the original shipped signature was
+  `ErrorFrame[E,Out]`, reusing the socket's `Out` codec instead of declaring its own — fixed so
+  `ErrorFrame` has the same "declare your own error struct+codec" guarantee as
+  `rest.ErrorPattern`/`events.ErrorChannel`/`reqreply.ErrorPattern`/`mcp.ErrorPattern`; `ErrorFrameRule`
+  is no longer generic, so `ErrorFrames` is a plain slice with no type erasure or runtime type
+  assertion — `ErrorFrameOptError` was removed as unreachable.)*
 - **G3 (Phase 1C) — SQL/Cache/File had no error-path story**: determined NO new adapter API was
   needed — every sink-side adapter's existing `OnError func(error)` already realizes the `handle`
   action (nil = `log`); a `respond`-equivalent is achieved by composing `OnError` with a declared

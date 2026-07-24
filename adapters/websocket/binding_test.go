@@ -2,6 +2,7 @@ package websocket_test
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -810,8 +811,8 @@ func TestDuplex_ErrorFrame_Match_BroadcastsToAllSessions(t *testing.T) {
 	}
 	_ = port.Bind(ctx, adapterws.DuplexSocketAdapter(mux, hub, up, handle,
 		adapterws.DuplexSocketAdapterOptions{
-			ErrorFrames: []adapterws.ErrorFrameRule[update]{
-				adapterws.ErrorFrame[duplexValidationErr, update](
+			ErrorFrames: []adapterws.ErrorFrameRule{
+				adapterws.ErrorFrame[duplexValidationErr, update](updateCodec,
 					func(e duplexValidationErr) (update, error) {
 						return update{Text: "error: " + e.msg}, nil
 					},
@@ -854,8 +855,8 @@ func TestDuplex_ErrorFrame_NoMatch_ForwardsToPortErrors(t *testing.T) {
 	}
 	_ = port.Bind(ctx, adapterws.DuplexSocketAdapter(mux, hub, up, handle,
 		adapterws.DuplexSocketAdapterOptions{
-			ErrorFrames: []adapterws.ErrorFrameRule[update]{
-				adapterws.ErrorFrame[duplexValidationErr, update](
+			ErrorFrames: []adapterws.ErrorFrameRule{
+				adapterws.ErrorFrame[duplexValidationErr, update](updateCodec,
 					func(e duplexValidationErr) (update, error) {
 						return update{Text: "error: " + e.msg}, nil
 					},
@@ -900,8 +901,8 @@ func TestDuplex_ErrorFrame_HandleAction_NoBroadcast(t *testing.T) {
 	}
 	_ = port.Bind(ctx, adapterws.DuplexSocketAdapter(mux, hub, up, handle,
 		adapterws.DuplexSocketAdapterOptions{
-			ErrorFrames: []adapterws.ErrorFrameRule[update]{
-				adapterws.ErrorFrame[duplexValidationErr, update](
+			ErrorFrames: []adapterws.ErrorFrameRule{
+				adapterws.ErrorFrame[duplexValidationErr, update](updateCodec,
 					func(e duplexValidationErr) (update, error) {
 						return update{Text: "error: " + e.msg}, nil
 					},
@@ -937,6 +938,127 @@ func TestDuplex_ErrorFrame_HandleAction_NoBroadcast(t *testing.T) {
 	}
 	if len(sockA.writtenFrames()) != 0 {
 		t.Errorf("want no broadcast for handle action, got %d frames", len(sockA.writtenFrames()))
+	}
+}
+
+// duplexErrPayload is a codec-validated error payload INDEPENDENT of the
+// socket's happy-path `update` type — demonstrating that websocket.ErrorFrame
+// declares its own codec, like rest.ErrorPattern/events.ErrorChannel/
+// reqreply.ErrorPattern/mcp.ErrorPattern all do.
+type duplexErrPayload struct {
+	Code    string
+	Message string
+}
+
+var duplexErrPayloadCodec = codex.Struct[duplexErrPayload](
+	codex.RequiredField("code", codex.String().Refine(validate.NonEmptyString),
+		func(e duplexErrPayload) string { return e.Code },
+		func(e *duplexErrPayload, v string) { e.Code = v },
+	),
+	codex.RequiredField("message", codex.String(),
+		func(e duplexErrPayload) string { return e.Message },
+		func(e *duplexErrPayload, v string) { e.Message = v },
+	),
+)
+
+// TestDuplex_ErrorFrame_IndependentCodec_ValidatesAndBroadcasts locks the
+// fix: ErrorFrame's payload type is independent of the socket's Out type
+// (`update`) and is codec-validated (all Refine constraints run) before
+// being broadcast — the same "one-struct-one-call" guarantee every other
+// error-path declaration (rest.ErrorPattern/events.ErrorChannel/
+// reqreply.ErrorPattern/mcp.ErrorPattern) provides.
+func TestDuplex_ErrorFrame_IndependentCodec_ValidatesAndBroadcasts(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	mux := http.NewServeMux()
+	hub := adapterws.NewHub(0)
+	sockA := newFakeSocket()
+	up := &fakeUpgrader{socks: []*fakeSocket{sockA}}
+
+	port, _ := ports.NewDuplexPort[command, update]("live-errframe-codec", commandCodec, updateCodec,
+		ports.PortOptions{Buffer: 8})
+	handle, err := port.PluginSocketPattern(ports.SocketPattern{Path: "/live"})
+	if err != nil {
+		t.Fatalf("PluginSocketPattern: %v", err)
+	}
+	_ = port.Bind(ctx, adapterws.DuplexSocketAdapter(mux, hub, up, handle,
+		adapterws.DuplexSocketAdapterOptions{
+			ErrorFrames: []adapterws.ErrorFrameRule{
+				adapterws.ErrorFrame[duplexValidationErr, duplexErrPayload](duplexErrPayloadCodec,
+					func(e duplexValidationErr) (duplexErrPayload, error) {
+						return duplexErrPayload{Code: "validation", Message: e.msg}, nil
+					},
+				),
+			},
+		}))
+	time.Sleep(20 * time.Millisecond)
+
+	connect(t, mux, "/live")
+
+	outErrs := make(chan error, 1)
+	outVals := make(chan ports.Framed[update])
+	outErrs <- duplexValidationErr{msg: "bad input"}
+	close(outErrs)
+	close(outVals)
+	go port.Feed(ctx, stream.Stream[ports.Framed[update]]{Values: outVals, Errors: outErrs})
+
+	waitFor(t, func() bool { return len(sockA.writtenFrames()) == 1 })
+	var got duplexErrPayload
+	if err := json.Unmarshal(sockA.writtenFrames()[0], &got); err != nil {
+		t.Fatalf("decode broadcast frame: %v", err)
+	}
+	if got.Code != "validation" || got.Message != "bad input" {
+		t.Errorf("unexpected broadcast payload: %+v", got)
+	}
+}
+
+// TestErrorFrame_MapperProducesInvalidPayload_ReturnsValidationError locks
+// that the declared codec's Refine constraints actually run on the mapped
+// payload — an empty Code (violates NonEmptyString) must fail encode.
+func TestErrorFrame_MapperProducesInvalidPayload_ReturnsValidationError(t *testing.T) {
+	rule := adapterws.ErrorFrame[duplexValidationErr, duplexErrPayload](duplexErrPayloadCodec,
+		func(e duplexValidationErr) (duplexErrPayload, error) {
+			return duplexErrPayload{Code: "", Message: e.msg}, nil // empty Code is invalid
+		},
+	)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	mux := http.NewServeMux()
+	hub := adapterws.NewHub(0)
+	sockA := newFakeSocket()
+	up := &fakeUpgrader{socks: []*fakeSocket{sockA}}
+
+	port, _ := ports.NewDuplexPort[command, update]("live-errframe-invalid", commandCodec, updateCodec,
+		ports.PortOptions{Buffer: 8})
+	handle, err := port.PluginSocketPattern(ports.SocketPattern{Path: "/live"})
+	if err != nil {
+		t.Fatalf("PluginSocketPattern: %v", err)
+	}
+	_ = port.Bind(ctx, adapterws.DuplexSocketAdapter(mux, hub, up, handle,
+		adapterws.DuplexSocketAdapterOptions{ErrorFrames: []adapterws.ErrorFrameRule{rule}}))
+	time.Sleep(20 * time.Millisecond)
+
+	connect(t, mux, "/live")
+
+	outErrs := make(chan error, 1)
+	outVals := make(chan ports.Framed[update])
+	outErrs <- duplexValidationErr{msg: "bad input"}
+	close(outErrs)
+	close(outVals)
+	go port.Feed(ctx, stream.Stream[ports.Framed[update]]{Values: outVals, Errors: outErrs})
+
+	inbound := port.Inbound(ctx)
+	select {
+	case e := <-inbound.Errors:
+		if e == nil {
+			t.Fatal("want validation error forwarded, got nil")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timeout waiting for forwarded validation error")
+	}
+	if len(sockA.writtenFrames()) != 0 {
+		t.Errorf("want no broadcast for an invalid payload, got %d frames", len(sockA.writtenFrames()))
 	}
 }
 

@@ -244,26 +244,44 @@ declared error topic, the mapped payload is **broadcast to every connected
 session** (there is no dedicated error-output channel on a socket — broadcast
 IS the notification path).
 
+`ErrorFrame` declares its **own codec-backed payload type** — independent of
+the socket's happy-path `Out` frame type — the same "one-struct-one-call"
+guarantee `rest.ErrorPattern`/`events.ErrorChannel`/`reqreply.ErrorPattern`/
+`mcp.ErrorPattern` all provide: the payload is validated via its declared
+codec (all `Refine` constraints run) before being broadcast, exactly like the
+happy path.
+
 ```go
 type ValidationError struct{ Reason string }
 func (e ValidationError) Error() string { return "validation: " + e.Reason }
 
+type ErrorPayload struct {
+    Code    string
+    Message string
+}
+
 _ = domain.Live.Bind(ctx, websocket.DuplexSocketAdapter(mux, hub, upgrader, handle,
     websocket.DuplexSocketAdapterOptions{
-        ErrorFrames: []websocket.ErrorFrameRule[OutFrame]{
-            websocket.ErrorFrame[ValidationError, OutFrame](
-                func(e ValidationError) (OutFrame, error) {
-                    return OutFrame{Kind: "error", Message: e.Reason}, nil
+        ErrorFrames: []websocket.ErrorFrameRule{
+            websocket.ErrorFrame[ValidationError, ErrorPayload](errorPayloadCodec,
+                func(e ValidationError) (ErrorPayload, error) {
+                    return ErrorPayload{Code: "validation", Message: e.Reason}, nil
                 },
             ),
         },
     }))
 ```
 
-- **Direct mode** (no map function): `E` must itself be assignable to `Out`.
-- **Mapped mode** (map function provided): converts `E` into `Out`.
+- **Direct mode** (no map function): `E` must itself be assignable to the
+  declared payload type.
+- **Mapped mode** (map function provided): converts `E` into the declared
+  payload type.
 - **Matching**: type-only via `errors.As`; the first declared `ErrorFrame` (in
   declaration order in the `ErrorFrames` slice) whose type matches wins.
+- **`ErrorFrameRule` is NOT parameterized by `Out`** — its payload is
+  independently codec-validated and pre-encoded at declaration time, so
+  `DuplexSocketAdapterOptions.ErrorFrames` is a plain `[]websocket.ErrorFrameRule`
+  (no type erasure, no runtime type assertion needed at `Activate` time).
 
 ### Action model — `respond` / `handle` / `log`
 
@@ -271,18 +289,22 @@ A matched rule executes exactly **one** action, never an implicit chain:
 
 | Action | Behavior | Default |
 |---|---|---|
-| `events.ErrorRespond` | broadcast the mapped Out frame to every connected session | ✅ default |
+| `events.ErrorRespond` | broadcast the encoded typed payload to every connected session | ✅ default |
 | `events.ErrorHandle` | run `.WithHandle(func(error))` instead of broadcasting | opt-in via `.WithAction(events.ErrorHandle)` |
 | `events.ErrorLog` | forward the error to the port's `Errors` channel unchanged (same as no match) | opt-in via `.WithAction(events.ErrorLog)` |
 
 ```go
-websocket.ErrorFrame[ValidationError, OutFrame](mapFn).
+websocket.ErrorFrame[ValidationError, ErrorPayload](errorPayloadCodec, mapFn).
     WithAction(events.ErrorHandle).
     WithHandle(func(err error) { log.Printf("duplex error: %v", err) })
 ```
 
 Unmatched errors fall through to the existing default: forwarded unchanged to
-the port's `Errors` channel (surfaced via `port.Inbound(ctx).Errors`).
+the port's `Errors` channel (surfaced via `port.Inbound(ctx).Errors`). A
+matched rule whose mapped payload fails its declared codec's constraints is
+ALSO forwarded to the port's `Errors` channel (never silently broadcast) —
+the same terminal-error handling `rest.ErrorPattern`/`events.ErrorChannel`
+use for a mapping/encoding failure.
 
 ## Not MQTT-over-WebSocket
 

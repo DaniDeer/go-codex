@@ -250,7 +250,7 @@ All wrappers include:
 | EPU5 | Error payload success | direct-match and mapped `ErrorPattern` payload paths encode through declared codec | ✅ REST + events (`TestErrorChannel_MappedPayload_MatchAndEncode`, `TestErrorChannel_DirectMode_TypeAssignable`) |
 | EPU6 | Error payload encode failure | typed apply/encode error and fallback path | ✅ `TestErrorChannel_MapperError_ReturnsMatchedWithError` |
 | EPU7 | Errors.As chain | New error wrappers remain introspectable | ✅ |
-| EPU8 | LogValue group shape | Keys/kinds for new errors are stable | ✅ `ErrorFrameOptError`, `FormatOptError`-style errors |
+| EPU8 | LogValue group shape | Keys/kinds for new errors are stable | ✅ `FormatOptError`-style errors |
 | EPU9 | Ports parity | Same declaration path works via `PluginRESTPattern`/`PluginEventPattern` | ✅ `TestRESTPattern_ErrorStatus_ParityWithDirectRouteDeclaration`, `TestEventPattern_ErrorChannel_ParityWithDirectChannelDeclaration` |
 | EPU10 | Req/reply cross-adapter consistency | `mqtt5`/`zeromq`/`mcpgo` mapping model stays coherent | Open (not blocking — dedicated reply-error AsyncAPI channels already shipped separately) |
 | EPU11 | Non-req/reply error output channel | Source/Sink pub-sub boundaries emit codec-backed error payloads on declared error channel/pattern | ✅ `adapters/mqtt5` (`TestMQTT5PublishAdapter_ErrorChannelMatch_PublishesToDeclaredTopic`), `adapters/websocket` (`TestDuplex_ErrorFrame_Match_BroadcastsToAllSessions`) |
@@ -309,14 +309,19 @@ All wrappers include:
      their own publish/sink call sites as a follow-up (not blocking — the
      declarative surface lives entirely in `api/events`, adapter wiring is
      additive per adapter).
-   - `websocket.ErrorFrame[E,Out](mapFn...) ErrorFrameRule[Out]` +
-     `DuplexSocketAdapterOptions.ErrorFrames` (type-erased `any`, same
-     pattern as events Formats) wired into `adapters/websocket`'s
-     `DuplexSocketAdapter`: a matched `respond` rule broadcasts the mapped
-     frame to every connected session (no dedicated error topic exists on a
-     socket — broadcast IS the notification path); `handle` runs
-     `.WithHandle(func(error))`; `log` and unmatched errors fall through to
-     the existing default (forwarded unchanged to the port's Errors channel).
+   - `websocket.ErrorFrame[E,B](codec, mapFn...) ErrorFrameRule` +
+     `DuplexSocketAdapterOptions.ErrorFrames []ErrorFrameRule` (plain slice —
+     `ErrorFrameRule` is non-generic, no type erasure needed) wired into
+     `adapters/websocket`'s `DuplexSocketAdapter`: a matched `respond` rule
+     broadcasts the payload to every connected session (no dedicated error
+     topic exists on a socket — broadcast IS the notification path); `handle`
+     runs `.WithHandle(func(error))`; `log` and unmatched errors fall through
+     to the existing default (forwarded unchanged to the port's Errors
+     channel). `ErrorFrame` declares its OWN codec-backed payload type B,
+     independent of the socket's `Out` type — fixed in a follow-up round
+     (see the "Design decisions" note below) after initial shipping had
+     `ErrorFrame[E,Out]` incorrectly reuse the socket's `Out` codec, breaking
+     "one-struct-one-call" parity with REST/Events/ReqReply/MCP.
 3. **Phase 1C — Store/IO boundaries (shipped)**
    - SQL/Cache/File default to `handle`/`log` via their EXISTING `OnError func(error)`
      hooks (`sql.DrainInsertOptions`, `redis.SetAdapterOptions`,
@@ -373,9 +378,10 @@ All wrappers include:
    - `events.ErrorChannel[E,B](topic, codec, mapFn...)` (Phase 1B, shipped)
      mirrors the same two-mode shape, adapted to the pub/sub boundary
      (publish to a declared error topic instead of an HTTP body).
-   - `websocket.ErrorFrame[E,Out](mapFn...)` (Phase 1B, shipped) mirrors the
-     same shape again, adapted to the duplex-socket boundary (broadcast a
-     typed frame to every connected session instead of a declared topic).
+   - `websocket.ErrorFrame[E,B](codec, mapFn...)` (Phase 1B, shipped; codec
+     parity fix applied in a follow-up round — see below) mirrors the same
+     shape again, adapted to the duplex-socket boundary (broadcast a typed
+     frame to every connected session instead of a declared topic).
 2. Codec-first error payload timing:
    - included in Phase 1 via unified typed declarations (`ErrorResponse` on REST;
      `ErrorPattern`-style equivalents on other adapter families), with direct +
@@ -491,3 +497,38 @@ vocabulary consistency, item 6 is deferred/optional.
 6. **Client-side error decode parity** — evaluated, deferred (no concrete
    driving use case; `nethttp.UnexpectedStatusError.Body` already works as
    an escape hatch). Revisit only if a real use case emerges.
+
+## Phase 2 follow-up fix (post-review) — `websocket.ErrorFrame` codec parity
+
+A follow-up review of the shipped work asked: "does every error struct in the
+one-struct-one-call approach have to be declared with a codec and get
+validated?" Tracing the actual encode call chain confirmed
+`rest.ErrorPattern`/`events.ErrorChannel`/`reqreply.ErrorPattern`/
+`mcp.ErrorPattern` all declare an independent `codex.Codec[B]` for their error
+payload and validate it (all `Refine` constraints run via `codex.Codec.Encode`,
+called by `format.Format.Marshal`) before writing/publishing/returning it —
+but `websocket.ErrorFrame[E,Out]` did NOT: it had no codec parameter at all
+and reused the socket's already-declared `Out` codec/format
+(`a.handle.OutFormat.Marshal(frame)`), forcing the error payload to be the
+exact same type as the happy-path outbound frame.
+
+**Fixed**: `websocket.ErrorFrame[E,B](codec codex.Codec[B], mapFn...) ErrorFrameRule`
+now declares its own codec, exactly mirroring the other four boundaries —
+encoding (and thus validation) happens inside the rule's `match` closure via
+`format.JSON(codec).Marshal`, producing a pre-encoded `ErrorFrameResponse{Body,
+Value, Action}`. A useful side effect: `ErrorFrameRule` is no longer
+parameterized by `Out` at all (its payload is independently encoded), so
+`DuplexSocketAdapterOptions.ErrorFrames` became a plain `[]ErrorFrameRule` —
+the type-erasure (`any` field) and runtime type-assertion
+(`ErrorFrameOptError`) that the original design needed are both gone; a
+declaration mismatch is now a compile error, not a runtime one.
+
+- `adapters/websocket/binding.go`'s `Activate` broadcasts `resp.Body` directly
+  instead of re-marshaling via `handle.OutFormat`.
+- `ErrorFrameOptError` removed (unreachable — no type mismatch can occur now).
+- `examples/websocket-duplex` updated to declare a dedicated `ErrorPayload`
+  struct+codec instead of reusing `Update` (the happy-path frame type).
+- New tests: `TestDuplex_ErrorFrame_IndependentCodec_ValidatesAndBroadcasts`
+  (locks that a payload type different from `Out` broadcasts correctly) and
+  `TestErrorFrame_MapperProducesInvalidPayload_ReturnsValidationError` (locks
+  that a Refine-violating mapped payload is rejected, not silently broadcast).

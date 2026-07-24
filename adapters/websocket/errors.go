@@ -45,27 +45,3 @@ func (e SocketError) LogValue() slog.Value {
 // client's outbound queue is full and the frame is dropped (at-most-once
 // delivery policy — a lagging session never blocks the pipeline).
 var ErrFrameDropped = fmt.Errorf("websocket: outbound queue full, frame dropped")
-
-// ErrorFrameOptError reports a type mismatch between
-// [DuplexSocketAdapterOptions.ErrorFrames] (stored as `any` since Options is
-// non-generic) and the adapter's concrete Out type, resolved at
-// [DuplexSocketAdapter] Activate time.
-type ErrorFrameOptError struct {
-	Path string
-	Err  error
-}
-
-func (e ErrorFrameOptError) Error() string {
-	return fmt.Sprintf("websocket: %s: invalid ErrorFrames option: %v", e.Path, e.Err)
-}
-
-// Unwrap allows [errors.Is] and [errors.As] to reach the underlying error.
-func (e ErrorFrameOptError) Unwrap() error { return e.Err }
-
-// LogValue implements [slog.LogValuer] for structured logging.
-func (e ErrorFrameOptError) LogValue() slog.Value {
-	return slog.GroupValue(
-		slog.String("path", e.Path),
-		slog.Any("err", e.Err),
-	)
-}

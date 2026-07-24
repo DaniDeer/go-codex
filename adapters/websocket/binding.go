@@ -3,7 +3,6 @@ package websocket
 import (
 	"context"
 	"errors"
-	"fmt"
 	"net/http"
 	"regexp"
 	"strings"
@@ -379,14 +378,13 @@ type DuplexSocketAdapterOptions struct {
 	// Resolved from ctx when nil.
 	Observer stats.Observer
 
-	// ErrorFrames holds []ErrorFrameRule[Out] type-erased (any) — set via
-	// [ErrorFrame], resolved generically in [DuplexSocketAdapter] where Out
-	// is concrete (the same `any`-storage pattern events uses for
-	// Formats/SubscribeFormats/PublishFormats). When a rule matches an
-	// error received on the port's outbound stream Errors channel, the
-	// resolved action determines behaviour — see [ErrorFrame]. A type
-	// mismatch surfaces as [ErrorFrameOptError] from Activate.
-	ErrorFrames any
+	// ErrorFrames declares typed error patterns via [ErrorFrame] — each rule
+	// carries its own independently codec-validated payload (pre-encoded),
+	// so no type erasure or runtime type assertion against the socket's Out
+	// type is needed. When a rule matches an error received on the port's
+	// outbound stream Errors channel, the resolved action determines
+	// behaviour — see [ErrorFrame].
+	ErrorFrames []ErrorFrameRule
 }
 
 // DuplexSocketAdapter returns a [ports.DuplexAdapter]: inbound frames from
@@ -432,15 +430,7 @@ func (a *wsDuplexAdapter[In, Out]) Activate(
 	if obs == nil {
 		obs = stats.ObserverFromContext(ctx)
 	}
-	var errorFrames []ErrorFrameRule[Out]
-	if a.opts.ErrorFrames != nil {
-		fr, ok := a.opts.ErrorFrames.([]ErrorFrameRule[Out])
-		if !ok {
-			return ErrorFrameOptError{Path: a.handle.Path,
-				Err: fmt.Errorf("want []ErrorFrameRule[%T], got %T", *new(Out), a.opts.ErrorFrames)}
-		}
-		errorFrames = fr
-	}
+	errorFrames := a.opts.ErrorFrames
 	emitErr := func(err error) bool {
 		select {
 		case errs <- err:
@@ -461,7 +451,7 @@ func (a *wsDuplexAdapter[In, Out]) Activate(
 			if rule.match == nil {
 				continue
 			}
-			frame, matched, mapErr := rule.match(e)
+			resp, matched, mapErr := rule.match(e)
 			if !matched {
 				continue
 			}
@@ -469,7 +459,7 @@ func (a *wsDuplexAdapter[In, Out]) Activate(
 				stats.ReportErrors(obs, "error_frame", mapErr)
 				return emitErr(mapErr)
 			}
-			switch rule.action {
+			switch resp.Action {
 			case events.ErrorHandle:
 				if rule.onMatch != nil {
 					rule.onMatch(e)
@@ -479,14 +469,9 @@ func (a *wsDuplexAdapter[In, Out]) Activate(
 				return emitErr(e)
 			default: // events.ErrorRespond
 				start := time.Now()
-				encoded, encErr := a.handle.OutFormat.Marshal(frame)
-				if encErr != nil {
-					stats.ReportErrors(obs, "error_frame", encErr)
-					return emitErr(encErr)
-				}
 				success := true
 				for _, s := range a.hub.Sessions() {
-					if sent, _ := a.hub.send(s, encoded); !sent {
+					if sent, _ := a.hub.send(s, resp.Body); !sent {
 						success = false
 						if !emitErr(SocketError{Path: a.handle.Path, Session: s, Op: "write", Err: ErrFrameDropped}) {
 							return false

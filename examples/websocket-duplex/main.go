@@ -134,14 +134,35 @@ func (e NegativeValueError) Error() string {
 	return fmt.Sprintf("negative value %d not allowed for action %q", e.Value, e.Action)
 }
 
+// ErrorPayload is the typed, codec-validated error frame broadcast when a
+// NegativeValueError matches — independent of Update (the happy-path
+// outbound frame type), demonstrating that websocket.ErrorFrame declares
+// its own codec-backed payload just like rest.ErrorPattern/
+// events.ErrorChannel/reqreply.ErrorPattern/mcp.ErrorPattern do.
+type ErrorPayload struct {
+	Code    string
+	Message string
+}
+
+var errorPayloadCodec = codex.Struct[ErrorPayload](
+	codex.RequiredField("code", codex.String().Refine(validate.NonEmptyString),
+		func(e ErrorPayload) string { return e.Code },
+		func(e *ErrorPayload, v string) { e.Code = v },
+	),
+	codex.RequiredField("message", codex.String(),
+		func(e ErrorPayload) string { return e.Message },
+		func(e *ErrorPayload, v string) { e.Message = v },
+	),
+)
+
 // negativeValueErrorFrame declares the broadcast realized when a
 // NegativeValueError reaches the DuplexSocketAdapter: every connected
-// session receives a typed Update frame with the error message — the
+// session receives a typed, codec-validated ErrorPayload frame — the
 // duplex-socket analogue of events.ErrorChannel (broadcast IS the
 // notification path; there is no dedicated error-output topic on a socket).
-var negativeValueErrorFrame = adapterws.ErrorFrame[NegativeValueError, Update](
-	func(e NegativeValueError) (Update, error) {
-		return Update{Text: "error: " + e.Error()}, nil
+var negativeValueErrorFrame = adapterws.ErrorFrame[NegativeValueError, ErrorPayload](errorPayloadCodec,
+	func(e NegativeValueError) (ErrorPayload, error) {
+		return ErrorPayload{Code: "negative_value", Message: e.Error()}, nil
 	},
 )
 
@@ -217,7 +238,7 @@ func main() {
 	handle := codex.Must(Live.PluginSocketPattern(LivePattern))
 	if err := Live.Bind(ctx, adapterws.DuplexSocketAdapter(mux, hub, upgrader, handle,
 		adapterws.DuplexSocketAdapterOptions{
-			ErrorFrames: []adapterws.ErrorFrameRule[Update]{negativeValueErrorFrame},
+			ErrorFrames: []adapterws.ErrorFrameRule{negativeValueErrorFrame},
 		})); err != nil {
 		panic(err)
 	}
