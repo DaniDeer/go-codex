@@ -2451,16 +2451,16 @@ func (e pipelineStatusOtherError) Error() string {
 	return "pipeline other"
 }
 
-func TestPipelineErrorStatusFor_TypeMatch(t *testing.T) {
+func TestErrorStatusFor_TypeMatch(t *testing.T) {
 	b := rest.NewBuilder(testInfo)
 	h, err := rest.NewRoute[createReq, userResp]("POST", "/pipeline/status",
 		createReqCodec, userCodec,
-		rest.PipelineErrorStatus[pipelineStatusConflictError](409),
+		rest.ErrorStatus[pipelineStatusConflictError](409),
 	).Register(b)
 	if err != nil {
 		t.Fatalf("Register: %v", err)
 	}
-	status, ok := h.PipelineErrorStatusFor(
+	status, ok := h.ErrorStatusFor(
 		fmt.Errorf("wrapped: %w", pipelineStatusConflictError{msg: "dup"}),
 	)
 	if !ok {
@@ -2471,17 +2471,17 @@ func TestPipelineErrorStatusFor_TypeMatch(t *testing.T) {
 	}
 }
 
-func TestPipelineErrorStatusFor_FirstMatchWins(t *testing.T) {
+func TestErrorStatusFor_FirstMatchWins(t *testing.T) {
 	b := rest.NewBuilder(testInfo)
 	h, err := rest.NewRoute[createReq, userResp]("POST", "/pipeline/status-order",
 		createReqCodec, userCodec,
-		rest.PipelineErrorStatus[error](499),
-		rest.PipelineErrorStatus[pipelineStatusConflictError](409),
+		rest.ErrorStatus[error](499),
+		rest.ErrorStatus[pipelineStatusConflictError](409),
 	).Register(b)
 	if err != nil {
 		t.Fatalf("Register: %v", err)
 	}
-	status, ok := h.PipelineErrorStatusFor(pipelineStatusConflictError{msg: "dup"})
+	status, ok := h.ErrorStatusFor(pipelineStatusConflictError{msg: "dup"})
 	if !ok {
 		t.Fatal("want match, got no match")
 	}
@@ -2490,20 +2490,191 @@ func TestPipelineErrorStatusFor_FirstMatchWins(t *testing.T) {
 	}
 }
 
-func TestPipelineErrorStatusFor_NoMatch(t *testing.T) {
+func TestErrorStatusFor_NoMatch(t *testing.T) {
 	b := rest.NewBuilder(testInfo)
 	h, err := rest.NewRoute[createReq, userResp]("POST", "/pipeline/status-none",
 		createReqCodec, userCodec,
-		rest.PipelineErrorStatus[pipelineStatusConflictError](409),
+		rest.ErrorStatus[pipelineStatusConflictError](409),
 	).Register(b)
 	if err != nil {
 		t.Fatalf("Register: %v", err)
 	}
-	status, ok := h.PipelineErrorStatusFor(pipelineStatusOtherError{msg: "x"})
+	status, ok := h.ErrorStatusFor(pipelineStatusOtherError{msg: "x"})
 	if ok {
 		t.Fatalf("want no match, got status %d", status)
 	}
 	if status != 0 {
 		t.Fatalf("want status 0 when no match, got %d", status)
+	}
+}
+
+type directPatternError struct {
+	Code string
+}
+
+func (e directPatternError) Error() string { return "direct pattern " + e.Code }
+
+var directPatternCodec = codex.Struct[directPatternError](
+	codex.RequiredField("code", codex.String().Refine(validate.NonEmptyString),
+		func(e directPatternError) string { return e.Code },
+		func(e *directPatternError, v string) { e.Code = v },
+	),
+)
+
+type mappedPatternError struct{ Msg string }
+
+func (e mappedPatternError) Error() string { return e.Msg }
+
+type mappedPatternPayload struct {
+	Kind string
+}
+
+var mappedPatternCodec = codex.Struct[mappedPatternPayload](
+	codex.RequiredField("kind", codex.String().Refine(validate.NonEmptyString),
+		func(p mappedPatternPayload) string { return p.Kind },
+		func(p *mappedPatternPayload, v string) { p.Kind = v },
+	),
+)
+
+func TestErrorResponseFor_DirectPattern(t *testing.T) {
+	b := rest.NewBuilder(testInfo)
+	h, err := rest.NewRoute[createReq, userResp]("POST", "/errors/direct",
+		createReqCodec, userCodec,
+		rest.ErrorPattern[directPatternError, directPatternError](409, directPatternCodec),
+	).Register(b)
+	if err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+	resp, ok, applyErr := h.ErrorResponseFor(fmt.Errorf("wrapped: %w", directPatternError{Code: "conflict"}))
+	if applyErr != nil {
+		t.Fatalf("ErrorResponseFor applyErr: %v", applyErr)
+	}
+	if !ok {
+		t.Fatal("want pattern match, got no match")
+	}
+	if resp.Status != 409 {
+		t.Fatalf("want status 409, got %d", resp.Status)
+	}
+	var payload map[string]string
+	if err := json.Unmarshal(resp.Body, &payload); err != nil {
+		t.Fatalf("json.Unmarshal: %v", err)
+	}
+	if payload["code"] != "conflict" {
+		t.Fatalf("want code=conflict, got %q", payload["code"])
+	}
+}
+
+func TestErrorResponseFor_MappedPattern(t *testing.T) {
+	b := rest.NewBuilder(testInfo)
+	h, err := rest.NewRoute[createReq, userResp]("POST", "/errors/mapped",
+		createReqCodec, userCodec,
+		rest.ErrorPattern[mappedPatternError, mappedPatternPayload](422, mappedPatternCodec,
+			func(e mappedPatternError) (mappedPatternPayload, error) {
+				return mappedPatternPayload{Kind: e.Msg}, nil
+			}),
+	).Register(b)
+	if err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+	resp, ok, applyErr := h.ErrorResponseFor(mappedPatternError{Msg: "validation"})
+	if applyErr != nil {
+		t.Fatalf("ErrorResponseFor applyErr: %v", applyErr)
+	}
+	if !ok {
+		t.Fatal("want pattern match, got no match")
+	}
+	if resp.Status != 422 {
+		t.Fatalf("want status 422, got %d", resp.Status)
+	}
+	var payload map[string]string
+	if err := json.Unmarshal(resp.Body, &payload); err != nil {
+		t.Fatalf("json.Unmarshal: %v", err)
+	}
+	if payload["kind"] != "validation" {
+		t.Fatalf("want kind=validation, got %q", payload["kind"])
+	}
+}
+
+func TestErrorPattern_DefaultAction_IsRespond(t *testing.T) {
+	b := rest.NewBuilder(testInfo)
+	h, err := rest.NewRoute[createReq, userResp]("POST", "/errors/default-action",
+		createReqCodec, userCodec,
+		rest.ErrorPattern[directPatternError, directPatternError](409, directPatternCodec),
+	).Register(b)
+	if err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+	resp, ok, applyErr := h.ErrorResponseFor(directPatternError{Code: "x"})
+	if applyErr != nil {
+		t.Fatalf("ErrorResponseFor applyErr: %v", applyErr)
+	}
+	if !ok {
+		t.Fatal("want match")
+	}
+	if resp.Action != rest.ErrorRespond {
+		t.Fatalf("want default action ErrorRespond, got %q", resp.Action)
+	}
+}
+
+func TestErrorPattern_WithAction_Handle(t *testing.T) {
+	b := rest.NewBuilder(testInfo)
+	h, err := rest.NewRoute[createReq, userResp]("POST", "/errors/handle-action",
+		createReqCodec, userCodec,
+		rest.ErrorPattern[directPatternError, directPatternError](409, directPatternCodec).
+			WithAction(rest.ErrorHandle),
+	).Register(b)
+	if err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+	resp, ok, applyErr := h.ErrorResponseFor(directPatternError{Code: "x"})
+	if applyErr != nil {
+		t.Fatalf("ErrorResponseFor applyErr: %v", applyErr)
+	}
+	if !ok {
+		t.Fatal("want match")
+	}
+	if resp.Action != rest.ErrorHandle {
+		t.Fatalf("want action ErrorHandle, got %q", resp.Action)
+	}
+}
+
+func TestErrorPattern_WithAction_Log(t *testing.T) {
+	b := rest.NewBuilder(testInfo)
+	h, err := rest.NewRoute[createReq, userResp]("POST", "/errors/log-action",
+		createReqCodec, userCodec,
+		rest.ErrorPattern[directPatternError, directPatternError](409, directPatternCodec).
+			WithAction(rest.ErrorLog),
+	).Register(b)
+	if err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+	resp, ok, applyErr := h.ErrorResponseFor(directPatternError{Code: "x"})
+	if applyErr != nil {
+		t.Fatalf("ErrorResponseFor applyErr: %v", applyErr)
+	}
+	if !ok {
+		t.Fatal("want match")
+	}
+	if resp.Action != rest.ErrorLog {
+		t.Fatalf("want action ErrorLog, got %q", resp.Action)
+	}
+}
+
+// TestErrorPattern_StatusAndSpecStillWork_AfterActionRefactor is a regression
+// guard: ErrorStatusFor and the AsyncAPI-equivalent ResponseMeta/status
+// side effects that ErrorPattern.applyRoute installs must be unaffected by
+// the ErrorPatternOpt[E,B] chainable-return refactor.
+func TestErrorPattern_StatusAndSpecStillWork_AfterActionRefactor(t *testing.T) {
+	b := rest.NewBuilder(testInfo)
+	h, err := rest.NewRoute[createReq, userResp]("POST", "/errors/status-regress",
+		createReqCodec, userCodec,
+		rest.ErrorPattern[directPatternError, directPatternError](409, directPatternCodec),
+	).Register(b)
+	if err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+	status, ok := h.ErrorStatusFor(directPatternError{Code: "x"})
+	if !ok || status != 409 {
+		t.Fatalf("want ErrorStatusFor to return (409,true), got (%d,%v)", status, ok)
 	}
 }

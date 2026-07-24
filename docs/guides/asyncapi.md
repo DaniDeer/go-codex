@@ -76,7 +76,37 @@ channels:
 ### Declaring dedicated req/reply error channels
 
 For request-reply contracts, declare explicit error-path reply channels on the
-route with `reqreply.ErrorReplyMeta`:
+route with `reqreply.ErrorPattern` — this is the codec-first, runtime-wired
+declaration (recommended for new code) that drives BOTH the AsyncAPI spec
+entry AND the actual `mqtt5`/`zeromq` `Serve` reply behavior in one
+declaration:
+
+```go
+computeRoute := reqreply.NewRoute[ComputeReq, ComputeResp](
+    "compute/add", computeReqCodec, computeRespCodec,
+    reqreply.RouteMeta{OperationID: "computeAdd"},
+    reqreply.ErrorPattern[domain.ConflictError, ErrorPayload](errorPayloadCodec,
+        func(e domain.ConflictError) (ErrorPayload, error) {
+            return ErrorPayload{Code: "conflict", Message: e.Error()}, nil
+        },
+    ).WithCode("conflict").WithDescription("Business conflict reply.").WithSchemaName("ConflictError"),
+)
+```
+
+At runtime, `mqtt5.Serve`/`zeromq.Serve`/`zeromq.ServeRouter` consult
+`handle.ErrorResponseFor(err)` on handler and encode failures — a matched
+pattern sends the encoded typed payload instead of a plain-text error
+string. Unmatched errors keep the existing plain-text fallback unchanged.
+
+Generated AsyncAPI includes an additional dedicated reply-error channel and
+operation (for example `computeAddReplyErrorConflict` with address
+`compute/add/reply/error/conflict`) alongside the normal success reply channel
+— the same spec shape `ErrorReplyMeta` produces.
+
+`reqreply.ErrorReplyMeta` remains available unchanged for spec-only
+declarations that document an error reply produced by some other mechanism
+(no runtime dispatch — pure documentation/contract metadata, same role as
+`RouteMeta`):
 
 ```go
 computeRoute := reqreply.NewRoute[ComputeReq, ComputeResp](
@@ -90,10 +120,6 @@ computeRoute := reqreply.NewRoute[ComputeReq, ComputeResp](
     },
 )
 ```
-
-Generated AsyncAPI then includes an additional dedicated reply-error channel and
-operation (for example `computeAddReplyErrorConflict` with address
-`compute/add/reply/error/conflict`) alongside the normal success reply channel.
 
 ### What `AppendTo` does and does NOT copy
 

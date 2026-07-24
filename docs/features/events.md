@@ -296,6 +296,77 @@ handle, _ := contract.ReadingsChannel.Register(consumerBuilder)
 client.Subscribe(topic, 1, amqtt.SubscribeHandler(ctx, handle, fn, opts))
 ```
 
+## Error-path ergonomics — `ErrorChannel`
+
+Pub/sub channels have no synchronous caller to respond to — `events.ErrorChannel`
+is the pub/sub analogue of [`rest.ErrorPattern`](rest-api.md#error-path-ergonomics-errorstatus--errorpattern):
+declare a codec-backed typed error payload for a matched error type, published
+to a dedicated error-output topic instead of an HTTP status/body.
+
+```go
+type ValidationError struct{ Reason string }
+func (e ValidationError) Error() string { return "validation: " + e.Reason }
+
+type ErrorPayload struct {
+    Code    string
+    Message string
+}
+
+handle, err := events.NewChannel[SensorReading]("sensors/{id}/data", sensorCodec,
+    events.ErrorChannel[ValidationError, ErrorPayload](
+        "sensors/{id}/errors", errorPayloadCodec,
+        func(e ValidationError) (ErrorPayload, error) {
+            return ErrorPayload{Code: "validation", Message: e.Reason}, nil
+        },
+    ),
+).Register(b)
+```
+
+- **Direct mode** (no map function): `E` must itself be assignable to the declared
+  payload type `B`.
+- **Mapped mode** (map function provided): the map function converts `E` into `B`.
+- **Matching**: type-only via `errors.As`; the first declared `ErrorChannel` (in
+  `NewChannel` option order) whose type matches wins — the same deterministic
+  precedence used by REST.
+- **`ChannelHandle.ErrorResponseFor(err) (ErrorChannelResponse, bool, error)`**
+  looks up the first matching pattern — adapters call this before falling back
+  to their own default error handling.
+
+### Action model — `respond` / `handle` / `log`
+
+A matched pattern executes exactly **one** action, never an implicit chain:
+
+| Action | Behavior | Default |
+|---|---|---|
+| `events.ErrorRespond` | publish the typed payload to the declared error topic | ✅ default |
+| `events.ErrorHandle` | run a custom callback instead of publishing | opt-in via `.WithAction(events.ErrorHandle)` |
+| `events.ErrorLog` | forward the error through the adapter's normal error path only (same as no match) | opt-in via `.WithAction(events.ErrorLog)` |
+
+```go
+events.ErrorChannel[ValidationError, ErrorPayload]("sensors/{id}/errors", errorPayloadCodec, mapFn).
+    WithAction(events.ErrorLog)
+```
+
+### Adapter wiring (`adapters/mqtt5`, `adapters/mqtt`, `adapters/zeromq`)
+
+`mqtt5.PublishAdapter`, `mqtt.PublishAdapter`, and `zeromq.PublishAdapter`
+all consult `handle.ErrorResponseFor(err)` for every upstream stream error
+before falling back to their own `OnError` option:
+
+- matched + `respond` → publishes the encoded payload to the declared topic
+  (does not call `OnError`);
+- matched + `handle` → falls through to `OnError` (unchanged existing behavior —
+  `OnError` already IS the "handle" realization for these adapters);
+- matched + `log`, or unmatched → falls through to `OnError` unchanged.
+
+## WebSocket error frames
+
+See [WebSocket — error frames](websocket.md#error-path-ergonomics-errorframe)
+for the duplex-socket analogue (`websocket.ErrorFrame`), which broadcasts a
+typed error frame to every connected session instead of publishing to a
+declared topic (sockets have no dedicated error-output channel — broadcast
+IS the notification path).
+
 ## See also
 
 - [Feature: Security & Auth](security.md) — MQTT security, SecurityFunc

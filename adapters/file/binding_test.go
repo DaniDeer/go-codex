@@ -11,10 +11,12 @@ import (
 	"time"
 
 	fileadapter "github.com/DaniDeer/go-codex/adapters/file"
+	"github.com/DaniDeer/go-codex/api/events"
 	"github.com/DaniDeer/go-codex/codex"
 	"github.com/DaniDeer/go-codex/format"
 	"github.com/DaniDeer/go-codex/ports"
 	gstream "github.com/DaniDeer/go-codex/stream"
+	"github.com/DaniDeer/go-codex/validate"
 )
 
 // ── shared helpers ─────────────────────────────────────────────────────────────
@@ -120,6 +122,82 @@ func TestDrainWriteAdapter_EncodesAndWrites(t *testing.T) {
 	out := buf.String()
 	if out == "" {
 		t.Error("want non-empty output, got empty")
+	}
+}
+
+// R1C-3: File is an internal store boundary with no caller — the shared
+// respond/handle/log action model is realized by composing the existing
+// OnError hook with a declared events.ErrorChannel (Phase 1B), the same
+// pattern as SQL/Cache. This locks that composition actually works.
+type fileErrPayload struct {
+	Code    string
+	Message string
+}
+
+func (e fileErrPayload) Error() string { return "file error " + e.Code }
+
+var fileErrPayloadCodec = codex.Struct[fileErrPayload](
+	codex.RequiredField("code", codex.String().Refine(validate.NonEmptyString),
+		func(e fileErrPayload) string { return e.Code },
+		func(e *fileErrPayload, v string) { e.Code = v },
+	),
+	codex.RequiredField("message", codex.String(),
+		func(e fileErrPayload) string { return e.Message },
+		func(e *fileErrPayload, v string) { e.Message = v },
+	),
+)
+
+// failMarshalFormat always fails Marshal, forcing DrainWriteAdapter to
+// route a WriteError to OnError.
+var failMarshalFormat = format.New[item](itemCodec,
+	func(any) ([]byte, error) { return nil, errors.New("encode failed") },
+	func([]byte) (any, error) { return item{}, nil },
+)
+
+func TestDrainWriteAdapter_OnError_ComposesWithEventsErrorChannel(t *testing.T) {
+	ctx := context.Background()
+	var buf bytes.Buffer
+
+	b := events.NewBuilder(events.Info{Title: "Test", Version: "1.0.0"})
+	errHandle, err := events.NewChannel[item]("items/write", itemCodec,
+		events.ErrorChannel[fileadapter.WriteError, fileErrPayload](
+			"items/write/errors", fileErrPayloadCodec,
+			func(e fileadapter.WriteError) (fileErrPayload, error) {
+				return fileErrPayload{Code: "write_failed", Message: e.Error()}, nil
+			},
+		),
+	).Register(b)
+	if err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+
+	var publishedTopic string
+	var loggedErr error
+
+	ch := make(chan item, 1)
+	ch <- item{V: 1}
+	close(ch)
+
+	p, perr := ports.NewSinkPort[item]("write", itemCodec, ports.PortOptions{Buffer: 4})
+	if perr != nil {
+		t.Fatalf("construct port: %v", perr)
+	}
+	p.Bind(ctx, fileadapter.DrainWriteAdapter(&buf, failMarshalFormat,
+		fileadapter.DrainWriteAdapterOptions{Path: "items.ndjson", OnError: func(e error) {
+			resp, matched, mapErr := errHandle.ErrorResponseFor(e)
+			if matched && mapErr == nil && resp.Action == events.ErrorRespond {
+				publishedTopic = resp.Topic
+				return
+			}
+			loggedErr = e
+		}}))
+	p.Feed(ctx, gstream.From(ctx, ch))
+
+	if loggedErr != nil {
+		t.Errorf("want no fallback log for matched error, got %v", loggedErr)
+	}
+	if publishedTopic != "items/write/errors" {
+		t.Errorf("got topic %q, want items/write/errors", publishedTopic)
 	}
 }
 

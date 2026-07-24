@@ -14,6 +14,7 @@ import (
 	"time"
 
 	adapterws "github.com/DaniDeer/go-codex/adapters/websocket"
+	"github.com/DaniDeer/go-codex/api/events"
 	"github.com/DaniDeer/go-codex/api/rest"
 	"github.com/DaniDeer/go-codex/codex"
 	"github.com/DaniDeer/go-codex/format"
@@ -784,6 +785,158 @@ func TestDuplex_UnknownSession_Error(t *testing.T) {
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("timeout")
+	}
+}
+
+// ── ErrorFrame ────────────────────────────────────────────────────────────────
+
+type duplexValidationErr struct{ msg string }
+
+func (e duplexValidationErr) Error() string { return "duplex validation: " + e.msg }
+
+func TestDuplex_ErrorFrame_Match_BroadcastsToAllSessions(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	mux := http.NewServeMux()
+	hub := adapterws.NewHub(0)
+	sockA, sockB := newFakeSocket(), newFakeSocket()
+	up := &fakeUpgrader{socks: []*fakeSocket{sockA, sockB}}
+
+	port, _ := ports.NewDuplexPort[command, update]("live-errframe", commandCodec, updateCodec,
+		ports.PortOptions{Buffer: 8})
+	handle, err := port.PluginSocketPattern(ports.SocketPattern{Path: "/live"})
+	if err != nil {
+		t.Fatalf("PluginSocketPattern: %v", err)
+	}
+	_ = port.Bind(ctx, adapterws.DuplexSocketAdapter(mux, hub, up, handle,
+		adapterws.DuplexSocketAdapterOptions{
+			ErrorFrames: []adapterws.ErrorFrameRule[update]{
+				adapterws.ErrorFrame[duplexValidationErr, update](
+					func(e duplexValidationErr) (update, error) {
+						return update{Text: "error: " + e.msg}, nil
+					},
+				),
+			},
+		}))
+	time.Sleep(20 * time.Millisecond)
+
+	connect(t, mux, "/live")
+	connect(t, mux, "/live")
+
+	outErrs := make(chan error, 1)
+	outVals := make(chan ports.Framed[update])
+	outErrs <- duplexValidationErr{msg: "bad input"}
+	close(outErrs)
+	close(outVals)
+	go port.Feed(ctx, stream.Stream[ports.Framed[update]]{Values: outVals, Errors: outErrs})
+
+	waitFor(t, func() bool { return len(sockA.writtenFrames()) == 1 && len(sockB.writtenFrames()) == 1 })
+	if !strings.Contains(string(sockA.writtenFrames()[0]), "bad input") {
+		t.Errorf("sockA frame wrong: %s", sockA.writtenFrames()[0])
+	}
+	if !strings.Contains(string(sockB.writtenFrames()[0]), "bad input") {
+		t.Errorf("sockB frame wrong: %s", sockB.writtenFrames()[0])
+	}
+}
+
+func TestDuplex_ErrorFrame_NoMatch_ForwardsToPortErrors(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	mux := http.NewServeMux()
+	hub := adapterws.NewHub(0)
+	up := &fakeUpgrader{}
+
+	port, _ := ports.NewDuplexPort[command, update]("live-errframe-nomatch", commandCodec, updateCodec,
+		ports.PortOptions{Buffer: 8})
+	handle, err := port.PluginSocketPattern(ports.SocketPattern{Path: "/live"})
+	if err != nil {
+		t.Fatalf("PluginSocketPattern: %v", err)
+	}
+	_ = port.Bind(ctx, adapterws.DuplexSocketAdapter(mux, hub, up, handle,
+		adapterws.DuplexSocketAdapterOptions{
+			ErrorFrames: []adapterws.ErrorFrameRule[update]{
+				adapterws.ErrorFrame[duplexValidationErr, update](
+					func(e duplexValidationErr) (update, error) {
+						return update{Text: "error: " + e.msg}, nil
+					},
+				),
+			},
+		}))
+
+	outErrs := make(chan error, 1)
+	outVals := make(chan ports.Framed[update])
+	outErrs <- fmt.Errorf("unrelated upstream error")
+	close(outErrs)
+	close(outVals)
+	go port.Feed(ctx, stream.Stream[ports.Framed[update]]{Values: outVals, Errors: outErrs})
+
+	inbound := port.Inbound(ctx)
+	select {
+	case e := <-inbound.Errors:
+		if e == nil || !strings.Contains(e.Error(), "unrelated upstream error") {
+			t.Errorf("want unrelated error forwarded, got %v", e)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timeout waiting for forwarded error")
+	}
+}
+
+func TestDuplex_ErrorFrame_HandleAction_NoBroadcast(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	mux := http.NewServeMux()
+	hub := adapterws.NewHub(0)
+	sockA := newFakeSocket()
+	up := &fakeUpgrader{socks: []*fakeSocket{sockA}}
+
+	var handled error
+	var mu sync.Mutex
+
+	port, _ := ports.NewDuplexPort[command, update]("live-errframe-handle", commandCodec, updateCodec,
+		ports.PortOptions{Buffer: 8})
+	handle, err := port.PluginSocketPattern(ports.SocketPattern{Path: "/live"})
+	if err != nil {
+		t.Fatalf("PluginSocketPattern: %v", err)
+	}
+	_ = port.Bind(ctx, adapterws.DuplexSocketAdapter(mux, hub, up, handle,
+		adapterws.DuplexSocketAdapterOptions{
+			ErrorFrames: []adapterws.ErrorFrameRule[update]{
+				adapterws.ErrorFrame[duplexValidationErr, update](
+					func(e duplexValidationErr) (update, error) {
+						return update{Text: "error: " + e.msg}, nil
+					},
+				).WithAction(events.ErrorHandle).WithHandle(func(e error) {
+					mu.Lock()
+					handled = e
+					mu.Unlock()
+				}),
+			},
+		}))
+	time.Sleep(20 * time.Millisecond)
+
+	connect(t, mux, "/live")
+
+	outErrs := make(chan error, 1)
+	outVals := make(chan ports.Framed[update])
+	outErrs <- duplexValidationErr{msg: "bad input"}
+	close(outErrs)
+	close(outVals)
+	go port.Feed(ctx, stream.Stream[ports.Framed[update]]{Values: outVals, Errors: outErrs})
+
+	waitFor(t, func() bool {
+		mu.Lock()
+		defer mu.Unlock()
+		return handled != nil
+	})
+	mu.Lock()
+	gotHandled := handled
+	mu.Unlock()
+	var ve duplexValidationErr
+	if !errors.As(gotHandled, &ve) || ve.msg != "bad input" {
+		t.Errorf("want handled error duplexValidationErr{bad input}, got %v", gotHandled)
+	}
+	if len(sockA.writtenFrames()) != 0 {
+		t.Errorf("want no broadcast for handle action, got %d frames", len(sockA.writtenFrames()))
 	}
 }
 

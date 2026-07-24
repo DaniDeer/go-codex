@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -517,6 +518,128 @@ func TestServe_HandlerError(t *testing.T) {
 	}
 	if len(sock.sentFrames) != 1 || string(sock.sentFrames[0][0]) != "error" {
 		t.Fatalf("expected error reply frame, got %v", sock.sentFrames)
+	}
+}
+
+// ── ErrorPattern wiring (Phase 2) ─────────────────────────────────────────────
+
+type serveZmqConflictErr struct{ msg string }
+
+func (e serveZmqConflictErr) Error() string { return "conflict: " + e.msg }
+
+type serveZmqErrPayload struct {
+	Code    string
+	Message string
+}
+
+func (e serveZmqErrPayload) Error() string { return "error " + e.Code }
+
+var serveZmqErrPayloadCodec = codex.Struct[serveZmqErrPayload](
+	codex.RequiredField("code", codex.String().Refine(validate.NonEmptyString),
+		func(e serveZmqErrPayload) string { return e.Code },
+		func(e *serveZmqErrPayload, v string) { e.Code = v },
+	),
+	codex.RequiredField("message", codex.String(),
+		func(e serveZmqErrPayload) string { return e.Message },
+		func(e *serveZmqErrPayload, v string) { e.Message = v },
+	),
+)
+
+func newErrorPatternRouteHandle(t *testing.T) *reqreply.RouteHandle[computeReq, computeResp] {
+	t.Helper()
+	route := reqreply.NewRoute[computeReq, computeResp]("compute/add", computeReqCodec, computeRespCodec,
+		reqreply.ErrorPattern[serveZmqConflictErr, serveZmqErrPayload](serveZmqErrPayloadCodec,
+			func(e serveZmqConflictErr) (serveZmqErrPayload, error) {
+				return serveZmqErrPayload{Code: "conflict", Message: e.msg}, nil
+			},
+		),
+	)
+	handle, err := route.Register(reqreply.NewBuilder(reqreply.Info{Title: "t", Version: "1.0.0"}))
+	if err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+	return handle
+}
+
+func TestServe_ErrorPatternMatch_HandlerError_SendsTypedPayload(t *testing.T) {
+	sock := &mockSocket{inFrames: [][][]byte{{[]byte(validComputeJSON)}}}
+	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+	defer cancel()
+
+	_ = zeromq.Serve(ctx, sock, newErrorPatternRouteHandle(t),
+		func(_ context.Context, _ computeReq) (computeResp, error) {
+			return computeResp{}, serveZmqConflictErr{msg: "duplicate"}
+		}, zeromq.ServeOptions{})
+
+	if len(sock.sentFrames) != 1 || string(sock.sentFrames[0][0]) != "error" {
+		t.Fatalf("expected error reply frame, got %v", sock.sentFrames)
+	}
+	if !strings.Contains(string(sock.sentFrames[0][1]), `"code":"conflict"`) {
+		t.Errorf("want typed payload with code=conflict, got: %s", sock.sentFrames[0][1])
+	}
+}
+
+func TestServe_ErrorPatternNoMatch_HandlerError_FallsBackToPlainText(t *testing.T) {
+	sock := &mockSocket{inFrames: [][][]byte{{[]byte(validComputeJSON)}}}
+	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+	defer cancel()
+	unrelatedErr := errors.New("unrelated failure")
+
+	_ = zeromq.Serve(ctx, sock, newErrorPatternRouteHandle(t),
+		func(_ context.Context, _ computeReq) (computeResp, error) {
+			return computeResp{}, unrelatedErr
+		}, zeromq.ServeOptions{})
+
+	if len(sock.sentFrames) != 1 || string(sock.sentFrames[0][0]) != "error" {
+		t.Fatalf("expected error reply frame, got %v", sock.sentFrames)
+	}
+	if string(sock.sentFrames[0][1]) != unrelatedErr.Error() {
+		t.Errorf("want plain-text fallback %q, got %q", unrelatedErr.Error(), sock.sentFrames[0][1])
+	}
+}
+
+func TestServeRouter_ErrorPatternMatch_HandlerError_SendsTypedPayload(t *testing.T) {
+	sock := &mockSocket{inFrames: [][][]byte{routerFrame(validComputeJSON)}}
+	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+	defer cancel()
+
+	_ = zeromq.ServeRouter(ctx, sock, newErrorPatternRouteHandle(t),
+		func(_ context.Context, _ computeReq) (computeResp, error) {
+			return computeResp{}, serveZmqConflictErr{msg: "duplicate"}
+		}, zeromq.ServeOptions{})
+
+	if len(sock.sentFrames) != 1 {
+		t.Fatalf("expected 1 send, got %d", len(sock.sentFrames))
+	}
+	frame := sock.sentFrames[0]
+	if len(frame) != 4 || string(frame[2]) != "error" {
+		t.Fatalf("expected [identity, delim, error, payload] frame, got %v", frame)
+	}
+	if !strings.Contains(string(frame[3]), `"code":"conflict"`) {
+		t.Errorf("want typed payload with code=conflict, got: %s", frame[3])
+	}
+}
+
+func TestServeRouter_ErrorPatternNoMatch_HandlerError_FallsBackToPlainText(t *testing.T) {
+	sock := &mockSocket{inFrames: [][][]byte{routerFrame(validComputeJSON)}}
+	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+	defer cancel()
+	unrelatedErr := errors.New("unrelated failure")
+
+	_ = zeromq.ServeRouter(ctx, sock, newErrorPatternRouteHandle(t),
+		func(_ context.Context, _ computeReq) (computeResp, error) {
+			return computeResp{}, unrelatedErr
+		}, zeromq.ServeOptions{})
+
+	if len(sock.sentFrames) != 1 {
+		t.Fatalf("expected 1 send, got %d", len(sock.sentFrames))
+	}
+	frame := sock.sentFrames[0]
+	if len(frame) != 4 || string(frame[2]) != "error" {
+		t.Fatalf("expected [identity, delim, error, payload] frame, got %v", frame)
+	}
+	if string(frame[3]) != unrelatedErr.Error() {
+		t.Errorf("want plain-text fallback %q, got %q", unrelatedErr.Error(), frame[3])
 	}
 }
 

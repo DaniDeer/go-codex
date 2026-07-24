@@ -210,7 +210,7 @@ func Serve[Req, Resp any](
 		resp, serveErr = fn(spanCtx, req)
 		if serveErr != nil {
 			obs.RecordRequest("MQTT5-REP", path, 0, time.Since(start))
-			publishErrorReply(spanCtx, client, responseTopic, correlationData, serveErr)
+			publishHandlerErrorReply(spanCtx, client, handle, responseTopic, correlationData, serveErr, obs)
 			if opts.OnError != nil {
 				opts.OnError(ServeError{Kind: KindHandler, Err: serveErr})
 			}
@@ -226,7 +226,7 @@ func Serve[Req, Resp any](
 		}
 		if serveErr != nil {
 			obs.RecordRequest("MQTT5-REP", path, 0, time.Since(start))
-			publishErrorReply(spanCtx, client, responseTopic, correlationData, serveErr)
+			publishHandlerErrorReply(spanCtx, client, handle, responseTopic, correlationData, serveErr, obs)
 			if opts.OnError != nil {
 				opts.OnError(ServeError{Kind: KindEncode, Err: serveErr})
 			}
@@ -510,7 +510,10 @@ func isErrorReply(msg *pahomqtt5.Publish) bool {
 // errorReplyContentType is the ContentType set on error replies by [Serve].
 const errorReplyContentType = "application/mqtt5-error"
 
-// publishErrorReply sends an error reply to the requester's ResponseTopic.
+// publishErrorReply sends an error reply to the requester's ResponseTopic as
+// a plain-text payload. Used directly for transport/decode-level errors that
+// occur before the application handler runs (no [reqreply.ErrorPattern] can
+// apply — there is no business error to match yet).
 func publishErrorReply(ctx context.Context, client MQTTClient, responseTopic string, correlationData []byte, err error) {
 	if responseTopic == "" {
 		return
@@ -525,6 +528,48 @@ func publishErrorReply(ctx context.Context, client MQTTClient, responseTopic str
 		Payload:    []byte(err.Error()),
 		Properties: props,
 	})
+}
+
+// publishHandlerErrorReply is the [reqreply.ErrorPattern]-aware counterpart
+// of [publishErrorReply], used for handler/encode failures — errors that
+// originate from application business logic, where a declared ErrorPattern
+// may apply. It consults handle.ErrorResponseFor(err) first: on a match, the
+// declared codec-backed typed payload is published (still on the same
+// ResponseTopic/CorrelationData/error content-type) instead of plain text.
+// On no match, or on a mapping/encoding failure within the matched pattern
+// itself, it falls back to [publishErrorReply]'s plain-text behavior
+// unchanged (backward compatible — existing ErrorReplyMeta-only or
+// no-declaration routes see no behavior change).
+func publishHandlerErrorReply[Req, Resp any](
+	ctx context.Context,
+	client MQTTClient,
+	handle *reqreply.RouteHandle[Req, Resp],
+	responseTopic string,
+	correlationData []byte,
+	err error,
+	obs stats.Observer,
+) {
+	if responseTopic == "" {
+		return
+	}
+	resp, matched, mapErr := handle.ErrorResponseFor(err)
+	if matched && mapErr == nil {
+		props := &pahomqtt5.PublishProperties{
+			ContentType:     errorReplyContentType,
+			CorrelationData: correlationData,
+		}
+		_, _ = client.Publish(ctx, &pahomqtt5.Publish{
+			Topic:      responseTopic,
+			QoS:        1,
+			Payload:    resp.Body,
+			Properties: props,
+		})
+		return
+	}
+	if matched && mapErr != nil {
+		stats.ReportErrors(obs, "error_pattern", mapErr)
+	}
+	publishErrorReply(ctx, client, responseTopic, correlationData, err)
 }
 
 // reportRouteParamErrors reports topic variable errors from [reqreply.RouteHandle.BuildTopic]

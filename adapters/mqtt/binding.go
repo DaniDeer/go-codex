@@ -172,7 +172,41 @@ func (a *mqttPublishAdapter[T]) AdapterName() string { return "mqtt.PublishAdapt
 
 func (a *mqttPublishAdapter[T]) Activate(ctx context.Context, src gstream.Stream[T]) {
 	onErr := a.opts.OnError
+	obs := a.opts.Observer
+	if obs == nil {
+		obs = stats.ObserverFromContext(ctx)
+	}
 	pubOpts := PublishOptions{Observer: a.opts.Observer}
+	// handleUpstreamError resolves declared events.ErrorChannel patterns on
+	// a.handle before falling back to the adapter's existing OnError
+	// callback. A matched ErrorRespond pattern publishes the typed error
+	// payload to its declared error-output topic; ErrorHandle runs OnError
+	// (unchanged existing behaviour); ErrorLog and unmatched errors also
+	// fall through to OnError — see [events.ErrorChannel] and mirrors
+	// [adapters/mqtt5.mqtt5PublishAdapter.Activate].
+	handleUpstreamError := func(e error) {
+		resp, matched, matchErr := a.handle.ErrorResponseFor(e)
+		if matched && matchErr == nil && resp.Action == events.ErrorRespond {
+			token := a.client.Publish(resp.Topic, a.opts.QoS, a.opts.Retained, resp.Body)
+			select {
+			case <-ctx.Done():
+			case <-token.Done():
+				if pubErr := token.Error(); pubErr != nil {
+					stats.ReportErrors(obs, "error_channel", pubErr)
+					if onErr != nil {
+						onErr(pubErr)
+					}
+				}
+			}
+			return
+		}
+		if matched && matchErr != nil {
+			stats.ReportErrors(obs, "error_channel", matchErr)
+		}
+		if onErr != nil {
+			onErr(e)
+		}
+	}
 	gstream.Drain(ctx, src,
 		func(ctx context.Context, v T) error {
 			var err error
@@ -189,11 +223,7 @@ func (a *mqttPublishAdapter[T]) Activate(ctx context.Context, src gstream.Stream
 			}
 			return nil
 		},
-		func(e error) {
-			if onErr != nil {
-				onErr(e)
-			}
-		},
+		handleUpstreamError,
 		gstream.DrainOptions{Observer: a.opts.Observer},
 	)
 }

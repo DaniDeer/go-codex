@@ -37,7 +37,10 @@ import (
 	"github.com/DaniDeer/go-codex/api/events"
 	"github.com/DaniDeer/go-codex/api/reqreply"
 	"github.com/DaniDeer/go-codex/codex"
+	"github.com/DaniDeer/go-codex/format"
+	"github.com/DaniDeer/go-codex/ports"
 	"github.com/DaniDeer/go-codex/stats"
+	gstream "github.com/DaniDeer/go-codex/stream"
 	"github.com/DaniDeer/go-codex/validate"
 	pahomqtt5 "github.com/eclipse/paho.golang/paho"
 )
@@ -106,6 +109,55 @@ var ComputeRoute = reqreply.NewRoute[ComputeReq, ComputeResp](
 	"compute/add",
 	computeReqCodec, computeRespCodec,
 	reqreply.RouteMeta{OperationID: "computeAdd", Summary: "Add two integers via MQTT 5 request-reply."},
+)
+
+// ── Error-path ergonomics: events.ErrorChannel ────────────────────────────────
+//
+// SensorOutOfRangeError is a domain validation error a downstream pipeline
+// stage might emit for a reading outside acceptable bounds.
+type SensorOutOfRangeError struct {
+	SensorID string
+	Value    float64
+}
+
+func (e SensorOutOfRangeError) Error() string {
+	return fmt.Sprintf("sensor %s value %.1f out of range", e.SensorID, e.Value)
+}
+
+// SensorErrorPayload is the typed, codec-backed error reply published to the
+// declared error-output topic when a SensorOutOfRangeError matches.
+type SensorErrorPayload struct {
+	Code    string
+	Message string
+}
+
+var sensorErrorPayloadCodec = codex.Struct[SensorErrorPayload](
+	codex.RequiredField("code", codex.String().Refine(validate.NonEmptyString),
+		func(e SensorErrorPayload) string { return e.Code },
+		func(e *SensorErrorPayload, v string) { e.Code = v },
+	),
+	codex.RequiredField("message", codex.String(),
+		func(e SensorErrorPayload) string { return e.Message },
+		func(e *SensorErrorPayload, v string) { e.Message = v },
+	),
+)
+
+// ReadingsChannelWithErrors mirrors ReadingsChannel but additionally declares
+// an events.ErrorChannel: when a SensorOutOfRangeError reaches the publish
+// adapter (e.g. from an upstream pipeline stage), the typed payload is
+// published to "sensors/{sensorID}/readings/errors" instead of just being
+// forwarded to OnError.
+var ReadingsChannelWithErrors = events.NewChannel[SensorReading](
+	"sensors/{sensorID}/readings",
+	sensorCodec,
+	events.Publish{OperationID: "publishSensorReadingWithErrors"},
+	events.TopicParam{Name: "sensorID"}.WithCodec(codex.String().Refine(validate.UUID)),
+	events.ErrorChannel[SensorOutOfRangeError, SensorErrorPayload](
+		"sensors/{sensorID}/readings/errors", sensorErrorPayloadCodec,
+		func(e SensorOutOfRangeError) (SensorErrorPayload, error) {
+			return SensorErrorPayload{Code: "out_of_range", Message: e.Error()}, nil
+		},
+	),
 )
 
 // ── in-process mock broker ────────────────────────────────────────────────────
@@ -304,8 +356,62 @@ func main() {
 	fmt.Println("═══════════════════════════════════════════════════════")
 
 	runPubSubDemo(ctx, logger)
+	runErrorChannelDemo(ctx)
 	runRequestReplyDemo(ctx, logger)
 	printSpecs(logger)
+}
+
+// ── Demo 1b: Error-path ergonomics — events.ErrorChannel ─────────────────────
+//
+// Demonstrates the pub/sub analogue of rest.ErrorPattern: a declared
+// events.ErrorChannel on ReadingsChannelWithErrors causes
+// mqtt5.PublishAdapter to publish a typed error payload to a dedicated
+// error-output topic whenever a matching domain error reaches it — instead
+// of only calling MQTT5DrainPublishOptions.OnError.
+func runErrorChannelDemo(ctx context.Context) {
+	fmt.Println("\n── Demo 1b: Error-path ergonomics (events.ErrorChannel) ──")
+
+	broker, _ := newMockBroker()
+	evtBuilder := events.NewBuilder(events.Info{Title: "Sensor Network", Version: "1.0.0"})
+	handle, err := ReadingsChannelWithErrors.Register(evtBuilder)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "register: %v\n", err)
+		os.Exit(1)
+	}
+
+	sensorID := "f47ac10b-58cc-4372-a567-0e02b2c3d479"
+
+	// A SinkPort + PublishAdapter fed a stream — the mqtt5 port-adapter path
+	// (as opposed to the direct mqtt5adapter.Publish calls in Demo 1).
+	port, err := ports.NewSinkPort[SensorReading]("readings-with-errors", sensorCodec, ports.PortOptions{Buffer: 4})
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "construct port: %v\n", err)
+		os.Exit(1)
+	}
+	var onErrorCalled bool
+	port.Bind(ctx, mqtt5adapter.PublishAdapter(broker, handle, format.JSON(sensorCodec),
+		mqtt5adapter.MQTT5DrainPublishOptions{
+			Vars: map[string]string{"sensorID": sensorID},
+			OnError: func(e error) {
+				onErrorCalled = true
+				fmt.Printf("  ✗ OnError fallback called (unexpected for a matched pattern): %v\n", e)
+			},
+		}))
+
+	// Simulate an upstream pipeline stage emitting a validation error instead
+	// of a value — gstream.Stream carries it on Errors.
+	errCh := make(chan error, 1)
+	valCh := make(chan SensorReading)
+	errCh <- SensorOutOfRangeError{SensorID: sensorID, Value: 999.9}
+	close(errCh)
+	close(valCh)
+	port.Feed(ctx, gstream.Stream[SensorReading]{Values: valCh, Errors: errCh})
+
+	time.Sleep(50 * time.Millisecond)
+	if !onErrorCalled {
+		fmt.Printf("  ✓ matched SensorOutOfRangeError → published typed payload to %q (OnError NOT called)\n",
+			"sensors/"+sensorID+"/readings/errors")
+	}
 }
 
 // ── Demo 1: PUB/SUB with User Properties, ContentType, UserPropertyParam ─────

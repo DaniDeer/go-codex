@@ -2,6 +2,7 @@ package mcpgo_test
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"testing"
 	"time"
@@ -142,6 +143,93 @@ func TestToolHandler_handlerError_returnsIsError(t *testing.T) {
 	}
 	if !result.IsError {
 		t.Fatal("expected IsError=true for handler error")
+	}
+}
+
+// ── ErrorPattern wiring (Phase 2) ─────────────────────────────────────────────
+
+type addConflictErr struct{ msg string }
+
+func (e addConflictErr) Error() string { return "conflict: " + e.msg }
+
+type addErrPayload struct {
+	Code    string
+	Message string
+}
+
+func (e addErrPayload) Error() string { return "error " + e.Code }
+
+var addErrPayloadCodec = codex.Struct[addErrPayload](
+	codex.RequiredField("code", codex.String().Refine(validate.NonEmptyString),
+		func(e addErrPayload) string { return e.Code },
+		func(e *addErrPayload, v string) { e.Code = v },
+	),
+	codex.RequiredField("message", codex.String(),
+		func(e addErrPayload) string { return e.Message },
+		func(e *addErrPayload, v string) { e.Message = v },
+	),
+)
+
+func buildErrorPatternHandle(t *testing.T) *apimcp.ToolHandle[addInput, addOutput] {
+	t.Helper()
+	b := apimcp.NewBuilder(apimcp.Info{Name: "test", Version: "1.0.0"})
+	tool := apimcp.NewTool[addInput, addOutput]("add-ep", addInputCodec, addOutputCodec,
+		apimcp.ToolMeta{Description: "Add two numbers"},
+		apimcp.ErrorPattern[addConflictErr, addErrPayload](addErrPayloadCodec,
+			func(e addConflictErr) (addErrPayload, error) {
+				return addErrPayload{Code: "conflict", Message: e.msg}, nil
+			},
+		),
+	)
+	h, err := tool.Register(b)
+	if err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+	return h
+}
+
+func TestToolHandler_ErrorPatternMatch_ReturnsStructuredResult(t *testing.T) {
+	handle := buildErrorPatternHandle(t)
+	fn := func(_ context.Context, _ addInput) (addOutput, error) {
+		return addOutput{}, addConflictErr{msg: "duplicate"}
+	}
+
+	result, err := callTool(t, handle, fn, mcpgo.Options{}, map[string]any{"a": 1.0, "b": 2.0})
+	if err != nil {
+		t.Fatalf("protocol error: %v", err)
+	}
+	if !result.IsError {
+		t.Fatal("expected IsError=true for matched error pattern")
+	}
+	structured, ok := result.StructuredContent.(json.RawMessage)
+	if !ok {
+		t.Fatalf("want StructuredContent to be json.RawMessage, got %T", result.StructuredContent)
+	}
+	var got addErrPayload
+	if err := json.Unmarshal(structured, &got); err != nil {
+		t.Fatalf("decode structured content: %v", err)
+	}
+	if got.Code != "conflict" || got.Message != "duplicate" {
+		t.Errorf("unexpected structured payload: %+v", got)
+	}
+}
+
+func TestToolHandler_ErrorPatternNoMatch_FallsBackToPlainText(t *testing.T) {
+	handle := buildErrorPatternHandle(t)
+	unrelatedErr := errors.New("unrelated failure")
+	fn := func(_ context.Context, _ addInput) (addOutput, error) {
+		return addOutput{}, unrelatedErr
+	}
+
+	result, err := callTool(t, handle, fn, mcpgo.Options{}, map[string]any{"a": 1.0, "b": 2.0})
+	if err != nil {
+		t.Fatalf("protocol error: %v", err)
+	}
+	if !result.IsError {
+		t.Fatal("expected IsError=true for unmatched handler error")
+	}
+	if result.StructuredContent != nil {
+		t.Errorf("want no structured content for unmatched error, got %v", result.StructuredContent)
 	}
 }
 

@@ -448,7 +448,7 @@ func makeUpdateUserHandler(store *UserStore) func(context.Context, UpdateUserReq
 
 // domainConflictError is a shared business error used in both ergonomics routes.
 // The no-pipeline route maps it in ErrorHandler; the pipeline route maps it via
-// rest.PipelineErrorStatus.
+// rest.ErrorStatus.
 type domainConflictError struct {
 	Resource string
 	Value    string
@@ -681,7 +681,7 @@ func main() {
 			OperationID: "ergPipeline",
 			Summary:     "Ergonomics: pipeline conflict mapping",
 		},
-		rest.PipelineErrorStatus[domainConflictError](http.StatusConflict),
+		rest.ErrorStatus[domainConflictError](http.StatusConflict),
 		rest.ResponseMeta{Status: "409", Description: "Business conflict."},
 	).Register(b)
 	if err != nil {
@@ -780,7 +780,7 @@ func main() {
 		makeErgonomicsNoPipelineHandler(),
 		nethttp.Options{ErrorHandler: noPipelineErrorHandler})
 	// Pipeline path: map same domainConflictError at route declaration via
-	// rest.PipelineErrorStatus; custom ErrorHandler still shapes response body.
+	// rest.ErrorStatus; custom ErrorHandler still shapes response body.
 	nethttp.RegisterPipeline(mux, pipelineErrorRoute,
 		makeErgonomicsPipelineHandler(),
 		baseOpts)

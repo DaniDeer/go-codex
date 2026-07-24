@@ -213,6 +213,16 @@ type CacheError struct {
 `codex.ValidationErrors` both work through the chain. Key-template failures
 surface as `ports.CacheKeyError{Key, Var}`.
 
+### Error-path ergonomics — `handle`/`log` by default
+
+Cache is an internal store boundary with no caller to respond to.
+`DrainSetAdapter`'s `OnError func(error)` IS the `handle` action; leaving it
+nil is the `log` default (observer-only, via `RecordCacheWrite`). For a
+`respond`-equivalent, compose `OnError` with a declared
+[`events.ErrorChannel`](events.md#error-path-ergonomics-errorchannel) —
+see [Error handling guide — store/IO boundaries](../guides/error-handling.md#storeio-boundaries-sql-cache-file--handlelog-by-default)
+for the full pattern.
+
 ---
 
 ## Observer — `stats.CacheObserver`

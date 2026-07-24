@@ -340,7 +340,29 @@ func Handler[Req, Resp any](handle *rest.RouteHandle[Req, Resp], fn HandlerFunc[
 
 		resp, err = fn(ctx, req)
 		if err != nil {
-			errFn(sw, r, http.StatusInternalServerError, err)
+			if patternResp, matched, applyErr := handle.ErrorResponseFor(err); matched {
+				if applyErr == nil {
+					// ErrorRespond (default): write the typed body directly.
+					// ErrorHandle/ErrorLog: skip the auto-write and fall
+					// through to errFn below (Options.ErrorHandler), same
+					// as an unmatched error, but still using this pattern's
+					// declared status via ErrorStatusFor.
+					if patternResp.Action == "" || patternResp.Action == rest.ErrorRespond {
+						if writeErr := writeErrorPatternResponse(sw, handle, patternResp, respHeaders, pendingCookies, obs); writeErr == nil {
+							return
+						} else {
+							err = writeErr
+						}
+					}
+				} else {
+					err = applyErr
+				}
+			}
+			status := http.StatusInternalServerError
+			if mappedStatus, ok := handle.ErrorStatusFor(err); ok {
+				status = mappedStatus
+			}
+			errFn(sw, r, status, err)
 			return
 		}
 
@@ -874,6 +896,65 @@ func responseCookieValues(cookies []PendingCookie) map[string]string {
 		m[pc.Name] = pc.Value
 	}
 	return m
+}
+
+func writeErrorPatternResponse[Req, Resp any](
+	w http.ResponseWriter,
+	handle *rest.RouteHandle[Req, Resp],
+	pattern rest.ErrorPatternResponse,
+	respHeaders http.Header,
+	pendingCookies []PendingCookie,
+	obs stats.Observer,
+) error {
+	if respVal, ok := pattern.Value.(Resp); ok {
+		if headerFields := handle.ResponseHeaderMergeFields(); len(headerFields) > 0 {
+			values, encErr := codex.EncodeVars(respVal, headerFields...)
+			if encErr != nil {
+				reportResponseHeaderErrors(encErr, obs)
+				return encErr
+			}
+			for k, v := range values {
+				respHeaders.Set(k, v)
+			}
+		}
+		if cookieFields := handle.ResponseCookieMergeFields(); len(cookieFields) > 0 {
+			values, encErr := codex.EncodeVars(respVal, cookieFields...)
+			if encErr != nil {
+				reportResponseCookieErrors(encErr, obs)
+				return encErr
+			}
+			for k, v := range values {
+				pendingCookies = append(pendingCookies, PendingCookie{Name: k, Value: v})
+			}
+		}
+	}
+
+	if err := handle.ValidateResponseHeaders(responseHeaderValues(respHeaders)); err != nil {
+		reportResponseHeaderErrors(err, obs)
+		return err
+	}
+	if err := handle.ValidateResponseCookies(responseCookieValues(pendingCookies)); err != nil {
+		reportResponseCookieErrors(err, obs)
+		return err
+	}
+
+	for key, vals := range respHeaders {
+		for _, v := range vals {
+			w.Header().Add(key, v)
+		}
+	}
+	for i := range pendingCookies {
+		pc := &pendingCookies[i]
+		writeOpts := pc.Opts
+		writeOpts.Codec = nil
+		if err := SetCookie(w, pc.Name, pc.Value, writeOpts); err != nil {
+			return err
+		}
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(pattern.Status)
+	_, err := w.Write(pattern.Body)
+	return err
 }
 
 // reportResponseCookieErrors extracts the failing response cookie from a

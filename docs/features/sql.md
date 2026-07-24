@@ -190,6 +190,31 @@ if errors.As(err, &rve) {
 by go-codex — they pass through unchanged so `errors.Is(err, sql.ErrNoRows)`
 continues to work.
 
+### Error-path ergonomics — `handle`/`log` by default
+
+SQL is an internal store boundary with no caller to respond to.
+`DrainInsertAdapter`'s `OnError func(error)` IS the `handle` action (fully
+owns the error); leaving it nil is the `log` default (observer-only). For a
+`respond`-equivalent — publishing a typed error payload — compose `OnError`
+with a declared
+[`events.ErrorChannel`](events.md#error-path-ergonomics-errorchannel):
+
+```go
+sql.DrainInsertAdapter(db, "orders", format.JSON(orderCodec), sql.DrainInsertOptions{
+    OnError: func(err error) {
+        if resp, matched, mapErr := errHandle.ErrorResponseFor(err); matched && mapErr == nil &&
+            resp.Action == events.ErrorRespond {
+            _ = mqttClient.Publish(ctx, &paho.Publish{Topic: resp.Topic, Payload: resp.Body})
+            return
+        }
+        slog.Warn("insert failed", "error", err)
+    },
+})
+```
+
+See [Error handling guide — store/IO boundaries](../guides/error-handling.md#storeio-boundaries-sql-cache-file--handlelog-by-default)
+for the full pattern and rationale.
+
 ---
 
 ## Observer integration — `stats.SQLObserver`

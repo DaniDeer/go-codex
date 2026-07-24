@@ -27,6 +27,9 @@ import (
 type createReq struct{ Name string }
 type userResp struct{ ID, Name string }
 type getReq struct{}
+type handlerConflictError struct{ msg string }
+
+func (e handlerConflictError) Error() string { return e.msg }
 
 var createReqCodec = codex.Struct[createReq](
 	codex.Field[createReq, string]{
@@ -318,6 +321,33 @@ func TestHandler_ResponseCookies(t *testing.T) {
 	}
 }
 
+func TestHandler_ErrorStatusRouteMapping_Chi(t *testing.T) {
+	b := rest.NewBuilder(testInfo)
+	h, err := rest.NewRoute[createReq, userResp]("POST", "/users",
+		createReqCodec, userRespCodec,
+		rest.ErrorStatus[handlerConflictError](http.StatusConflict),
+	).Register(b)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	srv := httptest.NewServer(chiadapter.Handler(h, func(_ context.Context, _ createReq) (userResp, error) {
+		return userResp{}, handlerConflictError{msg: "conflict"}
+	}, chiadapter.Options{}))
+	defer srv.Close()
+
+	body := strings.NewReader(`{"name":"Alice"}`)
+	resp, err := http.Post(srv.URL+"/users", "application/json", body) //nolint:noctx
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusConflict {
+		t.Fatalf("want 409, got %d", resp.StatusCode)
+	}
+}
+
 // userRespWithMeta carries response header/cookie merge fields alongside
 // the JSON body fields (Round 3 — response merge fields).
 type userRespWithMeta struct {
@@ -326,6 +356,8 @@ type userRespWithMeta struct {
 	RequestID string
 	Session   string
 }
+
+func (u userRespWithMeta) Error() string { return "error user response " + u.ID }
 
 var userRespWithMetaBodyCodec = codex.Struct[userRespWithMeta](
 	codex.RequiredField("id", codex.String(),
@@ -381,6 +413,143 @@ func TestHandler_ResponseMergeFields_AutoAppliesFromResp_Chi(t *testing.T) {
 	}
 	if !found {
 		t.Errorf("Set-Cookie session=sess-xyz not found, got: %v", resp.Header["Set-Cookie"])
+	}
+}
+
+func TestHandler_ErrorPattern_DirectWithResponseHeaderCookieParity_Chi(t *testing.T) {
+	b := rest.NewBuilder(testInfo)
+	h, err := rest.NewRoute[createReq, userRespWithMeta]("POST", "/users", createReqCodec, userRespWithMetaBodyCodec,
+		rest.NewRequiredResponseHeaderParam("X-Request-Id", codex.String().Refine(validate.NonEmptyString),
+			func(u userRespWithMeta) string { return u.RequestID },
+			func(u *userRespWithMeta, v string) { u.RequestID = v }),
+		rest.NewOptionalResponseCookieParam("session", codex.String(),
+			func(u userRespWithMeta) string { return u.Session },
+			func(u *userRespWithMeta, v string) { u.Session = v }),
+		rest.ErrorPattern[userRespWithMeta, userRespWithMeta](http.StatusConflict, userRespWithMetaBodyCodec),
+	).Register(b)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	srv := httptest.NewServer(chiadapter.Handler(h, func(_ context.Context, req createReq) (userRespWithMeta, error) {
+		return userRespWithMeta{}, userRespWithMeta{
+			ID: "e1", Name: req.Name, RequestID: "req-error-1", Session: "sess-error-1",
+		}
+	}, chiadapter.Options{}))
+	defer srv.Close()
+
+	body := strings.NewReader(`{"name":"Alice"}`)
+	resp, err := http.Post(srv.URL+"/users", "application/json", body) //nolint:noctx
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusConflict {
+		t.Fatalf("want 409, got %d", resp.StatusCode)
+	}
+	if got := resp.Header.Get("X-Request-Id"); got != "req-error-1" {
+		t.Fatalf("want X-Request-Id=req-error-1, got %q", got)
+	}
+	found := false
+	for _, c := range resp.Header["Set-Cookie"] {
+		if strings.Contains(c, "session=sess-error-1") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("Set-Cookie session=sess-error-1 not found, got: %v", resp.Header["Set-Cookie"])
+	}
+	var bodyMap map[string]string
+	decodeJSON(t, resp.Body, &bodyMap)
+	if bodyMap["id"] != "e1" || bodyMap["name"] != "Alice" {
+		t.Fatalf("unexpected body: %v", bodyMap)
+	}
+}
+
+func TestHandler_ErrorPattern_MappedPayload_Chi(t *testing.T) {
+	b := rest.NewBuilder(testInfo)
+	h, err := rest.NewRoute[createReq, userResp]("POST", "/users",
+		createReqCodec, userRespCodec,
+		rest.ErrorPattern[handlerConflictError, userResp](http.StatusUnprocessableEntity, userRespCodec,
+			func(e handlerConflictError) (userResp, error) {
+				return userResp{ID: "mapped", Name: e.msg}, nil
+			}),
+	).Register(b)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	srv := httptest.NewServer(chiadapter.Handler(h, func(_ context.Context, _ createReq) (userResp, error) {
+		return userResp{}, handlerConflictError{msg: "mapped-message"}
+	}, chiadapter.Options{}))
+	defer srv.Close()
+
+	body := strings.NewReader(`{"name":"Alice"}`)
+	resp, err := http.Post(srv.URL+"/users", "application/json", body) //nolint:noctx
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusUnprocessableEntity {
+		t.Fatalf("want 422, got %d", resp.StatusCode)
+	}
+	var got userResp
+	decodeJSON(t, resp.Body, &got)
+	if got.ID != "mapped" || got.Name != "mapped-message" {
+		t.Fatalf("unexpected mapped response: %+v", got)
+	}
+}
+
+// Phase 2 (chi): rest.ErrorPattern.WithAction(rest.ErrorHandle) skips the
+// automatic typed body write and falls through to Options.ErrorHandler
+// instead — the resolved status still applies.
+func TestHandler_ErrorPattern_WithActionHandle_FallsThroughToErrorHandler_Chi(t *testing.T) {
+	b := rest.NewBuilder(testInfo)
+	h, err := rest.NewRoute[createReq, userResp]("POST", "/users",
+		createReqCodec, userRespCodec,
+		rest.ErrorPattern[handlerConflictError, userResp](http.StatusConflict, userRespCodec,
+			func(e handlerConflictError) (userResp, error) {
+				return userResp{ID: "mapped", Name: e.msg}, nil
+			}).WithAction(rest.ErrorHandle),
+	).Register(b)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var gotErrorHandlerStatus int
+	var gotErrorHandlerErr error
+	srv := httptest.NewServer(chiadapter.Handler(h, func(_ context.Context, _ createReq) (userResp, error) {
+		return userResp{}, handlerConflictError{msg: "handled-not-responded"}
+	}, chiadapter.Options{
+		ErrorHandler: func(w http.ResponseWriter, _ *http.Request, status int, err error) {
+			gotErrorHandlerStatus = status
+			gotErrorHandlerErr = err
+			w.WriteHeader(status)
+		},
+	}))
+	defer srv.Close()
+
+	body := strings.NewReader(`{"name":"Alice"}`)
+	resp, err := http.Post(srv.URL+"/users", "application/json", body) //nolint:noctx
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+
+	if gotErrorHandlerStatus != http.StatusConflict {
+		t.Fatalf("want ErrorHandler called with 409, got %d", gotErrorHandlerStatus)
+	}
+	if gotErrorHandlerErr == nil {
+		t.Fatal("want ErrorHandler called with the original error")
+	}
+	if resp.StatusCode != http.StatusConflict {
+		t.Fatalf("want response status 409, got %d", resp.StatusCode)
+	}
+	raw, _ := io.ReadAll(resp.Body)
+	if strings.Contains(string(raw), `"mapped"`) {
+		t.Fatalf("want NO typed body auto-written for handle action, got %s", raw)
 	}
 }
 

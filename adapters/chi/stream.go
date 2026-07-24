@@ -130,7 +130,7 @@ func PipelineHandler[Req, Resp any](
 ) http.HandlerFunc {
 	wrappedOpts := opts
 	wrappedOpts.ErrorHandler = chiRemapStatus(opts.ErrorHandler, func(err error) int {
-		if status, ok := handle.PipelineErrorStatusFor(err); ok {
+		if status, ok := handle.ErrorStatusFor(err); ok {
 			return status
 		}
 		var pnr PipelineNoResponseError

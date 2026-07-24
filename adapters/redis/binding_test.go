@@ -10,6 +10,7 @@ import (
 	"time"
 
 	adapterredis "github.com/DaniDeer/go-codex/adapters/redis"
+	"github.com/DaniDeer/go-codex/api/events"
 	"github.com/DaniDeer/go-codex/codex"
 	"github.com/DaniDeer/go-codex/ports"
 	"github.com/DaniDeer/go-codex/stats"
@@ -555,6 +556,72 @@ func TestDrainSetAdapter_DrainsAndWrites(t *testing.T) {
 	}
 	if len(errsSeen) != 0 {
 		t.Errorf("unexpected errors: %v", errsSeen)
+	}
+}
+
+// R1C-2: Cache (Redis) is an internal store boundary with no caller — the
+// shared respond/handle/log action model is realized by composing the
+// existing OnError hook with a declared events.ErrorChannel (Phase 1B), the
+// same pattern as SQL/File. This locks that composition actually works.
+type cacheWriteErr struct{ msg string }
+
+func (e cacheWriteErr) Error() string { return "cache write: " + e.msg }
+
+type cacheErrPayload struct {
+	Code    string
+	Message string
+}
+
+func (e cacheErrPayload) Error() string { return "cache error " + e.Code }
+
+var cacheErrPayloadCodec = codex.Struct[cacheErrPayload](
+	codex.RequiredField("code", codex.String().Refine(validate.NonEmptyString),
+		func(e cacheErrPayload) string { return e.Code },
+		func(e *cacheErrPayload, v string) { e.Code = v },
+	),
+	codex.RequiredField("message", codex.String(),
+		func(e cacheErrPayload) string { return e.Message },
+		func(e *cacheErrPayload, v string) { e.Message = v },
+	),
+)
+
+func TestDrainSetAdapter_OnError_ComposesWithEventsErrorChannel(t *testing.T) {
+	ctx := context.Background()
+	fake := newFake()
+	fake.setErr = cacheWriteErr{msg: "connection refused"}
+
+	b := events.NewBuilder(events.Info{Title: "Test", Version: "1.0.0"})
+	errHandle, err := events.NewChannel[user]("users/cache", userCodec,
+		events.ErrorChannel[cacheWriteErr, cacheErrPayload](
+			"users/cache/errors", cacheErrPayloadCodec,
+			func(e cacheWriteErr) (cacheErrPayload, error) {
+				return cacheErrPayload{Code: "cache_write", Message: e.msg}, nil
+			},
+		),
+	).Register(b)
+	if err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+
+	var publishedTopic string
+	var loggedErr error
+
+	adapterredis.DrainSetAdapter[user](fake, userCache(), keyByUser,
+		adapterredis.SetAdapterOptions{OnError: func(e error) {
+			resp, matched, mapErr := errHandle.ErrorResponseFor(e)
+			if matched && mapErr == nil && resp.Action == events.ErrorRespond {
+				publishedTopic = resp.Topic
+				return
+			}
+			loggedErr = e
+		}},
+	).Activate(ctx, userStream(user{ID: "1", Name: "A"}))
+
+	if loggedErr != nil {
+		t.Errorf("want no fallback log for matched error, got %v", loggedErr)
+	}
+	if publishedTopic != "users/cache/errors" {
+		t.Errorf("got topic %q, want users/cache/errors", publishedTopic)
 	}
 }
 

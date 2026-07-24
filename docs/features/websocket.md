@@ -233,6 +233,57 @@ No new stats extension — the transport-agnostic hooks fit:
 
 ---
 
+## Error-path ergonomics — `ErrorFrame`
+
+`DuplexSocketAdapter` has no synchronous caller to respond to for upstream
+pipeline errors (received on the port's outbound stream `Errors` channel) —
+`websocket.ErrorFrame` is the duplex-socket analogue of
+[`events.ErrorChannel`](events.md#error-path-ergonomics-errorchannel),
+adapted to a persistent multi-session transport: instead of publishing to a
+declared error topic, the mapped payload is **broadcast to every connected
+session** (there is no dedicated error-output channel on a socket — broadcast
+IS the notification path).
+
+```go
+type ValidationError struct{ Reason string }
+func (e ValidationError) Error() string { return "validation: " + e.Reason }
+
+_ = domain.Live.Bind(ctx, websocket.DuplexSocketAdapter(mux, hub, upgrader, handle,
+    websocket.DuplexSocketAdapterOptions{
+        ErrorFrames: []websocket.ErrorFrameRule[OutFrame]{
+            websocket.ErrorFrame[ValidationError, OutFrame](
+                func(e ValidationError) (OutFrame, error) {
+                    return OutFrame{Kind: "error", Message: e.Reason}, nil
+                },
+            ),
+        },
+    }))
+```
+
+- **Direct mode** (no map function): `E` must itself be assignable to `Out`.
+- **Mapped mode** (map function provided): converts `E` into `Out`.
+- **Matching**: type-only via `errors.As`; the first declared `ErrorFrame` (in
+  declaration order in the `ErrorFrames` slice) whose type matches wins.
+
+### Action model — `respond` / `handle` / `log`
+
+A matched rule executes exactly **one** action, never an implicit chain:
+
+| Action | Behavior | Default |
+|---|---|---|
+| `events.ErrorRespond` | broadcast the mapped Out frame to every connected session | ✅ default |
+| `events.ErrorHandle` | run `.WithHandle(func(error))` instead of broadcasting | opt-in via `.WithAction(events.ErrorHandle)` |
+| `events.ErrorLog` | forward the error to the port's `Errors` channel unchanged (same as no match) | opt-in via `.WithAction(events.ErrorLog)` |
+
+```go
+websocket.ErrorFrame[ValidationError, OutFrame](mapFn).
+    WithAction(events.ErrorHandle).
+    WithHandle(func(err error) { log.Printf("duplex error: %v", err) })
+```
+
+Unmatched errors fall through to the existing default: forwarded unchanged to
+the port's `Errors` channel (surfaced via `port.Inbound(ctx).Errors`).
+
 ## Not MQTT-over-WebSocket
 
 MQTT clients connecting via `ws://` tunnel MQTT frames inside WebSocket —

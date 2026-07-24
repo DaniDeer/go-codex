@@ -66,10 +66,14 @@ and `examples/rest-nested-binary` for the full runnable version.
 `events.NewTopicParam[T]`/`ChannelHandle.DecodeMerged`/`mqtt5.PublishHandle`
 and `reqreply.NewTopicParam[T]`/`RouteHandle.DecodeMerged`/`mqtt5.CallHandle`
 close the same loop for MQTT pub/sub and request/reply. Req/reply routes can
-also declare dedicated AsyncAPI error-reply channels via
-`reqreply.ErrorReplyMeta` on `NewRoute(...)` when the error path should be
-first-class in the contract — see
-[Feature: Event Channels & MQTT](../features/events.md#topic-vars-with-automatic-merge-newtopicparam).
+also declare dedicated, RUNTIME-WIRED error-reply channels via
+`reqreply.ErrorPattern` on `NewRoute(...)` — one declaration drives both the
+AsyncAPI reply-error channel/operation AND the actual `mqtt5`/`zeromq` Serve
+reply behavior (matched errors get a typed codec-backed payload instead of a
+plain-text string). `reqreply.ErrorReplyMeta` remains available for
+spec-only declarations with no runtime dispatch — see
+[Feature: Event Channels & MQTT](../features/events.md#topic-vars-with-automatic-merge-newtopicparam)
+and the [AsyncAPI guide](../guides/asyncapi.md#declaring-dedicated-reqreply-error-channels).
 
 **Shipped for the `ports.Pattern` BINDING LAYER too**:
 `DrainCallAdapter`/`PublishAdapter`/`CallAdapter` across

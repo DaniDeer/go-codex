@@ -418,26 +418,81 @@ http.ListenAndServe(":8080", mux)
 | `MultiValueQueryParams` | false | Use `ValidateQueryMulti` for repeated keys |
 | `SecurityFunc` | nil | Called after credential codec validation |
 
-### Pipeline error channel → HTTP status (per-route)
+### Error-path ergonomics — `ErrorStatus` / `ErrorPattern`
 
 When using `PipelineHandler` / `RegisterPipeline`, the adapter takes the
-first `stream.Errors` entry as the handler error. You can map specific
-pipeline error types to HTTP status **per route**:
+first `stream.Errors` entry as the handler error. `Handler` (no pipeline)
+consults the same route-level mapping too. Declare typed error → HTTP status
+(and optionally a codec-backed response body) **per route**:
 
 ```go
 route, _ := rest.NewRoute[CreateJobReq, JobResp]("POST", "/jobs", reqCodec, respCodec,
-    rest.PipelineErrorStatus[domain.ConflictError](http.StatusConflict), // 409
+    // Status-only mapping — body still goes through Options.ErrorHandler.
+    rest.ErrorStatus[domain.ConflictError](http.StatusConflict), // 409
+
+    // Status + codec-backed typed body (direct or mapped payload).
+    rest.ErrorPattern[domain.ValidationError, ErrorBody](http.StatusUnprocessableEntity, errorBodyCodec,
+        func(e domain.ValidationError) (ErrorBody, error) {
+            return ErrorBody{Code: "validation", Message: e.Error()}, nil
+        },
+    ),
 ).Register(b)
 ```
 
+- `rest.ErrorStatus[E](status)` — status-only mapping; body still flows
+  through `Options.ErrorHandler`.
+- `rest.ErrorPattern[E, B](status, codec, mapFn...)` — status **and** a
+  codec-backed typed error body. Two modes:
+  - **Direct** (no `mapFn`): `E` must itself be assignable to `B`.
+  - **Mapped** (`mapFn` provided): `mapFn(E)` produces `B`.
+  - On match, the adapter writes the encoded body directly — `Options.ErrorHandler`
+    is not consulted for that response (the default `rest.ErrorRespond` action —
+    see below for `.WithAction`).
+- Error responses support the **same one-struct-one-call header/cookie parity**
+  as the happy path — compose `rest.NewRequiredResponseHeaderParam`/
+  `rest.NewOptionalResponseCookieParam` merge fields alongside `ErrorPattern`
+  on the same route; matched error responses populate them from the mapped
+  payload exactly like a successful response does.
+- `RouteHandle.ErrorStatusFor(err) (int, bool)` and
+  `RouteHandle.ErrorResponseFor(err) (ErrorPatternResponse, bool, error)` are
+  the lookup accessors adapters call.
+
+### Action selector — `WithAction`
+
+A matched `ErrorPattern` executes exactly **one** action, mirroring the
+three-way action model used by `events.ErrorChannel`/`websocket.ErrorFrame`:
+
+| Action | Behavior | Default |
+|---|---|---|
+| `rest.ErrorRespond` | write the typed body (+status) directly | ✅ default |
+| `rest.ErrorHandle` | skip the auto-write; fall through to `Options.ErrorHandler` (using this pattern's declared status) | opt-in via `.WithAction(rest.ErrorHandle)` |
+| `rest.ErrorLog` | same as `ErrorHandle` for REST — kept as a distinct value for vocabulary parity across boundaries | opt-in via `.WithAction(rest.ErrorLog)` |
+
+```go
+rest.ErrorPattern[domain.ConflictError, ErrorBody](http.StatusConflict, errorBodyCodec, mapFn).
+    WithAction(rest.ErrorHandle)
+```
+
+REST always has a caller to respond to (unlike Events/WebSocket, which
+default to `respond` via a declared channel/broadcast, or SQL/Cache/File,
+which default to `handle`/`log`) — `ErrorHandle`/`ErrorLog` both fall
+through to the SAME `Options.ErrorHandler` escape hatch REST already
+provides, since REST has only one such hook (unlike adapters with a
+separate `OnError` callback).
+
 Rules:
-- First matching `PipelineErrorStatus[...]` rule wins (`errors.As` match).
+- Candidate set = all declared `ErrorStatus`/`ErrorPattern` rules, in
+  declaration order. First matching rule wins (`errors.As` match).
 - If no rule matches, pipeline errors keep default `500`.
 - If pipeline emits no value, adapters return `PipelineNoResponseError` with
-  default `503 Service Unavailable` (you can override by declaring
-  `rest.PipelineErrorStatus[nethttp.PipelineNoResponseError](...)` on the route).
-- `Options.ErrorHandler` is still the escape hatch for response body/format;
-  route mapping only changes the status code passed to that handler.
+  default `503 Service Unavailable` (override by declaring
+  `rest.ErrorStatus[nethttp.PipelineNoResponseError](...)` on the route).
+- `Options.ErrorHandler` remains the final envelope/serialization escape
+  hatch for anything not covered by a matched `ErrorPattern`.
+
+See [`docs/roadmap/error-path-ergonomics.md`](../roadmap/error-path-ergonomics.md)
+for the full cross-adapter design (events/websocket/store-IO boundaries use
+the same codec-first pattern, adapted to their transport).
 
 ## chi adapter
 
@@ -493,7 +548,7 @@ createUser, _ = rest.NewRoute[CreateUserReq, User]("POST", "/users", ...,
 
 Redirect pattern: declare a 3xx `RespStatus` and set `Location` (via response
 merge fields or `WithResponseHeaders`). This is separate from
-`PipelineErrorStatus[...]`, which only applies to error-channel mapping.
+`ErrorStatus[...]`, which only applies to error-channel mapping.
 
 Secure cookie writes:
 

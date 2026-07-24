@@ -236,34 +236,151 @@ type RouteMeta struct {
 
 func (m RouteMeta) applyRoute(rb *routeBuilder) { rb.meta = m }
 
-// pipelineErrorStatusRule stores one per-route pipeline error-status mapping
-// declared via [PipelineErrorStatus].
-type pipelineErrorStatusRule struct {
+// errorStatusRule stores one per-route error-status mapping declared via
+// [ErrorStatus].
+type errorStatusRule struct {
 	status int
 	// typeName is used for doc/debug readability only.
 	typeName string
 	match    func(error) bool
 }
 
-func (r pipelineErrorStatusRule) applyRoute(rb *routeBuilder) {
-	rb.pipelineErrorStatusRules = append(rb.pipelineErrorStatusRules, r)
+func (r errorStatusRule) applyRoute(rb *routeBuilder) {
+	rb.errorStatusRules = append(rb.errorStatusRules, r)
 }
 
-// PipelineErrorStatus declares a per-route mapping from a pipeline error type
-// to the HTTP status code the adapter should pass to Options.ErrorHandler.
+// ErrorAction selects how a matched [ErrorPattern] is realized by the
+// adapter. A matched pattern executes exactly ONE of these, never an
+// implicit chain — mirrors [events.ErrorAction]/[websocket.ErrorFrame]'s
+// action model, adapted to REST's request/response boundary.
+type ErrorAction string
+
+const (
+	// ErrorRespond writes the declared typed error body (+status) directly.
+	// This is the default action when [ErrorPattern] is declared without an
+	// explicit action — REST always has a caller to respond to.
+	ErrorRespond ErrorAction = "respond"
+	// ErrorHandle skips the automatic typed body write; the adapter falls
+	// through to [Options.ErrorHandler] instead (REST's existing envelope
+	// escape hatch — the same behavior as an unmatched error, but the
+	// resolved status from this pattern's declared status still applies).
+	ErrorHandle ErrorAction = "handle"
+	// ErrorLog skips the automatic typed body write; behaves identically to
+	// [ErrorHandle] for REST (both fall through to [Options.ErrorHandler]) —
+	// kept as a distinct value for vocabulary parity with
+	// [events.ErrorAction]/[websocket.ErrorFrame] across boundaries.
+	ErrorLog ErrorAction = "log"
+)
+
+// ErrorPatternResponse is the adapter-ready payload produced by
+// [RouteHandle.ErrorResponseFor] when a declared [ErrorPattern] matches.
+type ErrorPatternResponse struct {
+	Status int
+	Body   []byte
+	Value  any
+	// Action is the resolved action for the matched pattern. Adapters
+	// auto-write Body only when Action is [ErrorRespond] (the default);
+	// [ErrorHandle]/[ErrorLog] fall through to [Options.ErrorHandler].
+	Action ErrorAction
+}
+
+type errorPatternRule struct {
+	status int
+	match  func(error) (ErrorPatternResponse, bool, error)
+}
+
+func (r errorPatternRule) applyRoute(rb *routeBuilder) {
+	rb.errorPatternRules = append(rb.errorPatternRules, r)
+}
+
+// ErrorPatternOpt is the [RouteOpt] value returned by [ErrorPattern].
+type ErrorPatternOpt[E error, B any] struct {
+	status int
+	codec  codex.Codec[B]
+	mapper func(E) (B, error)
+	action ErrorAction
+}
+
+// WithAction returns a copy of o with Action set to action, overriding the
+// default [ErrorRespond]. A matched pattern executes exactly one action —
+// never an implicit respond-then-handle chain.
+func (o ErrorPatternOpt[E, B]) WithAction(action ErrorAction) ErrorPatternOpt[E, B] {
+	o.action = action
+	return o
+}
+
+func (o ErrorPatternOpt[E, B]) applyRoute(rb *routeBuilder) {
+	action := o.action
+	if action == "" {
+		action = ErrorRespond
+	}
+	jsonCodec := format.JSON(o.codec)
+	mapper := o.mapper
+	status := o.status
+	schemaCopy := o.codec.Schema
+
+	rule := errorPatternRule{
+		status: status,
+		match: func(err error) (ErrorPatternResponse, bool, error) {
+			var target E
+			if !errors.As(err, &target) {
+				return ErrorPatternResponse{}, false, nil
+			}
+
+			var (
+				payload B
+				ok      bool
+			)
+			if mapper != nil {
+				mapped, mapErr := mapper(target)
+				if mapErr != nil {
+					return ErrorPatternResponse{}, true, mapErr
+				}
+				payload = mapped
+			} else {
+				payload, ok = any(target).(B)
+				if !ok {
+					return ErrorPatternResponse{}, true,
+						fmt.Errorf("api/rest: ErrorPattern direct mode: %T not assignable to payload", target)
+				}
+			}
+
+			body, encErr := jsonCodec.Marshal(payload)
+			if encErr != nil {
+				return ErrorPatternResponse{}, true, encErr
+			}
+			return ErrorPatternResponse{Status: status, Body: body, Value: payload, Action: action}, true, nil
+		},
+	}
+
+	rule.applyRoute(rb)
+	errorStatusRule{
+		status:   status,
+		typeName: fmt.Sprintf("%T", *new(E)),
+		match: func(err error) bool {
+			var target E
+			return errors.As(err, &target)
+		},
+	}.applyRoute(rb)
+	ResponseMeta{
+		Status: fmt.Sprintf("%d", status),
+		Schema: &schemaCopy,
+	}.applyRoute(rb)
+}
+
+// ErrorStatus declares a per-route mapping from an error type to the HTTP
+// status code the adapter should pass to Options.ErrorHandler.
 //
-// This mapping is consumed by pipeline-aware adapters (currently
-// nethttp.PipelineHandler and chi.PipelineHandler). It does not affect plain
-// Handler/Register behavior.
+// This mapping is consumed by both plain and pipeline handlers.
 //
 // Matching is type-only: the first declared mapping whose type matches via
 // [errors.As] wins.
 //
 //	rest.NewRoute[Req, Resp]("POST", "/jobs", reqCodec, respCodec,
-//	    rest.PipelineErrorStatus[domain.InvalidTransitionError](http.StatusConflict),
+//	    rest.ErrorStatus[domain.InvalidTransitionError](http.StatusConflict),
 //	)
-func PipelineErrorStatus[E error](status int) RouteOpt {
-	return pipelineErrorStatusRule{
+func ErrorStatus[E error](status int) RouteOpt {
+	return errorStatusRule{
 		status:   status,
 		typeName: fmt.Sprintf("%T", *new(E)),
 		match: func(err error) bool {
@@ -271,6 +388,30 @@ func PipelineErrorStatus[E error](status int) RouteOpt {
 			return errors.As(err, &target)
 		},
 	}
+}
+
+// ErrorPattern declares a codec-backed typed error response for a matched
+// error type. The first matching declared pattern wins.
+//
+// Two modes:
+//   - Direct: no mapFn provided, E value must be assignable to B.
+//   - Mapped: mapFn provided, mapFn(E) produces B.
+//
+// On a match, adapters emit status+body directly (the default [ErrorRespond]
+// action) without delegating to Options.ErrorHandler. Use
+// [ErrorPatternOpt.WithAction] to select [ErrorHandle]/[ErrorLog] instead —
+// the adapter then falls through to Options.ErrorHandler (still using this
+// pattern's declared status).
+func ErrorPattern[E error, B any](
+	status int,
+	codec codex.Codec[B],
+	mapFn ...func(E) (B, error),
+) ErrorPatternOpt[E, B] {
+	var mapper func(E) (B, error)
+	if len(mapFn) > 0 {
+		mapper = mapFn[0]
+	}
+	return ErrorPatternOpt[E, B]{status: status, codec: codec, mapper: mapper}
 }
 
 // RouteOpt is the sealed interface for variadic [NewRoute] and [NewSSERoute] options.
@@ -284,7 +425,8 @@ func PipelineErrorStatus[E error](status int) RouteOpt {
 //   - [ResponseHeaderParam] — response header with optional codec for server-side validation
 //   - [ResponseCookieParam] — response Set-Cookie with optional codec for server-side validation
 //   - [ResponseMeta] — additional response entries (error codes, redirects, etc.)
-//   - [PipelineErrorStatus] — per-route pipeline error type → HTTP status mapping
+//   - [ErrorStatus] — per-route error type → HTTP status mapping
+//   - [ErrorPattern] — per-route typed error response (status + codec-backed body + [ErrorAction])
 type RouteOpt interface{ applyRoute(*routeBuilder) }
 
 // routeBuilder accumulates RouteOpt values before building the route descriptor.
@@ -333,10 +475,12 @@ type routeBuilder struct {
 	// registered via NewRequiredSSEEventParam/NewOptionalSSEEventParam.
 	// Resolved to []codex.FieldCodec[Event] in [SSERoute.Register].
 	sseEventMergeFields []any
-	// pipelineErrorStatusRules holds per-route pipeline error type -> HTTP status
-	// mappings declared via [PipelineErrorStatus]. Pipeline adapters use these
-	// rules to classify stream errors into route-specific statuses.
-	pipelineErrorStatusRules []pipelineErrorStatusRule
+	// errorStatusRules hold per-route error type -> HTTP status mappings declared
+	// via [ErrorStatus].
+	errorStatusRules []errorStatusRule
+	// errorPatternRules hold per-route typed error response declarations from
+	// [ErrorPattern]. Adapters may emit these directly before ErrorHandler.
+	errorPatternRules []errorPatternRule
 }
 
 // RouteHandle is returned by [Route.Register]. It holds the spec descriptor
@@ -439,23 +583,43 @@ type RouteHandle[Req, Resp any] struct {
 	// QueryParams/HeaderParams/CookieParams maps.
 	responseHeaderMergeFields []codex.FieldCodec[Resp]
 	responseCookieMergeFields []codex.FieldCodec[Resp]
-	// pipelineErrorStatusRules are per-route mappings declared via
-	// [PipelineErrorStatus], consumed by pipeline adapters.
-	pipelineErrorStatusRules []pipelineErrorStatusRule
+	// errorStatusRules are per-route mappings declared via [ErrorStatus].
+	errorStatusRules []errorStatusRule
+	// errorPatternRules are per-route typed error response declarations from
+	// [ErrorPattern].
+	errorPatternRules []errorPatternRule
 }
 
-// PipelineErrorStatusFor returns the first declared per-route mapping status
-// for err (matching via [errors.As]), or (0, false) when none match.
-func (h *RouteHandle[Req, Resp]) PipelineErrorStatusFor(err error) (int, bool) {
+// ErrorStatusFor returns the first declared per-route mapping status for err
+// (matching via [errors.As]), or (0, false) when none match.
+func (h *RouteHandle[Req, Resp]) ErrorStatusFor(err error) (int, bool) {
 	if err == nil {
 		return 0, false
 	}
-	for _, rule := range h.pipelineErrorStatusRules {
+	for _, rule := range h.errorStatusRules {
 		if rule.match != nil && rule.match(err) {
 			return rule.status, true
 		}
 	}
 	return 0, false
+}
+
+// ErrorResponseFor returns the first matching route-declared [ErrorPattern]
+// response, or ok=false when no pattern matches.
+func (h *RouteHandle[Req, Resp]) ErrorResponseFor(err error) (resp ErrorPatternResponse, ok bool, applyErr error) {
+	if err == nil {
+		return ErrorPatternResponse{}, false, nil
+	}
+	for _, rule := range h.errorPatternRules {
+		if rule.match == nil {
+			continue
+		}
+		matchedResp, matched, matchErr := rule.match(err)
+		if matched {
+			return matchedResp, true, matchErr
+		}
+	}
+	return ErrorPatternResponse{}, false, nil
 }
 
 // MergeFields returns ALL merge-capable fields registered via
@@ -1949,21 +2113,22 @@ func (r Route[Req, Resp]) Register(b *Builder) (*RouteHandle[Req, Resp], error) 
 		schemes[k] = v
 	}
 	h := &RouteHandle[Req, Resp]{
-		Descriptor:               frozen,
-		Decode:                   func(body []byte) (Req, error) { return jsonReq.Unmarshal(body) },
-		Encode:                   func(resp Resp) ([]byte, error) { return jsonResp.Marshal(resp) },
-		EncodeRequest:            func(req Req) ([]byte, error) { return jsonReq.Marshal(req) },
-		DecodeResponse:           func(body []byte) (Resp, error) { return jsonResp.Unmarshal(body) },
-		pathParams:               rb.pathParams,
-		queryParams:              rb.queryParams,
-		cookieParams:             rb.cookieParams,
-		headerParams:             rb.headerParams,
-		responseHeaderParams:     rb.respHeaders,
-		responseCookieParams:     rb.respCookies,
-		pathCodec:                b.pathCodec,
-		SecuritySchemes:          schemes,
-		GlobalSecurity:           slices.Clone(b.globalSecurity),
-		pipelineErrorStatusRules: slices.Clone(rb.pipelineErrorStatusRules),
+		Descriptor:           frozen,
+		Decode:               func(body []byte) (Req, error) { return jsonReq.Unmarshal(body) },
+		Encode:               func(resp Resp) ([]byte, error) { return jsonResp.Marshal(resp) },
+		EncodeRequest:        func(req Req) ([]byte, error) { return jsonReq.Marshal(req) },
+		DecodeResponse:       func(body []byte) (Resp, error) { return jsonResp.Unmarshal(body) },
+		pathParams:           rb.pathParams,
+		queryParams:          rb.queryParams,
+		cookieParams:         rb.cookieParams,
+		headerParams:         rb.headerParams,
+		responseHeaderParams: rb.respHeaders,
+		responseCookieParams: rb.respCookies,
+		pathCodec:            b.pathCodec,
+		SecuritySchemes:      schemes,
+		GlobalSecurity:       slices.Clone(b.globalSecurity),
+		errorStatusRules:     slices.Clone(rb.errorStatusRules),
+		errorPatternRules:    slices.Clone(rb.errorPatternRules),
 	}
 	if rb.requestFormats != nil {
 		fmts, ok := rb.requestFormats.([]format.Format[Req])
@@ -2054,7 +2219,8 @@ func (r Route[Req, Resp]) ClientHandle() *RouteHandle[Req, Resp] {
 		queryParams:               rb.queryParams,
 		cookieParams:              rb.cookieParams,
 		headerParams:              rb.headerParams,
-		pipelineErrorStatusRules:  slices.Clone(rb.pipelineErrorStatusRules),
+		errorStatusRules:          slices.Clone(rb.errorStatusRules),
+		errorPatternRules:         slices.Clone(rb.errorPatternRules),
 		pathMergeFields:           mustAssertMergeFields[Req]("ClientHandle", rb.pathMergeFields),
 		queryMergeFields:          mustAssertMergeFields[Req]("ClientHandle", rb.queryMergeFields),
 		headerMergeFields:         mustAssertMergeFields[Req]("ClientHandle", rb.headerMergeFields),

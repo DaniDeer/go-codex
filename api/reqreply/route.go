@@ -1,8 +1,11 @@
 package reqreply
 
 import (
+	"errors"
 	"fmt"
 	"log/slog"
+	"strings"
+	"unicode"
 
 	"github.com/DaniDeer/go-codex/api/internal"
 	"github.com/DaniDeer/go-codex/codex"
@@ -15,7 +18,8 @@ import (
 // The following types implement RouteOpt:
 //   - [RouteMeta] — operation metadata (OperationID, Summary, Description, Tags, schema names)
 //   - [TopicParam] — topic template variable with optional codec and description
-//   - [ErrorReplyMeta] — additional AsyncAPI reply error channel/message declarations
+//   - [ErrorReplyMeta] — additional AsyncAPI reply error channel/message declarations (spec-only)
+//   - [ErrorPattern] — codec-backed typed error reply (runtime dispatch + spec entry)
 type RouteOpt interface{ applyRoute(*routeBuilder) }
 
 // TopicParam describes a {varName} placeholder in a topic template.
@@ -271,11 +275,189 @@ func (m ErrorReplyMeta) applyRoute(rb *routeBuilder) {
 	rb.errorReplies = append(rb.errorReplies, m)
 }
 
+// ErrorPatternResponse is the adapter-ready payload produced by
+// [RouteHandle.ErrorResponseFor] when a declared [ErrorPattern] matches.
+type ErrorPatternResponse struct {
+	// Body is the JSON-encoded typed error payload.
+	Body []byte
+	// Value is the typed payload before encoding — useful for adapters that
+	// want to re-encode with a non-JSON format.
+	Value any
+}
+
+// errorPatternRule is the type-erased runtime form of a declared
+// [ErrorPattern], stored on [routeBuilder]/[RouteHandle].
+type errorPatternRule struct {
+	match func(error) (ErrorPatternResponse, bool, error)
+}
+
+// ErrorPatternOpt is the [RouteOpt] value returned by [ErrorPattern].
+type ErrorPatternOpt[E error, B any] struct {
+	codec          codex.Codec[B]
+	mapper         func(E) (B, error)
+	code           string
+	description    string
+	schemaName     string
+	channelAddress string
+	operationID    string
+}
+
+// ErrorPattern declares a codec-backed typed error reply for a matched error
+// type — the request-reply analogue of [rest.ErrorPattern] and
+// [events.ErrorChannel]. Unlike REST, reqreply has no HTTP status; the
+// declaration is simply "when a handler error matches E, reply with this
+// codec-backed payload" instead of a plain-text error string.
+//
+// Two modes, mirroring [rest.ErrorPattern]:
+//   - Direct: no mapFn provided, E must be assignable to B.
+//   - Mapped: mapFn(E) produces B.
+//
+// Matching is type-only via [errors.As]; the first declared ErrorPattern (in
+// [NewRoute] option order) whose type matches wins — the same deterministic
+// precedence used by REST/events.
+//
+// ErrorPattern ALSO drives the AsyncAPI reply-error channel/operation that
+// [ErrorReplyMeta] previously had to be declared separately for — one
+// declaration now produces both the runtime dispatch AND the spec entry.
+// Use [ErrorPatternOpt.WithCode]/[ErrorPatternOpt.WithDescription]/
+// [ErrorPatternOpt.WithSchemaName]/[ErrorPatternOpt.WithChannelAddress]/
+// [ErrorPatternOpt.WithOperationID] to customize the generated spec entry
+// (defaults mirror [ErrorReplyMeta]'s defaults). [ErrorReplyMeta] remains
+// available unchanged for spec-only declarations that need no runtime
+// dispatch (e.g. documenting an error reply produced by a different
+// mechanism entirely).
+//
+//	reqreply.NewRoute[ComputeReq, ComputeResp]("compute/add", reqCodec, respCodec,
+//	    reqreply.ErrorPattern[domain.ConflictError, ErrorPayload](errorPayloadCodec,
+//	        func(e domain.ConflictError) (ErrorPayload, error) {
+//	            return ErrorPayload{Code: "conflict", Message: e.Error()}, nil
+//	        },
+//	    ),
+//	)
+func ErrorPattern[E error, B any](
+	codec codex.Codec[B],
+	mapFn ...func(E) (B, error),
+) ErrorPatternOpt[E, B] {
+	var mapper func(E) (B, error)
+	if len(mapFn) > 0 {
+		mapper = mapFn[0]
+	}
+	return ErrorPatternOpt[E, B]{codec: codec, mapper: mapper}
+}
+
+// WithCode returns a copy of o with Code set — used to derive the generated
+// reply-error channel/operation IDs and address (mirrors [ErrorReplyMeta.Code]).
+// Defaults to a sanitized form of E's type name when not set.
+func (o ErrorPatternOpt[E, B]) WithCode(code string) ErrorPatternOpt[E, B] {
+	o.code = code
+	return o
+}
+
+// WithDescription returns a copy of o with Description set (mirrors
+// [ErrorReplyMeta.Description]).
+func (o ErrorPatternOpt[E, B]) WithDescription(desc string) ErrorPatternOpt[E, B] {
+	o.description = desc
+	return o
+}
+
+// WithSchemaName returns a copy of o with SchemaName set — emits a $ref for
+// the payload schema in components/schemas (mirrors [ErrorReplyMeta.SchemaName]).
+func (o ErrorPatternOpt[E, B]) WithSchemaName(name string) ErrorPatternOpt[E, B] {
+	o.schemaName = name
+	return o
+}
+
+// WithChannelAddress returns a copy of o with ChannelAddress set, overriding
+// the generated reply-error channel address (mirrors [ErrorReplyMeta.ChannelAddress]).
+func (o ErrorPatternOpt[E, B]) WithChannelAddress(addr string) ErrorPatternOpt[E, B] {
+	o.channelAddress = addr
+	return o
+}
+
+// WithOperationID returns a copy of o with OperationID set, overriding the
+// generated receive operation ID (mirrors [ErrorReplyMeta.OperationID]).
+func (o ErrorPatternOpt[E, B]) WithOperationID(id string) ErrorPatternOpt[E, B] {
+	o.operationID = id
+	return o
+}
+
+func (o ErrorPatternOpt[E, B]) applyRoute(rb *routeBuilder) {
+	code := o.code
+	if code == "" {
+		code = sanitizeTypeNameForCode(fmt.Sprintf("%T", *new(E)))
+	}
+	jsonCodec := format.JSON(o.codec)
+	mapper := o.mapper
+	schemaCopy := o.codec.Schema
+
+	rule := errorPatternRule{
+		match: func(err error) (ErrorPatternResponse, bool, error) {
+			var target E
+			if !errors.As(err, &target) {
+				return ErrorPatternResponse{}, false, nil
+			}
+
+			var (
+				payload B
+				ok      bool
+			)
+			if mapper != nil {
+				mapped, mapErr := mapper(target)
+				if mapErr != nil {
+					return ErrorPatternResponse{}, true, mapErr
+				}
+				payload = mapped
+			} else {
+				payload, ok = any(target).(B)
+				if !ok {
+					return ErrorPatternResponse{}, true,
+						fmt.Errorf("api/reqreply: ErrorPattern direct mode: %T not assignable to payload", target)
+				}
+			}
+
+			body, encErr := jsonCodec.Marshal(payload)
+			if encErr != nil {
+				return ErrorPatternResponse{}, true, encErr
+			}
+			return ErrorPatternResponse{Body: body, Value: payload}, true, nil
+		},
+	}
+	rb.errorPatternRules = append(rb.errorPatternRules, rule)
+	rb.errorReplies = append(rb.errorReplies, ErrorReplyMeta{
+		Code:           code,
+		Description:    o.description,
+		Schema:         schemaCopy,
+		SchemaName:     o.schemaName,
+		OperationID:    o.operationID,
+		ChannelAddress: o.channelAddress,
+	})
+}
+
+// sanitizeTypeNameForCode converts a %T-formatted type name (e.g.
+// "domain.ConflictError") to a topic/ID-safe code segment (e.g.
+// "conflictError") for default reply-error channel/operation derivation.
+func sanitizeTypeNameForCode(typeName string) string {
+	name := typeName
+	if idx := strings.LastIndex(name, "."); idx >= 0 {
+		name = name[idx+1:]
+	}
+	name = strings.TrimPrefix(name, "*")
+	if name == "" {
+		return "error"
+	}
+	runes := []rune(name)
+	runes[0] = unicode.ToLower(runes[0])
+	return string(runes)
+}
+
 // routeBuilder accumulates RouteOpt values before building the route.
 type routeBuilder struct {
 	meta         RouteMeta
 	topicParams  []TopicParam
 	errorReplies []ErrorReplyMeta
+	// errorPatternRules holds per-route typed error reply declarations from
+	// [ErrorPattern] — see [RouteHandle.ErrorResponseFor].
+	errorPatternRules []errorPatternRule
 	// requestFormats/formats hold []format.Format[Req]/[]format.Format[Resp]
 	// type-erased (any) — set by [RequestFormats]/[Formats], resolved
 	// generically in [Route.Register] where Req/Resp are concrete. See
@@ -373,13 +555,14 @@ func (r Route[Req, Resp]) ClientHandle() *RouteHandle[Req, Resp] {
 	jsonResp := format.JSON(r.respCodec)
 
 	return &RouteHandle[Req, Resp]{
-		Topic:          r.topic,
-		Decode:         func(p []byte) (Req, error) { return jsonReq.Unmarshal(p) },
-		Encode:         func(v Resp) ([]byte, error) { return jsonResp.Marshal(v) },
-		EncodeRequest:  func(v Req) ([]byte, error) { return jsonReq.Marshal(v) },
-		DecodeResponse: func(p []byte) (Resp, error) { return jsonResp.Unmarshal(p) },
-		topicParams:    rb.topicParams,
-		mergeFields:    mustAssertMergeFields[Req]("ClientHandle", rb.mergeFields),
+		Topic:             r.topic,
+		Decode:            func(p []byte) (Req, error) { return jsonReq.Unmarshal(p) },
+		Encode:            func(v Resp) ([]byte, error) { return jsonResp.Marshal(v) },
+		EncodeRequest:     func(v Req) ([]byte, error) { return jsonReq.Marshal(v) },
+		DecodeResponse:    func(p []byte) (Resp, error) { return jsonResp.Unmarshal(p) },
+		topicParams:       rb.topicParams,
+		mergeFields:       mustAssertMergeFields[Req]("ClientHandle", rb.mergeFields),
+		errorPatternRules: rb.errorPatternRules,
 	}
 }
 
@@ -404,12 +587,13 @@ func (r Route[Req, Resp]) Register(b *Builder) (*RouteHandle[Req, Resp], error) 
 	jsonResp := format.JSON(r.respCodec)
 
 	h := &RouteHandle[Req, Resp]{
-		Topic:          r.topic,
-		Decode:         func(p []byte) (Req, error) { return jsonReq.Unmarshal(p) },
-		Encode:         func(v Resp) ([]byte, error) { return jsonResp.Marshal(v) },
-		EncodeRequest:  func(v Req) ([]byte, error) { return jsonReq.Marshal(v) },
-		DecodeResponse: func(p []byte) (Resp, error) { return jsonResp.Unmarshal(p) },
-		topicParams:    rb.topicParams,
+		Topic:             r.topic,
+		Decode:            func(p []byte) (Req, error) { return jsonReq.Unmarshal(p) },
+		Encode:            func(v Resp) ([]byte, error) { return jsonResp.Marshal(v) },
+		EncodeRequest:     func(v Req) ([]byte, error) { return jsonReq.Marshal(v) },
+		DecodeResponse:    func(p []byte) (Resp, error) { return jsonResp.Unmarshal(p) },
+		topicParams:       rb.topicParams,
+		errorPatternRules: rb.errorPatternRules,
 	}
 
 	if rb.requestFormats != nil {
@@ -481,6 +665,34 @@ type RouteHandle[Req, Resp any] struct {
 	// [NewTopicParam] — see [MergeFields] and [DecodeMerged]. Request-side
 	// only (see [routeBuilder.mergeFields] for the rationale).
 	mergeFields []codex.FieldCodec[Req]
+
+	// errorPatternRules holds per-route typed error reply declarations from
+	// [ErrorPattern] — see [ErrorResponseFor].
+	errorPatternRules []errorPatternRule
+}
+
+// ErrorResponseFor returns the first declared [ErrorPattern] match for err
+// (matching via [errors.As], in declaration order), or
+// (ErrorPatternResponse{}, false, nil) when none match.
+//
+// A non-nil third return value indicates the matched pattern's mapping or
+// encoding failed — callers should treat this as a terminal error for that
+// pattern (do not fall through to other patterns).
+func (h *RouteHandle[Req, Resp]) ErrorResponseFor(err error) (ErrorPatternResponse, bool, error) {
+	if err == nil {
+		return ErrorPatternResponse{}, false, nil
+	}
+	for _, rule := range h.errorPatternRules {
+		if rule.match == nil {
+			continue
+		}
+		resp, matched, matchErr := rule.match(err)
+		if !matched {
+			continue
+		}
+		return resp, true, matchErr
+	}
+	return ErrorPatternResponse{}, false, nil
 }
 
 // MergeFields returns the merge-capable fields registered via

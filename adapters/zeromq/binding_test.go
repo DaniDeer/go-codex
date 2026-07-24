@@ -10,10 +10,12 @@ import (
 	"time"
 
 	zeromq "github.com/DaniDeer/go-codex/adapters/zeromq"
+	"github.com/DaniDeer/go-codex/api/events"
 	"github.com/DaniDeer/go-codex/codex"
 	"github.com/DaniDeer/go-codex/format"
 	"github.com/DaniDeer/go-codex/ports"
 	gstream "github.com/DaniDeer/go-codex/stream"
+	"github.com/DaniDeer/go-codex/validate"
 )
 
 // ── CallAdapter ───────────────────────────────────────────────────────────────
@@ -136,6 +138,165 @@ func TestZeromqPublishAdapter_DerivesVarsPerItem_WhenOptsVarsNil(t *testing.T) {
 		t.Errorf("want per-item resolved topics, got %q, %q", sent[0][0], sent[1][0])
 	}
 }
+
+// R1B-adoption: an upstream stream error matching a declared
+// events.ErrorChannel pattern publishes the typed error payload to the
+// declared error topic instead of calling OnError.
+func TestZeromqPublishAdapter_ErrorChannelMatch_PublishesToDeclaredTopic(t *testing.T) {
+	ctx := context.Background()
+	sock := &mockSocket{}
+
+	b := events.NewBuilder(events.Info{Title: "Test", Version: "1.0.0"})
+	handle, err := events.NewChannel[sensorReading]("sensors/readings", sensorCodec,
+		events.Publish{Summary: "sensor reading"},
+		events.ErrorChannel[sensorZmqValidationErr, sensorZmqErrPayload](
+			"sensors/readings/errors", sensorZmqErrPayloadCodec,
+			func(e sensorZmqValidationErr) (sensorZmqErrPayload, error) {
+				return sensorZmqErrPayload{Code: "validation", Message: e.msg}, nil
+			},
+		),
+	).Register(b)
+	if err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+
+	errCh := make(chan error, 1)
+	valCh := make(chan sensorReading)
+	errCh <- sensorZmqValidationErr{msg: "out of range"}
+	close(errCh)
+	close(valCh)
+	src := gstream.Stream[sensorReading]{Values: valCh, Errors: errCh}
+
+	var gotOnError error
+	p, perr := ports.NewSinkPort[sensorReading]("test", sensorCodec, ports.PortOptions{Buffer: 4})
+	if perr != nil {
+		t.Fatalf("construct port: %v", perr)
+	}
+	p.Bind(ctx, zeromq.PublishAdapter(sock, handle, format.JSON(sensorCodec),
+		zeromq.DrainPublishOptions{OnError: func(e error) { gotOnError = e }}))
+	p.Feed(ctx, src)
+
+	if gotOnError != nil {
+		t.Errorf("want OnError NOT called on matched respond action, got %v", gotOnError)
+	}
+	sent := sock.sentSnapshot()
+	if len(sent) != 1 || string(sent[0][0]) != "sensors/readings/errors" {
+		t.Fatalf("want 1 publish to sensors/readings/errors, got %v", sent)
+	}
+	var payload map[string]string
+	if err := json.Unmarshal(sent[0][1], &payload); err != nil {
+		t.Fatalf("decode published payload: %v", err)
+	}
+	if payload["code"] != "validation" || payload["message"] != "out of range" {
+		t.Errorf("unexpected published payload: %+v", payload)
+	}
+}
+
+func TestZeromqPublishAdapter_ErrorChannelNoMatch_FallsBackToOnError(t *testing.T) {
+	ctx := context.Background()
+	sock := &mockSocket{}
+
+	b := events.NewBuilder(events.Info{Title: "Test", Version: "1.0.0"})
+	handle, err := events.NewChannel[sensorReading]("sensors/readings", sensorCodec,
+		events.Publish{Summary: "sensor reading"},
+		events.ErrorChannel[sensorZmqValidationErr, sensorZmqErrPayload](
+			"sensors/readings/errors", sensorZmqErrPayloadCodec,
+			func(e sensorZmqValidationErr) (sensorZmqErrPayload, error) {
+				return sensorZmqErrPayload{Code: "validation", Message: e.msg}, nil
+			},
+		),
+	).Register(b)
+	if err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+
+	errCh := make(chan error, 1)
+	valCh := make(chan sensorReading)
+	errCh <- fmt.Errorf("unrelated upstream error")
+	close(errCh)
+	close(valCh)
+	src := gstream.Stream[sensorReading]{Values: valCh, Errors: errCh}
+
+	var gotOnError error
+	p, perr := ports.NewSinkPort[sensorReading]("test", sensorCodec, ports.PortOptions{Buffer: 4})
+	if perr != nil {
+		t.Fatalf("construct port: %v", perr)
+	}
+	p.Bind(ctx, zeromq.PublishAdapter(sock, handle, format.JSON(sensorCodec),
+		zeromq.DrainPublishOptions{OnError: func(e error) { gotOnError = e }}))
+	p.Feed(ctx, src)
+
+	if gotOnError == nil {
+		t.Fatal("want unmatched error forwarded to OnError, got nil")
+	}
+	if sent := sock.sentSnapshot(); len(sent) != 0 {
+		t.Errorf("want no publish for unmatched error, got %v", sent)
+	}
+}
+
+func TestZeromqPublishAdapter_ErrorChannelHandleAction_NoAutoPublish(t *testing.T) {
+	ctx := context.Background()
+	sock := &mockSocket{}
+
+	b := events.NewBuilder(events.Info{Title: "Test", Version: "1.0.0"})
+	handle, err := events.NewChannel[sensorReading]("sensors/readings", sensorCodec,
+		events.Publish{Summary: "sensor reading"},
+		events.ErrorChannel[sensorZmqValidationErr, sensorZmqErrPayload](
+			"sensors/readings/errors", sensorZmqErrPayloadCodec,
+			func(e sensorZmqValidationErr) (sensorZmqErrPayload, error) {
+				return sensorZmqErrPayload{Code: "validation", Message: e.msg}, nil
+			},
+		).WithAction(events.ErrorHandle),
+	).Register(b)
+	if err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+
+	errCh := make(chan error, 1)
+	valCh := make(chan sensorReading)
+	errCh <- sensorZmqValidationErr{msg: "x"}
+	close(errCh)
+	close(valCh)
+	src := gstream.Stream[sensorReading]{Values: valCh, Errors: errCh}
+
+	var gotOnError error
+	p, perr := ports.NewSinkPort[sensorReading]("test", sensorCodec, ports.PortOptions{Buffer: 4})
+	if perr != nil {
+		t.Fatalf("construct port: %v", perr)
+	}
+	p.Bind(ctx, zeromq.PublishAdapter(sock, handle, format.JSON(sensorCodec),
+		zeromq.DrainPublishOptions{OnError: func(e error) { gotOnError = e }}))
+	p.Feed(ctx, src)
+
+	if gotOnError == nil {
+		t.Fatal("want OnError called for handle action, got nil")
+	}
+	if sent := sock.sentSnapshot(); len(sent) != 0 {
+		t.Errorf("want no auto-publish for handle action, got %v", sent)
+	}
+}
+
+type sensorZmqValidationErr struct{ msg string }
+
+func (e sensorZmqValidationErr) Error() string { return "sensor validation: " + e.msg }
+
+type sensorZmqErrPayload struct {
+	Code    string
+	Message string
+}
+
+func (e sensorZmqErrPayload) Error() string { return "sensor error " + e.Code }
+
+var sensorZmqErrPayloadCodec = codex.Struct[sensorZmqErrPayload](
+	codex.RequiredField("code", codex.String().Refine(validate.NonEmptyString),
+		func(e sensorZmqErrPayload) string { return e.Code },
+		func(e *sensorZmqErrPayload, v string) { e.Code = v },
+	),
+	codex.RequiredField("message", codex.String(),
+		func(e sensorZmqErrPayload) string { return e.Message },
+		func(e *sensorZmqErrPayload, v string) { e.Message = v },
+	),
+)
 
 // Explicit (non-nil) DrainPublishOptions.Vars still wins — regression guard.
 func TestZeromqPublishAdapter_ExplicitVarsStillWins(t *testing.T) {

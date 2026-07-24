@@ -44,7 +44,7 @@ func newChiPipelineHandleWithMappedErrorStatus() (*rest.RouteHandle[createReq, u
 	return rest.NewRoute[createReq, userResp]("POST", "/pipeline-mapped",
 		createReqCodec, userRespCodec,
 		rest.RouteMeta{OperationID: "chiPipelineMapped"},
-		rest.PipelineErrorStatus[chiPipelineConflictError](http.StatusConflict),
+		rest.ErrorStatus[chiPipelineConflictError](http.StatusConflict),
 	).Register(b)
 }
 
@@ -53,7 +53,7 @@ func newChiPipelineHandleWithNoResponseOverride(status int) (*rest.RouteHandle[c
 	return rest.NewRoute[createReq, userResp]("POST", "/pipeline-noresp-override",
 		createReqCodec, userRespCodec,
 		rest.RouteMeta{OperationID: "chiPipelineNoRespOverride"},
-		rest.PipelineErrorStatus[chiadapter.PipelineNoResponseError](status),
+		rest.ErrorStatus[chiadapter.PipelineNoResponseError](status),
 	).Register(b)
 }
 

@@ -444,7 +444,7 @@ func serveRequest[Req, Resp any](
 	resp, serveErr = fn(spanCtx, req)
 	if serveErr != nil {
 		obs.RecordRequest("ZMQ-REP", path, 0, time.Since(start))
-		sendErrorReply(sock, serveErr)
+		sendHandlerErrorReply(sock, handle, serveErr, obs)
 		if opts.OnError != nil {
 			opts.OnError(ServeError{Kind: KindHandler, Err: serveErr})
 		}
@@ -460,7 +460,7 @@ func serveRequest[Req, Resp any](
 	}
 	if serveErr != nil {
 		obs.RecordRequest("ZMQ-REP", path, 0, time.Since(start))
-		sendErrorReply(sock, serveErr)
+		sendHandlerErrorReply(sock, handle, serveErr, obs)
 		if opts.OnError != nil {
 			opts.OnError(ServeError{Kind: KindEncode, Err: serveErr})
 		}
@@ -657,11 +657,39 @@ func CallHandle[Req, Resp any](
 	return Call(ctx, sock, handle, req, opts)
 }
 
-// sendErrorReply sends an error reply frame to the REQ peer.
+// sendErrorReply sends an error reply frame to the REQ peer as plain text.
 // Always called in the Serve loop on handler, decode, or encode failures
-// to prevent the REQ socket from blocking indefinitely.
+// to prevent the REQ socket from blocking indefinitely. Used directly for
+// decode-level errors (no [reqreply.ErrorPattern] can apply — there is no
+// business error to match yet).
 func sendErrorReply(sock FramedSocket, err error) {
 	_ = sock.SendFrames([][]byte{statusError, []byte(err.Error())})
+}
+
+// sendHandlerErrorReply is the [reqreply.ErrorPattern]-aware counterpart of
+// [sendErrorReply], used for handler/encode failures — errors that originate
+// from application business logic, where a declared ErrorPattern may apply.
+// It consults handle.ErrorResponseFor(err) first: on a match, the declared
+// codec-backed typed payload is sent instead of plain text. On no match, or
+// on a mapping/encoding failure within the matched pattern itself, it falls
+// back to [sendErrorReply]'s plain-text behavior unchanged (backward
+// compatible — existing ErrorReplyMeta-only or no-declaration routes see no
+// behavior change).
+func sendHandlerErrorReply[Req, Resp any](
+	sock FramedSocket,
+	handle *reqreply.RouteHandle[Req, Resp],
+	err error,
+	obs stats.Observer,
+) {
+	resp, matched, mapErr := handle.ErrorResponseFor(err)
+	if matched && mapErr == nil {
+		_ = sock.SendFrames([][]byte{statusError, resp.Body})
+		return
+	}
+	if matched && mapErr != nil {
+		stats.ReportErrors(obs, "error_pattern", mapErr)
+	}
+	sendErrorReply(sock, err)
 }
 
 // emptyDelimiter is the empty frame separating the identity stack from the
@@ -796,7 +824,7 @@ func serveRouterRequest[Req, Resp any](
 	resp, serveErr = fn(spanCtx, req)
 	if serveErr != nil {
 		obs.RecordRequest("ZMQ-ROUTER", path, 0, time.Since(start))
-		sendRouterErrorReply(sock, identity, serveErr)
+		sendRouterHandlerErrorReply(sock, identity, handle, serveErr, obs)
 		if opts.OnError != nil {
 			opts.OnError(ServeError{Kind: KindHandler, Err: serveErr})
 		}
@@ -812,7 +840,7 @@ func serveRouterRequest[Req, Resp any](
 	}
 	if serveErr != nil {
 		obs.RecordRequest("ZMQ-ROUTER", path, 0, time.Since(start))
-		sendRouterErrorReply(sock, identity, serveErr)
+		sendRouterHandlerErrorReply(sock, identity, handle, serveErr, obs)
 		if opts.OnError != nil {
 			opts.OnError(ServeError{Kind: KindEncode, Err: serveErr})
 		}
@@ -830,9 +858,32 @@ func serveRouterRequest[Req, Resp any](
 	obs.RecordRequest("ZMQ-ROUTER", path, 200, time.Since(start))
 }
 
-// sendRouterErrorReply sends an error reply to a ROUTER peer, preserving identity frames.
+// sendRouterErrorReply sends an error reply to a ROUTER peer, preserving
+// identity frames, as plain text. Used directly for decode-level errors (no
+// [reqreply.ErrorPattern] can apply yet).
 func sendRouterErrorReply(sock FramedSocket, identity []byte, err error) {
 	_ = sock.SendFrames([][]byte{identity, emptyDelimiter, statusError, []byte(err.Error())})
+}
+
+// sendRouterHandlerErrorReply is the [reqreply.ErrorPattern]-aware
+// counterpart of [sendRouterErrorReply], used for handler/encode failures —
+// see [sendHandlerErrorReply] for the matching/fallback semantics.
+func sendRouterHandlerErrorReply[Req, Resp any](
+	sock FramedSocket,
+	identity []byte,
+	handle *reqreply.RouteHandle[Req, Resp],
+	err error,
+	obs stats.Observer,
+) {
+	resp, matched, mapErr := handle.ErrorResponseFor(err)
+	if matched && mapErr == nil {
+		_ = sock.SendFrames([][]byte{identity, emptyDelimiter, statusError, resp.Body})
+		return
+	}
+	if matched && mapErr != nil {
+		stats.ReportErrors(obs, "error_pattern", mapErr)
+	}
+	sendRouterErrorReply(sock, identity, err)
 }
 
 // CallDealer encodes req and sends it via a DEALER socket using the ZMQ envelope

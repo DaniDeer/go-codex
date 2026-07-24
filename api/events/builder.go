@@ -330,6 +330,7 @@ func (p TopicParam) WithCodec(c codex.Codec[string]) TopicParam { p.Codec = &c; 
 //   - [Subscribe] — subscribe operation metadata (application receives messages)
 //   - [Publish] — publish operation metadata (application sends messages)
 //   - [TopicParam] — topic template variable with optional codec and description
+//   - [ErrorChannel] — per-channel typed error pattern with declared error-output topic
 type ChannelOpt interface{ applyChannel(*channelBuilder) }
 
 // channelBuilder accumulates ChannelOpt values before building the channel descriptor.
@@ -353,6 +354,9 @@ type channelBuilder struct {
 	// the decode (subscribe) and encode (publish) directions — no
 	// role-aware split is needed here (see [ChannelHandle.MergeFields]).
 	mergeFields []any
+	// errorChannelRules hold per-channel error-type -> error-output-topic
+	// declarations from [ErrorChannel].
+	errorChannelRules []errorChannelRule
 }
 
 // ChannelHandle is returned by [Channel.Register]. It holds the spec
@@ -415,6 +419,10 @@ type ChannelHandle[T any] struct {
 	// mergeFields holds the merge-capable fields registered via
 	// [NewTopicParam] — see [MergeFields] and [DecodeMerged].
 	mergeFields []codex.FieldCodec[T]
+
+	// errorChannelRules holds per-channel error patterns declared via
+	// [ErrorChannel] — see [ChannelHandle.ErrorResponseFor].
+	errorChannelRules []errorChannelRule
 }
 
 // MergeFields returns the merge-capable fields registered via
@@ -898,14 +906,15 @@ func (c Channel[T]) Register(b *Builder) (*ChannelHandle[T], error) {
 		schemes[k] = v
 	}
 	h := &ChannelHandle[T]{
-		Topic:           c.topic,
-		Descriptor:      frozen,
-		Decode:          func(payload []byte) (T, error) { return jsonFmt.Unmarshal(payload) },
-		Encode:          func(msg T) ([]byte, error) { return jsonFmt.Marshal(msg) },
-		topicParams:     cb.topicParams,
-		topicCodec:      b.topicCodec,
-		SecuritySchemes: schemes,
-		GlobalSecurity:  slices.Clone(b.globalSecurity),
+		Topic:             c.topic,
+		Descriptor:        frozen,
+		Decode:            func(payload []byte) (T, error) { return jsonFmt.Unmarshal(payload) },
+		Encode:            func(msg T) ([]byte, error) { return jsonFmt.Marshal(msg) },
+		topicParams:       cb.topicParams,
+		topicCodec:        b.topicCodec,
+		SecuritySchemes:   schemes,
+		GlobalSecurity:    slices.Clone(b.globalSecurity),
+		errorChannelRules: cb.errorChannelRules,
 	}
 	if cb.formats != nil {
 		fmts, ok := cb.formats.([]format.Format[T])
@@ -973,12 +982,13 @@ func (c Channel[T]) ClientHandle() *ChannelHandle[T] {
 	jsonFmt := format.JSON(c.codec)
 
 	return &ChannelHandle[T]{
-		Topic:       c.topic,
-		Descriptor:  frozen,
-		Decode:      func(payload []byte) (T, error) { return jsonFmt.Unmarshal(payload) },
-		Encode:      func(msg T) ([]byte, error) { return jsonFmt.Marshal(msg) },
-		topicParams: cb.topicParams,
-		mergeFields: mustAssertMergeFields[T]("ClientHandle", cb.mergeFields),
+		Topic:             c.topic,
+		Descriptor:        frozen,
+		Decode:            func(payload []byte) (T, error) { return jsonFmt.Unmarshal(payload) },
+		Encode:            func(msg T) ([]byte, error) { return jsonFmt.Marshal(msg) },
+		topicParams:       cb.topicParams,
+		mergeFields:       mustAssertMergeFields[T]("ClientHandle", cb.mergeFields),
+		errorChannelRules: cb.errorChannelRules,
 	}
 }
 

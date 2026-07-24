@@ -31,6 +31,7 @@ import (
 	"time"
 
 	adapterredis "github.com/DaniDeer/go-codex/adapters/redis"
+	"github.com/DaniDeer/go-codex/api/events"
 	"github.com/DaniDeer/go-codex/codex"
 	"github.com/DaniDeer/go-codex/format"
 	"github.com/DaniDeer/go-codex/ports"
@@ -78,6 +79,47 @@ var numericIDCodec = codex.String().Refine(codex.Constraint[string]{
 	},
 	Message: func(v string) string { return fmt.Sprintf("must be all-digits, got %q", v) },
 })
+
+// ── Error-path ergonomics: OnError + events.ErrorChannel composition ─────────
+//
+// Cache is an internal store boundary with no caller to respond to —
+// SetAdapterOptions.OnError already realizes the "handle" action. A
+// "respond"-equivalent (publishing a typed error payload) is achieved by
+// composing OnError with a declared events.ErrorChannel — no new
+// cache-specific API is needed; see docs/guides/error-handling.md
+// "Store/IO boundaries" for the full pattern.
+
+// CacheWriteError models a cache write failure the OnError callback receives.
+type CacheWriteError struct{ msg string }
+
+func (e CacheWriteError) Error() string { return "cache write failed: " + e.msg }
+
+// CacheErrorPayload is the typed, codec-backed error payload published to
+// the declared error-output topic when a CacheWriteError matches.
+type CacheErrorPayload struct {
+	Code    string
+	Message string
+}
+
+var cacheErrorPayloadCodec = codex.Struct[CacheErrorPayload](
+	codex.RequiredField("code", codex.String().Refine(validate.NonEmptyString),
+		func(e CacheErrorPayload) string { return e.Code },
+		func(e *CacheErrorPayload, v string) { e.Code = v },
+	),
+	codex.RequiredField("message", codex.String(),
+		func(e CacheErrorPayload) string { return e.Message },
+		func(e *CacheErrorPayload, v string) { e.Message = v },
+	),
+)
+
+// memoryCacheWithFailure is a Commands fake whose Set always fails, letting
+// this example demonstrate the OnError → ErrorResponseFor composition
+// without needing a live broker to publish the matched error to.
+type memoryCacheWithFailure struct{ *memoryCache }
+
+func (m memoryCacheWithFailure) Set(_ context.Context, _ string, _ []byte, _ time.Duration) error {
+	return CacheWriteError{msg: "connection refused"}
+}
 
 // ── In-memory Commands fake (stands in for a real Redis) ─────────────────────
 
@@ -217,6 +259,49 @@ func main() {
 
 	if v, ok, err := adapterredis.Seed(ctx, client, latestCache, adapterredis.SeedOptions{}); err == nil && ok {
 		fmt.Printf("  restored latest value after restart: %s\n", v.Name)
+	}
+
+	// ── Section 6: error-path ergonomics — OnError + events.ErrorChannel ─
+	fmt.Println("\n─── Section 6: Error-path ergonomics (OnError + events.ErrorChannel)")
+
+	errBuilder := events.NewBuilder(events.Info{Title: "Cache Errors", Version: "1.0.0"})
+	errHandle, err := events.NewChannel[User]("users/cache", userCodec,
+		events.ErrorChannel[CacheWriteError, CacheErrorPayload](
+			"users/cache/errors", cacheErrorPayloadCodec,
+			func(e CacheWriteError) (CacheErrorPayload, error) {
+				return CacheErrorPayload{Code: "cache_write", Message: e.Error()}, nil
+			},
+		),
+	).Register(errBuilder)
+	if err != nil {
+		panic(err)
+	}
+
+	failingClient := memoryCacheWithFailure{memoryCache: &memoryCache{store: map[string][]byte{}}}
+	var publishedTopic string
+	var loggedErr error
+
+	failingUsers := make(chan User, 1)
+	failingUsers <- User{ID: "1", Name: "Ada"}
+	close(failingUsers)
+
+	adapterredis.DrainSetAdapter[User](failingClient, cache,
+		func(u User) map[string]string { return map[string]string{"id": u.ID} },
+		adapterredis.SetAdapterOptions{OnError: func(e error) {
+			resp, matched, mapErr := errHandle.ErrorResponseFor(e)
+			if matched && mapErr == nil && resp.Action == events.ErrorRespond {
+				publishedTopic = resp.Topic
+				return
+			}
+			loggedErr = e
+		}},
+	).Activate(ctx, stream.From(ctx, failingUsers))
+
+	if publishedTopic != "" {
+		fmt.Printf("  ✓ matched CacheWriteError → published typed payload to %q (OnError NOT falling back to log)\n",
+			publishedTopic)
+	} else if loggedErr != nil {
+		fmt.Printf("  ✗ unmatched error, logged fallback: %v\n", loggedErr)
 	}
 
 	// ── Observer summary ──────────────────────────────────────────────────

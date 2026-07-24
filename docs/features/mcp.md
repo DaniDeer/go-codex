@@ -130,6 +130,58 @@ breaking change. Extraction/validation failures are routed through the
 same `RecordRequest(..., 500, ...)` observer path decode/encode errors
 already use.
 
+## Error-path ergonomics — `ErrorPattern`
+
+MCP tool results have no HTTP status or reply topic — `mcp.ErrorPattern` is
+the tool-call analogue of [`rest.ErrorPattern`](rest-api.md#error-path-ergonomics-errorstatus--errorpattern)
+and [`events.ErrorChannel`](events.md#error-path-ergonomics-errorchannel):
+declare a codec-backed typed error payload for a matched handler error type,
+returned as a structured tool result instead of a bare error string.
+
+```go
+type NotFoundError struct{ ID string }
+func (e NotFoundError) Error() string { return "not found: " + e.ID }
+
+type ErrorPayload struct {
+    Code    string
+    Message string
+}
+
+tool := mcp.NewTool[SearchIn, SearchOut]("search", inCodec, outCodec,
+    mcp.ErrorPattern[NotFoundError, ErrorPayload](errorPayloadCodec,
+        func(e NotFoundError) (ErrorPayload, error) {
+            return ErrorPayload{Code: "not_found", Message: e.Error()}, nil
+        },
+    ),
+)
+```
+
+- **Direct mode** (no map function): `E` must itself be assignable to the
+  declared payload type `B`.
+- **Mapped mode** (map function provided): the map function converts `E`
+  into `B`.
+- **Matching**: type-only via `errors.As`; the first declared `ErrorPattern`
+  (in `NewTool` option order) whose type matches wins — the same
+  deterministic precedence used by REST/events/reqreply.
+- **Scope**: `ErrorPattern` only applies to errors returned by the
+  application handler function (business logic) — input-decode failures
+  and output-encode failures are different concerns and unaffected.
+- **`ToolHandle.ErrorResponseFor(err) (ErrorPatternResponse, bool, error)`**
+  is the lookup accessor `adapters/mcpgo.ToolHandler` consults.
+
+### Adapter wiring (`adapters/mcpgo`)
+
+`mcpgo.ToolHandler`'s handler-error branch consults
+`handle.ErrorResponseFor(err)` before falling back to
+`mcp.NewToolResultError(err.Error())`:
+
+- matched → returns `mcp.NewToolResultStructured(json.RawMessage(body), string(body))`
+  with `IsError: true` — a structured typed result, still reported as an
+  error to the LLM, but with parseable JSON content instead of a bare string;
+- unmatched (or a mapper/encode failure within the matched pattern) → falls
+  back to the existing plain-text `mcp.NewToolResultError(err.Error())`
+  behavior unchanged (backward compatible).
+
 ## Structured errors
 
 | Error type | Returned by | When |

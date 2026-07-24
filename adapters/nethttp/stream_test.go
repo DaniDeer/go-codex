@@ -109,7 +109,7 @@ func newPipelineRouteWithMappedErrorStatus() (*rest.RouteHandle[createReq, userR
 	return rest.NewRoute[createReq, userResp]("POST", "/pipeline-mapped",
 		createReqCodec, userRespCodec,
 		rest.RouteMeta{OperationID: "pipelineMapped"},
-		rest.PipelineErrorStatus[pipelineConflictError](http.StatusConflict),
+		rest.ErrorStatus[pipelineConflictError](http.StatusConflict),
 	).Register(b)
 }
 
@@ -118,7 +118,7 @@ func newPipelineRouteWithNoResponseOverride(status int) (*rest.RouteHandle[creat
 	return rest.NewRoute[createReq, userResp]("POST", "/pipeline-noresp-override",
 		createReqCodec, userRespCodec,
 		rest.RouteMeta{OperationID: "pipelineNoRespOverride"},
-		rest.PipelineErrorStatus[nethttp.PipelineNoResponseError](status),
+		rest.ErrorStatus[nethttp.PipelineNoResponseError](status),
 	).Register(b)
 }
 

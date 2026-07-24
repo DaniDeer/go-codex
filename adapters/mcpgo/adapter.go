@@ -108,6 +108,18 @@ func ToolHandler[In, Out any](
 		output, err := fn(ctx, input)
 		if err != nil {
 			obs.RecordRequest("tool", handle.Name, 500, time.Since(start))
+			// Consult a declared apimcp.ErrorPattern before falling back to
+			// a bare error string — a matched pattern returns a structured
+			// typed error result (still IsError: true) instead of plain text.
+			if resp, matched, mapErr := handle.ErrorResponseFor(err); matched {
+				if mapErr != nil {
+					stats.ReportErrors(obs, "error_pattern", mapErr)
+					return mcp.NewToolResultError(err.Error()), nil
+				}
+				result := mcp.NewToolResultStructured(json.RawMessage(resp.Body), string(resp.Body))
+				result.IsError = true
+				return result, nil
+			}
 			return mcp.NewToolResultError(err.Error()), nil
 		}
 

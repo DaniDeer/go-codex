@@ -45,6 +45,10 @@ For adapter-specific hooks, see:
 - [MQTT 5 guide](mqtt5.md#error-handling)
 - [ZeroMQ guide](zeromq.md#error-handling)
 - [Error handling guide](error-handling.md#where-to-handle-errors-adapters-ports-pipelines)
+- [Error handling guide — store/IO boundaries (SQL/Cache/File)](error-handling.md#storeio-boundaries-sql-cache-file--handlelog-by-default) —
+  `SinkAdapter.OnError` (SQL/Cache/File) already realizes the shared
+  `handle`/`log` actions; compose it with a declared `events.ErrorChannel`
+  for a `respond`-equivalent typed error publish.
 
 ### `SourcePort[T]` — inbound boundary
 
@@ -736,5 +740,5 @@ computed value** rather than running the pipeline per call. Use them directly (n
 | `mcpgo.ToolPipelineHandler` / `RegisterToolPipeline` | MCP tool trigger → pipeline → response |
 
 `nethttp`/`chi` pipeline handlers support per-route stream-error status mapping
-via `rest.PipelineErrorStatus[...]`; `ToolPort + PipelineAdapter` inherits the
+via `rest.ErrorStatus[...]`; `ToolPort + PipelineAdapter` inherits the
 same behavior because adapters delegate to those handlers.

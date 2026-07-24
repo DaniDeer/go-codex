@@ -9,6 +9,7 @@ import (
 	"time"
 
 	adaptersql "github.com/DaniDeer/go-codex/adapters/sql"
+	"github.com/DaniDeer/go-codex/api/events"
 	"github.com/DaniDeer/go-codex/codex"
 	"github.com/DaniDeer/go-codex/ports"
 	gstream "github.com/DaniDeer/go-codex/stream"
@@ -146,6 +147,87 @@ func TestDrainInsertAdapter_ValidationFailureGoesToOnError(t *testing.T) {
 
 	if gotErr == nil {
 		t.Error("want validation error in OnError, got nil")
+	}
+}
+
+// R1C-1: SQL is an internal store boundary with no caller — the shared
+// respond/handle/log action model is realized by composing the existing
+// OnError hook with a declared events.ErrorChannel (Phase 1B), not by adding
+// new SQL-specific API. This locks that composition actually works.
+type sqlValidationErr struct{ msg string }
+
+func (e sqlValidationErr) Error() string { return "sql validation: " + e.msg }
+
+type sqlErrPayload struct {
+	Code    string
+	Message string
+}
+
+func (e sqlErrPayload) Error() string { return "sql error " + e.Code }
+
+var sqlErrPayloadCodec = codex.Struct[sqlErrPayload](
+	codex.RequiredField("code", codex.String().Refine(validate.NonEmptyString),
+		func(e sqlErrPayload) string { return e.Code },
+		func(e *sqlErrPayload, v string) { e.Code = v },
+	),
+	codex.RequiredField("message", codex.String(),
+		func(e sqlErrPayload) string { return e.Message },
+		func(e *sqlErrPayload, v string) { e.Message = v },
+	),
+)
+
+func TestDrainInsertAdapter_OnError_ComposesWithEventsErrorChannel(t *testing.T) {
+	ctx := context.Background()
+
+	b := events.NewBuilder(events.Info{Title: "Test", Version: "1.0.0"})
+	errHandle, err := events.NewChannel[testRow]("rows/create", testRowCodec,
+		events.ErrorChannel[sqlValidationErr, sqlErrPayload](
+			"rows/create/errors", sqlErrPayloadCodec,
+			func(e sqlValidationErr) (sqlErrPayload, error) {
+				return sqlErrPayload{Code: "validation", Message: e.msg}, nil
+			},
+		),
+	).Register(b)
+	if err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+
+	var publishedTopic string
+	var publishedBody []byte
+	var loggedErr error
+
+	insertFn := func(_ context.Context, _ testRow) error {
+		return sqlValidationErr{msg: "duplicate id"}
+	}
+
+	ch := make(chan testRow, 1)
+	ch <- testRow{ID: "dup", Value: 1.0}
+	close(ch)
+
+	p, perr := ports.NewSinkPort[testRow]("test", testRowCodec, ports.PortOptions{Buffer: 4})
+	if perr != nil {
+		t.Fatalf("construct port: %v", perr)
+	}
+	p.Bind(ctx, adaptersql.DrainInsertAdapter(testRowCodec, insertFn,
+		adaptersql.DrainInsertOptions{OnError: func(e error) {
+			resp, matched, mapErr := errHandle.ErrorResponseFor(e)
+			if matched && mapErr == nil && resp.Action == events.ErrorRespond {
+				publishedTopic = resp.Topic
+				publishedBody = resp.Body
+				return
+			}
+			loggedErr = e
+		}}))
+	p.Feed(ctx, gstream.From(ctx, ch))
+
+	if loggedErr != nil {
+		t.Errorf("want no fallback log for matched error, got %v", loggedErr)
+	}
+	if publishedTopic != "rows/create/errors" {
+		t.Errorf("got topic %q, want rows/create/errors", publishedTopic)
+	}
+	if len(publishedBody) == 0 {
+		t.Error("want non-empty published body")
 	}
 }
 

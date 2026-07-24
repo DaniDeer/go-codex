@@ -773,6 +773,31 @@ func TestRESTPattern_BuildsClientHandle(t *testing.T) {
 	}
 }
 
+// R1D-2: error-path-ergonomics parity for REST — rest.ErrorStatus/
+// rest.ErrorPattern declared as Pattern Opts behave identically to direct
+// rest.NewRoute declarations. Locks EPU9 for the Phase 1A REST error-pattern
+// surface: PluginRESTPattern is a thin pass-through for RouteOpt.
+type patternConflictErr struct{ msg string }
+
+func (e patternConflictErr) Error() string { return "conflict: " + e.msg }
+
+func TestRESTPattern_ErrorStatus_ParityWithDirectRouteDeclaration(t *testing.T) {
+	p, err := ports.NewIOPort[int, string]("call", intCodec, strCodec, ports.PortOptions{})
+	if err != nil {
+		t.Fatalf("construct port: %v", err)
+	}
+	handle, err := p.PluginRESTPattern(ports.RESTPattern{Method: "POST", Path: "/double", Opts: []rest.RouteOpt{
+		rest.ErrorStatus[patternConflictErr](409),
+	}})
+	if err != nil {
+		t.Fatalf("PluginRESTPattern: %v", err)
+	}
+	status, ok := handle.ErrorStatusFor(patternConflictErr{msg: "dup"})
+	if !ok || status != 409 {
+		t.Errorf("want ErrorStatus declared via Pattern Opts to match with 409, got (%d,%v)", status, ok)
+	}
+}
+
 func TestEventPattern_BuildsClientHandle(t *testing.T) {
 	p, err := ports.NewSourcePort[int]("readings", intCodec, ports.PortOptions{})
 	if err != nil {
@@ -786,6 +811,59 @@ func TestEventPattern_BuildsClientHandle(t *testing.T) {
 	}
 	if handle.Topic != "sensors/{sensorID}/data" {
 		t.Errorf("want topic %q, got %q", "sensors/{sensorID}/data", handle.Topic)
+	}
+}
+
+// R1D-1: error-path-ergonomics parity — events.ErrorChannel declared as a
+// Pattern Opt behaves identically to one declared via events.NewChannel
+// directly. This locks EPU9 (ports parity) for the Phase 1B error-pattern
+// declaration surface: PluginEventPattern is a thin pass-through for
+// ChannelOpt, so ErrorChannel needs no ports-specific wiring of its own.
+type patternErrValidationErr struct{ msg string }
+
+func (e patternErrValidationErr) Error() string { return "validation: " + e.msg }
+
+type patternErrPayload struct{ Code string }
+
+func (e patternErrPayload) Error() string { return "error " + e.Code }
+
+var patternErrPayloadCodec = codex.Struct[patternErrPayload](
+	codex.RequiredField("code", codex.String().Refine(validate.NonEmptyString),
+		func(e patternErrPayload) string { return e.Code },
+		func(e *patternErrPayload, v string) { e.Code = v },
+	),
+)
+
+func TestEventPattern_ErrorChannel_ParityWithDirectChannelDeclaration(t *testing.T) {
+	p, err := ports.NewSinkPort[int]("readings", intCodec, ports.PortOptions{})
+	if err != nil {
+		t.Fatalf("construct port: %v", err)
+	}
+	handle, err := p.PluginEventPattern(ports.EventPattern{Topic: "sensors/data", Opts: []events.ChannelOpt{
+		events.Publish{Summary: "sensor reading"},
+		events.ErrorChannel[patternErrValidationErr, patternErrPayload](
+			"sensors/data/errors", patternErrPayloadCodec,
+			func(e patternErrValidationErr) (patternErrPayload, error) {
+				return patternErrPayload{Code: "validation"}, nil
+			},
+		),
+	}})
+	if err != nil {
+		t.Fatalf("PluginEventPattern: %v", err)
+	}
+
+	resp, matched, mapErr := handle.ErrorResponseFor(patternErrValidationErr{msg: "x"})
+	if mapErr != nil {
+		t.Fatalf("unexpected map error: %v", mapErr)
+	}
+	if !matched {
+		t.Fatal("want ErrorChannel declared via Pattern Opts to match, same as direct events.NewChannel declaration")
+	}
+	if resp.Topic != "sensors/data/errors" {
+		t.Errorf("got topic %q, want sensors/data/errors", resp.Topic)
+	}
+	if resp.Action != events.ErrorRespond {
+		t.Errorf("got action %q, want respond (default)", resp.Action)
 	}
 }
 

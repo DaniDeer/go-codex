@@ -27,7 +27,7 @@ Use this as the consistent decision map:
 
 | Layer | Primary error surface | Main escape hatch |
 |---|---|---|
-| Adapter (HTTP server) | `nethttp` / `chi` route errors | `Options.ErrorHandler`; for pipeline stream errors also `rest.PipelineErrorStatus[...]` |
+| Adapter (HTTP server) | `nethttp` / `chi` route errors | `Options.ErrorHandler`; for pipeline stream errors also `rest.ErrorStatus[...]` |
 | Adapter (MQTT/MQTT5/ZeroMQ subscribe/serve) | adapter callback errors | `SubscribeOptions.OnError` / `ServeOptions.OnError` |
 | Adapter (MQTT/MQTT5/ZeroMQ call/publish) | returned `error` | `errors.As` into typed `CallError` / `PublishEncodeError` / route param errors |
 | Ports boundary | `SourcePort.Stream().Errors`, `SinkPort.Feed(...)` forwarding, bind/connect errors | drain `.Errors` explicitly and unwrap typed errors (`PortBindError`, `PortNoAdapterError`, `PortNoPipelineError`) |
@@ -79,6 +79,57 @@ See also:
 - [MQTT 5 guide](mqtt5.md#error-handling)
 - [ZeroMQ guide](zeromq.md#error-handling)
 - [Stream guide](stream.md#error-handling-patterns)
+
+## Store/IO boundaries (SQL, Cache, File) — `handle`/`log` by default
+
+SQL, Cache (Redis), and File are **internal boundaries with no caller to
+respond to** — unlike REST/ReqReply/MCP (respond) or Events/WebSocket
+(respond via declared error channel/frame), these adapters default to the
+`handle`/`log` half of the shared action model:
+
+- **`handle`** — every sink-side adapter (`sql.DrainInsertAdapter`,
+  `redis.SetAdapter`/`DrainSetAdapter`, `file.DrainWriteAdapter`/
+  `DrainWriteFileAdapter`) already accepts an `OnError func(error)` callback.
+  This callback IS the `handle` action — it fully owns the error, with no
+  automatic fallback behavior.
+- **`log`** — leaving `OnError` nil is the `log` default: the error is only
+  observed via the adapter's `stats.Observer` calls (`RecordValidationError`,
+  etc.), never surfaced anywhere else.
+- **`respond` via explicit error-output channel** — since these boundaries
+  have no channel/topic of their own, "respond" is achieved by *composing*
+  the existing `OnError` hook with a declared
+  [`events.ErrorChannel`](../features/events.md#error-path-ergonomics-errorchannel)
+  from a pub/sub channel you already publish to elsewhere in the
+  application — no new adapter API is needed:
+
+```go
+// A companion error channel, declared once, reused by any boundary's OnError.
+errHandle, _ := events.NewChannel[Order]("orders/create", orderCodec,
+    events.ErrorChannel[ValidationError, ErrorPayload](
+        "orders/create/errors", errorPayloadCodec,
+        func(e ValidationError) (ErrorPayload, error) {
+            return ErrorPayload{Code: "validation", Message: e.Error()}, nil
+        },
+    ),
+).Register(b)
+
+sql.DrainInsertAdapter(db, "orders", format.JSON(orderCodec), sql.DrainInsertOptions{
+    OnError: func(err error) {
+        if resp, matched, mapErr := errHandle.ErrorResponseFor(err); matched && mapErr == nil &&
+            resp.Action == events.ErrorRespond {
+            _ = mqttClient.Publish(ctx, &paho.Publish{Topic: resp.Topic, Payload: resp.Body})
+            return
+        }
+        slog.Warn("insert failed", "error", err) // handle/log fallback
+    },
+})
+```
+
+The same composition works for `redis.SetAdapter`/`DrainSetAdapter` and
+`file.DrainWriteAdapter`/`DrainWriteFileAdapter` `OnError` callbacks — the
+declarative pattern lives entirely in `api/events` (or `api/rest` for a
+caller-facing REST error response further up the pipeline); the store/IO
+adapter only needs its existing `OnError` hook to reach it.
 
 ## Examples
 

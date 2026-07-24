@@ -2,13 +2,18 @@ package mqtt_test
 
 import (
 	"context"
+	"encoding/json"
+	"fmt"
 	"testing"
 	"time"
 
 	adaptermqtt "github.com/DaniDeer/go-codex/adapters/mqtt"
+	"github.com/DaniDeer/go-codex/api/events"
+	"github.com/DaniDeer/go-codex/codex"
 	"github.com/DaniDeer/go-codex/format"
 	"github.com/DaniDeer/go-codex/ports"
 	gstream "github.com/DaniDeer/go-codex/stream"
+	"github.com/DaniDeer/go-codex/validate"
 )
 
 // ── SubscribeAdapter ──────────────────────────────────────────────────────────
@@ -95,6 +100,169 @@ func TestPublishAdapter_PublishesEachItem(t *testing.T) {
 		t.Errorf("want 1 publish to user/created, got %v", topics)
 	}
 }
+
+// R1B-adoption-1: an upstream stream error matching a declared
+// events.ErrorChannel pattern publishes the typed error payload to the
+// declared error topic instead of calling OnError.
+func TestPublishAdapter_ErrorChannelMatch_PublishesToDeclaredTopic(t *testing.T) {
+	ctx := context.Background()
+	client := &mockClient{token: newCompletedToken(nil)}
+
+	b := events.NewBuilder(events.Info{Title: "Test", Version: "1.0.0"})
+	handle, err := events.NewChannel[userEvent]("user/created", userEventCodec,
+		events.Publish{Summary: "User created"},
+		events.ErrorChannel[userValidationErr, userErrPayload](
+			"user/created/errors", userErrPayloadCodec,
+			func(e userValidationErr) (userErrPayload, error) {
+				return userErrPayload{Code: "validation", Message: e.msg}, nil
+			},
+		),
+	).Register(b)
+	if err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+
+	errCh := make(chan error, 1)
+	valCh := make(chan userEvent)
+	errCh <- userValidationErr{msg: "out of range"}
+	close(errCh)
+	close(valCh)
+	src := gstream.Stream[userEvent]{Values: valCh, Errors: errCh}
+
+	var gotOnError error
+	p, perr := ports.NewSinkPort[userEvent]("test", userEventCodec, ports.PortOptions{Buffer: 4})
+	if perr != nil {
+		t.Fatalf("construct port: %v", perr)
+	}
+	p.Bind(ctx, adaptermqtt.PublishAdapter(client, handle, format.JSON(userEventCodec),
+		adaptermqtt.MQTTDrainPublishOptions{OnError: func(e error) { gotOnError = e }}))
+	p.Feed(ctx, src)
+
+	if gotOnError != nil {
+		t.Errorf("want OnError NOT called on matched respond action, got %v", gotOnError)
+	}
+	topics := client.publishedTopicsSnapshot()
+	if len(topics) != 1 || topics[0] != "user/created/errors" {
+		t.Fatalf("want 1 publish to user/created/errors, got %v", topics)
+	}
+	var payload map[string]string
+	if err := json.Unmarshal(client.publishedPayloadSnapshot(), &payload); err != nil {
+		t.Fatalf("decode published payload: %v", err)
+	}
+	if payload["code"] != "validation" || payload["message"] != "out of range" {
+		t.Errorf("unexpected published payload: %+v", payload)
+	}
+}
+
+// R1B-adoption-2: an upstream stream error NOT matching any declared
+// ErrorChannel pattern falls through to OnError unchanged.
+func TestPublishAdapter_ErrorChannelNoMatch_FallsBackToOnError(t *testing.T) {
+	ctx := context.Background()
+	client := &mockClient{token: newCompletedToken(nil)}
+
+	b := events.NewBuilder(events.Info{Title: "Test", Version: "1.0.0"})
+	handle, err := events.NewChannel[userEvent]("user/created", userEventCodec,
+		events.Publish{Summary: "User created"},
+		events.ErrorChannel[userValidationErr, userErrPayload](
+			"user/created/errors", userErrPayloadCodec,
+			func(e userValidationErr) (userErrPayload, error) {
+				return userErrPayload{Code: "validation", Message: e.msg}, nil
+			},
+		),
+	).Register(b)
+	if err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+
+	errCh := make(chan error, 1)
+	valCh := make(chan userEvent)
+	errCh <- fmt.Errorf("unrelated upstream error")
+	close(errCh)
+	close(valCh)
+	src := gstream.Stream[userEvent]{Values: valCh, Errors: errCh}
+
+	var gotOnError error
+	p, perr := ports.NewSinkPort[userEvent]("test", userEventCodec, ports.PortOptions{Buffer: 4})
+	if perr != nil {
+		t.Fatalf("construct port: %v", perr)
+	}
+	p.Bind(ctx, adaptermqtt.PublishAdapter(client, handle, format.JSON(userEventCodec),
+		adaptermqtt.MQTTDrainPublishOptions{OnError: func(e error) { gotOnError = e }}))
+	p.Feed(ctx, src)
+
+	if gotOnError == nil {
+		t.Fatal("want unmatched error forwarded to OnError, got nil")
+	}
+	if topics := client.publishedTopicsSnapshot(); len(topics) != 0 {
+		t.Errorf("want no publish for unmatched error, got %v", topics)
+	}
+}
+
+// R1B-adoption-3: ErrorChannel declared with WithAction(events.ErrorHandle)
+// does NOT auto-publish — OnError still runs (one-action-only semantics).
+func TestPublishAdapter_ErrorChannelHandleAction_NoAutoPublish(t *testing.T) {
+	ctx := context.Background()
+	client := &mockClient{token: newCompletedToken(nil)}
+
+	b := events.NewBuilder(events.Info{Title: "Test", Version: "1.0.0"})
+	handle, err := events.NewChannel[userEvent]("user/created", userEventCodec,
+		events.Publish{Summary: "User created"},
+		events.ErrorChannel[userValidationErr, userErrPayload](
+			"user/created/errors", userErrPayloadCodec,
+			func(e userValidationErr) (userErrPayload, error) {
+				return userErrPayload{Code: "validation", Message: e.msg}, nil
+			},
+		).WithAction(events.ErrorHandle),
+	).Register(b)
+	if err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+
+	errCh := make(chan error, 1)
+	valCh := make(chan userEvent)
+	errCh <- userValidationErr{msg: "x"}
+	close(errCh)
+	close(valCh)
+	src := gstream.Stream[userEvent]{Values: valCh, Errors: errCh}
+
+	var gotOnError error
+	p, perr := ports.NewSinkPort[userEvent]("test", userEventCodec, ports.PortOptions{Buffer: 4})
+	if perr != nil {
+		t.Fatalf("construct port: %v", perr)
+	}
+	p.Bind(ctx, adaptermqtt.PublishAdapter(client, handle, format.JSON(userEventCodec),
+		adaptermqtt.MQTTDrainPublishOptions{OnError: func(e error) { gotOnError = e }}))
+	p.Feed(ctx, src)
+
+	if gotOnError == nil {
+		t.Fatal("want OnError called for handle action, got nil")
+	}
+	if topics := client.publishedTopicsSnapshot(); len(topics) != 0 {
+		t.Errorf("want no auto-publish for handle action, got %v", topics)
+	}
+}
+
+type userValidationErr struct{ msg string }
+
+func (e userValidationErr) Error() string { return "user validation: " + e.msg }
+
+type userErrPayload struct {
+	Code    string
+	Message string
+}
+
+func (e userErrPayload) Error() string { return "user error " + e.Code }
+
+var userErrPayloadCodec = codex.Struct[userErrPayload](
+	codex.RequiredField("code", codex.String().Refine(validate.NonEmptyString),
+		func(e userErrPayload) string { return e.Code },
+		func(e *userErrPayload, v string) { e.Code = v },
+	),
+	codex.RequiredField("message", codex.String(),
+		func(e userErrPayload) string { return e.Message },
+		func(e *userErrPayload, v string) { e.Message = v },
+	),
+)
 
 // G1-3 (mqtt v3): PublishAdapter derives topic vars PER-ITEM from each
 // item's own merge fields when opts.Vars is nil — two items with different

@@ -27,6 +27,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -119,6 +120,31 @@ var LivePattern = ports.SocketPattern{
 	},
 }
 
+// ── Error-path ergonomics: websocket.ErrorFrame ──────────────────────────────
+//
+// NegativeValueError is a domain validation error the pipeline emits (from
+// the Map stage below) for a command whose Value is negative — a business
+// rule the codec alone can't express since it depends on Action too.
+type NegativeValueError struct {
+	Action string
+	Value  int
+}
+
+func (e NegativeValueError) Error() string {
+	return fmt.Sprintf("negative value %d not allowed for action %q", e.Value, e.Action)
+}
+
+// negativeValueErrorFrame declares the broadcast realized when a
+// NegativeValueError reaches the DuplexSocketAdapter: every connected
+// session receives a typed Update frame with the error message — the
+// duplex-socket analogue of events.ErrorChannel (broadcast IS the
+// notification path; there is no dedicated error-output topic on a socket).
+var negativeValueErrorFrame = adapterws.ErrorFrame[NegativeValueError, Update](
+	func(e NegativeValueError) (Update, error) {
+		return Update{Text: "error: " + e.Error()}, nil
+	},
+)
+
 // ── Observer: pure counters over the transport-agnostic hooks ────────────────
 //
 // The websocket adapter needs NO new observer extension — it fires the same
@@ -190,7 +216,9 @@ func main() {
 	})
 	handle := codex.Must(Live.PluginSocketPattern(LivePattern))
 	if err := Live.Bind(ctx, adapterws.DuplexSocketAdapter(mux, hub, upgrader, handle,
-		adapterws.DuplexSocketAdapterOptions{})); err != nil {
+		adapterws.DuplexSocketAdapterOptions{
+			ErrorFrames: []adapterws.ErrorFrameRule[Update]{negativeValueErrorFrame},
+		})); err != nil {
 		panic(err)
 	}
 
@@ -201,6 +229,12 @@ func main() {
 	// ── Pipeline: Command → targeted Update (session preserved by Map) ───
 	replies := stream.Map(ctx, Live.Inbound(ctx),
 		func(f ports.Framed[Command]) (ports.Framed[Update], error) {
+			// Business rule the codec alone can't express (depends on both
+			// Action and Value) — returned as a domain error, not a codec
+			// validation failure. Demonstrates websocket.ErrorFrame below.
+			if f.Payload.Value < 0 {
+				return ports.Framed[Update]{}, NegativeValueError{Action: f.Payload.Action, Value: f.Payload.Value}
+			}
 			info, _ := hub.SessionInfo(f.Session)
 			return ports.Framed[Update]{
 				Session: f.Session, // targeted reply to the sender
@@ -217,11 +251,18 @@ func main() {
 	// IMPORTANT: consume pipeline errors BEFORE Feed. Errors fed into a
 	// DuplexPort's outbound stream are re-surfaced on the port's inbound
 	// Errors channel (that is how write failures reach you) — an unfiltered
-	// Inbound→Map→Feed loop would recycle them forever. The observer has
-	// already counted the validation failure; here we just drop it.
+	// Inbound→Map→Feed loop would recycle them forever. NegativeValueError is
+	// deliberately RE-EMITTED (not silenced) so it reaches
+	// DuplexSocketAdapter's Activate loop, where the declared
+	// negativeValueErrorFrame rule broadcasts it as a typed Update frame.
+	// Everything else is dropped — already counted by the observer.
 	replies = stream.MapErr(ctx, replies,
 		func(err error) (ports.Framed[Update], bool, error) {
 			var zero ports.Framed[Update]
+			var nve NegativeValueError
+			if errors.As(err, &nve) {
+				return zero, false, err // re-emit for websocket.ErrorFrame to catch
+			}
 			return zero, false, nil // silence — counted by the observer
 		})
 
@@ -256,6 +297,21 @@ func main() {
 		panic(err)
 	}
 	fmt.Printf("client received: %s\n", frame)
+
+	// A command with a negative Value triggers NegativeValueError in the
+	// pipeline's Map stage — websocket.ErrorFrame broadcasts a typed Update
+	// frame instead of the connection silently dropping the item.
+	if err := client.WriteMessage(gorillaws.TextMessage,
+		[]byte(`{"action":"set-temp","value":-5}`)); err != nil {
+		panic(err)
+	}
+	_ = client.SetReadDeadline(time.Now().Add(2 * time.Second))
+	_, errFrame, err := client.ReadMessage()
+	if err != nil {
+		panic(err)
+	}
+	fmt.Printf("client received (error frame): %s\n", errFrame)
+
 	fmt.Printf("connected sessions: %d\n", len(hub.Sessions()))
 
 	// ── Observer summary ──────────────────────────────────────────────────

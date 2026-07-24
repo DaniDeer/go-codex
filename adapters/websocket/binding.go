@@ -3,12 +3,14 @@ package websocket
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"regexp"
 	"strings"
 	"sync"
 	"time"
 
+	"github.com/DaniDeer/go-codex/api/events"
 	"github.com/DaniDeer/go-codex/api/rest"
 	"github.com/DaniDeer/go-codex/ports"
 	"github.com/DaniDeer/go-codex/stats"
@@ -376,6 +378,15 @@ type DuplexSocketAdapterOptions struct {
 	// RecordSubscribe, and per-outbound-frame RecordPublish events.
 	// Resolved from ctx when nil.
 	Observer stats.Observer
+
+	// ErrorFrames holds []ErrorFrameRule[Out] type-erased (any) — set via
+	// [ErrorFrame], resolved generically in [DuplexSocketAdapter] where Out
+	// is concrete (the same `any`-storage pattern events uses for
+	// Formats/SubscribeFormats/PublishFormats). When a rule matches an
+	// error received on the port's outbound stream Errors channel, the
+	// resolved action determines behaviour — see [ErrorFrame]. A type
+	// mismatch surfaces as [ErrorFrameOptError] from Activate.
+	ErrorFrames any
 }
 
 // DuplexSocketAdapter returns a [ports.DuplexAdapter]: inbound frames from
@@ -421,6 +432,15 @@ func (a *wsDuplexAdapter[In, Out]) Activate(
 	if obs == nil {
 		obs = stats.ObserverFromContext(ctx)
 	}
+	var errorFrames []ErrorFrameRule[Out]
+	if a.opts.ErrorFrames != nil {
+		fr, ok := a.opts.ErrorFrames.([]ErrorFrameRule[Out])
+		if !ok {
+			return ErrorFrameOptError{Path: a.handle.Path,
+				Err: fmt.Errorf("want []ErrorFrameRule[%T], got %T", *new(Out), a.opts.ErrorFrames)}
+		}
+		errorFrames = fr
+	}
 	emitErr := func(err error) bool {
 		select {
 		case errs <- err:
@@ -428,6 +448,57 @@ func (a *wsDuplexAdapter[In, Out]) Activate(
 		case <-ctx.Done():
 			return false
 		}
+	}
+	// handleUpstreamError resolves declared ErrorFrame rules before
+	// falling back to forwarding the error unchanged on errs (the previous
+	// default behaviour, also used explicitly for events.ErrorLog). A
+	// matched events.ErrorRespond rule broadcasts the mapped Out frame to
+	// every connected session; events.ErrorHandle runs the rule's Handle
+	// callback with no broadcast. Returns false when the caller should
+	// stop draining (ctx cancelled mid-emit).
+	handleUpstreamError := func(e error) bool {
+		for _, rule := range errorFrames {
+			if rule.match == nil {
+				continue
+			}
+			frame, matched, mapErr := rule.match(e)
+			if !matched {
+				continue
+			}
+			if mapErr != nil {
+				stats.ReportErrors(obs, "error_frame", mapErr)
+				return emitErr(mapErr)
+			}
+			switch rule.action {
+			case events.ErrorHandle:
+				if rule.onMatch != nil {
+					rule.onMatch(e)
+				}
+				return true
+			case events.ErrorLog:
+				return emitErr(e)
+			default: // events.ErrorRespond
+				start := time.Now()
+				encoded, encErr := a.handle.OutFormat.Marshal(frame)
+				if encErr != nil {
+					stats.ReportErrors(obs, "error_frame", encErr)
+					return emitErr(encErr)
+				}
+				success := true
+				for _, s := range a.hub.Sessions() {
+					if sent, _ := a.hub.send(s, encoded); !sent {
+						success = false
+						if !emitErr(SocketError{Path: a.handle.Path, Session: s, Op: "write", Err: ErrFrameDropped}) {
+							return false
+						}
+					}
+				}
+				obs.RecordPublish(a.handle.Path, success, time.Since(start))
+				return true
+			}
+		}
+		// No declared rule matched — unchanged default behaviour.
+		return emitErr(e)
 	}
 	var wg sync.WaitGroup
 
@@ -567,7 +638,7 @@ func (a *wsDuplexAdapter[In, Out]) Activate(
 				errCh = nil
 				continue
 			}
-			if !emitErr(e) {
+			if !handleUpstreamError(e) {
 				valCh, errCh = nil, nil
 			}
 		}

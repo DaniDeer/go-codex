@@ -122,6 +122,170 @@ func TestServe_HandlerError(t *testing.T) {
 	}
 }
 
+// ── ErrorPattern wiring (Phase 2) ─────────────────────────────────────────────
+
+type serveConflictErr struct{ msg string }
+
+func (e serveConflictErr) Error() string { return "conflict: " + e.msg }
+
+type serveErrPayload struct {
+	Code    string
+	Message string
+}
+
+func (e serveErrPayload) Error() string { return "error " + e.Code }
+
+var serveErrPayloadCodec = codex.Struct[serveErrPayload](
+	codex.RequiredField("code", codex.String().Refine(validate.NonEmptyString),
+		func(e serveErrPayload) string { return e.Code },
+		func(e *serveErrPayload, v string) { e.Code = v },
+	),
+	codex.RequiredField("message", codex.String(),
+		func(e serveErrPayload) string { return e.Message },
+		func(e *serveErrPayload, v string) { e.Message = v },
+	),
+)
+
+func TestServe_ErrorPatternMatch_HandlerError_PublishesTypedPayload(t *testing.T) {
+	client := &mockClient{}
+	router := newMockRouter()
+
+	route := reqreply.NewRoute[computeReq, computeResp]("compute/add", computeReqCodec, computeRespCodec,
+		reqreply.ErrorPattern[serveConflictErr, serveErrPayload](serveErrPayloadCodec,
+			func(e serveConflictErr) (serveErrPayload, error) {
+				return serveErrPayload{Code: "conflict", Message: e.msg}, nil
+			},
+		),
+	)
+	handle, err := route.Register(reqreply.NewBuilder(reqreply.Info{Title: "t", Version: "1.0.0"}))
+	if err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+
+	_ = mqtt5.Serve(ctx, client, router, handle,
+		func(_ context.Context, _ computeReq) (computeResp, error) {
+			return computeResp{}, serveConflictErr{msg: "duplicate"}
+		},
+		mqtt5.ServeOptions{})
+
+	router.dispatch("compute/add", &pahomqtt5.Publish{
+		Topic:   "compute/add",
+		Payload: []byte(validComputeJSON),
+		Properties: &pahomqtt5.PublishProperties{
+			ResponseTopic:   "replies/client-1",
+			CorrelationData: []byte("corr-ep1"),
+		},
+	})
+	time.Sleep(50 * time.Millisecond)
+
+	pub := client.lastPublished()
+	if pub == nil {
+		t.Fatal("expected reply to be published")
+	}
+	if strings.Contains(string(pub.Payload), "conflict:") {
+		t.Errorf("want typed JSON payload, got plain-text-looking payload: %s", pub.Payload)
+	}
+	if !strings.Contains(string(pub.Payload), `"code":"conflict"`) {
+		t.Errorf("want typed payload with code=conflict, got: %s", pub.Payload)
+	}
+}
+
+func TestServe_ErrorPatternNoMatch_HandlerError_FallsBackToPlainText(t *testing.T) {
+	client := &mockClient{}
+	router := newMockRouter()
+	unrelatedErr := errors.New("unrelated failure")
+
+	route := reqreply.NewRoute[computeReq, computeResp]("compute/add", computeReqCodec, computeRespCodec,
+		reqreply.ErrorPattern[serveConflictErr, serveErrPayload](serveErrPayloadCodec,
+			func(e serveConflictErr) (serveErrPayload, error) {
+				return serveErrPayload{Code: "conflict", Message: e.msg}, nil
+			},
+		),
+	)
+	handle, err := route.Register(reqreply.NewBuilder(reqreply.Info{Title: "t", Version: "1.0.0"}))
+	if err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+
+	_ = mqtt5.Serve(ctx, client, router, handle,
+		func(_ context.Context, _ computeReq) (computeResp, error) {
+			return computeResp{}, unrelatedErr
+		},
+		mqtt5.ServeOptions{})
+
+	router.dispatch("compute/add", &pahomqtt5.Publish{
+		Topic:   "compute/add",
+		Payload: []byte(validComputeJSON),
+		Properties: &pahomqtt5.PublishProperties{
+			ResponseTopic:   "replies/client-1",
+			CorrelationData: []byte("corr-ep2"),
+		},
+	})
+	time.Sleep(50 * time.Millisecond)
+
+	pub := client.lastPublished()
+	if pub == nil {
+		t.Fatal("expected reply to be published")
+	}
+	if string(pub.Payload) != unrelatedErr.Error() {
+		t.Errorf("want plain-text fallback %q, got %q", unrelatedErr.Error(), pub.Payload)
+	}
+}
+
+func TestServe_ErrorPatternMatch_EncodeError_PublishesTypedPayload(t *testing.T) {
+	client := &mockClient{}
+	router := newMockRouter()
+
+	route := reqreply.NewRoute[computeReq, computeResp]("compute/add", computeReqCodec, computeRespCodec,
+		reqreply.ErrorPattern[serveConflictErr, serveErrPayload](serveErrPayloadCodec,
+			func(e serveConflictErr) (serveErrPayload, error) {
+				return serveErrPayload{Code: "encode_failed", Message: e.msg}, nil
+			},
+		),
+	)
+	handle, err := route.Register(reqreply.NewBuilder(reqreply.Info{Title: "t", Version: "1.0.0"}))
+	if err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+	// Force an encode failure by overriding Encode after Register.
+	handle.Encode = func(_ computeResp) ([]byte, error) {
+		return nil, serveConflictErr{msg: "encode boom"}
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+
+	_ = mqtt5.Serve(ctx, client, router, handle,
+		func(_ context.Context, req computeReq) (computeResp, error) {
+			return computeResp{Sum: req.X + req.Y}, nil
+		},
+		mqtt5.ServeOptions{})
+
+	router.dispatch("compute/add", &pahomqtt5.Publish{
+		Topic:   "compute/add",
+		Payload: []byte(validComputeJSON),
+		Properties: &pahomqtt5.PublishProperties{
+			ResponseTopic:   "replies/client-1",
+			CorrelationData: []byte("corr-ep3"),
+		},
+	})
+	time.Sleep(50 * time.Millisecond)
+
+	pub := client.lastPublished()
+	if pub == nil {
+		t.Fatal("expected reply to be published")
+	}
+	if !strings.Contains(string(pub.Payload), `"code":"encode_failed"`) {
+		t.Errorf("want typed payload with code=encode_failed, got: %s", pub.Payload)
+	}
+}
+
 func TestServe_ObserverRecordRequestSuccess(t *testing.T) {
 	obs := &testObserver{}
 	client := &mockClient{}

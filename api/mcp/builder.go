@@ -132,10 +132,14 @@ func (m ToolMeta) applyTool(tb *toolBuilder) {
 //
 // The following types implement ToolOpt:
 //   - [ToolMeta] — tool-level documentation (description, tags)
+//   - [ErrorPattern] — codec-backed typed error result for a matched handler error
 type ToolOpt interface{ applyTool(*toolBuilder) }
 
 type toolBuilder struct {
 	meta ToolMeta
+	// errorPatternRules holds per-tool typed error result declarations from
+	// [ErrorPattern] — see [ToolHandle.ErrorResponseFor].
+	errorPatternRules []errorPatternRule
 }
 
 // Tool[In, Out] is the declarative tool descriptor.
@@ -198,6 +202,10 @@ type ToolHandle[In, Out any] struct {
 	// for inclusion in the MCP tool result.
 	// Errors are wrapped as [ToolOutputError].
 	Encode func(out Out) ([]byte, error)
+
+	// errorPatternRules holds per-tool typed error result declarations from
+	// [ErrorPattern] — see [ErrorResponseFor].
+	errorPatternRules []errorPatternRule
 }
 
 // Register validates the tool declaration, renders the input/output JSON
@@ -252,6 +260,8 @@ func (t Tool[In, Out]) Register(b *Builder) (*ToolHandle[In, Out], error) {
 			}
 			return data, nil
 		},
+
+		errorPatternRules: t.tb.errorPatternRules,
 	}
 
 	b.toolNames[t.name] = struct{}{}
@@ -321,6 +331,8 @@ func (t Tool[In, Out]) ClientHandle() (*ToolHandle[In, Out], error) {
 			}
 			return data, nil
 		},
+
+		errorPatternRules: t.tb.errorPatternRules,
 	}, nil
 }
 

@@ -46,6 +46,9 @@ var userRespCodec = codex.Struct[userResp](
 )
 
 type getReq struct{}
+type handlerConflictError struct{ msg string }
+
+func (e handlerConflictError) Error() string { return e.msg }
 
 var getReqCodec = codex.Struct[getReq]()
 var testInfo = rest.Info{Title: "Test API", Version: "1.0.0"}
@@ -148,6 +151,30 @@ func TestHandler_PostHandlerError(t *testing.T) {
 	}
 	if !strings.Contains(body["error"], "service unavailable") {
 		t.Fatalf("want error to contain 'service unavailable', got %q", body["error"])
+	}
+}
+
+func TestHandler_ErrorStatusRouteMapping(t *testing.T) {
+	b := rest.NewBuilder(testInfo)
+	handle, err := rest.NewRoute[createReq, userResp]("POST", "/users",
+		createReqCodec, userRespCodec,
+		rest.ErrorStatus[handlerConflictError](http.StatusConflict),
+	).Register(b)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	h := nethttp.Handler(handle, func(_ context.Context, _ createReq) (userResp, error) {
+		return userResp{}, handlerConflictError{msg: "conflict"}
+	}, nethttp.Options{})
+
+	rec := httptest.NewRecorder()
+	r := httptest.NewRequest(http.MethodPost, "/users", strings.NewReader(`{"name":"Alice"}`))
+	r.Header.Set("Content-Type", "application/json")
+	h.ServeHTTP(rec, r)
+
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("want 409, got %d", rec.Code)
 	}
 }
 
@@ -1005,6 +1032,8 @@ type userRespWithMeta struct {
 	Session   string
 }
 
+func (u userRespWithMeta) Error() string { return "error user response " + u.ID }
+
 var userRespWithMetaBodyCodec = codex.Struct[userRespWithMeta](
 	codex.RequiredField("id", codex.String(),
 		func(u userRespWithMeta) string { return u.ID },
@@ -1057,6 +1086,134 @@ func TestHandler_ResponseMergeFields_AutoAppliesFromResp(t *testing.T) {
 	}
 	if !found {
 		t.Errorf("Set-Cookie session=sess-xyz not found; cookies: %v", rec.Result().Cookies())
+	}
+}
+
+func TestHandler_ErrorPattern_DirectWithResponseHeaderCookieParity(t *testing.T) {
+	b := rest.NewBuilder(testInfo)
+	h, err := rest.NewRoute[createReq, userRespWithMeta]("POST", "/users", createReqCodec, userRespWithMetaBodyCodec,
+		rest.NewRequiredResponseHeaderParam("X-Request-Id", codex.String().Refine(validate.NonEmptyString),
+			func(u userRespWithMeta) string { return u.RequestID },
+			func(u *userRespWithMeta, v string) { u.RequestID = v }),
+		rest.NewOptionalResponseCookieParam("session", codex.String(),
+			func(u userRespWithMeta) string { return u.Session },
+			func(u *userRespWithMeta, v string) { u.Session = v }),
+		rest.ErrorPattern[userRespWithMeta, userRespWithMeta](http.StatusConflict, userRespWithMetaBodyCodec),
+	).Register(b)
+	if err != nil {
+		t.Fatal(err)
+	}
+	handler := nethttp.Handler(h, func(_ context.Context, req createReq) (userRespWithMeta, error) {
+		return userRespWithMeta{}, userRespWithMeta{
+			ID: "e1", Name: req.Name, RequestID: "req-error-1", Session: "sess-error-1",
+		}
+	}, nethttp.Options{})
+
+	rec := httptest.NewRecorder()
+	r := httptest.NewRequest(http.MethodPost, "/users", strings.NewReader(`{"name":"Alice"}`))
+	r.Header.Set("Content-Type", "application/json")
+	handler.ServeHTTP(rec, r)
+
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("want 409, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if got := rec.Header().Get("X-Request-Id"); got != "req-error-1" {
+		t.Fatalf("want X-Request-Id=req-error-1, got %q", got)
+	}
+	var found bool
+	for _, c := range rec.Result().Cookies() {
+		if c.Name == "session" && c.Value == "sess-error-1" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("want session cookie from error payload, got %v", rec.Result().Cookies())
+	}
+	var body map[string]string
+	if err := json.NewDecoder(rec.Body).Decode(&body); err != nil {
+		t.Fatal(err)
+	}
+	if body["id"] != "e1" || body["name"] != "Alice" {
+		t.Fatalf("unexpected body: %v", body)
+	}
+}
+
+func TestHandler_ErrorPattern_MappedPayload(t *testing.T) {
+	b := rest.NewBuilder(testInfo)
+	h, err := rest.NewRoute[createReq, userResp]("POST", "/users", createReqCodec, userRespCodec,
+		rest.ErrorPattern[handlerConflictError, userResp](http.StatusUnprocessableEntity, userRespCodec,
+			func(e handlerConflictError) (userResp, error) {
+				return userResp{ID: "mapped", Name: e.msg}, nil
+			}),
+	).Register(b)
+	if err != nil {
+		t.Fatal(err)
+	}
+	handler := nethttp.Handler(h, func(_ context.Context, _ createReq) (userResp, error) {
+		return userResp{}, handlerConflictError{msg: "mapped-message"}
+	}, nethttp.Options{})
+
+	rec := httptest.NewRecorder()
+	r := httptest.NewRequest(http.MethodPost, "/users", strings.NewReader(`{"name":"Alice"}`))
+	r.Header.Set("Content-Type", "application/json")
+	handler.ServeHTTP(rec, r)
+
+	if rec.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("want 422, got %d", rec.Code)
+	}
+	var got userResp
+	if err := json.NewDecoder(rec.Body).Decode(&got); err != nil {
+		t.Fatal(err)
+	}
+	if got.ID != "mapped" || got.Name != "mapped-message" {
+		t.Fatalf("unexpected mapped response: %+v", got)
+	}
+}
+
+// Phase 2: rest.ErrorPattern.WithAction(rest.ErrorHandle) skips the automatic
+// typed body write and falls through to Options.ErrorHandler instead — the
+// resolved status (409, from this pattern's declared status) still applies.
+func TestHandler_ErrorPattern_WithActionHandle_FallsThroughToErrorHandler(t *testing.T) {
+	b := rest.NewBuilder(testInfo)
+	h, err := rest.NewRoute[createReq, userResp]("POST", "/users", createReqCodec, userRespCodec,
+		rest.ErrorPattern[handlerConflictError, userResp](http.StatusConflict, userRespCodec,
+			func(e handlerConflictError) (userResp, error) {
+				return userResp{ID: "mapped", Name: e.msg}, nil
+			}).WithAction(rest.ErrorHandle),
+	).Register(b)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var gotErrorHandlerStatus int
+	var gotErrorHandlerErr error
+	handler := nethttp.Handler(h, func(_ context.Context, _ createReq) (userResp, error) {
+		return userResp{}, handlerConflictError{msg: "handled-not-responded"}
+	}, nethttp.Options{
+		ErrorHandler: func(w http.ResponseWriter, _ *http.Request, status int, err error) {
+			gotErrorHandlerStatus = status
+			gotErrorHandlerErr = err
+			w.WriteHeader(status)
+		},
+	})
+
+	rec := httptest.NewRecorder()
+	r := httptest.NewRequest(http.MethodPost, "/users", strings.NewReader(`{"name":"Alice"}`))
+	r.Header.Set("Content-Type", "application/json")
+	handler.ServeHTTP(rec, r)
+
+	if gotErrorHandlerStatus != http.StatusConflict {
+		t.Fatalf("want ErrorHandler called with 409, got %d", gotErrorHandlerStatus)
+	}
+	if gotErrorHandlerErr == nil {
+		t.Fatal("want ErrorHandler called with the original error")
+	}
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("want response status 409, got %d", rec.Code)
+	}
+	var body map[string]any
+	_ = json.NewDecoder(rec.Body).Decode(&body)
+	if _, hasID := body["id"]; hasID {
+		t.Fatalf("want NO typed body auto-written for handle action, got %v", body)
 	}
 }
 

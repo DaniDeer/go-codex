@@ -129,14 +129,25 @@ status mapping once on the route:
 
 ```go
 route, _ := rest.NewRoute[Req, Resp]("POST", "/jobs", reqCodec, respCodec,
-    rest.PipelineErrorStatus[domain.ConflictError](http.StatusConflict),
+    rest.ErrorStatus[domain.ConflictError](http.StatusConflict),
 ).Register(b)
 ```
 
 - First matching rule wins.
 - Unmatched pipeline errors stay `500`.
 - No pipeline value defaults to `503` (`PipelineNoResponseError`), overridable
-  with `PipelineErrorStatus[...](status)`.
+  with `ErrorStatus[...](status)`.
+
+Design closeout for unified REST error RouteOpt (roadmap):
+- `ErrorResponse[...]` becomes primary declaration (status + typed error body +
+  optional mapper/action), usable by plain and pipeline handlers.
+- `ErrorStatus[...]` is status-only shorthand; `ErrorStatus[...]` stays
+  deprecated alias for compatibility.
+- Matching precedence remains first declaration that matches via `errors.As`.
+- One matched rule performs one primary action only (`respond` OR `handle` OR
+  `log`), no implicit chaining.
+- Typed error response headers/cookies follow same codec+merge-field pattern as
+  happy-path response metadata, but scoped to matched error status.
 
 ### Ergonomics: same domain error, no-pipeline vs pipeline
 
@@ -179,7 +190,7 @@ Pipeline (`PipelineHandler`): map status in route declaration; keep custom
 
 ```go
 pipelineRoute, _ := rest.NewRoute[Req, Resp]("POST", "/erg/pipeline", reqCodec, respCodec,
-    rest.PipelineErrorStatus[domainConflictError](http.StatusConflict),
+    rest.ErrorStatus[domainConflictError](http.StatusConflict),
 ).Register(b)
 
 nethttp.RegisterPipeline(mux, pipelineRoute, pipelineFn,
@@ -192,8 +203,8 @@ nethttp.RegisterPipeline(mux, pipelineRoute, pipelineFn,
 |-----------|--------------------------|------------------------------|
 | One-struct-one-call request/response | Yes (`Req` decode + `Resp` encode via route codecs) | Yes (same route codec path; pipeline fn gets typed `Req`, returns typed `Resp` stream) |
 | Custom error body/envelope | Yes (`Options.ErrorHandler`) | Yes (`Options.ErrorHandler`) |
-| Where status code mapping lives | `ErrorHandler` (or default adapter status) | Route declaration via `PipelineErrorStatus[...]` for stream errors; then `ErrorHandler` writes body |
-| Typed route-level error mapping | No (handled in `ErrorHandler`) | Yes (`rest.PipelineErrorStatus[E](status)`) |
+| Where status code mapping lives | `ErrorHandler` (or default adapter status) | Route declaration via `ErrorStatus[...]` for stream errors; then `ErrorHandler` writes body |
+| Typed route-level error mapping | No (handled in `ErrorHandler`) | Yes (`rest.ErrorStatus[E](status)`) |
 | No emitted pipeline value handling | N/A | `PipelineNoResponseError` default `503` (overridable by route mapping) |
 | Redirect success path (`3xx` + `Location`) | `RespStatus` + response header merge / `WithResponseHeaders` | Same (pipeline does not change redirect mechanics) |
 
