@@ -215,8 +215,9 @@ All must be `errors.As`-navigable. Bare `fmt.Errorf` in `client.go` without a ty
 | Situation | How mcpgo handles it |
 |-----------|----------------------|
 | Input decode/validation failure | Returns `mcp.NewToolResultError(err.Error())` — `IsError: true` result, **not** a Go error |
-| Handler error | Returns `mcp.NewToolResultError(err.Error())` — `IsError: true` result |
-| Output encode failure | Returns `(nil, err)` — protocol-level Go error (server contract violation) |
+| Handler error, no matching `mcp.ErrorPattern` | Returns `mcp.NewToolResultError(err.Error())` — `IsError: true` result |
+| Handler error, matching `mcp.ErrorPattern` | Returns `mcp.NewToolResultStructured(json.RawMessage(body), string(body))` with `IsError: true` set manually — structured typed content, still an error to the LLM (see §13) |
+| Output encode failure | Returns `(nil, err)` — protocol-level Go error (server contract violation); NEVER consults `ErrorPattern` (different concern) |
 
 ### format package (File I/O)
 
@@ -508,3 +509,66 @@ the boundary being worked on. A boundary that passes the first five columns but 
 top-level fields is INCOMPLETE — file at least a `small` finding (see SKILL.md's "Boundary Symmetry
 Guardrail" for the rationale: body format is orthogonal to var-merge, and merge-field `get`/`set` are
 plain closures that must support nested access).
+
+---
+
+## 13. Error-Path Ergonomics (`ErrorPattern`/`ErrorChannel`/`ErrorFrame`/`ErrorAction`)
+
+Codec-first, declarative error-path declarations exist across every `api/*` layer plus
+`adapters/websocket`, unifying error handling with the same "declare → register → handle" workflow
+already used for the happy path. See `docs/roadmap/error-path-ergonomics.md` for full design history
+and `docs/guides/error-handling.md` for the cross-boundary usage guide.
+
+### Declaration surface per boundary
+
+| Boundary | Declaration | Status/topic concept | Action model |
+|---|---|---|---|
+| `api/rest` | `rest.ErrorStatus[E](status)` (status-only) / `rest.ErrorPattern[E,B](status, codec, mapFn...)` (status + codec-backed body) | HTTP status | Full: `rest.ErrorAction` (`ErrorRespond`/`ErrorHandle`/`ErrorLog`) via `.WithAction(...)` — REST-local type, NOT shared with `events.ErrorAction` (each API layer keeps its own parallel vocabulary, same as `RouteMeta`/`ChannelMeta`) |
+| `api/events` | `events.ErrorChannel[E,B](topic, codec, mapFn...)` | declared error-output topic | Full: `events.ErrorAction` via `.WithAction(...)` |
+| `api/reqreply` | `reqreply.ErrorPattern[E,B](codec, mapFn...)` — auto-generates the `ErrorReplyMeta`-equivalent AsyncAPI reply-error channel/operation in the SAME declaration (`.WithCode`/`.WithDescription`/`.WithSchemaName`/`.WithChannelAddress`/`.WithOperationID` customize it) | reply-error channel (no HTTP status) | n/a — reqreply has no separate OnError-style hook; matched pattern always sends the typed payload as the reply, unmatched falls back to plain-text `err.Error()` |
+| `api/mcp` | `mcp.ErrorPattern[E,B](codec, mapFn...)` on `NewTool` (Tool only — Resources/Prompts out of scope, protocol-level not business errors) | n/a (tool result, not HTTP/topic) | n/a — matched → structured `IsError:true` result; unmatched → plain-text `IsError:true` result |
+| `adapters/websocket` | `websocket.ErrorFrame[E,Out](mapFn...) ErrorFrameRule[Out]` on `DuplexSocketAdapterOptions.ErrorFrames` (type-erased `any`, same pattern as events `Formats`) | broadcast to all sessions (no dedicated topic — broadcast IS the notification path) | Full: shares `events.ErrorAction` (`.WithAction(events.ErrorHandle)` + `.WithHandle(func(error))`) |
+| SQL/Cache/File (`adapters/sql`/`adapters/redis`/`adapters/file`) | **NO dedicated declaration type** — compose the existing `OnError func(error)` hook with a declared `events.ErrorChannel.ErrorResponseFor(err)` lookup inline | n/a (internal boundary, no caller) | `OnError` IS the `handle` action; nil `OnError` is `log`; `respond`-equivalent achieved by composition, not new API |
+
+### Rules
+
+- **Matching is always type-only via `errors.As`, first-declared-rule-wins precedence** — identical
+  across all five declaration types above. A new boundary that invents different matching semantics
+  (e.g. string comparison, error codes) is a `bug`-severity finding.
+- **Two modes on every `ErrorPattern`/`ErrorChannel`/`ErrorFrame` constructor**: direct (no `mapFn`,
+  `E` must be assignable to `B`/`Out`) and mapped (`mapFn(E) (B, error)` provided). Missing either
+  mode on a new declaration type is a `small` finding.
+- **One matched pattern executes exactly ONE action** — never an implicit chain (e.g. never
+  handle-then-respond). Verify test coverage proves this (a `.WithAction(ErrorHandle)` test asserting
+  NO auto-write/auto-publish/auto-broadcast happened).
+- **Do NOT propose new dedicated declaration types for SQL/Cache/File** — this was a deliberate
+  design decision (see `docs/roadmap/error-path-ergonomics.md` Phase 1C): these are internal
+  boundaries with no channel/topic concept of their own, and the existing `OnError` hook already
+  generically covers "handle" — composing it with `events.ErrorChannel.ErrorResponseFor` achieves
+  the "respond"-equivalent with zero new API surface. Flagging the absence of
+  `sql.ErrorChannel`/`redis.ErrorChannel`/`file.ErrorChannel` as a gap is INCORRECT.
+- **`reqreply.ErrorPattern` reconciles with the older spec-only `reqreply.ErrorReplyMeta`** —
+  `ErrorReplyMeta` remains available UNCHANGED for spec-only declarations with no runtime dispatch
+  (pure documentation/contract metadata, same role as `RouteMeta`). Do not flag `ErrorReplyMeta` as
+  dead code or propose removing it.
+- **Adapter wiring only touches HANDLER/ENCODE failure branches, never DECODE failure** — decode
+  failures happen before the application handler runs, so there is no business error to match yet;
+  they keep their existing typed-error (`rest.PathParamError`, `mqtt5.SubscribeError{KindDecode}`,
+  etc.) behavior unchanged. A new adapter wiring that tries to match `ErrorPattern` against a decode
+  failure is a `bug`-severity finding (wrong boundary).
+- **`mqtt5.PublishAdapter` is the reference implementation for events pub/sub adapter wiring** —
+  `mqtt.PublishAdapter` and `zeromq.PublishAdapter` both mirror it exactly (consult
+  `handle.ErrorResponseFor(err)` before falling back to `OnError`). A new pub/sub adapter that skips
+  this wiring (only has `OnError`, never consults `ErrorResponseFor`) reproduces a known-fixed gap —
+  file at least a `small` finding.
+- **Ports parity is REQUIRED and already proven** — `TestRESTPattern_ErrorStatus_ParityWithDirectRouteDeclaration`
+  (`ports/port_test.go`) and `TestEventPattern_ErrorChannel_ParityWithDirectChannelDeclaration` lock
+  that a `Pattern`-declared error rule (via `PluginRESTPattern`/`PluginEventPattern`) behaves
+  identically to one declared directly via `rest.NewRoute`/`events.NewChannel` — no ports-specific
+  wiring needed since `Pattern.Opts` is a thin `RouteOpt`/`ChannelOpt` pass-through. A NEW pattern
+  type that fails this parity (e.g. silently drops error-pattern opts) is a `bug`.
+- **Examples exist and must stay in sync**: `examples/adapters-mqtt5` (events.ErrorChannel via
+  `ports.SinkPort`+`PublishAdapter`), `examples/websocket-duplex` (websocket.ErrorFrame broadcast),
+  `examples/redis-cache` (SQL/Cache/File composition pattern). If you touch any of these files for an
+  unrelated reason, verify the error-path demo section still builds/runs (`go build` + `go run`
+  clean exit).

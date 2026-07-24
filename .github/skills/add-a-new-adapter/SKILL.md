@@ -232,6 +232,21 @@ verification ritual. Track progress with todos, one per checklist block.
 - **Errors channel ownership**: stream bridges route errors to
   `Stream.Errors`, never a separate callback (`subOpts.OnError` is overridden
   internally — documented behaviour, keep it consistent).
+- **New pub/sub sink adapters must wire the error-path ergonomics convention**:
+  if your adapter binds an `events.ChannelHandle[T]` (pub/sub sink), consult
+  `handle.ErrorResponseFor(err)` for every upstream stream error BEFORE
+  falling back to your own `OnError` option — mirror
+  `adapters/mqtt5.PublishAdapter`'s `Activate` exactly (also implemented in
+  `adapters/mqtt`/`adapters/zeromq`). A matched `events.ErrorRespond` pattern
+  publishes the typed payload to its declared error topic using your
+  adapter's own low-level send call; `ErrorHandle`/`ErrorLog` or unmatched
+  falls through to `OnError` unchanged. No new options struct fields needed
+  — the declaration lives entirely on the `ChannelHandle`. If your adapter
+  is instead a request/reply Serve loop (binds `reqreply.RouteHandle`),
+  consult `handle.ErrorResponseFor(err)` on handler/encode failure ONLY
+  (never decode failure) before sending a plain-text error reply — mirror
+  `adapters/mqtt5.Serve`/`adapters/zeromq.Serve`. See `review-go-codex`
+  skill's checklist.md §13 for the full per-boundary rule set.
 - **No `//nolint`/`//gosec` suppressions** — `just check` must stay at 0
   issues without new suppressions.
 - **Unit tests must not require a live broker/server** — hand-written fakes

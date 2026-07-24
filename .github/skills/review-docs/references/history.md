@@ -4,6 +4,39 @@ Do not re-report any findings listed here. They have been implemented.
 
 ---
 
+## Round DR7 (error-path ergonomics — docs sync across all boundaries)
+
+Docs work accompanying the error-path-ergonomics feature (`docs/roadmap/error-path-ergonomics.md`,
+Phases 1A–1D + Phase 2). Not a standalone review round — recorded so future doc reviews don't
+re-flag these as gaps.
+
+- **D1 — `docs/features/rest-api.md` had no error-path-ergonomics section**: added, covering
+  `rest.ErrorStatus`/`rest.ErrorPattern` (direct/mapped modes), the `.WithAction` action selector
+  table, and header/cookie parity with the happy path.
+- **D2 — `docs/features/events.md` had no error-path-ergonomics section**: added, covering
+  `events.ErrorChannel`, the three-way action model, and adapter wiring notes for
+  `mqtt5`/`mqtt`/`zeromq` `PublishAdapter`.
+- **D3 — `docs/features/websocket.md` had no error-path-ergonomics section**: added, covering
+  `websocket.ErrorFrame`, broadcast semantics, and the action model.
+- **D4 — `docs/features/mcp.md` had NO error-path-ergonomics section at all (feature didn't exist
+  yet)**: added, covering `mcp.ErrorPattern` and the `adapters/mcpgo.ToolHandler` wiring.
+- **D5 — `docs/guides/error-handling.md` had no store/IO boundary guidance**: added "Store/IO
+  boundaries (SQL, Cache, File)" section documenting the `OnError` + `events.ErrorChannel`
+  composition pattern (no new adapter API — see checklist.md §13 in `review-go-codex`).
+- **D6 — `docs/guides/asyncapi.md` and `docs/concepts/api-contracts.md` described `ErrorReplyMeta`
+  as the only req/reply error declaration**: updated both to document `reqreply.ErrorPattern` as
+  the recommended runtime-wired declaration, with `ErrorReplyMeta` demoted to "spec-only, no runtime
+  dispatch" alternative.
+- **D7 — no runnable example demonstrated any error-path feature except REST**: extended
+  `examples/adapters-mqtt5`, `examples/websocket-duplex`, and `examples/redis-cache` — see
+  `review-go-codex` skill's history.md Round 64 (G8) for details.
+- **D8 — `.github/instructions/go-codex.instructions.md` bullets for `api/rest`, `api/events`,
+  `api/reqreply`, `api/mcp`, `adapters/nethttp`/`chi`/`mqtt5`/`mqtt`/`zeromq`/`mcpgo`/`websocket`
+  didn't mention any of the above**: all updated with concise error-path-ergonomics summaries
+  cross-referencing `docs/roadmap/error-path-ergonomics.md`.
+
+---
+
 ## Round DR6 (format/file docs sync after EntrySlice additions)
 
 - **D1 — `docs/features/formats.md` flat-key-patch link described only "four patterns"**: Updated to enumerate all 11 current sections including EntrySlice single-segment key, multi-field key extraction, and static key injection added in this session.

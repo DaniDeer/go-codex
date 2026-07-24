@@ -53,6 +53,7 @@ For each fenced code block in `docs/` that contains Go code:
 | `forge.NewFunction` | `docs/concepts/pipelines.md` — must have code examples |
 | Codec-as-contract pattern | `docs/concepts/codec-as-contract.md` — must have code examples |
 | Structured errors + slog | `docs/guides/error-handling.md` — must have code examples |
+| Error-path ergonomics (`ErrorPattern`/`ErrorChannel`/`ErrorFrame`) | `docs/roadmap/error-path-ergonomics.md` (design source of truth) + a dedicated "Error-path ergonomics" section on each of `docs/features/rest-api.md`, `docs/features/events.md`, `docs/features/websocket.md`, `docs/features/mcp.md`, and the "Store/IO boundaries" section of `docs/guides/error-handling.md` — each must have runnable code examples and cross-link to the roadmap doc |
 | Observer + metrics | `docs/guides/observer.md` — must have code examples |
 | OpenAPI spec generation | `docs/guides/openapi.md` — must have code examples |
 | AsyncAPI spec generation | `docs/guides/asyncapi.md` — must have code examples |

@@ -1,6 +1,69 @@
-# go-codex Review History (R1–R63)
+# go-codex Review History (R1–R64)
 
 Do not re-report any of these findings. They have been implemented and tested.
+
+---
+
+## Round 64 (error-path ergonomics — codec-first declarative error handling across all boundaries)
+
+Not a review round in the usual sense — a full feature roadmap (`docs/roadmap/error-path-ergonomics.md`,
+Phases 1A–1D + Phase 2) implemented across every `api/*` layer plus `adapters/websocket`. Recorded here
+so future review rounds don't re-flag any of this as a gap. See checklist.md §13 and SKILL.md's
+"Error-path ergonomics" gotcha entry for the full rule set.
+
+- **G1 (Phase 1A) — REST had no codec-first error declaration**: added `rest.ErrorStatus[E](status)`
+  (status-only) and `rest.ErrorPattern[E,B](status, codec, mapFn...)` (status + codec-backed body,
+  direct/mapped modes, `errors.As` match, first-match precedence). Wired into `adapters/nethttp`/`chi`
+  `Handler` (and `PipelineHandler`, which wraps `Handler`). Error responses support the same
+  header/cookie merge-field parity as the happy path.
+- **G2 (Phase 1B) — Events/WebSocket had no error-output declaration**: added
+  `events.ErrorChannel[E,B](topic, codec, mapFn...)` with a full three-way action model
+  (`events.ErrorAction`: `ErrorRespond`/`ErrorHandle`/`ErrorLog` via `.WithAction`). Wired into
+  `adapters/mqtt5.PublishAdapter` as the reference implementation. Added
+  `websocket.ErrorFrame[E,Out](mapFn...) ErrorFrameRule[Out]` on
+  `DuplexSocketAdapterOptions.ErrorFrames` — matched errors broadcast a typed frame to every
+  connected session (no dedicated error topic exists on a socket).
+- **G3 (Phase 1C) — SQL/Cache/File had no error-path story**: determined NO new adapter API was
+  needed — every sink-side adapter's existing `OnError func(error)` already realizes the `handle`
+  action (nil = `log`); a `respond`-equivalent is achieved by composing `OnError` with a declared
+  `events.ErrorChannel.ErrorResponseFor` lookup inline. Locked with composition tests in
+  `adapters/sql`/`adapters/redis`/`adapters/file`.
+- **G4 (Phase 1D) — no ports parity proof, no cross-adapter docs matrix**: added
+  `TestRESTPattern_ErrorStatus_ParityWithDirectRouteDeclaration`/
+  `TestEventPattern_ErrorChannel_ParityWithDirectChannelDeclaration` (`ports/port_test.go`) proving
+  `Pattern`-declared error rules behave identically to direct declarations. Added the capability
+  matrix now in checklist.md §13.
+- **G5 (Phase 2.1) — `reqreply.ErrorReplyMeta` was spec-only, no runtime dispatch**: added
+  `reqreply.ErrorPattern[E,B](codec, mapFn...)` which drives BOTH the AsyncAPI reply-error
+  channel/operation AND runtime dispatch in one declaration (`.WithCode`/`.WithDescription`/
+  `.WithSchemaName`/`.WithChannelAddress`/`.WithOperationID` customize the generated spec entry;
+  default `Code` derived from `%T` type name). Wired into `mqtt5.Serve` and `zeromq.Serve`/
+  `ServeRouter` (ROUTER variant preserves identity framing) on handler/encode failure only.
+  `ErrorReplyMeta` remains available unchanged for spec-only use.
+- **G6 (Phase 2.2) — MCP tool errors were always plain text**: added `mcp.ErrorPattern[E,B](codec,
+  mapFn...)` as a `ToolOpt` on `NewTool` (Tool handler errors only — Resources/Prompts are
+  protocol-level, out of scope). Wired into `adapters/mcpgo.ToolHandler`'s handler-error branch:
+  matched → `mcp.NewToolResultStructured(...)` with `IsError: true` set manually; unmatched → falls
+  back to `mcp.NewToolResultError(err.Error())` unchanged. Added `docs/features/mcp.md`'s
+  error-path-ergonomics section (new — none existed before).
+- **G7 (Phase 2.3) — only `mqtt5.PublishAdapter` consulted `ErrorResponseFor`**: applied the exact
+  same wiring to `adapters/mqtt.PublishAdapter` and `adapters/zeromq.PublishAdapter` — no new
+  options struct fields needed (the declaration lives entirely on the `events.ChannelHandle` every
+  publish adapter already receives).
+- **G8 (Phase 2.4) — no runnable examples for any error-path feature except REST**: extended
+  `examples/adapters-mqtt5` (events.ErrorChannel via `ports.SinkPort`+`PublishAdapter`),
+  `examples/websocket-duplex` (websocket.ErrorFrame broadcast, `NegativeValueError` business rule
+  re-emitted through `stream.MapErr` instead of silenced), and `examples/redis-cache` (SQL/Cache/File
+  `OnError`+`ErrorChannel` composition as a runnable program). All three build and smoke-test cleanly.
+- **G9 (Phase 2.5) — REST had no `handle`/`log` action selector, only `respond`**: `rest.ErrorPattern`
+  now returns a chainable `ErrorPatternOpt[E,B]` (still satisfies `RouteOpt`, zero breaking changes)
+  with `.WithAction(rest.ErrorAction)`. `rest.ErrorAction` is a NEW standalone type (NOT shared with
+  `events.ErrorAction` — see gotcha above). `ErrorHandle`/`ErrorLog` both skip the auto-write and
+  fall through to `Options.ErrorHandler` — behaviorally identical for REST (only one hook exists),
+  kept distinct for cross-boundary vocabulary parity. This closes three-way action-model parity
+  across REST/Events/WebSocket.
+- Deferred (not implemented, no concrete use case): client-side error decode parity for
+  `nethttp.Call` (`UnexpectedStatusError.Body` already works as an escape hatch).
 
 ---
 
