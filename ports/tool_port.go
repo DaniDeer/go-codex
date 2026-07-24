@@ -247,10 +247,43 @@ func (p *ToolPort[In, Out]) OutCodec() codex.Codec[Out] { return p.outCodec }
 //
 // The pipeline function must be safe for concurrent calls — each request starts
 // an independent invocation.
+//
+// Use SetPipeline when the handler benefits from [gstream.Apply]/[gstream.Tap]/
+// [gstream.MapErr] composition. For single-step, non-pipeline request handling,
+// use [ToolPort.SetFunc] instead — the port's declare→Plugin→[ToolPort.Bind]
+// mechanism is IDENTICAL either way; only this business-logic connection step
+// differs.
 func (p *ToolPort[In, Out]) SetPipeline(fn func(context.Context, In) gstream.Stream[Out]) {
 	p.mu.Lock()
 	p.fn = fn
 	p.mu.Unlock()
+}
+
+// SetFunc is a convenience wrapper around [ToolPort.SetPipeline] for
+// single-step, non-pipeline request handling: it wraps fn — a plain
+// func(context.Context, In) (Out, error), the idiomatic Go request/response
+// shape — into the [gstream.Stream][Out] shape [ToolPort.SetPipeline]/[ToolPort.Bind]
+// expect, via [gstream.Single]. A non-nil error from fn is delivered as the
+// single item on the resulting stream's Errors channel.
+//
+// Use SetFunc when the domain logic is one function call, not a multi-step
+// forge pipeline; use [ToolPort.SetPipeline] directly when you need
+// [gstream.Apply]/[gstream.Tap]/[gstream.MapErr] composition. Both connect to
+// the SAME declared port and the SAME [ToolPort.Bind] call — plain Go request
+// handling is a first-class consumption style, not a fallback.
+func (p *ToolPort[In, Out]) SetFunc(fn func(context.Context, In) (Out, error)) {
+	p.SetPipeline(func(ctx context.Context, req In) gstream.Stream[Out] {
+		v, err := fn(ctx, req)
+		if err != nil {
+			errCh := make(chan error, 1)
+			errCh <- err
+			close(errCh)
+			valCh := make(chan Out)
+			close(valCh)
+			return gstream.Stream[Out]{Values: valCh, Errors: errCh}
+		}
+		return gstream.Single(ctx, v)
+	})
 }
 
 // Bind registers the pipeline with a transport adapter. Can be called multiple

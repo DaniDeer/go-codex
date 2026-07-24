@@ -577,3 +577,12 @@ for user-facing docs.
   `examples/redis-cache` (SQL/Cache/File composition pattern). If you touch any of these files for an
   unrelated reason, verify the error-path demo section still builds/runs (`go build` + `go run`
   clean exit).
+- **`declare → PluginXxxPattern → Bind` is consumption-style-agnostic — do not propose parallel
+  plain-Go-only port constructors.** `SourcePort`/`SinkPort`/`LatestPort`/`DuplexPort` already
+  satisfy the "plain idiomatic Go, no forge/gstream" consumption style via existing methods:
+  `Stream(ctx)` + `stream.Drain` callback, `Start`/`Push`/`Close`, `Latest()`, `Inbound`/`Feed`.
+  `ToolPort.SetFunc(func(ctx, In) (Out, error))` and `IOPort.Call(ctx, req) (Resp, error)` are the
+  plain-Go equivalents of `SetPipeline`/`Connect` — same bound adapter, same `Pattern`-built handle,
+  mutually exclusive with their stream-composed sibling (later call wins for `SetFunc`/`SetPipeline`).
+  `IOPort.Call` returns `PortNoResponseError{Port}` if the adapter's stream emits zero items. Do not
+  flag the absence of a separate non-generic "simple port" API — this IS it.

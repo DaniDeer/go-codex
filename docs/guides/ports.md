@@ -22,6 +22,43 @@ Step 2 — Wiring (main.go only)
 
 ## Seven port types
 
+## Two consumption styles, one declaration mechanism
+
+`declare → PluginXxxPattern → Bind` never changes based on how you consume the
+port afterward. Plain idiomatic Go — no `forge`/`gstream` composition — is a
+first-class way to use `ports`, not a stepping stone toward pipelines:
+
+```go
+// Same declaration and Bind either way:
+handle, err := domain.OEETool.PluginRESTPattern(domain.OEERESTPattern)
+domain.OEETool.Bind(ctx, nethttp.PipelineAdapter(mux, handle, nethttp.PipelineAdapterOptions{}))
+
+// Pipeline-style pipeline function:
+domain.OEETool.SetPipeline(func(ctx context.Context, req OEEIn) gstream.Stream[OEEResult] {
+    return gstream.Apply(ctx, gstream.Single(ctx, req), oeeCalcFn, gstream.ApplyOptions{})
+})
+
+// Plain-Go style — identical wiring, no gstream:
+domain.OEETool.SetFunc(func(ctx context.Context, req OEEIn) (OEEResult, error) {
+    return oeeCalcFn(ctx, req)
+})
+```
+
+Per-port escape hatch for plain Go:
+
+| Port | Plain-Go method | Stream-composed equivalent |
+|---|---|---|
+| `SourcePort[T]` | `Stream(ctx)` + `stream.Drain` callback | `Stream(ctx)` + `gstream.Apply` |
+| `SinkPort[T]` | `Start`/`Push`/`Close` | `Feed(ctx, stream)` |
+| `IOPort[Req,Resp]` | `Call(ctx, req)` | `Connect(ctx, stream)` |
+| `ToolPort[In,Out]` | `SetFunc(fn)` | `SetPipeline(fn)` |
+| `LatestPort[T]` | `Latest()` | `Feed(ctx, stream)` to populate |
+| `DuplexPort[In,Out]` | `Inbound(ctx)` + per-session handling | `Feed(ctx, stream)` |
+
+See `examples/ports-plain-go` for a full application using only the
+plain-Go column — same `Pattern`/`Bind` lines as `examples/sensor-service`,
+zero `forge`/`gstream` imports.
+
 ## Error surfaces and escape hatches
 
 Ports keep transport imports out of pipeline code, but error handling still has
@@ -131,6 +168,10 @@ domain.Calibration.Bind(ctx, nethttp.CallAdapter(httpClient, "http://calib-svc",
 Or, for a single-transport `IOPort`, use the convenience constructor that
 combines the two steps: `port, handle := codex.Must2(ports.NewRestPort(...))`.
 
+Plain Go without stream composition: `resp, err := domain.Calibration.Call(ctx, req)`
+invokes the bound adapter directly — same declaration and `Bind` as above.
+`Call` returns `PortNoResponseError` if the adapter produced zero items.
+
 ### `ToolPort[In, Out]` — server-side request/response
 
 The complement of `IOPort`: instead of the pipeline calling out, an external caller
@@ -166,6 +207,11 @@ domain.OEETool.Bind(ctx, zeromq.ServeAdapter(repSock, zmqHandle, zeromq.ServeOpt
 `Bind` returns `PortBindError` wrapping `PortNoPipelineError` if `SetPipeline` was not
 called first. Multiple `Bind` calls are allowed — each exposes the same pipeline on a
 different transport concurrently.
+
+Plain Go without `gstream`: replace the `SetPipeline` call with `SetFunc`,
+registering a plain `func(context.Context, In) (Out, error)`. The three
+`PluginXxxPattern`/`Bind` calls are unchanged. `SetFunc` and `SetPipeline`
+are mutually exclusive — the later call wins.
 
 ### `LatestPort[T]` — reactive-cache boundary
 

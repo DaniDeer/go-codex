@@ -1,6 +1,48 @@
-# go-codex Review History (R1–R66)
+# go-codex Review History (R1–R67)
 
 Do not re-report any of these findings. They have been implemented and tested.
+
+---
+
+## Round 67 (ports plain-Go convenience — `ToolPort.SetFunc` + `IOPort.Call`)
+
+Closed the last consumption-style gap in `ports`: `SourcePort`/`SinkPort`/`LatestPort`/`DuplexPort`
+already had non-stream escape hatches (`Stream`+`Drain`, `Start`/`Push`/`Close`, `Latest()`,
+`Inbound`/`Feed`), but `ToolPort`/`IOPort` only accepted `gstream`-composed functions
+(`SetPipeline`, `Connect`), forcing plain idiomatic-Go users to write a trivial
+`stream.Single`/`stream.Collect` wrapper by hand.
+
+- **`ToolPort.SetFunc(func(ctx, In) (Out, error))`** (`ports/tool_port.go`) — plain-Go alternative
+  to `SetPipeline`; internally wraps the fn to satisfy the same pipeline-function field. Mutually
+  exclusive with `SetPipeline` — the later call wins. Same `PluginXxxPattern`/`Bind` calls serve
+  either style.
+- **`IOPort.Call(ctx, req) (Resp, error)`** (`ports/io_port.go`) — plain-Go alternative to
+  `Connect`; drains the bound adapter's stream for one request via `stream.Single`/`stream.Collect`.
+  Returns the new **`PortNoResponseError{Port}`** (`ports/port_errors.go`, `slog.LogValuer`) if the
+  adapter emits zero items.
+- **Documented the consumption-style-agnostic invariant** in `ports/doc.go` (new "Two consumption
+  styles, one declaration mechanism" section), `docs/features/ports.md` and `docs/guides/ports.md`
+  (new sections + inline `IOPort`/`ToolPort` callouts), and
+  `.github/instructions/go-codex.instructions.md`'s `ports` bullet.
+- Tests: `TestToolPort_SetFunc_*` (3), `TestIOPort_Call_*` (4),
+  `TestPortNoResponseError_ErrorAndLogValue` (1) in `ports/port_test.go`.
+- **New `docs/concepts/ports-and-adapters.md`** — dedicated concept page for the
+  port/Pattern/plugin/adapter mechanism, framing plain-Go and forge-pipeline
+  consumption as equal first-class styles; added to `zensical.toml` nav.
+- **New `examples/ports-plain-go`** — two `ToolPort` endpoints
+  (`/convert/{unit}` via `SetFunc`, `/convert-pipeline/{unit}` via
+  `SetPipeline`) share one `convertPattern()` (path param `unit` +
+  optional header `X-Trace-Id`, both via `rest.NewPathParam`/
+  `rest.NewOptionalHeaderParam` merge-field constructors, backed by
+  once-declared `unitCodec`/`traceIDCodec` reused across the struct field,
+  the merge-field constructor, AND — for `unit` — the request body field)
+  to prove the merge-field codec layer behaves identically for both
+  consumption styles. Also shows `rest.WithPathConstraints` +
+  `ports.PortOptions.RESTBuilder` enforcing the route TEMPLATE's shape
+  (`exactUnitPathConstraint`: exact prefix, exactly one placeholder,
+  nothing after) as a distinct concern from the placeholder's runtime
+  VALUE codec — and demonstrates `SourcePort`+`stream.Drain` and
+  `SinkPort` `Start`/`Push`/`Close`.
 
 ---
 

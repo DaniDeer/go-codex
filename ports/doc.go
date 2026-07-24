@@ -18,6 +18,31 @@
 //	handle, _ := ports.EventHandle[SensorReading](domain.SensorReadings)
 //	domain.SensorReadings.Bind(ctx, mqtt.SubscribeAdapter(client, handle, 0, fmt, opts))
 //
+// # Two consumption styles, one declaration mechanism
+//
+// declare → PluginXxxPattern → Bind is IDENTICAL regardless of how the
+// caller consumes the port afterward. Plain idiomatic Go — no [forge]
+// pipeline, no [stream] composition — is a first-class consumption style,
+// not a fallback for users who "don't use pipelines yet." Every port type
+// has a non-stream escape hatch that reuses the exact same declaration:
+//
+//   - [SourcePort] — [SourcePort.Stream] + [stream.Drain] to run a plain
+//     callback per item, instead of [stream.Apply]-style composition.
+//   - [SinkPort] — [SinkPort.Start]/[SinkPort.Push]/[SinkPort.Close] to feed
+//     items imperatively, instead of [SinkPort.Feed] from a stream.
+//   - [LatestPort] — [LatestPort.Latest] to read the cached value directly.
+//   - [ToolPort] — [ToolPort.SetFunc] to register a plain
+//     func(context.Context, In) (Out, error), instead of [ToolPort.SetPipeline].
+//   - [IOPort] — [IOPort.Call] to invoke the bound adapter with one request
+//     and get one response back, instead of streaming through the port.
+//   - [DuplexPort] — [DuplexPort.Inbound]/[DuplexPort.Feed], transport-inherent
+//     on both consumption styles.
+//
+// None of these are parallel APIs: they call the same bound adapter, the
+// same codec, the same [Pattern]-built handle as the stream-composed path.
+// Switching a pipeline-based application to plain Go (or vice versa) never
+// requires re-declaring the port — only the line(s) after Bind change.
+//
 // # Six port types
 //
 //   - [SourcePort] — inbound boundary (external → pipeline). Multiple adapters = fan-in merge.

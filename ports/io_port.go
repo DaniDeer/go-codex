@@ -342,3 +342,28 @@ func (p *IOPort[Req, Resp]) Connect(ctx context.Context, src gstream.Stream[Req]
 
 	return a.Transform(adapterContext(ctx, p.params, p.handles), src)
 }
+
+// Call is a convenience wrapper around [IOPort.Connect] for a single
+// request/response, non-pipeline use: it wraps req in a one-item stream via
+// [gstream.Single], calls Connect, and collects exactly one result via
+// [gstream.Collect]. Returns [PortNoAdapterError] if no adapter has been
+// bound, or [PortNoResponseError] if the bound adapter produces zero values
+// for req.
+//
+// Use Call for a single idiomatic Go request/response; use [IOPort.Connect]
+// directly when driving many items through the bound adapter as part of a
+// larger stream pipeline. Both connect to the SAME declared port and the
+// SAME [IOPort.Bind] call — plain Go request/response is a first-class
+// consumption style, not a fallback.
+func (p *IOPort[Req, Resp]) Call(ctx context.Context, req Req) (Resp, error) {
+	out := p.Connect(ctx, gstream.Single(ctx, req))
+	vals, errs := gstream.Collect(ctx, out)
+	var zero Resp
+	if len(errs) > 0 {
+		return zero, errs[0]
+	}
+	if len(vals) == 0 {
+		return zero, PortNoResponseError{Port: p.name}
+	}
+	return vals[0], nil
+}

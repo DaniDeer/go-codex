@@ -1,8 +1,8 @@
 # Protocol-Agnostic Pipeline Wiring — `ports`
 
-> See also: [`ports` package on pkg.go.dev](https://pkg.go.dev/github.com/DaniDeer/go-codex/ports) · [Forge Pipelines concept](../concepts/pipelines.md) · [Wiring Guide](../guides/ports.md) · [App — Application Lifecycle](app.md)
+> See also: [`ports` package on pkg.go.dev](https://pkg.go.dev/github.com/DaniDeer/go-codex/ports) · [Ports, Plugins, and Adapters concept](../concepts/ports-and-adapters.md) · [Forge Pipelines concept](../concepts/pipelines.md) · [Wiring Guide](../guides/ports.md) · [App — Application Lifecycle](app.md)
 >
-> Runnable demo: [`examples/sensor-service`](https://github.com/DaniDeer/go-codex/tree/main/examples/sensor-service) — one coherent use case wiring MQTT, SQL, file, and HTTP adapters to `SourcePort`/`SinkPort`/`IOPort`/`ToolPort`/`PipePort`, each declared with a `Pattern` plugged in at wiring time; its MQTT ingestion/egress boundary is a plain `SourcePort`/`SinkPort` connected directly to internal `PipePort` stages via `Chain`/`ChainStream`, with the SQL persistence hop modeled as its own `Chain`/`ChainStream` edge and the pipeline shape derived via `ports.PipelineSpec`; see its README for the full data-flow diagram.
+> Runnable demos: [`examples/sensor-service`](https://github.com/DaniDeer/go-codex/tree/main/examples/sensor-service) — one coherent use case wiring MQTT, SQL, file, and HTTP adapters to `SourcePort`/`SinkPort`/`IOPort`/`ToolPort`/`PipePort`, each declared with a `Pattern` plugged in at wiring time; its MQTT ingestion/egress boundary is a plain `SourcePort`/`SinkPort` connected directly to internal `PipePort` stages via `Chain`/`ChainStream`, with the SQL persistence hop modeled as its own `Chain`/`ChainStream` edge and the pipeline shape derived via `ports.PipelineSpec`; see its README for the full data-flow diagram. · [`examples/ports-plain-go`](https://github.com/DaniDeer/go-codex/tree/main/examples/ports-plain-go) — the SAME `SourcePort`/`SinkPort`/`ToolPort` declarations consumed with zero `forge`/`gstream` composition (`stream.Drain`, `Start`/`Push`/`Close`, `SetFunc`).
 
 `ports` is the protocol-agnostic wiring layer for go-codex pipelines. It lets you write
 domain logic and pipeline composition with **zero adapter imports**, then decide the
@@ -57,6 +57,48 @@ func StartPipeline(ctx context.Context) {
 handle, err := domain.SensorReadings.PluginEventPattern(domain.SensorReadingsPattern)
 domain.SensorReadings.Bind(ctx, mqtt5.SubscribeAdapter(client, router, handle, 0, fmt, opts))
 ```
+
+---
+
+## Two consumption styles, one declaration mechanism
+
+`declare → PluginXxxPattern → Bind` is **identical** no matter how the port is
+consumed afterward. Plain idiomatic Go — no `forge` pipeline, no `gstream`
+composition — is a first-class consumption style, not a fallback for users
+who haven't adopted pipelines yet. Only the code *after* `Bind` differs:
+
+```go
+// Shared declaration — SAME lines regardless of consumption style:
+var Calibration = codex.Must(ports.NewIOPort[SensorReading, CalibratedReading](
+    "calibration", ReadingCodec, calibratedCodec, ports.PortOptions{}))
+var CalibrationPattern = ports.RESTPattern{Method: "GET", Path: "/calibration/{sensorID}"}
+
+calibHandle, err := domain.Calibration.PluginRESTPattern(domain.CalibrationPattern)
+domain.Calibration.Bind(ctx, nethttp.CallAdapter(httpClient, baseURL, calibHandle, callOpts))
+
+// Forge-pipeline continuation:
+calibrated := domain.Calibration.Connect(ctx, sensors) // gstream.Stream[CalibratedReading]
+result := gstream.Apply(ctx, calibrated, enrichFn, gstream.ApplyOptions{})
+
+// Plain-Go continuation — no gstream import:
+resp, err := domain.Calibration.Call(ctx, reading)
+```
+
+Every port type has a non-stream escape hatch that reuses the exact same
+bound adapter, codec, and `Pattern`-built handle as the stream-composed path:
+
+| Port | Stream-composed style | Plain-Go style |
+|------|------------------------|----------------|
+| `SourcePort[T]` | `Stream(ctx)` + `gstream.Apply` | `Stream(ctx)` + [`stream.Drain`](../concepts/pipelines.md) callback |
+| `SinkPort[T]` | `Feed(ctx, stream)` | `Start`/`Push`/`Close` |
+| `IOPort[Req,Resp]` | `Connect(ctx, stream)` | `Call(ctx, req)` |
+| `ToolPort[In,Out]` | `SetPipeline(fn)` | `SetFunc(fn)` |
+| `LatestPort[T]` | `Feed(ctx, stream)` to populate | `Latest()` to read |
+| `DuplexPort[In,Out]` | `Feed(ctx, stream)` | `Inbound(ctx)` + plain per-session handling |
+
+Switching an application between the two styles — or mixing them across
+different ports in the same `main.go` — never requires re-declaring a port,
+re-plugging a `Pattern`, or rebinding an adapter.
 
 ---
 
@@ -163,6 +205,11 @@ calling the same Plugin method twice on one port).
 `Connect` returns a stream carrying `PortNoAdapterError` in `Stream.Errors` if no
 adapter was bound before the pipeline started.
 
+**Plain Go, no stream composition:** call `domain.Calibration.Call(ctx, req)` to
+invoke the bound adapter with one request and get one response back — same
+declaration, same `Bind` call, no `gstream` involved. `Call` returns
+`PortNoResponseError` if the adapter's stream produced zero items.
+
 ## `ToolPort[In,Out]`
 
 Declares a server-side request/response boundary — the complement of `IOPort` (which is
@@ -210,6 +257,20 @@ ports.RegisterREST[OEEIn, OEEResult](restBuilder, domain.OEETool) //nolint:errch
 
 `Bind` returns `PortBindError` wrapping `PortNoPipelineError` if `SetPipeline` was not
 called first.
+
+**Plain Go, no stream composition:** `SetFunc` registers a plain
+`func(context.Context, In) (Out, error)` instead of `SetPipeline` — no `gstream`
+import required:
+
+```go
+OEETool.SetFunc(func(ctx context.Context, req OEEIn) (OEEResult, error) {
+    return oeeCalcFn(ctx, req)
+})
+```
+
+Everything after `SetFunc` — the three `PluginXxxPattern` calls and the three
+`Bind` calls — is unchanged. `SetFunc` and `SetPipeline` are mutually
+exclusive; calling one after the other replaces the prior registration.
 
 ---
 

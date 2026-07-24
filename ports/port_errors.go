@@ -67,6 +67,23 @@ func (e PortNoPipelineError) LogValue() slog.Value {
 	return slog.GroupValue(slog.String("port", e.Port))
 }
 
+// PortNoResponseError is returned by [IOPort.Call] when the bound adapter
+// produces zero values for the given request — mirrors
+// nethttp/mqtt5/zeromq's PipelineNoResponseError for the ports layer.
+type PortNoResponseError struct {
+	// Port is the name passed to [NewIOPort].
+	Port string
+}
+
+func (e PortNoResponseError) Error() string {
+	return fmt.Sprintf("port %q: adapter produced no response for this request", e.Port)
+}
+
+// LogValue implements [slog.LogValuer] for structured logging.
+func (e PortNoResponseError) LogValue() slog.Value {
+	return slog.GroupValue(slog.String("port", e.Port))
+}
+
 // PortNotStartedError is returned by [SinkPort.Push] before [SinkPort.Start],
 // after [SinkPort.Close], or when the port is Feed-driven — the stream-fed
 // (Feed) and request-fed (Start/Push/Close) lifecycles are mutually exclusive.

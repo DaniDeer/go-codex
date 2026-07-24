@@ -290,6 +290,127 @@ func TestIOPort_AdapterErrorInStreamErrors(t *testing.T) {
 	}
 }
 
+// ── IOPort.Call ───────────────────────────────────────────────────────────────
+
+func TestIOPort_Call_HappyPath(t *testing.T) {
+	ctx := context.Background()
+	p, err := ports.NewIOPort[int, string]("double-str", intCodec, strCodec, ports.PortOptions{Buffer: 4})
+	if err != nil {
+		t.Fatalf("construct port: %v", err)
+	}
+	if err := p.Bind(ctx, ports.FuncIOAdapter(func(_ context.Context, v int) (string, error) {
+		return fmt.Sprintf("%d", v*2), nil
+	})); err != nil {
+		t.Fatalf("Bind: %v", err)
+	}
+
+	got, err := p.Call(ctx, 21)
+	if err != nil {
+		t.Fatalf("Call: unexpected error: %v", err)
+	}
+	if got != "42" {
+		t.Errorf("want %q, got %q", "42", got)
+	}
+}
+
+func TestIOPort_Call_PropagatesAdapterError(t *testing.T) {
+	ctx := context.Background()
+	p, err := ports.NewIOPort[int, string]("test", intCodec, strCodec, ports.PortOptions{Buffer: 4})
+	if err != nil {
+		t.Fatalf("construct port: %v", err)
+	}
+	wantErr := errors.New("enrichment failure")
+	if err := p.Bind(ctx, ports.FuncIOAdapter(func(_ context.Context, _ int) (string, error) {
+		return "", wantErr
+	})); err != nil {
+		t.Fatalf("Bind: %v", err)
+	}
+
+	_, err = p.Call(ctx, 1)
+	if err == nil {
+		t.Fatal("want error, got nil")
+	}
+	if !errors.Is(err, wantErr) {
+		t.Errorf("want %v, got %v", wantErr, err)
+	}
+}
+
+func TestIOPort_Call_NoAdapterBound(t *testing.T) {
+	ctx := context.Background()
+	p, err := ports.NewIOPort[int, string]("test", intCodec, strCodec, ports.PortOptions{Buffer: 4})
+	if err != nil {
+		t.Fatalf("construct port: %v", err)
+	}
+	// No Bind
+
+	_, err = p.Call(ctx, 1)
+	if err == nil {
+		t.Fatal("want PortNoAdapterError, got nil")
+	}
+	var nae ports.PortNoAdapterError
+	if !errors.As(err, &nae) {
+		t.Errorf("want PortNoAdapterError, got %T: %v", err, err)
+	}
+}
+
+func TestIOPort_Call_ZeroValuesReturnsPortNoResponseError(t *testing.T) {
+	ctx := context.Background()
+	p, err := ports.NewIOPort[int, string]("test", intCodec, strCodec, ports.PortOptions{Buffer: 4})
+	if err != nil {
+		t.Fatalf("construct port: %v", err)
+	}
+	// zeroValueIOAdapter emits no values and no errors for any request.
+	if err := p.Bind(ctx, zeroValueIOAdapter[int, string]{}); err != nil {
+		t.Fatalf("Bind: %v", err)
+	}
+
+	_, err = p.Call(ctx, 1)
+	if err == nil {
+		t.Fatal("want PortNoResponseError, got nil")
+	}
+	var nre ports.PortNoResponseError
+	if !errors.As(err, &nre) {
+		t.Errorf("want PortNoResponseError, got %T: %v", err, err)
+	}
+	if nre.Port != "test" {
+		t.Errorf("Port: want %q, got %q", "test", nre.Port)
+	}
+}
+
+func TestPortNoResponseError_ErrorAndLogValue(t *testing.T) {
+	e := ports.PortNoResponseError{Port: "oee-io"}
+	if e.Error() == "" {
+		t.Error("Error() should not be empty")
+	}
+	v := e.LogValue()
+	if v.Kind() != slog.KindGroup {
+		t.Fatalf("want KindGroup, got %v", v.Kind())
+	}
+	attrs := v.Group()
+	if len(attrs) == 0 || attrs[0].Key != "port" || attrs[0].Value.String() != "oee-io" {
+		t.Errorf("want 'port'='oee-io' attribute, got %v", attrs)
+	}
+}
+
+// zeroValueIOAdapter is a test IOAdapter that closes both channels
+// immediately, producing zero values and zero errors for every request —
+// used to exercise IOPort.Call's PortNoResponseError path.
+type zeroValueIOAdapter[Req, Resp any] struct{}
+
+func (zeroValueIOAdapter[Req, Resp]) AdapterName() string { return "test.zeroValueIOAdapter" }
+func (zeroValueIOAdapter[Req, Resp]) Transform(ctx context.Context, src gstream.Stream[Req]) gstream.Stream[Resp] {
+	valCh := make(chan Resp)
+	errCh := make(chan error)
+	go func() {
+		defer close(valCh)
+		defer close(errCh)
+		for range src.Values {
+			// drain and drop every request without producing a response
+		}
+	}()
+	return gstream.Stream[Resp]{Values: valCh, Errors: errCh}
+}
+
 // ── T12: ChanSourceAdapter pushes items ──────────────────────────────────────
 
 func TestChanSourceAdapter(t *testing.T) {
@@ -707,6 +828,90 @@ func TestToolPort_AdapterError(t *testing.T) {
 	var pbe ports.PortBindError
 	if !errors.As(err, &pbe) {
 		t.Errorf("want PortBindError, got %T", err)
+	}
+}
+
+// ── ToolPort.SetFunc ──────────────────────────────────────────────────────────
+
+func TestToolPort_SetFunc_HappyPath(t *testing.T) {
+	ctx := context.Background()
+	p, err := ports.NewToolPort[int, string]("test", intCodec, strCodec, ports.PortOptions{})
+	if err != nil {
+		t.Fatalf("construct port: %v", err)
+	}
+	p.SetFunc(func(_ context.Context, v int) (string, error) {
+		return fmt.Sprintf("plain-%d", v), nil
+	})
+
+	adapter := &mockToolAdapter{name: "mock.ToolAdapter"}
+	if err := p.Bind(ctx, adapter); err != nil {
+		t.Fatalf("Bind: unexpected error: %v", err)
+	}
+	if adapter.fn == nil {
+		t.Fatal("Bind should have set fn on adapter")
+	}
+
+	out := adapter.fn(ctx, 7)
+	vals, errs := gstream.Collect(ctx, out)
+	if len(errs) != 0 {
+		t.Fatalf("want no errors, got %v", errs)
+	}
+	if len(vals) != 1 || vals[0] != "plain-7" {
+		t.Errorf("want [plain-7], got %v", vals)
+	}
+}
+
+func TestToolPort_SetFunc_PropagatesError(t *testing.T) {
+	ctx := context.Background()
+	p, err := ports.NewToolPort[int, string]("test", intCodec, strCodec, ports.PortOptions{})
+	if err != nil {
+		t.Fatalf("construct port: %v", err)
+	}
+	wantErr := errors.New("business error")
+	p.SetFunc(func(_ context.Context, _ int) (string, error) {
+		return "", wantErr
+	})
+
+	adapter := &mockToolAdapter{name: "mock.ToolAdapter"}
+	if err := p.Bind(ctx, adapter); err != nil {
+		t.Fatalf("Bind: unexpected error: %v", err)
+	}
+
+	out := adapter.fn(ctx, 1)
+	vals, errs := gstream.Collect(ctx, out)
+	if len(vals) != 0 {
+		t.Errorf("want no values, got %v", vals)
+	}
+	if len(errs) != 1 || !errors.Is(errs[0], wantErr) {
+		t.Errorf("want [%v], got %v", wantErr, errs)
+	}
+}
+
+func TestToolPort_SetFunc_UsableWithBind(t *testing.T) {
+	ctx := context.Background()
+	p, err := ports.NewToolPort[int, string]("test", intCodec, strCodec, ports.PortOptions{})
+	if err != nil {
+		t.Fatalf("construct port: %v", err)
+	}
+	p.SetFunc(func(_ context.Context, v int) (string, error) {
+		return fmt.Sprintf("%d!", v), nil
+	})
+
+	a1 := &mockToolAdapter{name: "adapter1"}
+	a2 := &mockToolAdapter{name: "adapter2"}
+	if err := p.Bind(ctx, a1); err != nil {
+		t.Fatalf("first Bind: %v", err)
+	}
+	if err := p.Bind(ctx, a2); err != nil {
+		t.Fatalf("second Bind: %v", err)
+	}
+	if a1.fn == nil || a2.fn == nil {
+		t.Fatal("both adapters should have fn set")
+	}
+	vals1, _ := gstream.Collect(ctx, a1.fn(ctx, 3))
+	vals2, _ := gstream.Collect(ctx, a2.fn(ctx, 3))
+	if len(vals1) != 1 || vals1[0] != "3!" || len(vals2) != 1 || vals2[0] != "3!" {
+		t.Errorf("want both adapters to see identical output, got %v / %v", vals1, vals2)
 	}
 }
 
