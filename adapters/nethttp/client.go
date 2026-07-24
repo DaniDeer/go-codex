@@ -105,6 +105,39 @@ func (e UnexpectedStatusError) LogValue() slog.Value {
 	)
 }
 
+// ErrorPatternResponse is returned by [Call] instead of [UnexpectedStatusError]
+// when the response status matches a route-declared [rest.ErrorPattern]
+// (tagged with the default [rest.ErrorRespond] action) and the body decodes
+// successfully via that pattern's declared codec.
+//
+// Use [errors.As] to extract the decoded typed payload:
+//
+//	var epr nethttp.ErrorPatternResponse
+//	if errors.As(err, &epr) {
+//	    payload, ok := epr.Value.(MyErrorPayload)
+//	    ...
+//	}
+type ErrorPatternResponse struct {
+	// StatusCode is the HTTP response status code returned by the server.
+	StatusCode int
+	// Value is the decoded typed error payload (the pattern's declared B type).
+	Value any
+	// Body is the raw response body returned by the server.
+	Body []byte
+}
+
+func (e ErrorPatternResponse) Error() string {
+	return fmt.Sprintf("unexpected status %d: %T", e.StatusCode, e.Value)
+}
+
+// LogValue implements [slog.LogValuer] for structured logging.
+func (e ErrorPatternResponse) LogValue() slog.Value {
+	return slog.GroupValue(
+		slog.Int("status", e.StatusCode),
+		slog.Any("value", e.Value),
+	)
+}
+
 // RequestBuildError is returned by [Call] when constructing the outgoing
 // *http.Request fails (e.g. malformed base URL or context already cancelled).
 //
@@ -407,8 +440,16 @@ func Call[Req, Resp any](
 		return zero, ResponseBodyError{Err: err}
 	}
 
-	// 11. Non-2xx → structured error.
+	// 11. Non-2xx → structured error, preferring a declared ErrorPattern
+	// decode over the untyped fallback when one matches.
 	if statusCode < 200 || statusCode >= 300 {
+		if errResp, matched, decErr := handle.DecodeErrorFor(statusCode, respBody); matched && decErr == nil {
+			return zero, ErrorPatternResponse{
+				StatusCode: errResp.Status,
+				Value:      errResp.Value,
+				Body:       errResp.Body,
+			}
+		}
 		return zero, UnexpectedStatusError{
 			Method:     method,
 			Path:       routePath,

@@ -2678,3 +2678,164 @@ func TestErrorPattern_StatusAndSpecStillWork_AfterActionRefactor(t *testing.T) {
 		t.Fatalf("want ErrorStatusFor to return (409,true), got (%d,%v)", status, ok)
 	}
 }
+
+// --- Client-side error decode parity (DecodeErrorFor) ---
+
+// CDP7: DecodeErrorFor happy path.
+func TestDecodeErrorFor_MatchedPattern(t *testing.T) {
+	b := rest.NewBuilder(testInfo)
+	h, err := rest.NewRoute[createReq, userResp]("POST", "/errors/client-decode",
+		createReqCodec, userCodec,
+		rest.ErrorPattern[directPatternError, directPatternError](409, directPatternCodec),
+	).Register(b)
+	if err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+	body := []byte(`{"code":"conflict"}`)
+	resp, ok, applyErr := h.DecodeErrorFor(409, body)
+	if applyErr != nil {
+		t.Fatalf("DecodeErrorFor applyErr: %v", applyErr)
+	}
+	if !ok {
+		t.Fatal("want pattern match, got no match")
+	}
+	if resp.Status != 409 {
+		t.Fatalf("want status 409, got %d", resp.Status)
+	}
+	payload, ok := resp.Value.(directPatternError)
+	if !ok {
+		t.Fatalf("want Value of type directPatternError, got %T", resp.Value)
+	}
+	if payload.Code != "conflict" {
+		t.Fatalf("want code=conflict, got %q", payload.Code)
+	}
+}
+
+// CDP2: no declared pattern for that status -> no match.
+func TestDecodeErrorFor_NoMatch_UnknownStatus(t *testing.T) {
+	b := rest.NewBuilder(testInfo)
+	h, err := rest.NewRoute[createReq, userResp]("POST", "/errors/client-decode-nomatch",
+		createReqCodec, userCodec,
+		rest.ErrorPattern[directPatternError, directPatternError](409, directPatternCodec),
+	).Register(b)
+	if err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+	resp, ok, applyErr := h.DecodeErrorFor(500, []byte(`{}`))
+	if applyErr != nil {
+		t.Fatalf("DecodeErrorFor applyErr: %v", applyErr)
+	}
+	if ok {
+		t.Fatalf("want no match, got %+v", resp)
+	}
+}
+
+// CDP3: pattern tagged WithAction(ErrorHandle) is never matched client-side.
+func TestDecodeErrorFor_SkipsErrorHandleAction(t *testing.T) {
+	b := rest.NewBuilder(testInfo)
+	h, err := rest.NewRoute[createReq, userResp]("POST", "/errors/client-decode-handle",
+		createReqCodec, userCodec,
+		rest.ErrorPattern[directPatternError, directPatternError](409, directPatternCodec).
+			WithAction(rest.ErrorHandle),
+	).Register(b)
+	if err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+	resp, ok, applyErr := h.DecodeErrorFor(409, []byte(`{"code":"conflict"}`))
+	if applyErr != nil {
+		t.Fatalf("DecodeErrorFor applyErr: %v", applyErr)
+	}
+	if ok {
+		t.Fatalf("want no match for ErrorHandle-tagged pattern, got %+v", resp)
+	}
+}
+
+// CDP4: pattern tagged WithAction(ErrorLog) is never matched client-side.
+func TestDecodeErrorFor_SkipsErrorLogAction(t *testing.T) {
+	b := rest.NewBuilder(testInfo)
+	h, err := rest.NewRoute[createReq, userResp]("POST", "/errors/client-decode-log",
+		createReqCodec, userCodec,
+		rest.ErrorPattern[directPatternError, directPatternError](409, directPatternCodec).
+			WithAction(rest.ErrorLog),
+	).Register(b)
+	if err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+	resp, ok, applyErr := h.DecodeErrorFor(409, []byte(`{"code":"conflict"}`))
+	if applyErr != nil {
+		t.Fatalf("DecodeErrorFor applyErr: %v", applyErr)
+	}
+	if ok {
+		t.Fatalf("want no match for ErrorLog-tagged pattern, got %+v", resp)
+	}
+}
+
+// CDP5: matched status but body fails to decode against the declared codec ->
+// matched=true, applyErr!=nil. Callers must treat this the same as no match.
+func TestDecodeErrorFor_MatchedStatus_DecodeFailure(t *testing.T) {
+	b := rest.NewBuilder(testInfo)
+	h, err := rest.NewRoute[createReq, userResp]("POST", "/errors/client-decode-fail",
+		createReqCodec, userCodec,
+		rest.ErrorPattern[directPatternError, directPatternError](409, directPatternCodec),
+	).Register(b)
+	if err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+	// directPatternCodec requires a non-empty "code" field; send a body
+	// that fails that constraint.
+	resp, ok, applyErr := h.DecodeErrorFor(409, []byte(`{"code":""}`))
+	if applyErr == nil {
+		t.Fatal("want decode failure, got nil applyErr")
+	}
+	if !ok {
+		t.Fatal("want ok=true (status matched) even though decode failed")
+	}
+	_ = resp
+}
+
+// CDP6: first-declared-match-wins precedence with two patterns sharing the
+// same status.
+func TestDecodeErrorFor_FirstMatchWins_SameStatus(t *testing.T) {
+	b := rest.NewBuilder(testInfo)
+	h, err := rest.NewRoute[createReq, userResp]("POST", "/errors/client-decode-precedence",
+		createReqCodec, userCodec,
+		rest.ErrorPattern[directPatternError, directPatternError](409, directPatternCodec),
+		rest.ErrorPattern[mappedPatternError, mappedPatternPayload](409, mappedPatternCodec,
+			func(e mappedPatternError) (mappedPatternPayload, error) {
+				return mappedPatternPayload{Kind: e.Msg}, nil
+			}),
+	).Register(b)
+	if err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+	resp, ok, applyErr := h.DecodeErrorFor(409, []byte(`{"code":"conflict"}`))
+	if applyErr != nil {
+		t.Fatalf("DecodeErrorFor applyErr: %v", applyErr)
+	}
+	if !ok {
+		t.Fatal("want match")
+	}
+	if _, isDirect := resp.Value.(directPatternError); !isDirect {
+		t.Fatalf("want first-declared pattern (directPatternError) to win, got %T", resp.Value)
+	}
+}
+
+// CDP8: ErrorPatternResponse-adjacent LogValue shape check lives in
+// adapters/nethttp/client_test.go (nethttp.ErrorPatternResponse). This test
+// only locks DecodeErrorFor's own zero-value behavior on an empty handle.
+func TestDecodeErrorFor_NoPatternsDeclared(t *testing.T) {
+	b := rest.NewBuilder(testInfo)
+	h, err := rest.NewRoute[createReq, userResp]("POST", "/errors/client-decode-none",
+		createReqCodec, userCodec,
+	).Register(b)
+	if err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+	resp, ok, applyErr := h.DecodeErrorFor(409, []byte(`{}`))
+	if applyErr != nil {
+		t.Fatalf("DecodeErrorFor applyErr: %v", applyErr)
+	}
+	if ok {
+		t.Fatalf("want no match when no patterns declared, got %+v", resp)
+	}
+}

@@ -1,6 +1,44 @@
-# go-codex Review History (R1–R65)
+# go-codex Review History (R1–R66)
 
 Do not re-report any of these findings. They have been implemented and tested.
+
+---
+
+## Round 66 (client-side error decode parity — `nethttp.Call` + `RouteHandle.DecodeErrorFor`)
+
+Closed the last remaining error-path-ergonomics gap: `rest.Route.ClientHandle()`/`.Register()`
+already populated `errorPatternRules` on `RouteHandle` since Phase 1A, but `adapters/nethttp.Call`
+never consulted them — non-2xx responses always returned the untyped `UnexpectedStatusError`, even
+when the server had declared a typed `rest.ErrorPattern` for that exact status.
+
+- **New `RouteHandle.DecodeErrorFor(status int, body []byte) (ErrorPatternResponse, bool, error)`**
+  (`api/rest/builder.go`) — the client-side counterpart of `ErrorResponseFor`. Matching is
+  status-only (the client has no Go error to match via `errors.As`, only the wire status code).
+  Only rules whose action is the default `ErrorRespond` are eligible — rules tagged
+  `.WithAction(ErrorHandle)`/`.WithAction(ErrorLog)` are skipped, since the server does not
+  guarantee those wrote the typed body to the wire (falls through to `Options.ErrorHandler`
+  instead). Reuses the existing `errorPatternRule` struct with a new `decode func([]byte)
+  (ErrorPatternResponse, error)` field, populated alongside the existing `match` closure in
+  `ErrorPatternOpt.applyRoute` — same declared codec drives both directions.
+- **New `nethttp.ErrorPatternResponse{StatusCode int, Value any, Body []byte}`** (`adapters/nethttp/client.go`)
+  — `Error()`/`LogValue()` implemented per the structured-errors guardrail. `Call`'s non-2xx branch
+  now tries `handle.DecodeErrorFor(statusCode, respBody)` first; on match (`matched && decErr ==
+  nil`) returns `ErrorPatternResponse` instead of `UnexpectedStatusError`; falls back to the
+  unchanged `UnexpectedStatusError` on no-match or decode failure (schema drift) — zero behavior
+  change for callers with no declared `ErrorPattern`.
+- Tests: CDP1–CDP8 across `api/rest/builder_test.go` (`TestDecodeErrorFor_*` — matched, no-match,
+  action-skip ×2, decode-failure, first-match precedence, no-patterns-declared) and
+  `adapters/nethttp/client_test.go` (`TestCall_ErrorPatternResponse_*` integration tests via a real
+  `httptest.Server`, `TestErrorPatternResponse_LogValue`).
+- `examples/adapters-nethttp-client`: new section "1b" demonstrates the full round trip —
+  `contract.CreateUser` declares `rest.ErrorPattern[EmailConflictError, EmailConflictError](409,
+  EmailConflictCodec)`; a duplicate-email create call returns a decoded
+  `nethttp.ErrorPatternResponse` whose `Value` is already a typed `contract.EmailConflictError`.
+- Docs: `docs/features/rest-api.md` new "Client-side decode" subsection under "Error-path
+  ergonomics"; `docs/features/http-client.md` "Error handling" section reordered to check
+  `ErrorPatternResponse` before the `UnexpectedStatusError` fallback; `docs/guides/http-client.md`
+  new "Handling the response: happy path vs error path" section (full `errors.As` chain walkthrough
+  with a "what to do next" rule of thumb per error type).
 
 ---
 
@@ -47,10 +85,13 @@ Two follow-up reviews after Round 64 shipped error-path ergonomics.
 
 ## Round 64 (error-path ergonomics — codec-first declarative error handling across all boundaries)
 
-Not a review round in the usual sense — a full feature roadmap (`docs/roadmap/error-path-ergonomics.md`,
-Phases 1A–1D + Phase 2) implemented across every `api/*` layer plus `adapters/websocket`. Recorded here
-so future review rounds don't re-flag any of this as a gap. See checklist.md §13 and SKILL.md's
-"Error-path ergonomics" gotcha entry for the full rule set.
+Not a review round in the usual sense — a full feature roadmap (Phases 1A–1D + Phase 2) implemented
+across every `api/*` layer plus `adapters/websocket`. Recorded here so future review rounds don't
+re-flag any of this as a gap. See checklist.md §13 and SKILL.md's "Error-path ergonomics" gotcha
+entry for the full rule set. The design roadmap doc that originally tracked this
+(`docs/roadmap/error-path-ergonomics.md`) has since been REMOVED — all phases (including the Round
+65 follow-up fixes below) shipped; this history entry plus checklist.md §13 are now the durable
+design-decision record.
 
 - **G1 (Phase 1A) — REST had no codec-first error declaration**: added `rest.ErrorStatus[E](status)`
   (status-only) and `rest.ErrorPattern[E,B](status, codec, mapFn...)` (status + codec-backed body,

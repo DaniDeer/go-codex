@@ -131,6 +131,12 @@ var RequestIDCodec = codex.String().Refine(validate.UUID).
 // CreateUser is the declarative route spec for POST /users.
 // Register it with a rest.Builder on the server; import it in the client to call
 // the server with the same codec and parameter constraints.
+//
+// rest.ErrorPattern declares a typed 409 response for EmailConflictError —
+// this is what closes the loop between "server writes a typed error body"
+// and "client decodes it back into a typed value" (see main.go section 6).
+// The default action is rest.ErrorRespond, so both nethttp.Handler (server)
+// and nethttp.Call (client) participate automatically — no extra wiring.
 var CreateUser = rest.NewRoute[CreateUserReq, User](
 	"POST", "/users",
 	CreateUserReqCodec, UserCodec,
@@ -141,6 +147,7 @@ var CreateUser = rest.NewRoute[CreateUserReq, User](
 		RespSchemaName: "User",
 		RespStatus:     "201",
 	},
+	rest.ErrorPattern[EmailConflictError, EmailConflictError](409, EmailConflictCodec),
 )
 
 // GetUser is the declarative route spec for GET /users/{id}.
@@ -233,6 +240,30 @@ var GetProfile = rest.NewRoute[struct{}, Profile](
 		Description: "Idempotency and tracing UUID",
 		Required:    true,
 	}.WithCodec(RequestIDCodec),
+)
+
+// ── Typed error payload ───────────────────────────────────────────────────────
+
+// EmailConflictError is returned by the CreateUser handler when the
+// requested email is already registered. It is a domain error type — the
+// handler returns it as a plain Go `error`, never touching HTTP directly.
+type EmailConflictError struct {
+	Email string
+}
+
+func (e EmailConflictError) Error() string {
+	return "email already registered: " + e.Email
+}
+
+// EmailConflictCodec is the canonical codec for EmailConflictError — the
+// SAME codec declared once via [rest.ErrorPattern] below drives BOTH the
+// server's automatic typed body encode AND the client's automatic typed
+// body decode (see main.go section 6).
+var EmailConflictCodec = codex.Struct[EmailConflictError](
+	codex.RequiredField("email", emailCodec,
+		func(e EmailConflictError) string { return e.Email },
+		func(e *EmailConflictError, v string) { e.Email = v },
+	),
 )
 
 // GetSecuredData is the route spec for GET /data.

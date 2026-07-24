@@ -11,6 +11,11 @@
 // The example covers all CallOptions fields in five sections:
 //
 //  1. Body — POST /users (request body codec, shared-contract pattern)
+//     1b. Client-side typed error decode — nethttp.Call returns a decoded
+//     nethttp.ErrorPatternResponse (instead of the untyped
+//     UnexpectedStatusError) when the response status matches a
+//     rest.ErrorPattern declared on the route — errors.As extracts the
+//     typed payload directly, no manual status-switch or json.Unmarshal
 //  2. Path params — GET /users/{id} (codec-validated path variable)
 //     2b. Client encode with role-aware merge fields — GET /users/{id}/activity
 //     (rest.NewPathParam/NewOptionalQueryParam + codex.EncodeVars via
@@ -122,14 +127,19 @@ type userStore struct {
 	seq   int
 }
 
-func (s *userStore) create(req contract.CreateUserReq) contract.User {
+func (s *userStore) create(req contract.CreateUserReq) (contract.User, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	for _, u := range s.users {
+		if u.Email == req.Email {
+			return contract.User{}, contract.EmailConflictError{Email: req.Email}
+		}
+	}
 	s.seq++
 	id := fmt.Sprintf("u%d", s.seq)
 	u := contract.User{ID: id, Name: req.Name, Email: req.Email}
 	s.users[id] = u
-	return u
+	return u, nil
 }
 
 func (s *userStore) get(id string) (contract.User, bool) {
@@ -214,7 +224,14 @@ func main() {
 	mux := http.NewServeMux()
 
 	nethttp.Register(mux, createHandle, func(ctx context.Context, req contract.CreateUserReq) (contract.User, error) {
-		u := db.create(req)
+		u, err := db.create(req)
+		if err != nil {
+			// Returned as a plain Go error — the adapter consults the
+			// route's declared rest.ErrorPattern automatically and writes
+			// the typed EmailConflictError body + 409 status. No manual
+			// status/body handling needed here.
+			return contract.User{}, err
+		}
 		if h, ok := nethttp.ResponseHeadersFromContext(ctx); ok {
 			h.Set("Location", "/users/"+u.ID)
 		}
@@ -287,6 +304,44 @@ func main() {
 		os.Exit(1)
 	}
 	fmt.Printf("created: %+v\n\n", alice)
+
+	// ── 1b. Client-side typed error decode (ErrorPatternResponse) ─────────────
+	//
+	// CreateUser declares rest.ErrorPattern[EmailConflictError, EmailConflictError](409, ...)
+	// — the SAME codec drives the server's automatic typed body write AND the
+	// client's automatic typed body decode. Calling nethttp.Call with a
+	// duplicate email gets back a nethttp.ErrorPatternResponse (not the
+	// untyped nethttp.UnexpectedStatusError) whose Value already holds a
+	// decoded contract.EmailConflictError — no manual status-switch or
+	// json.Unmarshal needed.
+	fmt.Println("=== 1b. Client-side typed error decode ===")
+
+	_, err = nethttp.Call(clientCtx, srv.Client(), srv.URL,
+		clientCreate,
+		contract.CreateUserReq{Name: "Alice Again", Email: "alice@example.com"}, // duplicate email
+		nil, nethttp.CallOptions{})
+	if err == nil {
+		fmt.Fprintln(os.Stderr, "expected email-conflict error, got nil")
+		os.Exit(1)
+	}
+	var conflictResp nethttp.ErrorPatternResponse
+	if errors.As(err, &conflictResp) {
+		conflict, ok := conflictResp.Value.(contract.EmailConflictError)
+		if !ok {
+			fmt.Fprintf(os.Stderr, "unexpected Value type %T\n", conflictResp.Value)
+			os.Exit(1)
+		}
+		logger.Warn("email conflict (typed, decoded automatically)",
+			"status", conflictResp.StatusCode,
+			"email", conflict.Email,
+		)
+		fmt.Printf("conflict: status=%d email=%s\n\n", conflictResp.StatusCode, conflict.Email)
+	} else {
+		// Falls back here for any status with no matching ErrorPattern, or
+		// when the body fails to decode against the declared codec.
+		fmt.Fprintln(os.Stderr, "expected ErrorPatternResponse, got:", err)
+		os.Exit(1)
+	}
 
 	// ── 2. Path params — GET /users/{id} ──────────────────────────────────────
 	fmt.Println("=== 2. Path params: GET /users/{id} ===")

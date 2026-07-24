@@ -6,9 +6,11 @@ Do not re-report any findings listed here. They have been implemented.
 
 ## Round DR7 (error-path ergonomics — docs sync across all boundaries)
 
-Docs work accompanying the error-path-ergonomics feature (`docs/roadmap/error-path-ergonomics.md`,
-Phases 1A–1D + Phase 2). Not a standalone review round — recorded so future doc reviews don't
-re-flag these as gaps.
+Docs work accompanying the error-path-ergonomics feature (Phases 1A–1D + Phase 2). Not a
+standalone review round — recorded so future doc reviews don't re-flag these as gaps. The design
+roadmap doc that originally tracked this work (`docs/roadmap/error-path-ergonomics.md`) has since
+been REMOVED — every phase shipped, and the feature-doc sections below plus
+`.github/skills/review-go-codex/references/history.md` (Rounds 64–65) are now the durable record.
 
 - **D1 — `docs/features/rest-api.md` had no error-path-ergonomics section**: added, covering
   `rest.ErrorStatus`/`rest.ErrorPattern` (direct/mapped modes), the `.WithAction` action selector
@@ -32,8 +34,7 @@ re-flag these as gaps.
   `review-go-codex` skill's history.md Round 64 (G8) for details.
 - **D8 — `.github/instructions/go-codex.instructions.md` bullets for `api/rest`, `api/events`,
   `api/reqreply`, `api/mcp`, `adapters/nethttp`/`chi`/`mqtt5`/`mqtt`/`zeromq`/`mcpgo`/`websocket`
-  didn't mention any of the above**: all updated with concise error-path-ergonomics summaries
-  cross-referencing `docs/roadmap/error-path-ergonomics.md`.
+  didn't mention any of the above**: all updated with concise error-path-ergonomics summaries.
 
 ---
 

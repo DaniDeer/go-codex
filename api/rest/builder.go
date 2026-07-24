@@ -286,7 +286,13 @@ type ErrorPatternResponse struct {
 
 type errorPatternRule struct {
 	status int
+	action ErrorAction
 	match  func(error) (ErrorPatternResponse, bool, error)
+	// decode is the client-side counterpart of match: given the raw wire
+	// body for a response whose status equals status, decode it via the
+	// pattern's declared codec. Only populated for [ErrorPattern] rules
+	// (never nil after applyRoute).
+	decode func([]byte) (ErrorPatternResponse, error)
 }
 
 func (r errorPatternRule) applyRoute(rb *routeBuilder) {
@@ -321,6 +327,14 @@ func (o ErrorPatternOpt[E, B]) applyRoute(rb *routeBuilder) {
 
 	rule := errorPatternRule{
 		status: status,
+		action: action,
+		decode: func(body []byte) (ErrorPatternResponse, error) {
+			payload, err := jsonCodec.Unmarshal(body)
+			if err != nil {
+				return ErrorPatternResponse{}, err
+			}
+			return ErrorPatternResponse{Status: status, Body: body, Value: payload, Action: action}, nil
+		},
 		match: func(err error) (ErrorPatternResponse, bool, error) {
 			var target E
 			if !errors.As(err, &target) {
@@ -618,6 +632,33 @@ func (h *RouteHandle[Req, Resp]) ErrorResponseFor(err error) (resp ErrorPatternR
 		if matched {
 			return matchedResp, true, matchErr
 		}
+	}
+	return ErrorPatternResponse{}, false, nil
+}
+
+// DecodeErrorFor is the client-side counterpart of [RouteHandle.ErrorResponseFor]:
+// given a non-2xx response status and its raw body, it looks up the first
+// declared [ErrorPattern] (in declaration order) whose status matches AND
+// whose action is the default [ErrorRespond] — patterns tagged
+// [ErrorPatternOpt.WithAction] with [ErrorHandle] or [ErrorLog] are skipped,
+// since the server does not guarantee those patterns' typed body reached
+// the wire (it falls through to Options.ErrorHandler instead, which may
+// write anything).
+//
+// Matching is status-only: the client has no Go error value to match via
+// [errors.As], only the wire status code.
+//
+// On a match, body is decoded via that pattern's declared codec. A decode
+// failure (e.g. schema drift between client/server versions) is returned as
+// applyErr with ok=true — callers should treat any non-nil applyErr the same
+// as ok=false (fall back to an untyped error).
+func (h *RouteHandle[Req, Resp]) DecodeErrorFor(status int, body []byte) (resp ErrorPatternResponse, ok bool, applyErr error) {
+	for _, rule := range h.errorPatternRules {
+		if rule.status != status || rule.decode == nil || rule.action != ErrorRespond {
+			continue
+		}
+		decoded, err := rule.decode(body)
+		return decoded, true, err
 	}
 	return ErrorPatternResponse{}, false, nil
 }

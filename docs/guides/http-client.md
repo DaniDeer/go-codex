@@ -9,6 +9,7 @@ This guide walks through the HTTP client example. For the full API reference, se
 The most comprehensive client demo. Demonstrates both usage patterns in five numbered sections:
 
 1. **Body** — POST /users with a shared contract: `contract.CreateUser.Register(builder)` and `contract.CreateUser.ClientHandle()` both produce the same typed `RouteHandle`
+   - **1b. Client-side typed error decode** — `CreateUser` declares `rest.ErrorPattern[EmailConflictError, EmailConflictError](409, ...)`; calling `nethttp.Call` with a duplicate email returns a decoded `nethttp.ErrorPatternResponse` instead of the untyped `UnexpectedStatusError` — see "Handling the response" below
 2. **Path params** — GET /users/{id} with `PathParam.WithCodec(...)` codec validated client-side before any HTTP call is sent
 3. **Cookies + headers** — GET /profile with `CallOptions.CookieParams` + `CallOptions.HeaderParams`; empty or invalid values are rejected pre-flight
 4. **Security** — GET /data with `CallOptions.CredentialFunc` injecting `Authorization: Bearer <token>`; demonstrates all three cases: happy path, no credentials (401), CredentialFunc error (pre-flight abort)
@@ -31,6 +32,102 @@ if errors.As(err, &pathErr) {
 ```
 
 → [examples/adapters-nethttp-client](https://github.com/DaniDeer/go-codex/tree/main/examples/adapters-nethttp-client)
+
+## Handling the response: happy path vs error path
+
+`nethttp.Call` (and its convenience wrapper `nethttp.CallHandle`) always
+return exactly `(Resp, error)` — the "one struct, one call" contract holds
+for BOTH directions. There is no partial-success shape to handle: either
+you get a fully-decoded, fully-merged `Resp`, or you get a non-nil `error`.
+
+### Happy path — use the returned value directly
+
+```go
+user, err := nethttp.Call(ctx, client, baseURL, clientCreate, req, nil, nethttp.CallOptions{})
+if err != nil {
+    // handle the error path — see below
+    return err
+}
+// user is fully decoded: body + any response header/cookie merge fields
+fmt.Println(user.ID, user.Name)
+```
+
+No status-code check is needed before using the value — any non-2xx
+response, decode failure, or pre-flight validation failure is ALWAYS
+returned as a non-nil `error` instead. A nil error guarantees a usable
+`Resp`.
+
+### Error path — walk the error chain with `errors.As`
+
+Every failure mode `Call` can produce is a distinct, `errors.As`-navigable
+typed error. Check them in the order they can occur — pre-flight
+(no network call sent) first, then response-side:
+
+```go
+_, err := nethttp.Call(ctx, client, baseURL, handle, req, vars, opts)
+if err == nil {
+    return // happy path handled above
+}
+
+// Pre-flight: param codec validation failed — no HTTP request was sent.
+var pathErr rest.PathParamError
+if errors.As(err, &pathErr) {
+    return fmt.Errorf("invalid %s: %w", pathErr.Name, pathErr.Err)
+}
+var queryErr rest.QueryParamError
+if errors.As(err, &queryErr) { /* ... */ }
+var cookieErr rest.CookieParamError
+if errors.As(err, &cookieErr) { /* ... */ }
+var headerErr rest.HeaderParamError
+if errors.As(err, &headerErr) { /* ... */ }
+
+// Pre-flight: request construction/credential failure.
+var buildErr nethttp.RequestBuildError
+if errors.As(err, &buildErr) { /* malformed base URL, cancelled ctx, ... */ }
+
+// Response-side: the request was sent but failed at the network layer.
+var reqErr nethttp.RequestError
+if errors.As(err, &reqErr) {
+    return retry(req) // network/DNS/TLS/timeout — safe to retry
+}
+
+// Response-side: a declared rest.ErrorPattern matched and decoded — typed
+// business error, decide what to do per Value's concrete type.
+var patternResp nethttp.ErrorPatternResponse
+if errors.As(err, &patternResp) {
+    switch v := patternResp.Value.(type) {
+    case domain.EmailConflictError:
+        return promptDifferentEmail(v.Email)
+    default:
+        return fmt.Errorf("unexpected error payload: %+v", v)
+    }
+}
+
+// Response-side: no ErrorPattern matched (or its body failed to decode) —
+// raw status + bytes, the universal fallback.
+var statusErr nethttp.UnexpectedStatusError
+if errors.As(err, &statusErr) {
+    return fmt.Errorf("unexpected status %d: %s", statusErr.StatusCode, statusErr.Body)
+}
+
+// Response-side: body could not even be read after a successful connection.
+var bodyErr nethttp.ResponseBodyError
+if errors.As(err, &bodyErr) { /* ... */ }
+```
+
+Rule of thumb for "continuing" after an error:
+- **Pre-flight param errors** (`rest.PathParamError`/`QueryParamError`/
+  `CookieParamError`/`HeaderParamError`) mean YOUR request was malformed —
+  fix the input, never retry as-is.
+- **`nethttp.RequestError`** is a transport-layer failure (network/DNS/TLS/
+  timeout) — safe to retry with backoff.
+- **`nethttp.ErrorPatternResponse`** is a decoded, typed BUSINESS error the
+  server declared — branch on `.Value`'s concrete type and handle it like
+  any other domain error (see the "Client-side decode" section in the
+  [REST API feature page](../features/rest-api.md#client-side-decode--nethttpcall-and-errorpatternresponse)).
+- **`nethttp.UnexpectedStatusError`** is the universal fallback for any
+  status/body the route didn't declare a typed pattern for — log the raw
+  status + body, do not assume a specific shape.
 
 ## Binary requests and responses (PNG, JPEG, PDF…)
 

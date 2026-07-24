@@ -203,7 +203,8 @@ All must be `errors.As`-navigable. Bare `fmt.Errorf` in `adapter.go` Publish wit
 | `rest.QueryParamError` | query param codec failure (pre-flight) |
 | `rest.CookieParamError` | cookie codec failure (pre-flight) |
 | `rest.HeaderParamError` | header codec failure (pre-flight) |
-| `nethttp.UnexpectedStatusError{Method,Path,StatusCode,Body}` | non-2xx HTTP response |
+| `nethttp.ErrorPatternResponse{StatusCode,Value,Body}` | non-2xx response matching a route-declared `rest.ErrorPattern` (default `ErrorRespond` action), decoded via `RouteHandle.DecodeErrorFor` — returned INSTEAD OF `UnexpectedStatusError` on match; check this BEFORE `UnexpectedStatusError` in an `errors.As` chain |
+| `nethttp.UnexpectedStatusError{Method,Path,StatusCode,Body}` | non-2xx HTTP response with no matching `ErrorPattern` (or its body failed to decode) — universal fallback |
 | `nethttp.RequestBuildError{Err}` | `http.NewRequestWithContext` failure (bad URL, cancelled ctx) |
 | `nethttp.RequestError{Method,Path,Err}` | `http.Client.Do` transport failure (network, DNS, TLS, timeout) |
 | `nethttp.ResponseBodyError{Err}` | `io.ReadAll` failure on response body |
@@ -516,8 +517,11 @@ plain closures that must support nested access).
 
 Codec-first, declarative error-path declarations exist across every `api/*` layer plus
 `adapters/websocket`, unifying error handling with the same "declare → register → handle" workflow
-already used for the happy path. See `docs/roadmap/error-path-ergonomics.md` for full design history
-and `docs/guides/error-handling.md` for the cross-boundary usage guide.
+already used for the happy path. The design roadmap (`docs/roadmap/error-path-ergonomics.md`) has
+been REMOVED — all phases shipped, and this checklist section plus `references/history.md`
+(Rounds 64–65) are now the durable design-decision record. See `docs/guides/error-handling.md` for
+the cross-boundary usage guide and each `docs/features/*.md`'s own "Error-path ergonomics" section
+for user-facing docs.
 
 ### Declaration surface per boundary
 
@@ -529,6 +533,7 @@ and `docs/guides/error-handling.md` for the cross-boundary usage guide.
 | `api/mcp` | `mcp.ErrorPattern[E,B](codec, mapFn...)` on `NewTool` (Tool only — Resources/Prompts out of scope, protocol-level not business errors) | n/a (tool result, not HTTP/topic) | n/a — matched → structured `IsError:true` result; unmatched → plain-text `IsError:true` result |
 | `adapters/websocket` | `websocket.ErrorFrame[E,B](codec, mapFn...) ErrorFrameRule` on BOTH `DuplexSocketAdapterOptions.ErrorFrames []ErrorFrameRule` AND `BroadcastSocketAdapterOptions.ErrorFrames []ErrorFrameRule` (plain slice, non-generic rule type — declares its OWN codec, independent of the socket's `Out` type; matched against upstream stream `Errors` only, never per-session write/encode failures) | broadcast to all sessions (no dedicated topic — broadcast IS the notification path) | Full: shares `events.ErrorAction` (`.WithAction(events.ErrorHandle)` + `.WithHandle(func(error))`) |
 | SQL/Cache/File (`adapters/sql`/`adapters/redis`/`adapters/file`) | **NO dedicated declaration type** — compose the existing `OnError func(error)` hook with a declared `events.ErrorChannel.ErrorResponseFor(err)` lookup inline | n/a (internal boundary, no caller) | `OnError` IS the `handle` action; nil `OnError` is `log`; `respond`-equivalent achieved by composition, not new API |
+| `adapters/nethttp.Call` (client-side) | **No new declaration** — reuses the SAME `rest.ErrorPattern` rules already on `RouteHandle` via `RouteHandle.DecodeErrorFor(status, body) (ErrorPatternResponse, bool, error)`, status-only match (no Go error to match via `errors.As` client-side) | HTTP status (client reads it off the wire) | Only `ErrorRespond`-tagged rules are eligible — `ErrorHandle`/`ErrorLog`-tagged rules are skipped (server doesn't guarantee those wrote the typed body); `Call` returns `nethttp.ErrorPatternResponse` on match, unchanged `UnexpectedStatusError` on no-match or decode failure |
 
 ### Rules
 
@@ -542,7 +547,7 @@ and `docs/guides/error-handling.md` for the cross-boundary usage guide.
   handle-then-respond). Verify test coverage proves this (a `.WithAction(ErrorHandle)` test asserting
   NO auto-write/auto-publish/auto-broadcast happened).
 - **Do NOT propose new dedicated declaration types for SQL/Cache/File** — this was a deliberate
-  design decision (see `docs/roadmap/error-path-ergonomics.md` Phase 1C): these are internal
+  design decision (see `references/history.md` Round 64, item G3): these are internal
   boundaries with no channel/topic concept of their own, and the existing `OnError` hook already
   generically covers "handle" — composing it with `events.ErrorChannel.ErrorResponseFor` achieves
   the "respond"-equivalent with zero new API surface. Flagging the absence of

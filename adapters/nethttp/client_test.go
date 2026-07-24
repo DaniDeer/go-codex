@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -695,4 +696,144 @@ func ExampleCall() {
 		}
 	}
 	// Output: param "id" rejected: constraint failed (non-empty): expected non-empty string
+}
+
+// --- client-side error decode parity (ErrorPatternResponse) ---
+
+type clientErrPayload struct {
+	Code string `json:"code"`
+}
+
+func (e clientErrPayload) Error() string { return "client error " + e.Code }
+
+var clientErrPayloadCodec = codex.Struct[clientErrPayload](
+	codex.RequiredField("code", codex.String().Refine(validate.NonEmptyString),
+		func(e clientErrPayload) string { return e.Code },
+		func(e *clientErrPayload, v string) { e.Code = v },
+	),
+)
+
+// newClientErrorPatternRoute returns a route declaring an ErrorPattern for
+// status 409, whose payload type is clientErrPayload.
+func newClientErrorPatternRoute() *rest.RouteHandle[createReq, userResp] {
+	b := rest.NewBuilder(testInfo)
+	h, err := rest.NewRoute[createReq, userResp]("POST", "/errors/client-call",
+		createReqCodec, userRespCodec,
+		rest.ErrorPattern[clientErrPayload, clientErrPayload](http.StatusConflict, clientErrPayloadCodec),
+	).Register(b)
+	if err != nil {
+		panic(err)
+	}
+	return h
+}
+
+// CDP1: Call returns ErrorPatternResponse when the declared pattern matches.
+func TestCall_ErrorPatternResponse_MatchedPattern(t *testing.T) {
+	handle := newClientErrorPatternRoute()
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusConflict)
+		_, _ = w.Write([]byte(`{"code":"conflict"}`))
+	}))
+	defer srv.Close()
+
+	_, err := nethttp.Call(context.Background(), srv.Client(), srv.URL,
+		handle, createReq{Name: "Alice"}, nil, nethttp.CallOptions{})
+
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	var epr nethttp.ErrorPatternResponse
+	if !errors.As(err, &epr) {
+		t.Fatalf("expected ErrorPatternResponse, got %T: %v", err, err)
+	}
+	if epr.StatusCode != http.StatusConflict {
+		t.Errorf("status = %d, want 409", epr.StatusCode)
+	}
+	payload, ok := epr.Value.(clientErrPayload)
+	if !ok {
+		t.Fatalf("Value type = %T, want clientErrPayload", epr.Value)
+	}
+	if payload.Code != "conflict" {
+		t.Errorf("code = %q, want conflict", payload.Code)
+	}
+}
+
+// CDP5 (integration side): a matching status whose body fails to decode
+// against the declared codec falls back unchanged to UnexpectedStatusError.
+func TestCall_ErrorPatternResponse_DecodeFailureFallsBackToUnexpectedStatus(t *testing.T) {
+	handle := newClientErrorPatternRoute()
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusConflict)
+		// "code" is required non-empty; this violates the declared codec.
+		_, _ = w.Write([]byte(`{"code":""}`))
+	}))
+	defer srv.Close()
+
+	_, err := nethttp.Call(context.Background(), srv.Client(), srv.URL,
+		handle, createReq{Name: "Alice"}, nil, nethttp.CallOptions{})
+
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	var epr nethttp.ErrorPatternResponse
+	if errors.As(err, &epr) {
+		t.Fatalf("expected fallback to UnexpectedStatusError, got ErrorPatternResponse: %+v", epr)
+	}
+	var statusErr nethttp.UnexpectedStatusError
+	if !errors.As(err, &statusErr) {
+		t.Fatalf("expected UnexpectedStatusError, got %T: %v", err, err)
+	}
+	if statusErr.StatusCode != http.StatusConflict {
+		t.Errorf("status = %d, want 409", statusErr.StatusCode)
+	}
+}
+
+// Unmatched status (no declared pattern) still falls back to
+// UnexpectedStatusError unchanged — regression guard for non-opted-in callers.
+func TestCall_ErrorPatternResponse_NoMatch_FallsBackToUnexpectedStatus(t *testing.T) {
+	handle := newClientErrorPatternRoute()
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "server error", http.StatusInternalServerError)
+	}))
+	defer srv.Close()
+
+	_, err := nethttp.Call(context.Background(), srv.Client(), srv.URL,
+		handle, createReq{Name: "Alice"}, nil, nethttp.CallOptions{})
+
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	var statusErr nethttp.UnexpectedStatusError
+	if !errors.As(err, &statusErr) {
+		t.Fatalf("expected UnexpectedStatusError, got %T: %v", err, err)
+	}
+	if statusErr.StatusCode != http.StatusInternalServerError {
+		t.Errorf("status = %d, want 500", statusErr.StatusCode)
+	}
+}
+
+// CDP8: ErrorPatternResponse.LogValue shape.
+func TestErrorPatternResponse_LogValue(t *testing.T) {
+	epr := nethttp.ErrorPatternResponse{
+		StatusCode: http.StatusConflict,
+		Value:      clientErrPayload{Code: "conflict"},
+		Body:       []byte(`{"code":"conflict"}`),
+	}
+	v := epr.LogValue()
+	if v.Kind() != slog.KindGroup {
+		t.Fatalf("LogValue kind = %v, want Group", v.Kind())
+	}
+	attrs := v.Group()
+	found := map[string]bool{}
+	for _, a := range attrs {
+		found[a.Key] = true
+	}
+	if !found["status"] || !found["value"] {
+		t.Fatalf("LogValue attrs = %+v, want status and value keys", attrs)
+	}
 }

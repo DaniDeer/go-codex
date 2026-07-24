@@ -109,7 +109,20 @@ nethttp.CallOptions{
 ## Error handling
 
 ```go
-// Non-2xx response
+// A response status matching a route-declared rest.ErrorPattern (default
+// ErrorRespond action) is decoded automatically — check this BEFORE the
+// generic UnexpectedStatusError fallback.
+var patternResp nethttp.ErrorPatternResponse
+if errors.As(err, &patternResp) {
+    conflict := patternResp.Value.(domain.EmailConflictError) // decoded typed payload
+    logger.Warn("declared error pattern matched",
+        "status", patternResp.StatusCode,
+        "value",  conflict,
+    )
+}
+
+// Non-2xx response with no matching ErrorPattern (or its body failed to
+// decode) — the universal fallback, raw status + bytes.
 var statusErr nethttp.UnexpectedStatusError
 if errors.As(err, &statusErr) {
     logger.Error("api call failed",

@@ -490,9 +490,52 @@ Rules:
 - `Options.ErrorHandler` remains the final envelope/serialization escape
   hatch for anything not covered by a matched `ErrorPattern`.
 
-See [`docs/roadmap/error-path-ergonomics.md`](../roadmap/error-path-ergonomics.md)
-for the full cross-adapter design (events/websocket/store-IO boundaries use
-the same codec-first pattern, adapted to their transport).
+The same codec-first error-pattern model is used across every other
+boundary, adapted to its transport: [`events.ErrorChannel`](events.md#error-path-ergonomics-errorchannel)
+(pub/sub), [`websocket.ErrorFrame`](websocket.md#error-path-ergonomics-errorframe)
+(duplex/broadcast sockets), [`mcp.ErrorPattern`](mcp.md#error-path-ergonomics-errorpattern)
+(MCP tools), and the [Store/IO boundaries](../guides/error-handling.md#storeio-boundaries-sql-cache-file--handlelog-by-default)
+composition pattern (SQL/Cache/File).
+
+### Client-side decode — `nethttp.Call` and `ErrorPatternResponse`
+
+The declarative `ErrorPattern` data is not server-only — `Route.ClientHandle()`/
+`Register()` carry the SAME declared patterns onto the client-side
+`RouteHandle`. `nethttp.Call` consults them automatically on any non-2xx
+response:
+
+```go
+_, err := nethttp.Call(ctx, client, baseURL, clientCreate, req, nil, nethttp.CallOptions{})
+if err != nil {
+    var conflict nethttp.ErrorPatternResponse
+    if errors.As(err, &conflict) {
+        payload := conflict.Value.(domain.EmailConflictError) // decoded automatically
+        // ... handle the typed conflict ...
+    }
+    var statusErr nethttp.UnexpectedStatusError
+    if errors.As(err, &statusErr) {
+        // no matching pattern (or its body failed to decode) — raw bytes
+    }
+}
+```
+
+- `RouteHandle.DecodeErrorFor(status, body) (ErrorPatternResponse, bool, error)`
+  is the lookup accessor `Call` uses — status-only matching (the client has
+  no Go error to match via `errors.As`, only the wire status code and body).
+- **Only `ErrorRespond`-tagged patterns are eligible.** A pattern declared
+  with `.WithAction(rest.ErrorHandle)`/`.WithAction(rest.ErrorLog)` is
+  skipped during client-side lookup — the server does not guarantee writing
+  that pattern's typed body to the wire for those actions (it falls through
+  to `Options.ErrorHandler` instead, which may write anything).
+- **Unmatched status, or a matched status whose body fails to decode**
+  (e.g. schema drift between client/server versions) both fall back to the
+  unchanged `nethttp.UnexpectedStatusError{Method, Path, StatusCode, Body}`
+  — zero behavior change for callers who don't declare any `ErrorPattern`.
+- Same codec, same declaration, both directions: the pattern that drives
+  the server's typed body write is the ONLY thing needed for the client to
+  decode it back — no separate client-side declaration.
+- See [`examples/adapters-nethttp-client`](https://github.com/DaniDeer/go-codex/tree/main/examples/adapters-nethttp-client)
+  section "1b" for a full runnable round trip.
 
 ## chi adapter
 
