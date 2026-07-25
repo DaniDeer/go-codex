@@ -147,13 +147,13 @@ func PublishAdapter[T any](
 Declaration is the existing `EventPattern` — no new Pattern type:
 
 ```go
-var Alerts = codex.Must(ports.NewSinkPort[Alert]("alerts", alertCodec,
-    ports.PortOptions{Patterns: []ports.Pattern{
-        ports.EventPattern{Topic: "alerts/{severity}"},
-    }}))
-// main.go: Alerts.Bind(ctx, redis.PublishAdapter(pubsub, handle,
-//     func(a Alert) map[string]string { return map[string]string{"severity": a.Severity} },
-//     format.JSON(alertCodec), opts))
+var Alerts = codex.Must(ports.NewSinkPort[Alert]("alerts", alertCodec, ports.PortOptions{}))
+var AlertsPattern = ports.EventPattern{Topic: "alerts/{severity}"}
+// main.go:
+handle, _ := Alerts.PluginEventPattern(AlertsPattern)
+Alerts.Bind(ctx, redis.PublishAdapter(pubsub, handle,
+    func(a Alert) map[string]string { return map[string]string{"severity": a.Severity} },
+    format.JSON(alertCodec), opts))
 ```
 
 ## Structured errors

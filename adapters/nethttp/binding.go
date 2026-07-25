@@ -451,7 +451,7 @@ func (a *nethttpPipelineAdapter[Req, Resp]) Bind(
 // successor to [HandlerLatest]/[RegisterLatest] (which own their own cache
 // cell; the port owns it here). Use with [ports.LatestPort.Bind]:
 //
-//	handle, _ := ports.RESTHandle[struct{}, db.Reading](domain.Latest)
+//	handle, _ := domain.Latest.PluginRESTPattern(domain.LatestPattern)
 //	must(domain.Latest.Bind(ctx, nethttp.LatestAdapter(mux, handle, nethttp.Options{})))
 //	go domain.Latest.Feed(ctx, readings)
 //

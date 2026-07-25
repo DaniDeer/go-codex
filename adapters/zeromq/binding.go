@@ -330,7 +330,7 @@ func (a *zmqServeAdapter[Req, Resp]) Bind(
 // port owns it here). Use with [ports.LatestPort.Bind]; the port runs the
 // blocking Serve in a supervised goroutine:
 //
-//	handle, _ := ports.ReqReplyHandle[struct{}, OEE](domain.Latest)
+//	handle, _ := domain.Latest.PluginReqReplyPattern(domain.LatestPattern)
 //	must(domain.Latest.Bind(ctx, zeromq.LatestAdapter(sock, handle, zeromq.ServeLatestOptions{})))
 //	go domain.Latest.Feed(ctx, oeeStream)
 //

@@ -1,6 +1,42 @@
-# go-codex Review History (R1–R67)
+# go-codex Review History (R1–R68)
 
 Do not re-report any of these findings. They have been implemented and tested.
+
+---
+
+## Round 68 (stale Plugin-model doc examples — `PortOptions.Patterns`/free-function `XxxHandle`)
+
+Focused audit of Round 67's changes plus a repo-wide sweep it surfaced: several doc comments
+(godoc + README + a draft roadmap) still showed the PRE-Plugin-model-refactor API —
+`ports.PortOptions{Patterns: []ports.Pattern{...}}` (the field was removed) and free-function
+getters `ports.EventHandle[T](port)`/`ports.RESTHandle[T](port)`/`ports.ReqReplyHandle[T](port)`/
+`ports.MCPHandle[T](port)` (none of these functions exist — the current API is
+`port.PluginXxxPattern(pattern)` called directly on the port instance). None of the fixes are
+compiled code (doc comments only), but they presented non-compiling snippets as canonical usage
+on pkg.go.dev/README.
+
+- **G1 [bug] — `ports/doc.go`'s top package-doc example**: rewrote the "Inside-out development"
+  `SourcePort` example to declare a separate `Pattern` var and call `PluginEventPattern`, matching
+  the pattern the adjacent "Two consumption styles" section already used correctly.
+- **G2 [bug] — `README.md`**: same rewrite for its `SourcePort`/MQTT5 quickstart snippet.
+- **G3 [bug] — `adapters/nethttp/binding.go`'s `LatestAdapter` godoc**: replaced
+  `ports.RESTHandle[struct{}, db.Reading](domain.Latest)` with
+  `domain.Latest.PluginRESTPattern(domain.LatestPattern)`.
+- **G4 [bug] — `adapters/chi/binding.go`'s `LatestAdapter` godoc**: same fix as G3 (chi mirrors
+  nethttp).
+- **G5 [bug] — `adapters/zeromq/binding.go`'s `LatestAdapter` godoc**: replaced
+  `ports.ReqReplyHandle[struct{}, OEE](domain.Latest)` with
+  `domain.Latest.PluginReqReplyPattern(domain.LatestPattern)`.
+- **G6 [bug] — `adapters/mcpgo/binding.go`'s `LatestAdapter` godoc**: replaced
+  `ports.MCPHandle[struct{}, OEE](domain.Latest)` with
+  `domain.Latest.PluginMCPPattern(domain.LatestPattern)`.
+- **G7 [trivial] — `docs/roadmap/redis-pubsub.md`** (draft, unshipped): same
+  `PortOptions{Patterns:...}` rewrite for consistency with the current API even in draft form.
+- Also fixed during this round's verification pass (introduced by Round 67, not a new finding):
+  a `just check` gosec G104 (unhandled `resp.Body.Close()` error inside a loop) in
+  `examples/ports-plain-go/main.go` — extracted a `doConvertRequest` helper using the
+  `defer resp.Body.Close()` idiom already used throughout `examples/adapters-nethttp`/
+  `examples/adapters-chi`.
 
 ---
 

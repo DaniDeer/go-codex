@@ -68,11 +68,10 @@ user, _ := nethttp.Call(ctx, http.DefaultClient, serverURL, handle, req, nil, op
 // Layer 3 — declare an IO boundary with zero transport imports in domain code;
 // bind the concrete adapter only in main()
 var SensorReadings = codex.Must(ports.NewSourcePort[SensorReading]("sensors", readingCodec,
-    ports.PortOptions{Patterns: []ports.Pattern{
-        ports.EventPattern{Topic: "sensors/{sensorID}/data"},
-    }}))
+    ports.PortOptions{}))
+var SensorReadingsPattern = ports.EventPattern{Topic: "sensors/{sensorID}/data"}
 // main.go:
-handle, _ := ports.EventHandle[SensorReading](SensorReadings)
+handle, _ := SensorReadings.PluginEventPattern(SensorReadingsPattern)
 SensorReadings.Bind(ctx, mqtt5.SubscribeAdapter(client, handle, opts))
 
 // Layer 3 — governed computation with automatic input/output validation

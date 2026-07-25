@@ -210,7 +210,7 @@ func (a *chiPipelineAdapter[Req, Resp]) Bind(
 // own cache cell; the port owns it here). Mirrors nethttp.LatestAdapter.
 // Use with [ports.LatestPort.Bind]:
 //
-//	handle, _ := ports.RESTHandle[struct{}, db.Reading](domain.Latest)
+//	handle, _ := domain.Latest.PluginRESTPattern(domain.LatestPattern)
 //	must(domain.Latest.Bind(ctx, chi.LatestAdapter(r, handle, chi.Options{})))
 //	go domain.Latest.Feed(ctx, readings)
 //

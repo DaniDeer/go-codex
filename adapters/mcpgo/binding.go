@@ -55,7 +55,7 @@ func (a *mcpToolPipelineAdapter[In, Out]) Bind(
 // function and owned its own cache cell; the port owns it here, and no
 // pipeline argument exists to ignore). Use with [ports.LatestPort.Bind]:
 //
-//	handle, _ := ports.MCPHandle[struct{}, OEE](domain.Latest)
+//	handle, _ := domain.Latest.PluginMCPPattern(domain.LatestPattern)
 //	must(domain.Latest.Bind(ctx, mcpgo.LatestAdapter(srv, handle, mcpgo.Options{})))
 //	go domain.Latest.Feed(ctx, oeeStream)
 //

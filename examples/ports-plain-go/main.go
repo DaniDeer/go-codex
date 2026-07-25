@@ -251,6 +251,19 @@ var (
 
 const threshold = 30.0
 
+// doConvertRequest performs req and returns the response body, closing it
+// via defer (the standard net/http idiom — unlike a bare call, a deferred
+// Close's discarded error is the accepted pattern used throughout
+// examples/adapters-nethttp and examples/adapters-chi).
+func doConvertRequest(req *http.Request) ([]byte, error) {
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	return io.ReadAll(resp.Body)
+}
+
 func main() {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -320,13 +333,11 @@ func main() {
 			strings.NewReader(`{"value":100,"unit":"c"}`))
 		req.Header.Set("Content-Type", "application/json")
 		req.Header.Set("X-Trace-Id", "demo-trace-1")
-		resp, err := http.DefaultClient.Do(req)
+		respBody, err := doConvertRequest(req)
 		if err != nil {
 			fmt.Fprintln(os.Stderr, "call", path, ":", err)
 			os.Exit(1)
 		}
-		respBody, _ := io.ReadAll(resp.Body)
-		resp.Body.Close()
 		fmt.Printf("POST %s {value:100,unit:c} -> %s\n", path, respBody)
 	}
 

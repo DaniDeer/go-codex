@@ -10,12 +10,11 @@
 //
 //	// domain/pipeline.go — zero adapter imports; the Pattern IS the declaration
 //	var SensorReadings = codex.Must(ports.NewSourcePort[SensorReading]("sensors", ReadingCodec,
-//	    ports.PortOptions{Patterns: []ports.Pattern{
-//	        ports.EventPattern{Topic: "sensors/{sensorID}/data"},
-//	    }}))
+//	    ports.PortOptions{}))
+//	var SensorReadingsPattern = ports.EventPattern{Topic: "sensors/{sensorID}/data"}
 //
-//	// main.go — derive the handle from the port, pick the transport
-//	handle, _ := ports.EventHandle[SensorReading](domain.SensorReadings)
+//	// main.go — plug in the pattern to get the handle, pick the transport
+//	handle, _ := domain.SensorReadings.PluginEventPattern(domain.SensorReadingsPattern)
 //	domain.SensorReadings.Bind(ctx, mqtt.SubscribeAdapter(client, handle, 0, fmt, opts))
 //
 // # Two consumption styles, one declaration mechanism
