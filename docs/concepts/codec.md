@@ -444,7 +444,7 @@ var orderCodec = codex.Struct[Order](
     codex.RequiredField("customer", customerCodec,              ...),  // nested Struct, required
     codex.RequiredField("shipping", addressCodec,               ...),  // nested Struct, required
     codex.OptionalField("billingAddress", addressCodec,         ...),  // SAME nested Struct, optional
-    codex.RequiredField("items",    codex.SliceOf(lineItemCodec), ...), // slice of structs
+    codex.RequiredField("items",    codex.SliceOf(lineItemCodec).Refine(validate.NonEmptySlice[LineItem](), validate.MaxItems[LineItem](20)), ...), // slice of structs, 1-20 items
     codex.OptionalField("tags",     codex.StringMap(codex.String()), ...), // map
     codex.OptionalField("note",     codex.Nullable(codex.String()),  ...), // optional
 )
@@ -463,6 +463,43 @@ var orderCodec = codex.Struct[Order](
 - Encoding a never-populated `Optional` nested struct still emits the key with its zero value — codex has no "omit empty" semantics; `Required`/`Optional`/`Default` only affect DECODE and the generated schema's `Required` array, never what ENCODE writes.
 
 See [`examples/order`](https://github.com/DaniDeer/go-codex/tree/main/examples/order) for a complete runnable demo with all five nesting patterns, including both a required (`shipping`) and an optional (`billingAddress`) nested struct built from the identical codec.
+
+## Slices — array-level constraints
+
+`codex.SliceOf(elem)` returns a plain `Codec[[]T]`, so it composes with `.Refine(...)` exactly
+like any scalar codec — required/optional at the FIELD level is orthogonal to constraints on
+the array's LENGTH or CONTENTS:
+
+```go
+var itemsCodec = codex.SliceOf(lineItemCodec).
+    Refine(validate.NonEmptySlice[LineItem]()).  // at least 1 element
+    Refine(validate.MaxItems[LineItem](20))      // at most 20 elements
+// Schema: {type: array, items: {...}, minItems: 1, maxItems: 20}
+```
+
+Built-in `validate` constructors for slices (all generic, in `validate/slice.go`):
+
+| Constructor | Enforces | Schema keyword |
+|---|---|---|
+| `validate.MinItems[T](n)` | at least `n` elements | `minItems` |
+| `validate.MaxItems[T](n)` | at most `n` elements | `maxItems` |
+| `validate.NonEmptySlice[T]()` | at least 1 element (equivalent to `MinItems[T](1)`) | `minItems: 1` |
+| `validate.UniqueItems[T comparable]()` | no duplicate elements (Go `==` equality, `map[T]struct{}` dedup) | `uniqueItems` |
+
+`UniqueItems` requires `T comparable` — narrower than the other three's `any` — since it needs
+Go equality to detect duplicates. For element types containing slices/maps/funcs (not
+comparable), write a custom `codex.Constraint[[]T]` using `reflect.DeepEqual` or a
+domain-specific key extractor instead.
+
+These constructors are functions, not package-level `var`s like `validate.NonEmptyString` —
+Go has no generic package-level variables, so the element type must be supplied at the call
+site (`validate.MinItems[LineItem](1)`, not `validate.MinItems(1)`).
+
+Array-level required/optional (whether the KEY itself must be present) is controlled the same
+way as any other field — `RequiredField`/`OptionalField`/`DefaultField` wrapping a `SliceOf(...)`
+codec, exactly as shown for `items` above. Absent + Optional leaves the field at its Go zero
+value (`nil` slice); absent + Required fails with `ErrMissingField`; present (either case) runs
+the length/uniqueness constraints declared via `.Refine(...)`.
 
 ## Merging key and value into one type (`EntrySlice`)
 

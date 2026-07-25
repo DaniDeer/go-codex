@@ -62,6 +62,11 @@ type Schema struct {
 	MaxLength *int   `json:",omitempty"`
 	Pattern   string `json:",omitempty"`
 
+	// Array constraints.
+	MinItems    *int `json:",omitempty"`
+	MaxItems    *int `json:",omitempty"`
+	UniqueItems bool `json:",omitempty"`
+
 	// Deprecated marks this schema as deprecated in generated documentation.
 	Deprecated bool `json:",omitempty"`
 
@@ -94,6 +99,9 @@ func (s Schema) IsZero() bool {
 		s.MinLength == nil &&
 		s.MaxLength == nil &&
 		s.Pattern == "" &&
+		s.MinItems == nil &&
+		s.MaxItems == nil &&
+		!s.UniqueItems &&
 		!s.Deprecated &&
 		s.Default == nil
 }

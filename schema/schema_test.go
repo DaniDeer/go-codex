@@ -94,3 +94,26 @@ func TestSchema_IsZero_propertiesSet(t *testing.T) {
 		t.Error("Schema with Properties set should report IsZero() = false")
 	}
 }
+
+func TestSchema_IsZero_minItemsSet(t *testing.T) {
+	n := 1
+	s := schema.Schema{MinItems: &n}
+	if s.IsZero() {
+		t.Error("Schema with MinItems set should report IsZero() = false")
+	}
+}
+
+func TestSchema_IsZero_maxItemsSet(t *testing.T) {
+	n := 10
+	s := schema.Schema{MaxItems: &n}
+	if s.IsZero() {
+		t.Error("Schema with MaxItems set should report IsZero() = false")
+	}
+}
+
+func TestSchema_IsZero_uniqueItemsSet(t *testing.T) {
+	s := schema.Schema{UniqueItems: true}
+	if s.IsZero() {
+		t.Error("Schema with UniqueItems set should report IsZero() = false")
+	}
+}

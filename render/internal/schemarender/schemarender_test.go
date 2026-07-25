@@ -200,6 +200,34 @@ func TestSchemaObject_array(t *testing.T) {
 	}
 }
 
+func TestSchemaObject_arrayConstraints(t *testing.T) {
+	s := schema.Schema{
+		Type:        "array",
+		Items:       &schema.Schema{Type: "string"},
+		MinItems:    intptr(1),
+		MaxItems:    intptr(10),
+		UniqueItems: true,
+	}
+	got := schemarender.SchemaObject(s)
+	if got["minItems"] != 1 {
+		t.Errorf("minItems: want 1, got %v", got["minItems"])
+	}
+	if got["maxItems"] != 10 {
+		t.Errorf("maxItems: want 10, got %v", got["maxItems"])
+	}
+	if got["uniqueItems"] != true {
+		t.Errorf("uniqueItems: want true, got %v", got["uniqueItems"])
+	}
+}
+
+func TestSchemaObject_arrayConstraints_UniqueItemsFalse_NotRendered(t *testing.T) {
+	s := schema.Schema{Type: "array", Items: &schema.Schema{Type: "string"}, UniqueItems: false}
+	got := schemarender.SchemaObject(s)
+	if _, ok := got["uniqueItems"]; ok {
+		t.Error("uniqueItems=false must not appear in output")
+	}
+}
+
 // --- oneOf ---
 
 func TestSchemaObject_oneOf(t *testing.T) {
@@ -229,6 +257,7 @@ func TestSchemaObject_emptyFieldsOmitted(t *testing.T) {
 		"nullable", "additionalProperties", "discriminator",
 		"minimum", "maximum", "exclusiveMinimum", "exclusiveMaximum",
 		"minLength", "maxLength", "pattern",
+		"minItems", "maxItems", "uniqueItems",
 		"enum", "properties", "required", "items", "oneOf",
 	} {
 		if _, ok := got[key]; ok {

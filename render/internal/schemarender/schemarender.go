@@ -95,6 +95,15 @@ func SchemaObject(s schema.Schema) map[string]any {
 	if s.Items != nil {
 		obj["items"] = SchemaObject(*s.Items)
 	}
+	if s.MinItems != nil {
+		obj["minItems"] = *s.MinItems
+	}
+	if s.MaxItems != nil {
+		obj["maxItems"] = *s.MaxItems
+	}
+	if s.UniqueItems {
+		obj["uniqueItems"] = true
+	}
 
 	// Polymorphism.
 	if len(s.OneOf) > 0 {

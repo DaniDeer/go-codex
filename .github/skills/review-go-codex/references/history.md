@@ -1,6 +1,38 @@
-# go-codex Review History (R1–R68)
+# go-codex Review History (R1–R69)
 
 Do not re-report any of these findings. They have been implemented and tested.
+
+---
+
+## Round 69 (array/slice length constraints — `MinItems`/`MaxItems`/`NonEmptySlice`/`UniqueItems`)
+
+Closed a real feature gap found while evaluating "can arrays be required/optional, and can I
+set min/max length or non-empty?" (required/optional on `[]T` fields already worked via the
+generic `Field[T,F]` mechanism — no gap there — but array LENGTH/uniqueness constraints had no
+schema representation and no `validate` constructors at all):
+
+- **`schema.Schema`**: added `MinItems *int`, `MaxItems *int`, `UniqueItems bool` (JSON Schema
+  array-keyword names, mirroring `MinLength`/`MaxLength`'s int-pointer style); `IsZero()`
+  updated to check all three.
+- **`render/internal/schemarender/schemarender.go`**: renders `minItems`/`maxItems`/
+  `uniqueItems` in the "Array items" section — the single translation point shared by
+  `render/jsonschema` and `render/openapi`, so both pick this up with zero additional wiring.
+- **New `validate/slice.go`**: `MinItems[T](n)`, `MaxItems[T](n)`, `NonEmptySlice[T]()`
+  (function, not `var` — Go has no generic package-level vars), and
+  `UniqueItems[T comparable]()` (narrower `comparable` bound, `map[T]struct{}` O(n) dedup) —
+  all `codex.Constraint[[]T]`, composing via the existing `.Refine()` mechanism with zero
+  `codex`/`SliceOf` changes needed.
+- **`examples/order`**: `items` field now uses
+  `codex.SliceOf(lineItemCodec).Refine(validate.NonEmptySlice[LineItem](), validate.MaxItems[LineItem](20))`
+  — a new demo scenario shows the empty-items validation error; schema output shows
+  `"MinItems": 1, "MaxItems": 20` on the `items` property.
+- Tests: `schema/schema_test.go` (3 new `IsZero` cases),
+  `render/internal/schemarender/schemarender_test.go` (2 new render tests + emptyFieldsOmitted
+  list update), `validate/slice_test.go` (12 new tests covering Check/Message/Schema-annotation/
+  Decode-composition for all four constructors).
+- Docs: `docs/concepts/codec.md` new "Slices — array-level constraints" section;
+  `.github/instructions/go-codex.instructions.md`'s `schema`/`validate` bullets updated (new
+  exported symbols).
 
 ---
 

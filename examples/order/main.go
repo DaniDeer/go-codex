@@ -76,7 +76,10 @@ var orderCodec = codex.Struct[Order](
 	// zero-value Address{} and the nested codec's own "street"/"city"/
 	// "country" Required checks only run when "billingAddress" IS present.
 	codex.OptionalField("billingAddress", addressCodec, func(o Order) Address { return o.BillingAddress }, func(o *Order, v Address) { o.BillingAddress = v }),
-	codex.RequiredField("items", codex.SliceOf(lineItemCodec), func(o Order) []LineItem { return o.Items }, func(o *Order, v []LineItem) { o.Items = v }),
+	// SliceOf(...).Refine(...): array-level constraints compose exactly like
+	// scalar ones — an order must have between 1 and 20 line items.
+	codex.RequiredField("items", codex.SliceOf(lineItemCodec).Refine(validate.NonEmptySlice[LineItem](), validate.MaxItems[LineItem](20)),
+		func(o Order) []LineItem { return o.Items }, func(o *Order, v []LineItem) { o.Items = v }),
 	// StringMap: arbitrary string key/value labels on the order.
 	codex.OptionalField("tags", codex.StringMap(codex.String()), func(o Order) map[string]string { return o.Tags }, func(o *Order, v map[string]string) { o.Tags = v }),
 	// Nullable: note is optional; nil means the field is absent (JSON null / omitted).
@@ -209,6 +212,25 @@ func main() {
 	}
 	_, err = orderCodec.Decode(badBillingRaw)
 	fmt.Println("optional-nested-struct validation error:", err)
+
+	// Validation error: "items" present but empty — NonEmptySlice rejects it
+	// (an order needs at least one line item), demonstrating that array
+	// codecs enforce length constraints exactly like scalar/string codecs.
+	fmt.Println()
+	emptyItemsRaw := map[string]any{
+		"id": "ord-005",
+		"customer": map[string]any{
+			"name":  "Erin",
+			"email": "erin@example.com",
+		},
+		"shipping": map[string]any{
+			"street": "1 Empty St", "city": "Voidtown", "country": "Nullland",
+		},
+		"items":     []any{},
+		"createdAt": "2024-06-19T08:00:00Z",
+	}
+	_, err = orderCodec.Decode(emptyItemsRaw)
+	fmt.Println("empty-items validation error:", err)
 
 	// Encode back to map.
 	fmt.Println()
