@@ -1,7 +1,9 @@
 package codex
 
 import (
+	"errors"
 	"fmt"
+	"sort"
 
 	"github.com/DaniDeer/go-codex/schema"
 )
@@ -144,4 +146,76 @@ func Struct[T any](fields ...FieldCodec[T]) Codec[T] {
 			Required:   req,
 		},
 	}
+}
+
+// StrictStruct is [Struct], but Decode additionally rejects any input key not
+// declared by fields — the JSON Schema "additionalProperties: false"
+// semantics. Encode is unchanged: "unknown field" only has meaning on the
+// decode (external input) direction. Use StrictStruct when unrecognized keys
+// should be treated as errors (e.g. catching a typo'd field name) instead of
+// silently ignored, which is [Struct]'s default (forward-compatible) behavior.
+//
+//	strictOrderCodec := codex.StrictStruct[Order](
+//	    codex.RequiredField("id", codex.String(), ...),
+//	    // ...
+//	)
+//	_, err := strictOrderCodec.Decode(map[string]any{"id": "x", "totall": 9.99})
+//	// err: field "totall": unknown field (ErrUnknownField) — likely a typo for "total"
+//
+// Strictness is NOT viral/recursive: a nested [Struct] field inside a
+// StrictStruct-declared outer struct stays non-strict unless that nested
+// codec is ALSO declared via StrictStruct — opt in at each nesting level
+// independently, exactly like Required/Optional/Default are declared
+// independently at each level.
+//
+// Unknown-key errors are collected alongside normal per-field errors
+// (missing required fields, constraint failures) in one pass — a request
+// with both a missing required field AND a typo'd key reports both, not
+// just one.
+func StrictStruct[T any](fields ...FieldCodec[T]) Codec[T] {
+	c := Struct[T](fields...)
+
+	known := make(map[string]struct{}, len(fields))
+	for _, f := range fields {
+		name, _, _ := f.schema()
+		known[name] = struct{}{}
+	}
+
+	falseVal := false
+	c.Schema.AdditionalProperties = &falseVal
+
+	innerDecode := c.Decode
+	c.Decode = func(v any) (T, error) {
+		var zero T
+		obj, ok := v.(map[string]any)
+		if !ok {
+			return zero, TypeMismatchError{Expected: "object", Got: fmt.Sprintf("%T", v)}
+		}
+
+		result, err := innerDecode(v)
+		var errs ValidationErrors
+		if err != nil {
+			if !errors.As(err, &errs) {
+				return zero, err
+			}
+		}
+
+		var unknown []string
+		for k := range obj {
+			if _, ok := known[k]; !ok {
+				unknown = append(unknown, k)
+			}
+		}
+		sort.Strings(unknown) // deterministic error order across runs
+		for _, k := range unknown {
+			errs = append(errs, ValidationError{Field: k, Err: ErrUnknownField})
+		}
+
+		if len(errs) > 0 {
+			return result, errs
+		}
+		return result, nil
+	}
+
+	return c
 }

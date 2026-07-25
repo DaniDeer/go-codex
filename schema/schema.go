@@ -67,6 +67,11 @@ type Schema struct {
 	MaxItems    *int `json:",omitempty"`
 	UniqueItems bool `json:",omitempty"`
 
+	// Object/map size constraints — entry count for a dynamic-key object
+	// (e.g. Map[K,V]/StringMap[V]); not applicable to Struct's fixed field set.
+	MinProperties *int `json:",omitempty"`
+	MaxProperties *int `json:",omitempty"`
+
 	// Deprecated marks this schema as deprecated in generated documentation.
 	Deprecated bool `json:",omitempty"`
 
@@ -102,6 +107,8 @@ func (s Schema) IsZero() bool {
 		s.MinItems == nil &&
 		s.MaxItems == nil &&
 		!s.UniqueItems &&
+		s.MinProperties == nil &&
+		s.MaxProperties == nil &&
 		!s.Deprecated &&
 		s.Default == nil
 }

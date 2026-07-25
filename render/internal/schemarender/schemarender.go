@@ -81,6 +81,12 @@ func SchemaObject(s schema.Schema) map[string]any {
 	if s.PropertyNames != nil {
 		obj["propertyNames"] = SchemaObject(*s.PropertyNames)
 	}
+	if s.MinProperties != nil {
+		obj["minProperties"] = *s.MinProperties
+	}
+	if s.MaxProperties != nil {
+		obj["maxProperties"] = *s.MaxProperties
+	}
 
 	// Discriminator (TaggedUnion).
 	if s.Discriminator != nil {

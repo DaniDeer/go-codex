@@ -258,6 +258,7 @@ func TestSchemaObject_emptyFieldsOmitted(t *testing.T) {
 		"minimum", "maximum", "exclusiveMinimum", "exclusiveMaximum",
 		"minLength", "maxLength", "pattern",
 		"minItems", "maxItems", "uniqueItems",
+		"minProperties", "maxProperties",
 		"enum", "properties", "required", "items", "oneOf",
 	} {
 		if _, ok := got[key]; ok {
@@ -331,6 +332,33 @@ func TestSchemaObject_AdditionalPropertiesSchema_TakesPrecedenceOverBool(t *test
 	})
 	if _, ok := obj["additionalProperties"].(map[string]any); !ok {
 		t.Errorf("expected schema object form when AdditionalPropertiesSchema set, got %T", obj["additionalProperties"])
+	}
+}
+
+// --- Object/map size constraints ---
+
+func TestSchemaObject_ObjectSizeConstraints(t *testing.T) {
+	s := schema.Schema{
+		Type:          "object",
+		MinProperties: intptr(1),
+		MaxProperties: intptr(5),
+	}
+	got := schemarender.SchemaObject(s)
+	if got["minProperties"] != 1 {
+		t.Errorf("minProperties: want 1, got %v", got["minProperties"])
+	}
+	if got["maxProperties"] != 5 {
+		t.Errorf("maxProperties: want 5, got %v", got["maxProperties"])
+	}
+}
+
+func TestSchemaObject_ObjectSizeConstraints_NilNotRendered(t *testing.T) {
+	obj := schemarender.SchemaObject(schema.Schema{Type: "object"})
+	if _, ok := obj["minProperties"]; ok {
+		t.Error("nil MinProperties must not appear in output")
+	}
+	if _, ok := obj["maxProperties"]; ok {
+		t.Error("nil MaxProperties must not appear in output")
 	}
 }
 

@@ -1,6 +1,50 @@
-# go-codex Review History (R1–R69)
+# go-codex Review History (R1–R70)
 
 Do not re-report any of these findings. They have been implemented and tested.
+
+---
+
+## Round 70 (map size constraints, whole-struct cross-field Refine, `StrictStruct`)
+
+Broader follow-up to Round 69's array-length audit: "are there other missing features in
+codex's slice/object/map(key) codecs?" — three findings, all shipped.
+
+- **Map/StringMap size constraints (real gap, mirrors R69)**: `schema.Schema` gained
+  `MinProperties *int`/`MaxProperties *int` (JSON Schema object-size keywords); `IsZero()`
+  updated. `render/internal/schemarender/schemarender.go` renders `minProperties`/
+  `maxProperties`. New `validate/map.go`: `MinProperties[K,V](n)`, `MaxProperties[K,V](n)`,
+  `NonEmptyMap[K,V]()` — all `codex.Constraint[map[K]V]`, mirroring `validate/slice.go`'s
+  naming one level up (entries instead of elements). Map KEY constraints (pattern/format/enum
+  via `.Refine()` on the `keyCodec` argument) already fully worked — NOT a gap, confirmed via
+  existing tests. Documented caveat: `EntrySlice[K,V,R]` returns `Codec[[]R]` (slice-shaped),
+  so its entry-count constraint is the SLICE constructors (`MinItems[R]`/etc.), not the new
+  map ones, despite its object-shaped schema — a harmless keyword/type mismatch if rendered.
+  `examples/order`'s `tags` field now uses `MaxProperties[string,string](5)` with a new
+  too-many-tags validation-error demo scene.
+- **Whole-struct (cross-field) `Refine` (already worked, zero code changes — test/doc gap
+  only, same pattern as R68's nested-struct round)**: `codex.Struct[T](...)` returns a plain
+  `Codec[T]`, so `.Refine(...)` already validates invariants spanning multiple fields (e.g.
+  "start before end"), running after all per-field checks succeed, symmetric on Encode. Zero
+  prior test/doc coverage — now has 4 new tests in `codex/object_test.go`, a new "Whole-struct
+  (cross-field) constraints" doc subsection, and a real cross-field constraint on
+  `examples/order`'s `orderCodec` (`deliveryDate` must not be before `createdAt`) with a new
+  validation-error demo scene.
+- **`codex.StrictStruct[T]` (genuine new feature — reject unknown/typo'd keys)**: new sibling
+  constructor to `Struct[T]` (identical signature) that sets `Schema.AdditionalProperties =
+  false` and wraps Decode to also reject undeclared input keys. New `codex.ErrUnknownField`
+  sentinel mirrors `ErrMissingField`'s existing style exactly (no per-field struct — the field
+  name is carried by the wrapping `ValidationError.Field`). Unknown-key errors are merged with
+  normal per-field errors (missing required, constraint failures) in one `ValidationErrors`
+  pass, sorted for deterministic ordering. NOT viral/recursive across nesting — a plain
+  `Struct`-declared nested field stays non-strict under a `StrictStruct` outer struct; opt in
+  per level, matching how Required/Optional/Default are already independent per nesting level.
+  `Encode` unchanged from `Struct`. 8 new tests in `codex/object_test.go` (including the
+  merge-with-missing-required and non-viral-nesting edge cases), new "Rejecting unknown keys —
+  StrictStruct" doc subsection.
+- Docs: `docs/concepts/codec.md` (new "Maps — size constraints" section, new "Whole-struct
+  (cross-field) constraints" and "Rejecting unknown keys — StrictStruct" subsections);
+  `.github/instructions/go-codex.instructions.md`'s `codex`/`schema`/`validate` bullets
+  updated with all new exported symbols.
 
 ---
 

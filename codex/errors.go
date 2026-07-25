@@ -11,6 +11,13 @@ import (
 // Use errors.Is to check for this sentinel.
 var ErrMissingField = errors.New("missing required field")
 
+// ErrUnknownField is returned by [StrictStruct]-built codecs when the input
+// contains a key not declared by any field — the "additionalProperties: false"
+// case. Use errors.Is to check for this sentinel. Like [ErrMissingField], the
+// offending field name is carried by the wrapping [ValidationError.Field],
+// not by this sentinel itself.
+var ErrUnknownField = errors.New("unknown field")
+
 // ValidationError is a single field-level validation failure returned from struct Decode.
 type ValidationError struct {
 	Field string // name of the field that failed

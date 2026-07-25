@@ -80,15 +80,30 @@ var orderCodec = codex.Struct[Order](
 	// scalar ones — an order must have between 1 and 20 line items.
 	codex.RequiredField("items", codex.SliceOf(lineItemCodec).Refine(validate.NonEmptySlice[LineItem](), validate.MaxItems[LineItem](20)),
 		func(o Order) []LineItem { return o.Items }, func(o *Order, v []LineItem) { o.Items = v }),
-	// StringMap: arbitrary string key/value labels on the order.
-	codex.OptionalField("tags", codex.StringMap(codex.String()), func(o Order) map[string]string { return o.Tags }, func(o *Order, v map[string]string) { o.Tags = v }),
+	// StringMap: arbitrary string key/value labels on the order, capped at 5
+	// entries — map-size constraints compose with .Refine() exactly like
+	// slice-length constraints do.
+	codex.OptionalField("tags", codex.StringMap(codex.String()).Refine(validate.MaxProperties[string, string](5)),
+		func(o Order) map[string]string { return o.Tags }, func(o *Order, v map[string]string) { o.Tags = v }),
 	// Nullable: note is optional; nil means the field is absent (JSON null / omitted).
 	codex.OptionalField("note", codex.Nullable(codex.String()), func(o Order) *string { return o.Note }, func(o *Order, v *string) { o.Note = v }),
 	// Time: creation timestamp encoded as RFC 3339.
 	codex.RequiredField("createdAt", codex.Time(), func(o Order) time.Time { return o.CreatedAt }, func(o *Order, v time.Time) { o.CreatedAt = v }),
 	// Nullable + Date: optional promised delivery date encoded as YYYY-MM-DD.
 	codex.OptionalField("deliveryDate", codex.Nullable(codex.Date()), func(o Order) *time.Time { return o.DeliveryDate }, func(o *Order, v *time.Time) { o.DeliveryDate = v }),
-)
+).Refine(codex.Constraint[Order]{
+	// Whole-struct (cross-field) constraint: codex.Struct[T] returns a plain
+	// Codec[T], so .Refine(...) validates invariants spanning MULTIPLE
+	// fields — something no single RequiredField/OptionalField can express.
+	// Runs AFTER every per-field check already succeeded.
+	Name: "delivery-not-before-created",
+	Check: func(o Order) bool {
+		return o.DeliveryDate == nil || !o.DeliveryDate.Before(o.CreatedAt)
+	},
+	Message: func(o Order) string {
+		return fmt.Sprintf("deliveryDate (%s) must not be before createdAt (%s)", o.DeliveryDate.Format("2006-01-02"), o.CreatedAt.Format("2006-01-02"))
+	},
+})
 
 // ── Main ──────────────────────────────────────────────────────────────────────
 
@@ -231,6 +246,49 @@ func main() {
 	}
 	_, err = orderCodec.Decode(emptyItemsRaw)
 	fmt.Println("empty-items validation error:", err)
+
+	// Validation error: "tags" present with more than 5 entries — MaxProperties
+	// rejects it, demonstrating that map codecs enforce entry-count
+	// constraints exactly like slice-length constraints (validate.MaxItems).
+	fmt.Println()
+	tooManyTagsRaw := map[string]any{
+		"id": "ord-006",
+		"customer": map[string]any{
+			"name":  "Frank",
+			"email": "frank@example.com",
+		},
+		"shipping": map[string]any{
+			"street": "1 Tag St", "city": "Labeltown", "country": "Metaland",
+		},
+		"items": []any{map[string]any{"product": "Widget F", "quantity": 1, "price": 5.00}},
+		"tags": map[string]any{
+			"a": "1", "b": "2", "c": "3", "d": "4", "e": "5", "f": "6",
+		},
+		"createdAt": "2024-06-20T08:00:00Z",
+	}
+	_, err = orderCodec.Decode(tooManyTagsRaw)
+	fmt.Println("too-many-tags validation error:", err)
+
+	// Validation error: cross-field constraint — deliveryDate is BEFORE
+	// createdAt. Every individual field is valid on its own (both are
+	// well-formed dates); only the whole-struct Refine on orderCodec can
+	// catch this, since no single per-field constraint sees both values.
+	fmt.Println()
+	badDatesRaw := map[string]any{
+		"id": "ord-007",
+		"customer": map[string]any{
+			"name":  "Grace",
+			"email": "grace@example.com",
+		},
+		"shipping": map[string]any{
+			"street": "1 Time St", "city": "Chronotown", "country": "Sequenceland",
+		},
+		"items":        []any{map[string]any{"product": "Widget G", "quantity": 1, "price": 5.00}},
+		"createdAt":    "2024-06-20T08:00:00Z",
+		"deliveryDate": "2024-06-01", // before createdAt
+	}
+	_, err = orderCodec.Decode(badDatesRaw)
+	fmt.Println("cross-field validation error:", err)
 
 	// Encode back to map.
 	fmt.Println()

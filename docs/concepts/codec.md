@@ -160,6 +160,36 @@ codex.DefaultField("log_level",
 
 > **Encode note:** there is no "omit if zero" logic on encode — every field is always written to the output object. If you want a field to be absent rather than `null` on encode, handle that outside the codec.
 
+### Rejecting unknown keys — `StrictStruct`
+
+`Struct` is forward-compatible by default: any input key not matching a declared field is
+silently ignored on decode, and the generated schema leaves `additionalProperties` unset (JSON
+Schema default: extra properties allowed). Use `codex.StrictStruct` — same signature as
+`Struct`, same `RequiredField`/`OptionalField`/`DefaultField` vocabulary — to reject unknown
+keys instead (catches typo'd field names):
+
+```go
+var StrictUserCodec = codex.StrictStruct[User](
+    codex.RequiredField("name", nameCodec, get, set),
+    codex.OptionalField("bio",  codex.String(), get, set),
+)
+
+_, err := StrictUserCodec.Decode(map[string]any{"name": "Alice", "boi": "typo"})
+// err: field "boi": unknown field (codex.ErrUnknownField) — errors.Is-navigable
+```
+
+- Sets `Schema.AdditionalProperties = false` (JSON Schema `additionalProperties: false`) —
+  `Struct` never sets this field at all.
+- Unknown-key errors are collected ALONGSIDE normal per-field errors (missing required fields,
+  constraint failures) in one `ValidationErrors` — a request with both a missing required
+  field and a typo'd key reports both, not just one.
+- **Not viral/recursive across nesting** — a nested field declared with plain `Struct` stays
+  non-strict even when the OUTER struct uses `StrictStruct`. Opt in explicitly at each nesting
+  level, exactly like `Required`/`Optional`/`Default` are declared independently per level (see
+  [Nested structs](#nested-structs)).
+- `Encode` is unchanged from `Struct` — "unknown field" is a decode-only (external input)
+  concept.
+
 ### Reusing Field declarations for path/topic/header/query vars
 
 This is the mechanism behind a general library design principle: **one
@@ -303,6 +333,37 @@ var slugCodec = codex.String().
 Each `Constraint.Schema` function receives the schema produced by all previous constraints and returns the augmented version — they compose without interfering.
 
 Built-in constraints in the `validate` package already set `Schema` where appropriate (e.g. `validate.Email` sets `format: email`, `validate.RangeInt` sets `minimum`/`maximum`). Custom constraints without a `Schema` function simply add runtime validation without changing the spec.
+
+### Whole-struct (cross-field) constraints
+
+`.Refine(...)` isn't limited to scalar codecs — `codex.Struct[T](...)` returns a plain `Codec[T]`, so the same mechanism validates INVARIANTS THAT SPAN MULTIPLE FIELDS, something no single per-field `Constraint` can see:
+
+```go
+type DateRange struct {
+    Start, End time.Time
+}
+
+var dateRangeCodec = codex.Struct[DateRange](
+    codex.RequiredField("start", codex.Time(), func(d DateRange) time.Time { return d.Start }, func(d *DateRange, v time.Time) { d.Start = v }),
+    codex.RequiredField("end",   codex.Time(), func(d DateRange) time.Time { return d.End },   func(d *DateRange, v time.Time) { d.End = v }),
+).Refine(codex.Constraint[DateRange]{
+    Name:  "start-before-end",
+    Check: func(d DateRange) bool { return d.Start.Before(d.End) },
+    Message: func(d DateRange) string {
+        return fmt.Sprintf("start (%s) must be before end (%s)", d.Start, d.End)
+    },
+})
+```
+
+- The whole-struct `Constraint[DateRange]`'s `Check` receives the FULLY DECODED `DateRange` — it
+  runs AFTER every per-field `Required`/`Codec`/nested-struct check has already succeeded, so a
+  missing/invalid individual field is reported first (per-field `ValidationErrors`), and the
+  cross-field constraint only runs once the struct is otherwise well-formed.
+- Symmetric on Encode too — an in-memory `DateRange{Start: later, End: earlier}` fails to
+  encode, exactly like any other `Refine`d codec.
+- Use this for "at least one of A or B must be set", "field X only valid when field Y is a
+  certain value", range checks across two fields, and similar invariants that a single
+  `RequiredField`/`OptionalField` declaration cannot express.
 
 ## Composition — shared field codecs
 
@@ -500,6 +561,43 @@ way as any other field — `RequiredField`/`OptionalField`/`DefaultField` wrappi
 codec, exactly as shown for `items` above. Absent + Optional leaves the field at its Go zero
 value (`nil` slice); absent + Required fails with `ErrMissingField`; present (either case) runs
 the length/uniqueness constraints declared via `.Refine(...)`.
+
+## Maps — size constraints
+
+`codex.Map[K,V]`/`codex.StringMap[V]` return plain `Codec[map[K]V]` codecs, so entry-count
+constraints compose with `.Refine(...)` exactly like slice-length constraints:
+
+```go
+var tagsCodec = codex.StringMap(codex.String()).
+    Refine(validate.MaxProperties[string, string](5))  // at most 5 entries
+// Schema: {type: object, additionalProperties: {...}, maxProperties: 5}
+```
+
+Built-in `validate` constructors for maps (all generic, in `validate/map.go`):
+
+| Constructor | Enforces | Schema keyword |
+|---|---|---|
+| `validate.MinProperties[K, V](n)` | at least `n` entries | `minProperties` |
+| `validate.MaxProperties[K, V](n)` | at most `n` entries | `maxProperties` |
+| `validate.NonEmptyMap[K, V]()` | at least 1 entry (equivalent to `MinProperties[K,V](1)`) | `minProperties: 1` |
+
+These mirror `validate/slice.go`'s array constructors exactly, one level up (entries instead
+of elements). Map KEY constraints (pattern, format, enum, length) are a SEPARATE, already-fully
+-supported concern: pass a `.Refine(...)`-composed `Codec[K]` as `Map`'s `keyCodec` argument —
+it renders into the schema's `propertyNames` and is validated per-key on every decode. Do not
+confuse the two: `MinProperties`/`MaxProperties` constrain how MANY entries the map has;
+key-codec constraints constrain what EACH key looks like.
+
+`EntrySlice[K,V,R]` decodes to `Codec[[]R]` (a slice), not `Codec[map[K]V]` — its entry-count
+constraint is therefore `validate.MinItems[R]`/`MaxItems[R]`/`NonEmptySlice[R]` (the SLICE
+constructors), not the map ones above, even though `EntrySlice`'s generated schema is
+object-shaped (`type: object`, matching its wire format). This is a known, harmless
+schema/type mismatch: a JSON Schema validator ignores `minItems`/`maxItems` on a
+`type: object` schema (those keywords only apply where `type: array`), so the RUNTIME
+constraint still enforces correctly via `len()`, but the constraint won't appear in the
+rendered OpenAPI/AsyncAPI spec for that field. If the spec annotation matters for an
+`EntrySlice` field, use a custom `codex.Constraint[[]R]` with a `Schema` callback that sets
+`MinProperties`/`MaxProperties` directly instead.
 
 ## Merging key and value into one type (`EntrySlice`)
 

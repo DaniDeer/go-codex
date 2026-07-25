@@ -563,6 +563,243 @@ func TestStruct_NestedOptionalStruct_EncodeAlwaysIncludesField(t *testing.T) {
 	}
 }
 
+// --- Whole-struct (cross-field) Refine ---
+
+// dateRange has two fields whose validity depends on EACH OTHER — not
+// expressible as a per-field Constraint. codex.Struct[T] returns a plain
+// Codec[T], so .Refine(...) already supports this: the constraint's Check
+// receives the FULLY DECODED dateRange, after all per-field decode/validation
+// succeeded.
+type dateRange struct {
+	Start int // day-of-year, for simplicity
+	End   int
+}
+
+func dateRangeCodec() codex.Codec[dateRange] {
+	return codex.Struct[dateRange](
+		codex.RequiredField("start", codex.Int(),
+			func(d dateRange) int { return d.Start },
+			func(d *dateRange, v int) { d.Start = v },
+		),
+		codex.RequiredField("end", codex.Int(),
+			func(d dateRange) int { return d.End },
+			func(d *dateRange, v int) { d.End = v },
+		),
+	).Refine(codex.Constraint[dateRange]{
+		Name:    "start-before-end",
+		Check:   func(d dateRange) bool { return d.Start < d.End },
+		Message: func(d dateRange) string { return fmt.Sprintf("start (%d) must be before end (%d)", d.Start, d.End) },
+	})
+}
+
+func TestStruct_WholeStructRefine_ValidCrossFieldPasses(t *testing.T) {
+	c := dateRangeCodec()
+	got, err := c.Decode(map[string]any{"start": 1.0, "end": 10.0})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got.Start != 1 || got.End != 10 {
+		t.Errorf("got %+v, want {Start:1 End:10}", got)
+	}
+}
+
+func TestStruct_WholeStructRefine_InvalidCrossFieldFails(t *testing.T) {
+	c := dateRangeCodec()
+	// Both fields individually valid ints, but Start >= End violates the
+	// cross-field constraint — only a whole-struct Refine can catch this;
+	// no per-field Constraint has visibility into both fields at once.
+	_, err := c.Decode(map[string]any{"start": 10.0, "end": 1.0})
+	if err == nil {
+		t.Fatal("expected error for start >= end, got nil")
+	}
+	var ce codex.ConstraintError
+	if !errors.As(err, &ce) {
+		t.Fatalf("expected ConstraintError, got %T: %v", err, err)
+	}
+	if ce.Name != "start-before-end" {
+		t.Errorf("want constraint name 'start-before-end', got %q", ce.Name)
+	}
+}
+
+func TestStruct_WholeStructRefine_PerFieldErrorsStillRunFirst(t *testing.T) {
+	c := dateRangeCodec()
+	// "end" is missing entirely — the per-field Required check must fire
+	// (and be reported) BEFORE the whole-struct cross-field constraint ever
+	// gets a chance to run (Refine validates AFTER Decode succeeds).
+	_, err := c.Decode(map[string]any{"start": 1.0})
+	if err == nil {
+		t.Fatal("expected error for missing 'end', got nil")
+	}
+	var ve codex.ValidationErrors
+	if !errors.As(err, &ve) {
+		t.Fatalf("expected ValidationErrors (per-field), got %T: %v", err, err)
+	}
+}
+
+func TestStruct_WholeStructRefine_EncodeAlsoValidatesCrossField(t *testing.T) {
+	c := dateRangeCodec()
+	// Refine validates symmetrically on Encode too — an in-memory value
+	// that violates the cross-field invariant fails to encode.
+	_, err := c.Encode(dateRange{Start: 10, End: 1})
+	if err == nil {
+		t.Fatal("expected error encoding an invalid dateRange, got nil")
+	}
+	var ce codex.ConstraintError
+	if !errors.As(err, &ce) {
+		t.Fatalf("expected ConstraintError, got %T: %v", err, err)
+	}
+}
+
+// --- StrictStruct (reject unknown keys) ---
+
+func strictPointCodec() codex.Codec[point] {
+	return codex.StrictStruct[point](
+		codex.RequiredField("x", codex.Int(),
+			func(p point) int { return p.X },
+			func(p *point, v int) { p.X = v },
+		),
+		codex.OptionalField("y", codex.Int(),
+			func(p point) int { return p.Y },
+			func(p *point, v int) { p.Y = v },
+		),
+	)
+}
+
+func TestStrictStruct_KnownFieldsOnly_Decodes(t *testing.T) {
+	c := strictPointCodec()
+	got, err := c.Decode(map[string]any{"x": 1.0, "y": 2.0})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got.X != 1 || got.Y != 2 {
+		t.Errorf("got %+v, want {X:1 Y:2}", got)
+	}
+}
+
+func TestStrictStruct_UnknownKey_ReturnsError(t *testing.T) {
+	c := strictPointCodec()
+	_, err := c.Decode(map[string]any{"x": 1.0, "z": 3.0})
+	if err == nil {
+		t.Fatal("expected error for unknown key 'z', got nil")
+	}
+	var ve codex.ValidationErrors
+	if !errors.As(err, &ve) {
+		t.Fatalf("expected ValidationErrors, got %T: %v", err, err)
+	}
+	if len(ve) != 1 || ve[0].Field != "z" {
+		t.Fatalf("want error for field 'z', got %+v", ve)
+	}
+	if !errors.Is(ve[0].Err, codex.ErrUnknownField) {
+		t.Errorf("want ErrUnknownField, got %v", ve[0].Err)
+	}
+}
+
+func TestStrictStruct_MultipleUnknownKeys_AllReported(t *testing.T) {
+	c := strictPointCodec()
+	_, err := c.Decode(map[string]any{"x": 1.0, "z": 3.0, "w": 4.0})
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	var ve codex.ValidationErrors
+	if !errors.As(err, &ve) {
+		t.Fatalf("expected ValidationErrors, got %T: %v", err, err)
+	}
+	if len(ve) != 2 {
+		t.Fatalf("want 2 unknown-key errors, got %d: %+v", len(ve), ve)
+	}
+	// Deterministic (sorted) order: "w" before "z".
+	if ve[0].Field != "w" || ve[1].Field != "z" {
+		t.Errorf("want fields [w z] in sorted order, got [%s %s]", ve[0].Field, ve[1].Field)
+	}
+}
+
+func TestStrictStruct_UnknownKeyAndMissingRequired_BothReported(t *testing.T) {
+	c := strictPointCodec()
+	// "x" (required) is missing AND "z" (unknown) is present — both errors
+	// must be collected in one pass, not just one or the other.
+	_, err := c.Decode(map[string]any{"z": 3.0})
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	var ve codex.ValidationErrors
+	if !errors.As(err, &ve) {
+		t.Fatalf("expected ValidationErrors, got %T: %v", err, err)
+	}
+	if len(ve) != 2 {
+		t.Fatalf("want 2 errors (missing 'x' + unknown 'z'), got %d: %+v", len(ve), ve)
+	}
+	var sawMissingX, sawUnknownZ bool
+	for _, e := range ve {
+		if e.Field == "x" && errors.Is(e.Err, codex.ErrMissingField) {
+			sawMissingX = true
+		}
+		if e.Field == "z" && errors.Is(e.Err, codex.ErrUnknownField) {
+			sawUnknownZ = true
+		}
+	}
+	if !sawMissingX || !sawUnknownZ {
+		t.Errorf("want both missing-x and unknown-z errors, got %+v", ve)
+	}
+}
+
+func TestStrictStruct_SchemaSetsAdditionalPropertiesFalse(t *testing.T) {
+	s := strictPointCodec().Schema
+	if s.AdditionalProperties == nil || *s.AdditionalProperties != false {
+		t.Errorf("Schema.AdditionalProperties = %v, want pointer to false", s.AdditionalProperties)
+	}
+}
+
+func TestStruct_SchemaLeavesAdditionalPropertiesUnset(t *testing.T) {
+	// Plain Struct must NOT set AdditionalProperties — StrictStruct is
+	// opt-in, not the default.
+	s := pointCodec().Schema
+	if s.AdditionalProperties != nil {
+		t.Errorf("Schema.AdditionalProperties = %v, want nil (Struct is not strict by default)", s.AdditionalProperties)
+	}
+}
+
+func TestStrictStruct_NotViralAcrossNesting(t *testing.T) {
+	// A nested field declared with plain Struct (not StrictStruct) stays
+	// non-strict even when the OUTER struct is StrictStruct — strictness is
+	// opt-in per nesting level, not recursive.
+	type wrapper struct {
+		Inner point
+	}
+	inner := codex.Struct[point]( // plain Struct, not Strict
+		codex.RequiredField("x", codex.Int(), func(p point) int { return p.X }, func(p *point, v int) { p.X = v }),
+	)
+	outer := codex.StrictStruct[wrapper](
+		codex.RequiredField("inner", inner, func(w wrapper) point { return w.Inner }, func(w *wrapper, v point) { w.Inner = v }),
+	)
+	// Unknown key inside the NESTED (non-strict) struct is NOT rejected.
+	_, err := outer.Decode(map[string]any{
+		"inner": map[string]any{"x": 1.0, "extra": "ignored"},
+	})
+	if err != nil {
+		t.Errorf("nested plain Struct should ignore unknown keys, got error: %v", err)
+	}
+	// But an unknown key on the OUTER strict struct IS rejected.
+	_, err = outer.Decode(map[string]any{
+		"inner":      map[string]any{"x": 1.0},
+		"outerExtra": "rejected",
+	})
+	if err == nil {
+		t.Fatal("expected error for unknown key on outer StrictStruct, got nil")
+	}
+}
+
+func TestStrictStruct_EncodeUnchangedFromStruct(t *testing.T) {
+	c := strictPointCodec()
+	enc, err := c.Encode(point{X: 1, Y: 2})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	m, ok := enc.(map[string]any)
+	if !ok || m["x"] != 1 || m["y"] != 2 {
+		t.Errorf("encoded map = %v, want {x:1 y:2}", enc)
+	}
+}
+
 // --- Example functions (shown on pkg.go.dev as runnable snippets) ---
 
 func ExampleRequiredField() {
