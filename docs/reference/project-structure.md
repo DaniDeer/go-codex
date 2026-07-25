@@ -231,7 +231,7 @@ go-codex/
     ├── formats/            # builtin format constraints demo (Email, UUID, URL, …)
     ├── html-sanitize/      # sanitizing untrusted HTML input with a codec
     ├── multiformat/        # JSON / YAML / TOML with one codec
-    ├── order/              # nested structs, SliceOf, Time, Nullable, StringMap demo
+    ├── order/              # nested structs (required + optional), SliceOf, Time, Nullable, StringMap demo
     ├── shape/              # tagged union + Downcast demo
     └── validate/           # explicit Validate before marshal
     │

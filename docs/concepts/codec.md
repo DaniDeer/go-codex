@@ -418,12 +418,13 @@ type Address struct { Street, City, Country string }
 type Customer struct { Name, Email string }
 type LineItem struct { Product string; Quantity int; Price float64 }
 type Order struct {
-    ID       string
-    Customer Customer
-    Shipping Address
-    Items    []LineItem
-    Tags     map[string]string
-    Note     *string
+    ID             string
+    Customer       Customer
+    Shipping       Address
+    BillingAddress Address // same Address type/codec as Shipping — see below
+    Items          []LineItem
+    Tags           map[string]string
+    Note           *string
 }
 
 var addressCodec = codex.Struct[Address](
@@ -440,20 +441,28 @@ var lineItemCodec = codex.Struct[LineItem](
 
 var orderCodec = codex.Struct[Order](
     codex.RequiredField("id",       codex.String(), ...),
-    codex.RequiredField("customer", customerCodec,              ...),  // nested Struct
-    codex.RequiredField("shipping", addressCodec,               ...),  // nested Struct
+    codex.RequiredField("customer", customerCodec,              ...),  // nested Struct, required
+    codex.RequiredField("shipping", addressCodec,               ...),  // nested Struct, required
+    codex.OptionalField("billingAddress", addressCodec,         ...),  // SAME nested Struct, optional
     codex.RequiredField("items",    codex.SliceOf(lineItemCodec), ...), // slice of structs
     codex.OptionalField("tags",     codex.StringMap(codex.String()), ...), // map
     codex.OptionalField("note",     codex.Nullable(codex.String()),  ...), // optional
 )
 ```
 
+**Required vs optional is orthogonal to whether a field's codec is a nested `Struct` or a scalar.** `RequiredField`/`OptionalField`/`DefaultField` only decide PRESENCE — they never inspect what codec they wrap. `shipping` and `billingAddress` above use the exact same `addressCodec`; only `RequiredField` vs `OptionalField` differs:
+
+- **Absent + Required** → decode fails with `ErrMissingField` for that field name.
+- **Absent + Optional** → the nested field is silently left at its Go zero value (`Address{}`) — decode succeeds.
+- **Present** (either case) → decodes through the nested struct's OWN codec, which enforces its OWN required/optional/default rules completely independently. A present-but-incomplete `billingAddress` (e.g. missing `country`) still fails — declaring the OUTER field Optional never weakens the INNER struct's own validation, it only controls whether the key itself must exist.
+
 **What you get for free:**
 - Encode/decode recurses automatically — `order.Customer` is a Go struct, the JSON `"customer"` is an object.
-- Validation cascades — a constraint failure on `customer.email` surfaces as `ValidationErrors` with path `"customer.email"`.
-- Schema generation — `OrderCodec.Schema` produces a nested `$object` with inline `Customer` and `Address` schemas.
+- Validation cascades — a constraint failure on `customer.email` surfaces as a nested `ValidationErrors`: the top-level error names `"customer"`, and unwrapping it one level (`errors.As` into `codex.ValidationErrors`) yields the inner error naming `"email"` (message reads `field customer: field email: ...` — nested attribution, not a flattened dotted-path string).
+- Schema generation — `OrderCodec.Schema` produces a nested `$object` with inline `Customer`/`Address` schemas, and each nesting level's `Required` array is independent: `billingAddress` is absent from the OUTER `Required` list, but its own embedded schema still declares `["street","city","country"]` as required.
+- Encoding a never-populated `Optional` nested struct still emits the key with its zero value — codex has no "omit empty" semantics; `Required`/`Optional`/`Default` only affect DECODE and the generated schema's `Required` array, never what ENCODE writes.
 
-See [`examples/order`](https://github.com/DaniDeer/go-codex/tree/main/examples/order) for a complete runnable demo with all four nesting patterns.
+See [`examples/order`](https://github.com/DaniDeer/go-codex/tree/main/examples/order) for a complete runnable demo with all five nesting patterns, including both a required (`shipping`) and an optional (`billingAddress`) nested struct built from the identical codec.
 
 ## Merging key and value into one type (`EntrySlice`)
 

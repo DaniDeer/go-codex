@@ -30,14 +30,20 @@ type LineItem struct {
 }
 
 type Order struct {
-	ID           string
-	Customer     Customer
-	Shipping     Address
-	Items        []LineItem
-	Tags         map[string]string // e.g. {"channel":"web","priority":"high"}
-	Note         *string           // optional free-text note (nil = absent)
-	CreatedAt    time.Time         // RFC 3339 timestamp
-	DeliveryDate *time.Time        // optional promised delivery date (date-only)
+	ID       string
+	Customer Customer
+	Shipping Address
+	// BillingAddress reuses the SAME Address type/codec as Shipping — the
+	// only difference is RequiredField vs OptionalField below. Absent input
+	// decodes to a zero-value Address{} (not a pointer/Nullable): Required
+	// vs Optional is orthogonal to whether a field's codec is a nested
+	// Struct or a scalar.
+	BillingAddress Address
+	Items          []LineItem
+	Tags           map[string]string // e.g. {"channel":"web","priority":"high"}
+	Note           *string           // optional free-text note (nil = absent)
+	CreatedAt      time.Time         // RFC 3339 timestamp
+	DeliveryDate   *time.Time        // optional promised delivery date (date-only)
 }
 
 // ── Codecs ────────────────────────────────────────────────────────────────────
@@ -65,6 +71,11 @@ var orderCodec = codex.Struct[Order](
 	codex.RequiredField("id", codex.String().Refine(validate.NonEmptyString), func(o Order) string { return o.ID }, func(o *Order, v string) { o.ID = v }),
 	codex.RequiredField("customer", customerCodec, func(o Order) Customer { return o.Customer }, func(o *Order, v Customer) { o.Customer = v }),
 	codex.RequiredField("shipping", addressCodec, func(o Order) Address { return o.Shipping }, func(o *Order, v Address) { o.Shipping = v }),
+	// Optional nested struct: same addressCodec as "shipping" above, but
+	// OptionalField instead of RequiredField — absent input decodes to a
+	// zero-value Address{} and the nested codec's own "street"/"city"/
+	// "country" Required checks only run when "billingAddress" IS present.
+	codex.OptionalField("billingAddress", addressCodec, func(o Order) Address { return o.BillingAddress }, func(o *Order, v Address) { o.BillingAddress = v }),
 	codex.RequiredField("items", codex.SliceOf(lineItemCodec), func(o Order) []LineItem { return o.Items }, func(o *Order, v []LineItem) { o.Items = v }),
 	// StringMap: arbitrary string key/value labels on the order.
 	codex.OptionalField("tags", codex.StringMap(codex.String()), func(o Order) map[string]string { return o.Tags }, func(o *Order, v map[string]string) { o.Tags = v }),
@@ -93,6 +104,12 @@ func main() {
 			"city":    "Exampleville",
 			"country": "Exampleland",
 		},
+		// billingAddress present — decodes through addressCodec like shipping.
+		"billingAddress": map[string]any{
+			"street":  "1 Billing Ave",
+			"city":    "Invoicetown",
+			"country": "Exampleland",
+		},
 		"items": []any{
 			map[string]any{"product": "Widget A", "quantity": 2, "price": 9.99},
 			map[string]any{"product": "Widget B", "quantity": 1, "price": 24.50},
@@ -111,6 +128,7 @@ func main() {
 	fmt.Printf("order id:      %s\n", order.ID)
 	fmt.Printf("customer:      %s <%s>\n", order.Customer.Name, order.Customer.Email)
 	fmt.Printf("ship to:       %s, %s, %s\n", order.Shipping.Street, order.Shipping.City, order.Shipping.Country)
+	fmt.Printf("bill to:       %s, %s, %s\n", order.BillingAddress.Street, order.BillingAddress.City, order.BillingAddress.Country)
 	for i, item := range order.Items {
 		fmt.Printf("item %d:        %s × %d @ $%.2f\n", i+1, item.Product, item.Quantity, item.Price)
 	}
@@ -124,6 +142,9 @@ func main() {
 	}
 
 	// Nullable: order with no note and no delivery date.
+	// Also omits "billingAddress" entirely (not nil — the key is just
+	// absent) to show the OptionalField-nested-struct zero-value case,
+	// distinct from Nullable's explicit-nil case used by note/deliveryDate.
 	fmt.Println()
 	rawNoNote := map[string]any{
 		"id": "ord-002",
@@ -134,6 +155,7 @@ func main() {
 		"shipping": map[string]any{
 			"street": "1 Main St", "city": "Testtown", "country": "Testland",
 		},
+		// no "billingAddress" key at all.
 		"items":        []any{map[string]any{"product": "Widget C", "quantity": 3, "price": 5.00}},
 		"createdAt":    "2024-06-16T10:30:00Z",
 		"note":         nil,
@@ -144,8 +166,9 @@ func main() {
 		fmt.Println("decode error:", err)
 		return
 	}
-	fmt.Printf("order2 note:         %v (nil = absent)\n", order2.Note)
-	fmt.Printf("order2 deliveryDate: %v (nil = absent)\n", order2.DeliveryDate)
+	fmt.Printf("order2 note:           %v (nil = absent)\n", order2.Note)
+	fmt.Printf("order2 deliveryDate:   %v (nil = absent)\n", order2.DeliveryDate)
+	fmt.Printf("order2 billingAddress: %+v (zero value = absent, OptionalField on a nested struct)\n", order2.BillingAddress)
 
 	// Validation error: negative quantity.
 	fmt.Println()
@@ -163,6 +186,29 @@ func main() {
 	}
 	_, err = orderCodec.Decode(badRaw)
 	fmt.Println("validation error:", err)
+
+	// Validation error: "billingAddress" IS present (so its own codec runs)
+	// but missing its own required "country" field — proves that declaring
+	// the OUTER field Optional never weakens the nested struct's OWN
+	// required-field checks; they only apply when the key is present.
+	fmt.Println()
+	badBillingRaw := map[string]any{
+		"id": "ord-004",
+		"customer": map[string]any{
+			"name":  "Dana",
+			"email": "dana@example.com",
+		},
+		"shipping": map[string]any{
+			"street": "1 Ship St", "city": "Shiptown", "country": "Shipland",
+		},
+		"billingAddress": map[string]any{
+			"street": "1 Bill St", "city": "Billtown", // "country" missing
+		},
+		"items":     []any{map[string]any{"product": "Widget E", "quantity": 1, "price": 5.00}},
+		"createdAt": "2024-06-18T08:00:00Z",
+	}
+	_, err = orderCodec.Decode(badBillingRaw)
+	fmt.Println("optional-nested-struct validation error:", err)
 
 	// Encode back to map.
 	fmt.Println()

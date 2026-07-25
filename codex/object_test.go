@@ -369,6 +369,200 @@ func TestStruct_Encode_ValidValueSucceeds(t *testing.T) {
 	}
 }
 
+// --- Nested struct field required/optional (F itself is a codex.Struct[F]) ---
+
+// address/addressCodec are shared by the nested-struct tests below — a small
+// nested object whose "zip" field is itself Required, used to prove that a
+// nested struct's OWN required/optional rules are enforced independently of
+// whether the OUTER field holding it is Required or Optional.
+type address struct {
+	Zip string
+}
+
+func addressCodec() codex.Codec[address] {
+	return codex.Struct[address](
+		codex.RequiredField("zip", codex.String(),
+			func(a address) string { return a.Zip },
+			func(a *address, v string) { a.Zip = v },
+		),
+	)
+}
+
+type person struct {
+	Name    string
+	Billing address
+}
+
+// personCodecOptionalBilling declares "billing" as OptionalField — the
+// nested struct itself may be absent from the input.
+func personCodecOptionalBilling() codex.Codec[person] {
+	return codex.Struct[person](
+		codex.RequiredField("name", codex.String(),
+			func(p person) string { return p.Name },
+			func(p *person, v string) { p.Name = v },
+		),
+		codex.OptionalField("billing", addressCodec(),
+			func(p person) address { return p.Billing },
+			func(p *person, v address) { p.Billing = v },
+		),
+	)
+}
+
+// personCodecRequiredBilling declares "billing" as RequiredField — the
+// nested struct itself must be present in the input.
+func personCodecRequiredBilling() codex.Codec[person] {
+	return codex.Struct[person](
+		codex.RequiredField("name", codex.String(),
+			func(p person) string { return p.Name },
+			func(p *person, v string) { p.Name = v },
+		),
+		codex.RequiredField("billing", addressCodec(),
+			func(p person) address { return p.Billing },
+			func(p *person, v address) { p.Billing = v },
+		),
+	)
+}
+
+func TestStruct_NestedOptionalStruct_AbsentDecodesToZeroValue(t *testing.T) {
+	c := personCodecOptionalBilling()
+	got, err := c.Decode(map[string]any{"name": "Alice"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got.Name != "Alice" || got.Billing != (address{}) {
+		t.Errorf("got %+v, want {Name:Alice Billing:{}}", got)
+	}
+}
+
+func TestStruct_NestedOptionalStruct_PresentValidDecodes(t *testing.T) {
+	c := personCodecOptionalBilling()
+	got, err := c.Decode(map[string]any{
+		"name":    "Alice",
+		"billing": map[string]any{"zip": "12345"},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got.Billing.Zip != "12345" {
+		t.Errorf("got billing %+v, want Zip=12345", got.Billing)
+	}
+}
+
+func TestStruct_NestedOptionalStruct_PresentButMissingInnerRequiredField(t *testing.T) {
+	c := personCodecOptionalBilling()
+	// "billing" is present (so its OWN codec runs), but its inner "zip" field
+	// — required on addressCodec — is missing. The outer field being
+	// Optional must NOT suppress the inner struct's own Required check.
+	_, err := c.Decode(map[string]any{
+		"name":    "Alice",
+		"billing": map[string]any{},
+	})
+	if err == nil {
+		t.Fatal("expected error for missing inner required field, got nil")
+	}
+	var ve codex.ValidationErrors
+	if !errors.As(err, &ve) {
+		t.Fatalf("expected ValidationErrors, got %T: %v", err, err)
+	}
+	// The outer error must name "billing"; the nested error (reachable via
+	// Unwrap) must name "zip" — proving both levels of field attribution
+	// survive the nesting.
+	if len(ve) != 1 || ve[0].Field != "billing" {
+		t.Fatalf("want outer error for field 'billing', got %+v", ve)
+	}
+	var inner codex.ValidationErrors
+	if !errors.As(ve[0].Err, &inner) {
+		t.Fatalf("want nested ValidationErrors from addressCodec, got %T: %v", ve[0].Err, ve[0].Err)
+	}
+	if len(inner) != 1 || inner[0].Field != "zip" {
+		t.Fatalf("want inner error for field 'zip', got %+v", inner)
+	}
+}
+
+func TestStruct_NestedRequiredStruct_AbsentReturnsError(t *testing.T) {
+	c := personCodecRequiredBilling()
+	_, err := c.Decode(map[string]any{"name": "Alice"})
+	if err == nil {
+		t.Fatal("expected error for missing required nested struct, got nil")
+	}
+	var ve codex.ValidationErrors
+	if !errors.As(err, &ve) {
+		t.Fatalf("expected ValidationErrors, got %T: %v", err, err)
+	}
+	if len(ve) != 1 || ve[0].Field != "billing" {
+		t.Fatalf("want error for field 'billing', got %+v", ve)
+	}
+	if !errors.Is(ve[0].Err, codex.ErrMissingField) {
+		t.Errorf("want ErrMissingField, got %v", ve[0].Err)
+	}
+}
+
+func TestStruct_NestedOptionalStruct_SchemaShapeIndependentOfOuterAndInner(t *testing.T) {
+	s := personCodecOptionalBilling().Schema
+	// Outer schema: "billing" must NOT be in the outer Required list.
+	for _, r := range s.Required {
+		if r == "billing" {
+			t.Errorf("outer Required list %v should not include 'billing' (declared Optional)", s.Required)
+		}
+	}
+	// The nested schema is embedded verbatim as the "billing" property —
+	// its OWN Required list (["zip"]) must be present and correct,
+	// completely independent of the outer field's optionality.
+	billingProp, ok := s.Prop("billing")
+	if !ok {
+		t.Fatal("outer schema missing 'billing' property")
+	}
+	if billingProp.Type != "object" {
+		t.Errorf("billing property type = %q, want %q", billingProp.Type, "object")
+	}
+	foundZip := false
+	for _, r := range billingProp.Required {
+		if r == "zip" {
+			foundZip = true
+		}
+	}
+	if !foundZip {
+		t.Errorf("nested 'billing' schema Required = %v, want to include 'zip'", billingProp.Required)
+	}
+}
+
+func TestStruct_NestedRequiredStruct_SchemaIncludesOuterRequired(t *testing.T) {
+	s := personCodecRequiredBilling().Schema
+	found := false
+	for _, r := range s.Required {
+		if r == "billing" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("outer Required list %v should include 'billing' (declared Required)", s.Required)
+	}
+}
+
+func TestStruct_NestedOptionalStruct_EncodeAlwaysIncludesField(t *testing.T) {
+	// codex has no "omit empty" semantics — encode always emits every field
+	// regardless of Required/Optional, for scalar AND nested-struct fields
+	// alike. A never-populated Optional nested struct still round-trips as
+	// its zero value on the wire, not an absent key.
+	c := personCodecOptionalBilling()
+	enc, err := c.Encode(person{Name: "Alice"}) // Billing left at zero value
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	obj, ok := enc.(map[string]any)
+	if !ok {
+		t.Fatalf("encoded value is not a map: %T", enc)
+	}
+	billing, present := obj["billing"]
+	if !present {
+		t.Fatal("want 'billing' key present on encode even though it was never set (no omit-empty semantics)")
+	}
+	billingObj, ok := billing.(map[string]any)
+	if !ok || billingObj["zip"] != "" {
+		t.Errorf("want billing = {zip:\"\"}, got %v", billing)
+	}
+}
+
 // --- Example functions (shown on pkg.go.dev as runnable snippets) ---
 
 func ExampleRequiredField() {
