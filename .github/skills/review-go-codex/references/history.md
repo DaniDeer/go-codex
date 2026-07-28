@@ -1,6 +1,47 @@
-# go-codex Review History (R1–R70)
+# go-codex Review History (R1–R71)
 
 Do not re-report any of these findings. They have been implemented and tested.
+
+---
+
+## Round 71 (LLM Integration — `api/llm`, `ports.LLMPattern`, `adapters/openai`, `render/openaitools`)
+
+Full 5-phase implementation of the LLM-integration roadmap (declarative system-prompt +
+input/output codec contract for go-codex CALLING an LLM — the other direction from the
+already-shipped MCP server). All phases shipped in one autopilot session, sequentially:
+
+- **`api/llm`** (foundation, zero deps on `ports`/`adapters/openai`): `Call[Req,Resp]`,
+  `CallHandle[Req,Resp]`, `Builder`, `LLMSpec`/`CallSpec`, `SystemPromptFileError`/
+  `ResponseDecodeError`. 17 tests.
+- **`ports.LLMPattern`**: new `patternKindLLM` case in `buildDualCodecPatternHandles`
+  (2 new trailing params `llmBuilder *llm.Builder, llmAllowed bool` — mirrors
+  `CachePattern`'s `cacheAllowed bool` convention exactly); `IOPort`-only via
+  `IOPort.PluginLLMPattern`/`PortOptions.LLMBuilder` — `SourcePort`/`SinkPort` have no
+  method for it at all (type-system enforced, not just a runtime check); `ToolPort`/
+  `LatestPort`/`DuplexPort` call sites pass `nil, false` (reject). New `RegisterLLM` in
+  `ports/spec.go` for parity with `RegisterREST`/`RegisterEvent`/etc. Fixed a genuinely
+  stale doc comment in `ports/pattern_errors.go` found while touching the file
+  (`MissingPatternError` still referenced long-removed free functions
+  `RESTHandle`/`EventHandle`/etc. from a much earlier Plugin-model refactor round that
+  missed this one file). 7 tests.
+- **`adapters/openai`**: stdlib-only (`net/http`, no SDK) Chat Completions
+  `ports.IOAdapter[Req,Resp]` — strict `response_format:json_schema`, bounded
+  retry-on-invalid-completion loop. Design nuance: `MaxRetries:0` (default) returns the
+  raw `llm.ResponseDecodeError` unwrapped, NOT wrapped in `RetriesExhaustedError` — that
+  type is reserved specifically for "retries were attempted and exhausted"
+  (`MaxRetries > 0` case). 17 tests.
+- **`render/openaitools`**: pure renderer, `FromMCPSpec`/`FromLLMSpec`/`Render` — converts
+  existing `mcp.ToolSpec`/new `llm.CallSpec` into the OpenAI `tools` JSON array. 5 tests.
+- Runnable example `examples/adapters-openai` (httptest fake, no real API key needed,
+  demonstrates the retry loop firing once). Docs: `docs/features/llm-integration.md`,
+  `docs/guides/llm-integration.md`. Roadmap doc `docs/roadmap/llm-integration.md` retired
+  (deleted) once shipped — moved to Features/Guides nav, removed from Roadmap index/nav.
+- **Gotcha for future reviews**: a bash-tool output-display artifact showed "******" in
+  place of legitimate credential-adjacent text (e.g. "Bearer auth") when the doc was first
+  read this round — verified via `od -c` byte-level inspection that the actual file bytes
+  were always correct ("Bearer auth", "Authorization: Bearer <APIKey>", etc.). This was
+  purely a display-layer quirk of the tool, not real file corruption — don't re-flag
+  similar-looking text without a byte-level check first.
 
 ---
 

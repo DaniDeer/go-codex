@@ -5,6 +5,7 @@ import (
 	"errors"
 
 	"github.com/DaniDeer/go-codex/api/events"
+	"github.com/DaniDeer/go-codex/api/llm"
 	apimcp "github.com/DaniDeer/go-codex/api/mcp"
 	"github.com/DaniDeer/go-codex/api/reqreply"
 	"github.com/DaniDeer/go-codex/api/rest"
@@ -167,4 +168,11 @@ type PortOptions struct {
 
 	// MCPBuilder — same idea as RESTBuilder, for [MCPPattern] / apimcp.Builder.
 	MCPBuilder *apimcp.Builder
+
+	// LLMBuilder — same idea as RESTBuilder, for [LLMPattern] / llm.Builder.
+	// Only [IOPort] consults this field — an LLM completion is an outbound
+	// call the pipeline makes (the same category as a REST client call or a
+	// SQL query), not a transport that receives external requests, so
+	// [ToolPort]/[SourcePort]/[SinkPort]/[LatestPort] ignore it.
+	LLMBuilder *llm.Builder
 }

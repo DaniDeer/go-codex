@@ -4,6 +4,7 @@ import (
 	"time"
 
 	"github.com/DaniDeer/go-codex/api/events"
+	"github.com/DaniDeer/go-codex/api/llm"
 	apimcp "github.com/DaniDeer/go-codex/api/mcp"
 	"github.com/DaniDeer/go-codex/api/reqreply"
 	"github.com/DaniDeer/go-codex/api/rest"
@@ -25,6 +26,7 @@ import (
 //   - [SQLPattern] — SQL metadata (sql)
 //   - [CachePattern] — key/value-cache-shaped (redis)
 //   - [SocketPattern] — path-addressed duplex socket (websocket)
+//   - [LLMPattern] — LLM completion (adapters/openai) — [IOPort] only
 //
 // Each Pattern is a thin wrapper around the existing rest/events/reqreply/mcp/
 // format declarative option vocabulary — no new param types are introduced. A
@@ -163,6 +165,25 @@ type MCPPattern struct {
 }
 
 func (MCPPattern) isPortPattern() {}
+
+// LLMPattern declares an LLM completion boundary — reuses [api/llm]'s exact
+// option vocabulary, same role as [RESTPattern]/[EventPattern]/
+// [ReqReplyPattern]/[MCPPattern] for their respective api/* families.
+//
+// Only [IOPort] accepts LLMPattern: an LLM completion is an outbound call the
+// pipeline makes — the same category as [nethttp.CallAdapter]/
+// [sql.QueryEachAdapter] — not a transport that RECEIVES external requests.
+// [ToolPort]/[SourcePort]/[SinkPort]/[LatestPort] reject it with
+// [PatternRegisterError], mirroring how [SocketPattern] is rejected outside
+// [SourcePort]/[SinkPort]/[DuplexPort].
+type LLMPattern struct {
+	// Name is the Call's name, as passed to [llm.NewCall].
+	Name string
+	// Opts carries the same variadic options [llm.NewCall] accepts.
+	Opts []llm.CallOpt
+}
+
+func (LLMPattern) isPortPattern() {}
 
 // FileFormatKind selects the wire format a [FilePattern]-built [File]
 // uses, applied to the port's own codec. [FileFormatJSON] is the zero value

@@ -119,7 +119,7 @@ func (p *ToolPort[In, Out]) pluginPattern(pattern Pattern, kind string) (any, er
 	p.handlesMu.Unlock()
 
 	handles, specs, err := buildDualCodecPatternHandles(p.name, []Pattern{pattern}, p.inCodec, p.outCodec,
-		p.restBuilder, p.reqReplyBuilder, p.mcpBuilder, false)
+		p.restBuilder, p.reqReplyBuilder, p.mcpBuilder, false, nil, false)
 	if err != nil {
 		return nil, err
 	}

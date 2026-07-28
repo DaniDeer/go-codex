@@ -4,6 +4,7 @@ import (
 	"strings"
 
 	"github.com/DaniDeer/go-codex/api/events"
+	"github.com/DaniDeer/go-codex/api/llm"
 	apimcp "github.com/DaniDeer/go-codex/api/mcp"
 	"github.com/DaniDeer/go-codex/api/reqreply"
 	"github.com/DaniDeer/go-codex/api/rest"
@@ -134,6 +135,29 @@ func RegisterMCP[In, Out any](b *apimcp.Builder, port any) error {
 		return MissingPatternError{Port: portName(port), Kind: patternKindMCP}
 	}
 	_, err := tool.Register(b)
+	return err
+}
+
+// RegisterLLM replays port's declared [LLMPattern] against b, adding it to
+// b's LLMSpec catalog. Call after the port has already been declared and
+// bound to an adapter.
+//
+// Returns [MissingPatternError] if the port declared no [LLMPattern] (only
+// [IOPort] can declare one).
+func RegisterLLM[Req, Resp any](b *llm.Builder, port any) error {
+	ph, ok := port.(patternHolder)
+	if !ok {
+		return MissingPatternError{Port: portName(port), Kind: patternKindLLM}
+	}
+	v, ok := ph.patternSpec(patternKindLLM)
+	if !ok {
+		return MissingPatternError{Port: portName(port), Kind: patternKindLLM}
+	}
+	call, ok := v.(llm.Call[Req, Resp])
+	if !ok {
+		return MissingPatternError{Port: portName(port), Kind: patternKindLLM}
+	}
+	_, err := call.Register(b)
 	return err
 }
 

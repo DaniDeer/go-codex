@@ -5,13 +5,14 @@ import (
 	"log/slog"
 )
 
-// MissingPatternError is returned by [RESTHandle], [EventHandle],
-// [ReqReplyHandle], and [MCPHandle] when the port declares no [Pattern] of the
-// requested kind.
+// MissingPatternError is returned by [RegisterREST], [RegisterEvent],
+// [RegisterReqReply], [RegisterMCP], and [RegisterLLM] when the port declares
+// no [Pattern] of the requested kind.
 type MissingPatternError struct {
 	// Port is the name passed to the port constructor.
 	Port string
-	// Kind identifies the requested pattern kind: "rest", "event", "reqreply", or "mcp".
+	// Kind identifies the requested pattern kind: "rest", "event", "reqreply",
+	// "mcp", "file", "cache", "socket", or "llm".
 	Kind string
 }
 
@@ -42,7 +43,7 @@ type PatternRegisterError struct {
 	// Port is the name passed to the port constructor.
 	Port string
 	// Kind identifies the pattern kind that failed to build: "rest", "event",
-	// "reqreply", "mcp", "file", "cache", or "socket".
+	// "reqreply", "mcp", "file", "cache", "socket", or "llm".
 	Kind string
 	// Err is the underlying error.
 	Err error

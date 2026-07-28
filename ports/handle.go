@@ -4,6 +4,7 @@ import (
 	"fmt"
 
 	"github.com/DaniDeer/go-codex/api/events"
+	"github.com/DaniDeer/go-codex/api/llm"
 	apimcp "github.com/DaniDeer/go-codex/api/mcp"
 	"github.com/DaniDeer/go-codex/api/reqreply"
 	"github.com/DaniDeer/go-codex/api/rest"
@@ -21,6 +22,7 @@ const (
 	patternKindSQL      = "sql"
 	patternKindCache    = "cache"
 	patternKindSocket   = "socket"
+	patternKindLLM      = "llm"
 )
 
 // patternHolder is implemented by every port type that supports [Pattern]
@@ -384,6 +386,8 @@ func buildDualCodecPatternHandles[Req, Resp any](
 	reqReplyBuilder *reqreply.Builder,
 	mcpBuilder *apimcp.Builder,
 	cacheAllowed bool,
+	llmBuilder *llm.Builder,
+	llmAllowed bool,
 ) (handles map[string]any, specs map[string]any, err error) {
 	handles = make(map[string]any, len(patterns))
 	specs = make(map[string]any, len(patterns))
@@ -468,6 +472,28 @@ func buildDualCodecPatternHandles[Req, Resp any](
 				Port: portName, Kind: patternKindSocket,
 				Err: fmt.Errorf("SocketPattern is only supported on SourcePort, SinkPort, and DuplexPort"),
 			}
+		case LLMPattern:
+			// An LLM completion is an outbound call the pipeline makes — the
+			// same category as CachePattern/FilePattern being IOPort/
+			// LatestPort-shaped, not a tool/event surface. Only IOPort
+			// passes llmAllowed=true.
+			if !llmAllowed {
+				return nil, nil, PatternRegisterError{
+					Port: portName, Kind: patternKindLLM,
+					Err: fmt.Errorf("LLMPattern is only supported on IOPort — an LLM completion is an outbound call, not a request-serving surface"),
+				}
+			}
+			call := llm.NewCall[Req, Resp](pat.Name, reqCodec, respCodec, pat.Opts...)
+			b := llmBuilder
+			if b == nil {
+				b = llm.NewBuilder(llm.Info{})
+			}
+			handle, err := call.Register(b)
+			if err != nil {
+				return nil, nil, PatternRegisterError{Port: portName, Kind: patternKindLLM, Err: err}
+			}
+			handles[patternKindLLM] = handle
+			specs[patternKindLLM] = call
 		}
 	}
 	return handles, specs, nil

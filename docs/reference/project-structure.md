@@ -61,9 +61,15 @@ go-codex/
 │   │   │                   #   ToolHandle, ResourceHandle, PromptHandle, MCPSpec
 │   │   └── errors.go       # ToolInputError, ToolOutputError, ResourceEncodeError,
 │   │                       #   ResourceParamError, MissingResourceVarError, PromptArgError, …
-│   └── reqreply/           # transport-agnostic request-reply spec builder (ZMQ, MQTT 5, AMQP, …)
-│       └── route.go        # NewRoute[Req,Resp], Route, RouteHandle, BuildTopic, RouteOpt,
-│                           #   RouteParam, DuplicateRouteError, RouteParamError, MissingRouteParamError
+│   ├── reqreply/           # transport-agnostic request-reply spec builder (ZMQ, MQTT 5, AMQP, …)
+│   │   └── route.go        # NewRoute[Req,Resp], Route, RouteHandle, BuildTopic, RouteOpt,
+│   │                       #   RouteParam, DuplicateRouteError, RouteParamError, MissingRouteParamError
+│   └── llm/                # LLM completion contract: system prompt + input/output codecs
+│       ├── call.go         # Call[Req,Resp], NewCall, CallOpt, SystemPrompt, SystemPromptFile,
+│       │                   #   UserMessage, IncludeRequestSchema, CallMeta
+│       ├── builder.go      # Builder, Info, LLMSpec, CallSpec
+│       ├── handle.go       # CallHandle[Req,Resp], Register, ClientHandle
+│       └── errors.go       # SystemPromptFileError, ResponseDecodeError — slog.LogValuer
 │
 ├── adapters/               # transport-specific adapters
 │   ├── nethttp/            # net/http adapter — server + client
@@ -141,6 +147,12 @@ go-codex/
 │   │   ├── stream.go       # ToolLatestHandler, ToolPipelineHandler, RegisterToolLatest,
 │   │   │                   #   RegisterToolPipeline
 │   │   └── binding.go      # ToolPipelineAdapter (ports.ToolAdapter), LatestAdapter (ports.LatestAdapter)
+│   ├── openai/             # OpenAI-compatible Chat Completions adapter for api/llm handles
+│   │   │                   #   (stdlib-only; also works with Azure OpenAI, Ollama, vLLM, LM Studio, Groq, …)
+│   │   ├── client.go       # CallAdapterOptions, complete[Req,Resp] (wire request/response structs, retry loop)
+│   │   ├── binding.go      # CallAdapter (ports.IOAdapter[Req,Resp])
+│   │   └── errors.go       # RequestBuildError, RequestError, UnexpectedStatusError,
+│   │                       #   ResponseBodyError, NoChoicesError, RetriesExhaustedError — slog.LogValuer
 │   └── templ/              # templ SSR format plug-in for api/rest RouteHandles
 │       └── adapter.go      # Format[Props], StreamingFormat[Props], DecodeNotSupportedError
 │
@@ -191,8 +203,10 @@ go-codex/
 │   │   │   └── document.go # DocumentBuilder, Document, ChannelItem, Operation, Message
 │   │   └── v3/             # AsyncAPI 3.0 renderer
 │   │       └── document.go # DocumentBuilder, Document, Server, Operation, ChannelItem (Address)
-│   ├── jsonschema/         # plain JSON Schema renderer (used by api/mcp)
+│   ├── jsonschema/         # plain JSON Schema renderer (used by api/mcp, api/llm)
 │   │   └── jsonschema.go   # Schema(s schema.Schema) json.RawMessage
+│   ├── openaitools/        # renders mcp.MCPSpec/llm.LLMSpec into the OpenAI "tools" array JSON shape
+│   │   └── openaitools.go  # Tool, Render, FromMCPSpec, FromLLMSpec
 │   ├── pipeline/           # pipeline YAML renderer (for forge.PipelineSpec)
 │   │   └── pipeline.go     # Render(spec) []byte
 │   └── stream/             # stream topology YAML renderer (for stream.TopologySpec)
@@ -267,7 +281,11 @@ go-codex/
     └── adapters-zeromq-dealer-router/ # ZeroMQ DEALER/ROUTER: concurrent request-reply
     │
     │   # ── MCP (Layer 2) ────────────────────────────────────────────────────────
-    └── adapters-mcp/           # MCP server: Tools, Resources, Prompts, MCPSpec, observer
+    ├── adapters-mcp/           # MCP server: Tools, Resources, Prompts, MCPSpec, observer
+    │
+    │   # ── LLM Integration (Layer 2) ───────────────────────────────────────────
+    └── adapters-openai/        # api/llm + adapters/openai: system prompt + typed codecs,
+                                 #   strict structured outputs, retry-on-invalid-completion loop
     │
     │   # ── Forge / Pipeline (Layer 3) ──────────────────────────────────────────
     ├── forge-oee/          # forge pipeline: OEE KPI computation, governance, Compose, MeasuredCodec

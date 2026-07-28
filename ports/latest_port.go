@@ -107,7 +107,7 @@ func (p *LatestPort[T]) pluginPattern(pattern Pattern, kind string) (any, error)
 	p.handlesMu.Unlock()
 
 	handles, specs, err := buildDualCodecPatternHandles(p.name, []Pattern{pattern},
-		codex.Struct[struct{}](), p.codec, p.restBuilder, p.reqReplyBuilder, p.mcpBuilder, true)
+		codex.Struct[struct{}](), p.codec, p.restBuilder, p.reqReplyBuilder, p.mcpBuilder, true, nil, false)
 	if err != nil {
 		return nil, err
 	}

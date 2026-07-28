@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"sync"
 
+	"github.com/DaniDeer/go-codex/api/llm"
 	apimcp "github.com/DaniDeer/go-codex/api/mcp"
 	"github.com/DaniDeer/go-codex/api/reqreply"
 	"github.com/DaniDeer/go-codex/api/rest"
@@ -66,11 +67,13 @@ type IOPort[Req, Resp any] struct {
 
 	// Builders are stored (not used eagerly) so PluginRESTPattern/
 	// PluginReqReplyPattern/PluginMCPPattern/PluginSQLPattern/
-	// PluginCachePattern can register against the SAME shared builder
-	// every other Pattern-carrying declaration in the service uses.
+	// PluginCachePattern/PluginLLMPattern can register against the SAME
+	// shared builder every other Pattern-carrying declaration in the
+	// service uses.
 	restBuilder     *rest.Builder
 	reqReplyBuilder *reqreply.Builder
 	mcpBuilder      *apimcp.Builder
+	llmBuilder      *llm.Builder
 
 	handlesMu sync.Mutex
 	handles   map[string]any
@@ -82,12 +85,13 @@ type IOPort[Req, Resp any] struct {
 
 // NewIOPort creates an IOPort with the given name, request codec, and response
 // codec. opts configures IO params, observer, and (optionally) shared
-// RESTBuilder/ReqReplyBuilder/MCPBuilder references for later
+// RESTBuilder/ReqReplyBuilder/MCPBuilder/LLMBuilder references for later
 // [PluginRESTPattern]/[PluginReqReplyPattern]/[PluginMCPPattern]/
-// [PluginSQLPattern]/[PluginCachePattern] calls — declare the port's
-// communication Pattern separately (see [PortOptions]), or use one of the
-// protocol-named convenience constructors ([NewRestPort], [NewReqReplyPort],
-// [NewMCPPort], [NewSQLPort]) for the common single-Pattern case.
+// [PluginSQLPattern]/[PluginCachePattern]/[PluginLLMPattern] calls — declare
+// the port's communication Pattern separately (see [PortOptions]), or use one
+// of the protocol-named convenience constructors ([NewRestPort],
+// [NewReqReplyPort], [NewMCPPort], [NewSQLPort]) for the common
+// single-Pattern case.
 func NewIOPort[Req, Resp any](
 	name string,
 	reqCodec codex.Codec[Req],
@@ -103,6 +107,7 @@ func NewIOPort[Req, Resp any](
 		restBuilder:     opts.RESTBuilder,
 		reqReplyBuilder: opts.ReqReplyBuilder,
 		mcpBuilder:      opts.MCPBuilder,
+		llmBuilder:      opts.LLMBuilder,
 		handles:         map[string]any{},
 		specs:           map[string]any{},
 	}, nil
@@ -120,7 +125,7 @@ func (p *IOPort[Req, Resp]) pluginPattern(pattern Pattern, kind string) (any, er
 	p.handlesMu.Unlock()
 
 	handles, specs, err := buildDualCodecPatternHandles(p.name, []Pattern{pattern}, p.reqCodec, p.respCodec,
-		p.restBuilder, p.reqReplyBuilder, p.mcpBuilder, true)
+		p.restBuilder, p.reqReplyBuilder, p.mcpBuilder, true, p.llmBuilder, true)
 	if err != nil {
 		return nil, err
 	}
@@ -144,6 +149,24 @@ func (p *IOPort[Req, Resp]) PluginRESTPattern(pattern RESTPattern) (*rest.RouteH
 		return nil, err
 	}
 	h, _ := v.(*rest.RouteHandle[Req, Resp])
+	return h, nil
+}
+
+// PluginLLMPattern registers pattern and returns the resulting
+// [llm.CallHandle] directly — bind e.g. openai.CallAdapter to it.
+//
+// LLMPattern is only supported on IOPort — returns [PatternRegisterError]
+// wrapping a descriptive error if called on any other port type's
+// declaration path (this method only exists on IOPort, so the restriction is
+// enforced by the type system; the error only surfaces if a shared
+// buildDualCodecPatternHandles caller passes llmAllowed=false, which never
+// happens for IOPort itself).
+func (p *IOPort[Req, Resp]) PluginLLMPattern(pattern LLMPattern) (*llm.CallHandle[Req, Resp], error) {
+	v, err := p.pluginPattern(pattern, patternKindLLM)
+	if err != nil {
+		return nil, err
+	}
+	h, _ := v.(*llm.CallHandle[Req, Resp])
 	return h, nil
 }
 

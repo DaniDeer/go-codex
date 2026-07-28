@@ -42,6 +42,7 @@ repo_name = "DaniDeer/go-codex"
 "Stream — Reactive Pipelines" = "features/stream.md"
 "Ports — Protocol-Agnostic Wiring" = "features/ports.md"
 "App — Application Lifecycle" = "features/app.md"
+"LLM Integration" = "features/llm-integration.md"
 
 [nav.Guides]
 "Enums, Unions & Sum Types" = "guides/enum-union-sum.md"
@@ -60,6 +61,7 @@ repo_name = "DaniDeer/go-codex"
 "SQL Examples (goose + sqlc)" = "guides/sql.md"
 "Stream Examples" = "guides/stream.md"
 "Ports Examples" = "guides/ports.md"
+"LLM Integration Examples" = "guides/llm-integration.md"
 
 [nav.Reference]
 "Package Reference" = "reference/index.md"
@@ -76,5 +78,5 @@ repo_name = "DaniDeer/go-codex"
 "— Dynamic Port Rebinding" = "roadmap/dynamic-port-rebinding.md"
 "— Typed State Machine" = "roadmap/typed-state-machine.md"
 "— WebSocket: Deferred" = "roadmap/websocket-deferred.md"
-"— LLM Integration" = "roadmap/llm-integration.md"
 "— Vector Store Adapter (RAG)" = "roadmap/vector-store-adapter.md"
+"— OpenAI Multimodal Content" = "roadmap/openai-multimodal-content.md"
