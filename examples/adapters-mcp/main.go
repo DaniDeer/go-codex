@@ -13,10 +13,16 @@
 // failures additionally fire RecordValidationError per field, enabling per-field
 // error counters without any metrics library dependency.
 //
-// The server is started in stdio mode when SERVE=1 is set.
-// By default the example simulates calls, prints the observer summary, and exits.
+// The server is started in stdio mode when SERVE=1 is set (see [runServer]).
+// By default (SERVE unset) the example simulates calls, prints the observer
+// summary, and exits (see [runDemo]). The two modes are kept in separate
+// functions with SEPARATE loggers deliberately: stdio transport requires
+// stdout to carry ONLY the JSON-RPC protocol stream, so [runServer] logs to
+// stderr exclusively, while [runDemo] is free to log to stdout for
+// readability since no MCP client reads that stream in demo mode.
 //
 // Run with: go run ./examples/adapters-mcp
+// Run as a real stdio MCP server (e.g. from Claude Desktop's config): SERVE=1 go run ./examples/adapters-mcp
 package main
 
 import (
@@ -284,19 +290,6 @@ func handleSummarize(_ context.Context, args map[string]string) ([]mcpgo.PromptM
 // ---------------------------------------------------------------------------
 
 func main() {
-	// Structured logger — text format to stdout for readability.
-	logger := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelDebug}))
-	slog.SetDefault(logger)
-
-	// metrics collects per-call counters. In production replace with Prometheus / OTel.
-	// Logging is handled separately by stats.NewLoggingObserver — no mixing of concerns.
-	metrics := &CountingObserver{}
-	obs := stats.NewFanout(
-		metrics,
-		stats.NewLoggingObserver(logger.With("component", "mcp")),
-	)
-	opts := mcpgo.Options{Observer: obs}
-
 	// ── Layer 2: Register all primitives with the Builder ──────────────────
 	b := mcp.NewBuilder(mcp.Info{Name: "go-codex Demo Server", Version: "1.0.0"})
 
@@ -312,6 +305,41 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
+
+	// The SERVE=1 branch is checked FIRST and takes over the process's
+	// stdin/stdout entirely for the JSON-RPC protocol stream — runDemo's
+	// stdout output (MCPSpec dump, simulated calls, observer summary) must
+	// never run in that mode, or it would corrupt the very first bytes a
+	// real MCP client (e.g. Claude Desktop) reads from this process.
+	if os.Getenv("SERVE") == "1" {
+		runServer(b, toolHandle, resHandle, promptHandle)
+		return
+	}
+	runDemo(b, toolHandle, resHandle, promptHandle)
+}
+
+// runDemo prints the static MCPSpec, simulates a handful of tool/resource/
+// prompt calls in-process, and prints an observer summary. Safe to log to
+// stdout here — no MCP client is attached to this process's stdout in demo
+// mode, unlike [runServer]'s stdio transport.
+func runDemo(
+	b *mcp.Builder,
+	toolHandle *mcp.ToolHandle[CalcInput, CalcOutput],
+	resHandle *mcp.ResourceHandle[Item],
+	promptHandle *mcp.PromptHandle,
+) {
+	// Structured logger — text format to stdout for readability.
+	logger := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelDebug}))
+	slog.SetDefault(logger)
+
+	// metrics collects per-call counters. In production replace with Prometheus / OTel.
+	// Logging is handled separately by stats.NewLoggingObserver — no mixing of concerns.
+	metrics := &CountingObserver{}
+	obs := stats.NewFanout(
+		metrics,
+		stats.NewLoggingObserver(logger.With("component", "mcp")),
+	)
+	opts := mcpgo.Options{Observer: obs}
 
 	// Print the static MCPSpec (analogous to OpenAPI/AsyncAPI spec).
 	spec, err := b.MCPSpec()
@@ -332,7 +360,7 @@ func main() {
 		withLogging("calculate", handleCalculate, logger.With("handler", "calculate")),
 		opts,
 	)
-	_ = toolMCPTool // used when RegisterTool is called below
+	_ = toolMCPTool // used when RegisterTool is called in runServer
 
 	ctx := context.Background()
 	fmt.Println("=== Simulated tool calls ===")
@@ -381,12 +409,28 @@ func main() {
 
 	fmt.Println("\n=== Observer summary ===")
 	metrics.Print()
+	fmt.Println("\n(set SERVE=1 to start the stdio MCP server)")
+}
 
-	// ── Start server if SERVE=1 ────────────────────────────────────────────
-	if os.Getenv("SERVE") != "1" {
-		fmt.Println("\n(set SERVE=1 to start the stdio MCP server)")
-		return
-	}
+// runServer starts the MCP server on stdio — the transport used by local
+// LLM clients such as Claude Desktop.
+//
+// IMPORTANT: stdio transport requires stdout to carry ONLY the JSON-RPC
+// protocol stream. Every log line MUST go to stderr — never stdout — once
+// this path is taken, unlike [runDemo]'s stdout logger above. A single
+// stray line on stdout (a stray fmt.Println, a logger pointed at stdout,
+// etc.) corrupts the message framing for a real connected client.
+func runServer(
+	b *mcp.Builder,
+	toolHandle *mcp.ToolHandle[CalcInput, CalcOutput],
+	resHandle *mcp.ResourceHandle[Item],
+	promptHandle *mcp.PromptHandle,
+) {
+	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelDebug}))
+	slog.SetDefault(logger)
+
+	obs := stats.NewLoggingObserver(logger.With("component", "mcp"))
+	opts := mcpgo.Options{Observer: obs}
 
 	s := mcpgoserver.NewMCPServer(b.Info().Name, b.Info().Version)
 	mcpgo.RegisterTool(s, toolHandle,
@@ -398,7 +442,7 @@ func main() {
 
 	// ── Transport options ─────────────────────────────────────────────────
 	//
-	// Stdio (default, used by local LLM clients such as Claude Desktop):
+	// Stdio (default here, used by local LLM clients such as Claude Desktop):
 	//
 	//   fmt.Fprintln(os.Stderr, "Starting MCP server on stdio…")
 	//   if err := mcpgoserver.ServeStdio(s); err != nil { log.Fatal(err) }

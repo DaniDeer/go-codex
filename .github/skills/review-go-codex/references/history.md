@@ -1,6 +1,33 @@
-# go-codex Review History (R1–R73)
+# go-codex Review History (R1–R74)
 
 Do not re-report any of these findings. They have been implemented and tested.
+
+---
+
+## Round 74 (`examples/adapters-mcp` stdio stdout-pollution bug)
+
+Discovered while evaluating "can go-codex build a stdio MCP server instead of HTTP" —
+architecturally YES (`mcpgo.RegisterTool`/`RegisterResource`/`RegisterPrompt` only wire onto a
+`*server.MCPServer`, fully transport-agnostic; `server.ServeStdio(s)` from the underlying
+`mark3labs/mcp-go` library works directly), but the SHIPPED example had a real bug making it
+unsafe to actually point a real client at with `SERVE=1`:
+
+- **G5 — `examples/adapters-mcp` logged to stdout even in stdio-serving mode**: the demo logger
+  (`slog.NewTextHandler(os.Stdout, ...)`) and its `stats.NewLoggingObserver` were constructed once
+  in `main()` and reused for BOTH the in-process demo simulation AND the real `RegisterTool`/
+  `RegisterResource`/`RegisterPrompt` calls feeding `ServeStdio(s)`. Stdio transport requires stdout
+  to carry ONLY the JSON-RPC protocol stream — any stray log line (or the unconditional demo output:
+  MCPSpec dump, simulated calls, observer summary, all printed BEFORE the SERVE=1 check) corrupts
+  message framing for a real connected client. Fixed by splitting `main()` into `runDemo` (unchanged
+  behavior, stdout logger — safe, no client attached in demo mode) and `runServer` (stdio path,
+  logger + observer pointed at `os.Stderr` exclusively), with the `SERVE=1` branch checked BEFORE any
+  demo output runs. Verified end-to-end: piped a real `initialize` + `tools/call` JSON-RPC sequence
+  into `SERVE=1 go run ./examples/adapters-mcp` and confirmed stdout contained ONLY the two JSON-RPC
+  response frames, with all logging (including the "calculate succeeded"/`RecordRequest` observer
+  lines from the tool call) landing on stderr.
+- Docs updated: `docs/features/mcp.md`'s Transport options section gained an explicit "stdio
+  requires stdout reserved for the protocol" warning, cross-referencing the example's `runServer`/
+  `runDemo` split as the reference pattern.
 
 ---
 

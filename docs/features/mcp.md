@@ -78,6 +78,10 @@ mcpgoserver.NewStreamableHTTPServer(s).Start(":8080")
 mcpgoserver.NewSSEServer(s, mcpgoserver.WithBaseURL("http://localhost:8080")).Start(":8080")
 ```
 
+`mcpgo.RegisterTool`/`RegisterResource`/`RegisterPrompt` are fully transport-agnostic — they only wire handlers onto a `*server.MCPServer`; the transport is entirely determined by which serving call above you make on that same `s`.
+
+**Stdio requires stdout reserved for the protocol.** When using `server.ServeStdio(s)`, stdout carries ONLY the JSON-RPC message stream — a real client (e.g. Claude Desktop) reads every byte on stdout as protocol data. Any stray write to stdout (a `fmt.Println`, a `slog.Logger` pointed at `os.Stdout`, etc.) corrupts the message framing. Point every logger — including any `stats.Observer` that logs — at `os.Stderr` in a stdio-serving process; see `examples/adapters-mcp`'s `runServer`/`runDemo` split for the reference pattern (demo-mode output stays on stdout since no client reads it there; serve-mode logs exclusively to stderr).
+
 ## Key behaviours
 
 - **Codec-driven `inputSchema`**: the codec's `schema.Schema` is rendered to `json.RawMessage` as the tool's `inputSchema` — no `jsonschema:""` struct tags needed. Clients see exactly the constraints declared in the codec.
