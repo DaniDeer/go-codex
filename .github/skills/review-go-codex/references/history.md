@@ -1,6 +1,32 @@
-# go-codex Review History (R1–R72)
+# go-codex Review History (R1–R73)
 
 Do not re-report any of these findings. They have been implemented and tested.
+
+---
+
+## Round 73 (`api/rest` merge-field constructor test gap — codebase-memory graph analysis)
+
+Discovered via a code-knowledge-graph audit (the `codebase-memory` MCP server, newly available
+this session) cross-checking every documented layering/Pattern-acceptance rule against the actual
+import graph — all held with zero violations EXCEPT one isolated test-coverage gap:
+
+- **G4 — `NewRequiredQueryParam`/`NewRequiredCookieParam` had zero test coverage**: of the twelve
+  declare-once merge-field constructors (`NewRequiredXxxParam`/`NewOptionalXxxParam` pairs for
+  Path/Query/Cookie/Header/SSEEvent/ResponseHeader/ResponseCookie), only these two "Required"
+  variants had no direct test exercising their merge-field-registration behavior (sibling
+  `NewOptionalQueryParam`/`NewOptionalCookieParam` were already used in multiple existing tests;
+  `NewRequiredHeaderParam`/`NewRequiredSSEEventParam`/`NewRequiredResponseHeaderParam`/
+  `NewRequiredResponseCookieParam` all had coverage too). Added 4 tests to `api/rest/builder_test.go`:
+  `TestNewRequiredQueryParam_RegistersSpecAndMergeField`,
+  `TestDecodeMerged_RequiredQueryParam_MissingReturnsError`,
+  `TestNewRequiredCookieParam_RegistersSpecAndMergeField`,
+  `TestDecodeMerged_RequiredCookieParam_MissingReturnsError` — mirroring the existing
+  `TestNewPathParam_RegistersSpecAndMergeField`/`TestDecodeMerged_MergeFailure` pattern (spec
+  `Required:true` + `MergeFields()` count, then `DecodeMerged` missing-var → `codex.ValidationErrors`).
+- No production code changed — all other checked claims (core-layer purity, `ports`→`adapters`
+  isolation, `render`/`forge` purity, the one documented `chi→websocket` adapter coupling, the
+  Pattern-acceptance matrix per port type, `app`'s "stats only" dependency) were independently
+  confirmed correct by the graph with zero deviations from documentation.
 
 ---
 

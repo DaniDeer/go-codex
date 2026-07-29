@@ -1863,6 +1863,94 @@ func TestNewPathParam_RegistersSpecAndMergeField(t *testing.T) {
 	}
 }
 
+// G4-1: rest.NewRequiredQueryParam registers a Required:true spec Param and a
+// merge field — the merge-field-constructor counterpart to
+// NewOptionalQueryParam's coverage (which was already exercised elsewhere).
+func TestNewRequiredQueryParam_RegistersSpecAndMergeField(t *testing.T) {
+	b := rest.NewBuilder(testInfo)
+	h, err := rest.NewRoute[getUserReq, userResp]("GET", "/users", codex.Struct[getUserReq](), getUserRespCodec,
+		rest.NewRequiredQueryParam("filter", codex.String(),
+			func(r getUserReq) string { return r.Filter },
+			func(r *getUserReq, v string) { r.Filter = v }),
+	).Register(b)
+	if err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+	if len(h.Descriptor.QueryParams) != 1 || h.Descriptor.QueryParams[0].Name != "filter" || !h.Descriptor.QueryParams[0].Required {
+		t.Fatalf("Descriptor.QueryParams: unexpected %+v", h.Descriptor.QueryParams)
+	}
+	if len(h.MergeFields()) != 1 {
+		t.Fatalf("MergeFields: want 1 field, got %d", len(h.MergeFields()))
+	}
+}
+
+// G4-2: DecodeMerged returns a ValidationErrors when a NewRequiredQueryParam
+// var is missing — mirrors TestDecodeMerged_MergeFailure's path-param case
+// for the query-param merge-field constructor.
+func TestDecodeMerged_RequiredQueryParam_MissingReturnsError(t *testing.T) {
+	b := rest.NewBuilder(testInfo)
+	h, err := rest.NewRoute[getUserReq, userResp]("GET", "/users", codex.Struct[getUserReq](), getUserRespCodec,
+		rest.NewRequiredQueryParam("filter", codex.String(),
+			func(r getUserReq) string { return r.Filter },
+			func(r *getUserReq, v string) { r.Filter = v }),
+	).Register(b)
+	if err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+	_, err = h.DecodeMerged(nil, nil, map[string]string{}, nil, nil)
+	if err == nil {
+		t.Fatal("expected error for missing required query var")
+	}
+	var ve codex.ValidationErrors
+	if !errors.As(err, &ve) {
+		t.Fatalf("expected ValidationErrors, got %T: %v", err, err)
+	}
+}
+
+// G4-3: rest.NewRequiredCookieParam registers a Required:true spec Param and
+// a merge field — the merge-field-constructor counterpart to
+// NewOptionalCookieParam's coverage.
+func TestNewRequiredCookieParam_RegistersSpecAndMergeField(t *testing.T) {
+	b := rest.NewBuilder(testInfo)
+	h, err := rest.NewRoute[getUserReq, userResp]("GET", "/users", codex.Struct[getUserReq](), getUserRespCodec,
+		rest.NewRequiredCookieParam("session", codex.String(),
+			func(r getUserReq) string { return r.Filter },
+			func(r *getUserReq, v string) { r.Filter = v }),
+	).Register(b)
+	if err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+	if len(h.Descriptor.CookieParams) != 1 || h.Descriptor.CookieParams[0].Name != "session" || !h.Descriptor.CookieParams[0].Required {
+		t.Fatalf("Descriptor.CookieParams: unexpected %+v", h.Descriptor.CookieParams)
+	}
+	if len(h.MergeFields()) != 1 {
+		t.Fatalf("MergeFields: want 1 field, got %d", len(h.MergeFields()))
+	}
+}
+
+// G4-4: DecodeMerged returns a ValidationErrors when a NewRequiredCookieParam
+// var is missing — mirrors TestDecodeMerged_MergeFailure's path-param case
+// for the cookie-param merge-field constructor.
+func TestDecodeMerged_RequiredCookieParam_MissingReturnsError(t *testing.T) {
+	b := rest.NewBuilder(testInfo)
+	h, err := rest.NewRoute[getUserReq, userResp]("GET", "/users", codex.Struct[getUserReq](), getUserRespCodec,
+		rest.NewRequiredCookieParam("session", codex.String(),
+			func(r getUserReq) string { return r.Filter },
+			func(r *getUserReq, v string) { r.Filter = v }),
+	).Register(b)
+	if err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+	_, err = h.DecodeMerged(nil, nil, nil, nil, map[string]string{})
+	if err == nil {
+		t.Fatal("expected error for missing required cookie var")
+	}
+	var ve codex.ValidationErrors
+	if !errors.As(err, &ve) {
+		t.Fatalf("expected ValidationErrors, got %T: %v", err, err)
+	}
+}
+
 // P2: RouteHandle.DecodeMerged happy path.
 func TestDecodeMerged_HappyPath(t *testing.T) {
 	b := rest.NewBuilder(testInfo)
