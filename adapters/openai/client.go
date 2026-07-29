@@ -136,14 +136,14 @@ func complete[Req, Resp any](
 		reqBytes, marshalErr := json.Marshal(body)
 		if marshalErr != nil {
 			obs.RecordRequest("llm", handle.Name, 0, time.Since(start))
-			return zero, RequestBuildError{Err: marshalErr}
+			return zero, RequestBuildError{Name: handle.Name, Err: marshalErr}
 		}
 
 		httpReq, buildErr := http.NewRequestWithContext(ctx, http.MethodPost,
 			baseURL+"/chat/completions", bytes.NewReader(reqBytes))
 		if buildErr != nil {
 			obs.RecordRequest("llm", handle.Name, 0, time.Since(start))
-			return zero, RequestBuildError{Err: buildErr}
+			return zero, RequestBuildError{Name: handle.Name, Err: buildErr}
 		}
 		httpReq.Header.Set("Content-Type", "application/json")
 
@@ -163,7 +163,7 @@ func complete[Req, Resp any](
 		resp, doErr := client.Do(httpReq)
 		if doErr != nil {
 			obs.RecordRequest("llm", handle.Name, 0, time.Since(start))
-			return zero, RequestError{Model: opts.Model, Err: doErr}
+			return zero, RequestError{Name: handle.Name, Model: opts.Model, Err: doErr}
 		}
 
 		statusCode := resp.StatusCode
@@ -171,32 +171,32 @@ func complete[Req, Resp any](
 		closeErr := resp.Body.Close()
 		if readErr != nil {
 			obs.RecordRequest("llm", handle.Name, statusCode, time.Since(start))
-			return zero, ResponseBodyError{Err: readErr}
+			return zero, ResponseBodyError{Name: handle.Name, Err: readErr}
 		}
 		if closeErr != nil {
 			obs.RecordRequest("llm", handle.Name, statusCode, time.Since(start))
-			return zero, ResponseBodyError{Err: closeErr}
+			return zero, ResponseBodyError{Name: handle.Name, Err: closeErr}
 		}
 
 		if statusCode < 200 || statusCode >= 300 {
 			obs.RecordRequest("llm", handle.Name, statusCode, time.Since(start))
-			return zero, UnexpectedStatusError{Model: opts.Model, StatusCode: statusCode, Body: string(respBytes)}
+			return zero, UnexpectedStatusError{Name: handle.Name, Model: opts.Model, StatusCode: statusCode, Body: string(respBytes)}
 		}
 
 		var parsed chatResponse
 		if unmarshalErr := json.Unmarshal(respBytes, &parsed); unmarshalErr != nil {
 			obs.RecordRequest("llm", handle.Name, statusCode, time.Since(start))
-			return zero, ResponseBodyError{Err: unmarshalErr}
+			return zero, ResponseBodyError{Name: handle.Name, Err: unmarshalErr}
 		}
 		if len(parsed.Choices) == 0 {
 			obs.RecordRequest("llm", handle.Name, statusCode, time.Since(start))
-			return zero, NoChoicesError{Model: opts.Model}
+			return zero, NoChoicesError{Name: handle.Name, Model: opts.Model}
 		}
 
 		content := parsed.Choices[0].Message.Content
 		decoded, decodeErr := handle.DecodeResponse([]byte(content))
 		if decodeErr != nil {
-			stats.ReportErrors(obs, "response", decodeErr)
+			stats.ReportErrors(obs, "body", decodeErr)
 			obs.RecordRequest("llm", handle.Name, statusCode, time.Since(start))
 			lastDecodeErr = decodeErr
 			if opts.MaxRetries == 0 {
@@ -214,7 +214,7 @@ func complete[Req, Resp any](
 				)
 				continue
 			}
-			return zero, RetriesExhaustedError{Model: opts.Model, Attempts: maxAttempts, LastErr: lastDecodeErr}
+			return zero, RetriesExhaustedError{Name: handle.Name, Model: opts.Model, Attempts: maxAttempts, LastErr: lastDecodeErr}
 		}
 
 		obs.RecordRequest("llm", handle.Name, statusCode, time.Since(start))
@@ -222,5 +222,5 @@ func complete[Req, Resp any](
 	}
 
 	// Unreachable: maxAttempts >= 1 always, so the loop always returns.
-	return zero, RetriesExhaustedError{Model: opts.Model, Attempts: maxAttempts, LastErr: lastDecodeErr}
+	return zero, RetriesExhaustedError{Name: handle.Name, Model: opts.Model, Attempts: maxAttempts, LastErr: lastDecodeErr}
 }

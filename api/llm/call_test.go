@@ -2,6 +2,7 @@ package llm_test
 
 import (
 	"errors"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"testing"
@@ -10,6 +11,22 @@ import (
 	"github.com/DaniDeer/go-codex/codex"
 	"github.com/DaniDeer/go-codex/validate"
 )
+
+// logValueKeys asserts v is a KindGroup and returns its attribute keys as a
+// set — the reference pattern from adapters/sql/validate_test.go's
+// TestValidate_LogValue: check ALL expected keys are present by name, not
+// fragile index-based positions that break on field reordering.
+func logValueKeys(t *testing.T, v slog.Value) map[string]bool {
+	t.Helper()
+	if v.Kind() != slog.KindGroup {
+		t.Fatalf("LogValue: want KindGroup, got %v", v.Kind())
+	}
+	keys := make(map[string]bool)
+	for _, a := range v.Group() {
+		keys[a.Key] = true
+	}
+	return keys
+}
 
 // ── shared types and codecs ───────────────────────────────────────────────────
 
@@ -118,10 +135,11 @@ func TestSystemPromptFileError_LogValue(t *testing.T) {
 	if e.Error() == "" {
 		t.Error("Error() should not be empty")
 	}
-	v := e.LogValue()
-	attrs := v.Group()
-	if len(attrs) < 2 || attrs[0].Key != "path" || attrs[0].Value.String() != "prompts/x.md" {
-		t.Errorf("want 'path' attribute, got %v", attrs)
+	keys := logValueKeys(t, e.LogValue())
+	for _, want := range []string{"path", "err"} {
+		if !keys[want] {
+			t.Errorf("LogValue missing attribute %q", want)
+		}
 	}
 }
 
@@ -258,10 +276,11 @@ func TestResponseDecodeError_LogValue(t *testing.T) {
 	if e.Error() == "" {
 		t.Error("Error() should not be empty")
 	}
-	v := e.LogValue()
-	attrs := v.Group()
-	if len(attrs) < 3 || attrs[0].Key != "name" || attrs[0].Value.String() != "summarize" {
-		t.Errorf("want 'name' attribute, got %v", attrs)
+	keys := logValueKeys(t, e.LogValue())
+	for _, want := range []string{"name", "raw", "err"} {
+		if !keys[want] {
+			t.Errorf("LogValue missing attribute %q", want)
+		}
 	}
 }
 

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -395,61 +396,85 @@ func TestCallAdapter_Transform_DecodeFailure_ReportsValidationError(t *testing.T
 
 // ── errors: LogValue coverage ────────────────────────────────────────────────
 
+// logValueKeys asserts v is a KindGroup and returns its attribute keys as a
+// set — the reference pattern from adapters/sql/validate_test.go's
+// TestValidate_LogValue: check ALL expected keys are present by name, not
+// fragile index-based positions that break on field reordering.
+func logValueKeys(t *testing.T, v slog.Value) map[string]bool {
+	t.Helper()
+	if v.Kind() != slog.KindGroup {
+		t.Fatalf("LogValue: want KindGroup, got %v", v.Kind())
+	}
+	keys := make(map[string]bool)
+	for _, a := range v.Group() {
+		keys[a.Key] = true
+	}
+	return keys
+}
+
 func TestRequestBuildError_LogValue(t *testing.T) {
-	e := openai.RequestBuildError{Err: errors.New("boom")}
+	e := openai.RequestBuildError{Name: "summarize", Err: errors.New("boom")}
 	if e.Error() == "" {
 		t.Error("Error() should not be empty")
 	}
-	v := e.LogValue()
-	if len(v.Group()) == 0 {
-		t.Error("LogValue should return a non-empty group")
+	keys := logValueKeys(t, e.LogValue())
+	for _, want := range []string{"name", "cause"} {
+		if !keys[want] {
+			t.Errorf("LogValue missing attribute %q", want)
+		}
 	}
 }
 
 func TestRequestError_LogValue(t *testing.T) {
-	e := openai.RequestError{Model: "gpt-4o-mini", Err: errors.New("boom")}
-	v := e.LogValue()
-	attrs := v.Group()
-	if len(attrs) < 2 || attrs[0].Key != "model" || attrs[0].Value.String() != "gpt-4o-mini" {
-		t.Errorf("want 'model' attribute, got %v", attrs)
+	e := openai.RequestError{Name: "summarize", Model: "gpt-4o-mini", Err: errors.New("boom")}
+	keys := logValueKeys(t, e.LogValue())
+	for _, want := range []string{"name", "model", "cause"} {
+		if !keys[want] {
+			t.Errorf("LogValue missing attribute %q", want)
+		}
 	}
 }
 
 func TestUnexpectedStatusError_LogValue(t *testing.T) {
-	e := openai.UnexpectedStatusError{Model: "gpt-4o-mini", StatusCode: 429, Body: "rate limited"}
-	v := e.LogValue()
-	attrs := v.Group()
-	if len(attrs) < 2 || attrs[1].Key != "status" || attrs[1].Value.Int64() != 429 {
-		t.Errorf("want 'status'=429 attribute, got %v", attrs)
+	e := openai.UnexpectedStatusError{Name: "summarize", Model: "gpt-4o-mini", StatusCode: 429, Body: "rate limited"}
+	keys := logValueKeys(t, e.LogValue())
+	for _, want := range []string{"name", "model", "status"} {
+		if !keys[want] {
+			t.Errorf("LogValue missing attribute %q", want)
+		}
 	}
 }
 
 func TestResponseBodyError_LogValue(t *testing.T) {
-	e := openai.ResponseBodyError{Err: errors.New("boom")}
-	v := e.LogValue()
-	if len(v.Group()) == 0 {
-		t.Error("LogValue should return a non-empty group")
+	e := openai.ResponseBodyError{Name: "summarize", Err: errors.New("boom")}
+	keys := logValueKeys(t, e.LogValue())
+	for _, want := range []string{"name", "cause"} {
+		if !keys[want] {
+			t.Errorf("LogValue missing attribute %q", want)
+		}
 	}
 }
 
 func TestNoChoicesError_LogValue(t *testing.T) {
-	e := openai.NoChoicesError{Model: "gpt-4o-mini"}
-	v := e.LogValue()
-	attrs := v.Group()
-	if len(attrs) != 1 || attrs[0].Key != "model" {
-		t.Errorf("want 'model' attribute, got %v", attrs)
+	e := openai.NoChoicesError{Name: "summarize", Model: "gpt-4o-mini"}
+	keys := logValueKeys(t, e.LogValue())
+	for _, want := range []string{"name", "model"} {
+		if !keys[want] {
+			t.Errorf("LogValue missing attribute %q", want)
+		}
 	}
 }
 
 func TestRetriesExhaustedError_LogValue(t *testing.T) {
-	e := openai.RetriesExhaustedError{Model: "gpt-4o-mini", Attempts: 3, LastErr: errors.New("boom")}
+	e := openai.RetriesExhaustedError{Name: "summarize", Model: "gpt-4o-mini", Attempts: 3, LastErr: errors.New("boom")}
 	if e.Error() == "" {
 		t.Error("Error() should not be empty")
 	}
-	v := e.LogValue()
-	attrs := v.Group()
-	if len(attrs) < 3 || attrs[1].Key != "attempts" || attrs[1].Value.Int64() != 3 {
-		t.Errorf("want 'attempts'=3 attribute, got %v", attrs)
+	keys := logValueKeys(t, e.LogValue())
+	for _, want := range []string{"name", "model", "attempts", "lastErr"} {
+		if !keys[want] {
+			t.Errorf("LogValue missing attribute %q", want)
+		}
 	}
 	if !errors.Is(e, e.LastErr) {
 		t.Error("Unwrap should reach LastErr")

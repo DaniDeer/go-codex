@@ -97,7 +97,7 @@ The two codecs are NOT forwarded symmetrically — this is intentional:
 When `DecodeResponse` fails, `CallAdapterOptions.MaxRetries` bounds a re-prompt loop: the adapter appends the invalid assistant response plus a new user message describing the validation error, then re-sends the full conversation.
 
 - `MaxRetries: 0` (default) — the first decode failure is returned as-is, a plain `llm.ResponseDecodeError`.
-- `MaxRetries: N > 0` — up to `N` additional attempts; if all fail, `openai.RetriesExhaustedError{Model, Attempts, LastErr}` is returned instead.
+- `MaxRetries: N > 0` — up to `N` additional attempts; if all fail, `openai.RetriesExhaustedError{Name, Model, Attempts, LastErr}` is returned instead.
 
 #### How the validation error is forwarded to the model
 
@@ -112,25 +112,25 @@ Only a codec `Decode`/`Refine` failure (`llm.ResponseDecodeError`) triggers a re
 
 ## Structured errors
 
-All implement `slog.LogValuer`; errors with an inner `Err`/`LastErr` field implement `Unwrap()`.
+All implement `slog.LogValuer`; errors with an inner `Err`/`LastErr` field implement `Unwrap()`. Every `adapters/openai` error type also carries `Name` (the `llm.Call`'s name, from `handle.Name`) so an application with several Calls bound to the SAME model can tell which declared Call failed from the error text or structured log alone — the client-side analogue of `nethttp.RequestError.Path` disambiguating which route failed.
 
 | Package | Type | Fields | When |
 |---|---|---|---|
 | `api/llm` | `SystemPromptFileError` | `Path, Err` | `SystemPromptFile` path unreadable at Register/ClientHandle time |
 | `api/llm` | `ResponseDecodeError` | `Name, Raw, Err` | `CallHandle.DecodeResponse` — codec Decode/Refine failure on the raw completion |
-| `adapters/openai` | `RequestBuildError` | `Err` | Building the HTTP request failed |
-| `adapters/openai` | `RequestError` | `Model, Err` | `http.Client.Do` failed (network/DNS/TLS/timeout) |
-| `adapters/openai` | `UnexpectedStatusError` | `Model, StatusCode, Body` | Non-2xx HTTP response |
-| `adapters/openai` | `ResponseBodyError` | `Err` | Reading the response body failed after a successful connection |
-| `adapters/openai` | `NoChoicesError` | `Model` | The provider's response contained zero completion choices |
-| `adapters/openai` | `RetriesExhaustedError` | `Model, Attempts, LastErr` | `MaxRetries` exhausted without a valid completion |
+| `adapters/openai` | `RequestBuildError` | `Name, Err` | Building the HTTP request failed |
+| `adapters/openai` | `RequestError` | `Name, Model, Err` | `http.Client.Do` failed (network/DNS/TLS/timeout) |
+| `adapters/openai` | `UnexpectedStatusError` | `Name, Model, StatusCode, Body` | Non-2xx HTTP response |
+| `adapters/openai` | `ResponseBodyError` | `Name, Err` | Reading the response body failed after a successful connection |
+| `adapters/openai` | `NoChoicesError` | `Name, Model` | The provider's response contained zero completion choices |
+| `adapters/openai` | `RetriesExhaustedError` | `Name, Model, Attempts, LastErr` | `MaxRetries` exhausted without a valid completion |
 
 ## Observer
 
 `adapters/openai.CallAdapter` follows `nethttp.Call`'s exact observer convention:
 
 - `stats.Observer.RecordRequest("llm", handle.Name, statusCode, duration)` on **every** code path — status `0` when no HTTP call reached the network (pre-flight `EncodeRequest` failure, `CredentialFunc` error, request-build failure).
-- `stats.ReportErrors(obs, "response", err)` fires `RecordValidationError` per field when `DecodeResponse` fails.
+- `stats.ReportErrors(obs, "body", err)` fires `RecordValidationError` per field when `DecodeResponse` fails.
 - Each retry attempt fires its own `RecordRequest` call — observers see the full attempt sequence, not just the final outcome.
 - No `SecurityObserver` — authentication is a single Bearer token/`CredentialFunc`, not a pluggable security scheme.
 

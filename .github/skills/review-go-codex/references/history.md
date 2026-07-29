@@ -1,6 +1,34 @@
-# go-codex Review History (R1–R71)
+# go-codex Review History (R1–R72)
 
 Do not re-report any of these findings. They have been implemented and tested.
+
+---
+
+## Round 72 (`adapters/openai` error-name disambiguation + observer location fix)
+
+Focused follow-up audit of the newly-shipped LLM Integration feature (Round 71) against the
+full review-go-codex checklist — three findings, all implemented:
+
+- **G1 — `adapters/openai` error types missing `Name`**: `RequestBuildError`, `RequestError`,
+  `UnexpectedStatusError`, `ResponseBodyError`, `NoChoicesError`, `RetriesExhaustedError` only
+  carried `Model` (or nothing) — an app with two `llm.Call`s sharing the same Model couldn't tell
+  which one failed from the error text or structured log. Added `Name string` (populated from
+  `handle.Name`) to all 6 types; updated `Error()`/`LogValue()`; mirrors `llm.ResponseDecodeError`
+  (which already carried `Name`) and `nethttp.RequestError.Path`'s route-disambiguation role.
+- **G2 — Wrong observer location string for incoming-response decode failure**:
+  `adapters/openai/client.go`'s `complete[Req,Resp]` used `stats.ReportErrors(obs, "response", ...)`
+  for a `DecodeResponse` failure — `"response"` is already used elsewhere in the codebase for an
+  unrelated scenario (server-side SSE outgoing-event merge in `adapters/nethttp`/`chi`). Changed to
+  `"body"`, matching `nethttp.Call`'s established client-side incoming-response-decode convention.
+- **G3 — Fragile index-based `LogValue` tests**: 8 tests (2 in `api/llm/call_test.go`, 6 in
+  `adapters/openai/client_test.go`) asserted `attrs[0].Key`/bare `len(v.Group())` instead of the
+  reference pattern (`adapters/sql/validate_test.go`'s `TestValidate_LogValue`: assert
+  `Kind()==slog.KindGroup`, check ALL expected keys via a map). Rewrote all 8 using a shared
+  `logValueKeys(t, v)` test helper in each package.
+
+Docs updated: `docs/features/llm-integration.md`'s Structured errors table (all 6 `Name` fields)
+and Observer section (`"body"` location); `.github/instructions/go-codex.instructions.md`'s
+`adapters/openai` row.
 
 ---
 
