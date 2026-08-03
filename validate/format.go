@@ -257,6 +257,66 @@ var ContainerImage = codex.Constraint[string]{
 	Message: func(v string) string { return fmt.Sprintf("invalid container image reference: %q", v) },
 }
 
+// isValidPortNumber reports whether s is a decimal string in the valid
+// TCP/UDP port range (1-65535). Shared by [Port] and [DockerPort].
+func isValidPortNumber(s string) bool {
+	n, err := strconv.Atoi(s)
+	return err == nil && n >= 1 && n <= 65535
+}
+
+// rePort matches a bare decimal port-number string (no sign, no leading "+").
+var rePort = regexp.MustCompile(`^\d{1,5}$`)
+
+// Port is a Constraint that requires a decimal port-number string in the
+// valid TCP/UDP port range (1-65535), e.g. "8080", "443", "65535".
+//
+// Schema sets Pattern to a syntactic hint (`^\d{1,5}$`) — the 1-65535 range
+// itself is not expressible in a bare JSON Schema `pattern` regex, so the
+// numeric bound is enforced by [Port.Check] only, same rationale as
+// [ContainerImage]'s "no standard JSON Schema format" note.
+var Port = codex.Constraint[string]{
+	Name: "port",
+	Check: func(v string) bool {
+		return rePort.MatchString(v) && isValidPortNumber(v)
+	},
+	Message: func(v string) string {
+		return fmt.Sprintf("expected port number 1-65535, got %q", v)
+	},
+	Schema: func(s schema.Schema) schema.Schema {
+		s.Pattern = rePort.String()
+		return s
+	},
+}
+
+// reDockerPort matches a Docker port-spec string: a decimal port number
+// followed by "/tcp" or "/udp" (e.g. "8080/tcp", "53/udp"). The port number's
+// numeric range (1-65535) is checked separately in [DockerPort.Check] — a
+// bare regex cannot express that bound.
+var reDockerPort = regexp.MustCompile(`^(\d{1,5})/(tcp|udp)$`)
+
+// DockerPort is a Constraint that requires a Docker port-spec string in the
+// form "<port>/tcp" or "<port>/udp" (e.g. "8080/tcp", "53/udp"), with the
+// port number checked against the valid range (1-65535). This is the key
+// shape used by Docker's ExposedPorts and HostConfig.PortBindings maps in
+// container create-options documents.
+//
+// No Schema annotation beyond the syntactic pattern — see [Port]'s docs for
+// why the numeric range cannot be expressed in the schema Pattern alone.
+var DockerPort = codex.Constraint[string]{
+	Name: "docker-port",
+	Check: func(v string) bool {
+		m := reDockerPort.FindStringSubmatch(v)
+		return m != nil && isValidPortNumber(m[1])
+	},
+	Message: func(v string) string {
+		return fmt.Sprintf(`expected port spec "<port>/tcp" or "<port>/udp" (1-65535), got %q`, v)
+	},
+	Schema: func(s schema.Schema) schema.Schema {
+		s.Pattern = reDockerPort.String()
+		return s
+	},
+}
+
 // MQTTTopic is a Constraint that validates an MQTT topic string for general use
 // (subscribe or publish). It requires the string to be non-empty, contain no
 // null bytes (U+0000), and be at most 65535 UTF-8 bytes — as required by the

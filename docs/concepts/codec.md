@@ -47,6 +47,7 @@ go-codex collapses all three into a single `Codec[T]` that you define once and p
 | `codex.TaggedUnion[T](tag, variants...)` | any interface | object | `{oneOf:[...],discriminator:{...}}` |
 | `codex.UntaggedUnion[T](which, variants...)` | any interface | object | `{oneOf:[...]}` |
 | `codex.Either2(ca, cb)` | `Either[A,B]` | value | `{oneOf:[schemaA,schemaB]}` |
+| `codex.StringOrInt64()` (and `StringOrInt`/`StringOrInt32`/`StringOrUint`/`StringOrUint64`/`StringOrFloat32`/`StringOrFloat64`) | `Either[string,int64]` (etc.) | string or number | `{oneOf:[{type:string},{type:integer,...}]}` |
 | `codex.Any()` | `any` | any | `{}` |
 | `codex.Pure(value)` | `T` | fixed wire value | `{enum:[value]}` |
 | `codex.Eq(base, value)` | `T comparable` | validated by base | base schema + `{enum:[value]}` |
@@ -65,6 +66,7 @@ The following constructors accept another codec as an argument, letting you comp
 | `codex.TaggedUnion[T](tag, variants...)` | discriminated union — tag field selects variant | `TaggedUnion[Shape]("type", circleVariant, rectVariant)` |
 | `codex.UntaggedUnion[T](which, variants...)` | structural union — first-match decode | `UntaggedUnion[Shape](selector, variants...)` |
 | `codex.Either2(ca, cb)` | two-branch sum — `Either[A, B]` | `Either2(codex.String(), dbConfigCodec)` |
+| `codex.StringOrInt64()` (family) | value is a string OR a number — `Either[string, int64]` (etc.) | `StringOrInt64()` for a Docker/IoT-Edge-style env var value, `"5"` or `5` |
 | `codex.EntrySlice(keyCodec, valCodec, merge, split)` | object → `[]R`, key merged into element | `EntrySlice(containerKeyCodec, moduleCodec, merge, split)` |
 | `codex.Nullable(SliceOf(inner))` | optional array | compose freely to any depth |
 
@@ -990,6 +992,39 @@ left, _ := dsnOrConfig.Decode("postgres://localhost/db")
 ```
 
 If both branches fail, returns `EitherError{Errors: []error{errA, errB}}`.
+
+### `StringOrInt64` and family — the "string or number" convenience
+
+A config/env-style value that may be EITHER a string OR a number is a genuinely common wire
+pattern — Docker/IoT-Edge module env vars (`"5"` vs `5`), Kubernetes' `apimachinery`
+`IntOrString`, Terraform/HCL, Helm `values.yaml`. `codex.StringOrInt64()` (and its siblings
+`StringOrInt`/`StringOrInt32`/`StringOrUint`/`StringOrUint64`/`StringOrFloat32`/`StringOrFloat64`,
+one per numeric primitive) is a one-line named convenience over exactly the `Either2` pattern
+above:
+
+```go
+func StringOrInt64() Codec[Either[string, int64]] { return Either2(String(), Int64()) }
+
+var EnvVarCodec = codex.Struct[EnvVar](
+    codex.RequiredField("value", codex.StringOrInt64(),
+        func(e EnvVar) codex.Either[string, int64] { return e.Value },
+        func(e *EnvVar, v codex.Either[string, int64]) { e.Value = v },
+    ),
+)
+```
+
+**Format-agnostic by construction**: `encoding/json` always decodes a bare JSON number into
+`any` as `float64`; `yaml.v3` decodes a YAML integer as a native Go `int` (and a float as
+`float64`); `BurntSushi/toml` decodes a TOML integer as `int64` (and a float as `float64`).
+Every numeric primitive (`Int`/`Int32`/`Int64`/`Uint`/`Uint64`/`Float32`/`Float64`) already
+type-switches over ALL of these native representations in its own `Decode` — so the SAME
+`StringOrInt64()` codec works correctly whether the surrounding document is JSON, YAML, or
+TOML, with zero format-specific handling.
+
+A plain custom `Constraint[T]` cannot express this: it validates one FIXED type `T` after a
+successful `Decode` into `T` — there is no `T` for which `Check` could ever see the "other"
+type's raw value. The type-level choice has to happen in the codec itself, which is exactly
+what `Either2`/`UntaggedUnion` provide.
 
 ## UntaggedUnion — interface union without discriminator
 

@@ -1,6 +1,93 @@
-# go-codex Review History (R1–R74)
+# go-codex Review History (R1–R77)
 
 Do not re-report any of these findings. They have been implemented and tested.
+
+---
+
+## Round 77 (Docker `CreateOptions` codec — `format.EmbeddedJSON`, `validate.Port`/`DockerPort`, `codex.EntrySlice`)
+
+Designed and implemented a typed codec for `ModuleSettings.CreateOptions` (previously a raw
+`string` holding a JSON-escaped Docker create-options document: `ExposedPorts`,
+`HostConfig.Binds`, `HostConfig.PortBindings`). All 6 design decisions confirmed with the
+user before implementation:
+
+- **String-escaping**: `format.EmbeddedJSON(CreateOptionsCodec)` (already existed in the
+  library, documented in `docs/concepts/codec.md`) — zero new mechanism needed;
+  `ModuleSettings.CreateOptions` is now the fully-typed `CreateOptions` struct, not a raw
+  string.
+- **New reusable Constraints** — `validate.Port` (bare port-number string, 1-65535 range
+  check since a regex alone can't express the numeric bound) and `validate.DockerPort`
+  (full `"<port>/tcp"`/`"<port>/udp"` spec string), both in `validate/format.go` next to
+  `ContainerImage`/`CIDR`, same style/doc conventions, with table-driven tests in
+  `validate/format_test.go`.
+- **`ExposedPorts` → `[]Port`** (not `map[Port]struct{}`) via `codex.EntrySlice` — merges
+  each key with its (discarded) always-empty `{}` value; `codex.Struct[struct{}]()` (zero
+  fields) is the reusable "empty object" codec, no new library code needed for that either.
+- **`PortBindings` → `[]PortBinding{Port, Bindings []PortBindingEntry}`** via
+  `codex.EntrySlice` + `codex.SliceOf` — kept `PortBindingEntry{HostPort string}` as its
+  own named struct (not flattened to `[]string`) so adding `HostIp` later is additive.
+- **`HostPort` dual representation** — `PortNumberCodec` (in the example, not the library:
+  domain-specific) built on `codex.StringOrInt()` (shipped 2 rounds ago) + `validate.Port`:
+  accepts EITHER a JSON string or number on decode, always canonicalizes to a validated
+  string on encode.
+- **`HostConfig.Binds` → parsed `[]Bind{HostPath, ContainerPath, Mode}`** via
+  `codex.MapCodecValidated` (wire codec `codex.String()`, target codec
+  `codex.Struct[Bind](...)` used for its own per-field `Refine` via `Validate`) with a
+  documented segment-count-based parser limitation (doesn't handle paths containing
+  literal `:`).
+- New file `examples/go-edge-models/ModuleCreateOptions.go` holds all of the above; a
+  stale placeholder `examples/go-edge-models/CreateOptions.go` (pre-existing, minimal,
+  superseded) was removed to resolve a duplicate-declaration conflict.
+- Verified via an isolated scratch-module round trip of the user's EXACT example JSON:
+  full decode → every field checked → re-encode → `reflect.DeepEqual` confirms semantic
+  equivalence to the original (map key order differs, values don't); plus `HostPort`-as-
+  bare-number decode, invalid protocol/out-of-range-port/malformed-bind-spec error paths,
+  and a `:mode`-suffixed bind spec — all correct.
+- Docs updated: `.github/instructions/go-codex.instructions.md`'s `validate` row.
+- Verified: `gofmt`/`go build`/`go test ./...` clean repo-wide; all examples exit 0;
+  `staticcheck`/`gosec` clean on `validate`/`examples/go-edge-models` except the SAME
+  pre-existing, out-of-scope unused `moduleKeyPrefix` constant flagged in Rounds 75-76
+  (still not fixed, still not part of this task).
+
+---
+
+## Round 75 (`codex.StringOrXxx` family — "string or number" convenience)
+
+Evaluated whether the "value is a string OR a number" wire pattern (Docker/IoT-Edge module
+env vars `"5"` vs `5`, Kubernetes `apimachinery.IntOrString`, Terraform/HCL, Helm
+`values.yaml`) should be built into go-codex. Findings: it is common enough to warrant a
+named convenience, AND it was already fully possible today with zero new code
+(`codex.Either2(codex.String(), codex.Int64())`) — verified format-agnostic since
+`encoding/json`/`yaml.v3`/`BurntSushi/toml` each decode numbers into different native Go
+types (`float64` / `int`+`float64` / `int64`+`float64` respectively), all of which every
+existing numeric primitive's `Decode` already type-switches over. User chose to both
+document the pattern AND add named constructors:
+
+- Added `codex/stringor.go`: 7 one-line constructors (`StringOrInt`, `StringOrInt32`,
+  `StringOrInt64`, `StringOrUint`, `StringOrUint64`, `StringOrFloat32`, `StringOrFloat64`),
+  each `Either2(String(), Xxx())` — pure sugar, zero new error types/schema shape/observer
+  changes (inherits `Either2`'s existing `{oneOf:[...]}` schema and `EitherError` exactly).
+- Added `codex/stringor_test.go`: one test per constructor (decode string/native
+  number/invalid type, encode both branches, schema shape) plus a dedicated test
+  confirming `StringOrInt64` decodes both YAML's native `int` and TOML's native `int64`
+  correctly (not just JSON's `float64`).
+- Docs updated: `codex/doc.go`'s composing-constructors list (also added the
+  previously-undocumented `Either2` itself, which had been missing from that list),
+  `docs/concepts/codec.md` (both overview tables plus a new "StringOrInt64 and family"
+  prose subsection explaining the format-agnostic rationale), `docs/guides/enum-union-sum.md`
+  (extended item 5), `.github/instructions/go-codex.instructions.md`'s `codex` row.
+- Extended the officially-showcased `examples/enum-union-sum/main.go` with a "5b. Bonus"
+  section demonstrating `codex.StringOrInt64()` end-to-end (JSON string → Left, JSON
+  number → Right), keeping the example in sync with the new library feature.
+- Rewrote `examples/go-edge-models/ModuleEnvVars.go` (from the previous round) to use
+  `codex.StringOrInt64()` directly instead of a hand-rolled `MapCodecSafe`+`UntaggedUnion`
+  implementation — dropped the custom `EnvVarValue` struct entirely (`EnvVar.Value` is now
+  plain `codex.Either[string, int64]`), reducing the file from ~113 lines to 36 while
+  preserving identical decode/encode behavior (verified via an isolated scratch-module
+  round trip: string/number/empty-string/invalid-type decode, both-branch encode, and
+  `EnvVarsCodec`'s `StringMap` composition all behave identically to before).
+- Verified: `gofmt`/`go build`/`go test ./...` clean repo-wide; `staticcheck`/`gosec` clean
+  on every touched package (`codex`, `examples/enum-union-sum`); all examples exit 0.
 
 ---
 

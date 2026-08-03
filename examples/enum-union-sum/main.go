@@ -17,6 +17,7 @@
 //	Union — open      | Open   | Yes (any type)       | codex.Any()
 //	Sum type — tagged | Closed | Yes (different shapes)| TaggedUnion[T]
 //	Sum type — binary | Closed | Yes (two branches)   | Either2
+//	Bonus: string-or-number (e.g. env var "5" vs 5)    | StringOrInt64 (Either2 convenience)
 //
 // Run with: go run ./examples/enum-union-sum
 package main
@@ -200,6 +201,20 @@ var SkuOrInlineCodec = codex.Either2(
 	productRefCodec, // Right: inline ProductRef object
 )
 
+// ── 5b. Bonus — StringOrInt64, the "string or number" convenience ───────────
+//
+// A very common special case of Either2: a config/env-style value that may be
+// EITHER a string OR a number on the wire (Docker/IoT-Edge module env vars
+// "5" vs 5, Kubernetes' apimachinery IntOrString, Terraform/HCL, Helm
+// values.yaml). codex.StringOrInt64() (and its siblings StringOrInt/
+// StringOrInt32/StringOrUint/StringOrUint64/StringOrFloat32/StringOrFloat64,
+// one per numeric primitive) is a one-line named convenience over exactly
+// this pattern: Either2(String(), Int64()). It works uniformly across JSON,
+// YAML, and TOML — every numeric primitive's Decode already type-switches
+// over each format library's native number representation (encoding/json's
+// float64, yaml.v3's int/float64, BurntSushi/toml's int64/float64).
+var CountOrLabelCodec = codex.StringOrInt64()
+
 // ── Main ──────────────────────────────────────────────────────────────────────
 
 func main() {
@@ -321,6 +336,23 @@ func main() {
 
 	eitherSchemaJSON, _ := json.MarshalIndent(SkuOrInlineCodec.Schema, "", "  ")
 	fmt.Println("schema:", string(eitherSchemaJSON))
+	fmt.Println()
+
+	// ── Section 5b: Bonus — StringOrInt64 ─────────────────────────────────────
+	fmt.Println("=== 5b. Bonus — StringOrInt64 (string-or-number convenience) ===")
+
+	jCountOrLabel := format.JSON(CountOrLabelCodec)
+
+	// A JSON string decodes into the Left (string) branch.
+	label, _ := jCountOrLabel.Unmarshal([]byte(`"unlimited"`))
+	fmt.Printf("decode string: Left=%q Right=%v\n", *label.Left, label.Right)
+
+	// A JSON number decodes into the Right (int64) branch.
+	count, _ := jCountOrLabel.Unmarshal([]byte(`5`))
+	fmt.Printf("decode number: Left=%v Right=%d\n", count.Left, *count.Right)
+
+	countOrLabelSchemaJSON, _ := json.MarshalIndent(CountOrLabelCodec.Schema, "", "  ")
+	fmt.Println("schema:", string(countOrLabelSchemaJSON))
 	fmt.Println()
 
 	// ── Decision guide ────────────────────────────────────────────────────────

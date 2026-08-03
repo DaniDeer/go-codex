@@ -18,4 +18,6 @@ Demonstrates all three Go type-modeling patterns side-by-side, with commentary o
 
 5. **Binary sum type (`Either2`)** — A product field that is either a plain SKU string OR an inline ProductRef object. Left branch tried first; right branch as fallback. Schema: `{oneOf:[string, object]}`.
 
+   **Bonus — `StringOrInt64` and family**: the common special case of `Either2` where the two branches are a string and a number (e.g. Docker/IoT-Edge env var values `"5"` vs `5`, Kubernetes `IntOrString`) has a named one-line convenience: `codex.StringOrInt64()` (plus `StringOrInt`/`StringOrInt32`/`StringOrUint`/`StringOrUint64`/`StringOrFloat32`/`StringOrFloat64`). It's exactly `Either2(String(), Int64())` — verified format-agnostic across JSON/YAML/TOML since every numeric primitive already normalizes each format library's native number representation (`float64` for JSON, `int`/`float64` for YAML, `int64`/`float64` for TOML) in its own `Decode`.
+
 → [examples/enum-union-sum](https://github.com/DaniDeer/go-codex/tree/main/examples/enum-union-sum)

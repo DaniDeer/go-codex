@@ -98,6 +98,11 @@
 //   - [Nullable] — optional pointer *T
 //   - [TaggedUnion] — discriminated union
 //   - [UntaggedUnion] — structural union (first-match decode)
+//   - [Either2] — two-branch sum type, Either[A,B]
+//   - [StringOrInt], [StringOrInt32], [StringOrInt64], [StringOrUint], [StringOrUint64],
+//     [StringOrFloat32], [StringOrFloat64] — named convenience over Either2(String(), Xxx())
+//     for the common "value is a string OR a number" wire pattern (Docker/IoT-Edge env vars,
+//     Kubernetes IntOrString, Terraform/HCL); works uniformly across JSON, YAML, and TOML
 //
 // [EntrySlice] is particularly useful when the object key carries domain meaning:
 //

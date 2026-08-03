@@ -567,6 +567,92 @@ func TestContainerImage_invalid(t *testing.T) {
 		t.Error("ContainerImage.Message should not be empty")
 	}
 }
+
+func TestPort_valid(t *testing.T) {
+	c := validate.Port
+	cases := []struct {
+		v   string
+		msg string
+	}{
+		{"1", "minimum valid port"},
+		{"80", "well-known port"},
+		{"8080", "common alt-http port"},
+		{"65535", "maximum valid port"},
+	}
+	for _, tc := range cases {
+		if got := c.Check(tc.v); !got {
+			t.Errorf("Port.Check(%q) = false, want true — %s", tc.v, tc.msg)
+		}
+	}
+}
+
+func TestPort_invalid(t *testing.T) {
+	c := validate.Port
+	cases := []struct {
+		v   string
+		msg string
+	}{
+		{"", "empty"},
+		{"0", "zero not a valid port"},
+		{"65536", "one above maximum"},
+		{"99999999", "way out of range"},
+		{"-1", "negative"},
+		{"8080/tcp", "not a bare port number"},
+		{"abc", "not numeric"},
+		{"80 80", "contains whitespace"},
+	}
+	for _, tc := range cases {
+		if got := c.Check(tc.v); got {
+			t.Errorf("Port.Check(%q) = true, want false — %s", tc.v, tc.msg)
+		}
+	}
+	if msg := c.Message("99999"); msg == "" {
+		t.Error("Port.Message should not be empty")
+	}
+}
+
+func TestDockerPort_valid(t *testing.T) {
+	c := validate.DockerPort
+	cases := []struct {
+		v   string
+		msg string
+	}{
+		{"8080/tcp", "common tcp port"},
+		{"53/udp", "common udp port"},
+		{"1/tcp", "minimum valid port"},
+		{"65535/udp", "maximum valid port"},
+	}
+	for _, tc := range cases {
+		if got := c.Check(tc.v); !got {
+			t.Errorf("DockerPort.Check(%q) = false, want true — %s", tc.v, tc.msg)
+		}
+	}
+}
+
+func TestDockerPort_invalid(t *testing.T) {
+	c := validate.DockerPort
+	cases := []struct {
+		v   string
+		msg string
+	}{
+		{"", "empty"},
+		{"8080", "missing protocol"},
+		{"8080/sctp", "unsupported protocol"},
+		{"0/tcp", "zero not a valid port"},
+		{"65536/tcp", "one above maximum"},
+		{"8080/TCP", "protocol must be lowercase"},
+		{"8080-8090/tcp", "port range not supported"},
+	}
+	for _, tc := range cases {
+		if got := c.Check(tc.v); got {
+			t.Errorf("DockerPort.Check(%q) = true, want false — %s", tc.v, tc.msg)
+		}
+	}
+	if msg := c.Message("bad/tcp"); msg == "" {
+		t.Error("DockerPort.Message should not be empty")
+	}
+}
+
 func TestMQTTTopic(t *testing.T) {
 	c := validate.MQTTTopic
 	cases := []struct {
