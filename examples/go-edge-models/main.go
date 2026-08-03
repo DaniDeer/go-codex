@@ -12,8 +12,8 @@ import (
 // ── Key constants ─────────────────────────────────────────────────────────────
 
 const (
-	// moduleKeyPrefix is the fixed namespace for all module keys.
-	moduleKeyPrefix = "properties.desired.modules."
+// moduleKeyPrefix is the fixed namespace for all module keys.
+//moduleKeyPrefix = "properties.desired.modules."
 )
 
 func main() {
