@@ -89,6 +89,20 @@ examples:
     fi
     echo "All examples passed."
 
+# Clearing the Go Cahce
+# -cache flag is used to clear the Go build cache
+# -testcache flag is used to clear the Go test cache
+# -modcache flag is used to clear the Go module cache
+# -all flag is used to clear all caches plus fuzz cache
+clear-build:
+    go clean -cache
+
+clear-test:
+    go clean -testcache
+
+clear-all:
+    go clean -cache -testcache -modcache -fuzzcache
+
 # ── Docs ───────────────────────────────────────────────────────────────────────
 
 # Preview docs site locally (auto-reloads on file changes)
