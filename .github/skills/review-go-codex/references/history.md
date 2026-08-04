@@ -1,6 +1,375 @@
-# go-codex Review History (R1–R81)
+# go-codex Review History (R1–R88)
 
 Do not re-report any of these findings. They have been implemented and tested.
+
+---
+
+## Round 88 (`docker/registry` — real Docker Hub integration test + README; `registry_test.go` made fully IO-free)
+
+Live-verified `docker/registry` against the real `registry-1.docker.io`/
+`auth.docker.io` for `nodered/node-red` and `alpine` (no repo changes for
+the initial ad-hoc pass), then committed that coverage as a proper,
+opt-in test: `docker/registry/registry_integration_test.go`, gated behind
+`//go:build integration` — never compiled/run by `go build`/`go vet`/
+`go test ./...`/`just check`; run explicitly via `go test
+-tags=integration ./examples/go-edge-models/docker/registry/...`. Adds a
+runtime network-reachability guard (`t.Skip` on failure) so a
+tagged-but-offline run skips cleanly. Covers: `GetTags`/`GetImageMetadata`
+for both images (table-driven), a platform-override check confirming
+`linux/amd64` vs `linux/arm64` resolve to genuinely different digests
+against real multi-arch data, a `PlatformNotFoundError` check, and a small
+`ParseImageRef` real-convention sanity check. All 5 integration tests pass
+against the live registry.
+
+Per follow-up review request, simplified `registry_test.go` to be
+**totally IO-free**: removed the ~150-line httptest-mock-server
+infrastructure (`newTestRegistry`, `imageURLFor`, `httpClientFor`,
+`roundTripFunc`, `asPlatformNotFoundError`) and the three tests built on
+it (`TestGetTags`, `TestGetImageMetadata_ResolvesManifestList`,
+`TestGetImageMetadata_PlatformNotFound`) — their behavioral coverage is
+now provided more realistically by the new integration test against the
+REAL registry. `registry_test.go` now contains only `TestParseImageRef`
+and `TestParseChallenge`, both pure-function tests with zero network/IO.
+**Explicit tradeoff, noted for transparency**: the default (non-integration-
+tagged) `go test ./...`/`just check` path no longer exercises
+`GetTags`/`GetImageMetadata`'s full orchestration (auth flow, manifest-list
+resolution, header merging) at all — that coverage now requires the
+`integration` tag + network access. This was a deliberate choice: the
+mock-server infrastructure was substantial to maintain and the real
+integration test is strictly more realistic; the two test files' doc
+comments cross-reference each other so the coverage split is discoverable.
+
+Added `examples/go-edge-models/README.md` — package map (`iotedge`,
+`iotedge/modulepatch`, `docker`, `docker/registry` + its `internal`
+boundary), quick usage snippets (manifest decode, `ModulePatch` +
+`ports.PatchEncoded`, `GetTags`/`GetImageMetadata`), running the example,
+and testing instructions (unit vs. `-tags=integration`) — every code
+snippet's signatures were cross-checked against the actual source before
+being written.
+
+Verified via `go build ./...` (repo-wide), `go vet`, `go test
+./examples/go-edge-models/docker/registry/...` (no tags — confirms only
+the 2 pure-function tests run), `go test -tags=integration
+./examples/go-edge-models/docker/registry/...` (confirms all 5 integration
+tests + the 2 unit tests pass together against the live registry), full
+`go test ./...` (no regressions), `gofmt -l` (clean), `go run
+./examples/go-edge-models` (demo output unchanged), and `just check`
+(staticcheck+gosec, 0 issues; confirms the integration file is correctly
+excluded from gosec's scan by the build tag too).
+
+---
+
+## Round 87 (`docker/registry/internal` — a real, compiler-enforced public/private API boundary)
+
+Split `docker/registry` into a public surface and a genuine Go `internal/`
+package, per user request to make the future library's API surface
+unambiguous. Unlike prior rounds' `types.go`/`constraints.go`/`codecs.go`
+file-naming CONVENTION (which only signaled intent via capitalization),
+`docker/registry/internal` is a COMPILER-ENFORCED boundary — Go only allows
+importing an `internal/` package from code rooted at its parent directory;
+verified directly by attempting (and having the compiler correctly reject)
+an import of `docker/registry/internal` from the sibling `iotedge` package.
+
+**Stayed public** (`docker/registry`): `ImageRef`/`ImageRefCodec`,
+`TagsList`/`TagsListCodec`, `ManifestMetadata`, the four `Get*Req` types
+(needed since they're the exported `Get*Route` values' type parameters),
+`PingRoute`/`GetTagsRoute`/`GetManifestRoute`/`GetTokenRoute`,
+`GetTags`/`GetImageMetadata`, `ParseImageRef`, all 5 error types, and the
+`Format*` helper family.
+
+**Moved to `docker/registry/internal`** (organized as `types.go`/
+`constraints.go`/`codecs.go`/`helpers.go`, mirroring the parent package's
+own file convention): the 9 wire-shape/auth-flow types
+(`ManifestDescriptor`, `PlatformDescriptor`, `SingleManifestWire`,
+`ManifestListWire`, `ManifestEnvelope`, `TokenResponse`, `Challenge`,
+`PlatformSelector`, `DockerScope`), their constraints, their codecs
+(`ManifestEnvelopeCodec`, `TokenResponseCodec`, `ChallengeCodec`,
+`WWWAuthenticateCodec`, `PlatformSelectorCodec`, `DockerScopeCodec`,
+`BearerTokenCodec`, `DigestCodec`, `PlatformCodec` — all now exported
+WITHIN `internal`, since the parent package's `routes.go`/`client.go` need
+to reference them), and the `ParseChallengeString`/`FormatChallengeString`/
+`ParseDockerScopeString`/`FormatDockerScopeString` parse/format helper
+functions — `internal/helpers.go`'s file doc comment explicitly frames
+these as "the helpers wrapping codec decode/encode," per the user's own
+phrasing.
+
+**Ergonomic improvement as a byproduct**: the public `FormatChallenge`/
+`FormatDockerScope`/`FormatPlatformSelector` signatures changed from
+taking the (now-internal) struct type directly to plain fields
+(`FormatChallenge(realm, service, scope string)`, etc.) — a consumer of
+this library never needs to import or name an internal type at all, only
+pass plain values; each function builds the internal struct itself before
+calling into `internal.XxxCodec.Encode`.
+
+**`routes.go`** now imports `internal` and types `GetManifestRoute`/
+`GetTokenRoute`'s `Resp` as `internal.ManifestEnvelope`/
+`internal.TokenResponse` — documented explicitly in the route's doc
+comment: a consumer calling `GetManifestRoute.ClientHandle()` directly
+(bypassing `GetImageMetadata`) receives a value of this unimportable type;
+Go still permits reading its EXPORTED fields via ordinary type inference,
+but the type cannot be named outside `docker/registry` — a deliberate
+signal that the raw envelope is internal plumbing, and `GetImageMetadata`
+is the supported, fully-resolved public result.
+
+**Forward-looking rationale (per user)**: `internal/` is documented (its
+own `doc.go`) as staying PURELY generic OCI Distribution Spec / Docker
+Registry HTTP API v2 plumbing — future GHCR/MCR-specific integrations
+(both already OCI-compliant, so the CURRENT generic implementation likely
+already works against them unmodified) will live in their own sibling
+packages (e.g. `docker/registry/ghcr`), composing `docker/registry`'s
+PUBLIC contract, with NO access to this internal package by construction —
+exactly the boundary that keeps registry-specific quirks from ever leaking
+into the shared generic plumbing.
+
+Verified via `go build ./...` (repo-wide), `go vet`, `go test
+./examples/go-edge-models/docker/registry/...` (all 5 pre-existing tests
+pass, only their `Format*` call sites simplified for the new plain-field
+signatures — zero behavioral changes), full `go test ./...` (no
+regressions), `gofmt -l` (clean), `go run ./examples/go-edge-models` (demo
+output byte-identical), a direct compiler-rejection check confirming the
+`internal/` boundary is genuinely enforced, and `just check`
+(staticcheck+gosec, 0 issues).
+
+---
+
+## Round 86 (`docker/registry` — remaining string concatenations become codecs + a `Format*`/`Parse*` helper family)
+
+Audited every remaining `+`-based string concatenation in `docker/registry`
+and its consumers (`main.go`, `registry_test.go`) per user request, and closed
+every genuine gap. Added `DockerScope{ResourceType, Name, Actions []string}` +
+`DockerScopeCodec` (`MapCodecValidated`, mirrors `ImageRefCodec`'s pattern —
+`"type:name:action1,action2"` ↔ struct) replacing the hand-concatenated
+`"repository:" + repository + ":pull"` scope-fallback string in
+`authenticate`. Added `BearerTokenCodec` (`MapCodecSafe`, `"Bearer <token>"`
+↔ bare token string) replacing `"Bearer " + token` in `bearerCredentialFunc`.
+Added a new `Format*` thin-wrapper family (`FormatImageRef`, `FormatChallenge`,
+`FormatDockerScope`, `FormatPlatformSelector`, `FormatBearerToken`) mirroring
+the existing `ParseImageRef` convention — each hides its codec's
+`Encode(...) (any, error)` unboxing behind an ergonomic typed function, and
+all are EXPORTED so consumers (tests, mocks, demos) can construct valid wire
+values without hand-rolling string formats themselves. Reused the EXISTING
+`PlatformSelectorCodec` (no new codec) to replace the manual
+`OS+"/"+Architecture` concatenation when building the "available platforms"
+list in `GetImageMetadata`'s error path. Added one deliberate NON-codec
+helper, `registryBaseURL(host string) string`, replacing three repeated
+`"https://" + host` concatenations — explicitly NOT modeled as a codec since
+deriving a dial address from already-validated config data has no wire-decode
+direction to represent; forcing a codec there would misrepresent what a codec
+is for. Updated `main.go`'s registry demo mock and `registry_test.go`'s
+`newTestRegistry`/`imageURLFor` to build their WWW-Authenticate header,
+synthetic image URL, and Bearer-auth-check values via the new
+`registry.Format*` helpers instead of manual string concatenation —
+demonstrating the SAME codecs used to decode real registry responses also
+correctly encode the values a mock server needs to send. Deliberately left
+`TestParseChallenge`'s literal challenge-string fixtures untouched — building
+them via the codec's own Encode would make that test circular, no longer an
+independent check of the wire format. Verified via `go build ./...`,
+`go vet`, `go test ./examples/go-edge-models/docker/registry/...` (all 5
+pre-existing tests pass, zero test-assertion changes needed beyond the mock
+construction mechanism), full `go test ./...` (no regressions), `gofmt -l`
+(clean), `go run ./examples/go-edge-models` (demo output byte-identical),
+and `just check` (staticcheck+gosec, 0 issues).
+
+---
+
+## Round 85 (`WWWAuthenticateCodec` — the last plain `Header.Get(...)` in `docker/registry` becomes a codec)
+
+Closed the final non-codec-based step in `docker/registry`: `authenticate`'s
+extraction of the "WWW-Authenticate" value out of `nethttp.UnexpectedStatusError.
+Header` (Round 84) was still a plain `Header.Get("WWW-Authenticate")` call
+followed by a separate `ChallengeCodec.Decode(string)`. Added `headerCodec` (a
+trivial passthrough `codex.Codec[http.Header]` — Decode type-asserts the input,
+Encode is the identity — existing purely so the next codec can compose via the
+SAME `MapCodecValidated` pattern every other codec in this package uses) and
+`WWWAuthenticateCodec` (`http.Header -> Challenge` via `MapCodecValidated`,
+reusing the EXACT same `parseChallengeString`/`formatChallengeString`/
+`challengeStructCodec` building blocks `ChallengeCodec` itself uses — zero
+duplicated parsing logic, just composed one layer higher, over the header set
+instead of an already-extracted string). `parseChallenge`'s signature changed
+from `string` to `http.Header` — now a thin wrapper around
+`WWWAuthenticateCodec.Decode`, so the header-extraction step is itself part of
+a codec Decode call, not a preceding plain-Go step. `authenticate` now calls
+`parseChallenge(statusErr.Header)` directly. `ChallengeCodec` (string ↔
+Challenge) is unchanged and remains available for any caller that already has
+the raw header string. Fixed a real correctness bug surfaced while updating the
+test: constructing `http.Header` via a map literal (`http.Header{"WWW-
+Authenticate": [...]}`) does NOT canonicalize the key the way `http.Header.Set`
+does, so a literal `"WWW-Authenticate"` key is invisible to `.Get("WWW-
+Authenticate")` (which canonicalizes its lookup key to `"Www-Authenticate"`) —
+fixed both `WWWAuthenticateCodec`'s Encode direction and the new
+`TestParseChallenge` test to build headers via `.Set(...)`, not map literals.
+Verified via `go build ./...`, `go vet`, `go test ./examples/go-edge-models/docker/registry/...`
+(all 5 tests pass, including the updated `TestParseChallenge`), full
+`go test ./...` (no regressions), `gofmt -l` (clean), `go run
+./examples/go-edge-models` (demo output byte-identical), and `just check`
+(staticcheck+gosec, 0 issues). Entirely example-local — no further
+`adapters/nethttp` changes were needed; Round 84's `UnexpectedStatusError.
+Header` already supplied the input this codec consumes.
+
+---
+
+## Round 84 (`adapters/nethttp.UnexpectedStatusError.Header` — closing the last declarative gap in `docker/registry`'s `authenticate`)
+
+Closed the one remaining manual-HTTP exception in `docker/registry/client.go`'s
+`authenticate` function (the Ping/401-detection step), per explicit user
+request to have EVERY request in that function be a declared route with
+codecs, no manual plumbing at all. Investigation confirmed this genuinely
+required a small, additive change to the SHARED library, not just an
+example-local workaround: `adapters/nethttp.Call`'s response header/cookie
+merge (`rest.NewRequiredResponseHeaderParam`) only applies on the successful
+(2xx) path; `UnexpectedStatusError` (returned on non-2xx) had no `Header`
+field at all; and `rest.ErrorPattern`'s client-side decode only ever receives
+the response BODY, never headers — so there was no existing declarative path
+to reach `WWW-Authenticate` on a 401 response. Added `Header http.Header` to
+`adapters/nethttp.UnexpectedStatusError` (purely additive — populated in
+`Call`'s non-2xx fallback branch; confirmed via existing tests that nothing
+relies on the struct's exact field set, since all assertions use `errors.As`
++ individual field checks) — the same category of information `Body []byte`
+already exposes on this struct, now extended to cover the header set too.
+Added `TestCall_UnexpectedStatus_HeaderPopulated` in
+`adapters/nethttp/client_test.go` confirming the new field. Updated
+`.github/instructions/go-codex.instructions.md`'s `UnexpectedStatusError`
+field-set documentation to include `Header` and its rationale.
+`authenticate`'s Ping step is now a plain `nethttp.CallHandle(PingRoute...)`
+call like every other call in the package — on error, `errors.As(err,
+&statusErr)` extracts `statusErr.Header.Get("WWW-Authenticate")`, decoded via
+the already-existing `ChallengeCodec` (Round 83). Zero manual
+`http.NewRequestWithContext`/`httpClient.Do`/`resp.Body` handling remains
+anywhere in `docker/registry/client.go` — every request/response in the
+package is now route+codec driven. Searched the repo for other similar
+"manual plumbing to work around a header-access gap" helpers per the user's
+request: `adapters/openai/client.go` also calls `http.Client.Do` directly,
+but it is an intentionally separate, already-reviewed `ports`-pattern
+adapter with its own bespoke wire format (no `rest.Route` involved at all,
+so there is no declarative mechanism it could be bypassing) — not the same
+anti-pattern, correctly out of scope. No other offenders found. Verified via
+`go build ./...` (repo-wide, since this touches shared library code),
+`go vet` scoped to the changed packages (a pre-existing, unrelated `go vet`
+finding in `adapters/chi/adapter_test.go` was confirmed present before this
+session and left untouched, per the "don't fix pre-existing unrelated
+issues" rule), `go test ./adapters/nethttp/...` (existing tests + new
+header-population test all pass), `go test ./examples/go-edge-models/docker/registry/...`
+(all 5 pre-existing tests pass UNCHANGED — zero test modifications needed,
+confirming the refactor preserved exact external behavior), full
+`go test ./...` (repo-wide, no regressions), `go run
+./examples/go-edge-models` (demo output byte-identical), and `just check`
+(staticcheck+gosec, 0 issues).
+
+---
+
+## Round 83 (`docker/registry` — full-codec + one-struct-one-call refactor)
+
+Converted every remaining manual map-building, manual HTTP, and ad-hoc string
+parsing in `docker/registry` into declarative codecs and `nethttp.CallHandle`
+one-struct-one-call convenience, per explicit feedback that "codecs for most
+of the implementation" wasn't good enough — go FULL codec. Two categories of
+change:
+
+**HTTP-call boundary → merge-field codecs + CredentialFunc.** New request
+structs `GetTagsReq{Name}`, `GetManifestReq{Name, Reference}`,
+`GetTokenReq{Service, Scope}` replace `struct{}` + hand-built `vars`/query
+maps; `routes.go` declares `rest.NewPathParam`/`NewOptionalQueryParam` merge
+fields for each, consumed automatically by `nethttp.CallHandle`. Discovered
+(by reading `adapters/nethttp/client.go`) that `nethttp.Call`/`CallHandle`
+ALREADY merges declared response headers into `Resp` on every successful
+(2xx) response — added `manifestEnvelope.Digest` (a peer field of
+`Single`/`List`, since the digest belongs to the response envelope, not the
+JSON body) merged via `rest.NewRequiredResponseHeaderParam("Docker-Content-Digest", ...)`,
+which ELIMINATED the manual HTTP call `fetchManifest` previously needed just
+to read that header — it is now a single `nethttp.CallHandle` call.
+Bearer-token auth switched from manual `CallOptions.ExtraHeaders` to
+`RouteMeta.Security` (`bearerAuthSecurity`) + a new `bearerCredentialFunc`
+helper supplying `CallOptions.CredentialFunc` — the same declarative
+security mechanism `examples/adapters-nethttp-client` demonstrates.
+
+**Every manual parsing routine → a real `codex.Codec[T]`.** `ImageRefCodec`
+(`codex.MapCodecValidated`, mirrors `docker.BindCodec`'s parse/format
+pattern) replaces `ParseImageRef`'s inline registry/repository/reference
+extraction — `ParseImageRef` is now a thin wrapper around
+`ImageRefCodec.Decode`, with a real `formatImageRefString` Encode direction
+(round-trips "registry/repo:tag" vs "registry/repo@digest" faithfully,
+detecting which via whether `Reference` contains ":"). `ChallengeCodec`
+replaces `parseChallenge`'s ad-hoc regex (WWW-Authenticate → new `Challenge{Realm,
+Service, Scope}` type), also with a faithful Encode direction.
+`PlatformSelectorCodec` replaces the ad-hoc `strings.SplitN` inside
+`platformMatches` ("os/arch" → new `PlatformSelector{OS, Architecture}`
+type) — `platformMatches` is now a plain struct-field comparison over
+already-decoded values, no string splitting left anywhere in business
+logic. New `DigestCodec` (format constraint: `algorithm:hex`) applied to
+every digest value in the package — `manifestDescriptor.Digest` (wire body)
+AND `manifestEnvelope.Digest` (response-header merge field) — closing the
+loop so a malformed digest is now a structured `ConstraintError`, not a
+silently-accepted bare string.
+
+**Two explicitly scoped exceptions, justified as non-parsing:**
+`"Bearer " + token` header-value construction stays plain Go (one-way
+formatting of an OUTGOING value with no corresponding decode direction — a
+`Codec[T]` models a two-way transform, and there is nothing to decode
+here); `TotalSizeBytes` summation stays plain Go (arithmetic aggregation
+over already-decoded structured values, not a wire-format encode/decode).
+The Ping/401-detection manual `http.Client.Do` call in `authenticate`
+remains the SOLE I/O exception (`nethttp.Call`'s `UnexpectedStatusError`
+still doesn't expose response headers, and `WWW-Authenticate` is only
+present on the error response) — but the header value it retrieves is now
+decoded via `ChallengeCodec`, not ad-hoc regex.
+
+Verified via `go build ./...`, `go vet`, `go test ./examples/go-edge-models/docker/registry/...`
+(all 5 pre-existing tests kept passing after updating test fixtures to use
+valid 64-hex-char digests — `DigestCodec`'s new constraint correctly
+rejected the old placeholder digest strings like `"sha256:layer1"`, a
+genuine improvement in strictness, not a regression), `go test ./...`
+(repo-wide, no regressions), `gofmt -l` (clean), `go run
+./examples/go-edge-models` (demo output unchanged in shape, digest values
+updated to valid hex), and `just check` (staticcheck+gosec, 0 issues).
+
+---
+
+## Round 82 (`docker/registry` — Docker Registry HTTP API v2 client: routes + codecs + auth/resolution orchestration)
+
+Added a new sibling sub-package `examples/go-edge-models/docker/registry`, nested
+under `docker` (zero dependency on `iotedge` or `docker`'s own CreateOptions types —
+an entirely separate Docker HTTP API), modeling the Docker Registry HTTP API v2 /
+OCI Distribution Spec surface needed to fetch an image's tags and lean top-level
+manifest metadata (`SchemaVersion`, `MediaType`, `Digest`, `TotalSizeBytes` — no
+per-layer detail). First package in the `examples/go-edge-models` tree to go beyond
+pure codecs: `routes.go` declares `rest.Route` values (`PingRoute`, `GetTagsRoute`,
+`GetManifestRoute`, `GetTokenRoute`, all `ClientHandle()`-based, no server/Builder)
+as the PRIMARY reusable contract — a consumer can call `.ClientHandle()` themselves
+and drive `adapters/nethttp.Call` directly with their own client/observer/security
+wiring, independent of this package's own orchestration. `client.go` is a convenience
+layer built on top: `ParseImageRef` (replicates Docker Hub's default-registry +
+`library/`-prefix + `latest`-default convention via a from-scratch domain/tag/digest
+splitter, validated against the library's existing `validate.ContainerImage`),
+`authenticate` (WWW-Authenticate challenge parsing → realm-scoped Bearer token fetch
+via `GetTokenRoute`, whose `rest.Route` path is deliberately EMPTY since the auth
+realm can be a completely different host than the registry — Docker Hub's own
+`auth.docker.io` vs `registry-1.docker.io` topology), `GetTags`, and
+`GetImageMetadata` (auto-detects a multi-arch manifest list / OCI image index via
+`manifestEnvelopeCodec`'s `UntaggedUnion` single-vs-list dispatch — same
+try-in-order pattern as `iotedge.EnvVarValueCodec` — resolves ONE platform
+transparently, defaulting to `linux/amd64`, overridable per-request; a nested list
+after resolution is a clear `NestedManifestListError`). Documented and applied a
+deliberate, isolated exception: `nethttp.Call`'s `UnexpectedStatusError` doesn't
+expose response headers, so the Ping (401 challenge detection) and manifest-fetch
+(needs the `Docker-Content-Digest` header, which is NOT part of the manifest body)
+steps use a manual `http.Client.Do` call — `GetTagsRoute`/`GetTokenRoute` still go
+through `nethttp.Call`/`ClientHandle()` normally since they need no header access.
+Added typed, `slog.LogValuer` errors (`ImageRefParseError`,
+`RegistryAuthChallengeError`, `RegistryAuthError`, `NestedManifestListError`,
+`PlatformNotFoundError`) per the repo's structured-error convention. Added
+`registry_test.go` (this package, unlike its pure-codec siblings, has real
+executable orchestration logic worth testing directly): `ParseImageRef` table tests
+(Docker Hub default, explicit registry+port, digest reference, invalid shape) and an
+`httptest`-based end-to-end test (two servers — registry + a SEPARATE auth-realm
+host, proving the realm-on-a-different-host case) covering `GetTags`, manifest-list
+resolution, and the `PlatformNotFoundError` path. Demonstrated in a new section
+appended to `examples/go-edge-models/main.go` — PURE WIRING per the layering
+contract (spins up the same two-`httptest`-server topology, calls
+`registry.GetTags`/`registry.GetImageMetadata` against a synthetic multi-arch
+`cv-writer-web` image, prints results) — no business logic duplicated in `main.go`.
+Verified via `go build ./...`, `go vet`, `go test ./...` (new tests pass), `gofmt -l`
+(clean), `go run ./examples/go-edge-models` (new section's output correct, all
+prior output unchanged), and `just check` (staticcheck+gosec, 0 issues).
 
 ---
 

@@ -168,6 +168,33 @@ func TestCall_UnexpectedStatus(t *testing.T) {
 	}
 }
 
+// TestCall_UnexpectedStatus_HeaderPopulated verifies UnexpectedStatusError
+// exposes the raw response header set on a non-2xx response — the
+// declarative escape hatch for challenge-response flows (e.g.
+// WWW-Authenticate on a 401) that need a response header Call's normal
+// success-path header merge (rest.NewRequiredResponseHeaderParam) cannot
+// reach, since that only applies to 2xx responses.
+func TestCall_UnexpectedStatus_HeaderPopulated(t *testing.T) {
+	handle := newClientCreateRoute()
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("WWW-Authenticate", `Bearer realm="https://auth.example.com/token"`)
+		w.WriteHeader(http.StatusUnauthorized)
+	}))
+	defer srv.Close()
+
+	_, err := nethttp.Call(context.Background(), srv.Client(), srv.URL,
+		handle, createReq{Name: "Alice"}, nil, nethttp.CallOptions{})
+
+	var statusErr nethttp.UnexpectedStatusError
+	if !errors.As(err, &statusErr) {
+		t.Fatalf("expected UnexpectedStatusError, got %T: %v", err, err)
+	}
+	if got := statusErr.Header.Get("WWW-Authenticate"); got != `Bearer realm="https://auth.example.com/token"` {
+		t.Errorf("Header.Get(WWW-Authenticate) = %q, unexpected", got)
+	}
+}
+
 // --- path parameter validation ---
 
 func TestCall_PathParamValidation_EmptyID(t *testing.T) {

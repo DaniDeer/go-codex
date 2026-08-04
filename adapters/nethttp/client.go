@@ -90,6 +90,13 @@ type UnexpectedStatusError struct {
 	StatusCode int
 	// Body is the raw response body returned by the server (may be nil or empty).
 	Body []byte
+	// Header is the raw HTTP response header set returned by the server
+	// (e.g. WWW-Authenticate on a 401 challenge). Response header/cookie
+	// merge fields declared via [rest.NewRequiredResponseHeaderParam] only
+	// apply on a successful (2xx) response — Header is the declarative
+	// escape hatch for callers that need a response header on a non-2xx
+	// response, without hand-rolling their own HTTP request.
+	Header http.Header
 }
 
 func (e UnexpectedStatusError) Error() string {
@@ -455,6 +462,7 @@ func Call[Req, Resp any](
 			Path:       routePath,
 			StatusCode: statusCode,
 			Body:       respBody,
+			Header:     resp.Header,
 		}
 	}
 

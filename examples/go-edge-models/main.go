@@ -3,12 +3,19 @@
 package main
 
 import (
+	"context"
 	_ "embed"
+	"encoding/json"
 	"fmt"
 	"log"
+	"net/http"
+	"net/http/httptest"
+	"net/url"
 	"os"
 	"sort"
+	"strings"
 
+	"github.com/DaniDeer/go-codex/examples/go-edge-models/docker/registry"
 	"github.com/DaniDeer/go-codex/examples/go-edge-models/iotedge"
 	"github.com/DaniDeer/go-codex/examples/go-edge-models/iotedge/modulepatch"
 	"github.com/DaniDeer/go-codex/format"
@@ -144,4 +151,155 @@ func main() {
 		}
 	}
 	fmt.Printf("        all %d other modules unaffected: %v\n", len(modules)-1, unaffected)
+
+	// ── docker/registry: fetch tags + lean manifest metadata for one image ──
+	//
+	// This section is PURE WIRING — it just spins up two local httptest
+	// servers (simulating a registry host + a SEPARATE auth-realm host,
+	// exactly like Docker Hub's registry-1.docker.io vs auth.docker.io) and
+	// calls docker/registry's exported GetTags/GetImageMetadata. All the
+	// actual logic (auth-challenge flow, manifest-list-to-single-platform
+	// resolution, lean metadata computation) lives in the docker/registry
+	// package itself — reusable independent of this example.
+	fmt.Println("\n=== docker/registry: tags + manifest metadata for cv-writer-web ===")
+	runRegistryDemo()
 }
+
+// runRegistryDemo wires two local httptest servers together (a registry
+// host and a separate auth-realm host) and calls registry.GetTags /
+// registry.GetImageMetadata against a synthetic multi-arch image — the
+// image name reuses "cv-writer-web" for narrative continuity with the rest
+// of this example. See docker/registry's own package doc for the reusable
+// client API this demonstrates.
+func runRegistryDemo() {
+	const fakeToken = "demo-token"
+
+	authSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Query().Get("service") == "" || r.URL.Query().Get("scope") == "" {
+			http.Error(w, "missing service/scope", http.StatusBadRequest)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{"token": fakeToken})
+	}))
+	defer authSrv.Close()
+
+	// The challenge header and Authorization check below are built via the
+	// SAME codecs docker/registry uses to DECODE these values on the
+	// client side (registry.FormatChallenge/FormatDockerScope/
+	// FormatBearerToken) — demonstrating the encode direction, not just
+	// decode, and eliminating manual string concatenation from this mock.
+	scope, err := registry.FormatDockerScope("repository", "cv-writer-web", []string{"pull"})
+	if err != nil {
+		log.Fatal(err)
+	}
+	challenge, err := registry.FormatChallenge(authSrv.URL+"/token", "demo-registry", scope)
+	if err != nil {
+		log.Fatal(err)
+	}
+	bearerAuth := registry.FormatBearerToken(fakeToken)
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/v2/", func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") != bearerAuth {
+			w.Header().Set("WWW-Authenticate", challenge)
+			w.WriteHeader(http.StatusUnauthorized)
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+	})
+	mux.HandleFunc("/v2/cv-writer-web/tags/list", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"name": "cv-writer-web",
+			"tags": []string{"1.8.16.1", "1.8.15.0", "latest"},
+		})
+	})
+	mux.HandleFunc("/v2/cv-writer-web/manifests/", func(w http.ResponseWriter, r *http.Request) {
+		reference := strings.TrimPrefix(r.URL.Path, "/v2/cv-writer-web/manifests/")
+		w.Header().Set("Content-Type", "application/json")
+		switch reference {
+		case "latest":
+			// A multi-arch manifest list — GetImageMetadata resolves this
+			// transparently to the linux/amd64 entry below.
+			w.Header().Set("Docker-Content-Digest", "sha256:"+strings.Repeat("11", 32))
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"schemaVersion": 2,
+				"mediaType":     "application/vnd.docker.distribution.manifest.list.v2+json",
+				"manifests": []map[string]any{
+					{
+						"mediaType": "application/vnd.docker.distribution.manifest.v2+json",
+						"digest":    "sha256:f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6",
+						"size":      1234,
+						"platform":  map[string]any{"architecture": "amd64", "os": "linux"},
+					},
+					{
+						"mediaType": "application/vnd.docker.distribution.manifest.v2+json",
+						"digest":    "sha256:0707070707070707070707070707070707070707070707070707070707070707",
+						"size":      1235,
+						"platform":  map[string]any{"architecture": "arm64", "os": "linux"},
+					},
+				},
+			})
+		case "sha256:f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6":
+			w.Header().Set("Docker-Content-Digest", "sha256:f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6")
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"schemaVersion": 2,
+				"mediaType":     "application/vnd.docker.distribution.manifest.v2+json",
+				"config":        map[string]any{"mediaType": "application/vnd.docker.container.image.v1+json", "digest": "sha256:c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3", "size": 5000},
+				"layers": []map[string]any{
+					{"mediaType": "application/vnd.docker.image.rootfs.diff.tar.gzip", "digest": "sha256:d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4", "size": 30000000},
+					{"mediaType": "application/vnd.docker.image.rootfs.diff.tar.gzip", "digest": "sha256:e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5", "size": 12000000},
+				},
+			})
+		default:
+			http.NotFound(w, r)
+		}
+	})
+	registrySrv := httptest.NewServer(mux)
+	defer registrySrv.Close()
+
+	// client.go always dials "https://<registryHost>" — httptest.Server
+	// serves plain HTTP, so this Transport rewrites just the scheme.
+	httpsToHTTP := &http.Client{
+		Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+			req = req.Clone(req.Context())
+			if req.URL.Scheme == "https" {
+				req.URL.Scheme = "http"
+			}
+			return http.DefaultTransport.RoundTrip(req)
+		}),
+	}
+
+	registryHost, err := url.Parse(registrySrv.URL)
+	if err != nil {
+		log.Fatal(err)
+	}
+	imageURL, err := registry.FormatImageRef(registry.ImageRef{
+		Registry: registryHost.Host, Repository: "cv-writer-web", Reference: "latest",
+	})
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	ctx := context.Background()
+
+	tags, err := registry.GetTags(ctx, httpsToHTTP, imageURL)
+	if err != nil {
+		log.Fatal(err)
+	}
+	fmt.Printf("tags for %s: %v\n", tags.Name, tags.Tags)
+
+	meta, err := registry.GetImageMetadata(ctx, httpsToHTTP, registry.GetImageMetadataReq{ImageURL: imageURL})
+	if err != nil {
+		log.Fatal(err)
+	}
+	fmt.Printf("manifest metadata (resolved from a multi-arch list to linux/amd64):\n")
+	fmt.Printf("  schemaVersion=%d mediaType=%s\n", meta.SchemaVersion, meta.MediaType)
+	fmt.Printf("  digest=%s totalSizeBytes=%d\n", meta.Digest, meta.TotalSizeBytes)
+}
+
+// roundTripFunc adapts a plain function to http.RoundTripper.
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) { return f(req) }
