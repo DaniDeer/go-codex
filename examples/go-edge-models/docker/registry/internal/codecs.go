@@ -1,6 +1,7 @@
 package internal
 
 import (
+	"encoding/base64"
 	"fmt"
 	"net/http"
 	"strings"
@@ -296,4 +297,32 @@ var BearerTokenCodec = c.MapCodecSafe(
 	c.String(),
 	func(s string) string { return strings.TrimPrefix(s, "Bearer ") },
 	func(token string) (string, error) { return "Bearer " + token, nil },
+)
+
+// ── Basic auth ────────────────────────────────────────────────────────────────
+
+// BasicAuthCodec converts a username/password pair to/from an HTTP Basic
+// "Authorization" header value ("Basic <base64(username:password)>"). The
+// decode direction is a best-effort inverse (base64-decode, split on the
+// first ":") — provided for symmetry, same rationale as BearerTokenCodec;
+// this package currently only ever encodes (constructs outgoing
+// Authorization headers for the auth-token exchange).
+var BasicAuthCodec = c.MapCodecSafe(
+	c.String(),
+	func(s string) BasicCredentials {
+		encoded := strings.TrimPrefix(s, "Basic ")
+		decoded, err := base64.StdEncoding.DecodeString(encoded)
+		if err != nil {
+			return BasicCredentials{}
+		}
+		user, pass, ok := strings.Cut(string(decoded), ":")
+		if !ok {
+			return BasicCredentials{}
+		}
+		return BasicCredentials{Username: user, Password: pass}
+	},
+	func(creds BasicCredentials) (string, error) {
+		encoded := base64.StdEncoding.EncodeToString([]byte(creds.Username + ":" + creds.Password))
+		return "Basic " + encoded, nil
+	},
 )

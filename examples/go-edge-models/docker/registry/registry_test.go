@@ -1,15 +1,18 @@
 package registry
 
-// This file is intentionally IO-free — it tests only pure functions
-// (string parsing/formatting, no network, no httptest servers). The
-// end-to-end request/response flow (auth-challenge handshake, GetTags,
-// GetImageMetadata, manifest-list resolution, PlatformNotFoundError) is
-// covered by registry_integration_test.go instead, which exercises the
-// SAME code paths against the REAL Docker Hub registry — a stronger,
-// more realistic signal than a local httptest mock ever gave, without
-// this package having to own and maintain ~150 lines of mock-server
-// plumbing (auth-realm server, Bearer-token verification, manifest-list
-// JSON fixtures, a scheme-rewriting http.RoundTripper, ...). See
+// This file is intentionally IO-free — it tests only client.go's pure,
+// non-auth functions (image-reference string parsing, no network, no
+// httptest servers). Auth-related tests (challenge parsing, Basic-auth
+// credential injection) live in auth_test.go instead — mirroring the
+// client.go/auth.go source split. The end-to-end request/response flow
+// (auth-challenge handshake, GetTags, GetImageMetadata, manifest-list
+// resolution, PlatformNotFoundError) is covered by
+// registry_integration_test.go, which exercises the SAME code paths
+// against the REAL Docker Hub/GHCR/MCR registries — a stronger, more
+// realistic signal than a local httptest mock ever gave, without this
+// package having to own and maintain ~150 lines of mock-server plumbing
+// (auth-realm server, Bearer-token verification, manifest-list JSON
+// fixtures, a scheme-rewriting http.RoundTripper, ...). See
 // registry_integration_test.go's file doc comment for how to run it
 // (requires the "integration" build tag + network access; NOT part of the
 // default `go test ./...` / `just check` path).
@@ -77,26 +80,5 @@ func TestParseImageRef(t *testing.T) {
 				t.Errorf("ParseImageRef(%q) = %+v, want %+v", tt.input, got, tt.want)
 			}
 		})
-	}
-}
-
-func TestParseChallenge(t *testing.T) {
-	header := make(map[string][]string)
-	header["Www-Authenticate"] = []string{
-		`Bearer realm="https://auth.example.com/token",service="registry.example.com",scope="repository:my/repo:pull"`,
-	}
-
-	ch, err := parseChallenge(header)
-	if err != nil {
-		t.Fatalf("parseChallenge: %v", err)
-	}
-	if ch.Realm != "https://auth.example.com/token" || ch.Service != "registry.example.com" || ch.Scope != "repository:my/repo:pull" {
-		t.Errorf("parseChallenge = %+v, unexpected", ch)
-	}
-
-	badHeader := make(map[string][]string)
-	badHeader["Www-Authenticate"] = []string{`Basic realm="x"`}
-	if _, err := parseChallenge(badHeader); err == nil {
-		t.Error("parseChallenge: want error for non-Bearer scheme")
 	}
 }

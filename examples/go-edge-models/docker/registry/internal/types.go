@@ -97,3 +97,13 @@ type DockerScope struct {
 	// Actions is the requested permissions, e.g. ["pull"], ["pull","push"].
 	Actions []string
 }
+
+// BasicCredentials is a username/password pair encoded/decoded to/from an
+// HTTP Basic "Authorization" header value via BasicAuthCodec (codecs.go).
+// Needed for the auth-token exchange on registries/repositories that
+// require Basic auth to mint a Bearer token (e.g. a private GHCR package,
+// authenticated with a GitHub username + a PAT with read:packages scope).
+type BasicCredentials struct {
+	Username string
+	Password string
+}

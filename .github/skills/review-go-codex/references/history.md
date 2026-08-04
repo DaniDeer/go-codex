@@ -1,6 +1,119 @@
-# go-codex Review History (R1–R88)
+# go-codex Review History (R1–R90)
 
 Do not re-report any of these findings. They have been implemented and tested.
+
+---
+
+## Round 90 (`examples/go-edge-models/docker/registry`: split `client.go`/`auth.go`/`constants.go`/`errors.go`; consolidated tests into `auth_test.go`)
+
+Pure code-organization refactor of `docker/registry` — no behavior
+changes, no public API changes. Split the previously monolithic
+`client.go` into four single-purpose files so a reader can find any
+symbol by its category, and consolidated the auth-related tests
+previously scattered across `registry_test.go` and `credentials_test.go`
+into one `auth_test.go`:
+
+- **`auth.go`** (new): all authentication logic — `parseChallenge`,
+  `authenticate`, `bearerCredentialFunc`, the `FormatChallenge`/
+  `FormatDockerScope`/`FormatBearerToken`/`FormatBasicAuth` helpers, and
+  the `Option`/`WithCredentials` functional-option pair for private-repo
+  Basic auth.
+- **`client.go`** (trimmed): general client wiring only — image-reference
+  parsing (`ParseImageRef`/`FormatImageRef`/`FormatPlatformSelector`/
+  `splitDockerDomain`), manifest-list-to-single-platform resolution
+  (`fetchManifest`/`platformMatches`), and the two public entry points
+  (`GetTags`/`GetImageMetadata`).
+- **`constants.go`** (new): the Docker Hub default constants and
+  `acceptManifestTypes`, previously inlined at the top of `client.go`.
+- **`errors.go`** (new): every exported error type this package returns —
+  both the client-wiring errors (`ImageRefParseError`,
+  `NestedManifestListError`, `PlatformNotFoundError`) and the auth errors
+  (`RegistryAuthChallengeError`, `RegistryAuthError`) — consolidated in
+  one file so error shapes and their `slog.LogValuer` implementations are
+  easy to compare side-by-side.
+- **`auth_test.go`** (new): `TestParseChallenge` (moved from
+  `registry_test.go`) plus `TestAuthenticate_WithCredentials_SendsBasicAuthOnTokenExchange`
+  and `TestAuthenticate_NoCredentials_SendsNoAuthorizationOnTokenExchange`
+  (moved from the now-deleted `credentials_test.go`), along with their
+  httptest helpers.
+- **`credentials_test.go`** deleted — fully absorbed into `auth_test.go`.
+- **`registry_test.go`** trimmed to `TestParseImageRef` only (the sole
+  remaining non-auth pure-function test); its file doc comment now
+  cross-references `auth_test.go` for auth-specific tests.
+- File-level doc comments on `client.go`, `auth.go`, and the package
+  `doc.go` updated to describe the new file layout.
+- Verified: `gofmt`, `go build`, `go vet`, `go test` (untagged: 4 tests
+  pass) and `go test -tags=integration` (all integration + unit tests
+  pass against real Docker Hub/GHCR/MCR registries), full repo
+  `go test ./...`, `go run ./examples/go-edge-models` (demo output
+  unchanged), and `just check` (staticcheck+gosec, 0 issues) — all clean.
+
+---
+
+## Round 89 (`docker/registry` proven registry-agnostic against GHCR + MCR; a real bug found and fixed; private-repo `Credentials` support added)
+
+Extended `docker/registry` to be demonstrably registry-agnostic — same
+`GetTags`/`GetImageMetadata` functions, same routes, working identically
+against Docker Hub, GHCR (`ghcr.io`), and MCR (`mcr.microsoft.com`) — per
+explicit design goal that the user "will not use [a different client]...
+feels using the same client/routes despite the image URL."
+
+**Phase 1 (prove it) found and fixed a real, generic bug.** Added GHCR
+(`ghcr.io/nginxinc/nginx-unprivileged`) and MCR
+(`mcr.microsoft.com/dotnet/runtime`) cases to the existing integration
+test table. MCR passed immediately (anonymous, no auth — already handled
+by `authenticate`'s 200-ping-means-no-auth path). GHCR initially FAILED
+with a 403 on the token-exchange step. Root cause: `authenticate`
+previously preferred the CHALLENGE's own `Scope` value when present,
+falling back to a self-built `"repository:<repo>:pull"` scope only when
+the challenge's scope was empty — this happened to work for Docker Hub
+only because Docker Hub's base (repository-agnostic) `/v2/` ping never
+includes a `Scope` in its challenge at all; GHCR's base ping, however,
+DOES include a non-empty but placeholder/example scope
+(`"repository:user/image:pull"`), which is architecturally impossible to
+be correct (the base ping cannot know which repository the caller wants).
+Fixed generically (no registry-name branching): `authenticate` now ALWAYS
+self-builds the pull scope from the repository it is actually calling
+for, unconditionally ignoring `challenge.Scope` — a pure bug fix in
+`docker/registry`'s own trust assumption, applicable to every registry
+identically. Confirmed fix via a scratch reproduction, then via the full
+integration suite: all 4 images (Docker Hub ×2, GHCR, MCR) now pass with
+zero registry-specific code anywhere.
+
+**Phase 2 (the one real remaining gap): private-repository Basic auth.**
+Added `Credentials{Username,Password}` (public type, `types.go`),
+`Option`/`WithCredentials(Credentials) Option` (functional-option
+pattern), and `FormatBasicAuth(username, password string) (string,
+error)` (thin wrapper, mirrors `FormatBearerToken`) built on a new
+`internal.BasicAuthCodec`/`internal.BasicCredentials` (same
+`MapCodecSafe` pattern as `BearerTokenCodec`). `GetTags`/`GetImageMetadata`
+gained a variadic `...Option` parameter — 100% backward compatible,
+existing call sites unaffected; `authenticate` sends the resolved
+`Credentials` as a Basic `Authorization` header ONLY on the token-exchange
+request (`GetTokenRoute`), never on the subsequent Bearer-authenticated
+calls. Verified via two new httptest-based unit tests
+(`credentials_test.go` — the one deliberate, narrowly-scoped exception to
+`registry_test.go`'s Round-88 IO-free design, since observing an HTTP
+header requires a real request and no private-registry secret is
+available/appropriate in this environment) confirming Basic auth is sent
+when `Credentials` are supplied and absent when they are not.
+
+**Explicit non-goals held**: no per-registry subpackages, no
+registry-name branching anywhere, no speculative tags-list pagination
+support (checked — MCR ignored a `?n=` pagination hint and returned the
+full list; not needed for any image tested).
+
+Updated `docker/registry/doc.go` and `examples/go-edge-models/README.md`
+to state the registry-agnostic guarantee explicitly (which registries are
+verified) and document the `Credentials`/`WithCredentials` escape hatch.
+
+Verified via `go build ./...`, `go vet`, `go test
+./examples/go-edge-models/docker/registry/...` (4 pure/mock unit tests,
+no tags), `go test -tags=integration ./...` (9 tests: 5 original + GHCR/MCR
+cases + the 2 new pure tests, all passing against the 3 live registries),
+full `go test ./...` (no regressions), `gofmt -l` (clean), `go run
+./examples/go-edge-models` (demo output unchanged), and `just check`
+(staticcheck+gosec, 0 issues).
 
 ---
 

@@ -77,3 +77,15 @@ type ManifestMetadata struct {
 	// this image, without exposing the individual layer breakdown.
 	TotalSizeBytes int64
 }
+
+// Credentials supplies Basic-auth credentials for the auth-token exchange
+// step (GetTokenRoute) — needed for private repositories on registries
+// that require Basic auth to mint a Bearer token, e.g. a private GHCR
+// package authenticated with a GitHub username + a PAT with
+// read:packages scope. Anonymous/public pulls need no Credentials at
+// all — passing WithCredentials is purely additive; GetTags/
+// GetImageMetadata behave exactly as before when it is omitted.
+type Credentials struct {
+	Username string
+	Password string
+}

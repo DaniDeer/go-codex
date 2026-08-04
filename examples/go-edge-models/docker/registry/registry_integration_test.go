@@ -61,6 +61,11 @@ func TestIntegration_GetTags(t *testing.T) {
 	}{
 		{image: "alpine", wantName: "library/alpine", minTagsLen: 10},
 		{image: "nodered/node-red", wantName: "nodered/node-red", minTagsLen: 10},
+		// GHCR and MCR — same GetTags call, same registry.TagsList result
+		// shape, no registry-specific code involved. Proves docker/registry
+		// is registry-agnostic for public images, not just Docker-Hub-shaped.
+		{image: "ghcr.io/nginxinc/nginx-unprivileged", wantName: "nginxinc/nginx-unprivileged", minTagsLen: 5},
+		{image: "mcr.microsoft.com/dotnet/runtime", wantName: "dotnet/runtime", minTagsLen: 5},
 	}
 
 	for _, tt := range tests {
@@ -98,7 +103,9 @@ func TestIntegration_GetImageMetadata(t *testing.T) {
 	client := integrationClient()
 	requireNetwork(t, client)
 
-	images := []string{"alpine", "nodered/node-red"}
+	// Docker Hub, GHCR, and MCR — same GetImageMetadata call, same
+	// registry.ManifestMetadata result shape for every registry.
+	images := []string{"alpine", "nodered/node-red", "ghcr.io/nginxinc/nginx-unprivileged", "mcr.microsoft.com/dotnet/runtime"}
 
 	for _, image := range images {
 		t.Run(image, func(t *testing.T) {

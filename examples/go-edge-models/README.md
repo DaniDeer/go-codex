@@ -40,18 +40,31 @@ patch := modulepatch.ModulePatch{ModuleName: "cv-writer-web", ImageURL: "ghcr.io
 err := ports.PatchEncoded(manifestFile, nil, modulepatch.ModulePatchCodec, patch, ports.FileOptions{})
 ```
 
-**Fetch tags and lean manifest metadata from any OCI-compliant registry:**
+**Fetch tags and lean manifest metadata from any OCI-compliant registry —
+same functions, same routes, only the image URL differs:**
 
 ```go
-tags, err := registry.GetTags(ctx, http.DefaultClient, "nodered/node-red")
+tags, err := registry.GetTags(ctx, http.DefaultClient, "nodered/node-red")       // Docker Hub
+tags, err  = registry.GetTags(ctx, http.DefaultClient, "ghcr.io/org/image")      // GHCR
+tags, err  = registry.GetTags(ctx, http.DefaultClient, "mcr.microsoft.com/dotnet/runtime") // MCR
 
 meta, err := registry.GetImageMetadata(ctx, http.DefaultClient,
     registry.GetImageMetadataReq{ImageURL: "alpine:latest"}) // Platform defaults to "linux/amd64"
 fmt.Println(meta.Digest, meta.TotalSizeBytes)
+
+// Private repository requiring Basic auth at the token-exchange step
+// (e.g. a private GHCR package — GitHub username + a read:packages PAT):
+tags, err = registry.GetTags(ctx, http.DefaultClient, "ghcr.io/org/private-image",
+    registry.WithCredentials(registry.Credentials{Username: "gh-user", Password: os.Getenv("GH_PAT")}))
 ```
 
 `GetImageMetadata` transparently resolves a multi-arch manifest list to a
 single platform — no list/index shape ever reaches the caller.
+`docker/registry` is registry-agnostic by design — verified end-to-end
+against real Docker Hub, GHCR, and MCR (see Testing below); there is no
+per-registry subpackage, and none is planned — any future registry-specific
+wire-shape difference gets modeled as an additional field/variant in the
+existing generic codecs, never as registry-name branching.
 
 ## Running the example
 
@@ -76,4 +89,6 @@ go test -tags=integration ./examples/go-edge-models/docker/registry/...
 The integration test (`docker/registry/registry_integration_test.go`) is
 gated behind the `integration` build tag specifically so it never runs as
 part of a normal build/test/CI pass — it requires network access and talks
-to `registry-1.docker.io`/`auth.docker.io` directly.
+to `registry-1.docker.io`/`auth.docker.io`, `ghcr.io`, and
+`mcr.microsoft.com` directly (proving `docker/registry`'s registry-agnostic
+design against all three real registries in one run).
