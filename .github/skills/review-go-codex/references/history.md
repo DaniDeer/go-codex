@@ -1,6 +1,171 @@
-# go-codex Review History (R1–R77)
+# go-codex Review History (R1–R81)
 
 Do not re-report any of these findings. They have been implemented and tested.
+
+---
+
+## Round 81 (`iotedge/modulepatch` — derived-representation package composed from `iotedge`'s exported codecs + `ports.PatchEncoded` demo)
+
+Proved out Round 80's "compose new wire codecs from reusable field-level codecs" goal
+with a real use case: `modulepatch.ModulePatch{ModuleName, ImageURL}` — a flat struct
+whose `ModulePatchCodec` encodes directly into the manifest's full real nested wire
+shape (`modulesContent` → `$edgeAgent` → `<dotted module key>` → `settings` →
+`image`), reusing `iotedge.ModuleNameCodec` and `iotedge.ImageCodec` directly (zero new
+constraints). Initially implemented as a `derived_types.go`/`derived_codecs.go` file
+pair inside `iotedge` itself, then — per user feedback — promoted to its OWN sibling
+sub-package, `iotedge/modulepatch` (types.go/codecs.go/doc.go), mirroring the
+`docker`/`iotedge` reuse-boundary precedent from Round 80: `iotedge` stays focused on
+the base wire schema and never accumulates one file per derived representation, and a
+consumer who only needs the image-patch shape doesn't pull in any other derived
+representation added later. Any FUTURE derived representation (e.g. a status-only
+patch) should get its own sibling sub-package under `iotedge/` the same way — NOT a
+new file inside `iotedge` or inside `modulepatch`. Built via minimal per-level
+intermediate wire-shape types local to `modulepatch` (`imageSettingsPatch`,
+`moduleConfigPatch`, `modulesContentPatch`, `manifestImagePatch` — each mirroring
+exactly one field of the corresponding real manifest type, `ModuleSettings`/
+`ModuleConfig`/`ModulesContent`/`DeploymentManifest`, with only "image" populated)
+composed via nested `codex.Struct`/`codex.Map`, then one `MapCodecSafe` wrapper
+converting the flat `ModulePatch` Go value ↔ the fully-nested document shape — the same
+building-block pattern already used throughout `iotedge/codecs.go` for scalar
+wrapping, here applied to a whole nested structure. Demonstrated end-to-end in
+`main.go` via `ports.NewFile` + `ports.PatchEncoded` (mirrors
+`examples/flat-key-patch`'s pattern): writes the real `usecase1.json` to a temp file,
+patches `cv-writer-web`'s image, reads back and confirms via a full-manifest scan that
+the OTHER 11 modules and every other field of the patched module (env, createOptions,
+etc.) are byte-for-byte unaffected — deep-merge only touched `settings.image`.
+Verified via `go build ./...`, `go vet`, `go test ./...`, `gofmt -l` (clean),
+`go run ./examples/go-edge-models` (before/after output confirms exact, isolated field
+change), and `just check` (staticcheck+gosec, 0 issues).
+
+---
+
+## Round 80 (`examples/go-edge-models` restructured into an importable library: `docker` + `iotedge` sibling packages)
+
+Migrated the flat `package main` codec/struct files into two importable, non-`main`
+packages so downstream projects can compose new codecs reusing these types/codecs
+directly (e.g. a patch codec keyed by module name touching only the image field).
+`docker/` (Port, Bind, Ulimit, Healthcheck, HostConfig, CreateOptions — the generic
+Docker Engine API create-options modeling) is a SIBLING of `iotedge/` (ModuleConfig,
+ModuleSettings, EnvVars, ModuleName/Modules/DeploymentManifest), not nested under it —
+`iotedge` imports `docker` for `ModuleSettings.CreateOptions`, but `docker` has zero
+dependency on `iotedge`, so it stays reusable standalone for non-IoT-Edge tooling
+(Docker Compose codecs, plain `docker create`/`run` wrappers, etc.). Within EACH
+package, further split into `types.go` (plain structs/named types only),
+`constraints.go` (`validate.Constraint` values only), and `codecs.go` (all
+`codex.Codec[T]` values + `RequiredField`/`OptionalField` wiring) — every field's codec
+is now a standalone named value (previously several were inline `.Refine(...)` chains
+buried inside a struct's codec definition), so a caller assembling a NEW wire codec can
+reuse the exact same field-level codec. Newly extracted/named: `docker.UlimitNameCodec`
+(was inline on `Ulimit`'s "Name" field), `docker.bindPathCodec` (unexported, was
+duplicated inline on `Bind`'s "hostPath"/"containerPath" fields), `iotedge.ImageCodec`
+(was inline on `ModuleSettings`'s "image" field). Exported previously-unexported
+cross-package-boundary symbols: `docker.isZeroCreateOptions` → `docker.IsZeroCreateOptions`
+(needed by `iotedge.CreateOptionsFieldCodec`), `moduleKeyPrefix` →
+`iotedge.ModuleKeyPrefix` (reusable by a consumer's own dotted-key patch codec, mirroring
+`examples/flat-key-patch`'s `containerKeyPrefix`). Added `doc.go` package overviews to
+both new packages (mirrors `examples/sensor-service/domain/doc.go` convention).
+Compacted in-line documentation: removed all `usecase1.json`-specific narrative
+call-outs ("confirmed against the real reference file...") from every codec file,
+replacing them with general, fixture-independent design rationale — `main.go`'s own
+`usecase1.json` embed/read/print logic is UNCHANGED (it legitimately embeds and decodes
+that file). Verified via `go build ./...`, `go vet`, `go test ./...`, `gofmt -l` (clean),
+re-running the example against the real `usecase1.json` (output content identical to
+pre-restructure baseline — the only diffs were pre-existing Go map-iteration-order
+nondeterminism in ExposedPorts/env-var printing, confirmed present before this round
+too, not a regression), a scratch-module proof that a brand-new `ImagePatch` codec
+composes `iotedge.ModuleNameCodec` + `iotedge.ImageCodec` directly, and `just check`
+(staticcheck+gosec, 0 issues).
+
+---
+
+## Round 79 (`ModuleCreateOptions.go` — Docker `CreateOptions`/`HostConfig` field extension: Cmd/Entrypoint/Hostname/Domainname/Memory/MemorySwap/Ulimits/Healthcheck)
+
+Extended `CreateOptions` (top-level: `Cmd []string`, `Entrypoint []string`, `Hostname
+string`, `Domainname string`, `Healthcheck Healthcheck`) and `HostConfig` (`Memory int64`,
+`MemorySwap int64`, `Ulimits []Ulimit`) — scope narrowed via 6 rounds of user-confirmed
+leading questions against a research table of ~20 candidate Docker Engine API fields
+(deliberately deferring `Privileged`/`Devices`/`CapAdd`/`CapDrop`/`SecurityOpt`,
+`NetworkMode`/`ExtraHosts`/`DNS`, and `User`/`WorkingDir`/top-level `Env` — the last
+flagged as a real naming-collision risk vs. IoT-Edge's own module-level `env` map if ever
+added). New `Ulimit{Name,Soft,Hard}` type with `Name` validated via a local `OneOf`
+constraint against Docker's full documented `--ulimit` name list (`as, core, cpu, data,
+fsize, locks, memlock, msgqueue, nice, nofile, nproc, rss, rtprio, rttime, sigpending,
+stack`). New `Healthcheck{Test,Interval,Timeout,StartPeriod,StartInterval,Retries}` type
+(top-level `createOptions` field, sibling of `HostConfig`, not nested in it) backed by a
+new `dockerNanosDurationCodec` (`MapCodecSafe` wrapping `codex.Int64()` ↔
+`time.Duration`) — required because Docker's wire format for these fields is a raw
+nanosecond integer (e.g. `30000000000`), NOT a duration string, so `codex.Duration()`
+(which expects `"30s"` via `time.ParseDuration`) does not fit. All new fields are
+`OptionalField` (matches the existing convention: real IoT-Edge modules vary widely in
+which create-options fields they set). Updated `isZeroCreateOptions`/added
+`isZeroHealthcheck` to check all new fields — required for `CreateOptionsFieldCodec`'s
+(`ModuleSettings.go`) empty-string round-trip tolerance to stay correct (an unfixed
+`isZeroCreateOptions` would have wrongly treated a `CreateOptions` with only e.g. `Cmd`
+set as "zero" and lost the data on re-encode). Verified via an isolated scratch module
+(synthetic JSON exercising all new fields, invalid ulimit name rejection, nanosecond↔
+`time.Duration` round-trip correctness) plus a full re-run against the real
+`examples/go-edge-models/examples/usecase1.json` (all 12 modules unaffected — none use
+the new fields yet, confirming no regression). `go build ./...`, `go test ./...`, all
+`examples/*` runs, and `just check` (staticcheck+gosec) all clean.
+
+---
+
+## Round 78 (`DeploymentManifestTemplate.go` — `codex.Map[K,V]` module-name extraction; real-data robustness fixes)
+
+Built `ModuleNameCodec`/`ModulesCodec` to extract the container/module name from a dotted
+key (`"properties.desired.modules.cv-writer-kvrocks"` → `ModuleName("cv-writer-kvrocks")`)
+using `codex.Map[K,V]` — mirroring `examples/flat-key-patch`'s `containerKeyCodec` two-layer
+`MapCodecValidated` pattern (wire-level full-key constraint + domain-level name constraint),
+but targeting a NAMED `ModuleName` type so it composes with `codex.Map`
+(→ `map[ModuleName]ModuleConfig`) instead of `flat-key-patch`'s `codex.EntrySlice`
+(→ a merged `[]Container` slice). Reused `validate.Slug` (already in the library) for the
+name-segment check — verified it matches all 12 real module names in the user's
+`examples/go-edge-models/examples/usecase1.json` reference file, so no new constraint
+needed. Added `ModulesContent`/`DeploymentManifest` wrapper types matching the manifest's
+real 2-level nesting (`modulesContent` → `$edgeAgent` → module map).
+
+Per the user's explicit choice to decode the REAL reference file end-to-end (not a
+synthetic snippet), inspecting every one of its 12 modules surfaced — and required fixing —
+several real data-shape issues:
+
+- **G7 — `TypeCodec`/`StatusCodec`/`RestartPolicyCodec`/`VersionCodec` bug** (flagged but
+  left unfixed as out-of-scope in Rounds 76-77; now genuinely blocking): these wrapped
+  `Type`/`Status`/`RestartPolicy`/`Version` as single-field STRUCTS expecting
+  `{"type":"docker"}`, but the real wire shape is a bare string `"docker"` — would reject
+  every real module. Fixed: replaced with `codex.MapCodecSafe`-based plain-string wrappers.
+- **`ModuleConfig.Env` made `OptionalField`**: `cv-writer-kvrocks` has no `"env"` key at all
+  in the real file; 11/12 other modules do.
+- **`EnvVarsCodec` fixed to use `codex.Map[EnvVarName, EnvVar]`** (was still `StringMap`,
+  broken after the user's own independent edit introduced a named `EnvVarName` key type).
+  Deliberately did NOT apply `validate.EnvVarName`'s POSIX format constraint to it — real
+  module env var names in the reference file include `https_proxy`, `no_proxy`,
+  `UploadTarget`, `ResourceID`, `LogAnalyticsWorkspaceId`,
+  `experimentalFeatures__AddIdentifyingTags` (from the Azure Monitor metrics-collector
+  module) — none match `[A-Z_][A-Z0-9_]*`; Docker itself places no format restriction on
+  env var names, so applying that constraint would incorrectly reject legitimate data.
+- **`CreateOptions.ExposedPorts`/`HostConfig` and `HostConfig.Binds`/`PortBindings` all made
+  `OptionalField`**: real modules vary widely — only 1 of 12 declares all four; most
+  declare only `ExposedPorts`; one declares neither (just an unmodeled `Cmd` field, silently
+  ignored by the non-strict `Struct` codec — an intentional, already-documented "subset"
+  modeling limitation, not a new gap).
+- **New `CreateOptionsFieldCodec`** (in `ModuleSettings.go`, not `format.EmbeddedJSON`
+  directly): tolerates an empty `createOptions:""` string (the Azure Monitor
+  metrics-collector module ships this) as equivalent to `"{}"`/zero-value `CreateOptions{}`
+  — `format.EmbeddedJSON` alone would fail this with `EmbeddedDecodeError` since `""` isn't
+  valid JSON, and since `codex.Map`'s `Decode` aborts the ENTIRE map on any single entry's
+  error, this one module would otherwise have blocked decoding all 12. Symmetric on encode:
+  a zero-value `CreateOptions` re-encodes back to `""`, not `"{}"`.
+- Verified via an isolated scratch-module module-by-module round-trip diff against the
+  REAL reference file: all 12 modules decode correctly (names, images, ports, binds,
+  env values including the int/string union); 11/12 modules show only EXPECTED, DOCUMENTED
+  round-trip asymmetries on re-encode (`codex.Struct.Encode` always writes every declared
+  field regardless of `Required`/`Optional`, so an absent `"env"` key becomes `"env":{}` on
+  re-encode; unmodeled `Cmd`/`Memory` fields are silently dropped, matching `CreateOptions`'
+  documented "subset" scope; map key ordering differs, which is not semantically
+  significant) — none of these are bugs.
+- Side effect: the pre-existing, previously out-of-scope unused `moduleKeyPrefix` constant
+  finding (flagged in Rounds 76-77) is now resolved — the constant is genuinely used by
+  `ModuleNameCodec`. `just check` is now fully clean across the ENTIRE repo.
 
 ---
 

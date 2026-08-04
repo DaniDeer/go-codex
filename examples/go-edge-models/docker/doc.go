@@ -1,0 +1,26 @@
+// Package docker models the subset of the Docker Engine API's container
+// create-options document commonly needed by container-orchestration
+// tooling: exposed ports, port bindings, bind mounts, resource limits
+// (memory, ulimits), and a healthcheck.
+//
+// This package has NO dependency on any orchestrator-specific concept (it
+// does not know about IoT-Edge, Kubernetes, or Compose) — it models
+// Docker's own wire contract literally, so it composes as a building block
+// wherever a "createOptions"/"HostConfig"-shaped document needs to be
+// decoded, validated, or re-encoded: IoT-Edge module manifests (see the
+// sibling `iotedge` package), Docker Compose service definitions, or a
+// plain `docker create`/`docker run` wrapper.
+//
+// Every exported value is a small, independently reusable piece:
+//
+//   - types.go — plain Go structs and named types (Port, Bind, Ulimit,
+//     Healthcheck, HostConfig, CreateOptions, ...), no codec logic.
+//   - constraints.go — validate.Constraint values used by the codecs below.
+//   - codecs.go — codex.Codec[T] values, built by composing the types and
+//     constraints above via RequiredField/OptionalField. Each field's codec
+//     is its own named value (e.g. UlimitNameCodec, PortCodec,
+//     dockerNanosDurationCodec) so a caller assembling a NEW wire codec —
+//     for example a "patch this module's image" codec that only touches
+//     one field — can reuse the exact same field-level codec rather than
+//     re-deriving it.
+package docker
