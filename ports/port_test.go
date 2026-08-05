@@ -1249,7 +1249,6 @@ func TestEventPattern_WithBuilder_PopulatesSecuritySchemes(t *testing.T) {
 	scheme := events.SecurityScheme{SecurityScheme: route.BearerScheme("JWT")}
 
 	b := events.NewBuilder(events.Info{Title: "Test", Version: "1.0.0"})
-	b.AddSecurityScheme("bearerAuth", scheme)
 	b.AddGlobalSecurity(route.SecurityRequirement{"bearerAuth": {}})
 
 	p, err := ports.NewSourcePort[int]("secured-readings", intCodec, ports.PortOptions{
@@ -1258,7 +1257,10 @@ func TestEventPattern_WithBuilder_PopulatesSecuritySchemes(t *testing.T) {
 	if err != nil {
 		t.Fatalf("construct port: %v", err)
 	}
-	handle, err := p.PluginEventPattern(ports.EventPattern{Topic: "sensors/data"})
+	handle, err := p.PluginEventPattern(ports.EventPattern{
+		Topic: "sensors/data",
+		Opts:  []events.ChannelOpt{events.WithSecurityScheme("bearerAuth", scheme)},
+	})
 	if err != nil {
 		t.Fatalf("PluginEventPattern: %v", err)
 	}

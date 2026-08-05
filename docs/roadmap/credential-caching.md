@@ -196,10 +196,11 @@ following the exact pattern `SQLObserver` established (see
   dependency-free) but revisit if the hand-rolled version proves fragile
   under test.
 - **Does this belong in `adapters/nethttp` at all, or should it be a new,
-  transport-agnostic package** (since the SAME caching/refresh need could
-  apply to a future `adapters/events`-style publish-side `CredentialFunc`,
-  per [events-reqreply-mcp-security-scheme.md](events-reqreply-mcp-security-scheme.md)'s
-  Phase 2)? Lean toward keeping it `adapters/nethttp`-scoped for Phase 1
-  (concrete, proven need there) and revisiting a shared/generic package
-  only if a second transport actually grows a `CredentialFunc`-equivalent
-  worth caching.
+  transport-agnostic package** (since the SAME caching/refresh need now
+  also applies to `adapters/mqtt5`'s `PublishOptions.CredentialFunc` and
+  `reqreply.CallOptions.CredentialFunc` — see
+  [Security & Authentication](../features/security.md#security-for-event-channels-asyncapi))?
+  Lean toward keeping it `adapters/nethttp`-scoped for Phase 1 (concrete,
+  proven need there) and revisiting a shared/generic package only if
+  `adapters/mqtt5`'s `CredentialFunc`s actually grow a caching need worth
+  extracting.

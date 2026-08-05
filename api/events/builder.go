@@ -25,13 +25,19 @@ type Server = asyncapi.Server
 // SecurityScheme combines [route.SecurityScheme] spec metadata with optional
 // runtime credential validation for message broker adapters.
 //
-// AddSecurityScheme registers it with the builder. The spec fields flow into the
-// AsyncAPI document; Codec, when non-nil, is used by adapters to validate the
-// raw credential string before SecurityFunc is called.
+// [WithSecurityScheme] declares a SecurityScheme on a channel — the ONLY way
+// to declare one; there is no builder-level equivalent (mirrors
+// [rest.WithSecurityScheme] exactly). The spec fields flow into the AsyncAPI
+// document (aggregated from all registered channels by [Builder.AsyncAPISpec]);
+// Codec, when non-nil, is used by MQTT5 adapters to validate the raw
+// credential string extracted from a message's User Properties before
+// SecurityFunc is called (server-side, [adapters/mqtt5.Subscribe]) or before
+// the message is published (client-side, [adapters/mqtt5.Publish]).
 //
-// MQTT note: paho.mqtt.golang (MQTT 3.1.1) does not expose per-message credentials.
-// Codec-level extraction is a no-op for standard MQTT. Use SecurityFunc + closure
-// (credentials passed at MQTT CONNECT time) for runtime enforcement.
+// MQTT 3.1.1 ([adapters/mqtt]) and ZeroMQ ([adapters/zeromq]) pub/sub have no
+// per-message metadata channel — Codec-level extraction only applies to MQTT5
+// ([adapters/mqtt5]); use SecurityFunc + closure (credentials passed at
+// connect time) for runtime enforcement on those transports instead.
 //
 // Use [SecurityScheme.WithCodec] to set the Codec field inline without a temporary
 // variable: events.SecurityScheme{SecurityScheme: route.APIKeyScheme(...)}.WithCodec(c)
@@ -45,12 +51,109 @@ type SecurityScheme struct {
 // WithCodec returns a copy of s with Codec set to c. It avoids the
 // temporary-variable + address-of pattern required when setting Codec inline:
 //
-//	b.AddSecurityScheme("apiKey", events.SecurityScheme{
+//	events.WithSecurityScheme("apiKey", events.SecurityScheme{
 //	    SecurityScheme: route.APIKeyScheme("X-API-Key", "header"),
 //	}.WithCodec(codex.String().Refine(validate.NonEmptyString)))
 func (s SecurityScheme) WithCodec(c codex.Codec[string]) SecurityScheme {
 	s.Codec = &c
 	return s
+}
+
+// securitySchemeOpt is the [ChannelOpt] returned by [WithSecurityScheme].
+type securitySchemeOpt struct {
+	name   string
+	scheme SecurityScheme
+}
+
+func (o securitySchemeOpt) applyChannel(cb *channelBuilder) {
+	if cb.securitySchemes == nil {
+		cb.securitySchemes = make(map[string]SecurityScheme, 1)
+	}
+	cb.securitySchemes[o.name] = o.scheme
+}
+
+// WithSecurityScheme declares scheme's spec metadata and optional Codec for
+// THIS channel. It is the ONLY way to declare a security scheme — there is no
+// builder-level equivalent. Both [Channel.Register] and [Channel.ClientHandle]
+// populate [ChannelHandle.SecuritySchemes] from this declaration, so the SAME
+// channel value — including its security scheme — builds a server-side handle
+// (Register) and a client-side handle (ClientHandle) with IDENTICAL
+// credential-format enforcement on both sides. Mirrors [rest.WithSecurityScheme]
+// exactly.
+//
+// Define a scheme once as a package-level value and reuse it across every
+// channel that shares it:
+//
+//	var bearerAuth = events.SecurityScheme{SecurityScheme: route.BearerScheme("JWT")}.
+//	    WithCodec(codex.String().Refine(validate.BearerToken))
+//
+//	var UserCreated = events.NewChannel[UserCreated]("user/created", userCreatedCodec,
+//	    events.Subscribe{Security: []route.SecurityRequirement{route.Require("bearerAuth")}},
+//	    events.WithSecurityScheme("bearerAuth", bearerAuth),
+//	)
+//
+// When multiple channels declare the SAME scheme name with DIFFERENT values,
+// [Builder.AsyncAPISpec] resolves the conflict last-registered-wins (no
+// error) — define the scheme once as a shared value (as above) to avoid this
+// entirely.
+func WithSecurityScheme(name string, scheme SecurityScheme) ChannelOpt {
+	return securitySchemeOpt{name: name, scheme: scheme}
+}
+
+// SecurityCredentialError is returned when credential format validation via
+// SecurityScheme.Codec fails (MQTT5 only — MQTT 3.1.1 and ZeroMQ have no
+// per-message credential extraction). It is distinct from [SecurityError],
+// which wraps rejections from SecurityFunc.
+//
+// Use [errors.As] to extract the scheme name and underlying constraint error:
+//
+//	var credErr events.SecurityCredentialError
+//	if errors.As(err, &credErr) {
+//	    log.Printf("security scheme %q: invalid credential: %v", credErr.Scheme, credErr.Err)
+//	}
+type SecurityCredentialError struct {
+	Scheme string // security scheme name
+	Err    error  // codec constraint error
+}
+
+func (e SecurityCredentialError) Error() string {
+	return fmt.Sprintf("security scheme %q: invalid credential: %s", e.Scheme, e.Err)
+}
+
+// Unwrap allows errors.As and errors.Is to traverse the underlying constraint error.
+func (e SecurityCredentialError) Unwrap() error { return e.Err }
+
+// LogValue implements [slog.LogValuer] for structured logging.
+func (e SecurityCredentialError) LogValue() slog.Value {
+	return slog.GroupValue(
+		slog.String("scheme", e.Scheme),
+		slog.Any("err", e.Err),
+	)
+}
+
+// SecurityError is returned when SecurityFunc rejects a message.
+// It is distinct from [SecurityCredentialError], which covers codec format failures.
+//
+// Use [errors.As] to extract the underlying error from SecurityFunc:
+//
+//	var secErr events.SecurityError
+//	if errors.As(err, &secErr) {
+//	    log.Printf("security check failed: %v", secErr.Err)
+//	}
+type SecurityError struct {
+	Err error
+}
+
+func (e SecurityError) Error() string {
+	return fmt.Sprintf("security check failed: %s", e.Err)
+}
+
+// Unwrap allows errors.As and errors.Is to traverse the underlying SecurityFunc error.
+func (e SecurityError) Unwrap() error { return e.Err }
+
+// LogValue implements [slog.LogValuer] for structured logging.
+func (e SecurityError) LogValue() slog.Value {
+	return slog.GroupValue(slog.Any("err", e.Err))
 }
 
 // Subscribe describes the subscribe operation on a channel (application receives).
@@ -357,6 +460,11 @@ type channelBuilder struct {
 	// errorChannelRules hold per-channel error-type -> error-output-topic
 	// declarations from [ErrorChannel].
 	errorChannelRules []errorChannelRule
+	// securitySchemes holds this channel's own [WithSecurityScheme]
+	// declarations — the ONLY source of [ChannelHandle.SecuritySchemes]
+	// (there is no builder-level equivalent; mirrors
+	// [rest's routeBuilder.securitySchemes]).
+	securitySchemes map[string]SecurityScheme
 }
 
 // ChannelHandle is returned by [Channel.Register]. It holds the spec
@@ -404,8 +512,9 @@ type ChannelHandle[T any] struct {
 	topicCodec *codex.Codec[string]
 
 	// SecuritySchemes maps scheme name to SecurityScheme (with runtime Codec).
-	// Populated from Builder.AddSecurityScheme when AddChannel is called.
-	// Adapters use this map to extract and validate credentials per scheme.
+	// Populated from the channel's own [WithSecurityScheme] declarations —
+	// the ONLY source (there is no builder-level equivalent). Adapters use
+	// this map to extract and validate credentials per scheme.
 	SecuritySchemes map[string]SecurityScheme
 
 	// GlobalSecurity holds the builder-level security requirements that apply
@@ -680,6 +789,11 @@ func (e InvalidTopicParamError) Error() string {
 type channelEntry interface {
 	topic() string
 	descriptor() asyncapi.ChannelItem
+	// securitySchemes returns the channel's own [WithSecurityScheme]
+	// declarations (from the live handle) so [Builder.AsyncAPISpec] can
+	// aggregate every channel's schemes into the document — mirrors
+	// [rest.routeEntry.securitySchemes] exactly.
+	securitySchemes() map[string]SecurityScheme
 }
 
 // typedChannelEntry stores a pointer to the ChannelHandle so that the builder
@@ -691,6 +805,9 @@ type typedChannelEntry[T any] struct {
 
 func (e *typedChannelEntry[T]) topic() string                    { return e.topicStr }
 func (e *typedChannelEntry[T]) descriptor() asyncapi.ChannelItem { return e.handle.Descriptor }
+func (e *typedChannelEntry[T]) securitySchemes() map[string]SecurityScheme {
+	return e.handle.SecuritySchemes
+}
 
 // InvalidTopicError is returned by [Channel.Register] when the topic fails builder-level
 // topic codec validation.
@@ -723,13 +840,12 @@ type namedServer struct {
 // Builder accumulates channel registrations and produces AsyncAPI specs.
 // Create one with [NewBuilder].
 type Builder struct {
-	info            Info
-	servers         []namedServer
-	entries         []channelEntry
-	schemas         map[string]schema.Schema
-	topicCodec      *codex.Codec[string]
-	securitySchemes map[string]SecurityScheme
-	globalSecurity  []route.SecurityRequirement
+	info           Info
+	servers        []namedServer
+	entries        []channelEntry
+	schemas        map[string]schema.Schema
+	topicCodec     *codex.Codec[string]
+	globalSecurity []route.SecurityRequirement
 }
 
 // BuilderOption configures a [Builder] at construction time.
@@ -771,9 +887,8 @@ func WithTopicConstraints(cons ...codex.Constraint[string]) BuilderOption {
 // NewBuilder returns a Builder initialised with the given API metadata.
 func NewBuilder(info Info, opts ...BuilderOption) *Builder {
 	b := &Builder{
-		info:            info,
-		schemas:         make(map[string]schema.Schema),
-		securitySchemes: make(map[string]SecurityScheme),
+		info:    info,
+		schemas: make(map[string]schema.Schema),
 	}
 	for _, opt := range opts {
 		opt(b)
@@ -797,18 +912,6 @@ func (b *Builder) AddServer(name string, s Server) *Builder {
 // channel configs but not inlined in any codec.
 func (b *Builder) AddSchema(name string, s schema.Schema) *Builder {
 	b.schemas[name] = s
-	return b
-}
-
-// AddSecurityScheme registers a named security scheme with the builder.
-// The spec fields flow into the AsyncAPI document via AsyncAPISpec; Codec, when
-// non-nil, is used by adapters to validate extracted credentials before
-// SecurityFunc is called (MQTT adapters skip Codec validation — use SecurityFunc).
-//
-// The name must match those used in [route.Require] calls on Subscribe/Publish
-// Security fields and in [Builder.AddGlobalSecurity].
-func (b *Builder) AddSecurityScheme(name string, s SecurityScheme) *Builder {
-	b.securitySchemes[name] = s
 	return b
 }
 
@@ -901,8 +1004,8 @@ func (c Channel[T]) Register(b *Builder) (*ChannelHandle[T], error) {
 
 	jsonFmt := format.JSON(c.codec)
 
-	schemes := make(map[string]SecurityScheme, len(b.securitySchemes))
-	for k, v := range b.securitySchemes {
+	schemes := make(map[string]SecurityScheme, len(cb.securitySchemes))
+	for k, v := range cb.securitySchemes {
 		schemes[k] = v
 	}
 	h := &ChannelHandle[T]{
@@ -952,8 +1055,15 @@ func (c Channel[T]) Register(b *Builder) (*ChannelHandle[T], error) {
 }
 
 // ClientHandle returns a [ChannelHandle] for client-side use without registering
-// with a [Builder]. No spec registration occurs (SecuritySchemes and
-// GlobalSecurity are left empty).
+// with a [Builder]. No AsyncAPI spec registration occurs (the handle never
+// appears in any [Builder.AsyncAPISpec] output), but [ChannelHandle.SecuritySchemes]
+// IS populated from the channel's own [WithSecurityScheme] declarations — the
+// same declarations [Channel.Register] uses — so a channel's security scheme
+// is enforced identically whether the handle came from Register (server) or
+// ClientHandle (client). GlobalSecurity is left empty (there is no [Builder]
+// to source it from); a channel relying on inherited global security has
+// nothing to inherit via ClientHandle — declare Security explicitly on the
+// channel if client-side enforcement is needed without a Builder.
 //
 // Use ClientHandle when only the codec and topic definitions are needed (no
 // AsyncAPI spec, no server), or when sharing a [Channel] definition between
@@ -981,6 +1091,11 @@ func (c Channel[T]) ClientHandle() *ChannelHandle[T] {
 	frozen := buildChannelItem(c.topic, c.codec, cb)
 	jsonFmt := format.JSON(c.codec)
 
+	schemes := make(map[string]SecurityScheme, len(cb.securitySchemes))
+	for k, v := range cb.securitySchemes {
+		schemes[k] = v
+	}
+
 	return &ChannelHandle[T]{
 		Topic:             c.topic,
 		Descriptor:        frozen,
@@ -989,6 +1104,7 @@ func (c Channel[T]) ClientHandle() *ChannelHandle[T] {
 		topicParams:       cb.topicParams,
 		mergeFields:       mustAssertMergeFields[T]("ClientHandle", cb.mergeFields),
 		errorChannelRules: cb.errorChannelRules,
+		SecuritySchemes:   schemes,
 	}
 }
 
@@ -1003,6 +1119,11 @@ type rawChannelEntry struct {
 
 func (e *rawChannelEntry) topic() string                    { return e.topicStr }
 func (e *rawChannelEntry) descriptor() asyncapi.ChannelItem { return e.item }
+
+// securitySchemes returns nil — a raw pre-built ChannelItem carries no
+// [WithSecurityScheme] declarations of its own (it never goes through
+// [Channel.Register]).
+func (e *rawChannelEntry) securitySchemes() map[string]SecurityScheme { return nil }
 
 // AddChannelItem registers a pre-built [asyncapi.ChannelItem] under topic.
 // Use this for channels the single-codec [Channel] declaration cannot
@@ -1029,8 +1150,16 @@ func (b *Builder) AsyncAPISpec() (asyncapi.Document, error) {
 	for name, s := range b.schemas {
 		ab.AddSchema(name, s)
 	}
-	for name, s := range b.securitySchemes {
-		ab.AddSecurityScheme(name, s.SecurityScheme)
+	// Aggregate SecuritySchemes from every registered channel's own
+	// [WithSecurityScheme] declarations (there is no builder-level
+	// registry) — collision policy is last-registered-wins, matching
+	// [rest.Builder.OpenAPISpec]'s documented behavior. Entry order
+	// matches b.entries' registration order, so "last" means
+	// "most-recently-registered channel", not map-iteration order.
+	for _, e := range b.entries {
+		for name, s := range e.securitySchemes() {
+			ab.AddSecurityScheme(name, s.SecurityScheme)
+		}
 	}
 	if err := b.buildInto(ab); err != nil {
 		return asyncapi.Document{}, err

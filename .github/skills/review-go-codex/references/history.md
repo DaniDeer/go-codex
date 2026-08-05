@@ -1,6 +1,100 @@
-# go-codex Review History (R1–R98)
+# go-codex Review History (R1–R99)
 
 Do not re-report any of these findings. They have been implemented and tested.
+
+---
+
+## Round 99 (Security Scheme Parity Phases 1–3 — `api/events` + `api/reqreply`, MQTT5)
+
+Implemented Phases 1–3 of the (now-retired) `events-reqreply-mcp-security-scheme.md`
+roadmap doc, finalizing several design decisions during planning:
+
+- **Corrected a stale roadmap claim**: "reqreply is mqtt5-only today" was
+  wrong — `adapters/zeromq/adapter.go` also implements `Call`/`Serve`/
+  `ServeRouter`/`CallDealer` against `reqreply.RouteHandle`. Scoped Phase 3
+  to MQTT5 only anyway (ZeroMQ uses raw multipart frames with no header/
+  property concept — a genuinely separate envelope-frame design problem),
+  documented as an explicit future gap in both code comments and
+  `docs/features/security.md`.
+- **New parity gap found and closed**: REST's server side
+  (`nethttp.Handler`) has always done a BUILT-IN codec-based credential
+  extract+validate step (`validateSecurityCredentials`) BEFORE the
+  optional custom `SecurityFunc`. MQTT5's `Subscribe` had NO such
+  built-in step — `SecurityFunc` was entirely manual. Added the built-in
+  check to BOTH events (Subscribe/Publish) and reqreply (Serve/Call) MQTT5
+  paths, via a new shared `adapters/mqtt5/security.go`
+  (`extractUserPropertyCredential`/`validateSecurityCredentials`, mirroring
+  `adapters/nethttp`'s helpers exactly): HTTP/oauth2/oidc schemes read a
+  fixed `"Authorization"` MQTT5 User Property (stripping `Bearer `/`Basic `
+  prefixes, case-insensitive); apiKey schemes read the User Property named
+  `scheme.Name`.
+- **Phase 1** (`api/events`): migrated `Builder.AddSecurityScheme`
+  (builder-level) to channel-level `events.WithSecurityScheme` — exact
+  mirror of REST's Round-92 migration. Added `channelEntry.securitySchemes()`
+  to the entry interface so `AsyncAPISpec()` aggregates schemes from every
+  registered channel (last-registered-wins), instead of a removed
+  builder-level map. `Channel.ClientHandle()` now ALSO populates
+  `SecuritySchemes` (previously left empty) — client/server parity.
+  Migrated 6 call sites (`api/events/builder_test.go` ×2, `ports/port_test.go`,
+  `examples/api-events`, `examples/adapters-mqtt-security`,
+  `adapters/mqtt/adapter_test.go` ×2).
+- **Phase 2** (`adapters/mqtt5` events, MQTT5-only — same header/property
+  constraint as reqreply applies to `adapters/mqtt`/ZeroMQ pub/sub too,
+  confirmed with the user): added `PublishOptions.CredentialFunc func(ctx, reqs) ([]UserProperty, error)`.
+  `Publish` resolves `secReqs` from `Descriptor.Publish.Security`
+  (fallback `GlobalSecurity`), calls `CredentialFunc`, merges the returned
+  properties, then validates their format BEFORE the actual
+  `client.Publish` call — gated on `credProps != nil`, NOT
+  `len(secReqs) > 0` alone (the exact Round-93 REST regression class,
+  covered from day one here). New `events.SecurityCredentialError`/
+  `events.SecurityError` types (`slog.LogValuer`, `errors.As`-navigable).
+- **Phase 3** (`api/reqreply` + `adapters/mqtt5/reqreply`, MQTT5-only):
+  full net-new security feature mirroring REST end-to-end —
+  `reqreply.SecurityScheme`+`WithCodec`, `reqreply.WithSecurityScheme`
+  (route-level, the ONLY declaration mechanism — no builder-level
+  equivalent from the start), `RouteMeta.Security`, `RouteHandle.SecuritySchemes`/
+  `GlobalSecurity` (populated by both `Route.Register` and
+  `Route.ClientHandle`), `Builder.AddGlobalSecurity`. Since reqreply's
+  `Builder` has no per-route entry list (unlike rest/events), schemes are
+  accumulated directly into `Builder.securitySchemes` at `Route.Register`
+  time and pushed into the AsyncAPI doc builder inside `AsyncAPISpec()` —
+  a simpler storage approach than rest/events', appropriate given reqreply's
+  existing `Builder` shape. `mqtt5.reqreply.CallOptions.CredentialFunc` /
+  `ServeOptions.SecurityFunc` reuse the SAME `adapters/mqtt5/security.go`
+  helpers as Phase 2. New `reqreply.SecurityCredentialError`/
+  `reqreply.SecurityError` types. `binding.go`'s `CallAdapter`/`ServeAdapter`
+  needed NO changes — they pass `CallOptions`/`ServeOptions` straight
+  through, so the new fields flow automatically to `ports.Pattern` usage.
+- Added 6 new tests to `api/events/builder_test.go` (Phase 1), 6 to
+  `adapters/mqtt5/adapter_test.go` (Phase 2), 9 to
+  `adapters/mqtt5/reqreply_test.go` + 4 to `api/reqreply/route_test.go`
+  (Phase 3) — full REST-mirrored matrix (happy path, malformed credential,
+  nil-CredentialFunc-not-an-error, `SecurityFunc` two-step ordering, spec
+  aggregation, collision policy).
+- Added a new "Demo 3: Security" section to `examples/adapters-mqtt5`
+  demonstrating `reqreply.WithSecurityScheme` + `CallOptions.CredentialFunc`
+  (happy path + client-side-rejected malformed credential) end-to-end.
+  Updated `docs/features/security.md` (events section rewritten for
+  `WithSecurityScheme`+`CredentialFunc`; new "Security for request-reply
+  routes (reqreply)" section; explicit MCP-permanently-out-of-scope note)
+  and `.github/instructions/go-codex.instructions.md`.
+- **Retired `docs/roadmap/events-reqreply-mcp-security-scheme.md`**
+  (Phases 1–3 shipped; Phase 4/MCP is a PERMANENT non-goal, not a deferred
+  item — same retirement precedent as Round 97's
+  `security-scheme-symmetry.md`). Removed from `docs/roadmap/index.md`/
+  `zensical.toml`; fixed the dangling cross-reference in
+  `docs/roadmap/credential-caching.md`; fixed a stale
+  `Builder.AddSecurityScheme` mention in
+  `.github/skills/review-go-codex/references/checklist.md`'s mcp.Builder
+  parity table.
+- Hit a `/tmp` disk-space exhaustion mid-round (`go build` failures across
+  many `examples/*` packages) — resolved via `go clean -cache` (freed
+  ~50GB of stale build cache); unrelated to the code changes themselves.
+- Full verification: `gofmt -l .`, `go build ./...`, `go test ./...`
+  (repo-wide), `go run` on every example (all exit 0), `just check`
+  (staticcheck + gosec, 0 issues). `go vet ./...` surfaced one PRE-EXISTING,
+  unrelated finding in `adapters/chi/adapter_test.go` (not touched this
+  round).
 
 ---
 

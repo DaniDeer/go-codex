@@ -850,12 +850,13 @@ func TestSecurityScheme_WithCodec_returnsDistinctCopy(t *testing.T) {
 	}
 }
 
-func TestBuilder_AddSecurityScheme_propagatesToChannelHandle(t *testing.T) {
+func TestWithSecurityScheme_propagatesToChannelHandle(t *testing.T) {
 	b := events.NewBuilder(testInfo)
 	c := codex.String().Refine(validate.NonEmptyString)
-	b.AddSecurityScheme("bearer", events.SecurityScheme{SecurityScheme: route.BearerScheme("JWT")}.WithCodec(c))
 
-	handle, err := events.NewChannel[userEvent]("user/created", userEventCodec).Register(b)
+	handle, err := events.NewChannel[userEvent]("user/created", userEventCodec,
+		events.WithSecurityScheme("bearer", events.SecurityScheme{SecurityScheme: route.BearerScheme("JWT")}.WithCodec(c)),
+	).Register(b)
 	if err != nil {
 		t.Fatalf("AddChannel: %v", err)
 	}
@@ -864,6 +865,93 @@ func TestBuilder_AddSecurityScheme_propagatesToChannelHandle(t *testing.T) {
 	}
 	if handle.SecuritySchemes["bearer"].Codec == nil {
 		t.Fatal("expected Codec to be propagated to ChannelHandle")
+	}
+}
+
+func TestWithSecurityScheme_ClientHandle_PopulatesSecuritySchemes(t *testing.T) {
+	c := codex.String().Refine(validate.NonEmptyString)
+
+	handle := events.NewChannel[userEvent]("user/created", userEventCodec,
+		events.WithSecurityScheme("bearer", events.SecurityScheme{SecurityScheme: route.BearerScheme("JWT")}.WithCodec(c)),
+	).ClientHandle()
+
+	if _, ok := handle.SecuritySchemes["bearer"]; !ok {
+		t.Fatal("expected ClientHandle to populate SecuritySchemes from WithSecurityScheme, same as Register")
+	}
+	if handle.SecuritySchemes["bearer"].Codec == nil {
+		t.Fatal("expected Codec to be propagated to ClientHandle-built ChannelHandle")
+	}
+	if len(handle.GlobalSecurity) != 0 {
+		t.Errorf("want empty GlobalSecurity on ClientHandle (no Builder to source it from), got %v", handle.GlobalSecurity)
+	}
+}
+
+func TestAsyncAPISpec_AggregatesSecuritySchemesFromChannels(t *testing.T) {
+	b := events.NewBuilder(testInfo)
+
+	_, err := events.NewChannel[userEvent]("user/created", userEventCodec,
+		events.Subscribe{Summary: "User created"},
+		events.WithSecurityScheme("bearer", events.SecurityScheme{SecurityScheme: route.BearerScheme("JWT")}),
+	).Register(b)
+	if err != nil {
+		t.Fatalf("Register user/created: %v", err)
+	}
+	_, err = events.NewChannel[userEvent]("user/updated", userEventCodec,
+		events.Subscribe{Summary: "User updated"},
+		events.WithSecurityScheme("apiKey", events.SecurityScheme{SecurityScheme: route.APIKeyScheme("X-API-Key", "header")}),
+	).Register(b)
+	if err != nil {
+		t.Fatalf("Register user/updated: %v", err)
+	}
+
+	doc, err := b.AsyncAPISpec()
+	if err != nil {
+		t.Fatalf("AsyncAPISpec: %v", err)
+	}
+	yamlBytes, err := doc.MarshalYAML()
+	if err != nil {
+		t.Fatalf("MarshalYAML: %v", err)
+	}
+	spec := string(yamlBytes)
+	if !strings.Contains(spec, "bearer:") {
+		t.Errorf("want 'bearer' scheme aggregated from user/created channel, got:\n%s", spec)
+	}
+	if !strings.Contains(spec, "apiKey:") {
+		t.Errorf("want 'apiKey' scheme aggregated from user/updated channel, got:\n%s", spec)
+	}
+}
+
+func TestAsyncAPISpec_SecuritySchemeCollision_LastRegisteredWins(t *testing.T) {
+	b := events.NewBuilder(testInfo)
+
+	_, err := events.NewChannel[userEvent]("user/created", userEventCodec,
+		events.Subscribe{Summary: "User created"},
+		events.WithSecurityScheme("shared", events.SecurityScheme{SecurityScheme: route.APIKeyScheme("X-API-Key", "header")}),
+	).Register(b)
+	if err != nil {
+		t.Fatalf("Register user/created: %v", err)
+	}
+	_, err = events.NewChannel[userEvent]("user/updated", userEventCodec,
+		events.Subscribe{Summary: "User updated"},
+		events.WithSecurityScheme("shared", events.SecurityScheme{SecurityScheme: route.BearerScheme("JWT")}),
+	).Register(b)
+	if err != nil {
+		t.Fatalf("Register user/updated: %v", err)
+	}
+
+	doc, err := b.AsyncAPISpec()
+	if err != nil {
+		t.Fatalf("AsyncAPISpec: %v", err)
+	}
+	yamlBytes, err := doc.MarshalYAML()
+	if err != nil {
+		t.Fatalf("MarshalYAML: %v", err)
+	}
+	spec := string(yamlBytes)
+	// last-registered (bearer, from user/updated) must win — the apiKey
+	// scheme's "in: header" shape must NOT appear under the "shared" name.
+	if !strings.Contains(spec, "scheme: bearer") {
+		t.Errorf("want last-registered (bearer) scheme to win collision, got:\n%s", spec)
 	}
 }
 
@@ -886,11 +974,11 @@ func TestBuilder_AddGlobalSecurity_populatesChannelHandleGlobalSecurity(t *testi
 
 func TestBuilder_AddGlobalSecurity_doesNotAppearInAsyncAPISpec(t *testing.T) {
 	b := events.NewBuilder(testInfo)
-	b.AddSecurityScheme("bearer", events.SecurityScheme{SecurityScheme: route.BearerScheme("JWT")})
 	b.AddGlobalSecurity(route.Require("bearer"))
 
 	_, err := events.NewChannel[userEvent]("user/created", userEventCodec,
 		events.Subscribe{Summary: "User created"},
+		events.WithSecurityScheme("bearer", events.SecurityScheme{SecurityScheme: route.BearerScheme("JWT")}),
 	).Register(b)
 	if err != nil {
 		t.Fatalf("AddChannel: %v", err)

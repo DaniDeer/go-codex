@@ -155,6 +155,20 @@ type PublishOptions struct {
 	// UserProperties, when non-nil, are attached to outgoing MQTT 5 messages.
 	// Use this to send per-message metadata (e.g. trace IDs, tenant IDs).
 	UserProperties []UserProperty
+
+	// CredentialFunc, when non-nil, is called for channels that declare
+	// non-nil Publish.Security (or inherit non-empty GlobalSecurity),
+	// mirroring [nethttp.CallOptions.CredentialFunc]. It must return the
+	// MQTT 5 User Properties to attach as the outgoing credential — these
+	// are appended to [PublishOptions.UserProperties] before publishing.
+	// A nil CredentialFunc on a secured channel is not an error — the
+	// message is published without a credential, same as if the channel
+	// declared no security at all.
+	//
+	//	opts.CredentialFunc = func(ctx context.Context, reqs []route.SecurityRequirement) ([]mqtt5.UserProperty, error) {
+	//	    return []mqtt5.UserProperty{{Key: "Authorization", Value: "Bearer " + token}}, nil
+	//	}
+	CredentialFunc func(ctx context.Context, reqs []route.SecurityRequirement) ([]UserProperty, error)
 }
 
 // Subscribe subscribes to handle.Topic and dispatches messages to fn.
@@ -270,16 +284,45 @@ func makeSubscribeMessageHandler[T any](
 		if secReqs == nil {
 			secReqs = handle.GlobalSecurity
 		}
-		if len(secReqs) > 0 && opts.SecurityFunc != nil {
-			if err := opts.SecurityFunc(msgCtx, msg, secReqs); err != nil {
+		if len(secReqs) > 0 {
+			// Built-in codec-based credential check — runs BEFORE the
+			// optional custom SecurityFunc, mirroring
+			// [adapters/nethttp.Handler]'s validateSecurityCredentials +
+			// SecurityFunc ordering exactly. A scheme with no Codec (or no
+			// entry in handle.SecuritySchemes) is skipped — "nil Codec
+			// means no format validation" (same contract as REST).
+			schemeTypes := make(map[string]route.SecurityScheme, len(handle.SecuritySchemes))
+			schemeCodecs := make(map[string]*codex.Codec[string], len(handle.SecuritySchemes))
+			for name, s := range handle.SecuritySchemes {
+				schemeTypes[name] = s.SecurityScheme
+				schemeCodecs[name] = s.Codec
+			}
+			var userProps pahomqtt5.UserProperties
+			if msg.Properties != nil {
+				userProps = msg.Properties.User
+			}
+			if name, credErr := validateSecurityCredentials(userProps, secReqs, schemeTypes, schemeCodecs); credErr != nil {
 				if secObs, ok := obs.(stats.SecurityObserver); ok {
 					secObs.RecordSecurityRejection(msg.Topic, firstScheme(secReqs))
 				}
 				obs.RecordSubscribe(msg.Topic, false, time.Since(start))
+				wrapped := events.SecurityCredentialError{Scheme: name, Err: credErr}
 				if opts.OnError != nil {
-					opts.OnError(SubscribeError{Kind: KindSecurity, Topic: msg.Topic, Err: err})
+					opts.OnError(SubscribeError{Kind: KindSecurity, Topic: msg.Topic, Err: wrapped})
 				}
 				return
+			}
+			if opts.SecurityFunc != nil {
+				if err := opts.SecurityFunc(msgCtx, msg, secReqs); err != nil {
+					if secObs, ok := obs.(stats.SecurityObserver); ok {
+						secObs.RecordSecurityRejection(msg.Topic, firstScheme(secReqs))
+					}
+					obs.RecordSubscribe(msg.Topic, false, time.Since(start))
+					if opts.OnError != nil {
+						opts.OnError(SubscribeError{Kind: KindSecurity, Topic: msg.Topic, Err: events.SecurityError{Err: err}})
+					}
+					return
+				}
 			}
 		}
 
@@ -411,8 +454,54 @@ func Publish[T any](
 	if opts.ContentType != "" {
 		props.ContentType = opts.ContentType
 	}
-	if len(opts.UserProperties) > 0 {
-		props.User = pahomqtt5.UserProperties(opts.UserProperties)
+
+	// Resolve security requirements and obtain credentials (client-side
+	// mirror of makeSubscribeMessageHandler's server-side check, and of
+	// [nethttp.Call]'s CredentialFunc handling).
+	var secReqs []route.SecurityRequirement
+	if handle.Descriptor.Publish != nil {
+		secReqs = handle.Descriptor.Publish.Security
+	}
+	if secReqs == nil {
+		secReqs = handle.GlobalSecurity
+	}
+	userProps := append(pahomqtt5.UserProperties(nil), opts.UserProperties...)
+	var credProps []UserProperty
+	if len(secReqs) > 0 && opts.CredentialFunc != nil {
+		var credErr error
+		credProps, credErr = opts.CredentialFunc(ctx, secReqs)
+		if credErr != nil {
+			obs.RecordPublish(topic, false, time.Since(start))
+			return credErr
+		}
+		userProps = append(userProps, credProps...)
+	}
+
+	// Validate the outgoing credential FORMAT before publishing — the
+	// client-side mirror of Subscribe's built-in check. Gated on
+	// credProps != nil (CredentialFunc actually ran and returned
+	// something), NOT on len(secReqs) > 0 alone — a nil CredentialFunc, or
+	// one that deliberately returns (nil, nil) for "no credential needed",
+	// must stay a non-error (see Round-93's REST regression fix, mirrored
+	// here from day one).
+	if len(secReqs) > 0 && credProps != nil {
+		schemeTypes := make(map[string]route.SecurityScheme, len(handle.SecuritySchemes))
+		schemeCodecs := make(map[string]*codex.Codec[string], len(handle.SecuritySchemes))
+		for name, s := range handle.SecuritySchemes {
+			schemeTypes[name] = s.SecurityScheme
+			schemeCodecs[name] = s.Codec
+		}
+		if name, credErr := validateSecurityCredentials(userProps, secReqs, schemeTypes, schemeCodecs); credErr != nil {
+			if secObs, ok := obs.(stats.SecurityObserver); ok {
+				secObs.RecordSecurityRejection(topic, firstScheme(secReqs))
+			}
+			obs.RecordPublish(topic, false, time.Since(start))
+			return events.SecurityCredentialError{Scheme: name, Err: credErr}
+		}
+	}
+
+	if len(userProps) > 0 {
+		props.User = userProps
 	}
 
 	if _, err = client.Publish(ctx, &pahomqtt5.Publish{

@@ -200,13 +200,14 @@ func buildChannels() (
 		Description: "Production MQTT broker",
 	})
 
-	// Register an API key security scheme.
+	// Declare an API key security scheme once — referenced via WithSecurityScheme
+	// on any channel that needs it (there is no builder-level registry).
 	// The Codec field is omitted (nil) — MQTT 3.1.1 does not carry credentials in
 	// message metadata, so there is nothing to extract for codec-level validation.
 	// SecurityFunc is the enforcement point for MQTT.
-	b.AddSecurityScheme("apiKeyAuth", events.SecurityScheme{
+	apiKeyAuth := events.SecurityScheme{
 		SecurityScheme: route.APIKeyScheme("X-API-Key", "header"),
-	})
+	}
 
 	var err error
 
@@ -220,6 +221,7 @@ func buildChannels() (
 			// Security: requires apiKeyAuth. Enforced by SecurityFunc.
 			Security: []route.SecurityRequirement{route.Require("apiKeyAuth")},
 		},
+		events.WithSecurityScheme("apiKeyAuth", apiKeyAuth),
 	).Register(b)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "channel registration failed: %v\n", err)

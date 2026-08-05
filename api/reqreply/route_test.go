@@ -11,6 +11,7 @@ import (
 	"github.com/DaniDeer/go-codex/codex"
 	"github.com/DaniDeer/go-codex/format"
 	asyncapiv3 "github.com/DaniDeer/go-codex/render/asyncapi/v3"
+	"github.com/DaniDeer/go-codex/route"
 	"github.com/DaniDeer/go-codex/validate"
 )
 
@@ -702,5 +703,97 @@ func TestDecodeMerged_NoMergeFieldsIsNoop(t *testing.T) {
 	}
 	if viaDecode != viaMerged {
 		t.Errorf("DecodeMerged should match plain Decode when no merge fields declared: %+v vs %+v", viaDecode, viaMerged)
+	}
+}
+
+// ── Security (Phase 3) ────────────────────────────────────────────────────────
+
+func TestWithSecurityScheme_Register_PopulatesSecuritySchemes(t *testing.T) {
+	b := reqreply.NewBuilder(reqreply.Info{Title: "Test", Version: "1.0.0"})
+	c := codex.String().Refine(validate.NonEmptyString)
+
+	handle, err := reqreply.NewRoute[computeReq, computeResp]("compute/secured", reqCodec, respCodec,
+		reqreply.RouteMeta{Security: []route.SecurityRequirement{route.Require("bearer")}},
+		reqreply.WithSecurityScheme("bearer", reqreply.SecurityScheme{SecurityScheme: route.BearerScheme("JWT")}.WithCodec(c)),
+	).Register(b)
+	if err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+	if _, ok := handle.SecuritySchemes["bearer"]; !ok {
+		t.Fatal("expected SecuritySchemes to contain 'bearer'")
+	}
+	if handle.SecuritySchemes["bearer"].Codec == nil {
+		t.Fatal("expected Codec to be propagated to RouteHandle")
+	}
+	if len(handle.Security) != 1 {
+		t.Errorf("expected RouteHandle.Security to be populated from RouteMeta.Security, got %v", handle.Security)
+	}
+}
+
+func TestWithSecurityScheme_ClientHandle_PopulatesSecuritySchemes(t *testing.T) {
+	c := codex.String().Refine(validate.NonEmptyString)
+
+	handle := reqreply.NewRoute[computeReq, computeResp]("compute/secured", reqCodec, respCodec,
+		reqreply.RouteMeta{Security: []route.SecurityRequirement{route.Require("bearer")}},
+		reqreply.WithSecurityScheme("bearer", reqreply.SecurityScheme{SecurityScheme: route.BearerScheme("JWT")}.WithCodec(c)),
+	).ClientHandle()
+
+	if _, ok := handle.SecuritySchemes["bearer"]; !ok {
+		t.Fatal("expected ClientHandle to populate SecuritySchemes from WithSecurityScheme, same as Register")
+	}
+	if handle.SecuritySchemes["bearer"].Codec == nil {
+		t.Fatal("expected Codec to be propagated to ClientHandle-built RouteHandle")
+	}
+	if len(handle.GlobalSecurity) != 0 {
+		t.Errorf("want empty GlobalSecurity on ClientHandle (no Builder to source it from), got %v", handle.GlobalSecurity)
+	}
+}
+
+func TestAsyncAPISpec_AggregatesSecuritySchemesFromRoutes_reqreply(t *testing.T) {
+	b := reqreply.NewBuilder(reqreply.Info{Title: "Test", Version: "1.0.0"})
+
+	_, err := reqreply.NewRoute[computeReq, computeResp]("compute/add", reqCodec, respCodec,
+		reqreply.WithSecurityScheme("bearer", reqreply.SecurityScheme{SecurityScheme: route.BearerScheme("JWT")}),
+	).Register(b)
+	if err != nil {
+		t.Fatalf("Register compute/add: %v", err)
+	}
+	_, err = reqreply.NewRoute[computeReq, computeResp]("compute/sub", reqCodec, respCodec,
+		reqreply.WithSecurityScheme("apiKey", reqreply.SecurityScheme{SecurityScheme: route.APIKeyScheme("X-API-Key", "header")}),
+	).Register(b)
+	if err != nil {
+		t.Fatalf("Register compute/sub: %v", err)
+	}
+
+	doc, err := b.AsyncAPISpec()
+	if err != nil {
+		t.Fatalf("AsyncAPISpec: %v", err)
+	}
+	yamlBytes, err := doc.MarshalYAML()
+	if err != nil {
+		t.Fatalf("MarshalYAML: %v", err)
+	}
+	spec := string(yamlBytes)
+	if !strings.Contains(spec, "bearer:") {
+		t.Errorf("want 'bearer' scheme aggregated from compute/add route, got:\n%s", spec)
+	}
+	if !strings.Contains(spec, "apiKey:") {
+		t.Errorf("want 'apiKey' scheme aggregated from compute/sub route, got:\n%s", spec)
+	}
+}
+
+func TestAddGlobalSecurity_populatesRouteHandleGlobalSecurity(t *testing.T) {
+	b := reqreply.NewBuilder(reqreply.Info{Title: "Test", Version: "1.0.0"})
+	b.AddGlobalSecurity(route.Require("bearer"))
+
+	handle, err := reqreply.NewRoute[computeReq, computeResp]("compute/add", reqCodec, respCodec).Register(b)
+	if err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+	if len(handle.GlobalSecurity) == 0 {
+		t.Fatal("expected GlobalSecurity to be populated on RouteHandle")
+	}
+	if _, ok := handle.GlobalSecurity[0]["bearer"]; !ok {
+		t.Errorf("expected GlobalSecurity to contain 'bearer' requirement, got %v", handle.GlobalSecurity)
 	}
 }

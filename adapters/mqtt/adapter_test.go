@@ -991,13 +991,13 @@ func TestSubscribeHandler_SecurityObserver_calledOnRejection(t *testing.T) {
 
 func newGlobalSecuredMQTTHandle() (*events.ChannelHandle[userEvent], error) {
 	b := events.NewBuilder(events.Info{Title: "Test", Version: "1.0.0"})
-	b.AddSecurityScheme("bearerAuth", events.SecurityScheme{
-		SecurityScheme: route.BearerScheme("JWT"),
-	})
 	b.AddGlobalSecurity(route.Require("bearerAuth"))
 	// No per-operation Security — inherits global.
 	return events.NewChannel[userEvent]("user/created", userEventCodec,
 		events.Subscribe{Summary: "User created"},
+		events.WithSecurityScheme("bearerAuth", events.SecurityScheme{
+			SecurityScheme: route.BearerScheme("JWT"),
+		}),
 	).Register(b)
 }
 
@@ -1049,9 +1049,6 @@ func TestSubscribeHandler_GlobalSecurity_rejectsMessage(t *testing.T) {
 
 func TestSubscribeHandler_GlobalSecurity_notCalledWhenExplicitlyEmpty(t *testing.T) {
 	b := events.NewBuilder(events.Info{Title: "Test", Version: "1.0.0"})
-	b.AddSecurityScheme("bearerAuth", events.SecurityScheme{
-		SecurityScheme: route.BearerScheme("JWT"),
-	})
 	b.AddGlobalSecurity(route.Require("bearerAuth"))
 	// Explicitly empty Security = no auth on this channel.
 	handle, err := events.NewChannel[userEvent]("user/created", userEventCodec,
@@ -1059,6 +1056,9 @@ func TestSubscribeHandler_GlobalSecurity_notCalledWhenExplicitlyEmpty(t *testing
 			Summary:  "User created",
 			Security: []route.SecurityRequirement{},
 		},
+		events.WithSecurityScheme("bearerAuth", events.SecurityScheme{
+			SecurityScheme: route.BearerScheme("JWT"),
+		}),
 	).Register(b)
 	if err != nil {
 		t.Fatal(err)

@@ -2,7 +2,13 @@
 
 > See also: [`route` package on pkg.go.dev](https://pkg.go.dev/github.com/DaniDeer/go-codex/route)
 >
-> Runnable demos: [`examples/adapters-nethttp-security`](https://github.com/DaniDeer/go-codex/tree/main/examples/adapters-nethttp-security) · [`examples/adapters-chi-security`](https://github.com/DaniDeer/go-codex/tree/main/examples/adapters-chi-security) · [`examples/adapters-mqtt-security`](https://github.com/DaniDeer/go-codex/tree/main/examples/adapters-mqtt-security)
+> Runnable demos: [`examples/adapters-nethttp-security`](https://github.com/DaniDeer/go-codex/tree/main/examples/adapters-nethttp-security) · [`examples/adapters-chi-security`](https://github.com/DaniDeer/go-codex/tree/main/examples/adapters-chi-security) · [`examples/adapters-mqtt-security`](https://github.com/DaniDeer/go-codex/tree/main/examples/adapters-mqtt-security) · [`examples/adapters-mqtt5`](https://github.com/DaniDeer/go-codex/tree/main/examples/adapters-mqtt5) (Demo 3)
+>
+> `api/mcp` has NO security methods by deliberate, permanent design — MCP
+> security is handled by the host application (its own OAuth flow, or
+> transport-level auth on the SSE/stdio transport itself), not by go-codex.
+> This is the one place go-codex's security model is intentionally
+> asymmetric with REST/events/reqreply.
 
 go-codex documents security requirements in the spec and provides declarative hooks for runtime enforcement — **the library does not import any crypto or JWT library**. For REST, a security scheme is declared ONCE, directly on the route (`rest.WithSecurityScheme`) — there is no builder-level scheme registry — and the SAME declaration is consumed identically by both the server (`Route.Register`) and the client (`Route.ClientHandle`), so one route definition gets IDENTICAL credential-format enforcement on both ends. Runtime credential validation itself is handled by adapters: server-side via a `SecurityFunc` hook, client-side automatically inside `nethttp.Call` (see "HTTP client — CredentialFunc" below).
 
@@ -267,35 +273,122 @@ and it's up to the server to accept or reject it — symmetric with server-side
 
 ## Security for event channels (AsyncAPI)
 
+Just like REST, an events security scheme is declared ONCE, directly on the
+channel (`events.WithSecurityScheme`) — there is no builder-level scheme
+registry — and the SAME declaration is consumed identically by both the
+server (`Channel.Register`) and the client (`Channel.ClientHandle`):
+
 ```go
+var bearerAuth = events.SecurityScheme{
+    SecurityScheme: route.BearerScheme("JWT"),
+}.WithCodec(codex.String().Refine(validate.BearerToken))
+
 b := events.NewBuilder(events.Info{Title: "User Events", Version: "1.0.0"})
 b.AddServer("production", events.Server{
     URL:      "broker.example.com",
-    Protocol: "mqtt",
+    Protocol: "mqtt5",
     Security: []route.SecurityRequirement{route.Require("bearerAuth")},
 })
-b.AddSecurityScheme("bearerAuth", events.SecurityScheme{
-    SecurityScheme: route.BearerScheme("JWT"),
-}.WithCodec(codex.String().Refine(validate.BearerToken)))
 
 userCreated, _ := events.NewChannel[UserCreated]("user/created", codec,
     events.Subscribe{
         Summary:  "Receive user created events",
         Security: []route.SecurityRequirement{route.Require("bearerAuth")},
     },
+    events.WithSecurityScheme("bearerAuth", bearerAuth),
 ).Register(b)
 ```
 
-MQTT adapter:
+MQTT5 adapter — the server side runs a BUILT-IN codec-based credential
+check (extracting the "Authorization" MQTT5 User Property for `http`/`oauth2`/
+`openIdConnect` schemes, or the User Property named `scheme.Name` for
+`apiKey` schemes) BEFORE the optional custom `SecurityFunc` — same two-step
+order as `nethttp.Handler`:
 
 ```go
-mqtt.SubscribeHandler(ctx, userCreated, handler, mqtt.SubscribeOptions{
-    SecurityFunc: func(ctx context.Context, msg pahomqtt.Message, reqs []route.SecurityRequirement) error {
-        // Extract token from MQTT 5.0 User Properties or application headers.
-        return verifyJWT(msg, reqs)
+mqtt5.Subscribe(ctx, client, router, userCreated, handler, mqtt5.SubscribeOptions{
+    SecurityFunc: func(ctx context.Context, msg *paho.Publish, reqs []route.SecurityRequirement) error {
+        // Runs AFTER the built-in Codec check passes — add extra business
+        // logic here (e.g. a database revocation check) if needed.
+        return checkNotRevoked(msg, reqs)
     },
 })
 ```
+
+The client (publish) side is symmetric: `PublishOptions.CredentialFunc`
+supplies the credential as MQTT5 User Properties, and the SAME built-in
+codec check runs BEFORE the message is actually published — mirroring
+`nethttp.Call`'s `CredentialFunc` handling exactly, including the
+"a `CredentialFunc` returning `(nil, nil)` for 'no credential needed' is not
+an error" contract:
+
+```go
+mqtt5.Publish(ctx, client, userCreated, 1, false, event, nil, mqtt5.PublishOptions{
+    CredentialFunc: func(ctx context.Context, reqs []route.SecurityRequirement) ([]mqtt5.UserProperty, error) {
+        token, err := fetchToken(ctx)
+        if err != nil {
+            return nil, err
+        }
+        return []mqtt5.UserProperty{{Key: "Authorization", Value: "Bearer " + token}}, nil
+    },
+})
+```
+
+MQTT 3.1.1 (`adapters/mqtt`) and ZeroMQ pub/sub have no per-message metadata
+channel — Codec-level extraction (and `CredentialFunc`) only applies to
+MQTT5; use `SecurityFunc` + a closure over connection-time credentials for
+runtime enforcement on those transports instead.
+
+## Security for request-reply routes (reqreply)
+
+`api/reqreply` (MQTT5 only — `adapters/zeromq`'s reqreply `Call`/`Serve` have
+no security mechanism today, since ZeroMQ carries no per-message metadata;
+documented future gap) mirrors the exact same declare-once,
+enforce-symmetrically model:
+
+```go
+var bearerAuth = reqreply.SecurityScheme{
+    SecurityScheme: route.BearerScheme("JWT"),
+}.WithCodec(codex.String().Refine(validate.BearerToken))
+
+var ComputeRoute = reqreply.NewRoute[ComputeReq, ComputeResp](
+    "compute/add", computeReqCodec, computeRespCodec,
+    reqreply.RouteMeta{Security: []route.SecurityRequirement{route.Require("bearerAuth")}},
+    reqreply.WithSecurityScheme("bearerAuth", bearerAuth),
+)
+```
+
+Server (`Serve`) — built-in codec check first, then the optional custom
+`SecurityFunc`:
+
+```go
+mqtt5.Serve(ctx, client, router, handle, fn, mqtt5.ServeOptions{
+    SecurityFunc: func(ctx context.Context, msg *paho.Publish, reqs []route.SecurityRequirement) error {
+        return checkNotRevoked(msg, reqs)
+    },
+})
+```
+
+Client (`Call`) — `CredentialFunc` supplies the credential, validated
+client-side before the request is published:
+
+```go
+resp, err := mqtt5.Call(ctx, client, router, handle, req, mqtt5.CallOptions{
+    CredentialFunc: func(ctx context.Context, reqs []route.SecurityRequirement) ([]mqtt5.UserProperty, error) {
+        token, err := fetchToken(ctx)
+        if err != nil {
+            return nil, err
+        }
+        return []mqtt5.UserProperty{{Key: "Authorization", Value: "Bearer " + token}}, nil
+    },
+})
+```
+
+`Builder.AddGlobalSecurity(reqs...)` and per-route `RouteMeta.Security`
+(nil=inherit global, empty=no auth) work identically to REST/events.
+`reqreply.SecurityCredentialError`/`reqreply.SecurityError` are the
+request-reply analogues of REST's error types — same fields, same
+`errors.As`/`slog.LogValuer` shape.
 
 ## SecurityObserver — rejection metrics
 
@@ -315,7 +408,7 @@ func (o *TelemetryObserver) RecordSecurityRejection(location, scheme string) {
 
 ## OpenAPI / AsyncAPI output
 
-Security schemes appear in `components/securitySchemes`; global security at document root; per-operation security overrides inline — all generated automatically from REST's `WithSecurityScheme` (route-level; aggregated by `Builder.OpenAPISpec`) / events' `AddSecurityScheme` (builder-level) / `AddGlobalSecurity` / `RouteMeta.Security`. No manual YAML needed.
+Security schemes appear in `components/securitySchemes`; global security at document root (REST only — AsyncAPI 3.0 has no document-level global security field); per-operation security overrides inline — all generated automatically from `WithSecurityScheme` (route/channel-level for REST/events/reqreply — the ONLY declaration mechanism for all three; aggregated by `Builder.OpenAPISpec`/`Builder.AsyncAPISpec`, last-registered-wins on name collision) / `AddGlobalSecurity` / `RouteMeta.Security` / `Subscribe.Security` / `Publish.Security`. No manual YAML needed.
 
 ## See also
 

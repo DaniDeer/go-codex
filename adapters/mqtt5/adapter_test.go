@@ -15,6 +15,7 @@ import (
 	"github.com/DaniDeer/go-codex/api/reqreply"
 	"github.com/DaniDeer/go-codex/codex"
 	"github.com/DaniDeer/go-codex/format"
+	"github.com/DaniDeer/go-codex/route"
 	"github.com/DaniDeer/go-codex/validate"
 	pahomqtt5 "github.com/eclipse/paho.golang/paho"
 )
@@ -230,9 +231,64 @@ func newChannelHandle() *events.ChannelHandle[sensorReading] {
 	return h
 }
 
+// securedBearerScheme is a shared bearer scheme with a non-empty-string
+// format Codec, used by both the Subscribe built-in check and the Publish
+// CredentialFunc tests below.
+var securedBearerScheme = events.SecurityScheme{SecurityScheme: route.BearerScheme("JWT")}.
+	WithCodec(codex.String().Refine(validate.NonEmptyString))
+
+// newSecuredSubscribeChannelHandle returns a channel handle whose Subscribe
+// operation requires the "bearer" scheme declared above — used to test the
+// built-in codec-based credential check + SecurityFunc ordering.
+func newSecuredSubscribeChannelHandle() *events.ChannelHandle[sensorReading] {
+	b := events.NewBuilder(events.Info{Title: "Test", Version: "1.0.0"})
+	h, err := events.NewChannel[sensorReading]("sensors/readings", sensorCodec,
+		events.Subscribe{Summary: "test", Security: []route.SecurityRequirement{route.Require("bearer")}},
+		events.WithSecurityScheme("bearer", securedBearerScheme),
+	).Register(b)
+	if err != nil {
+		panic(err)
+	}
+	return h
+}
+
+// newSecuredPublishChannelHandle returns a channel handle whose Publish
+// operation requires the "bearer" scheme declared above — used to test
+// PublishOptions.CredentialFunc.
+func newSecuredPublishChannelHandle() *events.ChannelHandle[sensorReading] {
+	b := events.NewBuilder(events.Info{Title: "Test", Version: "1.0.0"})
+	h, err := events.NewChannel[sensorReading]("sensors/readings", sensorCodec,
+		events.Publish{Summary: "test", Security: []route.SecurityRequirement{route.Require("bearer")}},
+		events.WithSecurityScheme("bearer", securedBearerScheme),
+	).Register(b)
+	if err != nil {
+		panic(err)
+	}
+	return h
+}
+
 func newRouteHandle() *reqreply.RouteHandle[computeReq, computeResp] {
 	b := reqreply.NewBuilder(reqreply.Info{Title: "Test", Version: "1.0.0"})
 	h, err := computeRoute.Register(b)
+	if err != nil {
+		panic(err)
+	}
+	return h
+}
+
+// securedComputeRoute requires the "bearer" scheme declared below — used to
+// test reqreply's built-in codec check, SecurityFunc, and CredentialFunc.
+var securedComputeRoute = reqreply.NewRoute[computeReq, computeResp](
+	"compute/secured-add",
+	computeReqCodec, computeRespCodec,
+	reqreply.RouteMeta{OperationID: "securedCompute", Security: []route.SecurityRequirement{route.Require("bearer")}},
+	reqreply.WithSecurityScheme("bearer", reqreply.SecurityScheme{SecurityScheme: route.BearerScheme("JWT")}.
+		WithCodec(codex.String().Refine(validate.NonEmptyString))),
+)
+
+func newSecuredRouteHandle() *reqreply.RouteHandle[computeReq, computeResp] {
+	b := reqreply.NewBuilder(reqreply.Info{Title: "Test", Version: "1.0.0"})
+	h, err := securedComputeRoute.Register(b)
 	if err != nil {
 		panic(err)
 	}
@@ -341,6 +397,80 @@ func TestSubscribe_UserProperties_InContext(t *testing.T) {
 
 	if len(gotProps) != 1 || gotProps[0].Key != "Authorization" {
 		t.Fatalf("expected Authorization property, got %v", gotProps)
+	}
+}
+
+func TestSubscribe_BuiltInCredentialCheck_RejectsMalformedCredential(t *testing.T) {
+	client := &mockClient{}
+	router := newMockRouter()
+	obs := &testObserver{}
+	var gotErr mqtt5.SubscribeError
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+
+	_ = mqtt5.Subscribe(ctx, client, router, newSecuredSubscribeChannelHandle(), 1,
+		func(_ context.Context, _ sensorReading) error { t.Fatal("fn must not be called"); return nil },
+		mqtt5.SubscribeOptions{
+			Observer: obs,
+			OnError:  func(e mqtt5.SubscribeError) { gotErr = e },
+		})
+
+	// No "Authorization" User Property at all -> extracted credential is
+	// "" -> fails the non-empty-string Codec, BEFORE any custom SecurityFunc
+	// would run (none is registered here).
+	router.dispatch("sensors/readings", &pahomqtt5.Publish{
+		Topic:      "sensors/readings",
+		Payload:    []byte(validSensorJSON),
+		Properties: &pahomqtt5.PublishProperties{},
+	})
+
+	if gotErr.Kind != mqtt5.KindSecurity {
+		t.Fatalf("expected KindSecurity, got %v", gotErr.Kind)
+	}
+	var credErr events.SecurityCredentialError
+	if !errors.As(gotErr, &credErr) {
+		t.Fatalf("expected events.SecurityCredentialError, got %v", gotErr.Err)
+	}
+	if credErr.Scheme != "bearer" {
+		t.Errorf("want Scheme=bearer, got %q", credErr.Scheme)
+	}
+	if len(obs.secRejections) != 1 {
+		t.Errorf("want 1 security rejection recorded, got %d", len(obs.secRejections))
+	}
+}
+
+func TestSubscribe_SecurityFunc_StillRunsAfterBuiltInCheck_OnValidCredential(t *testing.T) {
+	client := &mockClient{}
+	router := newMockRouter()
+	secFuncCalled := false
+	fnCalled := false
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+
+	_ = mqtt5.Subscribe(ctx, client, router, newSecuredSubscribeChannelHandle(), 1,
+		func(_ context.Context, _ sensorReading) error { fnCalled = true; return nil },
+		mqtt5.SubscribeOptions{
+			SecurityFunc: func(_ context.Context, _ *pahomqtt5.Publish, _ []route.SecurityRequirement) error {
+				secFuncCalled = true
+				return nil
+			},
+		})
+
+	router.dispatch("sensors/readings", &pahomqtt5.Publish{
+		Topic:   "sensors/readings",
+		Payload: []byte(validSensorJSON),
+		Properties: &pahomqtt5.PublishProperties{
+			User: pahomqtt5.UserProperties{{Key: "Authorization", Value: "Bearer validtoken"}},
+		},
+	})
+
+	if !secFuncCalled {
+		t.Error("want SecurityFunc called after the built-in check passes")
+	}
+	if !fnCalled {
+		t.Error("want fn called after SecurityFunc passes")
 	}
 }
 
@@ -535,6 +665,77 @@ func TestPublish_UserProperties(t *testing.T) {
 	}
 	if pub.Properties.User[0].Key != "TenantID" {
 		t.Fatalf("unexpected User property: %v", pub.Properties.User)
+	}
+}
+
+func TestPublish_CredentialFunc_ValidFormat_Passes(t *testing.T) {
+	client := &mockClient{}
+	reading := sensorReading{SensorID: "f47ac10b-58cc-4372-a567-0e02b2c3d479", Value: 22.5}
+
+	err := mqtt5.Publish(context.Background(), client, newSecuredPublishChannelHandle(), 1, false, reading, nil,
+		mqtt5.PublishOptions{
+			CredentialFunc: func(context.Context, []route.SecurityRequirement) ([]mqtt5.UserProperty, error) {
+				return []mqtt5.UserProperty{{Key: "Authorization", Value: "Bearer validtoken"}}, nil
+			},
+		})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	pub := client.lastPublished()
+	if pub == nil || pub.Properties == nil {
+		t.Fatal("expected a published message with properties")
+	}
+	if got := pub.Properties.User.Get("Authorization"); got != "Bearer validtoken" {
+		t.Errorf("want Authorization=%q, got %q", "Bearer validtoken", got)
+	}
+}
+
+func TestPublish_CredentialFunc_MalformedFormat_ReturnsSecurityCredentialError(t *testing.T) {
+	client := &mockClient{}
+	obs := &testObserver{}
+	reading := sensorReading{SensorID: "f47ac10b-58cc-4372-a567-0e02b2c3d479", Value: 22.5}
+
+	err := mqtt5.Publish(context.Background(), client, newSecuredPublishChannelHandle(), 1, false, reading, nil,
+		mqtt5.PublishOptions{
+			Observer: obs,
+			CredentialFunc: func(context.Context, []route.SecurityRequirement) ([]mqtt5.UserProperty, error) {
+				// Empty Bearer credential -> fails the non-empty-string Codec.
+				return []mqtt5.UserProperty{{Key: "Authorization", Value: "Bearer "}}, nil
+			},
+		})
+	var credErr events.SecurityCredentialError
+	if !errors.As(err, &credErr) {
+		t.Fatalf("want events.SecurityCredentialError, got %v", err)
+	}
+	if credErr.Scheme != "bearer" {
+		t.Errorf("want Scheme=bearer, got %q", credErr.Scheme)
+	}
+	if len(client.published) != 0 {
+		t.Error("want no message actually published when credential format is malformed")
+	}
+	if len(obs.secRejections) != 1 {
+		t.Errorf("want 1 security rejection recorded, got %d", len(obs.secRejections))
+	}
+}
+
+func TestPublish_CredentialFunc_ReturnsNilProperties_SkipsValidation(t *testing.T) {
+	client := &mockClient{}
+	reading := sensorReading{SensorID: "f47ac10b-58cc-4372-a567-0e02b2c3d479", Value: 22.5}
+
+	// A CredentialFunc deliberately returning (nil, nil) for "no credential
+	// needed" must NOT be treated as a malformed-empty-credential error —
+	// the Round-93 regression class, mirrored here from day one.
+	err := mqtt5.Publish(context.Background(), client, newSecuredPublishChannelHandle(), 1, false, reading, nil,
+		mqtt5.PublishOptions{
+			CredentialFunc: func(context.Context, []route.SecurityRequirement) ([]mqtt5.UserProperty, error) {
+				return nil, nil
+			},
+		})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(client.published) != 1 {
+		t.Fatalf("expected 1 published message, got %d", len(client.published))
 	}
 }
 

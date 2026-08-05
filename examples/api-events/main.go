@@ -7,8 +7,8 @@
 //   - Publish   (action: send):    this app SENDS messages on the channel (producer)
 //   - Both:      bidirectional — pass both events.Subscribe and events.Publish to one AddChannel call
 //
-// Security schemes are declared once via AddSecurityScheme and referenced
-// per-channel via Subscribe.Security / Publish.Security. The spec output
+// Security schemes are declared once per channel via events.WithSecurityScheme
+// and referenced via Subscribe.Security / Publish.Security. The spec output
 // includes components/securitySchemes and per-operation security requirements.
 //
 // The same ChannelHandle.Decode and ChannelHandle.Encode helpers work unchanged
@@ -80,9 +80,9 @@ func main() {
 	// Declare a Bearer JWT security scheme once — referenced by subscribe channels.
 	// The Codec field is optional; set it to validate the credential format at the
 	// adapter layer (e.g. validate.JWT constraint) before calling SecurityFunc.
-	b.AddSecurityScheme("bearerAuth", events.SecurityScheme{
+	bearerAuth := events.SecurityScheme{
 		SecurityScheme: route.BearerScheme("JWT"),
-	})
+	}
 
 	// user/created — action: receive — this app RECEIVES events when users register.
 	// Security: requires bearerAuth — adapters (e.g. adapters/mqtt) enforce this via
@@ -96,6 +96,7 @@ func main() {
 			// Security: requires bearerAuth on this operation.
 			Security: []route.SecurityRequirement{route.Require("bearerAuth")},
 		},
+		events.WithSecurityScheme("bearerAuth", bearerAuth),
 	).Register(b)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "channel registration failed: %v\n", err)

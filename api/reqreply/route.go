@@ -10,6 +10,7 @@ import (
 	"github.com/DaniDeer/go-codex/api/internal"
 	"github.com/DaniDeer/go-codex/codex"
 	"github.com/DaniDeer/go-codex/format"
+	"github.com/DaniDeer/go-codex/route"
 	"github.com/DaniDeer/go-codex/schema"
 )
 
@@ -241,9 +242,149 @@ type RouteMeta struct {
 	// RespSchemaName, when non-empty, registers the response payload schema in
 	// components/schemas and emits a $ref.
 	RespSchemaName string
+
+	// Security, when non-nil, overrides global security for this route.
+	// Pass an empty slice to declare "no auth required" for this route.
+	// nil (default) inherits global security declared via [Builder.AddGlobalSecurity].
+	Security []route.SecurityRequirement
 }
 
 func (m RouteMeta) applyRoute(rb *routeBuilder) { rb.meta = m }
+
+// SecurityScheme combines [route.SecurityScheme] spec metadata with optional
+// runtime credential validation for request-reply adapters.
+//
+// [WithSecurityScheme] declares a SecurityScheme on a route — the ONLY way to
+// declare one; there is no builder-level equivalent (mirrors
+// [rest.WithSecurityScheme] and [events.WithSecurityScheme] exactly). The
+// spec fields flow into the AsyncAPI document (aggregated from all
+// registered routes by [Builder.AsyncAPISpec]); Codec, when non-nil, is used
+// by MQTT5 adapters ([adapters/mqtt5/reqreply.Serve]/[adapters/mqtt5/reqreply.Call])
+// to validate the raw credential string extracted from a message's User
+// Properties before ServeOptions.SecurityFunc is called (server) or before
+// the request is published (client, CallOptions.CredentialFunc).
+//
+// ZeroMQ's reqreply adapters ([adapters/zeromq]) have no per-message
+// metadata channel (raw multipart frames only) — Codec-level extraction only
+// applies to MQTT5; ZeroMQ reqreply security is a documented future gap.
+//
+// Use [SecurityScheme.WithCodec] to set the Codec field inline without a
+// temporary variable:
+// reqreply.SecurityScheme{SecurityScheme: route.BearerScheme("JWT")}.WithCodec(c)
+type SecurityScheme struct {
+	route.SecurityScheme
+	// Codec, when non-nil, validates the extracted raw credential string.
+	// Nil means no format validation; SecurityFunc receives the message as-is.
+	Codec *codex.Codec[string]
+}
+
+// WithCodec returns a copy of s with Codec set to c. It avoids the
+// temporary-variable + address-of pattern required when setting Codec inline:
+//
+//	reqreply.WithSecurityScheme("bearerAuth", reqreply.SecurityScheme{
+//	    SecurityScheme: route.BearerScheme("JWT"),
+//	}.WithCodec(codex.String().Refine(validate.BearerToken)))
+func (s SecurityScheme) WithCodec(c codex.Codec[string]) SecurityScheme {
+	s.Codec = &c
+	return s
+}
+
+// securitySchemeOpt is the [RouteOpt] returned by [WithSecurityScheme].
+type securitySchemeOpt struct {
+	name   string
+	scheme SecurityScheme
+}
+
+func (o securitySchemeOpt) applyRoute(rb *routeBuilder) {
+	if rb.securitySchemes == nil {
+		rb.securitySchemes = make(map[string]SecurityScheme, 1)
+	}
+	rb.securitySchemes[o.name] = o.scheme
+}
+
+// WithSecurityScheme declares scheme's spec metadata and optional Codec for
+// THIS route. It is the ONLY way to declare a security scheme — there is no
+// builder-level equivalent. Both [Route.Register] and [Route.ClientHandle]
+// populate [RouteHandle.SecuritySchemes] from this declaration, so the SAME
+// route value — including its security scheme — builds a server-side handle
+// (Register) and a client-side handle (ClientHandle) with IDENTICAL
+// credential-format enforcement on both sides. Mirrors [rest.WithSecurityScheme]
+// and [events.WithSecurityScheme] exactly.
+//
+// Define a scheme once as a package-level value and reuse it across every
+// route that shares it:
+//
+//	var bearerAuth = reqreply.SecurityScheme{SecurityScheme: route.BearerScheme("JWT")}.
+//	    WithCodec(codex.String().Refine(validate.BearerToken))
+//
+//	var ComputeRoute = reqreply.NewRoute[ComputeReq, ComputeResp](
+//	    "compute/add", computeReqCodec, computeRespCodec,
+//	    reqreply.RouteMeta{Security: []route.SecurityRequirement{route.Require("bearerAuth")}},
+//	    reqreply.WithSecurityScheme("bearerAuth", bearerAuth),
+//	)
+//
+// When multiple routes declare the SAME scheme name with DIFFERENT values,
+// [Builder.AsyncAPISpec] resolves the conflict last-registered-wins (no
+// error) — define the scheme once as a shared value (as above) to avoid
+// this entirely.
+func WithSecurityScheme(name string, scheme SecurityScheme) RouteOpt {
+	return securitySchemeOpt{name: name, scheme: scheme}
+}
+
+// SecurityCredentialError is returned when credential format validation via
+// SecurityScheme.Codec fails (MQTT5 only). It is distinct from [SecurityError],
+// which wraps rejections from ServeOptions.SecurityFunc.
+//
+// Use [errors.As] to extract the scheme name and underlying constraint error:
+//
+//	var credErr reqreply.SecurityCredentialError
+//	if errors.As(err, &credErr) {
+//	    log.Printf("security scheme %q: invalid credential: %v", credErr.Scheme, credErr.Err)
+//	}
+type SecurityCredentialError struct {
+	Scheme string // security scheme name
+	Err    error  // codec constraint error
+}
+
+func (e SecurityCredentialError) Error() string {
+	return fmt.Sprintf("security scheme %q: invalid credential: %s", e.Scheme, e.Err)
+}
+
+// Unwrap allows errors.As and errors.Is to traverse the underlying constraint error.
+func (e SecurityCredentialError) Unwrap() error { return e.Err }
+
+// LogValue implements [slog.LogValuer] for structured logging.
+func (e SecurityCredentialError) LogValue() slog.Value {
+	return slog.GroupValue(
+		slog.String("scheme", e.Scheme),
+		slog.Any("err", e.Err),
+	)
+}
+
+// SecurityError is returned when ServeOptions.SecurityFunc rejects a request.
+// It is distinct from [SecurityCredentialError], which covers codec format failures.
+//
+// Use [errors.As] to extract the underlying error from SecurityFunc:
+//
+//	var secErr reqreply.SecurityError
+//	if errors.As(err, &secErr) {
+//	    log.Printf("security check failed: %v", secErr.Err)
+//	}
+type SecurityError struct {
+	Err error
+}
+
+func (e SecurityError) Error() string {
+	return fmt.Sprintf("security check failed: %s", e.Err)
+}
+
+// Unwrap allows errors.As and errors.Is to traverse the underlying SecurityFunc error.
+func (e SecurityError) Unwrap() error { return e.Err }
+
+// LogValue implements [slog.LogValuer] for structured logging.
+func (e SecurityError) LogValue() slog.Value {
+	return slog.GroupValue(slog.Any("err", e.Err))
+}
 
 // ErrorReplyMeta declares one additional reply error message for AsyncAPI rendering.
 //
@@ -471,6 +612,11 @@ type routeBuilder struct {
 	// reply is correlated by the underlying transport (not by re-encoding
 	// topic vars into Resp) — resolved design decision.
 	mergeFields []any
+	// securitySchemes holds this route's own [WithSecurityScheme]
+	// declarations — the ONLY source of [RouteHandle.SecuritySchemes]
+	// (there is no builder-level equivalent; mirrors rest's/events'
+	// routeBuilder/channelBuilder.securitySchemes).
+	securitySchemes map[string]SecurityScheme
 }
 
 // Route[Req,Resp] is a typed request-reply route for async transports (ZeroMQ,
@@ -554,6 +700,11 @@ func (r Route[Req, Resp]) ClientHandle() *RouteHandle[Req, Resp] {
 	jsonReq := format.JSON(r.reqCodec)
 	jsonResp := format.JSON(r.respCodec)
 
+	schemes := make(map[string]SecurityScheme, len(rb.securitySchemes))
+	for k, v := range rb.securitySchemes {
+		schemes[k] = v
+	}
+
 	return &RouteHandle[Req, Resp]{
 		Topic:             r.topic,
 		Decode:            func(p []byte) (Req, error) { return jsonReq.Unmarshal(p) },
@@ -563,6 +714,8 @@ func (r Route[Req, Resp]) ClientHandle() *RouteHandle[Req, Resp] {
 		topicParams:       rb.topicParams,
 		mergeFields:       mustAssertMergeFields[Req]("ClientHandle", rb.mergeFields),
 		errorPatternRules: rb.errorPatternRules,
+		Security:          rb.meta.Security,
+		SecuritySchemes:   schemes,
 	}
 }
 
@@ -586,6 +739,11 @@ func (r Route[Req, Resp]) Register(b *Builder) (*RouteHandle[Req, Resp], error) 
 	jsonReq := format.JSON(r.reqCodec)
 	jsonResp := format.JSON(r.respCodec)
 
+	schemes := make(map[string]SecurityScheme, len(rb.securitySchemes))
+	for k, v := range rb.securitySchemes {
+		schemes[k] = v
+	}
+
 	h := &RouteHandle[Req, Resp]{
 		Topic:             r.topic,
 		Decode:            func(p []byte) (Req, error) { return jsonReq.Unmarshal(p) },
@@ -594,6 +752,9 @@ func (r Route[Req, Resp]) Register(b *Builder) (*RouteHandle[Req, Resp], error) 
 		DecodeResponse:    func(p []byte) (Resp, error) { return jsonResp.Unmarshal(p) },
 		topicParams:       rb.topicParams,
 		errorPatternRules: rb.errorPatternRules,
+		Security:          rb.meta.Security,
+		SecuritySchemes:   schemes,
+		GlobalSecurity:    append([]route.SecurityRequirement(nil), b.globalSecurity...),
 	}
 
 	if rb.requestFormats != nil {
@@ -619,6 +780,14 @@ func (r Route[Req, Resp]) Register(b *Builder) (*RouteHandle[Req, Resp], error) 
 	}
 
 	b.registerRoute(r.topic, r.reqCodec.Schema, r.respCodec.Schema, rb.meta, rb.errorReplies)
+	// Merge this route's own WithSecurityScheme declarations into the
+	// builder's aggregate — last-registered-wins on name collision,
+	// matching rest's/events' documented policy. There is no per-route
+	// entry list to iterate at AsyncAPISpec() time (unlike rest/events),
+	// so schemes are accumulated directly here instead.
+	for name, s := range schemes {
+		b.securitySchemes[name] = s
+	}
 	return h, nil
 }
 
@@ -669,6 +838,27 @@ type RouteHandle[Req, Resp any] struct {
 	// errorPatternRules holds per-route typed error reply declarations from
 	// [ErrorPattern] — see [ErrorResponseFor].
 	errorPatternRules []errorPatternRule
+
+	// Security holds this route's own effective security requirements — nil
+	// means "inherit GlobalSecurity", an empty (non-nil) slice means
+	// "explicitly no auth required". Set from [RouteMeta.Security].
+	// Adapters resolve the effective requirements as:
+	//   reqs := handle.Security
+	//   if reqs == nil { reqs = handle.GlobalSecurity }
+	Security []route.SecurityRequirement
+
+	// SecuritySchemes maps scheme name to SecurityScheme (with runtime Codec).
+	// Populated from the route's own [WithSecurityScheme] declarations — the
+	// ONLY source (there is no builder-level equivalent). Adapters use this
+	// map to extract and validate credentials per scheme.
+	SecuritySchemes map[string]SecurityScheme
+
+	// GlobalSecurity holds the builder-level security requirements that apply
+	// when Security is nil (i.e. the route inherits global security). Set
+	// via [Builder.AddGlobalSecurity]. nil when no global security is
+	// declared, or when the handle came from [Route.ClientHandle] (no
+	// Builder to source it from).
+	GlobalSecurity []route.SecurityRequirement
 }
 
 // ErrorResponseFor returns the first declared [ErrorPattern] match for err

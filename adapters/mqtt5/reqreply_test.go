@@ -10,6 +10,7 @@ import (
 	mqtt5 "github.com/DaniDeer/go-codex/adapters/mqtt5"
 	"github.com/DaniDeer/go-codex/api/reqreply"
 	"github.com/DaniDeer/go-codex/codex"
+	"github.com/DaniDeer/go-codex/route"
 	"github.com/DaniDeer/go-codex/validate"
 	pahomqtt5 "github.com/eclipse/paho.golang/paho"
 )
@@ -119,6 +120,244 @@ func TestServe_HandlerError(t *testing.T) {
 	}
 	if !errors.Is(gotErr, handlerErr) {
 		t.Fatal("errors.Is must find handlerErr via Unwrap")
+	}
+}
+
+// ── Security (Phase 3) ────────────────────────────────────────────────────────
+
+func TestServe_BuiltInCredentialCheck_RejectsMalformedCredential(t *testing.T) {
+	client := &mockClient{}
+	router := newMockRouter()
+	obs := &testObserver{}
+	var gotErr mqtt5.ServeError
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+
+	_ = mqtt5.Serve(ctx, client, router, newSecuredRouteHandle(),
+		func(_ context.Context, _ computeReq) (computeResp, error) {
+			t.Fatal("fn must not be called on security rejection")
+			return computeResp{}, nil
+		},
+		mqtt5.ServeOptions{
+			Observer: obs,
+			OnError:  func(e mqtt5.ServeError) { gotErr = e },
+		})
+
+	// No "Authorization" User Property -> extracted credential is "" ->
+	// fails the non-empty-string Codec, before any SecurityFunc runs.
+	router.dispatch("compute/secured-add", &pahomqtt5.Publish{
+		Topic:   "compute/secured-add",
+		Payload: []byte(validComputeJSON),
+		Properties: &pahomqtt5.PublishProperties{
+			ResponseTopic:   "replies/client-1",
+			CorrelationData: []byte("corr-sec-1"),
+		},
+	})
+	time.Sleep(50 * time.Millisecond)
+
+	if gotErr.Kind != mqtt5.KindSecurity {
+		t.Fatalf("expected KindSecurity, got %v", gotErr.Kind)
+	}
+	var credErr reqreply.SecurityCredentialError
+	if !errors.As(gotErr, &credErr) {
+		t.Fatalf("expected reqreply.SecurityCredentialError, got %v", gotErr.Err)
+	}
+	if credErr.Scheme != "bearer" {
+		t.Errorf("want Scheme=bearer, got %q", credErr.Scheme)
+	}
+	if len(obs.secRejections) != 1 {
+		t.Errorf("want 1 security rejection recorded, got %d", len(obs.secRejections))
+	}
+	// An error reply must still be published — the requester must not be
+	// left waiting indefinitely.
+	pub := client.lastPublished()
+	if pub == nil || pub.Topic != "replies/client-1" {
+		t.Fatalf("expected error reply published to replies/client-1, got %v", pub)
+	}
+}
+
+func TestServe_SecurityFunc_RejectsRequest(t *testing.T) {
+	client := &mockClient{}
+	router := newMockRouter()
+	var gotErr mqtt5.ServeError
+	secErr := errors.New("token revoked")
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+
+	_ = mqtt5.Serve(ctx, client, router, newSecuredRouteHandle(),
+		func(_ context.Context, _ computeReq) (computeResp, error) {
+			t.Fatal("fn must not be called on SecurityFunc rejection")
+			return computeResp{}, nil
+		},
+		mqtt5.ServeOptions{
+			OnError: func(e mqtt5.ServeError) { gotErr = e },
+			SecurityFunc: func(context.Context, *pahomqtt5.Publish, []route.SecurityRequirement) error {
+				return secErr
+			},
+		})
+
+	router.dispatch("compute/secured-add", &pahomqtt5.Publish{
+		Topic:   "compute/secured-add",
+		Payload: []byte(validComputeJSON),
+		Properties: &pahomqtt5.PublishProperties{
+			ResponseTopic:   "replies/client-1",
+			CorrelationData: []byte("corr-sec-2"),
+			User:            pahomqtt5.UserProperties{{Key: "Authorization", Value: "Bearer validtoken"}},
+		},
+	})
+	time.Sleep(50 * time.Millisecond)
+
+	if gotErr.Kind != mqtt5.KindSecurity {
+		t.Fatalf("expected KindSecurity, got %v", gotErr.Kind)
+	}
+	var wrapped reqreply.SecurityError
+	if !errors.As(gotErr, &wrapped) {
+		t.Fatalf("expected reqreply.SecurityError, got %v", gotErr.Err)
+	}
+	if !errors.Is(gotErr, secErr) {
+		t.Fatal("errors.Is must find secErr via Unwrap chain")
+	}
+}
+
+func TestServe_NilSecurityFunc_NotAnError(t *testing.T) {
+	client := &mockClient{}
+	router := newMockRouter()
+	fnCalled := false
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+
+	_ = mqtt5.Serve(ctx, client, router, newSecuredRouteHandle(),
+		func(_ context.Context, req computeReq) (computeResp, error) {
+			fnCalled = true
+			return computeResp{Sum: req.X + req.Y}, nil
+		},
+		mqtt5.ServeOptions{}) // no SecurityFunc set
+
+	router.dispatch("compute/secured-add", &pahomqtt5.Publish{
+		Topic:   "compute/secured-add",
+		Payload: []byte(validComputeJSON),
+		Properties: &pahomqtt5.PublishProperties{
+			ResponseTopic:   "replies/client-1",
+			CorrelationData: []byte("corr-sec-3"),
+			User:            pahomqtt5.UserProperties{{Key: "Authorization", Value: "Bearer validtoken"}},
+		},
+	})
+	time.Sleep(50 * time.Millisecond)
+
+	if !fnCalled {
+		t.Error("want fn called: built-in check passed and SecurityFunc is nil (not an error)")
+	}
+}
+
+func TestCall_CredentialFunc_ValidFormat_Passes(t *testing.T) {
+	client := &mockClient{}
+	router := newMockRouter()
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+
+	go func() {
+		time.Sleep(10 * time.Millisecond)
+		pub := client.lastPublished()
+		if pub == nil {
+			return
+		}
+		router.dispatch(pub.Properties.ResponseTopic, &pahomqtt5.Publish{
+			Topic:   pub.Properties.ResponseTopic,
+			Payload: []byte(`{"sum":7}`),
+			Properties: &pahomqtt5.PublishProperties{
+				CorrelationData: pub.Properties.CorrelationData,
+			},
+		})
+	}()
+
+	resp, err := mqtt5.Call(ctx, client, router, newSecuredRouteHandle(), computeReq{X: 3, Y: 4},
+		mqtt5.CallOptions{
+			CredentialFunc: func(context.Context, []route.SecurityRequirement) ([]mqtt5.UserProperty, error) {
+				return []mqtt5.UserProperty{{Key: "Authorization", Value: "Bearer validtoken"}}, nil
+			},
+		})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if resp.Sum != 7 {
+		t.Errorf("want Sum=7, got %d", resp.Sum)
+	}
+	pub := client.lastPublished()
+	if pub == nil || pub.Properties == nil || pub.Properties.User.Get("Authorization") != "Bearer validtoken" {
+		t.Fatalf("expected Authorization user property on published request, got %v", pub)
+	}
+}
+
+func TestCall_CredentialFunc_MalformedFormat_ReturnsSecurityCredentialError(t *testing.T) {
+	client := &mockClient{}
+	router := newMockRouter()
+	obs := &testObserver{}
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+
+	_, err := mqtt5.Call(ctx, client, router, newSecuredRouteHandle(), computeReq{X: 3, Y: 4},
+		mqtt5.CallOptions{
+			Observer: obs,
+			CredentialFunc: func(context.Context, []route.SecurityRequirement) ([]mqtt5.UserProperty, error) {
+				// Empty Bearer credential -> fails the non-empty-string Codec.
+				return []mqtt5.UserProperty{{Key: "Authorization", Value: "Bearer "}}, nil
+			},
+		})
+	var credErr reqreply.SecurityCredentialError
+	if !errors.As(err, &credErr) {
+		t.Fatalf("want reqreply.SecurityCredentialError, got %v", err)
+	}
+	if credErr.Scheme != "bearer" {
+		t.Errorf("want Scheme=bearer, got %q", credErr.Scheme)
+	}
+	if len(client.published) != 0 {
+		t.Error("want no request actually published when credential format is malformed")
+	}
+	if len(obs.secRejections) != 1 {
+		t.Errorf("want 1 security rejection recorded, got %d", len(obs.secRejections))
+	}
+}
+
+func TestCall_CredentialFunc_ReturnsNilProperties_SkipsValidation(t *testing.T) {
+	client := &mockClient{}
+	router := newMockRouter()
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+
+	go func() {
+		time.Sleep(10 * time.Millisecond)
+		pub := client.lastPublished()
+		if pub == nil {
+			return
+		}
+		router.dispatch(pub.Properties.ResponseTopic, &pahomqtt5.Publish{
+			Topic:   pub.Properties.ResponseTopic,
+			Payload: []byte(`{"sum":7}`),
+			Properties: &pahomqtt5.PublishProperties{
+				CorrelationData: pub.Properties.CorrelationData,
+			},
+		})
+	}()
+
+	// A CredentialFunc deliberately returning (nil, nil) for "no credential
+	// needed" must NOT be treated as a malformed-empty-credential error.
+	resp, err := mqtt5.Call(ctx, client, router, newSecuredRouteHandle(), computeReq{X: 3, Y: 4},
+		mqtt5.CallOptions{
+			CredentialFunc: func(context.Context, []route.SecurityRequirement) ([]mqtt5.UserProperty, error) {
+				return nil, nil
+			},
+		})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if resp.Sum != 7 {
+		t.Errorf("want Sum=7, got %d", resp.Sum)
 	}
 }
 

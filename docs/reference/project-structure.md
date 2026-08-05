@@ -98,10 +98,12 @@ go-codex/
 │   │   ├── topicvars.go    # TopicVarsFromMessage, TopicMismatchError
 │   │   └── binding.go      # SubscribeAdapter, PublishAdapter (ports.SourceAdapter/SinkAdapter)
 │   ├── mqtt5/              # MQTT 5.0 adapter (paho.golang) — PUB/SUB + request-reply
-│   │   ├── adapter.go      # Subscribe, Publish, SubscribeOptions, PublishOptions,
+│   │   ├── adapter.go      # Subscribe, Publish, SubscribeOptions, PublishOptions (+ CredentialFunc),
 │   │   │                   #   UserPropertyParam, ReplyTopicBuilder, UUIDReplyTopic, SharedReplyTopic
-│   │   ├── reqreply.go     # Serve[Req,Resp], Call[Req,Resp], ServeOptions, CallOptions,
-│   │   │                   #   ServeError, CallError, BrokerError, UserPropertyError
+│   │   ├── security.go     # extractUserPropertyCredential, validateSecurityCredentials — shared
+│   │   │                   #   built-in codec-based credential check for events + reqreply
+│   │   ├── reqreply.go     # Serve[Req,Resp], Call[Req,Resp], ServeOptions (+ SecurityFunc),
+│   │   │                   #   CallOptions (+ CredentialFunc), ServeError, CallError, BrokerError, UserPropertyError
 │   │   ├── stream.go       # AsPipelineFunc
 │   │   └── binding.go      # SubscribeAdapter, PublishAdapter, CallAdapter, ServeAdapter
 │   │                       #   (ports.SourceAdapter/SinkAdapter/IOAdapter/ToolAdapter)

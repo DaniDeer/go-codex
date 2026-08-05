@@ -8,6 +8,7 @@ import (
 
 	"github.com/DaniDeer/go-codex/api/reqreply"
 	"github.com/DaniDeer/go-codex/codex"
+	"github.com/DaniDeer/go-codex/route"
 	"github.com/DaniDeer/go-codex/stats"
 	pahomqtt5 "github.com/eclipse/paho.golang/paho"
 	"github.com/google/uuid"
@@ -32,6 +33,13 @@ type ServeOptions struct {
 	// Validation failure delivers [ServeError]{Kind: KindSecurity}
 	// and sends an error reply to the caller.
 	UserPropertyParams []UserPropertyParam
+
+	// SecurityFunc, when non-nil, is called for routes with non-empty
+	// security requirements, AFTER the built-in codec-based credential
+	// check (via [reqreply.SecurityScheme.Codec]) passes. Return a non-nil
+	// error to reject the request — mirrors [SubscribeOptions.SecurityFunc]
+	// exactly. MQTT 5 User Properties are available via msg.Properties.User.
+	SecurityFunc func(ctx context.Context, msg *pahomqtt5.Publish, reqs []route.SecurityRequirement) error
 }
 
 // CallOptions configures [Call].
@@ -76,6 +84,17 @@ type CallOptions struct {
 
 	// UserProperties, when non-nil, are attached to the outgoing request message.
 	UserProperties []UserProperty
+
+	// CredentialFunc, when non-nil, is called for routes that declare
+	// non-nil security requirements, mirroring
+	// [nethttp.CallOptions.CredentialFunc] and
+	// [PublishOptions.CredentialFunc] exactly. It must return the MQTT 5
+	// User Properties to attach as the outgoing credential — these are
+	// appended to [CallOptions.UserProperties] before publishing. A nil
+	// CredentialFunc on a secured route is not an error — the request is
+	// published without a credential, same as if the route declared no
+	// security at all.
+	CredentialFunc func(ctx context.Context, reqs []route.SecurityRequirement) ([]UserProperty, error)
 
 	// Vars, when non-nil, substitutes {varName} placeholders in the route topic
 	// template before publishing. Uses [reqreply.RouteHandle.BuildTopic] to
@@ -202,6 +221,56 @@ func Serve[Req, Resp any](
 					opts.OnError(ServeError{Kind: KindDecode, Err: mergeErr})
 				}
 				return
+			}
+		}
+
+		// Security enforcement: per-route requirements take precedence;
+		// nil falls back to global security declared via
+		// [Builder.AddGlobalSecurity]. Mirrors makeSubscribeMessageHandler's
+		// ordering exactly: built-in codec-based check first, THEN the
+		// optional custom SecurityFunc.
+		secReqs := handle.Security
+		if secReqs == nil {
+			secReqs = handle.GlobalSecurity
+		}
+		if len(secReqs) > 0 {
+			schemeTypes := make(map[string]route.SecurityScheme, len(handle.SecuritySchemes))
+			schemeCodecs := make(map[string]*codex.Codec[string], len(handle.SecuritySchemes))
+			for name, s := range handle.SecuritySchemes {
+				schemeTypes[name] = s.SecurityScheme
+				schemeCodecs[name] = s.Codec
+			}
+			var userProps pahomqtt5.UserProperties
+			if msg.Properties != nil {
+				userProps = msg.Properties.User
+			}
+			if name, credErr := validateSecurityCredentials(userProps, secReqs, schemeTypes, schemeCodecs); credErr != nil {
+				if secObs, ok := obs.(stats.SecurityObserver); ok {
+					secObs.RecordSecurityRejection(path, firstScheme(secReqs))
+				}
+				wrapped := reqreply.SecurityCredentialError{Scheme: name, Err: credErr}
+				serveErr = wrapped
+				obs.RecordRequest("MQTT5-REP", path, 0, time.Since(start))
+				publishErrorReply(spanCtx, client, responseTopic, correlationData, wrapped)
+				if opts.OnError != nil {
+					opts.OnError(ServeError{Kind: KindSecurity, Err: wrapped})
+				}
+				return
+			}
+			if opts.SecurityFunc != nil {
+				if err := opts.SecurityFunc(msgCtx, msg, secReqs); err != nil {
+					if secObs, ok := obs.(stats.SecurityObserver); ok {
+						secObs.RecordSecurityRejection(path, firstScheme(secReqs))
+					}
+					wrapped := reqreply.SecurityError{Err: err}
+					serveErr = wrapped
+					obs.RecordRequest("MQTT5-REP", path, 0, time.Since(start))
+					publishErrorReply(spanCtx, client, responseTopic, correlationData, wrapped)
+					if opts.OnError != nil {
+						opts.OnError(ServeError{Kind: KindSecurity, Err: wrapped})
+					}
+					return
+				}
 			}
 		}
 
@@ -397,13 +466,53 @@ func Call[Req, Resp any](
 		return zero, callErr
 	}
 
+	// Resolve security requirements and obtain credentials (client-side
+	// mirror of Serve's built-in check, and of [Publish]'s CredentialFunc
+	// handling).
+	secReqs := handle.Security
+	if secReqs == nil {
+		secReqs = handle.GlobalSecurity
+	}
+	userProps := append(pahomqtt5.UserProperties(nil), opts.UserProperties...)
+	var credProps []UserProperty
+	if len(secReqs) > 0 && opts.CredentialFunc != nil {
+		var credErr error
+		credProps, credErr = opts.CredentialFunc(ctx, secReqs)
+		if credErr != nil {
+			obs.RecordRequest("MQTT5-REQ", path, 0, time.Since(start))
+			callErr = credErr
+			return zero, callErr
+		}
+		userProps = append(userProps, credProps...)
+	}
+	// Validate the outgoing credential FORMAT before publishing — gated on
+	// credProps != nil (CredentialFunc actually ran and returned
+	// something), NOT on len(secReqs) > 0 alone (Round-93 pattern,
+	// mirrored here from day one).
+	if len(secReqs) > 0 && credProps != nil {
+		schemeTypes := make(map[string]route.SecurityScheme, len(handle.SecuritySchemes))
+		schemeCodecs := make(map[string]*codex.Codec[string], len(handle.SecuritySchemes))
+		for name, s := range handle.SecuritySchemes {
+			schemeTypes[name] = s.SecurityScheme
+			schemeCodecs[name] = s.Codec
+		}
+		if name, credErr := validateSecurityCredentials(userProps, secReqs, schemeTypes, schemeCodecs); credErr != nil {
+			if secObs, ok := obs.(stats.SecurityObserver); ok {
+				secObs.RecordSecurityRejection(path, firstScheme(secReqs))
+			}
+			obs.RecordRequest("MQTT5-REQ", path, 0, time.Since(start))
+			callErr = reqreply.SecurityCredentialError{Scheme: name, Err: credErr}
+			return zero, callErr
+		}
+	}
+
 	// Publish request with ResponseTopic and CorrelationData.
 	reqProps := &pahomqtt5.PublishProperties{
 		ResponseTopic:   replyTopic,
 		CorrelationData: corrData,
 	}
-	if len(opts.UserProperties) > 0 {
-		reqProps.User = pahomqtt5.UserProperties(opts.UserProperties)
+	if len(userProps) > 0 {
+		reqProps.User = userProps
 	}
 
 	if _, err := client.Publish(ctx, &pahomqtt5.Publish{

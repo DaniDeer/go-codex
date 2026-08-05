@@ -39,6 +39,7 @@ import (
 	"github.com/DaniDeer/go-codex/codex"
 	"github.com/DaniDeer/go-codex/format"
 	"github.com/DaniDeer/go-codex/ports"
+	"github.com/DaniDeer/go-codex/route"
 	"github.com/DaniDeer/go-codex/stats"
 	gstream "github.com/DaniDeer/go-codex/stream"
 	"github.com/DaniDeer/go-codex/validate"
@@ -109,6 +110,26 @@ var ComputeRoute = reqreply.NewRoute[ComputeReq, ComputeResp](
 	"compute/add",
 	computeReqCodec, computeRespCodec,
 	reqreply.RouteMeta{OperationID: "computeAdd", Summary: "Add two integers via MQTT 5 request-reply."},
+)
+
+// ── Security demo: WithSecurityScheme + CredentialFunc/SecurityFunc ──────────
+//
+// bearerAuth is declared ONCE and referenced by both SecuredComputeRoute
+// (request-reply) below and SecuredReadingsChannel (in runSecurityDemo) —
+// the SAME declaration is consumed identically by server (Serve/Subscribe)
+// and client (Call/Publish), mirroring rest.WithSecurityScheme exactly.
+var bearerAuth = reqreply.SecurityScheme{SecurityScheme: route.BearerScheme("JWT")}.
+	WithCodec(codex.String().Refine(validate.NonEmptyString))
+
+var SecuredComputeRoute = reqreply.NewRoute[ComputeReq, ComputeResp](
+	"compute/secured-add",
+	computeReqCodec, computeRespCodec,
+	reqreply.RouteMeta{
+		OperationID: "securedComputeAdd",
+		Summary:     "Add two integers via MQTT 5 request-reply — requires a bearer token.",
+		Security:    []route.SecurityRequirement{route.Require("bearerAuth")},
+	},
+	reqreply.WithSecurityScheme("bearerAuth", bearerAuth),
 )
 
 // ── Error-path ergonomics: events.ErrorChannel ────────────────────────────────
@@ -358,6 +379,7 @@ func main() {
 	runPubSubDemo(ctx, logger)
 	runErrorChannelDemo(ctx)
 	runRequestReplyDemo(ctx, logger)
+	runSecurityDemo(ctx, logger)
 	printSpecs(logger)
 }
 
@@ -547,6 +569,72 @@ func runRequestReplyDemo(ctx context.Context, logger *slog.Logger) {
 			os.Exit(1)
 		}
 		fmt.Printf("  compute(%d + %d) = %d\n", req.X, req.Y, resp.Sum)
+	}
+	_ = logger
+}
+
+// ── Demo 3: Security — WithSecurityScheme + CredentialFunc/SecurityFunc ──────
+//
+// SecuredComputeRoute declares bearerAuth ONCE via reqreply.WithSecurityScheme.
+// The server (Serve) runs a BUILT-IN codec-based credential check — reading
+// the "Authorization" MQTT 5 User Property, stripping "Bearer " — BEFORE the
+// optional custom SecurityFunc. The client (Call) supplies the credential via
+// CredentialFunc; the SAME built-in check runs client-side before publishing,
+// so a malformed credential never reaches the wire.
+func runSecurityDemo(ctx context.Context, logger *slog.Logger) {
+	fmt.Println("\n── Demo 3: Security — WithSecurityScheme + CredentialFunc/SecurityFunc ──")
+
+	broker, router := newMockBroker()
+
+	rrBuilder := reqreply.NewBuilder(reqreply.Info{Title: "Secured Compute API", Version: "1.0.0"})
+	rrBuilder.AddServer("mqtt5", reqreply.Server{URL: "mqtt://broker:1883", Protocol: "mqtt5"})
+	handle, _ := SecuredComputeRoute.Register(rrBuilder)
+
+	_ = mqtt5adapter.Serve(ctx, broker, router, handle,
+		func(_ context.Context, req ComputeReq) (ComputeResp, error) {
+			return ComputeResp{Sum: req.X + req.Y}, nil
+		},
+		mqtt5adapter.ServeOptions{
+			// Runs AFTER the built-in Codec check passes — add extra
+			// business logic here (e.g. a token-revocation check).
+			SecurityFunc: func(_ context.Context, _ *pahomqtt5.Publish, _ []route.SecurityRequirement) error {
+				return nil
+			},
+		},
+	)
+
+	// Happy path: CredentialFunc supplies a well-formed bearer token.
+	fmt.Println("\n  → Call with a valid bearer token:")
+	resp, err := mqtt5adapter.Call(ctx, broker, router, handle, ComputeReq{X: 7, Y: 8},
+		mqtt5adapter.CallOptions{
+			Timeout: 2 * time.Second,
+			CredentialFunc: func(context.Context, []route.SecurityRequirement) ([]mqtt5adapter.UserProperty, error) {
+				return []mqtt5adapter.UserProperty{{Key: "Authorization", Value: "Bearer valid-token-123"}}, nil
+			},
+		})
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "unexpected error: %v\n", err)
+		os.Exit(1)
+	}
+	fmt.Printf("  ✓ compute(7 + 8) = %d (credential accepted)\n", resp.Sum)
+
+	// Rejected path: CredentialFunc returns a malformed (empty) token — the
+	// client-side built-in check catches this BEFORE the request is ever
+	// published, returning reqreply.SecurityCredentialError.
+	fmt.Println("\n  → Call with a malformed (empty) bearer token:")
+	_, err = mqtt5adapter.Call(ctx, broker, router, handle, ComputeReq{X: 1, Y: 2},
+		mqtt5adapter.CallOptions{
+			Timeout: 2 * time.Second,
+			CredentialFunc: func(context.Context, []route.SecurityRequirement) ([]mqtt5adapter.UserProperty, error) {
+				return []mqtt5adapter.UserProperty{{Key: "Authorization", Value: "Bearer "}}, nil
+			},
+		})
+	var credErr reqreply.SecurityCredentialError
+	if errors.As(err, &credErr) {
+		fmt.Printf("  ✓ rejected client-side: scheme=%q (request never published)\n", credErr.Scheme)
+	} else {
+		fmt.Fprintf(os.Stderr, "expected SecurityCredentialError, got: %v\n", err)
+		os.Exit(1)
 	}
 	_ = logger
 }

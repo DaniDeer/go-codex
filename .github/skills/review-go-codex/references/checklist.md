@@ -70,7 +70,7 @@ If a method exists on `RouteHandle` and has a natural equivalent on `ChannelHand
 |---------|---------------------|-------------|
 | Spec generation | `OpenAPISpec()` / `AsyncAPISpec()` | `MCPSpec()` → `*MCPSpec{Name, Version, Tools, Resources, Prompts}` |
 | Server info | `NewBuilder(Info{Title, Version})` | `NewBuilder(Info{Name, Version})` — Name per MCP protocol |
-| Security | `AddSecurityScheme`, `AddGlobalSecurity` | n/a — MCP security outside builder |
+| Security | `WithSecurityScheme` (route/channel-level), `AddGlobalSecurity` (builder-level) | n/a — MCP security outside builder |
 
 ### mcp Handle parity
 

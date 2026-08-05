@@ -6,6 +6,7 @@ import (
 	"unicode"
 
 	asyncapi "github.com/DaniDeer/go-codex/render/asyncapi/v3"
+	"github.com/DaniDeer/go-codex/route"
 	"github.com/DaniDeer/go-codex/schema"
 )
 
@@ -15,16 +16,35 @@ import (
 // Create a Builder with [NewBuilder], add servers via [AddServer], register
 // routes via [Route.Register], and call [AsyncAPISpec] to produce the document.
 type Builder struct {
-	docBuilder *asyncapi.DocumentBuilder
-	topics     map[string]struct{} // guard against duplicate topic registration
+	docBuilder      *asyncapi.DocumentBuilder
+	topics          map[string]struct{} // guard against duplicate topic registration
+	securitySchemes map[string]SecurityScheme
+	globalSecurity  []route.SecurityRequirement
 }
 
 // NewBuilder returns a Builder initialised with the given Info.
 func NewBuilder(info Info) *Builder {
 	return &Builder{
-		docBuilder: asyncapi.NewDocumentBuilder(info),
-		topics:     make(map[string]struct{}),
+		docBuilder:      asyncapi.NewDocumentBuilder(info),
+		topics:          make(map[string]struct{}),
+		securitySchemes: make(map[string]SecurityScheme),
 	}
+}
+
+// AddGlobalSecurity appends security requirements that apply to all routes
+// by default. The requirements flow into runtime enforcement: routes with
+// nil RouteMeta.Security inherit these requirements at the adapter layer via
+// [RouteHandle.GlobalSecurity].
+//
+// AsyncAPI 3.0 has no document-level global security field; these
+// requirements do NOT appear in the AsyncAPI spec output. To annotate
+// per-route security in the spec, set [RouteMeta.Security] explicitly.
+//
+// To mark a specific route as explicitly unsecured (exempt from global
+// security), set Security to an empty slice: Security: []route.SecurityRequirement{}.
+func (b *Builder) AddGlobalSecurity(reqs ...route.SecurityRequirement) *Builder {
+	b.globalSecurity = append(b.globalSecurity, reqs...)
+	return b
 }
 
 // AddServer registers a named server in the AsyncAPI document. Servers appear
@@ -121,6 +141,15 @@ func (b *Builder) registerRoute(
 // AsyncAPISpec builds and returns the accumulated AsyncAPI 3.0 document.
 // Returns an error if any registered channel is invalid.
 func (b *Builder) AsyncAPISpec() (asyncapi.Document, error) {
+	// Aggregate SecuritySchemes from every registered route's own
+	// [WithSecurityScheme] declarations (there is no per-route entry list
+	// to iterate here, unlike rest/events — schemes are accumulated
+	// directly into b.securitySchemes as each route registers, in
+	// [Route.Register]). Collision policy is last-registered-wins,
+	// matching [rest.Builder.OpenAPISpec]/[events.Builder.AsyncAPISpec].
+	for name, s := range b.securitySchemes {
+		b.docBuilder.AddSecurityScheme(name, s.SecurityScheme)
+	}
 	return b.docBuilder.Build()
 }
 
