@@ -29,7 +29,22 @@ const (
 	defaultReference = "latest"
 	// defaultPlatform is used when GetImageMetadataReq.Platform is empty.
 	defaultPlatform = "linux/amd64"
+
+	// ghcrRegistryHost is GitHub Container Registry's host.
+	ghcrRegistryHost = "ghcr.io"
+	// mcrRegistryHost is Microsoft Container Registry's host.
+	mcrRegistryHost = "mcr.microsoft.com"
 )
+
+// knownRegistryHosts lists every registry host WithCredentialsByRegistry/
+// RegistryCredentialsCodec accepts as a map key — exactly the registries
+// this package has been proven against end-to-end (see
+// registry_integration_test.go). This is the SOLE source of truth
+// RegistryCredentialsCodec's key constraint is built from (via
+// validate.OneOf(knownRegistryHosts...)) — add a new registry here (and
+// prove it end-to-end) to expand what WithCredentialsByRegistry accepts;
+// there is no separate list to keep in sync.
+var knownRegistryHosts = []string{dockerHubRegistryHost, ghcrRegistryHost, mcrRegistryHost}
 
 // acceptManifestTypes is the fixed Accept header value sent with every
 // manifest fetch — all four media types the Docker Registry HTTP API v2 /

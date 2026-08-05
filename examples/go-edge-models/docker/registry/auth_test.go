@@ -242,3 +242,144 @@ func TestNewAuthCredentialFunc_PropagatesAuthError(t *testing.T) {
 		t.Errorf("credFn (2nd call) error = %v, want RegistryAuthError", err2)
 	}
 }
+
+// ── RegistryCredentials / WithCredentialsByRegistry ───────────────────────────
+
+func TestWithCredentialsByRegistry_PicksCorrectEntryPerRegistry(t *testing.T) {
+	var gotAuthA, gotAuthB string
+	registrySrvA, _ := newCredentialCheckRegistry(t, &gotAuthA)
+	registrySrvB, _ := newCredentialCheckRegistry(t, &gotAuthB)
+
+	uA, err := url.Parse(registrySrvA.URL)
+	if err != nil {
+		t.Fatalf("parse server URL: %v", err)
+	}
+	uB, err := url.Parse(registrySrvB.URL)
+	if err != nil {
+		t.Fatalf("parse server URL: %v", err)
+	}
+	client := httpsToHTTPClient()
+
+	credsA := Credentials{Username: "user-a", Password: "pass-a"}
+	credsB := Credentials{Username: "user-b", Password: "pass-b"}
+	byRegistry := RegistryCredentials{uA.Host: credsA, uB.Host: credsB}
+
+	credFnA := newAuthCredentialFunc(client, uA.Host, "org/repo-a", WithCredentialsByRegistry(byRegistry))
+	if _, err := credFnA(context.Background(), nil); err != nil {
+		t.Fatalf("credFnA: %v", err)
+	}
+	wantA, err := formatBasicAuth(credsA.Username, credsA.Password)
+	if err != nil {
+		t.Fatalf("formatBasicAuth: %v", err)
+	}
+	if gotAuthA != wantA {
+		t.Errorf("Authorization sent for registry A = %q, want %q", gotAuthA, wantA)
+	}
+
+	credFnB := newAuthCredentialFunc(client, uB.Host, "org/repo-b", WithCredentialsByRegistry(byRegistry))
+	if _, err := credFnB(context.Background(), nil); err != nil {
+		t.Fatalf("credFnB: %v", err)
+	}
+	wantB, err := formatBasicAuth(credsB.Username, credsB.Password)
+	if err != nil {
+		t.Fatalf("formatBasicAuth: %v", err)
+	}
+	if gotAuthB != wantB {
+		t.Errorf("Authorization sent for registry B = %q, want %q", gotAuthB, wantB)
+	}
+}
+
+func TestWithCredentialsByRegistry_NoMatchingEntry_FallsBackToAnonymous(t *testing.T) {
+	var gotAuth string
+	registrySrv, _ := newCredentialCheckRegistry(t, &gotAuth)
+
+	u, err := url.Parse(registrySrv.URL)
+	if err != nil {
+		t.Fatalf("parse server URL: %v", err)
+	}
+	client := httpsToHTTPClient()
+
+	// The map has an entry, but not for THIS registry's host.
+	byRegistry := RegistryCredentials{"some-other-host.example.com": {Username: "u", Password: "p"}}
+
+	credFn := newAuthCredentialFunc(client, u.Host, "org/repo", WithCredentialsByRegistry(byRegistry))
+	if _, err := credFn(context.Background(), nil); err != nil {
+		t.Fatalf("credFn: %v", err)
+	}
+	if gotAuth != "" {
+		t.Errorf("Authorization sent to token endpoint = %q, want empty (anonymous fallback)", gotAuth)
+	}
+}
+
+func TestWithCredentials_WinsOverWithCredentialsByRegistry(t *testing.T) {
+	var gotAuth string
+	registrySrv, _ := newCredentialCheckRegistry(t, &gotAuth)
+
+	u, err := url.Parse(registrySrv.URL)
+	if err != nil {
+		t.Fatalf("parse server URL: %v", err)
+	}
+	client := httpsToHTTPClient()
+
+	single := Credentials{Username: "single-user", Password: "single-pass"}
+	byRegistry := RegistryCredentials{u.Host: {Username: "map-user", Password: "map-pass"}}
+
+	credFn := newAuthCredentialFunc(client, u.Host, "org/repo",
+		WithCredentialsByRegistry(byRegistry), WithCredentials(single))
+	if _, err := credFn(context.Background(), nil); err != nil {
+		t.Fatalf("credFn: %v", err)
+	}
+	want, err := formatBasicAuth(single.Username, single.Password)
+	if err != nil {
+		t.Fatalf("formatBasicAuth: %v", err)
+	}
+	if gotAuth != want {
+		t.Errorf("Authorization sent to token endpoint = %q, want %q (WithCredentials should win)", gotAuth, want)
+	}
+}
+
+func TestRegistryCredentialsCodec_RejectsUnknownRegistryHost(t *testing.T) {
+	err := RegistryCredentialsCodec.Validate(RegistryCredentials{
+		"quay.io": {Username: "u", Password: "p"},
+	})
+	if err == nil {
+		t.Fatal("RegistryCredentialsCodec.Validate: want error for unknown registry host, got nil")
+	}
+}
+
+func TestRegistryCredentialsCodec_RoundTrip(t *testing.T) {
+	creds := RegistryCredentials{
+		dockerHubRegistryHost: {Username: "docker-user", Password: "docker-pass"},
+		ghcrRegistryHost:      {Username: "", Password: "ghp_examplePAT"},
+		mcrRegistryHost:       {Username: "mcr-user", Password: "mcr-pass"},
+	}
+
+	encoded, err := RegistryCredentialsCodec.Encode(creds)
+	if err != nil {
+		t.Fatalf("RegistryCredentialsCodec.Encode: %v", err)
+	}
+	decoded, err := RegistryCredentialsCodec.Decode(encoded)
+	if err != nil {
+		t.Fatalf("RegistryCredentialsCodec.Decode: %v", err)
+	}
+	if len(decoded) != len(creds) {
+		t.Fatalf("decoded = %+v, want %+v", decoded, creds)
+	}
+	for host, want := range creds {
+		if got := decoded[host]; got != want {
+			t.Errorf("decoded[%q] = %+v, want %+v", host, got, want)
+		}
+	}
+}
+
+func TestCredentialsCodec_RejectsEmptyPasswordButAllowsEmptyUsername(t *testing.T) {
+	// GHCR (and similar) authenticate correctly with an empty/arbitrary
+	// username and the PAT carried entirely in Password — Username must
+	// stay unconstrained while Password remains required.
+	if err := CredentialsCodec.Validate(Credentials{Username: "", Password: "ghp_examplePAT"}); err != nil {
+		t.Errorf("CredentialsCodec.Validate with empty Username: want nil error, got %v", err)
+	}
+	if err := CredentialsCodec.Validate(Credentials{Username: "user", Password: ""}); err == nil {
+		t.Error("CredentialsCodec.Validate with empty Password: want error, got nil")
+	}
+}

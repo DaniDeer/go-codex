@@ -1,6 +1,63 @@
-# go-codex Review History (R1–R97)
+# go-codex Review History (R1–R98)
 
 Do not re-report any of these findings. They have been implemented and tested.
+
+---
+
+## Round 98 (`docker/registry`: `RegistryCredentials` map — multi-registry credentials in one call)
+
+Implemented the `RegistryCredentials` feature designed in the prior
+planning round (session-only `plan.md`, no roadmap doc — this was a small,
+additive feature scoped directly with the user, not a new subsystem):
+
+- **`constants.go`**: added `ghcrRegistryHost`/`mcrRegistryHost` constants
+  and a single `knownRegistryHosts []string` package-level slice built FROM
+  the three named host constants (`dockerHubRegistryHost`/`ghcrRegistryHost`/
+  `mcrRegistryHost`) — the SOLE source of truth `RegistryCredentialsCodec`'s
+  key constraint is built from, per the user's explicit follow-up question
+  ("can I combine the OneOf with the constants?") — no separately hand-typed
+  string list exists anywhere to drift out of sync.
+- **`types.go`**: added `RegistryCredentials map[string]Credentials`, doc
+  comment explains the lookup-by-resolved-registry-host behavior and the
+  `WithCredentials` escape hatch for registries outside the known set.
+- **`codecs.go`**: added `CredentialsCodec` (struct codec) and
+  `RegistryCredentialsCodec` (`codex.Map` keyed by
+  `validate.OneOf(knownRegistryHosts...)`, valued by `CredentialsCodec`).
+  **Mid-implementation correction** (user-reported real-world GHCR
+  behavior): GHCR frequently authenticates with an empty/arbitrary username
+  and the PAT carried entirely in `Password`. Confirmed with the user, then
+  relaxed `CredentialsCodec.Username` from `RequiredField(NonEmptyString)`
+  to `OptionalField` (unconstrained) — only `Password` remains required
+  non-empty.
+- **`auth.go`**: added `options.credentialsByRegistry RegistryCredentials`
+  field, `WithCredentialsByRegistry(RegistryCredentials) Option`, and
+  lookup logic inside `newAuthCredentialFunc` — `registryHost` was already
+  a parameter (passed from `ParseImageRef`'s resolved `ref.Registry` by
+  `GetTags`/`GetImageMetadata`), so the lookup needed no new plumbing.
+  Precedence: a single `WithCredentials` value wins over
+  `WithCredentialsByRegistry` when both are supplied to the same call (more
+  specific override).
+- **`auth_test.go`**: added 6 new tests —
+  `TestWithCredentialsByRegistry_PicksCorrectEntryPerRegistry` (two mock
+  registries, two map entries, no cross-contamination),
+  `TestWithCredentialsByRegistry_NoMatchingEntry_FallsBackToAnonymous`,
+  `TestWithCredentials_WinsOverWithCredentialsByRegistry`,
+  `TestRegistryCredentialsCodec_RejectsUnknownRegistryHost`,
+  `TestRegistryCredentialsCodec_RoundTrip` (all 3 known hosts, including an
+  empty-Username GHCR-style entry), and
+  `TestCredentialsCodec_RejectsEmptyPasswordButAllowsEmptyUsername`.
+- Updated `doc.go`'s public-surface description (types.go/codecs.go bullet
+  now lists `RegistryCredentials`) and added a paragraph describing the
+  multi-registry option; updated `examples/go-edge-models/README.md`'s
+  Quick Usage section with a `WithCredentialsByRegistry` example (including
+  the GHCR empty-Username convention and MCR's no-auth zero value).
+- Full verification: `gofmt -l .` clean, `go build ./...`, `go test
+  ./examples/go-edge-models/docker/registry/...` (untagged, all new +
+  existing tests pass), `go test -tags=integration ./examples/go-edge-models/docker/registry/...`
+  (real Docker Hub/GHCR/MCR, unaffected — those tests only exercise
+  `WithCredentials`), full repo `go test ./...`, `go run
+  ./examples/go-edge-models` (demo output unchanged), `just check`
+  (staticcheck + gosec, 0 issues).
 
 ---
 

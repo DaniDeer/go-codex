@@ -57,8 +57,8 @@
 //     requirements, or use (1) instead.
 //  3. types.go/codecs.go's domain structs and codecs (ImageRef, TagsList,
 //     GetTagsReq, GetManifestReq, GetImageMetadataReq, ManifestMetadata,
-//     Credentials, and their codecs) — needed to call (1) or (2) and read
-//     their results.
+//     Credentials, RegistryCredentials, and their codecs) — needed to call
+//     (1) or (2) and read their results.
 //
 // If a future need calls for a new capability (e.g. wrapping GetTagsRoute/
 // GetManifestRoute as an MCP tool with this package's own auth flow baked
@@ -90,4 +90,17 @@
 // WithCredentials(Credentials{...}) — an additive functional option on
 // GetTags/GetImageMetadata; anonymous/public pulls are completely unaffected
 // when it is omitted.
+//
+// A single call site working against MULTIPLE registries (e.g. some
+// images on Docker Hub, some on GHCR, some on MCR) can instead declare
+// ALL of its registries' credentials once via
+// WithCredentialsByRegistry(RegistryCredentials{...}) — GetTags/
+// GetImageMetadata then pick the right entry automatically based on the
+// image URL's resolved registry host, so the SAME options value is reused
+// unchanged no matter which registry a given image URL resolves to.
+// RegistryCredentials' keys are restricted to the registries this package
+// is proven against end-to-end (Docker Hub, GHCR, MCR — see
+// knownRegistryHosts in constants.go); for any other registry, use the
+// unrestricted single-value WithCredentials instead. If both options are
+// supplied to the same call, WithCredentials wins.
 package registry

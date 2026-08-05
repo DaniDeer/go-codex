@@ -55,8 +55,33 @@ fmt.Println(meta.Digest, meta.TotalSizeBytes)
 // Private repository requiring Basic auth at the token-exchange step
 // (e.g. a private GHCR package — GitHub username + a read:packages PAT):
 tags, err = registry.GetTags(ctx, http.DefaultClient, "ghcr.io/org/private-image",
-    registry.WithCredentials(registry.Credentials{Username: "gh-user", Password: os.Getenv("GH_PAT")}))
+    registry.WithCredentials(registry.Credentials{Username: os.Getenv("GHCR_USER"), Password: os.Getenv("GHCR_PAT")}))
+
+// A single call site working against MULTIPLE registries: declare ALL
+// your registries' credentials once, GetTags/GetImageMetadata pick the
+// right entry automatically based on each image URL's resolved registry
+// host — the SAME options value is reused unchanged below.
+byRegistry := registry.RegistryCredentials{
+    "registry-1.docker.io": {Username: "docker-user", Password: os.Getenv("DOCKERHUB_TOKEN")},
+    "ghcr.io":               {Username: os.Getenv("GHCR_USER"), Password: os.Getenv("GHCR_PAT")},
+    "mcr.microsoft.com":     {},                              // MCR needs no auth — omit or leave zero.
+}
+opt := registry.WithCredentialsByRegistry(byRegistry)
+tags, err = registry.GetTags(ctx, http.DefaultClient, "nodered/node-red", opt)
+tags, err  = registry.GetTags(ctx, http.DefaultClient, "ghcr.io/org/private-image", opt)
 ```
+
+**GHCR requires a real username, not just a token.** GHCR's token-exchange
+step is standard HTTP Basic auth (`username:PAT`) — unlike some registries,
+there is no bearer-only/username-less mode, even with a `GITHUB_TOKEN` or
+a GitHub App installation token (neither is accepted for GHCR push/pull
+outside a GitHub Actions workflow). If you want to rotate *only* the
+token in an unattended service (e.g. an MCP server) without also touching
+a username each time, use a dedicated **bot/machine GitHub account**: its
+username is a fixed value you set once via `GHCR_USER` (rarely changes),
+and only its PAT (`GHCR_PAT`) — the actual expiring secret — needs
+rotating. Give the bot account's classic PAT `read:packages` (+ `repo` for
+private repositories) scope.
 
 `GetImageMetadata` transparently resolves a multi-arch manifest list to a
 single platform — no list/index shape ever reaches the caller.

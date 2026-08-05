@@ -137,7 +137,8 @@ func formatBasicAuth(username, password string) (string, error) {
 type Option func(*options)
 
 type options struct {
-	credentials *Credentials
+	credentials           *Credentials
+	credentialsByRegistry RegistryCredentials
 }
 
 func resolveOptions(opts []Option) options {
@@ -154,6 +155,19 @@ func resolveOptions(opts []Option) options {
 // to mint a Bearer token).
 func WithCredentials(creds Credentials) Option {
 	return func(o *options) { o.credentials = &creds }
+}
+
+// WithCredentialsByRegistry supplies a full registry-host → Credentials
+// map — GetTags/GetImageMetadata pick the right entry automatically based
+// on the image URL's resolved registry host, so the SAME options value
+// can be reused unchanged across calls to different registries. See
+// RegistryCredentials' doc comment (types.go) for the exact set of
+// supported registry-host keys and the WithCredentials escape hatch for
+// others. If BOTH WithCredentials and WithCredentialsByRegistry are
+// supplied to the same call, WithCredentials wins (it is the more
+// specific, single-registry override).
+func WithCredentialsByRegistry(creds RegistryCredentials) Option {
+	return func(o *options) { o.credentialsByRegistry = creds }
 }
 
 // ── Auth challenge parsing ────────────────────────────────────────────────────
@@ -291,6 +305,18 @@ type credentialFunc = func(ctx context.Context, reqs []route.SecurityRequirement
 // own credentialFunc directly.
 func newAuthCredentialFunc(httpClient *http.Client, registryHost, repository string, opts ...Option) credentialFunc {
 	o := resolveOptions(opts)
+	// A single WithCredentials value is the more specific override and
+	// wins over WithCredentialsByRegistry when both are supplied. When
+	// only the map is supplied, look up the entry for THIS call's
+	// resolved registryHost — registryHost is already a parameter here
+	// (passed by GetTags/GetImageMetadata from ParseImageRef's resolved
+	// ref.Registry), so there is no ordering issue.
+	creds := o.credentials
+	if creds == nil {
+		if cr, ok := o.credentialsByRegistry[registryHost]; ok {
+			creds = &cr
+		}
+	}
 	var (
 		once    sync.Once
 		token   string
@@ -298,7 +324,7 @@ func newAuthCredentialFunc(httpClient *http.Client, registryHost, repository str
 	)
 	return func(ctx context.Context, _ []route.SecurityRequirement) (http.Header, error) {
 		once.Do(func() {
-			token, authErr = authenticate(ctx, httpClient, registryHost, repository, o.credentials)
+			token, authErr = authenticate(ctx, httpClient, registryHost, repository, creds)
 		})
 		if authErr != nil {
 			return nil, authErr

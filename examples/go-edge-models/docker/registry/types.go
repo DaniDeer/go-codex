@@ -81,3 +81,19 @@ type Credentials struct {
 	Username string
 	Password string
 }
+
+// RegistryCredentials maps a registry host to the Credentials to use for
+// that registry's token-exchange step. Supply ALL your registries'
+// credentials via WithCredentialsByRegistry — GetTags/GetImageMetadata
+// look up the right entry automatically based on the image URL's resolved
+// registry host, making the call site itself registry-agnostic: the SAME
+// options work unchanged no matter which registry a given image URL
+// resolves to. A registry host with no matching entry falls back to
+// anonymous/public access — same as omitting credentials entirely.
+//
+// Keys are restricted to the registries this package has been proven
+// against end-to-end (see registry_integration_test.go) — Docker Hub,
+// GHCR, MCR — via RegistryCredentialsCodec's key constraint. For any OTHER
+// registry, use the single-value WithCredentials(Credentials{...}) option
+// instead (unrestricted — works with any OCI-compliant registry).
+type RegistryCredentials map[string]Credentials

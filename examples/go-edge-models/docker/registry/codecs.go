@@ -85,6 +85,37 @@ func formatImageRefString(ref ImageRef) (string, error) {
 	return ref.Registry + "/" + ref.Repository + sep + ref.Reference, nil
 }
 
+// ── Credentials / RegistryCredentials ─────────────────────────────────────────
+
+// CredentialsCodec validates a Credentials value — Password must be
+// non-empty; Username is OPTIONAL: some registries (e.g. GHCR with a
+// personal access token) authenticate correctly with an empty/arbitrary
+// username and the actual token carried entirely in Password, so
+// Username is deliberately not constrained here. Lets a caller decode
+// Credentials/RegistryCredentials from an external config file (JSON/
+// YAML/TOML) via format.<Format>(CredentialsCodec)/(RegistryCredentialsCodec).
+var CredentialsCodec = c.Struct[Credentials](
+	c.OptionalField("username", c.String(),
+		func(cr Credentials) string { return cr.Username },
+		func(cr *Credentials, val string) { cr.Username = val },
+	),
+	c.RequiredField("password", c.String().Refine(v.NonEmptyString),
+		func(cr Credentials) string { return cr.Password },
+		func(cr *Credentials, val string) { cr.Password = val },
+	),
+)
+
+// RegistryCredentialsCodec validates a RegistryCredentials map. Keys are
+// restricted via validate.OneOf(knownRegistryHosts...) to the registries
+// this package is proven against end-to-end — registry-1.docker.io
+// (Docker Hub's actual API host), ghcr.io, mcr.microsoft.com. See
+// RegistryCredentials' doc comment for the WithCredentials escape hatch
+// when a different registry is needed.
+var RegistryCredentialsCodec = c.Map(
+	c.String().Refine(v.OneOf(knownRegistryHosts...)),
+	CredentialsCodec,
+)
+
 // ── TagsList ──────────────────────────────────────────────────────────────────
 
 // TagsListCodec is the canonical codec for the GET /v2/<name>/tags/list
