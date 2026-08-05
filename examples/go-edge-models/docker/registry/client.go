@@ -18,15 +18,23 @@ import (
 // Everything related to AUTHENTICATION (the Bearer-token challenge/token
 // exchange flow, the optional Basic-auth Credentials escape hatch, and
 // their Format*/error types) lives in the sibling auth.go instead —
-// GetTags/GetImageMetadata below just call authenticate() (same package)
-// and pass the resulting token to bearerCredentialFunc. Package-level
-// constants (Docker Hub defaults, acceptManifestTypes) live in
-// constants.go; every exported error type this package returns (both
-// client-wiring and auth errors) lives in errors.go. This file only
-// holds: image-reference parsing (ParseImageRef/FormatImageRef/
-// splitDockerDomain), the manifest-list-to-single-platform resolution
-// logic (fetchManifest/platformMatches), and the two public entry points
-// (GetTags/GetImageMetadata) that tie routes + auth + resolution together.
+// GetTags/GetImageMetadata below just build a
+// NewAuthCredentialFunc(httpClient, ref.Registry, ref.Repository, opts...)
+// value (same package) and pass it straight through as
+// nethttp.CallOptions.CredentialFunc; the actual Ping + challenge +
+// token-exchange dance runs LAZILY, inside that CredentialFunc, only when
+// a secured route (GetTagsRoute/GetManifestRoute) is actually called —
+// this file never calls authenticate() directly, nor threads a raw token
+// string through fetchManifest (it threads a CredentialFunc instead, see
+// fetchManifest's own doc comment for why the SAME value is reused across
+// GetImageMetadata's two manifest fetches). Package-level constants
+// (Docker Hub defaults, acceptManifestTypes) live in constants.go; every
+// exported error type this package returns (both client-wiring and auth
+// errors) lives in errors.go. This file only holds: image-reference
+// parsing (ParseImageRef/FormatImageRef/splitDockerDomain), the
+// manifest-list-to-single-platform resolution logic (fetchManifest/
+// platformMatches), and the two public entry points (GetTags/
+// GetImageMetadata) that tie routes + auth + resolution together.
 //
 // EVERY request/response aspect below flows through a route + codec —
 // zero manual HTTP request building, zero manual response parsing
@@ -126,20 +134,15 @@ func registryBaseURL(host string) string {
 // requires Basic auth at the token-exchange step; anonymous pulls need
 // no options at all.
 func GetTags(ctx context.Context, httpClient *http.Client, imageURL string, opts ...Option) (TagsList, error) {
-	o := resolveOptions(opts)
-
 	ref, err := ParseImageRef(imageURL)
-	if err != nil {
-		return TagsList{}, err
-	}
-	token, err := authenticate(ctx, httpClient, ref.Registry, ref.Repository, o.credentials)
 	if err != nil {
 		return TagsList{}, err
 	}
 
 	handle := GetTagsRoute.ClientHandle()
 	baseURL := registryBaseURL(ref.Registry)
-	callOpts := nethttp.CallOptions{CredentialFunc: bearerCredentialFunc(token)}
+	credFn := NewAuthCredentialFunc(httpClient, ref.Registry, ref.Repository, opts...)
+	callOpts := nethttp.CallOptions{CredentialFunc: credFn}
 	return nethttp.CallHandle(ctx, httpClient, baseURL, handle, GetTagsReq{Name: ref.Repository}, callOpts)
 }
 
@@ -150,13 +153,17 @@ func GetTags(ctx context.Context, httpClient *http.Client, imageURL string, opts
 // already populates the returned internal.ManifestEnvelope's Digest from
 // Docker-Content-Digest automatically, so no manual HTTP or header
 // reading is needed here (contrast with the Ping step in authenticate,
-// which genuinely cannot use this mechanism — see the file-level doc
-// comment).
-func fetchManifest(ctx context.Context, httpClient *http.Client, baseURL, repository, reference, token string) (internal.ManifestEnvelope, error) {
+// which genuinely cannot use this mechanism — see auth.go's file doc
+// comment). credFn is a single NewAuthCredentialFunc(...) value shared
+// across every fetchManifest call in one GetImageMetadata invocation, so
+// the auth flow it performs lazily on first use stays memoized across
+// calls (see GetImageMetadata's manifest-list resolution below, which may
+// call fetchManifest twice for one request).
+func fetchManifest(ctx context.Context, httpClient *http.Client, baseURL, repository, reference string, credFn CredentialFunc) (internal.ManifestEnvelope, error) {
 	handle := GetManifestRoute.ClientHandle()
 	opts := nethttp.CallOptions{
 		ExtraHeaders:   http.Header{"Accept": []string{acceptManifestTypes}},
-		CredentialFunc: bearerCredentialFunc(token),
+		CredentialFunc: credFn,
 	}
 	return nethttp.CallHandle(ctx, httpClient, baseURL, handle,
 		GetManifestReq{Name: repository, Reference: reference}, opts)
@@ -178,8 +185,6 @@ func platformMatches(d internal.ManifestDescriptor, selector internal.PlatformSe
 // repository that requires Basic auth at the token-exchange step;
 // anonymous pulls need no options at all.
 func GetImageMetadata(ctx context.Context, httpClient *http.Client, req GetImageMetadataReq, opts ...Option) (ManifestMetadata, error) {
-	o := resolveOptions(opts)
-
 	platformStr := req.Platform
 	if platformStr == "" {
 		platformStr = defaultPlatform
@@ -193,13 +198,14 @@ func GetImageMetadata(ctx context.Context, httpClient *http.Client, req GetImage
 	if err != nil {
 		return ManifestMetadata{}, err
 	}
-	token, err := authenticate(ctx, httpClient, ref.Registry, ref.Repository, o.credentials)
-	if err != nil {
-		return ManifestMetadata{}, err
-	}
 
 	baseURL := registryBaseURL(ref.Registry)
-	env, err := fetchManifest(ctx, httpClient, baseURL, ref.Repository, ref.Reference, token)
+	// One credFn shared across both fetchManifest calls below (list
+	// resolution + platform-specific fetch) — NewAuthCredentialFunc
+	// memoizes its own Ping/token-exchange work, so reusing this single
+	// value means that work happens at most once per GetImageMetadata call.
+	credFn := NewAuthCredentialFunc(httpClient, ref.Registry, ref.Repository, opts...)
+	env, err := fetchManifest(ctx, httpClient, baseURL, ref.Repository, ref.Reference, credFn)
 	if err != nil {
 		return ManifestMetadata{}, err
 	}
@@ -222,7 +228,7 @@ func GetImageMetadata(ctx context.Context, httpClient *http.Client, req GetImage
 			return ManifestMetadata{}, PlatformNotFoundError{Platform: platformStr, Available: available}
 		}
 
-		env, err = fetchManifest(ctx, httpClient, baseURL, ref.Repository, resolvedDigest, token)
+		env, err = fetchManifest(ctx, httpClient, baseURL, ref.Repository, resolvedDigest, credFn)
 		if err != nil {
 			return ManifestMetadata{}, err
 		}

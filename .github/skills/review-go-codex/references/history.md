@@ -1,6 +1,63 @@
-# go-codex Review History (R1–R90)
+# go-codex Review History (R1–R91)
 
 Do not re-report any of these findings. They have been implemented and tested.
+
+---
+
+## Round 91 (`examples/go-edge-models/docker/registry`: rewrite `authenticate` as an exported, memoizing `NewAuthCredentialFunc`)
+
+Rewrote the registry auth flow so it runs through
+`nethttp.CallOptions.CredentialFunc` — the mechanism `GetTagsRoute`/
+`GetManifestRoute` already declared via `RouteMeta.Security`
+(`bearerAuthSecurity`) — instead of being pre-fetched manually before
+every secured call. This is groundwork for a later phase that wraps this
+package's routes as MCP tools without going through `GetTags`/
+`GetImageMetadata` at all.
+
+- **`auth.go`**: added `type CredentialFunc = func(ctx context.Context,
+  reqs []route.SecurityRequirement) (http.Header, error)` (named alias for
+  readability) and exported `NewAuthCredentialFunc(httpClient,
+  registryHost, repository, opts ...Option) CredentialFunc`. It calls the
+  existing (unchanged) `authenticate()` LAZILY, on first invocation by
+  `nethttp.Call`/`CallHandle`, and memoizes the token/error via
+  `sync.Once` for the closure's lifetime — so reusing the SAME
+  `CredentialFunc` value across multiple secured calls (e.g.
+  `GetImageMetadata`'s two `GetManifestRoute` fetches while resolving a
+  manifest list) performs the Ping + WWW-Authenticate-challenge +
+  token-exchange dance only ONCE. Removed `bearerCredentialFunc` (its
+  header-formatting logic is now inlined in the new closure).
+- **`client.go`**: `GetTags`/`GetImageMetadata` no longer call
+  `authenticate()` up front — they build one `NewAuthCredentialFunc(...)`
+  value and pass it straight through as `CallOptions.CredentialFunc`.
+  `fetchManifest`'s trailing `token string` parameter became
+  `credFn CredentialFunc`; `GetImageMetadata` builds ONE `credFn` and
+  reuses it across both `fetchManifest` calls, which is what makes the
+  memoization take effect for the manifest-list-resolution path.
+- **`auth_test.go`**: added `TestNewAuthCredentialFunc_MemoizesAcrossMultipleCalls`
+  (asserts the mock registry's Ping/token endpoints are each hit exactly
+  once across two `CredentialFunc` invocations), `TestNewAuthCredentialFunc_NoAuthNeeded_ReturnsNilHeader`,
+  and `TestNewAuthCredentialFunc_PropagatesAuthError` (asserts
+  `RegistryAuthError` surfaces via `errors.As`, and stays consistent on a
+  second invocation). Existing `TestAuthenticate_*` tests (calling
+  `authenticate()` directly) are untouched and still pass.
+- **Design decision, not implemented**: memoization stays in this example
+  package (`docker/registry`), not in `adapters/nethttp` — the core
+  adapter has no natural cache key or token-expiry/invalidation story at
+  the `CredentialFunc` boundary; baking caching into `CallOptions` would
+  be scope creep against go-codex's no-hidden-state design. A `sync.Once`
+  closure scoped to `(registryHost, repository, credentials)` is the
+  correct, precise place for it.
+- **Explicitly out of scope**: wrapping `docker/registry`'s routes as MCP
+  tools (planned as a separate, later round); registering an actual
+  `rest.SecurityScheme` via a `rest.Builder` (this package has no
+  spec-building `Builder` at all — `RouteMeta.Security` is already
+  sufficient to trigger client-side `CredentialFunc` invocation).
+- Verified: `gofmt`, `go build`, `go vet`, `go test` (untagged: 8 tests
+  pass) and `go test -tags=integration` (all integration + unit tests
+  pass against real Docker Hub/GHCR/MCR registries, including the
+  manifest-list double-fetch path for `alpine`/`nodered/node-red`), full
+  repo `go test ./...`, `go run ./examples/go-edge-models` (demo output
+  unchanged), and `just check` (staticcheck+gosec, 0 issues) — all clean.
 
 ---
 

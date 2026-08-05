@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"net/http"
+	"sync"
 
 	nethttp "github.com/DaniDeer/go-codex/adapters/nethttp"
 	"github.com/DaniDeer/go-codex/examples/go-edge-models/docker/registry/internal"
@@ -12,14 +13,26 @@ import (
 
 // This file holds EVERYTHING related to authenticating against a
 // registry — the Bearer-token challenge/token exchange flow (parseChallenge,
-// authenticate, bearerCredentialFunc), the optional Basic-auth escape
+// authenticate, NewAuthCredentialFunc), the optional Basic-auth escape
 // hatch for private repositories (Option/WithCredentials), and the
 // Format* helpers specific to that flow. This file's error types
 // (RegistryAuthChallengeError/RegistryAuthError) live in the sibling
 // errors.go alongside client.go's error types — see errors.go's file
 // doc comment. client.go deliberately has NO auth logic of its own —
-// GetTags/GetImageMetadata just call authenticate() (same package, no
-// import needed) and pass the resulting token to bearerCredentialFunc.
+// GetTags/GetImageMetadata just build a NewAuthCredentialFunc(...) value
+// (same package) and pass it straight through as
+// nethttp.CallOptions.CredentialFunc; the Ping + challenge + token-exchange
+// dance runs LAZILY, inside that CredentialFunc, only when a secured route
+// (GetTagsRoute/GetManifestRoute, both declaring RouteMeta.Security) is
+// actually called — never up front. NewAuthCredentialFunc memoizes its
+// result (sync.Once) for its own lifetime, so reusing the SAME
+// CredentialFunc value across multiple secured calls (e.g.
+// GetImageMetadata's two GetManifestRoute calls while resolving a
+// manifest list) triggers the dance only ONCE. NewAuthCredentialFunc is
+// exported so a caller driving routes.go's routes directly (bypassing
+// GetTags/GetImageMetadata) gets the identical auth flow as a reusable
+// building block — e.g. a future MCP tool wrapper mapping tool input
+// straight to GetTagsRoute/GetManifestRoute.
 //
 // EVERY request/response aspect below flows through a route + codec —
 // zero manual HTTP request building, zero manual response parsing
@@ -205,16 +218,50 @@ func authenticate(ctx context.Context, httpClient *http.Client, registryHost, re
 	return tr.AccessToken, nil
 }
 
-// bearerCredentialFunc returns a nethttp.CallOptions.CredentialFunc that
-// supplies the Authorization: Bearer header for token — the declarative
-// replacement for setting CallOptions.ExtraHeaders by hand. Invoked
-// automatically by nethttp.Call/CallHandle for any route declaring
-// RouteMeta.Security (see routes.go's bearerAuthSecurity). Returns an
-// empty header (no-op) when token is "" (registry requires no auth).
-func bearerCredentialFunc(token string) func(context.Context, []route.SecurityRequirement) (http.Header, error) {
-	return func(context.Context, []route.SecurityRequirement) (http.Header, error) {
+// CredentialFunc names nethttp.CallOptions.CredentialFunc's function type
+// for readability at call sites that need to store or pass one around
+// (NewAuthCredentialFunc's return type, client.go's fetchManifest
+// parameter) instead of repeating the full inline function type.
+type CredentialFunc = func(ctx context.Context, reqs []route.SecurityRequirement) (http.Header, error)
+
+// NewAuthCredentialFunc returns a CredentialFunc that authenticates
+// against registryHost for repository LAZILY — on first invocation by
+// nethttp.Call/CallHandle, which only happens for routes declaring
+// RouteMeta.Security (see routes.go's bearerAuthSecurity) — and MEMOIZES
+// the result (via sync.Once) for the lifetime of the returned closure.
+// Reusing the SAME CredentialFunc value across multiple CallHandle
+// invocations against secured routes therefore performs the Ping +
+// WWW-Authenticate-challenge + token-exchange dance only ONCE, no matter
+// how many secured calls are made with it (see client.go's
+// GetImageMetadata, which reuses one CredentialFunc across two
+// GetManifestRoute calls while resolving a manifest list).
+//
+// Returns a nil header (no-op — the request goes out unauthenticated)
+// when the registry turns out to require no auth at all (authenticate
+// returns "" for a 2xx Ping). Returns any authentication error
+// (RegistryAuthChallengeError/RegistryAuthError) unchanged once observed --
+// matching authenticate's own error behavior, just deferred to first use.
+//
+// Exported so a caller driving routes.go's routes directly (bypassing
+// GetTags/GetImageMetadata) gets the identical auth flow as a reusable
+// building block — e.g. a future MCP tool wrapper mapping tool input
+// straight to GetTagsRoute/GetManifestRoute.
+func NewAuthCredentialFunc(httpClient *http.Client, registryHost, repository string, opts ...Option) CredentialFunc {
+	o := resolveOptions(opts)
+	var (
+		once    sync.Once
+		token   string
+		authErr error
+	)
+	return func(ctx context.Context, _ []route.SecurityRequirement) (http.Header, error) {
+		once.Do(func() {
+			token, authErr = authenticate(ctx, httpClient, registryHost, repository, o.credentials)
+		})
+		if authErr != nil {
+			return nil, authErr
+		}
 		if token == "" {
-			return nil, nil
+			return nil, nil // registry requires no auth for this request.
 		}
 		h := make(http.Header, 1)
 		h.Set("Authorization", FormatBearerToken(token))

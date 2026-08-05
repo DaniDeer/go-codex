@@ -34,10 +34,16 @@
 //     GetManifestRoute, GetTokenRoute) are the PRIMARY contract — call
 //     .ClientHandle() on any of them and drive adapters/nethttp.Call
 //     directly, with your own *http.Client, retry policy, or observer.
+//     auth.go's NewAuthCredentialFunc is the matching reusable auth
+//     building block for this layer: pass its result as
+//     nethttp.CallOptions.CredentialFunc and the same Ping + challenge +
+//     token-exchange flow GetTags/GetImageMetadata use internally applies
+//     to your own direct route calls too — e.g. wrapping GetTagsRoute/
+//     GetManifestRoute as an MCP tool without going through (2) at all.
 //  2. client.go's GetTags/GetImageMetadata are a convenience layer built ON
-//     TOP of (1) — they compose the routes with auth.go's auth flow and
-//     manifest-list resolution so a caller doesn't have to reimplement
-//     that orchestration.
+//     TOP of (1) — they compose the routes with auth.go's auth flow (via
+//     NewAuthCredentialFunc) and manifest-list resolution so a caller
+//     doesn't have to reimplement that orchestration.
 //
 // This package has NO dependency on the sibling iotedge or docker
 // packages — it models an entirely separate Docker HTTP API (the registry
