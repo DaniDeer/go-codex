@@ -2,7 +2,7 @@
 
 > See also: [`route` package on pkg.go.dev](https://pkg.go.dev/github.com/DaniDeer/go-codex/route)
 >
-> Runnable demos: [`examples/adapters-nethttp-security`](https://github.com/DaniDeer/go-codex/tree/main/examples/adapters-nethttp-security) · [`examples/adapters-chi-security`](https://github.com/DaniDeer/go-codex/tree/main/examples/adapters-chi-security) · [`examples/adapters-mqtt-security`](https://github.com/DaniDeer/go-codex/tree/main/examples/adapters-mqtt-security) · [`examples/adapters-mqtt5`](https://github.com/DaniDeer/go-codex/tree/main/examples/adapters-mqtt5) (Demo 3)
+> Runnable demos: [`examples/adapters-nethttp-security`](https://github.com/DaniDeer/go-codex/tree/main/examples/adapters-nethttp-security) · [`examples/adapters-chi-security`](https://github.com/DaniDeer/go-codex/tree/main/examples/adapters-chi-security) · [`examples/adapters-mqtt-security`](https://github.com/DaniDeer/go-codex/tree/main/examples/adapters-mqtt-security) · [`examples/adapters-mqtt5`](https://github.com/DaniDeer/go-codex/tree/main/examples/adapters-mqtt5) (Demo 3: message-level; Demo 3b: connect-level `SecuredClient`)
 >
 > `api/mcp` has NO security methods by deliberate, permanent design — MCP
 > security is handled by the host application (its own OAuth flow, or
@@ -32,12 +32,43 @@ security layers exist:
    `events.Channel`/`reqreply.Route` is touched. This already works today
    with ZERO go-codex involvement, and is sufficient for "one connection =
    one identity" topologies (e.g. one IoT device, one dedicated broker
-   connection, one CONNECT-time credential). See
-   [Connect-Level Credential Codec](../roadmap/mqtt-connect-credential-scheme.md)
-   (design draft) for a planned `SecuredClient` wrapper that adds a
-   codec-validated FORMAT check on this connect-time credential — a
-   one-time, construction-only validation, protocol-symmetric across MQTT
-   3.1.1 + MQTT5 (unlike the message-level model below).
+   connection, one CONNECT-time credential).
+
+   go-codex adds an OPTIONAL, codec-validated FORMAT check on top via
+   `mqtt5.SecuredClient`/`mqtt.SecuredClient` (protocol-symmetric across
+   MQTT 3.1.1 + MQTT5, unlike the message-level model below, since CONNECT
+   username/password exists in both protocol versions). Validation happens
+   ONCE, synchronously, at construction — never per message:
+
+   ```go
+   var connectBearerAuth = mqtt5.ConnectSecurityScheme{SecurityScheme: route.BasicScheme()}.
+       WithCodec(codex.String().Refine(validate.MinLen(8)))
+
+   client := paho.NewClient(...)
+   if _, err := client.Connect(ctx, &paho.Connect{
+       Username: "svc-account", Password: []byte(token),
+   }); err != nil { /* handle */ }
+
+   secured, err := mqtt5.NewSecuredClient(client, connectBearerAuth, "svc-account", token)
+   if err != nil { /* malformed credential — client is never used */ }
+
+   // secured is a drop-in replacement — every Subscribe/Publish/Serve/Call
+   // call site below is UNCHANGED from how it would look with the raw client.
+   mqtt5.Subscribe(ctx, secured, router, handle, fn, opts)
+   ```
+
+   `NewSecuredClient` combines `username`+`password` into a single
+   `"username:password"` string before validating (the MQTT CONNECT packet
+   carries them as two separate wire fields — this combined form is a
+   VALIDATION-TIME representation only, never transmitted; mirrors
+   `examples/go-edge-models/docker/registry`'s `internal.BasicAuthCodec`
+   convention for HTTP Basic auth). On failure, returns
+   `ConnectSecurityCredentialError` and the underlying client is never
+   touched. `*SecuredClient` satisfies `MQTTClient`/`pahomqtt.Client`
+   transparently via Go struct embedding — no other code changes needed.
+   See [Connect-Level Credential Codec](../roadmap/mqtt-connect-credential-scheme.md)
+   for the full design (including the rejected global-memoization
+   alternative and rationale).
 2. **Message-level** (`WithSecurityScheme` + `SecurityFunc`/
    `CredentialFunc`, shipped — MQTT5-only, see below) — opt-in, per-message
    codec-validated credentials, needed when ONE connection carries traffic

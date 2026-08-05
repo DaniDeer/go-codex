@@ -1,6 +1,6 @@
 # Connect-Level Credential Codec — `adapters/mqtt` + `adapters/mqtt5`
 
-> **Status:** Design draft — not yet implemented.
+> **Status:** Design complete — ready for implementation.
 > [← Back to Roadmap](index.md)
 >
 > See also: [Security & Authentication](../features/security.md) (`api/rest`'s shipped symmetric security model; the "Connection-level vs message-level security" section explains where this feature fits)
@@ -119,13 +119,25 @@ type SecuredClient struct {
     MQTTClient
 }
 
-// NewSecuredClient validates credential against scheme.Codec ONCE,
-// synchronously. On success, returns a *SecuredClient ready to pass to
-// Subscribe/Publish/Serve/Call UNCHANGED — every existing call site keeps
-// working exactly as it does with a raw MQTTClient, since *SecuredClient
-// satisfies MQTTClient transparently.
+// NewSecuredClient combines username+password into a single
+// "username:password" string and validates that ONCE, synchronously,
+// against scheme.Codec — before the client is ever used.
 //
-// On failure, returns (nil, ConnectSecurityCredentialError) — client is
+// The MQTT CONNECT packet carries username and password as two SEPARATE
+// wire fields (unlike HTTP's single Authorization header, which is why the
+// message-level model validates one plain string) — but Codec.Validate
+// takes exactly one string. NewSecuredClient bridges this the same way
+// examples/go-edge-models/docker/registry's internal.BasicAuthCodec
+// already does for HTTP Basic auth: combine both into one string before
+// validating. This "username:password" string is a VALIDATION-TIME
+// representation ONLY — it is never transmitted; the raw username/password
+// you pass here are exactly what your OWN prior client.Connect(...) call
+// already sent to the broker, unchanged.
+//
+// On success: returns *SecuredClient, a drop-in replacement for the raw
+// client at every Subscribe/Publish/Serve/Call call site.
+//
+// On failure: returns (nil, ConnectSecurityCredentialError) — client is
 // NEVER touched or used; the caller should treat this as fatal (do not
 // attempt Subscribe/Publish with the unwrapped raw client either — the
 // whole point is that a malformed credential should never reach the
@@ -135,24 +147,56 @@ type SecuredClient struct {
 // validation" contract used everywhere else in the security model) —
 // NewSecuredClient always succeeds in that case.
 //
-// go-codex still never calls Connect() itself — connect first, THEN wrap:
+// go-codex still never calls Connect() itself — connect first, THEN wrap.
+// Recommendation: also declare the SAME requirement via Server.Security
+// when building an AsyncAPI spec for this connection, purely for
+// documentation parity between the spec output and this runtime check —
+// Server.Security itself has no code-level link to
+// ConnectSecurityScheme/NewSecuredClient.
 //
 //	client := paho.NewClient(...)
 //	if _, err := client.Connect(ctx, &paho.Connect{
 //	    Username: "svc-account", Password: []byte(token),
 //	}); err != nil { /* handle */ }
 //
-//	secured, err := mqtt5.NewSecuredClient(client, bearerAuth, "Bearer "+token)
+//	secured, err := mqtt5.NewSecuredClient(client, bearerAuth, "svc-account", token)
 //	if err != nil { /* malformed credential — client is never used */ }
 //
 //	mqtt5.Subscribe(ctx, secured, router, handle, fn, opts) // works exactly as before
-func NewSecuredClient(client MQTTClient, scheme ConnectSecurityScheme, credential string) (*SecuredClient, error) {
+func NewSecuredClient(client MQTTClient, scheme ConnectSecurityScheme, username, password string, opts ...SecuredClientOption) (*SecuredClient, error) {
+    o := resolveSecuredClientOptions(opts)
     if scheme.Codec != nil {
-        if err := scheme.Codec.Validate(credential); err != nil {
+        combined := username + ":" + password
+        if err := scheme.Codec.Validate(combined); err != nil {
+            if secObs, ok := o.observer.(stats.SecurityObserver); ok {
+                secObs.RecordSecurityRejection("connect", string(scheme.Type))
+            }
             return nil, ConnectSecurityCredentialError{Scheme: scheme, Err: err}
         }
     }
     return &SecuredClient{MQTTClient: client}, nil
+}
+
+// SecuredClientOption configures NewSecuredClient.
+type SecuredClientOption func(*securedClientOptions)
+
+type securedClientOptions struct {
+    observer stats.Observer
+}
+
+func resolveSecuredClientOptions(opts []SecuredClientOption) securedClientOptions {
+    o := securedClientOptions{observer: stats.NoopObserver{}}
+    for _, opt := range opts {
+        opt(&o)
+    }
+    return o
+}
+
+// WithObserver sets the Observer NewSecuredClient reports
+// RecordSecurityRejection to on validation failure. Defaults to
+// stats.NoopObserver when not supplied.
+func WithObserver(obs stats.Observer) SecuredClientOption {
+    return func(o *securedClientOptions) { o.observer = obs }
 }
 ```
 
@@ -219,7 +263,7 @@ existing `SecurityObserver` extension (no new observer interface needed):
 func NewSecuredClient(
     client MQTTClient,
     scheme ConnectSecurityScheme,
-    credential string,
+    username, password string,
     opts ...SecuredClientOption,
 ) (*SecuredClient, error)
 
@@ -287,21 +331,22 @@ already there.
   message-level `CredentialFunc`'s return value across calls, not a
   connection's own credential).
 
-## Open design decisions (to resolve before/during implementation)
+## Resolved design decisions
 
-- **Credential shape**: a single opaque `credential string` (as sketched
-  above — simplest, also covers MQTT5 enhanced/SASL auth methods beyond
-  plain username/password) vs. separate `username, password string`
-  parameters (matches the literal CONNECT packet fields more closely, but
-  doesn't generalize past basic auth). Lean toward the opaque string for
-  symmetry with the message-level model's `Codec[string]` validation, but
-  confirm before implementation.
-- **Does `Server.Security` need any cross-reference at all?** It remains
-  pure AsyncAPI documentation today, disconnected from any runtime
-  mechanism. This feature could optionally recommend (in godoc only, not
-  code) declaring the same requirement via `Server.Security` for spec
-  documentation purposes, purely as a convention — needs a decision on
-  whether that's worth mentioning or just leaving fully separate.
-- **Naming**: `SecuredClient`/`NewSecuredClient` vs. alternatives (e.g.
-  `AuthenticatedClient`, `ValidatedClient`) — confirm the chosen name reads
-  well alongside `MQTTClient`/`MQTTRouter` in both adapters' godoc.
+- **Credential shape**: separate `username, password string` parameters
+  on `NewSecuredClient` (matches the MQTT CONNECT packet's actual two
+  wire fields), combined internally into a single `"username:password"`
+  string before calling `scheme.Codec.Validate(...)` — mirrors
+  `examples/go-edge-models/docker/registry`'s existing
+  `internal.BasicAuthCodec` convention rather than inventing a new one.
+  This combined string is a VALIDATION-TIME-ONLY representation; it is
+  never transmitted anywhere — the actual `client.Connect(...)` call
+  (made by the caller, before ever calling `NewSecuredClient`) already
+  sent the raw username/password to the broker unchanged.
+- **`Server.Security` cross-reference**: godoc-only recommendation (no
+  code linkage) — `NewSecuredClient`'s doc comment recommends ALSO
+  declaring the same requirement via `Server.Security` when building an
+  AsyncAPI spec for the connection, purely for spec/runtime documentation
+  parity. `Server.Security` itself remains untouched — no new field, no
+  registration mechanism tying it to `ConnectSecurityScheme`.
+- **Naming**: `SecuredClient`/`NewSecuredClient` confirmed as-is.

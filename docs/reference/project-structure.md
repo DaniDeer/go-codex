@@ -96,12 +96,18 @@ go-codex/
 │   │   ├── adapter.go      # SubscribeHandler, SubscribeOptions, Publish, PublishOptions,
 │   │   │                   #   SubscribeError, ErrorKind, MessageFromContext
 │   │   ├── topicvars.go    # TopicVarsFromMessage, TopicMismatchError
+│   │   ├── connect_security.go # ConnectSecurityScheme, SecuredClient, NewSecuredClient,
+│   │   │                   #   ConnectSecurityCredentialError — connect-level (CONNECT
+│   │   │                   #   username/password) credential validation, wraps pahomqtt.Client
 │   │   └── binding.go      # SubscribeAdapter, PublishAdapter (ports.SourceAdapter/SinkAdapter)
 │   ├── mqtt5/              # MQTT 5.0 adapter (paho.golang) — PUB/SUB + request-reply
 │   │   ├── adapter.go      # Subscribe, Publish, SubscribeOptions, PublishOptions (+ CredentialFunc),
 │   │   │                   #   UserPropertyParam, ReplyTopicBuilder, UUIDReplyTopic, SharedReplyTopic
 │   │   ├── security.go     # extractUserPropertyCredential, validateSecurityCredentials — shared
 │   │   │                   #   built-in codec-based credential check for events + reqreply
+│   │   ├── connect_security.go # ConnectSecurityScheme, SecuredClient, NewSecuredClient,
+│   │   │                   #   ConnectSecurityCredentialError — connect-level (CONNECT
+│   │   │                   #   username/password) credential validation, wraps MQTTClient
 │   │   ├── reqreply.go     # Serve[Req,Resp], Call[Req,Resp], ServeOptions (+ SecurityFunc),
 │   │   │                   #   CallOptions (+ CredentialFunc), ServeError, CallError, BrokerError, UserPropertyError
 │   │   ├── stream.go       # AsPipelineFunc

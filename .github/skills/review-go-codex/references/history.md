@@ -1,6 +1,81 @@
-# go-codex Review History (R1–R100)
+# go-codex Review History (R1–R101)
 
 Do not re-report any of these findings. They have been implemented and tested.
+
+---
+
+## Round 101 (Implemented Connect-Level Credential Codec — `adapters/mqtt`/`adapters/mqtt5`)
+
+Implemented the `mqtt-connect-credential-scheme.md` roadmap doc drafted in
+Round 100, resolving its 3 open design decisions first:
+
+- **Credential shape**: `NewSecuredClient(client, scheme, username, password string, opts ...SecuredClientOption)`
+  — two separate parameters (matching the MQTT CONNECT packet's actual two
+  wire fields), combined internally into a single `"username:password"`
+  string before calling `scheme.Codec.Validate(...)` — mirrors the existing
+  `examples/go-edge-models/docker/registry`'s `internal.BasicAuthCodec`
+  convention rather than inventing a new one. This combined string is a
+  VALIDATION-TIME-ONLY representation — never transmitted.
+- **`Server.Security` cross-reference**: godoc-only recommendation (no code
+  linkage) — `NewSecuredClient`'s doc comment recommends also declaring the
+  same requirement via `Server.Security` for spec/runtime documentation
+  parity; `Server.Security` itself remains untouched.
+- **Naming**: `SecuredClient`/`NewSecuredClient` confirmed as-is.
+
+Implementation (identical shape in both adapters, protocol-symmetric):
+
+- **`adapters/mqtt5/connect_security.go`** (new file): `ConnectSecurityScheme{route.SecurityScheme + Codec}`
+  + `WithCodec`; `SecuredClient{MQTTClient}` (struct-embeds `MQTTClient` —
+  every method promoted automatically, zero manual delegation);
+  `SecuredClientOption`/`WithObserver`; `NewSecuredClient` (validates ONCE,
+  synchronously, at construction — no `sync.Once`, no lazy first-call
+  race, no global state); `ConnectSecurityCredentialError{Scheme,Err}` —
+  `Error()`/`Unwrap()`/`LogValue()` (`slog.LogValuer`). Compile-time
+  assertion `var _ MQTTClient = (*SecuredClient)(nil)`.
+- **`adapters/mqtt/connect_security.go`** (new file): identical shape,
+  wrapping `pahomqtt.Client` (MQTT 3.1.1) instead — confirms the design's
+  protocol symmetry (CONNECT username/password exists in both MQTT
+  versions, unlike per-message User Properties which are MQTT5-only).
+- **10 tests per adapter** (20 total, `connect_security_test.go` in each
+  package): valid credential → wrapper returned; malformed credential →
+  `ConnectSecurityCredentialError`, wrapper nil; nil `Codec` → no-op;
+  malformed credential → underlying client NEVER touched (zero
+  Publish/Subscribe calls on the mock); `*SecuredClient` satisfies
+  `MQTTClient`/`pahomqtt.Client` (compile-time assertion);
+  `TestSecuredClient_TransparentDelegation` — re-runs a representative
+  Publish+Subscribe pair through the wrapper, proving identical behavior
+  to the raw client; Observer records `RecordSecurityRejection("connect", scheme.Type)`
+  on failure; nil Observer doesn't panic; `LogValue()`/`errors.As` on the
+  new error type. Reused each package's EXISTING `mockClient` test helper
+  (both packages already had one satisfying the full client interface) —
+  no new mock infrastructure needed.
+- **`examples/adapters-mqtt5`**: added "Demo 3b: Connect-level security" —
+  wraps the mock broker with `NewSecuredClient`, contrasting the SAME
+  concept against Demo 3's message-level security in one runnable place;
+  happy path + malformed-credential-rejected-at-construction path. Found
+  and fixed a demo bug: the initial malformed-credential example used
+  `validate.NonEmptyString` on the combined `"username:password"` string,
+  but `""+ ":" +""` is still non-empty (1 char) — switched to
+  `validate.MinLen(3)` for a realistic rejection.
+- **Docs (3 surfaces)**: `.github/instructions/go-codex.instructions.md`
+  (both `adapters/mqtt`/`adapters/mqtt5` table rows); `docs/features/security.md`'s
+  "Connection-level vs message-level security" section (written in Round
+  100) updated with the concrete, now-shipped `NewSecuredClient` code
+  example; `docs/reference/project-structure.md` file listings for both
+  adapters' new `connect_security.go`.
+- **Roadmap doc updated in place** (`docs/roadmap/mqtt-connect-credential-scheme.md`):
+  Status → "Design complete — ready for implementation" before coding
+  started; "Open design decisions" section replaced with "Resolved design
+  decisions" recording the 3 choices above (not deleted — decision
+  history preserved per skill convention). NOT yet retired this round —
+  left in place as implementation reference; retirement (moving lasting
+  rationale into `docs/features/security.md` and deleting the roadmap
+  doc, per the Round 97/99 precedent) deferred to a future round once the
+  feature has been in use for a while, rather than immediately after
+  shipping.
+- Full verification: `gofmt -l .` clean, `go build ./...`, `go test ./...`
+  (repo-wide), `go run` on every example (all exit 0), `just check`
+  (staticcheck + gosec, 0 issues).
 
 ---
 

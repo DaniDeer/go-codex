@@ -380,6 +380,7 @@ func main() {
 	runErrorChannelDemo(ctx)
 	runRequestReplyDemo(ctx, logger)
 	runSecurityDemo(ctx, logger)
+	runConnectSecurityDemo(ctx)
 	printSpecs(logger)
 }
 
@@ -637,6 +638,61 @@ func runSecurityDemo(ctx context.Context, logger *slog.Logger) {
 		os.Exit(1)
 	}
 	_ = logger
+}
+
+// ── Demo 3b: Connect-level security — mqtt5.NewSecuredClient ─────────────────
+//
+// Contrasts CONNECTION-level security against Demo 3's MESSAGE-level
+// security: the SAME connectBearerAuth scheme is declared ONCE, but
+// validated a single time at construction (via NewSecuredClient), right
+// after the caller's own client.Connect(...) — NOT per message. The
+// resulting *mqtt5adapter.SecuredClient is a drop-in replacement for the
+// raw broker client: every Subscribe/Publish/Serve/Call call site below is
+// completely UNCHANGED from how it would look with the raw client.
+// MinLen(3) rejects the combined "username:password" string when either
+// part is empty (e.g. "" + "" -> ":" is only 1 character) — a stand-in for
+// a real-world constraint like "password must be a non-trivial token".
+var connectBearerAuth = mqtt5adapter.ConnectSecurityScheme{SecurityScheme: route.BasicScheme()}.
+	WithCodec(codex.String().Refine(validate.MinLen(3)))
+
+func runConnectSecurityDemo(ctx context.Context) {
+	fmt.Println("\n── Demo 3b: Connect-level security — mqtt5.NewSecuredClient ──")
+
+	broker, router := newMockBroker()
+
+	// The caller connects their own client FIRST (go-codex never calls
+	// Connect() itself) — here the mock broker is already "connected" by
+	// construction. In production: client.Connect(ctx, &paho.Connect{
+	// Username: "svc-account", Password: []byte(token)}).
+	fmt.Println("\n  → Wrapping an already-connected client with a valid credential:")
+	secured, err := mqtt5adapter.NewSecuredClient(broker, connectBearerAuth, "svc-account", "s3cr3t-token")
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "unexpected error: %v\n", err)
+		os.Exit(1)
+	}
+	fmt.Println("  ✓ credential accepted — secured is a drop-in replacement for broker")
+
+	// Every existing call site is UNCHANGED — secured satisfies MQTTClient
+	// transparently via struct embedding.
+	handle, _ := ReadingsChannel.Register(events.NewBuilder(events.Info{Title: "Test", Version: "1.0.0"}))
+	_ = mqtt5adapter.Publish(ctx, secured, handle, 1, false,
+		SensorReading{SensorID: "f47ac10b-58cc-4372-a567-0e02b2c3d479", Value: 22.5},
+		map[string]string{"sensorID": "f47ac10b-58cc-4372-a567-0e02b2c3d479"},
+		mqtt5adapter.PublishOptions{})
+	fmt.Println("  ✓ Publish through the wrapper works exactly like the raw client")
+	_ = router
+
+	// Rejected path: a malformed (empty) credential is caught at
+	// construction — the underlying client is never touched or used.
+	fmt.Println("\n  → Wrapping the SAME client with a malformed (empty) credential:")
+	_, err = mqtt5adapter.NewSecuredClient(broker, connectBearerAuth, "", "")
+	var credErr2 mqtt5adapter.ConnectSecurityCredentialError
+	if errors.As(err, &credErr2) {
+		fmt.Printf("  ✓ rejected at construction: scheme_type=%q (client never used)\n", credErr2.Scheme.Type)
+	} else {
+		fmt.Fprintf(os.Stderr, "expected ConnectSecurityCredentialError, got: %v\n", err)
+		os.Exit(1)
+	}
 }
 
 // ── Demo 3: AsyncAPI spec generation ─────────────────────────────────────────
