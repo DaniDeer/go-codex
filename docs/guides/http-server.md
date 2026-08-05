@@ -30,7 +30,7 @@ Key patterns:
 
 Demonstrates bearer JWT authentication with per-route scope enforcement:
 
-- `b.AddSecurityScheme("bearerAuth", ...)` with `validate.BearerToken` codec
+- `rest.WithSecurityScheme("bearerAuth", ...)` on the route, with `validate.BearerToken` codec
 - `b.AddGlobalSecurity(route.Require("bearerAuth"))`
 - Per-route scopes: `route.Require("bearerAuth", "profile")` vs `route.Require("bearerAuth", "admin")`
 - Custom `ErrorHandler` mapping `invalidCredentialsError` → 401

@@ -150,9 +150,10 @@ type PortOptions struct {
 	// RESTBuilder registers each [RESTPattern]'s Route against b via
 	// rest.Route.Register(b) — the SAME call a hand-declared route makes. Supply
 	// the *rest.Builder your application already uses (with rest.WithPathConstraints,
-	// b.AddSecurityScheme, b.AddGlobalSecurity already configured) to get full
-	// parity with hand-declared routes: the resulting handle is indistinguishable
-	// from one built by calling rest.NewRoute(...).Register(b) directly.
+	// b.AddGlobalSecurity already configured, and rest.WithSecurityScheme declared
+	// on the RESTPattern's own Route) to get full parity with hand-declared
+	// routes: the resulting handle is indistinguishable from one built by
+	// calling rest.NewRoute(...).Register(b) directly.
 	//
 	// When nil, ports registers against a private, single-use *rest.Builder with
 	// zero [rest.Info] — the same zero-ceremony default as a builder-free

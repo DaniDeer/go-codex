@@ -266,6 +266,18 @@ var EmailConflictCodec = codex.Struct[EmailConflictError](
 	),
 )
 
+// bearerAuthScheme declares the "bearerAuth" security scheme's spec metadata
+// and credential-format codec ONCE here, on the shared route definition, so
+// BOTH the server (Route.Register, main.go) and the client
+// (Route.ClientHandle, main.go) get IDENTICAL credential-format enforcement
+// from this single declaration — the server validates an incoming
+// Authorization header against this Codec before SecurityFunc runs; the
+// client (nethttp.Call) validates a CredentialFunc's returned header against
+// the SAME Codec before sending.
+var bearerAuthScheme = rest.SecurityScheme{
+	SecurityScheme: route.BearerScheme("JWT"),
+}.WithCodec(codex.String().Refine(validate.NonEmptyString))
+
 // GetSecuredData is the route spec for GET /data.
 // Requires bearer authentication — the client must supply a token via
 // CallOptions.CredentialFunc, which injects the Authorization header.
@@ -281,4 +293,5 @@ var GetSecuredData = rest.NewRoute[struct{}, Profile](
 			route.Require("bearerAuth"),
 		},
 	},
+	rest.WithSecurityScheme("bearerAuth", bearerAuthScheme),
 )

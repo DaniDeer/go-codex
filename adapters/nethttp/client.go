@@ -430,6 +430,38 @@ func Call[Req, Resp any](
 		httpReq.AddCookie(&http.Cookie{Name: k, Value: v})
 	}
 
+	// 8b. Validate the outgoing credential FORMAT — the client-side mirror
+	// of the server-side check in Handler (validateSecurityCredentials).
+	// httpReq now carries every header/cookie/query value that will be
+	// sent, including credHeaders merged above, so it is a valid input to
+	// the SAME extraction/validation helpers the server adapter uses on an
+	// incoming request — reused here verbatim, zero duplication. A route
+	// with no [rest.WithSecurityScheme] declaration (handle.SecuritySchemes
+	// empty) or a scheme with a nil Codec is a no-op, identical to today's
+	// behavior.
+	//
+	// Gated on credHeaders != nil — i.e. CredentialFunc actually ran and
+	// returned something — NOT on len(secReqs) > 0 alone. A nil
+	// CredentialFunc, or one that deliberately returns (nil, nil) to mean
+	// "this call needs no credential" (e.g. an auth flow that first probes
+	// whether the specific server instance requires auth at all, like
+	// examples/go-edge-models/docker/registry's NewAuthCredentialFunc),
+	// must stay a non-error — symmetric with the pre-existing "nil
+	// CredentialFunc on a secured route is not an error" contract. Without
+	// this gate, a route declaring both Security and a non-empty-string
+	// Codec would wrongly reject every request where the credential
+	// mechanism correctly determined no credential was needed, since the
+	// resulting (absent) Authorization header extracts as "" either way.
+	if len(secReqs) > 0 && credHeaders != nil {
+		if credErr := validateSecurityCredentials(httpReq, secReqs, handle.SecuritySchemes); credErr != nil {
+			if secObs, ok := obs.(stats.SecurityObserver); ok {
+				secObs.RecordSecurityRejection(routePath, firstScheme(secReqs))
+			}
+			obs.RecordRequest(method, routePath, 0, time.Since(start))
+			return zero, credErr
+		}
+	}
+
 	// 9. Execute the request.
 	resp, err := client.Do(httpReq)
 	if err != nil {

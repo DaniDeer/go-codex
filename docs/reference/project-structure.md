@@ -49,7 +49,7 @@ go-codex/
 │   ├── rest/               # REST API builder: typed Decode/Encode + OpenAPI spec
 │   │   └── builder.go      # Builder, Route[Req,Resp]/NewRoute, SSERoute[Req,Event]/NewSSERoute,
 │   │                       #   RouteHandle (Decode, Encode, EncodeRequest, DecodeResponse, ClientHandle),
-│   │                       #   SSERouteHandle, BuildPath, AddServer, AddSchema, AddSecurityScheme,
+│   │                       #   SSERouteHandle, BuildPath, AddServer, AddSchema, WithSecurityScheme,
 │   │                       #   AddGlobalSecurity, PathParam, QueryParam, CookieParam, HeaderParam,
 │   │                       #   ResponseHeaderParam, ResponseCookieParam, RouteMeta, SecurityScheme
 │   ├── events/             # Event channel builder: typed Decode/Encode + AsyncAPI spec

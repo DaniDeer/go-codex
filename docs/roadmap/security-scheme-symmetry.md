@@ -1,6 +1,7 @@
 # Route-Only Security Scheme Declaration + Client-Side Credential Validation — `api/rest`
 
-> **Status:** Design complete — not yet implemented.
+> **Status:** SHIPPED (Phase 1). Kept as design history — see
+> [Security & Authentication](../features/security.md) for current usage docs.
 > [← Back to Roadmap](index.md)
 
 ## Motivation

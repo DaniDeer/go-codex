@@ -5,17 +5,31 @@ import (
 	c "github.com/DaniDeer/go-codex/codex"
 	"github.com/DaniDeer/go-codex/examples/go-edge-models/docker/registry/internal"
 	"github.com/DaniDeer/go-codex/route"
+	"github.com/DaniDeer/go-codex/validate"
 )
 
 // bearerAuthSecurity declares that a route requires Bearer-token
 // credentials — set as RouteMeta.Security below so
 // [nethttp.CallOptions.CredentialFunc] is invoked automatically by
 // [nethttp.Call]/[nethttp.CallHandle], instead of the caller having to set
-// the Authorization header by hand via CallOptions.ExtraHeaders. This
-// package never registers an actual rest.SecurityScheme (there is no
-// Builder/spec here — see routes.go's file doc comment) — the requirement
-// alone is enough to trigger client-side CredentialFunc invocation.
+// the Authorization header by hand via CallOptions.ExtraHeaders.
 var bearerAuthSecurity = []route.SecurityRequirement{{"bearerAuth": nil}}
+
+// bearerAuthScheme declares the "bearerAuth" scheme's spec metadata and a
+// non-empty-string format Codec, attached to GetTagsRoute/GetManifestRoute
+// below via rest.WithSecurityScheme — the ONLY way to declare a security
+// scheme in go-codex (no Builder/spec involved here at all; WithSecurityScheme
+// is a route-level RouteOpt, so it works identically through .ClientHandle()
+// as it would through .Register(builder)). This gives NewAuthCredentialFunc
+// (auth.go) a genuine extra safety net: nethttp.Call now validates its
+// returned Authorization header's bare token against this Codec before
+// sending, on top of (not instead of) the fact that FormatBearerToken/
+// internal.BearerTokenCodec.Encode already construct that header from a
+// codec — this catches an empty token specifically, which the encode-side
+// codec alone does not.
+var bearerAuthScheme = rest.SecurityScheme{
+	SecurityScheme: route.BearerScheme(""),
+}.WithCodec(c.String().Refine(validate.NonEmptyString))
 
 // This file is the PRIMARY consumable contract of this package. Every
 // route below is a plain [rest.Route] value — a downstream consumer can
@@ -54,6 +68,7 @@ var GetTagsRoute = rest.NewRoute[GetTagsReq, TagsList](
 		RespSchemaName: "TagsList",
 		Security:       bearerAuthSecurity,
 	},
+	rest.WithSecurityScheme("bearerAuth", bearerAuthScheme),
 	rest.NewPathParam("name",
 		c.String(),
 		func(r GetTagsReq) string { return r.Name },
@@ -101,6 +116,7 @@ var GetManifestRoute = rest.NewRoute[GetManifestReq, internal.ManifestEnvelope](
 		RespSchemaName: "ManifestEnvelope",
 		Security:       bearerAuthSecurity,
 	},
+	rest.WithSecurityScheme("bearerAuth", bearerAuthScheme),
 	rest.NewPathParam("name",
 		c.String(),
 		func(r GetManifestReq) string { return r.Name },

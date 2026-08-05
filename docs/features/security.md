@@ -4,7 +4,7 @@
 >
 > Runnable demos: [`examples/adapters-nethttp-security`](https://github.com/DaniDeer/go-codex/tree/main/examples/adapters-nethttp-security) · [`examples/adapters-chi-security`](https://github.com/DaniDeer/go-codex/tree/main/examples/adapters-chi-security) · [`examples/adapters-mqtt-security`](https://github.com/DaniDeer/go-codex/tree/main/examples/adapters-mqtt-security)
 
-go-codex documents security requirements in the spec and provides declarative hooks for runtime enforcement. Security schemes are registered on the builder; runtime credential validation is handled by adapters via a `SecurityFunc` hook — **the library does not import any crypto or JWT library**.
+go-codex documents security requirements in the spec and provides declarative hooks for runtime enforcement — **the library does not import any crypto or JWT library**. For REST, a security scheme is declared ONCE, directly on the route (`rest.WithSecurityScheme`) — there is no builder-level scheme registry — and the SAME declaration is consumed identically by both the server (`Route.Register`) and the client (`Route.ClientHandle`), so one route definition gets IDENTICAL credential-format enforcement on both ends. Runtime credential validation itself is handled by adapters: server-side via a `SecurityFunc` hook, client-side automatically inside `nethttp.Call` (see "HTTP client — CredentialFunc" below).
 
 ## Security schemes (REST)
 
@@ -15,17 +15,30 @@ import (
     "github.com/DaniDeer/go-codex/validate"
 )
 
+// Declare each scheme ONCE as a shared value — Go's ordinary "declare once,
+// reference everywhere" idiom, no builder-level registry needed.
+var bearerAuth = rest.SecurityScheme{
+    SecurityScheme: route.BearerScheme("JWT"),
+}.WithCodec(codex.String().Refine(validate.BearerToken)) // format check before SecurityFunc/before send
+
+var apiKeyAuth = rest.SecurityScheme{
+    SecurityScheme: route.APIKeyScheme("X-API-Key", "header"),
+}
+
 b := rest.NewBuilder(rest.Info{Title: "User API", Version: "1.0.0"})
 
-// Register schemes — spec fields flow into OpenAPI; Codec validates the raw credential.
-b.AddSecurityScheme("bearerAuth", rest.SecurityScheme{
-    SecurityScheme: route.BearerScheme("JWT"),
-}.WithCodec(codex.String().Refine(validate.BearerToken))) // format check before SecurityFunc
-
-b.AddSecurityScheme("apiKey", rest.SecurityScheme{
-    SecurityScheme: route.APIKeyScheme("X-API-Key", "header"),
-})
+// Attach the scheme directly to every route that needs it, via WithSecurityScheme.
+createUser, _ := rest.NewRoute[CreateUserReq, User]("POST", "/users",
+    reqCodec, respCodec,
+    rest.RouteMeta{
+        OperationID: "createUser",
+        Security:    []route.SecurityRequirement{route.Require("bearerAuth", "write:users")},
+    },
+    rest.WithSecurityScheme("bearerAuth", bearerAuth),
+).Register(b)
 ```
+
+`Builder.OpenAPISpec()` aggregates `components.securitySchemes` automatically from every registered route's own `WithSecurityScheme` declarations — no separate builder-level step needed. When two routes declare the same scheme name with different values, the last-registered route wins (no error); define the scheme once as a shared value (as above) to avoid relying on this.
 
 Built-in scheme constructors:
 
@@ -40,11 +53,14 @@ route.OpenIDConnectScheme("https://.../.well-known")// OIDC discovery
 
 ## Global and per-route security
 
+`Builder.AddGlobalSecurity`/`RouteMeta.Security` answer "which routes require auth" — a SEPARATE, unchanged concern from `WithSecurityScheme` ("what does a named scheme look like"):
+
 ```go
 // Global security — applies to all operations by default.
 b.AddGlobalSecurity(route.Require("bearerAuth"))
 
 // Per-route override — nil inherits global; empty slice = no auth required.
+// bearerAuth is the SAME shared SecurityScheme value from the section above.
 createUser, _ := rest.NewRoute[CreateUserReq, User]("POST", "/users",
     reqCodec, respCodec,
     rest.RouteMeta{
@@ -54,6 +70,7 @@ createUser, _ := rest.NewRoute[CreateUserReq, User]("POST", "/users",
             route.Require("bearerAuth", "write:users"),
         },
     },
+    rest.WithSecurityScheme("bearerAuth", bearerAuth),
 ).Register(b)
 
 // Explicitly public — empty slice overrides global security
@@ -84,6 +101,8 @@ The adapter enforcement sequence:
 3. Calls `SecurityFunc` → returns `rest.SecurityError` + 401 on rejection
 
 Routes with `nil Security` (default) trigger enforcement when global security is set.
+
+`nethttp.Call` (client-side) runs the SAME sequence, symmetrically, on the OUTGOING request before it is sent — see "HTTP client — CredentialFunc" below.
 
 ## Credential format validation
 
@@ -116,6 +135,27 @@ user, err := nethttp.Call(ctx, http.DefaultClient, serverURL, handle, req, nil,
 ```
 
 `CredentialFunc` is called only when the route declares security requirements. For static credentials, use `CallOptions.ExtraHeaders` instead.
+
+**Symmetric credential-format validation.** If `handle` was built from a route
+declaring `rest.WithSecurityScheme(name, scheme)` with a non-nil `Codec` —
+whether via `Route.Register` or `Route.ClientHandle`, same declaration either
+way — `nethttp.Call` validates `CredentialFunc`'s returned header against that
+SAME `Codec` before sending, reusing the identical extraction/validation logic
+the server `Handler` uses on an incoming request. A malformed credential
+returns `rest.SecurityCredentialError` locally, before any network call, and
+fires `stats.SecurityObserver.RecordSecurityRejection` — catching a
+`CredentialFunc` bug immediately instead of after a round trip and a generic
+401.
+
+This does NOT require `CredentialFunc` to be non-nil on a secured route, and
+the check only fires when `CredentialFunc` actually returns something: a nil
+`CredentialFunc`, or one that deliberately returns `(nil, nil)` to mean "this
+call needs no credential" (e.g. an auth flow that first probes whether the
+specific server instance requires auth at all — see
+`examples/go-edge-models/docker/registry`'s `NewAuthCredentialFunc`), remains
+a deliberate non-error. The request is simply sent without the credential,
+and it's up to the server to accept or reject it — symmetric with server-side
+`SecurityFunc`.
 
 ## Security for event channels (AsyncAPI)
 
@@ -167,7 +207,7 @@ func (o *TelemetryObserver) RecordSecurityRejection(location, scheme string) {
 
 ## OpenAPI / AsyncAPI output
 
-Security schemes appear in `components/securitySchemes`; global security at document root; per-operation security overrides inline — all generated automatically from `AddSecurityScheme` / `AddGlobalSecurity` / `RouteMeta.Security`. No manual YAML needed.
+Security schemes appear in `components/securitySchemes`; global security at document root; per-operation security overrides inline — all generated automatically from REST's `WithSecurityScheme` (route-level; aggregated by `Builder.OpenAPISpec`) / events' `AddSecurityScheme` (builder-level) / `AddGlobalSecurity` / `RouteMeta.Security`. No manual YAML needed.
 
 ## See also
 

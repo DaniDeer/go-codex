@@ -250,12 +250,14 @@ func buildAPI() (
 		Description: "Demonstrates Bearer JWT authentication with per-route scope enforcement.",
 	})
 
-	// Register the Bearer JWT security scheme.
-	// WithCodec validates the raw credential format (non-empty, no whitespace)
-	// before SecurityFunc is invoked — catches malformed tokens early.
-	b.AddSecurityScheme("bearerAuth", rest.SecurityScheme{
+	// The Bearer JWT security scheme, declared ONCE as a shared value and
+	// attached to every secured route below via rest.WithSecurityScheme —
+	// there is no builder-level registry for this; each route declares it
+	// directly. WithCodec validates the raw credential format (non-empty, no
+	// whitespace) before SecurityFunc is invoked — catches malformed tokens early.
+	bearerAuth := rest.SecurityScheme{
 		SecurityScheme: route.BearerScheme("JWT"),
-	}.WithCodec(codex.String().Refine(validate.BearerToken)))
+	}.WithCodec(codex.String().Refine(validate.BearerToken))
 
 	// POST /login — public, no security requirement.
 	loginHandle, _ = rest.NewRoute[loginReq, tokenResp]("POST", "/login",
@@ -281,6 +283,7 @@ func buildAPI() (
 				route.Require("bearerAuth", "profile"),
 			},
 		},
+		rest.WithSecurityScheme("bearerAuth", bearerAuth),
 	).Register(b)
 
 	// POST /admin/action — secured: bearerAuth with "admin" scope.
@@ -295,6 +298,7 @@ func buildAPI() (
 				route.Require("bearerAuth", "admin"),
 			},
 		},
+		rest.WithSecurityScheme("bearerAuth", bearerAuth),
 	).Register(b)
 
 	return

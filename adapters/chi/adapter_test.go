@@ -925,15 +925,13 @@ func (o *mockSecurityObserver) RecordSecurityRejection(location, scheme string) 
 
 func newSecuredRoute() (*rest.RouteHandle[createReq, userResp], error) {
 	b := rest.NewBuilder(testInfo)
-	b.AddSecurityScheme("bearerAuth", rest.SecurityScheme{
-		SecurityScheme: route.BearerScheme("JWT"),
-	})
 	return rest.NewRoute[createReq, userResp]("POST", "/users",
 		createReqCodec, userRespCodec,
 		rest.RouteMeta{
 			OperationID: "createUser",
 			Security:    []route.SecurityRequirement{route.Require("bearerAuth")},
 		},
+		rest.WithSecurityScheme("bearerAuth", rest.SecurityScheme{SecurityScheme: route.BearerScheme("JWT")}),
 	).Register(b)
 }
 
@@ -1022,16 +1020,16 @@ func TestHandler_SecurityFunc_notCalledForUnsecuredRoute(t *testing.T) {
 func TestHandler_SecurityFunc_codecValidationFailure(t *testing.T) {
 	b := rest.NewBuilder(testInfo)
 	jwtCodec := codex.String().Refine(validate.JWT)
-	b.AddSecurityScheme("bearerAuth", rest.SecurityScheme{
-		SecurityScheme: route.BearerScheme("JWT"),
-		Codec:          &jwtCodec,
-	})
 	handle, err := rest.NewRoute[createReq, userResp]("POST", "/users",
 		createReqCodec, userRespCodec,
 		rest.RouteMeta{
 			OperationID: "createUser",
 			Security:    []route.SecurityRequirement{route.Require("bearerAuth")},
 		},
+		rest.WithSecurityScheme("bearerAuth", rest.SecurityScheme{
+			SecurityScheme: route.BearerScheme("JWT"),
+			Codec:          &jwtCodec,
+		}),
 	).Register(b)
 	if err != nil {
 		t.Fatal(err)
@@ -1087,13 +1085,11 @@ func TestHandler_SecurityObserver_calledOnRejection(t *testing.T) {
 
 func newGlobalSecuredChiRoute() (*rest.RouteHandle[createReq, userResp], error) {
 	b := rest.NewBuilder(testInfo)
-	b.AddSecurityScheme("bearerAuth", rest.SecurityScheme{
-		SecurityScheme: route.BearerScheme("JWT"),
-	})
 	b.AddGlobalSecurity(route.Require("bearerAuth"))
 	return rest.NewRoute[createReq, userResp]("POST", "/users",
 		createReqCodec, userRespCodec,
 		rest.RouteMeta{OperationID: "createUser"},
+		rest.WithSecurityScheme("bearerAuth", rest.SecurityScheme{SecurityScheme: route.BearerScheme("JWT")}),
 	).Register(b)
 }
 
@@ -1154,9 +1150,6 @@ func TestChiHandler_GlobalSecurity_rejectsWhenNoToken(t *testing.T) {
 
 func TestChiHandler_GlobalSecurity_notCalledWhenExplicitlyEmpty(t *testing.T) {
 	b := rest.NewBuilder(testInfo)
-	b.AddSecurityScheme("bearerAuth", rest.SecurityScheme{
-		SecurityScheme: route.BearerScheme("JWT"),
-	})
 	b.AddGlobalSecurity(route.Require("bearerAuth"))
 	handle, err := rest.NewRoute[createReq, userResp]("POST", "/users",
 		createReqCodec, userRespCodec,
@@ -1164,6 +1157,7 @@ func TestChiHandler_GlobalSecurity_notCalledWhenExplicitlyEmpty(t *testing.T) {
 			OperationID: "createUser",
 			Security:    []route.SecurityRequirement{},
 		},
+		rest.WithSecurityScheme("bearerAuth", rest.SecurityScheme{SecurityScheme: route.BearerScheme("JWT")}),
 	).Register(b)
 	if err != nil {
 		t.Fatal(err)
@@ -1195,13 +1189,11 @@ func TestChiHandler_GlobalSecurity_notCalledWhenExplicitlyEmpty(t *testing.T) {
 
 func newGlobalSecuredSSERoute() (*rest.SSERouteHandle[createReq, sseEvent], error) {
 	b := rest.NewBuilder(testInfo)
-	b.AddSecurityScheme("bearerAuth", rest.SecurityScheme{
-		SecurityScheme: route.BearerScheme("JWT"),
-	})
 	b.AddGlobalSecurity(route.Require("bearerAuth"))
 	return rest.NewSSERoute[createReq, sseEvent]("/stream",
 		createReqCodec, sseEventCodec,
 		rest.RouteMeta{OperationID: "streamSecured"},
+		rest.WithSecurityScheme("bearerAuth", rest.SecurityScheme{SecurityScheme: route.BearerScheme("JWT")}),
 	).Register(b)
 }
 

@@ -495,6 +495,11 @@ type routeBuilder struct {
 	// errorPatternRules hold per-route typed error response declarations from
 	// [ErrorPattern]. Adapters may emit these directly before ErrorHandler.
 	errorPatternRules []errorPatternRule
+	// securitySchemes holds per-route security scheme declarations from
+	// [WithSecurityScheme] — the ONLY source of RouteHandle.SecuritySchemes;
+	// there is no builder-level equivalent. Consumed identically by
+	// [Route.Register] and [Route.ClientHandle].
+	securitySchemes map[string]SecurityScheme
 }
 
 // RouteHandle is returned by [Route.Register]. It holds the spec descriptor
@@ -562,8 +567,16 @@ type RouteHandle[Req, Resp any] struct {
 	pathCodec *codex.Codec[string]
 
 	// SecuritySchemes maps scheme name to SecurityScheme (with runtime Codec).
-	// Populated from Builder.AddSecurityScheme when Register is called.
-	// Adapters use this map to extract and validate credentials per scheme.
+	// Populated from the route's own [WithSecurityScheme] declarations —
+	// this is the ONLY way to declare a security scheme; there is no
+	// builder-level equivalent. Both [Route.Register] and
+	// [Route.ClientHandle] populate this field identically, so the SAME
+	// route value builds a server-side handle and a client-side handle
+	// with IDENTICAL credential-format enforcement on both sides: the
+	// server adapter's Handler validates an INCOMING credential against
+	// Codec before calling SecurityFunc; [nethttp.Call] validates an
+	// OUTGOING credential (the header CredentialFunc returned) against the
+	// SAME Codec before sending.
 	SecuritySchemes map[string]SecurityScheme
 
 	// GlobalSecurity holds the builder-level security requirements that apply
@@ -572,6 +585,10 @@ type RouteHandle[Req, Resp any] struct {
 	//   reqs := handle.Descriptor.Security
 	//   if reqs == nil { reqs = handle.GlobalSecurity }
 	// Set via [Builder.AddGlobalSecurity]. nil when no global security is declared.
+	// Unlike SecuritySchemes, GlobalSecurity remains builder-only — it answers
+	// "which routes require auth by default" (spec-wide), not "what does a
+	// scheme look like" — and has no [Route.ClientHandle] equivalent (always
+	// nil there, unchanged).
 	GlobalSecurity []route.SecurityRequirement
 
 	// pathMergeFields/queryMergeFields/headerMergeFields/cookieMergeFields
@@ -1171,6 +1188,11 @@ func (rh *RouteHandle[Req, Resp]) ValidateResponseCookies(cookies map[string]str
 
 type routeEntry interface {
 	descriptor() route.Route
+	// securitySchemes returns the route's own security scheme declarations
+	// (from [WithSecurityScheme]) so [Builder.OpenAPISpec] can aggregate
+	// components.securitySchemes across all registered routes — there is no
+	// builder-level security scheme store to read from instead.
+	securitySchemes() map[string]SecurityScheme
 }
 
 // typedRouteEntry stores a pointer to the RouteHandle so that With* mutations
@@ -1180,6 +1202,9 @@ type typedRouteEntry[Req, Resp any] struct {
 }
 
 func (e *typedRouteEntry[Req, Resp]) descriptor() route.Route { return e.handle.Descriptor }
+func (e *typedRouteEntry[Req, Resp]) securitySchemes() map[string]SecurityScheme {
+	return e.handle.SecuritySchemes
+}
 
 // typedSSEEntry stores a pointer to the SSERouteHandle so that With* mutations
 // are visible to the builder at OpenAPISpec() time.
@@ -1188,6 +1213,9 @@ type typedSSEEntry[Req, Event any] struct {
 }
 
 func (e *typedSSEEntry[Req, Event]) descriptor() route.Route { return e.handle.Descriptor }
+func (e *typedSSEEntry[Req, Event]) securitySchemes() map[string]SecurityScheme {
+	return e.handle.SecuritySchemes
+}
 
 // InvalidPathError is returned by [Route.Register] when the path fails builder-level
 // path codec validation.
@@ -1827,9 +1855,12 @@ func (p MergedResponseCookieParam[Resp]) applyRoute(rb *routeBuilder) {
 // SecurityScheme combines [route.SecurityScheme] spec metadata with optional
 // runtime credential extraction and format validation.
 //
-// AddSecurityScheme registers a SecurityScheme with the builder. The spec fields
-// flow into the OpenAPI document; Codec, when non-nil, is used by adapters to
-// validate the raw credential string before SecurityFunc is called.
+// [WithSecurityScheme] declares a SecurityScheme on a route — the ONLY way to
+// declare one; there is no builder-level equivalent. The spec fields flow
+// into the OpenAPI document (aggregated from all registered routes by
+// [Builder.OpenAPISpec]); Codec, when non-nil, is used by adapters to
+// validate the raw credential string before SecurityFunc is called
+// (server-side) or before the request is sent (client-side, [nethttp.Call]).
 //
 // The adapter extracts the raw credential from the request based on the scheme
 // Type and location fields:
@@ -1838,7 +1869,8 @@ func (p MergedResponseCookieParam[Resp]) applyRoute(rb *routeBuilder) {
 //   - apiKey: reads from the header / query / cookie named Name according to In
 //
 // A codec validation failure causes the adapter to return a [SecurityCredentialError]
-// with HTTP 401, without invoking SecurityFunc.
+// with HTTP 401 (server), or the same error type client-side before any
+// network call is sent, without invoking SecurityFunc.
 type SecurityScheme struct {
 	route.SecurityScheme
 	// Codec, when non-nil, validates the extracted raw credential string.
@@ -1852,12 +1884,56 @@ type SecurityScheme struct {
 // WithCodec returns a copy of s with Codec set to c. It avoids the
 // temporary-variable + address-of pattern required when setting Codec inline:
 //
-//	b.AddSecurityScheme("bearer", rest.SecurityScheme{
+//	rest.WithSecurityScheme("bearer", rest.SecurityScheme{
 //	    SecurityScheme: route.BearerScheme("JWT"),
 //	}.WithCodec(codex.String().Refine(validate.BearerToken)))
 func (s SecurityScheme) WithCodec(c codex.Codec[string]) SecurityScheme {
 	s.Codec = &c
 	return s
+}
+
+// securitySchemeOpt is the [RouteOpt] returned by [WithSecurityScheme].
+type securitySchemeOpt struct {
+	name   string
+	scheme SecurityScheme
+}
+
+func (o securitySchemeOpt) applyRoute(rb *routeBuilder) {
+	if rb.securitySchemes == nil {
+		rb.securitySchemes = make(map[string]SecurityScheme, 1)
+	}
+	rb.securitySchemes[o.name] = o.scheme
+}
+
+// WithSecurityScheme declares scheme's spec metadata and optional Codec for
+// THIS route. It is the ONLY way to declare a security scheme in go-codex —
+// there is no builder-level equivalent. Both [Route.Register] and
+// [Route.ClientHandle] populate [RouteHandle.SecuritySchemes] from this
+// declaration, so the SAME route value — including its security scheme —
+// builds a server-side handle (Register) and a client-side handle
+// (ClientHandle) with IDENTICAL credential-format enforcement on both sides.
+//
+// Define a scheme once as a package-level value and reuse it across every
+// route that shares it — Go's ordinary "declare once, reference everywhere"
+// idiom, no builder-level registry needed:
+//
+//	var bearerAuth = rest.SecurityScheme{SecurityScheme: route.BearerScheme("JWT")}.
+//	    WithCodec(codex.String().Refine(validate.BearerToken))
+//
+//	var GetTagsRoute = rest.NewRoute[GetTagsReq, TagsList](
+//	    "GET", "/v2/{name}/tags/list",
+//	    c.Struct[GetTagsReq](), TagsListCodec,
+//	    rest.RouteMeta{Security: bearerAuthSecurity},
+//	    rest.WithSecurityScheme("bearerAuth", bearerAuth),
+//	    rest.NewPathParam("name", ...),
+//	)
+//
+// When multiple routes declare the SAME scheme name with DIFFERENT values,
+// [Builder.OpenAPISpec] resolves the conflict last-registered-wins (no
+// error) — define the scheme once as a shared value (as above) to avoid
+// this entirely.
+func WithSecurityScheme(name string, scheme SecurityScheme) RouteOpt {
+	return securitySchemeOpt{name: name, scheme: scheme}
 }
 
 // SecurityCredentialError is returned when credential format validation via
@@ -1959,18 +2035,19 @@ func (e NotAcceptableError) Error() string {
 	return fmt.Sprintf("not acceptable: Accept %q; supported: %s", e.Accept, strings.Join(e.Supported, ", "))
 }
 
-// Builder accumulates route registrations and security schemes, and produces
-// OpenAPI 3.1 specifications. It is safe to register routes from multiple
-// goroutines as long as [Builder.Build] is not called concurrently.
-// Create one with [NewBuilder].
+// Builder accumulates route registrations, and produces OpenAPI 3.1
+// specifications. Security schemes are declared per-route via
+// [WithSecurityScheme] (there is no builder-level equivalent) — see
+// [Builder.OpenAPISpec] for how they're aggregated into the spec. It is safe
+// to register routes from multiple goroutines as long as [Builder.Build] is
+// not called concurrently. Create one with [NewBuilder].
 type Builder struct {
-	info            Info
-	servers         []Server
-	entries         []routeEntry
-	schemas         map[string]schema.Schema
-	pathCodec       *codex.Codec[string]
-	securitySchemes map[string]SecurityScheme
-	globalSecurity  []route.SecurityRequirement
+	info           Info
+	servers        []Server
+	entries        []routeEntry
+	schemas        map[string]schema.Schema
+	pathCodec      *codex.Codec[string]
+	globalSecurity []route.SecurityRequirement
 }
 
 // BuilderOption configures a [Builder] at construction time.
@@ -2012,9 +2089,8 @@ func WithPathConstraints(cons ...codex.Constraint[string]) BuilderOption {
 // NewBuilder returns a Builder initialised with the given API metadata.
 func NewBuilder(info Info, opts ...BuilderOption) *Builder {
 	b := &Builder{
-		info:            info,
-		schemas:         make(map[string]schema.Schema),
-		securitySchemes: make(map[string]SecurityScheme),
+		info:    info,
+		schemas: make(map[string]schema.Schema),
 	}
 	for _, opt := range opts {
 		opt(b)
@@ -2039,17 +2115,6 @@ func (b *Builder) AddServer(name string, s Server) *Builder {
 // referenced by SchemaName in route configs but not inlined in any codec.
 func (b *Builder) AddSchema(name string, s schema.Schema) *Builder {
 	b.schemas[name] = s
-	return b
-}
-
-// AddSecurityScheme registers a named security scheme with the builder.
-// The spec fields flow into the OpenAPI document via OpenAPISpec; Codec, when
-// non-nil, is used by adapters to validate extracted credentials before
-// SecurityFunc is called.
-//
-// The name must match those used in route.Require calls and AddGlobalSecurity.
-func (b *Builder) AddSecurityScheme(name string, s SecurityScheme) *Builder {
-	b.securitySchemes[name] = s
 	return b
 }
 
@@ -2149,10 +2214,6 @@ func (r Route[Req, Resp]) Register(b *Builder) (*RouteHandle[Req, Resp], error) 
 	jsonReq := format.JSON(r.reqCodec)
 	jsonResp := format.JSON(r.respCodec)
 
-	schemes := make(map[string]SecurityScheme, len(b.securitySchemes))
-	for k, v := range b.securitySchemes {
-		schemes[k] = v
-	}
 	h := &RouteHandle[Req, Resp]{
 		Descriptor:           frozen,
 		Decode:               func(body []byte) (Req, error) { return jsonReq.Unmarshal(body) },
@@ -2166,7 +2227,7 @@ func (r Route[Req, Resp]) Register(b *Builder) (*RouteHandle[Req, Resp], error) 
 		responseHeaderParams: rb.respHeaders,
 		responseCookieParams: rb.respCookies,
 		pathCodec:            b.pathCodec,
-		SecuritySchemes:      schemes,
+		SecuritySchemes:      rb.securitySchemes,
 		GlobalSecurity:       slices.Clone(b.globalSecurity),
 		errorStatusRules:     slices.Clone(rb.errorStatusRules),
 		errorPatternRules:    slices.Clone(rb.errorPatternRules),
@@ -2227,7 +2288,12 @@ func (r Route[Req, Resp]) Register(b *Builder) (*RouteHandle[Req, Resp], error) 
 //
 // The returned handle has the same Decode / Encode / EncodeRequest / DecodeResponse
 // codec helpers and the same parameter validation methods as a handle returned
-// by [Route.Register].
+// by [Route.Register] — including [RouteHandle.SecuritySchemes], populated from
+// the route's own [WithSecurityScheme] declarations (there is no [Builder]
+// involved in this path, so builder-level state never applies here — route-level
+// declarations are the only source). [adapters/nethttp.Call] uses it to validate
+// a [nethttp.CallOptions.CredentialFunc]'s returned credential format before
+// sending, symmetric with the server-side check [Route.Register] enables.
 //
 // Example — client-only usage:
 //
@@ -2268,6 +2334,7 @@ func (r Route[Req, Resp]) ClientHandle() *RouteHandle[Req, Resp] {
 		cookieMergeFields:         mustAssertMergeFields[Req]("ClientHandle", rb.cookieMergeFields),
 		responseHeaderMergeFields: mustAssertMergeFields[Resp]("ClientHandle", rb.responseHeaderMergeFields),
 		responseCookieMergeFields: mustAssertMergeFields[Resp]("ClientHandle", rb.responseCookieMergeFields),
+		SecuritySchemes:           rb.securitySchemes,
 	}
 }
 
@@ -2347,8 +2414,16 @@ type SSERouteHandle[Req, Event any] struct {
 	pathCodec *codex.Codec[string]
 
 	// SecuritySchemes maps scheme name to SecurityScheme (with runtime Codec).
-	// Populated from Builder.AddSecurityScheme when Register is called.
-	// Adapters use this map to extract and validate credentials per scheme.
+	// Populated from the route's own [WithSecurityScheme] declarations —
+	// this is the ONLY way to declare a security scheme; there is no
+	// builder-level equivalent. Both [Route.Register] and
+	// [Route.ClientHandle] populate this field identically, so the SAME
+	// route value builds a server-side handle and a client-side handle
+	// with IDENTICAL credential-format enforcement on both sides: the
+	// server adapter's Handler validates an INCOMING credential against
+	// Codec before calling SecurityFunc; [nethttp.Call] validates an
+	// OUTGOING credential (the header CredentialFunc returned) against the
+	// SAME Codec before sending.
 	SecuritySchemes map[string]SecurityScheme
 
 	// GlobalSecurity holds the builder-level security requirements that apply
@@ -2357,6 +2432,10 @@ type SSERouteHandle[Req, Event any] struct {
 	//   reqs := handle.Descriptor.Security
 	//   if reqs == nil { reqs = handle.GlobalSecurity }
 	// Set via [Builder.AddGlobalSecurity]. nil when no global security is declared.
+	// Unlike SecuritySchemes, GlobalSecurity remains builder-only — it answers
+	// "which routes require auth by default" (spec-wide), not "what does a
+	// scheme look like" — and has no [Route.ClientHandle] equivalent (always
+	// nil there, unchanged).
 	GlobalSecurity []route.SecurityRequirement
 
 	// responseHeaderParams holds per-header entries registered via ResponseHeaderParam options.
@@ -2703,11 +2782,6 @@ func (s SSERoute[Req, Event]) Register(b *Builder) (*SSERouteHandle[Req, Event],
 	jsonReq := format.JSON(s.reqCodec)
 	jsonEvent := format.JSON(s.eventCodec)
 
-	schemes := make(map[string]SecurityScheme, len(b.securitySchemes))
-	for k, v := range b.securitySchemes {
-		schemes[k] = v
-	}
-
 	h := &SSERouteHandle[Req, Event]{
 		Descriptor:           frozen,
 		Decode:               func(body []byte) (Req, error) { return jsonReq.Unmarshal(body) },
@@ -2718,7 +2792,7 @@ func (s SSERoute[Req, Event]) Register(b *Builder) (*SSERouteHandle[Req, Event],
 		cookieParams:         rb.cookieParams,
 		headerParams:         rb.headerParams,
 		pathCodec:            b.pathCodec,
-		SecuritySchemes:      schemes,
+		SecuritySchemes:      rb.securitySchemes,
 		GlobalSecurity:       slices.Clone(b.globalSecurity),
 		responseHeaderParams: rb.respHeaders,
 		responseCookieParams: rb.respCookies,
@@ -2732,6 +2806,13 @@ func (s SSERoute[Req, Event]) Register(b *Builder) (*SSERouteHandle[Req, Event],
 // OpenAPISpec builds a complete OpenAPI 3.1 document from all registered routes.
 // Returns an error if any non-empty SchemaName references a schema that will not
 // be present in components/schemas (a dangling $ref).
+//
+// components.securitySchemes is aggregated from every registered route's own
+// [WithSecurityScheme] declarations (there is no builder-level security scheme
+// store) — when two routes declare the same scheme name with different values,
+// the LAST-registered route wins, with no error; define the scheme once as a
+// shared package-level value (see [WithSecurityScheme]'s example) to avoid
+// relying on this.
 func (b *Builder) OpenAPISpec() (openapi.Document, error) {
 	if err := b.checkDanglingRefs(); err != nil {
 		return openapi.Document{}, err
@@ -2743,7 +2824,13 @@ func (b *Builder) OpenAPISpec() (openapi.Document, error) {
 	for name, s := range b.schemas {
 		ob.AddSchema(name, s)
 	}
-	for name, s := range b.securitySchemes {
+	schemes := make(map[string]SecurityScheme)
+	for _, e := range b.entries {
+		for name, s := range e.securitySchemes() {
+			schemes[name] = s
+		}
+	}
+	for name, s := range schemes {
 		ob.AddSecurityScheme(name, s.SecurityScheme)
 	}
 	for _, req := range b.globalSecurity {

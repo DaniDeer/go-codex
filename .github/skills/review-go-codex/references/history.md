@@ -1,6 +1,143 @@
-# go-codex Review History (R1–R91)
+# go-codex Review History (R1–R93)
 
 Do not re-report any of these findings. They have been implemented and tested.
+
+---
+
+## Round 93 (Phase 2 review of Round 92: real bug found and fixed in the client-side credential check + `docker/registry` migration)
+
+Reviewed `docs/roadmap/security-scheme-symmetry.md`'s "Out of scope (Phase 2)"
+list after Round 92 shipped. Investigated all four items concretely:
+
+- **`api/events`/`api/reqreply`/`api/mcp` equivalents**: confirmed NOT
+  actionable — checked `adapters/mqtt`/`mqtt5` (`SecurityFunc` is
+  subscribe-side/server-only, no publish-side credential hook exists at
+  all), `adapters/mqtt5/reqreply.Call` (its `CallOptions` has no
+  `CredentialFunc`-equivalent field), and `api/mcp`/`adapters/mcpgo` (no
+  client dial-out concept). None of these transports have a client-side
+  credential hook to make symmetric with — left deferred, no action.
+- **Async/refreshable credential caching (retry-on-401)**: confirmed
+  genuinely a separate, larger feature (cache invalidation, retry
+  semantics) — would need its own roadmap doc if ever wanted. Left
+  deferred.
+- **Enforcing "Security ⇒ CredentialFunc required"**: stays rejected, not
+  phase 2 material — this was a deliberate design decision from Round 92,
+  not a deferred one.
+- **Migrating `docker/registry` to adopt `WithSecurityScheme`**: implemented.
+  Added `bearerAuthScheme` (a non-empty-string format `Codec`) to
+  `docker/registry/routes.go`, attached via `rest.WithSecurityScheme` to
+  `GetTagsRoute`/`GetManifestRoute` — no `Builder` needed (works through
+  `.ClientHandle()` alone). This surfaced a REAL, previously-undetected bug
+  in Round 92's own client-side check.
+
+**Bug found and fixed (`adapters/nethttp/client.go`):** the client-side
+credential-format check introduced in Round 92 was gated on
+`len(secReqs) > 0` alone. Running the `docker/registry` integration suite
+against MCR (a registry that requires NO authentication — a 200 direct on
+the base ping) failed: `NewAuthCredentialFunc` correctly detects "no auth
+needed" and returns `(nil, nil)` from its `CredentialFunc`, but the
+resulting ABSENT `Authorization` header still extracted as `""`, which the
+newly-attached `NonEmptyString` `Codec` rejected — wrongly treating "no
+credential needed" the same as "malformed credential" and breaking a
+previously-passing, real-registry integration test. Root cause: the check
+didn't distinguish "CredentialFunc deliberately supplied nothing" from "a
+credential was supplied but is malformed." Fixed by gating the check on
+`len(secReqs) > 0 && credHeaders != nil` instead — the codec check now
+only fires when the credential mechanism actually returned something,
+preserving the pre-existing "nil/no-op `CredentialFunc` on a secured route
+is not an error" contract exactly. Added
+`TestCall_CredentialFunc_ReturnsNilHeader_SkipsValidation` as a permanent
+regression guard.
+
+Also updated `examples/adapters-nethttp-client/main.go`'s security demo,
+which Round 92 had (incorrectly, as it turned out) reframed around the
+buggy behavior: restored the "no CredentialFunc → server 401" case to its
+original, now-correct-again form, and added a NEW, separate case
+demonstrating the client-side codec rejection with an EXPLICITLY malformed
+credential (`CredentialFunc` returns `"Bearer "` — empty after prefix
+strip) — the demo now correctly shows all four distinct security
+behaviors: happy path, no-`CredentialFunc` (server 401), malformed
+credential (local rejection), and `CredentialFunc` error (local abort).
+
+Verified: `gofmt`, `go build ./...`, `go test ./...` (all packages, plus
+`go test -tags=integration ./examples/go-edge-models/docker/registry/...`
+against real Docker Hub/GHCR/MCR — MCR specifically now passes again),
+every example run (all exit 0 except the known long-running
+`sensor-service`), and `just check` (0 issues).
+
+---
+
+## Round 92 (`api/rest`: route-only security scheme declaration + symmetric client-side credential validation)
+
+Implemented `docs/roadmap/security-scheme-symmetry.md` Phase 1 — a
+BREAKING change (sole consumer of go-codex, confirmed acceptable):
+
+- **Removed `Builder.AddSecurityScheme`/`Builder.securitySchemes` entirely**
+  from `api/rest`. New route-level `rest.WithSecurityScheme(name, scheme) RouteOpt`
+  is now the ONLY way to declare a security scheme+codec — stored in a new
+  `routeBuilder.securitySchemes` field, consumed identically by
+  `Route.Register` (server) and `Route.ClientHandle` (client, previously
+  never populated `SecuritySchemes` at all).
+- `Builder.OpenAPISpec()` now aggregates `components.securitySchemes` from
+  every registered route's own declaration (new `securitySchemes()` method
+  on the `routeEntry` interface, implemented by `typedRouteEntry`/
+  `typedSSEEntry`) instead of a builder-level map — last-registered-wins
+  on a name collision, documented.
+- `adapters/nethttp.Call`/`CallHandle`: new symmetric client-side check —
+  after all headers are merged into the outgoing request, reuses the
+  EXISTING `validateSecurityCredentials`/`extractCredential`/`firstScheme`
+  helpers (already generic over `*http.Request`, zero duplication) to
+  validate a `CredentialFunc`'s returned credential format before sending.
+  Reuses `rest.SecurityCredentialError` and
+  `stats.SecurityObserver.RecordSecurityRejection` verbatim — no new error
+  or observer types. Deliberately does NOT require `CredentialFunc` to be
+  non-nil on a secured route (preserves the existing, documented,
+  demonstrated "unauthenticated request to a secured route → server 401"
+  convention, symmetric with server-side `SecurityFunc`).
+- Migrated every in-repo `Builder.AddSecurityScheme` call site (breaking
+  change) to route-level `WithSecurityScheme`: `api/rest/builder_test.go`
+  (3 tests), `adapters/nethttp/adapter_test.go` + `client_test.go` (6
+  tests), `adapters/chi/adapter_test.go` (5 tests),
+  `examples/adapters-nethttp-security`, `examples/adapters-chi-security`,
+  `examples/adapters-nethttp-client` (scheme moved into the shared
+  `contract` package so client+server both get it from one declaration).
+  `api/events`' OWN independent `AddSecurityScheme` (different package,
+  different mechanism) is UNCHANGED — untouched by this round.
+- Fixed `examples/adapters-nethttp-client`'s "no CredentialFunc → server
+  401" demo, which the new client-side check legitimately changed the
+  mechanics of (the route's Codec now catches the missing credential
+  LOCALLY before any request, since `docker/registry`-style codec
+  guarantees didn't apply there) — updated the demo's comments/error
+  handling to `errors.As(err, &rest.SecurityCredentialError{})` and
+  reframed it as demonstrating the NEW symmetric behavior, rather than
+  silently leaving a dead `errors.As(&nethttp.UnexpectedStatusError{})`
+  branch that would never match again.
+- Added 8 new tests total across `api/rest/builder_test.go` (3:
+  `TestWithSecurityScheme_ClientHandle_PopulatesSecuritySchemes`,
+  `TestWithSecurityScheme_Register_PopulatesSecuritySchemes`,
+  `TestOpenAPISpec_AggregatesSecuritySchemesFromRoutes`) and
+  `adapters/nethttp/client_test.go` (5:
+  `TestCall_CredentialFunc_ValidFormat_Passes`,
+  `TestCall_CredentialFunc_MalformedFormat_ReturnsSecurityCredentialError`,
+  `TestCall_CredentialFunc_MalformedFormat_RecordsSecurityRejection`,
+  `TestCall_NoSecurityScheme_NoValidation`,
+  `TestCall_NoCredentialFunc_SecuredRoute_StillNotAnError`).
+- Updated `.github/instructions/go-codex.instructions.md`, `docs/features/security.md`,
+  `docs/features/openapi.md`, `docs/features/ports.md`, `docs/guides/ports.md`,
+  `docs/guides/http-server.md`, `docs/reference/project-structure.md`, and this
+  skill's own `checklist.md` (corrected the now-stale
+  `rest.Builder`/`events.Builder` `AddSecurityScheme` parity row — this is
+  now an INTENTIONAL divergence, do not re-flag it in a future review).
+- `docs/roadmap/security-scheme-symmetry.md` marked SHIPPED (kept as design
+  history); removed from `docs/roadmap/index.md`'s active table and
+  `zensical.toml`'s roadmap nav.
+- Verified: `gofmt`, `go build ./...`, `go test ./...` (one pre-existing,
+  unrelated flaky timing test in `stream` confirmed to pass in isolation
+  and on re-run — not caused by this change), every example run (all exit
+  0 except `sensor-service`, a long-running server example that always
+  times out under a bounded `timeout` wrapper — unrelated, no
+  `AddSecurityScheme`/`WithSecurityScheme` usage there), and `just check`
+  (staticcheck + gosec, 0 issues).
 
 ---
 

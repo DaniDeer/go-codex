@@ -604,13 +604,15 @@ same kind of `*events.ChannelHandle[T]`, and any adapter (`mqtt5.SubscribeAdapte
 that receives either cannot tell which one it got.
 
 Supply your own `*Builder` via `PortOptions` to get full parity with a
-hand-registered route — security schemes, global security, and whole-path/topic
-format constraints all become available, and the port's route/channel/tool
-accumulates directly into *your* spec document:
+hand-registered route — global security and whole-path/topic format
+constraints become available, and the port's route/channel/tool accumulates
+directly into *your* spec document. Security SCHEMES themselves are declared
+on the `RESTPattern`'s own `Opts` via `rest.WithSecurityScheme` (there is no
+builder-level scheme registry for REST — see
+[Security & Authentication](security.md)):
 
 ```go
 restBuilder := rest.NewBuilder(rest.Info{Title: "OEE Service", Version: "1.0.0"})
-restBuilder.AddSecurityScheme("bearerAuth", rest.SecurityScheme{SecurityScheme: route.BearerScheme("JWT")})
 restBuilder.AddGlobalSecurity(route.SecurityRequirement{"bearerAuth": {}})
 
 oeeTool := codex.Must(ports.NewToolPort[OEEIn, OEEResult]("oee-calc", oeeInCodec, oeeResultCodec,
@@ -619,6 +621,9 @@ oeeTool := codex.Must(ports.NewToolPort[OEEIn, OEEResult]("oee-calc", oeeInCodec
 _, err := oeeTool.PluginRESTPattern(ports.RESTPattern{
     Method: "POST",
     Path:   "/oee/calc",
+    Opts: []rest.RouteOpt{
+        rest.WithSecurityScheme("bearerAuth", rest.SecurityScheme{SecurityScheme: route.BearerScheme("JWT")}),
+    },
 })
 if err != nil {
     panic(err)
@@ -645,7 +650,10 @@ instead of a shared one).
 > `SecuritySchemes` map and `nil` `GlobalSecurity` — any `RouteMeta.Security`/
 > `Subscribe.Security`/`Publish.Security` requirement on a `Pattern`-based port was
 > silently unenforced (the credential check simply skips unknown scheme names).
-> Supplying a `Builder` with `AddSecurityScheme`/`AddGlobalSecurity` fixes this.
+> For REST, declaring `rest.WithSecurityScheme(...)` in the `RESTPattern`'s own
+> `Opts` (no `Builder` needed for that part) plus supplying a `Builder` with
+> `AddGlobalSecurity` fixes this; for events, supplying a `Builder` with
+> `AddSecurityScheme`/`AddGlobalSecurity` fixes this.
 
 **If you already supplied a `Builder`**, the port's route/channel/tool is already
 registered with it — calling `RegisterREST`/`RegisterEvent`/`RegisterReqReply`/

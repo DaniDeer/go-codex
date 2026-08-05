@@ -322,12 +322,11 @@ func TestCall_HeaderParamValidation(t *testing.T) {
 
 func TestCall_CredentialFunc_Invoked(t *testing.T) {
 	b := rest.NewBuilder(testInfo)
-	b.AddSecurityScheme("bearerAuth", rest.SecurityScheme{
-		SecurityScheme: route.BearerScheme("JWT"),
-	})
 	b.AddGlobalSecurity(route.Require("bearerAuth"))
 	handle, err := rest.NewRoute[getReq, userResp]("GET", "/me",
-		getReqCodec, userRespCodec).Register(b)
+		getReqCodec, userRespCodec,
+		rest.WithSecurityScheme("bearerAuth", rest.SecurityScheme{SecurityScheme: route.BearerScheme("JWT")}),
+	).Register(b)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -862,5 +861,189 @@ func TestErrorPatternResponse_LogValue(t *testing.T) {
 	}
 	if !found["status"] || !found["value"] {
 		t.Fatalf("LogValue attrs = %+v, want status and value keys", attrs)
+	}
+}
+
+// --- Client-side credential FORMAT validation (symmetric with server) ---
+
+// newSecuredClientHandle returns a GET /me RouteHandle via ClientHandle
+// (no Builder) with a "bearerAuth" scheme declared directly on the route
+// via rest.WithSecurityScheme — the credential Codec requires a non-empty
+// string.
+func newSecuredClientHandle() *rest.RouteHandle[getReq, userResp] {
+	return rest.NewRoute[getReq, userResp]("GET", "/me",
+		getReqCodec, userRespCodec,
+		rest.RouteMeta{Security: []route.SecurityRequirement{route.Require("bearerAuth")}},
+		rest.WithSecurityScheme("bearerAuth", rest.SecurityScheme{
+			SecurityScheme: route.BearerScheme("JWT"),
+		}.WithCodec(codex.String().Refine(validate.NonEmptyString))),
+	).ClientHandle()
+}
+
+func TestCall_CredentialFunc_ValidFormat_Passes(t *testing.T) {
+	handle := newSecuredClientHandle()
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]string{"id": "me", "name": "Alice"}) //nolint:errcheck
+	}))
+	defer srv.Close()
+
+	resp, err := nethttp.Call(context.Background(), srv.Client(), srv.URL,
+		handle, getReq{}, nil,
+		nethttp.CallOptions{
+			CredentialFunc: func(context.Context, []route.SecurityRequirement) (http.Header, error) {
+				h := make(http.Header)
+				h.Set("Authorization", "Bearer valid-token-123")
+				return h, nil
+			},
+		})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if resp.ID != "me" {
+		t.Errorf("unexpected response: %+v", resp)
+	}
+}
+
+func TestCall_CredentialFunc_MalformedFormat_ReturnsSecurityCredentialError(t *testing.T) {
+	handle := newSecuredClientHandle()
+
+	called := false
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		called = true
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	_, err := nethttp.Call(context.Background(), srv.Client(), srv.URL,
+		handle, getReq{}, nil,
+		nethttp.CallOptions{
+			CredentialFunc: func(context.Context, []route.SecurityRequirement) (http.Header, error) {
+				h := make(http.Header)
+				h.Set("Authorization", "Bearer ") // strips to an empty credential -> fails NonEmptyString
+				return h, nil
+			},
+		})
+
+	var credErr rest.SecurityCredentialError
+	if !errors.As(err, &credErr) {
+		t.Fatalf("want rest.SecurityCredentialError, got %T: %v", err, err)
+	}
+	if credErr.Scheme != "bearerAuth" {
+		t.Errorf("Scheme = %q, want %q", credErr.Scheme, "bearerAuth")
+	}
+	if called {
+		t.Error("server must NOT have been called — rejection must happen before any network call")
+	}
+}
+
+func TestCall_CredentialFunc_MalformedFormat_RecordsSecurityRejection(t *testing.T) {
+	handle := newSecuredClientHandle()
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	obs := &mockSecurityObserver{}
+	_, err := nethttp.Call(context.Background(), srv.Client(), srv.URL,
+		handle, getReq{}, nil,
+		nethttp.CallOptions{
+			Observer: obs,
+			CredentialFunc: func(context.Context, []route.SecurityRequirement) (http.Header, error) {
+				h := make(http.Header)
+				h.Set("Authorization", "Bearer ")
+				return h, nil
+			},
+		})
+	if err == nil {
+		t.Fatal("want error, got nil")
+	}
+	if obs.location != "/me" {
+		t.Errorf("location = %q, want /me", obs.location)
+	}
+	if obs.scheme != "bearerAuth" {
+		t.Errorf("scheme = %q, want bearerAuth", obs.scheme)
+	}
+}
+
+func TestCall_NoSecurityScheme_NoValidation(t *testing.T) {
+	// Security is declared but NO WithSecurityScheme entry exists for it —
+	// SecuritySchemes is empty, so the new client-side codec check is a
+	// no-op (matches pre-feature behavior): the request is sent, and the
+	// SERVER is the one that rejects it.
+	handle := rest.NewRoute[getReq, userResp]("GET", "/me",
+		getReqCodec, userRespCodec,
+		rest.RouteMeta{Security: []route.SecurityRequirement{route.Require("bearerAuth")}},
+	).ClientHandle()
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusUnauthorized)
+	}))
+	defer srv.Close()
+
+	_, err := nethttp.Call(context.Background(), srv.Client(), srv.URL,
+		handle, getReq{}, nil, nethttp.CallOptions{}) // no CredentialFunc
+
+	var statusErr nethttp.UnexpectedStatusError
+	if !errors.As(err, &statusErr) {
+		t.Fatalf("want nethttp.UnexpectedStatusError from the SERVER, got %T: %v", err, err)
+	}
+	if statusErr.StatusCode != http.StatusUnauthorized {
+		t.Errorf("StatusCode = %d, want 401", statusErr.StatusCode)
+	}
+}
+
+func TestCall_NoCredentialFunc_SecuredRoute_StillNotAnError(t *testing.T) {
+	// A secured route with a declared scheme+Codec, but the credential
+	// Codec would ACCEPT an empty string here (no Refine constraint) — so
+	// nil CredentialFunc must still not be a client-side error by itself;
+	// the request goes out with no Authorization, and it's up to the
+	// server to accept or reject it.
+	handle := rest.NewRoute[getReq, userResp]("GET", "/me",
+		getReqCodec, userRespCodec,
+		rest.RouteMeta{Security: []route.SecurityRequirement{route.Require("bearerAuth")}},
+		rest.WithSecurityScheme("bearerAuth", rest.SecurityScheme{SecurityScheme: route.BearerScheme("JWT")}),
+	).ClientHandle()
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]string{"id": "me", "name": "Alice"}) //nolint:errcheck
+	}))
+	defer srv.Close()
+
+	_, err := nethttp.Call(context.Background(), srv.Client(), srv.URL,
+		handle, getReq{}, nil, nethttp.CallOptions{}) // no CredentialFunc
+	if err != nil {
+		t.Fatalf("nil CredentialFunc on a secured route must not itself be an error: %v", err)
+	}
+}
+
+// TestCall_CredentialFunc_ReturnsNilHeader_SkipsValidation guards against a
+// real bug: a CredentialFunc that deliberately returns (nil, nil) to signal
+// "this call needs no credential" (e.g. an auth flow that first probes
+// whether the specific server instance requires auth at all) must NOT be
+// rejected by the client-side codec check just because the resulting
+// (absent) Authorization header extracts as an empty string — that would
+// wrongly treat "no credential needed" the same as "malformed credential".
+func TestCall_CredentialFunc_ReturnsNilHeader_SkipsValidation(t *testing.T) {
+	handle := newSecuredClientHandle() // Codec requires non-empty string
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]string{"id": "me", "name": "Alice"}) //nolint:errcheck
+	}))
+	defer srv.Close()
+
+	_, err := nethttp.Call(context.Background(), srv.Client(), srv.URL,
+		handle, getReq{}, nil,
+		nethttp.CallOptions{
+			CredentialFunc: func(context.Context, []route.SecurityRequirement) (http.Header, error) {
+				return nil, nil // deliberately "no credential needed"
+			},
+		})
+	if err != nil {
+		t.Fatalf("CredentialFunc returning (nil, nil) must not be rejected by the codec check: %v", err)
 	}
 }

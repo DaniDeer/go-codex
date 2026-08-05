@@ -50,7 +50,6 @@ import (
 	"github.com/DaniDeer/go-codex/examples/adapters-nethttp-client/contract"
 	"github.com/DaniDeer/go-codex/route"
 	"github.com/DaniDeer/go-codex/stats"
-	"github.com/DaniDeer/go-codex/validate"
 )
 
 // ── Observer ──────────────────────────────────────────────────────────────────
@@ -176,11 +175,10 @@ func main() {
 
 	b := rest.NewBuilder(rest.Info{Title: "User API", Version: "1.0.0"})
 
-	// Register the bearer security scheme so the OpenAPI spec documents it.
-	// The codec validates the raw credential format before SecurityFunc runs.
-	b.AddSecurityScheme("bearerAuth", rest.SecurityScheme{
-		SecurityScheme: route.BearerScheme("JWT"),
-	}.WithCodec(codex.String().Refine(validate.NonEmptyString)))
+	// The bearer security scheme is declared on contract.GetSecuredData
+	// itself (via rest.WithSecurityScheme, contract/contract.go) — no
+	// separate builder-level registration needed; Register below picks it
+	// up automatically and the OpenAPI spec documents it the same way.
 
 	createHandle, err := contract.CreateUser.Register(b)
 	if err != nil {
@@ -501,6 +499,16 @@ func main() {
 	// It receives the resolved []route.SecurityRequirement and must return
 	// headers to merge into the request — typically Authorization.
 	// A CredentialFunc error aborts the call before any network activity.
+	//
+	// contract.GetSecuredData declares its "bearerAuth" scheme (with a
+	// non-empty-string format Codec) via rest.WithSecurityScheme, ONCE, on
+	// the route itself — the SAME declaration this server used to Register
+	// (main.go, above) also flows into clientSecured below via ClientHandle.
+	// That symmetry is what lets nethttp.Call catch a MALFORMED credential
+	// LOCALLY now (rest.SecurityCredentialError), before any network call —
+	// see the third case below. A nil/absent CredentialFunc result stays a
+	// non-error client-side either way (second case) — the codec check
+	// only ever fires on a credential that was ACTUALLY supplied.
 	fmt.Println("=== 4. Security: GET /data (CredentialFunc) ===")
 
 	clientSecured := contract.GetSecuredData.ClientHandle()
@@ -524,7 +532,12 @@ func main() {
 	}
 	fmt.Printf("secured data: %+v\n", data)
 
-	// No CredentialFunc: request is sent without Authorization → server returns 401.
+	// No CredentialFunc: request is sent without Authorization → server
+	// returns 401. A nil CredentialFunc result is NOT itself a client-side
+	// error — the new credential-format codec check only activates when a
+	// credential mechanism actually supplies something (see the malformed
+	// case right below); declining to supply one at all is a deliberate,
+	// unchanged non-error, symmetric with server-side SecurityFunc.
 	_, err = nethttp.Call(clientCtx, srv.Client(), srv.URL,
 		clientSecured, struct{}{}, nil,
 		nethttp.CallOptions{}) // observer from clientCtx // no CredentialFunc
@@ -535,6 +548,30 @@ func main() {
 				"method", statusErr.Method,
 				"path", statusErr.Path,
 				"status", statusErr.StatusCode,
+			)
+		}
+	}
+
+	// CredentialFunc returns a MALFORMED credential (empty after the
+	// "Bearer " prefix is stripped): contract.GetSecuredData's declared
+	// Codec now rejects this LOCALLY, before any request is sent — the same
+	// rest.SecurityCredentialError the SERVER would otherwise have returned
+	// (401) is now caught client-side too, symmetric with the server check.
+	_, err = nethttp.Call(clientCtx, srv.Client(), srv.URL,
+		clientSecured, struct{}{}, nil,
+		nethttp.CallOptions{
+			CredentialFunc: func(_ context.Context, _ []route.SecurityRequirement) (http.Header, error) {
+				h := make(http.Header)
+				h.Set("Authorization", "Bearer ") // strips to an empty credential
+				return h, nil
+			},
+		})
+	if err != nil {
+		var credErr rest.SecurityCredentialError
+		if errors.As(err, &credErr) {
+			logger.Error("malformed credential rejected locally (no request sent)",
+				"scheme", credErr.Scheme,
+				"cause", credErr.Err,
 			)
 		}
 	}

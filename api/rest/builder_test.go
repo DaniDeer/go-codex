@@ -971,12 +971,13 @@ func TestSecurityScheme_WithCodec_returnsDistinctCopy(t *testing.T) {
 	}
 }
 
-func TestBuilder_AddSecurityScheme_propagatesToRouteHandle(t *testing.T) {
+func TestWithSecurityScheme_Register_PopulatesSecuritySchemes(t *testing.T) {
 	b := rest.NewBuilder(testInfo)
 	c := codex.String().Refine(validate.NonEmptyString)
-	b.AddSecurityScheme("bearer", rest.SecurityScheme{SecurityScheme: route.BearerScheme("JWT")}.WithCodec(c))
 
-	handle, err := rest.NewRoute[createReq, userResp]("GET", "/secure", createReqCodec, userCodec).Register(b)
+	handle, err := rest.NewRoute[createReq, userResp]("GET", "/secure", createReqCodec, userCodec,
+		rest.WithSecurityScheme("bearer", rest.SecurityScheme{SecurityScheme: route.BearerScheme("JWT")}.WithCodec(c)),
+	).Register(b)
 	if err != nil {
 		t.Fatalf("AddRoute: %v", err)
 	}
@@ -988,12 +989,61 @@ func TestBuilder_AddSecurityScheme_propagatesToRouteHandle(t *testing.T) {
 	}
 }
 
+func TestWithSecurityScheme_ClientHandle_PopulatesSecuritySchemes(t *testing.T) {
+	c := codex.String().Refine(validate.NonEmptyString)
+
+	handle := rest.NewRoute[createReq, userResp]("GET", "/secure", createReqCodec, userCodec,
+		rest.WithSecurityScheme("bearer", rest.SecurityScheme{SecurityScheme: route.BearerScheme("JWT")}.WithCodec(c)),
+	).ClientHandle()
+
+	if _, ok := handle.SecuritySchemes["bearer"]; !ok {
+		t.Fatal("expected ClientHandle to populate SecuritySchemes from route-level WithSecurityScheme, with NO Builder involved")
+	}
+	if handle.SecuritySchemes["bearer"].Codec == nil {
+		t.Fatal("expected Codec to be propagated to the client RouteHandle")
+	}
+}
+
+func TestOpenAPISpec_AggregatesSecuritySchemesFromRoutes(t *testing.T) {
+	b := rest.NewBuilder(testInfo)
+
+	_, err := rest.NewRoute[createReq, userResp]("GET", "/secure-a", createReqCodec, userCodec,
+		rest.WithSecurityScheme("bearer", rest.SecurityScheme{SecurityScheme: route.BearerScheme("JWT")}),
+	).Register(b)
+	if err != nil {
+		t.Fatalf("Register /secure-a: %v", err)
+	}
+	_, err = rest.NewRoute[createReq, userResp]("GET", "/secure-b", createReqCodec, userCodec,
+		rest.WithSecurityScheme("apiKey", rest.SecurityScheme{SecurityScheme: route.APIKeyScheme("X-API-Key", "header")}),
+	).Register(b)
+	if err != nil {
+		t.Fatalf("Register /secure-b: %v", err)
+	}
+
+	doc, err := b.OpenAPISpec()
+	if err != nil {
+		t.Fatalf("OpenAPISpec: %v", err)
+	}
+	raw, err := doc.MarshalJSON()
+	if err != nil {
+		t.Fatalf("MarshalJSON: %v", err)
+	}
+	spec := string(raw)
+	if !strings.Contains(spec, `"bearer"`) {
+		t.Errorf("expected OpenAPI spec to contain scheme 'bearer' from /secure-a; got:\n%s", spec)
+	}
+	if !strings.Contains(spec, `"apiKey"`) {
+		t.Errorf("expected OpenAPI spec to contain scheme 'apiKey' from /secure-b; got:\n%s", spec)
+	}
+}
+
 func TestBuilder_AddGlobalSecurity_appearsInOpenAPISpec(t *testing.T) {
 	b := rest.NewBuilder(testInfo)
-	b.AddSecurityScheme("bearer", rest.SecurityScheme{SecurityScheme: route.BearerScheme("JWT")})
-	b.AddGlobalSecurity(route.Require("bearer"))
 
-	_, err := rest.NewRoute[createReq, userResp]("GET", "/secure", createReqCodec, userCodec).Register(b)
+	b.AddGlobalSecurity(route.Require("bearer"))
+	_, err := rest.NewRoute[createReq, userResp]("GET", "/secure", createReqCodec, userCodec,
+		rest.WithSecurityScheme("bearer", rest.SecurityScheme{SecurityScheme: route.BearerScheme("JWT")}),
+	).Register(b)
 	if err != nil {
 		t.Fatalf("AddRoute: %v", err)
 	}
@@ -1172,11 +1222,11 @@ func TestSSERouteHandle_ValidateHeaders_invalid(t *testing.T) {
 
 func TestSSERouteHandle_GlobalSecurity_populated(t *testing.T) {
 	b := rest.NewBuilder(testInfo)
-	b.AddSecurityScheme("bearerAuth", rest.SecurityScheme{SecurityScheme: route.BearerScheme("JWT")})
 	b.AddGlobalSecurity(route.Require("bearerAuth"))
 
 	h, err := rest.NewSSERoute[createReq, sseEvent]("/stream",
 		createReqCodec, sseEventCodec,
+		rest.WithSecurityScheme("bearerAuth", rest.SecurityScheme{SecurityScheme: route.BearerScheme("JWT")}),
 	).Register(b)
 	if err != nil {
 		t.Fatal(err)

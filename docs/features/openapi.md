@@ -118,10 +118,14 @@ yamlBytes, _ := doc.MarshalYAML()
 
 ## Security schemes
 
+`rest.WithSecurityScheme` is the ONLY way to declare a security scheme — directly
+on the route, no builder-level registry. `Builder.OpenAPISpec()` aggregates
+`components.securitySchemes` from every registered route automatically:
+
 ```go
-b.AddSecurityScheme("bearerAuth", rest.SecurityScheme{
+bearerAuth := rest.SecurityScheme{
     SecurityScheme: route.BearerScheme("JWT"),
-}.WithCodec(codex.String().Refine(validate.BearerToken)))
+}.WithCodec(codex.String().Refine(validate.BearerToken))
 
 b.AddGlobalSecurity(route.Require("bearerAuth"))
 
@@ -132,6 +136,7 @@ createUser, _ := rest.NewRoute[CreateUserReq, User]("POST", "/users", ...,
             route.Require("bearerAuth", "write:users"),
         },
     },
+    rest.WithSecurityScheme("bearerAuth", bearerAuth),
 ).Register(b)
 ```
 

@@ -563,14 +563,15 @@ socket, err := domain.SomePort.PluginSocketPattern(pattern)   // ports.Socket[In
 Internally, a `Pattern` always becomes a handle via the **same**
 `Route`/`Channel`/`Tool.Register(builder)` call a hand-declared route makes —
 never the weaker, builder-free `ClientHandle()`. Supply your own `*Builder` via
-`PortOptions` to get full parity with a hand-registered route (security schemes,
-global security, path/topic format constraints, shared spec accumulation); when
-you don't, `ports` registers against a private, single-use `Builder` instead —
-same zero-ceremony default, identical code path:
+`PortOptions` to get full parity with a hand-registered route (global security,
+path/topic format constraints, shared spec accumulation); when you don't,
+`ports` registers against a private, single-use `Builder` instead — same
+zero-ceremony default, identical code path. For REST, security SCHEMES are
+declared directly on the `RESTPattern`'s own `Opts` via `rest.WithSecurityScheme`
+(no builder-level scheme registry for REST):
 
 ```go
 restBuilder := rest.NewBuilder(rest.Info{Title: "OEE Service", Version: "1.0.0"})
-restBuilder.AddSecurityScheme("bearerAuth", rest.SecurityScheme{SecurityScheme: route.BearerScheme("JWT")})
 restBuilder.AddGlobalSecurity(route.SecurityRequirement{"bearerAuth": {}})
 
 oeeTool := codex.Must(ports.NewToolPort[OEEIn, OEEResult]("oee-calc", oeeInCodec, oeeResultCodec,
@@ -578,6 +579,9 @@ oeeTool := codex.Must(ports.NewToolPort[OEEIn, OEEResult]("oee-calc", oeeInCodec
 _, err := oeeTool.PluginRESTPattern(ports.RESTPattern{
     Method: "POST",
     Path:   "/oee/calc",
+    Opts: []rest.RouteOpt{
+        rest.WithSecurityScheme("bearerAuth", rest.SecurityScheme{SecurityScheme: route.BearerScheme("JWT")}),
+    },
 })
 if err != nil {
     panic(err)
@@ -590,7 +594,7 @@ spec, _ := restBuilder.OpenAPISpec()
 
 | `PortOptions` field | Pattern | Gives you |
 |---|---|---|
-| `RESTBuilder *rest.Builder` | `RESTPattern` | Security schemes, global security, `rest.WithPathConstraints` |
+| `RESTBuilder *rest.Builder` | `RESTPattern` | Global security, `rest.WithPathConstraints` (security SCHEMES are declared on the Pattern's own `Opts`) |
 | `EventBuilder *events.Builder` | `EventPattern` | Security schemes, global security, `events.WithTopicConstraints` |
 | `ReqReplyBuilder *reqreply.Builder` | `ReqReplyPattern` | Duplicate-topic detection |
 | `MCPBuilder *apimcp.Builder` | `MCPPattern` | Duplicate-name detection |
@@ -599,8 +603,10 @@ spec, _ := restBuilder.OpenAPISpec()
 > enforcement** — `SecuritySchemes` was always an empty map (the credential check
 > skips unknown scheme names rather than rejecting), so any `RouteMeta.Security`/
 > `Subscribe.Security`/`Publish.Security` requirement declared on a `Pattern`-based
-> port had no effect. Supply a `Builder` with `AddSecurityScheme`/`AddGlobalSecurity`
-> to fix this for a given port.
+> port had no effect. For REST, declare `rest.WithSecurityScheme(...)` in the
+> `RESTPattern`'s `Opts` (plus a `Builder` with `AddGlobalSecurity`); for events,
+> supply a `Builder` with `AddSecurityScheme`/`AddGlobalSecurity` — either fixes
+> this for a given port.
 
 If you already supplied a `Builder`, the port's route/channel/tool is already
 registered with it — calling `RegisterREST`/etc. with that *same* builder
