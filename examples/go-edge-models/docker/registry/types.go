@@ -37,14 +37,6 @@ type GetManifestReq struct {
 	Reference string
 }
 
-// GetTokenReq is GetTokenRoute's request — Service and Scope merge
-// automatically into the service/scope query parameters via
-// nethttp.CallHandle (see routes.go).
-type GetTokenReq struct {
-	Service string
-	Scope   string
-}
-
 // GetImageMetadataReq is the input to GetImageMetadata.
 type GetImageMetadataReq struct {
 	// ImageURL is the raw image reference string, e.g.
@@ -79,7 +71,7 @@ type ManifestMetadata struct {
 }
 
 // Credentials supplies Basic-auth credentials for the auth-token exchange
-// step (GetTokenRoute) — needed for private repositories on registries
+// step (getTokenRoute) — needed for private repositories on registries
 // that require Basic auth to mint a Bearer token, e.g. a private GHCR
 // package authenticated with a GitHub username + a PAT with
 // read:packages scope. Anonymous/public pulls need no Credentials at

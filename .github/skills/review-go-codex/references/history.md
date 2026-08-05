@@ -1,6 +1,212 @@
-# go-codex Review History (R1–R93)
+# go-codex Review History (R1–R97)
 
 Do not re-report any of these findings. They have been implemented and tested.
+
+---
+
+## Round 97 (retired `docs/roadmap/security-scheme-symmetry.md` — all follow-ups fully accounted for)
+
+Audited every outstanding item in the shipped `security-scheme-symmetry.md`
+roadmap doc's "Out of scope (Phase 2)" and "Open design decisions" sections
+and confirmed each is now resolved:
+
+- **`api/events`/`api/reqreply`/`api/mcp` equivalents** → covered by the new
+  `docs/roadmap/events-reqreply-mcp-security-scheme.md` (Round 94).
+- **Async/refreshable credential caching** → covered by the new
+  `docs/roadmap/credential-caching.md` (Round 94).
+- **Enforcing "Security implies CredentialFunc required"** → permanently
+  rejected during design (not deferred) — confirmed still documented in
+  `docker/registry`'s own code comments and `docs/features/security.md`.
+- **Migrating `docker/registry` to `WithSecurityScheme`** → actually
+  IMPLEMENTED (Rounds 94–96), not just planned — confirmed via
+  `grep`/`go doc` that `auth.go` uses `rest.WithSecurityScheme` for both
+  Bearer and Basic auth.
+- **Collision policy (last-registered-wins) for `OpenAPISpec()`** →
+  resolved and shipped in code (`api/rest/builder.go`'s own godoc states
+  it).
+- **Whether `WithSecurityScheme` should imply `RouteMeta.Security`** →
+  resolved (kept separate) via the "Why two mechanisms" design Q&A,
+  documented in `docs/features/security.md`'s "Security requirement
+  shapes" section.
+
+With every follow-up item accounted for elsewhere, deleted
+`docs/roadmap/security-scheme-symmetry.md` (previously kept as design
+history) rather than leaving a redundant, now-fully-superseded doc around.
+Fixed the resulting cross-references in `.github/skills/review-go-codex/references/checklist.md`,
+`docs/features/security.md`, `docs/roadmap/events-reqreply-mcp-security-scheme.md`,
+and `docs/roadmap/credential-caching.md` to point at `docs/features/security.md`
+(the durable, current usage doc) instead of the deleted file — verified no
+dead markdown links remain and `go build ./...` is unaffected (doc-only
+change).
+
+---
+
+## Round 96 (`docker/registry`: radical public-API-surface reduction — auth flow fully internal)
+
+Follow-up to Round 95's `GetTokenRoute` move: the user asked to reduce the
+package's ENTIRE public surface to exactly three things — routes, the two
+client functions, and domain structs/codecs — removing every other
+exported symbol that exists only to support "drive the auth flow yourself"
+use cases nobody actually needs yet.
+
+- **Unexported** (moved from exported to lowercase, all within the SAME
+  package so no behavior change): `NewAuthCredentialFunc` →
+  `newAuthCredentialFunc`, the `CredentialFunc` type alias →
+  `credentialFunc`, `FormatChallenge`/`FormatDockerScope`/
+  `FormatBearerToken`/`FormatBasicAuth` → `formatChallenge`/
+  `formatDockerScope`/`formatBearerToken`/`formatBasicAuth`. A regex-based
+  rename initially, and dangerously, also matched the UNRELATED
+  `nethttp.CallOptions.CredentialFunc` field name (a different symbol in
+  go-codex core) in both comments and actual code
+  (`nethttp.CallOptions{credentialFunc: ...}` — would not have compiled);
+  caught immediately via `go build` and fixed by restoring every
+  `nethttp.CallOptions.CredentialFunc`/`.CredentialFunc` reference to its
+  correct capitalization.
+- **Kept exported** (deliberately, with reasoning re-verified): `Option`/
+  `WithCredentials`/`Credentials` (needed to call `GetTags`/
+  `GetImageMetadata` with private-repo credentials — part of the client
+  functions' own public API, not auth-internal plumbing);
+  `RegistryAuthChallengeError`/`RegistryAuthError` (can legitimately
+  surface FROM `GetTags`/`GetImageMetadata`'s own error returns, so a
+  caller doing `errors.As` needs to name them); `ParseImageRef`/
+  `FormatImageRef`/`FormatPlatformSelector` (domain-struct helpers —
+  `ImageRef`/platform-selector ↔ string — squarely "structs and codecs for
+  domain models," not auth plumbing).
+- **Updated `examples/go-edge-models/main.go`'s demo**, which used the
+  now-unexported `registry.FormatChallenge`/`FormatDockerScope`/
+  `FormatBearerToken` to build its mock registry+auth server — replaced
+  with plain string formatting (`fmt.Sprintf`), since that mock plays the
+  role of a REAL third-party registry SERVER (which `docker/registry`
+  itself never implements — it's a client-only package), not part of the
+  reusable client logic being demonstrated.
+- Rewrote `auth.go`'s and `doc.go`'s file-level doc comments to state the
+  reduced public surface as an explicit, permanent design invariant (not
+  just describe what currently happens to be exported) — including
+  guidance that a future need (e.g. an MCP tool wrapper) should add a NEW
+  exported function to `client.go`, not re-expose the auth-flow internals.
+  Fixed several now-stale cross-references left over from the
+  `GetTokenRoute`/`bearerAuthScheme` moves (Round 95) that still pointed
+  at `routes.go` for things now living in `auth.go`.
+- Verified public surface via `go doc .`: exactly `PingRoute`/
+  `GetTagsRoute`/`GetManifestRoute` (routes), `GetTags`/`GetImageMetadata`
+  (client functions), `Option`/`WithCredentials` (the one functional
+  option), domain structs/codecs, and the 5 error types — zero auth-flow
+  internals visible.
+- Verified: `gofmt`, `go build ./...`, `go test ./...` (all clean),
+  `go test -tags=integration` against real Docker Hub/GHCR/MCR, `go run
+  ./examples/go-edge-models` (demo output unchanged), `just check`
+  (0 issues).
+
+---
+
+## Round 95 (`docker/registry`: move `GetTokenRoute` out of routes.go's externally-facing contract; documented `route.SecurityRequirement` AND/OR shapes)
+
+Two follow-ups from design Q&A about the security-scheme-symmetry feature:
+
+- **Documented `route.SecurityRequirement`'s combination shapes**: added a
+  new "Security requirement shapes" section to `docs/features/security.md`
+  covering single-scheme, OR (multiple slice elements), AND (one map,
+  multiple keys), mixed OR-of-ANDs, explicit opt-out (empty slice), inherit
+  global (nil), and scheme-reuse-with-different-scopes — with a closing
+  explanation of why `WithSecurityScheme` (1:1 "what does scheme X look
+  like") and `RouteMeta.Security` (N:M "which combination does this
+  operation need") stay separate mechanisms rather than being folded into
+  one (a `RequireSecurityScheme` convenience sugar was considered and
+  explicitly rejected — it would only cover the single-scheme case, still
+  needing the two-call pattern for AND-combinations, not worth the added
+  decision-fork).
+- **Fixed a real inconsistency in `examples/go-edge-models/docker/registry`**:
+  `GetTokenRoute` (the auth-realm token-exchange endpoint, used exclusively
+  by `auth.go`'s `authenticate()`) was declared in `routes.go` alongside
+  `PingRoute`/`GetTagsRoute`/`GetManifestRoute`, and `doc.go` explicitly
+  listed it as part of "the PRIMARY contract" a downstream caller would
+  call `.ClientHandle()` on directly. This was misleading — `GetTokenRoute`
+  needs a realm URL/service/scope that only come from parsing a
+  WWW-Authenticate challenge (`authenticate()`'s own job), so it has no
+  legitimate standalone caller, unlike the three routes it was grouped
+  with. Moved `GetTokenRoute` (plus its exclusively-related
+  `basicAuthScheme`/`basicAuthSecurity` declarations) from `routes.go` into
+  `auth.go`, alongside its only caller. Updated `routes.go`'s and
+  `doc.go`'s file-level doc comments to accurately describe
+  `routes.go` as containing only genuinely externally-facing routes.
+  Zero behavior change — pure code-organization fix, all existing tests
+  pass unchanged (including the private-repo Basic-auth credential tests
+  and the full integration suite against real Docker Hub/GHCR/MCR).
+- Verified: `gofmt`, `go build ./...`, `go test ./...` (all clean),
+  `go test -tags=integration` against real registries, `go run
+  ./examples/go-edge-models` (demo unchanged), `just check` (0 issues).
+
+---
+
+## Round 94 (`docker/registry`: unify Basic-auth with Bearer's `WithSecurityScheme` pattern; two new roadmap docs)
+
+Three separate follow-ups requested after Round 93's Phase 2 review:
+
+- **`examples/go-edge-models/docker/registry` — full migration to
+  `WithSecurityScheme` (implemented):** `GetTokenRoute` (the token-exchange
+  call, used only when private-repo `Credentials` are supplied) previously
+  injected Basic-auth via `nethttp.CallOptions.ExtraHeaders`, entirely
+  bypassing the `SecurityScheme`/`CredentialFunc` mechanism Bearer
+  credentials already used. Added `routes.go`'s `basicAuthScheme`
+  (mirrors `bearerAuthScheme`: `route.BasicScheme()` + a non-empty-string
+  format `Codec`) and `basicAuthSecurity`, attached to `GetTokenRoute` via
+  `rest.WithSecurityScheme` + `RouteMeta.Security` (declared
+  unconditionally — safe, since a nil/no-op `CredentialFunc` on a secured
+  route stays a non-error per the Round 92/93 contract, so anonymous
+  token-exchange calls are completely unaffected). `auth.go`'s
+  `authenticate()` now builds a `tokenOpts.CredentialFunc` via
+  `FormatBasicAuth` instead of setting `ExtraHeaders` directly — both
+  Bearer and Basic credentials now flow through the IDENTICAL declarative
+  mechanism, eliminating the package's one remaining manual header
+  injection site. Deliberately did NOT remove
+  `internal.BearerTokenCodec`/`BasicAuthCodec`/`Format*` helpers — those
+  construct header VALUES (a different job from `SecurityScheme.Codec`,
+  which only validates an already-constructed value) and removing them
+  would contradict the package's established "everything flows through a
+  codec" philosophy; the actual "custom code to reduce" was the
+  `ExtraHeaders` bypass, not the codecs themselves. All existing tests
+  (including `TestAuthenticate_WithCredentials_SendsBasicAuthOnTokenExchange`/
+  `TestAuthenticate_NoCredentials_SendsNoAuthorizationOnTokenExchange`) pass
+  UNCHANGED — same external behavior, different internal wiring. Verified
+  against real Docker Hub/GHCR/MCR via `-tags=integration`.
+- **New roadmap doc: `docs/roadmap/events-reqreply-mcp-security-scheme.md`**
+  (Explore mode, no code changes). Investigated current state per layer:
+  `api/events` has builder-level `AddSecurityScheme`+`Codec` (server/
+  subscribe-side only, mirrors REST's OLD asymmetric design) but its
+  pub/sub `PublishOptions` (mqtt/mqtt5/zeromq) has NO
+  `CredentialFunc`-equivalent field at all — no per-publish credential
+  injection point exists today. `api/reqreply` has ZERO security concepts
+  (no `Security` field, no `SecurityScheme` type, no `CredentialFunc`/
+  `SecurityFunc` anywhere) — a full net-new feature, not a migration.
+  `api/mcp` has ZERO, and is EXPLICITLY documented as intentional ("MCP
+  security is handled separately and not part of `api/mcp`"). Doc phases
+  the work: Phase 1 (events channel-level `WithSecurityScheme`, small) →
+  Phase 2 (net-new publish-side `CredentialFunc` for mqtt/mqtt5/zeromq,
+  flags an open design question — MQTT 3.1.1/ZeroMQ have no per-message
+  header concept to inject a credential into, unlike MQTT 5's User
+  Properties) → Phase 3 (reqreply full net-new security feature) → Phase 4
+  (mcp, explicitly flagged BLOCKED pending maintainer sign-off, since it
+  reverses a deliberate documented design decision, not a routine parity
+  gap).
+- **New roadmap doc: `docs/roadmap/credential-caching.md`** (Explore mode,
+  no code changes). Sketches `nethttp.NewCachingCredentialFunc(inner,
+  opts)` — a generic, protocol-agnostic wrapper adding TTL-based caching,
+  single-flight concurrency safety, and an optional retry-on-401 policy to
+  any `CredentialFunc`. Flags the trickiest open design question:
+  `CredentialFunc` runs BEFORE the network call and has no visibility into
+  the response, so "retry on 401" needs either a bigger wrapper API
+  (wrapping the whole `Call` invocation) or a new `nethttp.Call`-level hook
+  (`OnCredentialRejected`) — deferred to implementation time. Also sketches
+  a new `stats.CredentialCacheObserver` extension
+  (`RecordCredentialCacheHit`/`RecordCredentialCacheRefresh`). Explicitly
+  notes `docker/registry`'s own `sync.Once`-based memoization is CORRECT
+  for its actual usage pattern and does NOT need migrating to this wrapper.
+- Both new roadmap docs added to `docs/roadmap/index.md`'s table and
+  `zensical.toml`'s roadmap nav.
+- Verified: `gofmt`, `go build ./...`, `go test ./...` (all clean),
+  `go test -tags=integration ./examples/go-edge-models/docker/registry/...`
+  against real Docker Hub/GHCR/MCR, `go run ./examples/go-edge-models`
+  (unchanged demo output), and `just check` (0 issues).
 
 ---
 

@@ -184,20 +184,15 @@ func runRegistryDemo() {
 	}))
 	defer authSrv.Close()
 
-	// The challenge header and Authorization check below are built via the
-	// SAME codecs docker/registry uses to DECODE these values on the
-	// client side (registry.FormatChallenge/FormatDockerScope/
-	// FormatBearerToken) — demonstrating the encode direction, not just
-	// decode, and eliminating manual string concatenation from this mock.
-	scope, err := registry.FormatDockerScope("repository", "cv-writer-web", []string{"pull"})
-	if err != nil {
-		log.Fatal(err)
-	}
-	challenge, err := registry.FormatChallenge(authSrv.URL+"/token", "demo-registry", scope)
-	if err != nil {
-		log.Fatal(err)
-	}
-	bearerAuth := registry.FormatBearerToken(fakeToken)
+	// This mock plays the role of a REAL registry/auth server — docker/registry
+	// is a client only, so it has no exported helpers for constructing these
+	// values (that machinery is a private implementation detail of its own
+	// auth flow). Building the WWW-Authenticate challenge, scope, and
+	// Authorization value here is plain string formatting per the Docker
+	// Distribution / RFC 6750 wire format a real registry server would emit.
+	scope := "repository:cv-writer-web:pull"
+	challenge := fmt.Sprintf(`Bearer realm=%q,service=%q,scope=%q`, authSrv.URL+"/token", "demo-registry", scope)
+	bearerAuth := "Bearer " + fakeToken
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/v2/", func(w http.ResponseWriter, r *http.Request) {

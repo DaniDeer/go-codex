@@ -4,41 +4,35 @@ import (
 	"github.com/DaniDeer/go-codex/api/rest"
 	c "github.com/DaniDeer/go-codex/codex"
 	"github.com/DaniDeer/go-codex/examples/go-edge-models/docker/registry/internal"
-	"github.com/DaniDeer/go-codex/route"
-	"github.com/DaniDeer/go-codex/validate"
 )
 
-// bearerAuthSecurity declares that a route requires Bearer-token
-// credentials — set as RouteMeta.Security below so
-// [nethttp.CallOptions.CredentialFunc] is invoked automatically by
-// [nethttp.Call]/[nethttp.CallHandle], instead of the caller having to set
-// the Authorization header by hand via CallOptions.ExtraHeaders.
-var bearerAuthSecurity = []route.SecurityRequirement{{"bearerAuth": nil}}
-
-// bearerAuthScheme declares the "bearerAuth" scheme's spec metadata and a
-// non-empty-string format Codec, attached to GetTagsRoute/GetManifestRoute
-// below via rest.WithSecurityScheme — the ONLY way to declare a security
-// scheme in go-codex (no Builder/spec involved here at all; WithSecurityScheme
-// is a route-level RouteOpt, so it works identically through .ClientHandle()
-// as it would through .Register(builder)). This gives NewAuthCredentialFunc
-// (auth.go) a genuine extra safety net: nethttp.Call now validates its
-// returned Authorization header's bare token against this Codec before
-// sending, on top of (not instead of) the fact that FormatBearerToken/
-// internal.BearerTokenCodec.Encode already construct that header from a
-// codec — this catches an empty token specifically, which the encode-side
-// codec alone does not.
-var bearerAuthScheme = rest.SecurityScheme{
-	SecurityScheme: route.BearerScheme(""),
-}.WithCodec(c.String().Refine(validate.NonEmptyString))
-
-// This file is the PRIMARY consumable contract of this package. Every
-// route below is a plain [rest.Route] value — a downstream consumer can
-// call .ClientHandle() on any of them directly and drive
-// adapters/nethttp.Call with their own *http.Client, retry policy,
-// observer, or security wiring, entirely independent of client.go's
-// convenience orchestration (auth flow, manifest-list resolution). See
-// client.go for the batteries-included GetTags/GetImageMetadata built on
-// top of these same routes.
+// This file is the PRIMARY consumable contract of this package AND
+// contains ONLY route declarations — no security scheme/requirement
+// values are defined here. Every route below (PingRoute, GetTagsRoute,
+// GetManifestRoute) is a plain [rest.Route] value a downstream consumer
+// can genuinely call .ClientHandle() on directly — each is independently
+// useful with its own *http.Client, retry policy, observer, or security
+// wiring, entirely independent of client.go's convenience orchestration
+// (auth flow, manifest-list resolution). See client.go for the
+// batteries-included GetTags/GetImageMetadata built on top of these same
+// routes.
+//
+// bearerAuthSecurity/bearerAuthScheme (referenced by GetTagsRoute/
+// GetManifestRoute below via RouteMeta.Security/rest.WithSecurityScheme)
+// are declared in auth.go, NOT here — auth.go is the single home for
+// every security scheme/requirement value this package declares
+// (bearerAuthSecurity/bearerAuthScheme AND basicAuthSecurity/
+// basicAuthScheme), keeping this file's own job purely "declare the
+// routes," independent of the auth flow's own internal wiring.
+//
+// getTokenRoute (the auth-realm token-exchange endpoint) deliberately does
+// NOT live here even though it is also a [rest.Route] value — it lives in
+// auth.go instead, alongside its exclusive caller (authenticate()) and its
+// own basicAuthScheme/basicAuthSecurity declarations. Unlike the three
+// routes above, getTokenRoute has no legitimate standalone caller: it
+// needs a realm URL, service, and scope that only come from parsing a
+// WWW-Authenticate challenge (authenticate's own job), so it is auth-flow
+// plumbing, not part of this package's externally-facing contract.
 
 // PingRoute is the Docker Registry HTTP API v2 base check, GET /v2/. A 200
 // response means the registry is reachable and does not require auth for
@@ -132,35 +126,4 @@ var GetManifestRoute = rest.NewRoute[GetManifestReq, internal.ManifestEnvelope](
 		func(e internal.ManifestEnvelope) string { return e.Digest },
 		func(e *internal.ManifestEnvelope, v string) { e.Digest = v },
 	).WithDescription("The manifest's own content digest"),
-)
-
-// GetTokenRoute is the registry auth-token endpoint. Its path is
-// deliberately EMPTY: the auth realm is an arbitrary full URL that may be
-// on a COMPLETELY DIFFERENT HOST than the registry itself (e.g. Docker
-// Hub's registry is registry-1.docker.io but its auth realm is
-// auth.docker.io/token) — client.go passes the realm URL (parsed from the
-// WWW-Authenticate challenge header) as the baseURL for this route's
-// nethttp.Call, so the route's own path template must contribute nothing
-// beyond that. Req is GetTokenReq, whose Service/Scope fields merge into
-// the service/scope query params automatically via nethttp.CallHandle —
-// both OptionalField since real registries vary in which of the two they
-// actually populate in a challenge.
-var GetTokenRoute = rest.NewRoute[GetTokenReq, internal.TokenResponse](
-	"GET", "",
-	c.Struct[GetTokenReq](), internal.TokenResponseCodec,
-	rest.RouteMeta{
-		OperationID:    "getToken",
-		Summary:        "Fetch a Bearer token from the registry's auth realm",
-		RespSchemaName: "TokenResponse",
-	},
-	rest.NewOptionalQueryParam("service",
-		c.String(),
-		func(r GetTokenReq) string { return r.Service },
-		func(r *GetTokenReq, v string) { r.Service = v },
-	),
-	rest.NewOptionalQueryParam("scope",
-		c.String(),
-		func(r GetTokenReq) string { return r.Scope },
-		func(r *GetTokenReq, v string) { r.Scope = v },
-	),
 )

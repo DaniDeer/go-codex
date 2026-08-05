@@ -18,7 +18,7 @@ format specified in SKILL.md.
 | Builder naming | `rest.Builder`, `events.Builder`, `forge.Registry` — consistent fluent builder pattern |
 | MCP Builder | `mcp.Builder` with `NewBuilder(info)`, `Info()`, `MCPSpec()` — analogous to `OpenAPISpec()`/`AsyncAPISpec()` |
 | `AddServer` | Both `rest.Builder.AddServer(name, Server)` and `events.Builder.AddServer(name, Server)` exist; description fallback on both |
-| Security scheme declaration | `rest.WithSecurityScheme(name, SecurityScheme)` (route-level `RouteOpt` — `rest.Builder` has NO `AddSecurityScheme`, removed) vs `events.Builder.AddSecurityScheme(name, SecurityScheme)` (builder-level) — INTENTIONAL divergence, do not flag; see `docs/roadmap/security-scheme-symmetry.md` for the design rationale (REST needed client+server symmetry via `Route.ClientHandle`, which has no `Builder` at all) |
+| Security scheme declaration | `rest.WithSecurityScheme(name, SecurityScheme)` (route-level `RouteOpt` — `rest.Builder` has NO `AddSecurityScheme`, removed) vs `events.Builder.AddSecurityScheme(name, SecurityScheme)` (builder-level) — INTENTIONAL divergence, do not flag; see `docs/features/security.md` for the design rationale (REST needed client+server symmetry via `Route.ClientHandle`, which has no `Builder` at all) |
 | `AddGlobalSecurity` | Both builders have `AddGlobalSecurity(reqs...)` |
 | Server description fallback | Both builders fall back `Server.Description = name` when empty |
 

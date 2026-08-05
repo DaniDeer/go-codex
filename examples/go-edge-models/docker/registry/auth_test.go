@@ -5,7 +5,7 @@ package registry
 // parseChallenge (pure function, no I/O). The remaining tests are the
 // deliberate, narrowly-scoped exception to this package's otherwise
 // IO-free unit test design: verifying auth behavior (Basic-auth
-// credential injection, CredentialFunc memoization/error propagation)
+// credential injection, credentialFunc memoization/error propagation)
 // requires observing HTTP headers/request counts on real requests, and
 // there is no private registry credential available (or appropriate) in
 // this environment to exercise this against a real registry, so a
@@ -14,7 +14,7 @@ package registry
 // removed from registry_test.go (Round 88) — only a bare-minimum Ping
 // (401 challenge) + token endpoint, optionally with request counters
 // (newCountingCredentialCheckRegistry) to verify
-// NewAuthCredentialFunc's memoization. The end-to-end auth flow against
+// newAuthCredentialFunc's memoization. The end-to-end auth flow against
 // REAL registries (Docker Hub, GHCR, MCR) is covered by
 // registry_integration_test.go instead.
 
@@ -80,9 +80,9 @@ func newCredentialCheckRegistry(t *testing.T, gotAuth *string) (registrySrv, aut
 	}))
 	t.Cleanup(authSrv.Close)
 
-	challenge, err := FormatChallenge(authSrv.URL+"/token", "test-registry", "")
+	challenge, err := formatChallenge(authSrv.URL+"/token", "test-registry", "")
 	if err != nil {
-		t.Fatalf("FormatChallenge: %v", err)
+		t.Fatalf("formatChallenge: %v", err)
 	}
 	registrySrv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("WWW-Authenticate", challenge)
@@ -107,9 +107,9 @@ func TestAuthenticate_WithCredentials_SendsBasicAuthOnTokenExchange(t *testing.T
 		t.Fatalf("authenticate: %v", err)
 	}
 
-	want, err := FormatBasicAuth(creds.Username, creds.Password)
+	want, err := formatBasicAuth(creds.Username, creds.Password)
 	if err != nil {
-		t.Fatalf("FormatBasicAuth: %v", err)
+		t.Fatalf("formatBasicAuth: %v", err)
 	}
 	if gotAuth != want {
 		t.Errorf("Authorization sent to token endpoint = %q, want %q", gotAuth, want)
@@ -136,7 +136,7 @@ func TestAuthenticate_NoCredentials_SendsNoAuthorizationOnTokenExchange(t *testi
 
 // newCountingCredentialCheckRegistry is like newCredentialCheckRegistry but
 // also counts how many times each endpoint (registry Ping, auth-realm
-// token exchange) is hit — used to verify NewAuthCredentialFunc's
+// token exchange) is hit — used to verify newAuthCredentialFunc's
 // memoization actually suppresses repeat network round trips.
 func newCountingCredentialCheckRegistry(t *testing.T) (registrySrv, authSrv *httptest.Server, pingHits, tokenHits *int32) {
 	t.Helper()
@@ -151,9 +151,9 @@ func newCountingCredentialCheckRegistry(t *testing.T) (registrySrv, authSrv *htt
 	}))
 	t.Cleanup(authSrv.Close)
 
-	challenge, err := FormatChallenge(authSrv.URL+"/token", "test-registry", "")
+	challenge, err := formatChallenge(authSrv.URL+"/token", "test-registry", "")
 	if err != nil {
-		t.Fatalf("FormatChallenge: %v", err)
+		t.Fatalf("formatChallenge: %v", err)
 	}
 	registrySrv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		atomic.AddInt32(pingHits, 1)
@@ -173,7 +173,7 @@ func TestNewAuthCredentialFunc_MemoizesAcrossMultipleCalls(t *testing.T) {
 	}
 	client := httpsToHTTPClient()
 
-	credFn := NewAuthCredentialFunc(client, u.Host, "org/repo")
+	credFn := newAuthCredentialFunc(client, u.Host, "org/repo")
 
 	if _, err := credFn(context.Background(), nil); err != nil {
 		t.Fatalf("credFn (1st call): %v", err)
@@ -203,7 +203,7 @@ func TestNewAuthCredentialFunc_NoAuthNeeded_ReturnsNilHeader(t *testing.T) {
 	}
 	client := httpsToHTTPClient()
 
-	credFn := NewAuthCredentialFunc(client, u.Host, "org/repo")
+	credFn := newAuthCredentialFunc(client, u.Host, "org/repo")
 	header, err := credFn(context.Background(), nil)
 	if err != nil {
 		t.Fatalf("credFn: %v", err)
@@ -225,7 +225,7 @@ func TestNewAuthCredentialFunc_PropagatesAuthError(t *testing.T) {
 	}
 	client := httpsToHTTPClient()
 
-	credFn := NewAuthCredentialFunc(client, u.Host, "org/repo")
+	credFn := newAuthCredentialFunc(client, u.Host, "org/repo")
 	_, err = credFn(context.Background(), nil)
 	if err == nil {
 		t.Fatal("credFn: want error, got nil")

@@ -19,13 +19,13 @@ import (
 // exchange flow, the optional Basic-auth Credentials escape hatch, and
 // their Format*/error types) lives in the sibling auth.go instead —
 // GetTags/GetImageMetadata below just build a
-// NewAuthCredentialFunc(httpClient, ref.Registry, ref.Repository, opts...)
+// newAuthCredentialFunc(httpClient, ref.Registry, ref.Repository, opts...)
 // value (same package) and pass it straight through as
 // nethttp.CallOptions.CredentialFunc; the actual Ping + challenge +
-// token-exchange dance runs LAZILY, inside that CredentialFunc, only when
+// token-exchange dance runs LAZILY, inside that credentialFunc, only when
 // a secured route (GetTagsRoute/GetManifestRoute) is actually called —
 // this file never calls authenticate() directly, nor threads a raw token
-// string through fetchManifest (it threads a CredentialFunc instead, see
+// string through fetchManifest (it threads a credentialFunc instead, see
 // fetchManifest's own doc comment for why the SAME value is reused across
 // GetImageMetadata's two manifest fetches). Package-level constants
 // (Docker Hub defaults, acceptManifestTypes) live in constants.go; every
@@ -141,7 +141,7 @@ func GetTags(ctx context.Context, httpClient *http.Client, imageURL string, opts
 
 	handle := GetTagsRoute.ClientHandle()
 	baseURL := registryBaseURL(ref.Registry)
-	credFn := NewAuthCredentialFunc(httpClient, ref.Registry, ref.Repository, opts...)
+	credFn := newAuthCredentialFunc(httpClient, ref.Registry, ref.Repository, opts...)
 	callOpts := nethttp.CallOptions{CredentialFunc: credFn}
 	return nethttp.CallHandle(ctx, httpClient, baseURL, handle, GetTagsReq{Name: ref.Repository}, callOpts)
 }
@@ -154,12 +154,12 @@ func GetTags(ctx context.Context, httpClient *http.Client, imageURL string, opts
 // Docker-Content-Digest automatically, so no manual HTTP or header
 // reading is needed here (contrast with the Ping step in authenticate,
 // which genuinely cannot use this mechanism — see auth.go's file doc
-// comment). credFn is a single NewAuthCredentialFunc(...) value shared
+// comment). credFn is a single newAuthCredentialFunc(...) value shared
 // across every fetchManifest call in one GetImageMetadata invocation, so
 // the auth flow it performs lazily on first use stays memoized across
 // calls (see GetImageMetadata's manifest-list resolution below, which may
 // call fetchManifest twice for one request).
-func fetchManifest(ctx context.Context, httpClient *http.Client, baseURL, repository, reference string, credFn CredentialFunc) (internal.ManifestEnvelope, error) {
+func fetchManifest(ctx context.Context, httpClient *http.Client, baseURL, repository, reference string, credFn credentialFunc) (internal.ManifestEnvelope, error) {
 	handle := GetManifestRoute.ClientHandle()
 	opts := nethttp.CallOptions{
 		ExtraHeaders:   http.Header{"Accept": []string{acceptManifestTypes}},
@@ -201,10 +201,10 @@ func GetImageMetadata(ctx context.Context, httpClient *http.Client, req GetImage
 
 	baseURL := registryBaseURL(ref.Registry)
 	// One credFn shared across both fetchManifest calls below (list
-	// resolution + platform-specific fetch) — NewAuthCredentialFunc
+	// resolution + platform-specific fetch) — newAuthCredentialFunc
 	// memoizes its own Ping/token-exchange work, so reusing this single
 	// value means that work happens at most once per GetImageMetadata call.
-	credFn := NewAuthCredentialFunc(httpClient, ref.Registry, ref.Repository, opts...)
+	credFn := newAuthCredentialFunc(httpClient, ref.Registry, ref.Repository, opts...)
 	env, err := fetchManifest(ctx, httpClient, baseURL, ref.Repository, ref.Reference, credFn)
 	if err != nil {
 		return ManifestMetadata{}, err

@@ -7,43 +7,69 @@ import (
 	"sync"
 
 	nethttp "github.com/DaniDeer/go-codex/adapters/nethttp"
+	"github.com/DaniDeer/go-codex/api/rest"
+	c "github.com/DaniDeer/go-codex/codex"
 	"github.com/DaniDeer/go-codex/examples/go-edge-models/docker/registry/internal"
 	"github.com/DaniDeer/go-codex/route"
+	"github.com/DaniDeer/go-codex/validate"
 )
 
 // This file holds EVERYTHING related to authenticating against a
 // registry — the Bearer-token challenge/token exchange flow (parseChallenge,
-// authenticate, NewAuthCredentialFunc), the optional Basic-auth escape
+// authenticate, newAuthCredentialFunc), the optional Basic-auth escape
 // hatch for private repositories (Option/WithCredentials), and the
-// Format* helpers specific to that flow. This file's error types
-// (RegistryAuthChallengeError/RegistryAuthError) live in the sibling
-// errors.go alongside client.go's error types — see errors.go's file
-// doc comment. client.go deliberately has NO auth logic of its own —
-// GetTags/GetImageMetadata just build a NewAuthCredentialFunc(...) value
-// (same package) and pass it straight through as
-// nethttp.CallOptions.CredentialFunc; the Ping + challenge + token-exchange
-// dance runs LAZILY, inside that CredentialFunc, only when a secured route
-// (GetTagsRoute/GetManifestRoute, both declaring RouteMeta.Security) is
-// actually called — never up front. NewAuthCredentialFunc memoizes its
-// result (sync.Once) for its own lifetime, so reusing the SAME
-// CredentialFunc value across multiple secured calls (e.g.
-// GetImageMetadata's two GetManifestRoute calls while resolving a
-// manifest list) triggers the dance only ONCE. NewAuthCredentialFunc is
-// exported so a caller driving routes.go's routes directly (bypassing
-// GetTags/GetImageMetadata) gets the identical auth flow as a reusable
-// building block — e.g. a future MCP tool wrapper mapping tool input
-// straight to GetTagsRoute/GetManifestRoute.
+// format* helpers specific to that flow, PLUS every security scheme/
+// requirement value and route (getTokenRoute) this package's auth flow
+// needs. This file's error types (RegistryAuthChallengeError/
+// RegistryAuthError) live in the sibling errors.go alongside client.go's
+// error types — see errors.go's file doc comment.
+//
+// EVERYTHING in this file is UNEXPORTED and stays that way deliberately —
+// this package's public surface is radically reduced to exactly three
+// things: the routes (routes.go's PingRoute/GetTagsRoute/GetManifestRoute),
+// the client functions built on top of them (client.go's GetTags/
+// GetImageMetadata), and the domain structs/codecs a caller needs to use
+// either (types.go/codecs.go). A caller never needs newAuthCredentialFunc,
+// the format* helpers, or getTokenRoute directly — GetTags/GetImageMetadata
+// already wire the whole auth flow internally; if a future need calls for
+// wrapping GetTagsRoute/GetManifestRoute standalone (e.g. an MCP tool),
+// that capability belongs on client.go's public surface (a new exported
+// function), not on exposing this file's internal auth plumbing for
+// external callers to wire together themselves.
+//
+// client.go deliberately has NO auth logic of its own — GetTags/
+// GetImageMetadata just build a newAuthCredentialFunc(...) value (same
+// package) and pass it straight through as nethttp.CallOptions.CredentialFunc;
+// the Ping + challenge + token-exchange dance runs LAZILY, inside that
+// credentialFunc, only when a secured route (GetTagsRoute/GetManifestRoute,
+// both declaring RouteMeta.Security) is actually called — never up front.
+// newAuthCredentialFunc memoizes its result (sync.Once) for its own
+// lifetime, so reusing the SAME credentialFunc value across multiple
+// secured calls (e.g. GetImageMetadata's two GetManifestRoute calls while
+// resolving a manifest list) triggers the dance only ONCE.
 //
 // EVERY request/response aspect below flows through a route + codec —
 // zero manual HTTP request building, zero manual response parsing
 // anywhere in this file. The WWW-Authenticate challenge is decoded via
 // internal.WWWAuthenticateCodec (parseChallenge is a thin wrapper around
 // its Decode); the Bearer/Basic Authorization header values are built via
-// internal.BearerTokenCodec/internal.BasicAuthCodec (FormatBearerToken/
-// FormatBasicAuth are thin wrappers around their Encode direction); the
+// internal.BearerTokenCodec/internal.BasicAuthCodec (formatBearerToken/
+// formatBasicAuth are thin wrappers around their Encode direction); the
 // Docker Distribution auth-scope string is built via
-// internal.DockerScopeCodec (FormatDockerScope). None of these require a
+// internal.DockerScopeCodec (formatDockerScope). None of these require a
 // caller to import the internal package.
+//
+// BOTH credential schemes this package uses (Bearer, on
+// GetTagsRoute/GetManifestRoute; Basic, on getTokenRoute's token-exchange
+// call) flow through the IDENTICAL declarative mechanism — a
+// rest.WithSecurityScheme declaration on the route (routes.go's
+// bearerAuthScheme/basicAuthScheme) paired with a credentialFunc passed as
+// nethttp.CallOptions.CredentialFunc. Neither scheme is ever injected via
+// CallOptions.ExtraHeaders — that manual bypass was removed once
+// WithSecurityScheme shipped, so nethttp.Call's client-side
+// credential-format check (validating the credentialFunc-returned header
+// against the route's declared Codec before sending, symmetric with the
+// server-side check) applies to both.
 //
 // authenticate's Ping/401-detection step is a plain nethttp.CallHandle
 // call — reading the WWW-Authenticate challenge header on the 401
@@ -56,14 +82,13 @@ import (
 
 // ── Format helpers (Challenge / DockerScope / Bearer / Basic) ─────────────────
 
-// FormatChallenge reconstructs a WWW-Authenticate Bearer challenge header
-// value from its realm/service/scope parameters — a thin wrapper around
-// internal.ChallengeCodec.Encode. Exported so callers building mock
-// registry/auth servers for tests or demos can construct a valid
-// challenge header without hand-concatenating
-// `Bearer realm="...",service="...",scope="..."` themselves, and without
-// needing to know about the internal.Challenge type.
-func FormatChallenge(realm, service, scope string) (string, error) {
+// formatChallenge reconstructs a WWW-Authenticate Bearer challenge
+// header value from its realm/service/scope parameters — a thin wrapper
+// around internal.ChallengeCodec.Encode. Unexported: this package's own
+// authenticate() is the only caller that ever needs to construct this
+// header shape (a real registry SERVER, not this client, is what emits
+// it) — no external caller needs this.
+func formatChallenge(realm, service, scope string) (string, error) {
 	raw, err := internal.ChallengeCodec.Encode(internal.Challenge{Realm: realm, Service: service, Scope: scope})
 	if err != nil {
 		return "", err
@@ -71,13 +96,12 @@ func FormatChallenge(realm, service, scope string) (string, error) {
 	return raw.(string), nil
 }
 
-// FormatDockerScope reconstructs a Docker Distribution auth scope string
+// formatDockerScope reconstructs a Docker Distribution auth scope string
 // from its resourceType/name/actions parameters — a thin wrapper around
-// internal.DockerScopeCodec.Encode. Exported so callers building mock
-// auth servers, or requesting a scope with custom actions, can construct
-// a valid scope string without hand-concatenating
-// "type:name:action1,action2" themselves.
-func FormatDockerScope(resourceType, name string, actions []string) (string, error) {
+// internal.DockerScopeCodec.Encode. Unexported: only authenticate()
+// (building the "repository:<repository>:pull" scope for a token
+// request) needs this.
+func formatDockerScope(resourceType, name string, actions []string) (string, error) {
 	raw, err := internal.DockerScopeCodec.Encode(internal.DockerScope{ResourceType: resourceType, Name: name, Actions: actions})
 	if err != nil {
 		return "", err
@@ -85,19 +109,19 @@ func FormatDockerScope(resourceType, name string, actions []string) (string, err
 	return raw.(string), nil
 }
 
-// FormatBearerToken formats token as an "Authorization: Bearer <token>"
+// formatBearerToken formats token as an "Authorization: Bearer <token>"
 // header value — a thin wrapper around internal.BearerTokenCodec.Encode,
 // which never fails for a plain string, so this returns just the
 // formatted string (no error) for ergonomic call sites.
-func FormatBearerToken(token string) string {
+func formatBearerToken(token string) string {
 	raw, _ := internal.BearerTokenCodec.Encode(token)
 	return raw.(string)
 }
 
-// FormatBasicAuth formats username/password as an "Authorization: Basic
+// formatBasicAuth formats username/password as an "Authorization: Basic
 // <base64>" header value — a thin wrapper around
 // internal.BasicAuthCodec.Encode.
-func FormatBasicAuth(username, password string) (string, error) {
+func formatBasicAuth(username, password string) (string, error) {
 	raw, err := internal.BasicAuthCodec.Encode(internal.BasicCredentials{Username: username, Password: password})
 	if err != nil {
 		return "", err
@@ -154,12 +178,17 @@ func parseChallenge(header http.Header) (internal.Challenge, error) {
 // authenticate probes registryHost's base endpoint (GET /v2/) and, if it
 // requires auth (401 + WWW-Authenticate challenge), fetches a Bearer token
 // scoped to "repository:<repository>:pull" from the challenge's realm via
-// GetTokenRoute (a normal, fully declarative nethttp.CallHandle call).
+// getTokenRoute (a normal, fully declarative nethttp.CallHandle call).
 // Returns "" (no error) when the registry does not require auth. creds is
 // nil for anonymous pulls (the default); when non-nil, its Basic-auth
-// value is sent on the token-exchange request only (never on the
+// value is sent on the token-exchange request ONLY (never on the
 // subsequent Bearer-authenticated GetTagsRoute/GetManifestRoute calls) —
-// see Credentials' doc comment (types.go) for when this is needed.
+// see Credentials' doc comment (types.go) for when this is needed. Both
+// the Basic-auth credential here and the Bearer token GetTags/
+// GetImageMetadata use afterward flow through the SAME credentialFunc +
+// rest.WithSecurityScheme mechanism (routes.go's basicAuthScheme/
+// bearerAuthScheme) — no CallOptions.ExtraHeaders injection anywhere in
+// this package.
 func authenticate(ctx context.Context, httpClient *http.Client, registryHost, repository string, creds *Credentials) (string, error) {
 	baseURL := registryBaseURL(registryHost)
 	pingHandle := PingRoute.ClientHandle()
@@ -192,23 +221,37 @@ func authenticate(ctx context.Context, httpClient *http.Client, registryHost, re
 	// The correct scope for a pull is always self-built from the
 	// repository we are actually calling for — challenge.Scope is
 	// deliberately ignored here, regardless of whether it is empty.
-	scope, err := FormatDockerScope("repository", repository, []string{"pull"})
+	scope, err := formatDockerScope("repository", repository, []string{"pull"})
 	if err != nil {
 		return "", err
 	}
 
+	// Basic-auth credentials (when supplied) flow through credentialFunc,
+	// the SAME declarative mechanism Bearer credentials use on
+	// GetTagsRoute/GetManifestRoute (see newAuthCredentialFunc below) — not a
+	// manual CallOptions.ExtraHeaders injection. getTokenRoute declares
+	// Security unconditionally (routes.go's basicAuthSecurity), so this
+	// credentialFunc is invoked automatically by nethttp.CallHandle
+	// whenever creds is non-nil; when creds is nil (anonymous exchange),
+	// tokenOpts.CredentialFunc stays nil — a nil CredentialFunc on a
+	// secured route is never an error, so the request goes out exactly as
+	// it always has: no Authorization header at all.
 	tokenOpts := nethttp.CallOptions{}
 	if creds != nil {
-		basicAuth, err := FormatBasicAuth(creds.Username, creds.Password)
-		if err != nil {
-			return "", err
+		tokenOpts.CredentialFunc = func(context.Context, []route.SecurityRequirement) (http.Header, error) {
+			basicAuth, err := formatBasicAuth(creds.Username, creds.Password)
+			if err != nil {
+				return nil, err
+			}
+			h := make(http.Header, 1)
+			h.Set("Authorization", basicAuth)
+			return h, nil
 		}
-		tokenOpts.ExtraHeaders = http.Header{"Authorization": []string{basicAuth}}
 	}
 
-	tokenHandle := GetTokenRoute.ClientHandle()
+	tokenHandle := getTokenRoute.ClientHandle()
 	tr, err := nethttp.CallHandle(ctx, httpClient, challenge.Realm, tokenHandle,
-		GetTokenReq{Service: challenge.Service, Scope: scope}, tokenOpts)
+		getTokenReq{Service: challenge.Service, Scope: scope}, tokenOpts)
 	if err != nil {
 		return "", RegistryAuthError{Registry: registryHost, Err: err}
 	}
@@ -218,22 +261,22 @@ func authenticate(ctx context.Context, httpClient *http.Client, registryHost, re
 	return tr.AccessToken, nil
 }
 
-// CredentialFunc names nethttp.CallOptions.CredentialFunc's function type
+// credentialFunc names nethttp.CallOptions.CredentialFunc's function type
 // for readability at call sites that need to store or pass one around
-// (NewAuthCredentialFunc's return type, client.go's fetchManifest
+// (newAuthCredentialFunc's return type, client.go's fetchManifest
 // parameter) instead of repeating the full inline function type.
-type CredentialFunc = func(ctx context.Context, reqs []route.SecurityRequirement) (http.Header, error)
+type credentialFunc = func(ctx context.Context, reqs []route.SecurityRequirement) (http.Header, error)
 
-// NewAuthCredentialFunc returns a CredentialFunc that authenticates
+// newAuthCredentialFunc returns a credentialFunc that authenticates
 // against registryHost for repository LAZILY — on first invocation by
 // nethttp.Call/CallHandle, which only happens for routes declaring
-// RouteMeta.Security (see routes.go's bearerAuthSecurity) — and MEMOIZES
-// the result (via sync.Once) for the lifetime of the returned closure.
-// Reusing the SAME CredentialFunc value across multiple CallHandle
-// invocations against secured routes therefore performs the Ping +
-// WWW-Authenticate-challenge + token-exchange dance only ONCE, no matter
-// how many secured calls are made with it (see client.go's
-// GetImageMetadata, which reuses one CredentialFunc across two
+// RouteMeta.Security (see this file's own bearerAuthSecurity) — and
+// MEMOIZES the result (via sync.Once) for the lifetime of the returned
+// closure. Reusing the SAME credentialFunc value across multiple
+// CallHandle invocations against secured routes therefore performs the
+// Ping + WWW-Authenticate-challenge + token-exchange dance only ONCE, no
+// matter how many secured calls are made with it (see client.go's
+// GetImageMetadata, which reuses one credentialFunc across two
 // GetManifestRoute calls while resolving a manifest list).
 //
 // Returns a nil header (no-op — the request goes out unauthenticated)
@@ -242,11 +285,11 @@ type CredentialFunc = func(ctx context.Context, reqs []route.SecurityRequirement
 // (RegistryAuthChallengeError/RegistryAuthError) unchanged once observed --
 // matching authenticate's own error behavior, just deferred to first use.
 //
-// Exported so a caller driving routes.go's routes directly (bypassing
-// GetTags/GetImageMetadata) gets the identical auth flow as a reusable
-// building block — e.g. a future MCP tool wrapper mapping tool input
-// straight to GetTagsRoute/GetManifestRoute.
-func NewAuthCredentialFunc(httpClient *http.Client, registryHost, repository string, opts ...Option) CredentialFunc {
+// Unexported: GetTags/GetImageMetadata (client.go) are the only callers.
+// This package's public surface is deliberately just routes + client
+// functions + domain structs/codecs — a caller never needs to build their
+// own credentialFunc directly.
+func newAuthCredentialFunc(httpClient *http.Client, registryHost, repository string, opts ...Option) credentialFunc {
 	o := resolveOptions(opts)
 	var (
 		once    sync.Once
@@ -264,7 +307,99 @@ func NewAuthCredentialFunc(httpClient *http.Client, registryHost, repository str
 			return nil, nil // registry requires no auth for this request.
 		}
 		h := make(http.Header, 1)
-		h.Set("Authorization", FormatBearerToken(token))
+		h.Set("Authorization", formatBearerToken(token))
 		return h, nil
 	}
 }
+
+// ---- bearerAuth + basicAuth scheme declarations, and getTokenRoute
+// (all moved from routes.go: routes.go's own job is purely declaring
+// routes; every security scheme/requirement value this package declares
+// lives here instead, alongside authenticate()/newAuthCredentialFunc,
+// which are their only real consumers) ----
+
+// bearerAuthSecurity declares that a route requires Bearer-token
+// credentials — set as RouteMeta.Security below so
+// [nethttp.CallOptions.CredentialFunc] is invoked automatically by
+// [nethttp.Call]/[nethttp.CallHandle], instead of the caller having to set
+// the Authorization header by hand via CallOptions.ExtraHeaders.
+var bearerAuthSecurity = []route.SecurityRequirement{{"bearerAuth": nil}}
+
+// bearerAuthScheme declares the "bearerAuth" scheme's spec metadata and a
+// non-empty-string format Codec, attached to GetTagsRoute/GetManifestRoute
+// below via rest.WithSecurityScheme — the ONLY way to declare a security
+// scheme in go-codex (no Builder/spec involved here at all; WithSecurityScheme
+// is a route-level RouteOpt, so it works identically through .ClientHandle()
+// as it would through .Register(builder)). This gives newAuthCredentialFunc
+// (auth.go) a genuine extra safety net: nethttp.Call now validates its
+// returned Authorization header's bare token against this Codec before
+// sending, on top of (not instead of) the fact that formatBearerToken/
+// internal.BearerTokenCodec.Encode already construct that header from a
+// codec — this catches an empty token specifically, which the encode-side
+// codec alone does not.
+var bearerAuthScheme = rest.SecurityScheme{
+	SecurityScheme: route.BearerScheme(""),
+}.WithCodec(c.String().Refine(validate.NonEmptyString))
+
+// basicAuthSecurity declares that getTokenRoute accepts Basic-auth
+// credentials — set as RouteMeta.Security below so
+// [nethttp.CallOptions.CredentialFunc] is invoked automatically by
+// [nethttp.Call]/[nethttp.CallHandle] whenever auth.go's authenticate()
+// supplies one (private-repo Credentials). Declaring this UNCONDITIONALLY
+// is safe even for anonymous (no-Credentials) token exchanges: a nil/no-op
+// credentialFunc on a secured route is never an error (see auth.go) — the
+// request simply goes out without a Basic-auth header in that case,
+// exactly as it always has.
+var basicAuthSecurity = []route.SecurityRequirement{{"basicAuth": nil}}
+
+// basicAuthScheme declares the "basicAuth" scheme's spec metadata and a
+// non-empty-string format Codec, attached to getTokenRoute below via
+// rest.WithSecurityScheme — the same declarative mechanism bearerAuthScheme
+// uses above, giving auth.go's Basic-auth token-exchange credential the
+// SAME client-side format-validation safety net Bearer credentials already
+// get, instead of the manual CallOptions.ExtraHeaders injection this
+// package used before.
+var basicAuthScheme = rest.SecurityScheme{
+	SecurityScheme: route.BasicScheme(),
+}.WithCodec(c.String().Refine(validate.NonEmptyString))
+
+// getTokenReq is getTokenRoute's request — Service and Scope merge
+// automatically into the service/scope query parameters via
+// nethttp.CallHandle.
+type getTokenReq struct {
+	Service string
+	Scope   string
+}
+
+// getTokenRoute is the registry auth-token endpoint. Its path is
+// deliberately EMPTY: the auth realm is an arbitrary full URL that may be
+// on a COMPLETELY DIFFERENT HOST than the registry itself (e.g. Docker
+// Hub's registry is registry-1.docker.io but its auth realm is
+// auth.docker.io/token) — client.go passes the realm URL (parsed from the
+// WWW-Authenticate challenge header) as the baseURL for this route's
+// nethttp.Call, so the route's own path template must contribute nothing
+// beyond that. Req is getTokenReq, whose Service/Scope fields merge into
+// the service/scope query params automatically via nethttp.CallHandle —
+// both OptionalField since real registries vary in which of the two they
+// actually populate in a challenge.
+var getTokenRoute = rest.NewRoute[getTokenReq, internal.TokenResponse](
+	"GET", "",
+	c.Struct[getTokenReq](), internal.TokenResponseCodec,
+	rest.RouteMeta{
+		OperationID:    "getToken",
+		Summary:        "Fetch a Bearer token from the registry's auth realm",
+		RespSchemaName: "TokenResponse",
+		Security:       basicAuthSecurity,
+	},
+	rest.WithSecurityScheme("basicAuth", basicAuthScheme),
+	rest.NewOptionalQueryParam("service",
+		c.String(),
+		func(r getTokenReq) string { return r.Service },
+		func(r *getTokenReq, v string) { r.Service = v },
+	),
+	rest.NewOptionalQueryParam("scope",
+		c.String(),
+		func(r getTokenReq) string { return r.Scope },
+		func(r *getTokenReq, v string) { r.Scope = v },
+	),
+)

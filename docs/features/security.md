@@ -82,6 +82,114 @@ publicRoute, _ := rest.NewRoute[struct{}, Info]("GET", "/health",
 ).Register(b)
 ```
 
+## Security requirement shapes — single, OR, AND, opt-out, inherit
+
+`route.SecurityRequirement` is `map[string][]string` (scheme name → required
+OAuth2 scopes) — a single map can hold MULTIPLE scheme names as keys, and
+`RouteMeta.Security` is a SLICE of these maps. This gives two independent
+axes of combination:
+
+- **Within one map**: every key (scheme name) must be satisfied together — **AND**.
+- **Across the slice**: any one map fully satisfied is enough — **OR**.
+
+`route.Require(name, scopes...)` (used throughout this doc so far) is a
+convenience that only ever builds a SINGLE-KEY map — reach for the map
+literal directly whenever a requirement needs more than one scheme name at
+once (the AND case below). Every scheme name referenced ANYWHERE in
+`Security` still needs a matching `rest.WithSecurityScheme(name, ...)`
+declaration on the same route for its `Codec` to be enforced — a
+referenced name with no matching declaration still gates
+`SecurityFunc`/`CredentialFunc` invocation correctly, but gets no
+credential-FORMAT validation (matches the "no adapter enforces a
+SecurityScheme unless explicitly declared" convention used throughout this
+doc).
+
+**1. Single scheme required** (the baseline shown above):
+
+```go
+rest.RouteMeta{Security: []route.SecurityRequirement{route.Require("bearerAuth", "write:users")}},
+rest.WithSecurityScheme("bearerAuth", bearerAuth),
+```
+
+**2. OR — either scheme suffices** (two elements in the slice; each
+`route.Require(...)` call already produces one single-key map, so calling
+it twice at the slice level is all that's needed):
+
+```go
+rest.RouteMeta{
+    Security: []route.SecurityRequirement{
+        route.Require("bearerAuth"),
+        route.Require("apiKey"),
+    },
+},
+rest.WithSecurityScheme("bearerAuth", bearerAuth),
+rest.WithSecurityScheme("apiKey", apiKeyAuth),
+```
+
+**3. AND — both required together** (one map with multiple keys — build
+the literal directly, since `route.Require` only ever builds a single-key
+map):
+
+```go
+rest.RouteMeta{
+    Security: []route.SecurityRequirement{
+        {"bearerAuth": nil, "apiKey": nil},
+    },
+},
+rest.WithSecurityScheme("bearerAuth", bearerAuth),
+rest.WithSecurityScheme("apiKey", apiKeyAuth),
+```
+
+**4. Mixed — OR of ANDs** ("(bearerAuth AND apiKey) OR (oauth2 with a
+scope)"):
+
+```go
+rest.RouteMeta{
+    Security: []route.SecurityRequirement{
+        {"bearerAuth": nil, "apiKey": nil},
+        {"oauth2": {"read:users"}},
+    },
+},
+```
+
+**5. Explicit opt-out** (empty slice, NOT nil — overrides global security
+for just this route):
+
+```go
+rest.RouteMeta{Security: []route.SecurityRequirement{}},
+```
+
+**6. Inherit global** (omit `Security` entirely — the default):
+
+```go
+rest.RouteMeta{OperationID: "health"}, // no Security field at all
+```
+
+**7. Same scheme, different scopes per route** (the actual reason
+`WithSecurityScheme` and `RouteMeta.Security` stay two separate
+declarations rather than one combined call — see the "Why two mechanisms"
+note below):
+
+```go
+// route A — needs the "profile" scope:
+rest.RouteMeta{Security: []route.SecurityRequirement{route.Require("bearerAuth", "profile")}},
+rest.WithSecurityScheme("bearerAuth", bearerAuth), // SAME shared value
+
+// route B — needs the "admin" scope:
+rest.RouteMeta{Security: []route.SecurityRequirement{route.Require("bearerAuth", "admin")}},
+rest.WithSecurityScheme("bearerAuth", bearerAuth), // SAME shared value, different required scope
+```
+
+**Why two mechanisms, not one:** `WithSecurityScheme` answers "what does
+scheme X look like" — a 1:1 mapping (name → shape), reusable across routes.
+`RouteMeta.Security` answers "which combination of schemes does THIS
+operation need" — an N:M relationship (routes → AND/OR combinations of
+scheme names + scopes), as shapes 2–4 above demonstrate. Folding them into
+one declaration would lose that combinatorial expressiveness — there would
+be no way to say "requires bearerAuth AND apiKey together" or "requires
+bearerAuth with scope A on this route but scope B on that one" without
+duplicating the entire scheme definition per combination.
+
 ## Runtime enforcement (nethttp / chi adapters)
 
 ```go
