@@ -12,6 +12,44 @@
 
 go-codex documents security requirements in the spec and provides declarative hooks for runtime enforcement — **the library does not import any crypto or JWT library**. For REST, a security scheme is declared ONCE, directly on the route (`rest.WithSecurityScheme`) — there is no builder-level scheme registry — and the SAME declaration is consumed identically by both the server (`Route.Register`) and the client (`Route.ClientHandle`), so one route definition gets IDENTICAL credential-format enforcement on both ends. Runtime credential validation itself is handled by adapters: server-side via a `SecurityFunc` hook, client-side automatically inside `nethttp.Call` (see "HTTP client — CredentialFunc" below).
 
+## Connection-level vs message-level security
+
+REST is stateless per-request — every `nethttp.Call`/incoming request IS a
+fresh connection-equivalent, so there's no "connection level" distinct
+from "message level" at all.
+
+MQTT (both 3.1.1 and 5.0) is different: connections are long-lived and
+stateful. The caller calls `Connect()` ONCE, entirely outside go-codex
+(`MQTTClient`/`pahomqtt.Client` deliberately expose no connection-lifecycle
+methods — go-codex never manages `Connect()`/`Disconnect()`), then reuses
+that SAME client across many `Subscribe`/`Publish`/`Serve`/`Call`
+invocations for the program's lifetime. This means TWO independent
+security layers exist:
+
+1. **Connection-level** — broker ACLs (Mosquitto `acl_file`, EMQX rules,
+   etc.) tied to CONNECT-time username/password/TLS client cert,
+   configured ENTIRELY in the caller's own connect code, before any
+   `events.Channel`/`reqreply.Route` is touched. This already works today
+   with ZERO go-codex involvement, and is sufficient for "one connection =
+   one identity" topologies (e.g. one IoT device, one dedicated broker
+   connection, one CONNECT-time credential). See
+   [Connect-Level Credential Codec](../roadmap/mqtt-connect-credential-scheme.md)
+   (design draft) for a planned `SecuredClient` wrapper that adds a
+   codec-validated FORMAT check on this connect-time credential — a
+   one-time, construction-only validation, protocol-symmetric across MQTT
+   3.1.1 + MQTT5 (unlike the message-level model below).
+2. **Message-level** (`WithSecurityScheme` + `SecurityFunc`/
+   `CredentialFunc`, shipped — MQTT5-only, see below) — opt-in, per-message
+   codec-validated credentials, needed when ONE connection carries traffic
+   for MULTIPLE logical identities (e.g. a gateway relaying many devices'
+   messages over one shared broker connection) and broker ACLs alone can't
+   distinguish between them.
+
+Both layers are independent and composable — use connection-level ACLs for
+coarse-grained, per-connection authorization, and message-level
+`SecurityFunc`/`CredentialFunc` for fine-grained, per-message claims within
+a single shared connection. Neither requires the other.
+
 ## Security schemes (REST)
 
 ```go

@@ -1,6 +1,67 @@
-# go-codex Review History (R1–R99)
+# go-codex Review History (R1–R100)
 
 Do not re-report any of these findings. They have been implemented and tested.
+
+---
+
+## Round 100 (New roadmap doc: Connect-Level Credential Codec — `adapters/mqtt`/`adapters/mqtt5`)
+
+Follow-up investigation after Round 99's message-level security parity
+work — reviewed remaining open items and designed a NEW, not-yet-implemented
+feature (Explore mode, docs only, no code this round):
+
+- **Corrected another assumption**: `adapters/zeromq` ALSO implements
+  reqreply (`Serve`/`Call`/`ServeRouter`/`CallDealer` in `adapter.go`, not a
+  separate `reqreply.go` file) — confirmed it has ZERO security fields at
+  all (not even a manual `SecurityFunc`-style hook), a real gap distinct
+  from the MQTT5-only scoping decision. Left as a documented gap per the
+  user's explicit choice — already captured in `docs/features/security.md`
+  from Round 99.
+- **Clarified `adapters/mqtt` (3.1.1) Subscribe/Publish asymmetry**: found
+  `adapters/mqtt` already had a pre-existing (permanent no-op)
+  `validateSecurityCredentials` scaffold on Subscribe (from before this
+  session), but `Publish` has ZERO security wiring at all — not resolved
+  this round (user redirected toward the connect-level design instead).
+- **Confirmed `credential-caching.md` is NOT a connection-lifecycle
+  concern** — it only caches `CredentialFunc`'s returned VALUE across
+  stateless `nethttp.Call` invocations, never touches any transport
+  connection. No principle needed weakening for the new feature either.
+- **Designed a new feature**: connect-level (CONNECT username/password)
+  credential FORMAT validation — protocol-symmetric across MQTT 3.1.1 +
+  MQTT5 (confirmed via `go doc` that both `paho.mqtt.golang` and
+  `paho.golang/paho` carry Username/Password on CONNECT), unlike the
+  message-level model (MQTT5-only, since it depends on User Properties).
+  Surfaced and resolved a real design tension: `WithSecurityScheme`'s
+  "declare once → automatically applied" guarantee works because
+  `Subscribe`/`Publish`/`Serve`/`Call` are go-codex-owned entry points that
+  read the handle every call — connect-level validation has NO such hook
+  (go-codex never calls `Connect()`). Considered two designs:
+  - **Design 1 (rejected)**: global per-client-pointer memoization
+    (`sync.Map`), lazily triggered on first `Subscribe`/`Publish`/`Serve`/
+    `Call` — rejected for hidden global state, cache-eviction complexity,
+    and requiring a new options field on 8 structs (4 entry points × 2
+    adapters).
+  - **Design 2 (chosen)**: an explicit `SecuredClient` wrapper —
+    `NewSecuredClient(client, scheme, credential) (*SecuredClient, error)`
+    validates ONCE, synchronously, at construction; the wrapper uses Go
+    struct embedding to get every `MQTTClient`/`pahomqtt.Client` method
+    promoted for free (zero manual delegation), so every existing
+    `Subscribe`/`Publish`/`Serve`/`Call` call site works completely
+    unchanged afterward. No global state, no lazy-race, no eviction
+    questions — mirrors `docker/registry`'s already-proven memoized-closure
+    pattern, just evaluated once per CONNECTION instead of once per
+    top-level call.
+- Wrote `docs/roadmap/mqtt-connect-credential-scheme.md` (Status: Design
+  draft) with full API surface, structured error
+  (`ConnectSecurityCredentialError`), Observer integration sketch, unit
+  test plan, files-to-create list, and explicit open design decisions
+  (opaque credential string vs. username+password; `Server.Security`
+  cross-reference; naming). Added to `docs/roadmap/index.md`/`zensical.toml`.
+- Added a new "Connection-level vs message-level security" section to
+  `docs/features/security.md` explaining the two independent layers and
+  forward-referencing the new roadmap doc.
+- No code changes this round — verified `gofmt -l .` clean and
+  `go build ./...` unaffected (docs-only).
 
 ---
 
