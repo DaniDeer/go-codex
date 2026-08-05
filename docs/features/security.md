@@ -66,9 +66,6 @@ security layers exist:
    `ConnectSecurityCredentialError` and the underlying client is never
    touched. `*SecuredClient` satisfies `MQTTClient`/`pahomqtt.Client`
    transparently via Go struct embedding — no other code changes needed.
-   See [Connect-Level Credential Codec](../roadmap/mqtt-connect-credential-scheme.md)
-   for the full design (including the rejected global-memoization
-   alternative and rationale).
 2. **Message-level** (`WithSecurityScheme` + `SecurityFunc`/
    `CredentialFunc`, shipped — MQTT5-only, see below) — opt-in, per-message
    codec-validated credentials, needed when ONE connection carries traffic

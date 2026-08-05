@@ -1,6 +1,38 @@
-# go-codex Review History (R1–R101)
+# go-codex Review History (R1–R102)
 
 Do not re-report any of these findings. They have been implemented and tested.
+
+---
+
+## Round 102 (Retired `docs/roadmap/mqtt-connect-credential-scheme.md` — fully shipped)
+
+Reviewed the roadmap doc against Round 101's implementation, item by item:
+
+- **API surface**: `ConnectSecurityScheme`/`WithCodec`, `SecuredClient`,
+  `NewSecuredClient(client, scheme, username, password string, opts...)`,
+  `SecuredClientOption`/`WithObserver`, `ConnectSecurityCredentialError` —
+  confirmed identical in both `adapters/mqtt5/connect_security.go` and
+  `adapters/mqtt/connect_security.go` to the roadmap doc's final code
+  block.
+- **Unit test plan**: all 10 planned tests present verbatim (by name) in
+  both `connect_security_test.go` files — 20/20 shipped, all passing.
+- **Example update**: confirmed `examples/adapters-mqtt5`'s "Demo 3b"
+  wired into `main()`.
+- **Out of scope items correctly NOT implemented**: no `sync.Map`/
+  `sync.Once` (Design 1's rejected global memoization did not leak in);
+  `Server.Security` remains godoc-only cross-reference, no code linkage.
+- **Resolved design decisions section**: matches the shipped code exactly
+  (username/password combined into `"username:password"`; `Server.Security`
+  godoc-only; naming confirmed as `SecuredClient`/`NewSecuredClient`).
+
+Since every item was fully shipped and verified, deleted
+`docs/roadmap/mqtt-connect-credential-scheme.md` (same retirement
+precedent as Rounds 97/99). Fixed the resulting dangling cross-references
+in `docs/features/security.md` (removed the "see roadmap doc for full
+design" pointer — the feature is now documented as shipped, not planned),
+`docs/roadmap/index.md` (removed the table row), and `zensical.toml`
+(removed the nav entry). Verified `gofmt -l .`/`go build ./...` unaffected
+(docs-only change) and the 20 connect-security tests still pass.
 
 ---
 
