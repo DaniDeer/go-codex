@@ -41,8 +41,8 @@ func TestParseImageRef(t *testing.T) {
 		},
 		{
 			name:  "explicit registry host with port",
-			input: "ghcr.io/bosch-cc-mfd/edge-gateway:0.12.5.0",
-			want:  ImageRef{Registry: "ghcr.io", Repository: "bosch-cc-mfd/edge-gateway", Reference: "0.12.5.0"},
+			input: "quay.io/prometheus/prometheus:v2.53.0",
+			want:  ImageRef{Registry: "quay.io", Repository: "prometheus/prometheus", Reference: "v2.53.0"},
 		},
 		{
 			name:  "digest reference",

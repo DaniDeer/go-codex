@@ -57,20 +57,21 @@ func main() {
 	}
 
 	// ── CreateOptions detail for one module with a rich create-options doc ──
-	multiAccess := modules["cv-writer-multi-access-service"]
-	fmt.Println("\n=== cv-writer-multi-access-service: CreateOptions detail ===")
-	fmt.Println("ExposedPorts:", multiAccess.Settings.CreateOptions.ExposedPorts)
-	fmt.Printf("HostConfig.Binds: %+v\n", multiAccess.Settings.CreateOptions.HostConfig.Binds)
-	fmt.Printf("HostConfig.PortBindings: %+v\n", multiAccess.Settings.CreateOptions.HostConfig.PortBindings)
+	edgeProxy := modules["factory-edge-proxy"]
+	fmt.Println("\n=== factory-edge-proxy: CreateOptions detail ===")
+	fmt.Println("ExposedPorts:", edgeProxy.Settings.CreateOptions.ExposedPorts)
+	fmt.Printf("HostConfig.Binds: %+v\n", edgeProxy.Settings.CreateOptions.HostConfig.Binds)
+	fmt.Printf("HostConfig.PortBindings: %+v\n", edgeProxy.Settings.CreateOptions.HostConfig.PortBindings)
 
 	// ── EnvVarValue's 3-way string/int/float union in action ───────────────
-	// cv-writer-web's AUTO_REFRESH_INTERVAL is a bare JSON number (15000),
-	// while most other env vars are JSON strings — EnvVarValueCodec (via
+	// factory-dashboard's AUTO_REFRESH_INTERVAL is a bare JSON integer (15000)
+	// and REFRESH_RATE_HZ is a bare JSON fractional number (0.5), while most
+	// other env vars are JSON strings — EnvVarValueCodec (via
 	// codex.UntaggedUnion, tried string-then-int-then-float) dispatches each
 	// to the correct branch automatically.
-	web := modules["cv-writer-web"]
-	fmt.Println("\n=== cv-writer-web: env var value union (string vs number) ===")
-	for name, ev := range web.Env {
+	dashboard := modules["factory-dashboard"]
+	fmt.Println("\n=== factory-dashboard: env var value union (string vs int vs float) ===")
+	for name, ev := range dashboard.Env {
 		switch {
 		case ev.Value.StringValue != nil:
 			fmt.Printf("  %-16s StringValue=%q\n", name, *ev.Value.StringValue)
@@ -81,13 +82,13 @@ func main() {
 		}
 	}
 
-	// ── cv-writer-kvrocks has NO "env" key at all (OptionalField) ───────────
-	kvrocks := modules["cv-writer-kvrocks"]
-	fmt.Printf("\ncv-writer-kvrocks.Env (no \"env\" key on the wire): %v (len=%d)\n", kvrocks.Env, len(kvrocks.Env))
+	// ── factory-cache has NO "env" key at all (OptionalField) ───────────
+	cache := modules["factory-cache"]
+	fmt.Printf("\nfactory-cache.Env (no \"env\" key on the wire): %v (len=%d)\n", cache.Env, len(cache.Env))
 
-	// ── cv-writer-metrics has createOptions:"" (empty string) ───────────────
-	metrics := modules["cv-writer-metrics"]
-	fmt.Printf("cv-writer-metrics.Settings.CreateOptions (createOptions was \"\" on the wire): %+v\n", metrics.Settings.CreateOptions)
+	// ── factory-metrics-collector has createOptions:"" (empty string) ───────────────
+	metrics := modules["factory-metrics-collector"]
+	fmt.Printf("factory-metrics-collector.Settings.CreateOptions (createOptions was \"\" on the wire): %+v\n", metrics.Settings.CreateOptions)
 
 	// ── Round trip: re-encode the entire manifest ───────────────────────────
 	reEncoded, err := jManifest.Marshal(manifest)
@@ -106,7 +107,7 @@ func main() {
 	// shape onto the real file on disk, touching ONLY settings.image for
 	// the named module — every other field, and every other module, is
 	// left untouched. Same pattern as examples/flat-key-patch.
-	fmt.Println("\n=== ModulePatch: patch cv-writer-web's image on disk ===")
+	fmt.Println("\n=== ModulePatch: patch factory-dashboard's image on disk ===")
 
 	dir, err := os.MkdirTemp("", "go-edge-models-patch-*")
 	if err != nil {
@@ -124,9 +125,9 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
-	fmt.Printf("before: cv-writer-web image=%q\n", before.ModulesContent.EdgeAgent["cv-writer-web"].Settings.Image)
+	fmt.Printf("before: factory-dashboard image=%q\n", before.ModulesContent.EdgeAgent["factory-dashboard"].Settings.Image)
 
-	patch := modulepatch.ModulePatch{ModuleName: "cv-writer-web", ImageURL: "ghcr.io/bosch-cc-mfd/edge-curve-viewer-web:2.0.0"}
+	patch := modulepatch.ModulePatch{ModuleName: "factory-dashboard", ImageURL: "ghcr.io/example-org/factory-dashboard:2.0.0"}
 	if err := ports.PatchEncoded(manifestFile, nil, modulepatch.ModulePatchCodec, patch, ports.FileOptions{}); err != nil {
 		log.Fatal(err)
 	}
@@ -135,14 +136,14 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
-	patchedWeb := after.ModulesContent.EdgeAgent["cv-writer-web"]
-	fmt.Printf("after:  cv-writer-web image=%q\n", patchedWeb.Settings.Image)
-	fmt.Printf("        cv-writer-web env still has %d entries (untouched): %v\n", len(patchedWeb.Env), patchedWeb.Env != nil)
+	patchedWeb := after.ModulesContent.EdgeAgent["factory-dashboard"]
+	fmt.Printf("after:  factory-dashboard image=%q\n", patchedWeb.Settings.Image)
+	fmt.Printf("        factory-dashboard env still has %d entries (untouched): %v\n", len(patchedWeb.Env), patchedWeb.Env != nil)
 
 	// Confirm every OTHER module is byte-for-byte unaffected by the patch.
 	unaffected := true
 	for name, m := range modules {
-		if name == "cv-writer-web" {
+		if name == "factory-dashboard" {
 			continue
 		}
 		if after.ModulesContent.EdgeAgent[name].Settings.Image != m.Settings.Image {
@@ -161,14 +162,14 @@ func main() {
 	// actual logic (auth-challenge flow, manifest-list-to-single-platform
 	// resolution, lean metadata computation) lives in the docker/registry
 	// package itself — reusable independent of this example.
-	fmt.Println("\n=== docker/registry: tags + manifest metadata for cv-writer-web ===")
+	fmt.Println("\n=== docker/registry: tags + manifest metadata for factory-dashboard ===")
 	runRegistryDemo()
 }
 
 // runRegistryDemo wires two local httptest servers together (a registry
 // host and a separate auth-realm host) and calls registry.GetTags /
 // registry.GetImageMetadata against a synthetic multi-arch image — the
-// image name reuses "cv-writer-web" for narrative continuity with the rest
+// image name reuses "factory-dashboard" for narrative continuity with the rest
 // of this example. See docker/registry's own package doc for the reusable
 // client API this demonstrates.
 func runRegistryDemo() {
@@ -190,7 +191,7 @@ func runRegistryDemo() {
 	// auth flow). Building the WWW-Authenticate challenge, scope, and
 	// Authorization value here is plain string formatting per the Docker
 	// Distribution / RFC 6750 wire format a real registry server would emit.
-	scope := "repository:cv-writer-web:pull"
+	scope := "repository:factory-dashboard:pull"
 	challenge := fmt.Sprintf(`Bearer realm=%q,service=%q,scope=%q`, authSrv.URL+"/token", "demo-registry", scope)
 	bearerAuth := "Bearer " + fakeToken
 
@@ -203,15 +204,15 @@ func runRegistryDemo() {
 		}
 		w.WriteHeader(http.StatusOK)
 	})
-	mux.HandleFunc("/v2/cv-writer-web/tags/list", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/v2/factory-dashboard/tags/list", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]any{
-			"name": "cv-writer-web",
+			"name": "factory-dashboard",
 			"tags": []string{"1.8.16.1", "1.8.15.0", "latest"},
 		})
 	})
-	mux.HandleFunc("/v2/cv-writer-web/manifests/", func(w http.ResponseWriter, r *http.Request) {
-		reference := strings.TrimPrefix(r.URL.Path, "/v2/cv-writer-web/manifests/")
+	mux.HandleFunc("/v2/factory-dashboard/manifests/", func(w http.ResponseWriter, r *http.Request) {
+		reference := strings.TrimPrefix(r.URL.Path, "/v2/factory-dashboard/manifests/")
 		w.Header().Set("Content-Type", "application/json")
 		switch reference {
 		case "latest":
@@ -271,7 +272,7 @@ func runRegistryDemo() {
 		log.Fatal(err)
 	}
 	imageURL, err := registry.FormatImageRef(registry.ImageRef{
-		Registry: registryHost.Host, Repository: "cv-writer-web", Reference: "latest",
+		Registry: registryHost.Host, Repository: "factory-dashboard", Reference: "latest",
 	})
 	if err != nil {
 		log.Fatal(err)

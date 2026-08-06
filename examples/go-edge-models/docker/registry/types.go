@@ -9,7 +9,7 @@ type ImageRef struct {
 	// "registry-1.docker.io" (the Docker Hub default when the input image
 	// URL has no explicit registry host).
 	Registry string
-	// Repository is the repository path, e.g. "bosch-cc-mfd/edge-gateway"
+	// Repository is the repository path, e.g. "prometheus/prometheus"
 	// or "library/alpine" (the Docker Hub "library/" default for
 	// single-segment repository names).
 	Repository string
@@ -40,7 +40,7 @@ type GetManifestReq struct {
 // GetImageMetadataReq is the input to GetImageMetadata.
 type GetImageMetadataReq struct {
 	// ImageURL is the raw image reference string, e.g.
-	// "ghcr.io/bosch-cc-mfd/edge-gateway:0.12.5.0" or "alpine:latest".
+	// "quay.io/prometheus/prometheus:v2.53.0" or "alpine:latest".
 	ImageURL string
 	// Platform selects which platform-specific manifest to resolve when
 	// ImageURL points at a multi-arch manifest list / OCI image index,

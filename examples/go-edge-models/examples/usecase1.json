@@ -1,0 +1,361 @@
+{
+  "modulesContent": {
+    "$edgeAgent": {
+      "properties.desired.modules.factory-cache": {
+        "settings": {
+          "image": "apache/kvrocks:2.15.0",
+          "createOptions": "{\"HostConfig\": {\"Binds\": [\"factory-cache-data:/var/lib/kvrocks\"]}}"
+        },
+        "type": "docker",
+        "status": "running",
+        "restartPolicy": "always",
+        "version": "Will be automatically overwritten"
+      },
+      "properties.desired.modules.factory-ingest-agent": {
+        "settings": {
+          "image": "ghcr.io/example-org/factory-ingest-agent:0.4.6",
+          "createOptions": "{\"Cmd\": [\"ToDo: Override createOptions in device layers.\"]}"
+        },
+        "env": {
+          "TZ": {
+            "value": "Europe/Berlin"
+          },
+          "PIPELINE_CONFIG": {
+            "value": "ToDo: Override value in device layers."
+          },
+          "CACHE_HOST": {
+            "value": "factory-cache"
+          },
+          "CACHE_PORT": {
+            "value": "6666"
+          },
+          "TELEMETRY_HOST": {
+            "value": "factory-telemetry-collector"
+          }
+        },
+        "type": "docker",
+        "status": "running",
+        "restartPolicy": "always",
+        "version": "Will be automatically overwritten"
+      },
+      "properties.desired.modules.factory-mqtt-gateway-1": {
+        "settings": {
+          "image": "ghcr.io/example-org/factory-gateway:0.12.5",
+          "createOptions": "{\"ExposedPorts\": {\"8000/tcp\": {}}}"
+        },
+        "env": {
+          "DEBUG_LOG": {
+            "value": "False"
+          },
+          "QUEUE_CLEANUP": {
+            "value": "False"
+          },
+          "BROKER_URL": {
+            "value": "ToDo: Override value in device layers."
+          },
+          "CACHE_HOST": {
+            "value": "factory-cache"
+          },
+          "CACHE_PORT": {
+            "value": "6666"
+          },
+          "TZ": {
+            "value": "Europe/Berlin"
+          },
+          "TELEMETRY_HOST": {
+            "value": "factory-telemetry-collector"
+          }
+        },
+        "type": "docker",
+        "status": "running",
+        "restartPolicy": "on-failure",
+        "version": "Will be automatically overwritten"
+      },
+      "properties.desired.modules.factory-mqtt-gateway-2": {
+        "settings": {
+          "image": "ghcr.io/example-org/factory-gateway:0.12.5",
+          "createOptions": "{\"ExposedPorts\": {\"8000/tcp\": {}}}"
+        },
+        "env": {
+          "DEBUG_LOG": {
+            "value": "False"
+          },
+          "QUEUE_CLEANUP": {
+            "value": "False"
+          },
+          "BROKER_URL": {
+            "value": "ToDo: Override value in device layers."
+          },
+          "CACHE_HOST": {
+            "value": "factory-cache"
+          },
+          "CACHE_PORT": {
+            "value": "6666"
+          },
+          "TZ": {
+            "value": "Europe/Berlin"
+          },
+          "TELEMETRY_HOST": {
+            "value": "factory-telemetry-collector"
+          }
+        },
+        "type": "docker",
+        "status": "stopped",
+        "restartPolicy": "on-failure",
+        "version": "Will be automatically overwritten"
+      },
+      "properties.desired.modules.factory-opcua-gateway": {
+        "settings": {
+          "image": "ghcr.io/example-org/factory-gateway:0.12.5",
+          "createOptions": "{\"Cmd\": [\"opcua\"], \"ExposedPorts\": {\"8000/tcp\": {}}}"
+        },
+        "env": {
+          "DEBUG_LOG": {
+            "value": "False"
+          },
+          "OPCUA_ENDPOINT": {
+            "value": "ToDo: Override value in device layers."
+          },
+          "OPCUA_NODES": {
+            "value": "ToDo: Override value in device layers."
+          },
+          "OPCUA_TEXT": {
+            "value": "True"
+          },
+          "CACHE_HOST": {
+            "value": "factory-cache"
+          },
+          "CACHE_PORT": {
+            "value": "6666"
+          },
+          "TZ": {
+            "value": "Europe/Berlin"
+          },
+          "TELEMETRY_HOST": {
+            "value": "factory-telemetry-collector"
+          }
+        },
+        "type": "docker",
+        "status": "running",
+        "restartPolicy": "never",
+        "version": "Will be automatically overwritten"
+      },
+      "properties.desired.modules.factory-normalizer": {
+        "settings": {
+          "image": "ghcr.io/example-org/factory-normalizer:0.4.4",
+          "createOptions": "{\"ExposedPorts\": {\"8000/tcp\": {}}}"
+        },
+        "env": {
+          "DEBUG_LOG": {
+            "value": "False"
+          },
+          "LIMIT_SIGNIFICANT_DIGITS": {
+            "value": 6
+          },
+          "LIMIT_SIZE": {
+            "value": 921600
+          },
+          "CACHE_HOST": {
+            "value": "factory-cache"
+          },
+          "CACHE_PORT": {
+            "value": "6666"
+          },
+          "TZ": {
+            "value": "Europe/Berlin"
+          },
+          "TELEMETRY_HOST": {
+            "value": "factory-telemetry-collector"
+          }
+        },
+        "type": "docker",
+        "status": "running",
+        "restartPolicy": "on-unhealthy",
+        "version": "Will be automatically overwritten"
+      },
+      "properties.desired.modules.factory-metrics-collector": {
+        "settings": {
+          "image": "mcr.microsoft.com/azureiotedge-metrics-collector:1.2.36",
+          "createOptions": ""
+        },
+        "env": {
+          "experimentalFeatures__AddIdentifyingTags": {
+            "value": "true"
+          },
+          "UploadTarget": {
+            "value": "AzureMonitor"
+          },
+          "MetricsEndpointsCSV": {
+            "value": "http://factory-ingest-agent:8000/metrics,http://factory-telemetry-collector:8888/metrics,http://factory-mqtt-gateway-1:8000/metrics,http://factory-mqtt-gateway-2:8000/metrics,http://factory-opcua-gateway:8000/metrics,http://factory-normalizer:8000/metrics,http://factory-api:8000/metrics"
+          },
+          "LogAnalyticsWorkspaceId": {
+            "value": "00000000-0000-0000-0000-000000000000"
+          },
+          "LogAnalyticsSharedKey": {
+            "value": "${FACTORY_MONITOR_LOG_ANALYTICS_SHARED_KEY}"
+          },
+          "ResourceID": {
+            "value": "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/rg-example-edge/providers/Microsoft.Devices/IotHubs/ioth-example-edge"
+          },
+          "https_proxy": {
+            "value": "http://proxy.example.com:8080/"
+          },
+          "no_proxy": {
+            "value": "factory-ingest-agent,factory-telemetry-collector,factory-mqtt-gateway-1,factory-mqtt-gateway-2,factory-opcua-gateway,factory-normalizer,factory-db,factory-api,factory-dashboard"
+          }
+        },
+        "type": "docker",
+        "status": "running",
+        "restartPolicy": "always",
+        "version": "Will be automatically overwritten"
+      },
+      "properties.desired.modules.factory-telemetry-collector": {
+        "settings": {
+          "image": "ghcr.io/example-org/otel-collector:0.153.0",
+          "createOptions": "{\"ExposedPorts\": {\"9411/tcp\": {}, \"4318/tcp\": {}}}"
+        },
+        "env": {
+          "HTTPS_PROXY": {
+            "value": "http://proxy.example.com:8080/"
+          },
+          "HTTP_PROXY": {
+            "value": "http://proxy.example.com:8080/"
+          },
+          "AZURE_CONNECTION_STRING": {
+            "value": "${FACTORY_MONITOR_AZ_CONNECTION_STRING}"
+          }
+        },
+        "type": "docker",
+        "status": "running",
+        "restartPolicy": "always",
+        "version": "Will be automatically overwritten"
+      },
+      "properties.desired.modules.factory-db": {
+        "settings": {
+          "image": "ghcr.io/example-org/factory-db:1.8.16",
+          "createOptions": "{\"ExposedPorts\": {\"27017/tcp\": {}}, \"HostConfig\": {\"Memory\": 4000000000, \"Binds\": [\"factory-db-data:/data/db\"]}, \"Healthcheck\": {\"Test\": [\"CMD\", \"mongosh\", \"--eval\", \"db.adminCommand('ping')\"], \"Interval\": 30000000000, \"Timeout\": 5000000000, \"StartPeriod\": 10000000000, \"Retries\": 3}}"
+        },
+        "env": {
+          "MONGO_INITDB_ROOT_USERNAME": {
+            "value": "factory_admin"
+          },
+          "MONGO_INITDB_ROOT_PASSWORD": {
+            "value": "${FACTORY_MONITOR_DB_ADMIN_PWD}"
+          },
+          "MONGO_INITDB_DATABASE": {
+            "value": "factory_monitor"
+          },
+          "MONGO_MONITORING_USER": {
+            "value": "monitoring_user"
+          },
+          "MONGO_MONITORING_PWD": {
+            "value": "${FACTORY_MONITOR_DB_MONITORING_PWD}"
+          },
+          "MONGO_INITDB_USER": {
+            "value": "factory_monitor_user"
+          },
+          "MONGO_INITDB_PWD": {
+            "value": "${FACTORY_MONITOR_DB_INITDB_PWD}"
+          },
+          "MONGO_INITDB_RETENTIONTIMEINSECONDS": {
+            "value": 1209600
+          },
+          "MONGO_INITDB_TEMP_STORE_RETENTIONTIMEINSECONDS": {
+            "value": 300
+          }
+        },
+        "type": "docker",
+        "status": "running",
+        "restartPolicy": "always",
+        "version": "Will be automatically overwritten"
+      },
+      "properties.desired.modules.factory-api": {
+        "settings": {
+          "image": "ghcr.io/example-org/factory-api:1.8.16",
+          "createOptions": "{\"ExposedPorts\": {\"8000/tcp\": {}}}"
+        },
+        "env": {
+          "DEBUG_LOG": {
+            "value": "False"
+          },
+          "MONGO_DB": {
+            "value": "{ \"hostname\": \"factory-db\", \"database\": \"factory_monitor\", \"port\": 27017, \"collection\": \"process_events\", \"loginName\": \"factory_monitor_user\", \"loginPassword\": \"${FACTORY_MONITOR_DB_INITDB_PWD}\" }"
+          },
+          "CACHE_HOST": {
+            "value": "factory-cache"
+          },
+          "CACHE_PORT": {
+            "value": "6666"
+          },
+          "TZ": {
+            "value": "Europe/Berlin"
+          },
+          "TELEMETRY_HOST": {
+            "value": "factory-telemetry-collector"
+          }
+        },
+        "type": "docker",
+        "status": "running",
+        "restartPolicy": "always",
+        "version": "Will be automatically overwritten"
+      },
+      "properties.desired.modules.factory-dashboard": {
+        "settings": {
+          "image": "ghcr.io/example-org/factory-dashboard:1.8.16",
+          "createOptions": "{\"ExposedPorts\": {\"5000/tcp\": {}}}"
+        },
+        "env": {
+          "MONGO_INITDB_DATABASE": {
+            "value": "factory_monitor"
+          },
+          "MONGO_INITDB_USER": {
+            "value": "factory_monitor_user"
+          },
+          "MONGO_INITDB_PWD": {
+            "value": "${FACTORY_MONITOR_DB_INITDB_PWD}"
+          },
+          "MONGO_HOST": {
+            "value": "factory-db"
+          },
+          "API_URL": {
+            "value": ""
+          },
+          "AUTO_REFRESH_INTERVAL": {
+            "value": 15000
+          },
+          "REFRESH_RATE_HZ": {
+            "value": 0.5
+          }
+        },
+        "type": "docker",
+        "status": "running",
+        "restartPolicy": "always",
+        "version": "Will be automatically overwritten"
+      },
+      "properties.desired.modules.factory-edge-proxy": {
+        "settings": {
+          "image": "ghcr.io/example-org/factory-edge-proxy:web-app-3.6.13",
+          "createOptions": "{\"ExposedPorts\": {\"8080/tcp\": {}, \"8443/tcp\": {}, \"8090/tcp\": {}}, \"HostConfig\": {\"Binds\": [\"/etc/ssl/local/pubkey.pem:/etc/proxy/ssl/pubkey.pem\", \"/etc/ssl/local/private.key:/etc/proxy/ssl/private.key\"], \"PortBindings\": {\"8080/tcp\": [{\"HostPort\": \"8090\"}], \"8443/tcp\": [{\"HostPort\": \"9090\"}], \"8090/tcp\": [{\"HostPort\": \"9092\"}]}, \"Memory\": 536870912, \"MemorySwap\": -1, \"Ulimits\": [{\"Name\": \"nofile\", \"Soft\": 65536, \"Hard\": 65536}]}}"
+        },
+        "env": {
+          "PROXY_CONFIG": {
+            "value": "ToDo: Override value in device layers."
+          },
+          "PROXY_ROUTES": {
+            "value": "ToDo: Override value in device layers."
+          },
+          "OTEL_PROPAGATORS": {
+            "value": "b3"
+          },
+          "NO_PROXY": {
+            "value": "factory-dashboard,factory-telemetry-collector"
+          }
+        },
+        "type": "docker",
+        "status": "running",
+        "restartPolicy": "never",
+        "version": "Will be automatically overwritten"
+      }
+    }
+  }
+}

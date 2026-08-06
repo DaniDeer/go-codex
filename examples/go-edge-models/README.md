@@ -28,15 +28,15 @@ buried inline inside a larger struct's codec.
 
 ```go
 manifest, err := format.JSON(iotedge.DeploymentManifestCodec).Unmarshal(manifestJSON)
-web := manifest.ModulesContent.EdgeAgent["cv-writer-web"]
-fmt.Println(web.Settings.Image, web.Status)
+dashboard := manifest.ModulesContent.EdgeAgent["factory-dashboard"]
+fmt.Println(dashboard.Settings.Image, dashboard.Status)
 ```
 
 **Patch one module's image in-place on disk:**
 
 ```go
 manifestFile := ports.NewFile(path, format.JSON(iotedge.DeploymentManifestCodec))
-patch := modulepatch.ModulePatch{ModuleName: "cv-writer-web", ImageURL: "ghcr.io/org/edge-web:2.0.0"}
+patch := modulepatch.ModulePatch{ModuleName: "factory-dashboard", ImageURL: "ghcr.io/org/edge-web:2.0.0"}
 err := ports.PatchEncoded(manifestFile, nil, modulepatch.ModulePatchCodec, patch, ports.FileOptions{})
 ```
 

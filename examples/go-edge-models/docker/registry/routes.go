@@ -49,7 +49,7 @@ var PingRoute = rest.NewRoute[struct{}, struct{}](
 
 // GetTagsRoute is GET /v2/{name}/tags/list — lists every tag for a
 // repository. {name} is the full repository path (may itself contain "/",
-// e.g. "bosch-cc-mfd/edge-gateway") — substituted as-is, no escaping
+// e.g. "prometheus/prometheus") — substituted as-is, no escaping
 // needed (see BuildPath's plain string-replace semantics). Req is
 // GetTagsReq, whose Name field merges into {name} automatically via
 // nethttp.CallHandle (see client.go) — no manual vars map needed.
