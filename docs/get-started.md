@@ -56,6 +56,15 @@ func main() {
 }
 ```
 
+Each `RequiredField` call takes two small closures after the codec — a
+**getter** (`func(u User) string { return u.Name }`) and a **setter**
+(`func(u *User, v string) { u.Name = v }`). These are how `Struct[T]`
+reads and writes that one field on your struct: Go's type system has no
+reflection-free way to do this automatically, so the closures are how you
+tell the codec where the value lives. You write them once per field, not
+per encode/decode call — see [Codec concepts](concepts/codec.md#struct-codecs)
+for how to share them across multiple structs with the same field.
+
 ## The three layers
 
 The codec above is **Layer 1** — it works standalone, with no other go-codex

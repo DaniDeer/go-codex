@@ -115,6 +115,25 @@ var UserCodec = codex.Struct[User](
 )
 ```
 
+`get`/`set` are a **getter** (`func(T) F`) and a **setter** (`func(*T, F)`)
+for that one field — how `RequiredField`/`OptionalField`/`DefaultField`
+read a value out of your struct (encode) and write a decoded value back
+into it (decode). Go has no reflection-free way to do this automatically,
+so plain closures are the mechanism; they are not go-codex-internal
+plumbing, they're what you write at every call site:
+
+```go
+codex.RequiredField("name", nameCodec,
+    func(u User) string { return u.Name },
+    func(u *User, v string) { u.Name = v },
+)
+```
+
+They reach nested sub-structs the same way (`func(u User) string { return u.Meta.Region }`).
+See ["Field factory functions"](#field-factory-functions--reusing-field-groups-across-structs)
+below for how to avoid repeating them when several struct types share the
+same field.
+
 ### Missing fields on decode
 
 When a field key is absent from the incoming object, the codec follows this decision tree:

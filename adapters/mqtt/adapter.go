@@ -349,6 +349,16 @@ func reportTopicMismatchErrors(err error, obs stats.Observer) {
 	obs.RecordValidationError("topic", "topic-mismatch", "")
 }
 
+// PublishOptions has no security-related fields — unlike [SubscribeOptions.SecurityFunc],
+// there is no message-level credential mechanism for Publish. MQTT 3.1.1
+// (github.com/eclipse/paho.mqtt.golang) exposes no per-message metadata
+// channel at all (no User Properties — that's MQTT 5 only), so there is
+// nowhere to carry a per-publish credential even if one were declared via
+// [events.WithSecurityScheme]. Use [NewSecuredClient] instead — a
+// connect-level, codec-validated credential check performed ONCE at
+// construction (right after your own client.Connect() call), rather than
+// per message. See docs/features/security.md's "Connection-level vs
+// message-level security" section for the full rationale.
 type PublishOptions struct {
 	// Observer, when non-nil, receives per-publish lifecycle events:
 	// [stats.Observer.RecordPublish] is called with success=true on broker

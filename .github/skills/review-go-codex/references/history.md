@@ -1,6 +1,34 @@
-# go-codex Review History (R1–R102)
+# go-codex Review History (R1–R103)
 
 Do not re-report any of these findings. They have been implemented and tested.
+
+---
+
+## Round 103 (Consistency audit — `adapters/mqtt.PublishOptions` security godoc gap)
+
+Ran the `review-go-codex` skill's full checklist, focused on the most
+recently touched areas (Rounds 92–102: REST/events/reqreply security
+parity + the connect-level credential feature). Checked cross-layer
+naming/API parity, structured errors, observer pattern guardrails, test
+coverage, example correctness, and `Codec` field godoc wording — all
+clean, no issues found in any of those categories.
+
+- **G1 [small] — `adapters/mqtt.PublishOptions` had no security
+  documentation at all**: `SubscribeOptions.SecurityFunc` has an extensive
+  doc comment explaining the (permanent, documented no-op) message-level
+  credential check for MQTT 3.1.1; `PublishOptions` had NOTHING — no
+  field, no comment, nothing explaining why a channel declaring
+  `Publish.Security` is silently ignored. Fixed by adding a type-level doc
+  comment to `PublishOptions` explaining MQTT 3.1.1 has no per-message
+  metadata channel at all (unlike MQTT 5's User Properties), so
+  message-level security has no viable mechanism for Publish, and pointing
+  callers at `mqtt.NewSecuredClient` (the connect-level mechanism shipped
+  in Round 101) as the intended alternative. Documentation-only — no
+  functional change.
+
+Full verification: `gofmt -l .` clean, `go build ./...`, `go test ./...`
+(repo-wide), all examples exit 0, `just check` (staticcheck + gosec, 0
+issues).
 
 ---
 
