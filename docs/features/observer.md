@@ -89,7 +89,8 @@ To propagate into forge and file:
 | Layer | How the observer is injected | Events emitted |
 |---|---|---|
 | **Codec** | `stats.ReportErrors(obs, location, err)` | `RecordValidationError` per failing field |
-| **Adapter (HTTP/MQTT/MCP)** | `Options{Observer: obs}` | `RecordRequest`/`RecordSubscribe`/`RecordPublish`, validation errors, security rejections, trace spans |
+| **Adapter (HTTP/MQTT/MCP)** | `Options{Observer: obs}` (or ctx default) | `RecordRequest`/`RecordSubscribe`/`RecordPublish`, validation errors, security rejections, trace spans |
+| **HTTP client** (`nethttp.Call`, `CallHandle`) | `CallOptions{Observer: obs}` (or ctx default) | `RecordRequest` (status 0 = pre-flight validation failure, no HTTP call sent), validation errors, security rejections, trace spans |
 | **Format (file I/O)** | `FileOptions{Observer: obs}` | `RecordFileRead`/`RecordFileWrite`, validation errors, trace spans |
 | **Forge** | `Registry.WithObserver(obs)` | `RecordApply` per function call, trace spans |
 | **Stream** | `ApplyOptions{Observer: obs}` (or ctx default) | `RecordStreamItem` per item via `stream.Apply`, trace spans |
@@ -141,6 +142,7 @@ nethttp.Handler(handle, fn, nethttp.Options{Observer: auditObserver}) // explici
 | Layer | ctx source | Resolution |
 |-------|-----------|------------|
 | **HTTP adapters** (`nethttp.Handler`, `chi.Handler`, `SSEHandler`) | `r.Context()` per-request | Resolved inside the request closure — a server middleware can inject per-request observers |
+| **HTTP client** (`nethttp.Call`, `CallHandle`) | ctx passed to function | Resolved at call time — SAME mechanism as MQTT/ZeroMQ below; see the callout after this table for what this means for client wrapper packages |
 | **SSE stream bridges** (`SSEFromStream`, `SSEFromHub`) | ctx from each SSE connection | Resolved inside the per-connection closure |
 | **MQTT adapters** (`Subscribe`, `Publish`) | ctx passed to function | Resolved at call time |
 | **ZeroMQ adapters** (`Subscribe`, `Publish`, `Serve`, `Call`) | ctx passed to function | Resolved at call time |
@@ -149,6 +151,22 @@ nethttp.Handler(handle, fn, nethttp.Options{Observer: auditObserver}) // explici
 | **`ports.File`** (`Read`, `Write`, `Update`) | `FileOptions.Context` | Resolved from `opts.Context` when non-nil |
 | **`forge.Registry`** | not applicable | No context integration — uses explicit `.WithObserver(obs)` builder |
 | **`sql.Validate`** | not applicable | No ctx parameter — falls back to `NoopObserver{}` only |
+
+> **Client wrapper packages inherit this for free.** Any package that
+> builds its own typed client on top of `nethttp.Call`/`CallHandle`
+> internally (a generated API client, a registry client, an SDK, etc.)
+> automatically supports `stats.WithObserver(ctx, obs)` with **zero extra
+> code**, as long as it doesn't hard-code a non-nil default into its own
+> `CallOptions.Observer`. A caller gets full `RecordRequest` metrics for
+> every underlying HTTP call the wrapper makes just by attaching an
+> observer to the `ctx` it passes through — no bespoke `WithObserver`
+> option required on the wrapper's own API (though adding one, mirroring
+> `nethttp.CallOptions.Observer`'s own explicit-overrides-context
+> precedence, is still a reasonable convenience for a per-call override).
+> See [`examples/go-edge-models`](https://github.com/DaniDeer/go-codex/tree/main/examples/go-edge-models)'s
+> `docker/registry` package for a concrete example of both: the ctx-based
+> path works out of the box, and it ALSO offers an explicit
+> `registry.WithObserver(obs)` option for one-off overrides.
 
 ### HTTP middleware pattern
 

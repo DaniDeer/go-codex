@@ -7,13 +7,24 @@ import (
 
 	nethttp "github.com/DaniDeer/go-codex/adapters/nethttp"
 	"github.com/DaniDeer/go-codex/examples/go-edge-models/docker/registry/internal"
+	"github.com/DaniDeer/go-codex/stats"
 )
 
 // This file is the general client wiring built ON TOP of routes.go's
 // plain [rest.Route] values (see routes.go's doc comment for the full
 // layering rationale). A consumer who wants full control over the HTTP
-// client, retries, or observer wiring can bypass this file entirely and
-// call routes.go's routes directly via adapters/nethttp.Call/ClientHandle.
+// client or retries can bypass this file entirely and call routes.go's
+// routes directly via adapters/nethttp.Call/ClientHandle.
+//
+// Observer wiring does NOT require bypassing this file at all: GetTags/
+// GetImageMetadata's internal nethttp.CallHandle invocations already fall
+// back to stats.ObserverFromContext(ctx) whenever CallOptions.Observer is
+// nil — the exact same mechanism every nethttp.Call caller gets for free.
+// A caller can attach an observer to ctx once (ctx = stats.WithObserver(ctx,
+// obs)) and every HTTP call this package makes (including auth.go's Ping +
+// token exchange) is observed automatically, with zero calls into this
+// package's own API. WithObserver (auth.go) is an ADDITIONAL, explicit
+// per-call override on top of that — see its own doc comment.
 //
 // Everything related to AUTHENTICATION (the Bearer-token challenge/token
 // exchange flow, the optional Basic-auth Credentials escape hatch, and
@@ -132,17 +143,20 @@ func registryBaseURL(host string) string {
 // Reference segment (if any) is ignored — only Registry and Repository
 // are used. Pass WithCredentials(...) for a private repository that
 // requires Basic auth at the token-exchange step; anonymous pulls need
-// no options at all.
+// no options at all. Pass WithObserver(...) to receive
+// stats.Observer.RecordRequest metrics for every HTTP call this makes
+// (including the auth-realm Ping/token exchange, when required).
 func GetTags(ctx context.Context, httpClient *http.Client, imageURL string, opts ...Option) (TagsList, error) {
 	ref, err := ParseImageRef(imageURL)
 	if err != nil {
 		return TagsList{}, err
 	}
 
+	o := resolveOptions(opts)
 	handle := GetTagsRoute.ClientHandle()
 	baseURL := registryBaseURL(ref.Registry)
 	credFn := newAuthCredentialFunc(httpClient, ref.Registry, ref.Repository, opts...)
-	callOpts := nethttp.CallOptions{CredentialFunc: credFn}
+	callOpts := nethttp.CallOptions{CredentialFunc: credFn, Observer: o.observer}
 	return nethttp.CallHandle(ctx, httpClient, baseURL, handle, GetTagsReq{Name: ref.Repository}, callOpts)
 }
 
@@ -159,11 +173,12 @@ func GetTags(ctx context.Context, httpClient *http.Client, imageURL string, opts
 // the auth flow it performs lazily on first use stays memoized across
 // calls (see GetImageMetadata's manifest-list resolution below, which may
 // call fetchManifest twice for one request).
-func fetchManifest(ctx context.Context, httpClient *http.Client, baseURL, repository, reference string, credFn credentialFunc) (internal.ManifestEnvelope, error) {
+func fetchManifest(ctx context.Context, httpClient *http.Client, baseURL, repository, reference string, credFn credentialFunc, obs stats.Observer) (internal.ManifestEnvelope, error) {
 	handle := GetManifestRoute.ClientHandle()
 	opts := nethttp.CallOptions{
 		ExtraHeaders:   http.Header{"Accept": []string{acceptManifestTypes}},
 		CredentialFunc: credFn,
+		Observer:       obs,
 	}
 	return nethttp.CallHandle(ctx, httpClient, baseURL, handle,
 		GetManifestReq{Name: repository, Reference: reference}, opts)
@@ -183,7 +198,10 @@ func platformMatches(d internal.ManifestDescriptor, selector internal.PlatformSe
 // req.Platform's specific manifest (defaulting to "linux/amd64" when
 // req.Platform is empty). Pass WithCredentials(...) for a private
 // repository that requires Basic auth at the token-exchange step;
-// anonymous pulls need no options at all.
+// anonymous pulls need no options at all. Pass WithObserver(...) to
+// receive stats.Observer.RecordRequest metrics for every HTTP call this
+// makes (auth-realm Ping/token exchange, plus one or two GetManifestRoute
+// calls depending on manifest-list resolution).
 func GetImageMetadata(ctx context.Context, httpClient *http.Client, req GetImageMetadataReq, opts ...Option) (ManifestMetadata, error) {
 	platformStr := req.Platform
 	if platformStr == "" {
@@ -199,13 +217,14 @@ func GetImageMetadata(ctx context.Context, httpClient *http.Client, req GetImage
 		return ManifestMetadata{}, err
 	}
 
+	o := resolveOptions(opts)
 	baseURL := registryBaseURL(ref.Registry)
 	// One credFn shared across both fetchManifest calls below (list
 	// resolution + platform-specific fetch) — newAuthCredentialFunc
 	// memoizes its own Ping/token-exchange work, so reusing this single
 	// value means that work happens at most once per GetImageMetadata call.
 	credFn := newAuthCredentialFunc(httpClient, ref.Registry, ref.Repository, opts...)
-	env, err := fetchManifest(ctx, httpClient, baseURL, ref.Repository, ref.Reference, credFn)
+	env, err := fetchManifest(ctx, httpClient, baseURL, ref.Repository, ref.Reference, credFn, o.observer)
 	if err != nil {
 		return ManifestMetadata{}, err
 	}
@@ -228,7 +247,7 @@ func GetImageMetadata(ctx context.Context, httpClient *http.Client, req GetImage
 			return ManifestMetadata{}, PlatformNotFoundError{Platform: platformStr, Available: available}
 		}
 
-		env, err = fetchManifest(ctx, httpClient, baseURL, ref.Repository, resolvedDigest, credFn)
+		env, err = fetchManifest(ctx, httpClient, baseURL, ref.Repository, resolvedDigest, credFn, o.observer)
 		if err != nil {
 			return ManifestMetadata{}, err
 		}

@@ -11,6 +11,7 @@ import (
 	c "github.com/DaniDeer/go-codex/codex"
 	"github.com/DaniDeer/go-codex/examples/go-edge-models/docker/registry/internal"
 	"github.com/DaniDeer/go-codex/route"
+	"github.com/DaniDeer/go-codex/stats"
 	"github.com/DaniDeer/go-codex/validate"
 )
 
@@ -139,6 +140,7 @@ type Option func(*options)
 type options struct {
 	credentials           *Credentials
 	credentialsByRegistry RegistryCredentials
+	observer              stats.Observer
 }
 
 func resolveOptions(opts []Option) options {
@@ -168,6 +170,29 @@ func WithCredentials(creds Credentials) Option {
 // specific, single-registry override).
 func WithCredentialsByRegistry(creds RegistryCredentials) Option {
 	return func(o *options) { o.credentialsByRegistry = creds }
+}
+
+// WithObserver is usually NOT needed: GetTags/GetImageMetadata's internal
+// nethttp.CallHandle invocations already fall back to
+// stats.ObserverFromContext(ctx) whenever no explicit Observer is set —
+// the SAME context-based default every nethttp.Call caller gets. Just
+// attach an observer to ctx once, before calling GetTags/GetImageMetadata:
+//
+//	ctx = stats.WithObserver(ctx, obs)
+//	tags, err := GetTags(ctx, httpClient, imageURL) // already observed
+//
+// WithObserver exists as an EXPLICIT, per-call override on top of that —
+// for a caller who wants a DIFFERENT Observer for one specific
+// GetTags/GetImageMetadata call without touching a shared ctx (mirrors
+// nethttp.CallOptions.Observer's own "explicit always wins over context"
+// precedence). It applies to EVERY nethttp.CallHandle invocation this
+// package makes on behalf of one call — the auth-realm Ping + token
+// exchange (authenticate, when the registry requires auth) AND the actual
+// GetTagsRoute/GetManifestRoute calls, giving RecordRequest metrics
+// (method, path, status, duration) for all of them. A nil/absent Observer
+// here preserves the ctx-based default described above unchanged.
+func WithObserver(obs stats.Observer) Option {
+	return func(o *options) { o.observer = obs }
 }
 
 // ── Auth challenge parsing ────────────────────────────────────────────────────
@@ -203,10 +228,10 @@ func parseChallenge(header http.Header) (internal.Challenge, error) {
 // rest.WithSecurityScheme mechanism (routes.go's basicAuthScheme/
 // bearerAuthScheme) — no CallOptions.ExtraHeaders injection anywhere in
 // this package.
-func authenticate(ctx context.Context, httpClient *http.Client, registryHost, repository string, creds *Credentials) (string, error) {
+func authenticate(ctx context.Context, httpClient *http.Client, registryHost, repository string, creds *Credentials, obs stats.Observer) (string, error) {
 	baseURL := registryBaseURL(registryHost)
 	pingHandle := PingRoute.ClientHandle()
-	_, err := nethttp.CallHandle(ctx, httpClient, baseURL, pingHandle, struct{}{}, nethttp.CallOptions{})
+	_, err := nethttp.CallHandle(ctx, httpClient, baseURL, pingHandle, struct{}{}, nethttp.CallOptions{Observer: obs})
 	if err == nil {
 		return "", nil // 2xx — registry requires no auth for this request.
 	}
@@ -250,7 +275,7 @@ func authenticate(ctx context.Context, httpClient *http.Client, registryHost, re
 	// tokenOpts.CredentialFunc stays nil — a nil CredentialFunc on a
 	// secured route is never an error, so the request goes out exactly as
 	// it always has: no Authorization header at all.
-	tokenOpts := nethttp.CallOptions{}
+	tokenOpts := nethttp.CallOptions{Observer: obs}
 	if creds != nil {
 		tokenOpts.CredentialFunc = func(context.Context, []route.SecurityRequirement) (http.Header, error) {
 			basicAuth, err := formatBasicAuth(creds.Username, creds.Password)
@@ -324,7 +349,7 @@ func newAuthCredentialFunc(httpClient *http.Client, registryHost, repository str
 	)
 	return func(ctx context.Context, _ []route.SecurityRequirement) (http.Header, error) {
 		once.Do(func() {
-			token, authErr = authenticate(ctx, httpClient, registryHost, repository, creds)
+			token, authErr = authenticate(ctx, httpClient, registryHost, repository, creds, o.observer)
 		})
 		if authErr != nil {
 			return nil, authErr

@@ -26,6 +26,8 @@ import (
 	"net/url"
 	"sync/atomic"
 	"testing"
+
+	"github.com/DaniDeer/go-codex/stats"
 )
 
 func TestParseChallenge(t *testing.T) {
@@ -103,7 +105,7 @@ func TestAuthenticate_WithCredentials_SendsBasicAuthOnTokenExchange(t *testing.T
 	client := httpsToHTTPClient()
 
 	creds := &Credentials{Username: "gh-user", Password: "ghp_examplePAT"}
-	if _, err := authenticate(context.Background(), client, u.Host, "org/private-repo", creds); err != nil {
+	if _, err := authenticate(context.Background(), client, u.Host, "org/private-repo", creds, nil); err != nil {
 		t.Fatalf("authenticate: %v", err)
 	}
 
@@ -126,7 +128,7 @@ func TestAuthenticate_NoCredentials_SendsNoAuthorizationOnTokenExchange(t *testi
 	}
 	client := httpsToHTTPClient()
 
-	if _, err := authenticate(context.Background(), client, u.Host, "org/public-repo", nil); err != nil {
+	if _, err := authenticate(context.Background(), client, u.Host, "org/public-repo", nil, nil); err != nil {
 		t.Fatalf("authenticate: %v", err)
 	}
 	if gotAuth != "" {
@@ -381,5 +383,27 @@ func TestCredentialsCodec_RejectsEmptyPasswordButAllowsEmptyUsername(t *testing.
 	}
 	if err := CredentialsCodec.Validate(Credentials{Username: "user", Password: ""}); err == nil {
 		t.Error("CredentialsCodec.Validate with empty Password: want error, got nil")
+	}
+}
+
+// ── WithObserver ──────────────────────────────────────────────────────────────
+//
+// Pure resolveOptions-level assertion — no HTTP involved (mirrors this
+// package's stated IO-free unit-test policy). End-to-end observer firing
+// through GetTags/GetImageMetadata's real nethttp.CallHandle invocations
+// is demonstrated by examples/go-edge-models/main.go's runRegistryDemo,
+// not re-derived here as a mock-server test.
+func TestWithObserver_SetsObserverOnOptions(t *testing.T) {
+	obs := stats.NoopObserver{}
+	o := resolveOptions([]Option{WithObserver(obs)})
+	if o.observer != obs {
+		t.Errorf("resolveOptions(...).observer = %#v, want %#v", o.observer, obs)
+	}
+}
+
+func TestWithObserver_AbsentLeavesObserverNil(t *testing.T) {
+	o := resolveOptions([]Option{WithCredentials(Credentials{Username: "u", Password: "p"})})
+	if o.observer != nil {
+		t.Errorf("resolveOptions(...).observer = %#v, want nil", o.observer)
 	}
 }

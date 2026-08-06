@@ -71,6 +71,24 @@ tags, err = registry.GetTags(ctx, http.DefaultClient, "nodered/node-red", opt)
 tags, err  = registry.GetTags(ctx, http.DefaultClient, "ghcr.io/org/private-image", opt)
 ```
 
+**Observer integration.** This package builds on `nethttp.Call`/`CallHandle`
+internally, so it inherits [go-codex's context-based Observer
+default](../../docs/features/observer.md#per-layer-behavior) for free — no
+option needed:
+
+```go
+// The FREE way: attach an observer to ctx once; every HTTP call this
+// package makes (auth-realm Ping/token exchange included) is observed
+// automatically.
+ctx = stats.WithObserver(ctx, stats.NewLoggingObserver(slog.Default()))
+tags, err := registry.GetTags(ctx, http.DefaultClient, "nodered/node-red")
+
+// The EXPLICIT way: registry.WithObserver overrides ctx for just this one
+// call (same "explicit wins over context" precedence as nethttp.CallOptions.Observer).
+tags, err = registry.GetTags(ctx, http.DefaultClient, "nodered/node-red",
+    registry.WithObserver(stats.NewLoggingObserver(slog.Default())))
+```
+
 **GHCR requires a real username, not just a token.** GHCR's token-exchange
 step is standard HTTP Basic auth (`username:PAT`) — unlike some registries,
 there is no bearer-only/username-less mode, even with a `GITHUB_TOKEN` or
