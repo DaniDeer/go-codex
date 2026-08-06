@@ -17,6 +17,15 @@ import (
 	"github.com/DaniDeer/go-codex/stats"
 )
 
+// CredentialFunc names the function type already used by
+// [CallOptions.CredentialFunc] — a type ALIAS (not a new defined type), so
+// CallOptions.CredentialFunc's field type is completely unchanged. Lets
+// callers (and [NewCachingCredentialFunc]) name the shape instead of
+// repeating the inline function type everywhere —
+// examples/go-edge-models/docker/registry's own package-level
+// credentialFunc type alias is the precedent this mirrors.
+type CredentialFunc = func(ctx context.Context, reqs []route.SecurityRequirement) (http.Header, error)
+
 // CallOptions configures an outgoing HTTP request made via [Call].
 type CallOptions struct {
 	// QueryParams appends query string parameters to the URL.
@@ -50,7 +59,19 @@ type CallOptions struct {
 	// Use [CallOptions.ExtraHeaders] for simple static credentials;
 	// use CredentialFunc for structured or dynamic credential injection —
 	// it mirrors the server-side SecurityFunc pattern.
-	CredentialFunc func(ctx context.Context, reqs []route.SecurityRequirement) (http.Header, error)
+	CredentialFunc CredentialFunc
+
+	// OnCredentialRejected, when non-nil, is called when the server responds
+	// with HTTP 401 AND CredentialFunc was non-nil for this call (mirrors
+	// the "only if the credential mechanism actually engaged" gating used
+	// for the symmetric client-side format check below). Purely a
+	// notification hook — Call does NOT retry the request automatically.
+	//
+	// [NewCachingCredentialFunc]'s returned invalidate function is designed
+	// to be wired here: a 401 invalidates the cached credential so the
+	// NEXT call (a simple, explicit retry the caller writes) fetches a
+	// fresh one instead of reusing the rejected one.
+	OnCredentialRejected func()
 
 	// Observer, when non-nil, receives per-call lifecycle events.
 	// [stats.Observer.RecordRequest] is called on every code path — including
@@ -482,6 +503,15 @@ func Call[Req, Resp any](
 	// 11. Non-2xx → structured error, preferring a declared ErrorPattern
 	// decode over the untyped fallback when one matches.
 	if statusCode < 200 || statusCode >= 300 {
+		// A 401 with an engaged CredentialFunc means the credential we sent
+		// was rejected — notify OnCredentialRejected (if configured) so a
+		// caching wrapper can invalidate its cached credential before the
+		// caller's own next attempt. This fires regardless of whether an
+		// ErrorPattern also matches below — it is orthogonal to that
+		// decoding concern.
+		if statusCode == http.StatusUnauthorized && opts.CredentialFunc != nil && opts.OnCredentialRejected != nil {
+			opts.OnCredentialRejected()
+		}
 		if errResp, matched, decErr := handle.DecodeErrorFor(statusCode, respBody); matched && decErr == nil {
 			return zero, ErrorPatternResponse{
 				StatusCode: errResp.Status,

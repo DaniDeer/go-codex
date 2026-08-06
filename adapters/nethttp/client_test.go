@@ -388,6 +388,108 @@ func TestCall_CredentialFunc_Error(t *testing.T) {
 	}
 }
 
+// --- OnCredentialRejected hook ---
+
+func TestCall_OnCredentialRejected_FiresOn401(t *testing.T) {
+	b := rest.NewBuilder(testInfo)
+	b.AddGlobalSecurity(route.Require("bearerAuth"))
+	handle, err := rest.NewRoute[getReq, userResp]("GET", "/me",
+		getReqCodec, userRespCodec,
+		rest.WithSecurityScheme("bearerAuth", rest.SecurityScheme{SecurityScheme: route.BearerScheme("JWT")}),
+	).Register(b)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusUnauthorized)
+	}))
+	defer srv.Close()
+
+	rejectedCalls := 0
+	_, err = nethttp.Call(context.Background(), srv.Client(), srv.URL,
+		handle, getReq{}, nil,
+		nethttp.CallOptions{
+			CredentialFunc: func(ctx context.Context, reqs []route.SecurityRequirement) (http.Header, error) {
+				h := make(http.Header)
+				h.Set("Authorization", "Bearer test-token")
+				return h, nil
+			},
+			OnCredentialRejected: func() { rejectedCalls++ },
+		})
+
+	var statusErr nethttp.UnexpectedStatusError
+	if !errors.As(err, &statusErr) || statusErr.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("expected UnexpectedStatusError{StatusCode:401}, got %v", err)
+	}
+	if rejectedCalls != 1 {
+		t.Errorf("want OnCredentialRejected called exactly once, got %d", rejectedCalls)
+	}
+}
+
+func TestCall_OnCredentialRejected_NotCalledWhenCredentialFuncNil(t *testing.T) {
+	handle := rest.NewRoute[getReq, userResp]("GET", "/me",
+		getReqCodec, userRespCodec).ClientHandle()
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusUnauthorized)
+	}))
+	defer srv.Close()
+
+	rejectedCalls := 0
+	_, err := nethttp.Call(context.Background(), srv.Client(), srv.URL,
+		handle, getReq{}, nil,
+		nethttp.CallOptions{
+			// No CredentialFunc configured.
+			OnCredentialRejected: func() { rejectedCalls++ },
+		})
+
+	var statusErr nethttp.UnexpectedStatusError
+	if !errors.As(err, &statusErr) || statusErr.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("expected UnexpectedStatusError{StatusCode:401}, got %v", err)
+	}
+	if rejectedCalls != 0 {
+		t.Errorf("want OnCredentialRejected never called without a CredentialFunc, got %d calls", rejectedCalls)
+	}
+}
+
+func TestCall_OnCredentialRejected_NotCalledOnNon401Status(t *testing.T) {
+	b := rest.NewBuilder(testInfo)
+	b.AddGlobalSecurity(route.Require("bearerAuth"))
+	handle, err := rest.NewRoute[getReq, userResp]("GET", "/me",
+		getReqCodec, userRespCodec,
+		rest.WithSecurityScheme("bearerAuth", rest.SecurityScheme{SecurityScheme: route.BearerScheme("JWT")}),
+	).Register(b)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer srv.Close()
+
+	rejectedCalls := 0
+	_, err = nethttp.Call(context.Background(), srv.Client(), srv.URL,
+		handle, getReq{}, nil,
+		nethttp.CallOptions{
+			CredentialFunc: func(ctx context.Context, reqs []route.SecurityRequirement) (http.Header, error) {
+				h := make(http.Header)
+				h.Set("Authorization", "Bearer test-token")
+				return h, nil
+			},
+			OnCredentialRejected: func() { rejectedCalls++ },
+		})
+
+	var statusErr nethttp.UnexpectedStatusError
+	if !errors.As(err, &statusErr) || statusErr.StatusCode != http.StatusInternalServerError {
+		t.Fatalf("expected UnexpectedStatusError{StatusCode:500}, got %v", err)
+	}
+	if rejectedCalls != 0 {
+		t.Errorf("want OnCredentialRejected not called on non-401 status, got %d calls", rejectedCalls)
+	}
+}
+
 // --- Observer RecordRequest on validation failure ---
 
 func TestCall_Observer_RecordRequest_OnValidationFailure(t *testing.T) {

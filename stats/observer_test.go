@@ -250,6 +250,7 @@ func TestLoggingObserver_ImplementsAllInterfaces(t *testing.T) {
 	var _ stats.SQLObserver = obs
 	var _ stats.StreamObserver = obs
 	var _ stats.CacheObserver = obs
+	var _ stats.CredentialCacheObserver = obs
 }
 
 func TestLoggingObserver_AllMethods_NoPanic(t *testing.T) {
@@ -265,6 +266,8 @@ func TestLoggingObserver_AllMethods_NoPanic(t *testing.T) {
 	obs.RecordValidation("users", "get_user", 1*time.Millisecond, nil)
 	obs.RecordMigration("up", "00001_create_users.sql", 1, 2*time.Millisecond, nil)
 	obs.RecordStreamItem("oeeCalc", true, 1*time.Millisecond)
+	obs.RecordCredentialCacheHit("ghcr.io", 1*time.Millisecond)
+	obs.RecordCredentialCacheRefresh("ghcr.io", true, 2*time.Millisecond)
 }
 
 // ── NewFanout ─────────────────────────────────────────────────────────────────
@@ -630,4 +633,55 @@ func TestFanout_CacheObserver_SkipsNonImplementors(t *testing.T) {
 	}
 	// Must not panic when no inner observer implements CacheObserver.
 	co.RecordCacheMiss("user:42", time.Millisecond)
+}
+
+// ── CredentialCacheObserver fanout tests ──────────────────────────────────────
+
+type credentialCacheFanoutSpy struct {
+	stats.NoopObserver
+	hits, refreshes int
+}
+
+func (s *credentialCacheFanoutSpy) RecordCredentialCacheHit(_ string, _ time.Duration) {
+	s.hits++
+}
+
+func (s *credentialCacheFanoutSpy) RecordCredentialCacheRefresh(_ string, _ bool, _ time.Duration) {
+	s.refreshes++
+}
+
+func TestNoopObserver_ImplementsCredentialCacheObserver(t *testing.T) {
+	var noop stats.NoopObserver
+	var obs stats.Observer = noop
+	if _, ok := obs.(stats.CredentialCacheObserver); !ok {
+		t.Fatal("NoopObserver must implement CredentialCacheObserver")
+	}
+}
+
+func TestFanout_CredentialCacheObserver_OnlyToImplementors(t *testing.T) {
+	spy := &credentialCacheFanoutSpy{}
+	plain := &fanoutSpy{} // does NOT implement CredentialCacheObserver
+	obs := stats.NewFanout(plain, spy)
+
+	co, ok := obs.(stats.CredentialCacheObserver)
+	if !ok {
+		t.Fatal("fanout must implement CredentialCacheObserver when any inner does")
+	}
+	co.RecordCredentialCacheHit("ghcr.io", time.Millisecond)
+	co.RecordCredentialCacheRefresh("ghcr.io", true, time.Millisecond)
+	if spy.hits != 1 || spy.refreshes != 1 {
+		t.Errorf("want 1/1 calls on spy, got %d/%d", spy.hits, spy.refreshes)
+	}
+}
+
+func TestFanout_CredentialCacheObserver_SkipsNonImplementors(t *testing.T) {
+	plain := &fanoutSpy{}
+	obs := stats.NewFanout(plain)
+
+	co, ok := obs.(stats.CredentialCacheObserver)
+	if !ok {
+		t.Fatal("fanout must implement CredentialCacheObserver regardless of inner observers")
+	}
+	// Must not panic when no inner observer implements CredentialCacheObserver.
+	co.RecordCredentialCacheRefresh("ghcr.io", false, time.Millisecond)
 }

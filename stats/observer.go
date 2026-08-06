@@ -213,6 +213,30 @@ type CacheObserver interface {
 	RecordCacheWrite(key, op string, success bool, duration time.Duration)
 }
 
+// CredentialCacheObserver is an optional extension to [Observer] for
+// credential-cache lifecycle events (adapters/nethttp's
+// NewCachingCredentialFunc). Adapters type-assert the configured Observer
+// to CredentialCacheObserver before calling its methods — existing
+// Observer implementations need not change.
+//
+//	type MyObserver struct{ ... }
+//	func (o *MyObserver) RecordCredentialCacheHit(location string, d time.Duration)             { hits.Inc() }
+//	func (o *MyObserver) RecordCredentialCacheRefresh(location string, success bool, d time.Duration) { ... }
+type CredentialCacheObserver interface {
+	// RecordCredentialCacheHit is called when a cached credential is reused
+	// without invoking the wrapped CredentialFunc. duration is the
+	// (near-zero) lookup cost — included for consistency with
+	// [CacheObserver.RecordCacheHit], which always includes duration even
+	// on a hit.
+	RecordCredentialCacheHit(location string, duration time.Duration)
+
+	// RecordCredentialCacheRefresh is called when the wrapped CredentialFunc
+	// is invoked (cache miss, TTL expiry, or a refresh after invalidation)
+	// — success indicates whether it returned without error. duration is
+	// its own call duration.
+	RecordCredentialCacheRefresh(location string, success bool, duration time.Duration)
+}
+
 // StreamObserver is an optional extension to [Observer] for stream-level throughput
 // metrics. [stream.Apply] type-asserts the configured Observer to
 // StreamObserver before calling its methods — existing Observer implementations
@@ -232,8 +256,8 @@ type StreamObserver interface {
 // LoggingObserver logs every observer event as a structured slog message.
 // It implements all observer interfaces except [TraceObserver]:
 // [Observer] (embeds [ValidationObserver]), [PipelineObserver],
-// [SecurityObserver], [FileObserver], [SQLObserver], [StreamObserver], and
-// [CacheObserver].
+// [SecurityObserver], [FileObserver], [SQLObserver], [StreamObserver],
+// [CacheObserver], and [CredentialCacheObserver].
 //
 // [TraceObserver] is intentionally not implemented — slog has no concept of
 // distributed trace spans. Use [stats.NewFanout] to combine a LoggingObserver
@@ -320,10 +344,19 @@ func (o *LoggingObserver) RecordCacheWrite(key, op string, success bool, d time.
 	o.logger.Debug("cache write", "key", key, "op", op, "success", success, "ms", d.Milliseconds())
 }
 
+func (o *LoggingObserver) RecordCredentialCacheHit(location string, d time.Duration) {
+	o.logger.Debug("credential cache hit", "location", location, "ms", d.Milliseconds())
+}
+
+func (o *LoggingObserver) RecordCredentialCacheRefresh(location string, success bool, d time.Duration) {
+	o.logger.Debug("credential cache refresh", "location", location, "success", success, "ms", d.Milliseconds())
+}
+
 // NewFanout returns an [Observer] that fans out all calls to each provided observer.
 // The returned value also implements [FileObserver], [SecurityObserver],
-// [PipelineObserver], [SQLObserver], [StreamObserver], [CacheObserver], and
-// [TraceObserver] — delegating each to the inner observers that satisfy those
+// [PipelineObserver], [SQLObserver], [StreamObserver], [CacheObserver],
+// [CredentialCacheObserver], and [TraceObserver] — delegating each to the
+// inner observers that satisfy those
 // interfaces, so composing
 // a metrics-only observer with a [LoggingObserver] works without any
 // type-assertion boilerplate.
@@ -454,6 +487,24 @@ func (f *fanout) RecordCacheWrite(key, op string, success bool, d time.Duration)
 	}
 }
 
+// RecordCredentialCacheHit implements [CredentialCacheObserver].
+func (f *fanout) RecordCredentialCacheHit(location string, d time.Duration) {
+	for _, o := range f.observers {
+		if co, ok := o.(CredentialCacheObserver); ok {
+			co.RecordCredentialCacheHit(location, d)
+		}
+	}
+}
+
+// RecordCredentialCacheRefresh implements [CredentialCacheObserver].
+func (f *fanout) RecordCredentialCacheRefresh(location string, success bool, d time.Duration) {
+	for _, o := range f.observers {
+		if co, ok := o.(CredentialCacheObserver); ok {
+			co.RecordCredentialCacheRefresh(location, success, d)
+		}
+	}
+}
+
 // StartSpan implements [TraceObserver].
 func (f *fanout) StartSpan(ctx context.Context, operation, name string) context.Context {
 	for _, o := range f.observers {
@@ -494,6 +545,8 @@ func (NoopObserver) RecordStreamItem(_ string, _ bool, _ time.Duration)         
 func (NoopObserver) RecordCacheHit(_ string, _ time.Duration)                       {}
 func (NoopObserver) RecordCacheMiss(_ string, _ time.Duration)                      {}
 func (NoopObserver) RecordCacheWrite(_, _ string, _ bool, _ time.Duration)          {}
+func (NoopObserver) RecordCredentialCacheHit(_ string, _ time.Duration)             {}
+func (NoopObserver) RecordCredentialCacheRefresh(_ string, _ bool, _ time.Duration) {}
 func (NoopObserver) StartSpan(ctx context.Context, _, _ string) context.Context     { return ctx }
 func (NoopObserver) EndSpan(_ context.Context, _ error)                             {}
 

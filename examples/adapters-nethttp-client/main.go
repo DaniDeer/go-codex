@@ -27,6 +27,10 @@
 //     full request+response, single-call story for one route
 //  3. Cookies + headers — GET /profile (CookieParam + HeaderParam validation)
 //  4. Security — GET /data (CredentialFunc injects bearer Authorization header)
+//     4b. Caching a CredentialFunc — nethttp.NewCachingCredentialFunc wraps
+//     any CredentialFunc with TTL-based caching; CallOptions.OnCredentialRejected
+//     + the returned invalidate func implement the explicit retry-once-on-401
+//     pattern (Call never retries automatically)
 //  5. Structured error logging — errors.As + slog for all typed error types
 //
 // Run with: go run ./examples/adapters-nethttp-client
@@ -591,6 +595,63 @@ func main() {
 			logger.Warn("credential error (no request sent)", "cause", err)
 		}
 	}
+	fmt.Println()
+
+	// ── 4b. Security — caching a CredentialFunc ────────────────────────────────
+	//
+	// Re-authenticating on every Call is wasteful when the underlying
+	// credential fetch does real work (an OAuth token endpoint, a registry
+	// token exchange, etc.). NewCachingCredentialFunc wraps any CredentialFunc
+	// with TTL-based caching; concurrent callers during a cache miss share the
+	// same in-flight call (hand-rolled single-flight). OnCredentialRejected +
+	// the returned invalidate func implement the retry-once-on-401 pattern
+	// explicitly — Call itself never retries automatically.
+	fmt.Println("=== 4b. Security: caching a CredentialFunc ===")
+
+	var innerCalls int
+	// Simulates a token store that returns a STALE token once (already
+	// rotated server-side) before refreshing to the current valid one —
+	// demonstrating OnCredentialRejected forcing exactly one extra inner call.
+	innerCredFn := func(_ context.Context, _ []route.SecurityRequirement) (http.Header, error) {
+		innerCalls++
+		h := make(http.Header)
+		if innerCalls == 1 {
+			h.Set("Authorization", "Bearer stale-token")
+		} else {
+			h.Set("Authorization", "Bearer "+validToken)
+		}
+		return h, nil
+	}
+	cachedCredFn, invalidateCred := nethttp.NewCachingCredentialFunc(innerCredFn, nethttp.CachingCredentialFuncOptions{
+		TTL: time.Hour,
+	})
+	cachedCallOpts := nethttp.CallOptions{
+		CredentialFunc:       cachedCredFn,
+		OnCredentialRejected: invalidateCred,
+	}
+
+	// First call: the stale cached token is rejected (401). OnCredentialRejected
+	// purges the cache, so an explicit retry fetches a fresh credential.
+	_, err = nethttp.Call(clientCtx, srv.Client(), srv.URL, clientSecured, struct{}{}, nil, cachedCallOpts)
+	var rejectedErr nethttp.UnexpectedStatusError
+	if errors.As(err, &rejectedErr) && rejectedErr.StatusCode == http.StatusUnauthorized {
+		logger.Info("credential rejected — retrying once with a refreshed credential")
+		data, err = nethttp.Call(clientCtx, srv.Client(), srv.URL, clientSecured, struct{}{}, nil, cachedCallOpts)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "retry after credential refresh:", err)
+			os.Exit(1)
+		}
+		fmt.Printf("secured data (after credential refresh): %+v\n", data)
+	}
+
+	// Second call reuses the now-valid cached credential — inner is NOT
+	// invoked again.
+	data, err = nethttp.Call(clientCtx, srv.Client(), srv.URL, clientSecured, struct{}{}, nil, cachedCallOpts)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "cached call:", err)
+		os.Exit(1)
+	}
+	fmt.Printf("secured data (cache hit, inner invoked %d time(s) total): %+v\n", innerCalls, data)
 	fmt.Println()
 
 	// ── 5. OpenAPI spec ───────────────────────────────────────────────────────

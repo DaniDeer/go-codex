@@ -76,8 +76,9 @@ go-codex/
 │   │   ├── adapter.go      # Handler, Register, SSEHandler, RegisterSSE, RequestFromContext,
 │   │   │                   #   WithResponseHeaders, ResponseHeadersFromContext,
 │   │   │                   #   WithResponseCookies, ResponseCookiesFromContext, Options
-│   │   ├── client.go       # Call[Req,Resp], CallOptions, UnexpectedStatusError,
+│   │   ├── client.go       # Call[Req,Resp], CallOptions, CredentialFunc, UnexpectedStatusError,
 │   │   │                   #   RequestBuildError, RequestError, ResponseBodyError
+│   │   ├── credential_cache.go  # NewCachingCredentialFunc, CachingCredentialFuncOptions
 │   │   ├── cookie.go       # SetCookie, CookieOptions, PendingCookie
 │   │   ├── stream.go       # HandlerLatest, RegisterLatest, PipelineHandler, RegisterPipeline,
 │   │   │                   #   SSEFromHub, PipelineHandlerFunc

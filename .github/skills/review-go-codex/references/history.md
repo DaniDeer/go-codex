@@ -1,8 +1,62 @@
-# go-codex Review History (R1–R103)
+# go-codex Review History (R1–R104)
 
 Do not re-report any of these findings. They have been implemented and tested.
 
 ---
+
+## Round 104 (Async/refreshable credential caching for `adapters/nethttp`)
+
+Implemented the `docs/roadmap/credential-caching.md` feature end-to-end
+after finalizing three open design decisions with the user (hand-rolled
+single-flight instead of `x/sync/singleflight`; a `CredentialFunc` type
+ALIAS for zero breaking change; a notification-only
+`CallOptions.OnCredentialRejected` hook instead of a hidden retry loop
+inside `Call`).
+
+- **`adapters/nethttp/client.go`**: added `CredentialFunc` type alias
+  (`= func(ctx, []route.SecurityRequirement) (http.Header, error)`) and
+  `CallOptions.OnCredentialRejected func()`, which fires when `Call`
+  observes a 401 response AND a `CredentialFunc` was configured for that
+  call — purely notificational, `Call` never retries automatically.
+- **`adapters/nethttp/credential_cache.go`** (new): `NewCachingCredentialFunc(inner CredentialFunc, CachingCredentialFuncOptions{TTL, Observer}) (fn CredentialFunc, invalidate func())`
+  — TTL-based caching wrapper; concurrent callers during a cache miss share
+  the same in-flight call via a hand-rolled channel-based single-flight
+  join (no thundering herd, no external dependency); `invalidate` purges
+  the cached entry immediately, meant to be wired to
+  `CallOptions.OnCredentialRejected`.
+- **`stats.CredentialCacheObserver`** (new optional `Observer` extension):
+  `RecordCredentialCacheHit(location string, duration time.Duration)` +
+  `RecordCredentialCacheRefresh(location string, success bool, duration time.Duration)`
+  — both include `duration` even on a hit, matching the established
+  `CacheObserver` convention (a real inconsistency in the original roadmap
+  draft, fixed during finalization). Implemented by `NoopObserver`,
+  `LoggingObserver`, and `fanout` (type-assertion delegation, same pattern
+  as `CacheObserver`); both doc-comment interface-enumeration lists
+  (`LoggingObserver`, `NewFanout`) updated.
+- **Tests**: 3 new tests in `adapters/nethttp/client_test.go`
+  (`TestCall_OnCredentialRejected_FiresOn401`/`NotCalledWhenCredentialFuncNil`/`NotCalledOnNon401Status`);
+  7 new tests in `adapters/nethttp/credential_cache_test.go` covering
+  TTL caching, TTL expiry, concurrent-miss single-flight correctness,
+  error-not-cached, invalidate-forces-refresh, observer hit/refresh
+  events, and nil-Observer safety; compile-time `CredentialCacheObserver`
+  assertions + fanout hit/refresh tests added to `stats/observer_test.go`.
+- **Docs**: `.github/instructions/go-codex.instructions.md` (`adapters/nethttp`
+  and `stats` rows), `docs/features/security.md` (new "Caching a
+  CredentialFunc" subsection with the explicit retry-once caller pattern),
+  `docs/reference/project-structure.md` (added `credential_cache.go`
+  listing).
+- **Example**: `examples/adapters-nethttp-client/main.go` gained a new
+  "4b. Security: caching a CredentialFunc" section demonstrating
+  cache-hit reuse across calls and the `OnCredentialRejected` +
+  explicit-retry-once pattern against a simulated 401.
+- **Roadmap**: `docs/roadmap/credential-caching.md` updated in place with
+  the finalized design (status: implemented) rather than retired, per the
+  precedent of keeping shipped design docs unless the user asks to delete
+  them.
+
+Full verification: `gofmt -l .` clean, `go build ./...`, `go test ./...`
+(repo-wide, including `-count=1` and `-race` on `adapters/nethttp`), all
+examples exit 0, `just check` (staticcheck + gosec, 0 issues).
 
 ## Round 103 (Consistency audit — `adapters/mqtt.PublishOptions` security godoc gap)
 

@@ -337,6 +337,56 @@ a deliberate non-error. The request is simply sent without the credential,
 and it's up to the server to accept or reject it — symmetric with server-side
 `SecurityFunc`.
 
+### Caching a CredentialFunc
+
+Re-authenticating on every `Call` is wasteful when the underlying `inner`
+credential fetch is itself an HTTP round trip (e.g. an OAuth2 token
+endpoint, or `examples/go-edge-models/docker/registry`'s registry token
+exchange). `nethttp.NewCachingCredentialFunc` wraps any `CredentialFunc`
+with TTL-based caching:
+
+```go
+credFn, invalidate := nethttp.NewCachingCredentialFunc(inner, nethttp.CachingCredentialFuncOptions{
+    TTL: time.Hour,
+})
+```
+
+- `inner` is invoked at most once per TTL window; concurrent callers during
+  a cache miss share the SAME in-flight call (hand-rolled single-flight —
+  no thundering herd on the auth server, no external dependency).
+- The returned `invalidate func()` immediately expires the cached
+  credential. `NewCachingCredentialFunc` does NOT know when a credential is
+  rejected — the server only reveals that via a 401 response, which is
+  observed by `Call`, not by `CredentialFunc` (which runs before the
+  network call). Wire `invalidate` to `CallOptions.OnCredentialRejected` and
+  retry once, explicitly:
+
+```go
+callOpts := nethttp.CallOptions{
+    CredentialFunc:       credFn,
+    OnCredentialRejected: invalidate, // purges the cache; does NOT retry
+}
+resp, err := nethttp.CallHandle(ctx, client, baseURL, handle, req, callOpts)
+
+var statusErr nethttp.UnexpectedStatusError
+if errors.As(err, &statusErr) && statusErr.StatusCode == http.StatusUnauthorized {
+    resp, err = nethttp.CallHandle(ctx, client, baseURL, handle, req, callOpts) // fresh credential now
+}
+```
+
+`OnCredentialRejected` is purely a notification hook — `Call` never retries
+automatically, keeping control flow explicit and in the caller's hands.
+
+`CachingCredentialFuncOptions.Observer`, when set, receives
+`stats.CredentialCacheObserver` hit/refresh events
+(`RecordCredentialCacheHit`/`RecordCredentialCacheRefresh`), each including a
+`location` string derived from the security scheme names of the request's
+`[]route.SecurityRequirement`.
+
+One `NewCachingCredentialFunc` instance is one cache entry — construct a
+separate instance per credential scope (e.g. per host/registry) when
+different routes need independently-cached credentials.
+
 ## Security for event channels (AsyncAPI)
 
 Just like REST, an events security scheme is declared ONCE, directly on the

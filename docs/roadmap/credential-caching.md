@@ -1,6 +1,6 @@
 # Async/Refreshable Credential Caching — `adapters/nethttp`
 
-> **Status:** Design draft — awaiting a concrete driving use case before implementation.
+> **Status:** Implemented (Round 104 — see `.github/skills/review-go-codex/references/history.md`).
 > [← Back to Roadmap](index.md)
 >
 > See also: [Security & Authentication](../features/security.md) (`api/rest`'s shipped symmetric security model)
@@ -41,9 +41,9 @@ obtained.
 
 | In scope | Out of scope |
 |---|---|
-| `nethttp.NewCachingCredentialFunc(inner CredentialFunc, opts CachingCredentialFuncOptions) CredentialFunc` — wraps any `CredentialFunc`, adding TTL-based caching | Any specific auth PROTOCOL implementation (OAuth2 token refresh endpoints, JWT expiry parsing, etc.) — the wrapper is protocol-agnostic; `inner` does the actual protocol work, exactly like `docker/registry`'s `authenticate()` does today |
-| `RetryOn401 bool` option — on receiving `nethttp.UnexpectedStatusError{StatusCode: 401}` from the WRAPPED call, invalidate the cache and invoke `inner` exactly ONCE more before giving up | Automatic retry on any OTHER status code (403, 5xx, etc.) — 401 specifically means "your credential was rejected," which is the one case this wrapper can meaningfully react to; other statuses are the caller's own business logic to retry (or not) |
-| Concurrency safety — concurrent callers during a cache miss/refresh must NOT all invoke `inner` simultaneously (a "thundering herd" on the auth server); exactly one refresh in flight, others wait for its result | Configurable jitter/backoff on refresh failure — Phase 1 ships a single-attempt refresh; a caller wanting backoff wraps `inner` itself with their own retry logic before passing it to `NewCachingCredentialFunc` |
+| `nethttp.NewCachingCredentialFunc(inner CredentialFunc, opts CachingCredentialFuncOptions) (fn CredentialFunc, invalidate func())` — wraps any `CredentialFunc`, adding TTL-based caching | Any specific auth PROTOCOL implementation (OAuth2 token refresh endpoints, JWT expiry parsing, etc.) — the wrapper is protocol-agnostic; `inner` does the actual protocol work, exactly like `docker/registry`'s `authenticate()` does today |
+| `CallOptions.OnCredentialRejected func()` — a new, purely notificational hook on `Call`/`CallHandle`, invoked when the server responds 401 AND `CredentialFunc` was actually used for this call; wire `NewCachingCredentialFunc`'s returned `invalidate` here so the NEXT call fetches a fresh credential | Automatic retry of the CURRENT call inside `Call` itself — `Call` stays single-attempt with no hidden control flow (matches the "small, focused hooks" principle used everywhere else in go-codex); the retry-the-call-once pattern is a simple, explicit, documented 3-line snippet the CALLER writes (call, check for 401, call again) — see "API surface" below |
+| Concurrency safety — concurrent callers during a cache miss/refresh must NOT all invoke `inner` simultaneously (a "thundering herd" on the auth server); exactly one refresh in flight, others wait for its result — implemented via a HAND-ROLLED generation-counter + `sync.Once`-per-generation (NOT `x/sync/singleflight` — keeps `adapters/nethttp` dependency-free) | Configurable jitter/backoff on refresh failure — Phase 1 ships a single-attempt refresh; a caller wanting backoff wraps `inner` itself with their own retry logic before passing it to `NewCachingCredentialFunc` |
 | TTL is CALLER-SUPPLIED (`CachingCredentialFuncOptions.TTL time.Duration`) — this wrapper does NOT parse a JWT's `exp` claim or otherwise infer TTL from the credential itself (would require a JWT dependency, violating go-codex's "no crypto/JWT library" rule for `adapters/nethttp`) | Auto-detecting TTL from a JWT's `exp` claim, from a `Cache-Control` response header, or any other credential-format-specific signal |
 
 ## Toolchain / dependency decisions
@@ -60,6 +60,29 @@ its existing zero-external-dependency posture).
 ## API surface
 
 ```go
+// adapters/nethttp/client.go — additions to the EXISTING file:
+
+// CredentialFunc names the function type already used by
+// CallOptions.CredentialFunc — a TYPE ALIAS (not a new defined type), so
+// CallOptions.CredentialFunc's field type is completely unchanged. Lets
+// credential_cache.go (and any caller) name the shape instead of repeating
+// the inline function type everywhere — docker/registry's own
+// package-level credentialFunc type alias (added in Round 92) is the
+// precedent this mirrors.
+type CredentialFunc = func(ctx context.Context, reqs []route.SecurityRequirement) (http.Header, error)
+
+// CallOptions gains:
+//   OnCredentialRejected func()
+// Called by Call/CallHandle when the server responds 401 AND
+// opts.CredentialFunc was non-nil for this call (mirrors the existing
+// "only if the credential mechanism actually engaged" gating used for the
+// symmetric client-side format check). Purely a notification hook — Call
+// does NOT retry automatically. Wire NewCachingCredentialFunc's second
+// return value here to invalidate the cache so the NEXT call gets a fresh
+// credential.
+```
+
+```go
 // adapters/nethttp/credential_cache.go (new file)
 
 // CachingCredentialFuncOptions configures NewCachingCredentialFunc.
@@ -69,36 +92,35 @@ type CachingCredentialFuncOptions struct {
     // (every call invokes inner), which is a valid but unusual choice.
     TTL time.Duration
 
-    // RetryOn401, when true, invalidates the cached credential and invokes
-    // inner exactly ONCE more when the wrapped Call returns
-    // nethttp.UnexpectedStatusError{StatusCode: 401} — see "Scope decisions"
-    // for why only 401 triggers this. Requires the caller to route the
-    // Call's error back into this wrapper (see "Open design decisions" —
-    // this is the trickiest part of the API to get right ergonomically,
-    // since NewCachingCredentialFunc only wraps CredentialFunc, which runs
-    // BEFORE the network call, not after).
-    RetryOn401 bool
-
-    // Observer, when non-nil, receives cache hit/miss/refresh events — see
+    // Observer, when non-nil, receives cache hit/refresh events — see
     // "Observer integration" below. Defaults to stats.NoopObserver.
     Observer stats.Observer
 }
 
 // NewCachingCredentialFunc wraps inner with TTL-based caching: inner is
 // invoked at most once per TTL window, with concurrent callers during a
-// cache miss sharing the SAME in-flight call (no thundering herd on the
-// auth server). Returns a CredentialFunc suitable for
-// nethttp.CallOptions.CredentialFunc.
-func NewCachingCredentialFunc(inner CredentialFunc, opts CachingCredentialFuncOptions) CredentialFunc
+// cache miss sharing the SAME in-flight call (hand-rolled generation-based
+// single-flight — a sync.Once scoped to each cache generation — no
+// thundering herd on the auth server, no external dependency).
+//
+// Returns (fn, invalidate): fn is a CredentialFunc suitable for
+// CallOptions.CredentialFunc; invalidate immediately expires the cached
+// credential — wire it to CallOptions.OnCredentialRejected so a 401
+// causes the NEXT call to fetch a fresh credential:
+//
+//	credFn, invalidate := nethttp.NewCachingCredentialFunc(inner, nethttp.CachingCredentialFuncOptions{TTL: time.Hour})
+//	callOpts := nethttp.CallOptions{CredentialFunc: credFn, OnCredentialRejected: invalidate}
+//	resp, err := nethttp.CallHandle(ctx, client, url, handle, req, callOpts)
+//	var statusErr nethttp.UnexpectedStatusError
+//	if errors.As(err, &statusErr) && statusErr.StatusCode == http.StatusUnauthorized {
+//	    resp, err = nethttp.CallHandle(ctx, client, url, handle, req, callOpts) // fresh credential now
+//	}
+//
+// One NewCachingCredentialFunc instance = one cache entry. Construct a
+// separate instance per credential scope (e.g. per host/registry) if a
+// caller's routes need independently-cached credentials.
+func NewCachingCredentialFunc(inner CredentialFunc, opts CachingCredentialFuncOptions) (fn CredentialFunc, invalidate func())
 ```
-
-`CredentialFunc` here refers to the existing inline function type already
-used by `nethttp.CallOptions.CredentialFunc` — `docker/registry`'s own
-package-level `CredentialFunc` type alias (added in Round 92) is a useful
-precedent for naming this shared shape if `adapters/nethttp` doesn't already
-have one exported (check during implementation; add one if missing, since
-this new file would otherwise need to repeat the inline function type
-everywhere).
 
 ## Structured errors (all implement `slog.LogValuer`)
 
@@ -123,18 +145,23 @@ lifecycle event not covered by `RecordRequest`/`RecordSecurityRejection`:
 // Observer to CredentialCacheObserver before calling these methods.
 type CredentialCacheObserver interface {
     // RecordCredentialCacheHit is called when a cached credential is reused
-    // without invoking inner.
-    RecordCredentialCacheHit(location string)
+    // without invoking inner. duration is the (near-zero) lookup cost —
+    // included for consistency with CacheObserver.RecordCacheHit, which
+    // always includes duration even on a hit.
+    RecordCredentialCacheHit(location string, duration time.Duration)
     // RecordCredentialCacheRefresh is called when inner is invoked (cache
-    // miss, TTL expiry, or a 401-triggered retry) — success indicates
-    // whether inner returned without error.
-    RecordCredentialCacheRefresh(location string, success bool)
+    // miss, TTL expiry, or a refresh after invalidate) — success indicates
+    // whether inner returned without error. duration is inner's own call
+    // duration.
+    RecordCredentialCacheRefresh(location string, success bool, duration time.Duration)
 }
 ```
 
 `NoopObserver`, `LoggingObserver`, and `fanout` all need to implement it,
-following the exact pattern `SQLObserver` established (see
-`stats/observer.go`'s existing extensions table).
+following the exact pattern `SQLObserver`/`CacheObserver` established (see
+`stats/observer.go`'s existing extensions table) — including the two
+doc-comment lists enumerating which extensions `LoggingObserver` and
+`NewFanout` implement, which both need `[CredentialCacheObserver]` added.
 
 ## Unit test plan
 
@@ -142,18 +169,23 @@ following the exact pattern `SQLObserver` established (see
 |---|---|
 | `TestNewCachingCredentialFunc_CachesWithinTTL` | `inner` invoked once across N calls within the TTL window |
 | `TestNewCachingCredentialFunc_RefreshesAfterTTL` | `inner` invoked again after TTL elapses |
-| `TestNewCachingCredentialFunc_ConcurrentCallsDuringMiss_SingleInnerInvocation` | N concurrent callers during a cache miss result in exactly ONE `inner` call, all callers get the same result |
+| `TestNewCachingCredentialFunc_ConcurrentCallsDuringMiss_SingleInnerInvocation` | N concurrent callers during a cache miss result in exactly ONE `inner` call, all callers get the same result (hand-rolled single-flight correctness) |
 | `TestNewCachingCredentialFunc_InnerError_NotCached` | An `inner` error is NOT cached — the next call retries `inner` immediately, not after the full TTL |
-| `TestNewCachingCredentialFunc_RetryOn401_InvalidatesAndRetriesOnce` | The 401-triggered retry path invokes `inner` exactly once more, not in an unbounded loop |
-| `TestNewCachingCredentialFunc_Observer_RecordsHitAndRefresh` | `CredentialCacheObserver` methods fire with correct `location`/`success` values |
+| `TestNewCachingCredentialFunc_Invalidate_ForcesRefreshOnNextCall` | Calling the returned `invalidate func()` causes the NEXT `fn` call to invoke `inner` again, even within the TTL window |
+| `TestNewCachingCredentialFunc_Observer_RecordsHitAndRefresh` | `CredentialCacheObserver` methods fire with correct `location`/`success`/`duration` values |
 | `TestNewCachingCredentialFunc_NilObserver_NoPanic` | Nil `Observer` behaves like `NoopObserver` |
+| `TestCall_OnCredentialRejected_FiresOn401` | `Call`/`CallHandle` invokes `opts.OnCredentialRejected` exactly once when the server responds 401 AND `CredentialFunc` was non-nil for this call |
+| `TestCall_OnCredentialRejected_NotCalledWhenCredentialFuncNil` | No `CredentialFunc` configured → `OnCredentialRejected` never fires even on a 401 |
+| `TestCall_OnCredentialRejected_NotCalledOnNon401Status` | A non-401 non-2xx status (e.g. 403, 500) does NOT fire `OnCredentialRejected` |
 
 ## Files to create
 
 | File | Responsibility |
 |---|---|
+| `adapters/nethttp/client.go` | Add `CredentialFunc` type alias; add `CallOptions.OnCredentialRejected func()` field; wire the 401-detection call site |
+| `adapters/nethttp/client_test.go` | New tests: the 3 `TestCall_OnCredentialRejected_*` tests above |
 | `adapters/nethttp/credential_cache.go` | `NewCachingCredentialFunc`, `CachingCredentialFuncOptions`, internal cache-entry/generation tracking |
-| `adapters/nethttp/credential_cache_test.go` | Full unit test matrix above |
+| `adapters/nethttp/credential_cache_test.go` | The 7 wrapper unit tests above |
 | `stats/observer.go` | `CredentialCacheObserver` interface; `NoopObserver`/`LoggingObserver`/`fanout` implementations |
 | `stats/observer_test.go` | Compile-time assertion that the three implementations satisfy the new interface |
 
@@ -175,32 +207,31 @@ following the exact pattern `SQLObserver` established (see
   call, never reused across hours of long-lived operation); adopting this
   wrapper there would be a no-op improvement at best, not a bug fix.
 
-## Open design decisions (to resolve before/during implementation)
+## Resolved design decisions
 
-- **How does `RetryOn401` actually observe the 401?** `CredentialFunc` runs
-  BEFORE the network call — it has no visibility into the RESPONSE. Two
-  options: (a) `NewCachingCredentialFunc`'s returned `CredentialFunc` could
-  wrap the ENTIRE `nethttp.Call` invocation instead of just the credential
-  step (a bigger API — `func(ctx, callFn func() (Resp, error)) (Resp, error)`-shaped,
-  not a drop-in `CredentialFunc` replacement anymore); or (b) `adapters/nethttp.Call`
-  itself could grow a NEW opt-in hook (`CallOptions.OnCredentialRejected
-  func()`) that the caching wrapper subscribes to, invalidating its cache
-  when invoked — smaller API surface change, but requires a new `Call`-level
-  hook, not just a wrapper function. Option (b) seems more consistent with
-  go-codex's existing pattern of small, focused hooks — but this needs to
-  be resolved concretely before implementation, since it changes whether
-  this feature touches `adapters/nethttp.Call`'s signature at all or stays
-  fully self-contained in the new wrapper file.
+- **How does `OnCredentialRejected` actually observe the 401?**
+  `CredentialFunc` runs BEFORE the network call — it has no visibility
+  into the response. Resolved as option (b) from the original two
+  candidates: `adapters/nethttp.Call`/`CallHandle` grow a new opt-in hook,
+  `CallOptions.OnCredentialRejected func()`, invoked when the response is
+  401 AND `CredentialFunc` was non-nil for this call. This hook is PURELY
+  notificational — it only invalidates the cache (via
+  `NewCachingCredentialFunc`'s returned `invalidate` function); `Call`
+  itself does NOT retry automatically, keeping it single-attempt with no
+  hidden control flow (consistent with go-codex's existing "small, focused
+  hooks" principle). The retry-the-call-once behavior originally sketched
+  as `CachingCredentialFuncOptions.RetryOn401 bool` is DROPPED as a config
+  option — it's now a simple, explicit, documented 3-line caller pattern
+  (see "API surface" above) rather than a hidden mechanism, since
+  constructing a caching wrapper always implies "yes, invalidate on
+  rejection" (the bool would have been redundant).
 - **Is a hand-rolled single-flight sufficient, or is `x/sync/singleflight`
-  worth the dependency?** Lean toward hand-rolled (keeps `adapters/nethttp`
-  dependency-free) but revisit if the hand-rolled version proves fragile
-  under test.
+  worth the dependency?** Resolved: hand-rolled (a generation counter +
+  `sync.Once` scoped to each generation, so concurrent callers during a
+  miss block on the SAME `Once.Do`) — keeps `adapters/nethttp`
+  dependency-free, matching its existing zero-external-dependency posture.
 - **Does this belong in `adapters/nethttp` at all, or should it be a new,
-  transport-agnostic package** (since the SAME caching/refresh need now
-  also applies to `adapters/mqtt5`'s `PublishOptions.CredentialFunc` and
-  `reqreply.CallOptions.CredentialFunc` — see
-  [Security & Authentication](../features/security.md#security-for-event-channels-asyncapi))?
-  Lean toward keeping it `adapters/nethttp`-scoped for Phase 1 (concrete,
-  proven need there) and revisiting a shared/generic package only if
-  `adapters/mqtt5`'s `CredentialFunc`s actually grow a caching need worth
-  extracting.
+  transport-agnostic package?** Resolved: stays `adapters/nethttp`-scoped
+  for Phase 1 (this remains the only package with a concrete, proven need)
+  — revisit a shared/generic package only if `adapters/mqtt5`'s
+  `CredentialFunc`s actually grow a caching need worth extracting.
