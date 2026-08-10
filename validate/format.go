@@ -257,6 +257,30 @@ var ContainerImage = codex.Constraint[string]{
 	Message: func(v string) string { return fmt.Sprintf("invalid container image reference: %q", v) },
 }
 
+// reDigest matches a content digest, "algorithm:hex" (e.g.
+// "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855")
+// — the SAME digest-segment shape [ContainerImage] itself checks after "@",
+// extracted here as its own standalone constraint since a content digest
+// also appears on its own in many container/registry APIs (a manifest's
+// own content-addressable digest, a resolved image's pinned digest, etc.)
+// — not only as an optional suffix of a full image reference.
+var reDigest = regexp.MustCompile(`^[a-z0-9]+(?:[.+_\-][a-z0-9]+)*:[a-fA-F0-9]{32,}$`)
+
+// Digest is a Constraint that requires a valid content digest in
+// "algorithm:hex" form (e.g. "sha256:abc...", the OCI/Docker Distribution
+// Spec convention for content-addressable references to images,
+// manifests, and layers).
+//
+// No Schema annotation — there is no standard JSON Schema format for
+// content digests.
+var Digest = codex.Constraint[string]{
+	Name:  "digest",
+	Check: func(v string) bool { return reDigest.MatchString(v) },
+	Message: func(v string) string {
+		return fmt.Sprintf("invalid content digest: %q (want \"algorithm:hex\", e.g. \"sha256:...\")", v)
+	},
+}
+
 // isValidPortNumber reports whether s is a decimal string in the valid
 // TCP/UDP port range (1-65535). Shared by [Port] and [DockerPort].
 func isValidPortNumber(s string) bool {

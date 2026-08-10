@@ -568,6 +568,44 @@ func TestContainerImage_invalid(t *testing.T) {
 	}
 }
 
+func TestDigest_valid(t *testing.T) {
+	c := validate.Digest
+	cases := []struct {
+		v   string
+		msg string
+	}{
+		{"sha256:abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890", "sha256 digest"},
+		{"sha512:abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890", "sha512 digest"},
+		{"sha256+b64u:abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890", "algorithm with extra segment"},
+	}
+	for _, tc := range cases {
+		if got := c.Check(tc.v); !got {
+			t.Errorf("Digest.Check(%q) = false, want true — %s", tc.v, tc.msg)
+		}
+	}
+}
+
+func TestDigest_invalid(t *testing.T) {
+	c := validate.Digest
+	cases := []struct {
+		v   string
+		msg string
+	}{
+		{"", "empty"},
+		{"sha256", "no colon/hex"},
+		{"sha256:xyz", "too short/not hex"},
+		{"sha256:abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890@extra", "trailing junk"},
+	}
+	for _, tc := range cases {
+		if got := c.Check(tc.v); got {
+			t.Errorf("Digest.Check(%q) = true, want false — %s", tc.v, tc.msg)
+		}
+	}
+	if msg := c.Message("bad"); msg == "" {
+		t.Error("Digest.Message should not be empty")
+	}
+}
+
 func TestPort_valid(t *testing.T) {
 	c := validate.Port
 	cases := []struct {
