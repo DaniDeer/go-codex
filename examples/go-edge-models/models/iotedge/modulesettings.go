@@ -4,7 +4,7 @@ import (
 	"encoding/json"
 
 	c "github.com/DaniDeer/go-codex/codex"
-	"github.com/DaniDeer/go-codex/examples/go-edge-models/docker"
+	"github.com/DaniDeer/go-codex/examples/go-edge-models/models/docker"
 	f "github.com/DaniDeer/go-codex/format"
 )
 

@@ -2,26 +2,19 @@ package registry
 
 // This file is intentionally IO-free — it tests only imageref.go's pure,
 // non-auth functions (image-reference string parsing, no network, no
-// httptest servers). Auth-related tests (challenge parsing, Basic-auth
-// credential injection) live in auth_test.go instead — mirroring the
-// imageref.go/auth.go source split. The end-to-end request/response flow
+// httptest servers). Auth-flow tests (challenge parsing, Basic-auth
+// credential injection) and the end-to-end request/response flow
 // (auth-challenge handshake, GetTags, GetImageMetadata, manifest-list
-// resolution, PlatformNotFoundError) is covered by
-// registry_integration_test.go, which exercises the SAME code paths
-// against the REAL Docker Hub/GHCR/MCR registries — a stronger, more
-// realistic signal than a local httptest mock ever gave, without this
-// package having to own and maintain ~150 lines of mock-server plumbing
-// (auth-realm server, Bearer-token verification, manifest-list JSON
-// fixtures, a scheme-rewriting http.RoundTripper, ...). See
-// registry_integration_test.go's file doc comment for how to run it
-// (requires the "integration" build tag + network access; NOT part of the
-// default `go test ./...` / `just check` path).
+// resolution, PlatformNotFoundError) both live in the sibling app/registry
+// package's auth_test.go/registry_integration_test.go instead — this
+// models/ package has no I/O of its own to test beyond pure codec/parse
+// logic.
 
 import (
 	"strings"
 	"testing"
 
-	"github.com/DaniDeer/go-codex/examples/go-edge-models/docker"
+	"github.com/DaniDeer/go-codex/examples/go-edge-models/models/docker"
 )
 
 func TestParseImageRef(t *testing.T) {

@@ -61,7 +61,7 @@ security layers exist:
    `"username:password"` string before validating (the MQTT CONNECT packet
    carries them as two separate wire fields — this combined form is a
    VALIDATION-TIME representation only, never transmitted; mirrors
-   `examples/go-edge-models/docker/registry`'s `internal.BasicAuthCodec`
+   `examples/go-edge-models/app/registry`'s `internal.BasicAuthCodec`
    convention for HTTP Basic auth). On failure, returns
    `ConnectSecurityCredentialError` and the underlying client is never
    touched. `*SecuredClient` satisfies `MQTTClient`/`pahomqtt.Client`
@@ -332,7 +332,7 @@ the check only fires when `CredentialFunc` actually returns something: a nil
 `CredentialFunc`, or one that deliberately returns `(nil, nil)` to mean "this
 call needs no credential" (e.g. an auth flow that first probes whether the
 specific server instance requires auth at all — see
-`examples/go-edge-models/docker/registry`'s `NewAuthCredentialFunc`), remains
+`examples/go-edge-models/app/registry`'s `newAuthCredentialFunc`), remains
 a deliberate non-error. The request is simply sent without the credential,
 and it's up to the server to accept or reject it — symmetric with server-side
 `SecurityFunc`.
@@ -341,7 +341,7 @@ and it's up to the server to accept or reject it — symmetric with server-side
 
 Re-authenticating on every `Call` is wasteful when the underlying `inner`
 credential fetch is itself an HTTP round trip (e.g. an OAuth2 token
-endpoint, or `examples/go-edge-models/docker/registry`'s registry token
+endpoint, or `examples/go-edge-models/app/registry`'s registry token
 exchange). `nethttp.NewCachingCredentialFunc` wraps any `CredentialFunc`
 with TTL-based caching:
 

@@ -1,13 +1,10 @@
 package registry
 
 import (
-	"context"
-	"errors"
-	"net/http"
 	"testing"
 
 	mcp "github.com/DaniDeer/go-codex/api/mcp"
-	"github.com/DaniDeer/go-codex/examples/go-edge-models/docker"
+	"github.com/DaniDeer/go-codex/examples/go-edge-models/models/docker"
 )
 
 func TestGetImageMetadataReqCodec_RoundTrip(t *testing.T) {
@@ -99,20 +96,5 @@ func TestGetImageMetadataTool_RegistersSuccessfully(t *testing.T) {
 	builder := mcp.NewBuilder(mcp.Info{Name: "test", Version: "1.0.0"})
 	if _, err := GetImageMetadataTool.Register(builder); err != nil {
 		t.Fatalf("GetImageMetadataTool.Register: %v", err)
-	}
-}
-
-func TestNewGetImageMetadataToolHandler_PropagatesInvalidImageURL(t *testing.T) {
-	// Same offline-safe rationale as
-	// TestNewGetTagsToolHandler_PropagatesInvalidImageURL (gettags_test.go)
-	// — ParseImageRef fails before any HTTP call for a malformed ImageURL.
-	handler := NewGetImageMetadataToolHandler(http.DefaultClient)
-	_, err := handler(context.Background(), GetImageMetadataReq{ImageURL: "INVALID IMAGE REF!!"})
-	if err == nil {
-		t.Fatal("handler: want error for invalid ImageURL, got nil")
-	}
-	var parseErr ImageRefParseError
-	if !errors.As(err, &parseErr) {
-		t.Errorf("handler error = %v, want ImageRefParseError", err)
 	}
 }

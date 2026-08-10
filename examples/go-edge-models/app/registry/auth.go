@@ -11,7 +11,8 @@ import (
 	nethttp "github.com/DaniDeer/go-codex/adapters/nethttp"
 	"github.com/DaniDeer/go-codex/api/rest"
 	c "github.com/DaniDeer/go-codex/codex"
-	"github.com/DaniDeer/go-codex/examples/go-edge-models/docker/registry/internal"
+	"github.com/DaniDeer/go-codex/examples/go-edge-models/internal/registry"
+	regmodels "github.com/DaniDeer/go-codex/examples/go-edge-models/models/docker/registry"
 	"github.com/DaniDeer/go-codex/route"
 	"github.com/DaniDeer/go-codex/stats"
 	"github.com/DaniDeer/go-codex/validate"
@@ -139,8 +140,8 @@ func formatBasicAuth(username, password string) (string, error) {
 type Option func(*options)
 
 type options struct {
-	credentials           *Credentials
-	credentialsByRegistry RegistryCredentials
+	credentials           *regmodels.Credentials
+	credentialsByRegistry regmodels.RegistryCredentials
 	observer              stats.Observer
 }
 
@@ -156,7 +157,7 @@ func resolveOptions(opts []Option) options {
 // exchange step — see Credentials' doc comment (credentials.go) for when this
 // is needed (private repositories on registries that require Basic auth
 // to mint a Bearer token).
-func WithCredentials(creds Credentials) Option {
+func WithCredentials(creds regmodels.Credentials) Option {
 	return func(o *options) { o.credentials = &creds }
 }
 
@@ -169,7 +170,7 @@ func WithCredentials(creds Credentials) Option {
 // others. If BOTH WithCredentials and WithCredentialsByRegistry are
 // supplied to the same call, WithCredentials wins (it is the more
 // specific, single-registry override).
-func WithCredentialsByRegistry(creds RegistryCredentials) Option {
+func WithCredentialsByRegistry(creds regmodels.RegistryCredentials) Option {
 	return func(o *options) { o.credentialsByRegistry = creds }
 }
 
@@ -229,9 +230,9 @@ func parseChallenge(header http.Header) (internal.Challenge, error) {
 // rest.WithSecurityScheme mechanism (this file's own basicAuthScheme/
 // bearerAuthScheme) — no CallOptions.ExtraHeaders injection anywhere in
 // this package.
-func authenticate(ctx context.Context, httpClient *http.Client, registryHost, repository string, creds *Credentials, obs stats.Observer) (string, error) {
+func authenticate(ctx context.Context, httpClient *http.Client, registryHost, repository string, creds *regmodels.Credentials, obs stats.Observer) (string, error) {
 	baseURL := registryBaseURL(registryHost)
-	pingHandle := PingRoute.ClientHandle()
+	pingHandle := regmodels.PingRoute.ClientHandle()
 	_, err := nethttp.CallHandle(ctx, httpClient, baseURL, pingHandle, struct{}{}, nethttp.CallOptions{Observer: obs})
 	if err == nil {
 		return "", nil // 2xx — registry requires no auth for this request.
@@ -366,34 +367,16 @@ func newAuthCredentialFunc(httpClient *http.Client, registryHost, repository str
 	}
 }
 
-// ---- bearerAuth + basicAuth scheme declarations, and getTokenRoute
-// (every security scheme/requirement value this package declares lives
-// here, alongside authenticate()/newAuthCredentialFunc, which are their
-// only real consumers — gettags.go/getimagemetadata.go's own routes only
-// REFERENCE these by name) ----
-
-// bearerAuthSecurity declares that a route requires Bearer-token
-// credentials — set as RouteMeta.Security below so
-// [nethttp.CallOptions.CredentialFunc] is invoked automatically by
-// [nethttp.Call]/[nethttp.CallHandle], instead of the caller having to set
-// the Authorization header by hand via CallOptions.ExtraHeaders.
-var bearerAuthSecurity = []route.SecurityRequirement{{"bearerAuth": nil}}
-
-// bearerAuthScheme declares the "bearerAuth" scheme's spec metadata and a
-// non-empty-string format Codec, attached to GetTagsRoute/GetManifestRoute
-// below via rest.WithSecurityScheme — the ONLY way to declare a security
-// scheme in go-codex (no Builder/spec involved here at all; WithSecurityScheme
-// is a route-level RouteOpt, so it works identically through .ClientHandle()
-// as it would through .Register(builder)). This gives newAuthCredentialFunc
-// (auth.go) a genuine extra safety net: nethttp.Call now validates its
-// returned Authorization header's bare token against this Codec before
-// sending, on top of (not instead of) the fact that formatBearerToken/
-// internal.BearerTokenCodec.Encode already construct that header from a
-// codec — this catches an empty token specifically, which the encode-side
-// codec alone does not.
-var bearerAuthScheme = rest.SecurityScheme{
-	SecurityScheme: route.BearerScheme(""),
-}.WithCodec(c.String().Refine(validate.NonEmptyString))
+// ---- basicAuth scheme declaration, and getTokenRoute ----
+//
+// bearerAuthSecurity/bearerAuthScheme (GetTagsRoute/GetManifestRoute's
+// OWN declared security requirement) live in the sibling
+// models/docker/registry package's security.go instead — they are part
+// of those routes' DECLARED CONTRACT, not this file's auth-flow
+// implementation. basicAuthSecurity/basicAuthScheme below stay HERE
+// because getTokenRoute (also declared here) has no legitimate
+// standalone caller outside this file's own authenticate() function —
+// auth-flow plumbing, not part of the externally-facing contract.
 
 // basicAuthSecurity declares that getTokenRoute accepts Basic-auth
 // credentials — set as RouteMeta.Security below so

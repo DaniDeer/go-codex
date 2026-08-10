@@ -27,6 +27,7 @@ import (
 	"sync/atomic"
 	"testing"
 
+	regmodels "github.com/DaniDeer/go-codex/examples/go-edge-models/models/docker/registry"
 	"github.com/DaniDeer/go-codex/stats"
 )
 
@@ -104,7 +105,7 @@ func TestAuthenticate_WithCredentials_SendsBasicAuthOnTokenExchange(t *testing.T
 	}
 	client := httpsToHTTPClient()
 
-	creds := &Credentials{Username: "gh-user", Password: "ghp_examplePAT"}
+	creds := &regmodels.Credentials{Username: "gh-user", Password: "ghp_examplePAT"}
 	if _, err := authenticate(context.Background(), client, u.Host, "org/private-repo", creds, nil); err != nil {
 		t.Fatalf("authenticate: %v", err)
 	}
@@ -262,9 +263,9 @@ func TestWithCredentialsByRegistry_PicksCorrectEntryPerRegistry(t *testing.T) {
 	}
 	client := httpsToHTTPClient()
 
-	credsA := Credentials{Username: "user-a", Password: "pass-a"}
-	credsB := Credentials{Username: "user-b", Password: "pass-b"}
-	byRegistry := RegistryCredentials{uA.Host: credsA, uB.Host: credsB}
+	credsA := regmodels.Credentials{Username: "user-a", Password: "pass-a"}
+	credsB := regmodels.Credentials{Username: "user-b", Password: "pass-b"}
+	byRegistry := regmodels.RegistryCredentials{uA.Host: credsA, uB.Host: credsB}
 
 	credFnA := newAuthCredentialFunc(client, uA.Host, "org/repo-a", WithCredentialsByRegistry(byRegistry))
 	if _, err := credFnA(context.Background(), nil); err != nil {
@@ -302,7 +303,7 @@ func TestWithCredentialsByRegistry_NoMatchingEntry_FallsBackToAnonymous(t *testi
 	client := httpsToHTTPClient()
 
 	// The map has an entry, but not for THIS registry's host.
-	byRegistry := RegistryCredentials{"some-other-host.example.com": {Username: "u", Password: "p"}}
+	byRegistry := regmodels.RegistryCredentials{"some-other-host.example.com": {Username: "u", Password: "p"}}
 
 	credFn := newAuthCredentialFunc(client, u.Host, "org/repo", WithCredentialsByRegistry(byRegistry))
 	if _, err := credFn(context.Background(), nil); err != nil {
@@ -323,8 +324,8 @@ func TestWithCredentials_WinsOverWithCredentialsByRegistry(t *testing.T) {
 	}
 	client := httpsToHTTPClient()
 
-	single := Credentials{Username: "single-user", Password: "single-pass"}
-	byRegistry := RegistryCredentials{u.Host: {Username: "map-user", Password: "map-pass"}}
+	single := regmodels.Credentials{Username: "single-user", Password: "single-pass"}
+	byRegistry := regmodels.RegistryCredentials{u.Host: {Username: "map-user", Password: "map-pass"}}
 
 	credFn := newAuthCredentialFunc(client, u.Host, "org/repo",
 		WithCredentialsByRegistry(byRegistry), WithCredentials(single))
@@ -337,52 +338,6 @@ func TestWithCredentials_WinsOverWithCredentialsByRegistry(t *testing.T) {
 	}
 	if gotAuth != want {
 		t.Errorf("Authorization sent to token endpoint = %q, want %q (WithCredentials should win)", gotAuth, want)
-	}
-}
-
-func TestRegistryCredentialsCodec_RejectsUnknownRegistryHost(t *testing.T) {
-	err := RegistryCredentialsCodec.Validate(RegistryCredentials{
-		"quay.io": {Username: "u", Password: "p"},
-	})
-	if err == nil {
-		t.Fatal("RegistryCredentialsCodec.Validate: want error for unknown registry host, got nil")
-	}
-}
-
-func TestRegistryCredentialsCodec_RoundTrip(t *testing.T) {
-	creds := RegistryCredentials{
-		dockerHubRegistryHost: {Username: "docker-user", Password: "docker-pass"},
-		ghcrRegistryHost:      {Username: "", Password: "ghp_examplePAT"},
-		mcrRegistryHost:       {Username: "mcr-user", Password: "mcr-pass"},
-	}
-
-	encoded, err := RegistryCredentialsCodec.Encode(creds)
-	if err != nil {
-		t.Fatalf("RegistryCredentialsCodec.Encode: %v", err)
-	}
-	decoded, err := RegistryCredentialsCodec.Decode(encoded)
-	if err != nil {
-		t.Fatalf("RegistryCredentialsCodec.Decode: %v", err)
-	}
-	if len(decoded) != len(creds) {
-		t.Fatalf("decoded = %+v, want %+v", decoded, creds)
-	}
-	for host, want := range creds {
-		if got := decoded[host]; got != want {
-			t.Errorf("decoded[%q] = %+v, want %+v", host, got, want)
-		}
-	}
-}
-
-func TestCredentialsCodec_RejectsEmptyPasswordButAllowsEmptyUsername(t *testing.T) {
-	// GHCR (and similar) authenticate correctly with an empty/arbitrary
-	// username and the PAT carried entirely in Password — Username must
-	// stay unconstrained while Password remains required.
-	if err := CredentialsCodec.Validate(Credentials{Username: "", Password: "ghp_examplePAT"}); err != nil {
-		t.Errorf("CredentialsCodec.Validate with empty Username: want nil error, got %v", err)
-	}
-	if err := CredentialsCodec.Validate(Credentials{Username: "user", Password: ""}); err == nil {
-		t.Error("CredentialsCodec.Validate with empty Password: want error, got nil")
 	}
 }
 
@@ -402,7 +357,7 @@ func TestWithObserver_SetsObserverOnOptions(t *testing.T) {
 }
 
 func TestWithObserver_AbsentLeavesObserverNil(t *testing.T) {
-	o := resolveOptions([]Option{WithCredentials(Credentials{Username: "u", Password: "p"})})
+	o := resolveOptions([]Option{WithCredentials(regmodels.Credentials{Username: "u", Password: "p"})})
 	if o.observer != nil {
 		t.Errorf("resolveOptions(...).observer = %#v, want nil", o.observer)
 	}

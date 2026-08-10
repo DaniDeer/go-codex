@@ -3,7 +3,7 @@ package iotedge
 import (
 	"testing"
 
-	"github.com/DaniDeer/go-codex/examples/go-edge-models/docker"
+	"github.com/DaniDeer/go-codex/examples/go-edge-models/models/docker"
 )
 
 func strPtr(s string) *string     { return &s }

@@ -6,7 +6,7 @@
 // deterministic. Run it explicitly, with network access to Docker Hub,
 // via:
 //
-//	go test -tags=integration ./examples/go-edge-models/docker/registry/...
+//	go test -tags=integration ./examples/go-edge-models/app/registry/...
 //
 // Every assertion below was first verified manually against the real
 // registry-1.docker.io / auth.docker.io before being committed here — this
@@ -14,7 +14,7 @@
 //
 // THIS FILE IS THE PRIMARY coverage for the full request/response flow
 // (auth-challenge handshake, GetTags, GetImageMetadata, manifest-list
-// resolution, PlatformNotFoundError) — registry_test.go deliberately does
+// resolution, PlatformNotFoundError) — models/docker/registry's imageref_test.go deliberately does
 // NOT re-derive this coverage via local httptest mocks; it stays IO-free,
 // testing only pure functions (ParseImageRef, parseChallenge). A real
 // registry is a stronger, more realistic signal than a hand-maintained
@@ -31,6 +31,8 @@ import (
 	"regexp"
 	"testing"
 	"time"
+
+	regmodels "github.com/DaniDeer/go-codex/examples/go-edge-models/models/docker/registry"
 )
 
 // requireNetwork skips t if a short-timeout probe against Docker Hub
@@ -112,7 +114,7 @@ func TestIntegration_GetImageMetadata(t *testing.T) {
 			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 			defer cancel()
 
-			meta, err := GetImageMetadata(ctx, client, GetImageMetadataReq{ImageURL: image + ":latest"})
+			meta, err := GetImageMetadata(ctx, client, regmodels.GetImageMetadataReq{ImageURL: image + ":latest"})
 			if err != nil {
 				t.Fatalf("GetImageMetadata(%q:latest): %v", image, err)
 			}
@@ -143,11 +145,11 @@ func TestIntegration_PlatformOverride(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	amd64, err := GetImageMetadata(ctx, client, GetImageMetadataReq{ImageURL: "alpine:latest", Platform: "linux/amd64"})
+	amd64, err := GetImageMetadata(ctx, client, regmodels.GetImageMetadataReq{ImageURL: "alpine:latest", Platform: "linux/amd64"})
 	if err != nil {
 		t.Fatalf("GetImageMetadata(linux/amd64): %v", err)
 	}
-	arm64, err := GetImageMetadata(ctx, client, GetImageMetadataReq{ImageURL: "alpine:latest", Platform: "linux/arm64"})
+	arm64, err := GetImageMetadata(ctx, client, regmodels.GetImageMetadataReq{ImageURL: "alpine:latest", Platform: "linux/arm64"})
 	if err != nil {
 		t.Fatalf("GetImageMetadata(linux/arm64): %v", err)
 	}
@@ -165,7 +167,7 @@ func TestIntegration_PlatformNotFound(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	_, err := GetImageMetadata(ctx, client, GetImageMetadataReq{ImageURL: "alpine:latest", Platform: "plan9/386"})
+	_, err := GetImageMetadata(ctx, client, regmodels.GetImageMetadataReq{ImageURL: "alpine:latest", Platform: "plan9/386"})
 	var pnfErr PlatformNotFoundError
 	if !errors.As(err, &pnfErr) {
 		t.Fatalf("GetImageMetadata(plan9/386): want PlatformNotFoundError, got %v", err)
@@ -182,19 +184,19 @@ func TestIntegration_PlatformNotFound(t *testing.T) {
 func TestIntegration_ParseImageRef_RealConventions(t *testing.T) {
 	tests := []struct {
 		input string
-		want  ImageRef
+		want  regmodels.ImageRef
 	}{
-		{input: "alpine", want: ImageRef{Registry: "registry-1.docker.io", Repository: "library/alpine", Reference: "latest"}},
-		{input: "nodered/node-red:1.3.7", want: ImageRef{Registry: "registry-1.docker.io", Repository: "nodered/node-red", Reference: "1.3.7"}},
+		{input: "alpine", want: regmodels.ImageRef{Registry: "registry-1.docker.io", Repository: "library/alpine", Reference: "latest"}},
+		{input: "nodered/node-red:1.3.7", want: regmodels.ImageRef{Registry: "registry-1.docker.io", Repository: "nodered/node-red", Reference: "1.3.7"}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.input, func(t *testing.T) {
-			got, err := ParseImageRef(tt.input)
+			got, err := regmodels.ParseImageRef(tt.input)
 			if err != nil {
-				t.Fatalf("ParseImageRef(%q): %v", tt.input, err)
+				t.Fatalf("regmodels.ParseImageRef(%q): %v", tt.input, err)
 			}
 			if got != tt.want {
-				t.Errorf("ParseImageRef(%q) = %+v, want %+v", tt.input, got, tt.want)
+				t.Errorf("regmodels.ParseImageRef(%q) = %+v, want %+v", tt.input, got, tt.want)
 			}
 		})
 	}

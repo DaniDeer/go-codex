@@ -6,7 +6,7 @@ import (
 	"strings"
 
 	c "github.com/DaniDeer/go-codex/codex"
-	"github.com/DaniDeer/go-codex/examples/go-edge-models/docker"
+	"github.com/DaniDeer/go-codex/examples/go-edge-models/models/docker"
 	v "github.com/DaniDeer/go-codex/validate"
 )
 

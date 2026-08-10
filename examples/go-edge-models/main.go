@@ -1,7 +1,7 @@
 // Also demonstrates: spec generation (iotedge.DeploymentManifestCodec.Schema
 // rendered as OpenAPI components/schemas YAML via render/openapi.MarshalYAML)
 // and observer integration (the codec-only stats.ReportErrors path for iotedge
-// manifest decoding, and registry.WithObserver for docker/registry's HTTP calls).
+// manifest decoding, and registryapp.WithObserver for docker/registry's HTTP calls).
 //
 // Resources
 // - examples/flat-key-patch -> demonstrates dotted-key JSON patching with go-codex
@@ -31,9 +31,10 @@ import (
 	nethttp "github.com/DaniDeer/go-codex/adapters/nethttp"
 	"github.com/DaniDeer/go-codex/api/mcp"
 	"github.com/DaniDeer/go-codex/codex"
-	"github.com/DaniDeer/go-codex/examples/go-edge-models/docker/registry"
-	"github.com/DaniDeer/go-codex/examples/go-edge-models/iotedge"
-	"github.com/DaniDeer/go-codex/examples/go-edge-models/iotedge/modulepatch"
+	registryapp "github.com/DaniDeer/go-codex/examples/go-edge-models/app/registry"
+	"github.com/DaniDeer/go-codex/examples/go-edge-models/models/docker/registry"
+	"github.com/DaniDeer/go-codex/examples/go-edge-models/models/iotedge"
+	"github.com/DaniDeer/go-codex/examples/go-edge-models/models/iotedge/modulepatch"
 	"github.com/DaniDeer/go-codex/format"
 	"github.com/DaniDeer/go-codex/ports"
 	"github.com/DaniDeer/go-codex/render/openapi"
@@ -49,7 +50,7 @@ var usecase1JSON []byte
 
 // logger is used for every fatal error path below via structured slog
 // attributes, NOT the stdlib log package — every go-codex error type
-// (codex.ValidationErrors, registry.RegistryAuthError,
+// (codex.ValidationErrors, registryapp.RegistryAuthError,
 // rest.SecurityCredentialError, ...) implements slog.LogValuer, so passing
 // err as a slog attribute (logger.Error("...", "error", err)) automatically
 // resolves its LogValue() into structured fields instead of just its
@@ -244,8 +245,8 @@ func main() {
 }
 
 // runRegistryDemo wires two local httptest servers together (a registry
-// host and a separate auth-realm host) and calls registry.GetTags /
-// registry.GetImageMetadata against a synthetic multi-arch image — the
+// host and a separate auth-realm host) and calls registryapp.GetTags /
+// registryapp.GetImageMetadata against a synthetic multi-arch image — the
 // image name reuses "factory-dashboard" for narrative continuity with the rest
 // of this example. See docker/registry's own package doc for the reusable
 // client API this demonstrates.
@@ -368,7 +369,7 @@ func runRegistryDemo() {
 
 	ctx := context.Background()
 
-	// registry.WithObserver wires a stats.Observer through every
+	// registryapp.WithObserver wires a stats.Observer through every
 	// nethttp.CallHandle invocation GetTags/GetImageMetadata make,
 	// including the Ping/token-exchange auth flow — the same mechanism
 	// demonstrated for iotedge above, applied to an HTTP client instead of
@@ -391,14 +392,14 @@ func runRegistryDemo() {
 	logObs := stats.NewLoggingObserver(logger)
 	obs := stats.NewFanout(regObs, logObs)
 
-	tags, err := registry.GetTags(ctx, httpsToHTTP, imageURL, registry.WithObserver(obs))
+	tags, err := registryapp.GetTags(ctx, httpsToHTTP, imageURL, registryapp.WithObserver(obs))
 	if err != nil {
 		logger.Error("get tags", "error", err)
 		os.Exit(1)
 	}
 	fmt.Printf("tags for %s: %v\n", tags.Name, tags.Tags)
 
-	meta, err := registry.GetImageMetadata(ctx, httpsToHTTP, registry.GetImageMetadataReq{ImageURL: imageURL}, registry.WithObserver(obs))
+	meta, err := registryapp.GetImageMetadata(ctx, httpsToHTTP, registry.GetImageMetadataReq{ImageURL: imageURL}, registryapp.WithObserver(obs))
 	if err != nil {
 		logger.Error("get image metadata", "error", err)
 		os.Exit(1)
@@ -415,13 +416,13 @@ func runRegistryDemo() {
 
 // runMCPBridgeDemo wraps registry.GetTagsRoute as an MCP tool via
 // adapters/mcprest — the SAME REST client machinery (path merge fields,
-// security scheme) as registry.GetTags demonstrated above, now exposed as
+// security scheme) as registryapp.GetTags demonstrated above, now exposed as
 // something an LLM agent could call directly. Reuses the running fake
 // registry server from runRegistryDemo (client, registryHost, fakeToken).
 func runMCPBridgeDemo(client *http.Client, registryHost, fakeToken string) {
 	baseURL := "https://" + registryHost
 
-	// A CredentialFunc for the MCP demo: the real registry.GetTags call
+	// A CredentialFunc for the MCP demo: the real registryapp.GetTags call
 	// above goes through the full Ping/challenge/token-exchange dance
 	// (auth.go, package-private) — this demo already knows the fake
 	// server's expected token, so it supplies it directly. A real
@@ -551,7 +552,7 @@ func runMCPBridgeDemo(client *http.Client, registryHost, fakeToken string) {
 	// resolves its target registry per call from the tool input's
 	// ImageURL). No mcprest bridge is involved: NewGetTagsToolHandler/
 	// NewGetImageMetadataToolHandler are plain closures over
-	// registry.GetTags/GetImageMetadata.
+	// registryapp.GetTags/GetImageMetadata.
 	fmt.Println("\n=== Package-provided MCP tools: registry.GetTagsTool/GetImageMetadataTool (registry-agnostic) ===")
 
 	imageURL, err := registry.FormatImageRef(registry.ImageRef{
@@ -573,7 +574,7 @@ func runMCPBridgeDemo(client *http.Client, registryHost, fakeToken string) {
 		os.Exit(1)
 	}
 	_, getTagsToolHandlerFn := mcpgo.ToolHandler(getTagsToolHandle,
-		registry.NewGetTagsToolHandler(client),
+		registryapp.NewGetTagsToolHandler(client),
 		mcpgo.Options{},
 	)
 	callMCPTool(getTagsToolHandlerFn, fmt.Sprintf("get_tags(%s)", imageURL), map[string]any{"imageURL": imageURL})
@@ -584,7 +585,7 @@ func runMCPBridgeDemo(client *http.Client, registryHost, fakeToken string) {
 		os.Exit(1)
 	}
 	_, getMetaToolHandlerFn := mcpgo.ToolHandler(getMetaToolHandle,
-		registry.NewGetImageMetadataToolHandler(client),
+		registryapp.NewGetImageMetadataToolHandler(client),
 		mcpgo.Options{},
 	)
 	callMCPTool(getMetaToolHandlerFn, fmt.Sprintf("get_image_metadata(%s)", imageURL), map[string]any{"imageURL": imageURL})
@@ -657,7 +658,7 @@ func (o *ManifestObserver) RecordValidationError(location, constraint, field str
 }
 
 // RegistryObserver implements stats.Observer — records every HTTP call
-// registry.GetTags/GetImageMetadata make (via registry.WithObserver),
+// registryapp.GetTags/GetImageMetadata make (via registryapp.WithObserver),
 // including the auth-realm Ping/token exchange, not just the final
 // tags/manifest fetch.
 type RegistryObserver struct {
