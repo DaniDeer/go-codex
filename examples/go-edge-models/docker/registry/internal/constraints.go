@@ -5,6 +5,7 @@ import (
 	"regexp"
 
 	c "github.com/DaniDeer/go-codex/codex"
+	v "github.com/DaniDeer/go-codex/validate"
 )
 
 // rePlatform matches a "os/arch" platform selector, e.g. "linux/amd64",
@@ -21,22 +22,12 @@ var PlatformConstraint = c.Constraint[string]{
 	},
 }
 
-// reDigest matches a content digest, "algorithm:hex" (e.g.
-// "sha256:e3b0c4429...") — the same digest-segment shape validate.ContainerImage
-// itself checks after "@", extracted here as its own standalone constraint
-// since digests also appear on their own (ManifestDescriptor.Digest,
-// ManifestEnvelope.Digest) — not only as an optional suffix of a full image
-// reference.
-var reDigest = regexp.MustCompile(`^[a-z0-9]+(?:[.+_\-][a-z0-9]+)*:[a-fA-F0-9]{32,}$`)
-
-// DigestConstraint validates a bare content digest's "algorithm:hex" shape.
-var DigestConstraint = c.Constraint[string]{
-	Name:  "digest",
-	Check: func(v string) bool { return reDigest.MatchString(v) },
-	Message: func(v string) string {
-		return fmt.Sprintf("digest %q must be \"algorithm:hex\" (e.g. \"sha256:...\")", v)
-	},
-}
+// DigestConstraint validates a bare content digest's "algorithm:hex" shape
+// — a thin re-export of validate.Digest under this package's own name
+// (used for ManifestDescriptor.Digest and ManifestEnvelope.Digest, which
+// appear as standalone fields, not only as an optional suffix of a full
+// image reference like validate.ContainerImage checks).
+var DigestConstraint = v.Digest
 
 // ActionsConstraint requires DockerScope.Actions to contain at least one
 // action — an empty actions list would encode to a scope string with a

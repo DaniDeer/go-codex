@@ -11,16 +11,26 @@
 // sibling `iotedge` package), Docker Compose service definitions, or a
 // plain `docker create`/`docker run` wrapper.
 //
-// Every exported value is a small, independently reusable piece:
+// Every exported value is a small, independently reusable piece. Files are
+// organized ONE PER DOMAIN CONCEPT — each file holds that concept's
+// struct(s), any validate.Constraint values it needs, and its codex.Codec[T]
+// values together, so understanding one concept never requires jumping
+// across files:
 //
-//   - types.go — plain Go structs and named types (Port, Bind, Ulimit,
-//     Healthcheck, HostConfig, CreateOptions, ...), no codec logic.
-//   - constraints.go — validate.Constraint values used by the codecs below.
-//   - codecs.go — codex.Codec[T] values, built by composing the types and
-//     constraints above via RequiredField/OptionalField. Each field's codec
-//     is its own named value (e.g. UlimitNameCodec, PortCodec,
-//     dockerNanosDurationCodec) so a caller assembling a NEW wire codec —
-//     for example a "patch this module's image" codec that only touches
-//     one field — can reuse the exact same field-level codec rather than
-//     re-deriving it.
+//   - image.go — Image (parsed Name/Tag/Digest), the Tag/Digest named types
+//     and their constraints, ImageCodec, and Image.String().
+//   - port.go — Port, PortBindingEntry, PortBinding, and their codecs
+//     (PortCodec, PortNumberCodec, ExposedPortsCodec, PortBindingCodec).
+//   - bind.go — Bind and BindCodec (parses "host:container[:mode]").
+//   - ulimit.go — Ulimit, ulimitNameConstraint, UlimitNameCodec, UlimitCodec.
+//   - healthcheck.go — Healthcheck and HealthcheckCodec.
+//   - env.go — EnvVar/Env and EnvCodec (parses "KEY=VALUE" entries).
+//   - hostconfig.go — HostConfig and CreateOptions (composing every concept
+//     above) and their codecs, plus IsZeroCreateOptions.
+//
+// Each field's codec is its own named value (e.g. UlimitNameCodec,
+// PortCodec, dockerNanosDurationCodec) so a caller assembling a NEW wire
+// codec — for example a "patch this module's image" codec that only
+// touches one field — can reuse the exact same field-level codec rather
+// than re-deriving it.
 package docker

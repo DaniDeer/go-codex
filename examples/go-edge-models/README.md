@@ -11,16 +11,25 @@ independently, not just from `main.go`'s demo.
 
 | Package | What it models | Depends on |
 |---|---|---|
-| [`iotedge/`](iotedge) | Azure IoT-Edge deployment manifest: `ModuleConfig`, `ModuleSettings`, `EnvVars` (string/int/float union), and `ModuleName`/`Modules`/`DeploymentManifest` — dotted-key extraction (`"properties.desired.modules.<name>"`) via `codex.Map`. | `docker/` (for `ModuleSettings.CreateOptions`) |
+| [`iotedge/`](iotedge) | Azure IoT-Edge deployment manifest: `ModuleConfig`, `ModuleSettings`, `EnvVars` (string/int/float union), and `ModuleName`/`Modules`/`DeploymentManifest` — dotted-key extraction (`"properties.desired.modules.<name>"`) via `codex.Map`. `FlattenEnvVars(vars EnvVars) docker.Env` is a ONE-DIRECTION mapper (iotedge → docker only) that formats each typed string/int/float `EnvVarValue` as a flat "KEY=VALUE" `docker.EnvVar` — no reverse mapper (would require guessing the original value's type from a flat string). | `docker/` (for `ModuleSettings.CreateOptions` and `FlattenEnvVars`'s return type) |
 | [`iotedge/modulepatch/`](iotedge/modulepatch) | A derived, composed codec demonstrating the "compose new wire codecs from reusable codecs" story: `ModulePatch{ModuleName, ImageURL}` encodes directly into the manifest's full nested shape (`modulesContent` → `$edgeAgent` → `<key>` → `settings` → `image`), reusing `iotedge`'s own exported field codecs. | `iotedge/` |
-| [`docker/`](docker) | Generic Docker Engine API create-options modeling: `Port`, `Bind`, `Ulimit`, `Healthcheck`, `HostConfig`, `CreateOptions`. Zero dependency on `iotedge` — reusable standalone for Docker Compose or any other Docker create-options tooling. | *(none)* |
-| [`docker/registry/`](docker/registry) | Docker Registry HTTP API v2 / OCI Distribution Spec client with a deliberately RADICALLY REDUCED public surface — exactly three things: (1) `GetTags`/`GetImageMetadata`, the primary batteries-included entry points; (2) `PingRoute`/`GetTagsRoute`/`GetManifestRoute`, plain `rest.Route` values for advanced/low-level direct use; (3) domain structs/codecs (`ImageRef`, `TagsList`, `GetTagsReq`, `GetManifestReq`, `GetImageMetadataReq`, `ManifestMetadata`, `Credentials`). The entire Bearer/Basic auth-challenge flow (token exchange, credential injection, `rest.WithSecurityScheme` declarations) is package-private plumbing in `auth.go` — a caller never constructs it themselves. Transparent multi-arch manifest-list resolution. `docker/registry/internal/` holds the generic wire-format plumbing behind a real, compiler-enforced package boundary — never imported from outside `docker/registry`. | *(none — a separate concern from the create-options `docker/` package)* |
+| [`docker/`](docker) | The shared "working-with-Docker-containers" DOMAIN package: `Image` (parsed `Name`/`Tag`/`Digest`, with `ImageCodec` for the wire string ↔ struct round trip and a `Stringer` for ergonomic printing), `Tag`/`Digest` named domain types (validated by a package-local `tagConstraint` and by core `validate.Digest` respectively — reused directly by `docker/registry`'s `TagsList.Tags`/`ManifestMetadata.Image.Digest`), `EnvVar`/`Env` (Docker's real create-options `"Env":["KEY=VALUE",...]` field, with `EnvCodec` for the wire ↔ struct round trip), plus generic Docker Engine API create-options modeling: `Port`, `Bind`, `Ulimit`, `Healthcheck`, `HostConfig`, `CreateOptions`. Zero dependency on `iotedge` — reusable standalone for Docker Compose or any other Docker create-options tooling. | *(none)* |
+| [`docker/registry/`](docker/registry) | Docker Registry HTTP API v2 / OCI Distribution Spec client with a deliberately RADICALLY REDUCED public surface — exactly FOUR things: (1) `GetTags`/`GetImageMetadata`, the primary batteries-included entry points; (2) `PingRoute`/`GetTagsRoute`/`GetManifestRoute`, plain `rest.Route` values for advanced/low-level direct use; (3) domain structs/codecs (`ImageRef`, `TagsList`, `GetTagsReq`, `GetManifestReq`, `GetImageMetadataReq`, `ManifestMetadata`, `Credentials`); (4) `GetTagsTool`/`GetImageMetadataTool` + `NewGetTagsToolHandler`/`NewGetImageMetadataToolHandler` — ready-made MCP tool contracts wrapping (1) directly (registry-agnostic closures, not an `adapters/mcprest` route bridge — see below). The entire Bearer/Basic auth-challenge flow (token exchange, credential injection, `rest.WithSecurityScheme` declarations) is package-private plumbing in `auth.go` — a caller never constructs it themselves. Transparent multi-arch manifest-list resolution. `docker/registry/internal/` holds the generic wire-format plumbing behind a real, compiler-enforced package boundary — never imported from outside `docker/registry` (its own `DigestConstraint` is a thin re-export of core `validate.Digest`, deduped against `docker.Digest`'s constraint). `ImageRef.ToImage()`/`ImageRefFromImage()` map to/from `docker.Image` — `ImageRef`'s registry-host-split shape is genuinely different (needed to build a specific registry's HTTP base URL), so it keeps its own codec rather than reusing `docker.ImageCodec` directly. `TagsList.Tags []docker.Tag` reuses the shared domain type directly (same concept, identical shape — no mapper needed); `ManifestMetadata.Image docker.Image` is built by `GetImageMetadata` reusing `ImageRef.ToImage()` and overriding `.Digest` with the registry-resolved content digest. `GetImageMetadataReq`/`ManifestMetadata` (unlike `GetTagsReq`/`GetManifestReq`) are NOT one route's Req/Resp types — `GetImageMetadata` is a multi-call client-side orchestration (parses the image URL, calls `GetManifestRoute` up to twice, computes a size summary), so its own shape is declared via a plain `codex.Struct`-based codec pair (`GetImageMetadataReqCodec`/`ManifestMetadataCodec`) instead of a `rest.Route`. Files are organized ONE PER OPERATION (`ping.go`, `gettags.go`, `getimagemetadata.go`, plus shared `imageref.go`/`credentials.go`/`auth.go`) — each operation's route, req/resp types+codecs, client function, and MCP tool live together; there is deliberately no `client.go`/`routes.go`/`mcptools.go` aggregator file. | `docker` (Image/Tag/Digest reuse plus the Image mapper — the HTTP client/auth/routes remain independent) |
 
-Each package follows the same internal convention: `types.go` (plain
-structs, no codec logic), `constraints.go` (`validate.Constraint` values),
-`codecs.go` (`codex.Codec[T]` values + `RequiredField`/`OptionalField`
-wiring) — so every field-level codec is a standalone, reusable value, not
-buried inline inside a larger struct's codec.
+Each package follows the same internal convention: ONE FILE PER CONCEPT —
+a concept's plain struct(s), any `validate.Constraint` values it needs,
+and its `codex.Codec[T]` values (built via `RequiredField`/
+`OptionalField`) all live together in that one file, so understanding or
+changing one concept never requires jumping across files. `docker`/
+`iotedge` split by DOMAIN CONCEPT (e.g. `docker/image.go`,
+`iotedge/envvars.go`); `docker/registry` (a REST client, not a pure codec
+package) splits by OPERATION instead (e.g. `gettags.go`,
+`getimagemetadata.go`) — each operation's route, request/response
+types+codecs, batteries-included client function, and MCP tool all live
+together, with no separate `client.go`/`routes.go`/`mcptools.go`
+aggregator file. Every field-level codec is still its own standalone,
+reusable value, not buried inline inside a larger struct's codec — see
+each package's `doc.go` for its exact file map.
 
 ## Quick usage
 
@@ -30,6 +39,8 @@ buried inline inside a larger struct's codec.
 manifest, err := format.JSON(iotedge.DeploymentManifestCodec).Unmarshal(manifestJSON)
 dashboard := manifest.ModulesContent.EdgeAgent["factory-dashboard"]
 fmt.Println(dashboard.Settings.Image, dashboard.Status)
+// dashboard.Settings.Image is a docker.Image (Name/Tag/Digest) — its
+// Stringer prints it back as the same plain wire string ("ghcr.io/org/edge-web:2.0.0").
 ```
 
 **Patch one module's image in-place on disk:**
@@ -50,7 +61,7 @@ tags, err  = registry.GetTags(ctx, http.DefaultClient, "mcr.microsoft.com/dotnet
 
 meta, err := registry.GetImageMetadata(ctx, http.DefaultClient,
     registry.GetImageMetadataReq{ImageURL: "alpine:latest"}) // Platform defaults to "linux/amd64"
-fmt.Println(meta.Digest, meta.TotalSizeBytes)
+fmt.Println(meta.Image, meta.TotalSizeBytes)
 
 // Private repository requiring Basic auth at the token-exchange step
 // (e.g. a private GHCR package — GitHub username + a read:packages PAT):

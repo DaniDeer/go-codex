@@ -50,7 +50,7 @@ type ManifestListWire struct {
 //
 // Digest is a PEER of Single/List, not nested inside either — it is
 // populated from the Docker-Content-Digest RESPONSE HEADER via the parent
-// package's routes.go GetManifestRoute response-header merge field
+// package's getimagemetadata.go GetManifestRoute response-header merge field
 // (rest.NewRequiredResponseHeaderParam), never from the JSON body, so it
 // applies regardless of which of Single/List the body decoded to.
 type ManifestEnvelope struct {

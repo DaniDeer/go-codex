@@ -23,14 +23,25 @@ import (
 	"strings"
 	"time"
 
+	mcpmsg "github.com/mark3labs/mcp-go/mcp"
+	mcpgoserver "github.com/mark3labs/mcp-go/server"
+
+	mcpgo "github.com/DaniDeer/go-codex/adapters/mcpgo"
+	mcprest "github.com/DaniDeer/go-codex/adapters/mcprest"
+	nethttp "github.com/DaniDeer/go-codex/adapters/nethttp"
+	"github.com/DaniDeer/go-codex/api/mcp"
+	"github.com/DaniDeer/go-codex/codex"
 	"github.com/DaniDeer/go-codex/examples/go-edge-models/docker/registry"
 	"github.com/DaniDeer/go-codex/examples/go-edge-models/iotedge"
 	"github.com/DaniDeer/go-codex/examples/go-edge-models/iotedge/modulepatch"
 	"github.com/DaniDeer/go-codex/format"
 	"github.com/DaniDeer/go-codex/ports"
 	"github.com/DaniDeer/go-codex/render/openapi"
+	"github.com/DaniDeer/go-codex/route"
 	"github.com/DaniDeer/go-codex/schema"
 	"github.com/DaniDeer/go-codex/stats"
+	gstream "github.com/DaniDeer/go-codex/stream"
+	"github.com/DaniDeer/go-codex/validate"
 )
 
 //go:embed examples/usecase1.json
@@ -277,6 +288,15 @@ func runRegistryDemo() {
 			"tags": []string{"1.8.16.1", "1.8.15.0", "latest"},
 		})
 	})
+	// Explicit 404 for any OTHER repository's tags — more specific than the
+	// "/v2/" prefix pattern above, so ServeMux prefers this wildcard match
+	// instead of silently falling through to the auth ping handler (which
+	// would otherwise return a confusing 200-with-empty-body for an unknown
+	// image). Used by runMCPBridgeDemo to demonstrate a real
+	// nethttp.UnexpectedStatusError reaching mcprest.DefaultErrorPatterns.
+	mux.HandleFunc("/v2/{name}/tags/list", func(w http.ResponseWriter, r *http.Request) {
+		http.NotFound(w, r)
+	})
 	mux.HandleFunc("/v2/factory-dashboard/manifests/", func(w http.ResponseWriter, r *http.Request) {
 		reference := strings.TrimPrefix(r.URL.Path, "/v2/factory-dashboard/manifests/")
 		w.Header().Set("Content-Type", "application/json")
@@ -385,11 +405,233 @@ func runRegistryDemo() {
 	}
 	fmt.Printf("manifest metadata (resolved from a multi-arch list to linux/amd64):\n")
 	fmt.Printf("  schemaVersion=%d mediaType=%s\n", meta.SchemaVersion, meta.MediaType)
-	fmt.Printf("  digest=%s totalSizeBytes=%d\n", meta.Digest, meta.TotalSizeBytes)
+	fmt.Printf("  image=%s totalSizeBytes=%d\n", meta.Image, meta.TotalSizeBytes)
 
 	fmt.Println("\n=== Observer integration: docker/registry HTTP calls (RegistryObserver summary) ===")
 	regObs.Print()
+
+	runMCPBridgeDemo(httpsToHTTP, registryHost.Host, fakeToken)
 }
+
+// runMCPBridgeDemo wraps registry.GetTagsRoute as an MCP tool via
+// adapters/mcprest — the SAME REST client machinery (path merge fields,
+// security scheme) as registry.GetTags demonstrated above, now exposed as
+// something an LLM agent could call directly. Reuses the running fake
+// registry server from runRegistryDemo (client, registryHost, fakeToken).
+func runMCPBridgeDemo(client *http.Client, registryHost, fakeToken string) {
+	baseURL := "https://" + registryHost
+
+	// A CredentialFunc for the MCP demo: the real registry.GetTags call
+	// above goes through the full Ping/challenge/token-exchange dance
+	// (auth.go, package-private) — this demo already knows the fake
+	// server's expected token, so it supplies it directly. A real
+	// integration would plug in its own token source here (a cached OAuth
+	// token, an API key, etc.) — CredentialFunc is FIXED for every call
+	// made through the returned MCP tool handler, matching every other
+	// client-adapter binding in go-codex (see adapters/mcprest's package doc).
+	credFn := func(context.Context, []route.SecurityRequirement) (http.Header, error) {
+		h := make(http.Header)
+		h.Set("Authorization", "Bearer "+fakeToken)
+		return h, nil
+	}
+	callOpts := nethttp.CallOptions{CredentialFunc: credFn}
+	restHandle := registry.GetTagsRoute.ClientHandle()
+
+	mcpBuilder := mcp.NewBuilder(mcp.Info{Name: "go-edge-models MCP bridge demo", Version: "1.0.0"})
+
+	// ── ToolHandler: the identity case ──────────────────────────────────────
+	//
+	// GetTagsRoute's OWN request codec is intentionally EMPTY —
+	// registry.GetTagsReq.Name merges into the route's {name} path segment,
+	// never the body (see routes.go). For an MCP tool there is no separate
+	// path-var mechanism — every input field must flow through the tool's
+	// OWN input codec — so this example declares one that DOES include Name.
+	fmt.Println("\n=== MCP bridge: docker/registry.GetTagsRoute as an MCP tool (mcprest.ToolHandler) ===")
+
+	mcpGetTagsReqCodec := codex.Struct[registry.GetTagsReq](
+		codex.RequiredField("name", codex.String().Refine(validate.NonEmptyString),
+			func(r registry.GetTagsReq) string { return r.Name },
+			func(r *registry.GetTagsReq, v string) { r.Name = v }),
+	)
+
+	getTagsTool, err := mcp.NewTool[registry.GetTagsReq, registry.TagsList](
+		"get_tags", mcpGetTagsReqCodec, registry.TagsListCodec,
+		mcprest.DefaultErrorPatterns()...,
+	).Register(mcpBuilder)
+	if err != nil {
+		logger.Error("register get_tags MCP tool", "error", err)
+		os.Exit(1)
+	}
+	_, getTagsHandlerFn := mcpgo.ToolHandler(getTagsTool,
+		mcprest.ToolHandler(client, baseURL, restHandle, callOpts),
+		mcpgo.Options{},
+	)
+
+	callMCPTool(getTagsHandlerFn, "get_tags(factory-dashboard)", map[string]any{"name": "factory-dashboard"})
+	callMCPTool(getTagsHandlerFn, "get_tags(unknown-image) — triggers DefaultErrorPatterns", map[string]any{"name": "unknown-image"})
+
+	// ── MappedToolHandler: a simplified, LLM-facing shape ───────────────────
+	fmt.Println("\n=== MCP bridge: MappedToolHandler with a simplified LLM-facing shape ===")
+
+	searchInputCodec := codex.Struct[searchTagsInput](
+		codex.RequiredField("image", codex.String().Refine(validate.NonEmptyString),
+			func(in searchTagsInput) string { return in.Image },
+			func(in *searchTagsInput, v string) { in.Image = v }),
+	)
+	searchOutputCodec := codex.Struct[searchTagsOutput](
+		codex.RequiredField("tags", codex.SliceOf(codex.String()),
+			func(o searchTagsOutput) []string { return o.Tags },
+			func(o *searchTagsOutput, v []string) { o.Tags = v }),
+	)
+
+	searchTool, err := mcp.NewTool[searchTagsInput, searchTagsOutput](
+		"search_tags", searchInputCodec, searchOutputCodec,
+		mcprest.DefaultErrorPatterns()...,
+	).Register(mcpBuilder)
+	if err != nil {
+		logger.Error("register search_tags MCP tool", "error", err)
+		os.Exit(1)
+	}
+	_, searchHandlerFn := mcpgo.ToolHandler(searchTool,
+		mcprest.MappedToolHandler(client, baseURL, restHandle, callOpts,
+			func(in searchTagsInput) (registry.GetTagsReq, error) {
+				return registry.GetTagsReq{Name: in.Image}, nil
+			},
+			func(resp registry.TagsList) (searchTagsOutput, error) {
+				tags := make([]string, len(resp.Tags))
+				for i, t := range resp.Tags {
+					tags[i] = string(t)
+				}
+				return searchTagsOutput{Tags: tags}, nil
+			},
+		),
+		mcpgo.Options{},
+	)
+	callMCPTool(searchHandlerFn, "search_tags(factory-dashboard)", map[string]any{"image": "factory-dashboard"})
+
+	// ── ports.ToolPort composition: same handler, bindable to ANY transport ──
+	//
+	// mcprest.ToolHandler's return value is exactly the
+	// func(context.Context, In) (Out, error) shape ports.ToolPort.SetFunc
+	// already accepts — no adaptation needed. Once bound to a ToolPort
+	// (rather than directly to mcpgo.ToolHandler), the SAME REST-backed
+	// logic could ALSO be exposed as a REST endpoint or reqreply endpoint
+	// from the same port declaration, simultaneously.
+	fmt.Println("\n=== MCP bridge: composing with ports.ToolPort.SetFunc ===")
+
+	domainPort, err := ports.NewToolPort[registry.GetTagsReq, registry.TagsList](
+		"get_tags", mcpGetTagsReqCodec, registry.TagsListCodec, ports.PortOptions{},
+	)
+	if err != nil {
+		logger.Error("new tool port", "error", err)
+		os.Exit(1)
+	}
+	domainPort.SetFunc(mcprest.ToolHandler(client, baseURL, restHandle, callOpts))
+
+	adapter := &demoToolAdapter{}
+	if err := domainPort.Bind(context.Background(), adapter); err != nil {
+		logger.Error("bind demo tool adapter", "error", err)
+		os.Exit(1)
+	}
+	values, errs := gstream.Collect(context.Background(),
+		adapter.fn(context.Background(), registry.GetTagsReq{Name: "factory-dashboard"}))
+	if len(errs) > 0 {
+		logger.Error("ports.ToolPort demo call", "error", errs[0])
+		os.Exit(1)
+	}
+	fmt.Printf("ports.ToolPort demo: tags for %s: %v\n", values[0].Name, values[0].Tags)
+
+	// ── Package-provided MCP tools: GetTagsTool/GetImageMetadataTool ─────────
+	//
+	// Unlike the ToolHandler/MappedToolHandler sections above (which wrap
+	// GetTagsRoute directly via adapters/mcprest — fixed to ONE registry's
+	// baseURL), registry.GetTagsTool/GetImageMetadataTool wrap the
+	// batteries-included GetTags/GetImageMetadata FUNCTIONS themselves —
+	// registry-agnostic, exactly like calling them directly above (each
+	// resolves its target registry per call from the tool input's
+	// ImageURL). No mcprest bridge is involved: NewGetTagsToolHandler/
+	// NewGetImageMetadataToolHandler are plain closures over
+	// registry.GetTags/GetImageMetadata.
+	fmt.Println("\n=== Package-provided MCP tools: registry.GetTagsTool/GetImageMetadataTool (registry-agnostic) ===")
+
+	imageURL, err := registry.FormatImageRef(registry.ImageRef{
+		Registry: registryHost, Repository: "factory-dashboard", Reference: "latest",
+	})
+	if err != nil {
+		logger.Error("format image ref", "error", err)
+		os.Exit(1)
+	}
+
+	// A SEPARATE Builder from mcpBuilder above — GetTagsTool's name
+	// ("get_tags") collides with the ad-hoc "get_tags" tool the
+	// ToolHandler section above already registered on mcpBuilder.
+	packageToolsBuilder := mcp.NewBuilder(mcp.Info{Name: "go-edge-models package-provided MCP tools", Version: "1.0.0"})
+
+	getTagsToolHandle, err := registry.GetTagsTool.Register(packageToolsBuilder)
+	if err != nil {
+		logger.Error("register get_tags (package tool)", "error", err)
+		os.Exit(1)
+	}
+	_, getTagsToolHandlerFn := mcpgo.ToolHandler(getTagsToolHandle,
+		registry.NewGetTagsToolHandler(client),
+		mcpgo.Options{},
+	)
+	callMCPTool(getTagsToolHandlerFn, fmt.Sprintf("get_tags(%s)", imageURL), map[string]any{"imageURL": imageURL})
+
+	getMetaToolHandle, err := registry.GetImageMetadataTool.Register(packageToolsBuilder)
+	if err != nil {
+		logger.Error("register get_image_metadata (package tool)", "error", err)
+		os.Exit(1)
+	}
+	_, getMetaToolHandlerFn := mcpgo.ToolHandler(getMetaToolHandle,
+		registry.NewGetImageMetadataToolHandler(client),
+		mcpgo.Options{},
+	)
+	callMCPTool(getMetaToolHandlerFn, fmt.Sprintf("get_image_metadata(%s)", imageURL), map[string]any{"imageURL": imageURL})
+}
+
+// searchTagsInput/searchTagsOutput are a simplified, LLM-facing tool
+// shape — deliberately different from registry.GetTagsReq/TagsList (fewer
+// fields, renamed) to demonstrate mcprest.MappedToolHandler's mapping layer.
+type searchTagsInput struct{ Image string }
+type searchTagsOutput struct{ Tags []string }
+
+// callMCPTool invokes an MCP tool handler function in-process (no real
+// server/client needed) and prints the result — same pattern as
+// examples/adapters-mcp's callTool helper.
+func callMCPTool(handler mcpgoserver.ToolHandlerFunc, label string, args map[string]any) {
+	fmt.Printf("  call: %s\n", label)
+	result, err := handler(context.Background(), mcpmsg.CallToolRequest{
+		Params: mcpmsg.CallToolParams{Arguments: args},
+	})
+	if err != nil {
+		logger.Error("protocol error", "error", err)
+		return
+	}
+	if len(result.Content) > 0 {
+		if tc, ok := result.Content[0].(mcpmsg.TextContent); ok {
+			if result.IsError {
+				fmt.Printf("  → tool error (IsError=true): %s\n", tc.Text)
+			} else {
+				fmt.Printf("  → success: %s\n", tc.Text)
+			}
+		}
+	}
+}
+
+// demoToolAdapter implements ports.ToolAdapter — captures the pipeline
+// function ToolPort.Bind hands it, so this example can invoke it directly
+// without starting a real MCP/REST/reqreply server.
+type demoToolAdapter struct {
+	fn func(context.Context, registry.GetTagsReq) gstream.Stream[registry.TagsList]
+}
+
+func (a *demoToolAdapter) Bind(_ context.Context, fn func(context.Context, registry.GetTagsReq) gstream.Stream[registry.TagsList]) error {
+	a.fn = fn
+	return nil
+}
+
+func (a *demoToolAdapter) AdapterName() string { return "demoToolAdapter" }
 
 // roundTripFunc adapts a plain function to http.RoundTripper.
 type roundTripFunc func(*http.Request) (*http.Response, error)

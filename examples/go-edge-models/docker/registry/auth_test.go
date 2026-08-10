@@ -1,7 +1,7 @@
 package registry
 
 // This file consolidates all authentication-related tests — mirroring
-// the client.go/auth.go source split. TestParseChallenge covers
+// the imageref.go/auth.go source split. TestParseChallenge covers
 // parseChallenge (pure function, no I/O). The remaining tests are the
 // deliberate, narrowly-scoped exception to this package's otherwise
 // IO-free unit test design: verifying auth behavior (Basic-auth

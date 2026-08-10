@@ -3,6 +3,8 @@ package registry
 import (
 	"context"
 	"errors"
+	"fmt"
+	"log/slog"
 	"net/http"
 	"sync"
 
@@ -21,30 +23,29 @@ import (
 // hatch for private repositories (Option/WithCredentials), and the
 // format* helpers specific to that flow, PLUS every security scheme/
 // requirement value and route (getTokenRoute) this package's auth flow
-// needs. This file's error types (RegistryAuthChallengeError/
-// RegistryAuthError) live in the sibling errors.go alongside client.go's
-// error types — see errors.go's file doc comment.
+// needs, PLUS this file's own error types (RegistryAuthChallengeError/
+// RegistryAuthError).
 //
 // EVERYTHING in this file is UNEXPORTED and stays that way deliberately —
-// this package's public surface is radically reduced to exactly three
-// things: the routes (routes.go's PingRoute/GetTagsRoute/GetManifestRoute),
-// the client functions built on top of them (client.go's GetTags/
-// GetImageMetadata), and the domain structs/codecs a caller needs to use
-// either (types.go/codecs.go). A caller never needs newAuthCredentialFunc,
-// the format* helpers, or getTokenRoute directly — GetTags/GetImageMetadata
-// already wire the whole auth flow internally; if a future need calls for
-// wrapping GetTagsRoute/GetManifestRoute standalone (e.g. an MCP tool),
-// that capability belongs on client.go's public surface (a new exported
-// function), not on exposing this file's internal auth plumbing for
-// external callers to wire together themselves.
+// this package's public surface is radically reduced (see doc.go for the
+// full 4-item list): the routes (ping.go's PingRoute, gettags.go's
+// GetTagsRoute, getimagemetadata.go's GetManifestRoute), the client
+// functions built on top of them (gettags.go's GetTags,
+// getimagemetadata.go's GetImageMetadata), the domain structs/codecs a
+// caller needs to use either (imageref.go/credentials.go plus each
+// operation's own file), and the MCP tools wrapping the client functions
+// (GetTagsTool/GetImageMetadataTool). A caller never needs
+// newAuthCredentialFunc, the format* helpers, or getTokenRoute directly —
+// GetTags/GetImageMetadata already wire the whole auth flow internally.
 //
-// client.go deliberately has NO auth logic of its own — GetTags/
-// GetImageMetadata just build a newAuthCredentialFunc(...) value (same
-// package) and pass it straight through as nethttp.CallOptions.CredentialFunc;
-// the Ping + challenge + token-exchange dance runs LAZILY, inside that
-// credentialFunc, only when a secured route (GetTagsRoute/GetManifestRoute,
-// both declaring RouteMeta.Security) is actually called — never up front.
-// newAuthCredentialFunc memoizes its result (sync.Once) for its own
+// This file deliberately has NO client-wiring logic of its own —
+// GetTags/GetImageMetadata just build a newAuthCredentialFunc(...) value
+// (same package) and pass it straight through as
+// nethttp.CallOptions.CredentialFunc; the Ping + challenge + token-exchange
+// dance runs LAZILY, inside that credentialFunc, only when a secured route
+// (GetTagsRoute/GetManifestRoute, both declaring RouteMeta.Security) is
+// actually called — never up front. newAuthCredentialFunc memoizes its
+// result (sync.Once) for its own
 // lifetime, so reusing the SAME credentialFunc value across multiple
 // secured calls (e.g. GetImageMetadata's two GetManifestRoute calls while
 // resolving a manifest list) triggers the dance only ONCE.
@@ -63,7 +64,7 @@ import (
 // BOTH credential schemes this package uses (Bearer, on
 // GetTagsRoute/GetManifestRoute; Basic, on getTokenRoute's token-exchange
 // call) flow through the IDENTICAL declarative mechanism — a
-// rest.WithSecurityScheme declaration on the route (routes.go's
+// rest.WithSecurityScheme declaration on the route (this file's own
 // bearerAuthScheme/basicAuthScheme) paired with a credentialFunc passed as
 // nethttp.CallOptions.CredentialFunc. Neither scheme is ever injected via
 // CallOptions.ExtraHeaders — that manual bypass was removed once
@@ -152,7 +153,7 @@ func resolveOptions(opts []Option) options {
 }
 
 // WithCredentials supplies Basic-auth credentials for the auth-token
-// exchange step — see Credentials' doc comment (types.go) for when this
+// exchange step — see Credentials' doc comment (credentials.go) for when this
 // is needed (private repositories on registries that require Basic auth
 // to mint a Bearer token).
 func WithCredentials(creds Credentials) Option {
@@ -163,7 +164,7 @@ func WithCredentials(creds Credentials) Option {
 // map — GetTags/GetImageMetadata pick the right entry automatically based
 // on the image URL's resolved registry host, so the SAME options value
 // can be reused unchanged across calls to different registries. See
-// RegistryCredentials' doc comment (types.go) for the exact set of
+// RegistryCredentials' doc comment (credentials.go) for the exact set of
 // supported registry-host keys and the WithCredentials escape hatch for
 // others. If BOTH WithCredentials and WithCredentialsByRegistry are
 // supplied to the same call, WithCredentials wins (it is the more
@@ -222,10 +223,10 @@ func parseChallenge(header http.Header) (internal.Challenge, error) {
 // nil for anonymous pulls (the default); when non-nil, its Basic-auth
 // value is sent on the token-exchange request ONLY (never on the
 // subsequent Bearer-authenticated GetTagsRoute/GetManifestRoute calls) —
-// see Credentials' doc comment (types.go) for when this is needed. Both
+// see Credentials' doc comment (credentials.go) for when this is needed. Both
 // the Basic-auth credential here and the Bearer token GetTags/
 // GetImageMetadata use afterward flow through the SAME credentialFunc +
-// rest.WithSecurityScheme mechanism (routes.go's basicAuthScheme/
+// rest.WithSecurityScheme mechanism (this file's own basicAuthScheme/
 // bearerAuthScheme) — no CallOptions.ExtraHeaders injection anywhere in
 // this package.
 func authenticate(ctx context.Context, httpClient *http.Client, registryHost, repository string, creds *Credentials, obs stats.Observer) (string, error) {
@@ -269,7 +270,7 @@ func authenticate(ctx context.Context, httpClient *http.Client, registryHost, re
 	// the SAME declarative mechanism Bearer credentials use on
 	// GetTagsRoute/GetManifestRoute (see newAuthCredentialFunc below) — not a
 	// manual CallOptions.ExtraHeaders injection. getTokenRoute declares
-	// Security unconditionally (routes.go's basicAuthSecurity), so this
+	// Security unconditionally (this file's own basicAuthSecurity), so this
 	// credentialFunc is invoked automatically by nethttp.CallHandle
 	// whenever creds is non-nil; when creds is nil (anonymous exchange),
 	// tokenOpts.CredentialFunc stays nil — a nil CredentialFunc on a
@@ -302,8 +303,9 @@ func authenticate(ctx context.Context, httpClient *http.Client, registryHost, re
 
 // credentialFunc names nethttp.CallOptions.CredentialFunc's function type
 // for readability at call sites that need to store or pass one around
-// (newAuthCredentialFunc's return type, client.go's fetchManifest
-// parameter) instead of repeating the full inline function type.
+// (newAuthCredentialFunc's return type, getimagemetadata.go's
+// fetchManifest parameter) instead of repeating the full inline function
+// type.
 type credentialFunc = func(ctx context.Context, reqs []route.SecurityRequirement) (http.Header, error)
 
 // newAuthCredentialFunc returns a credentialFunc that authenticates
@@ -314,8 +316,8 @@ type credentialFunc = func(ctx context.Context, reqs []route.SecurityRequirement
 // closure. Reusing the SAME credentialFunc value across multiple
 // CallHandle invocations against secured routes therefore performs the
 // Ping + WWW-Authenticate-challenge + token-exchange dance only ONCE, no
-// matter how many secured calls are made with it (see client.go's
-// GetImageMetadata, which reuses one credentialFunc across two
+// matter how many secured calls are made with it (see
+// getimagemetadata.go's GetImageMetadata, which reuses one credentialFunc across two
 // GetManifestRoute calls while resolving a manifest list).
 //
 // Returns a nil header (no-op — the request goes out unauthenticated)
@@ -324,7 +326,8 @@ type credentialFunc = func(ctx context.Context, reqs []route.SecurityRequirement
 // (RegistryAuthChallengeError/RegistryAuthError) unchanged once observed --
 // matching authenticate's own error behavior, just deferred to first use.
 //
-// Unexported: GetTags/GetImageMetadata (client.go) are the only callers.
+// Unexported: GetTags/GetImageMetadata (gettags.go/getimagemetadata.go)
+// are the only callers.
 // This package's public surface is deliberately just routes + client
 // functions + domain structs/codecs — a caller never needs to build their
 // own credentialFunc directly.
@@ -364,10 +367,10 @@ func newAuthCredentialFunc(httpClient *http.Client, registryHost, repository str
 }
 
 // ---- bearerAuth + basicAuth scheme declarations, and getTokenRoute
-// (all moved from routes.go: routes.go's own job is purely declaring
-// routes; every security scheme/requirement value this package declares
-// lives here instead, alongside authenticate()/newAuthCredentialFunc,
-// which are their only real consumers) ----
+// (every security scheme/requirement value this package declares lives
+// here, alongside authenticate()/newAuthCredentialFunc, which are their
+// only real consumers — gettags.go/getimagemetadata.go's own routes only
+// REFERENCE these by name) ----
 
 // bearerAuthSecurity declares that a route requires Bearer-token
 // credentials — set as RouteMeta.Security below so
@@ -426,7 +429,7 @@ type getTokenReq struct {
 // deliberately EMPTY: the auth realm is an arbitrary full URL that may be
 // on a COMPLETELY DIFFERENT HOST than the registry itself (e.g. Docker
 // Hub's registry is registry-1.docker.io but its auth realm is
-// auth.docker.io/token) — client.go passes the realm URL (parsed from the
+// auth.docker.io/token) — authenticate() (this file) passes the realm URL (parsed from the
 // WWW-Authenticate challenge header) as the baseURL for this route's
 // nethttp.Call, so the route's own path template must contribute nothing
 // beyond that. Req is getTokenReq, whose Service/Scope fields merge into
@@ -454,3 +457,36 @@ var getTokenRoute = rest.NewRoute[getTokenReq, internal.TokenResponse](
 		func(r *getTokenReq, v string) { r.Scope = v },
 	),
 )
+
+// ── Auth errors ────────────────────────────────────────────────────────────────────
+
+// RegistryAuthChallengeError is returned when a registry's 401 response
+// carries a malformed or missing WWW-Authenticate header.
+type RegistryAuthChallengeError struct {
+	Header string
+	Err    error
+}
+
+func (e RegistryAuthChallengeError) Error() string {
+	return fmt.Sprintf("parse WWW-Authenticate challenge %q: %s", e.Header, e.Err)
+}
+func (e RegistryAuthChallengeError) Unwrap() error { return e.Err }
+func (e RegistryAuthChallengeError) LogValue() slog.Value {
+	return slog.GroupValue(slog.String("header", e.Header), slog.Any("cause", e.Err))
+}
+
+// RegistryAuthError is returned when the auth realm's token endpoint call
+// fails, or the ping request itself fails for a reason other than a clean
+// 401 challenge.
+type RegistryAuthError struct {
+	Registry string
+	Err      error
+}
+
+func (e RegistryAuthError) Error() string {
+	return fmt.Sprintf("authenticate with registry %q: %s", e.Registry, e.Err)
+}
+func (e RegistryAuthError) Unwrap() error { return e.Err }
+func (e RegistryAuthError) LogValue() slog.Value {
+	return slog.GroupValue(slog.String("registry", e.Registry), slog.Any("cause", e.Err))
+}

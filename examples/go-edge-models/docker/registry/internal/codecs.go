@@ -16,7 +16,7 @@ var PlatformCodec = c.String().Refine(PlatformConstraint)
 // DigestCodec validates a bare content digest's "algorithm:hex" shape —
 // used for ManifestDescriptor.Digest (wire body field) and
 // ManifestEnvelope.Digest (response-header merge field, see the parent
-// package's routes.go), so every digest value flows through the same
+// package's getimagemetadata.go), so every digest value flows through the same
 // constraint.
 var DigestCodec = c.String().Refine(DigestConstraint)
 
@@ -240,7 +240,7 @@ var ManifestEnvelopeCodec = c.UntaggedUnion[ManifestEnvelope](
 // TokenResponseCodec decodes/encodes the registry token endpoint's JSON
 // body. Both Token and AccessToken are OptionalField — registries vary
 // between the two key names for the same value (the parent package's
-// client.go picks whichever is non-empty).
+// auth.go picks whichever is non-empty).
 var TokenResponseCodec = c.Struct[TokenResponse](
 	c.OptionalField("token", c.String(),
 		func(t TokenResponse) string { return t.Token },

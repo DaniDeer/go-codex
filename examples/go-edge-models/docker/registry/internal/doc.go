@@ -8,9 +8,9 @@
 // imported by code rooted at docker/registry (docker/registry itself, and
 // any of docker/registry's OWN subpackages), never by a sibling package or
 // an external module. That is a deliberate, enforced boundary, not just a
-// naming convention: docker/registry's public files (types.go, codecs.go,
-// routes.go, client.go) are the ONLY supported surface for a consumer of
-// this library.
+// naming convention: docker/registry's public files (ping.go,
+// gettags.go, getimagemetadata.go, imageref.go, credentials.go, auth.go)
+// are the ONLY supported surface for a consumer of this library.
 //
 // IMPORTANT for future work: this package must stay PURELY GENERIC OCI/
 // Docker Distribution Spec plumbing — it must never absorb a

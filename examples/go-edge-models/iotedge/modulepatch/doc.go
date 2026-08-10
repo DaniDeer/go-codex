@@ -12,10 +12,15 @@
 //   - a consumer who only needs the image-patch shape doesn't pull in any
 //     other derived representation that might be added later.
 //
+// This package is a single domain concept (ModulePatch), so it stays in
+// ONE file — modulepatch.go — holding the struct, its internal wire-shape
+// mirror types (imageSettingsPatch/moduleConfigPatch/modulesContentPatch/
+// manifestImagePatch), and ModulePatchCodec together, rather than being
+// split by layer (types.go/codecs.go).
+//
 // Any FUTURE derived representation (e.g. a status-only or
 // restart-policy-only patch) should live in its own sibling package under
-// iotedge/ (e.g. iotedge/statuspatch), following the same pattern:
-// types.go (plain structs) + codecs.go (codecs composed from iotedge's
-// exported building blocks), importing iotedge directly — never the
+// iotedge/ (e.g. iotedge/statuspatch), following the same
+// single-file-per-concept pattern, importing iotedge directly — never the
 // reverse.
 package modulepatch

@@ -6,20 +6,56 @@
 //
 // Unlike the sibling docker package (pure codec modeling, zero I/O), this
 // package is a REST CLIENT: it declares api/rest.Route values for every
-// registry endpoint (routes.go) AND provides a thin orchestration layer
-// implementing the registry's Bearer-token challenge flow (auth.go) and
-// automatic multi-arch manifest-list resolution (client.go) — both of
+// registry endpoint AND provides a thin orchestration layer implementing
+// the registry's Bearer-token challenge flow (auth.go) and automatic
+// multi-arch manifest-list resolution (getimagemetadata.go) — both of
 // which require issuing HTTP calls, so they cannot live inside a pure
 // codex.Codec.
 //
-// File layout of this package:
+// File layout of this package — ONE FILE PER OPERATION, not per layer:
+// each operation's route declaration, request/response types+codecs,
+// batteries-included client function, its own error types/constants, and
+// (where applicable) its ready-made MCP tool ALL live together, so
+// understanding or changing one operation never requires jumping across
+// files. There is deliberately no client.go/routes.go/mcptools.go
+// aggregator file — Go doesn't need one for "a clear import" (the
+// package itself, `import ".../docker/registry"`, already is that), and
+// this doc comment is the one index a reader needs.
 //
-//   - routes.go: the externally-facing api/rest.Route contract — every
-//     endpoint a downstream caller has a legitimate standalone reason to
-//     call directly (Ping, GetTags, GetManifest).
-//   - client.go: general client wiring — image-reference parsing,
-//     manifest-list-to-single-platform resolution, and the two public
-//     entry points (GetTags/GetImageMetadata).
+//   - ping.go: PingRoute — no client function or MCP tool of its own (see
+//     its own doc comment for why).
+//   - gettags.go: GetTagsReq/GetTagsRoute, TagsList/TagsListCodec,
+//     GetTags (the batteries-included client function),
+//     GetTagsToolReq/GetTagsTool/NewGetTagsToolHandler (its MCP tool),
+//     and registryBaseURL (the one helper shared with
+//     getimagemetadata.go).
+//   - getimagemetadata.go: GetManifestReq/GetManifestRoute (the
+//     underlying single-manifest route this operation composes, up to
+//     twice, for manifest-list resolution), GetImageMetadataReq/
+//     ManifestMetadata and their codecs (GetImageMetadataReqCodec/
+//     ManifestMetadataCodec — declared as plain codex.Struct codecs, NOT
+//     a rest.Route, since GetImageMetadata is a multi-call
+//     client-side orchestration with no single dialable Method+Path —
+//     see this file's own doc comment for the full rationale),
+//     GetImageMetadata (the batteries-included client function),
+//     fetchManifest/platformMatches (its manifest-list resolution
+//     logic), and GetImageMetadataTool/NewGetImageMetadataToolHandler
+//     (its MCP tool — reuses GetImageMetadataReq/ManifestMetadata
+//     directly, since they're already a single registry-agnostic shape).
+//     ManifestMetadata.Image is a docker.Image built by reusing
+//     imageref.go's ImageRef.ToImage() and overriding Digest with the
+//     registry-resolved content digest.
+//   - imageref.go: ImageRef (registry/repository/reference), its codec,
+//     the ToImage/ImageRefFromImage mapper to/from docker.Image,
+//     ParseImageRef/FormatImageRef, splitDockerDomain, ImageRefParseError,
+//     and the Docker-Hub-default constants only this file's own logic
+//     needs.
+//   - credentials.go: Credentials/RegistryCredentials and their codecs,
+//     plus the registry-host constants (ghcrRegistryHost/
+//     mcrRegistryHost/knownRegistryHosts) only RegistryCredentialsCodec's
+//     key constraint needs (dockerHubRegistryHost itself lives in
+//     imageref.go and is referenced from here directly — same package,
+//     no import needed).
 //   - auth.go: everything related to authentication — the Bearer-token
 //     challenge/token exchange flow, the optional Basic-auth Credentials
 //     escape hatch for private repositories, the getTokenRoute endpoint
@@ -27,26 +63,24 @@
 //     than part of the externally-facing contract above — it needs a
 //     realm URL/service/scope that only come from parsing a
 //     WWW-Authenticate challenge, so it has no legitimate standalone
-//     caller outside authenticate()), AND every security scheme/
-//     requirement value this package declares (bearerAuthScheme/
-//     bearerAuthSecurity, basicAuthScheme/basicAuthSecurity) — routes.go
-//     only REFERENCES these by name (RouteMeta.Security/
-//     rest.WithSecurityScheme), it never defines any of them itself.
-//   - constants.go: package-level constants (Docker Hub defaults, the
-//     manifest Accept header value).
-//   - errors.go: every exported error type this package returns, both
-//     client-wiring and auth errors.
-//   - types.go: all public request/response/domain types.
+//     caller outside authenticate()), every security scheme/requirement
+//     value this package declares (bearerAuthScheme/bearerAuthSecurity,
+//     basicAuthScheme/basicAuthSecurity — gettags.go/getimagemetadata.go
+//     only REFERENCE these by name via RouteMeta.Security/
+//     rest.WithSecurityScheme, never define them), and this package's
+//     auth-specific error types (RegistryAuthChallengeError/
+//     RegistryAuthError).
 //
-// This package's PUBLIC SURFACE is deliberately reduced to exactly three
+// This package's PUBLIC SURFACE is deliberately reduced to exactly FOUR
 // things — nothing about the auth flow itself (challenge parsing, token
 // exchange, credential injection) is exported:
 //
-//  1. client.go's GetTags/GetImageMetadata — the PRIMARY, batteries-included
-//     entry points. They compose routes.go's routes with the auth flow and
-//     manifest-list resolution internally; a caller never touches auth
-//     machinery directly. This is how most callers use this package.
-//  2. routes.go's exported rest.Route values (PingRoute, GetTagsRoute,
+//  1. GetTags/GetImageMetadata (gettags.go/getimagemetadata.go) — the
+//     PRIMARY, batteries-included entry points. They compose the routes
+//     below with the auth flow and manifest-list resolution internally;
+//     a caller never touches auth machinery directly. This is how most
+//     callers use this package.
+//  2. The exported rest.Route values (PingRoute, GetTagsRoute,
 //     GetManifestRoute) — for advanced/low-level use: call .ClientHandle()
 //     on any of them and drive adapters/nethttp.Call directly, with your
 //     own *http.Client, retry policy, or observer. GetTagsRoute/
@@ -55,16 +89,24 @@
 //     nethttp.CallOptions.CredentialFunc — this package has no exported
 //     helper for that; write one against the target registry's actual auth
 //     requirements, or use (1) instead.
-//  3. types.go/codecs.go's domain structs and codecs (ImageRef, TagsList,
-//     GetTagsReq, GetManifestReq, GetImageMetadataReq, ManifestMetadata,
-//     Credentials, RegistryCredentials, and their codecs) — needed to call
-//     (1) or (2) and read their results.
-//
-// If a future need calls for a new capability (e.g. wrapping GetTagsRoute/
-// GetManifestRoute as an MCP tool with this package's own auth flow baked
-// in), that belongs as a NEW exported function alongside GetTags/
-// GetImageMetadata in client.go — not as newly-exported internal auth
-// plumbing for external callers to wire together themselves.
+//  3. The domain structs and codecs (ImageRef in imageref.go, TagsList in
+//     gettags.go, GetTagsReq in gettags.go, GetManifestReq/
+//     GetImageMetadataReq/ManifestMetadata in getimagemetadata.go,
+//     Credentials/RegistryCredentials in credentials.go, and their
+//     codecs) — needed to call (1) or (2) and read their results.
+//  4. GetTagsTool/GetImageMetadataTool + NewGetTagsToolHandler/
+//     NewGetImageMetadataToolHandler (gettags.go/getimagemetadata.go) —
+//     ready-made MCP tool contracts wrapping (1) directly (registry-agnostic,
+//     closure-based — NOT an mcprest route bridge, since GetTags/
+//     GetImageMetadata resolve their target registry per call, not from
+//     one fixed baseURL). A caller registers the Tool against their own
+//     mcp.Builder and pairs it with the handler via mcpgo.ToolHandler;
+//     see either constructor's own doc comment for the full usage
+//     snippet. (examples/go-edge-models/main.go's OWN separate demo
+//     additionally shows the LOWER-level pattern of wrapping GetTagsRoute
+//     directly via adapters/mcprest.ToolHandler, fixed to one registry —
+//     a distinct, more advanced use case from wrapping GetTagsRoute
+//     yourself, kept for illustration.)
 //
 // This package has NO dependency on the sibling iotedge or docker
 // packages — it models an entirely separate Docker HTTP API (the registry
@@ -100,7 +142,7 @@
 // unchanged no matter which registry a given image URL resolves to.
 // RegistryCredentials' keys are restricted to the registries this package
 // is proven against end-to-end (Docker Hub, GHCR, MCR — see
-// knownRegistryHosts in constants.go); for any other registry, use the
+// knownRegistryHosts in credentials.go); for any other registry, use the
 // unrestricted single-value WithCredentials instead. If both options are
 // supplied to the same call, WithCredentials wins.
 package registry

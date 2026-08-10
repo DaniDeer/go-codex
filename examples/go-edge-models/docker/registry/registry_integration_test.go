@@ -119,8 +119,8 @@ func TestIntegration_GetImageMetadata(t *testing.T) {
 			if meta.SchemaVersion != 2 {
 				t.Errorf("SchemaVersion = %d, want 2", meta.SchemaVersion)
 			}
-			if !reSHA256Digest.MatchString(meta.Digest) {
-				t.Errorf("Digest = %q, want a valid sha256:<64-hex> digest", meta.Digest)
+			if !reSHA256Digest.MatchString(string(meta.Image.Digest)) {
+				t.Errorf("Digest = %q, want a valid sha256:<64-hex> digest", meta.Image.Digest)
 			}
 			if meta.TotalSizeBytes <= 0 {
 				t.Errorf("TotalSizeBytes = %d, want > 0", meta.TotalSizeBytes)
@@ -151,8 +151,8 @@ func TestIntegration_PlatformOverride(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetImageMetadata(linux/arm64): %v", err)
 	}
-	if amd64.Digest == arm64.Digest {
-		t.Errorf("expected different digests for linux/amd64 vs linux/arm64, both got %q", amd64.Digest)
+	if amd64.Image.Digest == arm64.Image.Digest {
+		t.Errorf("expected different digests for linux/amd64 vs linux/arm64, both got %q", amd64.Image.Digest)
 	}
 }
 
