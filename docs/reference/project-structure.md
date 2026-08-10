@@ -156,6 +156,12 @@ go-codex/
 │   │   ├── stream.go       # ToolLatestHandler, ToolPipelineHandler, RegisterToolLatest,
 │   │   │                   #   RegisterToolPipeline
 │   │   └── binding.go      # ToolPipelineAdapter (ports.ToolAdapter), LatestAdapter (ports.LatestAdapter)
+│   ├── mcprest/            # Bridges adapters/nethttp REST clients to adapters/mcpgo MCP tools
+│   │   ├── bridge.go       # ToolHandler[Req,Resp] (identity), MappedToolHandler[ToolIn,ToolOut,Req,Resp]
+│   │   ├── errors.go       # ToolRequestMapError, ToolResponseMapError, RESTClientErrorPayload,
+│   │   │                   #   DefaultErrorPatterns()
+│   │   └── doc.go          # package doc: mapper rationale, fixed-credential rationale,
+│   │                       #   ctx/session recipe, ports.ToolPort composition
 │   ├── openai/             # OpenAI-compatible Chat Completions adapter for api/llm handles
 │   │   │                   #   (stdlib-only; also works with Azure OpenAI, Ollama, vLLM, LM Studio, Groq, …)
 │   │   ├── client.go       # CallAdapterOptions, complete[Req,Resp] (wire request/response structs, retry loop)

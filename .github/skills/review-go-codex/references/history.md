@@ -1,6 +1,121 @@
-# go-codex Review History (R1–R104)
+# go-codex Review History (R1–R106)
 
 Do not re-report any of these findings. They have been implemented and tested.
+
+---
+
+## Round 106 (`adapters/mcprest.DefaultErrorPatterns` missing pre-flight validation errors)
+
+Focused audit of Round 105's new `adapters/mcprest` package (everything
+else was already covered through Round 105) — found one completeness gap.
+
+- **G1 [small] — `DefaultErrorPatterns()` didn't cover the pre-flight
+  validation error family**: its own doc comment (and
+  `.github/instructions/go-codex.instructions.md`/`docs/features/mcp.md`)
+  claimed to map "every exported `adapters/nethttp`/`api/rest` CLIENT
+  error type" into `RESTClientErrorPayload`, but only 5 of the 11 client
+  error types `nethttp.Call`/`CallHandle` can return were actually
+  covered — missing `rest.PathParamError`, `rest.MissingPathVarError`,
+  `rest.QueryParamError`, `rest.CookieParamError`, `rest.HeaderParamError`
+  (all pre-flight validation failures returned BEFORE any HTTP request is
+  sent, per this skill's own "Structured Errors Guardrail"). Fixed by
+  adding 5 more `apimcp.ErrorPattern` rules (`Kind` values `"path_param"`,
+  `"missing_path_var"`, `"query_param"`, `"cookie_param"`,
+  `"header_param"`), mirroring the existing 6 rules' style exactly, plus a
+  matching unit test per new rule. `rest.InvalidPathParamError`
+  (Register-time only, never returned by `Call`) and
+  `nethttp.ErrorPatternResponse` (the route's own already-typed declared
+  `rest.ErrorPattern` match — wrapping it generically would discard its
+  decoded `Value`) were confirmed correctly excluded, not additional gaps.
+  No doc changes were needed — the "every... client error type" claim in
+  `go-codex.instructions.md`/`docs/features/mcp.md` is now accurate.
+
+Two trivial, unrelated working-tree hygiene items were also found
+(an empty untracked stub `examples/go-edge-models/docker/registry/mcptools.go`
+and an unused, uncommitted `docker.Image` struct + commented-out codec in
+`examples/go-edge-models/docker/{types,codecs}.go`) — left untouched since
+they are uncommitted and could be the user's own in-progress work; only a
+`gofmt -w` (whitespace-only, zero content change) was applied to the stub
+file to unblock `just check`.
+
+Full verification: `gofmt -l .` clean, `go build ./...`, `go test ./...`
+(repo-wide, including the 5 new `adapters/mcprest` tests), all examples
+exit 0, `just check` (staticcheck + gosec, 0 issues).
+
+---
+
+## Round 105 (New `adapters/mcprest` package — MCP Tool ↔ REST Client Bridge)
+
+Implemented `docs/roadmap/mcp-rest-tool-bridge.md`'s design end-to-end — a
+new standalone package bridging `adapters/nethttp`'s REST client to
+`adapters/mcpgo`'s MCP tool handler shape, driven by the concrete
+`examples/go-edge-models/docker/registry` use case.
+
+- **`adapters/mcprest/bridge.go`**: `ToolHandler[Req, Resp](client,
+  baseURL, handle, opts) mcpgo.HandlerFunc[Req, Resp]` — zero-boilerplate
+  identity case, implemented as `MappedToolHandler` with identity mapper
+  functions (mirrors `Call`/`CallHandle`'s convenience-vs-general
+  relationship). `MappedToolHandler[ToolIn, ToolOut, Req, Resp](client,
+  baseURL, handle, opts, toReq, fromResp) mcpgo.HandlerFunc[ToolIn,
+  ToolOut]` — the general form, letting an LLM-facing tool's input/output
+  shape differ from the REST route's wire request/response shape via
+  fallible mapper functions.
+- **`adapters/mcprest/errors.go`**: two new structured errors,
+  `ToolRequestMapError{Method, Path, Err}` / `ToolResponseMapError{Method,
+  Path, Err}` (both `slog.LogValuer`), wrapping a failing `toReq`/
+  `fromResp` specifically — kept distinct from the underlying REST call's
+  own typed errors, which continue to forward unchanged.
+  `DefaultErrorPatterns() []apimcp.ToolOpt` — an opt-in helper reusing the
+  EXISTING `apimcp.ErrorPattern` mechanism, mapping every `adapters/nethttp`/
+  `api/rest` client error type plus the two new mapper errors into one
+  structured `RESTClientErrorPayload{Kind, StatusCode, Body, Message}`.
+- **Package placement**: new standalone package (not inside
+  `adapters/mcpgo` or `adapters/nethttp`) — both those adapters are
+  documented to import a narrow, fixed set of packages with no
+  cross-adapter imports; `adapters/mcprest` is the only package importing
+  both, keeping each transport-pure.
+- **Credential model**: `nethttp.CallOptions`/`CredentialFunc` is FIXED
+  once at construction — matches every existing client-adapter binding
+  (`nethttp.CallAdapter`, `DrainCallAdapter`, mqtt5/zeromq equivalents).
+  Evaluated and rejected a generic cross-adapter "per-session credential"
+  mechanism (MCP's long-lived session is architecturally different from
+  REST/MQTT/ZeroMQ's per-call model); documented a zero-new-API ctx/session
+  recipe instead, using `mcp-go`'s own `server.ClientSessionFromContext`.
+- **No new `stats.Observer` extension** — reuses `nethttp.CallOptions.Observer`
+  and `mcpgo.Options.Observer` unchanged; the bridge is pure composition of
+  two already-observed layers.
+- **Composes with `ports.ToolPort.SetFunc` with zero extra plumbing** —
+  confirmed identical function shape to `mcpgo.HandlerFunc`; proven with a
+  dedicated test (`TestToolHandler_ComposesWithToolPortSetFunc`), not just a
+  doc claim.
+- **Tests**: 18 tests/examples in `adapters/mcprest` covering happy/error
+  paths for both constructors, fixed-options application, mapper
+  happy/error paths (with underlying-call errors still forwarding
+  unchanged), `LogValue()` shape for both new error types,
+  `DefaultErrorPatterns()` per-error-type mapping plus
+  first-declared-rule-wins override, ports composition, and two runnable
+  `Example_` functions.
+- **Docs**: `.github/instructions/go-codex.instructions.md` (new
+  `adapters/mcprest` row in both the package table and dependency table),
+  `docs/features/mcp.md` (new "Bridging an existing REST client" section +
+  2 new structured-error table rows), `docs/reference/project-structure.md`
+  (new package listing).
+- **Example**: `examples/go-edge-models/main.go` gained `runMCPBridgeDemo`
+  — wraps `docker/registry`'s `GetTagsRoute` as an MCP tool both ways
+  (`ToolHandler` and `MappedToolHandler` with a simplified
+  `search_tags(image) -> {tags}` shape), demonstrates `DefaultErrorPatterns()`
+  against a real simulated 404 (an explicit wildcard mux handler was added
+  so an unknown image produces a genuine `UnexpectedStatusError` instead of
+  falling through to the auth-ping catch-all), and binds the same handler
+  function via `ports.ToolPort.SetFunc` using a small local fake
+  `ports.ToolAdapter` to invoke it in-process.
+- **Roadmap doc retired**: `docs/roadmap/mcp-rest-tool-bridge.md` deleted
+  along with its `docs/roadmap/index.md` row and `zensical.toml` nav entry,
+  per the "remove once shipped" convention.
+
+Full verification: `gofmt -l .` clean, `go build ./...`, `go test ./...`
+(repo-wide, including the new `adapters/mcprest` package), all examples
+exit 0, `just check` (staticcheck + gosec, 0 issues).
 
 ---
 

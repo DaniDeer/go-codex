@@ -186,6 +186,59 @@ tool := mcp.NewTool[SearchIn, SearchOut]("search", inCodec, outCodec,
   back to the existing plain-text `mcp.NewToolResultError(err.Error())`
   behavior unchanged (backward compatible).
 
+## Bridging an existing REST client — `adapters/mcprest`
+
+Any already-declared `rest.Route` — consumed client-side via
+`adapters/nethttp.Call`/`CallHandle` — can become an MCP tool with a
+single function, because `nethttp.CallHandle`'s shape already almost
+matches `mcpgo.HandlerFunc`'s shape:
+
+```go
+restHandle := registry.GetTagsRoute.ClientHandle()
+toolHandle, _ := mcp.NewTool[registry.GetTagsReq, registry.TagsList](
+    "get_tags", reqCodec, respCodec,
+    mcprest.DefaultErrorPatterns()...,
+).Register(mcpBuilder)
+
+tool, handlerFn := mcpgo.ToolHandler(toolHandle,
+    mcprest.ToolHandler(httpClient, baseURL, restHandle, nethttp.CallOptions{
+        CredentialFunc: myFixedCredentialFunc,
+    }),
+    mcpgo.Options{},
+)
+```
+
+- **`ToolHandler[Req, Resp]`** is the zero-boilerplate case where the
+  tool's input/output IS the route's request/response shape.
+- **`MappedToolHandler[ToolIn, ToolOut, Req, Resp]`** supports an LLM-facing
+  tool shape that differs from the wire shape (fewer fields, renamed,
+  flattened) via `toReq`/`fromResp` mapper functions. Mapper failures wrap
+  as `mcprest.ToolRequestMapError`/`ToolResponseMapError` — kept distinct
+  from the underlying REST call's own typed errors, which forward
+  unchanged.
+- **`DefaultErrorPatterns()`** is an opt-in helper mapping every REST
+  client error type (`nethttp.UnexpectedStatusError`, `RequestError`,
+  `rest.SecurityCredentialError`, etc.) into one structured
+  `RESTClientErrorPayload{Kind, StatusCode, Body, Message}`, so the calling
+  LLM sees HTTP status/body context instead of a flat error string —
+  reuses the SAME `apimcp.ErrorPattern` mechanism unchanged; declare your
+  own `ErrorPattern` first in `NewTool`'s opts to override a specific
+  mapping.
+- **Credentials are FIXED per tool**, matching every other client-adapter
+  binding in go-codex. See `adapters/mcprest`'s package doc for the
+  ctx/session recipe if a per-caller credential is ever needed.
+- **Composes with `ports.ToolPort.SetFunc`** with zero extra plumbing —
+  both constructors return exactly the `func(context.Context, In) (Out,
+  error)` shape it expects, so the same REST-backed logic can also be
+  exposed as a REST endpoint or reqreply endpoint from the same port
+  declaration.
+
+See [examples/go-edge-models](https://github.com/DaniDeer/go-codex/tree/main/examples/go-edge-models) —
+wraps `docker/registry`'s `GetTagsRoute` as an MCP tool both ways
+(`ToolHandler` and `MappedToolHandler`), demonstrates `DefaultErrorPatterns()`
+against a simulated registry failure, and binds the same handler via
+`ports.ToolPort.SetFunc`.
+
 ## Structured errors
 
 | Error type | Returned by | When |
@@ -198,6 +251,8 @@ tool := mcp.NewTool[SearchIn, SearchOut]("search", inCodec, outCodec,
 | `mcp.ResourceEncodeError{URI, Err}` | `ResourceHandle.Encode` | resource encode failure |
 | `mcp.PromptArgError{Name, Err}` | `PromptHandle.ValidateArgs` | arg codec failure |
 | `mcp.MissingPromptArgError{Name}` | `PromptHandle.ValidateArgs` | required arg absent |
+| `mcprest.ToolRequestMapError{Method, Path, Err}` | `mcprest.MappedToolHandler` | `toReq` mapper function failure |
+| `mcprest.ToolResponseMapError{Method, Path, Err}` | `mcprest.MappedToolHandler` | `fromResp` mapper function failure |
 
 ## Observer
 
