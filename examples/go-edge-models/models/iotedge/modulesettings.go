@@ -91,3 +91,18 @@ var ModuleSettingsCodec = c.Struct[ModuleSettings](
 		func(ms *ModuleSettings, val docker.CreateOptions) { ms.CreateOptions = val },
 	),
 )
+
+// Codec implements [codex.HasCodec][ModuleSettings], returning
+// [ModuleSettingsCodec].
+func (ModuleSettings) Codec() c.Codec[ModuleSettings] { return ModuleSettingsCodec }
+
+// NewModuleSettings is a named per-field smart constructor: validates the
+// nested image (via docker.Image's own struct validation — Name
+// non-empty, Tag/Digest format-checked when non-empty) via
+// ModuleSettingsCodec.New and returns the constructed ModuleSettings, or
+// the zero value and the first failing constraint's error.
+// createOptions has no field-level constraints of its own — pass
+// docker.CreateOptions{} for "nothing declared".
+func NewModuleSettings(image docker.Image, createOptions docker.CreateOptions) (ModuleSettings, error) {
+	return ModuleSettingsCodec.New(ModuleSettings{Image: image, CreateOptions: createOptions})
+}

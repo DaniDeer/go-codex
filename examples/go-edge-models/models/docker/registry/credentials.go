@@ -70,6 +70,19 @@ var CredentialsCodec = c.Struct[Credentials](
 	),
 )
 
+// Codec implements [codex.HasCodec][Credentials], returning
+// [CredentialsCodec].
+func (Credentials) Codec() c.Codec[Credentials] { return CredentialsCodec }
+
+// NewCredentials is a named per-field smart constructor: validates
+// password (non-empty; username is deliberately unconstrained, see
+// Credentials' own doc comment) via CredentialsCodec.New and returns the
+// constructed Credentials, or the zero value and the failing constraint's
+// error.
+func NewCredentials(username, password string) (Credentials, error) {
+	return CredentialsCodec.New(Credentials{Username: username, Password: password})
+}
+
 // RegistryCredentialsCodec validates a RegistryCredentials map. Keys are
 // restricted via validate.OneOf(knownRegistryHosts...) to the registries
 // this package is proven against end-to-end — registry-1.docker.io

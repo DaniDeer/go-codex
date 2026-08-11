@@ -14,6 +14,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/DaniDeer/go-codex/codex"
 	"github.com/DaniDeer/go-codex/examples/go-edge-models/models/docker"
 )
 
@@ -154,5 +155,55 @@ func TestImageRef_ToImage_RoundTripsThroughImageRefFromImage(t *testing.T) {
 	back := ImageRefFromImage(img, original.Registry)
 	if back != original {
 		t.Errorf("round trip: got %+v, want %+v", back, original)
+	}
+}
+
+func TestNewImageRef_ReturnsValueOnSuccess(t *testing.T) {
+	got, err := NewImageRef("ghcr.io", "org/repo", "1.2.3")
+	if err != nil {
+		t.Fatalf("NewImageRef: unexpected error: %v", err)
+	}
+	want := ImageRef{Registry: "ghcr.io", Repository: "org/repo", Reference: "1.2.3"}
+	if got != want {
+		t.Errorf("NewImageRef(...) = %+v, want %+v", got, want)
+	}
+}
+
+func TestNewImageRef_RejectsEmptyRegistry(t *testing.T) {
+	if _, err := NewImageRef("", "org/repo", "latest"); err == nil {
+		t.Error("NewImageRef with empty registry: want error, got nil")
+	}
+}
+
+func TestNewImageRef_RejectsEmptyRepository(t *testing.T) {
+	if _, err := NewImageRef("ghcr.io", "", "latest"); err == nil {
+		t.Error("NewImageRef with empty repository: want error, got nil")
+	}
+}
+
+func TestNewImageRef_RejectsEmptyReference(t *testing.T) {
+	if _, err := NewImageRef("ghcr.io", "org/repo", ""); err == nil {
+		t.Error("NewImageRef with empty reference: want error, got nil")
+	}
+}
+
+func TestImageRef_ImplementsHasCodec(t *testing.T) {
+	ref, err := NewImageRef("ghcr.io", "org/repo", "1.2.3")
+	if err != nil {
+		t.Fatalf("NewImageRef: %v", err)
+	}
+	if err := codex.Validate(ref); err != nil {
+		t.Errorf("codex.Validate(ref) = %v, want nil", err)
+	}
+	raw, err := codex.EncodeSelf(ref)
+	if err != nil {
+		t.Fatalf("codex.EncodeSelf: %v", err)
+	}
+	back, err := codex.DecodeAs[ImageRef](raw)
+	if err != nil {
+		t.Fatalf("codex.DecodeAs: %v", err)
+	}
+	if back != ref {
+		t.Errorf("DecodeAs(EncodeSelf(ref)) = %+v, want %+v", back, ref)
 	}
 }

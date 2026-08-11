@@ -59,6 +59,15 @@ func NewProfile(handle Username, score Score) (Profile, error) {
 	return profileCodec.New(Profile{Handle: handle, Score: score})
 }
 
+// Codec implements codex.HasCodec[Profile] — the closest Go gets to
+// Pydantic's "the model knows how to validate/serialize itself" without
+// inheritance (Go has none): one method, and the generic codex.Validate/
+// New/EncodeSelf/DecodeAs/SchemaOf helpers below then work on Profile
+// without repeating profileCodec's name at every call site. A value
+// receiver returning the package-level codec is the right shape here —
+// Profile has no per-instance state that would change which codec applies.
+func (Profile) Codec() codex.Codec[Profile] { return profileCodec }
+
 // ── Package-level validated constants ────────────────────────────────────────
 
 // Must panics at init time if the value doesn't satisfy the codec constraints.
@@ -138,4 +147,28 @@ func main() {
 	// never returned, only the zero value + a typed validation error.
 	_, err = NewProfile(Username("alice_42"), Score(150))
 	fmt.Println("invalid profile:", err)
+
+	// codex.HasCodec: since Profile implements Codec() codex.Codec[Profile],
+	// the generic helpers below work on it WITHOUT naming profileCodec —
+	// the same p value flows through every one of them.
+	p, err = codex.New(p) // re-validates p via its own declared codec
+	if err != nil {
+		fmt.Println("HasCodec New error:", err)
+	}
+	if err := codex.Validate(p); err != nil {
+		fmt.Println("HasCodec Validate error:", err)
+	} else {
+		fmt.Println("HasCodec Validate:  ok")
+	}
+	raw, err := codex.EncodeSelf(p)
+	if err != nil {
+		fmt.Println("HasCodec EncodeSelf error:", err)
+	}
+	back, err := codex.DecodeAs[Profile](raw)
+	if err != nil {
+		fmt.Println("HasCodec DecodeAs error:", err)
+	} else {
+		fmt.Printf("HasCodec round trip: %+v\n", back)
+	}
+	fmt.Printf("HasCodec SchemaOf:   type=%s\n", codex.SchemaOf[Profile]().Type)
 }

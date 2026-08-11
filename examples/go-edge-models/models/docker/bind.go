@@ -80,3 +80,14 @@ var BindCodec = c.MapCodecValidated(
 	c.String(), bindStructCodec,
 	parseBind, formatBind,
 )
+
+// Codec implements [codex.HasCodec][Bind], returning [BindCodec].
+func (Bind) Codec() c.Codec[Bind] { return BindCodec }
+
+// NewBind is a named per-field smart constructor: validates hostPath/
+// containerPath (both non-empty) via BindCodec.New and returns the
+// constructed Bind, or the zero value and the first failing constraint's
+// error. mode may be empty (Docker's default, read-write).
+func NewBind(hostPath, containerPath, mode string) (Bind, error) {
+	return BindCodec.New(Bind{HostPath: hostPath, ContainerPath: containerPath, Mode: mode})
+}

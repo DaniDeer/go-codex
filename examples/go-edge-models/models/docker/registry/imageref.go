@@ -85,6 +85,26 @@ var ImageRefCodec = c.MapCodecValidated(
 	parseImageRefString, formatImageRefString,
 )
 
+// Codec implements [codex.HasCodec][ImageRef], returning [ImageRefCodec].
+func (ImageRef) Codec() c.Codec[ImageRef] { return ImageRefCodec }
+
+// NewImageRef is a named per-field smart constructor: validates
+// registry/repository/reference (all non-empty, AND the reconstructed
+// "registry/repository:reference" or "registry/repository@reference"
+// string must itself be a valid container image reference — both layers
+// run via ImageRefCodec.New) and returns the constructed ImageRef, or the
+// zero value and the first failing constraint's error.
+//
+// NewImageRef complements — it does NOT replace — [ParseImageRef]:
+// ParseImageRef parses a full raw image URL string (applying Docker Hub's
+// default-registry/"library/" conventions along the way); NewImageRef is
+// for a caller that already has the three parts in hand (e.g. building a
+// ref against a specific known registry, or test fixtures) and wants them
+// validated together without hand-formatting a string first.
+func NewImageRef(registry, repository, reference string) (ImageRef, error) {
+	return ImageRefCodec.New(ImageRef{Registry: registry, Repository: repository, Reference: reference})
+}
+
 // parseImageRefString splits raw into registry/repository/reference,
 // applying Docker Hub's default-registry + "library/" prefix convention
 // (see splitDockerDomain) and defaulting Reference to "latest" when

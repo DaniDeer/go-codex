@@ -118,6 +118,27 @@ var EnvVarValueCodec = c.UntaggedUnion[EnvVarValue](
 	c.UntaggedVariant[EnvVarValue]{Name: "float", Codec: floatVariantCodec},
 )
 
+// Codec implements [codex.HasCodec][EnvVarValue], returning
+// [EnvVarValueCodec].
+func (EnvVarValue) Codec() c.Codec[EnvVarValue] { return EnvVarValueCodec }
+
+// NewEnvVarValueString constructs an EnvVarValue holding a string. This is
+// the named-constructor form of EnvVarValue{StringValue: &s} — it avoids
+// the caller having to take the address of a local variable by hand, and
+// is INFALLIBLE: no branch of EnvVarValueCodec's union has a Refine
+// constraint today, so there is nothing that could reject s.
+func NewEnvVarValueString(s string) EnvVarValue { return EnvVarValue{StringValue: &s} }
+
+// NewEnvVarValueInt constructs an EnvVarValue holding an int64. See
+// [NewEnvVarValueString] for the general rationale (named constructor,
+// infallible).
+func NewEnvVarValueInt(i int64) EnvVarValue { return EnvVarValue{IntValue: &i} }
+
+// NewEnvVarValueFloat constructs an EnvVarValue holding a float64. See
+// [NewEnvVarValueString] for the general rationale (named constructor,
+// infallible).
+func NewEnvVarValueFloat(f float64) EnvVarValue { return EnvVarValue{FloatValue: &f} }
+
 var EnvVarCodec = c.Struct[EnvVar](
 	c.RequiredField("value", EnvVarValueCodec,
 		func(e EnvVar) EnvVarValue { return e.Value },

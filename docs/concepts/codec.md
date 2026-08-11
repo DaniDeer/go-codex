@@ -998,6 +998,72 @@ if err != nil { return err }
 See `examples/construction/main.go` (`Profile`/`NewProfile`) for a runnable
 version.
 
+### `HasCodec[T]`: letting a type carry its own codec
+
+`Codec[T].New`/`Validate` above always need the codec value in scope at the
+call site (`emailCodec.New(...)`). `codex.HasCodec[T]` is an opt-in
+interface — the closest Go gets to Pydantic's "the model knows how to
+validate/serialize itself" without inheritance (Go has none) — that lets a
+type declare its OWN canonical codec once, so generic helper functions can
+then work on it without repeating the codec's name:
+
+```go
+// HasCodec is implemented by types that declare their canonical Codec.
+type HasCodec[T any] interface {
+    Codec() Codec[T]
+}
+
+func Validate[T HasCodec[T]](v T) error
+func New[T HasCodec[T]](v T) (T, error)
+func EncodeSelf[T HasCodec[T]](v T) (any, error)
+func DecodeAs[T HasCodec[T]](raw any) (T, error)
+func SchemaOf[T HasCodec[T]]() schema.Schema
+```
+
+A type implements it with one method:
+
+```go
+type Image struct{ Name, Tag string }
+
+var imageCodec = codex.Struct[Image](
+    codex.RequiredField("name", codex.String().Refine(validate.NonEmptyString),
+        func(i Image) string { return i.Name },
+        func(i *Image, v string) { i.Name = v }),
+    codex.OptionalField("tag", codex.String(),
+        func(i Image) string { return i.Tag },
+        func(i *Image, v string) { i.Tag = v }),
+)
+
+// Value receiver, package-level codec — the common case (no per-instance state).
+func (Image) Codec() codex.Codec[Image] { return imageCodec }
+```
+
+...and every generic helper works on it, with zero further per-type code:
+
+```go
+img, err := codex.New(Image{Name: "alpine", Tag: "latest"})
+err = codex.Validate(img)
+raw, err := codex.EncodeSelf(img)
+back, err := codex.DecodeAs[Image](raw)
+s := codex.SchemaOf[Image]()
+```
+
+**Zero-value-call contract for `DecodeAs`/`SchemaOf`.** Neither has a `T`
+value to call `.Codec()` on yet, so both call it on `T`'s zero value
+(`var zero T; zero.Codec()...`). This is correct and side-effect-free for
+the documented common case (a stateless `Codec()`), but a `HasCodec`
+implementation whose `Codec()` genuinely depends on instance state must
+NOT be used with `DecodeAs`/`SchemaOf` — its zero value would return the
+WRONG codec. `Validate`/`New`/`EncodeSelf` have no such restriction; they
+always call `Codec()` on the actual value passed in.
+
+**This does not change the "no auto-derived `NewUser(...)`" decision
+above.** `HasCodec` gives you generic DISPATCH over a codec you already
+declared by hand — it is not a way to synthesize a constructor from field
+names, and the same reflection/struct-tag/variadic-arity limitations still
+apply. Adoption is entirely opt-in, exactly like `Codec[T].New` itself —
+no existing type or package is required to implement `HasCodec`.
+
 ## Either — typed sum type
 
 `Either2` tries codec A first; if decode fails, tries codec B. Encode uses whichever branch is non-nil:

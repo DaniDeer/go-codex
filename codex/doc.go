@@ -129,6 +129,15 @@
 //
 //	var defaultUser = codex.Must(usernameCodec.New(Username("guest")))
 //
+// Implement [HasCodec] to let a type carry its own canonical codec, so the
+// generic [Validate], [New], [EncodeSelf], [DecodeAs], and [SchemaOf]
+// helpers work on it without repeating the codec's name at every call site:
+//
+//	func (Image) Codec() codex.Codec[Image] { return imageCodec }
+//
+//	img, err := codex.New(Image{Name: "alpine", Tag: "latest"})
+//	err = codex.Validate(img)
+//
 // # Further reading
 //
 //   - [validate] — reusable constraints (Email, UUID, URL, ranges, …)

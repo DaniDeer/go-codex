@@ -48,3 +48,14 @@ var UlimitCodec = c.Struct[Ulimit](
 		func(u *Ulimit, val int64) { u.Hard = val },
 	),
 )
+
+// Codec implements [codex.HasCodec][Ulimit], returning [UlimitCodec].
+func (Ulimit) Codec() c.Codec[Ulimit] { return UlimitCodec }
+
+// NewUlimit is a named per-field smart constructor: validates name against
+// Docker's real `--ulimit` name allow-list via UlimitCodec.New and returns
+// the constructed Ulimit, or the zero value and the first failing
+// constraint's error.
+func NewUlimit(name string, soft, hard int64) (Ulimit, error) {
+	return UlimitCodec.New(Ulimit{Name: name, Soft: soft, Hard: hard})
+}

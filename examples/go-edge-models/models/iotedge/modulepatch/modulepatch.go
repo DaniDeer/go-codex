@@ -137,3 +137,19 @@ var ModulePatchCodec = c.MapCodecSafe(
 		}, nil
 	},
 )
+
+// Codec implements [codex.HasCodec][ModulePatch], returning
+// [ModulePatchCodec].
+func (ModulePatch) Codec() c.Codec[ModulePatch] { return ModulePatchCodec }
+
+// NewModulePatch validates BOTH fields via ModulePatchCodec.New's encode
+// direction: moduleName must be a valid slug (iotedge.ModuleNameCodec's
+// constraint, e.g. "temp-sensor" — NOT "tempSensor"), and imageURL is
+// actually parsed as a container image reference via
+// docker.ImageCodec.Decode(imageURL) to build the nested wire shape. A
+// malformed moduleName or imageURL (e.g. an empty string) is rejected here
+// with the underlying constraint/parse error, before the patch is ever
+// applied to a real manifest via ports.PatchEncoded.
+func NewModulePatch(moduleName iotedge.ModuleName, imageURL string) (ModulePatch, error) {
+	return ModulePatchCodec.New(ModulePatch{ModuleName: moduleName, ImageURL: imageURL})
+}

@@ -1,6 +1,10 @@
 package registry
 
-import "testing"
+import (
+	"testing"
+
+	"github.com/DaniDeer/go-codex/codex"
+)
 
 // This file tests credentials.go's pure codecs — no HTTP, no auth flow
 // (that's the sibling app/registry package's auth_test.go instead).
@@ -48,5 +52,43 @@ func TestCredentialsCodec_RejectsEmptyPasswordButAllowsEmptyUsername(t *testing.
 	}
 	if err := CredentialsCodec.Validate(Credentials{Username: "user", Password: ""}); err == nil {
 		t.Error("CredentialsCodec.Validate with empty Password: want error, got nil")
+	}
+}
+
+func TestNewCredentials_AllowsEmptyUsername(t *testing.T) {
+	got, err := NewCredentials("", "ghp_examplePAT")
+	if err != nil {
+		t.Fatalf("NewCredentials with empty username: unexpected error: %v", err)
+	}
+	want := Credentials{Username: "", Password: "ghp_examplePAT"}
+	if got != want {
+		t.Errorf("NewCredentials(...) = %+v, want %+v", got, want)
+	}
+}
+
+func TestNewCredentials_RejectsEmptyPassword(t *testing.T) {
+	if _, err := NewCredentials("user", ""); err == nil {
+		t.Error("NewCredentials with empty password: want error, got nil")
+	}
+}
+
+func TestCredentials_ImplementsHasCodec(t *testing.T) {
+	cr, err := NewCredentials("user", "pass")
+	if err != nil {
+		t.Fatalf("NewCredentials: %v", err)
+	}
+	if err := codex.Validate(cr); err != nil {
+		t.Errorf("codex.Validate(cr) = %v, want nil", err)
+	}
+	raw, err := codex.EncodeSelf(cr)
+	if err != nil {
+		t.Fatalf("codex.EncodeSelf: %v", err)
+	}
+	back, err := codex.DecodeAs[Credentials](raw)
+	if err != nil {
+		t.Fatalf("codex.DecodeAs: %v", err)
+	}
+	if back != cr {
+		t.Errorf("DecodeAs(EncodeSelf(cr)) = %+v, want %+v", back, cr)
 	}
 }

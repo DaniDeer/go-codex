@@ -3,6 +3,8 @@ package docker
 import (
 	"strings"
 	"testing"
+
+	"github.com/DaniDeer/go-codex/codex"
 )
 
 func TestImageCodec_RoundTrip(t *testing.T) {
@@ -111,5 +113,49 @@ func TestDigestConstraint_RejectsInvalidShape(t *testing.T) {
 	valid := "sha256:" + strings.Repeat("d", 64)
 	if !digestConstraint.Check(valid) {
 		t.Errorf("digestConstraint.Check(%q) = false, want true", valid)
+	}
+}
+
+func TestNewImage_ReturnsValueOnSuccess(t *testing.T) {
+	got, err := NewImage("alpine", "3.19", "")
+	if err != nil {
+		t.Fatalf("NewImage: unexpected error: %v", err)
+	}
+	want := Image{Name: "alpine", Tag: "3.19"}
+	if got != want {
+		t.Errorf("NewImage(...) = %+v, want %+v", got, want)
+	}
+}
+
+func TestNewImage_RejectsEmptyName(t *testing.T) {
+	if _, err := NewImage("", "3.19", ""); err == nil {
+		t.Error("NewImage with empty name: want error, got nil")
+	}
+}
+
+func TestNewImage_RejectsInvalidTag(t *testing.T) {
+	if _, err := NewImage("alpine", "!!not valid!!", ""); err == nil {
+		t.Error("NewImage with invalid tag: want error, got nil")
+	}
+}
+
+func TestImage_ImplementsHasCodec(t *testing.T) {
+	img, err := NewImage("alpine", "latest", "")
+	if err != nil {
+		t.Fatalf("NewImage: %v", err)
+	}
+	if err := codex.Validate(img); err != nil {
+		t.Errorf("codex.Validate(img) = %v, want nil", err)
+	}
+	raw, err := codex.EncodeSelf(img)
+	if err != nil {
+		t.Fatalf("codex.EncodeSelf: %v", err)
+	}
+	back, err := codex.DecodeAs[Image](raw)
+	if err != nil {
+		t.Fatalf("codex.DecodeAs: %v", err)
+	}
+	if back != img {
+		t.Errorf("DecodeAs(EncodeSelf(img)) = %+v, want %+v", back, img)
 	}
 }

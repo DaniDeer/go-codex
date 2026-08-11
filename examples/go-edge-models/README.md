@@ -60,6 +60,18 @@ is still its own standalone, reusable value, not buried inline inside a
 larger struct's codec — see each package's `doc.go` for its exact file
 map.
 
+**Construction:** types whose codec enforces a genuine constraint (not
+just a bare literal) implement `codex.HasCodec[T]` (a one-line `Codec()`
+method) and expose a hand-written `NewXxx(...)` smart constructor
+wrapping `Codec.New` — e.g. `docker.NewImage`/`NewBind`/`NewUlimit`,
+`registry.NewCredentials`/`NewImageRef`, `iotedge.NewModuleSettings`,
+`iotedge.NewEnvVarValueString`/`NewEnvVarValueInt`/`NewEnvVarValueFloat`,
+`modulepatch.NewModulePatch`. See [`docs/concepts/codec.md`](../../docs/concepts/codec.md)'s
+`HasCodec[T]` section for the general pattern; types without a real
+constraint (e.g. `docker.CreateOptions`, `iotedge.ModuleConfig`) are left
+as plain struct literals + `Validate` — no ceremony added for its own
+sake.
+
 ## Quick usage
 
 **Decode a real deployment manifest:**

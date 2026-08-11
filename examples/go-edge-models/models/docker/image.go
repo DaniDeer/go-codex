@@ -59,6 +59,19 @@ func (i Image) String() string {
 	return s
 }
 
+// Codec implements [codex.HasCodec][Image], returning [ImageCodec] — lets
+// the generic codex.Validate/New/EncodeSelf/DecodeAs/SchemaOf helpers work
+// on Image without repeating ImageCodec's name at the call site.
+func (Image) Codec() c.Codec[Image] { return ImageCodec }
+
+// NewImage is a named per-field smart constructor: validates name/tag/digest
+// via ImageCodec.New (Name non-empty; Tag/Digest format-checked when
+// non-empty) and returns the constructed Image, or the zero value and the
+// first failing constraint's error.
+func NewImage(name string, tag Tag, digest Digest) (Image, error) {
+	return ImageCodec.New(Image{Name: name, Tag: tag, Digest: digest})
+}
+
 // reTag matches a Docker image tag — the SAME tag-segment shape
 // validate.ContainerImage itself checks after ":" (`[\w][\w\.\-]{0,127}`,
 // the Docker Distribution Spec's tag format), extracted here as its own
