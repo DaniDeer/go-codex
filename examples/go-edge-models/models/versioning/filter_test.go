@@ -101,3 +101,54 @@ func TestFilter_GenericOverNamedStringType(t *testing.T) {
 		t.Errorf("Filter[fakeTag](...) = %v, want %v (generic ~string must work end-to-end on non-Docker types too)", got, want)
 	}
 }
+
+func TestMostRecent_EmptyInput(t *testing.T) {
+	got, ok := MostRecent[string](nil)
+	if ok {
+		t.Errorf("MostRecent(nil) ok = true, want false")
+	}
+	if got != "" {
+		t.Errorf("MostRecent(nil) value = %q, want zero value", got)
+	}
+}
+
+func TestMostRecent_SingleValue(t *testing.T) {
+	got, ok := MostRecent([]string{"1.0.0"})
+	if !ok {
+		t.Fatal("MostRecent: want ok=true for single-element input")
+	}
+	if got != "1.0.0" {
+		t.Errorf("MostRecent([\"1.0.0\"]) = %q, want %q", got, "1.0.0")
+	}
+}
+
+func TestMostRecent_MultipleValues_PicksHighestVersion(t *testing.T) {
+	got, ok := MostRecent([]string{"1.0.0", "3.0.0", "2.0.0"})
+	if !ok {
+		t.Fatal("MostRecent: want ok=true")
+	}
+	if got != "3.0.0" {
+		t.Errorf("MostRecent(...) = %q, want %q", got, "3.0.0")
+	}
+}
+
+func TestMostRecent_MixedBucket_SemVerBeatsSemVerLikeBeatsOther(t *testing.T) {
+	got, ok := MostRecent([]string{"latest", "18.04", "1.0.0"})
+	if !ok {
+		t.Fatal("MostRecent: want ok=true")
+	}
+	if got != "1.0.0" {
+		t.Errorf("MostRecent(mixed) = %q, want %q (SemVer beats SemVerLike/Other)", got, "1.0.0")
+	}
+}
+
+func TestMostRecent_GenericOverNamedStringType(t *testing.T) {
+	type fakeTag string
+	got, ok := MostRecent([]fakeTag{"1.0.0", "2.0.0"})
+	if !ok {
+		t.Fatal("MostRecent: want ok=true")
+	}
+	if got != fakeTag("2.0.0") {
+		t.Errorf("MostRecent[fakeTag](...) = %q, want %q", got, "2.0.0")
+	}
+}

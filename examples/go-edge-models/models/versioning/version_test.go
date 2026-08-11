@@ -1,6 +1,12 @@
 package versioning
 
-import "testing"
+import (
+	"errors"
+	"reflect"
+	"testing"
+
+	c "github.com/DaniDeer/go-codex/codex"
+)
 
 func TestParse_Classification(t *testing.T) {
 	tests := []struct {
@@ -154,5 +160,63 @@ func TestCompare_OtherAlphabetical(t *testing.T) {
 	b := Parse("beta")
 	if Compare(a, b) >= 0 {
 		t.Error("Compare: \"alpha\" should sort before \"beta\" (alphabetical)")
+	}
+}
+
+func TestVersionCodec_EncodeZeroValue_ReturnsErrorNotPanic(t *testing.T) {
+	defer func() {
+		if r := recover(); r != nil {
+			t.Fatalf("VersionCodec.Encode(Version{}) panicked: %v", r)
+		}
+	}()
+	_, err := VersionCodec.Encode(Version{})
+	if err == nil {
+		t.Error("VersionCodec.Encode(Version{}): want error for zero-value Version, got nil")
+	}
+	var invalidErr InvalidVersionError
+	if !errors.As(err, &invalidErr) {
+		t.Errorf("VersionCodec.Encode(Version{}) error = %v, want InvalidVersionError", err)
+	}
+}
+
+func TestVersion_ImplementsHasCodec(t *testing.T) {
+	ver := Parse("1.2.3")
+	if err := c.Validate(ver); err != nil {
+		t.Errorf("codex.Validate(ver) = %v, want nil", err)
+	}
+	raw, err := c.EncodeSelf(ver)
+	if err != nil {
+		t.Fatalf("codex.EncodeSelf: %v", err)
+	}
+	back, err := c.DecodeAs[Version](raw)
+	if err != nil {
+		t.Fatalf("codex.DecodeAs: %v", err)
+	}
+	if !reflect.DeepEqual(back, ver) {
+		t.Errorf("DecodeAs(EncodeSelf(ver)) = %+v, want %+v", back, ver)
+	}
+}
+
+func TestVersion_HasCodec_ValidateFailsOnZeroValue(t *testing.T) {
+	if err := c.Validate(Version{}); err == nil {
+		t.Error("codex.Validate(Version{}) = nil, want error (no branch set)")
+	}
+}
+
+func TestVersionCodec_EncodeDoubleBranch_UsesFirstMatchingBranch(t *testing.T) {
+	// Not a new bug — documents existing, unchanged dispatch behavior:
+	// which() checks SemVer before SemVerLike/Other, so a hand-built
+	// Version with multiple branches set still encodes deterministically
+	// via the FIRST matching branch, ignoring the others.
+	semver := SemVerRank{Major: 1, Minor: 0, Patch: 0}
+	other := "ignored"
+	ver := Version{SemVer: &semver, Other: &other}
+
+	raw, err := VersionCodec.Encode(ver)
+	if err != nil {
+		t.Fatalf("Encode: unexpected error: %v", err)
+	}
+	if raw != "1.0.0" {
+		t.Errorf("Encode(double-branch Version) = %q, want %q (SemVer branch should win)", raw, "1.0.0")
 	}
 }

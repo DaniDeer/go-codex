@@ -141,30 +141,55 @@ func formatSemVerLikeRank(r SemVerLikeRank) (string, error) {
 var semverVariant = c.MapCodecSafe(
 	c.String().Refine(v.SemVer),
 	func(s string) Version { r := parseSemVerRank(s); return Version{SemVer: &r} },
-	func(t Version) (string, error) { return formatSemVerRank(*t.SemVer) },
+	func(t Version) (string, error) {
+		if t.SemVer == nil {
+			return "", InvalidVersionError{Version: t}
+		}
+		return formatSemVerRank(*t.SemVer)
+	},
 )
 
 var semVerLikeVariant = c.MapCodecSafe(
 	c.String().Refine(v.SemVerLike),
 	func(s string) Version { r := parseSemVerLikeRank(s); return Version{SemVerLike: &r} },
-	func(t Version) (string, error) { return formatSemVerLikeRank(*t.SemVerLike) },
+	func(t Version) (string, error) {
+		if t.SemVerLike == nil {
+			return "", InvalidVersionError{Version: t}
+		}
+		return formatSemVerLikeRank(*t.SemVerLike)
+	},
 )
 
 var otherVariant = c.MapCodecSafe(
 	c.String(),
 	func(s string) Version { return Version{Other: &s} },
-	func(t Version) (string, error) { return *t.Other, nil },
+	func(t Version) (string, error) {
+		if t.Other == nil {
+			return "", InvalidVersionError{Version: t}
+		}
+		return *t.Other, nil
+	},
 )
 
 // VersionCodec classifies a bare version-like string into a [Version] by
 // trying, in order: strict semver (validate.SemVer), semver-like
 // (validate.SemVerLike), then an unconditional opaque-string fallback —
 // so Decode never actually fails for this codec (the last branch always
-// succeeds). Encode dispatches on whichever field of Version is non-nil.
-// There is no [codex.HasCodec]/New smart constructor for Version: parsing
-// can never fail, so there is no constraint for a smart constructor to
-// add value over — see [Parse] for a plain, error-free convenience
-// wrapper.
+// succeeds). Encode dispatches on whichever field of Version is non-nil;
+// if none are set (e.g. a zero-value Version{}), Encode returns a typed
+// error rather than dereferencing a nil pointer.
+//
+// [Parse] is the recommended — and, for the common case, the ONLY
+// realistic — way to construct a Version: it never fails, since Other is
+// a total catch-all. Version implements [codex.HasCodec][Version] (see
+// [Version.Codec]) purely as a DEFENSIVE mechanism: its three fields are
+// exported, so nothing stops a caller from hand-building an invalid
+// value (e.g. the zero value, or two branches set at once); the generic
+// codex.Validate/New/EncodeSelf/DecodeAs helpers give such a caller a way
+// to check a hand-built Version before using it. There is deliberately
+// NO hand-written NewVersion(...) constructor — Version's three fields
+// are mutually-exclusive union branches, not orthogonal fields, so a
+// positional constructor doesn't fit; use [Parse] instead.
 var VersionCodec = c.UntaggedUnion[Version](
 	func(t Version) int {
 		switch {
@@ -180,6 +205,12 @@ var VersionCodec = c.UntaggedUnion[Version](
 	c.UntaggedVariant[Version]{Name: "semver-like", Codec: semVerLikeVariant},
 	c.UntaggedVariant[Version]{Name: "other", Codec: otherVariant},
 )
+
+// Codec implements [codex.HasCodec][Version], returning [VersionCodec] —
+// see VersionCodec's own doc comment for why this exists (defensive
+// validation of a hand-built Version, not a smart constructor — [Parse]
+// remains the recommended way to construct one).
+func (Version) Codec() c.Codec[Version] { return VersionCodec }
 
 // Parse classifies s via VersionCodec — never fails (see VersionCodec's
 // own doc comment), so this wrapper drops the impossible error return

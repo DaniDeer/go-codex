@@ -101,3 +101,17 @@ func Filter[T ~string](values []T, opts ...FilterOpt) []T {
 	}
 	return out
 }
+
+// MostRecent returns the single most version-recent value from values
+// (per [SortByVersionDesc]'s ordering — see its own doc comment for the
+// important "version-order, not chronological order" caveat), and true.
+// Returns the zero value and false if values is empty. A one-shot
+// convenience over `Filter(values, WithLimit(1))[0]` for callers who
+// don't want to think about slices at all.
+func MostRecent[T ~string](values []T) (T, bool) {
+	if len(values) == 0 {
+		var zero T
+		return zero, false
+	}
+	return Filter(values, WithLimit(1))[0], true
+}

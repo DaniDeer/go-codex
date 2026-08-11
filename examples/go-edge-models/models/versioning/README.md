@@ -71,7 +71,53 @@ top := versioning.Filter(tags, versioning.WithLimit(2))
 // Plain strings work too:
 names := []string{"v1", "v2", "v10"}
 sorted := versioning.Filter(names, versioning.WithSort(versioning.SortAlphabetical))
+
+// Just want the single most recent value?
+top1, ok := versioning.MostRecent(tags)
+// top1 == docker.Tag("2.0.0"), ok == true
+
+// Just want a yes/no classification, no full Version struct?
+versioning.IsSemVer("1.2.3")      // true
+versioning.IsSemVerLike("18.04")  // true
 ```
+
+## HasCodec
+
+`Version` implements `codex.HasCodec[Version]` (`Version.Codec()` returns
+`VersionCodec`) — this is purely DEFENSIVE, not a smart constructor.
+`Parse` remains the only realistic/recommended way to build a `Version`
+(it never fails). Because `Version`'s three fields are exported, nothing
+stops a caller from hand-building an invalid value (e.g. the zero value,
+or two branches set at once); the generic `codex.Validate`/`New`/
+`EncodeSelf`/`DecodeAs` helpers let such a caller check a hand-built
+`Version` before using it — `VersionCodec.Encode` returns a typed
+`versioning.InvalidVersionError` (implements `slog.LogValuer`) instead of
+panicking when no branch is set.
+
+```go
+// Instantiate via Parse — the normal path, never fails:
+ver := versioning.Parse("1.2.3")
+
+// Use the generic codex.* helpers via HasCodec, instead of naming
+// VersionCodec directly at every call site:
+err := codex.Validate(ver)              // ver.Codec().Validate(ver)
+ver, err = codex.New(ver)               // ver.Codec().New(ver)
+raw, err := codex.EncodeSelf(ver)       // ver.Codec().Encode(ver)
+back, err := codex.DecodeAs[versioning.Version](raw) // zero.Codec().Decode(raw)
+
+// Defensive check on a HAND-BUILT Version (bypassing Parse) — this is
+// what HasCodec is actually for: catching an invalid union state before
+// it reaches VersionCodec.Encode's dispatch.
+bad := versioning.Version{} // zero value — no branch set
+if err := codex.Validate(bad); err != nil {
+    var invalid versioning.InvalidVersionError
+    errors.As(err, &invalid) // true
+}
+```
+
+There is deliberately no hand-written
+`NewVersion(...)` constructor: the three fields are mutually-exclusive
+union branches, not orthogonal fields to combine positionally.
 
 ## Important caveat: version-order, not chronological order
 
@@ -90,13 +136,6 @@ These are proposed extensions, noted here so they're easy to pick up
 later without re-deriving the rationale — none of them are needed for
 this package's current scope:
 
-- `versioning.MostRecent[T ~string](values []T) (T, bool)` — a one-shot
-  "just give me the single most recent value" convenience over
-  `Filter(values, WithLimit(1))[0]`, for callers who don't want to think
-  about slices at all.
-- `versioning.IsSemVer(s string) bool` / `IsSemVerLike(s string) bool` —
-  classification-only helpers (no full `Version` struct) for callers who
-  just want a yes/no check.
 - Reuse in a hypothetical future `models/helm` (Helm chart versions) or
   `models/npm` (npm package tags) package — this is exactly why this
   package was generalized out of `models/docker` in the first place; see
