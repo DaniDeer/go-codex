@@ -31,7 +31,9 @@ import (
 	nethttp "github.com/DaniDeer/go-codex/adapters/nethttp"
 	"github.com/DaniDeer/go-codex/api/mcp"
 	"github.com/DaniDeer/go-codex/codex"
+	iotedgeapp "github.com/DaniDeer/go-codex/examples/go-edge-models/app/iotedge"
 	registryapp "github.com/DaniDeer/go-codex/examples/go-edge-models/app/registry"
+	"github.com/DaniDeer/go-codex/examples/go-edge-models/models/docker"
 	"github.com/DaniDeer/go-codex/examples/go-edge-models/models/docker/registry"
 	"github.com/DaniDeer/go-codex/examples/go-edge-models/models/iotedge"
 	"github.com/DaniDeer/go-codex/examples/go-edge-models/models/iotedge/modulepatch"
@@ -170,17 +172,18 @@ func main() {
 		fmt.Printf("  location=%s constraint=%s field=%s\n", e.location, e.constraint, e.field)
 	}
 
-	// ── ModulePatch: patch one module's image via ports.File + PatchEncoded ──
+	// ── app/iotedge: patch one module's image via the batteries-included
+	// UpdateModuleImage ──────────────────────────────────────────────────
 	//
-	// modulepatch.ModulePatchCodec (iotedge/modulepatch) encodes a flat
-	// ModulePatch{ModuleName, ImageURL} into the manifest's full nested wire
-	// shape (modulesContent -> $edgeAgent -> <dotted key> -> settings ->
-	// image) — reusing iotedge.ModuleNameCodec and iotedge.ImageCodec
-	// directly, no new constraints. ports.PatchEncoded deep-merges that
-	// shape onto the real file on disk, touching ONLY settings.image for
-	// the named module — every other field, and every other module, is
-	// left untouched. Same pattern as examples/flat-key-patch.
-	fmt.Println("\n=== ModulePatch: patch factory-dashboard's image on disk ===")
+	// UpdateModuleImage (app/iotedge) is a thin convenience over the
+	// general PatchModule mechanism (below): it builds a
+	// modulepatch.ModuleFieldsPatch with only Image set, and applies it via
+	// iotedge.NewConfigFile + ports.PatchEncoded internally — a caller
+	// never touches ports.File/PatchEncoded directly for this, the single
+	// most common patch operation. Same underlying deep-merge as
+	// examples/flat-key-patch: only settings.image changes for the named
+	// module; every other field, and every other module, is untouched.
+	fmt.Println("\n=== app/iotedge.UpdateModuleImage: patch factory-dashboard's image on disk ===")
 
 	dir, err := os.MkdirTemp("", "go-edge-models-patch-*")
 	if err != nil {
@@ -194,31 +197,64 @@ func main() {
 		logger.Error("write manifest to disk", "error", err)
 		os.Exit(1)
 	}
-	manifestFile := ports.NewFile(manifestPath, jManifest)
 
-	before, err := manifestFile.Read(nil, ports.FileOptions{})
+	before, err := iotedgeapp.ReadConfig(manifestPath, ports.FileOptions{})
 	if err != nil {
 		logger.Error("read manifest before patch", "error", err)
 		os.Exit(1)
 	}
 	fmt.Printf("before: factory-dashboard image=%q\n", before.ModulesContent.EdgeAgent["factory-dashboard"].Settings.Image)
 
-	patch := modulepatch.ModulePatch{ModuleName: "factory-dashboard", ImageURL: "ghcr.io/example-org/factory-dashboard:2.0.0"}
-	if err := ports.PatchEncoded(manifestFile, nil, modulepatch.ModulePatchCodec, patch, ports.FileOptions{}); err != nil {
-		logger.Error("patch module image", "error", err)
+	newImage := docker.Image{Name: "ghcr.io/example-org/factory-dashboard", Tag: "2.0.0"}
+	if err := iotedgeapp.UpdateModuleImage(manifestPath, "factory-dashboard", newImage, ports.FileOptions{}); err != nil {
+		logger.Error("update module image", "error", err)
 		os.Exit(1)
 	}
 
-	after, err := manifestFile.Read(nil, ports.FileOptions{})
+	afterImage, err := iotedgeapp.ReadConfig(manifestPath, ports.FileOptions{})
 	if err != nil {
-		logger.Error("read manifest after patch", "error", err)
+		logger.Error("read manifest after image update", "error", err)
 		os.Exit(1)
 	}
-	patchedWeb := after.ModulesContent.EdgeAgent["factory-dashboard"]
+	patchedWeb := afterImage.ModulesContent.EdgeAgent["factory-dashboard"]
 	fmt.Printf("after:  factory-dashboard image=%q\n", patchedWeb.Settings.Image)
 	fmt.Printf("        factory-dashboard env still has %d entries (untouched): %v\n", len(patchedWeb.Env), patchedWeb.Env != nil)
 
-	// Confirm every OTHER module is byte-for-byte unaffected by the patch.
+	// ── app/iotedge: patch MULTIPLE fields at once via the general
+	// PatchModule + modulepatch.ModuleFieldsPatch ────────────────────────
+	//
+	// ModuleFieldsPatch mirrors ModuleConfig's own field set — every field
+	// is independently optional (a pointer, or nil for Env), and
+	// ModuleFieldsPatchCodec (a HAND-ROLLED codex.Codec, since
+	// codex.Struct's Encode always writes every declared field and cannot
+	// express "omit if unset") includes ONLY the fields actually set.
+	// Here we patch Status AND RestartPolicy together in ONE call, leaving
+	// the image we just updated above (and every other field) untouched.
+	fmt.Println("\n=== app/iotedge.PatchModule: patch status+restartPolicy together ===")
+
+	newStatus := iotedge.Status("stopped")
+	newRestartPolicy := iotedge.RestartPolicy("on-failure")
+	fieldsPatch := modulepatch.ModuleFieldsPatch{
+		ModuleName:    "factory-dashboard",
+		Status:        &newStatus,
+		RestartPolicy: &newRestartPolicy,
+	}
+	if err := iotedgeapp.PatchModule(manifestPath, fieldsPatch, ports.FileOptions{}); err != nil {
+		logger.Error("patch module fields", "error", err)
+		os.Exit(1)
+	}
+
+	after, err := iotedgeapp.ReadConfig(manifestPath, ports.FileOptions{})
+	if err != nil {
+		logger.Error("read manifest after fields patch", "error", err)
+		os.Exit(1)
+	}
+	dashboardFinal := after.ModulesContent.EdgeAgent["factory-dashboard"]
+	fmt.Printf("after:  factory-dashboard status=%q restartPolicy=%q\n", dashboardFinal.Status, dashboardFinal.RestartPolicy)
+	fmt.Printf("        factory-dashboard image still %q (untouched by this patch): %v\n",
+		dashboardFinal.Settings.Image, dashboardFinal.Settings.Image.String() == newImage.String())
+
+	// Confirm every OTHER module is byte-for-byte unaffected by BOTH patches.
 	unaffected := true
 	for name, m := range modules {
 		if name == "factory-dashboard" {

@@ -72,6 +72,14 @@ func NewImage(name string, tag Tag, digest Digest) (Image, error) {
 	return ImageCodec.New(Image{Name: name, Tag: tag, Digest: digest})
 }
 
+// NewImageFromStr is a convenience wrapper around ImageCodec.Decode: parses
+// a plain image reference string ("name[:tag][@digest]") into the structured
+// Image, validating Name non-empty and Tag/Digest format when present. Returns
+// the zero value and an error if validation fails.
+func NewImageFromStr(image string) (Image, error) {
+	return ImageCodec.Decode(image)
+}
+
 // reTag matches a Docker image tag — the SAME tag-segment shape
 // validate.ContainerImage itself checks after ":" (`[\w][\w\.\-]{0,127}`,
 // the Docker Distribution Spec's tag format), extracted here as its own

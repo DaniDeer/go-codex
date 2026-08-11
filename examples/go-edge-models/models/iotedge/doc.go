@@ -24,6 +24,15 @@
 //     docker.Env mapper).
 //   - modules.go — ModuleName, Modules, ModulesContent, DeploymentManifest,
 //     ModuleKeyPrefix/moduleKeyConstraint, and their codecs.
+//   - configfile.go — ConfigFileFormat and NewConfigFile (a declared file
+//     port CONSTRUCTOR — see its own doc comment for why a manifest's
+//     path is fully caller-supplied rather than a static declared value).
+//   - modulesummary.go — ModuleSummary, ModuleSummaryCodec, and
+//     NewModuleSummary (a reduced, read-only module view).
+//   - readmodulesummary.go — ReadModuleSummaryReq/Codec and the declared,
+//     unregistered ReadModuleSummaryTool MCP contract.
+//   - updatemoduleimage.go — UpdateModuleImageReq/Codec and the declared,
+//     unregistered UpdateModuleImageTool MCP contract.
 //
 // Each field's codec is its own named value (e.g. ImageCodec,
 // ModuleNameCodec) so a caller assembling a NEW wire codec — for example a
