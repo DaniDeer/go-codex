@@ -26,6 +26,29 @@
 // package is implementation plumbing for BOTH of them, never imported
 // directly by anything else.
 //
+// Files are organized ONE PER CONCEPT — the same convention every other
+// package in this module follows (models/docker, models/iotedge,
+// models/docker/registry, models/versioning): each file holds that
+// concept's struct(s), any validate.Constraint values it needs, its
+// codex.Codec[T] values, and (where the codec composes one) its
+// low-level parse/format functions, all together:
+//
+//   - manifest.go — ManifestDescriptor/PlatformDescriptor/
+//     SingleManifestWire/ManifestListWire/ManifestEnvelope, DigestConstraint,
+//     and their codecs (DigestCodec, ManifestDescriptorCodec,
+//     SingleManifestWireCodec, ManifestListWireCodec, ManifestEnvelopeCodec).
+//   - challenge.go — Challenge, ChallengeCodec, WWWAuthenticateCodec (decodes
+//     directly from an http.Header set), and the WWW-Authenticate
+//     Bearer-challenge parse/format functions.
+//   - platform.go — PlatformSelector, PlatformConstraint, PlatformSelectorCodec
+//     ("os/arch" selector strings).
+//   - token.go — TokenResponse, TokenResponseCodec (registry token endpoint
+//     response body).
+//   - scope.go — DockerScope, ActionsConstraint, DockerScopeCodec, and the
+//     Docker auth-scope string parse/format functions.
+//   - auth.go — BearerTokenCodec and BasicCredentials/BasicAuthCodec (the
+//     Authorization header encodings the auth-token exchange needs).
+//
 // IMPORTANT for future work: this package must stay PURELY GENERIC OCI/
 // Docker Distribution Spec plumbing — it must never absorb a
 // registry-specific quirk (e.g. a GHCR-only pagination scheme, an
