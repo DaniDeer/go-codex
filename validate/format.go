@@ -22,6 +22,7 @@ var (
 	reSemVer   = regexp.MustCompile(`^v?(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)` +
 		`(?:-(?:(?:0|[1-9]\d*|\d*[a-zA-Z\-][0-9a-zA-Z\-]*)(?:\.(?:0|[1-9]\d*|\d*[a-zA-Z\-][0-9a-zA-Z\-]*))*))?` +
 		`(?:\+[0-9a-zA-Z\-]+(?:\.[0-9a-zA-Z\-]+)*)?$`)
+	reSemVerLike = regexp.MustCompile(`^v?\d+(?:\.\d+){0,3}(?:-[0-9A-Za-z.\-]+)?$`)
 )
 
 func withFormat(f string) func(schema.Schema) schema.Schema {
@@ -200,6 +201,35 @@ var SemVer = codex.Constraint[string]{
 	},
 	Schema: func(s schema.Schema) schema.Schema {
 		s.Pattern = reSemVer.String()
+		return s
+	},
+}
+
+// SemVerLike is a Constraint for version-shaped strings that don't
+// satisfy strict semver's exactly-three-numeric-parts rule — e.g.
+// "3.1", "3.1-debian", "18.04", "2024.01.15" (an optional leading "v",
+// one to four dot-separated non-negative integers, and an optional
+// "-suffix"). Common in real-world tagging schemes (Docker image tags,
+// OS release channels) that borrow semver's spirit without following its
+// exact grammar.
+//
+// SemVerLike's grammar overlaps SemVer's for the common case (e.g.
+// "1.2.3" and "v1.2.3-alpha" satisfy both), but is NOT a strict
+// superset — it has no equivalent of semver's "+build.metadata" suffix,
+// since real-world semver-like tagging schemes don't use one. Callers
+// that need to distinguish "strictly semver" from "semver-like but not
+// strict" (e.g. an UntaggedUnion classifying a value into exactly one
+// bucket) MUST check SemVer first and only fall back to SemVerLike when
+// SemVer's Check fails — checking order determines classification, not
+// the constraints themselves.
+var SemVerLike = codex.Constraint[string]{
+	Name:  "semver-like",
+	Check: func(v string) bool { return reSemVerLike.MatchString(v) },
+	Message: func(v string) string {
+		return fmt.Sprintf("invalid semver-like version (expected leading dotted integers, e.g. \"3.1\" or \"18.04-debian\"): %q", v)
+	},
+	Schema: func(s schema.Schema) schema.Schema {
+		s.Pattern = reSemVerLike.String()
 		return s
 	},
 }

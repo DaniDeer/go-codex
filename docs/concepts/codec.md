@@ -1352,6 +1352,7 @@ Format constraints (annotate schema automatically):
 | `validate.Time` | RFC 3339 time-only | `time` |
 | `validate.DateTime` | RFC 3339 date-time | `date-time` |
 | `validate.SemVer` | semantic version | `pattern` |
+| `validate.SemVerLike` | version-shaped but not strict semver (e.g. `3.1-debian`, `18.04`) — overlaps SemVer's grammar for the common case, but not build metadata; check SemVer first when classifying | `pattern` |
 | `validate.Slug` | `lowercase-hyphen-slug` | `pattern` |
 | `validate.CIDR` | CIDR notation | _(none)_ |
 | `validate.ContainerImage` | OCI container image reference (e.g. `alpine:latest`, `docker.io/library/nginx:1.25`) | _(none)_ |

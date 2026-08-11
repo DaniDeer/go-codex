@@ -118,11 +118,52 @@ var TagsListCodec = c.Struct[TagsList](
 // GetTagsToolReq is GetTagsTool's input.
 type GetTagsToolReq struct {
 	ImageURL string
+	// Limit caps the number of tags returned, keeping the first Limit
+	// after sorting (see Sort). 0 or absent means "no limit" (every tag
+	// returned) — mirrors docker.WithLimit's own "n <= 0 means no limit"
+	// semantics.
+	Limit int
+	// Sort selects the tag ordering — one of "version_desc" (default),
+	// "alphabetical", or "none". An absent or unrecognized value falls
+	// back to "version_desc" (app/registry's NewGetTagsToolHandler
+	// tolerates this rather than erroring, since an LLM omitting the
+	// field is the expected common case).
+	Sort string
+}
+
+// sortModeAllowedValues lists GetTagsToolReq.Sort's allowed wire values —
+// the string names for docker.SortMode's constants, since MCP tool
+// arguments are plain JSON-ish values, not Go enums. Exported as a plain
+// slice (not a type) so app/registry's NewGetTagsToolHandler can reuse
+// the same three literal strings when mapping Sort back to
+// docker.SortMode, without either package hand-duplicating them.
+var sortModeAllowedValues = []string{"version_desc", "alphabetical", "none"}
+
+// sortModeConstraint accepts "" (the zero value for an absent Sort field)
+// in addition to sortModeAllowedValues — an OptionalField's codec is still
+// called unconditionally on Encode even when the field was never set (see
+// docker.Image's tagConstraint for the same "empty string must stay
+// valid for Encode-time re-validation" reasoning), so plain
+// validate.OneOf(sortModeAllowedValues...) alone would incorrectly reject
+// every GetTagsToolReq whose Sort was left at its zero value.
+var sortModeConstraint = c.Constraint[string]{
+	Name: "get-tags-sort-mode",
+	Check: func(s string) bool {
+		if s == "" {
+			return true
+		}
+		return v.OneOf(sortModeAllowedValues...).Check(s)
+	},
+	Message: func(s string) string {
+		return v.OneOf(sortModeAllowedValues...).Message(s)
+	},
+	Schema: v.OneOf(sortModeAllowedValues...).Schema,
 }
 
 // GetTagsToolReqCodec validates a GetTagsToolReq value — ImageURL is
 // required (app/registry's GetTags further validates the full
-// image-reference shape via ParseImageRef at call time).
+// image-reference shape via ParseImageRef at call time); Limit and Sort
+// are both optional.
 var GetTagsToolReqCodec = c.Struct[GetTagsToolReq](
 	c.RequiredField("imageURL",
 		c.String().Refine(v.NonEmptyString).WithDescription(
@@ -133,6 +174,26 @@ var GetTagsToolReqCodec = c.Struct[GetTagsToolReq](
 		),
 		func(r GetTagsToolReq) string { return r.ImageURL },
 		func(r *GetTagsToolReq, val string) { r.ImageURL = val },
+	),
+	c.OptionalField("limit",
+		c.Int().WithDescription(
+			"Maximum number of tags to return, keeping the highest-ranked "+
+				"ones per sort (see sort). Omit or pass 0 for every tag.",
+		),
+		func(r GetTagsToolReq) int { return r.Limit },
+		func(r *GetTagsToolReq, val int) { r.Limit = val },
+	),
+	c.OptionalField("sort",
+		c.String().Refine(sortModeConstraint).WithDescription(
+			`How to order the returned tags: "version_desc" (default — `+
+				"highest version first, inferred from each tag's own text; "+
+				"NOT real chronological recency, since registries do not "+
+				`expose tag timestamps), "alphabetical" (plain string sort, `+
+				`ignoring version structure), or "none" (registry's own `+
+				"order). Omit for the default.",
+		),
+		func(r GetTagsToolReq) string { return r.Sort },
+		func(r *GetTagsToolReq, val string) { r.Sort = val },
 	),
 )
 

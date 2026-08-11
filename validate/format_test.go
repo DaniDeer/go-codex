@@ -417,6 +417,59 @@ func TestSemVer(t *testing.T) {
 	}
 }
 
+func TestSemVerLike(t *testing.T) {
+	c := validate.SemVerLike
+	valid := []string{
+		"1", "3.1", "18.04", "2024.01.15", "3.1-debian", "18.04-alpine",
+		"20-alpine", "2024.01.15.2", "v1.2.3", "v18.04",
+	}
+	invalid := []string{
+		"", "not-a-version", "1.2.x", "1.2.3.4.5", // 5 parts, over the 4-part limit
+	}
+	for _, v := range valid {
+		if !c.Check(v) {
+			t.Errorf("SemVerLike.Check(%q) = false, want true", v)
+		}
+	}
+	for _, v := range invalid {
+		if c.Check(v) {
+			t.Errorf("SemVerLike.Check(%q) = true, want false", v)
+		}
+	}
+	if msg := c.Message("bad"); msg == "" {
+		t.Error("SemVerLike.Message should not be empty")
+	}
+}
+
+func TestSemVerLike_OverlapsSemVerForCommonCase(t *testing.T) {
+	// SemVerLike's own doc comment documents this overlap (NOT a strict
+	// superset — see the doc comment for the "+build.metadata" exception,
+	// covered separately below).
+	overlapping := []string{
+		"1.0.0", "0.0.1", "1.2.3-alpha", "1.2.3-alpha.1",
+	}
+	for _, v := range overlapping {
+		if !validate.SemVer.Check(v) {
+			t.Fatalf("test setup: %q should satisfy SemVer", v)
+		}
+		if !validate.SemVerLike.Check(v) {
+			t.Errorf("SemVerLike.Check(%q) = false, want true", v)
+		}
+	}
+}
+
+func TestSemVerLike_DoesNotSupportBuildMetadata(t *testing.T) {
+	// The one documented gap between SemVer and SemVerLike's grammars —
+	// real-world semver-like tagging schemes don't use "+build" metadata.
+	v := "1.2.3+build.456"
+	if !validate.SemVer.Check(v) {
+		t.Fatalf("test setup: %q should satisfy SemVer", v)
+	}
+	if validate.SemVerLike.Check(v) {
+		t.Error("SemVerLike.Check(\"1.2.3+build.456\") = true, want false (build metadata is not part of SemVerLike's grammar)")
+	}
+}
+
 func TestCIDR(t *testing.T) {
 	c := validate.CIDR
 	valid := []string{

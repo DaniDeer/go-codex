@@ -6,6 +6,7 @@ import (
 
 	mcpgo "github.com/DaniDeer/go-codex/adapters/mcpgo"
 	nethttp "github.com/DaniDeer/go-codex/adapters/nethttp"
+	"github.com/DaniDeer/go-codex/examples/go-edge-models/models/docker"
 	regmodels "github.com/DaniDeer/go-codex/examples/go-edge-models/models/docker/registry"
 )
 
@@ -53,6 +54,22 @@ func GetTags(ctx context.Context, httpClient *http.Client, imageURL string, opts
 	return nethttp.CallHandle(ctx, httpClient, baseURL, handle, regmodels.GetTagsReq{Name: ref.Repository}, callOpts)
 }
 
+// GetTagsFiltered calls GetTags, then sorts/limits the result's Tags via
+// docker.FilterTags(list.Tags, filterOpts...) — a thin, client-side
+// convenience: no new HTTP call, no new wire type. filterOpts default to
+// docker.FilterTags's own defaults (docker.SortByVersionDesc, no limit)
+// when empty. See docker.SortByVersionDesc's doc comment for the
+// important "version-order, not chronological order" caveat that applies
+// here too (the registry's tags/list response carries no timestamps).
+func GetTagsFiltered(ctx context.Context, httpClient *http.Client, imageURL string, filterOpts []docker.FilterTagsOpt, opts ...Option) (regmodels.TagsList, error) {
+	list, err := GetTags(ctx, httpClient, imageURL, opts...)
+	if err != nil {
+		return regmodels.TagsList{}, err
+	}
+	list.Tags = docker.FilterTags(list.Tags, filterOpts...)
+	return list, nil
+}
+
 // ── GetTags as an MCP tool ──────────────────────────────────────────────────────
 //
 // NewGetTagsToolHandler wraps the batteries-included GetTags FUNCTION
@@ -77,6 +94,26 @@ func GetTags(ctx context.Context, httpClient *http.Client, imageURL string, opts
 //	    mcpgo.Options{})
 func NewGetTagsToolHandler(httpClient *http.Client, opts ...Option) mcpgo.HandlerFunc[regmodels.GetTagsToolReq, regmodels.TagsList] {
 	return func(ctx context.Context, req regmodels.GetTagsToolReq) (regmodels.TagsList, error) {
-		return GetTags(ctx, httpClient, req.ImageURL, opts...)
+		return GetTagsFiltered(ctx, httpClient, req.ImageURL, filterOptsFor(req), opts...)
 	}
+}
+
+// filterOptsFor maps a GetTagsToolReq's wire-friendly Limit/Sort fields to
+// docker.FilterTagsOpt values. An absent or unrecognized Sort falls back
+// to docker.FilterTags's own default (docker.SortByVersionDesc) rather
+// than erroring — an LLM omitting the field is the expected common case,
+// and GetTagsToolReqCodec's own sortModeConstraint already guarantees Sort
+// is either "" or one of regmodels' allowed values by the time a handler
+// ever sees it.
+func filterOptsFor(req regmodels.GetTagsToolReq) []docker.FilterTagsOpt {
+	opts := []docker.FilterTagsOpt{docker.WithLimit(req.Limit)}
+	switch req.Sort {
+	case "alphabetical":
+		opts = append(opts, docker.WithSort(docker.SortAlphabetical))
+	case "none":
+		opts = append(opts, docker.WithSort(docker.SortNone))
+	default:
+		opts = append(opts, docker.WithSort(docker.SortByVersionDesc))
+	}
+	return opts
 }
