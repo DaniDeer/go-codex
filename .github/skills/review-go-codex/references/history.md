@@ -1,6 +1,37 @@
-# go-codex Review History (R1–R106)
+# go-codex Review History (R1–R107)
 
 Do not re-report any of these findings. They have been implemented and tested.
+
+---
+
+## Round 107 (`codex.HasCodec`'s own godoc gave impossible construction advice)
+
+Focused audit of the only new core-library surface since Round 106 —
+`codex.HasCodec[T]` (added earlier this session, plus its 8 adoptions in
+`examples/go-edge-models`). Found one doc-comment defect; everything else
+(interface design, 5 generic helpers, zero-value-call contract, test
+coverage, `doc.go`/`docs/concepts/codec.md` sync) was already correct.
+
+- **G1 [small] — `codex/hascodec.go`'s exported doc comment recommended
+  an impossible pattern**: it said "Prefer defining Codec() as a
+  package-level function (func Codec() codex.Codec[MyType])" — but
+  `HasCodec[T]`'s method set requires `Codec()` to be a METHOD on `T`, so
+  a bare package-level function can never satisfy it. This contradicted
+  the interface declared 15 lines below in the same file, all 9 real
+  implementations in the repo (`examples/construction` + all 8
+  `go-edge-models` types, all value-receiver methods), and
+  `docs/concepts/codec.md`'s own correct example. Fixed by rewording to
+  "Prefer a value-receiver method returning a package-level codec
+  variable... when the type has no per-instance state — the common case.
+  A method is always required...; only the RECEIVER needs to genuinely
+  close over instance state." Applied the identical wording fix to
+  `.github/instructions/go-codex.instructions.md`'s matching bullet (which
+  had a parenthetical that technically saved it from being wrong, but was
+  confusingly worded the same way).
+
+Full verification: `gofmt -l .` clean, `go build ./...`, `go test
+./codex/...` (all 7 `HasCodec` tests pass unchanged — doc-only fix), `just
+check` (staticcheck + gosec, 0 issues).
 
 ---
 

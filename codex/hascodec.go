@@ -10,10 +10,12 @@ import "github.com/DaniDeer/go-codex/schema"
 // [EncodeSelf], [DecodeAs], [SchemaOf]) then work on ANY type
 // implementing it, with zero per-type boilerplate beyond that one method.
 //
-// Prefer defining Codec() as a package-level function
-// (func Codec() codex.Codec[MyType]) when the type is a plain value type
-// with no per-instance state — the common case. Use a method receiver
-// only when the codec genuinely depends on instance state.
+// Prefer a value-receiver method returning a package-level codec variable
+// (func (MyType) Codec() codex.Codec[MyType] { return myTypeCodec }) when
+// the type has no per-instance state — the common case. A method is
+// always required (HasCodec's method set demands it); only the RECEIVER
+// needs to genuinely close over instance state, and only when the codec
+// itself actually depends on that state.
 //
 // IMPORTANT for [DecodeAs] and [SchemaOf]: neither has a T value to call
 // .Codec() on yet, so both call it on T's ZERO VALUE (var zero T;
