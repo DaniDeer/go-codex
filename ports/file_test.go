@@ -2117,3 +2117,51 @@ func TestWriteHandle_PropagatesCreatedDirs(t *testing.T) {
 		t.Errorf("createdDirs = %v, want 2 entries", created)
 	}
 }
+
+// ── Glob path template segments ──────────────────────────────────────────────
+
+func TestFile_MatchPath_GlobTemplate_MatchesExternallyDiscoveredPath(t *testing.T) {
+	f := ports.NewFile("logs/app-*/**/errors/*.log", format.JSON(fileItemCodec))
+	vars, err := f.MatchPath("logs/app-1/a/b/errors/x.log")
+	if err != nil {
+		t.Fatalf("MatchPath: %v", err)
+	}
+	if len(vars) != 0 {
+		t.Errorf("vars = %v, want empty (glob segments never capture)", vars)
+	}
+
+	if _, err := f.MatchPath("logs/app-1/errors/wrong-suffix.txt"); err == nil {
+		t.Fatal("MatchPath: want mismatch error for wrong file extension")
+	}
+}
+
+func TestFile_MatchPath_GlobTemplate_NamedVarStillCaptured(t *testing.T) {
+	f := ports.NewFile("readings/{sensorID}/*.json", format.JSON(fileItemCodec),
+		ports.FilePathParam{Name: "sensorID"},
+	)
+	vars, err := f.MatchPath("readings/sensor-42/2024-01-15.json")
+	if err != nil {
+		t.Fatalf("MatchPath: %v", err)
+	}
+	if vars["sensorID"] != "sensor-42" {
+		t.Errorf("vars[sensorID] = %q, want %q", vars["sensorID"], "sensor-42")
+	}
+}
+
+func TestFile_BuildPath_GlobTemplate_ReturnsFileWildcardBuildError(t *testing.T) {
+	f := ports.NewFile("logs/app-*/errors/*.log", format.JSON(fileItemCodec))
+	_, err := f.BuildPath(nil)
+	var wantErr ports.FileWildcardBuildError
+	if !errors.As(err, &wantErr) {
+		t.Fatalf("BuildPath err = %v, want FileWildcardBuildError", err)
+	}
+}
+
+func TestNewFile_Glob_PanicsOnMultipleGlobstar(t *testing.T) {
+	defer func() {
+		if r := recover(); r == nil {
+			t.Fatal("NewFile: want panic on multiple ** segments")
+		}
+	}()
+	ports.NewFile("a/**/b/**/c.json", format.JSON(fileItemCodec))
+}

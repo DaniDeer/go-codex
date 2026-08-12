@@ -231,8 +231,14 @@ type FileOpt interface{ applyFile(*fileBuilder) }
 // not match T — this can only happen if a caller manually constructs a
 // [MergedFilePathParam] with the wrong type parameter, a programming error
 // analogous to the ones [forge.NewFunction] already panics on (empty name/
-// version), not a runtime data error.
+// version), not a runtime data error. NewFile also PANICS if template
+// contains more than one "**" glob segment — see
+// [internal/templatematch.ValidateGlobstarCount] — another structural
+// template error caught at declaration time.
 func NewFile[T any](template string, f format.Format[T], opts ...FileOpt) File[T] {
+	if err := templatematch.ValidateGlobstarCount(template); err != nil {
+		panic("ports: NewFile: " + err.Error())
+	}
 	var fb fileBuilder
 	for _, opt := range opts {
 		opt.applyFile(&fb)
@@ -277,7 +283,14 @@ func (fh File[T]) MergeFields() []codex.FieldCodec[T] {
 //
 // When vars is nil or empty and the template has no placeholders, BuildPath
 // returns the template unchanged.
+//
+// Returns [FileWildcardBuildError] if the template is glob-enabled (see
+// [internal/templatematch.IsGlobEnabled]) — a glob-enabled template does
+// not describe a single concrete path.
 func (fh File[T]) BuildPath(vars map[string]string) (string, error) {
+	if templatematch.IsGlobEnabled(fh.Template) {
+		return "", FileWildcardBuildError{Template: fh.Template}
+	}
 	codecMap := make(map[string]*codex.Codec[string], len(fh.params))
 	for i := range fh.params {
 		if fh.params[i].Codec != nil {
@@ -346,8 +359,22 @@ func (fh File[T]) PathParamSchemas() map[string]schema.Schema {
 //
 //	vars, err := readingFile.MatchPath("readings/sensor-42/2024-01-15.json")
 //	// vars == map[string]string{"sensorID": "sensor-42", "date": "2024-01-15"}
+//
+// MatchPath ALSO supports a glob-enabled template (see
+// [internal/templatematch.IsGlobEnabled]) — "**"/"*"/"?"/"[...]" segments
+// match anonymously (never captured), useful for validating/extracting
+// vars from a path already discovered via [Dir.List]'s glob-discovery
+// mode or the caller's own filepath.WalkDir.
 func (fh File[T]) MatchPath(path string) (map[string]string, error) {
-	vars, err := matchFileTemplate(fh.Template, path)
+	var vars map[string]string
+	var err error
+	if templatematch.IsGlobEnabled(fh.Template) {
+		vars, err = templatematch.MatchGlob(fh.Template, path, func(template, path string) error {
+			return FilePathMismatchError{Template: template, Path: path}
+		})
+	} else {
+		vars, err = matchFileTemplate(fh.Template, path)
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -1286,5 +1313,29 @@ func (e FileNotFoundError) Error() string {
 func (e FileNotFoundError) LogValue() slog.Value {
 	return slog.GroupValue(
 		slog.String("path", e.Path),
+	)
+}
+
+// FileWildcardBuildError is returned by [File.BuildPath] when the
+// template contains a glob segment ("**", or a segment with '*'/'?'/'[')
+// — see [internal/templatematch.IsGlobEnabled]. Building or matching a
+// SINGLE concrete path from a template that can match multiple paths is
+// undefined; [File.MatchPath] still works against a glob-enabled
+// template (matching an externally-discovered path), but BuildPath does
+// not, since File has no glob-discovery mechanism of its own — compose
+// [Dir.List]'s glob-discovery mode (discover) with [File.Read]/
+// [File.Write]/[File.Delete] (per-entry) instead.
+type FileWildcardBuildError struct {
+	Template string
+}
+
+func (e FileWildcardBuildError) Error() string {
+	return fmt.Sprintf("file path template %q is glob-enabled: BuildPath has no meaning for a template that can match multiple paths", e.Template)
+}
+
+// LogValue implements [slog.LogValuer] for structured logging.
+func (e FileWildcardBuildError) LogValue() slog.Value {
+	return slog.GroupValue(
+		slog.String("template", e.Template),
 	)
 }

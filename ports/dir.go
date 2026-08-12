@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/DaniDeer/go-codex/codex"
@@ -148,12 +149,14 @@ type Dir struct {
 	params    []DirPathParam
 	entry     EntryPattern
 	recursive bool
+	baseDir   string
 }
 
 type dirBuilder struct {
 	params    []DirPathParam
 	entry     EntryPattern
 	recursive bool
+	baseDir   string
 }
 
 // DirOpt is the sealed option interface for [NewDir].
@@ -176,8 +179,30 @@ func (o recursiveOpt) applyDir(db *dirBuilder) { db.recursive = o.recursive }
 // default, like plain "ls").
 func WithRecursive(recursive bool) DirOpt { return recursiveOpt{recursive: recursive} }
 
+type baseDirOpt struct{ path string }
+
+func (o baseDirOpt) applyDir(db *dirBuilder) { db.baseDir = o.path }
+
+// WithBaseDir sets the filesystem root [Dir.List]'s glob-discovery mode
+// (see [IsGlobEnabled] via the template) walks from, prepended (via
+// [path/filepath.Join]) to the template's own literal prefix (the leading
+// run of segments containing no "{varName}" placeholder or glob
+// metacharacter — see [internal/templatematch.LiteralPrefix]). Defaults
+// to "." (the current working directory) when unset — this keeps
+// existing literal-prefixed templates' behavior completely unchanged
+// (filepath.Join(".", "configs") == "configs"), and gives a
+// wildcard-first template (e.g. "*/errors", "**/secret.json") an
+// explicit, safe anchor instead of an implicit, unbounded scan from cwd.
+//
+// Only meaningful for glob-enabled [Dir] templates in [Dir.List]'s
+// glob-discovery mode — has no effect on a non-glob template, or on
+// [Dir.BuildPath]/[Dir.MatchPath] (which already resolve relative to cwd
+// exactly as today).
+func WithBaseDir(path string) DirOpt { return baseDirOpt{path: path} }
+
 // NewDir creates a [Dir] descriptor from a path template and optional
-// [DirOpt] values ([DirPathParam], [WithEntryPattern], [WithRecursive]).
+// [DirOpt] values ([DirPathParam], [WithEntryPattern], [WithRecursive],
+// [WithBaseDir]).
 //
 // NewDir is infallible — it only captures the spec. Validation of template
 // variable names against registered params runs at [Dir.BuildPath]/
@@ -187,16 +212,37 @@ func WithRecursive(recursive bool) DirOpt { return recursiveOpt{recursive: recur
 // resolves to that literal path — declare NewDir(".") for "the current
 // directory," the same way [NewFile] has no separate "default path"
 // mechanism beyond a literal template.
+//
+// NewDir PANICS if template contains more than one "**" glob segment
+// (see [internal/templatematch.ValidateGlobstarCount]), or if a
+// [DirPathParam] name collides with an [EntryParam] name declared via
+// [WithEntryPattern] — both are structural declaration errors (the
+// latter would make a glob-discovery match's merged [DirEntry.Vars]
+// map ambiguous), caught immediately rather than silently clobbering a
+// value at match time.
 func NewDir(template string, opts ...DirOpt) Dir {
+	if err := templatematch.ValidateGlobstarCount(template); err != nil {
+		panic("ports: NewDir: " + err.Error())
+	}
 	var db dirBuilder
 	for _, opt := range opts {
 		opt.applyDir(&db)
+	}
+	dirNames := make(map[string]bool, len(db.params))
+	for _, p := range db.params {
+		dirNames[p.Name] = true
+	}
+	for _, p := range db.entry.Params {
+		if dirNames[p.Name] {
+			panic(fmt.Sprintf("ports: NewDir: DirPathParam and EntryParam share the name %q — rename one to avoid an ambiguous merged Vars map", p.Name))
+		}
 	}
 	return Dir{
 		template:  template,
 		params:    db.params,
 		entry:     db.entry,
 		recursive: db.recursive,
+		baseDir:   db.baseDir,
 	}
 }
 
@@ -207,7 +253,15 @@ func NewDir(template string, opts ...DirOpt) Dir {
 // All template variables must be present in vars; missing variables return
 // a [MissingDirPathVarError]. Values are validated before substitution;
 // codec failures return a [DirPathParamError].
+//
+// Returns [DirWildcardBuildError] if the template is glob-enabled (see
+// [internal/templatematch.IsGlobEnabled]) — a glob-enabled template does
+// not describe a single concrete path; use [Dir.List]'s glob-discovery
+// mode instead.
 func (d Dir) BuildPath(vars map[string]string) (string, error) {
+	if templatematch.IsGlobEnabled(d.template) {
+		return "", DirWildcardBuildError{Template: d.template}
+	}
 	codecMap := make(map[string]*codex.Codec[string], len(d.params))
 	for i := range d.params {
 		if d.params[i].Codec != nil {
@@ -226,8 +280,13 @@ func (d Dir) BuildPath(vars map[string]string) (string, error) {
 //
 // Returns [DirPathMismatchError] if path does not match the template's
 // structure. Returns [DirPathParamError] if an extracted variable fails
-// its registered codec.
+// its registered codec. Returns [DirWildcardBuildError] if the template
+// is glob-enabled (see [internal/templatematch.IsGlobEnabled]) — use
+// [Dir.List]'s glob-discovery mode instead of matching a single path.
 func (d Dir) MatchPath(path string) (map[string]string, error) {
+	if templatematch.IsGlobEnabled(d.template) {
+		return nil, DirWildcardBuildError{Template: d.template}
+	}
 	vars, err := matchDirTemplate(d.template, path)
 	if err != nil {
 		return nil, err
@@ -317,11 +376,31 @@ type DirOptions struct {
 // the same core [File.MatchPath] uses, silently excluding non-matching
 // entries.
 //
+// When d's OWN template is glob-enabled (see
+// [internal/templatematch.IsGlobEnabled]), List switches to
+// glob-discovery mode instead: it discovers EVERY directory matching the
+// glob template (via [filepath.WalkDir], anchored at [WithBaseDir]
+// joined with the template's literal prefix) and aggregates their
+// entries into one result. In this mode vars remains a filter for named
+// "{varName}" segments only (glob segments contribute no vars): a named
+// segment supplied in vars narrows discovery to that literal value; an
+// unsupplied named segment becomes a per-match capture instead of
+// triggering [MissingDirPathVarError]. Each returned [DirEntry]'s Vars
+// merges the directory-level captured vars with any [EntryPattern]-
+// captured vars. See [Dir.listGlobDiscovery] for the implementation.
+//
+// [DirOptions.CreateIfMissing]/[DirOptions.DryRun]/[DirOptions.Strict]
+// have NO EFFECT in glob-discovery mode — a glob-enabled template
+// describes MULTIPLE possible directories, so "create the (one) missing
+// directory" has no meaning; List silently ignores all three fields for
+// a glob-enabled template instead of erroring.
+//
 // Errors:
-//   - [DirPathParamError] / [MissingDirPathVarError] — directory path variable validation failure (no I/O)
-//   - [DirAlreadyExistsError] — CreateIfMissing and Strict are both set, and the directory already exists
+//   - [DirPathParamError] / [MissingDirPathVarError] — directory path variable validation failure (no I/O; non-glob templates only)
+//   - [DirAlreadyExistsError] — CreateIfMissing and Strict are both set, and the directory already exists (non-glob templates only)
 //   - [DirReadError] — os.MkdirAll (when CreateIfMissing is set) or os.ReadDir/filepath.WalkDir failure
 //   - [DirEntryParamError] — an entry's RelPath matched EntryPattern's template shape but failed a param's codec
+//   - [DirPathParamError] — (glob-discovery mode) a captured named var failed its registered codec
 func (d Dir) List(vars map[string]string, opts DirOptions) ([]DirEntry, error) {
 	obs := opts.Observer
 	if obs == nil && opts.Context != nil {
@@ -329,6 +408,10 @@ func (d Dir) List(vars map[string]string, opts DirOptions) ([]DirEntry, error) {
 	}
 	if obs == nil {
 		obs = stats.NoopObserver{}
+	}
+
+	if templatematch.IsGlobEnabled(d.template) {
+		return d.listGlobDiscovery(vars, obs)
 	}
 
 	path, err := d.BuildPath(vars)
@@ -437,6 +520,149 @@ func (d Dir) listRecursive(root string) ([]DirEntry, error) {
 	return out, nil
 }
 
+// dirGlobMismatch is an internal sentinel distinguishing "this candidate
+// directory does not match d's own glob-enabled template at all" (keep
+// walking, not an error) from a real error. Never leaves this file.
+type dirGlobMismatch struct{}
+
+func (dirGlobMismatch) Error() string { return "dir path does not match glob template" }
+
+// matchDirGlob tests a candidate directory's path (relative to the
+// glob-discovery walk's base directory) against d's own glob-enabled
+// template. vars acts as a filter for named "{varName}" segments: a
+// supplied name must match literally, or the candidate is excluded (not
+// an error — the walk continues into/past it). matched == false with a
+// nil error means "does not match, keep walking"; a non-nil error is a
+// real [DirPathParamError] (a captured named var failed its codec) to
+// propagate and abort the walk.
+func (d Dir) matchDirGlob(rel string, vars map[string]string) (captured map[string]string, matched bool, err error) {
+	captured, merr := templatematch.MatchGlob(d.template, rel, func(_, _ string) error {
+		return dirGlobMismatch{}
+	})
+	if merr != nil {
+		if _, ok := merr.(dirGlobMismatch); ok {
+			return nil, false, nil
+		}
+		return nil, false, merr
+	}
+	for name, want := range vars {
+		if got, ok := captured[name]; !ok || got != want {
+			return nil, false, nil
+		}
+	}
+	for i := range d.params {
+		p := &d.params[i]
+		if p.Codec == nil {
+			continue
+		}
+		value := captured[p.Name]
+		if cerr := p.Codec.Validate(value); cerr != nil {
+			return nil, false, DirPathParamError{Name: p.Name, Value: value, Err: cerr}
+		}
+	}
+	return captured, true, nil
+}
+
+// listGlobDiscovery implements [Dir.List]'s glob-discovery mode: it walks
+// from [WithBaseDir] (default ".") joined with the template's literal
+// prefix (see [internal/templatematch.LiteralPrefix]), testing every
+// visited directory against d's own glob-enabled template, and
+// aggregates the matching directories' entries into one result. Each
+// returned [DirEntry]'s Vars merges the directory-level captured vars
+// (from the matched template) with any [EntryPattern]-captured vars.
+//
+// A template with no "**" is pruned: once a candidate directory's depth
+// already equals the template's own segment count, [Dir.listGlobDiscovery]
+// does not descend further (that subtree cannot satisfy a fixed-length
+// template). A template containing "**" disables this pruning by design
+// — its zero-or-more-segments semantics means no fixed maximum depth
+// exists to prune against.
+func (d Dir) listGlobDiscovery(vars map[string]string, obs stats.Observer) ([]DirEntry, error) {
+	start := time.Now()
+
+	baseDir := d.baseDir
+	if baseDir == "" {
+		baseDir = "."
+	}
+	prefix := templatematch.LiteralPrefix(d.template)
+	walkRoot := filepath.Join(baseDir, prefix)
+
+	tmplSegs := strings.Split(d.template, "/")
+	hasGlobstar := false
+	for _, seg := range tmplSegs {
+		if seg == "**" {
+			hasGlobstar = true
+			break
+		}
+	}
+
+	var out []DirEntry
+	walkErr := filepath.WalkDir(walkRoot, func(p string, de fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if !de.IsDir() {
+			return nil // only directories are candidates for d's own template
+		}
+		rel, relErr := filepath.Rel(baseDir, p)
+		if relErr != nil {
+			return relErr
+		}
+		rel = filepath.ToSlash(rel)
+		if rel == "." {
+			rel = ""
+		}
+
+		var relSegLen int
+		if rel != "" {
+			relSegLen = len(strings.Split(rel, "/"))
+		}
+
+		dirVars, matched, merr := d.matchDirGlob(rel, vars)
+		if merr != nil {
+			return merr
+		}
+		if matched {
+			var entries []DirEntry
+			if d.recursive {
+				entries, err = d.listRecursive(p)
+			} else {
+				entries, err = d.listSingleLevel(p)
+			}
+			if err != nil {
+				return err
+			}
+			for i := range entries {
+				if len(dirVars) == 0 {
+					continue
+				}
+				merged := make(map[string]string, len(dirVars)+len(entries[i].Vars))
+				for k, v := range dirVars {
+					merged[k] = v
+				}
+				for k, v := range entries[i].Vars {
+					merged[k] = v
+				}
+				entries[i].Vars = merged
+			}
+			out = append(out, entries...)
+		}
+		if !hasGlobstar && relSegLen >= len(tmplSegs) {
+			return filepath.SkipDir
+		}
+		return nil
+	})
+	if walkErr != nil {
+		recordFileRead(obs, walkRoot, false, time.Since(start))
+		if paramErr, ok := walkErr.(DirPathParamError); ok {
+			return nil, paramErr
+		}
+		return nil, DirReadError{Path: walkRoot, Err: walkErr}
+	}
+	recordFileRead(obs, walkRoot, true, time.Since(start))
+	return out, nil
+}
+
 // Delete removes the directory at the built path (and, if
 // [DirOptions.DeleteRecursive] is set, everything inside it). By
 // default, Delete is idempotent "ensure absent" semantics: a missing
@@ -452,8 +678,15 @@ func (d Dir) listRecursive(root string) ([]DirEntry, error) {
 // directory itself, once confirmed empty). Recursive: every path under
 // the tree (root included).
 //
+// Delete has no glob-discovery mode of its own — a glob-enabled template
+// (see [internal/templatematch.IsGlobEnabled]) is rejected outright with
+// [DirWildcardBuildError] (via Delete's internal [Dir.BuildPath] call):
+// deleting MULTIPLE directories matched by one template in a single call
+// is deliberately not supported; discover matches via [Dir.List]'s
+// glob-discovery mode first, then call Delete per discovered path.
+//
 // Errors:
-//   - [DirPathParamError] / [MissingDirPathVarError] — directory path variable validation failure (no I/O)
+//   - [DirPathParamError] / [MissingDirPathVarError] / [DirWildcardBuildError] — directory path variable validation failure (no I/O)
 //   - [DirNotFoundError] — directory did not exist AND [DirOptions.Strict] is set
 //   - [DirNotEmptyError] — non-empty directory, DeleteRecursive not set
 //   - [DirDeleteError] — os.ReadDir/os.Remove/os.RemoveAll failure (e.g. permission denied)
@@ -819,5 +1052,26 @@ func (e DirEntryParamError) LogValue() slog.Value {
 		slog.String("param", e.Name),
 		slog.String("value", e.Value),
 		slog.Any("cause", e.Err),
+	)
+}
+
+// DirWildcardBuildError is returned by [Dir.BuildPath]/[Dir.MatchPath]
+// when the template contains a glob segment ("**", or a segment with
+// '*'/'?'/'[') — see [internal/templatematch.IsGlobEnabled]. Building or
+// matching a SINGLE concrete path from a template that can match
+// multiple paths is undefined; use [Dir.List]'s glob-discovery mode
+// instead.
+type DirWildcardBuildError struct {
+	Template string
+}
+
+func (e DirWildcardBuildError) Error() string {
+	return fmt.Sprintf("dir path template %q is glob-enabled: BuildPath/MatchPath has no meaning for a template that can match multiple paths", e.Template)
+}
+
+// LogValue implements [slog.LogValuer] for structured logging.
+func (e DirWildcardBuildError) LogValue() slog.Value {
+	return slog.GroupValue(
+		slog.String("template", e.Template),
 	)
 }

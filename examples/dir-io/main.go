@@ -37,6 +37,12 @@
 //     [ports.DirOptions.DeleteRecursive] opt-ins for both Delete and
 //     List+CreateIfMissing (Strict on Create means the REVERSE
 //     precondition of Strict on Delete: the path must NOT already exist)
+//   - Glob path template segments (shell-glob "*"/"?"/"[...]" plus "**"
+//     globstar, NOT MQTT's "+"/"#") — [ports.Dir.List]'s glob-discovery
+//     mode finds EVERY matching directory and aggregates their entries;
+//     [ports.WithBaseDir] anchors the discovery walk;
+//     [ports.DirWildcardBuildError] rejects BuildPath/MatchPath on a
+//     glob-enabled template
 //
 // Run with: go run ./examples/dir-io
 package main
@@ -328,4 +334,69 @@ func main() {
 		panic(err)
 	}
 	fmt.Printf("  DeleteRecursive: removed %d path(s) total\n", len(finalDeleted))
+
+	// ── Section 8: Glob path template segments — discovery across MULTIPLE
+	// matching directories ───────────────────────────────────────────────────
+	//
+	// Unlike Sections 1-3 (one directory, matched exactly), a glob-enabled
+	// template — "*"/"?"/"[...]" via path/filepath.Match, plus "**"
+	// globstar matching zero-or-more WHOLE segments anywhere — makes
+	// Dir.List DISCOVER every directory matching the template and
+	// aggregate their entries into one result. This mirrors shell glob,
+	// NOT MQTT's topic wildcards (an earlier draft modeled this on MQTT's
+	// "+"/"#"; that direction was rejected — filesystem users already
+	// know shell glob).
+	fmt.Println("\n── Section 8: glob path template segments — Dir.List discovery ──")
+
+	logsRoot := filepath.Join(root, "logs")
+	for _, app := range []string{"web", "api", "other"} {
+		appErrorsDir := filepath.Join(logsRoot, "app-"+app, "errors")
+		if err := os.MkdirAll(appErrorsDir, 0o755); err != nil {
+			panic(err)
+		}
+		if err := os.WriteFile(filepath.Join(appErrorsDir, "trace.log"), []byte("boom\n"), 0o644); err != nil {
+			panic(err)
+		}
+	}
+
+	// "*" matches exactly one path segment and may share it with literal
+	// text ("app-*"); WithBaseDir anchors the glob-discovery walk so an
+	// unbounded scan from the current working directory never happens.
+	appErrorLogs := ports.NewDir("logs/app-*/errors", ports.WithBaseDir(root))
+	globEntries, err := appErrorLogs.List(nil, ports.DirOptions{})
+	if err != nil {
+		panic(err)
+	}
+	fmt.Printf("  \"logs/app-*/errors\" discovered %d entries across every matching app directory\n", len(globEntries))
+	for _, e := range globEntries {
+		fmt.Printf("    entry=%q vars=%v (glob segments never capture — Vars stays empty unless a named {var} is also present)\n", e.RelPath, e.Vars)
+	}
+
+	// "**" (globstar) matches zero or more WHOLE segments, usable anywhere
+	// in the template — at most ONE per template (NewDir would PANIC on a
+	// second "**"), which keeps matching deterministic prefix/suffix
+	// segment arithmetic instead of a general backtracking matcher.
+	deepDir := filepath.Join(logsRoot, "app-web", "a", "b", "errors")
+	if err := os.MkdirAll(deepDir, 0o755); err != nil {
+		panic(err)
+	}
+	if err := os.WriteFile(filepath.Join(deepDir, "deep.log"), []byte("deep\n"), 0o644); err != nil {
+		panic(err)
+	}
+	globstarLogs := ports.NewDir("logs/**/errors", ports.WithBaseDir(root))
+	globstarEntries, err := globstarLogs.List(nil, ports.DirOptions{})
+	if err != nil {
+		panic(err)
+	}
+	fmt.Printf("  \"logs/**/errors\" discovered %d entries across every depth (0+ segments matched by **)\n", len(globstarEntries))
+
+	// BuildPath/MatchPath reject a glob-enabled template outright — a
+	// glob-enabled template can match MULTIPLE paths, so building/matching
+	// a SINGLE concrete path is undefined. Use Dir.List's glob-discovery
+	// mode instead.
+	_, err = appErrorLogs.BuildPath(nil)
+	var wildcardErr ports.DirWildcardBuildError
+	if errors.As(err, &wildcardErr) {
+		fmt.Printf("  BuildPath on a glob-enabled template: DirWildcardBuildError (template=%q), as expected\n", wildcardErr.Template)
+	}
 }

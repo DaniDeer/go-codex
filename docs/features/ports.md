@@ -944,6 +944,64 @@ deleted, err = useCaseDir.Delete(nil, ports.DirOptions{DeleteRecursive: true, Dr
   source would). `examples/go-edge-models/models/iotedge.NewConfigDir` is
   the real-world flagship consumer this feature was built for.
 
+#### Glob path template segments — filesystem-glob discovery, not MQTT
+
+Both `Dir`'s own template and `FilePathParam` (`ports.File`) support a
+shell-glob vocabulary — `*`, `?`, `[...]` (delegated straight to
+`path/filepath.Match`), plus `**` ("globstar," matching zero or more
+WHOLE segments, usable anywhere in the template). This mirrors what a
+filesystem user already knows from shell globbing — an earlier design
+draft modeled the syntax on MQTT's topic wildcards (`+`/`#`) instead, but
+that direction was explicitly rejected: `ports.File`/`ports.Dir` is a
+filesystem abstraction, not a pub/sub topic abstraction.
+
+```go
+var appLogs = ports.NewDir("logs/app-*/errors", ports.WithBaseDir("/var/data"))
+entries, err := appLogs.List(nil, ports.DirOptions{})
+// discovers every "logs/app-<anything>/errors" directory under /var/data
+// and aggregates their entries into one result
+
+var recentErrors = ports.NewDir("data/**/errors")
+// "**" matches zero or more whole segments anywhere in the template —
+// matches "data/errors", "data/a/errors", "data/a/b/errors", ...
+```
+
+Key rules:
+
+- **A segment is EITHER a named `{varName}` placeholder OR a glob segment
+  (`*`/`?`/`[...]`/`**`) — never both.** Non-glob templates are completely
+  unaffected and keep today's `"{date}.json"` segment-sharing convenience.
+- **Glob wildcards produce NO captures** — exactly like a shell glob,
+  `*`/`?`/`[...]`/`**` matches are anonymous. `DirEntry.Vars` only ever
+  contains named `{varName}` captures (merged from the directory-level
+  match and any `EntryPattern` match into one flat map).
+- **At most one `**` per template** — `NewDir`/`NewFile` PANIC on a
+  second `**` (a structural template error). This keeps `**` matching
+  deterministic prefix/suffix segment arithmetic instead of a general
+  backtracking matcher.
+- **`Dir.List` glob-discovery mode**: when `Dir`'s own template is
+  glob-enabled, `List` discovers EVERY matching directory (via
+  `filepath.WalkDir`) instead of listing the one directory built from
+  `vars`. Named `{varName}` segments still act as a filter: supplied in
+  `vars` narrows discovery to that literal value; left unsupplied,
+  each match's value is captured into that entry's `Vars` instead of
+  raising `MissingDirPathVarError`.
+- **`ports.WithBaseDir(path)`** sets the walk root for glob-discovery,
+  joined (via `filepath.Join`) with the template's own literal prefix.
+  Defaults to `"."` — unchanged behavior for literal-prefixed templates.
+  A template whose FIRST segment is itself a glob (e.g. `"*/errors"`,
+  `"**/secret.json"`) has no literal anchor; without `WithBaseDir` it
+  scans from the current working directory, which can be slow on a large
+  tree — set `WithBaseDir` explicitly to bound the scan.
+- **`BuildPath`/`MatchPath` reject a glob-enabled template** with
+  `DirWildcardBuildError`/`FileWildcardBuildError` — building/matching a
+  SINGLE concrete path from a template that can match multiple paths is
+  undefined. `File.MatchPath` still works against a glob-enabled
+  template (for validating an externally-discovered path); there is no
+  `File.Glob` bulk-discovery method — compose `Dir.List` (discover) +
+  `File.Read`/`Write`/`Delete` (per-entry) instead, the same pattern
+  `examples/dir-io` already demonstrates.
+
 ### `SQLPattern` — metadata-only, by design
 
 SQL has no path/topic template: query text and bind-parameter syntax are

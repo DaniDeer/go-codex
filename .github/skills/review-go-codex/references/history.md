@@ -1,6 +1,50 @@
-# go-codex Review History (R1–R109)
+# go-codex Review History (R1–R110)
 
 Do not re-report any of these findings. They have been implemented and tested.
+
+---
+
+## Round 110 (`ports.Dir`/`ports.File` glob path template segments — error-wrap bug + doc gaps)
+
+Focused audit of the new filesystem-glob path template feature
+(`*`/`?`/`[...]`/`**` via `internal/templatematch.MatchGlob`, `Dir.List`'s
+glob-discovery mode, `ports.WithBaseDir`) added this session — found one
+real bug and three doc/test-coverage gaps, no observer/example issues.
+
+- **G1 [bug] — glob-discovery double-wrapped `DirPathParamError`**:
+  `Dir.listGlobDiscovery`'s `filepath.WalkDir` error handling wrapped a
+  `DirPathParamError` (from a captured named var failing its codec)
+  inside `DirReadError` instead of returning it directly — `errors.As`
+  still worked via `Unwrap()`, but the top-level type/message was wrong
+  and contradicted `List`'s own godoc. `listRecursive` (same file)
+  already special-cases this exact situation for `DirEntryParamError`;
+  `listGlobDiscovery` didn't mirror it. Fixed by adding the same
+  type-assertion unwrap, plus a regression test
+  (`TestDir_List_Glob_NamedVarCodecFailure_ReturnsDirPathParamErrorDirectly`).
+- **G2 [small] — `Dir.List`'s godoc omitted glob-mode opt behavior**:
+  `DirOptions.CreateIfMissing`/`DryRun`/`Strict` are silently ignored
+  when the template is glob-enabled (the glob branch returns before
+  those opts are consulted), but this wasn't documented anywhere. Added
+  a paragraph to `List`'s godoc.
+- **G3 [trivial] — `Dir.Delete`'s glob rejection was undocumented and
+  untested**: `Delete` on a glob-enabled template correctly returns
+  `DirWildcardBuildError` (via its internal `BuildPath` call), but
+  `Delete`'s own godoc didn't mention it and no test covered it. Added a
+  paragraph to `Delete`'s godoc plus
+  `TestDir_Delete_GlobTemplate_ReturnsDirWildcardBuildError`.
+- **G4 [trivial] — dangling roadmap reference**: `listGlobDiscovery`'s
+  doc comment referenced "the roadmap's accepted wildcard-first-segment
+  risk," pointing at `docs/roadmap/path-template-wildcards.md`, deleted
+  once shipped (same pattern Round 109's G1 already fixed once for a
+  different doc). Rephrased to state the rationale inline.
+
+Full verification: `gofmt -l .` clean, `go build ./...`, `go test ./...`
+(repo-wide, all packages pass), `just check` (staticcheck + gosec, 0
+issues), full example sweep (all exit 0 after clearing a disk-space
+constraint — `go clean -cache` + removing stale `/tmp/go-build*` dirs).
+No exported API signatures changed (godoc + internal error-handling
+fix only) — no `.github/instructions/go-codex.instructions.md` update
+needed.
 
 ---
 

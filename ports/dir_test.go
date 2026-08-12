@@ -690,6 +690,350 @@ func TestDir_Delete_ObserverRecordsFileDelete(t *testing.T) {
 	}
 }
 
+// ── Glob path template segments ──────────────────────────────────────────────
+
+func TestDir_List_Glob_SingleSegment_DiscoversAllMatchingDirs(t *testing.T) {
+	root := t.TempDir()
+	for _, name := range []string{"app-1", "app-2", "other"} {
+		dir := filepath.Join(root, "logs", name, "errors")
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatalf("MkdirAll: %v", err)
+		}
+	}
+	mustWriteFile(t, filepath.Join(root, "logs", "app-1", "errors", "a.log"), "x")
+	mustWriteFile(t, filepath.Join(root, "logs", "app-2", "errors", "b.log"), "x")
+	mustWriteFile(t, filepath.Join(root, "logs", "other", "errors", "c.log"), "x")
+
+	d := ports.NewDir("logs/app-*/errors", ports.WithBaseDir(root))
+	entries, err := d.List(nil, ports.DirOptions{})
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	if len(entries) != 2 {
+		t.Fatalf("entries = %v, want 2 (app-1, app-2 only, not 'other')", entries)
+	}
+}
+
+func TestDir_List_Glob_Globstar_MatchesZeroOrMoreSegments(t *testing.T) {
+	root := t.TempDir()
+	for _, dir := range []string{"data/errors", "data/a/errors", "data/a/b/errors"} {
+		if err := os.MkdirAll(filepath.Join(root, dir), 0o755); err != nil {
+			t.Fatalf("MkdirAll: %v", err)
+		}
+		mustWriteFile(t, filepath.Join(root, dir, "x.log"), "x")
+	}
+	// Sibling that must NOT match.
+	if err := os.MkdirAll(filepath.Join(root, "data/a/notmatched"), 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+
+	d := ports.NewDir("data/**/errors", ports.WithBaseDir(root))
+	entries, err := d.List(nil, ports.DirOptions{})
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	if len(entries) != 3 {
+		t.Fatalf("entries = %v, want 3 (one x.log per matching dir)", entries)
+	}
+}
+
+func TestDir_List_Glob_QuestionMarkAndCharClass(t *testing.T) {
+	root := t.TempDir()
+	// "app-1", "app-2", "app-x" — one char after "app-". "app-10" — two chars,
+	// must NOT match either "?" (exactly one char) or "[0-9]" (one digit).
+	for _, name := range []string{"app-1", "app-2", "app-x", "app-10"} {
+		dir := filepath.Join(root, "logs", name)
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatalf("MkdirAll: %v", err)
+		}
+		mustWriteFile(t, filepath.Join(dir, "x.log"), "x")
+	}
+
+	dQuestion := ports.NewDir("logs/app-?", ports.WithBaseDir(root))
+	entries, err := dQuestion.List(nil, ports.DirOptions{})
+	if err != nil {
+		t.Fatalf("List (?): %v", err)
+	}
+	if len(entries) != 3 {
+		t.Fatalf("entries (?) = %v, want 3 (app-1, app-2, app-x; not app-10)", entries)
+	}
+
+	dClass := ports.NewDir("logs/app-[0-9]", ports.WithBaseDir(root))
+	entries, err = dClass.List(nil, ports.DirOptions{})
+	if err != nil {
+		t.Fatalf("List ([0-9]): %v", err)
+	}
+	if len(entries) != 2 {
+		t.Fatalf("entries ([0-9]) = %v, want 2 (app-1, app-2; not app-x or app-10)", entries)
+	}
+}
+
+func TestDir_List_Glob_NoVarsCaptured(t *testing.T) {
+	root := t.TempDir()
+	dir := filepath.Join(root, "logs", "app-1")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	mustWriteFile(t, filepath.Join(dir, "a.log"), "x")
+
+	d := ports.NewDir("logs/app-*", ports.WithBaseDir(root))
+	entries, err := d.List(nil, ports.DirOptions{})
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	if len(entries) != 1 {
+		t.Fatalf("entries = %v, want 1", entries)
+	}
+	if entries[0].Vars != nil {
+		t.Fatalf("entries[0].Vars = %v, want nil (glob segments never capture)", entries[0].Vars)
+	}
+}
+
+func TestDir_List_Glob_NamedVarSupplied_FiltersLiterally(t *testing.T) {
+	root := t.TempDir()
+	for _, env := range []string{"prod", "staging"} {
+		dir := filepath.Join(root, "logs", env, "app-1")
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatalf("MkdirAll: %v", err)
+		}
+		mustWriteFile(t, filepath.Join(dir, "x.log"), "x")
+	}
+
+	d := ports.NewDir("logs/{env}/app-*", ports.DirPathParam{Name: "env"}, ports.WithBaseDir(root))
+	entries, err := d.List(map[string]string{"env": "prod"}, ports.DirOptions{})
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	if len(entries) != 1 {
+		t.Fatalf("entries = %v, want 1 (only prod)", entries)
+	}
+	if entries[0].Vars["env"] != "prod" {
+		t.Fatalf("entries[0].Vars = %v, want env=prod", entries[0].Vars)
+	}
+}
+
+func TestDir_List_Glob_NamedVarUnsupplied_CapturedPerMatch(t *testing.T) {
+	root := t.TempDir()
+	for _, env := range []string{"prod", "staging"} {
+		dir := filepath.Join(root, "logs", env, "app-1")
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatalf("MkdirAll: %v", err)
+		}
+		mustWriteFile(t, filepath.Join(dir, "x.log"), "x")
+	}
+
+	d := ports.NewDir("logs/{env}/app-*", ports.DirPathParam{Name: "env"}, ports.WithBaseDir(root))
+	entries, err := d.List(nil, ports.DirOptions{})
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	if len(entries) != 2 {
+		t.Fatalf("entries = %v, want 2 (both envs)", entries)
+	}
+	seen := map[string]bool{}
+	for _, e := range entries {
+		seen[e.Vars["env"]] = true
+	}
+	if !seen["prod"] || !seen["staging"] {
+		t.Fatalf("seen = %v, want both prod and staging captured", seen)
+	}
+}
+
+func TestDir_List_Glob_MergesDirAndEntryVars(t *testing.T) {
+	root := t.TempDir()
+	dir := filepath.Join(root, "logs", "prod", "app-1")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	mustWriteFile(t, filepath.Join(dir, "temp-sensor.json"), "{}")
+
+	d := ports.NewDir("logs/{env}/app-*",
+		ports.DirPathParam{Name: "env"},
+		ports.WithBaseDir(root),
+		ports.WithEntryPattern(ports.EntryPattern{
+			Template: "{useCase}.json",
+			Params:   []ports.EntryParam{{Name: "useCase"}},
+		}),
+	)
+	entries, err := d.List(nil, ports.DirOptions{})
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	if len(entries) != 1 {
+		t.Fatalf("entries = %v, want 1", entries)
+	}
+	if entries[0].Vars["env"] != "prod" || entries[0].Vars["useCase"] != "temp-sensor" {
+		t.Fatalf("entries[0].Vars = %v, want env=prod and useCase=temp-sensor merged", entries[0].Vars)
+	}
+}
+
+func TestDir_List_Glob_NamedVarCodecFailure_ReturnsDirPathParamErrorDirectly(t *testing.T) {
+	root := t.TempDir()
+	dir := filepath.Join(root, "logs", "ab", "app-1")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+
+	d := ports.NewDir("logs/{env}/app-*",
+		ports.DirPathParam{Name: "env"}.WithCodec(codex.String().Refine(validate.MinLen(3))),
+		ports.WithBaseDir(root),
+	)
+	_, err := d.List(nil, ports.DirOptions{})
+	var paramErr ports.DirPathParamError
+	if !errors.As(err, &paramErr) {
+		t.Fatalf("List err = %v (%T), want DirPathParamError directly (not wrapped in DirReadError)", err, err)
+	}
+	if paramErr.Name != "env" {
+		t.Fatalf("DirPathParamError.Name = %q, want %q", paramErr.Name, "env")
+	}
+}
+
+func TestNewDir_Glob_PanicsOnVarNameCollision(t *testing.T) {
+	defer func() {
+		if r := recover(); r == nil {
+			t.Fatal("NewDir: want panic on DirPathParam/EntryParam name collision")
+		}
+	}()
+	ports.NewDir("logs/{name}/*",
+		ports.DirPathParam{Name: "name"},
+		ports.WithEntryPattern(ports.EntryPattern{
+			Template: "{name}.json",
+			Params:   []ports.EntryParam{{Name: "name"}},
+		}),
+	)
+}
+
+func TestNewDir_Glob_PanicsOnMultipleGlobstar(t *testing.T) {
+	defer func() {
+		if r := recover(); r == nil {
+			t.Fatal("NewDir: want panic on multiple ** segments")
+		}
+	}()
+	ports.NewDir("a/**/b/**/c")
+}
+
+func TestDir_BuildPath_GlobTemplate_ReturnsDirWildcardBuildError(t *testing.T) {
+	d := ports.NewDir("logs/*/errors")
+	_, err := d.BuildPath(nil)
+	var wantErr ports.DirWildcardBuildError
+	if !errors.As(err, &wantErr) {
+		t.Fatalf("BuildPath err = %v, want DirWildcardBuildError", err)
+	}
+}
+
+func TestDir_Delete_GlobTemplate_ReturnsDirWildcardBuildError(t *testing.T) {
+	d := ports.NewDir("logs/app-*/errors")
+	_, err := d.Delete(nil, ports.DirOptions{})
+	var wantErr ports.DirWildcardBuildError
+	if !errors.As(err, &wantErr) {
+		t.Fatalf("Delete err = %v, want DirWildcardBuildError", err)
+	}
+}
+
+func TestDir_MatchPath_GlobTemplate_ReturnsDirWildcardBuildError(t *testing.T) {
+	d := ports.NewDir("logs/*/errors")
+	_, err := d.MatchPath("logs/app-1/errors")
+	var wantErr ports.DirWildcardBuildError
+	if !errors.As(err, &wantErr) {
+		t.Fatalf("MatchPath err = %v, want DirWildcardBuildError", err)
+	}
+}
+
+func TestDir_List_Glob_WildcardFirstSegment_WalksFromTemplateRoot(t *testing.T) {
+	root := t.TempDir()
+	oldWD, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("Getwd: %v", err)
+	}
+	if err := os.Chdir(root); err != nil {
+		t.Fatalf("Chdir: %v", err)
+	}
+	defer func() { _ = os.Chdir(oldWD) }()
+
+	dir := filepath.Join(root, "app-1", "errors")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	mustWriteFile(t, filepath.Join(dir, "x.log"), "x")
+
+	d := ports.NewDir("*/errors") // no WithBaseDir — walks from cwd
+	entries, err := d.List(nil, ports.DirOptions{})
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	if len(entries) != 1 {
+		t.Fatalf("entries = %v, want 1", entries)
+	}
+}
+
+func TestDir_List_Glob_WithBaseDir_AnchorsWildcardFirstSegment(t *testing.T) {
+	root := t.TempDir()
+	dir := filepath.Join(root, "app-1", "errors")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	mustWriteFile(t, filepath.Join(dir, "x.log"), "x")
+
+	d := ports.NewDir("*/errors", ports.WithBaseDir(root))
+	entries, err := d.List(nil, ports.DirOptions{})
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	if len(entries) != 1 {
+		t.Fatalf("entries = %v, want 1", entries)
+	}
+}
+
+func TestDir_List_Glob_WithBaseDir_JoinsWithLiteralPrefix(t *testing.T) {
+	root := t.TempDir()
+	dir := filepath.Join(root, "configs", "app-1", "errors")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	mustWriteFile(t, filepath.Join(dir, "x.log"), "x")
+
+	d := ports.NewDir("configs/*/errors", ports.WithBaseDir(root))
+	entries, err := d.List(nil, ports.DirOptions{})
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	if len(entries) != 1 {
+		t.Fatalf("entries = %v, want 1", entries)
+	}
+}
+
+func TestDir_List_NoGlob_Unaffected(t *testing.T) {
+	root := t.TempDir()
+	dir := filepath.Join(root, "configs")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	mustWriteFile(t, filepath.Join(dir, "temp-sensor.json"), "{}")
+
+	d := ports.NewDir(filepath.Join(root, "configs"),
+		ports.WithEntryPattern(ports.EntryPattern{
+			Template: "{useCase}.json",
+			Params:   []ports.EntryParam{{Name: "useCase"}},
+		}),
+	)
+	entries, err := d.List(nil, ports.DirOptions{})
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	if len(entries) != 1 || entries[0].Vars["useCase"] != "temp-sensor" {
+		t.Fatalf("entries = %v, want 1 with useCase=temp-sensor (non-glob behavior unchanged)", entries)
+	}
+
+	// BuildPath/MatchPath still work normally for a non-glob template.
+	path, err := d.BuildPath(nil)
+	if err != nil {
+		t.Fatalf("BuildPath: %v", err)
+	}
+	if path != filepath.Join(root, "configs") {
+		t.Fatalf("BuildPath = %q, want %q", path, filepath.Join(root, "configs"))
+	}
+}
+
 // ── test helpers ──────────────────────────────────────────────────────────────
 
 func mustWriteFile(t *testing.T, path, content string) {
