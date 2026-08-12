@@ -263,6 +263,7 @@ func TestLoggingObserver_AllMethods_NoPanic(t *testing.T) {
 	obs.RecordSecurityRejection("/admin", "bearerAuth")
 	obs.RecordFileRead("/etc/config.toml", true, 1*time.Millisecond)
 	obs.RecordFileWrite("/etc/config.toml", false, 1*time.Millisecond)
+	obs.RecordFileDelete("/etc/config.toml", true, 1*time.Millisecond)
 	obs.RecordValidation("users", "get_user", 1*time.Millisecond, nil)
 	obs.RecordMigration("up", "00001_create_users.sql", 1, 2*time.Millisecond, nil)
 	obs.RecordStreamItem("oeeCalc", true, 1*time.Millisecond)
@@ -285,11 +286,12 @@ func (s *fanoutSpy) RecordPublish(_ string, _ bool, _ time.Duration)   { s.publi
 
 type fanoutFileSpy struct {
 	fanoutSpy
-	reads, writes int
+	reads, writes, deletes int
 }
 
-func (s *fanoutFileSpy) RecordFileRead(_ string, _ bool, _ time.Duration)  { s.reads++ }
-func (s *fanoutFileSpy) RecordFileWrite(_ string, _ bool, _ time.Duration) { s.writes++ }
+func (s *fanoutFileSpy) RecordFileRead(_ string, _ bool, _ time.Duration)   { s.reads++ }
+func (s *fanoutFileSpy) RecordFileWrite(_ string, _ bool, _ time.Duration)  { s.writes++ }
+func (s *fanoutFileSpy) RecordFileDelete(_ string, _ bool, _ time.Duration) { s.deletes++ }
 
 var _ stats.FileObserver = (*fanoutFileSpy)(nil)
 
@@ -335,8 +337,9 @@ func TestNewFanout_FileObserver_OnlyToImplementors(t *testing.T) {
 	}
 	fo.RecordFileRead("/p", true, 0)
 	fo.RecordFileWrite("/p", false, 0)
-	if file.reads != 1 || file.writes != 1 {
-		t.Errorf("FileObserver not delegated: reads=%d writes=%d", file.reads, file.writes)
+	fo.RecordFileDelete("/p", true, 0)
+	if file.reads != 1 || file.writes != 1 || file.deletes != 1 {
+		t.Errorf("FileObserver not delegated: reads=%d writes=%d deletes=%d", file.reads, file.writes, file.deletes)
 	}
 }
 

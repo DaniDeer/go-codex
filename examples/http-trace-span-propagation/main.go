@@ -209,7 +209,7 @@ func main() {
 		// 2. File — child of HTTP span.
 		filePath := filepath.Join(outputDir, in.Name+".txt")
 		f := ports.NewFile(filePath, format.JSON(codex.String()))
-		if err := f.Write(nil, result, ports.FileOptions{Observer: obs, Context: ctx}); err != nil {
+		if _, err := f.Write(nil, result, ports.FileOptions{Observer: obs, Context: ctx}); err != nil {
 			return GreetOut{}, err
 		}
 

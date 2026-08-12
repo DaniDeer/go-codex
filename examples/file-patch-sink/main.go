@@ -76,7 +76,7 @@ func main() {
 	configFile := ports.NewFile(path, format.JSON(appConfigCodec))
 
 	// Seed the file with a whole record before any patches arrive.
-	if err := configFile.Write(nil, AppConfig{Port: 8080, LogLevel: "info"}, ports.FileOptions{}); err != nil {
+	if _, err := configFile.Write(nil, AppConfig{Port: 8080, LogLevel: "info"}, ports.FileOptions{}); err != nil {
 		panic(err)
 	}
 	fmt.Println("─── Scene 1: DrainPatchAdapter (untyped map[string]any patch)")
@@ -132,7 +132,7 @@ func main() {
 	fmt.Println("\n─── Format restriction: Patch requires a map-based format")
 	gobPath := filepath.Join(dir, "config.gob")
 	gobFile := ports.NewFile(gobPath, format.Gob(appConfigCodec))
-	if err := gobFile.Write(nil, AppConfig{Port: 9090, LogLevel: "info"}, ports.FileOptions{}); err != nil {
+	if _, err := gobFile.Write(nil, AppConfig{Port: 9090, LogLevel: "info"}, ports.FileOptions{}); err != nil {
 		panic(err)
 	}
 	gobPatches, err := ports.NewSinkPort[map[string]any]("gob-patches", mapCodec, ports.PortOptions{Buffer: 4})

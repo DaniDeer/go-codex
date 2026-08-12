@@ -148,15 +148,23 @@ type TraceObserver interface {
 }
 
 // FileObserver is an optional extension to [Observer] for file I/O lifecycle
-// events. [ports.File] type-asserts the configured observer to FileObserver
-// before calling its methods, so implementing this interface is purely additive
-// — existing Observer implementations need not change.
+// events. [ports.File] and [ports.Dir] both type-assert the configured
+// observer to FileObserver before calling its methods. Implementing this
+// interface was purely additive when it had two methods (RecordFileRead/
+// RecordFileWrite); RecordFileDelete was later added directly to this SAME
+// interface as an intentional, acknowledged breaking change (go-codex has
+// one consumer) rather than a separate extension — see
+// docs/features/ports.md's "Dir" subsection for the rationale. Embed
+// [NoopObserver] in your own implementation (the established idiom
+// throughout this repo) for automatic forward-compatibility with any
+// future additions.
 //
-//	type MyObserver struct{ ... }
+//	type MyObserver struct{ NoopObserver }
 //	func (o *MyObserver) RecordFileRead(path string, success bool, d time.Duration) {
 //	    // increment a Prometheus counter, emit a log line, etc.
 //	}
 //	func (o *MyObserver) RecordFileWrite(path string, success bool, d time.Duration) { ... }
+//	func (o *MyObserver) RecordFileDelete(path string, success bool, d time.Duration) { ... }
 type FileObserver interface {
 	// RecordFileRead is called after every [ports.File.Read], [ports.File.Update],
 	// or [ports.File.Patch] attempt (read phase). path is the concrete file path
@@ -168,6 +176,12 @@ type FileObserver interface {
 	// or [ports.File.Patch] attempt (write phase). success is false on any
 	// encode or filesystem error.
 	RecordFileWrite(path string, success bool, duration time.Duration)
+
+	// RecordFileDelete is called after every [ports.File.Delete]/
+	// [ports.Dir.Delete] attempt (including DryRun calls). success is
+	// false for any error OTHER than the idempotent "already absent"
+	// case (which reports success=true — the postcondition holds).
+	RecordFileDelete(path string, success bool, duration time.Duration)
 }
 
 // SQLObserver is an optional extension to [Observer] for SQL adapter lifecycle
@@ -320,6 +334,10 @@ func (o *LoggingObserver) RecordFileWrite(path string, success bool, d time.Dura
 	o.logger.Debug("file write", "path", path, "success", success, "ms", d.Milliseconds())
 }
 
+func (o *LoggingObserver) RecordFileDelete(path string, success bool, d time.Duration) {
+	o.logger.Debug("file delete", "path", path, "success", success, "ms", d.Milliseconds())
+}
+
 func (o *LoggingObserver) RecordValidation(table, op string, d time.Duration, err error) {
 	o.logger.Debug("sql validate", "table", table, "op", op, "ms", d.Milliseconds(), "err", err)
 }
@@ -411,6 +429,15 @@ func (f *fanout) RecordFileWrite(path string, success bool, d time.Duration) {
 	for _, o := range f.observers {
 		if fo, ok := o.(FileObserver); ok {
 			fo.RecordFileWrite(path, success, d)
+		}
+	}
+}
+
+// RecordFileDelete implements [FileObserver].
+func (f *fanout) RecordFileDelete(path string, success bool, d time.Duration) {
+	for _, o := range f.observers {
+		if fo, ok := o.(FileObserver); ok {
+			fo.RecordFileDelete(path, success, d)
 		}
 	}
 }
@@ -539,6 +566,7 @@ func (NoopObserver) RecordApply(_, _ string, _ bool, _ time.Duration)           
 func (NoopObserver) RecordSecurityRejection(_, _ string)                            {}
 func (NoopObserver) RecordFileRead(_ string, _ bool, _ time.Duration)               {}
 func (NoopObserver) RecordFileWrite(_ string, _ bool, _ time.Duration)              {}
+func (NoopObserver) RecordFileDelete(_ string, _ bool, _ time.Duration)             {}
 func (NoopObserver) RecordValidation(_, _ string, _ time.Duration, _ error)         {}
 func (NoopObserver) RecordMigration(_, _ string, _ int64, _ time.Duration, _ error) {}
 func (NoopObserver) RecordStreamItem(_ string, _ bool, _ time.Duration)             {}

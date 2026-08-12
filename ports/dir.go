@@ -14,12 +14,14 @@ import (
 	"github.com/DaniDeer/go-codex/stats"
 )
 
-// This file implements the "list a directory's entries" port — the
+// This file implements the directory-listing/deletion port — the
 // [File]-equivalent declarative surface for LISTING files/subdirectories
-// (like the "ls" shell command) instead of reading one file's typed
-// content. See docs/roadmap/directory-listing-port.md for the full design
-// rationale (retired once shipped — this file + its godoc are the
-// up-to-date reference from then on).
+// (like the "ls" shell command) and DELETING a directory (like "rm"/
+// "rm -r"), instead of reading/writing one file's typed content. See
+// docs/features/ports.md's "Dir" subsection for the full design
+// rationale (the original roadmap docs were retired once shipped — this
+// file + its godoc, plus docs/features/ports.md, are the up-to-date
+// reference from then on).
 
 // ── DirPathParam ──────────────────────────────────────────────────────────────
 
@@ -243,9 +245,12 @@ func (d Dir) MatchPath(path string) (map[string]string, error) {
 	return vars, nil
 }
 
-// DirOptions configures the behaviour of [Dir.List] — mirrors [FileOptions]
-// (Observer, Context); a directory listing has no typed payload, so there
-// is no format-related option.
+// DirOptions configures the behaviour of [Dir.List] and [Dir.Delete] —
+// mirrors [FileOptions] (Observer, Context); a directory listing has no
+// typed payload, so there is no format-related option. Not every field
+// applies to every method — e.g. DeleteRecursive only affects Delete,
+// CreateIfMissing/CreatePerm only affect List; DryRun/Strict apply to
+// both with a method-specific meaning documented on each field below.
 type DirOptions struct {
 	// Observer, when non-nil, receives a [stats.FileObserver.RecordFileRead]
 	// call after List (a directory listing IS a read operation). Type-asserted
@@ -269,6 +274,40 @@ type DirOptions struct {
 	// directory. Defaults to 0755 when zero. Has no effect when
 	// CreateIfMissing is false.
 	CreatePerm os.FileMode
+
+	// DeleteRecursive, when true, allows [Dir.Delete] to remove a
+	// NON-empty directory and everything inside it (os.RemoveAll).
+	// Default false: Delete on a non-empty directory returns
+	// [DirNotEmptyError] instead of silently recursing. Deliberately
+	// SEPARATE from the Dir's own declared [WithRecursive] (a
+	// listing-depth option) — a destructive operation must be opted into
+	// explicitly, per call, never inherited from an unrelated listing
+	// declaration.
+	DeleteRecursive bool
+
+	// DryRun, when true:
+	//   - on [Dir.Delete]: returns the list of paths that WOULD be
+	//     removed WITHOUT actually removing anything. Reports the SAME
+	//     errors a real call would (e.g. [DirNotEmptyError]).
+	//   - on [Dir.List] (with CreateIfMissing set): skips the mutating
+	//     os.MkdirAll call only — a genuinely-missing directory then
+	//     naturally surfaces [DirReadError] from List's own os.ReadDir
+	//     (the informative "creation would have been needed" signal);
+	//     the Strict existence check below still runs regardless.
+	// Default false.
+	DryRun bool
+
+	// Strict, when true:
+	//   - on [Dir.Delete]: requires the directory to have existed —
+	//     [DirNotFoundError] instead of idempotent "ensure absent" success.
+	//   - on [Dir.List] (only meaningful together with CreateIfMissing):
+	//     requires the directory to NOT already exist — [DirAlreadyExistsError]
+	//     instead of silently reusing it (the create-side
+	//     precondition-mirror of Delete's Strict). Checked via os.Stat
+	//     BEFORE os.MkdirAll, so it still fires correctly under DryRun.
+	//     Has no effect when CreateIfMissing is false.
+	// Default false — existing callers see no change unless they opt in.
+	Strict bool
 }
 
 // List builds the concrete directory path from vars (an empty resolved
@@ -280,6 +319,7 @@ type DirOptions struct {
 //
 // Errors:
 //   - [DirPathParamError] / [MissingDirPathVarError] — directory path variable validation failure (no I/O)
+//   - [DirAlreadyExistsError] — CreateIfMissing and Strict are both set, and the directory already exists
 //   - [DirReadError] — os.MkdirAll (when CreateIfMissing is set) or os.ReadDir/filepath.WalkDir failure
 //   - [DirEntryParamError] — an entry's RelPath matched EntryPattern's template shape but failed a param's codec
 func (d Dir) List(vars map[string]string, opts DirOptions) ([]DirEntry, error) {
@@ -305,9 +345,20 @@ func (d Dir) List(vars map[string]string, opts DirOptions) ([]DirEntry, error) {
 		if perm == 0 {
 			perm = 0755
 		}
-		if err := os.MkdirAll(path, perm); err != nil {
-			recordFileRead(obs, path, false, time.Since(start))
-			return nil, DirReadError{Path: path, Err: err}
+		if opts.Strict {
+			if _, statErr := os.Stat(path); statErr == nil {
+				recordFileRead(obs, path, false, time.Since(start))
+				return nil, DirAlreadyExistsError{Path: path}
+			} else if !os.IsNotExist(statErr) {
+				recordFileRead(obs, path, false, time.Since(start))
+				return nil, DirReadError{Path: path, Err: statErr}
+			}
+		}
+		if !opts.DryRun {
+			if err := os.MkdirAll(path, perm); err != nil {
+				recordFileRead(obs, path, false, time.Since(start))
+				return nil, DirReadError{Path: path, Err: err}
+			}
 		}
 	}
 
@@ -384,6 +435,124 @@ func (d Dir) listRecursive(root string) ([]DirEntry, error) {
 		return nil, DirReadError{Path: root, Err: walkErr}
 	}
 	return out, nil
+}
+
+// Delete removes the directory at the built path (and, if
+// [DirOptions.DeleteRecursive] is set, everything inside it). By
+// default, Delete is idempotent "ensure absent" semantics: a missing
+// directory is not an error (returns a nil, empty slice). Set
+// [DirOptions.Strict] to require the directory to have existed — a
+// missing directory then returns [DirNotFoundError] instead. A
+// non-empty directory is refused with [DirNotEmptyError] UNLESS
+// DeleteRecursive is true.
+//
+// deleted is the list of concrete paths removed — or, under
+// [DirOptions.DryRun], the list that WOULD have been removed, with
+// nothing actually deleted. Non-recursive: at most one path (the
+// directory itself, once confirmed empty). Recursive: every path under
+// the tree (root included).
+//
+// Errors:
+//   - [DirPathParamError] / [MissingDirPathVarError] — directory path variable validation failure (no I/O)
+//   - [DirNotFoundError] — directory did not exist AND [DirOptions.Strict] is set
+//   - [DirNotEmptyError] — non-empty directory, DeleteRecursive not set
+//   - [DirDeleteError] — os.ReadDir/os.Remove/os.RemoveAll failure (e.g. permission denied)
+func (d Dir) Delete(vars map[string]string, opts DirOptions) (deleted []string, err error) {
+	obs := opts.Observer
+	if obs == nil && opts.Context != nil {
+		obs = stats.ObserverFromContext(opts.Context)
+	}
+	if obs == nil {
+		obs = stats.NoopObserver{}
+	}
+
+	path, buildErr := d.BuildPath(vars)
+	if buildErr != nil {
+		return nil, buildErr
+	}
+	if path == "" {
+		path = "."
+	}
+
+	start := time.Now()
+
+	info, statErr := os.Stat(path)
+	if statErr != nil {
+		if os.IsNotExist(statErr) {
+			if opts.Strict {
+				recordFileDelete(obs, path, false, time.Since(start))
+				return nil, DirNotFoundError{Path: path}
+			}
+			recordFileDelete(obs, path, true, time.Since(start))
+			return nil, nil
+		}
+		recordFileDelete(obs, path, false, time.Since(start))
+		return nil, DirDeleteError{Path: path, Err: statErr}
+	}
+	if !info.IsDir() {
+		recordFileDelete(obs, path, false, time.Since(start))
+		return nil, DirDeleteError{Path: path, Err: fmt.Errorf("%s is not a directory", path)}
+	}
+
+	if opts.DeleteRecursive {
+		affected, walkErr := collectAllPaths(path)
+		if walkErr != nil {
+			recordFileDelete(obs, path, false, time.Since(start))
+			return nil, DirDeleteError{Path: path, Err: walkErr}
+		}
+		if opts.DryRun {
+			recordFileDelete(obs, path, true, time.Since(start))
+			return affected, nil
+		}
+		if err := os.RemoveAll(path); err != nil {
+			recordFileDelete(obs, path, false, time.Since(start))
+			return nil, DirDeleteError{Path: path, Err: err}
+		}
+		recordFileDelete(obs, path, true, time.Since(start))
+		return affected, nil
+	}
+
+	// Non-recursive: the directory must be empty.
+	osEntries, readErr := os.ReadDir(path)
+	if readErr != nil {
+		recordFileDelete(obs, path, false, time.Since(start))
+		return nil, DirDeleteError{Path: path, Err: readErr}
+	}
+	if len(osEntries) > 0 {
+		recordFileDelete(obs, path, false, time.Since(start))
+		return nil, DirNotEmptyError{Path: path}
+	}
+
+	if opts.DryRun {
+		recordFileDelete(obs, path, true, time.Since(start))
+		return []string{path}, nil
+	}
+
+	if err := os.Remove(path); err != nil {
+		recordFileDelete(obs, path, false, time.Since(start))
+		return nil, DirDeleteError{Path: path, Err: err}
+	}
+	recordFileDelete(obs, path, true, time.Since(start))
+	return []string{path}, nil
+}
+
+// collectAllPaths walks root and returns every path found, root included
+// first (filepath.WalkDir's own visiting order) — used by [Dir.Delete]'s
+// DeleteRecursive mode to report the full affected-paths list, for both
+// a real removal and a DryRun preview.
+func collectAllPaths(root string) ([]string, error) {
+	var all []string
+	err := filepath.WalkDir(root, func(p string, _ fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		all = append(all, p)
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return all, nil
 }
 
 // dirEntryMismatch is an internal sentinel distinguishing "this entry's
@@ -546,6 +715,80 @@ func (e DirReadError) LogValue() slog.Value {
 	return slog.GroupValue(
 		slog.String("path", e.Path),
 		slog.Any("cause", e.Err),
+	)
+}
+
+// DirAlreadyExistsError is returned by [Dir.List] (with CreateIfMissing
+// set) when [DirOptions.Strict] is set and the directory already exists
+// — no creation is attempted.
+type DirAlreadyExistsError struct {
+	Path string
+}
+
+func (e DirAlreadyExistsError) Error() string {
+	return fmt.Sprintf("dir %q already exists (Strict)", e.Path)
+}
+
+// LogValue implements [slog.LogValuer] for structured logging.
+func (e DirAlreadyExistsError) LogValue() slog.Value {
+	return slog.GroupValue(
+		slog.String("path", e.Path),
+	)
+}
+
+// DirDeleteError is returned by [Dir.Delete] when os.ReadDir/os.Remove/
+// os.RemoveAll fails for a reason OTHER than "already absent" (e.g.
+// permission denied).
+type DirDeleteError struct {
+	Path string
+	Err  error
+}
+
+func (e DirDeleteError) Error() string { return fmt.Sprintf("delete dir %q: %s", e.Path, e.Err) }
+
+// Unwrap allows [errors.Is] and [errors.As] to traverse the underlying error.
+func (e DirDeleteError) Unwrap() error { return e.Err }
+
+// LogValue implements [slog.LogValuer] for structured logging.
+func (e DirDeleteError) LogValue() slog.Value {
+	return slog.GroupValue(
+		slog.String("path", e.Path),
+		slog.Any("cause", e.Err),
+	)
+}
+
+// DirNotFoundError is returned by [Dir.Delete] when [DirOptions.Strict]
+// is set and the directory did not exist — Delete's default is
+// idempotent "ensure absent" success; Strict opts out of that.
+type DirNotFoundError struct {
+	Path string
+}
+
+func (e DirNotFoundError) Error() string {
+	return fmt.Sprintf("dir %q does not exist (Strict)", e.Path)
+}
+
+// LogValue implements [slog.LogValuer] for structured logging.
+func (e DirNotFoundError) LogValue() slog.Value {
+	return slog.GroupValue(
+		slog.String("path", e.Path),
+	)
+}
+
+// DirNotEmptyError is returned by [Dir.Delete] when the directory
+// contains entries and [DirOptions.DeleteRecursive] is not set.
+type DirNotEmptyError struct {
+	Path string
+}
+
+func (e DirNotEmptyError) Error() string {
+	return fmt.Sprintf("dir %q is not empty (DeleteRecursive not set)", e.Path)
+}
+
+// LogValue implements [slog.LogValuer] for structured logging.
+func (e DirNotEmptyError) LogValue() slog.Value {
+	return slog.GroupValue(
+		slog.String("path", e.Path),
 	)
 }
 

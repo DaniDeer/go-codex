@@ -32,6 +32,11 @@
 //   - [ports.DirOptions.CreateIfMissing] — opt-in auto-creation of a
 //     missing directory before listing (default off, matches
 //     [ports.File]'s own "never auto-create" default)
+//   - [ports.Dir.Delete] — idempotent "ensure absent" by default;
+//     [ports.DirOptions.Strict]/[ports.DirOptions.DryRun]/
+//     [ports.DirOptions.DeleteRecursive] opt-ins for both Delete and
+//     List+CreateIfMissing (Strict on Create means the REVERSE
+//     precondition of Strict on Delete: the path must NOT already exist)
 //
 // Run with: go run ./examples/dir-io
 package main
@@ -262,4 +267,65 @@ func main() {
 		panic(err)
 	}
 	fmt.Printf("  freshly-created directory lists %d entries (empty, not an error)\n", len(freshEntries))
+
+	// Strict: refuse to reuse the directory we just created.
+	_, err = freshDir.List(nil, ports.DirOptions{CreateIfMissing: true, Strict: true})
+	var existsErr ports.DirAlreadyExistsError
+	if errors.As(err, &existsErr) {
+		fmt.Printf("  Strict: DirAlreadyExistsError (path=%q), as expected\n", existsErr.Path)
+	}
+
+	// DryRun: preview whether creation WOULD be needed, without creating anything.
+	dryRunDir := ports.NewDir(filepath.Join(root, "reports", "2024-dryrun"))
+	_, err = dryRunDir.List(nil, ports.DirOptions{CreateIfMissing: true, DryRun: true})
+	var dryRunReadErr ports.DirReadError
+	if errors.As(err, &dryRunReadErr) {
+		fmt.Printf("  DryRun: DirReadError (creation would have been needed), nothing created\n")
+	}
+
+	// ── Section 7: Dir.Delete — idempotent by default, Strict/DeleteRecursive/DryRun opt-ins ──
+	fmt.Println("\n── Section 7: Dir.Delete — idempotent by default ──")
+
+	// Delete the empty directory we created above.
+	deleted, err := freshDir.Delete(nil, ports.DirOptions{})
+	if err != nil {
+		panic(err)
+	}
+	fmt.Printf("  Delete empty dir: removed %v\n", deleted)
+
+	// Deleting again: idempotent success (no error, empty slice).
+	deleted, err = freshDir.Delete(nil, ports.DirOptions{})
+	if err != nil {
+		panic(err)
+	}
+	fmt.Printf("  Delete again: deleted=%v, err=nil (idempotent)\n", deleted)
+
+	// Strict: the directory is already gone — now it's an error.
+	_, err = freshDir.Delete(nil, ports.DirOptions{Strict: true})
+	var notFoundErr ports.DirNotFoundError
+	if errors.As(err, &notFoundErr) {
+		fmt.Printf("  Strict Delete: DirNotFoundError (already absent), as expected\n")
+	}
+
+	// Non-empty directory without DeleteRecursive: refused.
+	reportsDelete := ports.NewDir(reportsDir)
+	_, err = reportsDelete.Delete(nil, ports.DirOptions{})
+	var notEmptyErr ports.DirNotEmptyError
+	if errors.As(err, &notEmptyErr) {
+		fmt.Printf("  Delete non-empty without DeleteRecursive: DirNotEmptyError, as expected\n")
+	}
+
+	// DryRun + DeleteRecursive: preview every path that WOULD be removed.
+	previewDeleted, err := reportsDelete.Delete(nil, ports.DirOptions{DeleteRecursive: true, DryRun: true})
+	if err != nil {
+		panic(err)
+	}
+	fmt.Printf("  DryRun + DeleteRecursive: would remove %d path(s), nothing actually removed\n", len(previewDeleted))
+
+	// DeleteRecursive for real: removes the directory and everything inside it.
+	finalDeleted, err := reportsDelete.Delete(nil, ports.DirOptions{DeleteRecursive: true})
+	if err != nil {
+		panic(err)
+	}
+	fmt.Printf("  DeleteRecursive: removed %d path(s) total\n", len(finalDeleted))
 }

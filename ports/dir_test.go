@@ -13,15 +13,21 @@ import (
 	"github.com/DaniDeer/go-codex/validate"
 )
 
-// dirObserverSpy captures FileObserver.RecordFileRead callbacks (Dir.List
-// reuses the same observer extension File.Read does).
+// dirObserverSpy captures FileObserver.RecordFileRead/RecordFileDelete
+// callbacks (Dir.List/Dir.Delete reuse the same observer extension
+// File.Read/File.Delete do).
 type dirObserverSpy struct {
 	stats.NoopObserver
-	reads []fileObsCall
+	reads   []fileObsCall
+	deletes []fileObsCall
 }
 
 func (o *dirObserverSpy) RecordFileRead(path string, success bool, d time.Duration) {
 	o.reads = append(o.reads, fileObsCall{path, success, d})
+}
+
+func (o *dirObserverSpy) RecordFileDelete(path string, success bool, d time.Duration) {
+	o.deletes = append(o.deletes, fileObsCall{path, success, d})
 }
 
 var _ stats.FileObserver = (*dirObserverSpy)(nil)
@@ -361,6 +367,75 @@ func TestDir_List_CreateIfMissing_MkdirFailure_ReturnsDirReadError(t *testing.T)
 	}
 }
 
+func TestDir_List_CreateIfMissing_Strict_ExistingDir_ReturnsDirAlreadyExistsError(t *testing.T) {
+	root := t.TempDir()
+	existing := filepath.Join(root, "already-here")
+	if err := os.Mkdir(existing, 0o755); err != nil {
+		t.Fatalf("Mkdir: %v", err)
+	}
+
+	d := ports.NewDir(existing)
+	_, err := d.List(nil, ports.DirOptions{CreateIfMissing: true, Strict: true})
+	if err == nil {
+		t.Fatal("List: want error for Strict + already-existing directory, got nil")
+	}
+	var existsErr ports.DirAlreadyExistsError
+	if !errors.As(err, &existsErr) {
+		t.Fatalf("List error = %T, want ports.DirAlreadyExistsError", err)
+	}
+}
+
+func TestDir_List_CreateIfMissing_Strict_MissingDir_CreatesNormally(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "fresh")
+	d := ports.NewDir(root)
+
+	entries, err := d.List(nil, ports.DirOptions{CreateIfMissing: true, Strict: true})
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	if len(entries) != 0 {
+		t.Errorf("List = %d entries, want 0 (freshly created)", len(entries))
+	}
+	if info, statErr := os.Stat(root); statErr != nil || !info.IsDir() {
+		t.Errorf("expected directory %q to have been created", root)
+	}
+}
+
+func TestDir_List_CreateIfMissing_DryRun_MissingDir_ReturnsDirReadError(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "would-be-created")
+	d := ports.NewDir(root)
+
+	_, err := d.List(nil, ports.DirOptions{CreateIfMissing: true, DryRun: true})
+	if err == nil {
+		t.Fatal("List: want DirReadError for a genuinely-missing directory under DryRun, got nil")
+	}
+	var readErr ports.DirReadError
+	if !errors.As(err, &readErr) {
+		t.Fatalf("List error = %T, want ports.DirReadError", err)
+	}
+	if _, statErr := os.Stat(root); statErr == nil {
+		t.Error("DryRun must not actually create the directory")
+	}
+}
+
+func TestDir_List_CreateIfMissing_Strict_DryRun_ExistingDir_StillReturnsDirAlreadyExistsError(t *testing.T) {
+	root := t.TempDir()
+	existing := filepath.Join(root, "already-here")
+	if err := os.Mkdir(existing, 0o755); err != nil {
+		t.Fatalf("Mkdir: %v", err)
+	}
+
+	d := ports.NewDir(existing)
+	_, err := d.List(nil, ports.DirOptions{CreateIfMissing: true, Strict: true, DryRun: true})
+	if err == nil {
+		t.Fatal("List: want DirAlreadyExistsError even under DryRun, got nil")
+	}
+	var existsErr ports.DirAlreadyExistsError
+	if !errors.As(err, &existsErr) {
+		t.Fatalf("List error = %T, want ports.DirAlreadyExistsError", err)
+	}
+}
+
 func TestDir_List_ObserverRecordsFileRead(t *testing.T) {
 	root := t.TempDir()
 	mustWriteFile(t, filepath.Join(root, "a.json"), "{}")
@@ -424,6 +499,194 @@ func TestDirReadError_Unwrap(t *testing.T) {
 	err := ports.DirReadError{Path: "/root", Err: inner}
 	if !errors.Is(err, inner) {
 		t.Error("errors.Is(DirReadError, inner) = false, want true")
+	}
+}
+
+// ── Delete ────────────────────────────────────────────────────────────────────
+
+func TestDir_Delete_RemovesEmptyDir(t *testing.T) {
+	root := t.TempDir()
+	target := filepath.Join(root, "empty")
+	if err := os.Mkdir(target, 0o755); err != nil {
+		t.Fatalf("Mkdir: %v", err)
+	}
+
+	d := ports.NewDir(target)
+	deleted, err := d.Delete(nil, ports.DirOptions{})
+	if err != nil {
+		t.Fatalf("Delete: %v", err)
+	}
+	if len(deleted) != 1 || deleted[0] != target {
+		t.Errorf("deleted = %v, want [%q]", deleted, target)
+	}
+	if _, statErr := os.Stat(target); statErr == nil {
+		t.Error("expected directory to be removed")
+	}
+}
+
+func TestDir_Delete_NonEmptyWithoutRecursive_ReturnsDirNotEmptyError(t *testing.T) {
+	root := t.TempDir()
+	target := filepath.Join(root, "nonempty")
+	if err := os.Mkdir(target, 0o755); err != nil {
+		t.Fatalf("Mkdir: %v", err)
+	}
+	mustWriteFile(t, filepath.Join(target, "a.txt"), "x")
+
+	d := ports.NewDir(target)
+	_, err := d.Delete(nil, ports.DirOptions{})
+	if err == nil {
+		t.Fatal("Delete: want DirNotEmptyError for non-empty dir, got nil")
+	}
+	var notEmptyErr ports.DirNotEmptyError
+	if !errors.As(err, &notEmptyErr) {
+		t.Fatalf("Delete error = %T, want ports.DirNotEmptyError", err)
+	}
+	if _, statErr := os.Stat(target); statErr != nil {
+		t.Error("directory must still exist after refused delete")
+	}
+}
+
+func TestDir_Delete_NonEmptyWithRecursive_RemovesAll(t *testing.T) {
+	root := t.TempDir()
+	target := filepath.Join(root, "tree")
+	if err := os.MkdirAll(filepath.Join(target, "sub"), 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	mustWriteFile(t, filepath.Join(target, "a.txt"), "x")
+	mustWriteFile(t, filepath.Join(target, "sub", "b.txt"), "y")
+
+	d := ports.NewDir(target)
+	deleted, err := d.Delete(nil, ports.DirOptions{DeleteRecursive: true})
+	if err != nil {
+		t.Fatalf("Delete: %v", err)
+	}
+	if len(deleted) != 4 { // target, a.txt, sub, sub/b.txt
+		t.Errorf("deleted = %v, want 4 entries", deleted)
+	}
+	if _, statErr := os.Stat(target); statErr == nil {
+		t.Error("expected directory tree to be removed")
+	}
+}
+
+func TestDir_Delete_MissingDir_IdempotentSuccess(t *testing.T) {
+	d := ports.NewDir(filepath.Join(t.TempDir(), "does-not-exist"))
+	deleted, err := d.Delete(nil, ports.DirOptions{})
+	if err != nil {
+		t.Fatalf("Delete: unexpected error: %v", err)
+	}
+	if len(deleted) != 0 {
+		t.Errorf("deleted = %v, want empty", deleted)
+	}
+}
+
+func TestDir_Delete_PathVarError_NoIO(t *testing.T) {
+	d := ports.NewDir("configs/{env}")
+	_, err := d.Delete(nil, ports.DirOptions{})
+	if err == nil {
+		t.Fatal("Delete: want error for missing env var, got nil")
+	}
+	var missingErr ports.MissingDirPathVarError
+	if !errors.As(err, &missingErr) {
+		t.Fatalf("Delete error = %T, want ports.MissingDirPathVarError", err)
+	}
+}
+
+func TestDir_Delete_DryRun_NonRecursive_ReportsWithoutRemoving(t *testing.T) {
+	root := t.TempDir()
+	target := filepath.Join(root, "empty")
+	if err := os.Mkdir(target, 0o755); err != nil {
+		t.Fatalf("Mkdir: %v", err)
+	}
+
+	d := ports.NewDir(target)
+	deleted, err := d.Delete(nil, ports.DirOptions{DryRun: true})
+	if err != nil {
+		t.Fatalf("Delete: %v", err)
+	}
+	if len(deleted) != 1 || deleted[0] != target {
+		t.Errorf("deleted = %v, want [%q]", deleted, target)
+	}
+	if _, statErr := os.Stat(target); statErr != nil {
+		t.Error("DryRun must not actually remove the directory")
+	}
+}
+
+func TestDir_Delete_DryRun_Recursive_ListsAllAffectedPaths(t *testing.T) {
+	root := t.TempDir()
+	target := filepath.Join(root, "tree")
+	if err := os.MkdirAll(filepath.Join(target, "sub"), 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	mustWriteFile(t, filepath.Join(target, "a.txt"), "x")
+	mustWriteFile(t, filepath.Join(target, "sub", "b.txt"), "y")
+
+	d := ports.NewDir(target)
+	deleted, err := d.Delete(nil, ports.DirOptions{DeleteRecursive: true, DryRun: true})
+	if err != nil {
+		t.Fatalf("Delete: %v", err)
+	}
+	if len(deleted) != 4 {
+		t.Errorf("deleted = %v, want 4 entries", deleted)
+	}
+	if _, statErr := os.Stat(target); statErr != nil {
+		t.Error("DryRun must not actually remove anything")
+	}
+}
+
+func TestDir_Delete_DryRun_NonEmptyWithoutRecursive_StillReturnsDirNotEmptyError(t *testing.T) {
+	root := t.TempDir()
+	target := filepath.Join(root, "nonempty")
+	if err := os.Mkdir(target, 0o755); err != nil {
+		t.Fatalf("Mkdir: %v", err)
+	}
+	mustWriteFile(t, filepath.Join(target, "a.txt"), "x")
+
+	d := ports.NewDir(target)
+	_, err := d.Delete(nil, ports.DirOptions{DryRun: true})
+	if err == nil {
+		t.Fatal("Delete: want DirNotEmptyError even under DryRun, got nil")
+	}
+	var notEmptyErr ports.DirNotEmptyError
+	if !errors.As(err, &notEmptyErr) {
+		t.Fatalf("Delete error = %T, want ports.DirNotEmptyError", err)
+	}
+}
+
+func TestDir_Delete_Strict_MissingDir_ReturnsDirNotFoundError(t *testing.T) {
+	d := ports.NewDir(filepath.Join(t.TempDir(), "does-not-exist"))
+	_, err := d.Delete(nil, ports.DirOptions{Strict: true})
+	if err == nil {
+		t.Fatal("Delete: want error for missing directory with Strict, got nil")
+	}
+	var notFoundErr ports.DirNotFoundError
+	if !errors.As(err, &notFoundErr) {
+		t.Fatalf("Delete error = %T, want ports.DirNotFoundError", err)
+	}
+}
+
+func TestDir_Delete_ObserverRecordsFileDelete(t *testing.T) {
+	root := t.TempDir()
+	target := filepath.Join(root, "empty")
+	if err := os.Mkdir(target, 0o755); err != nil {
+		t.Fatalf("Mkdir: %v", err)
+	}
+
+	obs := &dirObserverSpy{}
+	d := ports.NewDir(target)
+	if _, err := d.Delete(nil, ports.DirOptions{Observer: obs}); err != nil {
+		t.Fatalf("Delete: %v", err)
+	}
+	if len(obs.deletes) != 1 || !obs.deletes[0].success {
+		t.Fatalf("RecordFileDelete calls = %+v, want one successful call", obs.deletes)
+	}
+
+	obs2 := &dirObserverSpy{}
+	missing := ports.NewDir(filepath.Join(root, "does-not-exist"))
+	if _, err := missing.Delete(nil, ports.DirOptions{Observer: obs2, Strict: true}); err == nil {
+		t.Fatal("Delete: want DirNotFoundError")
+	}
+	if len(obs2.deletes) != 1 || obs2.deletes[0].success {
+		t.Fatalf("RecordFileDelete calls = %+v, want one failed call", obs2.deletes)
 	}
 }
 

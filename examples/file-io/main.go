@@ -191,7 +191,8 @@ func loadConfig(ctx context.Context, path string) (ServiceConfig, error) {
 // writeConfig writes config to the given path.
 func writeConfig(ctx context.Context, path string, cfg ServiceConfig) error {
 	f := ports.NewFile(path, format.TOML(configCodec))
-	return f.Write(nil, cfg, ports.FileOptions{Context: ctx, Perm: 0600}) // observer from ctx
+	_, err := f.Write(nil, cfg, ports.FileOptions{Context: ctx, Perm: 0600}) // observer from ctx
+	return err
 }
 
 // ── main ──────────────────────────────────────────────────────────────────────
@@ -246,7 +247,7 @@ func main() {
 
 	// Update: bump retention_days by 10 via atomic read-modify-write.
 	f := ports.NewFile(cfgPath, format.TOML(configCodec))
-	if err := f.Update(nil, func(c ServiceConfig) ServiceConfig {
+	if _, err := f.Update(nil, func(c ServiceConfig) ServiceConfig {
 		c.RetentionDays += 10
 		return c
 	}, ports.FileOptions{Context: ctx}); err != nil {
@@ -312,7 +313,7 @@ func main() {
 		Value:     23.7,
 		Unit:      "celsius",
 	}
-	if err := sensorFile.Write(vars, m, ports.FileOptions{Context: ctx}); err != nil {
+	if _, err := sensorFile.Write(vars, m, ports.FileOptions{Context: ctx}); err != nil {
 		slog.Error("Write failed", "err", err)
 	} else {
 		fmt.Printf("  written: sensor=%s value=%.1f%s\n", m.SensorID, m.Value, m.Unit)
@@ -403,18 +404,74 @@ func main() {
 	newVars := map[string]string{"date": "2024-02-01", "sensor": "temp-99"}
 
 	// Without CreateDirs: the "2024-02-01" directory doesn't exist yet.
-	if err := sensorFile.Write(newVars, m, ports.FileOptions{Context: ctx}); err != nil {
+	if _, err := sensorFile.Write(newVars, m, ports.FileOptions{Context: ctx}); err != nil {
 		var writeErr ports.FileWriteError
 		if errors.As(err, &writeErr) {
 			fmt.Printf("  without CreateDirs: FileWriteError (missing parent dir), as expected\n")
 		}
 	}
 
+	// DryRun + CreateDirs: preview which directories WOULD be created,
+	// without creating them or writing the file.
+	createdDirs, err := sensorFile.Write(newVars, m, ports.FileOptions{Context: ctx, CreateDirs: true, DryRun: true})
+	if err != nil {
+		slog.Error("DryRun write failed", "err", err)
+	} else {
+		fmt.Printf("  DryRun + CreateDirs: would create %d dir(s): %v (nothing written)\n", len(createdDirs), createdDirs)
+	}
+
 	// With CreateDirs: the missing "2024-02-01" directory is created first.
-	if err := sensorFile.Write(newVars, m, ports.FileOptions{Context: ctx, CreateDirs: true}); err != nil {
+	createdDirs, err = sensorFile.Write(newVars, m, ports.FileOptions{Context: ctx, CreateDirs: true})
+	if err != nil {
 		slog.Error("Write with CreateDirs failed", "err", err)
 	} else {
-		fmt.Println("  with CreateDirs: parent directory created, write succeeded")
+		fmt.Printf("  with CreateDirs: created %d dir(s): %v, write succeeded\n", len(createdDirs), createdDirs)
+	}
+
+	// Strict: refuse to overwrite the file we just wrote (O_CREATE|O_EXCL).
+	if _, err := sensorFile.Write(newVars, m, ports.FileOptions{Context: ctx, Strict: true}); err != nil {
+		var existsErr ports.FileAlreadyExistsError
+		if errors.As(err, &existsErr) {
+			fmt.Printf("  Strict: FileAlreadyExistsError (file already exists), as expected\n")
+		}
+	}
+
+	// ── Section 2d: Delete — idempotent by default, Strict/DryRun opt-ins ────
+	//
+	// File.Delete's default is idempotent "ensure absent": deleting an
+	// already-missing file succeeds. FileOptions.Strict opts OUT of that,
+	// requiring the file to have existed. FileOptions.DryRun previews the
+	// outcome without touching the filesystem.
+	fmt.Println("\n── Section 2d: File.Delete — idempotent by default ──")
+
+	existed, err := sensorFile.Delete(newVars, ports.FileOptions{Context: ctx, DryRun: true})
+	if err != nil {
+		slog.Error("DryRun delete failed", "err", err)
+	} else {
+		fmt.Printf("  DryRun: existed=%v (nothing removed)\n", existed)
+	}
+
+	existed, err = sensorFile.Delete(newVars, ports.FileOptions{Context: ctx})
+	if err != nil {
+		slog.Error("Delete failed", "err", err)
+	} else {
+		fmt.Printf("  Delete: existed=%v, file removed\n", existed)
+	}
+
+	// Deleting again: idempotent success (no error, existed=false).
+	existed, err = sensorFile.Delete(newVars, ports.FileOptions{Context: ctx})
+	if err != nil {
+		slog.Error("second Delete failed unexpectedly", "err", err)
+	} else {
+		fmt.Printf("  Delete again: existed=%v, err=nil (idempotent)\n", existed)
+	}
+
+	// Strict: the file is already gone — now it's an error.
+	if _, err := sensorFile.Delete(newVars, ports.FileOptions{Context: ctx, Strict: true}); err != nil {
+		var notFoundErr ports.FileNotFoundError
+		if errors.As(err, &notFoundErr) {
+			fmt.Printf("  Strict Delete: FileNotFoundError (already absent), as expected\n")
+		}
 	}
 
 	// ── Section 3: Error handling ─────────────────────────────────────────────
@@ -488,7 +545,7 @@ func main() {
 	pngVars := map[string]string{"name": "chart"}
 
 	// Write — FileObserver.RecordFileWrite is called after the write.
-	if err := pngFile.Write(pngVars, validPNG, ports.FileOptions{Context: ctx}); err != nil {
+	if _, err := pngFile.Write(pngVars, validPNG, ports.FileOptions{Context: ctx}); err != nil {
 		slog.Error("PNG write failed", "err", err)
 	} else {
 		fmt.Printf("  written PNG: %d bytes\n", len(validPNG))
@@ -504,7 +561,7 @@ func main() {
 
 	// Write invalid data (missing PNG magic bytes) — constraint failure.
 	notPNG := []byte("this is not a PNG file")
-	if err := pngFile.Write(pngVars, notPNG, ports.FileOptions{Context: ctx}); err != nil {
+	if _, err := pngFile.Write(pngVars, notPNG, ports.FileOptions{Context: ctx}); err != nil {
 		var encErr ports.FileEncodeError
 		if errors.As(err, &encErr) {
 			fmt.Printf("  FileEncodeError (constraint): path=%q\n", encErr.Path)
@@ -543,7 +600,7 @@ func main() {
 	appCfgFile := ports.NewFile(dataDir+"/app-config.json", format.JSON(appCfgCodec))
 
 	initial := appCfg{Port: 8080, LogLevel: "info", MaxWorkers: 4}
-	if err := appCfgFile.Write(nil, initial, ports.FileOptions{Context: ctx}); err != nil {
+	if _, err := appCfgFile.Write(nil, initial, ports.FileOptions{Context: ctx}); err != nil {
 		slog.Error("Write initial config failed", "err", err)
 		os.Exit(1)
 	}
@@ -589,7 +646,7 @@ func main() {
 	)
 
 	// Reset to initial values.
-	_ = appCfgFile.Write(nil, initial, ports.FileOptions{})
+	_, _ = appCfgFile.Write(nil, initial, ports.FileOptions{})
 	fmt.Printf("  reset: port=%d log_level=%q max_workers=%d\n",
 		initial.Port, initial.LogLevel, initial.MaxWorkers)
 
@@ -612,8 +669,8 @@ func main() {
 	// If you've already decoded the struct and modified it, Write is the right choice.
 	// Update re-reads unnecessarily if you already have the value in memory.
 	decoded, _ := appCfgFile.Read(nil, ports.FileOptions{})
-	decoded.Port = 5050                                                 // modify in memory
-	_ = appCfgFile.Write(nil, decoded, ports.FileOptions{Context: ctx}) // Write directly — no re-read
+	decoded.Port = 5050                                                    // modify in memory
+	_, _ = appCfgFile.Write(nil, decoded, ports.FileOptions{Context: ctx}) // Write directly — no re-read
 	fmt.Printf("  after Write (decoded→modified): port=%d\n", decoded.Port)
 
 	// ── FilePatchNotSupportedError for Gob ────────────────────────────────────

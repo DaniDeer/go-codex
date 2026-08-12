@@ -405,7 +405,7 @@ func main() {
 
 	fmt.Println("=== 1. Write and read (flat dotted keys) ===")
 
-	if err := twinFile.Write(nil, initial, opts); err != nil {
+	if _, err := twinFile.Write(nil, initial, opts); err != nil {
 		fmt.Fprintln(os.Stderr, "Write:", err)
 		os.Exit(1)
 	}

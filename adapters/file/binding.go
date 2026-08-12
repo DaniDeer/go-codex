@@ -495,7 +495,7 @@ func (a *fileDrainWriteFileAdapter[T]) Activate(ctx context.Context, src gstream
 				}
 				return nil
 			}
-			if err := a.f.Write(vars, v, fileOpts); err != nil {
+			if _, err := a.f.Write(vars, v, fileOpts); err != nil {
 				if onErr != nil {
 					onErr(err)
 				}

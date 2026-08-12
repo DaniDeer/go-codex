@@ -3,12 +3,13 @@
 > **Status:** Idea only — not designed, no use case yet.
 > [← Back to Roadmap](index.md)
 >
-> Follow-on to the now-SHIPPED [Directory Listing Port](directory-listing-port.md)
-> (`ports.Dir`/`DirPathParam`, see `docs/features/ports.md`) — split out
-> as its own roadmap entry since it is a genuinely separate design
-> question that would affect BOTH `ports.File`'s existing `FilePathParam`
-> and `ports.Dir`'s `DirPathParam`, not something scoped into either
-> feature's Phase 1.
+> Follow-on to the now-SHIPPED Directory Listing Port (`ports.Dir`/
+> `DirPathParam`, see `docs/features/ports.md`'s "`Dir` — listing a
+> directory's entries" subsection — its roadmap doc was retired once
+> shipped) — split out as its own roadmap entry since it is a genuinely
+> separate design question that would affect BOTH `ports.File`'s existing
+> `FilePathParam` and `ports.Dir`'s `DirPathParam`, not something scoped
+> into either feature's Phase 1.
 
 ## The idea
 

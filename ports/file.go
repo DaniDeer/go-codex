@@ -102,8 +102,11 @@ func (p MergedFilePathParam[T]) applyFile(fb *fileBuilder) {
 
 // ── FileOptions ───────────────────────────────────────────────────────────────
 
-// FileOptions configures the behaviour of [File.Read], [File.Write], and
-// [File.Update].
+// FileOptions configures the behaviour of [File.Read], [File.ReadMerged],
+// [File.Write], [File.Update], [File.Delete], [File.Patch], [PatchEncoded],
+// and [WriteHandle]. Not every field applies to every method — e.g. Perm/
+// CreateDirs/DirPerm only affect Write-family methods, DryRun/Strict apply
+// per-method with a method-specific meaning documented on each field below.
 type FileOptions struct {
 	// Observer, when non-nil, receives per-operation lifecycle events.
 	// [stats.FileObserver.RecordFileRead] is called after every Read or Update
@@ -136,6 +139,25 @@ type FileOptions struct {
 	// DirPerm is the permission used for directories created by CreateDirs.
 	// Defaults to 0755 when zero. Has no effect when CreateDirs is false.
 	DirPerm os.FileMode
+
+	// DryRun, when true:
+	//   - on [File.Delete]: reports what WOULD happen (via existed/err)
+	//     WITHOUT removing the file.
+	//   - on [File.Write]: reports which directories WOULD be created
+	//     (via createdDirs) WITHOUT creating them or writing the file —
+	//     the value is still encoded, so encode errors still surface.
+	// Default false.
+	DryRun bool
+
+	// Strict, when true:
+	//   - on [File.Delete]: requires the file to have existed —
+	//     [FileNotFoundError] instead of idempotent "ensure absent" success.
+	//   - on [File.Write]: requires the file to NOT already exist —
+	//     [FileAlreadyExistsError] instead of silently overwriting
+	//     (O_CREATE|O_EXCL semantics; the create-side precondition-mirror
+	//     of Delete's Strict). Has no effect on Read/Update/Patch.
+	// Default false — existing callers see no change unless they opt in.
+	Strict bool
 }
 
 // ── File ──────────────────────────────────────────────────────────────────────
@@ -426,15 +448,25 @@ func (fh File[T]) ReadMerged(vars map[string]string, opts FileOptions) (T, error
 }
 
 // Write builds the concrete path from vars, encodes v, and writes it to the file.
-// The file is created if it does not exist, or truncated and overwritten if it does.
-// Missing PARENT directories are NOT created unless [FileOptions.CreateDirs]
-// is set — matches [os.WriteFile]'s own behavior by default.
+// The file is created if it does not exist, or truncated and overwritten if it does
+// — unless [FileOptions.Strict] is set AND the file already exists, in which case
+// Write returns [FileAlreadyExistsError] and performs no write (O_CREATE|O_EXCL
+// semantics). Missing PARENT directories are NOT created unless
+// [FileOptions.CreateDirs] is set — matches [os.WriteFile]'s own behavior by default.
+//
+// createdDirs lists the parent directories that were created (or, under
+// [FileOptions.DryRun], that WOULD be created) — empty when CreateDirs is
+// false or no parent directories were missing. Under DryRun, NOTHING is
+// created or written — createdDirs and any [FileAlreadyExistsError]
+// reflect exactly what a real call would do (the value is still encoded,
+// so [FileEncodeError] still surfaces normally).
 //
 // Errors:
 //   - [FilePathParamError] / [MissingFilePathVarError] — path variable validation failure (no I/O)
 //   - [FileEncodeError] — format encode/validation failure
+//   - [FileAlreadyExistsError] — file already exists AND [FileOptions.Strict] is set
 //   - [FileWriteError] — os.MkdirAll (when CreateDirs is set) or os.WriteFile failure
-func (fh File[T]) Write(vars map[string]string, v T, opts FileOptions) error {
+func (fh File[T]) Write(vars map[string]string, v T, opts FileOptions) (createdDirs []string, err error) {
 	obs := opts.Observer
 	if obs == nil && opts.Context != nil {
 		obs = stats.ObserverFromContext(opts.Context)
@@ -446,10 +478,14 @@ func (fh File[T]) Write(vars map[string]string, v T, opts FileOptions) error {
 	if perm == 0 {
 		perm = 0644
 	}
+	dirPerm := opts.DirPerm
+	if dirPerm == 0 {
+		dirPerm = 0755
+	}
 
-	path, err := fh.BuildPath(vars)
-	if err != nil {
-		return err
+	path, buildErr := fh.BuildPath(vars)
+	if buildErr != nil {
+		return nil, buildErr
 	}
 
 	var opErr error
@@ -462,34 +498,154 @@ func (fh File[T]) Write(vars map[string]string, v T, opts FileOptions) error {
 		defer func() { to.EndSpan(traceCtx, opErr) }()
 	}
 
-	data, err := fh.format.Marshal(v)
-	if err != nil {
-		opErr = FileEncodeError{Path: path, Err: err}
-		stats.ReportErrors(obs, "file", err)
+	data, encErr := fh.format.Marshal(v)
+	if encErr != nil {
+		opErr = FileEncodeError{Path: path, Err: encErr}
+		stats.ReportErrors(obs, "file", encErr)
 		recordFileWrite(obs, path, false, 0)
-		return opErr
+		return nil, opErr
 	}
 
 	start := time.Now()
+
 	if opts.CreateDirs {
-		dirPerm := opts.DirPerm
-		if dirPerm == 0 {
-			dirPerm = 0755
+		createdDirs = missingParentDirs(filepath.Dir(path))
+	}
+
+	if opts.DryRun {
+		if opts.Strict {
+			if _, statErr := os.Stat(path); statErr == nil {
+				opErr = FileAlreadyExistsError{Path: path}
+				recordFileWrite(obs, path, false, time.Since(start))
+				return createdDirs, opErr
+			} else if !os.IsNotExist(statErr) {
+				opErr = FileWriteError{Path: path, Err: statErr}
+				recordFileWrite(obs, path, false, time.Since(start))
+				return createdDirs, opErr
+			}
 		}
+		recordFileWrite(obs, path, true, time.Since(start))
+		return createdDirs, nil
+	}
+
+	if opts.CreateDirs {
 		if err := os.MkdirAll(filepath.Dir(path), dirPerm); err != nil {
 			opErr = FileWriteError{Path: path, Err: err}
 			recordFileWrite(obs, path, false, time.Since(start))
-			return opErr
+			return nil, opErr
 		}
 	}
+
+	if opts.Strict {
+		f, openErr := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, perm)
+		if openErr != nil {
+			if os.IsExist(openErr) {
+				opErr = FileAlreadyExistsError{Path: path}
+			} else {
+				opErr = FileWriteError{Path: path, Err: openErr}
+			}
+			recordFileWrite(obs, path, false, time.Since(start))
+			return createdDirs, opErr
+		}
+		_, writeErr := f.Write(data)
+		closeErr := f.Close()
+		if writeErr != nil {
+			opErr = FileWriteError{Path: path, Err: writeErr}
+			recordFileWrite(obs, path, false, time.Since(start))
+			return createdDirs, opErr
+		}
+		if closeErr != nil {
+			opErr = FileWriteError{Path: path, Err: closeErr}
+			recordFileWrite(obs, path, false, time.Since(start))
+			return createdDirs, opErr
+		}
+		recordFileWrite(obs, path, true, time.Since(start))
+		return createdDirs, nil
+	}
+
 	if err := os.WriteFile(path, data, perm); err != nil {
 		opErr = FileWriteError{Path: path, Err: err}
 		recordFileWrite(obs, path, false, time.Since(start))
-		return opErr
+		return createdDirs, opErr
 	}
 
 	recordFileWrite(obs, path, true, time.Since(start))
-	return nil
+	return createdDirs, nil
+}
+
+// Delete removes the file at the built path. By default, Delete is
+// idempotent "ensure absent" semantics: if the file is already gone,
+// Delete succeeds. Set [FileOptions.Strict] to require the file to have
+// existed — a missing file then returns [FileNotFoundError] instead.
+// existed reports whether the file was present before the call (true
+// even under [FileOptions.DryRun], which performs the same existence
+// check but skips the actual os.Remove).
+//
+// Errors:
+//   - [FilePathParamError] / [MissingFilePathVarError] — path variable validation failure (no I/O)
+//   - [FileNotFoundError] — file did not exist AND [FileOptions.Strict] is set
+//   - [FileDeleteError] — os.Remove failure OTHER than "already absent"
+//     (e.g. permission denied, path is actually a non-empty directory)
+func (fh File[T]) Delete(vars map[string]string, opts FileOptions) (existed bool, err error) {
+	obs := opts.Observer
+	if obs == nil && opts.Context != nil {
+		obs = stats.ObserverFromContext(opts.Context)
+	}
+	if obs == nil {
+		obs = stats.NoopObserver{}
+	}
+
+	path, buildErr := fh.BuildPath(vars)
+	if buildErr != nil {
+		return false, buildErr
+	}
+
+	var opErr error
+	traceCtx := opts.Context
+	if traceCtx == nil {
+		traceCtx = context.Background()
+	}
+	if to, ok := obs.(stats.TraceObserver); ok {
+		traceCtx = to.StartSpan(traceCtx, "file.delete", path)
+		defer func() { to.EndSpan(traceCtx, opErr) }()
+	}
+
+	start := time.Now()
+
+	if opts.DryRun {
+		_, statErr := os.Stat(path)
+		existed = statErr == nil
+		if statErr != nil && !os.IsNotExist(statErr) {
+			opErr = FileDeleteError{Path: path, Err: statErr}
+			recordFileDelete(obs, path, false, time.Since(start))
+			return false, opErr
+		}
+		if !existed && opts.Strict {
+			opErr = FileNotFoundError{Path: path}
+			recordFileDelete(obs, path, false, time.Since(start))
+			return false, opErr
+		}
+		recordFileDelete(obs, path, true, time.Since(start))
+		return existed, nil
+	}
+
+	removeErr := os.Remove(path)
+	if removeErr == nil {
+		recordFileDelete(obs, path, true, time.Since(start))
+		return true, nil
+	}
+	if os.IsNotExist(removeErr) {
+		if opts.Strict {
+			opErr = FileNotFoundError{Path: path}
+			recordFileDelete(obs, path, false, time.Since(start))
+			return false, opErr
+		}
+		recordFileDelete(obs, path, true, time.Since(start))
+		return false, nil
+	}
+	opErr = FileDeleteError{Path: path, Err: removeErr}
+	recordFileDelete(obs, path, false, time.Since(start))
+	return true, opErr
 }
 
 // WriteHandle is the single-call convenience wrapper around [File.Write]:
@@ -502,12 +658,12 @@ func (fh File[T]) Write(vars map[string]string, v T, opts FileOptions) error {
 // callers that build the vars map themselves (e.g. no merge-capable path
 // params declared, or vars come from a non-struct source).
 //
-//	err := ports.WriteHandle(readingFile, reading, ports.FileOptions{})
+//	createdDirs, err := ports.WriteHandle(readingFile, reading, ports.FileOptions{})
 //	// path derived from reading's own SensorID field — no manual vars map.
-func WriteHandle[T any](fh File[T], v T, opts FileOptions) error {
+func WriteHandle[T any](fh File[T], v T, opts FileOptions) (createdDirs []string, err error) {
 	vars, err := codex.EncodeVars(v, fh.mergeFields...)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	if len(vars) == 0 {
 		vars = nil
@@ -524,10 +680,10 @@ func WriteHandle[T any](fh File[T], v T, opts FileOptions) error {
 // to avoid an unnecessary re-read.
 //
 // Errors: see [File.Read] and [File.Write].
-func (fh File[T]) Update(vars map[string]string, fn func(T) T, opts FileOptions) error {
+func (fh File[T]) Update(vars map[string]string, fn func(T) T, opts FileOptions) (createdDirs []string, err error) {
 	v, err := fh.Read(vars, opts)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	return fh.Write(vars, fn(v), opts)
 }
@@ -770,8 +926,12 @@ func (fh File[T]) Patch(vars map[string]string, patch map[string]any, opts FileO
 	}
 	recordFileRead(obs, path, true, time.Since(start))
 
-	// Write the patched value back.
-	return fh.Write(vars, patched, opts)
+	// Write the patched value back. createdDirs is discarded — Patch
+	// requires the file to already exist (it just Read it above), so
+	// CreateDirs never has any missing parent directory left to create
+	// by the time Write is reached here.
+	_, err = fh.Write(vars, patched, opts)
+	return err
 }
 
 // ── FilePatchNotSupportedError ────────────────────────────────────────────────
@@ -814,6 +974,41 @@ func recordFileWrite(obs stats.Observer, path string, success bool, d time.Durat
 	if fo, ok := obs.(stats.FileObserver); ok {
 		fo.RecordFileWrite(path, success, d)
 	}
+}
+
+func recordFileDelete(obs stats.Observer, path string, success bool, d time.Duration) {
+	if fo, ok := obs.(stats.FileObserver); ok {
+		fo.RecordFileDelete(path, success, d)
+	}
+}
+
+// missingParentDirs returns the list of directories, from the outermost
+// missing ancestor down to dir itself, that do not currently exist —
+// exactly the directories os.MkdirAll(dir, ...) would create. Returns nil
+// if dir already exists. Used by [File.Write]'s CreateDirs to report
+// createdDirs (both for a real call and a DryRun preview).
+func missingParentDirs(dir string) []string {
+	var missing []string
+	cur := dir
+	for {
+		_, statErr := os.Stat(cur)
+		if statErr == nil {
+			// Exists already (as a directory or otherwise — if it's a
+			// non-directory, os.MkdirAll will fail; the caller's real
+			// MkdirAll call surfaces that error).
+			break
+		}
+		missing = append(missing, cur)
+		parent := filepath.Dir(cur)
+		if parent == cur {
+			break // reached filesystem root
+		}
+		cur = parent
+	}
+	for i, j := 0, len(missing)-1; i < j; i, j = i+1, j-1 {
+		missing[i], missing[j] = missing[j], missing[i]
+	}
+	return missing
 }
 
 // ── Template engine ───────────────────────────────────────────────────────────
@@ -1034,5 +1229,62 @@ func (e FileWriteError) LogValue() slog.Value {
 	return slog.GroupValue(
 		slog.String("path", e.Path),
 		slog.Any("cause", e.Err),
+	)
+}
+
+// FileAlreadyExistsError is returned by [File.Write] when [FileOptions.Strict]
+// is set and the file already exists (O_CREATE|O_EXCL semantics) — no write
+// is performed.
+type FileAlreadyExistsError struct {
+	Path string
+}
+
+func (e FileAlreadyExistsError) Error() string {
+	return fmt.Sprintf("file %q already exists (Strict)", e.Path)
+}
+
+// LogValue implements [slog.LogValuer] for structured logging.
+func (e FileAlreadyExistsError) LogValue() slog.Value {
+	return slog.GroupValue(
+		slog.String("path", e.Path),
+	)
+}
+
+// FileDeleteError is returned by [File.Delete] when [os.Remove] fails for a
+// reason OTHER than "already absent" (e.g. permission denied, path is
+// actually a non-empty directory).
+type FileDeleteError struct {
+	Path string
+	Err  error
+}
+
+func (e FileDeleteError) Error() string { return fmt.Sprintf("delete file %q: %s", e.Path, e.Err) }
+
+// Unwrap allows [errors.Is] and [errors.As] to traverse the underlying error.
+func (e FileDeleteError) Unwrap() error { return e.Err }
+
+// LogValue implements [slog.LogValuer] for structured logging.
+func (e FileDeleteError) LogValue() slog.Value {
+	return slog.GroupValue(
+		slog.String("path", e.Path),
+		slog.Any("cause", e.Err),
+	)
+}
+
+// FileNotFoundError is returned by [File.Delete] when [FileOptions.Strict]
+// is set and the file did not exist — Delete's default is idempotent
+// "ensure absent" success; Strict opts out of that.
+type FileNotFoundError struct {
+	Path string
+}
+
+func (e FileNotFoundError) Error() string {
+	return fmt.Sprintf("file %q does not exist (Strict)", e.Path)
+}
+
+// LogValue implements [slog.LogValuer] for structured logging.
+func (e FileNotFoundError) LogValue() slog.Value {
+	return slog.GroupValue(
+		slog.String("path", e.Path),
 	)
 }

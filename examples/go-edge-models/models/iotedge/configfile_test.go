@@ -55,7 +55,7 @@ func TestNewConfigFile_WriteThenRead(t *testing.T) {
 
 	fh := NewConfigFile(path)
 	manifest := sampleManifest()
-	if err := fh.Write(nil, manifest, ports.FileOptions{}); err != nil {
+	if _, err := fh.Write(nil, manifest, ports.FileOptions{}); err != nil {
 		t.Fatalf("Write: %v", err)
 	}
 
@@ -76,7 +76,7 @@ func TestNewConfigFile_DifferentPathsAreIndependent(t *testing.T) {
 	fhA := NewConfigFile(pathA)
 	fhB := NewConfigFile(pathB)
 
-	if err := fhA.Write(nil, sampleManifest(), ports.FileOptions{}); err != nil {
+	if _, err := fhA.Write(nil, sampleManifest(), ports.FileOptions{}); err != nil {
 		t.Fatalf("Write A: %v", err)
 	}
 	if _, err := fhB.Read(nil, ports.FileOptions{}); err == nil {

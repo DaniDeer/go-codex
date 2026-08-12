@@ -787,11 +787,47 @@ by default, writing to a path whose directory doesn't exist yet returns
 `FileWriteError`. Opt into auto-creation with `FileOptions.CreateDirs: true`
 (`os.MkdirAll` runs before the write; `FileOptions.DirPerm` controls the
 created directories' permission, defaulting to `0755`). Default `false` —
-existing callers see no behavior change.
+existing callers see no behavior change. `Write` returns the list of
+directories it created (`createdDirs []string`) — empty when `CreateDirs`
+is false or nothing was missing; `WriteHandle`/`Update` propagate the same
+return.
 
 ```go
-err := calibFile.Write(vars, data, ports.FileOptions{CreateDirs: true})
-// creates data/<sensorID>/ if it doesn't exist yet, then writes calibration.json
+createdDirs, err := calibFile.Write(vars, data, ports.FileOptions{CreateDirs: true})
+// creates data/<sensorID>/ if it doesn't exist yet, then writes calibration.json;
+// createdDirs lists exactly which directories (if any) were created.
+```
+
+**`DryRun`/`Strict` on `Write`**: `FileOptions.DryRun: true` previews a
+write — `createdDirs` reports which directories WOULD be created, and the
+value is still encoded (so `FileEncodeError` still surfaces), but nothing
+is created or written. `FileOptions.Strict: true` makes `Write` refuse to
+overwrite an ALREADY-EXISTING file (`O_CREATE|O_EXCL` semantics, new
+`FileAlreadyExistsError`) instead of silently overwriting — the
+create-side precondition-mirror of `File.Delete`'s own `Strict` (below):
+Delete's `Strict` demands the path already existed; Write's `Strict`
+demands it did NOT.
+
+```go
+createdDirs, err := calibFile.Write(vars, data, ports.FileOptions{DryRun: true, CreateDirs: true})
+// reports createdDirs without creating anything or writing the file
+
+_, err = calibFile.Write(vars, data, ports.FileOptions{Strict: true})
+// fails with FileAlreadyExistsError if calibration.json already exists
+```
+
+**`File.Delete`**: removes the file at the built path. Idempotent
+"ensure absent" by DEFAULT — deleting an already-missing file succeeds
+(`existed == false, err == nil`). Opt into `FileOptions.Strict: true` to
+require the file to have existed (`FileNotFoundError` otherwise).
+`FileOptions.DryRun: true` reports `existed`/error WITHOUT removing.
+
+```go
+existed, err := calibFile.Delete(vars, ports.FileOptions{})
+// existed == false if the file was already gone — not an error
+
+_, err = calibFile.Delete(vars, ports.FileOptions{Strict: true})
+// FileNotFoundError if the file didn't exist
 ```
 
 ### `Dir` — listing a directory's entries (declarative `ls`)
@@ -857,6 +893,45 @@ entries, err := useCaseDir.List(nil, ports.DirOptions{Observer: obs})
   `DirOptions.CreatePerm` controls the permission, defaulting to `0755`).
   Default `false` — existing callers see no behavior change; same opt-in
   precedent as `FileOptions.CreateDirs` above.
+- **`DryRun`/`Strict` on `List`+`CreateIfMissing`**: `DryRun: true` skips
+  only the mutating `os.MkdirAll` call — a genuinely-missing directory
+  then naturally surfaces `DirReadError` from `List`'s own `os.ReadDir`
+  (the informative "creation would have been needed" signal). `Strict:
+  true` requires the directory to NOT already exist (`DirAlreadyExistsError`
+  otherwise) — checked via `os.Stat` before `os.MkdirAll`, so it still
+  fires under `DryRun`. Has no effect when `CreateIfMissing` is false —
+  the create-side precondition-mirror of `Dir.Delete`'s own `Strict`
+  (below).
+
+```go
+entries, err := useCaseDir.List(nil, ports.DirOptions{CreateIfMissing: true, Strict: true})
+// DirAlreadyExistsError if a directory already sits at that path
+```
+
+- **`Dir.Delete`**: removes the directory at the built path (and, with
+  `DirOptions.DeleteRecursive: true`, everything inside it —
+  `os.RemoveAll`; refused with `DirNotEmptyError` otherwise if
+  non-empty). Idempotent "ensure absent" by DEFAULT (missing directory =
+  success, empty `deleted` slice). `DirOptions.Strict: true` requires the
+  directory to have existed (`DirNotFoundError` otherwise).
+  `DirOptions.DryRun: true` returns the affected-paths list WITHOUT
+  removing anything, reporting the same errors a real call would.
+  `DeleteRecursive` is deliberately SEPARATE from `Dir`'s own declared
+  `WithRecursive` (a listing-depth option) — a destructive operation must
+  be opted into explicitly, per call, never inherited from an unrelated
+  listing declaration.
+
+```go
+deleted, err := useCaseDir.Delete(nil, ports.DirOptions{})
+// deleted == nil if the directory was already gone — not an error
+
+_, err = useCaseDir.Delete(nil, ports.DirOptions{})
+// DirNotEmptyError if the directory still has files, unless DeleteRecursive is set
+
+deleted, err = useCaseDir.Delete(nil, ports.DirOptions{DeleteRecursive: true, DryRun: true})
+// deleted lists every path that WOULD be removed, with nothing actually deleted
+```
+
 - No streaming/watch variant yet (`Dir.List` returns one `[]DirEntry`
   snapshot per call) — see `docs/roadmap/dir-walk-adapter.md` for an
   idea-only sketch of a future streamed/continuous-watch adapter.

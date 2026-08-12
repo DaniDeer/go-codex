@@ -213,7 +213,7 @@ func TestReadEachAdapter_HappyPath(t *testing.T) {
 	)
 	for id, factor := range map[string]float64{"a": 2.0, "b": 3.0} {
 		f := ports.NewFile(filepath.Join(dir, id+".json"), format.JSON(c))
-		if err := f.Write(nil, config{Factor: factor}, ports.FileOptions{}); err != nil {
+		if _, err := f.Write(nil, config{Factor: factor}, ports.FileOptions{}); err != nil {
 			t.Fatalf("write: %v", err)
 		}
 	}
@@ -357,7 +357,7 @@ func TestDrainPatchAdapter_AppliesPartialUpdate(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "config.json")
 	f := ports.NewFile(path, format.JSON(itemCodec))
-	if err := f.Write(nil, item{V: 1}, ports.FileOptions{}); err != nil {
+	if _, err := f.Write(nil, item{V: 1}, ports.FileOptions{}); err != nil {
 		t.Fatalf("seed file: %v", err)
 	}
 
@@ -393,7 +393,7 @@ func TestDrainPatchAdapter_NotSupportedForGob(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "config.gob")
 	f := ports.NewFile(path, format.Gob(itemCodec))
-	if err := f.Write(nil, item{V: 1}, ports.FileOptions{}); err != nil {
+	if _, err := f.Write(nil, item{V: 1}, ports.FileOptions{}); err != nil {
 		t.Fatalf("seed file: %v", err)
 	}
 
@@ -467,7 +467,7 @@ func TestDrainPatchEncodedAdapter_AppliesTypedPartialUpdate(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "config.json")
 	f := ports.NewFile(path, format.JSON(itemCodec))
-	if err := f.Write(nil, item{V: 1}, ports.FileOptions{}); err != nil {
+	if _, err := f.Write(nil, item{V: 1}, ports.FileOptions{}); err != nil {
 		t.Fatalf("seed file: %v", err)
 	}
 
@@ -610,7 +610,7 @@ func TestReadAdapter_HappyPath_ViaFilePattern(t *testing.T) {
 	)
 	for id, factor := range map[string]float64{"a": 2.0, "b": 3.0} {
 		f := ports.NewFile(filepath.Join(dir, id+".json"), format.JSON(c))
-		if err := f.Write(nil, config{Factor: factor}, ports.FileOptions{}); err != nil {
+		if _, err := f.Write(nil, config{Factor: factor}, ports.FileOptions{}); err != nil {
 			t.Fatalf("write: %v", err)
 		}
 	}

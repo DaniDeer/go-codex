@@ -3,13 +3,14 @@
 > **Status:** Idea only — not designed, no use case yet.
 > [← Back to Roadmap](index.md)
 >
-> Follow-on to the now-SHIPPED [Directory Listing Port](directory-listing-port.md)
-> (`ports.Dir`/`DirEntry`, see `docs/features/ports.md`) — split out as
-> its own roadmap entry since it is a genuinely separate design question
-> (a streamed, `ports.SourceAdapter`-shaped enumeration/watch capability),
-> explicitly noted as OUT of that feature's Phase 1 scope ("A generic
-> recursive WALK/streaming API ... a natural Phase 2 if a use case
-> appears").
+> Follow-on to the now-SHIPPED Directory Listing Port (`ports.Dir`/
+> `DirEntry`, see `docs/features/ports.md`'s "`Dir` — listing a
+> directory's entries" subsection — its roadmap doc was retired once
+> shipped) — split out as its own roadmap entry since it is a genuinely
+> separate design question (a streamed, `ports.SourceAdapter`-shaped
+> enumeration/watch capability), explicitly noted as OUT of that
+> feature's Phase 1 scope ("A generic recursive WALK/streaming API ... a
+> natural Phase 2 if a use case appears").
 
 ## The idea
 
@@ -74,8 +75,7 @@ attempt.
     changes the emitted item shape (needs an explicit "created/modified/
     deleted" event kind, not just a bare `DirEntry`).
   - Does `EntryPattern`-based filtering apply here too, mirroring
-    `ports.Dir.List`'s silent-exclude behavior (resolved in
-    `directory-listing-port.md`)?
+    `ports.Dir.List`'s silent-exclude behavior (see `docs/features/ports.md`)?
 
 ## Relationship to what already exists (do not duplicate)
 

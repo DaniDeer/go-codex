@@ -101,7 +101,7 @@ func main() {
 
 	vars := map[string]string{"id": "avatar"}
 	fileOpts := ports.FileOptions{}
-	if err := imgHandle.Write(vars, fakePNG, fileOpts); err != nil {
+	if _, err := imgHandle.Write(vars, fakePNG, fileOpts); err != nil {
 		panic(err)
 	}
 	path, _ := imgHandle.BuildPath(vars)
@@ -141,7 +141,7 @@ func main() {
 
 	// ── Regression: an invalid PNG is rejected by the codec constraint ────
 	fmt.Println("\n─── Constraint enforcement still applies to CustomFormat")
-	if err := imgHandle.Write(vars, []byte("not a png"), fileOpts); err != nil {
+	if _, err := imgHandle.Write(vars, []byte("not a png"), fileOpts); err != nil {
 		fmt.Println("  invalid PNG correctly rejected:", err)
 	}
 }

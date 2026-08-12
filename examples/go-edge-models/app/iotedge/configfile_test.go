@@ -31,7 +31,7 @@ func writeSampleManifest(t *testing.T) string {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "manifest.json")
 	fh := regiotedge.NewConfigFile(path)
-	if err := fh.Write(nil, sampleManifest(), ports.FileOptions{}); err != nil {
+	if _, err := fh.Write(nil, sampleManifest(), ports.FileOptions{}); err != nil {
 		t.Fatalf("Write: %v", err)
 	}
 	return path

@@ -1,6 +1,51 @@
-# go-codex Review History (R1–R108)
+# go-codex Review History (R1–R109)
 
 Do not re-report any of these findings. They have been implemented and tested.
+
+---
+
+## Round 109 (`ports.Dir`/`File.Delete`/`Dir.Delete` — stale doc comments after rapid iteration)
+
+Focused audit of the new `ports.Dir`, `File.Delete`/`Dir.Delete`, and
+symmetric `DryRun`/`Strict` surface added this session (nothing since
+Round 108 covered it) — found 4 small doc-consistency gaps, no
+functional bugs, no test-coverage gaps (30+ tests already existed and
+passed), no observer/error-type/example issues.
+
+- **G1 [small] — `ports/dir.go`'s top-of-file comment had a dead link**:
+  it pointed at `docs/roadmap/directory-listing-port.md`, deleted earlier
+  this session once shipped, and its "list a directory's entries"
+  description didn't mention the now-present `Delete` capability. Fixed
+  by pointing at `docs/features/ports.md`'s "Dir" subsection instead and
+  broadening the description to cover both listing and deletion.
+- **G2 [small] — `FileOptions`/`DirOptions` top doc comments were
+  stale**: `FileOptions`'s comment listed only `Read`/`Write`/`Update`,
+  omitting `Delete`/`Patch`/`PatchEncoded`/`WriteHandle`/`ReadMerged` (all
+  of which take `FileOptions`); `DirOptions`'s comment listed only `List`,
+  omitting `Delete`. Fixed by enumerating every method each Options
+  struct configures, noting that not every field applies to every method.
+- **G3 [small] — `Dir.List`'s own `Errors:` godoc list was incomplete**:
+  `List` can return `DirAlreadyExistsError` (via `CreateIfMissing`+
+  `Strict` on an already-existing directory) but its doc comment didn't
+  mention it, making the error undiscoverable via godoc alone. Added it
+  to the list.
+- **G4 [small] — `stats.FileObserver`'s doc comment/example were
+  stale**: the comment claimed "implementing this interface is purely
+  additive — existing Observer implementations need not change," but
+  `RecordFileDelete` was later added directly to this SAME interface as
+  an intentional, acknowledged breaking change; the code example only
+  showed `RecordFileRead`/`RecordFileWrite`; the comment mentioned only
+  `[ports.File]`, omitting `[ports.Dir]` (which also type-asserts
+  `FileObserver`). Fixed by documenting the one exception, recommending
+  embedding `NoopObserver` for forward-compatibility, adding
+  `RecordFileDelete` to the example, and mentioning `ports.Dir` alongside
+  `ports.File`.
+
+Full verification: `gofmt -l .` clean, `go build ./...`, `go test ./...`
+(repo-wide, 48 packages, all pass), `just check` (staticcheck + gosec, 0
+issues), full example sweep (all exit 0). No exported API changed
+(doc-only fixes) — no `.github/instructions/go-codex.instructions.md`
+update needed.
 
 ---
 
