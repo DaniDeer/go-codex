@@ -47,8 +47,11 @@ import (
 	"github.com/DaniDeer/go-codex/validate"
 )
 
-//go:embed examples/usecase1.json
+//go:embed examples/usecases/usecase1.json
 var usecase1JSON []byte
+
+//go:embed examples/devices/usecase1/sensor-1.json
+var sensor1JSON []byte
 
 // logger is used for every fatal error path below via structured slog
 // attributes, NOT the stdlib log package — every go-codex error type
@@ -185,6 +188,11 @@ func main() {
 	// module; every other field, and every other module, is untouched.
 	fmt.Println("\n=== app/iotedge.UpdateModuleImage: patch factory-dashboard's image on disk ===")
 
+	// basePath mirrors examples/go-edge-models/examples' own mock layout —
+	// "usecases/<usecase_name>.json" + "devices/<usecase_name>/<device_id>.json"
+	// — copied from the embedded mock files into a writable temp dir (the
+	// embed.FS mock tree itself is read-only; this section's patch demos
+	// need to write).
 	dir, err := os.MkdirTemp("", "go-edge-models-patch-*")
 	if err != nil {
 		logger.Error("create temp dir", "error", err)
@@ -192,9 +200,24 @@ func main() {
 	}
 	defer os.RemoveAll(dir)
 
-	manifestPath := dir + "/usecase1.json"
-	if err := os.WriteFile(manifestPath, usecase1JSON, 0o644); err != nil {
+	const useCaseName = "usecase1"
+	const deviceID = "sensor-1"
+	usecasesDir := dir + "/usecases"
+	if err := os.MkdirAll(usecasesDir, 0o755); err != nil {
+		logger.Error("create usecases dir", "error", err)
+		os.Exit(1)
+	}
+	if err := os.WriteFile(usecasesDir+"/"+useCaseName+".json", usecase1JSON, 0o644); err != nil {
 		logger.Error("write manifest to disk", "error", err)
+		os.Exit(1)
+	}
+	devicesDir := dir + "/devices/" + useCaseName
+	if err := os.MkdirAll(devicesDir, 0o755); err != nil {
+		logger.Error("create devices dir", "error", err)
+		os.Exit(1)
+	}
+	if err := os.WriteFile(devicesDir+"/"+deviceID+".json", sensor1JSON, 0o644); err != nil {
+		logger.Error("write device manifest to disk", "error", err)
 		os.Exit(1)
 	}
 
@@ -207,7 +230,7 @@ func main() {
 	// discover, then read, without hand-rolled os.ReadDir/filepath.Glob code.
 	fmt.Println("\n=== ports.Dir: list iotedge config files (use cases) in a directory ===")
 
-	configDir := iotedge.NewConfigDir(dir)
+	configDir := iotedge.NewConfigDir(usecasesDir)
 	useCaseEntries, err := configDir.List(nil, ports.DirOptions{})
 	if err != nil {
 		logger.Error("list config directory", "error", err)
@@ -217,7 +240,40 @@ func main() {
 		fmt.Printf("found use case %q (file %q, kind=%s)\n", e.Vars["useCase"], e.Name, e.Kind)
 	}
 
-	before, err := iotedgeapp.ReadConfig(manifestPath, ports.FileOptions{})
+	// ── iotedge.ListDeviceIDs / ReadDeviceConfig / ReadUseCase: the
+	// "devices/{usecase_name}/{device_id}.json" side of the same
+	// templated-file story ───────────────────────────────────────────────
+	//
+	// DeploymentManifest/DeviceManifest stay PURE wire/file content — no
+	// usecase_name/device_id field on either — iotedge.UseCase/DeviceConfig
+	// are the DOMAIN composition structs that pair each with its identity
+	// (from the path, not the body). ReadUseCase combines NewConfigFile +
+	// ListDeviceIDs + ReadDeviceConfig into ONE call.
+	fmt.Println("\n=== iotedge.ListDeviceIDs / ReadUseCase: usecase_name + device_id, composed ===")
+
+	deviceIDs, err := iotedge.ListDeviceIDs(dir, useCaseName, ports.DirOptions{})
+	if err != nil {
+		logger.Error("list device ids", "error", err)
+		os.Exit(1)
+	}
+	fmt.Printf("device_ids for use case %q: %v\n", useCaseName, deviceIDs)
+
+	deviceCfg, err := iotedge.ReadDeviceConfig(dir, useCaseName, deviceID, ports.FileOptions{})
+	if err != nil {
+		logger.Error("read device config", "error", err)
+		os.Exit(1)
+	}
+	fmt.Printf("device %q: displayName=%q enabled=%v\n", deviceCfg.DeviceID, deviceCfg.DeviceManifest.DisplayName, deviceCfg.DeviceManifest.Enabled)
+
+	useCase, err := iotedge.ReadUseCase(dir, useCaseName, ports.FileOptions{})
+	if err != nil {
+		logger.Error("read use case", "error", err)
+		os.Exit(1)
+	}
+	fmt.Printf("ReadUseCase(%q): %d module(s), %d device(s)\n",
+		useCase.Name, len(useCase.DeploymentManifest.ModulesContent.EdgeAgent), len(useCase.Devices))
+
+	before, err := iotedgeapp.ReadConfig(dir, useCaseName, ports.FileOptions{})
 	if err != nil {
 		logger.Error("read manifest before patch", "error", err)
 		os.Exit(1)
@@ -225,12 +281,12 @@ func main() {
 	fmt.Printf("before: factory-dashboard image=%q\n", before.ModulesContent.EdgeAgent["factory-dashboard"].Settings.Image)
 
 	newImage := docker.Image{Name: "ghcr.io/example-org/factory-dashboard", Tag: "2.0.0"}
-	if err := iotedgeapp.UpdateModuleImage(manifestPath, "factory-dashboard", newImage, ports.FileOptions{}); err != nil {
+	if err := iotedgeapp.UpdateModuleImage(dir, useCaseName, "factory-dashboard", newImage, ports.FileOptions{}); err != nil {
 		logger.Error("update module image", "error", err)
 		os.Exit(1)
 	}
 
-	afterImage, err := iotedgeapp.ReadConfig(manifestPath, ports.FileOptions{})
+	afterImage, err := iotedgeapp.ReadConfig(dir, useCaseName, ports.FileOptions{})
 	if err != nil {
 		logger.Error("read manifest after image update", "error", err)
 		os.Exit(1)
@@ -258,12 +314,12 @@ func main() {
 		Status:        &newStatus,
 		RestartPolicy: &newRestartPolicy,
 	}
-	if err := iotedgeapp.PatchModule(manifestPath, fieldsPatch, ports.FileOptions{}); err != nil {
+	if err := iotedgeapp.PatchModule(dir, useCaseName, fieldsPatch, ports.FileOptions{}); err != nil {
 		logger.Error("patch module fields", "error", err)
 		os.Exit(1)
 	}
 
-	after, err := iotedgeapp.ReadConfig(manifestPath, ports.FileOptions{})
+	after, err := iotedgeapp.ReadConfig(dir, useCaseName, ports.FileOptions{})
 	if err != nil {
 		logger.Error("read manifest after fields patch", "error", err)
 		os.Exit(1)

@@ -8,9 +8,10 @@ import (
 
 func TestUpdateModuleImageReqCodec_RoundTrip(t *testing.T) {
 	req := UpdateModuleImageReq{
-		ManifestPath: "/tmp/manifest.json",
-		ModuleName:   "factory-dashboard",
-		ImageURL:     "ghcr.io/org/repo:1.2.3",
+		BasePath:    "/tmp/edge",
+		UseCaseName: "usecase1",
+		ModuleName:  "factory-dashboard",
+		ImageURL:    "ghcr.io/org/repo:1.2.3",
 	}
 
 	encoded, err := UpdateModuleImageReqCodec.Encode(req)
@@ -26,22 +27,29 @@ func TestUpdateModuleImageReqCodec_RoundTrip(t *testing.T) {
 	}
 }
 
-func TestUpdateModuleImageReqCodec_RejectsEmptyManifestPath(t *testing.T) {
-	req := UpdateModuleImageReq{ManifestPath: "", ModuleName: "factory-dashboard", ImageURL: "ghcr.io/org/repo:1.2.3"}
+func TestUpdateModuleImageReqCodec_RejectsEmptyBasePath(t *testing.T) {
+	req := UpdateModuleImageReq{BasePath: "", UseCaseName: "usecase1", ModuleName: "factory-dashboard", ImageURL: "ghcr.io/org/repo:1.2.3"}
 	if err := UpdateModuleImageReqCodec.Validate(req); err == nil {
-		t.Error("Validate: want error for empty ManifestPath, got nil")
+		t.Error("Validate: want error for empty BasePath, got nil")
+	}
+}
+
+func TestUpdateModuleImageReqCodec_RejectsEmptyUseCaseName(t *testing.T) {
+	req := UpdateModuleImageReq{BasePath: "/tmp/edge", UseCaseName: "", ModuleName: "factory-dashboard", ImageURL: "ghcr.io/org/repo:1.2.3"}
+	if err := UpdateModuleImageReqCodec.Validate(req); err == nil {
+		t.Error("Validate: want error for empty UseCaseName, got nil")
 	}
 }
 
 func TestUpdateModuleImageReqCodec_RejectsInvalidModuleName(t *testing.T) {
-	req := UpdateModuleImageReq{ManifestPath: "/tmp/manifest.json", ModuleName: "", ImageURL: "ghcr.io/org/repo:1.2.3"}
+	req := UpdateModuleImageReq{BasePath: "/tmp/edge", UseCaseName: "usecase1", ModuleName: "", ImageURL: "ghcr.io/org/repo:1.2.3"}
 	if err := UpdateModuleImageReqCodec.Validate(req); err == nil {
 		t.Error("Validate: want error for empty ModuleName, got nil")
 	}
 }
 
 func TestUpdateModuleImageReqCodec_RejectsEmptyImageURL(t *testing.T) {
-	req := UpdateModuleImageReq{ManifestPath: "/tmp/manifest.json", ModuleName: "factory-dashboard", ImageURL: ""}
+	req := UpdateModuleImageReq{BasePath: "/tmp/edge", UseCaseName: "usecase1", ModuleName: "factory-dashboard", ImageURL: ""}
 	if err := UpdateModuleImageReqCodec.Validate(req); err == nil {
 		t.Error("Validate: want error for empty ImageURL, got nil")
 	}

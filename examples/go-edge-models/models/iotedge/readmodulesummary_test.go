@@ -7,7 +7,7 @@ import (
 )
 
 func TestReadModuleSummaryReqCodec_RoundTrip(t *testing.T) {
-	req := ReadModuleSummaryReq{ManifestPath: "/tmp/manifest.json", ModuleName: "factory-dashboard"}
+	req := ReadModuleSummaryReq{BasePath: "/tmp/edge", UseCaseName: "usecase1", ModuleName: "factory-dashboard"}
 
 	encoded, err := ReadModuleSummaryReqCodec.Encode(req)
 	if err != nil {
@@ -22,15 +22,22 @@ func TestReadModuleSummaryReqCodec_RoundTrip(t *testing.T) {
 	}
 }
 
-func TestReadModuleSummaryReqCodec_RejectsEmptyManifestPath(t *testing.T) {
-	req := ReadModuleSummaryReq{ManifestPath: "", ModuleName: "factory-dashboard"}
+func TestReadModuleSummaryReqCodec_RejectsEmptyBasePath(t *testing.T) {
+	req := ReadModuleSummaryReq{BasePath: "", UseCaseName: "usecase1", ModuleName: "factory-dashboard"}
 	if err := ReadModuleSummaryReqCodec.Validate(req); err == nil {
-		t.Error("Validate: want error for empty ManifestPath, got nil")
+		t.Error("Validate: want error for empty BasePath, got nil")
+	}
+}
+
+func TestReadModuleSummaryReqCodec_RejectsEmptyUseCaseName(t *testing.T) {
+	req := ReadModuleSummaryReq{BasePath: "/tmp/edge", UseCaseName: "", ModuleName: "factory-dashboard"}
+	if err := ReadModuleSummaryReqCodec.Validate(req); err == nil {
+		t.Error("Validate: want error for empty UseCaseName, got nil")
 	}
 }
 
 func TestReadModuleSummaryReqCodec_RejectsInvalidModuleName(t *testing.T) {
-	req := ReadModuleSummaryReq{ManifestPath: "/tmp/manifest.json", ModuleName: ""}
+	req := ReadModuleSummaryReq{BasePath: "/tmp/edge", UseCaseName: "usecase1", ModuleName: ""}
 	if err := ReadModuleSummaryReqCodec.Validate(req); err == nil {
 		t.Error("Validate: want error for empty ModuleName, got nil")
 	}

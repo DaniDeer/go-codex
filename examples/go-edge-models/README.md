@@ -220,9 +220,14 @@ existing generic codecs, never as registry-name branching.
 go run ./examples/go-edge-models
 ```
 
-Decodes the embedded `examples/usecase1.json` reference manifest, patches
-one module's image, and demonstrates `app/registry` against two local
-`httptest` mock servers (a registry host + a separate auth-realm host).
+Decodes the embedded `examples/usecases/usecase1.json` reference manifest
+and `examples/devices/usecase1/sensor-1.json` device manifest (mirroring
+the real `<basePath>/usecases/<usecase_name>.json` +
+`<basePath>/devices/<usecase_name>/<device_id>.json` filesystem layout),
+patches one module's image, lists/reads the device via
+`iotedge.ListDeviceIDs`/`ReadDeviceConfig`/`ReadUseCase`, and demonstrates
+`app/registry` against two local `httptest` mock servers (a registry host
++ a separate auth-realm host).
 
 ## Testing
 

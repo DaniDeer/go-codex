@@ -34,12 +34,12 @@ func NewUpdateModuleImageToolHandler(opts ports.FileOptions) mcpgo.HandlerFunc[r
 		// type/status/restartPolicy/version) and fail with a confusing
 		// low-level ports.FileDecodeError instead of a clean, typed
 		// ModuleNotFoundError.
-		if _, err := readModuleSummary(req.ManifestPath, req.ModuleName, opts); err != nil {
+		if _, err := readModuleSummary(req.BasePath, req.UseCaseName, req.ModuleName, opts); err != nil {
 			return regiotedge.ModuleSummary{}, err
 		}
-		if err := UpdateModuleImage(req.ManifestPath, req.ModuleName, image, opts); err != nil {
+		if err := UpdateModuleImage(req.BasePath, req.UseCaseName, req.ModuleName, image, opts); err != nil {
 			return regiotedge.ModuleSummary{}, err
 		}
-		return readModuleSummary(req.ManifestPath, req.ModuleName, opts)
+		return readModuleSummary(req.BasePath, req.UseCaseName, req.ModuleName, opts)
 	}
 }

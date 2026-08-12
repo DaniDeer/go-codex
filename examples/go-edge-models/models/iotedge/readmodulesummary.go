@@ -16,23 +16,32 @@ import (
 
 // ReadModuleSummaryReq is ReadModuleSummaryTool's input.
 type ReadModuleSummaryReq struct {
-	// ManifestPath is the concrete deployment-manifest file to read —
-	// see iotedge.NewConfigFile's own doc comment for why this is a
-	// plain caller-supplied path, not a path template variable.
-	ManifestPath string
+	// BasePath is the root directory holding the "usecases/" subtree —
+	// see iotedge.NewConfigFile's own doc comment for the templated
+	// "{basePath}/usecases/{usecase_name}.json" path this composes into.
+	BasePath string
+	// UseCaseName is the use case whose deployment manifest to read.
+	UseCaseName string
 	// ModuleName is the module to summarize, e.g. "factory-dashboard".
 	ModuleName ModuleName
 }
 
-// ReadModuleSummaryReqCodec validates a ReadModuleSummaryReq value — both
-// fields are required.
+// ReadModuleSummaryReqCodec validates a ReadModuleSummaryReq value — all
+// three fields are required.
 var ReadModuleSummaryReqCodec = c.Struct[ReadModuleSummaryReq](
-	c.RequiredField("manifestPath",
+	c.RequiredField("basePath",
 		c.String().Refine(v.NonEmptyString).WithDescription(
-			"The file path of the deployment manifest to read.",
+			"The root directory holding the \"usecases/\" subtree.",
 		),
-		func(r ReadModuleSummaryReq) string { return r.ManifestPath },
-		func(r *ReadModuleSummaryReq, val string) { r.ManifestPath = val },
+		func(r ReadModuleSummaryReq) string { return r.BasePath },
+		func(r *ReadModuleSummaryReq, val string) { r.BasePath = val },
+	),
+	c.RequiredField("useCaseName",
+		c.String().Refine(v.NonEmptyString).WithDescription(
+			"The use case whose deployment manifest to read.",
+		),
+		func(r ReadModuleSummaryReq) string { return r.UseCaseName },
+		func(r *ReadModuleSummaryReq, val string) { r.UseCaseName = val },
 	),
 	c.RequiredField("moduleName",
 		ModuleNameCodec.WithDescription(

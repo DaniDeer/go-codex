@@ -16,10 +16,12 @@ import (
 
 // UpdateModuleImageReq is UpdateModuleImageTool's input.
 type UpdateModuleImageReq struct {
-	// ManifestPath is the concrete deployment-manifest file to update —
-	// see iotedge.NewConfigFile's own doc comment for why this is a
-	// plain caller-supplied path, not a path template variable.
-	ManifestPath string
+	// BasePath is the root directory holding the "usecases/" subtree —
+	// see iotedge.NewConfigFile's own doc comment for the templated
+	// "{basePath}/usecases/{usecase_name}.json" path this composes into.
+	BasePath string
+	// UseCaseName is the use case whose deployment manifest to update.
+	UseCaseName string
 	// ModuleName is the module to update, e.g. "factory-dashboard".
 	ModuleName ModuleName
 	// ImageURL is the full container image reference to set, e.g.
@@ -32,14 +34,21 @@ type UpdateModuleImageReq struct {
 }
 
 // UpdateModuleImageReqCodec validates an UpdateModuleImageReq value —
-// all three fields are required.
+// all four fields are required.
 var UpdateModuleImageReqCodec = c.Struct[UpdateModuleImageReq](
-	c.RequiredField("manifestPath",
+	c.RequiredField("basePath",
 		c.String().Refine(v.NonEmptyString).WithDescription(
-			"The file path of the deployment manifest to update.",
+			"The root directory holding the \"usecases/\" subtree.",
 		),
-		func(r UpdateModuleImageReq) string { return r.ManifestPath },
-		func(r *UpdateModuleImageReq, val string) { r.ManifestPath = val },
+		func(r UpdateModuleImageReq) string { return r.BasePath },
+		func(r *UpdateModuleImageReq, val string) { r.BasePath = val },
+	),
+	c.RequiredField("useCaseName",
+		c.String().Refine(v.NonEmptyString).WithDescription(
+			"The use case whose deployment manifest to update.",
+		),
+		func(r UpdateModuleImageReq) string { return r.UseCaseName },
+		func(r *UpdateModuleImageReq, val string) { r.UseCaseName = val },
 	),
 	c.RequiredField("moduleName",
 		ModuleNameCodec.WithDescription(

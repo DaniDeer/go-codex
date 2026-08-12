@@ -39,3 +39,20 @@ var ConfigDirEntryPattern = ports.EntryPattern{
 func NewConfigDir(path string) ports.Dir {
 	return ports.NewDir(path, ports.WithEntryPattern(ConfigDirEntryPattern))
 }
+
+// ListUseCaseNames returns every discovered use case name under
+// "{basePath}/usecases" — a thin convenience wrapping [NewConfigDir] +
+// [ports.Dir.List], extracting each entry's captured "useCase" var. Pair
+// a returned name with [NewConfigFile]/[ReadUseCase] to read/patch that
+// SPECIFIC use case's manifest.
+func ListUseCaseNames(basePath string, opts ports.DirOptions) ([]string, error) {
+	entries, err := NewConfigDir(basePath+"/usecases").List(nil, opts)
+	if err != nil {
+		return nil, err
+	}
+	names := make([]string, len(entries))
+	for i, e := range entries {
+		names[i] = e.Vars["useCase"]
+	}
+	return names, nil
+}

@@ -24,14 +24,37 @@
 //     docker.Env mapper).
 //   - modules.go — ModuleName, Modules, ModulesContent, DeploymentManifest,
 //     ModuleKeyPrefix/moduleKeyConstraint, and their codecs.
-//   - configfile.go — ConfigFileFormat and NewConfigFile (a declared file
-//     port CONSTRUCTOR — see its own doc comment for why a manifest's
-//     path is fully caller-supplied rather than a static declared value).
+//     DeploymentManifest stays PURE wire/file content — no use case
+//     identity field; see usecase.go's UseCase for that composition.
+//   - configfile.go — ConfigFileFormat and NewConfigFile (a declared,
+//     TEMPLATED file port over "{basePath}/usecases/{usecase_name}.json" —
+//     usecase_name is a plain, non-merge ports.FilePathParam, validated
+//     but never merged into DeploymentManifest).
+//   - configdir.go — ConfigDirEntryPattern, NewConfigDir, and
+//     ListUseCaseNames (discovers every usecase_name under
+//     "{basePath}/usecases").
+//   - devicefile.go — DeviceManifest (the device-level analogue of
+//     DeploymentManifest — pure wire/file content, no identity fields),
+//     DeviceManifestCodec, and NewDeviceFile (a declared, templated file
+//     port over "{basePath}/devices/{usecase_name}/{device_id}.json").
+//   - devicedir.go — DeviceDirEntryPattern, NewDeviceDir, and
+//     ListDeviceIDs (discovers every device_id for ONE given
+//     usecase_name — plain named-var substitution, no glob/wildcard).
+//   - deviceconfig.go — DeviceConfig (pairs a device_id with its PURE
+//     DeviceManifest — the domain-level composition, one level down
+//     from UseCase) and ReadDeviceConfig/WriteDeviceConfig.
+//   - usecase.go — UseCase (pairs a usecase_name with its PURE
+//     DeploymentManifest AND every DeviceConfig nested under it) and
+//     ReadUseCase/WriteUseCase — the "one struct, one call" convenience
+//     for the FULL usecase+devices tree (combines NewConfigFile,
+//     ListDeviceIDs, and ReadDeviceConfig/WriteDeviceConfig internally).
 //   - modulesummary.go — ModuleSummary, ModuleSummaryCodec, and
 //     NewModuleSummary (a reduced, read-only module view).
-//   - readmodulesummary.go — ReadModuleSummaryReq/Codec and the declared,
-//     unregistered ReadModuleSummaryTool MCP contract.
-//   - updatemoduleimage.go — UpdateModuleImageReq/Codec and the declared,
+//   - readmodulesummary.go — ReadModuleSummaryReq/Codec (BasePath +
+//     UseCaseName + ModuleName) and the declared, unregistered
+//     ReadModuleSummaryTool MCP contract.
+//   - updatemoduleimage.go — UpdateModuleImageReq/Codec (BasePath +
+//     UseCaseName + ModuleName + ImageURL) and the declared,
 //     unregistered UpdateModuleImageTool MCP contract.
 //
 // Each field's codec is its own named value (e.g. ImageCodec,

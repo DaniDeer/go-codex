@@ -10,13 +10,14 @@ import (
 )
 
 func TestNewUpdateModuleImageToolHandler_ReturnsUpdatedSummary(t *testing.T) {
-	path := writeSampleManifest(t)
+	basePath := writeSampleManifest(t)
 	handler := NewUpdateModuleImageToolHandler(ports.FileOptions{})
 
 	summary, err := handler(context.Background(), regiotedge.UpdateModuleImageReq{
-		ManifestPath: path,
-		ModuleName:   "factory-dashboard",
-		ImageURL:     "ghcr.io/org/edge-web:2.0.0",
+		BasePath:    basePath,
+		UseCaseName: sampleUseCaseName,
+		ModuleName:  "factory-dashboard",
+		ImageURL:    "ghcr.io/org/edge-web:2.0.0",
 	})
 	if err != nil {
 		t.Fatalf("handler: %v", err)
@@ -33,7 +34,7 @@ func TestNewUpdateModuleImageToolHandler_ReturnsUpdatedSummary(t *testing.T) {
 	}
 
 	// Confirm the change was actually persisted to disk.
-	got, err := ReadConfig(path, ports.FileOptions{})
+	got, err := ReadConfig(basePath, sampleUseCaseName, ports.FileOptions{})
 	if err != nil {
 		t.Fatalf("ReadConfig: %v", err)
 	}
@@ -43,20 +44,21 @@ func TestNewUpdateModuleImageToolHandler_ReturnsUpdatedSummary(t *testing.T) {
 }
 
 func TestNewUpdateModuleImageToolHandler_RejectsInvalidImageURL(t *testing.T) {
-	path := writeSampleManifest(t)
+	basePath := writeSampleManifest(t)
 	handler := NewUpdateModuleImageToolHandler(ports.FileOptions{})
 
 	_, err := handler(context.Background(), regiotedge.UpdateModuleImageReq{
-		ManifestPath: path,
-		ModuleName:   "factory-dashboard",
-		ImageURL:     "not a valid image ref!!",
+		BasePath:    basePath,
+		UseCaseName: sampleUseCaseName,
+		ModuleName:  "factory-dashboard",
+		ImageURL:    "not a valid image ref!!",
 	})
 	if err == nil {
 		t.Fatal("handler: want error for invalid ImageURL, got nil")
 	}
 
 	// The manifest must be untouched by a rejected update.
-	got, readErr := ReadConfig(path, ports.FileOptions{})
+	got, readErr := ReadConfig(basePath, sampleUseCaseName, ports.FileOptions{})
 	if readErr != nil {
 		t.Fatalf("ReadConfig: %v", readErr)
 	}
@@ -66,13 +68,14 @@ func TestNewUpdateModuleImageToolHandler_RejectsInvalidImageURL(t *testing.T) {
 }
 
 func TestNewUpdateModuleImageToolHandler_ModuleNotFound(t *testing.T) {
-	path := writeSampleManifest(t)
+	basePath := writeSampleManifest(t)
 	handler := NewUpdateModuleImageToolHandler(ports.FileOptions{})
 
 	_, err := handler(context.Background(), regiotedge.UpdateModuleImageReq{
-		ManifestPath: path,
-		ModuleName:   "does-not-exist",
-		ImageURL:     "ghcr.io/org/edge-web:2.0.0",
+		BasePath:    basePath,
+		UseCaseName: sampleUseCaseName,
+		ModuleName:  "does-not-exist",
+		ImageURL:    "ghcr.io/org/edge-web:2.0.0",
 	})
 	if err == nil {
 		t.Fatal("handler: want error for missing module, got nil")
@@ -86,9 +89,10 @@ func TestNewUpdateModuleImageToolHandler_ModuleNotFound(t *testing.T) {
 func TestNewUpdateModuleImageToolHandler_PropagatesMissingFileError(t *testing.T) {
 	handler := NewUpdateModuleImageToolHandler(ports.FileOptions{})
 	_, err := handler(context.Background(), regiotedge.UpdateModuleImageReq{
-		ManifestPath: "/nonexistent/manifest.json",
-		ModuleName:   "factory-dashboard",
-		ImageURL:     "ghcr.io/org/edge-web:2.0.0",
+		BasePath:    "/nonexistent",
+		UseCaseName: "nonexistent-usecase",
+		ModuleName:  "factory-dashboard",
+		ImageURL:    "ghcr.io/org/edge-web:2.0.0",
 	})
 	if err == nil {
 		t.Error("handler: want error for nonexistent file, got nil")

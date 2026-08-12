@@ -1,7 +1,6 @@
 package iotedge
 
 import (
-	"path/filepath"
 	"testing"
 
 	"github.com/DaniDeer/go-codex/examples/go-edge-models/models/docker"
@@ -26,21 +25,22 @@ func sampleManifest() regiotedge.DeploymentManifest {
 	}
 }
 
+const sampleUseCaseName = "usecase1"
+
 func writeSampleManifest(t *testing.T) string {
 	t.Helper()
-	dir := t.TempDir()
-	path := filepath.Join(dir, "manifest.json")
-	fh := regiotedge.NewConfigFile(path)
-	if _, err := fh.Write(nil, sampleManifest(), ports.FileOptions{}); err != nil {
+	basePath := t.TempDir()
+	fh := regiotedge.NewConfigFile(basePath)
+	if _, err := fh.Write(map[string]string{"usecase_name": sampleUseCaseName}, sampleManifest(), ports.FileOptions{CreateDirs: true}); err != nil {
 		t.Fatalf("Write: %v", err)
 	}
-	return path
+	return basePath
 }
 
 func TestReadConfig_ReturnsWrittenManifest(t *testing.T) {
-	path := writeSampleManifest(t)
+	basePath := writeSampleManifest(t)
 
-	got, err := ReadConfig(path, ports.FileOptions{})
+	got, err := ReadConfig(basePath, sampleUseCaseName, ports.FileOptions{})
 	if err != nil {
 		t.Fatalf("ReadConfig: %v", err)
 	}
@@ -51,21 +51,21 @@ func TestReadConfig_ReturnsWrittenManifest(t *testing.T) {
 }
 
 func TestReadConfig_PropagatesMissingFileError(t *testing.T) {
-	_, err := ReadConfig("/nonexistent/path/manifest.json", ports.FileOptions{})
+	_, err := ReadConfig("/nonexistent/path", "nonexistent-usecase", ports.FileOptions{})
 	if err == nil {
 		t.Error("ReadConfig: want error for nonexistent file, got nil")
 	}
 }
 
 func TestUpdateModuleImage_PatchesOnlyImage(t *testing.T) {
-	path := writeSampleManifest(t)
+	basePath := writeSampleManifest(t)
 
 	newImage := docker.Image{Name: "ghcr.io/org/edge-web", Tag: "2.0.0"}
-	if err := UpdateModuleImage(path, "factory-dashboard", newImage, ports.FileOptions{}); err != nil {
+	if err := UpdateModuleImage(basePath, sampleUseCaseName, "factory-dashboard", newImage, ports.FileOptions{}); err != nil {
 		t.Fatalf("UpdateModuleImage: %v", err)
 	}
 
-	got, err := ReadConfig(path, ports.FileOptions{})
+	got, err := ReadConfig(basePath, sampleUseCaseName, ports.FileOptions{})
 	if err != nil {
 		t.Fatalf("ReadConfig after update: %v", err)
 	}
@@ -86,17 +86,17 @@ func TestUpdateModuleImage_PatchesOnlyImage(t *testing.T) {
 }
 
 func TestUpdateModuleImage_RejectsInvalidImage(t *testing.T) {
-	path := writeSampleManifest(t)
+	basePath := writeSampleManifest(t)
 
 	// modulepatch.NewUpdateModuleImagePatch validates the image BEFORE any
 	// disk I/O happens — an empty Name must be rejected here, not silently
 	// written to the manifest.
-	err := UpdateModuleImage(path, "factory-dashboard", docker.Image{}, ports.FileOptions{})
+	err := UpdateModuleImage(basePath, sampleUseCaseName, "factory-dashboard", docker.Image{}, ports.FileOptions{})
 	if err == nil {
 		t.Fatal("UpdateModuleImage: want error for invalid image, got nil")
 	}
 
-	got, readErr := ReadConfig(path, ports.FileOptions{})
+	got, readErr := ReadConfig(basePath, sampleUseCaseName, ports.FileOptions{})
 	if readErr != nil {
 		t.Fatalf("ReadConfig: %v", readErr)
 	}
@@ -107,17 +107,17 @@ func TestUpdateModuleImage_RejectsInvalidImage(t *testing.T) {
 }
 
 func TestPatchModule_PatchesMultipleFieldsLeavesOthersUntouched(t *testing.T) {
-	path := writeSampleManifest(t)
+	basePath := writeSampleManifest(t)
 
 	status := regiotedge.Status("stopped")
-	if err := PatchModule(path, modulepatch.ModuleFieldsPatch{
+	if err := PatchModule(basePath, sampleUseCaseName, modulepatch.ModuleFieldsPatch{
 		ModuleName: "factory-dashboard",
 		Status:     &status,
 	}, ports.FileOptions{}); err != nil {
 		t.Fatalf("PatchModule: %v", err)
 	}
 
-	got, err := ReadConfig(path, ports.FileOptions{})
+	got, err := ReadConfig(basePath, sampleUseCaseName, ports.FileOptions{})
 	if err != nil {
 		t.Fatalf("ReadConfig after patch: %v", err)
 	}
@@ -134,9 +134,9 @@ func TestPatchModule_PatchesMultipleFieldsLeavesOthersUntouched(t *testing.T) {
 }
 
 func TestPatchModule_PropagatesEmptyPatchError(t *testing.T) {
-	path := writeSampleManifest(t)
+	basePath := writeSampleManifest(t)
 
-	err := PatchModule(path, modulepatch.ModuleFieldsPatch{ModuleName: "factory-dashboard"}, ports.FileOptions{})
+	err := PatchModule(basePath, sampleUseCaseName, modulepatch.ModuleFieldsPatch{ModuleName: "factory-dashboard"}, ports.FileOptions{})
 	if err == nil {
 		t.Error("PatchModule: want error for empty patch, got nil")
 	}

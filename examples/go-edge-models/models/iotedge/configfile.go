@@ -13,18 +13,23 @@ import (
 // don't have to repeat format.JSON(DeploymentManifestCodec).
 var ConfigFileFormat = f.JSON(DeploymentManifestCodec)
 
-// NewConfigFile declares the file port for the deployment manifest at
-// path — a thin, pure (no I/O) constructor over ports.NewFile, using
-// ConfigFileFormat. path is a concrete, caller-supplied file location:
-// this package has no opinion about where a manifest actually lives, and
-// a single "{var}" path template cannot capture an arbitrary multi-segment
-// path (template vars never cross a "/" boundary — see
-// internal/templatematch), so path is taken as the file port's WHOLE
-// template (zero vars) rather than substituted into one.
+// NewConfigFile declares the templated file port for a USE CASE's
+// deployment manifest under basePath — "{basePath}/usecases/{usecase_name}.json"
+// — a thin, pure (no I/O) constructor over ports.NewFile, using
+// ConfigFileFormat. usecase_name is validated against useCaseNameCodec
+// (the SAME codec [ConfigDirEntryPattern] uses to validate a discovered
+// use case's name) via a PLAIN (non-merge) [ports.FilePathParam] —
+// [DeploymentManifest] stays pure wire/file content; usecase_name is
+// never merged into it. Read/Write take usecase_name via their own vars
+// map, e.g. NewConfigFile(basePath).Read(map[string]string{"usecase_name": name}, opts).
 //
-// The returned port is reused for BOTH reading (File.Read) and patching
-// (ports.PatchEncoded(file, ...)) — the same file, two different
-// operations; see app/iotedge's ReadConfig/PatchModule.
-func NewConfigFile(path string) ports.File[DeploymentManifest] {
-	return ports.NewFile[DeploymentManifest](path, ConfigFileFormat)
+// The returned port is reused for reading (File.Read), writing
+// (File.Write), and patching (ports.PatchEncoded(file, ...)) — see
+// [ReadUseCase]/[WriteUseCase] for the higher-level convenience that
+// combines this with device discovery, and app/iotedge's
+// ReadConfig/PatchModule for direct usage.
+func NewConfigFile(basePath string) ports.File[DeploymentManifest] {
+	return ports.NewFile[DeploymentManifest](basePath+"/usecases/{usecase_name}.json", ConfigFileFormat,
+		ports.FilePathParam{Name: "usecase_name", Codec: &useCaseNameCodec},
+	)
 }

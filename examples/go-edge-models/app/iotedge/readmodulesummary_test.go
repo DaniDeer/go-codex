@@ -10,12 +10,13 @@ import (
 )
 
 func TestNewReadModuleSummaryToolHandler_ReturnsSummary(t *testing.T) {
-	path := writeSampleManifest(t)
+	basePath := writeSampleManifest(t)
 	handler := NewReadModuleSummaryToolHandler(ports.FileOptions{})
 
 	summary, err := handler(context.Background(), regiotedge.ReadModuleSummaryReq{
-		ManifestPath: path,
-		ModuleName:   "factory-dashboard",
+		BasePath:    basePath,
+		UseCaseName: sampleUseCaseName,
+		ModuleName:  "factory-dashboard",
 	})
 	if err != nil {
 		t.Fatalf("handler: %v", err)
@@ -32,12 +33,13 @@ func TestNewReadModuleSummaryToolHandler_ReturnsSummary(t *testing.T) {
 }
 
 func TestNewReadModuleSummaryToolHandler_ModuleNotFound(t *testing.T) {
-	path := writeSampleManifest(t)
+	basePath := writeSampleManifest(t)
 	handler := NewReadModuleSummaryToolHandler(ports.FileOptions{})
 
 	_, err := handler(context.Background(), regiotedge.ReadModuleSummaryReq{
-		ManifestPath: path,
-		ModuleName:   "does-not-exist",
+		BasePath:    basePath,
+		UseCaseName: sampleUseCaseName,
+		ModuleName:  "does-not-exist",
 	})
 	if err == nil {
 		t.Fatal("handler: want error for missing module, got nil")
@@ -54,8 +56,9 @@ func TestNewReadModuleSummaryToolHandler_ModuleNotFound(t *testing.T) {
 func TestNewReadModuleSummaryToolHandler_PropagatesReadError(t *testing.T) {
 	handler := NewReadModuleSummaryToolHandler(ports.FileOptions{})
 	_, err := handler(context.Background(), regiotedge.ReadModuleSummaryReq{
-		ManifestPath: "/nonexistent/manifest.json",
-		ModuleName:   "factory-dashboard",
+		BasePath:    "/nonexistent",
+		UseCaseName: "nonexistent-usecase",
+		ModuleName:  "factory-dashboard",
 	})
 	if err == nil {
 		t.Error("handler: want error for nonexistent file, got nil")

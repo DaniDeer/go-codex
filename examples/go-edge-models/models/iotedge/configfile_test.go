@@ -26,20 +26,23 @@ func sampleManifest() DeploymentManifest {
 }
 
 func TestNewConfigFile_ReadRoundTrip(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, "manifest.json")
+	basePath := t.TempDir()
+	usecasesDir := filepath.Join(basePath, "usecases")
+	if err := os.MkdirAll(usecasesDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
 
 	manifest := sampleManifest()
 	raw, err := ConfigFileFormat.Marshal(manifest)
 	if err != nil {
 		t.Fatalf("Marshal: %v", err)
 	}
-	if err := os.WriteFile(path, raw, 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(usecasesDir, "usecase1.json"), raw, 0o600); err != nil {
 		t.Fatalf("WriteFile: %v", err)
 	}
 
-	fh := NewConfigFile(path)
-	got, err := fh.Read(nil, ports.FileOptions{})
+	fh := NewConfigFile(basePath)
+	got, err := fh.Read(map[string]string{"usecase_name": "usecase1"}, ports.FileOptions{})
 	if err != nil {
 		t.Fatalf("Read: %v", err)
 	}
@@ -50,16 +53,16 @@ func TestNewConfigFile_ReadRoundTrip(t *testing.T) {
 }
 
 func TestNewConfigFile_WriteThenRead(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, "manifest.json")
+	basePath := t.TempDir()
 
-	fh := NewConfigFile(path)
+	fh := NewConfigFile(basePath)
 	manifest := sampleManifest()
-	if _, err := fh.Write(nil, manifest, ports.FileOptions{}); err != nil {
+	vars := map[string]string{"usecase_name": "usecase1"}
+	if _, err := fh.Write(vars, manifest, ports.FileOptions{CreateDirs: true}); err != nil {
 		t.Fatalf("Write: %v", err)
 	}
 
-	got, err := fh.Read(nil, ports.FileOptions{})
+	got, err := fh.Read(vars, ports.FileOptions{})
 	if err != nil {
 		t.Fatalf("Read: %v", err)
 	}
@@ -68,18 +71,23 @@ func TestNewConfigFile_WriteThenRead(t *testing.T) {
 	}
 }
 
-func TestNewConfigFile_DifferentPathsAreIndependent(t *testing.T) {
-	dir := t.TempDir()
-	pathA := filepath.Join(dir, "a.json")
-	pathB := filepath.Join(dir, "b.json")
+func TestNewConfigFile_DifferentUseCasesAreIndependent(t *testing.T) {
+	basePath := t.TempDir()
 
-	fhA := NewConfigFile(pathA)
-	fhB := NewConfigFile(pathB)
+	fh := NewConfigFile(basePath)
 
-	if _, err := fhA.Write(nil, sampleManifest(), ports.FileOptions{}); err != nil {
+	if _, err := fh.Write(map[string]string{"usecase_name": "usecase-a"}, sampleManifest(), ports.FileOptions{CreateDirs: true}); err != nil {
 		t.Fatalf("Write A: %v", err)
 	}
-	if _, err := fhB.Read(nil, ports.FileOptions{}); err == nil {
-		t.Error("Read B: want error (file b.json was never written), got nil")
+	if _, err := fh.Read(map[string]string{"usecase_name": "usecase-b"}, ports.FileOptions{}); err == nil {
+		t.Error("Read B: want error (usecase-b was never written), got nil")
+	}
+}
+
+func TestNewConfigFile_MissingUseCaseNameVar_ReturnsMissingFilePathVarError(t *testing.T) {
+	basePath := t.TempDir()
+	fh := NewConfigFile(basePath)
+	if _, err := fh.Read(nil, ports.FileOptions{}); err == nil {
+		t.Error("Read: want MissingFilePathVarError for missing usecase_name, got nil")
 	}
 }

@@ -30,13 +30,14 @@ func (e ModuleNotFoundError) LogValue() slog.Value {
 	)
 }
 
-// readModuleSummary reads the deployment manifest at manifestPath, looks
-// up moduleName, and maps it to a regiotedge.ModuleSummary — shared by
-// NewReadModuleSummaryToolHandler (below) and
-// NewUpdateModuleImageToolHandler (updatemoduleimage.go), which both need
-// "read manifest, find module, summarize" as their final step.
-func readModuleSummary(manifestPath string, moduleName regiotedge.ModuleName, opts ports.FileOptions) (regiotedge.ModuleSummary, error) {
-	manifest, err := ReadConfig(manifestPath, opts)
+// readModuleSummary reads useCaseName's deployment manifest under
+// basePath, looks up moduleName, and maps it to a
+// regiotedge.ModuleSummary — shared by NewReadModuleSummaryToolHandler
+// (below) and NewUpdateModuleImageToolHandler (updatemoduleimage.go),
+// which both need "read manifest, find module, summarize" as their
+// final step.
+func readModuleSummary(basePath, useCaseName string, moduleName regiotedge.ModuleName, opts ports.FileOptions) (regiotedge.ModuleSummary, error) {
+	manifest, err := ReadConfig(basePath, useCaseName, opts)
 	if err != nil {
 		return regiotedge.ModuleSummary{}, err
 	}
@@ -48,8 +49,8 @@ func readModuleSummary(manifestPath string, moduleName regiotedge.ModuleName, op
 }
 
 // NewReadModuleSummaryToolHandler returns an mcpgo.HandlerFunc that reads
-// the deployment manifest at req.ManifestPath, looks up req.ModuleName,
-// and maps it to a regiotedge.ModuleSummary — binding
+// req.UseCaseName's deployment manifest under req.BasePath, looks up
+// req.ModuleName, and maps it to a regiotedge.ModuleSummary — binding
 // models/iotedge's declared ReadModuleSummaryTool to ReadConfig.
 //
 // Usage:
@@ -60,6 +61,6 @@ func readModuleSummary(manifestPath string, moduleName regiotedge.ModuleName, op
 //	    mcpgo.Options{})
 func NewReadModuleSummaryToolHandler(opts ports.FileOptions) mcpgo.HandlerFunc[regiotedge.ReadModuleSummaryReq, regiotedge.ModuleSummary] {
 	return func(ctx context.Context, req regiotedge.ReadModuleSummaryReq) (regiotedge.ModuleSummary, error) {
-		return readModuleSummary(req.ManifestPath, req.ModuleName, opts)
+		return readModuleSummary(req.BasePath, req.UseCaseName, req.ModuleName, opts)
 	}
 }
