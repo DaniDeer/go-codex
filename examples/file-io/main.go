@@ -21,6 +21,11 @@
 //   - [ports.FilePathParamError], [ports.MissingFilePathVarError],
 //     [ports.FileReadError] — navigate via [errors.As]
 //   - [format.Binary] — raw binary file I/O with magic-byte validation
+//   - Glob path template segments ("*"/"**" via [ports.File.MatchPath])
+//     — matching, not building: [ports.File.BuildPath] rejects a
+//     glob-enabled template with [ports.FileWildcardBuildError]; see
+//     examples/dir-io's Section 8 for [ports.Dir.List]'s glob-DISCOVERY
+//     mode, which File itself deliberately does not duplicate
 //
 // Run with: go run ./examples/file-io
 package main
@@ -472,6 +477,46 @@ func main() {
 		if errors.As(err, &notFoundErr) {
 			fmt.Printf("  Strict Delete: FileNotFoundError (already absent), as expected\n")
 		}
+	}
+
+	// ── Section 2e: Glob path template segments — matching, not building ─────
+	//
+	// ports.File has NO glob-DISCOVERY method of its own (see
+	// examples/dir-io's Section 8 for that — ports.Dir.List's
+	// glob-discovery mode). File's own role in the glob feature is
+	// narrower: [ports.File.MatchPath] validates/extracts vars from a
+	// path ALREADY discovered by Dir.List (or the caller's own
+	// filepath.WalkDir), while [ports.File.BuildPath] rejects a
+	// glob-enabled template outright — building a SINGLE concrete path
+	// from a template that can match MULTIPLE paths is undefined.
+	fmt.Println("\n── Section 2e: glob path template segments — File.MatchPath/BuildPath ──")
+
+	// A glob-enabled template: "*" shares a segment with literal text
+	// ("app-*"), "**" matches zero-or-more WHOLE segments anywhere, and
+	// a named "{level}" segment still captures normally — but ONLY
+	// because it occupies a WHOLE segment on its own here. A
+	// glob-enabled template requires "{varName}" segments to be
+	// whole-segment (mutually exclusive with literal text/glob chars in
+	// the SAME segment) — unlike a non-glob template's "{date}.json"
+	// convenience, "{level}.log" would NOT work in a glob-enabled
+	// template. Glob segments themselves never capture — only named
+	// "{varName}" segments do.
+	logGlobFile := ports.NewFile("logs/app-*/**/{level}/trace.log", format.JSON(codex.Struct[struct{}]()))
+
+	discoveredLogPath := "logs/app-web/a/b/fatal/trace.log"
+	logVars, err := logGlobFile.MatchPath(discoveredLogPath)
+	if err != nil {
+		slog.Error("MatchPath on glob template failed", "err", err)
+	} else {
+		fmt.Printf("  MatchPath(%q): vars=%v (only {level} captured — \"*\"/\"**\" never capture)\n", discoveredLogPath, logVars)
+	}
+
+	// BuildPath has no meaning for a glob-enabled template — rejected
+	// with FileWildcardBuildError instead of silently picking one match.
+	_, err = logGlobFile.BuildPath(map[string]string{"level": "fatal"})
+	var fileWildcardErr ports.FileWildcardBuildError
+	if errors.As(err, &fileWildcardErr) {
+		fmt.Printf("  BuildPath on a glob-enabled template: FileWildcardBuildError (template=%q), as expected\n", fileWildcardErr.Template)
 	}
 
 	// ── Section 3: Error handling ─────────────────────────────────────────────

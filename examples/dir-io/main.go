@@ -40,9 +40,13 @@
 //   - Glob path template segments (shell-glob "*"/"?"/"[...]" plus "**"
 //     globstar, NOT MQTT's "+"/"#") — [ports.Dir.List]'s glob-discovery
 //     mode finds EVERY matching directory and aggregates their entries;
-//     [ports.WithBaseDir] anchors the discovery walk;
-//     [ports.DirWildcardBuildError] rejects BuildPath/MatchPath on a
-//     glob-enabled template
+//     a named "{var}" segment combined with a glob segment acts as a
+//     PARTIAL FILTER (supplied narrows, unsupplied is captured per
+//     match, merged with any EntryPattern captures into one Vars map);
+//     [ports.WithBaseDir] anchors the discovery walk (an unanchored
+//     wildcard-first template walks from cwd instead);
+//     [ports.DirWildcardBuildError] rejects BuildPath/MatchPath/Delete on
+//     a glob-enabled template
 //
 // Run with: go run ./examples/dir-io
 package main
@@ -390,6 +394,97 @@ func main() {
 	}
 	fmt.Printf("  \"logs/**/errors\" discovered %d entries across every depth (0+ segments matched by **)\n", len(globstarEntries))
 
+	// "?" (single char) and "[...]" (character class) round out the
+	// path/filepath.Match vocabulary — "app-?" matches exactly one char
+	// after "app-"; "app-[wa]*" matches a char class before more text.
+	// Each directory gets one marker file so List's entry COUNT directly
+	// reflects how many directories matched (List returns entries INSIDE
+	// matched directories, not the directories themselves).
+	for _, name := range []string{"app-1", "app-2", "app-10"} {
+		d := filepath.Join(logsRoot, name)
+		if err := os.MkdirAll(d, 0o755); err != nil {
+			panic(err)
+		}
+		if err := os.WriteFile(filepath.Join(d, "marker.log"), []byte("x\n"), 0o644); err != nil {
+			panic(err)
+		}
+	}
+	questionMarkLogs := ports.NewDir("logs/app-?", ports.WithBaseDir(root))
+	qEntries, err := questionMarkLogs.List(nil, ports.DirOptions{})
+	if err != nil {
+		panic(err)
+	}
+	fmt.Printf("  \"logs/app-?\" (single char) discovered %d dirs (app-1, app-2) — not \"app-10\" (two chars)\n", len(qEntries))
+
+	charClassLogs := ports.NewDir("logs/app-[wa]*", ports.WithBaseDir(root))
+	classEntries, err := charClassLogs.List(nil, ports.DirOptions{})
+	if err != nil {
+		panic(err)
+	}
+	fmt.Printf("  \"logs/app-[wa]*\" (char class) discovered %d entries across app-web/app-api — app-other/app-1/app-2/app-10 don't match\n", len(classEntries))
+
+	// A named "{env}" segment combined with a glob segment in the SAME
+	// template: vars acts as a PARTIAL FILTER. Supplied → narrows
+	// discovery to that literal value. Unsupplied → each match's value is
+	// CAPTURED per directory instead of raising MissingDirPathVarError.
+	// Directory-level captures merge with any EntryPattern captures into
+	// ONE flat DirEntry.Vars map.
+	envLogsRoot := filepath.Join(root, "env-logs")
+	for _, env := range []string{"prod", "staging"} {
+		appDir := filepath.Join(envLogsRoot, env, "app-web")
+		if err := os.MkdirAll(appDir, 0o755); err != nil {
+			panic(err)
+		}
+		if err := os.WriteFile(filepath.Join(appDir, "trace-1.log"), []byte("x\n"), 0o644); err != nil {
+			panic(err)
+		}
+	}
+	envAppLogs := ports.NewDir("env-logs/{env}/app-*",
+		ports.DirPathParam{Name: "env"},
+		ports.WithBaseDir(root),
+		ports.WithEntryPattern(ports.EntryPattern{
+			Template: "trace-{seq}.log",
+			Params:   []ports.EntryParam{{Name: "seq"}},
+		}),
+	)
+	// Supplied "env" filters discovery to ONLY that literal value.
+	prodOnly, err := envAppLogs.List(map[string]string{"env": "prod"}, ports.DirOptions{})
+	if err != nil {
+		panic(err)
+	}
+	fmt.Printf("  \"env-logs/{env}/app-*\" with env=prod: %d entries (staging excluded)\n", len(prodOnly))
+
+	// Unsupplied "env" is captured per match — merged with EntryPattern's
+	// own "seq" capture into ONE flat Vars map per entry.
+	allEnvs, err := envAppLogs.List(nil, ports.DirOptions{})
+	if err != nil {
+		panic(err)
+	}
+	for _, e := range allEnvs {
+		fmt.Printf("    discovered env=%q seq=%q (dir-level + EntryPattern vars merged into one map)\n", e.Vars["env"], e.Vars["seq"])
+	}
+
+	// A wildcard-first-segment template (no literal prefix at all) has no
+	// safe anchor — WITHOUT WithBaseDir it walks from the current working
+	// directory, which can be slow on a large tree. Chdir here so the
+	// unanchored walk stays scoped to this demo's own temp root.
+	oldWD, err := os.Getwd()
+	if err != nil {
+		panic(err)
+	}
+	if err := os.Chdir(root); err != nil {
+		panic(err)
+	}
+	unanchoredLogs := ports.NewDir("logs/app-*/errors") // no WithBaseDir — walks from cwd
+	unanchoredEntries, err := unanchoredLogs.List(nil, ports.DirOptions{})
+	if err != nil {
+		panic(err)
+	}
+	fmt.Printf("  \"logs/app-*/errors\" with NO WithBaseDir: %d entries, walked from cwd (%s)\n", len(unanchoredEntries), root)
+	if err := os.Chdir(oldWD); err != nil {
+		panic(err)
+	}
+
 	// BuildPath/MatchPath reject a glob-enabled template outright — a
 	// glob-enabled template can match MULTIPLE paths, so building/matching
 	// a SINGLE concrete path is undefined. Use Dir.List's glob-discovery
@@ -398,5 +493,17 @@ func main() {
 	var wildcardErr ports.DirWildcardBuildError
 	if errors.As(err, &wildcardErr) {
 		fmt.Printf("  BuildPath on a glob-enabled template: DirWildcardBuildError (template=%q), as expected\n", wildcardErr.Template)
+	}
+	_, err = appErrorLogs.MatchPath(filepath.Join(root, "logs", "app-web", "errors"))
+	if errors.As(err, &wildcardErr) {
+		fmt.Printf("  MatchPath on a glob-enabled template: DirWildcardBuildError (template=%q), as expected\n", wildcardErr.Template)
+	}
+
+	// Dir.Delete ALSO has no glob-discovery mode of its own — deleting
+	// MULTIPLE directories matched by one template in a single call is
+	// deliberately not supported; rejected the same way BuildPath is.
+	_, err = appErrorLogs.Delete(nil, ports.DirOptions{})
+	if errors.As(err, &wildcardErr) {
+		fmt.Printf("  Delete on a glob-enabled template: DirWildcardBuildError (template=%q), as expected\n", wildcardErr.Template)
 	}
 }
