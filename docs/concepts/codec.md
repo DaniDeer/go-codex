@@ -1064,6 +1064,100 @@ names, and the same reflection/struct-tag/variadic-arity limitations still
 apply. Adoption is entirely opt-in, exactly like `Codec[T].New` itself —
 no existing type or package is required to implement `HasCodec`.
 
+### `PartialField`/`PartialStruct`: patching an existing struct
+
+`Struct[T]`'s own `Encode` unconditionally writes EVERY declared field
+into its output map — `RequiredField` and `OptionalField` alike. There is
+no built-in "omit this field from the encoded object when it was never
+set" behavior, so a "patch"/"partial update" struct (only SOME fields
+set, and only those written to the wire) can't be expressed with
+`Struct` directly. `PartialField`/`PartialStruct` are a parallel
+interface/constructor pair — not a modification of `FieldCodec`/`Struct`
+— for exactly that case:
+
+```go
+type ProfilePatch struct {
+    Nickname *string
+    Age      *int
+}
+var profilePatchCodec = codex.PartialStruct[ProfilePatch](
+    codex.PartialField("nickname", codex.String(),
+        func(p ProfilePatch) *string { return p.Nickname },
+        func(p *ProfilePatch, v *string) { p.Nickname = v }),
+    codex.PartialField("age", codex.Int(),
+        func(p ProfilePatch) *int { return p.Age },
+        func(p *ProfilePatch, v *int) { p.Age = v }),
+)
+
+raw, _ := profilePatchCodec.Encode(ProfilePatch{Nickname: ptr("bob")})
+// raw == map[string]any{"nickname": "bob"} — "age" key is ABSENT, not null.
+```
+
+Every `PartialField`-declared field is required to be a pointer `*F` on
+`T`: nil means "not set, leave untouched" when encoding; non-nil means
+"set to this value". `codec` is the SAME field-level `Codec[F]` an
+existing full-struct declaration for this concept already uses —
+reused completely unchanged, so a patch field's validation is *inherited*
+from the base type's own codec with zero new logic. Decode is the
+mirror: only fields whose keys are present in the input get assigned;
+absent keys leave the target pointer nil. If every field is nil,
+`Encode` returns an empty `map[string]any` (not an error — a caller for
+whom an entirely-empty patch is meaningless should reject it themselves
+via their own domain error).
+
+**Why not just extend `OptionalField`?** `FieldCodec[T]`'s sealed
+`encode` method returns `(string, any, error)` — no room for a "was this
+actually set" signal without either a breaking interface change touching
+every existing `Field[T,F]` consumer, or an ad-hoc sentinel value
+threaded through `any` (exactly the kind of implicit-behavior hack this
+library avoids elsewhere). A parallel interface avoids touching
+`FieldCodec`/`Struct` at all, and keeps `Struct`'s well-tested
+"always-write-every-field" semantics completely separate from
+`PartialStruct`'s "omit-when-unset" semantics — two clearly-named,
+single-purpose entry points instead of one function with two presence
+models a reader would have to hold in their head at once.
+
+**Nesting needs no special mechanism.** A `PartialStruct`-built `Codec[F]`
+can be used as another `PartialField[Outer, F]`'s `codec` — `PartialField`
+accepts any `Codec[F]`, and `PartialStruct` returns a plain `Codec[T]`,
+so this is ordinary `Codec[T]` composability (the same way `Struct`
+already nests inside `Struct` today). Presence for the nested field is
+decided exactly like any other field: is the OUTER pointer nil? The
+caller only allocates the nested pointer (`&SettingsPatch{Image: &img}`)
+when it actually means to include a change inside it — there is no
+"auto-collapse an empty nested result" heuristic involved.
+
+**Nesting gotcha**: presence is decided by `!= nil`, not "has any inner
+field set" — so a non-nil-but-entirely-empty nested pointer (e.g.
+`&SettingsPatch{}` with every one of ITS OWN fields left nil) still
+encodes as present (`"settings": {}` — a key with an empty object, not an
+absent key). This is a natural consequence of the nil-means-unset rule,
+not a bug, but it's a real footgun: only allocate a nested patch pointer
+when you're about to set at least one field inside it.
+
+**Gotcha: named types over `Map`/`SliceOf`.** `codex.Map[K,V]`/
+`codex.SliceOf[T]` return a `Codec` over the PLAIN underlying type
+(`map[K]V`/`[]T`), not any named type built on top of it. If `F` in
+`PartialField[T,F]` is a named type (e.g. `type EnvVars
+map[EnvVarName]EnvVar`), passing that raw `Map`-built codec directly to
+`PartialField` fails Go's generic type inference — even though the
+underlying representation is identical. Fix: wrap it in a trivial
+identity retype via `codex.MapCodecSafe` (`Codec[map[K]V]` →
+`Codec[NamedType]`) before passing it to `PartialField` — see
+`modulepatch.envVarsCodec` for the reference pattern.
+
+No new structured error types and no observer integration are needed:
+`PartialStruct`/`PartialField` reuse whatever errors the per-field
+`Codec[F]` values already produce (`ValidationError`/`ValidationErrors`,
+exactly like `Struct`), and are pure codec-construction primitives with
+no I/O, same as `Struct`/`UntaggedUnion`/`TaggedUnion`. See
+`examples/go-edge-models/models/iotedge/modulepatch.ModuleFieldsPatch`
+for a real-world worked example (patching one IoT-Edge module's fields,
+including a nested `ModuleSettingsPatch` grouping) — this subsection and
+`.github/instructions/go-codex.instructions.md`'s matching section are
+now the authoritative design reference (the feature's roadmap doc was
+retired once shipped).
+
 ## Either — typed sum type
 
 `Either2` tries codec A first; if decode fails, tries codec B. Encode uses whichever branch is non-nil:

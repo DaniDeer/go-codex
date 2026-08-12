@@ -7,37 +7,80 @@ import (
 	c "github.com/DaniDeer/go-codex/codex"
 	"github.com/DaniDeer/go-codex/examples/go-edge-models/models/docker"
 	"github.com/DaniDeer/go-codex/examples/go-edge-models/models/iotedge"
-	"github.com/DaniDeer/go-codex/schema"
 )
 
 // This file holds ModuleFieldsPatch — a GENERAL, multi-field patch for
-// one module. Every field is independently optional; only the ones
+// one module. Every field is independently optional (a pointer, nil =
+// untouched — a uniform rule with zero exceptions); only the ones
 // actually set are included when encoding, leaving every other field on
 // this module — and everything else in the manifest — untouched.
 //
-// Why this can't be built with codex.Struct: codex.Struct's own Encode
-// unconditionally writes EVERY declared field into its output map (see
-// codex/object.go), whether RequiredField or OptionalField — there is no
-// built-in "omit this field from the encoded map when it was never set"
-// behavior. ModuleFieldsPatchCodec is therefore a HAND-ROLLED
-// codex.Codec[ModuleFieldsPatch] (Decode/Encode written directly, not
-// composed via codex.Struct for the outer shape). Each field that IS
-// present still gets validated/encoded via its own EXISTING codec
-// (iotedge.ImageCodec, docker.CreateOptionsCodec, etc.) — no new
-// validation logic, only the sparse-inclusion mechanism is new.
+// ModuleFieldsPatch's own fields (Settings/Env/Type/Status/
+// RestartPolicy/Version) are declared via codex.PartialField and
+// composed into moduleFieldsBodyCodec via codex.PartialStruct — the
+// sparse "omit unset fields entirely" mechanism (see
+// docs/concepts/codec.md's "PartialField/PartialStruct" subsection for
+// the full design). Settings
+// itself groups Image/CreateOptions the SAME way — a nested
+// ModuleSettingsPatch, also PartialStruct-built — mirroring how
+// iotedge.ModuleConfig.Settings groups those same two fields on the
+// base (non-patch) type. Nesting needs no special mechanism: presence
+// for "settings" is decided exactly like any other field — is
+// ModuleFieldsPatch.Settings nil?
+//
+// The ONE part that genuinely can't be expressed as a fixed field list
+// (and therefore stays hand-written): the manifest wraps each patch
+// under a RUNTIME-DETERMINED module-name key
+// (modulesContent -> $edgeAgent -> <dotted key> -> {...}) — that key is
+// data, not a static field name, so ModuleFieldsPatchCodec's own
+// Encode/Decode still hand-assembles that outer wrapping (reusing
+// iotedge.ModuleNameCodec for the key itself) around
+// moduleFieldsBodyCodec's declarative result.
 
-// ModuleFieldsPatch is a partial set of one module's fields to update —
-// mirrors iotedge.ModuleConfig's own field set (Image/CreateOptions
-// together form ModuleConfig.Settings on the wire; Env/Type/Status/
-// RestartPolicy/Version are ModuleConfig's remaining top-level fields).
-// Only non-nil pointer fields (and non-nil Env, which is already a map —
-// nil means "untouched", the same convention ModuleConfig.Env itself
-// uses) are included when [ModuleFieldsPatchCodec] encodes a value.
-type ModuleFieldsPatch struct {
-	ModuleName    iotedge.ModuleName
+// ModuleSettingsPatch groups the two fields the wire format nests under
+// "settings" — mirrors iotedge.ModuleSettings, but every field is
+// independently optional.
+//
+// Gotcha: presence is decided by "is this pointer non-nil", not "does it
+// have anything set inside" — so a non-nil-but-entirely-empty
+// &ModuleSettingsPatch{} (neither Image nor CreateOptions set) still
+// encodes as a present-but-empty "settings": {} key on the outer
+// ModuleFieldsPatch, not an absent key. Only allocate a
+// *ModuleSettingsPatch when you're about to set at least one field
+// inside it.
+type ModuleSettingsPatch struct {
 	Image         *docker.Image
 	CreateOptions *docker.CreateOptions
-	Env           iotedge.EnvVars
+}
+
+// ModuleSettingsPatchCodec — each present field is validated/encoded via
+// the SAME codec iotedge.ModuleSettingsCodec itself uses
+// (iotedge.ImageCodec/docker.CreateOptionsCodec) — no new validation
+// logic, only the sparse-inclusion mechanism.
+var ModuleSettingsPatchCodec = c.PartialStruct[ModuleSettingsPatch](
+	c.PartialField("image", iotedge.ImageCodec,
+		func(s ModuleSettingsPatch) *docker.Image { return s.Image },
+		func(s *ModuleSettingsPatch, v *docker.Image) { s.Image = v },
+	),
+	c.PartialField("createOptions", docker.CreateOptionsCodec,
+		func(s ModuleSettingsPatch) *docker.CreateOptions { return s.CreateOptions },
+		func(s *ModuleSettingsPatch, v *docker.CreateOptions) { s.CreateOptions = v },
+	),
+)
+
+// ModuleFieldsPatch is a partial set of one module's fields to update —
+// mirrors iotedge.ModuleConfig's own field set (Settings groups Image/
+// CreateOptions, exactly like ModuleConfig.Settings does on the base
+// type; Env/Type/Status/RestartPolicy/Version are ModuleConfig's
+// remaining top-level fields). Every field is a pointer; nil means
+// "untouched" — including Env, which (unlike the base ModuleConfig.Env)
+// is *iotedge.EnvVars here rather than a bare EnvVars map, so every
+// field in this struct follows the exact same nil-means-unset
+// convention with no exceptions.
+type ModuleFieldsPatch struct {
+	ModuleName    iotedge.ModuleName
+	Settings      *ModuleSettingsPatch
+	Env           *iotedge.EnvVars
 	Type          *iotedge.Type
 	Status        *iotedge.Status
 	RestartPolicy *iotedge.RestartPolicy
@@ -45,11 +88,10 @@ type ModuleFieldsPatch struct {
 }
 
 // EmptyPatchError reports that a ModuleFieldsPatch had NOTHING set
-// (every pointer field nil and Env empty) — encoding it would produce a
-// no-op patch, which is almost certainly a caller mistake (an empty
-// patch silently "succeeding" would hide that mistake), so
-// ModuleFieldsPatchCodec.Encode returns this instead. Implements
-// slog.LogValuer for structured logging.
+// (every pointer field nil) — encoding it would produce a no-op patch,
+// which is almost certainly a caller mistake (an empty patch silently
+// "succeeding" would hide that mistake), so ModuleFieldsPatchCodec.Encode
+// returns this instead. Implements slog.LogValuer for structured logging.
 type EmptyPatchError struct {
 	ModuleName iotedge.ModuleName
 }
@@ -65,90 +107,64 @@ func (e EmptyPatchError) LogValue() slog.Value {
 	)
 }
 
-// moduleFieldsPatchSchema is hand-built (not derived from codex.Struct,
-// for the same reason the Encode/Decode functions below are hand-written)
-// — one property per patchable field, pulling each field's own sub-codec
-// Schema; none are Required (every field is optional in a patch).
-var moduleFieldsPatchSchema = schema.Schema{
-	Type: "object",
-	Properties: []schema.Property{
-		{Name: "image", Schema: iotedge.ImageCodec.Schema},
-		{Name: "createOptions", Schema: docker.CreateOptionsCodec.Schema},
-		{Name: "env", Schema: iotedge.EnvVarsCodec.Schema},
-		{Name: "type", Schema: iotedge.TypeCodec.Schema},
-		{Name: "status", Schema: iotedge.StatusCodec.Schema},
-		{Name: "restartPolicy", Schema: iotedge.RestartPolicyCodec.Schema},
-		{Name: "version", Schema: iotedge.VersionCodec.Schema},
-	},
-}
+// envVarsCodec re-types iotedge.EnvVarsCodec's underlying
+// Codec[map[EnvVarName]EnvVar] as Codec[iotedge.EnvVars] — a trivial
+// identity conversion needed only because c.Map[K,V] itself returns a
+// Codec over the plain map type, not the named EnvVars type PartialField
+// needs to match ModuleFieldsPatch.Env's own *iotedge.EnvVars field type.
+var envVarsCodec = c.MapCodecSafe(
+	iotedge.EnvVarsCodec,
+	func(m map[iotedge.EnvVarName]iotedge.EnvVar) iotedge.EnvVars { return iotedge.EnvVars(m) },
+	func(v iotedge.EnvVars) (map[iotedge.EnvVarName]iotedge.EnvVar, error) { return v, nil },
+)
+
+// moduleFieldsBodyCodec declaratively encodes/decodes ModuleFieldsPatch's
+// OWN patchable fields (everything except ModuleName, which the outer
+// ModuleFieldsPatchCodec handles separately as the dynamic map key) —
+// this is the entire "which fields were set" sparse-inclusion logic,
+// expressed as plain field declarations instead of hand-rolled
+// "if p.X != nil {...}" branches.
+var moduleFieldsBodyCodec = c.PartialStruct[ModuleFieldsPatch](
+	c.PartialField("settings", ModuleSettingsPatchCodec,
+		func(p ModuleFieldsPatch) *ModuleSettingsPatch { return p.Settings },
+		func(p *ModuleFieldsPatch, v *ModuleSettingsPatch) { p.Settings = v },
+	),
+	c.PartialField("env", envVarsCodec,
+		func(p ModuleFieldsPatch) *iotedge.EnvVars { return p.Env },
+		func(p *ModuleFieldsPatch, v *iotedge.EnvVars) { p.Env = v },
+	),
+	c.PartialField("type", iotedge.TypeCodec,
+		func(p ModuleFieldsPatch) *iotedge.Type { return p.Type },
+		func(p *ModuleFieldsPatch, v *iotedge.Type) { p.Type = v },
+	),
+	c.PartialField("status", iotedge.StatusCodec,
+		func(p ModuleFieldsPatch) *iotedge.Status { return p.Status },
+		func(p *ModuleFieldsPatch, v *iotedge.Status) { p.Status = v },
+	),
+	c.PartialField("restartPolicy", iotedge.RestartPolicyCodec,
+		func(p ModuleFieldsPatch) *iotedge.RestartPolicy { return p.RestartPolicy },
+		func(p *ModuleFieldsPatch, v *iotedge.RestartPolicy) { p.RestartPolicy = v },
+	),
+	c.PartialField("version", iotedge.VersionCodec,
+		func(p ModuleFieldsPatch) *iotedge.Version { return p.Version },
+		func(p *ModuleFieldsPatch, v *iotedge.Version) { p.Version = v },
+	),
+)
 
 // ModuleFieldsPatchCodec encodes a ModuleFieldsPatch into the manifest's
 // full nested wire shape (modulesContent -> $edgeAgent -> <dotted key> ->
-// {settings:{image?,createOptions?}, env?, type?, status?,
-// restartPolicy?, version?}), including ONLY the fields actually set —
-// see this file's own top-of-file doc comment for why codex.Struct
-// cannot express this. Decode is the exact inverse (reads whichever keys
-// are present, leaving the rest nil/zero) — provided for symmetry and
-// testability, even though ports.PatchEncoded itself only ever calls
-// Encode.
+// {settings?, env?, type?, status?, restartPolicy?, version?}),
+// including ONLY the fields actually set (delegated to
+// moduleFieldsBodyCodec — see this file's own top-of-file doc comment
+// for why the OUTER module-name-keyed wrapping stays hand-written while
+// everything else is declarative).
 var ModuleFieldsPatchCodec = c.Codec[ModuleFieldsPatch]{
 	Encode: func(p ModuleFieldsPatch) (any, error) {
-		settings := map[string]any{}
-		if p.Image != nil {
-			raw, err := iotedge.ImageCodec.Encode(*p.Image)
-			if err != nil {
-				return nil, err
-			}
-			settings["image"] = raw
+		rawBody, err := moduleFieldsBodyCodec.Encode(p)
+		if err != nil {
+			return nil, err
 		}
-		if p.CreateOptions != nil {
-			raw, err := docker.CreateOptionsCodec.Encode(*p.CreateOptions)
-			if err != nil {
-				return nil, err
-			}
-			settings["createOptions"] = raw
-		}
-
-		moduleObj := map[string]any{}
-		if len(settings) > 0 {
-			moduleObj["settings"] = settings
-		}
-		if p.Env != nil {
-			raw, err := iotedge.EnvVarsCodec.Encode(p.Env)
-			if err != nil {
-				return nil, err
-			}
-			moduleObj["env"] = raw
-		}
-		if p.Type != nil {
-			raw, err := iotedge.TypeCodec.Encode(*p.Type)
-			if err != nil {
-				return nil, err
-			}
-			moduleObj["type"] = raw
-		}
-		if p.Status != nil {
-			raw, err := iotedge.StatusCodec.Encode(*p.Status)
-			if err != nil {
-				return nil, err
-			}
-			moduleObj["status"] = raw
-		}
-		if p.RestartPolicy != nil {
-			raw, err := iotedge.RestartPolicyCodec.Encode(*p.RestartPolicy)
-			if err != nil {
-				return nil, err
-			}
-			moduleObj["restartPolicy"] = raw
-		}
-		if p.Version != nil {
-			raw, err := iotedge.VersionCodec.Encode(*p.Version)
-			if err != nil {
-				return nil, err
-			}
-			moduleObj["version"] = raw
-		}
-
+		moduleObj := rawBody.(map[string]any)
 		if len(moduleObj) == 0 {
 			return nil, EmptyPatchError{ModuleName: p.ModuleName}
 		}
@@ -180,79 +196,21 @@ var ModuleFieldsPatchCodec = c.Codec[ModuleFieldsPatch]{
 			return ModuleFieldsPatch{}, c.TypeMismatchError{Expected: "object", Got: typeName(modulesContent["$edgeAgent"])}
 		}
 
-		var p ModuleFieldsPatch
 		for rawKey, rawModule := range edgeAgent {
 			name, err := iotedge.ModuleNameCodec.Decode(rawKey)
 			if err != nil {
 				return ModuleFieldsPatch{}, err
 			}
+			p, err := moduleFieldsBodyCodec.Decode(rawModule)
+			if err != nil {
+				return ModuleFieldsPatch{}, err
+			}
 			p.ModuleName = name
-
-			moduleObj, ok := rawModule.(map[string]any)
-			if !ok {
-				return ModuleFieldsPatch{}, c.TypeMismatchError{Expected: "object", Got: typeName(rawModule)}
-			}
-
-			if rawSettings, ok := moduleObj["settings"]; ok {
-				settings, ok := rawSettings.(map[string]any)
-				if !ok {
-					return ModuleFieldsPatch{}, c.TypeMismatchError{Expected: "object", Got: typeName(rawSettings)}
-				}
-				if rawImage, ok := settings["image"]; ok {
-					img, err := iotedge.ImageCodec.Decode(rawImage)
-					if err != nil {
-						return ModuleFieldsPatch{}, err
-					}
-					p.Image = &img
-				}
-				if rawCO, ok := settings["createOptions"]; ok {
-					co, err := docker.CreateOptionsCodec.Decode(rawCO)
-					if err != nil {
-						return ModuleFieldsPatch{}, err
-					}
-					p.CreateOptions = &co
-				}
-			}
-			if rawEnv, ok := moduleObj["env"]; ok {
-				env, err := iotedge.EnvVarsCodec.Decode(rawEnv)
-				if err != nil {
-					return ModuleFieldsPatch{}, err
-				}
-				p.Env = env
-			}
-			if rawType, ok := moduleObj["type"]; ok {
-				t, err := iotedge.TypeCodec.Decode(rawType)
-				if err != nil {
-					return ModuleFieldsPatch{}, err
-				}
-				p.Type = &t
-			}
-			if rawStatus, ok := moduleObj["status"]; ok {
-				s, err := iotedge.StatusCodec.Decode(rawStatus)
-				if err != nil {
-					return ModuleFieldsPatch{}, err
-				}
-				p.Status = &s
-			}
-			if rawRP, ok := moduleObj["restartPolicy"]; ok {
-				rp, err := iotedge.RestartPolicyCodec.Decode(rawRP)
-				if err != nil {
-					return ModuleFieldsPatch{}, err
-				}
-				p.RestartPolicy = &rp
-			}
-			if rawVersion, ok := moduleObj["version"]; ok {
-				ver, err := iotedge.VersionCodec.Decode(rawVersion)
-				if err != nil {
-					return ModuleFieldsPatch{}, err
-				}
-				p.Version = &ver
-			}
-			break // exactly one entry is ever produced by Encode above.
+			return p, nil // exactly one entry is ever produced by Encode above.
 		}
-		return p, nil
+		return ModuleFieldsPatch{}, nil
 	},
-	Schema: moduleFieldsPatchSchema,
+	Schema: moduleFieldsBodyCodec.Schema,
 }
 
 // asObject type-asserts raw as map[string]any, returning a
@@ -286,5 +244,8 @@ func typeName(v any) string {
 // per iotedge.ImageCodec) before the patch is ever applied to a real
 // manifest via ports.PatchEncoded.
 func NewUpdateModuleImagePatch(moduleName iotedge.ModuleName, image docker.Image) (ModuleFieldsPatch, error) {
-	return ModuleFieldsPatchCodec.New(ModuleFieldsPatch{ModuleName: moduleName, Image: &image})
+	return ModuleFieldsPatchCodec.New(ModuleFieldsPatch{
+		ModuleName: moduleName,
+		Settings:   &ModuleSettingsPatch{Image: &image},
+	})
 }

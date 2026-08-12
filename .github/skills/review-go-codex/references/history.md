@@ -1,6 +1,46 @@
-# go-codex Review History (R1–R107)
+# go-codex Review History (R1–R108)
 
 Do not re-report any of these findings. They have been implemented and tested.
+
+---
+
+## Round 108 (`codex.PartialField`/`PartialStruct` — test coverage + gotcha docs)
+
+Focused audit of the newly-shipped `codex.PartialField`/`codex.PartialStruct`
+primitive and its flagship consumer (`examples/go-edge-models/models/iotedge/modulepatch`).
+The core implementation itself was already correct (sealed interface,
+`//lint:ignore U1000` markers, `ValidationErrors`/`TypeMismatchError` reuse
+all matching `Struct`/`FieldCodec`'s established pattern) — found three
+completeness gaps, all documentation/test-coverage, no functional bugs.
+
+- **G1 [small] — `PartialStruct` missing Decode error-path tests**:
+  `codex/partial_test.go` had no equivalent of `object_test.go`'s
+  `TestStruct_DecodeNonObject`/`TestStruct_DecodeFieldWrongType`/
+  `TestStruct_DecodeMultipleErrors`. Added
+  `TestPartialStruct_Decode_NonObject_ReturnsTypeMismatchError`,
+  `TestPartialStruct_Decode_FieldCodecError`,
+  `TestPartialStruct_Decode_MultipleErrors`.
+- **G2 [small] — nested-empty-patch footgun undocumented outside a test
+  comment**: a non-nil-but-empty `&ModuleSettingsPatch{}` still encodes as
+  present (`"settings": {}`) since presence is `!= nil`, not "has anything
+  set inside" — this was only noted in a test comment, not in either doc
+  surface or `ModuleSettingsPatch`'s own godoc. Added a "Nesting gotcha"
+  note to `.github/instructions/go-codex.instructions.md` and
+  `docs/concepts/codec.md`'s `PartialField`/`PartialStruct` sections, plus
+  a godoc comment on `ModuleSettingsPatch` itself.
+- **G3 [small] — Go generics named-type inference gotcha undocumented**:
+  `codex.Map[K,V]`/`codex.SliceOf[T]` return a `Codec` over the plain
+  underlying type, not any named type built on it, so `PartialField[T,F]`
+  fails to infer `F` against a `*NamedType` field without an explicit
+  `MapCodecSafe` identity-retype wrapper (discovered via
+  `modulepatch.envVarsCodec` during the flagship refactor, but only
+  documented as a code comment in that one file). Added a matching gotcha
+  bullet to both doc surfaces referencing `modulepatch.envVarsCodec` as
+  the reference pattern.
+
+Full verification: `gofmt -l .` clean, `go build ./...`, `go test ./...`
+(repo-wide, 48 packages, all pass), `just check` (staticcheck + gosec, 0
+issues), full example sweep (all exit 0).
 
 ---
 

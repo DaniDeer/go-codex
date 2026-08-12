@@ -3,12 +3,17 @@
 > **Status:** Idea only — not designed, no use case yet.
 > [← Back to Roadmap](index.md)
 >
-> Follow-on to [Partial/Patch Struct Codec](partial-struct-codec.md) — split out as its own roadmap entry since it is a genuinely separate design question, not part of that feature's Phase 1.
+> Follow-on to the now-SHIPPED `codex.PartialField`/`codex.PartialStruct`
+> (see `docs/concepts/codec.md`'s "`PartialField`/`PartialStruct`: patching
+> an existing struct" subsection and `.github/instructions/go-codex.instructions.md`)
+> — split out as its own roadmap entry since it is a genuinely separate
+> design question, not part of that feature's Phase 1. That feature's own
+> roadmap doc was retired once implemented; this follow-on idea remains open.
 
 ## The idea
 
 Once `codex.PartialField`/`codex.PartialStruct` make it easy to
-*construct* a patch (`partial-struct-codec.md`), the natural next
+*construct* a patch, the natural next
 question is whether go-codex can also help *derive* one: given a
 previous/base `T` value and an updated `T` value, auto-populate a
 `PartialStruct`-shaped patch type with only the fields that actually
