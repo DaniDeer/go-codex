@@ -1,7 +1,15 @@
 # Directory Listing Port — `ports`
 
-> **Status:** Design complete, all open decisions resolved — not yet
-> implemented.
+> **Status:** SHIPPED. `ports.Dir`/`DirPathParam`/`EntryPattern` are
+> implemented in `ports/dir.go` (tests in `ports/dir_test.go`). The
+> flagship consumer, `examples/go-edge-models/models/iotedge.NewConfigDir`,
+> demonstrates discovering iotedge use-case config files by filename (see
+> `configdir.go`/`configdir_test.go` and the "ports.Dir" section of
+> `examples/go-edge-models/main.go`). Kept here as design history/
+> rationale — see `docs/features/ports.md`'s "`Dir` — listing a
+> directory's entries" subsection and
+> `.github/instructions/go-codex.instructions.md`'s `ports` row for the
+> current, user-facing documentation.
 > [← Back to Roadmap](index.md)
 >
 > Motivated by a concrete consumer: `examples/go-edge-models`'s iotedge

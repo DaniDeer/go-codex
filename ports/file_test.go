@@ -431,6 +431,61 @@ func TestWrite_CustomPerm_SetOnFile(t *testing.T) {
 	}
 }
 
+func TestWrite_CreateDirs_CreatesMissingParents(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "a", "b", "c", "item.json")
+	f := ports.NewFile(path, format.JSON(fileItemCodec))
+
+	err := f.Write(nil, fileItem{Name: "gadget", Value: 7}, ports.FileOptions{CreateDirs: true})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("expected file to exist after CreateDirs write: %v", err)
+	}
+	if !strings.Contains(string(data), "gadget") {
+		t.Errorf("written file missing expected content: %s", data)
+	}
+}
+
+func TestWrite_CreateDirsFalse_DefaultUnchanged(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "missing", "item.json")
+	f := ports.NewFile(path, format.JSON(fileItemCodec))
+
+	// CreateDirs defaults to false — behavior must be identical to before
+	// this option existed: FileWriteError for a missing parent directory.
+	err := f.Write(nil, fileItem{Name: "x", Value: 1}, ports.FileOptions{})
+	if err == nil {
+		t.Fatal("expected error for missing parent directory, got nil")
+	}
+	var writeErr ports.FileWriteError
+	if !errors.As(err, &writeErr) {
+		t.Fatalf("expected FileWriteError, got %T: %v", err, err)
+	}
+}
+
+func TestWrite_CreateDirs_MkdirFailure_ReturnsFileWriteError(t *testing.T) {
+	dir := t.TempDir()
+	// Create a FILE where a directory is expected — MkdirAll must fail.
+	blocker := filepath.Join(dir, "blocker")
+	if err := os.WriteFile(blocker, []byte("x"), 0644); err != nil {
+		t.Fatalf("setup WriteFile: %v", err)
+	}
+	path := filepath.Join(blocker, "sub", "item.json")
+	f := ports.NewFile(path, format.JSON(fileItemCodec))
+
+	err := f.Write(nil, fileItem{Name: "x", Value: 1}, ports.FileOptions{CreateDirs: true})
+	if err == nil {
+		t.Fatal("expected error for MkdirAll through a file path segment, got nil")
+	}
+	var writeErr ports.FileWriteError
+	if !errors.As(err, &writeErr) {
+		t.Fatalf("expected FileWriteError, got %T: %v", err, err)
+	}
+}
+
 // ── Update ────────────────────────────────────────────────────────────────────
 
 func TestUpdate_RoundTrip(t *testing.T) {

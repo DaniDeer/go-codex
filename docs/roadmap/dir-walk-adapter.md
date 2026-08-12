@@ -3,18 +3,19 @@
 > **Status:** Idea only — not designed, no use case yet.
 > [← Back to Roadmap](index.md)
 >
-> Follow-on to [Directory Listing Port](directory-listing-port.md) — split
-> out as its own roadmap entry since it is a genuinely separate design
-> question (a streamed, `ports.SourceAdapter`-shaped enumeration/watch
-> capability), explicitly noted as OUT of that feature's Phase 1 scope
-> ("A generic recursive WALK/streaming API ... a `dir.ScanAdapter`
-> (streamed entries) is a natural Phase 2 if a use case appears").
+> Follow-on to the now-SHIPPED [Directory Listing Port](directory-listing-port.md)
+> (`ports.Dir`/`DirEntry`, see `docs/features/ports.md`) — split out as
+> its own roadmap entry since it is a genuinely separate design question
+> (a streamed, `ports.SourceAdapter`-shaped enumeration/watch capability),
+> explicitly noted as OUT of that feature's Phase 1 scope ("A generic
+> recursive WALK/streaming API ... a natural Phase 2 if a use case
+> appears").
 
 ## The idea
 
-`ports.Dir` (planned, see `directory-listing-port.md`) returns one
-`[]DirEntry` snapshot per `List` call — a single-shot enumeration, not a
-stream. `adapters/file.WatchAdapter` (already shipped) DOES stream, but
+`ports.Dir.List` (shipped) returns one `[]DirEntry` snapshot per call — a
+single-shot enumeration, not a stream. `adapters/file.WatchAdapter` (also
+already shipped) DOES stream, but
 only emits NEWLY-CREATED file paths in one non-recursive directory,
 polling on an interval, and returns plain `string` paths (no `DirEntry`
 shape, no distinction between files/dirs, no `EntryPattern`-style
@@ -23,8 +24,8 @@ filename parsing).
 The gap this idea would close: a `ports.SourceAdapter`-shaped adapter
 that WALKS a directory tree (like `filepath.WalkDir`, recursively, in one
 pass) and STREAMS every discovered entry as a `ports.DirEntry` (reusing
-whatever shape `ports.Dir`/`EntryPattern` ships with), for pipelines that
-want to process "every config file under this tree" reactively/
+the shape `ports.Dir`/`EntryPattern` already shipped with), for pipelines
+that want to process "every config file under this tree" reactively/
 incrementally rather than collecting a full slice up front — plus,
 potentially, a genuinely CONTINUOUS watch mode that also detects
 modifications and deletions (not just new files), which
@@ -35,13 +36,11 @@ attempt.
 
 - **Not requested by a concrete use case yet** — no consumer in
   `go-edge-models` needs streamed/incremental directory processing today;
-  `ports.Dir.List`'s one-shot slice (once shipped) is sufficient for the
-  iotedge use-case-discovery driver.
-- **Depends on `ports.Dir`/`DirEntry` shipping first** — this idea reuses
-  whatever `DirEntry`/`EntryPattern` shape `directory-listing-port.md`
-  ships with (once implemented); designing the streaming variant before
-  the one-shot `List` API is stable would risk having to redesign both
-  together.
+  `ports.Dir.List`'s one-shot slice is sufficient for the iotedge
+  use-case-discovery driver (`examples/go-edge-models/models/iotedge.NewConfigDir`).
+- **Builds directly on the shipped `ports.Dir`/`DirEntry` shape** — this
+  idea reuses `DirEntry`/`EntryPattern` as they actually shipped; no
+  redesign risk remains now that the one-shot `List` API is stable.
 - **The biggest open question is genuinely a dependency/architecture
   fork**, not a small detail:
   - **Polling-based** (extends `WatchAdapter`'s existing approach — an
@@ -91,10 +90,9 @@ attempt.
 
 ## Next step (when a use case appears)
 
-Write a proper roadmap doc (following the standard template) once (1)
-`ports.Dir`/`DirEntry` has actually shipped (this idea builds directly on
-its shape), and (2) there is a concrete driver that resolves at minimum:
-polling vs. event-based (and, if event-based, which dependency and
-platform support matrix), one-shot walk vs. continuous watch (or both, as
-separate adapters), and whether continuous watch needs to track
-modify/delete events beyond today's create-only scope.
+Write a proper roadmap doc (following the standard template) once there
+is a concrete driver that resolves at minimum: polling vs. event-based
+(and, if event-based, which dependency and platform support matrix),
+one-shot walk vs. continuous watch (or both, as separate adapters), and
+whether continuous watch needs to track modify/delete events beyond
+today's create-only scope.

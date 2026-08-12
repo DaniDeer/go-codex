@@ -781,6 +781,94 @@ cause `PluginFilePattern` to error — a `CustomFormat` type mismatch returns
 `PatternRegisterError` (the enum-only path — no `CustomFormat` — always
 succeeds).
 
+**Missing parent directories**: `ports.File.Write` creates the FILE itself
+if missing (same as `os.WriteFile`), but NOT missing parent directories —
+by default, writing to a path whose directory doesn't exist yet returns
+`FileWriteError`. Opt into auto-creation with `FileOptions.CreateDirs: true`
+(`os.MkdirAll` runs before the write; `FileOptions.DirPerm` controls the
+created directories' permission, defaulting to `0755`). Default `false` —
+existing callers see no behavior change.
+
+```go
+err := calibFile.Write(vars, data, ports.FileOptions{CreateDirs: true})
+// creates data/<sensorID>/ if it doesn't exist yet, then writes calibration.json
+```
+
+### `Dir` — listing a directory's entries (declarative `ls`)
+
+`ports.Dir` is the `ports.File`-equivalent surface for LISTING a
+directory's entries (files and subdirectories) instead of reading one
+file's typed content — a declarative `ls`, not `cat`. It is a **standalone
+type**, not a method on `ports.File[T]` (a directory listing has no single
+typed payload the way a file's contents do) — and, unlike every other
+port type in this section, it has **no `Pattern`/adapter binding** today:
+`Dir` is used directly as a value, the same way you'd use `ports.File`
+before `FilePattern`/port-binding existed for it. Two independent reasons
+this isn't a gap to close: (1) every `Pattern` is built by a function
+generic over the port's own payload type `T` (`FilePattern` → `File[T]`,
+matching the port's `codex.Codec[T]` exactly) — `Dir`/`DirEntry` carry no
+such type parameter, so there is no `T` for a port's codec to bind
+against; (2) `Pattern` only matters when an adapter's `Bind` call
+*consumes* the built handle (`file.ReadAdapter` consumes a `File[T]`) —
+no `dir.XxxAdapter` exists yet (see `docs/roadmap/dir-walk-adapter.md`),
+so there is nothing for a `DirPattern` to plug into. `Dir.List` composes
+into a pipeline today via the SAME generic bridge any in-memory source
+uses (`ports.ChanSourceAdapter` — see `examples/dir-io`), not via `Pattern`.
+
+```go
+var useCaseDir = ports.NewDir("configs",
+    ports.WithEntryPattern(ports.EntryPattern{
+        Template: "{useCase}.json",
+        Params:   []ports.EntryParam{{Name: "useCase", Codec: &nonEmptyString}},
+    }),
+)
+
+entries, err := useCaseDir.List(nil, ports.DirOptions{Observer: obs})
+// entries[i].Vars["useCase"] == "temp-sensor" for "configs/temp-sensor.json";
+// a stray ".gitkeep"/"README.md" alongside those files is silently excluded
+// — EntryPattern is both a filter AND a parser.
+```
+
+- **`DirPathParam`** validates `{var}` segments in the DIRECTORY's own path
+  template (e.g. `"configs/{env}"`) — exact mirror of `FilePathParam`'s
+  `.WithCodec(c)` shape. `Dir.BuildPath`/`Dir.MatchPath` mirror
+  `File.BuildPath`/`File.MatchPath` exactly (build vs. validate-an-
+  already-discovered-path, respectively).
+- **`WithEntryPattern`** is optional — without it, `List` returns every
+  entry with `Vars == nil` and nothing filtered. When set, it matches
+  against each entry's `RelPath` (not just its leaf `Name`) using the same
+  `internal/templatematch` core `File.MatchPath` already uses, and
+  SILENTLY EXCLUDES any entry that doesn't match the template's shape at
+  all — a structural match with a bad codec value still surfaces
+  `DirEntryParamError`.
+- **`WithRecursive(true)`** descends into subdirectories (like `ls -R`)
+  instead of the single-level default (like plain `ls`) — `EntryPattern`
+  matches against `RelPath` uniformly in both modes (`RelPath == Name`
+  when non-recursive, so a leaf-only template behaves identically either
+  way; a recursive template MAY span subdirectory segments, e.g.
+  `"{env}/{useCase}.json"`).
+- `Dir.List` reuses `stats.FileObserver.RecordFileRead` (a listing IS a
+  read) — no new observer extension.
+- **Missing directory**: by default, `List` on a non-existent directory
+  returns `DirReadError`, mirroring `File`'s "never auto-create" default.
+  Opt into auto-creation with `DirOptions.CreateIfMissing: true`
+  (`os.MkdirAll` runs before listing — a freshly-created directory is
+  empty, so `List` then returns a zero-length slice, not an error;
+  `DirOptions.CreatePerm` controls the permission, defaulting to `0755`).
+  Default `false` — existing callers see no behavior change; same opt-in
+  precedent as `FileOptions.CreateDirs` above.
+- No streaming/watch variant yet (`Dir.List` returns one `[]DirEntry`
+  snapshot per call) — see `docs/roadmap/dir-walk-adapter.md` for an
+  idea-only sketch of a future streamed/continuous-watch adapter.
+- See [`examples/dir-io`](https://github.com/DaniDeer/go-codex/tree/main/examples/dir-io)
+  for a focused, runnable demo covering `List`/`BuildPath`/`MatchPath`,
+  recursive listing with a subdirectory-spanning `EntryPattern`, and
+  composing `Dir.List`'s one-shot discovery into a `ports.SourcePort`
+  pipeline via `ports.ChanSourceAdapter` (`Dir` has no adapter binding of
+  its own, so it plugs into a pipeline the same way any in-memory data
+  source would). `examples/go-edge-models/models/iotedge.NewConfigDir` is
+  the real-world flagship consumer this feature was built for.
+
 ### `SQLPattern` — metadata-only, by design
 
 SQL has no path/topic template: query text and bind-parameter syntax are

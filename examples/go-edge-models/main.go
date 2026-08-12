@@ -198,6 +198,25 @@ func main() {
 		os.Exit(1)
 	}
 
+	// ── ports.Dir: discover which iotedge "use case" config files exist in
+	// a directory — a declarative `ls`, not `cat`. Each file in the config
+	// directory represents one use case, and the filename (minus ".json")
+	// IS that use case's name; iotedge.ConfigDirEntryPattern extracts it,
+	// validated the same way iotedge.NewConfigFile validates its own path
+	// variables. List's result feeds directly into NewConfigFile below —
+	// discover, then read, without hand-rolled os.ReadDir/filepath.Glob code.
+	fmt.Println("\n=== ports.Dir: list iotedge config files (use cases) in a directory ===")
+
+	configDir := iotedge.NewConfigDir(dir)
+	useCaseEntries, err := configDir.List(nil, ports.DirOptions{})
+	if err != nil {
+		logger.Error("list config directory", "error", err)
+		os.Exit(1)
+	}
+	for _, e := range useCaseEntries {
+		fmt.Printf("found use case %q (file %q, kind=%s)\n", e.Vars["useCase"], e.Name, e.Kind)
+	}
+
 	before, err := iotedgeapp.ReadConfig(manifestPath, ports.FileOptions{})
 	if err != nil {
 		logger.Error("read manifest before patch", "error", err)

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"time"
@@ -124,6 +125,17 @@ type FileOptions struct {
 	// carried by this context. When nil (default), spans use [context.Background]
 	// and become root spans.
 	Context context.Context
+
+	// CreateDirs, when true, creates any missing parent directories (via
+	// [os.MkdirAll]) before [File.Write] writes the file. Default false —
+	// matches [os.WriteFile]'s own behavior exactly (it creates the FILE if
+	// missing, but never its parent directories), so existing callers see
+	// no change unless they opt in.
+	CreateDirs bool
+
+	// DirPerm is the permission used for directories created by CreateDirs.
+	// Defaults to 0755 when zero. Has no effect when CreateDirs is false.
+	DirPerm os.FileMode
 }
 
 // ── File ──────────────────────────────────────────────────────────────────────
@@ -415,11 +427,13 @@ func (fh File[T]) ReadMerged(vars map[string]string, opts FileOptions) (T, error
 
 // Write builds the concrete path from vars, encodes v, and writes it to the file.
 // The file is created if it does not exist, or truncated and overwritten if it does.
+// Missing PARENT directories are NOT created unless [FileOptions.CreateDirs]
+// is set — matches [os.WriteFile]'s own behavior by default.
 //
 // Errors:
 //   - [FilePathParamError] / [MissingFilePathVarError] — path variable validation failure (no I/O)
 //   - [FileEncodeError] — format encode/validation failure
-//   - [FileWriteError] — os.WriteFile failure
+//   - [FileWriteError] — os.MkdirAll (when CreateDirs is set) or os.WriteFile failure
 func (fh File[T]) Write(vars map[string]string, v T, opts FileOptions) error {
 	obs := opts.Observer
 	if obs == nil && opts.Context != nil {
@@ -457,6 +471,17 @@ func (fh File[T]) Write(vars map[string]string, v T, opts FileOptions) error {
 	}
 
 	start := time.Now()
+	if opts.CreateDirs {
+		dirPerm := opts.DirPerm
+		if dirPerm == 0 {
+			dirPerm = 0755
+		}
+		if err := os.MkdirAll(filepath.Dir(path), dirPerm); err != nil {
+			opErr = FileWriteError{Path: path, Err: err}
+			recordFileWrite(obs, path, false, time.Since(start))
+			return opErr
+		}
+	}
 	if err := os.WriteFile(path, data, perm); err != nil {
 		opErr = FileWriteError{Path: path, Err: err}
 		recordFileWrite(obs, path, false, time.Since(start))

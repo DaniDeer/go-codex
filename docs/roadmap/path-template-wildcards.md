@@ -3,18 +3,19 @@
 > **Status:** Idea only — not designed, no use case yet.
 > [← Back to Roadmap](index.md)
 >
-> Follow-on to [Directory Listing Port](directory-listing-port.md) — split
-> out as its own roadmap entry since it is a genuinely separate design
+> Follow-on to the now-SHIPPED [Directory Listing Port](directory-listing-port.md)
+> (`ports.Dir`/`DirPathParam`, see `docs/features/ports.md`) — split out
+> as its own roadmap entry since it is a genuinely separate design
 > question that would affect BOTH `ports.File`'s existing `FilePathParam`
-> and the planned `ports.Dir`'s `DirPathParam`, not something scoped into
-> either feature's Phase 1.
+> and `ports.Dir`'s `DirPathParam`, not something scoped into either
+> feature's Phase 1.
 
 ## The idea
 
-Today both `FilePathParam` (`ports.File`, shipped) and `DirPathParam`
-(`ports.Dir`, planned — see `directory-listing-port.md`) support ONLY
-named `{varName}` placeholders in a path template — every segment is
-either literal text or a named, individually-codec-validated variable.
+Today both `FilePathParam` (`ports.File`) and `DirPathParam` (`ports.Dir`,
+both shipped) support ONLY named `{varName}` placeholders in a path
+template — every segment is either literal text or a named,
+individually-codec-validated variable.
 Neither supports an actual wildcard/glob segment (e.g. `*` matching "any
 single path segment, value discarded" or `**` matching "any number of
 segments"), the way `filepath.Glob`/shell globbing does.
@@ -31,9 +32,9 @@ value the caller doesn't actually care about.
 ## Why this isn't scoped into any current Phase 1
 
 - **Not requested by a concrete use case yet** — the iotedge consumer
-  driving `directory-listing-port.md` always cares about the extracted
-  variable value (e.g. `{useCase}` from a filename); it never needs "any
-  segment, don't care what."
+  that drove Directory Listing Port (`examples/go-edge-models/models/iotedge.NewConfigDir`)
+  always cares about the extracted variable value (e.g. `{useCase}` from
+  a filename); it never needs "any segment, don't care what."
 - **`BuildPath` has no meaningful semantics for a wildcard segment** — you
   cannot construct a concrete path from a template containing a bare `*`
   without SOME value for that segment, so a wildcarded template would

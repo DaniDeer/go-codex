@@ -392,6 +392,31 @@ func main() {
 		fmt.Printf("  FilePathMismatchError: template=%q path=%q\n", mismatchErr.Template, mismatchErr.Path)
 	}
 
+	// ── Section 2c: CreateDirs — auto-creating missing parent directories ─────
+	//
+	// By default Write creates the FILE if missing but NOT its parent
+	// directories (matches os.WriteFile exactly) — writing to a brand-new
+	// sensor/date combination whose directory doesn't exist yet would fail
+	// with FileWriteError unless FileOptions.CreateDirs opts in.
+	fmt.Println("\n── Section 2c: CreateDirs — auto-creating missing parent directories ──")
+
+	newVars := map[string]string{"date": "2024-02-01", "sensor": "temp-99"}
+
+	// Without CreateDirs: the "2024-02-01" directory doesn't exist yet.
+	if err := sensorFile.Write(newVars, m, ports.FileOptions{Context: ctx}); err != nil {
+		var writeErr ports.FileWriteError
+		if errors.As(err, &writeErr) {
+			fmt.Printf("  without CreateDirs: FileWriteError (missing parent dir), as expected\n")
+		}
+	}
+
+	// With CreateDirs: the missing "2024-02-01" directory is created first.
+	if err := sensorFile.Write(newVars, m, ports.FileOptions{Context: ctx, CreateDirs: true}); err != nil {
+		slog.Error("Write with CreateDirs failed", "err", err)
+	} else {
+		fmt.Println("  with CreateDirs: parent directory created, write succeeded")
+	}
+
 	// ── Section 3: Error handling ─────────────────────────────────────────────
 
 	fmt.Println("\n── Section 3: Typed error handling ────────────────────────────")
