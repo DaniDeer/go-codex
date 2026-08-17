@@ -1,4 +1,4 @@
-// Also demonstrates: spec generation (iotedge.DeploymentManifestCodec.Schema
+// Also demonstrates: spec generation (manifesttemplate.DeploymentManifestCodec.Schema
 // rendered as OpenAPI components/schemas YAML via render/openapi.MarshalYAML)
 // and observer integration (the codec-only stats.ReportErrors path for iotedge
 // manifest decoding, and registryapp.WithObserver for docker/registry's HTTP calls).
@@ -35,8 +35,9 @@ import (
 	registryapp "github.com/DaniDeer/go-codex/examples/go-edge-models/app/registry"
 	"github.com/DaniDeer/go-codex/examples/go-edge-models/models/docker"
 	"github.com/DaniDeer/go-codex/examples/go-edge-models/models/docker/registry"
-	"github.com/DaniDeer/go-codex/examples/go-edge-models/models/iotedge"
+	manifesttemplate "github.com/DaniDeer/go-codex/examples/go-edge-models/models/iotedge/manifesttemplate"
 	"github.com/DaniDeer/go-codex/examples/go-edge-models/models/iotedge/modulepatch"
+	"github.com/DaniDeer/go-codex/examples/go-edge-models/models/iotedge/usecase"
 	"github.com/DaniDeer/go-codex/format"
 	"github.com/DaniDeer/go-codex/ports"
 	"github.com/DaniDeer/go-codex/render/openapi"
@@ -66,14 +67,14 @@ func main() {
 	// Decode a REAL IoT-Edge deployment manifest end-to-end:
 	// modulesContent -> $edgeAgent -> {<dotted module key>: ModuleConfig, ...}
 	//
-	// iotedge.ModuleNameCodec strips iotedge.ModuleKeyPrefix from each
+	// manifesttemplate.ModuleNameCodec strips manifesttemplate.ModuleKeyPrefix from each
 	// dotted key and validates the remaining segment via validate.Slug,
 	// producing a map[ModuleName]ModuleConfig — this is the codex.Map[K,V]
 	// key-extraction pattern this example demonstrates, mirroring
 	// examples/flat-key-patch's containerKeyCodec/containersCodec section
 	// but producing a MAP (Modules) instead of a merged []Container slice
 	// (via codex.EntrySlice).
-	jManifest := format.JSON(iotedge.DeploymentManifestCodec)
+	jManifest := format.JSON(manifesttemplate.DeploymentManifestCodec)
 	manifest, err := jManifest.Unmarshal(usecase1JSON)
 	if err != nil {
 		logger.Error("decode manifest", "error", err)
@@ -81,7 +82,7 @@ func main() {
 	}
 
 	modules := manifest.ModulesContent.EdgeAgent
-	names := make([]iotedge.ModuleName, 0, len(modules))
+	names := make([]manifesttemplate.ModuleName, 0, len(modules))
 	for name := range modules {
 		names = append(names, name)
 	}
@@ -136,15 +137,15 @@ func main() {
 	}
 	fmt.Printf("\nre-encoded manifest: %d bytes (original: %d bytes)\n", len(reEncoded), len(usecase1JSON))
 
-	// ── Spec generation: iotedge.DeploymentManifestCodec.Schema as OpenAPI YAML ──
+	// ── Spec generation: manifesttemplate.DeploymentManifestCodec.Schema as OpenAPI YAML ──
 	//
 	// Every codex.Codec[T] carries a schema.Schema — render/openapi.MarshalYAML
 	// turns any map of named schemas into standalone OpenAPI-style
 	// components/schemas YAML, with zero api/rest Route/Builder involved.
 	// Same pattern as examples/formats' "OpenAPI schema" section.
-	fmt.Println("\n=== Spec generation: iotedge.DeploymentManifestCodec (OpenAPI components/schemas) ===")
+	fmt.Println("\n=== Spec generation: manifesttemplate.DeploymentManifestCodec (OpenAPI components/schemas) ===")
 	specYAML, err := openapi.MarshalYAML(map[string]schema.Schema{
-		"DeploymentManifest": iotedge.DeploymentManifestCodec.Schema,
+		"DeploymentManifest": manifesttemplate.DeploymentManifestCodec.Schema,
 	})
 	if err != nil {
 		logger.Error("render OpenAPI spec", "error", err)
@@ -180,8 +181,8 @@ func main() {
 	//
 	// UpdateModuleImage (app/iotedge) is a thin convenience over the
 	// general PatchModule mechanism (below): it builds a
-	// modulepatch.ModuleFieldsPatch with only Image set, and applies it via
-	// iotedge.NewConfigFile + ports.PatchEncoded internally — a caller
+	// modulepatch.FieldsPatch with only Image set, and applies it via
+	// usecase.NewFile + ports.PatchEncoded internally — a caller
 	// never touches ports.File/PatchEncoded directly for this, the single
 	// most common patch operation. Same underlying deep-merge as
 	// examples/flat-key-patch: only settings.image changes for the named
@@ -224,14 +225,14 @@ func main() {
 	// ── ports.Dir: discover which iotedge "use case" config files exist in
 	// a directory — a declarative `ls`, not `cat`. Each file in the config
 	// directory represents one use case, and the filename (minus ".json")
-	// IS that use case's name; iotedge.ConfigDirEntryPattern extracts it,
-	// validated the same way iotedge.NewConfigFile validates its own path
-	// variables. List's result feeds directly into NewConfigFile below —
+	// IS that use case's name; usecase.DirEntryPattern extracts it,
+	// validated the same way usecase.NewFile validates its own path
+	// variables. List's result feeds directly into NewFile below —
 	// discover, then read, without hand-rolled os.ReadDir/filepath.Glob code.
 	fmt.Println("\n=== ports.Dir: list iotedge config files (use cases) in a directory ===")
 
-	configDir := iotedge.NewConfigDir(usecasesDir)
-	useCaseEntries, err := configDir.List(nil, ports.DirOptions{})
+	useCaseDir := usecase.NewDir(usecasesDir)
+	useCaseEntries, err := useCaseDir.List(nil, ports.DirOptions{})
 	if err != nil {
 		logger.Error("list config directory", "error", err)
 		os.Exit(1)
@@ -240,40 +241,40 @@ func main() {
 		fmt.Printf("found use case %q (file %q, kind=%s)\n", e.Vars["useCase"], e.Name, e.Kind)
 	}
 
-	// ── iotedge.ListDeviceIDs / ReadDeviceConfig / ReadUseCase: the
+	// ── usecase.ListDeviceIDs / ReadDeviceConfig / Read: the
 	// "devices/{usecase_name}/{device_id}.json" side of the same
 	// templated-file story ───────────────────────────────────────────────
 	//
 	// DeploymentManifest/DeviceManifest stay PURE wire/file content — no
-	// usecase_name/device_id field on either — iotedge.UseCase/DeviceConfig
+	// usecase_name/device_id field on either — usecase.UseCase/DeviceConfig
 	// are the DOMAIN composition structs that pair each with its identity
-	// (from the path, not the body). ReadUseCase combines NewConfigFile +
-	// ListDeviceIDs + ReadDeviceConfig into ONE call.
-	fmt.Println("\n=== iotedge.ListDeviceIDs / ReadUseCase: usecase_name + device_id, composed ===")
+	// (from the path, not the body). Read combines NewFile + ListDeviceIDs
+	// + ReadDeviceConfig into ONE call.
+	fmt.Println("\n=== usecase.ListDeviceIDs / Read: usecase_name + device_id, composed ===")
 
-	deviceIDs, err := iotedge.ListDeviceIDs(dir, useCaseName, ports.DirOptions{})
+	deviceIDs, err := usecase.ListDeviceIDs(dir, useCaseName, ports.DirOptions{})
 	if err != nil {
 		logger.Error("list device ids", "error", err)
 		os.Exit(1)
 	}
 	fmt.Printf("device_ids for use case %q: %v\n", useCaseName, deviceIDs)
 
-	deviceCfg, err := iotedge.ReadDeviceConfig(dir, useCaseName, deviceID, ports.FileOptions{})
+	deviceCfg, err := usecase.ReadDeviceConfig(dir, useCaseName, deviceID, ports.FileOptions{})
 	if err != nil {
 		logger.Error("read device config", "error", err)
 		os.Exit(1)
 	}
 	fmt.Printf("device %q: displayName=%q enabled=%v\n", deviceCfg.DeviceID, deviceCfg.DeviceManifest.DisplayName, deviceCfg.DeviceManifest.Enabled)
 
-	useCase, err := iotedge.ReadUseCase(dir, useCaseName, ports.FileOptions{})
+	useCase, err := usecase.Read(dir, useCaseName, ports.FileOptions{})
 	if err != nil {
 		logger.Error("read use case", "error", err)
 		os.Exit(1)
 	}
-	fmt.Printf("ReadUseCase(%q): %d module(s), %d device(s)\n",
+	fmt.Printf("usecase.Read(%q): %d module(s), %d device(s)\n",
 		useCase.Name, len(useCase.DeploymentManifest.ModulesContent.EdgeAgent), len(useCase.Devices))
 
-	before, err := iotedgeapp.ReadConfig(dir, useCaseName, ports.FileOptions{})
+	before, err := iotedgeapp.ReadUseCase(dir, useCaseName, ports.FileOptions{})
 	if err != nil {
 		logger.Error("read manifest before patch", "error", err)
 		os.Exit(1)
@@ -281,12 +282,12 @@ func main() {
 	fmt.Printf("before: factory-dashboard image=%q\n", before.ModulesContent.EdgeAgent["factory-dashboard"].Settings.Image)
 
 	newImage := docker.Image{Name: "ghcr.io/example-org/factory-dashboard", Tag: "2.0.0"}
-	if err := iotedgeapp.UpdateModuleImage(dir, useCaseName, "factory-dashboard", newImage, ports.FileOptions{}); err != nil {
+	if err := iotedgeapp.UpdateUseCaseModuleImage(dir, useCaseName, "factory-dashboard", newImage, ports.FileOptions{}); err != nil {
 		logger.Error("update module image", "error", err)
 		os.Exit(1)
 	}
 
-	afterImage, err := iotedgeapp.ReadConfig(dir, useCaseName, ports.FileOptions{})
+	afterImage, err := iotedgeapp.ReadUseCase(dir, useCaseName, ports.FileOptions{})
 	if err != nil {
 		logger.Error("read manifest after image update", "error", err)
 		os.Exit(1)
@@ -296,30 +297,30 @@ func main() {
 	fmt.Printf("        factory-dashboard env still has %d entries (untouched): %v\n", len(patchedWeb.Env), patchedWeb.Env != nil)
 
 	// ── app/iotedge: patch MULTIPLE fields at once via the general
-	// PatchModule + modulepatch.ModuleFieldsPatch ────────────────────────
+	// PatchUseCaseModule + modulepatch.FieldsPatch ─────────────────
 	//
-	// ModuleFieldsPatch mirrors ModuleConfig's own field set — every field
+	// FieldsPatch mirrors ModuleConfig's own field set — every field
 	// is independently optional (a pointer, or nil for Env), and
-	// ModuleFieldsPatchCodec (a HAND-ROLLED codex.Codec, since
+	// FieldsPatchCodec (a HAND-ROLLED codex.Codec, since
 	// codex.Struct's Encode always writes every declared field and cannot
 	// express "omit if unset") includes ONLY the fields actually set.
 	// Here we patch Status AND RestartPolicy together in ONE call, leaving
 	// the image we just updated above (and every other field) untouched.
-	fmt.Println("\n=== app/iotedge.PatchModule: patch status+restartPolicy together ===")
+	fmt.Println("\n=== app/iotedge.PatchUseCaseModule: patch status+restartPolicy together ===")
 
-	newStatus := iotedge.Status("stopped")
-	newRestartPolicy := iotedge.RestartPolicy("on-failure")
-	fieldsPatch := modulepatch.ModuleFieldsPatch{
+	newStatus := manifesttemplate.Status("stopped")
+	newRestartPolicy := manifesttemplate.RestartPolicy("on-failure")
+	fieldsPatch := modulepatch.FieldsPatch{
 		ModuleName:    "factory-dashboard",
 		Status:        &newStatus,
 		RestartPolicy: &newRestartPolicy,
 	}
-	if err := iotedgeapp.PatchModule(dir, useCaseName, fieldsPatch, ports.FileOptions{}); err != nil {
+	if err := iotedgeapp.PatchUseCaseModule(dir, useCaseName, fieldsPatch, ports.FileOptions{}); err != nil {
 		logger.Error("patch module fields", "error", err)
 		os.Exit(1)
 	}
 
-	after, err := iotedgeapp.ReadConfig(dir, useCaseName, ports.FileOptions{})
+	after, err := iotedgeapp.ReadUseCase(dir, useCaseName, ports.FileOptions{})
 	if err != nil {
 		logger.Error("read manifest after fields patch", "error", err)
 		os.Exit(1)

@@ -17,7 +17,7 @@ import (
 // env var names commonly violate the POSIX convention (e.g.
 // "https_proxy", mixed case) and Docker itself places no restriction on
 // them, so validate.EnvVarName is intentionally NOT applied here — the
-// SAME reasoning iotedge.EnvVarNameCodec's own doc comment documents for
+// SAME reasoning manifesttemplate.EnvVarNameCodec's own doc comment documents for
 // IoT Edge module env vars.
 type EnvVar struct {
 	Name  string

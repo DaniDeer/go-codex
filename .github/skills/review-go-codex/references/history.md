@@ -1,6 +1,40 @@
-# go-codex Review History (R1–R110)
+# go-codex Review History (R1–R111)
 
 Do not re-report any of these findings. They have been implemented and tested.
+
+---
+
+## Round 111 (`examples/go-edge-models` wire/derived split + directory nesting — stale relationship wording)
+
+Focused audit of this session's `models/iotedge` refactor (extracting
+`manifesttemplate`/`deviceconfig` wire packages, then nesting both under
+`models/iotedge`) — no core go-codex library files changed since Round
+110, so this round scoped to the example tree per the established
+"review what changed this session" pattern. Found 4 stale
+parent/child/sibling relationship claims in doc comments, no
+functional bugs.
+
+- **G1 [small] — `manifesttemplate/doc.go` called `models/iotedge` a
+  "sibling"**: after nesting `manifest-template` under `models/iotedge`
+  this session, `iotedge` became `manifesttemplate`'s PARENT, not a
+  sibling. Fixed the wording.
+- **G2 [small] — `manifesttemplate/doc.go` called `docker` a
+  "sibling"**: `models/docker` (top-level) and `manifesttemplate`
+  (nested two levels under `models/iotedge`) are no longer siblings
+  post-nesting. Dropped the inaccurate "sibling" qualifier.
+- **G3 [small] — `deviceconfig/doc.go` called `models/iotedge` a
+  "sibling"**: same bug as G1 — `iotedge` is `deviceconfig`'s parent
+  now, not a sibling. Fixed the wording.
+- **G4 [trivial] — `models/iotedge/doc.go` called its own child
+  `modulepatch` package a "sibling"**: `modulepatch` is nested at
+  `models/iotedge/modulepatch` (a child of `iotedge`), not a sibling of
+  it. Reworded to "child package".
+
+Full verification: `gofmt -l .` clean, `go build ./...`, `go test ./...`
+(repo-wide, all packages pass), `just check` (staticcheck + gosec, 0
+issues), `go run ./examples/go-edge-models` exits 0 unchanged. No
+exported API changed (doc-comment wording only) — no
+`.github/instructions/go-codex.instructions.md` update needed.
 
 ---
 

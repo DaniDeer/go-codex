@@ -5,7 +5,7 @@ import (
 	"errors"
 	"testing"
 
-	regiotedge "github.com/DaniDeer/go-codex/examples/go-edge-models/models/iotedge"
+	"github.com/DaniDeer/go-codex/examples/go-edge-models/models/iotedge/modulesummary"
 	"github.com/DaniDeer/go-codex/ports"
 )
 
@@ -13,7 +13,7 @@ func TestNewReadModuleSummaryToolHandler_ReturnsSummary(t *testing.T) {
 	basePath := writeSampleManifest(t)
 	handler := NewReadModuleSummaryToolHandler(ports.FileOptions{})
 
-	summary, err := handler(context.Background(), regiotedge.ReadModuleSummaryReq{
+	summary, err := handler(context.Background(), modulesummary.ReadReq{
 		BasePath:    basePath,
 		UseCaseName: sampleUseCaseName,
 		ModuleName:  "factory-dashboard",
@@ -36,7 +36,7 @@ func TestNewReadModuleSummaryToolHandler_ModuleNotFound(t *testing.T) {
 	basePath := writeSampleManifest(t)
 	handler := NewReadModuleSummaryToolHandler(ports.FileOptions{})
 
-	_, err := handler(context.Background(), regiotedge.ReadModuleSummaryReq{
+	_, err := handler(context.Background(), modulesummary.ReadReq{
 		BasePath:    basePath,
 		UseCaseName: sampleUseCaseName,
 		ModuleName:  "does-not-exist",
@@ -55,7 +55,7 @@ func TestNewReadModuleSummaryToolHandler_ModuleNotFound(t *testing.T) {
 
 func TestNewReadModuleSummaryToolHandler_PropagatesReadError(t *testing.T) {
 	handler := NewReadModuleSummaryToolHandler(ports.FileOptions{})
-	_, err := handler(context.Background(), regiotedge.ReadModuleSummaryReq{
+	_, err := handler(context.Background(), modulesummary.ReadReq{
 		BasePath:    "/nonexistent",
 		UseCaseName: "nonexistent-usecase",
 		ModuleName:  "factory-dashboard",

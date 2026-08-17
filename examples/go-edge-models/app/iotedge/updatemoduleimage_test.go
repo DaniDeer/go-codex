@@ -5,7 +5,7 @@ import (
 	"errors"
 	"testing"
 
-	regiotedge "github.com/DaniDeer/go-codex/examples/go-edge-models/models/iotedge"
+	"github.com/DaniDeer/go-codex/examples/go-edge-models/models/iotedge/updatemoduleimage"
 	"github.com/DaniDeer/go-codex/ports"
 )
 
@@ -13,7 +13,7 @@ func TestNewUpdateModuleImageToolHandler_ReturnsUpdatedSummary(t *testing.T) {
 	basePath := writeSampleManifest(t)
 	handler := NewUpdateModuleImageToolHandler(ports.FileOptions{})
 
-	summary, err := handler(context.Background(), regiotedge.UpdateModuleImageReq{
+	summary, err := handler(context.Background(), updatemoduleimage.Req{
 		BasePath:    basePath,
 		UseCaseName: sampleUseCaseName,
 		ModuleName:  "factory-dashboard",
@@ -34,9 +34,9 @@ func TestNewUpdateModuleImageToolHandler_ReturnsUpdatedSummary(t *testing.T) {
 	}
 
 	// Confirm the change was actually persisted to disk.
-	got, err := ReadConfig(basePath, sampleUseCaseName, ports.FileOptions{})
+	got, err := ReadUseCase(basePath, sampleUseCaseName, ports.FileOptions{})
 	if err != nil {
-		t.Fatalf("ReadConfig: %v", err)
+		t.Fatalf("ReadUseCase: %v", err)
 	}
 	if got.ModulesContent.EdgeAgent["factory-dashboard"].Settings.Image.String() != "ghcr.io/org/edge-web:2.0.0" {
 		t.Error("handler did not persist the image update to disk")
@@ -47,7 +47,7 @@ func TestNewUpdateModuleImageToolHandler_RejectsInvalidImageURL(t *testing.T) {
 	basePath := writeSampleManifest(t)
 	handler := NewUpdateModuleImageToolHandler(ports.FileOptions{})
 
-	_, err := handler(context.Background(), regiotedge.UpdateModuleImageReq{
+	_, err := handler(context.Background(), updatemoduleimage.Req{
 		BasePath:    basePath,
 		UseCaseName: sampleUseCaseName,
 		ModuleName:  "factory-dashboard",
@@ -58,9 +58,9 @@ func TestNewUpdateModuleImageToolHandler_RejectsInvalidImageURL(t *testing.T) {
 	}
 
 	// The manifest must be untouched by a rejected update.
-	got, readErr := ReadConfig(basePath, sampleUseCaseName, ports.FileOptions{})
+	got, readErr := ReadUseCase(basePath, sampleUseCaseName, ports.FileOptions{})
 	if readErr != nil {
-		t.Fatalf("ReadConfig: %v", readErr)
+		t.Fatalf("ReadUseCase: %v", readErr)
 	}
 	if got.ModulesContent.EdgeAgent["factory-dashboard"].Settings.Image.String() != "ghcr.io/org/edge-web:1.0.0" {
 		t.Error("handler should not have touched disk for an invalid ImageURL")
@@ -71,7 +71,7 @@ func TestNewUpdateModuleImageToolHandler_ModuleNotFound(t *testing.T) {
 	basePath := writeSampleManifest(t)
 	handler := NewUpdateModuleImageToolHandler(ports.FileOptions{})
 
-	_, err := handler(context.Background(), regiotedge.UpdateModuleImageReq{
+	_, err := handler(context.Background(), updatemoduleimage.Req{
 		BasePath:    basePath,
 		UseCaseName: sampleUseCaseName,
 		ModuleName:  "does-not-exist",
@@ -88,7 +88,7 @@ func TestNewUpdateModuleImageToolHandler_ModuleNotFound(t *testing.T) {
 
 func TestNewUpdateModuleImageToolHandler_PropagatesMissingFileError(t *testing.T) {
 	handler := NewUpdateModuleImageToolHandler(ports.FileOptions{})
-	_, err := handler(context.Background(), regiotedge.UpdateModuleImageReq{
+	_, err := handler(context.Background(), updatemoduleimage.Req{
 		BasePath:    "/nonexistent",
 		UseCaseName: "nonexistent-usecase",
 		ModuleName:  "factory-dashboard",

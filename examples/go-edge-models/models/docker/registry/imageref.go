@@ -160,7 +160,7 @@ func formatImageRefString(ref ImageRef) (string, error) {
 // GetManifestRoute needs); docker.Image keeps any registry host embedded
 // in Name and splits Tag/Digest apart. Because the shapes genuinely
 // differ, ImageRefCodec is NOT replaced by docker.ImageCodec (unlike
-// iotedge.ImageCodec, which re-exports docker.ImageCodec directly because
+// manifesttemplate.ImageCodec, which re-exports docker.ImageCodec directly because
 // its wire shape is identical) — instead, these two functions MAP between
 // the two representations.
 

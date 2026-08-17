@@ -162,9 +162,9 @@ var imageStructCodec = c.Struct[Image](
 // the field extraction/reconstruction, and imageStructCodec validates the
 // parsed fields.
 //
-// iotedge.ImageCodec re-exports this codec directly (IoT Edge's module
+// manifesttemplate.ImageCodec re-exports this codec directly (IoT Edge's module
 // settings "image" field is the SAME plain image-reference string) rather
-// than defining its own — see iotedge/modulesettings.go's ImageCodec doc
+// than defining its own — see manifest-template/modulesettings.go's ImageCodec doc
 // comment.
 var ImageCodec = c.MapCodecValidated(
 	c.String().Refine(v.ContainerImage), imageStructCodec,

@@ -6,7 +6,8 @@ import (
 	"log/slog"
 
 	mcpgo "github.com/DaniDeer/go-codex/adapters/mcpgo"
-	regiotedge "github.com/DaniDeer/go-codex/examples/go-edge-models/models/iotedge"
+	manifesttemplate "github.com/DaniDeer/go-codex/examples/go-edge-models/models/iotedge/manifesttemplate"
+	"github.com/DaniDeer/go-codex/examples/go-edge-models/models/iotedge/modulesummary"
 	"github.com/DaniDeer/go-codex/ports"
 )
 
@@ -16,7 +17,7 @@ import (
 // handler when req.ModuleName is not present in the manifest's
 // $edgeAgent map.
 type ModuleNotFoundError struct {
-	ModuleName regiotedge.ModuleName
+	ModuleName manifesttemplate.ModuleName
 }
 
 func (e ModuleNotFoundError) Error() string {
@@ -32,35 +33,35 @@ func (e ModuleNotFoundError) LogValue() slog.Value {
 
 // readModuleSummary reads useCaseName's deployment manifest under
 // basePath, looks up moduleName, and maps it to a
-// regiotedge.ModuleSummary — shared by NewReadModuleSummaryToolHandler
+// modulesummary.Summary — shared by NewReadModuleSummaryToolHandler
 // (below) and NewUpdateModuleImageToolHandler (updatemoduleimage.go),
 // which both need "read manifest, find module, summarize" as their
 // final step.
-func readModuleSummary(basePath, useCaseName string, moduleName regiotedge.ModuleName, opts ports.FileOptions) (regiotedge.ModuleSummary, error) {
-	manifest, err := ReadConfig(basePath, useCaseName, opts)
+func readModuleSummary(basePath, useCaseName string, moduleName manifesttemplate.ModuleName, opts ports.FileOptions) (modulesummary.Summary, error) {
+	manifest, err := ReadUseCase(basePath, useCaseName, opts)
 	if err != nil {
-		return regiotedge.ModuleSummary{}, err
+		return modulesummary.Summary{}, err
 	}
 	mc, ok := manifest.ModulesContent.EdgeAgent[moduleName]
 	if !ok {
-		return regiotedge.ModuleSummary{}, ModuleNotFoundError{ModuleName: moduleName}
+		return modulesummary.Summary{}, ModuleNotFoundError{ModuleName: moduleName}
 	}
-	return regiotedge.NewModuleSummary(mc), nil
+	return modulesummary.NewSummary(mc), nil
 }
 
 // NewReadModuleSummaryToolHandler returns an mcpgo.HandlerFunc that reads
 // req.UseCaseName's deployment manifest under req.BasePath, looks up
-// req.ModuleName, and maps it to a regiotedge.ModuleSummary — binding
-// models/iotedge's declared ReadModuleSummaryTool to ReadConfig.
+// req.ModuleName, and maps it to a modulesummary.Summary — binding
+// modulesummary's declared ReadTool to ReadUseCase.
 //
 // Usage:
 //
-//	tool, _ := regiotedge.ReadModuleSummaryTool.Register(mcpBuilder)
+//	tool, _ := modulesummary.ReadTool.Register(mcpBuilder)
 //	_, handlerFn := mcpgo.ToolHandler(tool,
 //	    iotedgeapp.NewReadModuleSummaryToolHandler(ports.FileOptions{}),
 //	    mcpgo.Options{})
-func NewReadModuleSummaryToolHandler(opts ports.FileOptions) mcpgo.HandlerFunc[regiotedge.ReadModuleSummaryReq, regiotedge.ModuleSummary] {
-	return func(ctx context.Context, req regiotedge.ReadModuleSummaryReq) (regiotedge.ModuleSummary, error) {
+func NewReadModuleSummaryToolHandler(opts ports.FileOptions) mcpgo.HandlerFunc[modulesummary.ReadReq, modulesummary.Summary] {
+	return func(ctx context.Context, req modulesummary.ReadReq) (modulesummary.Summary, error) {
 		return readModuleSummary(req.BasePath, req.UseCaseName, req.ModuleName, opts)
 	}
 }
