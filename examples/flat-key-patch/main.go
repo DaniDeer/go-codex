@@ -158,22 +158,14 @@ var containerNameConstraint = codex.Constraint[string]{
 	},
 }
 
-// containerKeyCodec: two-layer validation via MapCodecValidated.
-//   - wire codec validates the full dotted key ("properties.desired.modules.cv-writer")
-//   - domain codec validates the extracted container name ("cv-writer")
-//
-// On decode: full key → strip prefix → validate name → return name.
-// On encode: validate name → add prefix → validate full key → return full key.
-var containerKeyCodec = codex.MapCodecValidated(
-	codex.String().Refine(moduleKeyConstraint),
-	codex.String().Refine(containerNameConstraint),
-	func(fullKey string) (string, error) {
-		return strings.TrimPrefix(fullKey, moduleKeyPrefix), nil
-	},
-	func(name string) (string, error) {
-		return moduleKeyPrefix + name, nil
-	},
-)
+// containerKeyCodec: two-layer validation via codex.PrefixedKeyCodec — the
+// general-purpose "prefix + validated-name-segment" convenience that
+// generalizes what this file used to hand-roll via MapCodecValidated
+// directly (wire codec validates the full dotted key
+// "properties.desired.modules.cv-writer"; name codec validates the
+// extracted container name "cv-writer"). Same wire shape, same
+// validation, same errors — just built via the shared constructor.
+var containerKeyCodec = codex.PrefixedKeyCodec[string](moduleKeyPrefix, containerNameConstraint)
 
 // containersCodec decodes a flat JSON/YAML/TOML object into []Container.
 // K = string (container name, after prefix stripping).

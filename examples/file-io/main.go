@@ -290,6 +290,25 @@ func main() {
 		fmt.Printf("  template path: %s\n", templatePath)
 	}
 
+	// ports.FilePathTemplate: reusing a template+params shape (opt-in, NOT the
+	// default). The plain-string form above (ports.NewFile("data/{date}/{sensor}.json", ...))
+	// remains the default and primary way to declare a file — nothing about it
+	// changes. FilePathTemplate is a SECOND, additional, opt-in constructor —
+	// reach for it only when the SAME layout would otherwise be copy-pasted
+	// across two or more record types stored under the same directory shape.
+	measurementLayout := ports.NewFilePathTemplate("data/{date}/{sensor}.json",
+		ports.FilePathParam{Name: "date"}.WithCodec(codex.String().Refine(validate.Date)),
+		ports.FilePathParam{Name: "sensor"},
+	)
+	measurementFileViaTemplate := ports.NewFileFromPathTemplate(measurementLayout, format.JSON(measurementCodec))
+	if layoutPath, err := measurementFileViaTemplate.BuildPath(map[string]string{
+		"date": "2024-01-15", "sensor": "temp-42",
+	}); err != nil {
+		slog.Error("FilePathTemplate BuildPath failed", "err", err)
+	} else {
+		fmt.Printf("  same layout via FilePathTemplate: %s\n", layoutPath)
+	}
+
 	// sensorFile uses the temp dir prefix for actual I/O in this example.
 	sensorFile := ports.NewFile(
 		dataDir+"/data/{date}/{sensor}.json",

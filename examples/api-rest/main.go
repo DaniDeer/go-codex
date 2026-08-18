@@ -125,6 +125,39 @@ func main() {
 		os.Exit(1)
 	}
 
+	// --- rest.Path: reusing a template+params shape (opt-in, NOT the default) ---
+	//
+	// The plain-string form above (rest.NewRoute[Req,Resp]("GET", "/users/{id}", ...))
+	// remains the default and primary way to declare a route — nothing about
+	// it changes. rest.Path is a SECOND, additional, opt-in constructor —
+	// reach for it only when the SAME path template + PathParam declaration
+	// would otherwise be copy-pasted across two or more routes (here: GET and
+	// DELETE on the same resource path), giving that shape exactly one source
+	// of truth.
+	userByIDPath := rest.NewPath("/users/{id}",
+		rest.PathParam{Name: "id", Description: "User ID (UUID)."},
+	)
+	deleteUser, err := rest.NewRouteFromPath[struct{}, struct{}]("DELETE", userByIDPath,
+		codex.Empty, codex.Empty,
+		rest.RouteMeta{OperationID: "deleteUser", Summary: "Delete a user", Tags: []string{"users"}},
+		rest.ResponseMeta{Status: "204", Description: "User deleted."},
+		rest.ResponseMeta{Status: "404", Description: "User not found."},
+	).Register(b)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "route registration failed: %v\n", err)
+		os.Exit(1)
+	}
+	// Standalone use — no request/response codec involved at all:
+	standalonePath, err := userByIDPath.BuildPath(map[string]string{"id": "f47ac10b-58cc-4372-a567-0e02b2c3d479"})
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "BuildPath error: %v\n", err)
+		os.Exit(1)
+	}
+	fmt.Println("=== rest.Path: shared template+params shape ===")
+	fmt.Printf("deleteUser descriptor: %s %s\n", deleteUser.Descriptor.Method, deleteUser.Descriptor.Path)
+	fmt.Printf("standalone BuildPath (no request/response codec): %s\n", standalonePath)
+	fmt.Println()
+
 	// --- Demonstrate codec-backed Decode/Encode ---
 	// These helpers work with any HTTP library; pass them to your handler.
 

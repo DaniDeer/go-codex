@@ -161,6 +161,41 @@ handle, _ := readingsChannel.Register(builder)
 // builder.AsyncAPISpec()      → full AsyncAPI 3.0 document
 ```
 
+### Reusing a Topic/Path/FilePathTemplate
+
+The plain-string form above (`"sensors/{sensorID}/readings"` passed
+directly to `NewChannel`) is the default and stays that way — nothing
+below changes it. If the SAME topic template and `TopicParam` end up
+declared for two or more channels of DIFFERENT payload types (e.g. one
+topic family carrying several event types), extract the shape once as a
+`Topic` value and reuse it:
+
+```go
+var sensorReadingsTopic = events.NewTopic("sensors/{sensorID}/readings",
+    events.TopicParam{Name: "sensorID"}.WithCodec(uuidCodec),
+)
+
+var temperatureChannel = events.NewChannelFromTopic(sensorReadingsTopic, temperatureCodec,
+    events.Subscribe{OperationID: "receiveTemperature"},
+)
+var humidityChannel = events.NewChannelFromTopic(sensorReadingsTopic, humidityCodec,
+    events.Subscribe{OperationID: "receiveHumidity"},
+)
+
+// Standalone use — no payload codec involved at all:
+topic, err := sensorReadingsTopic.BuildTopic(map[string]string{
+    "sensorID": "f47ac10b-58cc-4372-a567-0e02b2c3d479",
+})
+```
+
+`temperatureChannel`/`humidityChannel` are byte-for-byte identical to
+channels declared via `NewChannel` with the same template and
+`TopicParam` passed inline — the `{sensorID}` variable's name and codec
+now have exactly one source of truth instead of being copy-pasted per
+channel. `rest.Path`/`ports.FilePathTemplate`/`ports.DirPathTemplate`
+provide the identical convenience for `api/rest` routes and `ports.File`/
+`ports.Dir` declarations. See [Guide: Declarative wire-format vocabulary](../guides/wire-vocabulary.md#reusing-a-topicpathfilepathtemplate) for the full recipe.
+
 ## MCP tools (`api/mcp`)
 
 ```go

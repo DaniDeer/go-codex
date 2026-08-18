@@ -62,6 +62,7 @@ repo_name = "DaniDeer/go-codex"
 "Stream Examples" = "guides/stream.md"
 "Ports Examples" = "guides/ports.md"
 "LLM Integration Examples" = "guides/llm-integration.md"
+"Wire-format Vocabulary" = "guides/wire-vocabulary.md"
 
 [nav.Reference]
 "Package Reference" = "reference/index.md"

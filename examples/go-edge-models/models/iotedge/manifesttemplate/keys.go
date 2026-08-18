@@ -1,9 +1,6 @@
 package manifesttemplate
 
 import (
-	"fmt"
-	"strings"
-
 	c "github.com/DaniDeer/go-codex/codex"
 	v "github.com/DaniDeer/go-codex/validate"
 )
@@ -62,7 +59,7 @@ const EdgeHubKey = "$edgeHub"
 //
 // Same two-layer key-validation pattern as examples/flat-key-patch's
 // containerKeyCodec (wire-level full-key constraint + domain-level name
-// constraint via MapCodecValidated) — but the target here is a NAMED
+// constraint via codex.PrefixedKeyCodec) — but the target here is a NAMED
 // ModuleName type (not bare string), so it composes with codex.Map
 // (→ map[ModuleName]ModuleConfig) instead of flat-key-patch's
 // codex.EntrySlice (→ a merged []Container slice). Use Map when you want
@@ -75,43 +72,16 @@ const EdgeHubKey = "$edgeHub"
 // by name) can reuse the exact same prefix instead of duplicating it.
 const ModuleKeyPrefix = "properties.desired.modules."
 
-// moduleKeyConstraint validates the FULL wire key: must start with
-// ModuleKeyPrefix and have a non-empty module-name segment after it.
-var moduleKeyConstraint = c.Constraint[string]{
-	Name: "module-key",
-	Check: func(s string) bool {
-		return strings.HasPrefix(s, ModuleKeyPrefix) && len(strings.TrimPrefix(s, ModuleKeyPrefix)) > 0
-	},
-	Message: func(s string) string {
-		return fmt.Sprintf("key %q must start with %q followed by a module name", s, ModuleKeyPrefix)
-	},
-}
-
-// moduleNameCodec validates the extracted name segment — reusing
-// validate.Slug (lowercase alphanumeric + hyphens) rather than a one-off
-// constraint — and wraps the validated string as the named ModuleName type.
-var moduleNameCodec = c.MapCodecSafe(
-	c.String().Refine(v.Slug),
-	func(s string) ModuleName { return ModuleName(s) },
-	func(n ModuleName) (string, error) { return string(n), nil },
-)
-
-// ModuleNameCodec: two-layer validation via MapCodecValidated — the wire
-// codec validates the FULL dotted key; moduleNameCodec validates+wraps the
-// extracted name segment.
+// ModuleNameCodec: two-layer validation via codex.PrefixedKeyCodec — the
+// general-purpose "prefix + validated-name-segment" convenience that
+// generalizes the exact recipe this file used to hand-roll directly (a
+// wire codec validating the FULL dotted key, a name codec validating the
+// extracted name segment via v.Slug). Same wire shape, same validation,
+// same errors — just built via the shared codex-level constructor.
 //
-// Decode: full key → strip prefix → moduleNameCodec.Validate (via Slug) → ModuleName.
-// Encode: ModuleName → prepend prefix → validate full key → full key string.
-var ModuleNameCodec = c.MapCodecValidated(
-	c.String().Refine(moduleKeyConstraint),
-	moduleNameCodec,
-	func(fullKey string) (ModuleName, error) {
-		return ModuleName(strings.TrimPrefix(fullKey, ModuleKeyPrefix)), nil
-	},
-	func(n ModuleName) (string, error) {
-		return ModuleKeyPrefix + string(n), nil
-	},
-)
+// Decode: full key → strip prefix → validate name (via Slug) → ModuleName.
+// Encode: ModuleName → validate name (via Slug) → prepend prefix → full key string.
+var ModuleNameCodec = c.PrefixedKeyCodec[ModuleName](ModuleKeyPrefix, v.Slug)
 
 // ── RouteName dotted-key extraction ────────────────────────────────────────────
 //
@@ -119,8 +89,8 @@ var ModuleNameCodec = c.MapCodecValidated(
 // Go:   map[RouteName]Route{"factory-mqtt-to-ingest": {...}, ...}
 //
 // Mirrors ModuleName's own dotted-key extraction exactly, above — same
-// two-layer wire-key + name-constraint validation via MapCodecValidated,
-// just under a different prefix and value shape.
+// two-layer wire-key + name-constraint validation via
+// codex.PrefixedKeyCodec, just under a different prefix and value shape.
 
 // RouteKeyPrefix is the fixed namespace for all route keys, e.g.
 // "properties.desired.routes.factory-mqtt-to-ingest". Exported so a
@@ -129,38 +99,7 @@ var ModuleNameCodec = c.MapCodecValidated(
 // instead of duplicating it.
 const RouteKeyPrefix = "properties.desired.routes."
 
-// routeKeyConstraint validates the FULL wire key: must start with
-// RouteKeyPrefix and have a non-empty route-name segment after it.
-var routeKeyConstraint = c.Constraint[string]{
-	Name: "route-key",
-	Check: func(s string) bool {
-		return strings.HasPrefix(s, RouteKeyPrefix) && len(strings.TrimPrefix(s, RouteKeyPrefix)) > 0
-	},
-	Message: func(s string) string {
-		return fmt.Sprintf("key %q must start with %q followed by a route name", s, RouteKeyPrefix)
-	},
-}
-
-// routeNameCodec validates the extracted name segment — reusing
-// validate.Slug (lowercase alphanumeric + hyphens), the same constraint
-// moduleNameCodec applies — and wraps the validated string as the named
-// RouteName type.
-var routeNameCodec = c.MapCodecSafe(
-	c.String().Refine(v.Slug),
-	func(s string) RouteName { return RouteName(s) },
-	func(n RouteName) (string, error) { return string(n), nil },
-)
-
-// RouteNameCodec: two-layer validation via MapCodecValidated — the wire
-// codec validates the FULL dotted key; routeNameCodec validates+wraps the
-// extracted name segment. Mirrors ModuleNameCodec exactly.
-var RouteNameCodec = c.MapCodecValidated(
-	c.String().Refine(routeKeyConstraint),
-	routeNameCodec,
-	func(fullKey string) (RouteName, error) {
-		return RouteName(strings.TrimPrefix(fullKey, RouteKeyPrefix)), nil
-	},
-	func(n RouteName) (string, error) {
-		return RouteKeyPrefix + string(n), nil
-	},
-)
+// RouteNameCodec: two-layer validation via codex.PrefixedKeyCodec — same
+// convenience constructor ModuleNameCodec uses above, just under a
+// different prefix. Mirrors ModuleNameCodec exactly.
+var RouteNameCodec = c.PrefixedKeyCodec[RouteName](RouteKeyPrefix, v.Slug)

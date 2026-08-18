@@ -1616,3 +1616,89 @@ func TestDecodeMerged_NoMergeFieldsIsNoop(t *testing.T) {
 		t.Errorf("DecodeMerged should match plain Decode when no merge fields declared: %+v vs %+v", viaDecode, viaMerged)
 	}
 }
+
+// ── Topic ────────────────────────────────────────────────────────────────────
+
+func TestTopic_BuildTopic_RoundTrip(t *testing.T) {
+	idCodec := codex.String().Refine(validate.NonEmptyString)
+	topic := events.NewTopic("devices/{deviceID}/telemetry",
+		events.TopicParam{Name: "deviceID", Codec: &idCodec},
+	)
+	got, err := topic.BuildTopic(map[string]string{"deviceID": "sensor-1"})
+	if err != nil {
+		t.Fatalf("BuildTopic: %v", err)
+	}
+	if got != "devices/sensor-1/telemetry" {
+		t.Errorf("BuildTopic = %q, want devices/sensor-1/telemetry", got)
+	}
+}
+
+func TestTopic_BuildTopic_MissingVar(t *testing.T) {
+	topic := events.NewTopic("devices/{deviceID}/telemetry")
+	_, err := topic.BuildTopic(nil)
+	var missing events.MissingTopicVarError
+	if !errors.As(err, &missing) {
+		t.Fatalf("expected MissingTopicVarError, got %v", err)
+	}
+	if missing.Name != "deviceID" {
+		t.Errorf("missing var name = %q, want deviceID", missing.Name)
+	}
+}
+
+func TestTopic_ValidateTopicVars(t *testing.T) {
+	idCodec := codex.String().Refine(validate.NonEmptyString)
+	topic := events.NewTopic("devices/{deviceID}/telemetry",
+		events.TopicParam{Name: "deviceID", Codec: &idCodec},
+	)
+	if err := topic.ValidateTopicVars(map[string]string{"deviceID": "sensor-1"}); err != nil {
+		t.Errorf("ValidateTopicVars: %v", err)
+	}
+	err := topic.ValidateTopicVars(map[string]string{"deviceID": ""})
+	var paramErr events.TopicParamError
+	if !errors.As(err, &paramErr) {
+		t.Fatalf("expected TopicParamError, got %v", err)
+	}
+}
+
+func TestNewChannelFromTopic_ProducesIdenticalHandleToNewChannel(t *testing.T) {
+	idCodec := codex.String().Refine(validate.NonEmptyString)
+	topic := events.NewTopic("devices/{deviceID}/telemetry",
+		events.TopicParam{Name: "deviceID", Codec: &idCodec},
+	)
+
+	b1 := events.NewBuilder(testInfo)
+	viaTopic, err := events.NewChannelFromTopic(topic, userEventCodec,
+		events.Subscribe{Summary: "Telemetry"},
+	).Register(b1)
+	if err != nil {
+		t.Fatalf("Register via Topic: %v", err)
+	}
+
+	b2 := events.NewBuilder(testInfo)
+	viaPlain, err := events.NewChannel[userEvent]("devices/{deviceID}/telemetry", userEventCodec,
+		events.TopicParam{Name: "deviceID", Codec: &idCodec},
+		events.Subscribe{Summary: "Telemetry"},
+	).Register(b2)
+	if err != nil {
+		t.Fatalf("Register via plain string: %v", err)
+	}
+
+	if viaTopic.Topic != viaPlain.Topic {
+		t.Errorf("Topic = %q, want %q", viaTopic.Topic, viaPlain.Topic)
+	}
+	if viaTopic.Descriptor.Subscribe.Summary != viaPlain.Descriptor.Subscribe.Summary {
+		t.Errorf("Descriptor.Subscribe.Summary differs between Topic-based and plain-string declarations")
+	}
+	// Both handles must validate/build topics identically.
+	built1, err := viaTopic.BuildTopic(map[string]string{"deviceID": "sensor-1"})
+	if err != nil {
+		t.Fatalf("BuildTopic (viaTopic): %v", err)
+	}
+	built2, err := viaPlain.BuildTopic(map[string]string{"deviceID": "sensor-1"})
+	if err != nil {
+		t.Fatalf("BuildTopic (viaPlain): %v", err)
+	}
+	if built1 != built2 {
+		t.Errorf("BuildTopic results differ: %q vs %q", built1, built2)
+	}
+}

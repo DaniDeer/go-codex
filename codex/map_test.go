@@ -2,6 +2,7 @@ package codex_test
 
 import (
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -225,4 +226,81 @@ func TestMapCodecValidated_BaseDecodeErrorPropagated(t *testing.T) {
 	if !strings.Contains(err.Error(), "expected") {
 		t.Errorf("unexpected error message: %v", err)
 	}
+}
+
+// ── PrefixedKeyCodec ─────────────────────────────────────────────────────────
+
+// moduleName is a named string type standing in for a real caller's
+// domain-specific identifier (e.g. manifesttemplate.ModuleName).
+type moduleName string
+
+var moduleNameConstraint = codex.Constraint[string]{
+	Name:    "module-name",
+	Check:   func(s string) bool { return s != "" && !strings.Contains(s, " ") },
+	Message: func(s string) string { return fmt.Sprintf("module name %q must be non-empty and contain no spaces", s) },
+}
+
+var testModuleKeyCodec = codex.PrefixedKeyCodec[moduleName]("properties.desired.modules.", moduleNameConstraint)
+
+func TestPrefixedKeyCodec_RoundTrip(t *testing.T) {
+	enc, err := testModuleKeyCodec.Encode(moduleName("cv-writer"))
+	if err != nil {
+		t.Fatalf("Encode: %v", err)
+	}
+	if enc != "properties.desired.modules.cv-writer" {
+		t.Errorf("Encode = %v, want properties.desired.modules.cv-writer", enc)
+	}
+	got, err := testModuleKeyCodec.Decode(enc)
+	if err != nil {
+		t.Fatalf("Decode: %v", err)
+	}
+	if got != moduleName("cv-writer") {
+		t.Errorf("round-trip = %q, want cv-writer", got)
+	}
+}
+
+func TestPrefixedKeyCodec_DecodeError_MissingPrefix(t *testing.T) {
+	_, err := testModuleKeyCodec.Decode("wrong.prefix.cv-writer")
+	if err == nil {
+		t.Fatal("expected error for missing prefix, got nil")
+	}
+}
+
+func TestPrefixedKeyCodec_DecodeError_EmptySuffix(t *testing.T) {
+	_, err := testModuleKeyCodec.Decode("properties.desired.modules.")
+	if err == nil {
+		t.Fatal("expected error for empty name suffix, got nil")
+	}
+}
+
+func TestPrefixedKeyCodec_EncodeError_NameConstraintFails(t *testing.T) {
+	_, err := testModuleKeyCodec.Encode(moduleName("has space"))
+	if err == nil {
+		t.Fatal("expected error for name constraint failure, got nil")
+	}
+}
+
+func TestPrefixedKeyCodec_SchemaCarriesStringType(t *testing.T) {
+	if testModuleKeyCodec.Schema.Type != "string" {
+		t.Errorf("Schema.Type = %q, want string", testModuleKeyCodec.Schema.Type)
+	}
+}
+
+func ExamplePrefixedKeyCodec() {
+	type routeName string
+
+	nameConstraint := codex.Constraint[string]{
+		Name:    "route-name",
+		Check:   func(s string) bool { return s != "" },
+		Message: func(s string) string { return "route name must not be empty" },
+	}
+	routeKeyCodec := codex.PrefixedKeyCodec[routeName]("properties.desired.routes.", nameConstraint)
+
+	name, err := routeKeyCodec.Decode("properties.desired.routes.factory-mqtt-to-ingest")
+	if err != nil {
+		fmt.Println("error:", err)
+		return
+	}
+	fmt.Println(name)
+	// Output: factory-mqtt-to-ingest
 }

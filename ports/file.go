@@ -201,6 +201,105 @@ type FileOptions struct {
 //	    "sensorID": "f47ac10b-58cc-4372-a567-0e02b2c3d479",
 //	})
 //	// path == "data/2024-01-15/f47ac10b-58cc-4372-a567-0e02b2c3d479.json"
+
+// FilePathTemplate bundles a path template with its declared
+// [FilePathParam] variables — the payload-independent "shape" of a
+// [File]'s path (the SAME state [File.BuildPath]/[File.MatchPath] already
+// use internally, extracted into its own value). Mirrors
+// [github.com/DaniDeer/go-codex/api/events.Topic]/
+// [github.com/DaniDeer/go-codex/api/rest.Path], one boundary over.
+//
+// The plain-string form remains the default and primary way to declare a
+// file — pass a path template string directly to [NewFile], exactly as
+// always. Reach for FilePathTemplate ONLY when you find yourself declaring
+// the SAME template+params shape for two or more files (of different
+// record types sharing one on-disk layout) and want that shape to have
+// exactly one source of truth, or when you need to build/match a path
+// standalone, with no wire format involved at all.
+//
+// A file declared via [NewFileFromPathTemplate] is byte-for-byte identical
+// to one declared via [NewFile] with the same template and
+// [FilePathParam] values passed inline — nothing downstream can tell the
+// difference.
+type FilePathTemplate struct {
+	// Template is the path template, e.g. "readings/{sensorID}/{date}.json".
+	Template string
+	// Params holds the path template's variable declarations.
+	Params []FilePathParam
+}
+
+// NewFilePathTemplate declares a FilePathTemplate from a template and its
+// FilePathParam variables.
+func NewFilePathTemplate(template string, params ...FilePathParam) FilePathTemplate {
+	return FilePathTemplate{Template: template, Params: params}
+}
+
+// BuildPath substitutes {varName} placeholders in t.Template with the
+// values in vars, validating each against its registered
+// [FilePathParam.Codec] (if any). Mirrors [File.BuildPath] exactly (same
+// underlying engine, same error types).
+func (t FilePathTemplate) BuildPath(vars map[string]string) (string, error) {
+	if templatematch.IsGlobEnabled(t.Template) {
+		return "", FileWildcardBuildError{Template: t.Template}
+	}
+	codecMap := make(map[string]*codex.Codec[string], len(t.Params))
+	for i := range t.Params {
+		if t.Params[i].Codec != nil {
+			codecMap[t.Params[i].Name] = t.Params[i].Codec
+		}
+	}
+	return buildFromFileTemplate(t.Template, vars, codecMap)
+}
+
+// MatchPath is the inverse of [FilePathTemplate.BuildPath] — mirrors
+// [File.MatchPath] exactly (same underlying engine, same error types,
+// including glob-enabled templates).
+func (t FilePathTemplate) MatchPath(path string) (map[string]string, error) {
+	var vars map[string]string
+	var err error
+	if templatematch.IsGlobEnabled(t.Template) {
+		vars, err = templatematch.MatchGlob(t.Template, path, func(template, path string) error {
+			return FilePathMismatchError{Template: template, Path: path}
+		})
+	} else {
+		vars, err = matchFileTemplate(t.Template, path)
+	}
+	if err != nil {
+		return nil, err
+	}
+	for i := range t.Params {
+		p := &t.Params[i]
+		if p.Codec == nil {
+			continue
+		}
+		value := vars[p.Name]
+		if err := p.Codec.Validate(value); err != nil {
+			return nil, FilePathParamError{Name: p.Name, Value: value, Err: err}
+		}
+	}
+	return vars, nil
+}
+
+// ValidatePathVars validates the variable values in vars against t's
+// registered [FilePathParam] codecs, without building the concrete path.
+// Mirrors [File.ValidatePathVars] exactly (same error types).
+func (t FilePathTemplate) ValidatePathVars(vars map[string]string) error {
+	for i := range t.Params {
+		p := &t.Params[i]
+		if p.Codec == nil {
+			continue
+		}
+		value, ok := vars[p.Name]
+		if !ok {
+			return MissingFilePathVarError{Name: p.Name}
+		}
+		if err := p.Codec.Validate(value); err != nil {
+			return FilePathParamError{Name: p.Name, Value: value, Err: err}
+		}
+	}
+	return nil
+}
+
 type File[T any] struct {
 	// Template is the original path template (with {varName} placeholders).
 	Template string
@@ -257,6 +356,22 @@ func NewFile[T any](template string, f format.Format[T], opts ...FileOpt) File[T
 		params:      fb.params,
 		mergeFields: mergeFields,
 	}
+}
+
+// NewFileFromPathTemplate creates a [File] descriptor using a pre-built
+// [FilePathTemplate] instead of a raw path-template string — see
+// [FilePathTemplate]'s doc comment for when to reach for this. Produces
+// the IDENTICAL [File] [NewFile] would produce from t.Template plus
+// t.Params passed inline, since [FilePathParam] already implements
+// [FileOpt]. Same panics as [NewFile] apply (wrong merge-field type
+// parameter, multiple "**" glob segments).
+func NewFileFromPathTemplate[T any](t FilePathTemplate, f format.Format[T], opts ...FileOpt) File[T] {
+	allOpts := make([]FileOpt, 0, len(t.Params)+len(opts))
+	for _, p := range t.Params {
+		allOpts = append(allOpts, p)
+	}
+	allOpts = append(allOpts, opts...)
+	return NewFile(t.Template, f, allOpts...)
 }
 
 // MergeFields returns the merge-capable fields registered via

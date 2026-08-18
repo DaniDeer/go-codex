@@ -1,6 +1,9 @@
 package codex
 
-import "fmt"
+import (
+	"fmt"
+	"strings"
+)
 
 // MapCodecSafe creates a new Codec[B] from Codec[A] using two mapping functions.
 // from is the encode direction and must always succeed.
@@ -73,6 +76,52 @@ func MapCodecValidated[A, B any](
 			return ca.Encode(a)
 		},
 	}
+}
+
+// PrefixedKeyCodec builds a Codec[B] for a dotted/namespaced wire key shaped
+// "prefix" + name — e.g. "properties.desired.modules.cv-writer" — where B is
+// the (possibly named, e.g. `type ModuleName string`) type wrapping the
+// extracted name segment. nameConstraint validates ONLY the name segment
+// (after prefix is stripped); the full key's own "has prefix, non-empty
+// suffix" shape is validated internally and does not need to be expressed by
+// the caller.
+//
+// Decode: full key → strip prefix → validate name segment via
+// nameConstraint → B.
+// Encode: B → validate name segment via nameConstraint → prepend prefix →
+// full key string.
+//
+// This is a convenience constructor, not new validation behavior — it
+// generalizes the two-layer "wire codec validates the full dotted key;
+// domain codec validates the extracted name segment" recipe already
+// hand-rolled ad hoc across the codebase for this exact shape (e.g.
+// examples/flat-key-patch's containerKeyCodec, or
+// examples/go-edge-models's manifesttemplate.ModuleNameCodec/RouteNameCodec).
+func PrefixedKeyCodec[B ~string](prefix string, nameConstraint Constraint[string]) Codec[B] {
+	fullKeyConstraint := Constraint[string]{
+		Name: "prefixed-key",
+		Check: func(s string) bool {
+			return strings.HasPrefix(s, prefix) && len(strings.TrimPrefix(s, prefix)) > 0
+		},
+		Message: func(s string) string {
+			return fmt.Sprintf("key %q must start with %q followed by a non-empty name", s, prefix)
+		},
+	}
+	nameCodec := MapCodecSafe(
+		String().Refine(nameConstraint),
+		func(s string) B { return B(s) },
+		func(b B) (string, error) { return string(b), nil },
+	)
+	return MapCodecValidated(
+		String().Refine(fullKeyConstraint),
+		nameCodec,
+		func(fullKey string) (B, error) {
+			return B(strings.TrimPrefix(fullKey, prefix)), nil
+		},
+		func(n B) (string, error) {
+			return prefix + string(n), nil
+		},
+	)
 }
 
 // Downcast attempts to cast a value of type B to type A.

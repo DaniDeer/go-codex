@@ -1263,6 +1263,28 @@ var celsiusCodec = codex.MapCodecValidated(
 
 **Rule:** use `MapCodecSafe` for newtypes and type-safe wrappers; use `MapCodecValidated` when both directions may fail and the target type carries its own constraints.
 
+### PrefixedKeyCodec — a prefix + validated-name-segment convenience
+
+A recurring shape built on `MapCodecValidated` (see "Recommended key codec" above): a wire key is a fixed PREFIX followed by a validated NAME segment — `"properties.desired.modules.cv-writer"`, `"user:42"`, `"tenant-acme.cv-writer-kvrocks"`. `PrefixedKeyCodec[B ~string]` generalizes the two-layer recipe (full-key shape via an internal `Constraint`, name segment via the caller's own `Constraint`) into one constructor:
+
+```go
+type ModuleName string
+
+var ModuleNameCodec = codex.PrefixedKeyCodec[ModuleName](
+    "properties.desired.modules.", validate.Slug,
+)
+
+key, _ := ModuleNameCodec.Encode(ModuleName("cv-writer"))
+// key == "properties.desired.modules.cv-writer"
+
+name, _ := ModuleNameCodec.Decode("properties.desired.modules.cv-writer")
+// name == ModuleName("cv-writer")
+```
+
+`B` can be a bare `string` (e.g. `examples/flat-key-patch`'s `containerKeyCodec`) or a named string type. Reach for `PrefixedKeyCodec` whenever the key shape is EXACTLY "prefix + name"; a key with a different internal structure (e.g. two segments joined by a delimiter, like `<tenant>.<name>`) needs its own hand-rolled `MapCodecValidated` — see `examples/flat-key-patch`'s `twoPartKeyCodec` for that case.
+
+See [Guide: Wire-format vocabulary](../guides/wire-vocabulary.md) for how this fits into a package's single-source-of-truth `keys.go`.
+
 ### Encoding / decoding escaped or re-serialised fields
 
 A recurring pattern in APIs and event systems is a field whose wire value is itself a serialised string — JSON, YAML, or TOML encoded as a string, or URL-encoded, or HTML-escaped content. The `format` package provides built-in functions for all three serialisation formats:

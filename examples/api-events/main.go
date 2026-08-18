@@ -51,6 +51,24 @@ var userCreatedCodec = codex.Struct[UserCreatedEvent](
 	codex.RequiredField("email", codex.String().Refine(validate.Email).WithDescription("Primary email address."), func(e UserCreatedEvent) string { return e.Email }, func(e *UserCreatedEvent, v string) { e.Email = v }),
 )
 
+// DeviceOnline/DeviceOffline share the SAME "devices/{deviceID}/status" topic
+// shape (see events.Topic demo in main) despite being different payload types.
+type DeviceOnline struct {
+	DeviceID string
+}
+type DeviceOffline struct {
+	DeviceID string
+	Reason   string
+}
+
+var deviceOnlineCodec = codex.Struct[DeviceOnline](
+	codex.RequiredField("deviceId", codex.String().Refine(validate.UUID), func(e DeviceOnline) string { return e.DeviceID }, func(e *DeviceOnline, v string) { e.DeviceID = v }),
+)
+var deviceOfflineCodec = codex.Struct[DeviceOffline](
+	codex.RequiredField("deviceId", codex.String().Refine(validate.UUID), func(e DeviceOffline) string { return e.DeviceID }, func(e *DeviceOffline, v string) { e.DeviceID = v }),
+	codex.RequiredField("reason", codex.String().Refine(validate.NonEmptyString), func(e DeviceOffline) string { return e.Reason }, func(e *DeviceOffline, v string) { e.Reason = v }),
+)
+
 var notificationCommandCodec = codex.Struct[NotificationCommand](
 	codex.RequiredField("recipient", codex.String().Refine(validate.Email).WithDescription("Recipient email address."), func(c NotificationCommand) string { return c.Recipient }, func(c *NotificationCommand, v string) { c.Recipient = v }),
 	codex.RequiredField("subject", codex.String().Refine(validate.NonEmptyString).WithDescription("Notification subject line."), func(c NotificationCommand) string { return c.Subject }, func(c *NotificationCommand, v string) { c.Subject = v }),
@@ -121,6 +139,49 @@ func main() {
 	// Bidirectional example (both directions on one channel):
 	// events.Subscribe{Summary: "Receive command result", Security: []route.SecurityRequirement{route.Require("bearerAuth")}},
 	// events.Publish{Summary: "Send command"},
+
+	// --- events.Topic: reusing a template+params shape (opt-in, NOT the default) ---
+	//
+	// The plain-string form above (events.NewChannel[T]("user/created", ...))
+	// remains the default and primary way to declare a channel — nothing about
+	// it changes. events.Topic is a SECOND, additional, opt-in constructor —
+	// reach for it only when the SAME topic template + TopicParam declaration
+	// would otherwise be copy-pasted across two or more channels of different
+	// payload types, giving that shape exactly one source of truth.
+	deviceIDCodec := codex.String().Refine(validate.UUID)
+	deviceStatusTopic := events.NewTopic("devices/{deviceID}/status",
+		events.TopicParam{Name: "deviceID", Codec: &deviceIDCodec},
+	)
+	deviceOnline, err := events.NewChannelFromTopic(deviceStatusTopic, deviceOnlineCodec,
+		events.Subscribe{Summary: "Receive device online event", SchemaName: "DeviceOnline"},
+	).Register(b)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "channel registration failed: %v\n", err)
+		os.Exit(1)
+	}
+	deviceOffline, err := events.NewChannelFromTopic(deviceStatusTopic, deviceOfflineCodec,
+		events.Subscribe{Summary: "Receive device offline event", SchemaName: "DeviceOffline"},
+	).Register(b)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "channel registration failed: %v\n", err)
+		os.Exit(1)
+	}
+	// Both channels were built from the SAME Topic value — the {deviceID}
+	// variable's name/codec has exactly one source of truth instead of being
+	// declared twice. A Topic can also build/validate a topic standalone, with
+	// no payload codec involved at all:
+	standaloneTopic, err := deviceStatusTopic.BuildTopic(map[string]string{
+		"deviceID": "f47ac10b-58cc-4372-a567-0e02b2c3d479",
+	})
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "BuildTopic error: %v\n", err)
+		os.Exit(1)
+	}
+	fmt.Println("=== events.Topic: shared template+params shape ===")
+	fmt.Printf("deviceOnline topic:  %s\n", deviceOnline.Topic)
+	fmt.Printf("deviceOffline topic: %s\n", deviceOffline.Topic)
+	fmt.Printf("standalone BuildTopic (no payload codec): %s\n", standaloneTopic)
+	fmt.Println()
 
 	// --- Demonstrate codec-backed Decode/Encode ---
 	// These helpers work with any broker library; pass them to your callbacks.

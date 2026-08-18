@@ -2136,6 +2136,80 @@ func (b *Builder) AddGlobalSecurity(reqs ...route.SecurityRequirement) *Builder 
 // it with one or more [Builder] instances via [Route.Register].
 //
 // Create a Route with [NewRoute].
+// Path bundles a path template with its declared [PathParam] variables —
+// the Req/Resp-independent "shape" of a route's path (the SAME state
+// [RouteHandle.BuildPath]/[RouteHandle.ValidatePathParams] already use
+// internally, extracted into its own value). Mirrors
+// [github.com/DaniDeer/go-codex/api/events.Topic] exactly, one boundary over.
+//
+// The plain-string form remains the default and primary way to declare a
+// route — pass a path template string directly to [NewRoute], exactly as
+// always. Reach for Path ONLY when you find yourself declaring the SAME
+// template+params shape for two or more routes (of different Req/Resp
+// types — e.g. GET and DELETE on the same resource path) and want that
+// shape to have exactly one source of truth, or when you need to
+// build/validate a path standalone, with no request/response codec
+// involved at all.
+//
+// A route declared via [NewRouteFromPath] is byte-for-byte identical to one
+// declared via [NewRoute] with the same template and [PathParam] values
+// passed inline — nothing downstream can tell the difference. Path
+// captures ONLY the template+params shape; every other [RouteOpt] is
+// passed to [NewRouteFromPath] exactly as it would be to [NewRoute].
+type Path struct {
+	// Template is the path template, e.g. "/users/{id}".
+	Template string
+	// Params holds the path template's variable declarations.
+	Params []PathParam
+}
+
+// NewPath declares a Path from a template and its PathParam variables.
+func NewPath(template string, params ...PathParam) Path {
+	return Path{Template: template, Params: params}
+}
+
+// BuildPath substitutes {varName} placeholders in p.Template with the
+// values in vars, validating each against its registered [PathParam.Codec]
+// (if any). Mirrors [RouteHandle.BuildPath] exactly (same underlying
+// engine, same error types), MINUS any builder-level path codec — that
+// only applies once a Path-based route is registered via
+// [NewRouteFromPath] + [Route.Register], where it is enforced exactly as
+// it would be for a plain-string route.
+func (p Path) BuildPath(vars map[string]string) (string, error) {
+	codecMap := make(map[string]*codex.Codec[string], len(p.Params))
+	for i := range p.Params {
+		if p.Params[i].Codec != nil {
+			codecMap[p.Params[i].Name] = p.Params[i].Codec
+		}
+	}
+	return internal.BuildFromTemplate(p.Template, vars, codecMap,
+		func(name string) error { return MissingPathVarError{Name: name} },
+		func(name, value string, err error) error {
+			return PathParamError{Name: name, Value: value, Err: err}
+		},
+	)
+}
+
+// ValidatePathParams validates path variable values against p's registered
+// [PathParam] codecs. Mirrors [RouteHandle.ValidatePathParams] exactly
+// (same error types); variables without a registered codec are skipped.
+func (p Path) ValidatePathParams(vars map[string]string) error {
+	for i := range p.Params {
+		pp := &p.Params[i]
+		if pp.Codec == nil {
+			continue
+		}
+		val, ok := vars[pp.Name]
+		if !ok {
+			return MissingPathVarError{Name: pp.Name}
+		}
+		if err := pp.Codec.Validate(val); err != nil {
+			return PathParamError{Name: pp.Name, Value: val, Err: err}
+		}
+	}
+	return nil
+}
+
 type Route[Req, Resp any] struct {
 	method    string
 	path      string
@@ -2177,6 +2251,26 @@ func NewRoute[Req, Resp any](
 		respCodec: respCodec,
 		opts:      opts,
 	}
+}
+
+// NewRouteFromPath declares a Route using a pre-built [Path] instead of a
+// raw path-template string — see [Path]'s doc comment for when to reach
+// for this. Produces the IDENTICAL [Route] [NewRoute] would produce from
+// path.Template plus path.Params passed inline, since [PathParam] already
+// implements [RouteOpt].
+func NewRouteFromPath[Req, Resp any](
+	method string,
+	path Path,
+	reqCodec codex.Codec[Req],
+	respCodec codex.Codec[Resp],
+	opts ...RouteOpt,
+) Route[Req, Resp] {
+	allOpts := make([]RouteOpt, 0, len(path.Params)+len(opts))
+	for _, p := range path.Params {
+		allOpts = append(allOpts, p)
+	}
+	allOpts = append(allOpts, opts...)
+	return NewRoute(method, path.Template, reqCodec, respCodec, allOpts...)
 }
 
 // Register registers the route with b and returns a [RouteHandle].

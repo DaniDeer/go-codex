@@ -341,6 +341,24 @@ var celsiusCodec = codex.MapCodecValidated(
 | Schema source          | `ca`                   | `cb`                          |
 | Typical use            | newtype wrappers       | domain types with constraints |
 
+## `PrefixedKeyCodec`: Dotted/Namespaced Wire-Key Convenience
+
+`PrefixedKeyCodec[B ~string](prefix string, nameConstraint codex.Constraint[string]) codex.Codec[B]` generalizes the "prefix + validated-name-segment" recipe for a dotted/namespaced wire key (e.g. `"properties.desired.modules.cv-writer"`) into one constructor — built on `MapCodecSafe` + `MapCodecValidated` internally, so it produces the IDENTICAL two-layer validation those hand-rolled ad hoc across the codebase (see `examples/flat-key-patch`'s `containerKeyCodec` and `examples/go-edge-models`'s `manifesttemplate.ModuleNameCodec`/`RouteNameCodec`, both now built on this constructor). `B` may be a bare `string` or a named string type (e.g. `type ModuleName string`).
+
+```go
+type ModuleName string
+
+var ModuleNameCodec = codex.PrefixedKeyCodec[ModuleName](
+    "properties.desired.modules.", validate.Slug,
+)
+// Decode: "properties.desired.modules.cv-writer" → ModuleName("cv-writer")
+// Encode: ModuleName("cv-writer") → "properties.desired.modules.cv-writer"
+```
+
+- `nameConstraint` validates ONLY the extracted name segment (after the prefix is stripped) — the full key's own "has prefix, non-empty suffix" shape is validated internally; the caller never expresses it.
+- Reach for this whenever a wire format's keys are dotted/namespaced strings that need BOTH full-key shape validation AND name-segment validation/wrapping — this is a strictly narrower, more convenient constructor than hand-rolling the same `Constraint` + `MapCodecValidated` pair; it does not replace `MapCodecValidated` for cases whose shape differs (e.g. a two-part `<tenant>.<name>` key needing custom splitting — see `examples/flat-key-patch`'s `twoPartKeyCodec`, which stays hand-rolled).
+- See `docs/guides/wire-vocabulary.md` for the full "single source of truth" recipe this fits into (wire-key constants, dotted-key codecs, path templates, named identifier types, all consolidated in one `keys.go`/`config.go` file per package).
+
 ## `Downcast`: Type Assertion Helper
 
 `Downcast[A, B any]` attempts to cast a value of type `B` to type `A` using a type assertion.
@@ -893,6 +911,61 @@ behavior).
 
 New error types: `events.MergeFieldTypeError{Err}`/`reqreply.MergeFieldTypeError{Err}`
 (both mirror `rest.MergeFieldTypeError` exactly).
+
+### Topic/Path/PathTemplate: reusable template+params bundles (opt-in, NOT the default)
+
+`events.Topic{Template, Params []TopicParam}`, `rest.Path{Template, Params
+[]PathParam}`, `ports.FilePathTemplate{Template, Params []FilePathParam}`,
+`ports.DirPathTemplate{Template, Params []DirPathParam}` extract the
+payload-independent "shape" (template + var declarations) that
+`ChannelHandle.BuildTopic`/`RouteHandle.BuildPath`/`File.BuildPath`/
+`Dir.BuildPath` already use internally into its own standalone value,
+each with `BuildTopic`/`BuildPath` + `ValidateTopicVars`/`ValidatePathVars`
+methods mirroring the corresponding Handle method exactly (same
+`api/internal.BuildFromTemplate`/file-local engine, same error types:
+`MissingTopicVarError`/`TopicParamError`, `MissingPathVarError`/
+`PathParamError`, `MissingFilePathVarError`/`FilePathParamError`, Dir
+equivalents). `events.NewTopic(template, params...)`/`rest.NewPath(...)`/
+`ports.NewFilePathTemplate(...)`/`ports.NewDirPathTemplate(...)` construct
+them; `events.NewChannelFromTopic[T](topic, codec, opts...)`/
+`rest.NewRouteFromPath[Req,Resp](method, path, reqCodec, respCodec,
+opts...)`/`ports.NewFileFromPathTemplate[T](t, format, opts...)`/
+`ports.NewDirFromPathTemplate(t, opts...)` build a `Channel[T]`/
+`Route[Req,Resp]`/`File[T]`/`Dir` from a pre-built bundle instead of a raw
+template string.
+
+**This does NOT change the default workflow.** The plain-string form
+(`NewChannel[T]("devices/{deviceID}/telemetry", codec, opts...)`, and the
+`rest`/`ports` equivalents) remains completely unchanged and stays the
+default, primary, first-taught way to declare a one-off channel/route/
+file/dir. `NewChannelFromTopic`/`NewRouteFromPath`/`NewFileFromPathTemplate`/
+`NewDirFromPathTemplate` are a SECOND, additional, opt-in constructor —
+reach for them ONLY when the SAME template+params shape is genuinely
+reused across two or more channels/routes/files/dirs of different
+payload types (avoiding copy-paste drift of the shared var name/codec),
+or when a topic/path needs to be built/validated standalone with no
+payload codec at all. A bundle-built `Channel`/`Route`/`File`/`Dir` is
+byte-for-byte identical to one hand-written with the plain-string
+constructor and the same params passed inline — nothing downstream
+(adapters, `Register`, spec generation) can tell the difference, since
+`TopicParam`/`PathParam`/`FilePathParam`/`DirPathParam` already implement
+their boundary's `ChannelOpt`/`RouteOpt`/`FileOpt`/`DirOpt` interface (the
+bundle constructors are thin wrappers, not a parallel declaration
+surface) — every other opt (`ChannelMeta`, `Subscribe`/`Publish`,
+`RouteMeta`, `WithSecurityScheme`, `ErrorPattern`/`ErrorChannel`, formats,
+…) is passed through unchanged. Documentation MUST always show the
+plain-string form first and introduce these bundles afterward, framed as
+"extract when reused" (mirrors `rest.Body`/`Response`'s own inline-schema-
+vs-`SchemaName`-$ref convention) — never as a "getting started"
+recommendation. See `docs/guides/wire-vocabulary.md`.
+
+**Cross-boundary scope note**: this is intentionally NOT a unification of
+`TopicParam`/`PathParam`/`FilePathParam`/`DirPathParam`/`CacheKeyParam`
+themselves across boundaries — each bundle type stays scoped to its own
+boundary's existing Param type (each carries boundary-specific behavior:
+OpenAPI/AsyncAPI spec export, glob-for-listing, TTL semantics) — see the
+`ErrorAction`/`ErrorFrame` "parallel-but-independent vocabularies"
+precedent already documented elsewhere in this file.
 
 ### Nullable Codec
 

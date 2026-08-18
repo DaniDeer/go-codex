@@ -1042,3 +1042,48 @@ func mustWriteFile(t *testing.T, path, content string) {
 		t.Fatalf("WriteFile(%q): %v", path, err)
 	}
 }
+
+// ── DirPathTemplate ──────────────────────────────────────────────────────────
+
+func TestDirPathTemplate_BuildPath_RoundTrip(t *testing.T) {
+	c := nonEmptyStringCodec()
+	tmpl := ports.NewDirPathTemplate("configs/{env}", ports.DirPathParam{Name: "env"}.WithCodec(c))
+	got, err := tmpl.BuildPath(map[string]string{"env": "prod"})
+	if err != nil {
+		t.Fatalf("BuildPath: %v", err)
+	}
+	if got != "configs/prod" {
+		t.Errorf("BuildPath = %q, want configs/prod", got)
+	}
+}
+
+func TestDirPathTemplate_MatchPath_Inverse(t *testing.T) {
+	tmpl := ports.NewDirPathTemplate("configs/{env}")
+	vars, err := tmpl.MatchPath("configs/prod")
+	if err != nil {
+		t.Fatalf("MatchPath: %v", err)
+	}
+	if vars["env"] != "prod" {
+		t.Errorf("MatchPath vars = %+v, want env=prod", vars)
+	}
+}
+
+func TestNewDirFromPathTemplate_ProducesIdenticalDirToNewDir(t *testing.T) {
+	c := nonEmptyStringCodec()
+	tmpl := ports.NewDirPathTemplate("configs/{env}", ports.DirPathParam{Name: "env"}.WithCodec(c))
+
+	viaTemplate := ports.NewDirFromPathTemplate(tmpl)
+	viaPlain := ports.NewDir("configs/{env}", ports.DirPathParam{Name: "env"}.WithCodec(c))
+
+	built1, err := viaTemplate.BuildPath(map[string]string{"env": "prod"})
+	if err != nil {
+		t.Fatalf("BuildPath (viaTemplate): %v", err)
+	}
+	built2, err := viaPlain.BuildPath(map[string]string{"env": "prod"})
+	if err != nil {
+		t.Fatalf("BuildPath (viaPlain): %v", err)
+	}
+	if built1 != built2 {
+		t.Errorf("BuildPath results differ: %q vs %q", built1, built2)
+	}
+}

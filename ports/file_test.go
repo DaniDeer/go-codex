@@ -2165,3 +2165,71 @@ func TestNewFile_Glob_PanicsOnMultipleGlobstar(t *testing.T) {
 	}()
 	ports.NewFile("a/**/b/**/c.json", format.JSON(fileItemCodec))
 }
+
+// ── FilePathTemplate ─────────────────────────────────────────────────────────
+
+func TestFilePathTemplate_BuildPath_RoundTrip(t *testing.T) {
+	catCodec := codex.String().Refine(validate.NonEmptyString)
+	tmpl := ports.NewFilePathTemplate("data/{category}/{id}.json",
+		ports.FilePathParam{Name: "category", Codec: &catCodec},
+	)
+	got, err := tmpl.BuildPath(map[string]string{"category": "sensors", "id": "42"})
+	if err != nil {
+		t.Fatalf("BuildPath: %v", err)
+	}
+	if got != "data/sensors/42.json" {
+		t.Errorf("BuildPath = %q, want data/sensors/42.json", got)
+	}
+}
+
+func TestFilePathTemplate_MatchPath_Inverse(t *testing.T) {
+	tmpl := ports.NewFilePathTemplate("data/{category}/{id}.json")
+	vars, err := tmpl.MatchPath("data/sensors/42.json")
+	if err != nil {
+		t.Fatalf("MatchPath: %v", err)
+	}
+	if vars["category"] != "sensors" || vars["id"] != "42" {
+		t.Errorf("MatchPath vars = %+v, want category=sensors id=42", vars)
+	}
+}
+
+func TestFilePathTemplate_ValidatePathVars(t *testing.T) {
+	catCodec := codex.String().Refine(validate.NonEmptyString)
+	tmpl := ports.NewFilePathTemplate("data/{category}/{id}.json",
+		ports.FilePathParam{Name: "category", Codec: &catCodec},
+	)
+	if err := tmpl.ValidatePathVars(map[string]string{"category": "sensors", "id": "42"}); err != nil {
+		t.Errorf("ValidatePathVars: %v", err)
+	}
+	err := tmpl.ValidatePathVars(map[string]string{"category": "", "id": "42"})
+	var paramErr ports.FilePathParamError
+	if !errors.As(err, &paramErr) {
+		t.Fatalf("expected FilePathParamError, got %v", err)
+	}
+}
+
+func TestNewFileFromPathTemplate_ProducesIdenticalFileToNewFile(t *testing.T) {
+	catCodec := codex.String().Refine(validate.NonEmptyString)
+	tmpl := ports.NewFilePathTemplate("data/{category}/{id}.json",
+		ports.FilePathParam{Name: "category", Codec: &catCodec},
+	)
+	viaTemplate := ports.NewFileFromPathTemplate(tmpl, format.JSON(fileItemCodec))
+	viaPlain := ports.NewFile("data/{category}/{id}.json", format.JSON(fileItemCodec),
+		ports.FilePathParam{Name: "category", Codec: &catCodec},
+	)
+
+	built1, err := viaTemplate.BuildPath(map[string]string{"category": "sensors", "id": "42"})
+	if err != nil {
+		t.Fatalf("BuildPath (viaTemplate): %v", err)
+	}
+	built2, err := viaPlain.BuildPath(map[string]string{"category": "sensors", "id": "42"})
+	if err != nil {
+		t.Fatalf("BuildPath (viaPlain): %v", err)
+	}
+	if built1 != built2 {
+		t.Errorf("BuildPath results differ: %q vs %q", built1, built2)
+	}
+	if viaTemplate.Template != viaPlain.Template {
+		t.Errorf("Template = %q, want %q", viaTemplate.Template, viaPlain.Template)
+	}
+}

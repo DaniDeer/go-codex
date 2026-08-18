@@ -55,6 +55,78 @@ func (p DirPathParam) WithCodec(c codex.Codec[string]) DirPathParam {
 
 func (p DirPathParam) applyDir(db *dirBuilder) { db.params = append(db.params, p) }
 
+// DirPathTemplate bundles a path template with its declared [DirPathParam]
+// variables — the "shape" of a [Dir]'s own path (the SAME state
+// [Dir.BuildPath]/[Dir.MatchPath] already use internally, extracted into
+// its own value). Mirrors [FilePathTemplate] exactly, one type over —
+// this does NOT bundle [WithEntryPattern]/[WithRecursive]/[WithBaseDir],
+// which stay separate [DirOpt] values passed to [NewDirFromPathTemplate]
+// exactly as they would be to [NewDir].
+//
+// The plain-string form remains the default and primary way to declare a
+// directory — pass a path template string directly to [NewDir], exactly
+// as always. Reach for DirPathTemplate ONLY when you find yourself
+// declaring the SAME template+params shape for two or more directories
+// and want that shape to have exactly one source of truth, or when you
+// need to build/match a directory path standalone.
+//
+// A directory declared via [NewDirFromPathTemplate] is byte-for-byte
+// identical to one declared via [NewDir] with the same template and
+// [DirPathParam] values passed inline — nothing downstream can tell the
+// difference.
+type DirPathTemplate struct {
+	// Template is the path template, e.g. "devices/{usecase_name}".
+	Template string
+	// Params holds the path template's variable declarations.
+	Params []DirPathParam
+}
+
+// NewDirPathTemplate declares a DirPathTemplate from a template and its
+// DirPathParam variables.
+func NewDirPathTemplate(template string, params ...DirPathParam) DirPathTemplate {
+	return DirPathTemplate{Template: template, Params: params}
+}
+
+// BuildPath substitutes {varName} placeholders in t.Template with the
+// values in vars, validating each against its registered
+// [DirPathParam.Codec] (if any). Mirrors [Dir.BuildPath] exactly (same
+// underlying engine, same error types).
+func (t DirPathTemplate) BuildPath(vars map[string]string) (string, error) {
+	if templatematch.IsGlobEnabled(t.Template) {
+		return "", DirWildcardBuildError{Template: t.Template}
+	}
+	codecMap := make(map[string]*codex.Codec[string], len(t.Params))
+	for i := range t.Params {
+		if t.Params[i].Codec != nil {
+			codecMap[t.Params[i].Name] = t.Params[i].Codec
+		}
+	}
+	return buildFromDirTemplate(t.Template, vars, codecMap)
+}
+
+// MatchPath is the inverse of [DirPathTemplate.BuildPath] — mirrors
+// [Dir.MatchPath] exactly (same underlying engine, same error types).
+func (t DirPathTemplate) MatchPath(path string) (map[string]string, error) {
+	if templatematch.IsGlobEnabled(t.Template) {
+		return nil, DirWildcardBuildError{Template: t.Template}
+	}
+	vars, err := matchDirTemplate(t.Template, path)
+	if err != nil {
+		return nil, err
+	}
+	for i := range t.Params {
+		p := &t.Params[i]
+		if p.Codec == nil {
+			continue
+		}
+		value := vars[p.Name]
+		if err := p.Codec.Validate(value); err != nil {
+			return nil, DirPathParamError{Name: p.Name, Value: value, Err: err}
+		}
+	}
+	return vars, nil
+}
+
 // ── EntryKind / EntryParam / EntryPattern / DirEntry ─────────────────────────
 
 // EntryKind distinguishes a listed [DirEntry]'s kind — a file or a
@@ -244,6 +316,21 @@ func NewDir(template string, opts ...DirOpt) Dir {
 		recursive: db.recursive,
 		baseDir:   db.baseDir,
 	}
+}
+
+// NewDirFromPathTemplate creates a [Dir] descriptor using a pre-built
+// [DirPathTemplate] instead of a raw path-template string — see
+// [DirPathTemplate]'s doc comment for when to reach for this. Produces
+// the IDENTICAL [Dir] [NewDir] would produce from t.Template plus
+// t.Params passed inline, since [DirPathParam] already implements
+// [DirOpt]. Same panics as [NewDir] apply.
+func NewDirFromPathTemplate(t DirPathTemplate, opts ...DirOpt) Dir {
+	allOpts := make([]DirOpt, 0, len(t.Params)+len(opts))
+	for _, p := range t.Params {
+		allOpts = append(allOpts, p)
+	}
+	allOpts = append(allOpts, opts...)
+	return NewDir(t.Template, allOpts...)
 }
 
 // BuildPath substitutes {varName} placeholders with the values in vars and

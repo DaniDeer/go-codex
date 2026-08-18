@@ -931,11 +931,104 @@ func (b *Builder) AddGlobalSecurity(reqs ...route.SecurityRequirement) *Builder 
 	return b
 }
 
+// Topic bundles a topic template with its declared [TopicParam] variables —
+// the payload-independent "shape" of a channel's topic (the SAME state
+// [ChannelHandle.BuildTopic]/[ChannelHandle.ValidateTopicVars] already use
+// internally, extracted into its own value).
+//
+// The plain-string form remains the default and primary way to declare a
+// channel — pass a topic template string directly to [NewChannel], exactly
+// as always. Reach for Topic ONLY when you find yourself declaring the SAME
+// template+params shape for two or more channels (of different payload
+// types) and want that shape to have exactly one source of truth, or when
+// you need to build/validate a topic string standalone, with no payload
+// codec involved at all:
+//
+//	var deviceTelemetryTopic = events.NewTopic("devices/{deviceID}/telemetry/{kind}",
+//	    events.TopicParam{Name: "deviceID", Codec: &deviceIDCodec},
+//	)
+//
+//	var temperatureChannel = events.NewChannelFromTopic(deviceTelemetryTopic, temperatureCodec,
+//	    events.NewTopicParam("deviceID", deviceIDCodec,
+//	        func(r TemperatureReading) string { return r.DeviceID },
+//	        func(r *TemperatureReading, v string) { r.DeviceID = v }),
+//	)
+//	var pressureChannel = events.NewChannelFromTopic(deviceTelemetryTopic, pressureCodec,
+//	    events.NewTopicParam("deviceID", deviceIDCodec,
+//	        func(r PressureReading) string { return r.DeviceID },
+//	        func(r *PressureReading, v string) { r.DeviceID = v }),
+//	)
+//
+// A channel declared via [NewChannelFromTopic] is byte-for-byte identical to
+// one declared via [NewChannel] with the same template and [TopicParam]
+// values passed inline — nothing downstream (adapters, Register, spec
+// generation) can tell the difference. Topic captures ONLY the
+// template+params shape; every other [ChannelOpt] ([ChannelMeta],
+// [Subscribe], [Publish], [WithSecurityScheme], formats, error patterns, …)
+// is passed to [NewChannelFromTopic] exactly as it would be to [NewChannel]
+// — nothing about the richer declaration surface is restricted by using a
+// Topic for the template+params portion.
+type Topic struct {
+	// Template is the topic template, e.g. "devices/{deviceID}/telemetry".
+	Template string
+	// Params holds the topic template's variable declarations.
+	Params []TopicParam
+}
+
+// NewTopic declares a Topic from a template and its TopicParam variables.
+func NewTopic(template string, params ...TopicParam) Topic {
+	return Topic{Template: template, Params: params}
+}
+
+// BuildTopic substitutes {varName} placeholders in t.Template with the
+// values in vars, validating each against its registered [TopicParam.Codec]
+// (if any). Mirrors [ChannelHandle.BuildTopic] exactly (same underlying
+// engine, same error types), MINUS any builder-level topic codec — that
+// only applies once a Topic-based channel is registered via
+// [NewChannelFromTopic] + [Channel.Register], where it is enforced exactly
+// as it would be for a plain-string channel.
+func (t Topic) BuildTopic(vars map[string]string) (string, error) {
+	codecMap := make(map[string]*codex.Codec[string], len(t.Params))
+	for i := range t.Params {
+		if t.Params[i].Codec != nil {
+			codecMap[t.Params[i].Name] = t.Params[i].Codec
+		}
+	}
+	return internal.BuildFromTemplate(t.Template, vars, codecMap,
+		func(name string) error { return MissingTopicVarError{Name: name} },
+		func(name, value string, err error) error {
+			return TopicParamError{Name: name, Value: value, Err: err}
+		},
+	)
+}
+
+// ValidateTopicVars validates extracted topic variable values against t's
+// registered [TopicParam] codecs. Mirrors [ChannelHandle.ValidateTopicVars]
+// exactly (same error types); variables without a registered codec are
+// skipped.
+func (t Topic) ValidateTopicVars(vars map[string]string) error {
+	for i := range t.Params {
+		p := &t.Params[i]
+		if p.Codec == nil {
+			continue
+		}
+		val, ok := vars[p.Name]
+		if !ok {
+			return MissingTopicVarError{Name: p.Name}
+		}
+		if err := p.Codec.Validate(val); err != nil {
+			return TopicParamError{Name: p.Name, Value: val, Err: err}
+		}
+	}
+	return nil
+}
+
 // Channel is a declarative event channel spec: topic, codec, and options.
 // It is a value type — define it once, store it, pass it around, and register
 // it with one or more [Builder] instances via [Channel.Register].
 //
-// Create a Channel with [NewChannel].
+// Create a Channel with [NewChannel], or with a pre-built [Topic] via
+// [NewChannelFromTopic].
 type Channel[T any] struct {
 	topic string
 	codec codex.Codec[T]
@@ -971,6 +1064,24 @@ func NewChannel[T any](
 		codec: codec,
 		opts:  opts,
 	}
+}
+
+// NewChannelFromTopic declares a Channel using a pre-built [Topic] instead
+// of a raw topic-template string — see [Topic]'s doc comment for when to
+// reach for this. Produces the IDENTICAL [Channel] [NewChannel] would
+// produce from topic.Template plus topic.Params passed inline, since
+// [TopicParam] already implements [ChannelOpt].
+func NewChannelFromTopic[T any](
+	topic Topic,
+	codec codex.Codec[T],
+	opts ...ChannelOpt,
+) Channel[T] {
+	allOpts := make([]ChannelOpt, 0, len(topic.Params)+len(opts))
+	for _, p := range topic.Params {
+		allOpts = append(allOpts, p)
+	}
+	allOpts = append(allOpts, opts...)
+	return NewChannel(topic.Template, codec, allOpts...)
 }
 
 // Register registers the channel with b and returns a [ChannelHandle].

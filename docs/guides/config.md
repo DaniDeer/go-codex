@@ -4,6 +4,10 @@ For the full API reference and all code examples, see the feature page.
 
 **Feature:** [Config, CLI & Protobuf](../features/config.md)
 
+For a package's own WIRE-FORMAT vocabulary (dotted keys, path templates,
+named identifier types) rather than application env/CLI config, see
+[Guide: Declarative wire-format vocabulary](wire-vocabulary.md).
+
 ## examples/cli-config
 
 Demonstrates TOML config file loading with env var overlay:

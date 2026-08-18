@@ -2977,3 +2977,73 @@ func TestDecodeErrorFor_NoPatternsDeclared(t *testing.T) {
 		t.Fatalf("want no match when no patterns declared, got %+v", resp)
 	}
 }
+
+// ── Path ─────────────────────────────────────────────────────────────────────
+
+func TestPath_BuildPath_RoundTrip(t *testing.T) {
+	idCodec := codex.String().Refine(validate.NonEmptyString)
+	path := rest.NewPath("/users/{id}", rest.PathParam{Name: "id", Codec: &idCodec})
+	got, err := path.BuildPath(map[string]string{"id": "42"})
+	if err != nil {
+		t.Fatalf("BuildPath: %v", err)
+	}
+	if got != "/users/42" {
+		t.Errorf("BuildPath = %q, want /users/42", got)
+	}
+}
+
+func TestPath_BuildPath_MissingVar(t *testing.T) {
+	path := rest.NewPath("/users/{id}")
+	_, err := path.BuildPath(nil)
+	var missing rest.MissingPathVarError
+	if !errors.As(err, &missing) {
+		t.Fatalf("expected MissingPathVarError, got %v", err)
+	}
+	if missing.Name != "id" {
+		t.Errorf("missing var name = %q, want id", missing.Name)
+	}
+}
+
+func TestPath_ValidatePathParams(t *testing.T) {
+	idCodec := codex.String().Refine(validate.NonEmptyString)
+	path := rest.NewPath("/users/{id}", rest.PathParam{Name: "id", Codec: &idCodec})
+	if err := path.ValidatePathParams(map[string]string{"id": "42"}); err != nil {
+		t.Errorf("ValidatePathParams: %v", err)
+	}
+	err := path.ValidatePathParams(map[string]string{"id": ""})
+	var paramErr rest.PathParamError
+	if !errors.As(err, &paramErr) {
+		t.Fatalf("expected PathParamError, got %v", err)
+	}
+}
+
+func TestNewRouteFromPath_ProducesIdenticalHandleToNewRoute(t *testing.T) {
+	idCodec := codex.String().Refine(validate.NonEmptyString)
+	path := rest.NewPath("/users/{id}", rest.PathParam{Name: "id", Codec: &idCodec})
+
+	b1 := rest.NewBuilder(testInfo)
+	viaPath, err := rest.NewRouteFromPath[createReq, userResp]("GET", path, createReqCodec, userCodec).Register(b1)
+	if err != nil {
+		t.Fatalf("Register via Path: %v", err)
+	}
+
+	b2 := rest.NewBuilder(testInfo)
+	viaPlain, err := rest.NewRoute[createReq, userResp]("GET", "/users/{id}", createReqCodec, userCodec,
+		rest.PathParam{Name: "id", Codec: &idCodec},
+	).Register(b2)
+	if err != nil {
+		t.Fatalf("Register via plain string: %v", err)
+	}
+
+	built1, err := viaPath.BuildPath(map[string]string{"id": "42"})
+	if err != nil {
+		t.Fatalf("BuildPath (viaPath): %v", err)
+	}
+	built2, err := viaPlain.BuildPath(map[string]string{"id": "42"})
+	if err != nil {
+		t.Fatalf("BuildPath (viaPlain): %v", err)
+	}
+	if built1 != built2 {
+		t.Errorf("BuildPath results differ: %q vs %q", built1, built2)
+	}
+}
