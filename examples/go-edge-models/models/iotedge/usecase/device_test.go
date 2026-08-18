@@ -3,12 +3,18 @@ package usecase
 import (
 	"testing"
 
+	"github.com/DaniDeer/go-codex/examples/go-edge-models/models/docker"
 	deviceconfig "github.com/DaniDeer/go-codex/examples/go-edge-models/models/iotedge/deviceconfig"
+	manifesttemplate "github.com/DaniDeer/go-codex/examples/go-edge-models/models/iotedge/manifesttemplate"
 	"github.com/DaniDeer/go-codex/ports"
 )
 
-func sampleDeviceManifest() deviceconfig.Manifest {
-	return deviceconfig.Manifest{DisplayName: "Sensor 42", Enabled: true}
+func samplePatch() deviceconfig.Patch {
+	return deviceconfig.Patch{
+		EdgeAgent: map[string]any{
+			"factory-mqtt-gateway-1.status": "stopped",
+		},
+	}
 }
 
 // ── DeviceFile ────────────────────────────────────────────────────────────────
@@ -18,7 +24,7 @@ func TestNewDeviceFile_WriteThenRead(t *testing.T) {
 	fh := NewDeviceFile(basePath)
 	vars := map[string]string{"usecase_name": "usecase1", "device_id": "sensor-42"}
 
-	if _, err := fh.Write(vars, sampleDeviceManifest(), ports.FileOptions{CreateDirs: true}); err != nil {
+	if _, err := fh.Write(vars, samplePatch(), ports.FileOptions{CreateDirs: true}); err != nil {
 		t.Fatalf("Write: %v", err)
 	}
 
@@ -26,8 +32,8 @@ func TestNewDeviceFile_WriteThenRead(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Read: %v", err)
 	}
-	if got.DisplayName != "Sensor 42" || !got.Enabled {
-		t.Errorf("got = %+v, want DisplayName=Sensor 42 Enabled=true", got)
+	if got.EdgeAgent["factory-mqtt-gateway-1.status"] != "stopped" {
+		t.Errorf("got = %+v, want EdgeAgent[factory-mqtt-gateway-1.status]=stopped", got)
 	}
 }
 
@@ -35,7 +41,7 @@ func TestNewDeviceFile_DifferentDevicesAreIndependent(t *testing.T) {
 	basePath := t.TempDir()
 	fh := NewDeviceFile(basePath)
 
-	if _, err := fh.Write(map[string]string{"usecase_name": "usecase1", "device_id": "sensor-a"}, sampleDeviceManifest(), ports.FileOptions{CreateDirs: true}); err != nil {
+	if _, err := fh.Write(map[string]string{"usecase_name": "usecase1", "device_id": "sensor-a"}, samplePatch(), ports.FileOptions{CreateDirs: true}); err != nil {
 		t.Fatalf("Write A: %v", err)
 	}
 	if _, err := fh.Read(map[string]string{"usecase_name": "usecase1", "device_id": "sensor-b"}, ports.FileOptions{}); err == nil {
@@ -47,7 +53,7 @@ func TestNewDeviceFile_DifferentUseCasesAreIndependent(t *testing.T) {
 	basePath := t.TempDir()
 	fh := NewDeviceFile(basePath)
 
-	if _, err := fh.Write(map[string]string{"usecase_name": "usecase-a", "device_id": "sensor-42"}, sampleDeviceManifest(), ports.FileOptions{CreateDirs: true}); err != nil {
+	if _, err := fh.Write(map[string]string{"usecase_name": "usecase-a", "device_id": "sensor-42"}, samplePatch(), ports.FileOptions{CreateDirs: true}); err != nil {
 		t.Fatalf("Write: %v", err)
 	}
 	if _, err := fh.Read(map[string]string{"usecase_name": "usecase-b", "device_id": "sensor-42"}, ports.FileOptions{}); err == nil {
@@ -70,8 +76,8 @@ func TestNewDeviceDir_ListDiscoversDevicesForGivenUseCase(t *testing.T) {
 
 	writeDevice := func(useCaseName Name, deviceID DeviceID) {
 		if _, err := WriteDeviceConfig(basePath, useCaseName, DeviceConfig{
-			DeviceID:       deviceID,
-			DeviceManifest: sampleDeviceManifest(),
+			DeviceID: deviceID,
+			Patch:    samplePatch(),
 		}, ports.FileOptions{CreateDirs: true}); err != nil {
 			t.Fatalf("WriteDeviceConfig(%q, %q): %v", useCaseName, deviceID, err)
 		}
@@ -100,10 +106,10 @@ func TestNewDeviceDir_ListDiscoversDevicesForGivenUseCase(t *testing.T) {
 func TestListDeviceIDs(t *testing.T) {
 	basePath := t.TempDir()
 
-	if _, err := WriteDeviceConfig(basePath, "usecase1", DeviceConfig{DeviceID: "sensor-1", DeviceManifest: sampleDeviceManifest()}, ports.FileOptions{CreateDirs: true}); err != nil {
+	if _, err := WriteDeviceConfig(basePath, "usecase1", DeviceConfig{DeviceID: "sensor-1", Patch: samplePatch()}, ports.FileOptions{CreateDirs: true}); err != nil {
 		t.Fatalf("WriteDeviceConfig: %v", err)
 	}
-	if _, err := WriteDeviceConfig(basePath, "usecase1", DeviceConfig{DeviceID: "sensor-2", DeviceManifest: sampleDeviceManifest()}, ports.FileOptions{CreateDirs: true}); err != nil {
+	if _, err := WriteDeviceConfig(basePath, "usecase1", DeviceConfig{DeviceID: "sensor-2", Patch: samplePatch()}, ports.FileOptions{CreateDirs: true}); err != nil {
 		t.Fatalf("WriteDeviceConfig: %v", err)
 	}
 
@@ -135,7 +141,7 @@ func TestListDeviceIDs_NoDevicesForUseCase_ReturnsEmpty(t *testing.T) {
 
 func TestWriteDeviceConfig_ReadDeviceConfig_RoundTrip(t *testing.T) {
 	basePath := t.TempDir()
-	cfg := DeviceConfig{DeviceID: "sensor-42", DeviceManifest: sampleDeviceManifest()}
+	cfg := DeviceConfig{DeviceID: "sensor-42", Patch: samplePatch()}
 
 	if _, err := WriteDeviceConfig(basePath, "usecase1", cfg, ports.FileOptions{CreateDirs: true}); err != nil {
 		t.Fatalf("WriteDeviceConfig: %v", err)
@@ -148,8 +154,8 @@ func TestWriteDeviceConfig_ReadDeviceConfig_RoundTrip(t *testing.T) {
 	if got.DeviceID != "sensor-42" {
 		t.Errorf("DeviceID = %q, want sensor-42", got.DeviceID)
 	}
-	if got.DeviceManifest.DisplayName != "Sensor 42" || !got.DeviceManifest.Enabled {
-		t.Errorf("DeviceManifest = %+v, want DisplayName=Sensor 42 Enabled=true", got.DeviceManifest)
+	if got.Patch.EdgeAgent["factory-mqtt-gateway-1.status"] != "stopped" {
+		t.Errorf("Patch = %+v, want EdgeAgent[factory-mqtt-gateway-1.status]=stopped", got.Patch)
 	}
 }
 
@@ -158,5 +164,92 @@ func TestReadDeviceConfig_PropagatesMissingFileError(t *testing.T) {
 	_, err := ReadDeviceConfig(basePath, "usecase1", "does-not-exist", ports.FileOptions{})
 	if err == nil {
 		t.Error("ReadDeviceConfig: want error for nonexistent device, got nil")
+	}
+}
+
+func TestDeviceConfig_Merge_LayersPatchOntoTemplate(t *testing.T) {
+	template := manifesttemplate.DeploymentManifest{
+		ModulesContent: manifesttemplate.ModulesContent{
+			EdgeAgent: manifesttemplate.Modules{
+				"factory-mqtt-gateway-1": manifesttemplate.ModuleConfig{
+					Settings:      manifesttemplate.ModuleSettings{Image: docker.Image{Name: "ghcr.io/example-org/factory-gateway", Tag: "0.12.5"}},
+					Type:          "docker",
+					Status:        "running",
+					RestartPolicy: "on-failure",
+					Version:       "1.0",
+				},
+			},
+		},
+	}
+	cfg := DeviceConfig{DeviceID: "sensor-1", Patch: samplePatch()}
+
+	got, err := cfg.Merge(template)
+	if err != nil {
+		t.Fatalf("Merge: %v", err)
+	}
+	gw := got.ModulesContent.EdgeAgent["factory-mqtt-gateway-1"]
+	if gw.Status != "stopped" {
+		t.Errorf("Status = %v, want stopped (patched)", gw.Status)
+	}
+	// Fields the patch never touched must survive.
+	if gw.RestartPolicy != "on-failure" {
+		t.Errorf("RestartPolicy = %v, want unchanged on-failure", gw.RestartPolicy)
+	}
+}
+
+func TestReadEffective_MergesTemplateAndDeviceConfigFromDisk(t *testing.T) {
+	basePath := t.TempDir()
+
+	if _, err := NewFile(basePath).Write(map[string]string{"usecase_name": "usecase1"}, sampleManifest(), ports.FileOptions{CreateDirs: true}); err != nil {
+		t.Fatalf("Write template: %v", err)
+	}
+	cfg := DeviceConfig{
+		DeviceID: "sensor-1",
+		Patch:    deviceconfig.Patch{EdgeAgent: map[string]any{"factory-dashboard.status": "stopped"}},
+	}
+	if _, err := WriteDeviceConfig(basePath, "usecase1", cfg, ports.FileOptions{CreateDirs: true}); err != nil {
+		t.Fatalf("WriteDeviceConfig: %v", err)
+	}
+
+	got, err := ReadEffective(basePath, "usecase1", "sensor-1", ports.FileOptions{})
+	if err != nil {
+		t.Fatalf("ReadEffective: %v", err)
+	}
+	dashboard := got.ModulesContent.EdgeAgent["factory-dashboard"]
+	if dashboard.Status != "stopped" {
+		t.Errorf("Status = %v, want stopped (device-patched)", dashboard.Status)
+	}
+	// Fields the device's patch never touched must survive from the template.
+	if dashboard.Settings.Image.String() != "ghcr.io/org/edge-web:1.0.0" {
+		t.Errorf("Image = %v, want unchanged from template", dashboard.Settings.Image)
+	}
+	if dashboard.RestartPolicy != "always" {
+		t.Errorf("RestartPolicy = %v, want unchanged always", dashboard.RestartPolicy)
+	}
+}
+
+func TestReadEffective_PropagatesMissingTemplateError(t *testing.T) {
+	basePath := t.TempDir()
+	_, err := ReadEffective(basePath, "does-not-exist", "sensor-1", ports.FileOptions{})
+	if err == nil {
+		t.Error("ReadEffective: want error for nonexistent use case, got nil")
+	}
+}
+
+func TestReadEffective_NoDeviceConfigYet_ReturnsTemplateUnchanged(t *testing.T) {
+	// A device that has NEVER had a config file written is NOT an error
+	// — its effective config is simply the template, since "no overrides
+	// yet" is a valid, expected state (a device connecting for the first
+	// time, before any override has ever been applied).
+	basePath := t.TempDir()
+	if _, err := NewFile(basePath).Write(map[string]string{"usecase_name": "usecase1"}, sampleManifest(), ports.FileOptions{CreateDirs: true}); err != nil {
+		t.Fatalf("Write template: %v", err)
+	}
+	got, err := ReadEffective(basePath, "usecase1", "never-configured-device", ports.FileOptions{})
+	if err != nil {
+		t.Fatalf("ReadEffective: %v", err)
+	}
+	if got.ModulesContent.EdgeAgent["factory-dashboard"].Settings.Image.String() != "ghcr.io/org/edge-web:1.0.0" {
+		t.Errorf("Image = %v, want unchanged from template", got.ModulesContent.EdgeAgent["factory-dashboard"].Settings.Image)
 	}
 }

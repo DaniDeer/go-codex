@@ -28,16 +28,38 @@
 //   - envvars.go — EnvVarName, EnvVars, EnvVarValue, EnvVar and every
 //     env-var codec, plus FlattenEnvVars (the one-direction
 //     manifesttemplate -> docker.Env mapper).
-//   - modules.go — ModuleName, Modules, ModulesContent, DeploymentManifest,
-//     ModuleKeyPrefix/moduleKeyConstraint, and their codecs.
-//     DeploymentManifest stays PURE wire/file content — no use case
-//     identity field; see models/iotedge/usecase's usecase.go (UseCase)
-//     for that composition.
+//   - keys.go — the SINGLE SOURCE OF TRUTH for the deployment manifest's
+//     WIRE-KEY vocabulary: ModulesContentKey/EdgeAgentKey/EdgeHubKey
+//     (the top-level wrapper key names), ModuleKeyPrefix/RouteKeyPrefix
+//     (the dotted-key namespaces), their full-key constraints
+//     (moduleKeyConstraint/routeKeyConstraint), name-segment codecs
+//     (moduleNameCodec/routeNameCodec), and the exported two-layer
+//     ModuleNameCodec/RouteNameCodec. Every package that hand-rolls a
+//     codec touching these same wire buckets — modulepatch,
+//     deviceconfig, finaldeviceconfig — imports these constants instead
+//     of re-hardcoding the same literal strings.
+//   - modules.go — ModuleName, Modules, ModulesContent,
+//     DeploymentManifest, and their codecs (built from keys.go's
+//     constants/codecs). DeploymentManifest stays PURE wire/file
+//     content — no use case identity field; see models/iotedge/usecase's
+//     usecase.go (UseCase) for that composition.
+//   - edgehub.go — RouteName, Routes (mirrors ModuleName/Modules's own
+//     dotted-key extraction pattern exactly, one namespace over, built
+//     from keys.go); RouteTargetKind/RouteTarget/NewBrokeredEndpoint/
+//     UpstreamTarget (a route's INTO target: a specific module endpoint,
+//     or the literal $upstream); Route and its HAND-ROLLED RouteCodec
+//     (the wire value is a single "FROM <path> INTO ..." STRING, not a
+//     JSON object, so codex.Struct cannot express it — mirrors why
+//     modulepatch.FieldsPatchCodec is hand-rolled too). ModulesContent.
+//     EdgeHub (OPTIONAL — most use cases declare no routes at the
+//     template level; routes are equally often added/overridden
+//     entirely by a device config's patch — see the sibling
+//     models/iotedge/deviceconfig package's Patch/Merge).
 //
 // Each field's codec is its own named value (e.g. ImageCodec,
-// ModuleNameCodec) so a caller assembling a NEW wire codec — for
-// example a "patch this module's image, keyed by module name" codec
-// (see the sibling models/iotedge/modulepatch package, which depends
-// ONLY on this package, never on models/iotedge) — can reuse the exact
-// same field-level codec rather than re-deriving it.
+// ModuleNameCodec, RouteNameCodec) so a caller assembling a NEW wire
+// codec — for example a "patch this module's image, keyed by module
+// name" codec (see the sibling models/iotedge/modulepatch package, which
+// depends ONLY on this package, never on models/iotedge) — can reuse the
+// exact same field-level codec rather than re-deriving it.
 package manifesttemplate

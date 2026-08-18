@@ -264,15 +264,72 @@ func main() {
 		logger.Error("read device config", "error", err)
 		os.Exit(1)
 	}
-	fmt.Printf("device %q: displayName=%q enabled=%v\n", deviceCfg.DeviceID, deviceCfg.DeviceManifest.DisplayName, deviceCfg.DeviceManifest.Enabled)
+	fmt.Printf("device %q: patches %d $edgeAgent key(s), %d $edgeHub route(s)\n",
+		deviceCfg.DeviceID, len(deviceCfg.Patch.EdgeAgent), len(deviceCfg.Patch.EdgeHub))
 
 	useCase, err := usecase.Read(dir, useCaseName, ports.FileOptions{})
 	if err != nil {
 		logger.Error("read use case", "error", err)
 		os.Exit(1)
 	}
-	fmt.Printf("usecase.Read(%q): %d module(s), %d device(s)\n",
-		useCase.Name, len(useCase.DeploymentManifest.ModulesContent.EdgeAgent), len(useCase.Devices))
+	fmt.Printf("usecase.Read(%q): %d module(s), %d route(s), %d device(s)\n",
+		useCase.Name, len(useCase.DeploymentManifest.ModulesContent.EdgeAgent),
+		len(useCase.DeploymentManifest.ModulesContent.EdgeHub), len(useCase.Devices))
+
+	// ── deviceCfg.Merge: "template + device config, layered on top" ─────
+	//
+	// The use case's OWN template still has factory-mqtt-gateway-1's
+	// BROKER_URL set to the placeholder "ToDo: Override value in device
+	// layers." — sensor-1's device config patches exactly that field
+	// (plus adds a device-specific $edgeHub route). Merge produces the
+	// FINAL, deployable manifest for this ONE device: the placeholder is
+	// gone, replaced by the device's own value, and everything else the
+	// template declared survives untouched.
+	fmt.Println("\n=== DeviceConfig.Merge: template + device config, layered ===")
+
+	merged, err := deviceCfg.Merge(useCase.DeploymentManifest)
+	if err != nil {
+		logger.Error("merge device config onto template", "error", err)
+		os.Exit(1)
+	}
+	gw := merged.ModulesContent.EdgeAgent["factory-mqtt-gateway-1"]
+	fmt.Printf("factory-mqtt-gateway-1 BROKER_URL after merge: %q\n", *gw.Env["BROKER_URL"].Value.StringValue)
+	fmt.Printf("factory-mqtt-gateway-1 status still %q (untouched by this device's patch)\n", gw.Status)
+	fmt.Printf("merged route count: %d (template's %d + device's %d)\n",
+		len(merged.ModulesContent.EdgeHub), len(useCase.DeploymentManifest.ModulesContent.EdgeHub), len(deviceCfg.Patch.EdgeHub))
+
+	// ── app/iotedge.UpdateDeviceModuleImage: an ISOLATED, device-scoped
+	// image update ────────────────────────────────────────────────────
+	//
+	// Unlike UpdateUseCaseModuleImage (which patches the shared TEMPLATE
+	// — demonstrated earlier for factory-dashboard), UpdateDeviceModuleImage
+	// writes into sensor-1's OWN config file only: the template and every
+	// other device stay completely untouched. Reuses
+	// modulepatch.FieldsBodyCodec internally to bridge the SAME typed
+	// image validation modulepatch already provides at the template
+	// level down to this device-scoped write.
+	fmt.Println("\n=== app/iotedge.UpdateDeviceModuleImage: isolated, device-scoped image update ===")
+
+	deviceOnlyImage := docker.Image{Name: "ghcr.io/example-org/factory-cache", Tag: "3.0.0-sensor1-only"}
+	if err := iotedgeapp.UpdateDeviceModuleImage(dir, useCaseName, deviceID, "factory-cache", deviceOnlyImage, ports.FileOptions{}); err != nil {
+		logger.Error("update device module image", "error", err)
+		os.Exit(1)
+	}
+
+	deviceEffective, err := usecase.ReadEffective(dir, usecase.Name(useCaseName), usecase.DeviceID(deviceID), ports.FileOptions{})
+	if err != nil {
+		logger.Error("read effective device config", "error", err)
+		os.Exit(1)
+	}
+	fmt.Printf("sensor-1 EFFECTIVE factory-cache image: %q\n", deviceEffective.ModulesContent.EdgeAgent["factory-cache"].Settings.Image.String())
+
+	templateAfterDeviceUpdate, err := iotedgeapp.ReadUseCase(dir, useCaseName, ports.FileOptions{})
+	if err != nil {
+		logger.Error("read use case after device update", "error", err)
+		os.Exit(1)
+	}
+	fmt.Printf("TEMPLATE factory-cache image still: %q (untouched by the device-scoped update)\n",
+		templateAfterDeviceUpdate.ModulesContent.EdgeAgent["factory-cache"].Settings.Image.String())
 
 	before, err := iotedgeapp.ReadUseCase(dir, useCaseName, ports.FileOptions{})
 	if err != nil {

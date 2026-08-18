@@ -13,10 +13,12 @@ import (
 // ── UpdateModuleImage as an MCP tool ──────────────────────────────────────────
 
 // NewUpdateModuleImageToolHandler returns an mcpgo.HandlerFunc that
-// parses req.ImageURL, applies it as req.ModuleName's new image via
-// UpdateUseCaseModuleImage, and returns the module's UPDATED
-// modulesummary.Summary — binding updatemoduleimage's declared Tool to
-// UpdateUseCaseModuleImage.
+// parses req.ImageURL and applies it as req.ModuleName's new image —
+// via UpdateUseCaseModuleImage (the use case template) when req.DeviceID
+// is empty, or via UpdateDeviceModuleImage (that ONE device's own
+// config file, template and every other device untouched) when set —
+// returning the module's UPDATED modulesummary.Summary, reflecting
+// whichever scope was updated.
 //
 // Usage:
 //
@@ -34,13 +36,20 @@ func NewUpdateModuleImageToolHandler(opts ports.FileOptions) mcpgo.HandlerFunc[u
 		// otherwise the deep-merge would add an incomplete entry (missing
 		// type/status/restartPolicy/version) and fail with a confusing
 		// low-level ports.FileDecodeError instead of a clean, typed
-		// ModuleNotFoundError.
-		if _, err := readModuleSummary(req.BasePath, req.UseCaseName, req.ModuleName, opts); err != nil {
+		// ModuleNotFoundError. Uses the SAME scope (template or device)
+		// the update itself will target, via req.DeviceID.
+		if _, err := readModuleSummary(req.BasePath, req.UseCaseName, req.DeviceID, req.ModuleName, opts); err != nil {
 			return modulesummary.Summary{}, err
 		}
-		if err := UpdateUseCaseModuleImage(req.BasePath, req.UseCaseName, req.ModuleName, image, opts); err != nil {
-			return modulesummary.Summary{}, err
+		if req.DeviceID == "" {
+			if err := UpdateUseCaseModuleImage(req.BasePath, req.UseCaseName, req.ModuleName, image, opts); err != nil {
+				return modulesummary.Summary{}, err
+			}
+		} else {
+			if err := UpdateDeviceModuleImage(req.BasePath, req.UseCaseName, req.DeviceID, req.ModuleName, image, opts); err != nil {
+				return modulesummary.Summary{}, err
+			}
 		}
-		return readModuleSummary(req.BasePath, req.UseCaseName, req.ModuleName, opts)
+		return readModuleSummary(req.BasePath, req.UseCaseName, req.DeviceID, req.ModuleName, opts)
 	}
 }

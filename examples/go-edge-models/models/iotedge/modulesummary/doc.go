@@ -7,9 +7,12 @@
 //
 //   - modulesummary.go — Summary (the reduced view), SummaryCodec, and
 //     NewSummary (a pure mapping from manifesttemplate.ModuleConfig).
-//   - readmodulesummary.go — ReadReq/ReadReqCodec (the tool's input) and
-//     ReadTool (the declared, UNREGISTERED MCP tool contract; the
-//     concrete implementation lives in app/iotedge's
+//   - readmodulesummary.go — ReadReq/ReadReqCodec (the tool's input,
+//     including an OPTIONAL DeviceID — set, the summary reflects that
+//     device's ACTUAL configured module (template + device config,
+//     merged); empty, the use case template alone) and ReadTool (the
+//     declared, UNREGISTERED MCP tool contract; the concrete
+//     implementation lives in app/iotedge's
 //     NewReadModuleSummaryToolHandler).
 //
 // The [github.com/DaniDeer/go-codex/examples/go-edge-models/models/iotedge/updatemoduleimage]

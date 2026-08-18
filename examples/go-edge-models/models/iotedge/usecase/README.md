@@ -25,8 +25,10 @@ manifest) and [`deviceconfig`](../deviceconfig) (device config) packages.
 
 **Devices (`device.go`)**
 
-- `DeviceConfig` — pairs a `DeviceID` with its `deviceconfig.Manifest`.
-- `ReadDeviceConfig`/`WriteDeviceConfig` — one-call read/write of ONE device.
+- `DeviceConfig` — pairs a `DeviceID` with its `deviceconfig.Patch` (a device config file IS a patch over its use case's own template, not a standalone document).
+- `ReadDeviceConfig`/`WriteDeviceConfig` — one-call read/write of ONE device's patch.
+- `DeviceConfig.Merge(template)` — the "one call" convenience for "template + device config, layered on top"; delegates to the sibling [`finaldeviceconfig`](../finaldeviceconfig) package.
+- `ReadEffective(basePath, useCaseName, deviceID, opts)` — reads the template AND the device's config, merging them in ONE call (combines `NewFile.Read` + `ReadDeviceConfig` + `DeviceConfig.Merge`).
 - `NewDeviceFile` — templated file port over `"{basePath}/devices/{usecase_name}/{device_id}.json"`.
 - `NewDeviceDir`/`ListDeviceIDs` — discover every device `DeviceID` for ONE given use case.
 - `DeviceFileFormat`, `DeviceDirEntryPattern` — the format/entry-pattern values the device constructors are built from.

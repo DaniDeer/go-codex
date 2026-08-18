@@ -47,10 +47,19 @@
 //     down: DeviceFileFormat and NewDeviceFile (a declared, templated
 //     file port over
 //     "{basePath}/devices/{usecase_name}/{device_id}.json" wrapping
-//     deviceconfig.Manifest); DeviceDirEntryPattern, NewDeviceDir, and
-//     ListDeviceIDs (discovers every device_id for ONE given
-//     usecase_name — plain named-var substitution, no glob/wildcard —
-//     returning []DeviceID); DeviceConfig (pairs a DeviceID with its
-//     PURE deviceconfig.Manifest — the domain-level composition, one
-//     level down from UseCase) and ReadDeviceConfig/WriteDeviceConfig.
+//     deviceconfig.Patch — a device config file IS a patch over its use
+//     case's own template, not a standalone document); DeviceDirEntryPattern,
+//     NewDeviceDir, and ListDeviceIDs (discovers every device_id for ONE
+//     given usecase_name — plain named-var substitution, no glob/
+//     wildcard — returning []DeviceID); DeviceConfig (pairs a DeviceID
+//     with its PURE deviceconfig.Patch — the domain-level composition,
+//     one level down from UseCase), ReadDeviceConfig/WriteDeviceConfig,
+//     DeviceConfig.Merge (the "one call" convenience for "template +
+//     device config, layered on top" — delegates to the sibling
+//     [github.com/DaniDeer/go-codex/examples/go-edge-models/models/iotedge/finaldeviceconfig]
+//     package's Merge function), and ReadEffective (a further
+//     convenience combining NewFile's Read + ReadDeviceConfig +
+//     DeviceConfig.Merge into ONE call — the primitive app/iotedge's
+//     device-scoped handlers delegate to instead of duplicating
+//     read+merge logic).
 package usecase

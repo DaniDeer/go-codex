@@ -217,8 +217,8 @@ func TestWrite_Read_RoundTrip_WithNestedDevices(t *testing.T) {
 		Name:               "usecase1",
 		DeploymentManifest: sampleManifest(),
 		Devices: []DeviceConfig{
-			{DeviceID: "sensor-1", DeviceManifest: deviceconfig.Manifest{DisplayName: "Sensor One", Enabled: true}},
-			{DeviceID: "sensor-2", DeviceManifest: deviceconfig.Manifest{DisplayName: "Sensor Two", Enabled: false}},
+			{DeviceID: "sensor-1", Patch: deviceconfig.Patch{EdgeAgent: map[string]any{"factory-dashboard.status": "stopped"}}},
+			{DeviceID: "sensor-2", Patch: deviceconfig.Patch{EdgeAgent: map[string]any{"factory-dashboard.restartPolicy": "never"}}},
 		},
 	}
 
@@ -243,14 +243,11 @@ func TestWrite_Read_RoundTrip_WithNestedDevices(t *testing.T) {
 	for _, d := range got.Devices {
 		byID[string(d.DeviceID)] = d
 	}
-	if byID["sensor-1"].DeviceManifest.DisplayName != "Sensor One" {
-		t.Errorf("sensor-1 DisplayName = %q, want Sensor One", byID["sensor-1"].DeviceManifest.DisplayName)
+	if byID["sensor-1"].Patch.EdgeAgent["factory-dashboard.status"] != "stopped" {
+		t.Errorf("sensor-1 Patch = %+v, want EdgeAgent[factory-dashboard.status]=stopped", byID["sensor-1"].Patch)
 	}
-	if !byID["sensor-1"].DeviceManifest.Enabled {
-		t.Error("sensor-1 Enabled = false, want true")
-	}
-	if byID["sensor-2"].DeviceManifest.Enabled {
-		t.Error("sensor-2 Enabled = true, want false")
+	if byID["sensor-2"].Patch.EdgeAgent["factory-dashboard.restartPolicy"] != "never" {
+		t.Errorf("sensor-2 Patch = %+v, want EdgeAgent[factory-dashboard.restartPolicy]=never", byID["sensor-2"].Patch)
 	}
 }
 

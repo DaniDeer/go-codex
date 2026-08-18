@@ -1,4 +1,22 @@
 {
-  "displayName": "Factory Floor Sensor 1",
-  "enabled": true
+  "modulesContent": {
+    "$edgeAgent": {
+      "properties.desired.modules.factory-mqtt-gateway-1.env.BROKER_URL": {
+        "value": "mqtts://sensor-1-broker.example.com:8883"
+      },
+      "properties.desired.modules.factory-opcua-gateway": {
+        "env": {
+          "OPCUA_ENDPOINT": {
+            "value": "opc.tcp://sensor-1-plc.local:4840"
+          },
+          "OPCUA_NODES": {
+            "value": "ns=2;s=Sensor1.Values"
+          }
+        }
+      }
+    },
+    "$edgeHub": {
+      "properties.desired.routes.factory-mqtt-gateway1-to-ingest-device": "FROM /messages/modules/factory-mqtt-gateway-1/outputs/telemetry INTO BrokeredEndpoint(\"/modules/factory-ingest-agent/inputs/sensor-1\")"
+    }
+  }
 }

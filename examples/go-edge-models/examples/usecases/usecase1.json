@@ -356,6 +356,10 @@
         "restartPolicy": "never",
         "version": "Will be automatically overwritten"
       }
+    },
+    "$edgeHub": {
+      "properties.desired.routes.factory-mqtt-to-ingest": "FROM /messages/modules/factory-mqtt-gateway-1/outputs/telemetry INTO BrokeredEndpoint(\"/modules/factory-ingest-agent/inputs/ingest\")",
+      "properties.desired.routes.factory-normalizer-upstream": "FROM /messages/modules/factory-normalizer/outputs/output INTO $upstream"
     }
   }
 }

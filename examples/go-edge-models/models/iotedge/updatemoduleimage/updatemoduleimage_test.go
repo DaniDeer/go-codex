@@ -61,3 +61,32 @@ func TestTool_RegistersSuccessfully(t *testing.T) {
 		t.Fatalf("Tool.Register: %v", err)
 	}
 }
+
+func TestReqCodec_DeviceIDIsOptional(t *testing.T) {
+	req := Req{BasePath: "/tmp/edge", UseCaseName: "usecase1", ModuleName: "factory-dashboard", ImageURL: "ghcr.io/org/repo:1.2.3"}
+	if err := ReqCodec.Validate(req); err != nil {
+		t.Errorf("Validate: want no error for absent DeviceID, got %v", err)
+	}
+}
+
+func TestReqCodec_DeviceIDRoundTrip(t *testing.T) {
+	req := Req{
+		BasePath:    "/tmp/edge",
+		UseCaseName: "usecase1",
+		ModuleName:  "factory-dashboard",
+		ImageURL:    "ghcr.io/org/repo:1.2.3",
+		DeviceID:    "sensor-1",
+	}
+
+	encoded, err := ReqCodec.Encode(req)
+	if err != nil {
+		t.Fatalf("Encode: %v", err)
+	}
+	decoded, err := ReqCodec.Decode(encoded)
+	if err != nil {
+		t.Fatalf("Decode: %v", err)
+	}
+	if decoded != req {
+		t.Errorf("decoded = %+v, want %+v", decoded, req)
+	}
+}

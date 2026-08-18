@@ -55,6 +55,21 @@ var EnvVarNameCodec = c.MapCodecSafe(
 // (always succeeds — the direction MapCodecSafe requires to be
 // error-free); `from` (B→A) fails when a DIFFERENT field is set, which is
 // what drives UntaggedUnion's per-branch Encode dispatch via which().
+//
+// The bare fmt.Errorf in each `from` below is DEFENSIVE, not a
+// currently-reachable error path: EnvVarValueCodec's own which()
+// function always selects the ONE branch whose field is actually set,
+// so UntaggedUnion.Encode only ever calls variants[idx].Codec.Encode(v)
+// for the MATCHING branch — the mismatched-field case these checks
+// guard against cannot occur through EnvVarValueCodec today. Left
+// UNSTRUCTURED (not wrapped in a typed error) deliberately: these
+// variant codecs are unexported and used ONLY by EnvVarValueCodec, so
+// this can never surface as a caller-observed error to structure; the
+// `error` return itself cannot be removed without changing
+// MapCodecSafe's own generic signature (a core, widely-reused
+// primitive), and dropping the nil-check would risk a nil-pointer panic
+// instead of a clean error if one of these codecs were ever called
+// directly in a different context later.
 var stringVariantCodec = c.MapCodecSafe(
 	c.String(),
 	func(s string) EnvVarValue { return EnvVarValue{StringValue: &s} },

@@ -17,7 +17,7 @@ import (
 //
 // FieldsPatch's own fields (Settings/Env/Type/Status/
 // RestartPolicy/Version) are declared via codex.PartialField and
-// composed into moduleFieldsBodyCodec via codex.PartialStruct — the
+// composed into FieldsBodyCodec via codex.PartialStruct — the
 // sparse "omit unset fields entirely" mechanism (see
 // docs/concepts/codec.md's "PartialField/PartialStruct" subsection for
 // the full design). Settings
@@ -35,7 +35,7 @@ import (
 // data, not a static field name, so FieldsPatchCodec's own
 // Encode/Decode still hand-assembles that outer wrapping (reusing
 // manifesttemplate.ModuleNameCodec for the key itself) around
-// moduleFieldsBodyCodec's declarative result.
+// FieldsBodyCodec's declarative result.
 
 // SettingsPatch groups the two fields the wire format nests under
 // "settings" — mirrors manifesttemplate.ModuleSettings, but every field is
@@ -87,6 +87,30 @@ type FieldsPatch struct {
 	Version       *manifesttemplate.Version
 }
 
+// NonEmptyFieldsPatch is a Constraint checking that AT LEAST ONE of
+// FieldsPatch's pointer fields is set — the same "nothing to patch"
+// predicate FieldsPatchCodec.Encode enforces internally (there, via the
+// richer EmptyPatchError{ModuleName}), exported here as a standalone,
+// reusable building block for callers using [FieldsBodyCodec] directly
+// (e.g. to assemble a device-level patch — see
+// models/iotedge/deviceconfig's Patch) who want the SAME "reject a no-op
+// patch" guard without going through FieldsPatchCodec's own
+// module-name-keyed wrapping. NOT applied via .Refine on
+// [FieldsBodyCodec] itself — doing so would change
+// FieldsPatchCodec.Encode's existing EmptyPatchError into a generic
+// ConstraintError, a breaking behavior change this constraint is
+// deliberately kept opt-in to avoid.
+var NonEmptyFieldsPatch = c.Constraint[FieldsPatch]{
+	Name: "non-empty-fields-patch",
+	Check: func(p FieldsPatch) bool {
+		return p.Settings != nil || p.Env != nil || p.Type != nil ||
+			p.Status != nil || p.RestartPolicy != nil || p.Version != nil
+	},
+	Message: func(p FieldsPatch) string {
+		return fmt.Sprintf("modulepatch: empty FieldsPatch for module %q: nothing to patch", p.ModuleName)
+	},
+}
+
 // EmptyPatchError reports that a FieldsPatch had NOTHING set
 // (every pointer field nil) — encoding it would produce a no-op patch,
 // which is almost certainly a caller mistake (an empty patch silently
@@ -122,13 +146,22 @@ var envVarsCodec = c.MapCodecSafe(
 	},
 )
 
-// moduleFieldsBodyCodec declaratively encodes/decodes FieldsPatch's
+// FieldsBodyCodec declaratively encodes/decodes FieldsPatch's
 // OWN patchable fields (everything except ModuleName, which the outer
 // FieldsPatchCodec handles separately as the dynamic map key) —
 // this is the entire "which fields were set" sparse-inclusion logic,
 // expressed as plain field declarations instead of hand-rolled
 // "if p.X != nil {...}" branches.
-var moduleFieldsBodyCodec = c.PartialStruct[FieldsPatch](
+//
+// EXPORTED so this SAME typed validation reuses at the DEVICE level too
+// — encoding a FieldsPatch via FieldsBodyCodec produces exactly the raw
+// {settings?, env?, type?, status?, restartPolicy?, version?} object a
+// caller can assign directly to
+// models/iotedge/deviceconfig.Patch.EdgeAgent[string(patch.ModuleName)],
+// bridging modulepatch's TEMPLATE-level typed patch mechanism and
+// deviceconfig's DEVICE-level raw dotted-path patch mechanism with ZERO
+// duplicated validation logic (see app/iotedge's PatchDeviceModule).
+var FieldsBodyCodec = c.PartialStruct[FieldsPatch](
 	c.PartialField("settings", SettingsPatchCodec,
 		func(p FieldsPatch) *SettingsPatch { return p.Settings },
 		func(p *FieldsPatch, v *SettingsPatch) { p.Settings = v },
@@ -159,12 +192,12 @@ var moduleFieldsBodyCodec = c.PartialStruct[FieldsPatch](
 // full nested wire shape (modulesContent -> $edgeAgent -> <dotted key> ->
 // {settings?, env?, type?, status?, restartPolicy?, version?}),
 // including ONLY the fields actually set (delegated to
-// moduleFieldsBodyCodec — see this file's own top-of-file doc comment
+// FieldsBodyCodec — see this file's own top-of-file doc comment
 // for why the OUTER module-name-keyed wrapping stays hand-written while
 // everything else is declarative).
 var FieldsPatchCodec = c.Codec[FieldsPatch]{
 	Encode: func(p FieldsPatch) (any, error) {
-		rawBody, err := moduleFieldsBodyCodec.Encode(p)
+		rawBody, err := FieldsBodyCodec.Encode(p)
 		if err != nil {
 			return nil, err
 		}
@@ -179,25 +212,25 @@ var FieldsPatchCodec = c.Codec[FieldsPatch]{
 		}
 
 		return map[string]any{
-			"modulesContent": map[string]any{
-				"$edgeAgent": map[string]any{
+			manifesttemplate.ModulesContentKey: map[string]any{
+				manifesttemplate.EdgeAgentKey: map[string]any{
 					key.(string): moduleObj,
 				},
 			},
 		}, nil
 	},
 	Decode: func(raw any) (FieldsPatch, error) {
-		obj, err := asObject(raw, "modulesContent")
+		obj, err := asObject(raw, manifesttemplate.ModulesContentKey)
 		if err != nil {
 			return FieldsPatch{}, err
 		}
-		modulesContent, err := asObject(obj["modulesContent"], "$edgeAgent")
+		modulesContent, err := asObject(obj[manifesttemplate.ModulesContentKey], manifesttemplate.EdgeAgentKey)
 		if err != nil {
 			return FieldsPatch{}, err
 		}
-		edgeAgent, ok := modulesContent["$edgeAgent"].(map[string]any)
+		edgeAgent, ok := modulesContent[manifesttemplate.EdgeAgentKey].(map[string]any)
 		if !ok {
-			return FieldsPatch{}, c.TypeMismatchError{Expected: "object", Got: typeName(modulesContent["$edgeAgent"])}
+			return FieldsPatch{}, c.TypeMismatchError{Expected: "object", Got: typeName(modulesContent[manifesttemplate.EdgeAgentKey])}
 		}
 
 		for rawKey, rawModule := range edgeAgent {
@@ -205,7 +238,7 @@ var FieldsPatchCodec = c.Codec[FieldsPatch]{
 			if err != nil {
 				return FieldsPatch{}, err
 			}
-			p, err := moduleFieldsBodyCodec.Decode(rawModule)
+			p, err := FieldsBodyCodec.Decode(rawModule)
 			if err != nil {
 				return FieldsPatch{}, err
 			}
@@ -214,7 +247,7 @@ var FieldsPatchCodec = c.Codec[FieldsPatch]{
 		}
 		return FieldsPatch{}, nil
 	},
-	Schema: moduleFieldsBodyCodec.Schema,
+	Schema: FieldsBodyCodec.Schema,
 }
 
 // asObject type-asserts raw as map[string]any, returning a

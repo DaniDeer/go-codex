@@ -98,3 +98,31 @@ func TestNewUpdateModuleImageToolHandler_PropagatesMissingFileError(t *testing.T
 		t.Error("handler: want error for nonexistent file, got nil")
 	}
 }
+
+func TestNewUpdateModuleImageToolHandler_DeviceScoped_WritesOnlyDeviceFile(t *testing.T) {
+	basePath := writeSampleManifest(t)
+	handler := NewUpdateModuleImageToolHandler(ports.FileOptions{})
+
+	summary, err := handler(context.Background(), updatemoduleimage.Req{
+		BasePath:    basePath,
+		UseCaseName: sampleUseCaseName,
+		ModuleName:  "factory-dashboard",
+		ImageURL:    "ghcr.io/org/edge-web:5.0.0",
+		DeviceID:    sampleDeviceID,
+	})
+	if err != nil {
+		t.Fatalf("handler: %v", err)
+	}
+	if summary.Image.String() != "ghcr.io/org/edge-web:5.0.0" {
+		t.Errorf("Image = %v, want ghcr.io/org/edge-web:5.0.0", summary.Image)
+	}
+
+	// The TEMPLATE must be completely untouched.
+	template, err := ReadUseCase(basePath, sampleUseCaseName, ports.FileOptions{})
+	if err != nil {
+		t.Fatalf("ReadUseCase: %v", err)
+	}
+	if template.ModulesContent.EdgeAgent["factory-dashboard"].Settings.Image.String() != "ghcr.io/org/edge-web:1.0.0" {
+		t.Error("template image must stay unchanged by a device-scoped update")
+	}
+}

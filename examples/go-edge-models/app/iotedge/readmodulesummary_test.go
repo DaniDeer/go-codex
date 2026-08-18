@@ -5,6 +5,7 @@ import (
 	"errors"
 	"testing"
 
+	"github.com/DaniDeer/go-codex/examples/go-edge-models/models/docker"
 	"github.com/DaniDeer/go-codex/examples/go-edge-models/models/iotedge/modulesummary"
 	"github.com/DaniDeer/go-codex/ports"
 )
@@ -62,6 +63,54 @@ func TestNewReadModuleSummaryToolHandler_PropagatesReadError(t *testing.T) {
 	})
 	if err == nil {
 		t.Error("handler: want error for nonexistent file, got nil")
+	}
+}
+
+func TestNewReadModuleSummaryToolHandler_DeviceScoped_ReturnsEffectiveSummary(t *testing.T) {
+	basePath := writeSampleManifest(t)
+	newImage := docker.Image{Name: "ghcr.io/org/edge-web", Tag: "3.0.0"}
+	if err := UpdateDeviceModuleImage(basePath, sampleUseCaseName, sampleDeviceID, "factory-dashboard", newImage, ports.FileOptions{}); err != nil {
+		t.Fatalf("UpdateDeviceModuleImage: %v", err)
+	}
+	handler := NewReadModuleSummaryToolHandler(ports.FileOptions{})
+
+	summary, err := handler(context.Background(), modulesummary.ReadReq{
+		BasePath:    basePath,
+		UseCaseName: sampleUseCaseName,
+		ModuleName:  "factory-dashboard",
+		DeviceID:    sampleDeviceID,
+	})
+	if err != nil {
+		t.Fatalf("handler: %v", err)
+	}
+	if summary.Image.String() != "ghcr.io/org/edge-web:3.0.0" {
+		t.Errorf("Image = %v, want ghcr.io/org/edge-web:3.0.0 (device-effective)", summary.Image)
+	}
+	// Unrelated to the device patch — must survive from the template.
+	if summary.Status != "running" {
+		t.Errorf("Status = %v, want unchanged running", summary.Status)
+	}
+}
+
+func TestNewReadModuleSummaryToolHandler_DeviceScoped_TemplateUnaffected(t *testing.T) {
+	basePath := writeSampleManifest(t)
+	newImage := docker.Image{Name: "ghcr.io/org/edge-web", Tag: "3.0.0"}
+	if err := UpdateDeviceModuleImage(basePath, sampleUseCaseName, sampleDeviceID, "factory-dashboard", newImage, ports.FileOptions{}); err != nil {
+		t.Fatalf("UpdateDeviceModuleImage: %v", err)
+	}
+	handler := NewReadModuleSummaryToolHandler(ports.FileOptions{})
+
+	// Same request WITHOUT DeviceID must still reflect the TEMPLATE.
+	summary, err := handler(context.Background(), modulesummary.ReadReq{
+		BasePath:    basePath,
+		UseCaseName: sampleUseCaseName,
+		ModuleName:  "factory-dashboard",
+	})
+	if err != nil {
+		t.Fatalf("handler: %v", err)
+	}
+	if summary.Image.String() != "ghcr.io/org/edge-web:1.0.0" {
+		t.Errorf("Image = %v, want unchanged ghcr.io/org/edge-web:1.0.0 (template scope)", summary.Image)
 	}
 }
 

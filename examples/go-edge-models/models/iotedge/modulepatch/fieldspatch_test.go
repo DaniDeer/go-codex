@@ -274,3 +274,75 @@ func TestNewUpdateModuleImage_RejectsInvalidImage(t *testing.T) {
 		t.Error("NewUpdateModuleImage: want error for empty image Name, got nil")
 	}
 }
+
+// ── FieldsBodyCodec / NonEmptyFieldsPatch (device-level bridge) ─────────────
+
+func TestFieldsBodyCodec_EncodeProducesRawBodyWithoutModuleNameWrapping(t *testing.T) {
+	image := docker.Image{Name: "ghcr.io/org/repo", Tag: "2.0.0"}
+	patch := FieldsPatch{ModuleName: "temp-sensor", Settings: &SettingsPatch{Image: &image}}
+
+	raw, err := FieldsBodyCodec.Encode(patch)
+	if err != nil {
+		t.Fatalf("Encode: %v", err)
+	}
+	body, ok := raw.(map[string]any)
+	if !ok {
+		t.Fatalf("Encode = %T, want map[string]any", raw)
+	}
+	// No "modulesContent"/"$edgeAgent"/module-name-key wrapping — just
+	// the bare patchable-fields object, ready to be assigned directly to
+	// e.g. deviceconfig.Patch.EdgeAgent[string(patch.ModuleName)].
+	if _, hasModulesContent := body["modulesContent"]; hasModulesContent {
+		t.Error("FieldsBodyCodec.Encode should NOT include the outer modulesContent wrapping")
+	}
+	settings, ok := body["settings"].(map[string]any)
+	if !ok || settings["image"] != "ghcr.io/org/repo:2.0.0" {
+		t.Errorf("body[settings] = %v, want image=ghcr.io/org/repo:2.0.0", body["settings"])
+	}
+}
+
+func TestFieldsBodyCodec_DecodeRoundTrip(t *testing.T) {
+	status := manifesttemplate.Status("stopped")
+	patch := FieldsPatch{ModuleName: "temp-sensor", Status: &status}
+
+	raw, err := FieldsBodyCodec.Encode(patch)
+	if err != nil {
+		t.Fatalf("Encode: %v", err)
+	}
+	got, err := FieldsBodyCodec.Decode(raw)
+	if err != nil {
+		t.Fatalf("Decode: %v", err)
+	}
+	// ModuleName is NOT part of the body — Decode never populates it.
+	if got.ModuleName != "" {
+		t.Errorf("ModuleName = %q, want empty (not part of the body)", got.ModuleName)
+	}
+	if got.Status == nil || *got.Status != "stopped" {
+		t.Errorf("Status = %v, want stopped", got.Status)
+	}
+}
+
+func TestNonEmptyFieldsPatch_RejectsAllNilFields(t *testing.T) {
+	if NonEmptyFieldsPatch.Check(FieldsPatch{ModuleName: "temp-sensor"}) {
+		t.Error("NonEmptyFieldsPatch.Check: want false for a patch with every field nil")
+	}
+}
+
+func TestNonEmptyFieldsPatch_AcceptsOneFieldSet(t *testing.T) {
+	status := manifesttemplate.Status("stopped")
+	if !NonEmptyFieldsPatch.Check(FieldsPatch{ModuleName: "temp-sensor", Status: &status}) {
+		t.Error("NonEmptyFieldsPatch.Check: want true when Status is set")
+	}
+}
+
+func TestNonEmptyFieldsPatch_NotAppliedToFieldsPatchCodec(t *testing.T) {
+	// FieldsPatchCodec.Encode must keep returning its own richer
+	// EmptyPatchError{ModuleName} for an empty patch, NOT a generic
+	// ConstraintError from NonEmptyFieldsPatch — confirms
+	// NonEmptyFieldsPatch is NOT wired via .Refine onto FieldsBodyCodec.
+	_, err := FieldsPatchCodec.Encode(FieldsPatch{ModuleName: "temp-sensor"})
+	var emptyErr EmptyPatchError
+	if !errors.As(err, &emptyErr) {
+		t.Errorf("Encode error = %v (%T), want EmptyPatchError", err, err)
+	}
+}

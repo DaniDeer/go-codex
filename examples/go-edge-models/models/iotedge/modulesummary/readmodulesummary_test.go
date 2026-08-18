@@ -49,3 +49,26 @@ func TestReadTool_RegistersSuccessfully(t *testing.T) {
 		t.Fatalf("ReadTool.Register: %v", err)
 	}
 }
+
+func TestReadReqCodec_DeviceIDIsOptional(t *testing.T) {
+	req := ReadReq{BasePath: "/tmp/edge", UseCaseName: "usecase1", ModuleName: "factory-dashboard"}
+	if err := ReadReqCodec.Validate(req); err != nil {
+		t.Errorf("Validate: want no error for absent DeviceID, got %v", err)
+	}
+}
+
+func TestReadReqCodec_DeviceIDRoundTrip(t *testing.T) {
+	req := ReadReq{BasePath: "/tmp/edge", UseCaseName: "usecase1", ModuleName: "factory-dashboard", DeviceID: "sensor-1"}
+
+	encoded, err := ReadReqCodec.Encode(req)
+	if err != nil {
+		t.Fatalf("Encode: %v", err)
+	}
+	decoded, err := ReadReqCodec.Decode(encoded)
+	if err != nil {
+		t.Fatalf("Decode: %v", err)
+	}
+	if decoded != req {
+		t.Errorf("decoded = %+v, want %+v", decoded, req)
+	}
+}

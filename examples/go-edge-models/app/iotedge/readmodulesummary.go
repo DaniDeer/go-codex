@@ -8,6 +8,7 @@ import (
 	mcpgo "github.com/DaniDeer/go-codex/adapters/mcpgo"
 	manifesttemplate "github.com/DaniDeer/go-codex/examples/go-edge-models/models/iotedge/manifesttemplate"
 	"github.com/DaniDeer/go-codex/examples/go-edge-models/models/iotedge/modulesummary"
+	"github.com/DaniDeer/go-codex/examples/go-edge-models/models/iotedge/usecase"
 	"github.com/DaniDeer/go-codex/ports"
 )
 
@@ -32,13 +33,15 @@ func (e ModuleNotFoundError) LogValue() slog.Value {
 }
 
 // readModuleSummary reads useCaseName's deployment manifest under
-// basePath, looks up moduleName, and maps it to a
+// basePath — OR, when deviceID is non-empty, that DEVICE's ACTUAL
+// configured manifest (template + device config, merged, via
+// usecase.ReadEffective) — looks up moduleName, and maps it to a
 // modulesummary.Summary — shared by NewReadModuleSummaryToolHandler
 // (below) and NewUpdateModuleImageToolHandler (updatemoduleimage.go),
-// which both need "read manifest, find module, summarize" as their
-// final step.
-func readModuleSummary(basePath, useCaseName string, moduleName manifesttemplate.ModuleName, opts ports.FileOptions) (modulesummary.Summary, error) {
-	manifest, err := ReadUseCase(basePath, useCaseName, opts)
+// which both need "read (template or device-effective) manifest, find
+// module, summarize" as their final step.
+func readModuleSummary(basePath, useCaseName, deviceID string, moduleName manifesttemplate.ModuleName, opts ports.FileOptions) (modulesummary.Summary, error) {
+	manifest, err := effectiveManifest(basePath, useCaseName, deviceID, opts)
 	if err != nil {
 		return modulesummary.Summary{}, err
 	}
@@ -49,10 +52,31 @@ func readModuleSummary(basePath, useCaseName string, moduleName manifesttemplate
 	return modulesummary.NewSummary(mc), nil
 }
 
+// effectiveManifest reads useCaseName's deployment manifest under
+// basePath — the use case TEMPLATE when deviceID is empty, or that
+// DEVICE's ACTUAL configured manifest (template + device config,
+// merged) when deviceID is set. Converts the plain deviceID string to
+// usecase.DeviceID, propagating any validation error.
+func effectiveManifest(basePath, useCaseName, deviceID string, opts ports.FileOptions) (manifesttemplate.DeploymentManifest, error) {
+	if deviceID == "" {
+		return ReadUseCase(basePath, useCaseName, opts)
+	}
+	ucName, err := usecase.NewName(useCaseName)
+	if err != nil {
+		return manifesttemplate.DeploymentManifest{}, err
+	}
+	devID, err := usecase.NewDeviceID(deviceID)
+	if err != nil {
+		return manifesttemplate.DeploymentManifest{}, err
+	}
+	return usecase.ReadEffective(basePath, ucName, devID, opts)
+}
+
 // NewReadModuleSummaryToolHandler returns an mcpgo.HandlerFunc that reads
-// req.UseCaseName's deployment manifest under req.BasePath, looks up
-// req.ModuleName, and maps it to a modulesummary.Summary — binding
-// modulesummary's declared ReadTool to ReadUseCase.
+// req.UseCaseName's deployment manifest under req.BasePath — OR, when
+// req.DeviceID is set, that device's ACTUAL configured manifest — looks
+// up req.ModuleName, and maps it to a modulesummary.Summary — binding
+// modulesummary's declared ReadTool to ReadUseCase/usecase.ReadEffective.
 //
 // Usage:
 //
@@ -62,6 +86,6 @@ func readModuleSummary(basePath, useCaseName string, moduleName manifesttemplate
 //	    mcpgo.Options{})
 func NewReadModuleSummaryToolHandler(opts ports.FileOptions) mcpgo.HandlerFunc[modulesummary.ReadReq, modulesummary.Summary] {
 	return func(ctx context.Context, req modulesummary.ReadReq) (modulesummary.Summary, error) {
-		return readModuleSummary(req.BasePath, req.UseCaseName, req.ModuleName, opts)
+		return readModuleSummary(req.BasePath, req.UseCaseName, req.DeviceID, req.ModuleName, opts)
 	}
 }

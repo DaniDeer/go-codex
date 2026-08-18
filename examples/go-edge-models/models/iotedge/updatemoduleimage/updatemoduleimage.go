@@ -33,9 +33,18 @@ type Req struct {
 	// server-side via docker.ImageCodec.Decode (see
 	// app/iotedge.NewUpdateModuleImageToolHandler).
 	ImageURL string
+	// DeviceID OPTIONALLY scopes the update to ONE device's OWN config
+	// file — the use case template and every OTHER device stay
+	// completely untouched (isolated, reversible). Empty (the zero
+	// value) means "update the use case template's shared manifest" —
+	// this package deliberately stays decoupled from
+	// models/iotedge/usecase (a plain string, not usecase.DeviceID),
+	// matching BasePath/UseCaseName's own convention above.
+	DeviceID string
 }
 
-// ReqCodec validates a Req value — all four fields are required.
+// ReqCodec validates a Req value — BasePath/UseCaseName/ModuleName/
+// ImageURL are required; DeviceID is OPTIONAL (empty = template scope).
 var ReqCodec = c.Struct[Req](
 	c.RequiredField("basePath",
 		c.String().Refine(v.NonEmptyString).WithDescription(
@@ -65,21 +74,35 @@ var ReqCodec = c.Struct[Req](
 		func(r Req) string { return r.ImageURL },
 		func(r *Req, val string) { r.ImageURL = val },
 	),
+	c.OptionalField("deviceID",
+		c.String().WithDescription(
+			"If set, the update is written to THIS DEVICE'S OWN config "+
+				"file only — the use case template and every other "+
+				"device are left untouched.",
+		),
+		func(r Req) string { return r.DeviceID },
+		func(r *Req, val string) { r.DeviceID = val },
+	),
 )
 
 // Tool is the declared, UNREGISTERED MCP tool contract for updating one
-// module's container image in a deployment manifest file, returning the
-// module's UPDATED reduced summary (image, host-mapped ports, binds,
-// status, restart policy) — the same "declare once, register anywhere"
-// pattern modulesummary.ReadTool follows: a caller registers it against
-// their own mcp.Builder (Tool.Register(builder)) and pairs the
-// resulting handle with app/iotedge's NewUpdateModuleImageToolHandler
-// via mcpgo.ToolHandler.
+// module's container image in a deployment manifest file — OR, when
+// DeviceID is set, ONE device's own config file only (see
+// Req.DeviceID) — returning the module's UPDATED reduced summary
+// (image, host-mapped ports, binds, status, restart policy) — the same
+// "declare once, register anywhere" pattern modulesummary.ReadTool
+// follows: a caller registers it against their own mcp.Builder
+// (Tool.Register(builder)) and pairs the resulting handle with
+// app/iotedge's NewUpdateModuleImageToolHandler via mcpgo.ToolHandler.
 var Tool = mcp.NewTool[Req, modulesummary.Summary](
 	"update_module_image", ReqCodec, modulesummary.SummaryCodec,
 	mcp.ToolMeta{
-		Description: "Update one module's container image in a deployment " +
-			"manifest file, returning the module's updated summary " +
-			"(image, host-mapped ports, binds, status, restart policy).",
+		Description: "Update one module's container image, returning the " +
+			"module's updated summary (image, host-mapped ports, binds, " +
+			"status, restart policy). If deviceID is set, the update is " +
+			"written to that device's OWN config only — the use case " +
+			"template and every other device stay untouched; otherwise " +
+			"the update is written to the use case template's shared " +
+			"manifest.",
 	},
 )
