@@ -29,14 +29,19 @@ Put ALL of the following in one file, grouped by concern:
    type (`type ModuleName string`) via `codex.MapCodecSafe`, with a smart
    constructor (`NewModuleName(s string) (ModuleName, error)`) built on
    the codec's own `.New(...)`.
+5. **Fixed-value ("constant") fields** — for a field that may ONLY ever
+   equal one specific value at a specific place in the format (not one
+   of several, and not user-configurable), use `codex.Eq(base, value)`
+   instead of a degenerate single-element `validate.OneOf(value)`. See
+   [Fixed-value fields: `Eq`/`Pure`](#fixed-value-fields-eqpure) below.
 
 ### Reference implementation
 
 `examples/go-edge-models` has two real files following this recipe —
 read them directly rather than a synthesized snippet:
 
-- [`models/iotedge/manifesttemplate/keys.go`](https://github.com/DaniDeer/go-codex/blob/main/examples/go-edge-models/models/iotedge/manifesttemplate/keys.go) — wire-key constants (#1) + dotted-key codecs via `PrefixedKeyCodec` (#2), for a deployment manifest's `$edgeAgent`/`$edgeHub` buckets.
-- [`models/iotedge/usecase/config.go`](https://github.com/DaniDeer/go-codex/blob/main/examples/go-edge-models/models/iotedge/usecase/config.go) — path templates via `fmt.Sprintf` (#3) + named identifier types (#4), for a use case's on-disk file layout.
+- [`models/iotedge/manifesttemplate/keys.go`](https://github.com/DaniDeer/go-codex/blob/main/examples/go-edge-models/models/iotedge/manifesttemplate/keys.go) — wire-key constants (#1) + dotted-key codecs via `PrefixedKeyCodec` (#2), for a deployment manifest's `$edgeAgent`/`$edgeHub` buckets. See the sibling [`lifecycle.go`](https://github.com/DaniDeer/go-codex/blob/main/examples/go-edge-models/models/iotedge/manifesttemplate/lifecycle.go)'s `TypeCodec` for #5 (fixed-value fields).
+- [`models/iotedge/usecase/config.go`](https://github.com/DaniDeer/go-codex/blob/main/examples/go-edge-models/models/iotedge/usecase/config.go) — path templates via `fmt.Sprintf` (#3) + named identifier types (#4), for a use case's on-disk file layout. This file has no fixed-value fields of its own (no `codex.Struct` at all — only path templates and identifier types), so #5 doesn't apply here; see `lifecycle.go` instead.
 
 Both files are the FIRST thing a maintainer reads to answer "what does
 this wire key actually look like" or "where do these files live on disk"
@@ -55,6 +60,7 @@ in the recipe above composes primitives that already exist:
 | Path templates | `ports.FilePathParam`/`DirPathParam`, `fmt.Sprintf` | no |
 | Named identifier types | `codex.MapCodecSafe` + smart constructor (`.New`) | no |
 | REST path / event topic vars | `rest.NewPathParam`/`events.NewTopicParam` | no |
+| Fixed-value ("constant") fields | `codex.Eq`/`codex.Pure` | no |
 
 The ONE genuine gap closed here is `codex.PrefixedKeyCodec` — a small,
 purely-compositional addition to the `codex` package (see
@@ -124,3 +130,61 @@ whole thing), regardless of whether that Route's path portion was built
 via `NewRoute` directly or via `NewRouteFromPath` — adopting a bundle
 where convenient changes nothing about how the resulting `Route`/
 `Channel`/`File` looks or behaves afterward.
+
+## Fixed-value fields: `Eq`/`Pure`
+
+"Define a constant with a codec, use it in exactly one place, and only
+this constant is valid there" is already fully supported — see
+[Codec concepts: Pure and Eq](../concepts/codec.md#pure-and-eq--fixed-and-single-value-codecs)
+for the full mechanics. This section covers WHEN to reach for it as part
+of a package's wire-format vocabulary:
+
+- **`codex.Eq(base, value)`** — the field only accepts exactly `value`;
+  anything else is a `ConstraintError`. Use for a field that is always
+  one specific value BY DEFINITION of the format (not user-configurable,
+  not one of several valid choices).
+- **`codex.Pure(value)`** — the field ALWAYS decodes/encodes to `value`
+  regardless of wire input (no error, just forced). Use for a field that
+  is automatically/always set by the format itself (e.g. a protocol
+  version marker), never meaningfully supplied by a caller.
+
+**Spotting the case**: a `validate.OneOf(...)` constraint called with
+EXACTLY ONE argument is a degenerate single-element enum — a strong
+signal the field is actually a fixed constant, not a genuine multiple-
+choice enum, and `codex.Eq` communicates that intent more directly:
+
+```go
+// Before: a single-value OneOf reads like there COULD be more choices.
+var TypeCodec = codex.MapCodecSafe(
+    codex.String().Refine(validate.OneOf("docker")),
+    func(s string) Type { return Type(s) },
+    func(t Type) (string, error) { return string(t), nil },
+)
+
+// After: Eq states directly that "docker" is the ONLY valid value.
+var TypeCodec = codex.MapCodecSafe(
+    codex.Eq(codex.String(), "docker"),
+    func(s string) Type { return Type(s) },
+    func(t Type) (string, error) { return string(t), nil },
+)
+```
+
+Same wire shape, same validation, same error on mismatch — purely a
+clearer expression of intent. See
+[`models/iotedge/manifesttemplate/lifecycle.go`](https://github.com/DaniDeer/go-codex/blob/main/examples/go-edge-models/models/iotedge/manifesttemplate/lifecycle.go)'s
+`TypeCodec` for the real, in-repo version of this exact refactor —
+contrast with the SAME file's `StatusCodec`/`RestartPolicyCodec`, which
+keep `validate.OneOf` because they are genuine multi-value enums
+(`"running"`/`"stopped"`, `"always"`/`"on-failure"`/…).
+
+Two ideas considered and rejected for this recipe:
+- A thin `codex.ConstString(value)` wrapper over `Eq(codex.String(), value)`
+  — real but marginal (saves a few characters over an already-one-line
+  call); not worth its own constructor.
+- Enforcing that a constant-codec pair may only be referenced from
+  exactly one call site in the whole codebase — NOT achievable as a
+  codec/library feature at all (a `Codec[T]` value has no visibility
+  into its own static call graph); would require an unrelated
+  static-analysis/lint tool, and would work against `Eq`/`Pure`'s own
+  reuse benefit (the same fixed value validated identically wherever the
+  format legitimately reuses it).

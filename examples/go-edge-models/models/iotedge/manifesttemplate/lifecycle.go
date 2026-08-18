@@ -23,8 +23,14 @@ type Version string
 
 type StartupOrder int64
 
+// TypeCodec uses c.Eq rather than v.OneOf, unlike Status/RestartPolicy
+// below — "docker" is the ONLY valid value (not one of several), so this
+// is a fixed-value ("constant") field: c.Eq(base, value) expresses
+// "only this exact value is valid" directly, rather than a degenerate
+// single-element enum. See docs/guides/wire-vocabulary.md's "Fixed-value
+// fields" section for the general recipe.
 var TypeCodec = c.MapCodecSafe(
-	c.String().Refine(v.OneOf("docker")),
+	c.Eq(c.String(), "docker"),
 	func(s string) Type { return Type(s) },
 	func(t Type) (string, error) { return string(t), nil },
 )
