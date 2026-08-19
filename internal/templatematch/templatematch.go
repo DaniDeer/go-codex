@@ -77,8 +77,8 @@ func MatchNonWildcard(template, concrete string, wrapMismatch func(template, con
 //   - MQTT single-level wildcard (+) — matches exactly one level (anonymous
 //     capture is omitted from the result map).
 //   - MQTT multi-level wildcard (#) as the last template segment — matches
-//     all remaining levels; the remaining path is captured under "#" in the
-//     result map.
+//     all remaining levels (zero or more); the remaining path is captured
+//     under "#" in the result map.
 //
 // Unlike [MatchNonWildcard], each {varName} placeholder must occupy an
 // ENTIRE topic level — it cannot share a segment with literal text or
@@ -88,24 +88,47 @@ func MatchNonWildcard(template, concrete string, wrapMismatch func(template, con
 // Returns wrapMismatch(template, concrete) when the concrete topic's
 // structure does not match the template (wrong number of levels, or a
 // literal segment does not match).
+//
+// Delegates to matchWildcard with "/" as the level delimiter — see
+// [MatchDottedWildcard] for the SAME syntax applied to dotted wire keys
+// (codec map buckets) instead of MQTT topics, "." as the delimiter.
 func MatchMQTTWildcard(template, concrete string, wrapMismatch func(template, concrete string) error) (map[string]string, error) {
-	tmplParts := strings.Split(template, "/")
-	topicParts := strings.Split(concrete, "/")
+	return matchWildcard(template, concrete, "/", wrapMismatch)
+}
+
+// MatchDottedWildcard is [MatchMQTTWildcard]'s dotted-key counterpart —
+// identical {varName}/+/# semantics, but "." is the level delimiter
+// instead of "/". Used by codec.DottedKeyCodec/DottedPatchMapCodec to
+// validate/extract dotted wire keys (e.g.
+// "properties.desired.modules.factory-gw.env.API_URL") the SAME
+// declarative way MQTT topic templates already work.
+func MatchDottedWildcard(template, concrete string, wrapMismatch func(template, concrete string) error) (map[string]string, error) {
+	return matchWildcard(template, concrete, ".", wrapMismatch)
+}
+
+// matchWildcard is the delimiter-parameterized core both
+// [MatchMQTTWildcard] (delimiter "/") and [MatchDottedWildcard]
+// (delimiter ".") build on — level-by-level matching of a concrete
+// string against a template using {varName}/+/# syntax (see
+// [MatchMQTTWildcard]'s own doc comment for the full syntax reference).
+func matchWildcard(template, concrete, delimiter string, wrapMismatch func(template, concrete string) error) (map[string]string, error) {
+	tmplParts := strings.Split(template, delimiter)
+	concreteParts := strings.Split(concrete, delimiter)
 
 	vars := make(map[string]string)
 
 	for i, seg := range tmplParts {
 		// Multi-level wildcard — must be last segment; captures everything remaining.
 		if seg == "#" {
-			vars["#"] = strings.Join(topicParts[i:], "/")
+			vars["#"] = strings.Join(concreteParts[i:], delimiter)
 			return vars, nil
 		}
 
-		if i >= len(topicParts) {
+		if i >= len(concreteParts) {
 			return nil, wrapMismatch(template, concrete)
 		}
 
-		concreteSeg := topicParts[i]
+		concreteSeg := concreteParts[i]
 
 		switch {
 		case len(seg) > 2 && seg[0] == '{' && seg[len(seg)-1] == '}':
@@ -124,8 +147,8 @@ func MatchMQTTWildcard(template, concrete string, wrapMismatch func(template, co
 		}
 	}
 
-	// All template segments consumed; the concrete topic must have no extra segments.
-	if len(topicParts) != len(tmplParts) {
+	// All template segments consumed; the concrete string must have no extra segments.
+	if len(concreteParts) != len(tmplParts) {
 		return nil, wrapMismatch(template, concrete)
 	}
 

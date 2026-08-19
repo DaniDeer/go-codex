@@ -1158,6 +1158,152 @@ including a nested `ModuleSettingsPatch` grouping) — this subsection and
 now the authoritative design reference (the feature's roadmap doc was
 retired once shipped).
 
+### Applying a patch: `ApplyPatch` (flat) vs. `ApplyDottedPatch` (dotted-path)
+
+`PartialField`/`PartialStruct` build a validated PATCH value — but say
+nothing about how to APPLY it onto a base `T`. `codex.ApplyPatch` closes
+that gap for the FLAT case (patch fields overwrite the SAME top-level
+keys `T`'s own codec declares):
+
+```go
+type ProfilePatch struct { Nickname *string; Age *int }
+var profilePatchCodec = codex.PartialStruct[ProfilePatch](...)
+
+updated, err := codex.ApplyPatch(currentProfile, profileCodec,
+    ProfilePatch{Nickname: ptr("bob")}, profilePatchCodec)
+// updated.Nickname == "bob"; updated.Age unchanged.
+```
+
+`ApplyPatch` encodes both `base` and `patch` to `map[string]any` via
+their own codecs, deep-merges patch over base (`codex.DeepMerge`), and
+decodes the merged map back through `baseCodec` — re-running every
+`Refine` constraint on the result.
+
+**Dotted-path patches** — when a patch key reaches ARBITRARILY DEEP
+(e.g. `"factory-gw.env.API_URL"`, not just a top-level field), use
+`codex.ApplyDottedPatch`/`ApplyDottedPatchTo` instead:
+
+```go
+patch := map[string]any{"factory-gw.env.API_URL": "http://new"}
+updated, err := codex.ApplyDottedPatchTo(base, baseCodec, patch)
+```
+
+`ApplyDottedPatch(base, patch map[string]any) map[string]any` is the raw
+map-level primitive (no codec involved) — each patch key's FIRST
+dotted segment names a top-level key in `base`; remaining segments (via
+`codex.BuildDottedPatch`) reach deeper via `codex.DeepMerge`. When a
+patch key names a top-level key `base` doesn't have yet, the patch value
+is used WHOLESALE — this is what lets a dotted patch introduce an
+entirely NEW entry, not just override fields inside an existing one.
+
+**Declaring a codec for a dynamic-dotted-key wire bucket — MQTT-style
+templates**: if the PATCH itself needs a wire-level codec (not just an
+already-decoded `map[string]any`), and its keys are prefix + dotted-path
+(module name unknown ahead of time, e.g. `deviceconfig.Patch.EdgeAgent`'s
+own wire bucket), use `codex.DottedPatchMapCodec` — it declares the key
+SHAPE as an MQTT-style TEMPLATE, reusing the exact `{varName}`/`+`/`#`
+vocabulary MQTT topic templates already use (`"." ` as the level
+delimiter instead of `"/"`):
+
+```go
+var edgeAgentPatchCodec = codex.DottedPatchMapCodec(
+    "properties.desired.modules.{moduleName}.#",
+    codex.KeyVarConstraint{Name: "moduleName", Constraint: validate.Slug},
+)
+```
+
+- `{moduleName}` captures and validates (via the registered
+  `KeyVarConstraint`) exactly one segment.
+- `#` (as the LAST template segment) matches the remaining path
+  WHOLESALE — zero or more further segments, left OPAQUE — matching
+  `PartialStruct`'s own untyped-leaf precedent for genuinely
+  dynamic-shape patches. This is what lets a device patch reach a bare
+  module key, one top-level field, or an arbitrarily deep env-var path,
+  all with ONE template.
+- `+` matches exactly ONE anonymous segment — reach for it instead of
+  `#` when the shape should NOT go deeper than one more level, e.g.
+  `"{moduleName}.env.+"` accepts exactly one env var name but rejects
+  anything reaching further.
+
+Wildcards are match-ONLY — see [`DottedKeyCodec`](#dottedkeycodec--dottedpatchmapcodec-mqtt-style-dotted-key-templates)
+below for the complementary "build ONE typed key from named segments, no
+wildcards" case. Typed per-path leaf validation (validate a SPECIFIC
+path's value against a SPECIFIC codec) remains a deferred, still-open
+idea.
+
+### `DottedKeyCodec`/`DottedPatchMapCodec`: MQTT-style dotted-key templates
+
+go-codex already has an MQTT topic-matching engine
+(`internal/templatematch.MatchMQTTWildcard`). `MatchDottedWildcard`
+adapts the identical algorithm with `"."` as the level delimiter — giving
+dotted wire keys the SAME declarative vocabulary MQTT topics already
+have. Since wildcards (`+`/`#`) only make sense for MATCHING an
+already-existing key (not building exactly one new key from named
+values), this splits into two constructors:
+
+```go
+// DottedKeyCodec: named-vars-ONLY template (no wildcards — panics
+// otherwise). Builds ONE typed key K via the SAME DecodeVars/EncodeVars/
+// FieldCodec machinery PathParam/TopicParam already use.
+var moduleKeyCodec = codex.DottedKeyCodec("properties.desired.modules.{tenant}.{name}",
+    codex.RequiredField("tenant", codex.String().Refine(validate.Slug),
+        func(k ModuleKey) string { return k.Tenant },
+        func(k *ModuleKey, v string) { k.Tenant = v }),
+    codex.RequiredField("name", codex.String().Refine(validate.Slug),
+        func(k ModuleKey) string { return k.Name },
+        func(k *ModuleKey, v string) { k.Name = v }),
+)
+// Compose with Map[K,V]/EntrySlice for a fully-typed dotted-key map:
+var modulesCodec = codex.Map[ModuleKey, ModuleConfig](moduleKeyCodec, moduleConfigCodec)
+```
+
+`DottedKeyCodec` generalizes the "prefix + a fixed, known number of
+dotted segments → a struct key" pattern (previously hand-rolled per
+package, e.g. `examples/flat-key-patch`'s former `twoPartKeyCodec`) with
+a template-string API instead of `numSegments`+`build`/`split` closures —
+and reuses `DecodeVars`/`EncodeVars` rather than inventing a new
+mechanism. A template with exactly ONE `{var}` covers `PrefixedKeyCodec`'s
+own "prefix + name" shape too — e.g. `examples/go-edge-models`'s
+`manifesttemplate.ModuleNameCodec`/`RouteNameCodec`:
+
+```go
+type ModuleName string
+
+var moduleNameField = codex.RequiredField("name", codex.String().Refine(validate.Slug),
+    func(n ModuleName) string { return string(n) },
+    func(n *ModuleName, s string) { *n = ModuleName(s) },
+)
+var ModuleNameCodec = codex.DottedKeyCodec[ModuleName](
+    "properties.desired.modules.{name}", moduleNameField,
+)
+// Same wire shape/validation/errors PrefixedKeyCodec produces — one
+// FieldCodec instead of a bare Constraint, reusing the SAME template
+// mechanism the package's other (multi-segment/wildcard) dotted keys use.
+```
+
+**`PrefixedKeyCodec` stays available and is NOT removed** — it remains
+the more minimal constructor for "prefix + exactly one segment, whole
+rest wrapped as one named string type" when a package has no OTHER
+dotted-key needs (no `FieldCodec` ceremony, just a `Constraint`). Reach
+for `DottedKeyCodec`'s single-`{var}` form instead when the same package
+already uses `DottedKeyCodec`/`DottedPatchMapCodec` for other keys and
+you want one consistent template-based vocabulary throughout. See
+`docs/guides/wire-vocabulary.md`'s decision table for the full "which one
+do I need" guide across all three (`PrefixedKeyCodec`/`DottedKeyCodec`/
+`DottedPatchMapCodec`).
+
+**Rejecting a no-op patch**: `codex.IsEmptyPatch(patchCodec, patch) bool`
+reports whether a `PartialStruct`-built patch encodes to an empty object
+(every field unset) — generalizing the "reject a no-op patch" guard
+several packages hand-roll per patch type. `codex.NonEmptyPatch(patchCodec)`
+wraps it as a `Constraint[P]`; `codex.EmptyPatchError{}` (implements
+`slog.LogValuer`) is the generic error for callers who don't need extra
+per-patch context.
+
+**Governed pipeline use**: `forge.Patch` wraps `ApplyPatch` as a named,
+versioned, contract-hashed pipeline step — see
+[Pipelines](pipelines.md#applying-a-patch-forgepatch).
+
 ## Either — typed sum type
 
 `Either2` tries codec A first; if decode fails, tries codec B. Encode uses whichever branch is non-nil:
@@ -1268,20 +1414,20 @@ var celsiusCodec = codex.MapCodecValidated(
 A recurring shape built on `MapCodecValidated` (see "Recommended key codec" above): a wire key is a fixed PREFIX followed by a validated NAME segment — `"properties.desired.modules.cv-writer"`, `"user:42"`, `"tenant-acme.cv-writer-kvrocks"`. `PrefixedKeyCodec[B ~string]` generalizes the two-layer recipe (full-key shape via an internal `Constraint`, name segment via the caller's own `Constraint`) into one constructor:
 
 ```go
-type ModuleName string
+type UserKey string
 
-var ModuleNameCodec = codex.PrefixedKeyCodec[ModuleName](
-    "properties.desired.modules.", validate.Slug,
+var UserKeyCodec = codex.PrefixedKeyCodec[UserKey](
+    "user:", validate.Slug,
 )
 
-key, _ := ModuleNameCodec.Encode(ModuleName("cv-writer"))
-// key == "properties.desired.modules.cv-writer"
+key, _ := UserKeyCodec.Encode(UserKey("42"))
+// key == "user:42"
 
-name, _ := ModuleNameCodec.Decode("properties.desired.modules.cv-writer")
-// name == ModuleName("cv-writer")
+name, _ := UserKeyCodec.Decode("user:42")
+// name == UserKey("42")
 ```
 
-`B` can be a bare `string` (e.g. `examples/flat-key-patch`'s `containerKeyCodec`) or a named string type. Reach for `PrefixedKeyCodec` whenever the key shape is EXACTLY "prefix + name"; a key with a different internal structure (e.g. two segments joined by a delimiter, like `<tenant>.<name>`) needs its own hand-rolled `MapCodecValidated` — see `examples/flat-key-patch`'s `twoPartKeyCodec` for that case.
+`B` can be a bare `string` (e.g. `examples/flat-key-patch`'s `containerKeyCodec`) or a named string type. Reach for `PrefixedKeyCodec` whenever the key shape is EXACTLY "prefix + name" and you want the MINIMAL constructor for it — no `FieldCodec`/template ceremony. `DottedKeyCodec` (above) covers this SAME single-segment case too (see `examples/go-edge-models`'s `manifesttemplate.ModuleNameCodec`/`RouteNameCodec`, both built on `DottedKeyCodec` over a one-`{var}` template) via the more general MQTT-style template mechanism — reach for `DottedKeyCodec` instead when a package already uses it for OTHER multi-segment/wildcard keys and you want one consistent vocabulary, or when the key shape might grow beyond one segment later. A key with a different internal structure (e.g. two segments joined by a delimiter, like `<tenant>.<name>`) needs `DottedKeyCodec`'s multi-`{var}` template (see "MQTT-style dotted-key templates" above) — `examples/flat-key-patch`'s `twoPartKeyCodec` is built on it.
 
 See [Guide: Wire-format vocabulary](../guides/wire-vocabulary.md) for how this fits into a package's single-source-of-truth `keys.go`.
 

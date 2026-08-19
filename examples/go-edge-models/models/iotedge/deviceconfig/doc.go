@@ -10,8 +10,11 @@
 // (manifesttemplate.ModulesContentKey/EdgeAgentKey/EdgeHubKey) and
 // dotted-key prefix (manifesttemplate.ModuleKeyPrefix) manifesttemplate
 // itself uses, imported from there rather than re-hardcoded here (see
-// manifesttemplate/keys.go, this package's single source of truth for
-// that vocabulary).
+// manifesttemplate/keys.go, the single source of truth for that SHARED
+// vocabulary). This package's OWN unique dotted-key vocabulary — the
+// EdgeAgentPatchTemplate/edgeAgentPatchCodec pair validating
+// Patch.EdgeAgent's wire bucket — lives in this package's own
+// keys.go instead.
 //
 // Applying a Patch to produce the FINAL, layered config is a DERIVED
 // operation — NOT part of this wire format — so it lives in the

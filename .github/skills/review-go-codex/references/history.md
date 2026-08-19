@@ -1,6 +1,32 @@
-# go-codex Review History (R1–R111)
+# go-codex Review History (R1–R112)
 
 Do not re-report any of these findings. They have been implemented and tested.
+
+---
+
+## Round 112 (dotted-key/patch primitives — missing Schema on new Layer 1 codecs)
+
+Audit of this session's new core-library surface: `codex.ApplyPatch`/`ApplyDottedPatch`/
+`ApplyDottedPatchTo`/`IsEmptyPatch`/`NonEmptyPatch`/`EmptyPatchError`, `codex.DottedKeyCodec`/
+`DottedPatchMapCodec`/`KeyVarConstraint`/`DottedKeyError`, `forge.Patch`/`PatchInput`, and the
+`internal/templatematch` MQTT-to-dotted-key generalization (`matchWildcard`/`MatchDottedWildcard`).
+All Layer 2/3 bundle constructors added this session (`events.Topic`/`rest.Path`/
+`ports.FilePathTemplate`/`ports.DirPathTemplate`) were re-verified and found consistent — no
+findings there.
+
+- **G1 [bug] — `codex.DottedKeyCodec`/`codex.DottedPatchMapCodec` returned a `Codec` with a
+  zero-value `Schema`**: every other codec constructor in the library sets `Schema` (e.g.
+  `codex.String()` → `{Type:"string"}`, `PartialStruct` → `{Type:"object", ...}`), and
+  `codex.Map[K,V]` propagates `keyCodec.Schema` directly into `PropertyNames` — so any
+  `Map`/`Codec` built on these two new constructors (including
+  `examples/go-edge-models`'s `deviceconfig.edgeAgentPatchCodec`) silently rendered an empty
+  `propertyNames`/schema in generated JSON Schema/OpenAPI/AsyncAPI docs, with no error. Fixed
+  by setting `Schema: schema.Schema{Type: "string"}` on `DottedKeyCodec` and
+  `Schema: schema.Schema{Type: "object"}` on `DottedPatchMapCodec`, matching the `codex.String()`/
+  `PartialStruct` conventions. Added `TestDottedKeyCodec_Schema_IsString`,
+  `TestDottedPatchMapCodec_Schema_IsObject`, and a `Schema.PropertyNames` assertion in
+  `TestDottedKeyCodec_ComposesWithMapForTypedValues` to close the coverage gap and prevent
+  regression.
 
 ---
 

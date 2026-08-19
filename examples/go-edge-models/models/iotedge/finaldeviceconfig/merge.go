@@ -15,14 +15,15 @@ import (
 // producing the FINAL, deployable config for one device: "template +
 // device config, layered on top". Every EdgeAgent entry's dotted path is
 // walked/created inside the relevant module's own raw JSON shape via
-// deepMerge; every EdgeHub entry is added/overwritten wholesale (routes
-// are atomic). The result is re-encoded through
+// codex.ApplyDottedPatch; every EdgeHub entry is added/overwritten
+// wholesale (routes are atomic). The result is re-encoded through
 // manifesttemplate.DeploymentManifestCodec, so any merge that produces
 // an invalid manifest fails HERE, not silently.
 //
 // Merge is OVERWRITE/ADD ONLY: a patch value always either creates a new
 // key or replaces an existing one; there is no way to DELETE a field the
-// base template already set (no RFC 7396 null-means-remove semantics).
+// base template already set (no RFC 7396 null-means-remove semantics) —
+// codex.ApplyDottedPatch's own documented behavior.
 //
 // This is a DERIVED operation — not part of either wire format — so it
 // lives in its own package rather than manifesttemplate or deviceconfig,
@@ -31,6 +32,19 @@ import (
 // deviceconfig (the patch), a dependency shape neither wire package
 // itself may take on (they must stay independently reusable, with zero
 // knowledge of each other).
+//
+// The dotted-merge ALGORITHM itself (this file used to hand-roll it as
+// buildNestedPatch/deepMerge) is now promoted to
+// codex.BuildDottedPatch/codex.ApplyDottedPatch — see
+// docs/concepts/codec.md's "Applying a patch" subsection. This file's
+// own job is narrowed to the manifest-specific bookkeeping ApplyDottedPatch cannot
+// know about: patch.EdgeAgent's keys are BARE module names (deviceconfig
+// strips manifesttemplate.ModuleKeyPrefix on decode — see
+// deviceconfig.go), but edgeAgent's own map keys carry that prefix
+// (e.g. "properties.desired.modules.factory-gw") — so this function
+// strips the prefix before calling ApplyDottedPatch (whose first-dotted-
+// segment matching assumes base's top-level keys are exactly what a
+// patch key's first segment names) and re-adds it afterward.
 
 // Merge applies patch on top of base, returning the fully layered
 // manifesttemplate.DeploymentManifest.
@@ -52,12 +66,14 @@ func Merge(base manifesttemplate.DeploymentManifest, patch deviceconfig.Patch) (
 	if edgeAgent == nil {
 		edgeAgent = map[string]any{}
 	}
-	for path, value := range patch.EdgeAgent {
-		segments := strings.Split(path, ".")
-		moduleName := segments[0]
-		moduleKey := manifesttemplate.ModuleKeyPrefix + moduleName
-		nestedPatch := buildNestedPatch(segments[1:], value)
-		edgeAgent[moduleKey] = deepMerge(edgeAgent[moduleKey], nestedPatch)
+	bareEdgeAgent := make(map[string]any, len(edgeAgent))
+	for key, value := range edgeAgent {
+		bareEdgeAgent[strings.TrimPrefix(key, manifesttemplate.ModuleKeyPrefix)] = value
+	}
+	merged := c.ApplyDottedPatch(bareEdgeAgent, patch.EdgeAgent)
+	edgeAgent = make(map[string]any, len(merged))
+	for name, value := range merged {
+		edgeAgent[manifesttemplate.ModuleKeyPrefix+name] = value
 	}
 	mc[manifesttemplate.EdgeAgentKey] = edgeAgent
 
@@ -81,44 +97,6 @@ func Merge(base manifesttemplate.DeploymentManifest, patch deviceconfig.Patch) (
 	}
 
 	return manifesttemplate.DeploymentManifestCodec.Decode(rawBase)
-}
-
-// buildNestedPatch wraps value in a chain of single-key maps, one per
-// remaining path segment — e.g. segments ["env","API_URL"] + value
-// "http://x" builds {"env": {"API_URL": "http://x"}}. Zero segments
-// (a bare module-name path) returns value unwrapped, since it targets
-// the WHOLE module, not a field inside it.
-func buildNestedPatch(segments []string, value any) any {
-	if len(segments) == 0 {
-		return value
-	}
-	result := value
-	for i := len(segments) - 1; i >= 0; i-- {
-		result = map[string]any{segments[i]: result}
-	}
-	return result
-}
-
-// deepMerge recursively merges patch onto base: when BOTH are
-// map[string]any, keys are merged recursively (patch wins on conflicts,
-// base's other keys survive untouched); otherwise patch REPLACES base
-// outright (covers scalars, arrays, nil, and type mismatches — the
-// "overwrite" half of "overwriting existing fields or adding to the
-// config").
-func deepMerge(base, patch any) any {
-	baseMap, baseOK := base.(map[string]any)
-	patchMap, patchOK := patch.(map[string]any)
-	if !baseOK || !patchOK {
-		return patch
-	}
-	result := make(map[string]any, len(baseMap)+len(patchMap))
-	for k, v := range baseMap {
-		result[k] = v
-	}
-	for k, v := range patchMap {
-		result[k] = deepMerge(result[k], v)
-	}
-	return result
 }
 
 // asObject type-asserts raw as map[string]any, returning a

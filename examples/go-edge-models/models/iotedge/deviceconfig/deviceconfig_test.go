@@ -4,6 +4,7 @@ import (
 	"errors"
 	"testing"
 
+	"github.com/DaniDeer/go-codex/codex"
 	manifesttemplate "github.com/DaniDeer/go-codex/examples/go-edge-models/models/iotedge/manifesttemplate"
 )
 
@@ -121,17 +122,19 @@ func TestPatchCodec_Decode_RejectsEdgeAgentKeyMissingModulePrefix(t *testing.T) 
 	if err == nil {
 		t.Fatal("Decode: want error for a $edgeAgent key missing the module-key prefix, got nil")
 	}
-	var prefixErr edgeAgentKeyPrefixError
+	// edgeAgentKeyPrefixError was promoted to codex.DottedKeyError when
+	// this bucket was rebuilt on codex.DottedPatchMapCodec.
+	var prefixErr codex.DottedKeyError
 	if !errors.As(err, &prefixErr) {
-		t.Fatalf("Decode error = %v (%T), want edgeAgentKeyPrefixError", err, err)
+		t.Fatalf("Decode error = %v (%T), want codex.DottedKeyError", err, err)
 	}
 	if prefixErr.Key != "not-prefixed-with-properties.desired.modules." {
-		t.Errorf("edgeAgentKeyPrefixError.Key = %q, want %q", prefixErr.Key, "not-prefixed-with-properties.desired.modules.")
+		t.Errorf("DottedKeyError.Key = %q, want %q", prefixErr.Key, "not-prefixed-with-properties.desired.modules.")
 	}
 }
 
-func TestEdgeAgentKeyPrefixError_LogValue(t *testing.T) {
-	err := edgeAgentKeyPrefixError{Key: "bad-key"}
+func TestDottedKeyError_LogValue(t *testing.T) {
+	err := codex.DottedKeyError{Key: "bad-key", Template: EdgeAgentPatchTemplate, Err: errors.New("boom")}
 	if err.Error() == "" {
 		t.Error("Error() should not be empty")
 	}

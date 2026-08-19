@@ -177,3 +177,61 @@ func TestMatchMQTTWildcard_Mismatch_FewerSegments(t *testing.T) {
 		t.Fatalf("want mismatchError, got %T: %v", err, err)
 	}
 }
+
+// ── MatchDottedWildcard ──────────────────────────────────────────────────────
+// Mirrors MatchMQTTWildcard's own test matrix exactly — same algorithm,
+// "." delimiter instead of "/".
+
+func TestMatchDottedWildcard_NamedVar(t *testing.T) {
+	vars, err := MatchDottedWildcard("properties.desired.modules.{moduleName}", "properties.desired.modules.factory-gw", wrapMismatchTest)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if vars["moduleName"] != "factory-gw" {
+		t.Fatalf("want moduleName=factory-gw, got %q", vars["moduleName"])
+	}
+}
+
+func TestMatchDottedWildcard_AnonymousWildcard(t *testing.T) {
+	vars, err := MatchDottedWildcard("modules.{moduleName}.env.+", "modules.factory-gw.env.API_URL", wrapMismatchTest)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if vars["moduleName"] != "factory-gw" {
+		t.Fatalf("want moduleName=factory-gw, got %q", vars["moduleName"])
+	}
+	if _, exists := vars["+"]; exists {
+		t.Fatal("want + not captured, but got entry in map")
+	}
+}
+
+func TestMatchDottedWildcard_TrailingHashCatchAll_MatchesZeroOrMore(t *testing.T) {
+	// Zero remaining segments — "#" must still match (bare module key).
+	vars, err := MatchDottedWildcard("modules.{moduleName}.#", "modules.factory-gw", wrapMismatchTest)
+	if err != nil {
+		t.Fatalf("unexpected error (zero remaining): %v", err)
+	}
+	if vars["#"] != "" {
+		t.Fatalf("want #=\"\" for zero remaining segments, got %q", vars["#"])
+	}
+
+	// Multiple remaining segments — "#" captures the whole opaque tail.
+	vars, err = MatchDottedWildcard("modules.{moduleName}.#", "modules.factory-gw.env.API_URL", wrapMismatchTest)
+	if err != nil {
+		t.Fatalf("unexpected error (multiple remaining): %v", err)
+	}
+	if vars["moduleName"] != "factory-gw" {
+		t.Fatalf("want moduleName=factory-gw, got %q", vars["moduleName"])
+	}
+	if vars["#"] != "env.API_URL" {
+		t.Fatalf("want #=env.API_URL, got %q", vars["#"])
+	}
+}
+
+func TestMatchDottedWildcard_LiteralMismatch(t *testing.T) {
+	_, err := MatchDottedWildcard("modules.{moduleName}.env", "devices.factory-gw.env", wrapMismatchTest)
+	var me mismatchError
+	if !errors.As(err, &me) {
+		t.Fatalf("want mismatchError, got %T: %v", err, err)
+	}
+}

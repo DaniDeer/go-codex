@@ -148,6 +148,8 @@ const (
 	FunctionKindReduce FunctionKind = "reduce"
 	// FunctionKindMapValues is a function created by MapValues or MapValuesK.
 	FunctionKindMapValues FunctionKind = "mapValues"
+	// FunctionKindPatch is a function created by Patch (applies a patch onto a base value).
+	FunctionKindPatch FunctionKind = "patch"
 )
 
 // FunctionSpec is the type-erased, schema-level descriptor of a function.

@@ -100,6 +100,15 @@ type FieldsPatch struct {
 // FieldsPatchCodec.Encode's existing EmptyPatchError into a generic
 // ConstraintError, a breaking behavior change this constraint is
 // deliberately kept opt-in to avoid.
+//
+// A GENERIC version of this exact guard now exists as
+// codex.NonEmptyPatch/codex.IsEmptyPatch/codex.EmptyPatchError for any
+// PartialStruct-built patch type that doesn't need the richer
+// module-name-carrying error this file's own EmptyPatchError provides —
+// this file's own NonEmptyFieldsPatch/EmptyPatchError are UNCHANGED,
+// not migrated, since they carry that extra context the generic version
+// intentionally omits. See docs/guides/wire-vocabulary.md's "Applying a
+// patch" section.
 var NonEmptyFieldsPatch = c.Constraint[FieldsPatch]{
 	Name: "non-empty-fields-patch",
 	Check: func(p FieldsPatch) bool {

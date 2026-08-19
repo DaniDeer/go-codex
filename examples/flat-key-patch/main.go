@@ -205,20 +205,6 @@ type TenantContainer struct {
 
 const twoPartPrefix = "properties.desired.modules."
 
-// twoPartKeyConstraint validates the full two-segment key on the wire.
-var twoPartKeyConstraint = codex.Constraint[string]{
-	Name: "two-part-module-key",
-	Check: func(v string) bool {
-		rest := strings.TrimPrefix(v, twoPartPrefix)
-		parts := strings.SplitN(rest, ".", 2)
-		return strings.HasPrefix(v, twoPartPrefix) && len(parts) == 2 &&
-			len(parts[0]) > 0 && len(parts[1]) > 0
-	},
-	Message: func(v string) string {
-		return fmt.Sprintf("key %q must be %q<tenant>.<name>", v, twoPartPrefix)
-	},
-}
-
 // tenantConstraint validates the tenant segment of the key.
 var tenantConstraint = codex.Constraint[string]{
 	Name:  "tenant-name",
@@ -228,8 +214,13 @@ var tenantConstraint = codex.Constraint[string]{
 	},
 }
 
-// moduleKeyStructCodec validates each extracted field of ModuleKey independently.
-var moduleKeyStructCodec = codex.Struct[ModuleKey](
+// moduleKeyFields declares ModuleKey's two segments — the SAME
+// RequiredField declarations codex.Struct/PathParam/TopicParam already
+// use, passed directly to codex.DottedKeyCodec below instead of wrapped
+// in codex.Struct (DottedKeyCodec merges captured template vars into K
+// via this exact field list, through the SAME DecodeVars/EncodeVars
+// machinery those boundaries already use).
+var moduleKeyFields = []codex.FieldCodec[ModuleKey]{
 	codex.RequiredField("tenant", codex.String().Refine(tenantConstraint),
 		func(k ModuleKey) string { return k.Tenant },
 		func(k *ModuleKey, v string) { k.Tenant = v },
@@ -238,30 +229,23 @@ var moduleKeyStructCodec = codex.Struct[ModuleKey](
 		func(k ModuleKey) string { return k.Name },
 		func(k *ModuleKey, v string) { k.Name = v },
 	),
-)
+}
 
-// twoPartKeyCodec: wire validates the full key; domain validates each segment.
+// twoPartKeyCodec: an MQTT-style DOTTED-KEY TEMPLATE — the SAME
+// "{varName}" vocabulary MQTT topic templates already use, "." as the
+// level delimiter instead of "/". Each "{varName}" segment is captured
+// and merged into ModuleKey via moduleKeyFields (tenant/name segment
+// constraints run exactly as before — nothing about validation changed,
+// only how the shape is DECLARED: a template string instead of a
+// hand-rolled full-key Constraint + manual strings.SplitN parsing).
 //
 //	Decode: "properties.desired.modules.tenant-acme.cv-writer-kvrocks"
-//	      → split on first "." after prefix → ModuleKey{Tenant:"tenant-acme", Name:"cv-writer-kvrocks"}
-//	      → moduleKeyStructCodec validates each field
+//	      → template match → vars{tenant:"tenant-acme", name:"cv-writer-kvrocks"}
+//	      → DecodeVars(moduleKeyFields) → ModuleKey{...}
 //
-//	Encode: ModuleKey → validate fields → reassemble → validate full key.
-var twoPartKeyCodec = codex.MapCodecValidated(
-	codex.String().Refine(twoPartKeyConstraint),
-	moduleKeyStructCodec,
-	func(fullKey string) (ModuleKey, error) {
-		rest := strings.TrimPrefix(fullKey, twoPartPrefix)
-		parts := strings.SplitN(rest, ".", 2)
-		if len(parts) != 2 {
-			return ModuleKey{}, fmt.Errorf("key %q: expected <tenant>.<name> after prefix", fullKey)
-		}
-		return ModuleKey{Tenant: parts[0], Name: parts[1]}, nil
-	},
-	func(k ModuleKey) (string, error) {
-		return twoPartPrefix + k.Tenant + "." + k.Name, nil
-	},
-)
+//	Encode: ModuleKey → EncodeVars(moduleKeyFields) (validates both
+//	        fields) → vars → substituted into template → full key.
+var twoPartKeyCodec = codex.DottedKeyCodec(twoPartPrefix+"{tenant}.{name}", moduleKeyFields...)
 
 // tenantContainersCodec: K = ModuleKey (struct), V = ModuleConfig.
 // EntrySlice accepts any comparable K — structs with only comparable fields qualify.
@@ -315,6 +299,36 @@ var cvWriterCodec = codex.Struct[Container](
 		func(c Container) Container { return c },
 		func(outer *Container, inner Container) { *outer = inner },
 	),
+)
+
+// ── Section 12: DottedPatchMapCodec — MQTT-style wildcards for a patch bucket ──
+//
+// Unlike Sections 9-11 (which decode a map into TYPED values via
+// EntrySlice/Map), a real device-config PATCH bucket has entries whose
+// SHAPE varies per key — a whole new module, one top-level field, or one
+// specific env var — so values stay OPAQUE (any), and the KEY SHAPE
+// itself is what needs validating. codex.DottedPatchMapCodec expresses
+// that shape as an MQTT-style TEMPLATE: "{varName}" captures/validates
+// one named segment; "+" matches exactly one ANONYMOUS segment; "#" (as
+// the last segment) matches the remaining path WHOLESALE, opaque.
+//
+// envVarPatchCodec demonstrates the "+" wildcard specifically for env
+// vars (the scenario prompting this feature): the template only accepts
+// keys shaped "<moduleName>.env.<anything>" — exactly ONE env var name,
+// nothing deeper — rejecting a key that reaches further (unlike "#",
+// which would accept arbitrary depth).
+var envVarPatchCodec = codex.DottedPatchMapCodec(
+	twoPartPrefix+"{moduleName}.env.+",
+	codex.KeyVarConstraint{Name: "moduleName", Constraint: containerNameConstraint},
+)
+
+// anyDepthPatchCodec demonstrates "#": the template accepts a bare
+// module key (zero remaining segments), one top-level field, or
+// arbitrary-depth paths — mirroring examples/go-edge-models's real
+// deviceconfig.Patch.EdgeAgent bucket exactly.
+var anyDepthPatchCodec = codex.DottedPatchMapCodec(
+	twoPartPrefix+"{moduleName}.#",
+	codex.KeyVarConstraint{Name: "moduleName", Constraint: containerNameConstraint},
 )
 
 // ── Observer — metrics (counting) ─────────────────────────────────────────────
@@ -579,6 +593,9 @@ func main() {
 
 	// ── 11. Static key — constant name injected via MapCodecSafe ───────────
 	runStaticKeyDemo()
+
+	// ── 12. DottedPatchMapCodec — MQTT-style wildcards for a patch bucket ──
+	runDottedPatchWildcardDemo()
 }
 
 func readFile(path string) string {
@@ -909,4 +926,62 @@ func runStaticKeyDemo() {
 	fmt.Printf("  Round-trip: Name=%s Image=%s Status=%s\n",
 		roundtripped.Name, roundtripped.Image, roundtripped.Status)
 	fmt.Printf("  Wire JSON: %s\n", jsonBytes)
+}
+
+// runDottedPatchWildcardDemo shows Section 12: codex.DottedPatchMapCodec
+// validating a PATCH BUCKET's key SHAPE using MQTT-style wildcards — "+"
+// for exactly one anonymous segment (the concrete env-var scenario that
+// prompted this feature), "#" for arbitrary remaining depth (mirroring
+// examples/go-edge-models's real deviceconfig.Patch.EdgeAgent bucket).
+func runDottedPatchWildcardDemo() {
+	fmt.Println("\n=== 12. DottedPatchMapCodec — MQTT-style wildcards for a patch bucket ===")
+
+	// ── 12a. "+" — exactly one env var, nothing deeper ─────────────────────
+	//
+	// Template: "properties.desired.modules.{moduleName}.env.+"
+	// Accepts:    "...cv-writer.env.API_URL"   (exactly one env var name)
+	// Rejects:    "...cv-writer.env.API_URL.extra" (reaches too deep)
+	fmt.Println("\n  -- envVarPatchCodec (template: {moduleName}.env.+) --")
+	envPatch := map[string]any{
+		twoPartPrefix + "cv-writer.env.API_URL": "https://api.example.com",
+	}
+	dec, err := envVarPatchCodec.Decode(envPatch)
+	if err != nil {
+		fmt.Println("  decode error:", err)
+	} else {
+		fmt.Printf("  Decoded (prefix-stripped, opaque value): %+v\n", dec)
+	}
+
+	tooDeep := map[string]any{
+		twoPartPrefix + "cv-writer.env.API_URL.extra": "nope",
+	}
+	_, err = envVarPatchCodec.Decode(tooDeep)
+	fmt.Printf("  Rejected (reaches deeper than one env var): %v\n", err)
+
+	// ── 12b. "#" — arbitrary depth, mirrors a real device-config patch ─────
+	//
+	// Template: "properties.desired.modules.{moduleName}.#"
+	// Accepts a bare module key (zero remaining segments), one top-level
+	// field, or an arbitrary-depth path — every one of these is a single
+	// map entry codex.ApplyDottedPatch can then merge onto a base module.
+	fmt.Println("\n  -- anyDepthPatchCodec (template: {moduleName}.#) --")
+	devicePatch := map[string]any{
+		twoPartPrefix + "cv-writer":               map[string]any{"status": "stopped"}, // bare module key
+		twoPartPrefix + "cv-writer.env.API_URL":   "https://api.example.com",           // 2-level path
+		twoPartPrefix + "cv-writer.restartPolicy": "always",                            // 1-level path
+	}
+	dec, err = anyDepthPatchCodec.Decode(devicePatch)
+	if err != nil {
+		fmt.Println("  decode error:", err)
+		return
+	}
+	keys := make([]string, 0, len(dec))
+	for k := range dec {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	fmt.Printf("  Decoded %d entries (prefix-stripped, ready for codex.ApplyDottedPatch):\n", len(dec))
+	for _, k := range keys {
+		fmt.Printf("    %-30s -> %v\n", k, dec[k])
+	}
 }

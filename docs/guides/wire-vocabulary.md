@@ -18,7 +18,13 @@ Put ALL of the following in one file, grouped by concern:
    keys a wire format uses (e.g. `"modulesContent"`, `"$edgeAgent"`).
 2. **Dotted-key prefixes + codecs** — for keys shaped "prefix + validated
    name segment", use [`codex.PrefixedKeyCodec`](../concepts/codec.md#prefixedkeycodec--a-prefix--validated-name-segment-convenience)
-   instead of hand-rolling a `Constraint` + `MapCodecValidated` pair.
+   (the more minimal option) or [`codex.DottedKeyCodec`](../concepts/codec.md#dottedkeycodecdottedpatchmapcodec-mqtt-style-dotted-key-templates)
+   with a single-`{var}` template (when the package already uses
+   `DottedKeyCodec`/`DottedPatchMapCodec` for other, multi-segment or
+   wildcard keys, for one consistent vocabulary) — instead of
+   hand-rolling a `Constraint` + `MapCodecValidated` pair. See the
+   [dotted-key decision guide](#dotted-key-decision-guide) below for the
+   full "which one do I need" table.
 3. **File/directory path templates** — build these with plain
    `fmt.Sprintf` (readable, and a `var` rather than `const` since
    `fmt.Sprintf` isn't a constant expression — evaluated once at package
@@ -40,7 +46,7 @@ Put ALL of the following in one file, grouped by concern:
 `examples/go-edge-models` has two real files following this recipe —
 read them directly rather than a synthesized snippet:
 
-- [`models/iotedge/manifesttemplate/keys.go`](https://github.com/DaniDeer/go-codex/blob/main/examples/go-edge-models/models/iotedge/manifesttemplate/keys.go) — wire-key constants (#1) + dotted-key codecs via `PrefixedKeyCodec` (#2), for a deployment manifest's `$edgeAgent`/`$edgeHub` buckets. See the sibling [`lifecycle.go`](https://github.com/DaniDeer/go-codex/blob/main/examples/go-edge-models/models/iotedge/manifesttemplate/lifecycle.go)'s `TypeCodec` for #5 (fixed-value fields).
+- [`models/iotedge/manifesttemplate/keys.go`](https://github.com/DaniDeer/go-codex/blob/main/examples/go-edge-models/models/iotedge/manifesttemplate/keys.go) — wire-key constants (#1) + dotted-key codecs via `DottedKeyCodec`'s single-`{var}` template form (#2), for a deployment manifest's `$edgeAgent`/`$edgeHub` buckets. See the sibling [`lifecycle.go`](https://github.com/DaniDeer/go-codex/blob/main/examples/go-edge-models/models/iotedge/manifesttemplate/lifecycle.go)'s `TypeCodec` for #5 (fixed-value fields).
 - [`models/iotedge/usecase/config.go`](https://github.com/DaniDeer/go-codex/blob/main/examples/go-edge-models/models/iotedge/usecase/config.go) — path templates via `fmt.Sprintf` (#3) + named identifier types (#4), for a use case's on-disk file layout. This file has no fixed-value fields of its own (no `codex.Struct` at all — only path templates and identifier types), so #5 doesn't apply here; see `lifecycle.go` instead.
 
 Both files are the FIRST thing a maintainer reads to answer "what does
@@ -56,15 +62,22 @@ in the recipe above composes primitives that already exist:
 | Concern | Primitive | New in this guide? |
 |---|---|---|
 | Wire-key constants | plain Go `const` | no |
-| Dotted-key codec | `codex.PrefixedKeyCodec` | **yes** — generalizes a recipe that used to be hand-rolled per package |
+| Dotted-key codec (prefix + exactly one name segment, minimal constructor) | `codex.PrefixedKeyCodec` | **yes** — generalizes a recipe that used to be hand-rolled per package |
+| Dotted-key codec (single-`{var}` template — same shape as `PrefixedKeyCodec`, via the template mechanism) | `codex.DottedKeyCodec` | **yes** — see `manifesttemplate.ModuleNameCodec`/`RouteNameCodec` |
+| Dotted-key codec (fixed multi-segment struct key, no wildcards) | `codex.DottedKeyCodec` | **yes** — MQTT-style template syntax, generalizes what `examples/flat-key-patch`'s former `twoPartKeyCodec` hand-rolled |
 | Path templates | `ports.FilePathParam`/`DirPathParam`, `fmt.Sprintf` | no |
 | Named identifier types | `codex.MapCodecSafe` + smart constructor (`.New`) | no |
 | REST path / event topic vars | `rest.NewPathParam`/`events.NewTopicParam` | no |
 | Fixed-value ("constant") fields | `codex.Eq`/`codex.Pure` | no |
+| Applying a patch (flat) | `codex.ApplyPatch` | **yes** — new in-memory primitive, previously only bundled inside file-I/O machinery |
+| Applying a patch (dotted-path) | `codex.ApplyDottedPatch`/`ApplyDottedPatchTo`/`DottedPatchMapCodec` | **yes** — generalizes what `finaldeviceconfig.Merge`/`deviceconfig.PatchCodec` used to hand-roll |
 
-The ONE genuine gap closed here is `codex.PrefixedKeyCodec` — a small,
-purely-compositional addition to the `codex` package (see
-[Codec concepts](../concepts/codec.md#prefixedkeycodec--a-prefix--validated-name-segment-convenience)).
+The genuine gaps closed here are `codex.PrefixedKeyCodec`, `DottedKeyCodec`,
+and the patch-application primitives (`ApplyPatch`/`ApplyDottedPatch`/
+`DottedPatchMapCodec`) — small, purely-compositional additions to the
+`codex` package (see
+[Codec concepts](../concepts/codec.md#prefixedkeycodec--a-prefix--validated-name-segment-convenience)
+and [Applying a patch](../concepts/codec.md#applying-a-patch-applypatch-flat-vs-applydottedpatch-dotted-path)).
 Path/route/topic-variable declaration ALREADY has a fully declarative,
 consistent story across boundaries (`rest.PathParam`, `events.TopicParam`,
 `ports.FilePathParam`/`DirPathParam`, `ports.CacheKeyParam`) — this guide
@@ -188,3 +201,60 @@ Two ideas considered and rejected for this recipe:
   static-analysis/lint tool, and would work against `Eq`/`Pure`'s own
   reuse benefit (the same fixed value validated identically wherever the
   format legitimately reuses it).
+
+## Applying a patch: flat and dotted-path
+
+A package that hand-rolls a "patch" wire format (like `deviceconfig.Patch`
+did) usually needs TWO more pieces beyond the recipe above: something to
+declare the patch's own wire-key vocabulary (if its keys are dynamic/
+dotted), and something to actually APPLY the patch onto a base value.
+Both are now covered by existing `codex` primitives:
+
+- **Applying the patch** — `codex.ApplyPatch` (fixed field list) or
+  `codex.ApplyDottedPatch`/`ApplyDottedPatchTo` (dotted paths of
+  arbitrary depth) — see
+  [Codec concepts: Applying a patch](../concepts/codec.md#applying-a-patch-applypatch-flat-vs-applydottedpatch-dotted-path).
+- **Declaring the dynamic-key wire bucket** — `codex.DottedKeyCodec`
+  (typed, no wildcards) or `codex.DottedPatchMapCodec` (opaque bucket,
+  MQTT-style wildcards) — see
+  [Codec concepts: DottedKeyCodec/DottedPatchMapCodec](../concepts/codec.md#dottedkeycodec--dottedpatchmapcodec-mqtt-style-dotted-key-templates).
+
+### Dotted-key decision guide
+
+go-codex already has an MQTT topic-matching engine
+(`internal/templatematch.MatchMQTTWildcard`: `{varName}`/`+`/`#`).
+`codex.DottedKeyCodec`/`DottedPatchMapCodec` adapt the SAME algorithm to
+dotted wire keys (`"."` as the level delimiter instead of `"/"`) — giving
+a package's own dotted-key vocabulary the SAME declarative template
+syntax MQTT topics already use, instead of hand-rolled `Constraint` +
+manual `strings.Split`/`SplitN` parsing.
+
+| You have... | Use |
+|---|---|
+| A dotted key extracting exactly ONE name segment after a fixed prefix, wrapped as ONE named string type (e.g. `"user:42"` → `UserKey("42")`), and the package has NO other dotted-key needs | `codex.PrefixedKeyCodec` — the more minimal constructor, no `FieldCodec` ceremony |
+| The SAME single-segment shape, but the package already uses `DottedKeyCodec`/`DottedPatchMapCodec` for OTHER keys (one consistent template vocabulary) — e.g. `examples/go-edge-models`'s `manifesttemplate.ModuleNameCodec`/`RouteNameCodec` (`"properties.desired.modules.{name}"` → `ModuleName("cv-writer")`) | `codex.DottedKeyCodec` with a single-`{var}` template |
+| A dotted key extracting a FIXED, KNOWN number of named segments into a STRUCT key (e.g. `"properties.desired.modules.{tenant}.{name}"` → `ModuleKey{Tenant, Name}`) | `codex.DottedKeyCodec` |
+| A dotted key needing `+`/`#` WILDCARDS — a whole opaque-value BUCKET where the key shape varies per entry (e.g. `"{moduleName}.#"` for arbitrary depth, or `"{moduleName}.env.+"` for exactly one env var) | `codex.DottedPatchMapCodec` |
+
+**Wildcards are match-only**: `+`/`#` can validate/extract from an
+ALREADY-EXISTING key (many different concrete keys, one shape), but have
+no meaning when building exactly ONE new concrete key from named values
+(there's no single value to substitute for "any segment") — this is
+exactly why `DottedKeyCodec` (builds one typed key) PANICS if its
+template contains a wildcard, while `DottedPatchMapCodec` (validates a
+whole bucket of existing keys) is where wildcards belong.
+
+`examples/go-edge-models`'s `deviceconfig.PatchCodec` (the `$edgeAgent`
+bucket, now `DottedPatchMapCodec(ModuleKeyPrefix+"{moduleName}.#", ...)`)
+and `finaldeviceconfig.Merge` (the actual patch-application step, needs
+ZERO changes — it consumes already-decoded `map[string]any`, agnostic to
+which codec produced it) are both built on these primitives — read
+[`deviceconfig.go`](https://github.com/DaniDeer/go-codex/blob/main/examples/go-edge-models/models/iotedge/deviceconfig/deviceconfig.go)
+and
+[`finaldeviceconfig/merge.go`](https://github.com/DaniDeer/go-codex/blob/main/examples/go-edge-models/models/iotedge/finaldeviceconfig/merge.go)
+directly for the real, in-repo reference. `examples/flat-key-patch`'s
+Section 10 (`DottedKeyCodec`) and new Section 12 (`DottedPatchMapCodec`
+with `+`/`#`) demonstrate both constructors standalone. Typed per-path
+LEAF validation (e.g. "validate the value at
+`factory-gw.settings.createOptions` specifically") remains a deferred,
+still-open idea.

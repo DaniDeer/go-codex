@@ -385,10 +385,67 @@ if errors.As(err, &ce) {
 
 `MapValuesK` validates all keys atomically before processing any value — one bad key returns `InputError → KeyError → ConstraintError` immediately.
 
+## Applying a patch: `forge.Patch`
+
+`forge.Patch` extends the same "governed wrapper around an existing primitive" idea to [`codex.ApplyPatch`](codec.md#applying-a-patch-applypatch-flat-vs-applydottedpatch-dotted-path) — applying a `PartialStruct`-built patch onto a base value as a named, versioned, contract-hashed pipeline step:
+
+```go
+applyConfigPatch := forge.Patch("applyConfigPatch", "1.0.0",
+    appConfigCodec, appConfigPatchCodec,
+    forge.FunctionMeta{Description: "Applies a partial override onto the current config."},
+)
+
+updated, err := applyConfigPatch.Apply(forge.PatchInput[AppConfig, AppConfigPatch]{
+    Base:  currentConfig,
+    Patch: patch,
+})
+```
+
+`FunctionSpec.Kind == FunctionKindPatch` (`"patch"`), and `Spec.Inputs`
+carries TWO named ports (`"base"`, `"patch"`) — this falls out of
+`NewFunction`'s existing `inputSpecs` machinery automatically, since
+`Patch` builds its input codec as a `codex.Struct[PatchInput[T,P]]` with
+one field per port. `Patch` delegates entirely to `NewFunction`, so
+`InputError`/`OutputError`/`RefinementError` and `stats.PipelineObserver.
+RecordApply` all work exactly as they do for any other forge Function —
+no special-casing needed to register it in a `Registry` or see it in the
+rendered pipeline YAML.
+
+Reach for `forge.Patch` when the "apply a patch" step needs to
+participate in a `Registry`'s pipeline spec/observer metrics alongside
+other governed steps (e.g. an ingest pipeline that reads a raw patch off
+a broker, applies it, then feeds the result into further governed
+validation/alerting steps). A bare `codex.ApplyPatch` call is sufficient
+when no such governance is needed.
+
+**Applying a SEQUENCE of patches** already works today with zero new API
+— compose `forge.Reduce` with `codex.ApplyPatch`:
+
+```go
+applyAll := forge.Reduce("applyAllPatches", "1.0.0",
+    patchCodec, baseCodec, initialBase,
+    func(acc AppConfig, p AppConfigPatch) AppConfig {
+        updated, _ := codex.ApplyPatch(acc, baseCodec, p, patchCodec)
+        return updated
+    },
+)
+```
+
+Caveat: `Reduce`'s `step` function has no error return today (a
+pre-existing `Reduce` limitation, not introduced by this feature) — a
+real caller should either validate each patch BEFORE folding, or use a
+richer `Acc` type (e.g. wrapping a running error alongside the value) if
+`ApplyPatch` might fail mid-sequence.
+
+There is no dedicated `forge` builtin for the DOTTED-path case
+(`codex.ApplyDottedPatchTo`) — wrap it in `forge.NewFunction` by hand if
+a governed dotted-patch step is ever needed.
+
 ## See also
 
 - [examples/forge-oee](https://github.com/DaniDeer/go-codex/tree/main/examples/forge-oee) — OEE KPI computation, governance, Compose, MeasuredCodec
 - [examples/forge-collection](https://github.com/DaniDeer/go-codex/tree/main/examples/forge-collection) — Map, Filter, Reduce, MapValuesK on sensor batches
+- [examples/forge-patch](https://github.com/DaniDeer/go-codex/tree/main/examples/forge-patch) — forge.Patch applying a partial config override, registered in a Registry
 - [examples/oee-chain](https://github.com/DaniDeer/go-codex/tree/main/examples/oee-chain) — full three-layer chain: codex + api/events + forge + AsyncAPI + pipeline spec
 
 ## Binary data in forge functions

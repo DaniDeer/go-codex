@@ -3,12 +3,10 @@ package deviceconfig
 import (
 	"fmt"
 	"log/slog"
-	"strings"
 
 	c "github.com/DaniDeer/go-codex/codex"
 	manifesttemplate "github.com/DaniDeer/go-codex/examples/go-edge-models/models/iotedge/manifesttemplate"
 	"github.com/DaniDeer/go-codex/schema"
-	v "github.com/DaniDeer/go-codex/validate"
 )
 
 // ── Patch ──────────────────────────────────────────────────────────────────────
@@ -108,23 +106,8 @@ func (e EmptyPatchError) LogValue() slog.Value {
 	return slog.GroupValue()
 }
 
-// edgeAgentKeyConstraint validates a Patch.EdgeAgent map key's FIRST
-// dotted segment as a valid module-name slug — the same constraint
-// manifesttemplate.ModuleNameCodec applies to a whole module key.
-// Further segments (if any) are not validated here.
-var edgeAgentKeyConstraint = c.Constraint[string]{
-	Name: "edge-agent-patch-key",
-	Check: func(s string) bool {
-		if s == "" {
-			return false
-		}
-		first, _, _ := strings.Cut(s, ".")
-		return v.Slug.Check(first)
-	},
-	Message: func(s string) string {
-		return fmt.Sprintf("edge-agent patch key %q must start with a valid module-name slug", s)
-	},
-}
+// edgeAgentPatchCodec is declared in keys.go, this package's single
+// source of truth for its own dotted-key vocabulary.
 
 // PatchCodec is Patch's canonical codec — HAND-ROLLED (like
 // modulepatch.FieldsPatchCodec) because Patch's keys are DYNAMIC
@@ -139,12 +122,9 @@ var PatchCodec = c.Codec[Patch]{
 		modulesContent := map[string]any{}
 
 		if len(p.EdgeAgent) > 0 {
-			edgeAgent := map[string]any{}
-			for key, val := range p.EdgeAgent {
-				if err := c.String().Refine(edgeAgentKeyConstraint).Validate(key); err != nil {
-					return nil, err
-				}
-				edgeAgent[manifesttemplate.ModuleKeyPrefix+key] = val
+			edgeAgent, err := edgeAgentPatchCodec.Encode(p.EdgeAgent)
+			if err != nil {
+				return nil, err
 			}
 			modulesContent[manifesttemplate.EdgeAgentKey] = edgeAgent
 		}
@@ -186,18 +166,11 @@ var PatchCodec = c.Codec[Patch]{
 
 		p := Patch{}
 		if edgeAgentRaw, ok := modulesContent[manifesttemplate.EdgeAgentKey]; ok {
-			edgeAgent, err := asObject(edgeAgentRaw, "")
+			edgeAgent, err := edgeAgentPatchCodec.Decode(edgeAgentRaw)
 			if err != nil {
 				return Patch{}, err
 			}
-			p.EdgeAgent = make(map[string]any, len(edgeAgent))
-			for key, val := range edgeAgent {
-				suffix := strings.TrimPrefix(key, manifesttemplate.ModuleKeyPrefix)
-				if suffix == key {
-					return Patch{}, edgeAgentKeyPrefixError{Key: key}
-				}
-				p.EdgeAgent[suffix] = val
-			}
+			p.EdgeAgent = edgeAgent
 		}
 		if edgeHubRaw, ok := modulesContent[manifesttemplate.EdgeHubKey]; ok {
 			edgeHub, err := asObject(edgeHubRaw, "")
@@ -234,25 +207,6 @@ var PatchCodec = c.Codec[Patch]{
 }
 
 func boolPtr(b bool) *bool { return &b }
-
-// edgeAgentKeyPrefixError reports a decoded $edgeAgent key that doesn't
-// start with manifesttemplate.ModuleKeyPrefix — a malformed patch file,
-// not a caller-facing validation of Patch.EdgeAgent's own (already
-// prefix-free) keys.
-type edgeAgentKeyPrefixError struct {
-	Key string
-}
-
-func (e edgeAgentKeyPrefixError) Error() string {
-	return "deviceconfig: $edgeAgent key " + e.Key + " must start with " + manifesttemplate.ModuleKeyPrefix
-}
-
-// LogValue implements slog.LogValuer for structured logging.
-func (e edgeAgentKeyPrefixError) LogValue() slog.Value {
-	return slog.GroupValue(
-		slog.String("key", e.Key),
-	)
-}
 
 // asObject type-asserts raw as map[string]any, returning a
 // TypeMismatchError mentioning the FIRST key the caller is about to look

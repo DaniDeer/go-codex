@@ -32,7 +32,7 @@ go-codex is a Go port of the core ideas from Haskell's [autodocodec](https://hac
 | `render/openapi`               | Renders `schema.Schema` as OpenAPI 3.1 `components/schemas`; `DocumentBuilder` for full spec                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            | `schema`, `route`, `render/internal/schemarender`, external libs           |
 | `render/asyncapi/v2`           | Renders channels and schemas as a full AsyncAPI 2.6 document (frozen)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   | `schema`, `render/internal/schemarender`, external libs                    |
 | `render/asyncapi/v3`           | Renders channels and schemas as a full AsyncAPI 3.0 document; separate `channels` + `operations` top-level keys; per-operation `security`; `Server.Security`; `ChannelItem.Address`; `AddSecurityScheme(name, route.SecurityScheme)`; **request-reply**: `OperationReply{Channel string}` + `Operation.Reply *OperationReply` — set on send operations to emit `reply: {channel: {$ref: ...}}` in the spec; `DocumentBuilder.AddReplyChannel(name, ChannelItem)` — registers a channel as reply-only (bypasses the "must have subscribe or publish" validation; reply channels are referenced by `OperationReply.Channel`)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              | `schema`, `route`, `render/internal/schemarender`, external libs           |
-| `forge`                        | Governed, signed KPI computation: `Measured[T]` boundary wrapper with provenance; `MeasuredCodec[T]` struct codec; `Function[In,Out]` generic derivation function with SHA-256 contract hash — single-input or struct-input (use `codex.Struct[T]` for multi-input); `NewFunction[In,Out](name, version string, input codex.Codec[In], output codex.Codec[Out], fn, opts...)` constructor — infallible (panics on empty name/version); port names for pipeline graph-edge inference are inferred from `codec.Schema.Title` (set via `.WithTitle("name")`); struct codec properties auto-expand to individual `PortSpec` entries; scalar codecs default to `"input"` / `"output"` when title is empty; `Compose[A,B,Out]` for type-safe chaining — infallible; `Registry` fluent builder (`NewRegistry(title, version string).WithDescription().WithAuthor().WithApproval(approvedBy, approvedAt).WithObserver()`) + `PipelineSpec` for graph inference; `PipelineInfo{Title, Version, Description, Author, ApprovedBy, ApprovedAt}` — pipeline-level governance mirrors `FunctionMeta` at the pipeline envelope; `render/pipeline` emits `author`/`approvedBy`/`approvedAt` under `info:` when set; `FunctionOpt` interface — primary option is `FunctionMeta{Description, Author, ApprovedBy, ApprovedAt string}` struct literal (matches `RouteMeta` / `ChannelMeta` pattern); pipeline-level cross-input refinement via `WithRefinement[In](func(In)error)` — preferred: cross-field constraints via `codex.RefineFunc` on the input struct codec surface as `InputError`; `WithRefinement` surfaces as `RefinementError`; Apply sequence: input codec validation → optional cross-input refinement → compute → output codec validation; typed errors: `InputError`, `OutputError`, `ApplyError`, `RefinementError{Function,Err}`; `FunctionKind` typed constants: `FunctionKindScalar`(`""`), `FunctionKindMap`, `FunctionKindFilter`, `FunctionKindReduce`, `FunctionKindMapValues`; `render/pipeline` omits `kind:` key for `FunctionKindScalar` (stored as empty string — `NewFunction`/`Compose` never write `Kind`, so scalar functions have `Kind==""` by default); `FunctionSpec.Kind FunctionKind`, `FunctionSpec.Inputs []PortSpec`, `FunctionSpec.Output PortSpec`; collection ops: `Map` (lift fn over slice), `Filter` (predicate over slice, element port name inferred from `elemCodec.Schema.Title`), `Reduce` (fold slice, elem+acc port names from codec titles), `MapValues` (lift fn over `map[string]_`, no key validation), `MapValuesK[K]` (lift fn over `map[K]_` with key codec validation — validates all keys atomically before any value is processed; invalid key → `InputError → KeyError → ConstraintError`; `Kind=FunctionKindMapValues`, `Wraps=innerFn.Spec.Name` in pipeline YAML)                                                                                                                                                                | `codex`, `schema`, `stats`, stdlib (`crypto/sha256`, `encoding/json`)      |
+| `forge`                        | Governed, signed KPI computation: `Measured[T]` boundary wrapper with provenance; `MeasuredCodec[T]` struct codec; `Function[In,Out]` generic derivation function with SHA-256 contract hash — single-input or struct-input (use `codex.Struct[T]` for multi-input); `NewFunction[In,Out](name, version string, input codex.Codec[In], output codex.Codec[Out], fn, opts...)` constructor — infallible (panics on empty name/version); port names for pipeline graph-edge inference are inferred from `codec.Schema.Title` (set via `.WithTitle("name")`); struct codec properties auto-expand to individual `PortSpec` entries; scalar codecs default to `"input"` / `"output"` when title is empty; `Compose[A,B,Out]` for type-safe chaining — infallible; `Registry` fluent builder (`NewRegistry(title, version string).WithDescription().WithAuthor().WithApproval(approvedBy, approvedAt).WithObserver()`) + `PipelineSpec` for graph inference; `PipelineInfo{Title, Version, Description, Author, ApprovedBy, ApprovedAt}` — pipeline-level governance mirrors `FunctionMeta` at the pipeline envelope; `render/pipeline` emits `author`/`approvedBy`/`approvedAt` under `info:` when set; `FunctionOpt` interface — primary option is `FunctionMeta{Description, Author, ApprovedBy, ApprovedAt string}` struct literal (matches `RouteMeta` / `ChannelMeta` pattern); pipeline-level cross-input refinement via `WithRefinement[In](func(In)error)` — preferred: cross-field constraints via `codex.RefineFunc` on the input struct codec surface as `InputError`; `WithRefinement` surfaces as `RefinementError`; Apply sequence: input codec validation → optional cross-input refinement → compute → output codec validation; typed errors: `InputError`, `OutputError`, `ApplyError`, `RefinementError{Function,Err}`; `FunctionKind` typed constants: `FunctionKindScalar`(`""`), `FunctionKindMap`, `FunctionKindFilter`, `FunctionKindReduce`, `FunctionKindMapValues`, `FunctionKindPatch`; `render/pipeline` omits `kind:` key for `FunctionKindScalar` (stored as empty string — `NewFunction`/`Compose` never write `Kind`, so scalar functions have `Kind==""` by default); `FunctionSpec.Kind FunctionKind`, `FunctionSpec.Inputs []PortSpec`, `FunctionSpec.Output PortSpec`; collection ops: `Map` (lift fn over slice), `Filter` (predicate over slice, element port name inferred from `elemCodec.Schema.Title`), `Reduce` (fold slice, elem+acc port names from codec titles), `MapValues` (lift fn over `map[string]_`, no key validation), `MapValuesK[K]` (lift fn over `map[K]_` with key codec validation — validates all keys atomically before any value is processed; invalid key → `InputError → KeyError → ConstraintError`; `Kind=FunctionKindMapValues`, `Wraps=innerFn.Spec.Name` in pipeline YAML); `Patch[T,P](name, version, baseCodec, patchCodec, opts...) *Function[PatchInput[T,P], T]` — applies a `codex.PartialStruct`-built patch onto a base value via `codex.ApplyPatch` (governed wrapper, `Kind=FunctionKindPatch`, two named input ports "base"/"patch" from `inputSpecs`'s existing struct-field-splitting, delegates entirely to `NewFunction` for error/observer wiring); `PatchInput[T,P]{Base T, Patch P}` — the two-value input shape (both supplied per-call, unlike `Reduce`'s curried `init`)                                                                                                                                                                | `codex`, `schema`, `stats`, stdlib (`crypto/sha256`, `encoding/json`)      |
 | `render/pipeline`              | Renders a `forge.PipelineSpec` as a `pipelineSpec` YAML document (mirrors `render/openapi` / `render/asyncapi`)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         | `forge`, `schema`, `render/internal/schemarender`, external libs           |
 | `render/stream`                | Renders a `stream.TopologySpec` as a `streamTopology` YAML document; `Render(spec stream.TopologySpec) ([]byte, error)` — analogous to `render/pipeline.Render` for forge; each step emits `kind`, `name`, `description`; apply steps also emit `function`, `version`, `hash` (from `forge.FunctionSpec.Hash`) | `stream`, external libs (`gopkg.in/yaml.v3`)                               |
 | `api/internal`                 | Shared helpers for `api/rest`, `api/events`, and `api/mcp` (template variable parsing and substitution); not part of the public API                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     | `codex`                                                                    |
@@ -343,21 +343,159 @@ var celsiusCodec = codex.MapCodecValidated(
 
 ## `PrefixedKeyCodec`: Dotted/Namespaced Wire-Key Convenience
 
-`PrefixedKeyCodec[B ~string](prefix string, nameConstraint codex.Constraint[string]) codex.Codec[B]` generalizes the "prefix + validated-name-segment" recipe for a dotted/namespaced wire key (e.g. `"properties.desired.modules.cv-writer"`) into one constructor — built on `MapCodecSafe` + `MapCodecValidated` internally, so it produces the IDENTICAL two-layer validation those hand-rolled ad hoc across the codebase (see `examples/flat-key-patch`'s `containerKeyCodec` and `examples/go-edge-models`'s `manifesttemplate.ModuleNameCodec`/`RouteNameCodec`, both now built on this constructor). `B` may be a bare `string` or a named string type (e.g. `type ModuleName string`).
+`PrefixedKeyCodec[B ~string](prefix string, nameConstraint codex.Constraint[string]) codex.Codec[B]` generalizes the "prefix + validated-name-segment" recipe for a dotted/namespaced wire key (e.g. `"user:42"`) into one constructor — built on `MapCodecSafe` + `MapCodecValidated` internally, so it produces the IDENTICAL two-layer validation those hand-rolled ad hoc across the codebase (see `examples/flat-key-patch`'s `containerKeyCodec`). `B` may be a bare `string` or a named string type.
 
 ```go
-type ModuleName string
+type UserKey string
 
-var ModuleNameCodec = codex.PrefixedKeyCodec[ModuleName](
-    "properties.desired.modules.", validate.Slug,
+var UserKeyCodec = codex.PrefixedKeyCodec[UserKey](
+    "user:", validate.Slug,
 )
-// Decode: "properties.desired.modules.cv-writer" → ModuleName("cv-writer")
-// Encode: ModuleName("cv-writer") → "properties.desired.modules.cv-writer"
+// Decode: "user:42" → UserKey("42")
+// Encode: UserKey("42") → "user:42"
 ```
+
+`examples/go-edge-models`'s `manifesttemplate.ModuleNameCodec`/`RouteNameCodec` — the same "prefix + exactly one name segment" shape — are instead built on `codex.DottedKeyCodec` with a single-`{var}` template (see "MQTT-style dotted-key templates" below), demonstrating that `DottedKeyCodec` covers this case too; that package already needed `DottedKeyCodec`'s template mechanism for nothing else here, but showcases the more general, one-consistent-vocabulary option since the whole `models/iotedge` tree standardizes on dotted-key templates elsewhere (`deviceconfig.edgeAgentPatchCodec`'s `DottedPatchMapCodec`).
 
 - `nameConstraint` validates ONLY the extracted name segment (after the prefix is stripped) — the full key's own "has prefix, non-empty suffix" shape is validated internally; the caller never expresses it.
 - Reach for this whenever a wire format's keys are dotted/namespaced strings that need BOTH full-key shape validation AND name-segment validation/wrapping — this is a strictly narrower, more convenient constructor than hand-rolling the same `Constraint` + `MapCodecValidated` pair; it does not replace `MapCodecValidated` for cases whose shape differs (e.g. a two-part `<tenant>.<name>` key needing custom splitting — see `examples/flat-key-patch`'s `twoPartKeyCodec`, which stays hand-rolled).
 - See `docs/guides/wire-vocabulary.md` for the full "single source of truth" recipe this fits into (wire-key constants, dotted-key codecs, path templates, named identifier types, all consolidated in one `keys.go`/`config.go` file per package).
+
+## Patch application: `ApplyPatch` (flat) / `ApplyDottedPatch` (dotted) / `forge.Patch` builtin
+
+Applying a `codex.PartialStruct`-built patch onto a base value is pure codec composition — encode base → merge patch → decode base, re-validating all constraints — with no I/O involved. `codex/patch.go` provides this as a standalone, in-memory primitive (previously only available bundled inside `ports.PatchEncoded`/`format.Format.PatchInto`'s file-write machinery):
+
+```go
+// DeepMerge applies src over dst in place — nested maps merge recursively,
+// scalars/arrays in src overwrite dst. Promoted from format.DeepMerge
+// (single source of truth; format.DeepMerge is now a thin wrapper).
+func DeepMerge(dst, src map[string]any)
+
+// ApplyPatch: FLAT case — patch is a fixed-field PartialStruct type whose
+// keys overwrite the SAME top-level keys base's own codec declares.
+func ApplyPatch[T, P any](base T, baseCodec Codec[T], patch P, patchCodec Codec[P]) (T, error)
+
+// BuildDottedPatch/ApplyDottedPatch/ApplyDottedPatchTo: DOTTED case —
+// patch keys are dotted paths of arbitrary depth (e.g. "gw.env.API_URL"),
+// promoted from examples/go-edge-models/models/iotedge/finaldeviceconfig.Merge's
+// own former private buildNestedPatch/deepMerge algorithm (that package now
+// calls these directly).
+func BuildDottedPatch(path string, value any) any
+func ApplyDottedPatch(base, patch map[string]any) map[string]any
+func ApplyDottedPatchTo[T any](base T, baseCodec Codec[T], patch map[string]any) (T, error)
+
+// IsEmptyPatch/NonEmptyPatch/EmptyPatchError: generalized "reject a
+// no-op patch" guard for ANY PartialStruct-built patch type — works by
+// checking whether patchCodec.Encode(patch) produces an empty map (no
+// per-field enumeration needed, since PartialStruct's own Encode already
+// omits every unset field). Existing per-package richer errors (e.g.
+// modulepatch.EmptyPatchError{ModuleName}) are UNCHANGED — this is
+// purely additive for new, simpler cases.
+func IsEmptyPatch[P any](patchCodec Codec[P], patch P) bool
+func NonEmptyPatch[P any](patchCodec Codec[P]) Constraint[P]
+type EmptyPatchError struct{}
+```
+
+`ApplyPatch`/`ApplyDottedPatch` are OVERWRITE/ADD ONLY — no RFC 7396 null-means-delete; leaf values in the dotted case stay OPAQUE (`any`), matching `PartialStruct`'s own untyped-leaf precedent for dynamic-shape patches — typed per-path leaf validation remains a deferred, still-open idea.
+
+## MQTT-style dotted-key templates: `DottedKeyCodec` / `DottedPatchMapCodec` (`codex/dottedkey.go`)
+
+go-codex already has an MQTT topic-matching engine
+(`internal/templatematch.MatchMQTTWildcard`: `{varName}` captures one
+named segment, `+` matches one ANONYMOUS segment, `#` (last segment)
+matches the remaining path WHOLESALE). `internal/templatematch.MatchDottedWildcard`
+adapts the SAME algorithm with `"."` as the level delimiter instead of
+`"/"`, giving dotted wire keys the SAME declarative vocabulary MQTT
+topics already have (both delegate to a shared, delimiter-parameterized
+`matchWildcard` core — `MatchMQTTWildcard`'s own public signature/behavior
+is unchanged).
+
+**Wildcards (`+`/`#`) are match-only** — meaningless when building exactly
+ONE new concrete key from named values (there's no single value to
+substitute for "any segment"). This splits into two constructors:
+
+```go
+// DottedKeyCodec: template contains ONLY "{varName}"/literal text — NO
+// wildcards (PANICS if template contains "+"/"#"). Builds ONE typed key K
+// via the SAME DecodeVars/EncodeVars/FieldCodec machinery PathParam/
+// TopicParam/FilePathParam already use — zero new declaration mechanism.
+// Compose with Map[K,V]/EntrySlice for a fully-typed dotted-key map.
+func DottedKeyCodec[K any](template string, fields ...FieldCodec[K]) Codec[K]
+
+// KeyVarConstraint pairs a named template variable with a Constraint
+// validating its captured segment — used by DottedPatchMapCodec.
+type KeyVarConstraint struct { Name string; Constraint Constraint[string] }
+
+// DottedPatchMapCodec: template MAY contain "{varName}"/"+"/"#". Declares
+// a Codec[map[string]any] for a WHOLE BUCKET of matching dotted-key
+// entries — values stay OPAQUE (matching PartialStruct/ApplyPatch's own
+// untyped-leaf precedent). Decode strips the template's own literal
+// prefix (everything before the first {var}/+/# token) from each
+// matching key; Encode re-adds it. Returns DottedKeyError{Key, Template,
+// Err} (slog.LogValuer) on a structural mismatch or a failed
+// KeyVarConstraint.
+func DottedPatchMapCodec(template string, varConstraints ...KeyVarConstraint) Codec[map[string]any]
+```
+
+```go
+// DottedKeyCodec — typed 2-segment struct key, no wildcards:
+var moduleKeyCodec = codex.DottedKeyCodec("properties.desired.modules.{tenant}.{name}",
+    codex.RequiredField("tenant", codex.String().Refine(validate.Slug), ...),
+    codex.RequiredField("name", codex.String().Refine(validate.Slug), ...),
+)
+// Compose with codex.Map[ModuleKey, ModuleConfig](moduleKeyCodec, moduleConfigCodec).
+
+// DottedPatchMapCodec — opaque-value bucket, "#" for arbitrary depth
+// (the deviceconfig.Patch.EdgeAgent case):
+var edgeAgentPatchCodec = codex.DottedPatchMapCodec(
+    manifesttemplate.ModuleKeyPrefix+"{moduleName}.#",
+    codex.KeyVarConstraint{Name: "moduleName", Constraint: validate.Slug},
+)
+// "+" for exactly one segment (e.g. one specific env var, not deeper):
+// codex.DottedPatchMapCodec(prefix+"{moduleName}.env.+", ...)
+```
+
+**Relationship to `PrefixedKeyCodec`** (still available, not removed):
+`PrefixedKeyCodec` stays the more minimal constructor for "prefix +
+exactly one segment, whole rest wrapped as one named string type" when a
+package has no OTHER dotted-key needs — no `FieldCodec` ceremony needed
+since there's only one value to wrap (`examples/flat-key-patch`'s
+`containerKeyCodec` still uses it this way). `DottedKeyCodec`'s
+single-`{var}` template form covers the SAME shape (see
+`manifesttemplate.ModuleNameCodec`/`RouteNameCodec`, switched from
+`PrefixedKeyCodec` to `DottedKeyCodec` — same wire shape/validation/
+errors, building `map[ModuleName]ModuleConfig` for the manifest's own
+`$edgeAgent`, not an opaque patch bucket) — reach for this instead when
+the package already standardizes on `DottedKeyCodec`/`DottedPatchMapCodec`
+for OTHER keys and one consistent template-based vocabulary is
+preferable to mixing both constructors. `DottedKeyCodec` generalizes the
+MULTI-segment, no-wildcard case (superseding the earlier considered
+`MultiSegmentKeyCodec` idea with a more ergonomic template-string API
+reusing existing `FieldCodec` machinery); `DottedPatchMapCodec`
+generalizes the wildcard/opaque-bucket case. See
+`docs/guides/wire-vocabulary.md`'s decision table for the full "which one
+do I need" guide.
+
+**go-edge-models adoption**: `examples/go-edge-models`'s
+`deviceconfig.PatchCodec`'s `$edgeAgent` bucket is built on the new
+`DottedPatchMapCodec(ModuleKeyPrefix+"{moduleName}.#", ...)` signature;
+`manifesttemplate.ModuleNameCodec`/`RouteNameCodec` are built on
+`DottedKeyCodec`'s single-`{var}` template form (see `keys.go`);
+`examples/flat-key-patch`'s `twoPartKeyCodec` is built on `DottedKeyCodec`
+(replacing its former hand-rolled `MapCodecValidated` + manual
+`strings.SplitN` parsing); a new Section 12 in that same example
+demonstrates `DottedPatchMapCodec`'s `+`/`#` wildcards directly.
+
+**`forge.Patch` builtin** (mirrors `Map`/`Filter`/`Reduce`/`MapValues`'s "governed wrapper around an existing primitive" pattern, for the FLAT case):
+
+```go
+type PatchInput[T, P any] struct{ Base T; Patch P }
+func Patch[T, P any](name, version string, baseCodec codex.Codec[T], patchCodec codex.Codec[P], opts ...FunctionOpt) *Function[PatchInput[T, P], T]
+```
+
+`FunctionKindPatch FunctionKind = "patch"`. Delegates entirely to `NewFunction` (gets `InputError`/`OutputError`/`RefinementError` wiring AND two named input ports "base"/"patch" for free, since `inputSpecs` already splits a `codex.Struct`-shaped input codec per field) + `codex.ApplyPatch`. Reach for it when the "apply a patch" step needs to participate in a `Registry`'s pipeline spec/observer metrics; a bare `codex.ApplyPatch` call is sufficient when no such governance is needed. No dedicated `forge` builtin exists for the dotted case — wrap `ApplyDottedPatchTo` in `forge.NewFunction` by hand if ever needed.
+
+**go-edge-models adoption**: `modulepatch.ApplyToModule` (flat, `ModuleConfigCodec`+`FieldsBodyCodec` share identical field keys), `finaldeviceconfig.Merge` (dotted, now a thin wrapper), `deviceconfig.PatchCodec`'s `$edgeAgent` bucket (dotted map codec) — all rewritten as thin wrappers over these primitives, public behavior unchanged, proven by their existing test suites passing unmodified.
 
 ## `Downcast`: Type Assertion Helper
 

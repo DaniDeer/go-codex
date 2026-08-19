@@ -176,7 +176,7 @@ func (f Format[T]) PatchInto(existing []byte, patch map[string]any) (T, error) {
 		// Shouldn't happen for JSON/YAML/TOML struct codecs, but guard defensively.
 		return zero, fmt.Errorf("patch: intermediate is not a map (got %T)", raw)
 	}
-	DeepMerge(base, patch)
+	codex.DeepMerge(base, patch)
 	return f.codec.Decode(base)
 }
 
@@ -184,18 +184,12 @@ func (f Format[T]) PatchInto(existing []byte, patch map[string]any) (T, error) {
 // recursively merged. Scalar and array values in src overwrite those in dst.
 // Exposed for callers that need to merge two map[string]any intermediates
 // themselves (see [ports.PatchEncoded]); [Format.PatchInto] uses it internally.
+//
+// Promoted to [codex.DeepMerge] (single source of truth, since this logic is
+// pure map[string]any composition unrelated to any wire format) — this is now
+// a thin wrapper kept for backward compatibility.
 func DeepMerge(dst, src map[string]any) {
-	for k, sv := range src {
-		if dv, ok := dst[k]; ok {
-			dm, dmOK := dv.(map[string]any)
-			sm, smOK := sv.(map[string]any)
-			if dmOK && smOK {
-				DeepMerge(dm, sm)
-				continue
-			}
-		}
-		dst[k] = sv
-	}
+	codex.DeepMerge(dst, src)
 }
 
 // Marshal encodes v to bytes using the codec and then the format serializer.
