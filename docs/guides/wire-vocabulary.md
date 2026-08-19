@@ -46,7 +46,7 @@ Put ALL of the following in one file, grouped by concern:
 `examples/go-edge-models` has two real files following this recipe —
 read them directly rather than a synthesized snippet:
 
-- [`models/iotedge/manifesttemplate/keys.go`](https://github.com/DaniDeer/go-codex/blob/main/examples/go-edge-models/models/iotedge/manifesttemplate/keys.go) — wire-key constants (#1) + dotted-key codecs via `DottedKeyCodec`'s single-`{var}` template form (#2), for a deployment manifest's `$edgeAgent`/`$edgeHub` buckets. See the sibling [`lifecycle.go`](https://github.com/DaniDeer/go-codex/blob/main/examples/go-edge-models/models/iotedge/manifesttemplate/lifecycle.go)'s `TypeCodec` for #5 (fixed-value fields).
+- [`models/azure/iothub/keys.go`](https://github.com/DaniDeer/go-codex/blob/main/examples/go-edge-models/models/azure/iothub/keys.go) — wire-key constants (#1) + dotted-key codecs via `DottedKeyCodec`'s single-`{var}` template form (#2), for a deployment manifest's `$edgeAgent`/`$edgeHub` buckets. See the sibling [`lifecycle.go`](https://github.com/DaniDeer/go-codex/blob/main/examples/go-edge-models/models/azure/iothub/lifecycle.go)'s `TypeCodec` for #5 (fixed-value fields).
 - [`models/iotedge/usecase/config.go`](https://github.com/DaniDeer/go-codex/blob/main/examples/go-edge-models/models/iotedge/usecase/config.go) — path templates via `fmt.Sprintf` (#3) + named identifier types (#4), for a use case's on-disk file layout. This file has no fixed-value fields of its own (no `codex.Struct` at all — only path templates and identifier types), so #5 doesn't apply here; see `lifecycle.go` instead.
 
 Both files are the FIRST thing a maintainer reads to answer "what does
@@ -63,7 +63,7 @@ in the recipe above composes primitives that already exist:
 |---|---|---|
 | Wire-key constants | plain Go `const` | no |
 | Dotted-key codec (prefix + exactly one name segment, minimal constructor) | `codex.PrefixedKeyCodec` | **yes** — generalizes a recipe that used to be hand-rolled per package |
-| Dotted-key codec (single-`{var}` template — same shape as `PrefixedKeyCodec`, via the template mechanism) | `codex.DottedKeyCodec` | **yes** — see `manifesttemplate.ModuleNameCodec`/`RouteNameCodec` |
+| Dotted-key codec (single-`{var}` template — same shape as `PrefixedKeyCodec`, via the template mechanism) | `codex.DottedKeyCodec` | **yes** — see `iothub.ModuleNameCodec`/`RouteNameCodec` |
 | Dotted-key codec (fixed multi-segment struct key, no wildcards) | `codex.DottedKeyCodec` | **yes** — MQTT-style template syntax, generalizes what `examples/flat-key-patch`'s former `twoPartKeyCodec` hand-rolled |
 | Path templates | `ports.FilePathParam`/`DirPathParam`, `fmt.Sprintf` | no |
 | Named identifier types | `codex.MapCodecSafe` + smart constructor (`.New`) | no |
@@ -184,7 +184,7 @@ var TypeCodec = codex.MapCodecSafe(
 
 Same wire shape, same validation, same error on mismatch — purely a
 clearer expression of intent. See
-[`models/iotedge/manifesttemplate/lifecycle.go`](https://github.com/DaniDeer/go-codex/blob/main/examples/go-edge-models/models/iotedge/manifesttemplate/lifecycle.go)'s
+[`models/azure/iothub/lifecycle.go`](https://github.com/DaniDeer/go-codex/blob/main/examples/go-edge-models/models/azure/iothub/lifecycle.go)'s
 `TypeCodec` for the real, in-repo version of this exact refactor —
 contrast with the SAME file's `StatusCodec`/`RestartPolicyCodec`, which
 keep `validate.OneOf` because they are genuine multi-value enums
@@ -232,7 +232,7 @@ manual `strings.Split`/`SplitN` parsing.
 | You have... | Use |
 |---|---|
 | A dotted key extracting exactly ONE name segment after a fixed prefix, wrapped as ONE named string type (e.g. `"user:42"` → `UserKey("42")`), and the package has NO other dotted-key needs | `codex.PrefixedKeyCodec` — the more minimal constructor, no `FieldCodec` ceremony |
-| The SAME single-segment shape, but the package already uses `DottedKeyCodec`/`DottedPatchMapCodec` for OTHER keys (one consistent template vocabulary) — e.g. `examples/go-edge-models`'s `manifesttemplate.ModuleNameCodec`/`RouteNameCodec` (`"properties.desired.modules.{name}"` → `ModuleName("cv-writer")`) | `codex.DottedKeyCodec` with a single-`{var}` template |
+| The SAME single-segment shape, but the package already uses `DottedKeyCodec`/`DottedPatchMapCodec` for OTHER keys (one consistent template vocabulary) — e.g. `examples/go-edge-models`'s `iothub.ModuleNameCodec`/`RouteNameCodec` (`"properties.desired.modules.{name}"` → `ModuleName("cv-writer")`) | `codex.DottedKeyCodec` with a single-`{var}` template |
 | A dotted key extracting a FIXED, KNOWN number of named segments into a STRUCT key (e.g. `"properties.desired.modules.{tenant}.{name}"` → `ModuleKey{Tenant, Name}`) | `codex.DottedKeyCodec` |
 | A dotted key needing `+`/`#` WILDCARDS — a whole opaque-value BUCKET where the key shape varies per entry (e.g. `"{moduleName}.#"` for arbitrary depth, or `"{moduleName}.env.+"` for exactly one env var) | `codex.DottedPatchMapCodec` |
 

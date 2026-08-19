@@ -26,10 +26,10 @@ func TestNewUpdateModuleImageToolHandler_ReturnsUpdatedSummary(t *testing.T) {
 		t.Errorf("Image = %v, want ghcr.io/org/edge-web:2.0.0", summary.Image)
 	}
 	// Other fields should still reflect the unchanged manifest state.
-	if summary.Status != "running" {
+	if summary.Status == nil || *summary.Status != "running" {
 		t.Errorf("Status = %v, want unchanged running", summary.Status)
 	}
-	if summary.RestartPolicy != "always" {
+	if summary.RestartPolicy == nil || *summary.RestartPolicy != "always" {
 		t.Errorf("RestartPolicy = %v, want unchanged always", summary.RestartPolicy)
 	}
 

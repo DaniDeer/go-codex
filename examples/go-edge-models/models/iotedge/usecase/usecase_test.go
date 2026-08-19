@@ -5,18 +5,18 @@ import (
 	"path/filepath"
 	"testing"
 
+	iothub "github.com/DaniDeer/go-codex/examples/go-edge-models/models/azure/iothub"
 	"github.com/DaniDeer/go-codex/examples/go-edge-models/models/docker"
 	deviceconfig "github.com/DaniDeer/go-codex/examples/go-edge-models/models/iotedge/deviceconfig"
-	manifesttemplate "github.com/DaniDeer/go-codex/examples/go-edge-models/models/iotedge/manifesttemplate"
 	"github.com/DaniDeer/go-codex/ports"
 )
 
-func sampleManifest() manifesttemplate.DeploymentManifest {
-	return manifesttemplate.DeploymentManifest{
-		ModulesContent: manifesttemplate.ModulesContent{
-			EdgeAgent: manifesttemplate.Modules{
-				"factory-dashboard": manifesttemplate.ModuleConfig{
-					Settings:      manifesttemplate.ModuleSettings{Image: docker.Image{Name: "ghcr.io/org/edge-web", Tag: "1.0.0"}},
+func sampleManifest() iothub.LayeredDeployment {
+	return iothub.LayeredDeployment{
+		ModulesContent: iothub.LayeredModulesContent{
+			EdgeAgent: iothub.Modules{
+				"factory-dashboard": iothub.ModuleConfig{
+					Settings:      iothub.ModuleSettings{Image: docker.Image{Name: "ghcr.io/org/edge-web", Tag: "1.0.0"}},
 					Type:          "docker",
 					Status:        "running",
 					RestartPolicy: "always",
@@ -24,6 +24,50 @@ func sampleManifest() manifesttemplate.DeploymentManifest {
 				},
 			},
 		},
+	}
+}
+
+// sampleBaselineManifest returns a minimal, valid iothub.BaseDeployment with
+// ZERO regular modules/routes of its own — mirrors
+// finaldeviceconfig's own test helper of the same shape.
+func sampleBaselineManifest() iothub.BaseDeployment {
+	return iothub.BaseDeployment{
+		ModulesContent: iothub.BaseModulesContent{
+			EdgeAgent: iothub.EdgeAgentProperties{
+				SchemaVersion: "1.1",
+				Runtime: iothub.Runtime{
+					Settings: iothub.RuntimeSettings{MinDockerVersion: "v1.25"},
+					Type:     "docker",
+				},
+				SystemModules: iothub.SystemModules{
+					EdgeAgent: iothub.SystemModuleConfig{
+						Settings: iothub.ModuleSettings{Image: docker.Image{Name: "mcr.microsoft.com/azureiotedge-agent", Tag: "1.5.31"}},
+						Type:     "docker",
+					},
+					EdgeHub: iothub.SystemModuleConfig{
+						Settings:      iothub.ModuleSettings{Image: docker.Image{Name: "mcr.microsoft.com/azureiotedge-hub", Tag: "1.5.31"}},
+						Type:          "docker",
+						Status:        "running",
+						RestartPolicy: "always",
+					},
+				},
+			},
+			EdgeHub: iothub.EdgeHubProperties{
+				SchemaVersion:                "1.1",
+				StoreAndForwardConfiguration: iothub.StoreAndForwardConfiguration{TimeToLiveSecs: 259200},
+			},
+		},
+	}
+}
+
+// writeSampleBaseline writes sampleBaselineManifest() to
+// "{basePath}/baseline/baseline.json" — a test-only convenience most
+// ReadEffective-exercising tests need, since the baseline file is now a
+// REQUIRED read for every ReadEffective call.
+func writeSampleBaseline(t *testing.T, basePath string) {
+	t.Helper()
+	if _, err := NewBaselineFile(basePath).Write(nil, sampleBaselineManifest(), ports.FileOptions{CreateDirs: true}); err != nil {
+		t.Fatalf("writeSampleBaseline: %v", err)
 	}
 }
 
@@ -72,6 +116,40 @@ func TestNewFile_WriteThenRead(t *testing.T) {
 	}
 	if len(got.ModulesContent.EdgeAgent) != 1 {
 		t.Errorf("EdgeAgent len = %d, want 1", len(got.ModulesContent.EdgeAgent))
+	}
+}
+
+func TestNewBaselineFile_WriteThenRead(t *testing.T) {
+	basePath := t.TempDir()
+
+	fh := NewBaselineFile(basePath)
+	bl := sampleBaselineManifest()
+	if _, err := fh.Write(nil, bl, ports.FileOptions{CreateDirs: true}); err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+
+	got, err := fh.Read(nil, ports.FileOptions{})
+	if err != nil {
+		t.Fatalf("Read: %v", err)
+	}
+	if got.ModulesContent.EdgeAgent.SchemaVersion != "1.1" {
+		t.Errorf("SchemaVersion = %q, want 1.1", got.ModulesContent.EdgeAgent.SchemaVersion)
+	}
+	if got.ModulesContent.EdgeAgent.Runtime.Settings.MinDockerVersion != "v1.25" {
+		t.Errorf("MinDockerVersion = %q, want v1.25", got.ModulesContent.EdgeAgent.Runtime.Settings.MinDockerVersion)
+	}
+}
+
+func TestNewBaselineFile_PathHasNoTemplateVariables(t *testing.T) {
+	basePath := t.TempDir()
+	wantPath := filepath.Join(basePath, "baseline", "baseline.json")
+
+	fh := NewBaselineFile(basePath)
+	if _, err := fh.Write(nil, sampleBaselineManifest(), ports.FileOptions{CreateDirs: true}); err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+	if _, err := os.Stat(wantPath); err != nil {
+		t.Errorf("expected file at fixed path %q (no template variables): %v", wantPath, err)
 	}
 }
 

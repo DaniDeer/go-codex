@@ -1,12 +1,12 @@
 // Package modulesummary holds a REDUCED, read-only view of one
-// module's manifesttemplate.ModuleConfig — image, host-mapped ports,
+// module's iothub.ModuleConfig — image, host-mapped ports,
 // bind mounts, status, and restart policy — plus the DECLARATIVE
 // contract for reading it via an MCP tool.
 //
 // File layout:
 //
 //   - modulesummary.go — Summary (the reduced view), SummaryCodec, and
-//     NewSummary (a pure mapping from manifesttemplate.ModuleConfig).
+//     NewSummary (a pure mapping from iothub.ModuleConfig).
 //   - readmodulesummary.go — ReadReq/ReadReqCodec (the tool's input,
 //     including an OPTIONAL DeviceID — set, the summary reflects that
 //     device's ACTUAL configured module (template + device config,

@@ -355,7 +355,7 @@ var UserKeyCodec = codex.PrefixedKeyCodec[UserKey](
 // Encode: UserKey("42") → "user:42"
 ```
 
-`examples/go-edge-models`'s `manifesttemplate.ModuleNameCodec`/`RouteNameCodec` — the same "prefix + exactly one name segment" shape — are instead built on `codex.DottedKeyCodec` with a single-`{var}` template (see "MQTT-style dotted-key templates" below), demonstrating that `DottedKeyCodec` covers this case too; that package already needed `DottedKeyCodec`'s template mechanism for nothing else here, but showcases the more general, one-consistent-vocabulary option since the whole `models/iotedge` tree standardizes on dotted-key templates elsewhere (`deviceconfig.edgeAgentPatchCodec`'s `DottedPatchMapCodec`).
+`examples/go-edge-models`'s `iothub.ModuleNameCodec`/`RouteNameCodec` — the same "prefix + exactly one name segment" shape — are instead built on `codex.DottedKeyCodec` with a single-`{var}` template (see "MQTT-style dotted-key templates" below), demonstrating that `DottedKeyCodec` covers this case too; that package already needed `DottedKeyCodec`'s template mechanism for nothing else here, but showcases the more general, one-consistent-vocabulary option since the whole `models/iotedge` tree standardizes on dotted-key templates elsewhere (`deviceconfig.edgeAgentPatchCodec`'s `DottedPatchMapCodec`).
 
 - `nameConstraint` validates ONLY the extracted name segment (after the prefix is stripped) — the full key's own "has prefix, non-empty suffix" shape is validated internally; the caller never expresses it.
 - Reach for this whenever a wire format's keys are dotted/namespaced strings that need BOTH full-key shape validation AND name-segment validation/wrapping — this is a strictly narrower, more convenient constructor than hand-rolling the same `Constraint` + `MapCodecValidated` pair; it does not replace `MapCodecValidated` for cases whose shape differs (e.g. a two-part `<tenant>.<name>` key needing custom splitting — see `examples/flat-key-patch`'s `twoPartKeyCodec`, which stays hand-rolled).
@@ -448,7 +448,7 @@ var moduleKeyCodec = codex.DottedKeyCodec("properties.desired.modules.{tenant}.{
 // DottedPatchMapCodec — opaque-value bucket, "#" for arbitrary depth
 // (the deviceconfig.Patch.EdgeAgent case):
 var edgeAgentPatchCodec = codex.DottedPatchMapCodec(
-    manifesttemplate.ModuleKeyPrefix+"{moduleName}.#",
+    iothub.ModuleKeyPrefix+"{moduleName}.#",
     codex.KeyVarConstraint{Name: "moduleName", Constraint: validate.Slug},
 )
 // "+" for exactly one segment (e.g. one specific env var, not deeper):
@@ -462,7 +462,7 @@ package has no OTHER dotted-key needs — no `FieldCodec` ceremony needed
 since there's only one value to wrap (`examples/flat-key-patch`'s
 `containerKeyCodec` still uses it this way). `DottedKeyCodec`'s
 single-`{var}` template form covers the SAME shape (see
-`manifesttemplate.ModuleNameCodec`/`RouteNameCodec`, switched from
+`iothub.ModuleNameCodec`/`RouteNameCodec`, switched from
 `PrefixedKeyCodec` to `DottedKeyCodec` — same wire shape/validation/
 errors, building `map[ModuleName]ModuleConfig` for the manifest's own
 `$edgeAgent`, not an opaque patch bucket) — reach for this instead when
@@ -479,7 +479,7 @@ do I need" guide.
 **go-edge-models adoption**: `examples/go-edge-models`'s
 `deviceconfig.PatchCodec`'s `$edgeAgent` bucket is built on the new
 `DottedPatchMapCodec(ModuleKeyPrefix+"{moduleName}.#", ...)` signature;
-`manifesttemplate.ModuleNameCodec`/`RouteNameCodec` are built on
+`iothub.ModuleNameCodec`/`RouteNameCodec` are built on
 `DottedKeyCodec`'s single-`{var}` template form (see `keys.go`);
 `examples/flat-key-patch`'s `twoPartKeyCodec` is built on `DottedKeyCodec`
 (replacing its former hand-rolled `MapCodecValidated` + manual

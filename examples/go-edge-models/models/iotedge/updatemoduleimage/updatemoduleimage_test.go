@@ -4,6 +4,7 @@ import (
 	"testing"
 
 	mcp "github.com/DaniDeer/go-codex/api/mcp"
+	iothub "github.com/DaniDeer/go-codex/examples/go-edge-models/models/azure/iothub"
 )
 
 func TestReqCodec_RoundTrip(t *testing.T) {
@@ -45,6 +46,15 @@ func TestReqCodec_RejectsInvalidModuleName(t *testing.T) {
 	req := Req{BasePath: "/tmp/edge", UseCaseName: "usecase1", ModuleName: "", ImageURL: "ghcr.io/org/repo:1.2.3"}
 	if err := ReqCodec.Validate(req); err == nil {
 		t.Error("Validate: want error for empty ModuleName, got nil")
+	}
+}
+
+func TestReqCodec_AcceptsSystemModuleNames(t *testing.T) {
+	for _, name := range []string{"edgeAgent", "edgeHub"} {
+		req := Req{BasePath: "/tmp/edge", UseCaseName: "usecase1", ModuleName: iothub.ModuleName(name), ImageURL: "ghcr.io/org/repo:1.2.3"}
+		if err := ReqCodec.Validate(req); err != nil {
+			t.Errorf("Validate(%q): %v, want nil", name, err)
+		}
 	}
 }
 

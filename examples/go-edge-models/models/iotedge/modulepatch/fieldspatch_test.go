@@ -5,8 +5,8 @@ import (
 	"reflect"
 	"testing"
 
+	iothub "github.com/DaniDeer/go-codex/examples/go-edge-models/models/azure/iothub"
 	"github.com/DaniDeer/go-codex/examples/go-edge-models/models/docker"
-	manifesttemplate "github.com/DaniDeer/go-codex/examples/go-edge-models/models/iotedge/manifesttemplate"
 )
 
 func TestFieldsPatchCodec_EncodeImageOnly(t *testing.T) {
@@ -20,7 +20,7 @@ func TestFieldsPatchCodec_EncodeImageOnly(t *testing.T) {
 	obj := raw.(map[string]any)
 	modulesContent := obj["modulesContent"].(map[string]any)
 	edgeAgent := modulesContent["$edgeAgent"].(map[string]any)
-	module := edgeAgent[manifesttemplate.ModuleKeyPrefix+"temp-sensor"].(map[string]any)
+	module := edgeAgent[iothub.ModuleKeyPrefix+"temp-sensor"].(map[string]any)
 
 	settings, ok := module["settings"].(map[string]any)
 	if !ok {
@@ -41,7 +41,7 @@ func TestFieldsPatchCodec_EncodeImageOnly(t *testing.T) {
 }
 
 func TestFieldsPatchCodec_EncodeStatusOnly(t *testing.T) {
-	status := manifesttemplate.Status("running")
+	status := iothub.Status("running")
 	p := FieldsPatch{ModuleName: "temp-sensor", Status: &status}
 
 	raw, err := FieldsPatchCodec.Encode(p)
@@ -51,7 +51,7 @@ func TestFieldsPatchCodec_EncodeStatusOnly(t *testing.T) {
 	obj := raw.(map[string]any)
 	modulesContent := obj["modulesContent"].(map[string]any)
 	edgeAgent := modulesContent["$edgeAgent"].(map[string]any)
-	module := edgeAgent[manifesttemplate.ModuleKeyPrefix+"temp-sensor"].(map[string]any)
+	module := edgeAgent[iothub.ModuleKeyPrefix+"temp-sensor"].(map[string]any)
 
 	if _, ok := module["settings"]; ok {
 		t.Error("settings key should be ABSENT when Settings is nil")
@@ -62,8 +62,8 @@ func TestFieldsPatchCodec_EncodeStatusOnly(t *testing.T) {
 }
 
 func TestFieldsPatchCodec_EncodeMultipleFields(t *testing.T) {
-	status := manifesttemplate.Status("running")
-	rp := manifesttemplate.RestartPolicy("always")
+	status := iothub.Status("running")
+	rp := iothub.RestartPolicy("always")
 	p := FieldsPatch{ModuleName: "temp-sensor", Status: &status, RestartPolicy: &rp}
 
 	raw, err := FieldsPatchCodec.Encode(p)
@@ -73,7 +73,7 @@ func TestFieldsPatchCodec_EncodeMultipleFields(t *testing.T) {
 	obj := raw.(map[string]any)
 	modulesContent := obj["modulesContent"].(map[string]any)
 	edgeAgent := modulesContent["$edgeAgent"].(map[string]any)
-	module := edgeAgent[manifesttemplate.ModuleKeyPrefix+"temp-sensor"].(map[string]any)
+	module := edgeAgent[iothub.ModuleKeyPrefix+"temp-sensor"].(map[string]any)
 
 	if module["status"] != "running" || module["restartPolicy"] != "always" {
 		t.Errorf("module = %+v, want status=running, restartPolicy=always", module)
@@ -84,7 +84,7 @@ func TestFieldsPatchCodec_EncodeMultipleFields(t *testing.T) {
 }
 
 func TestFieldsPatchCodec_EncodeEnv(t *testing.T) {
-	env := manifesttemplate.EnvVars{"FOO": {Value: manifesttemplate.NewEnvVarValueString("bar")}}
+	env := iothub.EnvVars{"FOO": {Value: iothub.NewEnvVarValueString("bar")}}
 	p := FieldsPatch{ModuleName: "temp-sensor", Env: &env}
 
 	raw, err := FieldsPatchCodec.Encode(p)
@@ -94,7 +94,7 @@ func TestFieldsPatchCodec_EncodeEnv(t *testing.T) {
 	obj := raw.(map[string]any)
 	modulesContent := obj["modulesContent"].(map[string]any)
 	edgeAgent := modulesContent["$edgeAgent"].(map[string]any)
-	module := edgeAgent[manifesttemplate.ModuleKeyPrefix+"temp-sensor"].(map[string]any)
+	module := edgeAgent[iothub.ModuleKeyPrefix+"temp-sensor"].(map[string]any)
 	if _, ok := module["env"]; !ok {
 		t.Error("expected env key to be present")
 	}
@@ -133,7 +133,7 @@ func TestFieldsPatchCodec_EncodeEmptySettings_TreatedAsAbsent(t *testing.T) {
 	obj := raw.(map[string]any)
 	modulesContent := obj["modulesContent"].(map[string]any)
 	edgeAgent := modulesContent["$edgeAgent"].(map[string]any)
-	module := edgeAgent[manifesttemplate.ModuleKeyPrefix+"temp-sensor"].(map[string]any)
+	module := edgeAgent[iothub.ModuleKeyPrefix+"temp-sensor"].(map[string]any)
 	settings, ok := module["settings"].(map[string]any)
 	if !ok {
 		t.Fatal("expected settings key to be present (Settings pointer was non-nil)")
@@ -153,8 +153,8 @@ func TestFieldsPatchCodec_EncodeRejectsInvalidImage(t *testing.T) {
 
 func TestFieldsPatchCodec_DecodeRoundTrip(t *testing.T) {
 	img := docker.Image{Name: "ghcr.io/org/repo", Tag: "2.0.0"}
-	status := manifesttemplate.Status("running")
-	rp := manifesttemplate.RestartPolicy("always")
+	status := iothub.Status("running")
+	rp := iothub.RestartPolicy("always")
 	p := FieldsPatch{
 		ModuleName:    "temp-sensor",
 		Settings:      &SettingsPatch{Image: &img},
@@ -199,7 +199,7 @@ func TestFieldsPatchCodec_DecodeRoundTrip(t *testing.T) {
 
 func TestFieldsPatchCodec_DecodeCreateOptionsAndEnv(t *testing.T) {
 	co := docker.CreateOptions{Hostname: "sensor-host"}
-	env := manifesttemplate.EnvVars{"FOO": {Value: manifesttemplate.NewEnvVarValueString("bar")}}
+	env := iothub.EnvVars{"FOO": {Value: iothub.NewEnvVarValueString("bar")}}
 	p := FieldsPatch{
 		ModuleName: "temp-sensor",
 		Settings:   &SettingsPatch{CreateOptions: &co},
@@ -219,6 +219,32 @@ func TestFieldsPatchCodec_DecodeCreateOptionsAndEnv(t *testing.T) {
 	}
 	if back.Env == nil || !reflect.DeepEqual(*back.Env, env) {
 		t.Errorf("Env = %+v, want %+v", back.Env, env)
+	}
+}
+
+// TestSettingsPatchCodec_CreateOptions_EncodesAsJSONStringNotRawObject is
+// a regression test: SettingsPatchCodec's "createOptions" field must use
+// iothub.CreateOptionsFieldCodec (JSON-escaped STRING wire
+// shape), not docker.CreateOptionsCodec directly (raw object) — a
+// mismatch that previously round-tripped fine WITHIN this package's own
+// codec (self-consistent) but broke the moment the resulting patch was
+// merged into a real iothub.DeploymentManifest and decoded via
+// iothub.DeploymentManifestCodec (which expects "createOptions"
+// as a string, per its own wire format).
+func TestSettingsPatchCodec_CreateOptions_EncodesAsJSONStringNotRawObject(t *testing.T) {
+	co := docker.CreateOptions{Hostname: "sensor-host"}
+	sp := SettingsPatch{CreateOptions: &co}
+
+	raw, err := SettingsPatchCodec.Encode(sp)
+	if err != nil {
+		t.Fatalf("Encode: %v", err)
+	}
+	obj, ok := raw.(map[string]any)
+	if !ok {
+		t.Fatalf("Encode result = %T, want map[string]any", raw)
+	}
+	if _, ok := obj["createOptions"].(string); !ok {
+		t.Errorf("createOptions = %T (%v), want a JSON-escaped STRING", obj["createOptions"], obj["createOptions"])
 	}
 }
 
@@ -275,6 +301,73 @@ func TestNewUpdateModuleImage_RejectsInvalidImage(t *testing.T) {
 	}
 }
 
+func TestNewUpdateModuleImageFromBase_SeedsEveryFieldFromBase(t *testing.T) {
+	base := iothub.ModuleConfig{
+		Settings: iothub.ModuleSettings{
+			Image:         docker.Image{Name: "ghcr.io/org/repo", Tag: "1.0.0"},
+			CreateOptions: docker.CreateOptions{Hostname: "sensor-host"},
+		},
+		Env:           iothub.EnvVars{"FOO": {Value: iothub.NewEnvVarValueString("bar")}},
+		Type:          "docker",
+		Status:        "running",
+		RestartPolicy: "always",
+		Version:       "1.0.0",
+	}
+	newImage := docker.Image{Name: "ghcr.io/org/repo", Tag: "2.0.0"}
+
+	got, err := NewUpdateModuleImageFromBase("temp-sensor", base, newImage)
+	if err != nil {
+		t.Fatalf("NewUpdateModuleImageFromBase: %v", err)
+	}
+	if got.ModuleName != "temp-sensor" {
+		t.Errorf("ModuleName = %q, want temp-sensor", got.ModuleName)
+	}
+	if got.Settings == nil || got.Settings.Image == nil || *got.Settings.Image != newImage {
+		t.Errorf("Settings.Image = %v, want %v (new image)", got.Settings, newImage)
+	}
+	if got.Settings.CreateOptions == nil || got.Settings.CreateOptions.Hostname != "sensor-host" {
+		t.Errorf("Settings.CreateOptions = %v, want Hostname=sensor-host (seeded from base)", got.Settings.CreateOptions)
+	}
+	if got.Type == nil || *got.Type != "docker" {
+		t.Errorf("Type = %v, want docker (seeded from base)", got.Type)
+	}
+	if got.Status == nil || *got.Status != "running" {
+		t.Errorf("Status = %v, want running (seeded from base)", got.Status)
+	}
+	if got.RestartPolicy == nil || *got.RestartPolicy != "always" {
+		t.Errorf("RestartPolicy = %v, want always (seeded from base)", got.RestartPolicy)
+	}
+	if got.Version == nil || *got.Version != "1.0.0" {
+		t.Errorf("Version = %v, want 1.0.0 (seeded from base)", got.Version)
+	}
+	if got.Env == nil || (*got.Env)["FOO"].Value.StringValue == nil || *(*got.Env)["FOO"].Value.StringValue != "bar" {
+		t.Errorf("Env = %v, want FOO=bar (seeded from base)", got.Env)
+	}
+
+	// The resulting patch must encode to a COMPLETE, standalone-decodable
+	// ModuleConfig (every required field present).
+	raw, err := FieldsBodyCodec.Encode(got)
+	if err != nil {
+		t.Fatalf("FieldsBodyCodec.Encode: %v", err)
+	}
+	if _, err := iothub.ModuleConfigCodec.Decode(raw); err != nil {
+		t.Errorf("iothub.ModuleConfigCodec.Decode(promoted patch): %v, want a fully valid ModuleConfig", err)
+	}
+}
+
+func TestNewUpdateModuleImageFromBase_RejectsInvalidImage(t *testing.T) {
+	base := iothub.ModuleConfig{
+		Settings:      iothub.ModuleSettings{Image: docker.Image{Name: "ghcr.io/org/repo", Tag: "1.0.0"}},
+		Type:          "docker",
+		Status:        "running",
+		RestartPolicy: "always",
+		Version:       "1.0.0",
+	}
+	if _, err := NewUpdateModuleImageFromBase("temp-sensor", base, docker.Image{}); err == nil {
+		t.Error("NewUpdateModuleImageFromBase: want error for empty image Name, got nil")
+	}
+}
+
 // ── FieldsBodyCodec / NonEmptyFieldsPatch (device-level bridge) ─────────────
 
 func TestFieldsBodyCodec_EncodeProducesRawBodyWithoutModuleNameWrapping(t *testing.T) {
@@ -302,7 +395,7 @@ func TestFieldsBodyCodec_EncodeProducesRawBodyWithoutModuleNameWrapping(t *testi
 }
 
 func TestFieldsBodyCodec_DecodeRoundTrip(t *testing.T) {
-	status := manifesttemplate.Status("stopped")
+	status := iothub.Status("stopped")
 	patch := FieldsPatch{ModuleName: "temp-sensor", Status: &status}
 
 	raw, err := FieldsBodyCodec.Encode(patch)
@@ -329,7 +422,7 @@ func TestNonEmptyFieldsPatch_RejectsAllNilFields(t *testing.T) {
 }
 
 func TestNonEmptyFieldsPatch_AcceptsOneFieldSet(t *testing.T) {
-	status := manifesttemplate.Status("stopped")
+	status := iothub.Status("stopped")
 	if !NonEmptyFieldsPatch.Check(FieldsPatch{ModuleName: "temp-sensor", Status: &status}) {
 		t.Error("NonEmptyFieldsPatch.Check: want true when Status is set")
 	}

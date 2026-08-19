@@ -24,9 +24,20 @@ import (
 //
 // The real, on-disk layout this package assumes:
 //
+//	{basePath}/baseline/baseline.json
 //	{basePath}/usecases/{usecase_name}.json
 //	{basePath}/devices/{usecase_name}/{device_id}.json
 const (
+	// baselineDirName is the subdirectory under basePath holding the
+	// SINGLE GLOBAL baseline file — mirrors useCasesDirName/
+	// devicesDirName's "one subdirectory per concern" convention,
+	// even though this one holds exactly one file, not one-per-name.
+	baselineDirName = "baseline"
+	// baselineFileName is the SINGLE GLOBAL file (no template variables
+	// — unlike every other path here) holding the priority-0 base
+	// deployment applied to EVERY device, regardless of use case —
+	// see models/azure/iothub for its wire shape.
+	baselineFileName = "baseline.json"
 	// useCasesDirName is the subdirectory under basePath holding one
 	// deployment manifest file per use case.
 	useCasesDirName = "usecases"
@@ -51,7 +62,7 @@ const (
 	useCaseEntryVar = "useCase"
 )
 
-// The 5 values below are DERIVED from the leaf constants above via
+// The 6 values below are DERIVED from the leaf constants above via
 // fmt.Sprintf, rather than a chain of "+" concatenations, so each
 // template's literal shape (e.g. "%s/{%s}.json") reads directly next to
 // the values filling it in. fmt.Sprintf(...) is a function call, not a
@@ -60,6 +71,13 @@ const (
 // const for every one of this package's call sites (all of which just
 // read them as plain strings).
 var (
+	// baselinePathPattern is [NewBaselineFile]'s path, relative to
+	// basePath: "baseline/baseline.json". Has NO {var} placeholders —
+	// unlike every other pattern below — since it names the SAME
+	// single global file every time, never a per-use-case/per-device
+	// one; still built the same fmt.Sprintf way for consistency.
+	baselinePathPattern = fmt.Sprintf("%s/%s", baselineDirName, baselineFileName)
+
 	// useCasePathPattern is [NewFile]'s templated path, relative to
 	// basePath: "usecases/{usecase_name}.json".
 	useCasePathPattern = fmt.Sprintf("%s/{%s}.json", useCasesDirName, useCaseNameVar)

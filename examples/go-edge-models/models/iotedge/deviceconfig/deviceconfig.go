@@ -3,9 +3,10 @@ package deviceconfig
 import (
 	"fmt"
 	"log/slog"
+	"strings"
 
 	c "github.com/DaniDeer/go-codex/codex"
-	manifesttemplate "github.com/DaniDeer/go-codex/examples/go-edge-models/models/iotedge/manifesttemplate"
+	iothub "github.com/DaniDeer/go-codex/examples/go-edge-models/models/azure/iothub"
 	"github.com/DaniDeer/go-codex/schema"
 )
 
@@ -13,7 +14,7 @@ import (
 //
 // This file holds Patch — the PURE wire/file content for ONE device's
 // device-specific config file — and its inverse operation, Merge, which
-// layers a Patch onto a use case's own manifesttemplate.DeploymentManifest
+// layers a Patch onto a use case's own iothub.DeploymentManifest
 // to produce the FINAL, deployable config for that one device.
 //
 // Patch is a GENERAL, arbitrary-DEPTH patch — unlike
@@ -25,7 +26,7 @@ import (
 // module) — the real-world shape genuinely cannot be expressed as a
 // fixed Go struct, so leaf values are validated-opaque (any), matching
 // codex.Any()'s "opaque config blob" rationale. $edgeHub route entries
-// ARE fully typed (manifesttemplate.Route), since a route's wire value
+// ARE fully typed (iothub.Route), since a route's wire value
 // is always exactly one atomic string — no deeper nesting is possible
 // there.
 //
@@ -56,14 +57,14 @@ import (
 //
 // One important LIMITATION: "settings.createOptions" is patchable only
 // as ONE ATOMIC, already-JSON-escaped STRING (matching its own wire
-// shape in manifesttemplate — see manifesttemplate.CreateOptionsFieldCodec)
+// shape in the azure/iothub package — see iothub.CreateOptionsFieldCodec)
 // — it is NOT possible to reach further inside it, e.g.
 // "factory-opcua-gateway.settings.createOptions.HostConfig.Binds" does
 // NOT work. Attempting to do so builds a nested MAP at the
 // "createOptions" key, but the base's existing value there is a STRING;
 // deepMerge's "both sides must be maps to merge" check fails, so the
 // patch's map wholesale-REPLACES the string, and
-// manifesttemplate.DeploymentManifestCodec.Decode then fails with a
+// iothub.DeploymentManifestCodec.Decode then fails with a
 // generic codex.TypeMismatchError{Expected: "string", Got:
 // "map[string]interface {}"} at Merge time — not a purpose-built error,
 // but a clear enough signal. This is an intentional, accepted
@@ -73,25 +74,36 @@ import (
 // the existing one.
 
 // Patch is a partial, arbitrary-depth override of a use case's
-// manifesttemplate.DeploymentManifest.
+// iothub.DeploymentManifest.
 type Patch struct {
 	// EdgeAgent maps a bare dotted PATH (relative to
-	// manifesttemplate.ModuleKeyPrefix, e.g. "factory-opcua-gateway" for a whole-module
+	// iothub.ModuleKeyPrefix, e.g. "factory-opcua-gateway" for a whole-module
 	// override, or "factory-opcua-gateway.env.API_URL" to reach one env var) to the raw
 	// JSON value to set/overwrite at that path. The FIRST path segment
 	// is always a module name (validated as a slug — see
-	// manifesttemplate.ModuleNameCodec); any further segments reach
+	// iothub.ModuleNameCodec); any further segments reach
 	// deeper into that module's own JSON shape and are NOT validated
 	// here (their meaning depends on where they land after Merge).
 	EdgeAgent map[string]any
+	// SystemModules mirrors EdgeAgent exactly, one bucket over: a bare
+	// dotted PATH (relative to iothub.SystemModuleKeyPrefix,
+	// e.g. "edgeAgent" for a whole-system-module override, or
+	// "edgeAgent.settings.image" to reach one field) to the raw JSON
+	// value to set/overwrite at that path. The FIRST path segment is
+	// always "edgeAgent" or "edgeHub" (IoT Edge's two system modules; no
+	// others exist — see iothub.SystemModuleNameCodec); any
+	// further segments reach deeper into that system module's own JSON
+	// shape and are NOT validated here.
+	SystemModules map[string]any
 	// EdgeHub maps a route name to its FULL replacement/addition Route
 	// — routes are atomic (a route's wire value is one string), so
 	// there is no deeper nesting to express here, unlike EdgeAgent.
-	EdgeHub map[manifesttemplate.RouteName]manifesttemplate.Route
+	EdgeHub map[iothub.RouteName]iothub.Route
 }
 
-// EmptyPatchError reports that a Patch had NOTHING set (both EdgeAgent
-// and EdgeHub empty) — encoding it would produce a no-op device config,
+// EmptyPatchError reports that a Patch had NOTHING set (EdgeAgent,
+// SystemModules, and EdgeHub all empty) — encoding it would produce a
+// no-op device config,
 // which is almost certainly a caller mistake, so PatchCodec.Encode
 // returns this instead. Implements slog.LogValuer for structured
 // logging.
@@ -111,79 +123,123 @@ func (e EmptyPatchError) LogValue() slog.Value {
 
 // PatchCodec is Patch's canonical codec — HAND-ROLLED (like
 // modulepatch.FieldsPatchCodec) because Patch's keys are DYNAMIC
-// (arbitrary-depth dotted paths for EdgeAgent, route names for
-// EdgeHub), not a fixed field list codex.Struct could express.
+// (arbitrary-depth dotted paths for EdgeAgent/SystemModules, route names
+// for EdgeHub), not a fixed field list codex.Struct could express.
 //
 // Wire shape: {"modulesContent": {"$edgeAgent"?: {...}, "$edgeHub"?: {...}}}
-// — each top-level bucket is OMITTED ENTIRELY when its map is empty,
-// mirroring modulepatch.FieldsPatchCodec's own sparse-inclusion rule.
+// — each top-level bucket is OMITTED ENTIRELY when empty, mirroring
+// modulepatch.FieldsPatchCodec's own sparse-inclusion rule.
+// EdgeAgent/SystemModules SHARE the SAME "$edgeAgent" flat key bag on
+// the wire (mirroring iothub.ModulesContentCodec's own
+// $edgeAgent split — see that codec's doc comment) — merged together on
+// Encode, split by prefix on Decode.
 var PatchCodec = c.Codec[Patch]{
 	Encode: func(p Patch) (any, error) {
 		modulesContent := map[string]any{}
 
+		edgeAgent := map[string]any{}
 		if len(p.EdgeAgent) > 0 {
-			edgeAgent, err := edgeAgentPatchCodec.Encode(p.EdgeAgent)
+			raw, err := edgeAgentPatchCodec.Encode(p.EdgeAgent)
 			if err != nil {
 				return nil, err
 			}
-			modulesContent[manifesttemplate.EdgeAgentKey] = edgeAgent
+			for k, v := range raw.(map[string]any) {
+				edgeAgent[k] = v
+			}
+		}
+		if len(p.SystemModules) > 0 {
+			raw, err := systemModulePatchCodec.Encode(p.SystemModules)
+			if err != nil {
+				return nil, err
+			}
+			for k, v := range raw.(map[string]any) {
+				edgeAgent[k] = v
+			}
+		}
+		if len(edgeAgent) > 0 {
+			modulesContent[iothub.EdgeAgentKey] = edgeAgent
 		}
 
 		if len(p.EdgeHub) > 0 {
 			edgeHub := map[string]any{}
 			for name, route := range p.EdgeHub {
-				key, err := manifesttemplate.RouteNameCodec.Encode(name)
+				key, err := iothub.RouteNameCodec.Encode(name)
 				if err != nil {
 					return nil, err
 				}
-				raw, err := manifesttemplate.RouteCodec.Encode(route)
+				raw, err := iothub.RouteCodec.Encode(route)
 				if err != nil {
 					return nil, err
 				}
 				edgeHub[key.(string)] = raw
 			}
-			modulesContent[manifesttemplate.EdgeHubKey] = edgeHub
+			modulesContent[iothub.EdgeHubKey] = edgeHub
 		}
 
 		if len(modulesContent) == 0 {
 			return nil, EmptyPatchError{}
 		}
-		return map[string]any{manifesttemplate.ModulesContentKey: modulesContent}, nil
+		return map[string]any{iothub.ModulesContentKey: modulesContent}, nil
 	},
 	Decode: func(raw any) (Patch, error) {
-		obj, err := asObject(raw, manifesttemplate.ModulesContentKey)
+		obj, err := asObject(raw, iothub.ModulesContentKey)
 		if err != nil {
 			return Patch{}, err
 		}
-		modulesContentRaw, ok := obj[manifesttemplate.ModulesContentKey]
+		modulesContentRaw, ok := obj[iothub.ModulesContentKey]
 		if !ok {
 			return Patch{}, nil
 		}
-		modulesContent, err := asObject(modulesContentRaw, manifesttemplate.EdgeAgentKey)
+		modulesContent, err := asObject(modulesContentRaw, iothub.EdgeAgentKey)
 		if err != nil {
 			return Patch{}, err
 		}
 
 		p := Patch{}
-		if edgeAgentRaw, ok := modulesContent[manifesttemplate.EdgeAgentKey]; ok {
-			edgeAgent, err := edgeAgentPatchCodec.Decode(edgeAgentRaw)
+		if edgeAgentRaw, ok := modulesContent[iothub.EdgeAgentKey]; ok {
+			edgeAgentObj, err := asObject(edgeAgentRaw, "")
 			if err != nil {
 				return Patch{}, err
 			}
-			p.EdgeAgent = edgeAgent
+			modules := map[string]any{}
+			systemModules := map[string]any{}
+			for k, v := range edgeAgentObj {
+				switch {
+				case strings.HasPrefix(k, iothub.ModuleKeyPrefix):
+					modules[k] = v
+				case strings.HasPrefix(k, iothub.SystemModuleKeyPrefix):
+					systemModules[k] = v
+				default:
+					return Patch{}, c.DottedKeyError{Key: k, Template: EdgeAgentPatchTemplate, Err: fmt.Errorf("key matches neither module nor system-module prefix")}
+				}
+			}
+			if len(modules) > 0 {
+				dec, err := edgeAgentPatchCodec.Decode(modules)
+				if err != nil {
+					return Patch{}, err
+				}
+				p.EdgeAgent = dec
+			}
+			if len(systemModules) > 0 {
+				dec, err := systemModulePatchCodec.Decode(systemModules)
+				if err != nil {
+					return Patch{}, err
+				}
+				p.SystemModules = dec
+			}
 		}
-		if edgeHubRaw, ok := modulesContent[manifesttemplate.EdgeHubKey]; ok {
+		if edgeHubRaw, ok := modulesContent[iothub.EdgeHubKey]; ok {
 			edgeHub, err := asObject(edgeHubRaw, "")
 			if err != nil {
 				return Patch{}, err
 			}
-			p.EdgeHub = make(map[manifesttemplate.RouteName]manifesttemplate.Route, len(edgeHub))
+			p.EdgeHub = make(map[iothub.RouteName]iothub.Route, len(edgeHub))
 			for key, val := range edgeHub {
-				name, err := manifesttemplate.RouteNameCodec.Decode(key)
+				name, err := iothub.RouteNameCodec.Decode(key)
 				if err != nil {
 					return Patch{}, err
 				}
-				route, err := manifesttemplate.RouteCodec.Decode(val)
+				route, err := iothub.RouteCodec.Decode(val)
 				if err != nil {
 					return Patch{}, err
 				}
@@ -195,11 +251,11 @@ var PatchCodec = c.Codec[Patch]{
 	Schema: schema.Schema{
 		Type: "object",
 		Properties: []schema.Property{
-			{Name: manifesttemplate.ModulesContentKey, Schema: schema.Schema{
+			{Name: iothub.ModulesContentKey, Schema: schema.Schema{
 				Type: "object",
 				Properties: []schema.Property{
-					{Name: manifesttemplate.EdgeAgentKey, Schema: schema.Schema{Type: "object", AdditionalProperties: boolPtr(true)}},
-					{Name: manifesttemplate.EdgeHubKey, Schema: schema.Schema{Type: "object", AdditionalProperties: boolPtr(true)}},
+					{Name: iothub.EdgeAgentKey, Schema: schema.Schema{Type: "object", AdditionalProperties: boolPtr(true)}},
+					{Name: iothub.EdgeHubKey, Schema: schema.Schema{Type: "object", AdditionalProperties: boolPtr(true)}},
 				},
 			}},
 		},

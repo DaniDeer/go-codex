@@ -3,7 +3,7 @@ package modulesummary
 import (
 	mcp "github.com/DaniDeer/go-codex/api/mcp"
 	c "github.com/DaniDeer/go-codex/codex"
-	manifesttemplate "github.com/DaniDeer/go-codex/examples/go-edge-models/models/iotedge/manifesttemplate"
+	iothub "github.com/DaniDeer/go-codex/examples/go-edge-models/models/azure/iothub"
 	v "github.com/DaniDeer/go-codex/validate"
 )
 
@@ -23,8 +23,10 @@ type ReadReq struct {
 	BasePath string
 	// UseCaseName is the use case whose deployment manifest to read.
 	UseCaseName string
-	// ModuleName is the module to summarize, e.g. "factory-dashboard".
-	ModuleName manifesttemplate.ModuleName
+	// ModuleName is the module to summarize, e.g. "factory-dashboard" —
+	// or "edgeAgent"/"edgeHub" for a system module's own summary (see
+	// IsSystemModuleName).
+	ModuleName iothub.ModuleName
 	// DeviceID OPTIONALLY scopes the summary to ONE device's ACTUAL
 	// configured module — the use case template's manifest, with that
 	// device's own config patch layered on top (see
@@ -56,11 +58,12 @@ var ReadReqCodec = c.Struct[ReadReq](
 		func(r *ReadReq, val string) { r.UseCaseName = val },
 	),
 	c.RequiredField("moduleName",
-		manifesttemplate.ModuleNameCodec.WithDescription(
-			"The name of the module to summarize, e.g. \"factory-dashboard\".",
+		ModuleOrSystemModuleNameCodec.WithDescription(
+			"The name of the module to summarize, e.g. \"factory-dashboard\" — "+
+				"or \"edgeAgent\"/\"edgeHub\" for a system module's own summary.",
 		),
-		func(r ReadReq) manifesttemplate.ModuleName { return r.ModuleName },
-		func(r *ReadReq, val manifesttemplate.ModuleName) { r.ModuleName = val },
+		func(r ReadReq) iothub.ModuleName { return r.ModuleName },
+		func(r *ReadReq, val iothub.ModuleName) { r.ModuleName = val },
 	),
 	c.OptionalField("deviceID",
 		c.String().WithDescription(

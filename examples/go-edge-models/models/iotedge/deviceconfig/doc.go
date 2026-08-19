@@ -2,15 +2,15 @@
 // device-specific config file — the exact JSON shape found on disk at
 // "<basePath>/devices/<usecase_name>/<device_id>.json" — and NOTHING
 // else. A real device config file IS a PATCH over its use case's own
-// manifesttemplate.DeploymentManifest — see deviceconfig.go's Patch/
-// PatchCodec for the wire shape
+// [github.com/DaniDeer/go-codex/examples/go-edge-models/models/azure/iothub.LayeredDeployment]
+// — see deviceconfig.go's Patch/PatchCodec for the wire shape
 // ({"modulesContent": {"$edgeAgent"?: {...}, "$edgeHub"?: {...}}},
 // dotted keys reaching to arbitrary depth inside a module, or a whole
 // route by name) — the SAME top-level wire-key names
-// (manifesttemplate.ModulesContentKey/EdgeAgentKey/EdgeHubKey) and
-// dotted-key prefix (manifesttemplate.ModuleKeyPrefix) manifesttemplate
-// itself uses, imported from there rather than re-hardcoded here (see
-// manifesttemplate/keys.go, the single source of truth for that SHARED
+// (iothub.ModulesContentKey/EdgeAgentKey/EdgeHubKey) and dotted-key
+// prefix (iothub.ModuleKeyPrefix) the generic Azure spec itself uses,
+// imported from there rather than re-hardcoded here (see
+// azure/iothub/keys.go, the single source of truth for that SHARED
 // vocabulary). This package's OWN unique dotted-key vocabulary — the
 // EdgeAgentPatchTemplate/edgeAgentPatchCodec pair validating
 // Patch.EdgeAgent's wire bucket — lives in this package's own
@@ -22,7 +22,7 @@
 // [github.com/DaniDeer/go-codex/examples/go-edge-models/models/iotedge/finaldeviceconfig]
 // package's Merge function instead, keeping this package importable
 // standalone by anything that only needs to decode/encode/validate a
-// device config file, with zero dependency on manifesttemplate beyond
+// device config file, with zero dependency on azure/iothub beyond
 // the few field-level codecs/constants Patch reuses (ModulesContentKey,
 // EdgeAgentKey, EdgeHubKey, ModuleKeyPrefix, RouteNameCodec, RouteCodec).
 //

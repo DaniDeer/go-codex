@@ -5,9 +5,10 @@
 // filesystem layout ("{basePath}/devices/{usecase_name}/{device_id}.json"),
 // so the two concepts belong together as one aggregate.
 //
-// The pure wire formats live in the sibling
-// [github.com/DaniDeer/go-codex/examples/go-edge-models/models/iotedge/manifesttemplate]
-// (deployment manifest) and
+// The pure wire formats live in
+// [github.com/DaniDeer/go-codex/examples/go-edge-models/models/azure/iothub]
+// (both the global base deployment AND the layered deployment manifest
+// shapes) and the sibling
 // [github.com/DaniDeer/go-codex/examples/go-edge-models/models/iotedge/deviceconfig]
 // (device config) packages — this package imports both and builds
 // templated ports.File/ports.Dir constructors, domain composition
@@ -31,15 +32,19 @@
 //     c.MapCodecSafe), and [NewName]/[NewDeviceID] smart constructors —
 //     this package's public, typed vocabulary for "a use case's name" /
 //     "a device's ID", used throughout the rest of this package's API.
-//   - usecase.go — the FULL use-case model + composition: FileFormat
+//   - usecase.go — the FULL use-case model + composition: NewBaselineFile
+//     (a declared file port over the SINGLE GLOBAL
+//     "{basePath}/baseline/baseline.json" — no template variables,
+//     unlike every other path here — wrapping
+//     iothub.BaseDeployment); FileFormat
 //     and NewFile (a declared, TEMPLATED file port over
 //     "{basePath}/usecases/{usecase_name}.json" wrapping
-//     manifesttemplate.DeploymentManifest — usecase_name is a plain,
+//     iothub.LayeredDeployment — usecase_name is a plain,
 //     non-merge ports.FilePathParam, validated but never merged into
 //     the wire struct); DirEntryPattern, NewDir, and ListNames
 //     (discovers every usecase_name under "{basePath}/usecases",
 //     returning []Name); UseCase (pairs a Name with its PURE
-//     manifesttemplate.DeploymentManifest AND every DeviceConfig nested
+//     iothub.LayeredDeployment AND every DeviceConfig nested
 //     under it) and Read/Write — the "one struct, one call" convenience
 //     for the FULL usecase+devices tree.
 //   - device.go — the FULL device model + composition, mirroring
@@ -54,12 +59,13 @@
 //     wildcard — returning []DeviceID); DeviceConfig (pairs a DeviceID
 //     with its PURE deviceconfig.Patch — the domain-level composition,
 //     one level down from UseCase), ReadDeviceConfig/WriteDeviceConfig,
-//     DeviceConfig.Merge (the "one call" convenience for "template +
-//     device config, layered on top" — delegates to the sibling
+//     DeviceConfig.Merge (the "one call" convenience for "baseline +
+//     template + device config, layered on top" — delegates to the
+//     sibling
 //     [github.com/DaniDeer/go-codex/examples/go-edge-models/models/iotedge/finaldeviceconfig]
 //     package's Merge function), and ReadEffective (a further
-//     convenience combining NewFile's Read + ReadDeviceConfig +
-//     DeviceConfig.Merge into ONE call — the primitive app/iotedge's
-//     device-scoped handlers delegate to instead of duplicating
-//     read+merge logic).
+//     convenience combining NewBaselineFile's Read + NewFile's Read +
+//     ReadDeviceConfig + DeviceConfig.Merge into ONE call, returning a
+//     iothub.BaseDeployment — the primitive app/iotedge's device-scoped
+//     handlers delegate to instead of duplicating read+merge logic).
 package usecase

@@ -3,9 +3,9 @@ package usecase
 import (
 	"testing"
 
+	iothub "github.com/DaniDeer/go-codex/examples/go-edge-models/models/azure/iothub"
 	"github.com/DaniDeer/go-codex/examples/go-edge-models/models/docker"
 	deviceconfig "github.com/DaniDeer/go-codex/examples/go-edge-models/models/iotedge/deviceconfig"
-	manifesttemplate "github.com/DaniDeer/go-codex/examples/go-edge-models/models/iotedge/manifesttemplate"
 	"github.com/DaniDeer/go-codex/ports"
 )
 
@@ -168,11 +168,11 @@ func TestReadDeviceConfig_PropagatesMissingFileError(t *testing.T) {
 }
 
 func TestDeviceConfig_Merge_LayersPatchOntoTemplate(t *testing.T) {
-	template := manifesttemplate.DeploymentManifest{
-		ModulesContent: manifesttemplate.ModulesContent{
-			EdgeAgent: manifesttemplate.Modules{
-				"factory-mqtt-gateway-1": manifesttemplate.ModuleConfig{
-					Settings:      manifesttemplate.ModuleSettings{Image: docker.Image{Name: "ghcr.io/example-org/factory-gateway", Tag: "0.12.5"}},
+	template := iothub.LayeredDeployment{
+		ModulesContent: iothub.LayeredModulesContent{
+			EdgeAgent: iothub.Modules{
+				"factory-mqtt-gateway-1": iothub.ModuleConfig{
+					Settings:      iothub.ModuleSettings{Image: docker.Image{Name: "ghcr.io/example-org/factory-gateway", Tag: "0.12.5"}},
 					Type:          "docker",
 					Status:        "running",
 					RestartPolicy: "on-failure",
@@ -183,11 +183,11 @@ func TestDeviceConfig_Merge_LayersPatchOntoTemplate(t *testing.T) {
 	}
 	cfg := DeviceConfig{DeviceID: "sensor-1", Patch: samplePatch()}
 
-	got, err := cfg.Merge(template)
+	got, err := cfg.Merge(sampleBaselineManifest(), template)
 	if err != nil {
 		t.Fatalf("Merge: %v", err)
 	}
-	gw := got.ModulesContent.EdgeAgent["factory-mqtt-gateway-1"]
+	gw := got.ModulesContent.EdgeAgent.Modules["factory-mqtt-gateway-1"]
 	if gw.Status != "stopped" {
 		t.Errorf("Status = %v, want stopped (patched)", gw.Status)
 	}
@@ -200,6 +200,7 @@ func TestDeviceConfig_Merge_LayersPatchOntoTemplate(t *testing.T) {
 func TestReadEffective_MergesTemplateAndDeviceConfigFromDisk(t *testing.T) {
 	basePath := t.TempDir()
 
+	writeSampleBaseline(t, basePath)
 	if _, err := NewFile(basePath).Write(map[string]string{"usecase_name": "usecase1"}, sampleManifest(), ports.FileOptions{CreateDirs: true}); err != nil {
 		t.Fatalf("Write template: %v", err)
 	}
@@ -215,7 +216,7 @@ func TestReadEffective_MergesTemplateAndDeviceConfigFromDisk(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ReadEffective: %v", err)
 	}
-	dashboard := got.ModulesContent.EdgeAgent["factory-dashboard"]
+	dashboard := got.ModulesContent.EdgeAgent.Modules["factory-dashboard"]
 	if dashboard.Status != "stopped" {
 		t.Errorf("Status = %v, want stopped (device-patched)", dashboard.Status)
 	}
@@ -226,22 +227,40 @@ func TestReadEffective_MergesTemplateAndDeviceConfigFromDisk(t *testing.T) {
 	if dashboard.RestartPolicy != "always" {
 		t.Errorf("RestartPolicy = %v, want unchanged always", dashboard.RestartPolicy)
 	}
+	// The baseline's own system modules must survive into the effective manifest.
+	if got.ModulesContent.EdgeAgent.SchemaVersion != "1.1" {
+		t.Errorf("SchemaVersion = %q, want 1.1 (from baseline)", got.ModulesContent.EdgeAgent.SchemaVersion)
+	}
 }
 
 func TestReadEffective_PropagatesMissingTemplateError(t *testing.T) {
 	basePath := t.TempDir()
+	writeSampleBaseline(t, basePath)
 	_, err := ReadEffective(basePath, "does-not-exist", "sensor-1", ports.FileOptions{})
 	if err == nil {
 		t.Error("ReadEffective: want error for nonexistent use case, got nil")
 	}
 }
 
+func TestReadEffective_PropagatesMissingBaselineError(t *testing.T) {
+	basePath := t.TempDir()
+	if _, err := NewFile(basePath).Write(map[string]string{"usecase_name": "usecase1"}, sampleManifest(), ports.FileOptions{CreateDirs: true}); err != nil {
+		t.Fatalf("Write template: %v", err)
+	}
+	_, err := ReadEffective(basePath, "usecase1", "sensor-1", ports.FileOptions{})
+	if err == nil {
+		t.Error("ReadEffective: want error for missing baseline.json, got nil")
+	}
+}
+
 func TestReadEffective_NoDeviceConfigYet_ReturnsTemplateUnchanged(t *testing.T) {
 	// A device that has NEVER had a config file written is NOT an error
-	// — its effective config is simply the template, since "no overrides
-	// yet" is a valid, expected state (a device connecting for the first
-	// time, before any override has ever been applied).
+	// — its effective config is simply baseline+template merged with an
+	// EMPTY device patch, since "no overrides yet" is a valid, expected
+	// state (a device connecting for the first time, before any override
+	// has ever been applied).
 	basePath := t.TempDir()
+	writeSampleBaseline(t, basePath)
 	if _, err := NewFile(basePath).Write(map[string]string{"usecase_name": "usecase1"}, sampleManifest(), ports.FileOptions{CreateDirs: true}); err != nil {
 		t.Fatalf("Write template: %v", err)
 	}
@@ -249,7 +268,7 @@ func TestReadEffective_NoDeviceConfigYet_ReturnsTemplateUnchanged(t *testing.T) 
 	if err != nil {
 		t.Fatalf("ReadEffective: %v", err)
 	}
-	if got.ModulesContent.EdgeAgent["factory-dashboard"].Settings.Image.String() != "ghcr.io/org/edge-web:1.0.0" {
-		t.Errorf("Image = %v, want unchanged from template", got.ModulesContent.EdgeAgent["factory-dashboard"].Settings.Image)
+	if got.ModulesContent.EdgeAgent.Modules["factory-dashboard"].Settings.Image.String() != "ghcr.io/org/edge-web:1.0.0" {
+		t.Errorf("Image = %v, want unchanged from template", got.ModulesContent.EdgeAgent.Modules["factory-dashboard"].Settings.Image)
 	}
 }

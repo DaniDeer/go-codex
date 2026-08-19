@@ -3,7 +3,7 @@ package updatemoduleimage
 import (
 	mcp "github.com/DaniDeer/go-codex/api/mcp"
 	c "github.com/DaniDeer/go-codex/codex"
-	manifesttemplate "github.com/DaniDeer/go-codex/examples/go-edge-models/models/iotedge/manifesttemplate"
+	iothub "github.com/DaniDeer/go-codex/examples/go-edge-models/models/azure/iothub"
 	"github.com/DaniDeer/go-codex/examples/go-edge-models/models/iotedge/modulesummary"
 	v "github.com/DaniDeer/go-codex/validate"
 )
@@ -24,8 +24,10 @@ type Req struct {
 	BasePath string
 	// UseCaseName is the use case whose deployment manifest to update.
 	UseCaseName string
-	// ModuleName is the module to update, e.g. "factory-dashboard".
-	ModuleName manifesttemplate.ModuleName
+	// ModuleName is the module to update, e.g. "factory-dashboard" — or
+	// "edgeAgent"/"edgeHub" for a system module's own image (see
+	// modulesummary.IsSystemModuleName).
+	ModuleName iothub.ModuleName
 	// ImageURL is the full container image reference to set, e.g.
 	// "ghcr.io/org/repo:1.2.3" — a plain string (not a structured
 	// Name/Tag/Digest shape), matching the flat-string convention already
@@ -61,11 +63,12 @@ var ReqCodec = c.Struct[Req](
 		func(r *Req, val string) { r.UseCaseName = val },
 	),
 	c.RequiredField("moduleName",
-		manifesttemplate.ModuleNameCodec.WithDescription(
-			"The name of the module to update, e.g. \"factory-dashboard\".",
+		modulesummary.ModuleOrSystemModuleNameCodec.WithDescription(
+			"The name of the module to update, e.g. \"factory-dashboard\" — "+
+				"or \"edgeAgent\"/\"edgeHub\" for a system module's own image.",
 		),
-		func(r Req) manifesttemplate.ModuleName { return r.ModuleName },
-		func(r *Req, val manifesttemplate.ModuleName) { r.ModuleName = val },
+		func(r Req) iothub.ModuleName { return r.ModuleName },
+		func(r *Req, val iothub.ModuleName) { r.ModuleName = val },
 	),
 	c.RequiredField("imageURL",
 		c.String().Refine(v.NonEmptyString).WithDescription(

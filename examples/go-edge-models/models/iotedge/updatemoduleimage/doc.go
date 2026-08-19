@@ -11,6 +11,6 @@
 //
 // Kept as its own package, separate from
 // [github.com/DaniDeer/go-codex/examples/go-edge-models/models/iotedge/modulesummary],
-// mirroring modulepatch's existing separateness from manifesttemplate —
+// mirroring modulepatch's existing separateness from azure/iothub —
 // this package imports modulesummary for its Summary response type.
 package updatemoduleimage

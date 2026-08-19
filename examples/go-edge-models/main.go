@@ -1,7 +1,11 @@
-// Also demonstrates: spec generation (manifesttemplate.DeploymentManifestCodec.Schema
-// rendered as OpenAPI components/schemas YAML via render/openapi.MarshalYAML)
-// and observer integration (the codec-only stats.ReportErrors path for iotedge
-// manifest decoding, and registryapp.WithObserver for docker/registry's HTTP calls).
+// Also demonstrates: spec generation (iothub.LayeredDeploymentCodec.Schema
+// rendered as OpenAPI components/schemas YAML via render/openapi.MarshalYAML),
+// observer integration (the codec-only stats.ReportErrors path for iotedge
+// manifest decoding, and registryapp.WithObserver for docker/registry's HTTP
+// calls), and modulesummary/updatemoduleimage resolving a module declared
+// ONLY in the GLOBAL baseline.json (never in a use case's own template) —
+// for both a regular module and a system module (edgeAgent) — bridged as
+// live MCP tools the same way registry.GetTagsTool/GetImageMetadataTool are.
 //
 // Resources
 // - examples/flat-key-patch -> demonstrates dotted-key JSON patching with go-codex
@@ -33,10 +37,12 @@ import (
 	"github.com/DaniDeer/go-codex/codex"
 	iotedgeapp "github.com/DaniDeer/go-codex/examples/go-edge-models/app/iotedge"
 	registryapp "github.com/DaniDeer/go-codex/examples/go-edge-models/app/registry"
+	iothub "github.com/DaniDeer/go-codex/examples/go-edge-models/models/azure/iothub"
 	"github.com/DaniDeer/go-codex/examples/go-edge-models/models/docker"
 	"github.com/DaniDeer/go-codex/examples/go-edge-models/models/docker/registry"
-	manifesttemplate "github.com/DaniDeer/go-codex/examples/go-edge-models/models/iotedge/manifesttemplate"
 	"github.com/DaniDeer/go-codex/examples/go-edge-models/models/iotedge/modulepatch"
+	"github.com/DaniDeer/go-codex/examples/go-edge-models/models/iotedge/modulesummary"
+	"github.com/DaniDeer/go-codex/examples/go-edge-models/models/iotedge/updatemoduleimage"
 	"github.com/DaniDeer/go-codex/examples/go-edge-models/models/iotedge/usecase"
 	"github.com/DaniDeer/go-codex/format"
 	"github.com/DaniDeer/go-codex/ports"
@@ -54,6 +60,19 @@ var usecase1JSON []byte
 //go:embed examples/devices/usecase1/sensor-1.json
 var sensor1JSON []byte
 
+// baselineJSON is the REAL, GLOBAL priority-0 base deployment every
+// device shares (schemaVersion/runtime/systemModules/modules) — the
+// same "{basePath}/baseline/baseline.json" shape usecase.NewBaselineFile
+// wraps (see models/azure/iothub's own doc comment for what a
+// BaseDeployment is). Declares TWO common modules
+// ("vulnerability-scanner"/"baseline-metrics") deployed to every device
+// regardless of use case, demonstrating modules that resolve via
+// modulesummary/updatemoduleimage WITHOUT ever being declared in
+// usecase1's own template — see runModuleSummaryDemo.
+//
+//go:embed examples/baseline/baseline.json
+var baselineJSON []byte
+
 // logger is used for every fatal error path below via structured slog
 // attributes, NOT the stdlib log package — every go-codex error type
 // (codex.ValidationErrors, registryapp.RegistryAuthError,
@@ -64,17 +83,57 @@ var sensor1JSON []byte
 var logger = slog.New(slog.NewTextHandler(os.Stdout, nil))
 
 func main() {
+	runManifestCodecDemo()
+
+	// basePath mirrors examples/go-edge-models/examples' own mock layout —
+	// "baseline/baseline.json" + "usecases/<usecase_name>.json" +
+	// "devices/<usecase_name>/<device_id>.json" — copied from the
+	// embedded mock files into a writable temp dir (the embed.FS mock
+	// tree itself is read-only; the patch demos below need to write).
+	dir, err := os.MkdirTemp("", "go-edge-models-patch-*")
+	if err != nil {
+		logger.Error("create temp dir", "error", err)
+		os.Exit(1)
+	}
+	defer os.RemoveAll(dir)
+
+	const useCaseName = "usecase1"
+	const deviceID = "sensor-1"
+
+	runUseCaseWriteDemo(dir, useCaseName, deviceID)
+	runModulePatchDemo(dir, useCaseName, deviceID)
+	runModuleSummaryDemo(dir, useCaseName, deviceID)
+
+	// ── docker/registry: fetch tags + lean manifest metadata for one image ──
+	//
+	// This section is PURE WIRING — it just spins up two local httptest
+	// servers (simulating a registry host + a SEPARATE auth-realm host,
+	// exactly like Docker Hub's registry-1.docker.io vs auth.docker.io) and
+	// calls docker/registry's exported GetTags/GetImageMetadata. All the
+	// actual logic (auth-challenge flow, manifest-list-to-single-platform
+	// resolution, lean metadata computation) lives in the docker/registry
+	// package itself — reusable independent of this example.
+	fmt.Println("\n=== docker/registry: tags + manifest metadata for factory-dashboard ===")
+	runRegistryDemo()
+}
+
+// runManifestCodecDemo decodes usecase1.json end-to-end and demonstrates
+// the codec-level features it exercises — module extraction via
+// codex.Map[K,V], CreateOptions detail, the string/int/float env-var
+// union, round-tripping, OpenAPI schema generation, and the codec-only
+// observer path. Entirely self-contained (no temp dir, no writes).
+func runManifestCodecDemo() {
 	// Decode a REAL IoT-Edge deployment manifest end-to-end:
 	// modulesContent -> $edgeAgent -> {<dotted module key>: ModuleConfig, ...}
 	//
-	// manifesttemplate.ModuleNameCodec strips manifesttemplate.ModuleKeyPrefix from each
+	// iothub.ModuleNameCodec strips iothub.ModuleKeyPrefix from each
 	// dotted key and validates the remaining segment via validate.Slug,
 	// producing a map[ModuleName]ModuleConfig — this is the codex.Map[K,V]
 	// key-extraction pattern this example demonstrates, mirroring
 	// examples/flat-key-patch's containerKeyCodec/containersCodec section
 	// but producing a MAP (Modules) instead of a merged []Container slice
 	// (via codex.EntrySlice).
-	jManifest := format.JSON(manifesttemplate.DeploymentManifestCodec)
+	jManifest := format.JSON(iothub.LayeredDeploymentCodec)
 	manifest, err := jManifest.Unmarshal(usecase1JSON)
 	if err != nil {
 		logger.Error("decode manifest", "error", err)
@@ -82,7 +141,7 @@ func main() {
 	}
 
 	modules := manifest.ModulesContent.EdgeAgent
-	names := make([]manifesttemplate.ModuleName, 0, len(modules))
+	names := make([]iothub.ModuleName, 0, len(modules))
 	for name := range modules {
 		names = append(names, name)
 	}
@@ -137,15 +196,15 @@ func main() {
 	}
 	fmt.Printf("\nre-encoded manifest: %d bytes (original: %d bytes)\n", len(reEncoded), len(usecase1JSON))
 
-	// ── Spec generation: manifesttemplate.DeploymentManifestCodec.Schema as OpenAPI YAML ──
+	// ── Spec generation: iothub.LayeredDeploymentCodec.Schema as OpenAPI YAML ──
 	//
 	// Every codex.Codec[T] carries a schema.Schema — render/openapi.MarshalYAML
 	// turns any map of named schemas into standalone OpenAPI-style
 	// components/schemas YAML, with zero api/rest Route/Builder involved.
 	// Same pattern as examples/formats' "OpenAPI schema" section.
-	fmt.Println("\n=== Spec generation: manifesttemplate.DeploymentManifestCodec (OpenAPI components/schemas) ===")
+	fmt.Println("\n=== Spec generation: iothub.LayeredDeploymentCodec (OpenAPI components/schemas) ===")
 	specYAML, err := openapi.MarshalYAML(map[string]schema.Schema{
-		"DeploymentManifest": manifesttemplate.DeploymentManifestCodec.Schema,
+		"LayeredDeployment": iothub.LayeredDeploymentCodec.Schema,
 	})
 	if err != nil {
 		logger.Error("render OpenAPI spec", "error", err)
@@ -175,34 +234,18 @@ func main() {
 	for _, e := range manifestObs.errors {
 		fmt.Printf("  location=%s constraint=%s field=%s\n", e.location, e.constraint, e.field)
 	}
+}
 
-	// ── app/iotedge: patch one module's image via the batteries-included
-	// UpdateModuleImage ──────────────────────────────────────────────────
-	//
-	// UpdateModuleImage (app/iotedge) is a thin convenience over the
-	// general PatchModule mechanism (below): it builds a
-	// modulepatch.FieldsPatch with only Image set, and applies it via
-	// usecase.NewFile + ports.PatchEncoded internally — a caller
-	// never touches ports.File/PatchEncoded directly for this, the single
-	// most common patch operation. Same underlying deep-merge as
-	// examples/flat-key-patch: only settings.image changes for the named
-	// module; every other field, and every other module, is untouched.
-	fmt.Println("\n=== app/iotedge.UpdateModuleImage: patch factory-dashboard's image on disk ===")
+// runUseCaseWriteDemo copies the embedded mock use case/device files, plus
+// the real embedded baseline fixture, into dir — the "usecases/
+// <usecase_name>.json" + "devices/<usecase_name>/<device_id>.json" +
+// "baseline/baseline.json" layout every other demo function below reads
+// from and patches. This is where UpdateModuleImage/PatchUseCaseModule's
+// underlying deep-merge (below, in runModulePatchDemo) gets something to
+// write to — the embed.FS mock tree itself is read-only.
+func runUseCaseWriteDemo(dir, useCaseName, deviceID string) {
+	fmt.Println("\n=== app/iotedge: writing use case + device + baseline mock files to a scratch dir ===")
 
-	// basePath mirrors examples/go-edge-models/examples' own mock layout —
-	// "usecases/<usecase_name>.json" + "devices/<usecase_name>/<device_id>.json"
-	// — copied from the embedded mock files into a writable temp dir (the
-	// embed.FS mock tree itself is read-only; this section's patch demos
-	// need to write).
-	dir, err := os.MkdirTemp("", "go-edge-models-patch-*")
-	if err != nil {
-		logger.Error("create temp dir", "error", err)
-		os.Exit(1)
-	}
-	defer os.RemoveAll(dir)
-
-	const useCaseName = "usecase1"
-	const deviceID = "sensor-1"
 	usecasesDir := dir + "/usecases"
 	if err := os.MkdirAll(usecasesDir, 0o755); err != nil {
 		logger.Error("create usecases dir", "error", err)
@@ -221,6 +264,34 @@ func main() {
 		logger.Error("write device manifest to disk", "error", err)
 		os.Exit(1)
 	}
+
+	// ── baseline/baseline.json: the GLOBAL, priority-0 base deployment
+	// every device shares (schemaVersion/runtime/systemModules/modules),
+	// applied BEFORE the use case's own modules/routes and a device's
+	// own patch — see the models/azure/iothub package's own doc comment.
+	// usecase.NewBaselineFile has NO template variables (one fixed path,
+	// unlike NewFile/NewDeviceFile). baselineJSON is decoded first
+	// (rather than written raw like usecase1JSON/sensor1JSON above) to
+	// demonstrate NewBaselineFile's typed ports.File[iothub.BaseDeployment]
+	// Write path specifically.
+	baseline, err := format.JSON(iothub.BaseDeploymentCodec).Unmarshal(baselineJSON)
+	if err != nil {
+		logger.Error("decode baseline.json", "error", err)
+		os.Exit(1)
+	}
+	if _, err := usecase.NewBaselineFile(dir).Write(nil, baseline, ports.FileOptions{CreateDirs: true}); err != nil {
+		logger.Error("write baseline.json to disk", "error", err)
+		os.Exit(1)
+	}
+}
+
+// runModulePatchDemo demonstrates the ports.Dir discovery, usecase.Read/
+// ListDeviceIDs/ReadDeviceConfig composition, DeviceConfig.Merge (three-
+// way baseline+template+device layering), and the app/iotedge template-
+// and device-scoped patch functions — all against the mock files
+// runUseCaseWriteDemo wrote to dir.
+func runModulePatchDemo(dir, useCaseName, deviceID string) {
+	usecasesDir := dir + "/usecases"
 
 	// ── ports.Dir: discover which iotedge "use case" config files exist in
 	// a directory — a declarative `ls`, not `cat`. Each file in the config
@@ -252,14 +323,14 @@ func main() {
 	// + ReadDeviceConfig into ONE call.
 	fmt.Println("\n=== usecase.ListDeviceIDs / Read: usecase_name + device_id, composed ===")
 
-	deviceIDs, err := usecase.ListDeviceIDs(dir, useCaseName, ports.DirOptions{})
+	deviceIDs, err := usecase.ListDeviceIDs(dir, usecase.Name(useCaseName), ports.DirOptions{})
 	if err != nil {
 		logger.Error("list device ids", "error", err)
 		os.Exit(1)
 	}
 	fmt.Printf("device_ids for use case %q: %v\n", useCaseName, deviceIDs)
 
-	deviceCfg, err := usecase.ReadDeviceConfig(dir, useCaseName, deviceID, ports.FileOptions{})
+	deviceCfg, err := usecase.ReadDeviceConfig(dir, usecase.Name(useCaseName), usecase.DeviceID(deviceID), ports.FileOptions{})
 	if err != nil {
 		logger.Error("read device config", "error", err)
 		os.Exit(1)
@@ -267,7 +338,7 @@ func main() {
 	fmt.Printf("device %q: patches %d $edgeAgent key(s), %d $edgeHub route(s)\n",
 		deviceCfg.DeviceID, len(deviceCfg.Patch.EdgeAgent), len(deviceCfg.Patch.EdgeHub))
 
-	useCase, err := usecase.Read(dir, useCaseName, ports.FileOptions{})
+	useCase, err := usecase.Read(dir, usecase.Name(useCaseName), ports.FileOptions{})
 	if err != nil {
 		logger.Error("read use case", "error", err)
 		os.Exit(1)
@@ -287,16 +358,21 @@ func main() {
 	// template declared survives untouched.
 	fmt.Println("\n=== DeviceConfig.Merge: template + device config, layered ===")
 
-	merged, err := deviceCfg.Merge(useCase.DeploymentManifest)
+	baseline, err := usecase.NewBaselineFile(dir).Read(nil, ports.FileOptions{})
+	if err != nil {
+		logger.Error("read baseline for merge", "error", err)
+		os.Exit(1)
+	}
+	merged, err := deviceCfg.Merge(baseline, useCase.DeploymentManifest)
 	if err != nil {
 		logger.Error("merge device config onto template", "error", err)
 		os.Exit(1)
 	}
-	gw := merged.ModulesContent.EdgeAgent["factory-mqtt-gateway-1"]
+	gw := merged.ModulesContent.EdgeAgent.Modules["factory-mqtt-gateway-1"]
 	fmt.Printf("factory-mqtt-gateway-1 BROKER_URL after merge: %q\n", *gw.Env["BROKER_URL"].Value.StringValue)
 	fmt.Printf("factory-mqtt-gateway-1 status still %q (untouched by this device's patch)\n", gw.Status)
 	fmt.Printf("merged route count: %d (template's %d + device's %d)\n",
-		len(merged.ModulesContent.EdgeHub), len(useCase.DeploymentManifest.ModulesContent.EdgeHub), len(deviceCfg.Patch.EdgeHub))
+		len(merged.ModulesContent.EdgeHub.Routes), len(useCase.DeploymentManifest.ModulesContent.EdgeHub), len(deviceCfg.Patch.EdgeHub))
 
 	// ── app/iotedge.UpdateDeviceModuleImage: an ISOLATED, device-scoped
 	// image update ────────────────────────────────────────────────────
@@ -321,7 +397,7 @@ func main() {
 		logger.Error("read effective device config", "error", err)
 		os.Exit(1)
 	}
-	fmt.Printf("sensor-1 EFFECTIVE factory-cache image: %q\n", deviceEffective.ModulesContent.EdgeAgent["factory-cache"].Settings.Image.String())
+	fmt.Printf("sensor-1 EFFECTIVE factory-cache image: %q\n", deviceEffective.ModulesContent.EdgeAgent.Modules["factory-cache"].Settings.Image.String())
 
 	templateAfterDeviceUpdate, err := iotedgeapp.ReadUseCase(dir, useCaseName, ports.FileOptions{})
 	if err != nil {
@@ -365,8 +441,8 @@ func main() {
 	// the image we just updated above (and every other field) untouched.
 	fmt.Println("\n=== app/iotedge.PatchUseCaseModule: patch status+restartPolicy together ===")
 
-	newStatus := manifesttemplate.Status("stopped")
-	newRestartPolicy := manifesttemplate.RestartPolicy("on-failure")
+	newStatus := iothub.Status("stopped")
+	newRestartPolicy := iothub.RestartPolicy("on-failure")
 	fieldsPatch := modulepatch.FieldsPatch{
 		ModuleName:    "factory-dashboard",
 		Status:        &newStatus,
@@ -387,9 +463,12 @@ func main() {
 	fmt.Printf("        factory-dashboard image still %q (untouched by this patch): %v\n",
 		dashboardFinal.Settings.Image, dashboardFinal.Settings.Image.String() == newImage.String())
 
-	// Confirm every OTHER module is byte-for-byte unaffected by BOTH patches.
+	// Confirm every OTHER module is byte-for-byte unaffected by BOTH
+	// patches — useCase.DeploymentManifest (read further above, BEFORE
+	// either patch) is the "before" snapshot to compare against.
+	origModules := useCase.DeploymentManifest.ModulesContent.EdgeAgent
 	unaffected := true
-	for name, m := range modules {
+	for name, m := range origModules {
 		if name == "factory-dashboard" {
 			continue
 		}
@@ -398,19 +477,99 @@ func main() {
 			break
 		}
 	}
-	fmt.Printf("        all %d other modules unaffected: %v\n", len(modules)-1, unaffected)
+	fmt.Printf("        all %d other modules unaffected: %v\n", len(origModules)-1, unaffected)
+}
 
-	// ── docker/registry: fetch tags + lean manifest metadata for one image ──
+// runModuleSummaryDemo demonstrates modulesummary/updatemoduleimage's
+// "resolves via ANY layer" story: "vulnerability-scanner" is declared
+// ONLY in baseline/baseline.json, never in usecase1's own template, yet
+// modulesummary.NewSummary resolves it through usecase.ReadEffective
+// exactly like a template-declared module would. Also demonstrates the
+// SAME resolution + update path for a SYSTEM module (edgeAgent), and
+// bridges both modulesummary.ReadTool and updatemoduleimage.Tool as live
+// MCP tools — the SAME "declare once, register anywhere" pattern
+// registry.GetTagsTool/GetImageMetadataTool demonstrate below, since
+// both are ALREADY native MCP tool contracts (no adapters/mcprest
+// bridge needed, unlike GetTagsRoute — a plain REST route — above).
+func runModuleSummaryDemo(dir, useCaseName, deviceID string) {
+	opts := ports.FileOptions{}
+
+	fmt.Println("\n=== modulesummary: a baseline-only module resolves without ever being in the template ===")
+
+	effective, err := usecase.ReadEffective(dir, usecase.Name(useCaseName), usecase.DeviceID(deviceID), opts)
+	if err != nil {
+		logger.Error("read effective config for module summary", "error", err)
+		os.Exit(1)
+	}
+
+	scanner := modulesummary.NewSummary(effective.ModulesContent.EdgeAgent.Modules["vulnerability-scanner"])
+	fmt.Printf("vulnerability-scanner (baseline-only, absent from usecase1's own template): image=%s status=%v restartPolicy=%v\n",
+		scanner.Image, *scanner.Status, *scanner.RestartPolicy)
+
+	// ── system module (edgeAgent) summary + image update ─────────────────
 	//
-	// This section is PURE WIRING — it just spins up two local httptest
-	// servers (simulating a registry host + a SEPARATE auth-realm host,
-	// exactly like Docker Hub's registry-1.docker.io vs auth.docker.io) and
-	// calls docker/registry's exported GetTags/GetImageMetadata. All the
-	// actual logic (auth-challenge flow, manifest-list-to-single-platform
-	// resolution, lean metadata computation) lives in the docker/registry
-	// package itself — reusable independent of this example.
-	fmt.Println("\n=== docker/registry: tags + manifest metadata for factory-dashboard ===")
-	runRegistryDemo()
+	// edgeAgent/edgeHub are the two RESERVED system modules every
+	// BaseDeployment declares (see iothub.SystemModules) — a genuinely
+	// separate wire bucket from regular modules, but modulesummary
+	// resolves/summarizes both through the SAME Summary shape via
+	// NewSummaryFromSystemModule + SystemModuleConfigFor.
+	fmt.Println("\n=== modulesummary: system module (edgeAgent) summary + image update ===")
+
+	edgeAgentCfg, ok := modulesummary.SystemModuleConfigFor(effective.ModulesContent.EdgeAgent.SystemModules, "edgeAgent")
+	if !ok {
+		logger.Error("edgeAgent system module not found", "error", nil)
+		os.Exit(1)
+	}
+	fmt.Printf("edgeAgent BEFORE update: image=%s\n", modulesummary.NewSummaryFromSystemModule(edgeAgentCfg).Image)
+
+	newEdgeAgentImage := docker.Image{Name: "mcr.microsoft.com/azureiotedge-agent", Tag: "1.6.0"}
+	if err := iotedgeapp.UpdateUseCaseSystemModuleImage(dir, useCaseName, "edgeAgent", newEdgeAgentImage, opts); err != nil {
+		logger.Error("update edgeAgent system module image", "error", err)
+		os.Exit(1)
+	}
+
+	effectiveAfter, err := usecase.ReadEffective(dir, usecase.Name(useCaseName), usecase.DeviceID(deviceID), opts)
+	if err != nil {
+		logger.Error("re-read effective config after system module update", "error", err)
+		os.Exit(1)
+	}
+	edgeAgentCfgAfter, _ := modulesummary.SystemModuleConfigFor(effectiveAfter.ModulesContent.EdgeAgent.SystemModules, "edgeAgent")
+	fmt.Printf("edgeAgent AFTER update:  image=%s\n", modulesummary.NewSummaryFromSystemModule(edgeAgentCfgAfter).Image)
+
+	// ── Bridge modulesummary.ReadTool / updatemoduleimage.Tool as MCP tools ──
+	fmt.Println("\n=== MCP bridge: modulesummary.ReadTool/updatemoduleimage.Tool (baseline-only + system module) ===")
+
+	moduleSummaryToolsBuilder := mcp.NewBuilder(mcp.Info{Name: "go-edge-models module summary MCP tools", Version: "1.0.0"})
+
+	readSummaryHandle, err := modulesummary.ReadTool.Register(moduleSummaryToolsBuilder)
+	if err != nil {
+		logger.Error("register read_module_summary tool", "error", err)
+		os.Exit(1)
+	}
+	_, readSummaryHandlerFn := mcpgo.ToolHandler(readSummaryHandle,
+		iotedgeapp.NewReadModuleSummaryToolHandler(opts),
+		mcpgo.Options{},
+	)
+	callMCPTool(readSummaryHandlerFn, "read_module_summary(vulnerability-scanner)", map[string]any{
+		"basePath": dir, "useCaseName": useCaseName, "moduleName": "vulnerability-scanner",
+	})
+	callMCPTool(readSummaryHandlerFn, "read_module_summary(edgeAgent)", map[string]any{
+		"basePath": dir, "useCaseName": useCaseName, "moduleName": "edgeAgent",
+	})
+
+	updateImageHandle, err := updatemoduleimage.Tool.Register(moduleSummaryToolsBuilder)
+	if err != nil {
+		logger.Error("register update_module_image tool", "error", err)
+		os.Exit(1)
+	}
+	_, updateImageHandlerFn := mcpgo.ToolHandler(updateImageHandle,
+		iotedgeapp.NewUpdateModuleImageToolHandler(opts),
+		mcpgo.Options{},
+	)
+	callMCPTool(updateImageHandlerFn, "update_module_image(edgeAgent, 1.6.1)", map[string]any{
+		"basePath": dir, "useCaseName": useCaseName, "moduleName": "edgeAgent",
+		"imageURL": "mcr.microsoft.com/azureiotedge-agent:1.6.1",
+	})
 }
 
 // runRegistryDemo wires two local httptest servers together (a registry

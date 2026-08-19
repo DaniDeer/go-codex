@@ -1,21 +1,22 @@
 package iotedge
 
 import (
+	"errors"
 	"testing"
 
+	iothub "github.com/DaniDeer/go-codex/examples/go-edge-models/models/azure/iothub"
 	"github.com/DaniDeer/go-codex/examples/go-edge-models/models/docker"
-	manifesttemplate "github.com/DaniDeer/go-codex/examples/go-edge-models/models/iotedge/manifesttemplate"
 	"github.com/DaniDeer/go-codex/examples/go-edge-models/models/iotedge/modulepatch"
 	"github.com/DaniDeer/go-codex/examples/go-edge-models/models/iotedge/usecase"
 	"github.com/DaniDeer/go-codex/ports"
 )
 
-func sampleManifest() manifesttemplate.DeploymentManifest {
-	return manifesttemplate.DeploymentManifest{
-		ModulesContent: manifesttemplate.ModulesContent{
-			EdgeAgent: manifesttemplate.Modules{
-				"factory-dashboard": manifesttemplate.ModuleConfig{
-					Settings:      manifesttemplate.ModuleSettings{Image: docker.Image{Name: "ghcr.io/org/edge-web", Tag: "1.0.0"}},
+func sampleManifest() iothub.LayeredDeployment {
+	return iothub.LayeredDeployment{
+		ModulesContent: iothub.LayeredModulesContent{
+			EdgeAgent: iothub.Modules{
+				"factory-dashboard": iothub.ModuleConfig{
+					Settings:      iothub.ModuleSettings{Image: docker.Image{Name: "ghcr.io/org/edge-web", Tag: "1.0.0"}},
 					Type:          "docker",
 					Status:        "running",
 					RestartPolicy: "always",
@@ -26,11 +27,58 @@ func sampleManifest() manifesttemplate.DeploymentManifest {
 	}
 }
 
+// sampleBaselineManifest returns a minimal, valid iothub.BaseDeployment with
+// ONE baseline-only module ("vulnerability-scanner", never declared in
+// sampleManifest's own template) — lets tests exercise both "module
+// resolves via the template" and "module resolves via baseline only"
+// paths from the SAME fixture.
+func sampleBaselineManifest() iothub.BaseDeployment {
+	return iothub.BaseDeployment{
+		ModulesContent: iothub.BaseModulesContent{
+			EdgeAgent: iothub.EdgeAgentProperties{
+				SchemaVersion: "1.1",
+				Runtime: iothub.Runtime{
+					Settings: iothub.RuntimeSettings{MinDockerVersion: "v1.25"},
+					Type:     "docker",
+				},
+				SystemModules: iothub.SystemModules{
+					EdgeAgent: iothub.SystemModuleConfig{
+						Settings: iothub.ModuleSettings{Image: docker.Image{Name: "mcr.microsoft.com/azureiotedge-agent", Tag: "1.5.31"}},
+						Type:     "docker",
+					},
+					EdgeHub: iothub.SystemModuleConfig{
+						Settings:      iothub.ModuleSettings{Image: docker.Image{Name: "mcr.microsoft.com/azureiotedge-hub", Tag: "1.5.31"}},
+						Type:          "docker",
+						Status:        "running",
+						RestartPolicy: "always",
+					},
+				},
+				Modules: iothub.Modules{
+					"vulnerability-scanner": iothub.ModuleConfig{
+						Settings:      iothub.ModuleSettings{Image: docker.Image{Name: "ghcr.io/example-org/edge-security-scanner", Tag: "0.0.2"}},
+						Type:          "docker",
+						Status:        "running",
+						RestartPolicy: "always",
+						Version:       "auto",
+					},
+				},
+			},
+			EdgeHub: iothub.EdgeHubProperties{
+				SchemaVersion:                "1.1",
+				StoreAndForwardConfiguration: iothub.StoreAndForwardConfiguration{TimeToLiveSecs: 259200},
+			},
+		},
+	}
+}
+
 const sampleUseCaseName = "usecase1"
 
 func writeSampleManifest(t *testing.T) string {
 	t.Helper()
 	basePath := t.TempDir()
+	if _, err := usecase.NewBaselineFile(basePath).Write(nil, sampleBaselineManifest(), ports.FileOptions{CreateDirs: true}); err != nil {
+		t.Fatalf("Write baseline: %v", err)
+	}
 	fh := usecase.NewFile(basePath)
 	if _, err := fh.Write(map[string]string{"usecase_name": sampleUseCaseName}, sampleManifest(), ports.FileOptions{CreateDirs: true}); err != nil {
 		t.Fatalf("Write: %v", err)
@@ -107,10 +155,142 @@ func TestUpdateUseCaseModuleImage_RejectsInvalidImage(t *testing.T) {
 	}
 }
 
+func TestUpdateUseCaseModuleImage_PromotesBaselineOnlyModule(t *testing.T) {
+	basePath := writeSampleManifest(t)
+
+	// "vulnerability-scanner" is declared ONLY in sampleBaselineManifest,
+	// never in sampleManifest's own template — updating its image must
+	// AUTO-PROMOTE to a full override in the template, not attempt an
+	// incomplete sparse patch onto nothing.
+	newImage := docker.Image{Name: "ghcr.io/example-org/edge-security-scanner", Tag: "0.0.3"}
+	if err := UpdateUseCaseModuleImage(basePath, sampleUseCaseName, "vulnerability-scanner", newImage, ports.FileOptions{}); err != nil {
+		t.Fatalf("UpdateUseCaseModuleImage: %v", err)
+	}
+
+	template, err := ReadUseCase(basePath, sampleUseCaseName, ports.FileOptions{})
+	if err != nil {
+		t.Fatalf("ReadUseCase after update: %v", err)
+	}
+	scanner, ok := template.ModulesContent.EdgeAgent["vulnerability-scanner"]
+	if !ok {
+		t.Fatal("ReadUseCase: expected vulnerability-scanner to now be declared in the template")
+	}
+	if scanner.Settings.Image.String() != "ghcr.io/example-org/edge-security-scanner:0.0.3" {
+		t.Errorf("Image = %v, want ghcr.io/example-org/edge-security-scanner:0.0.3", scanner.Settings.Image)
+	}
+	// The promoted entry must be COMPLETE (every required field set,
+	// seeded from baseline) so it decodes cleanly on its own.
+	if scanner.Status != "running" || scanner.RestartPolicy != "always" || scanner.Type != "docker" {
+		t.Errorf("promoted entry = %+v, want every field seeded from baseline", scanner)
+	}
+
+	// Reading it back via the app-level summary helper (baseline-aware)
+	// must reflect the NEW image too.
+	summary, err := readModuleSummary(basePath, sampleUseCaseName, "", "vulnerability-scanner", ports.FileOptions{})
+	if err != nil {
+		t.Fatalf("readModuleSummary: %v", err)
+	}
+	if summary.Image.String() != "ghcr.io/example-org/edge-security-scanner:0.0.3" {
+		t.Errorf("Summary.Image = %v, want ghcr.io/example-org/edge-security-scanner:0.0.3", summary.Image)
+	}
+}
+
+func TestUpdateUseCaseModuleImage_UnknownModule_ReturnsModuleNotFoundError(t *testing.T) {
+	basePath := writeSampleManifest(t)
+	err := UpdateUseCaseModuleImage(basePath, sampleUseCaseName, "totally-unknown-module", docker.Image{Name: "ghcr.io/org/x", Tag: "1.0.0"}, ports.FileOptions{})
+	var notFound ModuleNotFoundError
+	if !errors.As(err, &notFound) {
+		t.Fatalf("UpdateUseCaseModuleImage error = %v (%T), want ModuleNotFoundError", err, err)
+	}
+}
+
+func TestUpdateUseCaseSystemModuleImage_PromotesWhenNoTemplateOverrideYet(t *testing.T) {
+	basePath := writeSampleManifest(t)
+
+	newImage := docker.Image{Name: "mcr.microsoft.com/azureiotedge-agent", Tag: "1.6.0"}
+	if err := UpdateUseCaseSystemModuleImage(basePath, sampleUseCaseName, "edgeAgent", newImage, ports.FileOptions{}); err != nil {
+		t.Fatalf("UpdateUseCaseSystemModuleImage: %v", err)
+	}
+
+	template, err := ReadUseCase(basePath, sampleUseCaseName, ports.FileOptions{})
+	if err != nil {
+		t.Fatalf("ReadUseCase after update: %v", err)
+	}
+	smc, ok := template.ModulesContent.SystemModules["edgeAgent"]
+	if !ok {
+		t.Fatal("ReadUseCase: expected an edgeAgent override to now be declared in the template")
+	}
+	if smc.Settings.Image.String() != "mcr.microsoft.com/azureiotedge-agent:1.6.0" {
+		t.Errorf("Image = %v, want mcr.microsoft.com/azureiotedge-agent:1.6.0", smc.Settings.Image)
+	}
+	if smc.Type != "docker" {
+		t.Errorf("Type = %q, want docker (promoted entry must be complete)", smc.Type)
+	}
+
+	summary, err := readModuleSummary(basePath, sampleUseCaseName, "", "edgeAgent", ports.FileOptions{})
+	if err != nil {
+		t.Fatalf("readModuleSummary: %v", err)
+	}
+	if summary.Image.String() != "mcr.microsoft.com/azureiotedge-agent:1.6.0" {
+		t.Errorf("Summary.Image = %v, want mcr.microsoft.com/azureiotedge-agent:1.6.0", summary.Image)
+	}
+}
+
+func TestUpdateUseCaseSystemModuleImage_SparseWhenTemplateOverrideAlreadyExists(t *testing.T) {
+	basePath := writeSampleManifest(t)
+
+	// First update promotes a full override.
+	firstImage := docker.Image{Name: "mcr.microsoft.com/azureiotedge-hub", Tag: "1.6.0"}
+	if err := UpdateUseCaseSystemModuleImage(basePath, sampleUseCaseName, "edgeHub", firstImage, ports.FileOptions{}); err != nil {
+		t.Fatalf("first UpdateUseCaseSystemModuleImage: %v", err)
+	}
+	// Second update should sparse-patch the EXISTING override.
+	secondImage := docker.Image{Name: "mcr.microsoft.com/azureiotedge-hub", Tag: "1.6.1"}
+	if err := UpdateUseCaseSystemModuleImage(basePath, sampleUseCaseName, "edgeHub", secondImage, ports.FileOptions{}); err != nil {
+		t.Fatalf("second UpdateUseCaseSystemModuleImage: %v", err)
+	}
+
+	template, err := ReadUseCase(basePath, sampleUseCaseName, ports.FileOptions{})
+	if err != nil {
+		t.Fatalf("ReadUseCase after update: %v", err)
+	}
+	smc := template.ModulesContent.SystemModules["edgeHub"]
+	if smc.Settings.Image.String() != "mcr.microsoft.com/azureiotedge-hub:1.6.1" {
+		t.Errorf("Image = %v, want mcr.microsoft.com/azureiotedge-hub:1.6.1", smc.Settings.Image)
+	}
+	// Fields the second (sparse) update never touched must survive from
+	// the first (full) promotion.
+	if smc.Status != "running" || smc.RestartPolicy != "always" {
+		t.Errorf("Status/RestartPolicy = %q/%q, want unchanged from baseline (running/always)", smc.Status, smc.RestartPolicy)
+	}
+}
+
+func TestUpdateDeviceSystemModuleImage_FirstOverride_WritesNewDeviceFile(t *testing.T) {
+	basePath := writeSampleManifest(t)
+
+	newImage := docker.Image{Name: "mcr.microsoft.com/azureiotedge-agent", Tag: "1.6.0"}
+	if err := UpdateDeviceSystemModuleImage(basePath, sampleUseCaseName, sampleDeviceID, "edgeAgent", newImage, ports.FileOptions{}); err != nil {
+		t.Fatalf("UpdateDeviceSystemModuleImage: %v", err)
+	}
+
+	effective, err := usecase.ReadEffective(basePath, sampleUseCaseName, sampleDeviceID, ports.FileOptions{})
+	if err != nil {
+		t.Fatalf("ReadEffective: %v", err)
+	}
+	if effective.ModulesContent.EdgeAgent.SystemModules.EdgeAgent.Settings.Image.String() != "mcr.microsoft.com/azureiotedge-agent:1.6.0" {
+		t.Errorf("EdgeAgent.Settings.Image = %v, want mcr.microsoft.com/azureiotedge-agent:1.6.0",
+			effective.ModulesContent.EdgeAgent.SystemModules.EdgeAgent.Settings.Image)
+	}
+	// The device patch should NOT have touched edgeHub.
+	if effective.ModulesContent.EdgeAgent.SystemModules.EdgeHub.Status != "running" {
+		t.Errorf("EdgeHub.Status = %q, want unchanged \"running\"", effective.ModulesContent.EdgeAgent.SystemModules.EdgeHub.Status)
+	}
+}
+
 func TestPatchUseCaseModule_PatchesMultipleFieldsLeavesOthersUntouched(t *testing.T) {
 	basePath := writeSampleManifest(t)
 
-	status := manifesttemplate.Status("stopped")
+	status := iothub.Status("stopped")
 	if err := PatchUseCaseModule(basePath, sampleUseCaseName, modulepatch.FieldsPatch{
 		ModuleName: "factory-dashboard",
 		Status:     &status,
@@ -169,7 +349,7 @@ func TestUpdateDeviceModuleImage_FirstOverride_WritesNewDeviceFile(t *testing.T)
 	if err != nil {
 		t.Fatalf("ReadEffective: %v", err)
 	}
-	dashboard := effective.ModulesContent.EdgeAgent["factory-dashboard"]
+	dashboard := effective.ModulesContent.EdgeAgent.Modules["factory-dashboard"]
 	if dashboard.Settings.Image.String() != "ghcr.io/org/edge-web:9.9.9" {
 		t.Errorf("effective Image = %v, want ghcr.io/org/edge-web:9.9.9", dashboard.Settings.Image)
 	}
@@ -189,7 +369,7 @@ func TestPatchDeviceModule_SecondOverride_MergesOntoExistingDeviceFile(t *testin
 	}
 
 	// Second override: status, on a DIFFERENT field of the SAME module.
-	status := manifesttemplate.Status("stopped")
+	status := iothub.Status("stopped")
 	if err := PatchDeviceModule(basePath, sampleUseCaseName, sampleDeviceID, modulepatch.FieldsPatch{
 		ModuleName: "factory-dashboard",
 		Status:     &status,
@@ -201,7 +381,7 @@ func TestPatchDeviceModule_SecondOverride_MergesOntoExistingDeviceFile(t *testin
 	if err != nil {
 		t.Fatalf("ReadEffective: %v", err)
 	}
-	dashboard := effective.ModulesContent.EdgeAgent["factory-dashboard"]
+	dashboard := effective.ModulesContent.EdgeAgent.Modules["factory-dashboard"]
 	// BOTH overrides must be present — the second patch must not have
 	// clobbered the first.
 	if dashboard.Settings.Image.String() != "ghcr.io/org/edge-web:2.0.0" {
@@ -222,10 +402,10 @@ func TestUpdateDeviceModuleImage_IntroducesNewModuleAtDeviceLevel(t *testing.T) 
 	}
 	// A brand-new module needs its OTHER required fields set too — Image
 	// alone isn't a complete ModuleConfig.
-	moduleType := manifesttemplate.Type("docker")
-	moduleStatus := manifesttemplate.Status("running")
-	restartPolicy := manifesttemplate.RestartPolicy("always")
-	version := manifesttemplate.Version("1.0")
+	moduleType := iothub.Type("docker")
+	moduleStatus := iothub.Status("running")
+	restartPolicy := iothub.RestartPolicy("always")
+	version := iothub.Version("1.0")
 	patch.Type = &moduleType
 	patch.Status = &moduleStatus
 	patch.RestartPolicy = &restartPolicy
@@ -239,7 +419,7 @@ func TestUpdateDeviceModuleImage_IntroducesNewModuleAtDeviceLevel(t *testing.T) 
 	if err != nil {
 		t.Fatalf("ReadEffective: %v", err)
 	}
-	extra, ok := effective.ModulesContent.EdgeAgent["extra-sensor-agent"]
+	extra, ok := effective.ModulesContent.EdgeAgent.Modules["extra-sensor-agent"]
 	if !ok {
 		t.Fatal("ReadEffective: expected a brand-new module introduced at the device level")
 	}
@@ -247,7 +427,7 @@ func TestUpdateDeviceModuleImage_IntroducesNewModuleAtDeviceLevel(t *testing.T) 
 		t.Errorf("new module Image = %v, want ghcr.io/org/extra-sensor-agent:1.0.0", extra.Settings.Image)
 	}
 	// The ORIGINAL template module must be completely untouched.
-	if effective.ModulesContent.EdgeAgent["factory-dashboard"].Settings.Image.String() != "ghcr.io/org/edge-web:1.0.0" {
+	if effective.ModulesContent.EdgeAgent.Modules["factory-dashboard"].Settings.Image.String() != "ghcr.io/org/edge-web:1.0.0" {
 		t.Error("factory-dashboard must be untouched by a patch introducing a different module")
 	}
 }

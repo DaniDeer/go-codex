@@ -1,23 +1,23 @@
 // Package modulepatch holds representations DERIVED FROM — not part of —
-// the base IoT-Edge manifest wire schema in the sibling
-// models/iotedge/manifesttemplate package (Go package manifesttemplate): a
-// partial document assembled by reusing manifesttemplate's already-exported
-// field-level codecs (manifesttemplate.ModuleNameCodec, manifesttemplate.ImageCodec,
-// docker.CreateOptionsCodec, manifesttemplate.EnvVarsCodec, manifesttemplate.TypeCodec,
-// manifesttemplate.StatusCodec, manifesttemplate.RestartPolicyCodec, manifesttemplate.VersionCodec)
-// AND its wire-key vocabulary (manifesttemplate.ModulesContentKey/
-// EdgeAgentKey — see manifesttemplate/keys.go, the single source of
+// the base IoT-Edge manifest wire schema in the
+// models/azure/iothub package (Go package iothub): a
+// partial document assembled by reusing iothub's already-exported
+// field-level codecs (iothub.ModuleNameCodec, iothub.ImageCodec,
+// docker.CreateOptionsCodec, iothub.EnvVarsCodec, iothub.TypeCodec,
+// iothub.StatusCodec, iothub.RestartPolicyCodec, iothub.VersionCodec)
+// AND its wire-key vocabulary (iothub.ModulesContentKey/
+// EdgeAgentKey — see azure/iothub/keys.go, the single source of
 // truth for these; FieldsPatchCodec's outer wrapping is built from
 // them, never re-hardcoded) to target one module's fields within the
-// real manifest shape. This package depends ONLY on manifesttemplate
+// real manifest shape. This package depends ONLY on azure/iothub
 // (+docker) — it has ZERO dependency on models/iotedge itself, since
 // everything it needs is pure wire model, not a derived/constructed
 // concept.
 //
-// This is a SEPARATE package from manifesttemplate itself (not a file
+// This is a SEPARATE package from azure/iothub itself (not a file
 // inside it) so that:
-//   - manifesttemplate stays focused on the base wire schema (ModuleConfig,
-//     ModuleSettings, EnvVars, DeploymentManifest, ...), never accumulating
+//   - azure/iothub stays focused on the base wire schema (ModuleConfig,
+//     ModuleSettings, EnvVars, LayeredDeployment, ...), never accumulating
 //     one file per derived representation.
 //   - a consumer who only needs to patch a module doesn't pull in any
 //     other derived representation that might be added later.

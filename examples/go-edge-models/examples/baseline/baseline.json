@@ -1,0 +1,145 @@
+{
+	"modulesContent": {
+		"$edgeAgent": {
+			"properties.desired": {
+				"modules": {
+					"vulnerability-scanner": {
+						"settings": {
+							"image": "ghcr.io/example-org/edge-security-scanner:0.0.2",
+							"createOptions": "{\"ExposedPorts\": {\"8080/tcp\": {}}, \"HostConfig\": {\"Binds\": [\"/var/run/docker.sock:/var/run/docker.sock\"]}}"
+						},
+						"type": "docker",
+						"version": "Will be automatically overwritten",
+						"env": {
+							"SEVERITY": {
+								"value": "CRITICAL,HIGH"
+							},
+							"SCAN_INTERVAL": {
+								"value": "1h"
+							},
+							"https_proxy": {
+								"value": "http://proxy.your-company.com:8080/"
+							}
+						},
+						"status": "running",
+						"restartPolicy": "always"
+					},
+					"baseline-metrics": {
+						"settings": {
+							"image": "mcr.microsoft.com/azureiotedge-metrics-collector:1.3.0",
+							"createOptions": ""
+						},
+						"type": "docker",
+						"version": "Will be automatically overwritten",
+						"env": {
+							"experimentalFeatures__AddIdentifyingTags": {
+								"value": "true"
+							},
+							"UploadTarget": {
+								"value": "AzureMonitor"
+							},
+							"MetricsEndpointsCSV": {
+								"value": "http://edgeHub:9600/metrics,http://edgeAgent:9600/metrics,http://vulnerability-scanner:8080/metrics"
+							},
+							"no_proxy": {
+								"value": "edgeHub,edgeAgent,vulnerability-scanner"
+							},
+							"LogAnalyticsWorkspaceId": {
+								"value": "00000000-0000-0000-0000-000000000000"
+							},
+							"LogAnalyticsSharedKey": {
+								"value": "${BASELINE_LOG_ANALYTICS_SHARED_KEY}"
+							},
+							"ResourceID": {
+								"value": "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/rg-example-edge/providers/Microsoft.Devices/IotHubs/ioth-example-edge"
+							},
+							"https_proxy": {
+								"value": "http://proxy.your-company.com:8080/"
+							}
+						},
+						"status": "running",
+						"restartPolicy": "always"
+					}
+				},
+				"runtime": {
+					"settings": {
+						"minDockerVersion": "v1.25",
+						"registryCredentials": {
+							"ghcrExampleOrg": {
+								"address": "ghcr.io",
+								"password": "${GHCR_IO_READ_PACKAGES_PAT}",
+								"username": "user"
+							}
+						}
+					},
+					"type": "docker"
+				},
+				"schemaVersion": "1.1",
+				"systemModules": {
+					"edgeAgent": {
+						"settings": {
+							"image": "mcr.microsoft.com/azureiotedge-agent:1.5.31",
+							"createOptions": "{\"ExposedPorts\":{\"9600/tcp\":{}},\"HostConfig\":{\"Binds\":[\"edgeAgent:/storage\"]}}"
+						},
+						"type": "docker",
+						"env": {
+							"https_proxy": {
+								"value": "http://proxy.your-company.com:8080/"
+							},
+							"UpstreamProtocol": {
+								"value": "AmqpWs"
+							},
+							"http_proxy": {
+								"value": "http://proxy.your-company.com:8080/"
+							},
+							"storageFolder": {
+								"value": "/storage"
+							},
+							"SendRuntimeQualityTelemetry": {
+								"value": "false"
+							},
+							"CoolOffTimeUnitInSeconds": {
+								"value": "60"
+							},
+							"MaxRestartCount": {
+								"value": "1440"
+							}
+						}
+					},
+					"edgeHub": {
+						"settings": {
+							"image": "mcr.microsoft.com/azureiotedge-hub:1.5.31",
+							"createOptions": "{\"ExposedPorts\":{\"9600/tcp\":{}},\"HostConfig\":{\"Binds\":[\"edgeHub:/storage\"]}}"
+						},
+						"type": "docker",
+						"env": {
+							"http_proxy": {
+								"value": "http://proxy.your-company.com:8080/"
+							},
+							"https_proxy": {
+								"value": "http://proxy.your-company.com:8080/"
+							},
+							"UpstreamProtocol": {
+								"value": "AmqpWs"
+							},
+							"storageFolder": {
+								"value": "/storage"
+							}
+						},
+						"status": "running",
+						"restartPolicy": "always"
+					}
+				}
+			}
+		},
+		"$edgeHub": {
+			"properties.desired": {
+				"routes": {},
+				"schemaVersion": "1.1",
+				"storeAndForwardConfiguration": {
+					"timeToLiveSecs": 259200
+				}
+			}
+		}
+	}
+}

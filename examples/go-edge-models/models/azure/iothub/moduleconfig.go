@@ -1,4 +1,4 @@
-package manifesttemplate
+package iothub
 
 import (
 	c "github.com/DaniDeer/go-codex/codex"

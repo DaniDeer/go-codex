@@ -1,4 +1,4 @@
-package manifesttemplate
+package iothub
 
 import (
 	"fmt"
@@ -84,7 +84,7 @@ type InvalidRouteError struct {
 }
 
 func (e InvalidRouteError) Error() string {
-	return fmt.Sprintf(`manifesttemplate: invalid route %q: want "FROM <path> INTO BrokeredEndpoint(\"<topic>\")" or "FROM <path> INTO $upstream"`, e.Raw)
+	return fmt.Sprintf(`iothub: invalid route %q: want "FROM <path> INTO BrokeredEndpoint(\"<topic>\")" or "FROM <path> INTO $upstream"`, e.Raw)
 }
 
 // LogValue implements slog.LogValuer for structured logging.

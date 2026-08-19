@@ -25,10 +25,10 @@ func TestNewReadModuleSummaryToolHandler_ReturnsSummary(t *testing.T) {
 	if summary.Image.String() != "ghcr.io/org/edge-web:1.0.0" {
 		t.Errorf("Image = %v, want ghcr.io/org/edge-web:1.0.0", summary.Image)
 	}
-	if summary.Status != "running" {
+	if summary.Status == nil || *summary.Status != "running" {
 		t.Errorf("Status = %v, want running", summary.Status)
 	}
-	if summary.RestartPolicy != "always" {
+	if summary.RestartPolicy == nil || *summary.RestartPolicy != "always" {
 		t.Errorf("RestartPolicy = %v, want always", summary.RestartPolicy)
 	}
 }
@@ -87,7 +87,7 @@ func TestNewReadModuleSummaryToolHandler_DeviceScoped_ReturnsEffectiveSummary(t 
 		t.Errorf("Image = %v, want ghcr.io/org/edge-web:3.0.0 (device-effective)", summary.Image)
 	}
 	// Unrelated to the device patch — must survive from the template.
-	if summary.Status != "running" {
+	if summary.Status == nil || *summary.Status != "running" {
 		t.Errorf("Status = %v, want unchanged running", summary.Status)
 	}
 }

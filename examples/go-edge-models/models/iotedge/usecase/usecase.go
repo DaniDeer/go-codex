@@ -3,7 +3,7 @@ package usecase
 import (
 	"path/filepath"
 
-	manifesttemplate "github.com/DaniDeer/go-codex/examples/go-edge-models/models/iotedge/manifesttemplate"
+	iothub "github.com/DaniDeer/go-codex/examples/go-edge-models/models/azure/iothub"
 	f "github.com/DaniDeer/go-codex/format"
 	"github.com/DaniDeer/go-codex/ports"
 )
@@ -29,8 +29,23 @@ import (
 // FileFormat is the declared, reusable format/codec pairing for an
 // iotedge deployment manifest file — no I/O by itself; it exists so
 // [NewFile] and any caller building their own ports.File don't have to
-// repeat format.JSON(manifesttemplate.DeploymentManifestCodec).
-var FileFormat = f.JSON(manifesttemplate.DeploymentManifestCodec)
+// repeat format.JSON(iothub.LayeredDeploymentCodec).
+var FileFormat = f.JSON(iothub.LayeredDeploymentCodec)
+
+// BaselineFileFormat mirrors FileFormat exactly, for the GLOBAL
+// baseline.json file (see [NewBaselineFile]).
+var BaselineFileFormat = f.JSON(iothub.BaseDeploymentCodec)
+
+// NewBaselineFile declares the file port for the SINGLE GLOBAL baseline
+// deployment file under basePath — "{basePath}/baseline/baseline.json"
+// — a thin, pure (no I/O) constructor over ports.NewFile, using
+// BaselineFileFormat. Unlike [NewFile]/[NewDeviceFile], this path has NO
+// template variables (no per-use-case or per-device variation — see the
+// models/azure/iothub package's own doc comment for why): Read/Write
+// take a nil vars map, e.g. NewBaselineFile(basePath).Read(nil, opts).
+func NewBaselineFile(basePath string) ports.File[iothub.BaseDeployment] {
+	return ports.NewFile[iothub.BaseDeployment](filepath.Join(basePath, baselinePathPattern), BaselineFileFormat)
+}
 
 // DirEntryPattern declares the filename SHAPE for iotedge config files
 // inside a config directory: each file is one "use case", and the
@@ -50,7 +65,7 @@ var DirEntryPattern = ports.EntryPattern{
 // FileFormat. usecase_name is validated against nameCodec (the SAME
 // codec [DirEntryPattern] uses to validate a discovered use case's name)
 // via a PLAIN (non-merge) [ports.FilePathParam] —
-// [manifesttemplate.DeploymentManifest] stays pure wire/file content;
+// [iothub.LayeredDeployment] stays pure wire/file content;
 // usecase_name is never merged into it. Read/Write take usecase_name via
 // their own vars map, e.g.
 // NewFile(basePath).Read(map[string]string{"usecase_name": name}, opts).
@@ -59,8 +74,8 @@ var DirEntryPattern = ports.EntryPattern{
 // (File.Write), and patching (ports.PatchEncoded(file, ...)) — see
 // [Read]/[Write] for the higher-level convenience that combines this
 // with device discovery.
-func NewFile(basePath string) ports.File[manifesttemplate.DeploymentManifest] {
-	return ports.NewFile[manifesttemplate.DeploymentManifest](filepath.Join(basePath, useCasePathPattern), FileFormat,
+func NewFile(basePath string) ports.File[iothub.LayeredDeployment] {
+	return ports.NewFile[iothub.LayeredDeployment](filepath.Join(basePath, useCasePathPattern), FileFormat,
 		ports.FilePathParam{Name: useCaseNameVar, Codec: &nameCodec},
 	)
 }
@@ -101,13 +116,13 @@ func ListNames(basePath string, opts ports.DirOptions) ([]Name, error) {
 
 // UseCase is the domain-level composition struct for ONE use case: its
 // name (from the file's own path, not its body) paired with its PURE
-// [manifesttemplate.DeploymentManifest] wire content, plus every device
-// nested under it. [manifesttemplate.DeploymentManifest] itself stays
+// [iothub.LayeredDeployment] wire content, plus every device
+// nested under it. [iothub.LayeredDeployment] itself stays
 // pure/unchanged — Name and Devices live only on UseCase, assembled by
 // [Read]/[Write].
 type UseCase struct {
 	Name               Name
-	DeploymentManifest manifesttemplate.DeploymentManifest
+	DeploymentManifest iothub.LayeredDeployment
 	Devices            []DeviceConfig
 }
 

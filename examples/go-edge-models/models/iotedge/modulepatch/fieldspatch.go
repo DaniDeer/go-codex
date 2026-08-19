@@ -5,8 +5,8 @@ import (
 	"log/slog"
 
 	c "github.com/DaniDeer/go-codex/codex"
+	iothub "github.com/DaniDeer/go-codex/examples/go-edge-models/models/azure/iothub"
 	"github.com/DaniDeer/go-codex/examples/go-edge-models/models/docker"
-	manifesttemplate "github.com/DaniDeer/go-codex/examples/go-edge-models/models/iotedge/manifesttemplate"
 )
 
 // This file holds FieldsPatch — a GENERAL, multi-field patch for
@@ -23,7 +23,7 @@ import (
 // the full design). Settings
 // itself groups Image/CreateOptions the SAME way — a nested
 // SettingsPatch, also PartialStruct-built — mirroring how
-// manifesttemplate.ModuleConfig.Settings groups those same two fields on the
+// iothub.ModuleConfig.Settings groups those same two fields on the
 // base (non-patch) type. Nesting needs no special mechanism: presence
 // for "settings" is decided exactly like any other field — is
 // FieldsPatch.Settings nil?
@@ -34,11 +34,11 @@ import (
 // (modulesContent -> $edgeAgent -> <dotted key> -> {...}) — that key is
 // data, not a static field name, so FieldsPatchCodec's own
 // Encode/Decode still hand-assembles that outer wrapping (reusing
-// manifesttemplate.ModuleNameCodec for the key itself) around
+// iothub.ModuleNameCodec for the key itself) around
 // FieldsBodyCodec's declarative result.
 
 // SettingsPatch groups the two fields the wire format nests under
-// "settings" — mirrors manifesttemplate.ModuleSettings, but every field is
+// "settings" — mirrors iothub.ModuleSettings, but every field is
 // independently optional.
 //
 // Gotcha: presence is decided by "is this pointer non-nil", not "does it
@@ -54,37 +54,42 @@ type SettingsPatch struct {
 }
 
 // SettingsPatchCodec — each present field is validated/encoded via
-// the SAME codec manifesttemplate.ModuleSettingsCodec itself uses
-// (manifesttemplate.ImageCodec/docker.CreateOptionsCodec) — no new validation
-// logic, only the sparse-inclusion mechanism.
+// the SAME codec iothub.ModuleSettingsCodec itself uses
+// (iothub.ImageCodec/iothub.CreateOptionsFieldCodec) —
+// no new validation logic, only the sparse-inclusion mechanism.
+// CreateOptions uses CreateOptionsFieldCodec specifically (NOT
+// docker.CreateOptionsCodec directly) since the wire shape is a
+// JSON-ESCAPED STRING, not a raw object — the same "settings.
+// createOptions" field iothub.ModuleSettingsCodec itself
+// wraps.
 var SettingsPatchCodec = c.PartialStruct[SettingsPatch](
-	c.PartialField("image", manifesttemplate.ImageCodec,
+	c.PartialField("image", iothub.ImageCodec,
 		func(s SettingsPatch) *docker.Image { return s.Image },
 		func(s *SettingsPatch, v *docker.Image) { s.Image = v },
 	),
-	c.PartialField("createOptions", docker.CreateOptionsCodec,
+	c.PartialField("createOptions", iothub.CreateOptionsFieldCodec,
 		func(s SettingsPatch) *docker.CreateOptions { return s.CreateOptions },
 		func(s *SettingsPatch, v *docker.CreateOptions) { s.CreateOptions = v },
 	),
 )
 
 // FieldsPatch is a partial set of one module's fields to update —
-// mirrors manifesttemplate.ModuleConfig's own field set (Settings groups Image/
+// mirrors iothub.ModuleConfig's own field set (Settings groups Image/
 // CreateOptions, exactly like ModuleConfig.Settings does on the base
 // type; Env/Type/Status/RestartPolicy/Version are ModuleConfig's
 // remaining top-level fields). Every field is a pointer; nil means
 // "untouched" — including Env, which (unlike the base ModuleConfig.Env)
-// is *manifesttemplate.EnvVars here rather than a bare EnvVars map, so every
+// is *iothub.EnvVars here rather than a bare EnvVars map, so every
 // field in this struct follows the exact same nil-means-unset
 // convention with no exceptions.
 type FieldsPatch struct {
-	ModuleName    manifesttemplate.ModuleName
+	ModuleName    iothub.ModuleName
 	Settings      *SettingsPatch
-	Env           *manifesttemplate.EnvVars
-	Type          *manifesttemplate.Type
-	Status        *manifesttemplate.Status
-	RestartPolicy *manifesttemplate.RestartPolicy
-	Version       *manifesttemplate.Version
+	Env           *iothub.EnvVars
+	Type          *iothub.Type
+	Status        *iothub.Status
+	RestartPolicy *iothub.RestartPolicy
+	Version       *iothub.Version
 }
 
 // NonEmptyFieldsPatch is a Constraint checking that AT LEAST ONE of
@@ -126,7 +131,7 @@ var NonEmptyFieldsPatch = c.Constraint[FieldsPatch]{
 // "succeeding" would hide that mistake), so FieldsPatchCodec.Encode
 // returns this instead. Implements slog.LogValuer for structured logging.
 type EmptyPatchError struct {
-	ModuleName manifesttemplate.ModuleName
+	ModuleName iothub.ModuleName
 }
 
 func (e EmptyPatchError) Error() string {
@@ -140,17 +145,17 @@ func (e EmptyPatchError) LogValue() slog.Value {
 	)
 }
 
-// envVarsCodec re-types manifesttemplate.EnvVarsCodec's underlying
-// Codec[map[EnvVarName]EnvVar] as Codec[manifesttemplate.EnvVars] — a trivial
+// envVarsCodec re-types iothub.EnvVarsCodec's underlying
+// Codec[map[EnvVarName]EnvVar] as Codec[iothub.EnvVars] — a trivial
 // identity conversion needed only because c.Map[K,V] itself returns a
 // Codec over the plain map type, not the named EnvVars type PartialField
-// needs to match FieldsPatch.Env's own *manifesttemplate.EnvVars field type.
+// needs to match FieldsPatch.Env's own *iothub.EnvVars field type.
 var envVarsCodec = c.MapCodecSafe(
-	manifesttemplate.EnvVarsCodec,
-	func(m map[manifesttemplate.EnvVarName]manifesttemplate.EnvVar) manifesttemplate.EnvVars {
-		return manifesttemplate.EnvVars(m)
+	iothub.EnvVarsCodec,
+	func(m map[iothub.EnvVarName]iothub.EnvVar) iothub.EnvVars {
+		return iothub.EnvVars(m)
 	},
-	func(v manifesttemplate.EnvVars) (map[manifesttemplate.EnvVarName]manifesttemplate.EnvVar, error) {
+	func(v iothub.EnvVars) (map[iothub.EnvVarName]iothub.EnvVar, error) {
 		return v, nil
 	},
 )
@@ -176,24 +181,24 @@ var FieldsBodyCodec = c.PartialStruct[FieldsPatch](
 		func(p *FieldsPatch, v *SettingsPatch) { p.Settings = v },
 	),
 	c.PartialField("env", envVarsCodec,
-		func(p FieldsPatch) *manifesttemplate.EnvVars { return p.Env },
-		func(p *FieldsPatch, v *manifesttemplate.EnvVars) { p.Env = v },
+		func(p FieldsPatch) *iothub.EnvVars { return p.Env },
+		func(p *FieldsPatch, v *iothub.EnvVars) { p.Env = v },
 	),
-	c.PartialField("type", manifesttemplate.TypeCodec,
-		func(p FieldsPatch) *manifesttemplate.Type { return p.Type },
-		func(p *FieldsPatch, v *manifesttemplate.Type) { p.Type = v },
+	c.PartialField("type", iothub.TypeCodec,
+		func(p FieldsPatch) *iothub.Type { return p.Type },
+		func(p *FieldsPatch, v *iothub.Type) { p.Type = v },
 	),
-	c.PartialField("status", manifesttemplate.StatusCodec,
-		func(p FieldsPatch) *manifesttemplate.Status { return p.Status },
-		func(p *FieldsPatch, v *manifesttemplate.Status) { p.Status = v },
+	c.PartialField("status", iothub.StatusCodec,
+		func(p FieldsPatch) *iothub.Status { return p.Status },
+		func(p *FieldsPatch, v *iothub.Status) { p.Status = v },
 	),
-	c.PartialField("restartPolicy", manifesttemplate.RestartPolicyCodec,
-		func(p FieldsPatch) *manifesttemplate.RestartPolicy { return p.RestartPolicy },
-		func(p *FieldsPatch, v *manifesttemplate.RestartPolicy) { p.RestartPolicy = v },
+	c.PartialField("restartPolicy", iothub.RestartPolicyCodec,
+		func(p FieldsPatch) *iothub.RestartPolicy { return p.RestartPolicy },
+		func(p *FieldsPatch, v *iothub.RestartPolicy) { p.RestartPolicy = v },
 	),
-	c.PartialField("version", manifesttemplate.VersionCodec,
-		func(p FieldsPatch) *manifesttemplate.Version { return p.Version },
-		func(p *FieldsPatch, v *manifesttemplate.Version) { p.Version = v },
+	c.PartialField("version", iothub.VersionCodec,
+		func(p FieldsPatch) *iothub.Version { return p.Version },
+		func(p *FieldsPatch, v *iothub.Version) { p.Version = v },
 	),
 )
 
@@ -215,35 +220,35 @@ var FieldsPatchCodec = c.Codec[FieldsPatch]{
 			return nil, EmptyPatchError{ModuleName: p.ModuleName}
 		}
 
-		key, err := manifesttemplate.ModuleNameCodec.Encode(p.ModuleName)
+		key, err := iothub.ModuleNameCodec.Encode(p.ModuleName)
 		if err != nil {
 			return nil, err
 		}
 
 		return map[string]any{
-			manifesttemplate.ModulesContentKey: map[string]any{
-				manifesttemplate.EdgeAgentKey: map[string]any{
+			iothub.ModulesContentKey: map[string]any{
+				iothub.EdgeAgentKey: map[string]any{
 					key.(string): moduleObj,
 				},
 			},
 		}, nil
 	},
 	Decode: func(raw any) (FieldsPatch, error) {
-		obj, err := asObject(raw, manifesttemplate.ModulesContentKey)
+		obj, err := asObject(raw, iothub.ModulesContentKey)
 		if err != nil {
 			return FieldsPatch{}, err
 		}
-		modulesContent, err := asObject(obj[manifesttemplate.ModulesContentKey], manifesttemplate.EdgeAgentKey)
+		modulesContent, err := asObject(obj[iothub.ModulesContentKey], iothub.EdgeAgentKey)
 		if err != nil {
 			return FieldsPatch{}, err
 		}
-		edgeAgent, ok := modulesContent[manifesttemplate.EdgeAgentKey].(map[string]any)
+		edgeAgent, ok := modulesContent[iothub.EdgeAgentKey].(map[string]any)
 		if !ok {
-			return FieldsPatch{}, c.TypeMismatchError{Expected: "object", Got: typeName(modulesContent[manifesttemplate.EdgeAgentKey])}
+			return FieldsPatch{}, c.TypeMismatchError{Expected: "object", Got: typeName(modulesContent[iothub.EdgeAgentKey])}
 		}
 
 		for rawKey, rawModule := range edgeAgent {
-			name, err := manifesttemplate.ModuleNameCodec.Decode(rawKey)
+			name, err := iothub.ModuleNameCodec.Decode(rawKey)
 			if err != nil {
 				return FieldsPatch{}, err
 			}
@@ -286,12 +291,44 @@ func typeName(v any) string {
 // mechanism rather than a separate ad-hoc type. Validates via
 // FieldsPatchCodec.New, which — since .New calls Encode and
 // discards the result — validates BOTH moduleName (must be a valid slug,
-// per manifesttemplate.ModuleNameCodec) and image (Name/Tag/Digest constraints,
-// per manifesttemplate.ImageCodec) before the patch is ever applied to a real
+// per iothub.ModuleNameCodec) and image (Name/Tag/Digest constraints,
+// per iothub.ImageCodec) before the patch is ever applied to a real
 // manifest via ports.PatchEncoded.
-func NewUpdateModuleImage(moduleName manifesttemplate.ModuleName, image docker.Image) (FieldsPatch, error) {
+func NewUpdateModuleImage(moduleName iothub.ModuleName, image docker.Image) (FieldsPatch, error) {
 	return FieldsPatchCodec.New(FieldsPatch{
 		ModuleName: moduleName,
 		Settings:   &SettingsPatch{Image: &image},
+	})
+}
+
+// NewUpdateModuleImageFromBase builds a FULL FieldsPatch — every field
+// set, seeded from base, with ONLY Image changed — for the case
+// [NewUpdateModuleImage]'s SPARSE patch cannot safely handle: writing
+// moduleName's image for the FIRST TIME at a scope (a use case template
+// or device config) where moduleName has no EXISTING entry of its own
+// yet (it currently only resolves via a LOWER layer, e.g.
+// models/azure/iothub's global base deployment). A sparse
+// patch deep-merged onto NOTHING would produce an incomplete entry
+// missing required fields (status/restartPolicy/version); seeding every
+// field from the already-resolved base avoids that entirely — the
+// written entry is immediately valid on its own, matching what
+// [iothub.ModuleConfigCodec] requires.
+//
+// Validates via FieldsPatchCodec.New exactly like [NewUpdateModuleImage].
+func NewUpdateModuleImageFromBase(moduleName iothub.ModuleName, base iothub.ModuleConfig, image docker.Image) (FieldsPatch, error) {
+	createOptions := base.Settings.CreateOptions
+	env := base.Env
+	typ := base.Type
+	status := base.Status
+	restartPolicy := base.RestartPolicy
+	version := base.Version
+	return FieldsPatchCodec.New(FieldsPatch{
+		ModuleName:    moduleName,
+		Settings:      &SettingsPatch{Image: &image, CreateOptions: &createOptions},
+		Env:           &env,
+		Type:          &typ,
+		Status:        &status,
+		RestartPolicy: &restartPolicy,
+		Version:       &version,
 	})
 }

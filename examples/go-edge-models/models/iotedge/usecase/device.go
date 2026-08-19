@@ -4,9 +4,9 @@ import (
 	"errors"
 	"os"
 
+	iothub "github.com/DaniDeer/go-codex/examples/go-edge-models/models/azure/iothub"
 	deviceconfig "github.com/DaniDeer/go-codex/examples/go-edge-models/models/iotedge/deviceconfig"
 	finaldeviceconfig "github.com/DaniDeer/go-codex/examples/go-edge-models/models/iotedge/finaldeviceconfig"
-	manifesttemplate "github.com/DaniDeer/go-codex/examples/go-edge-models/models/iotedge/manifesttemplate"
 	f "github.com/DaniDeer/go-codex/format"
 	"github.com/DaniDeer/go-codex/ports"
 )
@@ -141,41 +141,47 @@ func WriteDeviceConfig(basePath string, useCaseName Name, cfg DeviceConfig, opts
 	}, cfg.Patch, opts)
 }
 
-// Merge layers cfg's Patch onto template, returning the FINAL,
-// deployable manifesttemplate.DeploymentManifest for this ONE device —
-// the "one call" convenience for "template + device config, layered on
-// top". Delegates to the sibling models/iotedge/finaldeviceconfig
-// package's Merge function.
-func (cfg DeviceConfig) Merge(template manifesttemplate.DeploymentManifest) (manifesttemplate.DeploymentManifest, error) {
-	return finaldeviceconfig.Merge(template, cfg.Patch)
+// Merge layers base (the GLOBAL baseline deployment) and template (the
+// use case's own manifest), then cfg's own Patch on top, returning the
+// FINAL, deployable-to-IoT-Hub iothub.BaseDeployment for this ONE device —
+// the "one call" convenience for "baseline + template + device config,
+// layered on top". Delegates to the sibling
+// models/iotedge/finaldeviceconfig package's Merge function.
+func (cfg DeviceConfig) Merge(base iothub.BaseDeployment, template iothub.LayeredDeployment) (iothub.BaseDeployment, error) {
+	return finaldeviceconfig.Merge(base, template, cfg.Patch)
 }
 
-// ReadEffective reads useCaseName's template AND deviceID's config,
-// merging them into ONE effective manifesttemplate.DeploymentManifest —
-// "template + device config, layered on top" — in a single call. Thin
-// composition of [NewFile]'s Read + [ReadDeviceConfig] +
-// [DeviceConfig.Merge]; no new merge logic of its own.
+// ReadEffective reads the GLOBAL baseline, useCaseName's template, AND
+// deviceID's config, merging all three into ONE effective
+// iothub.BaseDeployment — "baseline + template + device config, layered on
+// top" — in a single call. Thin composition of [NewBaselineFile]'s Read
+// + [NewFile]'s Read + [ReadDeviceConfig] + [DeviceConfig.Merge]; no new
+// merge logic of its own.
 //
 // A device that has NEVER had a config file written for it (this
 // package's ONLY signal for "does this device exist" — there is no
 // separate device registry, matching [ListDeviceIDs]'s own
 // discover-by-file model) is NOT an error here: its effective config is
-// simply the template UNCHANGED, since "no overrides yet" IS this
-// device's current, valid state — not a caller mistake. Any OTHER read
-// error (a missing/invalid TEMPLATE, or an existing-but-malformed
-// device file) still propagates as-is.
-func ReadEffective(basePath string, useCaseName Name, deviceID DeviceID, opts ports.FileOptions) (manifesttemplate.DeploymentManifest, error) {
+// simply baseline+template merged with an EMPTY device patch, since "no
+// overrides yet" IS this device's current, valid state — not a caller
+// mistake. Any OTHER read error (a missing/invalid BASELINE/TEMPLATE, or
+// an existing-but-malformed device file) still propagates as-is.
+func ReadEffective(basePath string, useCaseName Name, deviceID DeviceID, opts ports.FileOptions) (iothub.BaseDeployment, error) {
+	base, err := NewBaselineFile(basePath).Read(nil, opts)
+	if err != nil {
+		return iothub.BaseDeployment{}, err
+	}
 	template, err := NewFile(basePath).Read(map[string]string{useCaseNameVar: string(useCaseName)}, opts)
 	if err != nil {
-		return manifesttemplate.DeploymentManifest{}, err
+		return iothub.BaseDeployment{}, err
 	}
 	cfg, err := ReadDeviceConfig(basePath, useCaseName, deviceID, opts)
 	switch {
 	case err == nil:
-		return cfg.Merge(template)
+		return cfg.Merge(base, template)
 	case errors.Is(err, os.ErrNotExist):
-		return template, nil
+		return finaldeviceconfig.Merge(base, template, deviceconfig.Patch{})
 	default:
-		return manifesttemplate.DeploymentManifest{}, err
+		return iothub.BaseDeployment{}, err
 	}
 }

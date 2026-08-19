@@ -5,7 +5,7 @@ import (
 	"testing"
 
 	"github.com/DaniDeer/go-codex/codex"
-	manifesttemplate "github.com/DaniDeer/go-codex/examples/go-edge-models/models/iotedge/manifesttemplate"
+	iothub "github.com/DaniDeer/go-codex/examples/go-edge-models/models/azure/iothub"
 )
 
 func TestPatchCodec_EncodeDecodeRoundTrip_WholeModuleKey(t *testing.T) {
@@ -52,10 +52,10 @@ func TestPatchCodec_EncodeDecodeRoundTrip_DottedPathKey(t *testing.T) {
 
 func TestPatchCodec_EncodeDecodeRoundTrip_EdgeHubRoute(t *testing.T) {
 	p := Patch{
-		EdgeHub: map[manifesttemplate.RouteName]manifesttemplate.Route{
+		EdgeHub: map[iothub.RouteName]iothub.Route{
 			"factory-mqtt-to-ingest": {
 				From: "/messages/modules/factory-mqtt-gateway-1/outputs/telemetry",
-				To:   manifesttemplate.NewBrokeredEndpoint("/modules/factory-ingest-agent/inputs/ingest"),
+				To:   iothub.NewBrokeredEndpoint("/modules/factory-ingest-agent/inputs/ingest"),
 			},
 		},
 	}
@@ -97,6 +97,89 @@ func TestPatchCodec_Encode_RejectsEmptyEdgeAgentKey(t *testing.T) {
 	})
 	if err == nil {
 		t.Error("Encode: want error for empty edge-agent key, got nil")
+	}
+}
+
+func TestPatchCodec_EncodeDecodeRoundTrip_SystemModuleWholeKey(t *testing.T) {
+	p := Patch{
+		SystemModules: map[string]any{
+			"edgeAgent": map[string]any{"type": "docker"},
+		},
+	}
+	raw, err := PatchCodec.Encode(p)
+	if err != nil {
+		t.Fatalf("Encode: %v", err)
+	}
+	got, err := PatchCodec.Decode(raw)
+	if err != nil {
+		t.Fatalf("Decode: %v", err)
+	}
+	if len(got.SystemModules) != 1 {
+		t.Fatalf("SystemModules = %v, want 1 entry", got.SystemModules)
+	}
+	typeMap, ok := got.SystemModules["edgeAgent"].(map[string]any)
+	if !ok || typeMap["type"] != "docker" {
+		t.Errorf("SystemModules[edgeAgent] = %v, want {type: docker}", got.SystemModules["edgeAgent"])
+	}
+}
+
+func TestPatchCodec_EncodeDecodeRoundTrip_SystemModuleDottedPathKey(t *testing.T) {
+	p := Patch{
+		SystemModules: map[string]any{
+			"edgeHub.settings.image": "mcr.microsoft.com/azureiotedge-hub:1.5.99",
+		},
+	}
+	raw, err := PatchCodec.Encode(p)
+	if err != nil {
+		t.Fatalf("Encode: %v", err)
+	}
+	got, err := PatchCodec.Decode(raw)
+	if err != nil {
+		t.Fatalf("Decode: %v", err)
+	}
+	if got.SystemModules["edgeHub.settings.image"] != "mcr.microsoft.com/azureiotedge-hub:1.5.99" {
+		t.Errorf("SystemModules dotted-path key = %v, want mcr.microsoft.com/azureiotedge-hub:1.5.99",
+			got.SystemModules["edgeHub.settings.image"])
+	}
+}
+
+func TestPatchCodec_EncodeDecodeRoundTrip_EdgeAgentAndSystemModulesCoexist(t *testing.T) {
+	p := Patch{
+		EdgeAgent: map[string]any{
+			"factory-mqtt-gateway-1": map[string]any{"status": "stopped"},
+		},
+		SystemModules: map[string]any{
+			"edgeAgent": map[string]any{"type": "docker"},
+		},
+	}
+	raw, err := PatchCodec.Encode(p)
+	if err != nil {
+		t.Fatalf("Encode: %v", err)
+	}
+	modulesContent := raw.(map[string]any)[iothub.ModulesContentKey].(map[string]any)
+	edgeAgent := modulesContent[iothub.EdgeAgentKey].(map[string]any)
+	if _, ok := edgeAgent["properties.desired.modules.factory-mqtt-gateway-1"]; !ok {
+		t.Errorf("$edgeAgent = %+v, want flat module key present", edgeAgent)
+	}
+	if _, ok := edgeAgent["properties.desired.systemModules.edgeAgent"]; !ok {
+		t.Errorf("$edgeAgent = %+v, want flat systemModule key present, side by side", edgeAgent)
+	}
+
+	got, err := PatchCodec.Decode(raw)
+	if err != nil {
+		t.Fatalf("Decode: %v", err)
+	}
+	if len(got.EdgeAgent) != 1 || len(got.SystemModules) != 1 {
+		t.Errorf("got = %+v, want 1 EdgeAgent entry + 1 SystemModules entry", got)
+	}
+}
+
+func TestPatchCodec_Encode_RejectsInvalidSystemModuleKey(t *testing.T) {
+	_, err := PatchCodec.Encode(Patch{
+		SystemModules: map[string]any{"edgeFoo": "value"},
+	})
+	if err == nil {
+		t.Error("Encode: want error for invalid system-module name key, got nil")
 	}
 }
 

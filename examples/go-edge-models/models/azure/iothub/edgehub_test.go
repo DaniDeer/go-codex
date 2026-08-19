@@ -1,4 +1,4 @@
-package manifesttemplate
+package iothub
 
 import (
 	"errors"
@@ -142,11 +142,11 @@ func TestRoutesCodec_EncodeDecodeRoundTrip(t *testing.T) {
 	}
 }
 
-func TestModulesContentCodec_WithoutEdgeHub_DecodesEmptyRoutes(t *testing.T) {
+func TestLayeredModulesContentCodec_WithoutEdgeHub_DecodesEmptyRoutes(t *testing.T) {
 	raw := map[string]any{
 		"$edgeAgent": map[string]any{},
 	}
-	got, err := ModulesContentCodec.Decode(raw)
+	got, err := LayeredModulesContentCodec.Decode(raw)
 	if err != nil {
 		t.Fatalf("Decode: %v", err)
 	}
@@ -155,8 +155,8 @@ func TestModulesContentCodec_WithoutEdgeHub_DecodesEmptyRoutes(t *testing.T) {
 	}
 }
 
-func TestModulesContentCodec_WithEdgeHub_RoundTrip(t *testing.T) {
-	mc := ModulesContent{
+func TestLayeredModulesContentCodec_WithEdgeHub_RoundTrip(t *testing.T) {
+	mc := LayeredModulesContent{
 		EdgeAgent: Modules{},
 		EdgeHub: Routes{
 			"factory-mqtt-to-ingest": {
@@ -165,11 +165,11 @@ func TestModulesContentCodec_WithEdgeHub_RoundTrip(t *testing.T) {
 			},
 		},
 	}
-	raw, err := ModulesContentCodec.Encode(mc)
+	raw, err := LayeredModulesContentCodec.Encode(mc)
 	if err != nil {
 		t.Fatalf("Encode: %v", err)
 	}
-	got, err := ModulesContentCodec.Decode(raw)
+	got, err := LayeredModulesContentCodec.Decode(raw)
 	if err != nil {
 		t.Fatalf("Decode: %v", err)
 	}

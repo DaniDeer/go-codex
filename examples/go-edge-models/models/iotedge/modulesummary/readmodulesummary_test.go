@@ -4,6 +4,7 @@ import (
 	"testing"
 
 	mcp "github.com/DaniDeer/go-codex/api/mcp"
+	iothub "github.com/DaniDeer/go-codex/examples/go-edge-models/models/azure/iothub"
 )
 
 func TestReadReqCodec_RoundTrip(t *testing.T) {
@@ -40,6 +41,22 @@ func TestReadReqCodec_RejectsInvalidModuleName(t *testing.T) {
 	req := ReadReq{BasePath: "/tmp/edge", UseCaseName: "usecase1", ModuleName: ""}
 	if err := ReadReqCodec.Validate(req); err == nil {
 		t.Error("Validate: want error for empty ModuleName, got nil")
+	}
+}
+
+func TestReadReqCodec_AcceptsSystemModuleNames(t *testing.T) {
+	for _, name := range []string{"edgeAgent", "edgeHub"} {
+		req := ReadReq{BasePath: "/tmp/edge", UseCaseName: "usecase1", ModuleName: iothub.ModuleName(name)}
+		if err := ReadReqCodec.Validate(req); err != nil {
+			t.Errorf("Validate(%q): %v, want nil", name, err)
+		}
+	}
+}
+
+func TestReadReqCodec_RejectsUnknownSystemModuleName(t *testing.T) {
+	req := ReadReq{BasePath: "/tmp/edge", UseCaseName: "usecase1", ModuleName: "edgeFoo"}
+	if err := ReadReqCodec.Validate(req); err == nil {
+		t.Error("Validate: want error for \"edgeFoo\" (neither a slug nor a reserved system module name), got nil")
 	}
 }
 

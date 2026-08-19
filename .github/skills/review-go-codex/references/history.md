@@ -1,6 +1,57 @@
-# go-codex Review History (R1–R112)
+# go-codex Review History (R1–R113)
 
 Do not re-report any of these findings. They have been implemented and tested.
+
+---
+
+## Round 113 (`examples/go-edge-models` azure/iothub extraction — stale "sibling" wording + corrupted filename literals)
+
+Focused audit of this session's `models/azure/iothub` extraction (moving `manifesttemplate`/`baseline`
+out of `models/iotedge` into a new top-level `models/azure/iothub` package) — no core go-codex
+library files changed this session (confirmed via `git status`), so this round scoped entirely to the
+example tree per the established "review what changed" pattern (same as Round 111). Found the same
+class of bug as Round 111 (stale sibling/parent/child relationship wording after a package move) plus
+one new class: corrupted filename literals from a blanket `s/baseline\./iothub./g` rename.
+
+- **G1–G12 [trivial] — stale "sibling" claims across `models/iotedge/*` and `models/azure/iothub`**:
+  after moving `manifesttemplate`/`baseline` from `models/iotedge/{manifesttemplate,baseline}` into the
+  new `models/azure/iothub` (a different parent directory, `models/azure` vs `models/iotedge`), several
+  doc comments and READMEs still called the two packages "siblings" of each other (and of `models/iotedge`
+  itself) — no longer true, since a sibling relationship requires the same immediate parent directory.
+  Fixed in `deviceconfig.go`, `modulepatch/doc.go`, `modulepatch/fieldspatch.go`,
+  `modulesummary/modulesummary.go`, `usecase/config.go`, `usecase/usecase.go`, `usecase/device.go`
+  (verified correct, no change needed), `usecase/doc.go`, `azure/iothub/basedeployment.go`,
+  `azure/iothub/doc.go` (×3 sites), `azure/iothub/keys.go`, `azure/iothub/layereddeployment.go`,
+  `models/iotedge/doc.go`, `models/iotedge/README.md`, `models/azure/iothub/README.md`,
+  `models/iotedge/usecase/README.md`, `main.go` (×2 sites), and `app/iotedge/usecase.go` — by dropping
+  the inaccurate "sibling" qualifier (or moving it to the genuinely-sibling half of a mixed sentence).
+  True siblings (both packages sharing the same immediate parent, e.g. `deviceconfig`↔`finaldeviceconfig`,
+  both under `models/iotedge`) were left unchanged — verified each site's actual directory tree before
+  editing.
+- **G13 [small] — corrupted `"baseline.json"` filename literal became `"iothub.json"`**: a blanket
+  `sed 's/\biothub\.json\b/.../'`-style rename during the mechanical package-move accidentally rewrote
+  the literal on-disk filename string `"baseline.json"` to `"iothub.json"` in doc comments and one test
+  assertion message across `usecase/config.go`, `usecase/doc.go`, `usecase/usecase.go`,
+  `usecase/usecase_test.go`, and `usecase/device_test.go` — the actual `baselineFileName` CONSTANT was
+  correct (fixed earlier in the same session), but the doc comments/test-failure message still claimed
+  the wrong filename, which would mislead anyone reading the docs about what file to look for on disk.
+  Fixed all 7 occurrences to read `"baseline.json"` consistently with the real constant.
+- **G14 [small] — `usecase/doc.go` listed the SAME `models/azure/iothub` package link twice** as if it
+  were two separate wire-format packages ("the global base deployment" and "deployment manifest") — a
+  leftover artifact from when `baseline` and `manifesttemplate` were two distinct sibling packages before
+  this session's merge into one `azure/iothub` package. Collapsed into one link covering both document
+  shapes (`BaseDeployment` and `LayeredDeployment`).
+- **Also fixed 4 stale `manifesttemplate.ModuleNameCodec`/`ModuleKeyPrefix` references** in
+  `.github/instructions/go-codex.instructions.md` (missed during the session's mechanical rename pass
+  since this file isn't Go source and wasn't touched by any `go build`/`go test` run) — updated to
+  `iothub.ModuleNameCodec`/`iothub.ModuleKeyPrefix`.
+
+Full verification: `gofmt -l .` clean, `go build ./...`, `go test ./...` (repo-wide, all packages pass,
+including all `go-edge-models` subpackages), `just check` (staticcheck + gosec, 0 issues across 336
+files/78,530 lines), `go run ./examples/go-edge-models` exits 0 unchanged (913-line demo, full
+baseline+template+device-config layering). No exported API changed (doc-comment/godoc wording and
+comment-only filename-literal fixes) — `.github/instructions/go-codex.instructions.md` updated for the
+4 stale references found there.
 
 ---
 

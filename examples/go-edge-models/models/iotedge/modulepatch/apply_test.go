@@ -3,13 +3,13 @@ package modulepatch
 import (
 	"testing"
 
+	iothub "github.com/DaniDeer/go-codex/examples/go-edge-models/models/azure/iothub"
 	"github.com/DaniDeer/go-codex/examples/go-edge-models/models/docker"
-	manifesttemplate "github.com/DaniDeer/go-codex/examples/go-edge-models/models/iotedge/manifesttemplate"
 )
 
-func sampleModuleConfig() manifesttemplate.ModuleConfig {
-	return manifesttemplate.ModuleConfig{
-		Settings: manifesttemplate.ModuleSettings{
+func sampleModuleConfig() iothub.ModuleConfig {
+	return iothub.ModuleConfig{
+		Settings: iothub.ModuleSettings{
 			Image: docker.Image{Name: "ghcr.io/example-org/factory-gateway", Tag: "0.12.5"},
 		},
 		Type:          "docker",
@@ -21,7 +21,7 @@ func sampleModuleConfig() manifesttemplate.ModuleConfig {
 
 func TestApplyToModule_RoundTrip(t *testing.T) {
 	base := sampleModuleConfig()
-	stopped := manifesttemplate.Status("stopped")
+	stopped := iothub.Status("stopped")
 	patch := FieldsPatch{ModuleName: "factory-gateway", Status: &stopped}
 
 	got, err := ApplyToModule(base, patch)
@@ -35,7 +35,7 @@ func TestApplyToModule_RoundTrip(t *testing.T) {
 
 func TestApplyToModule_OneFieldOverwritten_SiblingsSurvive(t *testing.T) {
 	base := sampleModuleConfig()
-	newVersion := manifesttemplate.Version("2.0")
+	newVersion := iothub.Version("2.0")
 	patch := FieldsPatch{ModuleName: "factory-gateway", Version: &newVersion}
 
 	got, err := ApplyToModule(base, patch)
@@ -62,7 +62,7 @@ func TestApplyToModule_PropagatesDecodeValidationErrors(t *testing.T) {
 	// "bogus" is not a valid Type enum value ("docker" is the only one) —
 	// merging it in must surface a decode validation error from
 	// ModuleConfigCodec, not silently succeed.
-	bogus := manifesttemplate.Type("bogus")
+	bogus := iothub.Type("bogus")
 	patch := FieldsPatch{ModuleName: "factory-gateway", Type: &bogus}
 
 	_, err := ApplyToModule(base, patch)

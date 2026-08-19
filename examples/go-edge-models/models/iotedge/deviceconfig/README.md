@@ -12,8 +12,8 @@ logic (see [`finaldeviceconfig`](../finaldeviceconfig) for that).
 
 ## What's here
 
-- `EdgeAgentPatchTemplate`/`edgeAgentPatchCodec` (`keys.go`) — this package's own single source of truth for its unique dotted-key vocabulary: the MQTT-style `codex.DottedPatchMapCodec` template validating `Patch.EdgeAgent`'s wire bucket. Shared wire-key names/prefixes (`ModulesContentKey`, `EdgeAgentKey`, `ModuleKeyPrefix`, ...) stay imported from `manifesttemplate/keys.go` unchanged, not re-declared here.
-- `Patch` — `EdgeAgent map[string]any` (bare dotted paths, e.g. `"factory-opcua-gateway"` or `"factory-opcua-gateway.env.API_URL"`) + `EdgeHub map[manifesttemplate.RouteName]manifesttemplate.Route` (whole-route add/override).
+- `EdgeAgentPatchTemplate`/`edgeAgentPatchCodec` (`keys.go`) — this package's own single source of truth for its unique dotted-key vocabulary: the MQTT-style `codex.DottedPatchMapCodec` template validating `Patch.EdgeAgent`'s wire bucket. Shared wire-key names/prefixes (`ModulesContentKey`, `EdgeAgentKey`, `ModuleKeyPrefix`, ...) stay imported from `azure/iothub/keys.go` unchanged, not re-declared here.
+- `Patch` — `EdgeAgent map[string]any` (bare dotted paths, e.g. `"factory-opcua-gateway"` or `"factory-opcua-gateway.env.API_URL"`) + `EdgeHub map[iothub.RouteName]iothub.Route` (whole-route add/override).
 - `PatchCodec` — hand-rolled codec for the `{"modulesContent": {"$edgeAgent"?: {...}, "$edgeHub"?: {...}}}` wire shape; each bucket omitted when empty.
 - `EmptyPatchError` — returned when a patch has nothing set (would be a no-op).
 
@@ -24,7 +24,7 @@ logic (see [`finaldeviceconfig`](../finaldeviceconfig) for that).
 - **Limitation**: `settings.createOptions` is patchable only as ONE atomic, already-JSON-escaped string (matching its own wire shape) — reaching further inside it (e.g. `...createOptions.HostConfig.Binds`) is NOT supported and fails with a generic `codex.TypeMismatchError` at merge time. This is intentional — encode a whole new `createOptions` string instead.
 
 See the sibling [`finaldeviceconfig`](../finaldeviceconfig) package for
-`Merge` (layering a `Patch` onto a `manifesttemplate.DeploymentManifest`
+`Merge` (layering a `Patch` onto an `azure/iothub.LayeredDeployment`
 to produce the final config), and [`models/iotedge/usecase`](../usecase)
 for the templated file/dir ports and domain composition (`DeviceConfig`,
 `ReadDeviceConfig`/`WriteDeviceConfig`, `DeviceConfig.Merge`) built on
