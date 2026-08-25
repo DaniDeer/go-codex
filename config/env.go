@@ -12,7 +12,15 @@ import (
 	"github.com/DaniDeer/go-codex/schema"
 )
 
-// FromEnv loads T from environment variables using schema-driven type coercion.
+// FromEnv loads T from environment variables using schema-driven type
+// coercion, validates it, and returns it wrapped in a freshly-constructed,
+// already-[codex.Immutable.Set] [*codex.Immutable][T] — the config becomes
+// the authoritative, read-only value for the rest of the process's
+// lifetime, enforced by [codex.Immutable][T]'s own set-once/
+// panic-before-[codex.Immutable.Set] contract, not just a documented
+// convention. This mirrors config loading's own nature: it happens ONCE at
+// startup, before any pipeline or transport exists (see this package's own
+// doc comment) — exactly the shape [codex.Immutable][T] exists for.
 //
 // Naming convention: strings.ToUpper(prefix + field_name).
 // Underscores in field names are preserved:
@@ -36,17 +44,37 @@ import (
 //
 // Silently skipped: TaggedUnion, slices of objects.
 //
-// Errors are returned as [codex.ValidationErrors]. Parse errors (an env var is
-// set but its value cannot be coerced to the field's type) are collected and
-// returned before the codec's Decode runs. Missing required fields and
-// constraint violations are reported by Decode in the same error shape.
-func FromEnv[T any](c codex.Codec[T], prefix string) (T, error) {
+// Errors are returned as [codex.ValidationErrors] — a nil [*codex.Immutable][T]
+// is returned alongside any error. Parse errors (an env var is set but its
+// value cannot be coerced to the field's type) are collected and returned
+// before the codec's Decode runs. Missing required fields and constraint
+// violations are reported by Decode in the same error shape.
+//
+// Typical usage — load once in main, read everywhere else via Get():
+//
+//	appConfig, err := config.FromEnv(configCodec, "APP_")
+//	if err != nil {
+//	    log.Fatal(err)
+//	}
+//	// ... elsewhere, for the rest of the process's lifetime:
+//	cfg := appConfig.Get()
+func FromEnv[T any](c codex.Codec[T], prefix string) (*codex.Immutable[T], error) {
 	intermediate, parseErrs := buildEnvIntermediate(c.Schema, prefix)
 	if len(parseErrs) > 0 {
-		var zero T
-		return zero, parseErrs
+		return nil, parseErrs
 	}
-	return c.Decode(intermediate)
+	cfg, err := c.Decode(intermediate)
+	if err != nil {
+		return nil, err
+	}
+	im := codex.NewImmutable(c)
+	if err := im.Set(cfg); err != nil {
+		// Unreachable in practice: cfg already passed c.Decode above, and im
+		// is freshly constructed here (never already-set). Kept only for
+		// Setter[T] contract completeness, not a real failure mode.
+		return nil, err
+	}
+	return im, nil
 }
 
 // FromEnvVar loads a single typed value from one environment variable.

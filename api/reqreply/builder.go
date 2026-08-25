@@ -5,6 +5,7 @@ import (
 	"strings"
 	"unicode"
 
+	"github.com/DaniDeer/go-codex/codex"
 	asyncapi "github.com/DaniDeer/go-codex/render/asyncapi/v3"
 	"github.com/DaniDeer/go-codex/route"
 	"github.com/DaniDeer/go-codex/schema"
@@ -20,15 +21,58 @@ type Builder struct {
 	topics          map[string]struct{} // guard against duplicate topic registration
 	securitySchemes map[string]SecurityScheme
 	globalSecurity  []route.SecurityRequirement
+	topicCodec      *codex.Codec[string]
+}
+
+// BuilderOption configures a [Builder] at construction time.
+type BuilderOption func(*Builder)
+
+// WithTopicCodec sets a codec used to validate every topic passed to
+// [Route.Register]. If the topic is invalid, [Route.Register] returns an
+// [InvalidTopicError] immediately.
+//
+// Use [WithTopicConstraints] for the common case of stacking one or more
+// [codex.Constraint] values; use WithTopicCodec when you need a fully-custom
+// [codex.Codec]. Mirrors [events.WithTopicCodec].
+//
+// Example — enforce a shared topic-prefix rule across every route:
+//
+//	import "github.com/DaniDeer/go-codex/validate"
+//
+//	b := reqreply.NewBuilder(info, reqreply.WithTopicConstraints(validate.MQTTPublishTopic))
+func WithTopicCodec(c codex.Codec[string]) BuilderOption {
+	return func(b *Builder) { b.topicCodec = &c }
+}
+
+// WithTopicConstraints is a convenience wrapper around [WithTopicCodec] that
+// builds a codec from [codex.String] refined with the given constraints.
+// Multiple constraints are applied in order; all must pass. Mirrors
+// [events.WithTopicConstraints].
+//
+// Users can mix built-in constraints from the validate package with their own:
+//
+//	deviceLevel := codex.Constraint[string]{
+//	    Name:    "device-prefix",
+//	    Check:   func(v string) bool { return strings.HasPrefix(v, "device/") },
+//	    Message: func(v string) string { return fmt.Sprintf("topic must start with device/, got %q", v) },
+//	}
+//	b := reqreply.NewBuilder(info, reqreply.WithTopicConstraints(deviceLevel))
+func WithTopicConstraints(cons ...codex.Constraint[string]) BuilderOption {
+	c := codex.String().Refine(cons...)
+	return WithTopicCodec(c)
 }
 
 // NewBuilder returns a Builder initialised with the given Info.
-func NewBuilder(info Info) *Builder {
-	return &Builder{
+func NewBuilder(info Info, opts ...BuilderOption) *Builder {
+	b := &Builder{
 		docBuilder:      asyncapi.NewDocumentBuilder(info),
 		topics:          make(map[string]struct{}),
 		securitySchemes: make(map[string]SecurityScheme),
 	}
+	for _, opt := range opts {
+		opt(b)
+	}
+	return b
 }
 
 // AddGlobalSecurity appends security requirements that apply to all routes

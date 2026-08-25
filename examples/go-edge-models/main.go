@@ -60,6 +60,9 @@ var usecase1JSON []byte
 //go:embed examples/devices/usecase1/sensor-1.json
 var sensor1JSON []byte
 
+//go:embed examples/docker-compose/docker-compose.yml
+var factoryComposeYAML []byte
+
 // baselineJSON is the REAL, GLOBAL priority-0 base deployment every
 // device shares (schemaVersion/runtime/systemModules/modules) — the
 // same "{basePath}/baseline/baseline.json" shape usecase.NewBaselineFile
@@ -97,12 +100,26 @@ func main() {
 	}
 	defer os.RemoveAll(dir)
 
+	// The ONE string->usecase.BasePath conversion this whole example
+	// needs — every usecase.*/iotedgeapp.* call below takes basePath
+	// directly; dir itself stays around only for the handful of raw
+	// os.MkdirAll/os.WriteFile calls (runUseCaseWriteDemo) and the
+	// MCP tool-call argument maps (which are wire-level JSON, still a
+	// plain string on the wire — decoded into a usecase.BasePath by
+	// ReadReqCodec/ReqCodec themselves).
+	basePath, err := usecase.NewBasePath(dir)
+	if err != nil {
+		logger.Error("construct basePath", "error", err)
+		os.Exit(1)
+	}
+
 	const useCaseName = "usecase1"
 	const deviceID = "sensor-1"
 
-	runUseCaseWriteDemo(dir, useCaseName, deviceID)
-	runModulePatchDemo(dir, useCaseName, deviceID)
-	runModuleSummaryDemo(dir, useCaseName, deviceID)
+	runUseCaseWriteDemo(dir, basePath, useCaseName, deviceID)
+	runModulePatchDemo(basePath, useCaseName, deviceID)
+	runModuleSummaryDemo(dir, basePath, useCaseName, deviceID)
+	runFromComposeDemo(dir, basePath)
 
 	// ── docker/registry: fetch tags + lean manifest metadata for one image ──
 	//
@@ -243,7 +260,7 @@ func runManifestCodecDemo() {
 // from and patches. This is where UpdateModuleImage/PatchUseCaseModule's
 // underlying deep-merge (below, in runModulePatchDemo) gets something to
 // write to — the embed.FS mock tree itself is read-only.
-func runUseCaseWriteDemo(dir, useCaseName, deviceID string) {
+func runUseCaseWriteDemo(dir string, basePath usecase.BasePath, useCaseName, deviceID string) {
 	fmt.Println("\n=== app/iotedge: writing use case + device + baseline mock files to a scratch dir ===")
 
 	usecasesDir := dir + "/usecases"
@@ -279,7 +296,7 @@ func runUseCaseWriteDemo(dir, useCaseName, deviceID string) {
 		logger.Error("decode baseline.json", "error", err)
 		os.Exit(1)
 	}
-	if _, err := usecase.NewBaselineFile(dir).Write(nil, baseline, ports.FileOptions{CreateDirs: true}); err != nil {
+	if _, err := usecase.NewBaselineFile(basePath).Write(nil, baseline, ports.FileOptions{CreateDirs: true}); err != nil {
 		logger.Error("write baseline.json to disk", "error", err)
 		os.Exit(1)
 	}
@@ -290,8 +307,8 @@ func runUseCaseWriteDemo(dir, useCaseName, deviceID string) {
 // way baseline+template+device layering), and the app/iotedge template-
 // and device-scoped patch functions — all against the mock files
 // runUseCaseWriteDemo wrote to dir.
-func runModulePatchDemo(dir, useCaseName, deviceID string) {
-	usecasesDir := dir + "/usecases"
+func runModulePatchDemo(basePath usecase.BasePath, useCaseName usecase.Name, deviceID usecase.DeviceID) {
+	usecasesDir := string(basePath) + "/usecases"
 
 	// ── ports.Dir: discover which iotedge "use case" config files exist in
 	// a directory — a declarative `ls`, not `cat`. Each file in the config
@@ -323,14 +340,14 @@ func runModulePatchDemo(dir, useCaseName, deviceID string) {
 	// + ReadDeviceConfig into ONE call.
 	fmt.Println("\n=== usecase.ListDeviceIDs / Read: usecase_name + device_id, composed ===")
 
-	deviceIDs, err := usecase.ListDeviceIDs(dir, usecase.Name(useCaseName), ports.DirOptions{})
+	deviceIDs, err := usecase.ListDeviceIDs(basePath, useCaseName, ports.DirOptions{})
 	if err != nil {
 		logger.Error("list device ids", "error", err)
 		os.Exit(1)
 	}
 	fmt.Printf("device_ids for use case %q: %v\n", useCaseName, deviceIDs)
 
-	deviceCfg, err := usecase.ReadDeviceConfig(dir, usecase.Name(useCaseName), usecase.DeviceID(deviceID), ports.FileOptions{})
+	deviceCfg, err := usecase.ReadDeviceConfig(basePath, useCaseName, deviceID, ports.FileOptions{})
 	if err != nil {
 		logger.Error("read device config", "error", err)
 		os.Exit(1)
@@ -338,7 +355,7 @@ func runModulePatchDemo(dir, useCaseName, deviceID string) {
 	fmt.Printf("device %q: patches %d $edgeAgent key(s), %d $edgeHub route(s)\n",
 		deviceCfg.DeviceID, len(deviceCfg.Patch.EdgeAgent), len(deviceCfg.Patch.EdgeHub))
 
-	useCase, err := usecase.Read(dir, usecase.Name(useCaseName), ports.FileOptions{})
+	useCase, err := usecase.Read(basePath, useCaseName, ports.FileOptions{})
 	if err != nil {
 		logger.Error("read use case", "error", err)
 		os.Exit(1)
@@ -358,7 +375,7 @@ func runModulePatchDemo(dir, useCaseName, deviceID string) {
 	// template declared survives untouched.
 	fmt.Println("\n=== DeviceConfig.Merge: template + device config, layered ===")
 
-	baseline, err := usecase.NewBaselineFile(dir).Read(nil, ports.FileOptions{})
+	baseline, err := usecase.NewBaselineFile(basePath).Read(nil, ports.FileOptions{})
 	if err != nil {
 		logger.Error("read baseline for merge", "error", err)
 		os.Exit(1)
@@ -387,19 +404,19 @@ func runModulePatchDemo(dir, useCaseName, deviceID string) {
 	fmt.Println("\n=== app/iotedge.UpdateDeviceModuleImage: isolated, device-scoped image update ===")
 
 	deviceOnlyImage := docker.Image{Name: "ghcr.io/example-org/factory-cache", Tag: "3.0.0-sensor1-only"}
-	if err := iotedgeapp.UpdateDeviceModuleImage(dir, useCaseName, deviceID, "factory-cache", deviceOnlyImage, ports.FileOptions{}); err != nil {
+	if err := iotedgeapp.UpdateDeviceModuleImage(basePath, useCaseName, deviceID, "factory-cache", deviceOnlyImage, ports.FileOptions{}); err != nil {
 		logger.Error("update device module image", "error", err)
 		os.Exit(1)
 	}
 
-	deviceEffective, err := usecase.ReadEffective(dir, usecase.Name(useCaseName), usecase.DeviceID(deviceID), ports.FileOptions{})
+	deviceEffective, err := usecase.ReadEffective(basePath, useCaseName, deviceID, ports.FileOptions{})
 	if err != nil {
 		logger.Error("read effective device config", "error", err)
 		os.Exit(1)
 	}
 	fmt.Printf("sensor-1 EFFECTIVE factory-cache image: %q\n", deviceEffective.ModulesContent.EdgeAgent.Modules["factory-cache"].Settings.Image.String())
 
-	templateAfterDeviceUpdate, err := iotedgeapp.ReadUseCase(dir, useCaseName, ports.FileOptions{})
+	templateAfterDeviceUpdate, err := iotedgeapp.ReadUseCase(basePath, useCaseName, ports.FileOptions{})
 	if err != nil {
 		logger.Error("read use case after device update", "error", err)
 		os.Exit(1)
@@ -407,7 +424,7 @@ func runModulePatchDemo(dir, useCaseName, deviceID string) {
 	fmt.Printf("TEMPLATE factory-cache image still: %q (untouched by the device-scoped update)\n",
 		templateAfterDeviceUpdate.ModulesContent.EdgeAgent["factory-cache"].Settings.Image.String())
 
-	before, err := iotedgeapp.ReadUseCase(dir, useCaseName, ports.FileOptions{})
+	before, err := iotedgeapp.ReadUseCase(basePath, useCaseName, ports.FileOptions{})
 	if err != nil {
 		logger.Error("read manifest before patch", "error", err)
 		os.Exit(1)
@@ -415,12 +432,12 @@ func runModulePatchDemo(dir, useCaseName, deviceID string) {
 	fmt.Printf("before: factory-dashboard image=%q\n", before.ModulesContent.EdgeAgent["factory-dashboard"].Settings.Image)
 
 	newImage := docker.Image{Name: "ghcr.io/example-org/factory-dashboard", Tag: "2.0.0"}
-	if err := iotedgeapp.UpdateUseCaseModuleImage(dir, useCaseName, "factory-dashboard", newImage, ports.FileOptions{}); err != nil {
+	if err := iotedgeapp.UpdateUseCaseModuleImage(basePath, useCaseName, "factory-dashboard", newImage, ports.FileOptions{}); err != nil {
 		logger.Error("update module image", "error", err)
 		os.Exit(1)
 	}
 
-	afterImage, err := iotedgeapp.ReadUseCase(dir, useCaseName, ports.FileOptions{})
+	afterImage, err := iotedgeapp.ReadUseCase(basePath, useCaseName, ports.FileOptions{})
 	if err != nil {
 		logger.Error("read manifest after image update", "error", err)
 		os.Exit(1)
@@ -448,12 +465,12 @@ func runModulePatchDemo(dir, useCaseName, deviceID string) {
 		Status:        &newStatus,
 		RestartPolicy: &newRestartPolicy,
 	}
-	if err := iotedgeapp.PatchUseCaseModule(dir, useCaseName, fieldsPatch, ports.FileOptions{}); err != nil {
+	if err := iotedgeapp.PatchUseCaseModule(basePath, useCaseName, fieldsPatch, ports.FileOptions{}); err != nil {
 		logger.Error("patch module fields", "error", err)
 		os.Exit(1)
 	}
 
-	after, err := iotedgeapp.ReadUseCase(dir, useCaseName, ports.FileOptions{})
+	after, err := iotedgeapp.ReadUseCase(basePath, useCaseName, ports.FileOptions{})
 	if err != nil {
 		logger.Error("read manifest after fields patch", "error", err)
 		os.Exit(1)
@@ -491,12 +508,12 @@ func runModulePatchDemo(dir, useCaseName, deviceID string) {
 // registry.GetTagsTool/GetImageMetadataTool demonstrate below, since
 // both are ALREADY native MCP tool contracts (no adapters/mcprest
 // bridge needed, unlike GetTagsRoute — a plain REST route — above).
-func runModuleSummaryDemo(dir, useCaseName, deviceID string) {
+func runModuleSummaryDemo(dir string, basePath usecase.BasePath, useCaseName usecase.Name, deviceID usecase.DeviceID) {
 	opts := ports.FileOptions{}
 
 	fmt.Println("\n=== modulesummary: a baseline-only module resolves without ever being in the template ===")
 
-	effective, err := usecase.ReadEffective(dir, usecase.Name(useCaseName), usecase.DeviceID(deviceID), opts)
+	effective, err := usecase.ReadEffective(basePath, useCaseName, deviceID, opts)
 	if err != nil {
 		logger.Error("read effective config for module summary", "error", err)
 		os.Exit(1)
@@ -523,12 +540,12 @@ func runModuleSummaryDemo(dir, useCaseName, deviceID string) {
 	fmt.Printf("edgeAgent BEFORE update: image=%s\n", modulesummary.NewSummaryFromSystemModule(edgeAgentCfg).Image)
 
 	newEdgeAgentImage := docker.Image{Name: "mcr.microsoft.com/azureiotedge-agent", Tag: "1.6.0"}
-	if err := iotedgeapp.UpdateUseCaseSystemModuleImage(dir, useCaseName, "edgeAgent", newEdgeAgentImage, opts); err != nil {
+	if err := iotedgeapp.UpdateUseCaseSystemModuleImage(basePath, useCaseName, "edgeAgent", newEdgeAgentImage, opts); err != nil {
 		logger.Error("update edgeAgent system module image", "error", err)
 		os.Exit(1)
 	}
 
-	effectiveAfter, err := usecase.ReadEffective(dir, usecase.Name(useCaseName), usecase.DeviceID(deviceID), opts)
+	effectiveAfter, err := usecase.ReadEffective(basePath, useCaseName, deviceID, opts)
 	if err != nil {
 		logger.Error("re-read effective config after system module update", "error", err)
 		os.Exit(1)
@@ -551,10 +568,10 @@ func runModuleSummaryDemo(dir, useCaseName, deviceID string) {
 		mcpgo.Options{},
 	)
 	callMCPTool(readSummaryHandlerFn, "read_module_summary(vulnerability-scanner)", map[string]any{
-		"basePath": dir, "useCaseName": useCaseName, "moduleName": "vulnerability-scanner",
+		"basePath": dir, "useCaseName": string(useCaseName), "moduleName": "vulnerability-scanner",
 	})
 	callMCPTool(readSummaryHandlerFn, "read_module_summary(edgeAgent)", map[string]any{
-		"basePath": dir, "useCaseName": useCaseName, "moduleName": "edgeAgent",
+		"basePath": dir, "useCaseName": string(useCaseName), "moduleName": "edgeAgent",
 	})
 
 	updateImageHandle, err := updatemoduleimage.Tool.Register(moduleSummaryToolsBuilder)
@@ -567,9 +584,79 @@ func runModuleSummaryDemo(dir, useCaseName, deviceID string) {
 		mcpgo.Options{},
 	)
 	callMCPTool(updateImageHandlerFn, "update_module_image(edgeAgent, 1.6.1)", map[string]any{
-		"basePath": dir, "useCaseName": useCaseName, "moduleName": "edgeAgent",
+		"basePath": dir, "useCaseName": string(useCaseName), "moduleName": "edgeAgent",
 		"imageURL": "mcr.microsoft.com/azureiotedge-agent:1.6.1",
 	})
+}
+
+// runFromComposeDemo demonstrates the iotedge/fromcompose package's
+// bidirectional Docker Compose ↔ IoT Edge conversion, end to end:
+//
+//  1. Import: iotedgeapp.ImportDockerComposeAsUseCase reads the embedded
+//     5-service factory-edge docker-compose.yml, converts it into a
+//     scaffold iothub.LayeredDeployment via fromcompose.ConvertProject,
+//     and writes it as a NEW use case ("factory-stack") — reusing
+//     usecase.NewFile's existing templated file port, zero new
+//     file-layout code (see ImportDockerComposeAsUseCase's own doc
+//     comment). Every fromcompose.Warning is printed: the compose file
+//     deliberately declares THREE services with restart: unless-stopped,
+//     which has no exact IoT Edge equivalent (see fromcompose's own
+//     README's "scaffold, not full fidelity" contract) — each produces
+//     an approximated-restart-policy warning.
+//  2. Read back: the just-written use case is read via ReadUseCase,
+//     proving the conversion produced a genuinely USABLE deployment —
+//     prints the resolved module count and each module's image.
+//  3. Export (reverse direction): ExportUseCaseAsDockerCompose converts
+//     the SAME use case back into a Compose YAML file, closing the loop.
+//     Reverse warnings are printed too (e.g. a placeholder image
+//     reversing to a bare `build: true`, if any module lacked an image).
+func runFromComposeDemo(dir string, basePath usecase.BasePath) {
+	fmt.Println("\n=== iotedge/fromcompose: import + read back + export (bidirectional) ===")
+
+	factoryUseCaseName, err := usecase.NewName("factory-stack")
+	if err != nil {
+		logger.Error("construct factory-stack use case name", "error", err)
+		os.Exit(1)
+	}
+
+	composeFilePath := dir + "/factory-docker-compose.yml"
+	if err := os.WriteFile(composeFilePath, factoryComposeYAML, 0o644); err != nil {
+		logger.Error("write embedded docker-compose.yml to disk", "error", err)
+		os.Exit(1)
+	}
+
+	opts := ports.FileOptions{CreateDirs: true}
+
+	importWarnings, err := iotedgeapp.ImportDockerComposeAsUseCase(basePath, factoryUseCaseName, composeFilePath, opts)
+	if err != nil {
+		logger.Error("import docker-compose.yml as use case", "error", err)
+		os.Exit(1)
+	}
+	fmt.Printf("imported %q from %s — %d warning(s):\n", factoryUseCaseName, composeFilePath, len(importWarnings))
+	for _, w := range importWarnings {
+		fmt.Printf("  - %s: %s\n", w.Kind, w.Message)
+	}
+
+	deployment, err := iotedgeapp.ReadUseCase(basePath, factoryUseCaseName, opts)
+	if err != nil {
+		logger.Error("read back imported use case", "error", err)
+		os.Exit(1)
+	}
+	fmt.Printf("read back %d module(s):\n", len(deployment.ModulesContent.EdgeAgent))
+	for name, mod := range deployment.ModulesContent.EdgeAgent {
+		fmt.Printf("  - %s: image=%s restartPolicy=%s\n", name, mod.Settings.Image, mod.RestartPolicy)
+	}
+
+	exportedPath := dir + "/factory-docker-compose.exported.yml"
+	exportWarnings, err := iotedgeapp.ExportUseCaseAsDockerCompose(basePath, factoryUseCaseName, exportedPath, opts)
+	if err != nil {
+		logger.Error("export use case back to docker-compose.yml", "error", err)
+		os.Exit(1)
+	}
+	fmt.Printf("exported %q to %s — %d warning(s):\n", factoryUseCaseName, exportedPath, len(exportWarnings))
+	for _, w := range exportWarnings {
+		fmt.Printf("  - %s: %s\n", w.Kind, w.Message)
+	}
 }
 
 // runRegistryDemo wires two local httptest servers together (a registry

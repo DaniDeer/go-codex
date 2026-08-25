@@ -87,3 +87,7 @@ func TestMatchTemplate_NoVars(t *testing.T) {
 		t.Errorf("expected no vars, got %+v", vars)
 	}
 }
+
+// BuildFromTemplate's own tests moved to codex/param_test.go — see
+// codex.BuildFromParams, which superseded this package's former
+// BuildFromTemplate function.

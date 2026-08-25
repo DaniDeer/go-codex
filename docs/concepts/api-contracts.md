@@ -1,6 +1,6 @@
 # API Contracts
 
-> See also: [`api/rest`](https://pkg.go.dev/github.com/DaniDeer/go-codex/api/rest) · [`api/events`](https://pkg.go.dev/github.com/DaniDeer/go-codex/api/events) · [`api/mcp`](https://pkg.go.dev/github.com/DaniDeer/go-codex/api/mcp)
+> See also: [`api/rest`](https://pkg.go.dev/github.com/DaniDeer/go-codex/api/rest) · [`api/events`](https://pkg.go.dev/github.com/DaniDeer/go-codex/api/events) · [`api/mcp`](https://pkg.go.dev/github.com/DaniDeer/go-codex/api/mcp) · [Declaring APIs and Ports](declaring-apis-and-ports.md) (constructor/escape-hatch comparison across all six boundaries)
 
 Layer 2 builds on codecs to declare typed API contracts as values. The same declaration drives runtime behaviour (decode/encode/validate) **and** spec generation (OpenAPI, AsyncAPI, MCP schema) — no duplication.
 
@@ -109,16 +109,17 @@ Step 5b).
 | Req/reply (`api/reqreply` + `adapters/mqtt5`/`zeromq`) | `reqreply.NewTopicParam[T]` (Req-side only) | `mqtt5.CallHandle`/`zeromq.CallHandle` (client) + `mqtt5.Serve` auto-merge (server) | [MQTT 5 Guide — Request/Reply](../guides/mqtt5.md) |
 | WebSocket (`ports.DuplexPort` + `adapters/websocket`) | `ports.NewRequiredSocketInParam[T]`/`NewOptionalSocketInParam[T]` + `ports.NewRequiredSocketOutParam[T]`/`NewOptionalSocketOutParam[T]` on `SocketPattern` | `DuplexSocketAdapter`/`IngestSocketAdapter`/`BroadcastSocketAdapter` auto-merge connection vars into inbound/outbound payload structs | [Feature: WebSocket](../features/websocket.md#one-struct-one-call-with-connection-vars) |
 | `ports.Pattern` binding layer (`nethttp`/`mqtt5`/`zeromq`/`mqtt`) | n/a — delegates to the underlying transport's constructors above | `DrainCallAdapter`/`PublishAdapter`/`CallAdapter` derive vars per-item when `Vars` is left `nil` | [Feature: Ports](../features/ports.md#available-adapters-by-transport) |
-| MCP Resources (`api/mcp` + `adapters/mcpgo`) | URI `{varName}` template (validate-only `ResourceParam`, not merge-capable — see below) | `ResourceHandle.ExtractURIVars` + `mcpgo.RegisterResourceWithVars`/`ResourceHandlerWithVars` (additive; `RegisterResource`/`ResourceHandlerFunc` unchanged) | [Feature: MCP Server](../features/mcp.md#automatic-uri-var-extraction-extracturivars-registerresourcewithvars) |
+| MCP Resources (`api/mcp` + `adapters/mcpgo`) | URI `{varName}` template — `ResourceHandle[V,T]` built directly on `codex.Template[V]` (a real typed vars container, not merge-capable into `T` — see below) | `ResourceHandle.ExtractURIVars` + `mcpgo.RegisterResourceWithVars`/`ResourceHandlerWithVars` (additive; `RegisterResource`/`ResourceHandlerFunc` unchanged) | [Feature: MCP Server](../features/mcp.md#automatic-uri-var-extraction-extracturivars-registerresourcewithvars) |
 | File I/O (`ports.File` + `adapters/file`) | `ports.NewFilePathParam[T]` | `ports.WriteHandle` (write) + `File.ReadMerged` auto-merge (read, wired into `ReadEachAdapter`/`ReadAdapter`; `DrainWriteFileAdapter`'s `varsFor` may be `nil`) | [Feature: Ports](../features/ports.md) |
 | Cache (`ports.Cache` + `adapters/redis`) | `ports.NewCacheKeyParam[T]` | `redis.SetHandle` (write) + `redis.GetMerged` auto-merge (read, wired into `GetAdapter`; `SetAdapter`/`DrainSetAdapter`'s `keyFn` may be `nil`) | [Feature: Redis Cache Adapter](../features/redis.md) |
 
 **Not merge-capable, by explicit design decision — not a gap**:
-MCP Resources' URI vars use validate-only `ResourceParam` (no getter/setter
-merge into the resource's output type — `T` is application-produced, not
-wire-decoded, so "merge after the handler runs" is a narrower win than
-elsewhere); MCP Prompts' args are validated (`ValidateArgs`) but handed to
-the app as a raw `map[string]string`, not a merged struct.
+MCP Resources' URI vars are a real typed `V` (via `codex.Template[V]`) but
+never merge into the resource's output type `T` — `T` is
+application-produced, not wire-decoded, so "merge after the handler runs"
+is a narrower win than elsewhere; MCP Prompts' args are validated
+(`ValidateArgs`) but handed to the app as a raw `map[string]string`, not a
+merged struct.
 
 ## REST routes (`api/rest`)
 
@@ -192,9 +193,13 @@ topic, err := sensorReadingsTopic.BuildTopic(map[string]string{
 channels declared via `NewChannel` with the same template and
 `TopicParam` passed inline — the `{sensorID}` variable's name and codec
 now have exactly one source of truth instead of being copy-pasted per
-channel. `rest.Path`/`ports.FilePathTemplate`/`ports.DirPathTemplate`
-provide the identical convenience for `api/rest` routes and `ports.File`/
-`ports.Dir` declarations. See [Guide: Declarative wire-format vocabulary](../guides/wire-vocabulary.md#reusing-a-topicpathfilepathtemplate) for the full recipe.
+channel. `rest.Path`/`reqreply.Topic`/`mcp` Template+`NewResourceFromTemplate`/
+`ports.FilePathTemplate`/`ports.DirPathTemplate` provide the identical
+convenience for `api/rest` routes, `api/reqreply` routes, `api/mcp`
+resources, and `ports.File`/`ports.Dir` declarations respectively. See
+[Guide: Declarative wire-format vocabulary](../guides/wire-vocabulary.md#reusing-a-topicpathfilepathtemplate)
+for the full recipe, and [Declaring APIs and Ports](declaring-apis-and-ports.md)
+for the full comparison across all six boundaries.
 
 ## MCP tools (`api/mcp`)
 

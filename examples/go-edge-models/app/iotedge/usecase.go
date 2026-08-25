@@ -22,8 +22,8 @@ import (
 // distinctly from usecase.Read (which additionally reads every nested
 // device into one composed usecase.UseCase value) — this function
 // returns just the deployment manifest.
-func ReadUseCase(basePath, useCaseName string, opts ports.FileOptions) (iothub.LayeredDeployment, error) {
-	return usecase.NewFile(basePath).Read(map[string]string{"usecase_name": useCaseName}, opts)
+func ReadUseCase(basePath usecase.BasePath, useCaseName usecase.Name, opts ports.FileOptions) (iothub.LayeredDeployment, error) {
+	return usecase.NewFile(basePath).Read(map[string]string{"usecase_name": string(useCaseName)}, opts)
 }
 
 // ── PatchUseCaseModule / UpdateUseCaseModuleImage ────────────────────────────
@@ -32,8 +32,8 @@ func ReadUseCase(basePath, useCaseName string, opts ports.FileOptions) (iothub.L
 // (see modulepatch.FieldsPatch's own doc comment) — to useCaseName's
 // deployment manifest under basePath, leaving every other field on that
 // module, and every other module, untouched.
-func PatchUseCaseModule(basePath, useCaseName string, patch modulepatch.FieldsPatch, opts ports.FileOptions) error {
-	return ports.PatchEncoded(usecase.NewFile(basePath), map[string]string{"usecase_name": useCaseName},
+func PatchUseCaseModule(basePath usecase.BasePath, useCaseName usecase.Name, patch modulepatch.FieldsPatch, opts ports.FileOptions) error {
+	return ports.PatchEncoded(usecase.NewFile(basePath), map[string]string{"usecase_name": string(useCaseName)},
 		modulepatch.FieldsPatchCodec, patch, opts)
 }
 
@@ -56,7 +56,7 @@ func PatchUseCaseModule(basePath, useCaseName string, patch modulepatch.FieldsPa
 // modulepatch.FieldsPatch via [PatchUseCaseModule] instead — this
 // convenience always assumes an EXISTING config to update, one layer or
 // another).
-func UpdateUseCaseModuleImage(basePath, useCaseName string, moduleName iothub.ModuleName, image docker.Image, opts ports.FileOptions) error {
+func UpdateUseCaseModuleImage(basePath usecase.BasePath, useCaseName usecase.Name, moduleName iothub.ModuleName, image docker.Image, opts ports.FileOptions) error {
 	template, err := ReadUseCase(basePath, useCaseName, opts)
 	if err != nil {
 		return err
@@ -111,28 +111,19 @@ func UpdateUseCaseModuleImage(basePath, useCaseName string, moduleName iothub.Mo
 //     detected via errors.Is(err, os.ErrNotExist) on the read attempt.
 //     Any OTHER read error (e.g. an existing-but-malformed device file)
 //     propagates as-is, never silently overwritten.
-func PatchDeviceModule(basePath, useCaseName, deviceID string, patch modulepatch.FieldsPatch, opts ports.FileOptions) error {
-	ucName, err := usecase.NewName(useCaseName)
-	if err != nil {
-		return err
-	}
-	devID, err := usecase.NewDeviceID(deviceID)
-	if err != nil {
-		return err
-	}
-
+func PatchDeviceModule(basePath usecase.BasePath, useCaseName usecase.Name, deviceID usecase.DeviceID, patch modulepatch.FieldsPatch, opts ports.FileOptions) error {
 	rawBody, err := modulepatch.FieldsBodyCodec.Encode(patch)
 	if err != nil {
 		return err
 	}
 	delta := deviceconfig.Patch{EdgeAgent: map[string]any{string(patch.ModuleName): rawBody}}
 
-	_, readErr := usecase.ReadDeviceConfig(basePath, ucName, devID, opts)
+	_, readErr := usecase.ReadDeviceConfig(basePath, useCaseName, deviceID, opts)
 	switch {
 	case readErr == nil:
 		return ports.PatchEncoded(usecase.NewDeviceFile(basePath), map[string]string{
-			"usecase_name": useCaseName,
-			"device_id":    deviceID,
+			"usecase_name": string(useCaseName),
+			"device_id":    string(deviceID),
 		}, deviceconfig.PatchCodec, delta, opts)
 	case errors.Is(readErr, os.ErrNotExist):
 		// First-ever override for this device: the "devices/{useCaseName}/"
@@ -142,7 +133,7 @@ func PatchDeviceModule(basePath, useCaseName, deviceID string, patch modulepatch
 		// this device already has a config file.
 		firstWriteOpts := opts
 		firstWriteOpts.CreateDirs = true
-		_, writeErr := usecase.WriteDeviceConfig(basePath, ucName, usecase.DeviceConfig{DeviceID: devID, Patch: delta}, firstWriteOpts)
+		_, writeErr := usecase.WriteDeviceConfig(basePath, useCaseName, usecase.DeviceConfig{DeviceID: deviceID, Patch: delta}, firstWriteOpts)
 		return writeErr
 	default:
 		return readErr
@@ -156,7 +147,7 @@ func PatchDeviceModule(basePath, useCaseName, deviceID string, patch modulepatch
 // and validated by modulepatch.NewUpdateModuleImage (moduleName's slug
 // shape and image's Name/Tag/Digest constraints are both checked there,
 // before this ever touches disk).
-func UpdateDeviceModuleImage(basePath, useCaseName, deviceID string, moduleName iothub.ModuleName, image docker.Image, opts ports.FileOptions) error {
+func UpdateDeviceModuleImage(basePath usecase.BasePath, useCaseName usecase.Name, deviceID usecase.DeviceID, moduleName iothub.ModuleName, image docker.Image, opts ports.FileOptions) error {
 	patch, err := modulepatch.NewUpdateModuleImage(moduleName, image)
 	if err != nil {
 		return err
@@ -195,7 +186,7 @@ var systemModulePatchIdentityCodec = codex.Codec[map[string]any]{
 // ("edgeAgent"/"edgeHub") own fields, matching
 // iothub.SystemModuleConfigCodec's own wire shape — to
 // useCaseName's deployment manifest under basePath.
-func PatchUseCaseSystemModule(basePath, useCaseName string, name iothub.SystemModuleName, patchFields map[string]any, opts ports.FileOptions) error {
+func PatchUseCaseSystemModule(basePath usecase.BasePath, useCaseName usecase.Name, name iothub.SystemModuleName, patchFields map[string]any, opts ports.FileOptions) error {
 	fullKey, err := iothub.SystemModuleNameCodec.Encode(name)
 	if err != nil {
 		return err
@@ -205,7 +196,7 @@ func PatchUseCaseSystemModule(basePath, useCaseName string, name iothub.SystemMo
 			iothub.EdgeAgentKey: map[string]any{fullKey.(string): patchFields},
 		},
 	}
-	return ports.PatchEncoded(usecase.NewFile(basePath), map[string]string{"usecase_name": useCaseName},
+	return ports.PatchEncoded(usecase.NewFile(basePath), map[string]string{"usecase_name": string(useCaseName)},
 		systemModulePatchIdentityCodec, delta, opts)
 }
 
@@ -217,7 +208,7 @@ func PatchUseCaseSystemModule(basePath, useCaseName string, name iothub.SystemMo
 // otherwise AUTO-PROMOTES to a FULL iothub.SystemModuleConfig
 // (seeded from baseline's own resolved value, only Image changed) so
 // the newly-written override is immediately valid on its own.
-func UpdateUseCaseSystemModuleImage(basePath, useCaseName string, name iothub.SystemModuleName, image docker.Image, opts ports.FileOptions) error {
+func UpdateUseCaseSystemModuleImage(basePath usecase.BasePath, useCaseName usecase.Name, name iothub.SystemModuleName, image docker.Image, opts ports.FileOptions) error {
 	template, err := ReadUseCase(basePath, useCaseName, opts)
 	if err != nil {
 		return err
@@ -250,29 +241,20 @@ func UpdateUseCaseSystemModuleImage(basePath, useCaseName string, name iothub.Sy
 // [PatchDeviceModule]'s own two-case (existing file / first-ever
 // override) handling exactly, one bucket over
 // (deviceconfig.Patch.SystemModules, not EdgeAgent).
-func PatchDeviceSystemModule(basePath, useCaseName, deviceID string, name iothub.SystemModuleName, patchFields map[string]any, opts ports.FileOptions) error {
-	ucName, err := usecase.NewName(useCaseName)
-	if err != nil {
-		return err
-	}
-	devID, err := usecase.NewDeviceID(deviceID)
-	if err != nil {
-		return err
-	}
-
+func PatchDeviceSystemModule(basePath usecase.BasePath, useCaseName usecase.Name, deviceID usecase.DeviceID, name iothub.SystemModuleName, patchFields map[string]any, opts ports.FileOptions) error {
 	delta := deviceconfig.Patch{SystemModules: map[string]any{string(name): patchFields}}
 
-	_, readErr := usecase.ReadDeviceConfig(basePath, ucName, devID, opts)
+	_, readErr := usecase.ReadDeviceConfig(basePath, useCaseName, deviceID, opts)
 	switch {
 	case readErr == nil:
 		return ports.PatchEncoded(usecase.NewDeviceFile(basePath), map[string]string{
-			"usecase_name": useCaseName,
-			"device_id":    deviceID,
+			"usecase_name": string(useCaseName),
+			"device_id":    string(deviceID),
 		}, deviceconfig.PatchCodec, delta, opts)
 	case errors.Is(readErr, os.ErrNotExist):
 		firstWriteOpts := opts
 		firstWriteOpts.CreateDirs = true
-		_, writeErr := usecase.WriteDeviceConfig(basePath, ucName, usecase.DeviceConfig{DeviceID: devID, Patch: delta}, firstWriteOpts)
+		_, writeErr := usecase.WriteDeviceConfig(basePath, useCaseName, usecase.DeviceConfig{DeviceID: deviceID, Patch: delta}, firstWriteOpts)
 		return writeErr
 	default:
 		return readErr
@@ -287,7 +269,7 @@ func PatchDeviceSystemModule(basePath, useCaseName, deviceID string, name iothub
 // are mandatory there — see iothub.SystemModules), so a sparse
 // "settings.image" patch always deep-merges onto an already-complete
 // base.
-func UpdateDeviceSystemModuleImage(basePath, useCaseName, deviceID string, name iothub.SystemModuleName, image docker.Image, opts ports.FileOptions) error {
+func UpdateDeviceSystemModuleImage(basePath usecase.BasePath, useCaseName usecase.Name, deviceID usecase.DeviceID, name iothub.SystemModuleName, image docker.Image, opts ports.FileOptions) error {
 	return PatchDeviceSystemModule(basePath, useCaseName, deviceID, name, map[string]any{
 		"settings": map[string]any{"image": image.String()},
 	}, opts)

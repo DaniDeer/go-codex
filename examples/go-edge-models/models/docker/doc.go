@@ -20,13 +20,24 @@
 //   - image.go — Image (parsed Name/Tag/Digest), the Tag/Digest named types
 //     and their constraints, ImageCodec, and Image.String().
 //   - port.go — Port, PortBindingEntry, PortBinding, and their codecs
-//     (PortCodec, PortNumberCodec, ExposedPortsCodec, PortBindingCodec).
+//     (PortCodec, PortNumberCodec, ExposedPortsCodec, PortBindingCodec),
+//     plus ParsePortMapping/FormatPortMapping — the `docker run -p`-style
+//     short-syntax parser/formatter pair (one CLI port-mapping string <->
+//     Port + optional host port).
 //   - bind.go — Bind and BindCodec (parses "host:container[:mode]").
 //   - ulimit.go — Ulimit, ulimitNameConstraint, UlimitNameCodec, UlimitCodec.
-//   - healthcheck.go — Healthcheck and HealthcheckCodec.
+//   - healthcheck.go — Healthcheck and HealthcheckCodec, plus
+//     CLIDurationCodec/HealthcheckCLICodec (the `docker run
+//     --health-interval=30s`-style duration-STRING wire form of the
+//     same struct).
 //   - env.go — EnvVar/Env and EnvCodec (parses "KEY=VALUE" entries).
 //   - hostconfig.go — HostConfig and CreateOptions (composing every concept
 //     above) and their codecs, plus IsZeroCreateOptions.
+//   - memory.go — ParseMemBytes/FormatMemBytes/MemBytesCodec, the
+//     `docker run --memory`-style human byte-size string convention (an
+//     alternate STRING wire form of the SAME int64 byte count
+//     HostConfig.Memory/MemorySwap already use via their own c.Int64()
+//     field codecs).
 //
 // Each field's codec is its own named value (e.g. UlimitNameCodec,
 // PortCodec, dockerNanosDurationCodec) so a caller assembling a NEW wire

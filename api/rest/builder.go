@@ -38,6 +38,17 @@ type Server = openapi.Server
 // Required: true or false as appropriate.
 //
 // PathParam implements [RouteOpt]: pass it directly to [NewRoute] or [NewSSERoute].
+// PathParam mirrors [codex.Param]'s shape field-for-field — the shared,
+// VALIDATE-ONLY escape hatch (see codex/param.go's own doc comment for the
+// cross-package rationale). Kept as a flat, non-embedded struct (rather
+// than embedding codex.Param) so existing `rest.PathParam{Name: "id"}`
+// struct literals keep compiling unchanged (Go requires keyed literal
+// fields to be the struct's OWN fields, not promoted ones). A rest-owned
+// type is required regardless (Go's method-locality rule: a type
+// satisfying [RouteOpt] must be defined in this package), but PathParam
+// keeps its own name/vocabulary rather than a generic shared one — rest's
+// own domain concept ("a PATH variable"), distinct from
+// api/events'/api/reqreply's "TopicParam".
 type PathParam struct {
 	Name        string
 	Description string
@@ -53,14 +64,18 @@ func (p PathParam) applyRoute(rb *routeBuilder) { rb.pathParams = append(rb.path
 // WithCodec sets the validation codec and returns the updated PathParam.
 func (p PathParam) WithCodec(c codex.Codec[string]) PathParam { p.Codec = &c; return p }
 
-// MergedPathParam is returned by [NewPathParam]. It embeds the unchanged
-// [PathParam] (spec/validation, exactly as before) plus a merge field
-// produced internally via [codex.RequiredField], so the same declaration
-// serves both OpenAPI spec generation/validation AND automatic merge into
-// Req via [RouteHandle.DecodeMerged] / [RouteHandle.MergeFields].
+// toParam converts p to the shared [codex.Param] shape.
+func (p PathParam) toParam() codex.Param {
+	return codex.Param{Name: p.Name, Description: p.Description, Codec: p.Codec}
+}
+
+// MergedPathParam is returned by [NewPathParam]. It wraps
+// [codex.MergedParam][T] — the shared merge-capable counterpart to
+// [PathParam] — so the same declaration serves both OpenAPI spec
+// generation/validation AND automatic merge into Req via
+// [RouteHandle.DecodeMerged] / [RouteHandle.MergeFields].
 type MergedPathParam[T any] struct {
-	PathParam
-	field codex.FieldCodec[T]
+	codex.MergedParam[T]
 }
 
 // NewPathParam declares a path parameter that is BOTH validated against
@@ -85,10 +100,7 @@ func NewPathParam[T any](
 	get func(T) string,
 	set func(*T, string),
 ) MergedPathParam[T] {
-	return MergedPathParam[T]{
-		PathParam: PathParam{Name: name, Codec: &codec},
-		field:     codex.RequiredField(name, codec, get, set),
-	}
+	return MergedPathParam[T]{MergedParam: codex.NewParam(name, codec, get, set)}
 }
 
 // WithDescription sets the PARAMETER-level description (rendered into the
@@ -96,13 +108,23 @@ func NewPathParam[T any](
 // description) and returns the updated value, mirroring PathParam.WithCodec's
 // existing chain style.
 func (p MergedPathParam[T]) WithDescription(desc string) MergedPathParam[T] {
-	p.Description = desc
+	p.MergedParam = p.MergedParam.WithDescription(desc)
 	return p
 }
 
 func (p MergedPathParam[T]) applyRoute(rb *routeBuilder) {
-	rb.pathParams = append(rb.pathParams, p.PathParam) // unchanged spec/validation path
-	rb.pathMergeFields = append(rb.pathMergeFields, p.field)
+	rb.pathParams = append(rb.pathParams, PathParam{Name: p.Name, Description: p.Description, Codec: p.Codec}) // unchanged spec/validation path
+	rb.pathMergeFields = append(rb.pathMergeFields, p.Field)
+}
+
+// toCodexParams converts pathParams to []codex.Param for [codex.BuildFromParams]/
+// [codex.ValidateParams]/[codex.ValidateDeclaredParams].
+func toCodexParams(pathParams []PathParam) []codex.Param {
+	out := make([]codex.Param, len(pathParams))
+	for i, p := range pathParams {
+		out[i] = p.toParam()
+	}
+	return out
 }
 
 // requestFormatsOpt / formatsOpt are unexported RouteOpt implementations
@@ -931,19 +953,7 @@ func (h *RouteHandle[Req, Resp]) WithFormats(fmts ...format.Format[Resp]) *Route
 //	path, err := getUserRoute.BuildPath(map[string]string{"id": "f47ac10b-..."})
 //	// path = "/users/f47ac10b-..."
 func (h *RouteHandle[Req, Resp]) BuildPath(vars map[string]string) (string, error) {
-	// Build codec lookup map from pathParams.
-	codecMap := make(map[string]*codex.Codec[string], len(h.pathParams))
-	for i := range h.pathParams {
-		if h.pathParams[i].Codec != nil {
-			codecMap[h.pathParams[i].Name] = h.pathParams[i].Codec
-		}
-	}
-	result, err := internal.BuildFromTemplate(h.Descriptor.Path, vars, codecMap,
-		func(name string) error { return MissingPathVarError{Name: name} },
-		func(name, value string, err error) error {
-			return PathParamError{Name: name, Value: value, Err: err}
-		},
-	)
+	result, err := codex.BuildFromParams(h.Descriptor.Path, toCodexParams(h.pathParams), vars)
 	if err != nil {
 		return "", err
 	}
@@ -971,20 +981,7 @@ var ErrRequiredParam = errors.New("required parameter missing")
 // Adapters build the vars map using [RouteHandle.PathParamNames] and the
 // path-variable extraction provided by their router (e.g. r.PathValue).
 func (h *RouteHandle[Req, Resp]) ValidatePathParams(vars map[string]string) error {
-	for i := range h.pathParams {
-		pp := &h.pathParams[i]
-		if pp.Codec == nil {
-			continue
-		}
-		value, ok := vars[pp.Name]
-		if !ok {
-			continue
-		}
-		if err := pp.Codec.Validate(value); err != nil {
-			return PathParamError{Name: pp.Name, Value: value, Err: err}
-		}
-	}
-	return nil
+	return codex.ValidateParams(toCodexParams(h.pathParams), vars)
 }
 
 // PathParamNames returns the names of all registered path parameters.
@@ -1240,7 +1237,10 @@ func (e InvalidPathError) Error() string {
 func (e InvalidPathError) Unwrap() error { return e.Err }
 
 // PathParamError is returned by [RouteHandle.BuildPath] when a path variable
-// value fails codec validation.
+// value fails codec validation. A type ALIAS for [codex.ParamError] — the
+// SAME underlying type, so existing errors.As(&rest.PathParamError{}) calls
+// and generic instantiations (e.g. apimcp.ErrorPattern[rest.PathParamError, ...])
+// keep working unchanged; see codex/param.go for the canonical definition.
 //
 // Use errors.As to extract the failing variable name and value:
 //
@@ -1248,21 +1248,12 @@ func (e InvalidPathError) Unwrap() error { return e.Err }
 //	if errors.As(err, &paramErr) {
 //	    log.Printf("bad value for {%s}: %q — %v", paramErr.Name, paramErr.Value, paramErr.Err)
 //	}
-type PathParamError struct {
-	Name  string // variable name without braces, e.g. "id"
-	Value string // the value that failed validation
-	Err   error  // the underlying constraint or codec error
-}
-
-func (e PathParamError) Error() string {
-	return fmt.Sprintf("path variable {%s}: invalid value %q: %s", e.Name, e.Value, e.Err.Error())
-}
-
-// Unwrap allows errors.As and errors.Is to traverse the underlying constraint error.
-func (e PathParamError) Unwrap() error { return e.Err }
+type PathParamError = codex.ParamError
 
 // MissingPathVarError is returned by [RouteHandle.BuildPath] when a {varName}
 // placeholder in the path template has no corresponding entry in the vars map.
+// A type ALIAS for [codex.MissingParamError] — see [PathParamError]'s own
+// doc comment for the rationale.
 //
 // Use errors.As to extract the missing variable name:
 //
@@ -1270,31 +1261,21 @@ func (e PathParamError) Unwrap() error { return e.Err }
 //	if errors.As(err, &missingErr) {
 //	    log.Printf("caller forgot to supply path variable {%s}", missingErr.Name)
 //	}
-type MissingPathVarError struct {
-	Name string // the variable name (without braces) that had no value
-}
-
-func (e MissingPathVarError) Error() string {
-	return fmt.Sprintf("missing value for path variable {%s}", e.Name)
-}
+type MissingPathVarError = codex.MissingParamError
 
 // InvalidPathParamError is returned by [Route.Register] when a [PathParam] entry
-// names a variable that does not appear in the path template.
+// names a variable that does not appear in the path template. A type ALIAS
+// for [codex.InvalidParamError] — see [PathParamError]'s own doc comment for
+// the rationale. NOTE: the field is named Template (not Path) on the shared
+// type.
 //
 // Use errors.As to extract the offending name and the path template:
 //
 //	var paramErr rest.InvalidPathParamError
 //	if errors.As(err, &paramErr) {
-//	    log.Printf("PathParam %q not in path %q", paramErr.Name, paramErr.Path)
+//	    log.Printf("PathParam %q not in path %q", paramErr.Name, paramErr.Template)
 //	}
-type InvalidPathParamError struct {
-	Name string // the variable name (without braces) that is not in the template
-	Path string // the path template that was validated against
-}
-
-func (e InvalidPathParamError) Error() string {
-	return fmt.Sprintf("api/rest: PathParams entry %q not found in path template %q", e.Name, e.Path)
-}
+type InvalidPathParamError = codex.InvalidParamError
 
 // QueryParam describes a query parameter for a route.
 // It combines spec metadata with optional runtime validation via a codec.
@@ -2176,38 +2157,14 @@ func NewPath(template string, params ...PathParam) Path {
 // [NewRouteFromPath] + [Route.Register], where it is enforced exactly as
 // it would be for a plain-string route.
 func (p Path) BuildPath(vars map[string]string) (string, error) {
-	codecMap := make(map[string]*codex.Codec[string], len(p.Params))
-	for i := range p.Params {
-		if p.Params[i].Codec != nil {
-			codecMap[p.Params[i].Name] = p.Params[i].Codec
-		}
-	}
-	return internal.BuildFromTemplate(p.Template, vars, codecMap,
-		func(name string) error { return MissingPathVarError{Name: name} },
-		func(name, value string, err error) error {
-			return PathParamError{Name: name, Value: value, Err: err}
-		},
-	)
+	return codex.BuildFromParams(p.Template, toCodexParams(p.Params), vars)
 }
 
 // ValidatePathParams validates path variable values against p's registered
 // [PathParam] codecs. Mirrors [RouteHandle.ValidatePathParams] exactly
 // (same error types); variables without a registered codec are skipped.
 func (p Path) ValidatePathParams(vars map[string]string) error {
-	for i := range p.Params {
-		pp := &p.Params[i]
-		if pp.Codec == nil {
-			continue
-		}
-		val, ok := vars[pp.Name]
-		if !ok {
-			return MissingPathVarError{Name: pp.Name}
-		}
-		if err := pp.Codec.Validate(val); err != nil {
-			return PathParamError{Name: pp.Name, Value: val, Err: err}
-		}
-	}
-	return nil
+	return codex.ValidateParams(toCodexParams(p.Params), vars)
 }
 
 type Route[Req, Resp any] struct {
@@ -2296,11 +2253,8 @@ func (r Route[Req, Resp]) Register(b *Builder) (*RouteHandle[Req, Resp], error) 
 		opt.applyRoute(&rb)
 	}
 
-	templateVars := internal.ParseTemplateVars(r.path)
-	for _, p := range rb.pathParams {
-		if !templateVars[p.Name] {
-			return nil, InvalidPathParamError{Name: p.Name, Path: r.path}
-		}
+	if err := codex.ValidateDeclaredParams(r.path, toCodexParams(rb.pathParams)); err != nil {
+		return nil, err
 	}
 
 	frozen := buildDescriptor(r.method, r.path, r.reqCodec.Schema, r.respCodec.Schema, rb, nil)
@@ -2547,18 +2501,7 @@ type SSERouteHandle[Req, Event any] struct {
 // with the values provided in vars, validating each against its registered
 // codec (if any). Follows the same contract as [RouteHandle.BuildPath].
 func (h *SSERouteHandle[Req, Event]) BuildPath(vars map[string]string) (string, error) {
-	codecMap := make(map[string]*codex.Codec[string], len(h.pathParams))
-	for i := range h.pathParams {
-		if h.pathParams[i].Codec != nil {
-			codecMap[h.pathParams[i].Name] = h.pathParams[i].Codec
-		}
-	}
-	result, err := internal.BuildFromTemplate(h.Descriptor.Path, vars, codecMap,
-		func(name string) error { return MissingPathVarError{Name: name} },
-		func(name, value string, err error) error {
-			return PathParamError{Name: name, Value: value, Err: err}
-		},
-	)
+	result, err := codex.BuildFromParams(h.Descriptor.Path, toCodexParams(h.pathParams), vars)
 	if err != nil {
 		return "", err
 	}
@@ -2635,20 +2578,7 @@ func (h *SSERouteHandle[Req, Event]) MergeEvent(
 // ValidatePathParams validates path variable values against their registered codecs.
 // Mirrors [RouteHandle.ValidatePathParams] for SSE routes.
 func (h *SSERouteHandle[Req, Event]) ValidatePathParams(vars map[string]string) error {
-	for i := range h.pathParams {
-		pp := &h.pathParams[i]
-		if pp.Codec == nil {
-			continue
-		}
-		value, ok := vars[pp.Name]
-		if !ok {
-			continue
-		}
-		if err := pp.Codec.Validate(value); err != nil {
-			return PathParamError{Name: pp.Name, Value: value, Err: err}
-		}
-	}
-	return nil
+	return codex.ValidateParams(toCodexParams(h.pathParams), vars)
 }
 
 // PathParamNames returns the names of all registered path parameters.
@@ -2864,11 +2794,8 @@ func (s SSERoute[Req, Event]) Register(b *Builder) (*SSERouteHandle[Req, Event],
 		return nil, err
 	}
 
-	templateVars := internal.ParseTemplateVars(s.path)
-	for _, p := range rb.pathParams {
-		if !templateVars[p.Name] {
-			return nil, InvalidPathParamError{Name: p.Name, Path: s.path}
-		}
+	if err := codex.ValidateDeclaredParams(s.path, toCodexParams(rb.pathParams)); err != nil {
+		return nil, err
 	}
 
 	frozen := buildDescriptor("GET", s.path, s.reqCodec.Schema, s.eventCodec.Schema, rb, []string{"text/event-stream"})

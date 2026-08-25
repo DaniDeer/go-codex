@@ -2,6 +2,7 @@ package ports
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io/fs"
 	"log/slog"
@@ -26,11 +27,15 @@ import (
 
 // ── DirPathParam ──────────────────────────────────────────────────────────────
 
-// DirPathParam describes a {varName} placeholder in a [Dir] path template —
-// exact mirror of [FilePathParam], but validates the DIRECTORY's own
-// location rather than a file's. No Required field, same rationale as
-// [FilePathParam]/[TopicParam]/[PathParam]: every template variable must
-// always be present.
+// DirPathParam mirrors [codex.Param]'s shape field-for-field — exact mirror
+// of [FilePathParam], but validates the DIRECTORY's own location rather
+// than a file's; no merge variant exists (unlike [FilePathParam]/
+// [MergedFilePathParam]) since a [Dir] never decodes content, so there is
+// no T to merge a variable into. Kept as a flat, non-embedded struct
+// (rather than embedding codex.Param) so existing
+// `ports.DirPathParam{Name: "id"}` struct literals keep compiling
+// unchanged (Go requires keyed literal fields to be the struct's OWN
+// fields, not promoted ones).
 //
 // DirPathParam implements the [DirOpt] interface: pass it directly to [NewDir].
 type DirPathParam struct {
@@ -54,6 +59,21 @@ func (p DirPathParam) WithCodec(c codex.Codec[string]) DirPathParam {
 }
 
 func (p DirPathParam) applyDir(db *dirBuilder) { db.params = append(db.params, p) }
+
+// toParam converts p to the shared [codex.Param] shape.
+func (p DirPathParam) toParam() codex.Param {
+	return codex.Param{Name: p.Name, Description: p.Description, Codec: p.Codec}
+}
+
+// toCodexDirParams converts params to []codex.Param for
+// [codex.BuildFromParams]/[codex.ValidateParams].
+func toCodexDirParams(params []DirPathParam) []codex.Param {
+	out := make([]codex.Param, len(params))
+	for i, p := range params {
+		out[i] = p.toParam()
+	}
+	return out
+}
 
 // DirPathTemplate bundles a path template with its declared [DirPathParam]
 // variables — the "shape" of a [Dir]'s own path (the SAME state
@@ -95,13 +115,7 @@ func (t DirPathTemplate) BuildPath(vars map[string]string) (string, error) {
 	if templatematch.IsGlobEnabled(t.Template) {
 		return "", DirWildcardBuildError{Template: t.Template}
 	}
-	codecMap := make(map[string]*codex.Codec[string], len(t.Params))
-	for i := range t.Params {
-		if t.Params[i].Codec != nil {
-			codecMap[t.Params[i].Name] = t.Params[i].Codec
-		}
-	}
-	return buildFromDirTemplate(t.Template, vars, codecMap)
+	return buildFromDirTemplate(t.Template, vars, toCodexDirParams(t.Params))
 }
 
 // MatchPath is the inverse of [DirPathTemplate.BuildPath] — mirrors
@@ -114,15 +128,8 @@ func (t DirPathTemplate) MatchPath(path string) (map[string]string, error) {
 	if err != nil {
 		return nil, err
 	}
-	for i := range t.Params {
-		p := &t.Params[i]
-		if p.Codec == nil {
-			continue
-		}
-		value := vars[p.Name]
-		if err := p.Codec.Validate(value); err != nil {
-			return nil, DirPathParamError{Name: p.Name, Value: value, Err: err}
-		}
+	if err := convertDirParamErr(codex.ValidateParams(toCodexDirParams(t.Params), vars)); err != nil {
+		return nil, err
 	}
 	return vars, nil
 }
@@ -151,10 +158,16 @@ func (k EntryKind) String() string {
 // EntryParam describes a {varName} placeholder in an [EntryPattern]'s
 // template — exact mirror of [DirPathParam], scoped to one entry's
 // RelPath rather than the directory's own location.
-type EntryParam struct {
-	Name  string
-	Codec *codex.Codec[string]
-}
+// EntryParam is a type ALIAS for [codex.Param] (the shared, cross-package
+// path/topic parameter primitive — see codex/param.go's own doc comment).
+// No method is needed here (EntryParam is a plain data element inside
+// [EntryPattern.Params], not a [DirOpt]), so — unlike [FilePathParam]/
+// [DirPathParam], which need a ports-owned wrapper type to satisfy their
+// own sealed opt interfaces — EntryParam can be a straight alias with zero
+// wrapper boilerplate; existing `ports.EntryParam{Name: "x", Codec: &c}`
+// struct literals keep compiling unchanged (codex.Param has the same
+// Name/Codec fields, plus an unused Description field).
+type EntryParam = codex.Param
 
 // EntryPattern optionally declares the expected SHAPE for entries inside a
 // [Dir], matched against each entry's RelPath (not just its leaf Name) —
@@ -349,13 +362,7 @@ func (d Dir) BuildPath(vars map[string]string) (string, error) {
 	if templatematch.IsGlobEnabled(d.template) {
 		return "", DirWildcardBuildError{Template: d.template}
 	}
-	codecMap := make(map[string]*codex.Codec[string], len(d.params))
-	for i := range d.params {
-		if d.params[i].Codec != nil {
-			codecMap[d.params[i].Name] = d.params[i].Codec
-		}
-	}
-	return buildFromDirTemplate(d.template, vars, codecMap)
+	return buildFromDirTemplate(d.template, vars, toCodexDirParams(d.params))
 }
 
 // MatchPath is the inverse of [Dir.BuildPath]: it matches a concrete,
@@ -378,15 +385,8 @@ func (d Dir) MatchPath(path string) (map[string]string, error) {
 	if err != nil {
 		return nil, err
 	}
-	for i := range d.params {
-		p := &d.params[i]
-		if p.Codec == nil {
-			continue
-		}
-		value := vars[p.Name]
-		if err := p.Codec.Validate(value); err != nil {
-			return nil, DirPathParamError{Name: p.Name, Value: value, Err: err}
-		}
+	if err := convertDirParamErr(codex.ValidateParams(toCodexDirParams(d.params), vars)); err != nil {
+		return nil, err
 	}
 	return vars, nil
 }
@@ -913,33 +913,36 @@ func (d Dir) matchEntry(relPath string) (vars map[string]string, included bool, 
 }
 
 // ── Template engine (Dir's own path template — mirrors file.go's) ───────────
+//
+// buildFromDirTemplate used to have its own private regexp-substitution
+// loop (sharing file.go's fileTemplateVarRe) — now delegates the actual
+// substitution to [codex.BuildFromParams]/[templatematch.Build], the SAME
+// canonical function file.go's own buildFromFileTemplate now uses.
+
+// convertDirParamErr converts a [codex.MissingParamError]/[codex.ParamError]
+// (returned by [codex.BuildFromParams]/[codex.ValidateParams]) into ports'
+// own [MissingDirPathVarError]/[DirPathParamError]. Passes any other error
+// (including nil) through unchanged.
+func convertDirParamErr(err error) error {
+	var me codex.MissingParamError
+	if errors.As(err, &me) {
+		return MissingDirPathVarError{Name: me.Name}
+	}
+	var pe codex.ParamError
+	if errors.As(err, &pe) {
+		return DirPathParamError{Name: pe.Name, Value: pe.Value, Err: pe.Err}
+	}
+	return err
+}
 
 func buildFromDirTemplate(
 	template string,
 	vars map[string]string,
-	codecs map[string]*codex.Codec[string],
+	params []codex.Param,
 ) (string, error) {
-	var buildErr error
-	result := fileTemplateVarRe.ReplaceAllStringFunc(template, func(placeholder string) string {
-		if buildErr != nil {
-			return placeholder
-		}
-		name := placeholder[1 : len(placeholder)-1] // strip { and }
-		value, ok := vars[name]
-		if !ok {
-			buildErr = MissingDirPathVarError{Name: name}
-			return placeholder
-		}
-		if c, hasCdc := codecs[name]; hasCdc {
-			if err := c.Validate(value); err != nil {
-				buildErr = DirPathParamError{Name: name, Value: value, Err: err}
-				return placeholder
-			}
-		}
-		return value
-	})
-	if buildErr != nil {
-		return "", buildErr
+	result, err := codex.BuildFromParams(template, params, vars)
+	if err != nil {
+		return "", convertDirParamErr(err)
 	}
 	return result, nil
 }

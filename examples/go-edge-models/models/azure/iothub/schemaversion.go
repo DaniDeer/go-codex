@@ -20,3 +20,11 @@ var SchemaVersionCodec = c.MapCodecSafe(
 	func(s string) SchemaVersion { return SchemaVersion(s) },
 	func(sv SchemaVersion) (string, error) { return string(sv), nil },
 )
+
+// SchemaVersionField declares a REQUIRED "schemaVersion" field for any
+// container type T, using [SchemaVersionCodec] — single source of truth
+// for EdgeAgentProperties' and EdgeHubProperties' identical
+// "schemaVersion" field.
+func SchemaVersionField[T any](get func(T) SchemaVersion, set func(*T, SchemaVersion)) c.FieldCodec[T] {
+	return c.RequiredField("schemaVersion", SchemaVersionCodec, get, set)
+}

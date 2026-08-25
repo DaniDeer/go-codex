@@ -3,7 +3,7 @@ package mcp
 import (
 	"encoding/json"
 	"fmt"
-	"github.com/DaniDeer/go-codex/api/internal"
+
 	"github.com/DaniDeer/go-codex/codex"
 	"github.com/DaniDeer/go-codex/render/jsonschema"
 )
@@ -359,76 +359,122 @@ func (m ResourceMeta) applyResource(rb *resourceBuilder) {
 	rb.meta = m
 }
 
-// ResourceParam describes a {varName} placeholder in a resource URI template.
-// It optionally carries a codec for runtime validation of the variable value.
-//
-// ResourceParam implements [ResourceOpt].
-type ResourceParam struct {
-	// Name is the variable name (without braces) as it appears in the URI template.
-	Name string
-	// Description is shown in the spec for this parameter.
-	Description string
-	// Codec validates URI parameter values at [ResourceHandle.ValidateURIVars]
-	// and [ResourceHandle.BuildURI] time. Nil means no runtime validation.
-	Codec *codex.Codec[string]
-}
-
-func (p ResourceParam) applyResource(rb *resourceBuilder) {
-	rb.uriParams = append(rb.uriParams, p)
-}
-
-// WithCodec sets the validation codec and returns the updated ResourceParam.
-// Use this instead of setting Codec directly to avoid the address-of pattern:
-//
-//	mcp.ResourceParam{Name: "id"}.WithCodec(uuidCodec)
-func (p ResourceParam) WithCodec(c codex.Codec[string]) ResourceParam {
-	p.Codec = &c
-	return p
-}
-
 // ResourceOpt is the sealed interface for [NewResource] options.
 //
 // The following types implement ResourceOpt:
 //   - [ResourceMeta] — resource-level metadata (name, description, mimeType)
-//   - [ResourceParam] — URI template variable with optional codec
+//   - [URIParam] — a {varName} placeholder's field declaration
 type ResourceOpt interface{ applyResource(*resourceBuilder) }
 
 type resourceBuilder struct {
-	meta      ResourceMeta
-	uriParams []ResourceParam
+	meta ResourceMeta
+	// uriFields holds type-erased codex.FieldCodec[V] values registered
+	// via [URIParam] — resolved to []codex.FieldCodec[V] in [NewResource],
+	// where V is concrete. Mirrors rest/reqreply's own type-erased
+	// mergeFields []any + assertMergeFields pattern.
+	uriFields []any
 }
 
-// Resource[T] is the declarative resource descriptor.
-// Construct with [NewResource]; register with [Resource.Register].
-type Resource[T any] struct {
-	uriTemplate string
-	codec       codex.Codec[T]
-	rb          resourceBuilder
+// uriParamOpt is the unexported [ResourceOpt] implementation backing
+// [URIParam].
+type uriParamOpt[V any] struct{ field codex.FieldCodec[V] }
+
+func (o uriParamOpt[V]) applyResource(rb *resourceBuilder) {
+	rb.uriFields = append(rb.uriFields, o.field)
 }
 
-// NewResource returns a declarative resource descriptor. uriTemplate may
-// contain {varName} placeholders (e.g. "items://{id}"). Call [Resource.Register]
-// to obtain a [ResourceHandle].
+// URIParam declares a {varName} placeholder in a [NewResource] URI
+// template, wrapping any [codex.FieldCodec][V] (typically
+// [codex.RequiredField]/[codex.IdentityField]) as a [ResourceOpt] — the
+// SAME variadic-fields shape [codex.NewTemplate] itself accepts, just
+// usable inline in NewResource's own opts list.
+//
+//	mcp.NewResource[string, Item]("items://{id}", itemCodec,
+//	    mcp.URIParam(codex.IdentityField("id", codex.String().Refine(validate.NonEmptyString))),
+//	)
+func URIParam[V any](field codex.FieldCodec[V]) ResourceOpt {
+	return uriParamOpt[V]{field: field}
+}
+
+// Resource[V, T] is the declarative resource descriptor. V is the URI
+// template's vars type (e.g. a single-var resource can use V=string
+// directly, via an identity [codex.FieldCodec] — see [codex.Template]'s
+// own doc for the general pattern); T is the resource's CONTENT type,
+// returned by the application handler and encoded via codec. Construct
+// with [NewResource] (bare URI template string + [URIParam] opts) or
+// [NewResourceFromTemplate] (a pre-built [codex.Template][V]); register
+// with [Resource.Register].
+type Resource[V, T any] struct {
+	template codex.Template[V]
+	codec    codex.Codec[T]
+	rb       resourceBuilder
+}
+
+// NewResource returns a declarative resource descriptor from a bare URI
+// template string (may contain "{varName}" placeholders) — the PRIMARY,
+// recommended way to declare a resource, matching [rest.NewRoute]/
+// [events.NewChannel]/[ports.NewFile]/[ports.NewDir]'s exact "bare string +
+// opts" call shape. Declare each "{varName}" via [URIParam]; internally
+// builds a [codex.Template][V] via [codex.NewTemplate] with
+// [codex.PathStyle]. Call [Resource.Register] to obtain a [ResourceHandle].
+//
+// PANICS if a "{varName}" in template has no matching [URIParam] declared
+// (mirrors [codex.NewTemplate]'s own construction-time panic) or if a
+// [URIParam] was declared with the wrong type parameter for V.
 //
 // codec validates the value returned by the resource handler before it is
 // serialised as resource content.
-func NewResource[T any](uriTemplate string, codec codex.Codec[T], opts ...ResourceOpt) Resource[T] {
+//
+//	var itemResource = mcp.NewResource[string, Item]("items://{id}", itemCodec,
+//	    mcp.ResourceMeta{Name: "Item", MimeType: "application/json"},
+//	    mcp.URIParam(codex.IdentityField("id", codex.String().Refine(validate.NonEmptyString))),
+//	)
+func NewResource[V, T any](uriTemplate string, codec codex.Codec[T], opts ...ResourceOpt) Resource[V, T] {
 	var rb resourceBuilder
 	for _, o := range opts {
 		o.applyResource(&rb)
 	}
-	return Resource[T]{
-		uriTemplate: uriTemplate,
-		codec:       codec,
-		rb:          rb,
+	fields := make([]codex.FieldCodec[V], len(rb.uriFields))
+	for i, f := range rb.uriFields {
+		fc, ok := f.(codex.FieldCodec[V])
+		if !ok {
+			panic(fmt.Sprintf("api/mcp: NewResource[%T]: URIParam has the wrong type parameter (got %T)", *new(V), f))
+		}
+		fields[i] = fc
+	}
+	template := codex.NewTemplate(uriTemplate, codex.PathStyle, fields...)
+	return Resource[V, T]{
+		template: template,
+		codec:    codec,
+		rb:       rb,
 	}
 }
 
-// ResourceHandle[T] is returned by [Resource.Register]. It provides:
+// NewResourceFromTemplate declares a [Resource] from a pre-built
+// [codex.Template][V] instead of a bare URI template string + [URIParam]
+// opts — mirrors [rest.NewRouteFromPath]/[events.NewChannelFromTopic]/
+// [ports.NewFileFromPathTemplate]/[ports.NewDirFromPathTemplate]: reach for
+// this when you already have (or want to reuse) a Template[V] value across
+// multiple Resource declarations of different T. Decomposes template's own
+// declared fields (via [codex.Template.Fields]) back into [URIParam] opts
+// and delegates to [NewResource], so the result is IDENTICAL to declaring
+// the same template+fields inline.
+func NewResourceFromTemplate[V, T any](template codex.Template[V], codec codex.Codec[T], opts ...ResourceOpt) Resource[V, T] {
+	fields := template.Fields()
+	allOpts := make([]ResourceOpt, 0, len(fields)+len(opts))
+	for _, f := range fields {
+		allOpts = append(allOpts, URIParam(f))
+	}
+	allOpts = append(allOpts, opts...)
+	return NewResource[V, T](template.String(), codec, allOpts...)
+}
+
+// ResourceHandle[V, T] is returned by [Resource.Register]. It provides:
 //   - [ResourceHandle.Encode] for codec-validated JSON serialisation.
-//   - [ResourceHandle.BuildURI] for constructing concrete URIs from template vars.
-//   - [ResourceHandle.ValidateURIVars] for validating extracted vars.
-type ResourceHandle[T any] struct {
+//   - [ResourceHandle.BuildURI] for constructing concrete URIs from typed vars.
+//   - [ResourceHandle.ExtractURIVars] for extracting AND validating vars
+//     from a received URI.
+type ResourceHandle[V, T any] struct {
 	// URITemplate is the registered URI template (may contain {varName} placeholders).
 	URITemplate string
 	// Name is the short display name for this resource.
@@ -444,50 +490,32 @@ type ResourceHandle[T any] struct {
 	// Errors are wrapped as [ResourceEncodeError].
 	Encode func(v T) ([]byte, error)
 
-	// uriParams holds per-variable params registered via ResourceParam options.
-	uriParams []ResourceParam
-
-	// codecMap is the pre-built codec lookup derived from uriParams.
-	codecMap map[string]*codex.Codec[string]
+	// template is the underlying build+match engine BuildURI/ExtractURIVars
+	// delegate to.
+	template codex.Template[V]
 }
 
-// Register validates the resource declaration and returns a [ResourceHandle].
-// Returns an error if the URI template is empty or unknown {varName}
-// placeholders are found in uriParams that do not appear in the template.
-func (r Resource[T]) Register(b *Builder) (*ResourceHandle[T], error) {
-	if r.uriTemplate == "" {
-		return nil, fmt.Errorf("mcp: resource URI template must not be empty")
-	}
-
-	// Validate that all declared ResourceParams appear in the template.
-	templateVars := internal.ParseTemplateVars(r.uriTemplate)
-	for _, p := range r.rb.uriParams {
-		if !templateVars[p.Name] {
-			return nil, InvalidResourceParamError{Name: p.Name, URITemplate: r.uriTemplate}
-		}
-	}
-
-	uriTemplate := r.uriTemplate
+// Register returns a [ResourceHandle] for r. The URI template's own
+// {varName} placeholders are validated against r.template's declared
+// [codex.FieldCodec] fields at [codex.NewTemplate] CONSTRUCTION time (a
+// panic, not a Register-time error — mirrors
+// examples/go-edge-models/models/iotedge/usecase/config.go's
+// [codex.MustConst]-style "panic at package init" convention), so there is
+// no remaining declaration-error path here today. Register still returns an
+// error for signature symmetry with [Tool.Register]/[Prompt.Register] —
+// future validation can use it without a breaking change.
+func (r Resource[V, T]) Register(b *Builder) (*ResourceHandle[V, T], error) {
+	uriTemplate := r.template.String()
 	codec := r.codec
 	meta := r.rb.meta
-	uriParams := r.rb.uriParams
 
-	// Build codec lookup for BuildURI/ValidateURIVars.
-	codecMap := make(map[string]*codex.Codec[string], len(uriParams))
-	for i := range uriParams {
-		if uriParams[i].Codec != nil {
-			codecMap[uriParams[i].Name] = uriParams[i].Codec
-		}
-	}
-
-	h := &ResourceHandle[T]{
+	h := &ResourceHandle[V, T]{
 		URITemplate: uriTemplate,
 		Name:        meta.Name,
 		Description: meta.Description,
 		MimeType:    meta.MimeType,
 		Tags:        meta.Tags,
-		uriParams:   uriParams,
-		codecMap:    codecMap,
+		template:    r.template,
 
 		Encode: func(v T) ([]byte, error) {
 			intermediate, err := codec.Encode(v)
@@ -514,79 +542,37 @@ func (r Resource[T]) Register(b *Builder) (*ResourceHandle[T], error) {
 	return h, nil
 }
 
-// BuildURI substitutes {varName} placeholders in [ResourceHandle.URITemplate]
-// with the values provided in vars, validating each against its registered codec.
-//
-// All template variables must be present in vars; missing variables return a
-// [MissingResourceVarError]. Values are validated before substitution; codec
-// failures return a [ResourceParamError]. Keys in vars that do not appear in
-// the template are silently ignored.
+// BuildURI substitutes vars into [ResourceHandle.URITemplate] via
+// [codex.Template.Build], validating each declared field's codec before
+// substitution.
 //
 // Example:
 //
-//	uri, err := itemResource.BuildURI(map[string]string{"id": "abc-123"})
+//	uri, err := itemResource.BuildURI("abc-123")
 //	// uri = "items://abc-123"
-func (h *ResourceHandle[T]) BuildURI(vars map[string]string) (string, error) {
-	return internal.BuildFromTemplate(h.URITemplate, vars, h.codecMap,
-		func(name string) error { return MissingResourceVarError{Name: name} },
-		func(name, value string, err error) error {
-			return ResourceParamError{Name: name, Value: value, Err: err}
-		},
-	)
-}
-
-// ValidateURIVars validates extracted URI variable values against registered
-// [ResourceParam] codecs. Call this after extracting vars from a received URI
-// to ensure each variable satisfies its codec constraints.
-//
-// Returns [ResourceParamError] for the first variable that fails its codec.
-// Variables without a registered codec are skipped.
-func (h *ResourceHandle[T]) ValidateURIVars(vars map[string]string) error {
-	for i := range h.uriParams {
-		p := &h.uriParams[i]
-		if p.Codec == nil {
-			continue
-		}
-		val, ok := vars[p.Name]
-		if !ok {
-			return MissingResourceVarError{Name: p.Name}
-		}
-		if err := p.Codec.Validate(val); err != nil {
-			return ResourceParamError{Name: p.Name, Value: val, Err: err}
-		}
-	}
-	return nil
+func (h *ResourceHandle[V, T]) BuildURI(vars V) (string, error) {
+	return h.template.Build(vars)
 }
 
 // ExtractURIVars is the inverse of [ResourceHandle.BuildURI]: it matches a
-// concrete, received URI against [ResourceHandle.URITemplate] and returns
-// the extracted {varName} placeholder values, ALREADY validated against
-// every registered [ResourceParam] codec via [ResourceHandle.ValidateURIVars]
-// — one call replaces "parse the URI yourself" + "remember to call
-// ValidateURIVars yourself" (adapters/mcpgo.ResourceHandler calls this
+// concrete, received URI against [ResourceHandle.URITemplate] and decodes
+// the extracted {varName} placeholder values into a V, ALREADY validated
+// against every declared field's codec via [codex.Template.Codec]'s own
+// Decode — one call replaces "parse the URI yourself" + "remember to
+// validate yourself" (adapters/mcpgo.ResourceHandler calls this
 // automatically; see [mcpgo.ResourceVarsHandlerFunc]).
 //
-// Returns [ResourceURIMismatchError] if uri does not match the template's
-// structure (wrong number of segments, or a literal segment does not
-// match). Returns [ResourceParamError]/[MissingResourceVarError] if an
-// extracted variable fails its registered codec (via
-// [ResourceHandle.ValidateURIVars]).
+// Returns a [codex.TemplateMismatchError] if uri does not match the
+// template's structure (wrong number of segments, or a literal segment does
+// not match). Returns [codex.ValidationErrors] if an extracted variable
+// fails its declared field's codec.
 //
 // Example:
 //
-//	vars, err := itemResource.ExtractURIVars("items://abc-123")
-//	// vars["id"] == "abc-123"
-func (h *ResourceHandle[T]) ExtractURIVars(uri string) (map[string]string, error) {
-	vars, err := internal.MatchTemplate(h.URITemplate, uri, func(template, uri string) error {
-		return ResourceURIMismatchError{Template: template, URI: uri}
-	})
-	if err != nil {
-		return nil, err
-	}
-	if err := h.ValidateURIVars(vars); err != nil {
-		return nil, err
-	}
-	return vars, nil
+//	id, err := itemResource.ExtractURIVars("items://abc-123")
+//	// id == "abc-123"
+func (h *ResourceHandle[V, T]) ExtractURIVars(uri string) (V, error) {
+	return h.template.Codec().Decode(uri)
 }
 
 // ---------------------------------------------------------------------------

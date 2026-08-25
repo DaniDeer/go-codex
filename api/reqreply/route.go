@@ -46,6 +46,13 @@ type RouteOpt interface{ applyRoute(*routeBuilder) }
 //	        Description: "Tenant namespace for this computation.",
 //	    }.WithCodec(codex.String().Refine(validate.NonEmptyString)),
 //	)
+//
+// TopicParam mirrors [codex.Param]'s shape field-for-field — the shared,
+// VALIDATE-ONLY escape hatch (see codex/param.go's own doc comment for the
+// cross-package rationale). Kept as a flat, non-embedded struct (rather
+// than embedding codex.Param) so existing `reqreply.TopicParam{Name: "id"}`
+// struct literals keep compiling unchanged (Go requires keyed literal
+// fields to be the struct's OWN fields, not promoted ones).
 type TopicParam struct {
 	// Name is the variable name (without braces) as it appears in the topic template.
 	Name string
@@ -62,16 +69,32 @@ func (p TopicParam) applyRoute(rb *routeBuilder) {
 	rb.topicParams = append(rb.topicParams, p)
 }
 
-// MergedTopicParam is returned by [NewTopicParam]. It is the reqreply
-// mirror of [rest.MergedPathParam]/[events.MergedTopicParam]: the
-// registered field's setter merges the extracted topic variable into the
-// decoded Req via [RouteHandle.DecodeMerged]; the getter extracts the
-// topic variable's value from Req for the client-side single-call
-// convenience (adapter-specific `CallHandle`, e.g. `mqtt5.CallHandle`/
+// toParam converts p to the shared [codex.Param] shape.
+func (p TopicParam) toParam() codex.Param {
+	return codex.Param{Name: p.Name, Description: p.Description, Codec: p.Codec}
+}
+
+// toCodexParams converts topicParams to []codex.Param for [codex.BuildFromParams]/
+// [codex.ValidateParams]/[codex.ValidateDeclaredParams].
+func toCodexParams(topicParams []TopicParam) []codex.Param {
+	out := make([]codex.Param, len(topicParams))
+	for i, p := range topicParams {
+		out[i] = p.toParam()
+	}
+	return out
+}
+
+// MergedTopicParam is returned by [NewTopicParam]. It wraps
+// [codex.MergedParam][Req] — the shared merge-capable counterpart to
+// [TopicParam]. It is the reqreply mirror of
+// [rest.MergedPathParam]/[events.MergedTopicParam]: the registered field's
+// setter merges the extracted topic variable into the decoded Req via
+// [RouteHandle.DecodeMerged]; the getter extracts the topic variable's
+// value from Req for the client-side single-call convenience
+// (adapter-specific `CallHandle`, e.g. `mqtt5.CallHandle`/
 // `zeromq.CallHandle`). Request-side only — see [routeBuilder.mergeFields].
 type MergedTopicParam[Req any] struct {
-	TopicParam
-	field codex.FieldCodec[Req]
+	codex.MergedParam[Req]
 }
 
 // NewTopicParam declares a topic variable that is BOTH validated against
@@ -93,22 +116,19 @@ func NewTopicParam[Req any](
 	get func(Req) string,
 	set func(*Req, string),
 ) MergedTopicParam[Req] {
-	return MergedTopicParam[Req]{
-		TopicParam: TopicParam{Name: name, Codec: &codec},
-		field:      codex.RequiredField(name, codec, get, set),
-	}
+	return MergedTopicParam[Req]{MergedParam: codex.NewParam(name, codec, get, set)}
 }
 
 // WithDescription sets the PARAMETER-level description and returns the
 // updated value.
 func (p MergedTopicParam[Req]) WithDescription(desc string) MergedTopicParam[Req] {
-	p.Description = desc
+	p.MergedParam = p.MergedParam.WithDescription(desc)
 	return p
 }
 
 func (p MergedTopicParam[Req]) applyRoute(rb *routeBuilder) {
-	rb.topicParams = append(rb.topicParams, p.TopicParam)
-	rb.mergeFields = append(rb.mergeFields, p.field)
+	rb.topicParams = append(rb.topicParams, TopicParam{Name: p.Name, Description: p.Description, Codec: p.Codec})
+	rb.mergeFields = append(rb.mergeFields, p.Field)
 }
 
 // requestFormatsOpt / formatsOpt are unexported RouteOpt implementations
@@ -619,6 +639,64 @@ type routeBuilder struct {
 	securitySchemes map[string]SecurityScheme
 }
 
+// Topic is a reusable topic template + [TopicParam] shape, for the rare case
+// where the SAME topic template and variable declarations are shared by two
+// or more [Route] declarations of DIFFERENT Req/Resp type pairs (e.g. one
+// topic family used for several distinct command types). Mirrors
+// [events.Topic]/[rest.Path]/[ports.FilePathTemplate] exactly.
+//
+// The plain-string form passed directly to [NewRoute] is the default and
+// stays that way — reach for Topic + [NewRouteFromTopic] only when reuse is
+// the actual goal:
+//
+//	var deviceCmdTopic = reqreply.NewTopic("device/{deviceID}/cmd",
+//	    reqreply.TopicParam{Name: "deviceID", Codec: deviceIDCodec},
+//	)
+//	var RebootRoute = reqreply.NewRouteFromTopic[RebootReq, RebootResp](
+//	    deviceCmdTopic, rebootReqCodec, rebootRespCodec,
+//	)
+//	var UpdateRoute = reqreply.NewRouteFromTopic[UpdateReq, UpdateResp](
+//	    deviceCmdTopic, updateReqCodec, updateRespCodec,
+//	)
+//
+// A route declared via [NewRouteFromTopic] is byte-for-byte identical to one
+// declared via [NewRoute] with the same template and [TopicParam] values
+// passed inline — nothing downstream (adapters, Register, spec generation)
+// can tell the difference. Topic captures ONLY the template+params shape;
+// every other [RouteOpt] ([RouteMeta], [ErrorReplyMeta], [ErrorPattern],
+// [WithSecurityScheme], …) is passed to [NewRouteFromTopic] exactly as it
+// would be to [NewRoute].
+type Topic struct {
+	// Template is the topic template, e.g. "device/{deviceID}/cmd".
+	Template string
+	// Params holds the topic template's variable declarations.
+	Params []TopicParam
+}
+
+// NewTopic declares a Topic from a template and its TopicParam variables.
+func NewTopic(template string, params ...TopicParam) Topic {
+	return Topic{Template: template, Params: params}
+}
+
+// BuildTopic substitutes {varName} placeholders in t.Template with the
+// values in vars, validating each against its registered [TopicParam.Codec]
+// (if any). Mirrors [RouteHandle.BuildTopic] exactly (same underlying
+// engine, same error types), MINUS any builder-level topic codec — that
+// only applies once a Topic-based route is registered via
+// [NewRouteFromTopic] + [Route.Register], where it is enforced exactly as
+// it would be for a plain-string route.
+func (t Topic) BuildTopic(vars map[string]string) (string, error) {
+	return codex.BuildFromParams(t.Template, toCodexParams(t.Params), vars)
+}
+
+// ValidateTopicVars validates extracted topic variable values against t's
+// registered [TopicParam] codecs. Mirrors [RouteHandle.ValidateTopicVars]
+// exactly (same error types); variables without a registered codec are
+// skipped.
+func (t Topic) ValidateTopicVars(vars map[string]string) error {
+	return codex.ValidateParams(toCodexParams(t.Params), vars)
+}
+
 // Route[Req,Resp] is a typed request-reply route for async transports (ZeroMQ,
 // MQTT 5, AMQP, etc.). It is the [api/reqreply] analogue of [rest.Route], which
 // is for HTTP. The key difference is that a Route has a topic/address instead of
@@ -667,6 +745,25 @@ func NewRoute[Req, Resp any](
 		respCodec: respCodec,
 		opts:      opts,
 	}
+}
+
+// NewRouteFromTopic declares a Route using a pre-built [Topic] instead of a
+// raw topic-template string — see [Topic]'s doc comment for when to reach
+// for this. Produces the IDENTICAL [Route] [NewRoute] would produce from
+// topic.Template plus topic.Params passed inline, since [TopicParam] already
+// implements [RouteOpt].
+func NewRouteFromTopic[Req, Resp any](
+	topic Topic,
+	reqCodec codex.Codec[Req],
+	respCodec codex.Codec[Resp],
+	opts ...RouteOpt,
+) Route[Req, Resp] {
+	allOpts := make([]RouteOpt, 0, len(topic.Params)+len(opts))
+	for _, p := range topic.Params {
+		allOpts = append(allOpts, p)
+	}
+	allOpts = append(allOpts, opts...)
+	return NewRoute(topic.Template, reqCodec, respCodec, allOpts...)
 }
 
 // ClientHandle returns a [RouteHandle] for client-side use without registering
@@ -724,6 +821,10 @@ func (r Route[Req, Resp]) ClientHandle() *RouteHandle[Req, Resp] {
 // Returns [DuplicateRouteError] if a route with the same topic has already been
 // registered with b.
 //
+// If b was created with [WithTopicCodec] or [WithTopicConstraints], the
+// topic is validated immediately and an [InvalidTopicError] is returned if
+// it fails — no route is registered in that case.
+//
 // Use [RouteHandle.WithRequestFormats] and [RouteHandle.WithFormats] after
 // Register to configure multi-format request/response handling.
 func (r Route[Req, Resp]) Register(b *Builder) (*RouteHandle[Req, Resp], error) {
@@ -731,9 +832,19 @@ func (r Route[Req, Resp]) Register(b *Builder) (*RouteHandle[Req, Resp], error) 
 		return nil, DuplicateRouteError{Topic: r.topic}
 	}
 
+	if b.topicCodec != nil {
+		if err := b.topicCodec.Validate(internal.StripTemplateVars(r.topic)); err != nil {
+			return nil, InvalidTopicError{Topic: r.topic, Err: err}
+		}
+	}
+
 	var rb routeBuilder
 	for _, opt := range r.opts {
 		opt.applyRoute(&rb)
+	}
+
+	if err := codex.ValidateDeclaredParams(r.topic, toCodexParams(rb.topicParams)); err != nil {
+		return nil, err
 	}
 
 	jsonReq := format.JSON(r.reqCodec)
@@ -751,6 +862,7 @@ func (r Route[Req, Resp]) Register(b *Builder) (*RouteHandle[Req, Resp], error) 
 		EncodeRequest:     func(v Req) ([]byte, error) { return jsonReq.Marshal(v) },
 		DecodeResponse:    func(p []byte) (Resp, error) { return jsonResp.Unmarshal(p) },
 		topicParams:       rb.topicParams,
+		topicCodec:        b.topicCodec,
 		errorPatternRules: rb.errorPatternRules,
 		Security:          rb.meta.Security,
 		SecuritySchemes:   schemes,
@@ -829,6 +941,12 @@ type RouteHandle[Req, Resp any] struct {
 
 	// topicParams holds per-variable params registered via [TopicParam] options.
 	topicParams []TopicParam
+
+	// topicCodec is the builder-level topic codec (may be nil), set via
+	// [WithTopicCodec]/[WithTopicConstraints] on the [Builder] this handle
+	// was registered with. nil when the handle came from [Route.ClientHandle]
+	// (no Builder to source it from).
+	topicCodec *codex.Codec[string]
 
 	// mergeFields holds the merge-capable fields registered via
 	// [NewTopicParam] — see [MergeFields] and [DecodeMerged]. Request-side
@@ -952,23 +1070,45 @@ func (h *RouteHandle[Req, Resp]) WithFormats(fmts ...format.Format[Resp]) *Route
 // failures return a [RouteParamError] identifying the variable name and value.
 // Keys in vars that do not appear in the template are silently ignored.
 //
+// If the builder was created with [WithTopicCodec] or [WithTopicConstraints],
+// the final assembled topic is also validated against that codec. A failure
+// returns an [InvalidTopicError] with the concrete topic (not the template).
+//
 // Mirrors [events.ChannelHandle.BuildTopic].
 //
 //	topic, err := computeRoute.BuildTopic(map[string]string{"tenantID": "acme"})
 //	// topic = "compute/acme/add"
 func (h *RouteHandle[Req, Resp]) BuildTopic(vars map[string]string) (string, error) {
-	codecMap := make(map[string]*codex.Codec[string], len(h.topicParams))
-	for i := range h.topicParams {
-		if h.topicParams[i].Codec != nil {
-			codecMap[h.topicParams[i].Name] = h.topicParams[i].Codec
+	result, err := codex.BuildFromParams(h.Topic, toCodexParams(h.topicParams), vars)
+	if err != nil {
+		return "", err
+	}
+	if h.topicCodec != nil {
+		if err := h.topicCodec.Validate(result); err != nil {
+			return "", InvalidTopicError{Topic: result, Err: err}
 		}
 	}
-	return internal.BuildFromTemplate(h.Topic, vars, codecMap,
-		func(name string) error { return MissingRouteParamError{Name: name} },
-		func(name, value string, err error) error {
-			return RouteParamError{Name: name, Value: value, Err: err}
-		},
-	)
+	return result, nil
+}
+
+// ValidateTopic validates a received concrete topic string against the
+// builder-level topic codec (set via [WithTopicCodec] or
+// [WithTopicConstraints]).
+//
+// Call this after a wildcard subscription/reply delivers a message to
+// verify the concrete topic satisfies the same constraints applied at route
+// registration time. Returns [InvalidTopicError] on failure; returns nil if
+// no topic codec is registered.
+//
+// Mirrors [events.ChannelHandle.ValidateTopic].
+func (h *RouteHandle[Req, Resp]) ValidateTopic(topic string) error {
+	if h.topicCodec == nil {
+		return nil
+	}
+	if err := h.topicCodec.Validate(topic); err != nil {
+		return InvalidTopicError{Topic: topic, Err: err}
+	}
+	return nil
 }
 
 // ValidateTopicVars validates extracted topic variable values against the
@@ -981,75 +1121,44 @@ func (h *RouteHandle[Req, Resp]) BuildTopic(vars map[string]string) (string, err
 //
 // Mirrors [events.ChannelHandle.ValidateTopicVars].
 func (h *RouteHandle[Req, Resp]) ValidateTopicVars(vars map[string]string) error {
-	for i := range h.topicParams {
-		p := &h.topicParams[i]
-		if p.Codec == nil {
-			continue
-		}
-		val, ok := vars[p.Name]
-		if !ok {
-			return MissingRouteParamError{Name: p.Name}
-		}
-		if err := p.Codec.Validate(val); err != nil {
-			return RouteParamError{Name: p.Name, Value: val, Err: err}
-		}
-	}
-	return nil
+	return codex.ValidateParams(toCodexParams(h.topicParams), vars)
 }
 
 // RouteParamError is returned by [RouteHandle.BuildTopic] and
 // [RouteHandle.ValidateTopicVars] when a topic variable fails its registered
-// codec check. It mirrors [events.TopicParamError].
+// codec check. A type ALIAS for [codex.ParamError] — the SAME underlying
+// type, so existing errors.As(&reqreply.RouteParamError{}) calls keep
+// working unchanged; see codex/param.go for the canonical definition.
 //
 //	var paramErr reqreply.RouteParamError
 //	if errors.As(err, &paramErr) {
 //	    slog.Warn("bad topic var", "error", paramErr)
 //	}
-type RouteParamError struct {
-	Name  string // the {varName} that failed
-	Value string // the value that was rejected
-	Err   error  // the underlying codec error
-}
-
-func (e RouteParamError) Error() string {
-	return fmt.Sprintf("invalid value %q for topic variable {%s}: %v", e.Value, e.Name, e.Err)
-}
-
-// Unwrap allows [errors.Is] and [errors.As] to traverse the underlying error.
-func (e RouteParamError) Unwrap() error { return e.Err }
-
-// LogValue implements [slog.LogValuer] for structured logging.
-func (e RouteParamError) LogValue() slog.Value {
-	return slog.GroupValue(
-		slog.String("name", e.Name),
-		slog.String("value", e.Value),
-		slog.Any("err", e.Err),
-	)
-}
+type RouteParamError = codex.ParamError
 
 // MissingRouteParamError is returned by [RouteHandle.BuildTopic] and
 // [RouteHandle.ValidateTopicVars] when a required topic variable is absent from
-// the vars map. It mirrors [events.MissingTopicVarError].
+// the vars map. A type ALIAS for [codex.MissingParamError] — see
+// [RouteParamError]'s own doc comment for the rationale.
 //
 //	var missing reqreply.MissingRouteParamError
 //	if errors.As(err, &missing) {
 //	    slog.Warn("missing topic var", "name", missing.Name)
 //	}
-type MissingRouteParamError struct {
-	// Name is the {varName} placeholder that was missing from vars.
-	Name string
-}
+type MissingRouteParamError = codex.MissingParamError
 
-func (e MissingRouteParamError) Error() string {
-	return fmt.Sprintf("missing topic variable {%s}", e.Name)
-}
-
-// LogValue implements [slog.LogValuer] for structured logging.
-func (e MissingRouteParamError) LogValue() slog.Value {
-	return slog.GroupValue(
-		slog.String("name", e.Name),
-	)
-}
+// InvalidRouteParamError is returned by [Route.Register] when a [TopicParam]
+// entry names a variable that does not appear in the topic template — a
+// NEW check reqreply gains for free from the shared codex.Param foundation
+// (rest/events already had the equivalent InvalidPathParamError/
+// InvalidTopicParamError checks; reqreply never did until now). A type
+// ALIAS for [codex.InvalidParamError].
+//
+//	var paramErr reqreply.InvalidRouteParamError
+//	if errors.As(err, &paramErr) {
+//	    slog.Warn("TopicParam not in template", "name", paramErr.Name, "template", paramErr.Template)
+//	}
+type InvalidRouteParamError = codex.InvalidParamError
 
 // DuplicateRouteError is returned by [Route.Register] when a route with the
 // same topic has already been registered with the [Builder].
@@ -1071,5 +1180,38 @@ func (e DuplicateRouteError) Error() string {
 func (e DuplicateRouteError) LogValue() slog.Value {
 	return slog.GroupValue(
 		slog.String("topic", e.Topic),
+	)
+}
+
+// InvalidTopicError is returned by [Route.Register], [RouteHandle.BuildTopic],
+// and [RouteHandle.ValidateTopic] when a topic fails builder-level topic
+// codec validation (set via [WithTopicCodec]/[WithTopicConstraints]).
+//
+// Use errors.As to extract it and inspect the failing topic or the
+// underlying constraint error:
+//
+//	var topicErr reqreply.InvalidTopicError
+//	if errors.As(err, &topicErr) {
+//	    slog.Error("bad topic", "topic", topicErr.Topic, "err", topicErr.Err)
+//	}
+//
+// Mirrors [events.InvalidTopicError].
+type InvalidTopicError struct {
+	Topic string // the topic that failed validation
+	Err   error  // the underlying constraint or codec error
+}
+
+func (e InvalidTopicError) Error() string {
+	return fmt.Sprintf("reqreply: invalid topic %q: %s", e.Topic, e.Err.Error())
+}
+
+// Unwrap allows errors.As and errors.Is to traverse the underlying constraint error.
+func (e InvalidTopicError) Unwrap() error { return e.Err }
+
+// LogValue implements [slog.LogValuer] for structured logging.
+func (e InvalidTopicError) LogValue() slog.Value {
+	return slog.GroupValue(
+		slog.String("topic", e.Topic),
+		slog.Any("err", e.Err),
 	)
 }

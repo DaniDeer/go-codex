@@ -26,6 +26,10 @@ Full `config.FromEnv` demo including:
 - Slice from comma-separated values (`APP_TAGS=web,api`)
 - Complex fields as JSON strings (`APP_DB='{"host":"localhost",...}'`)
 - JSON Schema output for VS Code settings autocomplete
+- `Immutable[T]` — the recommended "load once, read everywhere" pattern:
+  `TryGet`/`Get` before load, a package-level config cell read by a helper
+  function with NO config parameter, and a second `Set` failing with
+  `codex.ImmutableAlreadySetError`
 
 → [examples/env-config](https://github.com/DaniDeer/go-codex/tree/main/examples/env-config)
 
@@ -98,9 +102,14 @@ func newShouldAlert(cfg AlertConfig) func(db.Reading) bool {
 }
 
 // main() — load + validate ONCE, at the same place ports and adapters are wired.
-alertCfg, err := config.FromEnv(alertConfigCodec, "APP_ALERT_") // APP_ALERT_THRESHOLD
+// config.FromEnv returns a *codex.Immutable[AlertConfig], not a bare struct —
+// the loaded config is frozen from this point on, enforced by the type
+// (a second FromEnv call targeting the SAME instance would fail Set).
+// Extract the plain value once via Get() since the factory below wants it
+// by value.
+alertImmutable, err := config.FromEnv(alertConfigCodec, "APP_ALERT_") // APP_ALERT_THRESHOLD
 must(err, "load alert config from env")
-shouldAlert := newShouldAlert(alertCfg)
+shouldAlert := newShouldAlert(alertImmutable.Get())
 
 aboveThreshold := gstream.Filter(ctx, readings, shouldAlert)
 ```

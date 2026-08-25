@@ -236,6 +236,12 @@ func (m ChannelMeta) applyChannel(cb *channelBuilder) { cb.meta = m }
 //
 // Entry names must correspond to {varName} placeholders in the topic template;
 // unknown names cause [Channel.Register] to return an error immediately.
+// TopicParam mirrors [codex.Param]'s shape field-for-field — the shared,
+// VALIDATE-ONLY escape hatch (see codex/param.go's own doc comment for the
+// cross-package rationale). Kept as a flat, non-embedded struct (rather
+// than embedding codex.Param) so existing `events.TopicParam{Name: "id"}`
+// struct literals keep compiling unchanged (Go requires keyed literal
+// fields to be the struct's OWN fields, not promoted ones).
 type TopicParam struct {
 	// Name is the variable name (without braces) as it appears in the topic template.
 	Name string
@@ -252,16 +258,24 @@ func (p TopicParam) applyChannel(cb *channelBuilder) {
 	cb.topicParams = append(cb.topicParams, p)
 }
 
-// MergedTopicParam is returned by [NewTopicParam]. It is the events-boundary
-// mirror of [rest.MergedPathParam]: on subscribe, the registered field's
-// setter merges the extracted topic variable into the decoded payload via
-// [ChannelHandle.DecodeMerged]; on publish, the field's getter extracts the
-// topic variable's value from the payload via [ChannelHandle.MergeFields]
-// + [codex.EncodeVars] (or [PublishHandle] in adapters/mqtt5, which does
-// this automatically).
+// WithCodec sets the validation codec and returns the updated TopicParam.
+func (p TopicParam) WithCodec(c codex.Codec[string]) TopicParam { p.Codec = &c; return p }
+
+// toParam converts p to the shared [codex.Param] shape.
+func (p TopicParam) toParam() codex.Param {
+	return codex.Param{Name: p.Name, Description: p.Description, Codec: p.Codec}
+}
+
+// MergedTopicParam is returned by [NewTopicParam]. It wraps
+// [codex.MergedParam][T] — the shared merge-capable counterpart to
+// [TopicParam]. It is the events-boundary mirror of [rest.MergedPathParam]:
+// on subscribe, the registered field's setter merges the extracted topic
+// variable into the decoded payload via [ChannelHandle.DecodeMerged]; on
+// publish, the field's getter extracts the topic variable's value from the
+// payload via [ChannelHandle.MergeFields] + [codex.EncodeVars] (or
+// [PublishHandle] in adapters/mqtt5, which does this automatically).
 type MergedTopicParam[T any] struct {
-	TopicParam
-	field codex.FieldCodec[T]
+	codex.MergedParam[T]
 }
 
 // NewTopicParam declares a topic variable that is BOTH validated against
@@ -283,22 +297,29 @@ func NewTopicParam[T any](
 	get func(T) string,
 	set func(*T, string),
 ) MergedTopicParam[T] {
-	return MergedTopicParam[T]{
-		TopicParam: TopicParam{Name: name, Codec: &codec},
-		field:      codex.RequiredField(name, codec, get, set),
-	}
+	return MergedTopicParam[T]{MergedParam: codex.NewParam(name, codec, get, set)}
 }
 
 // WithDescription sets the PARAMETER-level description and returns the
 // updated value.
 func (p MergedTopicParam[T]) WithDescription(desc string) MergedTopicParam[T] {
-	p.Description = desc
+	p.MergedParam = p.MergedParam.WithDescription(desc)
 	return p
 }
 
 func (p MergedTopicParam[T]) applyChannel(cb *channelBuilder) {
-	cb.topicParams = append(cb.topicParams, p.TopicParam)
-	cb.mergeFields = append(cb.mergeFields, p.field)
+	cb.topicParams = append(cb.topicParams, TopicParam{Name: p.Name, Description: p.Description, Codec: p.Codec})
+	cb.mergeFields = append(cb.mergeFields, p.Field)
+}
+
+// toCodexParams converts topicParams to []codex.Param for [codex.BuildFromParams]/
+// [codex.ValidateParams]/[codex.ValidateDeclaredParams].
+func toCodexParams(topicParams []TopicParam) []codex.Param {
+	out := make([]codex.Param, len(topicParams))
+	for i, p := range topicParams {
+		out[i] = p.toParam()
+	}
+	return out
 }
 
 // formatsOpt / subscribeFormatsOpt / publishFormatsOpt are unexported
@@ -422,9 +443,6 @@ func mustAssertMergeFields[T any](caller string, raw []any) []codex.FieldCodec[T
 	}
 	return fields
 }
-
-// WithCodec sets the validation codec and returns the updated TopicParam.
-func (p TopicParam) WithCodec(c codex.Codec[string]) TopicParam { p.Codec = &c; return p }
 
 // ChannelOpt is the sealed interface for variadic [NewChannel] options.
 //
@@ -592,19 +610,7 @@ func (h *ChannelHandle[T]) DecodeMerged(payload []byte, topicVars map[string]str
 //	topic, err := sensorChannel.BuildTopic(map[string]string{"sensorID": "f47ac10b-..."})
 //	// topic = "sensors/f47ac10b-.../measurements"
 func (h *ChannelHandle[T]) BuildTopic(vars map[string]string) (string, error) {
-	// Build codec lookup map from topicParams.
-	codecMap := make(map[string]*codex.Codec[string], len(h.topicParams))
-	for i := range h.topicParams {
-		if h.topicParams[i].Codec != nil {
-			codecMap[h.topicParams[i].Name] = h.topicParams[i].Codec
-		}
-	}
-	result, err := internal.BuildFromTemplate(h.Topic, vars, codecMap,
-		func(name string) error { return MissingTopicVarError{Name: name} },
-		func(name, value string, err error) error {
-			return TopicParamError{Name: name, Value: value, Err: err}
-		},
-	)
+	result, err := codex.BuildFromParams(h.Topic, toCodexParams(h.topicParams), vars)
 	if err != nil {
 		return "", err
 	}
@@ -642,20 +648,7 @@ func (h *ChannelHandle[T]) ValidateTopic(topic string) error {
 // Returns [TopicParamError] for the first variable that fails its codec.
 // Variables without a registered codec are skipped.
 func (h *ChannelHandle[T]) ValidateTopicVars(vars map[string]string) error {
-	for i := range h.topicParams {
-		p := &h.topicParams[i]
-		if p.Codec == nil {
-			continue
-		}
-		val, ok := vars[p.Name]
-		if !ok {
-			return MissingTopicVarError{Name: p.Name}
-		}
-		if err := p.Codec.Validate(val); err != nil {
-			return TopicParamError{Name: p.Name, Value: val, Err: err}
-		}
-	}
-	return nil
+	return codex.ValidateParams(toCodexParams(h.topicParams), vars)
 }
 
 // WithFormats sets the default payload format for this channel. The adapter
@@ -737,21 +730,16 @@ func (h *ChannelHandle[T]) WithPublishFormats(fmts ...format.Format[T]) *Channel
 //	if errors.As(err, &paramErr) {
 //	    log.Printf("bad value %q for {%s}: %v", paramErr.Value, paramErr.Name, paramErr.Err)
 //	}
-type TopicParamError struct {
-	Name  string // the {varName} that failed
-	Value string // the value that was rejected
-	Err   error  // the underlying codec error
-}
-
-func (e TopicParamError) Error() string {
-	return fmt.Sprintf("invalid value %q for topic variable {%s}: %s", e.Value, e.Name, e.Err.Error())
-}
-
-// Unwrap allows errors.As and errors.Is to traverse the underlying codec error.
-func (e TopicParamError) Unwrap() error { return e.Err }
+//
+// A type ALIAS for [codex.ParamError] — the SAME underlying type, so
+// existing errors.As(&events.TopicParamError{}) calls keep working
+// unchanged; see codex/param.go for the canonical definition.
+type TopicParamError = codex.ParamError
 
 // MissingTopicVarError is returned by [ChannelHandle.BuildTopic] when a {varName}
 // placeholder in the topic template has no corresponding entry in the vars map.
+// A type ALIAS for [codex.MissingParamError] — see [TopicParamError]'s own
+// doc comment for the rationale.
 //
 // Use errors.As to extract the missing variable name:
 //
@@ -759,31 +747,21 @@ func (e TopicParamError) Unwrap() error { return e.Err }
 //	if errors.As(err, &missingErr) {
 //	    log.Printf("caller forgot to supply topic variable {%s}", missingErr.Name)
 //	}
-type MissingTopicVarError struct {
-	Name string // the variable name (without braces) that had no value
-}
-
-func (e MissingTopicVarError) Error() string {
-	return fmt.Sprintf("missing value for topic variable {%s}", e.Name)
-}
+type MissingTopicVarError = codex.MissingParamError
 
 // InvalidTopicParamError is returned by [Channel.Register] when a [TopicParam] entry
-// names a variable that does not appear in the topic template.
+// names a variable that does not appear in the topic template. A type ALIAS
+// for [codex.InvalidParamError] — see [TopicParamError]'s own doc comment
+// for the rationale. NOTE: the field is named Template (not Topic) on the
+// shared type.
 //
 // Use errors.As to extract the offending name and the topic template:
 //
 //	var paramErr events.InvalidTopicParamError
 //	if errors.As(err, &paramErr) {
-//	    log.Printf("TopicParam %q not in topic %q", paramErr.Name, paramErr.Topic)
+//	    log.Printf("TopicParam %q not in topic %q", paramErr.Name, paramErr.Template)
 //	}
-type InvalidTopicParamError struct {
-	Name  string // the variable name (without braces) that is not in the template
-	Topic string // the topic template that was validated against
-}
-
-func (e InvalidTopicParamError) Error() string {
-	return fmt.Sprintf("api/events: TopicParams entry %q not found in topic template %q", e.Name, e.Topic)
-}
+type InvalidTopicParamError = codex.InvalidParamError
 
 // channelEntry is the type-erased interface stored inside Builder.
 type channelEntry interface {
@@ -988,18 +966,7 @@ func NewTopic(template string, params ...TopicParam) Topic {
 // [NewChannelFromTopic] + [Channel.Register], where it is enforced exactly
 // as it would be for a plain-string channel.
 func (t Topic) BuildTopic(vars map[string]string) (string, error) {
-	codecMap := make(map[string]*codex.Codec[string], len(t.Params))
-	for i := range t.Params {
-		if t.Params[i].Codec != nil {
-			codecMap[t.Params[i].Name] = t.Params[i].Codec
-		}
-	}
-	return internal.BuildFromTemplate(t.Template, vars, codecMap,
-		func(name string) error { return MissingTopicVarError{Name: name} },
-		func(name, value string, err error) error {
-			return TopicParamError{Name: name, Value: value, Err: err}
-		},
-	)
+	return codex.BuildFromParams(t.Template, toCodexParams(t.Params), vars)
 }
 
 // ValidateTopicVars validates extracted topic variable values against t's
@@ -1007,20 +974,7 @@ func (t Topic) BuildTopic(vars map[string]string) (string, error) {
 // exactly (same error types); variables without a registered codec are
 // skipped.
 func (t Topic) ValidateTopicVars(vars map[string]string) error {
-	for i := range t.Params {
-		p := &t.Params[i]
-		if p.Codec == nil {
-			continue
-		}
-		val, ok := vars[p.Name]
-		if !ok {
-			return MissingTopicVarError{Name: p.Name}
-		}
-		if err := p.Codec.Validate(val); err != nil {
-			return TopicParamError{Name: p.Name, Value: val, Err: err}
-		}
-	}
-	return nil
+	return codex.ValidateParams(toCodexParams(t.Params), vars)
 }
 
 // Channel is a declarative event channel spec: topic, codec, and options.
@@ -1104,11 +1058,8 @@ func (c Channel[T]) Register(b *Builder) (*ChannelHandle[T], error) {
 		opt.applyChannel(&cb)
 	}
 
-	templateVars := internal.ParseTemplateVars(c.topic)
-	for _, tp := range cb.topicParams {
-		if !templateVars[tp.Name] {
-			return nil, InvalidTopicParamError{Name: tp.Name, Topic: c.topic}
-		}
+	if err := codex.ValidateDeclaredParams(c.topic, toCodexParams(cb.topicParams)); err != nil {
+		return nil, err
 	}
 
 	frozen := buildChannelItem(c.topic, c.codec, cb)

@@ -311,6 +311,30 @@ func TestDuplicateRouteError_LogValue(t *testing.T) {
 	}
 }
 
+// Register-time "declared param not in template" check — a NEW check
+// reqreply gains for free from the shared codex.Param foundation (rest/
+// events already had the equivalent InvalidPathParamError/
+// InvalidTopicParamError checks; reqreply never did until now).
+func TestRoute_Register_UnknownTopicParamFails_returnsInvalidRouteParamError(t *testing.T) {
+	b := reqreply.NewBuilder(reqreply.Info{})
+	_, err := reqreply.NewRoute[computeReq, computeResp]("compute/add", reqCodec, respCodec,
+		reqreply.TopicParam{Name: "unknown"},
+	).Register(b)
+	if err == nil {
+		t.Fatal("expected error for unknown topic param")
+	}
+	var ipe reqreply.InvalidRouteParamError
+	if !errors.As(err, &ipe) {
+		t.Fatalf("expected InvalidRouteParamError, got %T: %v", err, err)
+	}
+	if ipe.Name != "unknown" {
+		t.Errorf("Name: got %q, want %q", ipe.Name, "unknown")
+	}
+	if ipe.Template != "compute/add" {
+		t.Errorf("Template: got %q, want %q", ipe.Template, "compute/add")
+	}
+}
+
 // ── TopicParam and BuildTopic tests ──────────────────────────────────────────
 
 var templateRoute = reqreply.NewRoute[computeReq, computeResp](
@@ -795,5 +819,202 @@ func TestAddGlobalSecurity_populatesRouteHandleGlobalSecurity(t *testing.T) {
 	}
 	if _, ok := handle.GlobalSecurity[0]["bearer"]; !ok {
 		t.Errorf("expected GlobalSecurity to contain 'bearer' requirement, got %v", handle.GlobalSecurity)
+	}
+}
+
+// ── Topic / NewRouteFromTopic ─────────────────────────────────────────────────
+
+func TestTopic_BuildTopic_RoundTrip(t *testing.T) {
+	idCodec := codex.String().Refine(validate.NonEmptyString)
+	topic := reqreply.NewTopic("device/{deviceID}/cmd",
+		reqreply.TopicParam{Name: "deviceID", Codec: &idCodec},
+	)
+	got, err := topic.BuildTopic(map[string]string{"deviceID": "sensor-1"})
+	if err != nil {
+		t.Fatalf("BuildTopic: %v", err)
+	}
+	if got != "device/sensor-1/cmd" {
+		t.Errorf("BuildTopic = %q, want device/sensor-1/cmd", got)
+	}
+}
+
+func TestTopic_BuildTopic_MissingVar(t *testing.T) {
+	topic := reqreply.NewTopic("device/{deviceID}/cmd")
+	_, err := topic.BuildTopic(nil)
+	var missing reqreply.MissingRouteParamError
+	if !errors.As(err, &missing) {
+		t.Fatalf("expected MissingRouteParamError, got %v", err)
+	}
+	if missing.Name != "deviceID" {
+		t.Errorf("missing var name = %q, want deviceID", missing.Name)
+	}
+}
+
+func TestTopic_ValidateTopicVars(t *testing.T) {
+	idCodec := codex.String().Refine(validate.NonEmptyString)
+	topic := reqreply.NewTopic("device/{deviceID}/cmd",
+		reqreply.TopicParam{Name: "deviceID", Codec: &idCodec},
+	)
+	if err := topic.ValidateTopicVars(map[string]string{"deviceID": "sensor-1"}); err != nil {
+		t.Errorf("ValidateTopicVars: %v", err)
+	}
+	err := topic.ValidateTopicVars(map[string]string{"deviceID": ""})
+	var paramErr reqreply.RouteParamError
+	if !errors.As(err, &paramErr) {
+		t.Fatalf("expected RouteParamError, got %v", err)
+	}
+}
+
+func TestNewRouteFromTopic_ProducesIdenticalHandleToNewRoute(t *testing.T) {
+	idCodec := codex.String().Refine(validate.NonEmptyString)
+	topic := reqreply.NewTopic("device/{deviceID}/cmd",
+		reqreply.TopicParam{Name: "deviceID", Codec: &idCodec},
+	)
+
+	b1 := reqreply.NewBuilder(reqreply.Info{Title: "Test", Version: "1.0.0"})
+	viaTopic, err := reqreply.NewRouteFromTopic[computeReq, computeResp](topic, reqCodec, respCodec,
+		reqreply.RouteMeta{Summary: "Command"},
+	).Register(b1)
+	if err != nil {
+		t.Fatalf("Register via Topic: %v", err)
+	}
+
+	b2 := reqreply.NewBuilder(reqreply.Info{Title: "Test", Version: "1.0.0"})
+	viaPlain, err := reqreply.NewRoute[computeReq, computeResp]("device/{deviceID}/cmd", reqCodec, respCodec,
+		reqreply.TopicParam{Name: "deviceID", Codec: &idCodec},
+		reqreply.RouteMeta{Summary: "Command"},
+	).Register(b2)
+	if err != nil {
+		t.Fatalf("Register via plain string: %v", err)
+	}
+
+	if viaTopic.Topic != viaPlain.Topic {
+		t.Errorf("Topic = %q, want %q", viaTopic.Topic, viaPlain.Topic)
+	}
+	built1, err := viaTopic.BuildTopic(map[string]string{"deviceID": "sensor-1"})
+	if err != nil {
+		t.Fatalf("BuildTopic (viaTopic): %v", err)
+	}
+	built2, err := viaPlain.BuildTopic(map[string]string{"deviceID": "sensor-1"})
+	if err != nil {
+		t.Fatalf("BuildTopic (viaPlain): %v", err)
+	}
+	if built1 != built2 {
+		t.Errorf("BuildTopic results differ: %q vs %q", built1, built2)
+	}
+}
+
+// ── WithTopicCodec / WithTopicConstraints ─────────────────────────────────────
+
+func TestBuilder_withTopicCodec_validTopicPasses(t *testing.T) {
+	b := reqreply.NewBuilder(reqreply.Info{Title: "Test", Version: "1.0.0"},
+		reqreply.WithTopicCodec(codex.String().Refine(validate.MQTTPublishTopic)))
+	if _, err := reqreply.NewRoute[computeReq, computeResp]("compute/add", reqCodec, respCodec).Register(b); err != nil {
+		t.Fatalf("Register error: %v", err)
+	}
+	if _, err := b.AsyncAPISpec(); err != nil {
+		t.Fatalf("expected no error for valid topic, got: %v", err)
+	}
+}
+
+func TestBuilder_withTopicCodec_invalidTopicSurfacesError(t *testing.T) {
+	b := reqreply.NewBuilder(reqreply.Info{Title: "Test", Version: "1.0.0"},
+		reqreply.WithTopicCodec(codex.String().Refine(validate.MQTTPublishTopic)))
+	_, err := reqreply.NewRoute[computeReq, computeResp]("compute/+/add", reqCodec, respCodec).Register(b)
+	if err == nil {
+		t.Fatal("expected error for topic with wildcard '+', got nil")
+	}
+	if !strings.Contains(err.Error(), "compute/+/add") {
+		t.Errorf("error message should mention the invalid topic, got: %v", err)
+	}
+	var topicErr reqreply.InvalidTopicError
+	if !errors.As(err, &topicErr) {
+		t.Errorf("expected InvalidTopicError, got %T: %v", err, err)
+	}
+	if topicErr.Topic != "compute/+/add" {
+		t.Errorf("InvalidTopicError.Topic = %q, want %q", topicErr.Topic, "compute/+/add")
+	}
+	if topicErr.Err == nil {
+		t.Error("InvalidTopicError.Err should be non-nil")
+	}
+}
+
+func TestBuilder_withTopicConstraints_appliesSameValidation(t *testing.T) {
+	b := reqreply.NewBuilder(reqreply.Info{Title: "Test", Version: "1.0.0"},
+		reqreply.WithTopicConstraints(validate.MQTTPublishTopic))
+	_, err := reqreply.NewRoute[computeReq, computeResp]("compute/+/add", reqCodec, respCodec).Register(b)
+	if err == nil {
+		t.Fatal("expected error for topic with wildcard '+', got nil")
+	}
+	var topicErr reqreply.InvalidTopicError
+	if !errors.As(err, &topicErr) {
+		t.Errorf("expected InvalidTopicError, got %T: %v", err, err)
+	}
+}
+
+func TestRouteHandle_BuildTopic_InvalidTopicError(t *testing.T) {
+	b := reqreply.NewBuilder(reqreply.Info{Title: "Test", Version: "1.0.0"},
+		reqreply.WithTopicConstraints(validate.MQTTPublishTopic))
+	handle, err := reqreply.NewRoute[computeReq, computeResp]("device/{id}/cmd", reqCodec, respCodec,
+		reqreply.TopicParam{Name: "id"},
+	).Register(b)
+	if err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+	_, err = handle.BuildTopic(map[string]string{"id": "+"})
+	if err == nil {
+		t.Fatal("expected InvalidTopicError for wildcard concrete topic, got nil")
+	}
+	var topicErr reqreply.InvalidTopicError
+	if !errors.As(err, &topicErr) {
+		t.Fatalf("expected InvalidTopicError, got %T: %v", err, err)
+	}
+	if topicErr.Topic != "device/+/cmd" {
+		t.Errorf("InvalidTopicError.Topic = %q, want device/+/cmd", topicErr.Topic)
+	}
+}
+
+func TestRouteHandle_ValidateTopic(t *testing.T) {
+	b := reqreply.NewBuilder(reqreply.Info{Title: "Test", Version: "1.0.0"},
+		reqreply.WithTopicConstraints(validate.MQTTPublishTopic))
+	handle, err := reqreply.NewRoute[computeReq, computeResp]("compute/add", reqCodec, respCodec).Register(b)
+	if err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+	if err := handle.ValidateTopic("compute/add"); err != nil {
+		t.Errorf("ValidateTopic: %v", err)
+	}
+	err = handle.ValidateTopic("compute/+")
+	var topicErr reqreply.InvalidTopicError
+	if !errors.As(err, &topicErr) {
+		t.Fatalf("expected InvalidTopicError, got %T: %v", err, err)
+	}
+}
+
+func TestRouteHandle_ValidateTopic_NoBuilderCodec(t *testing.T) {
+	handle := reqreply.NewRoute[computeReq, computeResp]("compute/add", reqCodec, respCodec).ClientHandle()
+	if err := handle.ValidateTopic("anything/goes"); err != nil {
+		t.Errorf("expected nil error when no topic codec registered, got: %v", err)
+	}
+}
+
+func TestInvalidTopicError_LogValue(t *testing.T) {
+	err := reqreply.InvalidTopicError{Topic: "bad/+", Err: fmt.Errorf("boom")}
+	v := err.LogValue()
+	if v.Kind() != slog.KindGroup {
+		t.Fatalf("LogValue kind = %v, want KindGroup", v.Kind())
+	}
+	attrs := v.Group()
+	found := map[string]bool{}
+	for _, a := range attrs {
+		found[a.Key] = true
+	}
+	for _, key := range []string{"topic", "err"} {
+		if !found[key] {
+			t.Errorf("LogValue missing key %q, got %v", key, attrs)
+		}
+	}
+	if !errors.Is(err, err.Err) {
+		t.Error("errors.Is should reach the underlying Err via Unwrap")
 	}
 }

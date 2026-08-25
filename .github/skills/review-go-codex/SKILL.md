@@ -62,7 +62,7 @@ Read all of these before opening any finding:
 | `api/rest/builder.go`                           | Layer 2 REST: all param types, builder methods, error types              |
 | `api/events/builder.go`                         | Layer 2 events: ChannelHandle, TopicParam, Builder                       |
 | `api/mcp/builder.go`                            | Layer 2 MCP: ToolHandle, ResourceHandle, PromptHandle, Builder, MCPSpec  |
-| `api/mcp/errors.go`                             | MCP error types: ToolInputError, ResourceParamError, PromptArgError, … |
+| `api/mcp/errors.go`                             | MCP error types: ToolInputError, ResourceEncodeError, PromptArgError, … |
 | `forge/forge.go`                                | Layer 3: PipelineInfo, FunctionMeta, Registry, error types               |
 | `render/pipeline/pipeline.go`                   | Pipeline YAML renderer                                                   |
 | `render/asyncapi/v3/document.go`                | AsyncAPI renderer                                                        |
@@ -228,9 +228,11 @@ go-codex uses typed errors, not bare strings. Check every error return site:
   - `mcp.ToolInputError{Name, Err}` — from `ToolHandle.Decode`
   - `mcp.ToolOutputError{Name, Err}` — from `ToolHandle.Encode`
   - `mcp.ResourceEncodeError{URI, Err}` — from `ResourceHandle.Encode`
-  - `mcp.ResourceParamError{Name, Value, Err}` — from `ResourceHandle.BuildURI`/`ValidateURIVars`
-  - `mcp.MissingResourceVarError{Name}` — from `ResourceHandle.BuildURI`/`ValidateURIVars`
-  - `mcp.InvalidResourceParamError{Name, URITemplate}` — from `Resource.Register`
+  - `Resource[V,T]`'s URI-var errors (`ResourceHandle.BuildURI`/`ExtractURIVars`) surface
+    `codex.ValidationErrors`/`codex.TemplateMismatchError` DIRECTLY, unwrapped — there are no
+    `api/mcp`-local `ResourceParamError`/`MissingResourceVarError`/`ResourceURIMismatchError`/
+    `InvalidResourceParamError` types anymore (removed when `Resource`/`ResourceHandle` became
+    generic over `V` and built directly on `codex.Template[V]` — do not flag their absence)
   - `mcp.PromptArgError{Name, Err}` — from `PromptHandle.ValidateArgs`
   - `mcp.MissingPromptArgError{Name}` — from `PromptHandle.ValidateArgs`
 - **adapters/mcpgo** error behavior — **different from REST/events adapters**:

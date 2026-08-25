@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/DaniDeer/go-codex/codex"
+	"github.com/DaniDeer/go-codex/validate"
 )
 
 type point struct {
@@ -146,6 +147,43 @@ func TestRequiredField_SetsRequired(t *testing.T) {
 	}
 	if f.Name != "x" {
 		t.Errorf("RequiredField: want Name=x, got %q", f.Name)
+	}
+}
+
+func TestIdentityField_SetsNameAndRequired(t *testing.T) {
+	f := codex.IdentityField("id", codex.String())
+	if f.Name != "id" {
+		t.Errorf("IdentityField: want Name=id, got %q", f.Name)
+	}
+	if !f.Required {
+		t.Error("IdentityField: want Required=true")
+	}
+}
+
+func TestIdentityField_EncodeDecodeRoundTrip(t *testing.T) {
+	f := codex.IdentityField("id", codex.String().Refine(validate.NonEmptyString))
+	vars, err := codex.EncodeVars("abc-123", f)
+	if err != nil {
+		t.Fatalf("EncodeVars: %v", err)
+	}
+	if vars["id"] != "abc-123" {
+		t.Errorf("EncodeVars: got %+v, want id=abc-123", vars)
+	}
+	var got string
+	if err := codex.DecodeVars(&got, vars, f); err != nil {
+		t.Fatalf("DecodeVars: %v", err)
+	}
+	if got != "abc-123" {
+		t.Errorf("DecodeVars: got %q, want %q", got, "abc-123")
+	}
+}
+
+func TestIdentityField_ValidationFailurePropagates(t *testing.T) {
+	f := codex.IdentityField("id", codex.String().Refine(validate.NonEmptyString))
+	var got string
+	err := codex.DecodeVars(&got, map[string]string{"id": ""}, f)
+	if err == nil {
+		t.Fatal("DecodeVars: want error for empty id, got nil")
 	}
 }
 

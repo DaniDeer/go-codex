@@ -17,21 +17,38 @@
 // File layout:
 //
 //   - config.go — the SINGLE SOURCE OF TRUTH for this package's
-//     filesystem layout AND for its two path-derived identifier types:
-//     every directory name, path-variable name, and derived path
-//     template/filename-shape constant used by the file ports below
-//     (useCasesDirName/devicesDirName,
+//     filesystem layout AND for its three path-derived identifier
+//     types: every directory name, path-variable name, and derived
+//     path template/filename-shape constant used by the file ports
+//     below (useCasesDirName/devicesDirName,
 //     useCaseNameVar/deviceIDVar/useCaseEntryVar,
-//     useCasePathPattern/useCaseEntryShape/deviceDirPathPattern/
-//     deviceFilePathPattern/deviceEntryShape — all unexported, a
+//     baselinePathPattern/useCasePathPattern/useCaseEntryShape/
+//     deviceDirPathPattern/deviceFilePathPattern/deviceEntryShape —
+//     all unexported; three of the six ALSO substitute vars and are
+//     wrapped as a [codex.Template[T]] (useCasePathPattern/
+//     deviceDirPathPattern as Template[Name], deviceFilePathPattern as
+//     Template[deviceFileVars]) — codex.Template.Build is a validated,
+//     concrete-path-producing accessor substituting an
+//     already-validated Name/DeviceID into the template directly, with
+//     zero ports.File I/O involved; the other three (no vars to
+//     substitute) stay a plain [codex.Const[string]] (validated ONCE at
+//     package init via codex.MustConst — an empty or malformed pattern
+//     panics immediately, not silently, at first use); a
 //     readability/consolidation refactor, not a runtime config
 //     surface); nameCodec/deviceIDCodec (the raw Codec[string]
 //     validators ports.FilePathParam/DirPathParam/EntryParam.Codec
-//     require); and the EXPORTED [Name]/[DeviceID] named types,
-//     [NameCodec]/[DeviceIDCodec] (re-typing the same constraints via
-//     c.MapCodecSafe), and [NewName]/[NewDeviceID] smart constructors —
-//     this package's public, typed vocabulary for "a use case's name" /
-//     "a device's ID", used throughout the rest of this package's API.
+//     require); and the EXPORTED [Name]/[DeviceID]/[BasePath] named
+//     types, [NameCodec]/[DeviceIDCodec]/[BasePathCodec] (re-typing the
+//     same constraints via c.MapCodecSafe — BasePathCodec additionally
+//     canonicalizes via filepath.Clean and carries its OWN description
+//     of what "basePath" means, reused as-is anywhere a caller builds a
+//     BasePath-typed field, e.g. the sibling modulesummary package's
+//     own MCP tool request types), and [NewName]/[NewDeviceID]/
+//     [NewBasePath] smart constructors — this package's public, typed
+//     vocabulary for "a use case's name" / "a device's ID" / "the
+//     use-case layout's root directory", used throughout the rest of
+//     this package's API (every basePath parameter below is a [BasePath],
+//     never a bare string).
 //   - usecase.go — the FULL use-case model + composition: NewBaselineFile
 //     (a declared file port over the SINGLE GLOBAL
 //     "{basePath}/baseline/baseline.json" — no template variables,

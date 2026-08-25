@@ -1,0 +1,347 @@
+services:
+    factory-api:
+        build: null
+        command: []
+        domainname: ""
+        entrypoint: []
+        environment:
+            - CACHE_HOST=factory-cache
+            - CACHE_PORT=6666
+            - DEBUG_LOG=False
+            - 'MONGO_DB={ "hostname": "factory-db", "database": "factory_monitor", "port": 27017, "collection": "process_events", "loginName": "factory_monitor_user", "loginPassword": "${FACTORY_MONITOR_DB_INITDB_PWD}" }'
+            - TELEMETRY_HOST=factory-telemetry-collector
+            - TZ=Europe/Berlin
+        healthcheck:
+            disable: false
+            interval: 0s
+            retries: 0
+            start_period: 0s
+            test: []
+            timeout: 0s
+        hostname: ""
+        image: ghcr.io/example-org/factory-api:1.8.16
+        mem_limit: 0b
+        mem_reservation: 0b
+        ports:
+            - "8000"
+        restart: always
+        ulimits: {}
+        volumes: []
+    factory-cache:
+        build: null
+        command: []
+        domainname: ""
+        entrypoint: []
+        environment: []
+        healthcheck:
+            disable: false
+            interval: 0s
+            retries: 0
+            start_period: 0s
+            test: []
+            timeout: 0s
+        hostname: ""
+        image: apache/kvrocks:2.15.0
+        mem_limit: 0b
+        mem_reservation: 0b
+        ports: []
+        restart: always
+        ulimits: {}
+        volumes:
+            - factory-cache-data:/var/lib/kvrocks
+    factory-dashboard:
+        build: null
+        command: []
+        domainname: ""
+        entrypoint: []
+        environment:
+            - API_URL=
+            - AUTO_REFRESH_INTERVAL=15000
+            - MONGO_HOST=factory-db
+            - MONGO_INITDB_DATABASE=factory_monitor
+            - MONGO_INITDB_PWD=${FACTORY_MONITOR_DB_INITDB_PWD}
+            - MONGO_INITDB_USER=factory_monitor_user
+            - REFRESH_RATE_HZ=0.5
+        healthcheck:
+            disable: false
+            interval: 0s
+            retries: 0
+            start_period: 0s
+            test: []
+            timeout: 0s
+        hostname: ""
+        image: ghcr.io/example-org/factory-dashboard:1.8.16
+        mem_limit: 0b
+        mem_reservation: 0b
+        ports:
+            - "5000"
+        restart: always
+        ulimits: {}
+        volumes: []
+    factory-db:
+        build: null
+        command: []
+        domainname: ""
+        entrypoint: []
+        environment:
+            - MONGO_INITDB_DATABASE=factory_monitor
+            - MONGO_INITDB_PWD=${FACTORY_MONITOR_DB_INITDB_PWD}
+            - MONGO_INITDB_RETENTIONTIMEINSECONDS=1209600
+            - MONGO_INITDB_ROOT_PASSWORD=${FACTORY_MONITOR_DB_ADMIN_PWD}
+            - MONGO_INITDB_ROOT_USERNAME=factory_admin
+            - MONGO_INITDB_TEMP_STORE_RETENTIONTIMEINSECONDS=300
+            - MONGO_INITDB_USER=factory_monitor_user
+            - MONGO_MONITORING_PWD=${FACTORY_MONITOR_DB_MONITORING_PWD}
+            - MONGO_MONITORING_USER=monitoring_user
+        healthcheck:
+            disable: false
+            interval: 30s
+            retries: 3
+            start_period: 10s
+            test:
+                - CMD
+                - mongosh
+                - --eval
+                - db.adminCommand('ping')
+            timeout: 5s
+        hostname: ""
+        image: ghcr.io/example-org/factory-db:1.8.16
+        mem_limit: 3906250k
+        mem_reservation: 0b
+        ports:
+            - "27017"
+        restart: always
+        ulimits: {}
+        volumes:
+            - factory-db-data:/data/db
+    factory-edge-proxy:
+        build: null
+        command: []
+        domainname: ""
+        entrypoint: []
+        environment:
+            - NO_PROXY=factory-dashboard,factory-telemetry-collector
+            - OTEL_PROPAGATORS=b3
+            - 'PROXY_CONFIG=ToDo: Override value in device layers.'
+            - 'PROXY_ROUTES=ToDo: Override value in device layers.'
+        healthcheck:
+            disable: false
+            interval: 0s
+            retries: 0
+            start_period: 0s
+            test: []
+            timeout: 0s
+        hostname: ""
+        image: ghcr.io/example-org/factory-edge-proxy:web-app-3.6.13
+        mem_limit: 512m
+        mem_reservation: 0b
+        ports:
+            - 8090:8080
+            - 9090:8443
+            - 9092:8090
+        restart: "no"
+        ulimits:
+            nofile: 65536
+        volumes:
+            - /etc/ssl/local/pubkey.pem:/etc/proxy/ssl/pubkey.pem
+            - /etc/ssl/local/private.key:/etc/proxy/ssl/private.key
+    factory-ingest-agent:
+        build: null
+        command:
+            - 'ToDo: Override createOptions in device layers.'
+        domainname: ""
+        entrypoint: []
+        environment:
+            - CACHE_HOST=factory-cache
+            - CACHE_PORT=6666
+            - 'PIPELINE_CONFIG=ToDo: Override value in device layers.'
+            - TELEMETRY_HOST=factory-telemetry-collector
+            - TZ=Europe/Berlin
+        healthcheck:
+            disable: false
+            interval: 0s
+            retries: 0
+            start_period: 0s
+            test: []
+            timeout: 0s
+        hostname: ""
+        image: ghcr.io/example-org/factory-ingest-agent:0.4.6
+        mem_limit: 0b
+        mem_reservation: 0b
+        ports: []
+        restart: always
+        ulimits: {}
+        volumes: []
+    factory-metrics-collector:
+        build: null
+        command: []
+        domainname: ""
+        entrypoint: []
+        environment:
+            - LogAnalyticsSharedKey=${FACTORY_MONITOR_LOG_ANALYTICS_SHARED_KEY}
+            - LogAnalyticsWorkspaceId=00000000-0000-0000-0000-000000000000
+            - MetricsEndpointsCSV=http://factory-ingest-agent:8000/metrics,http://factory-telemetry-collector:8888/metrics,http://factory-mqtt-gateway-1:8000/metrics,http://factory-mqtt-gateway-2:8000/metrics,http://factory-opcua-gateway:8000/metrics,http://factory-normalizer:8000/metrics,http://factory-api:8000/metrics
+            - ResourceID=/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/rg-example-edge/providers/Microsoft.Devices/IotHubs/ioth-example-edge
+            - UploadTarget=AzureMonitor
+            - experimentalFeatures__AddIdentifyingTags=true
+            - https_proxy=http://proxy.example.com:8080/
+            - no_proxy=factory-ingest-agent,factory-telemetry-collector,factory-mqtt-gateway-1,factory-mqtt-gateway-2,factory-opcua-gateway,factory-normalizer,factory-db,factory-api,factory-dashboard
+        healthcheck:
+            disable: false
+            interval: 0s
+            retries: 0
+            start_period: 0s
+            test: []
+            timeout: 0s
+        hostname: ""
+        image: mcr.microsoft.com/azureiotedge-metrics-collector:1.2.36
+        mem_limit: 0b
+        mem_reservation: 0b
+        ports: []
+        restart: always
+        ulimits: {}
+        volumes: []
+    factory-mqtt-gateway-1:
+        build: null
+        command: []
+        domainname: ""
+        entrypoint: []
+        environment:
+            - 'BROKER_URL=ToDo: Override value in device layers.'
+            - CACHE_HOST=factory-cache
+            - CACHE_PORT=6666
+            - DEBUG_LOG=False
+            - QUEUE_CLEANUP=False
+            - TELEMETRY_HOST=factory-telemetry-collector
+            - TZ=Europe/Berlin
+        healthcheck:
+            disable: false
+            interval: 0s
+            retries: 0
+            start_period: 0s
+            test: []
+            timeout: 0s
+        hostname: ""
+        image: ghcr.io/example-org/factory-gateway:0.12.5
+        mem_limit: 0b
+        mem_reservation: 0b
+        ports:
+            - "8000"
+        restart: on-failure
+        ulimits: {}
+        volumes: []
+    factory-mqtt-gateway-2:
+        build: null
+        command: []
+        domainname: ""
+        entrypoint: []
+        environment:
+            - 'BROKER_URL=ToDo: Override value in device layers.'
+            - CACHE_HOST=factory-cache
+            - CACHE_PORT=6666
+            - DEBUG_LOG=False
+            - QUEUE_CLEANUP=False
+            - TELEMETRY_HOST=factory-telemetry-collector
+            - TZ=Europe/Berlin
+        healthcheck:
+            disable: false
+            interval: 0s
+            retries: 0
+            start_period: 0s
+            test: []
+            timeout: 0s
+        hostname: ""
+        image: ghcr.io/example-org/factory-gateway:0.12.5
+        mem_limit: 0b
+        mem_reservation: 0b
+        ports:
+            - "8000"
+        restart: on-failure
+        ulimits: {}
+        volumes: []
+    factory-normalizer:
+        build: null
+        command: []
+        domainname: ""
+        entrypoint: []
+        environment:
+            - CACHE_HOST=factory-cache
+            - CACHE_PORT=6666
+            - DEBUG_LOG=False
+            - LIMIT_SIGNIFICANT_DIGITS=6
+            - LIMIT_SIZE=921600
+            - TELEMETRY_HOST=factory-telemetry-collector
+            - TZ=Europe/Berlin
+        healthcheck:
+            disable: false
+            interval: 0s
+            retries: 0
+            start_period: 0s
+            test: []
+            timeout: 0s
+        hostname: ""
+        image: ghcr.io/example-org/factory-normalizer:0.4.4
+        mem_limit: 0b
+        mem_reservation: 0b
+        ports:
+            - "8000"
+        restart: always
+        ulimits: {}
+        volumes: []
+    factory-opcua-gateway:
+        build: null
+        command:
+            - opcua
+        domainname: ""
+        entrypoint: []
+        environment:
+            - CACHE_HOST=factory-cache
+            - CACHE_PORT=6666
+            - DEBUG_LOG=False
+            - 'OPCUA_ENDPOINT=ToDo: Override value in device layers.'
+            - 'OPCUA_NODES=ToDo: Override value in device layers.'
+            - OPCUA_TEXT=True
+            - TELEMETRY_HOST=factory-telemetry-collector
+            - TZ=Europe/Berlin
+        healthcheck:
+            disable: false
+            interval: 0s
+            retries: 0
+            start_period: 0s
+            test: []
+            timeout: 0s
+        hostname: ""
+        image: ghcr.io/example-org/factory-gateway:0.12.5
+        mem_limit: 0b
+        mem_reservation: 0b
+        ports:
+            - "8000"
+        restart: "no"
+        ulimits: {}
+        volumes: []
+    factory-telemetry-collector:
+        build: null
+        command: []
+        domainname: ""
+        entrypoint: []
+        environment:
+            - AZURE_CONNECTION_STRING=${FACTORY_MONITOR_AZ_CONNECTION_STRING}
+            - HTTPS_PROXY=http://proxy.example.com:8080/
+            - HTTP_PROXY=http://proxy.example.com:8080/
+        healthcheck:
+            disable: false
+            interval: 0s
+            retries: 0
+            start_period: 0s
+            test: []
+            timeout: 0s
+        hostname: ""
+        image: ghcr.io/example-org/otel-collector:0.153.0
+        mem_limit: 0b
+        mem_reservation: 0b
+        ports:
+            - "9411"
+            - "4318"
+        restart: always
+        ulimits: {}
+        volumes: []

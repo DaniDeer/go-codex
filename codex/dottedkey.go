@@ -1,6 +1,7 @@
 package codex
 
 import (
+	"errors"
 	"fmt"
 	"log/slog"
 	"strings"
@@ -84,58 +85,58 @@ func literalPrefix(template string) string {
 //
 // template must contain ONLY literal text and "{varName}" placeholders —
 // PANICS if it contains "+" or "#" (a declaration-time programming
-// error: wildcards have no single value to substitute when building
-// exactly one concrete key; use [DottedPatchMapCodec] instead for the
-// whole-bucket, wildcard-matching case).
+// error: DottedKeyCodec has no decode-only/match-only mode — a wildcard
+// pattern is ALWAYS a caller mistake for this specific codec, unlike
+// [Template]'s own, more general "construction always succeeds; only
+// building fails" convention, which fits [DottedPatchMapCodec]'s
+// legitimate whole-bucket, match-only use case instead).
 //
 // Use with [Map]/[EntrySlice] for a fully-typed dotted-key map — e.g.
 // template "properties.desired.modules.{tenant}.{name}" merges into a
 // ModuleKey{Tenant, Name} struct, generalizing what
 // examples/flat-key-patch's former hand-rolled twoPartKeyCodec did by
-// hand.
+// hand. Built on [Template]/[NewTemplate] via [DottedStyle] — the SAME
+// shared build/match engine every other path/topic/dotted-key pattern
+// in go-codex now uses; DottedKeyCodec is a thin, panic-preserving
+// wrapper over it. Decode converts the underlying [Template]'s own
+// [TemplateMismatchError] back into [DottedKeyError] at this boundary —
+// DottedKeyCodec's established, documented error type — mirroring
+// ports/file.go's/ports/dir.go's own boundary-conversion pattern
+// (convertFileParamErr/convertDirParamErr) for the identical reason:
+// keep the shared [Template] engine's internals invisible to callers
+// depending on this codec's own error type.
 func DottedKeyCodec[K any](template string, fields ...FieldCodec[K]) Codec[K] {
 	if hasWildcard(template) {
 		panic(fmt.Sprintf("codex: DottedKeyCodec: template %q must not contain \"+\"/\"#\" wildcards — use DottedPatchMapCodec for the whole-bucket, wildcard-matching case", template))
 	}
+	inner := NewTemplate(template, DottedStyle, fields...).Codec()
 	return Codec[K]{
-		Encode: func(k K) (any, error) {
-			vars, err := EncodeVars(k, fields...)
-			if err != nil {
-				return nil, err
-			}
-			var b strings.Builder
-			for _, seg := range strings.Split(template, ".") {
-				if b.Len() > 0 {
-					b.WriteByte('.')
-				}
-				if len(seg) > 2 && seg[0] == '{' && seg[len(seg)-1] == '}' {
-					b.WriteString(vars[seg[1:len(seg)-1]])
-				} else {
-					b.WriteString(seg)
-				}
-			}
-			return b.String(), nil
-		},
+		Encode: inner.Encode,
 		Decode: func(v any) (K, error) {
-			var zero K
-			s, ok := v.(string)
-			if !ok {
-				return zero, TypeMismatchError{Expected: "string", Got: fmt.Sprintf("%T", v)}
-			}
-			vars, err := templatematch.MatchDottedWildcard(template, s, func(template, concrete string) error {
-				return DottedKeyError{Key: concrete, Template: template, Err: fmt.Errorf("key does not match template")}
-			})
+			k, err := inner.Decode(v)
 			if err != nil {
-				return zero, err
-			}
-			var k K
-			if err := DecodeVars(&k, vars, fields...); err != nil {
-				return zero, err
+				return k, convertDottedKeyErr(template, err)
 			}
 			return k, nil
 		},
-		Schema: schema.Schema{Type: "string"},
+		Schema: inner.Schema,
 	}
+}
+
+// convertDottedKeyErr converts a [TemplateMismatchError] from the shared
+// [Template] engine into [DottedKeyError] — DottedKeyCodec's own,
+// established error type (see [DottedKeyCodec]'s doc comment). Errors
+// other than a structural mismatch (e.g. a field's own codec validation
+// failure, surfaced as [ValidationErrors] via [DecodeVars]) pass through
+// unchanged — DottedKeyError has always meant "the key doesn't match the
+// template's SHAPE," not "a captured segment's value failed a
+// constraint."
+func convertDottedKeyErr(template string, err error) error {
+	var tm TemplateMismatchError
+	if errors.As(err, &tm) {
+		return DottedKeyError{Key: tm.Concrete, Template: tm.Template, Err: errors.New("key does not match template")}
+	}
+	return err
 }
 
 // KeyVarConstraint pairs a named template variable with a [Constraint]

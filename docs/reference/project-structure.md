@@ -9,16 +9,25 @@ go-codex/
 
 ├── codex/                  # ⭐ PUBLIC API: codecs, primitives, struct, union, slice
 │   ├── codec.go            # Codec[T], WithDescription, WithTitle, WithExample, WithDeprecated, Validate, New
+│   ├── const.go            # Const[T], MustConst, Immutable[T], NewImmutable — validated value containers
+│   ├── dottedkey.go        # DottedKeyCodec[K], DottedPatchMapCodec — MQTT-style dotted-key templates (built on Template)
 │   ├── either.go           # Either[A,B] type, Either2 codec
 │   ├── errors.go           # ValidationError, ValidationErrors, EitherError
+│   ├── getter.go           # Getter[T], Setter[T], GetterSetter[T] — minimal read/write interfaces
 │   ├── map.go              # MapCodecSafe, MapCodecValidated, Downcast
 │   ├── must.go             # Must[T] — generic panic-on-error helper
 │   ├── nullable.go         # Nullable[T]
-│   ├── object.go           # Field[T,F], RequiredField, OptionalField, DefaultField, Struct[T]
+│   ├── object.go           # Field[T,F], RequiredField, OptionalField, DefaultField, IdentityField, Struct[T]
+│   ├── param.go            # Param, MergedParam[T], NewParam[T], ValidateParams, ValidateDeclaredParams,
+│   │                       #   BuildFromParams, ParamError, MissingParamError, InvalidParamError — the
+│   │                       #   shared path/topic parameter primitive underneath api/rest.PathParam,
+│   │                       #   api/events'/api/reqreply's TopicParam, ports.FilePathParam/DirPathParam
 │   ├── primitives.go       # Int, Int32, Int64, Uint, Uint64, Float32, Float64, String, Bool, Bytes, Base64, Any, Pure
 │   ├── refine.go           # Constraint[T], Refine, RefineFunc, Eq (Constraint.Schema for schema reflection)
 │   ├── slice.go            # SliceOf[T]
 │   ├── stringmap.go        # StringMap[V], Map[K, V]
+│   ├── template.go         # Template[T], NewTemplate, TemplateStyle (PathStyle/MQTTStyle/DottedStyle/GlobStyle), Fields() —
+│   │                       #   shared build+match engine for every {varName} pattern; api/mcp's Resource[V,T] built on it
 │   ├── time.go             # Time(), Date(), Duration()
 │   └── union.go            # TaggedUnion[T], UntaggedUnion[T], UntaggedVariant[T]
 │
@@ -44,8 +53,10 @@ go-codex/
 ├── api/                    # transport-agnostic API builders
 │   ├── internal/           # shared helpers (not public API; api/*-only — see internal/ above
 │   │   │                   #   for the module-wide equivalent)
-│   │   └── template.go     # ParseTemplateVars, BuildFromTemplate, StripTemplateVars, MatchTemplate
-│   │                       #   (MatchTemplate delegates to internal/templatematch.MatchNonWildcard)
+│   │   └── template.go     # ParseTemplateVars, StripTemplateVars, MatchTemplate (delegates to
+│   │                       #   internal/templatematch.MatchNonWildcard) — the build-direction
+│   │                       #   counterpart (former BuildFromTemplate) was REMOVED, superseded by
+│   │                       #   codex.BuildFromParams (see codex/param.go above)
 │   ├── rest/               # REST API builder: typed Decode/Encode + OpenAPI spec
 │   │   └── builder.go      # Builder, Route[Req,Resp]/NewRoute, SSERoute[Req,Event]/NewSSERoute,
 │   │                       #   RouteHandle (Decode, Encode, EncodeRequest, DecodeResponse, ClientHandle),
@@ -57,13 +68,19 @@ go-codex/
 │   │                       #   AddServer, AddSchema, AddSecurityScheme, AddGlobalSecurity,
 │   │                       #   TopicParam, ChannelMeta, Subscribe, Publish, SecurityScheme
 │   ├── mcp/                # MCP server builder: Tools, Resources, Prompts
-│   │   ├── builder.go      # Builder, NewTool[In,Out], NewResource[T], NewPrompt,
-│   │   │                   #   ToolHandle, ResourceHandle, PromptHandle, MCPSpec
-│   │   └── errors.go       # ToolInputError, ToolOutputError, ResourceEncodeError,
-│   │                       #   ResourceParamError, MissingResourceVarError, PromptArgError, …
+│   │   ├── builder.go      # Builder, NewTool[In,Out], NewResource[V,T] (bare-string primary,
+│   │   │                   #   + URIParam[V] opts) / NewResourceFromTemplate[V,T] (pre-built
+│   │   │                   #   codex.Template[V] escape hatch), NewPrompt, ToolHandle,
+│   │   │                   #   ResourceHandle[V,T], PromptHandle, MCPSpec
+│   │   └── errors.go       # ToolInputError, ToolOutputError, ResourceEncodeError, PromptArgError, …
+│   │                       #   (URI var errors are codex.ValidationErrors/TemplateMismatchError, not
+│   │                       #   mcp-local types — see codex/template.go above)
 │   ├── reqreply/           # transport-agnostic request-reply spec builder (ZMQ, MQTT 5, AMQP, …)
-│   │   └── route.go        # NewRoute[Req,Resp], Route, RouteHandle, BuildTopic, RouteOpt,
-│   │                       #   RouteParam, DuplicateRouteError, RouteParamError, MissingRouteParamError
+│   │   └── route.go        # NewRoute[Req,Resp], Route, RouteHandle, BuildTopic, RouteOpt, TopicParam/
+│   │                       #   MergedTopicParam[Req]/NewTopicParam (thin wrappers over codex.Param —
+│   │                       #   see codex/param.go above), DuplicateRouteError, RouteParamError,
+│   │                       #   MissingRouteParamError, InvalidRouteParamError (all type ALIASES over
+│   │                       #   codex.ParamError/MissingParamError/InvalidParamError)
 │   └── llm/                # LLM completion contract: system prompt + input/output codecs
 │       ├── call.go         # Call[Req,Resp], NewCall, CallOpt, SystemPrompt, SystemPromptFile,
 │       │                   #   UserMessage, IncludeRequestSchema, CallMeta
@@ -183,10 +200,17 @@ go-codex/
 │   ├── latest_port.go      # LatestPort[T], LatestAdapter[T], NewLatestPort — reactive cache
 │   ├── duplex_port.go      # DuplexPort[In,Out], DuplexAdapter[In,Out], Framed[T], Session — bidirectional sessions
 │   ├── pipe_port.go        # PipePort[T] — patch panel connecting named SourcePort inputs to named SinkPort outputs (fan-in + fan-out)
-│   ├── file.go             # NewFile, File[T], FilePathParam, FileOptions, PatchEncoded, PathParamSchemas,
-│   │                       #   FilePathParamError, MissingFilePathVarError, FileReadError,
+│   ├── file.go             # NewFile, File[T], FilePathParam/MergedFilePathParam[T]/NewFilePathParam[T]
+│   │                       #   (thin wrappers over codex.Param/MergedParam[T]/NewParam[T] — see
+│   │                       #   codex/param.go above), FileOptions, PatchEncoded, PathParamSchemas,
+│   │                       #   FilePathParamError, MissingFilePathVarError (own distinct types, NOT
+│   │                       #   aliased to codex's — see codex/param.go's doc), FileReadError,
 │   │                       #   FileDecodeError, FileEncodeError, FileWriteError, FilePatchNotSupportedError
 │   │                       #   (moved from format — protocol-agnostic addressing descriptor, mirrors Cache[T])
+│   ├── dir.go              # NewDir, Dir, DirPathParam (thin wrapper over codex.Param), EntryParam
+│   │                       #   (type alias = codex.Param), EntryPattern, DirEntry, WithEntryPattern,
+│   │                       #   WithRecursive, WithBaseDir, DirOptions, DirPathParamError,
+│   │                       #   MissingDirPathVarError, DirReadError, DirDeleteError, DirNotFoundError
 │   └── test_adapters.go    # ChanSourceAdapter[T], ChanSinkAdapter[T], FuncIOAdapter[Req,Resp]
 │
 ├── stream/                 # reactive stream pipelines — bridges MQTT/ZeroMQ sources with forge functions

@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"log/slog"
 	"testing"
 
 	apimcp "github.com/DaniDeer/go-codex/api/mcp"
@@ -266,11 +265,23 @@ var itemCodec = codex.Struct[itemData](
 
 var uuidCodec = codex.String().Refine(validate.UUID)
 
+// idField is the identity [codex.FieldCodec] shared by every itemTemplate
+// below — V=string serves as its own field container (get/set are
+// identity operations), the same idiom
+// examples/go-edge-models/models/iotedge/usecase/config.go's
+// Template[Name] patterns use for a single-var template.
+func idField(codec codex.Codec[string]) codex.FieldCodec[string] {
+	return codex.RequiredField("id", codec,
+		func(s string) string { return s },
+		func(s *string, v string) { *s = v },
+	)
+}
+
 func TestResource_Register_happyPath(t *testing.T) {
 	b := newBuilder()
-	res := apimcp.NewResource[itemData]("items://{id}", itemCodec,
+	tmpl := codex.NewTemplate("items://{id}", codex.PathStyle, idField(uuidCodec))
+	res := apimcp.NewResourceFromTemplate(tmpl, itemCodec,
 		apimcp.ResourceMeta{Name: "Item", MimeType: "application/json"},
-		apimcp.ResourceParam{Name: "id"}.WithCodec(uuidCodec),
 	)
 	handle, err := res.Register(b)
 	if err != nil {
@@ -281,35 +292,133 @@ func TestResource_Register_happyPath(t *testing.T) {
 	}
 }
 
-func TestResource_Register_unknownParamFails_returnsInvalidResourceParamError(t *testing.T) {
+// ---------------------------------------------------------------------------
+// NewResource (primary, bare-string constructor) + URIParam tests
+// ---------------------------------------------------------------------------
+
+func TestNewResource_BareString_HappyPath(t *testing.T) {
 	b := newBuilder()
-	res := apimcp.NewResource[itemData]("items://{id}", itemCodec,
-		apimcp.ResourceParam{Name: "unknown"},
+	res := apimcp.NewResource[string](
+		"items://{id}", itemCodec,
+		apimcp.ResourceMeta{Name: "Item", MimeType: "application/json"},
+		apimcp.URIParam(codex.IdentityField("id", uuidCodec)),
 	)
-	_, err := res.Register(b)
-	if err == nil {
-		t.Fatal("expected error for unknown URI param")
+	handle, err := res.Register(b)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
 	}
-	var pe apimcp.InvalidResourceParamError
-	if !errors.As(err, &pe) {
-		t.Fatalf("expected InvalidResourceParamError, got %T: %v", err, err)
+	if handle.URITemplate != "items://{id}" {
+		t.Errorf("URITemplate: got %q", handle.URITemplate)
 	}
-	if pe.Name != "unknown" {
-		t.Errorf("Name: got %q, want %q", pe.Name, "unknown")
+	uri, err := handle.BuildURI("550e8400-e29b-41d4-a716-446655440000")
+	if err != nil {
+		t.Fatalf("BuildURI: %v", err)
 	}
-	if pe.URITemplate != "items://{id}" {
-		t.Errorf("URITemplate: got %q", pe.URITemplate)
+	if uri != "items://550e8400-e29b-41d4-a716-446655440000" {
+		t.Errorf("BuildURI = %q", uri)
 	}
+}
+
+func TestNewResource_BareString_MultiVar(t *testing.T) {
+	type itemVars struct{ Tenant, ID string }
+	b := newBuilder()
+	res := apimcp.NewResource[itemVars](
+		"items://{tenant}/{id}", itemCodec,
+		apimcp.URIParam(codex.RequiredField("tenant", codex.String().Refine(validate.NonEmptyString),
+			func(v itemVars) string { return v.Tenant },
+			func(v *itemVars, s string) { v.Tenant = s })),
+		apimcp.URIParam(codex.RequiredField("id", uuidCodec,
+			func(v itemVars) string { return v.ID },
+			func(v *itemVars, s string) { v.ID = s })),
+	)
+	handle, err := res.Register(b)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	uri, err := handle.BuildURI(itemVars{Tenant: "acme", ID: "550e8400-e29b-41d4-a716-446655440000"})
+	if err != nil {
+		t.Fatalf("BuildURI: %v", err)
+	}
+	if uri != "items://acme/550e8400-e29b-41d4-a716-446655440000" {
+		t.Errorf("BuildURI = %q", uri)
+	}
+}
+
+func TestNewResource_BareString_PanicsOnUndeclaredVar(t *testing.T) {
+	defer func() {
+		if r := recover(); r == nil {
+			t.Fatal("expected panic for {id} with no matching URIParam")
+		}
+	}()
+	apimcp.NewResource[struct{}]("items://{id}", itemCodec)
+}
+
+func TestNewResource_BareString_WrongURIParamTypeParamPanics(t *testing.T) {
+	defer func() {
+		if r := recover(); r == nil {
+			t.Fatal("expected panic for URIParam[int] on NewResource[string]")
+		}
+	}()
+	apimcp.NewResource[string]("items://{id}", itemCodec,
+		apimcp.URIParam(codex.IdentityField("id", codex.Int())),
+	)
+}
+
+func TestNewResourceFromTemplate_RoundTripsWithNewResource(t *testing.T) {
+	// NewResourceFromTemplate(tmpl, ...) built from a Template[V] must
+	// produce a byte-for-byte equivalent Resource to declaring the SAME
+	// template+fields inline via NewResource — confirmed by comparing the
+	// registered ResourceHandle's URITemplate and a BuildURI round-trip.
+	tmpl := codex.NewTemplate("items://{id}", codex.PathStyle,
+		codex.IdentityField("id", uuidCodec))
+
+	b1 := newBuilder()
+	viaTemplate, err := apimcp.NewResourceFromTemplate(tmpl, itemCodec).Register(b1)
+	if err != nil {
+		t.Fatalf("NewResourceFromTemplate.Register: %v", err)
+	}
+
+	b2 := newBuilder()
+	viaBareString, err := apimcp.NewResource[string]("items://{id}", itemCodec,
+		apimcp.URIParam(codex.IdentityField("id", uuidCodec)),
+	).Register(b2)
+	if err != nil {
+		t.Fatalf("NewResource.Register: %v", err)
+	}
+
+	if viaTemplate.URITemplate != viaBareString.URITemplate {
+		t.Errorf("URITemplate mismatch: %q vs %q", viaTemplate.URITemplate, viaBareString.URITemplate)
+	}
+	uri1, err1 := viaTemplate.BuildURI("550e8400-e29b-41d4-a716-446655440000")
+	uri2, err2 := viaBareString.BuildURI("550e8400-e29b-41d4-a716-446655440000")
+	if err1 != nil || err2 != nil {
+		t.Fatalf("BuildURI errors: %v, %v", err1, err2)
+	}
+	if uri1 != uri2 {
+		t.Errorf("BuildURI mismatch: %q vs %q", uri1, uri2)
+	}
+}
+
+func TestNewTemplate_UnknownFieldName_stillPanicsOnUndeclaredVar(t *testing.T) {
+	// codex.NewTemplate panics at CONSTRUCTION time (not Register time) when
+	// a {varName} in the pattern has no matching declared field — the
+	// inverse direction of the old InvalidResourceParamError check (a
+	// declared-but-unreferenced field is harmless and does NOT panic).
+	defer func() {
+		if r := recover(); r == nil {
+			t.Fatal("expected panic for {id} with no matching declared field")
+		}
+	}()
+	codex.NewTemplate[struct{}]("items://{id}", codex.PathStyle)
 }
 
 func TestResourceHandle_BuildURI_validVars(t *testing.T) {
 	b := newBuilder()
-	res := apimcp.NewResource[itemData]("items://{id}", itemCodec,
-		apimcp.ResourceParam{Name: "id"},
-	)
+	tmpl := codex.NewTemplate("items://{id}", codex.PathStyle, idField(codex.String()))
+	res := apimcp.NewResourceFromTemplate(tmpl, itemCodec)
 	handle, _ := res.Register(b)
 
-	uri, err := handle.BuildURI(map[string]string{"id": "abc123"})
+	uri, err := handle.BuildURI("abc123")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -318,53 +427,19 @@ func TestResourceHandle_BuildURI_validVars(t *testing.T) {
 	}
 }
 
-func TestResourceHandle_BuildURI_missingVar(t *testing.T) {
-	b := newBuilder()
-	res := apimcp.NewResource[itemData]("items://{id}", itemCodec,
-		apimcp.ResourceParam{Name: "id"},
-	)
-	handle, _ := res.Register(b)
-
-	_, err := handle.BuildURI(map[string]string{})
-	if err == nil {
-		t.Fatal("expected error for missing var")
-	}
-	var me apimcp.MissingResourceVarError
-	if !errors.As(err, &me) {
-		t.Fatalf("expected MissingResourceVarError, got %T", err)
-	}
-}
-
 func TestResourceHandle_BuildURI_codecFailure(t *testing.T) {
 	b := newBuilder()
-	res := apimcp.NewResource[itemData]("items://{id}", itemCodec,
-		apimcp.ResourceParam{Name: "id"}.WithCodec(uuidCodec),
-	)
+	tmpl := codex.NewTemplate("items://{id}", codex.PathStyle, idField(uuidCodec))
+	res := apimcp.NewResourceFromTemplate(tmpl, itemCodec)
 	handle, _ := res.Register(b)
 
-	_, err := handle.BuildURI(map[string]string{"id": "not-a-uuid"})
+	_, err := handle.BuildURI("not-a-uuid")
 	if err == nil {
 		t.Fatal("expected error for UUID validation failure")
 	}
-	var ve apimcp.ResourceParamError
+	var ve codex.ValidationErrors
 	if !errors.As(err, &ve) {
-		t.Fatalf("expected ResourceParamError, got %T", err)
-	}
-	if ve.Name != "id" {
-		t.Errorf("ResourceParamError.Name: got %q, want %q", ve.Name, "id")
-	}
-}
-
-func TestResourceHandle_ValidateURIVars_validVars(t *testing.T) {
-	b := newBuilder()
-	res := apimcp.NewResource[itemData]("items://{id}", itemCodec,
-		apimcp.ResourceParam{Name: "id"}.WithCodec(uuidCodec),
-	)
-	handle, _ := res.Register(b)
-
-	err := handle.ValidateURIVars(map[string]string{"id": "550e8400-e29b-41d4-a716-446655440000"})
-	if err != nil {
-		t.Errorf("unexpected error for valid UUID: %v", err)
+		t.Fatalf("expected codex.ValidationErrors, got %T", err)
 	}
 }
 
@@ -372,58 +447,52 @@ func TestResourceHandle_ValidateURIVars_validVars(t *testing.T) {
 // one call.
 func TestResourceHandle_ExtractURIVars_happyPath(t *testing.T) {
 	b := newBuilder()
-	res := apimcp.NewResource[itemData]("items://{id}", itemCodec,
-		apimcp.ResourceParam{Name: "id"}.WithCodec(uuidCodec),
-	)
+	tmpl := codex.NewTemplate("items://{id}", codex.PathStyle, idField(uuidCodec))
+	res := apimcp.NewResourceFromTemplate(tmpl, itemCodec)
 	handle, _ := res.Register(b)
 
-	vars, err := handle.ExtractURIVars("items://550e8400-e29b-41d4-a716-446655440000")
+	id, err := handle.ExtractURIVars("items://550e8400-e29b-41d4-a716-446655440000")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if vars["id"] != "550e8400-e29b-41d4-a716-446655440000" {
-		t.Errorf("id: got %q", vars["id"])
+	if id != "550e8400-e29b-41d4-a716-446655440000" {
+		t.Errorf("id: got %q", id)
 	}
 }
 
 // G4a: a mismatched URI structure (extra path segment) returns
-// ResourceURIMismatchError.
+// codex.TemplateMismatchError.
 func TestResourceHandle_ExtractURIVars_mismatch(t *testing.T) {
 	b := newBuilder()
-	res := apimcp.NewResource[itemData]("items://{id}", itemCodec,
-		apimcp.ResourceParam{Name: "id"},
-	)
+	tmpl := codex.NewTemplate("items://{id}", codex.PathStyle, idField(codex.String()))
+	res := apimcp.NewResourceFromTemplate(tmpl, itemCodec)
 	handle, _ := res.Register(b)
 
 	_, err := handle.ExtractURIVars("items://abc/extra")
-	var mm apimcp.ResourceURIMismatchError
+	var mm codex.TemplateMismatchError
 	if !errors.As(err, &mm) {
-		t.Fatalf("expected ResourceURIMismatchError, got %T: %v", err, err)
+		t.Fatalf("expected codex.TemplateMismatchError, got %T: %v", err, err)
 	}
 	if mm.Template != "items://{id}" {
 		t.Errorf("Template: got %q", mm.Template)
 	}
-	if mm.URI != "items://abc/extra" {
-		t.Errorf("URI: got %q", mm.URI)
+	if mm.Concrete != "items://abc/extra" {
+		t.Errorf("Concrete: got %q", mm.Concrete)
 	}
 }
 
-// G4a: an extracted variable that fails its registered codec returns
-// ResourceParamError (via the internal ValidateURIVars call).
+// G4a: an extracted variable that fails its declared field's codec returns
+// codex.ValidationErrors (via Template.Codec().Decode).
 func TestResourceHandle_ExtractURIVars_codecFailure(t *testing.T) {
 	b := newBuilder()
-	res := apimcp.NewResource[itemData]("items://{id}", itemCodec,
-		apimcp.ResourceParam{Name: "id"}.WithCodec(uuidCodec),
-	)
+	tmpl := codex.NewTemplate("items://{id}", codex.PathStyle, idField(uuidCodec))
+	res := apimcp.NewResourceFromTemplate(tmpl, itemCodec)
 	handle, _ := res.Register(b)
 
 	_, err := handle.ExtractURIVars("items://not-a-uuid")
-	var pe apimcp.ResourceParamError
-	if !errors.As(err, &pe) {
-		t.Fatalf("expected ResourceParamError, got %T: %v", err, err)
-	}
-	if pe.Name != "id" {
-		t.Errorf("Name: got %q, want %q", pe.Name, "id")
+	var ve codex.ValidationErrors
+	if !errors.As(err, &ve) {
+		t.Fatalf("expected codex.ValidationErrors, got %T: %v", err, err)
 	}
 }
 
@@ -431,37 +500,20 @@ func TestResourceHandle_ExtractURIVars_codecFailure(t *testing.T) {
 // no vars extracted, no error for the identical URI.
 func TestResourceHandle_ExtractURIVars_staticTemplate(t *testing.T) {
 	b := newBuilder()
-	res := apimcp.NewResource[itemData]("items://catalog", itemCodec)
+	tmpl := codex.NewTemplate[struct{}]("items://catalog", codex.PathStyle)
+	res := apimcp.NewResourceFromTemplate(tmpl, itemCodec)
 	handle, _ := res.Register(b)
 
-	vars, err := handle.ExtractURIVars("items://catalog")
+	_, err := handle.ExtractURIVars("items://catalog")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
-	}
-	if len(vars) != 0 {
-		t.Errorf("expected empty vars, got %+v", vars)
-	}
-}
-
-func TestResourceURIMismatchError_LogValue(t *testing.T) {
-	err := apimcp.ResourceURIMismatchError{Template: "items://{id}", URI: "items://a/b"}
-	v := err.LogValue()
-	if v.Kind() != slog.KindGroup {
-		t.Fatalf("want KindGroup, got %v", v.Kind())
-	}
-	attrs := v.Group()
-	got := map[string]string{}
-	for _, a := range attrs {
-		got[a.Key] = a.Value.String()
-	}
-	if got["template"] != "items://{id}" || got["uri"] != "items://a/b" {
-		t.Errorf("unexpected attrs: %+v", got)
 	}
 }
 
 func TestResourceHandle_Encode_happy(t *testing.T) {
 	b := newBuilder()
-	res := apimcp.NewResource[itemData]("items://{id}", itemCodec)
+	tmpl := codex.NewTemplate("items://{id}", codex.PathStyle, idField(codex.String()))
+	res := apimcp.NewResourceFromTemplate(tmpl, itemCodec)
 	handle, _ := res.Register(b)
 
 	data, err := handle.Encode(itemData{ID: "1", Name: "Widget"})
@@ -594,7 +646,8 @@ func TestBuilder_MCPSpec_containsAllRegistered(t *testing.T) {
 	b := newBuilder()
 	_, _ = newCalcTool().Register(b)
 
-	res := apimcp.NewResource[itemData]("items://{id}", itemCodec,
+	tmpl := codex.NewTemplate("items://{id}", codex.PathStyle, idField(codex.String()))
+	res := apimcp.NewResourceFromTemplate(tmpl, itemCodec,
 		apimcp.ResourceMeta{Name: "Item"},
 	)
 	_, _ = res.Register(b)
@@ -639,29 +692,11 @@ func TestBuilder_MCPSpec_toolInputSchemaPresent(t *testing.T) {
 // ---------------------------------------------------------------------------
 // WithCodec tests (G1 — mirrors TestPathParam_WithCodec_* in api/rest)
 // ---------------------------------------------------------------------------
-
-func TestResourceParam_WithCodec_setsCodecWithoutAddressOf(t *testing.T) {
-	uuidCodec := codex.String().Refine(validate.UUID)
-	p := apimcp.ResourceParam{Name: "id"}.WithCodec(uuidCodec)
-	if p.Codec == nil {
-		t.Fatal("expected Codec to be non-nil after WithCodec")
-	}
-	if err := p.Codec.Validate("550e8400-e29b-41d4-a716-446655440000"); err != nil {
-		t.Errorf("expected valid UUID to pass: %v", err)
-	}
-}
-
-func TestResourceParam_WithCodec_returnsDistinctCopy(t *testing.T) {
-	uuidCodec := codex.String().Refine(validate.UUID)
-	original := apimcp.ResourceParam{Name: "id"}
-	updated := original.WithCodec(uuidCodec)
-	if original.Codec != nil {
-		t.Error("original ResourceParam must not be mutated")
-	}
-	if updated.Codec == nil {
-		t.Fatal("updated ResourceParam must have Codec set")
-	}
-}
+//
+// ResourceParam.WithCodec no longer exists — a resource's URI var codec is
+// now declared directly on its codex.Template[V]'s FieldCodec (see idField
+// above), which already has its own WithCodec-equivalent test coverage in
+// codex/template_test.go and codex/object_test.go.
 
 func TestPromptArg_WithCodec_setsCodecWithoutAddressOf(t *testing.T) {
 	enumCodec := codex.String().Refine(validate.OneOf("bullets", "paragraph"))
@@ -710,7 +745,8 @@ func TestToolMeta_Tags_flowToHandleAndSpec(t *testing.T) {
 
 func TestResourceMeta_Tags_flowToHandleAndSpec(t *testing.T) {
 	b := newBuilder()
-	res := apimcp.NewResource[itemData]("items://{id}", itemCodec,
+	tmpl := codex.NewTemplate("items://{id}", codex.PathStyle, idField(codex.String()))
+	res := apimcp.NewResourceFromTemplate(tmpl, itemCodec,
 		apimcp.ResourceMeta{Name: "Item", Tags: []string{"catalog", "v2"}},
 	)
 	handle, err := res.Register(b)

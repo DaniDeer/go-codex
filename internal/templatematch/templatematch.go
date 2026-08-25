@@ -1,17 +1,22 @@
-// Package templatematch is the shared, module-internal core for matching a
-// concrete path/topic string against a "{varName}"-style template and
-// extracting the variable values — the inverse of building a concrete
-// path/topic FROM a template + a vars map (that direction is handled per
-// package, e.g. [github.com/DaniDeer/go-codex/api/internal.BuildFromTemplate]).
+// Package templatematch is the shared, module-internal core for both
+// directions of "{varName}"-style template handling: matching a concrete
+// path/topic string against a template to EXTRACT variable values, and
+// BUILDING a concrete string FROM a template + a vars map by substitution.
 //
-// This package exists because the matching algorithm was independently
-// duplicated FOUR times across the codebase (adapters/mqtt, adapters/mqtt5,
-// adapters/zeromq, ports/file.go) — none of those packages can import
-// api/internal (Go's internal/ import-visibility rule restricts it to code
-// rooted at api/'s own subtree). A package under the repository's TOP-LEVEL
-// internal/ directory is importable from anywhere in the module
-// (api/*, adapters/*, ports/, ...), which is why the shared core lives here
-// instead of under api/internal.
+// This package exists because both directions were independently
+// duplicated across the codebase (the match direction: adapters/mqtt,
+// adapters/mqtt5, adapters/zeromq, ports/file.go; the build direction:
+// api/internal.BuildFromTemplate, ports/file.go, ports/dir.go,
+// codex/dottedkey.go) — none of those packages can import api/internal
+// (Go's internal/ import-visibility rule restricts it to code rooted at
+// api/'s own subtree), and codex/ports cannot import each other. A package
+// under the repository's TOP-LEVEL internal/ directory is importable from
+// anywhere in the module (codex/, api/*, adapters/*, ports/, ...), which is
+// why the shared core lives here. This package deliberately has NO
+// dependency on codex (codex depends on templatematch, not the reverse) —
+// per-variable CODEC validation is layered on top by each caller (see
+// [github.com/DaniDeer/go-codex/codex.Template] for the canonical,
+// codec-aware wrapper built on this package's Build/Match functions).
 package templatematch
 
 import (
@@ -21,6 +26,75 @@ import (
 
 // templateVarRe matches {varName} placeholders in a path or topic template.
 var templateVarRe = regexp.MustCompile(`\{([^}]+)\}`)
+
+// Build substitutes each "{varName}" placeholder in template with the
+// corresponding value from vars, returning the concrete string. This is
+// the delimiter-agnostic CORE substitution algorithm — it works
+// identically for "/"-delimited (path/topic) and "."-delimited (dotted
+// key) templates, since it operates on the raw placeholder tokens
+// wherever they appear, not on delimiter-split segments.
+//
+// wrapMissing is called to produce an error when a template variable has
+// no entry in vars — the caller supplies this so the returned error has
+// the caller's OWN typed shape (this package has no error types of its
+// own). No per-variable CODEC validation happens here — vars is assumed
+// to already contain validated string values (see this package's own doc
+// comment: codec validation is layered on top by the caller, e.g.
+// [github.com/DaniDeer/go-codex/codex.Template], typically via
+// codex.EncodeVars BEFORE calling Build).
+func Build(template string, vars map[string]string, wrapMissing func(name string) error) (string, error) {
+	var firstErr error
+	result := templateVarRe.ReplaceAllStringFunc(template, func(placeholder string) string {
+		if firstErr != nil {
+			return placeholder
+		}
+		name := placeholder[1 : len(placeholder)-1] // strip { and }
+		value, ok := vars[name]
+		if !ok {
+			firstErr = wrapMissing(name)
+			return placeholder
+		}
+		return value
+	})
+	if firstErr != nil {
+		return "", firstErr
+	}
+	return result, nil
+}
+
+// ParseVars returns the set of "{varName}" placeholder names (without
+// braces) found in template — e.g. {"id": true} for "/users/{id}". Used
+// by [github.com/DaniDeer/go-codex/codex.Template] to validate, at
+// construction time, that every placeholder has a matching declared
+// field (a template referencing an undeclared var is a programming
+// error, caught immediately rather than surfacing as a confusing runtime
+// "missing var" failure).
+func ParseVars(template string) map[string]bool {
+	vars := make(map[string]bool)
+	for _, m := range templateVarRe.FindAllStringSubmatch(template, -1) {
+		vars[m[1]] = true
+	}
+	return vars
+}
+
+// ParseVarsInOrder returns the "{varName}" placeholder names (without
+// braces) found in template, in FIRST-OCCURRENCE, left-to-right order,
+// each name appearing once even if referenced multiple times in template.
+// Used by callers (e.g. codex.BuildFromParams) that need to preserve
+// left-to-right, first-error-wins validation semantics across multiple
+// placeholders — [ParseVars]'s map has no defined iteration order.
+func ParseVarsInOrder(template string) []string {
+	seen := make(map[string]bool)
+	var names []string
+	for _, m := range templateVarRe.FindAllStringSubmatch(template, -1) {
+		name := m[1]
+		if !seen[name] {
+			seen[name] = true
+			names = append(names, name)
+		}
+	}
+	return names
+}
 
 // MatchNonWildcard matches a concrete path/topic string against a template
 // containing "{varName}" placeholders and literal text, returning the

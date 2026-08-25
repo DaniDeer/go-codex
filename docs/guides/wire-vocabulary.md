@@ -86,21 +86,23 @@ already exists well.
 
 ## Reusing a Topic/Path/FilePathTemplate
 
-`events.ChannelHandle.BuildTopic`, `rest.RouteHandle.BuildPath`, and
-`ports.File.BuildPath`/`ports.Dir.BuildPath` are all logically independent
-of their generic payload type — they only touch the template string plus
-the declared variable params. `events.Topic`, `rest.Path`,
+`events.ChannelHandle.BuildTopic`, `rest.RouteHandle.BuildPath`,
+`reqreply.RouteHandle.BuildTopic`, and `ports.File.BuildPath`/
+`ports.Dir.BuildPath` are all logically independent of their generic
+payload type — they only touch the template string plus the declared
+variable params. `events.Topic`, `rest.Path`, `reqreply.Topic`,
 `ports.FilePathTemplate`, and `ports.DirPathTemplate` extract that
 payload-independent shape into its own reusable value.
 
 **This is opt-in, not the default.** The plain-string form
 (`events.NewChannel[T]("devices/{deviceID}/status", codec, opts...)`, and
-the `rest`/`ports` equivalents) remains completely unchanged and stays
-the default, primary way to declare a one-off channel/route/file/dir.
-Reach for `Topic`/`Path`/`FilePathTemplate`/`DirPathTemplate` ONLY when
-you find yourself declaring the SAME template+params shape for two or
-more channels/routes/files (of different payload types) and want that
-shape to have exactly one source of truth:
+the `rest`/`reqreply`/`ports` equivalents) remains completely unchanged
+and stays the default, primary way to declare a one-off
+channel/route/file/dir. Reach for `Topic`/`Path`/`FilePathTemplate`/
+`DirPathTemplate` ONLY when you find yourself declaring the SAME
+template+params shape for two or more channels/routes/files (of
+different payload types) and want that shape to have exactly one source
+of truth:
 
 ```go
 var deviceStatusTopic = events.NewTopic("devices/{deviceID}/status",
@@ -126,9 +128,10 @@ inline — nothing downstream (adapters, `Register`, spec generation) can
 tell the difference. Every other option (`ChannelMeta`, `Subscribe`/
 `Publish`, `RouteMeta`, `WithSecurityScheme`, formats, error patterns, …)
 is passed through to `NewChannelFromTopic`/`NewRouteFromPath`/
-`NewFileFromPathTemplate`/`NewDirFromPathTemplate` exactly as it would be
-to the plain constructor — using a bundle for the template+params portion
-restricts nothing else about the declaration.
+`reqreply.NewRouteFromTopic`/`NewFileFromPathTemplate`/
+`NewDirFromPathTemplate` exactly as it would be to the plain constructor
+— using a bundle for the template+params portion restricts nothing else
+about the declaration.
 
 See `examples/api-events`, `examples/api-rest`, and `examples/file-io`
 for runnable demonstrations of each.

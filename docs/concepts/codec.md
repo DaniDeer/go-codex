@@ -244,13 +244,36 @@ for typed fields like `int`/`time.Time` (vars are always string-valued at
 the wire level: path segments, topic segments, header/query/cookie values).
 
 **Per-boundary sugar**: `rest.NewPathParam[T]`/`NewRequiredQueryParam[T]`/
-`NewOptionalQueryParam[T]` (+ Header/Cookie equivalents) and
+`NewOptionalQueryParam[T]` (+ Header/Cookie equivalents),
+`events.NewTopicParam[T]`, `reqreply.NewTopicParam[T]`, and
 `ports.NewFilePathParam[T]` declare BOTH the boundary's spec Param (for
 OpenAPI/AsyncAPI generation, unchanged) AND a merge field in ONE call — see
 [Ports feature — File](../features/ports.md) and
 [REST API feature](../features/rest-api.md) for the full per-boundary
-API. The plain `PathParam`/`QueryParam`/`FilePathParam` struct literals
-remain available as the low-level, validate-only alternative.
+API. The plain `PathParam`/`QueryParam`/`FilePathParam`/`TopicParam`
+struct literals remain available as the low-level, validate-only
+alternative (`codex.Param`'s own escape-hatch role — see below).
+
+Every one of these boundary-specific `PathParam`/`TopicParam`/
+`FilePathParam` types is a thin wrapper over ONE shared pair of primitives
+in `codex`: `codex.Param{Name, Description, Codec}` (the validate-only
+escape hatch) and `codex.MergedParam[T]`/`codex.NewParam[T]` (the
+merge-capable counterpart, built via the SAME `RequiredField` mechanism
+above). `codex.ValidateParams`/`codex.ValidateDeclaredParams`/
+`codex.BuildFromParams` are the shared validate-loop/declaration-check/
+build-substitution bodies every boundary's `BuildPath`/`BuildTopic`/
+`ValidatePathParams`/`ValidateTopicVars` methods delegate to internally —
+one canonical implementation instead of five independently-duplicated
+copies (`api/rest`, `api/events`, `api/reqreply`, `ports/file.go`,
+`ports/dir.go`). Each boundary keeps its OWN struct name/vocabulary
+(`PathParam` reads as "a REST path variable", `TopicParam` as "an
+event/reqreply topic variable") since Go requires a package-owned type to
+satisfy that package's own sealed option interface (`RouteOpt`/
+`ChannelOpt`/`FileOpt`/`DirOpt`) — but the validation/build LOGIC, and the
+error shapes (`ParamError`/`MissingParamError`/`InvalidParamError`), are
+shared. `ports`' own `FilePathParamError`/`DirPathParamError` are the one
+exception, kept as their own distinct types rather than aliased, since
+their `LogValue()` keys predate and differ from `codex.Param`'s.
 
 A struct can mix BOTH sources at once — some fields decoded from the body,
 others merged from vars — as long as the body codec and the merge fields
@@ -1158,6 +1181,119 @@ including a nested `ModuleSettingsPatch` grouping) — this subsection and
 now the authoritative design reference (the feature's roadmap doc was
 retired once shipped).
 
+### `Getter`/`Setter`: validated value containers built on `Codec[T]`
+
+Everything above validates *runtime* values passed through `Encode`/
+`Decode`. A separate, smaller need: giving a compile-time-authored
+CONSTANT (a fixed path template, a protocol version string) or a
+runtime value SET EXACTLY ONCE (a config/env var loaded once at
+startup) the same declarative validation, instead of leaving it a bare,
+unchecked literal or variable. `codex.Getter[T]`/`Setter[T]` (declared
+standalone in `codex/getter.go`, so future codec-backed containers can
+satisfy them too) and their first two implementations, `Const[T]` and
+`Immutable[T]` (`codex/const.go`), are a THIRD layer sitting on top of
+the two that already exist:
+
+| Layer | What it validates | Reference |
+|---|---|---|
+| 0 — `Codec[T]` | A wire SHAPE, on every `Encode`/`Decode` call | `codex/codec.go` |
+| 1 — `HasCodec[T]` | "This TYPE knows its own Codec" — generic helpers (`Validate`/`New`/`EncodeSelf`/`DecodeAs`/`SchemaOf`) work on any type implementing it | `codex/hascodec.go` |
+| 2 — `Getter[T]`/`Setter[T]` + `Const[T]`/`Immutable[T]` | "This VALUE's identity, at a specific point in its OWN lifecycle (authored-at-compile-time vs. assigned-once-at-runtime), is validated and then frozen" — generic CONTAINERS parameterized by an externally supplied `Codec[T]` | `codex/const.go` |
+
+**Not literally "higher-kinded"** — Go generics have no abstraction over
+type *constructors*, only over concrete types — but this table captures
+a genuinely reusable recipe: wrap a `Codec[T]`, add ONE lifecycle rule,
+expose `Getter`/`Setter`. Nothing new is invented at the codec level:
+both consumers below validate their incoming value via the SAME
+`Codec[T].Validate` every other part of go-codex already uses.
+
+```go
+type Getter[T any] interface{ Get() T }
+type Setter[T any] interface{ Set(T) error }
+type GetterSetter[T any] interface {
+    Getter[T]
+    Setter[T]
+}
+```
+
+**`Const[T]`** — compile-time-authored, eagerly validated, PANICS if
+invalid (mirrors `Must`/`Must2`'s existing panic-on-invalid convention
+for authored, not runtime, input):
+
+```go
+var pathPatternCodec = codex.String().Refine(validate.NonEmptyString)
+
+var useCasePathPattern = codex.MustConst(
+    fmt.Sprintf("%s/{%s}.json", useCasesDirName, useCaseNameVar),
+    pathPatternCodec,
+)
+
+useCasePathPattern.Get()      // "usecases/{usecase_name}.json"
+useCasePathPattern.String()   // same, via fmt.Sprint — works for any T
+```
+
+`Const[T]` implements ONLY `Getter[T]` — its value is fixed forever at
+construction, so there is no runtime "assign" to expose. It is a plain
+value type (safe to copy freely, always fully valid).
+
+**`Immutable[T]`** — runtime-supplied, validated exactly once, at the
+ONE `Set` call — the "config/env var loaded once at startup, then
+read-only for the rest of the process" shape. `config.FromEnv` (see
+[Feature: Config](../features/config.md)) is now the batteries-included
+way to get there for a whole struct-shaped config, returning the loaded
+value ALREADY wrapped in a fresh `*Immutable[T]`:
+
+```go
+appConfig, err := config.FromEnv(configCodec, "APP_")
+if err != nil {
+    log.Fatal(err) // real external input — an error, never a panic
+}
+// ... elsewhere, for the rest of the process's lifetime:
+cfg := appConfig.Get()
+```
+
+For a single scalar value (not a whole struct), construct an
+`Immutable[T]` directly and `Set` it from `config.FromEnvVar`'s result
+(or `os.Getenv`) yourself — `FromEnvVar` stays plain-value on purpose
+(see `config.FromEnvVar`'s own doc comment for why):
+
+```go
+var apiBaseURL = codex.NewImmutable(codex.String().Refine(validate.NonEmptyString))
+
+func main() {
+    if err := apiBaseURL.Set(os.Getenv("API_BASE_URL")); err != nil {
+        log.Fatal(err) // real external input — an error, never a panic
+    }
+    // ... elsewhere, for the rest of the process's lifetime:
+    url := apiBaseURL.Get()
+}
+```
+
+`Immutable[T]` implements `GetterSetter[T]` — both `Getter[T]` and
+`Setter[T]` — and, unlike `Const[T]`, has a genuine "not yet set"
+lifecycle state before the first `Set`, so it is used via a pointer
+(`*Immutable[T]`) and guards its state with a mutex:
+
+- `Set` validates via the SAME `codec.Validate` and returns an error
+  (not a panic) on an invalid value — real runtime input, not an
+  authored literal.
+- A SECOND `Set` call always fails with `ImmutableAlreadySetError`,
+  regardless of whether the new value would itself be valid — "set
+  once" is enforced, not just documented.
+- `Get()` PANICS if called before any successful `Set` (a real bug:
+  reading config before startup finished loading it) — `TryGet() (T, bool)`
+  is the safe, non-panicking alternative for optional/defensive access.
+
+This asymmetry (`Const[T]` is `Getter[T]`-only; `Immutable[T]` is a full
+`GetterSetter[T]`) documents the conceptual difference directly:
+`Getter[T]` alone means "this value's identity is already settled";
+`Getter[T]` + `Setter[T]` together means "this value's identity can
+still be settled, exactly once, by someone." No structured error type
+is needed beyond `ImmutableAlreadySetError` (empty — nothing to report
+beyond the fact itself) and no observer integration applies (no I/O, no
+adapter boundary — `MustConst`/`Set` each run once, not on a repeated
+request/response path).
+
 ### Applying a patch: `ApplyPatch` (flat) vs. `ApplyDottedPatch` (dotted-path)
 
 `PartialField`/`PartialStruct` build a validated PATCH value — but say
@@ -1230,6 +1366,69 @@ below for the complementary "build ONE typed key from named segments, no
 wildcards" case. Typed per-path leaf validation (validate a SPECIFIC
 path's value against a SPECIFIC codec) remains a deferred, still-open
 idea.
+
+### `Template[T]`: the shared build+match engine underneath every `{varName}` pattern
+
+`codex.Template[T]` is the single, canonical build+match engine for every
+`"{varName}"`-style pattern in go-codex — REST paths, event/reqreply
+topics, MCP resource URIs, file/dir paths, and dotted wire keys (see
+`DottedKeyCodec` below, which is a one-line wrapper over it). Construct
+with `codex.NewTemplate(pattern, style, fields...)`, where `style` is one
+of four named values selecting the matching dialect: `PathStyle`
+(`"/"`-delimited, no wildcards — REST/events/reqreply/MCP/file paths),
+`MQTTStyle` (`"/"`-delimited, `+`/`#` wildcards), `DottedStyle`
+(`"."`-delimited, `+`/`#` wildcards — dotted wire keys), and `GlobStyle`
+(`"/"`-delimited, glob metacharacters — `ports.File`/`Dir`). `Template[T]`
+embeds `Const[string]` (the raw pattern text, via `Get()`/`String()`) and
+implements `HasCodec[T]`: `Codec().Encode` builds a concrete string from a
+`T` value (via `EncodeVars` + substitution), `Codec().Decode` matches a
+concrete string against the pattern and decodes the extracted vars into a
+`T` (via `DecodeVars`). `Template[T].Build(vars T) (string, error)` is a
+convenience wrapper over `Codec().Encode` for callers who don't need the
+full `Codec[T]` interface. A pattern with NO declared fields (e.g.
+`Template[struct{}]`) is a static, zero-variable pattern — `Encode` passes
+it through unchanged, `Decode` still confirms an exact match. `api/mcp`'s
+`Resource[V,T]`/`ResourceHandle[V,T]` are built directly on `Template[V]`;
+`api/rest`/`api/events`/`api/reqreply`/`ports.File`/`ports.Dir` instead
+share the lighter-weight `codex.Param`/`MergedParam[T]` primitive (see
+above) for their own `PathParam`/`TopicParam`/`FilePathParam`/
+`DirPathParam` — `Template[T]` is reached for when a boundary's vars
+naturally form ONE cohesive type with no separate merge target (like
+MCP's resource content), `Param`/`MergedParam[T]` when a boundary needs
+BOTH a validate-only escape hatch AND an optional merge into an
+independently-typed `Req`/content value.
+
+`Template[T].Fields() []FieldCodec[T]` returns the template's own declared
+fields (mirrors the existing `.Vars()`, which returns just the names) —
+used by callers that need to DECOMPOSE an already-built `Template` back
+into individual field declarations, e.g. `mcp.NewResourceFromTemplate`
+re-declaring them as `mcp.URIParam` options to delegate to the bare-string
+primary constructor (`mcp.NewResource`), the exact same "escape hatch
+decomposes into the primary constructor" idiom `rest.NewRouteFromPath`/
+`events.NewChannelFromTopic`/`ports.NewFileFromPathTemplate` already use
+via their own public `Path.Params`/`Topic.Params`/`FilePathTemplate.Params`.
+
+`codex.IdentityField[V any](name string, codec Codec[V]) Field[V, V]` is a
+`RequiredField` with `T=F=V` and identity get/set — for any single-var
+`Template[V]` where `V` IS the bare scalar type (not a wrapper struct),
+sparing the call site from repeating `func(v V) V { return v }`/
+`func(v *V, val V) { *v = val }` by hand:
+
+```go
+var itemResource = mcp.NewResource[string]("items://{id}", itemCodec,
+    mcp.ResourceMeta{Name: "Item", MimeType: "application/json"},
+    mcp.URIParam(codex.IdentityField("id", codex.String().Refine(validate.NonEmptyString))),
+)
+```
+
+— matching `rest.NewRoute`/`events.NewChannel`/`ports.NewFile`/
+`ports.NewDir`'s exact "bare string + opts" call shape for the common
+single-var-resource case, with zero `codex.NewTemplate`/`codex.PathStyle`
+ceremony needed at the call site (`NewResource` builds the `Template[V]`
+internally from the declared `URIParam`s). Reach for
+`mcp.NewResourceFromTemplate` (taking a pre-built `codex.Template[V]`
+directly) only when reusing the SAME URI shape across multiple `Resource`
+declarations of different content types.
 
 ### `DottedKeyCodec`/`DottedPatchMapCodec`: MQTT-style dotted-key templates
 

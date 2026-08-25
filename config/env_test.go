@@ -115,10 +115,11 @@ func TestFromEnv_FlatValid(t *testing.T) {
 	t.Setenv("APP_DEBUG", "true")
 	t.Setenv("APP_TIMEOUT", "30.5")
 
-	cfg, err := config.FromEnv(flatCodec, "APP_")
+	im, err := config.FromEnv(flatCodec, "APP_")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
+	cfg := im.Get()
 	if cfg.Host != "localhost" {
 		t.Errorf("host: got %q, want %q", cfg.Host, "localhost")
 	}
@@ -145,6 +146,43 @@ func TestFromEnv_MissingRequired(t *testing.T) {
 	}
 	if len(ve) == 0 {
 		t.Error("expected at least one ValidationError")
+	}
+}
+
+func TestFromEnv_Error_ReturnsNilImmutable(t *testing.T) {
+	// No env vars set; host, port, timeout are required — FromEnv must
+	// return a nil *codex.Immutable[T] alongside the error, never a
+	// constructed-but-unset one a caller could mistakenly Get() from.
+	im, err := config.FromEnv(flatCodec, "APP_")
+	if err == nil {
+		t.Fatal("expected error for missing required fields, got nil")
+	}
+	if im != nil {
+		t.Errorf("expected nil *Immutable[T] on error, got %v", im)
+	}
+}
+
+func TestFromEnv_Valid_ReturnsSetImmutable(t *testing.T) {
+	t.Setenv("APP_HOST", "localhost")
+	t.Setenv("APP_PORT", "8080")
+	t.Setenv("APP_TIMEOUT", "30.5")
+
+	im, err := config.FromEnv(flatCodec, "APP_")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	// Get() must not panic — FromEnv already Set the returned Immutable.
+	if im.Get().Host != "localhost" {
+		t.Errorf("Get().Host = %q, want localhost", im.Get().Host)
+	}
+	// A second Set must fail — FromEnv's returned Immutable is genuinely
+	// "set exactly once," not merely documented as read-only.
+	if err := im.Set(flat{Host: "other", Port: 1, Timeout: 1}); err == nil {
+		t.Error("expected second Set on FromEnv's returned Immutable to fail")
+	}
+	var alreadySet codex.ImmutableAlreadySetError
+	if !errors.As(im.Set(flat{Host: "other", Port: 1, Timeout: 1}), &alreadySet) {
+		t.Error("expected ImmutableAlreadySetError from a second Set call")
 	}
 }
 
@@ -213,10 +251,11 @@ func TestFromEnv_NestedStruct(t *testing.T) {
 	t.Setenv("APP_SERVER_TLS", "true")
 	t.Setenv("APP_PORT", "443")
 
-	cfg, err := config.FromEnv(nestedCodec, "APP_")
+	im, err := config.FromEnv(nestedCodec, "APP_")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
+	cfg := im.Get()
 	if cfg.Server.Host != "api.example.com" {
 		t.Errorf("server.host: got %q, want %q", cfg.Server.Host, "api.example.com")
 	}
@@ -231,10 +270,11 @@ func TestFromEnv_NestedStruct(t *testing.T) {
 func TestFromEnv_SliceOfStrings(t *testing.T) {
 	t.Setenv("APP_TAGS", "web,api,v2")
 
-	cfg, err := config.FromEnv(sliceCodec, "APP_")
+	im, err := config.FromEnv(sliceCodec, "APP_")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
+	cfg := im.Get()
 	if len(cfg.Tags) != 3 {
 		t.Fatalf("tags: got %d elements, want 3", len(cfg.Tags))
 	}
@@ -246,10 +286,11 @@ func TestFromEnv_SliceOfStrings(t *testing.T) {
 func TestFromEnv_SliceOfInts(t *testing.T) {
 	t.Setenv("APP_PORTS", "8080, 9090, 9091")
 
-	cfg, err := config.FromEnv(sliceCodec, "APP_")
+	im, err := config.FromEnv(sliceCodec, "APP_")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
+	cfg := im.Get()
 	if len(cfg.Ports) != 3 {
 		t.Fatalf("ports: got %d elements, want 3", len(cfg.Ports))
 	}
@@ -268,10 +309,11 @@ func TestFromEnv_SliceParseError(t *testing.T) {
 }
 
 func TestFromEnv_NullableAbsent(t *testing.T) {
-	cfg, err := config.FromEnv(nullableCodec, "APP_")
+	im, err := config.FromEnv(nullableCodec, "APP_")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
+	cfg := im.Get()
 	if cfg.Note != nil {
 		t.Errorf("note: expected nil, got %v", cfg.Note)
 	}
@@ -280,10 +322,11 @@ func TestFromEnv_NullableAbsent(t *testing.T) {
 func TestFromEnv_NullablePresent(t *testing.T) {
 	t.Setenv("APP_NOTE", "hello")
 
-	cfg, err := config.FromEnv(nullableCodec, "APP_")
+	im, err := config.FromEnv(nullableCodec, "APP_")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
+	cfg := im.Get()
 	if cfg.Note == nil {
 		t.Fatal("note: expected non-nil")
 	}
@@ -297,10 +340,11 @@ func TestFromEnv_EmptyPrefix(t *testing.T) {
 	t.Setenv("PORT", "3000")
 	t.Setenv("TIMEOUT", "5.0")
 
-	cfg, err := config.FromEnv(flatCodec, "")
+	im, err := config.FromEnv(flatCodec, "")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
+	cfg := im.Get()
 	if cfg.Host != "localhost" {
 		t.Errorf("host: got %q, want localhost", cfg.Host)
 	}
@@ -330,10 +374,11 @@ func TestFromEnv_NestedStructAsJSON(t *testing.T) {
 	t.Setenv("APP_SERVER", `{"host":"api.example.com","tls":true}`)
 	t.Setenv("APP_PORT", "443")
 
-	cfg, err := config.FromEnv(nestedCodec, "APP_")
+	im, err := config.FromEnv(nestedCodec, "APP_")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
+	cfg := im.Get()
 	if cfg.Server.Host != "api.example.com" {
 		t.Errorf("server.host: got %q, want api.example.com", cfg.Server.Host)
 	}
@@ -351,10 +396,11 @@ func TestFromEnv_JSONWinsOverPrefixExpansion(t *testing.T) {
 	t.Setenv("APP_SERVER_HOST", "from-prefix") // should be ignored
 	t.Setenv("APP_PORT", "80")
 
-	cfg, err := config.FromEnv(nestedCodec, "APP_")
+	im, err := config.FromEnv(nestedCodec, "APP_")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
+	cfg := im.Get()
 	if cfg.Server.Host != "from-json" {
 		t.Errorf("server.host: expected JSON to win, got %q", cfg.Server.Host)
 	}
@@ -364,10 +410,11 @@ func TestFromEnv_SliceAsJSONArray(t *testing.T) {
 	t.Setenv("APP_TAGS", `["web","api","v2"]`)
 	t.Setenv("APP_PORTS", `[8080,9090]`)
 
-	cfg, err := config.FromEnv(sliceCodec, "APP_")
+	im, err := config.FromEnv(sliceCodec, "APP_")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
+	cfg := im.Get()
 	if len(cfg.Tags) != 3 || cfg.Tags[0] != "web" || cfg.Tags[2] != "v2" {
 		t.Errorf("tags: got %v", cfg.Tags)
 	}
@@ -379,10 +426,11 @@ func TestFromEnv_SliceAsJSONArray(t *testing.T) {
 func TestFromEnv_StringMapAsJSON(t *testing.T) {
 	t.Setenv("APP_LABELS", `{"env":"prod","team":"platform"}`)
 
-	cfg, err := config.FromEnv(stringMapCodec, "APP_")
+	im, err := config.FromEnv(stringMapCodec, "APP_")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
+	cfg := im.Get()
 	if cfg.Labels["env"] != "prod" || cfg.Labels["team"] != "platform" {
 		t.Errorf("labels: got %v", cfg.Labels)
 	}

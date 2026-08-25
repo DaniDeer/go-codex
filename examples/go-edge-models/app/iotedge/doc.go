@@ -70,9 +70,9 @@
 //
 //  1. ReadUseCase/PatchUseCaseModule/UpdateUseCaseModuleImage
 //     (usecase.go) — the PRIMARY, batteries-included TEMPLATE-scoped
-//     entry points. A caller supplies basePath + useCaseName per call;
-//     this package never assumes or hardcodes where a use case's
-//     manifest lives.
+//     entry points. A caller supplies a usecase.BasePath + useCaseName
+//     per call; this package never assumes or hardcodes where a use
+//     case's manifest lives.
 //  2. PatchDeviceModule/UpdateDeviceModuleImage (usecase.go) — the
 //     DEVICE-scoped analogues, additionally taking a deviceID; write
 //     into that device's OWN config file only.

@@ -93,6 +93,36 @@ func DefaultField[T, F any](name string, codec Codec[F], defaultVal F, get func(
 	return Field[T, F]{Name: name, Codec: codec, Get: get, Set: set, Default: &defaultVal}
 }
 
+// IdentityField is [RequiredField] with T=F=V — declares a field where V
+// ITSELF is the whole value (not a wrapper struct), via the identity
+// get/set. Intended for a single-var [Template][V] (or [DottedKeyCodec][V])
+// whose vars type V is a bare scalar, e.g. Template[Name]/Template[string]
+// — the identity get/set (`func(v V) V { return v }` / `func(v *V, val V)
+// { *v = val }`) would otherwise be repeated by hand at every such call
+// site.
+//
+// NOT the same thing as a plain FIELD ACCESSOR — e.g.
+// `codex.RequiredField("image", imageCodec, func(ms ModuleSettings)
+// docker.Image { return ms.Image }, func(ms *ModuleSettings, v docker.Image)
+// { ms.Image = v })` has T=ModuleSettings (a multi-field struct) and
+// F=docker.Image (just ONE of its fields) — get/set genuinely EXTRACT/
+// ASSIGN a field there, so T≠F, and [IdentityField] does not apply
+// (there is no shortcut for that shape; [RequiredField]/[OptionalField]/
+// [DefaultField]'s get/set closures are already the simplest expression
+// of "field X of struct T" Go's type system allows). [IdentityField]
+// applies ONLY when T=F=V — the container has NO other fields at all, so
+// get/set do nothing but hand the value back unchanged.
+//
+//	var itemURITemplate = codex.NewTemplate("items://{id}", codex.PathStyle,
+//	    codex.IdentityField("id", codex.String().Refine(validate.NonEmptyString)),
+//	)
+func IdentityField[V any](name string, codec Codec[V]) Field[V, V] {
+	return RequiredField(name, codec,
+		func(v V) V { return v },
+		func(v *V, val V) { *v = val },
+	)
+}
+
 // Struct builds a Codec[T] by composing field codecs. Schema is built eagerly.
 func Struct[T any](fields ...FieldCodec[T]) Codec[T] {
 	var props []schema.Property

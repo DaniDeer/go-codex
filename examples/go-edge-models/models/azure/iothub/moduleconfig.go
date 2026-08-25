@@ -29,8 +29,7 @@ var ModuleConfigCodec = c.Struct[ModuleConfig](
 		func(mc ModuleConfig) map[EnvVarName]EnvVar { return mc.Env },
 		func(mc *ModuleConfig, v map[EnvVarName]EnvVar) { mc.Env = EnvVars(v) },
 	),
-	c.RequiredField("type",
-		TypeCodec,
+	TypeField(
 		func(mc ModuleConfig) Type { return mc.Type },
 		func(mc *ModuleConfig, v Type) { mc.Type = v },
 	),

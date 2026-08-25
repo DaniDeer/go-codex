@@ -28,9 +28,13 @@ var calcTool = mcp.NewTool[CalcInput, CalcOutput]("calculate",
     mcp.ToolMeta{Description: "Arithmetic on two non-negative numbers."},
 )
 
-var itemResource = mcp.NewResource[Item]("items://{id}", itemCodec,
+// V=string serves as its own field container for this single-var template
+// (codex.IdentityField supplies the identity get/set) — the SAME bare
+// string + opts call shape as mcp.NewTool/rest.NewRoute/events.NewChannel.
+var itemResource = mcp.NewResource[string](
+    "items://{id}", itemCodec,
     mcp.ResourceMeta{Name: "Item", MimeType: "application/json"},
-    mcp.ResourceParam{Name: "id"}.WithCodec(codex.String().Refine(validate.NonEmptyString)),
+    mcp.URIParam(codex.IdentityField("id", codex.String().Refine(validate.NonEmptyString))),
 )
 
 var summaryPrompt = mcp.NewPrompt("summarize",
@@ -90,13 +94,20 @@ mcpgoserver.NewSSEServer(s, mcpgoserver.WithBaseURL("http://localhost:8080")).St
 
 ## URI and prompt validation
 
-```go
-// ResourceHandle.BuildURI — validates URI variables before assembling
-uri, err := resHandle.BuildURI(map[string]string{"id": "item-123"})
+`ResourceHandle[V, T]` is built directly on `codex.Template[V]` — `V` is
+the URI template's typed vars (e.g. `string` for `itemResource`'s
+single-var template above, via an identity `codex.FieldCodec`; a
+multi-var template uses a small dedicated vars struct instead).
 
-// ResourceHandle.ValidateURIVars — validate without building
-err = resHandle.ValidateURIVars(map[string]string{"id": ""})
-// → mcp.ResourceParamError{Name: "id", Value: "", Err: ...}
+```go
+// ResourceHandle.BuildURI — validates the typed vars before assembling
+uri, err := resHandle.BuildURI("item-123")
+
+// A codec failure (e.g. an empty id) returns codex.ValidationErrors —
+// no separate "validate without building" method: Template[V]'s own
+// Codec().Encode always validates before substitution.
+_, err = resHandle.BuildURI("")
+// → codex.ValidationErrors (id fails NonEmptyString)
 
 // PromptHandle.ValidateArgs — validate arg presence and codecs
 err = promptHandle.ValidateArgs(map[string]string{"style": "bullet"})
@@ -106,25 +117,25 @@ err = promptHandle.ValidateArgs(map[string]string{"style": "bullet"})
 ### Automatic URI-var extraction — `ExtractURIVars` / `RegisterResourceWithVars`
 
 `mcpgo.RegisterResource`'s handler receives only the raw, concrete URI
-string — extracting `{varName}` values and validating them against each
-registered `ResourceParam` codec is left entirely to the application. Use
-`ResourceHandle.ExtractURIVars` (or the `mcpgo.RegisterResourceWithVars`
-wiring below) to close that gap in one call:
+string — extracting and validating `{varName}` values into typed `V` is
+left entirely to the application. Use `ResourceHandle.ExtractURIVars` (or
+the `mcpgo.RegisterResourceWithVars` wiring below) to close that gap in
+one call:
 
 ```go
 // ResourceHandle.ExtractURIVars is the inverse of BuildURI: matches a
-// received URI against the template and returns the extracted vars,
-// ALREADY validated via ValidateURIVars.
-vars, err := resHandle.ExtractURIVars("items://item-123")
-// vars["id"] == "item-123"
-// err is mcp.ResourceURIMismatchError on a structural mismatch, or
-// mcp.ResourceParamError/MissingResourceVarError on a codec failure.
+// received URI against the template and decodes the extracted vars into
+// V, ALREADY validated via Template[V]'s own Codec().Decode.
+id, err := resHandle.ExtractURIVars("items://item-123")
+// id == "item-123"
+// err is codex.TemplateMismatchError on a structural mismatch, or
+// codex.ValidationErrors on a codec failure.
 
 // mcpgo.RegisterResourceWithVars wires ExtractURIVars automatically —
-// the handler receives the extracted+validated vars map as a third
+// the handler receives the extracted+validated, TYPED vars as a third
 // argument, no manual parsing needed:
-mcpgo.RegisterResourceWithVars(s, resHandle, func(ctx context.Context, uri string, vars map[string]string) (Item, error) {
-    return svc.GetItem(ctx, vars["id"])
+mcpgo.RegisterResourceWithVars(s, resHandle, func(ctx context.Context, uri string, id string) (Item, error) {
+    return svc.GetItem(ctx, id)
 }, mcpgo.Options{})
 ```
 
@@ -245,9 +256,8 @@ against a simulated registry failure, and binds the same handler via
 |---|---|---|
 | `mcp.ToolInputError{Name, Err}` | `ToolHandle.Decode` | input codec validation failure |
 | `mcp.ToolOutputError{Name, Err}` | `ToolHandle.Encode` | output codec validation failure |
-| `mcp.ResourceParamError{Name, Value, Err}` | `ResourceHandle.BuildURI` / `ValidateURIVars` / `ExtractURIVars` | URI var codec failure |
-| `mcp.MissingResourceVarError{Name}` | `ResourceHandle.BuildURI` / `ValidateURIVars` / `ExtractURIVars` | required URI var absent |
-| `mcp.ResourceURIMismatchError{Template, URI}` | `ResourceHandle.ExtractURIVars` | received URI doesn't match the template's structure |
+| `codex.ValidationErrors` | `ResourceHandle.BuildURI` / `ExtractURIVars` | URI var codec failure (missing or invalid), via `Template[V]`'s own `Codec()` |
+| `codex.TemplateMismatchError{Template, Concrete}` | `ResourceHandle.ExtractURIVars` | received URI doesn't match the template's structure |
 | `mcp.ResourceEncodeError{URI, Err}` | `ResourceHandle.Encode` | resource encode failure |
 | `mcp.PromptArgError{Name, Err}` | `PromptHandle.ValidateArgs` | arg codec failure |
 | `mcp.MissingPromptArgError{Name}` | `PromptHandle.ValidateArgs` | required arg absent |

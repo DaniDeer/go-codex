@@ -189,9 +189,7 @@ All must be `errors.As`-navigable. Bare `fmt.Errorf` in `adapter.go` Publish wit
 | `mcp.ToolInputError{Name, Err}` | `ToolHandle.Decode` — input codec validation failure |
 | `mcp.ToolOutputError{Name, Err}` | `ToolHandle.Encode` — output codec validation failure |
 | `mcp.ResourceEncodeError{URI, Err}` | `ResourceHandle.Encode` — resource encode failure |
-| `mcp.ResourceParamError{Name, Value, Err}` | `ResourceHandle.BuildURI`/`ValidateURIVars` — URI var codec failure |
-| `mcp.MissingResourceVarError{Name}` | `ResourceHandle.BuildURI`/`ValidateURIVars` — required URI var absent |
-| `mcp.InvalidResourceParamError{Name, URITemplate}` | `Resource.Register` — `ResourceParam` not in URI template |
+| `codex.ValidationErrors` / `codex.TemplateMismatchError` | `ResourceHandle.BuildURI`/`ExtractURIVars` — URI var codec/structural failure, surfaced DIRECTLY (no `api/mcp`-local wrapper type — `Resource[V,T]` is built on `codex.Template[V]`) |
 | `mcp.PromptArgError{Name, Err}` | `PromptHandle.ValidateArgs` — arg codec failure |
 | `mcp.MissingPromptArgError{Name}` | `PromptHandle.ValidateArgs` — required arg absent |
 
@@ -380,7 +378,7 @@ Verify `examples/adapters-mcp/main.go` demonstrates:
 - `mcp.NewBuilder` + `MCPSpec()` output
 - `mcpgo.RegisterTool/Resource/Prompt` with `Options{Observer: obs}`
 - Observer (CountingObserver) wired and printed at end
-- Structured error handling (`errors.As` on `ResourceParamError`, `MissingPromptArgError`)
+- Structured error handling (`errors.As` on `codex.TemplateMismatchError`, `MissingPromptArgError`)
 - Transport options comment block (stdio / streamable HTTP / SSE)
 
 ---

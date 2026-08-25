@@ -67,6 +67,22 @@ func TestDottedKeyCodec_DecodeError_StructuralMismatch(t *testing.T) {
 	}
 }
 
+func TestDottedKeyCodec_DecodeError_StructuralMismatch_ReturnsDottedKeyError(t *testing.T) {
+	template := "properties.desired.modules.{tenant}.{name}"
+	c := codex.DottedKeyCodec(template, moduleKeyDKFields...)
+	_, err := c.Decode("wrong.prefix.tenant-acme.cv-writer")
+	var dke codex.DottedKeyError
+	if !errors.As(err, &dke) {
+		t.Fatalf("expected DottedKeyError, got %T: %v", err, err)
+	}
+	if dke.Key != "wrong.prefix.tenant-acme.cv-writer" {
+		t.Errorf("DottedKeyError.Key = %q, want %q", dke.Key, "wrong.prefix.tenant-acme.cv-writer")
+	}
+	if dke.Template != template {
+		t.Errorf("DottedKeyError.Template = %q, want %q", dke.Template, template)
+	}
+}
+
 func TestDottedKeyCodec_ComposesWithMapForTypedValues(t *testing.T) {
 	type ModuleValue struct{ Image string }
 	valueCodec := codex.Struct[ModuleValue](

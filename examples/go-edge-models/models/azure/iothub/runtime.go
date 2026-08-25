@@ -109,7 +109,7 @@ var RuntimeCodec = c.Struct[Runtime](
 		func(r Runtime) RuntimeSettings { return r.Settings },
 		func(r *Runtime, val RuntimeSettings) { r.Settings = val },
 	),
-	c.RequiredField("type", TypeCodec,
+	TypeField(
 		func(r Runtime) Type { return r.Type },
 		func(r *Runtime, val Type) { r.Type = val },
 	),

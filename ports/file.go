@@ -2,12 +2,11 @@ package ports
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
 	"path/filepath"
-	"regexp"
-	"strings"
 	"time"
 
 	"github.com/DaniDeer/go-codex/codex"
@@ -19,9 +18,14 @@ import (
 
 // ── FilePathParam ─────────────────────────────────────────────────────────────
 
-// FilePathParam describes a {varName} placeholder in a [File] path template.
-// It mirrors [TopicParam] and [PathParam] — no Required field because every
-// template variable must always be present.
+// FilePathParam mirrors [codex.Param]'s shape field-for-field — the shared,
+// VALIDATE-ONLY escape hatch (see codex/param.go's own doc comment for the
+// cross-package rationale; this is the SAME primitive api/rest's PathParam/
+// api/events'/api/reqreply's TopicParam are built on). Kept as a flat,
+// non-embedded struct (rather than embedding codex.Param) so existing
+// `ports.FilePathParam{Name: "id"}` struct literals keep compiling
+// unchanged (Go requires keyed literal fields to be the struct's OWN
+// fields, not promoted ones).
 //
 // FilePathParam implements the [FileOpt] interface: pass it directly to [NewFile].
 type FilePathParam struct {
@@ -49,14 +53,28 @@ func (p FilePathParam) WithCodec(c codex.Codec[string]) FilePathParam {
 
 func (p FilePathParam) applyFile(fb *fileBuilder) { fb.params = append(fb.params, p) }
 
-// MergedFilePathParam is returned by [NewFilePathParam]. It embeds the
-// unchanged [FilePathParam] (spec/validation, exactly as before) plus a
-// merge field produced internally via [codex.RequiredField], so the same
-// declaration serves both [File.BuildPath]/[File.MatchPath] validation AND
-// [File.MergeFields] / [codex.DecodeVars] merging.
+// toParam converts p to the shared [codex.Param] shape.
+func (p FilePathParam) toParam() codex.Param {
+	return codex.Param{Name: p.Name, Description: p.Description, Codec: p.Codec}
+}
+
+// toCodexParams converts params to []codex.Param for [codex.BuildFromParams]/
+// [codex.ValidateParams].
+func toCodexFileParams(params []FilePathParam) []codex.Param {
+	out := make([]codex.Param, len(params))
+	for i, p := range params {
+		out[i] = p.toParam()
+	}
+	return out
+}
+
+// MergedFilePathParam is returned by [NewFilePathParam]. It wraps
+// [codex.MergedParam][T] — the shared merge-capable counterpart to
+// [FilePathParam] — so the same declaration serves both
+// [File.BuildPath]/[File.MatchPath] validation AND [File.MergeFields] /
+// [codex.DecodeVars] merging.
 type MergedFilePathParam[T any] struct {
-	FilePathParam
-	field codex.FieldCodec[T]
+	codex.MergedParam[T]
 }
 
 // NewFilePathParam declares a path template variable that is BOTH validated
@@ -82,22 +100,19 @@ func NewFilePathParam[T any](
 	get func(T) string,
 	set func(*T, string),
 ) MergedFilePathParam[T] {
-	return MergedFilePathParam[T]{
-		FilePathParam: FilePathParam{Name: name, Codec: &codec},
-		field:         codex.RequiredField(name, codec, get, set),
-	}
+	return MergedFilePathParam[T]{MergedParam: codex.NewParam(name, codec, get, set)}
 }
 
 // WithDescription sets the PARAMETER-level description and returns the
 // updated value, mirroring FilePathParam.WithCodec's existing chain style.
 func (p MergedFilePathParam[T]) WithDescription(desc string) MergedFilePathParam[T] {
-	p.Description = desc
+	p.MergedParam = p.MergedParam.WithDescription(desc)
 	return p
 }
 
 func (p MergedFilePathParam[T]) applyFile(fb *fileBuilder) {
-	fb.params = append(fb.params, p.FilePathParam) // unchanged spec/validation path
-	fb.mergeFields = append(fb.mergeFields, p.field)
+	fb.params = append(fb.params, FilePathParam{Name: p.Name, Description: p.Description, Codec: p.Codec}) // unchanged spec/validation path
+	fb.mergeFields = append(fb.mergeFields, p.Field)
 }
 
 // ── FileOptions ───────────────────────────────────────────────────────────────
@@ -242,13 +257,7 @@ func (t FilePathTemplate) BuildPath(vars map[string]string) (string, error) {
 	if templatematch.IsGlobEnabled(t.Template) {
 		return "", FileWildcardBuildError{Template: t.Template}
 	}
-	codecMap := make(map[string]*codex.Codec[string], len(t.Params))
-	for i := range t.Params {
-		if t.Params[i].Codec != nil {
-			codecMap[t.Params[i].Name] = t.Params[i].Codec
-		}
-	}
-	return buildFromFileTemplate(t.Template, vars, codecMap)
+	return buildFromFileTemplate(t.Template, vars, toCodexFileParams(t.Params))
 }
 
 // MatchPath is the inverse of [FilePathTemplate.BuildPath] — mirrors
@@ -267,15 +276,8 @@ func (t FilePathTemplate) MatchPath(path string) (map[string]string, error) {
 	if err != nil {
 		return nil, err
 	}
-	for i := range t.Params {
-		p := &t.Params[i]
-		if p.Codec == nil {
-			continue
-		}
-		value := vars[p.Name]
-		if err := p.Codec.Validate(value); err != nil {
-			return nil, FilePathParamError{Name: p.Name, Value: value, Err: err}
-		}
+	if err := convertFileParamErr(codex.ValidateParams(toCodexFileParams(t.Params), vars)); err != nil {
+		return nil, err
 	}
 	return vars, nil
 }
@@ -406,13 +408,7 @@ func (fh File[T]) BuildPath(vars map[string]string) (string, error) {
 	if templatematch.IsGlobEnabled(fh.Template) {
 		return "", FileWildcardBuildError{Template: fh.Template}
 	}
-	codecMap := make(map[string]*codex.Codec[string], len(fh.params))
-	for i := range fh.params {
-		if fh.params[i].Codec != nil {
-			codecMap[fh.params[i].Name] = fh.params[i].Codec
-		}
-	}
-	return buildFromFileTemplate(fh.Template, vars, codecMap)
+	return buildFromFileTemplate(fh.Template, vars, toCodexFileParams(fh.params))
 }
 
 // ValidatePathVars validates the variable values in vars against their
@@ -420,20 +416,7 @@ func (fh File[T]) BuildPath(vars map[string]string) (string, error) {
 // codec failure as a [FilePathParamError], or [MissingFilePathVarError] for
 // absent variables.
 func (fh File[T]) ValidatePathVars(vars map[string]string) error {
-	for i := range fh.params {
-		p := &fh.params[i]
-		if p.Codec == nil {
-			continue
-		}
-		value, ok := vars[p.Name]
-		if !ok {
-			return MissingFilePathVarError{Name: p.Name}
-		}
-		if err := p.Codec.Validate(value); err != nil {
-			return FilePathParamError{Name: p.Name, Value: value, Err: err}
-		}
-	}
-	return nil
+	return convertFileParamErr(codex.ValidateParams(toCodexFileParams(fh.params), vars))
 }
 
 // PathParamSchemas returns a map from template variable name to the codec's
@@ -493,15 +476,8 @@ func (fh File[T]) MatchPath(path string) (map[string]string, error) {
 	if err != nil {
 		return nil, err
 	}
-	for i := range fh.params {
-		p := &fh.params[i]
-		if p.Codec == nil {
-			continue
-		}
-		value := vars[p.Name]
-		if err := p.Codec.Validate(value); err != nil {
-			return nil, FilePathParamError{Name: p.Name, Value: value, Err: err}
-		}
+	if err := convertFileParamErr(codex.ValidateParams(toCodexFileParams(fh.params), vars)); err != nil {
+		return nil, err
 	}
 	return vars, nil
 }
@@ -1155,37 +1131,43 @@ func missingParentDirs(dir string) []string {
 
 // ── Template engine ───────────────────────────────────────────────────────────
 //
-// Subset of api/internal template logic, inlined here to keep format's import
-// graph clean (format must not import api/internal).
+// buildFromFileTemplate used to have its own private regexp-substitution
+// loop (a 4th/5th independent copy of the same build-direction logic
+// api/internal.BuildFromTemplate used to have) — now delegates the actual
+// substitution to [templatematch.Build] directly, the SAME canonical
+// function [codex.BuildFromParams]/[codex.Template]'s own Codec().Encode
+// use. ports' own error types (FilePathParamError/MissingFilePathVarError)
+// are kept distinct from [codex.ParamError]/[codex.MissingParamError]
+// (rather than aliased, as rest/events/reqreply's equivalents were) since
+// their LogValue() keys ("param"/"cause") predate and differ from
+// codex.Param's ("name"/"err") — convertFileParamErr bridges the two at
+// the call-site boundary, preserving 100% of ports' existing, tested
+// error behavior.
 
-var fileTemplateVarRe = regexp.MustCompile(`\{([^}]+)\}`)
+// convertFileParamErr converts a [codex.MissingParamError]/[codex.ParamError]
+// (returned by [codex.BuildFromParams]/[codex.ValidateParams]) into ports'
+// own [MissingFilePathVarError]/[FilePathParamError]. Passes any other
+// error (including nil) through unchanged.
+func convertFileParamErr(err error) error {
+	var me codex.MissingParamError
+	if errors.As(err, &me) {
+		return MissingFilePathVarError{Name: me.Name}
+	}
+	var pe codex.ParamError
+	if errors.As(err, &pe) {
+		return FilePathParamError{Name: pe.Name, Value: pe.Value, Err: pe.Err}
+	}
+	return err
+}
 
 func buildFromFileTemplate(
 	template string,
 	vars map[string]string,
-	codecs map[string]*codex.Codec[string],
+	params []codex.Param,
 ) (string, error) {
-	var buildErr error
-	result := fileTemplateVarRe.ReplaceAllStringFunc(template, func(placeholder string) string {
-		if buildErr != nil {
-			return placeholder
-		}
-		name := strings.TrimSuffix(strings.TrimPrefix(placeholder, "{"), "}")
-		value, ok := vars[name]
-		if !ok {
-			buildErr = MissingFilePathVarError{Name: name}
-			return placeholder
-		}
-		if c, hasCdc := codecs[name]; hasCdc {
-			if err := c.Validate(value); err != nil {
-				buildErr = FilePathParamError{Name: name, Value: value, Err: err}
-				return placeholder
-			}
-		}
-		return value
-	})
-	if buildErr != nil {
-		return "", buildErr
+	result, err := codex.BuildFromParams(template, params, vars)
+	if err != nil {
+		return "", convertFileParamErr(err)
 	}
 	return result, nil
 }

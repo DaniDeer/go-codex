@@ -1,8 +1,6 @@
 package usecase
 
 import (
-	"path/filepath"
-
 	iothub "github.com/DaniDeer/go-codex/examples/go-edge-models/models/azure/iothub"
 	f "github.com/DaniDeer/go-codex/format"
 	"github.com/DaniDeer/go-codex/ports"
@@ -21,10 +19,13 @@ import (
 
 // See config.go for the filesystem-layout constants this file's port
 // constructors are built from (useCasesDirName, useCaseNameVar,
-// useCasePathPattern, useCaseEntryShape, useCaseEntryVar), and for
-// nameCodec (the raw Codec[string] validator used below) plus the
-// exported [Name] type/[NameCodec]/[NewName] this file's Go-level API
-// (UseCase.Name/Read/Write/ListNames) is typed with.
+// useCasePathPattern, useCaseEntryShape, useCaseEntryVar), the
+// basePath-join helpers (baselineFilePath/useCasesDirPath/
+// useCaseFilePathTemplate) these constructors call instead of joining
+// basePath inline, and for nameCodec (the raw Codec[string] validator
+// used below) plus the exported [Name] type/[NameCodec]/[NewName] this
+// file's Go-level API (UseCase.Name/Read/Write/ListNames) is typed
+// with.
 
 // FileFormat is the declared, reusable format/codec pairing for an
 // iotedge deployment manifest file — no I/O by itself; it exists so
@@ -43,8 +44,8 @@ var BaselineFileFormat = f.JSON(iothub.BaseDeploymentCodec)
 // template variables (no per-use-case or per-device variation — see the
 // models/azure/iothub package's own doc comment for why): Read/Write
 // take a nil vars map, e.g. NewBaselineFile(basePath).Read(nil, opts).
-func NewBaselineFile(basePath string) ports.File[iothub.BaseDeployment] {
-	return ports.NewFile[iothub.BaseDeployment](filepath.Join(basePath, baselinePathPattern), BaselineFileFormat)
+func NewBaselineFile(basePath BasePath) ports.File[iothub.BaseDeployment] {
+	return ports.NewFile[iothub.BaseDeployment](baselineFilePath(basePath), BaselineFileFormat)
 }
 
 // DirEntryPattern declares the filename SHAPE for iotedge config files
@@ -55,7 +56,7 @@ func NewBaselineFile(basePath string) ports.File[iothub.BaseDeployment] {
 // files) is silently excluded by [ports.Dir.List] — see
 // [ports.EntryPattern]'s own doc.
 var DirEntryPattern = ports.EntryPattern{
-	Template: useCaseEntryShape,
+	Template: useCaseEntryShape.String(),
 	Params:   []ports.EntryParam{{Name: useCaseEntryVar, Codec: &nameCodec}},
 }
 
@@ -74,8 +75,8 @@ var DirEntryPattern = ports.EntryPattern{
 // (File.Write), and patching (ports.PatchEncoded(file, ...)) — see
 // [Read]/[Write] for the higher-level convenience that combines this
 // with device discovery.
-func NewFile(basePath string) ports.File[iothub.LayeredDeployment] {
-	return ports.NewFile[iothub.LayeredDeployment](filepath.Join(basePath, useCasePathPattern), FileFormat,
+func NewFile(basePath BasePath) ports.File[iothub.LayeredDeployment] {
+	return ports.NewFile[iothub.LayeredDeployment](useCaseFilePathTemplate(basePath), FileFormat,
 		ports.FilePathParam{Name: useCaseNameVar, Codec: &nameCodec},
 	)
 }
@@ -100,8 +101,8 @@ func NewDir(path string) ports.Dir {
 // [ports.Dir.List], extracting each entry's captured "useCase" var. Pair
 // a returned name with [NewFile]/[Read] to read/patch that SPECIFIC use
 // case's manifest.
-func ListNames(basePath string, opts ports.DirOptions) ([]Name, error) {
-	entries, err := NewDir(filepath.Join(basePath, useCasesDirName)).List(nil, opts)
+func ListNames(basePath BasePath, opts ports.DirOptions) ([]Name, error) {
+	entries, err := NewDir(useCasesDirPath(basePath)).List(nil, opts)
 	if err != nil {
 		return nil, err
 	}
@@ -128,7 +129,7 @@ type UseCase struct {
 
 // Read reads useCaseName's deployment manifest AND every device nested
 // under it, assembling one UseCase value in one call.
-func Read(basePath string, useCaseName Name, opts ports.FileOptions) (UseCase, error) {
+func Read(basePath BasePath, useCaseName Name, opts ports.FileOptions) (UseCase, error) {
 	manifest, err := NewFile(basePath).Read(map[string]string{useCaseNameVar: string(useCaseName)}, opts)
 	if err != nil {
 		return UseCase{}, err
@@ -161,7 +162,7 @@ func Read(basePath string, useCaseName Name, opts ports.FileOptions) (UseCase, e
 
 // Write writes uc.DeploymentManifest AND every uc.Devices entry — the
 // inverse of [Read], one call.
-func Write(basePath string, uc UseCase, opts ports.FileOptions) error {
+func Write(basePath BasePath, uc UseCase, opts ports.FileOptions) error {
 	if _, err := NewFile(basePath).Write(map[string]string{useCaseNameVar: string(uc.Name)}, uc.DeploymentManifest, opts); err != nil {
 		return err
 	}

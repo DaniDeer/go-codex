@@ -1,0 +1,45 @@
+services:
+  factory-api:
+    image: ghcr.io/example-org/factory-api:1.4.0
+    ports:
+      - "8080:8080"
+    environment:
+      - LOG_LEVEL=info
+      - DB_HOST=factory-db
+    restart: unless-stopped
+
+  factory-db:
+    image: postgres:16-alpine
+    volumes:
+      - /var/lib/factory/db:/var/lib/postgresql/data
+    environment:
+      - POSTGRES_PASSWORD=changeme
+    restart: always
+
+  factory-cache:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    restart: on-failure
+
+  factory-dashboard:
+    image: ghcr.io/example-org/factory-dashboard:2.1.0
+    ports:
+      - "3000:3000"
+    environment:
+      - API_URL=http://factory-api:8080
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3000/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+    restart: unless-stopped
+
+  factory-edge-proxy:
+    image: traefik:v3.0
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - /etc/ssl/local/pubkey.pem:/etc/traefik/ssl/pubkey.pem:ro
+    restart: unless-stopped

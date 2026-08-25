@@ -93,90 +93,6 @@ func (e ResourceEncodeError) LogValue() slog.Value {
 	)
 }
 
-// ResourceParamError is returned by [ResourceHandle.BuildURI] or
-// [ResourceHandle.ValidateURIVars] when a URI variable fails its registered
-// codec constraint.
-//
-// Use [errors.As] to extract the failing variable name and value:
-//
-//	var paramErr mcp.ResourceParamError
-//	if errors.As(err, &paramErr) {
-//	    log.Printf("bad value %q for {%s}: %v", paramErr.Value, paramErr.Name, paramErr.Err)
-//	}
-type ResourceParamError struct {
-	Name  string // variable name without braces
-	Value string // the value that failed validation
-	Err   error  // the underlying constraint or codec error
-}
-
-func (e ResourceParamError) Error() string {
-	return fmt.Sprintf("resource URI var {%s}: invalid value %q: %s", e.Name, e.Value, e.Err)
-}
-func (e ResourceParamError) Unwrap() error { return e.Err }
-
-// LogValue implements [slog.LogValuer] for structured logging.
-func (e ResourceParamError) LogValue() slog.Value {
-	return slog.GroupValue(
-		slog.String("name", e.Name),
-		slog.String("value", e.Value),
-		slog.Any("cause", e.Err),
-	)
-}
-
-// MissingResourceVarError is returned by [ResourceHandle.BuildURI] when a
-// {varName} placeholder in the URI template has no corresponding entry in the
-// vars map.
-//
-// Use [errors.As] to extract the missing variable name:
-//
-//	var missingErr mcp.MissingResourceVarError
-//	if errors.As(err, &missingErr) {
-//	    log.Printf("caller forgot to supply URI variable {%s}", missingErr.Name)
-//	}
-type MissingResourceVarError struct {
-	Name string // the variable name (without braces) that had no value
-}
-
-func (e MissingResourceVarError) Error() string {
-	return fmt.Sprintf("missing value for resource URI variable {%s}", e.Name)
-}
-
-// LogValue implements [slog.LogValuer] for structured logging.
-func (e MissingResourceVarError) LogValue() slog.Value {
-	return slog.GroupValue(
-		slog.String("name", e.Name),
-	)
-}
-
-// ResourceURIMismatchError is returned by [ResourceHandle.ExtractURIVars]
-// when a received URI does not match the structure of the resource's URI
-// template (wrong number of segments, or a literal segment does not match).
-// Mirrors adapters/mqtt5.TopicMismatchError/adapters/mqtt.TopicMismatchError/
-// ports.FilePathMismatchError exactly.
-//
-// Use [errors.As] to inspect the mismatched URI:
-//
-//	var mm mcp.ResourceURIMismatchError
-//	if errors.As(err, &mm) {
-//	    log.Printf("URI %q does not match template %q", mm.URI, mm.Template)
-//	}
-type ResourceURIMismatchError struct {
-	Template string // the resource's URI template (e.g. "items://{id}")
-	URI      string // the received concrete URI (e.g. "items://abc-123/extra")
-}
-
-func (e ResourceURIMismatchError) Error() string {
-	return fmt.Sprintf("resource URI %q does not match template %q", e.URI, e.Template)
-}
-
-// LogValue implements [slog.LogValuer] for structured logging.
-func (e ResourceURIMismatchError) LogValue() slog.Value {
-	return slog.GroupValue(
-		slog.String("template", e.Template),
-		slog.String("uri", e.URI),
-	)
-}
-
 // PromptArgError is returned by [PromptHandle.ValidateArgs] when an argument
 // fails its registered codec constraint.
 //
@@ -227,33 +143,5 @@ func (e MissingPromptArgError) Error() string {
 func (e MissingPromptArgError) LogValue() slog.Value {
 	return slog.GroupValue(
 		slog.String("name", e.Name),
-	)
-}
-
-// InvalidResourceParamError is returned by [Resource.Register] when a
-// [ResourceParam] entry names a variable that does not appear in the URI template.
-//
-// Use [errors.As] to extract the offending name and the URI template:
-//
-//	var paramErr mcp.InvalidResourceParamError
-//	if errors.As(err, &paramErr) {
-//	    log.Printf("ResourceParam %q not in URI template %q", paramErr.Name, paramErr.URITemplate)
-//	}
-type InvalidResourceParamError struct {
-	// Name is the ResourceParam variable name not found in the template.
-	Name string
-	// URITemplate is the URI template that was checked.
-	URITemplate string
-}
-
-func (e InvalidResourceParamError) Error() string {
-	return fmt.Sprintf("api/mcp: ResourceParam %q not found in URI template %q", e.Name, e.URITemplate)
-}
-
-// LogValue implements [slog.LogValuer] for structured logging.
-func (e InvalidResourceParamError) LogValue() slog.Value {
-	return slog.GroupValue(
-		slog.String("name", e.Name),
-		slog.String("uri_template", e.URITemplate),
 	)
 }

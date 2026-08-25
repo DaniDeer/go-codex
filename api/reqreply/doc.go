@@ -40,6 +40,18 @@
 //	doc, _ := builder.AsyncAPISpec()
 //	yaml, _ := doc.MarshalYAML()
 //
+// # Reusing a topic across routes
+//
+// The plain-string form above is the default. When the SAME topic template
+// and [TopicParam] declarations are shared by two or more routes of
+// DIFFERENT Req/Resp type pairs, extract the shape once as a [Topic] and
+// reuse it via [NewRouteFromTopic] — mirrors [events.Topic]/
+// [events.NewChannelFromTopic] and [rest.Path]/[rest.NewRouteFromPath]
+// exactly. [Builder.AddGlobalSecurity] aside, [WithTopicCodec]/
+// [WithTopicConstraints] on [NewBuilder] set a builder-wide default topic
+// codec enforced at [Route.Register] time, mirroring [events.WithTopicCodec]/
+// [events.WithTopicConstraints].
+//
 // # Error-path ergonomics
 //
 // [ErrorPattern] is the codec-first, runtime-wired error declaration — the

@@ -39,7 +39,7 @@ The same codec works with JSON, YAML, and TOML — swap `format.TOML` for `forma
 
 ## Environment variables (12-factor / containers)
 
-`config.FromEnv` loads config from environment variables. The codec's schema drives string-to-type coercion — no per-field `strconv` code:
+`config.FromEnv` loads config from environment variables. The codec's schema drives string-to-type coercion — no per-field `strconv` code. It returns the loaded config wrapped in a freshly-constructed, already-`Set` `*codex.Immutable[T]` — not a bare struct — since config loading happens exactly once, at startup: the returned value is frozen for the rest of the process's lifetime as a type-level guarantee (a second `Set` on the SAME instance fails), not just a documented convention:
 
 ```go
 import "github.com/DaniDeer/go-codex/config"
@@ -47,12 +47,16 @@ import "github.com/DaniDeer/go-codex/config"
 // Env var names: strings.ToUpper(prefix + field_name)
 // "port"      + "APP_" → APP_PORT
 // "log_level" + "APP_" → APP_LOG_LEVEL
-cfg, err := config.FromEnv(configCodec, "APP_")
+appConfig, err := config.FromEnv(configCodec, "APP_")
 if err != nil {
     // err is codex.ValidationErrors
     log.Fatal(err)
 }
+// ... elsewhere, for the rest of the process's lifetime:
+cfg := appConfig.Get()
 ```
+
+See [Concept: Codec](../concepts/codec.md)'s `Getter`/`Setter` subsection for `Immutable[T]`'s full contract (`Get()` panics before `Set`, `TryGet()` for safe access, second `Set` always fails).
 
 Nested structs expand the prefix (`db.host` → `APP_DB_HOST`). Slices use comma separation. Complex fields also accept JSON:
 

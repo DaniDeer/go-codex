@@ -199,11 +199,10 @@ All MCP error types implement `slog.LogValuer`.
 | `mcp.ToolInputError{Name, Err}` | `ToolHandle.Decode` — input codec failure |
 | `mcp.ToolOutputError{Name, Err}` | `ToolHandle.Encode` — output codec failure |
 | `mcp.ResourceEncodeError{URI, Err}` | `ResourceHandle.Encode` — resource encode failure |
-| `mcp.ResourceParamError{Name, Value, Err}` | URI variable fails its codec |
-| `mcp.MissingResourceVarError{Name}` | required URI variable absent |
+| `codex.ValidationErrors` | `ResourceHandle.BuildURI`/`ExtractURIVars` — URI variable fails its codec or is absent (via `Template[V]`'s own `Codec()`) |
+| `codex.TemplateMismatchError{Template, Concrete}` | `ResourceHandle.ExtractURIVars` — received URI doesn't match the template's structure |
 | `mcp.PromptArgError{Name, Err}` | prompt argument codec failure |
 | `mcp.MissingPromptArgError{Name}` | required prompt argument absent |
-| `mcp.InvalidResourceParamError{Name, URITemplate}` | `Resource.Register` — `ResourceParam` not in URI template |
 
 ## See also
 

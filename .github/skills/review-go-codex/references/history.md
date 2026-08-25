@@ -1,6 +1,47 @@
-# go-codex Review History (R1–R113)
+# go-codex Review History (R1–R114)
 
 Do not re-report any of these findings. They have been implemented and tested.
+
+---
+
+## Round 114 (uncommitted template-unification/Param/Template primitives + `api/mcp` Resource[V,T] redesign)
+
+Reviewed the full set of uncommitted changes: the new `codex.Param`/`MergedParam[T]`/`NewParam[T]`
+(`codex/param.go`) and `codex.Template[T]`/`TemplateStyle` (`codex/template.go`) shared primitives now
+underneath `rest.PathParam`/`events.TopicParam`/`reqreply.TopicParam`/`ports.FilePathParam`/
+`ports.DirPathParam`/`codex.DottedKeyCodec`; `api/mcp`'s `Resource`/`ResourceHandle` becoming generic
+over `V` (typed URI vars via `codex.Template[V]`, replacing the old `map[string]string`-based
+`ResourceParam`); `api/reqreply`'s new `Topic`/`NewRouteFromTopic`/`WithTopicCodec`/
+`WithTopicConstraints` (closing its escape-hatch/builder-option gap vs. `rest`/`events`); and
+`codex.Const`/`Immutable`/`Getter`/`Setter` (`codex/const.go`, `codex/getter.go`). Full build/vet/
+test/gofmt/`just check`/all-examples verified clean both before and after this round's fixes.
+
+- **G1 [bug] — `codex.DottedKeyCodec` silently changed its Decode error type**: delegating to the new
+  shared `Template[K]`/`DottedStyle` engine made a structural-mismatch `Decode` call return
+  `codex.TemplateMismatchError` instead of the documented `codex.DottedKeyError` (different fields,
+  no `Unwrap`), with zero test pinning the concrete type to catch the regression. Added a boundary
+  conversion (`convertDottedKeyErr`, mirroring `ports/file.go`'s `convertFileParamErr` pattern) so
+  `DottedKeyCodec.Decode` converts `TemplateMismatchError` back to `DottedKeyError` at its own
+  boundary; added `TestDottedKeyCodec_DecodeError_StructuralMismatch_ReturnsDottedKeyError` asserting
+  `errors.As` reaches it with correct `Key`/`Template` fields.
+- **G2 [small] — dangling references to a deleted roadmap doc**: `docs/roadmap/template-unification.md`
+  was deleted (fully shipped) but 6 files still cited it by name: `ports/file.go`, `ports/dir.go`,
+  `codex/param.go`, `api/internal/doc.go`, `api/internal/template.go`,
+  `docs/roadmap/idea-codec-defined-hateoas.md`. Removed/redirected all 6 references.
+- **G3 [small] — stale import-rule documentation**: `.github/instructions/go-codex.instructions.md`'s
+  `codex` row "Allowed imports" column listed only `schema`, but `codex/param.go`/`codex/template.go`
+  (production files) now import `internal/templatematch`. Added it to the row.
+- **G4 [trivial] — doc overclaim**: `codex/param.go`'s package doc comment claimed aliasing existing
+  error types is "zero blast radius to every downstream caller" — true for `PathParamError`/
+  `MissingPathVarError` (identical fields) but false for `InvalidPathParamError`/`InvalidTopicParamError`
+  (field renamed `Path`/`Topic` → `Template`). Qualified the claim with a cross-reference to each
+  alias's own caveat.
+- **G5 [trivial, meta] — this skill's own guardrail text was stale**: `SKILL.md`'s Structured Errors
+  Guardrail and `references/checklist.md` still listed `mcp.ResourceParamError`/
+  `MissingResourceVarError`/`ResourceURIMismatchError`/`InvalidResourceParamError` as current API —
+  these were correctly removed when `Resource`/`ResourceHandle` became generic over `V` (URI-var
+  errors now surface `codex.ValidationErrors`/`codex.TemplateMismatchError` directly). Updated both
+  files to describe the current shape.
 
 ---
 

@@ -54,6 +54,7 @@ already declared.
 - [`modulesummary`](modulesummary) — a reduced, read-only module view (regular OR system module) + its MCP read tool contract.
 - [`updatemoduleimage`](updatemoduleimage) — the derived MCP tool contract for updating one module's image, at template or device scope.
 - [`modulepatch`](modulepatch) — the derived, general multi-field module patch mechanism shared by both template- and device-scoped updates.
+- [`fromcompose`](fromcompose) — a BIDIRECTIONAL converter between a Docker Compose project ([`models/docker/dockercompose`](../docker/dockercompose)) and a SCAFFOLD `iothub.LayeredDeployment` use-case template, built on `codex.MapCodecValidated`/`codex.Map` rather than hand-rolled conversion functions — routes always empty forward and unreconstructable in reverse, every other lossy/approximated decision recorded as a `Warning` instead of failing the conversion.
 
 See [`models/azure/iothub`](../azure/iothub)'s own README for the
 underlying wire spec (`BaseDeployment`/`LayeredDeployment`,

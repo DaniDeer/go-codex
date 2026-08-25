@@ -5,6 +5,7 @@ import (
 	c "github.com/DaniDeer/go-codex/codex"
 	iothub "github.com/DaniDeer/go-codex/examples/go-edge-models/models/azure/iothub"
 	"github.com/DaniDeer/go-codex/examples/go-edge-models/models/iotedge/modulesummary"
+	usecase "github.com/DaniDeer/go-codex/examples/go-edge-models/models/iotedge/usecase"
 	v "github.com/DaniDeer/go-codex/validate"
 )
 
@@ -18,12 +19,15 @@ import (
 
 // Req is Tool's input.
 type Req struct {
-	// BasePath is the root directory holding the "usecases/" subtree —
-	// see usecase.NewFile's own doc comment for the templated
-	// "{basePath}/usecases/{usecase_name}.json" path this composes into.
-	BasePath string
-	// UseCaseName is the use case whose deployment manifest to update.
-	UseCaseName string
+	// BasePath is the root directory holding this use case's ENTIRE
+	// on-disk layout — see [usecase.BasePath]'s own doc comment (this
+	// package now depends directly on models/iotedge/usecase for this
+	// ONE field, unlike DeviceID below, which deliberately stays
+	// decoupled).
+	BasePath usecase.BasePath
+	// UseCaseName is the use case whose deployment manifest to update —
+	// see [usecase.Name]'s own doc comment.
+	UseCaseName usecase.Name
 	// ModuleName is the module to update, e.g. "factory-dashboard" — or
 	// "edgeAgent"/"edgeHub" for a system module's own image (see
 	// modulesummary.IsSystemModuleName).
@@ -38,35 +42,28 @@ type Req struct {
 	// DeviceID OPTIONALLY scopes the update to ONE device's OWN config
 	// file — the use case template and every OTHER device stay
 	// completely untouched (isolated, reversible). Empty (the zero
-	// value) means "update the use case template's shared manifest" —
-	// this package deliberately stays decoupled from
-	// models/iotedge/usecase (a plain string, not usecase.DeviceID),
-	// matching BasePath/UseCaseName's own convention above.
-	DeviceID string
+	// value, [usecase.DeviceID]("")) means "update the use case
+	// template's shared manifest."
+	DeviceID usecase.DeviceID
 }
 
 // ReqCodec validates a Req value — BasePath/UseCaseName/ModuleName/
 // ImageURL are required; DeviceID is OPTIONAL (empty = template scope).
+// BasePath/UseCaseName/ModuleName/DeviceID field declarations are shared
+// with modulesummary.ReadReq via [modulesummary.BasePathField]/
+// [modulesummary.UseCaseNameField]/[modulesummary.ModuleNameField]/
+// [modulesummary.DeviceIDField] — single source of truth for the key
+// names, codecs, and description text both request types share.
 var ReqCodec = c.Struct[Req](
-	c.RequiredField("basePath",
-		c.String().Refine(v.NonEmptyString).WithDescription(
-			"The root directory holding the \"usecases/\" subtree.",
-		),
-		func(r Req) string { return r.BasePath },
-		func(r *Req, val string) { r.BasePath = val },
+	modulesummary.BasePathField(
+		func(r Req) usecase.BasePath { return r.BasePath },
+		func(r *Req, val usecase.BasePath) { r.BasePath = val },
 	),
-	c.RequiredField("useCaseName",
-		c.String().Refine(v.NonEmptyString).WithDescription(
-			"The use case whose deployment manifest to update.",
-		),
-		func(r Req) string { return r.UseCaseName },
-		func(r *Req, val string) { r.UseCaseName = val },
+	modulesummary.UseCaseNameField(
+		func(r Req) usecase.Name { return r.UseCaseName },
+		func(r *Req, val usecase.Name) { r.UseCaseName = val },
 	),
-	c.RequiredField("moduleName",
-		modulesummary.ModuleOrSystemModuleNameCodec.WithDescription(
-			"The name of the module to update, e.g. \"factory-dashboard\" — "+
-				"or \"edgeAgent\"/\"edgeHub\" for a system module's own image.",
-		),
+	modulesummary.ModuleNameField(
 		func(r Req) iothub.ModuleName { return r.ModuleName },
 		func(r *Req, val iothub.ModuleName) { r.ModuleName = val },
 	),
@@ -77,14 +74,9 @@ var ReqCodec = c.Struct[Req](
 		func(r Req) string { return r.ImageURL },
 		func(r *Req, val string) { r.ImageURL = val },
 	),
-	c.OptionalField("deviceID",
-		c.String().WithDescription(
-			"If set, the update is written to THIS DEVICE'S OWN config "+
-				"file only — the use case template and every other "+
-				"device are left untouched.",
-		),
-		func(r Req) string { return r.DeviceID },
-		func(r *Req, val string) { r.DeviceID = val },
+	modulesummary.DeviceIDField(
+		func(r Req) usecase.DeviceID { return r.DeviceID },
+		func(r *Req, val usecase.DeviceID) { r.DeviceID = val },
 	),
 )
 

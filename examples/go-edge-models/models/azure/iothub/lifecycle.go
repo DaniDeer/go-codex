@@ -35,6 +35,13 @@ var TypeCodec = c.MapCodecSafe(
 	func(t Type) (string, error) { return string(t), nil },
 )
 
+// TypeField declares a REQUIRED "type" field for any container type T,
+// using [TypeCodec] — single source of truth for both ModuleConfig's and
+// Runtime's identical "type" field (both are always "docker" today).
+func TypeField[T any](get func(T) Type, set func(*T, Type)) c.FieldCodec[T] {
+	return c.RequiredField("type", TypeCodec, get, set)
+}
+
 var StatusCodec = c.MapCodecSafe(
 	c.String().Refine(v.OneOf("running", "stopped")),
 	func(s string) Status { return Status(s) },

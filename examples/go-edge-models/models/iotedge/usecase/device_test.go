@@ -20,7 +20,7 @@ func samplePatch() deviceconfig.Patch {
 // ── DeviceFile ────────────────────────────────────────────────────────────────
 
 func TestNewDeviceFile_WriteThenRead(t *testing.T) {
-	basePath := t.TempDir()
+	basePath := BasePath(t.TempDir())
 	fh := NewDeviceFile(basePath)
 	vars := map[string]string{"usecase_name": "usecase1", "device_id": "sensor-42"}
 
@@ -38,7 +38,7 @@ func TestNewDeviceFile_WriteThenRead(t *testing.T) {
 }
 
 func TestNewDeviceFile_DifferentDevicesAreIndependent(t *testing.T) {
-	basePath := t.TempDir()
+	basePath := BasePath(t.TempDir())
 	fh := NewDeviceFile(basePath)
 
 	if _, err := fh.Write(map[string]string{"usecase_name": "usecase1", "device_id": "sensor-a"}, samplePatch(), ports.FileOptions{CreateDirs: true}); err != nil {
@@ -50,7 +50,7 @@ func TestNewDeviceFile_DifferentDevicesAreIndependent(t *testing.T) {
 }
 
 func TestNewDeviceFile_DifferentUseCasesAreIndependent(t *testing.T) {
-	basePath := t.TempDir()
+	basePath := BasePath(t.TempDir())
 	fh := NewDeviceFile(basePath)
 
 	if _, err := fh.Write(map[string]string{"usecase_name": "usecase-a", "device_id": "sensor-42"}, samplePatch(), ports.FileOptions{CreateDirs: true}); err != nil {
@@ -62,7 +62,7 @@ func TestNewDeviceFile_DifferentUseCasesAreIndependent(t *testing.T) {
 }
 
 func TestNewDeviceFile_MissingVars_ReturnsMissingFilePathVarError(t *testing.T) {
-	basePath := t.TempDir()
+	basePath := BasePath(t.TempDir())
 	fh := NewDeviceFile(basePath)
 	if _, err := fh.Read(map[string]string{"usecase_name": "usecase1"}, ports.FileOptions{}); err == nil {
 		t.Error("Read: want MissingFilePathVarError for missing device_id, got nil")
@@ -72,7 +72,7 @@ func TestNewDeviceFile_MissingVars_ReturnsMissingFilePathVarError(t *testing.T) 
 // ── DeviceDir ─────────────────────────────────────────────────────────────────
 
 func TestNewDeviceDir_ListDiscoversDevicesForGivenUseCase(t *testing.T) {
-	basePath := t.TempDir()
+	basePath := BasePath(t.TempDir())
 
 	writeDevice := func(useCaseName Name, deviceID DeviceID) {
 		if _, err := WriteDeviceConfig(basePath, useCaseName, DeviceConfig{
@@ -104,7 +104,7 @@ func TestNewDeviceDir_ListDiscoversDevicesForGivenUseCase(t *testing.T) {
 }
 
 func TestListDeviceIDs(t *testing.T) {
-	basePath := t.TempDir()
+	basePath := BasePath(t.TempDir())
 
 	if _, err := WriteDeviceConfig(basePath, "usecase1", DeviceConfig{DeviceID: "sensor-1", Patch: samplePatch()}, ports.FileOptions{CreateDirs: true}); err != nil {
 		t.Fatalf("WriteDeviceConfig: %v", err)
@@ -127,7 +127,7 @@ func TestListDeviceIDs(t *testing.T) {
 }
 
 func TestListDeviceIDs_NoDevicesForUseCase_ReturnsEmpty(t *testing.T) {
-	basePath := t.TempDir()
+	basePath := BasePath(t.TempDir())
 	ids, err := ListDeviceIDs(basePath, "nonexistent-usecase", ports.DirOptions{CreateIfMissing: true})
 	if err != nil {
 		t.Fatalf("ListDeviceIDs: %v", err)
@@ -140,7 +140,7 @@ func TestListDeviceIDs_NoDevicesForUseCase_ReturnsEmpty(t *testing.T) {
 // ── DeviceConfig ──────────────────────────────────────────────────────────────
 
 func TestWriteDeviceConfig_ReadDeviceConfig_RoundTrip(t *testing.T) {
-	basePath := t.TempDir()
+	basePath := BasePath(t.TempDir())
 	cfg := DeviceConfig{DeviceID: "sensor-42", Patch: samplePatch()}
 
 	if _, err := WriteDeviceConfig(basePath, "usecase1", cfg, ports.FileOptions{CreateDirs: true}); err != nil {
@@ -160,7 +160,7 @@ func TestWriteDeviceConfig_ReadDeviceConfig_RoundTrip(t *testing.T) {
 }
 
 func TestReadDeviceConfig_PropagatesMissingFileError(t *testing.T) {
-	basePath := t.TempDir()
+	basePath := BasePath(t.TempDir())
 	_, err := ReadDeviceConfig(basePath, "usecase1", "does-not-exist", ports.FileOptions{})
 	if err == nil {
 		t.Error("ReadDeviceConfig: want error for nonexistent device, got nil")
@@ -198,7 +198,7 @@ func TestDeviceConfig_Merge_LayersPatchOntoTemplate(t *testing.T) {
 }
 
 func TestReadEffective_MergesTemplateAndDeviceConfigFromDisk(t *testing.T) {
-	basePath := t.TempDir()
+	basePath := BasePath(t.TempDir())
 
 	writeSampleBaseline(t, basePath)
 	if _, err := NewFile(basePath).Write(map[string]string{"usecase_name": "usecase1"}, sampleManifest(), ports.FileOptions{CreateDirs: true}); err != nil {
@@ -234,7 +234,7 @@ func TestReadEffective_MergesTemplateAndDeviceConfigFromDisk(t *testing.T) {
 }
 
 func TestReadEffective_PropagatesMissingTemplateError(t *testing.T) {
-	basePath := t.TempDir()
+	basePath := BasePath(t.TempDir())
 	writeSampleBaseline(t, basePath)
 	_, err := ReadEffective(basePath, "does-not-exist", "sensor-1", ports.FileOptions{})
 	if err == nil {
@@ -243,7 +243,7 @@ func TestReadEffective_PropagatesMissingTemplateError(t *testing.T) {
 }
 
 func TestReadEffective_PropagatesMissingBaselineError(t *testing.T) {
-	basePath := t.TempDir()
+	basePath := BasePath(t.TempDir())
 	if _, err := NewFile(basePath).Write(map[string]string{"usecase_name": "usecase1"}, sampleManifest(), ports.FileOptions{CreateDirs: true}); err != nil {
 		t.Fatalf("Write template: %v", err)
 	}
@@ -259,7 +259,7 @@ func TestReadEffective_NoDeviceConfigYet_ReturnsTemplateUnchanged(t *testing.T) 
 	// EMPTY device patch, since "no overrides yet" is a valid, expected
 	// state (a device connecting for the first time, before any override
 	// has ever been applied).
-	basePath := t.TempDir()
+	basePath := BasePath(t.TempDir())
 	writeSampleBaseline(t, basePath)
 	if _, err := NewFile(basePath).Write(map[string]string{"usecase_name": "usecase1"}, sampleManifest(), ports.FileOptions{CreateDirs: true}); err != nil {
 		t.Fatalf("Write template: %v", err)

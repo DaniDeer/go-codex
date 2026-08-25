@@ -39,7 +39,7 @@ type EdgeAgentProperties struct {
 }
 
 var EdgeAgentPropertiesCodec = c.Struct[EdgeAgentProperties](
-	c.RequiredField("schemaVersion", SchemaVersionCodec,
+	SchemaVersionField(
 		func(p EdgeAgentProperties) SchemaVersion { return p.SchemaVersion },
 		func(p *EdgeAgentProperties, val SchemaVersion) { p.SchemaVersion = val },
 	),
@@ -85,7 +85,7 @@ type EdgeHubProperties struct {
 }
 
 var EdgeHubPropertiesCodec = c.Struct[EdgeHubProperties](
-	c.RequiredField("schemaVersion", SchemaVersionCodec,
+	SchemaVersionField(
 		func(p EdgeHubProperties) SchemaVersion { return p.SchemaVersion },
 		func(p *EdgeHubProperties, val SchemaVersion) { p.SchemaVersion = val },
 	),

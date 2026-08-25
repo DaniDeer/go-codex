@@ -73,9 +73,9 @@ func sampleBaselineManifest() iothub.BaseDeployment {
 
 const sampleUseCaseName = "usecase1"
 
-func writeSampleManifest(t *testing.T) string {
+func writeSampleManifest(t *testing.T) usecase.BasePath {
 	t.Helper()
-	basePath := t.TempDir()
+	basePath := usecase.BasePath(t.TempDir())
 	if _, err := usecase.NewBaselineFile(basePath).Write(nil, sampleBaselineManifest(), ports.FileOptions{CreateDirs: true}); err != nil {
 		t.Fatalf("Write baseline: %v", err)
 	}

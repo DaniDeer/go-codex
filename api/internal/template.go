@@ -3,7 +3,6 @@ package internal
 import (
 	"regexp"
 
-	"github.com/DaniDeer/go-codex/codex"
 	"github.com/DaniDeer/go-codex/internal/templatematch"
 )
 
@@ -54,38 +53,10 @@ func MatchTemplate(template, concrete string, wrapMismatch func(template, concre
 	return templatematch.MatchNonWildcard(template, concrete, wrapMismatch)
 }
 
-// from vars, validating each against the corresponding codec in paramCodecs.
-// wrapMissing is called to produce a typed error when a template variable has no
-// entry in vars. wrapErr is called to produce a typed error when codec validation
-// fails.
-func BuildFromTemplate(
-	template string,
-	vars map[string]string,
-	paramCodecs map[string]*codex.Codec[string],
-	wrapMissing func(name string) error,
-	wrapErr func(name, value string, err error) error,
-) (string, error) {
-	var firstErr error
-	result := TemplateVarRe.ReplaceAllStringFunc(template, func(placeholder string) string {
-		if firstErr != nil {
-			return placeholder
-		}
-		name := placeholder[1 : len(placeholder)-1] // strip { and }
-		value, ok := vars[name]
-		if !ok {
-			firstErr = wrapMissing(name)
-			return placeholder
-		}
-		if c := paramCodecs[name]; c != nil {
-			if err := c.Validate(value); err != nil {
-				firstErr = wrapErr(name, value, err)
-				return placeholder
-			}
-		}
-		return value
-	})
-	if firstErr != nil {
-		return "", firstErr
-	}
-	return result, nil
-}
+// BuildFromTemplate used to live here (the build-direction counterpart of
+// [MatchTemplate]) but has been SUPERSEDED by
+// [github.com/DaniDeer/go-codex/codex.BuildFromParams] — moving the logic
+// to codex (importable everywhere, not just the api/ subtree Go's
+// internal/ visibility rule restricts this package to) let api/rest,
+// api/events, and api/reqreply share ONE canonical implementation instead
+// of each repeating their own codecMap-building + call.

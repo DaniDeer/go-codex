@@ -19,13 +19,27 @@
 //	field "db" (nested) + prefix "APP_" → APP_DB_ prefix for its sub-fields
 //	nested field "host"                 → APP_DB_HOST
 //
+// config.FromEnv returns the loaded config wrapped in a freshly-constructed,
+// already-Set *codex.Immutable[AppConfig] — NOT a bare struct. This is the
+// example's second half: config loading happens exactly once, at startup,
+// so the returned value is frozen for the rest of the process's lifetime as
+// a TYPE-LEVEL guarantee (Get() panics if called before Set, a second Set
+// on the same instance always fails with codex.ImmutableAlreadySetError),
+// not merely a documented convention. See section 10 below for the full
+// Immutable[T] lifecycle demo: TryGet before load, one-call load, reading
+// config from a helper function with NO config parameter, and the panic/
+// already-set failure modes.
+//
 // The example also shows validate.EnvVarName and validate.EnvVarPrefix for
-// validating user-supplied env var names before passing them to FromEnvVar.
+// validating user-supplied env var names before passing them to FromEnvVar
+// (which stays plain-value on purpose — see config.FromEnvVar's own doc
+// comment for why).
 //
 // Run with: go run ./examples/env-config
 package main
 
 import (
+	"errors"
 	"fmt"
 	"os"
 
@@ -90,6 +104,23 @@ func mustSetenv(k, v string) {
 	}
 }
 
+// liveConfig is the package-level, "loaded once at startup" config cell —
+// nil until main() populates it via config.FromEnv. Real application code
+// (startServer below) reads from it directly, with NO config parameter
+// threaded through every function call — the point of loading config into
+// a *codex.Immutable[T] in the first place.
+var liveConfig *codex.Immutable[AppConfig]
+
+// startServer simulates a part of the application that needs config but
+// takes NO config parameter — it reads the package-level liveConfig
+// directly via Get(). This is the ergonomic payoff of loading config into
+// a *codex.Immutable[T] once in main(): no config struct/pointer needs to
+// be threaded through every function signature in the call graph.
+func startServer() {
+	cfg := liveConfig.Get()
+	fmt.Printf("  startServer(): binding to %s:%d (log_level=%s)\n", cfg.Host, cfg.Port, cfg.LogLevel)
+}
+
 func main() {
 	// ── 1. Valid config — flat + nested + slice ───────────────────────────────
 	fmt.Println("=== 1. Valid config from env vars ===")
@@ -112,11 +143,16 @@ func main() {
 		}
 	}()
 
-	cfg, err := config.FromEnv(configCodec, "APP_")
+	appConfig, err := config.FromEnv(configCodec, "APP_")
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "error:", err)
 		os.Exit(1)
 	}
+	// config.FromEnv returns a *codex.Immutable[AppConfig], already Set —
+	// Get() never panics here. cfg is a plain, local snapshot for these
+	// print statements; section 10 below uses appConfig itself directly,
+	// the way a real application would.
+	cfg := appConfig.Get()
 	fmt.Printf("host:      %s\n", cfg.Host)
 	fmt.Printf("port:      %d\n", cfg.Port)
 	fmt.Printf("log_level: %s\n", cfg.LogLevel)
@@ -185,11 +221,12 @@ func main() {
 	mustSetenv("APP_TAGS", `["production","web","v2"]`)
 	mustSetenv("APP_LABELS", `{"env":"prod","team":"platform","version":"2.0"}`)
 
-	cfg, err = config.FromEnv(configCodec, "APP_")
+	appConfig, err = config.FromEnv(configCodec, "APP_")
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "error:", err)
 		os.Exit(1)
 	}
+	cfg = appConfig.Get()
 	fmt.Printf("db (from JSON): host=%s port=%d name=%s\n", cfg.DB.Host, cfg.DB.Port, cfg.DB.Name)
 	fmt.Printf("tags (from JSON array): %v\n", cfg.Tags)
 	fmt.Printf("labels (from JSON object): %v\n", cfg.Labels)
@@ -208,19 +245,21 @@ func main() {
 
 	os.Unsetenv("APP_LOG_LEVEL")
 
-	cfg, err = config.FromEnv(configCodec, "APP_")
+	appConfig, err = config.FromEnv(configCodec, "APP_")
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "error:", err)
 		os.Exit(1)
 	}
+	cfg = appConfig.Get()
 	fmt.Printf("log_level (not set): %q  ← default applied\n", cfg.LogLevel)
 
 	mustSetenv("APP_LOG_LEVEL", "debug")
-	cfg, err = config.FromEnv(configCodec, "APP_")
+	appConfig, err = config.FromEnv(configCodec, "APP_")
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "error:", err)
 		os.Exit(1)
 	}
+	cfg = appConfig.Get()
 	fmt.Printf("log_level (set to debug): %q  ← override wins\n", cfg.LogLevel)
 	mustSetenv("APP_LOG_LEVEL", "info")
 
@@ -232,16 +271,17 @@ func main() {
 
 	mustSetenv("APP_EXTENSIONS", `{"feature_flags":{"dark_mode":true},"max_upload_mb":50}`)
 
-	cfg, err = config.FromEnv(configCodec, "APP_")
+	appConfig, err = config.FromEnv(configCodec, "APP_")
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "error:", err)
 		os.Exit(1)
 	}
+	cfg = appConfig.Get()
 	fmt.Printf("extensions (%T): %v\n", cfg.Extensions, cfg.Extensions)
 
 	os.Unsetenv("APP_EXTENSIONS")
 
-	// ── 9. Validate env var names from external input ────────────────────────
+	// ── 8. Validate env var names from external input ────────────────────────
 	// When env var names come from outside Go code (a config file, CLI flag, or
 	// user form), validate them before passing to config.FromEnvVar or os.LookupEnv.
 	//
@@ -309,4 +349,60 @@ func main() {
 		os.Exit(1)
 	}
 	fmt.Println(string(jsonBytes))
+
+	// ── 10. Immutable[T] — the recommended production pattern ────────────────
+	//
+	// Every demo above called config.FromEnv repeatedly with different (and
+	// sometimes deliberately invalid) env values, to show FromEnv's own error
+	// handling — each call produces its OWN fresh *codex.Immutable[AppConfig],
+	// since Immutable enforces "set exactly once" PER INSTANCE, not globally.
+	//
+	// A real application calls config.FromEnv exactly ONCE, at startup,
+	// stores the result in a package-level var (liveConfig, declared above),
+	// and reads it via Get() everywhere else — no config parameter threaded
+	// through every function signature, and "config not loaded yet" becomes
+	// a loud, immediate panic instead of a silent zero-value bug.
+	fmt.Println("\n=== 10. Immutable[T] — load once, read everywhere ===")
+
+	// Before the real load: TryGet() on a fresh, unset Immutable is the
+	// SAFE way to check "has config finished loading yet?" — never panics.
+	unset := codex.NewImmutable(configCodec)
+	if _, ok := unset.TryGet(); !ok {
+		fmt.Println("  TryGet() before Set: (zero value, false) — as expected")
+	}
+
+	// Get() on that SAME unset Immutable is the UNSAFE accessor — it panics,
+	// because reading config before startup finished loading it is a real
+	// bug, not a normal "maybe absent" case. Recovered here only so the
+	// example keeps running; a real program should never need this recover.
+	func() {
+		defer func() {
+			if r := recover(); r != nil {
+				fmt.Printf("  Get() before Set panicked (as designed): %v\n", r)
+			}
+		}()
+		unset.Get()
+	}()
+
+	// The real load: exactly once, populating the package-level liveConfig.
+	liveConfig, err = config.FromEnv(configCodec, "APP_")
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "error:", err)
+		os.Exit(1)
+	}
+	fmt.Println("  config.FromEnv: loaded and Set liveConfig")
+
+	// Real application code reads config with ZERO parameters threaded
+	// through the call — this is the whole ergonomic point.
+	startServer()
+
+	// A second Set on the SAME already-loaded Immutable — simulating an
+	// accidental reload — always fails, regardless of whether the new
+	// value would itself be valid. "Set once" is enforced by the type,
+	// not just documented.
+	err = liveConfig.Set(AppConfig{Host: "127.0.0.1", Port: 9999, LogLevel: "info", Workers: 1, DB: DBConfig{Host: "x", Port: 1, Name: "x"}})
+	var alreadySet codex.ImmutableAlreadySetError
+	if errors.As(err, &alreadySet) {
+		fmt.Printf("  second Set() rejected: %v\n", err)
+	}
 }

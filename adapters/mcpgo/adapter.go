@@ -21,12 +21,9 @@ type HandlerFunc[In, Out any] func(ctx context.Context, in In) (Out, error)
 
 // ResourceHandlerFunc[T] is the typed application handler for MCP resources.
 // uri is the concrete resource URI from the client request (placeholders are
-// already substituted) — no URI variables are extracted or validated
-// automatically. Use [ResourceVarsHandlerFunc]/[ResourceHandlerWithVars] for
-// the convenience of automatic extraction+validation via
-// [apimcp.ResourceHandle.ExtractURIVars], or call
-// [apimcp.ResourceHandle.ValidateURIVars] manually with vars parsed from uri
-// yourself.
+// already substituted) — no URI variables are extracted automatically. Use
+// [ResourceVarsHandlerFunc]/[ResourceHandlerWithVars] for the convenience of
+// automatic extraction+validation via [apimcp.ResourceHandle.ExtractURIVars].
 type ResourceHandlerFunc[T any] func(ctx context.Context, uri string) (T, error)
 
 // PromptHandlerFunc is the application handler for MCP prompts.
@@ -173,8 +170,8 @@ func RegisterTool[In, Out any](
 // [server.MCPServer.AddResource].
 //
 // Use [RegisterResource] to handle both cases automatically.
-func ResourceHandler[T any](
-	handle *apimcp.ResourceHandle[T],
+func ResourceHandler[V, T any](
+	handle *apimcp.ResourceHandle[V, T],
 	fn ResourceHandlerFunc[T],
 	opts Options,
 ) (resource mcp.Resource, template mcp.ResourceTemplate, isTemplate bool, handler server.ResourceHandlerFunc) {
@@ -233,9 +230,9 @@ func ResourceHandler[T any](
 // an [server.MCPServer]. URI templates (containing {varName}) are registered
 // via [server.MCPServer.AddResourceTemplate]; literal URIs via
 // [server.MCPServer.AddResource].
-func RegisterResource[T any](
+func RegisterResource[V, T any](
 	s *server.MCPServer,
-	handle *apimcp.ResourceHandle[T],
+	handle *apimcp.ResourceHandle[V, T],
 	fn ResourceHandlerFunc[T],
 	opts Options,
 ) {
@@ -247,27 +244,26 @@ func RegisterResource[T any](
 	}
 }
 
-// ResourceVarsHandlerFunc[T] is the typed application handler for MCP
-// resources, ADDITIONALLY receiving the URI template variables already
-// extracted from uri AND validated against every registered
-// [apimcp.ResourceParam] codec (via [apimcp.ResourceHandle.ExtractURIVars]) —
-// no manual URI parsing or [apimcp.ResourceHandle.ValidateURIVars] call
-// needed. [ResourceHandlerFunc] remains available as the lower-level escape
-// hatch for handlers that parse uri themselves.
-type ResourceVarsHandlerFunc[T any] func(ctx context.Context, uri string, vars map[string]string) (T, error)
+// ResourceVarsHandlerFunc[V, T] is the typed application handler for MCP
+// resources, ADDITIONALLY receiving the typed URI vars V already extracted
+// from uri AND validated against every declared field codec (via
+// [apimcp.ResourceHandle.ExtractURIVars]) — no manual URI parsing needed.
+// [ResourceHandlerFunc] remains available as the lower-level escape hatch
+// for handlers that parse uri themselves.
+type ResourceVarsHandlerFunc[V, T any] func(ctx context.Context, uri string, vars V) (T, error)
 
 // ResourceHandlerWithVars is [ResourceHandler]'s vars-aware counterpart: it
 // calls [apimcp.ResourceHandle.ExtractURIVars] on the incoming request URI
 // BEFORE invoking fn, routing extraction/validation failures
-// (ResourceURIMismatchError/ResourceParamError/MissingResourceVarError)
-// through the SAME RecordRequest(..., 500, ...) observer path decode/encode
-// errors already use.
+// (codex.TemplateMismatchError/codex.ValidationErrors) through the SAME
+// RecordRequest(..., 500, ...) observer path decode/encode errors already
+// use.
 //
 // Use [RegisterResourceWithVars] to handle both template/literal cases
 // automatically.
-func ResourceHandlerWithVars[T any](
-	handle *apimcp.ResourceHandle[T],
-	fn ResourceVarsHandlerFunc[T],
+func ResourceHandlerWithVars[V, T any](
+	handle *apimcp.ResourceHandle[V, T],
+	fn ResourceVarsHandlerFunc[V, T],
 	opts Options,
 ) (resource mcp.Resource, template mcp.ResourceTemplate, isTemplate bool, handler server.ResourceHandlerFunc) {
 	isTemplate = len(handle.URITemplate) > 0 && containsPlaceholder(handle.URITemplate)
@@ -330,10 +326,10 @@ func ResourceHandlerWithVars[T any](
 // wires a [apimcp.ResourceHandle] and [ResourceVarsHandlerFunc] to an
 // [server.MCPServer], with URI vars extracted and validated automatically
 // before every call.
-func RegisterResourceWithVars[T any](
+func RegisterResourceWithVars[V, T any](
 	s *server.MCPServer,
-	handle *apimcp.ResourceHandle[T],
-	fn ResourceVarsHandlerFunc[T],
+	handle *apimcp.ResourceHandle[V, T],
+	fn ResourceVarsHandlerFunc[V, T],
 	opts Options,
 ) {
 	res, tmpl, isTemplate, handler := ResourceHandlerWithVars(handle, fn, opts)

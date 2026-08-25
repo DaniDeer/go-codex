@@ -190,16 +190,20 @@ var calcTool = mcp.NewTool[CalcInput, CalcOutput]("calculate",
 	},
 )
 
-var itemResource = mcp.NewResource[Item]("items://{id}",
+// itemResource declares "{id}" via mcp.URIParam + codex.IdentityField —
+// V=string serves as its own field container for this single-var template
+// (the same idiom examples/go-edge-models/models/iotedge/usecase/config.go's
+// Template[Name] uses), matching rest.NewRoute/events.NewChannel's exact
+// "bare string + opts" call shape.
+var itemResource = mcp.NewResource[string](
+	"items://{id}",
 	itemCodec,
 	mcp.ResourceMeta{
 		Name:        "Item",
 		Description: "Look up an item by its ID.",
 		MimeType:    "application/json",
 	},
-	mcp.ResourceParam{Name: "id"}.WithCodec(
-		codex.String().Refine(validate.NonEmptyString),
-	),
+	mcp.URIParam(codex.IdentityField("id", codex.String().Refine(validate.NonEmptyString))),
 )
 
 var summaryPrompt = mcp.NewPrompt("summarize",
@@ -325,7 +329,7 @@ func main() {
 func runDemo(
 	b *mcp.Builder,
 	toolHandle *mcp.ToolHandle[CalcInput, CalcOutput],
-	resHandle *mcp.ResourceHandle[Item],
+	resHandle *mcp.ResourceHandle[string, Item],
 	promptHandle *mcp.PromptHandle,
 ) {
 	// Structured logger — text format to stdout for readability.
@@ -383,15 +387,15 @@ func runDemo(
 
 	// 6. BuildURI — demonstrate ResourceHandle.BuildURI with a codec failure.
 	fmt.Println("\n=== ResourceHandle.BuildURI ===")
-	uri, err := resHandle.BuildURI(map[string]string{"id": "item-1"})
+	uri, err := resHandle.BuildURI("item-1")
 	if err == nil {
 		fmt.Printf("  built URI: %s\n", uri)
 	}
-	_, err = resHandle.BuildURI(map[string]string{"id": ""}) // empty string fails NonEmptyString
+	_, err = resHandle.BuildURI("") // empty string fails NonEmptyString
 	if err != nil {
-		var ve mcp.ResourceParamError
+		var ve codex.ValidationErrors
 		if errors.As(err, &ve) {
-			logger.Error("BuildURI failed", "var", ve.Name, "value", ve.Value, "error", ve.Err)
+			logger.Error("BuildURI failed", "error", ve)
 		}
 	}
 
@@ -423,7 +427,7 @@ func runDemo(
 func runServer(
 	b *mcp.Builder,
 	toolHandle *mcp.ToolHandle[CalcInput, CalcOutput],
-	resHandle *mcp.ResourceHandle[Item],
+	resHandle *mcp.ResourceHandle[string, Item],
 	promptHandle *mcp.PromptHandle,
 ) {
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelDebug}))

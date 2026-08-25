@@ -29,12 +29,14 @@ import (
 // See config.go for the filesystem-layout constants this file's port
 // constructors are built from (deviceFilePathPattern,
 // deviceDirPathPattern, deviceEntryShape, useCaseNameVar, deviceIDVar),
-// the raw Codec[string] validators (nameCodec/deviceIDCodec) used
-// below, and the exported [DeviceID] type/[DeviceIDCodec]/[NewDeviceID]
-// this file's Go-level API is typed with. See the sibling
-// models/iotedge/deviceconfig package for the pure WIRE model
-// (deviceconfig.Patch/PatchCodec) [NewDeviceFile] consumes — everything
-// here is DERIVED/CONSTRUCTED on top of it.
+// the basePath-join helpers (deviceFilePathTemplate/
+// deviceDirPathTemplate) these constructors call instead of joining
+// basePath inline, the raw Codec[string] validators (nameCodec/
+// deviceIDCodec) used below, and the exported [DeviceID] type/
+// [DeviceIDCodec]/[NewDeviceID] this file's Go-level API is typed with.
+// See the sibling models/iotedge/deviceconfig package for the pure WIRE
+// model (deviceconfig.Patch/PatchCodec) [NewDeviceFile] consumes —
+// everything here is DERIVED/CONSTRUCTED on top of it.
 
 // ── DeviceFile ────────────────────────────────────────────────────────────────
 
@@ -53,8 +55,8 @@ var DeviceFileFormat = f.JSON(deviceconfig.PatchCodec)
 // (File.Write) — see [ReadDeviceConfig]/[WriteDeviceConfig] for the
 // higher-level convenience that pairs a Patch with its DeviceID into
 // one [DeviceConfig] value.
-func NewDeviceFile(basePath string) ports.File[deviceconfig.Patch] {
-	return ports.NewFile[deviceconfig.Patch](basePath+"/"+deviceFilePathPattern, DeviceFileFormat,
+func NewDeviceFile(basePath BasePath) ports.File[deviceconfig.Patch] {
+	return ports.NewFile[deviceconfig.Patch](deviceFilePathTemplate(basePath), DeviceFileFormat,
 		ports.FilePathParam{Name: useCaseNameVar, Codec: &nameCodec},
 		ports.FilePathParam{Name: deviceIDVar, Codec: &deviceIDCodec},
 	)
@@ -68,7 +70,7 @@ func NewDeviceFile(basePath string) ports.File[deviceconfig.Patch] {
 // "sensor-42.json" is device "sensor-42"'s manifest. Mirrors
 // [DirEntryPattern]'s role exactly, one level down.
 var DeviceDirEntryPattern = ports.EntryPattern{
-	Template: deviceEntryShape,
+	Template: deviceEntryShape.String(),
 	Params:   []ports.EntryParam{{Name: deviceIDVar, Codec: &deviceIDCodec}},
 }
 
@@ -84,8 +86,8 @@ var DeviceDirEntryPattern = ports.EntryPattern{
 // The returned port is read-only (listing has no write/patch operation)
 // — pair its result with [NewDeviceFile]/[ReadDeviceConfig] to read a
 // SPECIFIC discovered device's manifest; see [ListDeviceIDs].
-func NewDeviceDir(basePath string) ports.Dir {
-	return ports.NewDir(basePath+"/"+deviceDirPathPattern,
+func NewDeviceDir(basePath BasePath) ports.Dir {
+	return ports.NewDir(deviceDirPathTemplate(basePath),
 		ports.DirPathParam{Name: useCaseNameVar, Codec: &nameCodec},
 		ports.WithEntryPattern(DeviceDirEntryPattern),
 	)
@@ -95,7 +97,7 @@ func NewDeviceDir(basePath string) ports.Dir {
 // basePath's devices directory — a thin convenience wrapping
 // [NewDeviceDir] + [ports.Dir.List], extracting each entry's captured
 // "device_id" var.
-func ListDeviceIDs(basePath string, useCaseName Name, opts ports.DirOptions) ([]DeviceID, error) {
+func ListDeviceIDs(basePath BasePath, useCaseName Name, opts ports.DirOptions) ([]DeviceID, error) {
 	entries, err := NewDeviceDir(basePath).List(map[string]string{useCaseNameVar: string(useCaseName)}, opts)
 	if err != nil {
 		return nil, err
@@ -120,7 +122,7 @@ type DeviceConfig struct {
 
 // ReadDeviceConfig reads deviceID's config under basePath/useCaseName
 // and wraps it into a [DeviceConfig], one call.
-func ReadDeviceConfig(basePath string, useCaseName Name, deviceID DeviceID, opts ports.FileOptions) (DeviceConfig, error) {
+func ReadDeviceConfig(basePath BasePath, useCaseName Name, deviceID DeviceID, opts ports.FileOptions) (DeviceConfig, error) {
 	patch, err := NewDeviceFile(basePath).Read(map[string]string{
 		useCaseNameVar: string(useCaseName),
 		deviceIDVar:    string(deviceID),
@@ -134,7 +136,7 @@ func ReadDeviceConfig(basePath string, useCaseName Name, deviceID DeviceID, opts
 // WriteDeviceConfig writes cfg.Patch at
 // "basePath/devices/{useCaseName}/{cfg.DeviceID}.json" — the inverse of
 // [ReadDeviceConfig], one call.
-func WriteDeviceConfig(basePath string, useCaseName Name, cfg DeviceConfig, opts ports.FileOptions) (createdDirs []string, err error) {
+func WriteDeviceConfig(basePath BasePath, useCaseName Name, cfg DeviceConfig, opts ports.FileOptions) (createdDirs []string, err error) {
 	return NewDeviceFile(basePath).Write(map[string]string{
 		useCaseNameVar: string(useCaseName),
 		deviceIDVar:    string(cfg.DeviceID),
@@ -166,7 +168,7 @@ func (cfg DeviceConfig) Merge(base iothub.BaseDeployment, template iothub.Layere
 // overrides yet" IS this device's current, valid state — not a caller
 // mistake. Any OTHER read error (a missing/invalid BASELINE/TEMPLATE, or
 // an existing-but-malformed device file) still propagates as-is.
-func ReadEffective(basePath string, useCaseName Name, deviceID DeviceID, opts ports.FileOptions) (iothub.BaseDeployment, error) {
+func ReadEffective(basePath BasePath, useCaseName Name, deviceID DeviceID, opts ports.FileOptions) (iothub.BaseDeployment, error) {
 	base, err := NewBaselineFile(basePath).Read(nil, opts)
 	if err != nil {
 		return iothub.BaseDeployment{}, err

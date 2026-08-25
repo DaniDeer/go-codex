@@ -140,8 +140,15 @@ func main() {
 	// name (APP_ALERT_THRESHOLD), type coercion, MinFloat(0) constraint, and
 	// the 50.0 default when unset. The pipeline factories close over the
 	// typed config — pipeline code never touches os.Getenv.
-	alertCfg, err := config.FromEnv(domain.AlertConfigCodec, "APP_ALERT_")
+	//
+	// config.FromEnv returns a *codex.Immutable[T], not a bare struct — the
+	// loaded config is frozen from this point on (a second FromEnv call
+	// targeting the SAME instance would fail, enforced by the type, not
+	// just by convention). This demo extracts the plain value once via
+	// Get() immediately, since the structs below want alertCfg BY VALUE.
+	alertImmutable, err := config.FromEnv(domain.AlertConfigCodec, "APP_ALERT_")
 	must(err, "load alert config from env")
+	alertCfg := alertImmutable.Get()
 
 	// ── Database ───────────────────────────────────────────────────────────
 	sqlDB, err := sql.Open("sqlite", "file::memory:?cache=private")

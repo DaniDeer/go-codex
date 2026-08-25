@@ -4,7 +4,7 @@ import (
 	mcp "github.com/DaniDeer/go-codex/api/mcp"
 	c "github.com/DaniDeer/go-codex/codex"
 	iothub "github.com/DaniDeer/go-codex/examples/go-edge-models/models/azure/iothub"
-	v "github.com/DaniDeer/go-codex/validate"
+	usecase "github.com/DaniDeer/go-codex/examples/go-edge-models/models/iotedge/usecase"
 )
 
 // This file holds the DECLARATIVE contract for reading one module's
@@ -17,12 +17,15 @@ import (
 
 // ReadReq is ReadTool's input.
 type ReadReq struct {
-	// BasePath is the root directory holding the "usecases/" subtree —
-	// see usecase.NewFile's own doc comment for the templated
-	// "{basePath}/usecases/{usecase_name}.json" path this composes into.
-	BasePath string
-	// UseCaseName is the use case whose deployment manifest to read.
-	UseCaseName string
+	// BasePath is the root directory holding this use case's ENTIRE
+	// on-disk layout — see [usecase.BasePath]'s own doc comment (this
+	// package now depends directly on models/iotedge/usecase for this
+	// ONE field, unlike DeviceID below, which deliberately stays
+	// decoupled).
+	BasePath usecase.BasePath
+	// UseCaseName is the use case whose deployment manifest to read —
+	// see [usecase.Name]'s own doc comment.
+	UseCaseName usecase.Name
 	// ModuleName is the module to summarize, e.g. "factory-dashboard" —
 	// or "edgeAgent"/"edgeHub" for a system module's own summary (see
 	// IsSystemModuleName).
@@ -31,48 +34,33 @@ type ReadReq struct {
 	// configured module — the use case template's manifest, with that
 	// device's own config patch layered on top (see
 	// models/iotedge/usecase's ReadEffective/DeviceConfig.Merge). Empty
-	// (the zero value) means "summarize the use case template itself,
-	// with no device overrides applied" — this package deliberately
-	// stays decoupled from models/iotedge/usecase (a plain string, not
-	// usecase.DeviceID), matching BasePath/UseCaseName's own convention
-	// above.
-	DeviceID string
+	// (the zero value, [usecase.DeviceID]("")) means "summarize the use
+	// case template itself, with no device overrides applied."
+	DeviceID usecase.DeviceID
 }
 
 // ReadReqCodec validates a ReadReq value — BasePath/UseCaseName/
 // ModuleName are required; DeviceID is OPTIONAL (empty = template-only
-// scope).
+// scope). Field declarations are shared with updatemoduleimage.Req via
+// [BasePathField]/[UseCaseNameField]/[ModuleNameField]/[DeviceIDField]
+// (see targetfields.go) — single source of truth for the key names,
+// codecs, and description text both request types share.
 var ReadReqCodec = c.Struct[ReadReq](
-	c.RequiredField("basePath",
-		c.String().Refine(v.NonEmptyString).WithDescription(
-			"The root directory holding the \"usecases/\" subtree.",
-		),
-		func(r ReadReq) string { return r.BasePath },
-		func(r *ReadReq, val string) { r.BasePath = val },
+	BasePathField(
+		func(r ReadReq) usecase.BasePath { return r.BasePath },
+		func(r *ReadReq, val usecase.BasePath) { r.BasePath = val },
 	),
-	c.RequiredField("useCaseName",
-		c.String().Refine(v.NonEmptyString).WithDescription(
-			"The use case whose deployment manifest to read.",
-		),
-		func(r ReadReq) string { return r.UseCaseName },
-		func(r *ReadReq, val string) { r.UseCaseName = val },
+	UseCaseNameField(
+		func(r ReadReq) usecase.Name { return r.UseCaseName },
+		func(r *ReadReq, val usecase.Name) { r.UseCaseName = val },
 	),
-	c.RequiredField("moduleName",
-		ModuleOrSystemModuleNameCodec.WithDescription(
-			"The name of the module to summarize, e.g. \"factory-dashboard\" — "+
-				"or \"edgeAgent\"/\"edgeHub\" for a system module's own summary.",
-		),
+	ModuleNameField(
 		func(r ReadReq) iothub.ModuleName { return r.ModuleName },
 		func(r *ReadReq, val iothub.ModuleName) { r.ModuleName = val },
 	),
-	c.OptionalField("deviceID",
-		c.String().WithDescription(
-			"If set, summarize this device's ACTUAL configured module "+
-				"(template + this device's own config, merged) instead "+
-				"of the use case template alone.",
-		),
-		func(r ReadReq) string { return r.DeviceID },
-		func(r *ReadReq, val string) { r.DeviceID = val },
+	DeviceIDField(
+		func(r ReadReq) usecase.DeviceID { return r.DeviceID },
+		func(r *ReadReq, val usecase.DeviceID) { r.DeviceID = val },
 	),
 )
 

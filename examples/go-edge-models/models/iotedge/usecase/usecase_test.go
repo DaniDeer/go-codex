@@ -64,7 +64,7 @@ func sampleBaselineManifest() iothub.BaseDeployment {
 // "{basePath}/baseline/baseline.json" — a test-only convenience most
 // ReadEffective-exercising tests need, since the baseline file is now a
 // REQUIRED read for every ReadEffective call.
-func writeSampleBaseline(t *testing.T, basePath string) {
+func writeSampleBaseline(t *testing.T, basePath BasePath) {
 	t.Helper()
 	if _, err := NewBaselineFile(basePath).Write(nil, sampleBaselineManifest(), ports.FileOptions{CreateDirs: true}); err != nil {
 		t.Fatalf("writeSampleBaseline: %v", err)
@@ -74,8 +74,8 @@ func writeSampleBaseline(t *testing.T, basePath string) {
 // ── NewFile ───────────────────────────────────────────────────────────────────
 
 func TestNewFile_ReadRoundTrip(t *testing.T) {
-	basePath := t.TempDir()
-	usecasesDir := filepath.Join(basePath, "usecases")
+	basePath := BasePath(t.TempDir())
+	usecasesDir := filepath.Join(string(basePath), "usecases")
 	if err := os.MkdirAll(usecasesDir, 0o755); err != nil {
 		t.Fatalf("MkdirAll: %v", err)
 	}
@@ -101,7 +101,7 @@ func TestNewFile_ReadRoundTrip(t *testing.T) {
 }
 
 func TestNewFile_WriteThenRead(t *testing.T) {
-	basePath := t.TempDir()
+	basePath := BasePath(t.TempDir())
 
 	fh := NewFile(basePath)
 	manifest := sampleManifest()
@@ -120,7 +120,7 @@ func TestNewFile_WriteThenRead(t *testing.T) {
 }
 
 func TestNewBaselineFile_WriteThenRead(t *testing.T) {
-	basePath := t.TempDir()
+	basePath := BasePath(t.TempDir())
 
 	fh := NewBaselineFile(basePath)
 	bl := sampleBaselineManifest()
@@ -141,8 +141,8 @@ func TestNewBaselineFile_WriteThenRead(t *testing.T) {
 }
 
 func TestNewBaselineFile_PathHasNoTemplateVariables(t *testing.T) {
-	basePath := t.TempDir()
-	wantPath := filepath.Join(basePath, "baseline", "baseline.json")
+	basePath := BasePath(t.TempDir())
+	wantPath := filepath.Join(string(basePath), "baseline", "baseline.json")
 
 	fh := NewBaselineFile(basePath)
 	if _, err := fh.Write(nil, sampleBaselineManifest(), ports.FileOptions{CreateDirs: true}); err != nil {
@@ -154,7 +154,7 @@ func TestNewBaselineFile_PathHasNoTemplateVariables(t *testing.T) {
 }
 
 func TestNewFile_DifferentUseCasesAreIndependent(t *testing.T) {
-	basePath := t.TempDir()
+	basePath := BasePath(t.TempDir())
 
 	fh := NewFile(basePath)
 
@@ -167,7 +167,7 @@ func TestNewFile_DifferentUseCasesAreIndependent(t *testing.T) {
 }
 
 func TestNewFile_MissingUseCaseNameVar_ReturnsMissingFilePathVarError(t *testing.T) {
-	basePath := t.TempDir()
+	basePath := BasePath(t.TempDir())
 	fh := NewFile(basePath)
 	if _, err := fh.Read(nil, ports.FileOptions{}); err == nil {
 		t.Error("Read: want MissingFilePathVarError for missing usecase_name, got nil")
@@ -217,8 +217,8 @@ func TestNewDir_ListDiscoversUseCases(t *testing.T) {
 }
 
 func TestNewDir_ListThenReadDiscoveredManifest(t *testing.T) {
-	basePath := t.TempDir()
-	usecasesDir := filepath.Join(basePath, "usecases")
+	basePath := BasePath(t.TempDir())
+	usecasesDir := filepath.Join(string(basePath), "usecases")
 	if err := os.MkdirAll(usecasesDir, 0o755); err != nil {
 		t.Fatalf("MkdirAll: %v", err)
 	}
@@ -255,8 +255,8 @@ func TestNewDir_ListThenReadDiscoveredManifest(t *testing.T) {
 }
 
 func TestListNames(t *testing.T) {
-	basePath := t.TempDir()
-	usecasesDir := filepath.Join(basePath, "usecases")
+	basePath := BasePath(t.TempDir())
+	usecasesDir := filepath.Join(string(basePath), "usecases")
 	if err := os.MkdirAll(usecasesDir, 0o755); err != nil {
 		t.Fatalf("MkdirAll: %v", err)
 	}
@@ -289,7 +289,7 @@ func TestListNames(t *testing.T) {
 // ── UseCase / Read / Write ─────────────────────────────────────────────────────
 
 func TestWrite_Read_RoundTrip_WithNestedDevices(t *testing.T) {
-	basePath := t.TempDir()
+	basePath := BasePath(t.TempDir())
 
 	uc := UseCase{
 		Name:               "usecase1",
@@ -330,7 +330,7 @@ func TestWrite_Read_RoundTrip_WithNestedDevices(t *testing.T) {
 }
 
 func TestRead_NoDevices_ReturnsEmptyDevicesSlice(t *testing.T) {
-	basePath := t.TempDir()
+	basePath := BasePath(t.TempDir())
 	uc := UseCase{Name: "usecase1", DeploymentManifest: sampleManifest()}
 	if err := Write(basePath, uc, ports.FileOptions{CreateDirs: true}); err != nil {
 		t.Fatalf("Write: %v", err)
@@ -346,7 +346,7 @@ func TestRead_NoDevices_ReturnsEmptyDevicesSlice(t *testing.T) {
 }
 
 func TestRead_PropagatesMissingManifestError(t *testing.T) {
-	basePath := t.TempDir()
+	basePath := BasePath(t.TempDir())
 	_, err := Read(basePath, "does-not-exist", ports.FileOptions{})
 	if err == nil {
 		t.Error("Read: want error for nonexistent use case, got nil")

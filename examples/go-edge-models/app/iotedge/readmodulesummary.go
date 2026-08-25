@@ -49,7 +49,7 @@ func (e ModuleNotFoundError) LogValue() slog.Value {
 // modulesummary.IsSystemModuleName — looked up in
 // ModulesContent.EdgeAgent.SystemModules instead, via
 // modulesummary.NewSummaryFromSystemModule).
-func readModuleSummary(basePath, useCaseName, deviceID string, moduleName iothub.ModuleName, opts ports.FileOptions) (modulesummary.Summary, error) {
+func readModuleSummary(basePath usecase.BasePath, useCaseName usecase.Name, deviceID usecase.DeviceID, moduleName iothub.ModuleName, opts ports.FileOptions) (modulesummary.Summary, error) {
 	manifest, err := effectiveManifest(basePath, useCaseName, deviceID, opts)
 	if err != nil {
 		return modulesummary.Summary{}, err
@@ -78,14 +78,13 @@ func summaryFor(manifest iothub.BaseDeployment, moduleName iothub.ModuleName) (m
 // effectiveManifest reads the FULLY layered iothub.BaseDeployment for
 // useCaseName under basePath — baseline + template, with an EMPTY
 // device patch when deviceID is empty, or baseline + template + that
-// device's OWN config when deviceID is set. Converts the plain deviceID
-// string to usecase.DeviceID, propagating any validation error.
+// device's OWN config when deviceID is set.
 //
 // Always baseline-aware (even with no deviceID) — this is what lets
 // baseline-only modules/system-modules (e.g. "vulnerability-scanner",
 // "edgeAgent"/"edgeHub" themselves) resolve at the USE-CASE-TEMPLATE
 // scope too, not just the device scope.
-func effectiveManifest(basePath, useCaseName, deviceID string, opts ports.FileOptions) (iothub.BaseDeployment, error) {
+func effectiveManifest(basePath usecase.BasePath, useCaseName usecase.Name, deviceID usecase.DeviceID, opts ports.FileOptions) (iothub.BaseDeployment, error) {
 	base, err := usecase.NewBaselineFile(basePath).Read(nil, opts)
 	if err != nil {
 		return iothub.BaseDeployment{}, err
@@ -97,15 +96,7 @@ func effectiveManifest(basePath, useCaseName, deviceID string, opts ports.FileOp
 	if deviceID == "" {
 		return finaldeviceconfig.Merge(base, template, deviceconfig.Patch{})
 	}
-	ucName, err := usecase.NewName(useCaseName)
-	if err != nil {
-		return iothub.BaseDeployment{}, err
-	}
-	devID, err := usecase.NewDeviceID(deviceID)
-	if err != nil {
-		return iothub.BaseDeployment{}, err
-	}
-	return usecase.ReadEffective(basePath, ucName, devID, opts)
+	return usecase.ReadEffective(basePath, useCaseName, deviceID, opts)
 }
 
 // NewReadModuleSummaryToolHandler returns an mcpgo.HandlerFunc that reads

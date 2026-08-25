@@ -18,9 +18,12 @@
 //	    mcp.ToolMeta{Description: "Perform arithmetic"},
 //	)
 //
-//	var itemResource = mcp.NewResource[Item]("items://{id}", itemCodec,
+//	// V=string serves as its own field container for this single-var
+//	// template — codex.IdentityField supplies the identity get/set.
+//	var itemResource = mcp.NewResource[string](
+//	    "items://{id}", itemCodec,
 //	    mcp.ResourceMeta{Name: "Item", MimeType: "application/json"},
-//	    mcp.ResourceParam{Name: "id"}.WithCodec(uuidCodec),
+//	    mcp.URIParam(codex.IdentityField("id", uuidCodec)),
 //	)
 //
 //	var summaryPrompt = mcp.NewPrompt("summarize",
