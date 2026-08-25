@@ -25,7 +25,14 @@
 // What IS modeled:
 //
 //   - A project's services map (project.go: [Project]/[ServiceName]).
-//   - Per service (service.go: [Service]): `image` (optional — a
+//   - Per service (service.go: [Service]): every field is OMITTED from
+//     Encode when it's at its zero (absent) value — via
+//     [github.com/DaniDeer/go-codex/codex.OmitEmptyField]/
+//     [github.com/DaniDeer/go-codex/codex.OmitEmptyFieldFunc] — instead
+//     of always writing a `build: null`/`command: []`/`domainname: ""`
+//     placeholder; every field below already documents its own
+//     zero-means-absent convention, which is exactly [codex.OmitEmptyField]'s
+//     hard usage rule. `image` (optional — a
 //     service may declare `build:` instead, see [Service.HasImage]),
 //     `build` (decoded via [BuildCodec] into a real [Build] value —
 //     both Compose's SHORT string form, e.g. `build: ./app`, and its

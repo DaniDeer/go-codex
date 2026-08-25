@@ -426,3 +426,63 @@ func TestCreateOptionsFromServiceCodec_RoundTrip(t *testing.T) {
 		t.Errorf("encoded ports = %+v", obj["ports"])
 	}
 }
+
+// ── OmitEmptyField/OmitEmptyFieldFunc: noise-free Encode ────────────────────
+
+func TestServiceCodec_EncodeOmitsUnsetFields(t *testing.T) {
+	raw, err := ServiceCodec.Encode(Service{Image: "alpine:3.19"})
+	if err != nil {
+		t.Fatalf("Encode: unexpected error: %v", err)
+	}
+	obj := raw.(map[string]any)
+	for _, key := range []string{
+		"build", "ports", "volumes", "environment", "command", "entrypoint",
+		"hostname", "domainname", "restart", "healthcheck", "mem_limit",
+		"mem_reservation", "ulimits",
+	} {
+		if _, present := obj[key]; present {
+			t.Errorf("%q should be absent from the encoded map (never set)", key)
+		}
+	}
+	if obj["image"] != "alpine:3.19" {
+		t.Errorf(`obj["image"] = %v, want alpine:3.19`, obj["image"])
+	}
+}
+
+func TestServiceCodec_EncodeIncludesPopulatedFields(t *testing.T) {
+	svc := Service{
+		Image:       "alpine:3.19",
+		Command:     []string{"echo", "hi"},
+		Hostname:    "web",
+		Healthcheck: docker.Healthcheck{Test: []string{"CMD", "true"}},
+		MemLimit:    512 * 1024 * 1024,
+	}
+	raw, err := ServiceCodec.Encode(svc)
+	if err != nil {
+		t.Fatalf("Encode: unexpected error: %v", err)
+	}
+	obj := raw.(map[string]any)
+	for _, key := range []string{"command", "hostname", "healthcheck", "mem_limit"} {
+		if _, present := obj[key]; !present {
+			t.Errorf("%q should be present (explicitly populated)", key)
+		}
+	}
+	// A never-set sibling field must still be absent.
+	if _, present := obj["domainname"]; present {
+		t.Error(`"domainname" should be absent (never set)`)
+	}
+}
+
+func TestServiceCodec_EncodeHealthcheckUsesIsZeroValue(t *testing.T) {
+	// Healthcheck's zero value ({} — no Test, all durations 0) is
+	// documented as "say nothing about healthchecking" — codex.IsZeroValue
+	// correctly treats it as empty even though docker.Healthcheck contains
+	// a slice field (Test) and isn't `comparable`.
+	raw, err := ServiceCodec.Encode(Service{Image: "alpine:3.19"})
+	if err != nil {
+		t.Fatalf("Encode: unexpected error: %v", err)
+	}
+	if _, present := raw.(map[string]any)["healthcheck"]; present {
+		t.Error(`"healthcheck" should be absent for a zero-value Healthcheck`)
+	}
+}

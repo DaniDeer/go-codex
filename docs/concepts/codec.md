@@ -178,8 +178,10 @@ codex.DefaultField("log_level",
 | `OptionalField` | Go zero value (`""`, `0`, `nil`, …) | always encoded | field not in `required` |
 | `DefaultField` | declared default applied | always encoded | field not in `required`; `default: <value>` |
 | `OptionalField` + `Nullable` | `nil` pointer (type-safe absent) | encoded as `null` | field not in `required`; `nullable: true` |
+| `OmitEmptyField`/`OmitEmptyFieldFunc` | Go zero value (`""`, `0`, `nil`, …) | OMITTED when current value is "empty" (`==` zero or the `isEmpty` predicate), else encoded | field not in `required` |
+| `OmitDefaultField` | declared default applied | OMITTED when current value equals the declared default, else encoded | field not in `required`; `default: <value>` |
 
-> **Encode note:** there is no "omit if zero" logic on encode — every field is always written to the output object. If you want a field to be absent rather than `null` on encode, handle that outside the codec.
+> **Encode note:** `RequiredField`/`OptionalField`/`DefaultField` never omit a field on encode — every one of them always writes the key to the output object, even at the Go zero value. For an OPT-IN way to omit a zero-valued (or default-valued) field's key entirely, see ["`OmitEmptyField`/`OmitEmptyFieldFunc`/`OmitDefaultField`"](#omitemptyfieldomitemptyfieldfuncomitdefaultfield-omitting-a-zero-valued-field-on-encode) below.
 
 ### Rejecting unknown keys — `StrictStruct`
 
@@ -1180,6 +1182,122 @@ including a nested `ModuleSettingsPatch` grouping) — this subsection and
 `.github/instructions/go-codex.instructions.md`'s matching section are
 now the authoritative design reference (the feature's roadmap doc was
 retired once shipped).
+
+### `OmitEmptyField`/`OmitEmptyFieldFunc`/`OmitDefaultField`: omitting a zero-valued field on encode
+
+`Struct[T]`'s `Encode` unconditionally writes EVERY declared field into its
+output map — `RequiredField`, `OptionalField`, and `DefaultField` alike (see
+the "Encode note" callout above). `PartialField`/`PartialStruct` already
+solve "omit unset" — but only by converting **every** field of the struct to
+a pointer, a shape suited to a dedicated "patch" type, not to retrofitting
+onto an ordinary value-typed struct just to reduce noise on a handful of
+fields. `OmitEmptyField`/`OmitEmptyFieldFunc`/`OmitDefaultField` are a
+parallel, opt-in mechanism for exactly that case — no pointer reshape, and
+freely mixable with `Required`/`Optional`/`Default` fields in the SAME
+`Struct(...)` call:
+
+```go
+type Build struct {
+    Context    string
+    Dockerfile string
+}
+var buildCodec = codex.Struct[Build](
+    codex.OmitEmptyField("context", codex.String(),
+        func(b Build) string { return b.Context },
+        func(b *Build, v string) { b.Context = v }),
+    codex.OmitEmptyFieldFunc("dockerfile", codex.String(),
+        func(b Build) string { return b.Dockerfile },
+        func(b *Build, v string) { b.Dockerfile = v },
+        func(v string) bool { return v == "" }),
+)
+
+raw, _ := buildCodec.Encode(Build{Context: "./app"})
+// raw == map[string]any{"context": "./app"} — "dockerfile" key is ABSENT, not "".
+```
+
+**Hard usage rule — not a soft suggestion.** Comparing a field's current
+value to Go's zero value to decide "omit it" is fundamentally ambiguous
+whenever the zero value is ALSO a legitimate, deliberately-chosen value
+(e.g. a `Retries int` field where `0` means "explicitly no retries," not
+"never touched") — the exact same long-standing criticism of
+`encoding/json`'s `omitempty` tag. **Only use this family for fields whose
+own documented type convention already treats the Go zero value as a
+first-class "absent" sentinel** (this codebase's own convention for
+`MemLimit==0`, `Healthcheck==Healthcheck{}`, `Build.Context==""`). For a
+field where the zero value is itself meaningful, distinguishable data, use
+`PartialField`/`PartialStruct` instead — the pointer-based approach is the
+only one that can actually make that distinction.
+
+- **`OmitEmptyField[T, F comparable]`** — the ergonomic shorthand: omits
+  when the current value equals `F`'s Go zero value via `==`.
+- **`OmitEmptyFieldFunc[T, F any]`** — the escape hatch: an explicit
+  `isEmpty func(F) bool` predicate, required whenever `F` isn't
+  `comparable` (slices, maps) or "empty" means something other than Go's
+  zero value (e.g. a domain type's own `IsSet()`-style check).
+- **`OmitDefaultField[T, F comparable]`** — decodes exactly like
+  `DefaultField` (absent key → declared default applied) but omits the key
+  on encode whenever the current value equals that SAME declared default —
+  a "minimal diff" round trip. This does **not** modify `DefaultField`
+  itself, which keeps its existing "always show the resolved value"
+  contract (relied on by real configs that want the effective value
+  explicit) — it's a separate, additive sibling.
+
+**Why not just change `OptionalField`/`DefaultField` directly?** Both are
+used across dozens of existing call sites where zero (or the declared
+default) is legitimate, already-relied-upon data — silently flipping their
+encode behavior would change wire output for every existing caller with no
+migration path. Keeping this opt-in, per-field, and separately named avoids
+that blast radius entirely — exactly the same reasoning `PartialField`
+already established for staying a parallel mechanism instead of a breaking
+`FieldCodec`/`Struct` change.
+
+**Nil-vs-empty correctness for slices/maps.** `OmitEmptyFieldFunc`'s
+predicate should compare against `nil`, not `len(s) == 0` — a `nil` slice
+means "the key was never in the wire object" (exactly what `OptionalField`'s
+own decode already produces for an absent key), while a non-nil,
+zero-length slice (`[]string{}`) means "the wire explicitly had an empty
+array" — a genuinely different state a `len()==0` check would incorrectly
+conflate. `codex.IsZeroValue[F any](v F) bool` is a ready-made,
+reflection-based predicate that gets this right automatically (it checks
+`IsNil()` for slices/maps/pointers, not length) — pass it explicitly to
+`OmitEmptyFieldFunc` when you don't want to hand-write `s == nil` yourself:
+
+```go
+codex.OmitEmptyFieldFunc("tags", codex.SliceOf(codex.String()),
+    get, set, codex.IsZeroValue)
+```
+
+**This is go-codex's only use of reflection, and it is entirely opt-in** —
+never a hidden default. `Struct`'s own field constructors
+(`RequiredField`/`OptionalField`/`DefaultField`) and this family's own
+zero-value shorthand (`OmitEmptyField[T, F comparable]`) use plain `==`
+comparison, no reflection at all; `codex.IsZeroValue` exists purely as a
+convenience a caller may choose to pass to `OmitEmptyFieldFunc`'s `isEmpty`
+parameter. This deliberately does NOT become `OmitEmptyField`'s automatic
+default behavior for non-comparable types — a blind structural zero-check
+knows nothing about a type's own business meaning of "empty" (e.g. a
+domain type whose `IsSet()` checks only ONE of its fields, not the whole
+struct), so an implicit reflect-based default could silently disagree with
+that type's own convention.
+
+**Interaction with `Template`/`DottedKeyCodec`/`DecodeVars`/`EncodeVars`.**
+`FieldCodec[T]` has four consumers besides `Struct`/`StrictStruct` —
+`DottedKeyCodec`, `Template`'s `NewTemplate`/`Fields()`, and
+`DecodeVars`/`EncodeVars`. None of them route through `Struct`'s Encode
+loop — they call a field's plain `encode()` method directly. A sparse
+field's plain `encode()` ALWAYS encodes the current value, exactly like
+`OptionalField` — it deliberately does NOT consult `isEmpty`. Only
+`encodeSparse()` (consulted exclusively by `Struct`'s own type-assertion
+check) honors the omit rule. This guarantees a path/topic/dotted-key var
+declared with `OmitEmptyField` never silently goes missing from a
+URI/topic/key build merely because its value happened to be zero — in
+practice this scenario shouldn't arise, since path/topic template vars are
+conventionally always-required, but the guarantee holds regardless.
+
+No new structured error types and no observer integration are needed:
+these constructors reuse whatever errors the per-field `Codec[F]` already
+produces (`ValidationError`/`ValidationErrors`, exactly like `Struct`), and
+are pure codec-construction primitives with no I/O.
 
 ### `Getter`/`Setter`: validated value containers built on `Codec[T]`
 

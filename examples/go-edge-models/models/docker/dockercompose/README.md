@@ -35,7 +35,13 @@ the one place that bridges this package's types to
   project's named services map. `ServicesCodec` is reused directly by
   the sibling `fromcompose` package's own Project↔LayeredDeployment
   transcoding.
-- `service.go` — `Service`/`ServiceCodec` (image, `build` decoded via
+- `service.go` — `Service`/`ServiceCodec` — every field OMITTED from
+  Encode when it's at its zero (absent) value, via `codex.OmitEmptyField`/
+  `codex.OmitEmptyFieldFunc` (avoids `build: null`/`command: []`/
+  `domainname: ""` wire noise; `healthcheck` uses `codex.IsZeroValue`,
+  a good real-world case for that reflection-based helper, since its
+  zero value is already documented as "say nothing about
+  healthchecking"). Fields: image, `build` decoded via
   `BuildCodec` into a real `Build` value — Compose's SHORT string form
   (`build: ./app`) AND LONG object form (`{context, dockerfile, args,
   target}`), always re-encoding to the long object form; `Build.IsSet()`

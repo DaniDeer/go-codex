@@ -140,6 +140,22 @@ func Struct[T any](fields ...FieldCodec[T]) Codec[T] {
 			obj := map[string]any{}
 			var errs ValidationErrors
 			for _, f := range fields {
+				// sparseFieldCodec is an OPTIONAL companion capability
+				// (OmitEmptyField/OmitEmptyFieldFunc/OmitDefaultField, see
+				// omitempty.go) that lets a field OMIT its key entirely
+				// instead of always writing it. Every other field type
+				// (RequiredField/OptionalField/DefaultField) doesn't
+				// implement it, so this check is a no-op for them --
+				// completely backward compatible.
+				if sf, ok := f.(sparseFieldCodec[T]); ok {
+					name, val, present, err := sf.encodeSparse(v)
+					if err != nil {
+						errs = append(errs, ValidationError{Field: name, Err: err})
+					} else if present {
+						obj[name] = val
+					}
+					continue
+				}
 				name, val, err := f.encode(v)
 				if err != nil {
 					errs = append(errs, ValidationError{Field: name, Err: err})

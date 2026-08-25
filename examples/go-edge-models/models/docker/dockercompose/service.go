@@ -205,9 +205,14 @@ var BuildCodec = c.Codec[Build]{
 }
 
 // serviceFieldsCodec is the UNCONSTRAINED, field-only assembly every
-// Service field is built from — every field OptionalField, absent ->
-// zero value, matching Compose's own "everything but image/build is
-// optional" convention. Deliberately UNEXPORTED and kept SEPARATE from
+// Service field is built from — every field OMITTED from Encode
+// whenever it's at its zero (absent) value, matching Compose's own
+// "everything but image/build is optional" convention AND avoiding the
+// noisy `build: null`/`command: []`/`domainname: ""` wire output a plain
+// OptionalField would always emit (see codex.OmitEmptyField's own doc
+// comment for the "only when zero already means absent by this field's
+// own convention" hard rule — every field below already documents that
+// exact convention). Deliberately UNEXPORTED and kept SEPARATE from
 // the public, cross-field-validated [ServiceCodec] below: it backs
 // [CreateOptionsFromServiceCodec], whose OWN documented contract is a
 // PARTIAL Service (Image/Build/Restart intentionally left unset — see
@@ -216,61 +221,69 @@ var BuildCodec = c.Codec[Build]{
 // docker.CreateOptions value carries no image/build data at all), so it
 // must not be built on the constrained, whole-document codec.
 var serviceFieldsCodec = c.Struct[Service](
-	c.OptionalField("image", c.String(),
+	c.OmitEmptyField("image", c.String(),
 		func(s Service) string { return s.Image },
 		func(s *Service, val string) { s.Image = val },
 	),
-	c.OptionalField("build", BuildCodec,
+	c.OmitEmptyFieldFunc("build", BuildCodec,
 		func(s Service) Build { return s.Build },
 		func(s *Service, val Build) { s.Build = val },
+		func(v Build) bool { return !v.IsSet() },
 	),
-	c.OptionalField("ports", c.SliceOf(docker.PortMappingCodec),
+	c.OmitEmptyFieldFunc("ports", c.SliceOf(docker.PortMappingCodec),
 		func(s Service) []docker.PortMapping { return s.Ports },
 		func(s *Service, val []docker.PortMapping) { s.Ports = val },
+		func(v []docker.PortMapping) bool { return v == nil },
 	),
-	c.OptionalField("volumes", c.SliceOf(docker.BindCodec),
+	c.OmitEmptyFieldFunc("volumes", c.SliceOf(docker.BindCodec),
 		func(s Service) []docker.Bind { return s.Volumes },
 		func(s *Service, val []docker.Bind) { s.Volumes = val },
+		func(v []docker.Bind) bool { return v == nil },
 	),
-	c.OptionalField("environment", docker.EnvCodec,
+	c.OmitEmptyFieldFunc("environment", docker.EnvCodec,
 		func(s Service) docker.Env { return s.Environment },
 		func(s *Service, val docker.Env) { s.Environment = val },
+		func(v docker.Env) bool { return v == nil },
 	),
-	c.OptionalField("command", c.SliceOf(c.String()),
+	c.OmitEmptyFieldFunc("command", c.SliceOf(c.String()),
 		func(s Service) []string { return s.Command },
 		func(s *Service, val []string) { s.Command = val },
+		func(v []string) bool { return v == nil },
 	),
-	c.OptionalField("entrypoint", c.SliceOf(c.String()),
+	c.OmitEmptyFieldFunc("entrypoint", c.SliceOf(c.String()),
 		func(s Service) []string { return s.Entrypoint },
 		func(s *Service, val []string) { s.Entrypoint = val },
+		func(v []string) bool { return v == nil },
 	),
-	c.OptionalField("hostname", c.String(),
+	c.OmitEmptyField("hostname", c.String(),
 		func(s Service) string { return s.Hostname },
 		func(s *Service, val string) { s.Hostname = val },
 	),
-	c.OptionalField("domainname", c.String(),
+	c.OmitEmptyField("domainname", c.String(),
 		func(s Service) string { return s.Domainname },
 		func(s *Service, val string) { s.Domainname = val },
 	),
-	c.OptionalField("restart", c.String(),
+	c.OmitEmptyField("restart", c.String(),
 		func(s Service) string { return s.Restart },
 		func(s *Service, val string) { s.Restart = val },
 	),
-	c.OptionalField("healthcheck", HealthcheckFromComposeCodec,
+	c.OmitEmptyFieldFunc("healthcheck", HealthcheckFromComposeCodec,
 		func(s Service) docker.Healthcheck { return s.Healthcheck },
 		func(s *Service, val docker.Healthcheck) { s.Healthcheck = val },
+		c.IsZeroValue,
 	),
-	c.OptionalField("mem_limit", docker.MemBytesCodec,
+	c.OmitEmptyField("mem_limit", docker.MemBytesCodec,
 		func(s Service) int64 { return s.MemLimit },
 		func(s *Service, val int64) { s.MemLimit = val },
 	),
-	c.OptionalField("mem_reservation", docker.MemBytesCodec,
+	c.OmitEmptyField("mem_reservation", docker.MemBytesCodec,
 		func(s Service) int64 { return s.MemReservation },
 		func(s *Service, val int64) { s.MemReservation = val },
 	),
-	c.OptionalField("ulimits", UlimitsCodec,
+	c.OmitEmptyFieldFunc("ulimits", UlimitsCodec,
 		func(s Service) []docker.Ulimit { return s.Ulimits },
 		func(s *Service, val []docker.Ulimit) { s.Ulimits = val },
+		func(v []docker.Ulimit) bool { return v == nil },
 	),
 )
 
