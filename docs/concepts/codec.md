@@ -1299,6 +1299,165 @@ these constructors reuse whatever errors the per-field `Codec[F]` already
 produces (`ValidationError`/`ValidationErrors`, exactly like `Struct`), and
 are pure codec-construction primitives with no I/O.
 
+### `Maybe[T]`: definitive presence tracking
+
+`OmitEmptyField`/`OmitEmptyFieldFunc` (above) solve "omit a zero-valued
+field on Encode" via a HEURISTIC: compare the current value to Go's zero
+value (or a custom predicate). This heuristic is fundamentally UNABLE to
+distinguish two states that are byte-identical in Go's memory model: "this
+field was never touched" vs. "this field was explicitly set to exactly the
+zero-equivalent value" (e.g. a caller who genuinely means `Retries: 0`,
+`Nick: ""`). `codex.Maybe[T]` — go-codex's Go rendering of Haskell's
+`Maybe`/Rust's `Option` — is a lightweight, PER-FIELD alternative: a small
+value type pairing a `T` with an explicit "was this ever set" bit
+(`Just`/`Nothing`), usable as the type of ONE struct field (not the whole
+struct) — giving `OmitEmptyField`-style omission a DEFINITIVE signal
+instead of a heuristic, without forcing every OTHER field in the struct to
+become a pointer too (contrast with `PartialField`/`PartialStruct`, which
+solves this same ambiguity but requires an ALL-pointer struct reshape).
+
+**`Maybe[T]` does NOT replace `OmitEmptyField`/`OmitEmptyFieldFunc`.** They
+remain the right choice for the common case — a field whose zero-means-
+absent convention is already safe and documented (as with every field in
+`dockercompose.Service`). `Maybe[T]` is the precise escape hatch for the
+genuinely ambiguous cases where that heuristic isn't good enough.
+
+```go
+type Profile struct {
+    Name string
+    Nick codex.Maybe[string]
+}
+var profileCodec = codex.Struct[Profile](
+    codex.RequiredField("name", codex.String(),
+        func(p Profile) string { return p.Name },
+        func(p *Profile, v string) { p.Name = v }),
+    codex.MaybeField("nick", codex.String(),
+        func(p Profile) codex.Maybe[string] { return p.Nick },
+        func(p *Profile, v codex.Maybe[string]) { p.Nick = v }),
+)
+
+var p Profile
+p.Nick.Set("")     // explicitly set to "" -- NOT the same as never touched
+raw, _ := profileCodec.Encode(p)
+// raw == map[string]any{"name": "", "nick": ""} -- "nick" key IS present,
+// because it was explicitly Set, even though its value is the zero value.
+// A never-touched p.Nick (Maybe[string]{}) would omit the "nick" key
+// entirely -- the exact distinction OmitEmptyField cannot make.
+```
+
+`Maybe[T]`'s API: `Just(v)`/`Nothing[T]()` construct a set/unset value;
+`Set(v)` is REPEATABLE (every call overwrites — contrast with
+`Immutable.Set`'s exactly-once contract); `Get()` NEVER panics (returns
+`T`'s zero value when unset — contrast with `Immutable.Get`, which panics
+before the first `Set`); `IsSet()`/`TryGet()` are the explicit-presence-
+check siblings. Three combinators round out the type for working with it
+functionally: `MaybeMap[T,R](m, fn)` (a free function, not a method — Go
+generic methods cannot introduce a new type parameter `R`, the same
+constraint `forge.NewFunction[In, Out]` already documents elsewhere;
+applies `fn` only if set, `Nothing` in → `Nothing` out) — named `MaybeMap`
+rather than the shorter `Map` to avoid colliding with the existing
+`codex.Map[K,V]` map-codec constructor; `OrElse(fallback)` (the safe-
+default-value idiom, Rust's `unwrap_or`/Haskell's `fromMaybe`); `Filter(pred)`
+(narrows "set" down to "set AND satisfies some condition," returning
+`Nothing` otherwise).
+
+**Why `Maybe[T]` stays codec-agnostic.** Unlike `Immutable`/`Mutable`
+(which both REQUIRE a `Codec[T]` at construction), `Maybe[T]` carries no
+codec of its own — validation stays entirely owned by the enclosing
+field's `Codec[V]`, exactly like every other `Struct` field constructor.
+A zero-initialized `Maybe[V]{}` is already meaningful (`Nothing`) with no
+constructor call needed at all.
+
+**Why not just use a pointer (`*T`), like `PartialField` does?** A fair
+question, since `PartialField`/`PartialStruct` already ship and already
+solve this ambiguity definitively via pointers. Pointers remain the right
+tool for a DEDICATED patch/partial-update type where EVERY field is
+independently optional — the all-pointer reshape is the point there, not a
+cost. But reusing bare pointers as the GENERAL per-field answer has real
+downsides `Maybe[T]` avoids:
+
+- **No struct reshape required.** Making one ordinary domain field's type
+  `*string` instead of `string` touches every existing read site of that
+  field (arithmetic, string ops, anything not expecting a pointer) — real,
+  spread-out churn. `Maybe[T]` only changes what the FIELD wraps, not what
+  every consumer must additionally nil-check.
+- **Safe-by-default, not panic-by-forgetting.** Every pointer read site
+  must remember to nil-check or safely dereference. `Maybe[T]`'s `Get()`
+  is ALWAYS safe (zero value, never panics); the presence check
+  (`IsSet()`/`TryGet()`) is the deliberate opt-in, inverting the usual
+  pointer footgun.
+- **No aliasing.** Copying a struct with pointer fields means BOTH copies
+  share the same underlying value — mutating through one pointer silently
+  affects the other. `Maybe[T]` carries `T` BY VALUE inside the wrapper;
+  copying a `Maybe[T]`-containing struct copies the value too, exactly
+  like every other value-typed field in Go.
+- **No extra heap allocation.** Each non-nil pointer is a separate heap
+  allocation; `Maybe[T]{value T; set bool}` stores `T` INLINE — no
+  additional indirection beyond the struct's own layout, a real difference
+  under load for structs with many optional fields (e.g. a hot decode
+  path).
+- **No collision with `Nullable[T]`'s existing meaning for `*T`.**
+  go-codex already uses `*T` (via `codex.Nullable[T]`) for a DIFFERENT
+  axis: wire-level explicit `null` vs. a real value. Reusing bare pointers
+  ALSO for "was the Go field ever assigned" would overload one Go pattern
+  with two different meanings depending on context.
+
+**A concrete, already-shipped example of this exact ambiguity**: re-read
+the `OptionalField`+`Nullable` example earlier in this doc —
+
+```go
+// "note" absent  → Note == nil  (key was not in the object)
+// "note": null   → Note == nil  (key was present, value was null)
+```
+
+`OptionalField`+`Nullable` cannot distinguish "absent" from "explicit
+null" either — BOTH produce `Note == nil` today (only `RequiredField`+
+`Nullable` avoids this, since a required key is guaranteed present). This
+is the exact same shape of ambiguity this section is about, just on the
+"wire-null vs. absent" axis instead of "zero-value vs. absent."
+
+**Deferred ideas, not designed here** — see
+`docs/roadmap/maybe-nullable-and-codec.md` for a short "idea only" sketch
+of both: a THREE-state `Maybe[Nullable[T]]` composition (absent /
+present-null / present-value — the exact shape RFC 7396 JSON Merge Patch
+needs) that could resolve the ambiguity above; and a general-purpose
+public `codex.Codec[Maybe[T]]` (the internal `maybeFieldCodec` helper
+`MaybeField` already uses is 90% of this, but stays unexported for now).
+
+**Also see `docs/roadmap/reloadable-value-containers.md`** for
+`OptionalMutable[T]` — a DIFFERENT, NOT-yet-built idea (a `Mutable[T]`
+that may start unset) that sounds superficially similar to `Maybe[T]` but
+solves an opposite problem (a value's currentness over time, vs. `Maybe`'s
+provenance at a point in time) — see that section's own comparison table.
+
+No new structured error types and no observer integration are needed:
+`Maybe[T]`'s own `Set`/`Get` are infallible, and decode errors flow
+through the enclosing field's `Codec[V]`, exactly like `OmitEmptyField`.
+
+### Which presence tool do I use? A decision guide
+
+Five different mechanisms in this codebase all touch "is this field
+present/optional" in some way. They are NOT competing — each answers a
+different question:
+
+| Tool | Distinguishes absent from zero? | Struct reshape needed? | Extra allocation? | Use when... |
+|---|---|---|---|---|
+| `OptionalField` | No — zero value on absent, ALWAYS encoded | None | None | The field is genuinely optional AND its zero value is fine to always show on re-encode |
+| `OmitEmptyField`/`OmitEmptyFieldFunc` | No (heuristic — zero value is TREATED as absent) | None | None | Zero value is ALREADY a safe, conventional "absent" sentinel for this field (a documented codebase convention) — the common case |
+| `Maybe[T]` | **Yes, definitively** | None (only the ONE field's type changes) | None (value-typed, inline) | You need to tell "never touched" from "deliberately zero" for one or a few fields, without reshaping the whole struct |
+| `Nullable[T]` (+ `RequiredField`) | Distinguishes wire `null` from a real value — a DIFFERENT axis, not absence | None | One pointer per field | You need wire-level explicit `null` vs. a value; combine with `RequiredField` if "absent" must also be impossible |
+| `PartialField`/`PartialStruct` | **Yes, definitively**, for EVERY field at once | Whole struct becomes all-pointer (a dedicated "patch" type) | One pointer per field | You're building a dedicated PATCH/partial-update type where EVERY field is independently optional |
+
+**Start with `OmitEmptyField`** — it's the cheapest and matches most real
+zero-means-absent conventions already documented in a codebase (as
+`dockercompose.Service` demonstrates for all 14 of its fields). **Reach
+for `Maybe[T]`** only once you've concretely hit the ambiguity it solves —
+don't reach for it defensively on every field "just in case." **Use
+`PartialField`** when the WHOLE struct is a patch/partial-update BY
+DESIGN, not for one-off fields on an otherwise-ordinary domain struct.
+**`Nullable[T]`** solves a different problem (wire null) entirely and
+composes with any of the above rather than competing with them.
+
 ### `Getter`/`Setter`: validated value containers built on `Codec[T]`
 
 Everything above validates *runtime* values passed through `Encode`/
@@ -1411,6 +1570,34 @@ is needed beyond `ImmutableAlreadySetError` (empty — nothing to report
 beyond the fact itself) and no observer integration applies (no I/O, no
 adapter boundary — `MustConst`/`Set` each run once, not on a repeated
 request/response path).
+
+**Constructor naming convention.** Every `Getter`/`Setter`-family type
+(`Const`, `Immutable`, and the planned `Mutable`/`OptionalMutable`)
+follows the same naming pattern: `MustX` validates and PANICS (authored
+input, invalid = a bug); `NewX` validates and returns an ERROR (real
+runtime input, invalid = an expected condition); `Set(value) error` on a
+`GetterSetter[T]` type revalidates against the SAME codec on EVERY call.
+This is a documented CONVENTION, not a Go interface requirement — Go has
+no static/class methods, so a literal "Factory" interface can't express
+"a type that can be constructed" the way it might in other languages.
+See `.github/instructions/go-codex.instructions.md`'s "Constructor Naming
+Convention for `Getter`/`Setter`-Family Types" section for the full
+convention (including `Maybe[T]`'s documented exception: its `Set` is
+infallible by design, since it has no codec of its own).
+
+**Why isn't every struct field validated-on-assignment like `Mutable[T]`
+will be?** Deliberately not: `Mutable[T]`'s mutex + method-call-only
+access + per-field heap allocation would be a severe cost applied to the
+overwhelming common case (a value decoded once, read many times). go-codex
+already validates at the BOUNDARY (`Codec[T].Decode`, once) and trusts the
+Go type system from there — the same model virtually every statically
+typed program already operates under. `Mutable[T]`'s real driver is
+narrow: values reassigned repeatedly, during a running process, from an
+EXTERNAL source that can change without warning (rotating credentials) —
+a genuinely different risk profile from an ordinary decoded field. This is
+exactly why `Const`/`Immutable`/`Mutable`/`Maybe` stay OPT-IN, per-field
+wrapper types rather than a blanket mechanism — apply the extra protection
+selectively, where the guarantee is worth the cost.
 
 ### Applying a patch: `ApplyPatch` (flat) vs. `ApplyDottedPatch` (dotted-path)
 

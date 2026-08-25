@@ -34,9 +34,12 @@ type sparseFieldCodec[T any] interface {
 }
 
 // sparseField is sparseFieldCodec[T]'s sole implementation, returned by
-// [OmitEmptyField]/[OmitEmptyFieldFunc]/[OmitDefaultField]. One struct backs
-// all three constructors, mirroring how Field[T,F] backs
-// RequiredField/OptionalField/DefaultField.
+// [OmitEmptyField]/[OmitEmptyFieldFunc]/[OmitDefaultField] AND (in
+// maybe.go) [MaybeField] — one struct backs all four constructors,
+// mirroring how Field[T,F] backs RequiredField/OptionalField/DefaultField.
+// MaybeField's isEmpty is simply Maybe[V].IsSet() negated — a DEFINITIVE
+// presence check rather than a zero-value heuristic, see maybe.go's own
+// doc comment.
 type sparseField[T, F any] struct {
 	name    string
 	codec   Codec[F]

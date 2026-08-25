@@ -315,6 +315,16 @@ type ReloadObserver interface {
 - A `TryGet`-style safe accessor for `Mutable[T]` — unnecessary, since
   construction guarantees a valid value always exists (no "unset"
   state to guard against, unlike `Immutable[T]`).
+- **`OptionalMutable[T]`** — a `Mutable[T]` that may START unset (unlike
+  today's `NewMutable`, which REQUIRES a valid `initial T`), becoming a
+  normal `Mutable[T]` once a first value is supplied — e.g. an optional
+  feature's rotating credential that might not exist until the feature is
+  enabled. Now has its OWN dedicated design draft:
+  [`docs/roadmap/optional-mutable.md`](optional-mutable.md) — promoted
+  from a one-line flagged idea once the need surfaced a second time (see
+  that doc's Motivation section). Explicitly sequenced to depend on THIS
+  doc's `Mutable[T]` shipping first — do not implement `OptionalMutable[T]`
+  before `Mutable[T]` exists.
 
 ## Open design decisions
 
