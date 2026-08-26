@@ -1157,42 +1157,54 @@ New error types: `events.MergeFieldTypeError{Err}`/`reqreply.MergeFieldTypeError
 
 `events.Topic{Template, Params []TopicParam}`, `rest.Path{Template, Params
 []PathParam}`, `ports.FilePathTemplate{Template, Params []FilePathParam}`,
-`ports.DirPathTemplate{Template, Params []DirPathParam}` extract the
+`ports.DirPathTemplate{Template, Params []DirPathParam}`,
+`ports.CacheKeyTemplate{Template, Params []CacheKeyParam}` extract the
 payload-independent "shape" (template + var declarations) that
 `ChannelHandle.BuildTopic`/`RouteHandle.BuildPath`/`File.BuildPath`/
-`Dir.BuildPath` already use internally into its own standalone value,
-each with `BuildTopic`/`BuildPath` + `ValidateTopicVars`/`ValidatePathVars`
-methods mirroring the corresponding Handle method exactly (all delegate to
-the shared `codex.BuildFromParams`/`codex.ValidateParams`, same error types:
+`Dir.BuildPath`/`Cache.BuildKey` already use internally into its own
+standalone value, each with `BuildTopic`/`BuildPath`/`BuildKey` +
+`ValidateTopicVars`/`ValidatePathVars`/`ValidateKeyVars` methods mirroring
+the corresponding Handle method exactly (all delegate to the shared
+`codex.BuildFromParams`/`codex.ValidateParams`, same error types:
 `MissingTopicVarError`/`TopicParamError`, `MissingPathVarError`/
 `PathParamError`, `MissingFilePathVarError`/`FilePathParamError`, Dir
-equivalents). `events.NewTopic(template, params...)`/`rest.NewPath(...)`/
-`ports.NewFilePathTemplate(...)`/`ports.NewDirPathTemplate(...)` construct
-them; `events.NewChannelFromTopic[T](topic, codec, opts...)`/
+equivalents, `CacheKeyError`/`CacheKeyParamError`). `ports.Cache` was the
+LAST boundary to join this unification — `Cache.BuildKey`/
+`Cache.ValidateKeyVars` used to hand-roll their own `{var}` substitution
+loop instead of delegating to the shared engine; now identical to every
+other boundary, fully transparent to `adapters/redis` (only calls
+`cache.BuildKey(vars)`, never touched the substitution internals).
+`events.NewTopic(template, params...)`/`rest.NewPath(...)`/
+`ports.NewFilePathTemplate(...)`/`ports.NewDirPathTemplate(...)`/
+`ports.NewCacheKeyTemplate(...)` construct them;
+`events.NewChannelFromTopic[T](topic, codec, opts...)`/
 `rest.NewRouteFromPath[Req,Resp](method, path, reqCodec, respCodec,
 opts...)`/`ports.NewFileFromPathTemplate[T](t, format, opts...)`/
-`ports.NewDirFromPathTemplate(t, opts...)` build a `Channel[T]`/
-`Route[Req,Resp]`/`File[T]`/`Dir` from a pre-built bundle instead of a raw
-template string.
+`ports.NewDirFromPathTemplate(t, opts...)`/
+`ports.NewCacheFromKeyTemplate[T](t, format, opts...)` build a
+`Channel[T]`/`Route[Req,Resp]`/`File[T]`/`Dir`/`Cache[T]` from a pre-built
+bundle instead of a raw template string.
 
 **This does NOT change the default workflow.** The plain-string form
 (`NewChannel[T]("devices/{deviceID}/telemetry", codec, opts...)`, and the
 `rest`/`ports` equivalents) remains completely unchanged and stays the
 default, primary, first-taught way to declare a one-off channel/route/
-file/dir. `NewChannelFromTopic`/`NewRouteFromPath`/`NewFileFromPathTemplate`/
-`NewDirFromPathTemplate` are a SECOND, additional, opt-in constructor —
+file/dir/cache. `NewChannelFromTopic`/`NewRouteFromPath`/
+`NewFileFromPathTemplate`/`NewDirFromPathTemplate`/
+`NewCacheFromKeyTemplate` are a SECOND, additional, opt-in constructor —
 reach for them ONLY when the SAME template+params shape is genuinely
-reused across two or more channels/routes/files/dirs of different
+reused across two or more channels/routes/files/dirs/caches of different
 payload types (avoiding copy-paste drift of the shared var name/codec),
-or when a topic/path needs to be built/validated standalone with no
-payload codec at all. A bundle-built `Channel`/`Route`/`File`/`Dir` is
-byte-for-byte identical to one hand-written with the plain-string
-constructor and the same params passed inline — nothing downstream
-(adapters, `Register`, spec generation) can tell the difference, since
-`TopicParam`/`PathParam`/`FilePathParam`/`DirPathParam` already implement
-their boundary's `ChannelOpt`/`RouteOpt`/`FileOpt`/`DirOpt` interface (the
-bundle constructors are thin wrappers, not a parallel declaration
-surface) — every other opt (`ChannelMeta`, `Subscribe`/`Publish`,
+or when a topic/path/key needs to be built/validated standalone with no
+payload/value codec at all. A bundle-built `Channel`/`Route`/`File`/`Dir`/
+`Cache` is byte-for-byte identical to one hand-written with the
+plain-string constructor and the same params passed inline — nothing
+downstream (adapters, `Register`, spec generation) can tell the
+difference, since `TopicParam`/`PathParam`/`FilePathParam`/`DirPathParam`/
+`CacheKeyParam` already implement their boundary's `ChannelOpt`/
+`RouteOpt`/`FileOpt`/`DirOpt`/`CacheOpt` interface (the bundle
+constructors are thin wrappers, not a parallel declaration surface) —
+every other opt (`ChannelMeta`, `Subscribe`/`Publish`,
 `RouteMeta`, `WithSecurityScheme`, `ErrorPattern`/`ErrorChannel`, formats,
 …) is passed through unchanged. Documentation MUST always show the
 plain-string form first and introduce these bundles afterward, framed as

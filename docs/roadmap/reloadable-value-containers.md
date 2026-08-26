@@ -3,11 +3,15 @@
 > **Status:** Design complete — not yet implemented.
 > [← Back to Roadmap](index.md)
 >
-> See also: [Cache Template Parity + `Cacheable[T]`](cache-parity-and-cacheable.md)
-> — a 4th sibling, `codex.Cacheable[T]`, adds a TTL/`Invalidate()`
-> validity window on top of this doc's `Mutable[T]` design (that doc
-> also has the full `Const`/`Immutable`/`Mutable`/`Cacheable` comparison
-> table, and a Redis-backed `Cacheable[T]` sibling) · and
+> See also: [`codex.Cacheable[T]`](cache-parity-and-cacheable.md) — a 4th
+> sibling, EXPLICITLY SEQUENCED to depend on THIS doc's `Mutable[T]`
+> shipping first (do not implement `Cacheable[T]` before `Mutable[T]`
+> exists — same rule as `OptionalMutable[T]` below), adding a
+> TTL/`Invalidate()` validity window on top of this doc's `Mutable[T]`
+> design (that doc also has the full `Const`/`Immutable`/`Mutable`/
+> `Cacheable` comparison table, and a Redis-backed `Cacheable[T]`
+> sibling; that doc's own Part 1, `ports.Cache` template-unification
+> parity, has ALREADY shipped independently of this dependency) · and
 > [`ports.RefreshingCacheable[T]`](refreshing-cacheable.md) (an
 > auto-refresh wrapper depending on `Cacheable[T]` shipping first).
 
@@ -325,6 +329,18 @@ type ReloadObserver interface {
   that doc's Motivation section). Explicitly sequenced to depend on THIS
   doc's `Mutable[T]` shipping first — do not implement `OptionalMutable[T]`
   before `Mutable[T]` exists.
+- **`codex.Cacheable[T]`** — a 4th sibling adding a TTL/explicit-
+  `Invalidate()` validity window on top of `Mutable[T]`'s re-validating
+  `Set` shape (`Get()` returns `(T, bool)` instead of `Mutable[T]`'s plain
+  `T`, the second value reporting freshness). Has its OWN dedicated design
+  draft: [`docs/roadmap/cache-parity-and-cacheable.md`](cache-parity-and-cacheable.md)
+  (that doc's Part 1, unrelated `ports.Cache` template-unification parity,
+  has already shipped independently — only its `Cacheable[T]` design
+  remains). Explicitly sequenced to depend on THIS doc's `Mutable[T]`
+  shipping first — do not implement `Cacheable[T]` before `Mutable[T]`
+  exists, same rule as `OptionalMutable[T]` above. Also inherits THIS
+  doc's open `codex`↔`stats` import-cycle question unchanged (`Cacheable[T]`
+  needs the same `stats.ReloadObserver`-shaped field `Mutable[T]` does).
 
 ## Open design decisions
 

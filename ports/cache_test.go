@@ -172,6 +172,117 @@ func TestCache_KeySchemas_OmitsParamsWithoutCodec(t *testing.T) {
 	}
 }
 
+// ── Template-unification parity (BuildKey/ValidateKeyVars now delegate to
+// codex.BuildFromParams/codex.ValidateParams, mirroring rest/events/
+// reqreply/ports.File/ports.Dir) ───────────────────────────────────────────
+
+// TestCache_BuildKey_DelegatesToBuildFromParams verifies BuildKey's output
+// is unchanged for a representative multi-var, multi-codec fixture —
+// confirms the internal switch to codex.BuildFromParams is byte-identical
+// to the old hand-rolled substitution loop.
+func TestCache_BuildKey_DelegatesToBuildFromParams(t *testing.T) {
+	c := ports.NewCache("ns:{tenant}:user:{id}", format.JSON(cfgCodec),
+		ports.CacheKeyParam{Name: "tenant"}.WithCodec(codex.String().Refine(validate.NonEmptyString)),
+		ports.CacheKeyParam{Name: "id"}.WithCodec(codex.String().Refine(validate.UUID)),
+	)
+	key, err := c.BuildKey(map[string]string{
+		"tenant": "acme",
+		"id":     "f47ac10b-58cc-4372-a567-0e02b2c3d479",
+	})
+	if err != nil {
+		t.Fatalf("BuildKey: %v", err)
+	}
+	want := "ns:acme:user:f47ac10b-58cc-4372-a567-0e02b2c3d479"
+	if key != want {
+		t.Fatalf("BuildKey = %q, want %q", key, want)
+	}
+}
+
+// TestCacheKeyParamError_Unwrap_ReachesCause is a direct Unwrap regression
+// guard for the error-conversion helper introduced by this delegation.
+func TestCacheKeyParamError_Unwrap_ReachesCause(t *testing.T) {
+	c := ports.NewCache("user:{id}", format.JSON(cfgCodec),
+		ports.CacheKeyParam{Name: "id"}.WithCodec(codex.String().Refine(validate.UUID)))
+	_, err := c.BuildKey(map[string]string{"id": "not-a-uuid"})
+	var paramErr ports.CacheKeyParamError
+	if !errors.As(err, &paramErr) {
+		t.Fatalf("want CacheKeyParamError, got %T: %v", err, err)
+	}
+	if errors.Unwrap(paramErr) == nil {
+		t.Error("want Unwrap to reach the underlying constraint error")
+	}
+}
+
+// TestCacheKeyError_LogValue_KeysUnchanged is an explicit regression guard
+// for THIS change — CacheKeyError's LogValue keys must be unchanged after
+// switching BuildKey's internals to codex.BuildFromParams.
+func TestCacheKeyError_LogValue_KeysUnchanged(t *testing.T) {
+	c := ports.NewCache("user:{id}", format.JSON(cfgCodec),
+		ports.CacheKeyParam{Name: "id"}.WithCodec(codex.String().Refine(validate.UUID)))
+	_, err := c.BuildKey(map[string]string{})
+	var keyErr ports.CacheKeyError
+	if !errors.As(err, &keyErr) {
+		t.Fatalf("want CacheKeyError, got %T: %v", err, err)
+	}
+	v := keyErr.LogValue()
+	attrs := v.Group()
+	keys := make(map[string]bool, len(attrs))
+	for _, a := range attrs {
+		keys[a.Key] = true
+	}
+	for _, want := range []string{"key", "var"} {
+		if !keys[want] {
+			t.Errorf("want LogValue key %q present, got %v", want, keys)
+		}
+	}
+}
+
+// TestNewCacheKeyTemplate_BuildKey_RoundTrip verifies CacheKeyTemplate's
+// BuildKey/ValidateKeyVars mirror Cache's own, standalone (no value format
+// involved).
+func TestNewCacheKeyTemplate_BuildKey_RoundTrip(t *testing.T) {
+	tmpl := ports.NewCacheKeyTemplate("user:{id}",
+		ports.CacheKeyParam{Name: "id"}.WithCodec(codex.String().Refine(validate.UUID)),
+	)
+	key, err := tmpl.BuildKey(map[string]string{"id": "f47ac10b-58cc-4372-a567-0e02b2c3d479"})
+	if err != nil {
+		t.Fatalf("BuildKey: %v", err)
+	}
+	if key != "user:f47ac10b-58cc-4372-a567-0e02b2c3d479" {
+		t.Fatalf("BuildKey = %q", key)
+	}
+	if err := tmpl.ValidateKeyVars(map[string]string{"id": "not-a-uuid"}); err == nil {
+		t.Fatal("ValidateKeyVars: expected error for invalid UUID")
+	}
+}
+
+// TestNewCacheFromKeyTemplate_ProducesIdenticalCacheToNewCache verifies a
+// Cache[T] built via NewCacheFromKeyTemplate is byte-for-byte identical
+// (same Key, same BuildKey output) to one built via NewCache with the same
+// template+params passed inline.
+func TestNewCacheFromKeyTemplate_ProducesIdenticalCacheToNewCache(t *testing.T) {
+	params := ports.CacheKeyParam{Name: "id"}.WithCodec(codex.String().Refine(validate.UUID))
+
+	viaTemplate := ports.NewCacheFromKeyTemplate(
+		ports.NewCacheKeyTemplate("user:{id}", params),
+		format.JSON(cfgCodec),
+	)
+	viaInline := ports.NewCache("user:{id}", format.JSON(cfgCodec), params)
+
+	if viaTemplate.Key != viaInline.Key {
+		t.Fatalf("Key: %q != %q", viaTemplate.Key, viaInline.Key)
+	}
+	vars := map[string]string{"id": "f47ac10b-58cc-4372-a567-0e02b2c3d479"}
+	keyA, errA := viaTemplate.BuildKey(vars)
+	keyB, errB := viaInline.BuildKey(vars)
+	if errA != nil || errB != nil {
+		t.Fatalf("BuildKey errors: %v, %v", errA, errB)
+	}
+	if keyA != keyB {
+		t.Fatalf("BuildKey output differs: %q != %q", keyA, keyB)
+	}
+}
+
 // CK8: CachePattern.Opts wired through an IOPort — end-to-end validation.
 func TestCachePattern_Opts_WiredThroughIOPort(t *testing.T) {
 	p, err := ports.NewIOPort[int, cfgItem]("cache-keyparam-io", intCodec, cfgCodec, ports.PortOptions{})

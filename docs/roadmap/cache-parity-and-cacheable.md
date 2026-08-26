@@ -1,110 +1,34 @@
-# Cache Template Parity + `codex.Cacheable[T]` — `ports`, `adapters/redis`, `codex`
+# `codex.Cacheable[T]` — `codex`, `adapters/redis`
 
-> **Status:** Design complete — not yet implemented.
+> **Status:** Design draft — blocked on `Mutable[T]` shipping first
+> (see `reloadable-value-containers.md`'s open `codex`↔`stats`
+> import-cycle question, which this doc inherits unchanged).
 > [← Back to Roadmap](index.md)
 >
+> This doc originally tracked TWO related phases. **Part 1
+> (`ports.Cache` template-unification parity) has SHIPPED** —
+> `Cache.BuildKey`/`Cache.ValidateKeyVars` now delegate to
+> `codex.BuildFromParams`/`codex.ValidateParams` (the same shared
+> engine `rest`/`events`/`reqreply`/`ports.File`/`ports.Dir` already
+> use) instead of a hand-rolled substitution loop, and `ports.Cache`
+> gained the reusable-shape escape hatch every other boundary already
+> had: `ports.CacheKeyTemplate`/`ports.NewCacheKeyTemplate`/
+> `ports.NewCacheFromKeyTemplate[T]`. See `ports/cache.go` and
+> `.github/instructions/go-codex.instructions.md`'s "Topic/Path/
+> PathTemplate: reusable template+params bundles" section for the
+> shipped design. `ports.CacheKeyParam`/`MergedCacheKeyParam[T]`/
+> `NewCacheKeyParam[T]` and every `adapters/redis` function signature
+> are UNCHANGED — the migration was fully transparent. Only Part 2
+> below (`codex.Cacheable[T]`) remains open.
+>
 > See also: [Reloadable Value Containers — `Mutable`, `NewConst`](reloadable-value-containers.md)
-> (Part 2 below builds directly on that doc's not-yet-implemented `Mutable[T]`)
-> · [`ports.RefreshingCacheable[T]`](refreshing-cacheable.md) (auto-refresh
+> (Part 2 below builds directly on that doc's not-yet-implemented
+> `Mutable[T]` — explicitly sequenced to depend on it shipping first,
+> see that doc's own "Deferred/Phase 2 ideas" list) ·
+> [`ports.RefreshingCacheable[T]`](refreshing-cacheable.md) (auto-refresh
 > wrapper, depends on this doc's `Cacheable[T]` shipping first) ·
 > [Redis Cache Adapter (shipped)](../features/redis.md) ·
 > [Redis — Phase 2: Pub/Sub](redis-pubsub.md)
-
-## Motivation
-
-Two related questions came up together: (1) does `ports.Cache` — Redis
-cache keys declared as `{var}`-templated paths, exactly the same shape
-`rest`/`events`/`reqreply`/`ports.File`/`ports.Dir` all use — actually
-share the SAME underlying template-substitution primitive those
-boundaries were unified onto (`codex.BuildFromParams`/
-`internal/templatematch.Build`)? And (2) now that `Mutable[T]` is
-designed (reloadable, re-validated cell — see the companion roadmap
-doc), what about a value container with an explicit notion of
-**validity** — a TTL, or an explicit "this is now stale" signal — the
-in-process analogue of what `ports.Cache`'s own `TTL` field already
-means for a REMOTE Redis-backed cache entry?
-
-This doc answers both, as two independent but related phases in one
-package review.
-
-## Part 1 — `ports.Cache` template-unification parity audit
-
-**Audited against**: `rest.PathParam`/`events.TopicParam`/
-`reqreply.TopicParam` (all now thin wrappers over `codex.Param`/
-`MergedParam[T]`, `Build`/`Validate` delegating to
-`codex.BuildFromParams`/`ValidateParams`), and `ports.FilePathParam`/
-`ports.DirPathParam` (same delegation, kept as their own error types at
-the boundary). Result: **`ports.Cache` was NOT included in that
-unification pass** — two concrete, confirmed gaps, both cheap and
-low-risk to close, with an exact precedent already shipped for each:
-
-1. **`Cache.BuildKey`/`Cache.ValidateKeyVars` hand-roll their own
-   `{var}` substitution loop** (a manual `strings.IndexByte('{')`/
-   `IndexByte('}')` scan in `BuildKey`) instead of delegating to
-   `codex.BuildFromParams`/`codex.ValidateParams` — the ONE shared
-   engine (`internal/templatematch.Build`) every other boundary's
-   template substitution now goes through. This means Cache key
-   templates don't benefit from any future `templatematch` fix/feature
-   for free, and are the only boundary with a bespoke, untested-against-
-   the-same-fixture substitution path. Fix: rewrite both methods to
-   build a `[]codex.Param` from `c.params` (mirroring
-   `ports/file.go`'s existing `toCodexFileParams`-style helper) and
-   delegate to `codex.BuildFromParams`/`codex.ValidateParams`,
-   translating the shared `codex.MissingParamError`/`codex.ParamError`
-   back into Cache's own `CacheKeyError`/`CacheKeyParamError` at the
-   boundary — the EXACT pattern `ports.File`'s `convertFileParamErr`/
-   `ports.Dir`'s `convertDirParamErr` already established. `CacheKeyError`/
-   `CacheKeyParamError` stay their own distinct types (same rationale as
-   File/Dir: their `LogValue()` keys differ from `codex.ParamError`'s,
-   and existing tests assert the exact keys) — only the INTERNAL
-   substitution engine changes, not Cache's public error shape.
-2. **`ports.Cache` has no reusable-shape escape hatch.** Every other
-   boundary now has one — `rest.Path`+`NewRouteFromPath`,
-   `events.Topic`+`NewChannelFromTopic`, `reqreply.Topic`+
-   `NewRouteFromTopic`, `mcp`'s Template+`NewResourceFromTemplate`,
-   `ports.FilePathTemplate`+`NewFileFromPathTemplate`,
-   `ports.DirPathTemplate`+`NewDirFromPathTemplate` — for the case
-   where the SAME key template and `CacheKeyParam`s are shared by two or
-   more `Cache[T]` declarations of DIFFERENT value types (e.g. one Redis
-   key family, `"session:{id}"`, caching both a `SessionMeta` value under
-   one call site and a `SessionToken` value under another, same `{id}`
-   variable). Cache is now the ONLY boundary missing this. Fix: add
-   `ports.CacheKeyTemplate` (mirrors `FilePathTemplate` exactly:
-   `Template string`, `Params []CacheKeyParam`, `BuildKey`/
-   `ValidateKeyVars` methods) + `ports.NewCacheKeyTemplate(template
-   string, params ...CacheKeyParam) CacheKeyTemplate` +
-   `ports.NewCacheFromKeyTemplate[T any](t CacheKeyTemplate, f
-   format.Format[T], opts ...CacheOpt) Cache[T]`.
-
-**Not a gap, confirmed while auditing:** `ports.Cache` has no
-`ValidateDeclaredParams`-style "a declared param name doesn't appear in
-the template" check at construction time — but neither do `ports.File`/
-`ports.Dir`, for the same reason: that check only exists for `rest`/
-`events`/`reqreply` because THEY have a `.Register(builder)` step to run
-it at; `File`/`Dir`/`Cache` are all "no builder, no spec" boundaries
-(see `docs/concepts/declaring-apis-and-ports.md`), so there is no
-natural point to run this check other than at `BuildKey`/`ValidateKeyVars`
-time, where an unknown var is already harmless (silently ignored, exactly
-matching `File`/`Dir`'s existing behavior). No change proposed here —
-this is consistent, not a Cache-specific gap.
-
-**`adapters/redis` requires NO changes.** `binding.go`'s `GetAdapter`/
-`SetAdapter`/`DrainSetAdapter`/`Seed` all call `cache.BuildKey(vars)` and
-never touch the substitution internals directly — the Part 1 fix is
-fully transparent to the adapter layer, exactly like the `ports.File`/
-`ports.Dir` Phase 5 migration was transparent to `adapters/file`.
-
-### Part 1 test plan
-
-| Test | Verifies |
-|---|---|
-| `TestCache_BuildKey_DelegatesToBuildFromParams` | `BuildKey` output is byte-identical before/after the refactor for a representative template+params fixture |
-| `TestCache_BuildKey_MissingVar_ReturnsCacheKeyError` | Missing var still returns `CacheKeyError` (translated from `codex.MissingParamError`) with the SAME `Key`/`Var` fields as before |
-| `TestCache_BuildKey_CodecFailure_ReturnsCacheKeyParamError` | Codec failure still returns `CacheKeyParamError` (translated from `codex.ParamError`) with the SAME fields, `Unwrap` reaching the underlying error |
-| `TestCache_ValidateKeyVars_Unchanged` | `ValidateKeyVars`'s existing behavior/error shape is unchanged |
-| `TestNewCacheKeyTemplate_BuildKey_RoundTrip` | `CacheKeyTemplate.BuildKey` substitutes correctly |
-| `TestNewCacheFromKeyTemplate_ProducesIdenticalCacheToNewCache` | A `Cache[T]` built via `NewCacheFromKeyTemplate` is byte-for-byte identical (same `Key`, same `BuildKey` output) to one built via `NewCache` with the same template+params inline |
-| `TestCacheKeyError_LogValue_KeysUnchanged` | Regression guard: `CacheKeyError`/`CacheKeyParamError`'s `LogValue()` keys are UNCHANGED after the internal refactor (existing tests already assert this — this test just makes the invariant explicit for THIS change) |
 
 ## Part 2 — `codex.Cacheable[T]`: a validated cell with TTL/staleness
 
@@ -416,9 +340,9 @@ func (c *Cacheable[T]) IsStale(ctx context.Context) (bool, error)
   already carries forward (`const.go` vs. a split file); `Cacheable[T]`
   makes a 4th type in the family, which may tip the balance toward
   splitting regardless of what's decided for `Mutable[T]` alone.
-- **Should Part 1 (Cache template parity) ship independently of Part 2
-  (`Cacheable[T]`), given Part 1 is small/precedented and Part 2 is
-  genuinely new design?** Likely yes — nothing in Part 2 depends on
-  Part 1 shipping first, and Part 1's risk profile is low enough it
-  could reasonably be implemented as soon as this doc is reviewed,
-  without waiting for Part 2's open questions to resolve.
+- ~~Should Part 1 (Cache template parity) ship independently of Part 2
+  (`Cacheable[T]`)?~~ **Resolved — yes, and it has shipped.** Part 1
+  landed with zero dependency on Part 2's open questions (see this doc's
+  header). This confirms the ordering that made the decision easy: Part 1
+  was small/precedented, Part 2 remains genuinely new design blocked on
+  `Mutable[T]`.
