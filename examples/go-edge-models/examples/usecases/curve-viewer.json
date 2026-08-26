@@ -1,0 +1,343 @@
+{
+	"modulesContent": {
+		"$edgeAgent": {
+			"properties.desired.modules.cv-kvrocks": {
+				"settings": {
+					"image": "apache/kvrocks:2.15.0",
+					"createOptions": "{\"HostConfig\":{\"Binds\":[\"cv-kvrocks:/var/lib/kvrocks\"]}}"
+				},
+				"type": "docker",
+				"status": "running",
+				"restartPolicy": "always",
+				"version": "Will be automatically overwritten"
+			},
+			"properties.desired.modules.cv-solace-gateway": {
+				"settings": {
+					"image": "ghcr.io/bosch-cc-mfd/edge-gateway:0.12.6.0",
+					"createOptions": "{\"Cmd\":[\"solace\"],\"ExposedPorts\":{\"8000/tcp\":{}}}"
+				},
+				"type": "docker",
+				"env": {
+					"DEBUG_LOG": {
+						"value": "True"
+					},
+					"SOLACE_BROKER": {
+						"value": "{ \"hostnames\": \"tcps:bh0vm048.de.bosch.com,tcps:bh0vm049.de.bosch.com\", \"vpnName\": \"default\", \"loginName\": \"ProcessCurves_EdgeViewer_BhP\", \"loginPassword\": \"${DEV_MANIFEST_CV_SOLACE_PWD}\" }"
+					},
+					"SOLACE_ROUTES": {
+						"value": "{ \"fromSolace\": { \"route1\": { \"from\": \"UnideProcess2EdgeCurveViewer_BhP\", \"to\": \"unide_process\", \"instances\": 1 }}, \"toSolace\": { }}"
+					},
+					"REDIS_HOST": {
+						"value": "cv-kvrocks"
+					},
+					"REDIS_PORT": {
+						"value": "6666"
+					},
+					"TZ": {
+						"value": "Europe/Berlin"
+					},
+					"ZIPKIN_HOST": {
+						"value": "cv-zipkin"
+					},
+					"FORCE_CONSUMER_SPAN": {
+						"value": "False"
+					}
+				},
+				"status": "running",
+				"restartPolicy": "always",
+				"version": "Will be automatically overwritten"
+			},
+			"properties.desired.modules.cv-rabbitmq-gateway": {
+				"settings": {
+					"image": "ghcr.io/bosch-cc-mfd/edge-gateway:0.12.6.0",
+					"createOptions": "{\"HostConfig\":{\"ExtraHosts\":[\"bh0vm00001.de.bosch.com:172.18.0.1\"]},\"ExposedPorts\":{\"8000/tcp\":{}}}"
+				},
+				"type": "docker",
+				"env": {
+					"DEBUG_LOG": {
+						"value": "True"
+					},
+					"RABBIT": {
+						"value": "[{\"broker\":{\"hostname\":\"bh0vm00001.de.bosch.com\",\"virtualHost\":\"lp\",\"loginName\":\"user\",\"loginPassword\":\"${DEV_MANIFEST_RABBITMQ_USER_PASSWORD}\",\"ssl\":true},\"routes\":{\"fromRabbit\":{\"route1\":{\"from\":\"Edge.CurveData.Process\",\"to\":\"process\",\"instances\":1},\"route2\":{\"from\":\"Edge.CurveData.ProcessLogs\",\"to\":\"process_logs\",\"instances\":1}},\"toRabbit\":{\"process-event-final\":\"Edge.CurveData.ProcessEventFinal\"}}}]"
+					},
+					"REDIS_HOST": {
+						"value": "cv-kvrocks"
+					},
+					"REDIS_PORT": {
+						"value": "6666"
+					},
+					"TZ": {
+						"value": "Europe/Berlin"
+					},
+					"ZIPKIN_HOST": {
+						"value": "cv-zipkin"
+					},
+					"FORCE_CONSUMER_SPAN": {
+						"value": "False"
+					}
+				},
+				"status": "running",
+				"restartPolicy": "always",
+				"version": "1.0"
+			},
+			"properties.desired.modules.cv-zipkin": {
+				"settings": {
+					"image": "ghcr.io/bosch-cc-mfd/azure-monitor-collector:0.155.0-amd64",
+					"createOptions": "{\"ExposedPorts\":{\"9411/tcp\":{},\"4318/tcp\":{}}}"
+				},
+				"type": "docker",
+				"env": {
+					"HTTPS_PROXY": {
+						"value": "http://rb-proxy-sl.bosch.com:8080/"
+					},
+					"HTTP_PROXY": {
+						"value": "http://rb-proxy-sl.bosch.com:8080/"
+					},
+					"AZURE_CONNECTION_STRING": {
+						"value": "${DEV_MANIFEST_CV_AZ_CONNECTION_STRING}"
+					}
+				},
+				"status": "running",
+				"restartPolicy": "always",
+				"version": "Will be automatically overwritten"
+			},
+			"properties.desired.modules.cv-metrics-collector": {
+				"settings": {
+					"image": "mcr.microsoft.com/azureiotedge-metrics-collector:1.2.39",
+					"createOptions": ""
+				},
+				"type": "docker",
+				"env": {
+					"experimentalFeatures__AddIdentifyingTags": {
+						"value": "true"
+					},
+					"UploadTarget": {
+						"value": "AzureMonitor"
+					},
+					"MetricsEndpointsCSV": {
+						"value": "http://cv-solace-gateway:8000/metrics,http://cv-ingest:8000/metrics,http://cv-zipkin:8888/metrics,http://cv-mongodb-exporter:9216/metrics"
+					},
+					"no_proxy": {
+						"value": "cv-solace-gateway,cv-ingest,cv-zipkin"
+					},
+					"LogAnalyticsWorkspaceId": {
+						"value": "7337d870-a1a9-4015-8a5e-5b86ae8f2d1d"
+					},
+					"LogAnalyticsSharedKey": {
+						"value": "${DEV_MANIFEST_CV_LOG_ANALYTICS_SHARED_KEY}"
+					},
+					"ResourceID": {
+						"value": "/subscriptions/8cf0c417-12f9-4a5a-aaf8-035eb6b184e2/resourceGroups/rg-bhp-edge-dev/providers/Microsoft.Devices/IotHubs/ioth-bhp-edge-dev"
+					},
+					"https_proxy": {
+						"value": "http://rb-proxy-sl.bosch.com:8080/"
+					}
+				},
+				"status": "running",
+				"restartPolicy": "always",
+				"version": "Will be automatically overwritten"
+			},
+			"properties.desired.modules.cv-mongodb": {
+				"settings": {
+					"image": "ghcr.io/bosch-cc-mfd/edge-curve-viewer-mongodb:1.8.16.1",
+					"createOptions": "{\"ExposedPorts\":{\"27017/tcp\":{}},\"HostConfig\":{\"Memory\":6000000000,\"Binds\":[\"cv-mongodb-data:/data/db\"],\"PortBindings\":{\"27017/tcp\":[{\"HostPort\":\"27017\"}]}}}"
+				},
+				"type": "docker",
+				"env": {
+					"MONGO_INITDB_ROOT_USERNAME": {
+						"value": "mongo_admin"
+					},
+					"MONGO_INITDB_ROOT_PASSWORD": {
+						"value": "${DEV_MANIFEST_CV_MONGODB_ADMIN_PWD}"
+					},
+					"MONGO_INITDB_DATABASE": {
+						"value": "curve_viewer"
+					},
+					"MONGO_MONITORING_USER": {
+						"value": "monitoring_user"
+					},
+					"MONGO_MONITORING_PWD": {
+						"value": "${DEV_MANIFEST_CV_MONGODB_MONITORING_PWD}"
+					},
+					"MONGO_INITDB_USER": {
+						"value": "mongo_cv_user"
+					},
+					"MONGO_INITDB_PWD": {
+						"value": "${DEV_MANIFEST_CV_MONGODB_INITDB_PWD}"
+					},
+					"MONGO_INITDB_RETENTIONTIMEINSECONDS": {
+						"value": "432000"
+					},
+					"MONGO_INITDB_TEMP_STORE_RETENTIONTIMEINSECONDS": {
+						"value": "14400"
+					}
+				},
+				"status": "running",
+				"restartPolicy": "always",
+				"version": "Will be automatically overwritten"
+			},
+			"properties.desired.modules.cv-mongo-express": {
+				"settings": {
+					"image": "docker.io/library/mongo-express:1.0.2",
+					"createOptions": "{\"ExposedPorts\":{\"8081/tcp\":{}}}"
+				},
+				"env": {
+					"ME_CONFIG_BASICAUTH_USERNAME": {
+						"value": "mongo_admin"
+					},
+					"ME_CONFIG_BASICAUTH_PASSWORD": {
+						"value": "${DEV_MANIFEST_CV_MONGODB_ADMIN_PWD}"
+					},
+					"ME_CONFIG_MONGODB_ADMINUSERNAME": {
+						"value": "mongo_admin"
+					},
+					"ME_CONFIG_MONGODB_ADMINPASSWORD": {
+						"value": "${DEV_MANIFEST_CV_MONGODB_ADMIN_PWD}"
+					},
+					"ME_CONFIG_MONGODB_SERVER": {
+						"value": "cv-mongodb"
+					},
+					"ME_CONFIG_MONGODB_PORT": {
+						"value": "27017"
+					}
+				},
+				"type": "docker",
+				"status": "running",
+				"restartPolicy": "always",
+				"version": "Will be automatically overwritten"
+			},
+			"properties.desired.modules.cv-mongodb-exporter": {
+				"settings": {
+					"image": "docker.io/percona/mongodb_exporter:0.44.0",
+					"createOptions": "{\"Cmd\":[\"--discovering-mode\",\"--collect-all\",\"--log.level=debug\"],\"ExposedPorts\":{\"9216/tcp\":{}}}"
+				},
+				"type": "docker",
+				"env": {
+					"MONGODB_URI": {
+						"value": "mongodb://cv-mongodb:27017"
+					},
+					"MONGODB_USER": {
+						"value": "monitoring_user"
+					},
+					"MONGODB_PASSWORD": {
+						"value": "${DEV_MANIFEST_CV_MONGODB_MONITORING_PWD}"
+					}
+				},
+				"status": "running",
+				"restartPolicy": "always",
+				"version": "Will be automatically overwritten"
+			},
+			"properties.desired.modules.cv-ingest": {
+				"settings": {
+					"image": "ghcr.io/bosch-cc-mfd/edge-curve-viewer-ingest:1.8.16.1",
+					"createOptions": "{\"ExposedPorts\":{\"8000/tcp\":{}}}"
+				},
+				"type": "docker",
+				"env": {
+					"DEBUG_LOG": {
+						"value": "True"
+					},
+					"MONGO_DB": {
+						"value": "{ \"hostname\": \"cv-mongodb\", \"database\": \"curve_viewer\", \"port\": 27017, \"collection\": \"process_events\",  \"loginName\": \"mongo_cv_user\", \"loginPassword\": \"${DEV_MANIFEST_CV_MONGODB_INITDB_PWD}\" }"
+					},
+					"REDIS_HOST": {
+						"value": "cv-kvrocks"
+					},
+					"REDIS_PORT": {
+						"value": "6666"
+					},
+					"TZ": {
+						"value": "Europe/Berlin"
+					},
+					"ZIPKIN_HOST": {
+						"value": "cv-zipkin"
+					}
+				},
+				"status": "running",
+				"restartPolicy": "always",
+				"version": "Will be automatically overwritten"
+			},
+			"properties.desired.modules.cv-web": {
+				"settings": {
+					"image": "ghcr.io/bosch-cc-mfd/edge-curve-viewer-web-labs:fd8d04f3",
+					"createOptions": "{\"ExposedPorts\":{\"5000/tcp\":{}}}"
+				},
+				"type": "docker",
+				"env": {
+					"MONGO_INITDB_DATABASE": {
+						"value": "curve_viewer"
+					},
+					"MONGO_INITDB_USER": {
+						"value": "mongo_cv_user"
+					},
+					"MONGO_INITDB_PWD": {
+						"value": "${DEV_MANIFEST_CV_MONGODB_INITDB_PWD}"
+					},
+					"MONGO_HOST": {
+						"value": "cv-mongodb"
+					},
+					"API_URL": {
+						"value": ""
+					},
+					"AUTO_REFRESH_INTERVAL": {
+						"value": 15000
+					}
+				},
+				"status": "running",
+				"restartPolicy": "always",
+				"version": "Will be automatically overwritten"
+			},
+			"properties.desired.modules.cv-multi-access-service": {
+				"settings": {
+					"image": "ghcr.io/bosch-cc-mfd/edge-multi-access-service:web-app-3.7.6-0.0.14",
+					"createOptions": "{\"ExposedPorts\":{\"8080/tcp\":{},\"8090/tcp\":{},\"9090/tcp\":{},\"9093/tcp\":{}},\"HostConfig\":{\"Binds\":[\"/etc/ssl/local/pubkey.pem:/etc/traefik/ssl/pubkey.pem\",\"/etc/ssl/local/private.key:/etc/traefik/ssl/private.key\"],\"PortBindings\":{\"9090/tcp\":[{\"HostPort\":\"9090\"}],\"8090/tcp\":[{\"HostPort\":\"4000\"}],\"8080/tcp\":[{\"HostPort\":\"9092\"}],\"9093/tcp\":[{\"HostPort\":\"9093\"}]}}}"
+				},
+				"type": "docker",
+				"env": {
+					"TRAEFIK_JSON": {
+						"value": "ToDo: Override value in device layers."
+					},
+					"DYNAMIC_JSON": {
+						"value": "ToDo: Override value in device layers."
+					},
+					"OTEL_PROPAGATORS": {
+						"value": "b3"
+					},
+					"NO_PROXY": {
+						"value": "cv-web,cv-zipkin,cv-mongo-express"
+					}
+				},
+				"status": "running",
+				"restartPolicy": "always",
+				"version": "Will be automatically overwritten"
+			},
+			"properties.desired.modules.cv-genesis": {
+				"settings": {
+					"image": "ghcr.io/bosch-cc-mfd/edge-genesis:0.4.6.1",
+					"createOptions": "{\"Cmd\": [\"ToDo: Override createOptions in device layers.\"]}"
+				},
+				"type": "docker",
+				"status": "running",
+				"restartPolicy": "always",
+				"version": "Will be automatically overwritten",
+				"env": {
+					"DEBUG_LOG": {
+						"value": "True"
+					},
+					"TZ": {
+						"value": "Europe/Berlin"
+					},
+					"FLOW_CONFIG": {
+						"value": "ToDo: Override value in device layers."
+					},
+					"REDIS_HOST": {
+						"value": "cv-kvrocks"
+					},
+					"REDIS_PORT": {
+						"value": "6666"
+					}
+				}
+			}
+		}
+	}
+}

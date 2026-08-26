@@ -1,20 +1,34 @@
-// Package mutable-security-keys demonstrates codex.Mutable[T] — a
-// re-validated, hot-reloadable value cell — for the driving use case
-// that motivated it: key/credential rotation for a SecurityFunc/
-// CredentialFunc closure, without a process restart.
+// Package mutable-security-keys demonstrates codex.Mutable[T] and
+// codex.Cacheable[T] composed with REAL adapter security hooks — proof
+// that both containers are PURE OPT-IN CONVENIENCE, not a new API
+// surface: SecurityFunc/CredentialFunc are already plain closures, so a
+// caller captures a *codex.Mutable[T]/*codex.Cacheable[T] and calls
+// .Get() inside the closure body — the SAME hooks a plain static value
+// or hand-rolled cache would use.
 //
-// Unlike codex.Immutable[T] (set EXACTLY once, panics on a second Set),
-// Mutable[T] can be Set repeatedly — each call re-validates against the
-// SAME Codec[T] used at construction, and an invalid Set leaves the
-// current value UNCHANGED (last-good-value-wins) instead of corrupting
-// live traffic with a bad key.
+// Two scenes, wired to ONE real HTTP round-trip (httptest server + a
+// real nethttp.Call client):
 //
-// Two scenes:
-//   - A background rotation loop calling Set on a schedule (simulating
-//     a JWKS refresh), observed via codex.WithReloadObserver.
-//   - A SecurityFunc-shaped closure calling Get() on every simulated
-//     request — always sees the CURRENT key, never a stale one, with
-//     zero coordination beyond the Mutable cell itself.
+//   - SERVER side — codex.Mutable[T]: a background rotation loop calls
+//     Set on a schedule (simulating a JWKS/API-key refresh). The
+//     nethttp.Options.SecurityFunc closure calls keys.Get() on EVERY
+//     request — always sees the CURRENT key, no restart, no polling
+//     loop of its own.
+//   - CLIENT side — codex.Cacheable[T]: a TTL-bearing credential cache.
+//     The nethttp.CallOptions.CredentialFunc closure checks Get()'s
+//     freshness bool; when stale it "fetches" a new credential (a stand-
+//     in for a real token-issuer call) and Set()s it before use. This is
+//     the deliberate CONTRAST to Mutable[T]'s push model: nobody pushes
+//     into a Cacheable[T] — a reader decides when to refresh. (Fully
+//     automating this fetch-on-stale step is ports.RefreshingCacheable[T]'s
+//     job — a separate, not-yet-shipped roadmap item; this example wires
+//     the refresh manually, on purpose.)
+//
+// The one real gotcha this example is careful to avoid: BOTH closures
+// call .Get() INSIDE the closure body, on every invocation — never
+// hoisted out to a local variable at construction time. Hoisting it
+// would silently freeze the value forever, defeating the whole point of
+// using a live container instead of a plain static one.
 //
 // # Running
 //
@@ -22,53 +36,168 @@
 package main
 
 import (
+	"context"
+	"errors"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
+	"strings"
 	"time"
 
+	nethttp "github.com/DaniDeer/go-codex/adapters/nethttp"
+	"github.com/DaniDeer/go-codex/api/rest"
 	"github.com/DaniDeer/go-codex/codex"
+	"github.com/DaniDeer/go-codex/route"
 	"github.com/DaniDeer/go-codex/validate"
 )
 
-// rotationObserver logs every reload attempt — the same shape a real
-// stats.Observer-based type would satisfy structurally (see
-// stats.AsReloadObserver for bridging an existing stats.Observer value
-// into this position instead of a dedicated type like this one).
-type rotationObserver struct{}
+// reloadObserver logs every Mutable[T]/Cacheable[T] reload/invalidate —
+// the same shape a real stats.Observer-based type would satisfy
+// structurally (see stats.AsReloadObserver/AsInvalidateObserver for
+// bridging an existing stats.Observer value into this position instead
+// of a dedicated type like this one).
+type reloadObserver struct{ name string }
 
-func (rotationObserver) RecordReload(location string, success bool, _ time.Duration) {
-	fmt.Printf("  [observer] reload %q: success=%v\n", location, success)
+func (o reloadObserver) RecordReload(location string, success bool, _ time.Duration) {
+	fmt.Printf("  [observer:%s] reload %q: success=%v\n", o.name, location, success)
 }
+
+func (o reloadObserver) RecordInvalidate(location string) {
+	fmt.Printf("  [observer:%s] invalidate %q\n", o.name, location)
+}
+
+// secureResp is the response body of the demo's one secured route.
+type secureResp struct{ Message string }
+
+var secureRespCodec = codex.Struct[secureResp](
+	codex.RequiredField("message", codex.String(),
+		func(r secureResp) string { return r.Message },
+		func(r *secureResp, v string) { r.Message = v },
+	),
+)
 
 func main() {
 	keyCodec := codex.String().Refine(validate.NonEmptyString)
 
-	// ── Construction: the FIRST key, validated like any real runtime input ──
-	keys, err := codex.NewMutable("jwks-signing-keys", "key-v1", keyCodec,
-		codex.WithReloadObserver[string](rotationObserver{}))
+	// ── SERVER: codex.Mutable[T] — the signing key a real JWKS/API-key
+	// rotation loop would refresh in the background. ──────────────────
+	keys, err := codex.NewMutable("server-signing-key", "key-v1", keyCodec,
+		codex.WithReloadObserver[string](reloadObserver{name: "server-keys"}))
 	if err != nil {
 		panic(err)
 	}
 
-	// ── A SecurityFunc-shaped closure: always reads the CURRENT key ──────
-	verifyRequest := func(requestID string) {
-		fmt.Printf("request %s: verifying against key %q\n", requestID, keys.Get())
+	// ── CLIENT: codex.Cacheable[T] — a TTL-bearing credential cache.
+	// Starts already matching the server's key; its short TTL means it
+	// can go stale on its own, independent of any server-side rotation. ──
+	cred, err := codex.NewCacheable("client-credential-cache", "key-v1", keyCodec,
+		200*time.Millisecond,
+		codex.WithCacheableReloadObserver[string](reloadObserver{name: "client-cred"}))
+	if err != nil {
+		panic(err)
 	}
 
-	fmt.Println("=== Before rotation ===")
-	verifyRequest("req-1")
-	verifyRequest("req-2")
+	// ── Spec: ONE secured route, a plain rest.WithSecurityScheme
+	// declaration — completely unaware that Mutable[T]/Cacheable[T]
+	// exist. Nothing about the route/handle/builder changes to support
+	// either container; that is the point. ────────────────────────────
+	bearerAuth := rest.SecurityScheme{SecurityScheme: route.BearerScheme("JWT")}.WithCodec(keyCodec)
 
-	// ── Background rotation: e.g. a JWKS refresh ticker fires ────────────
-	fmt.Println("\n=== Rotating to key-v2 ===")
+	b := rest.NewBuilder(rest.Info{Title: "mutable-security-keys demo", Version: "1.0.0"})
+	secureHandle, err := rest.NewRoute[struct{}, secureResp]("GET", "/secure",
+		codex.Empty, secureRespCodec,
+		rest.RouteMeta{
+			OperationID: "secureEndpoint",
+			Security:    []route.SecurityRequirement{route.Require("bearerAuth")},
+		},
+		rest.WithSecurityScheme("bearerAuth", bearerAuth),
+	).Register(b)
+	if err != nil {
+		panic(err)
+	}
+
+	// ── Server: SecurityFunc calls keys.Get() INSIDE the closure body,
+	// on every request — never hoisted to a local outside the closure. ──
+	mux := http.NewServeMux()
+	nethttp.Register(mux, secureHandle,
+		func(_ context.Context, _ struct{}) (secureResp, error) {
+			return secureResp{Message: "welcome"}, nil
+		},
+		nethttp.Options{
+			SecurityFunc: func(_ context.Context, r *http.Request, _ []route.SecurityRequirement) error {
+				current := keys.Get() // ← read fresh on EVERY request, not hoisted
+				token := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
+				if token != current {
+					return errors.New("signing key mismatch")
+				}
+				return nil
+			},
+		},
+	)
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	// fetchFreshCredential simulates a real token-issuer round-trip a
+	// production CredentialFunc would make (e.g. an OAuth token endpoint
+	// or JWKS fetch) — here it stands in for that external call by
+	// reading the server's CURRENT key directly, purely to keep this a
+	// single-process, network-free example.
+	fetchFreshCredential := func() string { return keys.Get() }
+
+	// ── Client: CredentialFunc calls cred.Get() INSIDE the closure body
+	// on every call, refreshing via Set() when stale — never hoisted. ──
+	credentialFunc := func(_ context.Context, _ []route.SecurityRequirement) (http.Header, error) {
+		val, fresh := cred.Get() // ← the bool MUST be handled explicitly; Cacheable never hides it
+		if !fresh {
+			val = fetchFreshCredential()
+			if err := cred.Set(val); err != nil {
+				return nil, err
+			}
+		}
+		h := make(http.Header)
+		h.Set("Authorization", "Bearer "+val)
+		return h, nil
+	}
+
+	call := func(label string) {
+		_, err := nethttp.Call(context.Background(), srv.Client(), srv.URL,
+			secureHandle, struct{}{}, nil,
+			nethttp.CallOptions{
+				CredentialFunc: credentialFunc,
+				// A 401 means the cached credential no longer matches the
+				// server's rotated key — invalidate so the NEXT call
+				// refetches instead of retrying the same stale value.
+				// Mirrors nethttp.NewCachingCredentialFunc's own
+				// invalidate-on-401 wiring.
+				OnCredentialRejected: cred.Invalidate,
+			})
+		status := "200 OK"
+		if err != nil {
+			var statusErr nethttp.UnexpectedStatusError
+			if errors.As(err, &statusErr) {
+				status = fmt.Sprintf("%d rejected", statusErr.StatusCode)
+			} else {
+				status = "error: " + err.Error()
+			}
+		}
+		fmt.Printf("[%s] GET /secure → %s\n", label, status)
+	}
+
+	fmt.Println("=== 1. Fresh credential matches the server's key ===")
+	call("call 1")
+
+	fmt.Println("\n=== 2. Server rotates its signing key (Mutable[T].Set) ===")
 	if err := keys.Set("key-v2"); err != nil {
 		panic(err)
 	}
-	verifyRequest("req-3")
 
-	// ── An invalid rotation attempt leaves the CURRENT key untouched ─────
-	fmt.Println("\n=== Rejected rotation (empty key) ===")
-	if err := keys.Set(""); err != nil {
-		fmt.Println("  rotation rejected:", err)
-	}
-	verifyRequest("req-4") // still key-v2 — last-good-value-wins
+	fmt.Println("\n=== 3. Client's cache is still within its TTL — presents the OLD key, rejected ===")
+	call("call 2")
+
+	fmt.Println("\n=== 4. OnCredentialRejected invalidated the cache — next call refetches ===")
+	call("call 3")
+
+	fmt.Println("\n=== 5. Natural TTL expiry (no rotation this time) still triggers a refetch ===")
+	time.Sleep(250 * time.Millisecond)
+	call("call 4")
 }

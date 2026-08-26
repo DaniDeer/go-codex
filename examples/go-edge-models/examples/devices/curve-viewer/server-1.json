@@ -1,0 +1,23 @@
+{
+	"modulesContent": {
+		"$edgeAgent": {
+			"properties.desired.modules.cv-multi-access-service.env.TRAEFIK_JSON": {
+				"value": "{\"entryPoints\":{\"web-secure\":{\"address\":\":9090\",\"http\":{\"tls\":{}}},\"web\":{\"address\":\":8090\"},\"mongo-express\":{\"address\":\":9093\",\"http\":{\"tls\":{}}},\"dashboard\":{\"address\":\":8080\"}},\"tracing\":{\"addInternals\":true,\"globalAttributes\":{\"service.name\":\"cv-multi-access-service\",\"service.instance.id\":\"bh0vm00001\"},\"otlp\":{\"http\":{\"endpoint\":\"http://cv-zipkin:4318/v1/traces\"}}},\"providers\":{\"file\":{\"filename\":\"/app-config/dynamic/conf/dynamic.yml\"}},\"log\":{\"level\":\"DEBUG\"},\"api\":{\"dashboard\":true}}"
+			},
+			"properties.desired.modules.cv-multi-access-service.env.DYNAMIC_JSON": {
+				"value": "{\"http\":{\"routers\":{\"frontend-router\":{\"entryPoints\":[\"web-secure\",\"web\"],\"rule\":\"Host(`bh0vm00001.de.bosch.com`) && PathPrefix(`/`)\",\"service\":\"frontend-service\",\"priority\":1},\"backend-router\":{\"entryPoints\":[\"web-secure\",\"web\"],\"rule\":\"Host(`bh0vm00001.de.bosch.com`) && PathPrefix(`/api`)\",\"service\":\"backend-service\",\"priority\":2},\"mongo-express-router\":{\"entryPoints\":[\"mongo-express\"],\"rule\":\"Host(`bh0vm00001.de.bosch.com`) && PathPrefix(`/`)\",\"service\":\"mongo-express\",\"priority\":3},\"dashboard\":{\"rule\":\"Host(`bh0vm00001.de.bosch.com`) && (PathPrefix(`/dashboard`) || PathPrefix(`/api`))\",\"service\":\"api@internal\",\"entryPoints\":[\"dashboard\"],\"middlewares\":[\"dashboard-authentication\"],\"tls\":{}}},\"services\":{\"frontend-service\":{\"loadBalancer\":{\"servers\":[{\"url\":\"http://cv-web:5000/\"}]}},\"backend-service\":{\"loadBalancer\":{\"servers\":[{\"url\":\"http://cv-web:5000/\"}]}},\"mongo-express\":{\"loadBalancer\":{\"servers\":[{\"url\":\"http://cv-mongo-express:8081/\"}]}}},\"middlewares\":{\"dashboard-authentication\":{\"basicAuth\":{\"users\":[\"traefik:${DEV_MANIFEST_CV_BH0VM00001_TRAEFIK_DASHBOARD_PW}\"]}}}},\"tls\":{\"certificates\":[{\"certFile\":\"/etc/traefik/ssl/pubkey.pem\",\"keyFile\":\"/etc/traefik/ssl/private.key\"}]}}"
+			},
+			"properties.desired.modules.cv-genesis.env.FLOW_CONFIG": {
+				"value": "{\"in_bulk\":{\"deviceEvent\":{\"sink\":\"/mount/bulk\",\"resultPathPattern\":\"mfd4-process-logs-links/csl/moduleName/MachineLogs/#History#/year/month/day/\"},\"processLog\":{\"sink\":\"/mount/bulk\",\"resultPathPattern\":\"mfd4-process-logs-links/csl/moduleName/ProcessLog/#History#/year/month/day/\"},\"processMessage\":{\"sink\":\"/mount/bulk\",\"resultPathPattern\":\"mfd4-process-logs-links/csl/moduleName/ProcessMessage/#History#/year/month/day/\"}},\"debug\":{\"deviceEvent\":{\"sink\":\"/mount/bulk\",\"resultPathPattern\":\"bh0vm0001_debug/lineName/MachineLogs/#History#/year/month/day/\"},\"processLog\":{\"sink\":\"/mount/bulk\",\"resultPathPattern\":\"bh0vm0001_debug/lineName/ProcessLog/#History#/year/month/day/\"},\"processMessage\":{\"sink\":\"/mount/bulk\",\"resultPathPattern\":\"bh0vm0001_debug/lineName/ProcessMessage/#History#/year/month/day/\"}}}"
+			},
+			"properties.desired.modules.cv-genesis.settings.createOptions": "{\"ExposedPorts\": {\"8000/tcp\": {}}, \"HostConfig\": {\"Mounts\": [{\"Type\": \"volume\", \"Target\": \"/mount/bulk\", \"VolumeOptions\": {\"DriverConfig\": {\"Name\": \"local\", \"Options\": {\"device\": \"//bh5pmbulk01s.bh.de.bosch.com/BhP-MFD-Test1$\", \"o\": \"addr=bh5pmbulk01s.bh.de.bosch.com,username=pta9bh,password=${DEV_MANIFEST_CV_BH0VM00001_PTA9BH_PWD},file_mode=0777,dir_mode=0777\", \"type\": \"cifs\"}}}}]}}"
+		},
+		"$edgeHub": {
+			"properties.desired.routes.cv-ingest-process-link": "FROM /messages/modules/cv-rabbitmq-gateway/outputs/process_links INTO BrokeredEndpoint(\"/modules/cv-ingest/inputs/ingest\")",
+			"properties.desired.routes.cv-genesis": "FROM /messages/modules/cv-rabbitmq-gateway/outputs/process_logs INTO BrokeredEndpoint(\"/modules/cv-genesis/inputs/in_bulk\")",
+			"properties.desired.routes.cv-genesis-links": "FROM /messages/modules/cv-genesis/outputs/link-output INTO BrokeredEndpoint(\"/modules/cv-ingest/inputs/ingest\")",
+			"properties.desired.routes.cv-ingest-process": "FROM /messages/modules/cv-rabbitmq-gateway/outputs/process INTO BrokeredEndpoint(\"/modules/cv-ingest/inputs/ingest\")",
+			"properties.desired.routes.cv-ingest-process-event-final": "FROM /messages/modules/cv-ingest/outputs/output INTO BrokeredEndpoint(\"/modules/cv-rabbitmq-gateway/inputs/process-event-final\")"
+		}
+	}
+}

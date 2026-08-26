@@ -1866,6 +1866,65 @@ memo.Invalidate()
 | Observer | None | None | `ReloadObserver.RecordReload` on `Set` | Same `ReloadObserver` for `Set`, PLUS `InvalidateObserver.RecordInvalidate` for `Invalidate()` |
 | Typical driver | Path/topic pattern constants | Config/env var loaded once at startup | Rotating security credentials — "give me whatever is current" | Stale-while-revalidate memoization — "give me what you have, tell me if it's still good" |
 
+**Composing with adapters — `SecurityFunc`/`CredentialFunc` need ZERO new
+API.** `nethttp`/`chi`'s `Options.SecurityFunc` (server) and
+`CallOptions.CredentialFunc` (client) — mirrored by `mqtt`/`mqtt5`'s own
+`SecurityFunc`/`CredentialFunc` — are already plain closures. A caller
+captures a `*Mutable[T]`/`*Cacheable[T]` and calls `.Get()` INSIDE the
+closure body, exactly like capturing any other variable — no dedicated
+`SecurityFuncFromMutable`-style constructor exists, or is planned,
+because one would only save a line or two over the closure itself while
+adding permanent API surface. A plain static value, a hand-rolled cache,
+or one of these two containers are all EQUALLY valid choices for the
+SAME `SecurityFunc`/`CredentialFunc` field — nothing about the route,
+channel, or builder ever knows or cares which one a caller picked:
+
+```go
+// SERVER — Mutable[T]: a background rotation loop calls keys.Set on a
+// schedule; SecurityFunc always sees the CURRENT key.
+opts := nethttp.Options{
+    SecurityFunc: func(_ context.Context, r *http.Request, _ []route.SecurityRequirement) error {
+        current := keys.Get() // ← read INSIDE the closure, on every request
+        if !validSignature(r, current) {
+            return errors.New("signing key mismatch")
+        }
+        return nil
+    },
+}
+
+// CLIENT — Cacheable[T]: a TTL-bearing credential cache. The freshness
+// bool from Get() must be handled explicitly — Cacheable never hides it.
+credentialFunc := func(ctx context.Context, reqs []route.SecurityRequirement) (http.Header, error) {
+    val, fresh := cred.Get() // ← read INSIDE the closure, on every call
+    if !fresh {
+        val = fetchFreshCredential(ctx) // caller's own refresh — see below
+        if err := cred.Set(val); err != nil {
+            return nil, err
+        }
+    }
+    h := make(http.Header)
+    h.Set("Authorization", "Bearer "+val)
+    return h, nil
+}
+```
+
+**The one real gotcha:** `.Get()` MUST be called inside the closure body,
+on every invocation — never hoisted to a local variable at construction
+time (`current := keys.Get(); opts.SecurityFunc = func(...) { ... use current ... }`).
+Hoisting silently freezes the value forever, defeating the entire point
+of using a live container instead of a plain static one — the closure
+would keep verifying against the FIRST key forever, even after a real
+rotation. See `examples/mutable-security-keys` for a full runnable demo
+wiring both containers into REAL `nethttp` server/client hooks (not just
+simulated closures), including the `Cacheable[T]` case's manual
+fetch-on-stale + `CallOptions.OnCredentialRejected → cred.Invalidate`
+wiring (mirroring `nethttp.NewCachingCredentialFunc`'s own invalidate-on-401
+pattern). Fully AUTOMATING that fetch-on-stale step — so a caller never
+writes the `if !fresh { ... }` branch at all — is
+`ports.RefreshingCacheable[T]`'s job (`GetOrRefresh(ctx) (T, error)`), a
+separate, not-yet-shipped roadmap item that COMPOSES `Cacheable[T]`
+rather than replacing it.
+
 **Constructor naming convention.** Every `Getter`/`Setter`-family type
 (`Const`, `Immutable`, `Mutable`, `Cacheable`, and the planned
 `OptionalMutable`) follows the same naming pattern: `MustX` validates and

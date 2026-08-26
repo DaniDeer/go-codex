@@ -387,6 +387,23 @@ One `NewCachingCredentialFunc` instance is one cache entry — construct a
 separate instance per credential scope (e.g. per host/registry) when
 different routes need independently-cached credentials.
 
+### Live-reloadable credentials — `codex.Mutable[T]`/`codex.Cacheable[T]`
+
+`SecurityFunc`/`CredentialFunc` are plain closures — nothing above
+requires them to close over a static value. A rotating signing key
+(server-side `SecurityFunc`) or a TTL-bearing credential cache
+(client-side `CredentialFunc`) can capture a `*codex.Mutable[T]`/
+`*codex.Cacheable[T]` and call `.Get()` INSIDE the closure body, exactly
+like any other variable — no dedicated wrapper API exists or is planned
+for this; a plain static value, `NewCachingCredentialFunc`'s own
+hand-rolled cache, and these two containers are all equally valid
+choices for the SAME closure field. See `docs/concepts/codec.md`'s
+"Composing with adapters" subsection (under `Getter`/`Setter`) for the
+full pattern, including the one real gotcha (`.Get()` must never be
+hoisted out of the closure), and `examples/mutable-security-keys` for a
+runnable end-to-end demo wiring both containers into real `nethttp`
+server/client hooks.
+
 ## Security for event channels (AsyncAPI)
 
 Just like REST, an events security scheme is declared ONCE, directly on the
