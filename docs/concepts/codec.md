@@ -1637,18 +1637,20 @@ Everything above validates *runtime* values passed through `Encode`/
 `Decode`. A separate, smaller need: giving a compile-time-authored
 CONSTANT (a fixed path template, a protocol version string) or a
 runtime value SET EXACTLY ONCE (a config/env var loaded once at
-startup) the same declarative validation, instead of leaving it a bare,
-unchecked literal or variable. `codex.Getter[T]`/`Setter[T]` (declared
-standalone in `codex/getter.go`, so future codec-backed containers can
-satisfy them too) and their first two implementations, `Const[T]` and
-`Immutable[T]` (`codex/const.go`), are a THIRD layer sitting on top of
+startup) — or reassigned REPEATEDLY at runtime, re-validated on every
+reassignment (a rotating credential) — the same declarative validation,
+instead of leaving it a bare, unchecked literal or variable.
+`codex.Getter[T]`/`Setter[T]` (declared standalone in `codex/getter.go`,
+so future codec-backed containers can satisfy them too) and their three
+implementations, `Const[T]`/`Immutable[T]` (`codex/const.go`) and
+`Mutable[T]` (`codex/mutable.go`), are a THIRD layer sitting on top of
 the two that already exist:
 
 | Layer | What it validates | Reference |
 |---|---|---|
 | 0 — `Codec[T]` | A wire SHAPE, on every `Encode`/`Decode` call | `codex/codec.go` |
 | 1 — `HasCodec[T]` | "This TYPE knows its own Codec" — generic helpers (`Validate`/`New`/`EncodeSelf`/`DecodeAs`/`SchemaOf`) work on any type implementing it | `codex/hascodec.go` |
-| 2 — `Getter[T]`/`Setter[T]` + `Const[T]`/`Immutable[T]` | "This VALUE's identity, at a specific point in its OWN lifecycle (authored-at-compile-time vs. assigned-once-at-runtime), is validated and then frozen" — generic CONTAINERS parameterized by an externally supplied `Codec[T]` | `codex/const.go` |
+| 2 — `Getter[T]`/`Setter[T]` + `Const[T]`/`Immutable[T]`/`Mutable[T]` | "This VALUE's identity, at a specific point in its OWN lifecycle (authored-at-compile-time / assigned-once-at-runtime / reassigned repeatedly at runtime), is validated" — generic CONTAINERS parameterized by an externally supplied `Codec[T]` | `codex/const.go`, `codex/mutable.go` |
 
 **Not literally "higher-kinded"** — Go generics have no abstraction over
 type *constructors*, only over concrete types — but this table captures
@@ -1744,12 +1746,69 @@ beyond the fact itself) and no observer integration applies (no I/O, no
 adapter boundary — `MustConst`/`Set` each run once, not on a repeated
 request/response path).
 
+**`Mutable[T]`** — runtime-supplied, validated at EVERY `Set` call (not
+just once) — the "config that can be hot-reloaded without a restart"
+shape (a rotating JWKS key set, a rotating shared API key). Unlike
+`Immutable[T]` (set exactly once, panics on a repeat `Set`), `Mutable[T]`
+always holds a valid value from construction onward:
+
+```go
+keys, err := codex.NewMutable("jwks-signing-keys", "key-v1",
+    codex.String().Refine(validate.NonEmptyString))
+if err != nil {
+    log.Fatal(err) // real external input — an error, never a panic
+}
+
+// A SecurityFunc-shaped closure always reads the CURRENT key:
+current := keys.Get() // never panics — construction guarantees validity
+
+// A background rotation loop (e.g. a JWKS refresh ticker) calls Set —
+// re-validated, last-good-value-wins on an invalid Set:
+if err := keys.Set("key-v2"); err != nil {
+    // current value is UNCHANGED — the bad key never took effect
+    log.Warn("rotation rejected", "err", err)
+}
+```
+
+- `Get()` NEVER panics — construction (`NewMutable`) requires a valid
+  `initial` value, so there is no "unset" state to guard against, unlike
+  `Immutable[T]`; no `TryGet` needed either.
+- Every valid `Set` succeeds and REPLACES the current value — no
+  "already set" concept at all (the opposite of `Immutable[T]`'s
+  exactly-once rule). An invalid `Set` leaves the current value
+  UNCHANGED (last-good-value-wins) and returns the codec's own
+  validation error — the SAME error shape every other `Codec[T].Validate`
+  call already produces, no new error type.
+- Guarded by `sync.RWMutex` (not `sync.Mutex`) — reads (`Get`) vastly
+  outnumber writes (`Set`) for this container's intended use (every
+  request/message reads the current key material; reloads happen on a
+  schedule measured in minutes/hours).
+- `WithReloadObserver` wires in an optional Observer whose `RecordReload`
+  fires on every `Set`, success or failure — the first container in this
+  family with an observable lifecycle event. `codex.ReloadObserver` is
+  defined LOCALLY in `codex` (`codex/observer.go`), not in `stats` —
+  `codex` has zero dependency on `stats` (deliberately; `stats` depends
+  on `codex`, and the reverse would form a real import cycle). Any
+  `stats.Observer` CONCRETE implementation that also defines
+  `RecordReload` (`stats.NoopObserver`/`LoggingObserver`/the internal
+  fanout type all do) satisfies `codex.ReloadObserver` STRUCTURALLY, with
+  zero import needed in either direction — `stats` exposes the same
+  interface as `stats.ReloadObserver` (a type alias) plus
+  `stats.AsReloadObserver(obs)` to bridge an existing `stats.Observer`
+  value into this position:
+
+  ```go
+  keys, err := codex.NewMutable("jwks-signing-keys", "key-v1", codec,
+      codex.WithReloadObserver[string](myObserver)) // any value satisfying RecordReload
+  ```
+
 **Constructor naming convention.** Every `Getter`/`Setter`-family type
-(`Const`, `Immutable`, and the planned `Mutable`/`OptionalMutable`)
-follows the same naming pattern: `MustX` validates and PANICS (authored
-input, invalid = a bug); `NewX` validates and returns an ERROR (real
-runtime input, invalid = an expected condition); `Set(value) error` on a
-`GetterSetter[T]` type revalidates against the SAME codec on EVERY call.
+(`Const`, `Immutable`, `Mutable`, and the planned `Cacheable`/
+`OptionalMutable`) follows the same naming pattern: `MustX` validates and
+PANICS (authored input, invalid = a bug); `NewX` validates and returns an
+ERROR (real runtime input, invalid = an expected condition); `Set(value)
+error` on a `GetterSetter[T]` type revalidates against the SAME codec on
+EVERY call.
 This is a documented CONVENTION, not a Go interface requirement — Go has
 no static/class methods, so a literal "Factory" interface can't express
 "a type that can be constructed" the way it might in other languages.
@@ -1759,7 +1818,7 @@ convention (including `Maybe[T]`'s documented exception: its `Set` is
 infallible by design, since it has no codec of its own).
 
 **Why isn't every struct field validated-on-assignment like `Mutable[T]`
-will be?** Deliberately not: `Mutable[T]`'s mutex + method-call-only
+is?** Deliberately not: `Mutable[T]`'s mutex + method-call-only
 access + per-field heap allocation would be a severe cost applied to the
 overwhelming common case (a value decoded once, read many times). go-codex
 already validates at the BOUNDARY (`Codec[T].Decode`, once) and trusts the

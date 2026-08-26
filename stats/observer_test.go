@@ -251,6 +251,7 @@ func TestLoggingObserver_ImplementsAllInterfaces(t *testing.T) {
 	var _ stats.StreamObserver = obs
 	var _ stats.CacheObserver = obs
 	var _ stats.CredentialCacheObserver = obs
+	var _ stats.ReloadObserver = obs
 }
 
 func TestLoggingObserver_AllMethods_NoPanic(t *testing.T) {
@@ -269,6 +270,7 @@ func TestLoggingObserver_AllMethods_NoPanic(t *testing.T) {
 	obs.RecordStreamItem("oeeCalc", true, 1*time.Millisecond)
 	obs.RecordCredentialCacheHit("ghcr.io", 1*time.Millisecond)
 	obs.RecordCredentialCacheRefresh("ghcr.io", true, 2*time.Millisecond)
+	obs.RecordReload("jwks-signing-keys", true, 3*time.Millisecond)
 }
 
 // ── NewFanout ─────────────────────────────────────────────────────────────────
@@ -687,4 +689,79 @@ func TestFanout_CredentialCacheObserver_SkipsNonImplementors(t *testing.T) {
 	}
 	// Must not panic when no inner observer implements CredentialCacheObserver.
 	co.RecordCredentialCacheRefresh("ghcr.io", false, time.Millisecond)
+}
+
+// ── ReloadObserver ────────────────────────────────────────────────────────────
+
+func TestNoopObserver_ImplementsReloadObserver(t *testing.T) {
+	var noop stats.NoopObserver
+	var obs stats.Observer = noop
+	if _, ok := obs.(stats.ReloadObserver); !ok {
+		t.Fatal("NoopObserver must implement ReloadObserver")
+	}
+}
+
+// reloadFanoutSpy records RecordReload call counts for assertion.
+type reloadFanoutSpy struct {
+	stats.NoopObserver
+	reloads int
+}
+
+func (s *reloadFanoutSpy) RecordReload(_ string, _ bool, _ time.Duration) { s.reloads++ }
+
+var _ stats.ReloadObserver = (*reloadFanoutSpy)(nil)
+
+func TestFanout_ReloadObserver_OnlyToImplementors(t *testing.T) {
+	spy := &reloadFanoutSpy{}
+	plain := &fanoutSpy{} // does NOT implement ReloadObserver
+	obs := stats.NewFanout(plain, spy)
+
+	ro, ok := obs.(stats.ReloadObserver)
+	if !ok {
+		t.Fatal("fanout must implement ReloadObserver when any inner does")
+	}
+	ro.RecordReload("jwks-signing-keys", true, time.Millisecond)
+	if spy.reloads != 1 {
+		t.Errorf("want 1 call on spy, got %d", spy.reloads)
+	}
+}
+
+func TestFanout_ReloadObserver_SkipsNonImplementors(t *testing.T) {
+	plain := &fanoutSpy{}
+	obs := stats.NewFanout(plain)
+
+	ro, ok := obs.(stats.ReloadObserver)
+	if !ok {
+		t.Fatal("fanout must implement ReloadObserver regardless of inner observers")
+	}
+	// Must not panic when no inner observer implements ReloadObserver.
+	ro.RecordReload("jwks-signing-keys", false, time.Millisecond)
+}
+
+func TestAsReloadObserver_ImplementingObserver_ReturnsTrue(t *testing.T) {
+	var obs stats.Observer = stats.NewLoggingObserver(slog.New(slog.NewTextHandler(io.Discard, nil)))
+	ro, ok := stats.AsReloadObserver(obs)
+	if !ok {
+		t.Fatal("AsReloadObserver: want ok=true for LoggingObserver")
+	}
+	// Must not panic — proves the bridged value is actually usable.
+	ro.RecordReload("jwks-signing-keys", true, time.Millisecond)
+}
+
+// bareObserver implements ONLY stats.Observer's required methods — no
+// embedded NoopObserver, so it does NOT satisfy any optional extension
+// (including ReloadObserver).
+type bareObserver struct{}
+
+func (bareObserver) RecordValidationError(_, _, _ string)              {}
+func (bareObserver) RecordRequest(_, _ string, _ int, _ time.Duration) {}
+func (bareObserver) RecordSubscribe(_ string, _ bool, _ time.Duration) {}
+func (bareObserver) RecordPublish(_ string, _ bool, _ time.Duration)   {}
+
+func TestAsReloadObserver_NonImplementingObserver_ReturnsFalse(t *testing.T) {
+	var obs stats.Observer = bareObserver{}
+	_, ok := stats.AsReloadObserver(obs)
+	if ok {
+		t.Error("AsReloadObserver: want ok=false for a non-implementing Observer")
+	}
 }

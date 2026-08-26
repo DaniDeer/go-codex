@@ -41,6 +41,22 @@ func MustConst[T any](value T, codec Codec[T]) Const[T] {
 	return Const[T]{value: value}
 }
 
+// NewConst validates value against codec and returns a Const[T], or an
+// error if validation fails — the non-panicking sibling to [MustConst].
+// Use NewConst when value comes from a trusted-but-fallible startup
+// source (e.g. a manifest file read once at process start) rather than
+// a literal Go source constant, and a caller wants Const's plain-value,
+// no-mutex ergonomics without a panic on one bad entry. [MustConst]
+// remains the right choice — and stays unchanged — for genuinely
+// compile-time-authored constants, where an invalid value IS a
+// programming error that should fail loudly and immediately.
+func NewConst[T any](value T, codec Codec[T]) (Const[T], error) {
+	if err := codec.Validate(value); err != nil {
+		return Const[T]{}, err
+	}
+	return Const[T]{value: value}, nil
+}
+
 // Get returns the validated value — Const[T] satisfies Getter[T].
 func (c Const[T]) Get() T { return c.value }
 

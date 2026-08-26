@@ -1,6 +1,27 @@
-# go-codex Review History (R1–R117)
+# go-codex Review History (R1–R118)
 
 Do not re-report any of these findings. They have been implemented and tested.
+
+---
+
+## Round 118 (`codex.Mutable[T]`/`NewConst[T]`/`ReloadObserver` — `NewFanout` doc comment gap)
+
+Reviewed everything since Round 117: the `reqreply.TopicParam` AsyncAPI rendering fix
+(`api/reqreply/builder.go`'s `buildTopicParameters`), `ports.Cache` template-unification parity
+(`ports/cache.go`'s `CacheKeyTemplate`/`NewCacheFromKeyTemplate`, delegating `BuildKey`/`ValidateKeyVars`
+to `codex.BuildFromParams`/`ValidateParams`), and the new `codex.Mutable[T]`/`codex.NewConst[T]`/
+`codex.ReloadObserver` family (`codex/mutable.go`, `codex/observer.go`, `codex/const.go`'s `NewConst`,
+`stats/observer.go`'s `RecordReload` additions to `NoopObserver`/`LoggingObserver`/`fanout` +
+`ReloadObserver` alias + `AsReloadObserver` bridging helper). Full test coverage confirmed for every
+new exported symbol; roadmap doc reorganization (dropping `validated-const-getter.md`/
+`reloadable-value-containers.md`, adding `mutable-native-integration.md`) verified with zero dangling
+markdown links via a full-repo grep sweep.
+
+- **G1 — `NewFanout`'s doc comment missing `ReloadObserver`**: this round added `fanout.RecordReload`
+  (implementing the new `ReloadObserver`), but `NewFanout`'s own doc comment listing the interfaces a
+  fanout satisfies wasn't updated to include it, while `.github/instructions/go-codex.instructions.md`'s
+  copy of the same list was. Added `ReloadObserver` to the doc comment's interface list
+  (`stats/observer.go`).
 
 ---
 

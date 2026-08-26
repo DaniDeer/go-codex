@@ -251,6 +251,38 @@ type CredentialCacheObserver interface {
 	RecordCredentialCacheRefresh(location string, success bool, duration time.Duration)
 }
 
+// ReloadObserver is a type ALIAS (not a new interface) for
+// [codex.ReloadObserver] — the optional extension to [Observer] for
+// [codex.Mutable] reload events. It is defined IN codex, not here,
+// because codex has zero dependency on stats (stats depends on codex,
+// not the reverse) — a codex type cannot reference stats.Observer
+// without forming a real import cycle. This alias costs nothing (stats
+// already depends on codex) and gives it a NAMED, documented,
+// discoverable symbol matching every other extension's convention:
+//
+//	type MyObserver struct{ NoopObserver }
+//	func (o *MyObserver) RecordReload(location string, success bool, d time.Duration) {
+//	    // increment a Prometheus counter, emit a log line, etc.
+//	}
+type ReloadObserver = codex.ReloadObserver
+
+// AsReloadObserver bridges a stats.Observer-typed value into
+// [ReloadObserver]. Go's interface-to-interface assignability requires
+// the SOURCE interface's static method set to be a superset of the
+// target's — [Observer] does not itself declare RecordReload (only
+// concrete observer types do), so a caller holding an Observer-typed
+// variable cannot pass it directly into [codex.WithReloadObserver]
+// without an explicit type assertion. This helper does that assertion
+// once, mirroring [ObserverFromContext]'s simplicity:
+//
+//	if ro, ok := stats.AsReloadObserver(myObserver); ok {
+//	    m, err := codex.NewMutable("jwks", initial, codec, codex.WithReloadObserver[Keys](ro))
+//	}
+func AsReloadObserver(obs Observer) (ReloadObserver, bool) {
+	ro, ok := obs.(ReloadObserver)
+	return ro, ok
+}
+
 // StreamObserver is an optional extension to [Observer] for stream-level throughput
 // metrics. [stream.Apply] type-asserts the configured Observer to
 // StreamObserver before calling its methods — existing Observer implementations
@@ -370,10 +402,14 @@ func (o *LoggingObserver) RecordCredentialCacheRefresh(location string, success 
 	o.logger.Debug("credential cache refresh", "location", location, "success", success, "ms", d.Milliseconds())
 }
 
+func (o *LoggingObserver) RecordReload(location string, success bool, d time.Duration) {
+	o.logger.Info("reload", "location", location, "success", success, "ms", d.Milliseconds())
+}
+
 // NewFanout returns an [Observer] that fans out all calls to each provided observer.
 // The returned value also implements [FileObserver], [SecurityObserver],
 // [PipelineObserver], [SQLObserver], [StreamObserver], [CacheObserver],
-// [CredentialCacheObserver], and [TraceObserver] — delegating each to the
+// [CredentialCacheObserver], [ReloadObserver], and [TraceObserver] — delegating each to the
 // inner observers that satisfy those
 // interfaces, so composing
 // a metrics-only observer with a [LoggingObserver] works without any
@@ -532,6 +568,15 @@ func (f *fanout) RecordCredentialCacheRefresh(location string, success bool, d t
 	}
 }
 
+// RecordReload implements [ReloadObserver].
+func (f *fanout) RecordReload(location string, success bool, d time.Duration) {
+	for _, o := range f.observers {
+		if ro, ok := o.(ReloadObserver); ok {
+			ro.RecordReload(location, success, d)
+		}
+	}
+}
+
 // StartSpan implements [TraceObserver].
 func (f *fanout) StartSpan(ctx context.Context, operation, name string) context.Context {
 	for _, o := range f.observers {
@@ -575,6 +620,7 @@ func (NoopObserver) RecordCacheMiss(_ string, _ time.Duration)                  
 func (NoopObserver) RecordCacheWrite(_, _ string, _ bool, _ time.Duration)          {}
 func (NoopObserver) RecordCredentialCacheHit(_ string, _ time.Duration)             {}
 func (NoopObserver) RecordCredentialCacheRefresh(_ string, _ bool, _ time.Duration) {}
+func (NoopObserver) RecordReload(_ string, _ bool, _ time.Duration)                 {}
 func (NoopObserver) StartSpan(ctx context.Context, _, _ string) context.Context     { return ctx }
 func (NoopObserver) EndSpan(_ context.Context, _ error)                             {}
 

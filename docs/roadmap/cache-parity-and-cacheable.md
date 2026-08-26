@@ -1,11 +1,11 @@
 # `codex.Cacheable[T]` — `codex`, `adapters/redis`
 
-> **Status:** Design complete, shared blocker RESOLVED — still
-> SEQUENCED to implement after `Mutable[T]` (an implementation-order
-> rule, not a design blocker: the `codex`↔`stats` import-cycle question
-> this doc used to inherit from `reloadable-value-containers.md` is now
-> resolved there for both containers together — see that doc's
-> "Observer integration").
+> **Status:** Design complete — `codex.Mutable[T]` (this doc's
+> sequencing dependency) has SHIPPED, and the shared `codex`↔`stats`
+> import-cycle question both containers hit is RESOLVED and PROVEN
+> working (`codex/observer.go`'s `ReloadObserver`, `codex/mutable.go` —
+> see `docs/concepts/codec.md`'s Getter/Setter subsection). Ready to
+> implement.
 > [← Back to Roadmap](index.md)
 >
 > This doc originally tracked TWO related phases. **Part 1
@@ -24,10 +24,12 @@
 > are UNCHANGED — the migration was fully transparent. Only Part 2
 > below (`codex.Cacheable[T]`) remains open.
 >
-> See also: [Reloadable Value Containers — `Mutable`, `NewConst`](reloadable-value-containers.md)
-> (Part 2 below builds directly on that doc's not-yet-implemented
-> `Mutable[T]` — explicitly sequenced to depend on it shipping first,
-> see that doc's own "Deferred/Phase 2 ideas" list) ·
+> See also: `docs/concepts/codec.md`'s Getter/Setter subsection (Part 2
+> below builds directly on the now-shipped `codex.Mutable[T]` — the
+> roadmap doc that designed it, `reloadable-value-containers.md`, has
+> since been retired as fully shipped; its remaining "Phase 2" ideas
+> live on in [`mutable-native-integration.md`](mutable-native-integration.md),
+> sequenced to be picked up AFTER this doc's `Cacheable[T]`) ·
 > [`ports.RefreshingCacheable[T]`](refreshing-cacheable.md) (auto-refresh
 > wrapper, depends on this doc's `Cacheable[T]` shipping first) ·
 > [Redis Cache Adapter (shipped)](../features/redis.md) ·
@@ -35,8 +37,9 @@
 
 ## Part 2 — `codex.Cacheable[T]`: a validated cell with TTL/staleness
 
-Extends the (not yet implemented) `Const`/`Immutable`/`Mutable` family
-from `reloadable-value-containers.md` with a 4th sibling. Where
+Extends the shipped `Const`/`Immutable`/`Mutable` family
+(`docs/concepts/codec.md`'s Getter/Setter subsection) with a 4th
+sibling. Where
 `Mutable[T]` is a plain "read current / explicitly set new" cell with no
 notion of time, `Cacheable[T]` adds the ONE thing `ports.Cache`'s own
 `TTL` field already means for a remote Redis entry — a validity window —
@@ -85,8 +88,9 @@ type Cacheable[T any] struct {
 	// obs is untyped (any, not stats.Observer) — codex has zero
 	// dependency on stats and must not gain one. Type-asserted to
 	// ReloadObserver/InvalidateObserver at each call site — see
-	// reloadable-value-containers.md's "Observer integration" for the
-	// full codex.ReloadObserver design this shares with Mutable[T].
+	// codex/observer.go and docs/concepts/codec.md's Getter/Setter
+	// subsection for the full codex.ReloadObserver design this shares
+	// with the shipped Mutable[T].
 	obs any
 }
 
@@ -95,8 +99,8 @@ type CacheableOpt[T any] func(*Cacheable[T])
 
 // WithCacheableReloadObserver mirrors [WithReloadObserver] — reuses the
 // SAME [ReloadObserver]/[InvalidateObserver] interfaces [Mutable] uses
-// (defined in `codex/observer.go`, see reloadable-value-containers.md),
-// so a caller monitoring both containers needs only one Observer
+// (defined in `codex/observer.go`), so a caller monitoring both
+// containers needs only one Observer
 // implementation, wired in with the same call at both construction
 // sites. Accepts any value — most callers pass their existing
 // stats.Observer-based implementation directly (satisfies these
@@ -172,10 +176,11 @@ shouldn't be redrafted from scratch at documentation time.
 
 ### Observer integration
 
-**RESOLVED**, unified with `reloadable-value-containers.md`'s
-`Mutable[T]` design (see that doc's "Observer integration" for the full
-`codex.ReloadObserver` local-interface resolution — same blocker, same
-fix, designed once and shared here). `Cacheable.Set` reuses
+**RESOLVED**, unified with the shipped `Mutable[T]`'s design
+(`codex/observer.go`/`codex/mutable.go` — see `docs/concepts/codec.md`'s
+Getter/Setter subsection for the full `codex.ReloadObserver`
+local-interface resolution — same blocker, same fix, designed once and
+shared here). `Cacheable.Set` reuses
 `codex.ReloadObserver.RecordReload(location, success, duration)`
 unchanged, type-asserted from the same `obs any` field `Mutable[T]`
 uses.
@@ -200,10 +205,11 @@ type InvalidateObserver interface {
 ```
 
 `stats.NoopObserver`/`LoggingObserver`/`fanout` gain a matching
-`RecordInvalidate` method alongside `RecordReload` (same PR as
-`reloadable-value-containers.md`'s `stats`-side changes); `stats` also
-gets `type InvalidateObserver = codex.InvalidateObserver` (alias) and an
-`AsInvalidateObserver` bridging helper, mirroring `AsReloadObserver`
+`RecordInvalidate` method alongside the already-shipped `RecordReload`
+(same shape of change to `stats/observer.go`); `stats` also gets
+`type InvalidateObserver = codex.InvalidateObserver` (alias) and an
+`AsInvalidateObserver` bridging helper, mirroring the shipped
+`AsReloadObserver`
 exactly.
 
 ### Possible future tie-in: Redis keyspace notifications
@@ -319,13 +325,12 @@ func (c *Cacheable[T]) IsStale(ctx context.Context) (bool, error)
 
 ### Files to create
 
-**RESOLVED file layout** — shared with `reloadable-value-containers.md`
-now that both containers are designed together:
+**RESOLVED file layout** — shared with the already-shipped `Mutable[T]`:
 
 | File | Responsibility |
 |---|---|
 | `codex/cacheable.go` (NEW) | `Cacheable[T]`, `CacheableOpt[T]`, `WithCacheableReloadObserver`, `NewCacheable` |
-| `codex/observer.go` (NEW, shared with `Mutable[T]`) | `InvalidateObserver` added here alongside `ReloadObserver` |
+| `codex/observer.go` (EXISTING, ships `ReloadObserver` today) | Add `InvalidateObserver` alongside the shipped `ReloadObserver` |
 | `codex/getter.go` | New `FreshGetter[T]` interface (`Get() (T, bool)`) — `Cacheable[T]` implements it |
 | `codex/cacheable_test.go` (NEW) | Full Part 2 test plan |
 | `adapters/redis/cacheable.go` (follow-up phase, after `codex.Cacheable[T]` ships) | `redis.Cacheable[T]`, `NewCacheable`, ctx-aware `Get`/`Set`/`Invalidate`/`IsStale` |
@@ -372,11 +377,11 @@ now that both containers are designed together:
   interface (`RecordInvalidate(location string)`), not folded into
   `ReloadObserver`.
 - ~~File placement~~ **RESOLVED** — see "Files to create" above:
-  `codex/cacheable.go` (this type) + `codex/mutable.go`
-  (`reloadable-value-containers.md`'s `Mutable[T]`) + shared
-  `codex/observer.go` for both types' Observer interfaces. Having both
-  containers designed together settled the "4th type tips the balance"
-  question definitively toward splitting.
+  `codex/cacheable.go` (this type) + the already-shipped
+  `codex/mutable.go` (`Mutable[T]`) + shared `codex/observer.go` for both
+  types' Observer interfaces. Having both containers designed together
+  settled the "4th type tips the balance" question definitively toward
+  splitting.
 - ~~Should Part 1 (Cache template parity) ship independently of Part 2
   (`Cacheable[T]`)?~~ **Resolved — yes, and it has shipped.** Part 1
   landed with zero dependency on Part 2's open questions (see this doc's

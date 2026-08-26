@@ -1,13 +1,13 @@
 # `codex.OptionalMutable[T]`: A Mutable Cell That May Start Unset
 
-> **Status:** Design draft — explicitly depends on `Mutable[T]` shipping
-> first (see [Reloadable Value Containers](reloadable-value-containers.md)).
-> Do not implement before that.
+> **Status:** Design draft — `codex.Mutable[T]` has SHIPPED (see
+> `docs/concepts/codec.md`'s Getter/Setter subsection and `codex/mutable.go`)
+> — this doc's dependency is satisfied, ready to implement.
 > [← Back to Roadmap](index.md)
 
 ## Motivation
 
-`Mutable[T]` (see `reloadable-value-containers.md`) requires a valid
+`codex.Mutable[T]` (shipped — `codex/mutable.go`) requires a valid
 `initial T` at construction (`NewMutable(location, initial, codec)`) —
 there is no "not configured yet" state; `Get()` never panics precisely
 BECAUSE construction guarantees a value always exists. This is the right
@@ -134,7 +134,7 @@ call — from `RecordReload`'s point of view, "first configuration" and
 
 ## Unit test plan (mirrors `Mutable[T]`'s own test plan closely)
 
-Same shape as `reloadable-value-containers.md`'s `Mutable[T]` test table
+Same shape as `codex.Mutable[T]`'s own test table (`codex/mutable_test.go`)
 (`TestNewMutable_*`, `TestMutable_Get_NeverPanics`,
 `TestMutable_SetValid_ReplacesValue`,
 `TestMutable_SetInvalid_KeepsPreviousValue`,

@@ -69,6 +69,45 @@ func TestConst_String_UsesFmtSprint(t *testing.T) {
 	}
 }
 
+func TestNewConst_ValidValue_ReturnsConstNoError(t *testing.T) {
+	codec := codex.String().Refine(validate.NonEmptyString)
+	got, err := codex.NewConst("hello", codec)
+	if err != nil {
+		t.Fatalf("NewConst: unexpected error: %v", err)
+	}
+	if got.Get() != "hello" {
+		t.Errorf("Get() = %q, want %q", got.Get(), "hello")
+	}
+}
+
+func TestNewConst_InvalidValue_ReturnsError(t *testing.T) {
+	codec := codex.String().Refine(validate.NonEmptyString)
+	_, err := codex.NewConst("", codec)
+	if err == nil {
+		t.Fatal("NewConst(\"\"): want error, got nil")
+	}
+}
+
+func TestMustConst_Unchanged_StillPanicsOnInvalid(t *testing.T) {
+	codec := codex.String().Refine(validate.NonEmptyString)
+	defer func() {
+		if r := recover(); r == nil {
+			t.Fatal("MustConst did not panic")
+		}
+	}()
+	codex.MustConst("", codec)
+}
+
+func ExampleNewConst() {
+	pathPatternCodec := codex.String().Refine(validate.NonEmptyString)
+	pattern, err := codex.NewConst("usecases/{usecase_name}.json", pathPatternCodec)
+	if err != nil {
+		panic(err)
+	}
+	fmt.Println(pattern.String())
+	// Output: usecases/{usecase_name}.json
+}
+
 // ── Immutable ────────────────────────────────────────────────────────────
 
 func TestImmutable_SetValid_GetReturnsIt(t *testing.T) {
