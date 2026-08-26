@@ -1,10 +1,10 @@
 # `ports.RefreshingCacheable[T]` — an auto-refreshing wrapper over `codex.Cacheable[T]`
 
-> **Status:** Design complete — not yet implemented.
-> **Depends on:** `codex.Cacheable[T]` (see
-> [Cache Template Parity + `Cacheable[T]`](cache-parity-and-cacheable.md),
-> Part 2) must ship FIRST — this doc composes a real `*codex.Cacheable[T]`
-> instance; do not start implementation before that lands.
+> **Status:** Design complete — `codex.Cacheable[T]` has now shipped,
+> ready to implement.
+> **Depends on:** `codex.Cacheable[T]` (see `docs/concepts/codec.md`'s
+> `Cacheable[T]` subsection and `codex/cacheable.go`) — SHIPPED; this
+> doc composes a real `*codex.Cacheable[T]` instance.
 > [← Back to Roadmap](index.md)
 
 ## Motivation
@@ -197,10 +197,11 @@ JWKS refresh, a Redis-backed value, etc.).
 
 ## Relationship to the Redis-backed `Cacheable[T]` sibling
 
-`cache-parity-and-cacheable.md`'s Part 2 also designs a Redis-backed
-sibling (`adapters/redis.Cacheable[T]`, composing `ports.Cache[T]` +
-a `Commands` client, with a necessarily different, ctx-aware, fallible
-`Get` signature). Once BOTH that sibling and this wrapper exist, a
+[`cacheable-redis-backed.md`](cacheable-redis-backed.md) designs a
+Redis-backed sibling (`adapters/redis.Cacheable[T]`, composing
+`ports.Cache[T]` + a `Commands` client, with a necessarily different,
+ctx-aware, fallible `Get` signature). Once BOTH that sibling and this
+wrapper exist, a
 natural forward-looking possibility is `RefreshingCacheable[T]`
 composing EITHER backing (in-memory `codex.Cacheable[T]` or the
 Redis-backed sibling) interchangeably, refreshing whichever one is

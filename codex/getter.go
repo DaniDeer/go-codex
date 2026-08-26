@@ -37,9 +37,24 @@ type Setter[T any] interface {
 // depend on "a validated, readable-AND-writable cell of T" without
 // naming the concrete container type. [Const] implements ONLY
 // Getter[T] (a Const's value is fixed forever at construction, so there
-// is no runtime "assign" to expose) — [Immutable] is the first, and for
-// now the only, concrete GetterSetter[T].
+// is no runtime "assign" to expose) — [Immutable] and [Mutable] both
+// implement GetterSetter[T].
 type GetterSetter[T any] interface {
 	Getter[T]
 	Setter[T]
+}
+
+// FreshGetter is a THIRD sibling to Getter/GetterSetter — for a
+// container whose Get must also report whether the returned value is
+// still trustworthy (a TTL/validity-window concept, distinct from
+// Getter[T]'s "always current" contract). [Cacheable] is the first
+// concrete implementation: [Cacheable.Get]'s two-value return
+// (`(T, bool)`) does NOT satisfy Getter[T]'s single-value `Get() T`
+// signature, so this narrower interface exists instead of forcing
+// Cacheable's shape onto Getter[T] or silently dropping the freshness
+// flag. Not embedded in GetterSetter — a FreshGetter container's
+// write side ([Cacheable.Set]) still satisfies plain [Setter][T]
+// unchanged.
+type FreshGetter[T any] interface {
+	Get() (T, bool)
 }

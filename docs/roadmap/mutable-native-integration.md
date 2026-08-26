@@ -1,12 +1,11 @@
 # `Mutable[T]` Phase 2 — Native Security Wiring, Change Notifications & `CachingCredentialFunc` Integration — `codex`, `api/*`, `adapters/nethttp`
 
 > **Status:** Design draft — captured ideas, not yet fully speced.
-> Explicitly SEQUENCED to implement AFTER `codex.Cacheable[T]`
-> (`cache-parity-and-cacheable.md`) ships — no strict technical
-> dependency on `Cacheable[T]` itself, but `Cacheable[T]` is the
-> immediate next roadmap item and these ideas remain driver-light
-> (see each subsection below); resolve them once the `Cacheable[T]`
-> round is done rather than splitting attention across both at once.
+> `codex.Cacheable[T]` (see `docs/concepts/codec.md`'s `Cacheable[T]`
+> subsection) has now SHIPPED, so this doc is unblocked — no strict
+> technical dependency on `Cacheable[T]` ever existed, but these ideas
+> remain driver-light (see each subsection below); ready to pick up
+> whenever a concrete driver appears for any of the three.
 > [← Back to Roadmap](index.md)
 >
 > This doc preserves the "Out of scope (Phase 2)" ideas from the now-
@@ -19,9 +18,9 @@
 > resolved as unnecessary (construction guarantees a valid value always
 > exists — no "unset" state to guard against, unlike `Immutable[T]`) —
 > a settled non-decision, not a deferred idea. `OptionalMutable[T]`
-> (`optional-mutable.md`) and `Cacheable[T]`
-> (`cache-parity-and-cacheable.md`) already have their OWN dedicated
-> roadmap docs and are NOT part of this one.
+> (`optional-mutable.md`) and `Cacheable[T]` (now shipped — see
+> `docs/concepts/codec.md`'s `Cacheable[T]` subsection) already have
+> their OWN dedicated roadmap docs/homes and are NOT part of this one.
 
 ## Idea 1 — Native `Builder` security wiring
 
@@ -132,8 +131,7 @@ internal consistency.
 ## Sequencing
 
 All three ideas here remain driver-light (see each subsection) — none
-is blocked on `Cacheable[T]` technically, but per explicit direction
-this doc is sequenced to be picked up AFTER `Cacheable[T]`
-(`cache-parity-and-cacheable.md`) ships, to avoid splitting
-implementation attention across both at once. Revisit priority order
-if a concrete driver appears for any of the three before then.
+was ever blocked on `Cacheable[T]` technically, and `Cacheable[T]`
+(see `docs/concepts/codec.md`'s `Cacheable[T]` subsection) has now
+shipped, so this doc is fully unblocked. Revisit priority order
+whenever a concrete driver appears for any of the three.

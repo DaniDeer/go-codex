@@ -1,6 +1,12 @@
-# go-codex Review History (R1–R118)
+# go-codex Review History (R1–R119)
 
 Do not re-report any of these findings. They have been implemented and tested.
+
+---
+
+## Round 119 (Cacheable[T] self-review)
+
+- **G1 — LoggingObserver doc comment missing ReloadObserver/InvalidateObserver**: `stats.LoggingObserver`'s doc comment listed all satisfied observer interfaces but omitted both `ReloadObserver` (added for `Mutable[T]`) and `InvalidateObserver` (added for `Cacheable[T]`), even though `NewFanout`'s and `NoopObserver`'s equivalent lists had already been kept in sync. Fixed by adding both to the list.
 
 ---
 

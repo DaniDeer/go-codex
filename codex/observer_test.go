@@ -14,3 +14,11 @@ type fakeReloadObserver struct{}
 func (fakeReloadObserver) RecordReload(_ string, _ bool, _ time.Duration) {}
 
 var _ codex.ReloadObserver = fakeReloadObserver{}
+
+// fakeInvalidateObserver is the InvalidateObserver sibling to
+// fakeReloadObserver — same stats-free proof, for Cacheable's own event.
+type fakeInvalidateObserver struct{}
+
+func (fakeInvalidateObserver) RecordInvalidate(_ string) {}
+
+var _ codex.InvalidateObserver = fakeInvalidateObserver{}

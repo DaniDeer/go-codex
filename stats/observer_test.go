@@ -252,6 +252,7 @@ func TestLoggingObserver_ImplementsAllInterfaces(t *testing.T) {
 	var _ stats.CacheObserver = obs
 	var _ stats.CredentialCacheObserver = obs
 	var _ stats.ReloadObserver = obs
+	var _ stats.InvalidateObserver = obs
 }
 
 func TestLoggingObserver_AllMethods_NoPanic(t *testing.T) {
@@ -271,6 +272,7 @@ func TestLoggingObserver_AllMethods_NoPanic(t *testing.T) {
 	obs.RecordCredentialCacheHit("ghcr.io", 1*time.Millisecond)
 	obs.RecordCredentialCacheRefresh("ghcr.io", true, 2*time.Millisecond)
 	obs.RecordReload("jwks-signing-keys", true, 3*time.Millisecond)
+	obs.RecordInvalidate("expensive-computation")
 }
 
 // ── NewFanout ─────────────────────────────────────────────────────────────────
@@ -763,5 +765,70 @@ func TestAsReloadObserver_NonImplementingObserver_ReturnsFalse(t *testing.T) {
 	_, ok := stats.AsReloadObserver(obs)
 	if ok {
 		t.Error("AsReloadObserver: want ok=false for a non-implementing Observer")
+	}
+}
+
+// ── InvalidateObserver ────────────────────────────────────────────────────────
+
+func TestNoopObserver_ImplementsInvalidateObserver(t *testing.T) {
+	var noop stats.NoopObserver
+	var obs stats.Observer = noop
+	if _, ok := obs.(stats.InvalidateObserver); !ok {
+		t.Fatal("NoopObserver must implement InvalidateObserver")
+	}
+}
+
+// invalidateFanoutSpy records RecordInvalidate call counts for assertion.
+type invalidateFanoutSpy struct {
+	stats.NoopObserver
+	invalidates int
+}
+
+func (s *invalidateFanoutSpy) RecordInvalidate(_ string) { s.invalidates++ }
+
+var _ stats.InvalidateObserver = (*invalidateFanoutSpy)(nil)
+
+func TestFanout_InvalidateObserver_OnlyToImplementors(t *testing.T) {
+	spy := &invalidateFanoutSpy{}
+	plain := &fanoutSpy{} // does NOT implement InvalidateObserver
+	obs := stats.NewFanout(plain, spy)
+
+	io, ok := obs.(stats.InvalidateObserver)
+	if !ok {
+		t.Fatal("fanout must implement InvalidateObserver when any inner does")
+	}
+	io.RecordInvalidate("expensive-computation")
+	if spy.invalidates != 1 {
+		t.Errorf("want 1 call on spy, got %d", spy.invalidates)
+	}
+}
+
+func TestFanout_InvalidateObserver_SkipsNonImplementors(t *testing.T) {
+	plain := &fanoutSpy{}
+	obs := stats.NewFanout(plain)
+
+	io, ok := obs.(stats.InvalidateObserver)
+	if !ok {
+		t.Fatal("fanout must implement InvalidateObserver regardless of inner observers")
+	}
+	// Must not panic when no inner observer implements InvalidateObserver.
+	io.RecordInvalidate("expensive-computation")
+}
+
+func TestAsInvalidateObserver_ImplementingObserver_ReturnsTrue(t *testing.T) {
+	var obs stats.Observer = stats.NewLoggingObserver(slog.New(slog.NewTextHandler(io.Discard, nil)))
+	iv, ok := stats.AsInvalidateObserver(obs)
+	if !ok {
+		t.Fatal("AsInvalidateObserver: want ok=true for LoggingObserver")
+	}
+	// Must not panic — proves the bridged value is actually usable.
+	iv.RecordInvalidate("expensive-computation")
+}
+
+func TestAsInvalidateObserver_NonImplementingObserver_ReturnsFalse(t *testing.T) {
+	var obs stats.Observer = bareObserver{}
+	_, ok := stats.AsInvalidateObserver(obs)
+	if ok {
+		t.Error("AsInvalidateObserver: want ok=false for a non-implementing Observer")
 	}
 }

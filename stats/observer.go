@@ -283,6 +283,25 @@ func AsReloadObserver(obs Observer) (ReloadObserver, bool) {
 	return ro, ok
 }
 
+// InvalidateObserver is a type ALIAS (not a new interface) for
+// [codex.InvalidateObserver] — the optional sibling to [ReloadObserver]
+// for [codex.Cacheable.Invalidate] events. Same rationale as
+// [ReloadObserver] for living in codex, not here:
+//
+//	type MyObserver struct{ NoopObserver }
+//	func (o *MyObserver) RecordInvalidate(location string) {
+//	    // increment a Prometheus counter, emit a log line, etc.
+//	}
+type InvalidateObserver = codex.InvalidateObserver
+
+// AsInvalidateObserver bridges a stats.Observer-typed value into
+// [InvalidateObserver] — mirrors [AsReloadObserver] exactly, same
+// interface-to-interface assignability rationale.
+func AsInvalidateObserver(obs Observer) (InvalidateObserver, bool) {
+	io, ok := obs.(InvalidateObserver)
+	return io, ok
+}
+
 // StreamObserver is an optional extension to [Observer] for stream-level throughput
 // metrics. [stream.Apply] type-asserts the configured Observer to
 // StreamObserver before calling its methods — existing Observer implementations
@@ -303,7 +322,8 @@ type StreamObserver interface {
 // It implements all observer interfaces except [TraceObserver]:
 // [Observer] (embeds [ValidationObserver]), [PipelineObserver],
 // [SecurityObserver], [FileObserver], [SQLObserver], [StreamObserver],
-// [CacheObserver], and [CredentialCacheObserver].
+// [CacheObserver], [CredentialCacheObserver], [ReloadObserver], and
+// [InvalidateObserver].
 //
 // [TraceObserver] is intentionally not implemented — slog has no concept of
 // distributed trace spans. Use [stats.NewFanout] to combine a LoggingObserver
@@ -406,10 +426,15 @@ func (o *LoggingObserver) RecordReload(location string, success bool, d time.Dur
 	o.logger.Info("reload", "location", location, "success", success, "ms", d.Milliseconds())
 }
 
+func (o *LoggingObserver) RecordInvalidate(location string) {
+	o.logger.Info("invalidate", "location", location)
+}
+
 // NewFanout returns an [Observer] that fans out all calls to each provided observer.
 // The returned value also implements [FileObserver], [SecurityObserver],
 // [PipelineObserver], [SQLObserver], [StreamObserver], [CacheObserver],
-// [CredentialCacheObserver], [ReloadObserver], and [TraceObserver] — delegating each to the
+// [CredentialCacheObserver], [ReloadObserver], [InvalidateObserver], and
+// [TraceObserver] — delegating each to the
 // inner observers that satisfy those
 // interfaces, so composing
 // a metrics-only observer with a [LoggingObserver] works without any
@@ -568,6 +593,15 @@ func (f *fanout) RecordCredentialCacheRefresh(location string, success bool, d t
 	}
 }
 
+// RecordInvalidate implements [InvalidateObserver].
+func (f *fanout) RecordInvalidate(location string) {
+	for _, o := range f.observers {
+		if io, ok := o.(InvalidateObserver); ok {
+			io.RecordInvalidate(location)
+		}
+	}
+}
+
 // RecordReload implements [ReloadObserver].
 func (f *fanout) RecordReload(location string, success bool, d time.Duration) {
 	for _, o := range f.observers {
@@ -599,8 +633,9 @@ func (f *fanout) EndSpan(ctx context.Context, err error) {
 // NoopObserver discards all events. It satisfies all observer interfaces —
 // [Observer] (embeds [ValidationObserver]), [PipelineObserver],
 // [SecurityObserver], [FileObserver], [SQLObserver], [StreamObserver],
-// [CacheObserver], and [TraceObserver] — and is the zero-cost default used
-// when no observer is configured.
+// [CacheObserver], [CredentialCacheObserver], [ReloadObserver],
+// [InvalidateObserver], and [TraceObserver] — and is the zero-cost default
+// used when no observer is configured.
 type NoopObserver struct{}
 
 func (NoopObserver) RecordValidationError(_, _, _ string)                           {}
@@ -621,6 +656,7 @@ func (NoopObserver) RecordCacheWrite(_, _ string, _ bool, _ time.Duration)      
 func (NoopObserver) RecordCredentialCacheHit(_ string, _ time.Duration)             {}
 func (NoopObserver) RecordCredentialCacheRefresh(_ string, _ bool, _ time.Duration) {}
 func (NoopObserver) RecordReload(_ string, _ bool, _ time.Duration)                 {}
+func (NoopObserver) RecordInvalidate(_ string)                                      {}
 func (NoopObserver) StartSpan(ctx context.Context, _, _ string) context.Context     { return ctx }
 func (NoopObserver) EndSpan(_ context.Context, _ error)                             {}
 

@@ -1638,19 +1638,21 @@ Everything above validates *runtime* values passed through `Encode`/
 CONSTANT (a fixed path template, a protocol version string) or a
 runtime value SET EXACTLY ONCE (a config/env var loaded once at
 startup) — or reassigned REPEATEDLY at runtime, re-validated on every
-reassignment (a rotating credential) — the same declarative validation,
-instead of leaving it a bare, unchecked literal or variable.
-`codex.Getter[T]`/`Setter[T]` (declared standalone in `codex/getter.go`,
-so future codec-backed containers can satisfy them too) and their three
-implementations, `Const[T]`/`Immutable[T]` (`codex/const.go`) and
-`Mutable[T]` (`codex/mutable.go`), are a THIRD layer sitting on top of
-the two that already exist:
+reassignment (a rotating credential), optionally with an explicit
+validity window (a memoized, TTL/invalidate-able value) — the same
+declarative validation, instead of leaving it a bare, unchecked literal
+or variable. `codex.Getter[T]`/`Setter[T]`/`FreshGetter[T]` (declared
+standalone in `codex/getter.go`, so future codec-backed containers can
+satisfy them too) and their four implementations, `Const[T]`/
+`Immutable[T]` (`codex/const.go`), `Mutable[T]` (`codex/mutable.go`),
+and `Cacheable[T]` (`codex/cacheable.go`), are a THIRD layer sitting on
+top of the two that already exist:
 
 | Layer | What it validates | Reference |
 |---|---|---|
 | 0 — `Codec[T]` | A wire SHAPE, on every `Encode`/`Decode` call | `codex/codec.go` |
 | 1 — `HasCodec[T]` | "This TYPE knows its own Codec" — generic helpers (`Validate`/`New`/`EncodeSelf`/`DecodeAs`/`SchemaOf`) work on any type implementing it | `codex/hascodec.go` |
-| 2 — `Getter[T]`/`Setter[T]` + `Const[T]`/`Immutable[T]`/`Mutable[T]` | "This VALUE's identity, at a specific point in its OWN lifecycle (authored-at-compile-time / assigned-once-at-runtime / reassigned repeatedly at runtime), is validated" — generic CONTAINERS parameterized by an externally supplied `Codec[T]` | `codex/const.go`, `codex/mutable.go` |
+| 2 — `Getter[T]`/`Setter[T]`/`FreshGetter[T]` + `Const[T]`/`Immutable[T]`/`Mutable[T]`/`Cacheable[T]` | "This VALUE's identity, at a specific point in its OWN lifecycle (authored-at-compile-time / assigned-once-at-runtime / reassigned repeatedly at runtime / reassigned with an explicit validity window), is validated" — generic CONTAINERS parameterized by an externally supplied `Codec[T]` | `codex/const.go`, `codex/mutable.go`, `codex/cacheable.go` |
 
 **Not literally "higher-kinded"** — Go generics have no abstraction over
 type *constructors*, only over concrete types — but this table captures
@@ -1802,8 +1804,70 @@ if err := keys.Set("key-v2"); err != nil {
       codex.WithReloadObserver[string](myObserver)) // any value satisfying RecordReload
   ```
 
+**`Cacheable[T]`** — a 4th sibling, adding a validity WINDOW on top of
+`Mutable[T]`'s re-validating `Set` shape: a TTL, an explicit
+`Invalidate()` call, or both. Where `Mutable[T]` answers "what's the
+current value?", `Cacheable[T]` answers "what's the current value, and
+can I still trust it?" — the in-process, stale-while-revalidate
+memoization shape (an expensive computation, or any `SecurityFunc`/
+`CredentialFunc` result a process wants to avoid recomputing too often):
+
+```go
+memo, err := codex.NewCacheable("expensive-computation", initial, codec, time.Hour)
+if err != nil {
+    log.Fatal(err)
+}
+
+value, fresh := memo.Get() // never panics — same guarantee as Mutable[T].Get
+if !fresh {
+    // stale-while-revalidate: serve value anyway, refresh in the background
+    go func() {
+        if v, err := recompute(); err == nil {
+            memo.Set(v)
+        }
+    }()
+}
+
+// An upstream event (webhook, Redis keyspace notification) can mark the
+// value stale BEFORE its TTL naturally expires:
+memo.Invalidate()
+```
+
+- `Get()` returns `(T, bool)` — NOT `Mutable[T]`'s plain `T` — so
+  `Cacheable[T]` satisfies `codex.FreshGetter[T]` (`Get() (T, bool)`),
+  a THIRD sibling to `Getter[T]`/`GetterSetter[T]`, instead of forcing
+  `Cacheable[T]`'s two-value shape onto `Getter[T]`.
+  `Cacheable[T]` still satisfies plain `Setter[T]` unchanged.
+- `IsStale()` reports staleness without reading the value — for a
+  caller that wants to decide whether to refresh before paying for a
+  `Get()`.
+- `Set` reuses `Mutable[T]`'s exact `codex.ReloadObserver.RecordReload`
+  event unchanged. `Invalidate()` fires a SEPARATE
+  `codex.InvalidateObserver.RecordInvalidate(location)` — kept separate
+  from `RecordReload` because an explicit invalidation is not a failed
+  reload (conflating the two would make "how many `Set` calls failed
+  validation" and "how many times was this invalidated"
+  indistinguishable in a dashboard). A caller observing `Mutable[T]`
+  alone is never forced to implement `RecordInvalidate` — it's checked
+  with its own, independent type assertion, exactly like
+  `ReloadObserver`'s. `stats.InvalidateObserver`/`stats.AsInvalidateObserver`
+  mirror `ReloadObserver`'s shipped shape exactly.
+- Every `Mutable[T]` is functionally a `Cacheable[T]` with an infinite
+  TTL and no invalidation — `Cacheable[T]` adds a validity window on top
+  of `Mutable[T]`'s shape, not a separate mechanism underneath.
+
+| | `Const[T]` | `Immutable[T]` | `Mutable[T]` | `Cacheable[T]` |
+|---|---|---|---|---|
+| Re-`Set`-able? | Never | Once | Unlimited | Unlimited (same as `Mutable`) |
+| Invalid `Set` | Panics (`MustConst`) — or returns an error (`NewConst`) | Returns a typed/codec error | Current value UNCHANGED, returns codec error | Same as `Mutable` — last-good-value-wins |
+| Notion of time/staleness? | No | No | No — a value is just "current," forever, until replaced | **Yes** — TTL and/or explicit `Invalidate()`; a value can be *present but stale* |
+| `Get()` return shape | `T` | `T` (panics if unset) | `T` (never panics) | **`(T, bool)`** — value + freshness flag, never panics |
+| Interface satisfied | `Getter[T]` only | `GetterSetter[T]` | `GetterSetter[T]` | **`FreshGetter[T]`** + `Setter[T]` |
+| Observer | None | None | `ReloadObserver.RecordReload` on `Set` | Same `ReloadObserver` for `Set`, PLUS `InvalidateObserver.RecordInvalidate` for `Invalidate()` |
+| Typical driver | Path/topic pattern constants | Config/env var loaded once at startup | Rotating security credentials — "give me whatever is current" | Stale-while-revalidate memoization — "give me what you have, tell me if it's still good" |
+
 **Constructor naming convention.** Every `Getter`/`Setter`-family type
-(`Const`, `Immutable`, `Mutable`, and the planned `Cacheable`/
+(`Const`, `Immutable`, `Mutable`, `Cacheable`, and the planned
 `OptionalMutable`) follows the same naming pattern: `MustX` validates and
 PANICS (authored input, invalid = a bug); `NewX` validates and returns an
 ERROR (real runtime input, invalid = an expected condition); `Set(value)

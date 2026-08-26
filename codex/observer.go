@@ -24,3 +24,23 @@ type ReloadObserver interface {
 	// is the validation call's own cost.
 	RecordReload(location string, success bool, duration time.Duration)
 }
+
+// InvalidateObserver is the optional sibling to [ReloadObserver] for
+// [Cacheable.Invalidate] events — kept SEPARATE (not folded into
+// ReloadObserver as RecordReload(location, false, 0)) because an
+// explicit invalidation is NOT a failed reload: conflating the two
+// would make "how many Set calls failed validation" and "how many
+// times was this invalidated" indistinguishable in a dashboard. A
+// caller observing [Mutable] alone (which has no Invalidate concept) is
+// never forced to implement this method — it's checked with its own,
+// independent type assertion, mirroring how stats.Observer's
+// SecurityObserver/CacheObserver/etc. are each separately asserted.
+// stats exposes this same interface as stats.InvalidateObserver (a type
+// alias), plus stats.AsInvalidateObserver to bridge a stats.Observer
+// value into this interface.
+type InvalidateObserver interface {
+	// RecordInvalidate is called on every [Cacheable.Invalidate] call.
+	// location identifies the container instance (the caller-chosen
+	// string passed to [NewCacheable]).
+	RecordInvalidate(location string)
+}
