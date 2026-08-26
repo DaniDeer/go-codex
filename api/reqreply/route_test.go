@@ -203,6 +203,42 @@ func TestRoute_AsyncAPISpec_ReplyChannel(t *testing.T) {
 	}
 }
 
+// TestRoute_AsyncAPISpec_TopicParamRendersParameters is the regression
+// guard for the found-during-review gap: reqreply.TopicParam's
+// Description/Codec must render into the AsyncAPI spec's "parameters"
+// map on BOTH the request and reply channels (they share the same
+// {varName} tokens, since the reply address is topic + "/reply"), the
+// same way api/events' TopicParam already does.
+func TestRoute_AsyncAPISpec_TopicParamRendersParameters(t *testing.T) {
+	b := newBuilder()
+	r := reqreply.NewRoute[tenantComputeReq, computeResp]("compute/{tenantID}/add",
+		tenantComputeReqCodec, respCodec,
+		reqreply.NewTopicParam("tenantID", codex.String().Refine(validate.UUID).WithDescription("Wire-level UUID shape"),
+			func(r tenantComputeReq) string { return r.TenantID },
+			func(r *tenantComputeReq, v string) { r.TenantID = v }).WithDescription("Tenant namespace"),
+	)
+	_, err := r.Register(b)
+	if err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+	out := mustSpec(t, b)
+
+	// Parameters must appear under BOTH channels (request AND reply),
+	// since both addresses contain {tenantID}.
+	if strings.Count(out, "tenantID:") < 2 {
+		t.Errorf("want \"tenantID:\" parameters entry on both request and reply channels, got:\n%s", out)
+	}
+	if !strings.Contains(out, "Tenant namespace") {
+		t.Errorf("want parameter-level description 'Tenant namespace' in spec:\n%s", out)
+	}
+	if !strings.Contains(out, "Wire-level UUID shape") {
+		t.Errorf("want schema-level description 'Wire-level UUID shape' in spec:\n%s", out)
+	}
+	if !strings.Contains(out, "format: uuid") {
+		t.Errorf("want schema format 'uuid' in spec:\n%s", out)
+	}
+}
+
 func TestRoute_AsyncAPISpec_SendOpHasReplyBlock(t *testing.T) {
 	b := newBuilder()
 	_, _ = computeRoute.Register(b)

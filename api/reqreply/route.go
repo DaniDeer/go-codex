@@ -894,7 +894,7 @@ func (r Route[Req, Resp]) Register(b *Builder) (*RouteHandle[Req, Resp], error) 
 		return nil, mergeErr
 	}
 
-	b.registerRoute(r.topic, r.reqCodec.Schema, r.respCodec.Schema, rb.meta, rb.errorReplies)
+	b.registerRoute(r.topic, r.reqCodec.Schema, r.respCodec.Schema, rb.meta, rb.errorReplies, rb.topicParams)
 	// Merge this route's own WithSecurityScheme declarations into the
 	// builder's aggregate — last-registered-wins on name collision,
 	// matching rest's/events' documented policy. There is no per-route

@@ -5,6 +5,7 @@ import (
 	"strings"
 	"unicode"
 
+	"github.com/DaniDeer/go-codex/api/internal"
 	"github.com/DaniDeer/go-codex/codex"
 	asyncapi "github.com/DaniDeer/go-codex/render/asyncapi/v3"
 	"github.com/DaniDeer/go-codex/route"
@@ -100,6 +101,43 @@ func (b *Builder) AddServer(name string, s Server) *Builder {
 	return b
 }
 
+// buildTopicParameters derives the AsyncAPI channel parameters map from a
+// topic template and optional TopicParam entries — mirrors
+// api/events/builder.go's function of the same name (duplicated rather
+// than shared: different package, and this codebase already duplicates
+// this small per-boundary conversion helper rather than factoring it into
+// a shared non-codex location, matching toCodexParams/convertFileParamErr's
+// precedent).
+//
+// Priority for each variable's schema:
+//  1. TopicParam.Codec.Schema — when a codec is registered for the variable
+//  2. Default: {type: string}
+func buildTopicParameters(topic string, params []TopicParam) map[string]asyncapi.Parameter {
+	vars := internal.ParseTemplateVars(topic)
+	if len(vars) == 0 {
+		return nil
+	}
+
+	// Index TopicParams by name for O(1) lookup.
+	paramsByName := make(map[string]TopicParam, len(params))
+	for _, tp := range params {
+		paramsByName[tp.Name] = tp
+	}
+
+	result := make(map[string]asyncapi.Parameter, len(vars))
+	for name := range vars {
+		p := asyncapi.Parameter{}
+		if tp, ok := paramsByName[name]; ok {
+			p.Description = tp.Description
+			if tp.Codec != nil {
+				p.Schema = tp.Codec.Schema
+			}
+		}
+		result[name] = p
+	}
+	return result
+}
+
 // registerRoute is called by [Route.Register] to record the two AsyncAPI
 // channels and operations for a route.
 func (b *Builder) registerRoute(
@@ -107,6 +145,7 @@ func (b *Builder) registerRoute(
 	reqSchema, respSchema schema.Schema,
 	meta RouteMeta,
 	errorReplies []ErrorReplyMeta,
+	topicParams []TopicParam,
 ) {
 	b.topics[topic] = struct{}{}
 
@@ -119,11 +158,18 @@ func (b *Builder) registerRoute(
 	sendOpID := "send" + capitalise(base)
 	recvOpID := "receive" + capitalise(base) + "Reply"
 
+	// Both channel addresses share the same {varName} tokens (the reply
+	// channel's address is topic + "/reply"), so both independently need
+	// the same Parameters map — AsyncAPI channels each describe their own
+	// address's vars, even when the vars are shared.
+	params := buildTopicParameters(topic, topicParams)
+
 	// Register request channel.
 	b.docBuilder.AddChannel(reqChannelKey, asyncapi.ChannelItem{
-		Address: topic,
-		Summary: meta.Summary,
-		Tags:    meta.Tags,
+		Address:    topic,
+		Summary:    meta.Summary,
+		Tags:       meta.Tags,
+		Parameters: params,
 		Publish: &asyncapi.Operation{
 			OperationID: sendOpID,
 			Summary:     meta.Summary,
@@ -139,7 +185,8 @@ func (b *Builder) registerRoute(
 
 	// Register reply channel (receive-only — exempt from subscribe/publish validation).
 	b.docBuilder.AddReplyChannel(replyChannelKey, asyncapi.ChannelItem{
-		Address: topic + "/reply",
+		Address:    topic + "/reply",
+		Parameters: params,
 		Subscribe: &asyncapi.Operation{
 			OperationID: recvOpID,
 			Message: asyncapi.Message{
