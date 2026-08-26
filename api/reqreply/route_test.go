@@ -708,6 +708,37 @@ func TestDecodeMerged_HappyPath(t *testing.T) {
 	}
 }
 
+// TestNewTopicParam_TypedIntValue_DecodeMergedRoundTrip mirrors
+// rest/events' typed-param tests — reqreply.NewTopicParam merges the
+// "x" topic segment directly into tenantComputeReq.X (an int field) via
+// codex.IntString(), now that codex.NewParam is generic over V.
+func TestNewTopicParam_TypedIntValue_DecodeMergedRoundTrip(t *testing.T) {
+	b := reqreply.NewBuilder(reqreply.Info{})
+	h, err := reqreply.NewRoute[tenantComputeReq, computeResp]("compute/{x}/add",
+		tenantComputeReqCodec, respCodec,
+		reqreply.NewTopicParam("x", codex.IntString(),
+			func(r tenantComputeReq) int { return r.X },
+			func(r *tenantComputeReq, v int) { r.X = v }),
+	).Register(b)
+	if err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+	req, err := h.DecodeMerged([]byte(`{"x":0,"y":2}`), map[string]string{"x": "9"})
+	if err != nil {
+		t.Fatalf("DecodeMerged: %v", err)
+	}
+	if req.X != 9 {
+		t.Fatalf("req.X = %d, want 9", req.X)
+	}
+	vars, err := codex.EncodeVars(tenantComputeReq{X: 9}, h.MergeFields()...)
+	if err != nil {
+		t.Fatalf("EncodeVars: %v", err)
+	}
+	if vars["x"] != "9" {
+		t.Fatalf("EncodeVars: got %q, want \"9\"", vars["x"])
+	}
+}
+
 // RR3: RouteHandle.DecodeMerged with zero merge fields behaves like plain
 // Decode (regression guard).
 func TestDecodeMerged_NoMergeFieldsIsNoop(t *testing.T) {

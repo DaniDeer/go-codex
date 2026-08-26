@@ -1970,6 +1970,52 @@ func TestFile_NewFilePathParam_RegistersSpecAndMergeField(t *testing.T) {
 	}
 }
 
+type readingIntMeta struct {
+	SensorNo int
+	Value    float64
+}
+
+var readingIntValueCodec = codex.Struct[readingIntMeta](
+	codex.RequiredField("value", codex.Float64(),
+		func(r readingIntMeta) float64 { return r.Value },
+		func(r *readingIntMeta, v float64) { r.Value = v }),
+)
+
+// TestFile_NewFilePathParam_TypedIntValue_RoundTrip mirrors the rest/
+// events/reqreply/cache typed-param tests — ports.NewFilePathParam merges
+// into a non-string field (int) now that codex.NewParam is generic over V.
+func TestFile_NewFilePathParam_TypedIntValue_RoundTrip(t *testing.T) {
+	f := ports.NewFile("readings/{sensorNo}.json", format.JSON(readingIntValueCodec),
+		ports.NewFilePathParam("sensorNo", codex.IntString(),
+			func(r readingIntMeta) int { return r.SensorNo },
+			func(r *readingIntMeta, v int) { r.SensorNo = v }),
+	)
+
+	path, err := f.BuildPath(map[string]string{"sensorNo": "42"})
+	if err != nil {
+		t.Fatalf("BuildPath: %v", err)
+	}
+	if path != "readings/42.json" {
+		t.Errorf("BuildPath: got %q", path)
+	}
+
+	vars, err := f.MatchPath("readings/42.json")
+	if err != nil {
+		t.Fatalf("MatchPath: %v", err)
+	}
+	var meta readingIntMeta
+	if err := codex.DecodeVars(&meta, vars, f.MergeFields()...); err != nil {
+		t.Fatalf("DecodeVars: %v", err)
+	}
+	if meta.SensorNo != 42 {
+		t.Errorf("unexpected merged meta: %+v", meta)
+	}
+
+	if _, err := f.BuildPath(map[string]string{"sensorNo": "not-a-number"}); err == nil {
+		t.Fatal("BuildPath: expected error for non-numeric sensorNo")
+	}
+}
+
 func TestFile_NewFilePathParam_WithDescription(t *testing.T) {
 	p := ports.NewFilePathParam("sensorID", codex.String(),
 		func(r readingMeta) string { return r.SensorID },

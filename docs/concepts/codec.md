@@ -241,14 +241,16 @@ vars, err := codex.EncodeVars(req, idField)
 ```
 
 A field's codec must accept a string on `Decode` — plain `codex.String()`
-for string fields, or `codex.MapCodecSafe(codex.String()..., parse, format)`
-for typed fields like `int`/`time.Time` (vars are always string-valued at
-the wire level: path segments, topic segments, header/query/cookie values).
+for string fields, or `codex.StringCodec(parse, format, schema)`/
+`codex.TextCodec[V]()`/`codex.IntString()` (etc.) for typed fields like
+`int`/`uuid.UUID` (vars are always string-valued at the wire level: path
+segments, topic segments, header/query/cookie values) — see "Typed
+(non-string) path/topic/query/header/cookie/key vars" below.
 
-**Per-boundary sugar**: `rest.NewPathParam[T]`/`NewRequiredQueryParam[T]`/
-`NewOptionalQueryParam[T]` (+ Header/Cookie equivalents),
-`events.NewTopicParam[T]`, `reqreply.NewTopicParam[T]`, and
-`ports.NewFilePathParam[T]` declare BOTH the boundary's spec Param (for
+**Per-boundary sugar**: `rest.NewPathParam[T, V]`/`NewRequiredQueryParam[T, V]`/
+`NewOptionalQueryParam[T, V]` (+ Header/Cookie equivalents),
+`events.NewTopicParam[T, V]`, `reqreply.NewTopicParam[T, V]`, and
+`ports.NewFilePathParam[T, V]` declare BOTH the boundary's spec Param (for
 OpenAPI/AsyncAPI generation, unchanged) AND a merge field in ONE call — see
 [Ports feature — File](../features/ports.md) and
 [REST API feature](../features/rest-api.md) for the full per-boundary
@@ -259,7 +261,7 @@ alternative (`codex.Param`'s own escape-hatch role — see below).
 Every one of these boundary-specific `PathParam`/`TopicParam`/
 `FilePathParam` types is a thin wrapper over ONE shared pair of primitives
 in `codex`: `codex.Param{Name, Description, Codec}` (the validate-only
-escape hatch) and `codex.MergedParam[T]`/`codex.NewParam[T]` (the
+escape hatch) and `codex.MergedParam[T]`/`codex.NewParam[T, V]` (the
 merge-capable counterpart, built via the SAME `RequiredField` mechanism
 above). `codex.ValidateParams`/`codex.ValidateDeclaredParams`/
 `codex.BuildFromParams` are the shared validate-loop/declaration-check/
@@ -284,8 +286,10 @@ first, then merges vars into the same value, touching only the declared
 merge fields). See [REST API — Mixing body fields and merged params](../features/rest-api.md#mixing-body-fields-and-merged-params-on-one-struct).
 
 The SAME mechanism applies in the RESPONSE direction —
-`rest.NewRequiredResponseHeaderParam[Resp]`/`NewOptionalResponseHeaderParam[Resp]`
-(+ Cookie equivalents) declare a response header/cookie merge field on
+`rest.NewRequiredResponseHeaderParam[Resp, V]`/`NewOptionalResponseHeaderParam[Resp, V]`
+(+ Cookie equivalents, also generic over `V` — a typed response header/
+cookie merges directly into an `int`/`uuid.UUID`/etc. exactly like the
+request-side constructors above) declare a response header/cookie merge field on
 `Resp`: the server sets it automatically from the returned struct's field,
 and the client merges the HTTP response back into the same field
 automatically. On top of the four merge-field roles (path/query/header/cookie),
@@ -1542,10 +1546,11 @@ composes with any of the above rather than competing with them.
 
 #### Caveat: none of these belong on a path/topic param's merge `Field`
 
-`rest.NewPathParam[T]`/`events.NewTopicParam[T]`/`reqreply.NewTopicParam[T]`
-(and their shared foundation, `codex.NewParam[T]`) always build their merge
-`Field` as a plain `RequiredField` — there is no constructor argument to
-swap in `OmitEmptyField`/`MaybeField`. A caller COULD hand-construct a
+`rest.NewPathParam[T, V]`/`events.NewTopicParam[T, V]`/
+`reqreply.NewTopicParam[T, V]` (and their shared foundation,
+`codex.NewParam[T, V]`) always build their merge `Field` as a plain
+`RequiredField` — there is no constructor argument to swap in
+`OmitEmptyField`/`MaybeField`. A caller COULD hand-construct a
 `codex.MergedParam[T]{Field: ...}` with one of these anyway (`Field` is
 just an exported `codex.FieldCodec[T]`), but it would be inert:
 
@@ -1558,7 +1563,8 @@ just an exported `codex.FieldCodec[T]`), but it would be inert:
   ceremony. This isn't a bug — it's confirmation that a path/topic
   variable structurally can't be "absent" (unlike a JSON body key): the
   segment is either present-and-matched, or the route/channel never
-  matched at all.
+  matched at all. This holds regardless of V — typed params (see below)
+  don't change this.
 - **`EitherField`** is the one that DOES make sense here — a path/topic
   segment legitimately can be "one of two shapes" (e.g. a UUID-slug OR a
   numeric-string ID, mirroring Kubernetes' `IntOrString` but in a URL/topic
@@ -1567,13 +1573,63 @@ just an exported `codex.FieldCodec[T]`), but it would be inert:
   shape as a plain path param, just with a `oneOf` codec underneath.
   Requirement: BOTH `ca`/`cb` must decode from/encode to a Go `string`
   (`codex.DecodeVars`/`EncodeVars` box every path/topic var as `string`) —
-  e.g. two `codex.String().Refine(...)` variants distinguished by
-  constraint, not `codex.Int()` (which only accepts `float64`/`int`/`int64`,
-  never a raw string).
+  e.g. `Either2(codex.String().Refine(isSlug), codex.IntString())` now
+  works (see below), whereas plain `codex.Int()` still doesn't (it only
+  accepts `float64`/`int`/`int64`, never a raw string).
 - A "`Maybe` that errors instead of returning `Nothing`" isn't a gap to
   fill either — that's just `RequiredField`'s existing behavior (decode
   fails when the key is absent). `MaybeField`'s entire purpose is safe
   optionality; making it throw on `Nothing` would defeat that purpose.
+
+### Typed (non-string) path/topic/query/header/cookie/key vars
+
+`codex.DecodeVars`/`codex.EncodeVars` box every var value as a plain Go
+`string` on the wire — that's the ONLY hard requirement. Any `Codec[V]`
+that decodes from a boxed `string` and encodes back to a `string` composes
+with `RequiredField`/`OptionalField`, and therefore with `codex.NewParam`
+and every per-boundary constructor built on it
+(`rest.NewPathParam`/`NewRequired`/`OptionalQueryParam`/
+`NewRequired`/`OptionalHeaderParam`/`NewRequired`/`OptionalCookieParam`,
+`events.NewTopicParam`, `reqreply.NewTopicParam`,
+`ports.NewFilePathParam`, `ports.NewCacheKeyParam` — all of them generic
+over `V`, not hardcoded to `Codec[string]`). This lets a path/topic/query/
+header/cookie/key variable merge directly into an `int`, a `uuid.UUID`, or
+any other typed field instead of a bare `string` the handler has to
+re-parse by hand:
+
+```go
+rest.NewPathParam("id", codex.IntString(),
+    func(r GetUserReq) int { return r.ID },
+    func(r *GetUserReq, v int) { r.ID = v },
+)
+```
+
+Two primitives in `codex` build such a `Codec[V]`:
+
+- **`codex.StringCodec[V](parse, format, schema)`** — explicit, zero
+  magic: you supply the `string → V` parse function and the `V → string`
+  format function directly. Use for anything without a pre-existing text
+  form, or when you want full control (custom error wrapping, a stricter
+  schema, etc.).
+- **`codex.TextCodec[V]()`** — zero boilerplate for any `V` whose pointer
+  already implements `encoding.TextMarshaler`/`encoding.TextUnmarshaler`
+  (the standard Go convention for "this type has a canonical string
+  form"), e.g. `uuid.UUID` from `github.com/google/uuid`:
+  `codex.TextCodec[uuid.UUID]()`.
+
+Ready-made convenience codecs built on `StringCodec` for the common stdlib
+cases: `codex.IntString()`, `codex.Int64String()`, `codex.UintString()`,
+`codex.BoolString()`.
+
+Internally, `codex.NewParam` derives the param's spec-level `Codec[string]`
+(used by `ValidateParams`/`BuildFromParams`, which only ever see the raw
+wire string) from the typed `codec` via the exported
+`codex.StringValidatorFrom[V]` helper — it parses the wire string through
+`codec` to apply V's constraints, then discards the typed result and
+returns the original string. An invalid path segment (e.g. `"abc"` for an
+`IntString()`-typed param) is rejected at spec/pre-flight validation time,
+before `Decode` ever runs — identical behavior to a plain
+`codex.String().Refine(...)`-typed param, just generalized to any `V`.
 
 ### `Getter`/`Setter`: validated value containers built on `Codec[T]`
 

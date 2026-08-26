@@ -66,6 +66,93 @@ func TestNewParam_FieldMergesIntoT(t *testing.T) {
 	}
 }
 
+type intIDReq struct {
+	ID int
+}
+
+func TestNewParam_TypedValue_MergesIntoNonStringField(t *testing.T) {
+	mp := codex.NewParam("id", codex.IntString(),
+		func(r intIDReq) int { return r.ID },
+		func(r *intIDReq, v int) { r.ID = v })
+	if mp.Codec == nil {
+		t.Fatal("expected derived string Codec to be set")
+	}
+	var req intIDReq
+	if err := codex.DecodeVars(&req, map[string]string{"id": "42"}, mp.Field); err != nil {
+		t.Fatalf("DecodeVars: %v", err)
+	}
+	if req.ID != 42 {
+		t.Errorf("ID: got %d, want 42", req.ID)
+	}
+	got, err := codex.EncodeVars(intIDReq{ID: 42}, mp.Field)
+	if err != nil {
+		t.Fatalf("EncodeVars: %v", err)
+	}
+	if got["id"] != "42" {
+		t.Errorf("EncodeVars: got %q, want \"42\"", got["id"])
+	}
+}
+
+func TestNewParam_TypedValue_SpecCodecRejectsInvalidString(t *testing.T) {
+	mp := codex.NewParam("id", codex.IntString(),
+		func(r intIDReq) int { return r.ID },
+		func(r *intIDReq, v int) { r.ID = v })
+	err := codex.ValidateParams([]codex.Param{mp.Param}, map[string]string{"id": "not-a-number"})
+	var pe codex.ParamError
+	if !errors.As(err, &pe) {
+		t.Fatalf("ValidateParams: got %T: %v, want ParamError", err, err)
+	}
+}
+
+// ── StringValidatorFrom (direct coverage — previously only exercised
+// indirectly via NewParam/NewPathParam/etc.) ──────────────────────────────
+
+func TestStringValidatorFrom_ValidStringPassesThrough(t *testing.T) {
+	c := codex.StringValidatorFrom(codex.IntString())
+	got, err := c.Decode("42")
+	if err != nil {
+		t.Fatalf("Decode(\"42\") error = %v", err)
+	}
+	if got != "42" {
+		t.Fatalf("Decode(\"42\") = %q, want unchanged \"42\"", got)
+	}
+}
+
+func TestStringValidatorFrom_ConstraintFailurePropagates(t *testing.T) {
+	c := codex.StringValidatorFrom(codex.IntString())
+	_, err := c.Decode("not-a-number")
+	if err == nil {
+		t.Fatal("Decode(\"not-a-number\") expected error, got nil")
+	}
+}
+
+func TestStringValidatorFrom_WrongTypeReturnsTypeMismatchError(t *testing.T) {
+	c := codex.StringValidatorFrom(codex.IntString())
+	_, err := c.Decode(42) // not a string
+	var tme codex.TypeMismatchError
+	if !errors.As(err, &tme) {
+		t.Fatalf("Decode(42) error = %v, want TypeMismatchError", err)
+	}
+}
+
+func TestStringValidatorFrom_EncodeIsIdentity(t *testing.T) {
+	c := codex.StringValidatorFrom(codex.IntString())
+	enc, err := c.Encode("42")
+	if err != nil {
+		t.Fatalf("Encode(\"42\") error = %v", err)
+	}
+	if enc != "42" {
+		t.Fatalf("Encode(\"42\") = %v, want unchanged \"42\"", enc)
+	}
+}
+
+func TestStringValidatorFrom_SchemaMatchesInnerCodec(t *testing.T) {
+	c := codex.StringValidatorFrom(codex.IntString())
+	if c.Schema.Type != "integer" {
+		t.Fatalf("Schema.Type = %q, want \"integer\"", c.Schema.Type)
+	}
+}
+
 // ── ValidateParams ─────────────────────────────────────────────────────────
 
 func TestValidateParams_Happy(t *testing.T) {

@@ -110,11 +110,14 @@ type MergedTopicParam[Req any] struct {
 //	        func(r *ComputeReq, v string) { r.TenantID = v },
 //	    ),
 //	)
-func NewTopicParam[Req any](
+//
+// V need not be string — see [codex.NewParam] for merging a topic segment
+// directly into an int/UUID/etc.
+func NewTopicParam[Req, V any](
 	name string,
-	codec codex.Codec[string],
-	get func(Req) string,
-	set func(*Req, string),
+	codec codex.Codec[V],
+	get func(Req) V,
+	set func(*Req, V),
 ) MergedTopicParam[Req] {
 	return MergedTopicParam[Req]{MergedParam: codex.NewParam(name, codec, get, set)}
 }

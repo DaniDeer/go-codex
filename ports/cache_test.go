@@ -405,3 +405,44 @@ func TestCacheMergeFields_EncodeDecodeRoundTrip(t *testing.T) {
 		t.Errorf("round trip: want ID=u1, got %q", decoded.ID)
 	}
 }
+
+// TestNewCacheKeyParam_TypedIntValue_RoundTrip mirrors the rest/events/
+// reqreply typed-param tests — ports.NewCacheKeyParam merges into a
+// non-string field (int) now that codex.NewParam is generic over V.
+func TestNewCacheKeyParam_TypedIntValue_RoundTrip(t *testing.T) {
+	type user struct{ ID int }
+	userCodec := codex.Struct[user](
+		codex.RequiredField("id", codex.Int(),
+			func(u user) int { return u.ID },
+			func(u *user, v int) { u.ID = v }),
+	)
+	c := ports.NewCache("user:{id}", format.JSON(userCodec),
+		ports.NewCacheKeyParam("id", codex.IntString(),
+			func(u user) int { return u.ID },
+			func(u *user, v int) { u.ID = v }),
+	)
+	key, err := c.BuildKey(map[string]string{"id": "42"})
+	if err != nil {
+		t.Fatalf("BuildKey: %v", err)
+	}
+	if key != "user:42" {
+		t.Fatalf("BuildKey = %q, want user:42", key)
+	}
+	vars, err := codex.EncodeVars(user{ID: 42}, c.MergeFields()...)
+	if err != nil {
+		t.Fatalf("EncodeVars: %v", err)
+	}
+	if vars["id"] != "42" {
+		t.Fatalf("EncodeVars: got %q, want \"42\"", vars["id"])
+	}
+	var decoded user
+	if err := codex.DecodeVars(&decoded, vars, c.MergeFields()...); err != nil {
+		t.Fatalf("DecodeVars: %v", err)
+	}
+	if decoded.ID != 42 {
+		t.Errorf("round trip: want ID=42, got %d", decoded.ID)
+	}
+	if _, err := c.BuildKey(map[string]string{"id": "not-a-number"}); err == nil {
+		t.Fatal("BuildKey: expected error for non-numeric id")
+	}
+}

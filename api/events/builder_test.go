@@ -1559,6 +1559,49 @@ func TestNewTopicParam_RegistersSpecAndMergeField(t *testing.T) {
 	}
 }
 
+type intIDEvent struct {
+	ID   int
+	Name string
+}
+
+// TestNewTopicParam_TypedIntValue_DecodeMergedRoundTrip mirrors
+// rest.TestNewPathParam_TypedIntValue_DecodeMergedRoundTrip — verifies
+// events.NewTopicParam merges into a non-string field (int) now that
+// codex.NewParam is generic over V, not hardcoded to Codec[string].
+func TestNewTopicParam_TypedIntValue_DecodeMergedRoundTrip(t *testing.T) {
+	b := events.NewBuilder(testInfo)
+	intIDEventCodec := codex.Struct[intIDEvent](
+		codex.RequiredField("id", codex.Int(),
+			func(e intIDEvent) int { return e.ID },
+			func(e *intIDEvent, v int) { e.ID = v }),
+		codex.RequiredField("name", codex.String(),
+			func(e intIDEvent) string { return e.Name },
+			func(e *intIDEvent, v string) { e.Name = v }),
+	)
+	h, err := events.NewChannel[intIDEvent]("users/{id}", intIDEventCodec,
+		events.NewTopicParam("id", codex.IntString(),
+			func(e intIDEvent) int { return e.ID },
+			func(e *intIDEvent, v int) { e.ID = v }),
+	).Register(b)
+	if err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+	msg, err := h.DecodeMerged([]byte(`{"id":0,"name":"Alice"}`), map[string]string{"id": "7"})
+	if err != nil {
+		t.Fatalf("DecodeMerged: %v", err)
+	}
+	if msg.ID != 7 {
+		t.Fatalf("msg.ID = %d, want 7", msg.ID)
+	}
+	vars, err := codex.EncodeVars(intIDEvent{ID: 7}, h.MergeFields()...)
+	if err != nil {
+		t.Fatalf("EncodeVars: %v", err)
+	}
+	if vars["id"] != "7" {
+		t.Fatalf("EncodeVars: got %q, want \"7\"", vars["id"])
+	}
+}
+
 // nestedUserEvent demonstrates the Round 4 mandate: nested struct
 // composition also works for events, zero framework changes needed.
 type nestedUserEvent struct {

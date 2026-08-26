@@ -28,19 +28,22 @@ import (
 	"fmt"
 	"os"
 
+	"github.com/google/uuid"
+
 	"github.com/DaniDeer/go-codex/api/events"
 	"github.com/DaniDeer/go-codex/codex"
 	"github.com/DaniDeer/go-codex/format"
-	"github.com/DaniDeer/go-codex/validate"
 )
 
 // ── Domain types (nested composition) ──────────────────────────────────────
 
 // SensorMeta holds the topic-derived field — populated purely via the
 // merge field from the concrete topic, never part of the payload wire
-// bytes.
+// bytes. SensorID is a REAL uuid.UUID (via codex.TextCodec[uuid.UUID](),
+// not codex.String().Refine(validate.UUID)) — no manual uuid.Parse needed
+// on the subscriber side.
 type SensorMeta struct {
-	SensorID string
+	SensorID uuid.UUID
 }
 
 // SensorReading is the NESTED payload: Meta.SensorID comes from the topic,
@@ -87,9 +90,9 @@ var gobFormat = format.NewTyped[SensorReading](
 // sensorChannel is the shared contract — declares the topic template with
 // a merge-capable topic param targeting the NESTED Meta.SensorID field.
 var sensorChannel = events.NewChannel[SensorReading]("sensors/{sensorID}/readings", readingCodec,
-	events.NewTopicParam("sensorID", codex.String().Refine(validate.UUID),
-		func(r SensorReading) string { return r.Meta.SensorID },
-		func(r *SensorReading, v string) { r.Meta.SensorID = v },
+	events.NewTopicParam("sensorID", codex.TextCodec[uuid.UUID](),
+		func(r SensorReading) uuid.UUID { return r.Meta.SensorID },
+		func(r *SensorReading, v uuid.UUID) { r.Meta.SensorID = v },
 	).WithDescription("Sensor ID (UUID) — merged from the topic, never the payload"),
 )
 
@@ -106,7 +109,7 @@ func main() {
 	fmt.Println("=== Publisher: one struct in, Gob body + topic derived automatically ===")
 
 	reading := SensorReading{
-		Meta:  SensorMeta{SensorID: "f47ac10b-58cc-4372-a567-0e02b2c3d479"},
+		Meta:  SensorMeta{SensorID: uuid.MustParse("f47ac10b-58cc-4372-a567-0e02b2c3d479")},
 		Value: 22.5,
 	}
 

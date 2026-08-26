@@ -55,6 +55,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/google/uuid"
+
 	nethttp "github.com/DaniDeer/go-codex/adapters/nethttp"
 	"github.com/DaniDeer/go-codex/api/rest"
 	"github.com/DaniDeer/go-codex/codex"
@@ -224,9 +226,12 @@ var userCodec = codex.Struct[User](
 
 // GetUserReq carries the {id} path variable — merged in automatically by
 // rest.NewPathParam + nethttp.Handler's RouteHandle.DecodeMerged wiring
-// (no body: this route is a GET with no request payload).
+// (no body: this route is a GET with no request payload). ID is a REAL
+// uuid.UUID, not a string — codex.TextCodec[uuid.UUID]() parses/formats
+// it directly at the path-var boundary, so the handler never calls
+// uuid.Parse itself.
 type GetUserReq struct {
-	ID string
+	ID uuid.UUID
 }
 
 // getUserReqCodec has no declared fields — GetUserReq.ID is populated
@@ -400,7 +405,7 @@ func makeCreateUserHandler(store *UserStore) func(context.Context, CreateUserReq
 // manual r.PathValue("id") extraction needed here.
 func makeGetUserHandler(store *UserStore) func(context.Context, GetUserReq) (User, error) {
 	return func(_ context.Context, req GetUserReq) (User, error) {
-		record, ok := store.Get(req.ID)
+		record, ok := store.Get(req.ID.String())
 		if !ok {
 			return User{}, fmt.Errorf("user %q not found", req.ID)
 		}
@@ -572,10 +577,13 @@ func main() {
 		// PathParam) AND a merge field — nethttp.Handler merges {id} into
 		// GetUserReq.ID automatically via RouteHandle.DecodeMerged, so
 		// makeGetUserHandler never needs to call r.PathValue("id") itself.
+		// codex.TextCodec[uuid.UUID]() merges the path segment directly
+		// into a uuid.UUID field instead of a validated-but-still-string
+		// codex.String().Refine(validate.UUID).
 		rest.NewPathParam("id",
-			codex.String().Refine(validate.UUID).WithDescription("User UUID."),
-			func(r GetUserReq) string { return r.ID },
-			func(r *GetUserReq, v string) { r.ID = v },
+			codex.TextCodec[uuid.UUID]().WithDescription("User UUID."),
+			func(r GetUserReq) uuid.UUID { return r.ID },
+			func(r *GetUserReq, v uuid.UUID) { r.ID = v },
 		).WithDescription("User UUID"),
 	).Register(b)
 	if err != nil {

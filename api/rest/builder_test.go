@@ -1913,6 +1913,50 @@ func TestNewPathParam_RegistersSpecAndMergeField(t *testing.T) {
 	}
 }
 
+type getUserByIntIDReq struct {
+	ID int
+}
+
+// TestNewPathParam_TypedIntValue_DecodeMergedRoundTrip verifies a path
+// param can merge into a NON-string field (int, via codex.IntString())
+// instead of the plain string get/set every other test here uses — the
+// generalization that made codex.NewParam/rest.NewPathParam generic over
+// V (not hardcoded to Codec[string]).
+func TestNewPathParam_TypedIntValue_DecodeMergedRoundTrip(t *testing.T) {
+	b := rest.NewBuilder(testInfo)
+	h, err := rest.NewRoute[getUserByIntIDReq, userResp]("GET", "/users/{id}",
+		codex.Struct[getUserByIntIDReq](), getUserRespCodec,
+		rest.NewPathParam("id", codex.IntString(),
+			func(r getUserByIntIDReq) int { return r.ID },
+			func(r *getUserByIntIDReq, v int) { r.ID = v }),
+	).Register(b)
+	if err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+	if len(h.Descriptor.PathParams) != 1 || h.Descriptor.PathParams[0].Name != "id" {
+		t.Fatalf("Descriptor.PathParams: unexpected %+v", h.Descriptor.PathParams)
+	}
+	req, err := h.DecodeMerged(nil, map[string]string{"id": "42"}, nil, nil, nil)
+	if err != nil {
+		t.Fatalf("DecodeMerged: %v", err)
+	}
+	if req.ID != 42 {
+		t.Fatalf("req.ID = %d, want 42", req.ID)
+	}
+	// Encode direction: client-side EncodeVars via PathMergeFields.
+	vars, err := codex.EncodeVars(getUserByIntIDReq{ID: 42}, h.PathMergeFields()...)
+	if err != nil {
+		t.Fatalf("EncodeVars: %v", err)
+	}
+	if vars["id"] != "42" {
+		t.Fatalf("EncodeVars: got %q, want \"42\"", vars["id"])
+	}
+	// Invalid (non-numeric) path segment must fail spec-level validation.
+	if err := h.ValidatePathParams(map[string]string{"id": "not-a-number"}); err == nil {
+		t.Fatal("ValidatePathParams: expected error for non-numeric id")
+	}
+}
+
 // G4-1: rest.NewRequiredQueryParam registers a Required:true spec Param and a
 // merge field — the merge-field-constructor counterpart to
 // NewOptionalQueryParam's coverage (which was already exercised elsewhere).
@@ -2332,6 +2376,42 @@ func TestDecodeMergedResponse_HappyPath(t *testing.T) {
 	}
 	if resp.ID != "u1" || resp.Name != "Alice" || resp.RequestID != "req-123" || resp.Session != "sess-abc" {
 		t.Errorf("unexpected merged resp: %+v", resp)
+	}
+}
+
+type userRespWithIntSeq struct {
+	ID  string
+	Seq int // response header
+}
+
+var userRespWithIntSeqBodyCodec = codex.Struct[userRespWithIntSeq](
+	codex.RequiredField("id", codex.String(),
+		func(u userRespWithIntSeq) string { return u.ID },
+		func(u *userRespWithIntSeq, v string) { u.ID = v },
+	),
+)
+
+// TestNewRequiredResponseHeaderParam_TypedIntValue_DecodeMergedResponseRoundTrip
+// mirrors the request-side typed-param tests — response header/cookie
+// merge-field constructors are ALSO generic over V (int here via
+// codex.IntString()), not hardcoded to Codec[string].
+func TestNewRequiredResponseHeaderParam_TypedIntValue_DecodeMergedResponseRoundTrip(t *testing.T) {
+	b := rest.NewBuilder(testInfo)
+	h, err := rest.NewRoute[createReq, userRespWithIntSeq]("POST", "/users", createReqCodec, userRespWithIntSeqBodyCodec,
+		rest.NewRequiredResponseHeaderParam("X-Seq", codex.IntString(),
+			func(u userRespWithIntSeq) int { return u.Seq },
+			func(u *userRespWithIntSeq, v int) { u.Seq = v }),
+	).Register(b)
+	if err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+	body := []byte(`{"id":"u1"}`)
+	resp, err := h.DecodeMergedResponse(body, map[string]string{"X-Seq": "42"}, nil)
+	if err != nil {
+		t.Fatalf("DecodeMergedResponse: %v", err)
+	}
+	if resp.Seq != 42 {
+		t.Fatalf("resp.Seq = %d, want 42", resp.Seq)
 	}
 }
 

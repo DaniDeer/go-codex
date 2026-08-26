@@ -1,6 +1,36 @@
-# go-codex Review History (R1–R116)
+# go-codex Review History (R1–R117)
 
 Do not re-report any of these findings. They have been implemented and tested.
+
+---
+
+## Round 117 (Typed path/topic/query/header/cookie/key vars — `TextCodec` swallowed error, response-param asymmetry)
+
+Reviewed the typed (non-string) var-merge feature added since Round 116: `codex.StringCodec`/
+`codex.TextCodec`/`codex.IntString`/`codex.Int64String`/`codex.UintString`/`codex.BoolString`
+(`codex/stringcodec.go`, new), `codex.NewParam`/`codex.StringValidatorFrom` generalized to `[T, V]`,
+and the mirrored generalization across `rest`/`events`/`reqreply`/`ports` `New*Param` constructors,
+plus `examples/typed-params` (new) and three retrofitted examples
+(`adapters-chi`/`adapters-nethttp`/`events-nested-binary`) now using `codex.TextCodec[uuid.UUID]()`.
+
+- **G1 — `TextCodec`'s swallowed `MarshalText` error**: `codex.StringCodec`'s `format` callback had
+  no error return (unlike every other `Codec[T].Encode` in the library), so `TextCodec` had to
+  silently fall back to `fmt.Sprint(v)` when a type's `MarshalText` failed — an Encode that reports
+  success with a corrupted string and no error signal. Changed `StringCodec`'s `format` param to
+  `func(V) (string, error)`; `TextCodec` now propagates the real `MarshalText` error; updated
+  `IntString`/`Int64String`/`UintString`/`BoolString` and `examples/typed-params`'s `slugCodec` to the
+  new signature; added `TestTextCodec_EncodeMarshalTextErrorPropagates`.
+- **G2 — Response-side param constructors not generalized**: this round's typed-param work
+  generalized every REQUEST-side var constructor but missed `rest.NewRequiredResponseHeaderParam`/
+  `NewOptionalResponseHeaderParam`/`NewRequiredResponseCookieParam`/`NewOptionalResponseCookieParam`,
+  leaving them hardcoded to `Codec[string]` — an asymmetry with the request direction on the same
+  boundary. Generalized all four to `[Resp, V]` using `codex.StringValidatorFrom`, mirroring the
+  request-side fix; added a typed round-trip test
+  (`TestNewRequiredResponseHeaderParam_TypedIntValue_DecodeMergedResponseRoundTrip`).
+- **G3 — `codex.StringValidatorFrom` had no direct test**: the newly-exported helper was only
+  exercised indirectly through `NewParam`/`NewPathParam`/etc. round-trip tests. Added 5 direct tests
+  covering the happy path, constraint failure, wrong-type input, encode identity, and schema
+  passthrough.
 
 ---
 

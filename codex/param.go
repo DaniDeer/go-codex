@@ -61,15 +61,61 @@ type MergedParam[T any] struct {
 // (exactly like plain [Param]) AND merge-capable into T via
 // [DecodeVars]/[EncodeVars] — one declaration instead of a Param plus a
 // separate [RequiredField].
-func NewParam[T any](
+//
+// V need not be string: [DecodeVars]/[EncodeVars] box every path/topic/
+// query/header/cookie/key variable as a plain Go string on the wire, so
+// ANY Codec[V] that decodes-from and encodes-to a string works here — use
+// [StringCodec]/[TextCodec]/[IntString]/etc. to merge a path segment
+// straight into an int, a UUID, or any other typed field instead of a
+// bare string:
+//
+//	rest.NewPathParam("id", codex.IntString(),
+//	    func(r GetUserReq) int { return r.ID },
+//	    func(r *GetUserReq, v int) { r.ID = v },
+//	)
+//
+// codec's constraints still apply at the STRING level for spec/
+// pre-flight validation ([ValidateParams]/[BuildFromParams]) via
+// [StringValidatorFrom] — the derived Param.Codec parses+discards the
+// typed value, so an invalid path segment is rejected before Decode ever
+// runs.
+func NewParam[T, V any](
 	name string,
-	codec Codec[string],
-	get func(T) string,
-	set func(*T, string),
+	codec Codec[V],
+	get func(T) V,
+	set func(*T, V),
 ) MergedParam[T] {
+	strCodec := StringValidatorFrom(codec)
 	return MergedParam[T]{
-		Param: Param{Name: name, Codec: &codec},
+		Param: Param{Name: name, Codec: &strCodec},
 		Field: RequiredField(name, codec, get, set),
+	}
+}
+
+// StringValidatorFrom derives a Codec[string] from a typed Codec[V] — used
+// by [NewParam] (and callers that hand-build a [Param]/[MergedParam]
+// without going through NewParam, e.g. rest/events/reqreply's query/
+// header/cookie param constructors and ports.NewCacheKeyParam) to give the
+// STRING-only spec/pre-flight validation path ([ValidateParams],
+// [BuildFromParams]) the same constraints as the typed merge Field,
+// without needing [ValidateParams]/[BuildFromParams] themselves to know
+// about V. Decode parses the raw string through c to apply V's
+// constraints, then discards the typed result and returns the original
+// string unchanged (Validate only needs pass/fail, not the value).
+func StringValidatorFrom[V any](c Codec[V]) Codec[string] {
+	return Codec[string]{
+		Encode: func(s string) (any, error) { return s, nil },
+		Decode: func(v any) (string, error) {
+			s, ok := v.(string)
+			if !ok {
+				return "", TypeMismatchError{Expected: "string", Got: fmt.Sprintf("%T", v)}
+			}
+			if _, err := c.Decode(v); err != nil {
+				return "", err
+			}
+			return s, nil
+		},
+		Schema: c.Schema,
 	}
 }
 

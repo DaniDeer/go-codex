@@ -94,11 +94,14 @@ type MergedFilePathParam[T any] struct {
 //	        func(r ReadingMeta) string { return r.SensorID },
 //	        func(r *ReadingMeta, v string) { r.SensorID = v }),
 //	)
-func NewFilePathParam[T any](
+//
+// V need not be string — see [codex.NewParam] for merging a path segment
+// directly into an int/UUID/etc.
+func NewFilePathParam[T, V any](
 	name string,
-	codec codex.Codec[string],
-	get func(T) string,
-	set func(*T, string),
+	codec codex.Codec[V],
+	get func(T) V,
+	set func(*T, V),
 ) MergedFilePathParam[T] {
 	return MergedFilePathParam[T]{MergedParam: codex.NewParam(name, codec, get, set)}
 }

@@ -39,6 +39,7 @@ import (
 	"time"
 
 	gochi "github.com/go-chi/chi/v5"
+	"github.com/google/uuid"
 
 	chiadapter "github.com/DaniDeer/go-codex/adapters/chi"
 	"github.com/DaniDeer/go-codex/api/rest"
@@ -194,9 +195,12 @@ var userCodec = codex.Struct[User](
 
 // GetUserReq carries the {id} path variable — merged in automatically by
 // rest.NewPathParam + chi's Handler's RouteHandle.DecodeMerged wiring (no
-// body: this route is a GET with no request payload).
+// body: this route is a GET with no request payload). ID is a REAL
+// uuid.UUID, not a string — codex.TextCodec[uuid.UUID]() parses/formats
+// it directly at the path-var boundary, so the handler never calls
+// uuid.Parse itself.
 type GetUserReq struct {
-	ID string
+	ID uuid.UUID
 }
 
 // getUserReqCodec has no declared fields — GetUserReq.ID is populated
@@ -343,7 +347,7 @@ func makeCreateUserHandler(store *UserStore) func(context.Context, CreateUserReq
 // chi.URLParam extraction is needed here.
 func makeGetUserHandler(store *UserStore) func(context.Context, GetUserReq) (User, error) {
 	return func(_ context.Context, req GetUserReq) (User, error) {
-		record, ok := store.Get(req.ID)
+		record, ok := store.Get(req.ID.String())
 		if !ok {
 			return User{}, fmt.Errorf("user %q not found", req.ID)
 		}
@@ -470,11 +474,13 @@ func main() {
 		},
 		// NewPathParam declares BOTH the spec/validation Param AND a merge
 		// field — chi's Handler merges {id} into GetUserReq.ID
-		// automatically via RouteHandle.DecodeMerged.
+		// automatically via RouteHandle.DecodeMerged. codex.TextCodec[uuid.UUID]()
+		// merges the path segment directly into a uuid.UUID field instead
+		// of a validated-but-still-string codex.String().Refine(validate.UUID).
 		rest.NewPathParam("id",
-			codex.String().Refine(validate.UUID),
-			func(r GetUserReq) string { return r.ID },
-			func(r *GetUserReq, v string) { r.ID = v },
+			codex.TextCodec[uuid.UUID](),
+			func(r GetUserReq) uuid.UUID { return r.ID },
+			func(r *GetUserReq, v uuid.UUID) { r.ID = v },
 		).WithDescription("User UUID"),
 	).Register(b)
 	if err != nil {

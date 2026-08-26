@@ -291,11 +291,14 @@ type MergedTopicParam[T any] struct {
 //	        func(r *SensorReading, v string) { r.SensorID = v },
 //	    ),
 //	)
-func NewTopicParam[T any](
+//
+// V need not be string — see [codex.NewParam] for merging a topic segment
+// directly into an int/UUID/etc.
+func NewTopicParam[T, V any](
 	name string,
-	codec codex.Codec[string],
-	get func(T) string,
-	set func(*T, string),
+	codec codex.Codec[V],
+	get func(T) V,
+	set func(*T, V),
 ) MergedTopicParam[T] {
 	return MergedTopicParam[T]{MergedParam: codex.NewParam(name, codec, get, set)}
 }

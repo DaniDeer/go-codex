@@ -76,14 +76,18 @@ type MergedCacheKeyParam[T any] struct {
 //	    ports.NewCacheKeyParam("id", codex.String().Refine(validate.UUID),
 //	        func(u User) string { return u.ID },
 //	        func(u *User, v string) { u.ID = v }))
-func NewCacheKeyParam[T any](
+//
+// V need not be string — see [codex.NewParam] for merging a cache key
+// segment directly into an int/UUID/etc.
+func NewCacheKeyParam[T, V any](
 	name string,
-	codec codex.Codec[string],
-	get func(T) string,
-	set func(*T, string),
+	codec codex.Codec[V],
+	get func(T) V,
+	set func(*T, V),
 ) MergedCacheKeyParam[T] {
+	strCodec := codex.StringValidatorFrom(codec)
 	return MergedCacheKeyParam[T]{
-		CacheKeyParam: CacheKeyParam{Name: name, Codec: &codec},
+		CacheKeyParam: CacheKeyParam{Name: name, Codec: &strCodec},
 		field:         codex.RequiredField(name, codec, get, set),
 	}
 }

@@ -94,11 +94,15 @@ type MergedPathParam[T any] struct {
 //	        func(r *GetUserReq, v string) { r.ID = v },
 //	    ),
 //	)
-func NewPathParam[T any](
+//
+// V need not be string — see [codex.NewParam] for merging a path segment
+// directly into an int/UUID/etc. via [codex.IntString]/[codex.TextCodec]/
+// [codex.StringCodec].
+func NewPathParam[T, V any](
 	name string,
-	codec codex.Codec[string],
-	get func(T) string,
-	set func(*T, string),
+	codec codex.Codec[V],
+	get func(T) V,
+	set func(*T, V),
 ) MergedPathParam[T] {
 	return MergedPathParam[T]{MergedParam: codex.NewParam(name, codec, get, set)}
 }
@@ -1310,14 +1314,18 @@ type MergedQueryParam[T any] struct {
 // [RouteHandle.DecodeMerged]. See [NewPathParam] for the full rationale;
 // this is the query-parameter equivalent, following [codex.RequiredField]'s
 // naming convention.
-func NewRequiredQueryParam[T any](
+//
+// V need not be string — see [codex.NewParam] for merging a query value
+// directly into an int/UUID/etc.
+func NewRequiredQueryParam[T, V any](
 	name string,
-	codec codex.Codec[string],
-	get func(T) string,
-	set func(*T, string),
+	codec codex.Codec[V],
+	get func(T) V,
+	set func(*T, V),
 ) MergedQueryParam[T] {
+	strCodec := codex.StringValidatorFrom(codec)
 	return MergedQueryParam[T]{
-		QueryParam: QueryParam{Name: name, Codec: &codec, Required: true},
+		QueryParam: QueryParam{Name: name, Codec: &strCodec, Required: true},
 		field:      codex.RequiredField(name, codec, get, set),
 	}
 }
@@ -1326,14 +1334,18 @@ func NewRequiredQueryParam[T any](
 // validated against codec (when present) AND automatically merged into Req
 // by [RouteHandle.DecodeMerged] (when present — absent values leave the
 // field untouched, following [codex.OptionalField]'s semantics).
-func NewOptionalQueryParam[T any](
+//
+// V need not be string — see [codex.NewParam] for merging a query value
+// directly into an int/UUID/etc.
+func NewOptionalQueryParam[T, V any](
 	name string,
-	codec codex.Codec[string],
-	get func(T) string,
-	set func(*T, string),
+	codec codex.Codec[V],
+	get func(T) V,
+	set func(*T, V),
 ) MergedQueryParam[T] {
+	strCodec := codex.StringValidatorFrom(codec)
 	return MergedQueryParam[T]{
-		QueryParam: QueryParam{Name: name, Codec: &codec, Required: false},
+		QueryParam: QueryParam{Name: name, Codec: &strCodec, Required: false},
 		field:      codex.OptionalField(name, codec, get, set),
 	}
 }
@@ -1401,14 +1413,18 @@ type MergedCookieParam[T any] struct {
 // NewRequiredCookieParam declares a REQUIRED cookie parameter that is BOTH
 // validated against codec AND automatically merged into Req by
 // [RouteHandle.DecodeMerged]. See [NewPathParam] for the full rationale.
-func NewRequiredCookieParam[T any](
+//
+// V need not be string — see [codex.NewParam] for merging a cookie value
+// directly into an int/UUID/etc.
+func NewRequiredCookieParam[T, V any](
 	name string,
-	codec codex.Codec[string],
-	get func(T) string,
-	set func(*T, string),
+	codec codex.Codec[V],
+	get func(T) V,
+	set func(*T, V),
 ) MergedCookieParam[T] {
+	strCodec := codex.StringValidatorFrom(codec)
 	return MergedCookieParam[T]{
-		CookieParam: CookieParam{Name: name, Codec: &codec, Required: true},
+		CookieParam: CookieParam{Name: name, Codec: &strCodec, Required: true},
 		field:       codex.RequiredField(name, codec, get, set),
 	}
 }
@@ -1416,14 +1432,18 @@ func NewRequiredCookieParam[T any](
 // NewOptionalCookieParam declares an OPTIONAL cookie parameter that is BOTH
 // validated against codec (when present) AND automatically merged into Req
 // (when present) by [RouteHandle.DecodeMerged].
-func NewOptionalCookieParam[T any](
+//
+// V need not be string — see [codex.NewParam] for merging a cookie value
+// directly into an int/UUID/etc.
+func NewOptionalCookieParam[T, V any](
 	name string,
-	codec codex.Codec[string],
-	get func(T) string,
-	set func(*T, string),
+	codec codex.Codec[V],
+	get func(T) V,
+	set func(*T, V),
 ) MergedCookieParam[T] {
+	strCodec := codex.StringValidatorFrom(codec)
 	return MergedCookieParam[T]{
-		CookieParam: CookieParam{Name: name, Codec: &codec, Required: false},
+		CookieParam: CookieParam{Name: name, Codec: &strCodec, Required: false},
 		field:       codex.OptionalField(name, codec, get, set),
 	}
 }
@@ -1495,14 +1515,18 @@ type MergedHeaderParam[T any] struct {
 // NewRequiredHeaderParam declares a REQUIRED header parameter that is BOTH
 // validated against codec AND automatically merged into Req by
 // [RouteHandle.DecodeMerged]. See [NewPathParam] for the full rationale.
-func NewRequiredHeaderParam[T any](
+//
+// V need not be string — see [codex.NewParam] for merging a header value
+// directly into an int/UUID/etc.
+func NewRequiredHeaderParam[T, V any](
 	name string,
-	codec codex.Codec[string],
-	get func(T) string,
-	set func(*T, string),
+	codec codex.Codec[V],
+	get func(T) V,
+	set func(*T, V),
 ) MergedHeaderParam[T] {
+	strCodec := codex.StringValidatorFrom(codec)
 	return MergedHeaderParam[T]{
-		HeaderParam: HeaderParam{Name: name, Codec: &codec, Required: true},
+		HeaderParam: HeaderParam{Name: name, Codec: &strCodec, Required: true},
 		field:       codex.RequiredField(name, codec, get, set),
 	}
 }
@@ -1510,14 +1534,18 @@ func NewRequiredHeaderParam[T any](
 // NewOptionalHeaderParam declares an OPTIONAL header parameter that is BOTH
 // validated against codec (when present) AND automatically merged into Req
 // (when present) by [RouteHandle.DecodeMerged].
-func NewOptionalHeaderParam[T any](
+//
+// V need not be string — see [codex.NewParam] for merging a header value
+// directly into an int/UUID/etc.
+func NewOptionalHeaderParam[T, V any](
 	name string,
-	codec codex.Codec[string],
-	get func(T) string,
-	set func(*T, string),
+	codec codex.Codec[V],
+	get func(T) V,
+	set func(*T, V),
 ) MergedHeaderParam[T] {
+	strCodec := codex.StringValidatorFrom(codec)
 	return MergedHeaderParam[T]{
-		HeaderParam: HeaderParam{Name: name, Codec: &codec, Required: false},
+		HeaderParam: HeaderParam{Name: name, Codec: &strCodec, Required: false},
 		field:       codex.OptionalField(name, codec, get, set),
 	}
 }
@@ -1739,14 +1767,18 @@ type MergedResponseHeaderParam[Resp any] struct {
 // client (via [RouteHandle.DecodeMergedResponse], using set). "Required"
 // governs the DECODE direction only — the client treats a missing header as
 // a merge failure; the server always encodes it (get is always called).
-func NewRequiredResponseHeaderParam[Resp any](
+//
+// V need not be string — see [codex.NewParam] for merging a response
+// header value directly into an int/UUID/etc.
+func NewRequiredResponseHeaderParam[Resp, V any](
 	name string,
-	codec codex.Codec[string],
-	get func(Resp) string,
-	set func(*Resp, string),
+	codec codex.Codec[V],
+	get func(Resp) V,
+	set func(*Resp, V),
 ) MergedResponseHeaderParam[Resp] {
+	strCodec := codex.StringValidatorFrom(codec)
 	return MergedResponseHeaderParam[Resp]{
-		ResponseHeaderParam: ResponseHeaderParam{Name: name, Codec: &codec, Required: true},
+		ResponseHeaderParam: ResponseHeaderParam{Name: name, Codec: &strCodec, Required: true},
 		field:               codex.RequiredField(name, codec, get, set),
 	}
 }
@@ -1754,14 +1786,18 @@ func NewRequiredResponseHeaderParam[Resp any](
 // NewOptionalResponseHeaderParam declares an OPTIONAL response header that is
 // BOTH validated against codec (when present) AND automatically merged
 // (when present), for both the server encode and client decode directions.
-func NewOptionalResponseHeaderParam[Resp any](
+//
+// V need not be string — see [codex.NewParam] for merging a response
+// header value directly into an int/UUID/etc.
+func NewOptionalResponseHeaderParam[Resp, V any](
 	name string,
-	codec codex.Codec[string],
-	get func(Resp) string,
-	set func(*Resp, string),
+	codec codex.Codec[V],
+	get func(Resp) V,
+	set func(*Resp, V),
 ) MergedResponseHeaderParam[Resp] {
+	strCodec := codex.StringValidatorFrom(codec)
 	return MergedResponseHeaderParam[Resp]{
-		ResponseHeaderParam: ResponseHeaderParam{Name: name, Codec: &codec, Required: false},
+		ResponseHeaderParam: ResponseHeaderParam{Name: name, Codec: &strCodec, Required: false},
 		field:               codex.OptionalField(name, codec, get, set),
 	}
 }
@@ -1794,14 +1830,18 @@ type MergedResponseCookieParam[Resp any] struct {
 // [PendingCookie.Opts] (no Path/Secure/SameSite override) — use
 // [ResponseHeadersFromContext]'s cookie helper directly for custom cookie
 // attributes.
-func NewRequiredResponseCookieParam[Resp any](
+//
+// V need not be string — see [codex.NewParam] for merging a response
+// cookie value directly into an int/UUID/etc.
+func NewRequiredResponseCookieParam[Resp, V any](
 	name string,
-	codec codex.Codec[string],
-	get func(Resp) string,
-	set func(*Resp, string),
+	codec codex.Codec[V],
+	get func(Resp) V,
+	set func(*Resp, V),
 ) MergedResponseCookieParam[Resp] {
+	strCodec := codex.StringValidatorFrom(codec)
 	return MergedResponseCookieParam[Resp]{
-		ResponseCookieParam: ResponseCookieParam{Name: name, Codec: &codec, Required: true},
+		ResponseCookieParam: ResponseCookieParam{Name: name, Codec: &strCodec, Required: true},
 		field:               codex.RequiredField(name, codec, get, set),
 	}
 }
@@ -1809,14 +1849,18 @@ func NewRequiredResponseCookieParam[Resp any](
 // NewOptionalResponseCookieParam declares an OPTIONAL response cookie that is
 // BOTH validated against codec (when present) AND automatically merged
 // (when present), for both the server encode and client decode directions.
-func NewOptionalResponseCookieParam[Resp any](
+//
+// V need not be string — see [codex.NewParam] for merging a response
+// cookie value directly into an int/UUID/etc.
+func NewOptionalResponseCookieParam[Resp, V any](
 	name string,
-	codec codex.Codec[string],
-	get func(Resp) string,
-	set func(*Resp, string),
+	codec codex.Codec[V],
+	get func(Resp) V,
+	set func(*Resp, V),
 ) MergedResponseCookieParam[Resp] {
+	strCodec := codex.StringValidatorFrom(codec)
 	return MergedResponseCookieParam[Resp]{
-		ResponseCookieParam: ResponseCookieParam{Name: name, Codec: &codec, Required: false},
+		ResponseCookieParam: ResponseCookieParam{Name: name, Codec: &strCodec, Required: false},
 		field:               codex.OptionalField(name, codec, get, set),
 	}
 }
