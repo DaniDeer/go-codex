@@ -109,6 +109,47 @@ func TestMaybeMap_SkipsFnWhenNothing(t *testing.T) {
 	}
 }
 
+func TestMaybeFlatMap_AppliesFnWhenSet(t *testing.T) {
+	m := codex.Just(3)
+	r := codex.MaybeFlatMap(m, func(v int) codex.Maybe[string] {
+		return codex.Just(fmt.Sprintf("n=%d", v))
+	})
+	if !r.IsSet() {
+		t.Error("MaybeFlatMap(Just(v), fn) should be set")
+	}
+	if r.Get() != "n=3" {
+		t.Errorf("Get() = %q, want n=3", r.Get())
+	}
+}
+
+func TestMaybeFlatMap_SkipsFnWhenNothing(t *testing.T) {
+	called := false
+	m := codex.Nothing[int]()
+	r := codex.MaybeFlatMap(m, func(v int) codex.Maybe[string] {
+		called = true
+		return codex.Just("unreachable")
+	})
+	if r.IsSet() {
+		t.Error("MaybeFlatMap(Nothing, fn) should stay unset")
+	}
+	if called {
+		t.Error("fn should never be called for Nothing")
+	}
+}
+
+func TestMaybeFlatMap_FnCanProduceNothing(t *testing.T) {
+	// The key differentiator vs. MaybeMap: fn itself can turn a Just into
+	// a Nothing (e.g. a possibly-failing parse), which MaybeMap's plain
+	// func(T) R signature cannot express.
+	m := codex.Just("not-a-number")
+	r := codex.MaybeFlatMap(m, func(s string) codex.Maybe[int] {
+		return codex.Nothing[int]() // simulate a failed parse
+	})
+	if r.IsSet() {
+		t.Error("MaybeFlatMap should propagate a Nothing produced by fn")
+	}
+}
+
 func TestOrElse_ReturnsValueWhenSet(t *testing.T) {
 	m := codex.Just("value")
 	if got := m.OrElse("fallback"); got != "value" {
@@ -268,6 +309,143 @@ func TestStruct_MixesMaybeAndOtherFieldKinds(t *testing.T) {
 	}
 	if _, ok := obj["mby"]; !ok {
 		t.Error("mby should be present (MaybeField, explicitly Set even though to zero value)")
+	}
+}
+
+func TestMaybeField_EncodeVarsIgnoresSparseRule(t *testing.T) {
+	// EncodeVars calls a field's plain encode() directly, NOT Struct's
+	// sparse-aware Encode loop -- confirms the omit rule is exclusive to
+	// Struct, per docs/concepts/codec.md's "Interaction with
+	// Template/DottedKeyCodec/DecodeVars/EncodeVars" paragraph in the
+	// Maybe[T] subsection (mirrors OmitEmptyField's identical caveat).
+	field := codex.MaybeField("nick", codex.String(),
+		func(d maybeDoc) codex.Maybe[string] { return d.Nick },
+		func(d *maybeDoc, v codex.Maybe[string]) { d.Nick = v })
+
+	vars, err := codex.EncodeVars(maybeDoc{}, field)
+	if err != nil {
+		t.Fatalf("EncodeVars: unexpected error: %v", err)
+	}
+	if _, ok := vars["nick"]; !ok {
+		t.Error(`vars["nick"] absent -- EncodeVars must still encode a Nothing Maybe as V's zero value (sparse rule is Struct-loop-exclusive)`)
+	}
+}
+
+// ── MaybeCodec ───────────────────────────────────────────────────────────
+
+func TestMaybeCodec_DecodeEncodeRoundTrip(t *testing.T) {
+	c := codex.MaybeCodec(codex.String())
+
+	just, err := c.Decode("hi")
+	if err != nil {
+		t.Fatalf("Decode: unexpected error: %v", err)
+	}
+	if !just.IsSet() || just.Get() != "hi" {
+		t.Errorf("Decode(%q) = %+v, want Just(hi)", "hi", just)
+	}
+
+	raw, err := c.Encode(just)
+	if err != nil {
+		t.Fatalf("Encode: unexpected error: %v", err)
+	}
+	if raw != "hi" {
+		t.Errorf("Encode(Just(hi)) = %v, want hi", raw)
+	}
+
+	// Encode of Nothing renders inner's zero value -- NOT omitted, unlike
+	// MaybeField's sparse behavior (MaybeCodec alone has no omission).
+	nothingRaw, err := c.Encode(codex.Nothing[string]())
+	if err != nil {
+		t.Fatalf("Encode(Nothing): unexpected error: %v", err)
+	}
+	if nothingRaw != "" {
+		t.Errorf("Encode(Nothing) = %v, want empty string (inner's zero value)", nothingRaw)
+	}
+}
+
+func TestMaybeCodec_ComposesWithSliceOf(t *testing.T) {
+	c := codex.SliceOf(codex.MaybeCodec(codex.Int()))
+	decoded, err := c.Decode([]any{1, 2, 3})
+	if err != nil {
+		t.Fatalf("Decode: unexpected error: %v", err)
+	}
+	if len(decoded) != 3 || !decoded[0].IsSet() || decoded[0].Get() != 1 {
+		t.Errorf("Decode = %+v, want three Just values", decoded)
+	}
+}
+
+func TestMaybeCodec_ComposesWithRequiredField_NoOmission(t *testing.T) {
+	type doc struct {
+		Note codex.Maybe[string]
+	}
+	docCodec := codex.Struct[doc](
+		codex.RequiredField("note", codex.MaybeCodec(codex.String()),
+			func(d doc) codex.Maybe[string] { return d.Note },
+			func(d *doc, v codex.Maybe[string]) { d.Note = v }),
+	)
+
+	// Absent key -> RequiredField fails to decode (Maybe's Nothing does
+	// NOT make the FIELD itself optional -- that's MaybeField's job).
+	if _, err := docCodec.Decode(map[string]any{}); err == nil {
+		t.Error("Decode with absent key should fail (RequiredField, not MaybeField)")
+	}
+
+	d, err := docCodec.Decode(map[string]any{"note": "hi"})
+	if err != nil {
+		t.Fatalf("Decode: unexpected error: %v", err)
+	}
+	if !d.Note.IsSet() || d.Note.Get() != "hi" {
+		t.Errorf("Note = %+v, want Just(hi)", d.Note)
+	}
+
+	// Encode ALWAYS shows the key, even for a Nothing -- the key
+	// differentiator vs. MaybeField's omission behavior.
+	raw, err := docCodec.Encode(doc{})
+	if err != nil {
+		t.Fatalf("Encode: unexpected error: %v", err)
+	}
+	if _, present := raw.(map[string]any)["note"]; !present {
+		t.Error(`"note" should be PRESENT even for Nothing -- RequiredField+MaybeCodec never omits`)
+	}
+}
+
+func TestMaybeField_EquivalentToOmitEmptyFieldFuncPlusMaybeCodec(t *testing.T) {
+	type doc struct {
+		Nick codex.Maybe[string]
+	}
+	get := func(d doc) codex.Maybe[string] { return d.Nick }
+	set := func(d *doc, v codex.Maybe[string]) { d.Nick = v }
+
+	viaMaybeField := codex.Struct[doc](
+		codex.MaybeField("nick", codex.String(), get, set),
+	)
+	viaComposition := codex.Struct[doc](
+		codex.OmitEmptyFieldFunc("nick", codex.MaybeCodec(codex.String()), get, set,
+			func(m codex.Maybe[string]) bool { return !m.IsSet() }),
+	)
+
+	for _, tc := range []struct {
+		name string
+		d    doc
+	}{
+		{"never set", doc{}},
+		{"set to zero value", func() doc { var d doc; d.Nick.Set(""); return d }()},
+		{"set to a value", func() doc { var d doc; d.Nick.Set("bob"); return d }()},
+	} {
+		raw1, err1 := viaMaybeField.Encode(tc.d)
+		raw2, err2 := viaComposition.Encode(tc.d)
+		if (err1 == nil) != (err2 == nil) {
+			t.Errorf("%s: error mismatch: MaybeField=%v, composition=%v", tc.name, err1, err2)
+		}
+		obj1, obj2 := raw1.(map[string]any), raw2.(map[string]any)
+		_, present1 := obj1["nick"]
+		_, present2 := obj2["nick"]
+		if present1 != present2 {
+			t.Errorf("%s: presence mismatch: MaybeField=%v, composition=%v", tc.name, present1, present2)
+		}
+		if present1 && obj1["nick"] != obj2["nick"] {
+			t.Errorf("%s: value mismatch: MaybeField=%v, composition=%v", tc.name, obj1["nick"], obj2["nick"])
+		}
 	}
 }
 

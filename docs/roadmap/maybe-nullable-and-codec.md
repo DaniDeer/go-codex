@@ -1,14 +1,18 @@
-# `Maybe[Nullable[T]]` (Three-State Fields) & a Public `Codec[Maybe[T]]`
+# `Maybe[Nullable[T]]` (Three-State Fields)
 
 > **Status:** Idea only — not yet designed in detail, captured as a
 > reminder. No concrete driving use case yet.
 > [← Back to Roadmap](index.md)
-
-Two small, closely-related follow-ons to the now-SHIPPED `codex.Maybe[T]`
-(see `docs/concepts/codec.md`'s "`Maybe[T]`: definitive presence tracking"
-subsection and `.github/instructions/go-codex.instructions.md`'s matching
-section for the shipped design). Both surfaced naturally while designing
-`Maybe[T]` but weren't scoped into Phase 1.
+>
+> This doc originally tracked TWO follow-ons to the shipped
+> `codex.Maybe[T]`. **Idea 2 (a public `codex.Codec[Maybe[T]]`) has
+> SHIPPED** as `codex.MaybeCodec[T]` — see `docs/concepts/codec.md`'s
+> "`Maybe[T]`: definitive presence tracking" subsection and
+> `.github/instructions/go-codex.instructions.md`'s matching section for
+> the shipped design (including how `MaybeField` is now a documented,
+> test-proven special case of `OmitEmptyFieldFunc(name, MaybeCodec(codec),
+> get, set, isEmpty)`, and how `MaybeCodec` mirrors `Either2`'s existing
+> role exactly). Only Idea 1 below remains open.
 
 ## Idea 1: three-state fields via `Maybe[Nullable[T]]`
 
@@ -56,36 +60,3 @@ no special-casing anywhere in the pipeline.
   that would justify writing that example — currently speculative; a
   concrete driver would upgrade this from "document an existing
   composition" to "build a dedicated example/guide around it."
-
-## Idea 2: a public `codex.Codec[Maybe[T]]`
-
-`codex/maybe.go`'s internal `maybeFieldCodec[V]` (Decode wraps as
-`Just(v)`, Encode unwraps via `.Get()`) already does roughly 90% of this —
-it's UNEXPORTED today, used only inside `MaybeField`. Exporting it (as
-something like `codex.MaybeCodec[T](inner Codec[T]) Codec[Maybe[T]]` —
-naming TBD) would let `Maybe[T]` be used as an ORDINARY field's type via
-`RequiredField`/`OptionalField` too, not just via `MaybeField`.
-
-**Why this might matter:** a caller might want `Maybe[T]`'s ergonomics
-(`Get`/`IsSet`/`TryGet`/`MaybeMap`/`OrElse`/`Filter`) on a field WITHOUT
-`MaybeField`'s bundled-in omit-on-encode behavior — e.g. a `Maybe[T]` field
-that should ALWAYS be present on the wire (perhaps encoded as `null` when
-unset, via composing with `Nullable`), just so callers get the
-`IsSet`/`OrElse`/`Filter` ergonomics without opting into sparse encoding.
-
-**Not yet scoped:**
-
-- Exact function name and signature (`MaybeCodec`? Should it take an
-  option for how `Nothing` encodes — omitted entirely, `null`, or a
-  caller-supplied placeholder?).
-- Whether `RequiredField("x", MaybeCodec(inner), ...)` (which would ALWAYS
-  encode the key) makes sense semantically for a "presence-tracking" type
-  at all, or whether `Maybe[T]` genuinely only makes sense paired with
-  `MaybeField`'s sparse-encode behavior — needs a concrete use case to
-  validate either way, not just a compile-time possibility.
-
-**Deferred rationale:** small, low-risk, mostly-already-built addition —
-but no real caller has asked for it yet, and `MaybeField` already covers
-every use case `Maybe[T]`'s Phase 1 was scoped for. Revisit once one of
-the two "not yet scoped" questions above has a concrete answer from actual
-usage, not speculation.

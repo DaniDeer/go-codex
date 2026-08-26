@@ -71,6 +71,21 @@ func MaybeMap[T, R any](m Maybe[T], fn func(T) R) Maybe[R] {
 	return Just(fn(m.Get()))
 }
 
+// MaybeFlatMap applies fn to the contained value IF set, returning
+// whatever Maybe[R] fn itself produces — Nothing in, Nothing out; a Just
+// in can still produce Nothing out if fn itself does (the "chain a
+// possibly-failing transformation" case MaybeMap alone can't express,
+// since MaybeMap's fn always returns a plain R, never a Maybe[R]).
+// Haskell's >>=/Rust's and_then. A free function, not a method — same
+// constraint as MaybeMap (Go generic methods cannot introduce a new type
+// parameter R).
+func MaybeFlatMap[T, R any](m Maybe[T], fn func(T) Maybe[R]) Maybe[R] {
+	if !m.IsSet() {
+		return Maybe[R]{}
+	}
+	return fn(m.Get())
+}
+
 // OrElse returns the contained value if set, or fallback otherwise — the
 // safe-default-value idiom (Rust's unwrap_or, Haskell's fromMaybe).
 func (m Maybe[T]) OrElse(fallback T) T {
@@ -90,22 +105,36 @@ func (m Maybe[T]) Filter(pred func(T) bool) Maybe[T] {
 	return Maybe[T]{}
 }
 
-// maybeFieldCodec wraps inner so Decode produces Just(value) and Encode
-// unwraps via .Get() — Encode is only ever reached for a Just, since
-// sparseField.encodeSparse already skips codec.Encode entirely when
-// isEmpty (i.e. Nothing) is true. Deliberately UNEXPORTED for now — this
-// is 90% of a general-purpose public codex.Codec[Maybe[T]], intentionally
-// deferred (see docs/roadmap/maybe-nullable-and-codec.md).
-func maybeFieldCodec[V any](inner Codec[V]) Codec[Maybe[V]] {
-	return Codec[Maybe[V]]{
+// MaybeCodec derives a Codec[Maybe[T]] from inner — Decode wraps a
+// successful inner.Decode as Just(value); Encode unwraps via .Get()
+// (ALWAYS calling inner.Encode, even for a Nothing — Nothing's Get()
+// simply returns T's zero value, so it renders as inner's own zero-value
+// wire form, exactly like OptionalField's existing "always shown"
+// contract for any type). This is the SAME symmetric role [Either2]
+// already plays for [Either][A, B] — a plain codec derived from inner
+// codec(s), usable with ANY composer (RequiredField, OptionalField,
+// SliceOf, Map, or standalone), not just [MaybeField].
+//
+// Trade-off vs. [MaybeField]: MaybeCodec alone does NOT omit a Nothing's
+// key on Encode — use [MaybeField] instead when you specifically want
+// the omit-on-Nothing behavior. In fact, MaybeField(name, codec, get,
+// set) is EXACTLY EQUIVALENT to:
+//
+//	OmitEmptyFieldFunc(name, MaybeCodec(codec), get, set,
+//	    func(m Maybe[V]) bool { return !m.IsSet() })
+//
+// (documented here, not literally rewritten that way internally — both
+// forms are proven identical by TestMaybeField_EquivalentToOmitEmptyFieldFuncPlusMaybeCodec).
+func MaybeCodec[T any](inner Codec[T]) Codec[Maybe[T]] {
+	return Codec[Maybe[T]]{
 		Schema: inner.Schema,
-		Encode: func(m Maybe[V]) (any, error) {
+		Encode: func(m Maybe[T]) (any, error) {
 			return inner.Encode(m.Get())
 		},
-		Decode: func(v any) (Maybe[V], error) {
+		Decode: func(v any) (Maybe[T], error) {
 			val, err := inner.Decode(v)
 			if err != nil {
-				return Maybe[V]{}, err
+				return Maybe[T]{}, err
 			}
 			return Just(val), nil
 		},
@@ -118,14 +147,15 @@ func maybeFieldCodec[V any](inner Codec[V]) Codec[Maybe[V]] {
 // Use this instead of [OmitEmptyField]/[OmitEmptyFieldFunc] ONLY when you
 // genuinely need to distinguish "never set" from "deliberately set to the
 // zero value" for this field — see docs/concepts/codec.md's decision
-// guide for the full comparison.
+// guide for the full comparison. See [MaybeCodec]'s own doc comment for
+// the exact composition MaybeField is equivalent to.
 func MaybeField[T any, V any](
 	name string, codec Codec[V],
 	get func(T) Maybe[V], set func(*T, Maybe[V]),
 ) FieldCodec[T] {
 	return sparseField[T, Maybe[V]]{
 		name:  name,
-		codec: maybeFieldCodec(codec),
+		codec: MaybeCodec(codec),
 		get:   get,
 		set:   set,
 		isEmpty: func(m Maybe[V]) bool {

@@ -1350,23 +1350,85 @@ raw, _ := profileCodec.Encode(p)
 `Immutable.Set`'s exactly-once contract); `Get()` NEVER panics (returns
 `T`'s zero value when unset — contrast with `Immutable.Get`, which panics
 before the first `Set`); `IsSet()`/`TryGet()` are the explicit-presence-
-check siblings. Three combinators round out the type for working with it
+check siblings. Four combinators round out the type for working with it
 functionally: `MaybeMap[T,R](m, fn)` (a free function, not a method — Go
 generic methods cannot introduce a new type parameter `R`, the same
 constraint `forge.NewFunction[In, Out]` already documents elsewhere;
 applies `fn` only if set, `Nothing` in → `Nothing` out) — named `MaybeMap`
 rather than the shorter `Map` to avoid colliding with the existing
-`codex.Map[K,V]` map-codec constructor; `OrElse(fallback)` (the safe-
+`codex.Map[K,V]` map-codec constructor; `MaybeFlatMap[T,R](m, fn)` (also a
+free function, same reasoning) chains a `Maybe`-returning function
+instead — Haskell's `>>=`/Rust's `and_then` — for the case where the
+transformation ITSELF might not produce a value (e.g. parsing a
+`Maybe[string]` into a `Maybe[int]`, where the string might not parse): a
+`Just` input can still yield `Nothing` if `fn` does, unlike `MaybeMap`,
+whose `fn` always returns a plain `R`; `OrElse(fallback)` (the safe-
 default-value idiom, Rust's `unwrap_or`/Haskell's `fromMaybe`); `Filter(pred)`
 (narrows "set" down to "set AND satisfies some condition," returning
 `Nothing` otherwise).
 
-**Why `Maybe[T]` stays codec-agnostic.** Unlike `Immutable`/`Mutable`
-(which both REQUIRE a `Codec[T]` at construction), `Maybe[T]` carries no
-codec of its own — validation stays entirely owned by the enclosing
-field's `Codec[V]`, exactly like every other `Struct` field constructor.
-A zero-initialized `Maybe[V]{}` is already meaningful (`Nothing`) with no
-constructor call needed at all.
+**`Maybe[T]` the TYPE has no ambient codec — but `MaybeCodec[T]` derives
+one, symmetric with `Either2`.** Unlike `Immutable`/`Mutable` (which both
+REQUIRE a `Codec[T]` at construction), a bare `Maybe[T]` value carries no
+codec of its own — a zero-initialized `Maybe[V]{}` is already meaningful
+(`Nothing`) with no constructor call needed at all. This mirrors `Either`
+exactly: the bare `Either[A,B]` struct ALSO has no ambient codec — you
+always derive one from inner codecs (`Either2(ca, cb)`). `MaybeCodec[T](inner
+Codec[T]) Codec[Maybe[T]]` is `Maybe`'s exact counterpart to `Either2` —
+both are plain, general codec-derivation functions, usable with ANY
+composer (`RequiredField`, `OptionalField`, `SliceOf`, `Map`, or
+standalone), not just via a dedicated field constructor:
+
+```go
+codex.MaybeCodec(codex.String()).Decode("hi")      // Just("hi")
+codex.SliceOf(codex.MaybeCodec(codex.Int()))       // Codec[[]Maybe[int]]
+codex.RequiredField("note", codex.MaybeCodec(codex.String()), get, set)
+// -- decodes Just/Nothing correctly, but Encode ALWAYS shows the key
+// (Nothing renders as "", the inner codec's zero value) -- no omission.
+// Use MaybeField instead when omission-on-Nothing is what you want.
+```
+
+**`MaybeField` is a documented, provable special case of this general
+composition** — `MaybeField(name, codec, get, set)` behaves EXACTLY like:
+
+```go
+codex.OmitEmptyFieldFunc(name, codex.MaybeCodec(codec), get, set,
+    func(m codex.Maybe[V]) bool { return !m.IsSet() })
+```
+
+(`TestMaybeField_EquivalentToOmitEmptyFieldFuncPlusMaybeCodec` proves this
+by constructing a `Struct` BOTH ways and asserting identical Encode
+output for every presence state.) This is the exact same relationship
+`StringOrInt64()` already has to `Either2(String(), Int64())` — a named,
+common-case convenience built directly on a general composition, not a
+separate mechanism. `MaybeField`'s own internal implementation is left
+as its existing, already-tested hand-written form (not literally rewritten
+to call `OmitEmptyFieldFunc`) — the equivalence is proven by test, not by
+sharing code, avoiding churn to working code for a purely cosmetic reason.
+
+**How does `MaybeField` render in Schema?** IDENTICALLY to a plain
+`OptionalField` of the same type — no `oneOf`/`nullable`/any marker
+distinguishing "definitively presence-tracked" from "always-shown
+optional." Verified by an actual render:
+
+```go
+codex.MaybeField("nick", codex.String(), get, set)
+// Schema -> {"Type": "string"} -- indistinguishable from
+// codex.OptionalField("nick", codex.String(), get, set)'s OWN schema,
+// and NOT present in the Struct's "Required" array.
+```
+
+**This is correct, not a gap.** `MaybeCodec[T]`'s `Schema` field is
+literally `inner.Schema`, untouched, and `sparseField.schema()` (shared by
+every sparse-family constructor — `OmitEmptyField`/`OmitDefaultField`/
+`MaybeField` alike) always reports `Required=false`. The WIRE contract
+genuinely is identical between `MaybeField` and `OptionalField` for the
+same `V` — a valid document either omits the key or includes `V`'s shape,
+in BOTH cases. `Just`/`Nothing` vs. "Go zero value" is a Go-side,
+POST-decode distinction with no wire-visible difference to describe — a
+schema correctly stays silent about a distinction that doesn't exist on
+the wire. (Contrast with `EitherField`'s schema, which DOES differ
+visibly from a plain field's — see the Either ergonomics section below.)
 
 **Why not just use a pointer (`*T`), like `PartialField` does?** A fair
 question, since `PartialField`/`PartialStruct` already ship and already
@@ -1416,19 +1478,39 @@ null" either — BOTH produce `Note == nil` today (only `RequiredField`+
 is the exact same shape of ambiguity this section is about, just on the
 "wire-null vs. absent" axis instead of "zero-value vs. absent."
 
-**Deferred ideas, not designed here** — see
-`docs/roadmap/maybe-nullable-and-codec.md` for a short "idea only" sketch
-of both: a THREE-state `Maybe[Nullable[T]]` composition (absent /
-present-null / present-value — the exact shape RFC 7396 JSON Merge Patch
-needs) that could resolve the ambiguity above; and a general-purpose
-public `codex.Codec[Maybe[T]]` (the internal `maybeFieldCodec` helper
-`MaybeField` already uses is 90% of this, but stays unexported for now).
+**One deferred idea remains, not designed here** — see
+`docs/roadmap/maybe-nullable-and-codec.md` for a short "idea only" sketch:
+a THREE-state `Maybe[Nullable[T]]` composition (absent / present-null /
+present-value — the exact shape RFC 7396 JSON Merge Patch needs) that
+could resolve the ambiguity above (already VERIFIED to compose today with
+zero new code — `MaybeField("x", codex.Nullable(inner), ...)` on a
+`Maybe[*T]` field genuinely distinguishes all three states; what's left
+is a worked doc example, not a new primitive). The doc's OTHER idea — a
+general-purpose public `codex.Codec[Maybe[T]]` — has SHIPPED as
+`MaybeCodec[T]` above.
 
-**Also see `docs/roadmap/reloadable-value-containers.md`** for
-`OptionalMutable[T]` — a DIFFERENT, NOT-yet-built idea (a `Mutable[T]`
-that may start unset) that sounds superficially similar to `Maybe[T]` but
-solves an opposite problem (a value's currentness over time, vs. `Maybe`'s
-provenance at a point in time) — see that section's own comparison table.
+**Also see `docs/roadmap/optional-mutable.md`** for `OptionalMutable[T]`
+— a DIFFERENT, NOT-yet-built idea (a `Mutable[T]` that may start unset)
+that sounds superficially similar to `Maybe[T]` but solves an opposite
+problem (a value's currentness over time, vs. `Maybe`'s provenance at a
+point in time) — see that doc's own comparison table.
+
+**Interaction with `Template`/`DottedKeyCodec`/`DecodeVars`/`EncodeVars`.**
+`MaybeField` is built on the SAME `sparseField[T,F]` machinery as
+`OmitEmptyField` (see that subsection's own "Interaction with..." note) —
+so it inherits the identical caveat. `FieldCodec[T]` has four consumers
+besides `Struct`/`StrictStruct` (`DottedKeyCodec`, `Template`'s
+`NewTemplate`/`Fields()`, and `DecodeVars`/`EncodeVars`), and none of them
+route through `Struct`'s Encode loop — they call a field's plain
+`encode()` method directly. A `MaybeField`-declared field's plain
+`encode()` ALWAYS encodes the current value (calling `Maybe[V].Get()`,
+which returns `V`'s zero value for `Nothing`) — it deliberately does NOT
+consult `IsSet()`. Only `encodeSparse()` (consulted exclusively by
+`Struct`'s own type-assertion check) honors the omit rule. This guarantees
+a path/topic/dotted-key var declared with `MaybeField` never silently goes
+missing from a URI/topic/key build merely because it was never `Set` — in
+practice this scenario shouldn't arise, since path/topic template vars are
+conventionally always-required, but the guarantee holds regardless.
 
 No new structured error types and no observer integration are needed:
 `Maybe[T]`'s own `Set`/`Get` are infallible, and decode errors flow
@@ -1457,6 +1539,41 @@ don't reach for it defensively on every field "just in case." **Use
 DESIGN, not for one-off fields on an otherwise-ordinary domain struct.
 **`Nullable[T]`** solves a different problem (wire null) entirely and
 composes with any of the above rather than competing with them.
+
+#### Caveat: none of these belong on a path/topic param's merge `Field`
+
+`rest.NewPathParam[T]`/`events.NewTopicParam[T]`/`reqreply.NewTopicParam[T]`
+(and their shared foundation, `codex.NewParam[T]`) always build their merge
+`Field` as a plain `RequiredField` — there is no constructor argument to
+swap in `OmitEmptyField`/`MaybeField`. A caller COULD hand-construct a
+`codex.MergedParam[T]{Field: ...}` with one of these anyway (`Field` is
+just an exported `codex.FieldCodec[T]`), but it would be inert:
+
+- **`OmitEmptyField`/`MaybeField`** — decode never sees "absent", because a
+  route/channel only matches when the path/topic segment is present in the
+  first place; and `codex.EncodeVars` (used to build outgoing path/topic
+  vars) always calls a field's plain `encode()`, never `encodeSparse()`, so
+  the omission logic never fires either. Net effect: byte-for-byte
+  identical to `RequiredField`, just with pointless `Maybe[V]`/sparse
+  ceremony. This isn't a bug — it's confirmation that a path/topic
+  variable structurally can't be "absent" (unlike a JSON body key): the
+  segment is either present-and-matched, or the route/channel never
+  matched at all.
+- **`EitherField`** is the one that DOES make sense here — a path/topic
+  segment legitimately can be "one of two shapes" (e.g. a UUID-slug OR a
+  numeric-string ID, mirroring Kubernetes' `IntOrString` but in a URL/topic
+  segment). It composes because `EitherField` is just
+  `RequiredField(name, Either2(ca, cb), get, set)` — same "always present"
+  shape as a plain path param, just with a `oneOf` codec underneath.
+  Requirement: BOTH `ca`/`cb` must decode from/encode to a Go `string`
+  (`codex.DecodeVars`/`EncodeVars` box every path/topic var as `string`) —
+  e.g. two `codex.String().Refine(...)` variants distinguished by
+  constraint, not `codex.Int()` (which only accepts `float64`/`int`/`int64`,
+  never a raw string).
+- A "`Maybe` that errors instead of returning `Nothing`" isn't a gap to
+  fill either — that's just `RequiredField`'s existing behavior (decode
+  fails when the key is absent). `MaybeField`'s entire purpose is safe
+  optionality; making it throw on `Nothing` would defeat that purpose.
 
 ### `Getter`/`Setter`: validated value containers built on `Codec[T]`
 
@@ -1821,6 +1938,105 @@ left, _ := dsnOrConfig.Decode("postgres://localhost/db")
 ```
 
 If both branches fail, returns `EitherError{Errors: []error{errA, errB}}`.
+
+### Ergonomic constructors, methods, and free functions
+
+Constructing an `Either` used to require a manual struct literal
+(`Either[A,B]{Left: &a}`) and consuming one required a manual nil-check or
+type switch (as shown in the `switch { case e.Left != nil: ... }` pattern
+in `Either`'s own doc comment — still the correct escape hatch, but no
+longer the ONLY option). `Left`/`Right` construct directly; `IsLeft`/
+`IsRight`/`Swap` are methods (legal since they don't introduce a new type
+parameter beyond the receiver's own `A`/`B`); `EitherFold`/`EitherMapLeft`/
+`EitherMapRight` are free functions (each introduces a NEW type parameter
+— `R`, `C`, `C` respectively — which Go generic methods cannot do, the
+same constraint `Maybe[T]`'s `MaybeMap`/`MaybeFlatMap` already document):
+
+```go
+e := codex.Left[string, int]("hello")   // Either[string, int]
+e.IsLeft()                              // true
+e.Swap()                                // Either[int, string]{Right: &"hello"}
+
+msg := codex.EitherFold(e,
+    func(s string) string { return "text: " + s },
+    func(n int) string { return "number" },
+) // "text: hello"
+
+lengths := codex.EitherMapLeft(e, func(s string) int { return len(s) })
+// Either[int, int]{Left: &5} -- a Right value would pass through untouched
+```
+
+**Edge case**: a zero-value `Either[A,B]{}` (no constructor used, no
+successful decode) reports `false` for BOTH `IsLeft()` and `IsRight()` —
+already an implicitly invalid state per `Either`'s own "Left and Right are
+mutually exclusive" contract; always construct via `Left`/`Right`/a
+successful `Either2` decode. `EitherMapLeft`/`EitherMapRight` degrade
+GRACEFULLY on that same zero-value input (both branches nil in, both
+branches nil out — no panic, since they never need to produce a bare `R`
+without calling `fn`). `EitherFold`, by contrast, PANICS (nil-pointer
+dereference) on a zero-value `Either` — it MUST call `onLeft` or `onRight`
+to produce its `R` result, and has no branch left to fall back to once
+both `e.Left`/`e.Right` are nil.
+
+No new structured error types and no observer integration are needed:
+these are pure in-memory combinators with no I/O — any failure mode
+belongs to the caller's own `fn`/`onLeft`/`onRight` closures, not to
+`codex` itself.
+
+### `EitherField` — the Struct-field convenience for `Either`
+
+`Either2(ca, cb)` derives a plain `Codec[Either[A,B]]` — usable directly
+with `RequiredField`/`OptionalField`/`DefaultField` today, but every call
+site has to spell out `Either2(ca, cb)` itself. `EitherField` is a
+one-line convenience matching `MaybeField`'s own call-site shape (name +
+codec(s) + get/set → `FieldCodec[T]`), literal sugar for
+`RequiredField(name, Either2(ca, cb), get, set)`:
+
+```go
+var serviceCodec = codex.Struct[Service](
+    codex.EitherField("port", codex.String(), codex.Int(),
+        func(s Service) codex.Either[string, int] { return s.Port },
+        func(s *Service, v codex.Either[string, int]) { s.Port = v }),
+)
+```
+
+**Always `Required`, unlike `MaybeField`** — a valid `Either` always holds
+EXACTLY one of `Left`/`Right` (see `Either`'s own "mutually exclusive"
+contract), so there is no natural "absent" state for `EitherField` to make
+optional the way `Maybe`'s `Nothing` is. For an OPTIONAL `Either` field
+(may be absent, OR `Left`, OR `Right`), compose `MaybeField` with
+`Either2` directly instead: `MaybeField(name, Either2(ca, cb), get, set)`
+— a `Maybe[Either[A,B]]` field.
+
+**How does `EitherField` render in Schema?** As `Either2`'s own `{oneOf:
+[...]}` shape, AND present in the Struct's `Required` array — verified by
+an actual render:
+
+```go
+codex.EitherField("value", codex.String(), codex.Int(), get, set)
+// Schema -> {"OneOf": [{"Type": "string"}, {"Type": "integer"}]}
+// AND "value" appears in the Struct's "Required" list.
+```
+
+Unlike `MaybeField` (above), `EitherField`'s schema genuinely DOES differ
+visibly from what a plain scalar field's schema would look like — the
+`oneOf` two-branch shape is real, wire-level information a schema
+consumer (OpenAPI/AsyncAPI/JSON Schema tooling) needs to validate a
+document correctly, not a Go-side-only distinction the way `Maybe[T]`'s
+presence-tracking is.
+
+This completes the full 2×2 grid of `Maybe`/`Either` field-declaration
+tools:
+
+| | Plain codec constructor | Struct-field convenience |
+|---|---|---|
+| **`Maybe`** | `MaybeCodec[T](inner)` | `MaybeField(name, codec, get, set)` |
+| **`Either`** | `Either2(ca, cb)` | `EitherField(name, ca, cb, get, set)` |
+
+Both rows compose freely with every OTHER field constructor too
+(`OptionalField`/`DefaultField`/`OmitEmptyFieldFunc`) via their LEFT
+column's plain codec — the right column is purely a named shortcut for
+the single most common shape, not a separate mechanism.
 
 ### `StringOrInt64` and family — the "string or number" convenience
 

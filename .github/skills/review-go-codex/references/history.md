@@ -1,6 +1,56 @@
-# go-codex Review History (R1–R114)
+# go-codex Review History (R1–R116)
 
 Do not re-report any of these findings. They have been implemented and tested.
+
+---
+
+## Round 116 (`codex.MaybeFlatMap`/`Either[A,B]` ergonomics — `EitherFold`'s undocumented zero-value panic)
+
+Reviewed the only changes since Round 115: `codex/maybe.go`'s `MaybeFlatMap`, and `codex/either.go`'s
+new `Left`/`Right` constructors, `IsLeft`/`IsRight`/`Swap` methods, and `EitherFold`/`EitherMapLeft`/
+`EitherMapRight` free functions (plus their tests and `docs/concepts/codec.md`/`.github/instructions/
+go-codex.instructions.md` updates). No Layer 2/3 files changed since Round 115. Full build/test/gofmt/
+`just check` verified clean both before and after this round's fix.
+
+- **G1 [small] — `EitherFold`'s undocumented zero-value panic**: `EitherFold` panics with a
+  nil-pointer dereference (`*e.Right`) when called on a zero-value `Either[A,B]{}`, but its own doc
+  comment and both doc surfaces' "Edge case" notes only described `IsLeft()`/`IsRight()` safely
+  returning `false`/`false` for that same input — never mentioning `EitherFold`'s panic risk right
+  next to it (not a regression — `Either2.Encode`'s pre-existing code has the identical risk, just
+  never documented either — but this round's NEW doc coverage was inconsistent about it). Added a
+  precondition note to `EitherFold`'s own doc comment (`codex/either.go`), and extended both
+  `docs/concepts/codec.md`'s and `.github/instructions/go-codex.instructions.md`'s "Edge case"
+  paragraphs to explicitly contrast `EitherFold`'s panic against `EitherMapLeft`/`EitherMapRight`'s
+  graceful zero-value degradation (both branches nil in, both nil out, no panic). No test added —
+  asserting a panic for a documented precondition violation isn't required, matching how
+  `Either2.Encode`'s identical pre-existing risk has no test either.
+
+---
+
+## Round 115 (`codex.OmitEmptyField`/`codex.Maybe[T]` — Maybe's missing Template/EncodeVars interaction doc+test)
+
+Reviewed the only changes since Round 114: `codex/omitempty.go`/`codex/object.go` (`OmitEmptyField`/
+`OmitEmptyFieldFunc`/`OmitDefaultField`/`IsZeroValue`), `codex/maybe.go` (`Maybe[T]`/`MaybeField`), the
+`dockercompose.Service` field conversion to `OmitEmptyField`, and 6 roadmap/doc files (2 new roadmap
+docs — `optional-mutable.md`, `maybe-nullable-and-codec.md` — plus `maybe-value.md`'s retirement). No
+Layer 2/3 (`api/*`, `adapters/*`, `forge`) files changed since Round 114 — scoped entirely to these
+Layer 1 codec primitives and docs. Full build/vet/test/gofmt/`just check`/all-examples verified clean
+both before and after this round's fix.
+
+- **G1 [small] — `Maybe[T]`'s missing `Template`/`DecodeVars`/`EncodeVars` interaction doc+test**:
+  `MaybeField` is built on the exact same `sparseField[T,F]` machinery as `OmitEmptyField` — its plain
+  `encode()` method (reached via `Template`/`DottedKeyCodec`/`DecodeVars`/`EncodeVars`, none of which
+  route through `Struct`'s sparse-aware Encode loop) ALWAYS encodes the value (via `Maybe[V].Get()`,
+  returning `V`'s zero value for `Nothing`), silently ignoring the omit rule — identical to
+  `OmitEmptyField`'s own documented/tested caveat, but undocumented and untested for the newer `Maybe[T]`
+  feature. Added the matching "Interaction with `Template`/`DottedKeyCodec`/`DecodeVars`/`EncodeVars`"
+  paragraph to `docs/concepts/codec.md`'s and `.github/instructions/go-codex.instructions.md`'s `Maybe[T]`
+  sections, and added `TestMaybeField_EncodeVarsIgnoresSparseRule` to `codex/maybe_test.go` (mirroring
+  the existing `TestOmitEmptyField_EncodeVarsIgnoresSparseRule`). Also fixed a stale cross-reference
+  found in the same doc paragraph: `docs/concepts/codec.md`'s `Maybe[T]` subsection still pointed to
+  `docs/roadmap/reloadable-value-containers.md` for `OptionalMutable[T]`, but that idea was promoted to
+  its own dedicated doc (`docs/roadmap/optional-mutable.md`) in the prior session round — updated the
+  link.
 
 ---
 
