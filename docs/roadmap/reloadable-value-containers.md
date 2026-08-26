@@ -1,6 +1,10 @@
 # Reloadable & Fallible Value Containers — `Mutable[T]`, `NewConst[T]` — `codex`
 
-> **Status:** Design complete — not yet implemented.
+> **Status:** Design complete, blocker RESOLVED — ready to implement.
+> The `codex`↔`stats` import-cycle question this doc and
+> `cache-parity-and-cacheable.md`'s `Cacheable[T]` independently hit has
+> been unified into ONE resolution (a local, `stats`-free
+> `codex.ReloadObserver` interface) — see "Observer integration" below.
 > [← Back to Roadmap](index.md)
 >
 > See also: [`codex.Cacheable[T]`](cache-parity-and-cacheable.md) — a 4th
@@ -17,12 +21,16 @@
 
 ## Motivation
 
-`docs/roadmap/validated-const-getter.md` shipped `codex.Getter[T]`/
-`Setter[T]`/`GetterSetter[T]` and their first two implementations:
-`Const[T]` (compile-time-authored, panics if invalid) and `Immutable[T]`
+go-codex previously shipped `codex.Getter[T]`/`Setter[T]`/
+`GetterSetter[T]` and their first two implementations: `Const[T]`
+(compile-time-authored, panics if invalid) and `Immutable[T]`
 (runtime-supplied, validated exactly once, panics on `Get` before the
-first `Set`). Its own "Out of scope (Phase 3)" section named two natural
-follow-ons, deferred at the time for lack of a concrete driver:
+first `Set`) — see `docs/concepts/codec.md`'s "Getter/Setter: validated
+value containers built on Codec[T]" subsection for the full shipped
+design (the roadmap doc that originally scoped this, `validated-const-
+getter.md`, has since been removed — fully shipped with nothing left to
+plan). That original scoping named two natural follow-ons, deferred at
+the time for lack of a concrete driver:
 
 1. A non-panicking `NewConst[T](value, codec) (Const[T], error)` variant.
 2. A `Mutable[T]` allowing reassignment/hot-reload, with observer hooks.
@@ -77,7 +85,7 @@ plain-value, no-mutex ergonomics without a panic on one bad entry.
 
 | In scope | Out of scope |
 |---|---|
-| `codex.Mutable[T]` — a `GetterSetter[T]` cell that can be `Set` more than once, each call re-validating against the same `Codec[T]` and atomically swapping the current value | Wiring `Mutable[T]` NATIVELY into `rest`/`events`/`reqreply`/`mcp`'s `Builder.AddGlobalSecurity`/`WithSecurityScheme`/`SecuritySchemes` (i.e. making global security or scheme credentials themselves live-reloadable without a caller writing their own `SecurityFunc`) — no concrete driver yet, deferred to a "Phase 2" exactly as `validated-const-getter.md` deferred ITS Phase 2 |
+| `codex.Mutable[T]` — a `GetterSetter[T]` cell that can be `Set` more than once, each call re-validating against the same `Codec[T]` and atomically swapping the current value | Wiring `Mutable[T]` NATIVELY into `rest`/`events`/`reqreply`/`mcp`'s `Builder.AddGlobalSecurity`/`WithSecurityScheme`/`SecuritySchemes` (i.e. making global security or scheme credentials themselves live-reloadable without a caller writing their own `SecurityFunc`) — no concrete driver yet, deferred to a "Phase 2" exactly as the shipped `Getter`/`Setter`/`Const`/`Immutable` family's own original scoping deferred ITS Phase 2 |
 | `codex.NewMutable[T](location string, initial T, codec Codec[T], opts ...MutableOpt[T]) (*Mutable[T], error)` — fallible construction (mirrors why `Immutable`'s `Set` returns an error, not a panic: `initial` is real runtime input) | Auto-scheduling/refetch (TTL, polling, single-flight) inside `Mutable[T]` itself — that's `adapters/nethttp.NewCachingCredentialFunc`'s job; `Mutable[T]` stays a plain cell |
 | A NEW `stats.ReloadObserver` extension (`RecordReload(location string, success bool, duration time.Duration)`) — the first observable lifecycle event this whole container family has needed | A generic "subscribe to changes" callback/notification mechanism on `Mutable[T]` (push notifications to interested code elsewhere) — no driver yet |
 | `codex.NewConst[T](value T, codec Codec[T]) (Const[T], error)` — non-panicking sibling to the existing `MustConst`; `MustConst` itself is UNCHANGED | Any change to `Immutable[T]`'s existing "set exactly once, panics on repeat `Set`" semantics — `Mutable[T]` is a SEPARATE type, not a relaxed `Immutable[T]` |
@@ -85,7 +93,8 @@ plain-value, no-mutex ergonomics without a panic on one bad entry.
 
 ## Relationship to `Const[T]`/`Immutable[T]`
 
-Extending the 3-way comparison from `validated-const-getter.md`:
+Extending the 3-way comparison from `docs/concepts/codec.md`'s
+Getter/Setter subsection:
 
 | | `Const[T]` | `Immutable[T]` | `Mutable[T]` (NEW) |
 |---|---|---|---|
@@ -150,18 +159,26 @@ type Mutable[T any] struct {
 	value    T
 	codec    Codec[T]
 	location string
-	obs      stats.Observer
+	// obs is untyped (any, not stats.Observer — codex has zero
+	// dependency on stats and must not gain one; stats already depends
+	// on codex). Type-asserted to ReloadObserver at the one call site
+	// that needs it — see "Observer integration" below for the full
+	// codex.ReloadObserver design this resolves to.
+	obs any
 }
 
 // MutableOpt configures a [Mutable] at construction time.
 type MutableOpt[T any] func(*Mutable[T])
 
-// WithReloadObserver sets the [stats.Observer] whose
-// [stats.ReloadObserver] extension (if implemented) receives a
-// RecordReload event on every [Mutable.Set] call, success or failure.
-// Defaults to [stats.NoopObserver] — Mutable works with no Observer at
+// WithReloadObserver sets the value whose [ReloadObserver] extension
+// (if implemented) receives a RecordReload event on every
+// [Mutable.Set] call, success or failure. Accepts any value — most
+// callers will pass their existing stats.Observer-based implementation
+// directly (it satisfies [ReloadObserver] structurally once it defines
+// RecordReload, without codex importing stats — see "Observer
+// integration"). Defaults to nil — Mutable works with no Observer at
 // all, same as every other codex container.
-func WithReloadObserver[T any](obs stats.Observer) MutableOpt[T] {
+func WithReloadObserver[T any](obs any) MutableOpt[T] {
 	return func(m *Mutable[T]) { m.obs = obs }
 }
 
@@ -169,15 +186,15 @@ func WithReloadObserver[T any](obs stats.Observer) MutableOpt[T] {
 // or an error if initial fails validation — mirrors why [Immutable]'s
 // Set returns an error rather than panicking: initial is real runtime
 // input (e.g. the FIRST JWKS fetch at startup), not an authored
-// constant. location identifies this cell in [stats.ReloadObserver]
-// events (e.g. "jwks-signing-keys") — one Mutable instance = one
-// location, mirroring how one [adapters/nethttp.NewCachingCredentialFunc]
+// constant. location identifies this cell in [ReloadObserver] events
+// (e.g. "jwks-signing-keys") — one Mutable instance = one location,
+// mirroring how one [adapters/nethttp.NewCachingCredentialFunc]
 // instance is documented as "one cache entry."
 func NewMutable[T any](location string, initial T, codec Codec[T], opts ...MutableOpt[T]) (*Mutable[T], error) {
 	if err := codec.Validate(initial); err != nil {
 		return nil, err
 	}
-	m := &Mutable[T]{value: initial, codec: codec, location: location, obs: stats.NoopObserver{}}
+	m := &Mutable[T]{value: initial, codec: codec, location: location}
 	for _, opt := range opts {
 		opt(m)
 	}
@@ -195,9 +212,9 @@ func (m *Mutable[T]) Get() T {
 // Set validates value against m's codec; on success it atomically
 // replaces the current value and returns nil. On failure the current
 // value is left UNCHANGED (last-good-value-wins) and the codec's own
-// validation error is returned. Either way, if m's Observer implements
-// [stats.ReloadObserver], RecordReload(m.location, success, duration)
-// fires. Satisfies [Setter][T].
+// validation error is returned. Either way, if m's configured Observer
+// implements [ReloadObserver], RecordReload(m.location, success,
+// duration) fires. Satisfies [Setter][T].
 func (m *Mutable[T]) Set(value T) error {
 	start := time.Now()
 	err := m.codec.Validate(value)
@@ -206,7 +223,7 @@ func (m *Mutable[T]) Set(value T) error {
 		m.value = value
 		m.mu.Unlock()
 	}
-	if ro, ok := m.obs.(stats.ReloadObserver); ok {
+	if ro, ok := m.obs.(ReloadObserver); ok {
 		ro.RecordReload(m.location, err == nil, time.Since(start))
 	}
 	return err
@@ -230,31 +247,76 @@ mode is the codec's own existing validation error — reused unchanged,
 ## Observer integration
 
 **NEW** — the first container in this family with an observable
-lifecycle event. Add `stats.ReloadObserver` to `stats/observer.go`,
-following the existing `CredentialCacheObserver`/`CacheObserver`
-pattern exactly:
+lifecycle event. **RESOLVED design** (this doc and
+`cache-parity-and-cacheable.md`'s `Cacheable[T]` independently hit the
+SAME blocker below and are now unified on one resolution — see that
+doc's own "Observer integration" for its `InvalidateObserver` sibling,
+which builds on the exact same pattern):
+
+**The blocker:** `codex` has ZERO dependency on `stats` (deliberately —
+codec construction/validation has never needed observability before
+now), while `stats` already depends on `codex` (for `ReportErrors`/
+`codex.ValidationErrors`). Giving `codex.Mutable[T]` a field typed
+`stats.Observer`/`stats.ReloadObserver` would form a REAL Go import
+cycle — not merely "circular-looking," an actual compile error.
+
+**The resolution:** define the observer interface LOCALLY in `codex`,
+with zero `stats` import, in a new `codex/observer.go`:
 
 ```go
-// ReloadObserver is an optional extension to Observer for value-container
-// reload events ([codex.Mutable]). Callers type-assert the configured
-// Observer to ReloadObserver before calling its methods — existing
-// Observer implementations need not change.
+package codex
+
+// ReloadObserver is implemented by any value that wants to observe
+// [Mutable]/[Cacheable] Set/reload events. Deliberately defined HERE,
+// not in stats — codex has no dependency on stats (stats depends on
+// codex, not the reverse). Any stats.Observer CONCRETE implementation
+// that also defines this one method (stats.NoopObserver/LoggingObserver/
+// the internal fanout type all do, once they gain it) satisfies this
+// interface STRUCTURALLY — Go interfaces need no explicit "implements"
+// declaration — so existing stats-based observers work here with zero
+// code changes and zero import in either direction.
 type ReloadObserver interface {
-	// RecordReload is called on every [codex.Mutable.Set] call, success
-	// or failure. location identifies the Mutable instance (set via
-	// [codex.NewMutable]'s location parameter, e.g. "jwks-signing-keys").
-	// success is false when the new value failed codec validation (the
-	// PREVIOUS value remains in effect). duration is the validation
-	// call's own cost.
+	// RecordReload is called on every [Mutable.Set]/[Cacheable.Set]
+	// call, success or failure. location identifies the container
+	// instance (the caller-chosen string passed to [NewMutable]/
+	// [NewCacheable], e.g. "jwks-signing-keys"). success is false when
+	// the new value failed codec validation (the PREVIOUS value
+	// remains in effect). duration is the validation call's own cost.
 	RecordReload(location string, success bool, duration time.Duration)
 }
 ```
 
-- `NoopObserver`, `LoggingObserver`, `fanout` all gain a
-  `RecordReload` implementation, mirroring every other extension.
-- `codex.Mutable[T]` type-asserts its configured Observer to
-  `ReloadObserver` before calling it — never embeds it directly (same
-  guard rule as `FileObserver`/`SQLObserver`/`SecurityObserver`).
+- `Mutable[T]`'s (and `Cacheable[T]`'s — see the other doc) `obs` field
+  is typed `any`, type-asserted to `ReloadObserver` at the one call site
+  that needs it — never embedded directly, same guard rule
+  `stats.SecurityObserver`/`FileObserver`/`SQLObserver` already follow,
+  just applied one level down since `codex` can't reference `stats`'s
+  own `Observer` type as the field type.
+- **`stats` side**: add `RecordReload(location string, success bool,
+  duration time.Duration)` to `stats.NoopObserver`, `stats.LoggingObserver`,
+  and the internal `fanout` type — the same mechanical addition every
+  other extension (`CacheObserver`, `CredentialCacheObserver`, etc.)
+  already went through. Also add `type ReloadObserver =
+  codex.ReloadObserver` (a TYPE ALIAS, not a new interface) to
+  `stats/observer.go` — costs nothing (`stats` already depends on
+  `codex`) and gives `stats` a NAMED, documented, discoverable symbol
+  matching its own established one-extension-interface-per-event
+  convention, so callers reading `stats`'s own docs still find
+  `stats.ReloadObserver` where they'd expect it.
+- **Ergonomic wrinkle, documented explicitly**: Go's interface-to-
+  interface assignability requires the SOURCE interface's static method
+  set to be a superset of the target's. `stats.Observer` (the big
+  embedded interface used as a field type everywhere, e.g.
+  `Options{Observer stats.Observer}`) does NOT itself declare
+  `RecordReload` as part of ITS OWN method set (only concrete observer
+  types will have it) — so a caller holding a `stats.Observer`-typed
+  variable cannot pass it directly into `codex.WithReloadObserver`
+  without an explicit type assertion first. Add a small bridging helper,
+  `stats.AsReloadObserver(obs Observer) (ReloadObserver, bool)`
+  (mirrors `stats.ObserverFromContext`'s existing ergonomics), so a
+  caller who already has a `stats.Observer` value in hand can bridge it
+  in one call instead of hand-writing the assertion themselves:
+  `codex.WithReloadObserver[MyKeys](must(stats.AsReloadObserver(myObs)))`.
 - No location string convention exists yet for reload events — this
   introduces one (a caller-chosen identifier, not a fixed vocabulary
   like `"body"`/`"payload"`, since Mutable instances are inherently
@@ -286,12 +348,19 @@ type ReloadObserver interface {
 
 ## Files to create
 
+**RESOLVED file layout** (this doc's own "file placement" question,
+settled once `Cacheable[T]` — `cache-parity-and-cacheable.md` — joined
+this design as a sibling that needs the SAME observer interface):
+
 | File | Responsibility |
 |---|---|
-| `codex/const.go` (or split into `codex/mutable.go` — see "Open design decisions") | `NewConst`, `Mutable[T]`, `MutableOpt[T]`, `WithReloadObserver`, `NewMutable` |
-| `codex/const_test.go` (or `codex/mutable_test.go`) | Full unit test plan above (Mutable + NewConst + interface satisfaction + Example funcs) |
-| `stats/observer.go` | `ReloadObserver` interface + `NoopObserver`/`LoggingObserver`/`fanout` implementations |
-| `stats/observer_test.go` | Compile-time assertions + `LoggingObserver`/`fanout` `RecordReload` tests |
+| `codex/const.go` | UNCHANGED except for `NewConst` (small, natural addition next to the existing `MustConst`) |
+| `codex/observer.go` (NEW) | `ReloadObserver` — shared by `Mutable[T]` here AND `Cacheable[T]` (`cache-parity-and-cacheable.md`, which also adds its own `InvalidateObserver` to this same file) |
+| `codex/mutable.go` (NEW) | `Mutable[T]`, `MutableOpt[T]`, `WithReloadObserver`, `NewMutable` — split out from `const.go` now that it has an Observer dependency `Const`/`Immutable` don't |
+| `codex/mutable_test.go` (NEW) | Full unit test plan above (Mutable + NewConst + interface satisfaction + Example funcs) |
+| `codex/observer_test.go` (NEW) | Compile-time assertions for `ReloadObserver` |
+| `stats/observer.go` | `type ReloadObserver = codex.ReloadObserver` (alias) + `NoopObserver`/`LoggingObserver`/`fanout` gain `RecordReload` + `AsReloadObserver` bridging helper |
+| `stats/observer_test.go` | `LoggingObserver`/`fanout` `RecordReload` tests + `AsReloadObserver` tests |
 | `docs/concepts/codec.md` (doc-only) | Extend the existing "Getter/Setter: validated value containers" subsection with `Mutable[T]`'s row in the 3-way comparison table |
 | `examples/mutable-security-keys/main.go` (or extend an existing security example) | Runnable JWKS-style key-rotation demo: background reload loop calling `Set`, a `SecurityFunc` closure calling `Get()` |
 
@@ -306,8 +375,9 @@ type ReloadObserver interface {
   Builder types + their `RouteHandle`/`ChannelHandle`/`ToolHandle`
   snapshotting behavior (currently a COPY taken at `Register()` time).
   No concrete driver requesting this yet; ships as its own follow-on
-  roadmap item if one appears — exactly how `validated-const-getter.md`
-  deferred ITS Phase 2 until `go-edge-models` needed it.
+  roadmap item if one appears — exactly how the shipped `Const`/
+  `Immutable` family's own original scoping deferred ITS Phase 2 until
+  `go-edge-models` needed it.
 - A generic "subscribe to changes" callback/notification mechanism on
   `Mutable[T]` (push a change event to other interested code elsewhere
   in a process) — `ReloadObserver` covers OBSERVABILITY of a reload,
@@ -338,9 +408,11 @@ type ReloadObserver interface {
   has already shipped independently — only its `Cacheable[T]` design
   remains). Explicitly sequenced to depend on THIS doc's `Mutable[T]`
   shipping first — do not implement `Cacheable[T]` before `Mutable[T]`
-  exists, same rule as `OptionalMutable[T]` above. Also inherits THIS
-  doc's open `codex`↔`stats` import-cycle question unchanged (`Cacheable[T]`
-  needs the same `stats.ReloadObserver`-shaped field `Mutable[T]` does).
+  exists, same rule as `OptionalMutable[T]` above. Shares THIS doc's
+  `codex.ReloadObserver` design (see "Observer integration" above) for
+  its own `Set` events, plus its own `InvalidateObserver` sibling for
+  `Invalidate()` events — both now RESOLVED together, not independently
+  blocked.
 
 ## Open design decisions
 
@@ -352,22 +424,18 @@ type ReloadObserver interface {
   alongside them in `const.go` — but `const.go` growing a third,
   meaningfully-different-shaped type (the only one with an Observer
   dependency) may be the point at which splitting into `mutable.go`
-  reads better. Low-stakes; decide at implementation time, matching how
-  `validated-const-getter.md` itself deferred an analogous naming
-  question.
-- **Does `Mutable[T]` need its own `stats` import inside `codex`?**
-  `codex` currently has NO dependency on `stats` at all (deliberately —
-  codec construction/validation has never needed observability before
-  now). Confirm this import direction is acceptable (`stats` already
-  depends on `codex` for `ReportErrors`/`codex.ValidationErrors`, so
-  `codex` importing `stats` back would be a NEW, circular-looking
-  dependency the two packages must not actually form — check whether
-  `stats.Observer`/`ReloadObserver` need to move to a lower-level
-  shared package, or whether `codex.Mutable[T]`'s Observer field should
-  instead be a minimal LOCAL interface in `codex` (just
-  `RecordReload(string, bool, time.Duration)`, no `stats` import at
-  all) that `stats.Observer`-based callers satisfy structurally. This
-  is the single biggest open question before implementation starts.
+  reads better. **Resolved** — see the new "File layout" section below,
+  written once `Cacheable[T]` (`cache-parity-and-cacheable.md`) joined
+  this design: `Mutable[T]` gets its own `codex/mutable.go`.
+- ~~Does `Mutable[T]` need its own `stats` import inside `codex`?~~
+  **RESOLVED** — see "Observer integration" above: a minimal LOCAL
+  `codex.ReloadObserver` interface (just `RecordReload(string, bool,
+  time.Duration)`, zero `stats` import) that `stats`'s existing
+  `NoopObserver`/`LoggingObserver`/`fanout` satisfy structurally once
+  they gain the matching method, plus a `stats.ReloadObserver` type
+  alias and `stats.AsReloadObserver` bridging helper for ergonomics.
+  `codex` still has ZERO dependency on `stats` after this — was the
+  single biggest open question before implementation; now settled.
 - **Should `NewMutable`'s `location` be required, or optional
   (defaulting to some generic string) for callers who don't care about
   observability?** Leaning required (it's one extra constructor

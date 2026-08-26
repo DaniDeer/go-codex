@@ -75,8 +75,8 @@ const (
 // producing an empty pattern would panic immediately, not surface as a
 // mysterious ports.File error at first use) rather than a bare string —
 // this is exactly [codex.Const[T]]'s intended "compile-time-authored
-// constant" use case (see docs/roadmap/validated-const-getter.md and
-// docs/concepts/codec.md's matching subsection). The pattern TEXT
+// constant" use case (see docs/concepts/codec.md's Getter/Setter
+// subsection). The pattern TEXT
 // itself stays private (readable only via the embedded Const's own
 // String()/Get()); ports.NewFile/NewDir's own {var} substitution still
 // consumes that raw, unsubstituted text via String(), UNCHANGED from

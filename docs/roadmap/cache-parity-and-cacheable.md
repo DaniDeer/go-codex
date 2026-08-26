@@ -1,8 +1,11 @@
 # `codex.Cacheable[T]` — `codex`, `adapters/redis`
 
-> **Status:** Design draft — blocked on `Mutable[T]` shipping first
-> (see `reloadable-value-containers.md`'s open `codex`↔`stats`
-> import-cycle question, which this doc inherits unchanged).
+> **Status:** Design complete, shared blocker RESOLVED — still
+> SEQUENCED to implement after `Mutable[T]` (an implementation-order
+> rule, not a design blocker: the `codex`↔`stats` import-cycle question
+> this doc used to inherit from `reloadable-value-containers.md` is now
+> resolved there for both containers together — see that doc's
+> "Observer integration").
 > [← Back to Roadmap](index.md)
 >
 > This doc originally tracked TWO related phases. **Part 1
@@ -79,16 +82,27 @@ type Cacheable[T any] struct {
 	expiresAt time.Time
 	invalid   bool // explicit Invalidate() flag, independent of TTL
 	location  string
-	obs       stats.Observer
+	// obs is untyped (any, not stats.Observer) — codex has zero
+	// dependency on stats and must not gain one. Type-asserted to
+	// ReloadObserver/InvalidateObserver at each call site — see
+	// reloadable-value-containers.md's "Observer integration" for the
+	// full codex.ReloadObserver design this shares with Mutable[T].
+	obs any
 }
 
 // CacheableOpt configures a [Cacheable] at construction time.
 type CacheableOpt[T any] func(*Cacheable[T])
 
 // WithCacheableReloadObserver mirrors [WithReloadObserver] — reuses the
-// SAME [stats.ReloadObserver] extension [Mutable] uses, so a caller
-// monitoring both containers needs only one Observer implementation.
-func WithCacheableReloadObserver[T any](obs stats.Observer) CacheableOpt[T]
+// SAME [ReloadObserver]/[InvalidateObserver] interfaces [Mutable] uses
+// (defined in `codex/observer.go`, see reloadable-value-containers.md),
+// so a caller monitoring both containers needs only one Observer
+// implementation, wired in with the same call at both construction
+// sites. Accepts any value — most callers pass their existing
+// stats.Observer-based implementation directly (satisfies these
+// interfaces structurally once it defines RecordReload/
+// RecordInvalidate, with zero import of stats from codex).
+func WithCacheableReloadObserver[T any](obs any) CacheableOpt[T]
 
 // NewCacheable validates initial against codec and returns a
 // *Cacheable[T] whose value is fresh for ttl (zero = never expires
@@ -108,8 +122,8 @@ func (c *Cacheable[T]) Get() (value T, fresh bool)
 // resets the TTL window, and clears any prior [Cacheable.Invalidate].
 // On failure the current value/freshness is UNCHANGED (last-good-
 // value-wins, exactly like [Mutable.Set]) and the codec's own
-// validation error is returned. Fires [stats.ReloadObserver.RecordReload]
-// exactly like [Mutable.Set].
+// validation error is returned. Fires [ReloadObserver.RecordReload]
+// exactly like [Mutable.Set] (same interface, same call-site pattern).
 func (c *Cacheable[T]) Set(value T) error
 
 // Invalidate marks the current value stale immediately, independent of
@@ -117,7 +131,10 @@ func (c *Cacheable[T]) Set(value T) error
 // (a webhook, a Redis keyspace notification — see "Open design
 // decisions"). The value itself is NOT cleared — [Cacheable.Get] still
 // returns it, with fresh=false — so a caller can still serve it
-// (stale-while-revalidate) while triggering a refresh.
+// (stale-while-revalidate) while triggering a refresh. Fires
+// [InvalidateObserver.RecordInvalidate] if c's configured Observer
+// implements it — a SEPARATE event from RecordReload, since an
+// explicit invalidation is not a failed Set.
 func (c *Cacheable[T]) Invalidate()
 
 // IsStale reports whether the current value is stale (TTL elapsed or
@@ -137,8 +154,8 @@ codec's own existing validation error, exactly like `Mutable.Set`.
 | Invalid `Set` | Panics (`MustConst`) — or returns an error (`NewConst`) | Returns a typed/codec error | Current value UNCHANGED, returns codec error | Same as `Mutable` — last-good-value-wins |
 | **Notion of time/staleness?** | No | No | **No** — a value is just "current," forever, until replaced | **Yes** — TTL and/or explicit `Invalidate()`; a value can be *present but stale* |
 | `Get()` return shape | `T` | `T` (panics if unset) | `T` (never panics) | **`(T, bool)`** — value + freshness flag, never panics |
-| Interface satisfied | `Getter[T]` only | `GetterSetter[T]` | `GetterSetter[T]` (same as `Immutable[T]`) | **Does NOT satisfy `Getter[T]`** as designed — the 2-value return breaks the 1-value contract; see "Open design decisions" |
-| Observer | None (no I/O boundary) | None | `stats.ReloadObserver.RecordReload` on `Set` | **Reuses the same** `ReloadObserver` for `Set`; `Invalidate()` may need its own event (`RecordInvalidate`) — open question |
+| Interface satisfied | `Getter[T]` only | `GetterSetter[T]` | `GetterSetter[T]` (same as `Immutable[T]`) | **`FreshGetter[T]`** (`Get() (T, bool)`) — NOT `Getter[T]`, resolved below |
+| Observer | None (no I/O boundary) | None | `codex.ReloadObserver.RecordReload` on `Set` | **Reuses the same** `ReloadObserver` for `Set`, PLUS its own `InvalidateObserver.RecordInvalidate` for `Invalidate()` — resolved below |
 | Typical driver | Path/topic pattern constants | Config/env var loaded once at startup | Rotating security credentials (JWKS, API keys) — "give me whatever is current" | Stale-while-revalidate memoization — "give me what you have, tell me if it's still good" |
 
 **In one sentence:** `Mutable[T]` answers *"what's the current value?"*
@@ -155,17 +172,39 @@ shouldn't be redrafted from scratch at documentation time.
 
 ### Observer integration
 
-Reuses `stats.ReloadObserver` from `reloadable-value-containers.md`
-unchanged (`RecordReload(location, success, duration)`) for `Set` calls.
-**Open question:** does `Invalidate()` also deserve its own event (e.g.
-a `RecordInvalidate(location string)` on a NEW, separate extension, or
-folded into `ReloadObserver` as `RecordReload(location, false, 0)` with
-duration=0 signaling "this was an explicit invalidation, not a failed
-Set")? Leaning toward a SEPARATE `RecordInvalidate` call (an
-invalidation is not a failed reload — conflating the two would make
-"how many Set calls failed validation" and "how many times was this
-invalidated" indistinguishable in a dashboard) — flagged as an open
-design decision below, not resolved here.
+**RESOLVED**, unified with `reloadable-value-containers.md`'s
+`Mutable[T]` design (see that doc's "Observer integration" for the full
+`codex.ReloadObserver` local-interface resolution — same blocker, same
+fix, designed once and shared here). `Cacheable.Set` reuses
+`codex.ReloadObserver.RecordReload(location, success, duration)`
+unchanged, type-asserted from the same `obs any` field `Mutable[T]`
+uses.
+
+`Invalidate()` gets its OWN, SEPARATE interface — `codex.InvalidateObserver`
+(new, alongside `ReloadObserver` in the same `codex/observer.go`):
+
+```go
+// InvalidateObserver is the optional sibling to ReloadObserver for
+// Cacheable[T].Invalidate events — kept SEPARATE (not folded into
+// ReloadObserver as RecordReload(location, false, 0)) because an
+// explicit invalidation is NOT a failed reload: conflating the two
+// would make "how many Set calls failed validation" and "how many
+// times was this invalidated" indistinguishable in a dashboard. A
+// caller observing Mutable[T] alone (which has no Invalidate concept)
+// is never forced to implement this method — it's checked with its
+// own, independent type assertion, mirroring how stats.Observer's
+// SecurityObserver/CacheObserver/etc. are each separately asserted.
+type InvalidateObserver interface {
+	RecordInvalidate(location string)
+}
+```
+
+`stats.NoopObserver`/`LoggingObserver`/`fanout` gain a matching
+`RecordInvalidate` method alongside `RecordReload` (same PR as
+`reloadable-value-containers.md`'s `stats`-side changes); `stats` also
+gets `type InvalidateObserver = codex.InvalidateObserver` (alias) and an
+`AsInvalidateObserver` bridging helper, mirroring `AsReloadObserver`
+exactly.
 
 ### Possible future tie-in: Redis keyspace notifications
 
@@ -280,11 +319,15 @@ func (c *Cacheable[T]) IsStale(ctx context.Context) (bool, error)
 
 ### Files to create
 
+**RESOLVED file layout** — shared with `reloadable-value-containers.md`
+now that both containers are designed together:
+
 | File | Responsibility |
 |---|---|
-| `codex/const.go` (or `codex/mutable.go`/`codex/cacheable.go` — same open file-placement question as `reloadable-value-containers.md`) | `Cacheable[T]`, `CacheableOpt[T]`, `WithCacheableReloadObserver`, `NewCacheable` |
+| `codex/cacheable.go` (NEW) | `Cacheable[T]`, `CacheableOpt[T]`, `WithCacheableReloadObserver`, `NewCacheable` |
+| `codex/observer.go` (NEW, shared with `Mutable[T]`) | `InvalidateObserver` added here alongside `ReloadObserver` |
 | `codex/getter.go` | New `FreshGetter[T]` interface (`Get() (T, bool)`) — `Cacheable[T]` implements it |
-| `codex/const_test.go` (or split) | Full Part 2 test plan |
+| `codex/cacheable_test.go` (NEW) | Full Part 2 test plan |
 | `adapters/redis/cacheable.go` (follow-up phase, after `codex.Cacheable[T]` ships) | `redis.Cacheable[T]`, `NewCacheable`, ctx-aware `Get`/`Set`/`Invalidate`/`IsStale` |
 | `adapters/redis/cacheable_test.go` | Redis-backed sibling's own test plan (miss-is-not-error, TTL-driven freshness, DEL-based invalidation) |
 | `docs/concepts/codec.md` (doc-only) | Extend the Getter/Setter subsection's comparison table with `Cacheable[T]`'s row (see "Documentation note" above) |
@@ -315,31 +358,25 @@ func (c *Cacheable[T]) IsStale(ctx context.Context) (bool, error)
 
 ## Open design decisions
 
-- **Does `Cacheable[T]` satisfy `Getter[T]`/`GetterSetter[T]`?** As
-  designed above, `Get() (T, bool)` does NOT match `Getter[T]`'s
-  `Get() T` signature — `Cacheable[T]` would NOT satisfy the existing
-  interface. Options: (a) leave it as its own shape, not part of the
-  `Getter`/`Setter` interface family at all (simplest, but breaks the
-  "any future container satisfies these interfaces" promise
-  `getter.go`'s own doc comment makes); (b) add a THIRD interface,
-  `FreshGetter[T] interface { Get() (T, bool) }`, that `Cacheable[T]`
-  satisfies instead; (c) keep `Get() T` (panics or returns the stale
-  value silently) and add a SEPARATE `Fresh() bool` method instead of
-  bundling freshness into `Get`'s return. **Leaning toward (b)** — the
-  Redis-backed sibling subsection above gives `FreshGetter[T]` a SECOND
-  consumer (even though the Redis-backed type's `Get` needs its own
-  ctx/error-aware variant, not `FreshGetter[T]` itself, the SHAPE
-  precedent — "Get returns a freshness flag" — is shared), which
-  strengthens the case for resolving this as a real interface rather
-  than a one-off method shape. Still needs a final decision before
-  implementation — this is the single biggest open question in Part 2.
-- **Should `Invalidate()` fire its own Observer event, or reuse
-  `RecordReload`?** See "Observer integration" above — leaning toward a
-  new `RecordInvalidate(location string)`, not finalized.
-- **File placement** — same question `reloadable-value-containers.md`
-  already carries forward (`const.go` vs. a split file); `Cacheable[T]`
-  makes a 4th type in the family, which may tip the balance toward
-  splitting regardless of what's decided for `Mutable[T]` alone.
+- ~~Does `Cacheable[T]` satisfy `Getter[T]`/`GetterSetter[T]`?~~
+  **RESOLVED — option (b).** `Get() (T, bool)` does not match
+  `Getter[T]`'s `Get() T` signature, so a THIRD interface,
+  `FreshGetter[T] interface { Get() (T, bool) }` (`codex/getter.go`),
+  is what `Cacheable[T]` satisfies instead. The Redis-backed sibling
+  gave this a second consumer at the SHAPE level (even though its own
+  `Get` needs a ctx/error-aware variant, not `FreshGetter[T]` itself),
+  which settled the case for a real interface over a one-off method.
+- ~~Should `Invalidate()` fire its own Observer event, or reuse
+  `RecordReload`?~~ **RESOLVED — its own event.** See "Observer
+  integration" above: a new, SEPARATE `codex.InvalidateObserver`
+  interface (`RecordInvalidate(location string)`), not folded into
+  `ReloadObserver`.
+- ~~File placement~~ **RESOLVED** — see "Files to create" above:
+  `codex/cacheable.go` (this type) + `codex/mutable.go`
+  (`reloadable-value-containers.md`'s `Mutable[T]`) + shared
+  `codex/observer.go` for both types' Observer interfaces. Having both
+  containers designed together settled the "4th type tips the balance"
+  question definitively toward splitting.
 - ~~Should Part 1 (Cache template parity) ship independently of Part 2
   (`Cacheable[T]`)?~~ **Resolved — yes, and it has shipped.** Part 1
   landed with zero dependency on Part 2's open questions (see this doc's
