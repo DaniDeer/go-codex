@@ -7,15 +7,16 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"slices"
 	"strconv"
 	"strings"
-	"time"
 
 	gochi "github.com/go-chi/chi/v5"
 
 	"github.com/DaniDeer/go-codex/api/rest"
 	"github.com/DaniDeer/go-codex/codex"
 	"github.com/DaniDeer/go-codex/format"
+	"github.com/DaniDeer/go-codex/middleware"
 	"github.com/DaniDeer/go-codex/route"
 	"github.com/DaniDeer/go-codex/stats"
 )
@@ -170,15 +171,21 @@ func ResponseCookiesFromContext(ctx context.Context) ([]PendingCookie, bool) {
 }
 
 // Options configures the behaviour of [Handler] and [Register].
+//
+// BREAKING: Observer and SecurityFunc are REMOVED — replaced by
+// [middleware.Middleware] attached via [rest.WithMiddleware] (declaration
+// time, spec-relevant) and/or [Handler]/[Register]'s variadic mws parameter
+// (call time). Use [nethttp.RequireScopes] for the security replacement
+// (chi has no scheme-specific RequireScopes of its own — it reuses
+// nethttp's directly, identical *http.Request Raw type) and
+// [nethttp.ObservabilityMiddleware] for the observer replacement (same
+// general-purpose func(http.Handler) http.Handler shape this package's
+// Handler/Register already recognize).
 type Options struct {
 	// ErrorHandler, when non-nil, is called instead of the default JSON error
 	// envelope when a request fails. status is the suggested HTTP status code.
 	// Implementations must write the response header and body.
 	ErrorHandler func(w http.ResponseWriter, r *http.Request, status int, err error)
-
-	// Observer, when non-nil, receives per-request lifecycle events.
-	// Defaults to [stats.NoopObserver] when nil.
-	Observer stats.Observer
 
 	// MaxBodyBytes limits the number of bytes read from the request body.
 	// Zero means the default (1 MiB).
@@ -190,28 +197,85 @@ type Options struct {
 
 	// MultiValueQueryParams, when true, uses [rest.RouteHandle.ValidateQueryMulti].
 	MultiValueQueryParams bool
+}
 
-	// SecurityFunc, when non-nil, is called for routes that declare a non-nil
-	// Security field (via [rest.RouteMeta.Security] or global security), after
-	// parameter validation but before the handler fn.
-	//
-	// Return a non-nil error to reject the request with 401 Unauthorized.
-	// reqs contains the route's declared security requirements (scheme names +
-	// scopes). The adapter has already extracted and codec-validated the credential
-	// from the request before calling SecurityFunc.
-	//
-	// Example — JWT bearer verification:
-	//
-	//	opts.SecurityFunc = func(ctx context.Context, r *http.Request, reqs []route.SecurityRequirement) error {
-	//	    token := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
-	//	    return jwtlib.VerifyScopes(token, reqs)
-	//	}
-	SecurityFunc func(ctx context.Context, r *http.Request, reqs []route.SecurityRequirement) error
+// validateMiddlewareShapes checks every attached mw.Fn against the two
+// concrete shapes this package recognizes, EAGERLY at Register/Handler
+// construction time rather than deferring to the first incoming request —
+// a malformed Fn fails loudly and immediately.
+func validateMiddlewareShapes[Req any](mws []middleware.Middleware) error {
+	for _, mw := range mws {
+		switch mw.Fn.(type) {
+		case nil:
+			continue // spec-only/no-op middleware (e.g. RequestParams-only) — allowed
+		case func(http.Handler) http.Handler:
+			continue
+		case func(context.Context, *http.Request, *Req) (map[string][]string, error):
+			continue
+		default:
+			return middleware.MiddlewareShapeError{
+				Name:     mw.Name,
+				Expected: "func(http.Handler) http.Handler or func(context.Context, *http.Request, *Req) (map[string][]string, error)",
+				Got:      fmt.Sprintf("%T", mw.Fn),
+			}
+		}
+	}
+	return nil
+}
+
+// applyGeneralMiddleware wraps h with every general-purpose Fn found in mws,
+// OUTERMOST-in, in attachment order (mws[0] is outermost — the first
+// attached middleware runs first and returns last).
+func applyGeneralMiddleware(h http.Handler, mws []middleware.Middleware) http.Handler {
+	for i := len(mws) - 1; i >= 0; i-- {
+		fn, ok := mws[i].Fn.(func(http.Handler) http.Handler)
+		if !ok {
+			continue
+		}
+		h = fn(h)
+	}
+	return h
+}
+
+// runSecurityMiddleware runs every attached security-specific Fn IN
+// ATTACHMENT ORDER (fail-fast on the FIRST one whose OWN credential
+// extraction errors), merges their returned grants into ONE map, then
+// performs a SINGLE [middleware.CheckScopes] call — see "L4" in
+// docs/roadmap/declarative-middleware.md for why each Fn does NOT
+// independently decide pass/fail against the route's full requirement set.
+func runSecurityMiddleware[Req any](ctx context.Context, r *http.Request, req *Req, mws []middleware.Middleware, secReqs []route.SecurityRequirement) error {
+	if len(secReqs) == 0 {
+		return nil
+	}
+	granted := make(map[string][]string)
+	for _, mw := range mws {
+		fn, ok := mw.Fn.(func(context.Context, *http.Request, *Req) (map[string][]string, error))
+		if !ok {
+			continue
+		}
+		g, err := fn(ctx, r, req)
+		if err != nil {
+			return err
+		}
+		for k, v := range g {
+			granted[k] = v
+		}
+	}
+	return middleware.CheckScopes(secReqs, granted)
+}
+
+// diagnosticObserver adapts ctx-based [stats.RecordDiagnostic] to the
+// [stats.ValidationObserver] interface, so [stats.ReportErrors]'s existing
+// per-field error-walking logic can be reused UNCHANGED.
+type diagnosticObserver struct{ ctx context.Context }
+
+func (d diagnosticObserver) RecordValidationError(location, constraintName, field string) {
+	stats.RecordDiagnostic(d.ctx, stats.Diagnostic{Location: location, ConstraintName: constraintName, Field: field})
 }
 
 // Handler wraps a [rest.RouteHandle] and a [HandlerFunc] into an [http.HandlerFunc]
 // suitable for use with a chi.Router.
-func Handler[Req, Resp any](handle *rest.RouteHandle[Req, Resp], fn HandlerFunc[Req, Resp], opts Options) http.HandlerFunc {
+func Handler[Req, Resp any](handle *rest.RouteHandle[Req, Resp], fn HandlerFunc[Req, Resp], opts Options, mws ...middleware.Middleware) http.HandlerFunc {
 	errFn := opts.ErrorHandler
 	if errFn == nil {
 		errFn = defaultErrorHandler
@@ -224,22 +288,14 @@ func Handler[Req, Resp any](handle *rest.RouteHandle[Req, Resp], fn HandlerFunc[
 	if expectedCT == "" {
 		expectedCT = "application/json"
 	}
-	method := strings.ToUpper(handle.Descriptor.Method)
-	path := handle.Descriptor.Path
 
-	return func(w http.ResponseWriter, r *http.Request) {
-		// Resolve observer per-request: explicit opts.Observer beats context observer.
-		obs := opts.Observer
-		if obs == nil {
-			obs = stats.ObserverFromContext(r.Context())
-		}
-		start := time.Now()
+	allMws := append(slices.Clone(handle.Middlewares), mws...)
+
+	inner := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		sw := &statusResponseWriter{ResponseWriter: w, code: http.StatusOK}
-		defer func() {
-			obs.RecordRequest(method, path, sw.code, time.Since(start))
-		}()
 
-		ctx := context.WithValue(r.Context(), contextKey{}, r)
+		ctx := middleware.EnsureContextFields(r.Context())
+		ctx = context.WithValue(ctx, contextKey{}, r)
 		respHeaders := make(http.Header)
 		ctx = context.WithValue(ctx, responseHeadersKey{}, respHeaders)
 		pendingCookies := make([]PendingCookie, 0)
@@ -286,7 +342,7 @@ func Handler[Req, Resp any](handle *rest.RouteHandle[Req, Resp], fn HandlerFunc[
 				req, decErr = handle.Decode(body)
 			}
 			if decErr != nil {
-				reportBodyErrors(decErr, obs)
+				reportBodyErrors(ctx, decErr)
 				errFn(sw, r, http.StatusBadRequest, decErr)
 				return
 			}
@@ -294,26 +350,26 @@ func Handler[Req, Resp any](handle *rest.RouteHandle[Req, Resp], fn HandlerFunc[
 
 		if opts.MultiValueQueryParams {
 			if err := handle.ValidateQueryMulti(r.URL.Query()); err != nil {
-				reportQueryErrors(err, obs)
+				reportQueryErrors(ctx, err)
 				errFn(sw, r, http.StatusBadRequest, err)
 				return
 			}
 		} else {
 			if err := handle.ValidateQuery(queryValues(r)); err != nil {
-				reportQueryErrors(err, obs)
+				reportQueryErrors(ctx, err)
 				errFn(sw, r, http.StatusBadRequest, err)
 				return
 			}
 		}
 
 		if err := handle.ValidateCookies(cookieValues(r)); err != nil {
-			reportCookieErrors(err, obs)
+			reportCookieErrors(ctx, err)
 			errFn(sw, r, http.StatusBadRequest, err)
 			return
 		}
 
 		if err := handle.ValidateHeaders(headerValues(r)); err != nil {
-			reportHeaderErrors(err, obs)
+			reportHeaderErrors(ctx, err)
 			errFn(sw, r, http.StatusBadRequest, err)
 			return
 		}
@@ -322,7 +378,7 @@ func Handler[Req, Resp any](handle *rest.RouteHandle[Req, Resp], fn HandlerFunc[
 		names := handle.PathParamNames()
 		if len(names) > 0 {
 			if err := handle.ValidatePathParams(pathValues(r, names)); err != nil {
-				reportPathErrors(err, obs)
+				reportPathErrors(ctx, err)
 				errFn(sw, r, http.StatusBadRequest, err)
 				return
 			}
@@ -347,7 +403,7 @@ func Handler[Req, Resp any](handle *rest.RouteHandle[Req, Resp], fn HandlerFunc[
 				vars[k] = v
 			}
 			if err := codex.DecodeVars(&req, vars, mergeFields...); err != nil {
-				reportBodyErrors(err, obs)
+				reportBodyErrors(ctx, err)
 				errFn(sw, r, http.StatusBadRequest, err)
 				return
 			}
@@ -361,21 +417,19 @@ func Handler[Req, Resp any](handle *rest.RouteHandle[Req, Resp], fn HandlerFunc[
 		}
 		if len(secReqs) > 0 {
 			if credErr := validateSecurityCredentials(r, secReqs, handle.SecuritySchemes); credErr != nil {
-				if secObs, ok := obs.(stats.SecurityObserver); ok {
+				if secObs, ok := stats.ObserverFromContext(ctx).(stats.SecurityObserver); ok {
 					secObs.RecordSecurityRejection(handle.Descriptor.Path, firstScheme(secReqs))
 				}
 				errFn(sw, r, http.StatusUnauthorized, credErr)
 				return
 			}
-			if opts.SecurityFunc != nil {
-				if err := opts.SecurityFunc(ctx, r, secReqs); err != nil {
-					secErr := rest.SecurityError{Err: err}
-					if secObs, ok := obs.(stats.SecurityObserver); ok {
-						secObs.RecordSecurityRejection(handle.Descriptor.Path, firstScheme(secReqs))
-					}
-					errFn(sw, r, http.StatusUnauthorized, secErr)
-					return
-				}
+			// Run every attached security-specific Fn, merge grants, ONE
+			// middleware.CheckScopes call — see "L4" in
+			// docs/roadmap/declarative-middleware.md.
+			if err := runSecurityMiddleware(ctx, r, &req, allMws, secReqs); err != nil {
+				secErr := rest.SecurityError{Err: err}
+				errFn(sw, r, http.StatusUnauthorized, secErr)
+				return
 			}
 		}
 
@@ -383,10 +437,6 @@ func Handler[Req, Resp any](handle *rest.RouteHandle[Req, Resp], fn HandlerFunc[
 			resp Resp
 			err  error
 		)
-		if to, ok := obs.(stats.TraceObserver); ok {
-			ctx = to.StartSpan(ctx, "http.request", path)
-			defer func() { to.EndSpan(ctx, err) }()
-		}
 
 		resp, err = fn(ctx, req)
 		if err != nil {
@@ -398,7 +448,7 @@ func Handler[Req, Resp any](handle *rest.RouteHandle[Req, Resp], fn HandlerFunc[
 					// as an unmatched error, but still using this pattern's
 					// declared status via ErrorStatusFor.
 					if patternResp.Action == "" || patternResp.Action == rest.ErrorRespond {
-						if writeErr := writeErrorPatternResponse(sw, handle, patternResp, respHeaders, pendingCookies, obs); writeErr == nil {
+						if writeErr := writeErrorPatternResponse(ctx, sw, handle, patternResp, respHeaders, pendingCookies); writeErr == nil {
 							return
 						} else {
 							err = writeErr
@@ -428,7 +478,7 @@ func Handler[Req, Resp any](handle *rest.RouteHandle[Req, Resp], fn HandlerFunc[
 		if headerFields := handle.ResponseHeaderMergeFields(); len(headerFields) > 0 {
 			values, encErr := codex.EncodeVars(resp, headerFields...)
 			if encErr != nil {
-				reportResponseHeaderErrors(encErr, obs)
+				reportResponseHeaderErrors(ctx, encErr)
 				errFn(sw, r, http.StatusInternalServerError, encErr)
 				return
 			}
@@ -439,7 +489,7 @@ func Handler[Req, Resp any](handle *rest.RouteHandle[Req, Resp], fn HandlerFunc[
 		if cookieFields := handle.ResponseCookieMergeFields(); len(cookieFields) > 0 {
 			values, encErr := codex.EncodeVars(resp, cookieFields...)
 			if encErr != nil {
-				reportResponseCookieErrors(encErr, obs)
+				reportResponseCookieErrors(ctx, encErr)
 				errFn(sw, r, http.StatusInternalServerError, encErr)
 				return
 			}
@@ -465,19 +515,19 @@ func Handler[Req, Resp any](handle *rest.RouteHandle[Req, Resp], fn HandlerFunc[
 			}
 			if chosen.IsStreamable() {
 				if valErr := chosen.Validate(resp); valErr != nil {
-					reportBodyErrors(valErr, obs)
+					reportBodyErrors(ctx, valErr)
 					errFn(sw, r, http.StatusInternalServerError, valErr)
 					return
 				}
 				respCT = chosen.ContentType()
 
 				if err := handle.ValidateResponseHeaders(responseHeaderValues(respHeaders)); err != nil {
-					reportResponseHeaderErrors(err, obs)
+					reportResponseHeaderErrors(ctx, err)
 					errFn(sw, r, http.StatusInternalServerError, err)
 					return
 				}
 				if err := handle.ValidateResponseCookies(responseCookieValues(pendingCookies)); err != nil {
-					reportResponseCookieErrors(err, obs)
+					reportResponseCookieErrors(ctx, err)
 					errFn(sw, r, http.StatusInternalServerError, err)
 					return
 				}
@@ -498,14 +548,14 @@ func Handler[Req, Resp any](handle *rest.RouteHandle[Req, Resp], fn HandlerFunc[
 				sw.Header().Set("Content-Type", respCT)
 				sw.WriteHeader(primaryStatus(handle))
 				if streamErr := chosen.MarshalTo(resp, sw); streamErr != nil {
-					reportBodyErrors(streamErr, obs)
+					reportBodyErrors(ctx, streamErr)
 				}
 				return
 			}
 			var encErr error
 			out, encErr = chosen.Marshal(resp)
 			if encErr != nil {
-				reportBodyErrors(encErr, obs)
+				reportBodyErrors(ctx, encErr)
 				errFn(sw, r, http.StatusInternalServerError, encErr)
 				return
 			}
@@ -514,7 +564,7 @@ func Handler[Req, Resp any](handle *rest.RouteHandle[Req, Resp], fn HandlerFunc[
 			var encErr error
 			out, encErr = handle.Encode(resp)
 			if encErr != nil {
-				reportBodyErrors(encErr, obs)
+				reportBodyErrors(ctx, encErr)
 				errFn(sw, r, http.StatusInternalServerError, encErr)
 				return
 			}
@@ -522,13 +572,13 @@ func Handler[Req, Resp any](handle *rest.RouteHandle[Req, Resp], fn HandlerFunc[
 		}
 
 		if err := handle.ValidateResponseHeaders(responseHeaderValues(respHeaders)); err != nil {
-			reportResponseHeaderErrors(err, obs)
+			reportResponseHeaderErrors(ctx, err)
 			errFn(sw, r, http.StatusInternalServerError, err)
 			return
 		}
 
 		if err := handle.ValidateResponseCookies(responseCookieValues(pendingCookies)); err != nil {
-			reportResponseCookieErrors(err, obs)
+			reportResponseCookieErrors(ctx, err)
 			errFn(sw, r, http.StatusInternalServerError, err)
 			return
 		}
@@ -552,15 +602,40 @@ func Handler[Req, Resp any](handle *rest.RouteHandle[Req, Resp], fn HandlerFunc[
 		sw.Header().Set("Content-Type", respCT)
 		sw.WriteHeader(status)
 		_, _ = sw.Write(out) // #nosec G705 -- content is application-generated, not user-controlled
-	}
+	})
+
+	// General-purpose middlewares (e.g. nethttp.ObservabilityMiddleware) wrap
+	// the WHOLE call, outermost-in, in attachment order — see "Two
+	// attachment points" in docs/roadmap/declarative-middleware.md.
+	// Malformed Fn shapes are silently skipped here (best-effort, since
+	// Handler returns no error); use [Register] for eager, loud
+	// [middleware.MiddlewareShapeError] validation at wiring time instead
+	// of first-request time.
+	return applyGeneralMiddleware(inner, allMws).ServeHTTP
 }
 
 // Register registers the route on r using its method and path from the route
 // descriptor. Chi uses the same {param} placeholder syntax as go-codex path
 // templates, so no translation is needed.
-func Register[Req, Resp any](r gochi.Router, handle *rest.RouteHandle[Req, Resp], fn HandlerFunc[Req, Resp], opts Options) {
+//
+// mws combines with handle.Middlewares (declaration-time, attached via
+// [rest.WithMiddleware]) — declaration-time middleware runs first, then
+// call-time mws, in that combined order.
+//
+// Register validates every attached middleware's Fn shape EAGERLY, at
+// wiring time — before any request arrives — returning
+// [middleware.MiddlewareShapeError] immediately for a malformed Fn, instead
+// of silently skipping it on every incoming request the way [Handler] does
+// when called directly. This is why Register returns an error (BREAKING —
+// was previously void).
+func Register[Req, Resp any](r gochi.Router, handle *rest.RouteHandle[Req, Resp], fn HandlerFunc[Req, Resp], opts Options, mws ...middleware.Middleware) error {
+	allMws := append(slices.Clone(handle.Middlewares), mws...)
+	if err := validateMiddlewareShapes[Req](allMws); err != nil {
+		return err
+	}
 	method := strings.ToUpper(handle.Descriptor.Method)
-	r.Method(method, handle.Descriptor.Path, Handler(handle, fn, opts))
+	r.Method(method, handle.Descriptor.Path, Handler(handle, fn, opts, mws...))
+	return nil
 }
 
 // SSEHandlerFunc is the typed application handler called by [SSEHandler].
@@ -580,39 +655,30 @@ type SSEHandlerFunc[Req, Event any] func(ctx context.Context, req Req, send func
 // validation, send returns an error without writing anything.
 //
 // fn should honour ctx.Done() for clean client-disconnect handling.
-func SSEHandler[Req, Event any](handle *rest.SSERouteHandle[Req, Event], fn SSEHandlerFunc[Req, Event], opts Options) http.HandlerFunc {
+func SSEHandler[Req, Event any](handle *rest.SSERouteHandle[Req, Event], fn SSEHandlerFunc[Req, Event], opts Options, mws ...middleware.Middleware) http.HandlerFunc {
 	if opts.ErrorHandler == nil {
 		opts.ErrorHandler = defaultErrorHandler
 	}
-	return func(w http.ResponseWriter, r *http.Request) {
-		// Resolve observer per-request: explicit opts.Observer beats context observer.
-		obs := opts.Observer
-		if obs == nil {
-			obs = stats.ObserverFromContext(r.Context())
-		}
-		start := time.Now()
+	inner := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		sw := &statusResponseWriter{ResponseWriter: w, code: http.StatusOK}
 
 		var req Req
-		ctx := context.WithValue(r.Context(), contextKey{}, r)
+		ctx := middleware.EnsureContextFields(r.Context())
+		ctx = context.WithValue(ctx, contextKey{}, r)
 		responseHeaders := make(http.Header)
 		ctx = context.WithValue(ctx, responseHeadersKey{}, responseHeaders)
 		ctx = context.WithValue(ctx, responseCookiesKey{}, &[]PendingCookie{})
 
-		defer func() {
-			obs.RecordRequest(r.Method, handle.Descriptor.Path, sw.code, time.Since(start))
-		}()
-
 		// Validate query parameters against their registered codecs (if any).
 		if opts.MultiValueQueryParams {
 			if err := handle.ValidateQueryMulti(r.URL.Query()); err != nil {
-				reportQueryErrors(err, obs)
+				reportQueryErrors(ctx, err)
 				opts.ErrorHandler(sw, r, http.StatusBadRequest, err)
 				return
 			}
 		} else {
 			if err := handle.ValidateQuery(queryValues(r)); err != nil {
-				reportQueryErrors(err, obs)
+				reportQueryErrors(ctx, err)
 				opts.ErrorHandler(sw, r, http.StatusBadRequest, err)
 				return
 			}
@@ -620,14 +686,14 @@ func SSEHandler[Req, Event any](handle *rest.SSERouteHandle[Req, Event], fn SSEH
 
 		// Validate cookie parameters against their registered codecs (if any).
 		if err := handle.ValidateCookies(cookieValues(r)); err != nil {
-			reportCookieErrors(err, obs)
+			reportCookieErrors(ctx, err)
 			opts.ErrorHandler(sw, r, http.StatusBadRequest, err)
 			return
 		}
 
 		// Validate header parameters against their registered codecs (if any).
 		if err := handle.ValidateHeaders(headerValues(r)); err != nil {
-			reportHeaderErrors(err, obs)
+			reportHeaderErrors(ctx, err)
 			opts.ErrorHandler(sw, r, http.StatusBadRequest, err)
 			return
 		}
@@ -635,7 +701,7 @@ func SSEHandler[Req, Event any](handle *rest.SSERouteHandle[Req, Event], fn SSEH
 		// Validate path parameters against their registered codecs (if any).
 		if names := handle.PathParamNames(); len(names) > 0 {
 			if err := handle.ValidatePathParams(pathValues(r, names)); err != nil {
-				reportPathErrors(err, obs)
+				reportPathErrors(ctx, err)
 				opts.ErrorHandler(sw, r, http.StatusBadRequest, err)
 				return
 			}
@@ -653,21 +719,16 @@ func SSEHandler[Req, Event any](handle *rest.SSERouteHandle[Req, Event], fn SSEH
 		}
 		if len(secReqs) > 0 {
 			if credErr := validateSecurityCredentials(r, secReqs, handle.SecuritySchemes); credErr != nil {
-				if secObs, ok := obs.(stats.SecurityObserver); ok {
+				if secObs, ok := stats.ObserverFromContext(ctx).(stats.SecurityObserver); ok {
 					secObs.RecordSecurityRejection(handle.Descriptor.Path, firstScheme(secReqs))
 				}
 				opts.ErrorHandler(sw, r, http.StatusUnauthorized, credErr)
 				return
 			}
-			if opts.SecurityFunc != nil {
-				if err := opts.SecurityFunc(ctx, r, secReqs); err != nil {
-					secErr := rest.SecurityError{Err: err}
-					if secObs, ok := obs.(stats.SecurityObserver); ok {
-						secObs.RecordSecurityRejection(handle.Descriptor.Path, firstScheme(secReqs))
-					}
-					opts.ErrorHandler(sw, r, http.StatusUnauthorized, secErr)
-					return
-				}
+			if err := runSecurityMiddleware(ctx, r, &req, mws, secReqs); err != nil {
+				secErr := rest.SecurityError{Err: err}
+				opts.ErrorHandler(sw, r, http.StatusUnauthorized, secErr)
+				return
 			}
 		}
 
@@ -712,7 +773,7 @@ func SSEHandler[Req, Event any](handle *rest.SSERouteHandle[Req, Event], fn SSEH
 				var err error
 				e, err = handle.MergeEvent(e, pathVars, queryVars, headerVars, cookieVars)
 				if err != nil {
-					stats.ReportErrors(obs, "response", err)
+					stats.ReportErrors(diagnosticObserver{ctx}, "response", err)
 					return err
 				}
 			}
@@ -721,12 +782,12 @@ func SSEHandler[Req, Event any](handle *rest.SSERouteHandle[Req, Event], fn SSEH
 				// Commit staged response headers/cookies on first send, before
 				// any data is written (headers are not yet sent to the client).
 				if err := handle.ValidateResponseHeaders(responseHeaderValues(responseHeaders)); err != nil {
-					reportResponseHeaderErrors(err, obs)
+					reportResponseHeaderErrors(ctx, err)
 					return err
 				}
 				if pending, ok := ctx.Value(responseCookiesKey{}).(*[]PendingCookie); ok {
 					if err := handle.ValidateResponseCookies(responseCookieValues(*pending)); err != nil {
-						reportResponseCookieErrors(err, obs)
+						reportResponseCookieErrors(ctx, err)
 						return err
 					}
 					for i := range *pending {
@@ -745,7 +806,7 @@ func SSEHandler[Req, Event any](handle *rest.SSERouteHandle[Req, Event], fn SSEH
 				}
 			}
 			if err := validate(e); err != nil {
-				obs.RecordValidationError("response", stats.ConstraintName(err), "event")
+				stats.RecordDiagnostic(ctx, stats.Diagnostic{Location: "response", ConstraintName: stats.ConstraintName(err), Field: "event"})
 				return err
 			}
 			data, err := encode(e)
@@ -761,23 +822,30 @@ func SSEHandler[Req, Event any](handle *rest.SSERouteHandle[Req, Event], fn SSEH
 			return nil
 		}
 
-		var err error
-		if to, ok := obs.(stats.TraceObserver); ok {
-			ctx = to.StartSpan(ctx, "http.request", handle.Descriptor.Path)
-			defer func() { to.EndSpan(ctx, err) }()
-		}
-
-		if err = fn(ctx, req, send); err != nil {
+		if err := fn(ctx, req, send); err != nil {
 			if sw.code == http.StatusOK {
 				opts.ErrorHandler(sw, r, http.StatusInternalServerError, err)
 			}
 		}
-	}
+	})
+
+	// General-purpose middlewares wrap the WHOLE call, outermost-in, in
+	// attachment order — see [Handler]'s equivalent wrapping.
+	return applyGeneralMiddleware(inner, mws).ServeHTTP
 }
 
 // RegisterSSE wires an [rest.SSERouteHandle] onto a chi router as a GET SSE endpoint.
-func RegisterSSE[Req, Event any](r gochi.Router, handle *rest.SSERouteHandle[Req, Event], fn SSEHandlerFunc[Req, Event], opts Options) {
-	r.Get(handle.Descriptor.Path, SSEHandler(handle, fn, opts))
+//
+// mws is call-time-only (SSERouteHandle has no declaration-time Middlewares
+// field). Validates every attached middleware's Fn shape EAGERLY, returning
+// [middleware.MiddlewareShapeError] immediately for a malformed Fn
+// (BREAKING — RegisterSSE was previously void).
+func RegisterSSE[Req, Event any](r gochi.Router, handle *rest.SSERouteHandle[Req, Event], fn SSEHandlerFunc[Req, Event], opts Options, mws ...middleware.Middleware) error {
+	if err := validateMiddlewareShapes[Req](mws); err != nil {
+		return err
+	}
+	r.Get(handle.Descriptor.Path, SSEHandler(handle, fn, opts, mws...))
+	return nil
 }
 
 func primaryStatus[Req, Resp any](handle *rest.RouteHandle[Req, Resp]) int {
@@ -873,18 +941,18 @@ func responseCookieValues(cookies []PendingCookie) map[string]string {
 }
 
 func writeErrorPatternResponse[Req, Resp any](
+	ctx context.Context,
 	w http.ResponseWriter,
 	handle *rest.RouteHandle[Req, Resp],
 	pattern rest.ErrorPatternResponse,
 	respHeaders http.Header,
 	pendingCookies []PendingCookie,
-	obs stats.Observer,
 ) error {
 	if respVal, ok := pattern.Value.(Resp); ok {
 		if headerFields := handle.ResponseHeaderMergeFields(); len(headerFields) > 0 {
 			values, encErr := codex.EncodeVars(respVal, headerFields...)
 			if encErr != nil {
-				reportResponseHeaderErrors(encErr, obs)
+				reportResponseHeaderErrors(ctx, encErr)
 				return encErr
 			}
 			for k, v := range values {
@@ -894,7 +962,7 @@ func writeErrorPatternResponse[Req, Resp any](
 		if cookieFields := handle.ResponseCookieMergeFields(); len(cookieFields) > 0 {
 			values, encErr := codex.EncodeVars(respVal, cookieFields...)
 			if encErr != nil {
-				reportResponseCookieErrors(encErr, obs)
+				reportResponseCookieErrors(ctx, encErr)
 				return encErr
 			}
 			for k, v := range values {
@@ -904,11 +972,11 @@ func writeErrorPatternResponse[Req, Resp any](
 	}
 
 	if err := handle.ValidateResponseHeaders(responseHeaderValues(respHeaders)); err != nil {
-		reportResponseHeaderErrors(err, obs)
+		reportResponseHeaderErrors(ctx, err)
 		return err
 	}
 	if err := handle.ValidateResponseCookies(responseCookieValues(pendingCookies)); err != nil {
-		reportResponseCookieErrors(err, obs)
+		reportResponseCookieErrors(ctx, err)
 		return err
 	}
 
@@ -931,56 +999,56 @@ func writeErrorPatternResponse[Req, Resp any](
 	return err
 }
 
-func reportBodyErrors(err error, obs stats.Observer) {
-	stats.ReportErrors(obs, "body", err)
+func reportBodyErrors(ctx context.Context, err error) {
+	stats.ReportErrors(diagnosticObserver{ctx}, "body", err)
 }
 
-func reportQueryErrors(err error, obs stats.Observer) {
+func reportQueryErrors(ctx context.Context, err error) {
 	var qe rest.QueryParamError
 	if !errors.As(err, &qe) {
 		return
 	}
-	obs.RecordValidationError("query", stats.ConstraintName(qe.Err), qe.Name)
+	stats.RecordDiagnostic(ctx, stats.Diagnostic{Location: "query", ConstraintName: stats.ConstraintName(qe.Err), Field: qe.Name})
 }
 
-func reportCookieErrors(err error, obs stats.Observer) {
+func reportCookieErrors(ctx context.Context, err error) {
 	var ce rest.CookieParamError
 	if !errors.As(err, &ce) {
 		return
 	}
-	obs.RecordValidationError("cookie", stats.ConstraintName(ce.Err), ce.Name)
+	stats.RecordDiagnostic(ctx, stats.Diagnostic{Location: "cookie", ConstraintName: stats.ConstraintName(ce.Err), Field: ce.Name})
 }
 
-func reportHeaderErrors(err error, obs stats.Observer) {
+func reportHeaderErrors(ctx context.Context, err error) {
 	var he rest.HeaderParamError
 	if !errors.As(err, &he) {
 		return
 	}
-	obs.RecordValidationError("header", stats.ConstraintName(he.Err), he.Name)
+	stats.RecordDiagnostic(ctx, stats.Diagnostic{Location: "header", ConstraintName: stats.ConstraintName(he.Err), Field: he.Name})
 }
 
-func reportResponseHeaderErrors(err error, obs stats.Observer) {
+func reportResponseHeaderErrors(ctx context.Context, err error) {
 	var rhe rest.ResponseHeaderParamError
 	if !errors.As(err, &rhe) {
 		return
 	}
-	obs.RecordValidationError("response_header", stats.ConstraintName(rhe.Err), rhe.Name)
+	stats.RecordDiagnostic(ctx, stats.Diagnostic{Location: "response_header", ConstraintName: stats.ConstraintName(rhe.Err), Field: rhe.Name})
 }
 
-func reportResponseCookieErrors(err error, obs stats.Observer) {
+func reportResponseCookieErrors(ctx context.Context, err error) {
 	var rce rest.ResponseCookieParamError
 	if !errors.As(err, &rce) {
 		return
 	}
-	obs.RecordValidationError("response_cookie", stats.ConstraintName(rce.Err), rce.Name)
+	stats.RecordDiagnostic(ctx, stats.Diagnostic{Location: "response_cookie", ConstraintName: stats.ConstraintName(rce.Err), Field: rce.Name})
 }
 
-func reportPathErrors(err error, obs stats.Observer) {
+func reportPathErrors(ctx context.Context, err error) {
 	var pe rest.PathParamError
 	if !errors.As(err, &pe) {
 		return
 	}
-	obs.RecordValidationError("path", stats.ConstraintName(pe.Err), pe.Name)
+	stats.RecordDiagnostic(ctx, stats.Diagnostic{Location: "path", ConstraintName: stats.ConstraintName(pe.Err), Field: pe.Name})
 }
 
 func negotiateFormat[T any](formats []format.Format[T], accept string) (format.Format[T], bool) {

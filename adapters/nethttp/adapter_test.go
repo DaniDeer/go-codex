@@ -17,6 +17,7 @@ import (
 	"github.com/DaniDeer/go-codex/api/rest"
 	"github.com/DaniDeer/go-codex/codex"
 	"github.com/DaniDeer/go-codex/format"
+	"github.com/DaniDeer/go-codex/middleware"
 	"github.com/DaniDeer/go-codex/route"
 	"github.com/DaniDeer/go-codex/stats"
 	"github.com/DaniDeer/go-codex/validate"
@@ -401,7 +402,7 @@ func TestObserver_RecordRequest_success(t *testing.T) {
 	obs := &spyObserver{}
 	h := nethttp.Handler(handle, func(_ context.Context, req createReq) (userResp, error) {
 		return userResp{ID: "1", Name: req.Name}, nil
-	}, nethttp.Options{Observer: obs})
+	}, nethttp.Options{}, nethttp.ObservabilityMiddleware(obs))
 
 	rec := httptest.NewRecorder()
 	r := httptest.NewRequest(http.MethodPost, "/users", strings.NewReader(`{"name":"Alice"}`))
@@ -428,7 +429,7 @@ func TestObserver_RecordRequest_handlerError(t *testing.T) {
 	obs := &spyObserver{}
 	h := nethttp.Handler(handle, func(_ context.Context, req createReq) (userResp, error) {
 		return userResp{}, errors.New("oops")
-	}, nethttp.Options{Observer: obs})
+	}, nethttp.Options{}, nethttp.ObservabilityMiddleware(obs))
 
 	rec := httptest.NewRecorder()
 	r := httptest.NewRequest(http.MethodPost, "/users", strings.NewReader(`{"name":"Alice"}`))
@@ -448,7 +449,7 @@ func TestObserver_RecordValidationError_body(t *testing.T) {
 	obs := &spyObserver{}
 	h := nethttp.Handler(handle, func(_ context.Context, req createReq) (userResp, error) {
 		return userResp{}, nil
-	}, nethttp.Options{Observer: obs})
+	}, nethttp.Options{}, nethttp.ObservabilityMiddleware(obs))
 
 	rec := httptest.NewRecorder()
 	r := httptest.NewRequest(http.MethodPost, "/users", strings.NewReader(`{"name":""}`))
@@ -476,7 +477,7 @@ func TestObserver_RecordValidationError_query(t *testing.T) {
 	obs := &spyObserver{}
 	handler := nethttp.Handler(h, func(_ context.Context, _ getReq) (userResp, error) {
 		return userResp{}, nil
-	}, nethttp.Options{Observer: obs})
+	}, nethttp.Options{}, nethttp.ObservabilityMiddleware(obs))
 
 	rec := httptest.NewRecorder()
 	r := httptest.NewRequest(http.MethodGet, "/users?id=not-a-uuid", nil)
@@ -589,7 +590,7 @@ func TestObserver_RecordValidationError_cookie(t *testing.T) {
 	obs := &spyObserver{}
 	handler := nethttp.Handler(h, func(_ context.Context, _ getReq) (userResp, error) {
 		return userResp{}, nil
-	}, nethttp.Options{Observer: obs})
+	}, nethttp.Options{}, nethttp.ObservabilityMiddleware(obs))
 
 	rec := httptest.NewRecorder()
 	r := httptest.NewRequest(http.MethodGet, "/protected", nil)
@@ -617,7 +618,7 @@ func TestObserver_RecordValidationError_header(t *testing.T) {
 	obs := &spyObserver{}
 	handler := nethttp.Handler(h, func(_ context.Context, _ getReq) (userResp, error) {
 		return userResp{}, nil
-	}, nethttp.Options{Observer: obs})
+	}, nethttp.Options{}, nethttp.ObservabilityMiddleware(obs))
 
 	rec := httptest.NewRecorder()
 	r := httptest.NewRequest(http.MethodGet, "/items", nil)
@@ -1742,40 +1743,38 @@ func (o *mockSecurityObserver) RecordSecurityRejection(location, scheme string) 
 	o.scheme = scheme
 }
 
-func newSecuredRoute() (*rest.RouteHandle[createReq, userResp], error) {
+func newSecuredRoute(mw middleware.Middleware) (*rest.RouteHandle[createReq, userResp], error) {
 	b := rest.NewBuilder(testInfo)
 	return rest.NewRoute[createReq, userResp]("POST", "/users",
 		createReqCodec, userRespCodec,
-		rest.RouteMeta{
-			OperationID: "createUser",
-			Security:    []route.SecurityRequirement{route.Require("bearerAuth")},
-		},
-		rest.WithSecurityScheme("bearerAuth", rest.SecurityScheme{SecurityScheme: route.BearerScheme("JWT")}),
+		rest.RouteMeta{OperationID: "createUser"},
+		rest.WithMiddleware(mw),
 	).Register(b)
 }
 
 func TestHandler_SecurityFunc_calledForSecuredRoute(t *testing.T) {
-	handle, err := newSecuredRoute()
+	secFuncCalled := false
+	mw := nethttp.RequireScopes[createReq]("bearerAuth", route.BearerScheme("JWT"), nil, nil,
+		func(_ context.Context, r *http.Request, _ *createReq) (map[string][]string, error) {
+			secFuncCalled = true
+			if r.Header.Get("Authorization") != "test-bearer-token" {
+				return nil, errors.New("unauthorized")
+			}
+			return map[string][]string{"bearerAuth": nil}, nil
+		},
+	)
+	handle, err := newSecuredRoute(mw)
 	if err != nil {
 		t.Fatal(err)
 	}
-	secFuncCalled := false
 	h := nethttp.Handler(handle, func(_ context.Context, req createReq) (userResp, error) {
 		return userResp{ID: "1", Name: req.Name}, nil
-	}, nethttp.Options{
-		SecurityFunc: func(_ context.Context, r *http.Request, _ []route.SecurityRequirement) error {
-			secFuncCalled = true
-			if r.Header.Get("Authorization") != "Bearer valid-token" {
-				return errors.New("unauthorized")
-			}
-			return nil
-		},
-	})
+	}, nethttp.Options{})
 
 	rec := httptest.NewRecorder()
 	r := httptest.NewRequest(http.MethodPost, "/users", strings.NewReader(`{"name":"Alice"}`))
 	r.Header.Set("Content-Type", "application/json")
-	r.Header.Set("Authorization", "Bearer valid-token")
+	r.Header.Set("Authorization", "test-bearer-token")
 	h.ServeHTTP(rec, r)
 
 	if !secFuncCalled {
@@ -1787,23 +1786,24 @@ func TestHandler_SecurityFunc_calledForSecuredRoute(t *testing.T) {
 }
 
 func TestHandler_SecurityFunc_rejectsRequest(t *testing.T) {
-	handle, err := newSecuredRoute()
+	mw := nethttp.RequireScopes[createReq]("bearerAuth", route.BearerScheme("JWT"), nil, nil,
+		func(_ context.Context, _ *http.Request, _ *createReq) (map[string][]string, error) {
+			return nil, errors.New("unauthorized")
+		},
+	)
+	handle, err := newSecuredRoute(mw)
 	if err != nil {
 		t.Fatal(err)
 	}
 	h := nethttp.Handler(handle, func(_ context.Context, req createReq) (userResp, error) {
 		t.Fatal("handler must not be called when security rejects")
 		return userResp{}, nil
-	}, nethttp.Options{
-		SecurityFunc: func(_ context.Context, _ *http.Request, _ []route.SecurityRequirement) error {
-			return errors.New("unauthorized")
-		},
-	})
+	}, nethttp.Options{})
 
 	rec := httptest.NewRecorder()
 	r := httptest.NewRequest(http.MethodPost, "/users", strings.NewReader(`{"name":"Alice"}`))
 	r.Header.Set("Content-Type", "application/json")
-	r.Header.Set("Authorization", "Bearer valid-token")
+	r.Header.Set("Authorization", "test-bearer-token")
 	h.ServeHTTP(rec, r)
 
 	if rec.Code != http.StatusUnauthorized {
@@ -1814,14 +1814,15 @@ func TestHandler_SecurityFunc_rejectsRequest(t *testing.T) {
 func TestHandler_SecurityFunc_notCalledForUnsecuredRoute(t *testing.T) {
 	handle := newCreateRoute()
 	secFuncCalled := false
+	mw := nethttp.RequireScopes[createReq]("bearerAuth", route.BearerScheme("JWT"), nil, nil,
+		func(_ context.Context, _ *http.Request, _ *createReq) (map[string][]string, error) {
+			secFuncCalled = true
+			return nil, nil
+		},
+	)
 	h := nethttp.Handler(handle, func(_ context.Context, req createReq) (userResp, error) {
 		return userResp{ID: "1", Name: req.Name}, nil
-	}, nethttp.Options{
-		SecurityFunc: func(_ context.Context, _ *http.Request, _ []route.SecurityRequirement) error {
-			secFuncCalled = true
-			return nil
-		},
-	})
+	}, nethttp.Options{}, mw)
 
 	rec := httptest.NewRecorder()
 	r := httptest.NewRequest(http.MethodPost, "/users", strings.NewReader(`{"name":"Alice"}`))
@@ -1839,16 +1840,16 @@ func TestHandler_SecurityFunc_notCalledForUnsecuredRoute(t *testing.T) {
 func TestHandler_SecurityFunc_codecValidationFailure(t *testing.T) {
 	b := rest.NewBuilder(testInfo)
 	jwtCodec := codex.String().Refine(validate.JWT)
+	mw := nethttp.RequireScopes[createReq]("bearerAuth", route.BearerScheme("JWT"), nil, &jwtCodec,
+		func(_ context.Context, _ *http.Request, _ *createReq) (map[string][]string, error) {
+			t.Fatal("Fn must not be called when credential fails codec format validation")
+			return nil, nil
+		},
+	)
 	handle, err := rest.NewRoute[createReq, userResp]("POST", "/users",
 		createReqCodec, userRespCodec,
-		rest.RouteMeta{
-			OperationID: "createUser",
-			Security:    []route.SecurityRequirement{route.Require("bearerAuth")},
-		},
-		rest.WithSecurityScheme("bearerAuth", rest.SecurityScheme{
-			SecurityScheme: route.BearerScheme("JWT"),
-			Codec:          &jwtCodec,
-		}),
+		rest.RouteMeta{OperationID: "createUser"},
+		rest.WithMiddleware(mw),
 	).Register(b)
 	if err != nil {
 		t.Fatal(err)
@@ -1878,25 +1879,37 @@ func TestHandler_SecurityFunc_codecValidationFailure(t *testing.T) {
 }
 
 func TestHandler_SecurityObserver_calledOnRejection(t *testing.T) {
-	handle, err := newSecuredRoute()
+	obs := &mockSecurityObserver{}
+	mw := nethttp.RequireScopes[createReq]("bearerAuth", route.BearerScheme("JWT"), nil, nil,
+		func(ctx context.Context, _ *http.Request, _ *createReq) (map[string][]string, error) {
+			// Fn-driven rejection recording is now the Fn author's own
+			// responsibility (Class A moved into Fn) — the adapter no
+			// longer calls RecordSecurityRejection automatically for
+			// authorization (as opposed to credential-format) failures.
+			if secObs, ok := stats.ObserverFromContext(ctx).(stats.SecurityObserver); ok {
+				secObs.RecordSecurityRejection("/users", "bearerAuth")
+			}
+			return nil, errors.New("unauthorized")
+		},
+	)
+	handle, err := newSecuredRoute(mw)
 	if err != nil {
 		t.Fatal(err)
 	}
-	obs := &mockSecurityObserver{}
 	h := nethttp.Handler(handle, func(_ context.Context, req createReq) (userResp, error) {
 		return userResp{}, nil
-	}, nethttp.Options{
-		Observer: obs,
-		SecurityFunc: func(_ context.Context, _ *http.Request, _ []route.SecurityRequirement) error {
-			return errors.New("unauthorized")
-		},
+	}, nethttp.Options{})
+
+	withObsMiddleware := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		r = r.WithContext(stats.WithObserver(r.Context(), obs))
+		h.ServeHTTP(w, r)
 	})
 
 	rec := httptest.NewRecorder()
 	r := httptest.NewRequest(http.MethodPost, "/users", strings.NewReader(`{"name":"Alice"}`))
 	r.Header.Set("Content-Type", "application/json")
-	r.Header.Set("Authorization", "Bearer valid-token")
-	h.ServeHTTP(rec, r)
+	r.Header.Set("Authorization", "test-bearer-token")
+	withObsMiddleware.ServeHTTP(rec, r)
 
 	if rec.Code != http.StatusUnauthorized {
 		t.Errorf("want 401, got %d", rec.Code)
@@ -1912,7 +1925,10 @@ func TestHandler_SecurityObserver_calledOnRejection(t *testing.T) {
 func newGlobalSecuredRoute() (*rest.RouteHandle[createReq, userResp], error) {
 	b := rest.NewBuilder(testInfo)
 	b.AddGlobalSecurity(route.Require("bearerAuth"))
-	// No per-route Security — inherits global.
+	// No per-route Security — inherits global. Attach NO rest.WithMiddleware
+	// here (global security is not checked by drift-closing validation,
+	// see adapters/nethttp Stage 3 simplification) — the security
+	// middleware is instead attached at Handler call time in each test.
 	return rest.NewRoute[createReq, userResp]("POST", "/users",
 		createReqCodec, userRespCodec,
 		rest.RouteMeta{OperationID: "createUser"},
@@ -1926,22 +1942,23 @@ func TestHandler_GlobalSecurity_enforcedWhenNoPerRouteSecurity(t *testing.T) {
 		t.Fatal(err)
 	}
 	secFuncCalled := false
+	mw := nethttp.RequireScopes[createReq]("bearerAuth", route.BearerScheme("JWT"), nil, nil,
+		func(_ context.Context, r *http.Request, _ *createReq) (map[string][]string, error) {
+			secFuncCalled = true
+			if r.Header.Get("Authorization") != "test-bearer-token" {
+				return nil, errors.New("unauthorized")
+			}
+			return map[string][]string{"bearerAuth": nil}, nil
+		},
+	)
 	h := nethttp.Handler(handle, func(_ context.Context, req createReq) (userResp, error) {
 		return userResp{ID: "1", Name: req.Name}, nil
-	}, nethttp.Options{
-		SecurityFunc: func(_ context.Context, r *http.Request, _ []route.SecurityRequirement) error {
-			secFuncCalled = true
-			if r.Header.Get("Authorization") != "Bearer valid-token" {
-				return errors.New("unauthorized")
-			}
-			return nil
-		},
-	})
+	}, nethttp.Options{}, mw)
 
 	rec := httptest.NewRecorder()
 	r := httptest.NewRequest(http.MethodPost, "/users", strings.NewReader(`{"name":"Alice"}`))
 	r.Header.Set("Content-Type", "application/json")
-	r.Header.Set("Authorization", "Bearer valid-token")
+	r.Header.Set("Authorization", "test-bearer-token")
 	h.ServeHTTP(rec, r)
 
 	if !secFuncCalled {
@@ -1957,13 +1974,14 @@ func TestHandler_GlobalSecurity_rejectsWhenNoToken(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	mw := nethttp.RequireScopes[createReq]("bearerAuth", route.BearerScheme("JWT"), nil, nil,
+		func(_ context.Context, _ *http.Request, _ *createReq) (map[string][]string, error) {
+			return nil, errors.New("missing token")
+		},
+	)
 	h := nethttp.Handler(handle, func(_ context.Context, req createReq) (userResp, error) {
 		return userResp{}, nil
-	}, nethttp.Options{
-		SecurityFunc: func(_ context.Context, _ *http.Request, _ []route.SecurityRequirement) error {
-			return errors.New("missing token")
-		},
-	})
+	}, nethttp.Options{}, mw)
 
 	rec := httptest.NewRecorder()
 	r := httptest.NewRequest(http.MethodPost, "/users", strings.NewReader(`{"name":"Alice"}`))
@@ -1991,14 +2009,15 @@ func TestHandler_GlobalSecurity_notCalledWhenExplicitlyEmpty(t *testing.T) {
 		t.Fatal(err)
 	}
 	secFuncCalled := false
+	mw := nethttp.RequireScopes[createReq]("bearerAuth", route.BearerScheme("JWT"), nil, nil,
+		func(_ context.Context, _ *http.Request, _ *createReq) (map[string][]string, error) {
+			secFuncCalled = true
+			return nil, nil
+		},
+	)
 	h := nethttp.Handler(handle, func(_ context.Context, req createReq) (userResp, error) {
 		return userResp{ID: "1", Name: req.Name}, nil
-	}, nethttp.Options{
-		SecurityFunc: func(_ context.Context, _ *http.Request, _ []route.SecurityRequirement) error {
-			secFuncCalled = true
-			return nil
-		},
-	})
+	}, nethttp.Options{}, mw)
 
 	rec := httptest.NewRecorder()
 	r := httptest.NewRequest(http.MethodPost, "/users", strings.NewReader(`{"name":"Alice"}`))
@@ -2031,21 +2050,22 @@ func TestSSEHandler_GlobalSecurity_enforced(t *testing.T) {
 		t.Fatal(err)
 	}
 	secFuncCalled := false
+	mw := nethttp.RequireScopes[createReq]("bearerAuth", route.BearerScheme("JWT"), nil, nil,
+		func(_ context.Context, r *http.Request, _ *createReq) (map[string][]string, error) {
+			secFuncCalled = true
+			if r.Header.Get("Authorization") != "test-bearer-token" {
+				return nil, errors.New("unauthorized")
+			}
+			return map[string][]string{"bearerAuth": nil}, nil
+		},
+	)
 	h := nethttp.SSEHandler(handle, func(_ context.Context, _ createReq, _ func(sseEvent) error) error {
 		return nil
-	}, nethttp.Options{
-		SecurityFunc: func(_ context.Context, r *http.Request, _ []route.SecurityRequirement) error {
-			secFuncCalled = true
-			if r.Header.Get("Authorization") != "Bearer valid-token" {
-				return errors.New("unauthorized")
-			}
-			return nil
-		},
-	})
+	}, nethttp.Options{}, mw)
 
 	rec := httptest.NewRecorder()
 	r := httptest.NewRequest(http.MethodGet, "/stream", nil)
-	r.Header.Set("Authorization", "Bearer valid-token")
+	r.Header.Set("Authorization", "test-bearer-token")
 	h.ServeHTTP(rec, r)
 
 	if !secFuncCalled {
@@ -2061,13 +2081,14 @@ func TestSSEHandler_GlobalSecurity_rejectsWhenNoToken(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	mw := nethttp.RequireScopes[createReq]("bearerAuth", route.BearerScheme("JWT"), nil, nil,
+		func(_ context.Context, _ *http.Request, _ *createReq) (map[string][]string, error) {
+			return nil, errors.New("missing token")
+		},
+	)
 	h := nethttp.SSEHandler(handle, func(_ context.Context, _ createReq, _ func(sseEvent) error) error {
 		return nil
-	}, nethttp.Options{
-		SecurityFunc: func(_ context.Context, _ *http.Request, _ []route.SecurityRequirement) error {
-			return errors.New("missing token")
-		},
-	})
+	}, nethttp.Options{}, mw)
 
 	rec := httptest.NewRecorder()
 	r := httptest.NewRequest(http.MethodGet, "/stream", nil)
@@ -2519,7 +2540,14 @@ func TestSSEHandler_EventMerge_NestedGobFormat(t *testing.T) {
 // The context observer is server-side (set on the incoming request context);
 // HTTP is stateless so client-side contexts do not propagate to the server.
 // The typical integration is via server middleware: r.WithContext(stats.WithObserver(r.Context(), obs)).
-func TestHandler_ContextObserver_UsedWhenOptsNil(t *testing.T) {
+// T5: Handler with NO attached ObservabilityMiddleware does NOT call
+// RecordRequest at all, even when a context observer is present — an
+// intentional behavior change (see docs/roadmap/declarative-middleware.md):
+// RecordRequest/TraceObserver moved ENTIRELY into ObservabilityMiddleware,
+// the sole remaining stats.Observer call site in this package. A caller
+// wanting context-based observer resolution now attaches
+// nethttp.ObservabilityMiddleware(stats.ObserverFromContext(ctx)) itself.
+func TestHandler_ContextObserver_NotUsedWithoutObservabilityMiddleware(t *testing.T) {
 	b := rest.NewBuilder(testInfo)
 	handle, _ := rest.NewRoute[getReq, userResp]("GET", "/users",
 		getReqCodec, userRespCodec, rest.RouteMeta{}).Register(b)
@@ -2529,9 +2557,10 @@ func TestHandler_ContextObserver_UsedWhenOptsNil(t *testing.T) {
 
 	h := nethttp.Handler(handle, func(_ context.Context, _ getReq) (userResp, error) {
 		return userResp{ID: "u1", Name: "Alice"}, nil
-	}, nethttp.Options{}) // no explicit Observer
+	}, nethttp.Options{}) // no ObservabilityMiddleware attached
 
-	// Simulate server-side middleware injecting the observer into r.Context().
+	// Even with a context observer present, Handler itself never resolves
+	// or calls it for RecordRequest anymore.
 	withObsMiddleware := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		r = r.WithContext(stats.WithObserver(r.Context(), spy))
 		h.ServeHTTP(w, r)
@@ -2543,8 +2572,8 @@ func TestHandler_ContextObserver_UsedWhenOptsNil(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Errorf("want 200, got %d", rec.Code)
 	}
-	if !recorded {
-		t.Error("want context observer RecordRequest called via middleware, got nothing")
+	if recorded {
+		t.Error("want RecordRequest NOT called without an attached ObservabilityMiddleware")
 	}
 }
 
@@ -2560,7 +2589,7 @@ func TestHandler_ExplicitObserverBeatsContext(t *testing.T) {
 
 	h := nethttp.Handler(handle, func(_ context.Context, _ getReq) (userResp, error) {
 		return userResp{}, nil
-	}, nethttp.Options{Observer: explicit}) // explicit wins
+	}, nethttp.Options{}, nethttp.ObservabilityMiddleware(explicit)) // explicit wins
 
 	// Even if context observer is present, explicit wins.
 	withObsMiddleware := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

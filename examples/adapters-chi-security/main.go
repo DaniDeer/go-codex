@@ -43,6 +43,7 @@ import (
 	gochi "github.com/go-chi/chi/v5"
 
 	chiadapter "github.com/DaniDeer/go-codex/adapters/chi"
+	"github.com/DaniDeer/go-codex/adapters/nethttp"
 	"github.com/DaniDeer/go-codex/api/rest"
 	"github.com/DaniDeer/go-codex/codex"
 	"github.com/DaniDeer/go-codex/route"
@@ -146,41 +147,28 @@ var tokenScopes = map[string][]string{
 	"valid-admin-token": {"profile", "admin"},
 }
 
-func verifyToken(r *http.Request, reqs []route.SecurityRequirement) error {
+// extractScopes is a PURE AUTHENTICATION step — see
+// docs/roadmap/declarative-middleware.md's "L4"/"L12" for why the
+// mechanical scope-match is done ONCE by the adapter now, not here.
+func extractScopes(ctx context.Context, r *http.Request, path string) (map[string][]string, error) {
 	auth := r.Header.Get("Authorization")
 	token := strings.TrimPrefix(auth, "Bearer ")
 	if token == "" || token == auth {
-		return errors.New("missing or malformed Authorization header")
+		recordRejection(ctx, path)
+		return nil, errors.New("missing or malformed Authorization header")
 	}
 	scopes, ok := tokenScopes[token]
 	if !ok {
-		return fmt.Errorf("unknown or expired token %q", token)
+		recordRejection(ctx, path)
+		return nil, fmt.Errorf("unknown or expired token %q", token)
 	}
-	for _, req := range reqs {
-		for _, required := range flatScopes(req) {
-			if !hasScope(scopes, required) {
-				return fmt.Errorf("token lacks required scope %q", required)
-			}
-		}
-	}
-	return nil
+	return map[string][]string{"bearerAuth": scopes}, nil
 }
 
-func flatScopes(req route.SecurityRequirement) []string {
-	var out []string
-	for _, scopes := range req {
-		out = append(out, scopes...)
+func recordRejection(ctx context.Context, path string) {
+	if secObs, ok := stats.ObserverFromContext(ctx).(stats.SecurityObserver); ok {
+		secObs.RecordSecurityRejection(path, "bearerAuth")
 	}
-	return out
-}
-
-func hasScope(granted []string, required string) bool {
-	for _, s := range granted {
-		if s == required {
-			return true
-		}
-	}
-	return false
 }
 
 // ── Observer ──────────────────────────────────────────────────────────────────
@@ -242,15 +230,12 @@ func buildAPI() (
 	b = rest.NewBuilder(rest.Info{
 		Title:       "Secure API Demo (chi)",
 		Version:     "1.0.0",
-		Description: "Demonstrates Bearer JWT authentication with chi router and per-route scope enforcement.",
+		Description: "Demonstrates bearer authentication with chi router and per-route scope enforcement.",
 	})
 
-	// The bearer security scheme, declared ONCE as a shared value and
-	// attached to every secured route below via rest.WithSecurityScheme —
-	// there is no builder-level registry for this; each route declares it directly.
-	bearerAuth := rest.SecurityScheme{
-		SecurityScheme: route.BearerScheme("JWT"),
-	}.WithCodec(codex.String().Refine(validate.BearerToken))
+	// The bearer credential format codec, shared by both secured routes'
+	// RequireScopes middleware below.
+	bearerCodec := codex.String().Refine(validate.BearerToken)
 
 	// POST /login — public.
 	loginHandle, _ = rest.NewRoute[loginReq, tokenResp]("POST", "/login",
@@ -258,31 +243,50 @@ func buildAPI() (
 		rest.RouteMeta{OperationID: "login", Summary: "Authenticate and receive a bearer token", Tags: []string{"auth"}},
 	).Register(b)
 
-	// GET /users/{id}/profile — secured + chi path variable.
+	// GET /users/{id}/profile — secured + chi path variable. RequireScopes
+	// (reused from nethttp — chi has no scheme-specific RequireScopes of its
+	// own, identical *http.Request Raw type) is BOTH the spec declaration
+	// AND the runtime enforcement.
+	profileScopesMw := nethttp.RequireScopes[struct{}]("bearerAuth", route.BearerScheme("JWT"), []string{"profile"}, &bearerCodec,
+		func(ctx context.Context, r *http.Request, _ *struct{}) (map[string][]string, error) {
+			return extractScopes(ctx, r, "/users/{id}/profile")
+		},
+	)
 	profileHandle, _ = rest.NewRoute[struct{}, profileResp]("GET", "/users/{id}/profile",
 		codex.Empty, profileRespCodec,
 		rest.RouteMeta{
 			OperationID: "getUserProfile",
 			Summary:     "Get a user's profile by ID",
 			Tags:        []string{"user"},
-			Security:    []route.SecurityRequirement{route.Require("bearerAuth", "profile")},
 		},
-		rest.WithSecurityScheme("bearerAuth", bearerAuth),
+		rest.WithMiddleware(profileScopesMw),
 	).Register(b)
 
 	// POST /admin/action — secured with admin scope.
+	adminScopesMw := nethttp.RequireScopes[adminActionReq]("bearerAuth", route.BearerScheme("JWT"), []string{"admin"}, &bearerCodec,
+		func(ctx context.Context, r *http.Request, _ *adminActionReq) (map[string][]string, error) {
+			return extractScopes(ctx, r, "/admin/action")
+		},
+	)
 	adminHandle, _ = rest.NewRoute[adminActionReq, adminActionResp]("POST", "/admin/action",
 		adminActionReqCodec, adminActionRespCodec,
 		rest.RouteMeta{
 			OperationID: "adminAction",
 			Summary:     "Perform a privileged admin action",
 			Tags:        []string{"admin"},
-			Security:    []route.SecurityRequirement{route.Require("bearerAuth", "admin")},
 		},
-		rest.WithSecurityScheme("bearerAuth", bearerAuth),
+		rest.WithMiddleware(adminScopesMw),
 	).Register(b)
 
 	return
+}
+
+// mustRegister exits the program if chiadapter.Register returns an error.
+func mustRegister(err error) {
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "chi.Register failed: %v\n", err)
+		os.Exit(1)
+	}
 }
 
 func main() {
@@ -294,7 +298,6 @@ func main() {
 	obs := stats.NewFanout(metrics, stats.NewLoggingObserver(logger.With("component", "chi-security")))
 
 	opts := chiadapter.Options{
-		Observer: obs,
 		// ErrorHandler maps invalidCredentialsError to 401; all other errors
 		// fall through to the default JSON envelope with their suggested status.
 		ErrorHandler: func(w http.ResponseWriter, r *http.Request, status int, err error) {
@@ -306,13 +309,12 @@ func main() {
 			w.WriteHeader(status)
 			_ = json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
 		},
-		SecurityFunc: func(ctx context.Context, r *http.Request, reqs []route.SecurityRequirement) error {
-			return verifyToken(r, reqs)
-		},
 	}
+	// chi reuses nethttp.ObservabilityMiddleware directly.
+	obsMw := nethttp.ObservabilityMiddleware(obs)
 
 	router := gochi.NewRouter()
-	chiadapter.Register(router, loginHandle, func(_ context.Context, req loginReq) (tokenResp, error) {
+	mustRegister(chiadapter.Register(router, loginHandle, func(_ context.Context, req loginReq) (tokenResp, error) {
 		switch {
 		case req.Username == "alice" && req.Password == "secret":
 			return tokenResp{Token: "valid-user-token"}, nil
@@ -321,9 +323,9 @@ func main() {
 		default:
 			return tokenResp{}, invalidCredentialsError{Err: errors.New("invalid credentials")}
 		}
-	}, opts)
+	}, opts, obsMw))
 
-	chiadapter.Register(router, profileHandle, func(ctx context.Context, _ struct{}) (profileResp, error) {
+	mustRegister(chiadapter.Register(router, profileHandle, func(ctx context.Context, _ struct{}) (profileResp, error) {
 		// chi path variable: chi.URLParam is accessible from the request context.
 		id := gochi.URLParamFromCtx(ctx, "id")
 		return profileResp{
@@ -331,11 +333,11 @@ func main() {
 			Name:   "Alice",
 			Email:  "alice@example.com",
 		}, nil
-	}, opts)
+	}, opts, obsMw))
 
-	chiadapter.Register(router, adminHandle, func(_ context.Context, req adminActionReq) (adminActionResp, error) {
+	mustRegister(chiadapter.Register(router, adminHandle, func(_ context.Context, req adminActionReq) (adminActionResp, error) {
 		return adminActionResp{Result: "action " + req.Action + " executed"}, nil
-	}, opts)
+	}, opts, obsMw))
 
 	// ── Demo requests ─────────────────────────────────────────────────────────
 	fmt.Println("=== adapters-chi-security demo ===")

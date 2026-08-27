@@ -11,6 +11,7 @@ import (
 	"github.com/DaniDeer/go-codex/api/internal"
 	"github.com/DaniDeer/go-codex/codex"
 	"github.com/DaniDeer/go-codex/format"
+	"github.com/DaniDeer/go-codex/middleware"
 	"github.com/DaniDeer/go-codex/render/openapi"
 	"github.com/DaniDeer/go-codex/route"
 	"github.com/DaniDeer/go-codex/schema"
@@ -526,6 +527,14 @@ type routeBuilder struct {
 	// there is no builder-level equivalent. Consumed identically by
 	// [Route.Register] and [Route.ClientHandle].
 	securitySchemes map[string]SecurityScheme
+
+	// middlewares holds every [middleware.Middleware] attached via
+	// [WithMiddleware], in attachment order. Security/RequestParams/
+	// ResponseParams contributions are NOT applied here — they are applied
+	// ONCE, order-independently, by [applyMiddlewareDeclarations] at
+	// Register/ValidateRoute time (see "L1"/"L3" in
+	// docs/roadmap/declarative-middleware.md).
+	middlewares []middleware.Middleware
 }
 
 // RouteHandle is returned by [Route.Register]. It holds the spec descriptor
@@ -645,6 +654,13 @@ type RouteHandle[Req, Resp any] struct {
 	// errorPatternRules are per-route typed error response declarations from
 	// [ErrorPattern].
 	errorPatternRules []errorPatternRule
+
+	// Middlewares holds every [middleware.Middleware] attached via
+	// [WithMiddleware], in attachment order — combined declaration-time ∪
+	// call-time middleware for this route. Populated by [Route.Register];
+	// nil for handles built by [Route.ClientHandle] (no adapter Register
+	// call exists there to consume it).
+	Middlewares []middleware.Middleware
 }
 
 // ErrorStatusFor returns the first declared per-route mapping status for err
@@ -2297,6 +2313,10 @@ func (r Route[Req, Resp]) Register(b *Builder) (*RouteHandle[Req, Resp], error) 
 		opt.applyRoute(&rb)
 	}
 
+	if err := applyMiddlewareDeclarations(&rb, r.method+" "+r.path); err != nil {
+		return nil, err
+	}
+
 	if err := codex.ValidateDeclaredParams(r.path, toCodexParams(rb.pathParams)); err != nil {
 		return nil, err
 	}
@@ -2323,6 +2343,7 @@ func (r Route[Req, Resp]) Register(b *Builder) (*RouteHandle[Req, Resp], error) 
 		GlobalSecurity:       slices.Clone(b.globalSecurity),
 		errorStatusRules:     slices.Clone(rb.errorStatusRules),
 		errorPatternRules:    slices.Clone(rb.errorPatternRules),
+		Middlewares:          slices.Clone(rb.middlewares),
 	}
 	if rb.requestFormats != nil {
 		fmts, ok := rb.requestFormats.([]format.Format[Req])
@@ -2402,6 +2423,16 @@ func (r Route[Req, Resp]) ClientHandle() *RouteHandle[Req, Resp] {
 	for _, opt := range r.opts {
 		opt.applyRoute(&rb)
 	}
+	// Merge any middleware-declared Security into rb.securitySchemes/
+	// rb.meta.Security — the SAME mechanism Register uses (see
+	// applyMiddlewareDeclarations), so a route declared via
+	// rest.WithMiddleware gets IDENTICAL SecuritySchemes on BOTH the
+	// server (Register) and client (ClientHandle) side, keeping
+	// nethttp.Call's credential-format check working exactly like it
+	// already does for the manual WithSecurityScheme escape hatch.
+	// ClientHandle stays infallible: conflict detection and drift-closing
+	// coverage checking (Register/ValidateRoute's job) do NOT run here.
+	applyMiddlewareSecurityForClient(&rb)
 
 	frozen := buildDescriptor(r.method, r.path, r.reqCodec.Schema, r.respCodec.Schema, rb, nil)
 

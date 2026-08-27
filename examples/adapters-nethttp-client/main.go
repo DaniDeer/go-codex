@@ -26,11 +26,15 @@
 //     field (rest.NewRequiredResponseHeaderParam) straight into Resp — the
 //     full request+response, single-call story for one route
 //  3. Cookies + headers — GET /profile (CookieParam + HeaderParam validation)
-//  4. Security — GET /data (CredentialFunc injects bearer Authorization header)
-//     4b. Caching a CredentialFunc — nethttp.NewCachingCredentialFunc wraps
-//     any CredentialFunc with TTL-based caching; CallOptions.OnCredentialRejected
-//     + the returned invalidate func implement the explicit retry-once-on-401
-//     pattern (Call never retries automatically)
+//  4. Security — GET /data (a credential-providing [middleware.Middleware]
+//     injects the bearer Authorization header; attached as Call's trailing
+//     variadic argument)
+//     4b. Caching a credential-providing middleware — nethttp.NewCachingCredentialFunc
+//     wraps any [nethttp.CredentialFunc] with TTL-based caching, then the
+//     result is wrapped in a [middleware.Middleware] for Call;
+//     CallOptions.OnCredentialRejected + the returned invalidate func
+//     implement the explicit retry-once-on-401 pattern (Call never retries
+//     automatically)
 //  5. Structured error logging — errors.As + slog for all typed error types
 //
 // Run with: go run ./examples/adapters-nethttp-client
@@ -52,6 +56,7 @@ import (
 	"github.com/DaniDeer/go-codex/api/rest"
 	"github.com/DaniDeer/go-codex/codex"
 	"github.com/DaniDeer/go-codex/examples/adapters-nethttp-client/contract"
+	"github.com/DaniDeer/go-codex/middleware"
 	"github.com/DaniDeer/go-codex/route"
 	"github.com/DaniDeer/go-codex/stats"
 )
@@ -179,10 +184,22 @@ func main() {
 
 	b := rest.NewBuilder(rest.Info{Title: "User API", Version: "1.0.0"})
 
-	// The bearer security scheme is declared on contract.GetSecuredData
-	// itself (via rest.WithSecurityScheme, contract/contract.go) — no
-	// separate builder-level registration needed; Register below picks it
-	// up automatically and the OpenAPI spec documents it the same way.
+	// The bearer security scheme (contract.BearerAuthScheme/BearerCredentialCodec)
+	// is shared spec metadata; the actual verification logic lives HERE, in
+	// the server's own RequireScopes-built middleware — the contract package
+	// stays adapter-agnostic. nethttp.RequireScopes is BOTH the spec
+	// declaration (attached via rest.WithMiddleware inside
+	// contract.GetSecuredData) AND the runtime enforcement.
+	const validToken = "secret-token"
+	securedMw := nethttp.RequireScopes[struct{}]("bearerAuth", contract.BearerAuthScheme, nil, &contract.BearerCredentialCodec,
+		func(_ context.Context, r *http.Request, _ *struct{}) (map[string][]string, error) {
+			token := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
+			if token != validToken {
+				return nil, fmt.Errorf("invalid token")
+			}
+			return map[string][]string{"bearerAuth": nil}, nil
+		},
+	)
 
 	createHandle, err := contract.CreateUser.Register(b)
 	if err != nil {
@@ -199,7 +216,7 @@ func main() {
 		fmt.Fprintln(os.Stderr, "register getProfile:", err)
 		os.Exit(1)
 	}
-	securedHandle, err := contract.GetSecuredData.Register(b)
+	securedHandle, err := contract.GetSecuredData(securedMw).Register(b)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "register getSecuredData:", err)
 		os.Exit(1)
@@ -210,22 +227,11 @@ func main() {
 		os.Exit(1)
 	}
 
-	// SecurityFunc checks the Authorization header for the secured route.
-	// In production verify a signed JWT; here a fixed token suffices.
-	const validToken = "secret-token"
-	srvOpts := nethttp.Options{
-		SecurityFunc: func(ctx context.Context, r *http.Request, _ []route.SecurityRequirement) error {
-			token := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
-			if token != validToken {
-				return fmt.Errorf("invalid token")
-			}
-			return nil
-		},
-	}
+	srvOpts := nethttp.Options{}
 
 	mux := http.NewServeMux()
 
-	nethttp.Register(mux, createHandle, func(ctx context.Context, req contract.CreateUserReq) (contract.User, error) {
+	mustRegister(nethttp.Register(mux, createHandle, func(ctx context.Context, req contract.CreateUserReq) (contract.User, error) {
 		u, err := db.create(req)
 		if err != nil {
 			// Returned as a plain Go error — the adapter consults the
@@ -238,16 +244,16 @@ func main() {
 			h.Set("Location", "/users/"+u.ID)
 		}
 		return u, nil
-	}, nethttp.Options{})
+	}, nethttp.Options{}), "createUser")
 
-	nethttp.Register(mux, getHandle, func(ctx context.Context, _ struct{}) (contract.User, error) {
+	mustRegister(nethttp.Register(mux, getHandle, func(ctx context.Context, _ struct{}) (contract.User, error) {
 		r, _ := nethttp.RequestFromContext(ctx)
 		u, ok := db.get(r.PathValue("id"))
 		if !ok {
 			return contract.User{}, fmt.Errorf("user not found")
 		}
 		return u, nil
-	}, nethttp.Options{})
+	}, nethttp.Options{}), "getUser")
 
 	// GET /users/{id}/activity?filter=... — id is decoded from the path AND
 	// filter from the query string, both merged into req by the adapter
@@ -255,7 +261,7 @@ func main() {
 	// X-Request-Id RESPONSE header is populated automatically from
 	// u.RequestID by the adapter (rest.NewRequiredResponseHeaderParam
 	// declared it) — no nethttp.WithResponseHeaders call needed here.
-	nethttp.Register(mux, activityHandle, func(_ context.Context, req contract.GetUserActivityReq) (contract.User, error) {
+	mustRegister(nethttp.Register(mux, activityHandle, func(_ context.Context, req contract.GetUserActivityReq) (contract.User, error) {
 		u, ok := db.get(req.ID)
 		if !ok {
 			return contract.User{}, fmt.Errorf("user not found")
@@ -263,25 +269,25 @@ func main() {
 		u.Name = u.Name + " (filter=" + req.Filter + ")" // prove req.Filter reached the handler
 		u.RequestID = "f47ac10b-58cc-4372-a567-0e02b2c3d479"
 		return u, nil
-	}, nethttp.Options{})
+	}, nethttp.Options{}), "getUserActivity")
 
 	// GET /profile — adapter validates session_token cookie and X-Request-ID
 	// header automatically before this handler is called.
 	// The adapter validates session_token cookie and X-Request-Id header before
 	// calling this handler. The handler can read them via RequestFromContext if needed.
-	nethttp.Register(mux, profileHandle, func(_ context.Context, _ struct{}) (contract.Profile, error) {
+	mustRegister(nethttp.Register(mux, profileHandle, func(_ context.Context, _ struct{}) (contract.Profile, error) {
 		return contract.Profile{
 			ID:    "p1",
 			Name:  "Alice",
 			Email: "alice@example.com",
 			Role:  "user",
 		}, nil
-	}, nethttp.Options{})
+	}, nethttp.Options{}), "getProfile")
 
-	// GET /data — secured route; SecurityFunc runs after codec validation.
-	nethttp.Register(mux, securedHandle, func(_ context.Context, _ struct{}) (contract.Profile, error) {
+	// GET /data — secured route; the securedMw's Fn runs after codec validation.
+	mustRegister(nethttp.Register(mux, securedHandle, func(_ context.Context, _ struct{}) (contract.Profile, error) {
 		return contract.Profile{ID: "p1", Name: "Alice", Email: "alice@example.com", Role: "admin"}, nil
-	}, srvOpts)
+	}, srvOpts), "getSecuredData")
 
 	srv := httptest.NewServer(mux)
 	defer srv.Close()
@@ -497,38 +503,41 @@ func main() {
 	}
 	fmt.Println()
 
-	// ── 4. Security — GET /data (CredentialFunc) ──────────────────────────────
+	// ── 4. Security — GET /data (credential-providing middleware) ────────────
 	//
-	// CredentialFunc is called when the route declares Security requirements.
-	// It receives the resolved []route.SecurityRequirement and must return
-	// headers to merge into the request — typically Authorization.
-	// A CredentialFunc error aborts the call before any network activity.
+	// A [middleware.Middleware] with a non-nil Fn, attached as one of Call's
+	// trailing variadic arguments, is invoked when the route declares
+	// Security requirements. Fn receives the resolved
+	// []route.SecurityRequirement and must return headers to merge into the
+	// request — typically Authorization. An error from Fn aborts the call
+	// before any network activity.
 	//
-	// contract.GetSecuredData declares its "bearerAuth" scheme (with a
-	// non-empty-string format Codec) via rest.WithSecurityScheme, ONCE, on
-	// the route itself — the SAME declaration this server used to Register
-	// (main.go, above) also flows into clientSecured below via ClientHandle.
-	// That symmetry is what lets nethttp.Call catch a MALFORMED credential
-	// LOCALLY now (rest.SecurityCredentialError), before any network call —
-	// see the third case below. A nil/absent CredentialFunc result stays a
-	// non-error client-side either way (second case) — the codec check
-	// only ever fires on a credential that was ACTUALLY supplied.
-	fmt.Println("=== 4. Security: GET /data (CredentialFunc) ===")
+	// contract.GetSecuredData's attached middleware (securedMw, built above
+	// with contract.BearerAuthScheme/BearerCredentialCodec) carries the SAME
+	// Security declaration on BOTH the server (Register) and client
+	// (ClientHandle) side — ClientHandle now merges middleware-declared
+	// Security into SecuritySchemes just like Register does. That symmetry
+	// is what lets nethttp.Call catch a MALFORMED credential LOCALLY now
+	// (rest.SecurityCredentialError), before any network call — see the
+	// third case below. A nil/absent credential-providing middleware result
+	// stays a non-error client-side either way (second case) — the codec
+	// check only ever fires on a credential that was ACTUALLY supplied.
+	fmt.Println("=== 4. Security: GET /data (credential-providing middleware) ===")
 
-	clientSecured := contract.GetSecuredData.ClientHandle()
+	clientSecured := contract.GetSecuredData(securedMw).ClientHandle()
 
-	// Happy path: CredentialFunc injects the bearer token.
+	// Happy path: the credential-providing middleware injects the bearer token.
 	data, err := nethttp.Call(clientCtx, srv.Client(), srv.URL,
 		clientSecured, struct{}{}, nil,
-		nethttp.CallOptions{
-			CredentialFunc: func(_ context.Context, reqs []route.SecurityRequirement) (http.Header, error) {
+		nethttp.CallOptions{},
+		middleware.Middleware{
+			Fn: func(_ context.Context, reqs []route.SecurityRequirement) (http.Header, error) {
 				// reqs contains the declared security requirements from the route spec.
 				// In production: look up the token from a token store / refresh if expired.
 				h := make(http.Header)
 				h.Set("Authorization", "Bearer "+validToken)
 				return h, nil
 			},
-			// observer from clientCtx
 		})
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "get secured data:", err)
@@ -536,15 +545,15 @@ func main() {
 	}
 	fmt.Printf("secured data: %+v\n", data)
 
-	// No CredentialFunc: request is sent without Authorization → server
-	// returns 401. A nil CredentialFunc result is NOT itself a client-side
-	// error — the new credential-format codec check only activates when a
+	// No credential-providing middleware attached: request is sent without
+	// Authorization → server returns 401. This is NOT itself a client-side
+	// error — the credential-format codec check only activates when a
 	// credential mechanism actually supplies something (see the malformed
 	// case right below); declining to supply one at all is a deliberate,
-	// unchanged non-error, symmetric with server-side SecurityFunc.
+	// unchanged non-error, symmetric with server-side security enforcement.
 	_, err = nethttp.Call(clientCtx, srv.Client(), srv.URL,
 		clientSecured, struct{}{}, nil,
-		nethttp.CallOptions{}) // observer from clientCtx // no CredentialFunc
+		nethttp.CallOptions{}) // no credential-providing middleware attached
 	if err != nil {
 		var statusErr nethttp.UnexpectedStatusError
 		if errors.As(err, &statusErr) {
@@ -556,15 +565,17 @@ func main() {
 		}
 	}
 
-	// CredentialFunc returns a MALFORMED credential (empty after the
-	// "Bearer " prefix is stripped): contract.GetSecuredData's declared
-	// Codec now rejects this LOCALLY, before any request is sent — the same
-	// rest.SecurityCredentialError the SERVER would otherwise have returned
-	// (401) is now caught client-side too, symmetric with the server check.
+	// The credential-providing middleware returns a MALFORMED credential
+	// (empty after the "Bearer " prefix is stripped): contract.GetSecuredData's
+	// declared Codec now rejects this LOCALLY, before any request is sent —
+	// the same rest.SecurityCredentialError the SERVER would otherwise have
+	// returned (401) is now caught client-side too, symmetric with the
+	// server check.
 	_, err = nethttp.Call(clientCtx, srv.Client(), srv.URL,
 		clientSecured, struct{}{}, nil,
-		nethttp.CallOptions{
-			CredentialFunc: func(_ context.Context, _ []route.SecurityRequirement) (http.Header, error) {
+		nethttp.CallOptions{},
+		middleware.Middleware{
+			Fn: func(_ context.Context, _ []route.SecurityRequirement) (http.Header, error) {
 				h := make(http.Header)
 				h.Set("Authorization", "Bearer ") // strips to an empty credential
 				return h, nil
@@ -580,15 +591,16 @@ func main() {
 		}
 	}
 
-	// CredentialFunc returning an error: aborts the call client-side.
+	// The credential-providing middleware itself returns an error: aborts
+	// the call client-side.
 	tokenExpiredErr := fmt.Errorf("token expired")
 	_, err = nethttp.Call(clientCtx, srv.Client(), srv.URL,
 		clientSecured, struct{}{}, nil,
-		nethttp.CallOptions{
-			CredentialFunc: func(_ context.Context, _ []route.SecurityRequirement) (http.Header, error) {
+		nethttp.CallOptions{},
+		middleware.Middleware{
+			Fn: func(_ context.Context, _ []route.SecurityRequirement) (http.Header, error) {
 				return nil, tokenExpiredErr
 			},
-			// observer from clientCtx
 		})
 	if err != nil {
 		if errors.Is(err, tokenExpiredErr) {
@@ -626,17 +638,17 @@ func main() {
 		TTL: time.Hour,
 	})
 	cachedCallOpts := nethttp.CallOptions{
-		CredentialFunc:       cachedCredFn,
 		OnCredentialRejected: invalidateCred,
 	}
+	cachedMw := middleware.Middleware{Fn: cachedCredFn}
 
 	// First call: the stale cached token is rejected (401). OnCredentialRejected
 	// purges the cache, so an explicit retry fetches a fresh credential.
-	_, err = nethttp.Call(clientCtx, srv.Client(), srv.URL, clientSecured, struct{}{}, nil, cachedCallOpts)
+	_, err = nethttp.Call(clientCtx, srv.Client(), srv.URL, clientSecured, struct{}{}, nil, cachedCallOpts, cachedMw)
 	var rejectedErr nethttp.UnexpectedStatusError
 	if errors.As(err, &rejectedErr) && rejectedErr.StatusCode == http.StatusUnauthorized {
 		logger.Info("credential rejected — retrying once with a refreshed credential")
-		data, err = nethttp.Call(clientCtx, srv.Client(), srv.URL, clientSecured, struct{}{}, nil, cachedCallOpts)
+		data, err = nethttp.Call(clientCtx, srv.Client(), srv.URL, clientSecured, struct{}{}, nil, cachedCallOpts, cachedMw)
 		if err != nil {
 			fmt.Fprintln(os.Stderr, "retry after credential refresh:", err)
 			os.Exit(1)
@@ -646,7 +658,7 @@ func main() {
 
 	// Second call reuses the now-valid cached credential — inner is NOT
 	// invoked again.
-	data, err = nethttp.Call(clientCtx, srv.Client(), srv.URL, clientSecured, struct{}{}, nil, cachedCallOpts)
+	data, err = nethttp.Call(clientCtx, srv.Client(), srv.URL, clientSecured, struct{}{}, nil, cachedCallOpts, cachedMw)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "cached call:", err)
 		os.Exit(1)
@@ -679,4 +691,14 @@ func main() {
 	metrics.Print()
 	fmt.Println()
 	fmt.Println("done.")
+}
+
+// mustRegister exits the process if registering route named for a
+// route's handler fails — Register returns an error (e.g. duplicate
+// path/method) that a real server must not silently ignore.
+func mustRegister(err error, routeName string) {
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "register "+routeName+":", err)
+		os.Exit(1)
+	}
 }

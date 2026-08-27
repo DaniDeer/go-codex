@@ -494,6 +494,17 @@ func makeErgonomicsPipelineHandler() nethttp.PipelineHandlerFunc[CreateUserReq, 
 	}
 }
 
+// mustRegister exits the program if nethttp.Register returns an error — e.g.
+// a malformed middleware Fn shape, caught eagerly at wiring time rather than
+// on the first incoming request. Mirrors this file's existing
+// Route.Register error-handling style.
+func mustRegister(err error) {
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "nethttp.Register failed: %v\n", err)
+		os.Exit(1)
+	}
+}
+
 func main() {
 	baseLogger := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelDebug}))
 	slog.SetDefault(baseLogger)
@@ -743,50 +754,45 @@ func main() {
 	metrics := &CountingObserver{}
 	obs := stats.NewFanout(metrics, stats.NewLoggingObserver(baseLogger.With("component", "http")))
 
-	// HTTP adapters resolve the observer per-request from r.Context() when
-	// Options.Observer is nil. Wrap the mux with a middleware that injects obs
-	// into every request's context — a clean alternative to Options{Observer: obs}
-	// on every nethttp.Register call.
-	//
-	// This enables per-request observer injection (e.g. per-tenant observers via
-	// middleware) while keeping handler registration free of explicit wiring.
-	observerMiddleware := func(next http.Handler) http.Handler {
-		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			next.ServeHTTP(w, r.WithContext(stats.WithObserver(r.Context(), obs)))
-		})
-	}
+	// ObservabilityMiddleware is the ONLY nethttp call site that touches
+	// stats.Observer now (Options.Observer was removed) — build it ONCE,
+	// attach it to every route needing observability via the variadic mws
+	// parameter. It wraps the whole call, recording RecordRequest/
+	// RecordValidationError/spans exactly like the old Options.Observer did.
+	obsMw := nethttp.ObservabilityMiddleware(obs)
 
-	// Base options for all routes — ErrorHandler only; Observer comes from ctx via middleware.
+	// Base options for all routes — ErrorHandler only; observability comes
+	// from the attached obsMw, not from Options anymore.
 	baseOpts := nethttp.Options{ErrorHandler: errorHandler}
 
 	// Wire infrastructure handlers to HTTP routes with custom error handling + domain logging decorator.
 	mux := http.NewServeMux()
-	nethttp.Register(mux, createUserRoute,
+	mustRegister(nethttp.Register(mux, createUserRoute,
 		withDomainLogging("user.create", makeCreateUserHandler(store), domainLogger, extractUserAttrs),
-		baseOpts)
-	nethttp.Register(mux, getUserRoute,
+		baseOpts, obsMw))
+	mustRegister(nethttp.Register(mux, getUserRoute,
 		withDomainLogging("user.get", makeGetUserHandler(store), domainLogger, extractGetUserAttrs),
-		baseOpts)
-	nethttp.Register(mux, updateUserRoute,
+		baseOpts, obsMw))
+	mustRegister(nethttp.Register(mux, updateUserRoute,
 		withDomainLogging("user.update", makeUpdateUserHandler(store), domainLogger,
 			func(req UpdateUserReq, u User) []slog.Attr {
 				return []slog.Attr{slog.String("id", req.ID), slog.String("name", u.Name)}
 			}),
-		baseOpts)
-	nethttp.Register(mux, listUsersRoute,
+		baseOpts, obsMw))
+	mustRegister(nethttp.Register(mux, listUsersRoute,
 		withDomainLogging("user.list", makeListUsersHandler(), domainLogger,
 			func(_ struct{}, _ PagedUsersResp) []slog.Attr { return nil }),
-		baseOpts)
-	nethttp.Register(mux, profileRoute,
+		baseOpts, obsMw))
+	mustRegister(nethttp.Register(mux, profileRoute,
 		func(_ context.Context, _ struct{}) (User, error) {
 			// Handler only runs when both cookie and header are valid.
 			return User{ID: "f47ac10b-58cc-4372-a567-0e02b2c3d479", Name: "Alice", Email: "alice@example.com"}, nil
 		},
-		baseOpts)
+		baseOpts, obsMw))
 	// No-pipeline path: map domainConflictError in custom ErrorHandler.
-	nethttp.Register(mux, noPipelineErrorRoute,
+	mustRegister(nethttp.Register(mux, noPipelineErrorRoute,
 		makeErgonomicsNoPipelineHandler(),
-		nethttp.Options{ErrorHandler: noPipelineErrorHandler})
+		nethttp.Options{ErrorHandler: noPipelineErrorHandler}))
 	// Pipeline path: map same domainConflictError at route declaration via
 	// rest.ErrorStatus; custom ErrorHandler still shapes response body.
 	nethttp.RegisterPipeline(mux, pipelineErrorRoute,
@@ -794,8 +800,7 @@ func main() {
 		baseOpts)
 
 	// Demo requests against an in-process test server.
-	// observerMiddleware injects obs into every request's r.Context().
-	srv := httptest.NewServer(observerMiddleware(mux))
+	srv := httptest.NewServer(mux)
 	defer srv.Close()
 
 	fmt.Println("=== POST /users ===")
@@ -1013,12 +1018,12 @@ func main() {
 	// A separate server uses a handler that:
 	//   (a) deposits an empty Location value → fails NonEmptyString codec → adapter returns 500
 	//   (b) deposits a too-short session value → fails MinLen(8) codec → adapter returns 500
-	// The violation demo uses a separate mux (no middleware).
-	// Explicit Options{Observer: obs} demonstrates the override: when opts.Observer
-	// is non-nil it always wins over any context observer — even if the request
-	// context carried a different one via stats.WithObserver.
+	// The violation demo uses a separate mux with its OWN attached obsMw —
+	// ObservabilityMiddleware is now the only way to observe RecordRequest/
+	// RecordValidationError; attaching it per-route (rather than relying on
+	// a shared ctx-injected observer) is the standard pattern going forward.
 	violationMux := http.NewServeMux()
-	nethttp.Register(violationMux, createUserRoute,
+	mustRegister(nethttp.Register(violationMux, createUserRoute,
 		func(ctx context.Context, req CreateUserReq) (User, error) {
 			h := make(http.Header)
 			h.Set("Location", "") // empty → fails NonEmptyString → 500
@@ -1030,7 +1035,7 @@ func main() {
 			})
 			return buildUserResponse(buildUserRecord(req)), nil
 		},
-		nethttp.Options{Observer: obs}) // explicit override — explicit beats context observer
+		nethttp.Options{}, obsMw))
 	violationSrv := httptest.NewServer(violationMux)
 	defer violationSrv.Close()
 
@@ -1049,7 +1054,7 @@ func main() {
 	// The same codec that rejects an invalid request body at 400 now also rejects
 	// an invalid response body at 500. Refine constraints run on both Encode and Decode.
 	bodyViolMux := http.NewServeMux()
-	nethttp.Register(bodyViolMux, createUserRoute,
+	mustRegister(nethttp.Register(bodyViolMux, createUserRoute,
 		func(ctx context.Context, req CreateUserReq) (User, error) {
 			// Handler deliberately returns a User with invalid field values to
 			// demonstrate that handle.Encode now validates the response body.
@@ -1059,7 +1064,7 @@ func main() {
 				Email: "not-an-email", // fails Email constraint
 			}, nil
 		},
-		nethttp.Options{Observer: obs}) // explicit override
+		nethttp.Options{}, obsMw))
 	bodyViolSrv := httptest.NewServer(bodyViolMux)
 	defer bodyViolSrv.Close()
 

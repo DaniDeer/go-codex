@@ -176,6 +176,15 @@ func (o *statsObserver) print() {
 
 // ── Main ──────────────────────────────────────────────────────────────────────
 
+// mustRegister exits the program if Register/RegisterSSE returns an error —
+// e.g. a malformed middleware Fn shape, caught eagerly at wiring time.
+func mustRegister(err error) {
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Register failed: %v\n", err)
+		os.Exit(1)
+	}
+}
+
 func main() {
 	logger := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelDebug}))
 	slog.SetDefault(logger)
@@ -233,9 +242,10 @@ func main() {
 	// ── Shared mux ───────────────────────────────────────────────────────────
 
 	mux := http.NewServeMux()
-	opts := nethttp.Options{Observer: obs}
+	obsMw := nethttp.ObservabilityMiddleware(obs)
+	opts := nethttp.Options{}
 
-	nethttp.Register(mux, dashRoute, func(_ context.Context, _ struct{}) (DashboardProps, error) {
+	mustRegister(nethttp.Register(mux, dashRoute, func(_ context.Context, _ struct{}) (DashboardProps, error) {
 		return DashboardProps{
 			Title:    "Operations Dashboard",
 			Subtitle: "Real-time system overview",
@@ -243,9 +253,9 @@ func main() {
 			Section2: "2 active alerts — see notification feed",
 			Section3: "Last deployment: 2024-06-01 14:32 UTC",
 		}, nil
-	}, opts)
+	}, opts, obsMw))
 
-	nethttp.RegisterSSE(mux, notifRoute, func(ctx context.Context, _ struct{}, send func(NotifProps) error) error {
+	mustRegister(nethttp.RegisterSSE(mux, notifRoute, func(ctx context.Context, _ struct{}, send func(NotifProps) error) error {
 		events := []NotifProps{
 			{ID: "n1", Message: "Deployment succeeded", Level: "info"},
 			{ID: "n2", Message: "Disk usage above 75%", Level: "warn"},
@@ -259,7 +269,7 @@ func main() {
 			}
 		}
 		return nil
-	}, opts)
+	}, opts, obsMw))
 
 	srv := httptest.NewServer(mux)
 	defer srv.Close()
@@ -293,14 +303,14 @@ func main() {
 	// receives or renders invalid data.
 
 	invalidMux := http.NewServeMux()
-	nethttp.Register(invalidMux, dashRoute, func(_ context.Context, _ struct{}) (DashboardProps, error) {
+	mustRegister(nethttp.Register(invalidMux, dashRoute, func(_ context.Context, _ struct{}) (DashboardProps, error) {
 		return DashboardProps{
 			Title:    "", // fails NonEmptyString
 			Section1: "ok",
 			Section2: "ok",
 			Section3: "ok",
 		}, nil
-	}, nethttp.Options{Observer: obs})
+	}, nethttp.Options{}, obsMw))
 	invalidSrv := httptest.NewServer(invalidMux)
 	defer invalidSrv.Close()
 

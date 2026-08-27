@@ -124,3 +124,72 @@ func TestSecuritySchemeTypes(t *testing.T) {
 		t.Errorf("SecuritySchemeOpenIDConnect = %q, want 'openIdConnect'", route.SecuritySchemeOpenIDConnect)
 	}
 }
+
+func TestSatisfied_emptyReqsAlwaysTrue(t *testing.T) {
+	if !route.Satisfied(nil, nil) {
+		t.Error("want empty reqs to always be satisfied")
+	}
+	if !route.Satisfied([]route.SecurityRequirement{}, map[string][]string{}) {
+		t.Error("want empty reqs to always be satisfied, even with empty granted")
+	}
+}
+
+func TestSatisfied_ANDWithinOneRequirement(t *testing.T) {
+	reqs := []route.SecurityRequirement{
+		{"bearerAuth": nil, "apiKey": nil},
+	}
+	// Only bearerAuth granted — apiKey missing — should fail (AND).
+	if route.Satisfied(reqs, map[string][]string{"bearerAuth": nil}) {
+		t.Error("want AND-combined requirement to fail when one scheme is missing")
+	}
+	// Both granted — should pass.
+	if !route.Satisfied(reqs, map[string][]string{"bearerAuth": nil, "apiKey": nil}) {
+		t.Error("want AND-combined requirement to pass when both schemes are granted")
+	}
+}
+
+func TestSatisfied_ORAcrossRequirements(t *testing.T) {
+	reqs := []route.SecurityRequirement{
+		{"bearerAuth": nil},
+		{"apiKey": nil},
+	}
+	if !route.Satisfied(reqs, map[string][]string{"apiKey": nil}) {
+		t.Error("want OR-across-requirements to pass when only the second alternative is granted")
+	}
+	if route.Satisfied(reqs, map[string][]string{"unrelated": nil}) {
+		t.Error("want OR-across-requirements to fail when neither alternative is granted")
+	}
+}
+
+func TestSatisfied_emptyScopesMeansAuthenticatedNoRestriction(t *testing.T) {
+	reqs := []route.SecurityRequirement{
+		{"bearerAuth": nil}, // no scopes required
+	}
+	if !route.Satisfied(reqs, map[string][]string{"bearerAuth": nil}) {
+		t.Error("want a granted scheme with nil scopes to satisfy a no-scope requirement")
+	}
+	if !route.Satisfied(reqs, map[string][]string{"bearerAuth": {}}) {
+		t.Error("want a granted scheme with empty scopes to satisfy a no-scope requirement")
+	}
+}
+
+func TestSatisfied_scopeSubsetRequired(t *testing.T) {
+	reqs := []route.SecurityRequirement{
+		{"oauth2": {"read:users", "admin"}},
+	}
+	if route.Satisfied(reqs, map[string][]string{"oauth2": {"read:users"}}) {
+		t.Error("want a partial scope grant to fail")
+	}
+	if !route.Satisfied(reqs, map[string][]string{"oauth2": {"read:users", "admin", "extra"}}) {
+		t.Error("want a superset scope grant to pass")
+	}
+}
+
+func TestSatisfied_missingSchemeFails(t *testing.T) {
+	reqs := []route.SecurityRequirement{
+		{"oauth2": {"read:users"}},
+	}
+	if route.Satisfied(reqs, map[string][]string{}) {
+		t.Error("want an ungranted scheme to fail")
+	}
+}

@@ -13,6 +13,7 @@ import (
 	c "github.com/DaniDeer/go-codex/codex"
 	"github.com/DaniDeer/go-codex/examples/go-edge-models/internal/registry"
 	regmodels "github.com/DaniDeer/go-codex/examples/go-edge-models/models/docker/registry"
+	"github.com/DaniDeer/go-codex/middleware"
 	"github.com/DaniDeer/go-codex/route"
 	"github.com/DaniDeer/go-codex/stats"
 	"github.com/DaniDeer/go-codex/validate"
@@ -267,35 +268,40 @@ func authenticate(ctx context.Context, httpClient *http.Client, registryHost, re
 		return "", err
 	}
 
-	// Basic-auth credentials (when supplied) flow through credentialFunc,
-	// the SAME declarative mechanism Bearer credentials use on
-	// GetTagsRoute/GetManifestRoute (see newAuthCredentialFunc below) — not a
-	// manual CallOptions.ExtraHeaders injection. getTokenRoute declares
-	// Security unconditionally (this file's own basicAuthSecurity), so this
-	// credentialFunc is invoked automatically by nethttp.CallHandle
-	// whenever creds is non-nil; when creds is nil (anonymous exchange),
-	// tokenOpts.CredentialFunc stays nil — a nil CredentialFunc on a
-	// secured route is never an error, so the request goes out exactly as
-	// it always has: no Authorization header at all.
+	// Basic-auth credentials (when supplied) flow through a
+	// credential-providing middleware.Middleware, the SAME declarative
+	// mechanism newAuthCredentialFunc's Bearer credential uses below on
+	// GetTagsRoute/GetManifestRoute — not a manual CallOptions.ExtraHeaders
+	// injection. getTokenRoute declares Security unconditionally (this
+	// file's own basicAuthSecurity), so this middleware's Fn is invoked
+	// automatically by nethttp.CallHandle whenever creds is non-nil; when
+	// creds is nil (anonymous exchange), no middleware is attached at all —
+	// an absent credential-providing middleware on a secured route is
+	// never an error, so the request goes out exactly as it always has: no
+	// Authorization header at all.
 	tokenOpts := nethttp.CallOptions{Observer: obs}
+	var tokenMws []middleware.Middleware
 	if creds != nil {
-		tokenOpts.CredentialFunc = func(context.Context, []route.SecurityRequirement) (http.Header, error) {
-			basicAuth, err := formatBasicAuth(creds.Username, creds.Password)
-			if err != nil {
-				return nil, err
-			}
-			h := make(http.Header, 1)
-			h.Set("Authorization", basicAuth)
-			return h, nil
-		}
+		tokenMws = append(tokenMws, middleware.Middleware{
+			Fn: func(context.Context, []route.SecurityRequirement) (http.Header, error) {
+				basicAuth, err := formatBasicAuth(creds.Username, creds.Password)
+				if err != nil {
+					return nil, err
+				}
+				h := make(http.Header, 1)
+				h.Set("Authorization", basicAuth)
+				return h, nil
+			},
+		})
 	}
 
 	tokenHandle := getTokenRoute.ClientHandle()
 	tr, err := nethttp.CallHandle(ctx, httpClient, challenge.Realm, tokenHandle,
-		getTokenReq{Service: challenge.Service, Scope: scope}, tokenOpts)
+		getTokenReq{Service: challenge.Service, Scope: scope}, tokenOpts, tokenMws...)
 	if err != nil {
 		return "", RegistryAuthError{Registry: registryHost, Err: err}
 	}
+
 	if tr.Token != "" {
 		return tr.Token, nil
 	}

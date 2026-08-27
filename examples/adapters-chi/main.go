@@ -42,6 +42,7 @@ import (
 	"github.com/google/uuid"
 
 	chiadapter "github.com/DaniDeer/go-codex/adapters/chi"
+	"github.com/DaniDeer/go-codex/adapters/nethttp"
 	"github.com/DaniDeer/go-codex/api/rest"
 	"github.com/DaniDeer/go-codex/codex"
 	"github.com/DaniDeer/go-codex/format"
@@ -408,6 +409,16 @@ func makeListUsersHandler() func(context.Context, struct{}) (PagedUsersResp, err
 	}
 }
 
+// mustRegister exits the program if chiadapter.Register returns an error —
+// e.g. a malformed middleware Fn shape, caught eagerly at wiring time
+// rather than on the first incoming request.
+func mustRegister(err error) {
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "chi.Register failed: %v\n", err)
+		os.Exit(1)
+	}
+}
+
 func main() {
 	baseLogger := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelDebug}))
 	slog.SetDefault(baseLogger)
@@ -601,30 +612,34 @@ func main() {
 
 	metrics := &CountingObserver{}
 	obs := stats.NewFanout(metrics, stats.NewLoggingObserver(baseLogger.With("component", "http")))
-	opts := chiadapter.Options{ErrorHandler: errorHandler, Observer: obs}
+	// chi reuses nethttp.ObservabilityMiddleware directly — same
+	// general-purpose func(http.Handler) http.Handler shape chi's
+	// Handler/Register already recognize.
+	obsMw := nethttp.ObservabilityMiddleware(obs)
+	opts := chiadapter.Options{ErrorHandler: errorHandler}
 
 	r := gochi.NewRouter()
-	chiadapter.Register(r, createUserRoute,
+	mustRegister(chiadapter.Register(r, createUserRoute,
 		withDomainLogging("user.create", makeCreateUserHandler(store), domainLogger, extractUserAttrs),
-		opts)
-	chiadapter.Register(r, getUserRoute,
+		opts, obsMw))
+	mustRegister(chiadapter.Register(r, getUserRoute,
 		withDomainLogging("user.get", makeGetUserHandler(store), domainLogger, extractGetUserAttrs),
-		opts)
-	chiadapter.Register(r, updateUserRoute,
+		opts, obsMw))
+	mustRegister(chiadapter.Register(r, updateUserRoute,
 		withDomainLogging("user.update", makeUpdateUserHandler(store), domainLogger,
 			func(req UpdateUserReq, u User) []slog.Attr {
 				return []slog.Attr{slog.String("id", req.ID), slog.String("name", u.Name)}
 			}),
-		opts)
-	chiadapter.Register(r, listUsersRoute,
+		opts, obsMw))
+	mustRegister(chiadapter.Register(r, listUsersRoute,
 		withDomainLogging("user.list", makeListUsersHandler(), domainLogger,
 			func(_ struct{}, _ PagedUsersResp) []slog.Attr { return nil }),
-		opts)
-	chiadapter.Register(r, profileRoute,
+		opts, obsMw))
+	mustRegister(chiadapter.Register(r, profileRoute,
 		func(_ context.Context, _ struct{}) (User, error) {
 			return User{ID: "f47ac10b-58cc-4372-a567-0e02b2c3d479", Name: "Alice", Email: "alice@example.com"}, nil
 		},
-		opts)
+		opts, obsMw))
 
 	srv := httptest.NewServer(r)
 	defer srv.Close()
@@ -827,7 +842,7 @@ func main() {
 	fmt.Println("\n--- ResponseHeaderParams + ResponseCookieParams — contract violation demo ---")
 	func() {
 		violationRouter := gochi.NewRouter()
-		chiadapter.Register(violationRouter, createUserRoute,
+		mustRegister(chiadapter.Register(violationRouter, createUserRoute,
 			func(ctx context.Context, req CreateUserReq) (User, error) {
 				h := make(http.Header)
 				h.Set("Location", "") // empty → fails NonEmptyString → 500
@@ -839,7 +854,7 @@ func main() {
 				})
 				return buildUserResponse(buildUserRecord(req)), nil
 			},
-			chiadapter.Options{Observer: obs})
+			chiadapter.Options{}, obsMw))
 		violationSrv := httptest.NewServer(violationRouter)
 		defer violationSrv.Close()
 
@@ -859,7 +874,7 @@ func main() {
 	// an invalid response body at 500. Refine constraints run on both Encode and Decode.
 	func() {
 		bodyViolRouter := gochi.NewRouter()
-		chiadapter.Register(bodyViolRouter, createUserRoute,
+		mustRegister(chiadapter.Register(bodyViolRouter, createUserRoute,
 			func(ctx context.Context, req CreateUserReq) (User, error) {
 				// Handler deliberately returns a User with invalid field values to
 				// demonstrate that handle.Encode now validates the response body.
@@ -869,7 +884,7 @@ func main() {
 					Email: "not-an-email", // fails Email constraint
 				}, nil
 			},
-			chiadapter.Options{Observer: obs})
+			chiadapter.Options{}, obsMw))
 		bodyViolSrv := httptest.NewServer(bodyViolRouter)
 		defer bodyViolSrv.Close()
 

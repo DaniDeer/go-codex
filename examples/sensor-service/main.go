@@ -345,8 +345,8 @@ func main() {
 		nethttp.PipelineAdapterOptions{})), "bind export tool port")
 
 	// ── HTTP — register remaining routes ──────────────────────────────────
-	nethttp.Register(mux, ioports.CreateHandle, adapters.NewCreateHandler(store), nethttp.Options{})
-	nethttp.Register(mux, ioports.GetHandle, adapters.NewGetHandler(store), nethttp.Options{})
+	must(nethttp.Register(mux, ioports.CreateHandle, adapters.NewCreateHandler(store), nethttp.Options{}), "register create route")
+	must(nethttp.Register(mux, ioports.GetHandle, adapters.NewGetHandler(store), nethttp.Options{}), "register get route")
 
 	// Wrap with ObserverMiddleware so every HTTP request gets obs injected
 	// into r.Context() — handlers resolve the observer per-request.

@@ -7,6 +7,7 @@ import (
 	mcpgo "github.com/DaniDeer/go-codex/adapters/mcpgo"
 	nethttp "github.com/DaniDeer/go-codex/adapters/nethttp"
 	"github.com/DaniDeer/go-codex/api/rest"
+	"github.com/DaniDeer/go-codex/middleware"
 )
 
 // MappedToolHandler returns an [mcpgo.HandlerFunc][ToolIn, ToolOut] that
@@ -20,10 +21,11 @@ import (
 // continue to forward unchanged via errors.As).
 //
 // handle's declared path/query/header/cookie merge fields and security
-// schemes apply exactly as any other nethttp client call would. opts
-// (including opts.CredentialFunc) is FIXED for every call made through the
-// returned handler — see the package doc comment for the ctx/session
-// recipe if a per-caller credential is ever needed.
+// schemes apply exactly as any other nethttp client call would. opts and
+// mws (a credential-providing [middleware.Middleware], typically) are
+// FIXED for every call made through the returned handler — see the
+// package doc comment for the ctx/session recipe if a per-caller
+// credential is ever needed.
 //
 // Use [ToolHandler] instead when the tool's In/Out IS the route's Req/Resp
 // (the common case) — it is MappedToolHandler with identity mappers.
@@ -40,6 +42,7 @@ func MappedToolHandler[ToolIn, ToolOut, Req, Resp any](
 	opts nethttp.CallOptions,
 	toReq func(ToolIn) (Req, error),
 	fromResp func(Resp) (ToolOut, error),
+	mws ...middleware.Middleware,
 ) mcpgo.HandlerFunc[ToolIn, ToolOut] {
 	return func(ctx context.Context, in ToolIn) (ToolOut, error) {
 		var zero ToolOut
@@ -53,7 +56,7 @@ func MappedToolHandler[ToolIn, ToolOut, Req, Resp any](
 			}
 		}
 
-		resp, err := nethttp.CallHandle(ctx, client, baseURL, handle, req, opts)
+		resp, err := nethttp.CallHandle(ctx, client, baseURL, handle, req, opts, mws...)
 		if err != nil {
 			return zero, err
 		}
@@ -86,9 +89,8 @@ func MappedToolHandler[ToolIn, ToolOut, Req, Resp any](
 //	    mcprest.DefaultErrorPatterns()...,
 //	).Register(mcpBuilder)
 //	tool, handlerFn := mcpgoAdapter.ToolHandler(toolHandle,
-//	    mcprest.ToolHandler(httpClient, baseURL, restHandle, nethttp.CallOptions{
-//	        CredentialFunc: myFixedCredentialFunc,
-//	    }),
+//	    mcprest.ToolHandler(httpClient, baseURL, restHandle, nethttp.CallOptions{},
+//	        middleware.Middleware{Fn: myFixedCredentialFunc}),
 //	    mcpgo.Options{},
 //	)
 func ToolHandler[Req, Resp any](
@@ -96,9 +98,11 @@ func ToolHandler[Req, Resp any](
 	baseURL string,
 	handle *rest.RouteHandle[Req, Resp],
 	opts nethttp.CallOptions,
+	mws ...middleware.Middleware,
 ) mcpgo.HandlerFunc[Req, Resp] {
 	return MappedToolHandler(client, baseURL, handle, opts,
 		func(req Req) (Req, error) { return req, nil },
 		func(resp Resp) (Resp, error) { return resp, nil },
+		mws...,
 	)
 }

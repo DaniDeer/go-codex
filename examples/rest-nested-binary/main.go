@@ -198,7 +198,7 @@ func main() {
 	serverHandle.WithRequestFormats(uploadGobFormat)
 
 	mux := http.NewServeMux()
-	nethttp.Register(mux, serverHandle, func(_ context.Context, req UploadReq) (UploadResp, error) {
+	if err := nethttp.Register(mux, serverHandle, func(_ context.Context, req UploadReq) (UploadResp, error) {
 		// req arrives FULLY merged: ID (path), Meta.ContentHash (header),
 		// Meta.Compress (query), Payload (Gob body) — one struct, no manual
 		// r.PathValue()/r.URL.Query()/r.Header.Get() calls needed.
@@ -210,7 +210,10 @@ func main() {
 			Size:   len(req.Payload.Data),
 			Meta:   RespMeta{TraceID: "trace-" + req.ID},
 		}, nil
-	}, nethttp.Options{})
+	}, nethttp.Options{}); err != nil {
+		fmt.Fprintln(os.Stderr, "register upload route:", err)
+		os.Exit(1)
+	}
 
 	srv := httptest.NewServer(mux)
 	defer srv.Close()

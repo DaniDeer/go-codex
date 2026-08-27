@@ -21,9 +21,8 @@
 //	    mcprest.DefaultErrorPatterns()...,
 //	).Register(mcpBuilder)
 //	tool, handlerFn := mcpgoAdapter.ToolHandler(toolHandle,
-//	    mcprest.ToolHandler(httpClient, baseURL, restHandle, nethttp.CallOptions{
-//	        CredentialFunc: myFixedCredentialFunc,
-//	    }),
+//	    mcprest.ToolHandler(httpClient, baseURL, restHandle, nethttp.CallOptions{},
+//	        middleware.Middleware{Fn: myFixedCredentialFunc}),
 //	    mcpgo.Options{},
 //	)
 //
@@ -35,13 +34,14 @@
 // fromResp mapper functions to bridge between them:
 //
 //	handlerFn := mcprest.MappedToolHandler(httpClient, baseURL, restHandle,
-//	    nethttp.CallOptions{CredentialFunc: myFixedCredentialFunc},
+//	    nethttp.CallOptions{},
 //	    func(in SimpleSearchInput) (registry.GetTagsReq, error) {
 //	        return registry.GetTagsReq{Name: in.Image}, nil
 //	    },
 //	    func(resp registry.TagsList) (SimpleSearchOutput, error) {
 //	        return SimpleSearchOutput{Tags: resp.Tags}, nil
 //	    },
+//	    middleware.Middleware{Fn: myFixedCredentialFunc},
 //	)
 //
 // A failing mapper returns [ToolRequestMapError]/[ToolResponseMapError] —
@@ -51,23 +51,24 @@
 //
 // # Credentials are FIXED per tool
 //
-// opts (including opts.CredentialFunc) is configured ONCE, when the tool's
-// handler is built, and reused for every call made through it — matching
-// every other client-adapter binding in go-codex ([nethttp.CallAdapter],
-// [nethttp.DrainCallAdapter], the mqtt5/zeromq equivalents). There is no
-// per-call credential override.
+// opts and mws (the credential-providing [middleware.Middleware], if any)
+// are configured ONCE, when the tool's handler is built, and reused for
+// every call made through it — matching every other client-adapter
+// binding in go-codex ([nethttp.CallAdapter], [nethttp.DrainCallAdapter],
+// the mqtt5/zeromq equivalents). There is no per-call credential
+// override.
 //
 // If a per-CALLER credential is ever needed (e.g. different MCP clients/
 // sessions should authenticate to the downstream REST API differently),
-// it is already achievable with ZERO new API: a CredentialFunc closure
+// it is already achievable with ZERO new API: a middleware.Middleware's Fn
 // receives ctx on every invocation and MCP tool calls carry a
 // per-connection session identity accessible via
 // [github.com/mark3labs/mcp-go/server.ClientSessionFromContext](ctx).SessionID() —
 // look up a credential in an application-owned store keyed by that
-// session ID, inside the CredentialFunc closure passed to opts:
+// session ID, inside the Fn closure passed as mws:
 //
-//	opts := nethttp.CallOptions{
-//	    CredentialFunc: func(ctx context.Context, reqs []route.SecurityRequirement) (http.Header, error) {
+//	credMw := middleware.Middleware{
+//	    Fn: func(ctx context.Context, reqs []route.SecurityRequirement) (http.Header, error) {
 //	        sessionID := server.ClientSessionFromContext(ctx).SessionID()
 //	        cred, ok := myCredentialStore.Lookup(sessionID)
 //	        if !ok {

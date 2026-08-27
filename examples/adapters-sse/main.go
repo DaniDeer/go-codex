@@ -223,14 +223,27 @@ func readSSELines(resp *http.Response) []string {
 
 // ── Main ──────────────────────────────────────────────────────────────────────
 
+// mustRegister exits the program if RegisterSSE returns an error — e.g. a
+// malformed middleware Fn shape, caught eagerly at wiring time.
+func mustRegister(err error) {
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "RegisterSSE failed: %v\n", err)
+		os.Exit(1)
+	}
+}
+
 func main() {
 	logger := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelDebug}))
 	slog.SetDefault(logger)
 
 	metrics := &statsObserver{}
 	obs := stats.NewFanout(metrics, stats.NewLoggingObserver(logger.With("component", "sse")))
-	opts := nethttp.Options{Observer: obs}
-	chiOpts := chiadapter.Options{Observer: obs}
+	// ObservabilityMiddleware is the only nethttp/chi call site that
+	// touches stats.Observer now — chi reuses nethttp's directly (same
+	// general-purpose Fn shape both packages recognize).
+	obsMw := nethttp.ObservabilityMiddleware(obs)
+	opts := nethttp.Options{}
+	chiOpts := chiadapter.Options{}
 
 	b := rest.NewBuilder(rest.Info{Title: "SSE Demo API", Version: "1.0.0"})
 
@@ -306,14 +319,14 @@ func main() {
 
 	// ── Wiring ────────────────────────────────────────────────────────────
 	mux := http.NewServeMux()
-	nethttp.RegisterSSE(mux, counterRoute, handleCounter, opts)
-	nethttp.RegisterSSE(mux, invalidRoute, handleInvalid, opts)
-	nethttp.RegisterSSE(mux, withHeadersRoute, handleWithHeaders, opts)
-	nethttp.RegisterSSE(mux, mergedRoute, handleSensorMergedConvenience, opts)
-	nethttp.RegisterSSE(mux, manualRoute, handleSensorManualEscape, opts)
+	mustRegister(nethttp.RegisterSSE(mux, counterRoute, handleCounter, opts, obsMw))
+	mustRegister(nethttp.RegisterSSE(mux, invalidRoute, handleInvalid, opts, obsMw))
+	mustRegister(nethttp.RegisterSSE(mux, withHeadersRoute, handleWithHeaders, opts, obsMw))
+	mustRegister(nethttp.RegisterSSE(mux, mergedRoute, handleSensorMergedConvenience, opts, obsMw))
+	mustRegister(nethttp.RegisterSSE(mux, manualRoute, handleSensorManualEscape, opts, obsMw))
 
 	r := gochi.NewRouter()
-	chiadapter.RegisterSSE(r, sensorRoute, handleSensor, chiOpts)
+	mustRegister(chiadapter.RegisterSSE(r, sensorRoute, handleSensor, chiOpts, obsMw))
 	mux.Handle("/sse/sensor/", r)
 
 	srv := httptest.NewServer(mux)

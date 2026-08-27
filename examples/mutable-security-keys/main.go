@@ -47,6 +47,7 @@ import (
 	nethttp "github.com/DaniDeer/go-codex/adapters/nethttp"
 	"github.com/DaniDeer/go-codex/api/rest"
 	"github.com/DaniDeer/go-codex/codex"
+	"github.com/DaniDeer/go-codex/middleware"
 	"github.com/DaniDeer/go-codex/route"
 	"github.com/DaniDeer/go-codex/validate"
 )
@@ -97,43 +98,43 @@ func main() {
 		panic(err)
 	}
 
-	// ── Spec: ONE secured route, a plain rest.WithSecurityScheme
-	// declaration — completely unaware that Mutable[T]/Cacheable[T]
+	// ── Spec: ONE secured route, a nethttp.RequireScopes-built
+	// middleware — completely unaware that Mutable[T]/Cacheable[T]
 	// exist. Nothing about the route/handle/builder changes to support
 	// either container; that is the point. ────────────────────────────
-	bearerAuth := rest.SecurityScheme{SecurityScheme: route.BearerScheme("JWT")}.WithCodec(keyCodec)
+	// Server: the extraction Fn calls keys.Get() INSIDE the closure
+	// body, on every request — never hoisted to a local outside the
+	// closure.
+	secureScopesMw := nethttp.RequireScopes[struct{}]("bearerAuth", route.BearerScheme("JWT"), nil, &keyCodec,
+		func(_ context.Context, r *http.Request, _ *struct{}) (map[string][]string, error) {
+			current := keys.Get() // ← read fresh on EVERY request, not hoisted
+			token := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
+			if token != current {
+				return nil, errors.New("signing key mismatch")
+			}
+			return map[string][]string{"bearerAuth": nil}, nil
+		},
+	)
 
 	b := rest.NewBuilder(rest.Info{Title: "mutable-security-keys demo", Version: "1.0.0"})
 	secureHandle, err := rest.NewRoute[struct{}, secureResp]("GET", "/secure",
 		codex.Empty, secureRespCodec,
-		rest.RouteMeta{
-			OperationID: "secureEndpoint",
-			Security:    []route.SecurityRequirement{route.Require("bearerAuth")},
-		},
-		rest.WithSecurityScheme("bearerAuth", bearerAuth),
+		rest.RouteMeta{OperationID: "secureEndpoint"},
+		rest.WithMiddleware(secureScopesMw),
 	).Register(b)
 	if err != nil {
 		panic(err)
 	}
 
-	// ── Server: SecurityFunc calls keys.Get() INSIDE the closure body,
-	// on every request — never hoisted to a local outside the closure. ──
 	mux := http.NewServeMux()
-	nethttp.Register(mux, secureHandle,
+	if err := nethttp.Register(mux, secureHandle,
 		func(_ context.Context, _ struct{}) (secureResp, error) {
 			return secureResp{Message: "welcome"}, nil
 		},
-		nethttp.Options{
-			SecurityFunc: func(_ context.Context, r *http.Request, _ []route.SecurityRequirement) error {
-				current := keys.Get() // ← read fresh on EVERY request, not hoisted
-				token := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
-				if token != current {
-					return errors.New("signing key mismatch")
-				}
-				return nil
-			},
-		},
-	)
+		nethttp.Options{},
+	); err != nil {
+		panic(err)
+	}
 	srv := httptest.NewServer(mux)
 	defer srv.Close()
 
@@ -144,33 +145,36 @@ func main() {
 	// single-process, network-free example.
 	fetchFreshCredential := func() string { return keys.Get() }
 
-	// ── Client: CredentialFunc calls cred.Get() INSIDE the closure body
-	// on every call, refreshing via Set() when stale — never hoisted. ──
-	credentialFunc := func(_ context.Context, _ []route.SecurityRequirement) (http.Header, error) {
-		val, fresh := cred.Get() // ← the bool MUST be handled explicitly; Cacheable never hides it
-		if !fresh {
-			val = fetchFreshCredential()
-			if err := cred.Set(val); err != nil {
-				return nil, err
+	// ── Client: the credential-providing middleware's Fn calls
+	// cred.Get() INSIDE the closure body on every call, refreshing via
+	// Set() when stale — never hoisted. ──
+	credentialMw := middleware.Middleware{
+		Fn: func(_ context.Context, _ []route.SecurityRequirement) (http.Header, error) {
+			val, fresh := cred.Get() // ← the bool MUST be handled explicitly; Cacheable never hides it
+			if !fresh {
+				val = fetchFreshCredential()
+				if err := cred.Set(val); err != nil {
+					return nil, err
+				}
 			}
-		}
-		h := make(http.Header)
-		h.Set("Authorization", "Bearer "+val)
-		return h, nil
+			h := make(http.Header)
+			h.Set("Authorization", "Bearer "+val)
+			return h, nil
+		},
 	}
 
 	call := func(label string) {
 		_, err := nethttp.Call(context.Background(), srv.Client(), srv.URL,
 			secureHandle, struct{}{}, nil,
 			nethttp.CallOptions{
-				CredentialFunc: credentialFunc,
 				// A 401 means the cached credential no longer matches the
 				// server's rotated key — invalidate so the NEXT call
 				// refetches instead of retrying the same stale value.
 				// Mirrors nethttp.NewCachingCredentialFunc's own
 				// invalidate-on-401 wiring.
 				OnCredentialRejected: cred.Invalidate,
-			})
+			},
+			credentialMw)
 		status := "200 OK"
 		if err != nil {
 			var statusErr nethttp.UnexpectedStatusError

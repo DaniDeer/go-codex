@@ -11,6 +11,7 @@ import (
 	"github.com/DaniDeer/go-codex/examples/go-edge-models/internal/registry"
 	"github.com/DaniDeer/go-codex/examples/go-edge-models/models/docker"
 	regmodels "github.com/DaniDeer/go-codex/examples/go-edge-models/models/docker/registry"
+	"github.com/DaniDeer/go-codex/middleware"
 	"github.com/DaniDeer/go-codex/stats"
 )
 
@@ -56,12 +57,12 @@ const defaultPlatform = "linux/amd64"
 func fetchManifest(ctx context.Context, httpClient *http.Client, baseURL, repository, reference string, credFn credentialFunc, obs stats.Observer) (internal.ManifestEnvelope, error) {
 	handle := regmodels.GetManifestRoute.ClientHandle()
 	opts := nethttp.CallOptions{
-		ExtraHeaders:   http.Header{"Accept": []string{acceptManifestTypes}},
-		CredentialFunc: credFn,
-		Observer:       obs,
+		ExtraHeaders: http.Header{"Accept": []string{acceptManifestTypes}},
+		Observer:     obs,
 	}
 	return nethttp.CallHandle(ctx, httpClient, baseURL, handle,
-		regmodels.GetManifestReq{Name: repository, Reference: reference}, opts)
+		regmodels.GetManifestReq{Name: repository, Reference: reference}, opts,
+		middleware.Middleware{Fn: credFn})
 }
 
 // platformMatches reports whether d's platform matches selector — a plain

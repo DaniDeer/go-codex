@@ -52,6 +52,104 @@
 > as originally designed. This fixes a real sequencing bug in the
 > original single-attachment-point design — see "Two attachment points"
 > below.
+>
+> **Implementation status (Phase 1, REST): Stages 1-6 of 7 COMPLETE.**
+> `route.Satisfied`, `stats.Diagnostic`, the new `middleware` package,
+> `api/rest`'s `WithMiddleware`/conflict detection, `adapters/nethttp`,
+> `adapters/chi`, and every example package are all implemented, tested,
+> and verified (`go build`/`go vet`/`go test`/`staticcheck`/`gosec`/
+> `gofmt` all clean repo-wide; every `examples/*` package runs end-to-end
+> via `go run .`, not just compiles). Only **Stage 7 (docs)** remains —
+> `docs/features/security.md` rewrite, new `docs/concepts/middleware.md`/
+> `docs/features/middleware.md`, and `.github/instructions/
+> go-codex.instructions.md` sync. See "Implementation findings" below for
+> deviations from this doc's original design discovered while building
+> it, and "Stage 6 example migration notes" for what changed across the
+> whole example suite.
+
+## Implementation findings (discovered while building Phase 1)
+
+These are corrections/additions to the design above, found empirically
+during implementation — not part of the original L1-L14 review passes.
+Each is a small, self-contained deviation; none invalidates the overall
+design.
+
+- **`stats.NewFanout` already IS the planned `MultiObserver`.** The
+  implementation plan initially called for a new `stats.MultiObserver`
+  to fan a single `stats.Observer` call out to several observers
+  (needed once `ObservabilityMiddleware` injects a context observer that
+  must coexist with a per-call one). `stats.NewFanout` already provides
+  this, unused until now — no new type was added.
+- **`Route.ClientHandle()` vs `Route.Register()` asymmetry (real bug,
+  fixed).** `Register()` applies middleware-derived `Security`/
+  `SecuritySchemes` via `applyMiddlewareDeclarations` (full: conflict
+  detection + coverage check + merge); `ClientHandle()` only ran each
+  opt's bare `applyRoute()`, so a `rest.WithMiddleware`-declared route
+  built via `ClientHandle()` alone had an EMPTY `SecuritySchemes` —
+  breaking `nethttp.Call`'s client-side credential-format check. Fixed
+  with a new `applyMiddlewareSecurityForClient()` in
+  `api/rest/middleware.go`: a deliberately non-erroring,
+  conflict-detection-free variant (since `ClientHandle()` is documented
+  as infallible and must stay that way) that performs just the merge
+  step. Restores "declare once, both sides get identical treatment."
+- **`nethttp.CallHandle` was missing the `mws ...middleware.Middleware`
+  variadic that `Call` has (real bug, fixed).** The single-call
+  convenience wrapper couldn't attach a credential-providing middleware
+  at all — a caller had no way to reach `Call`'s own credential
+  mechanism through the documented one-line entry point. Fixed by
+  adding `mws ...middleware.Middleware` to `CallHandle`'s signature and
+  forwarding it to `Call` unchanged.
+- **`adapters/mcprest.ToolHandler`/`MappedToolHandler` had the identical
+  gap (real bug, fixed).** Both wrap `nethttp.CallHandle` internally and
+  needed the same trailing variadic added and threaded through; godoc
+  examples in `bridge.go`/`doc.go` updated from
+  `CallOptions{CredentialFunc: ...}` to
+  `middleware.Middleware{Fn: ...}` passed as the trailing arg.
+- **`ObservabilityMiddleware` needed to inject the observer into ctx,
+  not just diagnostics (real bug, fixed).** It originally only called
+  `stats.WithDiagnostics(ctx)`. Fn-driven code attached elsewhere on the
+  same request (e.g. a `RequireScopes` extraction `Fn` calling
+  `RecordSecurityRejection`) resolves its observer via
+  `stats.ObserverFromContext(ctx)` — without also calling
+  `stats.WithObserver(ctx, obs)` inside `ObservabilityMiddleware`, that
+  lookup silently returned `NoopObserver{}` and security-rejection
+  metrics never fired. Fixed by adding the `stats.WithObserver` call;
+  chi inherits the fix for free (it reuses
+  `nethttp.ObservabilityMiddleware` directly, no chi-specific copy).
+- **`Call`/`CallHandle` do not read `RouteHandle.Middlewares` at all**
+  (confirmed, not a bug) — only `Register` combines
+  `handle.Middlewares` with its own variadic `mws`. A client-side
+  credential-providing middleware must always be passed directly to
+  `Call`/`CallHandle`'s own variadic parameter; there is no
+  declaration-time attachment point for it, by design (the client
+  credential `Fn` shape is fundamentally different from the server
+  verification `Fn` shape).
+- **Contract packages must stay adapter-agnostic when a route needs
+  security middleware.** A shared, adapter-agnostic "contract" package
+  (declaring routes reused by both a server's `main.go` and a client's
+  `main.go`) cannot embed a concrete `nethttp.RequireScopes`-built
+  middleware directly — that would force an `adapters/nethttp` import
+  into a package that must stay transport-agnostic. The resolved
+  pattern: such a route becomes a `func(mw middleware.Middleware)
+  rest.Route[Req, Resp]` instead of a bare `var`, letting the
+  `main.go` that DOES import the adapter build and pass in the concrete
+  middleware. The contract package may still safely import the
+  `middleware` package itself (just not `adapters/*`).
+
+## Stage 6 example migration notes
+
+All 11 example packages identified as broken by the old
+`Options.Observer`/`Options.SecurityFunc`/`CallOptions.CredentialFunc`
+removal were migrated and verified end-to-end (`go run .`, output
+checked, not just exit code): `adapters-nethttp`, `adapters-chi`,
+`adapters-sse`, `adapters-streaming-sse-templ`, `adapters-templ`,
+`http-trace-span-propagation`, `adapters-nethttp-security`,
+`adapters-chi-security`, `mutable-security-keys`,
+`adapters-nethttp-client`, `go-edge-models/app/registry`. Two additional
+examples not on the original list (`sensor-service`,
+`rest-nested-binary`) had pre-existing `Register(...)` calls that
+silently ignored the (now-existing) `error` return — a gosec G104
+finding, not a compile error — and were fixed alongside the rest.
 
 ## Core thesis
 
@@ -2408,114 +2506,29 @@ dropped); `ports.File`'s decorator shape nests the same way; security
 headers (L9). MCP's shortcut ("no decorator needed, just swap the
 resolution source") is the ONE place in the entire design where
 attaching two of the same kind of middleware silently loses one of
-them. Confirmed via `grep` that `stats` has no `MultiObserver`/fan-out
-helper today that could paper over this by pre-composing observers
-before attaching a single one.
+them. **Correction (caught during Phase 1 implementation): `stats`
+ALREADY HAS exactly this fan-out helper** — `stats.NewFanout(observers
+...Observer) Observer` (`stats/observer.go`) already fans out
+`RecordRequest`/`RecordValidationError` unconditionally and every
+optional sub-interface (`SecurityObserver`, `TraceObserver`,
+`FileObserver`, `SQLObserver`, `CacheObserver`,
+`CredentialCacheObserver`, `PipelineObserver`, `StreamObserver`,
+`ReloadObserver`, `InvalidateObserver`) via a per-call type-assertion
+guard — shipped, tested, and already used elsewhere in this codebase
+(see `stats/doc.go`). The original L12 discovery (missed this on first
+pass) proposed inventing a NEW `stats.MultiObserver` type; that was
+unnecessary duplication of existing, working code.
 
-**Resolution — new `stats.MultiObserver` fan-out composite (confirmed
-with the user):** rather than making every observer call site
-(`RecordRequest`, `StartSpan`/`EndSpan`, `RecordValidationError`, …)
-loop over N observers individually, `stats.MultiObserver` mechanically
-combines N `stats.Observer` values into ONE `stats.Observer` value —
-mirrors `io.MultiWriter`. The EXISTING "scan `mws`, take the first
-`stats.Observer`-typed `Fn`" resolution logic in
-`ToolHandler`/`ResourceHandler`/`PromptHandler` stays structurally
-UNCHANGED; it just now collects EVERY matching `Fn` and builds a
-`MultiObserver` when there's more than one, instead of `break`-ing on
-the first:
-
-```go
-// stats — NEW, sketched here for a future implementation round.
-//
-// MultiObserver fans out every Observer-family call to N inner
-// observers, mechanically combining them into ONE stats.Observer value
-// — mirrors io.MultiWriter. All OPTIONAL sub-interfaces
-// (SecurityObserver, TraceObserver, FileObserver, SQLObserver,
-// CacheObserver, CredentialCacheObserver) are fanned out via a per-call
-// type-assertion guard — identical in spirit to how every adapter
-// already consults SecurityObserver today
-// (`if so, ok := obs.(stats.SecurityObserver); ok { ... }`) — no inner
-// observer is required to implement every optional interface.
-type MultiObserver struct {
-    Observers []Observer // order = fan-out order; also determines nested span order
-}
-
-func (m MultiObserver) RecordValidationError(location, constraintName, field string) {
-    for _, o := range m.Observers {
-        o.RecordValidationError(location, constraintName, field)
-    }
-}
-
-func (m MultiObserver) RecordRequest(method, path string, statusCode int, duration time.Duration) {
-    for _, o := range m.Observers {
-        o.RecordRequest(method, path, statusCode, duration)
-    }
-}
-
-func (m MultiObserver) RecordSecurityRejection(location, scheme string) {
-    for _, o := range m.Observers {
-        if so, ok := o.(SecurityObserver); ok {
-            so.RecordSecurityRejection(location, scheme)
-        }
-    }
-}
-```
-
-`TraceObserver` needs special handling — `StartSpan` returns a NEW
-`context.Context` that `EndSpan` later needs, so a naive fan-out would
-only see ONE span's context. `MultiObserver.StartSpan` calls EVERY
-inner `TraceObserver` in order, threading `ctx` through each (each
-tracer's span nests as a child of the previous), and stores the
-per-tracer `(TraceObserver, context.Context)` pairs in a private
-ctx-carried slice so `EndSpan` can unwind them in REVERSE order,
-calling each tracer's OWN `EndSpan` with ITS OWN chained ctx — the
-standard nested-span composition pattern:
-
-```go
-type multiSpanKey struct{}
-
-func (m MultiObserver) StartSpan(ctx context.Context, operation, name string) context.Context {
-    type span struct {
-        tracer TraceObserver
-        ctx    context.Context
-    }
-    var spans []span
-    for _, o := range m.Observers {
-        if to, ok := o.(TraceObserver); ok {
-            ctx = to.StartSpan(ctx, operation, name) // nests: child of the previous tracer's span
-            spans = append(spans, span{tracer: to, ctx: ctx})
-        }
-    }
-    return context.WithValue(ctx, multiSpanKey{}, spans)
-}
-
-func (m MultiObserver) EndSpan(ctx context.Context, err error) {
-    spans, _ := ctx.Value(multiSpanKey{}).([]struct {
-        tracer TraceObserver
-        ctx    context.Context
-    })
-    for i := len(spans) - 1; i >= 0; i-- { // reverse — innermost span ends first
-        spans[i].tracer.EndSpan(spans[i].ctx, err)
-    }
-}
-```
-
-`MultiObserver` itself always satisfies `stats.Observer`, and is always
-SAFE to type-assert against `stats.SecurityObserver`/`stats.TraceObserver`
-even when `Observers` is empty or none of them implement those optional
-interfaces — the fan-out degrades to a no-op loop, never a panic or a
-missing-method compile error.
-
-**MCP's resolution logic, updated to build a `MultiObserver` when
-N > 1** — this is L12's actual fix, and it is a strict superset of L5's
-original one-line swap (the zero- and single-observer cases behave
-IDENTICALLY to before; only the N>1 case, previously silently dropped,
-is now handled):
+**Resolution — reuse the EXISTING `stats.NewFanout`, no new `stats`
+type needed:** MCP's observability resolution simply collects EVERY
+`stats.Observer`-typed `Fn` (not just the first) and passes them ALL to
+`stats.NewFanout` when there's more than one, instead of `break`-ing on
+the first match:
 
 ```go
 // mcpgo — collects EVERY stats.Observer-typed Fn (not just the
-// first), combining them into ONE stats.MultiObserver when more than
-// one is found. Everything else in ToolHandler/ResourceHandler/
+// first), combining them via the EXISTING stats.NewFanout when more
+// than one is found. Everything else in ToolHandler/ResourceHandler/
 // PromptHandler is UNCHANGED — obs is still a single stats.Observer
 // value by the time the existing TraceObserver/RecordRequest logic runs.
 var observers []stats.Observer
@@ -2531,13 +2544,19 @@ case 0:
 case 1:
     obs = observers[0]
 default:
-    obs = stats.MultiObserver{Observers: observers}
+    obs = stats.NewFanout(observers...)
 }
 ```
 
-A caller can also pre-build a `stats.MultiObserver` themselves and pass
-it as the SOLE observability middleware, whenever they want explicit
-control over fan-out order — both paths converge on the same result.
+This is a strict superset of L5's original one-line swap (the zero-
+and single-observer cases behave IDENTICALLY to before; only the N>1
+case, previously silently dropped, is now handled). A caller can also
+pre-build a `stats.NewFanout(...)` themselves and pass it as the SOLE
+observability middleware, whenever they want explicit control over
+fan-out order — both paths converge on the same result. `stats`
+required ZERO new code for this fix — only `adapters/mcpgo`'s
+resolution loop changes (Phase 2, when MCP middleware coverage is
+implemented).
 
 ### L13 — `middleware.ContextField[V]`'s contract is incompatible with the L4-final security `Fn` signature
 
@@ -2677,9 +2696,7 @@ the claim without pre-committing to (a), (b), or (c).
 | `route/security.go` (or `route.go`) | `Satisfied` function + tests |
 | `stats/diagnostics.go` (new) | `Diagnostic`, `WithDiagnostics`, `RecordDiagnostic`, `DiagnosticsFromContext` — the Class B ctx-ferry mechanism |
 | `stats/diagnostics_test.go` (new) | Pre-allocate/append/read-back tests, no-op-when-absent tests |
-| `stats/multi.go` (new) | `MultiObserver` fan-out composite — `RecordRequest`/`RecordValidationError` unconditional, `SecurityObserver`/`TraceObserver`/etc. via per-call type-assertion guard, `StartSpan`/`EndSpan` nested-span chaining (see "L12" below) |
-| `stats/multi_test.go` (new) | Fan-out order tests, nested-span `StartSpan`/`EndSpan` unwind tests, zero/one/N-observer cases |
-| `adapters/mcpgo/adapter.go` | `ToolHandler`/`ResourceHandler`/`PromptHandler`'s observer resolution collects EVERY `stats.Observer`-typed `Fn` (not just the first) and builds a `stats.MultiObserver` when more than one is attached (see "L12" below) |
+| `adapters/mcpgo/adapter.go` (Phase 2, not this doc's Phase 1) | `ToolHandler`/`ResourceHandler`/`PromptHandler`'s observer resolution collects EVERY `stats.Observer`-typed `Fn` (not just the first) and combines them via the EXISTING `stats.NewFanout` when more than one is attached — no new `stats` code needed (see "L12" below) |
 | `api/rest/builder.go` | NEW `WithMiddleware` `RouteOpt` (applies `Security`/`RequestParams`/`ResponseParams` to the `routeBuilder` snapshot, appends to `rb.middlewares`, validates the FULL shape INSIDE `.Register(builder)` — see "L1" below); `routeBuilder` gains `securityContributedBy`/`requestParamContributedBy`/`responseParamContributedBy` registries (see "L3" below); `RouteHandle` gains `Middlewares []middleware.Middleware`; NEW `ConflictingSecurityDeclarationError`/`ConflictingParamContributionError`/`ParamContributionShapeError`; NEW `ValidateRoute[Req, Resp]` standalone helper — validates the FULL `opts` list via a scratch `routeBuilder`, not just middleware (see "L8" below) |
 | `api/events/builder.go`, `api/reqreply/route.go` | Mirrored `ValidateChannel[T]`/`ValidateRoute[Req]` standalone helpers, same rationale as `rest`'s |
 | `adapters/nethttp/adapter.go` | `Options.SecurityFunc`/`Options.Observer` removed; `Register`/`Handler` combine `handle.Middlewares` + variadic `extraMws`, apply drift-closing validation (manual-declaration path only), apply general-purpose wrapping; `report*Errors` helpers rewired to `stats.RecordDiagnostic`; pre-allocates the `ContextField` box via `middleware.EnsureContextFields` as the OUTERMOST step, before any attached `Fn` runs (see "L13" below) |

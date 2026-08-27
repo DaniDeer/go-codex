@@ -135,7 +135,10 @@ func (a *nethttpSSEAdapter[Event]) Activate(ctx context.Context, src gstream.Str
 		sseOpts.Topic = a.handle.Descriptor.Path
 	}
 	fn := SSEFromHub[struct{}, Event](hub, sseOpts)
-	RegisterSSE(a.mux, a.handle, fn, a.opts.Options)
+	// RegisterSSE now returns an error for eager middleware Fn-shape
+	// validation (see docs/roadmap/declarative-middleware.md) — unreachable
+	// here since no middleware is attached at this call site.
+	_ = RegisterSSE(a.mux, a.handle, fn, a.opts.Options)
 	<-ctx.Done()
 }
 

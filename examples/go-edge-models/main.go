@@ -45,6 +45,7 @@ import (
 	"github.com/DaniDeer/go-codex/examples/go-edge-models/models/iotedge/updatemoduleimage"
 	"github.com/DaniDeer/go-codex/examples/go-edge-models/models/iotedge/usecase"
 	"github.com/DaniDeer/go-codex/format"
+	"github.com/DaniDeer/go-codex/middleware"
 	"github.com/DaniDeer/go-codex/ports"
 	"github.com/DaniDeer/go-codex/render/openapi"
 	"github.com/DaniDeer/go-codex/route"
@@ -837,20 +838,23 @@ func runRegistryDemo() {
 func runMCPBridgeDemo(client *http.Client, registryHost, fakeToken string) {
 	baseURL := "https://" + registryHost
 
-	// A CredentialFunc for the MCP demo: the real registryapp.GetTags call
-	// above goes through the full Ping/challenge/token-exchange dance
-	// (auth.go, package-private) — this demo already knows the fake
-	// server's expected token, so it supplies it directly. A real
-	// integration would plug in its own token source here (a cached OAuth
-	// token, an API key, etc.) — CredentialFunc is FIXED for every call
-	// made through the returned MCP tool handler, matching every other
-	// client-adapter binding in go-codex (see adapters/mcprest's package doc).
-	credFn := func(context.Context, []route.SecurityRequirement) (http.Header, error) {
-		h := make(http.Header)
-		h.Set("Authorization", "Bearer "+fakeToken)
-		return h, nil
+	// A credential-providing middleware.Middleware for the MCP demo: the
+	// real registryapp.GetTags call above goes through the full
+	// Ping/challenge/token-exchange dance (auth.go, package-private) —
+	// this demo already knows the fake server's expected token, so it
+	// supplies it directly. A real integration would plug in its own
+	// token source here (a cached OAuth token, an API key, etc.) — the
+	// middleware is FIXED for every call made through the returned MCP
+	// tool handler, matching every other client-adapter binding in
+	// go-codex (see adapters/mcprest's package doc).
+	credMw := middleware.Middleware{
+		Fn: func(context.Context, []route.SecurityRequirement) (http.Header, error) {
+			h := make(http.Header)
+			h.Set("Authorization", "Bearer "+fakeToken)
+			return h, nil
+		},
 	}
-	callOpts := nethttp.CallOptions{CredentialFunc: credFn}
+	callOpts := nethttp.CallOptions{}
 	restHandle := registry.GetTagsRoute.ClientHandle()
 
 	mcpBuilder := mcp.NewBuilder(mcp.Info{Name: "go-edge-models MCP bridge demo", Version: "1.0.0"})
@@ -879,7 +883,7 @@ func runMCPBridgeDemo(client *http.Client, registryHost, fakeToken string) {
 		os.Exit(1)
 	}
 	_, getTagsHandlerFn := mcpgo.ToolHandler(getTagsTool,
-		mcprest.ToolHandler(client, baseURL, restHandle, callOpts),
+		mcprest.ToolHandler(client, baseURL, restHandle, callOpts, credMw),
 		mcpgo.Options{},
 	)
 
@@ -920,6 +924,7 @@ func runMCPBridgeDemo(client *http.Client, registryHost, fakeToken string) {
 				}
 				return searchTagsOutput{Tags: tags}, nil
 			},
+			credMw,
 		),
 		mcpgo.Options{},
 	)
@@ -942,7 +947,7 @@ func runMCPBridgeDemo(client *http.Client, registryHost, fakeToken string) {
 		logger.Error("new tool port", "error", err)
 		os.Exit(1)
 	}
-	domainPort.SetFunc(mcprest.ToolHandler(client, baseURL, restHandle, callOpts))
+	domainPort.SetFunc(mcprest.ToolHandler(client, baseURL, restHandle, callOpts, credMw))
 
 	adapter := &demoToolAdapter{}
 	if err := domainPort.Bind(context.Background(), adapter); err != nil {

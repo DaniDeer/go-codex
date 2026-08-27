@@ -146,46 +146,35 @@ var tokenScopes = map[string][]string{
 	"valid-admin-token": {"profile", "admin"},
 }
 
-// verifyToken checks the Authorization header and enforces required scopes.
-// Returns a non-nil error if the token is missing, invalid, or lacks a scope.
-func verifyToken(r *http.Request, reqs []route.SecurityRequirement) error {
+// extractScopes is a PURE AUTHENTICATION step — it extracts and validates
+// the bearer token, returning the scopes it grants. It does NOT decide
+// pass/fail against a route's required scopes: that mechanical scope-match
+// is now done ONCE by the adapter (via middleware.CheckScopes), after
+// merging every attached security Fn's grants — see "L4" in
+// docs/roadmap/declarative-middleware.md. A rejection HERE (missing/unknown
+// token) is a genuine authentication failure and is reported via
+// RecordSecurityRejection directly, since it's this Fn's own responsibility
+// now (the adapter no longer calls it automatically for Fn-driven
+// failures — only for the credential-FORMAT check that runs before any Fn).
+func extractScopes(ctx context.Context, r *http.Request, path string) (map[string][]string, error) {
 	auth := r.Header.Get("Authorization")
 	token := strings.TrimPrefix(auth, "Bearer ")
 	if token == "" || token == auth {
-		return errors.New("missing or malformed Authorization header")
+		recordRejection(ctx, path)
+		return nil, errors.New("missing or malformed Authorization header")
 	}
 	scopes, ok := tokenScopes[token]
 	if !ok {
-		return fmt.Errorf("unknown or expired token %q", token)
+		recordRejection(ctx, path)
+		return nil, fmt.Errorf("unknown or expired token %q", token)
 	}
-
-	// Collect all required scopes from the security requirements.
-	// Each SecurityRequirement is ANDed; multiple requirements are ORed.
-	for _, req := range reqs {
-		for _, required := range flatScopes(req) {
-			if !hasScope(scopes, required) {
-				return fmt.Errorf("token lacks required scope %q", required)
-			}
-		}
-	}
-	return nil
+	return map[string][]string{"bearerAuth": scopes}, nil
 }
 
-func flatScopes(req route.SecurityRequirement) []string {
-	var out []string
-	for _, scopes := range req {
-		out = append(out, scopes...)
+func recordRejection(ctx context.Context, path string) {
+	if secObs, ok := stats.ObserverFromContext(ctx).(stats.SecurityObserver); ok {
+		secObs.RecordSecurityRejection(path, "bearerAuth")
 	}
-	return out
-}
-
-func hasScope(granted []string, required string) bool {
-	for _, s := range granted {
-		if s == required {
-			return true
-		}
-	}
-	return false
 }
 
 // ── Observer ──────────────────────────────────────────────────────────────────
@@ -250,14 +239,12 @@ func buildAPI() (
 		Description: "Demonstrates Bearer JWT authentication with per-route scope enforcement.",
 	})
 
-	// The Bearer JWT security scheme, declared ONCE as a shared value and
-	// attached to every secured route below via rest.WithSecurityScheme —
-	// there is no builder-level registry for this; each route declares it
-	// directly. WithCodec validates the raw credential format (non-empty, no
-	// whitespace) before SecurityFunc is invoked — catches malformed tokens early.
-	bearerAuth := rest.SecurityScheme{
-		SecurityScheme: route.BearerScheme("JWT"),
-	}.WithCodec(codex.String().Refine(validate.BearerToken))
+	// The bearer credential format codec, shared by both secured routes'
+	// RequireScopes middleware below — validates non-empty, no whitespace
+	// BEFORE the middleware's Fn is ever invoked, catching malformed tokens
+	// early (the client-side mirror of this same codec would be used
+	// identically on any Call to these routes).
+	bearerCodec := codex.String().Refine(validate.BearerToken)
 
 	// POST /login — public, no security requirement.
 	loginHandle, _ = rest.NewRoute[loginReq, tokenResp]("POST", "/login",
@@ -266,42 +253,53 @@ func buildAPI() (
 			OperationID: "login",
 			Summary:     "Authenticate and receive a bearer token",
 			Tags:        []string{"auth"},
-			// Security: nil means "no per-route requirement" — inherits global.
-			// Since no global security is set, this route is public.
 		},
 	).Register(b)
 
-	// GET /profile — secured: bearerAuth with "profile" scope.
+	// GET /profile — secured: bearerAuth with "profile" scope. RequireScopes
+	// is BOTH the spec declaration (Security + securitySchemes, via
+	// rest.WithMiddleware below) AND the runtime enforcement (Fn) — no
+	// separate WithSecurityScheme/RouteMeta.Security call needed at all.
+	profileScopesMw := nethttp.RequireScopes[struct{}]("bearerAuth", route.BearerScheme("JWT"), []string{"profile"}, &bearerCodec,
+		func(ctx context.Context, r *http.Request, _ *struct{}) (map[string][]string, error) {
+			return extractScopes(ctx, r, "/profile")
+		},
+	)
 	profileHandle, _ = rest.NewRoute[struct{}, profileResp]("GET", "/profile",
 		codex.Empty, profileRespCodec,
 		rest.RouteMeta{
 			OperationID: "getProfile",
 			Summary:     "Get the authenticated user's profile",
 			Tags:        []string{"user"},
-			// Security: requires bearerAuth + "profile" scope.
-			Security: []route.SecurityRequirement{
-				route.Require("bearerAuth", "profile"),
-			},
 		},
-		rest.WithSecurityScheme("bearerAuth", bearerAuth),
+		rest.WithMiddleware(profileScopesMw),
 	).Register(b)
 
 	// POST /admin/action — secured: bearerAuth with "admin" scope.
+	adminScopesMw := nethttp.RequireScopes[adminActionReq]("bearerAuth", route.BearerScheme("JWT"), []string{"admin"}, &bearerCodec,
+		func(ctx context.Context, r *http.Request, _ *adminActionReq) (map[string][]string, error) {
+			return extractScopes(ctx, r, "/admin/action")
+		},
+	)
 	adminHandle, _ = rest.NewRoute[adminActionReq, adminActionResp]("POST", "/admin/action",
 		adminActionReqCodec, adminActionRespCodec,
 		rest.RouteMeta{
 			OperationID: "adminAction",
 			Summary:     "Perform a privileged admin action",
 			Tags:        []string{"admin"},
-			// Security: requires bearerAuth + "admin" scope.
-			Security: []route.SecurityRequirement{
-				route.Require("bearerAuth", "admin"),
-			},
 		},
-		rest.WithSecurityScheme("bearerAuth", bearerAuth),
+		rest.WithMiddleware(adminScopesMw),
 	).Register(b)
 
 	return
+}
+
+// mustRegister exits the program if nethttp.Register returns an error.
+func mustRegister(err error) {
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "nethttp.Register failed: %v\n", err)
+		os.Exit(1)
+	}
 }
 
 func main() {
@@ -312,10 +310,10 @@ func main() {
 	metrics := &CountingObserver{}
 	obs := stats.NewFanout(metrics, stats.NewLoggingObserver(logger.With("component", "http-security")))
 
-	// SecurityFunc is called after codec format validation passes.
-	// It receives the raw *http.Request and the route's declared security requirements.
+	// RequireScopes is attached at Register time in buildAPI (see there) —
+	// both the spec declaration and the runtime enforcement. Options only
+	// carries the ErrorHandler now; ObservabilityMiddleware supplies obs.
 	opts := nethttp.Options{
-		Observer: obs,
 		// ErrorHandler maps invalidCredentialsError to 401; all other errors
 		// fall through to the default JSON envelope with their suggested status.
 		ErrorHandler: func(w http.ResponseWriter, r *http.Request, status int, err error) {
@@ -327,14 +325,12 @@ func main() {
 			w.WriteHeader(status)
 			_ = json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
 		},
-		SecurityFunc: func(ctx context.Context, r *http.Request, reqs []route.SecurityRequirement) error {
-			return verifyToken(r, reqs)
-		},
 	}
+	obsMw := nethttp.ObservabilityMiddleware(obs)
 
 	mux := http.NewServeMux()
 
-	nethttp.Register(mux, loginHandle, func(_ context.Context, req loginReq) (tokenResp, error) {
+	mustRegister(nethttp.Register(mux, loginHandle, func(_ context.Context, req loginReq) (tokenResp, error) {
 		// Mock: accept alice/secret → user token, admin/secret → admin token.
 		switch {
 		case req.Username == "alice" && req.Password == "secret":
@@ -344,19 +340,19 @@ func main() {
 		default:
 			return tokenResp{}, invalidCredentialsError{Err: errors.New("invalid credentials")}
 		}
-	}, opts)
+	}, opts, obsMw))
 
-	nethttp.Register(mux, profileHandle, func(_ context.Context, _ struct{}) (profileResp, error) {
+	mustRegister(nethttp.Register(mux, profileHandle, func(_ context.Context, _ struct{}) (profileResp, error) {
 		return profileResp{
 			UserID: "f47ac10b-58cc-4372-a567-0e02b2c3d479",
 			Name:   "Alice",
 			Email:  "alice@example.com",
 		}, nil
-	}, opts)
+	}, opts, obsMw))
 
-	nethttp.Register(mux, adminHandle, func(_ context.Context, req adminActionReq) (adminActionResp, error) {
+	mustRegister(nethttp.Register(mux, adminHandle, func(_ context.Context, req adminActionReq) (adminActionResp, error) {
 		return adminActionResp{Result: "action " + req.Action + " executed"}, nil
-	}, opts)
+	}, opts, obsMw))
 
 	// ── Demo requests ─────────────────────────────────────────────────────────
 	fmt.Println("=== adapters-nethttp-security demo ===")

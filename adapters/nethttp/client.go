@@ -13,6 +13,7 @@ import (
 
 	"github.com/DaniDeer/go-codex/api/rest"
 	"github.com/DaniDeer/go-codex/codex"
+	"github.com/DaniDeer/go-codex/middleware"
 	"github.com/DaniDeer/go-codex/route"
 	"github.com/DaniDeer/go-codex/stats"
 )
@@ -51,21 +52,12 @@ type CallOptions struct {
 	// User-Agent, or static Authorization values.
 	ExtraHeaders http.Header
 
-	// CredentialFunc, when non-nil, is called for routes that declare non-nil
-	// Security requirements. It receives the effective security requirements and
-	// must return headers to merge into the outgoing request (e.g. Authorization).
-	// Return a non-nil error to abort the call before the request is sent.
-	//
-	// Use [CallOptions.ExtraHeaders] for simple static credentials;
-	// use CredentialFunc for structured or dynamic credential injection —
-	// it mirrors the server-side SecurityFunc pattern.
-	CredentialFunc CredentialFunc
-
 	// OnCredentialRejected, when non-nil, is called when the server responds
-	// with HTTP 401 AND CredentialFunc was non-nil for this call (mirrors
-	// the "only if the credential mechanism actually engaged" gating used
-	// for the symmetric client-side format check below). Purely a
-	// notification hook — Call does NOT retry the request automatically.
+	// with HTTP 401 AND at least one credential-providing [middleware.Middleware]
+	// was attached to this call (mirrors the "only if the credential mechanism
+	// actually engaged" gating used for the symmetric client-side format check
+	// below). Purely a notification hook — Call does NOT retry the request
+	// automatically.
 	//
 	// [NewCachingCredentialFunc]'s returned invalidate function is designed
 	// to be wired here: a 401 invalidates the cached credential so the
@@ -260,6 +252,75 @@ func (e ResponseBodyError) LogValue() slog.Value {
 	)
 }
 
+// ConflictingCredentialHeaderError is returned by [Call] when TWO attached
+// credential-providing middlewares (Fn shape
+// func(context.Context, []route.SecurityRequirement) (http.Header, error))
+// return DIFFERENT values for the SAME outgoing header key — see "L9" in
+// docs/roadmap/declarative-middleware.md. Identical values from two
+// middlewares for the same key are merged silently; only DIFFERING values
+// conflict.
+type ConflictingCredentialHeaderError struct {
+	Header                    string
+	FirstSource, SecondSource string
+}
+
+func (e ConflictingCredentialHeaderError) Error() string {
+	return fmt.Sprintf("nethttp: conflicting credential header %q: %q vs %q", e.Header, e.FirstSource, e.SecondSource)
+}
+
+// LogValue implements [slog.LogValuer] for structured logging.
+func (e ConflictingCredentialHeaderError) LogValue() slog.Value {
+	return slog.GroupValue(
+		slog.String("header", e.Header),
+		slog.String("first_source", e.FirstSource),
+		slog.String("second_source", e.SecondSource),
+	)
+}
+
+// mergeCredentialHeaders runs EVERY attached credential-providing Fn in
+// attachment order, merging their returned http.Header values into ONE
+// combined set — this is a MERGE, not an authorization check (the client
+// never judges its own authorization, only the server does). Any Fn's own
+// error aborts immediately (fail-fast). ran reports whether at least one
+// credential-providing Fn was found and invoked (used to gate the
+// client-side credential-format check and OnCredentialRejected below,
+// mirroring the pre-existing "nil CredentialFunc is not an error" contract).
+func mergeCredentialHeaders(ctx context.Context, secReqs []route.SecurityRequirement, mws []middleware.Middleware) (combined http.Header, ran bool, err error) {
+	combined = make(http.Header)
+	setBy := make(map[string]string)
+	for _, mw := range mws {
+		fn, ok := mw.Fn.(func(context.Context, []route.SecurityRequirement) (http.Header, error))
+		if !ok {
+			continue
+		}
+		ran = true
+		h, ferr := fn(ctx, secReqs)
+		if ferr != nil {
+			return nil, ran, ferr
+		}
+		for key, vals := range h {
+			if prior, exists := setBy[key]; exists && prior != mw.Name && !equalHeaderValues(combined[key], vals) {
+				return nil, ran, ConflictingCredentialHeaderError{Header: key, FirstSource: prior, SecondSource: mw.Name}
+			}
+			combined[key] = vals
+			setBy[key] = mw.Name
+		}
+	}
+	return combined, ran, nil
+}
+
+func equalHeaderValues(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
+}
+
 // Call executes a typed HTTP request for the given route handle against baseURL.
 //
 // The concrete URL is built as baseURL + handle.BuildPath(vars) + "?" + queryString.
@@ -314,6 +375,7 @@ func Call[Req, Resp any](
 	req Req,
 	vars map[string]string,
 	opts CallOptions,
+	mws ...middleware.Middleware,
 ) (Resp, error) {
 	var zero Resp
 
@@ -322,6 +384,17 @@ func Call[Req, Resp any](
 		obs = stats.ObserverFromContext(ctx)
 	}
 
+	// Ferry per-field validation errors (Class B) out via ctx, then drain
+	// them into obs.RecordValidationError exactly once before returning —
+	// Call has no outer wrapping concept the way Handler's
+	// ObservabilityMiddleware does, so it drains inline via defer instead.
+	ctx = stats.WithDiagnostics(ctx)
+	defer func() {
+		for _, d := range stats.DiagnosticsFromContext(ctx) {
+			obs.RecordValidationError(d.Location, d.ConstraintName, d.Field)
+		}
+	}()
+
 	method := strings.ToUpper(handle.Descriptor.Method)
 	routePath := handle.Descriptor.Path
 	start := time.Now()
@@ -329,28 +402,28 @@ func Call[Req, Resp any](
 	// 1. Build and validate path.
 	concretePath, err := handle.BuildPath(vars)
 	if err != nil {
-		reportPathErrors(err, obs)
+		reportPathErrors(ctx, err)
 		obs.RecordRequest(method, routePath, 0, time.Since(start))
 		return zero, err
 	}
 
 	// 2. Validate query parameters.
 	if err := handle.ValidateQuery(opts.QueryParams); err != nil {
-		reportQueryErrors(err, obs)
+		reportQueryErrors(ctx, err)
 		obs.RecordRequest(method, routePath, 0, time.Since(start))
 		return zero, err
 	}
 
 	// 3. Validate cookie parameters.
 	if err := handle.ValidateCookies(opts.CookieParams); err != nil {
-		reportCookieErrors(err, obs)
+		reportCookieErrors(ctx, err)
 		obs.RecordRequest(method, routePath, 0, time.Since(start))
 		return zero, err
 	}
 
 	// 4. Validate declared header parameters.
 	if err := handle.ValidateHeaders(opts.HeaderParams); err != nil {
-		reportHeaderErrors(err, obs)
+		reportHeaderErrors(ctx, err)
 		obs.RecordRequest(method, routePath, 0, time.Since(start))
 		return zero, err
 	}
@@ -370,15 +443,19 @@ func Call[Req, Resp any](
 		rawURL += "?" + qv.Encode()
 	}
 
-	// 6. Resolve security requirements and obtain credentials.
+	// 6. Resolve security requirements and obtain credentials — runs EVERY
+	// attached credential-providing middleware and merges their returned
+	// headers into ONE combined set (see "L9" in
+	// docs/roadmap/declarative-middleware.md).
 	secReqs := handle.Descriptor.Security
 	if secReqs == nil {
 		secReqs = handle.GlobalSecurity
 	}
 	var credHeaders http.Header
-	if len(secReqs) > 0 && opts.CredentialFunc != nil {
+	var credentialFnRan bool
+	if len(secReqs) > 0 {
 		var credErr error
-		credHeaders, credErr = opts.CredentialFunc(ctx, secReqs)
+		credHeaders, credentialFnRan, credErr = mergeCredentialHeaders(ctx, secReqs, mws)
 		if credErr != nil {
 			obs.RecordRequest(method, routePath, 0, time.Since(start))
 			return zero, credErr
@@ -399,7 +476,7 @@ func Call[Req, Resp any](
 			contentType = "application/json"
 		}
 		if err != nil {
-			reportBodyErrors(err, obs)
+			reportBodyErrors(ctx, err)
 			obs.RecordRequest(method, routePath, 0, time.Since(start))
 			return zero, err
 		}
@@ -461,19 +538,20 @@ func Call[Req, Resp any](
 	// empty) or a scheme with a nil Codec is a no-op, identical to today's
 	// behavior.
 	//
-	// Gated on credHeaders != nil — i.e. CredentialFunc actually ran and
-	// returned something — NOT on len(secReqs) > 0 alone. A nil
-	// CredentialFunc, or one that deliberately returns (nil, nil) to mean
-	// "this call needs no credential" (e.g. an auth flow that first probes
-	// whether the specific server instance requires auth at all, like
-	// examples/go-edge-models/docker/registry's NewAuthCredentialFunc),
-	// must stay a non-error — symmetric with the pre-existing "nil
-	// CredentialFunc on a secured route is not an error" contract. Without
-	// this gate, a route declaring both Security and a non-empty-string
-	// Codec would wrongly reject every request where the credential
-	// mechanism correctly determined no credential was needed, since the
-	// resulting (absent) Authorization header extracts as "" either way.
-	if len(secReqs) > 0 && credHeaders != nil {
+	// Gated on len(credHeaders) > 0 — i.e. the merge actually PRODUCED at
+	// least one header — NOT on credentialFnRan or len(secReqs) > 0 alone.
+	// A credential-providing middleware that deliberately returns (nil,
+	// nil) to mean "this call needs no credential" (e.g. an auth flow that
+	// first probes whether the specific server instance requires auth at
+	// all, like examples/go-edge-models/docker/registry's
+	// NewAuthCredentialFunc) must stay a non-error — symmetric with the
+	// pre-existing "nil CredentialFunc on a secured route is not an error"
+	// contract. Without this gate, a route declaring both Security and a
+	// non-empty-string Codec would wrongly reject every request where the
+	// credential mechanism correctly determined no credential was needed,
+	// since the resulting (absent) Authorization header extracts as ""
+	// either way.
+	if len(secReqs) > 0 && len(credHeaders) > 0 {
 		if credErr := validateSecurityCredentials(httpReq, secReqs, handle.SecuritySchemes); credErr != nil {
 			if secObs, ok := obs.(stats.SecurityObserver); ok {
 				secObs.RecordSecurityRejection(routePath, firstScheme(secReqs))
@@ -509,7 +587,7 @@ func Call[Req, Resp any](
 		// caller's own next attempt. This fires regardless of whether an
 		// ErrorPattern also matches below — it is orthogonal to that
 		// decoding concern.
-		if statusCode == http.StatusUnauthorized && opts.CredentialFunc != nil && opts.OnCredentialRejected != nil {
+		if statusCode == http.StatusUnauthorized && credentialFnRan && opts.OnCredentialRejected != nil {
 			opts.OnCredentialRejected()
 		}
 		if errResp, matched, decErr := handle.DecodeErrorFor(statusCode, respBody); matched && decErr == nil {
@@ -536,7 +614,7 @@ func Call[Req, Resp any](
 		result, err = handle.DecodeResponse(respBody)
 	}
 	if err != nil {
-		reportBodyErrors(err, obs)
+		reportBodyErrors(ctx, err)
 		return zero, err
 	}
 
@@ -559,7 +637,7 @@ func Call[Req, Resp any](
 		mergeFields = append(mergeFields, headerFields...)
 		mergeFields = append(mergeFields, cookieFields...)
 		if err := codex.DecodeVars(&result, vars, mergeFields...); err != nil {
-			reportBodyErrors(err, obs)
+			reportBodyErrors(ctx, err)
 			return zero, err
 		}
 	}
@@ -587,6 +665,9 @@ func Call[Req, Resp any](
 // vars from a non-struct source, or a route shared between multiple
 // unrelated Req shapes.
 //
+// mws is forwarded unchanged to [Call] — pass a credential-providing
+// [middleware.Middleware] here exactly as you would to Call directly.
+//
 // Example:
 //
 //	handle := getUserActivity.ClientHandle()
@@ -599,6 +680,7 @@ func CallHandle[Req, Resp any](
 	handle *rest.RouteHandle[Req, Resp],
 	req Req,
 	opts CallOptions,
+	mws ...middleware.Middleware,
 ) (Resp, error) {
 	var zero Resp
 
@@ -623,7 +705,7 @@ func CallHandle[Req, Resp any](
 	opts.HeaderParams = overrideDerived(headers, opts.HeaderParams)
 	opts.CookieParams = overrideDerived(cookies, opts.CookieParams)
 
-	return Call(ctx, client, baseURL, handle, req, vars, opts)
+	return Call(ctx, client, baseURL, handle, req, vars, opts, mws...)
 }
 
 // overrideDerived merges derived (from codex.EncodeVars) and explicit (from

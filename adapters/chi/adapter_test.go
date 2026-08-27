@@ -14,9 +14,11 @@ import (
 	gochi "github.com/go-chi/chi/v5"
 
 	chiadapter "github.com/DaniDeer/go-codex/adapters/chi"
+	"github.com/DaniDeer/go-codex/adapters/nethttp"
 	"github.com/DaniDeer/go-codex/api/rest"
 	"github.com/DaniDeer/go-codex/codex"
 	"github.com/DaniDeer/go-codex/format"
+	"github.com/DaniDeer/go-codex/middleware"
 	"github.com/DaniDeer/go-codex/route"
 	"github.com/DaniDeer/go-codex/stats"
 	"github.com/DaniDeer/go-codex/validate"
@@ -923,40 +925,38 @@ func (o *mockSecurityObserver) RecordSecurityRejection(location, scheme string) 
 	o.scheme = scheme
 }
 
-func newSecuredRoute() (*rest.RouteHandle[createReq, userResp], error) {
+func newSecuredRoute(mw middleware.Middleware) (*rest.RouteHandle[createReq, userResp], error) {
 	b := rest.NewBuilder(testInfo)
 	return rest.NewRoute[createReq, userResp]("POST", "/users",
 		createReqCodec, userRespCodec,
-		rest.RouteMeta{
-			OperationID: "createUser",
-			Security:    []route.SecurityRequirement{route.Require("bearerAuth")},
-		},
-		rest.WithSecurityScheme("bearerAuth", rest.SecurityScheme{SecurityScheme: route.BearerScheme("JWT")}),
+		rest.RouteMeta{OperationID: "createUser"},
+		rest.WithMiddleware(mw),
 	).Register(b)
 }
 
 func TestHandler_SecurityFunc_calledForSecuredRoute(t *testing.T) {
-	handle, err := newSecuredRoute()
+	secFuncCalled := false
+	mw := nethttp.RequireScopes[createReq]("bearerAuth", route.BearerScheme("JWT"), nil, nil,
+		func(_ context.Context, r *http.Request, _ *createReq) (map[string][]string, error) {
+			secFuncCalled = true
+			if r.Header.Get("Authorization") != "test-bearer-token" {
+				return nil, errors.New("unauthorized")
+			}
+			return map[string][]string{"bearerAuth": nil}, nil
+		},
+	)
+	handle, err := newSecuredRoute(mw)
 	if err != nil {
 		t.Fatal(err)
 	}
-	secFuncCalled := false
 	h := chiadapter.Handler(handle, func(_ context.Context, req createReq) (userResp, error) {
 		return userResp{ID: "1", Name: req.Name}, nil
-	}, chiadapter.Options{
-		SecurityFunc: func(_ context.Context, r *http.Request, _ []route.SecurityRequirement) error {
-			secFuncCalled = true
-			if r.Header.Get("Authorization") != "Bearer valid-token" {
-				return errors.New("unauthorized")
-			}
-			return nil
-		},
-	})
+	}, chiadapter.Options{})
 
 	rec := httptest.NewRecorder()
 	r := httptest.NewRequest(http.MethodPost, "/users", strings.NewReader(`{"name":"Alice"}`))
 	r.Header.Set("Content-Type", "application/json")
-	r.Header.Set("Authorization", "Bearer valid-token")
+	r.Header.Set("Authorization", "test-bearer-token")
 	h(rec, r)
 
 	if !secFuncCalled {
@@ -968,23 +968,24 @@ func TestHandler_SecurityFunc_calledForSecuredRoute(t *testing.T) {
 }
 
 func TestHandler_SecurityFunc_rejectsRequest(t *testing.T) {
-	handle, err := newSecuredRoute()
+	mw := nethttp.RequireScopes[createReq]("bearerAuth", route.BearerScheme("JWT"), nil, nil,
+		func(_ context.Context, _ *http.Request, _ *createReq) (map[string][]string, error) {
+			return nil, errors.New("unauthorized")
+		},
+	)
+	handle, err := newSecuredRoute(mw)
 	if err != nil {
 		t.Fatal(err)
 	}
 	h := chiadapter.Handler(handle, func(_ context.Context, req createReq) (userResp, error) {
 		t.Fatal("handler must not be called when security rejects")
 		return userResp{}, nil
-	}, chiadapter.Options{
-		SecurityFunc: func(_ context.Context, _ *http.Request, _ []route.SecurityRequirement) error {
-			return errors.New("unauthorized")
-		},
-	})
+	}, chiadapter.Options{})
 
 	rec := httptest.NewRecorder()
 	r := httptest.NewRequest(http.MethodPost, "/users", strings.NewReader(`{"name":"Alice"}`))
 	r.Header.Set("Content-Type", "application/json")
-	r.Header.Set("Authorization", "Bearer valid-token")
+	r.Header.Set("Authorization", "test-bearer-token")
 	h(rec, r)
 
 	if rec.Code != http.StatusUnauthorized {
@@ -995,14 +996,15 @@ func TestHandler_SecurityFunc_rejectsRequest(t *testing.T) {
 func TestHandler_SecurityFunc_notCalledForUnsecuredRoute(t *testing.T) {
 	handle := newCreateHandle()
 	secFuncCalled := false
+	mw := nethttp.RequireScopes[createReq]("bearerAuth", route.BearerScheme("JWT"), nil, nil,
+		func(_ context.Context, _ *http.Request, _ *createReq) (map[string][]string, error) {
+			secFuncCalled = true
+			return nil, nil
+		},
+	)
 	h := chiadapter.Handler(handle, func(_ context.Context, req createReq) (userResp, error) {
 		return userResp{ID: "1", Name: req.Name}, nil
-	}, chiadapter.Options{
-		SecurityFunc: func(_ context.Context, _ *http.Request, _ []route.SecurityRequirement) error {
-			secFuncCalled = true
-			return nil
-		},
-	})
+	}, chiadapter.Options{}, mw)
 
 	rec := httptest.NewRecorder()
 	r := httptest.NewRequest(http.MethodPost, "/users", strings.NewReader(`{"name":"Alice"}`))
@@ -1020,16 +1022,16 @@ func TestHandler_SecurityFunc_notCalledForUnsecuredRoute(t *testing.T) {
 func TestHandler_SecurityFunc_codecValidationFailure(t *testing.T) {
 	b := rest.NewBuilder(testInfo)
 	jwtCodec := codex.String().Refine(validate.JWT)
+	mw := nethttp.RequireScopes[createReq]("bearerAuth", route.BearerScheme("JWT"), nil, &jwtCodec,
+		func(_ context.Context, _ *http.Request, _ *createReq) (map[string][]string, error) {
+			t.Fatal("Fn must not be called when credential fails codec format validation")
+			return nil, nil
+		},
+	)
 	handle, err := rest.NewRoute[createReq, userResp]("POST", "/users",
 		createReqCodec, userRespCodec,
-		rest.RouteMeta{
-			OperationID: "createUser",
-			Security:    []route.SecurityRequirement{route.Require("bearerAuth")},
-		},
-		rest.WithSecurityScheme("bearerAuth", rest.SecurityScheme{
-			SecurityScheme: route.BearerScheme("JWT"),
-			Codec:          &jwtCodec,
-		}),
+		rest.RouteMeta{OperationID: "createUser"},
+		rest.WithMiddleware(mw),
 	).Register(b)
 	if err != nil {
 		t.Fatal(err)
@@ -1052,25 +1054,37 @@ func TestHandler_SecurityFunc_codecValidationFailure(t *testing.T) {
 }
 
 func TestHandler_SecurityObserver_calledOnRejection(t *testing.T) {
-	handle, err := newSecuredRoute()
+	obs := &mockSecurityObserver{}
+	mw := nethttp.RequireScopes[createReq]("bearerAuth", route.BearerScheme("JWT"), nil, nil,
+		func(ctx context.Context, _ *http.Request, _ *createReq) (map[string][]string, error) {
+			// Fn-driven rejection recording is now the Fn author's own
+			// responsibility (Class A moved into Fn) — the adapter no
+			// longer calls RecordSecurityRejection automatically for
+			// authorization (as opposed to credential-format) failures.
+			if secObs, ok := stats.ObserverFromContext(ctx).(stats.SecurityObserver); ok {
+				secObs.RecordSecurityRejection("/users", "bearerAuth")
+			}
+			return nil, errors.New("unauthorized")
+		},
+	)
+	handle, err := newSecuredRoute(mw)
 	if err != nil {
 		t.Fatal(err)
 	}
-	obs := &mockSecurityObserver{}
 	h := chiadapter.Handler(handle, func(_ context.Context, req createReq) (userResp, error) {
 		return userResp{}, nil
-	}, chiadapter.Options{
-		Observer: obs,
-		SecurityFunc: func(_ context.Context, _ *http.Request, _ []route.SecurityRequirement) error {
-			return errors.New("unauthorized")
-		},
-	})
+	}, chiadapter.Options{})
+
+	withObsMiddleware := func(w http.ResponseWriter, r *http.Request) {
+		r = r.WithContext(stats.WithObserver(r.Context(), obs))
+		h(w, r)
+	}
 
 	rec := httptest.NewRecorder()
 	r := httptest.NewRequest(http.MethodPost, "/users", strings.NewReader(`{"name":"Alice"}`))
 	r.Header.Set("Content-Type", "application/json")
-	r.Header.Set("Authorization", "Bearer valid-token")
-	h(rec, r)
+	r.Header.Set("Authorization", "test-bearer-token")
+	withObsMiddleware(rec, r)
 
 	if rec.Code != http.StatusUnauthorized {
 		t.Errorf("want 401, got %d", rec.Code)
@@ -1086,6 +1100,9 @@ func TestHandler_SecurityObserver_calledOnRejection(t *testing.T) {
 func newGlobalSecuredChiRoute() (*rest.RouteHandle[createReq, userResp], error) {
 	b := rest.NewBuilder(testInfo)
 	b.AddGlobalSecurity(route.Require("bearerAuth"))
+	// No per-route Security — inherits global. Attach NO rest.WithMiddleware
+	// here (global security is not checked by drift-closing validation) —
+	// the security middleware is instead attached at Handler call time.
 	return rest.NewRoute[createReq, userResp]("POST", "/users",
 		createReqCodec, userRespCodec,
 		rest.RouteMeta{OperationID: "createUser"},
@@ -1099,22 +1116,23 @@ func TestChiHandler_GlobalSecurity_enforcedWhenNoPerRouteSecurity(t *testing.T) 
 		t.Fatal(err)
 	}
 	secFuncCalled := false
+	mw := nethttp.RequireScopes[createReq]("bearerAuth", route.BearerScheme("JWT"), nil, nil,
+		func(_ context.Context, r *http.Request, _ *createReq) (map[string][]string, error) {
+			secFuncCalled = true
+			if r.Header.Get("Authorization") != "test-bearer-token" {
+				return nil, errors.New("unauthorized")
+			}
+			return map[string][]string{"bearerAuth": nil}, nil
+		},
+	)
 	h := chiadapter.Handler(handle, func(_ context.Context, req createReq) (userResp, error) {
 		return userResp{ID: "1", Name: req.Name}, nil
-	}, chiadapter.Options{
-		SecurityFunc: func(_ context.Context, r *http.Request, _ []route.SecurityRequirement) error {
-			secFuncCalled = true
-			if r.Header.Get("Authorization") != "Bearer valid-token" {
-				return errors.New("unauthorized")
-			}
-			return nil
-		},
-	})
+	}, chiadapter.Options{}, mw)
 
 	rec := httptest.NewRecorder()
 	r := httptest.NewRequest(http.MethodPost, "/users", strings.NewReader(`{"name":"Alice"}`))
 	r.Header.Set("Content-Type", "application/json")
-	r.Header.Set("Authorization", "Bearer valid-token")
+	r.Header.Set("Authorization", "test-bearer-token")
 	h.ServeHTTP(rec, r)
 
 	if !secFuncCalled {
@@ -1130,13 +1148,14 @@ func TestChiHandler_GlobalSecurity_rejectsWhenNoToken(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	mw := nethttp.RequireScopes[createReq]("bearerAuth", route.BearerScheme("JWT"), nil, nil,
+		func(_ context.Context, _ *http.Request, _ *createReq) (map[string][]string, error) {
+			return nil, errors.New("missing token")
+		},
+	)
 	h := chiadapter.Handler(handle, func(_ context.Context, req createReq) (userResp, error) {
 		return userResp{}, nil
-	}, chiadapter.Options{
-		SecurityFunc: func(_ context.Context, _ *http.Request, _ []route.SecurityRequirement) error {
-			return errors.New("missing token")
-		},
-	})
+	}, chiadapter.Options{}, mw)
 
 	rec := httptest.NewRecorder()
 	r := httptest.NewRequest(http.MethodPost, "/users", strings.NewReader(`{"name":"Alice"}`))
@@ -1163,14 +1182,15 @@ func TestChiHandler_GlobalSecurity_notCalledWhenExplicitlyEmpty(t *testing.T) {
 		t.Fatal(err)
 	}
 	secFuncCalled := false
+	mw := nethttp.RequireScopes[createReq]("bearerAuth", route.BearerScheme("JWT"), nil, nil,
+		func(_ context.Context, _ *http.Request, _ *createReq) (map[string][]string, error) {
+			secFuncCalled = true
+			return nil, nil
+		},
+	)
 	h := chiadapter.Handler(handle, func(_ context.Context, req createReq) (userResp, error) {
 		return userResp{ID: "1", Name: req.Name}, nil
-	}, chiadapter.Options{
-		SecurityFunc: func(_ context.Context, _ *http.Request, _ []route.SecurityRequirement) error {
-			secFuncCalled = true
-			return nil
-		},
-	})
+	}, chiadapter.Options{}, mw)
 
 	rec := httptest.NewRecorder()
 	r := httptest.NewRequest(http.MethodPost, "/users", strings.NewReader(`{"name":"Alice"}`))
@@ -1203,21 +1223,22 @@ func TestChiSSEHandler_GlobalSecurity_enforced(t *testing.T) {
 		t.Fatal(err)
 	}
 	secFuncCalled := false
+	mw := nethttp.RequireScopes[createReq]("bearerAuth", route.BearerScheme("JWT"), nil, nil,
+		func(_ context.Context, r *http.Request, _ *createReq) (map[string][]string, error) {
+			secFuncCalled = true
+			if r.Header.Get("Authorization") != "test-bearer-token" {
+				return nil, errors.New("unauthorized")
+			}
+			return map[string][]string{"bearerAuth": nil}, nil
+		},
+	)
 	h := chiadapter.SSEHandler(handle, func(_ context.Context, _ createReq, _ func(sseEvent) error) error {
 		return nil
-	}, chiadapter.Options{
-		SecurityFunc: func(_ context.Context, r *http.Request, _ []route.SecurityRequirement) error {
-			secFuncCalled = true
-			if r.Header.Get("Authorization") != "Bearer valid-token" {
-				return errors.New("unauthorized")
-			}
-			return nil
-		},
-	})
+	}, chiadapter.Options{}, mw)
 
 	rec := httptest.NewRecorder()
 	r := httptest.NewRequest(http.MethodGet, "/stream", nil)
-	r.Header.Set("Authorization", "Bearer valid-token")
+	r.Header.Set("Authorization", "test-bearer-token")
 	h.ServeHTTP(rec, r)
 
 	if !secFuncCalled {
@@ -1233,13 +1254,14 @@ func TestChiSSEHandler_GlobalSecurity_rejectsWhenNoToken(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	mw := nethttp.RequireScopes[createReq]("bearerAuth", route.BearerScheme("JWT"), nil, nil,
+		func(_ context.Context, _ *http.Request, _ *createReq) (map[string][]string, error) {
+			return nil, errors.New("missing token")
+		},
+	)
 	h := chiadapter.SSEHandler(handle, func(_ context.Context, _ createReq, _ func(sseEvent) error) error {
 		return nil
-	}, chiadapter.Options{
-		SecurityFunc: func(_ context.Context, _ *http.Request, _ []route.SecurityRequirement) error {
-			return errors.New("missing token")
-		},
-	})
+	}, chiadapter.Options{}, mw)
 
 	rec := httptest.NewRecorder()
 	r := httptest.NewRequest(http.MethodGet, "/stream", nil)

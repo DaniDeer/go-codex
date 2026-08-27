@@ -18,6 +18,7 @@ package contract
 import (
 	"github.com/DaniDeer/go-codex/api/rest"
 	"github.com/DaniDeer/go-codex/codex"
+	"github.com/DaniDeer/go-codex/middleware"
 	"github.com/DaniDeer/go-codex/route"
 	"github.com/DaniDeer/go-codex/validate"
 )
@@ -266,32 +267,36 @@ var EmailConflictCodec = codex.Struct[EmailConflictError](
 	),
 )
 
-// bearerAuthScheme declares the "bearerAuth" security scheme's spec metadata
-// and credential-format codec ONCE here, on the shared route definition, so
-// BOTH the server (Route.Register, main.go) and the client
-// (Route.ClientHandle, main.go) get IDENTICAL credential-format enforcement
-// from this single declaration — the server validates an incoming
-// Authorization header against this Codec before SecurityFunc runs; the
-// client (nethttp.Call) validates a CredentialFunc's returned header against
-// the SAME Codec before sending.
-var bearerAuthScheme = rest.SecurityScheme{
-	SecurityScheme: route.BearerScheme("JWT"),
-}.WithCodec(codex.String().Refine(validate.NonEmptyString))
+// BearerAuthScheme declares the "bearerAuth" security scheme's spec
+// metadata and credential-format codec ONCE, for use by main.go's
+// nethttp.RequireScopes-built middleware — exported so main.go (which owns
+// the actual token-verification logic, an adapter/application concern this
+// adapter-agnostic contract package deliberately stays free of) can build
+// that middleware with the IDENTICAL scheme metadata/codec used here.
+var BearerAuthScheme = route.BearerScheme("JWT")
 
-// GetSecuredData is the route spec for GET /data.
-// Requires bearer authentication — the client must supply a token via
-// CallOptions.CredentialFunc, which injects the Authorization header.
-var GetSecuredData = rest.NewRoute[struct{}, Profile](
-	"GET", "/data",
-	codex.Empty, ProfileCodec,
-	rest.RouteMeta{
-		OperationID:    "getSecuredData",
-		Summary:        "Get data (bearer-authenticated)",
-		RespSchemaName: "Profile",
-		// Per-route security overrides builder-level global security.
-		Security: []route.SecurityRequirement{
-			route.Require("bearerAuth"),
+// BearerCredentialCodec validates the raw credential format (non-empty) —
+// shared by both the server's verification middleware and the client's
+// credential-format pre-flight check, both via the SAME
+// middleware.SecurityDeclaration this route's attached middleware carries.
+var BearerCredentialCodec = codex.String().Refine(validate.NonEmptyString)
+
+// GetSecuredData is the route spec for GET /data — a FUNCTION, not a bare
+// var, because the actual security middleware (which knows HOW to verify a
+// token) is an adapter/application concern; this contract package only
+// supplies the reusable scheme/codec above. mw is BOTH the spec declaration
+// (Security + SecuritySchemes, identical on server Register AND client
+// ClientHandle) AND the runtime enforcement Fn on the server side — see
+// main.go for how it's built via nethttp.RequireScopes.
+func GetSecuredData(mw middleware.Middleware) rest.Route[struct{}, Profile] {
+	return rest.NewRoute[struct{}, Profile](
+		"GET", "/data",
+		codex.Empty, ProfileCodec,
+		rest.RouteMeta{
+			OperationID:    "getSecuredData",
+			Summary:        "Get data (bearer-authenticated)",
+			RespSchemaName: "Profile",
 		},
-	},
-	rest.WithSecurityScheme("bearerAuth", bearerAuthScheme),
-)
+		rest.WithMiddleware(mw),
+	)
+}

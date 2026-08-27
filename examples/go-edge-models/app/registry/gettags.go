@@ -8,6 +8,7 @@ import (
 	nethttp "github.com/DaniDeer/go-codex/adapters/nethttp"
 	"github.com/DaniDeer/go-codex/examples/go-edge-models/models/docker"
 	regmodels "github.com/DaniDeer/go-codex/examples/go-edge-models/models/docker/registry"
+	"github.com/DaniDeer/go-codex/middleware"
 )
 
 // This file holds the CONCRETE IMPLEMENTATION of the GetTags operation:
@@ -50,8 +51,9 @@ func GetTags(ctx context.Context, httpClient *http.Client, imageURL string, opts
 	handle := regmodels.GetTagsRoute.ClientHandle()
 	baseURL := registryBaseURL(ref.Registry)
 	credFn := newAuthCredentialFunc(httpClient, ref.Registry, ref.Repository, opts...)
-	callOpts := nethttp.CallOptions{CredentialFunc: credFn, Observer: o.observer}
-	return nethttp.CallHandle(ctx, httpClient, baseURL, handle, regmodels.GetTagsReq{Name: ref.Repository}, callOpts)
+	callOpts := nethttp.CallOptions{Observer: o.observer}
+	return nethttp.CallHandle(ctx, httpClient, baseURL, handle, regmodels.GetTagsReq{Name: ref.Repository}, callOpts,
+		middleware.Middleware{Fn: credFn})
 }
 
 // GetTagsFiltered calls GetTags, then sorts/limits the result's Tags via
