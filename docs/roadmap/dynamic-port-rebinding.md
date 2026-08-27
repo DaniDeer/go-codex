@@ -9,6 +9,20 @@
 
 `ports` keeps pipeline code transport-agnostic, but adapter changes still require process restart. Some deployments need live transport cutover (broker failover, endpoint rotation, credential rollover, phased migration) without dropping long-lived streams or app-level availability. Dynamic rebinding adds explicit, typed adapter hot-swap on already-running ports while preserving existing static `Bind` behavior.
 
+> **Cross-reference:** "credential rollover" above is listed as one
+> motivating scenario for hot-swap, but it is ALREADY solved for
+> `ports`, today, by [Declarative Middleware](declarative-middleware.md)'s
+> per-call middleware attachment — a `ports` security/credential
+> middleware value is never baked into an immutable handle, so it can be
+> swapped between calls with zero mechanism from this doc. This doc's
+> `Rebind` remains necessary for swapping the underlying TRANSPORT
+> ADAPTER itself (broker failover, endpoint rotation, phased
+> migration) — a different concern from credential rotation. See
+> Declarative Middleware's "L11" for the full reconciliation; note also
+> that REST/events/reqreply's immutable `RouteHandle`/`ChannelHandle`
+> middleware attachment has NO hot-swap story today — an acknowledged
+> gap in BOTH docs, not yet designed.
+
 **Operational baseline today:** fail-fast + process/container restart remains a
 valid default strategy and is intentionally simple. Dynamic rebinding is for
 cases where restart-based recovery is insufficient (strict availability
