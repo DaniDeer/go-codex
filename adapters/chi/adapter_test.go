@@ -1019,6 +1019,51 @@ func TestHandler_SecurityFunc_notCalledForUnsecuredRoute(t *testing.T) {
 	}
 }
 
+// TestHandler_RequireAPIKey_RunsWithoutRouteSecurity mirrors
+// adapters/nethttp's identically-named test — chi reuses
+// nethttp.RequireAPIKey directly, and the same G2 gating bug (fixed
+// alongside this test) was present in chi's own runSecurityMiddleware.
+func TestHandler_RequireAPIKey_RunsWithoutRouteSecurity(t *testing.T) {
+	handle := newCreateHandle()
+	verifyCalled := false
+	mw := nethttp.RequireAPIKey[createReq]("X-API-Key", func(_ context.Context, key string) error {
+		verifyCalled = true
+		if key != "secret" {
+			return errors.New("invalid api key")
+		}
+		return nil
+	})
+	h := chiadapter.Handler(handle, func(_ context.Context, req createReq) (userResp, error) {
+		return userResp{ID: "1", Name: req.Name}, nil
+	}, chiadapter.Options{}, mw)
+
+	rec := httptest.NewRecorder()
+	r := httptest.NewRequest(http.MethodPost, "/users", strings.NewReader(`{"name":"Alice"}`))
+	r.Header.Set("Content-Type", "application/json")
+	h(rec, r)
+
+	if !verifyCalled {
+		t.Fatal("want RequireAPIKey's verify called even though the route declares no Security")
+	}
+	if rec.Code != http.StatusUnauthorized {
+		t.Errorf("want 401 for missing API key, got %d", rec.Code)
+	}
+
+	verifyCalled = false
+	rec = httptest.NewRecorder()
+	r = httptest.NewRequest(http.MethodPost, "/users", strings.NewReader(`{"name":"Alice"}`))
+	r.Header.Set("Content-Type", "application/json")
+	r.Header.Set("X-API-Key", "secret")
+	h(rec, r)
+
+	if !verifyCalled {
+		t.Fatal("want RequireAPIKey's verify called")
+	}
+	if rec.Code != http.StatusCreated {
+		t.Errorf("want 201 for valid API key, got %d", rec.Code)
+	}
+}
+
 func TestHandler_SecurityFunc_codecValidationFailure(t *testing.T) {
 	b := rest.NewBuilder(testInfo)
 	jwtCodec := codex.String().Refine(validate.JWT)

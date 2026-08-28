@@ -391,6 +391,32 @@ func TestCall_CredentialFunc_Error(t *testing.T) {
 	}
 }
 
+// TestCall_WrongShapeMiddleware_ReturnsMiddlewareShapeError locks in that
+// Call fails LOUDLY (a typed middleware.MiddlewareShapeError, before any
+// network activity) for a mismatched-shape mw.Fn, rather than silently
+// ignoring it the way mergeCredentialHeaders' own type assertion would —
+// mirrors Handler/Register's eager validateMiddlewareShapes on the server
+// side (see docs/roadmap/declarative-middleware.md's "L1").
+func TestCall_WrongShapeMiddleware_ReturnsMiddlewareShapeError(t *testing.T) {
+	handle := rest.NewRoute[getReq, userResp]("GET", "/me", getReqCodec, userRespCodec).ClientHandle()
+
+	wrongShapeMw := middleware.Middleware{
+		Name: "oops",
+		Fn:   func(http.Handler) http.Handler { return nil }, // server-side shape, wrong for Call
+	}
+
+	_, err := nethttp.Call(context.Background(), http.DefaultClient, "http://localhost",
+		handle, getReq{}, nil, nethttp.CallOptions{}, wrongShapeMw)
+
+	var shapeErr middleware.MiddlewareShapeError
+	if !errors.As(err, &shapeErr) {
+		t.Fatalf("want MiddlewareShapeError, got %v", err)
+	}
+	if shapeErr.Name != "oops" {
+		t.Errorf("want Name %q, got %q", "oops", shapeErr.Name)
+	}
+}
+
 // --- OnCredentialRejected hook ---
 
 func TestCall_OnCredentialRejected_FiresOn401(t *testing.T) {

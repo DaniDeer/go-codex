@@ -18,11 +18,11 @@ import (
 	"github.com/DaniDeer/go-codex/stats"
 )
 
-// CredentialFunc names the function type already used by
-// [CallOptions.CredentialFunc] — a type ALIAS (not a new defined type), so
-// CallOptions.CredentialFunc's field type is completely unchanged. Lets
-// callers (and [NewCachingCredentialFunc]) name the shape instead of
-// repeating the inline function type everywhere —
+// CredentialFunc names the credential-providing shape [Call]/[CallHandle]
+// recognize on an attached [middleware.Middleware.Fn] — a type ALIAS (not a
+// new defined type). Lets callers (and [NewCachingCredentialFunc]) name the
+// shape instead of repeating the inline function type everywhere; wrap the
+// result in a middleware.Middleware{Fn: credFn} to attach it —
 // examples/go-edge-models/docker/registry's own package-level
 // credentialFunc type alias is the precedent this mirrors.
 type CredentialFunc = func(ctx context.Context, reqs []route.SecurityRequirement) (http.Header, error)
@@ -44,7 +44,7 @@ type CallOptions struct {
 	// before the request is sent.
 	//
 	// Do not pass the Authorization header here — use [CallOptions.ExtraHeaders] or
-	// [CallOptions.CredentialFunc] for security credentials.
+	// a credential-providing [middleware.Middleware] for security credentials.
 	HeaderParams map[string]string
 
 	// ExtraHeaders adds arbitrary HTTP headers to the outgoing request without
@@ -277,6 +277,31 @@ func (e ConflictingCredentialHeaderError) LogValue() slog.Value {
 	)
 }
 
+// validateClientMiddlewareShapes checks every attached mw.Fn against the
+// ONE concrete shape [Call]/[CallHandle] recognize ([CredentialFunc]'s
+// shape), EAGERLY before any network activity rather than letting
+// [mergeCredentialHeaders] silently skip a malformed Fn — a Middleware
+// built for the wrong adapter/role (e.g. a server-side general-purpose
+// func(http.Handler) http.Handler value passed here by mistake) fails
+// loudly and immediately instead.
+func validateClientMiddlewareShapes(mws []middleware.Middleware) error {
+	for _, mw := range mws {
+		switch mw.Fn.(type) {
+		case nil:
+			continue // spec-only/no-op middleware — allowed
+		case func(context.Context, []route.SecurityRequirement) (http.Header, error):
+			continue
+		default:
+			return middleware.MiddlewareShapeError{
+				Name:     mw.Name,
+				Expected: "func(context.Context, []route.SecurityRequirement) (http.Header, error)",
+				Got:      fmt.Sprintf("%T", mw.Fn),
+			}
+		}
+	}
+	return nil
+}
+
 // mergeCredentialHeaders runs EVERY attached credential-providing Fn in
 // attachment order, merging their returned http.Header values into ONE
 // combined set — this is a MERGE, not an authorization check (the client
@@ -285,6 +310,10 @@ func (e ConflictingCredentialHeaderError) LogValue() slog.Value {
 // credential-providing Fn was found and invoked (used to gate the
 // client-side credential-format check and OnCredentialRejected below,
 // mirroring the pre-existing "nil CredentialFunc is not an error" contract).
+//
+// Every mw.Fn here is already guaranteed to match this shape (or be nil) —
+// [validateClientMiddlewareShapes] rejects anything else EAGERLY, at the
+// top of [Call], before this function is ever reached.
 func mergeCredentialHeaders(ctx context.Context, secReqs []route.SecurityRequirement, mws []middleware.Middleware) (combined http.Header, ran bool, err error) {
 	combined = make(http.Header)
 	setBy := make(map[string]string)
@@ -335,10 +364,12 @@ func equalHeaderValues(a, b []string) bool {
 // [rest.QueryParamError]) without sending any request.
 //
 // Security requirements: if the route declares non-nil Security (or inherits
-// global security), [CallOptions.CredentialFunc] is called to obtain the
-// Authorization headers. A nil CredentialFunc on a secured route is not an error —
-// the request is sent without credential injection; use [CallOptions.ExtraHeaders]
-// to supply static credentials instead.
+// global security), every attached credential-providing [middleware.Middleware]
+// (an mws entry whose Fn matches [CredentialFunc]'s shape) is called to obtain
+// the Authorization headers. No credential-providing middleware attached to a
+// secured route is not an error — the request is sent without credential
+// injection; use [CallOptions.ExtraHeaders] to supply static credentials
+// instead.
 //
 // On a 2xx response the body is decoded into Resp using the route's response codec.
 // On a non-2xx response [UnexpectedStatusError] is returned.
@@ -360,13 +391,12 @@ func equalHeaderValues(a, b []string) bool {
 //	handle := createUserRoute.ClientHandle()
 //	resp, err := nethttp.Call(ctx, http.DefaultClient, "https://api.example.com",
 //	    handle, createReq, nil,
-//	    nethttp.CallOptions{
-//	        CredentialFunc: func(ctx context.Context, reqs []route.SecurityRequirement) (http.Header, error) {
-//	            h := make(http.Header)
-//	            h.Set("Authorization", "Bearer "+token)
-//	            return h, nil
-//	        },
-//	    })
+//	    nethttp.CallOptions{},
+//	    middleware.Middleware{Fn: func(ctx context.Context, reqs []route.SecurityRequirement) (http.Header, error) {
+//	        h := make(http.Header)
+//	        h.Set("Authorization", "Bearer "+token)
+//	        return h, nil
+//	    }})
 func Call[Req, Resp any](
 	ctx context.Context,
 	client *http.Client,
@@ -398,6 +428,17 @@ func Call[Req, Resp any](
 	method := strings.ToUpper(handle.Descriptor.Method)
 	routePath := handle.Descriptor.Path
 	start := time.Now()
+
+	// 0. Validate every attached mw.Fn against the ONE concrete shape this
+	// package recognizes client-side, EAGERLY before any network activity —
+	// mirrors Handler/Register's validateMiddlewareShapes; a malformed Fn
+	// fails loudly here instead of being silently ignored by
+	// mergeCredentialHeaders below (see middleware.Middleware.Fn's own doc
+	// comment: "fails LOUDLY... never silently").
+	if err := validateClientMiddlewareShapes(mws); err != nil {
+		obs.RecordRequest(method, routePath, 0, time.Since(start))
+		return zero, err
+	}
 
 	// 1. Build and validate path.
 	concretePath, err := handle.BuildPath(vars)

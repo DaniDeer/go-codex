@@ -176,14 +176,23 @@ func applyGeneralMiddleware(h http.Handler, mws []middleware.Middleware) http.Ha
 // performs a SINGLE [middleware.CheckScopes] call — see "L4" in
 // docs/roadmap/declarative-middleware.md for why each Fn does NOT
 // independently decide pass/fail against the route's full requirement set.
+//
+// A middleware with an EMPTY Satisfies (a pure presence/format check, e.g.
+// [RequireAPIKey], contributing no scope grants) ALWAYS runs, regardless of
+// whether the route declares any Security — that is its whole design
+// point (see docs/roadmap/declarative-middleware.md's "Header/cookie param
+// auto-contribution" section). A middleware with a NON-EMPTY Satisfies
+// (e.g. [RequireScopes]) only runs when the route actually declares a
+// security requirement — an unsecured route must not authenticate
+// credentials it never asked for.
 func runSecurityMiddleware[Req any](ctx context.Context, r *http.Request, req *Req, mws []middleware.Middleware, secReqs []route.SecurityRequirement) error {
-	if len(secReqs) == 0 {
-		return nil
-	}
 	granted := make(map[string][]string)
 	for _, mw := range mws {
 		fn, ok := mw.Fn.(func(context.Context, *http.Request, *Req) (map[string][]string, error))
 		if !ok {
+			continue
+		}
+		if len(mw.Satisfies) > 0 && len(secReqs) == 0 {
 			continue
 		}
 		g, err := fn(ctx, r, req)
@@ -359,14 +368,17 @@ func Handler[Req, Resp any](handle *rest.RouteHandle[Req, Resp], fn HandlerFunc[
 				errFn(sw, r, http.StatusUnauthorized, credErr)
 				return
 			}
-			// Run every attached security-specific Fn, merge grants, ONE
-			// middleware.CheckScopes call — see "L4" in
-			// docs/roadmap/declarative-middleware.md.
-			if err := runSecurityMiddleware(ctx, r, &req, allMws, secReqs); err != nil {
-				secErr := rest.SecurityError{Err: err}
-				errFn(sw, r, http.StatusUnauthorized, secErr)
-				return
-			}
+		}
+		// Run every attached security-specific Fn, merge grants, ONE
+		// middleware.CheckScopes call — see "L4" in
+		// docs/roadmap/declarative-middleware.md. Called even when secReqs
+		// is empty: a middleware with an EMPTY Satisfies (a pure
+		// presence/format check, e.g. RequireAPIKey) must still run — see
+		// runSecurityMiddleware's own doc comment.
+		if err := runSecurityMiddleware(ctx, r, &req, allMws, secReqs); err != nil {
+			secErr := rest.SecurityError{Err: err}
+			errFn(sw, r, http.StatusUnauthorized, secErr)
+			return
 		}
 
 		var (
@@ -671,11 +683,14 @@ func SSEHandler[Req, Event any](handle *rest.SSERouteHandle[Req, Event], fn SSEH
 				opts.ErrorHandler(sw, r, http.StatusUnauthorized, credErr)
 				return
 			}
-			if err := runSecurityMiddleware(ctx, r, &req, mws, secReqs); err != nil {
-				secErr := rest.SecurityError{Err: err}
-				opts.ErrorHandler(sw, r, http.StatusUnauthorized, secErr)
-				return
-			}
+		}
+		// Called even when secReqs is empty — see runSecurityMiddleware's
+		// own doc comment (a middleware with an EMPTY Satisfies must still
+		// run).
+		if err := runSecurityMiddleware(ctx, r, &req, mws, secReqs); err != nil {
+			secErr := rest.SecurityError{Err: err}
+			opts.ErrorHandler(sw, r, http.StatusUnauthorized, secErr)
+			return
 		}
 
 		// SSE headers — must be set before WriteHeader.

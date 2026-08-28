@@ -1,6 +1,44 @@
-# go-codex Review History (R1–R119)
+# go-codex Review History (R1–R120)
 
 Do not re-report any of these findings. They have been implemented and tested.
+
+---
+
+## Round 120 (declarative-middleware self-review)
+
+First consistency pass over the new `middleware` package and its integration across `api/rest`/
+`adapters/nethttp`/`adapters/chi` (Stages 1-6 of the `declarative-middleware` roadmap, never
+reviewed by this skill before this round).
+
+- **G1 — `Call`/`CallHandle` silently ignored a wrong-shape `middleware.Middleware.Fn`**: unlike
+  `Handler`/`Register`/`SSEHandler`/`RegisterSSE`'s eager `validateMiddlewareShapes` →
+  `MiddlewareShapeError`, client-side `Call`/`CallHandle` had no equivalent check —
+  `mergeCredentialHeaders`'s type assertion silently skipped any `Fn` that didn't match the
+  credential-providing shape, contradicting `Middleware.Fn`'s own doc guarantee ("fails LOUDLY...
+  never silently"). Added `validateClientMiddlewareShapes` in `adapters/nethttp/client.go`, called
+  eagerly at the top of `Call` before any network activity, returning a `MiddlewareShapeError` for
+  a mismatched `Fn`. Also fixed 7 stale doc-comment references to the removed
+  `CallOptions.CredentialFunc` field (`client.go`, `credential_cache.go`) discovered while
+  implementing this fix. Added `TestCall_WrongShapeMiddleware_ReturnsMiddlewareShapeError`.
+- **G2 [bug] — `RequireAPIKey`'s Fn never ran without route Security (live security bypass)**:
+  `runSecurityMiddleware` (and its call site in both `adapters/nethttp` and `adapters/chi`) was
+  gated entirely by `len(secReqs) > 0` — whether the ROUTE declares a security requirement, not
+  whether a security-shaped Fn is attached. `RequireAPIKey` (a documented worked example of a
+  RequestParams-only, non-`Security`-declaring presence-check middleware) therefore never had its
+  `verify()` called when used standalone — reproduced live: a request with no API key at all
+  returned 200. Fixed by running any middleware with an EMPTY `Satisfies` unconditionally (pure
+  presence/format check, no scope grants), while middlewares with non-empty `Satisfies` (e.g.
+  `RequireScopes`) remain gated by the route's declared `secReqs` (preserving
+  `TestHandler_SecurityFunc_notCalledForUnsecuredRoute`'s existing, intentional behavior). Applied
+  identically to `adapters/chi`.
+- **G3 — `RequireAPIKey` had zero test coverage**: the gap that let G2 ship unnoticed. Added
+  `TestHandler_RequireAPIKey_RunsWithoutRouteSecurity` to both `adapters/nethttp` and
+  `adapters/chi`, asserting `verify()` IS called and a missing/invalid key is rejected even with no
+  other `Security` declared on the route.
+
+G4 (missing `middleware` package entry in `.github/instructions/go-codex.instructions.md`) was
+identified but deliberately NOT actioned this round — already tracked as Stage 7 of the
+`declarative-middleware` roadmap's own implementation plan.
 
 ---
 

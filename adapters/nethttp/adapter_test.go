@@ -1837,6 +1837,58 @@ func TestHandler_SecurityFunc_notCalledForUnsecuredRoute(t *testing.T) {
 	}
 }
 
+// TestHandler_RequireAPIKey_RunsWithoutRouteSecurity locks in that
+// RequireAPIKey's Fn — a pure presence/format-check middleware with an
+// EMPTY Satisfies, contributing no scope grants — ALWAYS runs, even though
+// the route declares NO Security at all. This is the opposite gating rule
+// from RequireScopes (see TestHandler_SecurityFunc_notCalledForUnsecuredRoute
+// right above): a scope-granting middleware only runs for a secured route,
+// but a presence-check-only middleware must run unconditionally, otherwise
+// it never actually enforces anything (a real bug found and fixed — see
+// docs/roadmap/declarative-middleware.md's "G2" self-review finding).
+func TestHandler_RequireAPIKey_RunsWithoutRouteSecurity(t *testing.T) {
+	handle := newCreateRoute()
+	verifyCalled := false
+	mw := nethttp.RequireAPIKey[createReq]("X-API-Key", func(_ context.Context, key string) error {
+		verifyCalled = true
+		if key != "secret" {
+			return errors.New("invalid api key")
+		}
+		return nil
+	})
+	h := nethttp.Handler(handle, func(_ context.Context, req createReq) (userResp, error) {
+		return userResp{ID: "1", Name: req.Name}, nil
+	}, nethttp.Options{}, mw)
+
+	// Missing/invalid key is rejected.
+	rec := httptest.NewRecorder()
+	r := httptest.NewRequest(http.MethodPost, "/users", strings.NewReader(`{"name":"Alice"}`))
+	r.Header.Set("Content-Type", "application/json")
+	h.ServeHTTP(rec, r)
+
+	if !verifyCalled {
+		t.Fatal("want RequireAPIKey's verify called even though the route declares no Security")
+	}
+	if rec.Code != http.StatusUnauthorized {
+		t.Errorf("want 401 for missing API key, got %d", rec.Code)
+	}
+
+	// Valid key is accepted.
+	verifyCalled = false
+	rec = httptest.NewRecorder()
+	r = httptest.NewRequest(http.MethodPost, "/users", strings.NewReader(`{"name":"Alice"}`))
+	r.Header.Set("Content-Type", "application/json")
+	r.Header.Set("X-API-Key", "secret")
+	h.ServeHTTP(rec, r)
+
+	if !verifyCalled {
+		t.Fatal("want RequireAPIKey's verify called")
+	}
+	if rec.Code != http.StatusCreated {
+		t.Errorf("want 201 for valid API key, got %d", rec.Code)
+	}
+}
+
 func TestHandler_SecurityFunc_codecValidationFailure(t *testing.T) {
 	b := rest.NewBuilder(testInfo)
 	jwtCodec := codex.String().Refine(validate.JWT)
