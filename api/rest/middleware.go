@@ -39,6 +39,34 @@ func WithMiddleware(mws ...middleware.Middleware) RouteOpt {
 	return middlewareOpt{mws: mws}
 }
 
+// Use returns a NEW [Route] with mws chained onto it — chi/net-http-style
+// declaration-time sugar for [WithMiddleware], usable AFTER [NewRoute]
+// instead of only as one of its variadic opts:
+//
+//	handle, err := rest.NewRoute[GetProfileReq, ProfileResp]("GET", "/profile",
+//	    reqCodec, respCodec, rest.RouteMeta{OperationID: "getProfile"},
+//	).Use(scopesFromProxy).Register(builder)
+//
+// Chainable — `.Use(mw1).Use(mw2)` and `.Use(mw1, mw2)` are equivalent, in
+// attachment order. [Route] is an immutable value; Use never mutates the
+// receiver — it returns a distinct Route, leaving any Route it was called
+// on (and any OTHER Route derived from the same base via a different
+// `.Use(...)` call) unchanged. Register/ClientHandle still perform the
+// SAME, order-independent application pass documented on [WithMiddleware]
+// — Use is purely how the opts list is assembled beforehand; it introduces
+// no new runtime mechanism.
+func (r Route[Req, Resp]) Use(mws ...middleware.Middleware) Route[Req, Resp] {
+	r.opts = append(slices.Clone(r.opts), WithMiddleware(mws...))
+	return r
+}
+
+// Use is [SSERoute]'s equivalent of [Route.Use] — see its doc comment for
+// the full chaining/immutability contract, which applies identically here.
+func (s SSERoute[Req, Event]) Use(mws ...middleware.Middleware) SSERoute[Req, Event] {
+	s.opts = append(slices.Clone(s.opts), WithMiddleware(mws...))
+	return s
+}
+
 // securityContribution is one source's declaration for a single security
 // scheme name, tracked for conflict detection.
 type securityContribution struct {

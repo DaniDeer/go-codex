@@ -671,6 +671,7 @@ func SSEHandler[Req, Event any](handle *rest.SSERouteHandle[Req, Event], fn SSEH
 	if opts.ErrorHandler == nil {
 		opts.ErrorHandler = defaultErrorHandler
 	}
+	allMws := append(slices.Clone(handle.Middlewares), mws...)
 	inner := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		sw := &statusResponseWriter{ResponseWriter: w, code: http.StatusOK}
 
@@ -741,7 +742,7 @@ func SSEHandler[Req, Event any](handle *rest.SSERouteHandle[Req, Event], fn SSEH
 		// Called even when secReqs is empty — see runSecurityMiddleware's
 		// own doc comment (a middleware with an EMPTY Satisfies must still
 		// run).
-		if err := runSecurityMiddleware(ctx, r, &req, mws, secReqs); err != nil {
+		if err := runSecurityMiddleware(ctx, r, &req, allMws, secReqs); err != nil {
 			secErr := rest.SecurityError{Err: err}
 			opts.ErrorHandler(sw, r, http.StatusUnauthorized, secErr)
 			return
@@ -846,17 +847,19 @@ func SSEHandler[Req, Event any](handle *rest.SSERouteHandle[Req, Event], fn SSEH
 
 	// General-purpose middlewares wrap the WHOLE call, outermost-in, in
 	// attachment order — see [Handler]'s equivalent wrapping.
-	return applyGeneralMiddleware(inner, mws).ServeHTTP
+	return applyGeneralMiddleware(inner, allMws).ServeHTTP
 }
 
 // RegisterSSE wires an [rest.SSERouteHandle] onto a chi router as a GET SSE endpoint.
 //
-// mws is call-time-only (SSERouteHandle has no declaration-time Middlewares
-// field). Validates every attached middleware's Fn shape EAGERLY, returning
-// [middleware.MiddlewareShapeError] immediately for a malformed Fn
-// (BREAKING — RegisterSSE was previously void).
+// mws combines with handle.Middlewares (declared via
+// [rest.WithMiddleware]/[rest.SSERoute.Use]) exactly like [Register] does
+// for [rest.RouteHandle]. Validates every attached middleware's Fn shape
+// EAGERLY, returning [middleware.MiddlewareShapeError] immediately for a
+// malformed Fn (BREAKING — RegisterSSE was previously void).
 func RegisterSSE[Req, Event any](r gochi.Router, handle *rest.SSERouteHandle[Req, Event], fn SSEHandlerFunc[Req, Event], opts Options, mws ...middleware.Middleware) error {
-	if err := validateMiddlewareShapes[Req](mws); err != nil {
+	allMws := append(slices.Clone(handle.Middlewares), mws...)
+	if err := validateMiddlewareShapes[Req](allMws); err != nil {
 		return err
 	}
 	r.Get(handle.Descriptor.Path, SSEHandler(handle, fn, opts, mws...))

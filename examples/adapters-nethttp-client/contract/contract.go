@@ -297,6 +297,5 @@ func GetSecuredData(mw middleware.Middleware) rest.Route[struct{}, Profile] {
 			Summary:        "Get data (bearer-authenticated)",
 			RespSchemaName: "Profile",
 		},
-		rest.WithMiddleware(mw),
-	)
+	).Use(mw)
 }

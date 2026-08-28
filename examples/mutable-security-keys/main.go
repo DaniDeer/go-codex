@@ -120,8 +120,7 @@ func main() {
 	secureHandle, err := rest.NewRoute[struct{}, secureResp]("GET", "/secure",
 		codex.Empty, secureRespCodec,
 		rest.RouteMeta{OperationID: "secureEndpoint"},
-		rest.WithMiddleware(secureScopesMw),
-	).Register(b)
+	).Use(secureScopesMw).Register(b)
 	if err != nil {
 		panic(err)
 	}

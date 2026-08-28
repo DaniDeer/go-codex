@@ -188,8 +188,8 @@ func main() {
 	// is shared spec metadata; the actual verification logic lives HERE, in
 	// the server's own RequireScopes-built middleware — the contract package
 	// stays adapter-agnostic. nethttp.RequireScopes is BOTH the spec
-	// declaration (attached via rest.WithMiddleware inside
-	// contract.GetSecuredData) AND the runtime enforcement.
+	// declaration (chained via .Use(mw) inside contract.GetSecuredData)
+	// AND the runtime enforcement.
 	const validToken = "secret-token"
 	securedMw := nethttp.RequireScopes[struct{}]("bearerAuth", contract.BearerAuthScheme, nil, &contract.BearerCredentialCodec,
 		func(_ context.Context, r *http.Request, _ *struct{}) (map[string][]string, error) {

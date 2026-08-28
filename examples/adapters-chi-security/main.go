@@ -259,8 +259,7 @@ func buildAPI() (
 			Summary:     "Get a user's profile by ID",
 			Tags:        []string{"user"},
 		},
-		rest.WithMiddleware(profileScopesMw),
-	).Register(b)
+	).Use(profileScopesMw).Register(b)
 
 	// POST /admin/action — secured with admin scope.
 	adminScopesMw := nethttp.RequireScopes[adminActionReq]("bearerAuth", route.BearerScheme("JWT"), []string{"admin"}, &bearerCodec,
@@ -275,8 +274,7 @@ func buildAPI() (
 			Summary:     "Perform a privileged admin action",
 			Tags:        []string{"admin"},
 		},
-		rest.WithMiddleware(adminScopesMw),
-	).Register(b)
+	).Use(adminScopesMw).Register(b)
 
 	return
 }

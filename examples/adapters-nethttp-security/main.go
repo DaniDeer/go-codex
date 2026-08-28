@@ -257,8 +257,8 @@ func buildAPI() (
 	).Register(b)
 
 	// GET /profile — secured: bearerAuth with "profile" scope. RequireScopes
-	// is BOTH the spec declaration (Security + securitySchemes, via
-	// rest.WithMiddleware below) AND the runtime enforcement (Fn) — no
+	// is BOTH the spec declaration (Security + securitySchemes, via the
+	// chained .Use(...) below) AND the runtime enforcement (Fn) — no
 	// separate WithSecurityScheme/RouteMeta.Security call needed at all.
 	profileScopesMw := nethttp.RequireScopes[struct{}]("bearerAuth", route.BearerScheme("JWT"), []string{"profile"}, &bearerCodec,
 		func(ctx context.Context, r *http.Request, _ *struct{}) (map[string][]string, error) {
@@ -272,8 +272,7 @@ func buildAPI() (
 			Summary:     "Get the authenticated user's profile",
 			Tags:        []string{"user"},
 		},
-		rest.WithMiddleware(profileScopesMw),
-	).Register(b)
+	).Use(profileScopesMw).Register(b)
 
 	// POST /admin/action — secured: bearerAuth with "admin" scope.
 	adminScopesMw := nethttp.RequireScopes[adminActionReq]("bearerAuth", route.BearerScheme("JWT"), []string{"admin"}, &bearerCodec,
@@ -288,8 +287,7 @@ func buildAPI() (
 			Summary:     "Perform a privileged admin action",
 			Tags:        []string{"admin"},
 		},
-		rest.WithMiddleware(adminScopesMw),
-	).Register(b)
+	).Use(adminScopesMw).Register(b)
 
 	return
 }

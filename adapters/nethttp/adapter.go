@@ -617,6 +617,7 @@ func SSEHandler[Req, Event any](handle *rest.SSERouteHandle[Req, Event], fn SSEH
 	if opts.ErrorHandler == nil {
 		opts.ErrorHandler = defaultErrorHandler
 	}
+	allMws := append(slices.Clone(handle.Middlewares), mws...)
 	inner := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		sw := &statusResponseWriter{ResponseWriter: w, code: http.StatusOK}
 
@@ -687,7 +688,7 @@ func SSEHandler[Req, Event any](handle *rest.SSERouteHandle[Req, Event], fn SSEH
 		// Called even when secReqs is empty — see runSecurityMiddleware's
 		// own doc comment (a middleware with an EMPTY Satisfies must still
 		// run).
-		if err := runSecurityMiddleware(ctx, r, &req, mws, secReqs); err != nil {
+		if err := runSecurityMiddleware(ctx, r, &req, allMws, secReqs); err != nil {
 			secErr := rest.SecurityError{Err: err}
 			opts.ErrorHandler(sw, r, http.StatusUnauthorized, secErr)
 			return
@@ -795,7 +796,7 @@ func SSEHandler[Req, Event any](handle *rest.SSERouteHandle[Req, Event], fn SSEH
 
 	// General-purpose middlewares wrap the WHOLE call, outermost-in, in
 	// attachment order — see [Handler]'s equivalent wrapping.
-	return applyGeneralMiddleware(inner, mws)
+	return applyGeneralMiddleware(inner, allMws)
 }
 
 // RegisterSSE wires an [rest.SSERouteHandle] onto mux as a GET SSE endpoint.
@@ -806,7 +807,8 @@ func SSEHandler[Req, Event any](handle *rest.SSERouteHandle[Req, Event], fn SSEH
 // EAGERLY, returning [middleware.MiddlewareShapeError] immediately for a
 // malformed Fn (BREAKING — RegisterSSE was previously void).
 func RegisterSSE[Req, Event any](mux *http.ServeMux, handle *rest.SSERouteHandle[Req, Event], fn SSEHandlerFunc[Req, Event], opts Options, mws ...middleware.Middleware) error {
-	if err := validateMiddlewareShapes[Req](mws); err != nil {
+	allMws := append(slices.Clone(handle.Middlewares), mws...)
+	if err := validateMiddlewareShapes[Req](allMws); err != nil {
 		return err
 	}
 	mux.Handle("GET "+handle.Descriptor.Path, SSEHandler(handle, fn, opts, mws...))

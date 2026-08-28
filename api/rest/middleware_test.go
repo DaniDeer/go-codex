@@ -304,3 +304,111 @@ func TestValidateRoute_CatchesMissingSecurityMiddleware(t *testing.T) {
 		t.Fatalf("want MissingSecurityMiddlewareError, got %T: %v", err, err)
 	}
 }
+
+// ── Route.Use / SSERoute.Use: chi-style chaining sugar ──────────────────────
+
+func TestRouteUse_EquivalentToWithMiddleware(t *testing.T) {
+	mw := requireScopesMW("bearerAuth", []string{"read"})
+
+	viaUse, err := rest.NewRoute[mwTestReq, userResp]("GET", "/profile", mwTestReqCodec, userCodec,
+		rest.RouteMeta{OperationID: "getProfile"},
+	).Use(mw).Register(rest.NewBuilder(testInfo))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	viaOpt, err := rest.NewRoute[mwTestReq, userResp]("GET", "/profile", mwTestReqCodec, userCodec,
+		rest.RouteMeta{OperationID: "getProfile"},
+		rest.WithMiddleware(mw),
+	).Register(rest.NewBuilder(testInfo))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if len(viaUse.Middlewares) != 1 || viaUse.Middlewares[0].Name != mw.Name {
+		t.Fatalf("want Use to carry the attached middleware, got %+v", viaUse.Middlewares)
+	}
+	if len(viaUse.Descriptor.Security) != len(viaOpt.Descriptor.Security) {
+		t.Fatalf("want Use and WithMiddleware to produce the same Security, got %+v vs %+v",
+			viaUse.Descriptor.Security, viaOpt.Descriptor.Security)
+	}
+	if _, ok := viaUse.SecuritySchemes["bearerAuth"]; !ok {
+		t.Fatalf("want Use to populate SecuritySchemes, got %+v", viaUse.SecuritySchemes)
+	}
+}
+
+func TestRouteUse_ChainedCallsEquivalentToVariadic(t *testing.T) {
+	mw1 := requireScopesMW("bearerAuth", []string{"read"})
+	obsMw := middleware.Middleware{Name: "observability", Fn: nil}
+
+	chained, err := rest.NewRoute[mwTestReq, userResp]("GET", "/profile", mwTestReqCodec, userCodec,
+		rest.RouteMeta{OperationID: "getProfile"},
+	).Use(mw1).Use(obsMw).Register(rest.NewBuilder(testInfo))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	variadic, err := rest.NewRoute[mwTestReq, userResp]("GET", "/profile", mwTestReqCodec, userCodec,
+		rest.RouteMeta{OperationID: "getProfile"},
+	).Use(mw1, obsMw).Register(rest.NewBuilder(testInfo))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if len(chained.Middlewares) != 2 || len(variadic.Middlewares) != 2 {
+		t.Fatalf("want 2 middlewares each, got chained=%d variadic=%d", len(chained.Middlewares), len(variadic.Middlewares))
+	}
+	for i := range chained.Middlewares {
+		if chained.Middlewares[i].Name != variadic.Middlewares[i].Name {
+			t.Errorf("index %d: want same order/names, got %q vs %q",
+				i, chained.Middlewares[i].Name, variadic.Middlewares[i].Name)
+		}
+	}
+}
+
+func TestRouteUse_DoesNotMutateBaseRoute(t *testing.T) {
+	mw1 := requireScopesMW("bearerAuth", []string{"read"})
+	mw2 := requireScopesMW("apiKey", []string{"write"})
+
+	base := rest.NewRoute[mwTestReq, userResp]("GET", "/profile", mwTestReqCodec, userCodec,
+		rest.RouteMeta{OperationID: "getProfile"},
+	)
+
+	branchA := base.Use(mw1)
+	branchB := base.Use(mw2)
+
+	handleA, err := branchA.Register(rest.NewBuilder(testInfo))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	handleB, err := branchB.Register(rest.NewBuilder(testInfo))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	baseHandle, err := base.Register(rest.NewBuilder(testInfo))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if len(handleA.Middlewares) != 1 || handleA.Middlewares[0].Name != mw1.Name {
+		t.Fatalf("branchA: want only mw1, got %+v", handleA.Middlewares)
+	}
+	if len(handleB.Middlewares) != 1 || handleB.Middlewares[0].Name != mw2.Name {
+		t.Fatalf("branchB: want only mw2, got %+v", handleB.Middlewares)
+	}
+	if len(baseHandle.Middlewares) != 0 {
+		t.Fatalf("base: want zero middlewares (unaffected by branchA/branchB), got %+v", baseHandle.Middlewares)
+	}
+}
+
+func TestSSERouteUse_EquivalentToWithMiddleware(t *testing.T) {
+	obsMw := middleware.Middleware{Name: "observability", Fn: nil}
+
+	viaUse, err := rest.NewSSERoute[struct{}, userResp]("/stream", codex.Empty, userCodec,
+		rest.RouteMeta{OperationID: "streamUsers"},
+	).Use(obsMw).Register(rest.NewBuilder(testInfo))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(viaUse.Middlewares) != 1 || viaUse.Middlewares[0].Name != obsMw.Name {
+		t.Fatalf("want Use to carry the attached middleware, got %+v", viaUse.Middlewares)
+	}
+}

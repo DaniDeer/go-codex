@@ -298,6 +298,26 @@ extended. Unlike the first version of this doc, NONE of these are left
 vague — only the actual IMPLEMENTATION (real method/function signature
 changes per package) remains Phase 2+.
 
+**`.Use()` chaining sugar — REQUIRED parity, not optional polish.**
+Phase 1 shipped `rest.Route[Req,Resp].Use(mws ...middleware.Middleware) Route[Req,Resp]`
+and `rest.SSERoute[Req,Event].Use(...)` — chi/net-http-style
+declaration-time chaining sugar over `rest.WithMiddleware`, immutable and
+chainable (`.Use(mw1).Use(mw2)` ≡ `.Use(mw1, mw2)`), introducing NO new
+runtime mechanism (`Register`/`ClientHandle` still perform the identical,
+order-independent application pass regardless of how the opts list was
+assembled). EVERY Phase 2+ boundary's own declare-time type MUST ship the
+identical mirror once its OWN `WithMiddleware`-equivalent attachment point
+exists: `events.Channel[T].Use(...)`, `reqreply.Route[Req,Resp].Use(...)`,
+and whatever `ports.*` Pattern-backed declare-time type Phase 2 settles on
+for `ports.File`/`Cache`/`SQL`/`Dir`/`Dir`'s decorator-shaped variant.
+`api/mcp`'s equivalent (`mcp.Tool[In,Out]`, once it gains an
+observability-only `WithMiddleware`-equivalent attachment point) gets the
+same `.Use()` sugar too — Security stays N/A there, but the sugar itself
+is orthogonal to which spec-relevant declarations a boundary supports.
+This is a checklist item for EACH Phase 2+ implementation round, not a
+separate, optional follow-up — see the mirrored note in "Coverage across
+every API/port boundary" below.
+
 **Explicitly NOT in scope, by design, at any phase:** deriving a route's
 security/params from the mere PRESENCE of some attached middleware
 (inspection-based inference — "a middleware is attached, therefore GUESS
@@ -1309,6 +1329,20 @@ separately in
 | ReqReply (`api/reqreply` + `mqtt5`/`zeromq`) | AsyncAPI | Message-shaped | Yes — Phase 2, full parity below | Yes — Phase 2, full parity below |
 | MCP (`api/mcp` + `mcpgo`) | MCP manifest/JSON schema | Decorator-shaped | **No — N/A, permanent design** (unchanged) | Yes — Phase 2, below |
 | `ports.File`/`Cache`/`SQL`/`Dir` | **None — not spec-backed** | Decorator-shaped | Yes — `File` sketched above, mechanical extension below | Yes — Phase 2, below |
+
+**`.Use()` chaining sugar applies to EVERY row above, uniformly — not
+just REST.** REST's Phase 1 `rest.Route.Use`/`rest.SSERoute.Use` (chi/
+net-http-style declaration-time chaining, immutable, zero new runtime
+mechanism — see "Scope decisions" above) is the REFERENCE
+implementation every Phase 2+ boundary's own declare-time type must
+mirror once ITS OWN `WithMiddleware`-equivalent attachment point ships:
+`events.Channel[T].Use(...)`, `reqreply.Route[Req,Resp].Use(...)`, the
+`ports.*` Pattern-backed declare-time type(s), and `mcp.Tool[In,Out].Use(...)`
+(observability-only there, matching MCP's permanent Security N/A). Treat
+this as part of "FULL parity with REST" for events/reqreply in the table
+above, not a separate nice-to-have — a Phase 2+ implementation round
+that ships `WithMiddleware` without the matching `.Use()` sugar is
+INCOMPLETE relative to this doc's own bar.
 
 **The three shapes, confirmed as exhaustive:**
 

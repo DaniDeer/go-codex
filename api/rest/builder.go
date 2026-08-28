@@ -2561,6 +2561,12 @@ type SSERouteHandle[Req, Event any] struct {
 	// nil there, unchanged).
 	GlobalSecurity []route.SecurityRequirement
 
+	// Middlewares holds every [middleware.Middleware] attached via
+	// [WithMiddleware]/[SSERoute.Use], in attachment order — mirrors
+	// [RouteHandle.Middlewares]. [SSEHandler]/[RegisterSSE] combine this
+	// with their own variadic mws parameter automatically.
+	Middlewares []middleware.Middleware
+
 	// responseHeaderParams holds per-header entries registered via ResponseHeaderParam options.
 	responseHeaderParams []ResponseHeaderParam
 
@@ -2864,6 +2870,11 @@ func (s SSERoute[Req, Event]) Register(b *Builder) (*SSERouteHandle[Req, Event],
 	for _, opt := range s.opts {
 		opt.applyRoute(&rb)
 	}
+
+	if err := applyMiddlewareDeclarations(&rb, "GET "+s.path); err != nil {
+		return nil, err
+	}
+
 	eventMergeFields, err := assertMergeFields[Event](rb.sseEventMergeFields)
 	if err != nil {
 		return nil, err
@@ -2890,6 +2901,7 @@ func (s SSERoute[Req, Event]) Register(b *Builder) (*SSERouteHandle[Req, Event],
 		pathCodec:            b.pathCodec,
 		SecuritySchemes:      rb.securitySchemes,
 		GlobalSecurity:       slices.Clone(b.globalSecurity),
+		Middlewares:          slices.Clone(rb.middlewares),
 		responseHeaderParams: rb.respHeaders,
 		responseCookieParams: rb.respCookies,
 		mergeFields:          eventMergeFields,
