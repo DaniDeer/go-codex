@@ -417,6 +417,95 @@ func TestCall_WrongShapeMiddleware_ReturnsMiddlewareShapeError(t *testing.T) {
 	}
 }
 
+// TestCall_TwoCredentialMiddlewares_DifferingHeaderValuesConflict locks in
+// "L9" in docs/roadmap/declarative-middleware.md: two attached
+// credential-providing middlewares that return DIFFERENT values for the
+// SAME header key must fail with a typed ConflictingCredentialHeaderError —
+// the client never silently picks one over the other.
+func TestCall_TwoCredentialMiddlewares_DifferingHeaderValuesConflict(t *testing.T) {
+	b := rest.NewBuilder(testInfo)
+	b.AddGlobalSecurity(route.Require("bearerAuth"))
+	handle, err := rest.NewRoute[getReq, userResp]("GET", "/me",
+		getReqCodec, userRespCodec).Register(b)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	first := middleware.Middleware{
+		Name: "first",
+		Fn: func(_ context.Context, _ []route.SecurityRequirement) (http.Header, error) {
+			h := make(http.Header)
+			h.Set("Authorization", "Bearer token-a")
+			return h, nil
+		},
+	}
+	second := middleware.Middleware{
+		Name: "second",
+		Fn: func(_ context.Context, _ []route.SecurityRequirement) (http.Header, error) {
+			h := make(http.Header)
+			h.Set("Authorization", "Bearer token-b")
+			return h, nil
+		},
+	}
+
+	_, callErr := nethttp.Call(context.Background(), http.DefaultClient, "http://localhost",
+		handle, getReq{}, nil, nethttp.CallOptions{}, first, second)
+
+	var conflictErr nethttp.ConflictingCredentialHeaderError
+	if !errors.As(callErr, &conflictErr) {
+		t.Fatalf("want ConflictingCredentialHeaderError, got %v", callErr)
+	}
+	if conflictErr.Header != "Authorization" {
+		t.Errorf("want Header %q, got %q", "Authorization", conflictErr.Header)
+	}
+	if conflictErr.FirstSource != "first" || conflictErr.SecondSource != "second" {
+		t.Errorf("want sources first/second, got %q/%q", conflictErr.FirstSource, conflictErr.SecondSource)
+	}
+}
+
+// TestCall_TwoCredentialMiddlewares_IdenticalHeaderValuesMergeSilently
+// confirms the "identical values are allowed silently" half of the same
+// L9 rule — only DIFFERING values for the same key conflict.
+func TestCall_TwoCredentialMiddlewares_IdenticalHeaderValuesMergeSilently(t *testing.T) {
+	b := rest.NewBuilder(testInfo)
+	b.AddGlobalSecurity(route.Require("bearerAuth"))
+	handle, err := rest.NewRoute[getReq, userResp]("GET", "/me",
+		getReqCodec, userRespCodec).Register(b)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") != "test-bearer-token" {
+			w.WriteHeader(http.StatusUnauthorized)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]string{"id": "me", "name": "Alice"}) //nolint:errcheck
+	}))
+	defer srv.Close()
+
+	makeMw := func(name string) middleware.Middleware {
+		return middleware.Middleware{
+			Name: name,
+			Fn: func(_ context.Context, _ []route.SecurityRequirement) (http.Header, error) {
+				h := make(http.Header)
+				h.Set("Authorization", "test-bearer-token")
+				return h, nil
+			},
+		}
+	}
+
+	resp, err := nethttp.Call(context.Background(), srv.Client(), srv.URL,
+		handle, getReq{}, nil, nethttp.CallOptions{}, makeMw("first"), makeMw("second"))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if resp.ID != "me" {
+		t.Errorf("unexpected response: %+v", resp)
+	}
+}
+
 // --- OnCredentialRejected hook ---
 
 func TestCall_OnCredentialRejected_FiresOn401(t *testing.T) {

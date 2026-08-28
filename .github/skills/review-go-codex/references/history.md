@@ -1,6 +1,27 @@
-# go-codex Review History (R1–R120)
+# go-codex Review History (R1–R121)
 
 Do not re-report any of these findings. They have been implemented and tested.
+
+---
+
+## Round 121 (declarative-middleware follow-up — test coverage gap)
+
+Broad checklist pass across all layers following Round 120's middleware-specific fixes. Confirmed
+Round 120's fixes compose correctly: `adapters/mcprest.ToolHandler`/`MappedToolHandler` automatically
+inherit `Call`'s new eager shape validation (verified with a throwaway test), and `RequireAPIKey` +
+`RequireScopes` attached together on the same route both run and merge grants correctly. A fresh
+`AddRoute`/`AddChannel`/`codex.Field[`/`Codec: &`/stale-`CredentialFunc` grep sweep across the whole
+repo turned up zero new stale-pattern findings (all matches were either internal implementation code
+or the unrelated, still-valid `adapters/mqtt`/`mqtt5` `SecurityFunc`/`CredentialFunc` fields, out of
+scope for this Phase 1/REST-only feature).
+
+- **G1 — `ConflictingCredentialHeaderError` had zero test coverage**: the exported error type from
+  Round 120's/L9's "two credential-providing middlewares disagree on the same header" resolution had
+  no `func Test...` covering it anywhere in `adapters/nethttp`. Added
+  `TestCall_TwoCredentialMiddlewares_DifferingHeaderValuesConflict` (asserts `errors.As` reaches the
+  typed error with correct `Header`/`FirstSource`/`SecondSource`) and
+  `TestCall_TwoCredentialMiddlewares_IdenticalHeaderValuesMergeSilently` (asserts identical values
+  from two middlewares for the same key merge without error, per the same rule's other half).
 
 ---
 
