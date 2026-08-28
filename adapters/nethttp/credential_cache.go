@@ -46,14 +46,14 @@ type credentialCacheCall struct {
 // no thundering herd on the auth server, no external dependency).
 //
 // Returns (fn, invalidate): fn is a [CredentialFunc] — wrap it in a
-// middleware.Middleware{Fn: fn} to attach it to [Call]/[CallHandle];
+// middleware.ClientMiddleware{Fn: fn} to attach it to [Call]/[CallHandle];
 // invalidate immediately expires the cached credential — wire it to
 // [CallOptions.OnCredentialRejected] so a 401 causes the NEXT call to fetch
 // a fresh credential:
 //
 //	credFn, invalidate := nethttp.NewCachingCredentialFunc(inner, nethttp.CachingCredentialFuncOptions{TTL: time.Hour})
 //	callOpts := nethttp.CallOptions{OnCredentialRejected: invalidate}
-//	credMw := middleware.Middleware{Fn: credFn}
+//	credMw := middleware.ClientMiddleware{Fn: credFn}
 //	resp, err := nethttp.CallHandle(ctx, client, url, handle, req, callOpts, credMw)
 //	var statusErr nethttp.UnexpectedStatusError
 //	if errors.As(err, &statusErr) && statusErr.StatusCode == http.StatusUnauthorized {

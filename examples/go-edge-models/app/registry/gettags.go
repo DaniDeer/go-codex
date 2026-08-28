@@ -8,7 +8,6 @@ import (
 	nethttp "github.com/DaniDeer/go-codex/adapters/nethttp"
 	"github.com/DaniDeer/go-codex/examples/go-edge-models/models/docker"
 	regmodels "github.com/DaniDeer/go-codex/examples/go-edge-models/models/docker/registry"
-	"github.com/DaniDeer/go-codex/middleware"
 )
 
 // This file holds the CONCRETE IMPLEMENTATION of the GetTags operation:
@@ -48,12 +47,17 @@ func GetTags(ctx context.Context, httpClient *http.Client, imageURL string, opts
 	}
 
 	o := resolveOptions(opts)
-	handle := regmodels.GetTagsRoute.ClientHandle()
+	// Declare (GetTagsRoute, including its regmodels.BearerAuthDeclaration
+	// server-side Security declaration) → chain (UseClient) → build
+	// (ClientHandle) — authMw supplies the credential; see
+	// newAuthMiddleware's own doc comment (auth.go). CallHandle picks up
+	// authMw automatically from handle.ClientMiddlewares — no need to
+	// ALSO pass it here.
+	authMw := newAuthMiddleware(httpClient, ref.Registry, ref.Repository, opts...)
+	handle := regmodels.GetTagsRoute.UseClient(authMw).ClientHandle()
 	baseURL := registryBaseURL(ref.Registry)
-	credFn := newAuthCredentialFunc(httpClient, ref.Registry, ref.Repository, opts...)
 	callOpts := nethttp.CallOptions{Observer: o.observer}
-	return nethttp.CallHandle(ctx, httpClient, baseURL, handle, regmodels.GetTagsReq{Name: ref.Repository}, callOpts,
-		middleware.Middleware{Fn: credFn})
+	return nethttp.CallHandle(ctx, httpClient, baseURL, handle, regmodels.GetTagsReq{Name: ref.Repository}, callOpts)
 }
 
 // GetTagsFiltered calls GetTags, then sorts/limits the result's Tags via

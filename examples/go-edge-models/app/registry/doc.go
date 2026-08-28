@@ -21,16 +21,22 @@
 //
 //   - auth.go: everything related to authentication — the Bearer-token
 //     challenge/token exchange flow (parseChallenge, authenticate,
-//     newAuthCredentialFunc), the optional Basic-auth Credentials escape
-//     hatch for private repositories (Option/WithCredentials/
+//     newAuthCredentialFunc), newAuthMiddleware (the .Use()-able
+//     middleware.Middleware GetTags/GetImageMetadata chain onto
+//     GetTagsRoute/GetManifestRoute — BOTH the "bearerAuth" Security
+//     declaration, built from models/docker/registry's shared
+//     BearerAuthScheme/BearerAuthSchemeName, AND the runtime credential
+//     flow), the optional Basic-auth Credentials escape hatch for
+//     private repositories (Option/WithCredentials/
 //     WithCredentialsByRegistry/WithObserver), the getTokenRoute endpoint
 //     (auth-flow plumbing — it has no legitimate standalone caller
 //     outside this file's own authenticate()), basicAuthSecurity/
-//     basicAuthScheme (getTokenRoute's OWN declared security requirement
-//     — bearerAuthSecurity/bearerAuthScheme, used by
-//     models/docker/registry's GetTagsRoute/GetManifestRoute, live in
-//     THAT package's security.go instead), and this file's own error
-//     types (RegistryAuthChallengeError/RegistryAuthError).
+//     basicAuthScheme (getTokenRoute's OWN, manually-declared security
+//     requirement — a plain RouteOpt, unlike GetTagsRoute/
+//     GetManifestRoute's middleware-based declaration, since
+//     getTokenRoute has a single caller and no external contract to
+//     share), and this file's own error types
+//     (RegistryAuthChallengeError/RegistryAuthError).
 //   - gettags.go: GetTags (the batteries-included client function),
 //     registryBaseURL (shared with getimagemetadata.go/auth.go), and
 //     NewGetTagsToolHandler (binds models/docker/registry's GetTagsTool

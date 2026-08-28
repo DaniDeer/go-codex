@@ -22,7 +22,7 @@ import (
 //
 // handle's declared path/query/header/cookie merge fields and security
 // schemes apply exactly as any other nethttp client call would. opts and
-// mws (a credential-providing [middleware.Middleware], typically) are
+// mws (a credential-providing [middleware.ClientMiddleware], typically) are
 // FIXED for every call made through the returned handler — see the
 // package doc comment for the ctx/session recipe if a per-caller
 // credential is ever needed.
@@ -42,7 +42,7 @@ func MappedToolHandler[ToolIn, ToolOut, Req, Resp any](
 	opts nethttp.CallOptions,
 	toReq func(ToolIn) (Req, error),
 	fromResp func(Resp) (ToolOut, error),
-	mws ...middleware.Middleware,
+	mws ...middleware.ClientMiddleware,
 ) mcpgo.HandlerFunc[ToolIn, ToolOut] {
 	return func(ctx context.Context, in ToolIn) (ToolOut, error) {
 		var zero ToolOut
@@ -90,7 +90,7 @@ func MappedToolHandler[ToolIn, ToolOut, Req, Resp any](
 //	).Register(mcpBuilder)
 //	tool, handlerFn := mcpgoAdapter.ToolHandler(toolHandle,
 //	    mcprest.ToolHandler(httpClient, baseURL, restHandle, nethttp.CallOptions{},
-//	        middleware.Middleware{Fn: myFixedCredentialFunc}),
+//	        middleware.ClientMiddleware{Fn: myFixedCredentialFunc}),
 //	    mcpgo.Options{},
 //	)
 func ToolHandler[Req, Resp any](
@@ -98,7 +98,7 @@ func ToolHandler[Req, Resp any](
 	baseURL string,
 	handle *rest.RouteHandle[Req, Resp],
 	opts nethttp.CallOptions,
-	mws ...middleware.Middleware,
+	mws ...middleware.ClientMiddleware,
 ) mcpgo.HandlerFunc[Req, Resp] {
 	return MappedToolHandler(client, baseURL, handle, opts,
 		func(req Req) (Req, error) { return req, nil },

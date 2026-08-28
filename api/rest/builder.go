@@ -535,6 +535,13 @@ type routeBuilder struct {
 	// Register/ValidateRoute time (see "L1"/"L3" in
 	// docs/roadmap/declarative-middleware.md).
 	middlewares []middleware.Middleware
+
+	// clientMiddlewares holds every [middleware.ClientMiddleware] attached
+	// via [Route.UseClient], in attachment order. Unlike middlewares
+	// above, these NEVER feed spec-building logic at all — the type
+	// itself carries no Security/RequestParams/ResponseParams fields, so
+	// there is nothing to apply.
+	clientMiddlewares []middleware.ClientMiddleware
 }
 
 // RouteHandle is returned by [Route.Register]. It holds the spec descriptor
@@ -656,11 +663,24 @@ type RouteHandle[Req, Resp any] struct {
 	errorPatternRules []errorPatternRule
 
 	// Middlewares holds every [middleware.Middleware] attached via
-	// [WithMiddleware], in attachment order — combined declaration-time ∪
-	// call-time middleware for this route. Populated by [Route.Register];
-	// nil for handles built by [Route.ClientHandle] (no adapter Register
-	// call exists there to consume it).
+	// [WithMiddleware]/[Route.Use], in attachment order — SERVER-side
+	// declarations, combined with [Handler]/[Register]'s own call-time
+	// variadic by the adapter. Populated by [Route.Register] only; nil
+	// for handles built by [Route.ClientHandle] (a client handle has no
+	// server-verification role to play). See [ClientMiddlewares] for the
+	// client-side counterpart.
 	Middlewares []middleware.Middleware
+
+	// ClientMiddlewares holds every [middleware.ClientMiddleware] attached
+	// via [Route.UseClient], in attachment order — CLIENT-side
+	// declarations, combined with [nethttp.Call]/[CallHandle]'s own
+	// call-time variadic by the adapter. Populated by BOTH
+	// [Route.Register] and [Route.ClientHandle] (a handle built either
+	// way stays self-consistent, in case it is ever reused for the other
+	// role). Unlike Middlewares, this NEVER affects the route's spec —
+	// [middleware.ClientMiddleware] structurally cannot contribute
+	// Security/RequestParams/ResponseParams.
+	ClientMiddlewares []middleware.ClientMiddleware
 }
 
 // ErrorStatusFor returns the first declared per-route mapping status for err
@@ -2344,6 +2364,7 @@ func (r Route[Req, Resp]) Register(b *Builder) (*RouteHandle[Req, Resp], error) 
 		errorStatusRules:     slices.Clone(rb.errorStatusRules),
 		errorPatternRules:    slices.Clone(rb.errorPatternRules),
 		Middlewares:          slices.Clone(rb.middlewares),
+		ClientMiddlewares:    slices.Clone(rb.clientMiddlewares),
 	}
 	if rb.requestFormats != nil {
 		fmts, ok := rb.requestFormats.([]format.Format[Req])
@@ -2458,6 +2479,7 @@ func (r Route[Req, Resp]) ClientHandle() *RouteHandle[Req, Resp] {
 		responseHeaderMergeFields: mustAssertMergeFields[Resp]("ClientHandle", rb.responseHeaderMergeFields),
 		responseCookieMergeFields: mustAssertMergeFields[Resp]("ClientHandle", rb.responseCookieMergeFields),
 		SecuritySchemes:           rb.securitySchemes,
+		ClientMiddlewares:         slices.Clone(rb.clientMiddlewares),
 	}
 }
 

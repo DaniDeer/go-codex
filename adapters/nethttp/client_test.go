@@ -347,7 +347,7 @@ func TestCall_CredentialFunc_Invoked(t *testing.T) {
 	resp, err := nethttp.Call(context.Background(), srv.Client(), srv.URL,
 		handle, getReq{}, nil,
 		nethttp.CallOptions{},
-		middleware.Middleware{
+		middleware.ClientMiddleware{
 			Fn: func(ctx context.Context, reqs []route.SecurityRequirement) (http.Header, error) {
 				credCalled = true
 				h := make(http.Header)
@@ -380,7 +380,7 @@ func TestCall_CredentialFunc_Error(t *testing.T) {
 	_, callErr := nethttp.Call(context.Background(), http.DefaultClient, "http://localhost",
 		handle, getReq{}, nil,
 		nethttp.CallOptions{},
-		middleware.Middleware{
+		middleware.ClientMiddleware{
 			Fn: func(ctx context.Context, reqs []route.SecurityRequirement) (http.Header, error) {
 				return nil, credErr
 			},
@@ -400,7 +400,7 @@ func TestCall_CredentialFunc_Error(t *testing.T) {
 func TestCall_WrongShapeMiddleware_ReturnsMiddlewareShapeError(t *testing.T) {
 	handle := rest.NewRoute[getReq, userResp]("GET", "/me", getReqCodec, userRespCodec).ClientHandle()
 
-	wrongShapeMw := middleware.Middleware{
+	wrongShapeMw := middleware.ClientMiddleware{
 		Name: "oops",
 		Fn:   func(http.Handler) http.Handler { return nil }, // server-side shape, wrong for Call
 	}
@@ -431,7 +431,7 @@ func TestCall_TwoCredentialMiddlewares_DifferingHeaderValuesConflict(t *testing.
 		t.Fatal(err)
 	}
 
-	first := middleware.Middleware{
+	first := middleware.ClientMiddleware{
 		Name: "first",
 		Fn: func(_ context.Context, _ []route.SecurityRequirement) (http.Header, error) {
 			h := make(http.Header)
@@ -439,7 +439,7 @@ func TestCall_TwoCredentialMiddlewares_DifferingHeaderValuesConflict(t *testing.
 			return h, nil
 		},
 	}
-	second := middleware.Middleware{
+	second := middleware.ClientMiddleware{
 		Name: "second",
 		Fn: func(_ context.Context, _ []route.SecurityRequirement) (http.Header, error) {
 			h := make(http.Header)
@@ -485,8 +485,8 @@ func TestCall_TwoCredentialMiddlewares_IdenticalHeaderValuesMergeSilently(t *tes
 	}))
 	defer srv.Close()
 
-	makeMw := func(name string) middleware.Middleware {
-		return middleware.Middleware{
+	makeMw := func(name string) middleware.ClientMiddleware {
+		return middleware.ClientMiddleware{
 			Name: name,
 			Fn: func(_ context.Context, _ []route.SecurityRequirement) (http.Header, error) {
 				h := make(http.Header)
@@ -530,7 +530,7 @@ func TestCall_OnCredentialRejected_FiresOn401(t *testing.T) {
 		nethttp.CallOptions{
 			OnCredentialRejected: func() { rejectedCalls++ },
 		},
-		middleware.Middleware{
+		middleware.ClientMiddleware{
 			Fn: func(ctx context.Context, reqs []route.SecurityRequirement) (http.Header, error) {
 				h := make(http.Header)
 				h.Set("Authorization", "test-bearer-token")
@@ -595,7 +595,7 @@ func TestCall_OnCredentialRejected_NotCalledOnNon401Status(t *testing.T) {
 		nethttp.CallOptions{
 			OnCredentialRejected: func() { rejectedCalls++ },
 		},
-		middleware.Middleware{
+		middleware.ClientMiddleware{
 			Fn: func(ctx context.Context, reqs []route.SecurityRequirement) (http.Header, error) {
 				h := make(http.Header)
 				h.Set("Authorization", "test-bearer-token")
@@ -1116,7 +1116,7 @@ func TestCall_CredentialFunc_ValidFormat_Passes(t *testing.T) {
 	resp, err := nethttp.Call(context.Background(), srv.Client(), srv.URL,
 		handle, getReq{}, nil,
 		nethttp.CallOptions{},
-		middleware.Middleware{
+		middleware.ClientMiddleware{
 			Fn: func(context.Context, []route.SecurityRequirement) (http.Header, error) {
 				h := make(http.Header)
 				h.Set("Authorization", "test-bearer-token")
@@ -1144,7 +1144,7 @@ func TestCall_CredentialFunc_MalformedFormat_ReturnsSecurityCredentialError(t *t
 	_, err := nethttp.Call(context.Background(), srv.Client(), srv.URL,
 		handle, getReq{}, nil,
 		nethttp.CallOptions{},
-		middleware.Middleware{
+		middleware.ClientMiddleware{
 			Fn: func(context.Context, []route.SecurityRequirement) (http.Header, error) {
 				h := make(http.Header)
 				h.Set("Authorization", "Bearer ") // strips to an empty credential -> fails NonEmptyString
@@ -1178,7 +1178,7 @@ func TestCall_CredentialFunc_MalformedFormat_RecordsSecurityRejection(t *testing
 		nethttp.CallOptions{
 			Observer: obs,
 		},
-		middleware.Middleware{
+		middleware.ClientMiddleware{
 			Fn: func(context.Context, []route.SecurityRequirement) (http.Header, error) {
 				h := make(http.Header)
 				h.Set("Authorization", "Bearer ")
@@ -1267,7 +1267,7 @@ func TestCall_CredentialFunc_ReturnsNilHeader_SkipsValidation(t *testing.T) {
 	_, err := nethttp.Call(context.Background(), srv.Client(), srv.URL,
 		handle, getReq{}, nil,
 		nethttp.CallOptions{},
-		middleware.Middleware{
+		middleware.ClientMiddleware{
 			Fn: func(context.Context, []route.SecurityRequirement) (http.Header, error) {
 				return nil, nil // deliberately "no credential needed"
 			},

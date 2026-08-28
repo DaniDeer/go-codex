@@ -66,6 +66,20 @@
 > deviations from this doc's original design discovered while building
 > it, and "Stage 6 example migration notes" for what changed across the
 > whole example suite.
+>
+> **Revision 2 — PLANNED, NOT YET IMPLEMENTED**: a further critical look
+> at Phase 1 (prompted by comparing a client-side call site's
+> boilerplate against the route/handler lifecycle's own
+> declare→compose→register discipline) found that `middleware.Middleware`
+> itself still violates that same discipline — `RequireScopes` bundles
+> the declare-time spec contribution (`Security`) and the register-time
+> runtime behavior (`Fn`) into ONE value, at ONE call site, the same way
+> `NewRoute` would be wrong to require the business `fn` as a constructor
+> argument instead of deferring it to `Register`. See "Revision 2 — the
+> declare/implement split" below for the full design (confirmed:
+> breaking changes accepted, no compromise on correctness) — approved
+> for implementation, sequenced to happen BEFORE any further Phase 2
+> work, since it changes REST's own API declaration surface.
 
 ## Implementation findings (discovered while building Phase 1)
 
@@ -150,6 +164,154 @@ examples not on the original list (`sensor-service`,
 `rest-nested-binary`) had pre-existing `Register(...)` calls that
 silently ignored the (now-existing) `error` return — a gosec G104
 finding, not a compile error — and were fixed alongside the rest.
+
+## Revision 2 — the declare/implement split
+
+**Status: PLANNED, approved for implementation, not yet started.**
+
+### Motivation
+
+Phase 1 shipped `Route`/`RouteHandle`'s own lifecycle already following "declare →
+compose → register/build, IO-free until the last step" (`NewRoute` →
+`.Use()`/`.UseClient()` → `Register(builder)`/`ClientHandle()` → adapter
+`Register(mux, handle, fn, opts)`/`Call(...)`). Middleware itself never fully
+followed this: `nethttp.RequireScopes(...)` bundles the SPEC declaration
+(`Security`) and the RUNTIME implementation (`Fn`, a verification closure) into ONE
+value, built at ONE call site — typically immediately adjacent to the route's own
+declaration. This is the same smell as if `NewRoute` itself required the business
+`fn` as a constructor argument instead of deferring it to `Register`.
+
+The guiding principle (restated as the design rule going forward): **declare
+routes/channels/ports, declare middleware, and attach it to the route (producing a
+new route) — entirely without handler implementations. Only at REGISTER time
+(server: adapter `Register`/`Handler`; client: building the `Caller`) do we add IO,
+in the form of handlers for BOTH the route's own input/output AND its attached
+middleware.** Some middleware never touches the spec (logging/observability); some
+does, most prominently security — but in both cases the DECLARATION and the
+IMPLEMENTATION are separate steps, never bundled into one call.
+
+### The three types, final shape
+
+```go
+// middleware.Middleware — DECLARE-TIME ONLY. Pure data. NO Fn field at all —
+// cannot run anything, ever. Attached via rest.WithMiddleware/Route.Use.
+// The ONLY type that can contribute to a route's spec.
+type Middleware struct {
+    Name           string
+    Security       *SecurityDeclaration // nil for non-security declarations
+    RequestParams  []any
+    ResponseParams []any
+}
+
+// middleware.ServerImplementation — REGISTER-TIME ONLY, SERVER side. Pure
+// runtime behavior. NO Security/RequestParams/ResponseParams — cannot
+// contribute to the spec, ever. Attached via nethttp.Register/Handler/
+// SSEHandler/RegisterSSE's own variadic parameter (server adapter
+// construction time), NEVER via Route.Use.
+type ServerImplementation struct {
+    Name      string
+    Satisfies []string // scheme name(s) this Fn verifies; EMPTY = general-
+                       // purpose (always runs regardless of route Security —
+                       // unifies logging/observability/rate-limiting/
+                       // API-key-presence-checks with security verification
+                       // under ONE register-time type)
+    Fn        any      // func(http.Handler) http.Handler (general-purpose) OR
+                       // func(ctx, raw *http.Request, req *Req) (map[string][]string, error) (security)
+}
+
+// middleware.ClientMiddleware — REGISTER/BUILD-TIME, CLIENT side. UNCHANGED
+// from Phase 1 — the client never declares a spec, so there is no separate
+// "declare" stage to split off; Fn IS the whole thing.
+type ClientMiddleware struct {
+    Name string
+    Fn   any
+}
+```
+
+`Satisfies` moves OFF the declare-time type entirely — "what does this Fn satisfy"
+is a fact about an implementation, not a declaration, and never belonged on
+`Middleware`. Unifying general-purpose middleware (`func(http.Handler) http.Handler`)
+and security-verifying middleware under ONE `ServerImplementation` type (empty vs.
+non-empty `Satisfies`) removes a previously-arbitrary split between "two kinds of
+runtime attachment" that never needed to be two types.
+
+### Constructors — replacing RequireScopes/RequireAPIKey/ObservabilityMiddleware
+entirely (removed, not deprecated — breaking changes explicitly accepted, per this
+doc's own "Migration" section below)
+
+| Old (REMOVED) | New declare-time | New register-time |
+|---|---|---|
+| `nethttp.RequireScopes(...)` | `middleware.DeclareSecurity(scheme, scopes, codec)` (unchanged, already shipped Phase 1) | `nethttp.ImplementScopes[Req](schemeName, extract) ServerImplementation` (new) |
+| `nethttp.RequireAPIKey(...)` | `nethttp.DeclareHeaderParam(headerName) Middleware` (RequestParams-only; new) | `nethttp.ImplementAPIKey(headerName, verify) ServerImplementation` (empty `Satisfies`) |
+| `nethttp.ObservabilityMiddleware(obs)` | *(nothing — observability never had spec relevance)* | `nethttp.ObservabilityMiddleware(obs) ServerImplementation` (same name, new return type) |
+
+`middleware.ImplementScopes[Raw,Req]` is the shared, adapter-agnostic core (mirrors
+how `middleware.RequireScopes[Raw,Req]` worked before removal);
+`nethttp.ImplementScopes[Req]` pins `Raw = *http.Request`.
+
+### The critical structural change: relocating the security coverage check
+
+Today, `checkSecurityMiddlewareCoverage` runs INSIDE `Route.Register(builder)` —
+before any `ServerImplementation` can possibly exist. Splitting declaration from
+implementation requires this check to move to the point where BOTH the declared
+requirement AND the supplied implementations are simultaneously known:
+
+- **REMOVE** the coverage check from `api/rest/middleware.go`'s
+  `applyMiddlewareDeclarations` (called by `Route.Register(builder)`/`ValidateRoute`)
+  — a route declaring `Security` via `.Use(middleware.DeclareSecurity(...))` with NO
+  implementation anywhere now correctly PASSES `Route.Register(builder)` (the
+  intended, newly-legal "declared but not yet implemented" state).
+- **ADD** the identical check (same `MissingSecurityMiddlewareError`, new call site)
+  to `nethttp.Register`/`Handler`/`SSEHandler`/`RegisterSSE` (+ `adapters/chi`
+  mirror): every scheme in `handle.Descriptor.Security` must have a matching
+  `ServerImplementation.Satisfies` entry among what was just passed — fail loudly,
+  at construction time, one step later than before but still fail-fast.
+- `handle.Middlewares` stops being iterated for `Fn` at runtime — consulted ONLY for
+  this coverage-check comparison.
+- `applyGeneralMiddleware`/`runSecurityMiddleware` collapse into ONE function
+  operating on `[]ServerImplementation`.
+- Client side (`Call`/`CallHandle`, `Route.UseClient`, `RouteHandle.ClientMiddlewares`)
+  — UNCHANGED, already correct from Phase 1.
+
+### `nethttp.Caller` — new client-side convenience, evaluated and included
+
+```go
+type Caller struct { /* client *http.Client; baseURL string; defaultMws []middleware.ClientMiddleware */ }
+func NewCaller(client *http.Client, baseURL string, defaultMws ...middleware.ClientMiddleware) *Caller
+func (c *Caller) Call[Req, Resp any](ctx, handle, req, vars, opts, extraMws...) (Resp, error)
+func (c *Caller) CallHandle[Req, Resp any](ctx, handle, req, opts, extraMws...) (Resp, error)
+```
+
+NOT a spec-accumulating `Builder` (the server's `Builder` exists because OpenAPI
+needs ONE document; the client has no equivalent accumulation need) — a
+configuration holder removing repeated `client`/`baseURL`/shared-credential-
+middleware boilerplate across many calls to the same API. Delegates to the existing
+`Call`/`CallHandle` free functions.
+
+### Blast radius (every call site confirmed via repo grep)
+
+Library: `middleware/middleware.go`, `api/rest/middleware.go`/`builder.go`,
+`adapters/nethttp/{adapter.go,scopes.go,observability.go,client.go}`,
+`adapters/chi/adapter.go`. Tests: `middleware/middleware_test.go`,
+`api/rest/middleware_test.go`, `adapters/nethttp/{adapter_test.go,client_test.go}`,
+`adapters/chi/adapter_test.go` (`TestDeclareSecurity_AloneFailsRegisterCoverageCheck`'s
+assertion INVERTS — must now PASS `Route.Register(builder)`; a new adapter-level
+sibling test covers the SAME missing-coverage failure at `nethttp.Register` time
+instead). Examples (all 11 touching security/observability from Phase 1):
+`adapters-nethttp`, `adapters-chi`, `adapters-sse`, `adapters-streaming-sse-templ`,
+`adapters-templ`, `http-trace-span-propagation`, `adapters-nethttp-security`,
+`adapters-chi-security`, `mutable-security-keys`, `adapters-nethttp-client` (+
+`contract` package), `go-edge-models`.
+
+### Verification gate
+
+```bash
+go fmt ./... && go build ./... && go test ./... && gofmt -l . && just check
+for d in examples/*/; do (cd "$d" && go run .); done
+```
+
+Every example's output diffed against its own last-known-good behavior, not just
+exit code — this revision touches request-path behavior directly.
 
 ## Core thesis
 
@@ -411,6 +573,79 @@ information is needed:**
    handler — a middleware attached EITHER way behaves identically at
    runtime; only the ATTACHMENT POINT differs, driven purely by whether
    it has anything to declare into the spec.
+
+## Server declares, client fulfills — `middleware.Middleware` vs `middleware.ClientMiddleware`
+
+A route's security is inherently asymmetric between the two parties in
+the protocol: the SERVER verifies a credential and decides what it
+grants; the CLIENT presents a credential to satisfy a requirement it did
+not invent. These are genuinely different responsibilities, not just
+different Fn shapes — a client cannot "verify" anything (it has no
+authority to grant itself scopes), and a server cannot "obtain a
+credential from an external source" (that is a caller-environment
+concern the server has no visibility into). go-codex models this with
+TWO distinct types, not one type used two ways:
+
+```go
+// middleware.Middleware — SERVER-side. The ONLY type that can
+// contribute to a route's spec (Security/RequestParams/ResponseParams).
+// Attached via rest.WithMiddleware/Route.Use.
+type Middleware struct {
+    Name           string
+    Fn             any
+    Satisfies      []string
+    Security       *SecurityDeclaration
+    RequestParams  []any
+    ResponseParams []any
+}
+
+// middleware.ClientMiddleware — CLIENT-side. Structurally CANNOT
+// contribute to the spec — no Security/RequestParams/ResponseParams
+// fields exist on this type at all. Attached via Route.UseClient.
+type ClientMiddleware struct {
+    Name string
+    Fn   any
+}
+```
+
+A THREE-part vocabulary follows from this split:
+
+- **`middleware.RequireScopes`** builds a `Middleware` carrying BOTH a
+  `Security` declaration AND a verifying `Fn` — for a route THIS
+  codebase implements and enforces server-side.
+- **`middleware.DeclareSecurity`** builds a `Middleware` carrying
+  `Security` ONLY, no `Fn`, empty `Satisfies` — for a route that
+  documents a requirement THIS codebase does NOT enforce (typically a
+  route describing an EXTERNAL system's API — e.g.
+  `examples/go-edge-models`'s Docker registry client, which calls Docker
+  Hub/GHCR but never implements a registry server itself). If such a
+  route is ever mistakenly passed to `Register()`, the EXISTING
+  drift-closing coverage check (empty `Satisfies` never covers a
+  declared requirement) correctly rejects it with
+  `MissingSecurityMiddlewareError` — a real safety net, not an
+  afterthought.
+- **`ClientMiddleware`** (built directly, or via a helper like
+  `nethttp.NewCachingCredentialFunc`) supplies the credential — attached
+  via `Route.UseClient(...)`, combined automatically by
+  `nethttp.Call`/`CallHandle` with `RouteHandle.ClientMiddlewares`
+  (mirrors `Register`/`Handler`'s `handle.Middlewares` + variadic
+  combination exactly, on the client side).
+
+`Route.UseClient` NEVER affects `SecuritySchemes`/`Descriptor.Security`
+— by construction, since `ClientMiddleware` has no field to contribute
+one. A dual-role route (server AND client both implemented in
+go-codex — see `examples/adapters-nethttp-client`) declares Security
+ONCE via `.Use(serverMw)`; each calling application independently
+`.UseClient(itsOwnCredMw)`s its OWN way of fulfilling it — there is
+nothing to conflict-check, because only ONE side (`.Use()`) can ever
+declare anything.
+
+This distinction generalizes to every Phase 2+ boundary
+(events/reqreply/MCP/ports): whichever client-call entry point each
+boundary ships (`mqtt5.CallHandle`, `zeromq.CallHandle`, etc.) should
+combine its own `ClientMiddlewares`-equivalent field with its call-time
+variadic the same way, and each boundary's own `Channel`/`Route`/`Tool`
+type should gain the same `UseClient` mirror of its `Use` method.
 
 See "Security worked example" below for the full annotated
 `NewRoute`/`Register` call showing both attachment points side by side.
@@ -1330,19 +1565,24 @@ separately in
 | MCP (`api/mcp` + `mcpgo`) | MCP manifest/JSON schema | Decorator-shaped | **No — N/A, permanent design** (unchanged) | Yes — Phase 2, below |
 | `ports.File`/`Cache`/`SQL`/`Dir` | **None — not spec-backed** | Decorator-shaped | Yes — `File` sketched above, mechanical extension below | Yes — Phase 2, below |
 
-**`.Use()` chaining sugar applies to EVERY row above, uniformly — not
-just REST.** REST's Phase 1 `rest.Route.Use`/`rest.SSERoute.Use` (chi/
-net-http-style declaration-time chaining, immutable, zero new runtime
-mechanism — see "Scope decisions" above) is the REFERENCE
-implementation every Phase 2+ boundary's own declare-time type must
-mirror once ITS OWN `WithMiddleware`-equivalent attachment point ships:
-`events.Channel[T].Use(...)`, `reqreply.Route[Req,Resp].Use(...)`, the
-`ports.*` Pattern-backed declare-time type(s), and `mcp.Tool[In,Out].Use(...)`
-(observability-only there, matching MCP's permanent Security N/A). Treat
-this as part of "FULL parity with REST" for events/reqreply in the table
-above, not a separate nice-to-have — a Phase 2+ implementation round
-that ships `WithMiddleware` without the matching `.Use()` sugar is
-INCOMPLETE relative to this doc's own bar.
+**`.Use()`/`.UseClient()` chaining sugar applies to EVERY row above,
+uniformly — not just REST.** REST's Phase 1 `rest.Route.Use`/
+`rest.SSERoute.Use` (server-side, chi/net-http-style declaration-time
+chaining, immutable, zero new runtime mechanism — see "Scope decisions"
+above) AND `rest.Route.UseClient` (client-side, see "Server declares,
+client fulfills" above) are the REFERENCE implementation every Phase 2+
+boundary's own declare-time type must mirror once ITS OWN
+`WithMiddleware`-equivalent attachment point ships: `events.Channel[T].Use(...)`/
+`.UseClient(...)`, `reqreply.Route[Req,Resp].Use(...)`/`.UseClient(...)`,
+the `ports.*` Pattern-backed declare-time type(s), and
+`mcp.Tool[In,Out].Use(...)` (observability-only there, matching MCP's
+permanent Security N/A — no `.UseClient()` mirror needed since MCP has
+no client-call entry point analogous to `nethttp.Call`). Treat this as
+part of "FULL parity with REST" for events/reqreply in the table above,
+not a separate nice-to-have — a Phase 2+ implementation round that ships
+`WithMiddleware` without the matching `.Use()`/`.UseClient()` sugar (and
+the accompanying `ClientMiddleware`-equivalent type, structurally unable
+to carry spec fields) is INCOMPLETE relative to this doc's own bar.
 
 **The three shapes, confirmed as exhaustive:**
 

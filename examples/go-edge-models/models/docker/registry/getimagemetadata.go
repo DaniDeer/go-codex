@@ -66,6 +66,12 @@ type GetManifestReq struct {
 // rest.HeaderParam because its value is a fixed protocol-negotiation
 // constant, not a caller-supplied value — see app/registry's
 // acceptManifestTypes.
+//
+// GetManifestRoute declares its "bearerAuth" requirement via
+// .Use(BearerAuthDeclaration) below — same mechanism as GetTagsRoute (see
+// its own doc comment): a caller MUST separately chain a
+// credential-SUPPLYING middleware.ClientMiddleware via .UseClient(...)
+// before calling .ClientHandle() to actually authenticate outgoing calls.
 var GetManifestRoute = rest.NewRoute[GetManifestReq, internal.ManifestEnvelope](
 	"GET", "/v2/{name}/manifests/{reference}",
 	c.Struct[GetManifestReq](), internal.ManifestEnvelopeCodec,
@@ -73,9 +79,7 @@ var GetManifestRoute = rest.NewRoute[GetManifestReq, internal.ManifestEnvelope](
 		OperationID:    "getManifest",
 		Summary:        "Fetch a manifest or manifest list for a repository reference",
 		RespSchemaName: "ManifestEnvelope",
-		Security:       bearerAuthSecurity,
 	},
-	rest.WithSecurityScheme("bearerAuth", bearerAuthScheme),
 	rest.NewPathParam("name",
 		c.String(),
 		func(r GetManifestReq) string { return r.Name },
@@ -91,7 +95,7 @@ var GetManifestRoute = rest.NewRoute[GetManifestReq, internal.ManifestEnvelope](
 		func(e internal.ManifestEnvelope) string { return e.Digest },
 		func(e *internal.ManifestEnvelope, v string) { e.Digest = v },
 	).WithDescription("The manifest's own content digest"),
-)
+).Use(BearerAuthDeclaration)
 
 // ── GetImageMetadata's own request/response contract ─────────────────────────
 //

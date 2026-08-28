@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/url"
+	"slices"
 	"strings"
 	"time"
 
@@ -19,11 +20,11 @@ import (
 )
 
 // CredentialFunc names the credential-providing shape [Call]/[CallHandle]
-// recognize on an attached [middleware.Middleware.Fn] — a type ALIAS (not a
-// new defined type). Lets callers (and [NewCachingCredentialFunc]) name the
-// shape instead of repeating the inline function type everywhere; wrap the
-// result in a middleware.Middleware{Fn: credFn} to attach it —
-// examples/go-edge-models/docker/registry's own package-level
+// recognize on an attached [middleware.ClientMiddleware.Fn] — a type ALIAS
+// (not a new defined type). Lets callers (and [NewCachingCredentialFunc])
+// name the shape instead of repeating the inline function type everywhere;
+// wrap the result in a middleware.ClientMiddleware{Fn: credFn} to attach it
+// — examples/go-edge-models/docker/registry's own package-level
 // credentialFunc type alias is the precedent this mirrors.
 type CredentialFunc = func(ctx context.Context, reqs []route.SecurityRequirement) (http.Header, error)
 
@@ -44,7 +45,7 @@ type CallOptions struct {
 	// before the request is sent.
 	//
 	// Do not pass the Authorization header here — use [CallOptions.ExtraHeaders] or
-	// a credential-providing [middleware.Middleware] for security credentials.
+	// a credential-providing [middleware.ClientMiddleware] for security credentials.
 	HeaderParams map[string]string
 
 	// ExtraHeaders adds arbitrary HTTP headers to the outgoing request without
@@ -53,7 +54,7 @@ type CallOptions struct {
 	ExtraHeaders http.Header
 
 	// OnCredentialRejected, when non-nil, is called when the server responds
-	// with HTTP 401 AND at least one credential-providing [middleware.Middleware]
+	// with HTTP 401 AND at least one credential-providing [middleware.ClientMiddleware]
 	// was attached to this call (mirrors the "only if the credential mechanism
 	// actually engaged" gating used for the symmetric client-side format check
 	// below). Purely a notification hook — Call does NOT retry the request
@@ -280,11 +281,11 @@ func (e ConflictingCredentialHeaderError) LogValue() slog.Value {
 // validateClientMiddlewareShapes checks every attached mw.Fn against the
 // ONE concrete shape [Call]/[CallHandle] recognize ([CredentialFunc]'s
 // shape), EAGERLY before any network activity rather than letting
-// [mergeCredentialHeaders] silently skip a malformed Fn — a Middleware
-// built for the wrong adapter/role (e.g. a server-side general-purpose
-// func(http.Handler) http.Handler value passed here by mistake) fails
-// loudly and immediately instead.
-func validateClientMiddlewareShapes(mws []middleware.Middleware) error {
+// [mergeCredentialHeaders] silently skip a malformed Fn — a
+// ClientMiddleware built for the wrong adapter (e.g. a Fn shape meant for
+// a different transport, passed here by mistake) fails loudly and
+// immediately instead.
+func validateClientMiddlewareShapes(mws []middleware.ClientMiddleware) error {
 	for _, mw := range mws {
 		switch mw.Fn.(type) {
 		case nil:
@@ -314,7 +315,7 @@ func validateClientMiddlewareShapes(mws []middleware.Middleware) error {
 // Every mw.Fn here is already guaranteed to match this shape (or be nil) —
 // [validateClientMiddlewareShapes] rejects anything else EAGERLY, at the
 // top of [Call], before this function is ever reached.
-func mergeCredentialHeaders(ctx context.Context, secReqs []route.SecurityRequirement, mws []middleware.Middleware) (combined http.Header, ran bool, err error) {
+func mergeCredentialHeaders(ctx context.Context, secReqs []route.SecurityRequirement, mws []middleware.ClientMiddleware) (combined http.Header, ran bool, err error) {
 	combined = make(http.Header)
 	setBy := make(map[string]string)
 	for _, mw := range mws {
@@ -364,12 +365,13 @@ func equalHeaderValues(a, b []string) bool {
 // [rest.QueryParamError]) without sending any request.
 //
 // Security requirements: if the route declares non-nil Security (or inherits
-// global security), every attached credential-providing [middleware.Middleware]
-// (an mws entry whose Fn matches [CredentialFunc]'s shape) is called to obtain
-// the Authorization headers. No credential-providing middleware attached to a
-// secured route is not an error — the request is sent without credential
-// injection; use [CallOptions.ExtraHeaders] to supply static credentials
-// instead.
+// global security), every attached credential-providing [middleware.ClientMiddleware]
+// (combining [rest.RouteHandle.ClientMiddlewares], attached via
+// [rest.Route.UseClient], with this call's own mws — an entry whose Fn
+// matches [CredentialFunc]'s shape) is called to obtain the Authorization
+// headers. No credential-providing middleware attached to a secured route
+// is not an error — the request is sent without credential injection; use
+// [CallOptions.ExtraHeaders] to supply static credentials instead.
 //
 // On a 2xx response the body is decoded into Resp using the route's response codec.
 // On a non-2xx response [UnexpectedStatusError] is returned.
@@ -392,7 +394,7 @@ func equalHeaderValues(a, b []string) bool {
 //	resp, err := nethttp.Call(ctx, http.DefaultClient, "https://api.example.com",
 //	    handle, createReq, nil,
 //	    nethttp.CallOptions{},
-//	    middleware.Middleware{Fn: func(ctx context.Context, reqs []route.SecurityRequirement) (http.Header, error) {
+//	    middleware.ClientMiddleware{Fn: func(ctx context.Context, reqs []route.SecurityRequirement) (http.Header, error) {
 //	        h := make(http.Header)
 //	        h.Set("Authorization", "Bearer "+token)
 //	        return h, nil
@@ -405,7 +407,7 @@ func Call[Req, Resp any](
 	req Req,
 	vars map[string]string,
 	opts CallOptions,
-	mws ...middleware.Middleware,
+	mws ...middleware.ClientMiddleware,
 ) (Resp, error) {
 	var zero Resp
 
@@ -429,13 +431,17 @@ func Call[Req, Resp any](
 	routePath := handle.Descriptor.Path
 	start := time.Now()
 
-	// 0. Validate every attached mw.Fn against the ONE concrete shape this
-	// package recognizes client-side, EAGERLY before any network activity —
-	// mirrors Handler/Register's validateMiddlewareShapes; a malformed Fn
-	// fails loudly here instead of being silently ignored by
-	// mergeCredentialHeaders below (see middleware.Middleware.Fn's own doc
-	// comment: "fails LOUDLY... never silently").
-	if err := validateClientMiddlewareShapes(mws); err != nil {
+	// 0. Combine handle.ClientMiddlewares (declared via Route.UseClient)
+	// with this call's own variadic mws — mirrors Handler/Register's
+	// identical handle.Middlewares + variadic combination server-side.
+	// Then validate every attached mw.Fn against the ONE concrete shape
+	// this package recognizes client-side, EAGERLY before any network
+	// activity; a malformed Fn fails loudly here instead of being
+	// silently ignored by mergeCredentialHeaders below (see
+	// middleware.ClientMiddleware.Fn's own doc comment: "fails LOUDLY...
+	// never silently").
+	allMws := append(slices.Clone(handle.ClientMiddlewares), mws...)
+	if err := validateClientMiddlewareShapes(allMws); err != nil {
 		obs.RecordRequest(method, routePath, 0, time.Since(start))
 		return zero, err
 	}
@@ -496,7 +502,7 @@ func Call[Req, Resp any](
 	var credentialFnRan bool
 	if len(secReqs) > 0 {
 		var credErr error
-		credHeaders, credentialFnRan, credErr = mergeCredentialHeaders(ctx, secReqs, mws)
+		credHeaders, credentialFnRan, credErr = mergeCredentialHeaders(ctx, secReqs, allMws)
 		if credErr != nil {
 			obs.RecordRequest(method, routePath, 0, time.Since(start))
 			return zero, credErr
@@ -707,7 +713,9 @@ func Call[Req, Resp any](
 // unrelated Req shapes.
 //
 // mws is forwarded unchanged to [Call] — pass a credential-providing
-// [middleware.Middleware] here exactly as you would to Call directly.
+// [middleware.ClientMiddleware] here exactly as you would to Call
+// directly (combined automatically with any [rest.Route.UseClient]-declared
+// ones, same as Call).
 //
 // Example:
 //
@@ -721,7 +729,7 @@ func CallHandle[Req, Resp any](
 	handle *rest.RouteHandle[Req, Resp],
 	req Req,
 	opts CallOptions,
-	mws ...middleware.Middleware,
+	mws ...middleware.ClientMiddleware,
 ) (Resp, error) {
 	var zero Resp
 

@@ -19,6 +19,43 @@ func TestMiddleware_ZeroValue(t *testing.T) {
 	}
 }
 
+func TestClientMiddleware_ZeroValue(t *testing.T) {
+	var cmw middleware.ClientMiddleware
+	if cmw.Name != "" || cmw.Fn != nil {
+		t.Errorf("want zero-value ClientMiddleware to have empty fields, got %+v", cmw)
+	}
+}
+
+// ── DeclareSecurity ──────────────────────────────────────────────────────────
+
+func TestDeclareSecurity_BuildsSpecOnlyMiddleware(t *testing.T) {
+	scheme := route.BearerScheme("")
+	codec := codex.String()
+	mw := middleware.DeclareSecurity("bearerAuth", scheme, []string{"pull"}, &codec)
+
+	if mw.Fn != nil {
+		t.Errorf("want Fn nil (spec-only), got %v", mw.Fn)
+	}
+	if len(mw.Satisfies) != 0 {
+		t.Errorf("want empty Satisfies (nothing in this codebase enforces it), got %v", mw.Satisfies)
+	}
+	if mw.Security == nil {
+		t.Fatal("want non-nil Security")
+	}
+	if mw.Security.SchemeName != "bearerAuth" {
+		t.Errorf("want SchemeName %q, got %q", "bearerAuth", mw.Security.SchemeName)
+	}
+	if mw.Security.Scheme != scheme {
+		t.Errorf("want Scheme %+v, got %+v", scheme, mw.Security.Scheme)
+	}
+	if len(mw.Security.Scopes) != 1 || mw.Security.Scopes[0] != "pull" {
+		t.Errorf("want Scopes [pull], got %v", mw.Security.Scopes)
+	}
+	if mw.Security.Codec != &codec {
+		t.Errorf("want Codec pointer to match, got different pointer")
+	}
+}
+
 // ── RequireScopes ────────────────────────────────────────────────────────────
 
 type testReq struct{ Claims string }

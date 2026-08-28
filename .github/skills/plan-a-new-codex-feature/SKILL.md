@@ -251,13 +251,19 @@ keys — not just `Kind().String() != ""`. See `TestValidate_LogValue` in
 | **Zensical guide** | `docs/guides/<feature>.md` | Features with a step-by-step workflow |
 | **pkg.go.dev** | `*/doc.go` + `Example...()` in `*_test.go` | New packages or major API additions |
 | **Project structure** | `docs/reference/project-structure.md` | New directories / packages |
-| **Roadmap index** | `docs/roadmap/index.md` | Remove row when feature ships |
-| **Nav** | `zensical.toml` | Remove roadmap entry; add feature/guide entries |
+| **Roadmap index** | `docs/roadmap/index.md` | Remove row when feature ships (or move to `docs/design/index.md` — see 3-way policy below) |
+| **Nav** | `zensical.toml` | Remove roadmap entry; add feature/guide entries (or move to `[nav."Design Documents"]` — see 3-way policy below) |
 
-When a feature ships:
-- Remove `docs/roadmap/<feature>.md` (or keep as design history — user decides)
-- Remove from `docs/roadmap/index.md` table
-- Remove from `zensical.toml` roadmap nav
+When a feature ships, the roadmap doc's fate is a 3-way choice — most features take the
+first row; the third is deliberately rare:
+
+| Outcome | When | Action |
+|---|---|---|
+| Delete | Single-feature roadmap doc, fully shipped, no lasting cross-cutting design value (the common case) | Remove file + `docs/roadmap/index.md` row + `zensical.toml` roadmap nav entry |
+| Keep in roadmap | Partially shipped / still has open follow-on phases | Update `> Status:` header, keep in place |
+| **Promote to `docs/design/`** — reserved for BIGGER architecture reworks only, not routine features | Fully shipped AND establishes a pattern **multiple** apis/ports/packages are expected to follow (not a single-adapter feature), OR fundamentally changes how an existing api/port/package works | Move file to `docs/design/<name>.md`, rewrite its `> Status:` header to "Implemented — architectural foundation", remove from roadmap index/nav, add to `docs/design/index.md` + `zensical.toml`'s `[nav."Design Documents"]` |
+
+In every case, also:
 - Add to `docs/features/` and `docs/guides/` and `zensical.toml` features/guides nav
 
 #### 5. Example Update
@@ -312,7 +318,7 @@ When moving from roadmap to implementation, use this transition checklist:
 | Map roadmap "Unit test plan" → plan.md todos | One todo per test block |
 | Map roadmap "Files to create" → plan.md todos | One todo per file |
 | Check roadmap "Out of scope" is still current | Mark anything that crept in |
-| Remove `> Status: Design complete — not yet implemented` from roadmap doc | Or delete the file entirely when shipped |
+| Remove `> Status: Design complete — not yet implemented` from roadmap doc | See the 3-way delete/keep/promote-to-`docs/design/` policy in the "Documentation" section above |
 
 ---
 

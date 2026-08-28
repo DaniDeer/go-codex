@@ -67,6 +67,58 @@ func (s SSERoute[Req, Event]) Use(mws ...middleware.Middleware) SSERoute[Req, Ev
 	return s
 }
 
+// clientMiddlewareOpt is the [RouteOpt] returned by [WithClientMiddleware].
+// It only accumulates mws into rb.clientMiddlewares — unlike
+// [middlewareOpt], there is NO further application step: a
+// [middleware.ClientMiddleware] carries no Security/RequestParams/
+// ResponseParams to merge into the spec at all.
+type clientMiddlewareOpt struct{ mws []middleware.ClientMiddleware }
+
+func (o clientMiddlewareOpt) applyRoute(rb *routeBuilder) {
+	rb.clientMiddlewares = append(rb.clientMiddlewares, o.mws...)
+}
+
+// WithClientMiddleware attaches one or more [middleware.ClientMiddleware]
+// values to a route at declaration time — the CLIENT-side counterpart to
+// [WithMiddleware]. A ClientMiddleware NEVER affects the route's spec
+// (Security/RequestParams/ResponseParams are declared server-side only,
+// via WithMiddleware/[RequireScopes]/[middleware.DeclareSecurity]); it
+// only carries the runtime Fn a client-building call ([Route.ClientHandle]
+// + [nethttp.Call]/[CallHandle]) uses to fulfill whatever the route
+// already declares.
+//
+// Prefer [Route.UseClient] for the common case of attaching after
+// [NewRoute] — this exists so a ClientMiddleware can also be passed
+// inline as one of NewRoute's variadic opts, mirroring WithMiddleware's
+// own flexibility.
+func WithClientMiddleware(mws ...middleware.ClientMiddleware) RouteOpt {
+	return clientMiddlewareOpt{mws: mws}
+}
+
+// UseClient returns a NEW [Route] with mws chained onto it as CLIENT-side
+// declarations — the counterpart to [Route.Use]:
+//
+//	handle := rest.NewRoute[GetTagsReq, TagsList]("GET", "/v2/{name}/tags/list",
+//	    reqCodec, respCodec, rest.RouteMeta{OperationID: "getTags"},
+//	).Use(middleware.DeclareSecurity("bearerAuth", scheme, nil, codec)). // server declares
+//	    UseClient(authMw). // client fulfills
+//	    ClientHandle()
+//
+// A [middleware.ClientMiddleware] attached this way is combined
+// automatically with [nethttp.Call]/[CallHandle]'s own call-time variadic
+// (see [RouteHandle.ClientMiddlewares]) — no need to ALSO pass it there,
+// though doing so remains a valid, explicit per-call override (e.g. to
+// deliberately test a DIFFERENT credential for one specific call without
+// changing what the route declares generally).
+//
+// Chainable and immutable exactly like [Route.Use] — `.UseClient(mw1).UseClient(mw2)`
+// and `.UseClient(mw1, mw2)` are equivalent, in attachment order; Use never
+// mutates the receiver.
+func (r Route[Req, Resp]) UseClient(mws ...middleware.ClientMiddleware) Route[Req, Resp] {
+	r.opts = append(slices.Clone(r.opts), WithClientMiddleware(mws...))
+	return r
+}
+
 // securityContribution is one source's declaration for a single security
 // scheme name, tracked for conflict detection.
 type securityContribution struct {

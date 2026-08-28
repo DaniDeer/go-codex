@@ -49,20 +49,24 @@ const defaultPlatform = "linux/amd64"
 // Docker-Content-Digest automatically, so no manual HTTP or header
 // reading is needed here (contrast with the Ping step in authenticate,
 // which genuinely cannot use this mechanism — see auth.go's file doc
-// comment). credFn is a single newAuthCredentialFunc(...) value shared
-// across every fetchManifest call in one GetImageMetadata invocation, so
-// the auth flow it performs lazily on first use stays memoized across
-// calls (see GetImageMetadata's manifest-list resolution below, which may
-// call fetchManifest twice for one request).
-func fetchManifest(ctx context.Context, httpClient *http.Client, baseURL, repository, reference string, credFn credentialFunc, obs stats.Observer) (internal.ManifestEnvelope, error) {
-	handle := regmodels.GetManifestRoute.ClientHandle()
+// comment). authMw is a single newAuthMiddleware(...) value shared across
+// every fetchManifest call in one GetImageMetadata invocation, so the
+// auth flow it performs lazily on first use stays memoized across calls
+// (see GetImageMetadata's manifest-list resolution below, which may call
+// fetchManifest twice for one request). Declare (GetManifestRoute,
+// including its regmodels.BearerAuthDeclaration server-side Security
+// declaration) → chain (UseClient) → build (ClientHandle) — authMw
+// supplies the credential; see newAuthMiddleware's own doc comment
+// (auth.go). CallHandle picks up authMw automatically from
+// handle.ClientMiddlewares.
+func fetchManifest(ctx context.Context, httpClient *http.Client, baseURL, repository, reference string, authMw middleware.ClientMiddleware, obs stats.Observer) (internal.ManifestEnvelope, error) {
+	handle := regmodels.GetManifestRoute.UseClient(authMw).ClientHandle()
 	opts := nethttp.CallOptions{
 		ExtraHeaders: http.Header{"Accept": []string{acceptManifestTypes}},
 		Observer:     obs,
 	}
 	return nethttp.CallHandle(ctx, httpClient, baseURL, handle,
-		regmodels.GetManifestReq{Name: repository, Reference: reference}, opts,
-		middleware.Middleware{Fn: credFn})
+		regmodels.GetManifestReq{Name: repository, Reference: reference}, opts)
 }
 
 // platformMatches reports whether d's platform matches selector — a plain
@@ -148,12 +152,12 @@ func GetImageMetadata(ctx context.Context, httpClient *http.Client, req regmodel
 
 	o := resolveOptions(opts)
 	baseURL := registryBaseURL(ref.Registry)
-	// One credFn shared across both fetchManifest calls below (list
-	// resolution + platform-specific fetch) — newAuthCredentialFunc
+	// One authMw shared across both fetchManifest calls below (list
+	// resolution + platform-specific fetch) — newAuthMiddleware's Fn
 	// memoizes its own Ping/token-exchange work, so reusing this single
 	// value means that work happens at most once per GetImageMetadata call.
-	credFn := newAuthCredentialFunc(httpClient, ref.Registry, ref.Repository, opts...)
-	env, err := fetchManifest(ctx, httpClient, baseURL, ref.Repository, ref.Reference, credFn, o.observer)
+	authMw := newAuthMiddleware(httpClient, ref.Registry, ref.Repository, opts...)
+	env, err := fetchManifest(ctx, httpClient, baseURL, ref.Repository, ref.Reference, authMw, o.observer)
 	if err != nil {
 		return regmodels.ManifestMetadata{}, err
 	}
@@ -176,7 +180,7 @@ func GetImageMetadata(ctx context.Context, httpClient *http.Client, req regmodel
 			return regmodels.ManifestMetadata{}, PlatformNotFoundError{Platform: platformStr, Available: available}
 		}
 
-		env, err = fetchManifest(ctx, httpClient, baseURL, ref.Repository, resolvedDigest, credFn, o.observer)
+		env, err = fetchManifest(ctx, httpClient, baseURL, ref.Repository, resolvedDigest, authMw, o.observer)
 		if err != nil {
 			return regmodels.ManifestMetadata{}, err
 		}

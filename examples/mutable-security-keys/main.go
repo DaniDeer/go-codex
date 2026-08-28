@@ -147,7 +147,7 @@ func main() {
 	// ── Client: the credential-providing middleware's Fn calls
 	// cred.Get() INSIDE the closure body on every call, refreshing via
 	// Set() when stale — never hoisted. ──
-	credentialMw := middleware.Middleware{
+	credentialMw := middleware.ClientMiddleware{
 		Fn: func(_ context.Context, _ []route.SecurityRequirement) (http.Header, error) {
 			val, fresh := cred.Get() // ← the bool MUST be handled explicitly; Cacheable never hides it
 			if !fresh {

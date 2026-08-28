@@ -412,3 +412,69 @@ func TestSSERouteUse_EquivalentToWithMiddleware(t *testing.T) {
 		t.Fatalf("want Use to carry the attached middleware, got %+v", viaUse.Middlewares)
 	}
 }
+
+// ── Route.UseClient / ClientMiddlewares ──────────────────────────────────────
+
+func TestRouteUseClient_PopulatesClientMiddlewaresOnRegister(t *testing.T) {
+	cmw := middleware.ClientMiddleware{Name: "cred-supplier", Fn: func() {}}
+
+	h, err := rest.NewRoute[mwTestReq, userResp]("GET", "/profile", mwTestReqCodec, userCodec,
+		rest.RouteMeta{OperationID: "getProfile"},
+	).UseClient(cmw).Register(rest.NewBuilder(testInfo))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(h.ClientMiddlewares) != 1 || h.ClientMiddlewares[0].Name != "cred-supplier" {
+		t.Fatalf("want ClientMiddlewares to carry the attached middleware, got %+v", h.ClientMiddlewares)
+	}
+	// UseClient must NEVER affect the spec.
+	if len(h.Descriptor.Security) != 0 {
+		t.Errorf("want no Security contributed by UseClient, got %+v", h.Descriptor.Security)
+	}
+}
+
+func TestRouteUseClient_PopulatesClientMiddlewaresOnClientHandle(t *testing.T) {
+	cmw := middleware.ClientMiddleware{Name: "cred-supplier", Fn: func() {}}
+
+	h := rest.NewRoute[mwTestReq, userResp]("GET", "/profile", mwTestReqCodec, userCodec,
+		rest.RouteMeta{OperationID: "getProfile"},
+	).UseClient(cmw).ClientHandle()
+
+	if len(h.ClientMiddlewares) != 1 || h.ClientMiddlewares[0].Name != "cred-supplier" {
+		t.Fatalf("want ClientMiddlewares to carry the attached middleware, got %+v", h.ClientMiddlewares)
+	}
+}
+
+func TestRouteUseClient_CombinesWithServerDeclaredSecurity(t *testing.T) {
+	scheme := route.BearerScheme("")
+	declareMw := middleware.DeclareSecurity("bearerAuth", scheme, nil, nil)
+	cmw := middleware.ClientMiddleware{Name: "cred-supplier", Fn: func() {}}
+
+	h := rest.NewRoute[mwTestReq, userResp]("GET", "/profile", mwTestReqCodec, userCodec,
+		rest.RouteMeta{OperationID: "getProfile"},
+	).Use(declareMw).UseClient(cmw).ClientHandle()
+
+	if _, ok := h.SecuritySchemes["bearerAuth"]; !ok {
+		t.Fatalf("want SecuritySchemes populated by the server-side Use(DeclareSecurity(...)) declaration, got %+v", h.SecuritySchemes)
+	}
+	if len(h.ClientMiddlewares) != 1 {
+		t.Fatalf("want ClientMiddlewares populated by UseClient, got %+v", h.ClientMiddlewares)
+	}
+}
+
+func TestDeclareSecurity_AloneFailsRegisterCoverageCheck(t *testing.T) {
+	// A route using ONLY middleware.DeclareSecurity (no enforcing Fn, empty
+	// Satisfies) must still fail Register()'s drift-closing coverage check —
+	// DeclareSecurity is for client-only routes; accidentally Register()-ing
+	// one must be caught, not silently accepted.
+	declareMw := middleware.DeclareSecurity("bearerAuth", route.BearerScheme(""), nil, nil)
+
+	_, err := rest.NewRoute[mwTestReq, userResp]("GET", "/profile", mwTestReqCodec, userCodec,
+		rest.RouteMeta{OperationID: "getProfile"},
+	).Use(declareMw).Register(rest.NewBuilder(testInfo))
+
+	var missingErr rest.MissingSecurityMiddlewareError
+	if !errors.As(err, &missingErr) {
+		t.Fatalf("want MissingSecurityMiddlewareError, got %T: %v", err, err)
+	}
+}

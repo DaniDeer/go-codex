@@ -66,14 +66,16 @@ import (
 // BOTH credential schemes this package uses (Bearer, on
 // GetTagsRoute/GetManifestRoute; Basic, on getTokenRoute's token-exchange
 // call) flow through the IDENTICAL declarative mechanism — a
-// rest.WithSecurityScheme declaration on the route (this file's own
-// bearerAuthScheme/basicAuthScheme) paired with a credentialFunc passed as
-// nethttp.CallOptions.CredentialFunc. Neither scheme is ever injected via
-// CallOptions.ExtraHeaders — that manual bypass was removed once
-// WithSecurityScheme shipped, so nethttp.Call's client-side
-// credential-format check (validating the credentialFunc-returned header
-// against the route's declared Codec before sending, symmetric with the
-// server-side check) applies to both.
+// middleware.Middleware whose Security field declares the scheme
+// (newAuthMiddleware for Bearer, built from regmodels.BearerAuthScheme/
+// BearerAuthSchemeName; getTokenRoute's own basicAuthScheme below for
+// Basic) chained onto its route via .Use(...), paired with a
+// credentialFunc-shaped Fn passed to nethttp.Call/CallHandle's variadic.
+// Neither scheme is ever injected via CallOptions.ExtraHeaders — that
+// manual bypass was removed once WithSecurityScheme shipped, so
+// nethttp.Call's client-side credential-format check (validating the
+// credentialFunc-returned header against the route's declared Codec
+// before sending, symmetric with the server-side check) applies to both.
 //
 // authenticate's Ping/401-detection step is a plain nethttp.CallHandle
 // call — reading the WWW-Authenticate challenge header on the 401
@@ -227,10 +229,11 @@ func parseChallenge(header http.Header) (internal.Challenge, error) {
 // subsequent Bearer-authenticated GetTagsRoute/GetManifestRoute calls) —
 // see Credentials' doc comment (credentials.go) for when this is needed. Both
 // the Basic-auth credential here and the Bearer token GetTags/
-// GetImageMetadata use afterward flow through the SAME credentialFunc +
-// rest.WithSecurityScheme mechanism (this file's own basicAuthScheme/
-// bearerAuthScheme) — no CallOptions.ExtraHeaders injection anywhere in
-// this package.
+// GetImageMetadata use afterward flow through the SAME credentialFunc-shaped Fn +
+// Security-declaring middleware.Middleware mechanism (this file's own
+// basicAuthScheme below / newAuthMiddleware's regmodels.BearerAuthScheme
+// above) — no CallOptions.ExtraHeaders injection anywhere in this
+// package.
 func authenticate(ctx context.Context, httpClient *http.Client, registryHost, repository string, creds *regmodels.Credentials, obs stats.Observer) (string, error) {
 	baseURL := registryBaseURL(registryHost)
 	pingHandle := regmodels.PingRoute.ClientHandle()
@@ -280,9 +283,9 @@ func authenticate(ctx context.Context, httpClient *http.Client, registryHost, re
 	// never an error, so the request goes out exactly as it always has: no
 	// Authorization header at all.
 	tokenOpts := nethttp.CallOptions{Observer: obs}
-	var tokenMws []middleware.Middleware
+	var tokenMws []middleware.ClientMiddleware
 	if creds != nil {
-		tokenMws = append(tokenMws, middleware.Middleware{
+		tokenMws = append(tokenMws, middleware.ClientMiddleware{
 			Fn: func(context.Context, []route.SecurityRequirement) (http.Header, error) {
 				basicAuth, err := formatBasicAuth(creds.Username, creds.Password)
 				if err != nil {
@@ -310,17 +313,18 @@ func authenticate(ctx context.Context, httpClient *http.Client, registryHost, re
 
 // credentialFunc names nethttp.CallOptions.CredentialFunc's function type
 // for readability at call sites that need to store or pass one around
-// (newAuthCredentialFunc's return type, getimagemetadata.go's
-// fetchManifest parameter) instead of repeating the full inline function
-// type.
+// (newAuthCredentialFunc's return type, embedded in newAuthMiddleware's
+// Fn field above) instead of repeating the full inline function type.
 type credentialFunc = func(ctx context.Context, reqs []route.SecurityRequirement) (http.Header, error)
 
 // newAuthCredentialFunc returns a credentialFunc that authenticates
 // against registryHost for repository LAZILY — on first invocation by
-// nethttp.Call/CallHandle, which only happens for routes declaring
-// RouteMeta.Security (see this file's own bearerAuthSecurity) — and
-// MEMOIZES the result (via sync.Once) for the lifetime of the returned
-// closure. Reusing the SAME credentialFunc value across multiple
+// nethttp.Call/CallHandle, which only happens for a route whose
+// ClientHandle carries a matching Security requirement (see
+// newAuthMiddleware above, which wraps this as its Fn alongside the
+// "bearerAuth" Security declaration) — and MEMOIZES the result (via
+// sync.Once) for the lifetime of the returned closure. Reusing the SAME
+// credentialFunc value across multiple
 // CallHandle invocations against secured routes therefore performs the
 // Ping + WWW-Authenticate-challenge + token-exchange dance only ONCE, no
 // matter how many secured calls are made with it (see
@@ -333,11 +337,11 @@ type credentialFunc = func(ctx context.Context, reqs []route.SecurityRequirement
 // (RegistryAuthChallengeError/RegistryAuthError) unchanged once observed --
 // matching authenticate's own error behavior, just deferred to first use.
 //
-// Unexported: GetTags/GetImageMetadata (gettags.go/getimagemetadata.go)
-// are the only callers.
-// This package's public surface is deliberately just routes + client
-// functions + domain structs/codecs — a caller never needs to build their
-// own credentialFunc directly.
+// Unexported: newAuthMiddleware (above) is the only caller — GetTags/
+// GetImageMetadata (gettags.go/getimagemetadata.go) go through THAT,
+// never this directly. This package's public surface is deliberately
+// just routes + client functions + domain structs/codecs — a caller
+// never needs to build their own credentialFunc directly.
 func newAuthCredentialFunc(httpClient *http.Client, registryHost, repository string, opts ...Option) credentialFunc {
 	o := resolveOptions(opts)
 	// A single WithCredentials value is the more specific override and
@@ -373,16 +377,38 @@ func newAuthCredentialFunc(httpClient *http.Client, registryHost, repository str
 	}
 }
 
+// newAuthMiddleware is the CLIENT-side fulfillment of GetTagsRoute/
+// GetManifestRoute's "bearerAuth" requirement — those routes declare the
+// requirement THEMSELVES (regmodels.BearerAuthDeclaration, attached via
+// .Use(...) — see their own doc comments); this middleware only supplies
+// the credential, attached via .UseClient(...) in gettags.go's GetTags
+// and getimagemetadata.go's GetImageMetadata:
+//
+//	authMw := newAuthMiddleware(httpClient, ref.Registry, ref.Repository, opts...)
+//	handle := regmodels.GetTagsRoute.UseClient(authMw).ClientHandle()
+//
+// A [middleware.ClientMiddleware] structurally cannot carry a Security
+// declaration — this function's return type reflects that: it wraps
+// ONLY newAuthCredentialFunc's lazy, memoized (via sync.Once)
+// Ping/challenge/token-exchange dance, nothing else.
+func newAuthMiddleware(httpClient *http.Client, registryHost, repository string, opts ...Option) middleware.ClientMiddleware {
+	return middleware.ClientMiddleware{
+		Name: "registry-auth",
+		Fn:   newAuthCredentialFunc(httpClient, registryHost, repository, opts...),
+	}
+}
+
 // ---- basicAuth scheme declaration, and getTokenRoute ----
 //
-// bearerAuthSecurity/bearerAuthScheme (GetTagsRoute/GetManifestRoute's
-// OWN declared security requirement) live in the sibling
-// models/docker/registry package's security.go instead — they are part
-// of those routes' DECLARED CONTRACT, not this file's auth-flow
-// implementation. basicAuthSecurity/basicAuthScheme below stay HERE
-// because getTokenRoute (also declared here) has no legitimate
-// standalone caller outside this file's own authenticate() function —
-// auth-flow plumbing, not part of the externally-facing contract.
+// regmodels.BearerAuthScheme/BearerAuthSchemeName (GetTagsRoute/
+// GetManifestRoute's shared scheme metadata, consumed above by
+// newAuthMiddleware) live in the sibling models/docker/registry package's
+// security.go instead — they are part of those routes' DECLARED CONTRACT,
+// not this file's auth-flow implementation. basicAuthSecurity/
+// basicAuthScheme below stay HERE because getTokenRoute (also declared
+// here) has no legitimate standalone caller outside this file's own
+// authenticate() function — auth-flow plumbing, not part of the
+// externally-facing contract.
 
 // basicAuthSecurity declares that getTokenRoute accepts Basic-auth
 // credentials — set as RouteMeta.Security below so
@@ -397,8 +423,11 @@ var basicAuthSecurity = []route.SecurityRequirement{{"basicAuth": nil}}
 
 // basicAuthScheme declares the "basicAuth" scheme's spec metadata and a
 // non-empty-string format Codec, attached to getTokenRoute below via
-// rest.WithSecurityScheme — the same declarative mechanism bearerAuthScheme
-// uses above, giving auth.go's Basic-auth token-exchange credential the
+// rest.WithSecurityScheme — getTokenRoute has a single caller (this
+// file's own authenticate) so a plain manual declaration is appropriate
+// here, unlike GetTagsRoute/GetManifestRoute's middleware-based
+// declaration above (see newAuthMiddleware) — giving auth.go's Basic-auth
+// token-exchange credential the
 // SAME client-side format-validation safety net Bearer credentials already
 // get, instead of the manual CallOptions.ExtraHeaders injection this
 // package used before.

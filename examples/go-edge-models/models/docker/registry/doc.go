@@ -29,11 +29,13 @@
 //   - ping.go: PingRoute — no MCP tool of its own (an auth probe has no
 //     LLM-facing value); no client function either (see its own doc
 //     comment — used internally by app/registry's auth flow).
-//   - security.go: bearerAuthSecurity/bearerAuthScheme — GetTagsRoute/
-//     GetManifestRoute's OWN declared security requirement (which auth
-//     scheme those routes require). basicAuthSecurity/basicAuthScheme
-//     (used only by app/registry's own getTokenRoute, a pure auth-flow
-//     implementation detail) live in app/registry's auth.go instead.
+//   - security.go: BearerAuthScheme/BearerAuthSchemeName — shared
+//     "bearerAuth" scheme metadata GetTagsRoute/GetManifestRoute's
+//     callers build a credential-providing middleware.Middleware from
+//     (via .Use(...)) — the routes themselves declare NO Security
+//     directly. basicAuthSecurity/basicAuthScheme (used only by
+//     app/registry's own getTokenRoute, a pure auth-flow implementation
+//     detail) live in app/registry's auth.go instead.
 //   - gettags.go: GetTagsReq/GetTagsRoute, TagsList/TagsListCodec, and
 //     GetTagsToolReq/GetTagsTool (the declared MCP tool contract).
 //   - getimagemetadata.go: GetManifestReq/GetManifestRoute (the

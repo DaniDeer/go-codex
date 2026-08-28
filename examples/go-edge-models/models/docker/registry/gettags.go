@@ -32,10 +32,17 @@ type GetTagsReq struct {
 // e.g. "prometheus/prometheus") — substituted as-is, no escaping
 // needed (see BuildPath's plain string-replace semantics). Req is
 // GetTagsReq, whose Name field merges into {name} automatically via
-// nethttp.CallHandle — no manual vars map needed. Call
-// GetTagsRoute.ClientHandle() directly for advanced/low-level use, or use
-// app/registry's GetTags for the batteries-included client (auth flow,
-// image-URL parsing) built on top of this route.
+// nethttp.CallHandle — no manual vars map needed.
+//
+// GetTagsRoute declares its "bearerAuth" requirement via .Use(BearerAuthDeclaration)
+// below — a spec-only declaration (see BearerAuthSchemeName's doc comment):
+// this codebase documents the requirement but never enforces it, since the
+// real server is an external registry. A caller MUST separately chain a
+// credential-SUPPLYING middleware.ClientMiddleware via .UseClient(...)
+// before calling .ClientHandle() to actually authenticate outgoing calls;
+// see app/registry's GetTags for the batteries-included client (auth flow
+// via app/registry's own newAuthMiddleware, image-URL parsing) built this
+// way on top of this route.
 var GetTagsRoute = rest.NewRoute[GetTagsReq, TagsList](
 	"GET", "/v2/{name}/tags/list",
 	c.Struct[GetTagsReq](), TagsListCodec,
@@ -43,15 +50,13 @@ var GetTagsRoute = rest.NewRoute[GetTagsReq, TagsList](
 		OperationID:    "getTags",
 		Summary:        "List every tag for a repository",
 		RespSchemaName: "TagsList",
-		Security:       bearerAuthSecurity,
 	},
-	rest.WithSecurityScheme("bearerAuth", bearerAuthScheme),
 	rest.NewPathParam("name",
 		c.String(),
 		func(r GetTagsReq) string { return r.Name },
 		func(r *GetTagsReq, v string) { r.Name = v },
 	).WithDescription("Repository path"),
-)
+).Use(BearerAuthDeclaration)
 
 // ── TagsList ──────────────────────────────────────────────────────────────────
 
