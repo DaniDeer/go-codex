@@ -3,7 +3,7 @@
 > **Status:** Design draft — Phase 1 (REST) fully speced with THREE
 > worked capabilities: security (`RequireScopes`, now SPEC-DERIVING —
 > see "Two attachment points" below), observability
-> (`ObservabilityMiddleware`, see "Relationship to Observer" below), and
+> (`Observability`, see "Relationship to Observer" below), and
 > general header/cookie/query param spec contribution (`RequestParams`/
 > `ResponseParams`, not just security schemes). **EVERY other boundary
 > go-codex ships is now COVERED BY DESIGN** (see "Coverage across every
@@ -38,7 +38,7 @@
 > (required by L13); the Observability section's "Class A" list
 > conflated `PipelineObserver` (forge, explicitly out of scope per L14)
 > with the ports observers this doc actually wires; and
-> `nethttp.ObservabilityMiddleware`'s sketch called `to.EndSpan(ctx)`
+> `nethttp.Observability`'s sketch called `to.EndSpan(ctx)`
 > with one argument instead of `stats.TraceObserver.EndSpan`'s actual
 > two (`ctx, err`). This doc is now considered ready for Phase 1
 > implementation.
@@ -67,19 +67,29 @@
 > it, and "Stage 6 example migration notes" for what changed across the
 > whole example suite.
 >
-> **Revision 2 — PLANNED, NOT YET IMPLEMENTED**: a further critical look
-> at Phase 1 (prompted by comparing a client-side call site's
-> boilerplate against the route/handler lifecycle's own
-> declare→compose→register discipline) found that `middleware.Middleware`
-> itself still violates that same discipline — `RequireScopes` bundles
-> the declare-time spec contribution (`Security`) and the register-time
-> runtime behavior (`Fn`) into ONE value, at ONE call site, the same way
-> `NewRoute` would be wrong to require the business `fn` as a constructor
-> argument instead of deferring it to `Register`. See "Revision 2 — the
-> declare/implement split" below for the full design (confirmed:
-> breaking changes accepted, no compromise on correctness) — approved
-> for implementation, sequenced to happen BEFORE any further Phase 2
-> work, since it changes REST's own API declaration surface.
+> **Revision 2 — SHIPPED.** A further critical look at Phase 1 (prompted
+> by comparing a client-side call site's boilerplate against the
+> route/handler lifecycle's own declare→compose→register discipline)
+> found that `middleware.Middleware` itself still violated that same
+> discipline — the former `RequireScopes` bundled the declare-time spec
+> contribution (`Security`) and the register-time runtime behavior
+> (`Fn`) into ONE value, at ONE call site, the same way `NewRoute` would
+> be wrong to require the business `fn` as a constructor argument
+> instead of deferring it to `Register`. See "Revision 2 — the
+> declare/implement split" below for the full design and "Revision 2
+> implementation findings" for what shipped: `middleware.Middleware` is
+> now pure declare-time data (no `Fn`/`Satisfies` at all); the new
+> `middleware.ServerImplementation` type carries register-time,
+> server-side runtime behavior; `RequireScopes`/`RequireAPIKey` were
+> REMOVED (not deprecated) in favor of `SecurityScheme`+`Scopes`/
+> `HeaderParam`+`APIKey` pairs; the security coverage
+> check moved from `Route.Register(builder)` to adapter
+> `Register`/`RegisterSSE` time (`rest.CheckCoverage`); and a
+> new `nethttp.Caller`/`CallVia`/`CallHandleVia` client-side convenience
+> wraps `Call`/`CallHandle` with a shared client/baseURL/default
+> middlewares. `go build`/`go vet`/`go test`/`staticcheck`/`gosec`/
+> `gofmt` all clean repo-wide; all 11 examples touching security/
+> observability updated and verified end-to-end.
 
 ## Implementation findings (discovered while building Phase 1)
 
@@ -91,7 +101,7 @@ design.
 - **`stats.NewFanout` already IS the planned `MultiObserver`.** The
   implementation plan initially called for a new `stats.MultiObserver`
   to fan a single `stats.Observer` call out to several observers
-  (needed once `ObservabilityMiddleware` injects a context observer that
+  (needed once `Observability` injects a context observer that
   must coexist with a per-call one). `stats.NewFanout` already provides
   this, unused until now — no new type was added.
 - **`Route.ClientHandle()` vs `Route.Register()` asymmetry (real bug,
@@ -119,17 +129,17 @@ design.
   examples in `bridge.go`/`doc.go` updated from
   `CallOptions{CredentialFunc: ...}` to
   `middleware.Middleware{Fn: ...}` passed as the trailing arg.
-- **`ObservabilityMiddleware` needed to inject the observer into ctx,
+- **`Observability` needed to inject the observer into ctx,
   not just diagnostics (real bug, fixed).** It originally only called
   `stats.WithDiagnostics(ctx)`. Fn-driven code attached elsewhere on the
   same request (e.g. a `RequireScopes` extraction `Fn` calling
   `RecordSecurityRejection`) resolves its observer via
   `stats.ObserverFromContext(ctx)` — without also calling
-  `stats.WithObserver(ctx, obs)` inside `ObservabilityMiddleware`, that
+  `stats.WithObserver(ctx, obs)` inside `Observability`, that
   lookup silently returned `NoopObserver{}` and security-rejection
   metrics never fired. Fixed by adding the `stats.WithObserver` call;
   chi inherits the fix for free (it reuses
-  `nethttp.ObservabilityMiddleware` directly, no chi-specific copy).
+  `nethttp.Observability` directly, no chi-specific copy).
 - **`Call`/`CallHandle` do not read `RouteHandle.Middlewares` at all**
   (confirmed, not a bug) — only `Register` combines
   `handle.Middlewares` with its own variadic `mws`. A client-side
@@ -235,19 +245,19 @@ and security-verifying middleware under ONE `ServerImplementation` type (empty v
 non-empty `Satisfies`) removes a previously-arbitrary split between "two kinds of
 runtime attachment" that never needed to be two types.
 
-### Constructors — replacing RequireScopes/RequireAPIKey/ObservabilityMiddleware
+### Constructors — replacing RequireScopes/RequireAPIKey/Observability
 entirely (removed, not deprecated — breaking changes explicitly accepted, per this
 doc's own "Migration" section below)
 
 | Old (REMOVED) | New declare-time | New register-time |
 |---|---|---|
-| `nethttp.RequireScopes(...)` | `middleware.DeclareSecurity(scheme, scopes, codec)` (unchanged, already shipped Phase 1) | `nethttp.ImplementScopes[Req](schemeName, extract) ServerImplementation` (new) |
-| `nethttp.RequireAPIKey(...)` | `nethttp.DeclareHeaderParam(headerName) Middleware` (RequestParams-only; new) | `nethttp.ImplementAPIKey(headerName, verify) ServerImplementation` (empty `Satisfies`) |
-| `nethttp.ObservabilityMiddleware(obs)` | *(nothing — observability never had spec relevance)* | `nethttp.ObservabilityMiddleware(obs) ServerImplementation` (same name, new return type) |
+| `nethttp.RequireScopes(...)` | `middleware.SecurityScheme(scheme, scopes, codec)` (unchanged, already shipped Phase 1) | `nethttp.Scopes[Req](schemeName, extract) ServerImplementation` (new) |
+| `nethttp.RequireAPIKey(...)` | `nethttp.HeaderParam(headerName) Middleware` (RequestParams-only; new) | `nethttp.APIKey(headerName, verify) ServerImplementation` (empty `Satisfies`) |
+| `nethttp.Observability(obs)` | *(nothing — observability never had spec relevance)* | `nethttp.Observability(obs) ServerImplementation` (same name, new return type) |
 
-`middleware.ImplementScopes[Raw,Req]` is the shared, adapter-agnostic core (mirrors
+`middleware.Scopes[Raw,Req]` is the shared, adapter-agnostic core (mirrors
 how `middleware.RequireScopes[Raw,Req]` worked before removal);
-`nethttp.ImplementScopes[Req]` pins `Raw = *http.Request`.
+`nethttp.Scopes[Req]` pins `Raw = *http.Request`.
 
 ### The critical structural change: relocating the security coverage check
 
@@ -258,7 +268,7 @@ requirement AND the supplied implementations are simultaneously known:
 
 - **REMOVE** the coverage check from `api/rest/middleware.go`'s
   `applyMiddlewareDeclarations` (called by `Route.Register(builder)`/`ValidateRoute`)
-  — a route declaring `Security` via `.Use(middleware.DeclareSecurity(...))` with NO
+  — a route declaring `Security` via `.Use(middleware.SecurityScheme(...))` with NO
   implementation anywhere now correctly PASSES `Route.Register(builder)` (the
   intended, newly-legal "declared but not yet implemented" state).
 - **ADD** the identical check (same `MissingSecurityMiddlewareError`, new call site)
@@ -294,7 +304,7 @@ Library: `middleware/middleware.go`, `api/rest/middleware.go`/`builder.go`,
 `adapters/nethttp/{adapter.go,scopes.go,observability.go,client.go}`,
 `adapters/chi/adapter.go`. Tests: `middleware/middleware_test.go`,
 `api/rest/middleware_test.go`, `adapters/nethttp/{adapter_test.go,client_test.go}`,
-`adapters/chi/adapter_test.go` (`TestDeclareSecurity_AloneFailsRegisterCoverageCheck`'s
+`adapters/chi/adapter_test.go` (`TestSecurityScheme_AloneFailsRegisterCoverageCheck`'s
 assertion INVERTS — must now PASS `Route.Register(builder)`; a new adapter-level
 sibling test covers the SAME missing-coverage failure at `nethttp.Register` time
 instead). Examples (all 11 touching security/observability from Phase 1):
@@ -312,6 +322,46 @@ for d in examples/*/; do (cd "$d" && go run .); done
 
 Every example's output diffed against its own last-known-good behavior, not just
 exit code — this revision touches request-path behavior directly.
+
+## Revision 2 implementation findings
+
+Shipped exactly as designed above, with a few simplifications/clarifications
+discovered while building it:
+
+- **`handle.Middlewares`/`SSERouteHandle.Middlewares` become purely
+  informational post-relocation.** The coverage check
+  (`rest.CheckCoverage`) only needs `handle.Descriptor.Security`
+  (falling back to `handle.GlobalSecurity`) plus the newly-supplied
+  `[]middleware.ServerImplementation` — it never needs to consult
+  `handle.Middlewares` at all, since `Middleware` carries no `Satisfies`
+  to compare against. Simpler than the original design anticipated, not a
+  deviation from it.
+- **`TestSecurityScheme_AloneFailsRegisterCoverageCheck` inverted as
+  predicted**, plus two sibling tests
+  (`TestRegister_MissingSecurityMiddleware`,
+  `TestValidateRoute_CatchesMissingSecurityMiddleware`) needed the same
+  treatment — all three now assert `Route.Register(builder)`/
+  `ValidateRoute` **pass** for a route declaring `Security` with no
+  implementation anywhere, since the coverage check no longer runs at
+  that point at all.
+- **`nethttp.Caller`'s method-shaped pseudocode in the design sketch isn't
+  valid Go** — Go doesn't allow a method to introduce its own type
+  parameters, and `Call`/`CallHandle` are generic over `Req`/`Resp`, so
+  `func (c *Caller) Call[Req, Resp any](...)` cannot be written as a
+  method. Shipped as free functions `CallVia[Req, Resp any](ctx, c
+  *Caller, ...)`/`CallHandleVia[Req, Resp any](ctx, c *Caller, ...)`
+  instead — same convenience, idiomatic Go generics shape.
+- **Blast radius matched the prediction exactly** — no additional files
+  needed changes beyond what was listed above (plus the new
+  `adapters/nethttp/caller.go`/`caller_test.go`, not yet known at design
+  time).
+- Two background sub-agents migrated `adapters/nethttp/adapter_test.go`
+  (11 call sites) and `adapters/chi/adapter_test.go` (12 call sites) in
+  parallel — each split a bundled `RequireScopes`/`RequireAPIKey` call
+  site into its declare-time (`SecurityScheme`/`HeaderParam`) and
+  register-time (`Scopes`/`APIKey`) halves, attaching
+  each to the correct call site (`.Use()`/helper vs. `Handler`/
+  `Register`'s variadic) based on what the original test actually needed.
 
 ## Core thesis
 
@@ -441,7 +491,7 @@ general, not single-purpose:
    itself needs (e.g. an API-key middleware documenting "X-API-Key"),
    with zero route-level declaration (see "Header/cookie param
    auto-contribution" below).
-3. **Observability** — `ObservabilityMiddleware`, absorbing BOTH classes
+3. **Observability** — `Observability`, absorbing BOTH classes
    of `stats.Observer` events (including the decode-intrinsic ones, via
    a ctx-based diagnostics ferry) and REMOVING `Options.Observer`
    entirely (see "Relationship to Observer" below). Purely non-spec —
@@ -564,7 +614,7 @@ information is needed:**
    logging, rate-limiting — nothing to contribute to the spec) stays
    attachable at `nethttp.Register(mux, handle, fn, opts, extraMws...)`,
    UNCHANGED from the original design — this is ALSO the natural way to
-   wire ONE shared middleware (e.g. `ObservabilityMiddleware`) across MANY
+   wire ONE shared middleware (e.g. `Observability`) across MANY
    routes without repeating a `rest.WithMiddleware(...)` call on every
    single `NewRoute`.
 3. `nethttp.Register` combines BOTH sources
@@ -613,7 +663,7 @@ A THREE-part vocabulary follows from this split:
 - **`middleware.RequireScopes`** builds a `Middleware` carrying BOTH a
   `Security` declaration AND a verifying `Fn` — for a route THIS
   codebase implements and enforces server-side.
-- **`middleware.DeclareSecurity`** builds a `Middleware` carrying
+- **`middleware.SecurityScheme`** builds a `Middleware` carrying
   `Security` ONLY, no `Fn`, empty `Satisfies` — for a route that
   documents a requirement THIS codebase does NOT enforce (typically a
   route describing an EXTERNAL system's API — e.g.
@@ -1168,11 +1218,11 @@ declaration (either call style), never inferred from presence alone.
 - `nethttp.Options.Observer`/the `chi` equivalent are ALSO REMOVED (not
   deprecated-alongside) — `Handler` never holds or resolves a
   `stats.Observer` reference anywhere; observability is entirely opt-in
-  via `nethttp.ObservabilityMiddleware(obs)`, wired the same way as
+  via `nethttp.Observability(obs)`, wired the same way as
   `RequireScopes`. Every existing example/test passing `Options.Observer`
   (`examples/adapters-nethttp-security`, `examples/stats-observer`, and
   any other example constructing `nethttp.Options{Observer: ...}`) needs
-  rewriting to attach `nethttp.ObservabilityMiddleware` instead.
+  rewriting to attach `nethttp.Observability` instead.
 - `adapters/nethttp`'s internal `report*Errors` helpers
   (`reportQueryErrors`/`reportCookieErrors`/`reportHeaderErrors`/
   `reportPathErrors`/body-decode error reporting) are rewired from
@@ -1619,12 +1669,12 @@ MECHANICALLY, not merely "by analogy":
   `nethttp.RequireScopes` exactly, `Fn`: `func(ctx, *pahomqtt5.Publish,
   value *T, reqs) error` / `func(ctx, pahomqtt.Message, value *T, reqs)
   error` — invoked AFTER topic-var merge, same convenience as REST.
-- `mqtt5.ObservabilityMiddleware`/`mqtt.ObservabilityMiddleware` — Class
+- `mqtt5.Observability`/`mqtt.Observability` — Class
   A events (`RecordSubscribe`/`RecordPublish`, already boundary-shaped —
   see "Relationship to Observer" above) are absorbed directly, exactly
   like REST's `RecordRequest`. Class B (topic-var/payload decode errors)
   reuses the SAME `stats.Diagnostic`/`WithDiagnostics`/`RecordDiagnostic`/
-  `DiagnosticsFromContext` ferry REST's `ObservabilityMiddleware` uses —
+  `DiagnosticsFromContext` ferry REST's `Observability` uses —
   `stats.Diagnostic` is NOT REST-specific, so this is REUSE, not new
   design; `adapters/mqtt5`'s internal merge/decode error-reporting call
   sites redirect to `stats.RecordDiagnostic(ctx, ...)` the SAME way
@@ -1663,7 +1713,7 @@ duration)` on every path, differing only in the `<kind>`
 `"tool"`/`"resource"`/`"prompt"` string and the identifying name). See
 "L5" in "Known limitations" below for the full resolution.
 
-- `mcpgo.ObservabilityMiddleware(obs) middleware.Middleware{Fn: obs}` —
+- `mcpgo.Observability(obs) middleware.Middleware{Fn: obs}` —
   carries the RAW `stats.Observer` value directly; NO decorator/wrapping
   logic is needed at all, because `ToolHandler`/`ResourceHandler`/
   `PromptHandler` ALREADY contain the full observability logic inline —
@@ -1706,7 +1756,7 @@ wrapping the whole operation already sees the terminal `(T, error)`.
   IDENTICAL decorator shape as `File`'s `Read`/`Write` sketch above,
   parameterized by their own operation signature — no new design
   question per port, a straightforward mechanical extension.
-- `ports.ObservabilityMiddleware[T]` — a decorator calling
+- `ports.Observability[T]` — a decorator calling
   `RecordFileRead`/`RecordFileWrite` (or the `CacheObserver`/`SQLObserver`
   equivalent per port) directly around `next()` — no ctx-ferry, matching
   the SAME single-stage reasoning as MCP above.
@@ -1716,7 +1766,7 @@ wrapping the whole operation already sees the terminal `(T, error)`.
   attaches directly at the `Read`/`Write`/`Get`/`Set`/`Query`/`List` call
   site.
 
-## Observability worked example — `nethttp.ObservabilityMiddleware`
+## Observability worked example — `nethttp.Observability`
 
 Phase 1's SECOND worked use case (alongside security), proving
 `middleware.Middleware` generalizes beyond auth: `stats.Observer`'s
@@ -1819,18 +1869,18 @@ site, the SAME data, just redirected into `ctx` instead of a direct
 `Observer` call. `Handler` itself never holds or resolves an `Observer`
 reference anywhere.
 
-### `nethttp.ObservabilityMiddleware` — the worked example
+### `nethttp.Observability` — the worked example
 
 ```go
 // adapters/nethttp
 //
-// ObservabilityMiddleware builds a general-purpose Middleware that wraps
+// Observability builds a general-purpose Middleware that wraps
 // the ENTIRE call: records RecordRequest (method/path/status/duration),
 // drives TraceObserver.StartSpan/EndSpan if obs implements it, and — after
 // next.ServeHTTP returns — drains stats.DiagnosticsFromContext(ctx) and
 // forwards each to obs.RecordValidationError. This is the ONLY place in
 // adapters/nethttp that ever calls into stats.Observer.
-func ObservabilityMiddleware(obs stats.Observer) middleware.Middleware {
+func Observability(obs stats.Observer) middleware.Middleware {
     return middleware.Middleware{
         Name: "observability",
         Fn: func(next http.Handler) http.Handler {
@@ -1864,7 +1914,7 @@ opt-in via this one middleware, wired the SAME way as `RequireScopes`:
 
 ```go
 if err := nethttp.Register(mux, profileHandle, profileFn, nethttp.Options{},
-    nethttp.ObservabilityMiddleware(myObserver),
+    nethttp.Observability(myObserver),
     scopesFromProxy,
 ); err != nil {
     log.Fatal(err)
@@ -1885,7 +1935,7 @@ the `RequireScopes[T]` sketch above, just calling `RecordFileRead`/
 
 ```go
 // ports — no ctx-ferry needed; FileObserver has no field-level events.
-func ObservabilityMiddleware[T any](obs stats.Observer) middleware.Middleware {
+func Observability[T any](obs stats.Observer) middleware.Middleware {
     return middleware.Middleware{
         Name: "observability",
         Fn: func(ctx context.Context, vars map[string]string, next func() (T, error)) (T, error) {
@@ -2364,12 +2414,12 @@ with no prior home), MCP needs ONLY a change to WHERE `obs` comes from —
 not a new wrapping mechanism:
 
 ```go
-// mcpgo.ObservabilityMiddleware carries a raw stats.Observer value
+// mcpgo.Observability carries a raw stats.Observer value
 // INSIDE a middleware.Middleware wrapper — Fn IS the Observer itself,
 // not a closure around it. No decorator/wrapping logic is needed,
 // because ToolHandler/ResourceHandler/PromptHandler already CONTAIN the
 // full observability logic inline; only the SOURCE of obs changes.
-func ObservabilityMiddleware(obs stats.Observer) middleware.Middleware {
+func Observability(obs stats.Observer) middleware.Middleware {
     return middleware.Middleware{Name: "observability", Fn: obs}
 }
 ```
@@ -2761,7 +2811,7 @@ for _, mw := range mws {
 }
 ```
 
-If a caller attaches TWO `mcpgo.ObservabilityMiddleware` values (e.g.
+If a caller attaches TWO `mcpgo.Observability` values (e.g.
 one wrapping a metrics collector, one wrapping a tracer, a very
 plausible real setup mirroring how `chi`/`nethttp` freely stack
 multiple general-purpose middlewares today), only the FIRST is ever
@@ -2977,9 +3027,9 @@ the claim without pre-committing to (a), (b), or (c).
 | `adapters/nethttp/client.go` | `CallOptions.CredentialFunc` removed; `Call` accepts `...middleware.Middleware`; runs every attached credential-providing `Fn` and merges their headers, failing fast on any `Fn` error and on same-key-differing-value collisions; NEW `ConflictingCredentialHeaderError` (see "L9" below) |
 | `adapters/nethttp/errors.go` (or inline) | `MissingSecurityMiddlewareError`, `UnsatisfiedScopesError`, `MiddlewareShapeError` |
 | `adapters/nethttp/scopes.go` (new) | `RequireScopes` — ONE-LINE wrapper around `middleware.RequireScopes[*http.Request, Req]` (see "L2" below); `RequireAPIKey` (param-contribution worked example) |
-| `adapters/nethttp/observability.go` (new) | `ObservabilityMiddleware` — the ONLY `stats.Observer` call site left in the package |
+| `adapters/nethttp/observability.go` (new) | `Observability` — the ONLY `stats.Observer` call site left in the package |
 | `adapters/chi/adapter.go` | Mirror nethttp's changes exactly, including `Options.Observer` removal + `report*Errors` rewiring + `handle.Middlewares` combination. **NO `chi`-specific `RequireScopes`** — reuses `nethttp.RequireScopes` directly (identical `*http.Request` `Raw` type). |
-| `examples/adapters-nethttp-security`, `adapters-chi-security`, `adapters-nethttp-client`, `mutable-security-keys`, `stats-observer` | Rewritten call sites — security examples adopt `RequireScopes`; `stats-observer` adopts `ObservabilityMiddleware` in place of `Options.Observer` |
+| `examples/adapters-nethttp-security`, `adapters-chi-security`, `adapters-nethttp-client`, `mutable-security-keys`, `stats-observer` | Rewritten call sites — security examples adopt `RequireScopes`; `stats-observer` adopts `Observability` in place of `Options.Observer` |
 | `docs/features/security.md` | Rewritten `SecurityFunc`/`CredentialFunc` sections to the new `middleware.Middleware`-based API; new "Delegating authentication to an external proxy" section using `RequireScopes` |
 | `docs/concepts/middleware.md` (new) | Design rationale — the Core-thesis pure-I/O framing, the type-erasure + adapter-side-assertion pattern, why security schemes are NOT inferred from attached middleware, the `ports.File` proof-of-generality sketch. Mirrors `docs/concepts/observable-layers.md`'s role for the `Observer` pattern. |
 | `docs/features/middleware.md` (new) | Practical usage guide — `RequireScopes`, the OAuth2-Proxy-in-front pattern, migration from `Options.SecurityFunc`/`CallOptions.CredentialFunc`, a `ports.File` worked example. Mirrors `docs/features/observer.md`'s role. |

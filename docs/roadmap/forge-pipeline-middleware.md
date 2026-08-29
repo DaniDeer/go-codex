@@ -5,6 +5,14 @@
 > (third critical review pass). Independent of that doc's own
 > implementation status — no sequencing dependency either way.
 > [← Back to Roadmap](index.md)
+>
+> **Note:** Declarative Middleware's "Revision 2 — the declare/implement
+> split" has since SHIPPED (see that doc's "Revision 2 implementation
+> findings") — `middleware.Middleware`/`ServerImplementation`/
+> `ClientMiddleware` are final for Layer 2. This doc's open question
+> (whether/how forge's `Registry.WithObserver` should adopt the same
+> declare/implement discipline) is UNCHANGED by that — still deferred to
+> a future dedicated design pass, no new driver identified here.
 
 ## Motivation
 
