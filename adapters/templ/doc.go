@@ -7,16 +7,18 @@
 // receive the rendered component; API clients that send Accept: application/json
 // receive JSON — all from the same handler and the same route definition.
 //
-//	route, _ := rest.NewRoute[Req, Props]("GET", "/articles", reqCodec, propsCodec,
+//	route := rest.NewRoute[Req, Props]("GET", "/articles", reqCodec, propsCodec,
 //	    rest.RouteMeta{},
-//	    adapttempl.Format(propsCodec, ArticleList),  // Accept: text/html
-//	    format.JSON(propsCodec),                      // Accept: application/json
-//	).Register(b)
-//
-//	// Same handler, same route — nethttp handles both formats:
-//	nethttp.Register(mux, route, func(ctx context.Context, req SearchReq) (Props, error) {
+//	    rest.Formats(
+//	        adapttempl.Format(propsCodec, ArticleList),  // Accept: text/html
+//	        format.JSON(propsCodec),                      // Accept: application/json
+//	    ),
+//	).WithHandler(func(ctx context.Context, req SearchReq) (Props, error) {
+//	    // Same handler, same route — nethttp handles both formats:
 //	    return svc.Search(ctx, req.Query)
-//	}, nethttp.Options{Observer: obs})
+//	}).WithOptions(nethttp.Options{Observer: obs})
+//	if err := route.Register(b); err != nil { ... }
+//	if err := nethttp.Serve(mux, b); err != nil { ... }
 //
 // Props are validated via the route's response codec before the component
 // renders. Invalid props return HTTP 500 and the template is never reached.

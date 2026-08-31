@@ -4,30 +4,45 @@
 // Options.SecurityFunc/CallOptions.CredentialFunc) with one composable
 // vocabulary reused across every boundary go-codex ships.
 //
-// Two distinct types model the two distinct roles in this vocabulary:
+// Three distinct types model the three distinct roles in this vocabulary —
+// this package deliberately follows the SAME "declare, then implement, as
+// late as possible" discipline every route/channel/tool/port already
+// follows (codecs declared once via NewRoute/NewChannel/etc.; the actual
+// business handler supplied only later, at Register time):
 //
-//   - [Middleware] is a SERVER-side declaration — attached via a route's
-//     own declaration RouteOpt (e.g. rest.WithMiddleware/Route.Use). It is
-//     the ONLY type that can contribute to a route's spec (Security/
-//     RequestParams/ResponseParams) — "the server declares the contract."
-//     [RequireScopes] builds one carrying BOTH a Security declaration AND
-//     a verifying Fn (a route THIS codebase serves and enforces);
-//     [DeclareSecurity] builds one carrying Security ONLY, no Fn (a route
-//     describing an requirement this codebase does NOT enforce — e.g. an
-//     external system's API this codebase merely calls as a client).
-//   - [ClientMiddleware] is a CLIENT-side declaration — attached via
-//     Route.UseClient. It can NEVER contribute to the spec (the type has
-//     no Security/RequestParams/ResponseParams fields at all) — its only
-//     job is "how does THIS calling application fulfill an
-//     already-declared requirement" (e.g. supply a credential). The same
-//     already-declared Security, however it was declared, is what a
-//     ClientMiddleware's Fn is expected to satisfy.
+//   - [Middleware] is a DECLARE-TIME-ONLY value — pure data, no Fn field at
+//     all. Attached via a route's own declaration (e.g. rest.Route.Use).
+//     It is the ONLY type that can contribute to a route's spec
+//     (Security/RequestParams/ResponseParams) — "the server declares the
+//     contract." [SecurityScheme] builds one from scratch;
+//     rest.FromSecurityScheme bridges an existing rest.SecurityScheme
+//     value.
+//   - [ServerImplementation] is a REGISTER-TIME-ONLY, SERVER-side value —
+//     pure runtime behavior, no spec fields at all. Callers never
+//     construct one directly: rest.Route.HandleMW(mw, fn) builds it
+//     internally from whatever mw/fn it receives — mw non-nil with
+//     Security set PAIRS fn against a previously-.Use()'d declaration
+//     (Satisfies derived from mw.Security.SchemeName); mw nil (or
+//     Security nil) marks a general-purpose implementation (logging,
+//     rate limiting, observability, request enrichment) with an empty
+//     Satisfies that always runs regardless of the route's declared
+//     Security.
+//   - [ClientImplementation] is a REGISTER-TIME, CLIENT-side value — the
+//     client-side mirror of ServerImplementation. Callers never construct
+//     one directly either: rest.Route.ClientMW(mw, fn) builds it
+//     internally, with the SAME mw-derived Satisfies-gating discipline —
+//     "how does THIS calling application fulfill an already-declared
+//     requirement" (e.g. supply a credential), gated to run only when its
+//     Satisfies matches the route's declared security requirements.
 //
-// See docs/roadmap/declarative-middleware.md for the full design rationale.
+// See docs/design/middleware-workflow-simplification.md for the full
+// design rationale and resolution history (supersedes the earlier
+// docs/roadmap/declarative-middleware.md "Revision 2 — the declare/
+// implement split," which introduced Middleware/ServerImplementation's
+// split but predates HandleMW/ClientMW's unification described above).
 package middleware
 
 import (
-	"context"
 	"fmt"
 	"log/slog"
 
@@ -35,49 +50,46 @@ import (
 	"github.com/DaniDeer/go-codex/route"
 )
 
-// Middleware is a named, composable SERVER-side enrichment/enforcement
-// unit, attached at Register time (e.g. via rest.WithMiddleware/Route.Use).
-// It is the ONLY type in this package that can contribute to a route's
-// spec — see [ClientMiddleware] for the client-side counterpart, which
-// deliberately cannot.
+// Middleware is a named, composable DECLARE-TIME-ONLY value, attached at
+// route-declaration time (e.g. via rest.WithMiddleware/Route.Use). It is
+// the ONLY type in this package that can contribute to a route's spec —
+// see [ServerImplementation] for the server-side runtime counterpart and
+// [ClientImplementation] for the client-side one, neither of which can.
 //
-// Fn is deliberately untyped (any) — resolved by the SPECIFIC adapter
-// function that consumes it, mirroring the type-erasure + call-site-
-// assertion idiom already used elsewhere in this codebase (e.g.
-// [ports.Pattern]'s CustomFormat). A Middleware built for the wrong
-// adapter/role fails LOUDLY with a typed [MiddlewareShapeError] at
-// Register time — never silently.
+// Middleware carries NO Fn field — it cannot run anything, ever. This is
+// deliberate: mixing a "what does this route require" declaration with
+// "how do we verify/handle it" runtime behavior in one value was the
+// exact bundling this package's Revision 2 removed (see the former
+// RequireScopes/RequireAPIKey/Observability, which no longer
+// exist in this bundled shape).
 type Middleware struct {
 	// Name identifies this middleware in errors and observability.
 	Name string
 
-	// Fn is the adapter/role-specific closure. Never called directly by
-	// this package.
-	Fn any
-
-	// Satisfies lists the security scheme names (matching a
-	// WithSecurityScheme-declared name) this middleware ENFORCES. Empty for
-	// non-security middleware (logging, rate limiting, etc.).
-	Satisfies []string
-
 	// Security, when non-nil, is a COMPLETE security scheme + requirement
 	// declaration for the attaching route/channel — nothing is inferred
-	// from this Middleware's mere presence. Only meaningful when attached
-	// via a spec-relevant RouteOpt/ChannelOpt (e.g. rest.WithMiddleware);
-	// ignored, with no effect, if attached at a call-time-only point after
-	// the spec has already been frozen.
+	// from this Middleware's mere presence.
 	Security *SecurityDeclaration
 
-	// RequestParams contributes additional header/cookie/query param spec
-	// entries this middleware itself needs represented (e.g. an API-key
-	// middleware documenting "X-API-Key"). Type-erased (any), resolved by
-	// the consuming api/* package's own param types. Only meaningful via a
-	// spec-relevant attachment point, same caveat as Security.
-	RequestParams []any
+	// RequestHeaderParams/RequestCookieParams/RequestQueryParams contribute
+	// additional request param spec entries this middleware itself needs
+	// represented (e.g. an API-key middleware documenting "X-API-Key").
+	// Typed — a wrong-shape value is a Go compile error, not a runtime one
+	// (see [HeaderParamSpec]'s doc comment for why these are
+	// middleware-package-local types, not [rest.HeaderParam] etc.
+	// directly). Build one from scratch, or use api/rest's
+	// FromHeaderParam/FromCookieParam/FromQueryParam to bridge an
+	// existing rest.HeaderParam/CookieParam/QueryParam value.
+	RequestHeaderParams []HeaderParamSpec
+	RequestCookieParams []CookieParamSpec
+	RequestQueryParams  []QueryParamSpec
 
-	// ResponseParams mirrors RequestParams for response-side spec
-	// contributions.
-	ResponseParams []any
+	// ResponseHeaderParams/ResponseCookieParams mirror the RequestParams
+	// fields above for response-side spec contributions. Bridge an
+	// existing rest.ResponseHeaderParam/ResponseCookieParam value via
+	// api/rest's FromResponseHeaderParam/FromResponseCookieParam.
+	ResponseHeaderParams []ResponseHeaderParamSpec
+	ResponseCookieParams []ResponseCookieParamSpec
 }
 
 // SecurityDeclaration is a COMPLETE, explicit security scheme + requirement
@@ -97,56 +109,29 @@ type SecurityDeclaration struct {
 	Scopes []string
 
 	// Codec, when non-nil, format-validates the raw credential before any
-	// Fn runs.
+	// ServerImplementation Fn runs.
 	Codec *codex.Codec[string]
 }
 
-// ClientMiddleware is a named, composable CLIENT-side unit, attached at
-// Call time (e.g. via Route.UseClient) — the counterpart to [Middleware].
-// It answers a DIFFERENT question than Middleware does: not "what does
-// this route require, and how do we verify it," but "how does THIS
-// calling application fulfill an already-declared requirement" (e.g.
-// supply a credential the server — or an external system this codebase
-// merely calls — expects).
+// SecurityScheme builds a Middleware carrying ONLY a [SecurityDeclaration]
+// — no runtime behavior at all. This is the declare-time half of a
+// security requirement; pair it with a [ServerImplementation] (e.g. one
+// built by an adapter's Scopes constructor) supplied SEPARATELY, at
+// Register/Handler time, to actually enforce it.
 //
-// Deliberately has NO Security/RequestParams/ResponseParams fields — a
-// ClientMiddleware can NEVER contribute to a route's spec. The spec is
-// ALWAYS declared server-side, via [Middleware] (see [RequireScopes] for
-// "this codebase enforces it" and [DeclareSecurity] for "this codebase
-// merely documents an external requirement it doesn't enforce").
-//
-// Fn is deliberately untyped (any) for the SAME reason as
-// [Middleware.Fn] — resolved by the specific client adapter function that
-// consumes it (e.g. nethttp.Call's credential-providing shape). A
-// ClientMiddleware built for the wrong adapter/role fails LOUDLY with a
-// typed [MiddlewareShapeError] at Call time — never silently.
-type ClientMiddleware struct {
-	// Name identifies this middleware in errors and observability.
-	Name string
-
-	// Fn is the adapter-specific closure. Never called directly by this
-	// package.
-	Fn any
-}
-
-// DeclareSecurity builds a spec-only [Middleware] — a [SecurityDeclaration]
-// with NO Fn and an empty Satisfies. Use this for a route that documents a
-// security requirement WITHOUT an enforcement mechanism this codebase
-// provides — typically a route describing an EXTERNAL system's API (e.g.
-// a Docker registry) that this codebase calls as a client but never
-// implements/serves itself. Attach via [rest.WithMiddleware]/
-// [rest.Route.Use] exactly like [RequireScopes]'s output; the only
-// difference is the absent Fn/Satisfies.
-//
-// If a route using ONLY a DeclareSecurity-built Middleware is ever passed
-// to Register() (i.e. someone DOES try to serve it), the drift-closing
-// coverage check already run there correctly rejects it with
-// MissingSecurityMiddlewareError — an empty Satisfies never covers a
-// declared requirement. This is a deliberate safety net: DeclareSecurity
-// is for client-only routes; a route that gains a real server
-// implementation must switch to [RequireScopes] (or an equivalent
-// carrying a real Fn) instead.
-func DeclareSecurity(schemeName string, scheme route.SecurityScheme, scopes []string, codec *codex.Codec[string]) Middleware {
+// Use this directly (with no matching ServerImplementation ever supplied)
+// for a route that documents a security requirement WITHOUT an enforcement
+// mechanism this codebase provides — typically a route describing an
+// EXTERNAL system's API (e.g. a Docker registry) that this codebase calls
+// as a client but never implements/serves itself. If such a route is ever
+// passed to an adapter's Register/Handler-equivalent WITH NO matching
+// ServerImplementation supplied, the adapter's drift-closing coverage
+// check correctly rejects it with a MissingSecurityMiddlewareError — this
+// is the safety net that makes "declared but not enforced" a loud failure,
+// not a silent one, exactly where it can first be detected: at Register
+// time, once both the declaration AND the (absent) implementation are
+// known.
+func SecurityScheme(schemeName string, scheme route.SecurityScheme, scopes []string, codec *codex.Codec[string]) Middleware {
 	return Middleware{
 		Name: "declare-security:" + schemeName,
 		Security: &SecurityDeclaration{
@@ -158,10 +143,92 @@ func DeclareSecurity(schemeName string, scheme route.SecurityScheme, scopes []st
 	}
 }
 
-// MiddlewareShapeError is returned when a Middleware.Fn's concrete type
-// doesn't match what the consuming adapter/role expects (e.g. a
-// general-purpose func(http.Handler) http.Handler value passed where a
-// security-specific closure was required, or vice versa).
+// ServerImplementation is a named, composable REGISTER-TIME-ONLY,
+// SERVER-side value — the runtime counterpart to [Middleware]. It carries
+// NO Security/RequestParams/ResponseParams fields — it cannot contribute
+// to a route's spec, ever; the spec is ALWAYS declared separately, via
+// [Middleware] (see [SecurityScheme]).
+//
+// Built internally by rest.Route.HandleMW(mw, fn) — never constructed
+// directly by callers. mw non-nil with Security set derives Satisfies
+// from mw.Security.SchemeName (the PAIRED, security-verifying case,
+// matched against a previously-.Use()'d declaration); mw nil (or Security
+// nil) leaves Satisfies empty (the UNPAIRED, general-purpose case —
+// logging, rate limiting, observability, request enrichment — that runs
+// unconditionally regardless of whether the route declares any Security
+// at all).
+//
+// Fn is deliberately untyped (any) — resolved by the SPECIFIC adapter
+// function that consumes it, mirroring the type-erasure + call-site-
+// assertion idiom already used elsewhere in this codebase (e.g.
+// [ports.Pattern]'s CustomFormat). A ServerImplementation built for the
+// wrong adapter/role fails LOUDLY with a typed [MiddlewareShapeError] at
+// Register time — never silently.
+type ServerImplementation struct {
+	// Name identifies this implementation in errors and observability.
+	Name string
+
+	// Satisfies lists the security scheme name(s) (matching a
+	// SecurityScheme/SecurityDeclaration name) this Fn VERIFIES. EMPTY
+	// means general-purpose — Fn runs unconditionally, regardless of
+	// whether the route declares any Security at all (this is how
+	// logging/observability/rate-limiting/presence-only checks are
+	// expressed, unified with security verification under this ONE
+	// register-time type instead of two separate mechanisms).
+	Satisfies []string
+
+	// Fn is the adapter-specific closure. Never called directly by this
+	// package. Two concrete shapes exist for adapters/nethttp+chi:
+	// general-purpose func(http.Handler) http.Handler (Satisfies empty),
+	// and security-verifying func(ctx, raw *http.Request, req *Req)
+	// (map[string][]string, error) (Satisfies non-empty).
+	Fn any
+}
+
+// ClientImplementation is a named, composable REGISTER-TIME, CLIENT-side
+// value — the client-side mirror of [ServerImplementation]. It answers a
+// DIFFERENT question than either server-side type does: not "what does
+// this route require, and how do we verify it," but "how does THIS
+// calling application fulfill an already-declared requirement" (e.g.
+// supply a credential the server — or an external system this codebase
+// merely calls — expects).
+//
+// Built internally by rest.Route.ClientMW(mw, fn) — never constructed
+// directly by callers. mw non-nil with Security set derives Satisfies
+// from mw.Security.SchemeName, GATING this implementation to run only
+// when the route's declared security requirements include that scheme;
+// mw nil (or Security nil) leaves Satisfies empty — general-purpose,
+// always runs.
+//
+// Deliberately has NO Security/RequestParams/ResponseParams fields — a
+// ClientImplementation can NEVER contribute to a route's spec. The spec
+// is ALWAYS declared server-side, via [Middleware] (see [SecurityScheme]).
+//
+// Fn is deliberately untyped (any) for the SAME reason as
+// [ServerImplementation.Fn] — resolved by the specific client adapter
+// function that consumes it (e.g. nethttp.Call's credential-providing
+// shape). A ClientImplementation built for the wrong adapter/role fails
+// LOUDLY with a typed [MiddlewareShapeError] at Call time — never
+// silently.
+type ClientImplementation struct {
+	// Name identifies this implementation in errors and observability.
+	Name string
+
+	// Satisfies lists the security scheme name(s) this Fn supplies a
+	// credential for. EMPTY means general-purpose — Fn runs
+	// unconditionally.
+	Satisfies []string
+
+	// Fn is the adapter-specific closure. Never called directly by this
+	// package.
+	Fn any
+}
+
+// MiddlewareShapeError is returned when a [ServerImplementation.Fn]'s or
+// [ClientImplementation.Fn]'s concrete type doesn't match what the consuming
+// adapter/role expects (e.g. a general-purpose func(http.Handler)
+// http.Handler value passed where a security-specific closure was
+// required, or vice versa).
 type MiddlewareShapeError struct {
 	Name     string
 	Expected string
@@ -179,42 +246,6 @@ func (e MiddlewareShapeError) LogValue() slog.Value {
 		slog.String("expected", e.Expected),
 		slog.String("got", e.Got),
 	)
-}
-
-// RequireScopes builds a security Middleware that is BOTH the spec
-// declaration (via Security) AND the runtime authentication step (via Fn).
-// extract is PURE AUTHENTICATION — it returns the caller's granted scopes
-// however obtained; it does NOT decide pass/fail against a route's declared
-// requirements (no []route.SecurityRequirement parameter). Authorization (the
-// mechanical scope-match) is performed exactly once by the consuming
-// adapter, AFTER merging every attached security Fn's grants, via
-// [CheckScopes] — see docs/roadmap/declarative-middleware.md's "L4" for why
-// this split is necessary.
-//
-// Raw is the adapter's raw wire-request type (e.g. *http.Request for
-// nethttp/chi). Req is the route/channel's decoded, already-merged request
-// type — extract receives it as a pointer so it can also WRITE a
-// derived/verified field back onto it.
-func RequireScopes[Raw, Req any](
-	schemeName string,
-	scheme route.SecurityScheme,
-	scopes []string,
-	credentialCodec *codex.Codec[string],
-	extract func(ctx context.Context, raw Raw, req *Req) (map[string][]string, error),
-) Middleware {
-	return Middleware{
-		Name:      "require-scopes:" + schemeName,
-		Satisfies: []string{schemeName},
-		Security: &SecurityDeclaration{
-			SchemeName: schemeName,
-			Scheme:     scheme,
-			Scopes:     scopes,
-			Codec:      credentialCodec,
-		},
-		Fn: func(ctx context.Context, raw Raw, req *Req) (map[string][]string, error) {
-			return extract(ctx, raw, req)
-		},
-	}
 }
 
 // CheckScopes reports an error unless granted satisfies reqs, via

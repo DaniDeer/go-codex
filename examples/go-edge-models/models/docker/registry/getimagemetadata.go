@@ -28,7 +28,7 @@ import (
 
 // GetManifestReq is GetManifestRoute's request — Name and Reference merge
 // automatically into the {name}/{reference} path variables via
-// nethttp.CallHandle.
+// nethttp.Call/CallWithHandle.
 type GetManifestReq struct {
 	Name      string
 	Reference string
@@ -39,10 +39,10 @@ type GetManifestReq struct {
 // dispatched automatically by internal.ManifestEnvelopeCodec based on the
 // response shape. {reference} is a tag or a digest. Req is GetManifestReq,
 // whose Name/Reference fields merge into {name}/{reference} automatically
-// via nethttp.CallHandle. Resp additionally merges the
+// via nethttp.Call/CallWithHandle. Resp additionally merges the
 // Docker-Content-Digest RESPONSE HEADER directly into
 // internal.ManifestEnvelope.Digest via rest.NewRequiredResponseHeaderParam
-// — nethttp.Call/CallHandle applies this merge automatically on every
+// — nethttp.Call/CallWithHandle applies this merge automatically on every
 // successful (2xx) response, so app/registry's fetchManifest never needs
 // a manual HTTP call just to read that header.
 //
@@ -70,7 +70,7 @@ type GetManifestReq struct {
 // GetManifestRoute declares its "bearerAuth" requirement via
 // .Use(BearerAuthDeclaration) below — same mechanism as GetTagsRoute (see
 // its own doc comment): a caller MUST separately chain a
-// credential-SUPPLYING middleware.ClientMiddleware via .UseClient(...)
+// credential-SUPPLYING middleware.ClientImplementation via .ClientMW(...)
 // before calling .ClientHandle() to actually authenticate outgoing calls.
 var GetManifestRoute = rest.NewRoute[GetManifestReq, internal.ManifestEnvelope](
 	"GET", "/v2/{name}/manifests/{reference}",

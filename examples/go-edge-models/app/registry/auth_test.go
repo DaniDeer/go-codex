@@ -345,7 +345,7 @@ func TestWithCredentials_WinsOverWithCredentialsByRegistry(t *testing.T) {
 //
 // Pure resolveOptions-level assertion — no HTTP involved (mirrors this
 // package's stated IO-free unit-test policy). End-to-end observer firing
-// through GetTags/GetImageMetadata's real nethttp.CallHandle invocations
+// through GetTags/GetImageMetadata's real nethttp.CallWithHandle invocations
 // is demonstrated by examples/go-edge-models/main.go's runRegistryDemo,
 // not re-derived here as a mock-server test.
 func TestWithObserver_SetsObserverOnOptions(t *testing.T) {

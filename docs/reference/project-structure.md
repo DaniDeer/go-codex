@@ -294,7 +294,7 @@ go-codex/
     ├── rest-api/               # full OpenAPI 3.1 document from route descriptors
     ├── adapters-nethttp/       # net/http adapter: three-layer pipeline, multi-format bodies, observer
     ├── adapters-nethttp-security/   # net/http adapter: bearer JWT, scopes, SecurityFunc, observer
-    ├── adapters-nethttp-client/     # codec-as-contract HTTP client: shared contract/, Call, CredentialFunc
+    ├── adapters-nethttp-client/     # codec-as-contract HTTP client: shared contract/, Caller, security middleware
     │   └── contract/               #   shared Route specs, codecs, types (importable by both sides)
     ├── adapters-chi/           # chi adapter: wiring api/rest to chi.Router
     ├── adapters-chi-security/  # chi adapter: bearer JWT security, per-route scopes

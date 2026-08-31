@@ -18,7 +18,6 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
-	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
@@ -151,10 +150,10 @@ var greetPath = "/greet"
 
 // ── Main ─────────────────────────────────────────────────────────────────────
 
-// mustRegister exits the program if nethttp.Register returns an error.
-func mustRegister(err error) {
+// mustServe exits the program if Register or Serve returns an error.
+func mustServe(err error, what string) {
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "nethttp.Register failed: %v\n", err)
+		fmt.Fprintf(os.Stderr, "%s failed: %v\n", what, err)
 		os.Exit(1)
 	}
 }
@@ -186,13 +185,6 @@ func main() {
 		rest.RouteMeta{OperationID: "greet", Summary: "Returns a greeting"},
 	)
 
-	// Server handle (registered with builder — validates path codecs).
-	b := rest.NewBuilder(rest.Info{Title: "Trace Demo", Version: "1.0.0"})
-	regHandle, err := route.Register(b)
-	if err != nil {
-		panic(err)
-	}
-
 	// Client handle (no builder — client-only use).
 	clientHandle := route.ClientHandle()
 
@@ -206,9 +198,8 @@ func main() {
 
 	// ── Start server ──────────────────────────────────────────────────────
 
-	mux := http.NewServeMux()
-	obsMw := nethttp.ObservabilityMiddleware(obs)
-	mustRegister(nethttp.Register(mux, regHandle, func(ctx context.Context, in GreetIn) (GreetOut, error) {
+	obsFn := nethttp.Observability(obs)
+	servedRoute := route.WithHandler(func(ctx context.Context, in GreetIn) (GreetOut, error) {
 		// 1. Forge — child of HTTP span.
 		result, err := greetFn.ApplyContext(ctx, in.Name)
 		if err != nil {
@@ -223,7 +214,9 @@ func main() {
 		}
 
 		return GreetOut{Greeting: result}, nil
-	}, nethttp.Options{}, obsMw))
+	}).HandleMW(nil, obsFn)
+	mux, err := nethttp.ServeOne(servedRoute)
+	mustServe(err, "ServeOne")
 
 	srv := httptest.NewServer(mux)
 	defer srv.Close()
@@ -233,8 +226,8 @@ func main() {
 	clientCtx := tracer.StartSpan(context.Background(), "client:http.request", greetPath)
 	defer tracer.EndSpan(clientCtx, nil)
 
-	resp, err := nethttp.Call(clientCtx, srv.Client(), srv.URL,
-		clientHandle, GreetIn{Name: "Alice"}, nil,
+	resp, err := nethttp.CallWithHandle(clientCtx, srv.Client(), srv.URL,
+		clientHandle, GreetIn{Name: "Alice"},
 		nethttp.CallOptions{Observer: obs},
 	)
 	if err != nil {

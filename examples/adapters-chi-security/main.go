@@ -46,6 +46,7 @@ import (
 	"github.com/DaniDeer/go-codex/adapters/nethttp"
 	"github.com/DaniDeer/go-codex/api/rest"
 	"github.com/DaniDeer/go-codex/codex"
+	"github.com/DaniDeer/go-codex/middleware"
 	"github.com/DaniDeer/go-codex/route"
 	"github.com/DaniDeer/go-codex/stats"
 	"github.com/DaniDeer/go-codex/validate"
@@ -171,6 +172,19 @@ func recordRejection(ctx context.Context, path string) {
 	}
 }
 
+// scopesImpl builds a security middleware.ServerImplementation wrapping
+// extract — the runtime counterpart to a route's declare-time
+// middleware.SecurityScheme, matched by schemeName. Passed to
+// Route.HandleMW(&declMw, scopesImpl(...).Fn), which pairs it against the
+// matching .Use()-declared scheme (see docs/design/middleware-workflow-simplification.md).
+func scopesImpl[Req any](schemeName string, extract func(ctx context.Context, r *http.Request, req *Req) (map[string][]string, error)) middleware.ServerImplementation {
+	return middleware.ServerImplementation{
+		Name:      "implement-scopes:" + schemeName,
+		Satisfies: []string{schemeName},
+		Fn:        extract,
+	}
+}
+
 // ── Observer ──────────────────────────────────────────────────────────────────
 
 // CountingObserver implements [stats.Observer] and [stats.SecurityObserver].
@@ -222,9 +236,11 @@ func (o *CountingObserver) Print() {
 // ── Builder and routes ────────────────────────────────────────────────────────
 
 func buildAPI() (
-	loginHandle *rest.RouteHandle[loginReq, tokenResp],
-	profileHandle *rest.RouteHandle[struct{}, profileResp],
-	adminHandle *rest.RouteHandle[adminActionReq, adminActionResp],
+	loginRoute rest.Route[loginReq, tokenResp],
+	profileRoute rest.Route[struct{}, profileResp],
+	profileDeclMw middleware.Middleware,
+	adminRoute rest.Route[adminActionReq, adminActionResp],
+	adminDeclMw middleware.Middleware,
 	b *rest.Builder,
 ) {
 	b = rest.NewBuilder(rest.Info{
@@ -234,55 +250,50 @@ func buildAPI() (
 	})
 
 	// The bearer credential format codec, shared by both secured routes'
-	// RequireScopes middleware below.
+	// security declarations below.
 	bearerCodec := codex.String().Refine(validate.BearerToken)
 
 	// POST /login — public.
-	loginHandle, _ = rest.NewRoute[loginReq, tokenResp]("POST", "/login",
+	loginRoute = rest.NewRoute[loginReq, tokenResp]("POST", "/login",
 		loginReqCodec, tokenRespCodec,
 		rest.RouteMeta{OperationID: "login", Summary: "Authenticate and receive a bearer token", Tags: []string{"auth"}},
-	).Register(b)
-
-	// GET /users/{id}/profile — secured + chi path variable. RequireScopes
-	// (reused from nethttp — chi has no scheme-specific RequireScopes of its
-	// own, identical *http.Request Raw type) is BOTH the spec declaration
-	// AND the runtime enforcement.
-	profileScopesMw := nethttp.RequireScopes[struct{}]("bearerAuth", route.BearerScheme("JWT"), []string{"profile"}, &bearerCodec,
-		func(ctx context.Context, r *http.Request, _ *struct{}) (map[string][]string, error) {
-			return extractScopes(ctx, r, "/users/{id}/profile")
-		},
 	)
-	profileHandle, _ = rest.NewRoute[struct{}, profileResp]("GET", "/users/{id}/profile",
+
+	// GET /users/{id}/profile — secured + chi path variable.
+	// middleware.SecurityScheme is the declare-time half — attached via
+	// Use() it contributes the spec's Security requirement. The runtime
+	// enforcement is a SEPARATE middleware.ServerImplementation (built by
+	// this file's own scopesImpl helper — chi has no scheme-specific
+	// constructor of its own, identical *http.Request Raw type), attached
+	// via Route.HandleMW in main below.
+	profileDeclMw = middleware.SecurityScheme("bearerAuth", route.BearerScheme("JWT"), []string{"profile"}, &bearerCodec)
+	profileRoute = rest.NewRoute[struct{}, profileResp]("GET", "/users/{id}/profile",
 		codex.Empty, profileRespCodec,
 		rest.RouteMeta{
 			OperationID: "getUserProfile",
 			Summary:     "Get a user's profile by ID",
 			Tags:        []string{"user"},
 		},
-	).Use(profileScopesMw).Register(b)
+	).Use(profileDeclMw)
 
 	// POST /admin/action — secured with admin scope.
-	adminScopesMw := nethttp.RequireScopes[adminActionReq]("bearerAuth", route.BearerScheme("JWT"), []string{"admin"}, &bearerCodec,
-		func(ctx context.Context, r *http.Request, _ *adminActionReq) (map[string][]string, error) {
-			return extractScopes(ctx, r, "/admin/action")
-		},
-	)
-	adminHandle, _ = rest.NewRoute[adminActionReq, adminActionResp]("POST", "/admin/action",
+	adminDeclMw = middleware.SecurityScheme("bearerAuth", route.BearerScheme("JWT"), []string{"admin"}, &bearerCodec)
+	adminRoute = rest.NewRoute[adminActionReq, adminActionResp]("POST", "/admin/action",
 		adminActionReqCodec, adminActionRespCodec,
 		rest.RouteMeta{
 			OperationID: "adminAction",
 			Summary:     "Perform a privileged admin action",
 			Tags:        []string{"admin"},
 		},
-	).Use(adminScopesMw).Register(b)
+	).Use(adminDeclMw)
 
 	return
 }
 
-// mustRegister exits the program if chiadapter.Register returns an error.
-func mustRegister(err error) {
+// mustServe exits the program if Register or Serve returns an error.
+func mustServe(err error, what string) {
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "chi.Register failed: %v\n", err)
+		fmt.Fprintf(os.Stderr, "%s failed: %v\n", what, err)
 		os.Exit(1)
 	}
 }
@@ -291,7 +302,7 @@ func main() {
 	logger := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelDebug}))
 	slog.SetDefault(logger)
 
-	loginHandle, profileHandle, adminHandle, b := buildAPI()
+	loginRoute, profileRoute, profileDeclMw, adminRoute, adminDeclMw, b := buildAPI()
 	metrics := &CountingObserver{}
 	obs := stats.NewFanout(metrics, stats.NewLoggingObserver(logger.With("component", "chi-security")))
 
@@ -308,11 +319,26 @@ func main() {
 			_ = json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
 		},
 	}
-	// chi reuses nethttp.ObservabilityMiddleware directly.
-	obsMw := nethttp.ObservabilityMiddleware(obs)
+	// chi reuses nethttp.Observability directly.
+	obsFn := nethttp.Observability(obs)
 
-	router := gochi.NewRouter()
-	mustRegister(chiadapter.Register(router, loginHandle, func(_ context.Context, req loginReq) (tokenResp, error) {
+	// The runtime enforcement half of each secured route's declared
+	// security requirement — attached here, via HandleMW, separately
+	// from the declare-time middleware.SecurityScheme attached in
+	// buildAPI, built by this file's own scopesImpl helper (no
+	// scheme-specific constructor of chi's own).
+	profileImplMw := scopesImpl[struct{}]("bearerAuth",
+		func(ctx context.Context, r *http.Request, _ *struct{}) (map[string][]string, error) {
+			return extractScopes(ctx, r, "/users/{id}/profile")
+		},
+	)
+	adminImplMw := scopesImpl[adminActionReq]("bearerAuth",
+		func(ctx context.Context, r *http.Request, _ *adminActionReq) (map[string][]string, error) {
+			return extractScopes(ctx, r, "/admin/action")
+		},
+	)
+
+	loginRoute = loginRoute.WithHandler(func(_ context.Context, req loginReq) (tokenResp, error) {
 		switch {
 		case req.Username == "alice" && req.Password == "secret":
 			return tokenResp{Token: "valid-user-token"}, nil
@@ -321,9 +347,10 @@ func main() {
 		default:
 			return tokenResp{}, invalidCredentialsError{Err: errors.New("invalid credentials")}
 		}
-	}, opts, obsMw))
+	}).HandleMW(nil, obsFn).WithOptions(opts)
+	mustServe(loginRoute.Register(b), "register /login")
 
-	mustRegister(chiadapter.Register(router, profileHandle, func(ctx context.Context, _ struct{}) (profileResp, error) {
+	profileRoute = profileRoute.WithHandler(func(ctx context.Context, _ struct{}) (profileResp, error) {
 		// chi path variable: chi.URLParam is accessible from the request context.
 		id := gochi.URLParamFromCtx(ctx, "id")
 		return profileResp{
@@ -331,11 +358,16 @@ func main() {
 			Name:   "Alice",
 			Email:  "alice@example.com",
 		}, nil
-	}, opts, obsMw))
+	}).HandleMW(nil, obsFn).HandleMW(&profileDeclMw, profileImplMw.Fn).WithOptions(opts)
+	mustServe(profileRoute.Register(b), "register /users/{id}/profile")
 
-	mustRegister(chiadapter.Register(router, adminHandle, func(_ context.Context, req adminActionReq) (adminActionResp, error) {
+	adminRoute = adminRoute.WithHandler(func(_ context.Context, req adminActionReq) (adminActionResp, error) {
 		return adminActionResp{Result: "action " + req.Action + " executed"}, nil
-	}, opts, obsMw))
+	}).HandleMW(nil, obsFn).HandleMW(&adminDeclMw, adminImplMw.Fn).WithOptions(opts)
+	mustServe(adminRoute.Register(b), "register /admin/action")
+
+	router := gochi.NewRouter()
+	mustServe(chiadapter.Serve(router, b), "Serve")
 
 	// ── Demo requests ─────────────────────────────────────────────────────────
 	fmt.Println("=== adapters-chi-security demo ===")

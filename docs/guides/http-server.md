@@ -14,10 +14,10 @@ The most comprehensive HTTP server demo. Shows the **three-layer codec pipeline*
 
 - Layer 1: shared field codecs (`emailFieldCodec`, `nameFieldCodec`) propagate constraints to all three boundary codecs (request, database, response)
 - Layer 2: pure domain functions (`buildUserRecord`, `buildUserResponse`) with zero IO — independently unit-testable
-- Layer 3: infrastructure (`UserStore` uses codec for all DB IO; `nethttp.Register` is the only HTTP line)
+- Layer 3: infrastructure (`UserStore` uses codec for all DB IO; `nethttp.Serve` — the one call that wires every declared route onto the mux — is the only HTTP line)
 
 Key patterns:
-- `createUserRoute.WithRequestFormats(format.JSON(...), format.YAML(...))` — JSON + YAML bodies
+- `rest.RequestFormats(format.JSON(...), format.YAML(...))` declared inline in `NewRoute`'s opts — JSON + YAML bodies
 - `rest.NewPathParam` — declares the path param's spec/validation AND a merge field in one call; the handler receives an already-merged, validated request (`req.ID`) instead of manually calling `r.PathValue("id")` — see [REST API — Path/query/header params with automatic merge](../features/rest-api.md#pathqueryheader-params-with-automatic-merge)
 - `ResponseHeaderParam` + `ResponseCookieParam` — server-side contract validation on outgoing headers/cookies
 - `nethttp.SetCookie` with `.WithCodec()` — symmetric read/write validation using the same codec
@@ -30,11 +30,11 @@ Key patterns:
 
 Demonstrates bearer JWT authentication with per-route scope enforcement:
 
-- `rest.WithSecurityScheme("bearerAuth", ...)` on the route, with `validate.BearerToken` codec
+- `middleware.SecurityScheme("bearerAuth", route.BearerScheme("JWT"), scopes, &bearerCodec)` declares the scheme + per-route scope requirement in one value, attached via `.Use(declMw)`
 - `b.AddGlobalSecurity(route.Require("bearerAuth"))`
-- Per-route scopes: `route.Require("bearerAuth", "profile")` vs `route.Require("bearerAuth", "admin")`
+- Per-route scopes: one `middleware.SecurityScheme` value per required scope set (`[]string{"profile"}` vs `[]string{"admin"}`)
 - Custom `ErrorHandler` mapping `invalidCredentialsError` → 401
-- `SecurityFunc` that calls `verifyToken()` after codec format validation
+- A `scopesImpl`-built `middleware.ServerImplementation` that calls `verifyToken()` after codec format validation, attached via `.HandleMW(&declMw, impl.Fn)` (paired against the declared scheme via its `Satisfies`)
 
 → [examples/adapters-nethttp-security](https://github.com/DaniDeer/go-codex/tree/main/examples/adapters-nethttp-security)
 
@@ -42,8 +42,8 @@ Demonstrates bearer JWT authentication with per-route scope enforcement:
 
 Same patterns as `adapters-nethttp` but using chi router. Demonstrates both
 the low-level `chi.URLParam(r, "id")` extraction (for validate-only params)
-and `rest.NewPathParam`'s automatic merge (chi's `Handler` calls
-`RouteHandle.DecodeMerged` internally exactly like `nethttp.Handler` does).
+and `rest.NewPathParam`'s automatic merge (chi's `Serve` applies
+`RouteHandle.MergeFields()` internally exactly like `nethttp.Serve` does).
 
 → [examples/adapters-chi](https://github.com/DaniDeer/go-codex/tree/main/examples/adapters-chi) · [examples/adapters-chi-security](https://github.com/DaniDeer/go-codex/tree/main/examples/adapters-chi-security)
 
@@ -72,12 +72,12 @@ pngCodec := codex.Bytes().
     Refine(validate.MaxBytes(5 * 1024 * 1024)).
     Refine(validate.PNG)
 
-uploadRoute, _ := rest.NewRoute[[]byte, ImageMeta]("PUT", "/images/{id}",
+uploadHandle, _ := rest.NewRoute[[]byte, ImageMeta]("PUT", "/images/{id}",
     pngCodec, imageMetaCodec, ...,
-).Register(b)
+).RegisterHandle(b)
 
 // Accept binary PNG bodies; returns 415 if Content-Type doesn't match
-uploadRoute.WithRequestFormats(format.Binary(pngCodec).WithContentType("image/png"))
+uploadHandle.WithRequestFormats(format.Binary(pngCodec).WithContentType("image/png"))
 ```
 
 The adapter returns HTTP **415 Unsupported Media Type** if the client sends a `Content-Type` not in the registered set.
@@ -87,12 +87,12 @@ The adapter returns HTTP **415 Unsupported Media Type** if the client sends a `C
 Use `handle.WithFormats` to register binary as a producible format. The adapter negotiates by the `Accept` header, calls `format.Binary.Marshal` (validates constraints), and sets the response `Content-Type`:
 
 ```go
-downloadRoute, _ := rest.NewRoute[DownloadReq, []byte]("POST", "/images/{id}/download",
+downloadHandle, _ := rest.NewRoute[DownloadReq, []byte]("POST", "/images/{id}/download",
     downloadCodec, pngCodec, ...,
-).Register(b)
+).RegisterHandle(b)
 
 // Serve binary PNG responses; Accept: */* or Accept: image/png both match
-downloadRoute.WithFormats(format.Binary(pngCodec).WithContentType("image/png"))
+downloadHandle.WithFormats(format.Binary(pngCodec).WithContentType("image/png"))
 ```
 
 `Accept: */*` (or no Accept header — browsers, curl) matches the first registered format.
@@ -128,9 +128,9 @@ For `nethttp.PipelineHandler` / `chi.PipelineHandler`, declare per-route error
 status mapping once on the route:
 
 ```go
-route, _ := rest.NewRoute[Req, Resp]("POST", "/jobs", reqCodec, respCodec,
+handle, _ := rest.NewRoute[Req, Resp]("POST", "/jobs", reqCodec, respCodec,
     rest.ErrorStatus[domain.ConflictError](http.StatusConflict),
-).Register(b)
+).RegisterHandle(b)
 ```
 
 - First matching rule wins.
@@ -181,25 +181,27 @@ noPipelineErrHandler := func(w http.ResponseWriter, r *http.Request, status int,
     baseErrorHandler(w, r, status, err)
 }
 
-nethttp.Register(mux, noPipelineRoute, noPipelineFn,
-    nethttp.Options{ErrorHandler: noPipelineErrHandler})
+noPipelineRoute = noPipelineRoute.WithHandler(noPipelineFn).
+    WithOptions(nethttp.Options{ErrorHandler: noPipelineErrHandler})
+noPipelineRoute.Register(b)
+nethttp.Serve(mux, b)
 ```
 
 Pipeline (`PipelineHandler`): map status in route declaration; keep custom
 `ErrorHandler` for response-body shaping.
 
 ```go
-pipelineRoute, _ := rest.NewRoute[Req, Resp]("POST", "/erg/pipeline", reqCodec, respCodec,
+pipelineHandle, _ := rest.NewRoute[Req, Resp]("POST", "/erg/pipeline", reqCodec, respCodec,
     rest.ErrorStatus[domainConflictError](http.StatusConflict),
-).Register(b)
+).RegisterHandle(b)
 
-nethttp.RegisterPipeline(mux, pipelineRoute, pipelineFn,
+nethttp.RegisterPipeline(mux, pipelineHandle, pipelineFn,
     nethttp.Options{ErrorHandler: baseErrorHandler})
 ```
 
 ### Current possibilities matrix (today)
 
-| Capability | No-pipeline (`Handler`) | Pipeline (`PipelineHandler`) |
+| Capability | No-pipeline (plain business handler) | Pipeline (`PipelineHandler`) |
 |-----------|--------------------------|------------------------------|
 | One-struct-one-call request/response | Yes (`Req` decode + `Resp` encode via route codecs) | Yes (same route codec path; pipeline fn gets typed `Req`, returns typed `Resp` stream) |
 | Custom error body/envelope | Yes (`Options.ErrorHandler`) | Yes (`Options.ErrorHandler`) |
@@ -231,9 +233,11 @@ pngCodec := codex.Bytes().
     Refine(validate.PNG)
 
 // MaxBodyBytes matches the codec limit — codec error fires, not generic 413
-nethttp.Register(mux, uploadRoute, handler, nethttp.Options{
+uploadRoute = uploadRoute.WithHandler(handler).WithOptions(nethttp.Options{
     MaxBodyBytes: maxPNG,
 })
+uploadRoute.Register(b)
+nethttp.Serve(mux, b)
 ```
 
 See [`examples/png-upload`](https://github.com/DaniDeer/go-codex/tree/main/examples/png-upload) for a full upload + download route pair with path params, cookie validation, and OpenAPI spec generation.

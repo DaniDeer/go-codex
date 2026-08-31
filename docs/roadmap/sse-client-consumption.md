@@ -1,7 +1,7 @@
 # SSE Client Consumption — findings
 
 > **Status:** Findings only — no proposal, no driver yet. Spun out from
-> [Middleware Workflow Simplification](middleware-workflow-simplification.md)'s
+> [Middleware Workflow Simplification](../design/middleware-workflow-simplification.md)'s
 > final critical review pass (item 6: `SSERoute`'s full chainable method
 > set) while confirming what a client-side SSE story would need.
 > **Deliberately DEFERRED**: the plan is to implement the REST

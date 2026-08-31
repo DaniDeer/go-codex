@@ -1,6 +1,10 @@
 # Webhook Adapter — `adapters/webhook`
 
-> **Status:** Design complete — not yet implemented.
+> **Status:** Design complete — not yet implemented. Phase 0 prerequisite
+> identified: a small, additive `nethttp.IngestAdapterOptions.Middleware`
+> field must ship first (see "Design update (2026)" below) — the original
+> "zero-core-change" premise held for `chi`/`route`/`render/*` but not for
+> `adapters/nethttp` after `Handler` was removed.
 > [← Back to Roadmap](index.md)
 
 ## Motivation
@@ -15,13 +19,19 @@ for both directions (`nethttp.IngestAdapter` for inbound HTTP-push-to-pipeline,
 for OpenAPI, `api/events` for AsyncAPI), but the one mechanism that makes an
 HTTP endpoint a *webhook* rather than a generic REST route — **HMAC-SHA256
 signature verification/signing over the raw, undecoded payload bytes** — is
-not currently possible: `nethttp.Handler`'s `SecurityFunc` and `nethttp.Call`'s
-`CredentialFunc` both run after the body has already been read and decoded
-(and, for `SecurityFunc`, `r.Body` is drained by then with no fresh reader
+not currently possible: both the server-side declarative security mechanism
+(a route's `.Use(mw)`-declared requirement paired with a
+`.HandleMW(mw, fn)`-attached `middleware.ServerImplementation`) and the
+client-side credential mechanism (`.ClientMW(mw, fn)`-attached
+`middleware.ClientImplementation`) run against the already-DECODED `Req`
+value — by the time either runs, the body has already been read and decoded
+(and, server-side, `r.Body` is drained by then with no fresh reader
 substituted), so neither hook can access the exact bytes a sender/receiver
 signed. `adapters/webhook` closes that one real gap while reusing everything
-else — no changes to `nethttp`/`chi` core are needed (see "Zero-core-change
-design" below).
+else it can — see "Design update (2026)" below for what changed on the
+inbound side since this doc was first written (a small, additive
+`nethttp.IngestAdapter` change is now a Phase 0 prerequisite; the outbound
+side and everything else remains a zero-core-change addition).
 
 ## Scope decisions (what's in Phase 1, what's deferred)
 
@@ -35,10 +45,23 @@ design" below).
 | AsyncAPI generation — reuse `EventPattern`/`events.NewChannel` for a channel description of the payload as a message (protocol `"https"`/`"webhook"` on the server) — dual REST+AsyncAPI description on the same payload codec is optional per route, not mandatory | New AsyncAPI HTTP-callback binding objects — plain `Server{Protocol: "https"}` is descriptive enough for Phase 1 |
 | Narrow interface: none needed — `net/http.Client`/`*http.ServeMux` used directly (stdlib-only, mirrors `nethttp`) | — |
 
-## Zero-core-change design (why no changes to `nethttp`/`chi`/`route`/`render/*` are needed)
+## Design update (2026): the original "zero-core-change" premise no longer holds for the inbound side
 
-**Inbound** — a body-preserving verification middleware wraps the handler
-`nethttp.Handler`/`chi` already builds:
+> **This section supersedes an earlier version of this doc that assumed
+> `nethttp.Handler(handle, fn, opts)` — a standalone function turning a
+> `*rest.RouteHandle` + handler fn + `Options` directly into an
+> `http.Handler` — was still available for `ReceiveAdapter` to build on
+> "exactly like `nethttp.IngestAdapter` does internally." That function
+> was REMOVED during
+> [Middleware Workflow Simplification](../design/middleware-workflow-simplification.md)'s
+> old-door deletion phase, and `IngestAdapter` itself now calls an
+> UNEXPORTED replacement (`handlerFunc`) — inaccessible from an external
+> package like `adapters/webhook`. The **outbound** side is unaffected
+> (see below); only the **inbound** side needs a real design update,
+> spelled out here.
+
+**Inbound** — a body-preserving verification middleware still wraps the
+final `http.Handler`, unchanged in shape:
 
 ```go
 func verifyMiddleware(secret []byte, headerName string, tolerance time.Duration, next http.Handler) http.Handler {
@@ -51,23 +74,62 @@ func verifyMiddleware(secret []byte, headerName string, tolerance time.Duration,
 }
 ```
 
-`ReceiveAdapter` builds `nethttp.Handler(handle, fn, opts)` exactly like
-`nethttp.IngestAdapter` does internally, wraps it in `verifyMiddleware`, and
-registers the wrapped handler on the mux itself — the forwarding-channel
-plumbing (buffered chan, `PipelineFullError` on overflow, `Activate`
-lifecycle) is copied from `nethttp.IngestAdapter`'s pattern, not reused via
-composition (no exported hook exists to inject middleware into
-`IngestAdapter` today — revisit if a second use case wants that).
+But `ReceiveAdapter` can no longer build the wrapped handler itself the way
+the old design assumed — there is today NO exported function that turns a
+bare `*rest.RouteHandle[T, struct{}]` into an `http.Handler` (the whole
+decode/validate/security/dispatch pipeline lives behind `Serve`, which
+consumes a `*rest.Builder`'s *already-registered* routes — a bare handle
+can't be re-added to a fresh `Builder`, since registration needs the
+original `rest.Route` value, not a handle). **This makes a small, additive
+change to `nethttp.IngestAdapter` a genuine Phase 0 PREREQUISITE for this
+roadmap** — not a "zero-core-change" nice-to-have, and not new-`nethttp`-
+API scope creep: it is the SAME "inject middleware into `IngestAdapter`"
+hook this doc's own "Open design decision #1" already flagged as worth
+revisiting "if a second use case wants that." `ReceiveAdapter` genuinely IS
+that second use case, so the decision is resolved (see below), not merely
+revisited:
 
-**Outbound** — `handle.EncodeRequest(item)` (already exported on
-`rest.RouteHandle`) gives the exact marshaled bytes *before* the HTTP call is
-made. `DeliverAdapter` calls it once to compute the signature, adds the
-signature (and optionally a timestamp) header via
-`nethttp.CallOptions.ExtraHeaders`, then calls `nethttp.Call` normally — full
-reuse of path/query/cookie/header validation, `CredentialFunc`, observer,
-and tracing. Retry-with-backoff wraps the `nethttp.Call` invocation, mirroring
-`adapters/websocket`'s reconnect-backoff loop (`initialBackoff`, doubling,
-capped at `MaxBackoff`) rather than introducing a new stdlib dependency.
+```go
+// adapters/nethttp/binding.go — additive field, existing behavior when nil
+type IngestAdapterOptions struct {
+    Options    Options
+    Buffer     int
+    // Middleware, when non-nil, wraps the internally-built http.Handler
+    // BEFORE it is registered on mux — e.g. a body-preserving signature
+    // check that must run before decode. Nil preserves today's behavior
+    // exactly (registers the handler directly, no wrapping).
+    Middleware func(http.Handler) http.Handler
+}
+```
+
+With that one additive field, `webhook.ReceiveAdapter` becomes pure
+COMPOSITION over `nethttp.IngestAdapter` (no duplicated forwarding-channel/
+`PipelineFullError`/`Activate` logic in `adapters/webhook` at all):
+
+```go
+func ReceiveAdapter[T any](mux *http.ServeMux, handle *rest.RouteHandle[T, struct{}], opts ReceiveAdapterOptions) ports.SourceAdapter[T] {
+    return nethttp.IngestAdapter(mux, handle, nethttp.IngestAdapterOptions{
+        Options:    opts.Options,
+        Buffer:     opts.Buffer,
+        Middleware: verifyMiddleware(opts.Secret, opts.SignatureHeader, opts.Tolerance, opts /* ... */),
+    })
+}
+```
+
+**Outbound is unaffected** — `handle.EncodeRequest(item)` (already exported
+on `rest.RouteHandle`) gives the exact marshaled bytes *before* the HTTP
+call is made. `DeliverAdapter` calls it once to compute the signature, adds
+the signature (and optionally a timestamp) header via
+`nethttp.CallOptions.ExtraHeaders`, then calls **`nethttp.CallWithHandle`**
+directly — the handle-based primitive `nethttp.Call` wraps internally,
+still fully exported (unlike `Handler`) specifically for callers holding a
+handle but no `rest.Route` value (the same primitive `ports`' own binding
+adapters and `adapters/mcprest` use) — full reuse of path/query/cookie/
+header validation, any handle-declared credential-providing
+`middleware.ClientImplementation`, observer, and tracing. Retry-with-backoff
+wraps the `CallWithHandle` invocation, mirroring `adapters/websocket`'s
+reconnect-backoff loop (`initialBackoff`, doubling, capped at `MaxBackoff`)
+rather than introducing a new stdlib dependency.
 
 **Signature representation in specs**: the signature header is just
 documented as an `apiKey`-in-header `route.SecurityScheme` (e.g.
@@ -98,7 +160,7 @@ func VerifySignature(secret, body []byte, sig string) bool
 
 // ReceiveAdapterOptions configures [ReceiveAdapter].
 type ReceiveAdapterOptions struct {
-    // Options is passed through to the underlying nethttp.Handler.
+    // Options is passed through to the underlying nethttp.IngestAdapter.
     Options nethttp.Options
     // SignatureHeader is the header carrying the sender's signature
     // (e.g. "X-Hub-Signature-256"). Required.
@@ -120,7 +182,7 @@ type ReceiveAdapterOptions struct {
 
 // ReceiveAdapter returns a [ports.SourceAdapter] that verifies the inbound
 // request's HMAC signature over the RAW body BEFORE handing off to the
-// standard nethttp.Handler decode/validate/dispatch pipeline. A signature
+// standard nethttp.IngestAdapter decode/validate/dispatch pipeline. A signature
 // (or timestamp-tolerance) failure never reaches the item codec — it is
 // rejected 401 with [SignatureError], reported via
 // [stats.SecurityObserver.RecordSecurityRejection] with scheme
@@ -245,12 +307,12 @@ No new `stats.Observer` extension — reuses existing hooks, same rationale as
 the Redis pub/sub roadmap ("the whole point of transport-agnostic hooks"):
 
 - `stats.Observer.RecordRequest` fires for every inbound attempt (via the
-  wrapped `nethttp.Handler`, unchanged) — status 401 on signature rejection.
+  wrapped `nethttp.IngestAdapter`, unchanged) — status 401 on signature rejection.
 - `stats.SecurityObserver.RecordSecurityRejection(path, "webhook-hmac")` —
   type-asserted, fires on signature AND timestamp-tolerance failures.
-- `stats.Observer.RecordRequest` (client-side, via `nethttp.Call`, reused
-  as-is) fires per outbound attempt, including retries — each retry is a
-  distinct `RecordRequest` call, so retry count is directly observable.
+- `stats.Observer.RecordRequest` (client-side, via `nethttp.CallWithHandle`,
+  reused as-is) fires per outbound attempt, including retries — each retry
+  is a distinct `RecordRequest` call, so retry count is directly observable.
 - Nil observer → `stats.ObserverFromContext(ctx)` (both directions have a
   `ctx` at the point the observer is resolved — inbound via the request
   context, outbound via the `Activate(ctx, ...)` parameter).
@@ -283,7 +345,8 @@ the Redis pub/sub roadmap ("the whole point of transport-agnostic hooks"):
 
 | File | Responsibility |
 |---|---|
-| `adapters/webhook/doc.go` | package overview: zero-core-change design, both directions, spec story |
+| `adapters/nethttp/binding.go` (Phase 0, EDIT not new) | add `IngestAdapterOptions.Middleware func(http.Handler) http.Handler`, apply it (when non-nil) to the handler before `mux.Handle` — nil-safe, zero behavior change for existing callers |
+| `adapters/webhook/doc.go` | package overview: inbound composes over `nethttp.IngestAdapter`'s Middleware hook, outbound reuses `nethttp.CallWithHandle`, both directions, spec story |
 | `adapters/webhook/signature.go` | `SignPayload`, `VerifySignature` |
 | `adapters/webhook/binding.go` | `ReceiveAdapter`, `DeliverAdapter` + options structs, internal `verifyMiddleware` |
 | `adapters/webhook/errors.go` | `SignatureError`, `DeliveryError` |
@@ -319,13 +382,18 @@ the Redis pub/sub roadmap ("the whole point of transport-agnostic hooks"):
 
 ## Open design decisions (to resolve before/during implementation)
 
-1. **`ReceiveAdapter` reuse vs. duplication of `IngestAdapter`'s forwarding
-   plumbing** — Phase 1 leans toward copying `nethttp.IngestAdapter`'s
-   buffered-channel/`PipelineFullError` pattern into `webhook.ReceiveAdapter`
-   (no exported "middleware hook" exists on `IngestAdapter` today). Revisit
-   if a second middleware-wrapping use case appears — at that point exporting
-   a `nethttp.IngestAdapterOptions.Middleware func(http.Handler) http.Handler`
-   hook instead of duplicating logic becomes the better trade-off.
+1. **RESOLVED — `ReceiveAdapter` reuse vs. duplication of `IngestAdapter`'s
+   forwarding plumbing.** No longer optional: since `nethttp.Handler` was
+   removed (see "Design update (2026)" above), duplicating `IngestAdapter`'s
+   buffered-channel/`PipelineFullError` logic in `adapters/webhook` would
+   mean re-implementing already-unexported internals from scratch, with no
+   guarantee of staying in sync. `webhook.ReceiveAdapter` genuinely IS the
+   "second middleware-wrapping use case" this decision originally deferred
+   on — so Phase 0 of this roadmap now includes a small, additive
+   `nethttp.IngestAdapterOptions.Middleware func(http.Handler) http.Handler`
+   field (nil-safe, zero behavior change for existing callers), and
+   `ReceiveAdapter` composes over `nethttp.IngestAdapter` directly instead of
+   duplicating its logic.
 2. **Default `VerifyFunc`/`SignFunc` header format** — Phase 1's default
    (`VerifySignature` against the raw header value, `SignPayload`'s bare hex
    output) doesn't match any specific provider's convention out of the box

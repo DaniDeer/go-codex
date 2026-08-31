@@ -30,7 +30,7 @@ func (e pipelineConflictError) Error() string {
 func newGetHandle() (*rest.RouteHandle[getReq, userResp], error) {
 	b := rest.NewBuilder(testInfo)
 	return rest.NewRoute[getReq, userResp]("GET", "/latest",
-		getReqCodec, userRespCodec, rest.RouteMeta{OperationID: "getLatest"}).Register(b)
+		getReqCodec, userRespCodec, rest.RouteMeta{OperationID: "getLatest"}).RegisterHandle(b)
 }
 
 func TestHandlerLatest_ReturnsLatestValue(t *testing.T) {
@@ -101,7 +101,7 @@ func TestHandlerLatest_NoValueReturns503(t *testing.T) {
 func newPipelineRoute() (*rest.RouteHandle[createReq, userResp], error) {
 	b := rest.NewBuilder(testInfo)
 	return rest.NewRoute[createReq, userResp]("POST", "/pipeline",
-		createReqCodec, userRespCodec, rest.RouteMeta{OperationID: "pipeline"}).Register(b)
+		createReqCodec, userRespCodec, rest.RouteMeta{OperationID: "pipeline"}).RegisterHandle(b)
 }
 
 func newPipelineRouteWithMappedErrorStatus() (*rest.RouteHandle[createReq, userResp], error) {
@@ -110,7 +110,7 @@ func newPipelineRouteWithMappedErrorStatus() (*rest.RouteHandle[createReq, userR
 		createReqCodec, userRespCodec,
 		rest.RouteMeta{OperationID: "pipelineMapped"},
 		rest.ErrorStatus[pipelineConflictError](http.StatusConflict),
-	).Register(b)
+	).RegisterHandle(b)
 }
 
 func newPipelineRouteWithNoResponseOverride(status int) (*rest.RouteHandle[createReq, userResp], error) {
@@ -119,7 +119,7 @@ func newPipelineRouteWithNoResponseOverride(status int) (*rest.RouteHandle[creat
 		createReqCodec, userRespCodec,
 		rest.RouteMeta{OperationID: "pipelineNoRespOverride"},
 		rest.ErrorStatus[nethttp.PipelineNoResponseError](status),
-	).Register(b)
+	).RegisterHandle(b)
 }
 
 func TestPipelineHandler_ReturnsFirstValue(t *testing.T) {
@@ -301,15 +301,9 @@ func TestPipelineHandler_WithTapObservation(t *testing.T) {
 
 // ── SSEFromHub ────────────────────────────────────────────────────────────────
 
-func newSSEHandle(t *testing.T) *rest.SSERouteHandle[getReq, userResp] {
-	t.Helper()
-	b := rest.NewBuilder(testInfo)
-	h, err := rest.NewSSERoute[getReq, userResp]("/events",
-		getReqCodec, userRespCodec, rest.RouteMeta{OperationID: "streamEvents"}).Register(b)
-	if err != nil {
-		t.Fatalf("register SSE route: %v", err)
-	}
-	return h
+func newSSERoute() rest.SSERoute[getReq, userResp] {
+	return rest.NewSSERoute[getReq, userResp]("/events",
+		getReqCodec, userRespCodec, rest.RouteMeta{OperationID: "streamEvents"})
 }
 
 func readSSEEvents(t *testing.T, resp *http.Response, want int) []string {
@@ -332,15 +326,14 @@ func TestSSEFromHub_BroadcastsToAllClients(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	handle := newSSEHandle(t)
-
 	valCh := make(chan userResp, 3)
 	src := gstream.From(ctx, valCh)
 	hub := gstream.NewBroadcastHub(ctx, src, 8)
 
 	fn := nethttp.SSEFromHub[getReq, userResp](hub, nethttp.SSEStreamOptions{Topic: "/events"})
-	h := nethttp.SSEHandler(handle, fn, nethttp.Options{})
-	srv := httptest.NewServer(h)
+	route := newSSERoute().WithHandler(fn)
+	mux := mustServeSSE(t, route, rest.NewBuilder(testInfo))
+	srv := httptest.NewServer(mux)
 	defer srv.Close()
 
 	type result struct {

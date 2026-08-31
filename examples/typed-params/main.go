@@ -123,7 +123,7 @@ func main() {
 		rest.NewPathParam("id", codex.TextCodec[uuid.UUID](),
 			func(r GetUserReq) uuid.UUID { return r.ID },
 			func(r *GetUserReq, v uuid.UUID) { r.ID = v }),
-	).Register(b)
+	).RegisterHandle(b)
 	if err != nil {
 		panic(err)
 	}
@@ -179,7 +179,7 @@ func main() {
 		rest.NewPathParam("slug", slugCodec,
 			func(r ArticleReq) Slug { return r.Slug },
 			func(r *ArticleReq, v Slug) { r.Slug = v }),
-	).Register(ab)
+	).RegisterHandle(ab)
 	if err != nil {
 		panic(err)
 	}

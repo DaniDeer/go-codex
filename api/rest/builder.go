@@ -1,12 +1,14 @@
 package rest
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"log/slog"
 	"slices"
 	"sort"
 	"strings"
+	"sync"
 
 	"github.com/DaniDeer/go-codex/api/internal"
 	"github.com/DaniDeer/go-codex/codex"
@@ -523,9 +525,10 @@ type routeBuilder struct {
 	// [ErrorPattern]. Adapters may emit these directly before ErrorHandler.
 	errorPatternRules []errorPatternRule
 	// securitySchemes holds per-route security scheme declarations from
-	// [WithSecurityScheme] — the ONLY source of RouteHandle.SecuritySchemes;
-	// there is no builder-level equivalent. Consumed identically by
-	// [Route.Register] and [Route.ClientHandle].
+	// [Route.Use] (via [middleware.SecurityScheme]/[FromSecurityScheme]) —
+	// the ONLY source of RouteHandle.SecuritySchemes; there is no
+	// builder-level equivalent. Consumed identically by [Route.Register]
+	// and [Route.ClientHandle].
 	securitySchemes map[string]SecurityScheme
 
 	// middlewares holds every [middleware.Middleware] attached via
@@ -536,12 +539,28 @@ type routeBuilder struct {
 	// docs/roadmap/declarative-middleware.md).
 	middlewares []middleware.Middleware
 
-	// clientMiddlewares holds every [middleware.ClientMiddleware] attached
-	// via [Route.UseClient], in attachment order. Unlike middlewares
-	// above, these NEVER feed spec-building logic at all — the type
-	// itself carries no Security/RequestParams/ResponseParams fields, so
-	// there is nothing to apply.
-	clientMiddlewares []middleware.ClientMiddleware
+	// handlerFn holds the type-erased business handler attached via
+	// [Route.WithHandler]/[SSERoute.WithHandler]. Resolved to the
+	// concrete func(ctx, req) (Resp, error) (or the SSE handler shape) at
+	// Register/Serve time.
+	handlerFn any
+
+	// handlerOpts holds the type-erased adapter Options value attached
+	// via [Route.WithOptions]/[SSERoute.WithOptions]. Type-erased to
+	// avoid api/rest importing any adapters/* package; the consuming
+	// adapter (nethttp/chi) type-asserts it to its own Options type at
+	// Serve time, returning OptionsShapeError on mismatch.
+	handlerOpts any
+
+	// impls holds every [middleware.ServerImplementation] attached via
+	// [Route.HandleMW]/[SSERoute.HandleMW], in attachment order — built
+	// internally by HandleMW from whatever mw/fn it receives.
+	impls []middleware.ServerImplementation
+
+	// clientImpls holds every [middleware.ClientImplementation] attached
+	// via [Route.ClientMW], in attachment order — built internally by
+	// ClientMW.
+	clientImpls []middleware.ClientImplementation
 }
 
 // RouteHandle is returned by [Route.Register]. It holds the spec descriptor
@@ -609,9 +628,10 @@ type RouteHandle[Req, Resp any] struct {
 	pathCodec *codex.Codec[string]
 
 	// SecuritySchemes maps scheme name to SecurityScheme (with runtime Codec).
-	// Populated from the route's own [WithSecurityScheme] declarations —
-	// this is the ONLY way to declare a security scheme; there is no
-	// builder-level equivalent. Both [Route.Register] and
+	// Populated from the route's own [Route.Use] declarations (via
+	// [middleware.SecurityScheme]/[FromSecurityScheme]) — this is the ONLY
+	// way to declare a security scheme; there is no builder-level
+	// equivalent. Both [Route.Register] and
 	// [Route.ClientHandle] populate this field identically, so the SAME
 	// route value builds a server-side handle and a client-side handle
 	// with IDENTICAL credential-format enforcement on both sides: the
@@ -664,23 +684,33 @@ type RouteHandle[Req, Resp any] struct {
 
 	// Middlewares holds every [middleware.Middleware] attached via
 	// [WithMiddleware]/[Route.Use], in attachment order — SERVER-side
-	// declarations, combined with [Handler]/[Register]'s own call-time
-	// variadic by the adapter. Populated by [Route.Register] only; nil
-	// for handles built by [Route.ClientHandle] (a client handle has no
-	// server-verification role to play). See [ClientMiddlewares] for the
-	// client-side counterpart.
+	// declarations. Populated by both [Route.Register]/[Route.RegisterHandle]
+	// and [Route.ClientHandle].
 	Middlewares []middleware.Middleware
 
-	// ClientMiddlewares holds every [middleware.ClientMiddleware] attached
-	// via [Route.UseClient], in attachment order — CLIENT-side
-	// declarations, combined with [nethttp.Call]/[CallHandle]'s own
-	// call-time variadic by the adapter. Populated by BOTH
-	// [Route.Register] and [Route.ClientHandle] (a handle built either
-	// way stays self-consistent, in case it is ever reused for the other
-	// role). Unlike Middlewares, this NEVER affects the route's spec —
-	// [middleware.ClientMiddleware] structurally cannot contribute
-	// Security/RequestParams/ResponseParams.
-	ClientMiddlewares []middleware.ClientMiddleware
+	// HandlerFn holds the type-erased business handler attached via
+	// [Route.WithHandler]/[SSERoute.WithHandler] — nil if never called
+	// (the route is spec-only; see [Serve]'s Part-1 gating rule). Resolved
+	// to the concrete handler shape by the consuming adapter.
+	HandlerFn any
+
+	// HandlerOpts holds the type-erased adapter Options value attached via
+	// [Route.WithOptions]/[SSERoute.WithOptions] — nil if never called
+	// (the adapter uses its own zero-value Options).
+	HandlerOpts any
+
+	// Implementations holds every [middleware.ServerImplementation]
+	// attached via [Route.HandleMW]/[SSERoute.HandleMW], in attachment
+	// order — the runtime counterpart to Middlewares, built internally by
+	// HandleMW.
+	Implementations []middleware.ServerImplementation
+
+	// ClientImplementations holds every [middleware.ClientImplementation]
+	// attached via [Route.ClientMW], in attachment order — CLIENT-side
+	// runtime fulfillment, built internally by ClientMW. Populated by
+	// BOTH [Route.Register]/[Route.RegisterHandle] and
+	// [Route.ClientHandle].
+	ClientImplementations []middleware.ClientImplementation
 }
 
 // ErrorStatusFor returns the first declared per-route mapping status for err
@@ -831,9 +861,26 @@ func (h *RouteHandle[Req, Resp]) DecodeMerged(
 			return req, err
 		}
 	}
+	if err := h.ApplyMergeFields(&req, pathVars, query, headers, cookies); err != nil {
+		return req, err
+	}
+	return req, nil
+}
+
+// ApplyMergeFields merges pathVars/query/headers/cookies into an
+// ALREADY-DECODED req value via [MergeFields] + [codex.DecodeVars] — the
+// var-merge half of [DecodeMerged], split out so callers that decode the
+// body via a negotiated [format.Format] (i.e. [WithRequestFormats], not
+// plain [Decode]) can still apply merge-capable params afterward. Used by
+// [nethttp.Serve]/[chi.Serve]'s reflect dispatch for multi-format routes;
+// a no-op when the route declares no merge-capable params.
+func (h *RouteHandle[Req, Resp]) ApplyMergeFields(
+	req *Req,
+	pathVars, query, headers, cookies map[string]string,
+) error {
 	mergeFields := h.MergeFields()
 	if len(mergeFields) == 0 {
-		return req, nil
+		return nil
 	}
 	vars := make(map[string]string, len(pathVars)+len(query)+len(headers)+len(cookies))
 	for k, v := range pathVars {
@@ -848,10 +895,54 @@ func (h *RouteHandle[Req, Resp]) DecodeMerged(
 	for k, v := range cookies {
 		vars[k] = v
 	}
-	if err := codex.DecodeVars(&req, vars, mergeFields...); err != nil {
-		return req, err
+	return codex.DecodeVars(req, vars, mergeFields...)
+}
+
+// EncodeMerged encodes resp's body (via [RouteHandle.Encode]) AND derives
+// its response header/cookie values (via [ResponseHeaderMergeFields]/
+// [ResponseCookieMergeFields] + [codex.EncodeVars]) in ONE call — the
+// SERVER-side, response-direction mirror of [DecodeMerged]. Used
+// internally by [nethttp.Serve]/[chi.Serve] (via a single reflect call,
+// since Resp is erased at THAT call site — see
+// docs/design/middleware-workflow-simplification.md's "Decision: Serve's
+// generic dispatch mechanism") so the adapter never needs its own
+// Resp-typed encode/merge logic. Behaves identically to a bare Encode
+// when the route declares no response merge-capable params (both maps
+// nil).
+func (h *RouteHandle[Req, Resp]) EncodeMerged(resp Resp) (body []byte, headers, cookies map[string]string, err error) {
+	body, err = h.Encode(resp)
+	if err != nil {
+		return nil, nil, nil, err
 	}
-	return req, nil
+	headers, cookies, err = h.EncodeResponseMergeFields(resp)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	return body, headers, cookies, nil
+}
+
+// EncodeResponseMergeFields derives resp's response header/cookie values
+// (via [ResponseHeaderMergeFields]/[ResponseCookieMergeFields] +
+// [codex.EncodeVars]) WITHOUT encoding the response body — the
+// body-independent half of [EncodeMerged], split out so callers that
+// encode the body via a negotiated [format.Format] (i.e. [WithFormats],
+// not plain [Encode]) can still derive merge-capable response
+// header/cookie values. Used by [nethttp.Serve]/[chi.Serve]'s reflect
+// dispatch for multi-format routes AND for a matched [ErrorPattern]
+// payload whose concrete type equals Resp. Returns nil maps when the
+// route declares no response merge-capable params.
+func (h *RouteHandle[Req, Resp]) EncodeResponseMergeFields(resp Resp) (headers, cookies map[string]string, err error) {
+	if fields := h.ResponseHeaderMergeFields(); len(fields) > 0 {
+		if headers, err = codex.EncodeVars(resp, fields...); err != nil {
+			return nil, nil, err
+		}
+	}
+	if fields := h.ResponseCookieMergeFields(); len(fields) > 0 {
+		if cookies, err = codex.EncodeVars(resp, fields...); err != nil {
+			return nil, nil, err
+		}
+	}
+	return headers, cookies, nil
 }
 
 // ResponseHeaderMergeFields returns the merge-capable fields registered via
@@ -912,6 +1003,21 @@ func (h *RouteHandle[Req, Resp]) DecodeMergedResponse(
 		return resp, err
 	}
 	return resp, nil
+}
+
+// WithHandler is [Route.WithHandler]'s post-registration equivalent —
+// attaches fn as h's business handler AFTER [Route.RegisterHandle] instead
+// of before. Use this when the handler's dependencies (a database handle,
+// an in-memory store, etc.) aren't available until runtime, but the route
+// itself needs to be registered earlier (e.g. as a package-level var, for
+// spec generation or ports wiring) — [Serve]/[ServeOne] read whichever
+// value HandlerFn holds at the time they run, so calling WithHandler any
+// time before [Serve] is equivalent to [Route.WithHandler] before
+// [Route.Register]. A route with no handler attached by EITHER method
+// remains spec-only (see [Serve]'s Part-1 gating rule).
+func (h *RouteHandle[Req, Resp]) WithHandler(fn func(ctx context.Context, req Req) (Resp, error)) *RouteHandle[Req, Resp] {
+	h.HandlerFn = fn
+	return h
 }
 
 // WithRequestFormats registers the formats the route accepts for request body
@@ -1226,10 +1332,51 @@ func (rh *RouteHandle[Req, Resp]) ValidateResponseCookies(cookies map[string]str
 type routeEntry interface {
 	descriptor() route.Route
 	// securitySchemes returns the route's own security scheme declarations
-	// (from [WithSecurityScheme]) so [Builder.OpenAPISpec] can aggregate
+	// (from [Route.Use]) so [Builder.OpenAPISpec] can aggregate
 	// components.securitySchemes across all registered routes — there is no
 	// builder-level security scheme store to read from instead.
 	securitySchemes() map[string]SecurityScheme
+	// hasHandler reports whether WithHandler was ever called — the Part-1
+	// gating signal [nethttp.Serve]/[nethttp.ServeSSE] use to skip
+	// spec-only routes entirely (see "Decision: Serve's whole-builder
+	// failure semantics").
+	hasHandler() bool
+}
+
+// RouteEntry is a read-only, reflection-friendly view of one [Route]
+// registered into a [Builder] — returned by [Builder.RouteEntries]. It
+// exists so [nethttp.Serve]/[chi.Serve] can walk a HETEROGENEOUS
+// collection of routes (each with a DIFFERENT Req/Resp pair) without
+// api/rest itself needing net/http or reflect: Handle() returns the
+// concrete *[RouteHandle][Req, Resp] type-erased to any; the consuming
+// adapter recovers Req/Resp via reflect.Value.Call against the handle's
+// ALREADY-concrete exported closures (Decode/Encode/HandlerFn/each
+// [middleware.ServerImplementation.Fn]) — see
+// docs/design/middleware-workflow-simplification.md's "Decision:
+// Serve's generic dispatch mechanism" for the full rationale. The
+// isRouteEntry marker method seals this interface to api/rest's own
+// implementation.
+type RouteEntry interface {
+	// Method returns the route's HTTP method (GET, POST, etc.).
+	Method() string
+	// Path returns the route's path template (e.g. /users/{id}).
+	Path() string
+	// HasHandler reports whether [Route.WithHandler] was ever called.
+	HasHandler() bool
+	// Handle returns the underlying *RouteHandle[Req, Resp], type-erased.
+	Handle() any
+	isRouteEntry()
+}
+
+// SSERouteEntry is [RouteEntry]'s SSE counterpart, returned by
+// [Builder.SSEEntries]. Method always returns "GET" ([NewSSERoute]
+// hardcodes it).
+type SSERouteEntry interface {
+	Method() string
+	Path() string
+	HasHandler() bool
+	Handle() any // *SSERouteHandle[Req, Event], type-erased
+	isSSERouteEntry()
 }
 
 // typedRouteEntry stores a pointer to the RouteHandle so that With* mutations
@@ -1242,6 +1389,14 @@ func (e *typedRouteEntry[Req, Resp]) descriptor() route.Route { return e.handle.
 func (e *typedRouteEntry[Req, Resp]) securitySchemes() map[string]SecurityScheme {
 	return e.handle.SecuritySchemes
 }
+func (e *typedRouteEntry[Req, Resp]) hasHandler() bool { return e.handle.HandlerFn != nil }
+
+// RouteEntry implementation.
+func (e *typedRouteEntry[Req, Resp]) Method() string   { return e.handle.Descriptor.Method }
+func (e *typedRouteEntry[Req, Resp]) Path() string     { return e.handle.Descriptor.Path }
+func (e *typedRouteEntry[Req, Resp]) HasHandler() bool { return e.hasHandler() }
+func (e *typedRouteEntry[Req, Resp]) Handle() any      { return e.handle }
+func (e *typedRouteEntry[Req, Resp]) isRouteEntry()    {}
 
 // typedSSEEntry stores a pointer to the SSERouteHandle so that With* mutations
 // are visible to the builder at OpenAPISpec() time.
@@ -1253,6 +1408,14 @@ func (e *typedSSEEntry[Req, Event]) descriptor() route.Route { return e.handle.D
 func (e *typedSSEEntry[Req, Event]) securitySchemes() map[string]SecurityScheme {
 	return e.handle.SecuritySchemes
 }
+func (e *typedSSEEntry[Req, Event]) hasHandler() bool { return e.handle.HandlerFn != nil }
+
+// SSERouteEntry implementation.
+func (e *typedSSEEntry[Req, Event]) Method() string   { return e.handle.Descriptor.Method }
+func (e *typedSSEEntry[Req, Event]) Path() string     { return e.handle.Descriptor.Path }
+func (e *typedSSEEntry[Req, Event]) HasHandler() bool { return e.hasHandler() }
+func (e *typedSSEEntry[Req, Event]) Handle() any      { return e.handle }
+func (e *typedSSEEntry[Req, Event]) isSSERouteEntry() {}
 
 // InvalidPathError is returned by [Route.Register] when the path fails builder-level
 // path codec validation.
@@ -1916,10 +2079,11 @@ func (p MergedResponseCookieParam[Resp]) applyRoute(rb *routeBuilder) {
 // SecurityScheme combines [route.SecurityScheme] spec metadata with optional
 // runtime credential extraction and format validation.
 //
-// [WithSecurityScheme] declares a SecurityScheme on a route — the ONLY way to
-// declare one; there is no builder-level equivalent. The spec fields flow
-// into the OpenAPI document (aggregated from all registered routes by
-// [Builder.OpenAPISpec]); Codec, when non-nil, is used by adapters to
+// [middleware.SecurityScheme]/[FromSecurityScheme], attached via
+// [Route.Use], is the ONLY way to declare one; there is no builder-level
+// equivalent. The spec fields flow into the OpenAPI document (aggregated
+// from all registered routes by [Builder.OpenAPISpec]); Codec, when
+// non-nil, is used by adapters to
 // validate the raw credential string before SecurityFunc is called
 // (server-side) or before the request is sent (client-side, [nethttp.Call]).
 //
@@ -1945,38 +2109,37 @@ type SecurityScheme struct {
 // WithCodec returns a copy of s with Codec set to c. It avoids the
 // temporary-variable + address-of pattern required when setting Codec inline:
 //
-//	rest.WithSecurityScheme("bearer", rest.SecurityScheme{
+//	var bearerAuth = rest.SecurityScheme{
 //	    SecurityScheme: route.BearerScheme("JWT"),
-//	}.WithCodec(codex.String().Refine(validate.BearerToken)))
+//	}.WithCodec(codex.String().Refine(validate.BearerToken))
+//
+// Pass the result to [FromSecurityScheme] to build a [middleware.Middleware],
+// attached via [Route.Use].
 func (s SecurityScheme) WithCodec(c codex.Codec[string]) SecurityScheme {
 	s.Codec = &c
 	return s
 }
 
-// securitySchemeOpt is the [RouteOpt] returned by [WithSecurityScheme].
-type securitySchemeOpt struct {
-	name   string
-	scheme SecurityScheme
-}
+// NOTE: WithSecurityScheme (the RouteOpt pairing RouteMeta.Security's
+// manual, non-empty state with a scheme's spec metadata) was REMOVED —
+// every route that wants an actual security requirement now goes through
+// [middleware.SecurityScheme] (building a [middleware.Middleware] from
+// scratch) or [FromSecurityScheme] (bridging an existing [SecurityScheme]
+// value), attached via [Route.Use]. RouteMeta.Security's OTHER two states
+// — nil (inherit global security) and []route.SecurityRequirement{}
+// (explicit opt-out) — are UNRELATED to scheme declaration and remain
+// unchanged. See docs/design/middleware-workflow-simplification.md's
+// "Decision: eliminate manual per-route security declaration".
 
-func (o securitySchemeOpt) applyRoute(rb *routeBuilder) {
-	if rb.securitySchemes == nil {
-		rb.securitySchemes = make(map[string]SecurityScheme, 1)
-	}
-	rb.securitySchemes[o.name] = o.scheme
-}
-
-// WithSecurityScheme declares scheme's spec metadata and optional Codec for
-// THIS route. It is the ONLY way to declare a security scheme in go-codex —
-// there is no builder-level equivalent. Both [Route.Register] and
-// [Route.ClientHandle] populate [RouteHandle.SecuritySchemes] from this
-// declaration, so the SAME route value — including its security scheme —
-// builds a server-side handle (Register) and a client-side handle
-// (ClientHandle) with IDENTICAL credential-format enforcement on both sides.
+// FromSecurityScheme bridges an existing [SecurityScheme] value (e.g. a
+// package-level var shared across several routes) into a real
+// [middleware.Middleware], usable with [Route.Use]/[Route.HandleMW]
+// exactly like one built via [middleware.SecurityScheme] directly.
 //
-// Define a scheme once as a package-level value and reuse it across every
-// route that shares it — Go's ordinary "declare once, reference everywhere"
-// idiom, no builder-level registry needed:
+// Lives in api/rest, NOT middleware — [SecurityScheme] (which bundles
+// [route.SecurityScheme] + an optional Codec) is an api/rest-only type;
+// middleware cannot import api/rest without a cycle (api/rest already
+// imports middleware for [middleware.Middleware]/etc.).
 //
 //	var bearerAuth = rest.SecurityScheme{SecurityScheme: route.BearerScheme("JWT")}.
 //	    WithCodec(codex.String().Refine(validate.BearerToken))
@@ -1984,17 +2147,11 @@ func (o securitySchemeOpt) applyRoute(rb *routeBuilder) {
 //	var GetTagsRoute = rest.NewRoute[GetTagsReq, TagsList](
 //	    "GET", "/v2/{name}/tags/list",
 //	    c.Struct[GetTagsReq](), TagsListCodec,
-//	    rest.RouteMeta{Security: bearerAuthSecurity},
-//	    rest.WithSecurityScheme("bearerAuth", bearerAuth),
+//	    rest.RouteMeta{OperationID: "getTags"},
 //	    rest.NewPathParam("name", ...),
-//	)
-//
-// When multiple routes declare the SAME scheme name with DIFFERENT values,
-// [Builder.OpenAPISpec] resolves the conflict last-registered-wins (no
-// error) — define the scheme once as a shared value (as above) to avoid
-// this entirely.
-func WithSecurityScheme(name string, scheme SecurityScheme) RouteOpt {
-	return securitySchemeOpt{name: name, scheme: scheme}
+//	).Use(rest.FromSecurityScheme("bearerAuth", bearerAuth, nil))
+func FromSecurityScheme(schemeName string, scheme SecurityScheme, scopes []string) middleware.Middleware {
+	return middleware.SecurityScheme(schemeName, scheme.SecurityScheme, scopes, scheme.Codec)
 }
 
 // SecurityCredentialError is returned when credential format validation via
@@ -2098,7 +2255,7 @@ func (e NotAcceptableError) Error() string {
 
 // Builder accumulates route registrations, and produces OpenAPI 3.1
 // specifications. Security schemes are declared per-route via
-// [WithSecurityScheme] (there is no builder-level equivalent) — see
+// [Route.Use] (there is no builder-level equivalent) — see
 // [Builder.OpenAPISpec] for how they're aggregated into the spec. It is safe
 // to register routes from multiple goroutines as long as [Builder.Build] is
 // not called concurrently. Create one with [NewBuilder].
@@ -2109,6 +2266,15 @@ type Builder struct {
 	schemas        map[string]schema.Schema
 	pathCodec      *codex.Codec[string]
 	globalSecurity []route.SecurityRequirement
+
+	// mu guards entries/schemas, the only fields mutated after
+	// construction (via Route/SSERoute.Register/RegisterHandle and
+	// AddSchema) — making concurrent Register calls safe. Supports an app
+	// fanning Register calls out across goroutines (one per feature
+	// module, say) before a SINGLE later Serve call; it does NOT support
+	// hot-adding routes to an already-Serve'd, already-running mux (see
+	// docs/roadmap/dynamic-port-rebinding.md for that separate gap).
+	mu sync.RWMutex
 }
 
 // BuilderOption configures a [Builder] at construction time.
@@ -2167,7 +2333,9 @@ func (b *Builder) AddServer(name string, s Server) *Builder {
 	if s.Description == "" {
 		s.Description = name
 	}
+	b.mu.Lock()
 	b.servers = append(b.servers, s)
+	b.mu.Unlock()
 	return b
 }
 
@@ -2175,7 +2343,9 @@ func (b *Builder) AddServer(name string, s Server) *Builder {
 // Use this to register reusable schemas (e.g. shared error types) that are
 // referenced by SchemaName in route configs but not inlined in any codec.
 func (b *Builder) AddSchema(name string, s schema.Schema) *Builder {
+	b.mu.Lock()
 	b.schemas[name] = s
+	b.mu.Unlock()
 	return b
 }
 
@@ -2188,7 +2358,9 @@ func (b *Builder) AddSchema(name string, s schema.Schema) *Builder {
 // To mark a specific route as explicitly unsecured (exempt from global security),
 // set Security to an empty slice in [RouteMeta]: Security: []route.SecurityRequirement{}.
 func (b *Builder) AddGlobalSecurity(reqs ...route.SecurityRequirement) *Builder {
+	b.mu.Lock()
 	b.globalSecurity = append(b.globalSecurity, reqs...)
+	b.mu.Unlock()
 	return b
 }
 
@@ -2310,7 +2482,15 @@ func NewRouteFromPath[Req, Resp any](
 	return NewRoute(method, path.Template, reqCodec, respCodec, allOpts...)
 }
 
-// Register registers the route with b and returns a [RouteHandle].
+// Register registers the route with b, binding its spec, business handler
+// (attached via [Route.WithHandler]), and middleware implementations
+// (attached via [Route.HandleMW]/[Route.ClientMW]) into b — for use by
+// [nethttp.Serve]/[chi.Serve] (and their SSE/ServeOne equivalents), which
+// walk b's accumulated routes and wire each one. No [*RouteHandle] is
+// returned — a caller wiring routes through Serve never needs one
+// directly. Use [Route.RegisterHandle] instead when a direct handle is
+// needed (e.g. ports-style direct adapter wiring that bypasses Serve
+// entirely).
 //
 // If the builder was created with [WithPathCodec] or [WithPathConstraints], the
 // path is validated immediately and an error is returned if it fails — no route
@@ -2318,10 +2498,25 @@ func NewRouteFromPath[Req, Resp any](
 //
 // Any [PathParam] entry whose name does not appear as a {varName} placeholder
 // in the path template causes Register to return an error immediately.
+func (r Route[Req, Resp]) Register(b *Builder) error {
+	_, err := r.registerHandle(b)
+	return err
+}
+
+// RegisterHandle registers the route with b — identical spec/handler/impl
+// binding and validation as [Route.Register] — but ALSO returns the
+// resulting [*RouteHandle], for direct-wiring callers that bypass
+// [nethttp.Serve]/[chi.Serve] entirely (e.g. [ports]' pattern-building
+// machinery, which owns its own adapter wiring and never mounts routes on
+// a *http.ServeMux itself).
 //
-// Use [RouteHandle.WithRequestFormats] and [RouteHandle.WithFormats]
-// after Register to configure multi-format request/response handling.
-func (r Route[Req, Resp]) Register(b *Builder) (*RouteHandle[Req, Resp], error) {
+// Use [Route.WithRequestFormats]/[RouteHandle.WithFormats] on the returned
+// handle to configure multi-format request/response handling.
+func (r Route[Req, Resp]) RegisterHandle(b *Builder) (*RouteHandle[Req, Resp], error) {
+	return r.registerHandle(b)
+}
+
+func (r Route[Req, Resp]) registerHandle(b *Builder) (*RouteHandle[Req, Resp], error) {
 	if b.pathCodec != nil {
 		if err := b.pathCodec.Validate(internal.StripTemplateVars(r.path)); err != nil {
 			return nil, InvalidPathError{Path: r.path, Err: err}
@@ -2337,6 +2532,10 @@ func (r Route[Req, Resp]) Register(b *Builder) (*RouteHandle[Req, Resp], error) 
 		return nil, err
 	}
 
+	if err := checkImplementationsDeclared(r.method+" "+r.path, rb.middlewares, rb.impls); err != nil {
+		return nil, err
+	}
+
 	if err := codex.ValidateDeclaredParams(r.path, toCodexParams(rb.pathParams)); err != nil {
 		return nil, err
 	}
@@ -2347,24 +2546,27 @@ func (r Route[Req, Resp]) Register(b *Builder) (*RouteHandle[Req, Resp], error) 
 	jsonResp := format.JSON(r.respCodec)
 
 	h := &RouteHandle[Req, Resp]{
-		Descriptor:           frozen,
-		Decode:               func(body []byte) (Req, error) { return jsonReq.Unmarshal(body) },
-		Encode:               func(resp Resp) ([]byte, error) { return jsonResp.Marshal(resp) },
-		EncodeRequest:        func(req Req) ([]byte, error) { return jsonReq.Marshal(req) },
-		DecodeResponse:       func(body []byte) (Resp, error) { return jsonResp.Unmarshal(body) },
-		pathParams:           rb.pathParams,
-		queryParams:          rb.queryParams,
-		cookieParams:         rb.cookieParams,
-		headerParams:         rb.headerParams,
-		responseHeaderParams: rb.respHeaders,
-		responseCookieParams: rb.respCookies,
-		pathCodec:            b.pathCodec,
-		SecuritySchemes:      rb.securitySchemes,
-		GlobalSecurity:       slices.Clone(b.globalSecurity),
-		errorStatusRules:     slices.Clone(rb.errorStatusRules),
-		errorPatternRules:    slices.Clone(rb.errorPatternRules),
-		Middlewares:          slices.Clone(rb.middlewares),
-		ClientMiddlewares:    slices.Clone(rb.clientMiddlewares),
+		Descriptor:            frozen,
+		Decode:                func(body []byte) (Req, error) { return jsonReq.Unmarshal(body) },
+		Encode:                func(resp Resp) ([]byte, error) { return jsonResp.Marshal(resp) },
+		EncodeRequest:         func(req Req) ([]byte, error) { return jsonReq.Marshal(req) },
+		DecodeResponse:        func(body []byte) (Resp, error) { return jsonResp.Unmarshal(body) },
+		pathParams:            rb.pathParams,
+		queryParams:           rb.queryParams,
+		cookieParams:          rb.cookieParams,
+		headerParams:          rb.headerParams,
+		responseHeaderParams:  rb.respHeaders,
+		responseCookieParams:  rb.respCookies,
+		pathCodec:             b.pathCodec,
+		SecuritySchemes:       rb.securitySchemes,
+		GlobalSecurity:        slices.Clone(b.globalSecurity),
+		errorStatusRules:      slices.Clone(rb.errorStatusRules),
+		errorPatternRules:     slices.Clone(rb.errorPatternRules),
+		Middlewares:           slices.Clone(rb.middlewares),
+		HandlerFn:             rb.handlerFn,
+		HandlerOpts:           rb.handlerOpts,
+		Implementations:       slices.Clone(rb.impls),
+		ClientImplementations: slices.Clone(rb.clientImpls),
 	}
 	if rb.requestFormats != nil {
 		fmts, ok := rb.requestFormats.([]format.Format[Req])
@@ -2409,7 +2611,9 @@ func (r Route[Req, Resp]) Register(b *Builder) (*RouteHandle[Req, Resp], error) 
 	}
 
 	entry := &typedRouteEntry[Req, Resp]{handle: h}
+	b.mu.Lock()
 	b.entries = append(b.entries, entry)
+	b.mu.Unlock()
 	return h, nil
 }
 
@@ -2423,7 +2627,7 @@ func (r Route[Req, Resp]) Register(b *Builder) (*RouteHandle[Req, Resp], error) 
 // The returned handle has the same Decode / Encode / EncodeRequest / DecodeResponse
 // codec helpers and the same parameter validation methods as a handle returned
 // by [Route.Register] — including [RouteHandle.SecuritySchemes], populated from
-// the route's own [WithSecurityScheme] declarations (there is no [Builder]
+// the route's own [Route.Use] security declarations (there is no [Builder]
 // involved in this path, so builder-level state never applies here — route-level
 // declarations are the only source). [adapters/nethttp.Call] uses it to validate
 // a [nethttp.CallOptions.CredentialFunc]'s returned credential format before
@@ -2450,7 +2654,7 @@ func (r Route[Req, Resp]) ClientHandle() *RouteHandle[Req, Resp] {
 	// rest.WithMiddleware gets IDENTICAL SecuritySchemes on BOTH the
 	// server (Register) and client (ClientHandle) side, keeping
 	// nethttp.Call's credential-format check working exactly like it
-	// already does for the manual WithSecurityScheme escape hatch.
+	// already does for the manual RouteMeta.Security escape hatch.
 	// ClientHandle stays infallible: conflict detection and drift-closing
 	// coverage checking (Register/ValidateRoute's job) do NOT run here.
 	applyMiddlewareSecurityForClient(&rb)
@@ -2479,7 +2683,8 @@ func (r Route[Req, Resp]) ClientHandle() *RouteHandle[Req, Resp] {
 		responseHeaderMergeFields: mustAssertMergeFields[Resp]("ClientHandle", rb.responseHeaderMergeFields),
 		responseCookieMergeFields: mustAssertMergeFields[Resp]("ClientHandle", rb.responseCookieMergeFields),
 		SecuritySchemes:           rb.securitySchemes,
-		ClientMiddlewares:         slices.Clone(rb.clientMiddlewares),
+		Middlewares:               slices.Clone(rb.middlewares),
+		ClientImplementations:     slices.Clone(rb.clientImpls),
 	}
 }
 
@@ -2559,7 +2764,7 @@ type SSERouteHandle[Req, Event any] struct {
 	pathCodec *codex.Codec[string]
 
 	// SecuritySchemes maps scheme name to SecurityScheme (with runtime Codec).
-	// Populated from the route's own [WithSecurityScheme] declarations —
+	// Populated from the route's own [Route.Use] security declarations —
 	// this is the ONLY way to declare a security scheme; there is no
 	// builder-level equivalent. Both [Route.Register] and
 	// [Route.ClientHandle] populate this field identically, so the SAME
@@ -2585,9 +2790,22 @@ type SSERouteHandle[Req, Event any] struct {
 
 	// Middlewares holds every [middleware.Middleware] attached via
 	// [WithMiddleware]/[SSERoute.Use], in attachment order — mirrors
-	// [RouteHandle.Middlewares]. [SSEHandler]/[RegisterSSE] combine this
-	// with their own variadic mws parameter automatically.
+	// [RouteHandle.Middlewares].
 	Middlewares []middleware.Middleware
+
+	// HandlerFn holds the type-erased SSE handler attached via
+	// [SSERoute.WithHandler] — nil if never called (spec-only; see
+	// [ServeSSE]'s Part-1 gating rule).
+	HandlerFn any
+
+	// HandlerOpts holds the type-erased adapter Options value attached via
+	// [SSERoute.WithOptions] — nil if never called.
+	HandlerOpts any
+
+	// Implementations holds every [middleware.ServerImplementation]
+	// attached via [SSERoute.HandleMW], in attachment order — mirrors
+	// [RouteHandle.Implementations].
+	Implementations []middleware.ServerImplementation
 
 	// responseHeaderParams holds per-header entries registered via ResponseHeaderParam options.
 	responseHeaderParams []ResponseHeaderParam
@@ -2614,6 +2832,14 @@ func (h *SSERouteHandle[Req, Event]) BuildPath(vars map[string]string) (string, 
 		}
 	}
 	return result, nil
+}
+
+// WithHandler is [SSERoute.WithHandler]'s post-registration equivalent —
+// see [RouteHandle.WithHandler] for the full rationale (runtime-only
+// dependencies, package-level route vars, etc.); identical mechanics here.
+func (h *SSERouteHandle[Req, Event]) WithHandler(fn func(ctx context.Context, req Req, send func(Event) error) error) *SSERouteHandle[Req, Event] {
+	h.HandlerFn = fn
+	return h
 }
 
 // WithFormats registers the formats available for encoding SSE event data.
@@ -2876,12 +3102,30 @@ func NewSSERoute[Req, Event any](
 	}
 }
 
-// Register registers the SSE route with b and returns an [SSERouteHandle].
+// Register registers the SSE route with b, binding its spec, handler
+// (attached via [SSERoute.WithHandler]), and middleware implementations
+// (attached via [SSERoute.HandleMW]) into b — for use by
+// [nethttp.ServeSSE]/[chi.ServeSSE]. No [*SSERouteHandle] is returned;
+// use [SSERoute.RegisterHandle] when a direct handle is needed.
 //
 // Path validation follows the same rules as [Route.Register].
-// Use [SSERouteHandle.WithFormats] after Register to configure non-JSON
-// event serialisation formats.
-func (s SSERoute[Req, Event]) Register(b *Builder) (*SSERouteHandle[Req, Event], error) {
+func (s SSERoute[Req, Event]) Register(b *Builder) error {
+	_, err := s.registerHandle(b)
+	return err
+}
+
+// RegisterHandle registers the SSE route with b — identical binding and
+// validation as [SSERoute.Register] — but ALSO returns the resulting
+// [*SSERouteHandle], for direct-wiring callers (e.g. [ports]) that bypass
+// [nethttp.ServeSSE]/[chi.ServeSSE] entirely.
+//
+// Use [SSERouteHandle.WithFormats] on the returned handle to configure
+// non-JSON event serialisation formats.
+func (s SSERoute[Req, Event]) RegisterHandle(b *Builder) (*SSERouteHandle[Req, Event], error) {
+	return s.registerHandle(b)
+}
+
+func (s SSERoute[Req, Event]) registerHandle(b *Builder) (*SSERouteHandle[Req, Event], error) {
 	if b.pathCodec != nil {
 		if err := b.pathCodec.Validate(internal.StripTemplateVars(s.path)); err != nil {
 			return nil, InvalidPathError{Path: s.path, Err: err}
@@ -2894,6 +3138,10 @@ func (s SSERoute[Req, Event]) Register(b *Builder) (*SSERouteHandle[Req, Event],
 	}
 
 	if err := applyMiddlewareDeclarations(&rb, "GET "+s.path); err != nil {
+		return nil, err
+	}
+
+	if err := checkImplementationsDeclared("GET "+s.path, rb.middlewares, rb.impls); err != nil {
 		return nil, err
 	}
 
@@ -2924,12 +3172,17 @@ func (s SSERoute[Req, Event]) Register(b *Builder) (*SSERouteHandle[Req, Event],
 		SecuritySchemes:      rb.securitySchemes,
 		GlobalSecurity:       slices.Clone(b.globalSecurity),
 		Middlewares:          slices.Clone(rb.middlewares),
+		HandlerFn:            rb.handlerFn,
+		HandlerOpts:          rb.handlerOpts,
+		Implementations:      slices.Clone(rb.impls),
 		responseHeaderParams: rb.respHeaders,
 		responseCookieParams: rb.respCookies,
 		mergeFields:          eventMergeFields,
 	}
 	entry := &typedSSEEntry[Req, Event]{handle: h}
+	b.mu.Lock()
 	b.entries = append(b.entries, entry)
+	b.mu.Unlock()
 	return h, nil
 }
 
@@ -2938,12 +3191,15 @@ func (s SSERoute[Req, Event]) Register(b *Builder) (*SSERouteHandle[Req, Event],
 // be present in components/schemas (a dangling $ref).
 //
 // components.securitySchemes is aggregated from every registered route's own
-// [WithSecurityScheme] declarations (there is no builder-level security scheme
+// security declarations (via [Route.Use]/[middleware.SecurityScheme]/
+// [FromSecurityScheme] — there is no builder-level security scheme
 // store) — when two routes declare the same scheme name with different values,
 // the LAST-registered route wins, with no error; define the scheme once as a
-// shared package-level value (see [WithSecurityScheme]'s example) to avoid
+// shared package-level value (see [FromSecurityScheme]'s example) to avoid
 // relying on this.
 func (b *Builder) OpenAPISpec() (openapi.Document, error) {
+	b.mu.RLock()
+	defer b.mu.RUnlock()
 	if err := b.checkDanglingRefs(); err != nil {
 		return openapi.Document{}, err
 	}
@@ -2970,6 +3226,37 @@ func (b *Builder) OpenAPISpec() (openapi.Document, error) {
 		ob.AddRoute(e.descriptor())
 	}
 	return ob.Build()
+}
+
+// RouteEntries returns every [Route] registered into b, as read-only
+// [RouteEntry] views — for use by [nethttp.Serve]/[chi.Serve] to walk and
+// wire the whole builder in one call. SSE entries are excluded; see
+// [Builder.SSEEntries].
+func (b *Builder) RouteEntries() []RouteEntry {
+	b.mu.RLock()
+	defer b.mu.RUnlock()
+	out := make([]RouteEntry, 0, len(b.entries))
+	for _, e := range b.entries {
+		if re, ok := e.(RouteEntry); ok {
+			out = append(out, re)
+		}
+	}
+	return out
+}
+
+// SSEEntries returns every [SSERoute] registered into b, as read-only
+// [SSERouteEntry] views — for use by [nethttp.ServeSSE]/[chi.ServeSSE].
+// Regular Route entries are excluded; see [Builder.RouteEntries].
+func (b *Builder) SSEEntries() []SSERouteEntry {
+	b.mu.RLock()
+	defer b.mu.RUnlock()
+	out := make([]SSERouteEntry, 0, len(b.entries))
+	for _, e := range b.entries {
+		if se, ok := e.(SSERouteEntry); ok {
+			out = append(out, se)
+		}
+	}
+	return out
 }
 
 // checkDanglingRefs verifies that every non-empty SchemaName used in routes

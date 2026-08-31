@@ -345,8 +345,22 @@ func main() {
 		nethttp.PipelineAdapterOptions{})), "bind export tool port")
 
 	// ── HTTP — register remaining routes ──────────────────────────────────
-	must(nethttp.Register(mux, ioports.CreateHandle, adapters.NewCreateHandler(store), nethttp.Options{}), "register create route")
-	must(nethttp.Register(mux, ioports.GetHandle, adapters.NewGetHandler(store), nethttp.Options{}), "register get route")
+	// ioports.CreateHandle/GetHandle are PRE-REGISTERED onto the
+	// package-level ioports.RESTBuilder at var-init time (see
+	// examples/sensor-service/ioports: CreateHandle :=
+	// CreateRoute.RegisterHandle(RESTBuilder)), before any handler function
+	// exists (store isn't constructed until here in main()).
+	// *RouteHandle.WithHandler is Route.WithHandler's post-registration
+	// equivalent for exactly this case: attach the handler now that store
+	// exists, then let the ONE nethttp.Serve(mux, RESTBuilder) call below
+	// wire it — same mechanism, different attachment order. The other
+	// RESTBuilder entries (ExportToolHandle etc.) were already wired
+	// directly by their own port adapters (RegisterPipeline) without ever
+	// setting HandlerFn, so Serve's Part-1 gate skips them here — no
+	// double registration.
+	ioports.CreateHandle.WithHandler(adapters.NewCreateHandler(store))
+	ioports.GetHandle.WithHandler(adapters.NewGetHandler(store))
+	must(nethttp.Serve(mux, ioports.RESTBuilder), "Serve create/get routes")
 
 	// Wrap with ObserverMiddleware so every HTTP request gets obs injected
 	// into r.Context() — handlers resolve the observer per-request.

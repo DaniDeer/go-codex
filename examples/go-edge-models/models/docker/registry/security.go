@@ -14,13 +14,13 @@ import (
 // Distribution Spec registry (Docker Hub, GHCR, etc.) this package only
 // ever calls AS A CLIENT. The scheme is still declared "from the server's
 // perspective" — it documents what THAT external system requires — via
-// [middleware.DeclareSecurity] below, attached with [rest.Route.Use]
+// [middleware.SecurityScheme] below, attached with [rest.Route.Use]
 // exactly like a real server route would (see
 // docs/roadmap/declarative-middleware.md's "server declares, client
-// fulfills" principle). [middleware.DeclareSecurity] deliberately has NO
+// fulfills" principle). [middleware.SecurityScheme] deliberately has NO
 // Fn: nothing in THIS codebase verifies the credential — that is the
-// external registry's job. app/registry's own newAuthMiddleware supplies
-// the credential CLIENT-side, attached via [rest.Route.UseClient]
+// external registry's job. app/registry's own newAuthCredentialFunc supplies
+// the credential CLIENT-side, attached via [rest.Route.ClientMW]
 // (app/registry's gettags.go/getimagemetadata.go) — see its own doc
 // comment for the full flow.
 //
@@ -32,7 +32,7 @@ import (
 const BearerAuthSchemeName = "bearerAuth"
 
 // BearerAuthScheme declares the "bearerAuth" scheme's spec metadata and a
-// non-empty-string format Codec. app/registry's newAuthMiddleware's
+// non-empty-string format Codec. app/registry's newAuthCredentialFunc's
 // credential-supplying Fn gets a genuine extra safety net for free from
 // this Codec: nethttp.Call validates its returned Authorization header's
 // bare token against it before sending, on top of (not instead of) the
@@ -47,4 +47,4 @@ var BearerAuthScheme = rest.SecurityScheme{
 // GetManifestRoute attach via [rest.Route.Use] — see BearerAuthSchemeName's
 // own doc comment for why this codebase declares (but never enforces) this
 // requirement.
-var BearerAuthDeclaration = middleware.DeclareSecurity(BearerAuthSchemeName, BearerAuthScheme.SecurityScheme, nil, BearerAuthScheme.Codec)
+var BearerAuthDeclaration = middleware.SecurityScheme(BearerAuthSchemeName, BearerAuthScheme.SecurityScheme, nil, BearerAuthScheme.Codec)

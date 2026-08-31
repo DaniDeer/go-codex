@@ -22,7 +22,7 @@ import (
 // ── GetTagsReq / GetTagsRoute ──────────────────────────────────────────────────
 
 // GetTagsReq is GetTagsRoute's request — Name merges automatically into
-// the {name} path variable via nethttp.CallHandle.
+// the {name} path variable via nethttp.Call/CallWithHandle.
 type GetTagsReq struct {
 	Name string
 }
@@ -32,17 +32,17 @@ type GetTagsReq struct {
 // e.g. "prometheus/prometheus") — substituted as-is, no escaping
 // needed (see BuildPath's plain string-replace semantics). Req is
 // GetTagsReq, whose Name field merges into {name} automatically via
-// nethttp.CallHandle — no manual vars map needed.
+// nethttp.Call/CallWithHandle — no manual vars map needed.
 //
 // GetTagsRoute declares its "bearerAuth" requirement via .Use(BearerAuthDeclaration)
 // below — a spec-only declaration (see BearerAuthSchemeName's doc comment):
 // this codebase documents the requirement but never enforces it, since the
 // real server is an external registry. A caller MUST separately chain a
-// credential-SUPPLYING middleware.ClientMiddleware via .UseClient(...)
+// credential-SUPPLYING middleware.ClientImplementation via .ClientMW(...)
 // before calling .ClientHandle() to actually authenticate outgoing calls;
 // see app/registry's GetTags for the batteries-included client (auth flow
-// via app/registry's own newAuthMiddleware, image-URL parsing) built this
-// way on top of this route.
+// via app/registry's own newAuthCredentialFunc, image-URL parsing) built
+// this way on top of this route.
 var GetTagsRoute = rest.NewRoute[GetTagsReq, TagsList](
 	"GET", "/v2/{name}/tags/list",
 	c.Struct[GetTagsReq](), TagsListCodec,

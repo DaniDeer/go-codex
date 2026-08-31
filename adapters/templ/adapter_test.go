@@ -63,21 +63,21 @@ func pageComponent(p pageProps) atempl.Component {
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
-func buildRoute(t *testing.T) *rest.RouteHandle[pageReq, pageProps] {
+func mustServeOne[Req, Resp any](t *testing.T, route rest.Route[Req, Resp]) http.Handler {
 	t.Helper()
-	b := rest.NewBuilder(rest.Info{Title: "Test", Version: "1.0.0"})
-	route, err := rest.NewRoute[pageReq, pageProps]("GET", "/page",
+	h, err := nethttp.ServeOne(route)
+	if err != nil {
+		t.Fatalf("ServeOne: %v", err)
+	}
+	return h
+}
+
+func newPageRoute(fn func(context.Context, pageReq) (pageProps, error)) rest.Route[pageReq, pageProps] {
+	return rest.NewRoute[pageReq, pageProps]("GET", "/page",
 		pageReqCodec, pagePropsCodec,
 		rest.RouteMeta{OperationID: "page"},
-	).Register(b)
-	if err != nil {
-		t.Fatalf("AddRoute: %v", err)
-	}
-	route = route.WithFormats(
-		adapttempl.Format(pagePropsCodec, pageComponent),
-		format.JSON(pagePropsCodec),
-	)
-	return route
+		rest.Formats(adapttempl.Format(pagePropsCodec, pageComponent), format.JSON(pagePropsCodec)),
+	).WithHandler(fn)
 }
 
 func get(t *testing.T, srv *httptest.Server, path, accept string) (int, string) {
@@ -98,13 +98,12 @@ func get(t *testing.T, srv *httptest.Server, path, accept string) (int, string) 
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
 func TestFormat_HTMLResponse(t *testing.T) {
-	route := buildRoute(t)
-	mux := http.NewServeMux()
-	nethttp.Register(mux, route, func(_ context.Context, _ pageReq) (pageProps, error) {
+	route := newPageRoute(func(_ context.Context, _ pageReq) (pageProps, error) {
 		return pageProps{Title: "Hello", Items: []string{"a", "b"}}, nil
-	}, nethttp.Options{})
+	})
+	handler := mustServeOne(t, route)
 
-	srv := httptest.NewServer(mux)
+	srv := httptest.NewServer(handler)
 	defer srv.Close()
 
 	status, body := get(t, srv, "/page", "text/html")
@@ -117,13 +116,12 @@ func TestFormat_HTMLResponse(t *testing.T) {
 }
 
 func TestFormat_ContentTypeHeader(t *testing.T) {
-	route := buildRoute(t)
-	mux := http.NewServeMux()
-	nethttp.Register(mux, route, func(_ context.Context, _ pageReq) (pageProps, error) {
+	route := newPageRoute(func(_ context.Context, _ pageReq) (pageProps, error) {
 		return pageProps{Title: "T", Items: []string{}}, nil
-	}, nethttp.Options{})
+	})
+	handler := mustServeOne(t, route)
 
-	srv := httptest.NewServer(mux)
+	srv := httptest.NewServer(handler)
 	defer srv.Close()
 
 	req, _ := http.NewRequest(http.MethodGet, srv.URL+"/page", nil) //nolint:noctx
@@ -140,13 +138,12 @@ func TestFormat_ContentTypeHeader(t *testing.T) {
 
 func TestFormat_JSONFallback(t *testing.T) {
 	// Same route, same handler — JSON format served when Accept is application/json.
-	route := buildRoute(t)
-	mux := http.NewServeMux()
-	nethttp.Register(mux, route, func(_ context.Context, _ pageReq) (pageProps, error) {
+	route := newPageRoute(func(_ context.Context, _ pageReq) (pageProps, error) {
 		return pageProps{Title: "JSON", Items: []string{"x"}}, nil
-	}, nethttp.Options{})
+	})
+	handler := mustServeOne(t, route)
 
-	srv := httptest.NewServer(mux)
+	srv := httptest.NewServer(handler)
 	defer srv.Close()
 
 	status, body := get(t, srv, "/page", "application/json")
@@ -160,13 +157,12 @@ func TestFormat_JSONFallback(t *testing.T) {
 
 func TestFormat_InvalidPropsReturn500(t *testing.T) {
 	// Handler returns props that fail Refine constraints → 500 before render.
-	route := buildRoute(t)
-	mux := http.NewServeMux()
-	nethttp.Register(mux, route, func(_ context.Context, _ pageReq) (pageProps, error) {
+	route := newPageRoute(func(_ context.Context, _ pageReq) (pageProps, error) {
 		return pageProps{Title: "", Items: []string{}}, nil // empty title fails NonEmptyString
-	}, nethttp.Options{})
+	})
+	handler := mustServeOne(t, route)
 
-	srv := httptest.NewServer(mux)
+	srv := httptest.NewServer(handler)
 	defer srv.Close()
 
 	status, _ := get(t, srv, "/page", "text/html")
@@ -176,13 +172,12 @@ func TestFormat_InvalidPropsReturn500(t *testing.T) {
 }
 
 func TestFormat_HandlerErrorReturn500(t *testing.T) {
-	route := buildRoute(t)
-	mux := http.NewServeMux()
-	nethttp.Register(mux, route, func(_ context.Context, _ pageReq) (pageProps, error) {
+	route := newPageRoute(func(_ context.Context, _ pageReq) (pageProps, error) {
 		return pageProps{}, errors.New("service unavailable")
-	}, nethttp.Options{})
+	})
+	handler := mustServeOne(t, route)
 
-	srv := httptest.NewServer(mux)
+	srv := httptest.NewServer(handler)
 	defer srv.Close()
 
 	status, _ := get(t, srv, "/page", "text/html")
@@ -215,13 +210,12 @@ func TestFormat_ValidateUsesCodec(t *testing.T) {
 
 func TestFormat_SameHandlerServesHTMLAndJSON(t *testing.T) {
 	// Demonstrates handler reuse: one handler, two formats.
-	route := buildRoute(t)
-	mux := http.NewServeMux()
-	nethttp.Register(mux, route, func(_ context.Context, _ pageReq) (pageProps, error) {
+	route := newPageRoute(func(_ context.Context, _ pageReq) (pageProps, error) {
 		return pageProps{Title: "Shared", Items: []string{"item1"}}, nil
-	}, nethttp.Options{})
+	})
+	handler := mustServeOne(t, route)
 
-	srv := httptest.NewServer(mux)
+	srv := httptest.NewServer(handler)
 	defer srv.Close()
 
 	htmlStatus, htmlBody := get(t, srv, "/page", "text/html")
@@ -235,22 +229,21 @@ func TestFormat_SameHandlerServesHTMLAndJSON(t *testing.T) {
 	}
 }
 
-func TestStreamingFormat_HTMLResponse(t *testing.T) {
-	b := rest.NewBuilder(rest.Info{Title: "Test", Version: "1.0.0"})
-	route, err := rest.NewRoute[pageReq, pageProps]("GET", "/page",
+func newStreamingPageRoute(opID string, fn func(context.Context, pageReq) (pageProps, error)) rest.Route[pageReq, pageProps] {
+	return rest.NewRoute[pageReq, pageProps]("GET", "/page",
 		pageReqCodec, pagePropsCodec,
-		rest.RouteMeta{OperationID: "streamPage"},
-	).Register(b)
-	if err != nil {
-		t.Fatalf("AddRoute: %v", err)
-	}
-	route = route.WithFormats(adapttempl.StreamingFormat(pagePropsCodec, pageComponent))
-	mux := http.NewServeMux()
-	nethttp.Register(mux, route, func(_ context.Context, _ pageReq) (pageProps, error) {
-		return pageProps{Title: "Streamed", Items: []string{"a"}}, nil
-	}, nethttp.Options{})
+		rest.RouteMeta{OperationID: opID},
+		rest.Formats(adapttempl.StreamingFormat(pagePropsCodec, pageComponent)),
+	).WithHandler(fn)
+}
 
-	srv := httptest.NewServer(mux)
+func TestStreamingFormat_HTMLResponse(t *testing.T) {
+	route := newStreamingPageRoute("streamPage", func(_ context.Context, _ pageReq) (pageProps, error) {
+		return pageProps{Title: "Streamed", Items: []string{"a"}}, nil
+	})
+	handler := mustServeOne(t, route)
+
+	srv := httptest.NewServer(handler)
 	defer srv.Close()
 
 	status, body := get(t, srv, "/page", "text/html")
@@ -263,18 +256,10 @@ func TestStreamingFormat_HTMLResponse(t *testing.T) {
 }
 
 func TestStreamingFormat_ContentTypeHeader(t *testing.T) {
-	b := rest.NewBuilder(rest.Info{Title: "Test", Version: "1.0.0"})
-	route, err := rest.NewRoute[pageReq, pageProps]("GET", "/page",
-		pageReqCodec, pagePropsCodec,
-		rest.RouteMeta{OperationID: "streamPage"},
-	).Register(b)
-	if err != nil {
-		t.Fatalf("AddRoute: %v", err)
-	}
-	route = route.WithFormats(adapttempl.StreamingFormat(pagePropsCodec, pageComponent))
-	handler := nethttp.Handler(route, func(_ context.Context, _ pageReq) (pageProps, error) {
+	route := newStreamingPageRoute("streamPage", func(_ context.Context, _ pageReq) (pageProps, error) {
 		return pageProps{Title: "T", Items: []string{}}, nil
-	}, nethttp.Options{})
+	})
+	handler := mustServeOne(t, route)
 
 	rec := httptest.NewRecorder()
 	r := httptest.NewRequest(http.MethodGet, "/page", nil)
@@ -290,18 +275,10 @@ func TestStreamingFormat_ContentTypeHeader(t *testing.T) {
 }
 
 func TestStreamingFormat_InvalidPropsReturn500(t *testing.T) {
-	b := rest.NewBuilder(rest.Info{Title: "Test", Version: "1.0.0"})
-	route, err := rest.NewRoute[pageReq, pageProps]("GET", "/page",
-		pageReqCodec, pagePropsCodec,
-		rest.RouteMeta{OperationID: "streamPageInvalid"},
-	).Register(b)
-	if err != nil {
-		t.Fatalf("AddRoute: %v", err)
-	}
-	route = route.WithFormats(adapttempl.StreamingFormat(pagePropsCodec, pageComponent))
-	handler := nethttp.Handler(route, func(_ context.Context, _ pageReq) (pageProps, error) {
+	route := newStreamingPageRoute("streamPageInvalid", func(_ context.Context, _ pageReq) (pageProps, error) {
 		return pageProps{Title: "", Items: []string{}}, nil // Title="" fails NonEmptyString
-	}, nethttp.Options{})
+	})
+	handler := mustServeOne(t, route)
 
 	rec := httptest.NewRecorder()
 	r := httptest.NewRequest(http.MethodGet, "/page", nil)

@@ -569,7 +569,7 @@ func Call[Req, Resp any](
 // derives [CallOptions.Vars] from req automatically, using the route's
 // merge-capable topic params ([reqreply.RouteHandle.MergeFields] +
 // [codex.EncodeVars]) — one struct in, no manual vars map, mirroring
-// [nethttp.CallHandle]'s client-side convenience for REST.
+// [nethttp.CallWithHandle]'s client-side convenience for REST.
 //
 // An explicit [CallOptions.Vars] takes PRECEDENCE over the derived value —
 // this lets a caller override a struct field's value without losing the

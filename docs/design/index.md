@@ -24,7 +24,9 @@ open) — see `.github/skills/plan-a-new-codex-feature/SKILL.md` for the exact p
 
 ## Documents
 
-_No document has graduated to this section yet._
+| Document | Package | Summary |
+|---|---|---|
+| [Middleware Workflow Simplification](middleware-workflow-simplification.md) | `middleware`, `api/rest`, `adapters/nethttp`, `adapters/chi` | The declare/implement middleware split (`HandleMW`/`ClientMW`) plus whole-API declarative wiring (`Route.Register(builder)` + `Serve`/`ServeOne`/`ServeSSE` as the sole server-side entry points, `Call`/`CallWithHandle` as the sole client-side ones) — fully shipped, including removal of the older per-route `Handler`/`Register`/`SSEHandler`/`RegisterSSE` functions. Establishes the pattern the `ports.Pattern` binding layer (`RESTPattern`) reuses unchanged. |
 
 ---
 

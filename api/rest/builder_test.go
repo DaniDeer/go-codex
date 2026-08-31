@@ -62,7 +62,7 @@ type userResp struct {
 
 func TestAddRoute_returnsHandleWithDecodeEncode(t *testing.T) {
 	b := rest.NewBuilder(testInfo)
-	h, err := rest.NewRoute[createReq, userResp]("POST", "/users", createReqCodec, userCodec).Register(b)
+	h, err := rest.NewRoute[createReq, userResp]("POST", "/users", createReqCodec, userCodec).RegisterHandle(b)
 	if err != nil {
 		t.Fatalf("AddRoute error: %v", err)
 	}
@@ -92,7 +92,7 @@ func TestAddRoute_returnsHandleWithDecodeEncode(t *testing.T) {
 
 func TestAddRoute_decodeRunsValidation(t *testing.T) {
 	b := rest.NewBuilder(testInfo)
-	h, err := rest.NewRoute[createReq, userResp]("POST", "/users", createReqCodec, userCodec).Register(b)
+	h, err := rest.NewRoute[createReq, userResp]("POST", "/users", createReqCodec, userCodec).RegisterHandle(b)
 	if err != nil {
 		t.Fatalf("AddRoute error: %v", err)
 	}
@@ -109,7 +109,7 @@ func TestAddRoute_decodeRunsValidation(t *testing.T) {
 func TestAddRoute_descriptorFrozenAtRegistration(t *testing.T) {
 	b := rest.NewBuilder(testInfo)
 	config := rest.RouteMeta{OperationID: "createUser", Tags: []string{"users"}}
-	h, err := rest.NewRoute[createReq, userResp]("POST", "/users", createReqCodec, userCodec, config).Register(b)
+	h, err := rest.NewRoute[createReq, userResp]("POST", "/users", createReqCodec, userCodec, config).RegisterHandle(b)
 	if err != nil {
 		t.Fatalf("AddRoute error: %v", err)
 	}
@@ -128,7 +128,7 @@ func TestAddRoute_descriptorFrozenAtRegistration(t *testing.T) {
 
 func TestAddRoute_postDefaultStatus201(t *testing.T) {
 	b := rest.NewBuilder(testInfo)
-	h, err := rest.NewRoute[createReq, userResp]("POST", "/users", createReqCodec, userCodec).Register(b)
+	h, err := rest.NewRoute[createReq, userResp]("POST", "/users", createReqCodec, userCodec).RegisterHandle(b)
 	if err != nil {
 		t.Fatalf("AddRoute error: %v", err)
 	}
@@ -140,7 +140,7 @@ func TestAddRoute_postDefaultStatus201(t *testing.T) {
 
 func TestAddRoute_getDefaultStatus200(t *testing.T) {
 	b := rest.NewBuilder(testInfo)
-	h, err := rest.NewRoute[createReq, userResp]("GET", "/users", createReqCodec, userCodec).Register(b)
+	h, err := rest.NewRoute[createReq, userResp]("GET", "/users", createReqCodec, userCodec).RegisterHandle(b)
 	if err != nil {
 		t.Fatalf("AddRoute error: %v", err)
 	}
@@ -153,11 +153,11 @@ func TestAddRoute_getDefaultStatus200(t *testing.T) {
 func TestAddRoute_bodyOnlyForBodyMethods(t *testing.T) {
 	b := rest.NewBuilder(testInfo)
 
-	post, err := rest.NewRoute[createReq, userResp]("POST", "/users", createReqCodec, userCodec).Register(b)
+	post, err := rest.NewRoute[createReq, userResp]("POST", "/users", createReqCodec, userCodec).RegisterHandle(b)
 	if err != nil {
 		t.Fatalf("AddRoute error: %v", err)
 	}
-	get, err := rest.NewRoute[createReq, userResp]("GET", "/users", createReqCodec, userCodec).Register(b)
+	get, err := rest.NewRoute[createReq, userResp]("GET", "/users", createReqCodec, userCodec).RegisterHandle(b)
 	if err != nil {
 		t.Fatalf("AddRoute error: %v", err)
 	}
@@ -175,7 +175,7 @@ func TestAddRoute_additionalResponsesAppended(t *testing.T) {
 	errSchema := schema.Schema{Type: "object"}
 	config := []rest.RouteOpt{rest.ResponseMeta{Status: "400", Description: "Bad request", Schema: &errSchema}, rest.ResponseMeta{Status: "404", Description: "Not found"}}
 
-	h, err := rest.NewRoute[createReq, userResp]("POST", "/users", createReqCodec, userCodec, config...).Register(b)
+	h, err := rest.NewRoute[createReq, userResp]("POST", "/users", createReqCodec, userCodec, config...).RegisterHandle(b)
 	if err != nil {
 		t.Fatalf("AddRoute error: %v", err)
 	}
@@ -199,10 +199,10 @@ func TestBuilder_openAPISpec_containsRegisteredRoutes(t *testing.T) {
 		Summary:        "Create a user",
 		ReqSchemaName:  "CreateUserRequest",
 		RespSchemaName: "User"}, rest.ResponseMeta{Status: "400", Description: "Validation error"},
-	).Register(b); err != nil {
+	).RegisterHandle(b); err != nil {
 		t.Fatalf("AddRoute error: %v", err)
 	}
-	if _, err := rest.NewRoute[createReq, userResp]("GET", "/users/{id}", createReqCodec, userCodec, rest.RouteMeta{OperationID: "getUser"}, rest.PathParam{Name: "id"}).Register(b); err != nil {
+	if _, err := rest.NewRoute[createReq, userResp]("GET", "/users/{id}", createReqCodec, userCodec, rest.RouteMeta{OperationID: "getUser"}, rest.PathParam{Name: "id"}).RegisterHandle(b); err != nil {
 		t.Fatalf("AddRoute error: %v", err)
 	}
 
@@ -238,10 +238,10 @@ func TestBuilder_openAPISpec_containsRegisteredRoutes(t *testing.T) {
 
 func TestBuilder_openAPISpec_duplicateRouteError(t *testing.T) {
 	b := rest.NewBuilder(testInfo)
-	if _, err := rest.NewRoute[createReq, userResp]("POST", "/users", createReqCodec, userCodec).Register(b); err != nil {
+	if _, err := rest.NewRoute[createReq, userResp]("POST", "/users", createReqCodec, userCodec).RegisterHandle(b); err != nil {
 		t.Fatalf("AddRoute error: %v", err)
 	}
-	if _, err := rest.NewRoute[createReq, userResp]("POST", "/users", createReqCodec, userCodec).Register(b); err != nil {
+	if _, err := rest.NewRoute[createReq, userResp]("POST", "/users", createReqCodec, userCodec).RegisterHandle(b); err != nil {
 		t.Fatalf("AddRoute error: %v", err)
 	}
 
@@ -253,10 +253,10 @@ func TestBuilder_openAPISpec_duplicateRouteError(t *testing.T) {
 
 func TestBuilder_openAPISpec_multipleRoutesOnSamePath(t *testing.T) {
 	b := rest.NewBuilder(testInfo)
-	if _, err := rest.NewRoute[createReq, userResp]("GET", "/users", createReqCodec, userCodec, rest.RouteMeta{OperationID: "listUsers"}).Register(b); err != nil {
+	if _, err := rest.NewRoute[createReq, userResp]("GET", "/users", createReqCodec, userCodec, rest.RouteMeta{OperationID: "listUsers"}).RegisterHandle(b); err != nil {
 		t.Fatalf("AddRoute error: %v", err)
 	}
-	if _, err := rest.NewRoute[createReq, userResp]("POST", "/users", createReqCodec, userCodec, rest.RouteMeta{OperationID: "createUser"}).Register(b); err != nil {
+	if _, err := rest.NewRoute[createReq, userResp]("POST", "/users", createReqCodec, userCodec, rest.RouteMeta{OperationID: "createUser"}).RegisterHandle(b); err != nil {
 		t.Fatalf("AddRoute error: %v", err)
 	}
 
@@ -273,7 +273,7 @@ func TestBuilder_openAPISpec_multipleRoutesOnSamePath(t *testing.T) {
 
 func TestBuilder_openAPISpec_schemaRefInComponents(t *testing.T) {
 	b := rest.NewBuilder(testInfo)
-	if _, err := rest.NewRoute[createReq, userResp]("POST", "/users", createReqCodec, userCodec, rest.RouteMeta{RespSchemaName: "UserResponse"}).Register(b); err != nil {
+	if _, err := rest.NewRoute[createReq, userResp]("POST", "/users", createReqCodec, userCodec, rest.RouteMeta{RespSchemaName: "UserResponse"}).RegisterHandle(b); err != nil {
 		t.Fatalf("AddRoute error: %v", err)
 	}
 
@@ -293,7 +293,7 @@ func TestBuilder_openAPISpec_schemaRefInComponents(t *testing.T) {
 
 func TestBuilder_openAPISpec_jsonOutput(t *testing.T) {
 	b := rest.NewBuilder(testInfo)
-	if _, err := rest.NewRoute[createReq, userResp]("GET", "/health", createReqCodec, userCodec, rest.RouteMeta{OperationID: "healthCheck"}).Register(b); err != nil {
+	if _, err := rest.NewRoute[createReq, userResp]("GET", "/health", createReqCodec, userCodec, rest.RouteMeta{OperationID: "healthCheck"}).RegisterHandle(b); err != nil {
 		t.Fatalf("AddRoute error: %v", err)
 	}
 
@@ -318,10 +318,10 @@ func TestBuilder_withPathCodec_validPathPasses(t *testing.T) {
 	b := rest.NewBuilder(testInfo, rest.WithPathCodec(
 		codex.String().Refine(validate.HTTPPath),
 	))
-	if _, err := rest.NewRoute[createReq, userResp]("POST", "/users", createReqCodec, userCodec).Register(b); err != nil {
+	if _, err := rest.NewRoute[createReq, userResp]("POST", "/users", createReqCodec, userCodec).RegisterHandle(b); err != nil {
 		t.Fatalf("AddRoute error: %v", err)
 	}
-	if _, err := rest.NewRoute[createReq, userResp]("GET", "/users/{id}", createReqCodec, userCodec, rest.PathParam{Name: "id"}).Register(b); err != nil {
+	if _, err := rest.NewRoute[createReq, userResp]("GET", "/users/{id}", createReqCodec, userCodec, rest.PathParam{Name: "id"}).RegisterHandle(b); err != nil {
 		t.Fatalf("AddRoute error: %v", err)
 	}
 
@@ -335,7 +335,7 @@ func TestBuilder_withPathCodec_invalidPathSurfacesError(t *testing.T) {
 	b := rest.NewBuilder(testInfo, rest.WithPathCodec(
 		codex.String().Refine(validate.HTTPPath),
 	))
-	_, err := rest.NewRoute[createReq, userResp]("POST", "users", createReqCodec, userCodec).Register(b)
+	_, err := rest.NewRoute[createReq, userResp]("POST", "users", createReqCodec, userCodec).RegisterHandle(b)
 	if err == nil {
 		t.Fatal("expected error for path missing leading slash, got nil")
 	}
@@ -356,7 +356,7 @@ func TestBuilder_withPathCodec_invalidPathSurfacesError(t *testing.T) {
 
 func TestBuilder_withPathConstraints_multipleInvalidPathsCollected(t *testing.T) {
 	b := rest.NewBuilder(testInfo, rest.WithPathConstraints(validate.HTTPPath))
-	_, err := rest.NewRoute[createReq, userResp]("POST", "no-slash", createReqCodec, userCodec).Register(b)
+	_, err := rest.NewRoute[createReq, userResp]("POST", "no-slash", createReqCodec, userCodec).RegisterHandle(b)
 	if err == nil {
 		t.Fatal("expected error for path missing leading slash, got nil")
 	}
@@ -364,7 +364,7 @@ func TestBuilder_withPathConstraints_multipleInvalidPathsCollected(t *testing.T)
 		t.Errorf("error should mention the invalid path, got: %v", err)
 	}
 
-	_, err = rest.NewRoute[createReq, userResp]("GET", "also-bad", createReqCodec, userCodec).Register(b)
+	_, err = rest.NewRoute[createReq, userResp]("GET", "also-bad", createReqCodec, userCodec).RegisterHandle(b)
 	if err == nil {
 		t.Fatal("expected error for path missing leading slash, got nil")
 	}
@@ -375,7 +375,7 @@ func TestBuilder_withPathConstraints_multipleInvalidPathsCollected(t *testing.T)
 
 func TestBuilder_noPathCodec_anyPathAccepted(t *testing.T) {
 	b := rest.NewBuilder(testInfo)
-	if _, err := rest.NewRoute[createReq, userResp]("POST", "no-slash", createReqCodec, userCodec).Register(b); err != nil {
+	if _, err := rest.NewRoute[createReq, userResp]("POST", "no-slash", createReqCodec, userCodec).RegisterHandle(b); err != nil {
 		t.Fatalf("AddRoute error: %v", err)
 	}
 }
@@ -387,7 +387,7 @@ func TestAddRoute_unknownPathParamCodecKey(t *testing.T) {
 	_, err := rest.NewRoute[createReq, userResp]("GET", "/users/{id}", createReqCodec, userCodec,
 		rest.PathParam{Name: "id", Codec: &uuidCodec},
 		rest.PathParam{Name: "missing", Codec: &strCodec}, // not in template
-	).Register(b)
+	).RegisterHandle(b)
 
 	if err == nil {
 		t.Fatal("expected error for unknown PathParams name, got nil")
@@ -404,7 +404,7 @@ func TestAddRoute_unknownPathParamCodecKey(t *testing.T) {
 func TestBuildPath_validVars(t *testing.T) {
 	b := rest.NewBuilder(testInfo)
 	uuidCodec := codex.String().Refine(validate.UUID)
-	h, err := rest.NewRoute[createReq, userResp]("GET", "/users/{id}", createReqCodec, userCodec, rest.PathParam{Name: "id", Codec: &uuidCodec}).Register(b)
+	h, err := rest.NewRoute[createReq, userResp]("GET", "/users/{id}", createReqCodec, userCodec, rest.PathParam{Name: "id", Codec: &uuidCodec}).RegisterHandle(b)
 	if err != nil {
 		t.Fatalf("AddRoute error: %v", err)
 	}
@@ -420,7 +420,7 @@ func TestBuildPath_validVars(t *testing.T) {
 
 func TestBuildPath_missingVar(t *testing.T) {
 	b := rest.NewBuilder(testInfo)
-	h, err := rest.NewRoute[createReq, userResp]("GET", "/users/{id}", createReqCodec, userCodec).Register(b)
+	h, err := rest.NewRoute[createReq, userResp]("GET", "/users/{id}", createReqCodec, userCodec).RegisterHandle(b)
 	if err != nil {
 		t.Fatalf("AddRoute error: %v", err)
 	}
@@ -441,7 +441,7 @@ func TestBuildPath_missingVar(t *testing.T) {
 func TestBuildPath_codecFailure(t *testing.T) {
 	b := rest.NewBuilder(testInfo)
 	uuidCodec := codex.String().Refine(validate.UUID)
-	h, err := rest.NewRoute[createReq, userResp]("GET", "/users/{id}", createReqCodec, userCodec, rest.PathParam{Name: "id", Codec: &uuidCodec}).Register(b)
+	h, err := rest.NewRoute[createReq, userResp]("GET", "/users/{id}", createReqCodec, userCodec, rest.PathParam{Name: "id", Codec: &uuidCodec}).RegisterHandle(b)
 	if err != nil {
 		t.Fatalf("AddRoute error: %v", err)
 	}
@@ -464,7 +464,7 @@ func TestBuildPath_codecFailure(t *testing.T) {
 
 func TestBuildPath_extraKeysIgnored(t *testing.T) {
 	b := rest.NewBuilder(testInfo)
-	h, err := rest.NewRoute[createReq, userResp]("GET", "/users/{id}", createReqCodec, userCodec).Register(b)
+	h, err := rest.NewRoute[createReq, userResp]("GET", "/users/{id}", createReqCodec, userCodec).RegisterHandle(b)
 	if err != nil {
 		t.Fatalf("AddRoute error: %v", err)
 	}
@@ -490,7 +490,7 @@ func TestBuilder_withPathConstraints_templateTransparent(t *testing.T) {
 	b := rest.NewBuilder(testInfo, rest.WithPathConstraints(noBraces))
 
 	// Without template-transparent stripping this would return an InvalidPathError.
-	if _, err := rest.NewRoute[createReq, userResp]("GET", "/users/{id}", createReqCodec, userCodec).Register(b); err != nil {
+	if _, err := rest.NewRoute[createReq, userResp]("GET", "/users/{id}", createReqCodec, userCodec).RegisterHandle(b); err != nil {
 		t.Fatalf("expected template path to pass brace-free constraint after stripping, got: %v", err)
 	}
 }
@@ -507,7 +507,7 @@ func TestBuildPath_finalPathReValidatedAgainstBuilderCodec(t *testing.T) {
 	b := rest.NewBuilder(testInfo, rest.WithPathConstraints(noSpaces))
 	// PathParams only checks non-empty — does NOT forbid spaces.
 	nonEmptyCodec := codex.String().Refine(validate.NonEmptyString)
-	h, err := rest.NewRoute[createReq, userResp]("GET", "/users/{name}", createReqCodec, userCodec, rest.PathParam{Name: "name", Codec: &nonEmptyCodec}).Register(b)
+	h, err := rest.NewRoute[createReq, userResp]("GET", "/users/{name}", createReqCodec, userCodec, rest.PathParam{Name: "name", Codec: &nonEmptyCodec}).RegisterHandle(b)
 	if err != nil {
 		t.Fatalf("AddRoute error: %v", err)
 	}
@@ -539,7 +539,7 @@ func TestValidateQuery_validValues(t *testing.T) {
 	b := rest.NewBuilder(testInfo)
 	uuidCodec := codex.String().Refine(validate.UUID)
 	pageCodec := codex.String().Refine(validate.NonNegativeIntString)
-	h, err := rest.NewRoute[createReq, userResp]("GET", "/users", createReqCodec, userCodec, rest.QueryParam{Name: "id", Description: "User UUID", Codec: &uuidCodec}, rest.QueryParam{Name: "page", Description: "Page number", Required: false, Codec: &pageCodec}).Register(b)
+	h, err := rest.NewRoute[createReq, userResp]("GET", "/users", createReqCodec, userCodec, rest.QueryParam{Name: "id", Description: "User UUID", Codec: &uuidCodec}, rest.QueryParam{Name: "page", Description: "Page number", Required: false, Codec: &pageCodec}).RegisterHandle(b)
 	if err != nil {
 		t.Fatalf("AddRoute: %v", err)
 	}
@@ -554,7 +554,7 @@ func TestValidateQuery_validValues(t *testing.T) {
 func TestValidateQuery_invalidValue(t *testing.T) {
 	b := rest.NewBuilder(testInfo)
 	uuidCodec := codex.String().Refine(validate.UUID)
-	h, err := rest.NewRoute[createReq, userResp]("GET", "/users", createReqCodec, userCodec, rest.QueryParam{Name: "id", Codec: &uuidCodec}).Register(b)
+	h, err := rest.NewRoute[createReq, userResp]("GET", "/users", createReqCodec, userCodec, rest.QueryParam{Name: "id", Codec: &uuidCodec}).RegisterHandle(b)
 	if err != nil {
 		t.Fatalf("AddRoute: %v", err)
 	}
@@ -578,7 +578,7 @@ func TestValidateQuery_nilCodecSkipped(t *testing.T) {
 	b := rest.NewBuilder(testInfo)
 	h, err := rest.NewRoute[createReq, userResp]("GET", "/users", createReqCodec, userCodec,
 		rest.QueryParam{Name: "search"}, // no codec
-	).Register(b)
+	).RegisterHandle(b)
 
 	if err != nil {
 		t.Fatalf("AddRoute: %v", err)
@@ -591,7 +591,7 @@ func TestValidateQuery_nilCodecSkipped(t *testing.T) {
 func TestValidateQuery_missingKeySkipped(t *testing.T) {
 	b := rest.NewBuilder(testInfo)
 	uuidCodec := codex.String().Refine(validate.UUID)
-	h, err := rest.NewRoute[createReq, userResp]("GET", "/users", createReqCodec, userCodec, rest.QueryParam{Name: "id", Codec: &uuidCodec}).Register(b)
+	h, err := rest.NewRoute[createReq, userResp]("GET", "/users", createReqCodec, userCodec, rest.QueryParam{Name: "id", Codec: &uuidCodec}).RegisterHandle(b)
 	if err != nil {
 		t.Fatalf("AddRoute: %v", err)
 	}
@@ -604,7 +604,7 @@ func TestValidateQuery_missingKeySkipped(t *testing.T) {
 func TestValidateQueryMulti_validFirstValue(t *testing.T) {
 	b := rest.NewBuilder(testInfo)
 	uuidCodec := codex.String().Refine(validate.UUID)
-	h, err := rest.NewRoute[createReq, userResp]("GET", "/items", createReqCodec, userCodec, rest.QueryParam{Name: "id", Codec: &uuidCodec}).Register(b)
+	h, err := rest.NewRoute[createReq, userResp]("GET", "/items", createReqCodec, userCodec, rest.QueryParam{Name: "id", Codec: &uuidCodec}).RegisterHandle(b)
 	if err != nil {
 		t.Fatalf("AddRoute: %v", err)
 	}
@@ -619,7 +619,7 @@ func TestValidateQueryMulti_validFirstValue(t *testing.T) {
 func TestValidateQueryMulti_invalidFirstValue(t *testing.T) {
 	b := rest.NewBuilder(testInfo)
 	uuidCodec := codex.String().Refine(validate.UUID)
-	h, err := rest.NewRoute[createReq, userResp]("GET", "/items", createReqCodec, userCodec, rest.QueryParam{Name: "id", Codec: &uuidCodec}).Register(b)
+	h, err := rest.NewRoute[createReq, userResp]("GET", "/items", createReqCodec, userCodec, rest.QueryParam{Name: "id", Codec: &uuidCodec}).RegisterHandle(b)
 	if err != nil {
 		t.Fatalf("AddRoute: %v", err)
 	}
@@ -640,7 +640,7 @@ func TestValidateQueryMulti_invalidFirstValue(t *testing.T) {
 func TestValidateQueryMulti_missingKeySkipped(t *testing.T) {
 	b := rest.NewBuilder(testInfo)
 	uuidCodec := codex.String().Refine(validate.UUID)
-	h, err := rest.NewRoute[createReq, userResp]("GET", "/items", createReqCodec, userCodec, rest.QueryParam{Name: "id", Codec: &uuidCodec}).Register(b)
+	h, err := rest.NewRoute[createReq, userResp]("GET", "/items", createReqCodec, userCodec, rest.QueryParam{Name: "id", Codec: &uuidCodec}).RegisterHandle(b)
 	if err != nil {
 		t.Fatalf("AddRoute: %v", err)
 	}
@@ -652,7 +652,7 @@ func TestValidateQueryMulti_missingKeySkipped(t *testing.T) {
 func TestQueryParam_schemaFlowsToSpec(t *testing.T) {
 	b := rest.NewBuilder(testInfo)
 	uuidCodec := codex.String().Refine(validate.UUID)
-	_, err := rest.NewRoute[createReq, userResp]("GET", "/users", createReqCodec, userCodec, rest.QueryParam{Name: "id", Description: "User UUID", Required: true, Codec: &uuidCodec}).Register(b)
+	_, err := rest.NewRoute[createReq, userResp]("GET", "/users", createReqCodec, userCodec, rest.QueryParam{Name: "id", Description: "User UUID", Required: true, Codec: &uuidCodec}).RegisterHandle(b)
 	if err != nil {
 		t.Fatalf("AddRoute: %v", err)
 	}
@@ -676,7 +676,7 @@ func TestQueryParam_schemaFlowsToSpec(t *testing.T) {
 func TestValidateCookies_valid(t *testing.T) {
 	b := rest.NewBuilder(testInfo)
 	tokenCodec := codex.String().Refine(validate.NonEmptyString)
-	h, err := rest.NewRoute[createReq, userResp]("GET", "/protected", createReqCodec, userCodec, rest.CookieParam{Name: "session_token", Required: true, Codec: &tokenCodec}).Register(b)
+	h, err := rest.NewRoute[createReq, userResp]("GET", "/protected", createReqCodec, userCodec, rest.CookieParam{Name: "session_token", Required: true, Codec: &tokenCodec}).RegisterHandle(b)
 	if err != nil {
 		t.Fatalf("AddRoute: %v", err)
 	}
@@ -688,7 +688,7 @@ func TestValidateCookies_valid(t *testing.T) {
 func TestValidateCookies_invalid(t *testing.T) {
 	b := rest.NewBuilder(testInfo)
 	tokenCodec := codex.String().Refine(validate.NonEmptyString)
-	h, err := rest.NewRoute[createReq, userResp]("GET", "/protected", createReqCodec, userCodec, rest.CookieParam{Name: "session_token", Required: true, Codec: &tokenCodec}).Register(b)
+	h, err := rest.NewRoute[createReq, userResp]("GET", "/protected", createReqCodec, userCodec, rest.CookieParam{Name: "session_token", Required: true, Codec: &tokenCodec}).RegisterHandle(b)
 	if err != nil {
 		t.Fatalf("AddRoute: %v", err)
 	}
@@ -705,7 +705,7 @@ func TestValidateCookies_invalid(t *testing.T) {
 func TestValidateCookies_missingParam_notRequired_skipped(t *testing.T) {
 	b := rest.NewBuilder(testInfo)
 	tokenCodec := codex.String().Refine(validate.NonEmptyString)
-	h, err := rest.NewRoute[createReq, userResp]("GET", "/protected", createReqCodec, userCodec, rest.CookieParam{Name: "session_token", Required: false, Codec: &tokenCodec}).Register(b)
+	h, err := rest.NewRoute[createReq, userResp]("GET", "/protected", createReqCodec, userCodec, rest.CookieParam{Name: "session_token", Required: false, Codec: &tokenCodec}).RegisterHandle(b)
 	if err != nil {
 		t.Fatalf("AddRoute: %v", err)
 	}
@@ -718,7 +718,7 @@ func TestValidateCookies_missingParam_notRequired_skipped(t *testing.T) {
 func TestValidateCookies_missingParam_required_returnsError(t *testing.T) {
 	b := rest.NewBuilder(testInfo)
 	tokenCodec := codex.String().Refine(validate.NonEmptyString)
-	h, err := rest.NewRoute[createReq, userResp]("GET", "/protected", createReqCodec, userCodec, rest.CookieParam{Name: "session_token", Required: true, Codec: &tokenCodec}).Register(b)
+	h, err := rest.NewRoute[createReq, userResp]("GET", "/protected", createReqCodec, userCodec, rest.CookieParam{Name: "session_token", Required: true, Codec: &tokenCodec}).RegisterHandle(b)
 	if err != nil {
 		t.Fatalf("AddRoute: %v", err)
 	}
@@ -731,7 +731,7 @@ func TestValidateCookies_missingParam_required_returnsError(t *testing.T) {
 func TestValidateHeaders_valid(t *testing.T) {
 	b := rest.NewBuilder(testInfo)
 	uuidCodec := codex.String().Refine(validate.UUID)
-	h, err := rest.NewRoute[createReq, userResp]("POST", "/items", createReqCodec, userCodec, rest.HeaderParam{Name: "X-Request-ID", Required: true, Codec: &uuidCodec}).Register(b)
+	h, err := rest.NewRoute[createReq, userResp]("POST", "/items", createReqCodec, userCodec, rest.HeaderParam{Name: "X-Request-ID", Required: true, Codec: &uuidCodec}).RegisterHandle(b)
 	if err != nil {
 		t.Fatalf("AddRoute: %v", err)
 	}
@@ -743,7 +743,7 @@ func TestValidateHeaders_valid(t *testing.T) {
 func TestValidateHeaders_invalid(t *testing.T) {
 	b := rest.NewBuilder(testInfo)
 	uuidCodec := codex.String().Refine(validate.UUID)
-	h, err := rest.NewRoute[createReq, userResp]("POST", "/items", createReqCodec, userCodec, rest.HeaderParam{Name: "X-Request-ID", Required: true, Codec: &uuidCodec}).Register(b)
+	h, err := rest.NewRoute[createReq, userResp]("POST", "/items", createReqCodec, userCodec, rest.HeaderParam{Name: "X-Request-ID", Required: true, Codec: &uuidCodec}).RegisterHandle(b)
 	if err != nil {
 		t.Fatalf("AddRoute: %v", err)
 	}
@@ -760,7 +760,7 @@ func TestValidateHeaders_invalid(t *testing.T) {
 func TestCookieParam_schemaFlowsToSpec(t *testing.T) {
 	b := rest.NewBuilder(testInfo)
 	tokenCodec := codex.String().Refine(validate.NonEmptyString)
-	_, err := rest.NewRoute[createReq, userResp]("GET", "/protected", createReqCodec, userCodec, rest.CookieParam{Name: "session_token", Description: "Auth cookie", Required: true, Codec: &tokenCodec}).Register(b)
+	_, err := rest.NewRoute[createReq, userResp]("GET", "/protected", createReqCodec, userCodec, rest.CookieParam{Name: "session_token", Description: "Auth cookie", Required: true, Codec: &tokenCodec}).RegisterHandle(b)
 	if err != nil {
 		t.Fatalf("AddRoute: %v", err)
 	}
@@ -784,7 +784,7 @@ func TestCookieParam_schemaFlowsToSpec(t *testing.T) {
 func TestHeaderParam_schemaFlowsToSpec(t *testing.T) {
 	b := rest.NewBuilder(testInfo)
 	uuidCodec := codex.String().Refine(validate.UUID)
-	_, err := rest.NewRoute[createReq, userResp]("POST", "/items", createReqCodec, userCodec, rest.HeaderParam{Name: "X-Request-ID", Description: "Idempotency key", Required: true, Codec: &uuidCodec}).Register(b)
+	_, err := rest.NewRoute[createReq, userResp]("POST", "/items", createReqCodec, userCodec, rest.HeaderParam{Name: "X-Request-ID", Description: "Idempotency key", Required: true, Codec: &uuidCodec}).RegisterHandle(b)
 	if err != nil {
 		t.Fatalf("AddRoute: %v", err)
 	}
@@ -808,7 +808,7 @@ func TestHeaderParam_schemaFlowsToSpec(t *testing.T) {
 func TestResponseHeaderParam_validateValid(t *testing.T) {
 	b := rest.NewBuilder(testInfo)
 	uuidCodec := codex.String().Refine(validate.UUID)
-	h, err := rest.NewRoute[createReq, userResp]("POST", "/users", createReqCodec, userCodec, rest.ResponseHeaderParam{Name: "Location", Description: "URL of created resource", Codec: &uuidCodec}).Register(b)
+	h, err := rest.NewRoute[createReq, userResp]("POST", "/users", createReqCodec, userCodec, rest.ResponseHeaderParam{Name: "Location", Description: "URL of created resource", Codec: &uuidCodec}).RegisterHandle(b)
 	if err != nil {
 		t.Fatalf("AddRoute: %v", err)
 	}
@@ -823,7 +823,7 @@ func TestResponseHeaderParam_validateValid(t *testing.T) {
 func TestResponseHeaderParam_validateInvalid(t *testing.T) {
 	b := rest.NewBuilder(testInfo)
 	uuidCodec := codex.String().Refine(validate.UUID)
-	h, err := rest.NewRoute[createReq, userResp]("POST", "/users", createReqCodec, userCodec, rest.ResponseHeaderParam{Name: "ETag", Description: "Entity tag", Codec: &uuidCodec}).Register(b)
+	h, err := rest.NewRoute[createReq, userResp]("POST", "/users", createReqCodec, userCodec, rest.ResponseHeaderParam{Name: "ETag", Description: "Entity tag", Codec: &uuidCodec}).RegisterHandle(b)
 	if err != nil {
 		t.Fatalf("AddRoute: %v", err)
 	}
@@ -845,7 +845,7 @@ func TestResponseHeaderParam_validateInvalid(t *testing.T) {
 
 func TestResponseHeaderParam_nilCodecSkipped(t *testing.T) {
 	b := rest.NewBuilder(testInfo)
-	h, err := rest.NewRoute[createReq, userResp]("POST", "/users", createReqCodec, userCodec, rest.ResponseHeaderParam{Name: "Location", Description: "URL of created resource", Codec: nil}).Register(b)
+	h, err := rest.NewRoute[createReq, userResp]("POST", "/users", createReqCodec, userCodec, rest.ResponseHeaderParam{Name: "Location", Description: "URL of created resource", Codec: nil}).RegisterHandle(b)
 	if err != nil {
 		t.Fatalf("AddRoute: %v", err)
 	}
@@ -858,7 +858,7 @@ func TestResponseHeaderParam_nilCodecSkipped(t *testing.T) {
 func TestResponseHeaderParam_schemaFlowsToSpec(t *testing.T) {
 	b := rest.NewBuilder(testInfo)
 	uuidCodec := codex.String().Refine(validate.UUID)
-	_, err := rest.NewRoute[createReq, userResp]("POST", "/users", createReqCodec, userCodec, rest.ResponseHeaderParam{Name: "Location", Description: "URL of created resource", Codec: &uuidCodec}).Register(b)
+	_, err := rest.NewRoute[createReq, userResp]("POST", "/users", createReqCodec, userCodec, rest.ResponseHeaderParam{Name: "Location", Description: "URL of created resource", Codec: &uuidCodec}).RegisterHandle(b)
 	if err != nil {
 		t.Fatalf("AddRoute: %v", err)
 	}
@@ -882,7 +882,7 @@ func TestResponseHeaderParam_schemaFlowsToSpec(t *testing.T) {
 func TestResponseCookieParam_validateValid(t *testing.T) {
 	b := rest.NewBuilder(testInfo)
 	sessionCodec := codex.String().Refine(validate.MinLen(8))
-	handle, err := rest.NewRoute[createReq, userResp]("POST", "/users", createReqCodec, userCodec, rest.ResponseCookieParam{Name: "session", Codec: &sessionCodec}).Register(b)
+	handle, err := rest.NewRoute[createReq, userResp]("POST", "/users", createReqCodec, userCodec, rest.ResponseCookieParam{Name: "session", Codec: &sessionCodec}).RegisterHandle(b)
 	if err != nil {
 		t.Fatalf("AddRoute: %v", err)
 	}
@@ -894,7 +894,7 @@ func TestResponseCookieParam_validateValid(t *testing.T) {
 func TestResponseCookieParam_validateInvalid(t *testing.T) {
 	b := rest.NewBuilder(testInfo)
 	sessionCodec := codex.String().Refine(validate.MinLen(8))
-	handle, err := rest.NewRoute[createReq, userResp]("POST", "/users", createReqCodec, userCodec, rest.ResponseCookieParam{Name: "session", Codec: &sessionCodec}).Register(b)
+	handle, err := rest.NewRoute[createReq, userResp]("POST", "/users", createReqCodec, userCodec, rest.ResponseCookieParam{Name: "session", Codec: &sessionCodec}).RegisterHandle(b)
 	if err != nil {
 		t.Fatalf("AddRoute: %v", err)
 	}
@@ -915,7 +915,7 @@ func TestResponseCookieParam_nilCodecSkipped(t *testing.T) {
 	b := rest.NewBuilder(testInfo)
 	handle, err := rest.NewRoute[createReq, userResp]("POST", "/users", createReqCodec, userCodec,
 		rest.ResponseCookieParam{Name: "session"}, // no codec
-	).Register(b)
+	).RegisterHandle(b)
 
 	if err != nil {
 		t.Fatalf("AddRoute: %v", err)
@@ -928,7 +928,7 @@ func TestResponseCookieParam_nilCodecSkipped(t *testing.T) {
 func TestResponseCookieParam_schemaFlowsToSpec(t *testing.T) {
 	b := rest.NewBuilder(testInfo)
 	sessionCodec := codex.String().Refine(validate.MinLen(8))
-	_, err := rest.NewRoute[createReq, userResp]("POST", "/users", createReqCodec, userCodec, rest.ResponseCookieParam{Name: "session", Description: "Session token", Codec: &sessionCodec}).Register(b)
+	_, err := rest.NewRoute[createReq, userResp]("POST", "/users", createReqCodec, userCodec, rest.ResponseCookieParam{Name: "session", Description: "Session token", Codec: &sessionCodec}).RegisterHandle(b)
 	if err != nil {
 		t.Fatalf("AddRoute: %v", err)
 	}
@@ -971,13 +971,13 @@ func TestSecurityScheme_WithCodec_returnsDistinctCopy(t *testing.T) {
 	}
 }
 
-func TestWithSecurityScheme_Register_PopulatesSecuritySchemes(t *testing.T) {
+func TestFromSecurityScheme_Register_PopulatesSecuritySchemes(t *testing.T) {
 	b := rest.NewBuilder(testInfo)
 	c := codex.String().Refine(validate.NonEmptyString)
 
 	handle, err := rest.NewRoute[createReq, userResp]("GET", "/secure", createReqCodec, userCodec,
-		rest.WithSecurityScheme("bearer", rest.SecurityScheme{SecurityScheme: route.BearerScheme("JWT")}.WithCodec(c)),
-	).Register(b)
+		rest.WithMiddleware(rest.FromSecurityScheme("bearer", rest.SecurityScheme{SecurityScheme: route.BearerScheme("JWT")}.WithCodec(c), nil)),
+	).RegisterHandle(b)
 	if err != nil {
 		t.Fatalf("AddRoute: %v", err)
 	}
@@ -989,15 +989,15 @@ func TestWithSecurityScheme_Register_PopulatesSecuritySchemes(t *testing.T) {
 	}
 }
 
-func TestWithSecurityScheme_ClientHandle_PopulatesSecuritySchemes(t *testing.T) {
+func TestFromSecurityScheme_ClientHandle_PopulatesSecuritySchemes(t *testing.T) {
 	c := codex.String().Refine(validate.NonEmptyString)
 
 	handle := rest.NewRoute[createReq, userResp]("GET", "/secure", createReqCodec, userCodec,
-		rest.WithSecurityScheme("bearer", rest.SecurityScheme{SecurityScheme: route.BearerScheme("JWT")}.WithCodec(c)),
+		rest.WithMiddleware(rest.FromSecurityScheme("bearer", rest.SecurityScheme{SecurityScheme: route.BearerScheme("JWT")}.WithCodec(c), nil)),
 	).ClientHandle()
 
 	if _, ok := handle.SecuritySchemes["bearer"]; !ok {
-		t.Fatal("expected ClientHandle to populate SecuritySchemes from route-level WithSecurityScheme, with NO Builder involved")
+		t.Fatal("expected ClientHandle to populate SecuritySchemes from route-level FromSecurityScheme, with NO Builder involved")
 	}
 	if handle.SecuritySchemes["bearer"].Codec == nil {
 		t.Fatal("expected Codec to be propagated to the client RouteHandle")
@@ -1008,14 +1008,14 @@ func TestOpenAPISpec_AggregatesSecuritySchemesFromRoutes(t *testing.T) {
 	b := rest.NewBuilder(testInfo)
 
 	_, err := rest.NewRoute[createReq, userResp]("GET", "/secure-a", createReqCodec, userCodec,
-		rest.WithSecurityScheme("bearer", rest.SecurityScheme{SecurityScheme: route.BearerScheme("JWT")}),
-	).Register(b)
+		rest.WithMiddleware(rest.FromSecurityScheme("bearer", rest.SecurityScheme{SecurityScheme: route.BearerScheme("JWT")}, nil)),
+	).RegisterHandle(b)
 	if err != nil {
 		t.Fatalf("Register /secure-a: %v", err)
 	}
 	_, err = rest.NewRoute[createReq, userResp]("GET", "/secure-b", createReqCodec, userCodec,
-		rest.WithSecurityScheme("apiKey", rest.SecurityScheme{SecurityScheme: route.APIKeyScheme("X-API-Key", "header")}),
-	).Register(b)
+		rest.WithMiddleware(rest.FromSecurityScheme("apiKey", rest.SecurityScheme{SecurityScheme: route.APIKeyScheme("X-API-Key", "header")}, nil)),
+	).RegisterHandle(b)
 	if err != nil {
 		t.Fatalf("Register /secure-b: %v", err)
 	}
@@ -1042,8 +1042,8 @@ func TestBuilder_AddGlobalSecurity_appearsInOpenAPISpec(t *testing.T) {
 
 	b.AddGlobalSecurity(route.Require("bearer"))
 	_, err := rest.NewRoute[createReq, userResp]("GET", "/secure", createReqCodec, userCodec,
-		rest.WithSecurityScheme("bearer", rest.SecurityScheme{SecurityScheme: route.BearerScheme("JWT")}),
-	).Register(b)
+		rest.WithMiddleware(rest.FromSecurityScheme("bearer", rest.SecurityScheme{SecurityScheme: route.BearerScheme("JWT")}, nil)),
+	).RegisterHandle(b)
 	if err != nil {
 		t.Fatalf("AddRoute: %v", err)
 	}
@@ -1068,7 +1068,7 @@ func TestBuilder_AddGlobalSecurity_populatesRouteHandleGlobalSecurity(t *testing
 	b := rest.NewBuilder(testInfo)
 	b.AddGlobalSecurity(route.Require("bearer"))
 
-	handle, err := rest.NewRoute[createReq, userResp]("GET", "/secure", createReqCodec, userCodec).Register(b)
+	handle, err := rest.NewRoute[createReq, userResp]("GET", "/secure", createReqCodec, userCodec).RegisterHandle(b)
 	if err != nil {
 		t.Fatalf("AddRoute: %v", err)
 	}
@@ -1089,7 +1089,7 @@ func TestSSERouteHandle_ValidateQuery_valid(t *testing.T) {
 	h, err := rest.NewSSERoute[createReq, sseEvent]("/stream",
 		createReqCodec, sseEventCodec,
 		rest.QueryParam{Name: "id", Codec: &uuidCodec},
-	).Register(b)
+	).RegisterHandle(b)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1104,7 +1104,7 @@ func TestSSERouteHandle_ValidateQuery_invalid(t *testing.T) {
 	h, err := rest.NewSSERoute[createReq, sseEvent]("/stream",
 		createReqCodec, sseEventCodec,
 		rest.QueryParam{Name: "id", Codec: &uuidCodec},
-	).Register(b)
+	).RegisterHandle(b)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1124,7 +1124,7 @@ func TestSSERouteHandle_ValidateQueryMulti_valid(t *testing.T) {
 	h, err := rest.NewSSERoute[createReq, sseEvent]("/stream",
 		createReqCodec, sseEventCodec,
 		rest.QueryParam{Name: "id", Codec: &uuidCodec},
-	).Register(b)
+	).RegisterHandle(b)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1139,7 +1139,7 @@ func TestSSERouteHandle_ValidateQueryMulti_invalid(t *testing.T) {
 	h, err := rest.NewSSERoute[createReq, sseEvent]("/stream",
 		createReqCodec, sseEventCodec,
 		rest.QueryParam{Name: "id", Codec: &uuidCodec},
-	).Register(b)
+	).RegisterHandle(b)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1156,7 +1156,7 @@ func TestSSERouteHandle_ValidateCookies_valid(t *testing.T) {
 	h, err := rest.NewSSERoute[createReq, sseEvent]("/stream",
 		createReqCodec, sseEventCodec,
 		rest.CookieParam{Name: "session", Codec: &tokenCodec},
-	).Register(b)
+	).RegisterHandle(b)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1171,7 +1171,7 @@ func TestSSERouteHandle_ValidateCookies_invalid(t *testing.T) {
 	h, err := rest.NewSSERoute[createReq, sseEvent]("/stream",
 		createReqCodec, sseEventCodec,
 		rest.CookieParam{Name: "session", Codec: &tokenCodec},
-	).Register(b)
+	).RegisterHandle(b)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1191,7 +1191,7 @@ func TestSSERouteHandle_ValidateHeaders_valid(t *testing.T) {
 	h, err := rest.NewSSERoute[createReq, sseEvent]("/stream",
 		createReqCodec, sseEventCodec,
 		rest.HeaderParam{Name: "X-Request-Id", Codec: &uuidCodec},
-	).Register(b)
+	).RegisterHandle(b)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1206,7 +1206,7 @@ func TestSSERouteHandle_ValidateHeaders_invalid(t *testing.T) {
 	h, err := rest.NewSSERoute[createReq, sseEvent]("/stream",
 		createReqCodec, sseEventCodec,
 		rest.HeaderParam{Name: "X-Request-Id", Codec: &uuidCodec},
-	).Register(b)
+	).RegisterHandle(b)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1226,8 +1226,8 @@ func TestSSERouteHandle_GlobalSecurity_populated(t *testing.T) {
 
 	h, err := rest.NewSSERoute[createReq, sseEvent]("/stream",
 		createReqCodec, sseEventCodec,
-		rest.WithSecurityScheme("bearerAuth", rest.SecurityScheme{SecurityScheme: route.BearerScheme("JWT")}),
-	).Register(b)
+		rest.WithMiddleware(rest.FromSecurityScheme("bearerAuth", rest.SecurityScheme{SecurityScheme: route.BearerScheme("JWT")}, nil)),
+	).RegisterHandle(b)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1249,7 +1249,7 @@ func TestSSERouteHandle_ValidateResponseHeaders_valid(t *testing.T) {
 	h, err := rest.NewSSERoute[createReq, sseEvent]("/stream",
 		createReqCodec, sseEventCodec,
 		rest.ResponseHeaderParam{Name: "X-Correlation-Id", Codec: &strCodec},
-	).Register(b)
+	).RegisterHandle(b)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1272,7 +1272,7 @@ func TestSSERouteHandle_ValidateResponseHeaders_invalid(t *testing.T) {
 	h, err := rest.NewSSERoute[createReq, sseEvent]("/stream2",
 		createReqCodec, sseEventCodec,
 		rest.ResponseHeaderParam{Name: "X-Short", Codec: &strCodec},
-	).Register(b)
+	).RegisterHandle(b)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1296,7 +1296,7 @@ func TestSSERouteHandle_responseHeaderParams_populated(t *testing.T) {
 	h, err := rest.NewSSERoute[createReq, sseEvent]("/stream3",
 		createReqCodec, sseEventCodec,
 		rest.ResponseHeaderParam{Name: "X-Trace-Id", Codec: &strCodec},
-	).Register(b)
+	).RegisterHandle(b)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1313,7 +1313,7 @@ func TestRouteHandle_ValidatePathParams_valid(t *testing.T) {
 	uuidCodec := codex.String().Refine(validate.UUID)
 	h, err := rest.NewRoute[createReq, userResp]("GET", "/users/{id}", createReqCodec, userCodec,
 		rest.PathParam{Name: "id", Codec: &uuidCodec},
-	).Register(b)
+	).RegisterHandle(b)
 	if err != nil {
 		t.Fatalf("Register: %v", err)
 	}
@@ -1327,7 +1327,7 @@ func TestRouteHandle_ValidatePathParams_invalid(t *testing.T) {
 	uuidCodec := codex.String().Refine(validate.UUID)
 	h, err := rest.NewRoute[createReq, userResp]("GET", "/users/{id}", createReqCodec, userCodec,
 		rest.PathParam{Name: "id", Codec: &uuidCodec},
-	).Register(b)
+	).RegisterHandle(b)
 	if err != nil {
 		t.Fatalf("Register: %v", err)
 	}
@@ -1347,7 +1347,7 @@ func TestSSERouteHandle_ValidatePathParams_valid(t *testing.T) {
 	h, err := rest.NewSSERoute[createReq, sseEvent]("/stream/{id}",
 		createReqCodec, sseEventCodec,
 		rest.PathParam{Name: "id", Codec: &uuidCodec},
-	).Register(b)
+	).RegisterHandle(b)
 	if err != nil {
 		t.Fatalf("Register: %v", err)
 	}
@@ -1362,7 +1362,7 @@ func TestSSERouteHandle_ValidatePathParams_invalid(t *testing.T) {
 	h, err := rest.NewSSERoute[createReq, sseEvent]("/stream/{id}",
 		createReqCodec, sseEventCodec,
 		rest.PathParam{Name: "id", Codec: &uuidCodec},
-	).Register(b)
+	).RegisterHandle(b)
 	if err != nil {
 		t.Fatalf("Register: %v", err)
 	}
@@ -1380,7 +1380,7 @@ func TestValidateQuery_required_missing_returnsError(t *testing.T) {
 	pageCodec := codex.String()
 	h, err := rest.NewRoute[createReq, userResp]("GET", "/items", createReqCodec, userCodec,
 		rest.QueryParam{Name: "page", Required: true, Codec: &pageCodec},
-	).Register(b)
+	).RegisterHandle(b)
 	if err != nil {
 		t.Fatalf("Register: %v", err)
 	}
@@ -1394,7 +1394,7 @@ func TestValidateQuery_notRequired_missing_skipped(t *testing.T) {
 	pageCodec := codex.String()
 	h, err := rest.NewRoute[createReq, userResp]("GET", "/items", createReqCodec, userCodec,
 		rest.QueryParam{Name: "page", Required: false, Codec: &pageCodec},
-	).Register(b)
+	).RegisterHandle(b)
 	if err != nil {
 		t.Fatalf("Register: %v", err)
 	}
@@ -1408,7 +1408,7 @@ func TestValidateHeaders_required_missing_returnsError(t *testing.T) {
 	uuidCodec := codex.String().Refine(validate.UUID)
 	h, err := rest.NewRoute[createReq, userResp]("POST", "/items", createReqCodec, userCodec,
 		rest.HeaderParam{Name: "X-Request-Id", Required: true, Codec: &uuidCodec},
-	).Register(b)
+	).RegisterHandle(b)
 	if err != nil {
 		t.Fatalf("Register: %v", err)
 	}
@@ -1425,7 +1425,7 @@ func TestSSERouteHandle_ValidateResponseCookies_valid(t *testing.T) {
 	h, err := rest.NewSSERoute[createReq, sseEvent]("/stream-cookies",
 		createReqCodec, sseEventCodec,
 		rest.ResponseCookieParam{Name: "X-Session", Codec: &strCodec},
-	).Register(b)
+	).RegisterHandle(b)
 	if err != nil {
 		t.Fatalf("Register: %v", err)
 	}
@@ -1440,7 +1440,7 @@ func TestSSERouteHandle_ValidateResponseCookies_invalid(t *testing.T) {
 	h, err := rest.NewSSERoute[createReq, sseEvent]("/stream-cookies2",
 		createReqCodec, sseEventCodec,
 		rest.ResponseCookieParam{Name: "X-Session", Codec: &nonEmpty},
-	).Register(b)
+	).RegisterHandle(b)
 	if err != nil {
 		t.Fatalf("Register: %v", err)
 	}
@@ -1460,7 +1460,7 @@ func TestSSERouteHandle_BuildPath_noParams(t *testing.T) {
 	b := rest.NewBuilder(testInfo)
 	h, err := rest.NewSSERoute[createReq, sseEvent]("/stream",
 		createReqCodec, sseEventCodec,
-	).Register(b)
+	).RegisterHandle(b)
 	if err != nil {
 		t.Fatalf("Register: %v", err)
 	}
@@ -1479,7 +1479,7 @@ func TestSSERouteHandle_BuildPath_withPathParam(t *testing.T) {
 	h, err := rest.NewSSERoute[createReq, sseEvent]("/stream/{id}",
 		createReqCodec, sseEventCodec,
 		rest.PathParam{Name: "id", Codec: &uuidCodec},
-	).Register(b)
+	).RegisterHandle(b)
 	if err != nil {
 		t.Fatalf("Register: %v", err)
 	}
@@ -1498,7 +1498,7 @@ func TestSSERouteHandle_BuildPath_invalidParam_returnsError(t *testing.T) {
 	h, err := rest.NewSSERoute[createReq, sseEvent]("/stream/{id}",
 		createReqCodec, sseEventCodec,
 		rest.PathParam{Name: "id", Codec: &uuidCodec},
-	).Register(b)
+	).RegisterHandle(b)
 	if err != nil {
 		t.Fatalf("Register: %v", err)
 	}
@@ -1532,7 +1532,7 @@ func TestSSERouteHandle_MergeEvent_HappyPath(t *testing.T) {
 		rest.NewOptionalSSEEventParam("since", str, func(e sseMergedEvent) string { return e.Since }, func(e *sseMergedEvent, v string) { e.Since = v }),
 		rest.NewOptionalSSEEventParam("tenant", str, func(e sseMergedEvent) string { return e.Tenant }, func(e *sseMergedEvent, v string) { e.Tenant = v }),
 		rest.NewOptionalSSEEventParam("trace", str, func(e sseMergedEvent) string { return e.Trace }, func(e *sseMergedEvent, v string) { e.Trace = v }),
-	).Register(b)
+	).RegisterHandle(b)
 	if err != nil {
 		t.Fatalf("Register: %v", err)
 	}
@@ -1556,7 +1556,7 @@ func TestSSERouteHandle_MergeEvent_MissingRequired(t *testing.T) {
 	h, err := rest.NewSSERoute[createReq, sseMergedEvent]("/stream/{path_id}",
 		createReqCodec, sseMergedEventCodec,
 		rest.NewRequiredSSEEventParam("path_id", str, func(e sseMergedEvent) string { return e.PathID }, func(e *sseMergedEvent, v string) { e.PathID = v }),
-	).Register(b)
+	).RegisterHandle(b)
 	if err != nil {
 		t.Fatalf("Register: %v", err)
 	}
@@ -1644,7 +1644,7 @@ func TestResponseCookieParam_WithCodec_setsCodecWithoutAddressOf(t *testing.T) {
 func TestRouteHandle_EncodeRequest_roundTrip(t *testing.T) {
 	b := rest.NewBuilder(testInfo)
 	h, err := rest.NewRoute[createReq, userResp]("POST", "/users",
-		createReqCodec, userCodec).Register(b)
+		createReqCodec, userCodec).RegisterHandle(b)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1671,7 +1671,7 @@ func TestRouteHandle_EncodeRequest_roundTrip(t *testing.T) {
 func TestRouteHandle_DecodeResponse_roundTrip(t *testing.T) {
 	b := rest.NewBuilder(testInfo)
 	h, err := rest.NewRoute[createReq, userResp]("POST", "/users",
-		createReqCodec, userCodec).Register(b)
+		createReqCodec, userCodec).RegisterHandle(b)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1780,7 +1780,7 @@ func ExampleNewRoute() {
 		rest.RouteMeta{OperationID: "createUser", Summary: "Create a user"},
 	)
 
-	handle, err := route.Register(b)
+	handle, err := route.RegisterHandle(b)
 	if err != nil {
 		fmt.Println("register error:", err)
 		return
@@ -1808,7 +1808,7 @@ func TestRequestFormats_AppliesInline(t *testing.T) {
 	route := rest.NewRoute[[]byte, userResp]("PUT", "/images/{id}", pngCodec, userCodec,
 		rest.RequestFormats(format.Binary(pngCodec).WithContentType("image/png")),
 	)
-	handle, err := route.Register(b)
+	handle, err := route.RegisterHandle(b)
 	if err != nil {
 		t.Fatalf("register: %v", err)
 	}
@@ -1824,7 +1824,7 @@ func TestFormats_AppliesInline(t *testing.T) {
 	route := rest.NewRoute[createReq, []byte]("GET", "/images/{id}", createReqCodec, pngCodec,
 		rest.Formats(format.Binary(pngCodec).WithContentType("image/png")),
 	)
-	handle, err := route.Register(b)
+	handle, err := route.RegisterHandle(b)
 	if err != nil {
 		t.Fatalf("register: %v", err)
 	}
@@ -1843,7 +1843,7 @@ func TestRequestFormats_TypeMismatch(t *testing.T) {
 	route := rest.NewRoute[createReq, userResp]("POST", "/users", createReqCodec, userCodec,
 		rest.RequestFormats(format.Binary(pngCodec)),
 	)
-	_, err := route.Register(b)
+	_, err := route.RegisterHandle(b)
 	var fe rest.FormatOptError
 	if !errors.As(err, &fe) || fe.Direction != "request" {
 		t.Fatalf("want FormatOptError{request}, got %v", err)
@@ -1873,7 +1873,7 @@ func TestFormats_TypeMismatch(t *testing.T) {
 	route := rest.NewRoute[createReq, userResp]("POST", "/users", createReqCodec, userCodec,
 		rest.Formats(format.Binary(pngCodec)),
 	)
-	_, err := route.Register(b)
+	_, err := route.RegisterHandle(b)
 	var fe rest.FormatOptError
 	if !errors.As(err, &fe) || fe.Direction != "response" {
 		t.Fatalf("want FormatOptError{response}, got %v", err)
@@ -1901,7 +1901,7 @@ func TestNewPathParam_RegistersSpecAndMergeField(t *testing.T) {
 		rest.NewPathParam("id", codex.String().Refine(validate.NonEmptyString),
 			func(r getUserReq) string { return r.ID },
 			func(r *getUserReq, v string) { r.ID = v }),
-	).Register(b)
+	).RegisterHandle(b)
 	if err != nil {
 		t.Fatalf("Register: %v", err)
 	}
@@ -1929,7 +1929,7 @@ func TestNewPathParam_TypedIntValue_DecodeMergedRoundTrip(t *testing.T) {
 		rest.NewPathParam("id", codex.IntString(),
 			func(r getUserByIntIDReq) int { return r.ID },
 			func(r *getUserByIntIDReq, v int) { r.ID = v }),
-	).Register(b)
+	).RegisterHandle(b)
 	if err != nil {
 		t.Fatalf("Register: %v", err)
 	}
@@ -1966,7 +1966,7 @@ func TestNewRequiredQueryParam_RegistersSpecAndMergeField(t *testing.T) {
 		rest.NewRequiredQueryParam("filter", codex.String(),
 			func(r getUserReq) string { return r.Filter },
 			func(r *getUserReq, v string) { r.Filter = v }),
-	).Register(b)
+	).RegisterHandle(b)
 	if err != nil {
 		t.Fatalf("Register: %v", err)
 	}
@@ -1987,7 +1987,7 @@ func TestDecodeMerged_RequiredQueryParam_MissingReturnsError(t *testing.T) {
 		rest.NewRequiredQueryParam("filter", codex.String(),
 			func(r getUserReq) string { return r.Filter },
 			func(r *getUserReq, v string) { r.Filter = v }),
-	).Register(b)
+	).RegisterHandle(b)
 	if err != nil {
 		t.Fatalf("Register: %v", err)
 	}
@@ -2010,7 +2010,7 @@ func TestNewRequiredCookieParam_RegistersSpecAndMergeField(t *testing.T) {
 		rest.NewRequiredCookieParam("session", codex.String(),
 			func(r getUserReq) string { return r.Filter },
 			func(r *getUserReq, v string) { r.Filter = v }),
-	).Register(b)
+	).RegisterHandle(b)
 	if err != nil {
 		t.Fatalf("Register: %v", err)
 	}
@@ -2031,7 +2031,7 @@ func TestDecodeMerged_RequiredCookieParam_MissingReturnsError(t *testing.T) {
 		rest.NewRequiredCookieParam("session", codex.String(),
 			func(r getUserReq) string { return r.Filter },
 			func(r *getUserReq, v string) { r.Filter = v }),
-	).Register(b)
+	).RegisterHandle(b)
 	if err != nil {
 		t.Fatalf("Register: %v", err)
 	}
@@ -2055,7 +2055,7 @@ func TestDecodeMerged_HappyPath(t *testing.T) {
 		rest.NewOptionalQueryParam("filter", codex.String(),
 			func(r getUserReq) string { return r.Filter },
 			func(r *getUserReq, v string) { r.Filter = v }),
-	).Register(b)
+	).RegisterHandle(b)
 	if err != nil {
 		t.Fatalf("Register: %v", err)
 	}
@@ -2079,7 +2079,7 @@ func TestDecodeMerged_MergeFailure(t *testing.T) {
 		rest.NewPathParam("id", codex.String().Refine(validate.NonEmptyString),
 			func(r getUserReq) string { return r.ID },
 			func(r *getUserReq, v string) { r.ID = v }),
-	).Register(b)
+	).RegisterHandle(b)
 	if err != nil {
 		t.Fatalf("Register: %v", err)
 	}
@@ -2096,7 +2096,7 @@ func TestDecodeMerged_MergeFailure(t *testing.T) {
 // P4: RouteHandle.DecodeMerged with zero merge fields behaves like plain Decode.
 func TestDecodeMerged_NoMergeFieldsIsNoop(t *testing.T) {
 	b := rest.NewBuilder(testInfo)
-	h, err := rest.NewRoute[createReq, userResp]("POST", "/users", createReqCodec, userCodec).Register(b)
+	h, err := rest.NewRoute[createReq, userResp]("POST", "/users", createReqCodec, userCodec).RegisterHandle(b)
 	if err != nil {
 		t.Fatalf("Register: %v", err)
 	}
@@ -2132,7 +2132,7 @@ func TestNewPathParam_WithDescription(t *testing.T) {
 			func(r getUserReq) string { return r.ID },
 			func(r *getUserReq, v string) { r.ID = v },
 		).WithDescription("param-level"),
-	).Register(b)
+	).RegisterHandle(b)
 	if err != nil {
 		t.Fatalf("Register: %v", err)
 	}
@@ -2157,7 +2157,7 @@ func TestMixedMergeAndValidateOnlyParams(t *testing.T) {
 			func(r getUserReq) string { return r.ID },
 			func(r *getUserReq, v string) { r.ID = v }),
 		rest.PathParam{Name: "trace"}.WithCodec(codex.String()), // validate-only, no merge
-	).Register(b)
+	).RegisterHandle(b)
 	if err != nil {
 		t.Fatalf("Register: %v", err)
 	}
@@ -2205,7 +2205,7 @@ func TestRoleSpecificMergeFields_ReturnOnlyOwnRole(t *testing.T) {
 		rest.NewOptionalCookieParam("session", codex.String(),
 			func(r req) string { return r.Sess },
 			func(r *req, v string) { r.Sess = v }),
-	).Register(b)
+	).RegisterHandle(b)
 	if err != nil {
 		t.Fatalf("Register: %v", err)
 	}
@@ -2249,7 +2249,7 @@ func TestClientEncode_RoleAwareMergeFields_NoLeakage(t *testing.T) {
 		rest.NewOptionalQueryParam("filter", codex.String(),
 			func(r req) string { return r.Filter },
 			func(r *req, v string) { r.Filter = v }),
-	).Register(b)
+	).RegisterHandle(b)
 	if err != nil {
 		t.Fatalf("Register: %v", err)
 	}
@@ -2267,17 +2267,9 @@ func TestClientEncode_RoleAwareMergeFields_NoLeakage(t *testing.T) {
 	defer srv.Close()
 
 	item := req{ID: "abc-123", Filter: "active"}
-	pathVars, err := codex.EncodeVars(item, h.PathMergeFields()...)
-	if err != nil {
-		t.Fatalf("EncodeVars(path): %v", err)
-	}
-	query, err := codex.EncodeVars(item, h.QueryMergeFields()...)
-	if err != nil {
-		t.Fatalf("EncodeVars(query): %v", err)
-	}
 
-	_, err = nethttp.Call(t.Context(), srv.Client(), srv.URL, h, item, pathVars,
-		nethttp.CallOptions{QueryParams: query})
+	_, err = nethttp.CallWithHandle(t.Context(), srv.Client(), srv.URL, h, item,
+		nethttp.CallOptions{})
 	if err != nil {
 		t.Fatalf("Call: %v", err)
 	}
@@ -2322,7 +2314,7 @@ func TestResponseHeaderMergeParam_RegistersSpecAndMergeField(t *testing.T) {
 		rest.NewOptionalResponseHeaderParam("X-Trace", codex.String(),
 			func(u userRespWithMeta) string { return "" },
 			func(u *userRespWithMeta, v string) {}),
-	).Register(b)
+	).RegisterHandle(b)
 	if err != nil {
 		t.Fatalf("Register: %v", err)
 	}
@@ -2342,7 +2334,7 @@ func TestResponseCookieMergeParam_RegistersSpecAndMergeField(t *testing.T) {
 		rest.NewRequiredResponseCookieParam("session", codex.String().Refine(validate.NonEmptyString),
 			func(u userRespWithMeta) string { return u.Session },
 			func(u *userRespWithMeta, v string) { u.Session = v }),
-	).Register(b)
+	).RegisterHandle(b)
 	if err != nil {
 		t.Fatalf("Register: %v", err)
 	}
@@ -2362,7 +2354,7 @@ func TestDecodeMergedResponse_HappyPath(t *testing.T) {
 		rest.NewOptionalResponseCookieParam("session", codex.String(),
 			func(u userRespWithMeta) string { return u.Session },
 			func(u *userRespWithMeta, v string) { u.Session = v }),
-	).Register(b)
+	).RegisterHandle(b)
 	if err != nil {
 		t.Fatalf("Register: %v", err)
 	}
@@ -2401,7 +2393,7 @@ func TestNewRequiredResponseHeaderParam_TypedIntValue_DecodeMergedResponseRoundT
 		rest.NewRequiredResponseHeaderParam("X-Seq", codex.IntString(),
 			func(u userRespWithIntSeq) int { return u.Seq },
 			func(u *userRespWithIntSeq, v int) { u.Seq = v }),
-	).Register(b)
+	).RegisterHandle(b)
 	if err != nil {
 		t.Fatalf("Register: %v", err)
 	}
@@ -2423,7 +2415,7 @@ func TestDecodeMergedResponse_MergeFailure(t *testing.T) {
 		rest.NewRequiredResponseHeaderParam("X-Request-Id", codex.String().Refine(validate.NonEmptyString),
 			func(u userRespWithMeta) string { return u.RequestID },
 			func(u *userRespWithMeta, v string) { u.RequestID = v }),
-	).Register(b)
+	).RegisterHandle(b)
 	if err != nil {
 		t.Fatalf("Register: %v", err)
 	}
@@ -2442,7 +2434,7 @@ func TestDecodeMergedResponse_MergeFailure(t *testing.T) {
 // behaves like plain DecodeResponse.
 func TestDecodeMergedResponse_NoMergeFieldsIsNoop(t *testing.T) {
 	b := rest.NewBuilder(testInfo)
-	h, err := rest.NewRoute[createReq, userResp]("POST", "/users", createReqCodec, userCodec).Register(b)
+	h, err := rest.NewRoute[createReq, userResp]("POST", "/users", createReqCodec, userCodec).RegisterHandle(b)
 	if err != nil {
 		t.Fatalf("Register: %v", err)
 	}
@@ -2491,7 +2483,7 @@ func TestNestedStructMergeFields_GetSetReachIntoSubstruct(t *testing.T) {
 		rest.NewOptionalQueryParam("compress", codex.String(),
 			func(r req) string { return r.Meta.Compress },
 			func(r *req, v string) { r.Meta.Compress = v }),
-	).Register(b)
+	).RegisterHandle(b)
 	if err != nil {
 		t.Fatalf("Register: %v", err)
 	}
@@ -2585,26 +2577,23 @@ func TestGobBodyFormat_ComposesWithNestedMergeFields(t *testing.T) {
 		rest.NewOptionalHeaderParam("X-Content-Hash", codex.String(),
 			func(r uploadReq) string { return r.Meta.ContentHash },
 			func(r *uploadReq, v string) { r.Meta.ContentHash = v }),
+		rest.RequestFormats(gobFormat),
 	)
-
-	b := rest.NewBuilder(testInfo)
-	serverHandle, err := route.Register(b)
-	if err != nil {
-		t.Fatalf("Register: %v", err)
-	}
-	serverHandle.WithRequestFormats(gobFormat)
 
 	var gotID, gotHash string
 	var gotPayload payload
-	mux := http.NewServeMux()
-	nethttp.Register(mux, serverHandle, func(_ context.Context, req uploadReq) (uploadResp, error) {
+	serverRoute := route.WithHandler(func(_ context.Context, req uploadReq) (uploadResp, error) {
 		gotID = req.ID
 		gotHash = req.Meta.ContentHash
 		gotPayload = req.Payload
 		return uploadResp{Size: len(req.Payload.Data)}, nil
-	}, nethttp.Options{})
+	})
+	handler, err := nethttp.ServeOne(serverRoute)
+	if err != nil {
+		t.Fatalf("ServeOne: %v", err)
+	}
 
-	srv := httptest.NewServer(mux)
+	srv := httptest.NewServer(handler)
 	defer srv.Close()
 
 	clientHandle := route.ClientHandle()
@@ -2615,7 +2604,7 @@ func TestGobBodyFormat_ComposesWithNestedMergeFields(t *testing.T) {
 		Meta:    meta{ContentHash: "sha256:abc"},
 		Payload: payload{Filename: "x.bin", Data: []byte("hello world")},
 	}
-	resp, err := nethttp.CallHandle(context.Background(), srv.Client(), srv.URL, clientHandle, item, nethttp.CallOptions{})
+	resp, err := nethttp.CallWithHandle(context.Background(), srv.Client(), srv.URL, clientHandle, item, nethttp.CallOptions{})
 	if err != nil {
 		t.Fatalf("CallHandle: %v", err)
 	}
@@ -2651,6 +2640,167 @@ func TestMergeFieldTypeError_LogValue(t *testing.T) {
 	}
 }
 
+// TestRouteHandle_WithHandler_PostRegistration covers RouteHandle.WithHandler
+// — Route.WithHandler's post-registration equivalent, added for routes whose
+// handler depends on a runtime dependency unavailable at RegisterHandle time
+// (e.g. a package-level route var attached to a real handler later in main(),
+// see examples/sensor-service).
+func TestRouteHandle_WithHandler_PostRegistration(t *testing.T) {
+	b := rest.NewBuilder(testInfo)
+	handle, err := rest.NewRoute[createReq, userResp]("POST", "/users",
+		createReqCodec, userCodec, rest.RouteMeta{OperationID: "createUser"},
+	).RegisterHandle(b) // no WithHandler yet — spec-only at this point
+	if err != nil {
+		t.Fatalf("RegisterHandle: %v", err)
+	}
+	if handle.HandlerFn != nil {
+		t.Fatalf("want HandlerFn nil before WithHandler, got %v", handle.HandlerFn)
+	}
+
+	returned := handle.WithHandler(func(_ context.Context, req createReq) (userResp, error) {
+		return userResp{ID: "1", Name: req.Name}, nil
+	})
+	if returned != handle {
+		t.Error("WithHandler should return the SAME handle pointer for chaining, not a copy")
+	}
+	if handle.HandlerFn == nil {
+		t.Fatal("want HandlerFn set after WithHandler")
+	}
+
+	resp, err := handle.HandlerFn.(func(context.Context, createReq) (userResp, error))(context.Background(), createReq{Name: "Alice"})
+	if err != nil {
+		t.Fatalf("HandlerFn: %v", err)
+	}
+	if resp.Name != "Alice" {
+		t.Errorf("want Name=Alice, got %q", resp.Name)
+	}
+}
+
+// TestSSERouteHandle_WithHandler_PostRegistration mirrors
+// [TestRouteHandle_WithHandler_PostRegistration] for SSERouteHandle.
+func TestSSERouteHandle_WithHandler_PostRegistration(t *testing.T) {
+	b := rest.NewBuilder(testInfo)
+	handle, err := rest.NewSSERoute[createReq, sseEvent]("/events",
+		createReqCodec, sseEventCodec, rest.RouteMeta{OperationID: "streamEvents"},
+	).RegisterHandle(b)
+	if err != nil {
+		t.Fatalf("RegisterHandle: %v", err)
+	}
+	if handle.HandlerFn != nil {
+		t.Fatalf("want HandlerFn nil before WithHandler, got %v", handle.HandlerFn)
+	}
+
+	returned := handle.WithHandler(func(_ context.Context, _ createReq, send func(sseEvent) error) error {
+		return send(sseEvent{Message: "hi"})
+	})
+	if returned != handle {
+		t.Error("WithHandler should return the SAME handle pointer for chaining, not a copy")
+	}
+	if handle.HandlerFn == nil {
+		t.Fatal("want HandlerFn set after WithHandler")
+	}
+}
+
+// TestRouteHandle_ApplyMergeFields covers ApplyMergeFields in isolation —
+// DecodeMerged's var-merge half, split out so [nethttp.Serve]/[chi.Serve]'s
+// reflect dispatch can apply it to a body ALREADY decoded via a negotiated
+// [format.Format] (WithRequestFormats), not just via plain Decode.
+func TestRouteHandle_ApplyMergeFields(t *testing.T) {
+	b := rest.NewBuilder(testInfo)
+	handle, err := rest.NewRoute[createReq, userResp]("POST", "/users/{id}",
+		createReqCodec, userCodec,
+		rest.NewPathParam("id", codex.String(),
+			func(r createReq) string { return r.Name },
+			func(r *createReq, v string) { r.Name = v }),
+	).RegisterHandle(b)
+	if err != nil {
+		t.Fatalf("RegisterHandle: %v", err)
+	}
+
+	req := createReq{Name: "from-body"}
+	if err := handle.ApplyMergeFields(&req, map[string]string{"id": "from-path"}, nil, nil, nil); err != nil {
+		t.Fatalf("ApplyMergeFields: %v", err)
+	}
+	if req.Name != "from-path" {
+		t.Errorf("want Name overwritten by merge field, got %q", req.Name)
+	}
+}
+
+// TestRouteHandle_ApplyMergeFields_NoMergeFieldsIsNoop covers the case where
+// the route declares no merge-capable params — req must be left untouched.
+func TestRouteHandle_ApplyMergeFields_NoMergeFieldsIsNoop(t *testing.T) {
+	b := rest.NewBuilder(testInfo)
+	handle, err := rest.NewRoute[createReq, userResp]("POST", "/users",
+		createReqCodec, userCodec,
+	).RegisterHandle(b)
+	if err != nil {
+		t.Fatalf("RegisterHandle: %v", err)
+	}
+
+	req := createReq{Name: "unchanged"}
+	if err := handle.ApplyMergeFields(&req, map[string]string{"id": "ignored"}, nil, nil, nil); err != nil {
+		t.Fatalf("ApplyMergeFields: %v", err)
+	}
+	if req.Name != "unchanged" {
+		t.Errorf("want Name unchanged (no merge fields declared), got %q", req.Name)
+	}
+}
+
+// TestRouteHandle_EncodeResponseMergeFields covers EncodeResponseMergeFields
+// in isolation — EncodeMerged's response header/cookie-merge half, split out
+// so [nethttp.Serve]/[chi.Serve]'s reflect dispatch can derive header/cookie
+// values for a response body encoded via a negotiated [format.Format]
+// (WithFormats), not just via plain Encode — and so a matched [ErrorPattern]
+// payload can reuse the SAME derivation.
+func TestRouteHandle_EncodeResponseMergeFields(t *testing.T) {
+	b := rest.NewBuilder(testInfo)
+	handle, err := rest.NewRoute[createReq, userRespWithMeta]("POST", "/users",
+		createReqCodec, userRespWithMetaBodyCodec,
+		rest.NewRequiredResponseHeaderParam("X-Request-Id", codex.String().Refine(validate.NonEmptyString),
+			func(u userRespWithMeta) string { return u.RequestID },
+			func(u *userRespWithMeta, v string) { u.RequestID = v }),
+		rest.NewOptionalResponseCookieParam("session", codex.String(),
+			func(u userRespWithMeta) string { return u.Session },
+			func(u *userRespWithMeta, v string) { u.Session = v }),
+	).RegisterHandle(b)
+	if err != nil {
+		t.Fatalf("RegisterHandle: %v", err)
+	}
+
+	resp := userRespWithMeta{ID: "1", Name: "Alice", RequestID: "req-1", Session: "sess-1"}
+	headers, cookies, err := handle.EncodeResponseMergeFields(resp)
+	if err != nil {
+		t.Fatalf("EncodeResponseMergeFields: %v", err)
+	}
+	if headers["X-Request-Id"] != "req-1" {
+		t.Errorf("want X-Request-Id=req-1, got %v", headers)
+	}
+	if cookies["session"] != "sess-1" {
+		t.Errorf("want session=sess-1, got %v", cookies)
+	}
+}
+
+// TestRouteHandle_EncodeResponseMergeFields_ValidationFailure covers the
+// codec-violation error path — a merge field whose value fails its own
+// codec's constraints returns an error, mirroring EncodeMerged's behavior.
+func TestRouteHandle_EncodeResponseMergeFields_ValidationFailure(t *testing.T) {
+	b := rest.NewBuilder(testInfo)
+	handle, err := rest.NewRoute[createReq, userRespWithMeta]("POST", "/users",
+		createReqCodec, userRespWithMetaBodyCodec,
+		rest.NewRequiredResponseHeaderParam("X-Request-Id", codex.String().Refine(validate.NonEmptyString),
+			func(u userRespWithMeta) string { return u.RequestID },
+			func(u *userRespWithMeta, v string) { u.RequestID = v }),
+	).RegisterHandle(b)
+	if err != nil {
+		t.Fatalf("RegisterHandle: %v", err)
+	}
+
+	resp := userRespWithMeta{ID: "1", Name: "Alice", RequestID: ""} // empty fails NonEmptyString
+	if _, _, err := handle.EncodeResponseMergeFields(resp); err == nil {
+		t.Fatal("want error for empty X-Request-Id violating NonEmptyString, got nil")
+	}
+}
+
 type pipelineStatusConflictError struct{ msg string }
 
 func (e pipelineStatusConflictError) Error() string {
@@ -2674,7 +2824,7 @@ func TestErrorStatusFor_TypeMatch(t *testing.T) {
 	h, err := rest.NewRoute[createReq, userResp]("POST", "/pipeline/status",
 		createReqCodec, userCodec,
 		rest.ErrorStatus[pipelineStatusConflictError](409),
-	).Register(b)
+	).RegisterHandle(b)
 	if err != nil {
 		t.Fatalf("Register: %v", err)
 	}
@@ -2695,7 +2845,7 @@ func TestErrorStatusFor_FirstMatchWins(t *testing.T) {
 		createReqCodec, userCodec,
 		rest.ErrorStatus[error](499),
 		rest.ErrorStatus[pipelineStatusConflictError](409),
-	).Register(b)
+	).RegisterHandle(b)
 	if err != nil {
 		t.Fatalf("Register: %v", err)
 	}
@@ -2713,7 +2863,7 @@ func TestErrorStatusFor_NoMatch(t *testing.T) {
 	h, err := rest.NewRoute[createReq, userResp]("POST", "/pipeline/status-none",
 		createReqCodec, userCodec,
 		rest.ErrorStatus[pipelineStatusConflictError](409),
-	).Register(b)
+	).RegisterHandle(b)
 	if err != nil {
 		t.Fatalf("Register: %v", err)
 	}
@@ -2759,7 +2909,7 @@ func TestErrorResponseFor_DirectPattern(t *testing.T) {
 	h, err := rest.NewRoute[createReq, userResp]("POST", "/errors/direct",
 		createReqCodec, userCodec,
 		rest.ErrorPattern[directPatternError, directPatternError](409, directPatternCodec),
-	).Register(b)
+	).RegisterHandle(b)
 	if err != nil {
 		t.Fatalf("Register: %v", err)
 	}
@@ -2790,7 +2940,7 @@ func TestErrorResponseFor_MappedPattern(t *testing.T) {
 			func(e mappedPatternError) (mappedPatternPayload, error) {
 				return mappedPatternPayload{Kind: e.Msg}, nil
 			}),
-	).Register(b)
+	).RegisterHandle(b)
 	if err != nil {
 		t.Fatalf("Register: %v", err)
 	}
@@ -2818,7 +2968,7 @@ func TestErrorPattern_DefaultAction_IsRespond(t *testing.T) {
 	h, err := rest.NewRoute[createReq, userResp]("POST", "/errors/default-action",
 		createReqCodec, userCodec,
 		rest.ErrorPattern[directPatternError, directPatternError](409, directPatternCodec),
-	).Register(b)
+	).RegisterHandle(b)
 	if err != nil {
 		t.Fatalf("Register: %v", err)
 	}
@@ -2840,7 +2990,7 @@ func TestErrorPattern_WithAction_Handle(t *testing.T) {
 		createReqCodec, userCodec,
 		rest.ErrorPattern[directPatternError, directPatternError](409, directPatternCodec).
 			WithAction(rest.ErrorHandle),
-	).Register(b)
+	).RegisterHandle(b)
 	if err != nil {
 		t.Fatalf("Register: %v", err)
 	}
@@ -2862,7 +3012,7 @@ func TestErrorPattern_WithAction_Log(t *testing.T) {
 		createReqCodec, userCodec,
 		rest.ErrorPattern[directPatternError, directPatternError](409, directPatternCodec).
 			WithAction(rest.ErrorLog),
-	).Register(b)
+	).RegisterHandle(b)
 	if err != nil {
 		t.Fatalf("Register: %v", err)
 	}
@@ -2887,7 +3037,7 @@ func TestErrorPattern_StatusAndSpecStillWork_AfterActionRefactor(t *testing.T) {
 	h, err := rest.NewRoute[createReq, userResp]("POST", "/errors/status-regress",
 		createReqCodec, userCodec,
 		rest.ErrorPattern[directPatternError, directPatternError](409, directPatternCodec),
-	).Register(b)
+	).RegisterHandle(b)
 	if err != nil {
 		t.Fatalf("Register: %v", err)
 	}
@@ -2905,7 +3055,7 @@ func TestDecodeErrorFor_MatchedPattern(t *testing.T) {
 	h, err := rest.NewRoute[createReq, userResp]("POST", "/errors/client-decode",
 		createReqCodec, userCodec,
 		rest.ErrorPattern[directPatternError, directPatternError](409, directPatternCodec),
-	).Register(b)
+	).RegisterHandle(b)
 	if err != nil {
 		t.Fatalf("Register: %v", err)
 	}
@@ -2935,7 +3085,7 @@ func TestDecodeErrorFor_NoMatch_UnknownStatus(t *testing.T) {
 	h, err := rest.NewRoute[createReq, userResp]("POST", "/errors/client-decode-nomatch",
 		createReqCodec, userCodec,
 		rest.ErrorPattern[directPatternError, directPatternError](409, directPatternCodec),
-	).Register(b)
+	).RegisterHandle(b)
 	if err != nil {
 		t.Fatalf("Register: %v", err)
 	}
@@ -2955,7 +3105,7 @@ func TestDecodeErrorFor_SkipsErrorHandleAction(t *testing.T) {
 		createReqCodec, userCodec,
 		rest.ErrorPattern[directPatternError, directPatternError](409, directPatternCodec).
 			WithAction(rest.ErrorHandle),
-	).Register(b)
+	).RegisterHandle(b)
 	if err != nil {
 		t.Fatalf("Register: %v", err)
 	}
@@ -2975,7 +3125,7 @@ func TestDecodeErrorFor_SkipsErrorLogAction(t *testing.T) {
 		createReqCodec, userCodec,
 		rest.ErrorPattern[directPatternError, directPatternError](409, directPatternCodec).
 			WithAction(rest.ErrorLog),
-	).Register(b)
+	).RegisterHandle(b)
 	if err != nil {
 		t.Fatalf("Register: %v", err)
 	}
@@ -2995,7 +3145,7 @@ func TestDecodeErrorFor_MatchedStatus_DecodeFailure(t *testing.T) {
 	h, err := rest.NewRoute[createReq, userResp]("POST", "/errors/client-decode-fail",
 		createReqCodec, userCodec,
 		rest.ErrorPattern[directPatternError, directPatternError](409, directPatternCodec),
-	).Register(b)
+	).RegisterHandle(b)
 	if err != nil {
 		t.Fatalf("Register: %v", err)
 	}
@@ -3022,7 +3172,7 @@ func TestDecodeErrorFor_FirstMatchWins_SameStatus(t *testing.T) {
 			func(e mappedPatternError) (mappedPatternPayload, error) {
 				return mappedPatternPayload{Kind: e.Msg}, nil
 			}),
-	).Register(b)
+	).RegisterHandle(b)
 	if err != nil {
 		t.Fatalf("Register: %v", err)
 	}
@@ -3045,7 +3195,7 @@ func TestDecodeErrorFor_NoPatternsDeclared(t *testing.T) {
 	b := rest.NewBuilder(testInfo)
 	h, err := rest.NewRoute[createReq, userResp]("POST", "/errors/client-decode-none",
 		createReqCodec, userCodec,
-	).Register(b)
+	).RegisterHandle(b)
 	if err != nil {
 		t.Fatalf("Register: %v", err)
 	}
@@ -3102,7 +3252,7 @@ func TestNewRouteFromPath_ProducesIdenticalHandleToNewRoute(t *testing.T) {
 	path := rest.NewPath("/users/{id}", rest.PathParam{Name: "id", Codec: &idCodec})
 
 	b1 := rest.NewBuilder(testInfo)
-	viaPath, err := rest.NewRouteFromPath[createReq, userResp]("GET", path, createReqCodec, userCodec).Register(b1)
+	viaPath, err := rest.NewRouteFromPath[createReq, userResp]("GET", path, createReqCodec, userCodec).RegisterHandle(b1)
 	if err != nil {
 		t.Fatalf("Register via Path: %v", err)
 	}
@@ -3110,7 +3260,7 @@ func TestNewRouteFromPath_ProducesIdenticalHandleToNewRoute(t *testing.T) {
 	b2 := rest.NewBuilder(testInfo)
 	viaPlain, err := rest.NewRoute[createReq, userResp]("GET", "/users/{id}", createReqCodec, userCodec,
 		rest.PathParam{Name: "id", Codec: &idCodec},
-	).Register(b2)
+	).RegisterHandle(b2)
 	if err != nil {
 		t.Fatalf("Register via plain string: %v", err)
 	}
@@ -3125,5 +3275,128 @@ func TestNewRouteFromPath_ProducesIdenticalHandleToNewRoute(t *testing.T) {
 	}
 	if built1 != built2 {
 		t.Errorf("BuildPath results differ: %q vs %q", built1, built2)
+	}
+}
+
+// --- Builder.RouteEntries / Builder.SSEEntries tests ---
+
+func TestBuilder_RouteEntries_SkipsSpecOnlyIncludesHandlerBearing(t *testing.T) {
+	b := rest.NewBuilder(testInfo)
+	// Spec-only route: no WithHandler call.
+	if _, err := rest.NewRoute[createReq, userResp]("GET", "/spec-only", createReqCodec, userCodec).RegisterHandle(b); err != nil {
+		t.Fatalf("RegisterHandle (spec-only): %v", err)
+	}
+	// Handler-bearing route.
+	if _, err := rest.NewRoute[createReq, userResp]("POST", "/handled", createReqCodec, userCodec).
+		WithHandler(func(_ context.Context, req createReq) (userResp, error) {
+			return userResp{}, nil
+		}).RegisterHandle(b); err != nil {
+		t.Fatalf("RegisterHandle (handler-bearing): %v", err)
+	}
+
+	entries := b.RouteEntries()
+	if len(entries) != 2 {
+		t.Fatalf("want 2 RouteEntry values, got %d", len(entries))
+	}
+
+	var sawSpecOnly, sawHandled bool
+	for _, e := range entries {
+		switch e.Path() {
+		case "/spec-only":
+			sawSpecOnly = true
+			if e.HasHandler() {
+				t.Errorf("/spec-only: want HasHandler() false, got true")
+			}
+			if _, ok := e.Handle().(*rest.RouteHandle[createReq, userResp]); !ok {
+				t.Errorf("/spec-only: Handle() has wrong type %T", e.Handle())
+			}
+		case "/handled":
+			sawHandled = true
+			if e.Method() != "POST" {
+				t.Errorf("/handled: want Method() POST, got %q", e.Method())
+			}
+			if !e.HasHandler() {
+				t.Errorf("/handled: want HasHandler() true, got false")
+			}
+		default:
+			t.Errorf("unexpected entry path %q", e.Path())
+		}
+	}
+	if !sawSpecOnly || !sawHandled {
+		t.Errorf("missing expected entries: sawSpecOnly=%v sawHandled=%v", sawSpecOnly, sawHandled)
+	}
+}
+
+func TestBuilder_RouteEntries_ExcludesSSERoutes(t *testing.T) {
+	b := rest.NewBuilder(testInfo)
+	if _, err := rest.NewRoute[createReq, userResp]("GET", "/users", createReqCodec, userCodec).RegisterHandle(b); err != nil {
+		t.Fatalf("RegisterHandle (Route): %v", err)
+	}
+	if _, err := rest.NewSSERoute[createReq, sseEvent]("/stream", createReqCodec, sseEventCodec).RegisterHandle(b); err != nil {
+		t.Fatalf("RegisterHandle (SSERoute): %v", err)
+	}
+
+	entries := b.RouteEntries()
+	if len(entries) != 1 {
+		t.Fatalf("want 1 RouteEntry (SSE route excluded), got %d", len(entries))
+	}
+	if entries[0].Path() != "/users" {
+		t.Errorf("want /users, got %q", entries[0].Path())
+	}
+}
+
+func TestBuilder_SSEEntries_SkipsSpecOnlyIncludesHandlerBearing(t *testing.T) {
+	b := rest.NewBuilder(testInfo)
+	if _, err := rest.NewSSERoute[createReq, sseEvent]("/spec-only-stream", createReqCodec, sseEventCodec).RegisterHandle(b); err != nil {
+		t.Fatalf("RegisterHandle (spec-only SSE): %v", err)
+	}
+	if _, err := rest.NewSSERoute[createReq, sseEvent]("/handled-stream", createReqCodec, sseEventCodec).
+		WithHandler(func(_ context.Context, req createReq, send func(sseEvent) error) error {
+			return nil
+		}).RegisterHandle(b); err != nil {
+		t.Fatalf("RegisterHandle (handler-bearing SSE): %v", err)
+	}
+
+	entries := b.SSEEntries()
+	if len(entries) != 2 {
+		t.Fatalf("want 2 SSERouteEntry values, got %d", len(entries))
+	}
+	for _, e := range entries {
+		if e.Method() != "GET" {
+			t.Errorf("%s: want Method() GET, got %q", e.Path(), e.Method())
+		}
+		switch e.Path() {
+		case "/spec-only-stream":
+			if e.HasHandler() {
+				t.Errorf("/spec-only-stream: want HasHandler() false, got true")
+			}
+		case "/handled-stream":
+			if !e.HasHandler() {
+				t.Errorf("/handled-stream: want HasHandler() true, got false")
+			}
+			if _, ok := e.Handle().(*rest.SSERouteHandle[createReq, sseEvent]); !ok {
+				t.Errorf("/handled-stream: Handle() has wrong type %T", e.Handle())
+			}
+		default:
+			t.Errorf("unexpected entry path %q", e.Path())
+		}
+	}
+}
+
+func TestBuilder_SSEEntries_ExcludesRegularRoutes(t *testing.T) {
+	b := rest.NewBuilder(testInfo)
+	if _, err := rest.NewRoute[createReq, userResp]("GET", "/users", createReqCodec, userCodec).RegisterHandle(b); err != nil {
+		t.Fatalf("RegisterHandle (Route): %v", err)
+	}
+	if _, err := rest.NewSSERoute[createReq, sseEvent]("/stream", createReqCodec, sseEventCodec).RegisterHandle(b); err != nil {
+		t.Fatalf("RegisterHandle (SSERoute): %v", err)
+	}
+
+	entries := b.SSEEntries()
+	if len(entries) != 1 {
+		t.Fatalf("want 1 SSERouteEntry (regular route excluded), got %d", len(entries))
+	}
+	if entries[0].Path() != "/stream" {
+		t.Errorf("want /stream, got %q", entries[0].Path())
 	}
 }

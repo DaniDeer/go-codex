@@ -45,19 +45,19 @@ type credentialCacheCall struct {
 // cache miss sharing the SAME in-flight call (hand-rolled single-flight —
 // no thundering herd on the auth server, no external dependency).
 //
-// Returns (fn, invalidate): fn is a [CredentialFunc] — wrap it in a
-// middleware.ClientMiddleware{Fn: fn} to attach it to [Call]/[CallHandle];
-// invalidate immediately expires the cached credential — wire it to
-// [CallOptions.OnCredentialRejected] so a 401 causes the NEXT call to fetch
-// a fresh credential:
+// Returns (fn, invalidate): fn is a [CredentialFunc] — attach it to a route
+// via [rest.Route.ClientMW], paired against the SAME [middleware.Middleware]
+// the route's security requirement was declared with; invalidate immediately
+// expires the cached credential — wire it to [CallOptions.OnCredentialRejected]
+// so a 401 causes the NEXT call to fetch a fresh credential:
 //
 //	credFn, invalidate := nethttp.NewCachingCredentialFunc(inner, nethttp.CachingCredentialFuncOptions{TTL: time.Hour})
 //	callOpts := nethttp.CallOptions{OnCredentialRejected: invalidate}
-//	credMw := middleware.ClientMiddleware{Fn: credFn}
-//	resp, err := nethttp.CallHandle(ctx, client, url, handle, req, callOpts, credMw)
+//	route = route.ClientMW(&declMw, credFn)
+//	resp, err := nethttp.Call(ctx, caller, route, req, callOpts)
 //	var statusErr nethttp.UnexpectedStatusError
 //	if errors.As(err, &statusErr) && statusErr.StatusCode == http.StatusUnauthorized {
-//	    resp, err = nethttp.CallHandle(ctx, client, url, handle, req, callOpts, credMw) // fresh credential now
+//	    resp, err = nethttp.Call(ctx, caller, route, req, callOpts) // fresh credential now
 //	}
 //
 // One NewCachingCredentialFunc instance = one cache entry. Construct a

@@ -74,7 +74,7 @@ func newFailingServer(status int) *httptest.Server {
 
 // --- ToolHandler (identity case) ---
 
-func TestToolHandler_HappyPath_ForwardsToCallHandle(t *testing.T) {
+func TestToolHandler_HappyPath_ForwardsToCallWithHandle(t *testing.T) {
 	srv := newGreetServer(t, nil)
 	defer srv.Close()
 

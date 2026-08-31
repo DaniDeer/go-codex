@@ -8,7 +8,6 @@ import (
 	"log/slog"
 	"net/http"
 	"net/url"
-	"slices"
 	"strings"
 	"time"
 
@@ -19,13 +18,13 @@ import (
 	"github.com/DaniDeer/go-codex/stats"
 )
 
-// CredentialFunc names the credential-providing shape [Call]/[CallHandle]
-// recognize on an attached [middleware.ClientMiddleware.Fn] — a type ALIAS
+// CredentialFunc names the credential-providing shape [Call]/[CallWithHandle]
+// recognize on an attached [middleware.ClientImplementation.Fn] — a type ALIAS
 // (not a new defined type). Lets callers (and [NewCachingCredentialFunc])
 // name the shape instead of repeating the inline function type everywhere;
-// wrap the result in a middleware.ClientMiddleware{Fn: credFn} to attach it
-// — examples/go-edge-models/docker/registry's own package-level
-// credentialFunc type alias is the precedent this mirrors.
+// attach it to a route via [rest.Route.ClientMW] — examples/go-edge-models/
+// docker/registry's own package-level credentialFunc type alias is the
+// precedent this mirrors.
 type CredentialFunc = func(ctx context.Context, reqs []route.SecurityRequirement) (http.Header, error)
 
 // CallOptions configures an outgoing HTTP request made via [Call].
@@ -45,7 +44,7 @@ type CallOptions struct {
 	// before the request is sent.
 	//
 	// Do not pass the Authorization header here — use [CallOptions.ExtraHeaders] or
-	// a credential-providing [middleware.ClientMiddleware] for security credentials.
+	// a credential-providing [middleware.ClientImplementation] for security credentials.
 	HeaderParams map[string]string
 
 	// ExtraHeaders adds arbitrary HTTP headers to the outgoing request without
@@ -54,7 +53,7 @@ type CallOptions struct {
 	ExtraHeaders http.Header
 
 	// OnCredentialRejected, when non-nil, is called when the server responds
-	// with HTTP 401 AND at least one credential-providing [middleware.ClientMiddleware]
+	// with HTTP 401 AND at least one credential-providing [middleware.ClientImplementation]
 	// was attached to this call (mirrors the "only if the credential mechanism
 	// actually engaged" gating used for the symmetric client-side format check
 	// below). Purely a notification hook — Call does NOT retry the request
@@ -278,50 +277,77 @@ func (e ConflictingCredentialHeaderError) LogValue() slog.Value {
 	)
 }
 
-// validateClientMiddlewareShapes checks every attached mw.Fn against the
-// ONE concrete shape [Call]/[CallHandle] recognize ([CredentialFunc]'s
-// shape), EAGERLY before any network activity rather than letting
+// validateClientImplementationShapes checks every attached impl.Fn against the
+// ONE concrete shape [Call] recognizes ([CredentialFunc]'s shape),
+// EAGERLY before any network activity rather than letting
 // [mergeCredentialHeaders] silently skip a malformed Fn — a
-// ClientMiddleware built for the wrong adapter (e.g. a Fn shape meant for
-// a different transport, passed here by mistake) fails loudly and
-// immediately instead.
-func validateClientMiddlewareShapes(mws []middleware.ClientMiddleware) error {
-	for _, mw := range mws {
-		switch mw.Fn.(type) {
+// [middleware.ClientImplementation] built for the wrong adapter (e.g. a Fn
+// shape meant for a different transport, passed here by mistake) fails
+// loudly and immediately instead.
+func validateClientImplementationShapes(impls []middleware.ClientImplementation) error {
+	for _, impl := range impls {
+		switch impl.Fn.(type) {
 		case nil:
-			continue // spec-only/no-op middleware — allowed
+			continue // spec-only/no-op implementation — allowed
 		case func(context.Context, []route.SecurityRequirement) (http.Header, error):
 			continue
 		default:
 			return middleware.MiddlewareShapeError{
-				Name:     mw.Name,
+				Name:     impl.Name,
 				Expected: "func(context.Context, []route.SecurityRequirement) (http.Header, error)",
-				Got:      fmt.Sprintf("%T", mw.Fn),
+				Got:      fmt.Sprintf("%T", impl.Fn),
 			}
 		}
 	}
 	return nil
 }
 
-// mergeCredentialHeaders runs EVERY attached credential-providing Fn in
-// attachment order, merging their returned http.Header values into ONE
+// mergeCredentialHeaders runs every attached credential-providing Fn IN
+// ATTACHMENT ORDER, merging their returned http.Header values into ONE
 // combined set — this is a MERGE, not an authorization check (the client
 // never judges its own authorization, only the server does). Any Fn's own
 // error aborts immediately (fail-fast). ran reports whether at least one
 // credential-providing Fn was found and invoked (used to gate the
 // client-side credential-format check and OnCredentialRejected below,
-// mirroring the pre-existing "nil CredentialFunc is not an error" contract).
+// mirroring the pre-existing "nil CredentialFunc is not an error"
+// contract).
 //
-// Every mw.Fn here is already guaranteed to match this shape (or be nil) —
-// [validateClientMiddlewareShapes] rejects anything else EAGERLY, at the
-// top of [Call], before this function is ever reached.
-func mergeCredentialHeaders(ctx context.Context, secReqs []route.SecurityRequirement, mws []middleware.ClientMiddleware) (combined http.Header, ran bool, err error) {
+// GATED by Satisfies vs secReqs (the correctness improvement from
+// docs/design/middleware-workflow-simplification.md's "Client-side
+// Satisfies-gated implementations" — PREVENTS a mismatched implementation
+// from running rather than merely detecting it): an implementation with a
+// NON-EMPTY Satisfies only runs when at least one of its scheme names is
+// actually present in secReqs; an implementation with an EMPTY Satisfies
+// (general-purpose) always runs.
+//
+// Every impl.Fn here is already guaranteed to match this shape (or be
+// nil) — [validateClientImplementationShapes] rejects anything else EAGERLY,
+// at the top of [Call], before this function is ever reached.
+func mergeCredentialHeaders(ctx context.Context, secReqs []route.SecurityRequirement, impls []middleware.ClientImplementation) (combined http.Header, ran bool, err error) {
 	combined = make(http.Header)
 	setBy := make(map[string]string)
-	for _, mw := range mws {
-		fn, ok := mw.Fn.(func(context.Context, []route.SecurityRequirement) (http.Header, error))
+	reqSchemes := make(map[string]bool, len(secReqs))
+	for _, req := range secReqs {
+		for scheme := range req {
+			reqSchemes[scheme] = true
+		}
+	}
+	for _, impl := range impls {
+		fn, ok := impl.Fn.(func(context.Context, []route.SecurityRequirement) (http.Header, error))
 		if !ok {
 			continue
+		}
+		if len(impl.Satisfies) > 0 {
+			matched := false
+			for _, s := range impl.Satisfies {
+				if reqSchemes[s] {
+					matched = true
+					break
+				}
+			}
+			if !matched {
+				continue
+			}
 		}
 		ran = true
 		h, ferr := fn(ctx, secReqs)
@@ -329,11 +355,11 @@ func mergeCredentialHeaders(ctx context.Context, secReqs []route.SecurityRequire
 			return nil, ran, ferr
 		}
 		for key, vals := range h {
-			if prior, exists := setBy[key]; exists && prior != mw.Name && !equalHeaderValues(combined[key], vals) {
-				return nil, ran, ConflictingCredentialHeaderError{Header: key, FirstSource: prior, SecondSource: mw.Name}
+			if prior, exists := setBy[key]; exists && prior != impl.Name && !equalHeaderValues(combined[key], vals) {
+				return nil, ran, ConflictingCredentialHeaderError{Header: key, FirstSource: prior, SecondSource: impl.Name}
 			}
 			combined[key] = vals
-			setBy[key] = mw.Name
+			setBy[key] = impl.Name
 		}
 	}
 	return combined, ran, nil
@@ -351,26 +377,28 @@ func equalHeaderValues(a, b []string) bool {
 	return true
 }
 
-// Call executes a typed HTTP request for the given route handle against baseURL.
+// Call executes a typed HTTP request for r against c's baseURL — the SOLE
+// public client-side entry point (see
+// docs/design/middleware-workflow-simplification.md's "Decision:
+// symmetric client-side declarative wiring"). r is a [rest.Route] value
+// (typically the SAME value the server side declared via [rest.Route.Use]/
+// [rest.Route.HandleMW]); Call derives a [*rest.RouteHandle] internally via
+// [rest.Route.ClientHandle] and ALWAYS auto-derives path/query/header/cookie
+// values from the route's declared merge fields (folding in what the
+// former CallHandle did exclusively) — there is no manual-vars variant
+// anymore; a route intended for client use must declare merge fields for
+// every path/query/header/cookie value it needs.
 //
-// The concrete URL is built as baseURL + handle.BuildPath(vars) + "?" + queryString.
-// For body-bearing methods (POST, PUT, PATCH) req is JSON-encoded as the request
-// body; for other methods (GET, HEAD, DELETE) req is ignored.
+// For body-bearing methods (POST, PUT, PATCH) req is JSON-encoded as the
+// request body; for other methods (GET, HEAD, DELETE) req is ignored.
 //
-// All parameters are validated against their registered codecs before the request
-// is sent: path variables via [rest.RouteHandle.BuildPath], query parameters via
-// [rest.RouteHandle.ValidateQuery], cookies via [rest.RouteHandle.ValidateCookies],
-// and request headers via [rest.RouteHandle.ValidateHeaders]. A validation failure
-// returns the corresponding [rest] error type (e.g. [rest.PathParamError],
-// [rest.QueryParamError]) without sending any request.
-//
-// Security requirements: if the route declares non-nil Security (or inherits
-// global security), every attached credential-providing [middleware.ClientMiddleware]
-// (combining [rest.RouteHandle.ClientMiddlewares], attached via
-// [rest.Route.UseClient], with this call's own mws — an entry whose Fn
-// matches [CredentialFunc]'s shape) is called to obtain the Authorization
-// headers. No credential-providing middleware attached to a secured route
-// is not an error — the request is sent without credential injection; use
+// Security requirements: if the route declares non-nil Security (or
+// inherits global security), every attached credential-providing
+// [middleware.ClientImplementation] (declared via [rest.Route.ClientMW],
+// GATED by Satisfies vs the route's declared security requirements) is
+// called to obtain the Authorization headers. No credential-providing
+// implementation attached to a secured route is not an error — the
+// request is sent without credential injection; use
 // [CallOptions.ExtraHeaders] to supply static credentials instead.
 //
 // On a 2xx response the body is decoded into Resp using the route's response codec.
@@ -381,25 +409,34 @@ func equalHeaderValues(a, b []string) bool {
 // code, and total duration. Per-field validation errors are reported separately via
 // [stats.Observer.RecordValidationError].
 //
-// Example — GET with path variable:
+// Example — GET with path variable declared via a merge field:
 //
-//	handle := getUserRoute.ClientHandle()
-//	user, err := nethttp.Call(ctx, http.DefaultClient, "https://api.example.com",
-//	    handle, struct{}{}, map[string]string{"id": "f47ac10b"},
+//	user, err := nethttp.Call(ctx, caller, getUserRoute, GetUserReq{ID: "f47ac10b"},
 //	    nethttp.CallOptions{Observer: obs})
 //
-// Example — POST with body and bearer token:
+// Example — POST with body, on a route declaring a bearer credential via ClientMW:
 //
-//	handle := createUserRoute.ClientHandle()
-//	resp, err := nethttp.Call(ctx, http.DefaultClient, "https://api.example.com",
-//	    handle, createReq, nil,
-//	    nethttp.CallOptions{},
-//	    middleware.ClientMiddleware{Fn: func(ctx context.Context, reqs []route.SecurityRequirement) (http.Header, error) {
-//	        h := make(http.Header)
-//	        h.Set("Authorization", "Bearer "+token)
-//	        return h, nil
-//	    }})
+//	resp, err := nethttp.Call(ctx, caller, createUserRoute, createReq, nethttp.CallOptions{})
 func Call[Req, Resp any](
+	ctx context.Context,
+	c *Caller,
+	r rest.Route[Req, Resp],
+	req Req,
+	opts CallOptions,
+) (Resp, error) {
+	handle := r.ClientHandle()
+	return CallWithHandle(ctx, c.client, c.baseURL, handle, req, opts)
+}
+
+// callWithVars is the UNEXPORTED, handle-based call primitive — the
+// actual call logic, shared internally by [Call] (via [CallWithHandle])
+// AND [ports]' nethttp binding adapters (which own a *rest.RouteHandle
+// directly, built once and called many times, and never a [rest.Route]
+// value — see docs/design/middleware-workflow-simplification.md's
+// "Decision: unexported handle-based primitive" for the full rationale).
+// vars supplies path template values explicitly (no merge-field
+// auto-derivation) — see [CallWithHandle] for that convenience.
+func callWithVars[Req, Resp any](
 	ctx context.Context,
 	client *http.Client,
 	baseURL string,
@@ -407,7 +444,6 @@ func Call[Req, Resp any](
 	req Req,
 	vars map[string]string,
 	opts CallOptions,
-	mws ...middleware.ClientMiddleware,
 ) (Resp, error) {
 	var zero Resp
 
@@ -419,7 +455,7 @@ func Call[Req, Resp any](
 	// Ferry per-field validation errors (Class B) out via ctx, then drain
 	// them into obs.RecordValidationError exactly once before returning —
 	// Call has no outer wrapping concept the way Handler's
-	// ObservabilityMiddleware does, so it drains inline via defer instead.
+	// Observability does, so it drains inline via defer instead.
 	ctx = stats.WithDiagnostics(ctx)
 	defer func() {
 		for _, d := range stats.DiagnosticsFromContext(ctx) {
@@ -431,17 +467,14 @@ func Call[Req, Resp any](
 	routePath := handle.Descriptor.Path
 	start := time.Now()
 
-	// 0. Combine handle.ClientMiddlewares (declared via Route.UseClient)
-	// with this call's own variadic mws — mirrors Handler/Register's
-	// identical handle.Middlewares + variadic combination server-side.
-	// Then validate every attached mw.Fn against the ONE concrete shape
+	// 0. Validate every attached impl.Fn against the ONE concrete shape
 	// this package recognizes client-side, EAGERLY before any network
 	// activity; a malformed Fn fails loudly here instead of being
 	// silently ignored by mergeCredentialHeaders below (see
-	// middleware.ClientMiddleware.Fn's own doc comment: "fails LOUDLY...
-	// never silently").
-	allMws := append(slices.Clone(handle.ClientMiddlewares), mws...)
-	if err := validateClientMiddlewareShapes(allMws); err != nil {
+	// middleware.ClientImplementation.Fn's own doc comment: "fails
+	// LOUDLY... never silently").
+	allImpls := handle.ClientImplementations
+	if err := validateClientImplementationShapes(allImpls); err != nil {
 		obs.RecordRequest(method, routePath, 0, time.Since(start))
 		return zero, err
 	}
@@ -502,7 +535,7 @@ func Call[Req, Resp any](
 	var credentialFnRan bool
 	if len(secReqs) > 0 {
 		var credErr error
-		credHeaders, credentialFnRan, credErr = mergeCredentialHeaders(ctx, secReqs, allMws)
+		credHeaders, credentialFnRan, credErr = mergeCredentialHeaders(ctx, secReqs, allImpls)
 		if credErr != nil {
 			obs.RecordRequest(method, routePath, 0, time.Since(start))
 			return zero, credErr
@@ -692,44 +725,32 @@ func Call[Req, Resp any](
 	return result, nil
 }
 
-// CallHandle is the single-call convenience wrapper around [Call]: it
-// derives the path vars AND [CallOptions.QueryParams]/[HeaderParams]/
-// [CookieParams] from req automatically, using the route's role-aware
-// merge-field accessors ([rest.RouteHandle.PathMergeFields]/
-// [QueryMergeFields]/[HeaderMergeFields]/[CookieMergeFields]) and
-// [codex.EncodeVars] — one line instead of building each map by hand.
+// CallWithHandle is [callWithVars]'s single-call convenience wrapper,
+// EXPORTED for callers that already have a *[rest.RouteHandle] but no
+// [rest.Route] value to build one from — e.g. [ports]' handle-based
+// binding adapters, and other packages bridging a REST route into a
+// different protocol (see adapters/mcprest, which proxies MCP tool calls
+// through an outbound REST call using a *rest.RouteHandle it was handed
+// directly). Derives the path vars AND [CallOptions.QueryParams]/
+// [HeaderParams]/[CookieParams] from req automatically, using the
+// route's role-aware merge-field accessors
+// ([rest.RouteHandle.PathMergeFields]/[QueryMergeFields]/
+// [HeaderMergeFields]/[CookieMergeFields]) and [codex.EncodeVars] — the
+// SAME auto-derivation the public [Call] performs internally.
+//
+// Prefer [Call] when a [rest.Route] value is available (the common
+// case) — it additionally builds the handle for you via
+// [rest.Route.ClientHandle].
 //
 // Any entry already present in opts.QueryParams/HeaderParams/CookieParams
-// takes PRECEDENCE over the corresponding derived value for the same key —
-// this lets a caller override a struct field's value, or add ad-hoc
-// params the struct doesn't declare, without losing the one-line
-// convenience for the common case. opts fields left nil are populated
-// entirely from the derived values (or left nil if the route declares no
-// merge fields for that role).
-//
-// [Call] remains available as the lower-level escape hatch for callers
-// that build the maps themselves — e.g. no merge fields declared, path
-// vars from a non-struct source, or a route shared between multiple
-// unrelated Req shapes.
-//
-// mws is forwarded unchanged to [Call] — pass a credential-providing
-// [middleware.ClientMiddleware] here exactly as you would to Call
-// directly (combined automatically with any [rest.Route.UseClient]-declared
-// ones, same as Call).
-//
-// Example:
-//
-//	handle := getUserActivity.ClientHandle()
-//	activity, err := nethttp.CallHandle(ctx, client, baseURL, handle,
-//	    GetUserActivityReq{ID: userID, Filter: "logins"}, nethttp.CallOptions{})
-func CallHandle[Req, Resp any](
+// takes PRECEDENCE over the corresponding derived value for the same key.
+func CallWithHandle[Req, Resp any](
 	ctx context.Context,
 	client *http.Client,
 	baseURL string,
 	handle *rest.RouteHandle[Req, Resp],
 	req Req,
 	opts CallOptions,
-	mws ...middleware.ClientMiddleware,
 ) (Resp, error) {
 	var zero Resp
 
@@ -754,7 +775,7 @@ func CallHandle[Req, Resp any](
 	opts.HeaderParams = overrideDerived(headers, opts.HeaderParams)
 	opts.CookieParams = overrideDerived(cookies, opts.CookieParams)
 
-	return Call(ctx, client, baseURL, handle, req, vars, opts, mws...)
+	return callWithVars(ctx, client, baseURL, handle, req, vars, opts)
 }
 
 // overrideDerived merges derived (from codex.EncodeVars) and explicit (from

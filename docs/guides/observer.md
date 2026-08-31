@@ -124,7 +124,7 @@ zeromq.Call(ctx, sock, handle, req, zeromq.CallOptions{})
 never consulted. Per-component overrides still work:
 
 ```go
-nethttp.Handler(handle, fn, nethttp.Options{Observer: auditObs}) // explicit, no lookup
+route.WithOptions(nethttp.Options{Observer: auditObs}) // explicit, no lookup
 ```
 
 **For HTTP servers** — the context observer is resolved *per-request* from
@@ -261,10 +261,10 @@ func (o *CountingObserver) Print() {
 var _ stats.Observer = (*CountingObserver)(nil)
 
 obs := stats.NewFanout(&CountingObserver{}, stats.NewLoggingObserver(logger))
-nethttp.Register(mux, createUser, handler, nethttp.Options{Observer: obs})
+createUser.WithHandler(handler).WithOptions(nethttp.Options{Observer: obs})
 ```
 
-> **Context observer:** `nethttp.Handler` and `nethttp.SSEHandler` resolve the observer
+> **Context observer:** `nethttp.Serve`/`ServeOne`/`ServeSSE` resolve the observer
 > per-request from `r.Context()` when `opts.Observer` is nil. Use the middleware pattern above
 > to inject `obs` at request time, or pass `nethttp.Options{Observer: obs}` directly for
 > service-level wiring.
@@ -561,7 +561,7 @@ func (t *OTelTracer) EndSpan(ctx context.Context, err error) {
 obs := stats.NewFanout(metrics, stats.NewLoggingObserver(logger), &OTelTracer{})
 
 // The same obs propagates traces across every layer:
-nethttp.Register(mux, route, handler, nethttp.Options{Observer: obs})
+route.WithHandler(handler).WithOptions(nethttp.Options{Observer: obs})
 configFile.Read(nil, ports.FileOptions{Observer: obs})
 forge.NewRegistry("Pipeline", "1.0.0").WithObserver(obs)
 ```

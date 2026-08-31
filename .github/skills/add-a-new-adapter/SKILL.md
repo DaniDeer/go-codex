@@ -141,12 +141,14 @@ shape:
 
 ```go
 // Client: ONE struct in, ONE struct out.
-resp, err := nethttp.CallHandle(ctx, client, baseURL, handle, req, nethttp.CallOptions{})
+resp, err := nethttp.CallWithHandle(ctx, client, baseURL, handle, req, nethttp.CallOptions{})
 
 // Server: ONE struct in, ONE struct out.
-nethttp.Register(mux, handle, func(ctx context.Context, req Req) (Resp, error) {
+route := route.WithHandler(func(ctx context.Context, req Req) (Resp, error) {
     return resp, nil // adapter auto-decoded req, will auto-encode resp
-}, nethttp.Options{})
+})
+route.Register(b)
+nethttp.Serve(mux, b)
 ```
 
 **Checklist — implement all five, both directions, both roles:**

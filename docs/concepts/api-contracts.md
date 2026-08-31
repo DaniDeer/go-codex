@@ -31,16 +31,18 @@ directions, both roles:
 // Client: ONE struct in, ONE struct out.
 handle := getUserActivity.ClientHandle()
 req := GetUserActivityReq{ID: userID, Filter: "logins"} // literal, or a New... factory
-resp, err := nethttp.CallHandle(ctx, client, baseURL, handle, req, nethttp.CallOptions{})
+resp, err := nethttp.CallWithHandle(ctx, client, baseURL, handle, req, nethttp.CallOptions{})
 // resp is fully decoded AND merged — body + response header/cookie fields
 // (e.g. resp.RequestID) are all populated. Nothing else to do.
 
 // Server: ONE struct in, ONE struct out.
-nethttp.Register(mux, handle, func(ctx context.Context, req GetUserActivityReq) (User, error) {
+route := getUserActivity.WithHandler(func(ctx context.Context, req GetUserActivityReq) (User, error) {
     u := lookup(req.ID)     // req arrives fully merged: path+query+header+cookie+body
     u.RequestID = traceID() // just set the field — no w.Header().Set() call
     return u, nil           // adapter auto-encodes body AND response merge fields
-}, nethttp.Options{})
+})
+route.Register(builder)
+nethttp.Serve(mux, builder)
 ```
 
 This is made possible by declare-once constructors
@@ -103,7 +105,7 @@ Step 5b).
 
 | Boundary | Declare-once constructor | Single-call convenience | Reference |
 |---|---|---|---|
-| REST (`api/rest` + `adapters/nethttp`/`chi`) | `rest.NewPathParam[T]`/`NewRequiredQueryParam[T]`/etc. + `NewRequiredResponseHeaderParam[Resp]`/etc. | `nethttp.CallHandle` (client) + `Handler` auto-merge (server) | [Feature: REST API](../features/rest-api.md#one-line-client-calls-callhandle) |
+| REST (`api/rest` + `adapters/nethttp`/`chi`) | `rest.NewPathParam[T]`/`NewRequiredQueryParam[T]`/etc. + `NewRequiredResponseHeaderParam[Resp]`/etc. | `nethttp.Call`/`CallWithHandle` (client) + `Serve`/`Handler` auto-merge (server) | [Feature: REST API](../features/rest-api.md#one-line-client-calls-nethttpcall) |
 | REST SSE (`api/rest` + `adapters/nethttp`/`chi`) | `rest.NewRequiredSSEEventParam[T]`/`NewOptionalSSEEventParam[T]` | `send(event)` on `SSEHandler`/`RegisterSSE` auto-merges path/query/header/cookie vars into each event | [Feature: SSE & Streaming](../features/sse-streaming.md#one-struct-one-call-for-sse-events) |
 | Events pub/sub (`api/events` + `adapters/mqtt`/`mqtt5`/`zeromq`) | `events.NewTopicParam[T]` | `mqtt5.PublishHandle`/`zeromq.PublishHandle`/`mqtt.PublishHandle` (publish) + `Subscribe`/`SubscribeHandler` auto-merge (subscribe) | [Feature: Event Channels & MQTT](../features/events.md#topic-vars-with-automatic-merge-newtopicparam) |
 | Req/reply (`api/reqreply` + `adapters/mqtt5`/`zeromq`) | `reqreply.NewTopicParam[T]` (Req-side only) | `mqtt5.CallHandle`/`zeromq.CallHandle` (client) + `mqtt5.Serve` auto-merge (server) | [MQTT 5 Guide — Request/Reply](../guides/mqtt5.md) |
@@ -131,18 +133,19 @@ var createUser = rest.NewRoute[CreateUserReq, User](
     rest.PathParam{Name: "id"}.WithCodec(uuidCodec),
 )
 
-handle, _ := createUser.Register(builder)
+handle, _ := createUser.RegisterHandle(builder)
 // handle.Decode(body)        → typed CreateUserReq, validated
 // handle.Encode(user)        → JSON bytes
 // handle.BuildPath(vars)     → concrete path, validates params
 // builder.OpenAPISpec()      → full OpenAPI 3.1 document
 ```
 
-For the HTTP client side, use `ClientHandle()` — no builder needed:
+For the HTTP client side, `nethttp.Call` takes the `rest.Route` value
+directly — no builder, no separate handle needed:
 
 ```go
-handle := createUser.ClientHandle()
-user, err := nethttp.Call(ctx, http.DefaultClient, serverURL, handle, req, nil, opts)
+caller := nethttp.NewCaller(http.DefaultClient, serverURL)
+user, err := nethttp.Call(ctx, caller, createUser, req, opts)
 ```
 
 ## Event channels (`api/events`)

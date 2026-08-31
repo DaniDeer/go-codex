@@ -23,7 +23,7 @@ func newIngestRoute(t *testing.T) *rest.RouteHandle[createReq, struct{}] {
 	t.Helper()
 	b := rest.NewBuilder(testInfo)
 	h, err := rest.NewRoute[createReq, struct{}]("POST", "/ingest",
-		createReqCodec, codex.Struct[struct{}](), rest.RouteMeta{OperationID: "ingest"}).Register(b)
+		createReqCodec, codex.Struct[struct{}](), rest.RouteMeta{OperationID: "ingest"}).RegisterHandle(b)
 	if err != nil {
 		t.Fatalf("register route: %v", err)
 	}
@@ -89,7 +89,7 @@ func TestPollAdapter_EmitsResponsePerTick(t *testing.T) {
 
 	b := rest.NewBuilder(testInfo)
 	h, _ := rest.NewRoute[getReq, userResp]("GET", "/users/latest",
-		getReqCodec, userRespCodec, rest.RouteMeta{}).Register(b)
+		getReqCodec, userRespCodec, rest.RouteMeta{}).RegisterHandle(b)
 
 	p, err := ports.NewSourcePort[userResp]("poll", userRespCodec, ports.PortOptions{Buffer: 4})
 	if err != nil {
@@ -126,7 +126,7 @@ func TestCallAdapter_EmitsResponsePerItem(t *testing.T) {
 
 	b := rest.NewBuilder(testInfo)
 	h, _ := rest.NewRoute[createReq, userResp]("POST", "/users",
-		createReqCodec, userRespCodec, rest.RouteMeta{OperationID: "createUser"}).Register(b)
+		createReqCodec, userRespCodec, rest.RouteMeta{OperationID: "createUser"}).RegisterHandle(b)
 
 	ch := make(chan createReq, 1)
 	ch <- createReq{Name: "Alice"}
@@ -158,7 +158,7 @@ func TestCallAdapter_ErrorsGoToStreamErrors(t *testing.T) {
 
 	b := rest.NewBuilder(testInfo)
 	h, _ := rest.NewRoute[createReq, userResp]("POST", "/users",
-		createReqCodec, userRespCodec, rest.RouteMeta{}).Register(b)
+		createReqCodec, userRespCodec, rest.RouteMeta{}).RegisterHandle(b)
 
 	ch := make(chan createReq, 1)
 	ch <- createReq{Name: "Bob"}
@@ -199,7 +199,7 @@ func TestDrainCallAdapter_PostsEachItem(t *testing.T) {
 
 	b := rest.NewBuilder(testInfo)
 	h, _ := rest.NewRoute[createReq, userResp]("POST", "/notify",
-		createReqCodec, userRespCodec, rest.RouteMeta{}).Register(b)
+		createReqCodec, userRespCodec, rest.RouteMeta{}).RegisterHandle(b)
 
 	ch := make(chan createReq, 2)
 	ch <- createReq{Name: "A"}
@@ -341,7 +341,7 @@ func TestPipelineAdapter_RegistersAndHandlesRequests(t *testing.T) {
 	mux := http.NewServeMux()
 	b := rest.NewBuilder(testInfo)
 	handle, _ := rest.NewRoute[createReq, userResp]("POST", "/pipeline",
-		createReqCodec, userRespCodec, rest.RouteMeta{OperationID: "pipeline"}).Register(b)
+		createReqCodec, userRespCodec, rest.RouteMeta{OperationID: "pipeline"}).RegisterHandle(b)
 
 	p, err := ports.NewToolPort[createReq, userResp]("pipeline-tool", createReqCodec, userRespCodec, ports.PortOptions{})
 	if err != nil {

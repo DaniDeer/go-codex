@@ -6,13 +6,19 @@ This guide walks through the HTTP client example. For the full API reference, se
 
 ## examples/adapters-nethttp-client
 
-The most comprehensive client demo. Demonstrates both usage patterns in five numbered sections:
+The most comprehensive client demo. Every call in the example shares ONE
+`(client, baseURL)` pair, so it builds a single `caller :=
+nethttp.NewCaller(srv.Client(), srv.URL)` right after the server starts
+and reuses it via `nethttp.Call` for every call thereafter, passing the
+SAME `contract.Route` value the server registered directly — the
+recommended pattern for every call. Demonstrates both usage patterns in
+five numbered sections:
 
-1. **Body** — POST /users with a shared contract: `contract.CreateUser.Register(builder)` and `contract.CreateUser.ClientHandle()` both produce the same typed `RouteHandle`
-   - **1b. Client-side typed error decode** — `CreateUser` declares `rest.ErrorPattern[EmailConflictError, EmailConflictError](409, ...)`; calling `nethttp.Call` with a duplicate email returns a decoded `nethttp.ErrorPatternResponse` instead of the untyped `UnexpectedStatusError` — see "Handling the response" below
-2. **Path params** — GET /users/{id} with `PathParam.WithCodec(...)` codec validated client-side before any HTTP call is sent
+1. **Body** — POST /users with a shared contract: `contract.CreateUser.Register(builder)` (server) and `nethttp.Call(ctx, caller, contract.CreateUser, req, opts)` (client) both operate on the SAME `rest.Route` value
+   - **1b. Client-side typed error decode** — `CreateUser` declares `rest.ErrorPattern[EmailConflictError, EmailConflictError](409, ...)`; calling `Call` with a duplicate email returns a decoded `nethttp.ErrorPatternResponse` instead of the untyped `UnexpectedStatusError` — see "Handling the response" below
+2. **Path params** — GET /users/{id} with a path MERGE field (`rest.NewPathParam`) so `Call` derives the path value directly from the request struct, codec validated client-side before any HTTP call is sent
 3. **Cookies + headers** — GET /profile with `CallOptions.CookieParams` + `CallOptions.HeaderParams`; empty or invalid values are rejected pre-flight
-4. **Security** — GET /data with `CallOptions.CredentialFunc` injecting `Authorization: Bearer <token>`; demonstrates all three cases: happy path, no credentials (401), CredentialFunc error (pre-flight abort)
+4. **Security** — GET /data with a credential-providing implementation attached via `Route.ClientMW(mw, fn)` (paired against the route's declared `middleware.Middleware`) injecting an Authorization header; demonstrates all three cases: happy path, no credentials (401), credential-Fn error (pre-flight abort)
 5. **OpenAPI spec** — same `rest.Builder` used by the server generates the full spec
 
 Observer pattern:
@@ -33,17 +39,36 @@ if errors.As(err, &pathErr) {
 
 → [examples/adapters-nethttp-client](https://github.com/DaniDeer/go-codex/tree/main/examples/adapters-nethttp-client)
 
+## Call vs. CallWithHandle
+
+`nethttp.Call` is the SOLE public client-side entry point and the
+recommended pattern for every call — it takes a `rest.Route` value
+directly:
+
+```go
+caller := nethttp.NewCaller(client, baseURL) // build once
+user, err := nethttp.Call(ctx, caller, contract.CreateUser, req, nethttp.CallOptions{})
+```
+
+`nethttp.CallWithHandle` — the lower-level, handle-based primitive `Call`
+wraps internally — remains public and is still needed directly for
+callers that already have a `*rest.RouteHandle` but no `rest.Route`
+value: `ports.Pattern`'s REST binding machinery (`DrainCallAdapter`/
+`CallAdapter`), which owns its own client/baseURL via `PortOptions`, and
+`adapters/mcprest`'s REST-to-MCP bridge.
+
 ## Handling the response: happy path vs error path
 
-`nethttp.Call` (and its convenience wrapper `nethttp.CallHandle`) always
-return exactly `(Resp, error)` — the "one struct, one call" contract holds
-for BOTH directions. There is no partial-success shape to handle: either
-you get a fully-decoded, fully-merged `Resp`, or you get a non-nil `error`.
+`nethttp.Call` (and the lower-level `nethttp.CallWithHandle` it wraps)
+always return exactly `(Resp, error)` — the "one struct, one call"
+contract holds for BOTH directions. There is no partial-success shape to
+handle: either you get a fully-decoded, fully-merged `Resp`, or you get a
+non-nil `error`.
 
 ### Happy path — use the returned value directly
 
 ```go
-user, err := nethttp.Call(ctx, client, baseURL, clientCreate, req, nil, nethttp.CallOptions{})
+user, err := nethttp.Call(ctx, caller, contract.CreateUser, req, nethttp.CallOptions{})
 if err != nil {
     // handle the error path — see below
     return err
@@ -59,12 +84,12 @@ returned as a non-nil `error` instead. A nil error guarantees a usable
 
 ### Error path — walk the error chain with `errors.As`
 
-Every failure mode `Call` can produce is a distinct, `errors.As`-navigable
-typed error. Check them in the order they can occur — pre-flight
-(no network call sent) first, then response-side:
+Every failure mode `Call` can produce is a distinct,
+`errors.As`-navigable typed error. Check them in the order they can occur
+— pre-flight (no network call sent) first, then response-side:
 
 ```go
-_, err := nethttp.Call(ctx, client, baseURL, handle, req, vars, opts)
+_, err := nethttp.Call(ctx, caller, route, req, opts)
 if err == nil {
     return // happy path handled above
 }
@@ -131,11 +156,11 @@ Rule of thumb for "continuing" after an error:
 
 ## Binary requests and responses (PNG, JPEG, PDF…)
 
-The client (`nethttp.Call`) supports binary request bodies and binary response bodies the same way as JSON — register `format.Binary` on the route handle and the client sets headers and validates automatically.
+The client (`nethttp.Call`/`CallWithHandle`) supports binary request bodies and binary response bodies the same way as JSON — register `format.Binary` on the route handle and the client sets headers and validates automatically.
 
 ### Sending a binary request body
 
-Register `format.Binary` via `WithRequestFormats`. The client calls `format.Binary.Marshal` (validates magic bytes and size), sets `Content-Type: image/png`, and sends the raw bytes as the request body:
+Register `format.Binary` via `WithRequestFormats`. The client calls `format.Binary.Marshal` (validates magic bytes and size), sets `Content-Type: image/png`, and sends the raw bytes as the request body. The route's path variable must be declared as a MERGE field (`rest.NewPathParam`, not a plain `PathParam`) since `Call`/`CallWithHandle` derive path values ONLY from merge fields — there is no manual `vars map[string]string` escape hatch:
 
 ```go
 pngCodec := codex.Bytes().
@@ -145,13 +170,12 @@ pngCodec := codex.Bytes().
 uploadHandle := uploadRoute.ClientHandle()
 uploadHandle.WithRequestFormats(format.Binary(pngCodec).WithContentType("image/png"))
 
-meta, err := nethttp.Call(ctx, client, baseURL, uploadHandle, pngBytes,
-    map[string]string{"id": imageID},
+meta, err := nethttp.CallWithHandle(ctx, client, baseURL, uploadHandle, pngBytes,
     nethttp.CallOptions{Observer: obs},
 )
 ```
 
-The `Content-Type: image/png` header is set automatically from the registered format.
+The `Content-Type: image/png` header is set automatically from the registered format. `examples/png-upload`'s own routes currently declare a plain `rest.PathParam`/`rest.CookieParam` (server-only, no client-side call in that example) — switch to `rest.NewPathParam`/`rest.NewRequiredCookieParam` if you need this route to also be client-callable.
 
 ### Receiving a binary response body
 
@@ -161,8 +185,7 @@ Register `format.Binary` via `WithFormats`. The client sets `Accept: image/png`,
 downloadHandle := downloadRoute.ClientHandle()
 downloadHandle.WithFormats(format.Binary(pngCodec).WithContentType("image/png"))
 
-png, err := nethttp.Call(ctx, client, baseURL, downloadHandle, downloadReq,
-    map[string]string{"id": imageID},
+png, err := nethttp.CallWithHandle(ctx, client, baseURL, downloadHandle, downloadReq,
     nethttp.CallOptions{Observer: obs},
 )
 // png is validated (magic bytes + size) — safe to write to disk or display

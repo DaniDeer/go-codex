@@ -53,7 +53,7 @@ func (a *nethttpIngestAdapter[T]) Activate(ctx context.Context, dst chan<- T, er
 		}
 		return 0
 	})
-	h := Handler(a.handle, func(_ context.Context, req T) (struct{}, error) {
+	h := handlerFunc(a.handle, func(_ context.Context, req T) (struct{}, error) {
 		select {
 		case ch <- req:
 			return struct{}{}, nil
@@ -135,10 +135,11 @@ func (a *nethttpSSEAdapter[Event]) Activate(ctx context.Context, src gstream.Str
 		sseOpts.Topic = a.handle.Descriptor.Path
 	}
 	fn := SSEFromHub[struct{}, Event](hub, sseOpts)
-	// RegisterSSE now returns an error for eager middleware Fn-shape
-	// validation (see docs/roadmap/declarative-middleware.md) — unreachable
-	// here since no middleware is attached at this call site.
-	_ = RegisterSSE(a.mux, a.handle, fn, a.opts.Options)
+	// Calls sseHandlerFunc directly (not the deprecated RegisterSSE) —
+	// no middleware Fn-shape validation needed here since no middleware
+	// is attached at this call site.
+	routeLabel := "GET " + a.handle.Descriptor.Path
+	a.mux.Handle(routeLabel, sseHandlerFunc(a.handle, fn, a.opts.Options))
 	<-ctx.Done()
 }
 
@@ -150,7 +151,7 @@ type CallStreamOptions struct {
 	//
 	// When nil, path/query/header/cookie vars are derived PER-ITEM from each
 	// item's own merge-field-declared struct fields (the same convenience
-	// [CallHandle] provides). When set to a non-nil map (including an
+	// [CallWithHandle] provides). When set to a non-nil map (including an
 	// explicitly empty one), that map is used as-is for every request
 	// (static vars only) — the escape hatch, unchanged from prior behavior.
 	Vars     map[string]string
@@ -202,9 +203,9 @@ func (a *nethttpCallAdapter[Req, Resp]) Transform(ctx context.Context, src gstre
 				var resp Resp
 				var err error
 				if a.opts.Vars == nil {
-					resp, err = CallHandle(ctx, a.client, a.baseURL, a.handle, req, a.opts.CallOpts)
+					resp, err = CallWithHandle(ctx, a.client, a.baseURL, a.handle, req, a.opts.CallOpts)
 				} else {
-					resp, err = Call(ctx, a.client, a.baseURL, a.handle, req, a.opts.Vars, a.opts.CallOpts)
+					resp, err = callWithVars(ctx, a.client, a.baseURL, a.handle, req, a.opts.Vars, a.opts.CallOpts)
 				}
 				if err != nil {
 					select {
@@ -293,7 +294,7 @@ func (a *nethttpPollAdapter[Req, Resp]) Activate(ctx context.Context, dst chan<-
 			case <-ctx.Done():
 				return
 			case <-ticker.C:
-				resp, err := Call(ctx, a.client, a.baseURL, a.handle, a.req, a.opts.Vars, CallOptions{Observer: obs})
+				resp, err := callWithVars(ctx, a.client, a.baseURL, a.handle, a.req, a.opts.Vars, CallOptions{Observer: obs})
 				if err != nil {
 					select {
 					case errChan <- err:
@@ -348,7 +349,7 @@ type DrainCallOptions struct {
 	//
 	// When nil, path/query/header/cookie vars are derived PER-ITEM from each
 	// item's own merge-field-declared struct fields (the same convenience
-	// [CallHandle] provides) — every item may resolve to a different
+	// [CallWithHandle] provides) — every item may resolve to a different
 	// concrete path/query/header/cookie set. When set to a non-nil map
 	// (including an explicitly empty one), that map is used as-is for every
 	// item (today's static-vars behavior, unchanged) — this remains the
@@ -388,9 +389,9 @@ func (a *nethttpDrainCallAdapter[Req, Resp]) Activate(ctx context.Context, src g
 		func(ctx context.Context, item Req) error {
 			var err error
 			if a.opts.Vars == nil {
-				_, err = CallHandle(ctx, a.client, a.baseURL, a.handle, item, a.opts.CallOpts)
+				_, err = CallWithHandle(ctx, a.client, a.baseURL, a.handle, item, a.opts.CallOpts)
 			} else {
-				_, err = Call(ctx, a.client, a.baseURL, a.handle, item, a.opts.Vars, a.opts.CallOpts)
+				_, err = callWithVars(ctx, a.client, a.baseURL, a.handle, item, a.opts.Vars, a.opts.CallOpts)
 			}
 			if err != nil {
 				if onErr != nil {
@@ -459,8 +460,8 @@ func (a *nethttpPipelineAdapter[Req, Resp]) Bind(
 //	go domain.Latest.Feed(ctx, readings)
 //
 // Before the first value arrives the handler responds 503 Service Unavailable
-// with [NoLatestValueError] (same semantics as HandlerLatest). All codec
-// layers (params, security) validate exactly as with [Handler].
+// with [NoLatestValueError] (same semantics as [HandlerLatest]). All codec
+// layers (params, security) validate exactly as with the regular request pipeline.
 func LatestAdapter[Resp any](
 	mux *http.ServeMux,
 	handle *rest.RouteHandle[struct{}, Resp],
@@ -487,7 +488,7 @@ func (a *nethttpLatestAdapter[Resp]) Serve(_ context.Context, latest func() (Res
 			}
 			return 0
 		})
-	h := Handler(a.handle, func(_ context.Context, _ struct{}) (Resp, error) {
+	h := handlerFunc(a.handle, func(_ context.Context, _ struct{}) (Resp, error) {
 		v, ok := latest()
 		if !ok {
 			var zero Resp

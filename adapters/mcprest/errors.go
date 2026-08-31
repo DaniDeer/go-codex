@@ -99,7 +99,7 @@ var restClientErrorPayloadCodec = codex.Struct[RESTClientErrorPayload](
 // exported adapters/nethttp and api/rest CLIENT error type — including the
 // pre-flight validation errors [rest.PathParamError]/[rest.MissingPathVarError]/
 // [rest.QueryParamError]/[rest.CookieParamError]/[rest.HeaderParamError] that
-// [nethttp.CallHandle] returns BEFORE any HTTP request is sent — PLUS
+// [nethttp.CallWithHandle] returns BEFORE any HTTP request is sent — PLUS
 // [ToolRequestMapError]/[ToolResponseMapError], into [RESTClientErrorPayload]
 // — pass alongside [apimcp.NewTool]'s other opts. Purely additive: declare
 // your OWN [apimcp.ErrorPattern] BEFORE these in the opts list to override
@@ -109,7 +109,7 @@ var restClientErrorPayloadCodec = codex.Struct[RESTClientErrorPayload](
 // [rest.InvalidPathParamError] is deliberately NOT covered — it is a
 // Register-time/spec-declaration error (a [rest.PathParam] naming a
 // variable absent from the path template), never returned by a runtime
-// [nethttp.Call]/[nethttp.CallHandle] invocation. [nethttp.ErrorPatternResponse]
+// [nethttp.Call]/[nethttp.CallWithHandle] invocation. [nethttp.ErrorPatternResponse]
 // (the underlying REST route's OWN declared [rest.ErrorPattern] match) is
 // also NOT covered — it already carries an application-decoded typed
 // Value; wrapping it generically here would discard that type information

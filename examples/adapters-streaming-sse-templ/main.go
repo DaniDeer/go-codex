@@ -176,11 +176,12 @@ func (o *statsObserver) print() {
 
 // ── Main ──────────────────────────────────────────────────────────────────────
 
-// mustRegister exits the program if Register/RegisterSSE returns an error —
-// e.g. a malformed middleware Fn shape, caught eagerly at wiring time.
-func mustRegister(err error) {
+// mustServe exits the program if Register/RegisterHandle/Serve/ServeSSE
+// returns an error — e.g. a malformed middleware Fn shape, caught eagerly
+// at wiring time.
+func mustServe(err error, what string) {
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "Register failed: %v\n", err)
+		fmt.Fprintf(os.Stderr, "%s failed: %v\n", what, err)
 		os.Exit(1)
 	}
 }
@@ -192,6 +193,8 @@ func main() {
 	metrics := &statsObserver{}
 	obs := stats.NewFanout(metrics, stats.NewLoggingObserver(logger.With("component", "sse-templ")))
 	b := rest.NewBuilder(rest.Info{Title: "Streaming + SSE + templ Demo", Version: "1.0.0"})
+	obsFn := nethttp.Observability(obs)
+	opts := nethttp.Options{}
 
 	// ── Route 1: Chunked HTML streaming ──────────────────────────────────────
 	//
@@ -203,49 +206,19 @@ func main() {
 	// The same route also serves JSON via content negotiation:
 	//   Accept: text/html        → streams the templ component (chunked)
 	//   Accept: application/json → returns JSON-encoded DashboardProps
+	//
+	// rest.Formats declares the negotiable response formats inline — the
+	// RouteOpt equivalent of the old post-registration
+	// RouteHandle.WithFormats call.
 
-	dashRoute, err := rest.NewRoute[struct{}, DashboardProps]("GET", "/stream/dashboard",
+	dashRoute := rest.NewRoute[struct{}, DashboardProps]("GET", "/stream/dashboard",
 		codex.Empty, dashPropsCodec,
 		rest.RouteMeta{OperationID: "streamDashboard"},
-	).Register(b)
-	if err != nil {
-		fmt.Fprintln(os.Stderr, "route error:", err)
-		os.Exit(1)
-	}
-	dashRoute = dashRoute.WithFormats(
-		adapttempl.StreamingFormat(dashPropsCodec, dashboardPage), // chunked HTML
-		format.JSON(dashPropsCodec),                               // JSON fallback
-	)
-
-	// ── Route 2: SSE with HTML fragment events ────────────────────────────────
-	//
-	// rest.AddSSERoute registers an SSE endpoint. Setting Formats to use
-	// adapttempl.Format makes each event's data field a rendered HTML <li>
-	// fragment instead of JSON — the HTMX html-over-the-wire SSE pattern.
-	//
-	// The codec validates every NotifProps before rendering: events with an
-	// invalid Level or empty Message are rejected by send() and never written
-	// to the stream. The observer records each validation error.
-
-	notifRoute, err := rest.NewSSERoute[struct{}, NotifProps]("/sse/notifications",
-		codex.Empty, notifCodec,
-		rest.RouteMeta{OperationID: "sseNotifications"},
-	).Register(b)
-	if err != nil {
-		fmt.Fprintln(os.Stderr, "SSE route error:", err)
-		os.Exit(1)
-	}
-	notifRoute = notifRoute.WithFormats(
-		adapttempl.Format(notifCodec, notifFragment), // events as HTML fragments
-	)
-
-	// ── Shared mux ───────────────────────────────────────────────────────────
-
-	mux := http.NewServeMux()
-	obsMw := nethttp.ObservabilityMiddleware(obs)
-	opts := nethttp.Options{}
-
-	mustRegister(nethttp.Register(mux, dashRoute, func(_ context.Context, _ struct{}) (DashboardProps, error) {
+		rest.Formats(
+			adapttempl.StreamingFormat(dashPropsCodec, dashboardPage), // chunked HTML
+			format.JSON(dashPropsCodec),                               // JSON fallback
+		),
+	).WithHandler(func(_ context.Context, _ struct{}) (DashboardProps, error) {
 		return DashboardProps{
 			Title:    "Operations Dashboard",
 			Subtitle: "Real-time system overview",
@@ -253,9 +226,26 @@ func main() {
 			Section2: "2 active alerts — see notification feed",
 			Section3: "Last deployment: 2024-06-01 14:32 UTC",
 		}, nil
-	}, opts, obsMw))
+	}).HandleMW(nil, obsFn).WithOptions(opts)
+	mustServe(dashRoute.Register(b), "register /stream/dashboard")
 
-	mustRegister(nethttp.RegisterSSE(mux, notifRoute, func(ctx context.Context, _ struct{}, send func(NotifProps) error) error {
+	// ── Route 2: SSE with HTML fragment events ────────────────────────────────
+	//
+	// rest.NewSSERoute declares an SSE endpoint. Formats for SSE routes are
+	// still attached post-registration via SSERouteHandle.WithFormats —
+	// there is no pre-Register RouteOpt for SSE event formats — so we use
+	// RegisterHandle here to obtain the handle. Using adapttempl.Format
+	// makes each event's data field a rendered HTML <li> fragment instead
+	// of JSON — the HTMX html-over-the-wire SSE pattern.
+	//
+	// The codec validates every NotifProps before rendering: events with an
+	// invalid Level or empty Message are rejected by send() and never written
+	// to the stream. The observer records each validation error.
+
+	notifRoute := rest.NewSSERoute[struct{}, NotifProps]("/sse/notifications",
+		codex.Empty, notifCodec,
+		rest.RouteMeta{OperationID: "sseNotifications"},
+	).WithHandler(func(ctx context.Context, _ struct{}, send func(NotifProps) error) error {
 		events := []NotifProps{
 			{ID: "n1", Message: "Deployment succeeded", Level: "info"},
 			{ID: "n2", Message: "Disk usage above 75%", Level: "warn"},
@@ -269,7 +259,22 @@ func main() {
 			}
 		}
 		return nil
-	}, opts, obsMw))
+	}).HandleMW(nil, obsFn).WithOptions(opts)
+
+	notifHandle, err := notifRoute.RegisterHandle(b)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "register SSE /sse/notifications failed:", err)
+		os.Exit(1)
+	}
+	notifHandle.WithFormats(
+		adapttempl.Format(notifCodec, notifFragment), // events as HTML fragments
+	)
+
+	// ── Shared mux ───────────────────────────────────────────────────────────
+
+	mux := http.NewServeMux()
+	mustServe(nethttp.Serve(mux, b), "Serve")
+	mustServe(nethttp.ServeSSE(mux, b), "ServeSSE")
 
 	srv := httptest.NewServer(mux)
 	defer srv.Close()
@@ -302,15 +307,19 @@ func main() {
 	// codec rejects the response the adapter returns 500 — the component never
 	// receives or renders invalid data.
 
-	invalidMux := http.NewServeMux()
-	mustRegister(nethttp.Register(invalidMux, dashRoute, func(_ context.Context, _ struct{}) (DashboardProps, error) {
+	invalidBuilder := rest.NewBuilder(rest.Info{Title: "Streaming + SSE + templ Demo (invalid)", Version: "1.0.0"})
+	invalidDashRoute := dashRoute.WithHandler(func(_ context.Context, _ struct{}) (DashboardProps, error) {
 		return DashboardProps{
 			Title:    "", // fails NonEmptyString
 			Section1: "ok",
 			Section2: "ok",
 			Section3: "ok",
 		}, nil
-	}, nethttp.Options{}, obsMw))
+	})
+	mustServe(invalidDashRoute.Register(invalidBuilder), "register invalid /stream/dashboard")
+
+	invalidMux := http.NewServeMux()
+	mustServe(nethttp.Serve(invalidMux, invalidBuilder), "Serve(invalid)")
 	invalidSrv := httptest.NewServer(invalidMux)
 	defer invalidSrv.Close()
 

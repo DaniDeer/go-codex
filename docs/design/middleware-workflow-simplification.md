@@ -1,19 +1,47 @@
 # Middleware Workflow — Current-State Audit & Simplification Proposal
 
-> **Status:** Design complete — not yet implemented. Started as a factual
+> **Status:** FULLY IMPLEMENTED — `middleware`, `api/rest`,
+> `adapters/nethttp`, `adapters/chi` all ship the unified `HandleMW`/
+> `ClientMW`/`Serve`/`ServeSSE`/`ServeOne`/`Call`/`CallWithHandle` design
+> described below, PLUS the typed `RequestParams`/`ResponseParams` fields
+> (`HeaderParamSpec`/etc. in `middleware`, `FromHeaderParam`/etc. bridges
+> in `api/rest`) and the generalized spec-declaring middleware
+> constructors these same bridge functions also satisfy; every
+> non-example package plus all ~60 examples build, `go vet`, and
+> `go test` clean, and every example runs to completion. **Old-door
+> removal — DONE.** The OLD, pre-redesign `Handler`/`Register`/
+> `SSEHandler`/`RegisterSSE` per-route functions have been DELETED from
+> both `adapters/nethttp` and `adapters/chi`; `Serve`/`ServeOne`/
+> `ServeSSE` are now the SOLE public server-side entry points, with zero
+> capability lost — see "Decision: `Serve` is the only public
+> server-side entry point" below, updated to reflect the final state.
+> Closing this required fixing two genuine gaps discovered mid-migration
+> in `Serve`/`ServeSSE`'s reflect-based dispatch (request/response
+> `Formats` content negotiation, including streaming formats; full
+> `ErrorPattern` response building via `ErrorResponseFor` on the
+> handler-error path) — both are now fully implemented, so no
+> capability regression exists relative to the old `Handler`/`Register`
+> doors. `RouteHandle.WithHandler`/`SSERouteHandle.WithHandler` were
+> added as `Route.WithHandler`'s post-registration equivalents, for
+> routes whose handler depends on runtime state unavailable at
+> package-level var-init time (see `examples/sensor-service`).
+> **Also explicitly OUT of scope** (separate roadmap docs, not
+> implementation gaps of THIS doc): Events/ReqReply/Ports-beyond-
+> pattern-building and SSE CLIENT consumption — see the sibling docs
+> cross-referenced at the bottom of this summary. Started as a factual
 > audit of the SHIPPED workflow (post [Declarative
-> Middleware](declarative-middleware.md) "Revision 2 — the declare/
+> Middleware](../roadmap/declarative-middleware.md) "Revision 2 — the declare/
 > implement split"); all 6 open questions raised during that audit have
 > since been worked through collaboratively and resolved into 5 concrete
 > decisions (a 6th confirmed the status quo as correct, no change).
 > **Scope: REST (`api/rest`/`adapters/nethttp`/`adapters/chi`) only** —
 > see [Events/ReqReply/Ports Workflow
-> Simplification](events-reqreply-ports-workflow-simplification.md) for
+> Simplification](../roadmap/events-reqreply-ports-workflow-simplification.md) for
 > this same pattern's implications on `api/events`/`api/reqreply`/
 > `ports`, deliberately deferred until THIS doc's implementation ships.
 > The "Step 1–4"/"escape hatches" sections below describe the OLD, currently-
 > shipped workflow being replaced; the "## Decision: ..." sections
-> describe the NEW, agreed design. [← Back to Roadmap](index.md)
+> describe the NEW, agreed design. [← Back to Design Documents](index.md)
 >
 > **Summary of the 6 questions' decisions:** (1) whole-API declarative
 > wiring — `Route.HandleMW`/`.WithHandler()` chain into
@@ -99,7 +127,7 @@
 > up; `SSERoute`'s full chainable method set spelled out explicitly
 > (spinning SSE CLIENT consumption — confirmed to not exist anywhere in
 > go-codex today — into its own new [SSE Client
-> Consumption](sse-client-consumption.md) roadmap doc); `Builder` gains
+> Consumption](../roadmap/sse-client-consumption.md) roadmap doc); `Builder` gains
 > an internal mutex for concurrent `Register` calls (an explicit first
 > step toward, not a solution to, the separately-tracked [Dynamic Port
 > Rebinding](dynamic-port-rebinding.md) gap); and `MultiRouteError`'s
@@ -160,6 +188,45 @@
 > reworded for clarity (it IS skipped, exactly like a `.Use()`-only
 > route — there's no handler to wire either way). Zero open items remain
 > from this pass either.
+>
+> **Implementation planning found and resolved 3 more pre-implementation
+> gaps, all now written in below.** (1) `Register`'s "no more
+> `*RouteHandle` returned... nothing downstream consumes one directly"
+> claim was CODE-VERIFIED FALSE — `ports/handle.go` directly calls
+> `route.Register(b)`/`SSERoute.Register(b)` and consumes the returned
+> handle for both REST-ingest and SSE pattern wiring — resolved with a
+> NEW, dedicated `RegisterHandle` method on both `Route` and `SSERoute`
+> (identical validation, ALSO returns the handle) for `ports`-style
+> direct wiring that bypasses `Serve`/`ServeSSE` entirely; `Register(b)
+> error` stays the pure `Serve`-consumed path. (2) `middleware.Scopes`/
+> `nethttp.Scopes`/`nethttp.APIKey` are now REDUNDANT under the fourth
+> pass's `HandleMW` unification (their only job — wrapping an extract/
+> verify closure into a `ServerImplementation`— now happens INSIDE
+> `HandleMW` itself) — all three REMOVED. (3) `.WithOptions(opts
+> Options)`'s `Options` type was left ambiguous — `api/rest` cannot
+> import `adapters/nethttp.Options` without an import cycle — resolved
+> as type-erased `WithOptions(opts any)`, asserted at `Serve`/`chi.Serve`
+> time with a new `OptionsShapeError` on mismatch, mirroring the
+> existing `FormatOptError` pattern. Zero open items remain from this
+> pass either.
+>
+> **A further gap surfaced mid-implementation: `Serve`'s generic dispatch
+> is not achievable with plain Go generics.** `Serve(mux, b) error` walks
+> a HETEROGENEOUS collection of routes (each with a DIFFERENT `Req`/`Resp`
+> pair), but building each one's `http.Handler` needs Req/Resp-typed
+> code — Go cannot instantiate a generic function with type parameters
+> known only at runtime. **Resolved: `reflect.Value.Call`, used ENTIRELY
+> inside `nethttp`/`chi`'s own `Serve`/`ServeSSE`** — Go cannot
+> reflectively INSTANTIATE a generic function, but CAN reflectively CALL
+> an already-concrete function value by its dynamic type, and every
+> closure `Serve` needs (`Decode`/`Encode`/`HandlerFn`/each
+> `ServerImplementation.Fn`) is already such a value, stored in an
+> exported field. Zero logic moves out of `Handler`/`chi.Handler` (they
+> stay untouched); `api/rest` gains only 2 small, reflection-free
+> accessors (`Builder.RouteEntries`/`SSEEntries`) and stays exactly as
+> `net/http`/`reflect`-free as every other decision in this doc requires.
+> Zero open items remain from this pass either — ready for
+> implementation.
 >
 > See each "## Decision: ..." / "## Review round: ..." section below for
 > full API surface, rationale, and resolution history.
@@ -566,8 +633,7 @@ extraMws...)`. No new behavior, no new validation.
 
 ## Decision: whole-API declarative wiring (resolves Question 1, closes Question 2)
 
-**Status: agreed direction, mechanics confirmed through discussion — NOT
-yet implemented.** This supersedes Question 1's narrow "combine 2
+**Status: IMPLEMENTED.** This supersedes Question 1's narrow "combine 2
 constructors" framing with a bigger, generalized redesign: the ROUTE
 itself (still the SAME `Route[Req, Resp]` type throughout — no new type
 introduced) accumulates its own business handler AND every attached
@@ -626,9 +692,9 @@ func (r Route[Req, Resp]) HandleMW(mw *middleware.Middleware, fn any) Route[Req,
 
 // Register's signature changes — no more *RouteHandle returned to the
 // caller. Its job is now to bind everything (spec, handler, middleware
-// implementations) into the builder; the caller doesn't need a
-// per-route handle anymore because nothing downstream consumes one
-// directly — the NEXT step operates on the whole builder.
+// implementations) into the builder; a caller wiring routes through
+// Serve doesn't need a per-route handle anymore — the NEXT step
+// operates on the whole builder.
 func (r Route[Req, Resp]) Register(b *Builder) error
 
 // adapters/nethttp (adapters/chi mirrors identically) — NEW,
@@ -638,6 +704,46 @@ func (r Route[Req, Resp]) Register(b *Builder) error
 // for each — the ONLY place literal transport wiring happens.
 func Serve(mux *http.ServeMux, b *rest.Builder) error
 ```
+
+### RESOLVED — a dedicated `RegisterHandle` for direct-wiring callers (`ports`), found during implementation planning
+
+**Status: IMPLEMENTED.** Planning this doc's
+actual implementation surfaced a REAL, code-verified conflict: `Register`'s
+"no more `*RouteHandle` returned... nothing downstream consumes one
+directly" claim above is FALSE. `ports/handle.go` directly calls
+`route.Register(b)` (both its `roleSource`/REST-ingest and
+`roleSink`/SSE branches) and stores the RETURNED handle for adapter
+binding (`nethttp.IngestAdapter`/`SubscribeAdapter`-equivalent machinery
+consumes it directly, bypassing `Serve` entirely — `ports` never mounts
+routes on a `*http.ServeMux` itself). This is a real, current caller, not
+a hypothetical — the claim above was simply wrong.
+
+Considered and rejected: (a) reverting `Register` to keep returning a
+handle — reintroduces the exact ambiguity Decision 4 removed ("does the
+caller need to also call `Serve`, or is the handle enough on its own?");
+(b) having `ports` route through `Serve` somehow — `ports` doesn't own a
+`*http.ServeMux`/router at all, this doesn't fit its shape.
+
+**Resolved: `Route.Register` is for building the API (the `Serve` path)
+— `ports`-style direct wiring gets its OWN, separate method that shares
+`Register`'s validation but ALSO returns the handle:**
+
+```go
+// api/rest — ports-facing (and any other direct-wiring caller that
+// bypasses Serve/ServeSSE entirely). Does IDENTICAL spec/handler/impl
+// binding + validation as Register — shares the same internal
+// implementation — but ALSO returns the handle, for callers that need
+// to wire an adapter directly instead of going through Serve.
+func (r Route[Req, Resp]) RegisterHandle(b *Builder) (*RouteHandle[Req, Resp], error)
+func (s SSERoute[Req, Event]) RegisterHandle(b *Builder) (*SSERouteHandle[Req, Event], error)
+```
+
+`ports/handle.go`'s two call sites (`roleSource`/`roleSink`) switch from
+`route.Register(b)` to `route.RegisterHandle(b)` — a one-line rename
+each, zero other changes needed; every other `ports` behavior (spec
+accumulation, security scheme population, path/topic codec validation)
+is unaffected since `RegisterHandle` performs the SAME work `Register`
+always did, just also handing back the handle.
 
 ### Mechanics
 
@@ -779,7 +885,7 @@ to catch; a non-nil `mw` whose scheme was never actually `.Use()`'d is.
   server-side entry point" below.** Both are removed entirely, no
   escape hatch retained.
 - **RESOLVED — `Options` becomes per-route, via a new `.WithOptions(opts
-  Options) Route[Req, Resp]` chainable method.** Confirmed against real
+  any) Route[Req, Resp]` chainable method.** Confirmed against real
   usage: `examples/adapters-nethttp/main.go` already uses DIFFERENT
   `ErrorHandler`s for different routes on the SAME server — per-route
   customization is a real, currently-used pattern, not hypothetical.
@@ -789,6 +895,17 @@ to catch; a non-nil `mw` whose scheme was never actually `.Use()`'d is.
   `Builder` alongside the handler/impls. `Serve(mux, builder) error`
   takes NO `Options` parameter at all — it uses whatever each route
   declared.
+  **`opts` is type-erased (`any`), not `nethttp.Options` directly —
+  found during implementation planning.** `api/rest` cannot import
+  `adapters/nethttp` (nethttp already imports `api/rest` — that would be
+  a cycle). `WithOptions` stores `opts` type-erased, exactly like
+  `RequestFormats`/`HandleMW`'s `fn`/`RequestParams` already are;
+  `nethttp.Serve`/`chi.Serve` type-assert it to their own `Options` type
+  at wiring time, returning a new `OptionsShapeError` (mirroring the
+  existing `FormatOptError` pattern in `builder.go`) on mismatch. Every
+  earlier pseudocode signature in this doc showing `WithOptions(opts
+  Options)` means this type-erased `any` form, not a literal
+  cross-package `Options` reference.
 - ~~Does `SSERoute` get `.WithHandler()`/`.HandleMW()`, and does `Serve`
   handle both `Route` and `SSERoute`?~~ **RESOLVED — see "Decision:
   `Serve` is the only public server-side entry point" below.** SSE gets
@@ -818,8 +935,7 @@ to catch; a non-nil `mw` whose scheme was never actually `.Use()`'d is.
 
 ## Decision: symmetric client-side declarative wiring (resolves Question 3, closes Question 5)
 
-**Status: agreed direction, mechanics confirmed through discussion — NOT
-yet implemented.** This mirrors "Decision: whole-API declarative wiring"
+**Status: IMPLEMENTED.** This mirrors "Decision: whole-API declarative wiring"
 above onto the CLIENT side, closing the discoverability gap Question 3
 raised. It turned out to also fully resolve Question 5 (four client-side
 entry-point functions) as a side effect — the whole `Call`/`CallHandle`/
@@ -1067,32 +1183,46 @@ just not yet connected to this question when it was first raised.
 
 ## Decision: `Serve` is the only public server-side entry point (resolves Question 4)
 
-**Status: agreed direction, mechanics confirmed through discussion — NOT
-yet implemented.** This closes Question 4 by removing the asymmetric
-choice entirely rather than reconciling the two sides of it — mirroring
-exactly how "Decision: symmetric client-side declarative wiring" made
-`Call` the only client-side door.
+**Status: FULLY IMPLEMENTED.** `Serve(mux, b) error`/`ServeSSE(mux,
+b) error` are the SOLE public server-side entry points in both
+`adapters/nethttp` and `adapters/chi` — the OLD `Handler`/`Register`/
+`SSEHandler`/`RegisterSSE` per-route functions have been DELETED
+entirely (their internal implementations survive as unexported
+`handlerFunc`/`sseHandlerFunc`, reused by `Serve`/`ServeSSE`'s reflect
+dispatch AND by `HandlerLatest`/`PipelineHandler`/`SSEAdapter` in
+`stream.go`/`binding.go`). This closes Question 4 by removing the
+asymmetric choice entirely — mirroring exactly how "Decision: symmetric
+client-side declarative wiring" made `Call` the only client-side door.
 
-### The asymmetry this replaces
+Closing this required first fixing two genuine gaps discovered mid-migration
+in `Serve`/`ServeSSE`'s reflect-based dispatch (documented in "Decision:
+`Serve`'s generic dispatch mechanism" below): request/response `Formats`
+content negotiation (including streaming formats) via
+`WithRequestFormats`/`WithFormats`, and full `ErrorPattern` response
+building (typed payload + response header/cookie merge) via
+`ErrorResponseFor` on the handler-error path. Both are now fully
+implemented in `buildRouteHandler`'s reflect dispatch (identically in
+`adapters/nethttp/serve.go` and `adapters/chi/serve.go`) — so removing
+the old doors causes ZERO capability regression.
+
+A related structural case was also resolved: `examples/sensor-service`
+declares routes as package-level vars via `RegisterHandle` BEFORE any
+handler exists (the real handler needs a runtime-constructed `store`).
+`RouteHandle.WithHandler`/`SSERouteHandle.WithHandler` were added as
+`Route.WithHandler`'s post-registration equivalents (mirroring the
+existing `WithFormats`/`WithRequestFormats` post-registration pattern) —
+attach the handler once the runtime dependency exists, any time before
+`Serve`/`ServeSSE` runs.
+
+### The asymmetry this replaced
 
 `Handler`/`SSEHandler` (bare `http.Handler`, no error) skipped BOTH the
 eager shape-validation (`validateImplementationShapes`) AND the coverage
 check (`rest.CheckCoverage`) that `Register`/`RegisterSSE` (return
 `error`) performed. Reaching for "just give me an `http.Handler`" was a
 silent opt-out of both safety checks — a sharp edge for anyone who didn't
-realize the two pairs behaved differently.
-
-### The resolution
-
-`Handler`, `Register`, `SSEHandler`, and `RegisterSSE` (the OLD, per-route
-public functions) are ALL removed from the public API. `Serve(mux,
-builder) error` (see "Decision: whole-API declarative wiring") becomes
-the ONLY way to wire a `Builder`'s accumulated routes onto a
-`*http.ServeMux` — there is no other public door left to walk through
-unchecked, so the asymmetry cannot exist anymore: every route that
-reaches a real `mux.Handle(...)` call has ALREADY passed through
-`Register(builder)`'s spec/handler/impl binding and `Serve`'s own eager
-shape + coverage checks, unconditionally.
+realize the two pairs behaved differently. `Serve`/`ServeOne`/`ServeSSE`
+run BOTH checks unconditionally — there is no lower-safety door anymore.
 
 ### Confirmed: no capability actually lost for the two concerns raised
 
@@ -1100,50 +1230,42 @@ shape + coverage checks, unconditionally.
    lost. `HandleMW`'s general-purpose shape (`func(http.Handler)
    http.Handler`, empty `Satisfies` — the same shape `nethttp.Observability`
    already uses) lets ANY external middleware (otel, custom logging,
-   whatever) wrap a route's handler; it now flows through `Serve`
-   automatically as just another attached implementation, instead of
-   being applied manually outside the old `Handler` call. No new
-   mechanism needed — this was already possible, just not the obvious
-   path when `Handler`/`Register` coexisted as two separate doors.
+   whatever) wrap a route's handler; it flows through `Serve`
+   automatically as just another attached implementation.
 2. **"A route not part of any `Builder`"** (ad hoc handler, mounted on a
    DIFFERENT router such as gorilla/mux) — CONFIRMED DROPPED. Every route
    intended to actually serve traffic must go through `Register(builder)`
-   + `Serve(mux, builder)`. There is no more standalone
-   "give me a bare handler for a route with no Builder" path.
+   + `Serve(mux, builder)` (or `ServeOne` for a single route). There is
+   no more standalone "give me a bare handler for a route with no
+   Builder" path.
 
 ### SSE stays a separate function
 
 `Serve(mux, builder) error` handles ONLY `Route` entries. SSE gets its
-own `ServeSSE(mux, builder) error`, mirroring the existing
-`Register`/`RegisterSSE` split (not collapsed into one dispatching
+own `ServeSSE(mux, builder) error` (not collapsed into one dispatching
 function) — SSE's distinct streaming lifecycle (long-lived connection,
 `send func(Event) error` callback shape, no request body) stays cleanly
-separated from the regular request/response `Route` path, consistent
-with how `Register`/`RegisterSSE` were already two functions rather than
-one type-switching function.
+separated from the regular request/response `Route` path.
 
-### What disappears entirely
+### What was removed
 
 - `nethttp.Handler[Req, Resp any](handle, fn, opts, impls...) http.Handler`
 - `nethttp.Register[Req, Resp any](mux, handle, fn, opts, impls...) error`
 - `nethttp.SSEHandler[Req, Event any](handle, fn, opts, impls...) http.Handler`
 - `nethttp.RegisterSSE[Req, Event any](mux, handle, fn, opts, impls...) error`
-- (all four have a `chi` mirror — removed identically there)
+- (all four had a `chi` mirror — removed identically there)
+- All ~128 existing test call sites across both packages were migrated
+  onto `ServeOne`/`Serve`/`ServeSSE`; every example in `examples/` that
+  used the old doors was migrated to the same shape (7 examples plus
+  `sensor-service`'s runtime-attached-handler case).
 
 ### What replaces them
 
 ```go
 func Serve(mux *http.ServeMux, b *rest.Builder) error      // Route entries
+func ServeOne[Req, Resp any](r rest.Route[Req, Resp]) (http.Handler, error) // single-route sugar
 func ServeSSE(mux *http.ServeMux, b *rest.Builder) error   // SSERoute entries
 ```
-
-### Follow-on notes (all design questions resolved; one implementation heads-up remains)
-
-- Every currently-shipped example that calls `nethttp.Handler`/`Register`/
-  `SSEHandler`/`RegisterSSE` directly (a large fraction of the whole
-  `examples/` suite) needs a full rewrite onto the `Register(builder)` +
-  `Serve`/`ServeSSE` shape once this ships — not a design question, a
-  heads-up for the implementation phase's actual size.
 - **RESOLVED — a thin convenience wrapper, `ServeOne`, not a new
   mechanism.** Confirmed the scale of this need: `adapters/nethttp`'s
   OWN test suite (`adapter_test.go`) has 66 direct calls to
@@ -1182,11 +1304,137 @@ func ServeSSE(mux *http.ServeMux, b *rest.Builder) error   // SSERoute entries
   route among many by label/operation-ID. `Builder` stays a write-only
   accumulator, walked in full only by `Serve`/`ServeSSE`/`ServeOne`.
 
+## Decision: `Serve`'s generic dispatch mechanism — `reflect`, isolated to `nethttp`/`chi`, found and resolved during implementation
+
+**Status: IMPLEMENTED.** Implementation planning
+found a genuine Go-generics feasibility gap in the decision above:
+`Serve(mux, b) error` is non-generic and walks a HETEROGENEOUS
+collection (`b`'s accumulated routes, each with a DIFFERENT `Req`/`Resp`
+pair) — but building an `http.Handler` for any one of them requires
+calling code that is Req/Resp-typed (decode body into `Req`, call the
+business handler, encode `Resp`). Go has no mechanism to instantiate a
+generic function (`Handler[Req, Resp]`) with type parameters known only
+at runtime — every alternative considered (erased closures captured at
+register time, callback interfaces, registered-builder patterns) still
+requires knowing `Req`/`Resp` at a point that doesn't have them.
+
+**Resolved: `reflect.Value.Call`, used ENTIRELY inside `nethttp`/`chi`'s
+own `Serve`/`ServeSSE`, never in `api/rest`.** The key fact that makes
+this tractable: Go cannot reflectively INSTANTIATE a generic function,
+but it CAN reflectively CALL an already-concrete function VALUE
+(`reflect.Value.Call`), matching arguments/returns by their DYNAMIC
+types — regardless of whether the caller's own code knows those types
+statically. Every closure `Serve` needs (`RouteHandle.Decode`, `.Encode`,
+`.HandlerFn`, each `middleware.ServerImplementation.Fn`) is ALREADY a
+concrete function value stored in an EXPORTED field — `reflect.Value.Call`
+invokes each one directly, with ZERO logic moved out of
+`nethttp.Handler`/`chi.Handler` (which stay exactly where they are,
+unchanged) and ZERO new `net/http`/`reflect` dependency in `api/rest`.
+
+```go
+// api/rest — sealed exported interfaces (unexported marker method
+// prevents any OTHER package from implementing them, while still
+// letting nethttp/chi range over them) distinguishing Route entries
+// from SSERoute entries cleanly in Builder's single internal list.
+type RouteEntry interface {
+    Method() string
+    Path() string
+    HasHandler() bool
+    Handle() any // *RouteHandle[Req, Resp], Req/Resp erased
+    isRouteEntry()
+}
+type SSERouteEntry interface {
+    Method() string // always "GET"
+    Path() string
+    HasHandler() bool
+    Handle() any // *SSERouteHandle[Req, Event], erased
+    isSSERouteEntry()
+}
+func (b *Builder) RouteEntries() []RouteEntry      // read-only, RLock-guarded
+func (b *Builder) SSEEntries() []SSERouteEntry     // read-only, RLock-guarded
+```
+
+`nethttp.Serve`/`ServeSSE` (per handler-bearing entry): dereference
+`reflect.ValueOf(e.Handle()).Elem()`, then reflect-call `Decode` (body →
+`Req`), the ALREADY non-generic `ValidatePathParams`/`ValidateQuery`/etc.
+methods NORMALLY (no reflect needed — their signatures never named
+Req/Resp), reflect-call the Req-typed merge step, dispatch general-purpose
+implementations via an ORDINARY type assertion (`func(http.Handler)
+http.Handler` has nothing Req-specific in it), dispatch security-paired
+implementations via `reflect.Value.Call` (matches `impl.Fn`'s concrete
+`func(context.Context, *http.Request, *Req) (...)` shape by dynamic
+type), reflect-call `HandlerFn`, reflect-call `Encode`, write the
+response — the SAME pipeline `Handler[Req,Resp]` already runs today,
+just invoked via `reflect.Value.Call` instead of static generic calls.
+`ServeSSE` mirrors this for `*SSERouteHandle[Req,Event]`'s
+`EncodeEvent`/`ValidateEvent`/`send func(Event) error` shape.
+
+**Confirmed acceptable tradeoff.** Real per-request `reflect.Value.Call`
+overhead, and a mismatched `Fn` shape becomes a runtime panic (caught by
+Part 3's existing `recover()` safety net) rather than a compile error —
+but `validateImplementationShapesReflect` ALREADY eagerly type-switch-checks
+every `Fn` at `Serve`-call time (before any request arrives), so this is
+caught at wiring time, not silently at first-request time. Isolated
+entirely to `nethttp`/`chi`'s private `Serve`/`ServeSSE` — zero public
+API surface change, and `api/rest` itself remains exactly as
+`net/http`/`reflect`-free as every other decision in this doc requires
+(the 2 new `RouteEntry`/`SSERouteEntry` accessors above are ordinary,
+reflection-free Go).
+
+### Two gaps found and closed during old-door removal (not part of the original plan)
+
+Migrating the existing test suites and examples off `Handler`/`Register`
+onto `Serve`/`ServeOne` surfaced two features the FIRST version of
+`buildRouteHandler`'s reflect dispatch never implemented — silently
+regressing relative to `handlerFunc` for any route using them:
+
+1. **No request/response `Formats` content negotiation.** The first
+   version always called `DecodeMerged`/`EncodeMerged` (the route's
+   default JSON codec), never consulting `RequestFormats`/`Formats` at
+   all — confirmed via 6+ failing tests when migrated blindly. **Fixed**
+   by reflecting over the `[]format.Format[Req]`/`[]format.Format[Resp]`
+   slice fields directly: each `format.Format[T]` value's EXPORTED
+   methods (`ContentType`, `Unmarshal`, `Marshal`, `Validate`,
+   `IsStreamable`, `MarshalTo`) are reflect-callable regardless of `T`
+   (Go generics are monomorphized per concrete type at compile time, so
+   a `reflect.Value` wrapping an already-concrete `format.Format[T]`
+   value has a full, callable method set) — no new codex/format API
+   needed. `RouteHandle.ApplyMergeFields`/`EncodeResponseMergeFields`
+   were added (splitting `DecodeMerged`/`EncodeMerged`'s var-merge half
+   from their body-codec half) so the merge-field step still runs when
+   the body is decoded/encoded via a negotiated format instead of plain
+   `Decode`/`Encode`.
+2. **No full `ErrorPattern` response on the handler-error path.** The
+   first version only called `ErrorStatusFor` (status-code-only
+   mapping), never `ErrorResponseFor` (typed payload + response
+   header/cookie merge) — confirmed via 2 failing tests. **Fixed** by
+   reflect-calling `ErrorResponseFor` (already non-generic in its
+   return shape — `ErrorPatternResponse{Status, Body, Value any,
+   Action}` — so no reflect needed for the pattern match itself) and
+   adding `RouteHandle.EncodeResponseMergeFields` (used both by the
+   handler-success path AND the matched-`ErrorPattern`-payload path,
+   type-checking `pattern.Value`'s concrete type against `Resp` via
+   `reflect.TypeOf` before applying merge fields — the SAME parity rule
+   `handlerFunc`'s `writeErrorPatternResponse` already enforced).
+
+Both fixes are isolated to `serve.go`'s reflect dispatch (identically in
+`nethttp`/`chi`) plus 3 small new non-generic-signature `RouteHandle`
+methods (`ApplyMergeFields`, `EncodeResponseMergeFields`,
+`WithHandler`) — zero change to `handlerFunc`/`sseHandlerFunc` or any
+other public API. A third, SEPARATE parity bug was found and fixed in
+the same pass: `negotiateFormatReflect` (SSE's own Accept-header
+negotiation, shared with `Serve`'s Formats negotiation) compared the raw
+Accept token against a format's FULL `ContentType()` string without
+stripping `;`-parameters, unlike the non-reflect `negotiateFormat` —
+causing false 406s for content types with parameters (e.g. `text/html;
+charset=utf-8`). Fixed to strip parameters from both sides before
+comparing, matching `negotiateFormat` exactly.
+
 ---
 
 ## Decision: `SSERoute`'s full chainable method set (server-side only — closed during a final critical review pass)
 
-**Status: agreed direction — NOT yet implemented.** A final critical
+**Status: IMPLEMENTED.** A final critical
 review pass found that, while `Serve`/`ServeSSE`'s split was already
 resolved, `SSERoute`'s OWN new chainable methods were never given
 explicit signatures anywhere in this doc — only narratively implied
@@ -1203,7 +1451,7 @@ signature difference (`WithHandler`, below):
 // existed as a SEPARATE SSERoute method; this same HandleMW(nil, fn)
 // covers it.
 func (s SSERoute[Req, Event]) HandleMW(mw *middleware.Middleware, fn any) SSERoute[Req, Event]
-func (s SSERoute[Req, Event]) WithOptions(opts Options) SSERoute[Req, Event]
+func (s SSERoute[Req, Event]) WithOptions(opts any) SSERoute[Req, Event]
 
 // WithHandler DIFFERS from Route's — takes SSEHandlerFunc, not
 // func(ctx, req) (Resp, error), since an SSE route streams MULTIPLE
@@ -1214,6 +1462,11 @@ func (s SSERoute[Req, Event]) WithHandler(fn SSEHandlerFunc[Req, Event]) SSERout
 // *SSERouteHandle returned), binding spec+handler+impls into the SAME
 // Builder Route.Register(b) already accumulates into.
 func (s SSERoute[Req, Event]) Register(b *Builder) error
+
+// RegisterHandle — same ports-facing addition as Route's own (see
+// "RESOLVED — a dedicated RegisterHandle..." above); ports' roleSink/SSE
+// branch uses this instead of Register.
+func (s SSERoute[Req, Event]) RegisterHandle(b *Builder) (*SSERouteHandle[Req, Event], error)
 ```
 
 **`SSERoute.Register`'s merge pass is IDENTICAL to `Route.Register`'s —
@@ -1247,10 +1500,10 @@ This is NOT a mirror of an existing mechanism (unlike security/client-
 credentials, which HAD an old design to redesign) — it would be a
 GENUINELY NEW capability. Deliberately NOT designed as part of this
 review pass; captured instead as its own roadmap doc — see [SSE Client
-Consumption](sse-client-consumption.md) — to be picked up AFTER this
+Consumption](../roadmap/sse-client-consumption.md) — to be picked up AFTER this
 doc's implementation ships, same deferral pattern already established
 for [Events/ReqReply/Ports Workflow
-Simplification](events-reqreply-ports-workflow-simplification.md).
+Simplification](../roadmap/events-reqreply-ports-workflow-simplification.md).
 
 ---
 
@@ -1337,7 +1590,7 @@ cheap to prevent).
 
 ## Decision: eliminate manual per-route security declaration (resolves EH1's critical finding)
 
-**Status: agreed direction — NOT yet implemented.** Rather than merely
+**Status: IMPLEMENTED.** Rather than merely
 bridging the manual escape hatch into the new mechanism, this goes
 further: the manual "declare a NEW per-route security requirement without
 a `Middleware` value" pattern is removed entirely, since it structurally
@@ -1353,16 +1606,23 @@ Only the THIRD state — a non-empty `RouteMeta.Security` manually
 declaring a NEW requirement, paired with `rest.WithSecurityScheme` to
 register the scheme's metadata — is eliminated. Every route that wants an
 actual security requirement now goes through `middleware.SecurityScheme`
-(building a `Middleware` from scratch) or `FromSecurityScheme` (bridging
-an existing `rest.SecurityScheme` value — see below), attached via
-`.Use()`.
+(building a `Middleware` from scratch) or `rest.FromSecurityScheme`
+(bridging an existing `rest.SecurityScheme` value — see below), attached
+via `.Use()`.
 
 ```go
-// middleware package — bridges an existing rest.SecurityScheme value
-// (e.g. a package-level var shared across several routes) into a real
-// Middleware, usable with .Use()/.HandleMW() exactly like one built via
-// SecurityScheme(...) directly.
-func FromSecurityScheme(schemeName string, scheme rest.SecurityScheme, scopes []string) middleware.Middleware
+// api/rest package — NOT middleware (found during implementation
+// planning: rest.SecurityScheme is an api/rest-only type bundling
+// route.SecurityScheme + an optional Codec; middleware cannot import
+// api/rest without a cycle, since api/rest already imports middleware
+// for Middleware/ServerImplementation/etc. rest.FromSecurityScheme lives
+// alongside that type and bridges it into a real middleware.Middleware
+// with a one-line internal call to middleware.SecurityScheme, passing
+// scheme.SecurityScheme and scheme.Codec through) — bridges an existing
+// rest.SecurityScheme value (e.g. a package-level var shared across
+// several routes) into a real Middleware, usable with .Use()/.HandleMW()
+// exactly like one built via middleware.SecurityScheme(...) directly.
+func FromSecurityScheme(schemeName string, scheme SecurityScheme, scopes []string) middleware.Middleware
 ```
 
 **Confirmed consequence: `rest.WithSecurityScheme` is REMOVED entirely.**
@@ -1385,7 +1645,7 @@ scheme name) — only the "manual" source variant is dead.
 
 ### RESOLVED: `Serve`'s whole-builder failure semantics (escape hatch #2)
 
-**Status: agreed direction — NOT yet implemented.**
+**Status: IMPLEMENTED.**
 
 **Part 1 — `.WithHandler()`'s presence ALONE is the exact gating signal.**
 Whether a route ever had `.WithHandler()` called on it is precisely
@@ -1509,7 +1769,7 @@ this design being `errors.As`-navigable.
 
 ## Decision: unexported handle-based primitive (resolves EH7's confirmed regression)
 
-**Status: agreed direction — NOT yet implemented.** `adapters/nethttp/
+**Status: IMPLEMENTED.** `adapters/nethttp/
 binding.go` (where every `ports` adapter lives) is in the SAME Go package
 as `client.go` (where `Call` lives) — confirmed via `head -1` on both
 files. This means the fix needs ZERO new public API surface: an
@@ -1543,27 +1803,70 @@ compromise left for this escape hatch.
 
 ## Decision: typed `RequestParams`/`ResponseParams` fields (eliminates EH8)
 
-**Status: agreed direction — NOT yet implemented.** Unlike
-`ServerImplementation.Fn` (which genuinely cannot be made compile-time-
-typed — see Decision 6's Go-generics/layering argument), `HeaderParam`/
-`CookieParam`/`QueryParam` are already concrete, non-generic `api/rest`
-types. There is no obstacle to replacing the type-erased
-`[]any` fields with typed ones:
+**Status: IMPLEMENTED — with one design correction found during
+implementation.** Unlike `ServerImplementation.Fn` (which genuinely
+cannot be made compile-time-typed — see Decision 6's Go-generics/layering
+argument), `HeaderParam`/`CookieParam`/`QueryParam` are already concrete,
+non-generic `api/rest` types. There is no obstacle to replacing the
+type-erased `[]any` fields with typed ones — but this section's ORIGINAL
+sketch (directly below, struck through) had an import-cycle bug: the
+`middleware` package cannot import `api/rest` (`api/rest` already imports
+`middleware`), so `[]rest.HeaderParam` cannot compile as a `middleware`
+package field type.
 
 ```go
-// middleware package — Middleware's RequestParams/ResponseParams fields
-// become typed (exact field set to be finalized at implementation time;
-// illustrative shape below, mirroring api/rest's existing per-kind
-// separation already used internally by paramContribution.kind):
+// ORIGINAL SKETCH — DOES NOT COMPILE, kept for history. middleware cannot
+// import api/rest (api/rest already imports middleware for Middleware/
+// ServerImplementation/etc.) — the exact same constraint that already
+// keeps SecurityScheme/FromSecurityScheme split across the two packages.
 type Middleware struct {
     Name           string
     Security       *SecurityDeclaration
-    RequestHeaderParams  []rest.HeaderParam
-    RequestCookieParams  []rest.CookieParam
-    RequestQueryParams   []rest.QueryParam
-    ResponseHeaderParams []rest.ResponseHeaderParam
-    ResponseCookieParams []rest.ResponseCookieParam
+    RequestHeaderParams  []rest.HeaderParam  // ← does not compile
+    RequestCookieParams  []rest.CookieParam  // ← does not compile
+    RequestQueryParams   []rest.QueryParam   // ← does not compile
+    ResponseHeaderParams []rest.ResponseHeaderParam  // ← does not compile
+    ResponseCookieParams []rest.ResponseCookieParam  // ← does not compile
 }
+```
+
+**Shipped design: middleware-package-local typed spec structs +
+api/rest bridge functions, mirroring `SecurityDeclaration`/
+`FromSecurityScheme`'s existing split exactly.**
+
+```go
+// middleware package (middleware/params.go) — typed mirrors of
+// rest.HeaderParam/CookieParam/QueryParam/ResponseHeaderParam/
+// ResponseCookieParam's field shape, using only codex (which middleware
+// already imports) — no rest import needed.
+type HeaderParamSpec struct {
+    Name, Description string
+    Required           bool
+    Codec              *codex.Codec[string]
+}
+// CookieParamSpec/QueryParamSpec/ResponseHeaderParamSpec/
+// ResponseCookieParamSpec — identical shape, one type per kind.
+
+// middleware package — Middleware's typed fields, using the spec types above.
+type Middleware struct {
+    Name                 string
+    Security             *SecurityDeclaration
+    RequestHeaderParams  []HeaderParamSpec
+    RequestCookieParams  []CookieParamSpec
+    RequestQueryParams   []QueryParamSpec
+    ResponseHeaderParams []ResponseHeaderParamSpec
+    ResponseCookieParams []ResponseCookieParamSpec
+}
+
+// api/rest package — bridge functions wrapping an EXISTING rest.XParam
+// value into a Middleware, mirroring FromSecurityScheme's "wrap what you
+// already have" pattern (also closes "Decision: generalized spec-
+// declaring middleware constructors" below in the SAME change).
+func FromHeaderParam(p HeaderParam) middleware.Middleware
+func FromCookieParam(p CookieParam) middleware.Middleware
+func FromQueryParam(p QueryParam) middleware.Middleware
+func FromResponseHeaderParam(p ResponseHeaderParam) middleware.Middleware
+func FromResponseCookieParam(p ResponseCookieParam) middleware.Middleware
 ```
 
 **Eliminates `ParamContributionShapeError` entirely** — a wrong-type
@@ -1577,7 +1880,7 @@ fields instead of type-switched `any` entries.
 
 ## Decision: `HandleMW`/`ClientMW` unification (supersedes `.Implement()`, `Wrap`, and the original buggy `middleware.Wrap` draft)
 
-**Status: agreed direction — NOT yet implemented.** This is the THIRD
+**Status: IMPLEMENTED.** This is the THIRD
 generation of this exact idea, each one superseding the last as a
 deeper issue was found underneath the previous fix:
 
@@ -1631,6 +1934,19 @@ func (r Route[Req, Resp]) ClientMW(mw *middleware.Middleware, fn any) Route[Req,
 **`Wrap` is REMOVED entirely** — a caller passes their `func(http.Handler)
 http.Handler` closure DIRECTLY to `HandleMW(nil, myWrapFn)`; there is
 nothing left for a separate `Wrap` constructor to add.
+
+**`middleware.Scopes[Raw, Req]`, `nethttp.Scopes[Req]`, and
+`nethttp.APIKey[Req]` are ALSO REMOVED entirely — found during
+implementation planning.** All three exist ONLY to wrap a raw
+extract/verify closure into a `middleware.ServerImplementation{Satisfies,
+Fn}` — that exact wrapping now happens INSIDE `HandleMW` itself
+(deriving `Satisfies` from `mw.Security.SchemeName` when `mw.Security !=
+nil`, empty otherwise). A caller now passes the raw extract/verify
+closure straight to `HandleMW`/`ClientMW`, e.g.
+`route.HandleMW(&mw, extractScopesFn)` instead of
+`route.Implement(nethttp.Scopes[Req]("bearerAuth", extractScopesFn))` —
+one fewer indirection, and one fewer constructor per Raw/Req pinning to
+maintain.
 
 **`Transform` SURVIVES, but simplifies** — instead of returning a full
 `ServerImplementation`, it now returns the BARE wrapped closure directly,
@@ -1706,38 +2022,59 @@ method needed; the same unification closes both sides at once.
 
 ## Decision: generalized spec-declaring middleware constructors (the third sub-case of "general custom middleware")
 
-**Status: agreed direction — NOT yet implemented.** Reviewing the "may
-or may not add to headers/cookies" sub-case of general custom middleware
-found that today's `nethttp.HeaderParam` (declare-time half of the API-
-key story) generalizes cleanly beyond that framing — its output has
-NOTHING HTTP-specific about it (it wraps a `rest.HeaderParam` into a
-typed `RequestHeaderParams` entry, per the earlier "typed
-`RequestParams`/`ResponseParams`" decision) — and is missing several
-obvious siblings.
+**Status: IMPLEMENTED — with the SAME import-cycle correction as the
+previous section, and the constructors relocated to `api/rest` instead of
+`middleware`.** Reviewing the "may or may not add to headers/cookies"
+sub-case of general custom middleware found that the (now-removed)
+`nethttp.HeaderParam` (declare-time half of the API-key story)
+generalizes cleanly beyond that framing — and was missing several
+obvious siblings. The original sketch below proposed relocating it INTO
+`middleware` as `middleware.HeaderParam(p rest.HeaderParam) Middleware`
+— this has the exact same import-cycle bug as the previous section's
+original sketch (`middleware` cannot import `api/rest`).
 
 ```go
-// middleware package — relocated/generalized from adapters/nethttp/
-// scopes.go's HeaderParam (which had nothing HTTP-specific about it),
-// plus the missing siblings. Each wraps an EXISTING rest.XParam value
-// directly, mirroring FromSecurityScheme's "wrap what you already have"
-// pattern rather than growing a parameter list.
-func HeaderParam(p rest.HeaderParam) Middleware
-func CookieParam(p rest.CookieParam) Middleware
-func QueryParam(p rest.QueryParam) Middleware
-func ResponseHeaderParam(p rest.ResponseHeaderParam) Middleware
-func ResponseCookieParam(p rest.ResponseCookieParam) Middleware
+// ORIGINAL SKETCH — DOES NOT COMPILE, kept for history.
+func HeaderParam(p rest.HeaderParam) Middleware  // ← does not compile in package middleware
+func CookieParam(p rest.CookieParam) Middleware  // ← does not compile
+func QueryParam(p rest.QueryParam) Middleware    // ← does not compile
+func ResponseHeaderParam(p rest.ResponseHeaderParam) Middleware  // ← does not compile
+func ResponseCookieParam(p rest.ResponseCookieParam) Middleware  // ← does not compile
 ```
 
-Naming note: `middleware.HeaderParam` (function, returns `Middleware`)
-intentionally sits alongside `rest.HeaderParam` (struct type) in a
-DIFFERENT package — the SAME naming overlap already accepted for
-`middleware.SecurityScheme`/`rest.SecurityScheme`.
+**Shipped as `api/rest.FromHeaderParam`/etc. instead** — these are the
+EXACT SAME functions introduced in "Decision: typed `RequestParams`/
+`ResponseParams` fields" above; this section's "generalize beyond
+HTTP-specific framing" goal and that section's "typed fields" goal turned
+out to be the SAME change, closed together:
+
+```go
+// api/rest package (api/rest/middleware.go) — wraps an EXISTING
+// rest.XParam value directly, mirroring FromSecurityScheme's "wrap what
+// you already have" pattern. Lives in api/rest, not middleware, for the
+// SAME import-cycle reason FromSecurityScheme does.
+func FromHeaderParam(p HeaderParam) middleware.Middleware
+func FromCookieParam(p CookieParam) middleware.Middleware
+func FromQueryParam(p QueryParam) middleware.Middleware
+func FromResponseHeaderParam(p ResponseHeaderParam) middleware.Middleware
+func FromResponseCookieParam(p ResponseCookieParam) middleware.Middleware
+```
+
+`adapters/nethttp/scopes.go`'s old `HeaderParam(headerName string)`
+(which only took a bare NAME, not a full `rest.HeaderParam` value, and had
+zero call sites anywhere in the repo) was REMOVED entirely in favor of
+`rest.FromHeaderParam(rest.HeaderParam{Name: headerName, Required: true})`.
+
+Naming note: `rest.FromHeaderParam` (function, returns `middleware.Middleware`)
+intentionally sits alongside `rest.HeaderParam` (struct type) in the SAME
+package — the SAME naming pattern already used for `rest.FromSecurityScheme`/
+`rest.SecurityScheme`.
 
 ### The full workflow for this case — declare and implement are DECOUPLED, no matching needed
 
 ```go
 // DECLARE — pure spec, wraps an existing rest.HeaderParam value directly.
-corrIDMw := middleware.HeaderParam(rest.HeaderParam{
+corrIDMw := rest.FromHeaderParam(rest.HeaderParam{
     Name: "X-Correlation-ID", Required: true, Codec: &uuidCodec,
 })
 route := rest.NewRoute[Req, Resp](...).Use(corrIDMw)
@@ -1944,9 +2281,12 @@ not a recommendation.
    entry point" above.** ~~Is the `Handler`/`Register` validation
    asymmetry a trap?~~ Reaching for "just give me an `http.Handler`"
    (`Handler`/`SSEHandler`) silently opted out of BOTH the shape check
-   and the coverage check — resolved by removing `Handler`/`Register`/
-   `SSEHandler`/`RegisterSSE` entirely; `Serve`/`ServeSSE` are the only
-   remaining public entry points, both always checked.
+   and the coverage check — this asymmetry is now CLOSED entirely:
+   `Handler`/`Register`/`SSEHandler`/`RegisterSSE` have been DELETED from
+   both `adapters/nethttp` and `adapters/chi`; `Serve`/`ServeOne`/
+   `ServeSSE` (always fully checked, including the coverage check — see
+   "Lessons Learned" below for a regression this closure itself caused
+   and fixed) are the ONLY remaining public server-side entry points.
 
 5. **RESOLVED — see "Decision: symmetric client-side declarative wiring"
    above (closed as a side effect of resolving Question 3).** ~~Four
@@ -1963,3 +2303,150 @@ not a recommendation.
    design that satisfies both Go's no-generic-methods constraint and
    `api/rest`/`middleware`'s adapter-agnostic layering simultaneously; no
    API change follows from this question.
+
+---
+
+## Lessons Learned (post-implementation retrospective)
+
+This section is added AFTER the design above was fully implemented and the old
+doors (`Handler`/`Register`/`SSEHandler`/`RegisterSSE`) were deleted — it
+records what actually went wrong during execution that the design and its
+review passes did NOT anticipate, for future maintainers planning a
+similarly-shaped removal (an old, multi-responsibility public API replaced by
+a new one). None of this changes the shipped design; it changes how the NEXT
+one should be planned and reviewed.
+
+### 1. "Equivalent" claims about generated/reflective code need runtime proof, not review sign-off
+
+The roadmap doc's own "Decision: `Serve`'s generic dispatch mechanism" section
+stated plainly that `buildRouteHandler` "runs the SAME pipeline `Handler`
+runs, invoked via `reflect.Value.Call` instead of static generic calls." This
+was written in good faith, reviewed multiple times, and was **false** — the
+reflect dispatch never implemented request/response `Formats` content
+negotiation, and never called `ErrorResponseFor` on the handler-error path.
+Both gaps were silent: `Serve`/`ServeOne` built successfully, wired
+successfully, and served ordinary requests successfully. They only surfaced
+when the OLD test suite (128+ tests exercising `Handler`/`Register` directly)
+was migrated wholesale onto the new entry points and specific tests started
+failing. A smaller, incremental migration (a handful of tests at a time,
+declared "good enough" after each batch passed) would very plausibly have
+shipped with these gaps permanently baked in and undetected.
+
+**Takeaway:** when a design claims a new mechanism is a drop-in equivalent for
+an old one, that claim is a hypothesis, not a fact, until every existing
+caller of the old mechanism has been ported and re-verified against it. Plan
+for "migrate everything, then see what breaks" as the actual verification
+step — not code review of the new mechanism in isolation.
+
+### 2. Deleting an old function can silently delete a responsibility nobody tracked as separate
+
+`Register`/`RegisterSSE` did two things: wire the handler onto the
+mux/router, AND call `rest.CheckCoverage` to reject a route whose declared
+security scheme had no matching implementation. The roadmap's planning and
+every review pass treated "delete `Register`/`RegisterSSE`" as pure code
+removal of the wiring responsibility — nobody re-derived the full list of
+side effects the old function had, so the coverage check's removal was
+invisible until a dedicated regression test was written specifically to
+probe it (see the `review-go-codex` Round 125 finding G4). Until that test
+existed, `Serve`/`ServeSSE` would silently wire a misconfigured security
+route with zero error, deferring the failure to every individual runtime
+request instead of failing loudly at wiring time.
+
+**Takeaway:** before deleting a function, enumerate ALL of its responsibilities
+— not just the one implied by its name or its most obvious call site — and
+verify each one has an explicit new home. A multi-responsibility function is
+a bundle; deleting the bundle without unbundling it first drops whatever
+wasn't the primary focus of attention.
+
+### 3. Documentation is not verified by any build step — it rots silently and at scale
+
+Deleting 4 exported functions left 31 dangling godoc `[Symbol]` bracket-links
+across 7 Go files, plus stale, non-compiling code snippets in 8 separate
+`docs/*.md` pages, 2 examples' leftover explanatory comments, a README table,
+and 2 of this repo's own skill files — none of which `go build`, `go vet`,
+`go test`, or `staticcheck` ever flagged, because none of them parse Markdown
+or resolve godoc comment syntax. This required TWO separate full-repo grep
+sweeps (one that caught the `adapters/` package files, a second deeper pass
+that caught everything else) after the code-level work was already declared
+"done and verified."
+
+**Takeaway:** "the build is green" is necessary but not sufficient evidence
+that a symbol removal is complete. Any plan that removes an exported symbol
+must include an explicit, scheduled step to grep the ENTIRE repository — not
+just the package being changed — for the symbol's name, across `*.go` doc
+comments, `docs/**/*.md`, `examples/**/*.go`, and `.github/**/*.md`.
+
+### 4. The removal's true blast radius was far larger than what was planned for
+
+The original roadmap doc's status banner tracked the removal's cost as "128+
+combined test call sites" (83 in `adapters/nethttp/adapter_test.go` + 1 in
+`stream_test.go` + 44 in `adapters/chi/adapter_test.go`) — a code-only,
+test-only count. The actual cleanup touched: those 128 test call sites, 7
+examples using the old doors directly, 1 example (`sensor-service`) with a
+structurally different blocker entirely, 3 Go source files' doc comments
+outside `adapters/`, 8 `docs/*.md` pages, 2 examples' stale explanatory
+comments, a README, and 2 skill files — a genuinely larger surface than the
+plan's own cost estimate, discovered only by working through it rather than
+by the original scoping pass.
+
+**Takeaway:** when scoping the cost of an API removal, the code-call-site
+count is a floor, not a ceiling. Documentation, examples, and tooling
+configuration that reference the symbol are real, uncounted cost — budget for
+a discovery pass, not just the known call sites, before declaring a removal
+"small" or "large."
+
+### 5. Curated test suites don't surface every real-world integration shape
+
+Every existing unit test exercising `Handler`/`Register` assumed the ordinary
+shape: build a route, attach a handler, register it. `examples/sensor-service`
+did something none of the tests did: declare routes as PACKAGE-LEVEL VARS via
+`RegisterHandle` at Go `var`-init time, then attach the real handler LATER in
+`main()` once a runtime dependency (a database `store`) existed — an ordering
+the new `Serve`/`ServeOne` design had implicitly assumed away ("`WithHandler`
+before `Register`"). This wasn't found by reading the roadmap doc, the
+tests, or any other example — it was found only by attempting to actually
+migrate that ONE real, "in the wild" example. It required a genuinely new,
+small piece of API (`RouteHandle.WithHandler`/`SSERouteHandle.WithHandler` as
+`Route.WithHandler`'s post-registration equivalent) that the original design
+never anticipated needing.
+
+**Takeaway:** a representative-looking test suite is not a substitute for
+migrating every REAL consumer of an API being changed, including the ones
+that don't look like the tests. Structural assumptions ("handler always
+exists before registration") should be treated as unverified until every
+existing example — not just every existing test — has been checked against
+them.
+
+### 6. Independent, parallel exploration finds bugs a targeted review doesn't
+
+While migrating `examples/adapters-templ` (one of several migrations run as
+parallel background agents, each independently exercising a different
+example's code paths), one agent found that `negotiateFormatReflect` (SSE's
+Accept-header format negotiation, shared with `Serve`'s own dispatch) failed
+to strip `;`-parameters from a content-type before comparing it against the
+`Accept` header — a bug unrelated to either of the 2 gaps this round's review
+was explicitly looking for. It was caught only because that agent's specific
+example exercised `Accept: text/html` against a format whose `ContentType()`
+included `; charset=utf-8`, a case the review's own test-writing hadn't
+targeted.
+
+**Takeaway:** running independent migrations/explorations in parallel, each
+against a genuinely different real consumer, finds classes of bugs a single
+reviewer working through a fixed checklist will not — because the checklist
+can only test for what someone already thought to ask about.
+
+### 7. Environment reliability assumptions should be made explicit and have a fallback
+
+`ask_user` calls made throughout this implementation frequently returned
+"user not available" — including at moments intended to confirm significant,
+hard-to-reverse decisions (e.g., whether to accept feature loss vs. fix the 2
+Serve gaps before deleting the old doors). The practical resolution was an
+explicit fallback policy: when `ask_user` is unavailable, choose the more
+conservative option, state the assumption clearly in the response, and keep
+working rather than blocking. This was not planned for at the start of the
+implementation and had to be improvised mid-session.
+
+**Takeaway:** any implementation plan spanning a long session should assume
+interactive confirmation may be unavailable at the moment it's needed, and
+should pre-decide a conservative default for its highest-stakes open
+questions rather than relying on being able to ask in the moment.

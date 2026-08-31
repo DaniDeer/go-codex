@@ -567,8 +567,9 @@ never the weaker, builder-free `ClientHandle()`. Supply your own `*Builder` via
 path/topic format constraints, shared spec accumulation); when you don't,
 `ports` registers against a private, single-use `Builder` instead — same
 zero-ceremony default, identical code path. For REST, security SCHEMES are
-declared directly on the `RESTPattern`'s own `Opts` via `rest.WithSecurityScheme`
-(no builder-level scheme registry for REST):
+declared directly on the `RESTPattern`'s own `Opts` via
+`rest.WithMiddleware(rest.FromSecurityScheme(...))` (no builder-level scheme
+registry for REST):
 
 ```go
 restBuilder := rest.NewBuilder(rest.Info{Title: "OEE Service", Version: "1.0.0"})
@@ -576,11 +577,12 @@ restBuilder.AddGlobalSecurity(route.SecurityRequirement{"bearerAuth": {}})
 
 oeeTool := codex.Must(ports.NewToolPort[OEEIn, OEEResult]("oee-calc", oeeInCodec, oeeResultCodec,
     ports.PortOptions{RESTBuilder: restBuilder}))
+bearerAuth := rest.SecurityScheme{SecurityScheme: route.BearerScheme("JWT")}
 _, err := oeeTool.PluginRESTPattern(ports.RESTPattern{
     Method: "POST",
     Path:   "/oee/calc",
     Opts: []rest.RouteOpt{
-        rest.WithSecurityScheme("bearerAuth", rest.SecurityScheme{SecurityScheme: route.BearerScheme("JWT")}),
+        rest.WithMiddleware(rest.FromSecurityScheme("bearerAuth", bearerAuth, nil)),
     },
 })
 if err != nil {
@@ -603,10 +605,11 @@ spec, _ := restBuilder.OpenAPISpec()
 > enforcement** — `SecuritySchemes` was always an empty map (the credential check
 > skips unknown scheme names rather than rejecting), so any `RouteMeta.Security`/
 > `Subscribe.Security`/`Publish.Security` requirement declared on a `Pattern`-based
-> port had no effect. For REST, declare `rest.WithSecurityScheme(...)` in the
-> `RESTPattern`'s `Opts` (plus a `Builder` with `AddGlobalSecurity`); for events,
-> supply a `Builder` with `AddSecurityScheme`/`AddGlobalSecurity` — either fixes
-> this for a given port.
+> port had no effect. For REST, declare
+> `rest.WithMiddleware(rest.FromSecurityScheme(...))` in the `RESTPattern`'s
+> `Opts` (plus a `Builder` with `AddGlobalSecurity`); for events, supply a
+> `Builder` with `AddSecurityScheme`/`AddGlobalSecurity` — either fixes this
+> for a given port.
 
 If you already supplied a `Builder`, the port's route/channel/tool is already
 registered with it — calling `RegisterREST`/etc. with that *same* builder

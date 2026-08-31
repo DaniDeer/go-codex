@@ -38,7 +38,7 @@ Use this as the consistent decision map:
 HTTP (route handler + custom body/status policy):
 
 ```go
-nethttp.Register(mux, route, fn, nethttp.Options{
+route = route.WithHandler(fn).WithOptions(nethttp.Options{
     ErrorHandler: func(w http.ResponseWriter, _ *http.Request, status int, err error) {
         var conflict domainConflictError
         if errors.As(err, &conflict) {
@@ -47,6 +47,8 @@ nethttp.Register(mux, route, fn, nethttp.Options{
         w.WriteHeader(status)
     },
 })
+route.Register(b)
+nethttp.Serve(mux, b)
 ```
 
 MQTT5 subscribe/serve callback:

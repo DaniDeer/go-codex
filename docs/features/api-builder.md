@@ -27,7 +27,7 @@ var createUser = rest.NewRoute[CreateUserReq, User]("POST", "/users",
 )
 
 // Register with a server builder for runtime + OpenAPI
-serverHandle, _ := createUser.Register(serverBuilder)
+serverHandle, _ := createUser.RegisterHandle(serverBuilder)
 // Or get a client handle directly — no builder, no spec
 clientHandle := createUser.ClientHandle()
 ```
@@ -97,7 +97,7 @@ uuidCodec := codex.String().Refine(validate.UUID)
 getUser, _ := rest.NewRoute[struct{}, User]("GET", "/users/{id}",
     codex.Empty, userCodec,
     rest.PathParam{Name: "id"}.WithCodec(uuidCodec), // validates {id} at BuildPath time
-).Register(b)
+).RegisterHandle(b)
 
 // At call time — uuid codec rejects non-UUID values
 path, err := getUser.BuildPath(map[string]string{"id": "not-a-uuid"})

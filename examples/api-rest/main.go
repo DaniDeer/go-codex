@@ -95,7 +95,7 @@ func main() {
 			RespDescription: "User created.",
 		},
 		rest.ResponseMeta{Status: "400", Description: "Validation error."},
-	).Register(b)
+	).RegisterHandle(b)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "route registration failed: %v\n", err)
 		os.Exit(1)
@@ -119,7 +119,7 @@ func main() {
 		},
 		rest.PathParam{Name: "id", Description: "User ID (UUID)."},
 		rest.ResponseMeta{Status: "404", Description: "User not found."},
-	).Register(b)
+	).RegisterHandle(b)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "route registration failed: %v\n", err)
 		os.Exit(1)
@@ -142,7 +142,7 @@ func main() {
 		rest.RouteMeta{OperationID: "deleteUser", Summary: "Delete a user", Tags: []string{"users"}},
 		rest.ResponseMeta{Status: "204", Description: "User deleted."},
 		rest.ResponseMeta{Status: "404", Description: "User not found."},
-	).Register(b)
+	).RegisterHandle(b)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "route registration failed: %v\n", err)
 		os.Exit(1)

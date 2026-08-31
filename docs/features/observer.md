@@ -41,7 +41,7 @@ obs := stats.NewFanout(metrics, stats.NewLoggingObserver(logger), tracer)
 
 // Same value — works on every layer:
 stats.ReportErrors(obs, "config", err)          // codec
-nethttp.Register(mux, route, handler, nethttp.Options{Observer: obs}) // adapter
+route.WithHandler(handler).WithOptions(nethttp.Options{Observer: obs}) // adapter
 configFile.Read(nil, ports.FileOptions{Observer: obs})                // format/file
 forge.NewRegistry("P", "1.0.0").WithObserver(obs)                      // forge
 ```
@@ -76,7 +76,7 @@ The library provides the hook; the user's implementation controls span parenting
 
 All adapter entry points accept `context.Context`:
 - `nethttp.Call(ctx, ...)` — HTTP client, propagates downstream
-- `nethttp.Handler` — HTTP server, ctx from `*http.Request.Context()`
+- `nethttp.Serve`/`ServeOne` — HTTP server, ctx from `*http.Request.Context()`
 - `mqtt.Publish(ctx, ...)` — MQTT publish
 - `mqtt.SubscribeHandler(ctx, ...)` — MQTT subscribe, ctx flows to handler
 
@@ -110,7 +110,7 @@ ctx := stats.WithObserver(context.Background(), obs)
 // All adapters now use obs when Options.Observer is nil:
 mqtt.Subscribe(ctx, client, handle, 1, fn, mqtt.SubscribeOptions{})
 stream.Apply(ctx, s, fn, stream.ApplyOptions{})
-nethttp.Register(mux, handle, fn, nethttp.Options{}) // resolved per-request (see below)
+route.WithOptions(nethttp.Options{}) // resolved per-request (see below)
 ```
 
 ### API
@@ -134,14 +134,14 @@ opts.Observer == nil  →  use stats.ObserverFromContext(ctx) (context default)
 Explicit always wins. Per-component overrides continue to work:
 
 ```go
-nethttp.Handler(handle, fn, nethttp.Options{Observer: auditObserver}) // explicit, no lookup
+route.WithOptions(nethttp.Options{Observer: auditObserver}) // explicit, no lookup
 ```
 
 ### How each layer resolves the context observer
 
 | Layer | ctx source | Resolution |
 |-------|-----------|------------|
-| **HTTP adapters** (`nethttp.Handler`, `chi.Handler`, `SSEHandler`) | `r.Context()` per-request | Resolved inside the request closure — a server middleware can inject per-request observers |
+| **HTTP adapters** (`nethttp.Serve`/`ServeOne`/`ServeSSE`, chi mirrors) | `r.Context()` per-request | Resolved inside the request closure — a server middleware can inject per-request observers |
 | **HTTP client** (`nethttp.Call`, `CallHandle`) | ctx passed to function | Resolved at call time — SAME mechanism as MQTT/ZeroMQ below; see the callout after this table for what this means for client wrapper packages |
 | **SSE stream bridges** (`SSEFromStream`, `SSEFromHub`) | ctx from each SSE connection | Resolved inside the per-connection closure |
 | **MQTT adapters** (`Subscribe`, `Publish`) | ctx passed to function | Resolved at call time |
@@ -185,7 +185,7 @@ func ObserverMiddleware(obs stats.Observer) func(http.Handler) http.Handler {
 
 // Wire:
 mux := http.NewServeMux()
-nethttp.Register(mux, handle, fn, nethttp.Options{}) // no explicit Observer
+route.WithOptions(nethttp.Options{}) // no explicit Observer
 http.ListenAndServe(":8080", ObserverMiddleware(obs)(mux))
 ```
 

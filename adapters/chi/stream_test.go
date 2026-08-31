@@ -30,13 +30,13 @@ func (e chiPipelineConflictError) Error() string {
 func newChiGetHandle() (*rest.RouteHandle[getReq, userResp], error) {
 	b := rest.NewBuilder(testInfo)
 	return rest.NewRoute[getReq, userResp]("GET", "/latest",
-		getReqCodec, userRespCodec, rest.RouteMeta{OperationID: "chiGetLatest"}).Register(b)
+		getReqCodec, userRespCodec, rest.RouteMeta{OperationID: "chiGetLatest"}).RegisterHandle(b)
 }
 
 func newChiPipelineHandle() (*rest.RouteHandle[createReq, userResp], error) {
 	b := rest.NewBuilder(testInfo)
 	return rest.NewRoute[createReq, userResp]("POST", "/pipeline",
-		createReqCodec, userRespCodec, rest.RouteMeta{OperationID: "chiPipeline"}).Register(b)
+		createReqCodec, userRespCodec, rest.RouteMeta{OperationID: "chiPipeline"}).RegisterHandle(b)
 }
 
 func newChiPipelineHandleWithMappedErrorStatus() (*rest.RouteHandle[createReq, userResp], error) {
@@ -45,7 +45,7 @@ func newChiPipelineHandleWithMappedErrorStatus() (*rest.RouteHandle[createReq, u
 		createReqCodec, userRespCodec,
 		rest.RouteMeta{OperationID: "chiPipelineMapped"},
 		rest.ErrorStatus[chiPipelineConflictError](http.StatusConflict),
-	).Register(b)
+	).RegisterHandle(b)
 }
 
 func newChiPipelineHandleWithNoResponseOverride(status int) (*rest.RouteHandle[createReq, userResp], error) {
@@ -54,7 +54,7 @@ func newChiPipelineHandleWithNoResponseOverride(status int) (*rest.RouteHandle[c
 		createReqCodec, userRespCodec,
 		rest.RouteMeta{OperationID: "chiPipelineNoRespOverride"},
 		rest.ErrorStatus[chiadapter.PipelineNoResponseError](status),
-	).Register(b)
+	).RegisterHandle(b)
 }
 
 // ── HandlerLatest ─────────────────────────────────────────────────────────────
@@ -118,19 +118,6 @@ func TestChiHandlerLatest_NoValueReturns503(t *testing.T) {
 	if !errors.As(capturedErr, &nlv) {
 		t.Errorf("want NoLatestValueError, got %T", capturedErr)
 	}
-}
-
-// ── SSE helpers ──────────────────────────────────────────────────────────────
-
-func newChiSSEHandle(t *testing.T) *rest.SSERouteHandle[getReq, userResp] {
-	t.Helper()
-	b := rest.NewBuilder(testInfo)
-	h, err := rest.NewSSERoute[getReq, userResp]("/events",
-		getReqCodec, userRespCodec, rest.RouteMeta{OperationID: "streamEvents"}).Register(b)
-	if err != nil {
-		t.Fatalf("register SSE route: %v", err)
-	}
-	return h
 }
 
 func readChiSSEEvents(t *testing.T, resp *http.Response, want int) []string {
@@ -325,8 +312,6 @@ func TestChiSSEFromHub_BroadcastsToAllClients(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	handle := newChiSSEHandle(t)
-
 	valCh := make(chan userResp, 3)
 	src := gstream.From(ctx, valCh)
 	hub := gstream.NewBroadcastHub(ctx, src, 8)
@@ -334,7 +319,9 @@ func TestChiSSEFromHub_BroadcastsToAllClients(t *testing.T) {
 	fn := chiadapter.SSEFromHub[getReq, userResp](hub,
 		chiadapter.SSEStreamOptions{Topic: "/events"})
 
-	h := chiadapter.SSEHandler(handle, fn, chiadapter.Options{})
+	route := rest.NewSSERoute[getReq, userResp]("/events",
+		getReqCodec, userRespCodec, rest.RouteMeta{OperationID: "streamEvents"}).WithHandler(fn)
+	h := mustServeSSE(t, route, rest.NewBuilder(testInfo))
 	srv := httptest.NewServer(h)
 	defer srv.Close()
 

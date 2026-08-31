@@ -772,7 +772,7 @@ func (fh File[T]) Delete(vars map[string]string, opts FileOptions) (existed bool
 // WriteHandle is the single-call convenience wrapper around [File.Write]:
 // it derives the path vars from v automatically via
 // [codex.EncodeVars](v, [File.MergeFields]()...) — one struct in, no
-// manual vars map — mirroring [mqtt5.PublishHandle]/[nethttp.CallHandle]'s
+// manual vars map — mirroring [mqtt5.PublishHandle]/[nethttp.CallWithHandle]'s
 // convenience for MQTT 5 events / REST clients.
 //
 // [File.Write] remains available as the lower-level escape hatch for

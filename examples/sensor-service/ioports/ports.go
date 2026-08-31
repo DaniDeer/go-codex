@@ -239,7 +239,7 @@ var CreateRoute = rest.NewRoute("POST", "/readings",
 )
 
 // CreateHandle is CreateRoute registered against RESTBuilder.
-var CreateHandle = codex.Must(CreateRoute.Register(RESTBuilder))
+var CreateHandle = codex.Must(CreateRoute.RegisterHandle(RESTBuilder))
 
 // GetRoute — GET /readings/{id}.
 var GetRoute = rest.NewRoute("GET", "/readings/{id}",
@@ -249,7 +249,7 @@ var GetRoute = rest.NewRoute("GET", "/readings/{id}",
 )
 
 // GetHandle is GetRoute registered against RESTBuilder.
-var GetHandle = codex.Must(GetRoute.Register(RESTBuilder))
+var GetHandle = codex.Must(GetRoute.RegisterHandle(RESTBuilder))
 
 // ── Cache port ────────────────────────────────────────────────────────────────
 

@@ -89,7 +89,7 @@ func buildSocket[In, Out any](
 	}
 	route := rest.NewRoute[struct{}, struct{}]("GET", pat.Path,
 		codex.Struct[struct{}](), codex.Struct[struct{}](), pat.Opts...)
-	handle, err := route.Register(b)
+	handle, err := route.RegisterHandle(b)
 	if err != nil {
 		return Socket[In, Out]{}, PatternRegisterError{Port: portName, Kind: patternKindSocket, Err: err}
 	}
@@ -263,7 +263,7 @@ func buildEventPatternHandles[T any](
 				// response is empty (200 with empty body; the adapter maps a
 				// full buffer to 503 + PipelineFullError).
 				route := rest.NewRoute[T, struct{}](pat.Method, pat.Path, codec, codex.Struct[struct{}](), pat.Opts...)
-				handle, err := route.Register(b)
+				handle, err := route.RegisterHandle(b)
 				if err != nil {
 					return nil, nil, PatternRegisterError{Port: portName, Kind: patternKindREST, Err: err}
 				}
@@ -280,7 +280,7 @@ func buildEventPatternHandles[T any](
 					}
 				}
 				route := rest.NewSSERoute[struct{}, T](pat.Path, codex.Struct[struct{}](), codec, pat.Opts...)
-				handle, err := route.Register(b)
+				handle, err := route.RegisterHandle(b)
 				if err != nil {
 					return nil, nil, PatternRegisterError{Port: portName, Kind: patternKindREST, Err: err}
 				}
@@ -399,7 +399,7 @@ func buildDualCodecPatternHandles[Req, Resp any](
 			if b == nil {
 				b = rest.NewBuilder(rest.Info{})
 			}
-			handle, err := route.Register(b)
+			handle, err := route.RegisterHandle(b)
 			if err != nil {
 				return nil, nil, PatternRegisterError{Port: portName, Kind: patternKindREST, Err: err}
 			}

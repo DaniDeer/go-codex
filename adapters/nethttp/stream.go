@@ -27,9 +27,9 @@ import (
 //
 // # Codec coverage — all HTTP layers validated
 //
-// [Handler] validates all codec layers before the fn fires: body codec, query
+// The request pipeline validates all codec layers before the fn fires: body codec, query
 // params, cookie params, header params, path params, and security. The decoded
-// [Req] value and all param values are validated but not used for computation —
+// Req value and all param values are validated but not used for computation —
 // the response is always the latest stream value. This ensures only well-formed
 // requests receive a cached response; invalid requests produce the standard 400.
 func HandlerLatest[Req, Resp any](
@@ -70,7 +70,7 @@ func HandlerLatest[Req, Resp any](
 			return 0
 		})
 
-	return Handler(handle, func(ctx context.Context, _ Req) (Resp, error) {
+	return handlerFunc(handle, func(ctx context.Context, _ Req) (Resp, error) {
 		ptr := latest.Load()
 		var zero Resp
 		if ptr == nil {
@@ -80,8 +80,7 @@ func HandlerLatest[Req, Resp any](
 	}, wrappedOpts)
 }
 
-// RegisterLatest wires [HandlerLatest] onto mux using the route's method and
-// path. Mirrors [Register].
+// RegisterLatest wires [HandlerLatest] onto mux using the route's method and path.
 func RegisterLatest[Req, Resp any](
 	mux *http.ServeMux,
 	handle *rest.RouteHandle[Req, Resp],
@@ -106,8 +105,8 @@ type PipelineHandlerFunc[Req, Resp any] func(ctx context.Context, req Req) gstre
 
 // PipelineHandler wraps a [PipelineHandlerFunc] into an [http.Handler].
 // All codec validation, param validation, security enforcement, and observer
-// integration follow the same path as plain [Handler] — PipelineHandler is a
-// thin wrapper that adapts the function signature and collects the result via
+// integration follow the same path as a regular route handler — PipelineHandler is
+// a thin wrapper that adapts the function signature and collects the result via
 // [gstream.Collect].
 //
 // Use PipelineHandler when the handler body benefits from:
@@ -115,16 +114,16 @@ type PipelineHandlerFunc[Req, Resp any] func(ctx context.Context, req Req) gstre
 //   - [gstream.Apply] for multi-step forge function composition
 //   - [gstream.MapErr] for per-step typed error recovery
 //
-// For simple one-step handlers, use plain [Handler] for lower overhead.
+// For simple one-step handlers, a plain business handler has lower overhead.
 //
 // # Codec coverage — all HTTP layers
 //
-// Before fn is called, [Handler] has already validated and decoded:
+// Before fn is called, the request pipeline has already validated and decoded:
 //   - Request body (→ req Req)
 //   - Query, cookie, header, path params (all registered [rest.Param] codecs)
 //   - Security credentials + SecurityFunc
 //
-// After fn returns, [Handler] validates:
+// After fn returns, the request pipeline validates:
 //   - Response body (handle.Encode)
 //   - Response header and cookie params (ValidateResponseHeaders / ValidateResponseCookies)
 //
@@ -132,7 +131,7 @@ type PipelineHandlerFunc[Req, Resp any] func(ctx context.Context, req Req) gstre
 //
 // The decoded [Req] value (body) is passed directly to fn. To access path,
 // query, cookie, or header param values inside the pipeline (already codec-
-// validated by [Handler]), call [RequestFromContext] on the ctx passed to fn:
+// validated already), call [RequestFromContext] on the ctx passed to fn:
 //
 //	nethttp.RegisterPipeline(mux, handle,
 //	    func(ctx context.Context, body SensorBody) stream.Stream[OEEResult] {
@@ -150,7 +149,7 @@ type PipelineHandlerFunc[Req, Resp any] func(ctx context.Context, req Req) gstre
 // Call [WithResponseHeaders] or [WithResponseCookies] anywhere inside the
 // pipeline fn (including within [gstream.Tap] or forge functions). The maps
 // are reference types stored in ctx — writes in the pipeline goroutines are
-// visible to [Handler] after [gstream.Collect] returns. This is safe for
+// visible to the caller after [gstream.Collect] returns. This is safe for
 // sequential pipelines (Single → Apply chain). Parallel pipelines that write
 // to response headers concurrently should use a mutex or avoid this pattern.
 func PipelineHandler[Req, Resp any](
@@ -169,7 +168,7 @@ func PipelineHandler[Req, Resp any](
 		}
 		return 0
 	})
-	return Handler(handle, func(ctx context.Context, req Req) (Resp, error) {
+	return handlerFunc(handle, func(ctx context.Context, req Req) (Resp, error) {
 		pipeline := fn(ctx, req)
 		vals, errs := gstream.Collect(ctx, pipeline)
 		var zero Resp
@@ -184,7 +183,7 @@ func PipelineHandler[Req, Resp any](
 	}, wrappedOpts)
 }
 
-// RegisterPipeline wires [PipelineHandler] onto mux. Mirrors [Register].
+// RegisterPipeline wires [PipelineHandler] onto mux using the route's method and path.
 func RegisterPipeline[Req, Resp any](
 	mux *http.ServeMux,
 	handle *rest.RouteHandle[Req, Resp],
@@ -200,7 +199,7 @@ func RegisterPipeline[Req, Resp any](
 // SSEStreamOptions configures [SSEFromStream] and [SSEFromHub].
 type SSEStreamOptions struct {
 	// Topic is the SSE route path used for observer reporting and error context.
-	// Set this to handle.Descriptor.Path when wiring via SSEHandler/RegisterSSE.
+	// Set this to the route's Descriptor.Path when wiring via ServeSSE.
 	Topic string
 
 	// OnError, when non-nil, is called for write failures ([SSEWriteError]) and
@@ -220,11 +219,12 @@ type SSEStreamOptions struct {
 //
 // Use SSEFromStream when each client receives a personalised or filtered stream:
 //
-//	nethttp.RegisterSSE(mux, dashboardRoute,
+//	dashboardRoute = dashboardRoute.WithHandler(
 //	    nethttp.SSEFromStream(func(_ context.Context, req DashboardReq) gstream.Stream[OEEResult] {
 //	        return stream.Filter(ctx, sharedOEEStream, req.MatchesMachine)
 //	    }, nethttp.SSEStreamOptions{Topic: dashboardRoute.Descriptor.Path, Observer: obs}),
-//	    nethttp.Options{Observer: obs})
+//	).WithOptions(nethttp.Options{Observer: obs})
+//	dashboardRoute.Register(b); nethttp.ServeSSE(mux, b)
 //
 // When the client disconnects, ctx is cancelled and the returned fn exits,
 // terminating the per-connection pipeline.
@@ -290,10 +290,11 @@ func sseFromStream[Req, Event any](
 // Use SSEFromHub for live dashboards broadcasting the same stream to all users:
 //
 //	hub := stream.NewBroadcastHub(ctx, oeeStream, 32)
-//	nethttp.RegisterSSE(mux, dashboardRoute,
+//	dashboardRoute = dashboardRoute.WithHandler(
 //	    nethttp.SSEFromHub[struct{}, OEEResult](hub,
 //	        nethttp.SSEStreamOptions{Topic: dashboardRoute.Descriptor.Path, Observer: obs}),
-//	    nethttp.Options{Observer: obs})
+//	).WithOptions(nethttp.Options{Observer: obs})
+//	dashboardRoute.Register(b); nethttp.ServeSSE(mux, b)
 func SSEFromHub[Req, Event any](
 	hub *gstream.BroadcastHub[Event],
 	opts SSEStreamOptions,

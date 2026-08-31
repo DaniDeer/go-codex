@@ -225,7 +225,7 @@ var userCodec = codex.Struct[User](
 )
 
 // GetUserReq carries the {id} path variable — merged in automatically by
-// rest.NewPathParam + nethttp.Handler's RouteHandle.DecodeMerged wiring
+// rest.NewPathParam + Serve's RouteHandle.DecodeMerged wiring
 // (no body: this route is a GET with no request payload). ID is a REAL
 // uuid.UUID, not a string — codex.TextCodec[uuid.UUID]() parses/formats
 // it directly at the path-var boundary, so the handler never calls
@@ -401,7 +401,7 @@ func makeCreateUserHandler(store *UserStore) func(context.Context, CreateUserReq
 // makeGetUserHandler orchestrates the get-user pipeline:
 //
 // GetUserReq.ID arrives ALREADY merged and codec-validated by
-// nethttp.Handler (via rest.NewPathParam + RouteHandle.DecodeMerged) — no
+// nethttp.Serve (via rest.NewPathParam + RouteHandle.DecodeMerged) — no
 // manual r.PathValue("id") extraction needed here.
 func makeGetUserHandler(store *UserStore) func(context.Context, GetUserReq) (User, error) {
 	return func(_ context.Context, req GetUserReq) (User, error) {
@@ -494,13 +494,12 @@ func makeErgonomicsPipelineHandler() nethttp.PipelineHandlerFunc[CreateUserReq, 
 	}
 }
 
-// mustRegister exits the program if nethttp.Register returns an error — e.g.
-// a malformed middleware Fn shape, caught eagerly at wiring time rather than
-// on the first incoming request. Mirrors this file's existing
-// Route.Register error-handling style.
-func mustRegister(err error) {
+// mustServe exits the program if Register or Serve returns an error — e.g. a
+// malformed middleware Fn shape, caught eagerly at wiring time rather than on
+// the first incoming request.
+func mustServe(err error, what string) {
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "nethttp.Register failed: %v\n", err)
+		fmt.Fprintf(os.Stderr, "%s failed: %v\n", what, err)
 		os.Exit(1)
 	}
 }
@@ -536,177 +535,6 @@ func main() {
 	// request-handling time — the adapter rejects invalid values with 500.
 	locationCodec := codex.String().Refine(validate.NonEmptyString)
 	sessionCodec := codex.String().Refine(validate.MinLen(8))
-
-	createUserRoute, err := rest.NewRoute[CreateUserReq, User]("POST", "/users",
-		createUserReqCodec, userCodec,
-		rest.RouteMeta{
-			OperationID:    "createUser",
-			Summary:        "Create a user",
-			ReqSchemaName:  "CreateUserRequest",
-			RespSchemaName: "User",
-		},
-		// NewRequiredResponseHeaderParam declares the Location header AND
-		// merges it from User.Location automatically: the adapter reads
-		// the field after the handler returns and writes it as the actual
-		// Location HTTP header — no manual nethttp.WithResponseHeaders
-		// call needed. The adapter still validates it; a violation → 500.
-		// The codec schema flows into the OpenAPI response header spec.
-		rest.NewRequiredResponseHeaderParam("Location", locationCodec,
-			func(u User) string { return u.Location },
-			func(u *User, v string) { u.Location = v },
-		).WithDescription("URL of the newly created user resource"),
-		// ResponseCookieParam declares the session cookie written on 201.
-		// The adapter validates the value after the handler returns; a violation → 500.
-		rest.ResponseCookieParam{
-			Name:        "session",
-			Description: "Session token for the new user",
-			Required:    true,
-			Codec:       &sessionCodec,
-		},
-	).Register(b)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "route registration failed: %v\n", err)
-		os.Exit(1)
-	}
-	// WithRequestFormats enables multi-format request bodies.
-	// The adapter negotiates by Content-Type; unsupported types return 415.
-	// The OpenAPI spec gains additional content-type entries automatically.
-	createUserRoute = createUserRoute.WithRequestFormats(
-		format.JSON(createUserReqCodec),
-		format.YAML(createUserReqCodec),
-	)
-
-	getUserRoute, err := rest.NewRoute[GetUserReq, User]("GET", "/users/{id}",
-		getUserReqCodec, userCodec,
-		rest.RouteMeta{
-			OperationID:    "getUser",
-			Summary:        "Get a user by ID",
-			RespSchemaName: "User",
-		},
-		// NewPathParam declares BOTH the spec/validation Param (UUID schema
-		// flows into the OpenAPI spec automatically, exactly like plain
-		// PathParam) AND a merge field — nethttp.Handler merges {id} into
-		// GetUserReq.ID automatically via RouteHandle.DecodeMerged, so
-		// makeGetUserHandler never needs to call r.PathValue("id") itself.
-		// codex.TextCodec[uuid.UUID]() merges the path segment directly
-		// into a uuid.UUID field instead of a validated-but-still-string
-		// codex.String().Refine(validate.UUID).
-		rest.NewPathParam("id",
-			codex.TextCodec[uuid.UUID]().WithDescription("User UUID."),
-			func(r GetUserReq) uuid.UUID { return r.ID },
-			func(r *GetUserReq, v uuid.UUID) { r.ID = v },
-		).WithDescription("User UUID"),
-	).Register(b)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "route registration failed: %v\n", err)
-		os.Exit(1)
-	}
-
-	// PUT /users/{id} — MIXES a path field (ID) with body fields (Name,
-	// Email) on the SAME UpdateUserReq struct. DecodeMerged decodes the
-	// JSON body first, then merges {id} in — both populate one struct with
-	// zero manual wiring in the handler.
-	updateUserRoute, err := rest.NewRoute[UpdateUserReq, User]("PUT", "/users/{id}",
-		updateUserReqCodec, userCodec,
-		rest.RouteMeta{
-			OperationID:    "updateUser",
-			Summary:        "Update a user by ID",
-			RespSchemaName: "User",
-		},
-		rest.NewPathParam("id",
-			codex.String().Refine(validate.UUID).WithDescription("User UUID."),
-			func(r UpdateUserReq) string { return r.ID },
-			func(r *UpdateUserReq, v string) { r.ID = v },
-		).WithDescription("User UUID"),
-	).Register(b)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "route registration failed: %v\n", err)
-		os.Exit(1)
-	}
-
-	// GET /users — list users with optional query parameters.
-	// QueryParam.Codec validates the ?page value at request time via the nethttp
-	// adapter (auto-called before the handler). The schema flows into the OpenAPI
-	// spec automatically. ?search has no codec — it is documented only.
-	qPageCodec := codex.String().Refine(validate.NonNegativeIntString)
-	listUsersRoute, err := rest.NewRoute[struct{}, PagedUsersResp]("GET", "/users",
-		codex.Empty, pagedUsersRespCodec,
-		rest.RouteMeta{
-			OperationID: "listUsers",
-			Summary:     "List users",
-		},
-		rest.QueryParam{
-			Name:        "page",
-			Description: "Page number (0-based, non-negative integer)",
-			Codec:       &qPageCodec,
-		},
-		rest.QueryParam{
-			Name:        "search",
-			Description: "Filter by name prefix (no validation)",
-		},
-	).Register(b)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "route registration failed: %v\n", err)
-		os.Exit(1)
-	}
-
-	// GET /profile — demonstrates CookieParam and HeaderParam validation.
-	// session_token cookie: required, non-empty (validates auth session).
-	// X-Request-ID header: required UUID (idempotency/tracing key).
-	// The nethttp adapter calls ValidateCookies and ValidateHeaders automatically
-	// before the handler runs — no manual extraction needed.
-	profileSessionCodec := codex.String().Refine(validate.NonEmptyString)
-	profileRequestIDCodec := codex.String().Refine(validate.UUID)
-	profileRoute, err := rest.NewRoute[struct{}, User]("GET", "/profile",
-		codex.Empty, userCodec,
-		rest.RouteMeta{
-			OperationID: "getProfile",
-			Summary:     "Get the current user profile",
-		},
-		rest.CookieParam{
-			Name:        "session_token",
-			Description: "Active session token",
-			Required:    true,
-			Codec:       &profileSessionCodec,
-		},
-		rest.HeaderParam{
-			Name:        "X-Request-Id",
-			Description: "Idempotency and tracing UUID",
-			Required:    true,
-			Codec:       &profileRequestIDCodec,
-		},
-	).Register(b)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "route registration failed: %v\n", err)
-		os.Exit(1)
-	}
-
-	noPipelineErrorRoute, err := rest.NewRoute[CreateUserReq, User]("POST", "/ergonomics/no-pipeline",
-		createUserReqCodec, userCodec,
-		rest.RouteMeta{
-			OperationID: "ergNoPipeline",
-			Summary:     "Ergonomics: no-pipeline conflict mapping",
-		},
-		rest.ResponseMeta{Status: "409", Description: "Business conflict."},
-	).Register(b)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "route registration failed: %v\n", err)
-		os.Exit(1)
-	}
-
-	pipelineErrorRoute, err := rest.NewRoute[CreateUserReq, User]("POST", "/ergonomics/pipeline",
-		createUserReqCodec, userCodec,
-		rest.RouteMeta{
-			OperationID: "ergPipeline",
-			Summary:     "Ergonomics: pipeline conflict mapping",
-		},
-		rest.ErrorStatus[domainConflictError](http.StatusConflict),
-		rest.ResponseMeta{Status: "409", Description: "Business conflict."},
-	).Register(b)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "route registration failed: %v\n", err)
-		os.Exit(1)
-	}
 
 	// Distinguishes validation failures (400, Warn) from system errors (500, Error).
 	errorHandler := func(w http.ResponseWriter, r *http.Request, status int, err error) {
@@ -754,50 +582,239 @@ func main() {
 	metrics := &CountingObserver{}
 	obs := stats.NewFanout(metrics, stats.NewLoggingObserver(baseLogger.With("component", "http")))
 
-	// ObservabilityMiddleware is the ONLY nethttp call site that touches
-	// stats.Observer now (Options.Observer was removed) — build it ONCE,
-	// attach it to every route needing observability via the variadic mws
-	// parameter. It wraps the whole call, recording RecordRequest/
+	// Observability is the ONLY nethttp call site that touches stats.Observer
+	// now (Options.Observer was removed) — build it ONCE and attach it to
+	// every route needing observability via HandleMW(nil, obsFn) (nil: this
+	// is a general-purpose middleware, not paired against a declared
+	// security scheme). It wraps the whole call, recording RecordRequest/
 	// RecordValidationError/spans exactly like the old Options.Observer did.
-	obsMw := nethttp.ObservabilityMiddleware(obs)
+	obsFn := nethttp.Observability(obs)
 
 	// Base options for all routes — ErrorHandler only; observability comes
-	// from the attached obsMw, not from Options anymore.
+	// from the attached obsFn, not from Options anymore.
 	baseOpts := nethttp.Options{ErrorHandler: errorHandler}
 
-	// Wire infrastructure handlers to HTTP routes with custom error handling + domain logging decorator.
-	mux := http.NewServeMux()
-	mustRegister(nethttp.Register(mux, createUserRoute,
-		withDomainLogging("user.create", makeCreateUserHandler(store), domainLogger, extractUserAttrs),
-		baseOpts, obsMw))
-	mustRegister(nethttp.Register(mux, getUserRoute,
-		withDomainLogging("user.get", makeGetUserHandler(store), domainLogger, extractGetUserAttrs),
-		baseOpts, obsMw))
-	mustRegister(nethttp.Register(mux, updateUserRoute,
-		withDomainLogging("user.update", makeUpdateUserHandler(store), domainLogger,
+	// newCreateUserRouteSpec returns a fresh, unattached POST /users
+	// declaration — shared by the primary route below AND the two
+	// contract-violation demo routes further down, so all three exercise
+	// the SAME response header/cookie param declarations (and multi-format
+	// request body support) without re-registering the same Route value
+	// into more than one Builder.
+	newCreateUserRouteSpec := func() rest.Route[CreateUserReq, User] {
+		return rest.NewRoute[CreateUserReq, User]("POST", "/users",
+			createUserReqCodec, userCodec,
+			rest.RouteMeta{
+				OperationID:    "createUser",
+				Summary:        "Create a user",
+				ReqSchemaName:  "CreateUserRequest",
+				RespSchemaName: "User",
+			},
+			// NewRequiredResponseHeaderParam declares the Location header AND
+			// merges it from User.Location automatically: the adapter reads
+			// the field after the handler returns and writes it as the actual
+			// Location HTTP header — no manual nethttp.WithResponseHeaders
+			// call needed. The adapter still validates it; a violation → 500.
+			// The codec schema flows into the OpenAPI response header spec.
+			rest.NewRequiredResponseHeaderParam("Location", locationCodec,
+				func(u User) string { return u.Location },
+				func(u *User, v string) { u.Location = v },
+			).WithDescription("URL of the newly created user resource"),
+			// ResponseCookieParam declares the session cookie written on 201.
+			// The adapter validates the value after the handler returns; a violation → 500.
+			rest.ResponseCookieParam{
+				Name:        "session",
+				Description: "Session token for the new user",
+				Required:    true,
+				Codec:       &sessionCodec,
+			},
+			// RequestFormats enables multi-format request bodies. The adapter
+			// negotiates by Content-Type; unsupported types return 415. The
+			// OpenAPI spec gains additional content-type entries automatically.
+			rest.RequestFormats(
+				format.JSON(createUserReqCodec),
+				format.YAML(createUserReqCodec),
+			),
+		)
+	}
+
+	createUserRoute := newCreateUserRouteSpec().
+		WithHandler(withDomainLogging("user.create", makeCreateUserHandler(store), domainLogger, extractUserAttrs)).
+		HandleMW(nil, obsFn).
+		WithOptions(baseOpts)
+	mustServe(createUserRoute.Register(b), "register POST /users")
+
+	// GetUserReq.ID arrives ALREADY merged and codec-validated by Serve (via
+	// rest.NewPathParam + RouteHandle.DecodeMerged) — no manual
+	// r.PathValue("id") extraction needed in the handler. RegisterHandle is
+	// used (rather than Register) because getUserRoute.BuildPath is called
+	// later in the demo section below — BuildPath is only exposed on
+	// *rest.RouteHandle.
+	getUserRoute, err := rest.NewRoute[GetUserReq, User]("GET", "/users/{id}",
+		getUserReqCodec, userCodec,
+		rest.RouteMeta{
+			OperationID:    "getUser",
+			Summary:        "Get a user by ID",
+			RespSchemaName: "User",
+		},
+		// NewPathParam declares BOTH the spec/validation Param (UUID schema
+		// flows into the OpenAPI spec automatically, exactly like plain
+		// PathParam) AND a merge field — Serve merges {id} into
+		// GetUserReq.ID automatically via RouteHandle.DecodeMerged, so
+		// makeGetUserHandler never needs to call r.PathValue("id") itself.
+		// codex.TextCodec[uuid.UUID]() merges the path segment directly
+		// into a uuid.UUID field instead of a validated-but-still-string
+		// codex.String().Refine(validate.UUID).
+		rest.NewPathParam("id",
+			codex.TextCodec[uuid.UUID]().WithDescription("User UUID."),
+			func(r GetUserReq) uuid.UUID { return r.ID },
+			func(r *GetUserReq, v uuid.UUID) { r.ID = v },
+		).WithDescription("User UUID"),
+	).
+		WithHandler(withDomainLogging("user.get", makeGetUserHandler(store), domainLogger, extractGetUserAttrs)).
+		HandleMW(nil, obsFn).
+		WithOptions(baseOpts).
+		RegisterHandle(b)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "route registration failed: %v\n", err)
+		os.Exit(1)
+	}
+
+	// PUT /users/{id} — MIXES a path field (ID) with body fields (Name,
+	// Email) on the SAME UpdateUserReq struct. DecodeMerged decodes the
+	// JSON body first, then merges {id} in — both populate one struct with
+	// zero manual wiring in the handler. RegisterHandle is used because
+	// updateUserRoute.BuildPath is called later in the demo section below.
+	updateUserRoute, err := rest.NewRoute[UpdateUserReq, User]("PUT", "/users/{id}",
+		updateUserReqCodec, userCodec,
+		rest.RouteMeta{
+			OperationID:    "updateUser",
+			Summary:        "Update a user by ID",
+			RespSchemaName: "User",
+		},
+		rest.NewPathParam("id",
+			codex.String().Refine(validate.UUID).WithDescription("User UUID."),
+			func(r UpdateUserReq) string { return r.ID },
+			func(r *UpdateUserReq, v string) { r.ID = v },
+		).WithDescription("User UUID"),
+	).
+		WithHandler(withDomainLogging("user.update", makeUpdateUserHandler(store), domainLogger,
 			func(req UpdateUserReq, u User) []slog.Attr {
 				return []slog.Attr{slog.String("id", req.ID), slog.String("name", u.Name)}
-			}),
-		baseOpts, obsMw))
-	mustRegister(nethttp.Register(mux, listUsersRoute,
-		withDomainLogging("user.list", makeListUsersHandler(), domainLogger,
-			func(_ struct{}, _ PagedUsersResp) []slog.Attr { return nil }),
-		baseOpts, obsMw))
-	mustRegister(nethttp.Register(mux, profileRoute,
-		func(_ context.Context, _ struct{}) (User, error) {
+			})).
+		HandleMW(nil, obsFn).
+		WithOptions(baseOpts).
+		RegisterHandle(b)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "route registration failed: %v\n", err)
+		os.Exit(1)
+	}
+
+	// GET /users — list users with optional query parameters.
+	// QueryParam.Codec validates the ?page value at request time via the nethttp
+	// adapter (auto-called before the handler). The schema flows into the OpenAPI
+	// spec automatically. ?search has no codec — it is documented only.
+	qPageCodec := codex.String().Refine(validate.NonNegativeIntString)
+	listUsersRoute := rest.NewRoute[struct{}, PagedUsersResp]("GET", "/users",
+		codex.Empty, pagedUsersRespCodec,
+		rest.RouteMeta{
+			OperationID: "listUsers",
+			Summary:     "List users",
+		},
+		rest.QueryParam{
+			Name:        "page",
+			Description: "Page number (0-based, non-negative integer)",
+			Codec:       &qPageCodec,
+		},
+		rest.QueryParam{
+			Name:        "search",
+			Description: "Filter by name prefix (no validation)",
+		},
+	).
+		WithHandler(withDomainLogging("user.list", makeListUsersHandler(), domainLogger,
+			func(_ struct{}, _ PagedUsersResp) []slog.Attr { return nil })).
+		HandleMW(nil, obsFn).
+		WithOptions(baseOpts)
+	mustServe(listUsersRoute.Register(b), "register GET /users")
+
+	// GET /profile — demonstrates CookieParam and HeaderParam validation.
+	// session_token cookie: required, non-empty (validates auth session).
+	// X-Request-ID header: required UUID (idempotency/tracing key).
+	// The nethttp adapter calls ValidateCookies and ValidateHeaders automatically
+	// before the handler runs — no manual extraction needed.
+	profileSessionCodec := codex.String().Refine(validate.NonEmptyString)
+	profileRequestIDCodec := codex.String().Refine(validate.UUID)
+	profileRoute := rest.NewRoute[struct{}, User]("GET", "/profile",
+		codex.Empty, userCodec,
+		rest.RouteMeta{
+			OperationID: "getProfile",
+			Summary:     "Get the current user profile",
+		},
+		rest.CookieParam{
+			Name:        "session_token",
+			Description: "Active session token",
+			Required:    true,
+			Codec:       &profileSessionCodec,
+		},
+		rest.HeaderParam{
+			Name:        "X-Request-Id",
+			Description: "Idempotency and tracing UUID",
+			Required:    true,
+			Codec:       &profileRequestIDCodec,
+		},
+	).
+		WithHandler(func(_ context.Context, _ struct{}) (User, error) {
 			// Handler only runs when both cookie and header are valid.
 			return User{ID: "f47ac10b-58cc-4372-a567-0e02b2c3d479", Name: "Alice", Email: "alice@example.com"}, nil
-		},
-		baseOpts, obsMw))
+		}).
+		HandleMW(nil, obsFn).
+		WithOptions(baseOpts)
+	mustServe(profileRoute.Register(b), "register GET /profile")
+
 	// No-pipeline path: map domainConflictError in custom ErrorHandler.
-	mustRegister(nethttp.Register(mux, noPipelineErrorRoute,
-		makeErgonomicsNoPipelineHandler(),
-		nethttp.Options{ErrorHandler: noPipelineErrorHandler}))
+	noPipelineErrorRoute := rest.NewRoute[CreateUserReq, User]("POST", "/ergonomics/no-pipeline",
+		createUserReqCodec, userCodec,
+		rest.RouteMeta{
+			OperationID: "ergNoPipeline",
+			Summary:     "Ergonomics: no-pipeline conflict mapping",
+		},
+		rest.ResponseMeta{Status: "409", Description: "Business conflict."},
+	).
+		WithHandler(makeErgonomicsNoPipelineHandler()).
+		WithOptions(nethttp.Options{ErrorHandler: noPipelineErrorHandler})
+	mustServe(noPipelineErrorRoute.Register(b), "register POST /ergonomics/no-pipeline")
+
 	// Pipeline path: map same domainConflictError at route declaration via
 	// rest.ErrorStatus; custom ErrorHandler still shapes response body.
-	nethttp.RegisterPipeline(mux, pipelineErrorRoute,
-		makeErgonomicsPipelineHandler(),
-		baseOpts)
+	// This route is deliberately left spec-only for Serve (no .WithHandler
+	// call — makeErgonomicsPipelineHandler returns a
+	// nethttp.PipelineHandlerFunc, whose streaming shape
+	// func(ctx, req) gstream.Stream[Resp] doesn't fit rest.Route.WithHandler's
+	// func(ctx, req) (Resp, error) contract). RegisterHandle is used to
+	// obtain the *rest.RouteHandle that nethttp.RegisterPipeline (still a
+	// current, non-deprecated entry point — it mirrors Register but was not
+	// part of this migration's deprecated-function list) wires directly
+	// onto mux below, right after Serve.
+	pipelineErrorRoute, err := rest.NewRoute[CreateUserReq, User]("POST", "/ergonomics/pipeline",
+		createUserReqCodec, userCodec,
+		rest.RouteMeta{
+			OperationID: "ergPipeline",
+			Summary:     "Ergonomics: pipeline conflict mapping",
+		},
+		rest.ErrorStatus[domainConflictError](http.StatusConflict),
+		rest.ResponseMeta{Status: "409", Description: "Business conflict."},
+	).RegisterHandle(b)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "route registration failed: %v\n", err)
+		os.Exit(1)
+	}
+
+	// Wire every handler-bearing route registered into b onto mux — the
+	// SOLE server-side entry point for regular (non-SSE, non-pipeline) routes.
+	mux := http.NewServeMux()
+	mustServe(nethttp.Serve(mux, b), "Serve")
+	// pipelineErrorRoute has no WithHandler-attached handler, so Serve
+	// skipped it above (spec-only); wire its pipeline handler directly.
+	nethttp.RegisterPipeline(mux, pipelineErrorRoute, makeErgonomicsPipelineHandler(), baseOpts)
 
 	// Demo requests against an in-process test server.
 	srv := httptest.NewServer(mux)
@@ -820,7 +837,7 @@ func main() {
 		resp.StatusCode, created, resp.Header.Get("Location"), resp.Header.Get("Set-Cookie"))
 
 	fmt.Println("=== POST /users (YAML body — multi-format request) ===")
-	// WithRequestFormats enables content negotiation for incoming request bodies.
+	// RequestFormats enables content negotiation for incoming request bodies.
 	// The adapter picks the decoder matching the Content-Type header.
 	yamlReq, _ := http.NewRequest(http.MethodPost, srv.URL+"/users", //nolint:noctx
 		strings.NewReader("name: Bob\nemail: bob@example.com\n"))
@@ -1015,16 +1032,16 @@ func main() {
 	fmt.Printf("Status: %d\nError:  %s\n\n", resp8.StatusCode, headerErrBody["error"])
 
 	fmt.Println("=== ResponseHeaderParams + ResponseCookieParams — contract violation demos ===")
-	// A separate server uses a handler that:
+	// Each demo below builds its OWN standalone route (via
+	// newCreateUserRouteSpec, the SAME spec as the primary POST /users
+	// route) plus its OWN handler and observability attachment, wired
+	// through nethttp.ServeOne into an isolated http.Handler/mux — keeping
+	// these deliberately-broken handlers from ever touching the primary
+	// createUserRoute registered into b above.
 	//   (a) deposits an empty Location value → fails NonEmptyString codec → adapter returns 500
 	//   (b) deposits a too-short session value → fails MinLen(8) codec → adapter returns 500
-	// The violation demo uses a separate mux with its OWN attached obsMw —
-	// ObservabilityMiddleware is now the only way to observe RecordRequest/
-	// RecordValidationError; attaching it per-route (rather than relying on
-	// a shared ctx-injected observer) is the standard pattern going forward.
-	violationMux := http.NewServeMux()
-	mustRegister(nethttp.Register(violationMux, createUserRoute,
-		func(ctx context.Context, req CreateUserReq) (User, error) {
+	violationHandler, err := nethttp.ServeOne(newCreateUserRouteSpec().
+		WithHandler(func(ctx context.Context, req CreateUserReq) (User, error) {
 			h := make(http.Header)
 			h.Set("Location", "") // empty → fails NonEmptyString → 500
 			nethttp.WithResponseHeaders(ctx, h)
@@ -1034,9 +1051,13 @@ func main() {
 				Opts:  nethttp.CookieOptions{Insecure: true},
 			})
 			return buildUserResponse(buildUserRecord(req)), nil
-		},
-		nethttp.Options{}, obsMw))
-	violationSrv := httptest.NewServer(violationMux)
+		}).
+		HandleMW(nil, obsFn))
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "ServeOne failed: %v\n", err)
+		os.Exit(1)
+	}
+	violationSrv := httptest.NewServer(violationHandler)
 	defer violationSrv.Close()
 
 	violResp, err := http.Post(violationSrv.URL+"/users", "application/json", //nolint:noctx
@@ -1053,19 +1074,22 @@ func main() {
 	fmt.Println("=== Response body encode violation — symmetric validation ===")
 	// The same codec that rejects an invalid request body at 400 now also rejects
 	// an invalid response body at 500. Refine constraints run on both Encode and Decode.
-	bodyViolMux := http.NewServeMux()
-	mustRegister(nethttp.Register(bodyViolMux, createUserRoute,
-		func(ctx context.Context, req CreateUserReq) (User, error) {
+	bodyViolHandler, err := nethttp.ServeOne(newCreateUserRouteSpec().
+		WithHandler(func(_ context.Context, _ CreateUserReq) (User, error) {
 			// Handler deliberately returns a User with invalid field values to
-			// demonstrate that handle.Encode now validates the response body.
+			// demonstrate that Serve now validates the response body.
 			return User{
 				ID:    "not-a-uuid",   // fails UUID constraint
 				Name:  "",             // fails NonEmptyString constraint
 				Email: "not-an-email", // fails Email constraint
 			}, nil
-		},
-		nethttp.Options{}, obsMw))
-	bodyViolSrv := httptest.NewServer(bodyViolMux)
+		}).
+		HandleMW(nil, obsFn))
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "ServeOne failed: %v\n", err)
+		os.Exit(1)
+	}
+	bodyViolSrv := httptest.NewServer(bodyViolHandler)
 	defer bodyViolSrv.Close()
 
 	bodyViolResp, err := http.Post(bodyViolSrv.URL+"/users", "application/json", //nolint:noctx

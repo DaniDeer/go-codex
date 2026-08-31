@@ -82,7 +82,7 @@ createUser, _ := rest.NewRoute[CreateUserReq, User]("POST", "/users",
         RespSchemaName: "User",
         RespStatus:     "201",
     },
-).Register(b)
+).RegisterHandle(b)
 
 uuidCodec := codex.String().Refine(validate.UUID)
 getUser, _ := rest.NewRoute[struct{}, User]("GET", "/users/{id}",
@@ -90,7 +90,7 @@ getUser, _ := rest.NewRoute[struct{}, User]("GET", "/users/{id}",
     rest.RouteMeta{OperationID: "getUser", RespSchemaName: "User"},
     // PathParam.Codec validates {id} at BuildPath time + UUID schema → spec
     rest.PathParam{Name: "id", Description: "User UUID"}.WithCodec(uuidCodec),
-).Register(b)
+).RegisterHandle(b)
 
 // Query params flow into spec as in: query parameters
 pageCodec := codex.String().Refine(validate.NonNegativeIntString)
@@ -99,7 +99,7 @@ listUsers, _ := rest.NewRoute[struct{}, []User]("GET", "/users",
     rest.RouteMeta{OperationID: "listUsers"},
     rest.QueryParam{Name: "page", Description: "Page number (0-based)"}.WithCodec(pageCodec),
     rest.QueryParam{Name: "search", Description: "Name filter"},
-).Register(b)
+).RegisterHandle(b)
 
 // Cookie + header params flow into spec as in: cookie / in: header parameters
 sessionCodec  := codex.String().Refine(validate.NonEmptyString)
@@ -109,7 +109,7 @@ profile, _ := rest.NewRoute[struct{}, User]("GET", "/profile",
     rest.RouteMeta{OperationID: "getProfile"},
     rest.CookieParam{Name: "session_token", Required: true}.WithCodec(sessionCodec),
     rest.HeaderParam{Name: "X-Request-Id",  Required: true}.WithCodec(requestIDCodec),
-).Register(b)
+).RegisterHandle(b)
 
 // Generate the full OpenAPI 3.1 spec from all registered routes:
 doc, err := b.OpenAPISpec()
@@ -118,9 +118,13 @@ yamlBytes, _ := doc.MarshalYAML()
 
 ## Security schemes
 
-`rest.WithSecurityScheme` is the ONLY way to declare a security scheme — directly
-on the route, no builder-level registry. `Builder.OpenAPISpec()` aggregates
-`components.securitySchemes` from every registered route automatically:
+`middleware.SecurityScheme(schemeName, scheme, scopes, codec)`/
+`rest.FromSecurityScheme(schemeName, rest.SecurityScheme, scopes)`, attached
+via `Route.Use(mw)`, is the ONLY way to declare a security scheme — directly
+on the route, no builder-level registry (`rest.WithSecurityScheme` was
+REMOVED — there is no metadata-only registration anymore). `Builder.OpenAPISpec()`
+aggregates `components.securitySchemes` from every registered route
+automatically:
 
 ```go
 bearerAuth := rest.SecurityScheme{
@@ -136,8 +140,7 @@ createUser, _ := rest.NewRoute[CreateUserReq, User]("POST", "/users", ...,
             route.Require("bearerAuth", "write:users"),
         },
     },
-    rest.WithSecurityScheme("bearerAuth", bearerAuth),
-).Register(b)
+).Use(rest.FromSecurityScheme("bearerAuth", bearerAuth, []string{"write:users"})).RegisterHandle(b)
 ```
 
 Security schemes appear in `components/securitySchemes`; global security at document root; per-operation security overrides inline — all generated automatically.

@@ -1,5 +1,20 @@
 # Declarative Middleware — a shared `middleware` package for `route`/`api/*`/`ports`
 
+> **SUPERSEDED for REST — see [Middleware Workflow Simplification](../design/middleware-workflow-simplification.md), IMPLEMENTED.**
+> This doc's REST design ("Revision 2 — the declare/implement split")
+> shipped, then was further unified and simplified by
+> `middleware-workflow-simplification.md` (`HandleMW`/`ClientMW` replace
+> `.Implement()`/`Wrap`/manual `ServerImplementation`/`ClientMiddleware`
+> construction; `Register`/`RegisterHandle`/`Serve`/`ServeSSE`/`ServeOne`
+> replace the old `Handler`/`Register`/`SSEHandler`/`RegisterSSE`
+> four-door surface; `rest.WithSecurityScheme` was REMOVED entirely).
+> This doc remains useful for its Phase 2+ (events/reqreply/MCP/ports)
+> DESIGN RATIONALE, which is still valid and not yet implemented — see
+> `docs/roadmap/events-reqreply-ports-workflow-simplification.md` for
+> the up-to-date findings on that front. Do not follow this doc's OWN
+> REST code samples/signatures as current — they describe the
+> PRE-unification shape.
+>
 > **Status:** Design draft — Phase 1 (REST) fully speced with THREE
 > worked capabilities: security (`RequireScopes`, now SPEC-DERIVING —
 > see "Two attachment points" below), observability

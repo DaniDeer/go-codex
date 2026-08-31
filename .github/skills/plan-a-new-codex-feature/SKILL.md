@@ -319,6 +319,39 @@ When moving from roadmap to implementation, use this transition checklist:
 | Map roadmap "Files to create" → plan.md todos | One todo per file |
 | Check roadmap "Out of scope" is still current | Mark anything that crept in |
 | Remove `> Status: Design complete — not yet implemented` from roadmap doc | See the 3-way delete/keep/promote-to-`docs/design/` policy in the "Documentation" section above |
+| If the plan removes/replaces an old function/API | Run the "Removing an old API" checklist below BEFORE deleting anything |
+
+### Removing an old API (learned the hard way — see `docs/design/middleware-workflow-simplification.md`'s "Lessons Learned")
+
+A plan that replaces an old, multi-purpose function/door with a new one must
+treat the removal itself as a distinct, checked step — not an assumed-free
+side effect of "the new thing works now":
+
+1. **Enumerate every responsibility of the old function, not just its
+   headline purpose.** An old `Register`-style function often bundles
+   wiring + validation + a security/coverage check + observer setup in one
+   call. Before deleting it, list ALL of its side effects and verify each
+   one has an explicit new home in the replacement — a responsibility that
+   was "just always there" is exactly the one that gets silently dropped.
+2. **Verify "equivalent" claims by migration, not by review.** If the new
+   mechanism is a reflect-based/generic dispatcher claimed to run "the same
+   pipeline" as the old one, that claim is unverified until a REPRESENTATIVE
+   SAMPLE of the old API's EXISTING callers (tests, examples) has actually
+   been ported onto it and re-run. Do this early, before committing to the
+   removal — a design-review sign-off is not equivalent to a passing test.
+3. **Check every real consumer, not just the test suite.** Tests tend to
+   share one "ordinary" shape; a real example may use a structurally
+   different pattern (e.g. a package-level pre-registered handle attached to
+   its real handler later, once a runtime dependency exists) that the new
+   design's ordering assumptions never anticipated. Migrate every existing
+   example, not a representative subset, before declaring the removal done.
+4. **Sweep for documentation references BEFORE declaring the removal
+   done — `go build`/`go vet`/`staticcheck` verify none of this.** After
+   deleting an exported symbol, grep the WHOLE repo (not just the changed
+   package) for its name across: `*.go` godoc `[Symbol]` bracket-link
+   comments, `docs/**/*.md` code snippets, `examples/**/*.go` comments, and
+   `.github/**/*.md` skill files. A green build says nothing about a
+   dangling godoc link or a docs page showing code that no longer compiles.
 
 ---
 
@@ -349,6 +382,8 @@ for d in examples/*/; do go run ./$d; done   # all examples exit 0
 - **All Examples must exit 0.** Fix stale patterns in existing examples if your change affects their API.
 - **Go generics methods cannot introduce new type params.** Use free functions (`forge.NewFunction[In, Out]`) when a second type parameter is needed on a generic type.
 - **Observer location strings are shared vocabulary** — use existing strings (`"sql_row"`, `"file"`, `"payload"`) before inventing new ones. New ones only when genuinely different.
+- **A reflect-based/generic dispatch mechanism claimed to be "equivalent" to existing code is a hypothesis until proven.** Migrating a representative sample of the old API's existing tests/examples onto it EARLY is the actual verification step — a design review that reads convincingly is not equivalent to a passing test. See `docs/design/middleware-workflow-simplification.md`'s "Lessons Learned" for a real case where this shipped unverified and hid 2 genuine gaps plus a security regression until wholesale test migration surfaced them.
+- **Deleting an old function can silently delete a bundled responsibility nobody re-derived.** Before removing an old multi-purpose door, enumerate its FULL side-effect list (not just its obvious primary purpose) — see the "Removing an old API" checklist above.
 
 ---
 

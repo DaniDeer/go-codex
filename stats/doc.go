@@ -17,7 +17,8 @@
 // Use the full [Observer] interface when wiring to an adapter. It embeds
 // [ValidationObserver] and adds transport-specific hooks for HTTP and MQTT:
 //
-//	nethttp.Register(mux, route, handler, nethttp.Options{Observer: obs})
+//	route.WithOptions(nethttp.Options{Observer: obs})
+//	route.Register(b); nethttp.Serve(mux, b)
 //	adaptermqtt.SubscribeHandler(ctx, ch, fn, adaptermqtt.SubscribeOptions{Observer: obs})
 //
 // # Composing metrics and logging
@@ -32,7 +33,8 @@
 //	    stats.NewLoggingObserver(slog.Default().With("component", "api")),
 //	)
 //
-//	nethttp.Register(mux, route, handler, nethttp.Options{Observer: obs})
+//	route.WithOptions(nethttp.Options{Observer: obs})
+//	route.Register(b); nethttp.Serve(mux, b)
 //
 // [LoggingObserver] implements all five observer interfaces and logs every event
 // via slog. Configure the logger's handler for your environment:

@@ -14,31 +14,34 @@ import (
 
 func TestMiddleware_ZeroValue(t *testing.T) {
 	var mw middleware.Middleware
-	if mw.Name != "" || mw.Fn != nil || mw.Security != nil {
+	if mw.Name != "" || mw.Security != nil ||
+		mw.RequestHeaderParams != nil || mw.RequestCookieParams != nil || mw.RequestQueryParams != nil ||
+		mw.ResponseHeaderParams != nil || mw.ResponseCookieParams != nil {
 		t.Errorf("want zero-value Middleware to have empty fields, got %+v", mw)
 	}
 }
 
-func TestClientMiddleware_ZeroValue(t *testing.T) {
-	var cmw middleware.ClientMiddleware
-	if cmw.Name != "" || cmw.Fn != nil {
-		t.Errorf("want zero-value ClientMiddleware to have empty fields, got %+v", cmw)
+func TestServerImplementation_ZeroValue(t *testing.T) {
+	var impl middleware.ServerImplementation
+	if impl.Name != "" || impl.Fn != nil || impl.Satisfies != nil {
+		t.Errorf("want zero-value ServerImplementation to have empty fields, got %+v", impl)
 	}
 }
 
-// ── DeclareSecurity ──────────────────────────────────────────────────────────
+func TestClientImplementation_ZeroValue(t *testing.T) {
+	var cimpl middleware.ClientImplementation
+	if cimpl.Name != "" || cimpl.Fn != nil || cimpl.Satisfies != nil {
+		t.Errorf("want zero-value ClientImplementation to have empty fields, got %+v", cimpl)
+	}
+}
 
-func TestDeclareSecurity_BuildsSpecOnlyMiddleware(t *testing.T) {
+// ── SecurityScheme ──────────────────────────────────────────────────────────
+
+func TestSecurityScheme_BuildsSpecOnlyMiddleware(t *testing.T) {
 	scheme := route.BearerScheme("")
 	codec := codex.String()
-	mw := middleware.DeclareSecurity("bearerAuth", scheme, []string{"pull"}, &codec)
+	mw := middleware.SecurityScheme("bearerAuth", scheme, []string{"pull"}, &codec)
 
-	if mw.Fn != nil {
-		t.Errorf("want Fn nil (spec-only), got %v", mw.Fn)
-	}
-	if len(mw.Satisfies) != 0 {
-		t.Errorf("want empty Satisfies (nothing in this codebase enforces it), got %v", mw.Satisfies)
-	}
 	if mw.Security == nil {
 		t.Fatal("want non-nil Security")
 	}
@@ -56,52 +59,12 @@ func TestDeclareSecurity_BuildsSpecOnlyMiddleware(t *testing.T) {
 	}
 }
 
-// ── RequireScopes ────────────────────────────────────────────────────────────
-
-type testReq struct{ Claims string }
-
-func TestRequireScopes_BuildsSecurityDeclaration(t *testing.T) {
-	scheme := route.BearerScheme("JWT")
-	mw := middleware.RequireScopes[string, testReq]("bearerAuth", scheme, []string{"read"}, nil,
-		func(ctx context.Context, raw string, req *testReq) (map[string][]string, error) {
-			return map[string][]string{"bearerAuth": {"read"}}, nil
-		},
-	)
-	if mw.Name != "require-scopes:bearerAuth" {
-		t.Errorf("unexpected Name: %q", mw.Name)
-	}
-	if len(mw.Satisfies) != 1 || mw.Satisfies[0] != "bearerAuth" {
-		t.Errorf("unexpected Satisfies: %v", mw.Satisfies)
-	}
-	if mw.Security == nil || mw.Security.SchemeName != "bearerAuth" {
-		t.Fatalf("unexpected Security: %+v", mw.Security)
-	}
-	fn, ok := mw.Fn.(func(context.Context, string, *testReq) (map[string][]string, error))
-	if !ok {
-		t.Fatalf("Fn has wrong shape: %T", mw.Fn)
-	}
-	grants, err := fn(context.Background(), "token", &testReq{})
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if grants["bearerAuth"][0] != "read" {
-		t.Errorf("unexpected grants: %v", grants)
-	}
-}
-
-func TestRequireScopes_ExtractError(t *testing.T) {
-	wantErr := errors.New("invalid token")
-	mw := middleware.RequireScopes[string, testReq]("bearerAuth", route.BearerScheme("JWT"), nil, nil,
-		func(ctx context.Context, raw string, req *testReq) (map[string][]string, error) {
-			return nil, wantErr
-		},
-	)
-	fn := mw.Fn.(func(context.Context, string, *testReq) (map[string][]string, error))
-	_, err := fn(context.Background(), "bad", &testReq{})
-	if !errors.Is(err, wantErr) {
-		t.Errorf("want extraction error to propagate, got %v", err)
-	}
-}
+// NOTE: middleware.Scopes[Raw, Req] was REMOVED — its only job (wrapping
+// an extract closure into a ServerImplementation{Satisfies, Fn}) now
+// happens inside rest.Route.HandleMW itself. See
+// docs/design/middleware-workflow-simplification.md's "HandleMW/ClientMW
+// unification" decision. Equivalent coverage now lives in
+// api/rest/builder_test.go's HandleMW tests.
 
 // ── CheckScopes ──────────────────────────────────────────────────────────────
 

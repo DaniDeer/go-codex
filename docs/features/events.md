@@ -159,7 +159,7 @@ topicVars) (T, error)` closes the loop: decodes the payload (via
 value, in one call.
 
 `adapters/mqtt5.PublishHandle` is the single-call publisher convenience —
-mirrors `nethttp.CallHandle`: derives the topic vars from the payload
+mirrors `nethttp.CallWithHandle`: derives the topic vars from the payload
 struct automatically via `codex.EncodeVars(msg, handle.MergeFields()...)`,
 then delegates to `Publish`. `Publish` remains the lower-level escape
 hatch for callers building the vars map themselves. The same convenience

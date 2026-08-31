@@ -3,12 +3,14 @@ package rest_test
 import (
 	"context"
 	"errors"
+	"net/http"
 	"testing"
 
 	"github.com/DaniDeer/go-codex/api/rest"
 	"github.com/DaniDeer/go-codex/codex"
 	"github.com/DaniDeer/go-codex/middleware"
 	"github.com/DaniDeer/go-codex/route"
+	"github.com/DaniDeer/go-codex/validate"
 )
 
 type mwTestReq struct{ ID string }
@@ -20,12 +22,13 @@ var mwTestReqCodec = codex.Struct[mwTestReq](
 	),
 )
 
+// requireScopesMW builds a declare-time-only Middleware (no runtime
+// Fn/Satisfies — those live on a separately-supplied
+// middleware.ServerImplementation, attached at adapter Register/Handler
+// time, not here). Tests in this file only exercise Route.RegisterHandle(builder)/
+// ValidateRoute, which never consult an implementation.
 func requireScopesMW(name string, scopes []string) middleware.Middleware {
-	return middleware.RequireScopes[*struct{}, mwTestReq](name, route.BearerScheme("JWT"), scopes, nil,
-		func(ctx context.Context, raw *struct{}, req *mwTestReq) (map[string][]string, error) {
-			return map[string][]string{name: scopes}, nil
-		},
-	)
+	return middleware.SecurityScheme(name, route.BearerScheme("JWT"), scopes, nil)
 }
 
 // ── WithMiddleware: basic wiring ─────────────────────────────────────────────
@@ -37,7 +40,7 @@ func TestWithMiddleware_PopulatesHandleAndSpec(t *testing.T) {
 	h, err := rest.NewRoute[mwTestReq, userResp]("GET", "/profile", mwTestReqCodec, userCodec,
 		rest.RouteMeta{OperationID: "getProfile"},
 		rest.WithMiddleware(mw),
-	).Register(b)
+	).RegisterHandle(b)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -58,7 +61,7 @@ func TestWithMiddleware_NoSpecEffectForNonSecurityMiddleware(t *testing.T) {
 
 	h, err := rest.NewRoute[mwTestReq, userResp]("GET", "/plain", mwTestReqCodec, userCodec,
 		rest.WithMiddleware(mw),
-	).Register(b)
+	).RegisterHandle(b)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -77,7 +80,7 @@ func TestWithMiddleware_TwoSchemesANDCombined(t *testing.T) {
 	h, err := rest.NewRoute[mwTestReq, userResp]("GET", "/both", mwTestReqCodec, userCodec,
 		rest.WithMiddleware(mwA),
 		rest.WithMiddleware(mwB),
-	).Register(b)
+	).RegisterHandle(b)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -103,7 +106,7 @@ func TestWithMiddleware_ConflictingSecurityDeclarations(t *testing.T) {
 	_, err := rest.NewRoute[mwTestReq, userResp]("GET", "/profile", mwTestReqCodec, userCodec,
 		rest.WithMiddleware(mwA),
 		rest.WithMiddleware(mwB),
-	).Register(b)
+	).RegisterHandle(b)
 
 	var conflictErr rest.ConflictingSecurityDeclarationError
 	if !errors.As(err, &conflictErr) {
@@ -130,7 +133,7 @@ func TestWithMiddleware_IdenticalDeclarationsAllowedSilently(t *testing.T) {
 	_, err := rest.NewRoute[mwTestReq, userResp]("GET", "/profile", mwTestReqCodec, userCodec,
 		rest.WithMiddleware(mw),
 		rest.WithMiddleware(mwDup),
-	).Register(b)
+	).RegisterHandle(b)
 	if err != nil {
 		t.Fatalf("want identical redundant declarations to be allowed silently, got %v", err)
 	}
@@ -138,22 +141,20 @@ func TestWithMiddleware_IdenticalDeclarationsAllowedSilently(t *testing.T) {
 
 // ── Drift-closing validation: manual Security with no attached middleware ───
 
-func TestRegister_MissingSecurityMiddleware(t *testing.T) {
+func TestRegister_ManualSecurityWithNoMiddlewareNoLongerFailsAtRegister(t *testing.T) {
+	// Post-Revision-2, the coverage check (that every declared scheme has an
+	// enforcing ServerImplementation) has moved to adapter Register/Handler
+	// time — see rest.CheckCoverage. Route.RegisterHandle(builder) never
+	// sees any ServerImplementation values, so it correctly ALLOWS a route
+	// declaring Security with no attached middleware at all; the adapter is
+	// where the drift-closing check now happens.
 	b := rest.NewBuilder(testInfo)
 	_, err := rest.NewRoute[mwTestReq, userResp]("GET", "/secure", mwTestReqCodec, userCodec,
 		rest.RouteMeta{Security: []route.SecurityRequirement{{"bearerAuth": nil}}},
-		// No WithMiddleware attached at all — the original SecurityFunc bug.
-	).Register(b)
-
-	var missingErr rest.MissingSecurityMiddlewareError
-	if !errors.As(err, &missingErr) {
-		t.Fatalf("want MissingSecurityMiddlewareError, got %T: %v", err, err)
-	}
-	if missingErr.Scheme != "bearerAuth" {
-		t.Errorf("unexpected scheme: %q", missingErr.Scheme)
-	}
-	if missingErr.LogValue().String() == "" {
-		t.Error("want non-empty LogValue")
+		// No WithMiddleware attached at all.
+	).RegisterHandle(b)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
 	}
 }
 
@@ -163,7 +164,7 @@ func TestRegister_ManualSecurityWithAttachedMiddlewareOK(t *testing.T) {
 	_, err := rest.NewRoute[mwTestReq, userResp]("GET", "/secure", mwTestReqCodec, userCodec,
 		rest.RouteMeta{Security: []route.SecurityRequirement{{"bearerAuth": nil}}},
 		rest.WithMiddleware(mw),
-	).Register(b)
+	).RegisterHandle(b)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -175,13 +176,13 @@ func TestWithMiddleware_RequestParamsContribution(t *testing.T) {
 	b := rest.NewBuilder(testInfo)
 	mw := middleware.Middleware{
 		Name: "require-api-key",
-		RequestParams: []any{
-			rest.HeaderParam{Name: "X-API-Key", Required: true},
+		RequestHeaderParams: []middleware.HeaderParamSpec{
+			{Name: "X-API-Key", Required: true},
 		},
 	}
 	h, err := rest.NewRoute[mwTestReq, userResp]("GET", "/keyed", mwTestReqCodec, userCodec,
 		rest.WithMiddleware(mw),
-	).Register(b)
+	).RegisterHandle(b)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -199,17 +200,17 @@ func TestWithMiddleware_RequestParamsContribution(t *testing.T) {
 func TestWithMiddleware_ConflictingParamContribution(t *testing.T) {
 	b := rest.NewBuilder(testInfo)
 	mwA := middleware.Middleware{
-		Name:          "mw-a",
-		RequestParams: []any{rest.HeaderParam{Name: "X-Trace", Required: true}},
+		Name:                "mw-a",
+		RequestHeaderParams: []middleware.HeaderParamSpec{{Name: "X-Trace", Required: true}},
 	}
 	mwB := middleware.Middleware{
-		Name:          "mw-b",
-		RequestParams: []any{rest.CookieParam{Name: "X-Trace", Required: true}}, // DIFFERENT kind, same name
+		Name:                "mw-b",
+		RequestCookieParams: []middleware.CookieParamSpec{{Name: "X-Trace", Required: true}}, // DIFFERENT kind, same name
 	}
 	_, err := rest.NewRoute[mwTestReq, userResp]("GET", "/traced", mwTestReqCodec, userCodec,
 		rest.WithMiddleware(mwA),
 		rest.WithMiddleware(mwB),
-	).Register(b)
+	).RegisterHandle(b)
 
 	var conflictErr rest.ConflictingParamContributionError
 	if !errors.As(err, &conflictErr) {
@@ -220,21 +221,13 @@ func TestWithMiddleware_ConflictingParamContribution(t *testing.T) {
 	}
 }
 
-func TestWithMiddleware_ParamContributionShapeError(t *testing.T) {
-	b := rest.NewBuilder(testInfo)
-	mw := middleware.Middleware{
-		Name:          "bad-shape",
-		RequestParams: []any{"not-a-param"},
-	}
-	_, err := rest.NewRoute[mwTestReq, userResp]("GET", "/bad", mwTestReqCodec, userCodec,
-		rest.WithMiddleware(mw),
-	).Register(b)
-
-	var shapeErr rest.ParamContributionShapeError
-	if !errors.As(err, &shapeErr) {
-		t.Fatalf("want ParamContributionShapeError, got %T: %v", err, err)
-	}
-}
+// NOTE: TestWithMiddleware_ParamContributionShapeError was REMOVED —
+// RequestParams/ResponseParams were generalized from type-erased []any to
+// typed per-kind fields (RequestHeaderParams/RequestCookieParams/etc.), so
+// a wrong-shape entry is now a Go COMPILE error, not a runtime
+// rest.ParamContributionShapeError (removed along with the type-erased
+// fields). See docs/design/middleware-workflow-simplification.md's
+// "Decision: typed RequestParams/ResponseParams fields".
 
 // ── ValidateRoute (L1/L8): full opts list, no live Builder needed ───────────
 
@@ -295,13 +288,14 @@ func TestClientHandle_PicksUpMiddlewareDeclaredSecurity(t *testing.T) {
 	}
 }
 
-func TestValidateRoute_CatchesMissingSecurityMiddleware(t *testing.T) {
+func TestValidateRoute_NoLongerCatchesMissingSecurityMiddleware(t *testing.T) {
+	// Same rationale as TestRegister_ManualSecurityWithNoMiddlewareNoLongerFailsAtRegister:
+	// ValidateRoute runs the identical (coverage-free) validation Route.Register does.
 	err := rest.ValidateRoute[mwTestReq, userResp](
 		rest.RouteMeta{Security: []route.SecurityRequirement{{"bearerAuth": nil}}},
 	)
-	var missingErr rest.MissingSecurityMiddlewareError
-	if !errors.As(err, &missingErr) {
-		t.Fatalf("want MissingSecurityMiddlewareError, got %T: %v", err, err)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
 	}
 }
 
@@ -312,14 +306,14 @@ func TestRouteUse_EquivalentToWithMiddleware(t *testing.T) {
 
 	viaUse, err := rest.NewRoute[mwTestReq, userResp]("GET", "/profile", mwTestReqCodec, userCodec,
 		rest.RouteMeta{OperationID: "getProfile"},
-	).Use(mw).Register(rest.NewBuilder(testInfo))
+	).Use(mw).RegisterHandle(rest.NewBuilder(testInfo))
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	viaOpt, err := rest.NewRoute[mwTestReq, userResp]("GET", "/profile", mwTestReqCodec, userCodec,
 		rest.RouteMeta{OperationID: "getProfile"},
 		rest.WithMiddleware(mw),
-	).Register(rest.NewBuilder(testInfo))
+	).RegisterHandle(rest.NewBuilder(testInfo))
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -338,17 +332,17 @@ func TestRouteUse_EquivalentToWithMiddleware(t *testing.T) {
 
 func TestRouteUse_ChainedCallsEquivalentToVariadic(t *testing.T) {
 	mw1 := requireScopesMW("bearerAuth", []string{"read"})
-	obsMw := middleware.Middleware{Name: "observability", Fn: nil}
+	obsMw := middleware.Middleware{Name: "observability"}
 
 	chained, err := rest.NewRoute[mwTestReq, userResp]("GET", "/profile", mwTestReqCodec, userCodec,
 		rest.RouteMeta{OperationID: "getProfile"},
-	).Use(mw1).Use(obsMw).Register(rest.NewBuilder(testInfo))
+	).Use(mw1).Use(obsMw).RegisterHandle(rest.NewBuilder(testInfo))
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	variadic, err := rest.NewRoute[mwTestReq, userResp]("GET", "/profile", mwTestReqCodec, userCodec,
 		rest.RouteMeta{OperationID: "getProfile"},
-	).Use(mw1, obsMw).Register(rest.NewBuilder(testInfo))
+	).Use(mw1, obsMw).RegisterHandle(rest.NewBuilder(testInfo))
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -375,15 +369,15 @@ func TestRouteUse_DoesNotMutateBaseRoute(t *testing.T) {
 	branchA := base.Use(mw1)
 	branchB := base.Use(mw2)
 
-	handleA, err := branchA.Register(rest.NewBuilder(testInfo))
+	handleA, err := branchA.RegisterHandle(rest.NewBuilder(testInfo))
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	handleB, err := branchB.Register(rest.NewBuilder(testInfo))
+	handleB, err := branchB.RegisterHandle(rest.NewBuilder(testInfo))
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	baseHandle, err := base.Register(rest.NewBuilder(testInfo))
+	baseHandle, err := base.RegisterHandle(rest.NewBuilder(testInfo))
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -400,11 +394,11 @@ func TestRouteUse_DoesNotMutateBaseRoute(t *testing.T) {
 }
 
 func TestSSERouteUse_EquivalentToWithMiddleware(t *testing.T) {
-	obsMw := middleware.Middleware{Name: "observability", Fn: nil}
+	obsMw := middleware.Middleware{Name: "observability"}
 
 	viaUse, err := rest.NewSSERoute[struct{}, userResp]("/stream", codex.Empty, userCodec,
 		rest.RouteMeta{OperationID: "streamUsers"},
-	).Use(obsMw).Register(rest.NewBuilder(testInfo))
+	).Use(obsMw).RegisterHandle(rest.NewBuilder(testInfo))
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -413,68 +407,257 @@ func TestSSERouteUse_EquivalentToWithMiddleware(t *testing.T) {
 	}
 }
 
-// ── Route.UseClient / ClientMiddlewares ──────────────────────────────────────
+// ── Route.ClientMW / ClientImplementations ───────────────────────────────────
 
-func TestRouteUseClient_PopulatesClientMiddlewaresOnRegister(t *testing.T) {
-	cmw := middleware.ClientMiddleware{Name: "cred-supplier", Fn: func() {}}
-
+func TestRouteClientMW_PopulatesClientImplementationsOnRegister(t *testing.T) {
 	h, err := rest.NewRoute[mwTestReq, userResp]("GET", "/profile", mwTestReqCodec, userCodec,
 		rest.RouteMeta{OperationID: "getProfile"},
-	).UseClient(cmw).Register(rest.NewBuilder(testInfo))
+	).ClientMW(nil, func() {}).RegisterHandle(rest.NewBuilder(testInfo))
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if len(h.ClientMiddlewares) != 1 || h.ClientMiddlewares[0].Name != "cred-supplier" {
-		t.Fatalf("want ClientMiddlewares to carry the attached middleware, got %+v", h.ClientMiddlewares)
+	if len(h.ClientImplementations) != 1 {
+		t.Fatalf("want ClientImplementations to carry the attached implementation, got %+v", h.ClientImplementations)
 	}
-	// UseClient must NEVER affect the spec.
+	// ClientMW(nil, ...) must NEVER affect the spec.
 	if len(h.Descriptor.Security) != 0 {
-		t.Errorf("want no Security contributed by UseClient, got %+v", h.Descriptor.Security)
+		t.Errorf("want no Security contributed by ClientMW(nil, ...), got %+v", h.Descriptor.Security)
 	}
 }
 
-func TestRouteUseClient_PopulatesClientMiddlewaresOnClientHandle(t *testing.T) {
-	cmw := middleware.ClientMiddleware{Name: "cred-supplier", Fn: func() {}}
-
+func TestRouteClientMW_PopulatesClientImplementationsOnClientHandle(t *testing.T) {
 	h := rest.NewRoute[mwTestReq, userResp]("GET", "/profile", mwTestReqCodec, userCodec,
 		rest.RouteMeta{OperationID: "getProfile"},
-	).UseClient(cmw).ClientHandle()
+	).ClientMW(nil, func() {}).ClientHandle()
 
-	if len(h.ClientMiddlewares) != 1 || h.ClientMiddlewares[0].Name != "cred-supplier" {
-		t.Fatalf("want ClientMiddlewares to carry the attached middleware, got %+v", h.ClientMiddlewares)
+	if len(h.ClientImplementations) != 1 {
+		t.Fatalf("want ClientImplementations to carry the attached implementation, got %+v", h.ClientImplementations)
 	}
 }
 
-func TestRouteUseClient_CombinesWithServerDeclaredSecurity(t *testing.T) {
+func TestRouteClientMW_CombinesWithServerDeclaredSecurity(t *testing.T) {
 	scheme := route.BearerScheme("")
-	declareMw := middleware.DeclareSecurity("bearerAuth", scheme, nil, nil)
-	cmw := middleware.ClientMiddleware{Name: "cred-supplier", Fn: func() {}}
+	declareMw := middleware.SecurityScheme("bearerAuth", scheme, nil, nil)
 
 	h := rest.NewRoute[mwTestReq, userResp]("GET", "/profile", mwTestReqCodec, userCodec,
 		rest.RouteMeta{OperationID: "getProfile"},
-	).Use(declareMw).UseClient(cmw).ClientHandle()
+	).Use(declareMw).ClientMW(&declareMw, func() {}).ClientHandle()
 
 	if _, ok := h.SecuritySchemes["bearerAuth"]; !ok {
-		t.Fatalf("want SecuritySchemes populated by the server-side Use(DeclareSecurity(...)) declaration, got %+v", h.SecuritySchemes)
+		t.Fatalf("want SecuritySchemes populated by the server-side Use(SecurityScheme(...)) declaration, got %+v", h.SecuritySchemes)
 	}
-	if len(h.ClientMiddlewares) != 1 {
-		t.Fatalf("want ClientMiddlewares populated by UseClient, got %+v", h.ClientMiddlewares)
+	if len(h.ClientImplementations) != 1 {
+		t.Fatalf("want ClientImplementations populated by ClientMW, got %+v", h.ClientImplementations)
+	}
+	if len(h.ClientImplementations[0].Satisfies) != 1 || h.ClientImplementations[0].Satisfies[0] != "bearerAuth" {
+		t.Fatalf("want ClientMW to derive Satisfies from the paired mw, got %+v", h.ClientImplementations[0].Satisfies)
 	}
 }
 
-func TestDeclareSecurity_AloneFailsRegisterCoverageCheck(t *testing.T) {
-	// A route using ONLY middleware.DeclareSecurity (no enforcing Fn, empty
-	// Satisfies) must still fail Register()'s drift-closing coverage check —
-	// DeclareSecurity is for client-only routes; accidentally Register()-ing
-	// one must be caught, not silently accepted.
-	declareMw := middleware.DeclareSecurity("bearerAuth", route.BearerScheme(""), nil, nil)
+func TestSecurityScheme_AloneIsALegitimateIntermediateStateAtRegister(t *testing.T) {
+	// A route using ONLY middleware.SecurityScheme (no ServerImplementation
+	// supplied anywhere yet) is a legitimate, intermediate declare-time
+	// state — Route.RegisterHandle(builder) no longer checks coverage (that check
+	// is deliberately deferred to adapter Register/Handler time, once a
+	// []middleware.ServerImplementation has ALSO been supplied — see
+	// rest.CheckCoverage and TestSecurityScheme_AloneFailsAdapterCoverageCheck
+	// in adapters/nethttp).
+	declareMw := middleware.SecurityScheme("bearerAuth", route.BearerScheme(""), nil, nil)
 
 	_, err := rest.NewRoute[mwTestReq, userResp]("GET", "/profile", mwTestReqCodec, userCodec,
 		rest.RouteMeta{OperationID: "getProfile"},
-	).Use(declareMw).Register(rest.NewBuilder(testInfo))
+	).Use(declareMw).RegisterHandle(rest.NewBuilder(testInfo))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
 
-	var missingErr rest.MissingSecurityMiddlewareError
-	if !errors.As(err, &missingErr) {
-		t.Fatalf("want MissingSecurityMiddlewareError, got %T: %v", err, err)
+// ── UnknownMiddlewareImplementationError (reverse-Satisfies check) ──────────
+
+func TestRoute_HandleMW_PairedAgainstUndeclaredScheme_ReturnsUnknownMiddlewareImplementationError(t *testing.T) {
+	// declMw declares "bearerAuth" but the route below pairs its HandleMW
+	// implementation against a DIFFERENT scheme name ("otherAuth") that was
+	// never .Use()'d on this route — a copy-paste mistake reusing a
+	// different route's middleware.Middleware. checkImplementationsDeclared
+	// must catch this at Register/RegisterHandle time, not silently accept it.
+	declMw := requireScopesMW("bearerAuth", nil)
+	mismatchedMw := requireScopesMW("otherAuth", nil)
+
+	_, err := rest.NewRoute[mwTestReq, userResp]("GET", "/profile", mwTestReqCodec, userCodec,
+		rest.RouteMeta{OperationID: "getProfile"},
+	).Use(declMw).HandleMW(&mismatchedMw, func(_ context.Context, _ *http.Request, _ *mwTestReq) (map[string][]string, error) {
+		return nil, nil
+	}).RegisterHandle(rest.NewBuilder(testInfo))
+
+	var unknownErr rest.UnknownMiddlewareImplementationError
+	if !errors.As(err, &unknownErr) {
+		t.Fatalf("want UnknownMiddlewareImplementationError, got %v (%T)", err, err)
+	}
+	if unknownErr.Scheme != "otherAuth" {
+		t.Errorf("want Scheme %q, got %q", "otherAuth", unknownErr.Scheme)
+	}
+}
+
+func TestRoute_HandleMW_PairedAgainstDeclaredScheme_NoError(t *testing.T) {
+	// The mirror-image happy path: HandleMW paired against a scheme that
+	// WAS .Use()'d on the same route must succeed.
+	declMw := requireScopesMW("bearerAuth", nil)
+
+	_, err := rest.NewRoute[mwTestReq, userResp]("GET", "/profile", mwTestReqCodec, userCodec,
+		rest.RouteMeta{OperationID: "getProfile"},
+	).Use(declMw).HandleMW(&declMw, func(_ context.Context, _ *http.Request, _ *mwTestReq) (map[string][]string, error) {
+		return nil, nil
+	}).RegisterHandle(rest.NewBuilder(testInfo))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestSSERoute_HandleMW_PairedAgainstUndeclaredScheme_ReturnsUnknownMiddlewareImplementationError(t *testing.T) {
+	declMw := requireScopesMW("bearerAuth", nil)
+	mismatchedMw := requireScopesMW("otherAuth", nil)
+
+	_, err := rest.NewSSERoute[mwTestReq, sseEvent]("/stream", mwTestReqCodec, sseEventCodec).Use(declMw).HandleMW(&mismatchedMw, func(_ context.Context, _ *http.Request, _ *mwTestReq) (map[string][]string, error) {
+		return nil, nil
+	}).RegisterHandle(rest.NewBuilder(testInfo))
+
+	var unknownErr rest.UnknownMiddlewareImplementationError
+	if !errors.As(err, &unknownErr) {
+		t.Fatalf("want UnknownMiddlewareImplementationError, got %v (%T)", err, err)
+	}
+	if unknownErr.Scheme != "otherAuth" {
+		t.Errorf("want Scheme %q, got %q", "otherAuth", unknownErr.Scheme)
+	}
+}
+
+func TestUnknownMiddlewareImplementationError_LogValue(t *testing.T) {
+	e := rest.UnknownMiddlewareImplementationError{Route: "GET /profile", Scheme: "otherAuth"}
+	if e.Error() == "" {
+		t.Error("want non-empty Error() string")
+	}
+	v := e.LogValue()
+	if v.Kind().String() != "Group" {
+		t.Errorf("want LogValue() Kind Group, got %v", v.Kind())
+	}
+}
+
+// ── FromHeaderParam/FromCookieParam/FromQueryParam/FromResponseHeaderParam/
+//    FromResponseCookieParam (bridge an existing rest.XParam into a Middleware)
+
+func TestFromHeaderParam_Register_ContributesHeaderParamToSpec(t *testing.T) {
+	b := rest.NewBuilder(testInfo)
+	c := codex.String().Refine(validate.NonEmptyString)
+	apiKeyHeader := rest.HeaderParam{Name: "X-API-Key", Required: true}.WithCodec(c)
+
+	h, err := rest.NewRoute[mwTestReq, userResp]("GET", "/keyed", mwTestReqCodec, userCodec).Use(rest.FromHeaderParam(apiKeyHeader)).RegisterHandle(b)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	found := false
+	for _, p := range h.Descriptor.HeaderParams {
+		if p.Name == "X-API-Key" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("want X-API-Key header param in spec, got %+v", h.Descriptor.HeaderParams)
+	}
+	// Codec propagation proven via runtime validation: a non-empty-string
+	// constraint fires against an empty header value only if the bridged
+	// HeaderParam's Codec actually reached the handle.
+	if err := h.ValidateHeaders(map[string]string{"X-API-Key": ""}); err == nil {
+		t.Error("want validation error for empty X-API-Key (Codec not propagated?)")
+	}
+	if err := h.ValidateHeaders(map[string]string{"X-API-Key": "secret"}); err != nil {
+		t.Errorf("want nil for valid X-API-Key, got %v", err)
+	}
+}
+
+func TestFromCookieParam_Register_ContributesCookieParamToSpec(t *testing.T) {
+	b := rest.NewBuilder(testInfo)
+	sessionCookie := rest.CookieParam{Name: "session_token", Required: true}
+
+	h, err := rest.NewRoute[mwTestReq, userResp]("GET", "/session", mwTestReqCodec, userCodec).Use(rest.FromCookieParam(sessionCookie)).RegisterHandle(b)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	found := false
+	for _, p := range h.Descriptor.CookieParams {
+		if p.Name == "session_token" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("want session_token cookie param in spec, got %+v", h.Descriptor.CookieParams)
+	}
+}
+
+func TestFromQueryParam_Register_ContributesQueryParamToSpec(t *testing.T) {
+	b := rest.NewBuilder(testInfo)
+	pageParam := rest.QueryParam{Name: "page"}
+
+	h, err := rest.NewRoute[mwTestReq, userResp]("GET", "/list", mwTestReqCodec, userCodec).Use(rest.FromQueryParam(pageParam)).RegisterHandle(b)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	found := false
+	for _, p := range h.Descriptor.QueryParams {
+		if p.Name == "page" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("want page query param in spec, got %+v", h.Descriptor.QueryParams)
+	}
+}
+
+func TestFromResponseHeaderParam_Register_ContributesResponseHeaderParamToSpec(t *testing.T) {
+	b := rest.NewBuilder(testInfo)
+	uuidCodec := codex.String().Refine(validate.UUID)
+	locationHeader := rest.ResponseHeaderParam{Name: "Location", Required: true, Codec: &uuidCodec}
+
+	h, err := rest.NewRoute[mwTestReq, userResp]("POST", "/created", mwTestReqCodec, userCodec).Use(rest.FromResponseHeaderParam(locationHeader)).RegisterHandle(b)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	// Required + missing surfaces an error ONLY if the param actually
+	// attached — proves the middleware contribution reached the handle.
+	if err := h.ValidateResponseHeaders(map[string]string{}); err == nil {
+		t.Error("want error for missing required Location response header, got nil")
+	}
+	if err := h.ValidateResponseHeaders(map[string]string{"Location": "f47ac10b-58cc-4372-a567-0e02b2c3d479"}); err != nil {
+		t.Errorf("want nil for valid Location header, got %v", err)
+	}
+}
+
+func TestFromResponseCookieParam_Register_ContributesResponseCookieParamToSpec(t *testing.T) {
+	b := rest.NewBuilder(testInfo)
+	uuidCodec := codex.String().Refine(validate.UUID)
+	sessionCookie := rest.ResponseCookieParam{Name: "session_token", Required: true, Codec: &uuidCodec}
+
+	h, err := rest.NewRoute[mwTestReq, userResp]("POST", "/login", mwTestReqCodec, userCodec).Use(rest.FromResponseCookieParam(sessionCookie)).RegisterHandle(b)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if err := h.ValidateResponseCookies(map[string]string{}); err == nil {
+		t.Error("want error for missing required session_token response cookie, got nil")
+	}
+	if err := h.ValidateResponseCookies(map[string]string{"session_token": "f47ac10b-58cc-4372-a567-0e02b2c3d479"}); err != nil {
+		t.Errorf("want nil for valid session_token cookie, got %v", err)
+	}
+}
+
+func TestFromHeaderParam_ConflictsWithManualDeclaration(t *testing.T) {
+	b := rest.NewBuilder(testInfo)
+	manualHeader := rest.HeaderParam{Name: "X-Trace", Required: false}
+	bridgedHeader := rest.HeaderParam{Name: "X-Trace", Required: true} // different Required
+
+	_, err := rest.NewRoute[mwTestReq, userResp]("GET", "/traced2", mwTestReqCodec, userCodec,
+		manualHeader,
+	).Use(rest.FromHeaderParam(bridgedHeader)).RegisterHandle(b)
+
+	var conflictErr rest.ConflictingParamContributionError
+	if !errors.As(err, &conflictErr) {
+		t.Fatalf("want ConflictingParamContributionError, got %T: %v", err, err)
 	}
 }

@@ -26,7 +26,7 @@ import (
 //
 // # Codec coverage — all HTTP layers validated
 //
-// [Handler] validates all codec layers before fn fires: body codec, query
+// The request pipeline validates all codec layers before fn fires: body codec, query
 // params, cookie params, header params, path params, and security. Decoded Req
 // and all param values are validated but not used — response is always from src.
 // Invalid requests produce the standard 400; only well-formed requests get the cached value.
@@ -65,7 +65,7 @@ func HandlerLatest[Req, Resp any](
 			}
 			return 0
 		})
-	return Handler(handle, func(ctx context.Context, _ Req) (Resp, error) {
+	return handlerFunc(handle, func(ctx context.Context, _ Req) (Resp, error) {
 		ptr := latest.Load()
 		var zero Resp
 		if ptr == nil {
@@ -75,7 +75,7 @@ func HandlerLatest[Req, Resp any](
 	}, wrappedOpts)
 }
 
-// RegisterLatest wires [HandlerLatest] onto a chi router. Mirrors [Register].
+// RegisterLatest wires [HandlerLatest] onto a chi router using the route's method and path.
 func RegisterLatest[Req, Resp any](
 	r gochi.Router,
 	handle *rest.RouteHandle[Req, Resp],
@@ -100,7 +100,7 @@ type PipelineHandlerFunc[Req, Resp any] func(ctx context.Context, req Req) gstre
 
 // PipelineHandler wraps a [PipelineHandlerFunc] into an [http.HandlerFunc].
 // All codec validation, param validation, security enforcement, and observer
-// integration follow the same path as plain [Handler].
+// integration follow the same path as a regular route handler.
 //
 // Use PipelineHandler when the handler body benefits from [gstream.Tap] for
 // declarative intermediate observation, multi-step [gstream.Apply], or
@@ -108,8 +108,8 @@ type PipelineHandlerFunc[Req, Resp any] func(ctx context.Context, req Req) gstre
 //
 // # Codec coverage — all HTTP layers
 //
-// Before fn is called, [Handler] validates body codec, all param codecs
-// (query, cookie, header, path), and security. After fn returns, Handler
+// Before fn is called, the request pipeline validates body codec, all param
+// codecs (query, cookie, header, path), and security. After fn returns, it
 // validates response body, response header, and response cookie codecs.
 //
 // To access path/query/cookie/header param VALUES inside the pipeline, call
@@ -139,7 +139,7 @@ func PipelineHandler[Req, Resp any](
 		}
 		return 0
 	})
-	return Handler(handle, func(ctx context.Context, req Req) (Resp, error) {
+	return handlerFunc(handle, func(ctx context.Context, req Req) (Resp, error) {
 		pipeline := fn(ctx, req)
 		vals, errs := gstream.Collect(ctx, pipeline)
 		var zero Resp
@@ -153,7 +153,7 @@ func PipelineHandler[Req, Resp any](
 	}, wrappedOpts)
 }
 
-// RegisterPipeline wires [PipelineHandler] onto a chi router. Mirrors [Register].
+// RegisterPipeline wires [PipelineHandler] onto a chi router using the route's method and path.
 func RegisterPipeline[Req, Resp any](
 	r gochi.Router,
 	handle *rest.RouteHandle[Req, Resp],

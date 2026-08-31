@@ -24,7 +24,7 @@ func newChiIngestRoute(t *testing.T) *rest.RouteHandle[createReq, struct{}] {
 	t.Helper()
 	b := rest.NewBuilder(testInfo)
 	h, err := rest.NewRoute[createReq, struct{}]("POST", "/ingest",
-		createReqCodec, codex.Struct[struct{}](), rest.RouteMeta{OperationID: "ingest"}).Register(b)
+		createReqCodec, codex.Struct[struct{}](), rest.RouteMeta{OperationID: "ingest"}).RegisterHandle(b)
 	if err != nil {
 		t.Fatalf("register route: %v", err)
 	}
@@ -80,7 +80,7 @@ func newChiSSERouteForBinding(t *testing.T) *rest.SSERouteHandle[struct{}, userR
 	t.Helper()
 	b := rest.NewBuilder(testInfo)
 	h, err := rest.NewSSERoute[struct{}, userResp]("/events",
-		codex.Struct[struct{}](), userRespCodec, rest.RouteMeta{OperationID: "sseBinding"}).Register(b)
+		codex.Struct[struct{}](), userRespCodec, rest.RouteMeta{OperationID: "sseBinding"}).RegisterHandle(b)
 	if err != nil {
 		t.Fatalf("register SSE route: %v", err)
 	}
@@ -152,7 +152,7 @@ func TestChiPipelineAdapter_RegistersAndHandlesRequests(t *testing.T) {
 	r := gochi.NewRouter()
 	b := rest.NewBuilder(testInfo)
 	handle, _ := rest.NewRoute[createReq, userResp]("POST", "/pipeline",
-		createReqCodec, userRespCodec, rest.RouteMeta{OperationID: "pipeline"}).Register(b)
+		createReqCodec, userRespCodec, rest.RouteMeta{OperationID: "pipeline"}).RegisterHandle(b)
 
 	p, err := ports.NewToolPort[createReq, userResp]("pipeline-tool", createReqCodec, userRespCodec, ports.PortOptions{})
 	if err != nil {
@@ -186,7 +186,7 @@ func TestChiPipelineAdapter_MultipleBind_ExposesOnAllRouters(t *testing.T) {
 	r2 := gochi.NewRouter()
 	b := rest.NewBuilder(testInfo)
 	handle, _ := rest.NewRoute[createReq, userResp]("POST", "/pipeline",
-		createReqCodec, userRespCodec, rest.RouteMeta{OperationID: "pipeline-multi"}).Register(b)
+		createReqCodec, userRespCodec, rest.RouteMeta{OperationID: "pipeline-multi"}).RegisterHandle(b)
 
 	p, err := ports.NewToolPort[createReq, userResp]("pipeline-tool-multi", createReqCodec, userRespCodec, ports.PortOptions{})
 	if err != nil {

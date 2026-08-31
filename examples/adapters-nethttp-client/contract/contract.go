@@ -136,7 +136,7 @@ var RequestIDCodec = codex.String().Refine(validate.UUID).
 // rest.ErrorPattern declares a typed 409 response for EmailConflictError —
 // this is what closes the loop between "server writes a typed error body"
 // and "client decodes it back into a typed value" (see main.go section 6).
-// The default action is rest.ErrorRespond, so both nethttp.Handler (server)
+// The default action is rest.ErrorRespond, so both nethttp.Serve (server)
 // and nethttp.Call (client) participate automatically — no extra wiring.
 var CreateUser = rest.NewRoute[CreateUserReq, User](
 	"POST", "/users",
@@ -151,18 +151,25 @@ var CreateUser = rest.NewRoute[CreateUserReq, User](
 	rest.ErrorPattern[EmailConflictError, EmailConflictError](409, EmailConflictCodec),
 )
 
+// GetUserReq carries a path MERGE field (id) — lets the client derive the
+// path value directly from req, the same convenience GetUserActivityReq
+// demonstrates below, rather than needing a manual vars map.
+type GetUserReq struct{ ID string }
+
 // GetUser is the declarative route spec for GET /users/{id}.
-var GetUser = rest.NewRoute[struct{}, User](
+var GetUser = rest.NewRoute[GetUserReq, User](
 	"GET", "/users/{id}",
-	codex.Empty, UserCodec,
+	codex.Struct[GetUserReq](), UserCodec,
 	rest.RouteMeta{
 		OperationID:    "getUser",
 		Summary:        "Get a user by ID",
 		RespSchemaName: "User",
 	},
-	rest.PathParam{Name: "id", Description: "User ID"}.WithCodec(
+	rest.NewPathParam("id",
 		codex.String().Refine(validate.NonEmptyString),
-	),
+		func(r GetUserReq) string { return r.ID },
+		func(r *GetUserReq, v string) { r.ID = v },
+	).WithDescription("User ID"),
 )
 
 // GetUserActivityReq is the request for GetUserActivity — ID comes from the
@@ -269,10 +276,11 @@ var EmailConflictCodec = codex.Struct[EmailConflictError](
 
 // BearerAuthScheme declares the "bearerAuth" security scheme's spec
 // metadata and credential-format codec ONCE, for use by main.go's
-// nethttp.RequireScopes-built middleware — exported so main.go (which owns
-// the actual token-verification logic, an adapter/application concern this
-// adapter-agnostic contract package deliberately stays free of) can build
-// that middleware with the IDENTICAL scheme metadata/codec used here.
+// middleware.SecurityScheme-built declaration — exported so main.go (which
+// owns the actual token-verification logic, an adapter/application concern
+// this adapter-agnostic contract package deliberately stays free of) can
+// build that declaration with the IDENTICAL scheme metadata/codec used
+// here.
 var BearerAuthScheme = route.BearerScheme("JWT")
 
 // BearerCredentialCodec validates the raw credential format (non-empty) —
@@ -282,12 +290,14 @@ var BearerAuthScheme = route.BearerScheme("JWT")
 var BearerCredentialCodec = codex.String().Refine(validate.NonEmptyString)
 
 // GetSecuredData is the route spec for GET /data — a FUNCTION, not a bare
-// var, because the actual security middleware (which knows HOW to verify a
-// token) is an adapter/application concern; this contract package only
-// supplies the reusable scheme/codec above. mw is BOTH the spec declaration
+// var, because the actual security declaration's scopes/codec are an
+// adapter/application concern; this contract package only supplies the
+// reusable scheme/codec above. mw is the DECLARE-TIME-ONLY spec declaration
 // (Security + SecuritySchemes, identical on server Register AND client
-// ClientHandle) AND the runtime enforcement Fn on the server side — see
-// main.go for how it's built via nethttp.RequireScopes.
+// ClientHandle) — see main.go for how it's built via
+// middleware.SecurityScheme, and separately, how the runtime enforcement
+// (a middleware.ServerImplementation server-side, or a credential-providing
+// Fn attached via rest.Route.ClientMW client-side) is supplied.
 func GetSecuredData(mw middleware.Middleware) rest.Route[struct{}, Profile] {
 	return rest.NewRoute[struct{}, Profile](
 		"GET", "/data",

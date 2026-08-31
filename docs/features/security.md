@@ -10,7 +10,7 @@
 > This is the one place go-codex's security model is intentionally
 > asymmetric with REST/events/reqreply.
 
-go-codex documents security requirements in the spec and provides declarative hooks for runtime enforcement — **the library does not import any crypto or JWT library**. For REST, a security scheme is declared ONCE, directly on the route (`rest.WithSecurityScheme`) — there is no builder-level scheme registry — and the SAME declaration is consumed identically by both the server (`Route.Register`) and the client (`Route.ClientHandle`), so one route definition gets IDENTICAL credential-format enforcement on both ends. Runtime credential validation itself is handled by adapters: server-side via a `SecurityFunc` hook, client-side automatically inside `nethttp.Call` (see "HTTP client — CredentialFunc" below).
+go-codex documents security requirements in the spec and provides declarative hooks for runtime enforcement — **the library does not import any crypto or JWT library**. For REST, a security scheme is declared ONCE, via `middleware.SecurityScheme(schemeName, scheme, scopes, codec)`/`rest.FromSecurityScheme(schemeName, rest.SecurityScheme, scopes)` (bridging an existing `rest.SecurityScheme` value), attached to the route via `Route.Use(mw)` — there is no builder-level scheme registry, and `rest.WithSecurityScheme` was REMOVED (there is no metadata-only registration anymore; every declared scheme is a real requirement) — and the SAME declaration is consumed identically by both the server (`Route.Register`/`RegisterHandle`) and the client (`Route.ClientHandle`), so one route definition gets IDENTICAL credential-format enforcement on both ends. Runtime credential validation itself is attached PER-ROUTE, paired against the declared `middleware.Middleware`: server-side via `Route.HandleMW(mw, fn)`, client-side via `Route.ClientMW(mw, fn)` (see "HTTP client — credential-providing ClientMW" below).
 
 ## Connection-level vs message-level security
 
@@ -83,34 +83,35 @@ a single shared connection. Neither requires the other.
 ```go
 import (
     "github.com/DaniDeer/go-codex/api/rest"
+    "github.com/DaniDeer/go-codex/middleware"
     "github.com/DaniDeer/go-codex/route"
     "github.com/DaniDeer/go-codex/validate"
 )
 
 // Declare each scheme ONCE as a shared value — Go's ordinary "declare once,
 // reference everywhere" idiom, no builder-level registry needed.
-var bearerAuth = rest.SecurityScheme{
+var bearerAuthScheme = rest.SecurityScheme{
     SecurityScheme: route.BearerScheme("JWT"),
-}.WithCodec(codex.String().Refine(validate.BearerToken)) // format check before SecurityFunc/before send
+}.WithCodec(codex.String().Refine(validate.BearerToken)) // format check before HandleMW/before send
 
-var apiKeyAuth = rest.SecurityScheme{
+var bearerAuth = rest.FromSecurityScheme("bearerAuth", bearerAuthScheme, []string{"write:users"})
+
+var apiKeyAuthScheme = rest.SecurityScheme{
     SecurityScheme: route.APIKeyScheme("X-API-Key", "header"),
 }
+var apiKeyAuth = rest.FromSecurityScheme("apiKey", apiKeyAuthScheme, nil)
 
 b := rest.NewBuilder(rest.Info{Title: "User API", Version: "1.0.0"})
 
-// Attach the scheme directly to every route that needs it, via WithSecurityScheme.
-createUser, _ := rest.NewRoute[CreateUserReq, User]("POST", "/users",
+// Attach the scheme directly to every route that needs it, via Use.
+createUser := rest.NewRoute[CreateUserReq, User]("POST", "/users",
     reqCodec, respCodec,
-    rest.RouteMeta{
-        OperationID: "createUser",
-        Security:    []route.SecurityRequirement{route.Require("bearerAuth", "write:users")},
-    },
-    rest.WithSecurityScheme("bearerAuth", bearerAuth),
-).Register(b)
+    rest.RouteMeta{OperationID: "createUser"},
+).Use(bearerAuth)
+err := createUser.Register(b) // error only — see "Runtime enforcement" below for HandleMW
 ```
 
-`Builder.OpenAPISpec()` aggregates `components.securitySchemes` automatically from every registered route's own `WithSecurityScheme` declarations — no separate builder-level step needed. When two routes declare the same scheme name with different values, the last-registered route wins (no error); define the scheme once as a shared value (as above) to avoid relying on this.
+`Builder.OpenAPISpec()` aggregates `components.securitySchemes` automatically from every registered route's own `.Use()`-attached declarations — no separate builder-level step needed. When two routes declare the same scheme name with different values, the last-registered route wins (no error); define the scheme once as a shared value (as above) to avoid relying on this.
 
 Built-in scheme constructors:
 
@@ -125,33 +126,29 @@ route.OpenIDConnectScheme("https://.../.well-known")// OIDC discovery
 
 ## Global and per-route security
 
-`Builder.AddGlobalSecurity`/`RouteMeta.Security` answer "which routes require auth" — a SEPARATE, unchanged concern from `WithSecurityScheme` ("what does a named scheme look like"):
+`Builder.AddGlobalSecurity`/`RouteMeta.Security` answer "which routes require auth" — a SEPARATE, unchanged concern from a `.Use()`-attached scheme declaration ("what does a named scheme look like"). `RouteMeta.Security`'s `nil` (inherit global) and `[]route.SecurityRequirement{}` (explicit opt-out) states are UNCHANGED by the security-declaration redesign — only the THIRD state (a non-empty, MANUALLY-set `Security` paired with metadata-only registration) was removed, since `middleware.SecurityScheme`/`rest.FromSecurityScheme` now populate `RouteMeta.Security` automatically as part of `.Use()`:
 
 ```go
 // Global security — applies to all operations by default.
 b.AddGlobalSecurity(route.Require("bearerAuth"))
 
-// Per-route override — nil inherits global; empty slice = no auth required.
-// bearerAuth is the SAME shared SecurityScheme value from the section above.
-createUser, _ := rest.NewRoute[CreateUserReq, User]("POST", "/users",
+// Per-route: bearerAuth is the SAME shared Middleware value from the
+// section above — .Use() populates RouteMeta.Security automatically.
+createUser := rest.NewRoute[CreateUserReq, User]("POST", "/users",
     reqCodec, respCodec,
-    rest.RouteMeta{
-        OperationID: "createUser",
-        // Requires bearerAuth with write:users scope
-        Security: []route.SecurityRequirement{
-            route.Require("bearerAuth", "write:users"),
-        },
-    },
-    rest.WithSecurityScheme("bearerAuth", bearerAuth),
-).Register(b)
+    rest.RouteMeta{OperationID: "createUser"},
+).Use(bearerAuth)
+err := createUser.Register(b)
 
-// Explicitly public — empty slice overrides global security
-publicRoute, _ := rest.NewRoute[struct{}, Info]("GET", "/health",
+// Explicitly public — empty slice overrides global security (unaffected
+// by the security-declaration redesign; no .Use() call needed at all).
+publicRoute := rest.NewRoute[struct{}, Info]("GET", "/health",
     codex.Empty, infoCodec,
     rest.RouteMeta{
         Security: []route.SecurityRequirement{}, // no auth required
     },
-).Register(b)
+)
+err = publicRoute.Register(b)
 ```
 
 ## Security requirement shapes — single, OR, AND, opt-out, inherit
@@ -164,108 +161,77 @@ axes of combination:
 - **Within one map**: every key (scheme name) must be satisfied together — **AND**.
 - **Across the slice**: any one map fully satisfied is enough — **OR**.
 
-`route.Require(name, scopes...)` (used throughout this doc so far) is a
-convenience that only ever builds a SINGLE-KEY map — reach for the map
-literal directly whenever a requirement needs more than one scheme name at
-once (the AND case below). Every scheme name referenced ANYWHERE in
-`Security` still needs a matching `rest.WithSecurityScheme(name, ...)`
-declaration on the same route for its `Codec` to be enforced — a
-referenced name with no matching declaration still gates
-`SecurityFunc`/`CredentialFunc` invocation correctly, but gets no
-credential-FORMAT validation (matches the "no adapter enforces a
-SecurityScheme unless explicitly declared" convention used throughout this
-doc).
+`route.Require(name, scopes...)` builds a SINGLE-KEY map. Each
+`middleware.SecurityScheme`/`rest.FromSecurityScheme` value, attached via
+`.Use()`, contributes exactly ONE scheme-name key, merged AND-wise into
+`RouteMeta.Security`'s FIRST map entry — calling `.Use()` twice with two
+DIFFERENT scheme declarations naturally produces the **AND** case (shape
+2 below) with zero manual `RouteMeta.Security` needed at all.
 
 **1. Single scheme required** (the baseline shown above):
 
 ```go
-rest.RouteMeta{Security: []route.SecurityRequirement{route.Require("bearerAuth", "write:users")}},
-rest.WithSecurityScheme("bearerAuth", bearerAuth),
+route := rest.NewRoute[CreateUserReq, User]("POST", "/users",
+    reqCodec, respCodec, rest.RouteMeta{OperationID: "createUser"},
+).Use(bearerAuth) // bearerAuth = rest.FromSecurityScheme("bearerAuth", ..., []string{"write:users"})
 ```
 
-**2. OR — either scheme suffices** (two elements in the slice; each
-`route.Require(...)` call already produces one single-key map, so calling
-it twice at the slice level is all that's needed):
+**2. AND — both required together** (two `.Use()` calls, each declaring a
+DIFFERENT scheme, merge into ONE map — no manual `RouteMeta.Security`
+needed):
 
 ```go
-rest.RouteMeta{
-    Security: []route.SecurityRequirement{
-        route.Require("bearerAuth"),
-        route.Require("apiKey"),
-    },
-},
-rest.WithSecurityScheme("bearerAuth", bearerAuth),
-rest.WithSecurityScheme("apiKey", apiKeyAuth),
+route := rest.NewRoute[CreateUserReq, User]("POST", "/users",
+    reqCodec, respCodec, rest.RouteMeta{OperationID: "createUser"},
+).Use(bearerAuth).Use(apiKeyAuth)
+// Descriptor.Security == [{"bearerAuth": [...], "apiKey": []}] — AND
 ```
 
-**3. AND — both required together** (one map with multiple keys — build
-the literal directly, since `route.Require` only ever builds a single-key
-map):
-
-```go
-rest.RouteMeta{
-    Security: []route.SecurityRequirement{
-        {"bearerAuth": nil, "apiKey": nil},
-    },
-},
-rest.WithSecurityScheme("bearerAuth", bearerAuth),
-rest.WithSecurityScheme("apiKey", apiKeyAuth),
-```
-
-**4. Mixed — OR of ANDs** ("(bearerAuth AND apiKey) OR (oauth2 with a
-scope)"):
-
-```go
-rest.RouteMeta{
-    Security: []route.SecurityRequirement{
-        {"bearerAuth": nil, "apiKey": nil},
-        {"oauth2": {"read:users"}},
-    },
-},
-```
-
-**5. Explicit opt-out** (empty slice, NOT nil — overrides global security
-for just this route):
+**3. Explicit opt-out** (empty slice, NOT nil — overrides global security
+for just this route; no `.Use()` call needed):
 
 ```go
 rest.RouteMeta{Security: []route.SecurityRequirement{}},
 ```
 
-**6. Inherit global** (omit `Security` entirely — the default):
+**4. Inherit global** (omit `Security` entirely — the default):
 
 ```go
 rest.RouteMeta{OperationID: "health"}, // no Security field at all
 ```
 
-**7. Same scheme, different scopes per route** (the actual reason
-`WithSecurityScheme` and `RouteMeta.Security` stay two separate
-declarations rather than one combined call — see the "Why two mechanisms"
-note below):
+**5. Same scheme, different scopes per route** — each route builds its
+OWN `middleware.Middleware` value from the SAME shared `rest.SecurityScheme`
+(the scheme's SPEC metadata is reusable; the SCOPES are per-declaration):
 
 ```go
 // route A — needs the "profile" scope:
-rest.RouteMeta{Security: []route.SecurityRequirement{route.Require("bearerAuth", "profile")}},
-rest.WithSecurityScheme("bearerAuth", bearerAuth), // SAME shared value
+routeA := rest.NewRoute[...](...).Use(rest.FromSecurityScheme("bearerAuth", bearerAuthScheme, []string{"profile"}))
 
 // route B — needs the "admin" scope:
-rest.RouteMeta{Security: []route.SecurityRequirement{route.Require("bearerAuth", "admin")}},
-rest.WithSecurityScheme("bearerAuth", bearerAuth), // SAME shared value, different required scope
+routeB := rest.NewRoute[...](...).Use(rest.FromSecurityScheme("bearerAuth", bearerAuthScheme, []string{"admin"}))
 ```
 
-**Why two mechanisms, not one:** `WithSecurityScheme` answers "what does
-scheme X look like" — a 1:1 mapping (name → shape), reusable across routes.
-`RouteMeta.Security` answers "which combination of schemes does THIS
-operation need" — an N:M relationship (routes → AND/OR combinations of
-scheme names + scopes), as shapes 2–4 above demonstrate. Folding them into
-one declaration would lose that combinatorial expressiveness — there would
-be no way to say "requires bearerAuth AND apiKey together" or "requires
-bearerAuth with scope A on this route but scope B on that one" without
-duplicating the entire scheme definition per combination.
+> **Known limitation — OR across TWO scheme-declaring `.Use()` calls is
+> NOT directly expressible.** `applySecurityDeclarations` ALWAYS merges
+> every `.Use()`-attached scheme into `RouteMeta.Security`'s FIRST map
+> entry (AND-only) — it has no mechanism to route a scheme declaration
+> into a SEPARATE, alternative map entry. A manually-set
+> `RouteMeta.Security` with multiple OR'd map entries is NOT corrupted by
+> `.Use()` for schemes it does NOT also declare, but attaching `.Use()`
+> for a scheme ALSO present in that manual structure still merges an
+> extra key into entry `[0]`, producing an unintended shape. If your API
+> genuinely needs "scheme A alone OR scheme B alone" (not "A syntax
+> AND B"), build the requirement/spec manually via `RouteMeta.Security`
+> and register each scheme's OpenAPI metadata without a scope-bearing
+> `.Use()` call at all — this is a real, open gap in the current
+> declaration surface, not a documented feature; track it before relying
+> on it in production.
 
 ## Runtime enforcement (nethttp / chi adapters)
 
 ```go
-nethttp.Register(mux, createUser, handler, nethttp.Options{
+route := createUser.WithHandler(handler).WithOptions(nethttp.Options{
     // SecurityFunc is called after Codec format validation passes.
     // Receives the *http.Request and the route's declared security requirements.
     SecurityFunc: func(ctx context.Context, r *http.Request, reqs []route.SecurityRequirement) error {
@@ -273,6 +239,8 @@ nethttp.Register(mux, createUser, handler, nethttp.Options{
         return jwtlib.VerifyScopes(token, reqs)
     },
 })
+route.Register(b)
+nethttp.Serve(mux, b)
 ```
 
 The adapter enforcement sequence:
@@ -282,7 +250,7 @@ The adapter enforcement sequence:
 
 Routes with `nil Security` (default) trigger enforcement when global security is set.
 
-`nethttp.Call` (client-side) runs the SAME sequence, symmetrically, on the OUTGOING request before it is sent — see "HTTP client — CredentialFunc" below.
+`nethttp.Call` (client-side) runs the SAME sequence, symmetrically, on the OUTGOING request before it is sent — see "HTTP client — credential-providing ClientMW" below.
 
 ## Credential format validation
 
@@ -299,56 +267,74 @@ codex.String().Refine(validate.UUID)
 codex.String().Refine(validate.NonEmptyString)
 ```
 
-## HTTP client — CredentialFunc
+## HTTP client — credential-providing `ClientMW`
 
-For the `nethttp.Call` client, provide credentials via `CredentialFunc`:
+For `nethttp.Call`, provide credentials via a credential-providing
+implementation attached with [`Route.ClientMW`](../features/http-client.md),
+PAIRED against the SAME `middleware.Middleware` value the route's security
+requirement was declared with (via `.Use(mw)`). The Fn matches
+[`CredentialFunc`](https://pkg.go.dev/github.com/DaniDeer/go-codex/adapters/nethttp#CredentialFunc)'s
+shape (`func(ctx context.Context, reqs []route.SecurityRequirement) (http.Header, error)`).
+There is no per-call override anymore — a route's `ClientMW`-declared
+credential fulfillment applies to EVERY call made through that route
+value; a caller needing a genuinely different credential for one call
+builds a DIFFERENT `Route` value via a fresh `.ClientMW(...)`:
 
 ```go
-user, err := nethttp.Call(ctx, http.DefaultClient, serverURL, handle, req, nil,
-    nethttp.CallOptions{
-        CredentialFunc: func(ctx context.Context, reqs []route.SecurityRequirement) (http.Header, error) {
-            h := make(http.Header)
-            h.Set("Authorization", "Bearer "+getToken(ctx))
-            return h, nil
-        },
-    })
+securedMw := middleware.SecurityScheme("bearerAuth", route.BearerScheme("JWT"), nil, nil)
+
+securedRoute := rest.NewRoute[GetDataReq, Data]("GET", "/data",
+    reqCodec, respCodec, rest.RouteMeta{OperationID: "getSecuredData"},
+).Use(securedMw).ClientMW(&securedMw, func(ctx context.Context, reqs []route.SecurityRequirement) (http.Header, error) {
+    h := make(http.Header)
+    h.Set("Authorization", "Bearer "+getToken(ctx))
+    return h, nil
+})
+
+caller := nethttp.NewCaller(http.DefaultClient, serverURL)
+data, err := nethttp.Call(ctx, caller, securedRoute, GetDataReq{}, nethttp.CallOptions{})
 ```
 
-`CredentialFunc` is called only when the route declares security requirements. For static credentials, use `CallOptions.ExtraHeaders` instead.
+The credential-providing `Fn` is GATED by `Satisfies` (derived from
+`mw.Security.SchemeName`) vs. the route's declared requirements — it only
+runs when the route actually declares that scheme. For static
+credentials, use `CallOptions.ExtraHeaders` instead.
 
-**Symmetric credential-format validation.** If `handle` was built from a route
-declaring `rest.WithSecurityScheme(name, scheme)` with a non-nil `Codec` —
-whether via `Route.Register` or `Route.ClientHandle`, same declaration either
-way — `nethttp.Call` validates `CredentialFunc`'s returned header against that
-SAME `Codec` before sending, reusing the identical extraction/validation logic
-the server `Handler` uses on an incoming request. A malformed credential
-returns `rest.SecurityCredentialError` locally, before any network call, and
-fires `stats.SecurityObserver.RecordSecurityRejection` — catching a
-`CredentialFunc` bug immediately instead of after a round trip and a generic
-401.
+**Symmetric credential-format validation.** If `securedRoute`'s declared
+scheme carries a non-nil `Codec` — populated identically on BOTH
+`Route.Register`/`RegisterHandle` and `Route.ClientHandle` — `Call`
+validates the credential-providing `Fn`'s returned header against that
+SAME `Codec` before sending, reusing the identical extraction/validation
+logic the server `Handler` uses on an incoming request. A malformed
+credential returns `rest.SecurityCredentialError` locally, before any
+network call, and fires `stats.SecurityObserver.RecordSecurityRejection`
+— catching a credential bug immediately instead of after a round trip and
+a generic 401.
 
-This does NOT require `CredentialFunc` to be non-nil on a secured route, and
-the check only fires when `CredentialFunc` actually returns something: a nil
-`CredentialFunc`, or one that deliberately returns `(nil, nil)` to mean "this
-call needs no credential" (e.g. an auth flow that first probes whether the
-specific server instance requires auth at all — see
-`examples/go-edge-models/app/registry`'s `newAuthCredentialFunc`), remains
-a deliberate non-error. The request is simply sent without the credential,
-and it's up to the server to accept or reject it — symmetric with server-side
-`SecurityFunc`.
+This does NOT require a credential-providing `ClientMW` to be attached at
+all on a secured route, and the check only fires when one actually returns
+something: no `ClientMW` attached, or one that deliberately returns
+`(nil, nil)` to mean "this call needs no credential" (e.g. an auth flow
+that first probes whether the specific server instance requires auth at
+all — see `examples/go-edge-models/app/registry`'s
+`newAuthCredentialFunc`), remains a deliberate non-error. The request is
+simply sent without the credential, and it's up to the server to accept or
+reject it — symmetric with server-side `SecurityFunc`.
 
-### Caching a CredentialFunc
+### Caching a credential-providing Fn
 
-Re-authenticating on every `Call` is wasteful when the underlying `inner`
+Re-authenticating on every call is wasteful when the underlying `inner`
 credential fetch is itself an HTTP round trip (e.g. an OAuth2 token
 endpoint, or `examples/go-edge-models/app/registry`'s registry token
-exchange). `nethttp.NewCachingCredentialFunc` wraps any `CredentialFunc`
-with TTL-based caching:
+exchange). `nethttp.NewCachingCredentialFunc` wraps any
+[`CredentialFunc`](https://pkg.go.dev/github.com/DaniDeer/go-codex/adapters/nethttp#CredentialFunc)-shaped
+function with TTL-based caching:
 
 ```go
 credFn, invalidate := nethttp.NewCachingCredentialFunc(inner, nethttp.CachingCredentialFuncOptions{
     TTL: time.Hour,
 })
+securedRoute := contract.GetSecuredData(securedMw).ClientMW(&securedMw, credFn)
 ```
 
 - `inner` is invoked at most once per TTL window; concurrent callers during
@@ -357,25 +343,25 @@ credFn, invalidate := nethttp.NewCachingCredentialFunc(inner, nethttp.CachingCre
 - The returned `invalidate func()` immediately expires the cached
   credential. `NewCachingCredentialFunc` does NOT know when a credential is
   rejected — the server only reveals that via a 401 response, which is
-  observed by `Call`, not by `CredentialFunc` (which runs before the
-  network call). Wire `invalidate` to `CallOptions.OnCredentialRejected` and
-  retry once, explicitly:
+  observed by `Call`, not by the credential Fn (which runs before
+  the network call). Wire `invalidate` to `CallOptions.OnCredentialRejected`
+  and retry once, explicitly:
 
 ```go
 callOpts := nethttp.CallOptions{
-    CredentialFunc:       credFn,
     OnCredentialRejected: invalidate, // purges the cache; does NOT retry
 }
-resp, err := nethttp.CallHandle(ctx, client, baseURL, handle, req, callOpts)
+resp, err := nethttp.Call(ctx, caller, securedRoute, req, callOpts)
 
 var statusErr nethttp.UnexpectedStatusError
 if errors.As(err, &statusErr) && statusErr.StatusCode == http.StatusUnauthorized {
-    resp, err = nethttp.CallHandle(ctx, client, baseURL, handle, req, callOpts) // fresh credential now
+    resp, err = nethttp.Call(ctx, caller, securedRoute, req, callOpts) // fresh credential now
 }
 ```
 
-`OnCredentialRejected` is purely a notification hook — `Call` never retries
-automatically, keeping control flow explicit and in the caller's hands.
+`OnCredentialRejected` is purely a notification hook — `Call`
+never retries automatically, keeping control flow explicit and in the
+caller's hands.
 
 `CachingCredentialFuncOptions.Observer`, when set, receives
 `stats.CredentialCacheObserver` hit/refresh events
@@ -389,20 +375,20 @@ different routes need independently-cached credentials.
 
 ### Live-reloadable credentials — `codex.Mutable[T]`/`codex.Cacheable[T]`
 
-`SecurityFunc`/`CredentialFunc` are plain closures — nothing above
-requires them to close over a static value. A rotating signing key
-(server-side `SecurityFunc`) or a TTL-bearing credential cache
-(client-side `CredentialFunc`) can capture a `*codex.Mutable[T]`/
-`*codex.Cacheable[T]` and call `.Get()` INSIDE the closure body, exactly
-like any other variable — no dedicated wrapper API exists or is planned
-for this; a plain static value, `NewCachingCredentialFunc`'s own
-hand-rolled cache, and these two containers are all equally valid
-choices for the SAME closure field. See `docs/concepts/codec.md`'s
-"Composing with adapters" subsection (under `Getter`/`Setter`) for the
-full pattern, including the one real gotcha (`.Get()` must never be
-hoisted out of the closure), and `examples/mutable-security-keys` for a
-runnable end-to-end demo wiring both containers into real `nethttp`
-server/client hooks.
+`SecurityFunc` (server) and a credential-providing `ClientMW`-attached `Fn`
+(client) are plain closures — nothing above requires them to close over a
+static value. A rotating signing key (server-side `SecurityFunc`) or a
+TTL-bearing credential cache (client-side `Fn`) can capture a
+`*codex.Mutable[T]`/`*codex.Cacheable[T]` and call `.Get()` INSIDE the
+closure body, exactly like any other variable — no dedicated wrapper API
+exists or is planned for this; a plain static value,
+`NewCachingCredentialFunc`'s own hand-rolled cache, and these two
+containers are all equally valid choices for the SAME closure field. See
+`docs/concepts/codec.md`'s "Composing with adapters" subsection (under
+`Getter`/`Setter`) for the full pattern, including the one real gotcha
+(`.Get()` must never be hoisted out of the closure), and
+`examples/mutable-security-keys` for a runnable end-to-end demo wiring
+both containers into real `nethttp` server/client hooks.
 
 ## Security for event channels (AsyncAPI)
 
@@ -436,7 +422,7 @@ MQTT5 adapter — the server side runs a BUILT-IN codec-based credential
 check (extracting the "Authorization" MQTT5 User Property for `http`/`oauth2`/
 `openIdConnect` schemes, or the User Property named `scheme.Name` for
 `apiKey` schemes) BEFORE the optional custom `SecurityFunc` — same two-step
-order as `nethttp.Handler`:
+order as the nethttp/chi request pipeline:
 
 ```go
 mqtt5.Subscribe(ctx, client, router, userCreated, handler, mqtt5.SubscribeOptions{
@@ -541,7 +527,7 @@ func (o *TelemetryObserver) RecordSecurityRejection(location, scheme string) {
 
 ## OpenAPI / AsyncAPI output
 
-Security schemes appear in `components/securitySchemes`; global security at document root (REST only — AsyncAPI 3.0 has no document-level global security field); per-operation security overrides inline — all generated automatically from `WithSecurityScheme` (route/channel-level for REST/events/reqreply — the ONLY declaration mechanism for all three; aggregated by `Builder.OpenAPISpec`/`Builder.AsyncAPISpec`, last-registered-wins on name collision) / `AddGlobalSecurity` / `RouteMeta.Security` / `Subscribe.Security` / `Publish.Security`. No manual YAML needed.
+Security schemes appear in `components/securitySchemes`; global security at document root (REST only — AsyncAPI 3.0 has no document-level global security field); per-operation security overrides inline — all generated automatically from each route/channel's own security declaration (REST: `middleware.SecurityScheme`/`rest.FromSecurityScheme` attached via `.Use()`; events/reqreply: `WithSecurityScheme` — route/channel-level, the ONLY declaration mechanism for both; aggregated by `Builder.OpenAPISpec`/`Builder.AsyncAPISpec`, last-registered-wins on name collision) / `AddGlobalSecurity` / `RouteMeta.Security` / `Subscribe.Security` / `Publish.Security`. No manual YAML needed.
 
 ## See also
 

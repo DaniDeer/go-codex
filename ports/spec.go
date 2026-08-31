@@ -44,8 +44,7 @@ func RegisterREST[Req, Resp any](b *rest.Builder, port any) error {
 	if !ok {
 		return MissingPatternError{Port: portName(port), Kind: patternKindREST}
 	}
-	_, err := route.Register(b)
-	return err
+	return route.Register(b)
 }
 
 // RegisterSSE replays a [SinkPort]'s declared [RESTPattern] (SSE shape)
@@ -68,8 +67,7 @@ func RegisterSSE[Event any](b *rest.Builder, port any) error {
 	if !ok {
 		return MissingPatternError{Port: portName(port), Kind: patternKindREST}
 	}
-	_, err := route.Register(b)
-	return err
+	return route.Register(b)
 }
 
 // RegisterEvent replays port's declared [EventPattern] against b, adding it to

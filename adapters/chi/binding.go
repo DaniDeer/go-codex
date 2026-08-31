@@ -54,7 +54,7 @@ func (a *chiIngestAdapter[T]) Activate(ctx context.Context, dst chan<- T, errs c
 		}
 		return 0
 	})
-	h := Handler(a.handle, func(_ context.Context, req T) (struct{}, error) {
+	h := handlerFunc(a.handle, func(_ context.Context, req T) (struct{}, error) {
 		select {
 		case ch <- req:
 			return struct{}{}, nil
@@ -159,7 +159,7 @@ func (a *chiSSEAdapter[Event]) Activate(ctx context.Context, src gstream.Stream[
 		sseOpts.Topic = a.handle.Descriptor.Path
 	}
 	fn := SSEFromHub[struct{}, Event](hub, sseOpts)
-	a.sh.h.Store(SSEHandler(a.handle, fn, a.opts.Options)) // activate the route registered at construction
+	a.sh.h.Store(sseHandlerFunc(a.handle, fn, a.opts.Options)) // activate the route registered at construction
 	<-ctx.Done()
 }
 
@@ -244,7 +244,7 @@ func (a *chiLatestAdapter[Resp]) Serve(_ context.Context, latest func() (Resp, b
 			}
 			return 0
 		})
-	h := Handler(a.handle, func(_ context.Context, _ struct{}) (Resp, error) {
+	h := handlerFunc(a.handle, func(_ context.Context, _ struct{}) (Resp, error) {
 		v, ok := latest()
 		if !ok {
 			var zero Resp

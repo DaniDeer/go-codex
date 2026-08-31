@@ -200,8 +200,8 @@ tool := mcp.NewTool[SearchIn, SearchOut]("search", inCodec, outCodec,
 ## Bridging an existing REST client — `adapters/mcprest`
 
 Any already-declared `rest.Route` — consumed client-side via
-`adapters/nethttp.Call`/`CallHandle` — can become an MCP tool with a
-single function, because `nethttp.CallHandle`'s shape already almost
+`adapters/nethttp.Call`/`CallWithHandle` — can become an MCP tool with a
+single function, because `nethttp.CallWithHandle`'s shape already almost
 matches `mcpgo.HandlerFunc`'s shape:
 
 ```go

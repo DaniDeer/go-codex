@@ -2,7 +2,7 @@
 // calls (via [github.com/DaniDeer/go-codex/adapters/nethttp]) to MCP tool
 // handlers (via [github.com/DaniDeer/go-codex/adapters/mcpgo]) — any
 // already-declared [rest.Route] can become an MCP tool with a single
-// function, because [nethttp.CallHandle]'s shape already almost matches
+// function, because [nethttp.CallWithHandle]'s shape already almost matches
 // [mcpgo.HandlerFunc]'s shape.
 //
 // This package deliberately imports BOTH adapters/nethttp and
@@ -15,14 +15,13 @@
 // where the MCP tool's input/output IS the REST route's request/response
 // shape:
 //
-//	restHandle := registry.GetTagsRoute.ClientHandle()
+//	restHandle := registry.GetTagsRoute.ClientMW(&credMw, myFixedCredentialFunc).ClientHandle()
 //	toolHandle, _ := apimcp.NewTool[registry.GetTagsReq, registry.TagsList](
 //	    "get_tags", reqCodec, respCodec,
 //	    mcprest.DefaultErrorPatterns()...,
 //	).Register(mcpBuilder)
 //	tool, handlerFn := mcpgoAdapter.ToolHandler(toolHandle,
-//	    mcprest.ToolHandler(httpClient, baseURL, restHandle, nethttp.CallOptions{},
-//	        middleware.ClientMiddleware{Fn: myFixedCredentialFunc}),
+//	    mcprest.ToolHandler(httpClient, baseURL, restHandle, nethttp.CallOptions{}),
 //	    mcpgo.Options{},
 //	)
 //
@@ -41,7 +40,6 @@
 //	    func(resp registry.TagsList) (SimpleSearchOutput, error) {
 //	        return SimpleSearchOutput{Tags: resp.Tags}, nil
 //	    },
-//	    middleware.ClientMiddleware{Fn: myFixedCredentialFunc},
 //	)
 //
 // A failing mapper returns [ToolRequestMapError]/[ToolResponseMapError] —
@@ -51,34 +49,34 @@
 //
 // # Credentials are FIXED per tool
 //
-// opts and mws (the credential-providing [middleware.ClientMiddleware], if any)
-// are configured ONCE, when the tool's handler is built, and reused for
-// every call made through it — matching every other client-adapter
-// binding in go-codex ([nethttp.CallAdapter], [nethttp.DrainCallAdapter],
-// the mqtt5/zeromq equivalents). There is no per-call credential
-// override.
+// opts and handle's declared [rest.Route.ClientMW]-attached credential
+// implementations (if any) are configured ONCE, when the tool's handler
+// is built (specifically, when handle is derived via
+// [rest.Route.ClientHandle]), and reused for every call made through it —
+// matching every other client-adapter binding in go-codex
+// ([nethttp.CallAdapter], [nethttp.DrainCallAdapter], the mqtt5/zeromq
+// equivalents). There is no per-call credential override.
 //
 // If a per-CALLER credential is ever needed (e.g. different MCP clients/
 // sessions should authenticate to the downstream REST API differently),
-// it is already achievable with ZERO new API: a middleware.ClientMiddleware's Fn
-// receives ctx on every invocation and MCP tool calls carry a
-// per-connection session identity accessible via
+// it is already achievable with ZERO new API: a
+// [middleware.ClientImplementation]'s Fn receives ctx on every invocation
+// and MCP tool calls carry a per-connection session identity accessible
+// via
 // [github.com/mark3labs/mcp-go/server.ClientSessionFromContext](ctx).SessionID() —
 // look up a credential in an application-owned store keyed by that
-// session ID, inside the Fn closure passed as mws:
+// session ID, inside the Fn closure passed to [rest.Route.ClientMW]:
 //
-//	credMw := middleware.ClientMiddleware{
-//	    Fn: func(ctx context.Context, reqs []route.SecurityRequirement) (http.Header, error) {
-//	        sessionID := server.ClientSessionFromContext(ctx).SessionID()
-//	        cred, ok := myCredentialStore.Lookup(sessionID)
-//	        if !ok {
-//	            return nil, fmt.Errorf("no credential registered for session %s", sessionID)
-//	        }
-//	        h := make(http.Header)
-//	        h.Set("Authorization", "Bearer "+cred.Token)
-//	        return h, nil
-//	    },
-//	}
+//	route = route.ClientMW(&credMw, func(ctx context.Context, reqs []route.SecurityRequirement) (http.Header, error) {
+//	    sessionID := server.ClientSessionFromContext(ctx).SessionID()
+//	    cred, ok := myCredentialStore.Lookup(sessionID)
+//	    if !ok {
+//	        return nil, fmt.Errorf("no credential registered for session %s", sessionID)
+//	    }
+//	    h := make(http.Header)
+//	    h.Set("Authorization", "Bearer "+cred.Token)
+//	    return h, nil
+//	})
 //
 // This mirrors the same ctx-introspection idiom [stats.ObserverFromContext]
 // already establishes elsewhere in go-codex — no new mcprest API is needed

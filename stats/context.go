@@ -15,14 +15,14 @@ type observerKey struct{}
 //	ctx := stats.WithObserver(context.Background(), obs)
 //
 //	// All adapters use obs when Options.Observer is nil:
-//	nethttp.Handler(handle, fn, nethttp.Options{})
+//	route.WithOptions(nethttp.Options{})
 //	mqtt.Subscribe(ctx, client, handle, 1, fn, mqtt.SubscribeOptions{})
 //	stream.Apply(ctx, s, fn, stream.ApplyOptions{})
 //
 // The context-provided observer has **lower** priority than an explicitly set
 // opts.Observer — explicit always wins:
 //
-//	nethttp.Handler(handle, fn, nethttp.Options{Observer: auditObs}) // auditObs used, ctx obs ignored
+//	route.WithOptions(nethttp.Options{Observer: auditObs}) // auditObs used, ctx obs ignored
 //
 // The observer is scoped to the context: a child context from
 // [context.WithValue] inherits the parent's observer unless overridden. Use

@@ -613,7 +613,7 @@ func Call[Req, Resp any](
 // CallHandle is the single-call convenience wrapper around [Call]: it
 // derives [CallOptions.Vars] from req automatically, using the route's
 // merge-capable topic params ([reqreply.RouteHandle.MergeFields] +
-// [codex.EncodeVars]) — mirrors [nethttp.CallHandle]/[mqtt5.CallHandle].
+// [codex.EncodeVars]) — mirrors [nethttp.CallWithHandle]/[mqtt5.CallHandle].
 //
 // An explicit [CallOptions.Vars] takes PRECEDENCE over the derived value.
 // [Call] remains the lower-level escape hatch.

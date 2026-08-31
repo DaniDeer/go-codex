@@ -136,7 +136,7 @@ func main() {
 		rest.ResponseMeta{Status: "400", Description: "Invalid PNG data or parameter validation failure."},
 		rest.ResponseMeta{Status: "401", Description: "Missing or invalid session cookie."},
 		rest.ResponseMeta{Status: "404", Description: "Resource not found."},
-	).Register(b)
+	).RegisterHandle(b)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "route registration error: %v\n", err)
 		os.Exit(1)
@@ -179,7 +179,7 @@ func main() {
 		rest.ResponseMeta{Status: "400", Description: "Invalid request body or parameter validation failure."},
 		rest.ResponseMeta{Status: "401", Description: "Missing or invalid session cookie."},
 		rest.ResponseMeta{Status: "404", Description: "Image not found."},
-	).Register(b)
+	).RegisterHandle(b)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "route registration error: %v\n", err)
 		os.Exit(1)

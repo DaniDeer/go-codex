@@ -71,6 +71,7 @@ repo_name = "DaniDeer/go-codex"
 
 [nav."Design Documents"]
 "Overview" = "design/index.md"
+"— Middleware Workflow Simplification" = "design/middleware-workflow-simplification.md"
 
 [nav.Roadmap]
 "Overview" = "roadmap/index.md"

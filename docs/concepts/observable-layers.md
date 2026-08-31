@@ -19,7 +19,7 @@ go-codex has three codec layers — domain types, API contracts, and forge pipel
 ├─────────────────────────────────────────────────────────────────────────────┤
 │  LAYER 2 — API ADAPTERS (api/rest · api/events · api/mcp)                   │
 │                                                                             │
-│  nethttp.Register  ·  mqtt.SubscribeHandler  ·  mcpgo.ToolHandler           │
+│  nethttp.Serve  ·  mqtt.SubscribeHandler  ·  mcpgo.ToolHandler              │
 │                                                                             │
 │  Observable:  stats.Observer (embeds ValidationObserver)                    │
 │               + stats.SecurityObserver (optional extension)                 │
@@ -229,7 +229,7 @@ obs := stats.NewFanout(
 
 // Pass the same value to every layer:
 stats.ReportErrors(obs, "config", err)                        // codec layer
-nethttp.Register(mux, route, handler, nethttp.Options{Observer: obs})  // adapter
+route.WithHandler(handler).WithOptions(nethttp.Options{Observer: obs})  // adapter
 mqtt.SubscribeHandler(ctx, handle, fn, mqtt.SubscribeOptions{Observer: obs})
 file.Read(vars, ports.FileOptions{Observer: obs})            // file I/O
 forge.NewRegistry("P", "1.0.0").WithObserver(obs)            // forge
@@ -255,7 +255,7 @@ forge.NewRegistry("P", "1.0.0").WithObserver(obs)                       // expli
 
 **Precedence:** explicit `opts.Observer` > context observer > `NoopObserver{}`.
 
-HTTP adapters (`nethttp.Handler`, `chi.Handler`) resolve the observer per-request
+HTTP adapters (`nethttp.Serve`/`ServeOne`, `chi.Serve`/`ServeOne`) resolve the observer per-request
 from `r.Context()`, enabling per-request injection via a server middleware.
 `forge.Registry` uses the explicit `.WithObserver(obs)` builder — no context
 integration by design.
@@ -268,7 +268,7 @@ When an HTTP request arrives carrying a `traceparent` header (propagated by OTel
 
 ```
 Incoming HTTP request (traceparent header present)
-    └─ nethttp.Handler → StartSpan(ctx, "http.request", "/orders/{id}")
+    └─ nethttp.Serve's dispatched request pipeline → StartSpan(ctx, "http.request", "/orders/{id}")
             └─ handler(ctx, req)
                     ├─ forge.Function.ApplyContext(ctx, in)
                     │       └─ StartSpan(ctx, "forge.apply", "availabilityCalc")

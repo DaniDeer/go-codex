@@ -29,7 +29,7 @@ type contextFieldBox struct {
 
 // EnsureContextFields pre-allocates the shared ContextField box on ctx if
 // not already present, and returns the resulting context. Called ONCE by
-// each adapter's entry point (e.g. nethttp.Register's outermost wrap,
+// each adapter's request pipeline (e.g. nethttp/chi's Serve dispatch,
 // ports.File.Read/Write, mcpgo's handlers), BEFORE any attached Fn runs.
 // Idempotent — safe to call more than once on the same ctx chain.
 func EnsureContextFields(ctx context.Context) context.Context {

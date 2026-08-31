@@ -99,8 +99,8 @@ registers them against the same shared builder at declaration time:
 
 | Route | Handle | Endpoint | Wired via (main.go) |
 |-------|--------|----------|---------------------|
-| `CreateRoute` | `CreateHandle` | `POST /readings` | `nethttp.Register` + handler factory |
-| `GetRoute` | `GetHandle` | `GET /readings/{id}` | `nethttp.Register` + handler factory |
+| `CreateRoute` | `CreateHandle` | `POST /readings` | `WithHandler` (post-registration) + `nethttp.Serve` |
+| `GetRoute` | `GetHandle` | `GET /readings/{id}` | `WithHandler` (post-registration) + `nethttp.Serve` |
 
 ## Spec generation — the declarations are the spec
 

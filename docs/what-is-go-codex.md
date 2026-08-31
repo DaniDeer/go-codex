@@ -116,7 +116,7 @@ user, err := userCodec.Decode(raw) // validate + decode in one step
 var createUser = rest.NewRoute[CreateUserReq, User]("POST", "/users", reqCodec, userCodec,
     rest.RouteMeta{OperationID: "createUser", Summary: "Create a user"},
 )
-handle, _ := createUser.Register(b)
+handle, _ := createUser.RegisterHandle(b)
 req, _    := handle.Decode(body)
 
 // Layer 2 — channel: same pattern for events → typed handle + AsyncAPI spec

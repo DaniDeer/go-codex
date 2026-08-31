@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"slices"
 	"strconv"
 	"strings"
 
@@ -32,14 +31,14 @@ type responseHeadersKey struct{}
 // responseCookiesKey is the unexported type for pending response cookies stored in context.
 type responseCookiesKey struct{}
 
-// HandlerFunc is the typed application handler called by [Handler].
+// HandlerFunc is the typed application handler called by [Serve]/[ServeOne]'s dispatched request pipeline.
 // ctx is the request context. req is the decoded request value; for body-less
 // methods it is the zero value of Req.
 // Use [RequestFromContext] to access the underlying *http.Request for path
 // parameters, headers, or other request metadata.
 type HandlerFunc[Req, Resp any] func(ctx context.Context, req Req) (Resp, error)
 
-// RequestFromContext retrieves the *http.Request stored in ctx by [Handler].
+// RequestFromContext retrieves the *http.Request stored in ctx by the request pipeline (see [Serve]/[ServeOne]).
 // Returns false if the context was not created by this package.
 func RequestFromContext(ctx context.Context) (*http.Request, bool) {
 	r, ok := ctx.Value(contextKey{}).(*http.Request)
@@ -47,7 +46,7 @@ func RequestFromContext(ctx context.Context) (*http.Request, bool) {
 }
 
 // WithResponseHeaders copies the key-value pairs from h into the response
-// header map stored in ctx (pre-allocated by [Handler] before calling the
+// header map stored in ctx (pre-allocated by the request pipeline before calling the
 // [HandlerFunc]).  Call this inside a [HandlerFunc] to emit response headers
 // such as Location, ETag, or custom headers without direct access to
 // [http.ResponseWriter].
@@ -72,7 +71,7 @@ func ResponseHeadersFromContext(ctx context.Context) (http.Header, bool) {
 }
 
 // PendingCookie is a cookie queued to be validated and written as a Set-Cookie
-// response header by [Handler]. Create one inside a [HandlerFunc] and deposit
+// response header by the request pipeline. Create one inside a [HandlerFunc] and deposit
 // it via [WithResponseCookies].
 type PendingCookie struct {
 	Name  string
@@ -81,7 +80,7 @@ type PendingCookie struct {
 }
 
 // WithResponseCookies deposits one or more [PendingCookie] values into ctx.
-// [Handler] validates their values against the route's [ResponseCookieParam]
+// The request pipeline validates their values against the route's [ResponseCookieParam]
 // codecs and then writes Set-Cookie headers on success.
 // Call this inside a [HandlerFunc] to emit response cookies.
 func WithResponseCookies(ctx context.Context, cookies ...PendingCookie) {
@@ -100,13 +99,13 @@ func ResponseCookiesFromContext(ctx context.Context) ([]PendingCookie, bool) {
 	return *pending, true
 }
 
-// Options configures the behaviour of [Handler] and [Register].
+// Options configures the behaviour of [Serve]/[ServeOne]/[ServeSSE].
 //
 // BREAKING: Observer and SecurityFunc are REMOVED — replaced by
-// [middleware.Middleware] attached via [rest.WithMiddleware] (declaration
-// time, spec-relevant) and/or [Handler]/[Register]'s variadic mws parameter
-// (call time). See [RequireScopes] for the security replacement and
-// [ObservabilityMiddleware] for the observer replacement.
+// [middleware.Middleware] (declare-time, attached via [rest.WithMiddleware]/
+// [rest.Route.Use]) paired with a [middleware.ServerImplementation]
+// (register-time, attached via [rest.Route.HandleMW]). See
+// [Observability] for the observer replacement.
 type Options struct {
 	// ErrorHandler, when non-nil, is called instead of the default JSON error
 	// envelope when a request fails. status is the suggested HTTP status code
@@ -132,36 +131,12 @@ type Options struct {
 	MultiValueQueryParams bool
 }
 
-// validateMiddlewareShapes checks every attached mw.Fn against the two
-// concrete shapes this package recognizes, EAGERLY at Register/Handler
-// construction time rather than deferring to the first incoming request —
-// a malformed Fn fails loudly and immediately.
-func validateMiddlewareShapes[Req any](mws []middleware.Middleware) error {
-	for _, mw := range mws {
-		switch mw.Fn.(type) {
-		case nil:
-			continue // spec-only/no-op middleware (e.g. RequestParams-only) — allowed
-		case func(http.Handler) http.Handler:
-			continue
-		case func(context.Context, *http.Request, *Req) (map[string][]string, error):
-			continue
-		default:
-			return middleware.MiddlewareShapeError{
-				Name:     mw.Name,
-				Expected: "func(http.Handler) http.Handler or func(context.Context, *http.Request, *Req) (map[string][]string, error)",
-				Got:      fmt.Sprintf("%T", mw.Fn),
-			}
-		}
-	}
-	return nil
-}
-
-// applyGeneralMiddleware wraps h with every general-purpose Fn found in mws,
-// OUTERMOST-in, in attachment order (mws[0] is outermost — the first
-// attached middleware runs first and returns last).
-func applyGeneralMiddleware(h http.Handler, mws []middleware.Middleware) http.Handler {
-	for i := len(mws) - 1; i >= 0; i-- {
-		fn, ok := mws[i].Fn.(func(http.Handler) http.Handler)
+// applyGeneralMiddleware wraps h with every general-purpose Fn found in
+// impls, OUTERMOST-in, in attachment order (impls[0] is outermost — the
+// first attached implementation runs first and returns last).
+func applyGeneralMiddleware(h http.Handler, impls []middleware.ServerImplementation) http.Handler {
+	for i := len(impls) - 1; i >= 0; i-- {
+		fn, ok := impls[i].Fn.(func(http.Handler) http.Handler)
 		if !ok {
 			continue
 		}
@@ -177,22 +152,22 @@ func applyGeneralMiddleware(h http.Handler, mws []middleware.Middleware) http.Ha
 // docs/roadmap/declarative-middleware.md for why each Fn does NOT
 // independently decide pass/fail against the route's full requirement set.
 //
-// A middleware with an EMPTY Satisfies (a pure presence/format check, e.g.
-// [RequireAPIKey], contributing no scope grants) ALWAYS runs, regardless of
-// whether the route declares any Security — that is its whole design
-// point (see docs/roadmap/declarative-middleware.md's "Header/cookie param
-// auto-contribution" section). A middleware with a NON-EMPTY Satisfies
-// (e.g. [RequireScopes]) only runs when the route actually declares a
-// security requirement — an unsecured route must not authenticate
-// credentials it never asked for.
-func runSecurityMiddleware[Req any](ctx context.Context, r *http.Request, req *Req, mws []middleware.Middleware, secReqs []route.SecurityRequirement) error {
+// An implementation with an EMPTY Satisfies (a pure presence/format check,
+// e.g. an API-key format validator, contributing no scope grants) ALWAYS
+// runs, regardless of whether the route declares any Security — that is
+// its whole design point (see docs/roadmap/declarative-middleware.md's
+// "Header/cookie param auto-contribution" section). An implementation
+// with a NON-EMPTY Satisfies (e.g. a scope-checking implementation) only
+// runs when the route actually declares a security requirement — an
+// unsecured route must not authenticate credentials it never asked for.
+func runSecurityMiddleware[Req any](ctx context.Context, r *http.Request, req *Req, impls []middleware.ServerImplementation, secReqs []route.SecurityRequirement) error {
 	granted := make(map[string][]string)
-	for _, mw := range mws {
-		fn, ok := mw.Fn.(func(context.Context, *http.Request, *Req) (map[string][]string, error))
+	for _, impl := range impls {
+		fn, ok := impl.Fn.(func(context.Context, *http.Request, *Req) (map[string][]string, error))
 		if !ok {
 			continue
 		}
-		if len(mw.Satisfies) > 0 && len(secReqs) == 0 {
+		if len(impl.Satisfies) > 0 && len(secReqs) == 0 {
 			continue
 		}
 		g, err := fn(ctx, r, req)
@@ -206,7 +181,11 @@ func runSecurityMiddleware[Req any](ctx context.Context, r *http.Request, req *R
 	return middleware.CheckScopes(secReqs, granted)
 }
 
-// Handler wraps a [rest.RouteHandle] and a [HandlerFunc] into an [http.Handler].
+// handlerFunc wraps a [rest.RouteHandle] and a [HandlerFunc] into an
+// [http.Handler] — the shared implementation behind [Serve]/[ServeOne]'s
+// reflect dispatch (via [buildRouteHandler]) and [HandlerLatest]/
+// [PipelineHandler] (in stream.go), which call it directly since Req/Resp
+// are concrete at those call sites.
 //
 // For body-bearing methods (POST, PUT, PATCH) the request body is read,
 // decoded, and validated using the route's codec before fn is called.
@@ -217,7 +196,7 @@ func runSecurityMiddleware[Req any](ctx context.Context, r *http.Request, req *R
 //
 // Pass a zero-value [Options]{} for default behaviour (JSON error envelope, 1 MiB
 // body limit, application/json Content-Type check, no-op observer).
-func Handler[Req, Resp any](handle *rest.RouteHandle[Req, Resp], fn HandlerFunc[Req, Resp], opts Options, mws ...middleware.Middleware) http.Handler {
+func handlerFunc[Req, Resp any](handle *rest.RouteHandle[Req, Resp], fn HandlerFunc[Req, Resp], opts Options, impls ...middleware.ServerImplementation) http.Handler {
 	errFn := opts.ErrorHandler
 	if errFn == nil {
 		errFn = defaultErrorHandler
@@ -230,8 +209,6 @@ func Handler[Req, Resp any](handle *rest.RouteHandle[Req, Resp], fn HandlerFunc[
 	if expectedCT == "" {
 		expectedCT = "application/json"
 	}
-
-	allMws := append(slices.Clone(handle.Middlewares), mws...)
 
 	inner := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		sw := &statusResponseWriter{ResponseWriter: w, code: http.StatusOK}
@@ -375,7 +352,7 @@ func Handler[Req, Resp any](handle *rest.RouteHandle[Req, Resp], fn HandlerFunc[
 		// is empty: a middleware with an EMPTY Satisfies (a pure
 		// presence/format check, e.g. RequireAPIKey) must still run — see
 		// runSecurityMiddleware's own doc comment.
-		if err := runSecurityMiddleware(ctx, r, &req, allMws, secReqs); err != nil {
+		if err := runSecurityMiddleware(ctx, r, &req, impls, secReqs); err != nil {
 			secErr := rest.SecurityError{Err: err}
 			errFn(sw, r, http.StatusUnauthorized, secErr)
 			return
@@ -561,50 +538,24 @@ func Handler[Req, Resp any](handle *rest.RouteHandle[Req, Resp], fn HandlerFunc[
 		_, _ = sw.Write(out)
 	})
 
-	// General-purpose middlewares (e.g. [ObservabilityMiddleware]) wrap the
+	// General-purpose middlewares (e.g. [Observability]) wrap the
 	// WHOLE call, outermost-in, in attachment order — see "Two attachment
-	// points" in docs/roadmap/declarative-middleware.md. Malformed Fn shapes
-	// are silently skipped here (best-effort, since Handler returns no
-	// error); use [Register] for eager, loud [middleware.MiddlewareShapeError]
-	// validation at wiring time instead of first-request time.
-	return applyGeneralMiddleware(inner, allMws)
+	// points" in docs/roadmap/declarative-middleware.md.
+	return applyGeneralMiddleware(inner, impls)
 }
 
-// Register registers the route on mux using its method and path from the
-// route descriptor. It uses the Go 1.22+ enhanced ServeMux pattern
-// "METHOD /path" so each registration is scoped to a single method.
-//
-// mws combines with handle.Middlewares (declaration-time, attached via
-// [rest.WithMiddleware]) — declaration-time middleware runs first, then
-// call-time mws, in that combined order.
-//
-// Register validates every attached middleware's Fn shape EAGERLY, at
-// wiring time — before any request arrives — returning
-// [middleware.MiddlewareShapeError] immediately for a malformed Fn, instead
-// of silently skipping it on every incoming request the way [Handler] does
-// when called directly. This is why Register returns an error (BREAKING —
-// was previously void).
-//
-// Pass a zero-value [Options]{} for default behaviour.
-func Register[Req, Resp any](mux *http.ServeMux, handle *rest.RouteHandle[Req, Resp], fn HandlerFunc[Req, Resp], opts Options, mws ...middleware.Middleware) error {
-	allMws := append(slices.Clone(handle.Middlewares), mws...)
-	if err := validateMiddlewareShapes[Req](allMws); err != nil {
-		return err
-	}
-	pattern := strings.ToUpper(handle.Descriptor.Method) + " " + handle.Descriptor.Path
-	mux.Handle(pattern, Handler(handle, fn, opts, mws...))
-	return nil
-}
-
-// SSEHandlerFunc is the typed application handler called by [SSEHandler].
+// SSEHandlerFunc is the typed application handler called by SSE dispatch.
 // ctx is the request context (cancelled when the client disconnects).
 // req is the decoded request (zero value for body-less GET requests).
 // send encodes, validates, and writes one SSE event; it returns an error if
 // the event fails codec validation or if the underlying write fails.
 type SSEHandlerFunc[Req, Event any] func(ctx context.Context, req Req, send func(Event) error) error
 
-// SSEHandler wraps an [rest.SSERouteHandle] and a user-supplied [SSEHandlerFunc]
-// into an [http.Handler] that streams Server-Sent Events.
+// sseHandlerFunc wraps a [rest.SSERouteHandle] and a user-supplied
+// [SSEHandlerFunc] into an [http.Handler] that streams Server-Sent Events —
+// the shared implementation behind [ServeSSE]'s reflect dispatch and
+// [binding.go]'s SSEAdapter, which calls it directly since Req/Event are
+// concrete at that call site.
 //
 // The handler sets Content-Type: text/event-stream, Cache-Control: no-cache,
 // and Connection: keep-alive, then calls fn. The send func provided to fn
@@ -613,11 +564,10 @@ type SSEHandlerFunc[Req, Event any] func(ctx context.Context, req Req, send func
 // validation, send returns an error without writing anything.
 //
 // fn should honour ctx.Done() for clean client-disconnect handling.
-func SSEHandler[Req, Event any](handle *rest.SSERouteHandle[Req, Event], fn SSEHandlerFunc[Req, Event], opts Options, mws ...middleware.Middleware) http.Handler {
+func sseHandlerFunc[Req, Event any](handle *rest.SSERouteHandle[Req, Event], fn SSEHandlerFunc[Req, Event], opts Options, impls ...middleware.ServerImplementation) http.Handler {
 	if opts.ErrorHandler == nil {
 		opts.ErrorHandler = defaultErrorHandler
 	}
-	allMws := append(slices.Clone(handle.Middlewares), mws...)
 	inner := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		sw := &statusResponseWriter{ResponseWriter: w, code: http.StatusOK}
 
@@ -688,7 +638,7 @@ func SSEHandler[Req, Event any](handle *rest.SSERouteHandle[Req, Event], fn SSEH
 		// Called even when secReqs is empty — see runSecurityMiddleware's
 		// own doc comment (a middleware with an EMPTY Satisfies must still
 		// run).
-		if err := runSecurityMiddleware(ctx, r, &req, allMws, secReqs); err != nil {
+		if err := runSecurityMiddleware(ctx, r, &req, impls, secReqs); err != nil {
 			secErr := rest.SecurityError{Err: err}
 			opts.ErrorHandler(sw, r, http.StatusUnauthorized, secErr)
 			return
@@ -795,33 +745,24 @@ func SSEHandler[Req, Event any](handle *rest.SSERouteHandle[Req, Event], fn SSEH
 	})
 
 	// General-purpose middlewares wrap the WHOLE call, outermost-in, in
-	// attachment order — see [Handler]'s equivalent wrapping.
-	return applyGeneralMiddleware(inner, allMws)
-}
-
-// RegisterSSE wires an [rest.SSERouteHandle] onto mux as a GET SSE endpoint.
-//
-// mws is call-time-only (SSERouteHandle has no declaration-time Middlewares
-// field — there is no earlier "declaration time" separate from the call
-// itself for SSE routes). Validates every attached middleware's Fn shape
-// EAGERLY, returning [middleware.MiddlewareShapeError] immediately for a
-// malformed Fn (BREAKING — RegisterSSE was previously void).
-func RegisterSSE[Req, Event any](mux *http.ServeMux, handle *rest.SSERouteHandle[Req, Event], fn SSEHandlerFunc[Req, Event], opts Options, mws ...middleware.Middleware) error {
-	allMws := append(slices.Clone(handle.Middlewares), mws...)
-	if err := validateMiddlewareShapes[Req](allMws); err != nil {
-		return err
-	}
-	mux.Handle("GET "+handle.Descriptor.Path, SSEHandler(handle, fn, opts, mws...))
-	return nil
+	// attachment order — see handlerFunc's equivalent wrapping.
+	return applyGeneralMiddleware(inner, impls)
 }
 
 // primaryStatus returns the HTTP status code for the primary success response.
 // Falls back to 200 if the descriptor has no responses or the status is unparseable.
 func primaryStatus[Req, Resp any](handle *rest.RouteHandle[Req, Resp]) int {
-	if len(handle.Descriptor.Responses) == 0 {
+	return primaryStatusFor(handle.Descriptor)
+}
+
+// primaryStatusFor is [primaryStatus]'s non-generic-signature equivalent —
+// used by [Serve], which only has a route.Route descriptor (via reflect),
+// never a concrete *rest.RouteHandle[Req, Resp].
+func primaryStatusFor(descriptor route.Route) int {
+	if len(descriptor.Responses) == 0 {
 		return http.StatusOK
 	}
-	code, err := strconv.Atoi(handle.Descriptor.Responses[0].Status)
+	code, err := strconv.Atoi(descriptor.Responses[0].Status)
 	if err != nil {
 		return http.StatusOK
 	}
@@ -990,25 +931,17 @@ func writeErrorPatternResponse[Req, Resp any](
 	pendingCookies []PendingCookie,
 ) error {
 	if respVal, ok := pattern.Value.(Resp); ok {
-		if headerFields := handle.ResponseHeaderMergeFields(); len(headerFields) > 0 {
-			values, encErr := codex.EncodeVars(respVal, headerFields...)
-			if encErr != nil {
-				reportResponseHeaderErrors(ctx, encErr)
-				return encErr
-			}
-			for k, v := range values {
-				respHeaders.Set(k, v)
-			}
+		headerValues, cookieValues, encErr := handle.EncodeResponseMergeFields(respVal)
+		if encErr != nil {
+			reportResponseHeaderErrors(ctx, encErr)
+			reportResponseCookieErrors(ctx, encErr)
+			return encErr
 		}
-		if cookieFields := handle.ResponseCookieMergeFields(); len(cookieFields) > 0 {
-			values, encErr := codex.EncodeVars(respVal, cookieFields...)
-			if encErr != nil {
-				reportResponseCookieErrors(ctx, encErr)
-				return encErr
-			}
-			for k, v := range values {
-				pendingCookies = append(pendingCookies, PendingCookie{Name: k, Value: v})
-			}
+		for k, v := range headerValues {
+			respHeaders.Set(k, v)
+		}
+		for k, v := range cookieValues {
+			pendingCookies = append(pendingCookies, PendingCookie{Name: k, Value: v})
 		}
 	}
 

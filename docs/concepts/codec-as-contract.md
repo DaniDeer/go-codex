@@ -12,7 +12,7 @@ producer/
   main.go       ← imports contract/, calls Publish / nethttp.Call
 
 consumer/
-  main.go       ← imports contract/, calls SubscribeHandler / nethttp.Register
+  main.go       ← imports contract/, calls SubscribeHandler / nethttp.Serve
 ```
 
 ## HTTP example
@@ -25,12 +25,13 @@ var CreateUser = rest.NewRoute[CreateUserReq, User](
 )
 
 // server/main.go
-handle, _ := contract.CreateUser.Register(builder)
-nethttp.Register(mux, handle, myHandler, opts)
+route := contract.CreateUser.WithHandler(myHandler).WithOptions(opts)
+route.Register(builder)
+nethttp.Serve(mux, builder)
 
 // client/main.go — same Route, no duplication
-handle := contract.CreateUser.ClientHandle()
-user, err := nethttp.Call(ctx, http.DefaultClient, serverURL, handle, req, nil, opts)
+caller := nethttp.NewCaller(http.DefaultClient, serverURL)
+user, err := nethttp.Call(ctx, caller, contract.CreateUser, req, opts)
 ```
 
 ## MQTT example
@@ -43,9 +44,10 @@ var ReadingsChannel = events.NewChannel[SensorReading](
     events.TopicParam{Name: "sensorID"}.WithCodec(uuidCodec),
 )
 
-// producer/main.go
+// producer/main.go — PublishHandle auto-derives topic vars from reading's
+// declared merge fields, no manual vars map needed
 handle, _ := contract.ReadingsChannel.Register(producerBuilder)
-adaptermqtt.Publish(ctx, client, handle, 1, false, reading, vars, opts)
+adaptermqtt.PublishHandle(ctx, client, handle, 1, false, reading, opts)
 
 // consumer/main.go
 handle, _ := contract.ReadingsChannel.Register(consumerBuilder)
@@ -60,8 +62,11 @@ automatically gets the "one struct, one call" convenience on BOTH sides —
 producer and consumer, client and server — with zero extra code beyond
 declaring the route/channel once. See
 [API Contracts — Design principle: one struct, one call](api-contracts.md#design-principle-one-struct-one-call)
-for the underlying promise and its current REST-only status (events/reqreply
-contracts still assemble topic vars by hand today).
+for the underlying promise and its per-boundary coverage — REST is the
+reference implementation, but events/req-reply/WebSocket/SSE all ship the
+same single-call convenience today (`mqtt5.PublishHandle`/
+`zeromq.PublishHandle`/`mqtt.PublishHandle` for pub/sub;
+`mqtt5.CallHandle`/`zeromq.CallHandle` for req/reply).
 
 ## When to use this pattern
 

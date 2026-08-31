@@ -31,7 +31,6 @@ import (
 	"context"
 	"encoding/gob"
 	"fmt"
-	"net/http"
 	"net/http/httptest"
 	"os"
 
@@ -160,6 +159,13 @@ var uploadRoute = rest.NewRoute[UploadReq, UploadResp]("POST", "/uploads/{id}",
 		OperationID: "uploadFile",
 		Summary:     "Upload a file — Gob body projected onto a nested Payload field, header/query merged into a nested Meta field",
 	},
+	// Declares the accepted request body format inline (Gob instead of the
+	// JSON default) — the server-side equivalent of the manual
+	// serverHandle.WithRequestFormats call this replaces; applied
+	// automatically by both Route.Register/RegisterHandle (used by
+	// nethttp.Serve/ServeOne). Note: ClientHandle does NOT consume this
+	// opt, so the client below still calls WithRequestFormats explicitly.
+	rest.RequestFormats[UploadReq](uploadGobFormat),
 	// Path: nested closure would be unnecessary here (ID is top-level), but
 	// header/query below demonstrate the nested case (Meta.X).
 	rest.NewPathParam("id", codex.String().Refine(validate.NonEmptyString),
@@ -188,17 +194,10 @@ var uploadRoute = rest.NewRoute[UploadReq, UploadResp]("POST", "/uploads/{id}",
 func main() {
 	// ── Server ───────────────────────────────────────────────────────────────
 
-	b := rest.NewBuilder(rest.Info{Title: "Nested Binary Upload API", Version: "1.0.0"})
-	serverHandle, err := uploadRoute.Register(b)
-	if err != nil {
-		fmt.Fprintln(os.Stderr, "register:", err)
-		os.Exit(1)
-	}
-	// Accept Gob request bodies (application/gob) instead of the JSON default.
-	serverHandle.WithRequestFormats(uploadGobFormat)
-
-	mux := http.NewServeMux()
-	if err := nethttp.Register(mux, serverHandle, func(_ context.Context, req UploadReq) (UploadResp, error) {
+	// Single route, no other builder state needed — ServeOne builds a
+	// scratch single-route Builder internally, so no rest.NewBuilder call
+	// is needed on the server side at all.
+	handler, err := nethttp.ServeOne(uploadRoute.WithHandler(func(_ context.Context, req UploadReq) (UploadResp, error) {
 		// req arrives FULLY merged: ID (path), Meta.ContentHash (header),
 		// Meta.Compress (query), Payload (Gob body) — one struct, no manual
 		// r.PathValue()/r.URL.Query()/r.Header.Get() calls needed.
@@ -210,12 +209,13 @@ func main() {
 			Size:   len(req.Payload.Data),
 			Meta:   RespMeta{TraceID: "trace-" + req.ID},
 		}, nil
-	}, nethttp.Options{}); err != nil {
+	}))
+	if err != nil {
 		fmt.Fprintln(os.Stderr, "register upload route:", err)
 		os.Exit(1)
 	}
 
-	srv := httptest.NewServer(mux)
+	srv := httptest.NewServer(handler)
 	defer srv.Close()
 
 	// ── Client ───────────────────────────────────────────────────────────────
@@ -230,7 +230,7 @@ func main() {
 	}
 
 	fmt.Println("=== One struct, one call: nested Req, Gob body, header+query merge ===")
-	resp, err := nethttp.CallHandle(context.Background(), srv.Client(), srv.URL, clientHandle, req, nethttp.CallOptions{})
+	resp, err := nethttp.CallWithHandle(context.Background(), srv.Client(), srv.URL, clientHandle, req, nethttp.CallOptions{})
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "call:", err)
 		os.Exit(1)

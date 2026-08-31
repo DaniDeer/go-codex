@@ -26,7 +26,7 @@ createUser, _ := rest.NewRoute[CreateUserReq, User]("POST", "/users",
         RespStatus:     "201",
     },
     rest.ResponseMeta{Status: "400", Description: "Validation error."},
-).Register(b)
+).RegisterHandle(b)
 
 // GET /users/{id} — path param validated as UUID
 uuidCodec := codex.String().Refine(validate.UUID)
@@ -34,7 +34,7 @@ getUser, _ := rest.NewRoute[struct{}, User]("GET", "/users/{id}",
     codex.Empty, userCodec,
     rest.RouteMeta{OperationID: "getUser", RespSchemaName: "User"},
     rest.PathParam{Name: "id", Description: "User UUID"}.WithCodec(uuidCodec),
-).Register(b)
+).RegisterHandle(b)
 
 // GET /users — query params
 pageCodec := codex.String().Refine(validate.NonNegativeIntString)
@@ -43,7 +43,7 @@ listUsers, _ := rest.NewRoute[struct{}, []User]("GET", "/users",
     rest.RouteMeta{OperationID: "listUsers"},
     rest.QueryParam{Name: "page"}.WithCodec(pageCodec),
     rest.QueryParam{Name: "search"},
-).Register(b)
+).RegisterHandle(b)
 
 // GET /profile — cookie + header params
 sessionCodec   := codex.String().Refine(validate.NonEmptyString)
@@ -53,7 +53,7 @@ profile, _ := rest.NewRoute[struct{}, User]("GET", "/profile",
     rest.RouteMeta{OperationID: "getProfile"},
     rest.CookieParam{Name: "session_token", Required: true}.WithCodec(sessionCodec),
     rest.HeaderParam{Name: "X-Request-Id",  Required: true}.WithCodec(requestIDCodec),
-).Register(b)
+).RegisterHandle(b)
 ```
 
 ## Parameter types
@@ -90,10 +90,10 @@ var getUser = rest.NewRoute[GetUserReq, User]("GET", "/users/{id}", reqCodec, us
         func(r *GetUserReq, v string) { r.ID = v },
     ),
 )
-handle, _ := getUser.Register(builder)
+getUser.Register(builder)
 
-// nethttp.Handler / chi's Handler call RouteHandle.DecodeMerged automatically
-// whenever handle.MergeFields() is non-empty — the handler function just
+// nethttp.Serve / chi.Serve apply RouteHandle.MergeFields() automatically
+// whenever it is non-empty — the handler function just
 // receives a fully populated, validated GetUserReq:
 func(ctx context.Context, req GetUserReq) (User, error) {
     record, ok := store.Get(req.ID) // req.ID already validated as a UUID
@@ -173,21 +173,22 @@ for the underlying mechanism.
 ### Client-side encode — role-aware merge fields
 
 The merge fields declared via `NewPathParam`/`NewRequiredQueryParam`/etc.
-also benefit the CLIENT (encode) direction: `nethttp.Call` needs a
-`vars map[string]string` for the URL path, plus separate
-`CallOptions.QueryParams`/`HeaderParams`/`CookieParams` maps — building
-these by hand from a request struct is the same friction the decode side
-solves for the server.
+also benefit the CLIENT (encode) direction: `nethttp.Call` takes the
+`rest.Route` value directly and ALWAYS auto-derives path/query/header/cookie
+values from its declared merge fields internally — there is no manual
+`vars map[string]string`/`codex.EncodeVars` step for the caller to perform;
+a route intended for client use must simply declare merge fields for every
+value it needs.
 
-`RouteHandle.MergeFields()` returns an AGGREGATE of every declared merge
-field across all four roles — safe for the decode direction (the source
-vars are already correctly scoped before merging), but **not** safe to
-reuse directly for encode: `CallOptions.QueryParams`/`HeaderParams`/
-`CookieParams` each add every map entry to their HTTP location with no name
-filtering, so one flat map built from all roles could leak a path value
-into the query string. Use the role-specific accessors instead —
-`RouteHandle.PathMergeFields()`, `QueryMergeFields()`, `HeaderMergeFields()`,
-`CookieMergeFields()` — each returns only that role's fields:
+Internally, `Call` uses `RouteHandle.PathMergeFields()`/`QueryMergeFields()`/
+`HeaderMergeFields()`/`CookieMergeFields()` — role-specific accessors, each
+returning only that role's fields — never the flat, aggregate
+`RouteHandle.MergeFields()` (safe for the DECODE direction, where the
+source vars are already correctly scoped before merging, but unsafe for
+ENCODE: a flat map built from all roles could leak a path value into the
+query string). This role separation is why the path value can never end
+up in the query string, and vice versa, even though both come from the
+same `req`:
 
 ```go
 type GetUserActivityReq struct {
@@ -205,20 +206,21 @@ var getUserActivity = rest.NewRoute[GetUserActivityReq, User](
         func(r *GetUserActivityReq, v string) { r.Filter = v }),
 )
 
-handle := getUserActivity.ClientHandle()
+caller := nethttp.NewCaller(client, baseURL)
 req := GetUserActivityReq{ID: userID, Filter: "logins"}
 
-pathVars, _ := codex.EncodeVars(req, handle.PathMergeFields()...)
-queryParams, _ := codex.EncodeVars(req, handle.QueryMergeFields()...)
-
-user, err := nethttp.Call(ctx, client, baseURL, handle, req, pathVars,
-    nethttp.CallOptions{QueryParams: queryParams})
+// nethttp.Call takes the rest.Route value directly and ALWAYS auto-derives
+// path/query/header/cookie values from its declared merge fields — no
+// manual codex.EncodeVars call, no vars map. req.ID merges into {id},
+// req.Filter merges into ?filter=... automatically.
+user, err := nethttp.Call(ctx, caller, getUserActivity, req, nethttp.CallOptions{})
 ```
 
-`pathVars` and `queryParams` never overlap — the path value can never end
-up in the query string, and vice versa, even though both come from the
-same `req`. See `examples/adapters-nethttp-client` (section 2b) for the
-full runnable version.
+The path value can never end up in the query string, and vice versa, even
+though both come from the same `req` — each merge field is tagged with its
+own role (`NewPathParam`/`NewOptionalQueryParam`) at declaration time. See
+`examples/adapters-nethttp-client` (section 2b) for the full runnable
+version.
 
 ### Response merge fields
 
@@ -239,16 +241,18 @@ var getUserActivity = rest.NewRoute[GetUserActivityReq, User]("GET", "/users/{id
 )
 ```
 
-On the **server**, `nethttp`/`chi`'s `Handler`/`Register` automatically
-encode `User.RequestID` into the actual `X-Request-Id` HTTP response header
-after your handler returns — no `nethttp.WithResponseHeaders` call needed:
+On the **server**, `nethttp`/`chi`'s `Serve` (via `Route.WithHandler`)
+automatically encode `User.RequestID` into the actual `X-Request-Id` HTTP
+response header after your handler returns — no
+`nethttp.WithResponseHeaders` call needed:
 
 ```go
-nethttp.Register(mux, handle, func(ctx context.Context, req GetUserActivityReq) (User, error) {
+route.WithHandler(func(ctx context.Context, req GetUserActivityReq) (User, error) {
     u := lookup(req.ID)
     u.RequestID = generateTraceID() // adapter sets the X-Request-Id header from this automatically
     return u, nil
-}, nethttp.Options{})
+}).Register(builder)
+// ... nethttp.Serve(mux, builder) wires it
 ```
 
 On the **client**, `nethttp.Call` automatically merges the HTTP response's
@@ -263,26 +267,28 @@ Path/Secure/SameSite override) — use `nethttp.WithResponseCookies`
 directly for custom attributes, the same escape hatch that remains for any
 field not modeled as a struct field.
 
-### One-line client calls — CallHandle
+### One-line client calls — nethttp.Call
 
-`nethttp.CallHandle` derives `vars`/`QueryParams`/`HeaderParams`/
-`CookieParams` from `req` automatically, using the route's role-aware
-merge-field accessors — no `codex.EncodeVars` calls needed at the call
-site:
+`nethttp.Call` derives `vars`/`QueryParams`/`HeaderParams`/`CookieParams`
+from `req` automatically, using the route's role-aware merge-field
+accessors — no `codex.EncodeVars` calls needed at the call site. `Call`
+is the SOLE public client-side entry point (see
+[the HTTP Client feature page](http-client.md) for the full picture):
 
 ```go
-handle := getUserActivity.ClientHandle()
-activity, err := nethttp.CallHandle(ctx, client, baseURL, handle,
+caller := nethttp.NewCaller(client, baseURL)
+activity, err := nethttp.Call(ctx, caller, getUserActivity,
     GetUserActivityReq{ID: userID, Filter: "logins"}, nethttp.CallOptions{})
 // activity.RequestID is already populated from the response header.
 ```
 
 Any entry explicitly set in `opts.QueryParams`/`HeaderParams`/`CookieParams`
-takes PRECEDENCE over the value `CallHandle` derives from `req` for the
+takes PRECEDENCE over the value `Call` derives from `req` for the
 same key — this lets you override a field's value or add an ad-hoc param
 the struct doesn't declare, without losing the one-line convenience for
-the common case. `nethttp.Call` remains available as the lower-level
-escape hatch for callers that build the maps themselves.
+the common case. `nethttp.CallWithHandle` remains available as the
+lower-level, handle-based escape hatch for callers that already have a
+`*rest.RouteHandle` but no `rest.Route` value.
 
 Together, this closes the full loop the merge-field feature set targets:
 one codec/route definition, a single `Req`/`Resp` struct per side, and
@@ -295,7 +301,7 @@ version.
 
 This convenience also runs through the `ports` binding layer:
 `nethttp.DrainCallAdapter` (`ports.SinkAdapter`) and `nethttp.CallAdapter`
-(`ports.IOAdapter`) delegate to `CallHandle` and derive path/query/header/
+(`ports.IOAdapter`) delegate to `CallWithHandle` and derive path/query/header/
 cookie vars PER-ITEM from each streamed item's own merge fields whenever
 their `Vars` option is left `nil` — every item may resolve to a different
 concrete request. Set `Vars` to a non-nil map to keep the same, static vars
@@ -374,7 +380,7 @@ API. See `examples/rest-nested-binary` for the full runnable version:
 nested `Meta`/`Payload` sub-structs, Gob body projected onto `Payload`,
 header/query merged into `Meta`, and a response header merge field
 (`Resp.Meta.TraceID`) — one struct in, one struct out, on both
-`nethttp.CallHandle` (client) and `nethttp.Register` (server).
+`nethttp.CallWithHandle` (client) and `nethttp.Serve` (server).
 
 ## BuildPath — type-safe URL construction
 
@@ -391,10 +397,12 @@ import nethttp "github.com/DaniDeer/go-codex/adapters/nethttp"
 
 mux := http.NewServeMux()
 
-// Register uses the Go 1.22+ "METHOD /path" ServeMux pattern automatically.
-nethttp.Register(mux, createUser, func(ctx context.Context, req CreateUserReq) (User, error) {
+// Serve uses the Go 1.22+ "METHOD /path" ServeMux pattern automatically.
+route := createUser.WithHandler(func(ctx context.Context, req CreateUserReq) (User, error) {
     return svc.CreateUser(ctx, req)
-}, nethttp.Options{Observer: obs})
+}).WithOptions(nethttp.Options{Observer: obs})
+route.Register(builder)
+nethttp.Serve(mux, builder)
 
 http.ListenAndServe(":8080", mux)
 ```
@@ -436,7 +444,7 @@ route, _ := rest.NewRoute[CreateJobReq, JobResp]("POST", "/jobs", reqCodec, resp
             return ErrorBody{Code: "validation", Message: e.Error()}, nil
         },
     ),
-).Register(b)
+).RegisterHandle(b)
 ```
 
 - `rest.ErrorStatus[E](status)` — status-only mapping; body still flows
@@ -505,7 +513,7 @@ The declarative `ErrorPattern` data is not server-only — `Route.ClientHandle()
 response:
 
 ```go
-_, err := nethttp.Call(ctx, client, baseURL, clientCreate, req, nil, nethttp.CallOptions{})
+_, err := nethttp.Call(ctx, caller, clientCreate, req, nethttp.CallOptions{})
 if err != nil {
     var conflict nethttp.ErrorPatternResponse
     if errors.As(err, &conflict) {
@@ -546,27 +554,35 @@ import (
 )
 
 r := gochi.NewRouter()
-chiadapter.Register(r, getUser, func(ctx context.Context, _ struct{}) (User, error) {
+chiRoute := getUser.WithHandler(func(ctx context.Context, _ struct{}) (User, error) {
     rr, _ := chiadapter.RequestFromContext(ctx)
     return svc.GetUser(ctx, gochi.URLParam(rr, "id"))
-}, chiadapter.Options{})
+})
+chiRoute.Register(builder)
+chiadapter.Serve(r, builder)
 ```
 
 Same feature set as `adapters/nethttp` — all param validation, response headers/cookies, content negotiation, observer.
 
 ## Multi-format request/response
 
+Declare `rest.RequestFormats`/`rest.Formats` inline as `NewRoute` opts (or
+call `.WithRequestFormats`/`.WithFormats` on the `*RouteHandle` returned by
+`RegisterHandle` for post-registration configuration):
+
 ```go
-// Accept JSON or YAML request bodies
-createUser = createUser.WithRequestFormats(
-    format.JSON(createUserReqCodec),
-    format.YAML(createUserReqCodec),
+// Accept JSON or YAML request bodies; serve HTML or JSON responses.
+createUser := rest.NewRoute[CreateUserReq, User]("POST", "/users",
+    createUserReqCodec, userCodec,
+    rest.RequestFormats(format.JSON(createUserReqCodec), format.YAML(createUserReqCodec)),
 )
 
-// Serve HTML or JSON responses
-articleRoute = articleRoute.WithFormats(
-    adapttempl.Format(propsCodec, ArticleCard), // Accept: text/html
-    format.JSON(propsCodec),                    // Accept: application/json
+articleRoute := rest.NewRoute[struct{}, ArticleProps]("GET", "/article",
+    codex.Empty, propsCodec,
+    rest.Formats(
+        adapttempl.Format(propsCodec, ArticleCard), // Accept: text/html
+        format.JSON(propsCodec),                    // Accept: application/json
+    ),
 )
 ```
 
@@ -574,19 +590,21 @@ articleRoute = articleRoute.WithFormats(
 
 ```go
 // Inside a handler: deposit headers via ctx
-nethttp.Register(mux, createUser, func(ctx context.Context, req CreateUserReq) (User, error) {
+route := createUser.WithHandler(func(ctx context.Context, req CreateUserReq) (User, error) {
     u := svc.CreateUser(ctx, req)
     if h, ok := nethttp.ResponseHeadersFromContext(ctx); ok {
         h.Set("Location", "/users/"+u.ID)
     }
     return u, nil
-}, nethttp.Options{})
+})
+route.Register(builder)
+nethttp.Serve(mux, builder)
 
 // Declare response header + codec — validated after handler returns
 locationCodec := codex.String().Refine(validate.NonEmptyString)
 createUser, _ = rest.NewRoute[CreateUserReq, User]("POST", "/users", ...,
     rest.ResponseHeaderParam{Name: "Location", Required: true}.WithCodec(locationCodec),
-).Register(b)
+).RegisterHandle(b)
 ```
 
 Redirect pattern: declare a 3xx `RespStatus` and set `Location` (via response

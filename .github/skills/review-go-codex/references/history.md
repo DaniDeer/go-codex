@@ -1,6 +1,191 @@
-# go-codex Review History (R1–R121)
+# go-codex Review History (R1–R126, plus middleware-workflow-simplification G1–G15)
 
 Do not re-report any of these findings. They have been implemented and tested.
+
+---
+
+## Round 126 (`Caller.WithBaseURL` doc accuracy after nethttp-client-dynamic-baseurl work)
+
+Follow-up review of the just-completed `Caller.WithBaseURL` feature (added, then correctly
+reframed mid-session from "structural fix" to "ergonomic sugar" after empirically verifying
+`nethttp.NewCaller` fresh-per-call already solved the dynamic-baseURL use case with zero new
+API). Found the godoc/instructions text hadn't caught up to that correction.
+
+- **G1 [small] — misleading doc claiming example uses `WithBaseURL`**: `adapters/nethttp/caller.go`'s
+  `Caller` doc comment and `.github/instructions/go-codex.instructions.md`'s nethttp row both said
+  "see examples/go-edge-models's docker/registry client for the pattern" for `WithBaseURL`, but the
+  actual migrated example code uses plain `nethttp.NewCaller` per call (each call already resolves
+  its own baseURL before constructing one) — `WithBaseURL` is unused anywhere outside its own tests.
+  Fixed both doc sites to describe the example's actual `NewCaller`-per-call pattern instead of
+  falsely attributing `WithBaseURL` usage to it.
+- **G2 [trivial] — `ClientHandle()`/`Call` conflated in doc**: `examples/go-edge-models/models/docker/registry/doc.go`'s
+  public-surface list said "call `.ClientHandle()` ... and drive `adapters/nethttp.Call` directly" —
+  `ClientHandle()` pairs with the lower-level `CallWithHandle`, not `Call` (which takes the `rest.Route`
+  value directly, no `ClientHandle()` needed). Pre-existing, not introduced this session; fixed to
+  correctly describe both valid paths (`Call` with the route directly, or `ClientHandle()` +
+  `CallWithHandle`).
+
+---
+
+## Round 125 (Serve/ServeSSE security coverage regression + repo-wide doc sync)
+
+Follow-up pass immediately after Round 124, going one level deeper on the same old-door-removal
+change. Confirmed via a reproduction test (not just code reading) that Round 124's godoc sweep
+missed a real functional regression, then swept the ENTIRE repo (not just `adapters/`) for
+remaining stale references to the deleted `Handler`/`Register`/`SSEHandler`/`RegisterSSE`.
+
+- **G4 [bug] — `Serve`/`ServeSSE` silently skip the security coverage check**: deleting
+  `Register`/`RegisterSSE` also deleted the ONLY call site of `rest.CheckCoverage` — a route that
+  `.Use()`s a security scheme but never attaches a matching `.HandleMW()` implementation used to
+  be rejected immediately at `Register`/`RegisterSSE` time with `MissingSecurityMiddlewareError`;
+  after the old-door deletion, `Serve`/`ServeOne`/`ServeSSE` wired such a route successfully with
+  ZERO error, silently deferring the failure to every individual runtime request (which then fails
+  closed with a confusing, generic error instead of a clear wiring-time signal). Confirmed via a
+  reproduction test before fixing. Fixed by adding an explicit `rest.CheckCoverage(routeLabel,
+  secReqs, impls)` call inside `buildRouteHandler`/`buildSSERouteHandler` in BOTH
+  `adapters/nethttp` and `adapters/chi` (4 call sites total), mirroring the shape check that was
+  already there. Added 4 regression tests (`TestServeOne_MissingSecurityCoverage_RejectedAtServeTime`/
+  `TestServeSSE_MissingSecurityCoverage_RejectedAtServeTime`, one pair per adapter).
+- **G5 [small] — repo-wide stale references to deleted old-door API**: beyond the `adapters/`
+  package files fixed in Round 124, a broader sweep found stale mentions of `nethttp.Handler`/
+  `Register`/`SSEHandler`/`RegisterSSE` (and chi mirrors) as if still current in: `middleware/
+  context_field.go`, `adapters/mqtt5/adapter.go`, `api/rest/middleware.go` (doc comments); 8 live
+  `docs/` pages (`docs/features/{observer,sse-streaming,security,rest-api}.md`, `docs/guides/
+  {observer,http-server,error-handling}.md`, `docs/concepts/{codec-as-contract,
+  codec-as-domain-boundary,api-contracts,observable-layers}.md`) with dozens of now-non-compiling
+  code snippets; 2 examples (`adapters-nethttp-security`, `adapters-chi-security`) with stale
+  "this example still uses the older ... entry points" comments left over from BEFORE their own
+  migration; `examples/sensor-service/README.md`'s API-surface table; and the `add-a-new-adapter`
+  and `review-go-codex` skill files themselves (including one more stale `nethttp.CallHandle` →
+  `CallWithHandle` rename that Round 123 missed). All rewritten to the current `Serve`/`ServeOne`/
+  `ServeSSE` + `.WithHandler()`/`.HandleMW()` declarative pattern.
+
+---
+
+## Round 124 (post middleware-workflow-simplification Phase 3 — old-door removal cleanup)
+
+Focused pass over the changes made completing `middleware-workflow-simplification`: closing
+the 2 genuine `Serve`/`ServeSSE` reflect-dispatch gaps (Formats negotiation, full `ErrorPattern`
+response), deleting the old `Handler`/`Register`/`SSEHandler`/`RegisterSSE` doors from both
+`adapters/nethttp` and `adapters/chi`, and adding `RouteHandle.WithHandler`/
+`SSERouteHandle.WithHandler`/`ApplyMergeFields`/`EncodeResponseMergeFields`.
+
+- **G1 [small] — 31 dangling godoc bracket-links to deleted symbols**: `[Handler]`/
+  `[Register]`/`[SSEHandler]`/`[RegisterSSE]` links across `adapters/nethttp/{adapter.go,
+  binding.go,serve.go,stream.go}` and `adapters/chi/{adapter.go,serve.go,stream.go}` pointed
+  to symbols deleted in this session's Phase 3 old-door removal (rendering as silently
+  unlinked plain text on pkg.go.dev); `adapters/chi/serve.go`'s `validateImplementationShapesReflect`
+  doc comment also still referenced the deleted `[validateImplementationShapes]` (nethttp's
+  parallel comment had already been fixed but chi's was missed). Also found and fixed 2
+  pre-existing stale references from an earlier phase while in the area: `[Scopes]`/
+  `[APIKey]`/`[nethttp.RequireScopes]` in `adapters/nethttp/adapter.go`/`adapters/chi/adapter.go`
+  pointed to constructors removed when `HandleMW` unified security attachment. All rewritten
+  to plain-text descriptions or corrected `[Serve]`/`[ServeOne]`/`[ServeSSE]` links.
+- **G2 [trivial] — missing unit tests for 4 new RouteHandle/SSERouteHandle methods**: `WithHandler`
+  (both types), `ApplyMergeFields`, and `EncodeResponseMergeFields` had no dedicated `TestX` in
+  `api/rest/builder_test.go`. Added 6 new tests covering the post-registration handler-attachment
+  contract, the merge-field-only path (both the merged and no-op cases), and the response
+  merge-field derivation (both the happy path and the codec-violation error path).
+- **G3 [small] — no test combined `RequestFormats`/`Formats` with a merge-capable param**: the
+  `ApplyMergeFields` reflect-dispatch code path (used specifically when a route decodes its body
+  via a negotiated format instead of plain `Decode`) had zero coverage of the actual combination
+  it exists for. Added `TestRequestFormats_YAMLBodyWithQueryMergeField` to both
+  `adapters/nethttp/adapter_test.go` and `adapters/chi/adapter_test.go` — a route with
+  `RequestFormats(YAML, JSON)` plus a merge-capable `QueryParam`, asserting both the
+  YAML-decoded body field and the query-merged field arrive correctly in one call.
+
+---
+
+## Round 123 (middleware-workflow-simplification — stale `nethttp.CallHandle`/`WithSecurityScheme` cross-references)
+
+Third consistency pass over `middleware-workflow-simplification`, this time including the skill's
+OWN reference docs (`references/checklist.md`) alongside a repo-wide sweep for lingering
+cross-references to `nethttp.CallHandle` (renamed `CallWithHandle`) and `rest.WithSecurityScheme`
+(removed, replaced by `middleware.SecurityScheme`/`FromSecurityScheme` + `Route.Use`) from OTHER
+packages that mention REST's client API for comparison.
+
+- **G12 [small] — `references/checklist.md` itself was stale**: 3 table rows (§1 Cross-Layer Naming
+  Parity, §3 `rest.Builder` vs `events.Builder`, §3 `mcp.Builder` parity) described the removed
+  `rest.WithSecurityScheme` as current REST API, and §12's merge-field symmetry table listed
+  `nethttp.CallHandle` as the REST client single-call wrapper. Updated all 4 to describe
+  `middleware.SecurityScheme`/`rest.FromSecurityScheme` + `Route.Use` and `nethttp.Call`/
+  `CallWithHandle` respectively — future review rounds now have an accurate baseline.
+- **G13 [small] — stale `[CallHandle]` godoc cross-references in `adapters/nethttp/binding.go`**:
+  `CallStreamOptions.Vars` and `DrainCallOptions.Vars` doc comments referenced `[CallHandle]`
+  (removed) instead of `[CallWithHandle]` — broken godoc links in the SAME package as the rename.
+  Fixed both.
+- **G14 [small] — stale `[nethttp.CallHandle]` cross-references from 5 OTHER adapter packages**:
+  `adapters/mcprest/doc.go`, `adapters/mcprest/errors.go` (×2), `ports/file.go`, `adapters/zeromq/adapter.go`,
+  `adapters/mqtt5/reqreply.go`, and `adapters/mqtt5/adapter.go` all had doc comments comparing their
+  own convenience wrappers ("mirrors `[nethttp.CallHandle]`'s client-side convenience for REST")
+  against the now-renamed symbol. Updated all to `[nethttp.CallWithHandle]`. (Package-local
+  `[CallHandle]`/`[zeromq.CallHandle]`/`[mqtt5.CallHandle]`/`[llm.CallHandle]` references were left
+  unchanged — those packages never renamed their OWN `CallHandle` functions, only REST's did.)
+- **G15 [trivial] — stale test function name**: `adapters/mcprest/bridge_test.go`'s
+  `TestToolHandler_HappyPath_ForwardsToCallHandle` named a test after the renamed
+  `nethttp.CallHandle` symbol its subject (`ToolHandler`) actually forwards to (`CallWithHandle`).
+  Renamed to `TestToolHandler_HappyPath_ForwardsToCallWithHandle`.
+
+---
+
+## Round 122 (middleware-workflow-simplification self-review)
+
+First consistency pass over the full `middleware-workflow-simplification` redesign (unified
+`HandleMW`/`ClientMW`, `Route.Register`/`RegisterHandle` split, `nethttp`/`chi` `Serve`/`ServeSSE`
+via reflect-based dispatch, `FromSecurityScheme`, `middleware.ClientImplementation`) — never
+reviewed by this skill before this round. Read `middleware/middleware.go`, `api/rest/builder.go`/
+`middleware.go`, the new `adapters/nethttp/serve.go`/`serve_sse.go`/`caller.go`/`transform.go`,
+`adapters/chi/serve.go`/`serve_sse.go`, `ports/handle.go`/`spec.go`, `adapters/mcprest/bridge.go`,
+and every migrated example.
+
+- **G1 [bug] — `Serve`'s doc comment misattached to the unexported `wiredRoute` type**: in both
+  `adapters/nethttp/serve.go` and `adapters/chi/serve.go`, the entire multi-paragraph doc comment
+  describing `Serve`'s failure semantics had no blank line separating it from `type wiredRoute
+  struct` — Go attaches the comment to whichever declaration immediately follows, so `go doc Serve`
+  showed nothing for the single most important new public function in this redesign. Fixed by
+  moving `wiredRoute`'s declaration (with its own short comment) before `Serve`'s doc comment in
+  both files.
+- **G2 [bug] — `NewCachingCredentialFunc`'s doc example used removed API**: the example in
+  `adapters/nethttp/credential_cache.go` used `middleware.ClientMiddleware{Fn: fn}` (removed type)
+  and `nethttp.CallHandle(...)` (renamed to `CallWithHandle`) — would not compile if copy-pasted.
+  Rewrote the example using `.ClientMW(&declMw, credFn)` and `nethttp.Call`.
+- **G3-G5 [small] — stale `[middleware.ClientMiddleware]` godoc references**: `middleware/middleware.go`,
+  `api/rest/middleware.go`, and `adapters/nethttp/client.go` (`CredentialFunc`, `CallOptions.HeaderParams`,
+  `CallOptions.OnCredentialRejected`) all referenced the removed `ClientMiddleware` type instead of
+  its replacement `ClientImplementation`. Updated all references.
+- **G6 [small] — naming asymmetry between server/client shape validators**: `adapters/nethttp/client.go`'s
+  `validateClientMiddlewareShapes` didn't mirror the `ClientImplementation` rename (server-side
+  sibling is `validateImplementationShapes`). Renamed to `validateClientImplementationShapes`.
+- **G7 [small] — ~15 stale `[WithSecurityScheme]` godoc references in package `rest`**: `WithSecurityScheme`
+  was removed (replaced by `FromSecurityScheme`), but `api/rest/builder.go` (10 sites) and
+  `api/rest/middleware.go` (5 sites) still referenced it as if it existed — dead/misleading doc
+  links. Updated each to reference `FromSecurityScheme`/`Route.Use`/`middleware.SecurityScheme` as
+  appropriate; left the one intentional historical "NOTE: WithSecurityScheme... was REMOVED" comment
+  unchanged.
+- **G8 [small] — stale prose comments in `examples/go-edge-models`**: several comments across
+  `main.go`, `models/docker/registry/{gettags,getimagemetadata,security,doc}.go`, and
+  `app/registry/{auth,doc,auth_test}.go` described the pre-rewrite API (`.UseClient(...)`,
+  `nethttp.CallHandle`, `restHandle.ClientMiddlewares`, `nethttp.CallOptions.CredentialFunc`, and a
+  non-existent `newAuthMiddleware` function) even though the actual code had already been migrated
+  to `.ClientMW(...)`/`CallWithHandle`/`newAuthCredentialFunc`. Updated all to match the real code.
+- **G9 [trivial] — zero test coverage for `RouteEntries`/`SSEEntries`/`UnknownMiddlewareImplementationError`**:
+  these new exported symbols (central to `Serve`/`ServeSSE`'s design and the reverse-Satisfies
+  check) had no dedicated tests anywhere. Added `TestBuilder_RouteEntries_SkipsSpecOnlyIncludesHandlerBearing`,
+  `TestBuilder_RouteEntries_ExcludesSSERoutes`, `TestBuilder_SSEEntries_SkipsSpecOnlyIncludesHandlerBearing`,
+  `TestBuilder_SSEEntries_ExcludesRegularRoutes` (`api/rest/builder_test.go`), and
+  `TestRoute_HandleMW_PairedAgainstUndeclaredScheme_ReturnsUnknownMiddlewareImplementationError`,
+  `TestRoute_HandleMW_PairedAgainstDeclaredScheme_NoError`,
+  `TestSSERoute_HandleMW_PairedAgainstUndeclaredScheme_ReturnsUnknownMiddlewareImplementationError`,
+  `TestUnknownMiddlewareImplementationError_LogValue` (`api/rest/middleware_test.go`).
+- **G10 [small] — `Builder`'s new `RWMutex` only partially applied**: `AddServer`/`AddGlobalSecurity`
+  mutated `b.servers`/`b.globalSecurity` without acquiring `b.mu.Lock()`, while `OpenAPISpec`/
+  `RouteEntries`/`SSEEntries` read both fields under `b.mu.RLock()` — a genuine (if low-probability)
+  data race. Wrapped both methods' bodies in `b.mu.Lock()`/`Unlock()`.
+- **G11 [trivial] — stale `nethttp.Scopes`/`nethttp.APIKey` comments in 3 examples**: `examples/adapters-nethttp-security`,
+  `examples/adapters-chi-security` (2 sites), and `examples/mutable-security-keys` described their
+  runtime security enforcement using the removed `nethttp.Scopes`/`nethttp.APIKey` constructor names
+  instead of the local `scopesImpl` helper / inline `middleware.ServerImplementation` they actually
+  use. Updated comments to match.
 
 ---
 

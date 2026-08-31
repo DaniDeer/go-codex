@@ -1,7 +1,7 @@
 # Events / ReqReply / Ports Workflow Simplification — findings
 
 > **Status:** Findings only — no proposal, no driver yet. Spun out from
-> [Middleware Workflow Simplification](middleware-workflow-simplification.md)
+> [Middleware Workflow Simplification](../design/middleware-workflow-simplification.md)
 > while reviewing that doc's implications beyond REST. **Deliberately
 > DEFERRED**: the plan is to implement the REST redesign
 > (`middleware-workflow-simplification.md`'s Decisions 1–8) FIRST, then
@@ -117,8 +117,11 @@ round doesn't have to re-derive them from scratch.
   IMPLEMENT-time half does not exist for `ports` at all today — a
   plausible fix is a new `PortOptions` field (e.g.
   `ServerImplementations []middleware.ServerImplementation`/
-  `ClientMiddlewares []middleware.ClientMiddleware`) that `binding.go`'s
-  adapters thread through internally before calling `.Register()` —
+  `ClientImplementations []middleware.ClientImplementation` — REST's own
+  shipped types, see [Middleware Workflow
+  Simplification](middleware-workflow-simplification.md)) that
+  `binding.go`'s adapters thread through internally before calling
+  `.Register()` —
   mirroring how `RESTBuilder`/`EventBuilder` already let a caller supply
   a shared `Builder`. Not validated against `ports`' actual construction
   flow in detail yet.

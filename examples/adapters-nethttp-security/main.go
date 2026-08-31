@@ -43,6 +43,7 @@ import (
 	nethttp "github.com/DaniDeer/go-codex/adapters/nethttp"
 	"github.com/DaniDeer/go-codex/api/rest"
 	"github.com/DaniDeer/go-codex/codex"
+	"github.com/DaniDeer/go-codex/middleware"
 	"github.com/DaniDeer/go-codex/route"
 	"github.com/DaniDeer/go-codex/stats"
 	"github.com/DaniDeer/go-codex/validate"
@@ -177,6 +178,19 @@ func recordRejection(ctx context.Context, path string) {
 	}
 }
 
+// scopesImpl builds a security middleware.ServerImplementation wrapping
+// extract — the runtime counterpart to a route's declare-time
+// middleware.SecurityScheme, matched by schemeName. Passed to
+// Route.HandleMW(&declMw, scopesImpl(...).Fn), which pairs it against the
+// matching .Use()-declared scheme (see docs/design/middleware-workflow-simplification.md).
+func scopesImpl[Req any](schemeName string, extract func(ctx context.Context, r *http.Request, req *Req) (map[string][]string, error)) middleware.ServerImplementation {
+	return middleware.ServerImplementation{
+		Name:      "implement-scopes:" + schemeName,
+		Satisfies: []string{schemeName},
+		Fn:        extract,
+	}
+}
+
 // ── Observer ──────────────────────────────────────────────────────────────────
 
 // CountingObserver implements [stats.Observer] and [stats.SecurityObserver].
@@ -228,74 +242,71 @@ func (o *CountingObserver) Print() {
 // ── Builder and routes ────────────────────────────────────────────────────────
 
 func buildAPI() (
-	loginHandle *rest.RouteHandle[loginReq, tokenResp],
-	profileHandle *rest.RouteHandle[struct{}, profileResp],
-	adminHandle *rest.RouteHandle[adminActionReq, adminActionResp],
+	loginRoute rest.Route[loginReq, tokenResp],
+	profileRoute rest.Route[struct{}, profileResp],
+	profileDeclMw middleware.Middleware,
+	adminRoute rest.Route[adminActionReq, adminActionResp],
+	adminDeclMw middleware.Middleware,
 	b *rest.Builder,
 ) {
 	b = rest.NewBuilder(rest.Info{
 		Title:       "Secure API Demo",
 		Version:     "1.0.0",
-		Description: "Demonstrates Bearer JWT authentication with per-route scope enforcement.",
+		Description: "Demonstrates ****** authentication with per-route scope enforcement.",
 	})
 
 	// The bearer credential format codec, shared by both secured routes'
-	// RequireScopes middleware below — validates non-empty, no whitespace
-	// BEFORE the middleware's Fn is ever invoked, catching malformed tokens
-	// early (the client-side mirror of this same codec would be used
-	// identically on any Call to these routes).
+	// security declarations below — validates non-empty, no whitespace
+	// BEFORE the runtime implementation's Fn is ever invoked, catching
+	// malformed tokens early (the client-side mirror of this same codec
+	// would be used identically on any Call to these routes).
 	bearerCodec := codex.String().Refine(validate.BearerToken)
 
 	// POST /login — public, no security requirement.
-	loginHandle, _ = rest.NewRoute[loginReq, tokenResp]("POST", "/login",
+	loginRoute = rest.NewRoute[loginReq, tokenResp]("POST", "/login",
 		loginReqCodec, tokenRespCodec,
 		rest.RouteMeta{
 			OperationID: "login",
 			Summary:     "Authenticate and receive a bearer token",
 			Tags:        []string{"auth"},
 		},
-	).Register(b)
-
-	// GET /profile — secured: bearerAuth with "profile" scope. RequireScopes
-	// is BOTH the spec declaration (Security + securitySchemes, via the
-	// chained .Use(...) below) AND the runtime enforcement (Fn) — no
-	// separate WithSecurityScheme/RouteMeta.Security call needed at all.
-	profileScopesMw := nethttp.RequireScopes[struct{}]("bearerAuth", route.BearerScheme("JWT"), []string{"profile"}, &bearerCodec,
-		func(ctx context.Context, r *http.Request, _ *struct{}) (map[string][]string, error) {
-			return extractScopes(ctx, r, "/profile")
-		},
 	)
-	profileHandle, _ = rest.NewRoute[struct{}, profileResp]("GET", "/profile",
+
+	// GET /profile — secured: bearerAuth with "profile" scope.
+	// middleware.SecurityScheme is the declare-time half — attached via
+	// Use() it contributes the spec declaration (Security +
+	// securitySchemes) — no separate WithSecurityScheme/RouteMeta.Security
+	// call needed at all. The runtime enforcement is a SEPARATE
+	// middleware.ServerImplementation, attached via Route.HandleMW in
+	// main below, paired against this same declMw value.
+	profileDeclMw = middleware.SecurityScheme("bearerAuth", route.BearerScheme("JWT"), []string{"profile"}, &bearerCodec)
+	profileRoute = rest.NewRoute[struct{}, profileResp]("GET", "/profile",
 		codex.Empty, profileRespCodec,
 		rest.RouteMeta{
 			OperationID: "getProfile",
 			Summary:     "Get the authenticated user's profile",
 			Tags:        []string{"user"},
 		},
-	).Use(profileScopesMw).Register(b)
+	).Use(profileDeclMw)
 
 	// POST /admin/action — secured: bearerAuth with "admin" scope.
-	adminScopesMw := nethttp.RequireScopes[adminActionReq]("bearerAuth", route.BearerScheme("JWT"), []string{"admin"}, &bearerCodec,
-		func(ctx context.Context, r *http.Request, _ *adminActionReq) (map[string][]string, error) {
-			return extractScopes(ctx, r, "/admin/action")
-		},
-	)
-	adminHandle, _ = rest.NewRoute[adminActionReq, adminActionResp]("POST", "/admin/action",
+	adminDeclMw = middleware.SecurityScheme("bearerAuth", route.BearerScheme("JWT"), []string{"admin"}, &bearerCodec)
+	adminRoute = rest.NewRoute[adminActionReq, adminActionResp]("POST", "/admin/action",
 		adminActionReqCodec, adminActionRespCodec,
 		rest.RouteMeta{
 			OperationID: "adminAction",
 			Summary:     "Perform a privileged admin action",
 			Tags:        []string{"admin"},
 		},
-	).Use(adminScopesMw).Register(b)
+	).Use(adminDeclMw)
 
 	return
 }
 
-// mustRegister exits the program if nethttp.Register returns an error.
-func mustRegister(err error) {
+// mustServe exits the program if Register or Serve returns an error.
+func mustServe(err error, what string) {
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "nethttp.Register failed: %v\n", err)
+		fmt.Fprintf(os.Stderr, "%s failed: %v\n", what, err)
 		os.Exit(1)
 	}
 }
@@ -304,13 +315,14 @@ func main() {
 	logger := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelDebug}))
 	slog.SetDefault(logger)
 
-	loginHandle, profileHandle, adminHandle, b := buildAPI()
+	loginRoute, profileRoute, profileDeclMw, adminRoute, adminDeclMw, b := buildAPI()
 	metrics := &CountingObserver{}
 	obs := stats.NewFanout(metrics, stats.NewLoggingObserver(logger.With("component", "http-security")))
 
-	// RequireScopes is attached at Register time in buildAPI (see there) —
-	// both the spec declaration and the runtime enforcement. Options only
-	// carries the ErrorHandler now; ObservabilityMiddleware supplies obs.
+	// The declare-time security requirement is attached in buildAPI (see
+	// there); the runtime enforcement half (Scopes) is supplied
+	// separately, below, via HandleMW. Options only carries the
+	// ErrorHandler now; Observability supplies obs.
 	opts := nethttp.Options{
 		// ErrorHandler maps invalidCredentialsError to 401; all other errors
 		// fall through to the default JSON envelope with their suggested status.
@@ -324,11 +336,24 @@ func main() {
 			_ = json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
 		},
 	}
-	obsMw := nethttp.ObservabilityMiddleware(obs)
+	obsFn := nethttp.Observability(obs)
 
-	mux := http.NewServeMux()
+	// The runtime enforcement half of each secured route's declared
+	// security requirement — attached here, via HandleMW, separately
+	// from the declare-time middleware.SecurityScheme attached in
+	// buildAPI.
+	profileImplMw := scopesImpl[struct{}]("bearerAuth",
+		func(ctx context.Context, r *http.Request, _ *struct{}) (map[string][]string, error) {
+			return extractScopes(ctx, r, "/profile")
+		},
+	)
+	adminImplMw := scopesImpl[adminActionReq]("bearerAuth",
+		func(ctx context.Context, r *http.Request, _ *adminActionReq) (map[string][]string, error) {
+			return extractScopes(ctx, r, "/admin/action")
+		},
+	)
 
-	mustRegister(nethttp.Register(mux, loginHandle, func(_ context.Context, req loginReq) (tokenResp, error) {
+	loginRoute = loginRoute.WithHandler(func(_ context.Context, req loginReq) (tokenResp, error) {
 		// Mock: accept alice/secret → user token, admin/secret → admin token.
 		switch {
 		case req.Username == "alice" && req.Password == "secret":
@@ -338,19 +363,25 @@ func main() {
 		default:
 			return tokenResp{}, invalidCredentialsError{Err: errors.New("invalid credentials")}
 		}
-	}, opts, obsMw))
+	}).HandleMW(nil, obsFn).WithOptions(opts)
+	mustServe(loginRoute.Register(b), "register /login")
 
-	mustRegister(nethttp.Register(mux, profileHandle, func(_ context.Context, _ struct{}) (profileResp, error) {
+	profileRoute = profileRoute.WithHandler(func(_ context.Context, _ struct{}) (profileResp, error) {
 		return profileResp{
 			UserID: "f47ac10b-58cc-4372-a567-0e02b2c3d479",
 			Name:   "Alice",
 			Email:  "alice@example.com",
 		}, nil
-	}, opts, obsMw))
+	}).HandleMW(nil, obsFn).HandleMW(&profileDeclMw, profileImplMw.Fn).WithOptions(opts)
+	mustServe(profileRoute.Register(b), "register /profile")
 
-	mustRegister(nethttp.Register(mux, adminHandle, func(_ context.Context, req adminActionReq) (adminActionResp, error) {
+	adminRoute = adminRoute.WithHandler(func(_ context.Context, req adminActionReq) (adminActionResp, error) {
 		return adminActionResp{Result: "action " + req.Action + " executed"}, nil
-	}, opts, obsMw))
+	}).HandleMW(nil, obsFn).HandleMW(&adminDeclMw, adminImplMw.Fn).WithOptions(opts)
+	mustServe(adminRoute.Register(b), "register /admin/action")
+
+	mux := http.NewServeMux()
+	mustServe(nethttp.Serve(mux, b), "Serve")
 
 	// ── Demo requests ─────────────────────────────────────────────────────────
 	fmt.Println("=== adapters-nethttp-security demo ===")

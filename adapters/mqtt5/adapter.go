@@ -244,8 +244,8 @@ func makeSubscribeMessageHandler[T any](
 		// Merge topic variables declared via events.NewTopicParam into the
 		// SAME decoded value — additive, only runs when the channel has
 		// merge-capable topic params (backward compatible: identical
-		// behavior to today when none are declared). Mirrors
-		// nethttp.Handler's request-merge wiring.
+		// behavior to today when none are declared). Mirrors REST's
+		// request-merge wiring (see [rest.RouteHandle.DecodeMerged]).
 		if mergeFields := handle.MergeFields(); len(mergeFields) > 0 {
 			vars, varErr := TopicVarsFromMessage(handle, msg)
 			if varErr != nil {
@@ -286,9 +286,9 @@ func makeSubscribeMessageHandler[T any](
 		}
 		if len(secReqs) > 0 {
 			// Built-in codec-based credential check — runs BEFORE the
-			// optional custom SecurityFunc, mirroring
-			// [adapters/nethttp.Handler]'s validateSecurityCredentials +
-			// SecurityFunc ordering exactly. A scheme with no Codec (or no
+			// optional custom SecurityFunc, mirroring adapters/nethttp's
+			// validateSecurityCredentials + SecurityFunc ordering exactly.
+			// A scheme with no Codec (or no
 			// entry in handle.SecuritySchemes) is skipped — "nil Codec
 			// means no format validation" (same contract as REST).
 			schemeTypes := make(map[string]route.SecurityScheme, len(handle.SecuritySchemes))
@@ -522,7 +522,7 @@ func Publish[T any](
 // derives the topic vars map from msg automatically, using the channel's
 // merge-capable topic params ([events.ChannelHandle.MergeFields] +
 // [codex.EncodeVars]) — one struct in, no manual vars map, mirroring
-// [nethttp.CallHandle]'s client-side convenience for REST.
+// [nethttp.CallWithHandle]'s client-side convenience for REST.
 //
 // [Publish] remains available as the lower-level escape hatch for callers
 // that build the vars map themselves (e.g. no merge fields declared, or

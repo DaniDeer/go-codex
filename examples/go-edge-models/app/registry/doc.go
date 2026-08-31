@@ -21,22 +21,22 @@
 //
 //   - auth.go: everything related to authentication — the Bearer-token
 //     challenge/token exchange flow (parseChallenge, authenticate,
-//     newAuthCredentialFunc), newAuthMiddleware (the .Use()-able
-//     middleware.Middleware GetTags/GetImageMetadata chain onto
-//     GetTagsRoute/GetManifestRoute — BOTH the "bearerAuth" Security
-//     declaration, built from models/docker/registry's shared
-//     BearerAuthScheme/BearerAuthSchemeName, AND the runtime credential
-//     flow), the optional Basic-auth Credentials escape hatch for
+//     newAuthCredentialFunc), whose returned credentialFunc GetTags/
+//     GetImageMetadata chain onto GetTagsRoute/GetManifestRoute via
+//     .ClientMW(&regmodels.BearerAuthDeclaration, authFn) — pairing the
+//     runtime credential flow against the "bearerAuth" Security
+//     declaration built from models/docker/registry's shared
+//     BearerAuthScheme/BearerAuthSchemeName), the optional Basic-auth
+//     Credentials escape hatch for
 //     private repositories (Option/WithCredentials/
 //     WithCredentialsByRegistry/WithObserver), the getTokenRoute endpoint
 //     (auth-flow plumbing — it has no legitimate standalone caller
-//     outside this file's own authenticate()), basicAuthSecurity/
-//     basicAuthScheme (getTokenRoute's OWN, manually-declared security
-//     requirement — a plain RouteOpt, unlike GetTagsRoute/
-//     GetManifestRoute's middleware-based declaration, since
-//     getTokenRoute has a single caller and no external contract to
-//     share), and this file's own error types
-//     (RegistryAuthChallengeError/RegistryAuthError).
+//     outside this file's own authenticate()), basicAuthMw
+//     (getTokenRoute's OWN middleware.Middleware security declaration,
+//     unlike GetTagsRoute/GetManifestRoute's shared,
+//     models/docker/registry-declared one, since getTokenRoute has a
+//     single caller and no external contract to share), and this file's
+//     own error types (RegistryAuthChallengeError/RegistryAuthError).
 //   - gettags.go: GetTags (the batteries-included client function),
 //     registryBaseURL (shared with getimagemetadata.go/auth.go), and
 //     NewGetTagsToolHandler (binds models/docker/registry's GetTagsTool

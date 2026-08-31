@@ -3,9 +3,9 @@
 //
 // # What this example shows
 //
-//   - [rest.AddSSERoute] — registering a typed SSE route with request and event codecs
-//   - [nethttp.SSEHandler] / [nethttp.RegisterSSE] — wiring SSE onto net/http
-//   - [chiadapter.SSEHandler] / [chiadapter.RegisterSSE] — wiring SSE onto chi
+//   - [rest.NewSSERoute] — declaring a typed SSE route with request and event codecs
+//   - [nethttp.ServeSSE] — wiring a whole builder's SSE routes onto net/http
+//   - [chiadapter.ServeSSE] — wiring a whole builder's SSE routes onto chi
 //   - Path parameter codec validation on {id} via [rest.PathParam.Codec]
 //   - [rest.SSERouteHandle.BuildPath] for validated URL assembly
 //   - Codec validation on each event before it is written to the client
@@ -223,11 +223,11 @@ func readSSELines(resp *http.Response) []string {
 
 // ── Main ──────────────────────────────────────────────────────────────────────
 
-// mustRegister exits the program if RegisterSSE returns an error — e.g. a
+// mustServe exits the program if Register/ServeSSE returns an error — e.g. a
 // malformed middleware Fn shape, caught eagerly at wiring time.
-func mustRegister(err error) {
+func mustServe(err error, what string) {
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "RegisterSSE failed: %v\n", err)
+		fmt.Fprintf(os.Stderr, "%s failed: %v\n", what, err)
 		os.Exit(1)
 	}
 }
@@ -238,21 +238,26 @@ func main() {
 
 	metrics := &statsObserver{}
 	obs := stats.NewFanout(metrics, stats.NewLoggingObserver(logger.With("component", "sse")))
-	// ObservabilityMiddleware is the only nethttp/chi call site that
+	// Observability is the only nethttp/chi call site that
 	// touches stats.Observer now — chi reuses nethttp's directly (same
 	// general-purpose Fn shape both packages recognize).
-	obsMw := nethttp.ObservabilityMiddleware(obs)
+	obsFn := nethttp.Observability(obs)
 	opts := nethttp.Options{}
 	chiOpts := chiadapter.Options{}
 
-	b := rest.NewBuilder(rest.Info{Title: "SSE Demo API", Version: "1.0.0"})
+	// Two builders: bHTTP feeds nethttp.ServeSSE/mux, bChi feeds
+	// chiadapter.ServeSSE/chi router. ServeSSE walks EVERY SSE route
+	// registered into the builder it's given, so a route destined for
+	// chi must live in a builder never passed to nethttp.ServeSSE (and
+	// vice versa) — otherwise it would get wired onto both.
+	bHTTP := rest.NewBuilder(rest.Info{Title: "SSE Demo API (net/http)", Version: "1.0.0"})
+	bChi := rest.NewBuilder(rest.Info{Title: "SSE Demo API (chi)", Version: "1.0.0"})
 
-	counterRoute, err := rest.NewSSERoute[struct{}, counterEvent]("/sse/counter",
+	if err := rest.NewSSERoute[struct{}, counterEvent]("/sse/counter",
 		codex.Empty, counterEventCodec,
 		rest.RouteMeta{OperationID: "streamCounter", Summary: "Stream a counter"},
-	).Register(b)
-	if err != nil {
-		log.Fatalf("AddSSERoute counter: %v", err)
+	).WithHandler(handleCounter).HandleMW(nil, obsFn).WithOptions(opts).Register(bHTTP); err != nil {
+		log.Fatalf("NewSSERoute counter: %v", err)
 	}
 
 	sensorRoute, err := rest.NewSSERoute[struct{}, sensorReading]("/sse/sensor/{id}",
@@ -262,27 +267,25 @@ func main() {
 			Summary:     "Stream sensor readings",
 		},
 		rest.PathParam{Name: "id", Description: "Sensor ID (<word>-<word>)"}.WithCodec(sensorIDCodec),
-	).Register(b)
+	).WithHandler(handleSensor).HandleMW(nil, obsFn).WithOptions(chiOpts).RegisterHandle(bChi)
 	if err != nil {
-		log.Fatalf("AddSSERoute sensor: %v", err)
+		log.Fatalf("NewSSERoute sensor: %v", err)
 	}
 
-	invalidRoute, err := rest.NewSSERoute[struct{}, sensorReading]("/sse/invalid",
+	if err := rest.NewSSERoute[struct{}, sensorReading]("/sse/invalid",
 		codex.Empty, sensorReadingCodec,
 		rest.RouteMeta{OperationID: "streamInvalid", Summary: "Codec rejection demo"},
-	).Register(b)
-	if err != nil {
-		log.Fatalf("AddSSERoute invalid: %v", err)
+	).WithHandler(handleInvalid).HandleMW(nil, obsFn).WithOptions(opts).Register(bHTTP); err != nil {
+		log.Fatalf("NewSSERoute invalid: %v", err)
 	}
 
 	traceCodec := codex.String().Refine(validate.NonEmptyString)
-	withHeadersRoute, err := rest.NewSSERoute[struct{}, counterEvent]("/sse/with-headers",
+	if err := rest.NewSSERoute[struct{}, counterEvent]("/sse/with-headers",
 		codex.Empty, counterEventCodec,
 		rest.RouteMeta{OperationID: "streamWithHeaders", Summary: "Stream with custom response header"},
 		rest.ResponseHeaderParam{Name: "X-Trace-Id", Description: "Distributed trace ID"}.WithCodec(traceCodec),
-	).Register(b)
-	if err != nil {
-		log.Fatalf("AddSSERoute with-headers: %v", err)
+	).WithHandler(handleWithHeaders).HandleMW(nil, obsFn).WithOptions(opts).Register(bHTTP); err != nil {
+		log.Fatalf("NewSSERoute with-headers: %v", err)
 	}
 
 	mergedRoute, err := rest.NewSSERoute[struct{}, readingEvent]("/sse/merge/{id}",
@@ -290,21 +293,21 @@ func main() {
 		rest.RouteMeta{OperationID: "streamMerged", Summary: "One-struct SSE merge convenience"},
 		rest.PathParam{Name: "id", Description: "Sensor ID (<word>-<word>)"}.WithCodec(sensorIDCodec),
 		rest.NewRequiredSSEEventParam("id", codex.String(), func(e readingEvent) string { return e.Meta.SensorID }, func(e *readingEvent, v string) { e.Meta.SensorID = v }),
-	).Register(b)
+	).WithHandler(handleSensorMergedConvenience).HandleMW(nil, obsFn).WithOptions(opts).RegisterHandle(bHTTP)
 	if err != nil {
-		log.Fatalf("AddSSERoute merge: %v", err)
+		log.Fatalf("NewSSERoute merge: %v", err)
 	}
-	mergedRoute = mergedRoute.WithFormats(format.YAML(readingEventCodec))
+	mergedRoute.WithFormats(format.YAML(readingEventCodec))
 
 	manualRoute, err := rest.NewSSERoute[struct{}, readingEvent]("/sse/manual/{id}",
 		codex.Empty, readingEventCodec,
 		rest.RouteMeta{OperationID: "streamManual", Summary: "SSE merge escape hatch"},
 		rest.PathParam{Name: "id", Description: "Sensor ID (<word>-<word>)"}.WithCodec(sensorIDCodec),
-	).Register(b)
+	).WithHandler(handleSensorManualEscape).HandleMW(nil, obsFn).WithOptions(opts).RegisterHandle(bHTTP)
 	if err != nil {
-		log.Fatalf("AddSSERoute manual: %v", err)
+		log.Fatalf("NewSSERoute manual: %v", err)
 	}
-	manualRoute = manualRoute.WithFormats(format.YAML(readingEventCodec))
+	manualRoute.WithFormats(format.YAML(readingEventCodec))
 
 	// ── BuildPath codec validation ─────────────────────────────────────────
 	fmt.Println("=== BuildPath with sensorIDCodec ===")
@@ -319,14 +322,10 @@ func main() {
 
 	// ── Wiring ────────────────────────────────────────────────────────────
 	mux := http.NewServeMux()
-	mustRegister(nethttp.RegisterSSE(mux, counterRoute, handleCounter, opts, obsMw))
-	mustRegister(nethttp.RegisterSSE(mux, invalidRoute, handleInvalid, opts, obsMw))
-	mustRegister(nethttp.RegisterSSE(mux, withHeadersRoute, handleWithHeaders, opts, obsMw))
-	mustRegister(nethttp.RegisterSSE(mux, mergedRoute, handleSensorMergedConvenience, opts, obsMw))
-	mustRegister(nethttp.RegisterSSE(mux, manualRoute, handleSensorManualEscape, opts, obsMw))
+	mustServe(nethttp.ServeSSE(mux, bHTTP), "nethttp.ServeSSE")
 
 	r := gochi.NewRouter()
-	mustRegister(chiadapter.RegisterSSE(r, sensorRoute, handleSensor, chiOpts, obsMw))
+	mustServe(chiadapter.ServeSSE(r, bChi), "chiadapter.ServeSSE")
 	mux.Handle("/sse/sensor/", r)
 
 	srv := httptest.NewServer(mux)
@@ -407,16 +406,24 @@ func main() {
 	fmt.Println()
 
 	// ── OpenAPI spec ───────────────────────────────────────────────────────
-	fmt.Println("=== OpenAPI 3.1 spec (SSE routes included) ===")
-	doc, err := b.OpenAPISpec()
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "OpenAPISpec error: %v\n", err)
-		os.Exit(1)
+	// bHTTP and bChi each generate their own spec — the SSE routes each
+	// builder holds appear in that builder's document regardless of
+	// which adapter ultimately serves them.
+	printSpec := func(label string, b *rest.Builder) {
+		fmt.Printf("=== OpenAPI 3.1 spec: %s (SSE routes included) ===\n", label)
+		doc, err := b.OpenAPISpec()
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "OpenAPISpec error: %v\n", err)
+			os.Exit(1)
+		}
+		yaml, err := doc.MarshalYAML()
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "MarshalYAML error: %v\n", err)
+			os.Exit(1)
+		}
+		fmt.Print(string(yaml))
+		fmt.Println()
 	}
-	yaml, err := doc.MarshalYAML()
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "MarshalYAML error: %v\n", err)
-		os.Exit(1)
-	}
-	fmt.Print(string(yaml))
+	printSpec("net/http routes", bHTTP)
+	printSpec("chi routes", bChi)
 }

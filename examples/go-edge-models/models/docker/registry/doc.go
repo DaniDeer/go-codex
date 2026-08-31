@@ -68,14 +68,16 @@
 // a wire-compatible client/server/spec against this registry API:
 //
 //  1. The exported rest.Route values (PingRoute, GetTagsRoute,
-//     GetManifestRoute) — call .ClientHandle() on any of them and drive
-//     adapters/nethttp.Call directly, with your own *http.Client, retry
-//     policy, or observer. GetTagsRoute/GetManifestRoute both declare
-//     Security, so driving them directly means supplying your own
-//     nethttp.CallOptions.CredentialFunc — this package has no exported
-//     helper for that (that's app/registry's job); write one against the
-//     target registry's actual auth requirements, or use
-//     app/registry.GetTags/GetImageMetadata instead.
+//     GetManifestRoute) — pass any of them directly to
+//     adapters/nethttp.Call (via a nethttp.Caller wrapping your own
+//     *http.Client, retry policy, or observer), or call .ClientHandle()
+//     on one and drive the lower-level adapters/nethttp.CallWithHandle
+//     yourself. GetTagsRoute/GetManifestRoute both declare
+//     Security, so driving them directly means chaining your own
+//     nethttp.CredentialFunc onto the route via .ClientMW(...) — this
+//     package has no exported helper for that (that's app/registry's
+//     job); write one against the target registry's actual auth
+//     requirements, or use app/registry.GetTags/GetImageMetadata instead.
 //  2. The domain structs and codecs (ImageRef in imageref.go, TagsList in
 //     gettags.go, GetTagsReq in gettags.go, GetManifestReq/
 //     GetImageMetadataReq/ManifestMetadata in getimagemetadata.go,
