@@ -1,15 +1,17 @@
 # SSE Resume & Retry Policy — `adapters/nethttp`, `api/rest`
 
 > **Status:** Findings only — no proposal, no driver yet.
-> Spun out from [SSE Client Consumption](sse-client-consumption.md)'s "Out
+> Spun out from SSE Client Consumption's "Out
 > of scope (Phase 2)" once both sub-features turned out to be genuinely
 > CLIENT+SERVER, not client-only follow-ons — too large a scope to keep
-> as a two-bullet aside in that doc.
+> as a two-bullet aside in that doc (since shipped and removed; see
+> `docs/design/middleware-workflow-simplification.md`'s addendum for the
+> design lineage).
 > [← Back to Roadmap](index.md)
 >
 > This doc captures ONLY what was confirmed via code inspection — no
-> design decisions have been made, unlike `sse-client-consumption.md`'s
-> fully-resolved state. Treat every section below as "here is the
+> design decisions have been made, unlike SSE Client Consumption's
+> fully-resolved (and since shipped) state. Treat every section below as "here is the
 > starting point," not "here is the plan," same convention that doc
 > itself used before its own resolution.
 
@@ -17,7 +19,7 @@
 
 ## Why this exists
 
-[SSE Client Consumption](sse-client-consumption.md) originally deferred
+SSE Client Consumption originally deferred
 two items to "Phase 2" as small, client-side-only asides: `Last-Event-ID`
 resume, and a pluggable retry policy. Investigating what either would
 actually require revealed BOTH are genuinely bigger, and genuinely
@@ -51,7 +53,7 @@ CLIENT+SERVER, not client-only:
   values the hub forwards AFTER that call — confirmed via reading
   `NewBroadcastHub`/`Subscribe`'s implementation in `stream/broadcast.go`.
   There is no ring buffer, no persisted history, nothing to replay from.
-- **`sse-client-consumption.md`'s `Consume`/`CallSSEAdapter` design (as
+- **The shipped `Consume`/`CallSSEAdapter` design (as
   resolved) has a FIXED exponential backoff** (`ConsumeOptions.MaxBackoff`,
   250ms initial step, doubling, capped) — no caller-supplied policy
   function, no distinction between pre-first-event and post-first-event
@@ -86,7 +88,7 @@ CLIENT+SERVER, not client-only:
   event block to handle MULTIPLE lines per event (`id:`, `data:`, and
   potentially `event:`/`retry:` — see "Out of scope" below for the
   `event:` field specifically) — today's writer/reader design (as
-  resolved in `sse-client-consumption.md`) only ever handles a single
+  resolved) only ever handles a single
   `data:` line per event block. This is a bigger parsing-layer change
   than either doc originally assumed.
 
@@ -97,8 +99,8 @@ CLIENT+SERVER, not client-only:
   wait time.Duration)` replacing the fixed backoff — lets a caller do
   jittered backoff, per-error-type policies (e.g. give up immediately on
   a 404, retry forever on a network timeout), or a give-up-after-N
-  threshold (directly answering `sse-client-consumption.md`'s own Open
-  Design Decision 3).
+  threshold — this doc's own follow-on to that design's Open Design
+  Decision 3).
 - **Server half**: emit the standard SSE `retry: <milliseconds>\n\n`
   field, which spec-compliant `EventSource` browser clients honor
   NATIVELY as their own reconnect-delay hint — entirely independent of
@@ -166,6 +168,6 @@ CLIENT+SERVER, not client-only:
 ## Files to create
 
 None yet — this doc is findings-only. Once resumed, this section should
-follow `sse-client-consumption.md`'s eventual template (API surface,
+follow the SAME template SSE Client Consumption used (API surface,
 structured errors, observer integration, unit test plan, files to
 create) once the open questions above are resolved.

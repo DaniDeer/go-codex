@@ -126,8 +126,9 @@
 > `ContextField` alone to all FOUR ctx keys `Handler`'s current body sets
 > up; `SSERoute`'s full chainable method set spelled out explicitly
 > (spinning SSE CLIENT consumption — confirmed to not exist anywhere in
-> go-codex today — into its own new [SSE Client
-> Consumption](../roadmap/sse-client-consumption.md) roadmap doc); `Builder` gains
+> go-codex today — into its own new SSE Client Consumption roadmap doc,
+> since shipped and removed — see this doc's own addendum below);
+> `Builder` gains
 > an internal mutex for concurrent `Register` calls (an explicit first
 > step toward, not a solution to, the separately-tracked [Dynamic Port
 > Rebinding](dynamic-port-rebinding.md) gap); and `MultiRouteError`'s
@@ -1499,11 +1500,12 @@ stream-bridge helper that was never given a declarative replacement.
 This is NOT a mirror of an existing mechanism (unlike security/client-
 credentials, which HAD an old design to redesign) — it would be a
 GENUINELY NEW capability. Deliberately NOT designed as part of this
-review pass; captured instead as its own roadmap doc — see [SSE Client
-Consumption](../roadmap/sse-client-consumption.md) — to be picked up AFTER this
-doc's implementation ships, same deferral pattern already established
-for [Events/ReqReply/Ports Workflow
-Simplification](../roadmap/events-reqreply-ports-workflow-simplification.md).
+review pass; captured instead as its own roadmap doc, SSE Client
+Consumption — to be picked up AFTER this doc's implementation ships,
+same deferral pattern already established for [Events/ReqReply/Ports
+Workflow Simplification](../roadmap/events-reqreply-ports-workflow-simplification.md).
+(That roadmap doc has since shipped its Phase 1 and was removed after a
+confirmed zero-gap review — see this doc's own addendum below.)
 
 ---
 
@@ -2455,11 +2457,16 @@ questions rather than relying on being able to ask in the moment.
 
 ## Addendum: this design as the foundation for SSE client consumption
 
-Added after `docs/roadmap/sse-client-consumption.md` shipped its Phase 1 (a
-separate feature, planned and implemented in a later session) — recorded
-here so the lineage is discoverable from this document, since the newer
-feature's own roadmap doc does not itself narrate where its core mechanism
-came from.
+Added after the SSE Client Consumption roadmap doc (`docs/roadmap/
+sse-client-consumption.md`) shipped its Phase 1 (a separate feature, planned
+and implemented in a later session) — recorded here so the lineage is
+discoverable from this document, since the newer feature's own roadmap doc
+did not itself narrate where its core mechanism came from. That roadmap doc
+has SINCE BEEN DELETED (per its own 3-way delete/keep/promote graduation
+policy — a single-feature roadmap doc, fully shipped, with a confirmed
+zero-gap review, and no lasting cross-cutting design value of its own beyond
+what is captured here); this addendum is the durable record of the design
+lineage that remains after that deletion.
 
 `SSERoute.ClientHandle()`/`ClientMW()` — the pair that lets a single
 `rest.SSERoute` declaration serve BOTH the server side (`ServeSSE`) and the
