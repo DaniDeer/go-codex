@@ -148,6 +148,35 @@ caller := nethttp.NewCaller(http.DefaultClient, serverURL)
 user, err := nethttp.Call(ctx, caller, createUser, req, opts)
 ```
 
+### Why SSE lives in `api/rest`, not `api/events`
+
+Server-Sent Events (`rest.NewSSERoute`) isn't "RESTful" by the strict
+CRUD/cacheable-resource definition — but its WIRE PROTOCOL is plain HTTP:
+a normal `GET` request whose response never closes, streaming
+`text/event-stream` chunks instead of one JSON body. Because the
+transport is ordinary HTTP, an SSE route reuses `api/rest`'s ENTIRE
+existing toolchain — path/query/header params, security schemes,
+`nethttp.Call`, OpenAPI generation — with zero new machinery, instead of
+needing an AsyncAPI-shaped channel/message model built from scratch. This
+also matches the wider OpenAPI-ecosystem convention: most tooling
+(Swagger, FastAPI, NestJS, etc.) documents an SSE endpoint as a plain
+`GET` operation with a streamed content type, not as an AsyncAPI channel.
+
+AsyncAPI's channel/message model exists for genuinely broker/pub-sub-style
+protocols (MQTT, Kafka, AMQP, WebSocket) where the interaction ISN'T a
+single request/response pair. A DUAL description (OpenAPI as the primary
+spec, plus an optional AsyncAPI channel describing the same event payload)
+is technically possible in this codebase's renderer today —
+`render/asyncapi`'s `Server.Protocol` field already accepts a bare string
+like `"https"` (the same precedent `docs/roadmap/webhook-adapter.md` uses
+for its own HTTP-based case) — but this is NOT wired up for SSE: the
+HTTP-native OpenAPI description is already complete and sufficient, so no
+second spec surface is needed.
+
+See [`rest.NewSSERoute`'s godoc](https://pkg.go.dev/github.com/DaniDeer/go-codex/api/rest#NewSSERoute)
+and [Feature: SSE & Streaming](../features/sse-streaming.md) for the full
+API.
+
 ## Event channels (`api/events`)
 
 ```go

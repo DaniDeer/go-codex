@@ -3075,7 +3075,10 @@ type SSERoute[Req, Event any] struct {
 // [SSERoute.Register] time.
 //
 // The route is always GET and appears in the OpenAPI spec with Content-Type
-// text/event-stream.
+// text/event-stream — SSE's wire protocol is plain HTTP, so it reuses this
+// package's whole toolchain rather than an AsyncAPI-shaped channel/message
+// model; see docs/concepts/api-contracts.md's "Why SSE lives in api/rest,
+// not api/events" for the full rationale.
 //
 // NewSSERoute is a free function (not a method) because Go requires type
 // parameters to appear on free functions, not on method receivers.

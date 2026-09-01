@@ -6,7 +6,7 @@
 
 ## Server-Sent Events (SSE)
 
-`rest.NewSSERoute[Req, Event]` registers a typed SSE route — always GET — with an event codec that validates every value before it is serialised to `data: ...\n\n`.
+`rest.NewSSERoute[Req, Event]` registers a typed SSE route — always GET — with an event codec that validates every value before it is serialised to `data: ...\n\n`. SSE lives in `api/rest` (not `api/events`) because its wire protocol is plain HTTP — see [API Contracts: "Why SSE lives in `api/rest`, not `api/events`"](../concepts/api-contracts.md#why-sse-lives-in-apirest-not-apievents) for the full rationale.
 
 ```go
 import (
