@@ -305,6 +305,31 @@ func (r Route[Req, Resp]) ClientMW(mw *middleware.Middleware, fn any) Route[Req,
 	return r
 }
 
+// ClientMW is [SSERoute]'s client-side implementation-attachment method —
+// identical Satisfies-gating mechanics to [Route.ClientMW]: mw non-nil
+// with Security set gates fn to run only when the route's declared
+// security requirements include that scheme; mw nil (or Security nil)
+// marks fn general-purpose (always runs). Consumed by
+// [nethttp.Consume]/[nethttp.CallSSEAdapter] the same way
+// [nethttp.Call] consumes [Route.ClientMW]'s attached implementations.
+func (s SSERoute[Req, Event]) ClientMW(mw *middleware.Middleware, fn any) SSERoute[Req, Event] {
+	idx := 0
+	for _, o := range s.opts {
+		if _, ok := o.(clientMWOpt); ok {
+			idx++
+		}
+	}
+	impl := middleware.ClientImplementation{Fn: fn}
+	if mw != nil && mw.Security != nil {
+		impl.Name = fmt.Sprintf("fulfill:%s#%d", mw.Security.SchemeName, idx)
+		impl.Satisfies = []string{mw.Security.SchemeName}
+	} else {
+		impl.Name = fmt.Sprintf("fulfill:general#%d", idx)
+	}
+	s.opts = append(slices.Clone(s.opts), clientMWOpt{impl: impl})
+	return s
+}
+
 // securityContribution is one source's declaration for a single security
 // scheme name, tracked for conflict detection.
 type securityContribution struct {

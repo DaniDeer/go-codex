@@ -131,6 +131,9 @@ Deviation from this pattern = trivial finding.
 | `validate.HasPrefix(prefix []byte)` | General magic-byte check; prefer built-in constants for known formats; use HasPrefix for custom/proprietary formats |
 | `ports.FilePattern`/`CachePattern`/`SocketPattern` `CustomFormat any` | Pre-built `format.Format[T]` escape hatch for binary/custom formats — overrides `Format` enum when non-nil; type-asserted at build time via `resolveFormat`; mismatch → `PatternRegisterError` |
 | `rest.RequestFormats[Req]`/`Formats[Resp]`, `events.Formats[T]`/`SubscribeFormats[T]`/`PublishFormats[T]`, `reqreply.RequestFormats[Req]`/`Formats[Resp]` | Inline `RouteOpt`/`ChannelOpt` constructors — the `RESTPattern`/`EventPattern`/`ReqReplyPattern` equivalent of `CustomFormat` (these 3 patterns need no struct field since their handles already support format negotiation); mismatch → package-local `FormatOptError` |
+| `Route.ClientHandle()`/`SSERoute.ClientHandle()`/`Channel.ClientHandle()`/`reqreply.Route.ClientHandle()` | ALL apply the SAME declared `Formats`/`RequestFormats`/`SubscribeFormats`/`PublishFormats` `registerHandle`/`Register` applies server-side — type mismatch PANICS with the same message `FormatOptError` would return (infallible construction path, mirrors `mustAssertMergeFields`'s panic-on-misuse precedent) |
+| `nethttp.CallOptions.RequestFormats`/`ResponseFormats any`, `nethttp.ConsumeOptions.Formats any` | PER-CALL type-erased format override (resolved generically inside `Call`/`CallWithHandle`/`consumeSSE`) — wins over route-declared `handle.RequestFormats`/`handle.Formats` for THIS call only, falling back to JSON when neither is set; mismatch → `nethttp.CallFormatOptError{Direction,Err}` |
+| `mqtt5.CallOptions.RequestFormats`/`ResponseFormats any` (reqreply `Call`/`CallHandle`), `zeromq.CallOptions.RequestFormats`/`ResponseFormats any` (reqreply `Call`/`CallHandle`/`CallDealer`) | SAME per-call override mechanism as `nethttp.CallOptions`, mirrored for reqreply's bidirectional `Call` — mismatch wrapped in the package's own `CallError` (mqtt5: `Kind: KindEncode`/`KindDecode`; zeromq: plain `CallError{Err}`, no `Kind` field) rather than a dedicated `FormatOptError`-shaped type, matching each package's PRE-EXISTING error-wrapping convention for all other `Call`-time failures |
 
 ---
 
@@ -206,6 +209,7 @@ All must be `errors.As`-navigable. Bare `fmt.Errorf` in `adapter.go` Publish wit
 | `nethttp.RequestBuildError{Err}` | `http.NewRequestWithContext` failure (bad URL, cancelled ctx) |
 | `nethttp.RequestError{Method,Path,Err}` | `http.Client.Do` transport failure (network, DNS, TLS, timeout) |
 | `nethttp.ResponseBodyError{Err}` | `io.ReadAll` failure on response body |
+| `nethttp.CallFormatOptError{Direction,Err}` | `CallOptions.RequestFormats`/`ResponseFormats` (or `ConsumeOptions.Formats`) set with formats for the wrong `Req`/`Resp`/`Event` type parameter — per-call analogue of `rest.FormatOptError` |
 
 All must be `errors.As`-navigable. Bare `fmt.Errorf` in `client.go` without a typed sentinel is a finding.
 

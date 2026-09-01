@@ -13,6 +13,7 @@ import (
 	"github.com/DaniDeer/go-codex/api/events"
 	"github.com/DaniDeer/go-codex/api/reqreply"
 	"github.com/DaniDeer/go-codex/codex"
+	"github.com/DaniDeer/go-codex/format"
 	"github.com/DaniDeer/go-codex/validate"
 )
 
@@ -1295,5 +1296,131 @@ func TestCallHandle_ExplicitVarsOverridePrecedence(t *testing.T) {
 	wantPath := "compute/overridden/add"
 	if len(obs.paths) == 0 || obs.paths[0] != wantPath {
 		t.Errorf("expected observer path %q (explicit override), got %v", wantPath, obs.paths)
+	}
+}
+
+// ── CallOptions.RequestFormats / ResponseFormats per-call override ────────
+
+// TestCall_RequestFormats_OverridesRouteDeclaredFormat verifies
+// CallOptions.RequestFormats wins over the route's declared
+// handle.RequestFormats (here: undeclared, JSON default) for THIS call only.
+func TestCall_RequestFormats_OverridesRouteDeclaredFormat(t *testing.T) {
+	sock := &mockSocket{recvErr: zeromq.ErrTimeout} // no reply — inspect the sent payload only
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+	_, _ = zeromq.Call(ctx, sock, newRouteHandle(),
+		computeReq{X: 3, Y: 4}, zeromq.CallOptions{
+			RequestFormats: []format.Format[computeReq]{format.YAML(computeReqCodec)},
+		})
+
+	sent := sock.sentSnapshot()
+	if len(sent) == 0 {
+		t.Fatal("expected a send, got none")
+	}
+	if !strings.Contains(string(sent[0][0]), "x: 3") {
+		t.Errorf("want YAML-encoded payload (override), got %q", sent[0][0])
+	}
+}
+
+// TestCall_RequestFormats_RouteDeclaredStillAppliesWithoutOverride verifies
+// the route-declared (here: JSON default) format still applies when no
+// per-call override is given.
+func TestCall_RequestFormats_RouteDeclaredStillAppliesWithoutOverride(t *testing.T) {
+	sock := &mockSocket{recvErr: zeromq.ErrTimeout}
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+	_, _ = zeromq.Call(ctx, sock, newRouteHandle(),
+		computeReq{X: 3, Y: 4}, zeromq.CallOptions{})
+
+	sent := sock.sentSnapshot()
+	if len(sent) == 0 {
+		t.Fatal("expected a send, got none")
+	}
+	decoded, err := format.JSON(computeReqCodec).Unmarshal(sent[0][0])
+	if err != nil {
+		t.Fatalf("want JSON-encoded payload (route-declared default), got %q: %v", sent[0][0], err)
+	}
+	if decoded.X != 3 || decoded.Y != 4 {
+		t.Errorf("unexpected decoded payload: %+v", decoded)
+	}
+}
+
+// TestCall_ResponseFormats_OverridesRouteDeclaredFormat verifies
+// CallOptions.ResponseFormats wins over the route's declared handle.Formats
+// (here: undeclared, JSON default) for THIS call only — the canned reply
+// payload here is YAML-encoded, which only decodes correctly BECAUSE of
+// the override.
+func TestCall_ResponseFormats_OverridesRouteDeclaredFormat(t *testing.T) {
+	sock := &mockSocket{
+		inFrames: [][][]byte{
+			{[]byte("ok"), []byte("sum: 7\n")},
+		},
+	}
+	result, err := zeromq.Call(context.Background(), sock, newRouteHandle(),
+		computeReq{X: 3, Y: 4}, zeromq.CallOptions{
+			ResponseFormats: []format.Format[computeResp]{format.YAML(computeRespCodec)},
+		})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.Sum != 7 {
+		t.Fatalf("want Sum=7 decoded via YAML override, got %d", result.Sum)
+	}
+}
+
+// TestCall_RequestFormats_TypeMismatch_ReturnsCallError verifies a
+// wrong-typed CallOptions.RequestFormats returns CallError, errors.As-reachable.
+func TestCall_RequestFormats_TypeMismatch_ReturnsCallError(t *testing.T) {
+	sock := &mockSocket{}
+	_, err := zeromq.Call(context.Background(), sock, newRouteHandle(),
+		computeReq{X: 3, Y: 4}, zeromq.CallOptions{
+			// Wrong type: []format.Format[computeResp] instead of []format.Format[computeReq].
+			RequestFormats: []format.Format[computeResp]{format.JSON(computeRespCodec)},
+		})
+	var callErr zeromq.CallError
+	if !errors.As(err, &callErr) {
+		t.Fatalf("want CallError, got %T: %v", err, err)
+	}
+}
+
+// TestCall_ResponseFormats_TypeMismatch_ReturnsCallError mirrors
+// TestCall_RequestFormats_TypeMismatch_ReturnsCallError for the response
+// direction — requires a valid reply since the mismatch is only detected
+// after one arrives.
+func TestCall_ResponseFormats_TypeMismatch_ReturnsCallError(t *testing.T) {
+	sock := &mockSocket{
+		inFrames: [][][]byte{
+			{[]byte("ok"), []byte(`{"sum":7}`)},
+		},
+	}
+	_, err := zeromq.Call(context.Background(), sock, newRouteHandle(),
+		computeReq{X: 3, Y: 4}, zeromq.CallOptions{
+			// Wrong type: []format.Format[computeReq] instead of []format.Format[computeResp].
+			ResponseFormats: []format.Format[computeReq]{format.JSON(computeReqCodec)},
+		})
+	var callErr zeromq.CallError
+	if !errors.As(err, &callErr) {
+		t.Fatalf("want CallError, got %T: %v", err, err)
+	}
+}
+
+// TestCallDealer_RequestFormats_OverridesRouteDeclaredFormat verifies the
+// SAME per-call override wiring on CallDealer (which duplicates Call's
+// encode/decode logic under a DEALER envelope).
+func TestCallDealer_RequestFormats_OverridesRouteDeclaredFormat(t *testing.T) {
+	sock := &mockSocket{recvErr: zeromq.ErrTimeout}
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+	_, _ = zeromq.CallDealer(ctx, sock, newRouteHandle(),
+		computeReq{X: 3, Y: 4}, zeromq.CallOptions{
+			RequestFormats: []format.Format[computeReq]{format.YAML(computeReqCodec)},
+		})
+
+	sent := sock.sentSnapshot()
+	if len(sent) == 0 || len(sent[0]) < 2 {
+		t.Fatalf("expected a DEALER send with [delimiter, payload], got %v", sent)
+	}
+	if !strings.Contains(string(sent[0][1]), "x: 3") {
+		t.Errorf("want YAML-encoded payload (override), got %q", sent[0][1])
 	}
 }

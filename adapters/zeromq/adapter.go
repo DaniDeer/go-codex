@@ -91,6 +91,38 @@ type CallOptions struct {
 	// Returns [CallError] wrapping [reqreply.RouteParamError] or
 	// [reqreply.MissingRouteParamError] on validation failure.
 	Vars map[string]string
+
+	// RequestFormats, when non-nil, OVERRIDES the route's declared request
+	// encode format for THIS call only. Type-erased ([]format.Format[Req])
+	// since CallOptions itself is not generic; [Call]/[CallDealer]
+	// type-assert it once Req is concrete, returning [CallError] on a
+	// type mismatch — mirrors [nethttp.CallOptions.RequestFormats]
+	// exactly.
+	//
+	// Priority: RequestFormats (this field) > handle.RequestFormats
+	// (route-declared) > handle.EncodeRequest (JSON default).
+	RequestFormats any
+
+	// ResponseFormats, when non-nil, OVERRIDES the route's declared
+	// response decode format for THIS call only — same type-erasure and
+	// priority-chain contract as [CallOptions.RequestFormats], mirrored
+	// for the response direction ([]format.Format[Resp]).
+	ResponseFormats any
+}
+
+// resolveCallFormat type-asserts overrideAny (a [CallOptions.RequestFormats]/
+// [CallOptions.ResponseFormats] value) against []format.Format[T], falling
+// back to declared when overrideAny is nil. Returns an error on a type
+// mismatch — callers wrap it in [CallError].
+func resolveCallFormat[T any](declared []format.Format[T], overrideAny any) ([]format.Format[T], error) {
+	if overrideAny == nil {
+		return declared, nil
+	}
+	fmts, ok := overrideAny.([]format.Format[T])
+	if !ok {
+		return nil, fmt.Errorf("format option: want []format.Format[%T], got %T", *new(T), overrideAny)
+	}
+	return fmts, nil
 }
 
 // Subscribe blocks and processes incoming messages from a SUB or PULL socket.
@@ -529,10 +561,18 @@ func Call[Req, Resp any](
 		defer func() { to.EndSpan(ctx, callErr) }()
 	}
 
+	// Resolve per-call request format override.
+	reqFormats, fmtErr := resolveCallFormat[Req](handle.RequestFormats, opts.RequestFormats)
+	if fmtErr != nil {
+		obs.RecordRequest("ZMQ-REQ", path, 0, time.Since(start))
+		callErr = CallError{Err: fmtErr}
+		return zero, callErr
+	}
+
 	// encode request
 	var payload []byte
-	if len(handle.RequestFormats) > 0 {
-		payload, callErr = handle.RequestFormats[0].Marshal(req)
+	if len(reqFormats) > 0 {
+		payload, callErr = reqFormats[0].Marshal(req)
 	} else {
 		payload, callErr = handle.EncodeRequest(req)
 	}
@@ -593,10 +633,18 @@ func Call[Req, Resp any](
 		return zero, callErr
 	}
 
+	// Resolve per-call response format override.
+	respFormats, fmtErr := resolveCallFormat[Resp](handle.Formats, opts.ResponseFormats)
+	if fmtErr != nil {
+		callErr = CallError{Err: fmtErr}
+		obs.RecordRequest("ZMQ-REQ", path, 0, time.Since(start))
+		return zero, callErr
+	}
+
 	// decode response
 	var resp Resp
-	if len(handle.Formats) > 0 {
-		resp, callErr = handle.Formats[0].Unmarshal(frames[1])
+	if len(respFormats) > 0 {
+		resp, callErr = respFormats[0].Unmarshal(frames[1])
 	} else {
 		resp, callErr = handle.DecodeResponse(frames[1])
 	}
@@ -942,10 +990,18 @@ func CallDealer[Req, Resp any](
 		defer func() { to.EndSpan(ctx, callErr) }()
 	}
 
+	// Resolve per-call request format override.
+	reqFormats, fmtErr := resolveCallFormat[Req](handle.RequestFormats, opts.RequestFormats)
+	if fmtErr != nil {
+		obs.RecordRequest("ZMQ-DEALER", path, 0, time.Since(start))
+		callErr = CallError{Err: fmtErr}
+		return zero, callErr
+	}
+
 	// encode request
 	var payload []byte
-	if len(handle.RequestFormats) > 0 {
-		payload, callErr = handle.RequestFormats[0].Marshal(req)
+	if len(reqFormats) > 0 {
+		payload, callErr = reqFormats[0].Marshal(req)
 	} else {
 		payload, callErr = handle.EncodeRequest(req)
 	}
@@ -1007,10 +1063,18 @@ func CallDealer[Req, Resp any](
 		return zero, callErr
 	}
 
+	// Resolve per-call response format override.
+	respFormats, fmtErr := resolveCallFormat[Resp](handle.Formats, opts.ResponseFormats)
+	if fmtErr != nil {
+		callErr = CallError{Err: fmtErr}
+		obs.RecordRequest("ZMQ-DEALER", path, 0, time.Since(start))
+		return zero, callErr
+	}
+
 	// decode response
 	var resp Resp
-	if len(handle.Formats) > 0 {
-		resp, callErr = handle.Formats[0].Unmarshal(frames[2])
+	if len(respFormats) > 0 {
+		resp, callErr = respFormats[0].Unmarshal(frames[2])
 	} else {
 		resp, callErr = handle.DecodeResponse(frames[2])
 	}

@@ -156,8 +156,11 @@ a normal `GET` request whose response never closes, streaming
 `text/event-stream` chunks instead of one JSON body. Because the
 transport is ordinary HTTP, an SSE route reuses `api/rest`'s ENTIRE
 existing toolchain — path/query/header params, security schemes,
-`nethttp.Call`, OpenAPI generation — with zero new machinery, instead of
-needing an AsyncAPI-shaped channel/message model built from scratch. This
+OpenAPI generation, and (on the client side) `nethttp.Consumer`/
+`nethttp.Consume` — the STRICT client-side counterparts to `Caller`/
+`Call`, for a stream of many events instead of one response — with zero
+new machinery, instead of needing an AsyncAPI-shaped channel/message
+model built from scratch. This
 also matches the wider OpenAPI-ecosystem convention: most tooling
 (Swagger, FastAPI, NestJS, etc.) documents an SSE endpoint as a plain
 `GET` operation with a streamed content type, not as an AsyncAPI channel.

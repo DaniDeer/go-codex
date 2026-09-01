@@ -1161,7 +1161,7 @@ func (c Channel[T]) ClientHandle() *ChannelHandle[T] {
 		schemes[k] = v
 	}
 
-	return &ChannelHandle[T]{
+	h := &ChannelHandle[T]{
 		Topic:             c.topic,
 		Descriptor:        frozen,
 		Decode:            func(payload []byte) (T, error) { return jsonFmt.Unmarshal(payload) },
@@ -1171,6 +1171,37 @@ func (c Channel[T]) ClientHandle() *ChannelHandle[T] {
 		errorChannelRules: cb.errorChannelRules,
 		SecuritySchemes:   schemes,
 	}
+	// Apply any inline Formats/SubscribeFormats/PublishFormats ChannelOpt
+	// declared on the Channel -- the SAME cb.formats/cb.subscribeFormats/
+	// cb.publishFormats fields Register applies server-side. Without
+	// this, ClientHandle silently ignored a declared wire format and
+	// mqtt5/zeromq client-side calls always fell back to JSON regardless
+	// of what was declared (a confirmed bug).
+	if cb.formats != nil {
+		fmts, ok := cb.formats.([]format.Format[T])
+		if !ok {
+			panic(fmt.Sprintf("api/events: ClientHandle: %s", FormatOptError{Direction: "both",
+				Err: fmt.Errorf("want []format.Format[%T], got %T", *new(T), cb.formats)}.Error()))
+		}
+		h.WithFormats(fmts...)
+	}
+	if cb.subscribeFormats != nil {
+		fmts, ok := cb.subscribeFormats.([]format.Format[T])
+		if !ok {
+			panic(fmt.Sprintf("api/events: ClientHandle: %s", FormatOptError{Direction: "subscribe",
+				Err: fmt.Errorf("want []format.Format[%T], got %T", *new(T), cb.subscribeFormats)}.Error()))
+		}
+		h.WithSubscribeFormats(fmts...)
+	}
+	if cb.publishFormats != nil {
+		fmts, ok := cb.publishFormats.([]format.Format[T])
+		if !ok {
+			panic(fmt.Sprintf("api/events: ClientHandle: %s", FormatOptError{Direction: "publish",
+				Err: fmt.Errorf("want []format.Format[%T], got %T", *new(T), cb.publishFormats)}.Error()))
+		}
+		h.WithPublishFormats(fmts...)
+	}
+	return h
 }
 
 // rawChannelEntry stores a pre-built ChannelItem — used by channels whose

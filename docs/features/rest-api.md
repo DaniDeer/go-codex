@@ -586,6 +586,22 @@ articleRoute := rest.NewRoute[struct{}, ArticleProps]("GET", "/article",
 )
 ```
 
+`Route.ClientHandle()` applies these SAME declared formats identically to
+`Register`/`RegisterHandle` — `nethttp.Call` picks up a declared
+`RequestFormats`/`Formats` automatically, whether the route was registered
+with a `Builder` or built client-only via `ClientHandle()`.
+
+To override the format for ONE specific call without changing the route's
+declaration, set `CallOptions.RequestFormats`/`ResponseFormats` (type-erased
+`[]format.Format[Req]`/`[]format.Format[Resp]`) — wins over the
+route-declared format for that call only:
+
+```go
+resp, err := nethttp.Call(ctx, caller, createUser, req, nethttp.CallOptions{
+    ResponseFormats: []format.Format[User]{format.YAML(userCodec)},
+})
+```
+
 ## Response headers and cookies
 
 ```go

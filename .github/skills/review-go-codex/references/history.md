@@ -1,6 +1,49 @@
-# go-codex Review History (R1–R126, plus middleware-workflow-simplification G1–G15)
+# go-codex Review History (R1–R127, plus middleware-workflow-simplification G1–G15)
 
 Do not re-report any of these findings. They have been implemented and tested.
+
+---
+
+## Round 127 (per-call format override parity for reqreply's `Call` in `mqtt5`/`zeromq`)
+
+Follow-up review triggered right after implementing the `ClientHandle()`-ignores-declared-Formats
+bug fix + `nethttp.CallOptions.RequestFormats`/`ResponseFormats`/`ConsumeOptions.Formats` per-call
+override feature (outside this skill's normal workflow). Found the new override was bundled into
+`nethttp.Call`/`Consume` only, leaving reqreply's own bidirectional `Call` surface (`mqtt5`,
+`zeromq`) without the equivalent, despite already correctly consulting declared
+`handle.RequestFormats`/`handle.Formats`.
+
+- **G1 [small] — reqreply `Call`/`CallHandle`/`CallDealer` had no per-call format override**:
+  `adapters/mqtt5/reqreply.go` (`Call`, `CallHandle`) and `adapters/zeromq/adapter.go` (`Call`,
+  `CallHandle`, `CallDealer`) had NO `CallOptions.RequestFormats`/`ResponseFormats`-equivalent —
+  unlike `events.Subscribe`/`Publish` (already has a per-call `formats ...format.Format[T]`
+  override) and the just-added `nethttp.Call`/`CallWithHandle` (now has
+  `CallOptions.RequestFormats`/`ResponseFormats`) for the SAME bidirectional "Call" concept. Fixed
+  by adding `CallOptions.RequestFormats`/`ResponseFormats any` to both packages, resolved via a new
+  per-package `resolveCallFormat[T]` helper (type-erased, priority: per-call override >
+  handle-declared > JSON default) wired into `mqtt5.Call`'s encode/decode steps and `zeromq.Call`'s
+  AND `zeromq.CallDealer`'s (both duplicate the encode/decode logic under different socket
+  envelopes) encode/decode steps. Type mismatches wrap the SAME pre-existing package-local
+  `CallError` type each package already uses for every other `Call`-time failure (mqtt5:
+  `CallError{Kind: KindEncode/KindDecode}`; zeromq: plain `CallError{Err}`, no `Kind` field) rather
+  than introducing a new dedicated error type — matching each package's established convention
+  instead of copying `nethttp.CallFormatOptError` verbatim. Added 11 regression tests (5 in
+  `adapters/mqtt5/reqreply_test.go`, 6 in `adapters/zeromq/adapter_test.go`, including one
+  `CallDealer`-specific test) covering override-wins-over-declared, declared-still-applies, and
+  type-mismatch paths for both packages.
+- **G2 [trivial] — new `CallFormatOptError` tests didn't assert exact `LogValue` field keys**:
+  the 3 new tests added for `nethttp.CallFormatOptError` in `adapters/nethttp/client_test.go`/
+  `binding_test.go` checked `errors.As`/`Direction`/`slog.KindGroup` but never the exact
+  `LogValue()` field keys (`"direction"`, `"err"`) — inconsistent with the established sibling
+  pattern (`rest.FormatOptError`'s own test loops over the expected key list). Fixed by adding the
+  same key-presence loop to all 3 tests.
+- **G3 [trivial] — checklist.md's own reference tables were stale relative to the just-shipped
+  code**: `references/checklist.md` §5 (Format API Parity) and §7 (Error Sentinel Consistency,
+  "adapters/nethttp client" table) didn't list the newly-shipped `CallOptions.RequestFormats`/
+  `ResponseFormats`, `ConsumeOptions.Formats`, `CallFormatOptError`, or (after this round) the
+  mqtt5/zeromq per-call override — risking a future review round mis-flagging them as
+  undocumented. Added rows to both sections documenting all of the above, including the
+  `ClientHandle()`-formats bug fix that preceded this round.
 
 ---
 

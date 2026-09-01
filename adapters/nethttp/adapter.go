@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"io"
 	"net/http"
 	"strconv"
@@ -726,7 +725,7 @@ func sseHandlerFunc[Req, Event any](handle *rest.SSERouteHandle[Req, Event], fn 
 			if err != nil {
 				return err
 			}
-			if _, werr := fmt.Fprintf(sw, "data: %s\n\n", data); werr != nil {
+			if _, werr := writeSSEData(sw, data); werr != nil {
 				return werr
 			}
 			if canFlush {

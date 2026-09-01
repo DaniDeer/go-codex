@@ -858,6 +858,85 @@ var sseEventCodec = codex.Struct[sseEvent](
 	},
 )
 
+// decodeSSEFirstFrame reassembles the FIRST SSE event's raw data bytes
+// from a raw response body — the spec-correct counterpart to
+// writeSSEData: strips the "data: " prefix from EVERY consecutive
+// "data:" line up to the blank-line terminator and rejoins them with a
+// single "\n". Mirrors adapters/nethttp's identical test helper (no
+// import relationship between the two packages, so intentionally
+// duplicated).
+func decodeSSEFirstFrame(t *testing.T, body []byte) []byte {
+	t.Helper()
+	var lines [][]byte
+	for _, line := range strings.Split(string(body), "\n") {
+		data, ok := strings.CutPrefix(line, "data: ")
+		if !ok {
+			if len(lines) > 0 {
+				break
+			}
+			continue
+		}
+		lines = append(lines, []byte(data))
+	}
+	if len(lines) == 0 {
+		t.Fatalf("missing SSE data prefix in %q", string(body))
+	}
+	out := lines[0]
+	for _, l := range lines[1:] {
+		out = append(out, '\n')
+		out = append(out, l...)
+	}
+	return out
+}
+
+// TestSSEHandler_MultiLineDataFraming confirms the server writes a
+// multi-line event value (e.g. YAML block style) with EACH line getting
+// its own "data: " prefix, per the WHATWG SSE spec — mirrors
+// adapters/nethttp's identical test.
+func TestSSEHandler_MultiLineDataFraming(t *testing.T) {
+	route := rest.NewSSERoute[struct{}, userResp]("/stream-yaml",
+		codex.Empty, userRespCodec, rest.RouteMeta{OperationID: "streamYAML"},
+	).WithHandler(func(_ context.Context, _ struct{}, send func(userResp) error) error {
+		return send(userResp{ID: "1", Name: "Alice"})
+	})
+	b := rest.NewBuilder(testInfo)
+	handle, err := route.RegisterHandle(b)
+	if err != nil {
+		t.Fatalf("RegisterHandle: %v", err)
+	}
+	handle.WithFormats(format.YAML(userRespCodec))
+	r := gochi.NewRouter()
+	if err := chiadapter.ServeSSE(r, b); err != nil {
+		t.Fatalf("ServeSSE: %v", err)
+	}
+
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/stream-yaml", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("want 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	body := rec.Body.String()
+	if !strings.Contains(body, "\n") {
+		t.Fatalf("test setup: want YAML output to contain a newline, got %q", body)
+	}
+	for _, line := range strings.Split(strings.TrimRight(body, "\n"), "\n") {
+		if line == "" {
+			continue
+		}
+		if !strings.HasPrefix(line, "data: ") {
+			t.Errorf("want every line prefixed with %q, got line %q in body %q", "data: ", line, body)
+		}
+	}
+	frame := decodeSSEFirstFrame(t, rec.Body.Bytes())
+	got, err := format.YAML(userRespCodec).Unmarshal(frame)
+	if err != nil {
+		t.Fatalf("unmarshal reassembled YAML frame: %v", err)
+	}
+	if got.ID != "1" || got.Name != "Alice" {
+		t.Fatalf("unexpected decoded event: %+v", got)
+	}
+}
+
 func TestSSEHandler_streamEvents(t *testing.T) {
 	route := rest.NewSSERoute[createReq, sseEvent]("/events",
 		createReqCodec, sseEventCodec, rest.RouteMeta{OperationID: "streamEvents"}).WithHandler(func(ctx context.Context, _ createReq, send func(sseEvent) error) error {

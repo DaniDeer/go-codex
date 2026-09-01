@@ -10,6 +10,7 @@ import (
 	mqtt5 "github.com/DaniDeer/go-codex/adapters/mqtt5"
 	"github.com/DaniDeer/go-codex/api/reqreply"
 	"github.com/DaniDeer/go-codex/codex"
+	"github.com/DaniDeer/go-codex/format"
 	"github.com/DaniDeer/go-codex/route"
 	"github.com/DaniDeer/go-codex/validate"
 	pahomqtt5 "github.com/eclipse/paho.golang/paho"
@@ -1322,5 +1323,145 @@ func TestServeCallHandle_NestedReq_RoundTrip(t *testing.T) {
 	}
 	if received.X != 5 || received.Y != 6 {
 		t.Errorf("unexpected req: %+v", received)
+	}
+}
+
+// ── CallOptions.RequestFormats / ResponseFormats per-call override ────────
+
+// TestCall_RequestFormats_OverridesRouteDeclaredFormat verifies
+// CallOptions.RequestFormats wins over the route's declared
+// handle.RequestFormats (here: undeclared, JSON default) for THIS call only.
+func TestCall_RequestFormats_OverridesRouteDeclaredFormat(t *testing.T) {
+	client := &mockClient{} // plain mock — no routing, just records publishes
+	router := newMockRouter()
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+
+	// Request will timeout (no responder) — we only care about the
+	// encoded payload bytes.
+	_, _ = mqtt5.Call(ctx, client, router, newRouteHandle(),
+		computeReq{X: 3, Y: 4},
+		mqtt5.CallOptions{
+			Timeout:        100 * time.Millisecond,
+			RequestFormats: []format.Format[computeReq]{format.YAML(computeReqCodec)},
+		})
+
+	pub := client.lastPublished()
+	if pub == nil {
+		t.Fatal("expected a publish, got none")
+	}
+	if !strings.Contains(string(pub.Payload), "x: 3") {
+		t.Errorf("want YAML-encoded payload (override), got %q", pub.Payload)
+	}
+}
+
+// TestCall_RequestFormats_RouteDeclaredStillAppliesWithoutOverride verifies
+// the route-declared (here: JSON default) format still applies when no
+// per-call override is given.
+func TestCall_RequestFormats_RouteDeclaredStillAppliesWithoutOverride(t *testing.T) {
+	client := &mockClient{}
+	router := newMockRouter()
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+
+	_, _ = mqtt5.Call(ctx, client, router, newRouteHandle(),
+		computeReq{X: 3, Y: 4},
+		mqtt5.CallOptions{Timeout: 100 * time.Millisecond})
+
+	pub := client.lastPublished()
+	if pub == nil {
+		t.Fatal("expected a publish, got none")
+	}
+	decoded, err := format.JSON(computeReqCodec).Unmarshal(pub.Payload)
+	if err != nil {
+		t.Fatalf("want JSON-encoded payload (route-declared default), got %q: %v", pub.Payload, err)
+	}
+	if decoded.X != 3 || decoded.Y != 4 {
+		t.Errorf("unexpected decoded payload: %+v", decoded)
+	}
+}
+
+// TestCall_ResponseFormats_OverridesRouteDeclaredFormat verifies
+// CallOptions.ResponseFormats wins over the route's declared handle.Formats
+// for THIS call only — the SERVER'S handle here declares YAML (so Serve
+// replies with YAML bytes), while the CLIENT'S handle declares NOTHING
+// (defaults to JSON); the override is what lets Call correctly decode the
+// YAML reply anyway.
+func TestCall_ResponseFormats_OverridesRouteDeclaredFormat(t *testing.T) {
+	router := newMockRouter()
+	client := &brokerClient{router: router}
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+
+	serverHandle := newRouteHandle()
+	serverHandle.WithFormats(format.YAML(computeRespCodec))
+	_ = mqtt5.Serve(ctx, client, router, serverHandle,
+		func(_ context.Context, req computeReq) (computeResp, error) {
+			return computeResp{Sum: req.X + req.Y}, nil
+		},
+		mqtt5.ServeOptions{})
+
+	resp, err := mqtt5.Call(ctx, client, router, newRouteHandle(), // client handle: no Formats declared
+		computeReq{X: 3, Y: 4},
+		mqtt5.CallOptions{
+			Timeout:         2 * time.Second,
+			ResponseFormats: []format.Format[computeResp]{format.YAML(computeRespCodec)},
+		})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if resp.Sum != 7 {
+		t.Fatalf("want Sum=7 decoded via YAML override, got %d", resp.Sum)
+	}
+}
+
+// TestCall_RequestFormats_TypeMismatch_ReturnsCallError verifies a
+// wrong-typed CallOptions.RequestFormats returns CallError{Kind: KindEncode},
+// errors.As-reachable.
+func TestCall_RequestFormats_TypeMismatch_ReturnsCallError(t *testing.T) {
+	client := &mockClient{}
+	router := newMockRouter()
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+
+	_, err := mqtt5.Call(ctx, client, router, newRouteHandle(),
+		computeReq{X: 3, Y: 4},
+		mqtt5.CallOptions{
+			Timeout: time.Second,
+			// Wrong type: []format.Format[computeResp] instead of []format.Format[computeReq].
+			RequestFormats: []format.Format[computeResp]{format.JSON(computeRespCodec)},
+		})
+	var callErr mqtt5.CallError
+	if !errors.As(err, &callErr) || callErr.Kind != mqtt5.KindEncode {
+		t.Fatalf("want CallError{Kind: KindEncode}, got %v", err)
+	}
+}
+
+// TestCall_ResponseFormats_TypeMismatch_ReturnsCallError mirrors
+// TestCall_RequestFormats_TypeMismatch_ReturnsCallError for the response
+// direction — requires a real round trip since the mismatch is only
+// detected after a reply arrives.
+func TestCall_ResponseFormats_TypeMismatch_ReturnsCallError(t *testing.T) {
+	router := newMockRouter()
+	client := &brokerClient{router: router}
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+
+	_ = mqtt5.Serve(ctx, client, router, newRouteHandle(),
+		func(_ context.Context, req computeReq) (computeResp, error) {
+			return computeResp{Sum: req.X + req.Y}, nil
+		},
+		mqtt5.ServeOptions{})
+
+	_, err := mqtt5.Call(ctx, client, router, newRouteHandle(),
+		computeReq{X: 3, Y: 4},
+		mqtt5.CallOptions{
+			Timeout: 2 * time.Second,
+			// Wrong type: []format.Format[computeReq] instead of []format.Format[computeResp].
+			ResponseFormats: []format.Format[computeReq]{format.JSON(computeReqCodec)},
+		})
+	var callErr mqtt5.CallError
+	if !errors.As(err, &callErr) || callErr.Kind != mqtt5.KindDecode {
+		t.Fatalf("want CallError{Kind: KindDecode}, got %v", err)
 	}
 }

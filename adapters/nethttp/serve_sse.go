@@ -1,8 +1,10 @@
 package nethttp
 
 import (
+	"bytes"
 	"context"
 	"fmt"
+	"io"
 	"net/http"
 	"reflect"
 	"strings"
@@ -12,6 +14,29 @@ import (
 	"github.com/DaniDeer/go-codex/route"
 	"github.com/DaniDeer/go-codex/stats"
 )
+
+// writeSSEData writes data as one or more spec-compliant SSE "data:"
+// lines to w, terminated by the blank line that dispatches the event.
+// Per the WHATWG Server-Sent Events spec, EVERY line of a multi-line
+// data value must carry its OWN "data: " prefix — a single "data: "
+// prefix in front of a raw multi-line payload (as an earlier version of
+// this file did) is NOT spec-compliant: any standards-conformant reader
+// (a browser's native EventSource, or this package's own
+// [Consume]/[CallSSEAdapter]) would misread everything after the first
+// embedded newline as un-prefixed noise, silently losing it. This
+// matters for any format whose encoding embeds raw newlines — YAML's
+// block style, or an [adapters/templ.Format] HTML fragment — not just
+// contrived multi-line test payloads.
+func writeSSEData(w io.Writer, data []byte) (int, error) {
+	var buf bytes.Buffer
+	for _, line := range bytes.Split(data, []byte("\n")) {
+		buf.WriteString("data: ")
+		buf.Write(line)
+		buf.WriteByte('\n')
+	}
+	buf.WriteByte('\n')
+	return w.Write(buf.Bytes())
+}
 
 // ServeSSE walks every [rest.SSERoute] registered into b (via
 // [rest.SSERoute.Register]/[rest.SSERoute.RegisterHandle]) and wires each
@@ -280,7 +305,7 @@ func buildSSERouteHandler(handle any) (http.Handler, error) {
 			if err != nil {
 				return retErr(err)
 			}
-			if _, werr := fmt.Fprintf(sw, "data: %s\n\n", data); werr != nil {
+			if _, werr := writeSSEData(sw, data); werr != nil {
 				return retErr(werr)
 			}
 			if canFlush {

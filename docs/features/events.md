@@ -232,6 +232,13 @@ amqtt.SubscribeHandler(ctx, yamlChannel, handler, opts, format.JSON(measurementC
 
 Format priority: call-time variadic → `handle.SubscribeFormats`/`PublishFormats` → `handle.Formats` → JSON fallback.
 
+`events.Formats`/`SubscribeFormats`/`PublishFormats` declared INLINE as `NewChannel` opts apply
+identically whether the channel is registered with a `Builder` (`Channel.Register`) or built
+client-only via `Channel.ClientHandle()` — both populate the SAME `ChannelHandle.Formats`/
+`SubscribeFormats`/`PublishFormats` fields `mqtt5`/`zeromq`'s client-side `Subscribe`/`Publish`
+read. A type mismatch (formats declared for the wrong payload type) panics on `ClientHandle()`
+(infallible — no error return) with the same message `Register` would return as `FormatOptError`.
+
 ## TopicParam schema → AsyncAPI spec
 
 `TopicParam.Codec` schema flows automatically into the AsyncAPI `parameters:` block. Every `{varName}` placeholder gets a parameter entry:

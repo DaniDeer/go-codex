@@ -1538,6 +1538,46 @@ func TestPublishFormats_TypeMismatch(t *testing.T) {
 	}
 }
 
+// TestChannel_ClientHandle_AppliesInlineFormats verifies events.Formats/
+// SubscribeFormats/PublishFormats declared inline in NewChannel's opts are
+// ALSO visible on the handle returned by ClientHandle — not just Register.
+// Regression test for a confirmed bug where ClientHandle silently ignored
+// declared Formats, always falling back to JSON regardless of what was
+// declared (affecting mqtt5/zeromq client-side Subscribe/Publish).
+func TestChannel_ClientHandle_AppliesInlineFormats(t *testing.T) {
+	ch := events.NewChannel[userEvent]("users/{id}", userEventCodec,
+		events.SubscribeFormats(format.YAML(userEventCodec)),
+		events.PublishFormats(format.JSON(userEventCodec)),
+	)
+	handle := ch.ClientHandle()
+	if len(handle.SubscribeFormats) != 1 || handle.SubscribeFormats[0].ContentType() != "application/yaml" {
+		t.Errorf("want SubscribeFormats=YAML, got %+v", handle.SubscribeFormats)
+	}
+	if len(handle.PublishFormats) != 1 || handle.PublishFormats[0].ContentType() != "application/json" {
+		t.Errorf("want PublishFormats=JSON, got %+v", handle.PublishFormats)
+	}
+}
+
+// TestChannel_ClientHandle_FormatTypeMismatch verifies a wrong-typed
+// Formats option panics with a FormatOptError-shaped message on
+// ClientHandle (infallible — no error return), mirroring Register's
+// returned-error behavior for the same mistake.
+func TestChannel_ClientHandle_FormatTypeMismatch(t *testing.T) {
+	ch := events.NewChannel[userEvent]("users/{id}", userEventCodec,
+		events.Formats(format.Binary(eventPngCodec)),
+	)
+	defer func() {
+		r := recover()
+		if r == nil {
+			t.Fatal("want panic on type mismatch, got none")
+		}
+		if !strings.Contains(fmt.Sprint(r), "both") {
+			t.Errorf("want panic message to mention 'both' direction, got %v", r)
+		}
+	}()
+	ch.ClientHandle()
+}
+
 // ── Phase 2: events.NewTopicParam / ChannelHandle.DecodeMerged ────────────
 
 // EV1: events.NewTopicParam registers both spec TopicParam and merge field.

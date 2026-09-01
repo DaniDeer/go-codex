@@ -689,6 +689,46 @@ func TestFormats_TypeMismatch(t *testing.T) {
 	}
 }
 
+// TestRoute_ClientHandle_AppliesInlineFormats verifies reqreply.RequestFormats/
+// reqreply.Formats declared inline in NewRoute's opts are ALSO visible on
+// the handle returned by ClientHandle — not just Register. Regression
+// test for a confirmed bug where ClientHandle silently ignored declared
+// Formats, always falling back to JSON regardless of what was declared
+// (affecting mqtt5/zeromq client-side Call).
+func TestRoute_ClientHandle_AppliesInlineFormats(t *testing.T) {
+	route := reqreply.NewRoute[[]byte, []byte]("images/roundtrip", reqreplyPngCodec, reqreplyPngCodec,
+		reqreply.RequestFormats(format.Binary(reqreplyPngCodec).WithContentType("image/png")),
+		reqreply.Formats(format.Binary(reqreplyPngCodec).WithContentType("image/png")),
+	)
+	handle := route.ClientHandle()
+	if len(handle.RequestFormats) != 1 || handle.RequestFormats[0].ContentType() != "image/png" {
+		t.Errorf("want 1 RequestFormats entry with image/png, got %+v", handle.RequestFormats)
+	}
+	if len(handle.Formats) != 1 || handle.Formats[0].ContentType() != "image/png" {
+		t.Errorf("want 1 Formats entry with image/png, got %+v", handle.Formats)
+	}
+}
+
+// TestRoute_ClientHandle_FormatTypeMismatch verifies a wrong-typed
+// RequestFormats/Formats option panics with a FormatOptError-shaped
+// message on ClientHandle (infallible — no error return), mirroring
+// Register's returned-error behavior for the same mistake.
+func TestRoute_ClientHandle_FormatTypeMismatch(t *testing.T) {
+	route := reqreply.NewRoute[computeReq, computeResp]("compute/mul", reqCodec, respCodec,
+		reqreply.RequestFormats(format.Binary(reqreplyPngCodec)),
+	)
+	defer func() {
+		r := recover()
+		if r == nil {
+			t.Fatal("want panic on type mismatch, got none")
+		}
+		if !strings.Contains(fmt.Sprint(r), "request") {
+			t.Errorf("want panic message to mention request direction, got %v", r)
+		}
+	}()
+	route.ClientHandle()
+}
+
 // ── Phase 2: reqreply.NewTopicParam / RouteHandle.DecodeMerged ────────────
 
 type tenantComputeReq struct {

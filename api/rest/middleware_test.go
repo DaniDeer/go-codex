@@ -454,6 +454,50 @@ func TestRouteClientMW_CombinesWithServerDeclaredSecurity(t *testing.T) {
 	}
 }
 
+// ── SSERoute.ClientMW / ClientHandle (mirrors Route.ClientMW/ClientHandle) ──
+
+// TestSSERouteClientMW_PopulatesClientImplementationsOnClientHandle is C1's
+// happy path: SSERoute.ClientMW attaches a credential-providing
+// implementation that SSERoute.ClientHandle carries through — mirrors
+// TestRouteClientMW_PopulatesClientImplementationsOnClientHandle exactly.
+func TestSSERouteClientMW_PopulatesClientImplementationsOnClientHandle(t *testing.T) {
+	h := rest.NewSSERoute[struct{}, userResp]("/stream", codex.Empty, userCodec,
+		rest.RouteMeta{OperationID: "streamUsers"},
+	).ClientMW(nil, func() {}).ClientHandle()
+
+	if len(h.ClientImplementations) != 1 {
+		t.Fatalf("want ClientImplementations to carry the attached implementation, got %+v", h.ClientImplementations)
+	}
+}
+
+// TestSSERouteClientMW_SatisfiesGating is C2: a ClientMW paired against a
+// scheme the route did NOT declare via Use must still carry a Satisfies
+// value — mirrors nethttp's TestCall_ClientMWSatisfiesGating_UnrelatedImplNotRun
+// rationale at the api/rest layer (the actual "does NOT run" behavior is
+// nethttp.Consume's job to enforce at call time; this test only confirms
+// SSERoute.ClientHandle correctly derives and carries Satisfies).
+func TestSSERouteClientMW_SatisfiesGating(t *testing.T) {
+	declareMw := middleware.SecurityScheme("bearerAuth", route.BearerScheme(""), nil, nil)
+	otherMw := middleware.SecurityScheme("apiKey", route.APIKeyScheme("X-API-Key", "header"), nil, nil)
+
+	h := rest.NewSSERoute[struct{}, userResp]("/stream", codex.Empty, userCodec,
+		rest.RouteMeta{OperationID: "streamUsers"},
+	).Use(declareMw).
+		ClientMW(&declareMw, func() {}).
+		ClientMW(&otherMw, func() {}).
+		ClientHandle()
+
+	if len(h.ClientImplementations) != 2 {
+		t.Fatalf("want both ClientMW attachments carried, got %+v", h.ClientImplementations)
+	}
+	if len(h.ClientImplementations[0].Satisfies) != 1 || h.ClientImplementations[0].Satisfies[0] != "bearerAuth" {
+		t.Fatalf("want first ClientMW's Satisfies to be [bearerAuth], got %+v", h.ClientImplementations[0].Satisfies)
+	}
+	if len(h.ClientImplementations[1].Satisfies) != 1 || h.ClientImplementations[1].Satisfies[0] != "apiKey" {
+		t.Fatalf("want second ClientMW's Satisfies to be [apiKey], got %+v", h.ClientImplementations[1].Satisfies)
+	}
+}
+
 func TestSecurityScheme_AloneIsALegitimateIntermediateStateAtRegister(t *testing.T) {
 	// A route using ONLY middleware.SecurityScheme (no ServerImplementation
 	// supplied anywhere yet) is a legitimate, intermediate declare-time

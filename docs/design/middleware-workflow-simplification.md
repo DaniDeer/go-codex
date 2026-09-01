@@ -2450,3 +2450,51 @@ implementation and had to be improvised mid-session.
 interactive confirmation may be unavailable at the moment it's needed, and
 should pre-decide a conservative default for its highest-stakes open
 questions rather than relying on being able to ask in the moment.
+
+---
+
+## Addendum: this design as the foundation for SSE client consumption
+
+Added after `docs/roadmap/sse-client-consumption.md` shipped its Phase 1 (a
+separate feature, planned and implemented in a later session) — recorded
+here so the lineage is discoverable from this document, since the newer
+feature's own roadmap doc does not itself narrate where its core mechanism
+came from.
+
+`SSERoute.ClientHandle()`/`ClientMW()` — the pair that lets a single
+`rest.SSERoute` declaration serve BOTH the server side (`ServeSSE`) and the
+client side (`nethttp.Consume`/`CallSSEAdapter`) with no separate
+declaration — is not a new design. It is a direct, mechanical application of
+two decisions already made and shipped by THIS document:
+
+- **"Decision: symmetric client-side declarative wiring"** (above) is what
+  established `Route.ClientHandle()`/`ClientMW()` as the client-side mirror
+  of `Register`/`HandleMW` in the first place, for the plain request/response
+  `Route` case. `SSERoute.ClientHandle()`/`ClientMW()` apply the identical
+  pattern to the stream case — same struct-literal-construction shape, same
+  infallible-with-panic-on-type-mismatch contract, same
+  `applyMiddlewareSecurityForClient` reuse for security scheme parity with
+  the server side.
+- **"Decision: unexported handle-based primitive"** (above) is what
+  established `callWithVars`/`CallWithHandle` as the layering `Call` is
+  built on. `adapters/nethttp/binding.go`'s `consumeSSE`/`consumeSSEOnce`
+  primitive that both `Consume` (route-based convenience) and
+  `CallSSEAdapter` (handle-based, port-adapter-facing) delegate to is the
+  same layering shape, one level up (a long-lived reconnecting loop instead
+  of a single call), for exactly the same reason: one primitive, two public
+  entry points at different levels of convenience.
+
+A dedicated `review-go-codex` code-review pass (Round 127, prompted by the
+user's explicit request to check `sse-client-consumption.md` against its
+implementation for open gaps) confirmed **zero gaps** between that roadmap
+doc's committed scope and the shipped code, tests, and documentation — every
+API surface item, unit-test-plan item, and "in scope"/"out of scope" line
+was verified present and correct, and the "out of scope" `Last-Event-ID`/
+pluggable-retry-policy items were confirmed correctly carried forward into
+their own follow-on roadmap doc (`docs/roadmap/sse-resume-and-retry-policy.md`)
+rather than silently dropped. This is presented as evidence that the two
+Decisions above generalize cleanly to a second, structurally different
+boundary (a long-lived stream instead of a single request/response) without
+needing new design work — the strongest practical validation this document's
+core patterns could receive short of a third independent adapter adopting
+them.

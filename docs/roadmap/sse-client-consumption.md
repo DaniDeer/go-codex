@@ -1,6 +1,12 @@
 # SSE Client Consumption — `adapters/nethttp`
 
-> **Status:** Design complete — not yet implemented.
+> **Status:** Phase 1 SHIPPED — `Consumer`/`Consume`/`CallSSEAdapter`,
+> `SSERoute.ClientMW`/`ClientHandle`, `SSERouteHandle.DecodeEvent`, and
+> the Phase 0 Req-side merge-field fix are all implemented and tested.
+> Phase 2 (`Last-Event-ID` resume + retry policy) is deferred to its own
+> follow-on doc — see [SSE Resume & Retry Policy](sse-resume-and-retry-policy.md).
+> Kept in roadmap (not deleted/promoted) since that follow-on doc still
+> references this one's design context.
 > [← Back to Roadmap](index.md)
 >
 > Spun out from [Middleware Workflow Simplification](../design/middleware-workflow-simplification.md)'s
@@ -59,7 +65,7 @@ shape to mirror on the client side — though, as this revision found, the
   port adapters) that was never given a declarative replacement. Both
   types are REUSED as-is by this design (see "Structured errors" below) —
   only their stale doc-link needs fixing, from `[SSEClientStream]` to
-  `[CallSSEAdapter]`.
+  `[Consume]`/`[CallSSEAdapter]`.
 - **The server side (`adapters/nethttp.SSEAdapter`, a `ports.SinkAdapter`)
   is unaffected and unrelated** — it SERVES events out over SSE to
   connected clients; it has nothing to do with CONSUMING a remote SSE
@@ -636,35 +642,24 @@ this section — it stated a permanent structural fact, not a deferred
 Phase-2 feature; see the "Scope decisions" table above, which already
 covers it.)
 
-## Open design decisions (to resolve before/during implementation)
+## Open design decisions (all RESOLVED — ready to implement)
 
-1. **Should Phase 0's `Req`-merge-field fix ship independently of
-   `Consume`/`CallSSEAdapter`, as its own small bugfix PR?** It is a
-   genuine, currently-silent gap unrelated to client consumption (a user
-   could already be affected today). Leaning: ship it together in one
-   round, since it has no other consumer today and splitting adds
-   process overhead for zero benefit — but flag for reconsideration if
-   implementation reveals the fix is larger than expected.
-2. **`ConsumeOptions.MaxBackoff` default value** — Phase 1 leans toward
-   the SAME 30s default `adapters/websocket.DialAdapterOptions` uses
-   (consistency), but SSE and WebSocket have different reconnect-cost
-   profiles (SSE is a lighter GET request); revisit if a real caller's
-   preferred default differs meaningfully.
-3. **Does a connection failure BEFORE the first successful event count
-   differently from one AFTER?** (E.g., should consumption give up
-   entirely after N consecutive pre-first-event failures, versus retrying
-   forever once at least one event has been seen?) Leaning: retry forever
-   in both cases for Phase 1 (matches `adapters/websocket`'s unconditional
-   retry loop) — no caller-configurable give-up threshold yet; revisit if
-   a real caller needs one. A caller-configurable give-up threshold is
-   exactly the kind of policy [SSE Resume & Retry Policy](sse-resume-and-retry-policy.md)'s
-   pluggable `RetryPolicy` would let a caller express directly — revisit
-   THIS item once that doc's design resolves, rather than solving it here
-   in isolation.
-4. **Should `Consume` spawn its own goroutine internally, or always
-   block the caller's?** Phase 1 leans toward ALWAYS blocking (matching
-   `zeromq.Subscribe`'s existing precedent exactly, letting the caller
-   decide whether/how to run it in the background via a plain `go`
-   statement) rather than adding an internal-goroutine variant — avoids a
-   second API shape for zero clear benefit; revisit only if a real caller
-   finds the blocking contract awkward in practice.
+1. **RESOLVED — Phase 0's `Req`-merge-field fix ships TOGETHER with
+   `Consume`/`CallSSEAdapter`, not as a separate PR.** It has no other
+   consumer today, and splitting adds process overhead for zero benefit.
+2. **RESOLVED — `ConsumeOptions.MaxBackoff` defaults to 30s**, the SAME
+   default `adapters/websocket.DialAdapterOptions` uses (initial step
+   250ms, doubling per consecutive failure) — consistency wins over
+   SSE's lighter reconnect-cost profile until a real caller's preferred
+   default is shown to differ meaningfully.
+3. **RESOLVED — connection failures always retry forever**, with no
+   distinction between pre-first-event and post-first-event failure
+   counts, and no caller-configurable give-up threshold in Phase 1
+   (matches `adapters/websocket`'s unconditional retry loop). A
+   caller-configurable give-up threshold is exactly the kind of policy
+   [SSE Resume & Retry Policy](sse-resume-and-retry-policy.md)'s
+   pluggable `RetryPolicy` would let a caller express directly — deferred
+   there, not solved here in isolation.
+4. **RESOLVED — `Consume` ALWAYS blocks the caller's own goroutine**,
+   never spawns one internally (matches `zeromq.Subscribe`'s existing
+   precedent exactly) — no second API shape for zero clear benefit.

@@ -13,6 +13,7 @@ import (
 
 	"github.com/DaniDeer/go-codex/api/rest"
 	"github.com/DaniDeer/go-codex/codex"
+	"github.com/DaniDeer/go-codex/format"
 	"github.com/DaniDeer/go-codex/middleware"
 	"github.com/DaniDeer/go-codex/route"
 	"github.com/DaniDeer/go-codex/stats"
@@ -76,6 +77,49 @@ type CallOptions struct {
 	// Per-field validation errors are reported via [stats.Observer.RecordValidationError].
 	// Defaults to [stats.NoopObserver] when nil.
 	Observer stats.Observer
+
+	// RequestFormats, when non-nil, OVERRIDES the route's declared
+	// request-body encode format for THIS call only. Type-erased
+	// ([]format.Format[Req]) since CallOptions itself is not generic;
+	// [Call]/[CallWithHandle] type-assert it once Req is concrete,
+	// returning [CallFormatOptError] on a type mismatch.
+	//
+	// Priority: RequestFormats (this field) > handle.RequestFormats
+	// (declared via [rest.RequestFormats] on the route) >
+	// handle.EncodeRequest (JSON default) — mirrors
+	// [adapters/mqtt5.Publish]'s existing "call-time formats >
+	// handle.PublishFormats > handle.Formats > handle.Encode" priority
+	// chain.
+	//
+	// Example:
+	//
+	//	nethttp.Call(ctx, caller, route, req, nethttp.CallOptions{
+	//	    RequestFormats: []format.Format[MyReq]{format.YAML(myReqCodec)},
+	//	})
+	RequestFormats any
+
+	// ResponseFormats, when non-nil, OVERRIDES the route's declared
+	// response decode format for THIS call only — same type-erasure and
+	// priority-chain contract as [CallOptions.RequestFormats], mirrored
+	// for the response direction ([]format.Format[Resp]).
+	ResponseFormats any
+}
+
+// resolveCallFormat type-asserts overrideAny (a [CallOptions.RequestFormats]/
+// [CallOptions.ResponseFormats] value) against []format.Format[T], falling
+// back to declared when overrideAny is nil. Returns [CallFormatOptError] on
+// a type mismatch — direction is "request" or "response" for the error
+// message/LogValue.
+func resolveCallFormat[T any](declared []format.Format[T], overrideAny any, direction string) ([]format.Format[T], error) {
+	if overrideAny == nil {
+		return declared, nil
+	}
+	fmts, ok := overrideAny.([]format.Format[T])
+	if !ok {
+		return nil, CallFormatOptError{Direction: direction,
+			Err: fmt.Errorf("want []format.Format[%T], got %T", *new(T), overrideAny)}
+	}
+	return fmts, nil
 }
 
 // UnexpectedStatusError is returned by [Call] when the server responds with a
@@ -249,6 +293,34 @@ func (e ResponseBodyError) Unwrap() error { return e.Err }
 func (e ResponseBodyError) LogValue() slog.Value {
 	return slog.GroupValue(
 		slog.Any("cause", e.Err),
+	)
+}
+
+// CallFormatOptError is returned by [Call]/[CallWithHandle] when
+// [CallOptions.RequestFormats] or [CallOptions.ResponseFormats] was set
+// with formats for a type that does not match the route's actual
+// request/response type parameter — the per-call analogue of
+// [rest.FormatOptError] (which reports the SAME class of mistake at
+// [rest.Route.Register]/[rest.Route.ClientHandle] time instead).
+type CallFormatOptError struct {
+	// Direction is "request" (from [CallOptions.RequestFormats]) or
+	// "response" (from [CallOptions.ResponseFormats]).
+	Direction string
+	Err       error
+}
+
+func (e CallFormatOptError) Error() string {
+	return fmt.Sprintf("nethttp: %s format option: %v", e.Direction, e.Err)
+}
+
+// Unwrap allows [errors.Is] and [errors.As] to reach the underlying error.
+func (e CallFormatOptError) Unwrap() error { return e.Err }
+
+// LogValue implements [slog.LogValuer] for structured logging.
+func (e CallFormatOptError) LogValue() slog.Value {
+	return slog.GroupValue(
+		slog.String("direction", e.Direction),
+		slog.Any("err", e.Err),
 	)
 }
 
@@ -513,6 +585,21 @@ func callWithVars[Req, Resp any](
 		defer func() { to.EndSpan(ctx, err) }()
 	}
 
+	// 4b. Resolve per-call format overrides (opts.RequestFormats/
+	// ResponseFormats), falling back to the route-declared
+	// handle.RequestFormats/Formats when no override was given for this
+	// call — see [CallOptions.RequestFormats]/[ResponseFormats].
+	reqFormats, err := resolveCallFormat[Req](handle.RequestFormats, opts.RequestFormats, "request")
+	if err != nil {
+		obs.RecordRequest(method, routePath, 0, time.Since(start))
+		return zero, err
+	}
+	respFormats, err := resolveCallFormat[Resp](handle.Formats, opts.ResponseFormats, "response")
+	if err != nil {
+		obs.RecordRequest(method, routePath, 0, time.Since(start))
+		return zero, err
+	}
+
 	// 5. Build full URL.
 	rawURL := strings.TrimRight(baseURL, "/") + concretePath
 	if len(opts.QueryParams) > 0 {
@@ -548,9 +635,9 @@ func callWithVars[Req, Resp any](
 	switch method {
 	case http.MethodPost, http.MethodPut, http.MethodPatch:
 		var bodyBytes []byte
-		if len(handle.RequestFormats) > 0 {
-			bodyBytes, err = handle.RequestFormats[0].Marshal(req)
-			contentType = handle.RequestFormats[0].ContentType()
+		if len(reqFormats) > 0 {
+			bodyBytes, err = reqFormats[0].Marshal(req)
+			contentType = reqFormats[0].ContentType()
 		} else {
 			bodyBytes, err = handle.EncodeRequest(req)
 			contentType = "application/json"
@@ -575,9 +662,9 @@ func callWithVars[Req, Resp any](
 		httpReq.Header.Set("Content-Type", contentType)
 	}
 
-	// Set Accept header from registered response formats.
-	if len(handle.Formats) > 0 {
-		if ct := handle.Formats[0].ContentType(); ct != "" {
+	// Set Accept header from resolved response formats.
+	if len(respFormats) > 0 {
+		if ct := respFormats[0].ContentType(); ct != "" {
 			httpReq.Header.Set("Accept", ct)
 		}
 	} else {
@@ -688,8 +775,8 @@ func callWithVars[Req, Resp any](
 
 	// 12. Decode typed response.
 	var result Resp
-	if len(handle.Formats) > 0 {
-		result, err = handle.Formats[0].Unmarshal(respBody)
+	if len(respFormats) > 0 {
+		result, err = respFormats[0].Unmarshal(respBody)
 	} else {
 		result, err = handle.DecodeResponse(respBody)
 	}

@@ -90,6 +90,56 @@ Escape hatch stays unchanged: skip `NewRequiredSSEEventParam` and set the
 field manually from request context before `send`. The runnable
 `examples/adapters-sse` now shows both paths side-by-side.
 
+## SSE client consumption
+
+`nethttp.Consumer`/`nethttp.Consume` are the CLIENT-side counterpart to
+`Caller`/`Call` — the SAME declared `rest.SSERoute` used to serve events
+(above) is passed directly to `Consume` to consume them back, no separate
+client-side declaration needed:
+
+```go
+import (
+    nethttp "github.com/DaniDeer/go-codex/adapters/nethttp"
+)
+
+consumer := nethttp.NewConsumer(httpClient, "https://api.example.com")
+
+err := nethttp.Consume(ctx, consumer, sensorRoute, struct{}{},
+    func(ctx context.Context, reading SensorReading) error {
+        return handleReading(reading)
+    }, nethttp.ConsumeOptions{})
+```
+
+**Key properties:**
+- `Consume` BLOCKS until `ctx` is cancelled or a fatal setup error occurs (e.g. a merge-field encoding failure) — mirrors `zeromq.Subscribe`'s blocking shape; run it via `go nethttp.Consume(...)` for a background consumer.
+- Path/query/header/cookie values are derived from the `Req` struct via the route's declared merge fields (`rest.NewRequiredPathParam[T]`/etc.) — same "one struct in" mechanics as `Call`. A route with no merge-capable params for a value it needs cannot supply that value from `Req` — declare merge fields the same way you would for a regular `rest.Route`.
+- Connection drops trigger automatic reconnect with exponential backoff (250ms initial step, doubling, capped at `ConsumeOptions.MaxBackoff`, default 30s) — mirrors `adapters/websocket`'s reconnect loop. The merge-field vars AND any `rest.SSERoute.ClientMW`-declared credential are RE-DERIVED on every reconnect attempt, never cached — a short-lived Bearer token is re-fetched on each attempt.
+- `fn`'s returned error is NON-FATAL: wrapped in `nethttp.SSEHandlerError` and reported via `ConsumeOptions.OnError`, then consumption continues with the next event.
+- `ConsumeOptions.OnCredentialRejected` fires on a 401 response with an engaged `ClientMW` credential — mirrors `CallOptions.OnCredentialRejected`, letting a caching credential wrapper (e.g. `NewCachingCredentialFunc`) invalidate before the next reconnect attempt.
+- A route declaring multiple `Formats` has its decode format resolved ONCE per connection (from the response's `Content-Type`), reused for every event on that connection — symmetric with the server's own connect-once `Accept`-negotiation. See ["SSE with HTML fragments"](#sse-with-html-fragments-htmx-style) below for the one format `Consume`/`CallSSEAdapter` can never decode by design.
+- `rest.Formats(...)` declared INLINE as an `NewSSERoute` opt applies identically whether the route is registered with a `Builder` (`RegisterHandle`) or consumed client-only via `Consume`/`CallSSEAdapter` (both derive a `ClientHandle()` internally, which now applies the SAME declared `Formats` `registerHandle` does). To override the decode format for ONE specific `Consume`/`CallSSEAdapter` call without changing the route's declaration, set `ConsumeOptions.Formats` (type-erased `[]format.Format[Event]`) — wins over the route-declared format for that call only:
+  ```go
+  err := nethttp.Consume(ctx, consumer, sensorRoute, struct{}{}, handleReading, nethttp.ConsumeOptions{
+      Formats: []format.Format[SensorReading]{format.YAML(sensorReadingCodec)},
+  })
+  ```
+  `SSERouteHandle.WithFormats` (called on an already-built handle, post-registration) remains available for cases where the format isn't known until after the handle is built — still useful with `CallSSEAdapter`, which takes a handle directly:
+  ```go
+  handle := sensorRoute.ClientHandle()
+  handle.WithFormats(format.YAML(sensorReadingCodec))
+  port.Bind(ctx, nethttp.CallSSEAdapter(httpClient, baseURL, handle, struct{}{}, nethttp.ConsumeOptions{}))
+  ```
+
+For a `ports.SourcePort`/pipeline consumer instead of a direct callback, use `nethttp.CallSSEAdapter` — takes a pre-built `*rest.SSERouteHandle` and delegates to the SAME internal reconnect loop `Consume` uses:
+
+```go
+port, _ := ports.NewSourcePort[SensorReading]("sensorEvents", sensorReadingCodec, ports.PortOptions{})
+port.Bind(ctx, nethttp.CallSSEAdapter(httpClient, baseURL, sensorHandle, struct{}{}, nethttp.ConsumeOptions{}))
+events := port.Stream(ctx)
+```
+
+The runnable `examples/adapters-sse` demonstrates the full roundtrip: every route is declared once, served, AND consumed back by a client in the same example.
+
 ## Chunked streaming responses
 
 For routes that stream a response body (not SSE), use `format.NewStreamed`:
@@ -158,10 +208,24 @@ notifHandle.WithFormats(
 
 Events with invalid props are rejected by the codec **before** the fragment component renders — no malformed HTML is ever sent to the client.
 
+**Not consumable by `nethttp.Consume`/`CallSSEAdapter`.** HTMX-over-SSE is
+designed for a **browser's native `EventSource`** + DOM-swap — not for
+go-codex's own typed Go client. `adapttempl.Format`'s decode direction
+always returns `adapttempl.DecodeNotSupportedError` (HTML has no
+meaningful "decode back into a struct" direction). A `Consume`/
+`CallSSEAdapter` call against an HTML-formatted route will resolve that
+format (matched by the connection's negotiated `Content-Type`), attempt
+to decode every event, get `DecodeNotSupportedError` every time, and
+report each as a non-fatal `SSEParseError` via `ConsumeOptions.OnError` —
+`fn`/the port's `dst` channel is never reached for that route. This is
+correct, intentional behavior, not a bug: point a Go client at a
+JSON/YAML/TOML-formatted route instead when you need a decoded value
+back.
+
 ## See also
 
 - [Guide: HTTP Server](../guides/http-server.md) — SSE and templ SSR in the full HTTP server guide
 - [Feature: Formats & Serialization](formats.md) — `format.NewStreamed` reference
-- [examples/adapters-sse](https://github.com/DaniDeer/go-codex/tree/main/examples/adapters-sse) — SSE with BuildPath, invalid event rejection, observer
+- [examples/adapters-sse](https://github.com/DaniDeer/go-codex/tree/main/examples/adapters-sse) — full roundtrip: BuildPath, invalid event rejection, observer, AND client-side consumption via `Consume`/`CallSSEAdapter`
 - [examples/adapters-streaming-sse-templ](https://github.com/DaniDeer/go-codex/tree/main/examples/adapters-streaming-sse-templ) — chunked streaming + SSE HTML fragments
 - [examples/adapters-templ](https://github.com/DaniDeer/go-codex/tree/main/examples/adapters-templ) — content negotiation: HTML + JSON from one route

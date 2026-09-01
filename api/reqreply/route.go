@@ -805,7 +805,7 @@ func (r Route[Req, Resp]) ClientHandle() *RouteHandle[Req, Resp] {
 		schemes[k] = v
 	}
 
-	return &RouteHandle[Req, Resp]{
+	h := &RouteHandle[Req, Resp]{
 		Topic:             r.topic,
 		Decode:            func(p []byte) (Req, error) { return jsonReq.Unmarshal(p) },
 		Encode:            func(v Resp) ([]byte, error) { return jsonResp.Marshal(v) },
@@ -817,6 +817,28 @@ func (r Route[Req, Resp]) ClientHandle() *RouteHandle[Req, Resp] {
 		Security:          rb.meta.Security,
 		SecuritySchemes:   schemes,
 	}
+	// Apply any inline RequestFormats/Formats RouteOpt declared on the
+	// Route -- the SAME rb.requestFormats/rb.formats fields Register
+	// applies server-side. Without this, ClientHandle silently ignored a
+	// declared wire format and mqtt5/zeromq client-side Call always fell
+	// back to JSON regardless of what was declared (a confirmed bug).
+	if rb.requestFormats != nil {
+		fmts, ok := rb.requestFormats.([]format.Format[Req])
+		if !ok {
+			panic(fmt.Sprintf("api/reqreply: ClientHandle: %s", FormatOptError{Direction: "request",
+				Err: fmt.Errorf("want []format.Format[%T], got %T", *new(Req), rb.requestFormats)}.Error()))
+		}
+		h.WithRequestFormats(fmts...)
+	}
+	if rb.formats != nil {
+		fmts, ok := rb.formats.([]format.Format[Resp])
+		if !ok {
+			panic(fmt.Sprintf("api/reqreply: ClientHandle: %s", FormatOptError{Direction: "response",
+				Err: fmt.Errorf("want []format.Format[%T], got %T", *new(Resp), rb.formats)}.Error()))
+		}
+		h.WithFormats(fmts...)
+	}
+	return h
 }
 
 // Register registers the route with b and returns a [RouteHandle].
@@ -828,8 +850,12 @@ func (r Route[Req, Resp]) ClientHandle() *RouteHandle[Req, Resp] {
 // topic is validated immediately and an [InvalidTopicError] is returned if
 // it fails — no route is registered in that case.
 //
-// Use [RouteHandle.WithRequestFormats] and [RouteHandle.WithFormats] after
-// Register to configure multi-format request/response handling.
+// Multi-format request/response handling can be declared inline via
+// [RequestFormats]/[Formats] RouteOpt on [NewRoute] (applied here AND by
+// [Route.ClientHandle], so a shared Route definition gets identical
+// encode/decode behaviour on both the server and client side), or set
+// after the fact via [RouteHandle.WithRequestFormats]/[RouteHandle.WithFormats]
+// on the returned handle.
 func (r Route[Req, Resp]) Register(b *Builder) (*RouteHandle[Req, Resp], error) {
 	if _, exists := b.topics[r.topic]; exists {
 		return nil, DuplicateRouteError{Topic: r.topic}

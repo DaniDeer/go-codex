@@ -2438,6 +2438,89 @@ func TestSSEHandler_EventMerge_MissingRequiredFailsSend(t *testing.T) {
 	}
 }
 
+// decodeSSEFirstFrame reassembles the FIRST SSE event's raw data bytes
+// from a raw response body — the spec-correct counterpart to
+// writeSSEData: strips the "data: " prefix from EVERY consecutive
+// "data:" line up to the blank-line terminator and rejoins them with a
+// single "\n", exactly reversing writeSSEData's per-line framing
+// (bytes.Split/rejoin around "\n" is a lossless round-trip regardless of
+// binary vs. text content — critical for formats like Gob whose encoded
+// bytes may contain embedded 0x0A bytes that split across multiple
+// "data:" lines).
+func decodeSSEFirstFrame(t *testing.T, body []byte) []byte {
+	t.Helper()
+	var lines [][]byte
+	for _, line := range bytes.Split(body, []byte("\n")) {
+		data, ok := bytes.CutPrefix(line, []byte("data: "))
+		if !ok {
+			if len(lines) > 0 {
+				break // blank line (or non-data field) terminates the first event
+			}
+			continue
+		}
+		lines = append(lines, data)
+	}
+	if len(lines) == 0 {
+		t.Fatalf("missing SSE data prefix in %q", string(body))
+	}
+	return bytes.Join(lines, []byte("\n"))
+}
+
+// TestSSEHandler_MultiLineDataFraming confirms the server writes a
+// multi-line event value (e.g. YAML block style) with EACH line getting
+// its own "data: " prefix, per the WHATWG SSE spec — instead of writing
+// one "data: " prefix in front of the whole raw multi-line value (the
+// bug this round fixes). Uses format.YAML directly, whose block-style
+// output reliably embeds newlines, exercised via the SAME public
+// ServeSSE + raw-response path every other SSE test in this file uses —
+// no access to the unexported writeSSEData needed.
+func TestSSEHandler_MultiLineDataFraming(t *testing.T) {
+	b := rest.NewBuilder(testInfo)
+	handle, err := rest.NewSSERoute[struct{}, userResp]("/stream",
+		codex.Empty, userRespCodec,
+	).WithHandler(func(_ context.Context, _ struct{}, send func(userResp) error) error {
+		return send(userResp{ID: "1", Name: "Alice"})
+	}).RegisterHandle(b)
+	if err != nil {
+		t.Fatalf("RegisterHandle: %v", err)
+	}
+	handle.WithFormats(format.YAML(userRespCodec))
+	mux := http.NewServeMux()
+	if err := nethttp.ServeSSE(mux, b); err != nil {
+		t.Fatalf("ServeSSE: %v", err)
+	}
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/stream", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("want 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	body := rec.Body.String()
+	if !strings.Contains(body, "\n") {
+		t.Fatalf("test setup: want YAML output to contain a newline, got %q", body)
+	}
+	// Every non-blank line of the body must carry its OWN "data: " prefix
+	// — confirms per-line framing, not a single prefix in front of the
+	// whole multi-line value.
+	for _, line := range strings.Split(strings.TrimRight(body, "\n"), "\n") {
+		if line == "" {
+			continue
+		}
+		if !strings.HasPrefix(line, "data: ") {
+			t.Errorf("want every line prefixed with %q, got line %q in body %q", "data: ", line, body)
+		}
+	}
+	// Reassembling via decodeSSEFirstFrame (the client-side counterpart)
+	// must recover a value the SAME format.YAML can decode back.
+	frame := decodeSSEFirstFrame(t, rec.Body.Bytes())
+	got, err := format.YAML(userRespCodec).Unmarshal(frame)
+	if err != nil {
+		t.Fatalf("unmarshal reassembled YAML frame: %v", err)
+	}
+	if got.ID != "1" || got.Name != "Alice" {
+		t.Fatalf("unexpected decoded event: %+v", got)
+	}
+}
+
 func TestSSEHandler_EventMerge_NestedGobFormat(t *testing.T) {
 	type evtMeta struct {
 		ID string
@@ -2484,16 +2567,7 @@ func TestSSEHandler_EventMerge_NestedGobFormat(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("want 200, got %d: %s", rec.Code, rec.Body.String())
 	}
-	body := rec.Body.Bytes()
-	prefix := []byte("data: ")
-	start := bytes.Index(body, prefix)
-	if start < 0 {
-		t.Fatalf("missing SSE data prefix in %q", string(body))
-	}
-	frame := body[start+len(prefix):]
-	if i := bytes.Index(frame, []byte("\n\n")); i >= 0 {
-		frame = frame[:i]
-	}
+	frame := decodeSSEFirstFrame(t, rec.Body.Bytes())
 	got, err := gobFmt.Unmarshal(frame)
 	if err != nil {
 		t.Fatalf("unmarshal gob frame: %v", err)

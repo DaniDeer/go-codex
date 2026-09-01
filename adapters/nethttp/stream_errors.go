@@ -100,9 +100,9 @@ func (e SSEWriteError) LogValue() slog.Value {
 	)
 }
 
-// SSEConnectError is sent to [Stream.Errors] by [SSEClientStream] when an HTTP
-// connection attempt to the SSE endpoint fails. The stream retries after backoff;
-// this error is informational per reconnect attempt.
+// SSEConnectError is sent to opts.OnError by [Consume]/[CallSSEAdapter]
+// when an HTTP connection attempt to the SSE endpoint fails. Consumption
+// retries after backoff; this error is informational per reconnect attempt.
 type SSEConnectError struct {
 	// URL is the SSE endpoint URL.
 	URL string
@@ -128,9 +128,10 @@ func (e SSEConnectError) LogValue() slog.Value {
 	)
 }
 
-// SSEParseError is sent to [Stream.Errors] by [SSEClientStream] when an SSE
-// data line cannot be decoded using the provided format — malformed JSON, failed
-// codec validation, or other decode failure.
+// SSEParseError is sent to opts.OnError by [Consume]/[CallSSEAdapter] when
+// an SSE data line cannot be decoded using the route's event codec —
+// malformed JSON, failed codec validation, or other decode failure.
+// Consumption continues; only the one failing event is dropped.
 type SSEParseError struct {
 	// URL is the SSE endpoint URL.
 	URL string
@@ -152,6 +153,34 @@ func (e SSEParseError) LogValue() slog.Value {
 	return slog.GroupValue(
 		slog.String("url", e.URL),
 		slog.String("line", e.Line),
+		slog.Any("err", e.Err),
+	)
+}
+
+// SSEHandlerError is sent to opts.OnError by [Consume] when fn returns a
+// non-nil error for one decoded event — mirrors
+// [mqtt5.SubscribeError]/[zeromq.SubscribeError]'s existing
+// handler-error-is-non-fatal convention exactly. Consumption continues
+// with the next event. Never occurs for [CallSSEAdapter] — its internal
+// fn (a channel push) never returns an error.
+type SSEHandlerError struct {
+	// URL is the SSE endpoint URL.
+	URL string
+	// Err is fn's returned error.
+	Err error
+}
+
+func (e SSEHandlerError) Error() string {
+	return fmt.Sprintf("http sse handler %s: %v", e.URL, e.Err)
+}
+
+// Unwrap allows [errors.Is] and [errors.As] to traverse the underlying error.
+func (e SSEHandlerError) Unwrap() error { return e.Err }
+
+// LogValue implements [slog.LogValuer] for structured logging.
+func (e SSEHandlerError) LogValue() slog.Value {
+	return slog.GroupValue(
+		slog.String("url", e.URL),
 		slog.Any("err", e.Err),
 	)
 }

@@ -1523,6 +1523,173 @@ var sseMergedEventCodec = codex.Struct[sseMergedEvent](
 	codex.OptionalField("trace", codex.String(), func(e sseMergedEvent) string { return e.Trace }, func(e *sseMergedEvent, v string) { e.Trace = v }),
 )
 
+// TestSSERouteHandle_ReqMergeFields_RoleSpecific is M1: SSERouteHandle's
+// PathMergeFields/QueryMergeFields/HeaderMergeFields/CookieMergeFields
+// return only their own role's fields — mirrors
+// TestRoleSpecificMergeFields_ReturnOnlyOwnRole (RouteHandle's equivalent)
+// exactly, confirming the Phase 0 fix wires rb.pathMergeFields/etc.
+// through SSERoute.registerHandle correctly.
+func TestSSERouteHandle_ReqMergeFields_RoleSpecific(t *testing.T) {
+	type req struct {
+		ID     string
+		Filter string
+		Auth   string
+		Sess   string
+	}
+	b := rest.NewBuilder(testInfo)
+	h, err := rest.NewSSERoute[req, userResp]("/stream/{id}", codex.Struct[req](), userCodec,
+		rest.NewPathParam("id", codex.String(),
+			func(r req) string { return r.ID },
+			func(r *req, v string) { r.ID = v }),
+		rest.NewOptionalQueryParam("filter", codex.String(),
+			func(r req) string { return r.Filter },
+			func(r *req, v string) { r.Filter = v }),
+		rest.NewRequiredHeaderParam("Authorization", codex.String(),
+			func(r req) string { return r.Auth },
+			func(r *req, v string) { r.Auth = v }),
+		rest.NewOptionalCookieParam("session", codex.String(),
+			func(r req) string { return r.Sess },
+			func(r *req, v string) { r.Sess = v }),
+	).RegisterHandle(b)
+	if err != nil {
+		t.Fatalf("RegisterHandle: %v", err)
+	}
+	if len(h.PathMergeFields()) != 1 {
+		t.Errorf("PathMergeFields: want 1, got %d", len(h.PathMergeFields()))
+	}
+	if len(h.QueryMergeFields()) != 1 {
+		t.Errorf("QueryMergeFields: want 1, got %d", len(h.QueryMergeFields()))
+	}
+	if len(h.HeaderMergeFields()) != 1 {
+		t.Errorf("HeaderMergeFields: want 1, got %d", len(h.HeaderMergeFields()))
+	}
+	if len(h.CookieMergeFields()) != 1 {
+		t.Errorf("CookieMergeFields: want 1, got %d", len(h.CookieMergeFields()))
+	}
+}
+
+// TestSSERouteHandle_ReqMergeFields_PopulatedOnClientHandle is M2: the SAME
+// merge fields must ALSO be populated when built via ClientHandle (not just
+// Register/RegisterHandle) — regression guard proving the Phase 0 fix
+// covers BOTH construction paths, matching RouteHandle's parity.
+func TestSSERouteHandle_ReqMergeFields_PopulatedOnClientHandle(t *testing.T) {
+	type req struct{ ID string }
+	h := rest.NewSSERoute[req, userResp]("/stream/{id}", codex.Struct[req](), userCodec,
+		rest.NewPathParam("id", codex.String(),
+			func(r req) string { return r.ID },
+			func(r *req, v string) { r.ID = v }),
+	).ClientHandle()
+
+	if len(h.PathMergeFields()) != 1 {
+		t.Fatalf("want ClientHandle to populate PathMergeFields, got %d", len(h.PathMergeFields()))
+	}
+	vars, err := codex.EncodeVars(req{ID: "machine-1"}, h.PathMergeFields()...)
+	if err != nil {
+		t.Fatalf("EncodeVars: %v", err)
+	}
+	if vars["id"] != "machine-1" {
+		t.Fatalf("want encoded id=machine-1, got %+v", vars)
+	}
+}
+
+// TestSSERoute_Formats_AppliesOnRegisterHandle verifies rest.Formats
+// declared inline in NewSSERoute's opts is applied by registerHandle
+// (server side). Regression test for a confirmed bug where
+// SSERoute.registerHandle never read rb.respFormats at all — the only
+// working path was a manual post-registration handle.WithFormats() call.
+func TestSSERoute_Formats_AppliesOnRegisterHandle(t *testing.T) {
+	b := rest.NewBuilder(testInfo)
+	h, err := rest.NewSSERoute[struct{}, sseEvent]("/stream", codex.Empty, sseEventCodec,
+		rest.Formats(format.YAML(sseEventCodec).WithContentType("application/yaml")),
+	).RegisterHandle(b)
+	if err != nil {
+		t.Fatalf("RegisterHandle: %v", err)
+	}
+	if len(h.Formats) != 1 || h.Formats[0].ContentType() != "application/yaml" {
+		t.Errorf("want 1 Formats entry with application/yaml, got %+v", h.Formats)
+	}
+}
+
+// TestSSERoute_Formats_AppliesOnClientHandle mirrors
+// TestSSERoute_Formats_AppliesOnRegisterHandle for the client-side
+// construction path — regression guard proving BOTH SSERoute.registerHandle
+// and SSERoute.ClientHandle now read rb.respFormats (previously neither did).
+func TestSSERoute_Formats_AppliesOnClientHandle(t *testing.T) {
+	h := rest.NewSSERoute[struct{}, sseEvent]("/stream", codex.Empty, sseEventCodec,
+		rest.Formats(format.YAML(sseEventCodec).WithContentType("application/yaml")),
+	).ClientHandle()
+	if len(h.Formats) != 1 || h.Formats[0].ContentType() != "application/yaml" {
+		t.Errorf("want 1 Formats entry with application/yaml, got %+v", h.Formats)
+	}
+}
+
+// TestSSERoute_Formats_TypeMismatch_RegisterHandle verifies a wrong-typed
+// Formats option returns FormatOptError from registerHandle, errors.As
+// reachable.
+func TestSSERoute_Formats_TypeMismatch_RegisterHandle(t *testing.T) {
+	b := rest.NewBuilder(testInfo)
+	_, err := rest.NewSSERoute[struct{}, sseEvent]("/stream", codex.Empty, sseEventCodec,
+		rest.Formats(format.Binary(pngCodec)),
+	).RegisterHandle(b)
+	var fe rest.FormatOptError
+	if !errors.As(err, &fe) || fe.Direction != "response" {
+		t.Fatalf("want FormatOptError{response}, got %v", err)
+	}
+}
+
+// TestSSERoute_Formats_TypeMismatch_ClientHandle mirrors
+// TestSSERoute_Formats_TypeMismatch_RegisterHandle for ClientHandle's
+// infallible (panic-based) contract.
+func TestSSERoute_Formats_TypeMismatch_ClientHandle(t *testing.T) {
+	route := rest.NewSSERoute[struct{}, sseEvent]("/stream", codex.Empty, sseEventCodec,
+		rest.Formats(format.Binary(pngCodec)),
+	)
+	defer func() {
+		r := recover()
+		if r == nil {
+			t.Fatal("want panic on type mismatch, got none")
+		}
+		if !strings.Contains(fmt.Sprint(r), "response") {
+			t.Errorf("want panic message to mention response direction, got %v", r)
+		}
+	}()
+	route.ClientHandle()
+}
+
+// TestSSERouteHandle_DecodeEvent_HappyPath is D1: valid bytes decode to
+// the correct Event — mirrors EncodeEvent's existing round-trip coverage,
+// complement direction.
+func TestSSERouteHandle_DecodeEvent_HappyPath(t *testing.T) {
+	b := rest.NewBuilder(testInfo)
+	h, err := rest.NewSSERoute[struct{}, sseMergedEvent]("/stream", codex.Empty, sseMergedEventCodec).
+		RegisterHandle(b)
+	if err != nil {
+		t.Fatalf("RegisterHandle: %v", err)
+	}
+	got, err := h.DecodeEvent([]byte(`{"path_id":"m-1","since":"now","tenant":"acme","trace":"t-1"}`))
+	if err != nil {
+		t.Fatalf("DecodeEvent: %v", err)
+	}
+	if got.PathID != "m-1" || got.Since != "now" || got.Tenant != "acme" || got.Trace != "t-1" {
+		t.Fatalf("decoded event mismatch: %+v", got)
+	}
+}
+
+// TestSSERouteHandle_DecodeEvent_MalformedBytes is D2: malformed bytes
+// return a typed decode error, errors.As-reachable.
+func TestSSERouteHandle_DecodeEvent_MalformedBytes(t *testing.T) {
+	b := rest.NewBuilder(testInfo)
+	h, err := rest.NewSSERoute[struct{}, sseMergedEvent]("/stream", codex.Empty, sseMergedEventCodec).
+		RegisterHandle(b)
+	if err != nil {
+		t.Fatalf("RegisterHandle: %v", err)
+	}
+	_, err = h.DecodeEvent([]byte(`{not valid json`))
+	if err == nil {
+		t.Fatal("want a decode error for malformed JSON")
+	}
+}
+
 func TestSSERouteHandle_MergeEvent_HappyPath(t *testing.T) {
 	b := rest.NewBuilder(testInfo)
 	str := codex.String().Refine(validate.NonEmptyString)
@@ -1878,6 +2045,45 @@ func TestFormats_TypeMismatch(t *testing.T) {
 	if !errors.As(err, &fe) || fe.Direction != "response" {
 		t.Fatalf("want FormatOptError{response}, got %v", err)
 	}
+}
+
+// TestRoute_ClientHandle_AppliesInlineFormats verifies rest.RequestFormats/
+// rest.Formats declared inline in NewRoute's opts are ALSO visible on the
+// handle returned by ClientHandle — not just RegisterHandle. Regression
+// test for a confirmed bug where ClientHandle silently ignored declared
+// Formats, always falling back to JSON regardless of what was declared.
+func TestRoute_ClientHandle_AppliesInlineFormats(t *testing.T) {
+	route := rest.NewRoute[[]byte, []byte]("PUT", "/images/{id}", pngCodec, pngCodec,
+		rest.RequestFormats(format.Binary(pngCodec).WithContentType("image/png")),
+		rest.Formats(format.Binary(pngCodec).WithContentType("image/png")),
+	)
+	handle := route.ClientHandle()
+	if len(handle.RequestFormats) != 1 || handle.RequestFormats[0].ContentType() != "image/png" {
+		t.Errorf("want 1 RequestFormats entry with image/png, got %+v", handle.RequestFormats)
+	}
+	if len(handle.Formats) != 1 || handle.Formats[0].ContentType() != "image/png" {
+		t.Errorf("want 1 Formats entry with image/png, got %+v", handle.Formats)
+	}
+}
+
+// TestRoute_ClientHandle_FormatTypeMismatch verifies a wrong-typed
+// RequestFormats/Formats option panics with a FormatOptError-shaped
+// message on ClientHandle (infallible — no error return), mirroring
+// RegisterHandle's returned-error behavior for the same mistake.
+func TestRoute_ClientHandle_FormatTypeMismatch(t *testing.T) {
+	route := rest.NewRoute[createReq, userResp]("POST", "/users", createReqCodec, userCodec,
+		rest.RequestFormats(format.Binary(pngCodec)),
+	)
+	defer func() {
+		r := recover()
+		if r == nil {
+			t.Fatal("want panic on type mismatch, got none")
+		}
+		if !strings.Contains(fmt.Sprint(r), "request") {
+			t.Errorf("want panic message to mention request direction, got %v", r)
+		}
+	}()
+	route.ClientHandle()
 }
 
 // ── NewPathParam / NewRequiredQueryParam / NewOptionalQueryParam / MergeFields / DecodeMerged ──

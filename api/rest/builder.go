@@ -2664,7 +2664,7 @@ func (r Route[Req, Resp]) ClientHandle() *RouteHandle[Req, Resp] {
 	jsonReq := format.JSON(r.reqCodec)
 	jsonResp := format.JSON(r.respCodec)
 
-	return &RouteHandle[Req, Resp]{
+	h := &RouteHandle[Req, Resp]{
 		Descriptor:                frozen,
 		Decode:                    func(body []byte) (Req, error) { return jsonReq.Unmarshal(body) },
 		Encode:                    func(resp Resp) ([]byte, error) { return jsonResp.Marshal(resp) },
@@ -2686,6 +2686,29 @@ func (r Route[Req, Resp]) ClientHandle() *RouteHandle[Req, Resp] {
 		Middlewares:               slices.Clone(rb.middlewares),
 		ClientImplementations:     slices.Clone(rb.clientImpls),
 	}
+	// Apply any inline Formats/RequestFormats RouteOpt declared on the
+	// Route -- the SAME rb.requestFormats/rb.respFormats fields
+	// registerHandle applies server-side. Without this, ClientHandle
+	// silently ignored a declared wire format and nethttp.Call always
+	// fell back to JSON regardless of what was declared (a confirmed
+	// bug, not a design choice).
+	if rb.requestFormats != nil {
+		fmts, ok := rb.requestFormats.([]format.Format[Req])
+		if !ok {
+			panic(fmt.Sprintf("api/rest: ClientHandle: %s", FormatOptError{Direction: "request",
+				Err: fmt.Errorf("want []format.Format[%T], got %T", *new(Req), rb.requestFormats)}.Error()))
+		}
+		h.WithRequestFormats(fmts...)
+	}
+	if rb.respFormats != nil {
+		fmts, ok := rb.respFormats.([]format.Format[Resp])
+		if !ok {
+			panic(fmt.Sprintf("api/rest: ClientHandle: %s", FormatOptError{Direction: "response",
+				Err: fmt.Errorf("want []format.Format[%T], got %T", *new(Resp), rb.respFormats)}.Error()))
+		}
+		h.WithFormats(fmts...)
+	}
+	return h
 }
 
 // assertMergeFields type-asserts each element of raw (declared as []any on
@@ -2739,6 +2762,13 @@ type SSERouteHandle[Req, Event any] struct {
 	// EncodeEvent serialises one event value to JSON bytes.
 	// Used as the fallback encoder when Formats is empty.
 	EncodeEvent func(e Event) ([]byte, error)
+
+	// DecodeEvent deserialises and validates one SSE "data:" line's raw
+	// bytes into an Event — the complement of EncodeEvent, used by
+	// client-side consumption ([nethttp.Consume]/[nethttp.CallSSEAdapter])
+	// as the fallback decoder when no Formats entry matches the
+	// connection's negotiated Content-Type (or none are declared).
+	DecodeEvent func(data []byte) (Event, error)
 
 	// ValidateEvent runs the event codec constraints on e without serialising.
 	// The adapter calls this inside the send func before encoding.
@@ -2816,6 +2846,54 @@ type SSERouteHandle[Req, Event any] struct {
 	// mergeFields holds SSE event merge fields registered via
 	// NewRequiredSSEEventParam/NewOptionalSSEEventParam.
 	mergeFields []codex.FieldCodec[Event]
+
+	// pathMergeFields/queryMergeFields/headerMergeFields/cookieMergeFields
+	// hold the Req-side merge-capable fields registered via
+	// NewRequiredPathParam[T]/NewRequiredQueryParam[T]/etc. — mirrors
+	// RouteHandle's identically-named fields exactly. Populated by
+	// SSERoute.registerHandle/ClientHandle from the SAME
+	// rb.pathMergeFields/etc. routeBuilder fields Route.registerHandle
+	// already reads — see [SSERouteHandle.PathMergeFields] and siblings.
+	pathMergeFields   []codex.FieldCodec[Req]
+	queryMergeFields  []codex.FieldCodec[Req]
+	headerMergeFields []codex.FieldCodec[Req]
+	cookieMergeFields []codex.FieldCodec[Req]
+
+	// ClientImplementations holds every [middleware.ClientImplementation]
+	// attached via [SSERoute.ClientMW], in attachment order — mirrors
+	// [RouteHandle.ClientImplementations] exactly; consumed by
+	// [nethttp.Consume]/[nethttp.CallSSEAdapter] the same way
+	// nethttp.Call consumes RouteHandle's field.
+	ClientImplementations []middleware.ClientImplementation
+}
+
+// PathMergeFields returns the Req-side merge-capable fields registered via
+// [NewPathParam]/[NewRequiredPathParam] — role-scoped, safe for the
+// ENCODE direction (client building a connection URL from Req). Mirrors
+// [RouteHandle.PathMergeFields] exactly.
+func (h *SSERouteHandle[Req, Event]) PathMergeFields() []codex.FieldCodec[Req] {
+	return h.pathMergeFields
+}
+
+// QueryMergeFields returns the Req-side merge-capable fields registered
+// via [NewRequiredQueryParam]/[NewOptionalQueryParam] — mirrors
+// [RouteHandle.QueryMergeFields] exactly.
+func (h *SSERouteHandle[Req, Event]) QueryMergeFields() []codex.FieldCodec[Req] {
+	return h.queryMergeFields
+}
+
+// HeaderMergeFields returns the Req-side merge-capable fields registered
+// via [NewRequiredHeaderParam]/[NewOptionalHeaderParam] — mirrors
+// [RouteHandle.HeaderMergeFields] exactly.
+func (h *SSERouteHandle[Req, Event]) HeaderMergeFields() []codex.FieldCodec[Req] {
+	return h.headerMergeFields
+}
+
+// CookieMergeFields returns the Req-side merge-capable fields registered
+// via [NewRequiredCookieParam]/[NewOptionalCookieParam] — mirrors
+// [RouteHandle.CookieMergeFields] exactly.
+func (h *SSERouteHandle[Req, Event]) CookieMergeFields() []codex.FieldCodec[Req] {
+	return h.cookieMergeFields
 }
 
 // BuildPath substitutes {varName} placeholders in the route's path template
@@ -3128,6 +3206,70 @@ func (s SSERoute[Req, Event]) RegisterHandle(b *Builder) (*SSERouteHandle[Req, E
 	return s.registerHandle(b)
 }
 
+// ClientHandle returns an [SSERouteHandle] for client-side use without
+// registering with a [Builder] — mirrors [Route.ClientHandle] exactly (no
+// spec, no path codec validation): builds its OWN struct literal directly,
+// the SAME separate construction path Route.ClientHandle uses (does NOT
+// call [SSERoute.registerHandle]/[SSERoute.Register], which requires a
+// real [*Builder], runs the fallible [checkImplementationsDeclared]/
+// coverage checks, and appends to the builder's entries — none of which
+// ClientHandle wants). Merges middleware-declared Security via
+// [applyMiddlewareSecurityForClient] — the SAME infallible,
+// conflict-detection-free merge function Route.ClientHandle uses (NOT
+// [applyMiddlewareDeclarations], which is the fallible Register-only
+// path) — so a route declared via [WithMiddleware] gets IDENTICAL
+// SecuritySchemes on both the server ([SSERoute.Register]) and client
+// (ClientHandle) side.
+//
+// Use for client-only scenarios where no OpenAPI spec is needed, or when
+// sharing an [SSERoute] definition between server and client in the same
+// binary — see [nethttp.Consume]/[nethttp.CallSSEAdapter].
+func (s SSERoute[Req, Event]) ClientHandle() *SSERouteHandle[Req, Event] {
+	var rb routeBuilder
+	for _, opt := range s.opts {
+		opt.applyRoute(&rb)
+	}
+	applyMiddlewareSecurityForClient(&rb)
+
+	frozen := buildDescriptor("GET", s.path, s.reqCodec.Schema, s.eventCodec.Schema, rb, []string{"text/event-stream"})
+
+	jsonReq := format.JSON(s.reqCodec)
+	jsonEvent := format.JSON(s.eventCodec)
+
+	h := &SSERouteHandle[Req, Event]{
+		Descriptor:            frozen,
+		Decode:                func(body []byte) (Req, error) { return jsonReq.Unmarshal(body) },
+		EncodeEvent:           func(e Event) ([]byte, error) { return jsonEvent.Marshal(e) },
+		DecodeEvent:           func(data []byte) (Event, error) { return jsonEvent.Unmarshal(data) },
+		ValidateEvent:         func(e Event) error { return jsonEvent.Validate(e) },
+		pathParams:            rb.pathParams,
+		queryParams:           rb.queryParams,
+		cookieParams:          rb.cookieParams,
+		headerParams:          rb.headerParams,
+		SecuritySchemes:       rb.securitySchemes,
+		Middlewares:           slices.Clone(rb.middlewares),
+		ClientImplementations: slices.Clone(rb.clientImpls),
+		pathMergeFields:       mustAssertMergeFields[Req]("SSERoute.ClientHandle", rb.pathMergeFields),
+		queryMergeFields:      mustAssertMergeFields[Req]("SSERoute.ClientHandle", rb.queryMergeFields),
+		headerMergeFields:     mustAssertMergeFields[Req]("SSERoute.ClientHandle", rb.headerMergeFields),
+		cookieMergeFields:     mustAssertMergeFields[Req]("SSERoute.ClientHandle", rb.cookieMergeFields),
+	}
+	// Apply any inline Formats RouteOpt declared on the SSERoute -- the
+	// SAME rb.respFormats field registerHandle applies server-side.
+	// Without this, ClientHandle silently ignored a declared event
+	// format and nethttp.Consume/CallSSEAdapter always fell back to
+	// JSON regardless of what was declared (a confirmed bug).
+	if rb.respFormats != nil {
+		fmts, ok := rb.respFormats.([]format.Format[Event])
+		if !ok {
+			panic(fmt.Sprintf("api/rest: SSERoute.ClientHandle: %s", FormatOptError{Direction: "response",
+				Err: fmt.Errorf("want []format.Format[%T], got %T", *new(Event), rb.respFormats)}.Error()))
+		}
+		h.WithFormats(fmts...)
+	}
+	return h
+}
+
 func (s SSERoute[Req, Event]) registerHandle(b *Builder) (*SSERouteHandle[Req, Event], error) {
 	if b.pathCodec != nil {
 		if err := b.pathCodec.Validate(internal.StripTemplateVars(s.path)); err != nil {
@@ -3163,24 +3305,50 @@ func (s SSERoute[Req, Event]) registerHandle(b *Builder) (*SSERouteHandle[Req, E
 	jsonEvent := format.JSON(s.eventCodec)
 
 	h := &SSERouteHandle[Req, Event]{
-		Descriptor:           frozen,
-		Decode:               func(body []byte) (Req, error) { return jsonReq.Unmarshal(body) },
-		EncodeEvent:          func(e Event) ([]byte, error) { return jsonEvent.Marshal(e) },
-		ValidateEvent:        func(e Event) error { return jsonEvent.Validate(e) },
-		pathParams:           rb.pathParams,
-		queryParams:          rb.queryParams,
-		cookieParams:         rb.cookieParams,
-		headerParams:         rb.headerParams,
-		pathCodec:            b.pathCodec,
-		SecuritySchemes:      rb.securitySchemes,
-		GlobalSecurity:       slices.Clone(b.globalSecurity),
-		Middlewares:          slices.Clone(rb.middlewares),
-		HandlerFn:            rb.handlerFn,
-		HandlerOpts:          rb.handlerOpts,
-		Implementations:      slices.Clone(rb.impls),
-		responseHeaderParams: rb.respHeaders,
-		responseCookieParams: rb.respCookies,
-		mergeFields:          eventMergeFields,
+		Descriptor:            frozen,
+		Decode:                func(body []byte) (Req, error) { return jsonReq.Unmarshal(body) },
+		EncodeEvent:           func(e Event) ([]byte, error) { return jsonEvent.Marshal(e) },
+		DecodeEvent:           func(data []byte) (Event, error) { return jsonEvent.Unmarshal(data) },
+		ValidateEvent:         func(e Event) error { return jsonEvent.Validate(e) },
+		pathParams:            rb.pathParams,
+		queryParams:           rb.queryParams,
+		cookieParams:          rb.cookieParams,
+		headerParams:          rb.headerParams,
+		pathCodec:             b.pathCodec,
+		SecuritySchemes:       rb.securitySchemes,
+		GlobalSecurity:        slices.Clone(b.globalSecurity),
+		Middlewares:           slices.Clone(rb.middlewares),
+		HandlerFn:             rb.handlerFn,
+		HandlerOpts:           rb.handlerOpts,
+		Implementations:       slices.Clone(rb.impls),
+		ClientImplementations: slices.Clone(rb.clientImpls),
+		responseHeaderParams:  rb.respHeaders,
+		responseCookieParams:  rb.respCookies,
+		mergeFields:           eventMergeFields,
+	}
+	h.pathMergeFields, err = assertMergeFields[Req](rb.pathMergeFields)
+	if err != nil {
+		return nil, err
+	}
+	h.queryMergeFields, err = assertMergeFields[Req](rb.queryMergeFields)
+	if err != nil {
+		return nil, err
+	}
+	h.headerMergeFields, err = assertMergeFields[Req](rb.headerMergeFields)
+	if err != nil {
+		return nil, err
+	}
+	h.cookieMergeFields, err = assertMergeFields[Req](rb.cookieMergeFields)
+	if err != nil {
+		return nil, err
+	}
+	if rb.respFormats != nil {
+		fmts, ok := rb.respFormats.([]format.Format[Event])
+		if !ok {
+			return nil, FormatOptError{Direction: "response",
+				Err: fmt.Errorf("want []format.Format[%T], got %T", *new(Event), rb.respFormats)}
+		}
+		h.WithFormats(fmts...)
 	}
 	entry := &typedSSEEntry[Req, Event]{handle: h}
 	b.mu.Lock()

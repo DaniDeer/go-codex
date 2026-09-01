@@ -8,6 +8,7 @@ import (
 
 	"github.com/DaniDeer/go-codex/api/reqreply"
 	"github.com/DaniDeer/go-codex/codex"
+	"github.com/DaniDeer/go-codex/format"
 	"github.com/DaniDeer/go-codex/route"
 	"github.com/DaniDeer/go-codex/stats"
 	pahomqtt5 "github.com/eclipse/paho.golang/paho"
@@ -108,6 +109,39 @@ type CallOptions struct {
 	// Returns [reqreply.RouteParamError] or [reqreply.MissingRouteParamError] on
 	// validation failure.
 	Vars map[string]string
+
+	// RequestFormats, when non-nil, OVERRIDES the route's declared request
+	// encode format for THIS call only. Type-erased ([]format.Format[Req])
+	// since CallOptions itself is not generic; [Call] type-asserts it once
+	// Req is concrete, returning [CallError]{Kind: [KindEncode]} on a type
+	// mismatch — mirrors [nethttp.CallOptions.RequestFormats] exactly.
+	//
+	// Priority: RequestFormats (this field) > handle.RequestFormats
+	// (route-declared) > handle.EncodeRequest (JSON default).
+	RequestFormats any
+
+	// ResponseFormats, when non-nil, OVERRIDES the route's declared
+	// response decode format for THIS call only — same type-erasure and
+	// priority-chain contract as [CallOptions.RequestFormats], mirrored
+	// for the response direction ([]format.Format[Resp]); a type mismatch
+	// returns [CallError]{Kind: [KindDecode]}.
+	ResponseFormats any
+}
+
+// resolveCallFormat type-asserts overrideAny (a [CallOptions.RequestFormats]/
+// [CallOptions.ResponseFormats] value) against []format.Format[T], falling
+// back to declared when overrideAny is nil. Returns an error on a type
+// mismatch — callers wrap it in [CallError] with the direction-appropriate
+// [ErrorKind].
+func resolveCallFormat[T any](declared []format.Format[T], overrideAny any) ([]format.Format[T], error) {
+	if overrideAny == nil {
+		return declared, nil
+	}
+	fmts, ok := overrideAny.([]format.Format[T])
+	if !ok {
+		return nil, fmt.Errorf("format option: want []format.Format[%T], got %T", *new(T), overrideAny)
+	}
+	return fmts, nil
 }
 
 // Serve subscribes to the route path as an MQTT 5 request topic and
@@ -452,10 +486,20 @@ func Call[Req, Resp any](
 	}
 	defer cleanup()
 
+	// Resolve per-call request format override (opts.RequestFormats),
+	// falling back to the route-declared handle.RequestFormats when no
+	// override was given for this call.
+	reqFormats, fmtErr := resolveCallFormat[Req](handle.RequestFormats, opts.RequestFormats)
+	if fmtErr != nil {
+		callErr = CallError{Kind: KindEncode, Err: fmtErr}
+		obs.RecordRequest("MQTT5-REQ", path, 0, time.Since(start))
+		return zero, callErr
+	}
+
 	// Encode request payload.
 	var payload []byte
-	if len(handle.RequestFormats) > 0 {
-		payload, callErr = handle.RequestFormats[0].Marshal(req)
+	if len(reqFormats) > 0 {
+		payload, callErr = reqFormats[0].Marshal(req)
 	} else {
 		payload, callErr = handle.EncodeRequest(req)
 	}
@@ -547,10 +591,20 @@ func Call[Req, Resp any](
 			return zero, callErr
 		}
 
+		// Resolve per-call response format override (opts.ResponseFormats),
+		// falling back to the route-declared handle.Formats when no
+		// override was given for this call.
+		respFormats, fmtErr := resolveCallFormat[Resp](handle.Formats, opts.ResponseFormats)
+		if fmtErr != nil {
+			callErr = CallError{Kind: KindDecode, Err: fmtErr}
+			obs.RecordRequest("MQTT5-REQ", path, 0, time.Since(start))
+			return zero, callErr
+		}
+
 		// Decode response.
 		var resp Resp
-		if len(handle.Formats) > 0 {
-			resp, callErr = handle.Formats[0].Unmarshal(replyMsg.Payload)
+		if len(respFormats) > 0 {
+			resp, callErr = respFormats[0].Unmarshal(replyMsg.Payload)
 		} else {
 			resp, callErr = handle.DecodeResponse(replyMsg.Payload)
 		}

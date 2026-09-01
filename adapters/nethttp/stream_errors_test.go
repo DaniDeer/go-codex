@@ -130,3 +130,25 @@ func TestSSEParseError_Unwrap(t *testing.T) {
 		t.Error("errors.Is must reach inner via Unwrap")
 	}
 }
+
+func TestSSEHandlerError_LogValue(t *testing.T) {
+	e := nethttp.SSEHandlerError{URL: "http://svc/events", Err: fmt.Errorf("handler failed")}
+	lv := e.LogValue()
+	if lv.Kind() != slog.KindGroup {
+		t.Fatalf("want KindGroup, got %v", lv.Kind())
+	}
+	keys := attrKeysNH(lv)
+	for _, k := range []string{"url", "err"} {
+		if !keys[k] {
+			t.Errorf("LogValue missing %q", k)
+		}
+	}
+}
+
+func TestSSEHandlerError_Unwrap(t *testing.T) {
+	inner := fmt.Errorf("handler boom")
+	e := nethttp.SSEHandlerError{URL: "http://x", Err: inner}
+	if !errors.Is(e, inner) {
+		t.Error("errors.Is must reach inner via Unwrap")
+	}
+}

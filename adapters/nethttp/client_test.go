@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -15,6 +16,7 @@ import (
 	nethttp "github.com/DaniDeer/go-codex/adapters/nethttp"
 	"github.com/DaniDeer/go-codex/api/rest"
 	"github.com/DaniDeer/go-codex/codex"
+	"github.com/DaniDeer/go-codex/format"
 	"github.com/DaniDeer/go-codex/middleware"
 	"github.com/DaniDeer/go-codex/route"
 	"github.com/DaniDeer/go-codex/stats"
@@ -1281,5 +1283,166 @@ func TestCall_CredentialFunc_ReturnsNilHeader_SkipsValidation(t *testing.T) {
 		handle, getReq{}, nethttp.CallOptions{})
 	if err != nil {
 		t.Fatalf("CredentialFunc returning (nil, nil) must not be rejected by the codec check: %v", err)
+	}
+}
+
+// ── CallOptions.RequestFormats / ResponseFormats per-call override ────────
+
+// TestCall_ResponseFormats_OverridesRouteDeclaredFormat verifies
+// CallOptions.ResponseFormats wins over the route's declared handle.Formats
+// for THIS call only.
+func TestCall_ResponseFormats_OverridesRouteDeclaredFormat(t *testing.T) {
+	handle := rest.NewRoute[getReq, userResp]("GET", "/users",
+		getReqCodec, userRespCodec,
+		rest.Formats(format.JSON(userRespCodec)),
+	).ClientHandle()
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/yaml")
+		w.Write([]byte("id: u1\nname: Alice\n")) //nolint:errcheck
+	}))
+	defer srv.Close()
+
+	resp, err := nethttp.CallWithHandle(context.Background(), srv.Client(), srv.URL,
+		handle, getReq{}, nethttp.CallOptions{
+			ResponseFormats: []format.Format[userResp]{format.YAML(userRespCodec)},
+		})
+	if err != nil {
+		t.Fatalf("Call: %v", err)
+	}
+	if resp.ID != "u1" || resp.Name != "Alice" {
+		t.Errorf("want decoded via YAML override, got %+v", resp)
+	}
+}
+
+// TestCall_ResponseFormats_RouteDeclaredStillAppliesWithoutOverride
+// verifies the route-declared handle.Formats still applies when no
+// per-call override is given — the override must be additive, not a
+// regression of the normal declared-format path.
+func TestCall_ResponseFormats_RouteDeclaredStillAppliesWithoutOverride(t *testing.T) {
+	handle := rest.NewRoute[getReq, userResp]("GET", "/users",
+		getReqCodec, userRespCodec,
+		rest.Formats(format.YAML(userRespCodec)),
+	).ClientHandle()
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/yaml")
+		w.Write([]byte("id: u2\nname: Bob\n")) //nolint:errcheck
+	}))
+	defer srv.Close()
+
+	resp, err := nethttp.CallWithHandle(context.Background(), srv.Client(), srv.URL,
+		handle, getReq{}, nethttp.CallOptions{})
+	if err != nil {
+		t.Fatalf("Call: %v", err)
+	}
+	if resp.ID != "u2" || resp.Name != "Bob" {
+		t.Errorf("want decoded via route-declared YAML, got %+v", resp)
+	}
+}
+
+// TestCall_RequestFormats_OverridesRouteDeclaredFormat verifies
+// CallOptions.RequestFormats wins over the route's declared
+// handle.RequestFormats for THIS call only.
+func TestCall_RequestFormats_OverridesRouteDeclaredFormat(t *testing.T) {
+	handle := rest.NewRoute[createReq, userResp]("POST", "/users",
+		createReqCodec, userRespCodec,
+		rest.RequestFormats(format.JSON(createReqCodec)),
+	).ClientHandle()
+
+	var gotContentType string
+	var gotBody []byte
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotContentType = r.Header.Get("Content-Type")
+		gotBody, _ = io.ReadAll(r.Body)
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]string{"id": "u1", "name": "Alice"}) //nolint:errcheck
+	}))
+	defer srv.Close()
+
+	_, err := nethttp.CallWithHandle(context.Background(), srv.Client(), srv.URL,
+		handle, createReq{Name: "Alice"}, nethttp.CallOptions{
+			RequestFormats: []format.Format[createReq]{format.YAML(createReqCodec)},
+		})
+	if err != nil {
+		t.Fatalf("Call: %v", err)
+	}
+	if gotContentType != "application/yaml" {
+		t.Errorf("want Content-Type application/yaml (override), got %q", gotContentType)
+	}
+	if !strings.Contains(string(gotBody), "name: Alice") {
+		t.Errorf("want YAML-encoded body, got %q", gotBody)
+	}
+}
+
+// TestCall_ResponseFormats_TypeMismatch_ReturnsCallFormatOptError verifies
+// a wrong-typed CallOptions.ResponseFormats returns CallFormatOptError,
+// errors.As-reachable, with a structured LogValue.
+func TestCall_ResponseFormats_TypeMismatch_ReturnsCallFormatOptError(t *testing.T) {
+	handle := newClientCreateRoute()
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]string{"id": "u1", "name": "Alice"}) //nolint:errcheck
+	}))
+	defer srv.Close()
+
+	_, err := nethttp.CallWithHandle(context.Background(), srv.Client(), srv.URL,
+		handle, createReq{Name: "Alice"}, nethttp.CallOptions{
+			// Wrong type: []format.Format[getReq] instead of []format.Format[userResp].
+			ResponseFormats: []format.Format[getReq]{format.JSON(getReqCodec)},
+		})
+	var fe nethttp.CallFormatOptError
+	if !errors.As(err, &fe) || fe.Direction != "response" {
+		t.Fatalf("want CallFormatOptError{response}, got %v", err)
+	}
+	if fe.Unwrap() == nil {
+		t.Error("want non-nil Unwrap")
+	}
+	v := fe.LogValue()
+	if v.Kind() != slog.KindGroup {
+		t.Fatalf("want KindGroup, got %v", v.Kind())
+	}
+	keys := map[string]bool{}
+	for _, a := range v.Group() {
+		keys[a.Key] = true
+	}
+	for _, want := range []string{"direction", "err"} {
+		if !keys[want] {
+			t.Errorf("missing LogValue key %q", want)
+		}
+	}
+}
+
+// TestCall_RequestFormats_TypeMismatch_ReturnsCallFormatOptError mirrors
+// TestCall_ResponseFormats_TypeMismatch_ReturnsCallFormatOptError for the
+// request direction.
+func TestCall_RequestFormats_TypeMismatch_ReturnsCallFormatOptError(t *testing.T) {
+	handle := newClientCreateRoute()
+
+	_, err := nethttp.CallWithHandle(context.Background(), http.DefaultClient, "http://unused.invalid",
+		handle, createReq{Name: "Alice"}, nethttp.CallOptions{
+			// Wrong type: []format.Format[userResp] instead of []format.Format[createReq].
+			RequestFormats: []format.Format[userResp]{format.JSON(userRespCodec)},
+		})
+	var fe nethttp.CallFormatOptError
+	if !errors.As(err, &fe) || fe.Direction != "request" {
+		t.Fatalf("want CallFormatOptError{request}, got %v", err)
+	}
+	if fe.Unwrap() == nil {
+		t.Error("want non-nil Unwrap")
+	}
+	v := fe.LogValue()
+	if v.Kind() != slog.KindGroup {
+		t.Fatalf("want KindGroup, got %v", v.Kind())
+	}
+	keys := map[string]bool{}
+	for _, a := range v.Group() {
+		keys[a.Key] = true
+	}
+	for _, want := range []string{"direction", "err"} {
+		if !keys[want] {
+			t.Errorf("missing LogValue key %q", want)
+		}
 	}
 }
