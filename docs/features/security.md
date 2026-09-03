@@ -453,17 +453,33 @@ mqtt5.Publish(ctx, client, userCreated, 1, false, event, nil, mqtt5.PublishOptio
 })
 ```
 
-MQTT 3.1.1 (`adapters/mqtt`) and ZeroMQ pub/sub have no per-message metadata
-channel — Codec-level extraction (and `CredentialFunc`) only applies to
-MQTT5; use `SecurityFunc` + a closure over connection-time credentials for
-runtime enforcement on those transports instead.
+MQTT 3.1.1 (`adapters/mqtt`) has no per-message metadata channel — codec-level
+extraction (and `CredentialFunc`) only applies to MQTT5; `adapters/mqtt`'s
+`SubscribeOptions.SecurityFunc` still exists for subscribe-side verification
+(closure over connection-time credentials), but `PublishOptions` has no
+credential mechanism at all — MQTT 3.1.1 has nowhere to carry a per-publish
+credential even in principle (no User Properties). Use connection-level
+`mqtt.SecuredClient` for MQTT 3.1.1 publish-side enforcement instead.
+
+**ZeroMQ pub/sub (`adapters/zeromq`) has NO security mechanism at any layer
+today** — not message-level (no `SecurityFunc`/`CredentialFunc` option
+exists on `SubscribeOptions`/`PublishOptions` at all, unlike `mqtt`/`mqtt5`)
+and no connection-level `SecuredClient` equivalent either (ZMQ's base
+REQ/REP/PUB/SUB patterns have no CONNECT-time credential handshake to
+validate). A `Channel` declaring `Security` and used exclusively over
+`adapters/zeromq` has that requirement completely UNENFORCED at runtime —
+the AsyncAPI spec documents a requirement the code never checks. This is a
+known, tracked gap — see [Events/ReqReply/Ports Workflow
+Simplification](../roadmap/events-reqreply-ports-workflow-simplification.md).
 
 ## Security for request-reply routes (reqreply)
 
 `api/reqreply` (MQTT5 only — `adapters/zeromq`'s reqreply `Call`/`Serve` have
-no security mechanism today, since ZeroMQ carries no per-message metadata;
-documented future gap) mirrors the exact same declare-once,
-enforce-symmetrically model:
+no security mechanism today, confirmed: `Descriptor.Security`/
+`GlobalSecurity` are never even read, since ZeroMQ carries no per-message
+metadata; same tracked gap as pub/sub above — see [Events/ReqReply/Ports
+Workflow Simplification](../roadmap/events-reqreply-ports-workflow-simplification.md))
+mirrors the exact same declare-once, enforce-symmetrically model:
 
 ```go
 var bearerAuth = reqreply.SecurityScheme{

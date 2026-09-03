@@ -3,6 +3,13 @@
 > **Status:** Idea only — no driver yet. Independent of
 > [Declarative Middleware](declarative-middleware.md) (no sequencing
 > dependency either way — could ship before, after, or in parallel).
+> **This doc's own "registration surface... NOT resolved" open question
+> (below) may be answered by
+> [Protocol-Native Feature Declarations](protocol-native-features.md)**
+> — that doc proposes User Properties become a concrete
+> `ProtocolFeature` instance instead of a plain `ChannelOpt`, offering
+> an alternative registration path worth comparing before
+> implementation. Not resolved — both remain open.
 > [← Back to Roadmap](index.md)
 
 ## Motivation
