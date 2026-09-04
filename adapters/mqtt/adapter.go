@@ -215,7 +215,7 @@ func MessageFromContext(ctx context.Context) (pahomqtt.Message, bool) {
 // opts.OnError; any other action (or no match) falls through to
 // opts.OnError unchanged, identical to this function's pre-existing
 // behavior. Mirrors mqtt5's makeSubscribeMessageHandler's identical
-// extension — see docs/roadmap/pubsub-workflow-simplification.md's
+// extension — see docs/design/d-0002-pubsub-workflow-simplification.md's
 // Decision 8.
 func subscribeHandler[T any](
 	ctx context.Context,
@@ -417,7 +417,7 @@ type PublishOptions[T any] struct {
 	// credential, same as if the channel declared no security at all. This
 	// closes the "mqtt v3 publish-side has no message-level credential
 	// mechanism" gap — see
-	// docs/roadmap/pubsub-workflow-simplification.md's Decision 3.
+	// docs/design/d-0002-pubsub-workflow-simplification.md's Decision 3.
 	//
 	//	opts.CredentialFunc = func(ctx context.Context, msg *Reading, reqs []route.SecurityRequirement) error {
 	//	    msg.Token = "Bearer " + token

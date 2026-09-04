@@ -32,7 +32,7 @@ var (
 // decoded message — zeromq's [topic, payload] frames carry nothing beyond
 // what's already decoded into T, so there is no raw-message-equivalent
 // parameter to pass instead (unlike mqtt5's *pahomqtt5.Publish) — see
-// docs/roadmap/pubsub-workflow-simplification.md's Decision 3 "zeromq —
+// docs/design/d-0002-pubsub-workflow-simplification.md's Decision 3 "zeromq —
 // message-level mechanism now TRACTABLE" subsection.
 type SubscribeOptions[T any] struct {
 	// TopicFilter is the ZeroMQ SUB-socket prefix filter passed to
@@ -45,7 +45,7 @@ type SubscribeOptions[T any] struct {
 	// via [deriveTopicPrefix] (returns everything up to the first "{"
 	// placeholder). Set explicitly only for a filter that differs from
 	// this derivation. BUG FIX this pass — see
-	// docs/roadmap/pubsub-workflow-simplification.md's "Confirmed bug,
+	// docs/design/d-0002-pubsub-workflow-simplification.md's "Confirmed bug,
 	// fixed this pass" subsection: a templated topic's placeholders were
 	// previously sent VERBATIM as the subscription filter, which never
 	// matches any real published topic.
@@ -66,7 +66,7 @@ type SubscribeOptions[T any] struct {
 	// SecurityFunc, when non-nil, is called for channels with non-empty
 	// security requirements before fn is invoked — the message-level
 	// security mechanism zeromq had NONE of before this pass (confirmed
-	// via docs/roadmap/pubsub-workflow-simplification.md's escape-hatch
+	// via docs/design/d-0002-pubsub-workflow-simplification.md's escape-hatch
 	// #5 discussion: "zeromq has literally no security mechanism at any
 	// layer"). msg is a pointer to the decoded value — read it to extract
 	// an in-payload credential field, and/or mutate it (the same
@@ -274,7 +274,7 @@ func wrapSubscribeGeneral[T any](fn func(context.Context, T) error, impls []midd
 // a pre-existing bug where a templated topic's placeholders were sent
 // VERBATIM as the subscription filter, which never matches any real
 // published topic — see
-// docs/roadmap/pubsub-workflow-simplification.md's wildcard/prefix
+// docs/design/d-0002-pubsub-workflow-simplification.md's wildcard/prefix
 // bug-fix subsection). A non-templated topic's behavior is unchanged. For
 // PULL sockets the filter is a no-op — call
 // [FramedSocket.SetSubscription]("") separately if needed.
@@ -487,7 +487,7 @@ func firstSchemeName(reqs []route.SecurityRequirement) string {
 // subscribing without also registering a spec), then behaves identically
 // to [SubscribeWithHandle]. fn is STILL a call-time param, unchanged from
 // today's imperative "here's my handler, start consuming now" mental
-// model — see docs/roadmap/pubsub-workflow-simplification.md's two-tier
+// model — see docs/design/d-0002-pubsub-workflow-simplification.md's two-tier
 // Subscribe subsection.
 //
 //	sub := SensorReadings.WithSubscribe(events.Subscribe{})

@@ -133,7 +133,7 @@ func TestAttach_ClientCall_NonSuccessStatus_ReturnsUnexpectedStatusError(t *test
 
 // ── Observer + ErrorPattern parity for Client.Attach ────────────────────────
 //
-// Confirmed gap (see docs/design/middleware-workflow-simplification.md's
+// Confirmed gap (see docs/design/d-0001-rest-middleware-workflow-simplification.md's
 // addendum): the reflection-based clientTransport.Call used to call
 // neither stats.Observer NOR consult a declared ErrorPattern on non-2xx —
 // these tests lock in the fix.
@@ -299,9 +299,9 @@ func TestAttach_ClientCall_ErrorPatternResponse_NoMatch_FallsBackToUnexpectedSta
 	}
 }
 
-// ── Client.Call honors the route's declared format (middleware-workflow-simplification.md Addendum 2) ──
+// ── Client.Call honors the route's declared format (d-0001-rest-middleware-workflow-simplification.md Addendum 2) ──
 //
-// Confirmed gap (see docs/design/middleware-workflow-simplification.md's Addendum 2): Client.Call's
+// Confirmed gap (see docs/design/d-0001-rest-middleware-workflow-simplification.md's Addendum 2): Client.Call's
 // reflection shim used to ALWAYS assume JSON, silently ignoring a route's
 // declared RequestFormats/Formats — this test locks in the fix
 // (round-trips YAML request+response through Client.Call via Attach).

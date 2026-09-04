@@ -159,7 +159,7 @@ func main() {
     sock := WrapSocket(pubSock)
 
     // Spec-free, handle-based Decision 7 call surface
-    // (docs/roadmap/pubsub-workflow-simplification.md): NewPublishTransport
+    // (docs/design/d-0002-pubsub-workflow-simplification.md): NewPublishTransport
     // satisfies events.PublishTransport[T], consumed through events.PublishHandle
     // — no *events.Client/spec needed at all for this path.
     transport := zeromq.NewPublishTransport[SensorReading](sock, zeromq.PublishOptions[SensorReading]{Observer: obs})
@@ -242,11 +242,11 @@ method from introducing its own type parameters), `pub`/`sub`/`msg`/`fn` are pas
 their concrete types are recovered internally via reflection; a mismatch surfaces as
 `events.TransportTypeMismatchError` at CALL time rather than a compile error — an explicit,
 narrowly-scoped trade-off for this one convenience surface. See
-`docs/roadmap/pubsub-workflow-simplification.md`'s Decision 5 for the full design and its
+`docs/design/d-0002-pubsub-workflow-simplification.md`'s Decision 5 for the full design and its
 documented v1 scope limits (no per-call format override, no non-default QoS, no general-purpose
 SubscribeMW/PublishMW wrapping — use `events.SubscribeHandle`/`events.PublishHandle` with
 `zeromq.NewSubscribeTransport`/`zeromq.NewPublishTransport` directly for those, per Decision 7
-of `docs/roadmap/pubsub-workflow-simplification.md`; `Attach`'s internal transport wraps the
+of `docs/design/d-0002-pubsub-workflow-simplification.md`; `Attach`'s internal transport wraps the
 same underlying logic those transports expose).
 `examples/adapters-zeromq` demonstrates this workflow end to end.
 

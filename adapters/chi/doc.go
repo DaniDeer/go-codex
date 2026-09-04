@@ -1,7 +1,7 @@
 // Package chi adapts [api/rest] routes to [github.com/go-chi/chi/v5] routers.
 //
 // [AttachRouter] is the sole public server-side workflow (see
-// docs/roadmap/pubsub-workflow-simplification.md's Decision 6): it wires
+// docs/design/d-0002-pubsub-workflow-simplification.md's Decision 6): it wires
 // every handler-bearing [rest.Route]/[rest.SSERoute] registered into a
 // [rest.Server] directly onto a [gochi.Router] using the route's method
 // and path, then [rest.Server.Serve] blocks, owning its own

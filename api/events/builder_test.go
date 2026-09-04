@@ -1710,7 +1710,7 @@ func TestDecodeMerged_NoMergeFieldsIsNoop(t *testing.T) {
 // These are the single source of truth every adapter's Publish/Subscribe
 // (escape-hatch AND Transport/Client.Attach) delegates to instead of
 // duplicating format-resolution logic itself — see
-// docs/roadmap/pubsub-workflow-simplification.md's Decision 9.
+// docs/design/d-0002-pubsub-workflow-simplification.md's Decision 9.
 
 // FMT1: EncodeWithFormats falls back to plain Encode when no format is
 // declared and no call-time override is given (regression guard,

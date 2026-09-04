@@ -40,7 +40,7 @@ type clientTransport struct {
 // NOTE — v1 scope: the reflection shim's Call covers the CORE common
 // case (JSON body encode/decode, no path/query/header/cookie params, no
 // security/credential handling, no per-call format override). Per
-// Decision 6 (see docs/roadmap/pubsub-workflow-simplification.md),
+// Decision 6 (see docs/design/d-0002-pubsub-workflow-simplification.md),
 // [Attach] is the sole public entry point built on the now-unexported
 // `call` primitive; a caller needing the omitted features (or a
 // pre-built *rest.RouteHandle, e.g. adapters/mcprest bridging a REST
@@ -48,7 +48,7 @@ type clientTransport struct {
 // directly instead. [stats.Observer] (RecordRequest, TraceObserver) and
 // a declared [rest.ErrorPattern]'s client-side typed-error decode
 // (via [rest.RouteHandle.DecodeErrorFor]) ARE fully wired — see
-// docs/design/middleware-workflow-simplification.md's addendum on
+// docs/design/d-0001-rest-middleware-workflow-simplification.md's addendum on
 // Client.Attach Observer/ErrorPattern parity for the fix history.
 //
 //	client := rest.NewClient()

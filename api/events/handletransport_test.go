@@ -8,6 +8,7 @@ import (
 
 	"github.com/DaniDeer/go-codex/api/events"
 	"github.com/DaniDeer/go-codex/codex"
+	"github.com/DaniDeer/go-codex/format"
 	"github.com/DaniDeer/go-codex/validate"
 )
 
@@ -187,6 +188,51 @@ func TestDecodeAndMergeVars_InvalidPayload_ReturnsDecodeError(t *testing.T) {
 	_, err = events.DecodeAndMergeVars(handle, []byte(`{"sensor_id":"not-a-uuid","value":1}`), map[string]string{"sensorID": htSensorID})
 	if err == nil {
 		t.Fatal("expected a decode/validation error, got nil")
+	}
+}
+
+// TestEncodeAndBuildTopic_DecodeAndMergeVars_HonorDeclaredYAMLFormat
+// proves EncodeAndBuildTopic/DecodeAndMergeVars delegate to
+// ChannelHandle.EncodeWithFormats/DecodeMergedWithFormats (Decision 9,
+// docs/design/d-0002-pubsub-workflow-simplification.md) rather than
+// hand-rolling their own format-resolution — a declared non-JSON format
+// (YAML here) round-trips correctly, matching every shipped adapter's
+// own thin primitives.
+func TestEncodeAndBuildTopic_DecodeAndMergeVars_HonorDeclaredYAMLFormat(t *testing.T) {
+	yamlChannel := events.NewChannel[htSensorReading]("sensors/{sensorID}/readings", htSensorCodec,
+		events.NewTopicParam("sensorID", codex.String().Refine(validate.UUID),
+			func(r htSensorReading) string { return r.SensorID },
+			func(r *htSensorReading, v string) { r.SensorID = v },
+		),
+		events.Formats(format.YAML(htSensorCodec)),
+	)
+	pubHandle, err := yamlChannel.WithPublish(events.Publish{}).Handle(nil)
+	if err != nil {
+		t.Fatalf("Handle: %v", err)
+	}
+	reading := htSensorReading{SensorID: htSensorID, Value: 22.5}
+
+	topic, payload, err := events.EncodeAndBuildTopic(pubHandle, reading)
+	if err != nil {
+		t.Fatalf("EncodeAndBuildTopic: %v", err)
+	}
+	if strings.HasPrefix(strings.TrimSpace(string(payload)), "{") {
+		t.Errorf("expected YAML wire payload, got JSON-shaped: %s", payload)
+	}
+	if !strings.Contains(string(payload), "value: 22.5") {
+		t.Errorf("expected YAML payload containing 'value: 22.5', got: %s", payload)
+	}
+
+	subHandle, err := yamlChannel.WithSubscribe(events.Subscribe{}).Handle(nil)
+	if err != nil {
+		t.Fatalf("Handle: %v", err)
+	}
+	got, err := events.DecodeAndMergeVars(subHandle, payload, map[string]string{"sensorID": htSensorID})
+	if err != nil {
+		t.Fatalf("DecodeAndMergeVars: %v", err)
+	}
+	if got != reading {
+		t.Errorf("got = %+v, want %+v (topic=%s)", got, reading, topic)
 	}
 }
 

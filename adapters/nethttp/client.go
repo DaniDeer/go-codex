@@ -385,7 +385,7 @@ func validateClientImplementationShapes(impls []middleware.ClientImplementation)
 // contract).
 //
 // GATED by Satisfies vs secReqs (the correctness improvement from
-// docs/design/middleware-workflow-simplification.md's "Client-side
+// docs/design/d-0001-rest-middleware-workflow-simplification.md's "Client-side
 // Satisfies-gated implementations" — PREVENTS a mismatched implementation
 // from running rather than merely detecting it): an implementation with a
 // NON-EMPTY Satisfies only runs when at least one of its scheme names is
@@ -452,10 +452,10 @@ func equalHeaderValues(a, b []string) bool {
 // call executes a typed HTTP request for r against c's baseURL —
 // unexported: the sole PUBLIC client-side workflow is [Attach] +
 // [rest.Client.Call] (see
-// docs/roadmap/pubsub-workflow-simplification.md's Decision 6); call
+// docs/design/d-0002-pubsub-workflow-simplification.md's Decision 6); call
 // remains load-bearing internally, used by [clientTransport] and by
 // [ports]' handle-based binding adapters via [CallWithHandle] (see
-// docs/design/middleware-workflow-simplification.md's "Decision:
+// docs/design/d-0001-rest-middleware-workflow-simplification.md's "Decision:
 // symmetric client-side declarative wiring"). r is a [rest.Route] value
 // (typically the SAME value the server side declared via [rest.Route.Use]/
 // [rest.Route.HandleMW]); call derives a [*rest.RouteHandle] internally via
@@ -501,7 +501,7 @@ func call[Req, Resp any](
 // actual call logic, shared internally by [call] (via [CallWithHandle])
 // AND [ports]' nethttp binding adapters (which own a *rest.RouteHandle
 // directly, built once and called many times, and never a [rest.Route]
-// value — see docs/design/middleware-workflow-simplification.md's
+// value — see docs/design/d-0001-rest-middleware-workflow-simplification.md's
 // "Decision: unexported handle-based primitive" for the full rationale).
 // vars supplies path template values explicitly (no merge-field
 // auto-derivation) — see [CallWithHandle] for that convenience.

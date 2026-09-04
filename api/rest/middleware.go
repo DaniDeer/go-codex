@@ -145,7 +145,7 @@ func (s SSERoute[Req, Event]) Use(mws ...middleware.Middleware) SSERoute[Req, Ev
 // a client-side implementation directly against the SAME [middleware.Middleware]
 // value attached via [Route.Use], eliminating the schemeName-typo risk
 // UseClient's separate re-declaration carried. See
-// docs/design/middleware-workflow-simplification.md's "Decision:
+// docs/design/d-0001-rest-middleware-workflow-simplification.md's "Decision:
 // symmetric client-side declarative wiring".
 
 // handlerOpt is the [RouteOpt] returned by [Route.WithHandler]/
@@ -161,7 +161,7 @@ func (o handlerOpt) applyRoute(rb *routeBuilder) { rb.handlerFn = o.fn }
 // [nethttp.AttachMux]/[chi.AttachRouter], or [nethttp.ServeOne]) to wire
 // the actual mux.Handle(...) call. A route with NO WithHandler call is
 // spec-only — Serve skips it entirely (see "Serve's whole-builder failure semantics"
-// in docs/design/middleware-workflow-simplification.md).
+// in docs/design/d-0001-rest-middleware-workflow-simplification.md).
 func (r Route[Req, Resp]) WithHandler(fn func(ctx context.Context, req Req) (Resp, error)) Route[Req, Resp] {
 	r.opts = append(slices.Clone(r.opts), handlerOpt{fn: fn})
 	return r

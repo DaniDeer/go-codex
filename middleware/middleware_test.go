@@ -62,7 +62,7 @@ func TestSecurityScheme_BuildsSpecOnlyMiddleware(t *testing.T) {
 // NOTE: middleware.Scopes[Raw, Req] was REMOVED — its only job (wrapping
 // an extract closure into a ServerImplementation{Satisfies, Fn}) now
 // happens inside rest.Route.HandleMW itself. See
-// docs/design/middleware-workflow-simplification.md's "HandleMW/ClientMW
+// docs/design/d-0001-rest-middleware-workflow-simplification.md's "HandleMW/ClientMW
 // unification" decision. Equivalent coverage now lives in
 // api/rest/builder_test.go's HandleMW tests.
 

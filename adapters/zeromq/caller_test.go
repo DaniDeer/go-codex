@@ -179,7 +179,7 @@ func TestSubscribeOptions_TopicFilter_EmptyDerivesPrefix(t *testing.T) {
 // ── TopicFilter regression — ports-binding SubscribeAdapterOptions ──────────────
 //
 // SEPARATE, explicit regression test for the ports-binding layer's fix —
-// confirmed via docs/roadmap/pubsub-workflow-simplification.md that this
+// confirmed via docs/design/d-0002-pubsub-workflow-simplification.md that this
 // was an INDEPENDENTLY broken spot from the top-level SubscribeOptions fix
 // above (SubscribeAdapterOptions was "just {Buffer int}", zero filter
 // override field, before this pass) — do not assume the top-level test

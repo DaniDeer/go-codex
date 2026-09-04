@@ -909,7 +909,7 @@ func (h *RouteHandle[Req, Resp]) ApplyMergeFields(
 // each adapter's internal serve dispatch (invoked via
 // [nethttp.AttachMux]/[chi.AttachRouter]) via a single reflect call,
 // since Resp is erased at THAT call site — see
-// docs/design/middleware-workflow-simplification.md's "Decision: Serve's
+// docs/design/d-0001-rest-middleware-workflow-simplification.md's "Decision: Serve's
 // generic dispatch mechanism") so the adapter never needs its own
 // Resp-typed encode/merge logic. Behaves identically to a bare Encode
 // when the route declares no response merge-capable params (both maps
@@ -1421,7 +1421,7 @@ type routeEntry interface {
 // adapter recovers Req/Resp via reflect.Value.Call against the handle's
 // ALREADY-concrete exported closures (Decode/Encode/HandlerFn/each
 // [middleware.ServerImplementation.Fn]) — see
-// docs/design/middleware-workflow-simplification.md's "Decision:
+// docs/design/d-0001-rest-middleware-workflow-simplification.md's "Decision:
 // Serve's generic dispatch mechanism" for the full rationale. The
 // isRouteEntry marker method seals this interface to api/rest's own
 // implementation.
@@ -2197,7 +2197,7 @@ func (s SecurityScheme) WithCodec(c codex.Codec[string]) SecurityScheme {
 // value), attached via [Route.Use]. RouteMeta.Security's OTHER two states
 // — nil (inherit global security) and []route.SecurityRequirement{}
 // (explicit opt-out) — are UNRELATED to scheme declaration and remain
-// unchanged. See docs/design/middleware-workflow-simplification.md's
+// unchanged. See docs/design/d-0001-rest-middleware-workflow-simplification.md's
 // "Decision: eliminate manual per-route security declaration".
 
 // FromSecurityScheme bridges an existing [SecurityScheme] value (e.g. a
@@ -2348,7 +2348,7 @@ type Server struct {
 	// attached via [Server.Attach] (e.g. by nethttp.AttachMux/
 	// chi.AttachRouter) — nil until Attach is called. See
 	// [Server.Serve]'s doc comment and Decision 5 of
-	// docs/roadmap/pubsub-workflow-simplification.md /
+	// docs/design/d-0002-pubsub-workflow-simplification.md /
 	// docs/roadmap/transport-agnostic-serve-interface.md for the full
 	// design (this is purely ADDITIVE — today's existing
 	// nethttp.Serve(mux, builder)/chi.Serve(r, builder), wire-only,
@@ -2359,7 +2359,7 @@ type Server struct {
 // ServerTransport is implemented by each adapter's internal, unexported
 // binding attached to a [Server] via an adapter-specific Attach function
 // (e.g. [nethttp.AttachMux], chi.AttachRouter) — see [Server.Attach].
-// Mirrors [events.Transport] (docs/roadmap/pubsub-workflow-simplification.md's
+// Mirrors [events.Transport] (docs/design/d-0002-pubsub-workflow-simplification.md's
 // Decision 5) for the pub/sub side of this same unification — see
 // docs/roadmap/transport-agnostic-serve-interface.md for the full
 // rationale.
@@ -2479,7 +2479,7 @@ func (e TransportTypeMismatchError) LogValue() slog.Value {
 // ClientTransport is implemented by each adapter's internal, unexported
 // binding attached to a [Client] via an adapter-specific Attach function
 // (e.g. [nethttp.Attach]) — see [Client.Attach]. Mirrors
-// [events.Transport] (docs/roadmap/pubsub-workflow-simplification.md's
+// [events.Transport] (docs/design/d-0002-pubsub-workflow-simplification.md's
 // Decision 5) for the pub/sub side of this same unification — see
 // docs/roadmap/transport-agnostic-serve-interface.md for the full
 // rationale.

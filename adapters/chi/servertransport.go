@@ -20,7 +20,7 @@ import (
 // docs/roadmap/transport-agnostic-serve-interface.md for the full design.
 //
 // Fixes a real gap confirmed while scoping Decision 6 (see
-// docs/roadmap/pubsub-workflow-simplification.md): earlier, [AttachRouter]'s
+// docs/design/d-0002-pubsub-workflow-simplification.md): earlier, [AttachRouter]'s
 // [serverTransport.Serve] wired ONLY plain routes via [serve], never SSE
 // routes registered via [rest.SSERoute.Register]/[rest.SSERoute.RegisterHandle]
 // — an SSE route was silently unreachable through the Attach workflow.

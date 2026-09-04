@@ -14,7 +14,7 @@ import (
 // `pub.PublishMW(nil, zeromq.Observability[T](obs))` (unpaired: mw is
 // nil, so it runs unconditionally, wrapping the actual
 // handler/transmit-step invocation — see
-// docs/roadmap/pubsub-workflow-simplification.md's "General-purpose
+// docs/design/d-0002-pubsub-workflow-simplification.md's "General-purpose
 // (non-spec) Fn shapes for SubscribeMW/PublishMW" subsection).
 //
 // Injects obs into ctx via [stats.WithObserver] (so a security-shaped Fn,

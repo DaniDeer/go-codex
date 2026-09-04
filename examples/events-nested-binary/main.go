@@ -21,7 +21,7 @@
 // this was fixed by centralizing format resolution onto ChannelHandle
 // itself (EncodeWithFormats/DecodeMergedWithFormats), so every caller —
 // escape-hatch AND Client.Attach — is a thin caller of the SAME method.
-// See docs/roadmap/pubsub-workflow-simplification.md's Decision 9. This
+// See docs/design/d-0002-pubsub-workflow-simplification.md's Decision 9. This
 // example runs the round trip through a REAL adapters/mqtt.Attach +
 // Client.Publish/Client.Subscribe pair (backed by an in-process mock MQTT
 // client, so it needs no real broker) — not a hand-simulation of what the

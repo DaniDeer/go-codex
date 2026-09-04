@@ -276,7 +276,7 @@ func subscribeSecurityFnType(msgType reflect.Type) reflect.Type {
 // wrapping shape (func(next func(context.Context, T) error) func(context.Context, T) error)
 // for the given erased msgType T. Shared by both SubscribeMW and
 // PublishMW dispatch (deliberate symmetry — see docs/roadmap/
-// pubsub-workflow-simplification.md's "General-purpose (non-spec) Fn
+// d-0002-pubsub-workflow-simplification.md's "General-purpose (non-spec) Fn
 // shapes" subsection).
 func generalWrapFnType(msgType reflect.Type) reflect.Type {
 	handlerType := reflect.FuncOf(
@@ -483,7 +483,7 @@ func runErasedBuiltinSecurityCheck(msg *pahomqtt5.Publish, secReqs []route.Secur
 // or `pub.PublishMW(nil, mqtt5.Observability[T](topic, obs))` for
 // declare-time, per-channel observability, mirroring
 // [adapters/nethttp.Observability]'s role on the REST side (see
-// docs/roadmap/pubsub-workflow-simplification.md's "General-purpose
+// docs/design/d-0002-pubsub-workflow-simplification.md's "General-purpose
 // (non-spec) Fn shapes" subsection). topic identifies the channel in
 // recorded stats — pass the channel's own topic (the same string passed
 // to [events.NewChannel]).

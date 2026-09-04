@@ -134,7 +134,7 @@ func TestAttachMux_BuilderServe_ActuallyServesHTTP(t *testing.T) {
 }
 
 // TestAttachMux_BuilderServe_SSEOnly_ActuallyServesSSE proves the SSE-gap
-// fix (Decision 6, docs/roadmap/pubsub-workflow-simplification.md):
+// fix (Decision 6, docs/design/d-0002-pubsub-workflow-simplification.md):
 // [AttachMux]'s [serverTransport.Serve] used to wire ONLY plain routes
 // via [serve], never SSE routes — an SSE route registered on builder was
 // silently unreachable through the Attach workflow. A builder with ONLY

@@ -35,7 +35,7 @@
 //     requirement" (e.g. supply a credential), gated to run only when its
 //     Satisfies matches the route's declared security requirements.
 //
-// See docs/design/middleware-workflow-simplification.md for the full
+// See docs/design/d-0001-rest-middleware-workflow-simplification.md for the full
 // design rationale and resolution history (supersedes the earlier
 // docs/roadmap/declarative-middleware.md "Revision 2 — the declare/
 // implement split," which introduced Middleware/ServerImplementation's

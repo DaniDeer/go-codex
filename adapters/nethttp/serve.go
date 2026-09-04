@@ -104,7 +104,7 @@ type wiredRoute struct {
 // serve walks every [rest.Route] registered into b (via [rest.Route.Register]/
 // [rest.Route.RegisterHandle]) and wires each handler-bearing one onto mux
 // — the SOLE public server-side entry point for regular (non-SSE) routes
-// (see docs/design/middleware-workflow-simplification.md's "Decision:
+// (see docs/design/d-0001-rest-middleware-workflow-simplification.md's "Decision:
 // serve is the only public server-side entry point").
 //
 // Part 1 — routes with NO [rest.Route.WithHandler] call are spec-only and

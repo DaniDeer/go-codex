@@ -9,7 +9,7 @@ import (
 
 // NewPublishTransport builds an [events.PublishTransport][T] bound to
 // client — the GENERIC, per-T constructor Decision 7
-// (docs/roadmap/pubsub-workflow-simplification.md) uses to satisfy
+// (docs/design/d-0002-pubsub-workflow-simplification.md) uses to satisfy
 // api/events' new inverted, no-*Client-needed [events.PublishHandle] call
 // surface, mirroring [ports.SourceAdapter]/[ports.SinkAdapter]'s own
 // generic-constructor convention exactly (fully type-safe, no reflection

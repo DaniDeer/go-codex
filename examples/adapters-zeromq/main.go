@@ -1,7 +1,7 @@
 // Package adapters-zeromq demonstrates the ZeroMQ PUB/SUB adapter using
 // go-codex's api/events channel declarations, via the inverted-control
 // Client.Attach/.Publish/.Subscribe workflow (Decision 5 of
-// docs/roadmap/pubsub-workflow-simplification.md).
+// docs/design/d-0002-pubsub-workflow-simplification.md).
 //
 // The example wires together a publisher and a subscriber in-process using
 // a mock FramedSocket to avoid requiring a real libzmq installation. In

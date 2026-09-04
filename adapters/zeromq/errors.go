@@ -25,7 +25,7 @@ const (
 	// attached security-shaped [events.Subscriber.SubscribeMW] Fn rejected
 	// the message. NEW this pass — zeromq previously had NO message-level
 	// security mechanism at any layer (confirmed via
-	// docs/roadmap/pubsub-workflow-simplification.md's escape-hatch #5
+	// docs/design/d-0002-pubsub-workflow-simplification.md's escape-hatch #5
 	// discussion); the wrapped Err is reused directly from api/events'
 	// existing, transport-agnostic [events.SecurityError]/
 	// [events.SecurityCredentialError] shapes rather than introducing a new

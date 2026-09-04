@@ -14,7 +14,7 @@ import (
 // single client-like sock [FramedSocket] param; zeromq genuinely has no
 // router-equivalent — sock already plays the "client" role directly) —
 // no new capability needed, unlike e.g. adapters/mqtt(v3)'s Caller (see
-// docs/roadmap/pubsub-workflow-simplification.md's "Caller's mirroring
+// docs/design/d-0002-pubsub-workflow-simplification.md's "Caller's mirroring
 // across mqtt(v3)/zeromq" subsection).
 //
 // Construct once per socket via [newCaller], then pass it to [subscribe]

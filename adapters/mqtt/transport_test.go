@@ -247,7 +247,7 @@ func TestNewSubscribeTransport_SubscribeHandle_RoundTrip(t *testing.T) {
 
 // ── Observer + ErrorChannel parity for Client.Attach (Decision 8) ──────────
 //
-// Confirmed gap (see docs/roadmap/pubsub-workflow-simplification.md's
+// Confirmed gap (see docs/design/d-0002-pubsub-workflow-simplification.md's
 // Decision 8): transport.Publish/Subscribe used to call neither
 // stats.Observer NOR consult a declared events.ErrorChannel on a
 // subscribe handler's returned error — these tests lock in the fix.
@@ -358,9 +358,9 @@ func TestAttach_ClientSubscribe_HandlerError_MatchedErrorChannel_PublishesTypedP
 	}
 }
 
-// ── Client.Attach honors the channel's declared format (pubsub-workflow-simplification.md Decision 9) ──
+// ── Client.Attach honors the channel's declared format (d-0002-pubsub-workflow-simplification.md Decision 9) ──
 //
-// Confirmed gap (see docs/roadmap/pubsub-workflow-simplification.md's Decision 9): Client.Attach's
+// Confirmed gap (see docs/design/d-0002-pubsub-workflow-simplification.md's Decision 9): Client.Attach's
 // Publish/Subscribe used to ALWAYS assume JSON, silently ignoring a
 // channel's declared WithFormats/WithPublishFormats/WithSubscribeFormats
 // — this test locks in the fix (round-trips YAML through Client.Attach).

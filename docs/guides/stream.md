@@ -29,7 +29,7 @@ sensors := stream.From(ctx, ch)
 rawCh := make(chan []byte, 64)
 
 // Fill rawCh via the mqtt adapter's spec-free, handle-based Decision 7 call surface
-// (docs/roadmap/pubsub-workflow-simplification.md):
+// (docs/design/d-0002-pubsub-workflow-simplification.md):
 sub := rawChannel.WithSubscribe(events.Subscribe{})
 transport := adaptermqtt.NewSubscribeTransport[[]byte](mqttClient, 0, adaptermqtt.SubscribeOptions{})
 go func() {

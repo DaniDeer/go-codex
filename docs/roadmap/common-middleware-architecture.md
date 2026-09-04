@@ -1,7 +1,7 @@
 # Common-Base + Per-Pattern-Derived Middleware Types — `middleware`, `api/rest`, `api/reqreply`, `api/events`, future `ports`
 
 > **Status:** Idea only — no driver yet. Spun out of
-> [Pub/Sub Workflow Simplification](pubsub-workflow-simplification.md)'s
+> [Pub/Sub Workflow Simplification](../design/d-0002-pubsub-workflow-simplification.md)'s
 > critical-review finding (F6) that `middleware.Middleware` — a SINGLE,
 > FLAT struct carrying `Name`, `Security *SecurityDeclaration`, AND 5
 > REST-only param-contribution fields (`RequestHeaderParams`/

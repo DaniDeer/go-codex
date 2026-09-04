@@ -28,7 +28,7 @@
 // # Layer 3 (PUB/SUB) — TWO workflows, in order of preference
 //
 //  1. PREFERRED — events.Client + adaptermqtt.Attach + Client.Publish/.Subscribe
-//     (Decision 5 of docs/roadmap/pubsub-workflow-simplification.md). Attach
+//     (Decision 5 of docs/design/d-0002-pubsub-workflow-simplification.md). Attach
 //     the adapter to the client ONCE; from there, client.Publish/client.Subscribe
 //     fulfill each declared Subscriber[T]/Publisher[T]'s requirements directly —
 //     no further adaptermqtt.* calls needed at the usage site. The SAME client

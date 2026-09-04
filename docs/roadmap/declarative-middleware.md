@@ -1,9 +1,9 @@
 # Declarative Middleware — a shared `middleware` package for `route`/`api/*`/`ports`
 
-> **SUPERSEDED for REST — see [Middleware Workflow Simplification](../design/middleware-workflow-simplification.md), IMPLEMENTED.**
+> **SUPERSEDED for REST — see [Middleware Workflow Simplification](../design/d-0001-rest-middleware-workflow-simplification.md), IMPLEMENTED.**
 > This doc's REST design ("Revision 2 — the declare/implement split")
 > shipped, then was further unified and simplified by
-> `middleware-workflow-simplification.md` (`HandleMW`/`ClientMW` replace
+> `d-0001-rest-middleware-workflow-simplification.md` (`HandleMW`/`ClientMW` replace
 > `.Implement()`/`Wrap`/manual `ServerImplementation`/`ClientMiddleware`
 > construction; `Register`/`RegisterHandle`/`Serve`/`ServeSSE`/`ServeOne`
 > replace the old `Handler`/`Register`/`SSEHandler`/`RegisterSSE`
@@ -11,7 +11,7 @@
 > This doc remains useful for its Phase 2+ (events/reqreply/MCP/ports)
 > DESIGN RATIONALE, which is still valid and not yet implemented —
 > `api/events`'s own equivalent has since shipped (see
-> `docs/roadmap/pubsub-workflow-simplification.md`); `api/reqreply`'s
+> `docs/design/d-0002-pubsub-workflow-simplification.md`); `api/reqreply`'s
 > equivalent is designed in
 > `docs/roadmap/reqreply-workflow-simplification.md` for the up-to-date
 > findings on that front. Do not follow this doc's OWN REST code

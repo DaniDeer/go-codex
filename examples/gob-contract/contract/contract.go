@@ -76,7 +76,7 @@ var GobFormat = format.Gob(OrderCodec)
 // call"). GobFormat is declared inline via events.Formats — a
 // first-class part of the channel's own declaration — so Client.Attach's
 // Publish/Subscribe resolve it automatically (see the fix documented in
-// docs/roadmap/pubsub-workflow-simplification.md's Decision 9); no
+// docs/design/d-0002-pubsub-workflow-simplification.md's Decision 9); no
 // per-call format override or post-hoc handle.WithFormats call is
 // needed.
 var OrderChannel = events.NewChannel(
@@ -117,7 +117,7 @@ var OrderPublisher = OrderChannel.WithPublish(events.Publish{
 // it unchanged) with GobFormat declared for BOTH directions
 // (rest.RequestFormats for the request body, rest.Formats for the
 // response body) — proving the identical Decision 9 fix on the REST
-// side (docs/design/middleware-workflow-simplification.md's Addendum 2):
+// side (docs/design/d-0001-rest-middleware-workflow-simplification.md's Addendum 2):
 // Client.Call now resolves a route's declared Gob format automatically,
 // for both EncodeRequestWithFormats and DecodeResponseWithFormats.
 var OrderRoute = rest.NewRoute[Order, Order]("POST", "/orders",

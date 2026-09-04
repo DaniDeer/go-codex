@@ -5,7 +5,7 @@
 > interface + `Server.Attach`/`.Serve(ctx)`, `nethttp.AttachMux`/
 > `chi.AttachRouter`, and `rest.Client`/`nethttp.Attach`/`.Call` all
 > shipped. **Reworked (mirroring
-> [Pub/Sub Workflow Simplification](pubsub-workflow-simplification.md)'s
+> [Pub/Sub Workflow Simplification](../design/d-0002-pubsub-workflow-simplification.md)'s
 > `events.Client` design exactly, per direct user request): the client
 > side lives as a domain-level `rest.Client` type in `api/rest` (NOT an
 > adapter-level `nethttp.Caller` method) — `nethttp.Caller`/`NewCaller`/
@@ -23,12 +23,12 @@
 > which stay public unchanged) call internally. Also fixes a real gap:
 > `AttachMux`/`AttachRouter` currently wire ONLY plain routes, never SSE
 > — SSE becomes reachable through `Attach`+`Serve(ctx)` too. See
-> [Pub/Sub Workflow Simplification](pubsub-workflow-simplification.md)'s
+> [Pub/Sub Workflow Simplification](../design/d-0002-pubsub-workflow-simplification.md)'s
 > Decision 6 for the full removal list and execution plan (this doc's
 > REST side is executed as sub-phases 17e/17f of that plan).**
 > This doc was "idea only, no driver yet" — a direct user request for a
 > literal `Client.Publish`/`.Subscribe` call shape on the pub/sub side
-> (see [Pub/Sub Workflow Simplification](pubsub-workflow-simplification.md)'s
+> (see [Pub/Sub Workflow Simplification](../design/d-0002-pubsub-workflow-simplification.md)'s
 > Decision 5) is the concrete driver this doc was waiting for, and
 > resolves the shape-mismatch finding below via Option 1 (the option
 > this doc itself already recommended): REST gets a genuinely NEW,
@@ -73,7 +73,7 @@ directions:
    without actually starting them) and a separate "run" step —
    mirroring REST's mux-then-listen split. This would be a MORE
    INVASIVE change to the pub/sub design already written into
-   `pubsub-workflow-simplification.md`'s Decision 1 than simply adding
+   `docs/design/d-0002-pubsub-workflow-simplification.md`'s Decision 1 than simply adding
    REST a blocking variant — not recommended without strong
    justification, since pub/sub's "one call starts everything" shape is
    arguably more ergonomic for its own use case (there is no equivalent
@@ -84,7 +84,7 @@ directions:
 **Resolved: option 1 (give REST an ADDITIONAL blocking variant) is the
 chosen direction** — purely additive (existing `Serve` behavior is
 completely unchanged), now with a concrete driver:
-[Pub/Sub Workflow Simplification](pubsub-workflow-simplification.md)'s
+[Pub/Sub Workflow Simplification](../design/d-0002-pubsub-workflow-simplification.md)'s
 Decision 5 gives `events.Client` a literal `Attach(transport)` +
 `Subscribe`/`Publish`/`ServeSubscribers` call shape; this doc gives
 `api/rest` the matching counterpart so an application can use the SAME
@@ -158,7 +158,7 @@ EXISTING, unchanged `nethttp.Caller`/`nethttp.NewCaller`/
 wrapping their own `*Caller` internally) and calls `client.Attach(...)`.
 
 Same Go constraint and same reflection technique as
-[Pub/Sub Workflow Simplification](pubsub-workflow-simplification.md)'s
+[Pub/Sub Workflow Simplification](../design/d-0002-pubsub-workflow-simplification.md)'s
 Decision 5 `Client.Publish`/`.Subscribe`: a method cannot introduce its
 own `[Req, Resp any]` type parameters, so `route`/`req` are `any`
 (dynamic types `rest.Route[Req,Resp]`/`Req`), and the internal
@@ -216,23 +216,23 @@ this rework, just relocated to the `api/rest` domain level.
 
 This doc's shape-mismatch finding is now RESOLVED (see "Resolved
 design" above) — implementation is tracked alongside
-[Pub/Sub Workflow Simplification](pubsub-workflow-simplification.md)'s
+[Pub/Sub Workflow Simplification](../design/d-0002-pubsub-workflow-simplification.md)'s
 Decision 5. The broader reminder below still stands unchanged: this
 finding was ONE confirmed gap in REST's own workflow, found only
 because
-[Pub/Sub Workflow Simplification](pubsub-workflow-simplification.md)
+[Pub/Sub Workflow Simplification](../design/d-0002-pubsub-workflow-simplification.md)
 was being reviewed against its own two headline goals (simple
 declarative workflow for the user; transport/protocol-agnostic
 abstraction for the pub/sub pattern) and REST's `Serve`/`Caller` shape
 came up for comparison along the way. **It was NOT the product of a
 dedicated, from-scratch review of REST's OWN workflow against those
 SAME two goals** — REST's shipped design
-(`docs/design/middleware-workflow-simplification.md`) has not itself
+(`docs/design/d-0001-rest-middleware-workflow-simplification.md`) has not itself
 been walked step-by-step the way pub/sub's was (declaration workflow
 diagrams, escape-hatch-by-escape-hatch review, design-gap closure
 pass).
 
-**Reminder: once `pubsub-workflow-simplification.md` reaches its own
+**Reminder: now that [Pub/Sub Workflow Simplification](../design/d-0002-pubsub-workflow-simplification.md) has reached its own
 finalization milestone, come back and do that SAME kind of full review
 pass on REST's shipped design** — confirm whether this doc's shape-
 mismatch finding is REST's ONLY gap against the 2 goals, or whether a

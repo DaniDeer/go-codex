@@ -90,7 +90,7 @@ import (
 
 // NewSubscribeTransport/NewPublishTransport — the spec-free, no-*Client-needed,
 // handle-based call surface Decision 7 inverted into api/events itself
-// (docs/roadmap/pubsub-workflow-simplification.md). Fully typed generic
+// (docs/design/d-0002-pubsub-workflow-simplification.md). Fully typed generic
 // constructors, no reflection; use these for custom OnError/Observer/security
 // impls or wildcard topics. The simple case uses Client.Attach/.Subscribe below
 // instead.
@@ -122,7 +122,7 @@ err := events.PublishHandle(ctx, pub, pubTransport, reading)
 
 `events.PublishHandle`/`events.SubscribeHandle` + each adapter's `NewPublishTransport[T]`/
 `NewSubscribeTransport[T]` are the spec-free, handle-based call surface Decision 7 of
-`docs/roadmap/pubsub-workflow-simplification.md` inverted into `api/events` itself (mirroring
+`docs/design/d-0002-pubsub-workflow-simplification.md` inverted into `api/events` itself (mirroring
 `Client.Attach`'s own inversion). The OLD per-adapter `SubscribeWithHandle`/`Publish`/
 `PublishHandle` primitives (once kept public as a Decision 6 exception) are now unexported
 (`subscribeWithHandle`/`publish`/`publishHandle`) — their logic lives inside each transport's
@@ -162,7 +162,7 @@ Since `Client.Publish`/`Client.Subscribe` are ordinary Go methods (not generic �
 method from introducing its own type parameters), arguments are passed as `any` and their
 concrete types are recovered internally via reflection; a mismatch surfaces as
 `events.TransportTypeMismatchError` at CALL time. See
-`docs/roadmap/pubsub-workflow-simplification.md`'s Decision 5 for the full design and its
+`docs/design/d-0002-pubsub-workflow-simplification.md`'s Decision 5 for the full design and its
 documented v1 scope limits (no per-call format override, QoS 0 only, no general-purpose
 SubscribeMW/PublishMW wrapping, no custom `OnError` — use `events.SubscribeHandle`/
 `events.PublishHandle` with `mqtt5.NewSubscribeTransport`/`mqtt5.NewPublishTransport` directly

@@ -23,7 +23,7 @@ import (
 // a broader "everything up to the first placeholder" prefix is the
 // closest broker-compatible equivalent — see
 // [SubscribeOptions.TopicFilter]'s doc comment and
-// docs/roadmap/pubsub-workflow-simplification.md's bug-fix subsection).
+// docs/design/d-0002-pubsub-workflow-simplification.md's bug-fix subsection).
 //
 // Examples:
 //
@@ -48,7 +48,7 @@ type SubscribeAdapterOptions struct {
 	// not exist before, so every ports-based zeromq subscribe path sent
 	// handle.Topic (the RAW "{varName}"-templated string) VERBATIM as the
 	// byte-prefix filter, which never matches a real published topic (see
-	// docs/roadmap/pubsub-workflow-simplification.md's "Confirmed bug,
+	// docs/design/d-0002-pubsub-workflow-simplification.md's "Confirmed bug,
 	// fixed this pass" subsection — this bug affected EVERY zeromq
 	// subscribe path, ports-based or direct, with zero exception). When
 	// empty (the common case), a prefix is derived automatically from

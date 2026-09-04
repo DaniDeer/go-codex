@@ -2663,7 +2663,7 @@ func TestDecodeMergedResponse_NoMergeFieldsIsNoop(t *testing.T) {
 // These are the single source of truth every client-side caller
 // (escape-hatch callWithVars AND ClientTransport/Client.Attach) delegates
 // to instead of duplicating format-resolution logic itself — see
-// docs/design/middleware-workflow-simplification.md's Addendum 2.
+// docs/design/d-0001-rest-middleware-workflow-simplification.md's Addendum 2.
 
 // FMT1: EncodeRequestWithFormats falls back to plain EncodeRequest (JSON)
 // when no format is declared and no call-time override is given.

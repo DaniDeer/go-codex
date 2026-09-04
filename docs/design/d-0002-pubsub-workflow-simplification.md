@@ -59,30 +59,45 @@
 > `.Use`/`.SubscribeMW`/`.PublishMW`, `.Handle(client)`); `FromSecurityScheme`
 > + unconditional `CheckCoverage`; `events.SubscriberServer`/
 > `events.PublisherClient[T]` interfaces; adapter wiring across
-> `adapters/mqtt5` (`Caller`/`NewCaller`/`Subscribe`/`ServeSubscribers`/
-> `NewPublisherFor`/`Observability`), `adapters/mqtt` (v3, same shape,
-> `Caller` gains genuinely new capability since v3 had no router/bare
-> `Subscribe` before), and `adapters/zeromq` (`Caller`/`ServeSubscribers`/
-> `NewPublisherFor`/`Observability`, message-level security via
-> `SubscribeMW`/`PublishMW`); `ports.EventPattern` gained dedicated
-> `Subscribe`/`Publish` fields. **One phase remains genuinely open**:
-> `events.WithSecurityScheme` is DEPRECATED but not yet removed — a
-> repo-wide migration of its existing call sites (examples, adapter
-> tests, this package's own tests) onto `Channel.WithSubscribe`/
-> `WithPublish` + `FromSecurityScheme` is still tracked here (see
-> `events.WithSecurityScheme`'s own doc comment in `api/events/builder.go`)
-> and has NOT started; this doc is therefore kept (not archived) until
-> that migration lands. **A post-implementation audit (see escape hatches
-> #12/#13 below) found and fixed two real gaps between this doc's own
-> stated design and what shipped**: `Channel.Register`/`ClientHandle`
-> were supposed to be REMOVED per this doc's own Migration Checklist but
-> were initially kept, silently reopening `CheckCoverage`'s core
-> "no opt-out" guarantee for any handle built via them — now fully
-> resolved by completing the removal (both methods gone, every call site
-> migrated to `WithSubscribe`/`WithPublish` + `.Handle()`); and Decision
-> 1's promised `checkImplementationsDeclared`/
-> `UnknownMiddlewareImplementationError` reverse-coverage check (mirrors
-> REST) was never actually implemented — now added. Everything below
+> `adapters/mqtt5`, `adapters/mqtt` (v3, `Caller` gains genuinely new
+> capability since v3 had no router/bare `Subscribe` before), and
+> `adapters/zeromq` (message-level security via `SubscribeMW`/
+> `PublishMW`) — **`Caller`/`NewCaller`/`NewPublisherFor` were later
+> UNEXPORTED/REMOVED by Decision 6's no-escape-hatches pass; read that
+> decision, not this paragraph, for the adapters' final public shape**;
+> `ports.EventPattern` gained dedicated `Subscribe`/`Publish` fields.
+> **The `events.WithSecurityScheme` migration is COMPLETE**: verified via
+> repo-wide grep that every EXTERNAL call site (examples, adapter tests)
+> has migrated to `.Use(events.FromSecurityScheme(...))` — the only
+> remaining call sites are `api/events/builder_test.go`'s OWN regression
+> tests for the deprecated function itself, an intentional, permanent
+> keep (see Lessons Learned item 3: full removal was correctly declined
+> because the package's own test suite is a legitimate caller, not an
+> oversight to fix). `events.WithSecurityScheme` therefore stays
+> deprecated-but-kept by design — not a pending migration. **A
+> post-implementation audit (see escape hatches #12/#13 below) found and
+> fixed two real gaps between this doc's own stated design and what
+> shipped**: `Channel.Register`/`ClientHandle` were supposed to be
+> REMOVED per this doc's own Migration Checklist but were initially kept,
+> silently reopening `CheckCoverage`'s core "no opt-out" guarantee for
+> any handle built via them — now fully resolved by completing the
+> removal (both methods gone, every call site migrated to
+> `WithSubscribe`/`WithPublish` + `.Handle()`); and Decision 1's promised
+> `checkImplementationsDeclared`/`UnknownMiddlewareImplementationError`
+> reverse-coverage check (mirrors REST) was never actually implemented —
+> now added. **A final gap-closure pass (triggered by a dedicated review
+> of this doc against the shipped code, ahead of graduating it to
+> `docs/design/`) found and fixed one more real gap**:
+> `api/events/handletransport.go`'s `EncodeAndBuildTopic`/
+> `DecodeAndMergeVars` (Decision 7) still hand-rolled the OLD
+> format-resolution logic instead of delegating to Decision 9's
+> canonical `ChannelHandle.EncodeWithFormats`/`DecodeMergedWithFormats` —
+> the one place Decision 9's centralization pass missed (verified: zero
+> shipped adapter calls either function, so the miss was latent, but
+> both are public API documented as the pattern for a hand-written
+> `PublishTransport[T]`/`SubscribeTransport[T]`) — now fixed to delegate,
+> closing the loop on Decision 9. See the doc's closing addendum for the
+> full write-up. Everything below
 > this banner is the ORIGINAL design-decision narrative, preserved as
 > historical record — read the code (`api/events/builder.go`,
 > `adapters/mqtt5`, `adapters/mqtt`, `adapters/zeromq`, `ports`) as the
@@ -2924,7 +2939,7 @@ integration across REST and events under the "thin adapter" `Client.Attach`
 workflow (Decision 5), triggered by a direct user request to confirm both
 concerns are handled declaratively now that adapters are reduced to thin
 IO-binding layers. Companion REST-side fix documented in
-`docs/design/middleware-workflow-simplification.md`'s own addendum.
+`docs/design/d-0001-rest-middleware-workflow-simplification.md`'s own addendum.
 
 **Confirmed bug**: `mqtt5`, `mqtt` (v3), and `zeromq`'s `transport.go`
 (the reflection-based shim behind `events.Client.Publish`/`.Subscribe`,
@@ -2973,7 +2988,7 @@ the subscribe side across all three adapters (`mqtt5`'s
 `Subscribe` reflection shim).
 
 **Files changed**: `adapters/nethttp/clienttransport.go` (REST's
-`Client.Attach` companion fix — see the middleware-workflow-simplification.md
+`Client.Attach` companion fix — see `docs/design/d-0001-rest-middleware-workflow-simplification.md`'s
 addendum for the REST-specific detail); `adapters/mqtt5/transport.go`,
 `adapters/mqtt5/adapter.go` (+ `binding.go` call-site update);
 `adapters/mqtt/transport.go`, `adapters/mqtt/adapter.go` (+ `binding.go`/
@@ -2993,7 +3008,7 @@ green repo-wide; zero regressions in existing test suites.
 example rework, a deeper review of `Client.Attach`'s format handling
 surfaced a second, unrelated bug of the same shape. The identical fix
 also landed on the REST side in the same round — see
-`docs/design/middleware-workflow-simplification.md`'s Addendum 2 for the
+`docs/design/d-0001-rest-middleware-workflow-simplification.md`'s Addendum 2 for the
 REST-specific detail (`RouteHandle[Req,Resp]`'s mirror-image methods).
 
 **Confirmed bug**: `Client.Attach`'s `Publish`/`Subscribe` reflection
@@ -3096,6 +3111,98 @@ and `adapters/zeromq/transport_test.go`.
 **Verified**: `gofmt`/`go build`/`go vet`/`go test` all green repo-wide;
 `just check` (staticcheck + gosec) with no new suppressions; zero
 regressions in existing test suites.
+
+### Decision 10 — Final gap-closure pass, ahead of graduating this doc to `docs/design/` (IMPLEMENTED)
+
+**Trigger**: a direct user request to review this doc against the
+shipped implementation, check for missed goals or newly-introduced
+escape hatches, and confirm whether it is ready to graduate from
+`docs/roadmap/` to `docs/design/` (the "fully shipped AND establishes a
+pattern multiple packages follow" bar — see `docs/design/index.md`,
+already met once before by
+[Middleware Workflow Simplification](d-0001-rest-middleware-workflow-simplification.md)).
+
+**Method**: every concrete claim in this doc (Decisions 1-9, the
+Migration Checklist, every "Escape hatches" item, every "Remaining open
+items" entry) was re-verified directly against the shipped code via
+targeted grep/inspection of `api/events`, `adapters/mqtt5`,
+`adapters/mqtt`, `adapters/zeromq`, `ports`, and
+`.github/instructions/go-codex.instructions.md`.
+
+**Result: no new escape hatches were introduced**, and every previously
+flagged escape hatch that this doc claims is resolved was confirmed
+resolved in code (role-scoped `Subscriber[T]`/`Publisher[T]`,
+`Channel.Register`/`ClientHandle` fully removed with zero remaining call
+sites, `CheckCoverage`/`checkImplementationsDeclared` wired
+unconditionally, `ports.EventPattern.Subscribe`/`Publish` dedicated
+fields, `TopicFilter`/`deriveWildcardFilter`/`deriveTopicPrefix`,
+Decision 6's exact removal/kept-exception list verified symbol-by-symbol
+across all three adapters plus REST/`nethttp`/`chi`). Two things were
+found and fixed:
+
+1. **One real, if latent, code gap**: `api/events/handletransport.go`'s
+   exported `EncodeAndBuildTopic`/`DecodeAndMergeVars` (added by
+   Decision 7) still hand-rolled the OLD format-resolution logic
+   (`formats > handle.PublishFormats/SubscribeFormats > handle.Formats >
+   plain Encode/Decode`, duplicated inline) instead of delegating to
+   Decision 9's canonical `ChannelHandle.EncodeWithFormats`/
+   `DecodeMergedWithFormats` — the one place Decision 9's centralization
+   pass missed. Confirmed via repo-wide grep that ZERO shipped adapter
+   calls either function (all three adapters' `NewPublishTransport`/
+   `NewSubscribeTransport` delegate to their own already-fixed
+   `publishHandle`/`subscribeWithHandle`/`subscribeHandler` primitives
+   instead), so the miss was latent — but both functions are PUBLIC API
+   whose doc comments explicitly invited a third-party author writing a
+   NEW `PublishTransport[T]`/`SubscribeTransport[T]` (for a transport
+   this package doesn't ship an adapter for) to follow this exact
+   pattern, meaning anyone doing so today would get non-canonical,
+   drift-prone format logic. Fixed: both functions now delegate directly
+   (`EncodeAndBuildTopic` calls `handle.EncodeWithFormats`;
+   `DecodeAndMergeVars` becomes a one-line wrapper around
+   `handle.DecodeMergedWithFormats`, which already does exactly
+   "decode via resolved format, then merge topic vars" — a strict
+   behavioral improvement, since `DecodeMergedWithFormats` also gracefully
+   handles an empty payload the same way `DecodeMerged` always did,
+   which the old hand-rolled body did not). Doc comments corrected to
+   remove the now-false "each adapter's PublishTransport implementation
+   calls this once internally" claim. New test:
+   `TestEncodeAndBuildTopic_DecodeAndMergeVars_HonorDeclaredYAMLFormat`
+   in `api/events/handletransport_test.go`, mirroring the round-trip
+   tests Decision 9 added for the other 4 adapters.
+2. **Documentation staleness** (not a code bug, but this doc no longer
+   accurately described reality): the top status banner's "one phase
+   remains genuinely open" claim about the `events.WithSecurityScheme`
+   migration was stale — verified via grep that every EXTERNAL call
+   site had already migrated to `FromSecurityScheme`, with only
+   `api/events`'s own regression tests remaining (an intentional,
+   permanent keep per Lessons Learned item 3, not pending work); the
+   "Remaining open items" entry deferring `mqtt`(v3)/`zeromq`'s
+   `Caller`/`ServeSubscribers` implementation detail to "a future
+   adapter-wiring pass" was stale — verified via grep that all three
+   adapters ship it today; and a trailing "Implementation has not
+   started" sentence directly contradicted the rest of the doc. All
+   three corrected in place (see the top banner and "Remaining open
+   items" above).
+
+**Confirmed accurate, no changes needed**: `adapters/zeromq`'s
+connection-ownership deferral (a real, intentional, CGO-driven
+tradeoff — not a gap); the REST-workflow-review reminder (genuinely
+still open, but already fully and concretely tracked via 4 spun-out
+docs — `zeromq-security.md`, `reqreply-workflow-simplification.md`,
+`rest-client-general-purpose-middleware.md`,
+`common-middleware-architecture.md`, `protocol-native-features.md` —
+all still "idea only"/"PLANNED", none blocking THIS doc's own
+completion).
+
+**Verified**: `gofmt`/`go build`/`go vet`/`go test` all green repo-wide
+after the `handletransport.go` fix; zero regressions.
+
+**Conclusion**: this doc is fully shipped, establishes the pattern all
+three pub/sub adapters (`mqtt5`/`mqtt`/`zeromq`) AND REST (via Decision
+6's unification) follow, and meets `docs/design/`'s graduation bar —
+moved to `docs/design/d-0002-pubsub-workflow-simplification.md` (see
+`docs/design/index.md` for its new entry; this doc's `docs/roadmap/`
+listing is removed).
 
 ## Escape hatches that exist today (pub/sub-scoped, fresh audit)
 
@@ -3350,26 +3457,28 @@ regressions in existing test suites.
   returns immediately; pub/sub's `ServeSubscribers` blocks-and-runs)
   that needs its own investigation.
 - ~~`Caller`'s mirroring across `mqtt`(v3)/`zeromq`~~ — **CORRECTED
-  and PARTIALLY RESOLVED.** `zeromq`'s original claim was confirmed
-  accurate (its existing `sock`-taking shape maps cleanly onto the
-  two-tier split, no new capability needed). `mqtt`(v3)'s original
-  claim was WRONG — checked the actual code and found no router, no
-  bare `Subscribe` at all (only the lower-level, unchanged
-  `SubscribeHandler` closure-builder) — `mqtt`(v3) needs GENUINELY NEW
-  capability (a higher-level `Caller`/`Subscribe`/`ServeSubscribers`
-  wrapping the existing primitive), not a mechanical rename. Per-adapter
-  implementation DETAIL for both remains deferred to the future
-  adapter-wiring pass — only the SHAPE of what's needed is now
-  correctly scoped.
+  and FULLY RESOLVED (verified via a later code audit).** `zeromq`'s
+  original claim was confirmed accurate (its existing `sock`-taking
+  shape maps cleanly onto the two-tier split, no new capability
+  needed). `mqtt`(v3)'s original claim was WRONG — checked the actual
+  code and found no router, no bare `Subscribe` at all (only the
+  lower-level, unchanged `SubscribeHandler` closure-builder) —
+  `mqtt`(v3) needed GENUINELY NEW capability (a higher-level
+  `Caller`/`Subscribe`/`ServeSubscribers` wrapping the existing
+  primitive), not a mechanical rename. **Both now SHIPPED**: all three
+  adapters (`mqtt`, `mqtt5`, `zeromq`) confirmed via code to have
+  `Caller`(unexported by Decision 6)/`ServeSubscribers`/the two-tier
+  `Subscribe`/`SubscribeWithHandle` split — no per-adapter
+  implementation detail remains deferred.
 - ~~`zeromq`'s Fn shapes for both directions... needs a new wire-level
   credential convention~~ — **RESOLVED, scope narrowed.** Decision 3's
   `*T`-write-access mechanism gives zeromq a fully-tractable Fn shape
   with NO wire-level convention needed. What remains open (its own
   optional out-of-band frame mechanism, connection-level/CURVE) is spun
   out to [ZeroMQ Security Mechanism](zeromq-security.md) — zeromq's
-  `Caller`/`ServeSubscribers`/two-tier `Subscribe` mirroring is still
-  deferred to a future adapter-wiring pass, but no longer BLOCKED on
-  inventing a wire convention first.
+  `Caller`/`ServeSubscribers`/two-tier `Subscribe` mirroring SHIPPED (see
+  the item above); only the spun-out doc's own narrower remaining
+  question is still open.
 - ~~Coverage-check enforcement semantics during Decision 3's adapter
   wiring~~ — **RESOLVED.** `CheckCoverage` is now wired unconditionally
   (escape hatch #2, "Security model: two mechanisms, not three"
@@ -3415,13 +3524,19 @@ regressions in existing test suites.
   these four found gaps are REST's ONLY gaps or whether a direct review
   turns up more. Not started.
 
-Implementation has not started. **Decision 1 is now RESOLVED** (the
-former separate "Decision 2" is folded into it), and every design gap
-raised during this pass's review has been closed (see the list above) —
-the ONLY things left before this doc reaches full design-complete status
+**Implementation is now COMPLETE and verified** (this paragraph
+originally read "Implementation has not started" — stale, pre-
+implementation text never updated once Decisions 1-9 shipped; corrected
+here). **Decision 1 is RESOLVED** (the former separate "Decision 2" is
+folded into it), and every design gap raised during this doc's many
+review passes has been closed (see the list above, and Decisions 1-9's
+own status banners) — the only things left OUTSIDE this doc's own scope
 are `zeromq`'s remaining, much-narrower open questions (spun out to
-[ZeroMQ Security Mechanism](zeromq-security.md)), the per-adapter
-implementation DETAIL (not shape) deferred to the future adapter-wiring
-pass for `mqtt`(v3)/`zeromq`, and the REST-workflow-review reminder
-immediately above (owed once THIS doc's own design work concludes, not
-a blocker for starting `api/events`/`ports` implementation itself).
+[ZeroMQ Security Mechanism](zeromq-security.md), still "idea only"), and
+the REST-workflow-review reminder immediately above (already fully
+tracked via its own 4 spun-out docs, all still "idea only"/"PLANNED —
+no implementation yet" — none of these block THIS doc's own
+completion). The per-adapter `Caller`/`ServeSubscribers` implementation
+detail for `mqtt`(v3)/`zeromq` this paragraph used to defer is DONE (see
+the corrected item above) — nothing adapter-shaped remains open for
+pub/sub itself.

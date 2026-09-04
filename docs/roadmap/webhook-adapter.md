@@ -53,7 +53,7 @@ side and everything else remains a zero-core-change addition).
 > `http.Handler` — was still available for `ReceiveAdapter` to build on
 > "exactly like `nethttp.IngestAdapter` does internally." That function
 > was REMOVED during
-> [Middleware Workflow Simplification](../design/middleware-workflow-simplification.md)'s
+> [Middleware Workflow Simplification](../design/d-0001-rest-middleware-workflow-simplification.md)'s
 > old-door deletion phase, and `IngestAdapter` itself now calls an
 > UNEXPORTED replacement (`handlerFunc`) — inaccessible from an external
 > package like `adapters/webhook`. The **outbound** side is unaffected

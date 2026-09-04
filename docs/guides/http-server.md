@@ -273,7 +273,7 @@ err := builder.Serve(ctx) // blocks, owns its own http.Server
 ```
 
 This is the SOLE public server-startup workflow (per
-`docs/roadmap/pubsub-workflow-simplification.md`'s Decision 6 — "no escape hatches"): the
+`docs/design/d-0002-pubsub-workflow-simplification.md`'s Decision 6 — "no escape hatches"): the
 lower-level, wire-only `Serve(mux, builder)`/`ServeSSE(mux, builder)` functions this guide's
 earlier code snippets used to call directly are now unexported internals that `AttachMux`/
 `AttachRouter` call for you — there is no other public entry point for wiring a `*rest.Server`

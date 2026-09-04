@@ -3,7 +3,7 @@
 > **Status:** PLANNED — no implementation yet. Replaces the now-deleted
 > "Events/ReqReply/Ports Workflow Simplification" doc's `api/reqreply`-
 > scoped content (that doc's pub/sub-scoped content is superseded by
-> [Pub/Sub Workflow Simplification](pubsub-workflow-simplification.md),
+> [Pub/Sub Workflow Simplification](../design/d-0002-pubsub-workflow-simplification.md),
 > now fully implemented). Spun out of a dedicated thin-adapter review
 > (see [Protocol-Native Feature Declarations](protocol-native-features.md)'s
 > status banner) that confirmed REST and pub/sub already follow the
@@ -34,7 +34,7 @@ inspection:
   `events.Client` owns `Attach`/`Publish`/`Subscribe`/
   `ServeSubscribers`; `mqtt5.Attach`/`mqtt.Attach`/`zeromq.Attach` are
   thin `Transport` binders. Decision 7 of
-  [Pub/Sub Workflow Simplification](pubsub-workflow-simplification.md)
+  [Pub/Sub Workflow Simplification](../design/d-0002-pubsub-workflow-simplification.md)
   added a second, complementary spec-free path
   (`events.PublishHandle`/`SubscribeHandle` + each adapter's
   `NewPublishTransport`/`NewSubscribeTransport`) that keeps the SAME
@@ -118,7 +118,7 @@ forbids generic methods on non-generic types), `reqreply.Client.Call`/
 `reqreply.Server.Serve` follow the SAME reflection-based shape — this is
 a structural necessity, not a design choice, and mirrors
 `events.Transport`'s identical justification in
-[Pub/Sub Workflow Simplification](pubsub-workflow-simplification.md)'s
+[Pub/Sub Workflow Simplification](../design/d-0002-pubsub-workflow-simplification.md)'s
 Decision 5.
 
 ### Decision 2 — each adapter implements a THIN `ServerTransport`/`ClientTransport`
@@ -275,7 +275,7 @@ features against.
 - Migration path for existing callers of `adapters/mqtt5.Serve`/`.Call`
   and `adapters/zeromq.Serve`/`.Call`/`.ServeRouter` (breaking change) —
   needs an explicit checklist before implementation, mirroring
-  [Pub/Sub Workflow Simplification](pubsub-workflow-simplification.md)'s
+  [Pub/Sub Workflow Simplification](../design/d-0002-pubsub-workflow-simplification.md)'s
   own migration rounds (migrate every real example, not just tests,
   before deleting the old adapter-level entry points).
 - Whether Response Topic + Correlation Data should be a DECLARED

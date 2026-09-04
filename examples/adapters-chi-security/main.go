@@ -177,7 +177,7 @@ func recordRejection(ctx context.Context, path string) {
 // extract — the runtime counterpart to a route's declare-time
 // middleware.SecurityScheme, matched by schemeName. Passed to
 // Route.HandleMW(&declMw, scopesImpl(...).Fn), which pairs it against the
-// matching .Use()-declared scheme (see docs/design/middleware-workflow-simplification.md).
+// matching .Use()-declared scheme (see docs/design/d-0001-rest-middleware-workflow-simplification.md).
 func scopesImpl[Req any](schemeName string, extract func(ctx context.Context, r *http.Request, req *Req) (map[string][]string, error)) middleware.ServerImplementation {
 	return middleware.ServerImplementation{
 		Name:      "implement-scopes:" + schemeName,

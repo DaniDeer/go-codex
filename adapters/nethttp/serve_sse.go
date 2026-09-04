@@ -45,7 +45,7 @@ func writeSSEData(w io.Writer, data []byte) (int, error) {
 // all-or-nothing validation, Part 3 duplicate detection + recover safety
 // net) and its reflect-based generic dispatch mechanism (see "Decision:
 // serve's generic dispatch mechanism" in
-// docs/design/middleware-workflow-simplification.md) — SSERouteHandle's
+// docs/design/d-0001-rest-middleware-workflow-simplification.md) — SSERouteHandle's
 // EncodeEvent/ValidateEvent/MergeEvent and the send func(Event) error
 // callback shape are all invoked via reflect.Value.Call since Req/Event
 // are erased at this call site.

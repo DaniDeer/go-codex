@@ -64,7 +64,7 @@ var _ events.SubscriberServer = (*caller)(nil)
 // else a filter derived from the handle's topic via [deriveWildcardFilter]
 // (fixes the templated-topic bug this NEW entry point would otherwise
 // inherit from day one — see
-// docs/roadmap/pubsub-workflow-simplification.md's wildcard bug-fix
+// docs/design/d-0002-pubsub-workflow-simplification.md's wildcard bug-fix
 // subsection). A non-templated topic's behavior is unchanged.
 //
 // Every attached [events.ChannelHandle.Implementations] Fn (from
@@ -607,7 +607,7 @@ func validateSubscribeImplementationShapesReflect(topic string, valueType reflec
 // This is an ADDITIONAL, opt-in, declare-time attachment point — it does
 // NOT replace [SubscribeOptions.Observer]/[PublishOptions.Observer], which
 // remain the PRIMARY, zero-ceremony per-call mechanism (see
-// docs/roadmap/pubsub-workflow-simplification.md's "General-purpose Fn
+// docs/design/d-0002-pubsub-workflow-simplification.md's "General-purpose Fn
 // shapes" subsection).
 func Observability[T any](topic string, obs stats.Observer) func(func(context.Context, T) error) func(context.Context, T) error {
 	return func(next func(context.Context, T) error) func(context.Context, T) error {

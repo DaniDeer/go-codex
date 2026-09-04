@@ -11,7 +11,7 @@
 // logging. The tracer records parent→child span names to prove context propagation
 // works through every layer — including across the client-side rest.Client.Call
 // via nethttp.Attach (the preferred workflow), whose Observer wiring was a
-// confirmed, now-fixed gap (see docs/design/middleware-workflow-simplification.md's
+// confirmed, now-fixed gap (see docs/design/d-0001-rest-middleware-workflow-simplification.md's
 // Observer/ErrorPattern addendum).
 //
 // Run with: go run ./examples/http-trace-span-propagation

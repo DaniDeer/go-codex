@@ -182,7 +182,7 @@ topicVars) (T, error)` closes the loop: decodes the payload (via
 value, in one call.
 
 `events.PublishHandle` + each adapter's `NewPublishTransport[T]` is the single-call publisher
-convenience (Decision 7 of `docs/roadmap/pubsub-workflow-simplification.md`) — mirrors
+convenience (Decision 7 of `docs/design/d-0002-pubsub-workflow-simplification.md`) — mirrors
 `nethttp.CallWithHandle`: the transport's `Publish` method derives the topic vars from the
 payload struct automatically via `codex.EncodeVars(msg, handle.MergeFields()...)` internally.
 The same convenience exists for every transport with a pub/sub event surface —

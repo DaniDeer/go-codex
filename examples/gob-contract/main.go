@@ -42,8 +42,8 @@
 // centralizing format resolution onto the handle itself
 // (`RouteHandle.EncodeRequestWithFormats`/`DecodeResponseWithFormats`,
 // `ChannelHandle.EncodeWithFormats`/`DecodeMergedWithFormats`). See
-// docs/design/middleware-workflow-simplification.md's Addendum 2 (REST)
-// and docs/roadmap/pubsub-workflow-simplification.md's Decision 9
+// docs/design/d-0001-rest-middleware-workflow-simplification.md's Addendum 2 (REST)
+// and docs/design/d-0002-pubsub-workflow-simplification.md's Decision 9
 // (events). This example proves BOTH fixes with the SAME shared Gob
 // contract:
 //

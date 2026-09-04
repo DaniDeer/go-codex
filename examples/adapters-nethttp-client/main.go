@@ -16,7 +16,7 @@
 // handle bookkeeping. It used to have two real gaps versus the escape hatch
 // below (dropped [stats.Observer] wiring, and no [rest.ErrorPattern]
 // decode on non-2xx responses) — both are FIXED (see
-// docs/design/middleware-workflow-simplification.md's Observer/ErrorPattern
+// docs/design/d-0001-rest-middleware-workflow-simplification.md's Observer/ErrorPattern
 // addendum, and its second addendum for a declared-format gap fixed the
 // same way). Section 0 proves both fixes: a happy-path create followed by
 // a duplicate-email conflict decoded via [errors.As] into

@@ -5,7 +5,7 @@
 > of scope (Phase 2)" once both sub-features turned out to be genuinely
 > CLIENT+SERVER, not client-only follow-ons — too large a scope to keep
 > as a two-bullet aside in that doc (since shipped and removed; see
-> `docs/design/middleware-workflow-simplification.md`'s addendum for the
+> `docs/design/d-0001-rest-middleware-workflow-simplification.md`'s addendum for the
 > design lineage).
 > [← Back to Roadmap](index.md)
 >

@@ -75,7 +75,7 @@ imageCh.WithFormats(format.Binary(pngCodec).WithContentType("image/png"))
 
 // Publish a PNG — validate.PNG runs before the message is sent, via the
 // spec-free, handle-based Decision 7 call surface
-// (docs/roadmap/pubsub-workflow-simplification.md): adaptermqtt.NewPublishTransport[T]
+// (docs/design/d-0002-pubsub-workflow-simplification.md): adaptermqtt.NewPublishTransport[T]
 // satisfies events.PublishTransport[T], consumed through events.PublishHandle.
 pubTransport := adaptermqtt.NewPublishTransport[[]byte](client, 1, false,
     adaptermqtt.PublishOptions[[]byte]{Observer: obs})
@@ -170,7 +170,7 @@ Since `Client.Publish`/`Client.Subscribe` are ordinary Go methods (not generic �
 a method from introducing its own type parameters), arguments are passed as `any` and their
 concrete types are recovered internally via reflection; a mismatch surfaces as
 `events.TransportTypeMismatchError` at CALL time. See
-`docs/roadmap/pubsub-workflow-simplification.md`'s Decision 5 for the full design and its
+`docs/design/d-0002-pubsub-workflow-simplification.md`'s Decision 5 for the full design and its
 documented v1 scope limits (no per-call format override, QoS 0 only, no general-purpose
 SubscribeMW/PublishMW wrapping — use `events.SubscribeHandle`/`events.PublishHandle` with
 `mqtt.NewSubscribeTransport`/`mqtt.NewPublishTransport` directly for those).

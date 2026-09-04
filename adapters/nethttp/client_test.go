@@ -941,7 +941,7 @@ func TestCallHandle_NoMergeFieldsMatchesCall(t *testing.T) {
 // a [codex.ValidationError] without ever reaching the network. This
 // derivation is internal plumbing shared by [Attach] (the sole public
 // client-side workflow — see
-// docs/roadmap/pubsub-workflow-simplification.md's Decision 6) and by
+// docs/design/d-0002-pubsub-workflow-simplification.md's Decision 6) and by
 // [ports]' handle-based binding adapters.
 func Example() {
 	type Item struct{ ID, Name string }

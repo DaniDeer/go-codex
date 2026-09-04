@@ -19,7 +19,7 @@ import (
 const eventsPkgPath = "github.com/DaniDeer/go-codex/api/events"
 
 // transport implements [events.Transport], wrapping an internal [*Caller]
-// — built by [Attach]. See docs/roadmap/pubsub-workflow-simplification.md's
+// — built by [Attach]. See docs/design/d-0002-pubsub-workflow-simplification.md's
 // Decision 5 for the full design and the reflection technique this type
 // relies on (Go forbids generic methods, so Publish/Subscribe/
 // ServeSubscribers recover the concrete payload type at runtime via
@@ -55,7 +55,7 @@ type transport struct {
 // [stats.Observer] (RecordPublish/RecordSubscribe, TraceObserver) IS
 // fully wired; a subscribe handler's returned error also consults a
 // declared [events.ErrorChannel] — see
-// docs/roadmap/pubsub-workflow-simplification.md's Decision 8 for the
+// docs/design/d-0002-pubsub-workflow-simplification.md's Decision 8 for the
 // fix history.
 func Attach(client *events.Client, sock FramedSocket) error {
 	return client.Attach(&transport{caller: newCaller(sock, client)})

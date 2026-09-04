@@ -1,7 +1,7 @@
 # Protocol-Native Feature Declarations — `api/events`, `api/rest`, adapters
 
 > **Status:** Idea only — no driver yet. Spun out of
-> [Pub/Sub Workflow Simplification](pubsub-workflow-simplification.md)'s
+> [Pub/Sub Workflow Simplification](../design/d-0002-pubsub-workflow-simplification.md)'s
 > review of the middleware concept for spec-adding custom middleware
 > (REST's `FromHeaderParam`-style bridges). That review surfaced a
 > genuine question: how should PROTOCOL-SPECIFIC capabilities (MQTT5's
@@ -83,7 +83,7 @@ func (ConflateMode) isProtocolFeature() {}
 **Declared** via a new `.WithFeature(f events.ProtocolFeature) Subscriber[T]`/
 `Publisher[T]` method (accumulates a `[]ProtocolFeature` on the
 role-scoped builder — same accumulation pattern
-[Pub/Sub Workflow Simplification](pubsub-workflow-simplification.md)'s
+[Pub/Sub Workflow Simplification](../design/d-0002-pubsub-workflow-simplification.md)'s
 `.Use()` already established).
 
 **Evaluated** at the CONCRETE adapter's OWN `Subscribe`/`Publish`/

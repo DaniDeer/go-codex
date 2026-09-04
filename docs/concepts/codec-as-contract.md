@@ -70,7 +70,7 @@ for the underlying promise and its per-boundary coverage — REST is the
 reference implementation, but events/req-reply/WebSocket/SSE all ship the
 same single-call convenience today (`events.PublishHandle` + each
 adapter's `NewPublishTransport` for pub/sub — Decision 7 of
-`docs/roadmap/pubsub-workflow-simplification.md`; `mqtt5.CallHandle`/
+`docs/design/d-0002-pubsub-workflow-simplification.md`; `mqtt5.CallHandle`/
 `zeromq.CallHandle` for req/reply).
 
 ## When to use this pattern

@@ -538,7 +538,7 @@ Used correctly in: `PipelineHandlerFunc`, `AsPipelineFunc`. Do not flag as an is
 - **After any exported symbol removal/rename, run checklist §14 (Godoc & Documentation-Site
   Reference Integrity) explicitly.** Dangling `[Symbol]` godoc links and stale `docs/*.md`/
   `examples/*` code snippets are invisible to `go build`/`go vet`/`go test`/`staticcheck` — see
-  `docs/design/middleware-workflow-simplification.md`'s "Lessons Learned" for a real case where
+  `docs/design/d-0001-rest-middleware-workflow-simplification.md`'s "Lessons Learned" for a real case where
   this required two separate full-repo sweep rounds after the code-level work was already
   declared "done and verified."
 - **A function that bundles multiple responsibilities (wiring + a validation/coverage check,

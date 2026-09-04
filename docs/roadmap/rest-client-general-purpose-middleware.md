@@ -1,7 +1,7 @@
 # REST Client-Side General-Purpose Middleware — `middleware`, `api/rest`, `adapters/nethttp`, `adapters/chi`
 
 > **Status:** Idea only — no driver yet. Spun out of
-> [Pub/Sub Workflow Simplification](pubsub-workflow-simplification.md)'s
+> [Pub/Sub Workflow Simplification](../design/d-0002-pubsub-workflow-simplification.md)'s
 > critical review of the middleware concept for non-spec-adding
 > middlewares (like an Observer). That review traced REST's own
 > dispatch code precisely and found a genuine, pre-existing gap:

@@ -21,7 +21,7 @@ import (
 // goroutine per subscribe route:
 //
 // The internal caller type bundles exactly ONE [FramedSocket] (confirmed via
-// docs/roadmap/pubsub-workflow-simplification.md's zeromq Caller
+// docs/design/d-0002-pubsub-workflow-simplification.md's zeromq Caller
 // subsection — 2 fields, sock+events, no per-route socket). A
 // [FramedSocket] is a thin wrapper around a single underlying ZMQ socket
 // instance; ZMQ sockets are NOT safe for concurrent use from multiple
@@ -253,7 +253,7 @@ func resolveSubscribeOptsReflect(topic string, handlerOptsAny any) (resolvedSubs
 // error: a broader byte-prefix subscription (see [deriveTopicPrefix])
 // necessarily receives some non-matching concrete topics sharing the
 // same prefix too (confirmed safe via
-// docs/roadmap/pubsub-workflow-simplification.md's bug-fix subsection —
+// docs/design/d-0002-pubsub-workflow-simplification.md's bug-fix subsection —
 // the SAME reasoning [SubscribeWithHandle]'s own merge-field mismatch
 // handling already relies on).
 func dispatchToRoute(ctx context.Context, routes []*subscriberRoute, topic string, payload []byte) {

@@ -19,7 +19,7 @@ import (
 //
 // Returns the BARE closure, not a middleware.ServerImplementation —
 // [rest.Route.HandleMW] builds that internally from whatever fn it
-// receives (see docs/design/middleware-workflow-simplification.md's
+// receives (see docs/design/d-0001-rest-middleware-workflow-simplification.md's
 // "Decision: HandleMW/ClientMW unification"). Observability never
 // contributes to a route's spec, so pass nil as HandleMW's mw:
 //

@@ -32,7 +32,7 @@
 // Layer 3 (PUB/SUB) — TWO workflows, in order of preference:
 //
 //  1. PREFERRED — events.Client + mqtt5adapter.Attach + Client.Publish/.Subscribe
-//     (Decision 5 of docs/roadmap/pubsub-workflow-simplification.md). Attach
+//     (Decision 5 of docs/design/d-0002-pubsub-workflow-simplification.md). Attach
 //     the adapter to the client ONCE; from there, client.Publish/client.Subscribe
 //     fulfill each declared Subscriber[T]/Publisher[T]'s requirements directly —
 //     no further mqtt5adapter.* calls needed at the usage site. The SAME client
@@ -152,7 +152,7 @@ var ReadingsChannel = events.NewChannel[SensorReading](
 // registering BOTH against the SAME events.Client for the SAME topic
 // dedups to the FIRST-registered role's spec entry (documented,
 // first-registered-wins behavior — see
-// docs/roadmap/pubsub-workflow-simplification.md's Decision 1).
+// docs/design/d-0002-pubsub-workflow-simplification.md's Decision 1).
 var ReadingsSubscriber = ReadingsChannel.WithSubscribe(events.Subscribe{
 	OperationID: "receiveSensorReading",
 	Summary:     "Receive a sensor reading.",

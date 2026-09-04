@@ -227,7 +227,7 @@ type PublishOptions[T any] struct {
 // opts.OnError unchanged, identical to this function's pre-existing
 // behavior. Mirrors [mqtt5PublishAdapter.handleUpstreamError]'s action
 // dispatch, extended here to the subscribe side — see
-// docs/roadmap/pubsub-workflow-simplification.md's Decision 8.
+// docs/design/d-0002-pubsub-workflow-simplification.md's Decision 8.
 //
 // Separating handler creation from broker subscription lets SubscribeStream
 // reuse the same validation logic without calling the broker.
@@ -512,7 +512,7 @@ func validateSubscribeImplementationShapes[T any](impls []middleware.ServerImple
 // else a filter derived from handle.Topic via [deriveWildcardFilter] (fixes
 // a pre-existing bug where a templated topic's placeholders were sent
 // VERBATIM to the broker, which never matches any real published topic —
-// see docs/roadmap/pubsub-workflow-simplification.md's wildcard bug-fix
+// see docs/design/d-0002-pubsub-workflow-simplification.md's wildcard bug-fix
 // subsection). A non-templated topic's behavior is unchanged.
 //
 // Every attached [events.ChannelHandle.Implementations] Fn (from
@@ -646,7 +646,7 @@ func wrapPublishGeneral[T any](fn func(context.Context, T) error, impls []middle
 // call. Mirrors adapters/nethttp's validateClientImplementationShapes,
 // extended with the second, general-purpose shape (unlike REST's
 // ClientMW, which recognizes only one — see
-// docs/roadmap/pubsub-workflow-simplification.md's "General-purpose
+// docs/design/d-0002-pubsub-workflow-simplification.md's "General-purpose
 // (non-spec) Fn shapes" subsection for why pub/sub's PublishMW gets both).
 func validatePublishImplementationShapes[T any](impls []middleware.ClientImplementation) error {
 	for _, impl := range impls {

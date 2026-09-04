@@ -117,7 +117,7 @@ func (o securitySchemeOpt) applyChannel(cb *channelBuilder) {
 // [Channel.Register]/[Channel.ClientHandle] methods it originally paired
 // with were fully removed) — full removal of WithSecurityScheme itself
 // remains a distinct, not-yet-started later phase of
-// docs/roadmap/pubsub-workflow-simplification.md.
+// docs/design/d-0002-pubsub-workflow-simplification.md.
 func WithSecurityScheme(name string, scheme SecurityScheme) ChannelOpt {
 	return securitySchemeOpt{name: name, scheme: scheme}
 }
@@ -605,7 +605,7 @@ type ChannelHandle[T any] struct {
 	// (Phase 5+, per-adapter) — [Subscribe]/[SubscribeHandle]'s own
 	// call-time fn parameter NEVER reads this field, even when both are
 	// attached to the same declaration. See
-	// docs/roadmap/pubsub-workflow-simplification.md's "Subscriber[T].WithHandler
+	// docs/design/d-0002-pubsub-workflow-simplification.md's "Subscriber[T].WithHandler
 	// REINSTATED" subsection.
 	Handler func(context.Context, T) error
 
@@ -1001,7 +1001,7 @@ type namedServer struct {
 //
 // Client was named Builder prior to this package's client-centric role
 // redesign; the deprecated Builder/NewBuilder aliases have since been
-// removed (docs/roadmap/pubsub-workflow-simplification.md's exhaustive
+// removed (docs/design/d-0002-pubsub-workflow-simplification.md's exhaustive
 // migration pass) — every caller now uses Client/NewClient directly.
 type Client struct {
 	// mu guards every field below that can be mutated after construction
@@ -1036,7 +1036,7 @@ type Client struct {
 	// [Client.Attach] (e.g. by zeromq.Attach/mqtt5.Attach/mqtt.Attach) —
 	// nil until Attach is called. See [Client.Publish]/[Client.Subscribe]/
 	// [Client.ServeSubscribers]'s doc comments and Decision 5 of
-	// docs/roadmap/pubsub-workflow-simplification.md for the full design
+	// docs/design/d-0002-pubsub-workflow-simplification.md for the full design
 	// and rationale (why this is `any`-typed/reflection-based rather than
 	// a compile-time type-safe generic method — Go forbids methods from
 	// introducing their own type parameters).
@@ -1082,7 +1082,7 @@ func WithTopicConstraints(cons ...codex.Constraint[string]) ClientOption {
 // WithInfo sets a [Client]'s API metadata (title/version/description).
 // Optional — a [Client] built without WithInfo has a zero-value Info{}
 // (empty Title/Version/Description in [Client.AsyncAPISpec]'s output) —
-// per Decision 7 of docs/roadmap/pubsub-workflow-simplification.md, spec
+// per Decision 7 of docs/design/d-0002-pubsub-workflow-simplification.md, spec
 // metadata is no longer mandatory ceremony for callers who only want the
 // [Client.Attach]/[Client.Publish]/[Client.Subscribe] call surface (or the
 // no-Client-at-all [PublishHandle]/[SubscribeHandle] surface) and never
@@ -1316,7 +1316,7 @@ func sameScopeSet(a, b []string) bool {
 // Route.ClientHandle), this ONE fallible function suffices for pub/sub:
 // [Subscriber.Handle]/[Publisher.Handle] are ALREADY universally fallible,
 // even with a nil client, so there is no infallibility constraint left to
-// preserve (see docs/roadmap/pubsub-workflow-simplification.md's Decision 1).
+// preserve (see docs/design/d-0002-pubsub-workflow-simplification.md's Decision 1).
 //
 // Returns the MERGED SecuritySchemes map — the manual declaration's scheme
 // metadata is passed in as the starting schemes map (from
@@ -1396,7 +1396,7 @@ func applyEventsSecurityDeclarations(topic string, security *[]route.SecurityReq
 // RequestQueryParams/ResponseHeaderParams/ResponseCookieParams) — fields
 // [middleware.Middleware] carries for api/rest's header/cookie/query
 // boundary, meaningless for pub/sub's topic-only boundary. This is an
-// INTERIM fix (see docs/roadmap/pubsub-workflow-simplification.md's
+// INTERIM fix (see docs/design/d-0002-pubsub-workflow-simplification.md's
 // "middleware.Middleware's REST-only fields, rejected eagerly" subsection);
 // the long-term fix is a common-base + per-pattern-derived middleware type
 // hierarchy, tracked separately.
@@ -1568,7 +1568,7 @@ func (e ConflictingSecurityDeclarationError) LogValue() slog.Value {
 // contributions that are meaningless for pub/sub's topic-only boundary
 // (e.g. a [middleware.Middleware] accidentally built via
 // rest.FromHeaderParam and attached directly to a channel). See
-// docs/roadmap/pubsub-workflow-simplification.md's "middleware.Middleware's
+// docs/design/d-0002-pubsub-workflow-simplification.md's "middleware.Middleware's
 // REST-only fields, rejected eagerly" subsection.
 //
 // Use [errors.As] to extract the topic and middleware name:
@@ -1660,7 +1660,7 @@ type Publisher[T any] struct {
 // participate in subscribe/publish declaration — WithSubscribe/WithPublish
 // are the preferred entry points going forward — but [Subscribe]/[Publish]
 // still implement [ChannelOpt] for existing callers during this codebase's
-// phased migration (see docs/roadmap/pubsub-workflow-simplification.md).
+// phased migration (see docs/design/d-0002-pubsub-workflow-simplification.md).
 func (c Channel[T]) WithSubscribe(s Subscribe) Subscriber[T] {
 	ch := c
 	ch.opts = append(append([]ChannelOpt{}, c.opts...), s)
@@ -1689,7 +1689,7 @@ func (s Subscriber[T]) Use(mws ...middleware.Middleware) Subscriber[T] {
 // This is DIFFERENT from, and fully independent of, [Subscribe]/
 // [SubscribeHandle]'s own call-time fn parameter (which stays
 // unchanged, required, and read-only-by-that-call — see
-// docs/roadmap/pubsub-workflow-simplification.md's "Why Subscribe(fn)
+// docs/design/d-0002-pubsub-workflow-simplification.md's "Why Subscribe(fn)
 // itself never became declare-time-only" subsection). fn is consumed
 // EXCLUSIVELY by a future whole-client ServeSubscribers (Phase 5+,
 // per-adapter), reached via [Subscriber.Register] populating
@@ -1743,7 +1743,7 @@ func buildServerImplementation(mw *middleware.Middleware, fn any) middleware.Ser
 // time, mirroring [middleware.ServerImplementation.Fn]'s existing
 // type-erasure; recognizing "security-shaped" vs. "general-purpose
 // wrapping-shaped" Fn values is each adapter's OWN responsibility, not
-// this package's — see docs/roadmap/pubsub-workflow-simplification.md's
+// this package's — see docs/design/d-0002-pubsub-workflow-simplification.md's
 // Decision 3. A wrong-shaped fn fails with a typed error at that point,
 // never silently.
 //
@@ -2040,7 +2040,7 @@ func (e ChannelTypeConflictError) LogValue() slog.Value {
 // slot 2 of [Client]'s registry (feeding a future whole-client
 // ServeSubscribers) exists specifically to hold invokable handlers; an
 // entry with no handler would be useless to it. See
-// docs/roadmap/pubsub-workflow-simplification.md's "A blocking gap, found
+// docs/design/d-0002-pubsub-workflow-simplification.md's "A blocking gap, found
 // and fixed this pass" subsection.
 //
 // Use [errors.As] to extract the topic:
@@ -2075,7 +2075,7 @@ func (e MissingHandlerError) LogValue() slog.Value {
 // ALREADY-concrete exported closures (Decode, Handler) — mirrors
 // [rest.RouteEntry] exactly, including its "Serve's generic dispatch
 // mechanism" rationale (see
-// docs/roadmap/pubsub-workflow-simplification.md's
+// docs/design/d-0002-pubsub-workflow-simplification.md's
 // "Client.SubscriberEntries() + ServeSubscribers's generic dispatch
 // mechanism" subsection). The isSubscriberEntry marker method seals this
 // interface to api/events' own implementation.
@@ -2125,7 +2125,7 @@ func (e *typedSubscriberEntry[T]) isSubscriberEntry() {}
 // the internal Handle call [Subscribe]/[SubscribeHandle] make on their
 // own, handler-less [Subscriber] value). This separation fixes a real bug
 // found during design review — see
-// docs/roadmap/pubsub-workflow-simplification.md's "A blocking gap, found
+// docs/design/d-0002-pubsub-workflow-simplification.md's "A blocking gap, found
 // and fixed this pass" subsection for the full story.
 //
 // There is no way to un-register a previously-registered entry — a
@@ -2215,7 +2215,7 @@ type PublisherClient[T any] interface {
 // attached to a [Client] via an adapter-specific Attach function (e.g.
 // [zeromq.Attach], mqtt5.Attach, mqtt.Attach) — see [Client.Attach]. It
 // gives [Client] itself a literal Publish/Subscribe/ServeSubscribers call
-// shape (Decision 5 of docs/roadmap/pubsub-workflow-simplification.md).
+// shape (Decision 5 of docs/design/d-0002-pubsub-workflow-simplification.md).
 //
 // Methods are necessarily `any`-typed: Go forbids methods from
 // introducing their own type parameters, so a compile-time type-safe

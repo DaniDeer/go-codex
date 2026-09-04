@@ -4,7 +4,7 @@
 // per-T [events.SubscribeTransport]/[events.PublishTransport] values
 // consumed by [events.SubscribeHandle]/[events.PublishHandle] — the
 // no-*Client, handle-based call surface Decision 7
-// (docs/roadmap/pubsub-workflow-simplification.md) inverts into api/events
+// (docs/design/d-0002-pubsub-workflow-simplification.md) inverts into api/events
 // itself. Internally these still decode/validate/encode payloads using the
 // channel handle's codec exactly as before; only the call shape changed.
 //

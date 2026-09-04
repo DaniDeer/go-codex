@@ -10,7 +10,7 @@ import (
 // exists because OpenAPI needs ONE document; the client has no
 // equivalent accumulation need). Unexported: the sole public client-side
 // workflow is [Attach] + [rest.Client.Call] (see
-// docs/roadmap/pubsub-workflow-simplification.md's Decision 6); caller
+// docs/design/d-0002-pubsub-workflow-simplification.md's Decision 6); caller
 // is still used internally by [clientTransport] (built by [Attach]) and
 // by [call]/[callWithHandle].
 //

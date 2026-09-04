@@ -27,7 +27,7 @@ import (
 // scopesImpl reproduces the removed middleware.Scopes/Scopes
 // constructors' exact behavior — kept test-local since HandleMW now
 // builds this shape internally (see
-// docs/design/middleware-workflow-simplification.md's "Decision:
+// docs/design/d-0001-rest-middleware-workflow-simplification.md's "Decision:
 // HandleMW/ClientMW unification"); these tests exercise the OLD, still-
 // present Handler/Register directly (not HandleMW), so they still need a
 // raw middleware.ServerImplementation value to pass.
@@ -1446,7 +1446,7 @@ func TestRequestFormats_YAMLBodyAccepted(t *testing.T) {
 // dispatch's "format-negotiated body decode ALSO applies merge-capable
 // params" path (RequestFormats + a merge field together) — the ApplyMergeFields
 // reflect call added specifically for routes that decode via a non-default
-// format instead of plain DecodeMerged (see docs/design/middleware-workflow-simplification.md).
+// format instead of plain DecodeMerged (see docs/design/d-0001-rest-middleware-workflow-simplification.md).
 func TestRequestFormats_YAMLBodyWithQueryMergeField(t *testing.T) {
 	type mergeReq struct {
 		Name   string

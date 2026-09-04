@@ -261,7 +261,7 @@ first row; the third is deliberately rare:
 |---|---|---|
 | Delete | Single-feature roadmap doc, fully shipped, no lasting cross-cutting design value (the common case) | Remove file + `docs/roadmap/index.md` row + `zensical.toml` roadmap nav entry |
 | Keep in roadmap | Partially shipped / still has open follow-on phases | Update `> Status:` header, keep in place |
-| **Promote to `docs/design/`** — reserved for BIGGER architecture reworks only, not routine features | Fully shipped AND establishes a pattern **multiple** apis/ports/packages are expected to follow (not a single-adapter feature), OR fundamentally changes how an existing api/port/package works | Move file to `docs/design/<name>.md`, rewrite its `> Status:` header to "Implemented — architectural foundation", remove from roadmap index/nav, add to `docs/design/index.md` + `zensical.toml`'s `[nav."Design Documents"]` |
+| **Promote to `docs/design/`** — reserved for BIGGER architecture reworks only, not routine features | Fully shipped AND establishes a pattern **multiple** apis/ports/packages are expected to follow (not a single-adapter feature), OR fundamentally changes how an existing api/port/package works | Move file to `docs/design/d-NNNN-<name>.md` — a sequential, zero-padded number assigned in the CHRONOLOGICAL order design docs were WRITTEN, not renumbered later; see `docs/design/index.md`'s own numbering-convention note for the next available number — rewrite its `> Status:` header to "Implemented — architectural foundation", remove from roadmap index/nav, add to `docs/design/index.md` + `zensical.toml`'s `[nav."Design Documents"]` |
 
 In every case, also:
 - Add to `docs/features/` and `docs/guides/` and `zensical.toml` features/guides nav
@@ -321,7 +321,7 @@ When moving from roadmap to implementation, use this transition checklist:
 | Remove `> Status: Design complete — not yet implemented` from roadmap doc | See the 3-way delete/keep/promote-to-`docs/design/` policy in the "Documentation" section above |
 | If the plan removes/replaces an old function/API | Run the "Removing an old API" checklist below BEFORE deleting anything |
 
-### Removing an old API (learned the hard way — see `docs/design/middleware-workflow-simplification.md`'s "Lessons Learned")
+### Removing an old API (learned the hard way — see `docs/design/d-0001-rest-middleware-workflow-simplification.md`'s "Lessons Learned")
 
 A plan that replaces an old, multi-purpose function/door with a new one must
 treat the removal itself as a distinct, checked step — not an assumed-free
@@ -382,7 +382,7 @@ for d in examples/*/; do go run ./$d; done   # all examples exit 0
 - **All Examples must exit 0.** Fix stale patterns in existing examples if your change affects their API.
 - **Go generics methods cannot introduce new type params.** Use free functions (`forge.NewFunction[In, Out]`) when a second type parameter is needed on a generic type.
 - **Observer location strings are shared vocabulary** — use existing strings (`"sql_row"`, `"file"`, `"payload"`) before inventing new ones. New ones only when genuinely different.
-- **A reflect-based/generic dispatch mechanism claimed to be "equivalent" to existing code is a hypothesis until proven.** Migrating a representative sample of the old API's existing tests/examples onto it EARLY is the actual verification step — a design review that reads convincingly is not equivalent to a passing test. See `docs/design/middleware-workflow-simplification.md`'s "Lessons Learned" for a real case where this shipped unverified and hid 2 genuine gaps plus a security regression until wholesale test migration surfaced them.
+- **A reflect-based/generic dispatch mechanism claimed to be "equivalent" to existing code is a hypothesis until proven.** Migrating a representative sample of the old API's existing tests/examples onto it EARLY is the actual verification step — a design review that reads convincingly is not equivalent to a passing test. See `docs/design/d-0001-rest-middleware-workflow-simplification.md`'s "Lessons Learned" for a real case where this shipped unverified and hid 2 genuine gaps plus a security regression until wholesale test migration surfaced them.
 - **Deleting an old function can silently delete a bundled responsibility nobody re-derived.** Before removing an old multi-purpose door, enumerate its FULL side-effect list (not just its obvious primary purpose) — see the "Removing an old API" checklist above.
 
 ---

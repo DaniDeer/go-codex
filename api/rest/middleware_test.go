@@ -226,7 +226,7 @@ func TestWithMiddleware_ConflictingParamContribution(t *testing.T) {
 // typed per-kind fields (RequestHeaderParams/RequestCookieParams/etc.), so
 // a wrong-shape entry is now a Go COMPILE error, not a runtime
 // rest.ParamContributionShapeError (removed along with the type-erased
-// fields). See docs/design/middleware-workflow-simplification.md's
+// fields). See docs/design/d-0001-rest-middleware-workflow-simplification.md's
 // "Decision: typed RequestParams/ResponseParams fields".
 
 // ── ValidateRoute (L1/L8): full opts list, no live Builder needed ───────────

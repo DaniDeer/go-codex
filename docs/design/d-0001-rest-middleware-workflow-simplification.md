@@ -36,7 +36,7 @@
 > decisions (a 6th confirmed the status quo as correct, no change).
 > **Scope: REST (`api/rest`/`adapters/nethttp`/`adapters/chi`) only** —
 > `api/events`'s own equivalent shipped separately (see
-> [Pub/Sub Workflow Simplification](../roadmap/pubsub-workflow-simplification.md));
+> [Pub/Sub Workflow Simplification](d-0002-pubsub-workflow-simplification.md));
 > `api/reqreply`'s equivalent is designed in
 > [ReqReply Workflow Simplification](../roadmap/reqreply-workflow-simplification.md),
 > deliberately deferred until THIS doc's implementation ships.
@@ -1506,7 +1506,7 @@ Consumption — to be picked up AFTER this doc's implementation ships,
 same deferral pattern already established for
 [ReqReply Workflow Simplification](../roadmap/reqreply-workflow-simplification.md).
 (`api/events`'s own equivalent has since shipped — see
-[Pub/Sub Workflow Simplification](../roadmap/pubsub-workflow-simplification.md)
+[Pub/Sub Workflow Simplification](d-0002-pubsub-workflow-simplification.md)
 — and this doc's own addendum below.)
 
 ---
@@ -2514,7 +2514,7 @@ Added after a dedicated review of error handling and `stats.Observer`
 integration across REST and events under the "thin adapter" `Client.Attach`
 workflow (Decision 5, this doc's own `nethttp.Attach`/`AttachMux` design),
 triggered by a direct user request. Companion events-side fix documented in
-`docs/roadmap/pubsub-workflow-simplification.md`'s Decision 8.
+`docs/design/d-0002-pubsub-workflow-simplification.md`'s Decision 8.
 
 **Confirmed via code inspection: server-side `Attach` had NO gap.**
 `nethttp.AttachMux`/`chi.AttachRouter` delegate straight to the existing
@@ -2586,7 +2586,7 @@ suites.
 A second, structurally identical gap surfaced while proving the Observer/
 `ErrorPattern` fix above via example rework. The identical fix also
 landed on the events side in the same round — see
-`docs/roadmap/pubsub-workflow-simplification.md`'s Decision 9 for the
+`docs/design/d-0002-pubsub-workflow-simplification.md`'s Decision 9 for the
 events-specific detail (`ChannelHandle[T]`'s mirror-image methods).
 
 **Confirmed bug**: `clientTransport.Call`'s request-encode/response-decode

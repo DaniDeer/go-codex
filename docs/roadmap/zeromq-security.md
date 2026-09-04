@@ -1,7 +1,7 @@
 # ZeroMQ Security Mechanism — `adapters/zeromq`
 
 > **Status:** Idea only — no driver yet, but SIGNIFICANTLY DE-RISKED.
-> Spun out of [Pub/Sub Workflow Simplification](pubsub-workflow-simplification.md)'s
+> Spun out of [Pub/Sub Workflow Simplification](../design/d-0002-pubsub-workflow-simplification.md)'s
 > escape-hatch simplification review (Escape Hatch #5), which originally
 > assumed closing this gap required inventing an entirely new wire-level
 > credential convention before ANY progress was possible. That
@@ -30,7 +30,7 @@ MQTT 3.1.1's CONNECT-time username/password.
 
 ## What's now tractable, without any wire-format change
 
-[Pub/Sub Workflow Simplification](pubsub-workflow-simplification.md)'s
+[Pub/Sub Workflow Simplification](../design/d-0002-pubsub-workflow-simplification.md)'s
 Decision 3 gives `SubscribeMW`/`PublishMW`'s `fn` read/write access to
 `*T` — the DECODED payload itself, not any transport-specific envelope.
 A credential embedded as an ordinary field in the payload (validated,
@@ -53,7 +53,7 @@ any of the wire-level invention originally assumed necessary — a
 attach a credential today, using the SAME declarative attachment point
 (`Subscriber[T].SubscribeMW`/`Publisher[T].PublishMW`) every other
 transport uses. **This piece does not need its own roadmap item — it
-is part of [Pub/Sub Workflow Simplification](pubsub-workflow-simplification.md)'s
+is part of [Pub/Sub Workflow Simplification](../design/d-0002-pubsub-workflow-simplification.md)'s
 Decision 3 directly**, once implemented there.
 
 ## What remains genuinely open (this doc's actual scope)
