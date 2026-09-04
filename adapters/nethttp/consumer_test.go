@@ -1,10 +1,8 @@
-package nethttp_test
+package nethttp
 
 import (
 	"net/http"
 	"testing"
-
-	nethttp "github.com/DaniDeer/go-codex/adapters/nethttp"
 )
 
 // TestNewConsumer_WithBaseURL_ReturnsNewInstance is N1: NewConsumer +
@@ -15,7 +13,7 @@ import (
 // TestCall_WithRebasedCaller_ReachesNewHost), since Consumer alone has no
 // observable behavior without a Consume call to exercise it.
 func TestNewConsumer_WithBaseURL_ReturnsNewInstance(t *testing.T) {
-	base := nethttp.NewConsumer(http.DefaultClient, "http://base.example")
+	base := NewConsumer(http.DefaultClient, "http://base.example")
 	rebased := base.WithBaseURL("http://rebased.example")
 	if rebased == base {
 		t.Fatal("WithBaseURL must return a DISTINCT *Consumer, not the same pointer")
@@ -23,7 +21,7 @@ func TestNewConsumer_WithBaseURL_ReturnsNewInstance(t *testing.T) {
 }
 
 func TestConsumer_WithBaseURL_ChainedReturnsDistinctInstance(t *testing.T) {
-	base := nethttp.NewConsumer(http.DefaultClient, "http://base.example")
+	base := NewConsumer(http.DefaultClient, "http://base.example")
 	rebased := base.WithBaseURL("http://rebased.example")
 	rerebased := rebased.WithBaseURL("http://another.example")
 	if rerebased == nil || rerebased == rebased {

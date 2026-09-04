@@ -1,4 +1,4 @@
-package mqtt_test
+package mqtt
 
 import (
 	"context"
@@ -7,7 +7,6 @@ import (
 	"testing"
 	"time"
 
-	adaptermqtt "github.com/DaniDeer/go-codex/adapters/mqtt"
 	"github.com/DaniDeer/go-codex/api/events"
 	"github.com/DaniDeer/go-codex/codex"
 	"github.com/DaniDeer/go-codex/format"
@@ -27,7 +26,7 @@ func TestSubscribeAdapter_ValidPayload(t *testing.T) {
 	if err != nil {
 		t.Fatalf("construct port: %v", err)
 	}
-	p.Bind(ctx, adaptermqtt.SubscribeAdapter(client, handle, 0, format.JSON(userEventCodec), adaptermqtt.SubscribeAdapterOptions{}))
+	p.Bind(ctx, SubscribeAdapter(client, handle, 0, format.JSON(userEventCodec), SubscribeAdapterOptions{}))
 	s := p.Stream(ctx)
 
 	deadline := time.Now().Add(200 * time.Millisecond)
@@ -65,7 +64,7 @@ func TestSubscribeAdapter_AutoDerivesWildcardFilter(t *testing.T) {
 	if err != nil {
 		t.Fatalf("construct port: %v", err)
 	}
-	p.Bind(ctx, adaptermqtt.SubscribeAdapter(client, handle, 0, format.JSON(userEventCodec), adaptermqtt.SubscribeAdapterOptions{}))
+	p.Bind(ctx, SubscribeAdapter(client, handle, 0, format.JSON(userEventCodec), SubscribeAdapterOptions{}))
 	p.Stream(ctx)
 
 	deadline := time.Now().Add(200 * time.Millisecond)
@@ -92,7 +91,7 @@ func TestPublishAdapter_PublishesEachItem(t *testing.T) {
 	if err != nil {
 		t.Fatalf("construct port: %v", err)
 	}
-	p.Bind(ctx, adaptermqtt.PublishAdapter(client, handle, format.JSON(userEventCodec), adaptermqtt.MQTTDrainPublishOptions{}))
+	p.Bind(ctx, PublishAdapter(client, handle, format.JSON(userEventCodec), MQTTDrainPublishOptions{}))
 	p.Feed(ctx, gstream.From(ctx, ch))
 
 	topics := client.publishedTopicsSnapshot()
@@ -108,16 +107,15 @@ func TestPublishAdapter_ErrorChannelMatch_PublishesToDeclaredTopic(t *testing.T)
 	ctx := context.Background()
 	client := &mockClient{token: newCompletedToken(nil)}
 
-	b := events.NewBuilder(events.Info{Title: "Test", Version: "1.0.0"})
+	b := events.NewClient(events.WithInfo(events.Info{Title: "Test", Version: "1.0.0"}))
 	handle, err := events.NewChannel[userEvent]("user/created", userEventCodec,
-		events.Publish{Summary: "User created"},
 		events.ErrorChannel[userValidationErr, userErrPayload](
 			"user/created/errors", userErrPayloadCodec,
 			func(e userValidationErr) (userErrPayload, error) {
 				return userErrPayload{Code: "validation", Message: e.msg}, nil
 			},
 		),
-	).Register(b)
+	).WithPublish(events.Publish{Summary: "User created"}).Handle(b)
 	if err != nil {
 		t.Fatalf("Register: %v", err)
 	}
@@ -134,8 +132,8 @@ func TestPublishAdapter_ErrorChannelMatch_PublishesToDeclaredTopic(t *testing.T)
 	if perr != nil {
 		t.Fatalf("construct port: %v", perr)
 	}
-	p.Bind(ctx, adaptermqtt.PublishAdapter(client, handle, format.JSON(userEventCodec),
-		adaptermqtt.MQTTDrainPublishOptions{OnError: func(e error) { gotOnError = e }}))
+	p.Bind(ctx, PublishAdapter(client, handle, format.JSON(userEventCodec),
+		MQTTDrainPublishOptions{OnError: func(e error) { gotOnError = e }}))
 	p.Feed(ctx, src)
 
 	if gotOnError != nil {
@@ -160,16 +158,15 @@ func TestPublishAdapter_ErrorChannelNoMatch_FallsBackToOnError(t *testing.T) {
 	ctx := context.Background()
 	client := &mockClient{token: newCompletedToken(nil)}
 
-	b := events.NewBuilder(events.Info{Title: "Test", Version: "1.0.0"})
+	b := events.NewClient(events.WithInfo(events.Info{Title: "Test", Version: "1.0.0"}))
 	handle, err := events.NewChannel[userEvent]("user/created", userEventCodec,
-		events.Publish{Summary: "User created"},
 		events.ErrorChannel[userValidationErr, userErrPayload](
 			"user/created/errors", userErrPayloadCodec,
 			func(e userValidationErr) (userErrPayload, error) {
 				return userErrPayload{Code: "validation", Message: e.msg}, nil
 			},
 		),
-	).Register(b)
+	).WithPublish(events.Publish{Summary: "User created"}).Handle(b)
 	if err != nil {
 		t.Fatalf("Register: %v", err)
 	}
@@ -186,8 +183,8 @@ func TestPublishAdapter_ErrorChannelNoMatch_FallsBackToOnError(t *testing.T) {
 	if perr != nil {
 		t.Fatalf("construct port: %v", perr)
 	}
-	p.Bind(ctx, adaptermqtt.PublishAdapter(client, handle, format.JSON(userEventCodec),
-		adaptermqtt.MQTTDrainPublishOptions{OnError: func(e error) { gotOnError = e }}))
+	p.Bind(ctx, PublishAdapter(client, handle, format.JSON(userEventCodec),
+		MQTTDrainPublishOptions{OnError: func(e error) { gotOnError = e }}))
 	p.Feed(ctx, src)
 
 	if gotOnError == nil {
@@ -204,16 +201,15 @@ func TestPublishAdapter_ErrorChannelHandleAction_NoAutoPublish(t *testing.T) {
 	ctx := context.Background()
 	client := &mockClient{token: newCompletedToken(nil)}
 
-	b := events.NewBuilder(events.Info{Title: "Test", Version: "1.0.0"})
+	b := events.NewClient(events.WithInfo(events.Info{Title: "Test", Version: "1.0.0"}))
 	handle, err := events.NewChannel[userEvent]("user/created", userEventCodec,
-		events.Publish{Summary: "User created"},
 		events.ErrorChannel[userValidationErr, userErrPayload](
 			"user/created/errors", userErrPayloadCodec,
 			func(e userValidationErr) (userErrPayload, error) {
 				return userErrPayload{Code: "validation", Message: e.msg}, nil
 			},
 		).WithAction(events.ErrorHandle),
-	).Register(b)
+	).WithPublish(events.Publish{Summary: "User created"}).Handle(b)
 	if err != nil {
 		t.Fatalf("Register: %v", err)
 	}
@@ -230,8 +226,8 @@ func TestPublishAdapter_ErrorChannelHandleAction_NoAutoPublish(t *testing.T) {
 	if perr != nil {
 		t.Fatalf("construct port: %v", perr)
 	}
-	p.Bind(ctx, adaptermqtt.PublishAdapter(client, handle, format.JSON(userEventCodec),
-		adaptermqtt.MQTTDrainPublishOptions{OnError: func(e error) { gotOnError = e }}))
+	p.Bind(ctx, PublishAdapter(client, handle, format.JSON(userEventCodec),
+		MQTTDrainPublishOptions{OnError: func(e error) { gotOnError = e }}))
 	p.Feed(ctx, src)
 
 	if gotOnError == nil {
@@ -282,7 +278,7 @@ func TestPublishAdapter_DerivesVarsPerItem_WhenOptsVarsNil(t *testing.T) {
 		t.Fatalf("construct port: %v", err)
 	}
 	// opts.Vars left nil -> per-item derivation via PublishHandle.
-	p.Bind(ctx, adaptermqtt.PublishAdapter(client, handle, format.JSON(userEventCodec), adaptermqtt.MQTTDrainPublishOptions{}))
+	p.Bind(ctx, PublishAdapter(client, handle, format.JSON(userEventCodec), MQTTDrainPublishOptions{}))
 	p.Feed(ctx, gstream.From(ctx, ch))
 
 	topics := client.publishedTopicsSnapshot()
@@ -310,8 +306,8 @@ func TestPublishAdapter_ExplicitVarsStillWins(t *testing.T) {
 	if err != nil {
 		t.Fatalf("construct port: %v", err)
 	}
-	p.Bind(ctx, adaptermqtt.PublishAdapter(client, handle, format.JSON(userEventCodec),
-		adaptermqtt.MQTTDrainPublishOptions{Vars: map[string]string{"userID": "static-user"}}))
+	p.Bind(ctx, PublishAdapter(client, handle, format.JSON(userEventCodec),
+		MQTTDrainPublishOptions{Vars: map[string]string{"userID": "static-user"}}))
 	p.Feed(ctx, gstream.From(ctx, ch))
 
 	for _, topic := range client.publishedTopicsSnapshot() {

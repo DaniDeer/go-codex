@@ -35,18 +35,18 @@ func writeSSEData(w io.Writer, data []byte) (int, error) {
 	return w.Write(buf.Bytes())
 }
 
-// ServeSSE walks every [rest.SSERoute] registered into b (via
+// serveSSE walks every [rest.SSERoute] registered into b (via
 // [rest.SSERoute.Register]/[rest.SSERoute.RegisterHandle]) and wires each
-// handler-bearing one onto mux — the SSE counterpart to [Serve], sharing
+// handler-bearing one onto mux — the SSE counterpart to [serve], sharing
 // its EXACT failure semantics (Part 1 skip-no-handler, Part 2
 // all-or-nothing validation, Part 3 duplicate detection + recover safety
 // net) and its reflect-based generic dispatch mechanism (see "Decision:
-// Serve's generic dispatch mechanism" in
+// serve's generic dispatch mechanism" in
 // docs/design/middleware-workflow-simplification.md) — SSERouteHandle's
 // EncodeEvent/ValidateEvent/MergeEvent and the send func(Event) error
 // callback shape are all invoked via reflect.Value.Call since Req/Event
 // are erased at this call site.
-func ServeSSE(r gochi.Router, b *rest.Builder) error {
+func serveSSE(r gochi.Router, b *rest.Server) error {
 	entries := b.SSEEntries()
 
 	var routeErrs []RouteError
@@ -85,7 +85,7 @@ func ServeSSE(r gochi.Router, b *rest.Builder) error {
 func buildSSERouteHandler(handle any) (http.Handler, error) {
 	hv := reflect.ValueOf(handle)
 	if hv.Kind() != reflect.Pointer || hv.IsNil() {
-		return nil, fmt.Errorf("chi.ServeSSE: expected non-nil *rest.SSERouteHandle[Req, Event], got %T", handle)
+		return nil, fmt.Errorf("chi.serveSSE: expected non-nil *rest.SSERouteHandle[Req, Event], got %T", handle)
 	}
 	elem := hv.Elem()
 
@@ -96,7 +96,7 @@ func buildSSERouteHandler(handle any) (http.Handler, error) {
 	handlerOptsAny := elem.FieldByName("HandlerOpts").Interface()
 	handlerFnVal := elem.FieldByName("HandlerFn")
 	if handlerFnVal.IsNil() {
-		return nil, fmt.Errorf("chi.ServeSSE: route %s %s has no handler (internal error — HasHandler should have skipped it)", descriptor.Method, descriptor.Path)
+		return nil, fmt.Errorf("chi.serveSSE: route %s %s has no handler (internal error — HasHandler should have skipped it)", descriptor.Method, descriptor.Path)
 	}
 	handlerFn := handlerFnVal.Elem() // unwrap the `any` field to the concrete func value
 	reqType := handlerFn.Type().In(1)

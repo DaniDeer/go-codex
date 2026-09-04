@@ -1,4 +1,4 @@
-package chi_test
+package chi
 
 import (
 	"bufio"
@@ -10,7 +10,6 @@ import (
 	"strings"
 	"testing"
 
-	chiadapter "github.com/DaniDeer/go-codex/adapters/chi"
 	"github.com/DaniDeer/go-codex/api/rest"
 	gochi "github.com/go-chi/chi/v5"
 )
@@ -18,7 +17,7 @@ import (
 // --- Serve (regular routes) ---
 
 func TestChiServe_HappyPath(t *testing.T) {
-	b := rest.NewBuilder(testInfo)
+	b := rest.NewServer(testInfo)
 	err := rest.NewRoute[createReq, userResp]("POST", "/users",
 		createReqCodec, userRespCodec, rest.RouteMeta{OperationID: "createUser"},
 	).WithHandler(func(ctx context.Context, req createReq) (userResp, error) {
@@ -29,7 +28,7 @@ func TestChiServe_HappyPath(t *testing.T) {
 	}
 
 	r := gochi.NewRouter()
-	if err := chiadapter.Serve(r, b); err != nil {
+	if err := serve(r, b); err != nil {
 		t.Fatalf("Serve: %v", err)
 	}
 
@@ -51,7 +50,7 @@ func TestChiServe_HappyPath(t *testing.T) {
 }
 
 func TestChiServe_SkipsSpecOnlyRoutes(t *testing.T) {
-	b := rest.NewBuilder(testInfo)
+	b := rest.NewServer(testInfo)
 	if err := rest.NewRoute[createReq, userResp]("POST", "/spec-only",
 		createReqCodec, userRespCodec,
 	).Register(b); err != nil {
@@ -59,7 +58,7 @@ func TestChiServe_SkipsSpecOnlyRoutes(t *testing.T) {
 	}
 
 	r := gochi.NewRouter()
-	if err := chiadapter.Serve(r, b); err != nil {
+	if err := serve(r, b); err != nil {
 		t.Fatalf("Serve: %v", err)
 	}
 
@@ -72,7 +71,7 @@ func TestChiServe_SkipsSpecOnlyRoutes(t *testing.T) {
 }
 
 func TestChiServe_DuplicateRoute(t *testing.T) {
-	b := rest.NewBuilder(testInfo)
+	b := rest.NewServer(testInfo)
 	mkRoute := func() error {
 		return rest.NewRoute[createReq, userResp]("POST", "/dup",
 			createReqCodec, userRespCodec,
@@ -88,15 +87,15 @@ func TestChiServe_DuplicateRoute(t *testing.T) {
 	}
 
 	r := gochi.NewRouter()
-	err := chiadapter.Serve(r, b)
+	err := serve(r, b)
 	if err == nil {
 		t.Fatal("want error for duplicate route, got nil")
 	}
-	var multiErr chiadapter.MultiRouteError
+	var multiErr MultiRouteError
 	if !errors.As(err, &multiErr) {
 		t.Fatalf("want MultiRouteError, got %T: %v", err, err)
 	}
-	var dupErr chiadapter.DuplicateRouteError
+	var dupErr DuplicateRouteError
 	if !errors.As(err, &dupErr) {
 		t.Fatalf("want DuplicateRouteError inside MultiRouteError, got %v", err)
 	}
@@ -111,7 +110,7 @@ func TestChiServeOne_HappyPath(t *testing.T) {
 		return userResp{ID: "1", Name: req.Name}, nil
 	})
 
-	h, err := chiadapter.ServeOne(route)
+	h, err := serveOne(route)
 	if err != nil {
 		t.Fatalf("ServeOne: %v", err)
 	}
@@ -129,7 +128,7 @@ func TestChiServeOne_HappyPath(t *testing.T) {
 // --- ServeSSE ---
 
 func TestChiServeSSE_HappyPath(t *testing.T) {
-	b := rest.NewBuilder(testInfo)
+	b := rest.NewServer(testInfo)
 	err := rest.NewSSERoute[createReq, sseEvent]("/events",
 		createReqCodec, sseEventCodec, rest.RouteMeta{OperationID: "streamEvents"},
 	).WithHandler(func(ctx context.Context, req createReq, send func(sseEvent) error) error {
@@ -143,7 +142,7 @@ func TestChiServeSSE_HappyPath(t *testing.T) {
 	}
 
 	r := gochi.NewRouter()
-	if err := chiadapter.ServeSSE(r, b); err != nil {
+	if err := serveSSE(r, b); err != nil {
 		t.Fatalf("ServeSSE: %v", err)
 	}
 
@@ -180,7 +179,7 @@ func TestChiServeSSE_HappyPath(t *testing.T) {
 }
 
 func TestChiServeSSE_SkipsSpecOnlyRoutes(t *testing.T) {
-	b := rest.NewBuilder(testInfo)
+	b := rest.NewServer(testInfo)
 	if err := rest.NewSSERoute[createReq, sseEvent]("/spec-only-sse",
 		createReqCodec, sseEventCodec,
 	).Register(b); err != nil {
@@ -188,7 +187,7 @@ func TestChiServeSSE_SkipsSpecOnlyRoutes(t *testing.T) {
 	}
 
 	r := gochi.NewRouter()
-	if err := chiadapter.ServeSSE(r, b); err != nil {
+	if err := serveSSE(r, b); err != nil {
 		t.Fatalf("ServeSSE: %v", err)
 	}
 

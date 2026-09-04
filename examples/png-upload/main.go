@@ -100,7 +100,7 @@ var downloadRequestCodec = codex.Struct[DownloadImageRequest](
 )
 
 func main() {
-	b := rest.NewBuilder(rest.Info{
+	b := rest.NewServer(rest.Info{
 		Title:       "Image Transfer API",
 		Version:     "1.0.0",
 		Description: "Demonstrates PNG binary transfer: upload (binary request → JSON response) and download (JSON request → binary response).",

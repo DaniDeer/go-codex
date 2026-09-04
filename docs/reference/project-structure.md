@@ -63,10 +63,19 @@ go-codex/
 │   │                       #   SSERouteHandle, BuildPath, AddServer, AddSchema, WithSecurityScheme,
 │   │                       #   AddGlobalSecurity, PathParam, QueryParam, CookieParam, HeaderParam,
 │   │                       #   ResponseHeaderParam, ResponseCookieParam, RouteMeta, SecurityScheme
-│   ├── events/             # Event channel builder: typed Decode/Encode + AsyncAPI spec
-│   │   └── builder.go      # Builder, Channel[T]/NewChannel, ChannelHandle, BuildTopic,
-│   │                       #   AddServer, AddSchema, AddSecurityScheme, AddGlobalSecurity,
-│   │                       #   TopicParam, ChannelMeta, Subscribe, Publish, SecurityScheme
+│   ├── events/             # Event channel client: typed Decode/Encode + AsyncAPI spec
+│   │   ├── builder.go      # Client/NewClient(opts ...ClientOption), WithInfo(Info) ClientOption
+│   │   │                   #   (Info optional since Decision 7), Channel[T]/NewChannel, ChannelHandle,
+│   │   │                   #   BuildTopic, WithSubscribe/WithPublish → Subscriber[T]/Publisher[T]
+│   │   │                   #   (role-scoped, Use/SubscribeMW/PublishMW/Handle), FromSecurityScheme,
+│   │   │                   #   CheckCoverage, SubscriberServer, PublisherClient[T], AddServer,
+│   │   │                   #   AddSchema, AddGlobalSecurity, TopicParam, ChannelMeta, Subscribe,
+│   │   │                   #   Publish, SecurityScheme
+│   │   └── handletransport.go # PublishTransport[T]/SubscribeTransport[T] (generic interfaces),
+│   │                       #   PublishHandle[T]/SubscribeHandle[T] (spec-free, no-*Client call
+│   │                       #   surface), EncodeAndBuildTopic[T]/DecodeAndMergeVars[T] (shared
+│   │                       #   adapter-agnostic mechanical core) — Decision 7's inversion of the
+│   │                       #   handle-based primitives into api/events itself
 │   ├── mcp/                # MCP server builder: Tools, Resources, Prompts
 │   │   ├── builder.go      # Builder, NewTool[In,Out], NewResource[V,T] (bare-string primary,
 │   │   │                   #   + URIParam[V] opts) / NewResourceFromTemplate[V,T] (pre-built
@@ -111,30 +120,66 @@ go-codex/
 │   │   └── socket.go       # IngestSocketAdapter, BroadcastSocketAdapter, DuplexSocketAdapter
 │   │                       #   (chi-safe swap-handler variants of adapters/websocket)
 │   ├── mqtt/               # Paho MQTT 3.1.1 adapter for api/events ChannelHandles
-│   │   ├── adapter.go      # SubscribeHandler, SubscribeOptions, Publish, PublishOptions,
-│   │   │                   #   SubscribeError, ErrorKind, MessageFromContext
+│   │   ├── adapter.go      # SubscribeOptions, PublishOptions[T], SubscribeError, PublishEncodeError,
+│   │   │                   #   ErrorKind, MessageFromContext (subscribeHandle/publish/publishHandle
+│   │   │                   #   unexported — Decision 7 relocates their logic behind handletransport.go)
+│   │   ├── handletransport.go # NewPublishTransport[T]/NewSubscribeTransport[T]
+│   │   │                   #   (events.PublishTransport[T]/events.SubscribeTransport[T]) — Decision 7's
+│   │   │                   #   spec-free, no-*Client call surface, consumed via events.PublishHandle/
+│   │   │                   #   events.SubscribeHandle
+│   │   ├── connect.go      # Connect, ConnectOptions, ConnectError — broker-connection-owning
+│   │   │                   #   entry point (Decision 7), full "scheme://host:port" broker URL
+│   │   ├── caller.go       # unexported caller/newCaller/subscribe/subscribeHandle — internal only,
+│   │   │                   #   used by handletransport.go/transport.go/binding.go; Observability stays public
 │   │   ├── topicvars.go    # TopicVarsFromMessage, TopicMismatchError
 │   │   ├── connect_security.go # ConnectSecurityScheme, SecuredClient, NewSecuredClient,
 │   │   │                   #   ConnectSecurityCredentialError — connect-level (CONNECT
 │   │   │                   #   username/password) credential validation, wraps pahomqtt.Client
+│   │   ├── transport.go    # Attach (events.Transport, Decision 5's Client.Attach workflow)
 │   │   └── binding.go      # SubscribeAdapter, PublishAdapter (ports.SourceAdapter/SinkAdapter)
 │   ├── mqtt5/              # MQTT 5.0 adapter (paho.golang) — PUB/SUB + request-reply
-│   │   ├── adapter.go      # Subscribe, Publish, SubscribeOptions, PublishOptions (+ CredentialFunc),
-│   │   │                   #   UserPropertyParam, ReplyTopicBuilder, UUIDReplyTopic, SharedReplyTopic
+│   │   ├── adapter.go      # SubscribeOptions, PublishOptions[T] (+ CredentialFunc), UserPropertyParam,
+│   │   │                   #   MQTTClient, MQTTRouter, MessageFromContext, UserPropertiesFromContext
+│   │   │                   #   (subscribeWithHandle/publish/publishHandle unexported — Decision 7)
+│   │   ├── handletransport.go # NewPublishTransport[T]/NewSubscribeTransport[T]
+│   │   │                   #   (events.PublishTransport[T]/events.SubscribeTransport[T]) — Decision 7's
+│   │   │                   #   spec-free, no-*Client call surface, consumed via events.PublishHandle/
+│   │   │                   #   events.SubscribeHandle
+│   │   ├── connect.go      # Connect, ConnectOptions — broker-connection-owning entry point
+│   │   │                   #   (Decision 7), bare "host:port" broker address
+│   │   ├── caller.go       # unexported caller/newCaller/subscribe — internal only, used by
+│   │   │                   #   handletransport.go/transport.go/binding.go; Observability stays public
 │   │   ├── security.go     # extractUserPropertyCredential, validateSecurityCredentials — shared
 │   │   │                   #   built-in codec-based credential check for events + reqreply
 │   │   ├── connect_security.go # ConnectSecurityScheme, SecuredClient, NewSecuredClient,
 │   │   │                   #   ConnectSecurityCredentialError — connect-level (CONNECT
 │   │   │                   #   username/password) credential validation, wraps MQTTClient
-│   │   ├── reqreply.go     # Serve[Req,Resp], Call[Req,Resp], ServeOptions (+ SecurityFunc),
-│   │   │                   #   CallOptions (+ CredentialFunc), ServeError, CallError, BrokerError, UserPropertyError
+│   │   ├── reqreply.go     # Serve[Req,Resp], Call[Req,Resp], CallHandle[Req,Resp], ServeOptions
+│   │   │                   #   (+ SecurityFunc), CallOptions (+ CredentialFunc), ReplyTopicBuilder,
+│   │   │                   #   UUIDReplyTopic, SharedReplyTopic (out of scope for Decision 7 — unchanged)
+│   │   ├── errors.go       # ErrorKind, SubscribeError, PublishEncodeError, CallError, ServeError,
+│   │   │                   #   UserPropertyError, BrokerError, ConnectError
+│   │   ├── transport.go    # Attach (events.Transport, Decision 5's Client.Attach workflow)
 │   │   ├── stream.go       # AsPipelineFunc
 │   │   └── binding.go      # SubscribeAdapter, PublishAdapter, CallAdapter, ServeAdapter
 │   │                       #   (ports.SourceAdapter/SinkAdapter/IOAdapter/ToolAdapter)
 │   ├── zeromq/             # ZeroMQ adapter — PUB/SUB, REQ/REP, DEALER/ROUTER
-│   │   ├── adapter.go      # Subscribe, Publish, Serve, Call, ServeRouter, CallDealer
+│   │   ├── adapter.go      # SubscribeOptions[T], PublishOptions[T], ServeOptions, CallOptions,
+│   │   │                   #   Serve, Call, CallHandle, ServeRouter, CallDealer
+│   │   │                   #   (subscribeWithHandle/publish/publishHandle unexported — Decision 7)
+│   │   ├── handletransport.go # NewPublishTransport[T]/NewSubscribeTransport[T]
+│   │   │                   #   (events.PublishTransport[T]/events.SubscribeTransport[T]) — Decision 7's
+│   │   │                   #   spec-free, no-*Client call surface, consumed via events.PublishHandle/
+│   │   │                   #   events.SubscribeHandle. NOTE: connection-ownership (a zeromq.Connect)
+│   │   │                   #   is explicitly DEFERRED (would force a hard CGO pebbe/zmq4 dependency)
+│   │   ├── caller.go       # unexported caller/newCaller — internal only, used by
+│   │   │                   #   handletransport.go/transport.go/serve_subscribers.go/binding.go
+│   │   ├── serve_subscribers.go # (*caller).ServeSubscribers (events.SubscriberServer) — one shared
+│   │   │                   #   receive loop over every registered channel
+│   │   ├── observability.go # Observability — general-purpose SubscribeMW/PublishMW wrapper
 │   │   ├── errors.go       # SubscribeError, PublishEncodeError, ServeError, CallError
 │   │   ├── socket.go       # FramedSocket interface, ErrTimeout
+│   │   ├── transport.go    # Attach (events.Transport, Decision 5's Client.Attach workflow)
 │   │   ├── stream.go       # AsPipelineFunc, ServeLatest
 │   │   └── binding.go      # SubscribeAdapter, PublishAdapter, CallAdapter, ServeAdapter
 │   │                       #   (ports.SourceAdapter/SinkAdapter/IOAdapter/ToolAdapter)

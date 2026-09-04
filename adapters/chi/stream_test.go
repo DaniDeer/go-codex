@@ -1,4 +1,4 @@
-package chi_test
+package chi
 
 import (
 	"bufio"
@@ -11,7 +11,6 @@ import (
 	"testing"
 	"time"
 
-	chiadapter "github.com/DaniDeer/go-codex/adapters/chi"
 	"github.com/DaniDeer/go-codex/api/rest"
 	gstream "github.com/DaniDeer/go-codex/stream"
 )
@@ -28,19 +27,19 @@ func (e chiPipelineConflictError) Error() string {
 // ── shared helpers ────────────────────────────────────────────────────────────
 
 func newChiGetHandle() (*rest.RouteHandle[getReq, userResp], error) {
-	b := rest.NewBuilder(testInfo)
+	b := rest.NewServer(testInfo)
 	return rest.NewRoute[getReq, userResp]("GET", "/latest",
 		getReqCodec, userRespCodec, rest.RouteMeta{OperationID: "chiGetLatest"}).RegisterHandle(b)
 }
 
 func newChiPipelineHandle() (*rest.RouteHandle[createReq, userResp], error) {
-	b := rest.NewBuilder(testInfo)
+	b := rest.NewServer(testInfo)
 	return rest.NewRoute[createReq, userResp]("POST", "/pipeline",
 		createReqCodec, userRespCodec, rest.RouteMeta{OperationID: "chiPipeline"}).RegisterHandle(b)
 }
 
 func newChiPipelineHandleWithMappedErrorStatus() (*rest.RouteHandle[createReq, userResp], error) {
-	b := rest.NewBuilder(testInfo)
+	b := rest.NewServer(testInfo)
 	return rest.NewRoute[createReq, userResp]("POST", "/pipeline-mapped",
 		createReqCodec, userRespCodec,
 		rest.RouteMeta{OperationID: "chiPipelineMapped"},
@@ -49,11 +48,11 @@ func newChiPipelineHandleWithMappedErrorStatus() (*rest.RouteHandle[createReq, u
 }
 
 func newChiPipelineHandleWithNoResponseOverride(status int) (*rest.RouteHandle[createReq, userResp], error) {
-	b := rest.NewBuilder(testInfo)
+	b := rest.NewServer(testInfo)
 	return rest.NewRoute[createReq, userResp]("POST", "/pipeline-noresp-override",
 		createReqCodec, userRespCodec,
 		rest.RouteMeta{OperationID: "chiPipelineNoRespOverride"},
-		rest.ErrorStatus[chiadapter.PipelineNoResponseError](status),
+		rest.ErrorStatus[PipelineNoResponseError](status),
 	).RegisterHandle(b)
 }
 
@@ -71,7 +70,7 @@ func TestChiHandlerLatest_ReturnsLatestValue(t *testing.T) {
 	close(errCh)
 	src := gstream.Stream[userResp]{Values: valCh, Errors: errCh}
 
-	h := chiadapter.HandlerLatest(handle, src, chiadapter.Options{})
+	h := HandlerLatest(handle, src, Options{})
 	time.Sleep(20 * time.Millisecond)
 	close(valCh)
 
@@ -100,7 +99,7 @@ func TestChiHandlerLatest_NoValueReturns503(t *testing.T) {
 	src := gstream.Stream[userResp]{Values: valCh, Errors: errCh}
 
 	var capturedErr error
-	h := chiadapter.HandlerLatest(handle, src, chiadapter.Options{
+	h := HandlerLatest(handle, src, Options{
 		ErrorHandler: func(w http.ResponseWriter, _ *http.Request, status int, e error) {
 			capturedErr = e
 			http.Error(w, e.Error(), status)
@@ -114,7 +113,7 @@ func TestChiHandlerLatest_NoValueReturns503(t *testing.T) {
 	if rec.Code != http.StatusServiceUnavailable {
 		t.Errorf("want 503, got %d", rec.Code)
 	}
-	var nlv chiadapter.NoLatestValueError
+	var nlv NoLatestValueError
 	if !errors.As(capturedErr, &nlv) {
 		t.Errorf("want NoLatestValueError, got %T", capturedErr)
 	}
@@ -144,10 +143,10 @@ func TestChiPipelineHandler_ReturnsFirstValue(t *testing.T) {
 		t.Fatalf("build route: %v", err)
 	}
 
-	h := chiadapter.PipelineHandler(handle,
+	h := PipelineHandler(handle,
 		func(ctx context.Context, req createReq) gstream.Stream[userResp] {
 			return gstream.Single(ctx, userResp{ID: "u1", Name: req.Name})
-		}, chiadapter.Options{})
+		}, Options{})
 
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPost, "/pipeline",
@@ -169,7 +168,7 @@ func TestChiPipelineHandler_PipelineErrorReturns500(t *testing.T) {
 		t.Fatalf("build route: %v", err)
 	}
 
-	h := chiadapter.PipelineHandler(handle,
+	h := PipelineHandler(handle,
 		func(ctx context.Context, _ createReq) gstream.Stream[userResp] {
 			errCh := make(chan error, 1)
 			valCh := make(chan userResp)
@@ -177,7 +176,7 @@ func TestChiPipelineHandler_PipelineErrorReturns500(t *testing.T) {
 			close(errCh)
 			close(valCh)
 			return gstream.Stream[userResp]{Values: valCh, Errors: errCh}
-		}, chiadapter.Options{})
+		}, Options{})
 
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPost, "/pipeline",
@@ -195,7 +194,7 @@ func TestChiPipelineHandler_PipelineErrorRouteMappingReturnsDeclaredStatus(t *te
 	if err != nil {
 		t.Fatalf("build route: %v", err)
 	}
-	h := chiadapter.PipelineHandler(handle,
+	h := PipelineHandler(handle,
 		func(context.Context, createReq) gstream.Stream[userResp] {
 			errCh := make(chan error, 1)
 			valCh := make(chan userResp)
@@ -203,7 +202,7 @@ func TestChiPipelineHandler_PipelineErrorRouteMappingReturnsDeclaredStatus(t *te
 			close(errCh)
 			close(valCh)
 			return gstream.Stream[userResp]{Values: valCh, Errors: errCh}
-		}, chiadapter.Options{})
+		}, Options{})
 
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPost, "/pipeline-mapped",
@@ -224,14 +223,14 @@ func TestChiPipelineHandler_TapObservation(t *testing.T) {
 
 	var tapFired bool
 	var tapped string
-	h := chiadapter.PipelineHandler(handle,
+	h := PipelineHandler(handle,
 		func(ctx context.Context, req createReq) gstream.Stream[userResp] {
 			s := gstream.Single(ctx, req)
 			s = gstream.Tap(ctx, s, func(v createReq) { tapFired = true; tapped = v.Name })
 			return gstream.FlatMapSlice(ctx, s, func(v createReq) []userResp {
 				return []userResp{{ID: "u1", Name: v.Name}}
 			})
-		}, chiadapter.Options{})
+		}, Options{})
 
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPost, "/pipeline",
@@ -254,14 +253,14 @@ func TestChiPipelineHandler_NoValueReturnsPipelineNoResponseError(t *testing.T) 
 	}
 
 	var capturedErr error
-	h := chiadapter.PipelineHandler(handle,
+	h := PipelineHandler(handle,
 		func(ctx context.Context, _ createReq) gstream.Stream[userResp] {
 			errCh := make(chan error)
 			valCh := make(chan userResp)
 			close(errCh)
 			close(valCh)
 			return gstream.Stream[userResp]{Values: valCh, Errors: errCh}
-		}, chiadapter.Options{
+		}, Options{
 			ErrorHandler: func(w http.ResponseWriter, _ *http.Request, status int, e error) {
 				capturedErr = e
 				http.Error(w, e.Error(), status)
@@ -274,7 +273,7 @@ func TestChiPipelineHandler_NoValueReturnsPipelineNoResponseError(t *testing.T) 
 	req.Header.Set("Content-Type", "application/json")
 	h.ServeHTTP(rec, req)
 
-	var pnr chiadapter.PipelineNoResponseError
+	var pnr PipelineNoResponseError
 	if !errors.As(capturedErr, &pnr) {
 		t.Errorf("want PipelineNoResponseError, got %T", capturedErr)
 	}
@@ -288,14 +287,14 @@ func TestChiPipelineHandler_NoValueRouteMappingOverridesDefault503(t *testing.T)
 	if err != nil {
 		t.Fatalf("build route: %v", err)
 	}
-	h := chiadapter.PipelineHandler(handle,
+	h := PipelineHandler(handle,
 		func(context.Context, createReq) gstream.Stream[userResp] {
 			errCh := make(chan error)
 			valCh := make(chan userResp)
 			close(errCh)
 			close(valCh)
 			return gstream.Stream[userResp]{Values: valCh, Errors: errCh}
-		}, chiadapter.Options{})
+		}, Options{})
 
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPost, "/pipeline-noresp-override",
@@ -316,12 +315,12 @@ func TestChiSSEFromHub_BroadcastsToAllClients(t *testing.T) {
 	src := gstream.From(ctx, valCh)
 	hub := gstream.NewBroadcastHub(ctx, src, 8)
 
-	fn := chiadapter.SSEFromHub[getReq, userResp](hub,
-		chiadapter.SSEStreamOptions{Topic: "/events"})
+	fn := SSEFromHub[getReq, userResp](hub,
+		SSEStreamOptions{Topic: "/events"})
 
 	route := rest.NewSSERoute[getReq, userResp]("/events",
 		getReqCodec, userRespCodec, rest.RouteMeta{OperationID: "streamEvents"}).WithHandler(fn)
-	h := mustServeSSE(t, route, rest.NewBuilder(testInfo))
+	h := mustServeSSE(t, route, rest.NewServer(testInfo))
 	srv := httptest.NewServer(h)
 	defer srv.Close()
 

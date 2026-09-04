@@ -7,12 +7,20 @@
 //   - Request-Reply: typed RPC over MQTT using ResponseTopic + CorrelationData
 //
 // The example uses an in-process mock broker to avoid requiring a real MQTT 5.0
-// broker. In production, connect to Mosquitto ≥ 2.0 (MQTT 5.0 enabled by default):
+// broker. In production, either connect manually to Mosquitto ≥ 2.0 (MQTT 5.0
+// enabled by default):
 //
 //	conn, _ := net.Dial("tcp", "localhost:1883")
 //	router := paho.NewStandardRouter()
 //	client := paho.NewClient(paho.ClientConfig{Conn: conn, Router: router})
 //	client.Connect(ctx, &paho.Connect{ClientID: "my-service", CleanStart: true})
+//
+// or use the newer, connection-owning [mqtt5adapter.Connect] helper, which
+// wraps exactly the manual pattern above into a single call:
+//
+//	client, router, err := mqtt5adapter.Connect(ctx, "localhost:1883", mqtt5adapter.ConnectOptions{
+//	    ClientID: "my-service", CleanStart: true,
+//	})
 //
 // # Layer structure
 //
@@ -21,7 +29,46 @@
 //
 //	rest.NewRoute       (REQ/REP → AsyncAPI request-reply via reqreply.Builder)
 //
-// Layer 3: mqtt5adapter.Subscribe / Publish / ServeRequestReply / Request
+// Layer 3 (PUB/SUB) — TWO workflows, in order of preference:
+//
+//  1. PREFERRED — events.Client + mqtt5adapter.Attach + Client.Publish/.Subscribe
+//     (Decision 5 of docs/roadmap/pubsub-workflow-simplification.md). Attach
+//     the adapter to the client ONCE; from there, client.Publish/client.Subscribe
+//     fulfill each declared Subscriber[T]/Publisher[T]'s requirements directly —
+//     no further mqtt5adapter.* calls needed at the usage site. The SAME client
+//     doubles as the spec source (client.AsyncAPISpec()) with zero extra
+//     ceremony, since Attach/Publish/Subscribe register into it automatically.
+//     See Demo 1 below.
+//
+//     client := events.NewClient(events.WithInfo(events.Info{Title: "Sensor Network", Version: "1.0.0"}))
+//     if err := mqtt5adapter.Attach(client, broker, router); err != nil { ... }
+//     go client.Subscribe(ctx, ReadingsSubscriber, func(ctx context.Context, r SensorReading) error {
+//     ...
+//     return nil
+//     })
+//     err := client.Publish(ctx, ReadingsPublisher, reading)
+//
+//  2. ESCAPE HATCH — mqtt5adapter.NewSubscribeTransport / NewPublishTransport
+//     build per-T [events.SubscribeTransport]/[events.PublishTransport] values
+//     bound to a client+router; events.SubscribeHandle / events.PublishHandle
+//     then drive them against a declared events.Subscriber[T]/events.Publisher[T]
+//     with NO *events.Client/spec required (Decision 7's inverted, handle-based
+//     call surface). Use this ONLY when Client.Attach's v1 reflection shim
+//     can't express what's needed: custom OnError, a per-call Observer
+//     override, non-default QoS, ContentType/UserProperties, or
+//     UserPropertyParam validation — see Demo 2 below, which needs exactly
+//     these. Building a spec from THIS workflow requires a SEPARATE,
+//     throwaway events.Client purely for .Handle(builder) — contrast with
+//     workflow 1's spec-for-free.
+//
+//     transport := mqtt5adapter.NewSubscribeTransport[SensorReading](client, router, 1, mqtt5adapter.SubscribeOptions{})
+//     err := events.SubscribeHandle(ctx, ReadingsSubscriber, transport, func(ctx context.Context, r SensorReading) error {
+//     ...
+//     return nil
+//     })
+//
+// Layer 3 (REQ/REP): mqtt5adapter.Serve / Call — reqreply has no Client/Attach
+// equivalent yet; see docs/roadmap/reqreply-workflow-simplification.md.
 package main
 
 import (
@@ -92,19 +139,29 @@ var computeRespCodec = codex.Struct[ComputeResp](
 var ReadingsChannel = events.NewChannel[SensorReading](
 	"sensors/{sensorID}/readings",
 	sensorCodec,
-	events.Subscribe{
-		OperationID: "receiveSensorReading",
-		Summary:     "Receive a sensor reading.",
-	},
-	events.Publish{
-		OperationID: "publishSensorReading",
-		Summary:     "Publish a sensor reading.",
-	},
 	events.TopicParam{
 		Name:        "sensorID",
 		Description: "UUID of the originating sensor.",
 	}.WithCodec(codex.String().Refine(validate.UUID)),
 )
+
+// ReadingsSubscriber/ReadingsPublisher fork ReadingsChannel's shared
+// topic/codec/TopicParam declaration into its two roles — see
+// [events.Channel.WithSubscribe]/[events.Channel.WithPublish]. Each
+// produces its own independent *events.ChannelHandle[T] via .Handle(...);
+// registering BOTH against the SAME events.Client for the SAME topic
+// dedups to the FIRST-registered role's spec entry (documented,
+// first-registered-wins behavior — see
+// docs/roadmap/pubsub-workflow-simplification.md's Decision 1).
+var ReadingsSubscriber = ReadingsChannel.WithSubscribe(events.Subscribe{
+	OperationID: "receiveSensorReading",
+	Summary:     "Receive a sensor reading.",
+})
+
+var ReadingsPublisher = ReadingsChannel.WithPublish(events.Publish{
+	OperationID: "publishSensorReading",
+	Summary:     "Publish a sensor reading.",
+})
 
 var ComputeRoute = reqreply.NewRoute[ComputeReq, ComputeResp](
 	"compute/add",
@@ -171,7 +228,6 @@ var sensorErrorPayloadCodec = codex.Struct[SensorErrorPayload](
 var ReadingsChannelWithErrors = events.NewChannel[SensorReading](
 	"sensors/{sensorID}/readings",
 	sensorCodec,
-	events.Publish{OperationID: "publishSensorReadingWithErrors"},
 	events.TopicParam{Name: "sensorID"}.WithCodec(codex.String().Refine(validate.UUID)),
 	events.ErrorChannel[SensorOutOfRangeError, SensorErrorPayload](
 		"sensors/{sensorID}/readings/errors", sensorErrorPayloadCodec,
@@ -179,7 +235,7 @@ var ReadingsChannelWithErrors = events.NewChannel[SensorReading](
 			return SensorErrorPayload{Code: "out_of_range", Message: e.Error()}, nil
 		},
 	),
-)
+).WithPublish(events.Publish{OperationID: "publishSensorReadingWithErrors"})
 
 // ── in-process mock broker ────────────────────────────────────────────────────
 //
@@ -209,6 +265,24 @@ func (r *mockRouter) UnregisterHandler(topic string) {
 	r.mu.Lock()
 	delete(r.handlers, topic)
 	r.mu.Unlock()
+}
+
+// waitHandler blocks until the handler for topic is registered or 1 second
+// passes. Client.Subscribe (Decision 5's Attach-based workflow) registers
+// asynchronously in a background goroutine — a caller publishing immediately
+// afterward must synchronize against registration first, since (unlike
+// zeromq's buffered pipe socket) this mock router's dispatch has no buffer:
+// a message published before the handler is registered is simply dropped.
+func (r *mockRouter) waitHandler(topic string) {
+	for i := 0; i < 200; i++ {
+		r.mu.Lock()
+		_, ok := r.handlers[topic]
+		r.mu.Unlock()
+		if ok {
+			return
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
 }
 
 // dispatch finds all registered handlers whose topic matches msg.Topic and
@@ -376,6 +450,7 @@ func main() {
 	fmt.Println(" MQTT 5 adapter — features specific to MQTT 5.0")
 	fmt.Println("═══════════════════════════════════════════════════════")
 
+	runClientAttachDemo(ctx, logger)
 	runPubSubDemo(ctx, logger)
 	runErrorChannelDemo(ctx)
 	runRequestReplyDemo(ctx, logger)
@@ -384,7 +459,90 @@ func main() {
 	printSpecs(logger)
 }
 
-// ── Demo 1b: Error-path ergonomics — events.ErrorChannel ─────────────────────
+// ── Demo 1: Client.Attach — the PREFERRED workflow ───────────────────────────
+//
+// The simple, no-frills case (plain JSON payload, default QoS, no custom
+// OnError/User Properties) should use events.Client + mqtt5adapter.Attach +
+// Client.Publish/.Subscribe — mirroring examples/adapters-zeromq exactly.
+// Attach the adapter to the client ONCE; from there, client.Publish/
+// client.Subscribe fulfill ReadingsPublisher/ReadingsSubscriber's declared
+// requirements directly, with NO further mqtt5adapter.* calls at the usage
+// site. The SAME client doubles as the spec source below — Attach/Publish/
+// Subscribe register into it automatically, so client.AsyncAPISpec() needs
+// no separate builder. Contrast with Demo 2, which needs the handle-based
+// escape hatch (and a SEPARATE throwaway builder) purely because it uses
+// capabilities Client.Attach's v1 reflection shim doesn't support.
+func runClientAttachDemo(ctx context.Context, logger *slog.Logger) {
+	fmt.Println("\n── Demo 1: Client.Attach — the PREFERRED workflow ──")
+
+	broker, router := newMockBroker()
+
+	client := events.NewClient(events.WithInfo(events.Info{Title: "Sensor Network", Version: "1.0.0"}))
+	client.AddServer("mqtt5", events.Server{
+		URL:         "mqtt://broker:1883",
+		Protocol:    "mqtt5",
+		Description: "MQTT 5.0 broker for sensor data",
+	})
+
+	// ATTACH the adapter to the client — the one place transport specifics
+	// (broker + router) enter the picture.
+	if err := mqtt5adapter.Attach(client, broker, router); err != nil {
+		fmt.Fprintf(os.Stderr, "attach: %v\n", err)
+		os.Exit(1)
+	}
+
+	received := make(chan SensorReading, 4)
+	go func() {
+		_ = client.Subscribe(ctx, ReadingsSubscriber, func(_ context.Context, r SensorReading) error {
+			fmt.Printf("  received: sensorID=%s value=%.1f\n", r.SensorID, r.Value)
+			received <- r
+			return nil
+		})
+	}()
+	// Client.Subscribe registers with the router asynchronously — wait for
+	// it before publishing (see waitHandler's doc comment). The registered
+	// filter is the topic template with {varName} placeholders replaced by
+	// the MQTT "+" wildcard (mirrors mqtt5adapter's own internal derivation).
+	router.waitHandler(normaliseTopic("sensors/{sensorID}/readings"))
+
+	sensorID := "f47ac10b-58cc-4372-a567-0e02b2c3d479"
+	readings := []SensorReading{
+		{SensorID: sensorID, Value: 22.5},
+		{SensorID: sensorID, Value: 23.1},
+	}
+	for _, r := range readings {
+		if err := client.Publish(ctx, ReadingsPublisher, r); err != nil {
+			fmt.Fprintf(os.Stderr, "publish: %v\n", err)
+			os.Exit(1)
+		}
+	}
+
+	for i := 0; i < len(readings); i++ {
+		select {
+		case <-received:
+		case <-ctx.Done():
+			fmt.Fprintln(os.Stderr, "timeout waiting for readings")
+			os.Exit(1)
+		}
+	}
+
+	// The spec is a free byproduct of the calls above — no separate builder.
+	doc, err := client.AsyncAPISpec()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "spec: %v\n", err)
+		os.Exit(1)
+	}
+	specYAML, err := doc.MarshalYAML()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "marshal spec: %v\n", err)
+		os.Exit(1)
+	}
+	fmt.Println("\n  [spec — printed directly from the SAME client, zero extra ceremony]")
+	fmt.Println(string(specYAML))
+	_ = logger
+}
+
+// ── Demo 2b: Error-path ergonomics — events.ErrorChannel ─────────────────────
 //
 // Demonstrates the pub/sub analogue of rest.ErrorPattern: a declared
 // events.ErrorChannel on ReadingsChannelWithErrors causes
@@ -392,11 +550,11 @@ func main() {
 // error-output topic whenever a matching domain error reaches it — instead
 // of only calling MQTT5DrainPublishOptions.OnError.
 func runErrorChannelDemo(ctx context.Context) {
-	fmt.Println("\n── Demo 1b: Error-path ergonomics (events.ErrorChannel) ──")
+	fmt.Println("\n── Demo 2b: Error-path ergonomics (events.ErrorChannel) ──")
 
 	broker, _ := newMockBroker()
-	evtBuilder := events.NewBuilder(events.Info{Title: "Sensor Network", Version: "1.0.0"})
-	handle, err := ReadingsChannelWithErrors.Register(evtBuilder)
+	evtBuilder := events.NewClient(events.WithInfo(events.Info{Title: "Sensor Network", Version: "1.0.0"}))
+	handle, err := ReadingsChannelWithErrors.Handle(evtBuilder)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "register: %v\n", err)
 		os.Exit(1)
@@ -405,7 +563,7 @@ func runErrorChannelDemo(ctx context.Context) {
 	sensorID := "f47ac10b-58cc-4372-a567-0e02b2c3d479"
 
 	// A SinkPort + PublishAdapter fed a stream — the mqtt5 port-adapter path
-	// (as opposed to the direct mqtt5adapter.Publish calls in Demo 1).
+	// (as opposed to the direct mqtt5adapter.Publish calls in Demo 2).
 	port, err := ports.NewSinkPort[SensorReading]("readings-with-errors", sensorCodec, ports.PortOptions{Buffer: 4})
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "construct port: %v\n", err)
@@ -437,26 +595,48 @@ func runErrorChannelDemo(ctx context.Context) {
 	}
 }
 
-// ── Demo 1: PUB/SUB with User Properties, ContentType, UserPropertyParam ─────
+// ── Demo 2: PUB/SUB escape hatch — User Properties, ContentType, UserPropertyParam ─
+//
+// Unlike Demo 1's Client.Attach workflow, this demo needs the handle-based
+// escape hatch: custom OnError, UserPropertyParam validation, and
+// ContentType/UserProperties on publish are ALL capabilities Client.Attach's
+// v1 reflection shim does not support (see the package doc comment above).
+// Building a spec from this workflow (see printSpecs below) needs its OWN
+// throwaway events.Client, unlike Demo 1's spec-for-free.
 
 func runPubSubDemo(ctx context.Context, logger *slog.Logger) {
-	fmt.Println("\n── Demo 1: PUB/SUB (User Properties + ContentType + UserPropertyParam) ──")
+	fmt.Println("\n── Demo 2: PUB/SUB escape hatch (User Properties + ContentType + UserPropertyParam) ──")
 
 	broker, router := newMockBroker()
 	sensorID := "f47ac10b-58cc-4372-a567-0e02b2c3d479"
 
-	evtBuilder := events.NewBuilder(events.Info{Title: "Sensor Network", Version: "1.0.0"})
+	evtBuilder := events.NewClient(events.WithInfo(events.Info{Title: "Sensor Network", Version: "1.0.0"}))
 	evtBuilder.AddServer("mqtt5", events.Server{
 		URL:         "mqtt://broker:1883",
 		Protocol:    "mqtt5",
 		Description: "MQTT 5.0 broker for sensor data",
 	})
-	subHandle, _ := ReadingsChannel.Register(evtBuilder)
 
 	// ── MQTT 5 feature 1: UserPropertyParam ─────────────────────────────────
 	// Validate the TenantID User Property on every incoming message.
 	// This mirrors rest.HeaderParam for HTTP — no equivalent in MQTT 3.1.1.
-	if err := mqtt5adapter.Subscribe(ctx, broker, router, subHandle, 1,
+	//
+	// Decision 7's inverted, no-*Client-needed call shape: build a
+	// per-T transport bound to the broker+router, then hand it (plus the
+	// declared ReadingsSubscriber) to events.SubscribeHandle.
+	subTransport := mqtt5adapter.NewSubscribeTransport[SensorReading](broker, router, 1,
+		mqtt5adapter.SubscribeOptions{ // Observer resolved from ctx
+			OnError: func(e mqtt5adapter.SubscribeError) {
+				logger.Warn("subscribe error", "error", e)
+			},
+			UserPropertyParams: []mqtt5adapter.UserPropertyParam{
+				// Required: every message must carry a non-empty TenantID.
+				mqtt5adapter.UserPropertyParam{Name: "TenantID", Required: true}.
+					WithCodec(codex.String().Refine(validate.NonEmptyString)),
+			},
+		},
+	)
+	if err := events.SubscribeHandle(ctx, ReadingsSubscriber, subTransport,
 		func(ctx context.Context, r SensorReading) error {
 			// ── MQTT 5 feature 2: UserPropertiesFromContext ─────────────────
 			// Access the full User Properties bag inside the handler.
@@ -472,35 +652,24 @@ func runPubSubDemo(ctx context.Context, logger *slog.Logger) {
 			}
 			return nil
 		},
-		mqtt5adapter.SubscribeOptions{ // Observer resolved from ctx
-			OnError: func(e mqtt5adapter.SubscribeError) {
-				logger.Warn("subscribe error", "error", e)
-			},
-			UserPropertyParams: []mqtt5adapter.UserPropertyParam{
-				// Required: every message must carry a non-empty TenantID.
-				mqtt5adapter.UserPropertyParam{Name: "TenantID", Required: true}.
-					WithCodec(codex.String().Refine(validate.NonEmptyString)),
-			},
-		},
 	); err != nil {
 		fmt.Fprintf(os.Stderr, "subscribe: %v\n", err)
 		os.Exit(1)
 	}
 
-	pubHandle, _ := ReadingsChannel.Register(evtBuilder)
-
 	// Publish a valid reading: TenantID provided, ContentType set.
 	fmt.Println("\n  → Publishing valid reading with TenantID=acme and ContentType=application/json")
-	_ = mqtt5adapter.Publish(ctx, broker, pubHandle, 1, false,
-		SensorReading{SensorID: sensorID, Value: 22.5},
-		map[string]string{"sensorID": sensorID},
-		mqtt5adapter.PublishOptions{ // Observer resolved from ctx
+	pubTransport := mqtt5adapter.NewPublishTransport[SensorReading](broker, 1, false,
+		mqtt5adapter.PublishOptions[SensorReading]{ // Observer resolved from ctx
 			ContentType: "application/json", // ← MQTT 5 feature 3: ContentType property
 			UserProperties: []mqtt5adapter.UserProperty{
 				{Key: "TenantID", Value: "acme"},
 				{Key: "Source", Value: "factory-floor"},
 			},
 		},
+	)
+	_ = events.PublishHandle(ctx, ReadingsPublisher, pubTransport,
+		SensorReading{SensorID: sensorID, Value: 22.5},
 	)
 
 	time.Sleep(50 * time.Millisecond)
@@ -509,9 +678,7 @@ func runPubSubDemo(ctx context.Context, logger *slog.Logger) {
 	fmt.Println("\n  → Publishing reading WITHOUT TenantID (should be rejected by UserPropertyParam):")
 	var rejected mqtt5adapter.SubscribeError
 	broker2, router2 := newMockBroker()
-	subHandle2, _ := ReadingsChannel.Register(evtBuilder)
-	_ = mqtt5adapter.Subscribe(ctx, broker2, router2, subHandle2, 1,
-		func(_ context.Context, _ SensorReading) error { return nil },
+	subTransport2 := mqtt5adapter.NewSubscribeTransport[SensorReading](broker2, router2, 1,
 		mqtt5adapter.SubscribeOptions{
 			OnError: func(e mqtt5adapter.SubscribeError) { rejected = e },
 			UserPropertyParams: []mqtt5adapter.UserPropertyParam{
@@ -519,6 +686,9 @@ func runPubSubDemo(ctx context.Context, logger *slog.Logger) {
 					WithCodec(codex.String().Refine(validate.NonEmptyString)),
 			},
 		},
+	)
+	_ = events.SubscribeHandle(ctx, ReadingsSubscriber, subTransport2,
+		func(_ context.Context, _ SensorReading) error { return nil },
 	)
 	_, _ = broker2.Publish(ctx, &pahomqtt5.Publish{
 		Topic:   "sensors/" + sensorID + "/readings",
@@ -534,10 +704,15 @@ func runPubSubDemo(ctx context.Context, logger *slog.Logger) {
 	}
 }
 
-// ── Demo 2: Request-Reply (ResponseTopic + CorrelationData) ───────────────────
+// ── Demo 3: Request-Reply (ResponseTopic + CorrelationData) ───────────────────
+//
+// reqreply has no Client/Attach equivalent yet — Serve/Call remain the sole
+// entry points; see docs/roadmap/reqreply-workflow-simplification.md for the
+// design that would bring reqreply the same Client.Attach workflow PUB/SUB
+// already has.
 
 func runRequestReplyDemo(ctx context.Context, logger *slog.Logger) {
-	fmt.Println("\n── Demo 2: Request-Reply (ResponseTopic + CorrelationData) ──")
+	fmt.Println("\n── Demo 3: Request-Reply (ResponseTopic + CorrelationData) ──")
 	fmt.Println("  (No equivalent in MQTT 3.1.1 — MQTT 5.0 only)")
 
 	broker, router := newMockBroker()
@@ -574,7 +749,7 @@ func runRequestReplyDemo(ctx context.Context, logger *slog.Logger) {
 	_ = logger
 }
 
-// ── Demo 3: Security — WithSecurityScheme + CredentialFunc/SecurityFunc ──────
+// ── Demo 4: Security — WithSecurityScheme + CredentialFunc/SecurityFunc ──────
 //
 // SecuredComputeRoute declares bearerAuth ONCE via reqreply.WithSecurityScheme.
 // The server (Serve) runs a BUILT-IN codec-based credential check — reading
@@ -583,7 +758,7 @@ func runRequestReplyDemo(ctx context.Context, logger *slog.Logger) {
 // CredentialFunc; the SAME built-in check runs client-side before publishing,
 // so a malformed credential never reaches the wire.
 func runSecurityDemo(ctx context.Context, logger *slog.Logger) {
-	fmt.Println("\n── Demo 3: Security — WithSecurityScheme + CredentialFunc/SecurityFunc ──")
+	fmt.Println("\n── Demo 4: Security — WithSecurityScheme + CredentialFunc/SecurityFunc ──")
 
 	broker, router := newMockBroker()
 
@@ -640,9 +815,9 @@ func runSecurityDemo(ctx context.Context, logger *slog.Logger) {
 	_ = logger
 }
 
-// ── Demo 3b: Connect-level security — mqtt5.NewSecuredClient ─────────────────
+// ── Demo 4b: Connect-level security — mqtt5.NewSecuredClient ─────────────────
 //
-// Contrasts CONNECTION-level security against Demo 3's MESSAGE-level
+// Contrasts CONNECTION-level security against Demo 4's MESSAGE-level
 // security: the SAME connectBearerAuth scheme is declared ONCE, but
 // validated a single time at construction (via NewSecuredClient), right
 // after the caller's own client.Connect(...) — NOT per message. The
@@ -656,7 +831,7 @@ var connectBearerAuth = mqtt5adapter.ConnectSecurityScheme{SecurityScheme: route
 	WithCodec(codex.String().Refine(validate.MinLen(3)))
 
 func runConnectSecurityDemo(ctx context.Context) {
-	fmt.Println("\n── Demo 3b: Connect-level security — mqtt5.NewSecuredClient ──")
+	fmt.Println("\n── Demo 4b: Connect-level security — mqtt5.NewSecuredClient ──")
 
 	broker, router := newMockBroker()
 
@@ -673,12 +848,12 @@ func runConnectSecurityDemo(ctx context.Context) {
 	fmt.Println("  ✓ credential accepted — secured is a drop-in replacement for broker")
 
 	// Every existing call site is UNCHANGED — secured satisfies MQTTClient
-	// transparently via struct embedding.
-	handle, _ := ReadingsChannel.Register(events.NewBuilder(events.Info{Title: "Test", Version: "1.0.0"}))
-	_ = mqtt5adapter.Publish(ctx, secured, handle, 1, false,
-		SensorReading{SensorID: "f47ac10b-58cc-4372-a567-0e02b2c3d479", Value: 22.5},
-		map[string]string{"sensorID": "f47ac10b-58cc-4372-a567-0e02b2c3d479"},
-		mqtt5adapter.PublishOptions{})
+	// transparently via struct embedding, so it plugs into
+	// NewPublishTransport exactly like a raw client would.
+	securedTransport := mqtt5adapter.NewPublishTransport[SensorReading](secured, 1, false,
+		mqtt5adapter.PublishOptions[SensorReading]{})
+	_ = events.PublishHandle(ctx, ReadingsPublisher, securedTransport,
+		SensorReading{SensorID: "f47ac10b-58cc-4372-a567-0e02b2c3d479", Value: 22.5})
 	fmt.Println("  ✓ Publish through the wrapper works exactly like the raw client")
 	_ = router
 
@@ -695,29 +870,24 @@ func runConnectSecurityDemo(ctx context.Context) {
 	}
 }
 
-// ── Demo 3: AsyncAPI spec generation ─────────────────────────────────────────
+// ── Remaining spec: Request-Reply ────────────────────────────────────────────
+//
+// The PUB/SUB spec was ALREADY printed in full back in Demo 1 — directly
+// from the SAME events.Client that Attach/Publish/Subscribe used, with zero
+// extra ceremony. reqreply has no Client/Attach equivalent (see Demo 3's own
+// comment), so ITS spec still needs a dedicated, throwaway reqreply.Builder
+// purely for .Register(builder) — this is the one spec print this example
+// still needs a separate builder for.
 
 func printSpecs(logger *slog.Logger) {
-	fmt.Println("\n── AsyncAPI specs (protocol: mqtt5) ──")
+	fmt.Println("\n── AsyncAPI spec: Request-Reply (protocol: mqtt5) ──")
 
-	// PUB/SUB spec via events.Builder
-	evtBuilder := events.NewBuilder(events.Info{Title: "Sensor Network", Version: "1.0.0"})
-	evtBuilder.AddServer("mqtt5", events.Server{URL: "mqtt://broker:1883", Protocol: "mqtt5"})
-	_, _ = ReadingsChannel.Register(evtBuilder)
-
-	evtDoc, _ := evtBuilder.AsyncAPISpec()
-	evtYAML, _ := evtDoc.MarshalYAML()
-	fmt.Println("\n[PUB/SUB spec]")
-	fmt.Println(string(evtYAML))
-
-	// Request-Reply spec via reqreply.Builder
 	rrBuilder := reqreply.NewBuilder(reqreply.Info{Title: "Compute API", Version: "1.0.0"})
 	rrBuilder.AddServer("mqtt5", reqreply.Server{URL: "mqtt://broker:1883", Protocol: "mqtt5"})
 	_, _ = ComputeRoute.Register(rrBuilder)
 
 	rrDoc, _ := rrBuilder.AsyncAPISpec()
 	rrYAML, _ := rrDoc.MarshalYAML()
-	fmt.Println("[Request-Reply spec]")
 	fmt.Println(string(rrYAML))
 
 	_ = logger

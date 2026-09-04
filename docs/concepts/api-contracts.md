@@ -42,7 +42,8 @@ route := getUserActivity.WithHandler(func(ctx context.Context, req GetUserActivi
     return u, nil           // adapter auto-encodes body AND response merge fields
 })
 route.Register(builder)
-nethttp.Serve(mux, builder)
+nethttp.AttachMux(builder, mux, addr)
+go func() { _ = builder.Serve(ctx) }()
 ```
 
 This is made possible by declare-once constructors
@@ -65,8 +66,8 @@ format composes. See
 and `examples/rest-nested-binary` for the full runnable version.
 
 **Shipped for `api/events` (pub/sub) and `api/reqreply` (req/reply) too**:
-`events.NewTopicParam[T]`/`ChannelHandle.DecodeMerged`/`mqtt5.PublishHandle`
-and `reqreply.NewTopicParam[T]`/`RouteHandle.DecodeMerged`/`mqtt5.CallHandle`
+`events.NewTopicParam[T]`/`ChannelHandle.DecodeMerged`/`events.PublishHandle`
+(+ `mqtt5.NewPublishTransport`) and `reqreply.NewTopicParam[T]`/`RouteHandle.DecodeMerged`/`mqtt5.CallHandle`
 close the same loop for MQTT pub/sub and request/reply. Req/reply routes can
 also declare dedicated, RUNTIME-WIRED error-reply channels via
 `reqreply.ErrorPattern` on `NewRoute(...)` — one declaration drives both the
@@ -105,9 +106,9 @@ Step 5b).
 
 | Boundary | Declare-once constructor | Single-call convenience | Reference |
 |---|---|---|---|
-| REST (`api/rest` + `adapters/nethttp`/`chi`) | `rest.NewPathParam[T]`/`NewRequiredQueryParam[T]`/etc. + `NewRequiredResponseHeaderParam[Resp]`/etc. | `nethttp.Call`/`CallWithHandle` (client) + `Serve`/`Handler` auto-merge (server) | [Feature: REST API](../features/rest-api.md#one-line-client-calls-nethttpcall) |
+| REST (`api/rest` + `adapters/nethttp`/`chi`) | `rest.NewPathParam[T]`/`NewRequiredQueryParam[T]`/etc. + `NewRequiredResponseHeaderParam[Resp]`/etc. | `rest.Client.Call`/`nethttp.CallWithHandle` (client) + each adapter's internal serve dispatch, wired via `AttachMux`/`AttachRouter` (server) | [Feature: REST API](../features/rest-api.md#one-line-client-calls--restclientcall--nethttpcallwithhandle) |
 | REST SSE (`api/rest` + `adapters/nethttp`/`chi`) | `rest.NewRequiredSSEEventParam[T]`/`NewOptionalSSEEventParam[T]` | `send(event)` on `SSEHandler`/`RegisterSSE` auto-merges path/query/header/cookie vars into each event | [Feature: SSE & Streaming](../features/sse-streaming.md#one-struct-one-call-for-sse-events) |
-| Events pub/sub (`api/events` + `adapters/mqtt`/`mqtt5`/`zeromq`) | `events.NewTopicParam[T]` | `mqtt5.PublishHandle`/`zeromq.PublishHandle`/`mqtt.PublishHandle` (publish) + `Subscribe`/`SubscribeHandler` auto-merge (subscribe) | [Feature: Event Channels & MQTT](../features/events.md#topic-vars-with-automatic-merge-newtopicparam) |
+| Events pub/sub (`api/events` + `adapters/mqtt`/`mqtt5`/`zeromq`) | `events.NewTopicParam[T]` | `events.PublishHandle` + each adapter's `NewPublishTransport` (publish) + `events.SubscribeHandle` + `NewSubscribeTransport` auto-merge (subscribe) | [Feature: Event Channels & MQTT](../features/events.md#topic-vars-with-automatic-merge-newtopicparam) |
 | Req/reply (`api/reqreply` + `adapters/mqtt5`/`zeromq`) | `reqreply.NewTopicParam[T]` (Req-side only) | `mqtt5.CallHandle`/`zeromq.CallHandle` (client) + `mqtt5.Serve` auto-merge (server) | [MQTT 5 Guide — Request/Reply](../guides/mqtt5.md) |
 | WebSocket (`ports.DuplexPort` + `adapters/websocket`) | `ports.NewRequiredSocketInParam[T]`/`NewOptionalSocketInParam[T]` + `ports.NewRequiredSocketOutParam[T]`/`NewOptionalSocketOutParam[T]` on `SocketPattern` | `DuplexSocketAdapter`/`IngestSocketAdapter`/`BroadcastSocketAdapter` auto-merge connection vars into inbound/outbound payload structs | [Feature: WebSocket](../features/websocket.md#one-struct-one-call-with-connection-vars) |
 | `ports.Pattern` binding layer (`nethttp`/`mqtt5`/`zeromq`/`mqtt`) | n/a — delegates to the underlying transport's constructors above | `DrainCallAdapter`/`PublishAdapter`/`CallAdapter` derive vars per-item when `Vars` is left `nil` | [Feature: Ports](../features/ports.md#available-adapters-by-transport) |
@@ -140,12 +141,15 @@ handle, _ := createUser.RegisterHandle(builder)
 // builder.OpenAPISpec()      → full OpenAPI 3.1 document
 ```
 
-For the HTTP client side, `nethttp.Call` takes the `rest.Route` value
-directly — no builder, no separate handle needed:
+For the HTTP client side, `rest.Client.Call` (bound via `nethttp.Attach`)
+takes the `rest.Route` value directly — no builder, no separate handle
+needed:
 
 ```go
-caller := nethttp.NewCaller(http.DefaultClient, serverURL)
-user, err := nethttp.Call(ctx, caller, createUser, req, opts)
+client := rest.NewClient()
+nethttp.Attach(client, http.DefaultClient, serverURL)
+userAny, err := client.Call(ctx, createUser, req)
+user := userAny.(User)
 ```
 
 ### Why SSE lives in `api/rest`, not `api/events`
@@ -157,10 +161,11 @@ a normal `GET` request whose response never closes, streaming
 transport is ordinary HTTP, an SSE route reuses `api/rest`'s ENTIRE
 existing toolchain — path/query/header params, security schemes,
 OpenAPI generation, and (on the client side) `nethttp.Consumer`/
-`nethttp.Consume` — the STRICT client-side counterparts to `Caller`/
-`Call`, for a stream of many events instead of one response — with zero
-new machinery, instead of needing an AsyncAPI-shaped channel/message
-model built from scratch. This
+`nethttp.Consume` — the STRICT client-side counterparts to the package's
+internal, unexported `caller`/`call[Req,Resp]` (reachable publicly via
+`nethttp.CallWithHandle`/`rest.Client.Call`), for a stream of many events
+instead of one response — with zero new machinery, instead of needing an
+AsyncAPI-shaped channel/message model built from scratch. This
 also matches the wider OpenAPI-ecosystem convention: most tooling
 (Swagger, FastAPI, NestJS, etc.) documents an SSE endpoint as a plain
 `GET` operation with a streamed content type, not as an AsyncAPI channel.
@@ -186,12 +191,13 @@ API.
 var readingsChannel = events.NewChannel[SensorReading](
     "sensors/{sensorID}/readings",
     sensorReadingCodec,
-    events.Subscribe{OperationID: "receiveSensorReading"},
     events.Publish{OperationID: "publishSensorReading"},
     events.TopicParam{Name: "sensorID"}.WithCodec(uuidCodec),
 )
 
-handle, _ := readingsChannel.Register(builder)
+handle, _ := readingsChannel.
+    WithSubscribe(events.Subscribe{OperationID: "receiveSensorReading"}).
+    Handle(builder)
 // handle.Decode(payload)      → typed SensorReading
 // handle.BuildTopic(vars)     → concrete topic, validates params
 // builder.AsyncAPISpec()      → full AsyncAPI 3.0 document

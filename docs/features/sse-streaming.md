@@ -42,8 +42,11 @@ sensorRoute := rest.NewSSERoute[struct{}, SensorReading](
 }).WithOptions(nethttp.Options{Observer: obs})
 sensorRoute.Register(b)
 
-// Wire onto net/http.
-nethttp.ServeSSE(mux, b)
+// Wire onto net/http (AttachMux wires plain AND SSE routes together).
+if err := nethttp.AttachMux(b, mux, addr); err != nil {
+    log.Fatal(err)
+}
+_ = b.Serve(ctx) // blocks, owns its own http.Server
 ```
 
 **Key properties:**
@@ -81,7 +84,10 @@ route := rest.NewSSERoute[struct{}, Event](
         func(e *Event, v string) { e.Tenant = v }),
 ).WithHandler(streamFn)
 route.Register(b)
-nethttp.ServeSSE(mux, b)
+if err := nethttp.AttachMux(b, mux, addr); err != nil {
+    log.Fatal(err)
+}
+_ = b.Serve(ctx) // blocks, owns its own http.Server
 
 // send(Event{Payload: ...}) -> machineID/tenant merged automatically.
 ```
@@ -182,7 +188,10 @@ articleRoute := rest.NewRoute[struct{}, ArticleProps]("GET", "/article",
 
 // One handler, one route — the adapter picks the format from the Accept header.
 articleRoute.Register(b)
-nethttp.Serve(mux, b)
+if err := nethttp.AttachMux(b, mux, addr); err != nil {
+    log.Fatal(err)
+}
+_ = b.Serve(ctx) // blocks, owns its own http.Server
 ```
 
 **Key properties:**

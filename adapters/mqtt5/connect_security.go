@@ -128,7 +128,8 @@ func WithObserver(obs stats.Observer) SecuredClientOption {
 //	secured, err := mqtt5.NewSecuredClient(client, bearerAuth, "svc-account", token)
 //	if err != nil { /* malformed credential — client is never used */ }
 //
-//	mqtt5.Subscribe(ctx, secured, router, handle, fn, opts) // works exactly as before
+//	transport := mqtt5.NewSubscribeTransport[SensorReading](secured, router, qos, opts)
+//	events.SubscribeHandle(ctx, sensorChannel.WithSubscribe(events.Subscribe{}), transport, fn) // works exactly as before
 func NewSecuredClient(client MQTTClient, scheme ConnectSecurityScheme, username, password string, opts ...SecuredClientOption) (*SecuredClient, error) {
 	o := resolveSecuredClientOptions(opts)
 	if scheme.Codec != nil {

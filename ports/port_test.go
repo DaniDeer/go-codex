@@ -1008,14 +1008,135 @@ func TestEventPattern_BuildsClientHandle(t *testing.T) {
 	if err != nil {
 		t.Fatalf("construct port: %v", err)
 	}
-	handle, err := p.PluginEventPattern(ports.EventPattern{Topic: "sensors/{sensorID}/data", Opts: []events.ChannelOpt{
-		events.Subscribe{Summary: "sensor reading"},
-	}})
+	handle, err := p.PluginEventPattern(ports.EventPattern{
+		Topic:     "sensors/{sensorID}/data",
+		Subscribe: &events.Subscribe{Summary: "sensor reading"},
+	})
 	if err != nil {
 		t.Fatalf("PluginEventPattern: %v", err)
 	}
 	if handle.Topic != "sensors/{sensorID}/data" {
 		t.Errorf("want topic %q, got %q", "sensors/{sensorID}/data", handle.Topic)
+	}
+}
+
+// ── Phase 8 (Decision 4): EventPattern.Subscribe/Publish dedicated fields ────
+
+func TestEventPattern_SubscribeField_SourcePort_BuildsHandle(t *testing.T) {
+	p, err := ports.NewSourcePort[int]("readings", intCodec, ports.PortOptions{})
+	if err != nil {
+		t.Fatalf("construct port: %v", err)
+	}
+	handle, err := p.PluginEventPattern(ports.EventPattern{
+		Topic:     "sensors/{sensorID}/data",
+		Subscribe: &events.Subscribe{Summary: "sensor reading"},
+	})
+	if err != nil {
+		t.Fatalf("PluginEventPattern: %v", err)
+	}
+	if handle.Topic != "sensors/{sensorID}/data" {
+		t.Errorf("want topic %q, got %q", "sensors/{sensorID}/data", handle.Topic)
+	}
+}
+
+func TestEventPattern_PublishField_SinkPort_BuildsHandle(t *testing.T) {
+	p, err := ports.NewSinkPort[int]("alerts", intCodec, ports.PortOptions{})
+	if err != nil {
+		t.Fatalf("construct port: %v", err)
+	}
+	handle, err := p.PluginEventPattern(ports.EventPattern{
+		Topic:   "alerts/data",
+		Publish: &events.Publish{Summary: "alert"},
+	})
+	if err != nil {
+		t.Fatalf("PluginEventPattern: %v", err)
+	}
+	if handle.Topic != "alerts/data" {
+		t.Errorf("want topic %q, got %q", "alerts/data", handle.Topic)
+	}
+}
+
+func TestEventPattern_SourcePort_NilSubscribe_ParityWithZeroValue(t *testing.T) {
+	p1, err := ports.NewSourcePort[int]("readings-nil", intCodec, ports.PortOptions{})
+	if err != nil {
+		t.Fatalf("construct port: %v", err)
+	}
+	h1, err := p1.PluginEventPattern(ports.EventPattern{Topic: "sensors/data"})
+	if err != nil {
+		t.Fatalf("PluginEventPattern (nil Subscribe): %v", err)
+	}
+
+	p2, err := ports.NewSourcePort[int]("readings-zero", intCodec, ports.PortOptions{})
+	if err != nil {
+		t.Fatalf("construct port: %v", err)
+	}
+	h2, err := p2.PluginEventPattern(ports.EventPattern{Topic: "sensors/data", Subscribe: &events.Subscribe{}})
+	if err != nil {
+		t.Fatalf("PluginEventPattern (zero-value Subscribe): %v", err)
+	}
+
+	if h1.Topic != h2.Topic {
+		t.Errorf("want identical topic between nil and zero-value Subscribe, got %q vs %q", h1.Topic, h2.Topic)
+	}
+}
+
+func TestEventPattern_SourcePort_RejectsPublishField(t *testing.T) {
+	p, err := ports.NewSourcePort[int]("readings", intCodec, ports.PortOptions{})
+	if err != nil {
+		t.Fatalf("construct port: %v", err)
+	}
+	_, err = p.PluginEventPattern(ports.EventPattern{
+		Topic:   "sensors/data",
+		Publish: &events.Publish{Summary: "wrong role"},
+	})
+	if err == nil {
+		t.Fatal("want error for Publish declared on a SourcePort's EventPattern, got nil")
+	}
+	var registerErr ports.PatternRegisterError
+	if !errors.As(err, &registerErr) {
+		t.Fatalf("want PatternRegisterError, got %T: %v", err, err)
+	}
+	if registerErr.Kind != "event" {
+		t.Errorf("want Kind %q, got %q", "event", registerErr.Kind)
+	}
+}
+
+func TestEventPattern_SinkPort_RejectsSubscribeField(t *testing.T) {
+	p, err := ports.NewSinkPort[int]("alerts", intCodec, ports.PortOptions{})
+	if err != nil {
+		t.Fatalf("construct port: %v", err)
+	}
+	_, err = p.PluginEventPattern(ports.EventPattern{
+		Topic:     "alerts/data",
+		Subscribe: &events.Subscribe{Summary: "wrong role"},
+	})
+	if err == nil {
+		t.Fatal("want error for Subscribe declared on a SinkPort's EventPattern, got nil")
+	}
+	var registerErr ports.PatternRegisterError
+	if !errors.As(err, &registerErr) {
+		t.Fatalf("want PatternRegisterError, got %T: %v", err, err)
+	}
+	if registerErr.Kind != "event" {
+		t.Errorf("want Kind %q, got %q", "event", registerErr.Kind)
+	}
+}
+
+func TestPortOptions_EventClient_RoundTrip(t *testing.T) {
+	client := events.NewClient(events.WithInfo(events.Info{Title: "Test", Version: "1.0.0"}))
+	p, err := ports.NewSourcePort[int]("readings", intCodec, ports.PortOptions{EventClient: client})
+	if err != nil {
+		t.Fatalf("construct port: %v", err)
+	}
+	handle, err := p.PluginEventPattern(ports.EventPattern{
+		Topic:     "sensors/data",
+		Subscribe: &events.Subscribe{Summary: "sensor reading"},
+	})
+	if err != nil {
+		t.Fatalf("PluginEventPattern: %v", err)
+	}
+	if handle.Topic != "sensors/data" {
+		t.Errorf("want topic %q, got %q", "sensors/data", handle.Topic)
 	}
 }
 
@@ -1044,15 +1165,18 @@ func TestEventPattern_ErrorChannel_ParityWithDirectChannelDeclaration(t *testing
 	if err != nil {
 		t.Fatalf("construct port: %v", err)
 	}
-	handle, err := p.PluginEventPattern(ports.EventPattern{Topic: "sensors/data", Opts: []events.ChannelOpt{
-		events.Publish{Summary: "sensor reading"},
-		events.ErrorChannel[patternErrValidationErr, patternErrPayload](
-			"sensors/data/errors", patternErrPayloadCodec,
-			func(e patternErrValidationErr) (patternErrPayload, error) {
-				return patternErrPayload{Code: "validation"}, nil
-			},
-		),
-	}})
+	handle, err := p.PluginEventPattern(ports.EventPattern{
+		Topic:   "sensors/data",
+		Publish: &events.Publish{Summary: "sensor reading"},
+		Opts: []events.ChannelOpt{
+			events.ErrorChannel[patternErrValidationErr, patternErrPayload](
+				"sensors/data/errors", patternErrPayloadCodec,
+				func(e patternErrValidationErr) (patternErrPayload, error) {
+					return patternErrPayload{Code: "validation"}, nil
+				},
+			),
+		},
+	})
 	if err != nil {
 		t.Fatalf("PluginEventPattern: %v", err)
 	}
@@ -1146,7 +1270,7 @@ func TestRegisterREST_AddsRouteToBuilder(t *testing.T) {
 	}}); err != nil {
 		t.Fatalf("PluginRESTPattern: %v", err)
 	}
-	b := rest.NewBuilder(rest.Info{Title: "Test", Version: "1.0.0"})
+	b := rest.NewServer(rest.Info{Title: "Test", Version: "1.0.0"})
 	if err := ports.RegisterREST[int, string](b, p); err != nil {
 		t.Fatalf("RegisterREST: %v", err)
 	}
@@ -1168,7 +1292,7 @@ func TestRegisterREST_MissingPattern(t *testing.T) {
 	if err != nil {
 		t.Fatalf("construct port: %v", err)
 	}
-	b := rest.NewBuilder(rest.Info{Title: "Test", Version: "1.0.0"})
+	b := rest.NewServer(rest.Info{Title: "Test", Version: "1.0.0"})
 	err = ports.RegisterREST[int, string](b, p)
 	var mpe ports.MissingPatternError
 	if !errors.As(err, &mpe) {
@@ -1184,12 +1308,13 @@ func TestRegisterEvent_AddsChannelToBuilder(t *testing.T) {
 	if err != nil {
 		t.Fatalf("construct port: %v", err)
 	}
-	if _, err := p.PluginEventPattern(ports.EventPattern{Topic: "sensors/data", Opts: []events.ChannelOpt{
-		events.Subscribe{Summary: "sensor reading"},
-	}}); err != nil {
+	if _, err := p.PluginEventPattern(ports.EventPattern{
+		Topic:     "sensors/data",
+		Subscribe: &events.Subscribe{Summary: "sensor reading"},
+	}); err != nil {
 		t.Fatalf("PluginEventPattern: %v", err)
 	}
-	b := events.NewBuilder(events.Info{Title: "Test", Version: "1.0.0"})
+	b := events.NewClient(events.WithInfo(events.Info{Title: "Test", Version: "1.0.0"}))
 	if err := ports.RegisterEvent[int](b, p); err != nil {
 		t.Fatalf("RegisterEvent: %v", err)
 	}
@@ -1246,36 +1371,37 @@ func TestRegisterMCP_AddsToolToBuilder(t *testing.T) {
 // ── Phase 5: Builder-backed Pattern construction (single construction path) ──
 
 func TestEventPattern_WithBuilder_PopulatesSecuritySchemes(t *testing.T) {
-	scheme := events.SecurityScheme{SecurityScheme: route.BearerScheme("JWT")}
-
-	b := events.NewBuilder(events.Info{Title: "Test", Version: "1.0.0"})
+	// EventPattern.Opts carries no way to attach a channel-level security
+	// scheme declaration post-migration (events.WithSecurityScheme was
+	// removed in favor of Subscriber/Publisher.Use(events.FromSecurityScheme)
+	// — see api/events/builder_test.go's TestFromSecurityScheme_* coverage
+	// for the scheme-population assertions). This test now only exercises
+	// what EventPattern CAN propagate from a shared EventClient: global
+	// security requirements declared via [events.Client.AddGlobalSecurity].
+	b := events.NewClient(events.WithInfo(events.Info{Title: "Test", Version: "1.0.0"}))
 	b.AddGlobalSecurity(route.SecurityRequirement{"bearerAuth": {}})
 
 	p, err := ports.NewSourcePort[int]("secured-readings", intCodec, ports.PortOptions{
-		EventBuilder: b,
+		EventClient: b,
 	})
 	if err != nil {
 		t.Fatalf("construct port: %v", err)
 	}
 	handle, err := p.PluginEventPattern(ports.EventPattern{
 		Topic: "sensors/data",
-		Opts:  []events.ChannelOpt{events.WithSecurityScheme("bearerAuth", scheme)},
 	})
 	if err != nil {
 		t.Fatalf("PluginEventPattern: %v", err)
 	}
-	if len(handle.SecuritySchemes) != 1 {
-		t.Errorf("want 1 security scheme propagated from EventBuilder, got %d", len(handle.SecuritySchemes))
-	}
 	if len(handle.GlobalSecurity) != 1 {
-		t.Errorf("want GlobalSecurity propagated from EventBuilder, got %v", handle.GlobalSecurity)
+		t.Errorf("want GlobalSecurity propagated from EventClient, got %v", handle.GlobalSecurity)
 	}
 }
 
 func TestEventPattern_NilBuilder_NoSecuritySchemes(t *testing.T) {
-	// Regression: without an EventBuilder, the port still constructs successfully
-	// (via a private, single-use builder) but carries no security schemes —
-	// documents the "supply your own Builder to get security" contract.
+	// Regression: without an EventClient, the port still constructs successfully
+	// (Handle treats a nil client as spec-free) but carries no security schemes —
+	// documents the "supply your own Client to get security" contract.
 	p, err := ports.NewSourcePort[int]("unsecured-readings", intCodec, ports.PortOptions{})
 	if err != nil {
 		t.Fatalf("construct port: %v", err)
@@ -1285,7 +1411,7 @@ func TestEventPattern_NilBuilder_NoSecuritySchemes(t *testing.T) {
 		t.Fatalf("PluginEventPattern: %v", err)
 	}
 	if len(handle.SecuritySchemes) != 0 || handle.GlobalSecurity != nil {
-		t.Errorf("want no security schemes without an EventBuilder, got schemes=%v global=%v",
+		t.Errorf("want no security schemes without an EventClient, got schemes=%v global=%v",
 			handle.SecuritySchemes, handle.GlobalSecurity)
 	}
 }
@@ -1356,7 +1482,7 @@ func TestRegisterMCP_SameBuilderAlreadyUsed_ReturnsError(t *testing.T) {
 func TestRESTPattern_WithBuilder_UsesSharedBuilderForSpec(t *testing.T) {
 	// A RESTPattern built with a shared RESTBuilder accumulates directly into
 	// that builder's spec — no separate RegisterREST replay needed.
-	b := rest.NewBuilder(rest.Info{Title: "Test", Version: "1.0.0"})
+	b := rest.NewServer(rest.Info{Title: "Test", Version: "1.0.0"})
 	p, err := ports.NewIOPort[int, string]("shared-builder-route", intCodec, strCodec, ports.PortOptions{
 		RESTBuilder: b,
 	})
@@ -1387,7 +1513,7 @@ func TestRESTPattern_WithBuilder_PathConstraintFailure_ReturnsPatternRegisterErr
 		Check:   func(v string) bool { return !strings.ContainsAny(v, "0123456789") },
 		Message: func(v string) string { return "path must not contain digits: " + v },
 	}
-	b := rest.NewBuilder(rest.Info{Title: "Test", Version: "1.0.0"}, rest.WithPathConstraints(noDigits))
+	b := rest.NewServer(rest.Info{Title: "Test", Version: "1.0.0"}, rest.WithPathConstraints(noDigits))
 
 	p, err := ports.NewIOPort[int, string]("bad-path-shape", intCodec, strCodec, ports.PortOptions{
 		RESTBuilder: b,
@@ -1840,7 +1966,7 @@ func TestLatestPort_SurvivesStreamTermination(t *testing.T) {
 }
 
 func TestLatestPort_RESTPattern_InSpec(t *testing.T) {
-	b := rest.NewBuilder(rest.Info{Title: "t", Version: "1"})
+	b := rest.NewServer(rest.Info{Title: "t", Version: "1"})
 	p, err := ports.NewLatestPort[int]("latest-rest", intCodec, ports.PortOptions{
 		RESTBuilder: b,
 	})
@@ -1959,7 +2085,7 @@ func TestRESTPattern_SinkPort_MethodValidation(t *testing.T) {
 }
 
 func TestRESTPattern_InSharedSpec_IngestAndSSE(t *testing.T) {
-	b := rest.NewBuilder(rest.Info{Title: "t", Version: "1"})
+	b := rest.NewServer(rest.Info{Title: "t", Version: "1"})
 	src, err := ports.NewSourcePort[int]("ingest-spec", intCodec, ports.PortOptions{
 		RESTBuilder: b,
 	})
@@ -1998,7 +2124,7 @@ func TestRegisterSSE_ReplaysSpec(t *testing.T) {
 	if _, err := p.PluginRESTPattern(ports.RESTPattern{Path: "/replay", Opts: []rest.RouteOpt{rest.RouteMeta{OperationID: "opReplay"}}}); err != nil {
 		t.Fatalf("PluginRESTPattern: %v", err)
 	}
-	b := rest.NewBuilder(rest.Info{Title: "t", Version: "1"})
+	b := rest.NewServer(rest.Info{Title: "t", Version: "1"})
 	if err := ports.RegisterSSE[int](b, p); err != nil {
 		t.Fatalf("RegisterSSE: %v", err)
 	}
@@ -2222,7 +2348,7 @@ func TestRegisterSocket_DuplexBothOperations(t *testing.T) {
 	if _, err := port.PluginSocketPattern(ports.SocketPattern{Path: "/live/{room}"}); err != nil {
 		t.Fatalf("PluginSocketPattern: %v", err)
 	}
-	b := events.NewBuilder(events.Info{Title: "t", Version: "1"})
+	b := events.NewClient(events.WithInfo(events.Info{Title: "t", Version: "1"}))
 	b.AddServer("prod", events.Server{URL: "example.com", Protocol: "ws"})
 	if err := ports.RegisterSocket[int, string](b, port); err != nil {
 		t.Fatalf("RegisterSocket: %v", err)
@@ -2243,7 +2369,7 @@ func TestRegisterSocket_DuplexBothOperations(t *testing.T) {
 func TestRegisterSocket_OneDirectional(t *testing.T) {
 	src, _ := ports.NewSourcePort[int]("spec-src", intCodec, ports.PortOptions{})
 	_, _ = src.PluginSocketPattern(ports.SocketPattern{Path: "/in"})
-	b := events.NewBuilder(events.Info{Title: "t", Version: "1"})
+	b := events.NewClient(events.WithInfo(events.Info{Title: "t", Version: "1"}))
 	if err := ports.RegisterSocket[int, struct{}](b, src); err != nil {
 		t.Fatalf("RegisterSocket source: %v", err)
 	}
@@ -2263,7 +2389,7 @@ func TestRegisterSocket_OneDirectional(t *testing.T) {
 
 func TestRegisterSocket_MissingPattern(t *testing.T) {
 	port, _ := ports.NewDuplexPort[int, string]("spec-none", intCodec, strCodec, ports.PortOptions{})
-	b := events.NewBuilder(events.Info{})
+	b := events.NewClient(events.WithInfo(events.Info{}))
 	var mpe ports.MissingPatternError
 	if err := ports.RegisterSocket[int, string](b, port); !errors.As(err, &mpe) || mpe.Kind != "socket" {
 		t.Errorf("want MissingPatternError{socket}, got %v", err)

@@ -202,6 +202,25 @@ func topicMatchesSub(sub, topic string) bool {
 	return len(subParts) == len(topicParts)
 }
 
+// waitForSubscription polls until filter has been registered by
+// [mockClient.Subscribe], or timeout elapses. events.SubscribeHandle (Decision
+// 7) registers the subscription then blocks until ctx is cancelled — so
+// callers run it in a goroutine and must synchronize before delivering
+// simulated broker messages.
+func (c *mockClient) waitForSubscription(filter string, timeout time.Duration) bool {
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		c.mu.Lock()
+		_, ok := c.handlers[filter]
+		c.mu.Unlock()
+		if ok {
+			return true
+		}
+		time.Sleep(time.Millisecond)
+	}
+	return false
+}
+
 func (c *mockClient) IsConnected() bool      { return true }
 func (c *mockClient) IsConnectionOpen() bool { return true }
 func (c *mockClient) Connect() pahomqtt.Token {
@@ -262,33 +281,44 @@ func main() {
 	ctx = stats.WithObserver(ctx, obs)
 	client := newMockClient()
 
+	// Decision 7: events.SubscribeHandle registers the subscription then
+	// blocks until ctx is cancelled (mqtt v3 has no router — paho dispatches
+	// on its own goroutines once client.Subscribe registers the filter), so
+	// run it in a goroutine. subCtx is shared by every subscribe demo below
+	// and cancelled once when main returns.
+	subCtx, subCancel := context.WithCancel(ctx)
+	defer subCancel()
+
 	// ── Consumer service: register channels ───────────────────────────────────
 	//
 	// The consumer imports the shared contract and registers both channels with
-	// its own events.Builder. The builder accumulates route information for
+	// its own events.Client. The builder accumulates route information for
 	// AsyncAPI spec generation — it has no runtime effect on the handler.
 
-	consumerBuilder := events.NewBuilder(events.Info{
+	consumerBuilder := events.NewClient(events.WithInfo(events.Info{
 		Title:       "Alert Service",
 		Version:     "1.0.0",
 		Description: "Subscribes to sensor readings; publishes alerts on threshold breach.",
-	})
+	}))
 	consumerBuilder.AddServer("broker", events.Server{
 		URL:         "mqtt://broker.example.com:1883",
 		Protocol:    "mqtt",
 		Description: "Production MQTT broker",
 	})
 
-	// Register ReadingsChannel for subscribe — returns a *ChannelHandle with
+	// Handle ReadingsSubscriber for subscribe — returns a *ChannelHandle with
 	// Decode, Encode, BuildTopic, ValidateTopicVars, and all codec helpers.
-	readingsHandle, err := contract.ReadingsChannel.Register(consumerBuilder)
+	readingsHandle, err := contract.ReadingsSubscriber.Handle(consumerBuilder)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "consumer: register readings channel:", err)
 		os.Exit(1)
 	}
 
-	// Register AlertsChannel for publish — consumer publishes alerts here.
-	alertsHandle, err := contract.AlertsChannel.Register(consumerBuilder)
+	// Handle AlertsPublisher for publish — consumer publishes alerts here.
+	// The runtime call site below uses contract.AlertsPublisher directly
+	// (events.PublishHandle builds its own handle internally); only spec
+	// registration needs the returned handle, which is unused here.
+	_, err = contract.AlertsPublisher.Handle(consumerBuilder)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "consumer: register alerts channel:", err)
 		os.Exit(1)
@@ -304,19 +334,46 @@ func main() {
 
 	// Wire the consumer handler: decode SensorReading → domain logic → publish Alert.
 	//
-	// Note: the {sensorID} topic variable is the MQTT routing key (UUID); the
-	// SensorReading.SensorID payload field is the application-level identifier
-	// (may differ). Use TopicVarsFromMessage to extract the validated routing key
-	// from the incoming topic — do not assume the payload field is a UUID.
-	client.Subscribe(readingsTopic, 1,
-		adaptermqtt.SubscribeHandler(ctx, readingsHandle,
-			func(ctx context.Context, r contract.SensorReading) error {
-				msg, _ := adaptermqtt.MessageFromContext(ctx)
-				vars, err := adaptermqtt.TopicVarsFromMessage(readingsHandle, msg)
-				if err != nil {
-					return err
+	// {sensorID} is the MQTT routing key (UUID); SensorReading.SensorID is the
+	// application-level identifier (may differ). Decision 7's NewTopicParam
+	// merge field on contract.ReadingsChannel populates r.RoutingID with the
+	// validated routing key automatically — no manual TopicVarsFromMessage call
+	// needed.
+	//
+	// TopicFilter pins this subscription to sensor A's specific stream only —
+	// contrast with §4 below, which subscribes to ALL sensors via "sensors/#".
+	alertTransport := adaptermqtt.NewPublishTransport[contract.Alert](client, 1, false, adaptermqtt.PublishOptions[contract.Alert]{}) // observer from ctx
+	readingsTransport := adaptermqtt.NewSubscribeTransport[contract.SensorReading](client, 1,
+		adaptermqtt.SubscribeOptions{
+			TopicFilter: readingsTopic,
+			OnError: func(e adaptermqtt.SubscribeError) {
+				switch e.Kind {
+				case adaptermqtt.KindDecode:
+					var validationErrs codex.ValidationErrors
+					if errors.As(e.Err, &validationErrs) {
+						logger.Warn("consumer: decode validation error",
+							"topic", e.Topic,
+							"errors", validationErrs,
+						)
+					} else {
+						logger.Warn("consumer: decode error",
+							"topic", e.Topic,
+							"error", e.Err,
+						)
+					}
+				case adaptermqtt.KindHandler:
+					logger.Error("consumer: handler error",
+						"topic", e.Topic,
+						"error", e.Err,
+					)
 				}
-				routingSensorID := vars["sensorID"] // validated UUID by TopicParam.Codec
+			},
+		},
+	)
+	go func() {
+		err := events.SubscribeHandle(subCtx, contract.ReadingsSubscriber, readingsTransport,
+			func(ctx context.Context, r contract.SensorReading) error {
+				routingSensorID := r.RoutingID // populated automatically by the merge field
 
 				if !shouldAlert(r) {
 					fmt.Printf("  [consumer] reading OK  sensor=%.8s… value=%.1f %s\n",
@@ -324,39 +381,17 @@ func main() {
 					return nil
 				}
 				alert := buildAlert(r)
+				alert.RoutingID = routingSensorID // routing key, not payload field
 				fmt.Printf("  [consumer] ALERT       sensor=%.8s… value=%.1f > threshold=%.1f\n",
 					routingSensorID, r.Value, alertThreshold)
-				return adaptermqtt.Publish(ctx, client, alertsHandle, 1, false, alert,
-					map[string]string{"sensorID": routingSensorID}, // routing key, not payload field
-					adaptermqtt.PublishOptions{})                   // observer from ctx
+				return events.PublishHandle(ctx, contract.AlertsPublisher, alertTransport, alert)
 			},
-			adaptermqtt.SubscribeOptions{
-				// observer from ctx (resolved automatically)
-				OnError: func(e adaptermqtt.SubscribeError) {
-					switch e.Kind {
-					case adaptermqtt.KindDecode:
-						var validationErrs codex.ValidationErrors
-						if errors.As(e.Err, &validationErrs) {
-							logger.Warn("consumer: decode validation error",
-								"topic", e.Topic,
-								"errors", validationErrs,
-							)
-						} else {
-							logger.Warn("consumer: decode error",
-								"topic", e.Topic,
-								"error", e.Err,
-							)
-						}
-					case adaptermqtt.KindHandler:
-						logger.Error("consumer: handler error",
-							"topic", e.Topic,
-							"error", e.Err,
-						)
-					}
-				},
-			},
-		),
-	)
+		)
+		if err != nil {
+			logger.Error("consumer: subscribe failed", "error", err)
+		}
+	}()
+	client.waitForSubscription(readingsTopic, time.Second)
 
 	// ── Producer service: register channels ───────────────────────────────────
 	//
@@ -364,34 +399,39 @@ func main() {
 	// with its own builder. Both services get identical ChannelHandles from the
 	// same spec. If the contract changes, both fail to compile — no silent drift.
 
-	producerBuilder := events.NewBuilder(events.Info{
+	producerBuilder := events.NewClient(events.WithInfo(events.Info{
 		Title:       "Sensor Gateway",
 		Version:     "1.0.0",
 		Description: "Forwards raw sensor measurements to the MQTT broker.",
-	})
+	}))
 	producerBuilder.AddServer("broker", events.Server{
 		URL:      "mqtt://broker.example.com:1883",
 		Protocol: "mqtt",
 	})
 
-	producerReadingsHandle, err := contract.ReadingsChannel.Register(producerBuilder)
+	// The runtime call sites below use contract.ReadingsPublisher directly
+	// (events.PublishHandle builds its own handle internally); only spec
+	// registration needs the returned handle, which is unused here.
+	_, err = contract.ReadingsPublisher.Handle(producerBuilder)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "producer: register readings channel:", err)
 		os.Exit(1)
 	}
+	producerTransport := adaptermqtt.NewPublishTransport[contract.SensorReading](client, 1, false, adaptermqtt.PublishOptions[contract.SensorReading]{}) // observer from ctx
 
 	// ── 1. Normal readings ────────────────────────────────────────────────────
 	fmt.Println("=== 1. Normal readings (producer → broker → consumer) ===")
 
+	// RoutingID carries the {sensorID} MQTT topic routing key — Decision 7's
+	// NewTopicParam merge field on contract.ReadingsChannel derives the
+	// concrete topic from it automatically, no separate vars map needed.
 	readings := []contract.SensorReading{
-		{SensorID: "temp-01", Value: 62.5, Unit: "celsius", Timestamp: "2024-01-15T10:30:00Z"},
-		{SensorID: "temp-01", Value: 87.3, Unit: "celsius", Timestamp: "2024-01-15T10:31:00Z"}, // exceeds threshold
-		{SensorID: "temp-01", Value: 55.0, Unit: "celsius", Timestamp: "2024-01-15T10:32:00Z"},
+		{SensorID: "temp-01", Value: 62.5, Unit: "celsius", Timestamp: "2024-01-15T10:30:00Z", RoutingID: sensorA},
+		{SensorID: "temp-01", Value: 87.3, Unit: "celsius", Timestamp: "2024-01-15T10:31:00Z", RoutingID: sensorA}, // exceeds threshold
+		{SensorID: "temp-01", Value: 55.0, Unit: "celsius", Timestamp: "2024-01-15T10:32:00Z", RoutingID: sensorA},
 	}
 	for _, r := range readings {
-		if err := adaptermqtt.Publish(ctx, client, producerReadingsHandle, 1, false, r,
-			map[string]string{"sensorID": sensorA},
-			adaptermqtt.PublishOptions{}); /* observer from ctx */ err != nil {
+		if err := events.PublishHandle(ctx, contract.ReadingsPublisher, producerTransport, r); err != nil {
 			logger.Error("producer: publish failed", "error", err)
 		}
 	}
@@ -405,10 +445,9 @@ func main() {
 		Value:     0,  // fails NonZeroFloat
 		Unit:      "celsius",
 		Timestamp: "2024-01-15T10:33:00Z",
+		RoutingID: sensorB, // valid — isolates the payload failure path below
 	}
-	err = adaptermqtt.Publish(ctx, client, producerReadingsHandle, 1, false, badReading,
-		map[string]string{"sensorID": sensorB},
-		adaptermqtt.PublishOptions{}) // observer from ctx
+	err = events.PublishHandle(ctx, contract.ReadingsPublisher, producerTransport, badReading)
 	if err != nil {
 		var valErrs codex.ValidationErrors
 		if errors.As(err, &valErrs) {
@@ -421,24 +460,26 @@ func main() {
 	}
 	fmt.Println()
 
-	// ── 3. Invalid topic param — BuildTopic rejects non-UUID sensorID ─────────
-	fmt.Println("=== 3. Invalid topic param (BuildTopic rejects before broker call) ===")
+	// ── 3. Invalid topic param — EncodeVars rejects non-UUID sensorID ────────
+	fmt.Println("=== 3. Invalid topic param (rejected before broker call) ===")
 
-	err = adaptermqtt.Publish(ctx, client, producerReadingsHandle, 1, false,
+	// Decision 7 derives the topic var straight from SensorReading.RoutingID
+	// (the NewTopicParam merge field). "not-a-uuid" fails the UUID codec at
+	// the EncodeVars step, returning codex.ValidationErrors before Encode or
+	// broker I/O is attempted (TopicParamError is only reachable via a
+	// directly-supplied vars map, e.g. a manual BuildTopic call).
+	err = events.PublishHandle(ctx, contract.ReadingsPublisher, producerTransport,
 		contract.SensorReading{
 			SensorID: "temp-01", Value: 70.0, Unit: "celsius",
 			Timestamp: "2024-01-15T10:34:00Z",
+			RoutingID: "not-a-uuid",
 		},
-		map[string]string{"sensorID": "not-a-uuid"}, // fails UUID codec
-		adaptermqtt.PublishOptions{},                // observer from ctx
 	)
 	if err != nil {
-		var paramErr events.TopicParamError
-		if errors.As(err, &paramErr) {
-			logger.Warn("producer: topic param rejected (no broker call)",
-				"param", paramErr.Name,
-				"value", paramErr.Value,
-				"cause", paramErr.Err,
+		var valErrs codex.ValidationErrors
+		if errors.As(err, &valErrs) {
+			logger.Warn("producer: topic var rejected (no broker call)",
+				"errors", valErrs,
 			)
 		} else {
 			logger.Error("producer: publish error", "error", err)
@@ -449,55 +490,58 @@ func main() {
 	// ── 4. Multiple sensors via wildcard subscription ─────────────────────────
 	fmt.Println("=== 4. Multiple sensors via wildcard subscription (sensors/#) ===")
 
-	// Register a second ReadingsChannel handle for wildcard subscription.
-	// TopicVarsFromMessage extracts and validates {sensorID} from each incoming topic.
-	wildcardHandle, err := contract.ReadingsChannel.Register(
-		events.NewBuilder(events.Info{Title: "Wildcard Monitor", Version: "1.0.0"}),
+	// Handle a second ReadingsSubscriber registration for a separate builder
+	// context — purely for spec-registration purposes; the runtime call
+	// below uses contract.ReadingsSubscriber directly.
+	_, err = contract.ReadingsSubscriber.Handle(
+		events.NewClient(events.WithInfo(events.Info{Title: "Wildcard Monitor", Version: "1.0.0"})),
 	)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "wildcard: register:", err)
 		os.Exit(1)
 	}
 
-	client.Subscribe("sensors/#", 1,
-		adaptermqtt.SubscribeHandler(ctx, wildcardHandle,
-			func(ctx context.Context, r contract.SensorReading) error {
-				msg, _ := adaptermqtt.MessageFromContext(ctx)
-				vars, err := adaptermqtt.TopicVarsFromMessage(wildcardHandle, msg)
-				if err != nil {
-					return err
+	// The NewTopicParam merge field populates r.RoutingID automatically on
+	// every decoded message — no manual TopicVarsFromMessage call needed.
+	wildcardTransport := adaptermqtt.NewSubscribeTransport[contract.SensorReading](client, 1,
+		adaptermqtt.SubscribeOptions{
+			TopicFilter: "sensors/#",
+			OnError: func(e adaptermqtt.SubscribeError) {
+				var paramErr events.TopicParamError
+				if errors.As(e.Err, &paramErr) {
+					logger.Warn("wildcard: topic param rejected",
+						"var", paramErr.Name,
+						"value", paramErr.Value,
+						"cause", paramErr.Err,
+					)
+				} else {
+					logger.Warn("wildcard: error", "topic", e.Topic, "error", e.Err)
 				}
+			},
+		},
+	)
+	go func() {
+		err := events.SubscribeHandle(subCtx, contract.ReadingsSubscriber, wildcardTransport,
+			func(_ context.Context, r contract.SensorReading) error {
 				fmt.Printf("  [wildcard] sensor=%-42s value=%.1f %s\n",
-					vars["sensorID"], r.Value, r.Unit)
+					r.RoutingID, r.Value, r.Unit)
 				return nil
 			},
-			adaptermqtt.SubscribeOptions{
-				// observer from ctx (resolved automatically)
-				OnError: func(e adaptermqtt.SubscribeError) {
-					var paramErr events.TopicParamError
-					if errors.As(e.Err, &paramErr) {
-						logger.Warn("wildcard: topic param rejected",
-							"var", paramErr.Name,
-							"value", paramErr.Value,
-							"cause", paramErr.Err,
-						)
-					} else {
-						logger.Warn("wildcard: error", "topic", e.Topic, "error", e.Err)
-					}
-				},
-			},
-		),
-	)
+		)
+		if err != nil {
+			logger.Error("wildcard: subscribe failed", "error", err)
+		}
+	}()
+	client.waitForSubscription("sensors/#", time.Second)
 
 	// Publish from two different sensors — both arrive at the wildcard handler.
 	for _, sID := range []string{sensorA, sensorB} {
-		_ = adaptermqtt.Publish(ctx, client, producerReadingsHandle, 1, false,
+		_ = events.PublishHandle(ctx, contract.ReadingsPublisher, producerTransport,
 			contract.SensorReading{
 				SensorID: "temp-01", Value: 65.0 + float64(len(sID)%10),
 				Unit: "celsius", Timestamp: "2024-01-15T11:00:00Z",
-			},
-			map[string]string{"sensorID": sID},
-			adaptermqtt.PublishOptions{}) // observer from ctx
+				RoutingID: sID,
+			})
 	}
 	// Non-UUID sensorID — wildcard handler receives it, TopicVarsFromMessage rejects.
 	if len("sensors/not-a-uuid/readings") > 0 {

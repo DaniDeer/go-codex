@@ -48,6 +48,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -504,6 +505,36 @@ func mustServe(err error, what string) {
 	}
 }
 
+// mustFreeAddr reserves an OS-assigned free TCP port on localhost, then
+// releases it immediately so AttachMux's own *http.Server can bind to it —
+// used because AttachMux/builder.Serve now owns a real network listener
+// (unlike the wire-only nethttp.Serve this example used before) rather than
+// wiring routes onto a mux passed straight to httptest.NewServer.
+func mustFreeAddr() string {
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "reserve free port failed: %v\n", err)
+		os.Exit(1)
+	}
+	addr := l.Addr().String()
+	_ = l.Close()
+	return addr
+}
+
+// waitForReady polls addr until it accepts TCP connections — b.Serve starts
+// its *http.Server asynchronously in a goroutine, so demo requests below
+// must wait for it to actually be listening first.
+func waitForReady(addr string) {
+	for range 100 {
+		conn, err := net.DialTimeout("tcp", addr, 50*time.Millisecond)
+		if err == nil {
+			_ = conn.Close()
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
 func main() {
 	baseLogger := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelDebug}))
 	slog.SetDefault(baseLogger)
@@ -515,7 +546,7 @@ func main() {
 	httpLogger := baseLogger.With("transport", "http")
 
 	// Build the REST API description (transport-agnostic).
-	b := rest.NewBuilder(rest.Info{
+	b := rest.NewServer(rest.Info{
 		Title:       "User API",
 		Version:     "1.0.0",
 		Description: "Three-layer codec pipeline: HTTP ↔ domain ↔ database.",
@@ -527,7 +558,7 @@ func main() {
 		// /users/{id} passes correctly.
 		rest.WithPathConstraints(validate.HTTPPath),
 	)
-	b.AddServer("local", rest.Server{URL: "http://localhost:8080"})
+	b.AddServer("local", rest.ServerEntry{URL: "http://localhost:8080"})
 
 	// locationCodec validates Location response header values as non-empty strings.
 	// sessionCodec validates the session cookie value (at least 8 chars).
@@ -808,20 +839,28 @@ func main() {
 		os.Exit(1)
 	}
 
-	// Wire every handler-bearing route registered into b onto mux — the
-	// SOLE server-side entry point for regular (non-SSE, non-pipeline) routes.
+	// Wire every handler-bearing route registered into b onto mux via
+	// AttachMux — the SOLE server-side entry point for regular (non-SSE,
+	// non-pipeline) routes. AttachMux itself only binds builder+mux+addr;
+	// the actual wiring (plus starting b's own *http.Server) happens
+	// inside builder.Serve(ctx) below.
 	mux := http.NewServeMux()
-	mustServe(nethttp.Serve(mux, b), "Serve")
-	// pipelineErrorRoute has no WithHandler-attached handler, so Serve
-	// skipped it above (spec-only); wire its pipeline handler directly.
+	addr := mustFreeAddr()
+	mustServe(nethttp.AttachMux(b, mux, addr), "AttachMux")
+	// pipelineErrorRoute has no WithHandler-attached handler, so AttachMux's
+	// internal wiring skips it (spec-only); wire its pipeline handler directly.
 	nethttp.RegisterPipeline(mux, pipelineErrorRoute, makeErgonomicsPipelineHandler(), baseOpts)
 
-	// Demo requests against an in-process test server.
-	srv := httptest.NewServer(mux)
-	defer srv.Close()
+	// b.Serve blocks until ctx is cancelled, so it runs in a goroutine —
+	// demo requests below run concurrently against the real listener it owns.
+	ctx, cancel := context.WithCancel(context.Background())
+	go func() { _ = b.Serve(ctx) }()
+	defer cancel()
+	waitForReady(addr)
+	srvURL := "http://" + addr
 
 	fmt.Println("=== POST /users ===")
-	resp, err := http.Post(srv.URL+"/users", "application/json", //nolint:noctx
+	resp, err := http.Post(srvURL+"/users", "application/json", //nolint:noctx
 		strings.NewReader(`{"name":"Alice","email":"alice@example.com"}`))
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "POST error: %v\n", err)
@@ -839,7 +878,7 @@ func main() {
 	fmt.Println("=== POST /users (YAML body — multi-format request) ===")
 	// RequestFormats enables content negotiation for incoming request bodies.
 	// The adapter picks the decoder matching the Content-Type header.
-	yamlReq, _ := http.NewRequest(http.MethodPost, srv.URL+"/users", //nolint:noctx
+	yamlReq, _ := http.NewRequest(http.MethodPost, srvURL+"/users", //nolint:noctx
 		strings.NewReader("name: Bob\nemail: bob@example.com\n"))
 	yamlReq.Header.Set("Content-Type", "application/yaml")
 	respYAML, err := http.DefaultClient.Do(yamlReq)
@@ -853,7 +892,7 @@ func main() {
 	fmt.Printf("Status: %d\nUser:   %+v\n\n", respYAML.StatusCode, createdYAML)
 
 	fmt.Println("=== POST /users (unsupported Content-Type → 415) ===")
-	xmlReq, _ := http.NewRequest(http.MethodPost, srv.URL+"/users", //nolint:noctx
+	xmlReq, _ := http.NewRequest(http.MethodPost, srvURL+"/users", //nolint:noctx
 		strings.NewReader(`<name>Carol</name>`))
 	xmlReq.Header.Set("Content-Type", "application/xml")
 	respXML, err := http.DefaultClient.Do(xmlReq)
@@ -867,7 +906,7 @@ func main() {
 	fmt.Printf("Status: %d\nError:  %s\n\n", respXML.StatusCode, xmlErrBody["error"])
 
 	fmt.Println("=== POST /users (body constraint violation) ===")
-	resp2, err := http.Post(srv.URL+"/users", "application/json", //nolint:noctx
+	resp2, err := http.Post(srvURL+"/users", "application/json", //nolint:noctx
 		strings.NewReader(`{"name":"","email":"bad"}`))
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "POST error: %v\n", err)
@@ -880,7 +919,7 @@ func main() {
 
 	fmt.Println("=== Error ergonomics: no-pipeline vs pipeline (same domain error) ===")
 	conflictBody := `{"name":"conflict","email":"conflict@example.com"}`
-	noPipeResp, err := http.Post(srv.URL+"/ergonomics/no-pipeline", "application/json", //nolint:noctx
+	noPipeResp, err := http.Post(srvURL+"/ergonomics/no-pipeline", "application/json", //nolint:noctx
 		strings.NewReader(conflictBody))
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "POST error: %v\n", err)
@@ -891,7 +930,7 @@ func main() {
 	_ = json.NewDecoder(noPipeResp.Body).Decode(&noPipeErr)
 	fmt.Printf("no-pipeline status: %d\nno-pipeline error:  %s\n", noPipeResp.StatusCode, noPipeErr["error"])
 
-	pipeResp, err := http.Post(srv.URL+"/ergonomics/pipeline", "application/json", //nolint:noctx
+	pipeResp, err := http.Post(srvURL+"/ergonomics/pipeline", "application/json", //nolint:noctx
 		strings.NewReader(conflictBody))
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "POST error: %v\n", err)
@@ -909,7 +948,7 @@ func main() {
 		fmt.Fprintf(os.Stderr, "BuildPath error: %v\n", err)
 		os.Exit(1)
 	}
-	resp3, err := http.Get(srv.URL + userPath) //nolint:noctx
+	resp3, err := http.Get(srvURL + userPath) //nolint:noctx
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "GET error: %v\n", err)
 		os.Exit(1)
@@ -934,7 +973,7 @@ func main() {
 		os.Exit(1)
 	}
 	updateBody := strings.NewReader(`{"name":"Alice Updated","email":"alice.updated@example.com"}`)
-	req, err := http.NewRequest(http.MethodPut, srv.URL+updatePath, updateBody)
+	req, err := http.NewRequest(http.MethodPut, srvURL+updatePath, updateBody)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "NewRequest error: %v\n", err)
 		os.Exit(1)
@@ -953,7 +992,7 @@ func main() {
 	fmt.Println("=== GET /users?page=2&search=alice (query params) ===")
 	// ?page is validated against NonNegativeIntString by the nethttp adapter.
 	// ?search has no codec — passed through to the handler as-is.
-	resp4, err := http.Get(srv.URL + "/users?page=2&search=alice") //nolint:noctx
+	resp4, err := http.Get(srvURL + "/users?page=2&search=alice") //nolint:noctx
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "GET error: %v\n", err)
 		os.Exit(1)
@@ -966,7 +1005,7 @@ func main() {
 	fmt.Println("=== GET /users?page=abc (invalid query param — auto-rejected) ===")
 	// The nethttp adapter calls ValidateQuery before the handler.
 	// "abc" fails NonNegativeIntString → 400 returned, handler never runs.
-	resp5, err := http.Get(srv.URL + "/users?page=abc") //nolint:noctx
+	resp5, err := http.Get(srvURL + "/users?page=abc") //nolint:noctx
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "GET error: %v\n", err)
 		os.Exit(1)
@@ -978,7 +1017,7 @@ func main() {
 
 	fmt.Println("=== GET /profile (valid cookie + header) ===")
 	// Both session_token cookie and X-Request-Id header are valid.
-	req6, err := http.NewRequest(http.MethodGet, srv.URL+"/profile", nil) //nolint:noctx
+	req6, err := http.NewRequest(http.MethodGet, srvURL+"/profile", nil) //nolint:noctx
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "NewRequest error: %v\n", err)
 		os.Exit(1)
@@ -996,7 +1035,7 @@ func main() {
 	fmt.Printf("Status: %d\nUser:   %+v\n\n", resp6.StatusCode, profile)
 
 	fmt.Println("=== GET /profile (invalid cookie — auto-rejected) ===")
-	req7, err := http.NewRequest(http.MethodGet, srv.URL+"/profile", nil) //nolint:noctx
+	req7, err := http.NewRequest(http.MethodGet, srvURL+"/profile", nil) //nolint:noctx
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "NewRequest error: %v\n", err)
 		os.Exit(1)
@@ -1014,7 +1053,7 @@ func main() {
 	fmt.Printf("Status: %d\nError:  %s\n\n", resp7.StatusCode, cookieErrBody["error"])
 
 	fmt.Println("=== GET /profile (invalid header — auto-rejected) ===")
-	req8, err := http.NewRequest(http.MethodGet, srv.URL+"/profile", nil) //nolint:noctx
+	req8, err := http.NewRequest(http.MethodGet, srvURL+"/profile", nil) //nolint:noctx
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "NewRequest error: %v\n", err)
 		os.Exit(1)

@@ -234,6 +234,44 @@ func (e BrokerError) LogValue() slog.Value {
 	)
 }
 
+// ConnectError wraps broker-connection setup failures from [Connect]: the
+// initial TCP/TLS dial, or the subsequent MQTT CONNECT packet handshake.
+// It is distinct from [BrokerError] (which wraps a post-connection
+// Subscribe/Publish failure on an already-connected client) — ConnectError
+// only ever originates from [Connect] itself.
+//
+// The Op field identifies which connection step failed:
+//
+//	var connErr mqtt5.ConnectError
+//	if errors.As(err, &connErr) {
+//	    switch connErr.Op {
+//	    case "dial":    // TCP/TLS dial failed (unreachable broker, TLS handshake, etc.)
+//	    case "connect": // MQTT CONNECT packet was rejected or timed out
+//	    }
+//	    slog.Error("mqtt5 connect failed", "error", connErr)
+//	}
+type ConnectError struct {
+	// Op identifies the connection step that failed: "dial" or "connect".
+	Op string
+	// Err is the underlying network or protocol error.
+	Err error
+}
+
+func (e ConnectError) Error() string {
+	return fmt.Sprintf("mqtt5 connect %s: %v", e.Op, e.Err)
+}
+
+// Unwrap allows [errors.Is] and [errors.As] to traverse the underlying error.
+func (e ConnectError) Unwrap() error { return e.Err }
+
+// LogValue implements [slog.LogValuer] for structured logging.
+func (e ConnectError) LogValue() slog.Value {
+	return slog.GroupValue(
+		slog.String("op", e.Op),
+		slog.Any("err", e.Err),
+	)
+}
+
 // PipelineNoResponseError is returned by [AsPipelineFunc] when [stream.Collect]
 // returns without any value — either the pipeline emitted nothing, or the request
 // context was cancelled before the pipeline produced a result.

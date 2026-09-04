@@ -77,8 +77,8 @@ The library provides the hook; the user's implementation controls span parenting
 All adapter entry points accept `context.Context`:
 - `nethttp.Call(ctx, ...)` — HTTP client, propagates downstream
 - `nethttp.Serve`/`ServeOne` — HTTP server, ctx from `*http.Request.Context()`
-- `mqtt.Publish(ctx, ...)` — MQTT publish
-- `mqtt.SubscribeHandler(ctx, ...)` — MQTT subscribe, ctx flows to handler
+- `mqtt.NewPublishTransport[T](...).Publish(ctx, ...)` (via `events.PublishHandle`) — MQTT publish
+- `mqtt.NewSubscribeTransport[T](...).Subscribe(ctx, ...)` (via `events.SubscribeHandle`) — MQTT subscribe, ctx flows to handler
 
 To propagate into forge and file:
 - Use **`forge.Function.ApplyContext(ctx, in)`** instead of `Apply(in)`
@@ -108,7 +108,7 @@ obs := stats.NewFanout(metricsObserver, stats.NewLoggingObserver(slog.Default())
 ctx := stats.WithObserver(context.Background(), obs)
 
 // All adapters now use obs when Options.Observer is nil:
-mqtt.Subscribe(ctx, client, handle, 1, fn, mqtt.SubscribeOptions{})
+events.SubscribeHandle(ctx, sub, mqtt.NewSubscribeTransport[T](client, 1, mqtt.SubscribeOptions{}), fn)
 stream.Apply(ctx, s, fn, stream.ApplyOptions{})
 route.WithOptions(nethttp.Options{}) // resolved per-request (see below)
 ```

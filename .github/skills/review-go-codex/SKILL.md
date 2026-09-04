@@ -297,7 +297,7 @@ allow a single observer to be set once for all components. When reviewing:
   **Do NOT flag `ObserverFromContext(ctx)` as wrong.** It returns `NoopObserver{}` when no
   context observer is stored — identical behaviour to the old `NoopObserver{}` default.
 
-- **HTTP/MCP handler closures** (`nethttp.Serve`/`ServeOne`, `chi.Serve`/`ServeOne`, `mcpgo.ToolHandler`, etc.)
+- **HTTP/MCP handler closures** (each adapter's internal `serve`/`serveOne` dispatch, invoked via `nethttp.AttachMux`/`nethttp.ServeOne`/`chi.AttachRouter`, `mcpgo.ToolHandler`, etc.)
   are constructor functions that return closures. obs is resolved **inside the closure**,
   not at construction time:
   ```go
@@ -549,7 +549,7 @@ Used correctly in: `PipelineHandlerFunc`, `AsPipelineFunc`. Do not flag as an is
   verifying it. See the same Lessons Learned section for the `rest.CheckCoverage`/
   `MissingSecurityMiddlewareError` regression this exact gap caused in `Serve`/`ServeSSE`.
 - **`FunctionKindScalar` is `""` (empty string).** `NewFunction`/`Compose` never write `Kind` — scalar functions have `Kind==""` by design. The `render/pipeline` renderer omits `kind:` for scalar. This is correct.
-- **`rest.Builder.AddServer` discards `name` after description fallback.** OpenAPI servers are a keyless ordered array. `events.Builder.AddServer` stores the name (AsyncAPI servers are keyed). Same call site, different semantics.
+- **`rest.Server.AddServer` discards `name` after description fallback.** OpenAPI servers are a keyless ordered array. `events.Builder.AddServer` stores the name (AsyncAPI servers are keyed). Same call site, different semantics.
 - **`PathParam` and `TopicParam` have no `Required` field.** This is by design — OpenAPI mandates path params are always required; topic vars must always be present. Godoc explains this.
 - **`ResourceParam` has no `Required` field.** URI vars in a template must always be present (same rationale as PathParam/TopicParam). `PromptArg` DOES have `Required bool` — prompt args are optional by default.
 - **`SecurityScheme` codec is spec-only.** No adapter enforces it unless `SecurityFunc` does so explicitly.
@@ -579,7 +579,7 @@ Used correctly in: `PipelineHandlerFunc`, `AsPipelineFunc`. Do not flag as an is
 - **`mcpgo.ToolPipelineHandler` is the per-call trigger; `ToolLatestHandler` is the reactive cache.** Both wrap `ToolHandler`. `ToolPipelineHandler` runs a fresh stream per tool call (`stream.Single → Collect`); `ToolLatestHandler` runs a background stream and returns the latest value. Do not flag either as missing the other's pattern.
 - **`nethttp.HandlerLatest` validates `Req` even though it's discarded.** All codec layers run (body decode, query/cookie/header/path params, security). This ensures only well-formed requests receive cached responses. Do not flag as waste.
 - **`ObserverFromContext(ctx)` in nil-guards is correct — do not flag.** The nil-guard pattern was updated from `obs = stats.NoopObserver{}` to `obs = stats.ObserverFromContext(ctx)` as part of the default context observer feature. `ObserverFromContext` returns `NoopObserver{}` when no context observer is stored, so behaviour is identical when no context observer is present. This is not an inconsistency — it is the correct implementation.
-- **HTTP/MCP handler closures resolve observer inside closure, not at construction.** `nethttp.Serve`/`ServeOne`, `chi.Serve`/`ServeOne`, `mcpgo.ToolHandler`, etc. are constructor functions. obs is resolved per-request/per-call from `r.Context()`/call ctx inside the returned closure. This is intentional (enables per-request middleware injection). Do not flag as inconsistency with functions that resolve at call time.
+- **HTTP/MCP handler closures resolve observer inside closure, not at construction.** Each adapter's internal `serve`/`serveOne` dispatch (invoked via `nethttp.AttachMux`/`nethttp.ServeOne`/`chi.AttachRouter`), `mcpgo.ToolHandler`, etc. are constructor functions. obs is resolved per-request/per-call from `r.Context()`/call ctx inside the returned closure. This is intentional (enables per-request middleware injection). Do not flag as inconsistency with functions that resolve at call time.
 - **`sql.Validate` keeps `NoopObserver{}` fallback.** It has no `ctx` parameter and cannot participate in the context observer lookup. Do not flag as missing `ObserverFromContext`. Pass `ValidateOptions{Observer: stats.ObserverFromContext(ctx)}` explicitly when observability is required.
 - **`forge.Registry.WithObserver` keeps explicit builder API.** No context integration — registry is long-lived startup configuration. This is by design and must not be changed.
 - **`ports.File` uses two-step guard with `opts.Context`.** `FileOptions` has no direct `ctx` param but has an optional `Context` field. The nil-guard is `if obs == nil && opts.Context != nil { obs = ObserverFromContext(opts.Context) }` followed by `if obs == nil { obs = NoopObserver{} }`. This is correct and intentional — do not flag as inconsistent.

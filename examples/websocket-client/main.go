@@ -148,7 +148,7 @@ recvLoop:
 	}
 
 	// ── SPEC: the socket as an AsyncAPI channel ───────────────────────────
-	b := events.NewBuilder(events.Info{Title: "Live Ops Socket", Version: "1.0.0"})
+	b := events.NewClient(events.WithInfo(events.Info{Title: "Live Ops Socket", Version: "1.0.0"}))
 	b.AddServer("prod", events.Server{URL: "live.example.com", Protocol: "ws"})
 	if err := ports.RegisterSocket[Command, Update](b, serverPort); err != nil {
 		panic(err)

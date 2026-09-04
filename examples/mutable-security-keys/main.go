@@ -160,10 +160,12 @@ func main() {
 			h.Set("Authorization", "Bearer "+val)
 			return h, nil
 		})
-	caller := nethttp.NewCaller(srv.Client(), srv.URL)
+	// handle is built ONCE and reused by every call below — the
+	// recommended pattern for many calls to the same route.
+	handle := securedClientRoute.ClientHandle()
 
 	call := func(label string) {
-		_, err := nethttp.Call(context.Background(), caller, securedClientRoute, struct{}{},
+		_, err := nethttp.CallWithHandle(context.Background(), srv.Client(), srv.URL, handle, struct{}{},
 			nethttp.CallOptions{
 				// A 401 means the cached credential no longer matches the
 				// server's rotated key — invalidate so the NEXT call

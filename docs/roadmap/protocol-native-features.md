@@ -17,6 +17,40 @@
 > fulfill it or reject" pattern, GENERALIZED (per a follow-up
 > discussion) beyond pub/sub to REST's header/cookie/query params too.
 > [← Back to Roadmap](index.md)
+>
+> **Thin-adapter review (confirmed, no rework needed to this doc's own
+> mechanism):** a dedicated review against the codebase's guiding
+> principle — adapters stay THIN (pure IO, attach-only, adapter-specific
+> config/options); ALL workflow (middleware/handler attachment, calling
+> client/server functions) lives in the `api/*` declaration layer, never
+> called directly from an adapter package — confirmed `ProtocolFeature`
+> as sketched below ALREADY respects it: `.WithFeature()` is declared on
+> the api-layer role-scoped builder (`Subscriber[T]`/`Publisher[T]`);
+> evaluation happens inside the CONCRETE adapter's own thin `Subscribe`/
+> `Publish` dispatch (exactly where protocol-native wire behavior
+> belongs — e.g. rewriting a topic to `$share/group/topic`). REST
+> (`rest.Client`/`Server` + `nethttp`/`chi.Attach*`) and pub/sub
+> (`events.Client` + `mqtt5`/`mqtt`/`zeromq.Attach`, plus Decision 7's
+> `NewPublishTransport`/`SubscribeTransport` + `events.PublishHandle`/
+> `SubscribeHandle`) were independently confirmed to already fully
+> follow this same split. **The one confirmed violation is
+> `api/reqreply`**, which has NO `Client`/`Server`/`Attach` at all —
+> its entire workflow (topic subscribe, correlation matching, reply
+> management, dispatch loop) lives directly inside
+> `adapters/mqtt5.Serve`/`.Call` and `adapters/zeromq.Serve`/`.Call`,
+> called directly by users. This matters HERE because Response Topic +
+> Correlation Data — this doc's own confirmed, already-shipped example
+> of a protocol-native capability — is hardwired inside that same
+> violating code (`adapters/mqtt5/reqreply.go`). Fixing `api/reqreply`'s
+> architecture is a PREREQUISITE for cleanly exposing Response Topic/
+> Correlation Data (and Shared Subscriptions, for req-reply's own
+> reply-topic fan-out) as real `ProtocolFeature` declarations — see
+> [ReqReply Workflow Simplification](reqreply-workflow-simplification.md),
+> which designs that fix. No changes are needed to THIS doc's own
+> `ProtocolFeature` mechanism sketch as a result of this review — the
+> mechanism was already correct; only ITS BEST EXAMPLE currently lives
+> in code that needs the separate rework linked above before the
+> example can be cleanly declarative.
 
 ## The core idea — mirrors `ports.Pattern`'s sealed-interface technique
 
@@ -172,6 +206,17 @@ a future investigation):**
   drafted as a plain `ChannelOpt`/`MergedUserPropertyParam[T]`; this
   doc's mechanism offers an alternative, possibly more consistent,
   registration path worth comparing against before implementation).
+- [ReqReply Workflow Simplification](reqreply-workflow-simplification.md) —
+  a PREREQUISITE, not just a related doc: `api/reqreply` currently has
+  no `Client`/`Server`/`Attach` architecture (confirmed thin-adapter
+  violation — see the status banner above), so Response Topic +
+  Correlation Data (this doc's own confirmed, already-shipped
+  `ProtocolFeature`-shaped capability) has nowhere clean to be declared
+  today; it is hardwired inside `adapters/mqtt5/reqreply.go`'s
+  `Serve`/`Call`. Once that doc's `Client`/`Server`+`Attach` rework
+  lands, Response Topic/Correlation Data (and req-reply's own use of
+  Shared Subscriptions for reply fan-out) become this doc's first real,
+  cleanly-declarative `ProtocolFeature` instances.
 
 ## Open questions (not answered — for a future design session)
 

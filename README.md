@@ -144,7 +144,7 @@ func main() {
 - **OpenAPI 3.1 + AsyncAPI 3.0** — complete specs derived from the same codec; no manual YAML, no drift
 - **REST + HTTP client** — typed `Decode`/`Encode` per route; `nethttp.Call` for typed client calls; both share the same `Route` definition
 - **MQTT events** — typed subscribe/publish with topic validation, wildcard support, and AsyncAPI spec
-- **ZeroMQ** — typed REQ/REP and PUB/SUB via the same codec declarations as REST and MQTT; AsyncAPI 3.0 with request-reply (`api/zeromq`); DEALER/ROUTER for concurrent patterns; transport-agnostic `FramedSocket` interface (no CGO in the adapter)
+- **ZeroMQ** — typed REQ/REP and PUB/SUB via the same codec declarations as REST and MQTT; AsyncAPI 3.0 with request-reply (`api/reqreply`); DEALER/ROUTER for concurrent patterns; transport-agnostic `FramedSocket` interface (no CGO in the adapter)
 - **MCP server** — Tools, Resources, and Prompts follow the same declare → register → handle pattern; codec drives the `inputSchema` automatically
 - **SSE + templ SSR** — codec-validated event streams; same route serves HTML and JSON via content negotiation
 - **Forge pipelines** — named, versioned, governed KPI computation with SHA-256 contract hash and pipeline YAML spec

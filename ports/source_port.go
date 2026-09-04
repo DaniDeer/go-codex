@@ -62,12 +62,12 @@ type SourcePort[T any] struct {
 	obs    stats.Observer
 	buffer int
 
-	// eventBuilder/restBuilder are stored (not used eagerly — construction
+	// eventClient/restBuilder are stored (not used eagerly — construction
 	// builds no handle) so PluginEventPattern/PluginRESTPattern/
 	// PluginFilePattern can register against the SAME shared builder every
 	// other Pattern-carrying declaration in the service uses.
-	eventBuilder *events.Builder
-	restBuilder  *rest.Builder
+	eventClient *events.Client
+	restBuilder *rest.Server
 
 	handlesMu sync.Mutex
 	handles   map[string]any
@@ -83,23 +83,23 @@ type SourcePort[T any] struct {
 
 // NewSourcePort creates a SourcePort with the given name and payload codec.
 // opts configures IO params, buffer size, observer, and (optionally) shared
-// RESTBuilder/EventBuilder references for later [PluginEventPattern]/
+// RESTBuilder/EventClient references for later [PluginEventPattern]/
 // [PluginRESTPattern]/[PluginFilePattern] calls — declare the port's
 // communication Pattern separately, at whatever point in your wiring code
 // makes sense (see [PortOptions]).
 func NewSourcePort[T any](name string, codec codex.Codec[T], opts PortOptions) (*SourcePort[T], error) {
 	return &SourcePort[T]{
-		name:         name,
-		codec:        codec,
-		params:       opts.Params,
-		obs:          opts.Observer,
-		buffer:       opts.Buffer,
-		eventBuilder: opts.EventBuilder,
-		restBuilder:  opts.RESTBuilder,
-		handles:      map[string]any{},
-		specs:        map[string]any{},
-		ch:           make(chan T, opts.Buffer),
-		errCh:        make(chan error, opts.Buffer),
+		name:        name,
+		codec:       codec,
+		params:      opts.Params,
+		obs:         opts.Observer,
+		buffer:      opts.Buffer,
+		eventClient: opts.EventClient,
+		restBuilder: opts.RESTBuilder,
+		handles:     map[string]any{},
+		specs:       map[string]any{},
+		ch:          make(chan T, opts.Buffer),
+		errCh:       make(chan error, opts.Buffer),
 	}, nil
 }
 
@@ -118,7 +118,7 @@ func (p *SourcePort[T]) pluginPattern(pattern Pattern, kind string) (any, error)
 	}
 	p.handlesMu.Unlock()
 
-	handles, specs, err := buildEventPatternHandles(p.name, []Pattern{pattern}, p.codec, roleSource, p.eventBuilder, p.restBuilder)
+	handles, specs, err := buildEventPatternHandles(p.name, []Pattern{pattern}, p.codec, roleSource, p.eventClient, p.restBuilder)
 	if err != nil {
 		return nil, err
 	}
@@ -134,7 +134,7 @@ func (p *SourcePort[T]) pluginPattern(pattern Pattern, kind string) (any, error)
 	return handles[kind], nil
 }
 
-// PluginEventPattern registers pattern (against the EventBuilder supplied to
+// PluginEventPattern registers pattern (against the EventClient supplied to
 // [NewSourcePort]'s [PortOptions], or a private single-use builder if none)
 // and returns the resulting [events.ChannelHandle] directly — bind a
 // [SourceAdapter] to it (e.g. mqtt5.SubscribeAdapter) immediately after.

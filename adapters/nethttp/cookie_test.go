@@ -1,4 +1,4 @@
-package nethttp_test
+package nethttp
 
 import (
 	"errors"
@@ -6,7 +6,6 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	nethttp "github.com/DaniDeer/go-codex/adapters/nethttp"
 	"github.com/DaniDeer/go-codex/api/rest"
 	"github.com/DaniDeer/go-codex/codex"
 	"github.com/DaniDeer/go-codex/validate"
@@ -30,7 +29,7 @@ func findCookie(cookies []*http.Cookie, name string) *http.Cookie {
 
 func TestSetCookie_defaults(t *testing.T) {
 	rec := httptest.NewRecorder()
-	if err := nethttp.SetCookie(rec, "session", "abc", nethttp.CookieOptions{}); err != nil {
+	if err := SetCookie(rec, "session", "abc", CookieOptions{}); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
@@ -58,7 +57,7 @@ func TestSetCookie_defaults(t *testing.T) {
 
 func TestSetCookie_Insecure(t *testing.T) {
 	rec := httptest.NewRecorder()
-	_ = nethttp.SetCookie(rec, "dev", "val", nethttp.CookieOptions{Insecure: true})
+	_ = SetCookie(rec, "dev", "val", CookieOptions{Insecure: true})
 
 	cookies := parseCookies(rec)
 	c := findCookie(cookies, "dev")
@@ -75,7 +74,7 @@ func TestSetCookie_Insecure(t *testing.T) {
 
 func TestSetCookie_AllowJS(t *testing.T) {
 	rec := httptest.NewRecorder()
-	_ = nethttp.SetCookie(rec, "csrf", "token", nethttp.CookieOptions{AllowJS: true})
+	_ = SetCookie(rec, "csrf", "token", CookieOptions{AllowJS: true})
 
 	cookies := parseCookies(rec)
 	c := findCookie(cookies, "csrf")
@@ -92,7 +91,7 @@ func TestSetCookie_AllowJS(t *testing.T) {
 
 func TestSetCookie_SameSiteLax(t *testing.T) {
 	rec := httptest.NewRecorder()
-	_ = nethttp.SetCookie(rec, "pref", "dark", nethttp.CookieOptions{SameSite: http.SameSiteLaxMode})
+	_ = SetCookie(rec, "pref", "dark", CookieOptions{SameSite: http.SameSiteLaxMode})
 
 	cookies := parseCookies(rec)
 	c := findCookie(cookies, "pref")
@@ -106,7 +105,7 @@ func TestSetCookie_SameSiteLax(t *testing.T) {
 
 func TestSetCookie_MaxAge(t *testing.T) {
 	rec := httptest.NewRecorder()
-	_ = nethttp.SetCookie(rec, "session", "val", nethttp.CookieOptions{MaxAge: 3600})
+	_ = SetCookie(rec, "session", "val", CookieOptions{MaxAge: 3600})
 
 	cookies := parseCookies(rec)
 	c := findCookie(cookies, "session")
@@ -120,7 +119,7 @@ func TestSetCookie_MaxAge(t *testing.T) {
 
 func TestSetCookie_Path(t *testing.T) {
 	rec := httptest.NewRecorder()
-	_ = nethttp.SetCookie(rec, "admin", "val", nethttp.CookieOptions{Path: "/admin"})
+	_ = SetCookie(rec, "admin", "val", CookieOptions{Path: "/admin"})
 
 	cookies := parseCookies(rec)
 	c := findCookie(cookies, "admin")
@@ -134,7 +133,7 @@ func TestSetCookie_Path(t *testing.T) {
 
 func TestSetCookie_Domain(t *testing.T) {
 	rec := httptest.NewRecorder()
-	_ = nethttp.SetCookie(rec, "global", "val", nethttp.CookieOptions{Domain: "example.com"})
+	_ = SetCookie(rec, "global", "val", CookieOptions{Domain: "example.com"})
 
 	cookies := parseCookies(rec)
 	c := findCookie(cookies, "global")
@@ -149,7 +148,7 @@ func TestSetCookie_Domain(t *testing.T) {
 func TestSetCookie_Codec_valid(t *testing.T) {
 	minLen := codex.String().Refine(validate.MinLen(8))
 	rec := httptest.NewRecorder()
-	err := nethttp.SetCookie(rec, "token", "longenoughtoken", nethttp.CookieOptions{}.WithCodec(minLen))
+	err := SetCookie(rec, "token", "longenoughtoken", CookieOptions{}.WithCodec(minLen))
 	if err != nil {
 		t.Fatalf("want nil, got %v", err)
 	}
@@ -162,7 +161,7 @@ func TestSetCookie_Codec_valid(t *testing.T) {
 func TestSetCookie_Codec_invalid(t *testing.T) {
 	minLen := codex.String().Refine(validate.MinLen(8))
 	rec := httptest.NewRecorder()
-	err := nethttp.SetCookie(rec, "token", "short", nethttp.CookieOptions{}.WithCodec(minLen))
+	err := SetCookie(rec, "token", "short", CookieOptions{}.WithCodec(minLen))
 
 	var cookieErr rest.CookieParamError
 	if !errors.As(err, &cookieErr) {
@@ -183,7 +182,7 @@ func TestSetCookie_Codec_invalid(t *testing.T) {
 
 func TestCookieOptions_WithCodec_setsCodec(t *testing.T) {
 	c := codex.String().Refine(validate.MinLen(4))
-	opts := nethttp.CookieOptions{}.WithCodec(c)
+	opts := CookieOptions{}.WithCodec(c)
 	if opts.Codec == nil {
 		t.Fatal("want Codec set, got nil")
 	}
@@ -191,7 +190,7 @@ func TestCookieOptions_WithCodec_setsCodec(t *testing.T) {
 
 func TestCookieOptions_WithCodec_returnsDistinctCopy(t *testing.T) {
 	c := codex.String().Refine(validate.MinLen(4))
-	base := nethttp.CookieOptions{MaxAge: 3600}
+	base := CookieOptions{MaxAge: 3600}
 	updated := base.WithCodec(c)
 	if base.Codec != nil {
 		t.Error("WithCodec must not mutate the original")
@@ -207,7 +206,7 @@ func TestCookieOptions_WithCodec_returnsDistinctCopy(t *testing.T) {
 func TestSetCookie_Codec_nil_noValidation(t *testing.T) {
 	rec := httptest.NewRecorder()
 	// Nil Codec: no validation, any value accepted.
-	err := nethttp.SetCookie(rec, "session", "", nethttp.CookieOptions{Codec: nil})
+	err := SetCookie(rec, "session", "", CookieOptions{Codec: nil})
 	if err != nil {
 		t.Fatalf("want nil when Codec is nil, got %v", err)
 	}
@@ -215,7 +214,7 @@ func TestSetCookie_Codec_nil_noValidation(t *testing.T) {
 
 func TestSetCookie_DeleteCookie(t *testing.T) {
 	rec := httptest.NewRecorder()
-	_ = nethttp.SetCookie(rec, "session", "", nethttp.CookieOptions{MaxAge: -1})
+	_ = SetCookie(rec, "session", "", CookieOptions{MaxAge: -1})
 
 	cookies := parseCookies(rec)
 	c := findCookie(cookies, "session")

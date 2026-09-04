@@ -19,7 +19,8 @@
 //
 //	route.WithOptions(nethttp.Options{Observer: obs})
 //	route.Register(b); nethttp.Serve(mux, b)
-//	adaptermqtt.SubscribeHandler(ctx, ch, fn, adaptermqtt.SubscribeOptions{Observer: obs})
+//	transport := adaptermqtt.NewSubscribeTransport[Msg](client, 1, adaptermqtt.SubscribeOptions{Observer: obs})
+//	events.SubscribeHandle(ctx, sub, transport, fn)
 //
 // # Composing metrics and logging
 //

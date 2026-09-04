@@ -123,12 +123,12 @@ func main() {
 	// Register the channel in a builder to produce an AsyncAPI spec.
 	// The spec documents the data shape and topic address for human readers,
 	// but the Go library (contract package) remains the enforcement mechanism.
-	b := events.NewBuilder(events.Info{
+	b := events.NewClient(events.WithInfo(events.Info{
 		Title:       "Order Service",
 		Version:     "1.0.0",
 		Description: "Internal order events — Go-to-Go binary channel (gob).",
-	})
-	orderHandle, err := contract.OrderChannel.Register(b)
+	}))
+	orderHandle, err := contract.OrderChannel.Handle(b)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "register error:", err)
 		os.Exit(1)

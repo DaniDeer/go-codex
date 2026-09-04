@@ -1,4 +1,4 @@
-package chi_test
+package chi
 
 import (
 	"context"
@@ -9,7 +9,6 @@ import (
 	"testing"
 	"time"
 
-	chiadapter "github.com/DaniDeer/go-codex/adapters/chi"
 	"github.com/DaniDeer/go-codex/api/rest"
 	"github.com/DaniDeer/go-codex/codex"
 	gochi "github.com/go-chi/chi/v5"
@@ -22,7 +21,7 @@ import (
 
 func newChiIngestRoute(t *testing.T) *rest.RouteHandle[createReq, struct{}] {
 	t.Helper()
-	b := rest.NewBuilder(testInfo)
+	b := rest.NewServer(testInfo)
 	h, err := rest.NewRoute[createReq, struct{}]("POST", "/ingest",
 		createReqCodec, codex.Struct[struct{}](), rest.RouteMeta{OperationID: "ingest"}).RegisterHandle(b)
 	if err != nil {
@@ -42,7 +41,7 @@ func TestChiIngestAdapter_DeliversToPipelineSource(t *testing.T) {
 	if err != nil {
 		t.Fatalf("construct port: %v", err)
 	}
-	p.Bind(ctx, chiadapter.IngestAdapter(r, handle, chiadapter.IngestAdapterOptions{Buffer: 4}))
+	p.Bind(ctx, IngestAdapter(r, handle, IngestAdapterOptions{Buffer: 4}))
 	s := p.Stream(ctx)
 
 	srv := httptest.NewServer(r)
@@ -78,7 +77,7 @@ func TestChiIngestAdapter_DeliversToPipelineSource(t *testing.T) {
 
 func newChiSSERouteForBinding(t *testing.T) *rest.SSERouteHandle[struct{}, userResp] {
 	t.Helper()
-	b := rest.NewBuilder(testInfo)
+	b := rest.NewServer(testInfo)
 	h, err := rest.NewSSERoute[struct{}, userResp]("/events",
 		codex.Struct[struct{}](), userRespCodec, rest.RouteMeta{OperationID: "sseBinding"}).RegisterHandle(b)
 	if err != nil {
@@ -101,7 +100,7 @@ func TestChiSSEAdapter_ServesItemsToClients(t *testing.T) {
 	if err != nil {
 		t.Fatalf("construct port: %v", err)
 	}
-	p.Bind(ctx, chiadapter.SSEAdapter(r, handle, chiadapter.SSEAdapterOptions{}))
+	p.Bind(ctx, SSEAdapter(r, handle, SSEAdapterOptions{}))
 
 	srv := httptest.NewServer(r)
 	defer srv.Close()
@@ -150,7 +149,7 @@ func TestChiPipelineAdapter_RegistersAndHandlesRequests(t *testing.T) {
 	ctx := context.Background()
 
 	r := gochi.NewRouter()
-	b := rest.NewBuilder(testInfo)
+	b := rest.NewServer(testInfo)
 	handle, _ := rest.NewRoute[createReq, userResp]("POST", "/pipeline",
 		createReqCodec, userRespCodec, rest.RouteMeta{OperationID: "pipeline"}).RegisterHandle(b)
 
@@ -162,7 +161,7 @@ func TestChiPipelineAdapter_RegistersAndHandlesRequests(t *testing.T) {
 		return gstream.Single(context.Background(), userResp{ID: "u1", Name: req.Name})
 	})
 
-	if err := p.Bind(ctx, chiadapter.PipelineAdapter(r, handle, chiadapter.PipelineAdapterOptions{})); err != nil {
+	if err := p.Bind(ctx, PipelineAdapter(r, handle, PipelineAdapterOptions{})); err != nil {
 		t.Fatalf("Bind: %v", err)
 	}
 
@@ -184,7 +183,7 @@ func TestChiPipelineAdapter_MultipleBind_ExposesOnAllRouters(t *testing.T) {
 
 	r1 := gochi.NewRouter()
 	r2 := gochi.NewRouter()
-	b := rest.NewBuilder(testInfo)
+	b := rest.NewServer(testInfo)
 	handle, _ := rest.NewRoute[createReq, userResp]("POST", "/pipeline",
 		createReqCodec, userRespCodec, rest.RouteMeta{OperationID: "pipeline-multi"}).RegisterHandle(b)
 
@@ -196,10 +195,10 @@ func TestChiPipelineAdapter_MultipleBind_ExposesOnAllRouters(t *testing.T) {
 		return gstream.Single(context.Background(), userResp{ID: "u1", Name: req.Name})
 	})
 
-	if err := p.Bind(ctx, chiadapter.PipelineAdapter(r1, handle, chiadapter.PipelineAdapterOptions{})); err != nil {
+	if err := p.Bind(ctx, PipelineAdapter(r1, handle, PipelineAdapterOptions{})); err != nil {
 		t.Fatalf("Bind r1: %v", err)
 	}
-	if err := p.Bind(ctx, chiadapter.PipelineAdapter(r2, handle, chiadapter.PipelineAdapterOptions{})); err != nil {
+	if err := p.Bind(ctx, PipelineAdapter(r2, handle, PipelineAdapterOptions{})); err != nil {
 		t.Fatalf("Bind r2: %v", err)
 	}
 
@@ -231,7 +230,7 @@ func TestChiBinding_IngestAdapter_FullChannelReturns503(t *testing.T) {
 	if err != nil {
 		t.Fatalf("construct port: %v", err)
 	}
-	p.Bind(ctx, chiadapter.IngestAdapter(r, handle, chiadapter.IngestAdapterOptions{Buffer: 0}))
+	p.Bind(ctx, IngestAdapter(r, handle, IngestAdapterOptions{Buffer: 0}))
 	p.Stream(ctx) // start the stream goroutine
 
 	srv := httptest.NewServer(r)
@@ -266,7 +265,7 @@ func TestChiLatestAdapter_ServesLatest(t *testing.T) {
 	if err != nil {
 		t.Fatalf("PluginRESTPattern: %v", err)
 	}
-	if err := port.Bind(ctx, chiadapter.LatestAdapter(r, handle, chiadapter.Options{})); err != nil {
+	if err := port.Bind(ctx, LatestAdapter(r, handle, Options{})); err != nil {
 		t.Fatalf("bind: %v", err)
 	}
 

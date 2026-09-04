@@ -15,9 +15,9 @@ format specified in SKILL.md.
 | MCP Opt interfaces | `ToolOpt`, `ResourceOpt`, `PromptOpt` — all three exist as sealed interfaces |
 | Info struct naming | `PipelineInfo{Title, Version, Description, Author, ApprovedBy, ApprovedAt}` — governance mirrors `FunctionMeta` governance fields |
 | MCP Info | `mcp.Info{Name, Version}` — uses `Name` (MCP protocol) not `Title` (OpenAPI/AsyncAPI); correct by design |
-| Builder naming | `rest.Builder`, `events.Builder`, `forge.Registry` — consistent fluent builder pattern |
+| Builder naming | `rest.Server`, `events.Builder`, `forge.Registry` — consistent fluent builder pattern |
 | MCP Builder | `mcp.Builder` with `NewBuilder(info)`, `Info()`, `MCPSpec()` — analogous to `OpenAPISpec()`/`AsyncAPISpec()` |
-| `AddServer` | Both `rest.Builder.AddServer(name, Server)` and `events.Builder.AddServer(name, Server)` exist; description fallback on both |
+| `AddServer` | Both `rest.Server.AddServer(name, Server)` and `events.Builder.AddServer(name, Server)` exist; description fallback on both |
 | Security scheme declaration | REST: `middleware.SecurityScheme(schemeName, scheme, scopes, codec) middleware.Middleware` / `rest.FromSecurityScheme(schemeName, rest.SecurityScheme, scopes) middleware.Middleware`, attached via `Route.Use(mw)` (`rest.WithSecurityScheme` was REMOVED by `docs/design/middleware-workflow-simplification.md` — no metadata-only registration exists anymore) vs `events.Builder.AddSecurityScheme(name, SecurityScheme)` (builder-level) — INTENTIONAL divergence, do not flag; see `docs/features/security.md` for the design rationale (REST needed client+server symmetry via `Route.ClientHandle`, which has no `Builder` at all) |
 | `AddGlobalSecurity` | Both builders have `AddGlobalSecurity(reqs...)` |
 | Server description fallback | Both builders fall back `Server.Description = name` when empty |
@@ -43,9 +43,9 @@ format specified in SKILL.md.
 
 ## 3. Builder Method Parity
 
-### rest.Builder vs events.Builder
+### rest.Server vs events.Builder
 
-| Method | rest.Builder | events.Builder |
+| Method | rest.Server | events.Builder |
 |--------|-------------|----------------|
 | `AddServer` | ✓ | ✓ |
 | `AddSecurityScheme` | ✗ (removed — see `middleware.SecurityScheme`/`rest.FromSecurityScheme` + `Route.Use`, route-level) | ✓ |

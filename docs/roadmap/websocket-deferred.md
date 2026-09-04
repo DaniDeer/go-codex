@@ -11,7 +11,7 @@ Shipped so far: Phase 1 — server-side adapters (`IngestSocketAdapter`,
 `ports.DuplexPort[In,Out]`, `ports.SocketPattern`. Phase 2 — client-side
 dial adapters (`DialSourceAdapter`/`DialSinkAdapter`/`DialDuplexAdapter`
 with auto-reconnect + gap visibility), chi variants, and AsyncAPI spec
-generation (`ports.RegisterSocket` over `events.Builder.AddChannelItem`).
+generation (`ports.RegisterSocket` over `events.Client.AddChannelItem`).
 
 ## Deferred (awaiting a use case)
 

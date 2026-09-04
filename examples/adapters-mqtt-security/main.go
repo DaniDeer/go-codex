@@ -181,18 +181,128 @@ func (m *mockMessage) Ack()              {}
 // userProperty simulates msg.Properties().User.Get(key) from an MQTT 5.0 library.
 func (m *mockMessage) userProperty(key string) string { return m.headers[key] }
 
+// ── Mock MQTT client ──────────────────────────────────────────────────────────
+
+// completedToken is a pahomqtt.Token that is already resolved — used so
+// mockClient.Subscribe/Connect/Disconnect return immediately, mirroring
+// adapters/mqtt's own test mock (adapter_test.go).
+type completedToken struct{ done chan struct{} }
+
+func newCompletedToken() *completedToken {
+	t := &completedToken{done: make(chan struct{})}
+	close(t.done)
+	return t
+}
+
+func (t *completedToken) Wait() bool                       { return true }
+func (t *completedToken) WaitTimeout(_ time.Duration) bool { return true }
+func (t *completedToken) Done() <-chan struct{}            { return t.done }
+func (t *completedToken) Error() error                     { return nil }
+
+// mockClient implements pahomqtt.Client without a live broker. Only Subscribe
+// is exercised — [adaptermqtt.NewSubscribeTransport]'s Subscribe method calls
+// client.Subscribe to register a handler, then blocks on ctx.Done() (see
+// adapters/mqtt/handletransport.go's doc comment). The registered handler is
+// captured under mu so this demo can snapshot it and invoke it directly to
+// simulate an incoming broker message, exactly mirroring
+// adapters/mqtt/transport_test.go's TestNewSubscribeTransport_SubscribeHandle_RoundTrip.
+type mockClient struct {
+	mu      sync.Mutex
+	handler pahomqtt.MessageHandler
+}
+
+func (c *mockClient) IsConnected() bool       { return true }
+func (c *mockClient) IsConnectionOpen() bool  { return true }
+func (c *mockClient) Connect() pahomqtt.Token { return newCompletedToken() }
+func (c *mockClient) Disconnect(_ uint)       {}
+func (c *mockClient) Publish(_ string, _ byte, _ bool, _ interface{}) pahomqtt.Token {
+	return newCompletedToken()
+}
+func (c *mockClient) Subscribe(_ string, _ byte, handler pahomqtt.MessageHandler) pahomqtt.Token {
+	c.mu.Lock()
+	c.handler = handler
+	c.mu.Unlock()
+	return newCompletedToken()
+}
+
+// handlerSnapshot returns the last registered handler under mu — use this
+// (not the bare field) from a goroutine that races with Subscribe.
+func (c *mockClient) handlerSnapshot() pahomqtt.MessageHandler {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.handler
+}
+
+func (c *mockClient) SubscribeMultiple(_ map[string]byte, _ pahomqtt.MessageHandler) pahomqtt.Token {
+	return newCompletedToken()
+}
+func (c *mockClient) Unsubscribe(_ ...string) pahomqtt.Token       { return newCompletedToken() }
+func (c *mockClient) AddRoute(_ string, _ pahomqtt.MessageHandler) {}
+func (c *mockClient) OptionsReader() pahomqtt.ClientOptionsReader {
+	return pahomqtt.ClientOptionsReader{}
+}
+
+// runSecurityScenario registers a subscription on a fresh mock client via
+// [adaptermqtt.NewSubscribeTransport] + [events.SubscribeHandle] (run in a
+// goroutine, since mqtt v3's SubscribeTransport blocks until ctx is
+// cancelled — see adapters/mqtt/handletransport.go's doc comment), waits for
+// the handler to be registered, invokes deliver with the handler to simulate
+// one or more incoming broker messages, then cancels ctx and waits for
+// SubscribeHandle to return.
+func runSecurityScenario(
+	sensorDataSub events.Subscriber[SensorReading],
+	opts adaptermqtt.SubscribeOptions,
+	fn func(context.Context, SensorReading) error,
+	deliver func(handler pahomqtt.MessageHandler, client pahomqtt.Client),
+) {
+	client := &mockClient{}
+	transport := adaptermqtt.NewSubscribeTransport[SensorReading](client, 1, opts)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	done := make(chan error, 1)
+	go func() {
+		done <- events.SubscribeHandle(ctx, sensorDataSub, transport, fn)
+	}()
+
+	deadline := time.After(2 * time.Second)
+	var handler pahomqtt.MessageHandler
+	for handler == nil {
+		handler = client.handlerSnapshot()
+		if handler != nil {
+			break
+		}
+		select {
+		case <-deadline:
+			cancel()
+			fmt.Printf("  [error] timed out waiting for subscription registration; SubscribeHandle: %v\n", <-done)
+			return
+		case <-time.After(time.Millisecond):
+		}
+	}
+
+	deliver(handler, client)
+
+	cancel()
+	if err := <-done; err != nil {
+		fmt.Printf("  [error] SubscribeHandle returned: %v\n", err)
+	}
+}
+
 // ── Channel builder ───────────────────────────────────────────────────────────
 
 func buildChannels() (
 	sensorData *events.ChannelHandle[SensorReading],
+	sensorDataSub events.Subscriber[SensorReading],
 	sensorAlerts *events.ChannelHandle[SensorAlert],
-	b *events.Builder,
+	b *events.Client,
 ) {
-	b = events.NewBuilder(events.Info{
+	b = events.NewClient(events.WithInfo(events.Info{
 		Title:       "Sensor Network Events",
 		Version:     "1.0.0",
 		Description: "Channels for the sensor data ingestion service.",
-	})
+	}))
 
 	b.AddServer("production", events.Server{
 		URL:         "mqtt.example.com",
@@ -200,8 +310,9 @@ func buildChannels() (
 		Description: "Production MQTT broker",
 	})
 
-	// Declare an API key security scheme once — referenced via WithSecurityScheme
-	// on any channel that needs it (there is no builder-level registry).
+	// Declare an API key security scheme once — referenced via
+	// events.FromSecurityScheme + Subscriber/Publisher.Use on any channel
+	// that needs it (there is no builder-level registry).
 	// The Codec field is omitted (nil) — MQTT 3.1.1 does not carry credentials in
 	// message metadata, so there is nothing to extract for codec-level validation.
 	// SecurityFunc is the enforcement point for MQTT.
@@ -212,17 +323,25 @@ func buildChannels() (
 	var err error
 
 	// sensor/data/{sensorId} — action: receive — secured with apiKeyAuth.
-	sensorData, err = events.NewChannel[SensorReading]("sensor/data", sensorReadingCodec,
+	// apiKeyAuthMW pairs with the SubscribeMW attachment below — CheckCoverage
+	// (run unconditionally by Subscriber.Handle) rejects a declared security
+	// scheme with no attached implementation satisfying it. The Fn here is a
+	// no-op placeholder: actual enforcement happens via SubscribeOptions.SecurityFunc
+	// at the adapter layer (see Scenarios 1-3 below), not in this dispatcher middleware.
+	apiKeyAuthMW := events.FromSecurityScheme("apiKeyAuth", apiKeyAuth, nil)
+	sensorDataSub = events.NewChannel[SensorReading]("sensor/data", sensorReadingCodec,
 		events.ChannelMeta{Description: "Sensor readings received from the sensor network."},
-		events.Subscribe{
-			Summary:    "Receive sensor reading",
-			Tags:       []string{"sensor", "iot"},
-			SchemaName: "SensorReading",
-			// Security: requires apiKeyAuth. Enforced by SecurityFunc.
-			Security: []route.SecurityRequirement{route.Require("apiKeyAuth")},
-		},
-		events.WithSecurityScheme("apiKeyAuth", apiKeyAuth),
-	).Register(b)
+	).WithSubscribe(events.Subscribe{
+		Summary:    "Receive sensor reading",
+		Tags:       []string{"sensor", "iot"},
+		SchemaName: "SensorReading",
+		// Security: requires apiKeyAuth. Enforced by SecurityFunc.
+		Security: []route.SecurityRequirement{route.Require("apiKeyAuth")},
+	}).Use(apiKeyAuthMW).
+		SubscribeMW(&apiKeyAuthMW, func(_ context.Context, _ pahomqtt.Message, _ *SensorReading) (map[string][]string, error) {
+			return map[string][]string{"apiKeyAuth": {}}, nil
+		})
+	sensorData, err = sensorDataSub.Handle(b)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "channel registration failed: %v\n", err)
 		os.Exit(1)
@@ -231,12 +350,11 @@ func buildChannels() (
 	// sensor/alerts — action: send — no security (outbound publish).
 	sensorAlerts, err = events.NewChannel[SensorAlert]("sensor/alerts", sensorAlertCodec,
 		events.ChannelMeta{Description: "Alert events produced by this service on threshold breach."},
-		events.Publish{
-			Summary:    "Send sensor alert",
-			Tags:       []string{"sensor", "alerts"},
-			SchemaName: "SensorAlert",
-		},
-	).Register(b)
+	).WithPublish(events.Publish{
+		Summary:    "Send sensor alert",
+		Tags:       []string{"sensor", "alerts"},
+		SchemaName: "SensorAlert",
+	}).Handle(b)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "channel registration failed: %v\n", err)
 		os.Exit(1)
@@ -249,7 +367,7 @@ func main() {
 	logger := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelDebug}))
 	slog.SetDefault(logger)
 
-	sensorData, sensorAlerts, b := buildChannels()
+	sensorData, sensorDataSub, sensorAlerts, b := buildChannels()
 	metrics := &CountingObserver{}
 	obs := stats.NewFanout(metrics, stats.NewLoggingObserver(logger.With("component", "mqtt-security")))
 
@@ -282,22 +400,27 @@ func main() {
 		}
 	}
 
-	ctx := context.Background()
 	payload := []byte(`{"sensorId":"temp-01","value":42.5,"unit":"celsius"}`)
 
 	// ── Scenario 1: valid API key ─────────────────────────────────────────────
+	// events.SubscribeHandle/NewSubscribeTransport (Decision 7) blocks until
+	// ctx is cancelled, so runSecurityScenario registers the subscription on a
+	// mock client in a goroutine, waits for the handler to be registered, then
+	// invokes it directly to simulate an incoming broker message — mirroring
+	// adapters/mqtt/transport_test.go's TestNewSubscribeTransport_SubscribeHandle_RoundTrip.
 	fmt.Println("--- Scenario 1: valid API key ---")
 	accepted := false
-	handler := adaptermqtt.SubscribeHandler(ctx, sensorData,
+	runSecurityScenario(sensorDataSub, makeHandler("sensor-key-abc123"),
 		func(_ context.Context, r SensorReading) error {
 			fmt.Printf("  ✓ handler called: sensorId=%s value=%.1f unit=%s\n",
 				r.SensorID, r.Value, r.Unit)
 			accepted = true
 			return nil
 		},
-		makeHandler("sensor-key-abc123"),
+		func(handler pahomqtt.MessageHandler, client pahomqtt.Client) {
+			handler(client, &mockMessage{topic: sensorData.Topic, payload: payload})
+		},
 	)
-	handler(nil, &mockMessage{topic: sensorData.Topic, payload: payload})
 	if !accepted {
 		fmt.Println("  [unexpected] handler was not called")
 	}
@@ -305,14 +428,15 @@ func main() {
 
 	// ── Scenario 2: invalid API key ───────────────────────────────────────────
 	fmt.Println("--- Scenario 2: invalid API key (KindSecurity rejection) ---")
-	handler = adaptermqtt.SubscribeHandler(ctx, sensorData,
+	runSecurityScenario(sensorDataSub, makeHandler("bad-key"),
 		func(_ context.Context, r SensorReading) error {
 			fmt.Println("  [unexpected] handler should not be called")
 			return nil
 		},
-		makeHandler("bad-key"),
+		func(handler pahomqtt.MessageHandler, client pahomqtt.Client) {
+			handler(client, &mockMessage{topic: sensorData.Topic, payload: payload})
+		},
 	)
-	handler(nil, &mockMessage{topic: sensorData.Topic, payload: payload})
 	fmt.Println()
 
 	// ── Scenario 3: Pattern 2 — msg extraction (MQTT 5.0 / custom broker) ──────
@@ -352,19 +476,20 @@ func main() {
 		headers: map[string]string{"X-API-Key": ""},
 	}
 
-	handler = adaptermqtt.SubscribeHandler(ctx, sensorData,
+	// Both messages are delivered through the SAME registered subscription
+	// (msgOpts never changes between them) — no need to re-register. Only
+	// validMsg should ever reach fn; invalidMsg is rejected by SecurityFunc
+	// (KindSecurity, logged via OnError above) before fn is called.
+	runSecurityScenario(sensorDataSub, msgOpts,
 		func(_ context.Context, r SensorReading) error {
 			fmt.Printf("  ✓ handler called: sensorId=%s (key from msg user-property)\n", r.SensorID)
 			return nil
-		}, msgOpts)
-	handler(nil, validMsg)
-
-	handler = adaptermqtt.SubscribeHandler(ctx, sensorData,
-		func(_ context.Context, r SensorReading) error {
-			fmt.Println("  [unexpected] handler should not be called")
-			return nil
-		}, msgOpts)
-	handler(nil, invalidMsg)
+		},
+		func(handler pahomqtt.MessageHandler, client pahomqtt.Client) {
+			handler(client, validMsg)
+			handler(client, invalidMsg)
+		},
+	)
 	fmt.Println()
 
 	// ── Scenario 4: Pattern 3 — MessageFromContext inside handler fn ──────────
@@ -372,7 +497,7 @@ func main() {
 	// adaptermqtt.MessageFromContext(ctx) to access the original pahomqtt.Message.
 	// This is useful for inspecting QoS, retained flag, or raw topic.
 	fmt.Println("--- Scenario 4: Pattern 3 — MessageFromContext inside handler fn ---")
-	handler = adaptermqtt.SubscribeHandler(ctx, sensorData,
+	runSecurityScenario(sensorDataSub, makeHandler("sensor-key-abc123"),
 		func(ctx context.Context, r SensorReading) error {
 			if msg, ok := adaptermqtt.MessageFromContext(ctx); ok {
 				fmt.Printf("  ✓ handler: sensorId=%s | msg.QoS=%d retained=%v topic=%s\n",
@@ -380,9 +505,10 @@ func main() {
 			}
 			return nil
 		},
-		makeHandler("sensor-key-abc123"),
+		func(handler pahomqtt.MessageHandler, client pahomqtt.Client) {
+			handler(client, &mockMessage{topic: sensorData.Topic, payload: payload})
+		},
 	)
-	handler(nil, &mockMessage{topic: sensorData.Topic, payload: payload})
 	fmt.Println()
 
 	// ── Scenario 5: no security on publish channel ────────────────────────────

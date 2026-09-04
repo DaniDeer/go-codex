@@ -31,7 +31,7 @@ func portName(port any) string {
 // requiring the route to be declared and registered separately beforehand.
 //
 // Returns [MissingPatternError] if the port declared no [RESTPattern].
-func RegisterREST[Req, Resp any](b *rest.Builder, port any) error {
+func RegisterREST[Req, Resp any](b *rest.Server, port any) error {
 	ph, ok := port.(patternHolder)
 	if !ok {
 		return MissingPatternError{Port: portName(port), Kind: patternKindREST}
@@ -54,7 +54,7 @@ func RegisterREST[Req, Resp any](b *rest.Builder, port any) error {
 // Returns [MissingPatternError] if the port declared no [RESTPattern] (or the
 // pattern was built for a different port role/type), or the underlying
 // rest error if b rejects the route.
-func RegisterSSE[Event any](b *rest.Builder, port any) error {
+func RegisterSSE[Event any](b *rest.Server, port any) error {
 	ph, ok := port.(patternHolder)
 	if !ok {
 		return MissingPatternError{Port: portName(port), Kind: patternKindREST}
@@ -75,7 +75,7 @@ func RegisterSSE[Event any](b *rest.Builder, port any) error {
 // bound to an adapter.
 //
 // Returns [MissingPatternError] if the port declared no [EventPattern].
-func RegisterEvent[T any](b *events.Builder, port any) error {
+func RegisterEvent[T any](b *events.Client, port any) error {
 	ph, ok := port.(patternHolder)
 	if !ok {
 		return MissingPatternError{Port: portName(port), Kind: patternKindEvent}
@@ -84,12 +84,20 @@ func RegisterEvent[T any](b *events.Builder, port any) error {
 	if !ok {
 		return MissingPatternError{Port: portName(port), Kind: patternKindEvent}
 	}
-	channel, ok := v.(events.Channel[T])
-	if !ok {
+	// The stored spec is role-scoped — a [SourcePort] stores an
+	// [events.Subscriber[T]], a [SinkPort] an [events.Publisher[T]] (see
+	// [buildEventPatternHandles]) — try both, matching whichever role the
+	// port was built with.
+	switch spec := v.(type) {
+	case events.Subscriber[T]:
+		_, err := spec.Handle(b)
+		return err
+	case events.Publisher[T]:
+		_, err := spec.Handle(b)
+		return err
+	default:
 		return MissingPatternError{Port: portName(port), Kind: patternKindEvent}
 	}
-	_, err := channel.Register(b)
-	return err
 }
 
 // RegisterReqReply replays port's declared [ReqReplyPattern] against b,
@@ -179,7 +187,7 @@ func RegisterLLM[Req, Resp any](b *llm.Builder, port any) error {
 // for a complete document.
 //
 // Returns [MissingPatternError] if the port declared no [SocketPattern].
-func RegisterSocket[In, Out any](b *events.Builder, port any) error {
+func RegisterSocket[In, Out any](b *events.Client, port any) error {
 	handle, ok := socketHandleFor[In, Out](port)
 	if !ok {
 		return MissingPatternError{Port: portName(port), Kind: patternKindSocket}

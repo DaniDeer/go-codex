@@ -1,4 +1,4 @@
-package zeromq_test
+package zeromq
 
 import (
 	"context"
@@ -9,7 +9,6 @@ import (
 	"testing"
 	"time"
 
-	zeromq "github.com/DaniDeer/go-codex/adapters/zeromq"
 	"github.com/DaniDeer/go-codex/api/events"
 	"github.com/DaniDeer/go-codex/api/reqreply"
 	"github.com/DaniDeer/go-codex/codex"
@@ -75,6 +74,10 @@ type mockSocket struct {
 	sendErr error
 	// subTopic records the last SetSubscription call.
 	subTopic string
+	// subTopics records EVERY SetSubscription call in order — used by
+	// multi-route ServeSubscribers tests where subTopic (last-only) is
+	// insufficient.
+	subTopics []string
 	// timeoutCount is how many ErrTimeout returns to emit before real messages.
 	timeoutCount int
 }
@@ -98,13 +101,13 @@ func (m *mockSocket) RecvFrames() ([][]byte, error) {
 	defer m.mu.Unlock()
 	if m.timeoutCount > 0 {
 		m.timeoutCount--
-		return nil, zeromq.ErrTimeout
+		return nil, ErrTimeout
 	}
 	if len(m.inFrames) == 0 {
 		if m.recvErr != nil {
 			return nil, m.recvErr
 		}
-		return nil, zeromq.ErrTimeout
+		return nil, ErrTimeout
 	}
 	frames := m.inFrames[0]
 	m.inFrames = m.inFrames[1:]
@@ -115,7 +118,17 @@ func (m *mockSocket) SetSubscription(topic string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.subTopic = topic
+	m.subTopics = append(m.subTopics, topic)
 	return nil
+}
+
+// subTopicsSnapshot returns a copy of subTopics for race-free polling.
+func (m *mockSocket) subTopicsSnapshot() []string {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	out := make([]string, len(m.subTopics))
+	copy(out, m.subTopics)
+	return out
 }
 
 // sentSnapshot returns a copy of sentFrames for race-free polling.
@@ -131,12 +144,20 @@ func (m *mockSocket) SetRecvTimeout(_ time.Duration) error { return nil }
 
 // ── channel handle helpers ────────────────────────────────────────────────────
 
-func newChannelHandle() *events.ChannelHandle[sensorReading] {
-	b := events.NewBuilder(events.Info{Title: "Test", Version: "1.0.0"})
-	h, err := events.NewChannel[sensorReading]("sensors/readings", sensorCodec,
-		events.Subscribe{Summary: "Sensor reading received"},
-		events.Publish{Summary: "Sensor reading sent"},
-	).Register(b)
+func newSubscribeHandle() *events.ChannelHandle[sensorReading] {
+	b := events.NewClient(events.WithInfo(events.Info{Title: "Test", Version: "1.0.0"}))
+	h, err := events.NewChannel[sensorReading]("sensors/readings", sensorCodec).
+		WithSubscribe(events.Subscribe{Summary: "Sensor reading received"}).Handle(b)
+	if err != nil {
+		panic(err)
+	}
+	return h
+}
+
+func newPublishHandle() *events.ChannelHandle[sensorReading] {
+	b := events.NewClient(events.WithInfo(events.Info{Title: "Test", Version: "1.0.0"}))
+	h, err := events.NewChannel[sensorReading]("sensors/readings", sensorCodec).
+		WithPublish(events.Publish{Summary: "Sensor reading sent"}).Handle(b)
 	if err != nil {
 		panic(err)
 	}
@@ -149,14 +170,14 @@ func newChannelHandle() *events.ChannelHandle[sensorReading] {
 // PublishHandle) and G1 (PublishAdapter per-item derivation) tests.
 func newMergeChannelHandle() *events.ChannelHandle[sensorReading] {
 	uuidCodec := codex.String().Refine(validate.UUID)
-	b := events.NewBuilder(events.Info{Title: "Test", Version: "1.0.0"})
+	b := events.NewClient(events.WithInfo(events.Info{Title: "Test", Version: "1.0.0"}))
 	h, err := events.NewChannel[sensorReading](
 		"sensors/{sensorID}/readings",
 		sensorCodec,
 		events.NewTopicParam("sensorID", uuidCodec,
 			func(r sensorReading) string { return r.SensorID },
 			func(r *sensorReading, v string) { r.SensorID = v }),
-	).Register(b)
+	).WithSubscribe(events.Subscribe{}).Handle(b)
 	if err != nil {
 		panic(err)
 	}
@@ -213,10 +234,10 @@ func (o *testObserver) EndSpan(_ context.Context, err error) {
 
 const validSensorJSON = `{"sensor_id":"f47ac10b-58cc-4372-a567-0e02b2c3d479","value":22.5}`
 
-func runSubscribe(sock *mockSocket, fn func(context.Context, sensorReading) error, opts zeromq.SubscribeOptions) error {
+func runSubscribe(sock *mockSocket, fn func(context.Context, sensorReading) error, opts SubscribeOptions[sensorReading]) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
 	defer cancel()
-	return zeromq.Subscribe(ctx, sock, newChannelHandle(), fn, opts)
+	return subscribeWithHandle(ctx, sock, newSubscribeHandle(), fn, opts)
 }
 
 func TestSubscribe_ValidPayload(t *testing.T) {
@@ -229,7 +250,7 @@ func TestSubscribe_ValidPayload(t *testing.T) {
 	_ = runSubscribe(sock, func(_ context.Context, r sensorReading) error {
 		received = r
 		return nil
-	}, zeromq.SubscribeOptions{})
+	}, SubscribeOptions[sensorReading]{})
 
 	if received.SensorID != "f47ac10b-58cc-4372-a567-0e02b2c3d479" {
 		t.Fatalf("unexpected sensor ID: %q", received.SensorID)
@@ -241,14 +262,14 @@ func TestSubscribe_ValidPayload(t *testing.T) {
 
 func TestSubscribe_SetsSubscriptionFilter(t *testing.T) {
 	sock := &mockSocket{inFrames: [][][]byte{}}
-	_ = runSubscribe(sock, func(_ context.Context, _ sensorReading) error { return nil }, zeromq.SubscribeOptions{})
+	_ = runSubscribe(sock, func(_ context.Context, _ sensorReading) error { return nil }, SubscribeOptions[sensorReading]{})
 	if sock.subTopic != "sensors/readings" {
 		t.Fatalf("expected subscription to %q, got %q", "sensors/readings", sock.subTopic)
 	}
 }
 
 func TestSubscribe_DecodeError(t *testing.T) {
-	var gotErr zeromq.SubscribeError
+	var gotErr SubscribeError
 	sock := &mockSocket{
 		inFrames: [][][]byte{
 			{[]byte("sensors/readings"), []byte(`{"sensor_id":"not-a-uuid","value":0}`)},
@@ -257,11 +278,11 @@ func TestSubscribe_DecodeError(t *testing.T) {
 	_ = runSubscribe(sock, func(_ context.Context, _ sensorReading) error {
 		t.Fatal("fn must not be called on decode error")
 		return nil
-	}, zeromq.SubscribeOptions{
-		OnError: func(e zeromq.SubscribeError) { gotErr = e },
+	}, SubscribeOptions[sensorReading]{
+		OnError: func(e SubscribeError) { gotErr = e },
 	})
 
-	if gotErr.Kind != zeromq.KindDecode {
+	if gotErr.Kind != KindDecode {
 		t.Fatalf("expected KindDecode, got %v", gotErr.Kind)
 	}
 	if gotErr.Topic != "sensors/readings" {
@@ -270,7 +291,7 @@ func TestSubscribe_DecodeError(t *testing.T) {
 }
 
 func TestSubscribe_HandlerError(t *testing.T) {
-	var gotErr zeromq.SubscribeError
+	var gotErr SubscribeError
 	sock := &mockSocket{
 		inFrames: [][][]byte{
 			{[]byte("sensors/readings"), []byte(validSensorJSON)},
@@ -279,11 +300,11 @@ func TestSubscribe_HandlerError(t *testing.T) {
 	handlerErr := errors.New("store unavailable")
 	_ = runSubscribe(sock, func(_ context.Context, _ sensorReading) error {
 		return handlerErr
-	}, zeromq.SubscribeOptions{
-		OnError: func(e zeromq.SubscribeError) { gotErr = e },
+	}, SubscribeOptions[sensorReading]{
+		OnError: func(e SubscribeError) { gotErr = e },
 	})
 
-	if gotErr.Kind != zeromq.KindHandler {
+	if gotErr.Kind != KindHandler {
 		t.Fatalf("expected KindHandler, got %v", gotErr.Kind)
 	}
 	if !errors.Is(gotErr, handlerErr) {
@@ -299,7 +320,7 @@ func TestSubscribe_ObserverRecordSubscribeSuccess(t *testing.T) {
 		},
 	}
 	_ = runSubscribe(sock, func(_ context.Context, _ sensorReading) error { return nil },
-		zeromq.SubscribeOptions{Observer: obs})
+		SubscribeOptions[sensorReading]{Observer: obs})
 
 	if len(obs.subscribes) != 1 || !obs.subscribes[0] {
 		t.Fatalf("expected one successful subscribe, got %v", obs.subscribes)
@@ -314,7 +335,7 @@ func TestSubscribe_ObserverRecordSubscribeFailure(t *testing.T) {
 		},
 	}
 	_ = runSubscribe(sock, func(_ context.Context, _ sensorReading) error { return nil },
-		zeromq.SubscribeOptions{Observer: obs})
+		SubscribeOptions[sensorReading]{Observer: obs})
 
 	if len(obs.subscribes) != 1 || obs.subscribes[0] {
 		t.Fatalf("expected one failed subscribe, got %v", obs.subscribes)
@@ -330,7 +351,7 @@ func TestSubscribe_ValidationErrorReported(t *testing.T) {
 		},
 	}
 	_ = runSubscribe(sock, func(_ context.Context, _ sensorReading) error { return nil },
-		zeromq.SubscribeOptions{Observer: obs})
+		SubscribeOptions[sensorReading]{Observer: obs})
 
 	if len(obs.validationErrors) == 0 {
 		t.Fatal("expected at least one validation error to be reported")
@@ -345,7 +366,7 @@ func TestSubscribe_TraceObserver(t *testing.T) {
 		},
 	}
 	_ = runSubscribe(sock, func(_ context.Context, _ sensorReading) error { return nil },
-		zeromq.SubscribeOptions{Observer: obs})
+		SubscribeOptions[sensorReading]{Observer: obs})
 
 	if len(obs.startSpanOps) != 1 || obs.startSpanOps[0] != "zmq.subscribe" {
 		t.Fatalf("expected StartSpan with 'zmq.subscribe', got %v", obs.startSpanOps)
@@ -366,7 +387,7 @@ func TestSubscribe_IgnoresMalformedFrame(t *testing.T) {
 	_ = runSubscribe(sock, func(_ context.Context, _ sensorReading) error {
 		called++
 		return nil
-	}, zeromq.SubscribeOptions{})
+	}, SubscribeOptions[sensorReading]{})
 
 	if called != 1 {
 		t.Fatalf("expected fn called once (malformed frame skipped), got %d", called)
@@ -378,8 +399,8 @@ func TestSubscribe_IgnoresMalformedFrame(t *testing.T) {
 func TestPublish_ValidMessage(t *testing.T) {
 	sock := &mockSocket{}
 	reading := sensorReading{SensorID: "f47ac10b-58cc-4372-a567-0e02b2c3d479", Value: 22.5}
-	handle := newChannelHandle()
-	err := zeromq.Publish(context.Background(), sock, handle, reading, nil, zeromq.PublishOptions{})
+	handle := newPublishHandle()
+	err := publish(context.Background(), sock, handle, reading, nil, PublishOptions[sensorReading]{})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -395,10 +416,10 @@ func TestPublish_EncodeError_InvalidValue(t *testing.T) {
 	sock := &mockSocket{}
 	// value=0 fails NonZeroFloat constraint → encode error
 	invalid := sensorReading{SensorID: "f47ac10b-58cc-4372-a567-0e02b2c3d479", Value: 0}
-	handle := newChannelHandle()
-	err := zeromq.Publish(context.Background(), sock, handle, invalid, nil, zeromq.PublishOptions{})
+	handle := newPublishHandle()
+	err := publish(context.Background(), sock, handle, invalid, nil, PublishOptions[sensorReading]{})
 
-	var encErr zeromq.PublishEncodeError
+	var encErr PublishEncodeError
 	if !errors.As(err, &encErr) {
 		t.Fatalf("expected PublishEncodeError, got %T: %v", err, err)
 	}
@@ -414,8 +435,8 @@ func TestPublish_ObserverRecordPublishSuccess(t *testing.T) {
 	obs := &testObserver{}
 	sock := &mockSocket{}
 	reading := sensorReading{SensorID: "f47ac10b-58cc-4372-a567-0e02b2c3d479", Value: 1.0}
-	_ = zeromq.Publish(context.Background(), sock, newChannelHandle(), reading, nil,
-		zeromq.PublishOptions{Observer: obs})
+	_ = publish(context.Background(), sock, newPublishHandle(), reading, nil,
+		PublishOptions[sensorReading]{Observer: obs})
 
 	if len(obs.publishes) != 1 || !obs.publishes[0] {
 		t.Fatalf("expected successful RecordPublish, got %v", obs.publishes)
@@ -426,8 +447,8 @@ func TestPublish_ObserverRecordPublishFailure(t *testing.T) {
 	obs := &testObserver{}
 	sock := &mockSocket{}
 	invalid := sensorReading{SensorID: "f47ac10b-58cc-4372-a567-0e02b2c3d479", Value: 0}
-	_ = zeromq.Publish(context.Background(), sock, newChannelHandle(), invalid, nil,
-		zeromq.PublishOptions{Observer: obs})
+	_ = publish(context.Background(), sock, newPublishHandle(), invalid, nil,
+		PublishOptions[sensorReading]{Observer: obs})
 
 	if len(obs.publishes) != 1 || obs.publishes[0] {
 		t.Fatalf("expected failed RecordPublish, got %v", obs.publishes)
@@ -438,8 +459,8 @@ func TestPublish_TraceObserver(t *testing.T) {
 	obs := &testObserver{}
 	sock := &mockSocket{}
 	reading := sensorReading{SensorID: "f47ac10b-58cc-4372-a567-0e02b2c3d479", Value: 1.0}
-	_ = zeromq.Publish(context.Background(), sock, newChannelHandle(), reading, nil,
-		zeromq.PublishOptions{Observer: obs})
+	_ = publish(context.Background(), sock, newPublishHandle(), reading, nil,
+		PublishOptions[sensorReading]{Observer: obs})
 
 	if len(obs.startSpanOps) != 1 || obs.startSpanOps[0] != "zmq.publish" {
 		t.Fatalf("expected StartSpan with 'zmq.publish', got %v", obs.startSpanOps)
@@ -450,10 +471,10 @@ func TestPublish_TraceObserver(t *testing.T) {
 
 const validComputeJSON = `{"x":3,"y":4}`
 
-func runServe(sock *mockSocket, fn func(context.Context, computeReq) (computeResp, error), opts zeromq.ServeOptions) error {
+func runServe(sock *mockSocket, fn func(context.Context, computeReq) (computeResp, error), opts ServeOptions) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
 	defer cancel()
-	return zeromq.Serve(ctx, sock, newRouteHandle(), fn, opts)
+	return Serve(ctx, sock, newRouteHandle(), fn, opts)
 }
 
 func TestServe_ValidRoundTrip(t *testing.T) {
@@ -464,7 +485,7 @@ func TestServe_ValidRoundTrip(t *testing.T) {
 	}
 	_ = runServe(sock, func(_ context.Context, r computeReq) (computeResp, error) {
 		return computeResp{Sum: r.X + r.Y}, nil
-	}, zeromq.ServeOptions{})
+	}, ServeOptions{})
 
 	if len(sock.sentFrames) != 1 {
 		t.Fatalf("expected 1 send, got %d", len(sock.sentFrames))
@@ -475,7 +496,7 @@ func TestServe_ValidRoundTrip(t *testing.T) {
 }
 
 func TestServe_DecodeError(t *testing.T) {
-	var gotErr zeromq.ServeError
+	var gotErr ServeError
 	sock := &mockSocket{
 		inFrames: [][][]byte{
 			{[]byte(`bad json`)},
@@ -484,11 +505,11 @@ func TestServe_DecodeError(t *testing.T) {
 	_ = runServe(sock, func(_ context.Context, _ computeReq) (computeResp, error) {
 		t.Fatal("fn must not be called on decode error")
 		return computeResp{}, nil
-	}, zeromq.ServeOptions{
-		OnError: func(e zeromq.ServeError) { gotErr = e },
+	}, ServeOptions{
+		OnError: func(e ServeError) { gotErr = e },
 	})
 
-	if gotErr.Kind != zeromq.KindDecode {
+	if gotErr.Kind != KindDecode {
 		t.Fatalf("expected KindDecode, got %v", gotErr.Kind)
 	}
 	// error reply must be sent to unblock REQ peer
@@ -498,7 +519,7 @@ func TestServe_DecodeError(t *testing.T) {
 }
 
 func TestServe_HandlerError(t *testing.T) {
-	var gotErr zeromq.ServeError
+	var gotErr ServeError
 	sock := &mockSocket{
 		inFrames: [][][]byte{
 			{[]byte(validComputeJSON)},
@@ -507,11 +528,11 @@ func TestServe_HandlerError(t *testing.T) {
 	handlerErr := errors.New("overflow")
 	_ = runServe(sock, func(_ context.Context, _ computeReq) (computeResp, error) {
 		return computeResp{}, handlerErr
-	}, zeromq.ServeOptions{
-		OnError: func(e zeromq.ServeError) { gotErr = e },
+	}, ServeOptions{
+		OnError: func(e ServeError) { gotErr = e },
 	})
 
-	if gotErr.Kind != zeromq.KindHandler {
+	if gotErr.Kind != KindHandler {
 		t.Fatalf("expected KindHandler, got %v", gotErr.Kind)
 	}
 	if !errors.Is(gotErr, handlerErr) {
@@ -567,10 +588,10 @@ func TestServe_ErrorPatternMatch_HandlerError_SendsTypedPayload(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
 	defer cancel()
 
-	_ = zeromq.Serve(ctx, sock, newErrorPatternRouteHandle(t),
+	_ = Serve(ctx, sock, newErrorPatternRouteHandle(t),
 		func(_ context.Context, _ computeReq) (computeResp, error) {
 			return computeResp{}, serveZmqConflictErr{msg: "duplicate"}
-		}, zeromq.ServeOptions{})
+		}, ServeOptions{})
 
 	if len(sock.sentFrames) != 1 || string(sock.sentFrames[0][0]) != "error" {
 		t.Fatalf("expected error reply frame, got %v", sock.sentFrames)
@@ -586,10 +607,10 @@ func TestServe_ErrorPatternNoMatch_HandlerError_FallsBackToPlainText(t *testing.
 	defer cancel()
 	unrelatedErr := errors.New("unrelated failure")
 
-	_ = zeromq.Serve(ctx, sock, newErrorPatternRouteHandle(t),
+	_ = Serve(ctx, sock, newErrorPatternRouteHandle(t),
 		func(_ context.Context, _ computeReq) (computeResp, error) {
 			return computeResp{}, unrelatedErr
-		}, zeromq.ServeOptions{})
+		}, ServeOptions{})
 
 	if len(sock.sentFrames) != 1 || string(sock.sentFrames[0][0]) != "error" {
 		t.Fatalf("expected error reply frame, got %v", sock.sentFrames)
@@ -604,10 +625,10 @@ func TestServeRouter_ErrorPatternMatch_HandlerError_SendsTypedPayload(t *testing
 	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
 	defer cancel()
 
-	_ = zeromq.ServeRouter(ctx, sock, newErrorPatternRouteHandle(t),
+	_ = ServeRouter(ctx, sock, newErrorPatternRouteHandle(t),
 		func(_ context.Context, _ computeReq) (computeResp, error) {
 			return computeResp{}, serveZmqConflictErr{msg: "duplicate"}
-		}, zeromq.ServeOptions{})
+		}, ServeOptions{})
 
 	if len(sock.sentFrames) != 1 {
 		t.Fatalf("expected 1 send, got %d", len(sock.sentFrames))
@@ -627,10 +648,10 @@ func TestServeRouter_ErrorPatternNoMatch_HandlerError_FallsBackToPlainText(t *te
 	defer cancel()
 	unrelatedErr := errors.New("unrelated failure")
 
-	_ = zeromq.ServeRouter(ctx, sock, newErrorPatternRouteHandle(t),
+	_ = ServeRouter(ctx, sock, newErrorPatternRouteHandle(t),
 		func(_ context.Context, _ computeReq) (computeResp, error) {
 			return computeResp{}, unrelatedErr
-		}, zeromq.ServeOptions{})
+		}, ServeOptions{})
 
 	if len(sock.sentFrames) != 1 {
 		t.Fatalf("expected 1 send, got %d", len(sock.sentFrames))
@@ -649,7 +670,7 @@ func TestServe_ObserverRecordRequestSuccess(t *testing.T) {
 	sock := &mockSocket{inFrames: [][][]byte{{[]byte(validComputeJSON)}}}
 	_ = runServe(sock, func(_ context.Context, r computeReq) (computeResp, error) {
 		return computeResp{Sum: r.X + r.Y}, nil
-	}, zeromq.ServeOptions{Observer: obs})
+	}, ServeOptions{Observer: obs})
 
 	if len(obs.requests) != 1 || obs.requests[0] != 200 {
 		t.Fatalf("expected RecordRequest(200), got %v", obs.requests)
@@ -661,7 +682,7 @@ func TestServe_ObserverRecordRequestFailure(t *testing.T) {
 	sock := &mockSocket{inFrames: [][][]byte{{[]byte(`bad`)}}}
 	_ = runServe(sock, func(_ context.Context, _ computeReq) (computeResp, error) {
 		return computeResp{}, nil
-	}, zeromq.ServeOptions{Observer: obs})
+	}, ServeOptions{Observer: obs})
 
 	if len(obs.requests) != 1 || obs.requests[0] != 0 {
 		t.Fatalf("expected RecordRequest(0), got %v", obs.requests)
@@ -673,7 +694,7 @@ func TestServe_TraceObserver(t *testing.T) {
 	sock := &mockSocket{inFrames: [][][]byte{{[]byte(validComputeJSON)}}}
 	_ = runServe(sock, func(_ context.Context, r computeReq) (computeResp, error) {
 		return computeResp{Sum: r.X + r.Y}, nil
-	}, zeromq.ServeOptions{Observer: obs})
+	}, ServeOptions{Observer: obs})
 
 	if len(obs.startSpanOps) != 1 || obs.startSpanOps[0] != "zmq.serve" {
 		t.Fatalf("expected StartSpan with 'zmq.serve', got %v", obs.startSpanOps)
@@ -692,8 +713,8 @@ func TestCall_ValidRoundTrip(t *testing.T) {
 			{[]byte("ok"), []byte(replyJSON)},
 		},
 	}
-	result, err := zeromq.Call(context.Background(), sock, newRouteHandle(),
-		computeReq{X: 3, Y: 4}, zeromq.CallOptions{})
+	result, err := Call(context.Background(), sock, newRouteHandle(),
+		computeReq{X: 3, Y: 4}, CallOptions{})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -711,10 +732,10 @@ func TestCall_ServerErrorReply(t *testing.T) {
 			{[]byte("error"), []byte("overflow")},
 		},
 	}
-	_, err := zeromq.Call(context.Background(), sock, newRouteHandle(),
-		computeReq{X: 3, Y: 4}, zeromq.CallOptions{})
+	_, err := Call(context.Background(), sock, newRouteHandle(),
+		computeReq{X: 3, Y: 4}, CallOptions{})
 
-	var callErr zeromq.CallError
+	var callErr CallError
 	if !errors.As(err, &callErr) {
 		t.Fatalf("expected CallError, got %T: %v", err, err)
 	}
@@ -726,10 +747,10 @@ func TestCall_MalformedReply(t *testing.T) {
 			{[]byte("only-one-frame")},
 		},
 	}
-	_, err := zeromq.Call(context.Background(), sock, newRouteHandle(),
-		computeReq{X: 1, Y: 2}, zeromq.CallOptions{})
+	_, err := Call(context.Background(), sock, newRouteHandle(),
+		computeReq{X: 1, Y: 2}, CallOptions{})
 
-	var callErr zeromq.CallError
+	var callErr CallError
 	if !errors.As(err, &callErr) {
 		t.Fatalf("expected CallError on malformed reply, got %T: %v", err, err)
 	}
@@ -738,8 +759,8 @@ func TestCall_MalformedReply(t *testing.T) {
 func TestCall_ObserverRecordRequestSuccess(t *testing.T) {
 	obs := &testObserver{}
 	sock := &mockSocket{inFrames: [][][]byte{{[]byte("ok"), []byte(`{"sum":7}`)}}}
-	_, _ = zeromq.Call(context.Background(), sock, newRouteHandle(),
-		computeReq{X: 3, Y: 4}, zeromq.CallOptions{Observer: obs})
+	_, _ = Call(context.Background(), sock, newRouteHandle(),
+		computeReq{X: 3, Y: 4}, CallOptions{Observer: obs})
 
 	if len(obs.requests) != 1 || obs.requests[0] != 200 {
 		t.Fatalf("expected RecordRequest(200), got %v", obs.requests)
@@ -749,8 +770,8 @@ func TestCall_ObserverRecordRequestSuccess(t *testing.T) {
 func TestCall_ObserverRecordRequestFailure_ServerError(t *testing.T) {
 	obs := &testObserver{}
 	sock := &mockSocket{inFrames: [][][]byte{{[]byte("error"), []byte("internal")}}}
-	_, _ = zeromq.Call(context.Background(), sock, newRouteHandle(),
-		computeReq{X: 3, Y: 4}, zeromq.CallOptions{Observer: obs})
+	_, _ = Call(context.Background(), sock, newRouteHandle(),
+		computeReq{X: 3, Y: 4}, CallOptions{Observer: obs})
 
 	if len(obs.requests) != 1 || obs.requests[0] != 500 {
 		t.Fatalf("expected RecordRequest(500), got %v", obs.requests)
@@ -760,8 +781,8 @@ func TestCall_ObserverRecordRequestFailure_ServerError(t *testing.T) {
 func TestCall_TraceObserver(t *testing.T) {
 	obs := &testObserver{}
 	sock := &mockSocket{inFrames: [][][]byte{{[]byte("ok"), []byte(`{"sum":7}`)}}}
-	_, _ = zeromq.Call(context.Background(), sock, newRouteHandle(),
-		computeReq{X: 3, Y: 4}, zeromq.CallOptions{Observer: obs})
+	_, _ = Call(context.Background(), sock, newRouteHandle(),
+		computeReq{X: 3, Y: 4}, CallOptions{Observer: obs})
 
 	if len(obs.startSpanOps) != 1 || obs.startSpanOps[0] != "zmq.request" {
 		t.Fatalf("expected StartSpan with 'zmq.request', got %v", obs.startSpanOps)
@@ -774,10 +795,10 @@ func TestCall_ContextCancelled(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel() // cancel immediately
 
-	_, err := zeromq.Call(ctx, sock, newRouteHandle(),
-		computeReq{X: 1, Y: 2}, zeromq.CallOptions{})
+	_, err := Call(ctx, sock, newRouteHandle(),
+		computeReq{X: 1, Y: 2}, CallOptions{})
 
-	var callErr zeromq.CallError
+	var callErr CallError
 	if !errors.As(err, &callErr) {
 		t.Fatalf("expected CallError on context cancel, got %T: %v", err, err)
 	}
@@ -787,7 +808,7 @@ func TestCall_ContextCancelled(t *testing.T) {
 
 func TestSubscribeError_LogValue(t *testing.T) {
 	inner := errors.New("constraint failed")
-	e := zeromq.SubscribeError{Kind: zeromq.KindDecode, Topic: "sensors/t1", Err: inner}
+	e := SubscribeError{Kind: KindDecode, Topic: "sensors/t1", Err: inner}
 	v := e.LogValue()
 	if v.Kind() != slog.KindGroup {
 		t.Fatalf("expected Group log value, got %v", v.Kind())
@@ -796,7 +817,7 @@ func TestSubscribeError_LogValue(t *testing.T) {
 
 func TestPublishEncodeError_LogValue(t *testing.T) {
 	inner := errors.New("bad value")
-	e := zeromq.PublishEncodeError{Topic: "sensors/t1", Err: inner}
+	e := PublishEncodeError{Topic: "sensors/t1", Err: inner}
 	v := e.LogValue()
 	if v.Kind() != slog.KindGroup {
 		t.Fatalf("expected Group log value, got %v", v.Kind())
@@ -804,7 +825,7 @@ func TestPublishEncodeError_LogValue(t *testing.T) {
 }
 
 func TestServeError_LogValue(t *testing.T) {
-	e := zeromq.ServeError{Kind: zeromq.KindHandler, Err: errors.New("overflow")}
+	e := ServeError{Kind: KindHandler, Err: errors.New("overflow")}
 	v := e.LogValue()
 	if v.Kind() != slog.KindGroup {
 		t.Fatalf("expected Group log value, got %v", v.Kind())
@@ -812,7 +833,7 @@ func TestServeError_LogValue(t *testing.T) {
 }
 
 func TestCallError_LogValue(t *testing.T) {
-	e := zeromq.CallError{Err: errors.New("timeout")}
+	e := CallError{Err: errors.New("timeout")}
 	v := e.LogValue()
 	if v.Kind() != slog.KindGroup {
 		t.Fatalf("expected Group log value, got %v", v.Kind())
@@ -823,7 +844,7 @@ func TestCallError_LogValue(t *testing.T) {
 
 func TestSubscribeError_ErrorsAs(t *testing.T) {
 	inner := errors.New("inner")
-	outer := zeromq.SubscribeError{Kind: zeromq.KindDecode, Topic: "t", Err: inner}
+	outer := SubscribeError{Kind: KindDecode, Topic: "t", Err: inner}
 	if !errors.Is(outer, inner) {
 		t.Fatal("errors.Is must traverse Unwrap to find inner")
 	}
@@ -831,7 +852,7 @@ func TestSubscribeError_ErrorsAs(t *testing.T) {
 
 func TestServeError_ErrorsAs(t *testing.T) {
 	inner := errors.New("inner")
-	outer := zeromq.ServeError{Kind: zeromq.KindHandler, Err: inner}
+	outer := ServeError{Kind: KindHandler, Err: inner}
 	if !errors.Is(outer, inner) {
 		t.Fatal("errors.Is must traverse Unwrap to find inner")
 	}
@@ -839,7 +860,7 @@ func TestServeError_ErrorsAs(t *testing.T) {
 
 func TestCallError_ErrorsAs(t *testing.T) {
 	inner := errors.New("inner")
-	outer := zeromq.CallError{Err: inner}
+	outer := CallError{Err: inner}
 	if !errors.Is(outer, inner) {
 		t.Fatal("errors.Is must traverse Unwrap to find inner")
 	}
@@ -847,10 +868,10 @@ func TestCallError_ErrorsAs(t *testing.T) {
 
 // ── ServeRouter tests ─────────────────────────────────────────────────────────
 
-func runServeRouter(sock *mockSocket, fn func(context.Context, computeReq) (computeResp, error), opts zeromq.ServeOptions) error {
+func runServeRouter(sock *mockSocket, fn func(context.Context, computeReq) (computeResp, error), opts ServeOptions) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
 	defer cancel()
-	return zeromq.ServeRouter(ctx, sock, newRouteHandle(), fn, opts)
+	return ServeRouter(ctx, sock, newRouteHandle(), fn, opts)
 }
 
 func routerFrame(payload string) [][]byte {
@@ -863,7 +884,7 @@ func TestServeRouter_ValidRoundTrip(t *testing.T) {
 	}
 	_ = runServeRouter(sock, func(_ context.Context, r computeReq) (computeResp, error) {
 		return computeResp{Sum: r.X + r.Y}, nil
-	}, zeromq.ServeOptions{})
+	}, ServeOptions{})
 
 	// wait briefly for goroutine
 	time.Sleep(50 * time.Millisecond)
@@ -883,17 +904,17 @@ func TestServeRouter_ValidRoundTrip(t *testing.T) {
 }
 
 func TestServeRouter_DecodeError(t *testing.T) {
-	var gotErr zeromq.ServeError
+	var gotErr ServeError
 	sock := &mockSocket{inFrames: [][][]byte{routerFrame(`bad json`)}}
 	_ = runServeRouter(sock, func(_ context.Context, _ computeReq) (computeResp, error) {
 		t.Fatal("fn must not be called on decode error")
 		return computeResp{}, nil
-	}, zeromq.ServeOptions{
-		OnError: func(e zeromq.ServeError) { gotErr = e },
+	}, ServeOptions{
+		OnError: func(e ServeError) { gotErr = e },
 	})
 
 	time.Sleep(50 * time.Millisecond)
-	if gotErr.Kind != zeromq.KindDecode {
+	if gotErr.Kind != KindDecode {
 		t.Fatalf("expected KindDecode, got %v", gotErr.Kind)
 	}
 	// error reply must include identity frame
@@ -906,17 +927,17 @@ func TestServeRouter_DecodeError(t *testing.T) {
 }
 
 func TestServeRouter_HandlerError(t *testing.T) {
-	var gotErr zeromq.ServeError
+	var gotErr ServeError
 	sock := &mockSocket{inFrames: [][][]byte{routerFrame(validComputeJSON)}}
 	handlerErr := errors.New("overflow")
 	_ = runServeRouter(sock, func(_ context.Context, _ computeReq) (computeResp, error) {
 		return computeResp{}, handlerErr
-	}, zeromq.ServeOptions{
-		OnError: func(e zeromq.ServeError) { gotErr = e },
+	}, ServeOptions{
+		OnError: func(e ServeError) { gotErr = e },
 	})
 
 	time.Sleep(50 * time.Millisecond)
-	if gotErr.Kind != zeromq.KindHandler {
+	if gotErr.Kind != KindHandler {
 		t.Fatalf("expected KindHandler, got %v", gotErr.Kind)
 	}
 	if !errors.Is(gotErr, handlerErr) {
@@ -929,7 +950,7 @@ func TestServeRouter_ObserverRecordRequest(t *testing.T) {
 	sock := &mockSocket{inFrames: [][][]byte{routerFrame(validComputeJSON)}}
 	_ = runServeRouter(sock, func(_ context.Context, r computeReq) (computeResp, error) {
 		return computeResp{Sum: r.X + r.Y}, nil
-	}, zeromq.ServeOptions{Observer: obs})
+	}, ServeOptions{Observer: obs})
 
 	time.Sleep(80 * time.Millisecond)
 	if len(obs.requests) != 1 || obs.requests[0] != 200 {
@@ -942,7 +963,7 @@ func TestServeRouter_TraceObserver(t *testing.T) {
 	sock := &mockSocket{inFrames: [][][]byte{routerFrame(validComputeJSON)}}
 	_ = runServeRouter(sock, func(_ context.Context, r computeReq) (computeResp, error) {
 		return computeResp{Sum: r.X + r.Y}, nil
-	}, zeromq.ServeOptions{Observer: obs})
+	}, ServeOptions{Observer: obs})
 
 	time.Sleep(80 * time.Millisecond)
 	if len(obs.startSpanOps) != 1 || obs.startSpanOps[0] != "zmq.serve" {
@@ -961,7 +982,7 @@ func TestServeRouter_IgnoresMalformedFrame(t *testing.T) {
 	_ = runServeRouter(sock, func(_ context.Context, r computeReq) (computeResp, error) {
 		called++
 		return computeResp{Sum: r.X + r.Y}, nil
-	}, zeromq.ServeOptions{})
+	}, ServeOptions{})
 
 	time.Sleep(80 * time.Millisecond)
 	if called != 1 {
@@ -979,8 +1000,8 @@ func TestCallDealer_ValidRoundTrip(t *testing.T) {
 	sock := &mockSocket{
 		inFrames: [][][]byte{dealerReply("ok", `{"sum":7}`)},
 	}
-	result, err := zeromq.CallDealer(context.Background(), sock, newRouteHandle(),
-		computeReq{X: 3, Y: 4}, zeromq.CallOptions{})
+	result, err := CallDealer(context.Background(), sock, newRouteHandle(),
+		computeReq{X: 3, Y: 4}, CallOptions{})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -995,10 +1016,10 @@ func TestCallDealer_ValidRoundTrip(t *testing.T) {
 
 func TestCallDealer_ServerErrorReply(t *testing.T) {
 	sock := &mockSocket{inFrames: [][][]byte{dealerReply("error", "overflow")}}
-	_, err := zeromq.CallDealer(context.Background(), sock, newRouteHandle(),
-		computeReq{X: 1, Y: 2}, zeromq.CallOptions{})
+	_, err := CallDealer(context.Background(), sock, newRouteHandle(),
+		computeReq{X: 1, Y: 2}, CallOptions{})
 
-	var callErr zeromq.CallError
+	var callErr CallError
 	if !errors.As(err, &callErr) {
 		t.Fatalf("expected CallError, got %T: %v", err, err)
 	}
@@ -1006,10 +1027,10 @@ func TestCallDealer_ServerErrorReply(t *testing.T) {
 
 func TestCallDealer_MalformedReply(t *testing.T) {
 	sock := &mockSocket{inFrames: [][][]byte{{[]byte("only-one-frame")}}}
-	_, err := zeromq.CallDealer(context.Background(), sock, newRouteHandle(),
-		computeReq{X: 1, Y: 2}, zeromq.CallOptions{})
+	_, err := CallDealer(context.Background(), sock, newRouteHandle(),
+		computeReq{X: 1, Y: 2}, CallOptions{})
 
-	var callErr zeromq.CallError
+	var callErr CallError
 	if !errors.As(err, &callErr) {
 		t.Fatalf("expected CallError, got %T: %v", err, err)
 	}
@@ -1021,8 +1042,8 @@ func TestCallDealer_EncodeError(t *testing.T) {
 	// Instead test that socket is NOT written when encode succeeds but test the path is wired.
 	sock := &mockSocket{inFrames: [][][]byte{dealerReply("ok", `{"sum":0}`)}}
 	// zero values for computeReq are valid (int codec has no constraints) — just verify normal path
-	result, err := zeromq.CallDealer(context.Background(), sock, newRouteHandle(),
-		computeReq{X: 0, Y: 0}, zeromq.CallOptions{})
+	result, err := CallDealer(context.Background(), sock, newRouteHandle(),
+		computeReq{X: 0, Y: 0}, CallOptions{})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -1034,8 +1055,8 @@ func TestCallDealer_EncodeError(t *testing.T) {
 func TestCallDealer_ObserverRecordRequestSuccess(t *testing.T) {
 	obs := &testObserver{}
 	sock := &mockSocket{inFrames: [][][]byte{dealerReply("ok", `{"sum":7}`)}}
-	_, _ = zeromq.CallDealer(context.Background(), sock, newRouteHandle(),
-		computeReq{X: 3, Y: 4}, zeromq.CallOptions{Observer: obs})
+	_, _ = CallDealer(context.Background(), sock, newRouteHandle(),
+		computeReq{X: 3, Y: 4}, CallOptions{Observer: obs})
 
 	if len(obs.requests) != 1 || obs.requests[0] != 200 {
 		t.Fatalf("expected RecordRequest(200) for ZMQ-DEALER, got %v", obs.requests)
@@ -1045,8 +1066,8 @@ func TestCallDealer_ObserverRecordRequestSuccess(t *testing.T) {
 func TestCallDealer_ObserverRecordRequestFailure_ServerError(t *testing.T) {
 	obs := &testObserver{}
 	sock := &mockSocket{inFrames: [][][]byte{dealerReply("error", "internal")}}
-	_, _ = zeromq.CallDealer(context.Background(), sock, newRouteHandle(),
-		computeReq{X: 1, Y: 2}, zeromq.CallOptions{Observer: obs})
+	_, _ = CallDealer(context.Background(), sock, newRouteHandle(),
+		computeReq{X: 1, Y: 2}, CallOptions{Observer: obs})
 
 	if len(obs.requests) != 1 || obs.requests[0] != 500 {
 		t.Fatalf("expected RecordRequest(500), got %v", obs.requests)
@@ -1056,8 +1077,8 @@ func TestCallDealer_ObserverRecordRequestFailure_ServerError(t *testing.T) {
 func TestCallDealer_TraceObserver(t *testing.T) {
 	obs := &testObserver{}
 	sock := &mockSocket{inFrames: [][][]byte{dealerReply("ok", `{"sum":7}`)}}
-	_, _ = zeromq.CallDealer(context.Background(), sock, newRouteHandle(),
-		computeReq{X: 3, Y: 4}, zeromq.CallOptions{Observer: obs})
+	_, _ = CallDealer(context.Background(), sock, newRouteHandle(),
+		computeReq{X: 3, Y: 4}, CallOptions{Observer: obs})
 
 	if len(obs.startSpanOps) != 1 || obs.startSpanOps[0] != "zmq.request" {
 		t.Fatalf("expected StartSpan 'zmq.request', got %v", obs.startSpanOps)
@@ -1069,10 +1090,10 @@ func TestCallDealer_ContextCancelled(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
-	_, err := zeromq.CallDealer(ctx, sock, newRouteHandle(),
-		computeReq{X: 1, Y: 2}, zeromq.CallOptions{})
+	_, err := CallDealer(ctx, sock, newRouteHandle(),
+		computeReq{X: 1, Y: 2}, CallOptions{})
 
-	var callErr zeromq.CallError
+	var callErr CallError
 	if !errors.As(err, &callErr) {
 		t.Fatalf("expected CallError on ctx cancel, got %T: %v", err, err)
 	}
@@ -1082,7 +1103,7 @@ func TestCallDealer_ContextCancelled(t *testing.T) {
 
 func TestSocketError_LogValue(t *testing.T) {
 	inner := errors.New("connection reset")
-	e := zeromq.SocketError{Op: "recv", Err: inner}
+	e := SocketError{Op: "recv", Err: inner}
 	v := e.LogValue()
 	if v.Kind() != slog.KindGroup {
 		t.Fatalf("expected Group log value, got %v", v.Kind())
@@ -1091,14 +1112,14 @@ func TestSocketError_LogValue(t *testing.T) {
 
 func TestSocketError_ErrorsAs(t *testing.T) {
 	inner := errors.New("io error")
-	outer := zeromq.SocketError{Op: "set_subscription", Err: inner}
+	outer := SocketError{Op: "set_subscription", Err: inner}
 	if !errors.Is(outer, inner) {
 		t.Fatal("errors.Is must traverse Unwrap to find inner")
 	}
 }
 
 func TestSocketError_ErrorString(t *testing.T) {
-	e := zeromq.SocketError{Op: "send", Err: errors.New("broken pipe")}
+	e := SocketError{Op: "send", Err: errors.New("broken pipe")}
 	if e.Error() != "zeromq socket send: broken pipe" {
 		t.Fatalf("unexpected Error() string: %q", e.Error())
 	}
@@ -1110,11 +1131,11 @@ func TestSubscribe_SocketError_OnSetSubscriptionFail(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
 	defer cancel()
 
-	err := zeromq.Subscribe(ctx, sock, newChannelHandle(),
+	err := subscribeWithHandle(ctx, sock, newSubscribeHandle(),
 		func(_ context.Context, _ sensorReading) error { return nil },
-		zeromq.SubscribeOptions{})
+		SubscribeOptions[sensorReading]{})
 
-	var sockErr zeromq.SocketError
+	var sockErr SocketError
 	if !errors.As(err, &sockErr) {
 		t.Fatalf("expected SocketError, got %T: %v", err, err)
 	}
@@ -1137,7 +1158,7 @@ func (f *failingSocket) RecvFrames() ([][]byte, error) {
 	if f.recvErr != nil {
 		return nil, f.recvErr
 	}
-	return nil, zeromq.ErrTimeout
+	return nil, ErrTimeout
 }
 
 // ── Call/CallDealer Vars tests ────────────────────────────────────────────────
@@ -1165,9 +1186,9 @@ func TestCall_Vars_ObserverPathIsResolved(t *testing.T) {
 		},
 	}
 
-	_, _ = zeromq.Call(context.Background(), sock, newTemplateRouteHandle(),
+	_, _ = Call(context.Background(), sock, newTemplateRouteHandle(),
 		computeReq{X: 1, Y: 2},
-		zeromq.CallOptions{
+		CallOptions{
 			Observer: obs,
 			Vars:     map[string]string{"tenantID": tenantID},
 		})
@@ -1179,13 +1200,13 @@ func TestCall_Vars_ObserverPathIsResolved(t *testing.T) {
 
 func TestCall_Vars_MissingVar_ReturnsCallError(t *testing.T) {
 	sock := &mockSocket{}
-	_, err := zeromq.Call(context.Background(), sock, newTemplateRouteHandle(),
+	_, err := Call(context.Background(), sock, newTemplateRouteHandle(),
 		computeReq{X: 1, Y: 2},
-		zeromq.CallOptions{
+		CallOptions{
 			Vars: map[string]string{}, // tenantID missing
 		})
 
-	var callErr zeromq.CallError
+	var callErr CallError
 	if !errors.As(err, &callErr) {
 		t.Fatalf("expected CallError, got %T: %v", err, err)
 	}
@@ -1197,13 +1218,13 @@ func TestCall_Vars_MissingVar_ReturnsCallError(t *testing.T) {
 
 func TestCallDealer_Vars_MissingVar_ReturnsCallError(t *testing.T) {
 	sock := &mockSocket{}
-	_, err := zeromq.CallDealer(context.Background(), sock, newTemplateRouteHandle(),
+	_, err := CallDealer(context.Background(), sock, newTemplateRouteHandle(),
 		computeReq{X: 1, Y: 2},
-		zeromq.CallOptions{
+		CallOptions{
 			Vars: map[string]string{}, // tenantID missing
 		})
 
-	var callErr zeromq.CallError
+	var callErr CallError
 	if !errors.As(err, &callErr) {
 		t.Fatalf("expected CallError, got %T: %v", err, err)
 	}
@@ -1215,13 +1236,13 @@ func TestCallDealer_Vars_MissingVar_ReturnsCallError(t *testing.T) {
 
 func TestCall_Vars_InvalidVar_ReturnsCallError(t *testing.T) {
 	sock := &mockSocket{}
-	_, err := zeromq.Call(context.Background(), sock, newTemplateRouteHandle(),
+	_, err := Call(context.Background(), sock, newTemplateRouteHandle(),
 		computeReq{X: 1, Y: 2},
-		zeromq.CallOptions{
+		CallOptions{
 			Vars: map[string]string{"tenantID": "not-a-uuid"},
 		})
 
-	var callErr zeromq.CallError
+	var callErr CallError
 	if !errors.As(err, &callErr) {
 		t.Fatalf("expected CallError, got %T: %v", err, err)
 	}
@@ -1231,7 +1252,7 @@ func TestCall_Vars_InvalidVar_ReturnsCallError(t *testing.T) {
 	}
 }
 
-// ── Phase 2: zeromq.CallHandle (client-side only, no server-side merge) ──────
+// ── Phase 2: CallHandle (client-side only, no server-side merge) ──────
 
 type tenantComputeReq struct {
 	TenantID string
@@ -1257,7 +1278,7 @@ func newMergeRouteHandle() *reqreply.RouteHandle[tenantComputeReq, computeResp] 
 	).ClientHandle()
 }
 
-// EV/C: zeromq.CallHandle derives topic vars from req automatically — one
+// EV/C: CallHandle derives topic vars from req automatically — one
 // struct in, no manual vars map needed. Note: zeromq has no server-side
 // decode-merge (Serve carries no per-message topic string) — this
 // convenience is client-side only, verified here via the observer-reported
@@ -1270,9 +1291,9 @@ func TestCallHandle_DerivesVarsFromReq(t *testing.T) {
 		},
 	}
 
-	_, _ = zeromq.CallHandle(context.Background(), sock, newMergeRouteHandle(),
+	_, _ = CallHandle(context.Background(), sock, newMergeRouteHandle(),
 		tenantComputeReq{TenantID: "acme", X: 1, Y: 2},
-		zeromq.CallOptions{Observer: obs})
+		CallOptions{Observer: obs})
 
 	wantPath := "compute/acme/add"
 	if len(obs.paths) == 0 || obs.paths[0] != wantPath {
@@ -1289,9 +1310,9 @@ func TestCallHandle_ExplicitVarsOverridePrecedence(t *testing.T) {
 		},
 	}
 
-	_, _ = zeromq.CallHandle(context.Background(), sock, newMergeRouteHandle(),
+	_, _ = CallHandle(context.Background(), sock, newMergeRouteHandle(),
 		tenantComputeReq{TenantID: "acme", X: 1, Y: 2},
-		zeromq.CallOptions{Observer: obs, Vars: map[string]string{"tenantID": "overridden"}})
+		CallOptions{Observer: obs, Vars: map[string]string{"tenantID": "overridden"}})
 
 	wantPath := "compute/overridden/add"
 	if len(obs.paths) == 0 || obs.paths[0] != wantPath {
@@ -1305,11 +1326,11 @@ func TestCallHandle_ExplicitVarsOverridePrecedence(t *testing.T) {
 // CallOptions.RequestFormats wins over the route's declared
 // handle.RequestFormats (here: undeclared, JSON default) for THIS call only.
 func TestCall_RequestFormats_OverridesRouteDeclaredFormat(t *testing.T) {
-	sock := &mockSocket{recvErr: zeromq.ErrTimeout} // no reply — inspect the sent payload only
+	sock := &mockSocket{recvErr: ErrTimeout} // no reply — inspect the sent payload only
 	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
 	defer cancel()
-	_, _ = zeromq.Call(ctx, sock, newRouteHandle(),
-		computeReq{X: 3, Y: 4}, zeromq.CallOptions{
+	_, _ = Call(ctx, sock, newRouteHandle(),
+		computeReq{X: 3, Y: 4}, CallOptions{
 			RequestFormats: []format.Format[computeReq]{format.YAML(computeReqCodec)},
 		})
 
@@ -1326,11 +1347,11 @@ func TestCall_RequestFormats_OverridesRouteDeclaredFormat(t *testing.T) {
 // the route-declared (here: JSON default) format still applies when no
 // per-call override is given.
 func TestCall_RequestFormats_RouteDeclaredStillAppliesWithoutOverride(t *testing.T) {
-	sock := &mockSocket{recvErr: zeromq.ErrTimeout}
+	sock := &mockSocket{recvErr: ErrTimeout}
 	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
 	defer cancel()
-	_, _ = zeromq.Call(ctx, sock, newRouteHandle(),
-		computeReq{X: 3, Y: 4}, zeromq.CallOptions{})
+	_, _ = Call(ctx, sock, newRouteHandle(),
+		computeReq{X: 3, Y: 4}, CallOptions{})
 
 	sent := sock.sentSnapshot()
 	if len(sent) == 0 {
@@ -1356,8 +1377,8 @@ func TestCall_ResponseFormats_OverridesRouteDeclaredFormat(t *testing.T) {
 			{[]byte("ok"), []byte("sum: 7\n")},
 		},
 	}
-	result, err := zeromq.Call(context.Background(), sock, newRouteHandle(),
-		computeReq{X: 3, Y: 4}, zeromq.CallOptions{
+	result, err := Call(context.Background(), sock, newRouteHandle(),
+		computeReq{X: 3, Y: 4}, CallOptions{
 			ResponseFormats: []format.Format[computeResp]{format.YAML(computeRespCodec)},
 		})
 	if err != nil {
@@ -1372,12 +1393,12 @@ func TestCall_ResponseFormats_OverridesRouteDeclaredFormat(t *testing.T) {
 // wrong-typed CallOptions.RequestFormats returns CallError, errors.As-reachable.
 func TestCall_RequestFormats_TypeMismatch_ReturnsCallError(t *testing.T) {
 	sock := &mockSocket{}
-	_, err := zeromq.Call(context.Background(), sock, newRouteHandle(),
-		computeReq{X: 3, Y: 4}, zeromq.CallOptions{
+	_, err := Call(context.Background(), sock, newRouteHandle(),
+		computeReq{X: 3, Y: 4}, CallOptions{
 			// Wrong type: []format.Format[computeResp] instead of []format.Format[computeReq].
 			RequestFormats: []format.Format[computeResp]{format.JSON(computeRespCodec)},
 		})
-	var callErr zeromq.CallError
+	var callErr CallError
 	if !errors.As(err, &callErr) {
 		t.Fatalf("want CallError, got %T: %v", err, err)
 	}
@@ -1393,12 +1414,12 @@ func TestCall_ResponseFormats_TypeMismatch_ReturnsCallError(t *testing.T) {
 			{[]byte("ok"), []byte(`{"sum":7}`)},
 		},
 	}
-	_, err := zeromq.Call(context.Background(), sock, newRouteHandle(),
-		computeReq{X: 3, Y: 4}, zeromq.CallOptions{
+	_, err := Call(context.Background(), sock, newRouteHandle(),
+		computeReq{X: 3, Y: 4}, CallOptions{
 			// Wrong type: []format.Format[computeReq] instead of []format.Format[computeResp].
 			ResponseFormats: []format.Format[computeReq]{format.JSON(computeReqCodec)},
 		})
-	var callErr zeromq.CallError
+	var callErr CallError
 	if !errors.As(err, &callErr) {
 		t.Fatalf("want CallError, got %T: %v", err, err)
 	}
@@ -1408,11 +1429,11 @@ func TestCall_ResponseFormats_TypeMismatch_ReturnsCallError(t *testing.T) {
 // SAME per-call override wiring on CallDealer (which duplicates Call's
 // encode/decode logic under a DEALER envelope).
 func TestCallDealer_RequestFormats_OverridesRouteDeclaredFormat(t *testing.T) {
-	sock := &mockSocket{recvErr: zeromq.ErrTimeout}
+	sock := &mockSocket{recvErr: ErrTimeout}
 	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
 	defer cancel()
-	_, _ = zeromq.CallDealer(ctx, sock, newRouteHandle(),
-		computeReq{X: 3, Y: 4}, zeromq.CallOptions{
+	_, _ = CallDealer(ctx, sock, newRouteHandle(),
+		computeReq{X: 3, Y: 4}, CallOptions{
 			RequestFormats: []format.Format[computeReq]{format.YAML(computeReqCodec)},
 		})
 

@@ -85,7 +85,7 @@ type DuplexPort[In, Out any] struct {
 	obs      stats.Observer
 	buffer   int
 
-	restBuilder *rest.Builder
+	restBuilder *rest.Server
 
 	handlesMu sync.Mutex
 	handles   map[string]any

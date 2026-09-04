@@ -388,23 +388,22 @@ func main() {
 	// builder time. validate.MQTTPublishTopic rejects empty topics and wildcard
 	// characters (+ or #), making it safe for both subscribe and publish channels.
 	// Use validate.MQTTTopic if you only need the general MQTT topic rules.
-	b := events.NewBuilder(
-		events.Info{
+	b := events.NewClient(
+		events.WithInfo(events.Info{
 			Title:       "OEE Sensor Events",
 			Version:     "1.0.0",
 			Description: "Channels for receiving OT sensor readings and publishing KPI results.",
-		},
+		}),
 		events.WithTopicConstraints(validate.MQTTPublishTopic),
 	)
 
 	sensorCh, err := events.NewChannel[SensorReading]("sensors/oee/reading", sensorReadingCodec,
 		events.ChannelMeta{Description: "Raw equipment measurements from OT sensors."},
-		events.Subscribe{
-			Summary:    "Receive sensor reading",
-			Tags:       []string{"sensor", "oee"},
-			SchemaName: "SensorReading",
-		},
-	).Register(b)
+	).WithSubscribe(events.Subscribe{
+		Summary:    "Receive sensor reading",
+		Tags:       []string{"sensor", "oee"},
+		SchemaName: "SensorReading",
+	}).Handle(b)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "AddChannel sensor: %v\n", err)
 		os.Exit(1)
@@ -412,12 +411,11 @@ func main() {
 
 	kpiCh, err := events.NewChannel[KPIResult]("kpi/oee/result", kpiResultCodec,
 		events.ChannelMeta{Description: "Computed OEE KPI results published after each sensor reading."},
-		events.Publish{
-			Summary:    "Publish KPI result",
-			Tags:       []string{"kpi", "oee"},
-			SchemaName: "KPIResult",
-		},
-	).Register(b)
+	).WithPublish(events.Publish{
+		Summary:    "Publish KPI result",
+		Tags:       []string{"kpi", "oee"},
+		SchemaName: "KPIResult",
+	}).Handle(b)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "AddChannel kpi: %v\n", err)
 		os.Exit(1)

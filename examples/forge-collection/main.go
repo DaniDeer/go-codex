@@ -117,19 +117,18 @@ var sensorIDCodec = codex.String().
 // ─────────────────────────────────────────────────────────────────────────────
 
 func buildEventChannel() *events.ChannelHandle[RawReading] {
-	b := events.NewBuilder(
-		events.Info{
+	b := events.NewClient(
+		events.WithInfo(events.Info{
 			Title:       "SensorBatchPipeline",
 			Version:     "1.0.0",
 			Description: "Temperature sensor measurement pipeline.",
-		},
+		}),
 		events.WithTopicConstraints(validate.MQTTPublishTopic),
 	)
 	ch, err := events.NewChannel[RawReading]("sensors/{sensorId}/readings",
 		rawReadingCodec,
 		events.ChannelMeta{Description: "Raw temperature readings from field sensors."},
-		events.Subscribe{Summary: "Receive raw temperature readings"},
-	).Register(b)
+	).WithSubscribe(events.Subscribe{Summary: "Receive raw temperature readings"}).Handle(b)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "events.AddChannel: %v\n", err)
 		os.Exit(1)

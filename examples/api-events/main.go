@@ -7,9 +7,10 @@
 //   - Publish   (action: send):    this app SENDS messages on the channel (producer)
 //   - Both:      bidirectional — pass both events.Subscribe and events.Publish to one AddChannel call
 //
-// Security schemes are declared once per channel via events.WithSecurityScheme
-// and referenced via Subscribe.Security / Publish.Security. The spec output
-// includes components/securitySchemes and per-operation security requirements.
+// Security schemes are declared once per channel via events.FromSecurityScheme
+// (attached with Subscriber/Publisher.Use) and referenced via
+// Subscribe.Security / Publish.Security. The spec output includes
+// components/securitySchemes and per-operation security requirements.
 //
 // The same ChannelHandle.Decode and ChannelHandle.Encode helpers work unchanged
 // with MQTT (Paho), AMQP, Kafka, NATS, or any other message broker.
@@ -18,6 +19,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"os"
 
@@ -78,11 +80,11 @@ var notificationCommandCodec = codex.Struct[NotificationCommand](
 func main() {
 	// Build the event API: register channels with codecs.
 	// No messaging library import required.
-	b := events.NewBuilder(events.Info{
+	b := events.NewClient(events.WithInfo(events.Info{
 		Title:       "Notification Service Events",
 		Version:     "1.0.0",
 		Description: "Channels for the notification service: receives user events, sends notification commands.",
-	},
+	}),
 		// WithTopicConstraints is optional. When set, AddChannel returns an
 		// InvalidTopicError immediately if the topic violates the constraint.
 		// MQTTPublishTopic requires a non-empty topic with no wildcard characters
@@ -105,17 +107,25 @@ func main() {
 	// user/created — action: receive — this app RECEIVES events when users register.
 	// Security: requires bearerAuth — adapters (e.g. adapters/mqtt) enforce this via
 	// SubscribeOptions.SecurityFunc before calling the application handler.
+	// bearerAuthMW pairs with the SubscribeMW attachment below — CheckCoverage
+	// (run unconditionally by Subscriber.Handle) rejects a declared security
+	// scheme with no attached implementation satisfying it. The Fn here is a
+	// no-op placeholder: real deployments would parse the actual credential
+	// and return its granted scopes (or an error to reject the message).
+	bearerAuthMW := events.FromSecurityScheme("bearerAuth", bearerAuth, nil)
 	userCreated, err := events.NewChannel[UserCreatedEvent]("user/created", userCreatedCodec,
 		events.ChannelMeta{Description: "User registration events consumed by the notification service."},
-		events.Subscribe{
-			Summary:    "Receive user created event",
-			Tags:       []string{"user", "registration"},
-			SchemaName: "UserCreatedEvent",
-			// Security: requires bearerAuth on this operation.
-			Security: []route.SecurityRequirement{route.Require("bearerAuth")},
-		},
-		events.WithSecurityScheme("bearerAuth", bearerAuth),
-	).Register(b)
+	).WithSubscribe(events.Subscribe{
+		Summary:    "Receive user created event",
+		Tags:       []string{"user", "registration"},
+		SchemaName: "UserCreatedEvent",
+		// Security: requires bearerAuth on this operation.
+		Security: []route.SecurityRequirement{route.Require("bearerAuth")},
+	}).Use(bearerAuthMW).
+		SubscribeMW(&bearerAuthMW, func(_ context.Context, _ UserCreatedEvent) (map[string][]string, error) {
+			return map[string][]string{"bearerAuth": {}}, nil
+		}).
+		Handle(b)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "channel registration failed: %v\n", err)
 		os.Exit(1)
@@ -125,12 +135,11 @@ func main() {
 	// No security on outbound channels: the broker accepts messages from this service.
 	notificationSend, err := events.NewChannel[NotificationCommand]("notification/send", notificationCommandCodec,
 		events.ChannelMeta{Description: "Notification commands sent by this service to trigger delivery."},
-		events.Publish{
-			Summary:    "Send notification command",
-			Tags:       []string{"notification"},
-			SchemaName: "NotificationCommand",
-		},
-	).Register(b)
+	).WithPublish(events.Publish{
+		Summary:    "Send notification command",
+		Tags:       []string{"notification"},
+		SchemaName: "NotificationCommand",
+	}).Handle(b)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "channel registration failed: %v\n", err)
 		os.Exit(1)
@@ -152,16 +161,23 @@ func main() {
 	deviceStatusTopic := events.NewTopic("devices/{deviceID}/status",
 		events.TopicParam{Name: "deviceID", Codec: &deviceIDCodec},
 	)
-	deviceOnline, err := events.NewChannelFromTopic(deviceStatusTopic, deviceOnlineCodec,
-		events.Subscribe{Summary: "Receive device online event", SchemaName: "DeviceOnline"},
-	).Register(b)
+	deviceOnline, err := events.NewChannelFromTopic(deviceStatusTopic, deviceOnlineCodec).
+		WithSubscribe(events.Subscribe{Summary: "Receive device online event", SchemaName: "DeviceOnline"}).
+		Handle(b)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "channel registration failed: %v\n", err)
 		os.Exit(1)
 	}
-	deviceOffline, err := events.NewChannelFromTopic(deviceStatusTopic, deviceOfflineCodec,
-		events.Subscribe{Summary: "Receive device offline event", SchemaName: "DeviceOffline"},
-	).Register(b)
+	// deviceOffline shares deviceOnline's EXACT topic string but declares a
+	// DIFFERENT payload type — registering it against the SAME Client would
+	// trip events.ChannelTypeConflictError (Handle's topic-based spec dedup
+	// rejects two incompatible payload types under one topic, a genuine
+	// caller error it now catches that the deprecated Register never did).
+	// Handle(nil) builds a spec-free handle instead — this demo only needs
+	// deviceOffline.Topic below, not a second (conflicting) spec entry.
+	deviceOffline, err := events.NewChannelFromTopic(deviceStatusTopic, deviceOfflineCodec).
+		WithSubscribe(events.Subscribe{Summary: "Receive device offline event", SchemaName: "DeviceOffline"}).
+		Handle(nil)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "channel registration failed: %v\n", err)
 		os.Exit(1)

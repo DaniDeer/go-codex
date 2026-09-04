@@ -1,12 +1,10 @@
-package chi_test
+package chi
 
 import (
 	"errors"
 	"fmt"
 	"log/slog"
 	"testing"
-
-	chiadapter "github.com/DaniDeer/go-codex/adapters/chi"
 )
 
 func attrKeysChi(lv slog.Value) map[string]bool {
@@ -18,7 +16,7 @@ func attrKeysChi(lv slog.Value) map[string]bool {
 }
 
 func TestChiNoLatestValueError_LogValue(t *testing.T) {
-	e := chiadapter.NoLatestValueError{Path: "/oee"}
+	e := NoLatestValueError{Path: "/oee"}
 	lv := e.LogValue()
 	if lv.Kind() != slog.KindGroup {
 		t.Fatalf("want KindGroup, got %v", lv.Kind())
@@ -29,7 +27,7 @@ func TestChiNoLatestValueError_LogValue(t *testing.T) {
 }
 
 func TestChiPipelineFullError_LogValue(t *testing.T) {
-	e := chiadapter.PipelineFullError{Path: "/ingest", Capacity: 128}
+	e := PipelineFullError{Path: "/ingest", Capacity: 128}
 	lv := e.LogValue()
 	if lv.Kind() != slog.KindGroup {
 		t.Fatalf("want KindGroup, got %v", lv.Kind())
@@ -43,7 +41,7 @@ func TestChiPipelineFullError_LogValue(t *testing.T) {
 }
 
 func TestChiPipelineNoResponseError_LogValue(t *testing.T) {
-	e := chiadapter.PipelineNoResponseError{Path: "/compute"}
+	e := PipelineNoResponseError{Path: "/compute"}
 	lv := e.LogValue()
 	if lv.Kind() != slog.KindGroup {
 		t.Fatalf("want KindGroup, got %v", lv.Kind())
@@ -54,7 +52,7 @@ func TestChiPipelineNoResponseError_LogValue(t *testing.T) {
 }
 
 func TestChiSSEWriteError_LogValue(t *testing.T) {
-	e := chiadapter.SSEWriteError{Path: "/events", Err: fmt.Errorf("broken pipe")}
+	e := SSEWriteError{Path: "/events", Err: fmt.Errorf("broken pipe")}
 	lv := e.LogValue()
 	if lv.Kind() != slog.KindGroup {
 		t.Fatalf("want KindGroup, got %v", lv.Kind())
@@ -69,7 +67,7 @@ func TestChiSSEWriteError_LogValue(t *testing.T) {
 
 func TestChiSSEWriteError_Unwrap(t *testing.T) {
 	inner := fmt.Errorf("pipe broken")
-	e := chiadapter.SSEWriteError{Path: "/events", Err: inner}
+	e := SSEWriteError{Path: "/events", Err: inner}
 	if !errors.Is(e, inner) {
 		t.Error("errors.Is must reach inner via Unwrap")
 	}

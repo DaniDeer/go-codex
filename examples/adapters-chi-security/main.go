@@ -33,6 +33,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -241,9 +242,9 @@ func buildAPI() (
 	profileDeclMw middleware.Middleware,
 	adminRoute rest.Route[adminActionReq, adminActionResp],
 	adminDeclMw middleware.Middleware,
-	b *rest.Builder,
+	b *rest.Server,
 ) {
-	b = rest.NewBuilder(rest.Info{
+	b = rest.NewServer(rest.Info{
 		Title:       "Secure API Demo (chi)",
 		Version:     "1.0.0",
 		Description: "Demonstrates bearer authentication with chi router and per-route scope enforcement.",
@@ -295,6 +296,35 @@ func mustServe(err error, what string) {
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "%s failed: %v\n", what, err)
 		os.Exit(1)
+	}
+}
+
+// mustFreeAddr reserves an OS-assigned free TCP port on localhost, then
+// releases it immediately so AttachRouter's own *http.Server can bind to it.
+func mustFreeAddr() string {
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "reserve free port failed: %v\n", err)
+		os.Exit(1)
+	}
+	addr := l.Addr().String()
+	_ = l.Close()
+	return addr
+}
+
+// waitForReady polls addr until it accepts TCP connections — b.Serve wires
+// the router synchronously before starting its listener goroutine, so a
+// successful dial here also guarantees router is fully wired and safe to
+// call router.ServeHTTP directly against, as this example's demo requests
+// do below.
+func waitForReady(addr string) {
+	for range 100 {
+		conn, err := net.DialTimeout("tcp", addr, 50*time.Millisecond)
+		if err == nil {
+			_ = conn.Close()
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
 	}
 }
 
@@ -367,7 +397,12 @@ func main() {
 	mustServe(adminRoute.Register(b), "register /admin/action")
 
 	router := gochi.NewRouter()
-	mustServe(chiadapter.Serve(router, b), "Serve")
+	addr := mustFreeAddr()
+	mustServe(chiadapter.AttachRouter(b, router, addr), "AttachRouter")
+	ctx, cancel := context.WithCancel(context.Background())
+	go func() { _ = b.Serve(ctx) }()
+	defer cancel()
+	waitForReady(addr)
 
 	// ── Demo requests ─────────────────────────────────────────────────────────
 	fmt.Println("=== adapters-chi-security demo ===")

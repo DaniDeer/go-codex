@@ -16,7 +16,8 @@ type observerKey struct{}
 //
 //	// All adapters use obs when Options.Observer is nil:
 //	route.WithOptions(nethttp.Options{})
-//	mqtt.Subscribe(ctx, client, handle, 1, fn, mqtt.SubscribeOptions{})
+//	transport := mqtt.NewSubscribeTransport[Msg](client, 1, mqtt.SubscribeOptions{})
+//	events.SubscribeHandle(ctx, sub, transport, fn)
 //	stream.Apply(ctx, s, fn, stream.ApplyOptions{})
 //
 // The context-provided observer has **lower** priority than an explicitly set

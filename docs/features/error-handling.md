@@ -109,14 +109,14 @@ All MQTT adapter error types implement `slog.LogValuer`.
 
 | Error type | When returned |
 |---|---|
-| `mqtt.SubscribeError{Kind, Topic, Err}` | decode, handler, or security failure in `SubscribeHandler` |
-| `mqtt.PublishEncodeError{Topic, Err}` | payload encode failure in `Publish` |
+| `mqtt.SubscribeError{Kind, Topic, Err}` | decode, handler, or security failure in the subscribe transport |
+| `mqtt.PublishEncodeError{Topic, Err}` | payload encode failure in the publish transport |
 | `mqtt.TopicMismatchError{Template, Topic}` | concrete topic doesn't match template structure |
 | `events.TopicParamError{Name, Value, Err}` | topic variable fails its codec |
 | `events.MissingTopicVarError{Name}` | topic variable absent from vars map |
 
 ```go
-mqtt.SubscribeHandler(ctx, channel, handler, mqtt.SubscribeOptions{
+transport := mqtt.NewSubscribeTransport[Measurement](client, 1, mqtt.SubscribeOptions{
     OnError: func(e mqtt.SubscribeError) {
         switch e.Kind {
         case mqtt.KindDecode:
@@ -132,6 +132,7 @@ mqtt.SubscribeHandler(ctx, channel, handler, mqtt.SubscribeOptions{
         }
     },
 })
+go func() { _ = events.SubscribeHandle(ctx, sub, transport, handler) }()
 ```
 
 ## MQTT 5.0 adapter errors (adapters/mqtt5)

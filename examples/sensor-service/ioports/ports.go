@@ -8,7 +8,7 @@
 // SQLPattern/FilePattern) via the port's PluginXxxPattern method, which
 // registers it and returns the typed handle in one call; (3) bind a
 // concrete adapter to the returned handle in main.go. Patterns needing a
-// shared, application-wide builder (EventsBuilder/RESTBuilder below) are
+// shared, application-wide builder (EventsClient/RESTBuilder below) are
 // plugged in against THAT builder automatically — its channel/route shows
 // up in the printed AsyncAPI/OpenAPI spec alongside every other boundary.
 //
@@ -38,28 +38,28 @@ import (
 
 // ── Shared AsyncAPI builder ───────────────────────────────────────────────────
 
-// EventsBuilder is shared by every EventPattern-based port below via
-// PortOptions.EventBuilder. Configuring WithTopicConstraints here — exactly
-// the same call examples/adapters-mqtt makes on its own events.NewBuilder —
+// EventsClient is shared by every EventPattern-based port below via
+// PortOptions.EventClient. Configuring WithTopicConstraints here — exactly
+// the same call examples/adapters-mqtt makes on its own events.NewClient —
 // means every port's Plugin call enforces domain.SensorTopicConstraint too:
 // an invalid topic on any EventPattern plugged into a port constructed with
-// EventBuilder: EventsBuilder fails immediately (PatternRegisterError
+// EventClient: EventsClient fails immediately (PatternRegisterError
 // wrapping events.InvalidTopicError), exactly as it would if declared by
-// hand via events.NewChannel(...).Register(EventsBuilder).
+// hand via events.NewChannel(...).WithSubscribe(...).Handle(EventsClient).
 //
 // After wiring, main() prints the AsyncAPI spec straight from this builder —
 // the port declarations below ARE the channel declarations.
-var EventsBuilder = events.NewBuilder(events.Info{Title: "sensor-service", Version: "1.0.0"},
+var EventsClient = events.NewClient(events.WithInfo(events.Info{Title: "sensor-service", Version: "1.0.0"}),
 	events.WithTopicConstraints(validate.MQTTPublishTopic, domain.SensorTopicConstraint),
 )
 
 // ── Shared OpenAPI builder ────────────────────────────────────────────────────
 
 // RESTBuilder is shared by the RESTPattern-based tool ports below via
-// PortOptions.RESTBuilder — the same declare-once story as EventsBuilder:
+// PortOptions.RESTBuilder — the same declare-once story as EventsClient:
 // after wiring, main() prints the OpenAPI spec straight from this builder;
 // the port declarations ARE the route declarations.
-var RESTBuilder = rest.NewBuilder(rest.Info{Title: "sensor-service", Version: "1.0.0"})
+var RESTBuilder = rest.NewServer(rest.Info{Title: "sensor-service", Version: "1.0.0"})
 
 // ── Event ports (MQTT in the demo — any pub/sub adapter fits) ────────────────
 //
@@ -77,9 +77,9 @@ var SensorsPattern = ports.EventPattern{
 	Topic: "sensors/{sensorID}/data",
 	Opts: []events.ChannelOpt{
 		events.ChannelMeta{Description: "Sensor readings published by the sensor network."},
-		events.Subscribe{Summary: "Receive sensor reading"},
 		events.TopicParam{Name: "sensorID", Description: "UUID of the publishing sensor"},
 	},
+	Subscribe: &events.Subscribe{Summary: "Receive sensor reading"},
 }
 
 // Sensors is the inbound boundary: sensor readings published by the sensor
@@ -87,7 +87,7 @@ var SensorsPattern = ports.EventPattern{
 // wiring time in main.go.
 var Sensors = codex.Must(ports.NewSourcePort[domain.MQTTPayload](
 	"mqtt/sensors/+/data", domain.MQTTPayloadCodec,
-	ports.PortOptions{Buffer: 64, EventBuilder: EventsBuilder}))
+	ports.PortOptions{Buffer: 64, EventClient: EventsClient}))
 
 // AlertsPattern is Alerts' EventPattern, declared standalone — same
 // declare-once story as SensorsPattern.
@@ -95,9 +95,9 @@ var AlertsPattern = ports.EventPattern{
 	Topic: "alerts/{sensorID}",
 	Opts: []events.ChannelOpt{
 		events.ChannelMeta{Description: "Threshold-breach alerts."},
-		events.Publish{Summary: "Publish threshold-breach alert"},
 		events.TopicParam{Name: "sensorID", Description: "UUID of the sensor that triggered the alert"},
 	},
+	Publish: &events.Publish{Summary: "Publish threshold-breach alert"},
 }
 
 // Alerts is the outbound boundary: threshold-breach alerts. Fan-out to
@@ -105,7 +105,7 @@ var AlertsPattern = ports.EventPattern{
 // main() — no pipeline changes.
 var Alerts = codex.Must(ports.NewSinkPort[domain.SensorAlert](
 	"mqtt/alerts", domain.AlertCodec,
-	ports.PortOptions{EventBuilder: EventsBuilder}))
+	ports.PortOptions{EventClient: EventsClient}))
 
 // ── SQL ports ─────────────────────────────────────────────────────────────────
 //

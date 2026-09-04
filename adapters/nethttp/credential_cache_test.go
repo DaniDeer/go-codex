@@ -1,4 +1,4 @@
-package nethttp_test
+package nethttp
 
 import (
 	"context"
@@ -9,7 +9,6 @@ import (
 	"testing"
 	"time"
 
-	nethttp "github.com/DaniDeer/go-codex/adapters/nethttp"
 	"github.com/DaniDeer/go-codex/route"
 	"github.com/DaniDeer/go-codex/stats"
 )
@@ -51,7 +50,7 @@ func TestNewCachingCredentialFunc_CachesWithinTTL(t *testing.T) {
 		atomic.AddInt32(&calls, 1)
 		return makeCredentialHeader("Bearer token-1"), nil
 	}
-	fn, _ := nethttp.NewCachingCredentialFunc(inner, nethttp.CachingCredentialFuncOptions{TTL: time.Hour})
+	fn, _ := NewCachingCredentialFunc(inner, CachingCredentialFuncOptions{TTL: time.Hour})
 
 	for i := 0; i < 5; i++ {
 		h, err := fn(context.Background(), nil)
@@ -73,7 +72,7 @@ func TestNewCachingCredentialFunc_RefreshesAfterTTL(t *testing.T) {
 		n := atomic.AddInt32(&calls, 1)
 		return makeCredentialHeader("Bearer token-" + string(rune('0'+n))), nil
 	}
-	fn, _ := nethttp.NewCachingCredentialFunc(inner, nethttp.CachingCredentialFuncOptions{TTL: 20 * time.Millisecond})
+	fn, _ := NewCachingCredentialFunc(inner, CachingCredentialFuncOptions{TTL: 20 * time.Millisecond})
 
 	if _, err := fn(context.Background(), nil); err != nil {
 		t.Fatalf("first call: unexpected error: %v", err)
@@ -95,7 +94,7 @@ func TestNewCachingCredentialFunc_ConcurrentCallsDuringMiss_SingleInnerInvocatio
 		<-release
 		return makeCredentialHeader("Bearer shared-token"), nil
 	}
-	fn, _ := nethttp.NewCachingCredentialFunc(inner, nethttp.CachingCredentialFuncOptions{TTL: time.Hour})
+	fn, _ := NewCachingCredentialFunc(inner, CachingCredentialFuncOptions{TTL: time.Hour})
 
 	const n = 10
 	var wg sync.WaitGroup
@@ -136,7 +135,7 @@ func TestNewCachingCredentialFunc_InnerError_NotCached(t *testing.T) {
 		atomic.AddInt32(&calls, 1)
 		return nil, wantErr
 	}
-	fn, _ := nethttp.NewCachingCredentialFunc(inner, nethttp.CachingCredentialFuncOptions{TTL: time.Hour})
+	fn, _ := NewCachingCredentialFunc(inner, CachingCredentialFuncOptions{TTL: time.Hour})
 
 	if _, err := fn(context.Background(), nil); !errors.Is(err, wantErr) {
 		t.Fatalf("first call: got error %v, want %v", err, wantErr)
@@ -155,7 +154,7 @@ func TestNewCachingCredentialFunc_Invalidate_ForcesRefreshOnNextCall(t *testing.
 		atomic.AddInt32(&calls, 1)
 		return makeCredentialHeader("Bearer token"), nil
 	}
-	fn, invalidate := nethttp.NewCachingCredentialFunc(inner, nethttp.CachingCredentialFuncOptions{TTL: time.Hour})
+	fn, invalidate := NewCachingCredentialFunc(inner, CachingCredentialFuncOptions{TTL: time.Hour})
 
 	if _, err := fn(context.Background(), nil); err != nil {
 		t.Fatalf("first call: unexpected error: %v", err)
@@ -174,7 +173,7 @@ func TestNewCachingCredentialFunc_Observer_RecordsHitAndRefresh(t *testing.T) {
 		return makeCredentialHeader("Bearer token"), nil
 	}
 	spy := &credentialCacheObserverSpy{}
-	fn, _ := nethttp.NewCachingCredentialFunc(inner, nethttp.CachingCredentialFuncOptions{
+	fn, _ := NewCachingCredentialFunc(inner, CachingCredentialFuncOptions{
 		TTL:      time.Hour,
 		Observer: spy,
 	})
@@ -209,7 +208,7 @@ func TestNewCachingCredentialFunc_NilObserver_NoPanic(t *testing.T) {
 	inner := func(context.Context, []route.SecurityRequirement) (http.Header, error) {
 		return makeCredentialHeader("Bearer token"), nil
 	}
-	fn, invalidate := nethttp.NewCachingCredentialFunc(inner, nethttp.CachingCredentialFuncOptions{TTL: time.Hour})
+	fn, invalidate := NewCachingCredentialFunc(inner, CachingCredentialFuncOptions{TTL: time.Hour})
 
 	if _, err := fn(context.Background(), nil); err != nil {
 		t.Fatalf("unexpected error: %v", err)

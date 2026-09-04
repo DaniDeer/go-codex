@@ -2,21 +2,21 @@
 
 > See also: [`api/events` on pkg.go.dev](https://pkg.go.dev/github.com/DaniDeer/go-codex/api/events) · [`adapters/mqtt` on pkg.go.dev](https://pkg.go.dev/github.com/DaniDeer/go-codex/adapters/mqtt)
 
-`api/events` is a transport-agnostic event channel builder. The same builder that drives typed decode/encode also generates a complete AsyncAPI 3.0 spec.
+`api/events` is a transport-agnostic event channel client. The same `events.Client` that drives typed decode/encode also generates a complete AsyncAPI 3.0 spec.
 
 ## Declaring channels
 
 ```go
-b := events.NewBuilder(
-    events.Info{Title: "Sensor Platform", Version: "1.0.0"},
+client := events.NewClient(
+    events.WithInfo(events.Info{Title: "Sensor Platform", Version: "1.0.0"}),
     events.WithTopicConstraints(validate.MQTTPublishTopic),
 )
-b.AddServer("production", events.Server{URL: "mqtt://broker.example.com:1883", Protocol: "mqtt"})
+client.AddServer("production", events.Server{URL: "mqtt://broker.example.com:1883", Protocol: "mqtt"})
 
 // Static topic
 userCreated, _ := events.NewChannel[UserCreatedEvent]("user/created", userCreatedCodec,
     events.Subscribe{OperationID: "receiveUserCreated", Summary: "A user was created", SchemaName: "UserCreatedEvent"},
-).Register(b)
+).Register(client)
 
 // Template topic with parameter codec
 sensorUUIDCodec := codex.String().Refine(validate.UUID)
@@ -28,7 +28,20 @@ sensorMeasurement, _ := events.NewChannel[Measurement]("sensors/{sensorID}/measu
         Name:        "sensorID",
         Description: "UUID of the sensor.",
     }.WithCodec(sensorUUIDCodec),
-).Register(b)
+).Register(client)
+```
+
+Attaching security or general-purpose middleware (Observer-style logging,
+etc.) to a channel uses the role-scoped path instead —
+`Channel.WithSubscribe(events.Subscribe{...})`/`Channel.WithPublish(events.Publish{...})`
+each return a `Subscriber[T]`/`Publisher[T]` builder with its own
+`.Use(mws ...middleware.Middleware)` and a terminal `.Handle(client)`:
+
+```go
+handle, err := sensorMeasurement.
+    WithSubscribe(events.Subscribe{OperationID: "receiveMeasurement"}).
+    Use(events.FromSecurityScheme("apiKey", scheme, nil)).
+    Handle(client)
 ```
 
 ## Parameter types
@@ -50,10 +63,29 @@ topic, err := sensorMeasurement.BuildTopic(map[string]string{"sensorID": "f47ac1
 ## Paho MQTT adapter — subscribing
 
 ```go
-import amqtt "github.com/DaniDeer/go-codex/adapters/mqtt"
+import (
+    amqtt "github.com/DaniDeer/go-codex/adapters/mqtt"
+    "github.com/DaniDeer/go-codex/api/events"
+)
 
-client.Subscribe(topic, 1,
-    amqtt.SubscribeHandler(ctx, sensorMeasurement,
+sub := sensorMeasurement.WithSubscribe(events.Subscribe{})
+transport := amqtt.NewSubscribeTransport[Measurement](client, 1,
+    amqtt.SubscribeOptions{
+        Observer: obs,
+        OnError: func(e amqtt.SubscribeError) {
+            switch e.Kind {
+            case amqtt.KindDecode:
+                logger.Warn("decode error", "topic", e.Topic, "error", e.Err)
+            case amqtt.KindHandler:
+                logger.Error("handler error", "topic", e.Topic, "error", e.Err)
+            }
+        },
+    },
+)
+// mqtt v3 has no broker router, so events.SubscribeHandle registers then
+// blocks on ctx.Done() — run it in a goroutine.
+go func() {
+    _ = events.SubscribeHandle(ctx, sub, transport,
         func(ctx context.Context, m Measurement) error {
             // MessageFromContext gives access to QoS, retained flag, etc.
             if msg, ok := amqtt.MessageFromContext(ctx); ok {
@@ -61,32 +93,23 @@ client.Subscribe(topic, 1,
             }
             return svc.HandleMeasurement(ctx, m)
         },
-        amqtt.SubscribeOptions{
-            Observer: obs,
-            OnError: func(e amqtt.SubscribeError) {
-                switch e.Kind {
-                case amqtt.KindDecode:
-                    logger.Warn("decode error", "topic", e.Topic, "error", e.Err)
-                case amqtt.KindHandler:
-                    logger.Error("handler error", "topic", e.Topic, "error", e.Err)
-                }
-            },
-        },
-    ),
-)
+    )
+}()
 ```
 
 ## Paho MQTT adapter — publishing
 
 ```go
-// Static topic — pass nil for vars
-err := amqtt.Publish(ctx, client, alertChannel, 1, false, alert, nil,
-    amqtt.PublishOptions{Observer: obs})
+alertPub := alertChannel.WithPublish(events.Publish{})
+sensorPub := sensorMeasurement.WithPublish(events.Publish{})
 
-// Template topic — BuildTopic called internally
-err = amqtt.Publish(ctx, client, sensorMeasurement, 1, false, m,
-    map[string]string{"sensorID": sensorUUID},
-    amqtt.PublishOptions{Observer: obs})
+// Static topic — vars derived automatically from the channel's merge fields
+pubTransport := amqtt.NewPublishTransport[Alert](client, 1, false, amqtt.PublishOptions[Alert]{Observer: obs})
+err := events.PublishHandle(ctx, alertPub, pubTransport, alert)
+
+// Template topic — BuildTopic called internally from m's own merge-capable fields
+measurementTransport := amqtt.NewPublishTransport[Measurement](client, 1, false, amqtt.PublishOptions[Measurement]{Observer: obs})
+err = events.PublishHandle(ctx, sensorPub, measurementTransport, m)
 ```
 
 **`SubscribeError.Topic`** — always the concrete incoming message topic, even for template channels (e.g. `sensors/abc-123/measurements`, never `sensors/{sensorID}/measurements`). Use this in `OnError` logging to identify the exact message that failed.
@@ -134,7 +157,7 @@ var sensorChannel = events.NewChannel[SensorReading]("sensors/{sensorID}/reading
         func(r *SensorReading, v string) { r.SensorID = v },
     ),
 )
-handle, _ := sensorChannel.Register(builder)
+handle, _ := sensorChannel.WithSubscribe(events.Subscribe{}).Handle(client)
 
 // adapters/mqtt5.Subscribe calls ChannelHandle.DecodeMerged automatically
 // whenever handle.MergeFields() is non-empty — the handler function just
@@ -158,29 +181,28 @@ topicVars) (T, error)` closes the loop: decodes the payload (via
 `ChannelHandle.Decode`, JSON) AND merges every topic variable into the SAME
 value, in one call.
 
-`adapters/mqtt5.PublishHandle` is the single-call publisher convenience —
-mirrors `nethttp.CallWithHandle`: derives the topic vars from the payload
-struct automatically via `codex.EncodeVars(msg, handle.MergeFields()...)`,
-then delegates to `Publish`. `Publish` remains the lower-level escape
-hatch for callers building the vars map themselves. The same convenience
-exists for every transport with a pub/sub event surface:
-`adapters/mqtt.PublishHandle` (MQTT 3.1.1) and `adapters/zeromq.PublishHandle`
-(ZeroMQ PUB/SUB) — identical signature shape and semantics, one per
-transport package.
+`events.PublishHandle` + each adapter's `NewPublishTransport[T]` is the single-call publisher
+convenience (Decision 7 of `docs/roadmap/pubsub-workflow-simplification.md`) — mirrors
+`nethttp.CallWithHandle`: the transport's `Publish` method derives the topic vars from the
+payload struct automatically via `codex.EncodeVars(msg, handle.MergeFields()...)` internally.
+The same convenience exists for every transport with a pub/sub event surface —
+`mqtt5.NewPublishTransport[T]`, `mqtt.NewPublishTransport[T]` (MQTT 3.1.1), and
+`zeromq.NewPublishTransport[T]` — identical shape and semantics, one per transport package.
 
 ```go
-err := mqtt5.PublishHandle(ctx, client, sensorChannel, 1, false, reading, mqtt5.PublishOptions{})
+transport := mqtt5.NewPublishTransport[SensorReading](client, 1, false, mqtt5.PublishOptions[SensorReading]{})
+err := events.PublishHandle(ctx, sensorChannel.WithPublish(events.Publish{}), transport, reading)
 // topic + payload both derived from the SAME reading value — no manual vars map.
 ```
 
 `adapters/mqtt5.TopicVarsFromMessage` is the mqtt5-specific equivalent of
 the (Paho MQTT 3.1.1) `mqtt.TopicVarsFromMessage` shown above — used
-internally by `Subscribe`'s auto-merge wiring, and directly usable by
+internally by the subscribe-side auto-merge wiring, and directly usable by
 hand-rolled mqtt5 consumers. `adapters/zeromq.TopicVarsFromMessage` is the
 ZeroMQ equivalent, adapted for zeromq's plain-string topic (the first frame
 of a `[topic, payload]` PUB/SUB message) rather than a message struct;
-`zeromq.Subscribe` calls it internally whenever the channel declares merge
-fields, exactly like `mqtt5.Subscribe`/`mqtt.SubscribeHandler` do.
+`zeromq.NewSubscribeTransport`'s `Subscribe` calls it internally whenever the channel declares
+merge fields, exactly like `mqtt5`/`mqtt`'s subscribe transports do.
 
 Every port-binding `SinkAdapter`/`IOAdapter` constructed for one of these
 transports (`nethttp.DrainCallAdapter`/`CallAdapter`,
@@ -223,21 +245,29 @@ MQTT 3.1.1 carries no content-type metadata — format is agreed out-of-band. Co
 // Configure YAML as default — adapter picks it up automatically
 yamlChannel := measurementCh.WithFormats(format.YAML(measurementCodec))
 
-client.Subscribe(topic, 1, amqtt.SubscribeHandler(ctx, yamlChannel, handler, opts))
-err := amqtt.Publish(ctx, client, yamlChannel, 1, false, m, nil, amqtt.PublishOptions{})
+sub := yamlChannel.WithSubscribe(events.Subscribe{})
+pub := yamlChannel.WithPublish(events.Publish{})
 
-// Call-time override still works
-amqtt.SubscribeHandler(ctx, yamlChannel, handler, opts, format.JSON(measurementCodec))
+transport := amqtt.NewSubscribeTransport[Measurement](client, 1, opts)
+go func() { _ = events.SubscribeHandle(ctx, sub, transport, handler) }()
+
+pubTransport := amqtt.NewPublishTransport[Measurement](client, 1, false, amqtt.PublishOptions[Measurement]{})
+err := events.PublishHandle(ctx, pub, pubTransport, m)
+
+// Call-time format override still works — passed as trailing variadic to the constructor
+jsonTransport := amqtt.NewSubscribeTransport[Measurement](client, 1, opts, format.JSON(measurementCodec))
+go func() { _ = events.SubscribeHandle(ctx, sub, jsonTransport, handler) }()
 ```
 
 Format priority: call-time variadic → `handle.SubscribeFormats`/`PublishFormats` → `handle.Formats` → JSON fallback.
 
 `events.Formats`/`SubscribeFormats`/`PublishFormats` declared INLINE as `NewChannel` opts apply
-identically whether the channel is registered with a `Builder` (`Channel.Register`) or built
-client-only via `Channel.ClientHandle()` — both populate the SAME `ChannelHandle.Formats`/
-`SubscribeFormats`/`PublishFormats` fields `mqtt5`/`zeromq`'s client-side `Subscribe`/`Publish`
-read. A type mismatch (formats declared for the wrong payload type) panics on `ClientHandle()`
-(infallible — no error return) with the same message `Register` would return as `FormatOptError`.
+identically whether the channel is registered with a `Client` (`Subscriber.Handle(client)`/
+`Publisher.Handle(client)`) or built client-only via `Handle(nil)` — both populate the SAME
+`ChannelHandle.Formats`/`SubscribeFormats`/`PublishFormats` fields `mqtt5`/`zeromq`'s
+client-side `Subscribe`/`Publish` read. A type mismatch (formats declared for the wrong
+payload type) panics on `Handle(nil)` (infallible — no error return) with the same message
+`Handle(client)` would return as `FormatOptError`.
 
 ## TopicParam schema → AsyncAPI spec
 
@@ -255,7 +285,7 @@ events.TopicParam{Name: "sensorID", Description: "Sensor UUID"}.WithCodec(
 events.TopicParam{Name: "region", Description: "Geographic region"}
 ```
 
-## Builder options
+## Client options
 
 | Option | Effect |
 |---|---|
@@ -269,7 +299,7 @@ events.TopicParam{Name: "region", Description: "Geographic region"}
 ## AsyncAPI spec generation
 
 ```go
-doc, err := b.AsyncAPISpec()
+doc, err := client.AsyncAPISpec()
 yamlBytes, _ := doc.MarshalYAML()
 ```
 
@@ -290,17 +320,21 @@ AsyncAPI 3.0: separate `channels` and `operations` top-level keys, `action: rece
 // contract/contract.go
 var ReadingsChannel = events.NewChannel[SensorReading](
     "sensors/{sensorID}/readings", sensorReadingCodec,
-    events.Subscribe{...}, events.Publish{...},
     events.TopicParam{Name: "sensorID"}.WithCodec(SensorIDCodec),
 )
 
-// producer/main.go
-handle, _ := contract.ReadingsChannel.Register(producerBuilder)
-amqtt.Publish(ctx, client, handle, 1, false, reading, vars, opts)
+// producer/main.go — Handle(producerClient) registers the spec once (e.g. for AsyncAPISpec());
+// events.PublishHandle's own transport call is spec-free (Publisher.Handle(nil) internally).
+pub := contract.ReadingsChannel.WithPublish(events.Publish{...})
+_, _ = pub.Handle(producerClient) // optional — only needed if producerClient generates a spec
+transport := amqtt.NewPublishTransport[SensorReading](mqttClient, 1, false, amqtt.PublishOptions[SensorReading]{})
+err := events.PublishHandle(ctx, pub, transport, reading)
 
 // consumer/main.go
-handle, _ := contract.ReadingsChannel.Register(consumerBuilder)
-client.Subscribe(topic, 1, amqtt.SubscribeHandler(ctx, handle, fn, opts))
+sub := contract.ReadingsChannel.WithSubscribe(events.Subscribe{...})
+_, _ = sub.Handle(consumerClient) // optional — same spec-registration purpose
+subTransport := amqtt.NewSubscribeTransport[SensorReading](mqttClient, 1, opts)
+go func() { _ = events.SubscribeHandle(ctx, sub, subTransport, fn) }()
 ```
 
 ## Error-path ergonomics — `ErrorChannel`
@@ -326,7 +360,7 @@ handle, err := events.NewChannel[SensorReading]("sensors/{id}/data", sensorCodec
             return ErrorPayload{Code: "validation", Message: e.Reason}, nil
         },
     ),
-).Register(b)
+).Register(client)
 ```
 
 - **Direct mode** (no map function): `E` must itself be assignable to the declared

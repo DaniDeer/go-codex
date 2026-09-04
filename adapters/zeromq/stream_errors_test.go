@@ -1,16 +1,14 @@
-package zeromq_test
+package zeromq
 
 import (
 	"errors"
 	"fmt"
 	"log/slog"
 	"testing"
-
-	"github.com/DaniDeer/go-codex/adapters/zeromq"
 )
 
 func TestServeLatestError_LogValue(t *testing.T) {
-	e := zeromq.ServeLatestError{Op: "recv", Err: fmt.Errorf("connection reset")}
+	e := ServeLatestError{Op: "recv", Err: fmt.Errorf("connection reset")}
 	lv := e.LogValue()
 	if lv.Kind() != slog.KindGroup {
 		t.Fatalf("want KindGroup, got %v", lv.Kind())
@@ -25,14 +23,14 @@ func TestServeLatestError_LogValue(t *testing.T) {
 
 func TestServeLatestError_Unwrap(t *testing.T) {
 	inner := fmt.Errorf("io error")
-	e := zeromq.ServeLatestError{Op: "recv", Err: inner}
+	e := ServeLatestError{Op: "recv", Err: inner}
 	if !errors.Is(e, inner) {
 		t.Error("errors.Is must reach inner via Unwrap")
 	}
 }
 
 func TestNoLatestValueError_LogValue(t *testing.T) {
-	e := zeromq.NoLatestValueError{Topic: "compute/oee"}
+	e := NoLatestValueError{Topic: "compute/oee"}
 	lv := e.LogValue()
 	if lv.Kind() != slog.KindGroup {
 		t.Fatalf("want KindGroup, got %v", lv.Kind())
@@ -44,17 +42,17 @@ func TestNoLatestValueError_LogValue(t *testing.T) {
 }
 
 func TestNoLatestValueError_NoUnwrap(t *testing.T) {
-	e := zeromq.NoLatestValueError{Topic: "x"}
+	e := NoLatestValueError{Topic: "x"}
 	// No Unwrap — wrapping it should still work but not chain further
 	wrapped := fmt.Errorf("outer: %w", e)
-	var got zeromq.NoLatestValueError
+	var got NoLatestValueError
 	if !errors.As(wrapped, &got) {
 		t.Error("errors.As must reach NoLatestValueError")
 	}
 }
 
 func TestCorrelationError_LogValue(t *testing.T) {
-	e := zeromq.CorrelationError{Seq: 42, Err: fmt.Errorf("stale reply")}
+	e := CorrelationError{Seq: 42, Err: fmt.Errorf("stale reply")}
 	lv := e.LogValue()
 	if lv.Kind() != slog.KindGroup {
 		t.Fatalf("want KindGroup, got %v", lv.Kind())
@@ -69,14 +67,14 @@ func TestCorrelationError_LogValue(t *testing.T) {
 
 func TestCorrelationError_Unwrap(t *testing.T) {
 	inner := fmt.Errorf("stale")
-	e := zeromq.CorrelationError{Seq: 1, Err: inner}
+	e := CorrelationError{Seq: 1, Err: inner}
 	if !errors.Is(e, inner) {
 		t.Error("errors.Is must reach inner via Unwrap")
 	}
 }
 
 func TestPipelineNoResponseError_LogValue(t *testing.T) {
-	e := zeromq.PipelineNoResponseError{Topic: "compute/oee"}
+	e := PipelineNoResponseError{Topic: "compute/oee"}
 	lv := e.LogValue()
 	if lv.Kind() != slog.KindGroup {
 		t.Fatalf("want KindGroup, got %v", lv.Kind())

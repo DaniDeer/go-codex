@@ -48,7 +48,10 @@ route = route.WithHandler(fn).WithOptions(nethttp.Options{
     },
 })
 route.Register(b)
-nethttp.Serve(mux, b)
+if err := nethttp.AttachMux(b, mux, addr); err != nil {
+    log.Fatal(err)
+}
+_ = b.Serve(ctx) // blocks, owns its own http.Server
 ```
 
 MQTT5 subscribe/serve callback:

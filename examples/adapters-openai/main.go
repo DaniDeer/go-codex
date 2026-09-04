@@ -80,7 +80,7 @@ var (
 	// llmBuilder accumulates every Call plugged in via LLMPattern across
 	// this catalog — passed through PortOptions.LLMBuilder below so its
 	// LLMSpec() reflects every declared Call, the same role
-	// RESTBuilder/EventBuilder/MCPBuilder play for their families.
+	// RESTBuilder/EventClient/MCPBuilder play for their families.
 	llmBuilder = llm.NewBuilder(llm.Info{Name: "Adapters OpenAI Example", Version: "1.0.0"})
 
 	// Summarize is bound to openai.CallAdapter in main() below — a real

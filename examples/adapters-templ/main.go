@@ -21,8 +21,8 @@ import (
 	"html"
 	"io"
 	"log/slog"
+	"net"
 	"net/http"
-	"net/http/httptest"
 	"os"
 	"strings"
 	"sync"
@@ -146,6 +146,33 @@ func mustServe(err error, what string) {
 	}
 }
 
+// mustFreeAddr reserves an OS-assigned free TCP port on localhost, then
+// releases it immediately so AttachMux's own *http.Server can bind to it.
+func mustFreeAddr() string {
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "reserve free port failed: %v\n", err)
+		os.Exit(1)
+	}
+	addr := l.Addr().String()
+	_ = l.Close()
+	return addr
+}
+
+// waitForReady polls addr until it accepts TCP connections — b.Serve wires
+// mux synchronously before starting its listener goroutine, so demo
+// requests below must wait for it to actually be listening first.
+func waitForReady(addr string) {
+	for range 100 {
+		conn, err := net.DialTimeout("tcp", addr, 50*time.Millisecond)
+		if err == nil {
+			_ = conn.Close()
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
 func main() {
 	// ── Route definition ─────────────────────────────────────────────────────
 	//
@@ -156,7 +183,7 @@ func main() {
 	//
 	// No separate route, no separate handler — one definition, two formats.
 
-	b := rest.NewBuilder(rest.Info{Title: "Article API", Version: "1.0.0"})
+	b := rest.NewServer(rest.Info{Title: "Article API", Version: "1.0.0"})
 	articleRoute := rest.NewRoute[struct{}, ArticleProps]("GET", "/article",
 		codex.Empty, ArticlePropsCodec,
 		rest.RouteMeta{OperationID: "getArticle"},
@@ -193,13 +220,17 @@ func main() {
 	mustServe(articleRoute.Register(b), "register /article")
 
 	mux := http.NewServeMux()
-	mustServe(nethttp.Serve(mux, b), "Serve")
-	srv := httptest.NewServer(mux)
-	defer srv.Close()
+	addr := mustFreeAddr()
+	mustServe(nethttp.AttachMux(b, mux, addr), "AttachMux")
+	ctx, cancel := context.WithCancel(context.Background())
+	go func() { _ = b.Serve(ctx) }()
+	defer cancel()
+	waitForReady(addr)
+	srvURL := "http://" + addr
 
 	// ── Request 1: HTML response ──────────────────────────────────────────────
 	fmt.Println("=== GET /article (Accept: text/html) ===")
-	resp1, _ := get(srv.URL+"/article", "text/html")
+	resp1, _ := get(srvURL+"/article", "text/html")
 	fmt.Printf("  Content-Type: %s\n", resp1.Header.Get("Content-Type"))
 	body1, _ := io.ReadAll(resp1.Body)
 	_ = resp1.Body.Close()
@@ -208,7 +239,7 @@ func main() {
 
 	// ── Request 2: JSON response ──────────────────────────────────────────────
 	fmt.Println("=== GET /article (Accept: application/json) ===")
-	resp2, _ := get(srv.URL+"/article", "application/json")
+	resp2, _ := get(srvURL+"/article", "application/json")
 	fmt.Printf("  Content-Type: %s\n", resp2.Header.Get("Content-Type"))
 	body2, _ := io.ReadAll(resp2.Body)
 	_ = resp2.Body.Close()
@@ -222,7 +253,7 @@ func main() {
 	// codec's Refine constraints (symmetric validation) and returns 500 — the
 	// articleCard component is never rendered with invalid data.
 
-	invalidB := rest.NewBuilder(rest.Info{Title: "Article API (invalid demo)", Version: "1.0.0"})
+	invalidB := rest.NewServer(rest.Info{Title: "Article API (invalid demo)", Version: "1.0.0"})
 	invalidArticleRoute := rest.NewRoute[struct{}, ArticleProps]("GET", "/article",
 		codex.Empty, ArticlePropsCodec,
 		rest.RouteMeta{OperationID: "getArticle"},
@@ -243,12 +274,16 @@ func main() {
 	mustServe(invalidArticleRoute.Register(invalidB), "register invalid /article")
 
 	invalidMux := http.NewServeMux()
-	mustServe(nethttp.Serve(invalidMux, invalidB), "Serve invalid")
-	invalidSrv := httptest.NewServer(invalidMux)
-	defer invalidSrv.Close()
+	invalidAddr := mustFreeAddr()
+	mustServe(nethttp.AttachMux(invalidB, invalidMux, invalidAddr), "AttachMux invalid")
+	invalidCtx, invalidCancel := context.WithCancel(context.Background())
+	go func() { _ = invalidB.Serve(invalidCtx) }()
+	defer invalidCancel()
+	waitForReady(invalidAddr)
+	invalidSrvURL := "http://" + invalidAddr
 
 	fmt.Println("=== GET /article with invalid props (Accept: text/html) ===")
-	resp3, _ := get(invalidSrv.URL+"/article", "text/html")
+	resp3, _ := get(invalidSrvURL+"/article", "text/html")
 	body3, _ := io.ReadAll(resp3.Body)
 	_ = resp3.Body.Close()
 	fmt.Printf("  Status: %d (props failed validation — template never reached)\n\n", resp3.StatusCode)

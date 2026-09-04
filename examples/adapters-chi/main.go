@@ -31,6 +31,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -420,6 +421,33 @@ func mustServe(err error, what string) {
 	}
 }
 
+// mustFreeAddr reserves an OS-assigned free TCP port on localhost, then
+// releases it immediately so AttachRouter's own *http.Server can bind to it.
+func mustFreeAddr() string {
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "reserve free port failed: %v\n", err)
+		os.Exit(1)
+	}
+	addr := l.Addr().String()
+	_ = l.Close()
+	return addr
+}
+
+// waitForReady polls addr until it accepts TCP connections — b.Serve wires
+// the router synchronously before starting its listener goroutine, so demo
+// requests below must wait for it to actually be listening first.
+func waitForReady(addr string) {
+	for range 100 {
+		conn, err := net.DialTimeout("tcp", addr, 50*time.Millisecond)
+		if err == nil {
+			_ = conn.Close()
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
 func main() {
 	baseLogger := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelDebug}))
 	slog.SetDefault(baseLogger)
@@ -429,14 +457,14 @@ func main() {
 	domainLogger := baseLogger.With("layer", "domain")
 	httpLogger := baseLogger.With("transport", "http")
 
-	b := rest.NewBuilder(rest.Info{
+	b := rest.NewServer(rest.Info{
 		Title:       "User API (chi)",
 		Version:     "1.0.0",
 		Description: "Three-layer codec pipeline: HTTP ↔ domain ↔ database.",
 	},
 		rest.WithPathConstraints(validate.HTTPPath),
 	)
-	b.AddServer("local", rest.Server{URL: "http://localhost:8080"})
+	b.AddServer("local", rest.ServerEntry{URL: "http://localhost:8080"})
 
 	locationCodec := codex.String().Refine(validate.NonEmptyString)
 	sessionCodec := codex.String().Refine(validate.MinLen(8))
@@ -639,17 +667,20 @@ func main() {
 	mustServe(profileRoute.Register(b), "register GET /profile")
 
 	r := gochi.NewRouter()
-	mustServe(chiadapter.Serve(r, b), "Serve")
-
-	srv := httptest.NewServer(r)
-	defer srv.Close()
+	addr := mustFreeAddr()
+	mustServe(chiadapter.AttachRouter(b, r, addr), "AttachRouter")
+	ctx, cancel := context.WithCancel(context.Background())
+	go func() { _ = b.Serve(ctx) }()
+	defer cancel()
+	waitForReady(addr)
+	srvURL := "http://" + addr
 
 	fmt.Println("=== chi adapter demo ===")
 
 	fmt.Println("\n--- POST /users (JSON) ---")
 	func() {
 		body := strings.NewReader(`{"name":"Alice","email":"alice@example.com"}`)
-		resp, err := http.Post(srv.URL+"/users", "application/json", body) //nolint:noctx
+		resp, err := http.Post(srvURL+"/users", "application/json", body) //nolint:noctx
 		if err != nil {
 			panic(err)
 		}
@@ -665,7 +696,7 @@ func main() {
 	fmt.Println("\n--- POST /users (YAML response via Accept header) ---")
 	func() {
 		body := strings.NewReader(`{"name":"Bob","email":"bob@example.com"}`)
-		req, _ := http.NewRequest(http.MethodPost, srv.URL+"/users", body) //nolint:noctx
+		req, _ := http.NewRequest(http.MethodPost, srvURL+"/users", body) //nolint:noctx
 		req.Header.Set("Content-Type", "application/json")
 		req.Header.Set("Accept", "application/yaml")
 		resp, err := http.DefaultClient.Do(req)
@@ -682,7 +713,7 @@ func main() {
 		// WithRequestFormats enables decoding request bodies by Content-Type.
 		// Sending application/yaml routes to the YAML decoder; codec validation still runs.
 		body := strings.NewReader("name: Carol\nemail: carol@example.com\n")
-		req, _ := http.NewRequest(http.MethodPost, srv.URL+"/users", body) //nolint:noctx
+		req, _ := http.NewRequest(http.MethodPost, srvURL+"/users", body) //nolint:noctx
 		req.Header.Set("Content-Type", "application/yaml")
 		resp, err := http.DefaultClient.Do(req)
 		if err != nil {
@@ -697,7 +728,7 @@ func main() {
 	fmt.Println("\n--- POST /users (unsupported Content-Type → 415) ---")
 	func() {
 		body := strings.NewReader(`<name>Dave</name>`)
-		req, _ := http.NewRequest(http.MethodPost, srv.URL+"/users", body) //nolint:noctx
+		req, _ := http.NewRequest(http.MethodPost, srvURL+"/users", body) //nolint:noctx
 		req.Header.Set("Content-Type", "application/xml")
 		resp, err := http.DefaultClient.Do(req)
 		if err != nil {
@@ -712,7 +743,7 @@ func main() {
 	fmt.Println("\n--- POST /users (body constraint violation) ---")
 	func() {
 		body := strings.NewReader(`{"name":"","email":"bad"}`)
-		resp, err := http.Post(srv.URL+"/users", "application/json", body) //nolint:noctx
+		resp, err := http.Post(srvURL+"/users", "application/json", body) //nolint:noctx
 		if err != nil {
 			panic(err)
 		}
@@ -730,7 +761,7 @@ func main() {
 			fmt.Fprintf(os.Stderr, "BuildPath error: %v\n", err)
 			return
 		}
-		resp, err := http.Get(srv.URL + userPath) //nolint:noctx
+		resp, err := http.Get(srvURL + userPath) //nolint:noctx
 		if err != nil {
 			panic(err)
 		}
@@ -755,7 +786,7 @@ func main() {
 			return
 		}
 		body := strings.NewReader(`{"name":"Alice Updated","email":"alice.updated@example.com"}`)
-		req, err := http.NewRequest(http.MethodPut, srv.URL+updatePath, body)
+		req, err := http.NewRequest(http.MethodPut, srvURL+updatePath, body)
 		if err != nil {
 			panic(err)
 		}
@@ -772,7 +803,7 @@ func main() {
 
 	fmt.Println("\n--- GET /users?page=2&search=alice (query params) ---")
 	func() {
-		resp, err := http.Get(srv.URL + "/users?page=2&search=alice") //nolint:noctx
+		resp, err := http.Get(srvURL + "/users?page=2&search=alice") //nolint:noctx
 		if err != nil {
 			panic(err)
 		}
@@ -784,7 +815,7 @@ func main() {
 
 	fmt.Println("\n--- GET /users?page=abc (invalid query param — auto-rejected) ---")
 	func() {
-		resp, err := http.Get(srv.URL + "/users?page=abc") //nolint:noctx
+		resp, err := http.Get(srvURL + "/users?page=abc") //nolint:noctx
 		if err != nil {
 			panic(err)
 		}
@@ -796,7 +827,7 @@ func main() {
 
 	fmt.Println("\n--- GET /profile (valid cookie + header) ---")
 	func() {
-		req, _ := http.NewRequest(http.MethodGet, srv.URL+"/profile", nil) //nolint:noctx
+		req, _ := http.NewRequest(http.MethodGet, srvURL+"/profile", nil) //nolint:noctx
 		req.AddCookie(&http.Cookie{Name: "session_token", Value: "my-valid-session-token", Secure: true, HttpOnly: true, SameSite: http.SameSiteStrictMode})
 		req.Header.Set("X-Request-Id", "f47ac10b-58cc-4372-a567-0e02b2c3d479")
 		resp, err := http.DefaultClient.Do(req)
@@ -811,7 +842,7 @@ func main() {
 
 	fmt.Println("\n--- GET /profile (invalid cookie — auto-rejected) ---")
 	func() {
-		req, _ := http.NewRequest(http.MethodGet, srv.URL+"/profile", nil) //nolint:noctx
+		req, _ := http.NewRequest(http.MethodGet, srvURL+"/profile", nil) //nolint:noctx
 		req.AddCookie(&http.Cookie{Name: "session_token", Value: "", Secure: true, HttpOnly: true, SameSite: http.SameSiteStrictMode})
 		req.Header.Set("X-Request-Id", "f47ac10b-58cc-4372-a567-0e02b2c3d479")
 		resp, err := http.DefaultClient.Do(req)
@@ -826,7 +857,7 @@ func main() {
 
 	fmt.Println("\n--- GET /profile (invalid header — auto-rejected) ---")
 	func() {
-		req, _ := http.NewRequest(http.MethodGet, srv.URL+"/profile", nil) //nolint:noctx
+		req, _ := http.NewRequest(http.MethodGet, srvURL+"/profile", nil) //nolint:noctx
 		req.AddCookie(&http.Cookie{Name: "session_token", Value: "my-valid-session-token", Secure: true, HttpOnly: true, SameSite: http.SameSiteStrictMode})
 		req.Header.Set("X-Request-Id", "not-a-uuid")
 		resp, err := http.DefaultClient.Do(req)
@@ -843,9 +874,14 @@ func main() {
 	func() {
 		// Derives a FRESH Route from createUserRouteSpec (the declarative
 		// half only — no handler yet) with its own violation-demonstrating
-		// handler, and wires it via ServeOne — sugar for "scratch
-		// single-route Builder + Register + Serve" — instead of
-		// re-registering the real /users route a second time onto b.
+		// handler, registered onto its OWN scratch builder+router (chi's
+		// ServeOne no longer exists — Decision 6 kept nethttp.ServeOne
+		// public for a cross-package caller, but granted chi no such
+		// exception) — keeps this deliberately-broken handler from ever
+		// touching the primary createUserRoute registered into b above,
+		// instead of re-registering the real /users route a second time
+		// onto b (which would collide as a duplicate route).
+		violationBuilder := rest.NewServer(rest.Info{Title: "chi violation demo", Version: "1.0.0"})
 		violationRoute := createUserRouteSpec.WithHandler(
 			func(ctx context.Context, req CreateUserReq) (User, error) {
 				h := make(http.Header)
@@ -859,13 +895,18 @@ func main() {
 				return buildUserResponse(buildUserRecord(req)), nil
 			},
 		).HandleMW(nil, obsFn)
-		violationHandler, err := chiadapter.ServeOne(violationRoute)
-		mustServe(err, "ServeOne violation route")
-		violationSrv := httptest.NewServer(violationHandler)
-		defer violationSrv.Close()
+		mustServe(violationRoute.Register(violationBuilder), "register violation route")
+		violationRouter := gochi.NewRouter()
+		violationAddr := mustFreeAddr()
+		mustServe(chiadapter.AttachRouter(violationBuilder, violationRouter, violationAddr), "AttachRouter violation")
+		violationCtx, violationCancel := context.WithCancel(context.Background())
+		go func() { _ = violationBuilder.Serve(violationCtx) }()
+		defer violationCancel()
+		waitForReady(violationAddr)
+		violationSrvURL := "http://" + violationAddr
 
 		body := strings.NewReader(`{"name":"Carol","email":"carol@example.com"}`)
-		resp, err := http.Post(violationSrv.URL+"/users", "application/json", body) //nolint:noctx
+		resp, err := http.Post(violationSrvURL+"/users", "application/json", body) //nolint:noctx
 		if err != nil {
 			panic(err)
 		}
@@ -879,6 +920,9 @@ func main() {
 	// The same codec that rejects an invalid request body at 400 now also rejects
 	// an invalid response body at 500. Refine constraints run on both Encode and Decode.
 	func() {
+		// Same isolation rationale as the ResponseHeaderParams demo above:
+		// its own scratch builder+router, kept away from the primary b.
+		bodyViolBuilder := rest.NewServer(rest.Info{Title: "chi body-violation demo", Version: "1.0.0"})
 		bodyViolRoute := createUserRouteSpec.WithHandler(
 			func(ctx context.Context, req CreateUserReq) (User, error) {
 				// Handler deliberately returns a User with invalid field values to
@@ -890,13 +934,18 @@ func main() {
 				}, nil
 			},
 		).HandleMW(nil, obsFn)
-		bodyViolHandler, err := chiadapter.ServeOne(bodyViolRoute)
-		mustServe(err, "ServeOne body-violation route")
-		bodyViolSrv := httptest.NewServer(bodyViolHandler)
-		defer bodyViolSrv.Close()
+		mustServe(bodyViolRoute.Register(bodyViolBuilder), "register body-violation route")
+		bodyViolRouter := gochi.NewRouter()
+		bodyViolAddr := mustFreeAddr()
+		mustServe(chiadapter.AttachRouter(bodyViolBuilder, bodyViolRouter, bodyViolAddr), "AttachRouter body-violation")
+		bodyViolCtx, bodyViolCancel := context.WithCancel(context.Background())
+		go func() { _ = bodyViolBuilder.Serve(bodyViolCtx) }()
+		defer bodyViolCancel()
+		waitForReady(bodyViolAddr)
+		bodyViolSrvURL := "http://" + bodyViolAddr
 
 		body := strings.NewReader(`{"name":"Dave","email":"dave@example.com"}`)
-		resp, err := http.Post(bodyViolSrv.URL+"/users", "application/json", body) //nolint:noctx
+		resp, err := http.Post(bodyViolSrvURL+"/users", "application/json", body) //nolint:noctx
 		if err != nil {
 			panic(err)
 		}

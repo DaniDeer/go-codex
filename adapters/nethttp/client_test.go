@@ -1,4 +1,4 @@
-package nethttp_test
+package nethttp
 
 import (
 	"context"
@@ -13,7 +13,6 @@ import (
 	"testing"
 	"time"
 
-	nethttp "github.com/DaniDeer/go-codex/adapters/nethttp"
 	"github.com/DaniDeer/go-codex/api/rest"
 	"github.com/DaniDeer/go-codex/codex"
 	"github.com/DaniDeer/go-codex/format"
@@ -27,7 +26,7 @@ import (
 
 // newClientCreateRoute returns a POST /users route handle via Register (shared contract path).
 func newClientCreateRoute() *rest.RouteHandle[createReq, userResp] {
-	b := rest.NewBuilder(testInfo)
+	b := rest.NewServer(testInfo)
 	h, err := rest.NewRoute[createReq, userResp]("POST", "/users",
 		createReqCodec, userRespCodec, rest.RouteMeta{OperationID: "createUser"}).RegisterHandle(b)
 	if err != nil {
@@ -110,9 +109,9 @@ func TestCall_POST_HappyPath(t *testing.T) {
 	defer srv.Close()
 
 	obs := &testObserver{}
-	resp, err := nethttp.CallWithHandle(context.Background(), srv.Client(), srv.URL,
+	resp, err := CallWithHandle(context.Background(), srv.Client(), srv.URL,
 		handle, createReq{Name: "Alice"},
-		nethttp.CallOptions{Observer: obs})
+		CallOptions{Observer: obs})
 
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -143,9 +142,9 @@ func TestCall_GET_HappyPath(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	resp, err := nethttp.CallWithHandle(context.Background(), srv.Client(), srv.URL,
+	resp, err := CallWithHandle(context.Background(), srv.Client(), srv.URL,
 		handle, getByIDReq{ID: "abc"},
-		nethttp.CallOptions{})
+		CallOptions{})
 
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -166,14 +165,14 @@ func TestCall_UnexpectedStatus(t *testing.T) {
 	defer srv.Close()
 
 	obs := &testObserver{}
-	_, err := nethttp.CallWithHandle(context.Background(), srv.Client(), srv.URL,
+	_, err := CallWithHandle(context.Background(), srv.Client(), srv.URL,
 		handle, createReq{Name: "Alice"},
-		nethttp.CallOptions{Observer: obs})
+		CallOptions{Observer: obs})
 
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}
-	var statusErr nethttp.UnexpectedStatusError
+	var statusErr UnexpectedStatusError
 	if !errors.As(err, &statusErr) {
 		t.Fatalf("expected UnexpectedStatusError, got %T: %v", err, err)
 	}
@@ -209,10 +208,10 @@ func TestCall_UnexpectedStatus_HeaderPopulated(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	_, err := nethttp.CallWithHandle(context.Background(), srv.Client(), srv.URL,
-		handle, createReq{Name: "Alice"}, nethttp.CallOptions{})
+	_, err := CallWithHandle(context.Background(), srv.Client(), srv.URL,
+		handle, createReq{Name: "Alice"}, CallOptions{})
 
-	var statusErr nethttp.UnexpectedStatusError
+	var statusErr UnexpectedStatusError
 	if !errors.As(err, &statusErr) {
 		t.Fatalf("expected UnexpectedStatusError, got %T: %v", err, err)
 	}
@@ -235,9 +234,9 @@ func TestCall_UnexpectedStatus_HeaderPopulated(t *testing.T) {
 func TestCall_PathParamValidation_EmptyID(t *testing.T) {
 	handle := newClientGetByIDRoute() // id param requires NonEmptyString
 
-	_, err := nethttp.CallWithHandle(context.Background(), http.DefaultClient, "http://localhost",
+	_, err := CallWithHandle(context.Background(), http.DefaultClient, "http://localhost",
 		handle, getByIDReq{ID: ""},
-		nethttp.CallOptions{})
+		CallOptions{})
 
 	if err == nil {
 		t.Fatal("expected validation error, got nil")
@@ -260,9 +259,9 @@ func TestCall_PathParamValidation_EmptyID(t *testing.T) {
 func TestCall_PathParamValidation_MissingVar(t *testing.T) {
 	handle := newClientGetRoute()
 
-	_, err := nethttp.CallWithHandle(context.Background(), http.DefaultClient, "http://localhost",
+	_, err := CallWithHandle(context.Background(), http.DefaultClient, "http://localhost",
 		handle, getReq{},
-		nethttp.CallOptions{})
+		CallOptions{})
 
 	if err == nil {
 		t.Fatal("expected missing path var error, got nil")
@@ -283,9 +282,9 @@ func TestCall_QueryParamValidation(t *testing.T) {
 	).ClientHandle()
 
 	obs := &testObserver{}
-	_, err := nethttp.CallWithHandle(context.Background(), http.DefaultClient, "http://localhost",
+	_, err := CallWithHandle(context.Background(), http.DefaultClient, "http://localhost",
 		handle, getReq{},
-		nethttp.CallOptions{
+		CallOptions{
 			QueryParams: map[string]string{"filter": ""},
 			Observer:    obs,
 		})
@@ -314,9 +313,9 @@ func TestCall_CookieParamValidation(t *testing.T) {
 		rest.CookieParam{Name: "session", Required: true}.WithCodec(cookieCodec),
 	).ClientHandle()
 
-	_, err := nethttp.CallWithHandle(context.Background(), http.DefaultClient, "http://localhost",
+	_, err := CallWithHandle(context.Background(), http.DefaultClient, "http://localhost",
 		handle, getReq{},
-		nethttp.CallOptions{
+		CallOptions{
 			CookieParams: map[string]string{"session": ""},
 		})
 
@@ -341,9 +340,9 @@ func TestCall_HeaderParamValidation(t *testing.T) {
 		rest.HeaderParam{Name: "X-Tenant-ID", Required: true}.WithCodec(headerCodec),
 	).ClientHandle()
 
-	_, err := nethttp.CallWithHandle(context.Background(), http.DefaultClient, "http://localhost",
+	_, err := CallWithHandle(context.Background(), http.DefaultClient, "http://localhost",
 		handle, getReq{},
-		nethttp.CallOptions{
+		CallOptions{
 			HeaderParams: map[string]string{"X-Tenant-ID": ""},
 		})
 
@@ -362,7 +361,7 @@ func TestCall_HeaderParamValidation(t *testing.T) {
 // --- CredentialFunc ---
 
 func TestCall_CredentialFunc_Invoked(t *testing.T) {
-	b := rest.NewBuilder(testInfo)
+	b := rest.NewServer(testInfo)
 	b.AddGlobalSecurity(route.Require("bearerAuth"))
 	declMw := middleware.SecurityScheme("bearerAuth", route.BearerScheme("JWT"), nil, nil)
 	credCalled := false
@@ -389,8 +388,8 @@ func TestCall_CredentialFunc_Invoked(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	resp, err := nethttp.CallWithHandle(context.Background(), srv.Client(), srv.URL,
-		handle, getReq{}, nethttp.CallOptions{})
+	resp, err := CallWithHandle(context.Background(), srv.Client(), srv.URL,
+		handle, getReq{}, CallOptions{})
 
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -404,7 +403,7 @@ func TestCall_CredentialFunc_Invoked(t *testing.T) {
 }
 
 func TestCall_CredentialFunc_Error(t *testing.T) {
-	b := rest.NewBuilder(testInfo)
+	b := rest.NewServer(testInfo)
 	b.AddGlobalSecurity(route.Require("bearerAuth"))
 	declMw := middleware.SecurityScheme("bearerAuth", route.BearerScheme("JWT"), nil, nil)
 	credErr := errors.New("token expired")
@@ -417,8 +416,8 @@ func TestCall_CredentialFunc_Error(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	_, callErr := nethttp.CallWithHandle(context.Background(), http.DefaultClient, "http://localhost",
-		handle, getReq{}, nethttp.CallOptions{})
+	_, callErr := CallWithHandle(context.Background(), http.DefaultClient, "http://localhost",
+		handle, getReq{}, CallOptions{})
 
 	if !errors.Is(callErr, credErr) {
 		t.Fatalf("expected credential error, got %v", callErr)
@@ -436,8 +435,8 @@ func TestCall_WrongShapeMiddleware_ReturnsMiddlewareShapeError(t *testing.T) {
 		ClientMW(nil, func(http.Handler) http.Handler { return nil }). // server-side shape, wrong for Call
 		ClientHandle()
 
-	_, err := nethttp.CallWithHandle(context.Background(), http.DefaultClient, "http://localhost",
-		handle, getReq{}, nethttp.CallOptions{})
+	_, err := CallWithHandle(context.Background(), http.DefaultClient, "http://localhost",
+		handle, getReq{}, CallOptions{})
 
 	var shapeErr middleware.MiddlewareShapeError
 	if !errors.As(err, &shapeErr) {
@@ -454,7 +453,7 @@ func TestCall_WrongShapeMiddleware_ReturnsMiddlewareShapeError(t *testing.T) {
 // SAME header key must fail with a typed ConflictingCredentialHeaderError —
 // the client never silently picks one over the other.
 func TestCall_TwoCredentialMiddlewares_DifferingHeaderValuesConflict(t *testing.T) {
-	b := rest.NewBuilder(testInfo)
+	b := rest.NewServer(testInfo)
 	b.AddGlobalSecurity(route.Require("bearerAuth"))
 	declMw := middleware.SecurityScheme("bearerAuth", route.BearerScheme("JWT"), nil, nil)
 	// Two ClientMW calls for the SAME scheme on the SAME route — an
@@ -476,10 +475,10 @@ func TestCall_TwoCredentialMiddlewares_DifferingHeaderValuesConflict(t *testing.
 		t.Fatal(err)
 	}
 
-	_, callErr := nethttp.CallWithHandle(context.Background(), http.DefaultClient, "http://localhost",
-		handle, getReq{}, nethttp.CallOptions{})
+	_, callErr := CallWithHandle(context.Background(), http.DefaultClient, "http://localhost",
+		handle, getReq{}, CallOptions{})
 
-	var conflictErr nethttp.ConflictingCredentialHeaderError
+	var conflictErr ConflictingCredentialHeaderError
 	if !errors.As(callErr, &conflictErr) {
 		t.Fatalf("want ConflictingCredentialHeaderError, got %v", callErr)
 	}
@@ -495,7 +494,7 @@ func TestCall_TwoCredentialMiddlewares_DifferingHeaderValuesConflict(t *testing.
 // confirms the "identical values are allowed silently" half of the same
 // rule — only DIFFERING values for the same key conflict.
 func TestCall_TwoCredentialMiddlewares_IdenticalHeaderValuesMergeSilently(t *testing.T) {
-	b := rest.NewBuilder(testInfo)
+	b := rest.NewServer(testInfo)
 	b.AddGlobalSecurity(route.Require("bearerAuth"))
 	declMw := middleware.SecurityScheme("bearerAuth", route.BearerScheme("JWT"), nil, nil)
 	credFn := func(_ context.Context, _ []route.SecurityRequirement) (http.Header, error) {
@@ -520,8 +519,8 @@ func TestCall_TwoCredentialMiddlewares_IdenticalHeaderValuesMergeSilently(t *tes
 	}))
 	defer srv.Close()
 
-	resp, err := nethttp.CallWithHandle(context.Background(), srv.Client(), srv.URL,
-		handle, getReq{}, nethttp.CallOptions{})
+	resp, err := CallWithHandle(context.Background(), srv.Client(), srv.URL,
+		handle, getReq{}, CallOptions{})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -531,7 +530,7 @@ func TestCall_TwoCredentialMiddlewares_IdenticalHeaderValuesMergeSilently(t *tes
 }
 
 func TestCall_OnCredentialRejected_FiresOn401(t *testing.T) {
-	b := rest.NewBuilder(testInfo)
+	b := rest.NewServer(testInfo)
 	b.AddGlobalSecurity(route.Require("bearerAuth"))
 	declMw := middleware.SecurityScheme("bearerAuth", route.BearerScheme("JWT"), nil, nil)
 	handle, err := rest.NewRoute[getReq, userResp]("GET", "/me",
@@ -551,13 +550,13 @@ func TestCall_OnCredentialRejected_FiresOn401(t *testing.T) {
 	defer srv.Close()
 
 	rejectedCalls := 0
-	_, err = nethttp.CallWithHandle(context.Background(), srv.Client(), srv.URL,
+	_, err = CallWithHandle(context.Background(), srv.Client(), srv.URL,
 		handle, getReq{},
-		nethttp.CallOptions{
+		CallOptions{
 			OnCredentialRejected: func() { rejectedCalls++ },
 		})
 
-	var statusErr nethttp.UnexpectedStatusError
+	var statusErr UnexpectedStatusError
 	if !errors.As(err, &statusErr) || statusErr.StatusCode != http.StatusUnauthorized {
 		t.Fatalf("expected UnexpectedStatusError{StatusCode:401}, got %v", err)
 	}
@@ -576,14 +575,14 @@ func TestCall_OnCredentialRejected_NotCalledWhenCredentialFuncNil(t *testing.T) 
 	defer srv.Close()
 
 	rejectedCalls := 0
-	_, err := nethttp.CallWithHandle(context.Background(), srv.Client(), srv.URL,
+	_, err := CallWithHandle(context.Background(), srv.Client(), srv.URL,
 		handle, getReq{},
-		nethttp.CallOptions{
+		CallOptions{
 			// No credential-providing ClientMW configured.
 			OnCredentialRejected: func() { rejectedCalls++ },
 		})
 
-	var statusErr nethttp.UnexpectedStatusError
+	var statusErr UnexpectedStatusError
 	if !errors.As(err, &statusErr) || statusErr.StatusCode != http.StatusUnauthorized {
 		t.Fatalf("expected UnexpectedStatusError{StatusCode:401}, got %v", err)
 	}
@@ -593,7 +592,7 @@ func TestCall_OnCredentialRejected_NotCalledWhenCredentialFuncNil(t *testing.T) 
 }
 
 func TestCall_OnCredentialRejected_NotCalledOnNon401Status(t *testing.T) {
-	b := rest.NewBuilder(testInfo)
+	b := rest.NewServer(testInfo)
 	b.AddGlobalSecurity(route.Require("bearerAuth"))
 	declMw := middleware.SecurityScheme("bearerAuth", route.BearerScheme("JWT"), nil, nil)
 	handle, err := rest.NewRoute[getReq, userResp]("GET", "/me",
@@ -613,13 +612,13 @@ func TestCall_OnCredentialRejected_NotCalledOnNon401Status(t *testing.T) {
 	defer srv.Close()
 
 	rejectedCalls := 0
-	_, err = nethttp.CallWithHandle(context.Background(), srv.Client(), srv.URL,
+	_, err = CallWithHandle(context.Background(), srv.Client(), srv.URL,
 		handle, getReq{},
-		nethttp.CallOptions{
+		CallOptions{
 			OnCredentialRejected: func() { rejectedCalls++ },
 		})
 
-	var statusErr nethttp.UnexpectedStatusError
+	var statusErr UnexpectedStatusError
 	if !errors.As(err, &statusErr) || statusErr.StatusCode != http.StatusInternalServerError {
 		t.Fatalf("expected UnexpectedStatusError{StatusCode:500}, got %v", err)
 	}
@@ -635,9 +634,9 @@ func TestCall_Observer_RecordRequest_OnValidationFailure(t *testing.T) {
 	obs := &testObserver{}
 
 	// Missing path var → validation error before any request is sent.
-	nethttp.CallWithHandle(context.Background(), http.DefaultClient, "http://localhost", //nolint:errcheck
+	CallWithHandle(context.Background(), http.DefaultClient, "http://localhost", //nolint:errcheck
 		handle, getReq{},
-		nethttp.CallOptions{Observer: obs})
+		CallOptions{Observer: obs})
 
 	if !obs.called {
 		t.Error("observer RecordRequest not called on validation failure")
@@ -663,9 +662,9 @@ func TestCall_ClientHandle_NoBuilder(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	resp, err := nethttp.CallWithHandle(context.Background(), srv.Client(), srv.URL,
+	resp, err := CallWithHandle(context.Background(), srv.Client(), srv.URL,
 		handle, createReq{Name: "Widget"},
-		nethttp.CallOptions{})
+		CallOptions{})
 
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -692,9 +691,9 @@ func TestCall_QueryParams_AppendedToURL(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	_, err := nethttp.CallWithHandle(context.Background(), srv.Client(), srv.URL,
+	_, err := CallWithHandle(context.Background(), srv.Client(), srv.URL,
 		handle, getReq{},
-		nethttp.CallOptions{QueryParams: map[string]string{"limit": "10"}})
+		CallOptions{QueryParams: map[string]string{"limit": "10"}})
 
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -719,9 +718,9 @@ func TestCall_ExtraHeaders_Sent(t *testing.T) {
 
 	extra := make(http.Header)
 	extra.Set("X-Request-ID", "req-123")
-	_, err := nethttp.CallWithHandle(context.Background(), srv.Client(), srv.URL,
+	_, err := CallWithHandle(context.Background(), srv.Client(), srv.URL,
 		handle, getReq{},
-		nethttp.CallOptions{ExtraHeaders: extra})
+		CallOptions{ExtraHeaders: extra})
 
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -732,7 +731,7 @@ func TestCall_ExtraHeaders_Sent(t *testing.T) {
 
 func TestRequestBuildError_ErrorAndUnwrap(t *testing.T) {
 	cause := errors.New("invalid url")
-	e := nethttp.RequestBuildError{Err: cause}
+	e := RequestBuildError{Err: cause}
 
 	if e.Error() == "" {
 		t.Error("Error() must return a non-empty string")
@@ -740,7 +739,7 @@ func TestRequestBuildError_ErrorAndUnwrap(t *testing.T) {
 	if !errors.Is(e, cause) {
 		t.Error("errors.Is must traverse Unwrap to cause")
 	}
-	var extracted nethttp.RequestBuildError
+	var extracted RequestBuildError
 	wrapped := fmt.Errorf("outer: %w", e)
 	if !errors.As(wrapped, &extracted) {
 		t.Error("errors.As must extract RequestBuildError through wrapping")
@@ -752,7 +751,7 @@ func TestRequestBuildError_ErrorAndUnwrap(t *testing.T) {
 
 func TestRequestError_ErrorAndUnwrap(t *testing.T) {
 	cause := errors.New("connection refused")
-	e := nethttp.RequestError{Method: "GET", Path: "/users/{id}", Err: cause}
+	e := RequestError{Method: "GET", Path: "/users/{id}", Err: cause}
 
 	if e.Error() == "" {
 		t.Error("Error() must return a non-empty string")
@@ -760,7 +759,7 @@ func TestRequestError_ErrorAndUnwrap(t *testing.T) {
 	if !errors.Is(e, cause) {
 		t.Error("errors.Is must traverse Unwrap to cause")
 	}
-	var extracted nethttp.RequestError
+	var extracted RequestError
 	wrapped := fmt.Errorf("outer: %w", e)
 	if !errors.As(wrapped, &extracted) {
 		t.Error("errors.As must extract RequestError through wrapping")
@@ -772,7 +771,7 @@ func TestRequestError_ErrorAndUnwrap(t *testing.T) {
 
 func TestResponseBodyError_ErrorAndUnwrap(t *testing.T) {
 	cause := errors.New("unexpected EOF")
-	e := nethttp.ResponseBodyError{Err: cause}
+	e := ResponseBodyError{Err: cause}
 
 	if e.Error() == "" {
 		t.Error("Error() must return a non-empty string")
@@ -780,7 +779,7 @@ func TestResponseBodyError_ErrorAndUnwrap(t *testing.T) {
 	if !errors.Is(e, cause) {
 		t.Error("errors.Is must traverse Unwrap to cause")
 	}
-	var extracted nethttp.ResponseBodyError
+	var extracted ResponseBodyError
 	wrapped := fmt.Errorf("outer: %w", e)
 	if !errors.As(wrapped, &extracted) {
 		t.Error("errors.As must extract ResponseBodyError through wrapping")
@@ -821,7 +820,7 @@ func newClientActivityRoute() *rest.RouteHandle[getUserActivityReq, userRespWith
 	).ClientHandle()
 }
 
-// R8: nethttp.Call decodes response headers/cookies into Resp when response
+// R8: Call decodes response headers/cookies into Resp when response
 // merge fields are registered — round-trip: server sets header/cookie from
 // a fixed value, client reads it back into the SAME struct fields.
 func TestCall_ResponseMergeFields_DecodesIntoResp(t *testing.T) {
@@ -834,8 +833,8 @@ func TestCall_ResponseMergeFields_DecodesIntoResp(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	resp, err := nethttp.CallWithHandle(context.Background(), srv.Client(), srv.URL,
-		handle, getUserActivityReq{ID: "u1"}, nethttp.CallOptions{})
+	resp, err := CallWithHandle(context.Background(), srv.Client(), srv.URL,
+		handle, getUserActivityReq{ID: "u1"}, CallOptions{})
 	if err != nil {
 		t.Fatalf("Call: %v", err)
 	}
@@ -847,7 +846,7 @@ func TestCall_ResponseMergeFields_DecodesIntoResp(t *testing.T) {
 	}
 }
 
-// R9: nethttp.CallWithHandle happy path — a route with path+query merge
+// R9: CallWithHandle happy path — a route with path+query merge
 // fields on Req derives BOTH the path var and the query param from ONE
 // call, with no cross-role leakage (mirrors
 // TestClientEncode_RoleAwareMergeFields_NoLeakage in api/rest, extended
@@ -867,8 +866,8 @@ func TestCallHandle_HappyPath_NoLeakage(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	resp, err := nethttp.CallWithHandle(context.Background(), srv.Client(), srv.URL,
-		handle, getUserActivityReq{ID: "u1", Filter: "logins"}, nethttp.CallOptions{})
+	resp, err := CallWithHandle(context.Background(), srv.Client(), srv.URL,
+		handle, getUserActivityReq{ID: "u1", Filter: "logins"}, CallOptions{})
 	if err != nil {
 		t.Fatalf("CallWithHandle: %v", err)
 	}
@@ -896,9 +895,9 @@ func TestCallHandle_ExplicitOptsOverridePrecedence(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	_, err := nethttp.CallWithHandle(context.Background(), srv.Client(), srv.URL,
+	_, err := CallWithHandle(context.Background(), srv.Client(), srv.URL,
 		handle, getUserActivityReq{ID: "u1", Filter: "logins"},
-		nethttp.CallOptions{QueryParams: map[string]string{"filter": "overridden"}})
+		CallOptions{QueryParams: map[string]string{"filter": "overridden"}})
 	if err != nil {
 		t.Fatalf("CallWithHandle: %v", err)
 	}
@@ -908,7 +907,7 @@ func TestCallHandle_ExplicitOptsOverridePrecedence(t *testing.T) {
 }
 
 // R11: CallWithHandle with zero merge fields declared behaves like
-// Call(ctx, caller, route, req, opts) — regression guard.
+// call(ctx, caller, route, req, opts) — regression guard.
 func TestCallHandle_NoMergeFieldsMatchesCall(t *testing.T) {
 	handle := newClientCreateRoute()
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -919,13 +918,13 @@ func TestCallHandle_NoMergeFieldsMatchesCall(t *testing.T) {
 
 	r := rest.NewRoute[createReq, userResp]("POST", "/users",
 		createReqCodec, userRespCodec, rest.RouteMeta{OperationID: "createUser"})
-	caller := nethttp.NewCaller(srv.Client(), srv.URL)
-	viaCall, err := nethttp.Call(context.Background(), caller, r, createReq{Name: "Alice"}, nethttp.CallOptions{})
+	caller := newCaller(srv.Client(), srv.URL)
+	viaCall, err := call(context.Background(), caller, r, createReq{Name: "Alice"}, CallOptions{})
 	if err != nil {
 		t.Fatalf("Call: %v", err)
 	}
-	viaCallWithHandle, err := nethttp.CallWithHandle(context.Background(), srv.Client(), srv.URL,
-		handle, createReq{Name: "Alice"}, nethttp.CallOptions{})
+	viaCallWithHandle, err := CallWithHandle(context.Background(), srv.Client(), srv.URL,
+		handle, createReq{Name: "Alice"}, CallOptions{})
 	if err != nil {
 		t.Fatalf("CallWithHandle: %v", err)
 	}
@@ -936,9 +935,15 @@ func TestCallHandle_NoMergeFieldsMatchesCall(t *testing.T) {
 
 // --- Example functions (shown on pkg.go.dev as runnable snippets) ---
 
-func ExampleCall() {
-	// Define the route — declares a path merge field so Call can derive
-	// the path value directly from Req.
+// Example shows path-param validation happening BEFORE any HTTP call —
+// the route declares a path merge field, so the merge-field's own codec
+// constraint is checked at derive time, and an invalid value surfaces as
+// a [codex.ValidationError] without ever reaching the network. This
+// derivation is internal plumbing shared by [Attach] (the sole public
+// client-side workflow — see
+// docs/roadmap/pubsub-workflow-simplification.md's Decision 6) and by
+// [ports]' handle-based binding adapters.
+func Example() {
 	type Item struct{ ID, Name string }
 	type getItemReq struct{ ID string }
 	itemCodec := codex.Struct[Item](
@@ -961,8 +966,8 @@ func ExampleCall() {
 	// Validate path params before any HTTP call — a merge-field's own
 	// codec constraint is checked at derive time, so an invalid value
 	// surfaces as a codex.ValidationError.
-	caller := nethttp.NewCaller(http.DefaultClient, "https://api.example.com")
-	_, err := nethttp.Call(context.Background(), caller, getRoute, getItemReq{ID: ""}, nethttp.CallOptions{})
+	caller := newCaller(http.DefaultClient, "https://api.example.com")
+	_, err := call(context.Background(), caller, getRoute, getItemReq{ID: ""}, CallOptions{})
 	if err != nil {
 		var valErr codex.ValidationError
 		if errors.As(err, &valErr) {
@@ -990,7 +995,7 @@ var clientErrPayloadCodec = codex.Struct[clientErrPayload](
 // newClientErrorPatternRoute returns a route declaring an ErrorPattern for
 // status 409, whose payload type is clientErrPayload.
 func newClientErrorPatternRoute() *rest.RouteHandle[createReq, userResp] {
-	b := rest.NewBuilder(testInfo)
+	b := rest.NewServer(testInfo)
 	h, err := rest.NewRoute[createReq, userResp]("POST", "/errors/client-call",
 		createReqCodec, userRespCodec,
 		rest.ErrorPattern[clientErrPayload, clientErrPayload](http.StatusConflict, clientErrPayloadCodec),
@@ -1012,13 +1017,13 @@ func TestCall_ErrorPatternResponse_MatchedPattern(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	_, err := nethttp.CallWithHandle(context.Background(), srv.Client(), srv.URL,
-		handle, createReq{Name: "Alice"}, nethttp.CallOptions{})
+	_, err := CallWithHandle(context.Background(), srv.Client(), srv.URL,
+		handle, createReq{Name: "Alice"}, CallOptions{})
 
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}
-	var epr nethttp.ErrorPatternResponse
+	var epr ErrorPatternResponse
 	if !errors.As(err, &epr) {
 		t.Fatalf("expected ErrorPatternResponse, got %T: %v", err, err)
 	}
@@ -1047,17 +1052,17 @@ func TestCall_ErrorPatternResponse_DecodeFailureFallsBackToUnexpectedStatus(t *t
 	}))
 	defer srv.Close()
 
-	_, err := nethttp.CallWithHandle(context.Background(), srv.Client(), srv.URL,
-		handle, createReq{Name: "Alice"}, nethttp.CallOptions{})
+	_, err := CallWithHandle(context.Background(), srv.Client(), srv.URL,
+		handle, createReq{Name: "Alice"}, CallOptions{})
 
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}
-	var epr nethttp.ErrorPatternResponse
+	var epr ErrorPatternResponse
 	if errors.As(err, &epr) {
 		t.Fatalf("expected fallback to UnexpectedStatusError, got ErrorPatternResponse: %+v", epr)
 	}
-	var statusErr nethttp.UnexpectedStatusError
+	var statusErr UnexpectedStatusError
 	if !errors.As(err, &statusErr) {
 		t.Fatalf("expected UnexpectedStatusError, got %T: %v", err, err)
 	}
@@ -1076,13 +1081,13 @@ func TestCall_ErrorPatternResponse_NoMatch_FallsBackToUnexpectedStatus(t *testin
 	}))
 	defer srv.Close()
 
-	_, err := nethttp.CallWithHandle(context.Background(), srv.Client(), srv.URL,
-		handle, createReq{Name: "Alice"}, nethttp.CallOptions{})
+	_, err := CallWithHandle(context.Background(), srv.Client(), srv.URL,
+		handle, createReq{Name: "Alice"}, CallOptions{})
 
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}
-	var statusErr nethttp.UnexpectedStatusError
+	var statusErr UnexpectedStatusError
 	if !errors.As(err, &statusErr) {
 		t.Fatalf("expected UnexpectedStatusError, got %T: %v", err, err)
 	}
@@ -1093,7 +1098,7 @@ func TestCall_ErrorPatternResponse_NoMatch_FallsBackToUnexpectedStatus(t *testin
 
 // CDP8: ErrorPatternResponse.LogValue shape.
 func TestErrorPatternResponse_LogValue(t *testing.T) {
-	epr := nethttp.ErrorPatternResponse{
+	epr := ErrorPatternResponse{
 		StatusCode: http.StatusConflict,
 		Value:      clientErrPayload{Code: "conflict"},
 		Body:       []byte(`{"code":"conflict"}`),
@@ -1141,8 +1146,8 @@ func TestCall_CredentialFunc_ValidFormat_Passes(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	resp, err := nethttp.CallWithHandle(context.Background(), srv.Client(), srv.URL,
-		handle, getReq{}, nethttp.CallOptions{})
+	resp, err := CallWithHandle(context.Background(), srv.Client(), srv.URL,
+		handle, getReq{}, CallOptions{})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -1165,8 +1170,8 @@ func TestCall_CredentialFunc_MalformedFormat_ReturnsSecurityCredentialError(t *t
 	}))
 	defer srv.Close()
 
-	_, err := nethttp.CallWithHandle(context.Background(), srv.Client(), srv.URL,
-		handle, getReq{}, nethttp.CallOptions{})
+	_, err := CallWithHandle(context.Background(), srv.Client(), srv.URL,
+		handle, getReq{}, CallOptions{})
 
 	var credErr rest.SecurityCredentialError
 	if !errors.As(err, &credErr) {
@@ -1193,9 +1198,9 @@ func TestCall_CredentialFunc_MalformedFormat_RecordsSecurityRejection(t *testing
 	defer srv.Close()
 
 	obs := &mockSecurityObserver{}
-	_, err := nethttp.CallWithHandle(context.Background(), srv.Client(), srv.URL,
+	_, err := CallWithHandle(context.Background(), srv.Client(), srv.URL,
 		handle, getReq{},
-		nethttp.CallOptions{
+		CallOptions{
 			Observer: obs,
 		})
 	if err == nil {
@@ -1224,12 +1229,12 @@ func TestCall_NoSecurityScheme_NoValidation(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	_, err := nethttp.CallWithHandle(context.Background(), srv.Client(), srv.URL,
-		handle, getReq{}, nethttp.CallOptions{}) // no credential-providing ClientMW
+	_, err := CallWithHandle(context.Background(), srv.Client(), srv.URL,
+		handle, getReq{}, CallOptions{}) // no credential-providing ClientMW
 
-	var statusErr nethttp.UnexpectedStatusError
+	var statusErr UnexpectedStatusError
 	if !errors.As(err, &statusErr) {
-		t.Fatalf("want nethttp.UnexpectedStatusError from the SERVER, got %T: %v", err, err)
+		t.Fatalf("want UnexpectedStatusError from the SERVER, got %T: %v", err, err)
 	}
 	if statusErr.StatusCode != http.StatusUnauthorized {
 		t.Errorf("StatusCode = %d, want 401", statusErr.StatusCode)
@@ -1253,8 +1258,8 @@ func TestCall_NoCredentialFunc_SecuredRoute_StillNotAnError(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	_, err := nethttp.CallWithHandle(context.Background(), srv.Client(), srv.URL,
-		handle, getReq{}, nethttp.CallOptions{}) // no credential-providing ClientMW
+	_, err := CallWithHandle(context.Background(), srv.Client(), srv.URL,
+		handle, getReq{}, CallOptions{}) // no credential-providing ClientMW
 	if err != nil {
 		t.Fatalf("no credential-providing ClientMW on a secured route must not itself be an error: %v", err)
 	}
@@ -1279,8 +1284,8 @@ func TestCall_CredentialFunc_ReturnsNilHeader_SkipsValidation(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	_, err := nethttp.CallWithHandle(context.Background(), srv.Client(), srv.URL,
-		handle, getReq{}, nethttp.CallOptions{})
+	_, err := CallWithHandle(context.Background(), srv.Client(), srv.URL,
+		handle, getReq{}, CallOptions{})
 	if err != nil {
 		t.Fatalf("CredentialFunc returning (nil, nil) must not be rejected by the codec check: %v", err)
 	}
@@ -1303,8 +1308,8 @@ func TestCall_ResponseFormats_OverridesRouteDeclaredFormat(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	resp, err := nethttp.CallWithHandle(context.Background(), srv.Client(), srv.URL,
-		handle, getReq{}, nethttp.CallOptions{
+	resp, err := CallWithHandle(context.Background(), srv.Client(), srv.URL,
+		handle, getReq{}, CallOptions{
 			ResponseFormats: []format.Format[userResp]{format.YAML(userRespCodec)},
 		})
 	if err != nil {
@@ -1331,8 +1336,8 @@ func TestCall_ResponseFormats_RouteDeclaredStillAppliesWithoutOverride(t *testin
 	}))
 	defer srv.Close()
 
-	resp, err := nethttp.CallWithHandle(context.Background(), srv.Client(), srv.URL,
-		handle, getReq{}, nethttp.CallOptions{})
+	resp, err := CallWithHandle(context.Background(), srv.Client(), srv.URL,
+		handle, getReq{}, CallOptions{})
 	if err != nil {
 		t.Fatalf("Call: %v", err)
 	}
@@ -1360,8 +1365,8 @@ func TestCall_RequestFormats_OverridesRouteDeclaredFormat(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	_, err := nethttp.CallWithHandle(context.Background(), srv.Client(), srv.URL,
-		handle, createReq{Name: "Alice"}, nethttp.CallOptions{
+	_, err := CallWithHandle(context.Background(), srv.Client(), srv.URL,
+		handle, createReq{Name: "Alice"}, CallOptions{
 			RequestFormats: []format.Format[createReq]{format.YAML(createReqCodec)},
 		})
 	if err != nil {
@@ -1387,12 +1392,12 @@ func TestCall_ResponseFormats_TypeMismatch_ReturnsCallFormatOptError(t *testing.
 	}))
 	defer srv.Close()
 
-	_, err := nethttp.CallWithHandle(context.Background(), srv.Client(), srv.URL,
-		handle, createReq{Name: "Alice"}, nethttp.CallOptions{
+	_, err := CallWithHandle(context.Background(), srv.Client(), srv.URL,
+		handle, createReq{Name: "Alice"}, CallOptions{
 			// Wrong type: []format.Format[getReq] instead of []format.Format[userResp].
 			ResponseFormats: []format.Format[getReq]{format.JSON(getReqCodec)},
 		})
-	var fe nethttp.CallFormatOptError
+	var fe CallFormatOptError
 	if !errors.As(err, &fe) || fe.Direction != "response" {
 		t.Fatalf("want CallFormatOptError{response}, got %v", err)
 	}
@@ -1420,12 +1425,12 @@ func TestCall_ResponseFormats_TypeMismatch_ReturnsCallFormatOptError(t *testing.
 func TestCall_RequestFormats_TypeMismatch_ReturnsCallFormatOptError(t *testing.T) {
 	handle := newClientCreateRoute()
 
-	_, err := nethttp.CallWithHandle(context.Background(), http.DefaultClient, "http://unused.invalid",
-		handle, createReq{Name: "Alice"}, nethttp.CallOptions{
+	_, err := CallWithHandle(context.Background(), http.DefaultClient, "http://unused.invalid",
+		handle, createReq{Name: "Alice"}, CallOptions{
 			// Wrong type: []format.Format[userResp] instead of []format.Format[createReq].
 			RequestFormats: []format.Format[userResp]{format.JSON(userRespCodec)},
 		})
-	var fe nethttp.CallFormatOptError
+	var fe CallFormatOptError
 	if !errors.As(err, &fe) || fe.Direction != "request" {
 		t.Fatalf("want CallFormatOptError{request}, got %v", err)
 	}

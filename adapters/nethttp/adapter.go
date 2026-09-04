@@ -30,14 +30,14 @@ type responseHeadersKey struct{}
 // responseCookiesKey is the unexported type for pending response cookies stored in context.
 type responseCookiesKey struct{}
 
-// HandlerFunc is the typed application handler called by [Serve]/[ServeOne]'s dispatched request pipeline.
+// HandlerFunc is the typed application handler called by [serve]/[ServeOne]'s dispatched request pipeline.
 // ctx is the request context. req is the decoded request value; for body-less
 // methods it is the zero value of Req.
 // Use [RequestFromContext] to access the underlying *http.Request for path
 // parameters, headers, or other request metadata.
 type HandlerFunc[Req, Resp any] func(ctx context.Context, req Req) (Resp, error)
 
-// RequestFromContext retrieves the *http.Request stored in ctx by the request pipeline (see [Serve]/[ServeOne]).
+// RequestFromContext retrieves the *http.Request stored in ctx by the request pipeline (see [serve]/[ServeOne]).
 // Returns false if the context was not created by this package.
 func RequestFromContext(ctx context.Context) (*http.Request, bool) {
 	r, ok := ctx.Value(contextKey{}).(*http.Request)
@@ -98,7 +98,7 @@ func ResponseCookiesFromContext(ctx context.Context) ([]PendingCookie, bool) {
 	return *pending, true
 }
 
-// Options configures the behaviour of [Serve]/[ServeOne]/[ServeSSE].
+// Options configures the behaviour of [serve]/[ServeOne]/[serveSSE].
 //
 // BREAKING: Observer and SecurityFunc are REMOVED — replaced by
 // [middleware.Middleware] (declare-time, attached via [rest.WithMiddleware]/
@@ -181,7 +181,7 @@ func runSecurityMiddleware[Req any](ctx context.Context, r *http.Request, req *R
 }
 
 // handlerFunc wraps a [rest.RouteHandle] and a [HandlerFunc] into an
-// [http.Handler] — the shared implementation behind [Serve]/[ServeOne]'s
+// [http.Handler] — the shared implementation behind [serve]/[ServeOne]'s
 // reflect dispatch (via [buildRouteHandler]) and [HandlerLatest]/
 // [PipelineHandler] (in stream.go), which call it directly since Req/Resp
 // are concrete at those call sites.
@@ -552,7 +552,7 @@ type SSEHandlerFunc[Req, Event any] func(ctx context.Context, req Req, send func
 
 // sseHandlerFunc wraps a [rest.SSERouteHandle] and a user-supplied
 // [SSEHandlerFunc] into an [http.Handler] that streams Server-Sent Events —
-// the shared implementation behind [ServeSSE]'s reflect dispatch and
+// the shared implementation behind [serveSSE]'s reflect dispatch and
 // [binding.go]'s SSEAdapter, which calls it directly since Req/Event are
 // concrete at that call site.
 //
@@ -755,7 +755,7 @@ func primaryStatus[Req, Resp any](handle *rest.RouteHandle[Req, Resp]) int {
 }
 
 // primaryStatusFor is [primaryStatus]'s non-generic-signature equivalent —
-// used by [Serve], which only has a route.Route descriptor (via reflect),
+// used by [serve], which only has a route.Route descriptor (via reflect),
 // never a concrete *rest.RouteHandle[Req, Resp].
 func primaryStatusFor(descriptor route.Route) int {
 	if len(descriptor.Responses) == 0 {

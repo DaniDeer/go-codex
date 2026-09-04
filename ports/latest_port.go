@@ -62,7 +62,7 @@ type LatestPort[T any] struct {
 	params []IOParam
 	obs    stats.Observer
 
-	restBuilder     *rest.Builder
+	restBuilder     *rest.Server
 	reqReplyBuilder *reqreply.Builder
 	mcpBuilder      *apimcp.Builder
 

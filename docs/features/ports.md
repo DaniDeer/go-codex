@@ -251,7 +251,7 @@ Optionally, build the OpenAPI/AsyncAPI/MCP spec FROM an already-plugged-in
 binding, against a different `Builder`:
 
 ```go
-restBuilder := rest.NewBuilder(rest.Info{Title: "OEE Service", Version: "1.0.0"})
+restBuilder := rest.NewServer(rest.Info{Title: "OEE Service", Version: "1.0.0"})
 ports.RegisterREST[OEEIn, OEEResult](restBuilder, domain.OEETool) //nolint:errcheck
 ```
 
@@ -612,7 +612,7 @@ on the `RESTPattern`'s own `Opts` via `rest.WithMiddleware(rest.FromSecuritySche
 [Security & Authentication](security.md)):
 
 ```go
-restBuilder := rest.NewBuilder(rest.Info{Title: "OEE Service", Version: "1.0.0"})
+restBuilder := rest.NewServer(rest.Info{Title: "OEE Service", Version: "1.0.0"})
 restBuilder.AddGlobalSecurity(route.SecurityRequirement{"bearerAuth": {}})
 
 oeeTool := codex.Must(ports.NewToolPort[OEEIn, OEEResult]("oee-calc", oeeInCodec, oeeResultCodec,
@@ -643,8 +643,8 @@ instead of a shared one).
 
 | `PortOptions` field | Applies to | Gives you |
 |---|---|---|
-| `RESTBuilder *rest.Builder` | `RESTPattern` | Security schemes, global security, `rest.WithPathConstraints`, shared OpenAPI spec |
-| `EventBuilder *events.Builder` | `EventPattern` | Security schemes, global security, `events.WithTopicConstraints`, shared AsyncAPI spec |
+| `RESTBuilder *rest.Server` | `RESTPattern` | Security schemes, global security, `rest.WithPathConstraints`, shared OpenAPI spec |
+| `EventClient *events.Client` | `EventPattern` | Security schemes, global security, `events.WithTopicConstraints`, shared AsyncAPI spec |
 | `ReqReplyBuilder *reqreply.Builder` | `ReqReplyPattern` | Duplicate-topic detection, shared registration |
 | `MCPBuilder *apimcp.Builder` | `MCPPattern` | Duplicate-name detection, shared MCP spec |
 
@@ -667,7 +667,7 @@ registered with it — calling `RegisterREST`/`RegisterEvent`/`RegisterReqReply`
 document afterward:
 
 ```go
-b := rest.NewBuilder(rest.Info{Title: "OEE Service", Version: "1.0.0"})
+b := rest.NewServer(rest.Info{Title: "OEE Service", Version: "1.0.0"})
 if err := ports.RegisterREST[OEEIn, OEEResult](b, domain.OEETool); err != nil {
     // MissingPatternError if the port never plugged in a RESTPattern
 }
@@ -1141,7 +1141,7 @@ is not consulted there since the derived handle already validates fully.
 ports.IOParam{Name: "sensorID", Description: "Sensor identifier", Required: true}.WithCodec(sensorIDCodec)
 ```
 
-`PortOptions{Params, Buffer, Observer, RESTBuilder, EventBuilder, ReqReplyBuilder, MCPBuilder}`
+`PortOptions{Params, Buffer, Observer, RESTBuilder, EventClient, ReqReplyBuilder, MCPBuilder}`
 configures every port constructor (there is no `Patterns` field — Patterns
 are plugged in after construction via `PluginXxxPattern`). `Buffer` only
 applies to `SourcePort`/`SinkPort` (`IOPort`/`ToolPort` have no internal

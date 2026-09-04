@@ -10,7 +10,7 @@ type Info struct {
 }
 
 // Builder accumulates [CallSpec] entries as [Call] values are registered
-// against it — same role as [rest.Builder]/[events.Builder]/[reqreply.Builder]/
+// against it — same role as [rest.Server]/[events.Client]/[reqreply.Builder]/
 // [mcp.Builder], minus OpenAPI/AsyncAPI-specific spec assembly: there is no
 // path/topic template to validate, so LLMSpec is a flat catalog with no
 // document-rendering step of its own. [render/openaitools] consumes LLMSpec

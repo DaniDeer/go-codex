@@ -221,12 +221,12 @@ func runDemo(env demoEnv) {
 	// ── Specs built FROM the port declarations ─────────────────────────────
 	//
 	// ioports.Sensors/Alerts registered their EventPatterns against
-	// ioports.EventsBuilder, and ioports.HistoryTool/ExportTool their
+	// ioports.EventsClient, and ioports.HistoryTool/ExportTool their
 	// RESTPatterns against ioports.RESTBuilder — the specs below reflect the
 	// ports without any separate Register call: the port declaration IS the
 	// channel/route declaration.
 	fmt.Println("\n── AsyncAPI spec (from the ports.EventPattern bindings) ──")
-	asyncDoc, err := ioports.EventsBuilder.AsyncAPISpec()
+	asyncDoc, err := ioports.EventsClient.AsyncAPISpec()
 	must(err, "build AsyncAPI spec")
 	asyncYAML, err := asyncDoc.MarshalYAML()
 	must(err, "marshal AsyncAPI spec")

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 
 	"github.com/DaniDeer/go-codex/api/events"
 	"github.com/DaniDeer/go-codex/api/reqreply"
@@ -13,11 +14,48 @@ import (
 	gstream "github.com/DaniDeer/go-codex/stream"
 )
 
+// deriveTopicPrefix returns the substring of topic up to (but NOT
+// including) the first "{" placeholder, or topic unchanged if it has no
+// placeholders — the ZeroMQ byte-prefix-filter equivalent of
+// [adapters/mqtt5]'s deriveWildcardFilter (which instead replaces each
+// placeholder segment with MQTT's "+" wildcard; ZeroMQ SUB-socket
+// filtering has no wildcard concept at all, only a byte-prefix match, so
+// a broader "everything up to the first placeholder" prefix is the
+// closest broker-compatible equivalent — see
+// [SubscribeOptions.TopicFilter]'s doc comment and
+// docs/roadmap/pubsub-workflow-simplification.md's bug-fix subsection).
+//
+// Examples:
+//
+//	deriveTopicPrefix("sensors/{sensorID}/readings") == "sensors/"
+//	deriveTopicPrefix("a/{x}/b/{y}")                == "a/"
+//	deriveTopicPrefix("plain/topic")                == "plain/topic"
+func deriveTopicPrefix(topic string) string {
+	if i := strings.IndexByte(topic, '{'); i >= 0 {
+		return topic[:i]
+	}
+	return topic
+}
+
 // ── SubscribeAdapter ──────────────────────────────────────────────────────────
 
 // SubscribeAdapterOptions configures [SubscribeAdapter].
 type SubscribeAdapterOptions struct {
 	Buffer int
+
+	// TopicFilter is the ZeroMQ SUB-socket prefix filter passed to
+	// [FramedSocket.SetSubscription]. BUG FIX this pass — this field did
+	// not exist before, so every ports-based zeromq subscribe path sent
+	// handle.Topic (the RAW "{varName}"-templated string) VERBATIM as the
+	// byte-prefix filter, which never matches a real published topic (see
+	// docs/roadmap/pubsub-workflow-simplification.md's "Confirmed bug,
+	// fixed this pass" subsection — this bug affected EVERY zeromq
+	// subscribe path, ports-based or direct, with zero exception). When
+	// empty (the common case), a prefix is derived automatically from
+	// handle.Topic via [deriveTopicPrefix] — mirrors
+	// [SubscribeOptions.TopicFilter] exactly, moved down to this
+	// ports-binding layer's own option struct.
+	TopicFilter string
 }
 
 // SubscribeAdapter returns a [ports.SourceAdapter] backed by the ZeroMQ PUB/SUB
@@ -46,19 +84,24 @@ type zmqSubscribeAdapter[T any] struct {
 
 func (a *zmqSubscribeAdapter[T]) AdapterName() string { return "zeromq.SubscribeAdapter" }
 
-// Activate delegates to [Subscribe] (rather than hand-rolling frame
-// reads + [gstream.FromCodec] as it did before merge-field support was
-// added) so that topic-var merging (when the channel declares merge-capable
-// [events.NewTopicParam] fields) is applied automatically — mirroring
-// mqtt5.SubscribeAdapter's wiring. An internal buffered pair of channels
-// preserves [SubscribeAdapterOptions.Buffer]'s existing sizing behavior.
+// Activate delegates to [SubscribeWithHandle] (rather than hand-rolling
+// frame reads + [gstream.FromCodec] as it did before merge-field support
+// was added) so that topic-var merging (when the channel declares
+// merge-capable [events.NewTopicParam] fields) is applied automatically —
+// mirroring mqtt5.SubscribeAdapter's wiring. An internal buffered pair of
+// channels preserves [SubscribeAdapterOptions.Buffer]'s existing sizing
+// behavior. Uses [SubscribeWithHandle] (RENAMED from this package's
+// previous bare Subscribe — see [subscribe]/[SubscribeWithHandle]'s doc
+// comments) since this adapter already owns a pre-built handle, not a
+// declare-time [events.Subscriber] value.
 func (a *zmqSubscribeAdapter[T]) Activate(ctx context.Context, dst chan<- T, errs chan<- error) {
 	valCh := make(chan T, a.opts.Buffer)
 	errCh := make(chan error, a.opts.Buffer)
 	go func() {
 		defer close(valCh)
 		defer close(errCh)
-		subOpts := SubscribeOptions{
+		subOpts := SubscribeOptions[T]{
+			TopicFilter: a.opts.TopicFilter,
 			OnError: func(se SubscribeError) {
 				select {
 				case errCh <- se:
@@ -66,7 +109,7 @@ func (a *zmqSubscribeAdapter[T]) Activate(ctx context.Context, dst chan<- T, err
 				}
 			},
 		}
-		_ = Subscribe(ctx, a.sock, a.handle, func(_ context.Context, v T) error {
+		_ = subscribeWithHandle(ctx, a.sock, a.handle, func(_ context.Context, v T) error {
 			select {
 			case valCh <- v:
 			case <-ctx.Done():
@@ -152,7 +195,7 @@ func (a *zmqPublishAdapter[T]) Activate(ctx context.Context, src gstream.Stream[
 	if obs == nil {
 		obs = stats.ObserverFromContext(ctx)
 	}
-	pubOpts := PublishOptions{Observer: a.opts.Observer}
+	pubOpts := PublishOptions[T]{Observer: a.opts.Observer}
 	// handleUpstreamError resolves declared events.ErrorChannel patterns on
 	// a.handle before falling back to the adapter's existing OnError
 	// callback. A matched ErrorRespond pattern publishes the typed error
@@ -182,9 +225,9 @@ func (a *zmqPublishAdapter[T]) Activate(ctx context.Context, src gstream.Stream[
 		func(ctx context.Context, v T) error {
 			var err error
 			if a.opts.Vars == nil {
-				err = PublishHandle(ctx, a.sock, a.handle, v, pubOpts, a.fmt)
+				err = publishHandle(ctx, a.sock, a.handle, v, pubOpts, a.fmt)
 			} else {
-				err = Publish(ctx, a.sock, a.handle, v, a.opts.Vars, pubOpts, a.fmt)
+				err = publish(ctx, a.sock, a.handle, v, a.opts.Vars, pubOpts, a.fmt)
 			}
 			if err != nil {
 				if onErr != nil {

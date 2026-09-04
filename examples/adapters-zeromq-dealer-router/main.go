@@ -157,7 +157,8 @@ func main() {
 	// obs is stored in the context once — all adapter calls resolve it automatically.
 	zmqBuilder := reqreply.NewBuilder(reqreply.Info{Title: "Compute API (DEALER/ROUTER)", Version: "1.0.0"})
 	zmqBuilder.AddServer("zmq", reqreply.Server{URL: "tcp://localhost:5557", Protocol: "zmq"})
-	// Route.Register(builder) — consistent with rest.Route.Register and events.Channel.Register.
+	// Route.Register(builder) — consistent with rest.Route.Register and
+	// events.Subscriber.Register/events.Subscriber.Handle.
 	serverHandle, err := ComputeRoute.Register(zmqBuilder)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "register: %v\n", err)

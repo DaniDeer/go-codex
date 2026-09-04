@@ -122,7 +122,8 @@ func main() {
 		Protocol:    "zmq",
 		Description: "ZeroMQ REQ/REP compute service",
 	})
-	// Register: Route.Register(builder) — consistent with rest.Route.Register and events.Channel.Register
+	// Register: Route.Register(builder) — consistent with rest.Route.Register and
+	// events.Subscriber.Register/events.Subscriber.Handle
 	serverHandle, err := ComputeRoute.Register(zmqBuilder)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "register: %v\n", err)

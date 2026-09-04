@@ -23,8 +23,11 @@ import (
 // fields and keeps the two in sync automatically.
 type Info = openapi.Info
 
-// Server is an alias for [openapi.Server].
-type Server = openapi.Server
+// ServerEntry is an alias for [openapi.Server] — a single OpenAPI server URL
+// entry (see [Server.AddServer]). Named ServerEntry, not Server, to avoid
+// colliding with [Server] itself (the renamed api-level builder/registry
+// type, mirroring [events.Client]'s own domain-level design).
+type ServerEntry = openapi.Server
 
 // PathParam describes an HTTP path variable for a route (e.g. `{id}` in `/users/{id}`).
 // It combines spec metadata with optional runtime validation via a codec.
@@ -259,7 +262,7 @@ type RouteMeta struct {
 
 	// Security, when non-nil, overrides global security for this operation.
 	// Pass an empty slice to declare "no auth required" for this route.
-	// nil (default) inherits global security declared via Builder.AddGlobalSecurity.
+	// nil (default) inherits global security declared via Server.AddGlobalSecurity.
 	Security []route.SecurityRequirement
 }
 
@@ -646,7 +649,7 @@ type RouteHandle[Req, Resp any] struct {
 	// Adapters resolve the effective requirements as:
 	//   reqs := handle.Descriptor.Security
 	//   if reqs == nil { reqs = handle.GlobalSecurity }
-	// Set via [Builder.AddGlobalSecurity]. nil when no global security is declared.
+	// Set via [Server.AddGlobalSecurity]. nil when no global security is declared.
 	// Unlike SecuritySchemes, GlobalSecurity remains builder-only — it answers
 	// "which routes require auth by default" (spec-wide), not "what does a
 	// scheme look like" — and has no [Route.ClientHandle] equivalent (always
@@ -872,8 +875,9 @@ func (h *RouteHandle[Req, Resp]) DecodeMerged(
 // var-merge half of [DecodeMerged], split out so callers that decode the
 // body via a negotiated [format.Format] (i.e. [WithRequestFormats], not
 // plain [Decode]) can still apply merge-capable params afterward. Used by
-// [nethttp.Serve]/[chi.Serve]'s reflect dispatch for multi-format routes;
-// a no-op when the route declares no merge-capable params.
+// each adapter's internal serve dispatch (invoked via
+// [nethttp.AttachMux]/[chi.AttachRouter]) for multi-format routes; a
+// no-op when the route declares no merge-capable params.
 func (h *RouteHandle[Req, Resp]) ApplyMergeFields(
 	req *Req,
 	pathVars, query, headers, cookies map[string]string,
@@ -901,8 +905,9 @@ func (h *RouteHandle[Req, Resp]) ApplyMergeFields(
 // EncodeMerged encodes resp's body (via [RouteHandle.Encode]) AND derives
 // its response header/cookie values (via [ResponseHeaderMergeFields]/
 // [ResponseCookieMergeFields] + [codex.EncodeVars]) in ONE call — the
-// SERVER-side, response-direction mirror of [DecodeMerged]. Used
-// internally by [nethttp.Serve]/[chi.Serve] (via a single reflect call,
+// SERVER-side, response-direction mirror of [DecodeMerged]. Used by
+// each adapter's internal serve dispatch (invoked via
+// [nethttp.AttachMux]/[chi.AttachRouter]) via a single reflect call,
 // since Resp is erased at THAT call site — see
 // docs/design/middleware-workflow-simplification.md's "Decision: Serve's
 // generic dispatch mechanism") so the adapter never needs its own
@@ -927,10 +932,11 @@ func (h *RouteHandle[Req, Resp]) EncodeMerged(resp Resp) (body []byte, headers, 
 // body-independent half of [EncodeMerged], split out so callers that
 // encode the body via a negotiated [format.Format] (i.e. [WithFormats],
 // not plain [Encode]) can still derive merge-capable response
-// header/cookie values. Used by [nethttp.Serve]/[chi.Serve]'s reflect
-// dispatch for multi-format routes AND for a matched [ErrorPattern]
-// payload whose concrete type equals Resp. Returns nil maps when the
-// route declares no response merge-capable params.
+// header/cookie values. Used by each adapter's internal serve dispatch
+// (invoked via [nethttp.AttachMux]/[chi.AttachRouter]) for multi-format
+// routes AND for a matched [ErrorPattern] payload whose concrete type
+// equals Resp. Returns nil maps when the route declares no response
+// merge-capable params.
 func (h *RouteHandle[Req, Resp]) EncodeResponseMergeFields(resp Resp) (headers, cookies map[string]string, err error) {
 	if fields := h.ResponseHeaderMergeFields(); len(fields) > 0 {
 		if headers, err = codex.EncodeVars(resp, fields...); err != nil {
@@ -1332,20 +1338,22 @@ func (rh *RouteHandle[Req, Resp]) ValidateResponseCookies(cookies map[string]str
 type routeEntry interface {
 	descriptor() route.Route
 	// securitySchemes returns the route's own security scheme declarations
-	// (from [Route.Use]) so [Builder.OpenAPISpec] can aggregate
+	// (from [Route.Use]) so [Server.OpenAPISpec] can aggregate
 	// components.securitySchemes across all registered routes — there is no
 	// builder-level security scheme store to read from instead.
 	securitySchemes() map[string]SecurityScheme
 	// hasHandler reports whether WithHandler was ever called — the Part-1
-	// gating signal [nethttp.Serve]/[nethttp.ServeSSE] use to skip
+	// gating signal each adapter's internal serve/serveSSE dispatch (invoked via
+	// [nethttp.AttachMux]/[chi.AttachRouter]) uses to skip
 	// spec-only routes entirely (see "Decision: Serve's whole-builder
 	// failure semantics").
 	hasHandler() bool
 }
 
 // RouteEntry is a read-only, reflection-friendly view of one [Route]
-// registered into a [Builder] — returned by [Builder.RouteEntries]. It
-// exists so [nethttp.Serve]/[chi.Serve] can walk a HETEROGENEOUS
+// registered into a [Server] — returned by [Server.RouteEntries]. It
+// exists so each adapter's internal serve dispatch (invoked via
+// [nethttp.AttachMux]/[chi.AttachRouter]) can walk a HETEROGENEOUS
 // collection of routes (each with a DIFFERENT Req/Resp pair) without
 // api/rest itself needing net/http or reflect: Handle() returns the
 // concrete *[RouteHandle][Req, Resp] type-erased to any; the consuming
@@ -1369,7 +1377,7 @@ type RouteEntry interface {
 }
 
 // SSERouteEntry is [RouteEntry]'s SSE counterpart, returned by
-// [Builder.SSEEntries]. Method always returns "GET" ([NewSSERoute]
+// [Server.SSEEntries]. Method always returns "GET" ([NewSSERoute]
 // hardcodes it).
 type SSERouteEntry interface {
 	Method() string
@@ -2082,7 +2090,7 @@ func (p MergedResponseCookieParam[Resp]) applyRoute(rb *routeBuilder) {
 // [middleware.SecurityScheme]/[FromSecurityScheme], attached via
 // [Route.Use], is the ONLY way to declare one; there is no builder-level
 // equivalent. The spec fields flow into the OpenAPI document (aggregated
-// from all registered routes by [Builder.OpenAPISpec]); Codec, when
+// from all registered routes by [Server.OpenAPISpec]); Codec, when
 // non-nil, is used by adapters to
 // validate the raw credential string before SecurityFunc is called
 // (server-side) or before the request is sent (client-side, [nethttp.Call]).
@@ -2253,15 +2261,15 @@ func (e NotAcceptableError) Error() string {
 	return fmt.Sprintf("not acceptable: Accept %q; supported: %s", e.Accept, strings.Join(e.Supported, ", "))
 }
 
-// Builder accumulates route registrations, and produces OpenAPI 3.1
+// Server accumulates route registrations, and produces OpenAPI 3.1
 // specifications. Security schemes are declared per-route via
 // [Route.Use] (there is no builder-level equivalent) — see
-// [Builder.OpenAPISpec] for how they're aggregated into the spec. It is safe
-// to register routes from multiple goroutines as long as [Builder.Build] is
-// not called concurrently. Create one with [NewBuilder].
-type Builder struct {
+// [Server.OpenAPISpec] for how they're aggregated into the spec. It is safe
+// to register routes from multiple goroutines as long as [Server.Build] is
+// not called concurrently. Create one with [NewServer].
+type Server struct {
 	info           Info
-	servers        []Server
+	servers        []ServerEntry
 	entries        []routeEntry
 	schemas        map[string]schema.Schema
 	pathCodec      *codex.Codec[string]
@@ -2275,10 +2283,243 @@ type Builder struct {
 	// hot-adding routes to an already-Serve'd, already-running mux (see
 	// docs/roadmap/dynamic-port-rebinding.md for that separate gap).
 	mu sync.RWMutex
+	// transport is the optional, adapter-provided [ServerTransport]
+	// attached via [Server.Attach] (e.g. by nethttp.AttachMux/
+	// chi.AttachRouter) — nil until Attach is called. See
+	// [Server.Serve]'s doc comment and Decision 5 of
+	// docs/roadmap/pubsub-workflow-simplification.md /
+	// docs/roadmap/transport-agnostic-serve-interface.md for the full
+	// design (this is purely ADDITIVE — today's existing
+	// nethttp.Serve(mux, builder)/chi.Serve(r, builder), wire-only,
+	// caller owns their own http.Server, remain completely unchanged).
+	transport ServerTransport
 }
 
-// BuilderOption configures a [Builder] at construction time.
-type BuilderOption func(*Builder)
+// ServerTransport is implemented by each adapter's internal, unexported
+// binding attached to a [Server] via an adapter-specific Attach function
+// (e.g. [nethttp.AttachMux], chi.AttachRouter) — see [Server.Attach].
+// Mirrors [events.Transport] (docs/roadmap/pubsub-workflow-simplification.md's
+// Decision 5) for the pub/sub side of this same unification — see
+// docs/roadmap/transport-agnostic-serve-interface.md for the full
+// rationale.
+type ServerTransport interface {
+	// Serve wires every handler-bearing route (reusing today's existing
+	// nethttp.Serve/chi.Serve logic internally, unchanged) and BLOCKS,
+	// owning its own *http.Server, until ctx is cancelled (graceful
+	// shutdown) or a fatal serve error occurs.
+	Serve(ctx context.Context) error
+}
+
+// Attach binds t to b as b's server transport — the "attach the adapter to
+// the builder" step behind [Server.Serve]. Each adapter provides its own
+// entry point (e.g. nethttp.AttachMux(builder, mux, addr)) that builds an
+// internal ServerTransport implementation and calls this method
+// internally; application code calls the ADAPTER's Attach function, not
+// this method directly, in the common case.
+//
+// Returns [ServerTransportAlreadyAttachedError] if b already has a
+// transport attached — Attach is exclusive, mirrors
+// [events.Client.Attach] exactly.
+func (b *Server) Attach(t ServerTransport) error {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if b.transport != nil {
+		return ServerTransportAlreadyAttachedError{}
+	}
+	b.transport = t
+	return nil
+}
+
+// Serve wires every handler-bearing route and BLOCKS, via b's attached
+// [ServerTransport], until ctx is cancelled or a fatal serve error occurs
+// — a NEW, ADDITIVE, opt-in convenience for callers wanting ONE unified
+// startup call (mirrors [events.Client.ServeSubscribers]'s role on the
+// pub/sub side). Returns [NoServerTransportAttachedError] if
+// [Server.Attach] was never called.
+//
+// Today's existing nethttp.Serve(mux, builder)/chi.Serve(r, builder)
+// (wire-only, non-blocking, caller owns their own *http.Server) remain
+// completely UNCHANGED and available for callers needing full control
+// over TLS/timeouts/etc. — Serve is an alternative, not a replacement.
+//
+//	builder := rest.NewServer(rest.Info{...})
+//	_, _ = createUserRoute.Register(builder)
+//	mux := http.NewServeMux()
+//	_ = nethttp.AttachMux(builder, mux, ":8080")
+//	err := builder.Serve(ctx) // blocks, owns its own http.Server
+func (b *Server) Serve(ctx context.Context) error {
+	b.mu.RLock()
+	t := b.transport
+	b.mu.RUnlock()
+	if t == nil {
+		return NoServerTransportAttachedError{}
+	}
+	return t.Serve(ctx)
+}
+
+// ServerTransportAlreadyAttachedError is returned by [Server.Attach] when
+// b already has a [ServerTransport] attached — Attach is exclusive, see
+// its doc comment for the rationale.
+type ServerTransportAlreadyAttachedError struct{}
+
+func (e ServerTransportAlreadyAttachedError) Error() string {
+	return "api/rest: Server already has a ServerTransport attached (Attach is exclusive; build a fresh Server for a different transport)"
+}
+
+// LogValue implements [slog.LogValuer] for structured logging.
+func (e ServerTransportAlreadyAttachedError) LogValue() slog.Value {
+	return slog.GroupValue()
+}
+
+// NoServerTransportAttachedError is returned by [Server.Serve] when
+// [Server.Attach] was never called.
+type NoServerTransportAttachedError struct{}
+
+func (e NoServerTransportAttachedError) Error() string {
+	return "api/rest: Server has no ServerTransport attached (call an adapter's Attach function first, e.g. nethttp.AttachMux(builder, mux, addr))"
+}
+
+// LogValue implements [slog.LogValuer] for structured logging.
+func (e NoServerTransportAttachedError) LogValue() slog.Value {
+	return slog.GroupValue()
+}
+
+// TransportTypeMismatchError is returned by [Client.Call] when the
+// dynamic types of its `any`-typed arguments don't match each other as
+// expected — e.g. req's concrete type doesn't match route's declared Req
+// type. This is the explicit, narrowly-scoped runtime-type-safety cost of
+// Client.Call's literal method call shape — mirrors
+// [events.TransportTypeMismatchError] exactly (each API layer keeps its
+// own parallel error vocabulary).
+type TransportTypeMismatchError struct {
+	// Path is the route path involved (empty when the mismatch is
+	// detected before a route could be resolved at all, e.g. routeAny
+	// itself isn't a recognized rest.Route[Req, Resp]).
+	Path string
+	// Want describes the expected type (e.g. "rest.Route[GetUserReq, GetUserResp]").
+	Want string
+	// Got describes the actual dynamic type provided.
+	Got string
+}
+
+func (e TransportTypeMismatchError) Error() string {
+	return fmt.Sprintf("api/rest: path %q: Transport type mismatch: want %s, got %s", e.Path, e.Want, e.Got)
+}
+
+// LogValue implements [slog.LogValuer] for structured logging.
+func (e TransportTypeMismatchError) LogValue() slog.Value {
+	return slog.GroupValue(
+		slog.String("path", e.Path),
+		slog.String("want", e.Want),
+		slog.String("got", e.Got),
+	)
+}
+
+// ClientTransport is implemented by each adapter's internal, unexported
+// binding attached to a [Client] via an adapter-specific Attach function
+// (e.g. [nethttp.Attach]) — see [Client.Attach]. Mirrors
+// [events.Transport] (docs/roadmap/pubsub-workflow-simplification.md's
+// Decision 5) for the pub/sub side of this same unification — see
+// docs/roadmap/transport-agnostic-serve-interface.md for the full
+// rationale.
+type ClientTransport interface {
+	// Call performs a round trip against route (dynamic type
+	// rest.Route[Req, Resp]) with req (dynamic type Req), returning the
+	// decoded response as `any` (dynamic type Resp).
+	Call(ctx context.Context, route any, req any) (any, error)
+}
+
+// Client is a client-side, api-level connection holder — the mirror of
+// [events.Client] on REST's calling side, living in api/rest rather than
+// an adapter package (unlike the earlier adapters/nethttp.Caller design
+// this replaces). Client carries NO spec/registry (unlike [Server],
+// which keeps all of the OpenAPI spec-accumulation responsibilities) —
+// mirrors what adapters/nethttp.Caller already did (just a connection
+// holder), relocated to the api/rest domain level.
+//
+// Construct via [NewClient], then bind it to a concrete transport via an
+// adapter's own Attach function (e.g. [nethttp.Attach]) before calling
+// [Client.Call].
+type Client struct {
+	mu        sync.RWMutex
+	transport ClientTransport
+}
+
+// NewClient returns an unattached [Client]. Call an adapter's Attach
+// function (e.g. [nethttp.Attach]) before using [Client.Call].
+func NewClient() *Client {
+	return &Client{}
+}
+
+// Attach binds t to c as c's transport — the "attach the adapter to the
+// client" step behind [Client.Call]. Each adapter provides its own entry
+// point (e.g. [nethttp.Attach](client, httpClient, baseURL)) that builds
+// an internal ClientTransport implementation and calls this method
+// internally; application code calls the ADAPTER's Attach function, not
+// this method directly, in the common case.
+//
+// Returns [ClientTransportAlreadyAttachedError] if c already has a
+// transport attached — Attach is exclusive, mirrors
+// [events.Client.Attach]/[Server.Attach] exactly.
+func (c *Client) Attach(t ClientTransport) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.transport != nil {
+		return ClientTransportAlreadyAttachedError{}
+	}
+	c.transport = t
+	return nil
+}
+
+// Call performs a round trip against route with req, via c's attached
+// [ClientTransport] — see [ClientTransport]'s doc comment for the full
+// design rationale (why this is `any`-typed/reflection-based) and
+// [Client.Attach] for how a transport gets attached. Returns
+// [NoClientTransportAttachedError] if [Client.Attach] was never called.
+//
+//	client := rest.NewClient()
+//	_ = nethttp.Attach(client, httpClient, baseURL)
+//	respAny, err := client.Call(ctx, getUserRoute, GetUserReq{ID: "f47ac10b"})
+//	resp := respAny.(GetUserResp)
+func (c *Client) Call(ctx context.Context, route any, req any) (any, error) {
+	c.mu.RLock()
+	t := c.transport
+	c.mu.RUnlock()
+	if t == nil {
+		return nil, NoClientTransportAttachedError{}
+	}
+	return t.Call(ctx, route, req)
+}
+
+// ClientTransportAlreadyAttachedError is returned by [Client.Attach] when
+// c already has a [ClientTransport] attached — Attach is exclusive, see
+// its doc comment for the rationale.
+type ClientTransportAlreadyAttachedError struct{}
+
+func (e ClientTransportAlreadyAttachedError) Error() string {
+	return "api/rest: Client already has a ClientTransport attached (Attach is exclusive; build a fresh Client for a different transport)"
+}
+
+// LogValue implements [slog.LogValuer] for structured logging.
+func (e ClientTransportAlreadyAttachedError) LogValue() slog.Value {
+	return slog.GroupValue()
+}
+
+// NoClientTransportAttachedError is returned by [Client.Call] when
+// [Client.Attach] was never called.
+type NoClientTransportAttachedError struct{}
+
+func (e NoClientTransportAttachedError) Error() string {
+	return "api/rest: Client has no ClientTransport attached (call an adapter's Attach function first, e.g. nethttp.Attach(client, httpClient, baseURL))"
+}
+
+// LogValue implements [slog.LogValuer] for structured logging.
+func (e NoClientTransportAttachedError) LogValue() slog.Value {
+	return slog.GroupValue()
+}
+
+// ServerOption configures a [Server] at construction time.
+type ServerOption func(*Server)
 
 // WithPathCodec sets a codec used to validate every path passed to [Route.Register].
 // If the path is invalid, [Route.Register] returns an error immediately.
@@ -2291,9 +2532,9 @@ type BuilderOption func(*Builder)
 //
 //	import "github.com/DaniDeer/go-codex/validate"
 //
-//	b := rest.NewBuilder(info, rest.WithPathConstraints(validate.HTTPPath))
-func WithPathCodec(c codex.Codec[string]) BuilderOption {
-	return func(b *Builder) { b.pathCodec = &c }
+//	b := rest.NewServer(info, rest.WithPathConstraints(validate.HTTPPath))
+func WithPathCodec(c codex.Codec[string]) ServerOption {
+	return func(b *Server) { b.pathCodec = &c }
 }
 
 // WithPathConstraints is a convenience wrapper around [WithPathCodec] that
@@ -2307,15 +2548,15 @@ func WithPathCodec(c codex.Codec[string]) BuilderOption {
 //	    Check:   func(v string) bool { return strings.HasPrefix(v, "/sensors/") },
 //	    Message: func(v string) string { return fmt.Sprintf("path must start with /sensors/, got %q", v) },
 //	}
-//	b := rest.NewBuilder(info, rest.WithPathConstraints(validate.HTTPPath, sensorPrefix))
-func WithPathConstraints(cons ...codex.Constraint[string]) BuilderOption {
+//	b := rest.NewServer(info, rest.WithPathConstraints(validate.HTTPPath, sensorPrefix))
+func WithPathConstraints(cons ...codex.Constraint[string]) ServerOption {
 	c := codex.String().Refine(cons...)
 	return WithPathCodec(c)
 }
 
-// NewBuilder returns a Builder initialised with the given API metadata.
-func NewBuilder(info Info, opts ...BuilderOption) *Builder {
-	b := &Builder{
+// NewServer returns a Server initialised with the given API metadata.
+func NewServer(info Info, opts ...ServerOption) *Server {
+	b := &Server{
 		info:    info,
 		schemas: make(map[string]schema.Schema),
 	}
@@ -2327,9 +2568,9 @@ func NewBuilder(info Info, opts ...BuilderOption) *Builder {
 
 // AddServer appends a server entry to the OpenAPI spec in registration order.
 // If s.Description is empty, name is used as the description (consistent with
-// [events.Builder.AddServer]). Unlike the AsyncAPI builder, OpenAPI servers are
+// [events.Client.AddServer]). Unlike the AsyncAPI builder, OpenAPI servers are
 // an ordered array with no named keys — name is not stored beyond this point.
-func (b *Builder) AddServer(name string, s Server) *Builder {
+func (b *Server) AddServer(name string, s ServerEntry) *Server {
 	if s.Description == "" {
 		s.Description = name
 	}
@@ -2342,7 +2583,7 @@ func (b *Builder) AddServer(name string, s Server) *Builder {
 // AddSchema registers a named schema in components/schemas.
 // Use this to register reusable schemas (e.g. shared error types) that are
 // referenced by SchemaName in route configs but not inlined in any codec.
-func (b *Builder) AddSchema(name string, s schema.Schema) *Builder {
+func (b *Server) AddSchema(name string, s schema.Schema) *Server {
 	b.mu.Lock()
 	b.schemas[name] = s
 	b.mu.Unlock()
@@ -2357,7 +2598,7 @@ func (b *Builder) AddSchema(name string, s schema.Schema) *Builder {
 //
 // To mark a specific route as explicitly unsecured (exempt from global security),
 // set Security to an empty slice in [RouteMeta]: Security: []route.SecurityRequirement{}.
-func (b *Builder) AddGlobalSecurity(reqs ...route.SecurityRequirement) *Builder {
+func (b *Server) AddGlobalSecurity(reqs ...route.SecurityRequirement) *Server {
 	b.mu.Lock()
 	b.globalSecurity = append(b.globalSecurity, reqs...)
 	b.mu.Unlock()
@@ -2366,7 +2607,7 @@ func (b *Builder) AddGlobalSecurity(reqs ...route.SecurityRequirement) *Builder 
 
 // Route is a declarative HTTP route spec: method, path, codecs, and options.
 // It is a value type — define it once, store it, pass it around, and register
-// it with one or more [Builder] instances via [Route.Register].
+// it with one or more [Server] instances via [Route.Register].
 //
 // Create a Route with [NewRoute].
 // Path bundles a path template with its declared [PathParam] variables —
@@ -2485,9 +2726,10 @@ func NewRouteFromPath[Req, Resp any](
 // Register registers the route with b, binding its spec, business handler
 // (attached via [Route.WithHandler]), and middleware implementations
 // (attached via [Route.HandleMW]/[Route.ClientMW]) into b — for use by
-// [nethttp.Serve]/[chi.Serve] (and their SSE/ServeOne equivalents), which
+// each adapter's internal serve/serveSSE/serveOne dispatch (invoked via
+// [nethttp.AttachMux]/[nethttp.ServeOne]/[chi.AttachRouter]), which
 // walk b's accumulated routes and wire each one. No [*RouteHandle] is
-// returned — a caller wiring routes through Serve never needs one
+// returned — a caller wiring routes through Attach never needs one
 // directly. Use [Route.RegisterHandle] instead when a direct handle is
 // needed (e.g. ports-style direct adapter wiring that bypasses Serve
 // entirely).
@@ -2498,7 +2740,7 @@ func NewRouteFromPath[Req, Resp any](
 //
 // Any [PathParam] entry whose name does not appear as a {varName} placeholder
 // in the path template causes Register to return an error immediately.
-func (r Route[Req, Resp]) Register(b *Builder) error {
+func (r Route[Req, Resp]) Register(b *Server) error {
 	_, err := r.registerHandle(b)
 	return err
 }
@@ -2506,17 +2748,18 @@ func (r Route[Req, Resp]) Register(b *Builder) error {
 // RegisterHandle registers the route with b — identical spec/handler/impl
 // binding and validation as [Route.Register] — but ALSO returns the
 // resulting [*RouteHandle], for direct-wiring callers that bypass
-// [nethttp.Serve]/[chi.Serve] entirely (e.g. [ports]' pattern-building
-// machinery, which owns its own adapter wiring and never mounts routes on
-// a *http.ServeMux itself).
+// each adapter's internal serve dispatch (invoked via
+// [nethttp.AttachMux]/[chi.AttachRouter]) entirely (e.g. [ports]'
+// pattern-building machinery, which owns its own adapter wiring and never
+// mounts routes on a *http.ServeMux itself).
 //
 // Use [Route.WithRequestFormats]/[RouteHandle.WithFormats] on the returned
 // handle to configure multi-format request/response handling.
-func (r Route[Req, Resp]) RegisterHandle(b *Builder) (*RouteHandle[Req, Resp], error) {
+func (r Route[Req, Resp]) RegisterHandle(b *Server) (*RouteHandle[Req, Resp], error) {
 	return r.registerHandle(b)
 }
 
-func (r Route[Req, Resp]) registerHandle(b *Builder) (*RouteHandle[Req, Resp], error) {
+func (r Route[Req, Resp]) registerHandle(b *Server) (*RouteHandle[Req, Resp], error) {
 	if b.pathCodec != nil {
 		if err := b.pathCodec.Validate(internal.StripTemplateVars(r.path)); err != nil {
 			return nil, InvalidPathError{Path: r.path, Err: err}
@@ -2618,7 +2861,7 @@ func (r Route[Req, Resp]) registerHandle(b *Builder) (*RouteHandle[Req, Resp], e
 }
 
 // ClientHandle returns a [RouteHandle] for client-side use without registering
-// with a [Builder]. No path codec validation and no spec registration occur.
+// with a [Server]. No path codec validation and no spec registration occur.
 //
 // Use ClientHandle when only the client side needs codec and route definitions
 // (no OpenAPI spec, no server), or when sharing a [Route] definition between
@@ -2627,7 +2870,7 @@ func (r Route[Req, Resp]) registerHandle(b *Builder) (*RouteHandle[Req, Resp], e
 // The returned handle has the same Decode / Encode / EncodeRequest / DecodeResponse
 // codec helpers and the same parameter validation methods as a handle returned
 // by [Route.Register] — including [RouteHandle.SecuritySchemes], populated from
-// the route's own [Route.Use] security declarations (there is no [Builder]
+// the route's own [Route.Use] security declarations (there is no [Server]
 // involved in this path, so builder-level state never applies here — route-level
 // declarations are the only source). [adapters/nethttp.Call] uses it to validate
 // a [nethttp.CallOptions.CredentialFunc]'s returned credential format before
@@ -2811,7 +3054,7 @@ type SSERouteHandle[Req, Event any] struct {
 	// Adapters resolve the effective requirements as:
 	//   reqs := handle.Descriptor.Security
 	//   if reqs == nil { reqs = handle.GlobalSecurity }
-	// Set via [Builder.AddGlobalSecurity]. nil when no global security is declared.
+	// Set via [Server.AddGlobalSecurity]. nil when no global security is declared.
 	// Unlike SecuritySchemes, GlobalSecurity remains builder-only — it answers
 	// "which routes require auth by default" (spec-wide), not "what does a
 	// scheme look like" — and has no [Route.ClientHandle] equivalent (always
@@ -3186,11 +3429,12 @@ func NewSSERoute[Req, Event any](
 // Register registers the SSE route with b, binding its spec, handler
 // (attached via [SSERoute.WithHandler]), and middleware implementations
 // (attached via [SSERoute.HandleMW]) into b — for use by
-// [nethttp.ServeSSE]/[chi.ServeSSE]. No [*SSERouteHandle] is returned;
+// each adapter's internal serveSSE dispatch (invoked via
+// [nethttp.AttachMux]/[chi.AttachRouter]). No [*SSERouteHandle] is returned;
 // use [SSERoute.RegisterHandle] when a direct handle is needed.
 //
 // Path validation follows the same rules as [Route.Register].
-func (s SSERoute[Req, Event]) Register(b *Builder) error {
+func (s SSERoute[Req, Event]) Register(b *Server) error {
 	_, err := s.registerHandle(b)
 	return err
 }
@@ -3198,20 +3442,21 @@ func (s SSERoute[Req, Event]) Register(b *Builder) error {
 // RegisterHandle registers the SSE route with b — identical binding and
 // validation as [SSERoute.Register] — but ALSO returns the resulting
 // [*SSERouteHandle], for direct-wiring callers (e.g. [ports]) that bypass
-// [nethttp.ServeSSE]/[chi.ServeSSE] entirely.
+// each adapter's internal serveSSE dispatch (invoked via
+// [nethttp.AttachMux]/[chi.AttachRouter]) entirely.
 //
 // Use [SSERouteHandle.WithFormats] on the returned handle to configure
 // non-JSON event serialisation formats.
-func (s SSERoute[Req, Event]) RegisterHandle(b *Builder) (*SSERouteHandle[Req, Event], error) {
+func (s SSERoute[Req, Event]) RegisterHandle(b *Server) (*SSERouteHandle[Req, Event], error) {
 	return s.registerHandle(b)
 }
 
 // ClientHandle returns an [SSERouteHandle] for client-side use without
-// registering with a [Builder] — mirrors [Route.ClientHandle] exactly (no
+// registering with a [Server] — mirrors [Route.ClientHandle] exactly (no
 // spec, no path codec validation): builds its OWN struct literal directly,
 // the SAME separate construction path Route.ClientHandle uses (does NOT
 // call [SSERoute.registerHandle]/[SSERoute.Register], which requires a
-// real [*Builder], runs the fallible [checkImplementationsDeclared]/
+// real [*Server], runs the fallible [checkImplementationsDeclared]/
 // coverage checks, and appends to the builder's entries — none of which
 // ClientHandle wants). Merges middleware-declared Security via
 // [applyMiddlewareSecurityForClient] — the SAME infallible,
@@ -3270,7 +3515,7 @@ func (s SSERoute[Req, Event]) ClientHandle() *SSERouteHandle[Req, Event] {
 	return h
 }
 
-func (s SSERoute[Req, Event]) registerHandle(b *Builder) (*SSERouteHandle[Req, Event], error) {
+func (s SSERoute[Req, Event]) registerHandle(b *Server) (*SSERouteHandle[Req, Event], error) {
 	if b.pathCodec != nil {
 		if err := b.pathCodec.Validate(internal.StripTemplateVars(s.path)); err != nil {
 			return nil, InvalidPathError{Path: s.path, Err: err}
@@ -3368,7 +3613,7 @@ func (s SSERoute[Req, Event]) registerHandle(b *Builder) (*SSERouteHandle[Req, E
 // the LAST-registered route wins, with no error; define the scheme once as a
 // shared package-level value (see [FromSecurityScheme]'s example) to avoid
 // relying on this.
-func (b *Builder) OpenAPISpec() (openapi.Document, error) {
+func (b *Server) OpenAPISpec() (openapi.Document, error) {
 	b.mu.RLock()
 	defer b.mu.RUnlock()
 	if err := b.checkDanglingRefs(); err != nil {
@@ -3400,10 +3645,11 @@ func (b *Builder) OpenAPISpec() (openapi.Document, error) {
 }
 
 // RouteEntries returns every [Route] registered into b, as read-only
-// [RouteEntry] views — for use by [nethttp.Serve]/[chi.Serve] to walk and
+// [RouteEntry] views — for use by each adapter's internal serve dispatch
+// (invoked via [nethttp.AttachMux]/[chi.AttachRouter]) to walk and
 // wire the whole builder in one call. SSE entries are excluded; see
-// [Builder.SSEEntries].
-func (b *Builder) RouteEntries() []RouteEntry {
+// [Server.SSEEntries].
+func (b *Server) RouteEntries() []RouteEntry {
 	b.mu.RLock()
 	defer b.mu.RUnlock()
 	out := make([]RouteEntry, 0, len(b.entries))
@@ -3416,9 +3662,10 @@ func (b *Builder) RouteEntries() []RouteEntry {
 }
 
 // SSEEntries returns every [SSERoute] registered into b, as read-only
-// [SSERouteEntry] views — for use by [nethttp.ServeSSE]/[chi.ServeSSE].
-// Regular Route entries are excluded; see [Builder.RouteEntries].
-func (b *Builder) SSEEntries() []SSERouteEntry {
+// [SSERouteEntry] views — for use by each adapter's internal serveSSE
+// dispatch (invoked via [nethttp.AttachMux]/[chi.AttachRouter]).
+// Regular Route entries are excluded; see [Server.RouteEntries].
+func (b *Server) SSEEntries() []SSERouteEntry {
 	b.mu.RLock()
 	defer b.mu.RUnlock()
 	out := make([]SSERouteEntry, 0, len(b.entries))
@@ -3433,8 +3680,8 @@ func (b *Builder) SSEEntries() []SSERouteEntry {
 // checkDanglingRefs verifies that every non-empty SchemaName used in routes
 // resolves to a schema that will be registered in components/schemas.
 // A name is resolvable when the accompanying Schema is non-nil, or when the
-// name was explicitly registered via [Builder.AddSchema].
-func (b *Builder) checkDanglingRefs() error {
+// name was explicitly registered via [Server.AddSchema].
+func (b *Server) checkDanglingRefs() error {
 	// Build the set of resolvable names.
 	resolvable := make(map[string]bool, len(b.schemas))
 	for name := range b.schemas {

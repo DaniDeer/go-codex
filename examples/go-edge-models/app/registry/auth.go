@@ -75,19 +75,19 @@ import (
 // Bearer) chained onto the SAME route via .ClientMW(&declaredMw, fn).
 // Neither scheme is ever injected via CallOptions.ExtraHeaders — that
 // manual bypass was removed once the declarative security mechanism
-// shipped, so nethttp.Call's client-side credential-format check
+// shipped, so nethttp.CallWithHandle's client-side credential-format check
 // (validating the credentialFunc-returned header against the route's
 // declared Codec before sending, symmetric with the server-side check)
 // applies to both.
 //
-// authenticate's Ping/401-detection step is a plain nethttp.Call
+// authenticate's Ping/401-detection step is a plain nethttp.CallWithHandle
 // call — reading the WWW-Authenticate challenge header on the 401
 // response uses nethttp.UnexpectedStatusError.Header, a declarative
 // escape hatch added to adapters/nethttp for exactly this class of
 // problem: a response header only present on a non-2xx response, which
 // rest.NewRequiredResponseHeaderParam's success-path-only merge cannot
 // reach. This file performs no I/O of its own beyond calling
-// nethttp.Call/CallWithHandle — every request/response is route+codec driven.
+// nethttp.CallWithHandle — every request/response is route+codec driven.
 
 // ── Format helpers (Challenge / DockerScope / Bearer / Basic) ─────────────────
 
@@ -183,7 +183,7 @@ func WithCredentialsByRegistry(creds regmodels.RegistryCredentials) Option {
 // WithObserver is usually NOT needed: GetTags/GetImageMetadata's internal
 // nethttp.CallWithHandle invocations already fall back to
 // stats.ObserverFromContext(ctx) whenever no explicit Observer is set —
-// the SAME context-based default every nethttp.Call caller gets. Just
+// the SAME context-based default every nethttp.CallWithHandle caller gets. Just
 // attach an observer to ctx once, before calling GetTags/GetImageMetadata:
 //
 //	ctx = stats.WithObserver(ctx, obs)
@@ -225,7 +225,7 @@ func parseChallenge(header http.Header) (internal.Challenge, error) {
 // authenticate probes registryHost's base endpoint (GET /v2/) and, if it
 // requires auth (401 + WWW-Authenticate challenge), fetches a Bearer token
 // scoped to "repository:<repository>:pull" from the challenge's realm via
-// getTokenRoute (a normal, fully declarative nethttp.Call call).
+// getTokenRoute (a normal, fully declarative nethttp.CallWithHandle call).
 // Returns "" (no error) when the registry does not require auth. creds is
 // nil for anonymous pulls (the default); when non-nil, its Basic-auth
 // value is sent on the token-exchange request ONLY (never on the
@@ -238,8 +238,8 @@ func parseChallenge(header http.Header) (internal.Challenge, error) {
 // above) — no CallOptions.ExtraHeaders injection anywhere in this
 // package.
 func authenticate(ctx context.Context, httpClient *http.Client, registryHost, repository string, creds *regmodels.Credentials, obs stats.Observer) (string, error) {
-	caller := nethttp.NewCaller(httpClient, registryBaseURL(registryHost))
-	_, err := nethttp.Call(ctx, caller, regmodels.PingRoute, struct{}{}, nethttp.CallOptions{Observer: obs})
+	pingHandle := regmodels.PingRoute.ClientHandle()
+	_, err := nethttp.CallWithHandle(ctx, httpClient, registryBaseURL(registryHost), pingHandle, struct{}{}, nethttp.CallOptions{Observer: obs})
 	if err == nil {
 		return "", nil // 2xx — registry requires no auth for this request.
 	}
@@ -298,8 +298,8 @@ func authenticate(ctx context.Context, httpClient *http.Client, registryHost, re
 		})
 	}
 
-	tokenCaller := nethttp.NewCaller(httpClient, challenge.Realm)
-	tr, err := nethttp.Call(ctx, tokenCaller, tokenRoute,
+	tokenHandle := tokenRoute.ClientHandle()
+	tr, err := nethttp.CallWithHandle(ctx, httpClient, challenge.Realm, tokenHandle,
 		getTokenReq{Service: challenge.Service, Scope: scope}, tokenOpts)
 	if err != nil {
 		return "", RegistryAuthError{Registry: registryHost, Err: err}
@@ -319,7 +319,7 @@ type credentialFunc = func(ctx context.Context, reqs []route.SecurityRequirement
 
 // newAuthCredentialFunc returns a credentialFunc that authenticates
 // against registryHost for repository LAZILY — on first invocation by
-// nethttp.Call/CallWithHandle, which only happens for a route whose
+// nethttp.CallWithHandle, which only happens for a route whose
 // ClientHandle carries a matching Security requirement (see
 // gettags.go's GetTags/getimagemetadata.go's GetImageMetadata, which chain
 // this as the Fn alongside the "bearerAuth" Security declaration via
@@ -387,7 +387,8 @@ func newAuthCredentialFunc(httpClient *http.Client, registryHost, repository str
 //
 //	authFn := newAuthCredentialFunc(httpClient, ref.Registry, ref.Repository, opts...)
 //	route := regmodels.GetTagsRoute.ClientMW(&regmodels.BearerAuthDeclaration, authFn)
-//	caller := nethttp.NewCaller(httpClient, registryBaseURL(ref.Registry))
+//	handle := route.ClientHandle()
+//	baseURL := registryBaseURL(ref.Registry)
 
 // ---- basicAuth scheme declaration, and getTokenRoute ----
 //
@@ -402,7 +403,7 @@ func newAuthCredentialFunc(httpClient *http.Client, registryHost, repository str
 
 // basicAuthMw declares that getTokenRoute accepts Basic-auth
 // credentials — attached via .Use() below so a credentialFunc is invoked
-// automatically by [nethttp.Call]/[nethttp.CallWithHandle] (via
+// automatically by [nethttp.CallWithHandle] (via
 // .ClientMW(&basicAuthMw, ...)) whenever auth.go's authenticate()
 // supplies one (private-repo Credentials). Declaring this UNCONDITIONALLY
 // is safe even for anonymous (no-Credentials) token exchanges: a nil/no-op
@@ -431,7 +432,7 @@ type getTokenReq struct {
 // Hub's registry is registry-1.docker.io but its auth realm is
 // auth.docker.io/token) — authenticate() (this file) passes the realm URL (parsed from the
 // WWW-Authenticate challenge header) as the baseURL for this route's
-// nethttp.Call, so the route's own path template must contribute nothing
+// nethttp.CallWithHandle, so the route's own path template must contribute nothing
 // beyond that. Req is getTokenReq, whose Service/Scope fields merge into
 // the service/scope query params automatically via nethttp.CallWithHandle —
 // both OptionalField since real registries vary in which of the two they

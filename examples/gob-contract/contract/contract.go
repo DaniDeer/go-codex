@@ -63,10 +63,10 @@ var OrderCodec = codex.Struct[Order](
 var GobFormat = format.Gob(OrderCodec)
 
 // OrderChannel is the typed channel definition for the orders topic.
-// Each service calls OrderChannel.Register(builder) to get a *ChannelHandle
-// and register the channel in its own events.Builder. Both services get the
-// same topic template, codec, and format — the contract is enforced by the
-// Go compiler and the shared codec constraints.
+// Each service calls OrderChannel.WithPublish(...).Handle(builder) to get a
+// *ChannelHandle and register the channel in its own events.Client. Both
+// services get the same topic template, codec, and format — the contract is
+// enforced by the Go compiler and the shared codec constraints.
 var OrderChannel = events.NewChannel(
 	"orders/{orderId}",
 	OrderCodec,
@@ -75,9 +75,8 @@ var OrderChannel = events.NewChannel(
 		Description: "Publishes Order messages whenever a new order is placed.",
 	},
 	events.TopicParam{Name: "orderId", Description: "The UUID of the order being published."},
-	events.Publish{
-		Summary:    "Send order event",
-		SchemaName: "Order",
-		Tags:       []string{"orders"},
-	},
-)
+).WithPublish(events.Publish{
+	Summary:    "Send order event",
+	SchemaName: "Order",
+	Tags:       []string{"orders"},
+})

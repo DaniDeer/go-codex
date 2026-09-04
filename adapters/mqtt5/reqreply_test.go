@@ -1,4 +1,4 @@
-package mqtt5_test
+package mqtt5
 
 import (
 	"context"
@@ -7,7 +7,6 @@ import (
 	"testing"
 	"time"
 
-	mqtt5 "github.com/DaniDeer/go-codex/adapters/mqtt5"
 	"github.com/DaniDeer/go-codex/api/reqreply"
 	"github.com/DaniDeer/go-codex/codex"
 	"github.com/DaniDeer/go-codex/format"
@@ -27,11 +26,11 @@ func TestServe_ValidRoundTrip(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
 
-	err := mqtt5.Serve(ctx, client, router, newRouteHandle(),
+	err := Serve(ctx, client, router, newRouteHandle(),
 		func(_ context.Context, req computeReq) (computeResp, error) {
 			return computeResp{Sum: req.X + req.Y}, nil
 		},
-		mqtt5.ServeOptions{})
+		ServeOptions{})
 	if err != nil {
 		t.Fatalf("Serve setup failed: %v", err)
 	}
@@ -64,17 +63,17 @@ func TestServe_ValidRoundTrip(t *testing.T) {
 func TestServe_DecodeError(t *testing.T) {
 	client := &mockClient{}
 	router := newMockRouter()
-	var gotErr mqtt5.ServeError
+	var gotErr ServeError
 
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
 
-	_ = mqtt5.Serve(ctx, client, router, newRouteHandle(),
+	_ = Serve(ctx, client, router, newRouteHandle(),
 		func(_ context.Context, _ computeReq) (computeResp, error) {
 			t.Fatal("fn must not be called on decode error")
 			return computeResp{}, nil
 		},
-		mqtt5.ServeOptions{OnError: func(e mqtt5.ServeError) { gotErr = e }})
+		ServeOptions{OnError: func(e ServeError) { gotErr = e }})
 
 	router.dispatch("compute/add", &pahomqtt5.Publish{
 		Topic:   "compute/add",
@@ -86,7 +85,7 @@ func TestServe_DecodeError(t *testing.T) {
 	})
 	time.Sleep(50 * time.Millisecond)
 
-	if gotErr.Kind != mqtt5.KindDecode {
+	if gotErr.Kind != KindDecode {
 		t.Fatalf("expected KindDecode, got %v", gotErr.Kind)
 	}
 }
@@ -94,17 +93,17 @@ func TestServe_DecodeError(t *testing.T) {
 func TestServe_HandlerError(t *testing.T) {
 	client := &mockClient{}
 	router := newMockRouter()
-	var gotErr mqtt5.ServeError
+	var gotErr ServeError
 	handlerErr := errors.New("compute overflow")
 
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
 
-	_ = mqtt5.Serve(ctx, client, router, newRouteHandle(),
+	_ = Serve(ctx, client, router, newRouteHandle(),
 		func(_ context.Context, _ computeReq) (computeResp, error) {
 			return computeResp{}, handlerErr
 		},
-		mqtt5.ServeOptions{OnError: func(e mqtt5.ServeError) { gotErr = e }})
+		ServeOptions{OnError: func(e ServeError) { gotErr = e }})
 
 	router.dispatch("compute/add", &pahomqtt5.Publish{
 		Topic:   "compute/add",
@@ -116,7 +115,7 @@ func TestServe_HandlerError(t *testing.T) {
 	})
 	time.Sleep(50 * time.Millisecond)
 
-	if gotErr.Kind != mqtt5.KindHandler {
+	if gotErr.Kind != KindHandler {
 		t.Fatalf("expected KindHandler, got %v", gotErr.Kind)
 	}
 	if !errors.Is(gotErr, handlerErr) {
@@ -130,19 +129,19 @@ func TestServe_BuiltInCredentialCheck_RejectsMalformedCredential(t *testing.T) {
 	client := &mockClient{}
 	router := newMockRouter()
 	obs := &testObserver{}
-	var gotErr mqtt5.ServeError
+	var gotErr ServeError
 
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
 
-	_ = mqtt5.Serve(ctx, client, router, newSecuredRouteHandle(),
+	_ = Serve(ctx, client, router, newSecuredRouteHandle(),
 		func(_ context.Context, _ computeReq) (computeResp, error) {
 			t.Fatal("fn must not be called on security rejection")
 			return computeResp{}, nil
 		},
-		mqtt5.ServeOptions{
+		ServeOptions{
 			Observer: obs,
-			OnError:  func(e mqtt5.ServeError) { gotErr = e },
+			OnError:  func(e ServeError) { gotErr = e },
 		})
 
 	// No "Authorization" User Property -> extracted credential is "" ->
@@ -157,7 +156,7 @@ func TestServe_BuiltInCredentialCheck_RejectsMalformedCredential(t *testing.T) {
 	})
 	time.Sleep(50 * time.Millisecond)
 
-	if gotErr.Kind != mqtt5.KindSecurity {
+	if gotErr.Kind != KindSecurity {
 		t.Fatalf("expected KindSecurity, got %v", gotErr.Kind)
 	}
 	var credErr reqreply.SecurityCredentialError
@@ -181,19 +180,19 @@ func TestServe_BuiltInCredentialCheck_RejectsMalformedCredential(t *testing.T) {
 func TestServe_SecurityFunc_RejectsRequest(t *testing.T) {
 	client := &mockClient{}
 	router := newMockRouter()
-	var gotErr mqtt5.ServeError
+	var gotErr ServeError
 	secErr := errors.New("token revoked")
 
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
 
-	_ = mqtt5.Serve(ctx, client, router, newSecuredRouteHandle(),
+	_ = Serve(ctx, client, router, newSecuredRouteHandle(),
 		func(_ context.Context, _ computeReq) (computeResp, error) {
 			t.Fatal("fn must not be called on SecurityFunc rejection")
 			return computeResp{}, nil
 		},
-		mqtt5.ServeOptions{
-			OnError: func(e mqtt5.ServeError) { gotErr = e },
+		ServeOptions{
+			OnError: func(e ServeError) { gotErr = e },
 			SecurityFunc: func(context.Context, *pahomqtt5.Publish, []route.SecurityRequirement) error {
 				return secErr
 			},
@@ -210,7 +209,7 @@ func TestServe_SecurityFunc_RejectsRequest(t *testing.T) {
 	})
 	time.Sleep(50 * time.Millisecond)
 
-	if gotErr.Kind != mqtt5.KindSecurity {
+	if gotErr.Kind != KindSecurity {
 		t.Fatalf("expected KindSecurity, got %v", gotErr.Kind)
 	}
 	var wrapped reqreply.SecurityError
@@ -230,12 +229,12 @@ func TestServe_NilSecurityFunc_NotAnError(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
 
-	_ = mqtt5.Serve(ctx, client, router, newSecuredRouteHandle(),
+	_ = Serve(ctx, client, router, newSecuredRouteHandle(),
 		func(_ context.Context, req computeReq) (computeResp, error) {
 			fnCalled = true
 			return computeResp{Sum: req.X + req.Y}, nil
 		},
-		mqtt5.ServeOptions{}) // no SecurityFunc set
+		ServeOptions{}) // no SecurityFunc set
 
 	router.dispatch("compute/secured-add", &pahomqtt5.Publish{
 		Topic:   "compute/secured-add",
@@ -275,10 +274,10 @@ func TestCall_CredentialFunc_ValidFormat_Passes(t *testing.T) {
 		})
 	}()
 
-	resp, err := mqtt5.Call(ctx, client, router, newSecuredRouteHandle(), computeReq{X: 3, Y: 4},
-		mqtt5.CallOptions{
-			CredentialFunc: func(context.Context, []route.SecurityRequirement) ([]mqtt5.UserProperty, error) {
-				return []mqtt5.UserProperty{{Key: "Authorization", Value: "Bearer validtoken"}}, nil
+	resp, err := Call(ctx, client, router, newSecuredRouteHandle(), computeReq{X: 3, Y: 4},
+		CallOptions{
+			CredentialFunc: func(context.Context, []route.SecurityRequirement) ([]UserProperty, error) {
+				return []UserProperty{{Key: "Authorization", Value: "Bearer validtoken"}}, nil
 			},
 		})
 	if err != nil {
@@ -301,12 +300,12 @@ func TestCall_CredentialFunc_MalformedFormat_ReturnsSecurityCredentialError(t *t
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
 
-	_, err := mqtt5.Call(ctx, client, router, newSecuredRouteHandle(), computeReq{X: 3, Y: 4},
-		mqtt5.CallOptions{
+	_, err := Call(ctx, client, router, newSecuredRouteHandle(), computeReq{X: 3, Y: 4},
+		CallOptions{
 			Observer: obs,
-			CredentialFunc: func(context.Context, []route.SecurityRequirement) ([]mqtt5.UserProperty, error) {
+			CredentialFunc: func(context.Context, []route.SecurityRequirement) ([]UserProperty, error) {
 				// Empty Bearer credential -> fails the non-empty-string Codec.
-				return []mqtt5.UserProperty{{Key: "Authorization", Value: "Bearer "}}, nil
+				return []UserProperty{{Key: "Authorization", Value: "Bearer "}}, nil
 			},
 		})
 	var credErr reqreply.SecurityCredentialError
@@ -348,9 +347,9 @@ func TestCall_CredentialFunc_ReturnsNilProperties_SkipsValidation(t *testing.T) 
 
 	// A CredentialFunc deliberately returning (nil, nil) for "no credential
 	// needed" must NOT be treated as a malformed-empty-credential error.
-	resp, err := mqtt5.Call(ctx, client, router, newSecuredRouteHandle(), computeReq{X: 3, Y: 4},
-		mqtt5.CallOptions{
-			CredentialFunc: func(context.Context, []route.SecurityRequirement) ([]mqtt5.UserProperty, error) {
+	resp, err := Call(ctx, client, router, newSecuredRouteHandle(), computeReq{X: 3, Y: 4},
+		CallOptions{
+			CredentialFunc: func(context.Context, []route.SecurityRequirement) ([]UserProperty, error) {
 				return nil, nil
 			},
 		})
@@ -405,11 +404,11 @@ func TestServe_ErrorPatternMatch_HandlerError_PublishesTypedPayload(t *testing.T
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
 
-	_ = mqtt5.Serve(ctx, client, router, handle,
+	_ = Serve(ctx, client, router, handle,
 		func(_ context.Context, _ computeReq) (computeResp, error) {
 			return computeResp{}, serveConflictErr{msg: "duplicate"}
 		},
-		mqtt5.ServeOptions{})
+		ServeOptions{})
 
 	router.dispatch("compute/add", &pahomqtt5.Publish{
 		Topic:   "compute/add",
@@ -453,11 +452,11 @@ func TestServe_ErrorPatternNoMatch_HandlerError_FallsBackToPlainText(t *testing.
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
 
-	_ = mqtt5.Serve(ctx, client, router, handle,
+	_ = Serve(ctx, client, router, handle,
 		func(_ context.Context, _ computeReq) (computeResp, error) {
 			return computeResp{}, unrelatedErr
 		},
-		mqtt5.ServeOptions{})
+		ServeOptions{})
 
 	router.dispatch("compute/add", &pahomqtt5.Publish{
 		Topic:   "compute/add",
@@ -501,11 +500,11 @@ func TestServe_ErrorPatternMatch_EncodeError_PublishesTypedPayload(t *testing.T)
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
 
-	_ = mqtt5.Serve(ctx, client, router, handle,
+	_ = Serve(ctx, client, router, handle,
 		func(_ context.Context, req computeReq) (computeResp, error) {
 			return computeResp{Sum: req.X + req.Y}, nil
 		},
-		mqtt5.ServeOptions{})
+		ServeOptions{})
 
 	router.dispatch("compute/add", &pahomqtt5.Publish{
 		Topic:   "compute/add",
@@ -534,11 +533,11 @@ func TestServe_ObserverRecordRequestSuccess(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
 
-	_ = mqtt5.Serve(ctx, client, router, newRouteHandle(),
+	_ = Serve(ctx, client, router, newRouteHandle(),
 		func(_ context.Context, req computeReq) (computeResp, error) {
 			return computeResp{Sum: req.X + req.Y}, nil
 		},
-		mqtt5.ServeOptions{Observer: obs})
+		ServeOptions{Observer: obs})
 
 	router.dispatch("compute/add", &pahomqtt5.Publish{
 		Topic:   "compute/add",
@@ -562,9 +561,9 @@ func TestServe_ObserverRecordRequestFailure(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
 
-	_ = mqtt5.Serve(ctx, client, router, newRouteHandle(),
+	_ = Serve(ctx, client, router, newRouteHandle(),
 		func(_ context.Context, _ computeReq) (computeResp, error) { return computeResp{}, nil },
-		mqtt5.ServeOptions{Observer: obs})
+		ServeOptions{Observer: obs})
 
 	router.dispatch("compute/add", &pahomqtt5.Publish{
 		Topic:      "compute/add",
@@ -586,11 +585,11 @@ func TestServe_TraceSpan(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
 
-	_ = mqtt5.Serve(ctx, client, router, newRouteHandle(),
+	_ = Serve(ctx, client, router, newRouteHandle(),
 		func(_ context.Context, req computeReq) (computeResp, error) {
 			return computeResp{Sum: req.X + req.Y}, nil
 		},
-		mqtt5.ServeOptions{Observer: obs})
+		ServeOptions{Observer: obs})
 
 	router.dispatch("compute/add", &pahomqtt5.Publish{
 		Topic:      "compute/add",
@@ -600,7 +599,7 @@ func TestServe_TraceSpan(t *testing.T) {
 	time.Sleep(80 * time.Millisecond)
 
 	if len(obs.startSpanOps) != 1 || obs.startSpanOps[0] != "mqtt5.serve" {
-		t.Fatalf("expected StartSpan 'mqtt5.serve', got %v", obs.startSpanOps)
+		t.Fatalf("expected StartSpan 'serve', got %v", obs.startSpanOps)
 	}
 }
 
@@ -630,16 +629,16 @@ func TestCall_ValidRoundTrip(t *testing.T) {
 	defer cancel()
 
 	// Set up the responder.
-	_ = mqtt5.Serve(ctx, client, router, newRouteHandle(),
+	_ = Serve(ctx, client, router, newRouteHandle(),
 		func(_ context.Context, req computeReq) (computeResp, error) {
 			return computeResp{Sum: req.X + req.Y}, nil
 		},
-		mqtt5.ServeOptions{})
+		ServeOptions{})
 
 	// Make a request.
-	resp, err := mqtt5.Call(ctx, client, router, newRouteHandle(),
+	resp, err := Call(ctx, client, router, newRouteHandle(),
 		computeReq{X: 3, Y: 4},
-		mqtt5.CallOptions{
+		CallOptions{
 			ReplyTopicPrefix: "replies",
 			Timeout:          2 * time.Second,
 		})
@@ -658,18 +657,18 @@ func TestCall_Timeout(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
 
-	_, err := mqtt5.Call(ctx, client, router, newRouteHandle(),
+	_, err := Call(ctx, client, router, newRouteHandle(),
 		computeReq{X: 1, Y: 2},
-		mqtt5.CallOptions{
+		CallOptions{
 			ReplyTopicPrefix: "replies",
 			Timeout:          100 * time.Millisecond,
 		})
 
-	var reqErr mqtt5.CallError
+	var reqErr CallError
 	if !errors.As(err, &reqErr) {
 		t.Fatalf("expected CallError, got %T: %v", err, err)
 	}
-	if reqErr.Kind != mqtt5.KindTimeout {
+	if reqErr.Kind != KindTimeout {
 		t.Fatalf("expected KindTimeout, got %v", reqErr.Kind)
 	}
 }
@@ -681,15 +680,15 @@ func TestCall_ObserverRecordRequestSuccess(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
 
-	_ = mqtt5.Serve(ctx, client, router, newRouteHandle(),
+	_ = Serve(ctx, client, router, newRouteHandle(),
 		func(_ context.Context, req computeReq) (computeResp, error) {
 			return computeResp{Sum: req.X + req.Y}, nil
 		},
-		mqtt5.ServeOptions{})
+		ServeOptions{})
 
-	_, _ = mqtt5.Call(ctx, client, router, newRouteHandle(),
+	_, _ = Call(ctx, client, router, newRouteHandle(),
 		computeReq{X: 1, Y: 2},
-		mqtt5.CallOptions{Timeout: 2 * time.Second, Observer: obs})
+		CallOptions{Timeout: 2 * time.Second, Observer: obs})
 
 	if len(obs.requests) != 1 || obs.requests[0] != 200 {
 		t.Fatalf("expected RecordRequest(200), got %v", obs.requests)
@@ -703,9 +702,9 @@ func TestCall_ObserverRecordRequestTimeout(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
 
-	_, _ = mqtt5.Call(ctx, client, router, newRouteHandle(),
+	_, _ = Call(ctx, client, router, newRouteHandle(),
 		computeReq{X: 1, Y: 2},
-		mqtt5.CallOptions{Timeout: 50 * time.Millisecond, Observer: obs})
+		CallOptions{Timeout: 50 * time.Millisecond, Observer: obs})
 
 	if len(obs.requests) != 1 || obs.requests[0] != 0 {
 		t.Fatalf("expected RecordRequest(0) on timeout, got %v", obs.requests)
@@ -719,18 +718,18 @@ func TestCall_TraceSpan(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
 
-	_ = mqtt5.Serve(ctx, client, router, newRouteHandle(),
+	_ = Serve(ctx, client, router, newRouteHandle(),
 		func(_ context.Context, req computeReq) (computeResp, error) {
 			return computeResp{Sum: req.X + req.Y}, nil
 		},
-		mqtt5.ServeOptions{})
+		ServeOptions{})
 
-	_, _ = mqtt5.Call(ctx, client, router, newRouteHandle(),
+	_, _ = Call(ctx, client, router, newRouteHandle(),
 		computeReq{X: 1, Y: 2},
-		mqtt5.CallOptions{Timeout: 2 * time.Second, Observer: obs})
+		CallOptions{Timeout: 2 * time.Second, Observer: obs})
 
 	if len(obs.startSpanOps) != 1 || obs.startSpanOps[0] != "mqtt5.request" {
-		t.Fatalf("expected StartSpan 'mqtt5.request', got %v", obs.startSpanOps)
+		t.Fatalf("expected StartSpan 'request', got %v", obs.startSpanOps)
 	}
 }
 
@@ -740,11 +739,11 @@ func TestCall_ContextCancelled(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel() // cancel immediately
 
-	_, err := mqtt5.Call(ctx, client, router, newRouteHandle(),
+	_, err := Call(ctx, client, router, newRouteHandle(),
 		computeReq{X: 1, Y: 2},
-		mqtt5.CallOptions{Timeout: 5 * time.Second})
+		CallOptions{Timeout: 5 * time.Second})
 
-	var reqErr mqtt5.CallError
+	var reqErr CallError
 	if !errors.As(err, &reqErr) {
 		t.Fatalf("expected CallError on ctx cancel, got %T: %v", err, err)
 	}
@@ -769,9 +768,9 @@ func TestCall_WithVars_PublishesToResolvedTopic(t *testing.T) {
 
 	// Request will timeout (no responder), but we only care that it published
 	// to the resolved topic "compute/acme/add".
-	_, _ = mqtt5.Call(ctx, client, router, handle,
+	_, _ = Call(ctx, client, router, handle,
 		computeReq{X: 3, Y: 4},
-		mqtt5.CallOptions{
+		CallOptions{
 			Vars:    map[string]string{"tenantID": "acme"},
 			Timeout: 100 * time.Millisecond, // fast timeout
 		})
@@ -808,14 +807,14 @@ func TestCall_WithVars_MissingVar_ReturnsRequestError(t *testing.T) {
 	b := reqreply.NewBuilder(reqreply.Info{Title: "Test", Version: "1.0.0"})
 	handle, _ := templateRoute.Register(b)
 
-	_, err := mqtt5.Call(ctx, client, router, handle,
+	_, err := Call(ctx, client, router, handle,
 		computeReq{X: 1, Y: 2},
-		mqtt5.CallOptions{
+		CallOptions{
 			Vars:    map[string]string{}, // tenantID missing
 			Timeout: time.Second,
 		})
 
-	var reqErr mqtt5.CallError
+	var reqErr CallError
 	if !errors.As(err, &reqErr) {
 		t.Fatalf("expected CallError, got %T: %v", err, err)
 	}
@@ -842,9 +841,9 @@ func TestCall_WithVars_MissingVar_ReportsRequiredConstraintWithVarName(t *testin
 	b := reqreply.NewBuilder(reqreply.Info{Title: "Test", Version: "1.0.0"})
 	handle, _ := templateRoute.Register(b)
 
-	_, _ = mqtt5.Call(ctx, client, router, handle,
+	_, _ = Call(ctx, client, router, handle,
 		computeReq{X: 1, Y: 2},
-		mqtt5.CallOptions{
+		CallOptions{
 			Vars:     map[string]string{}, // tenantID missing
 			Observer: obs,
 		})
@@ -867,7 +866,7 @@ func TestCall_WithVars_MissingVar_ReportsRequiredConstraintWithVarName(t *testin
 // ── ReplyTopicBuilder unit tests ──────────────────────────────────────────────
 
 func TestUUIDReplyTopic_DefaultPrefix(t *testing.T) {
-	b := mqtt5.UUIDReplyTopic("")
+	b := UUIDReplyTopic("")
 	topic, filter := b()
 	if !strings.HasPrefix(topic, "replies/") {
 		t.Errorf("expected topic to start with %q, got %q", "replies/", topic)
@@ -878,7 +877,7 @@ func TestUUIDReplyTopic_DefaultPrefix(t *testing.T) {
 }
 
 func TestUUIDReplyTopic_CustomPrefix(t *testing.T) {
-	b := mqtt5.UUIDReplyTopic("myns")
+	b := UUIDReplyTopic("myns")
 	topic, filter := b()
 	if !strings.HasPrefix(topic, "myns/") {
 		t.Errorf("expected topic prefix %q, got %q", "myns/", topic)
@@ -889,7 +888,7 @@ func TestUUIDReplyTopic_CustomPrefix(t *testing.T) {
 }
 
 func TestUUIDReplyTopic_EqualTopicAndFilter(t *testing.T) {
-	b := mqtt5.UUIDReplyTopic("replies")
+	b := UUIDReplyTopic("replies")
 	topic, filter := b()
 	if topic != filter {
 		t.Errorf("expected responseTopic == subscribeFilter, got %q vs %q", topic, filter)
@@ -897,7 +896,7 @@ func TestUUIDReplyTopic_EqualTopicAndFilter(t *testing.T) {
 }
 
 func TestUUIDReplyTopic_UniquePerCall(t *testing.T) {
-	b := mqtt5.UUIDReplyTopic("replies")
+	b := UUIDReplyTopic("replies")
 	t1, _ := b()
 	t2, _ := b()
 	if t1 == t2 {
@@ -906,7 +905,7 @@ func TestUUIDReplyTopic_UniquePerCall(t *testing.T) {
 }
 
 func TestSharedReplyTopic_SubscribeFilterHasSharePrefix(t *testing.T) {
-	b := mqtt5.SharedReplyTopic("replies", "pool")
+	b := SharedReplyTopic("replies", "pool")
 	_, filter := b()
 	if !strings.HasPrefix(filter, "$share/pool/replies/") {
 		t.Errorf("expected filter to start with %q, got %q", "$share/pool/replies/", filter)
@@ -914,7 +913,7 @@ func TestSharedReplyTopic_SubscribeFilterHasSharePrefix(t *testing.T) {
 }
 
 func TestSharedReplyTopic_ResponseTopicHasNoSharePrefix(t *testing.T) {
-	b := mqtt5.SharedReplyTopic("replies", "pool")
+	b := SharedReplyTopic("replies", "pool")
 	topic, _ := b()
 	if strings.HasPrefix(topic, "$share/") {
 		t.Errorf("responseTopic must not carry $share prefix, got %q", topic)
@@ -925,7 +924,7 @@ func TestSharedReplyTopic_ResponseTopicHasNoSharePrefix(t *testing.T) {
 }
 
 func TestSharedReplyTopic_UniquePerCall(t *testing.T) {
-	b := mqtt5.SharedReplyTopic("replies", "pool")
+	b := SharedReplyTopic("replies", "pool")
 	t1, f1 := b()
 	t2, f2 := b()
 	if t1 == t2 {
@@ -937,7 +936,7 @@ func TestSharedReplyTopic_UniquePerCall(t *testing.T) {
 }
 
 func TestSharedReplyTopic_DefaultPrefix(t *testing.T) {
-	b := mqtt5.SharedReplyTopic("", "pool")
+	b := SharedReplyTopic("", "pool")
 	topic, filter := b()
 	if !strings.HasPrefix(topic, "replies/") {
 		t.Errorf("expected responseTopic prefix %q, got %q", "replies/", topic)
@@ -961,8 +960,8 @@ func TestCall_ReplyTopicBuilder_UsesReturnedResponseTopic(t *testing.T) {
 	handle, _ := computeRoute.Register(b)
 
 	customTopic := "custom/replies/abc"
-	_, _ = mqtt5.Call(ctx, client, router, handle, computeReq{X: 1, Y: 2},
-		mqtt5.CallOptions{
+	_, _ = Call(ctx, client, router, handle, computeReq{X: 1, Y: 2},
+		CallOptions{
 			ReplyTopicBuilder: func() (string, string) { return customTopic, customTopic },
 			Timeout:           100 * time.Millisecond,
 		})
@@ -1001,8 +1000,8 @@ func TestCall_ReplyTopicBuilder_UsesReturnedSubscribeFilter(t *testing.T) {
 	responseTopic := "replies/abc"
 	sharedFilter := "$share/mygroup/replies/abc"
 
-	_, _ = mqtt5.Call(ctx, client, router, handle, computeReq{X: 1, Y: 2},
-		mqtt5.CallOptions{
+	_, _ = Call(ctx, client, router, handle, computeReq{X: 1, Y: 2},
+		CallOptions{
 			ReplyTopicBuilder: func() (string, string) { return responseTopic, sharedFilter },
 			Timeout:           100 * time.Millisecond,
 		})
@@ -1028,16 +1027,16 @@ func TestCall_ReplyTopicBuilder_EmptyResponseTopic_ReturnsRequestError(t *testin
 	b := reqreply.NewBuilder(reqreply.Info{Title: "T", Version: "1"})
 	handle, _ := computeRoute.Register(b)
 
-	_, err := mqtt5.Call(ctx, client, router, handle, computeReq{X: 1, Y: 2},
-		mqtt5.CallOptions{
+	_, err := Call(ctx, client, router, handle, computeReq{X: 1, Y: 2},
+		CallOptions{
 			ReplyTopicBuilder: func() (string, string) { return "", "" },
 		})
 
-	var reqErr mqtt5.CallError
+	var reqErr CallError
 	if !errors.As(err, &reqErr) {
 		t.Fatalf("expected CallError, got %T: %v", err, err)
 	}
-	if reqErr.Kind != mqtt5.KindEncode {
+	if reqErr.Kind != KindEncode {
 		t.Errorf("expected KindEncode, got %v", reqErr.Kind)
 	}
 }
@@ -1053,8 +1052,8 @@ func TestCall_ReplyTopicBuilder_EmptyFilter_FallsBackToResponseTopic(t *testing.
 	handle, _ := computeRoute.Register(b)
 
 	responseTopic := "replies/fallback"
-	_, _ = mqtt5.Call(ctx, client, router, handle, computeReq{X: 1, Y: 2},
-		mqtt5.CallOptions{
+	_, _ = Call(ctx, client, router, handle, computeReq{X: 1, Y: 2},
+		CallOptions{
 			ReplyTopicBuilder: func() (string, string) { return responseTopic, "" },
 			Timeout:           100 * time.Millisecond,
 		})
@@ -1081,8 +1080,8 @@ func TestCall_NilBuilder_UsesReplyTopicPrefix(t *testing.T) {
 	b := reqreply.NewBuilder(reqreply.Info{Title: "T", Version: "1"})
 	handle, _ := computeRoute.Register(b)
 
-	_, _ = mqtt5.Call(ctx, client, router, handle, computeReq{X: 1, Y: 2},
-		mqtt5.CallOptions{
+	_, _ = Call(ctx, client, router, handle, computeReq{X: 1, Y: 2},
+		CallOptions{
 			ReplyTopicPrefix: "custom-prefix",
 			Timeout:          100 * time.Millisecond,
 		})
@@ -1110,8 +1109,8 @@ func TestCall_NilBuilder_DefaultPrefix(t *testing.T) {
 	b := reqreply.NewBuilder(reqreply.Info{Title: "T", Version: "1"})
 	handle, _ := computeRoute.Register(b)
 
-	_, _ = mqtt5.Call(ctx, client, router, handle, computeReq{X: 1, Y: 2},
-		mqtt5.CallOptions{
+	_, _ = Call(ctx, client, router, handle, computeReq{X: 1, Y: 2},
+		CallOptions{
 			Timeout: 100 * time.Millisecond,
 		})
 
@@ -1165,7 +1164,7 @@ func newTenantRouteHandle() *reqreply.RouteHandle[tenantReq, tenantResp] {
 	return h
 }
 
-// RR4: mqtt5.Serve auto-merges topic vars into the decoded req when the
+// RR4: Serve auto-merges topic vars into the decoded req when the
 // route declares merge fields.
 func TestServe_MergeFields_AutoMergesTopicVars(t *testing.T) {
 	client := &mockClient{}
@@ -1176,12 +1175,12 @@ func TestServe_MergeFields_AutoMergesTopicVars(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
 
-	err := mqtt5.Serve(ctx, client, router, handle,
+	err := Serve(ctx, client, router, handle,
 		func(_ context.Context, req tenantReq) (tenantResp, error) {
 			received = req
 			return tenantResp{Sum: req.X + req.Y}, nil
 		},
-		mqtt5.ServeOptions{})
+		ServeOptions{})
 	if err != nil {
 		t.Fatalf("Serve setup failed: %v", err)
 	}
@@ -1204,7 +1203,7 @@ func TestServe_MergeFields_AutoMergesTopicVars(t *testing.T) {
 	}
 }
 
-// RR5: mqtt5.CallHandle derives opts.Vars from req automatically — one
+// RR5: CallHandle derives opts.Vars from req automatically — one
 // struct in, no manual vars map needed.
 func TestCallHandle_DerivesVarsFromReq(t *testing.T) {
 	client := &mockClient{}
@@ -1213,9 +1212,9 @@ func TestCallHandle_DerivesVarsFromReq(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
 	defer cancel()
 
-	_, _ = mqtt5.CallHandle(ctx, client, router, handle,
+	_, _ = CallHandle(ctx, client, router, handle,
 		tenantReq{TenantID: "acme", X: 1, Y: 2},
-		mqtt5.CallOptions{Timeout: 100 * time.Millisecond})
+		CallOptions{Timeout: 100 * time.Millisecond})
 
 	pub := client.lastPublished()
 	if pub == nil {
@@ -1226,7 +1225,7 @@ func TestCallHandle_DerivesVarsFromReq(t *testing.T) {
 	}
 }
 
-// RR6: mqtt5.CallHandle explicit opts.Vars takes precedence over the
+// RR6: CallHandle explicit opts.Vars takes precedence over the
 // derived value for the same key.
 func TestCallHandle_ExplicitVarsOverridePrecedence(t *testing.T) {
 	client := &mockClient{}
@@ -1235,9 +1234,9 @@ func TestCallHandle_ExplicitVarsOverridePrecedence(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
 	defer cancel()
 
-	_, _ = mqtt5.CallHandle(ctx, client, router, handle,
+	_, _ = CallHandle(ctx, client, router, handle,
 		tenantReq{TenantID: "acme", X: 1, Y: 2},
-		mqtt5.CallOptions{
+		CallOptions{
 			Timeout: 100 * time.Millisecond,
 			Vars:    map[string]string{"tenantID": "overridden"},
 		})
@@ -1287,18 +1286,18 @@ func TestServeCallHandle_NestedReq_RoundTrip(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
 
-	if err := mqtt5.Serve(ctx, client, router, handle,
+	if err := Serve(ctx, client, router, handle,
 		func(_ context.Context, req nestedReq) (tenantResp, error) {
 			received = req
 			return tenantResp{Sum: req.X + req.Y}, nil
 		},
-		mqtt5.ServeOptions{}); err != nil {
+		ServeOptions{}); err != nil {
 		t.Fatalf("Serve setup failed: %v", err)
 	}
 
 	req := nestedReq{Meta: meta{TenantID: "acme"}, X: 5, Y: 6}
 	go func() {
-		_, _ = mqtt5.CallHandle(ctx, client, router, handle, req, mqtt5.CallOptions{Timeout: 500 * time.Millisecond})
+		_, _ = CallHandle(ctx, client, router, handle, req, CallOptions{Timeout: 500 * time.Millisecond})
 	}()
 
 	// Wait for the request to be published, then dispatch it to Serve's
@@ -1339,9 +1338,9 @@ func TestCall_RequestFormats_OverridesRouteDeclaredFormat(t *testing.T) {
 
 	// Request will timeout (no responder) — we only care about the
 	// encoded payload bytes.
-	_, _ = mqtt5.Call(ctx, client, router, newRouteHandle(),
+	_, _ = Call(ctx, client, router, newRouteHandle(),
 		computeReq{X: 3, Y: 4},
-		mqtt5.CallOptions{
+		CallOptions{
 			Timeout:        100 * time.Millisecond,
 			RequestFormats: []format.Format[computeReq]{format.YAML(computeReqCodec)},
 		})
@@ -1364,9 +1363,9 @@ func TestCall_RequestFormats_RouteDeclaredStillAppliesWithoutOverride(t *testing
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
 
-	_, _ = mqtt5.Call(ctx, client, router, newRouteHandle(),
+	_, _ = Call(ctx, client, router, newRouteHandle(),
 		computeReq{X: 3, Y: 4},
-		mqtt5.CallOptions{Timeout: 100 * time.Millisecond})
+		CallOptions{Timeout: 100 * time.Millisecond})
 
 	pub := client.lastPublished()
 	if pub == nil {
@@ -1395,15 +1394,15 @@ func TestCall_ResponseFormats_OverridesRouteDeclaredFormat(t *testing.T) {
 
 	serverHandle := newRouteHandle()
 	serverHandle.WithFormats(format.YAML(computeRespCodec))
-	_ = mqtt5.Serve(ctx, client, router, serverHandle,
+	_ = Serve(ctx, client, router, serverHandle,
 		func(_ context.Context, req computeReq) (computeResp, error) {
 			return computeResp{Sum: req.X + req.Y}, nil
 		},
-		mqtt5.ServeOptions{})
+		ServeOptions{})
 
-	resp, err := mqtt5.Call(ctx, client, router, newRouteHandle(), // client handle: no Formats declared
+	resp, err := Call(ctx, client, router, newRouteHandle(), // client handle: no Formats declared
 		computeReq{X: 3, Y: 4},
-		mqtt5.CallOptions{
+		CallOptions{
 			Timeout:         2 * time.Second,
 			ResponseFormats: []format.Format[computeResp]{format.YAML(computeRespCodec)},
 		})
@@ -1424,15 +1423,15 @@ func TestCall_RequestFormats_TypeMismatch_ReturnsCallError(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
 
-	_, err := mqtt5.Call(ctx, client, router, newRouteHandle(),
+	_, err := Call(ctx, client, router, newRouteHandle(),
 		computeReq{X: 3, Y: 4},
-		mqtt5.CallOptions{
+		CallOptions{
 			Timeout: time.Second,
 			// Wrong type: []format.Format[computeResp] instead of []format.Format[computeReq].
 			RequestFormats: []format.Format[computeResp]{format.JSON(computeRespCodec)},
 		})
-	var callErr mqtt5.CallError
-	if !errors.As(err, &callErr) || callErr.Kind != mqtt5.KindEncode {
+	var callErr CallError
+	if !errors.As(err, &callErr) || callErr.Kind != KindEncode {
 		t.Fatalf("want CallError{Kind: KindEncode}, got %v", err)
 	}
 }
@@ -1447,21 +1446,21 @@ func TestCall_ResponseFormats_TypeMismatch_ReturnsCallError(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
 
-	_ = mqtt5.Serve(ctx, client, router, newRouteHandle(),
+	_ = Serve(ctx, client, router, newRouteHandle(),
 		func(_ context.Context, req computeReq) (computeResp, error) {
 			return computeResp{Sum: req.X + req.Y}, nil
 		},
-		mqtt5.ServeOptions{})
+		ServeOptions{})
 
-	_, err := mqtt5.Call(ctx, client, router, newRouteHandle(),
+	_, err := Call(ctx, client, router, newRouteHandle(),
 		computeReq{X: 3, Y: 4},
-		mqtt5.CallOptions{
+		CallOptions{
 			Timeout: 2 * time.Second,
 			// Wrong type: []format.Format[computeReq] instead of []format.Format[computeResp].
 			ResponseFormats: []format.Format[computeReq]{format.JSON(computeReqCodec)},
 		})
-	var callErr mqtt5.CallError
-	if !errors.As(err, &callErr) || callErr.Kind != mqtt5.KindDecode {
+	var callErr CallError
+	if !errors.As(err, &callErr) || callErr.Kind != KindDecode {
 		t.Fatalf("want CallError{Kind: KindDecode}, got %v", err)
 	}
 }

@@ -9,11 +9,14 @@
 > replace the old `Handler`/`Register`/`SSEHandler`/`RegisterSSE`
 > four-door surface; `rest.WithSecurityScheme` was REMOVED entirely).
 > This doc remains useful for its Phase 2+ (events/reqreply/MCP/ports)
-> DESIGN RATIONALE, which is still valid and not yet implemented — see
-> `docs/roadmap/events-reqreply-ports-workflow-simplification.md` for
-> the up-to-date findings on that front. Do not follow this doc's OWN
-> REST code samples/signatures as current — they describe the
-> PRE-unification shape.
+> DESIGN RATIONALE, which is still valid and not yet implemented —
+> `api/events`'s own equivalent has since shipped (see
+> `docs/roadmap/pubsub-workflow-simplification.md`); `api/reqreply`'s
+> equivalent is designed in
+> `docs/roadmap/reqreply-workflow-simplification.md` for the up-to-date
+> findings on that front. Do not follow this doc's OWN REST code
+> samples/signatures as current — they describe the PRE-unification
+> shape.
 >
 > **Status:** Design draft — Phase 1 (REST) fully speced with THREE
 > worked capabilities: security (`RequireScopes`, now SPEC-DERIVING —

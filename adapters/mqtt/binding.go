@@ -97,7 +97,7 @@ func (a *mqttSubscribeAdapter[T]) Activate(ctx context.Context, dst chan<- T, er
 			}
 		},
 	}
-	handler := SubscribeHandler(ctx, a.handle,
+	handler := subscribeHandler(ctx, a.handle,
 		func(_ context.Context, v T) error {
 			select {
 			case dst <- v:
@@ -135,7 +135,7 @@ type MQTTDrainPublishOptions struct {
 	//
 	// When nil, topic vars are derived PER-ITEM from each item's own
 	// merge-field-declared struct fields (the same convenience
-	// [PublishHandle] provides) — every item may resolve to a different
+	// [publishHandle] provides) — every item may resolve to a different
 	// concrete topic. When set to a non-nil map (including an explicitly
 	// empty one), that map is used as-is for every item (static topic vars
 	// only) — the escape hatch, unchanged from prior behavior.
@@ -176,7 +176,7 @@ func (a *mqttPublishAdapter[T]) Activate(ctx context.Context, src gstream.Stream
 	if obs == nil {
 		obs = stats.ObserverFromContext(ctx)
 	}
-	pubOpts := PublishOptions{Observer: a.opts.Observer}
+	pubOpts := PublishOptions[T]{Observer: a.opts.Observer}
 	// handleUpstreamError resolves declared events.ErrorChannel patterns on
 	// a.handle before falling back to the adapter's existing OnError
 	// callback. A matched ErrorRespond pattern publishes the typed error
@@ -211,9 +211,9 @@ func (a *mqttPublishAdapter[T]) Activate(ctx context.Context, src gstream.Stream
 		func(ctx context.Context, v T) error {
 			var err error
 			if a.opts.Vars == nil {
-				err = PublishHandle(ctx, a.client, a.handle, a.opts.QoS, a.opts.Retained, v, pubOpts, a.fmt)
+				err = publishHandle(ctx, a.client, a.handle, a.opts.QoS, a.opts.Retained, v, pubOpts, a.fmt)
 			} else {
-				err = Publish(ctx, a.client, a.handle, a.opts.QoS, a.opts.Retained, v,
+				err = publish(ctx, a.client, a.handle, a.opts.QoS, a.opts.Retained, v,
 					a.opts.Vars, pubOpts, a.fmt)
 			}
 			if err != nil {

@@ -65,7 +65,7 @@ func buildSocket[In, Out any](
 	pat SocketPattern,
 	inCodec codex.Codec[In],
 	outCodec codex.Codec[Out],
-	restBuilder *rest.Builder,
+	restBuilder *rest.Server,
 ) (Socket[In, Out], error) {
 	var sb socketMergeBuilder
 	for _, opt := range pat.InOpts {
@@ -85,7 +85,7 @@ func buildSocket[In, Out any](
 
 	b := restBuilder
 	if b == nil {
-		b = rest.NewBuilder(rest.Info{})
+		b = rest.NewServer(rest.Info{})
 	}
 	route := rest.NewRoute[struct{}, struct{}]("GET", pat.Path,
 		codex.Struct[struct{}](), codex.Struct[struct{}](), pat.Opts...)
@@ -133,7 +133,7 @@ func buildDuplexPatternHandles[In, Out any](
 	patterns []Pattern,
 	inCodec codex.Codec[In],
 	outCodec codex.Codec[Out],
-	restBuilder *rest.Builder,
+	restBuilder *rest.Server,
 ) (handles map[string]any, specs map[string]any, err error) {
 	handles = make(map[string]any, len(patterns))
 	specs = make(map[string]any, len(patterns))
@@ -219,23 +219,25 @@ const (
 )
 
 // buildEventPatternHandles scans patterns for an [EventPattern] and builds a
-// *events.ChannelHandle[T] via [events.Channel.Register] — the SAME call a
-// hand-declared channel makes. Used by [SourcePort] (subscribe) and [SinkPort]
-// (publish) construction — both are single-codec ports, matching EventPattern's
-// single payload type. It also handles [RESTPattern] (role-dependent: HTTP
-// ingest rest.Route[T, struct{}] on a source, SSE rest.SSERoute[struct{}, T]
-// on a sink), [FilePattern] (building a File[T] from the port's codec
-// — infallible on the enum-only path; a declared CustomFormat type mismatch
-// returns [PatternRegisterError]), and [SQLPattern] (metadata-only, stored
-// for [SQLMeta] / [WithSQLMeta] propagation).
+// *events.ChannelHandle[T] via [events.Channel.WithSubscribe]/[events.Channel.WithPublish]
+// followed by [events.Subscriber.Handle]/[events.Publisher.Handle] — the SAME
+// calls a hand-declared channel makes. Used by [SourcePort] (subscribe) and
+// [SinkPort] (publish) construction — both are single-codec ports, matching
+// EventPattern's single payload type. It also handles [RESTPattern]
+// (role-dependent: HTTP ingest rest.Route[T, struct{}] on a source, SSE
+// rest.SSERoute[struct{}, T] on a sink), [FilePattern] (building a File[T]
+// from the port's codec — infallible on the enum-only path; a declared
+// CustomFormat type mismatch returns [PatternRegisterError]), and
+// [SQLPattern] (metadata-only, stored for [SQLMeta] / [WithSQLMeta]
+// propagation).
 //
-// eventBuilder/restBuilder are used when non-nil (giving the handle full
-// parity with a hand-registered channel/route: security schemes, global
-// security, topic/path constraints, shared spec accumulation). When nil, a
-// private, single-use Builder is created for that one Register call — the
-// same zero-ceremony default as before, through the identical Register code
-// path (there is no separate, weaker construction path — see
-// [PortOptions.EventBuilder]/[PortOptions.RESTBuilder]).
+// client is passed straight through to Handle — nil already builds a valid,
+// spec-free handle there (see [events.Subscriber.Handle]), so no private
+// fallback client is needed. restBuilder, by contrast, is used when non-nil
+// and otherwise replaced with a private, single-use Builder for that one
+// Register call — the same zero-ceremony default as before, through the
+// identical construction code path (see [PortOptions.EventClient]/
+// [PortOptions.RESTBuilder]).
 //
 // Returns both the built handles (for [EventHandle]/[RESTHandle]/[SSEHandle])
 // and the original spec values (for [RegisterEvent]/[RegisterREST]/
@@ -245,8 +247,8 @@ func buildEventPatternHandles[T any](
 	patterns []Pattern,
 	codec codex.Codec[T],
 	role portRole,
-	builder *events.Builder,
-	restBuilder *rest.Builder,
+	client *events.Client,
+	restBuilder *rest.Server,
 ) (handles map[string]any, specs map[string]any, err error) {
 	handles = make(map[string]any, len(patterns))
 	specs = make(map[string]any, len(patterns))
@@ -255,7 +257,7 @@ func buildEventPatternHandles[T any](
 		case RESTPattern:
 			b := restBuilder
 			if b == nil {
-				b = rest.NewBuilder(rest.Info{})
+				b = rest.NewServer(rest.Info{})
 			}
 			switch role {
 			case roleSource:
@@ -289,16 +291,48 @@ func buildEventPatternHandles[T any](
 			}
 		case EventPattern:
 			channel := events.NewChannel[T](pat.Topic, codec, pat.Opts...)
-			b := builder
-			if b == nil {
-				b = events.NewBuilder(events.Info{})
+			switch role {
+			case roleSource:
+				// Publish is a SinkPort-only field — declaring it here would
+				// be silently discarded, which is exactly the kind of
+				// silent-divergence gap this redesign eliminates elsewhere;
+				// mirrors the RESTPattern-on-SinkPort non-GET rejection above.
+				if pat.Publish != nil {
+					return nil, nil, PatternRegisterError{
+						Port: portName, Kind: patternKindEvent,
+						Err: fmt.Errorf("EventPattern on a SourcePort declares Publish, which only takes effect on a SinkPort"),
+					}
+				}
+				sub := events.Subscribe{}
+				if pat.Subscribe != nil {
+					sub = *pat.Subscribe
+				}
+				subscriber := channel.WithSubscribe(sub)
+				handle, err := subscriber.Handle(client)
+				if err != nil {
+					return nil, nil, PatternRegisterError{Port: portName, Kind: patternKindEvent, Err: err}
+				}
+				handles[patternKindEvent] = handle
+				specs[patternKindEvent] = subscriber
+			case roleSink:
+				if pat.Subscribe != nil {
+					return nil, nil, PatternRegisterError{
+						Port: portName, Kind: patternKindEvent,
+						Err: fmt.Errorf("EventPattern on a SinkPort declares Subscribe, which only takes effect on a SourcePort"),
+					}
+				}
+				pub := events.Publish{}
+				if pat.Publish != nil {
+					pub = *pat.Publish
+				}
+				publisher := channel.WithPublish(pub)
+				handle, err := publisher.Handle(client)
+				if err != nil {
+					return nil, nil, PatternRegisterError{Port: portName, Kind: patternKindEvent, Err: err}
+				}
+				handles[patternKindEvent] = handle
+				specs[patternKindEvent] = publisher
 			}
-			handle, err := channel.Register(b)
-			if err != nil {
-				return nil, nil, PatternRegisterError{Port: portName, Kind: patternKindEvent, Err: err}
-			}
-			handles[patternKindEvent] = handle
-			specs[patternKindEvent] = channel
 		case FilePattern:
 			fFmt, err := resolveFormat(portName, patternKindFile, pat.Format, pat.CustomFormat, codec)
 			if err != nil {
@@ -382,7 +416,7 @@ func buildDualCodecPatternHandles[Req, Resp any](
 	patterns []Pattern,
 	reqCodec codex.Codec[Req],
 	respCodec codex.Codec[Resp],
-	restBuilder *rest.Builder,
+	restBuilder *rest.Server,
 	reqReplyBuilder *reqreply.Builder,
 	mcpBuilder *apimcp.Builder,
 	cacheAllowed bool,
@@ -397,7 +431,7 @@ func buildDualCodecPatternHandles[Req, Resp any](
 			route := rest.NewRoute[Req, Resp](pat.Method, pat.Path, reqCodec, respCodec, pat.Opts...)
 			b := restBuilder
 			if b == nil {
-				b = rest.NewBuilder(rest.Info{})
+				b = rest.NewServer(rest.Info{})
 			}
 			handle, err := route.RegisterHandle(b)
 			if err != nil {

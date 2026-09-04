@@ -28,7 +28,7 @@ import (
 // Typical usage — channel defined with go-codex template variables, and
 // declared with merge-capable [events.NewTopicParam] fields so the extracted
 // vars can be merged directly into the payload via
-// [events.ChannelHandle.DecodeMerged] (this is exactly what [Subscribe]
+// [events.ChannelHandle.DecodeMerged] (this is exactly what [subscribe]
 // does internally whenever the channel declares merge fields):
 //
 //	vars, err := mqtt5.TopicVarsFromMessage(sensorChannel, msg)

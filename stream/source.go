@@ -89,14 +89,15 @@ func From[T any](ctx context.Context, src <-chan T) Stream[T] {
 //	sensors := stream.FromCodec(ctx, rawCh, format.YAML(sensorCodec),
 //	    stream.SourceOptions{Name: "mqtt/sensors/+", Observer: obs})
 //
-// Use with MQTT or ZeroMQ SubscribeHandlers that write raw payloads to a channel:
+// Use with an MQTT or ZeroMQ subscribe transport that writes raw payloads to
+// a channel:
 //
 //	rawCh := make(chan []byte, 64)
-//	mqttClient.Subscribe("sensors/+/data", 1,
-//	    adaptermqtt.SubscribeHandler(ctx, handle, func(_ context.Context, raw []byte) error {
-//	        select { case rawCh <- raw: default: }
-//	        return nil
-//	    }, adaptermqtt.SubscribeOptions{}))
+//	transport := adaptermqtt.NewSubscribeTransport[[]byte](client, 1, adaptermqtt.SubscribeOptions{})
+//	go events.SubscribeHandle(ctx, sub, transport, func(_ context.Context, raw []byte) error {
+//	    select { case rawCh <- raw: default: }
+//	    return nil
+//	})
 //
 //	sensors := stream.FromCodec(ctx, rawCh, format.JSON(sensorCodec),
 //	    stream.SourceOptions{Name: "mqtt/sensors/+", Observer: obs})

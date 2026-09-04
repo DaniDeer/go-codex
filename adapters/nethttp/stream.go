@@ -199,7 +199,7 @@ func RegisterPipeline[Req, Resp any](
 // SSEStreamOptions configures [SSEFromStream] and [SSEFromHub].
 type SSEStreamOptions struct {
 	// Topic is the SSE route path used for observer reporting and error context.
-	// Set this to the route's Descriptor.Path when wiring via ServeSSE.
+	// Set this to the route's Descriptor.Path when wiring via [AttachMux].
 	Topic string
 
 	// OnError, when non-nil, is called for write failures ([SSEWriteError]) and
@@ -224,7 +224,7 @@ type SSEStreamOptions struct {
 //	        return stream.Filter(ctx, sharedOEEStream, req.MatchesMachine)
 //	    }, nethttp.SSEStreamOptions{Topic: dashboardRoute.Descriptor.Path, Observer: obs}),
 //	).WithOptions(nethttp.Options{Observer: obs})
-//	dashboardRoute.Register(b); nethttp.ServeSSE(mux, b)
+//	dashboardRoute.Register(b); nethttp.AttachMux(b, mux, ":8080")
 //
 // When the client disconnects, ctx is cancelled and the returned fn exits,
 // terminating the per-connection pipeline.
@@ -294,7 +294,7 @@ func sseFromStream[Req, Event any](
 //	    nethttp.SSEFromHub[struct{}, OEEResult](hub,
 //	        nethttp.SSEStreamOptions{Topic: dashboardRoute.Descriptor.Path, Observer: obs}),
 //	).WithOptions(nethttp.Options{Observer: obs})
-//	dashboardRoute.Register(b); nethttp.ServeSSE(mux, b)
+//	dashboardRoute.Register(b); nethttp.AttachMux(b, mux, ":8080")
 func SSEFromHub[Req, Event any](
 	hub *gstream.BroadcastHub[Event],
 	opts SSEStreamOptions,

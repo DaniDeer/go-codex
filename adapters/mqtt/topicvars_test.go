@@ -1,10 +1,9 @@
-package mqtt_test
+package mqtt
 
 import (
 	"errors"
 	"testing"
 
-	adaptermqtt "github.com/DaniDeer/go-codex/adapters/mqtt"
 	"github.com/DaniDeer/go-codex/api/events"
 	"github.com/DaniDeer/go-codex/codex"
 	"github.com/DaniDeer/go-codex/validate"
@@ -25,9 +24,9 @@ func (m *mockMsg) Payload() []byte   { return m.payload }
 func (m *mockMsg) Ack()              {}
 
 func newTestHandle(topic string) *events.ChannelHandle[struct{}] {
-	b := events.NewBuilder(events.Info{Title: "Test", Version: "1"})
+	b := events.NewClient(events.WithInfo(events.Info{Title: "Test", Version: "1"}))
 	c := codex.Struct[struct{}]()
-	h, err := events.NewChannel[struct{}](topic, c).Register(b)
+	h, err := events.NewChannel[struct{}](topic, c).WithSubscribe(events.Subscribe{}).Handle(b)
 	if err != nil {
 		panic(err)
 	}
@@ -38,7 +37,7 @@ func TestTopicVarsFromMessage_SingleVar(t *testing.T) {
 	h := newTestHandle("sensors/{sensorID}/measurements")
 	msg := &mockMsg{topic: "sensors/f47ac10b/measurements"}
 
-	vars, err := adaptermqtt.TopicVarsFromMessage(h, msg)
+	vars, err := TopicVarsFromMessage(h, msg)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -51,7 +50,7 @@ func TestTopicVarsFromMessage_MultipleVars(t *testing.T) {
 	h := newTestHandle("buildings/{buildingID}/rooms/{roomID}/sensors/{sensorID}")
 	msg := &mockMsg{topic: "buildings/b1/rooms/r2/sensors/s3"}
 
-	vars, err := adaptermqtt.TopicVarsFromMessage(h, msg)
+	vars, err := TopicVarsFromMessage(h, msg)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -70,7 +69,7 @@ func TestTopicVarsFromMessage_StaticTopic(t *testing.T) {
 	h := newTestHandle("user/created")
 	msg := &mockMsg{topic: "user/created"}
 
-	vars, err := adaptermqtt.TopicVarsFromMessage(h, msg)
+	vars, err := TopicVarsFromMessage(h, msg)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -83,7 +82,7 @@ func TestTopicVarsFromMessage_PlusSingleLevelWildcard(t *testing.T) {
 	h := newTestHandle("sensors/+/measurements")
 	msg := &mockMsg{topic: "sensors/abc123/measurements"}
 
-	vars, err := adaptermqtt.TopicVarsFromMessage(h, msg)
+	vars, err := TopicVarsFromMessage(h, msg)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -100,7 +99,7 @@ func TestTopicVarsFromMessage_HashMultiLevelWildcard(t *testing.T) {
 	h := newTestHandle("sensors/{sensorID}/#")
 	msg := &mockMsg{topic: "sensors/abc123/measurements/raw/v1"}
 
-	vars, err := adaptermqtt.TopicVarsFromMessage(h, msg)
+	vars, err := TopicVarsFromMessage(h, msg)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -116,8 +115,8 @@ func TestTopicVarsFromMessage_Mismatch_ExtraSegments(t *testing.T) {
 	h := newTestHandle("sensors/{sensorID}/data")
 	msg := &mockMsg{topic: "sensors/abc/extra/data"}
 
-	_, err := adaptermqtt.TopicVarsFromMessage(h, msg)
-	var mm adaptermqtt.TopicMismatchError
+	_, err := TopicVarsFromMessage(h, msg)
+	var mm TopicMismatchError
 	if !errors.As(err, &mm) {
 		t.Fatalf("want TopicMismatchError, got %T: %v", err, err)
 	}
@@ -127,8 +126,8 @@ func TestTopicVarsFromMessage_Mismatch_WrongLiteral(t *testing.T) {
 	h := newTestHandle("sensors/{sensorID}/data")
 	msg := &mockMsg{topic: "devices/abc/data"}
 
-	_, err := adaptermqtt.TopicVarsFromMessage(h, msg)
-	var mm adaptermqtt.TopicMismatchError
+	_, err := TopicVarsFromMessage(h, msg)
+	var mm TopicMismatchError
 	if !errors.As(err, &mm) {
 		t.Fatalf("want TopicMismatchError, got %T: %v", err, err)
 	}
@@ -141,8 +140,8 @@ func TestTopicVarsFromMessage_Mismatch_FewerSegments(t *testing.T) {
 	h := newTestHandle("sensors/{sensorID}/data")
 	msg := &mockMsg{topic: "sensors/abc"}
 
-	_, err := adaptermqtt.TopicVarsFromMessage(h, msg)
-	var mm adaptermqtt.TopicMismatchError
+	_, err := TopicVarsFromMessage(h, msg)
+	var mm TopicMismatchError
 	if !errors.As(err, &mm) {
 		t.Fatalf("want TopicMismatchError, got %T: %v", err, err)
 	}
@@ -150,12 +149,12 @@ func TestTopicVarsFromMessage_Mismatch_FewerSegments(t *testing.T) {
 
 // newTestHandleWithUUIDParam creates a channel handle with a UUID codec on {sensorID}.
 func newTestHandleWithUUIDParam(topic string) *events.ChannelHandle[struct{}] {
-	b := events.NewBuilder(events.Info{Title: "Test", Version: "1"})
+	b := events.NewClient(events.WithInfo(events.Info{Title: "Test", Version: "1"}))
 	c := codex.Struct[struct{}]()
 	uuidCodec := codex.String().Refine(validate.UUID)
 	h, err := events.NewChannel[struct{}](topic, c,
 		events.TopicParam{Name: "sensorID", Codec: &uuidCodec},
-	).Register(b)
+	).WithSubscribe(events.Subscribe{}).Handle(b)
 	if err != nil {
 		panic(err)
 	}
@@ -164,12 +163,12 @@ func newTestHandleWithUUIDParam(topic string) *events.ChannelHandle[struct{}] {
 
 // newTestHandleWithMQTTConstraint creates a channel handle with MQTTPublishTopic constraint.
 func newTestHandleWithMQTTConstraint(topic string) *events.ChannelHandle[struct{}] {
-	b := events.NewBuilder(
-		events.Info{Title: "Test", Version: "1"},
+	b := events.NewClient(
+		events.WithInfo(events.Info{Title: "Test", Version: "1"}),
 		events.WithTopicConstraints(validate.MQTTPublishTopic),
 	)
 	c := codex.Struct[struct{}]()
-	h, err := events.NewChannel[struct{}](topic, c).Register(b)
+	h, err := events.NewChannel[struct{}](topic, c).WithSubscribe(events.Subscribe{}).Handle(b)
 	if err != nil {
 		panic(err)
 	}
@@ -180,7 +179,7 @@ func TestTopicVarsFromMessage_UUIDParamCodecPasses(t *testing.T) {
 	h := newTestHandleWithUUIDParam("sensors/{sensorID}/measurements")
 	msg := &mockMsg{topic: "sensors/f47ac10b-58cc-4372-a567-0e02b2c3d479/measurements"}
 
-	vars, err := adaptermqtt.TopicVarsFromMessage(h, msg)
+	vars, err := TopicVarsFromMessage(h, msg)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -193,7 +192,7 @@ func TestTopicVarsFromMessage_UUIDParamCodecFails_TopicParamError(t *testing.T) 
 	h := newTestHandleWithUUIDParam("sensors/{sensorID}/measurements")
 	msg := &mockMsg{topic: "sensors/not-a-uuid/measurements"}
 
-	_, err := adaptermqtt.TopicVarsFromMessage(h, msg)
+	_, err := TopicVarsFromMessage(h, msg)
 	if err == nil {
 		t.Fatal("expected TopicParamError, got nil")
 	}
@@ -216,7 +215,7 @@ func TestTopicVarsFromMessage_TopicCodecFails_InvalidTopicError(t *testing.T) {
 	// Simulate a corrupt/wildcard topic arriving on the wire.
 	msg := &mockMsg{topic: "sensors/+/measurements"}
 
-	_, err := adaptermqtt.TopicVarsFromMessage(h, msg)
+	_, err := TopicVarsFromMessage(h, msg)
 	if err == nil {
 		t.Fatal("expected InvalidTopicError, got nil")
 	}

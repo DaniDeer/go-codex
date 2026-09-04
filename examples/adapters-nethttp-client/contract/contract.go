@@ -130,7 +130,7 @@ var RequestIDCodec = codex.String().Refine(validate.UUID).
 // ── Route specs ───────────────────────────────────────────────────────────────
 
 // CreateUser is the declarative route spec for POST /users.
-// Register it with a rest.Builder on the server; import it in the client to call
+// Register it with a rest.Server on the server; import it in the client to call
 // the server with the same codec and parameter constraints.
 //
 // rest.ErrorPattern declares a typed 409 response for EmailConflictError —

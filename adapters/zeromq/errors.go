@@ -20,6 +20,17 @@ const (
 	// KindEncode indicates the response could not be encoded (server side)
 	// or the outgoing payload failed codec validation (publish side).
 	KindEncode
+
+	// KindSecurity indicates a [SubscribeOptions.SecurityFunc] or an
+	// attached security-shaped [events.Subscriber.SubscribeMW] Fn rejected
+	// the message. NEW this pass — zeromq previously had NO message-level
+	// security mechanism at any layer (confirmed via
+	// docs/roadmap/pubsub-workflow-simplification.md's escape-hatch #5
+	// discussion); the wrapped Err is reused directly from api/events'
+	// existing, transport-agnostic [events.SecurityError]/
+	// [events.SecurityCredentialError] shapes rather than introducing a new
+	// zeromq-local error type — only this ErrorKind value is genuinely new.
+	KindSecurity
 )
 
 func (k ErrorKind) String() string {
@@ -30,6 +41,8 @@ func (k ErrorKind) String() string {
 		return "handler"
 	case KindEncode:
 		return "encode"
+	case KindSecurity:
+		return "security"
 	default:
 		return "unknown"
 	}
@@ -272,4 +285,25 @@ func (e PipelineNoResponseError) Error() string {
 // LogValue implements [slog.LogValuer] for structured logging.
 func (e PipelineNoResponseError) LogValue() slog.Value {
 	return slog.GroupValue(slog.String("topic", e.Topic))
+}
+
+// OptionsShapeError is returned by [(*Caller).ServeSubscribers] when a
+// channel's [events.ChannelHandle.HandlerOpts] value's concrete type is
+// not [SubscribeOptions][T] for any T — mirrors
+// [adapters/mqtt5.OptionsShapeError]/[adapters/mqtt.OptionsShapeError].
+type OptionsShapeError struct {
+	Topic string
+	Got   any
+}
+
+func (e OptionsShapeError) Error() string {
+	return fmt.Sprintf("zeromq: %s: WithOptions value has wrong type: want zeromq.SubscribeOptions[T], got %T", e.Topic, e.Got)
+}
+
+// LogValue implements [slog.LogValuer] for structured logging.
+func (e OptionsShapeError) LogValue() slog.Value {
+	return slog.GroupValue(
+		slog.String("topic", e.Topic),
+		slog.Any("got", e.Got),
+	)
 }

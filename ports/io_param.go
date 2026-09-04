@@ -120,7 +120,7 @@ func ParamsFromContext(ctx context.Context) []IOParam {
 // point in your wiring code makes sense — often right before Bind, but
 // Patterns declared as standalone package-level values can be plugged in
 // anywhere. PluginXxxPattern registers the Pattern (against RESTBuilder/
-// EventBuilder/ReqReplyBuilder/MCPBuilder below, or a private single-use
+// EventClient/ReqReplyBuilder/MCPBuilder below, or a private single-use
 // Builder when the matching field is nil) AND returns the resulting typed
 // handle directly — no separate handle-lookup step.
 type PortOptions struct {
@@ -149,20 +149,20 @@ type PortOptions struct {
 
 	// RESTBuilder registers each [RESTPattern]'s Route against b via
 	// rest.Route.Register(b) — the SAME call a hand-declared route makes. Supply
-	// the *rest.Builder your application already uses (with rest.WithPathConstraints,
+	// the *rest.Server your application already uses (with rest.WithPathConstraints,
 	// b.AddGlobalSecurity already configured, and rest.WithSecurityScheme declared
 	// on the RESTPattern's own Route) to get full parity with hand-declared
 	// routes: the resulting handle is indistinguishable from one built by
 	// calling rest.NewRoute(...).Register(b) directly.
 	//
-	// When nil, ports registers against a private, single-use *rest.Builder with
+	// When nil, ports registers against a private, single-use *rest.Server with
 	// zero [rest.Info] — the same zero-ceremony default as a builder-free
 	// construction, through the identical Register code path (there is no
 	// separate, weaker construction path).
-	RESTBuilder *rest.Builder
+	RESTBuilder *rest.Server
 
-	// EventBuilder — same idea as RESTBuilder, for [EventPattern] / events.Builder.
-	EventBuilder *events.Builder
+	// EventClient — same idea as RESTBuilder, for [EventPattern] / events.Client.
+	EventClient *events.Client
 
 	// ReqReplyBuilder — same idea as RESTBuilder, for [ReqReplyPattern] / reqreply.Builder.
 	ReqReplyBuilder *reqreply.Builder

@@ -10,17 +10,25 @@ constraints. **No duplication between client and server.**
 
 Two entry points exist:
 
-- **`nethttp.Call`** — the SOLE public client-side entry point, and the
-  RECOMMENDED pattern for every call. Takes a `rest.Route` value directly
-  (the SAME value the server registers) plus a `*nethttp.Caller` (built
-  once per `(client, baseURL)` pair) — no separate "build a client copy"
-  step needed at all.
+- **`rest.Client.Call`** (bound via `nethttp.Attach`) — the single-workflow
+  entry point (Decision 6), and the RECOMMENDED pattern for every call.
+  Build a `rest.Client` once, `nethttp.Attach` it to an `*http.Client` +
+  baseURL, then call `client.Call(ctx, route, req)` with a `rest.Route`
+  value directly (the SAME value the server registers) — no separate
+  "build a client copy" step needed at all.
 - **`nethttp.CallWithHandle`** — the lower-level, handle-based primitive
-  `Call` wraps internally. Stays public for callers that already have a
-  `*rest.RouteHandle` but no `rest.Route` value — e.g. `ports.Pattern`'s
+  `Attach`'s internal transport wraps. Stays public for callers that
+  already have a `*rest.RouteHandle` but no `rest.Route` value, or that
+  need a v1-scope feature `Attach`'s reflection shim doesn't cover yet
+  (path/query/header/cookie params, security/credential handling,
+  per-call format override, error-pattern decoding) — e.g. `ports.Pattern`'s
   REST binding machinery (`DrainCallAdapter`/`CallAdapter`), which owns
   its own client/baseURL via `PortOptions`, or `adapters/mcprest`'s
   REST-to-MCP bridge.
+
+The package's former `Caller`/`NewCaller`/`Call[Req,Resp]` (a two-tier
+value-based convenience predating `Attach`) are now an unexported internal
+`caller`/`newCaller`/`call[Req,Resp]`, reachable only through `Attach`.
 
 Credential fulfillment is declared **per-route** via
 [`Route.ClientMW`](../features/security.md), paired against the SAME
@@ -38,8 +46,8 @@ Define routes, codecs, and types in a shared Go package. Both server and client 
 ```
 contract/
   contract.go   ← shared Route specs, codecs, types
-server/main.go  ← imports contract/, registers routes, calls Serve
-client/main.go  ← imports contract/, calls via nethttp.Call
+server/main.go  ← imports contract/, registers routes, calls AttachMux+Serve
+client/main.go  ← imports contract/, calls via rest.Client.Call
 ```
 
 ```go
@@ -51,21 +59,23 @@ var CreateUser = rest.NewRoute[CreateUserReq, User](
 
 // server.go — declare the handler, register, and wire the whole builder
 err := contract.CreateUser.WithHandler(myHandler).Register(builder)
-err = nethttp.Serve(mux, builder)
+err = nethttp.AttachMux(builder, mux, addr)
+go func() { _ = builder.Serve(ctx) }()
 
 // client.go — reuse the SAME Route value directly, no separate registration
-caller := nethttp.NewCaller(http.DefaultClient, "https://api.example.com")
+client := rest.NewClient()
+err = nethttp.Attach(client, http.DefaultClient, "https://api.example.com")
 
-user, err := nethttp.Call(ctx, caller, contract.CreateUser,
-    CreateUserReq{Name: "Alice", Email: "alice@example.com"},
-    nethttp.CallOptions{Observer: obs})
+userAny, err := client.Call(ctx, contract.CreateUser,
+    CreateUserReq{Name: "Alice", Email: "alice@example.com"})
+user := userAny.(User)
 ```
 
 ### Pattern 2 — Client-only (ClientHandle / no builder)
 
-When the client has no server role, `nethttp.Call` still works directly
+When the client has no server role, `rest.Client.Call` still works directly
 with a `rest.Route` value — no `Builder`, no server-side `Register` call
-needed at all. `Call` derives the handle internally via
+needed at all. Internally, the reflection shim derives the handle via
 `Route.ClientHandle()`.
 
 ```go
@@ -76,43 +86,38 @@ var getUser = rest.NewRoute[GetUserReq, User]("GET", "/users/{id}",
         func(r *GetUserReq, v string) { r.ID = v }),
 )
 
-caller := nethttp.NewCaller(http.DefaultClient, "https://api.example.com")
-user, err := nethttp.Call(ctx, caller, getUser, GetUserReq{ID: userID},
-    nethttp.CallOptions{})
+client := rest.NewClient()
+err := nethttp.Attach(client, http.DefaultClient, "https://api.example.com")
+userAny, err := client.Call(ctx, getUser, GetUserReq{ID: userID})
+user := userAny.(User)
 ```
 
 Note the path value is derived from `req.ID` automatically via the
-declared merge field ([`rest.NewPathParam`](rest-api.md)) — `Call` always
-auto-derives path/query/header/cookie values from a route's declared
-merge fields; there is no manual `vars map[string]string` escape hatch.
-A route intended for client use must declare a merge field for every
-path/query/header/cookie value it needs.
+declared merge field ([`rest.NewPathParam`](rest-api.md)) — the reflection
+shim always auto-derives path/query/header/cookie values from a route's
+declared merge fields; there is no manual `vars map[string]string` escape
+hatch. A route intended for client use must declare a merge field for
+every path/query/header/cookie value it needs. This v1-scope shim covers
+the CORE common case only (JSON body, no per-call format override, no
+security/credential handling) — use `nethttp.CallWithHandle` directly for
+anything beyond that.
 
-## nethttp.Caller
+## nethttp.Attach
 
 ```go
-type Caller struct { /* unexported: client, baseURL */ }
-
-func NewCaller(client *http.Client, baseURL string) *Caller
+func Attach(client *rest.Client, httpClient *http.Client, baseURL string) error
 ```
 
-`Caller` is a pure `(client, baseURL)` holder — NOT a spec-accumulating
-`Builder` equivalent (the server's `Builder` exists because OpenAPI needs
-ONE document; the client has no equivalent accumulation need), and no
-longer carries any default middleware list — credential fulfillment lives
-on the `Route` itself via `ClientMW`, not on `Caller`.
+`Attach` binds `httpClient`+`baseURL` (via an internal, unexported
+`caller`/`newCaller` — a pure `(client, baseURL)` holder, NOT a
+spec-accumulating `Builder` equivalent) as `client`'s `rest.ClientTransport`,
+giving `client` its `Call(ctx, route, req)` call shape. Credential
+fulfillment lives on the `Route` itself via `ClientMW`, not on the
+internal caller.
 
-## nethttp.Call / nethttp.CallWithHandle
+## nethttp.CallWithHandle
 
 ```go
-func Call[Req, Resp any](
-    ctx   context.Context,
-    c     *Caller,
-    route rest.Route[Req, Resp],
-    req   Req,
-    opts  CallOptions,
-) (Resp, error)
-
 func CallWithHandle[Req, Resp any](
     ctx     context.Context,
     client  *http.Client,
@@ -123,13 +128,14 @@ func CallWithHandle[Req, Resp any](
 ) (Resp, error)
 ```
 
-`Call` derives `vars`/`QueryParams`/`HeaderParams`/`CookieParams` from
-`req` automatically via the route's declared merge fields (internally via
-`Route.ClientHandle()` + `CallWithHandle`), and merges any response merge
-fields (e.g. a declared response header) back into the returned value —
-the full request+response, single-call story. `CallWithHandle` performs
-the identical derivation for callers that already have a
-`*rest.RouteHandle`.
+`CallWithHandle` derives `vars`/`QueryParams`/`HeaderParams`/`CookieParams`
+from `req` automatically via the route's declared merge fields, and merges
+any response merge fields (e.g. a declared response header) back into the
+returned value — the full request+response, single-call story, with full
+type safety (no `any` cast) and access to every `CallOptions` field.
+`rest.Client.Call` (via `Attach`) performs the identical derivation
+internally for the common case, trading some of these features for a
+uniform `Call(ctx, route, req)` shape across REST/pub-sub.
 
 **What Call does before sending the request:**
 1. `BuildPath(vars)` — derives path values from merge fields, validates each against its codec
@@ -279,7 +285,8 @@ securedRoute := contract.GetSecuredData(securedMw).ClientMW(&securedMw, cachedFn
 
 // Wire invalidate into OnCredentialRejected for a retry-once-on-401 pattern.
 opts := nethttp.CallOptions{OnCredentialRejected: invalidate}
-resp, err := nethttp.Call(ctx, caller, securedRoute, struct{}{}, opts)
+handle := securedRoute.ClientHandle()
+resp, err := nethttp.CallWithHandle(ctx, httpClient, baseURL, handle, struct{}{}, opts)
 ```
 
 ## See also
@@ -289,4 +296,4 @@ resp, err := nethttp.Call(ctx, caller, securedRoute, struct{}{}, opts)
 - [Guide: HTTP Client](../guides/http-client.md) — full walkthrough of the runnable demo
 - [Guide: Error Handling](error-handling.md) — all typed errors
 - [Guide: Observer](observer.md) — metrics wiring
-- [examples/adapters-nethttp-client](https://github.com/DaniDeer/go-codex/tree/main/examples/adapters-nethttp-client) — full demo with shared contract, cookies, headers, security, credential caching, Observer + slog, all via `nethttp.Call`
+- [examples/adapters-nethttp-client](https://github.com/DaniDeer/go-codex/tree/main/examples/adapters-nethttp-client) — full demo with shared contract, cookies, headers, security, credential caching, Observer + slog, all via `nethttp.CallWithHandle`

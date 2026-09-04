@@ -117,7 +117,7 @@ func main() {
 	// ── Scene 1: uuid.UUID path param ──────────────────────────────────
 	fmt.Println("─── Scene 1: codex.TextCodec[uuid.UUID]() — REST path param")
 
-	b := rest.NewBuilder(rest.Info{Title: "Typed Params Demo", Version: "1.0.0"})
+	b := rest.NewServer(rest.Info{Title: "Typed Params Demo", Version: "1.0.0"})
 	getUser, err := rest.NewRoute[GetUserReq, UserResp]("GET", "/users/{id}",
 		getUserReqCodec, userRespCodec,
 		rest.NewPathParam("id", codex.TextCodec[uuid.UUID](),
@@ -148,8 +148,8 @@ func main() {
 	// ── Scene 2: int topic param ───────────────────────────────────────
 	fmt.Println("\n─── Scene 2: codex.IntString() — events topic param")
 
-	eb := events.NewBuilder(events.Info{Title: "Sensor Events", Version: "1.0.0"})
-	sensorHandle, err := sensorChannel.Register(eb)
+	eb := events.NewClient(events.WithInfo(events.Info{Title: "Sensor Events", Version: "1.0.0"}))
+	sensorHandle, err := sensorChannel.WithSubscribe(events.Subscribe{}).Handle(eb)
 	if err != nil {
 		panic(err)
 	}
@@ -173,7 +173,7 @@ func main() {
 	// ── Scene 3: custom type via codex.StringCodec ─────────────────────
 	fmt.Println("\n─── Scene 3: codex.StringCodec — custom type escape hatch")
 
-	ab := rest.NewBuilder(rest.Info{Title: "Articles Demo", Version: "1.0.0"})
+	ab := rest.NewServer(rest.Info{Title: "Articles Demo", Version: "1.0.0"})
 	getArticle, err := rest.NewRoute[ArticleReq, UserResp]("GET", "/articles/{slug}",
 		articleReqCodec, userRespCodec,
 		rest.NewPathParam("slug", slugCodec,

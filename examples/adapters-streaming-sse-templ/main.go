@@ -24,8 +24,8 @@ import (
 	"html"
 	"io"
 	"log/slog"
+	"net"
 	"net/http"
-	"net/http/httptest"
 	"os"
 	"strings"
 	"sync"
@@ -186,13 +186,40 @@ func mustServe(err error, what string) {
 	}
 }
 
+// mustFreeAddr reserves an OS-assigned free TCP port on localhost, then
+// releases it immediately so AttachMux's own *http.Server can bind to it.
+func mustFreeAddr() string {
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "reserve free port failed: %v\n", err)
+		os.Exit(1)
+	}
+	addr := l.Addr().String()
+	_ = l.Close()
+	return addr
+}
+
+// waitForReady polls addr until it accepts TCP connections — b.Serve wires
+// mux synchronously before starting its listener goroutine, so demo
+// requests below must wait for it to actually be listening first.
+func waitForReady(addr string) {
+	for range 100 {
+		conn, err := net.DialTimeout("tcp", addr, 50*time.Millisecond)
+		if err == nil {
+			_ = conn.Close()
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
 func main() {
 	logger := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelDebug}))
 	slog.SetDefault(logger)
 
 	metrics := &statsObserver{}
 	obs := stats.NewFanout(metrics, stats.NewLoggingObserver(logger.With("component", "sse-templ")))
-	b := rest.NewBuilder(rest.Info{Title: "Streaming + SSE + templ Demo", Version: "1.0.0"})
+	b := rest.NewServer(rest.Info{Title: "Streaming + SSE + templ Demo", Version: "1.0.0"})
 	obsFn := nethttp.Observability(obs)
 	opts := nethttp.Options{}
 
@@ -271,17 +298,23 @@ func main() {
 	)
 
 	// ── Shared mux ───────────────────────────────────────────────────────────
+	//
+	// AttachMux wires BOTH plain routes (/stream/dashboard) and SSE routes
+	// (/sse/notifications) onto mux internally — a single AttachMux+Serve
+	// call replaces the old separate Serve+ServeSSE calls.
 
 	mux := http.NewServeMux()
-	mustServe(nethttp.Serve(mux, b), "Serve")
-	mustServe(nethttp.ServeSSE(mux, b), "ServeSSE")
-
-	srv := httptest.NewServer(mux)
-	defer srv.Close()
+	addr := mustFreeAddr()
+	mustServe(nethttp.AttachMux(b, mux, addr), "AttachMux")
+	ctx, cancel := context.WithCancel(context.Background())
+	go func() { _ = b.Serve(ctx) }()
+	defer cancel()
+	waitForReady(addr)
+	srvURL := "http://" + addr
 
 	// ── Demo 1: Chunked streaming — Accept: text/html ─────────────────────────
 	fmt.Println("=== GET /stream/dashboard (Accept: text/html — chunked streaming) ===")
-	resp1 := mustGet(srv.URL+"/stream/dashboard", "text/html")
+	resp1 := mustGet(srvURL+"/stream/dashboard", "text/html")
 	body1, _ := io.ReadAll(resp1.Body)
 	_ = resp1.Body.Close()
 	preview := strings.TrimSpace(string(body1))
@@ -294,7 +327,7 @@ func main() {
 
 	// ── Demo 2: Same route, JSON via content negotiation ─────────────────────
 	fmt.Println("=== GET /stream/dashboard (Accept: application/json) ===")
-	resp2 := mustGet(srv.URL+"/stream/dashboard", "application/json")
+	resp2 := mustGet(srvURL+"/stream/dashboard", "application/json")
 	body2, _ := io.ReadAll(resp2.Body)
 	_ = resp2.Body.Close()
 	fmt.Printf("  Status       : %d\n", resp2.StatusCode)
@@ -307,7 +340,7 @@ func main() {
 	// codec rejects the response the adapter returns 500 — the component never
 	// receives or renders invalid data.
 
-	invalidBuilder := rest.NewBuilder(rest.Info{Title: "Streaming + SSE + templ Demo (invalid)", Version: "1.0.0"})
+	invalidBuilder := rest.NewServer(rest.Info{Title: "Streaming + SSE + templ Demo (invalid)", Version: "1.0.0"})
 	invalidDashRoute := dashRoute.WithHandler(func(_ context.Context, _ struct{}) (DashboardProps, error) {
 		return DashboardProps{
 			Title:    "", // fails NonEmptyString
@@ -319,12 +352,16 @@ func main() {
 	mustServe(invalidDashRoute.Register(invalidBuilder), "register invalid /stream/dashboard")
 
 	invalidMux := http.NewServeMux()
-	mustServe(nethttp.Serve(invalidMux, invalidBuilder), "Serve(invalid)")
-	invalidSrv := httptest.NewServer(invalidMux)
-	defer invalidSrv.Close()
+	invalidAddr := mustFreeAddr()
+	mustServe(nethttp.AttachMux(invalidBuilder, invalidMux, invalidAddr), "AttachMux(invalid)")
+	invalidCtx, invalidCancel := context.WithCancel(context.Background())
+	go func() { _ = invalidBuilder.Serve(invalidCtx) }()
+	defer invalidCancel()
+	waitForReady(invalidAddr)
+	invalidSrvURL := "http://" + invalidAddr
 
 	fmt.Println("=== GET /stream/dashboard with invalid props (title empty) ===")
-	resp3 := mustGet(invalidSrv.URL+"/stream/dashboard", "text/html")
+	resp3 := mustGet(invalidSrvURL+"/stream/dashboard", "text/html")
 	body3, _ := io.ReadAll(resp3.Body)
 	_ = resp3.Body.Close()
 	fmt.Printf("  Status       : %d (props rejected — component never rendered)\n\n", resp3.StatusCode)
@@ -338,7 +375,7 @@ func main() {
 
 	fmt.Println("=== GET /sse/notifications (SSE — events as HTML fragments) ===")
 	req, _ := http.NewRequestWithContext(context.Background(), http.MethodGet,
-		srv.URL+"/sse/notifications", nil)
+		srvURL+"/sse/notifications", nil)
 	sseResp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "SSE request error:", err)

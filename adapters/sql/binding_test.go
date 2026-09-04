@@ -179,7 +179,7 @@ var sqlErrPayloadCodec = codex.Struct[sqlErrPayload](
 func TestDrainInsertAdapter_OnError_ComposesWithEventsErrorChannel(t *testing.T) {
 	ctx := context.Background()
 
-	b := events.NewBuilder(events.Info{Title: "Test", Version: "1.0.0"})
+	b := events.NewClient(events.WithInfo(events.Info{Title: "Test", Version: "1.0.0"}))
 	errHandle, err := events.NewChannel[testRow]("rows/create", testRowCodec,
 		events.ErrorChannel[sqlValidationErr, sqlErrPayload](
 			"rows/create/errors", sqlErrPayloadCodec,
@@ -187,7 +187,7 @@ func TestDrainInsertAdapter_OnError_ComposesWithEventsErrorChannel(t *testing.T)
 				return sqlErrPayload{Code: "validation", Message: e.msg}, nil
 			},
 		),
-	).Register(b)
+	).WithSubscribe(events.Subscribe{}).Handle(b)
 	if err != nil {
 		t.Fatalf("Register: %v", err)
 	}

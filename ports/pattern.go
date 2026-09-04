@@ -104,22 +104,37 @@ func (RESTPattern) isPortPattern() {}
 
 // EventPattern declares a topic-shaped pub/sub communication pattern for a
 // port bound to an event adapter (mqtt, mqtt5, zeromq). Topic mirrors
-// [events.NewChannel]'s first argument; Opts accepts the same option
-// vocabulary ([events.ChannelMeta], [events.Subscribe], [events.Publish],
-// [events.TopicParam]).
+// [events.NewChannel]'s first argument; Opts accepts every role-agnostic
+// option ([events.ChannelMeta], [events.TopicParam], [events.Formats]/
+// [events.SubscribeFormats]/[events.PublishFormats]). Subscribe and Publish
+// are dedicated fields, each consulted only for the matching port role: a
+// [SourcePort] consults Subscribe (via [events.Channel.WithSubscribe]) and
+// rejects a non-nil Publish; a [SinkPort] consults Publish (via
+// [events.Channel.WithPublish]) and rejects a non-nil Subscribe — declaring
+// the wrong role's field is a caller mistake, returned as a
+// [PatternRegisterError].
 //
 //	ports.EventPattern{
 //	    Topic: "sensors/{sensorID}/data",
 //	    Opts: []events.ChannelOpt{
-//	        events.Subscribe{Summary: "Sensor reading received"},
 //	        events.TopicParam{Name: "sensorID"}.WithCodec(sensorIDCodec),
 //	    },
+//	    Subscribe: &events.Subscribe{Summary: "Sensor reading received"},
 //	}
 type EventPattern struct {
 	// Topic is the topic template (e.g. "sensors/{sensorID}/data").
 	Topic string
-	// Opts carries the same variadic options [events.NewChannel] accepts.
+	// Opts carries the same variadic options [events.NewChannel] accepts,
+	// minus [events.Subscribe]/[events.Publish] — see Subscribe/Publish below.
 	Opts []events.ChannelOpt
+	// Subscribe is consulted only when the pattern builds a [SourcePort]
+	// handle. Nil defaults to a zero-value [events.Subscribe] — identical to
+	// today's behavior when no Subscribe metadata is declared.
+	Subscribe *events.Subscribe
+	// Publish is consulted only when the pattern builds a [SinkPort] handle.
+	// Nil defaults to a zero-value [events.Publish] — identical to today's
+	// behavior when no Publish metadata is declared.
+	Publish *events.Publish
 }
 
 func (EventPattern) isPortPattern() {}

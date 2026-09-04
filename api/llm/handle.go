@@ -53,7 +53,7 @@ func (c Call[Req, Resp]) ClientHandle() (*CallHandle[Req, Resp], error) {
 // Register validates the Call, resolves the system prompt (reading
 // [SystemPromptFile] if used), renders request/response JSON Schemas, adds a
 // [CallSpec] entry to b, and returns a [CallHandle]. Mirrors
-// [rest.Route.Register]/[events.Channel.Register]/[reqreply.Route.Register].
+// [rest.Route.Register]/[events.Subscriber.Register]/[reqreply.Route.Register].
 //
 // Returns an error if the Call's name is empty or already registered with b.
 // Returns [SystemPromptFileError] if [SystemPromptFile] was used and its

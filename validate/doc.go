@@ -31,8 +31,8 @@
 // Path and topic constraints are used with [api/rest.WithPathConstraints] and
 // [api/events.WithTopicConstraints]:
 //
-//	rest.NewBuilder(info, rest.WithPathConstraints(validate.HTTPPath))
-//	events.NewBuilder(info, events.WithTopicConstraints(validate.MQTTPublishTopic))
+//	rest.NewServer(info, rest.WithPathConstraints(validate.HTTPPath))
+//	events.NewClient(info, events.WithTopicConstraints(validate.MQTTPublishTopic))
 //
 // # Environment variable name constraints
 //

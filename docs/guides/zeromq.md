@@ -6,7 +6,7 @@ go-codex provides two ZeroMQ packages:
 
 | Package | Purpose |
 |---|---|
-| `adapters/zeromq` | Codec-backed adapters: `Subscribe`, `Publish`, `Serve`, `Call`, `ServeRouter`, `CallDealer` |
+| `adapters/zeromq` | Codec-backed adapters: `NewPublishTransport`/`NewSubscribeTransport` (pub/sub, consumed via `events.PublishHandle`/`events.SubscribeHandle`), `Serve`, `Call`, `ServeRouter`, `CallDealer` |
 | `api/zeromq` | AsyncAPI 3.0 spec builder for REQ/REP contracts (`Register`, `Builder`, `AsyncAPISpec`) |
 
 Both follow the same **declare → register → handle → adapt** pattern as the HTTP and MQTT adapters.
@@ -152,21 +152,21 @@ import (
 func main() {
     ctx := context.Background()
 
-    builder := events.NewBuilder(events.Info{Title: "Sensors", Version: "1.0.0"})
-    builder.AddServer("zmq", events.Server{URL: "tcp://localhost:5555", Protocol: "zmq"})
+    pubSock, _ := zmq.NewSocket(zmq.PUB)
+    defer pubSock.Close()
+    pubSock.Bind("tcp://*:5555")
 
-    handle, _ := contract.ReadingsChannel.Register(builder)
+    sock := WrapSocket(pubSock)
 
-    pub, _ := zmq.NewSocket(zmq.PUB)
-    defer pub.Close()
-    pub.Bind("tcp://*:5555")
+    // Spec-free, handle-based Decision 7 call surface
+    // (docs/roadmap/pubsub-workflow-simplification.md): NewPublishTransport
+    // satisfies events.PublishTransport[T], consumed through events.PublishHandle
+    // — no *events.Client/spec needed at all for this path.
+    transport := zeromq.NewPublishTransport[SensorReading](sock, zeromq.PublishOptions[SensorReading]{Observer: obs})
+    pub := contract.ReadingsChannel.WithPublish(events.Publish{})
 
-    sock := WrapSocket(pub)
     reading := SensorReading{SensorID: "f47ac10b-...", Value: 22.5}
-    err := zeromq.Publish(ctx, sock, handle, reading,
-        map[string]string{"sensorID": "f47ac10b-..."},
-        zeromq.PublishOptions{Observer: obs},
-    )
+    err := events.PublishHandle(ctx, pub, transport, reading)
     if err != nil {
         log.Fatal(err)
     }
@@ -180,29 +180,82 @@ func main() {
     ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
     defer stop()
 
-    builder := events.NewBuilder(events.Info{Title: "Sensors", Version: "1.0.0"})
-    handle, _ := contract.ReadingsChannel.Register(builder)
+    eventsClient := events.NewClient(events.WithInfo(events.Info{Title: "Sensors", Version: "1.0.0"}))
 
-    sub, _ := zmq.NewSocket(zmq.SUB)
-    defer sub.Close()
-    sub.Connect("tcp://localhost:5555")
+    subSock, _ := zmq.NewSocket(zmq.SUB)
+    defer subSock.Close()
+    subSock.Connect("tcp://localhost:5555")
 
-    sock := WrapSocket(sub)
-    if err := zeromq.Subscribe(ctx, sock, handle, func(ctx context.Context, r SensorReading) error {
-        log.Printf("received: %+v", r)
-        return nil
-    }, zeromq.SubscribeOptions{Observer: obs}); err != nil {
+    sock := WrapSocket(subSock)
+    if err := zeromq.Attach(eventsClient, sock); err != nil { // Decision 5: Client.Attach workflow
+        log.Fatal(err)
+    }
+    sub := contract.ReadingsChannel.WithSubscribe(events.Subscribe{})
+    if err := eventsClient.Subscribe(ctx, sub,
+        func(ctx context.Context, r SensorReading) error {
+            log.Printf("received: %+v", r)
+            return nil
+        }); err != nil {
         log.Fatal(err)
     }
 }
 ```
 
-### AsyncAPI spec
+`eventsClient.ServeSubscribers(ctx) error` (once `Attach`-bound) implements
+`events.SubscriberServer` through the package's internal, unexported caller type — dispatches
+every channel registered via `Subscriber[T].Register(client)` over one shared receive loop
+on the socket (ZMQ sockets aren't safe for concurrent multi-goroutine use).
+`eventsClient.Publish(ctx, pub, msg)` (once `Attach`-bound) implements
+`events.PublisherClient[T]`'s call shape for transport-agnostic publish-side application code —
+the former `NewPublisherFor[T]`/`PublisherFor[T]` were DELETED, with no separate binding type
+needed anymore.
 
-The existing `api/events` builder generates a valid AsyncAPI 3.0 document with `protocol: zmq`:
+### `Client.Attach` — the inverted-control workflow
+
+`zeromq.Attach(client, sock)` binds sock to `client` as its `events.Transport` — the
+"attach the adapter to the client" step. From there, call `client.Publish`/`client.Subscribe`
+directly on the `*events.Client` value itself; there is no adapter-package-qualified call
+needed at the usage site anymore, only at attach time:
 
 ```go
-spec, _ := builder.AsyncAPISpec()
+client := events.NewClient(events.WithInfo(events.Info{Title: "Sensor Network", Version: "1.0.0"}))
+if err := zeromq.Attach(client, sock); err != nil {
+    log.Fatal(err)
+}
+
+sub := contract.ReadingsChannel.WithSubscribe(events.Subscribe{})
+pub := contract.ReadingsChannel.WithPublish(events.Publish{})
+
+go func() {
+    _ = client.Subscribe(ctx, sub, func(ctx context.Context, r SensorReading) error {
+        log.Printf("received: %+v", r)
+        return nil
+    })
+}()
+
+err := client.Publish(ctx, pub, reading) // "one struct, one call" — topic derived
+                                          // automatically from a merge-capable topic param
+```
+
+Since `Client.Publish`/`Client.Subscribe` are ordinary Go methods (not generic — Go forbids a
+method from introducing its own type parameters), `pub`/`sub`/`msg`/`fn` are passed as `any` and
+their concrete types are recovered internally via reflection; a mismatch surfaces as
+`events.TransportTypeMismatchError` at CALL time rather than a compile error — an explicit,
+narrowly-scoped trade-off for this one convenience surface. See
+`docs/roadmap/pubsub-workflow-simplification.md`'s Decision 5 for the full design and its
+documented v1 scope limits (no per-call format override, no non-default QoS, no general-purpose
+SubscribeMW/PublishMW wrapping — use `events.SubscribeHandle`/`events.PublishHandle` with
+`zeromq.NewSubscribeTransport`/`zeromq.NewPublishTransport` directly for those, per Decision 7
+of `docs/roadmap/pubsub-workflow-simplification.md`; `Attach`'s internal transport wraps the
+same underlying logic those transports expose).
+`examples/adapters-zeromq` demonstrates this workflow end to end.
+
+### AsyncAPI spec
+
+The existing `api/events` client generates a valid AsyncAPI 3.0 document with `protocol: zmq`:
+
+```go
+spec, _ := eventsClient.AsyncAPISpec()
 // emits:
 // asyncapi: 3.0.0
 // servers:
@@ -330,8 +383,12 @@ obs := stats.NewFanout(
     tracer,
 )
 
-zeromq.Subscribe(ctx, sock, handle, fn, zeromq.SubscribeOptions{Observer: obs})
-zeromq.Publish(ctx, sock, handle, msg, vars, zeromq.PublishOptions{Observer: obs})
+subTransport := zeromq.NewSubscribeTransport[T](sock, zeromq.SubscribeOptions[T]{Observer: obs})
+err := events.SubscribeHandle(ctx, sub, subTransport, fn)
+
+pubTransport := zeromq.NewPublishTransport[T](sock, zeromq.PublishOptions[T]{Observer: obs})
+err = events.PublishHandle(ctx, pub, pubTransport, msg)
+
 zeromq.Serve(ctx, sock, handle, fn, zeromq.ServeOptions{Observer: obs})
 zeromq.Call(ctx, sock, handle, req, zeromq.CallOptions{Observer: obs})
 ```

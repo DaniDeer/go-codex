@@ -3,11 +3,13 @@ package mqtt5
 import (
 	"context"
 	"errors"
+	"fmt"
 	"time"
 
 	"github.com/DaniDeer/go-codex/api/events"
 	"github.com/DaniDeer/go-codex/codex"
 	"github.com/DaniDeer/go-codex/format"
+	"github.com/DaniDeer/go-codex/middleware"
 	"github.com/DaniDeer/go-codex/route"
 	"github.com/DaniDeer/go-codex/stats"
 	pahomqtt5 "github.com/eclipse/paho.golang/paho"
@@ -38,7 +40,7 @@ type contextKey struct{}
 // userPropsKey stores MQTT 5 User Properties in context.
 type userPropsKey struct{}
 
-// MessageFromContext retrieves the [*paho.Publish] stored in ctx by [Subscribe].
+// MessageFromContext retrieves the [*paho.Publish] stored in ctx by [subscribe]/[SubscribeWithHandle].
 // Returns false if ctx was not created by this package.
 func MessageFromContext(ctx context.Context) (*pahomqtt5.Publish, bool) {
 	msg, ok := ctx.Value(contextKey{}).(*pahomqtt5.Publish)
@@ -93,16 +95,29 @@ func (p UserPropertyParam) WithCodec(c codex.Codec[string]) UserPropertyParam {
 	return p
 }
 
-// SubscribeOptions configures [Subscribe].
+// SubscribeOptions configures [subscribe]/[SubscribeWithHandle].
 type SubscribeOptions struct {
 	// TopicFilter is the MQTT subscription filter for [pahomqtt5.Subscribe].
 	// Use this when the handle's topic template uses {varName} placeholders
 	// (e.g. "sensors/{sensorID}/data") but the broker requires MQTT wildcard
-	// syntax (e.g. "sensors/+/data"). When empty, handle.Topic is used.
-	//
-	// Only used by [SubscribeStream] — direct [Subscribe] callers provide
-	// the filter in the pahomqtt5.Subscribe struct themselves.
+	// syntax (e.g. "sensors/+/data"). When empty, a filter is derived
+	// automatically from handle.Topic via the same [deriveWildcardFilter]
+	// helper the ports-binding [SubscribeAdapter] already uses (replacing
+	// each {varName} placeholder with "+") — the common case needs no
+	// manual restatement. Set explicitly only for a filter that differs
+	// from this derivation (e.g. a multi-level "#" wildcard). Consumed by
+	// [SubscribeWithHandle] (and therefore [subscribe]/ServeSubscribers/
+	// [serveOneSubscriber], which all funnel through it).
 	TopicFilter string
+
+	// QoS, when [Subscriber.WithOptions] attaches a SubscribeOptions value
+	// as a channel's declare-time [events.ChannelHandle.HandlerOpts], is
+	// the MQTT quality-of-service level (*caller).ServeSubscribers uses to
+	// subscribe that channel — there is no other way for ServeSubscribers
+	// to learn a per-channel QoS, since it has no call-time qos parameter
+	// (unlike [subscribe]/[SubscribeWithHandle], whose own qos parameter
+	// ALWAYS takes precedence and never reads this field). Defaults to 0.
+	QoS byte
 
 	// OnError, when non-nil, is called with a typed [SubscribeError] on decode,
 	// handler, or security failure. If nil, errors are silently discarded.
@@ -141,8 +156,11 @@ type SubscribeOptions struct {
 	UserPropertyParams []UserPropertyParam
 }
 
-// PublishOptions configures [Publish].
-type PublishOptions struct {
+// PublishOptions configures [Publish]/[PublishHandle]. Generic over T
+// (BREAKING change from the previous non-generic PublishOptions) since
+// [PublishOptions.CredentialFunc]'s revised shape needs write-access to
+// the outgoing message — see that field's doc comment.
+type PublishOptions[T any] struct {
 	// Observer receives per-publish lifecycle events.
 	// Defaults to [stats.NoopObserver] when nil.
 	Observer stats.Observer
@@ -158,17 +176,26 @@ type PublishOptions struct {
 
 	// CredentialFunc, when non-nil, is called for channels that declare
 	// non-nil Publish.Security (or inherit non-empty GlobalSecurity),
-	// mirroring [nethttp.CallOptions.CredentialFunc]. It must return the
-	// MQTT 5 User Properties to attach as the outgoing credential — these
-	// are appended to [PublishOptions.UserProperties] before publishing.
-	// A nil CredentialFunc on a secured channel is not an error — the
-	// message is published without a credential, same as if the channel
-	// declared no security at all.
+	// mirroring [nethttp.CallOptions.CredentialFunc]. REVISED this pass
+	// (BREAKING — previously `func(context.Context, []route.SecurityRequirement)
+	// ([]UserProperty, error)`, with no `*T` access) to also grant
+	// write-access into the outgoing message, mirroring
+	// [SubscribeOptions.SecurityFunc]'s existing read/write `*T` access on
+	// the subscribe side: msg is a pointer to the value about to be
+	// encoded — mutate it to embed a credential AS AN ORDINARY PAYLOAD
+	// FIELD (works identically across every transport, since a payload is
+	// just codec-encoded bytes), and/or return protocol-native MQTT 5 User
+	// Properties — both mechanisms are available simultaneously, caller's
+	// choice. Returned UserProperty values are appended to
+	// [PublishOptions.UserProperties] before publishing. A nil
+	// CredentialFunc on a secured channel is not an error — the message is
+	// published without a credential, same as if the channel declared no
+	// security at all.
 	//
-	//	opts.CredentialFunc = func(ctx context.Context, reqs []route.SecurityRequirement) ([]mqtt5.UserProperty, error) {
+	//	opts.CredentialFunc = func(ctx context.Context, msg *Reading, reqs []route.SecurityRequirement) ([]mqtt5.UserProperty, error) {
 	//	    return []mqtt5.UserProperty{{Key: "Authorization", Value: "Bearer " + token}}, nil
 	//	}
-	CredentialFunc func(ctx context.Context, reqs []route.SecurityRequirement) ([]UserProperty, error)
+	CredentialFunc func(ctx context.Context, msg *T, reqs []route.SecurityRequirement) ([]UserProperty, error)
 }
 
 // Subscribe subscribes to handle.Topic and dispatches messages to fn.
@@ -326,6 +353,27 @@ func makeSubscribeMessageHandler[T any](
 			}
 		}
 
+		// handle.Implementations-based security check (populated by
+		// [events.Subscriber.SubscribeMW]) — runs UNCONDITIONALLY,
+		// mirroring adapters/nethttp's runSecurityMiddlewareReflect being
+		// called outside the secReqs>0 gate: an UNPAIRED (general-purpose
+		// Satisfies-empty) security-shaped Fn (e.g. a Transform-equivalent
+		// reading a User Property into *T) must run even on a channel with
+		// no declared security. Shapes were already validated eagerly by
+		// [SubscribeWithHandle] before this handler was ever registered.
+		if len(handle.Implementations) > 0 {
+			if err := runSubscribeSecurityImpls(msgCtx, msg, &value, secReqs, handle.Implementations); err != nil {
+				if secObs, ok := obs.(stats.SecurityObserver); ok {
+					secObs.RecordSecurityRejection(msg.Topic, firstScheme(secReqs))
+				}
+				obs.RecordSubscribe(msg.Topic, false, time.Since(start))
+				if opts.OnError != nil {
+					opts.OnError(SubscribeError{Kind: KindSecurity, Topic: msg.Topic, Err: events.SecurityError{Err: err}})
+				}
+				return
+			}
+		}
+
 		var spanCtx = msgCtx
 		if to, ok := obs.(stats.TraceObserver); ok {
 			spanCtx = to.StartSpan(msgCtx, "mqtt5.subscribe", msg.Topic)
@@ -346,7 +394,122 @@ func makeSubscribeMessageHandler[T any](
 	}
 }
 
-func Subscribe[T any](
+// runSubscribeSecurityImpls runs every attached [middleware.ServerImplementation]
+// whose Fn matches the security shape
+// (func(context.Context, *pahomqtt5.Publish, *T) (map[string][]string, error))
+// IN ATTACHMENT ORDER (fail-fast on the first one whose OWN extraction
+// errors), merges their returned grants into ONE map, then performs a
+// SINGLE [middleware.CheckScopes] call — the mqtt5 mirror of
+// adapters/nethttp's runSecurityMiddlewareReflect, but using a plain type
+// assertion (not reflect.Value.Call) since T is concrete at this generic
+// call site. General-purpose wrapping-shaped Fns are silently skipped here
+// (consumed instead by [wrapSubscribeGeneral]).
+func runSubscribeSecurityImpls[T any](ctx context.Context, msg *pahomqtt5.Publish, value *T, secReqs []route.SecurityRequirement, impls []middleware.ServerImplementation) error {
+	granted := make(map[string][]string)
+	for _, impl := range impls {
+		fn, ok := impl.Fn.(func(context.Context, *pahomqtt5.Publish, *T) (map[string][]string, error))
+		if !ok {
+			continue // general-purpose or nil
+		}
+		if len(impl.Satisfies) > 0 && len(secReqs) == 0 {
+			continue
+		}
+		g, err := fn(ctx, msg, value)
+		if err != nil {
+			return err
+		}
+		for k, v := range g {
+			granted[k] = v
+		}
+	}
+	return middleware.CheckScopes(secReqs, granted)
+}
+
+// wrapSubscribeGeneral wraps fn with every general-purpose Fn found in
+// impls (shape func(next func(context.Context, T) error) func(context.Context, T) error),
+// OUTERMOST-in, in attachment order (impls[0] is outermost — the first
+// attached implementation runs first and returns last) — mirrors
+// adapters/nethttp's applyGeneralMiddleware. Security-shaped Fns are
+// silently skipped here (consumed instead by [runSubscribeSecurityImpls]).
+// This is the mechanism [Observability] uses.
+func wrapSubscribeGeneral[T any](fn func(context.Context, T) error, impls []middleware.ServerImplementation) func(context.Context, T) error {
+	for i := len(impls) - 1; i >= 0; i-- {
+		wrap, ok := impls[i].Fn.(func(func(context.Context, T) error) func(context.Context, T) error)
+		if !ok {
+			continue
+		}
+		fn = wrap(fn)
+	}
+	return fn
+}
+
+// validateSubscribeImplementationShapes checks every attached impl.Fn
+// against the two shapes [Subscriber.SubscribeMW] recognizes for T — the
+// security shape (func(context.Context, *pahomqtt5.Publish, *T)
+// (map[string][]string, error)) or the general-purpose wrapping shape
+// (func(next func(context.Context, T) error) func(context.Context, T) error)
+// — EAGERLY at [SubscribeWithHandle] construction time rather than
+// deferring to the first incoming message. Mirrors adapters/nethttp's
+// validateImplementationShapesReflect, but via a plain type switch (T is
+// concrete here, no reflect.FuncOf needed).
+func validateSubscribeImplementationShapes[T any](impls []middleware.ServerImplementation) error {
+	for _, impl := range impls {
+		if impl.Fn == nil {
+			continue
+		}
+		switch impl.Fn.(type) {
+		case func(context.Context, *pahomqtt5.Publish, *T) (map[string][]string, error):
+		case func(func(context.Context, T) error) func(context.Context, T) error:
+		default:
+			return middleware.MiddlewareShapeError{
+				Name:     impl.Name,
+				Expected: "func(context.Context, *pahomqtt5.Publish, *T) (map[string][]string, error) or func(func(context.Context, T) error) func(context.Context, T) error",
+				Got:      fmt.Sprintf("%T", impl.Fn),
+			}
+		}
+	}
+	return nil
+}
+
+// SubscribeWithHandle subscribes to a filter derived from handle.Topic and
+// dispatches messages to fn — the handle-based primitive, on RAW
+// client+router params (used directly by ports/advanced callers who
+// already own a pre-built handle). RENAMED from this package's previous
+// bare Subscribe (BREAKING — existing callers of the old handle-based
+// Subscribe must rename their call site to SubscribeWithHandle to keep
+// identical behavior); see [subscribe] for the internal value-based
+// convenience that takes a [*caller] and a [events.Subscriber] instead.
+//
+// For each incoming message, SubscribeWithHandle:
+//  1. Stores the [*paho.Publish] in ctx via [MessageFromContext].
+//  2. Stores MQTT 5 User Properties in ctx via [UserPropertiesFromContext].
+//  3. Auto-selects the decode format: if the message carries a ContentType
+//     property, the first format in formats whose [format.Format.ContentType]
+//     matches is used. Otherwise the priority chain applies:
+//     call-time formats > handle.SubscribeFormats > handle.Formats > handle.Decode.
+//
+// The broker subscription filter resolves opts.TopicFilter if non-empty,
+// else a filter derived from handle.Topic via [deriveWildcardFilter] (fixes
+// a pre-existing bug where a templated topic's placeholders were sent
+// VERBATIM to the broker, which never matches any real published topic —
+// see docs/roadmap/pubsub-workflow-simplification.md's wildcard bug-fix
+// subsection). A non-templated topic's behavior is unchanged.
+//
+// Every attached [events.ChannelHandle.Implementations] Fn (from
+// [events.Subscriber.SubscribeMW]) is validated EAGERLY here, before the
+// broker subscription is made, via [validateSubscribeImplementationShapes]
+// — a malformed Fn fails loudly and immediately, never silently at message
+// time. General-purpose Fns wrap fn ([wrapSubscribeGeneral]); security-shaped
+// Fns run per-message ([runSubscribeSecurityImpls]).
+//
+// SubscribeWithHandle calls client.Subscribe once to register the
+// subscription with the broker, then registers a message handler with
+// router. Call it once per channel per connection. Cancelling ctx does NOT
+// unsubscribe from the broker — call client.Unsubscribe explicitly if
+// needed.
+//
+// The optional formats parameter specifies payload formats for decoding.
+func subscribeWithHandle[T any](
 	ctx context.Context,
 	client MQTTClient,
 	router MQTTRouter,
@@ -361,6 +524,11 @@ func Subscribe[T any](
 		obs = stats.ObserverFromContext(ctx)
 	}
 
+	if err := validateSubscribeImplementationShapes[T](handle.Implementations); err != nil {
+		return err
+	}
+	fn = wrapSubscribeGeneral(fn, handle.Implementations)
+
 	effectiveFmts := formats
 	if len(effectiveFmts) == 0 {
 		effectiveFmts = handle.SubscribeFormats
@@ -369,17 +537,115 @@ func Subscribe[T any](
 		effectiveFmts = handle.Formats
 	}
 
-	router.RegisterHandler(handle.Topic,
+	filter := opts.TopicFilter
+	if filter == "" {
+		filter = deriveWildcardFilter(handle.Topic)
+	}
+
+	router.RegisterHandler(filter,
 		makeSubscribeMessageHandler(ctx, handle, effectiveFmts, fn, obs, opts))
 
 	_, err := client.Subscribe(ctx, &pahomqtt5.Subscribe{
 		Subscriptions: []pahomqtt5.SubscribeOptions{
-			{Topic: handle.Topic, QoS: qos},
+			{Topic: filter, QoS: qos},
 		},
 	})
 	if err != nil {
-		router.UnregisterHandler(handle.Topic)
+		router.UnregisterHandler(filter)
 		return BrokerError{Op: "subscribe", Err: err}
+	}
+	return nil
+}
+
+// runPublishSecurityImpls runs every attached [middleware.ClientImplementation]
+// whose Fn matches the revised security shape
+// (func(context.Context, *T, []route.SecurityRequirement) ([]UserProperty, error))
+// — GATED by Satisfies vs secReqs, mirroring adapters/nethttp's
+// mergeCredentialHeaders: an implementation with a NON-EMPTY Satisfies only
+// runs when at least one of its scheme names is present in secReqs; an
+// implementation with an EMPTY Satisfies (general-purpose) always runs.
+// msg is a pointer — an Fn may write into it (in-payload credential
+// embedding); returned UserProperty slices are merged, in attachment
+// order. General-purpose wrapping-shaped Fns are silently skipped here
+// (consumed instead by [wrapPublishGeneral]).
+func runPublishSecurityImpls[T any](ctx context.Context, msg *T, secReqs []route.SecurityRequirement, impls []middleware.ClientImplementation) ([]UserProperty, error) {
+	reqSchemes := make(map[string]bool, len(secReqs))
+	for _, req := range secReqs {
+		for scheme := range req {
+			reqSchemes[scheme] = true
+		}
+	}
+	var combined []UserProperty
+	for _, impl := range impls {
+		fn, ok := impl.Fn.(func(context.Context, *T, []route.SecurityRequirement) ([]UserProperty, error))
+		if !ok {
+			continue // general-purpose or nil
+		}
+		if len(impl.Satisfies) > 0 {
+			matched := false
+			for _, s := range impl.Satisfies {
+				if reqSchemes[s] {
+					matched = true
+					break
+				}
+			}
+			if !matched {
+				continue
+			}
+		}
+		props, err := fn(ctx, msg, secReqs)
+		if err != nil {
+			return combined, err
+		}
+		combined = append(combined, props...)
+	}
+	return combined, nil
+}
+
+// wrapPublishGeneral wraps fn (the adapter's own "encode and transmit"
+// step) with every general-purpose Fn found in impls (shape
+// func(next func(context.Context, T) error) func(context.Context, T) error),
+// OUTERMOST-in, in attachment order — mirrors [wrapSubscribeGeneral]'s
+// subscribe-side sibling, deliberately symmetric. Security-shaped Fns are
+// silently skipped here (consumed instead by [runPublishSecurityImpls]).
+// This is the mechanism [Observability] uses on the publish side.
+func wrapPublishGeneral[T any](fn func(context.Context, T) error, impls []middleware.ClientImplementation) func(context.Context, T) error {
+	for i := len(impls) - 1; i >= 0; i-- {
+		wrap, ok := impls[i].Fn.(func(func(context.Context, T) error) func(context.Context, T) error)
+		if !ok {
+			continue
+		}
+		fn = wrap(fn)
+	}
+	return fn
+}
+
+// validatePublishImplementationShapes checks every attached impl.Fn
+// against the two shapes [Publisher.PublishMW] recognizes for T — the
+// revised security shape (func(context.Context, *T,
+// []route.SecurityRequirement) ([]UserProperty, error)) or the
+// general-purpose wrapping shape (func(next func(context.Context, T) error)
+// func(context.Context, T) error) — EAGERLY at the top of every [Publish]
+// call. Mirrors adapters/nethttp's validateClientImplementationShapes,
+// extended with the second, general-purpose shape (unlike REST's
+// ClientMW, which recognizes only one — see
+// docs/roadmap/pubsub-workflow-simplification.md's "General-purpose
+// (non-spec) Fn shapes" subsection for why pub/sub's PublishMW gets both).
+func validatePublishImplementationShapes[T any](impls []middleware.ClientImplementation) error {
+	for _, impl := range impls {
+		if impl.Fn == nil {
+			continue
+		}
+		switch impl.Fn.(type) {
+		case func(context.Context, *T, []route.SecurityRequirement) ([]UserProperty, error):
+		case func(func(context.Context, T) error) func(context.Context, T) error:
+		default:
+			return middleware.MiddlewareShapeError{
+				Name:     impl.Name,
+				Expected: "func(context.Context, *T, []route.SecurityRequirement) ([]UserProperty, error) or func(func(context.Context, T) error) func(context.Context, T) error",
+				Got:      fmt.Sprintf("%T", impl.Fn),
+			}
+		}
 	}
 	return nil
 }
@@ -392,9 +658,20 @@ func Subscribe[T any](
 //
 // MQTT 5 properties are set from [PublishOptions]: ContentType and UserProperties.
 //
+// Security/credential resolution (opts.CredentialFunc AND every attached
+// [events.ChannelHandle.ClientImplementations] Fn from
+// [events.Publisher.PublishMW]) runs BEFORE msg is encoded — both
+// mechanisms get write-access to *msg (in-payload credential embedding),
+// so the encode step downstream observes any mutation. Every attached
+// ClientImplementations Fn is shape-validated EAGERLY via
+// [validatePublishImplementationShapes] before anything else runs.
+// General-purpose Fns wrap the internal "encode and transmit" step
+// ([wrapPublishGeneral]); security-shaped Fns run once, merging returned
+// [UserProperty] values ([runPublishSecurityImpls]).
+//
 // The optional formats parameter specifies the payload format for encoding.
 // Priority: call-time formats > handle.PublishFormats > handle.Formats > handle.Encode.
-func Publish[T any](
+func publish[T any](
 	ctx context.Context,
 	client MQTTClient,
 	handle *events.ChannelHandle[T],
@@ -402,13 +679,18 @@ func Publish[T any](
 	retained bool,
 	msg T,
 	vars map[string]string,
-	opts PublishOptions,
+	opts PublishOptions[T],
 	formats ...format.Format[T],
 ) error {
 	obs := opts.Observer
 	if obs == nil {
 		obs = stats.ObserverFromContext(ctx)
 	}
+
+	if err := validatePublishImplementationShapes[T](handle.ClientImplementations); err != nil {
+		return err
+	}
+
 	start := time.Now()
 	var err error
 	if to, ok := obs.(stats.TraceObserver); ok {
@@ -430,34 +712,10 @@ func Publish[T any](
 		}
 	}
 
-	effectiveFmts := formats
-	if len(effectiveFmts) == 0 {
-		effectiveFmts = handle.PublishFormats
-	}
-	if len(effectiveFmts) == 0 {
-		effectiveFmts = handle.Formats
-	}
-
-	var payload []byte
-	if len(effectiveFmts) > 0 {
-		payload, err = effectiveFmts[0].Marshal(msg)
-	} else {
-		payload, err = handle.Encode(msg)
-	}
-	if err != nil {
-		stats.ReportErrors(obs, "payload", err)
-		obs.RecordPublish(topic, false, time.Since(start))
-		return PublishEncodeError{Topic: topic, Err: err}
-	}
-
-	props := &pahomqtt5.PublishProperties{}
-	if opts.ContentType != "" {
-		props.ContentType = opts.ContentType
-	}
-
 	// Resolve security requirements and obtain credentials (client-side
 	// mirror of makeSubscribeMessageHandler's server-side check, and of
-	// [nethttp.Call]'s CredentialFunc handling).
+	// [nethttp.Call]'s CredentialFunc handling) — BEFORE encoding, so any
+	// *msg mutation is captured by the encode step below.
 	var secReqs []route.SecurityRequirement
 	if handle.Descriptor.Publish != nil {
 		secReqs = handle.Descriptor.Publish.Security
@@ -466,25 +724,38 @@ func Publish[T any](
 		secReqs = handle.GlobalSecurity
 	}
 	userProps := append(pahomqtt5.UserProperties(nil), opts.UserProperties...)
-	var credProps []UserProperty
+	var credentialRan bool
 	if len(secReqs) > 0 && opts.CredentialFunc != nil {
-		var credErr error
-		credProps, credErr = opts.CredentialFunc(ctx, secReqs)
-		if credErr != nil {
+		var credProps []UserProperty
+		credProps, err = opts.CredentialFunc(ctx, &msg, secReqs)
+		if err != nil {
 			obs.RecordPublish(topic, false, time.Since(start))
-			return credErr
+			return err
 		}
+		credentialRan = credProps != nil
 		userProps = append(userProps, credProps...)
+	}
+	if len(handle.ClientImplementations) > 0 {
+		var implProps []UserProperty
+		implProps, err = runPublishSecurityImpls(ctx, &msg, secReqs, handle.ClientImplementations)
+		if err != nil {
+			obs.RecordPublish(topic, false, time.Since(start))
+			return err
+		}
+		if implProps != nil {
+			credentialRan = true
+		}
+		userProps = append(userProps, implProps...)
 	}
 
 	// Validate the outgoing credential FORMAT before publishing — the
 	// client-side mirror of Subscribe's built-in check. Gated on
-	// credProps != nil (CredentialFunc actually ran and returned
-	// something), NOT on len(secReqs) > 0 alone — a nil CredentialFunc, or
-	// one that deliberately returns (nil, nil) for "no credential needed",
-	// must stay a non-error (see Round-93's REST regression fix, mirrored
-	// here from day one).
-	if len(secReqs) > 0 && credProps != nil {
+	// credentialRan (CredentialFunc/a ClientImplementations Fn actually
+	// ran and returned something), NOT on len(secReqs) > 0 alone — a nil
+	// CredentialFunc, or one that deliberately returns (nil, nil) for "no
+	// credential needed", must stay a non-error (see Round-93's REST
+	// regression fix, mirrored here from day one).
+	if len(secReqs) > 0 && credentialRan {
 		schemeTypes := make(map[string]route.SecurityScheme, len(handle.SecuritySchemes))
 		schemeCodecs := make(map[string]*codex.Codec[string], len(handle.SecuritySchemes))
 		for name, s := range handle.SecuritySchemes {
@@ -496,23 +767,55 @@ func Publish[T any](
 				secObs.RecordSecurityRejection(topic, firstScheme(secReqs))
 			}
 			obs.RecordPublish(topic, false, time.Since(start))
-			return events.SecurityCredentialError{Scheme: name, Err: credErr}
+			err = events.SecurityCredentialError{Scheme: name, Err: credErr}
+			return err
 		}
 	}
 
+	effectiveFmts := formats
+	if len(effectiveFmts) == 0 {
+		effectiveFmts = handle.PublishFormats
+	}
+	if len(effectiveFmts) == 0 {
+		effectiveFmts = handle.Formats
+	}
+
+	props := &pahomqtt5.PublishProperties{}
+	if opts.ContentType != "" {
+		props.ContentType = opts.ContentType
+	}
 	if len(userProps) > 0 {
 		props.User = userProps
 	}
 
-	if _, err = client.Publish(ctx, &pahomqtt5.Publish{
-		Topic:      topic,
-		QoS:        qos,
-		Retain:     retained,
-		Payload:    payload,
-		Properties: props,
-	}); err != nil {
+	transmit := func(ctx context.Context, m T) error {
+		var payload []byte
+		var encErr error
+		if len(effectiveFmts) > 0 {
+			payload, encErr = effectiveFmts[0].Marshal(m)
+		} else {
+			payload, encErr = handle.Encode(m)
+		}
+		if encErr != nil {
+			stats.ReportErrors(obs, "payload", encErr)
+			return PublishEncodeError{Topic: topic, Err: encErr}
+		}
+		if _, pubErr := client.Publish(ctx, &pahomqtt5.Publish{
+			Topic:      topic,
+			QoS:        qos,
+			Retain:     retained,
+			Payload:    payload,
+			Properties: props,
+		}); pubErr != nil {
+			return BrokerError{Op: "publish", Err: pubErr}
+		}
+		return nil
+	}
+	transmit = wrapPublishGeneral(transmit, handle.ClientImplementations)
+
+	if err = transmit(ctx, msg); err != nil {
 		obs.RecordPublish(topic, false, time.Since(start))
-		return BrokerError{Op: "publish", Err: err}
+		return err
 	}
 	obs.RecordPublish(topic, true, time.Since(start))
 	return nil
@@ -529,14 +832,14 @@ func Publish[T any](
 // vars come from a non-struct source).
 //
 //	err := mqtt5.PublishHandle(ctx, client, sensorChannel, 1, false, reading, mqtt5.PublishOptions{})
-func PublishHandle[T any](
+func publishHandle[T any](
 	ctx context.Context,
 	client MQTTClient,
 	handle *events.ChannelHandle[T],
 	qos byte,
 	retained bool,
 	msg T,
-	opts PublishOptions,
+	opts PublishOptions[T],
 	formats ...format.Format[T],
 ) error {
 	vars, err := codex.EncodeVars(msg, handle.MergeFields()...)
@@ -546,7 +849,7 @@ func PublishHandle[T any](
 	if len(vars) == 0 {
 		vars = nil
 	}
-	return Publish(ctx, client, handle, qos, retained, msg, vars, opts, formats...)
+	return publish(ctx, client, handle, qos, retained, msg, vars, opts, formats...)
 }
 
 // firstScheme returns the first scheme name from the security requirements.

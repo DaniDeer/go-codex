@@ -187,7 +187,7 @@ func (a *mqtt5PublishAdapter[T]) Activate(ctx context.Context, src gstream.Strea
 	if obs == nil {
 		obs = stats.ObserverFromContext(ctx)
 	}
-	pubOpts := PublishOptions{Observer: a.opts.Observer}
+	pubOpts := PublishOptions[T]{Observer: a.opts.Observer}
 	// handleUpstreamError resolves declared events.ErrorChannel patterns on
 	// a.handle before falling back to the adapter's existing OnError
 	// callback. A matched ErrorRespond pattern publishes the typed error
@@ -222,9 +222,9 @@ func (a *mqtt5PublishAdapter[T]) Activate(ctx context.Context, src gstream.Strea
 		func(ctx context.Context, v T) error {
 			var err error
 			if a.opts.Vars == nil {
-				err = PublishHandle(ctx, a.client, a.handle, a.opts.QoS, a.opts.Retained, v, pubOpts, a.fmt)
+				err = publishHandle(ctx, a.client, a.handle, a.opts.QoS, a.opts.Retained, v, pubOpts, a.fmt)
 			} else {
-				err = Publish(ctx, a.client, a.handle, a.opts.QoS, a.opts.Retained, v, a.opts.Vars, pubOpts, a.fmt)
+				err = publish(ctx, a.client, a.handle, a.opts.QoS, a.opts.Retained, v, a.opts.Vars, pubOpts, a.fmt)
 			}
 			if err != nil {
 				if onErr != nil {

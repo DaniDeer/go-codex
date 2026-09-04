@@ -82,11 +82,13 @@ import (
 	"embed"
 	"fmt"
 	"log/slog"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"runtime"
+	"time"
 
 	_ "modernc.org/sqlite"
 
@@ -170,7 +172,7 @@ func main() {
 	// ioports.Sensors is a plain SourcePort — the pipeline's first stage AND
 	// the MQTT ingestion boundary. ioports.SensorsPattern declared the topic
 	// + params once, as a standalone value; PluginEventPattern registers it
-	// (against the SAME ioports.EventsBuilder the port was constructed with
+	// (against the SAME ioports.EventsClient the port was constructed with
 	// — its channel shows up in the same printed AsyncAPI spec as every
 	// hand-declared channel) AND returns the typed handle in one call. This
 	// is the ONLY place MQTT appears on the inbound path.
@@ -360,7 +362,17 @@ func main() {
 	// double registration.
 	ioports.CreateHandle.WithHandler(adapters.NewCreateHandler(store))
 	ioports.GetHandle.WithHandler(adapters.NewGetHandler(store))
-	must(nethttp.Serve(mux, ioports.RESTBuilder), "Serve create/get routes")
+	// AttachMux wires ioports.RESTBuilder's routes onto mux — the actual
+	// wiring happens inside restCtx-scoped Serve below, which also owns its
+	// own (unused-here) *http.Server; the wrapped srvHandler + httptest
+	// server below is the ACTUAL listener demo requests hit, since
+	// AttachMux's Handler must be the bare mux while every request here
+	// still needs obs injected into its context first.
+	restAddr := mustFreeAddr()
+	must(nethttp.AttachMux(ioports.RESTBuilder, mux, restAddr), "AttachMux create/get routes")
+	restCtx, restCancel := context.WithCancel(context.Background())
+	go func() { _ = ioports.RESTBuilder.Serve(restCtx) }()
+	waitForReady(restAddr) // blocks until AttachMux's wiring above has completed
 
 	// Wrap with ObserverMiddleware so every HTTP request gets obs injected
 	// into r.Context() — handlers resolve the observer per-request.
@@ -369,7 +381,7 @@ func main() {
 		mux.ServeHTTP(w, r)
 	})
 	srv := httptest.NewServer(srvHandler)
-	a.OnShutdown("http-server", func(context.Context) error { srv.Close(); return nil })
+	a.OnShutdown("http-server", func(context.Context) error { restCancel(); srv.Close(); return nil })
 	fmt.Printf("✓ HTTP server started: %s\n\n", srv.URL)
 
 	// ── Run the demo scenario ──────────────────────────────────────────────
@@ -404,5 +416,32 @@ func must(err error, msg string) {
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "FATAL %s: %v\n", msg, err)
 		os.Exit(1)
+	}
+}
+
+// mustFreeAddr reserves an OS-assigned free TCP port on localhost, then
+// releases it immediately so AttachMux's own *http.Server can bind to it.
+func mustFreeAddr() string {
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "reserve free port failed: %v\n", err)
+		os.Exit(1)
+	}
+	addr := l.Addr().String()
+	_ = l.Close()
+	return addr
+}
+
+// waitForReady polls addr until it accepts TCP connections — b.Serve wires
+// mux synchronously before starting its listener goroutine, so a successful
+// dial here guarantees mux is fully wired.
+func waitForReady(addr string) {
+	for range 100 {
+		conn, err := net.DialTimeout("tcp", addr, 50*time.Millisecond)
+		if err == nil {
+			_ = conn.Close()
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
 	}
 }

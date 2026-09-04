@@ -68,7 +68,7 @@ var _ = struct{}{} // placeholder removed — use codex.Empty
 func main() {
 	// Build the API: register routes with codecs.
 	// No net/http import required.
-	b := rest.NewBuilder(rest.Info{
+	b := rest.NewServer(rest.Info{
 		Title:       "User API",
 		Version:     "1.0.0",
 		Description: "CRUD API for managing users.",
@@ -79,8 +79,8 @@ func main() {
 		// bytes. OpenAPI-style path parameters like {id} are allowed.
 		rest.WithPathConstraints(validate.HTTPPath),
 	)
-	b.AddServer("production", rest.Server{URL: "https://api.example.com/v1", Description: "Production"})
-	b.AddServer("local", rest.Server{URL: "http://localhost:8080/v1", Description: "Local development"})
+	b.AddServer("production", rest.ServerEntry{URL: "https://api.example.com/v1", Description: "Production"})
+	b.AddServer("local", rest.ServerEntry{URL: "http://localhost:8080/v1", Description: "Local development"})
 
 	// POST /users — creates a user.
 	// createUser.Decode(body) and createUser.Encode(user) are the codec helpers.

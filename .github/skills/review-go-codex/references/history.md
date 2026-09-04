@@ -1,6 +1,63 @@
-# go-codex Review History (R1–R127, plus middleware-workflow-simplification G1–G15)
+# go-codex Review History (R1–R127, plus middleware-workflow-simplification G1–G15, pubsub-workflow-simplification G1–G4, F1–F2)
 
 Do not re-report any of these findings. They have been implemented and tested.
+
+---
+
+## pubsub-workflow-simplification F1–F2 (roadmap-vs-code fidelity audit)
+
+A separate, narrower audit (distinct from the G1–G4 consistency review round below) specifically comparing `docs/roadmap/pubsub-workflow-simplification.md`'s own stated design decisions against the actually-shipped code — triggered by a direct user question ("did we introduce new escape hatches, did we remove the ones we flagged"). Found two real gaps between the roadmap's own explicit claims and what shipped.
+
+- **F1 [bug, severe] — `Channel.Register`/`Channel.ClientHandle` were supposed to be REMOVED per the roadmap's own Migration Checklist, but were kept during implementation, silently reopening `CheckCoverage`'s entire "no opt-out" guarantee**: traced via code (`api/events/builder.go`) and runtime (`adapters/mqtt5`'s message handler) that both old methods built a `*ChannelHandle[T]` with `Implementations`/`ClientImplementations` always `nil` and never called `CheckCoverage` — so a channel built via them that declared a `Security` requirement got zero runtime enforcement, silently. Confirmed zero existing tests combined `Security` with the old methods (low blast radius), but both remained fully exported public API with no deprecation warning. Fixed by completing the original plan: removed `Channel.Register`/`Channel.ClientHandle` entirely; migrated all ~94 call sites (`api/events/builder_test.go`'s own ~78 regression tests plus a dozen adapter test/example call sites) to `WithSubscribe`/`WithPublish` + `.Handle(client)` (or `.Handle(nil)` for the old spec-free `ClientHandle()` behavior). Removed `mustAssertMergeFields` as dead-code fallout (its only caller was `ClientHandle`). Fixed one real, unrelated bug surfaced by the stricter `checkImplementationsDeclared`/`CheckCoverage` enforcement path: `adapters/mqtt/adapter_test.go`'s `newSecuredHandle` test helper was missing a `.Use(mw)` pairing. Swept and fixed dangling `[Channel.Register]`/`[Channel.ClientHandle]` godoc bracket-links across `api/events/builder.go` (25 references) and prose in `.github/instructions/go-codex.instructions.md`, `docs/features/{events,security}.md`, `docs/guides/{zeromq,asyncapi}.md`, `docs/concepts/{codec-as-contract,api-contracts,declaring-apis-and-ports}.md`, `api/mcp/builder.go`, `api/llm/handle.go`.
+- **F2 [small] — Decision 1 explicitly promised a `checkImplementationsDeclared`/`events.UnknownMiddlewareImplementationError` check (the REST-mirrored reverse-direction sibling to `CheckCoverage`) but it was never implemented in `api/events` at all**: confirmed via grep that `UnknownMiddlewareImplementationError`/`checkImplementationsDeclared` existed ONLY in `api/rest`. Fixed by adding both to `api/events`, called unconditionally alongside `CheckCoverage` in `Subscriber.Handle`/`Subscriber.Register` (subscribe-side only, matching `CheckCoverage`'s own asymmetry). Added `TestSubscribeMW_PairedAgainstUndeclaredScheme_ReturnsUnknownMiddlewareImplementationError`/`TestSubscribeMW_PairedAgainstDeclaredScheme_NoError`, both verified against a reverted build to confirm they actually exercise the new check.
+
+Verification: `go build ./...` clean, `go vet ./...` only the pre-existing unrelated `adapters/chi/adapter_test.go:1722` note, `go test ./...` 56/56 packages green, `just check` (fmt+staticcheck+gosec) clean/0 issues, `just examples` all pass.
+
+---
+
+## pubsub-workflow-simplification G1–G4 (post-implementation consistency review)
+
+Scoped review of the freshly-implemented `pubsub-workflow-simplification` roadmap
+(`api/events` `Client`/`Subscriber[T]`/`Publisher[T]`, `adapters/mqtt5`/`mqtt`/`zeromq` wiring,
+`ports.EventPattern` integration). Found four genuine gaps, all in the three-way adapter parity
+(mqtt5 as reference vs. its two siblings) — the class of bug this codebase's own Lessons Learned
+entries predict: a newer mechanism ships correctly in the reference adapter and gets silently
+dropped in a sibling, with no test catching either gap.
+
+- **G1 [bug] — `adapters/mqtt` (v3) `ServeSubscribers` never called `SecurityObserver`**:
+  its security-rejection path (`runSubscribeSecurityImplsReflect` failure) only called
+  `obs.RecordSubscribe(false)`, never the guarded `stats.SecurityObserver.RecordSecurityRejection`
+  — both `adapters/mqtt5` and `adapters/zeromq` call it correctly on the identical code path. Fixed
+  by adding the same guarded type-assertion call immediately before `RecordSubscribe`. Added
+  `TestServeSubscribers_SecurityRejection_CallsSecurityObserver` (`adapters/mqtt/caller_test.go`),
+  verified to fail without the fix and pass with it.
+- **G2 [bug] — `adapters/mqtt` (v3) had no `PublisherFor[T]`/`NewPublisherFor` at all**: unlike
+  `adapters/mqtt5`/`adapters/zeromq`, which both bind their existing `Publish[T]` into a
+  `PublisherFor[T]` implementing `events.PublisherClient[T]`, mqtt v3's `Caller` had no publish-side
+  binding despite already having `Publish[T]`/`PublishHandle` to wrap — breaking the roadmap's own
+  "transport-agnostic in both directions, across all three adapters" goal for one of three. Fixed
+  by adding `PublisherFor[T]`/`NewPublisherFor` to `adapters/mqtt/caller.go`, mirroring
+  `mqtt5.PublisherFor` exactly; added `TestPublisherFor_Publish` plus a
+  `var _ events.PublisherClient[T]` interface assertion; updated `adapters/mqtt/doc.go`.
+- **G3 [small] — `adapters/zeromq`'s `resolveSubscribeOptsReflect` silently ignored a
+  wrong-typed `WithOptions` value**: no error, no diagnostic — every field (TopicFilter/OnError/
+  Observer/SecurityFunc) just silently failed to apply. `adapters/mqtt5`/`adapters/mqtt` both raise
+  an explicit `OptionsShapeError` for the identical caller mistake. Fixed by adding
+  `zeromq.OptionsShapeError{Topic, Got}` and changing `resolveSubscribeOptsReflect` to return an
+  error (checked via `reflect.Type.PkgPath()`+`Name()` prefix, since `SubscribeOptions[T]` is
+  generic and the non-generic `ServeSubscribers` cannot type-assert against a concrete
+  instantiation). Added `TestServeSubscribers_WrongHandlerOptsType_ReturnsOptionsShapeError`,
+  verified to fail without the fix.
+- **G4 [trivial] — `docs/roadmap/websocket-deferred.md` still said `events.Builder.AddChannelItem`**:
+  a live, active roadmap doc (status: "Deferred — awaiting use cases", not archived) whose "Shipped
+  so far" summary wasn't updated when `events.Builder` was renamed to `events.Client` — the doc-sync
+  pass fixed the sibling reference in `docs/features/websocket.md` but missed this cross-linked
+  roadmap doc. Fixed the one line.
+
+Verification: `go build ./...` clean, `go vet ./...` only the pre-existing unrelated
+`adapters/chi/adapter_test.go:1722` note, `go test ./...` 56/56 packages green (including the 3 new
+regression tests), `just check` (fmt+staticcheck+gosec) clean with 0 gosec issues, `just examples`
+all pass.
 
 ---
 
@@ -148,7 +205,7 @@ cross-references to `nethttp.CallHandle` (renamed `CallWithHandle`) and `rest.Wi
 packages that mention REST's client API for comparison.
 
 - **G12 [small] — `references/checklist.md` itself was stale**: 3 table rows (§1 Cross-Layer Naming
-  Parity, §3 `rest.Builder` vs `events.Builder`, §3 `mcp.Builder` parity) described the removed
+  Parity, §3 `rest.Server` vs `events.Builder`, §3 `mcp.Builder` parity) described the removed
   `rest.WithSecurityScheme` as current REST API, and §12's merge-field symmetry table listed
   `nethttp.CallHandle` as the REST client single-call wrapper. Updated all 4 to describe
   `middleware.SecurityScheme`/`rest.FromSecurityScheme` + `Route.Use` and `nethttp.Call`/
@@ -1554,7 +1611,7 @@ BREAKING change (sole consumer of go-codex, confirmed acceptable):
   `docs/features/openapi.md`, `docs/features/ports.md`, `docs/guides/ports.md`,
   `docs/guides/http-server.md`, `docs/reference/project-structure.md`, and this
   skill's own `checklist.md` (corrected the now-stale
-  `rest.Builder`/`events.Builder` `AddSecurityScheme` parity row — this is
+  `rest.Server`/`events.Builder` `AddSecurityScheme` parity row — this is
   now an INTENTIONAL divergence, do not re-flag it in a future review).
 - `docs/roadmap/security-scheme-symmetry.md` marked SHIPPED (kept as design
   history); removed from `docs/roadmap/index.md`'s active table and
@@ -1614,7 +1671,7 @@ package's routes as MCP tools without going through `GetTags`/
   correct, precise place for it.
 - **Explicitly out of scope**: wrapping `docker/registry`'s routes as MCP
   tools (planned as a separate, later round); registering an actual
-  `rest.SecurityScheme` via a `rest.Builder` (this package has no
+  `rest.SecurityScheme` via a `rest.Server` (this package has no
   spec-building `Builder` at all — `RouteMeta.Security` is already
   sufficient to trigger client-side `CredentialFunc` invocation).
 - Verified: `gofmt`, `go build`, `go vet`, `go test` (untagged: 8 tests
@@ -2926,7 +2983,7 @@ design-decision record.
 ## Round 49 (inside-out pipeline wiring — Phase 5: full `api` module parity in `Pattern`, one construction path)
 
 - **`ports` always calls `Register`, never `ClientHandle`, internally.** `Route`/`Channel`/`Tool.Register(builder)` is a strict superset of `ClientHandle()` — same decode/encode/param wiring, plus unknown-param-name checks, path/topic codec validation, security scheme/global security population, and (for `reqreply`/`mcp` only) duplicate-name detection. When no `Builder` is supplied, `ports` creates a private, single-use one with zero `Info` for that one `Register` call — same zero-ceremony default, identical code path. This makes a `Pattern`-derived handle indistinguishable from one hand-built via `Register` — adapters cannot tell the difference.
-- **`PortOptions.RESTBuilder`/`EventBuilder`/`ReqReplyBuilder`/`MCPBuilder`** (`*rest.Builder`/`*events.Builder`/`*reqreply.Builder`/`*apimcp.Builder`) — supply your own (with `AddSecurityScheme`/`AddGlobalSecurity`/`rest.WithPathConstraints`/`events.WithTopicConstraints` already configured) to get full parity with a hand-registered route; the port's route/channel/tool accumulates directly into that builder's spec.
+- **`PortOptions.RESTBuilder`/`EventBuilder`/`ReqReplyBuilder`/`MCPBuilder`** (`*rest.Server`/`*events.Builder`/`*reqreply.Builder`/`*apimcp.Builder`) — supply your own (with `AddSecurityScheme`/`AddGlobalSecurity`/`rest.WithPathConstraints`/`events.WithTopicConstraints` already configured) to get full parity with a hand-registered route; the port's route/channel/tool accumulates directly into that builder's spec.
 - **`NewSourcePort`/`NewSinkPort` now return `(*Port, error)`** (breaking, joining `NewIOPort`/`NewToolPort` from Phase 4) — `Register` is fallible in ways the old builder-free construction wasn't (unknown param names, path/topic constraint failures, duplicate names on `reqreply`/`mcp`). ~27 call sites updated across `ports/port_test.go`, `examples/sensor-service/main.go`, and 5 adapter `binding_test.go` files.
 - **Fixed a real correctness bug found during the review**: `Pattern`-derived handles previously always had an empty `SecuritySchemes` map and `nil` `GlobalSecurity` (never populated by `ClientHandle`), meaning any `RouteMeta.Security`/`Subscribe.Security`/`Publish.Security` requirement on a `Pattern`-based port was silently unenforced (`validateSecurityCredentials` skips unknown scheme names rather than rejecting). Fixed by always registering against a real or private `Builder`.
 - **`mqtt5`/`mqtt` `SubscribeAdapterOptions.TopicFilter`** now auto-derives an MQTT wildcard filter (`{var}` → `+`, e.g. `"sensors/{id}/data"` → `"sensors/+/data"`) from the handle's topic when empty, instead of subscribing with the raw, brace-containing topic string — the one confirmed adapter-option redundancy found during a full audit of every adapter's `XxxAdapterOptions` against what the `Pattern`-derived handle already carries (all other option fields — `SecurityFunc`, `Observer`, poll intervals, buffer sizes — are genuine protocol-specific glue, not redundant). `adapters/mqtt` gained its first `binding_test.go` in the process (previously zero coverage for `SubscribeAdapter`).
@@ -3241,7 +3298,7 @@ Skill updates:
 - **`FunctionKindScalar = ""`**: constant value corrected to empty string — scalar functions have `Kind==""` by design; `NewFunction`/`Compose` never write `Kind`. Contradicting godoc removed.
 - **Stale `forge/options.go` godoc**: removed bullet mentioning non-existent `WithDescription`, `WithAuthor`, `WithApproval` as `FunctionOpt` functions. These do not exist at function level; use `FunctionMeta{...}` struct literal.
 - **`events.Builder.servers` map→slice**: switched from `map[string]Server` to `[]namedServer` for deterministic AsyncAPI server insertion order. Same fix applied to `render/asyncapi/v2/document.go` and `render/asyncapi/v3/document.go`.
-- **`events.Builder.AddServer` description fallback**: if `Server.Description` is empty, `AddServer` now falls back to using `name` as description (mirrors `rest.Builder.AddServer`).
+- **`events.Builder.AddServer` description fallback**: if `Server.Description` is empty, `AddServer` now falls back to using `name` as description (mirrors `rest.Server.AddServer`).
 - **`SSERouteHandle.Decode` godoc**: removed cross-package reference to `adapters/nethttp.RequestFromContext` — replaced with transport-agnostic wording.
 - **README Field literals**: replaced verbose `Field[User,string]{...}` struct literals with `codex.RequiredField(...)` / `codex.OptionalField(...)` constructors.
 
@@ -3299,7 +3356,7 @@ All findings listed in the active plan.md under "Round 9" are implemented:
 - **G3+G4 — `ChannelMeta` godoc**: condensed duplicate paragraph; `ChannelOpt` list now mentions all 4 `ChannelMeta` fields.
 - **G5 — Codec field godoc**: normalized wording on `HeaderParam`, `ResponseHeaderParam`, `ResponseCookieParam` to consistent pattern.
 - **G6 — `PipelineInfo` governance fields**: added `Author`, `ApprovedBy`, `ApprovedAt` to `PipelineInfo`; added `Registry.WithAuthor(string)` and `Registry.WithApproval(approvedBy, approvedAt string)` fluent methods; `render/pipeline/pipeline.go` `buildInfo()` emits them when set.
-- **G7 — `rest.Builder.AddServer` godoc**: clarified that `name` is not stored beyond the description fallback (OpenAPI servers are a keyless ordered array).
+- **G7 — `rest.Server.AddServer` godoc**: clarified that `name` is not stored beyond the description fallback (OpenAPI servers are a keyless ordered array).
 
 ---
 

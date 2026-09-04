@@ -1,4 +1,4 @@
-package zeromq_test
+package zeromq
 
 import (
 	"context"
@@ -9,7 +9,6 @@ import (
 	"testing"
 	"time"
 
-	zeromq "github.com/DaniDeer/go-codex/adapters/zeromq"
 	"github.com/DaniDeer/go-codex/api/events"
 	"github.com/DaniDeer/go-codex/codex"
 	"github.com/DaniDeer/go-codex/format"
@@ -38,7 +37,7 @@ func TestCallAdapter_EmitsResponses(t *testing.T) {
 	if err != nil {
 		t.Fatalf("construct port: %v", err)
 	}
-	p.Bind(ctx, zeromq.CallAdapter(sock, handle, zeromq.CallStreamOptions{})) //nolint:errcheck
+	p.Bind(ctx, CallAdapter(sock, handle, CallStreamOptions{})) //nolint:errcheck
 	out := p.Connect(ctx, src)
 	vals, errs := gstream.Collect(ctx, out)
 	if len(errs) != 0 {
@@ -65,7 +64,7 @@ func TestCallAdapter_ErrorsForwardedFromSrc(t *testing.T) {
 	if err != nil {
 		t.Fatalf("construct port: %v", err)
 	}
-	p.Bind(ctx, zeromq.CallAdapter(sock, handle, zeromq.CallStreamOptions{})) //nolint:errcheck
+	p.Bind(ctx, CallAdapter(sock, handle, CallStreamOptions{})) //nolint:errcheck
 	out := p.Connect(ctx, src)
 	_, errs := gstream.Collect(ctx, out)
 	if len(errs) != 1 {
@@ -98,7 +97,7 @@ func TestCallAdapter_DerivesVarsPerItem_WhenOptsVarsNil(t *testing.T) {
 		t.Fatalf("construct port: %v", err)
 	}
 	// opts.Vars left nil -> per-item derivation via CallHandle.
-	p.Bind(ctx, zeromq.CallAdapter(sock, handle, zeromq.CallStreamOptions{})) //nolint:errcheck
+	p.Bind(ctx, CallAdapter(sock, handle, CallStreamOptions{})) //nolint:errcheck
 	out := p.Connect(ctx, src)
 	vals, errs := gstream.Collect(ctx, out)
 	if len(errs) != 0 {
@@ -126,7 +125,7 @@ func TestZeromqPublishAdapter_DerivesVarsPerItem_WhenOptsVarsNil(t *testing.T) {
 	if err != nil {
 		t.Fatalf("construct port: %v", err)
 	}
-	p.Bind(ctx, zeromq.PublishAdapter(sock, handle, format.JSON(sensorCodec), zeromq.DrainPublishOptions{}))
+	p.Bind(ctx, PublishAdapter(sock, handle, format.JSON(sensorCodec), DrainPublishOptions{}))
 	p.Feed(ctx, gstream.From(ctx, ch))
 
 	sent := sock.sentSnapshot()
@@ -146,16 +145,15 @@ func TestZeromqPublishAdapter_ErrorChannelMatch_PublishesToDeclaredTopic(t *test
 	ctx := context.Background()
 	sock := &mockSocket{}
 
-	b := events.NewBuilder(events.Info{Title: "Test", Version: "1.0.0"})
+	b := events.NewClient(events.WithInfo(events.Info{Title: "Test", Version: "1.0.0"}))
 	handle, err := events.NewChannel[sensorReading]("sensors/readings", sensorCodec,
-		events.Publish{Summary: "sensor reading"},
 		events.ErrorChannel[sensorZmqValidationErr, sensorZmqErrPayload](
 			"sensors/readings/errors", sensorZmqErrPayloadCodec,
 			func(e sensorZmqValidationErr) (sensorZmqErrPayload, error) {
 				return sensorZmqErrPayload{Code: "validation", Message: e.msg}, nil
 			},
 		),
-	).Register(b)
+	).WithPublish(events.Publish{Summary: "sensor reading"}).Handle(b)
 	if err != nil {
 		t.Fatalf("Register: %v", err)
 	}
@@ -172,8 +170,8 @@ func TestZeromqPublishAdapter_ErrorChannelMatch_PublishesToDeclaredTopic(t *test
 	if perr != nil {
 		t.Fatalf("construct port: %v", perr)
 	}
-	p.Bind(ctx, zeromq.PublishAdapter(sock, handle, format.JSON(sensorCodec),
-		zeromq.DrainPublishOptions{OnError: func(e error) { gotOnError = e }}))
+	p.Bind(ctx, PublishAdapter(sock, handle, format.JSON(sensorCodec),
+		DrainPublishOptions{OnError: func(e error) { gotOnError = e }}))
 	p.Feed(ctx, src)
 
 	if gotOnError != nil {
@@ -196,16 +194,15 @@ func TestZeromqPublishAdapter_ErrorChannelNoMatch_FallsBackToOnError(t *testing.
 	ctx := context.Background()
 	sock := &mockSocket{}
 
-	b := events.NewBuilder(events.Info{Title: "Test", Version: "1.0.0"})
+	b := events.NewClient(events.WithInfo(events.Info{Title: "Test", Version: "1.0.0"}))
 	handle, err := events.NewChannel[sensorReading]("sensors/readings", sensorCodec,
-		events.Publish{Summary: "sensor reading"},
 		events.ErrorChannel[sensorZmqValidationErr, sensorZmqErrPayload](
 			"sensors/readings/errors", sensorZmqErrPayloadCodec,
 			func(e sensorZmqValidationErr) (sensorZmqErrPayload, error) {
 				return sensorZmqErrPayload{Code: "validation", Message: e.msg}, nil
 			},
 		),
-	).Register(b)
+	).WithPublish(events.Publish{Summary: "sensor reading"}).Handle(b)
 	if err != nil {
 		t.Fatalf("Register: %v", err)
 	}
@@ -222,8 +219,8 @@ func TestZeromqPublishAdapter_ErrorChannelNoMatch_FallsBackToOnError(t *testing.
 	if perr != nil {
 		t.Fatalf("construct port: %v", perr)
 	}
-	p.Bind(ctx, zeromq.PublishAdapter(sock, handle, format.JSON(sensorCodec),
-		zeromq.DrainPublishOptions{OnError: func(e error) { gotOnError = e }}))
+	p.Bind(ctx, PublishAdapter(sock, handle, format.JSON(sensorCodec),
+		DrainPublishOptions{OnError: func(e error) { gotOnError = e }}))
 	p.Feed(ctx, src)
 
 	if gotOnError == nil {
@@ -238,16 +235,15 @@ func TestZeromqPublishAdapter_ErrorChannelHandleAction_NoAutoPublish(t *testing.
 	ctx := context.Background()
 	sock := &mockSocket{}
 
-	b := events.NewBuilder(events.Info{Title: "Test", Version: "1.0.0"})
+	b := events.NewClient(events.WithInfo(events.Info{Title: "Test", Version: "1.0.0"}))
 	handle, err := events.NewChannel[sensorReading]("sensors/readings", sensorCodec,
-		events.Publish{Summary: "sensor reading"},
 		events.ErrorChannel[sensorZmqValidationErr, sensorZmqErrPayload](
 			"sensors/readings/errors", sensorZmqErrPayloadCodec,
 			func(e sensorZmqValidationErr) (sensorZmqErrPayload, error) {
 				return sensorZmqErrPayload{Code: "validation", Message: e.msg}, nil
 			},
 		).WithAction(events.ErrorHandle),
-	).Register(b)
+	).WithPublish(events.Publish{Summary: "sensor reading"}).Handle(b)
 	if err != nil {
 		t.Fatalf("Register: %v", err)
 	}
@@ -264,8 +260,8 @@ func TestZeromqPublishAdapter_ErrorChannelHandleAction_NoAutoPublish(t *testing.
 	if perr != nil {
 		t.Fatalf("construct port: %v", perr)
 	}
-	p.Bind(ctx, zeromq.PublishAdapter(sock, handle, format.JSON(sensorCodec),
-		zeromq.DrainPublishOptions{OnError: func(e error) { gotOnError = e }}))
+	p.Bind(ctx, PublishAdapter(sock, handle, format.JSON(sensorCodec),
+		DrainPublishOptions{OnError: func(e error) { gotOnError = e }}))
 	p.Feed(ctx, src)
 
 	if gotOnError == nil {
@@ -313,8 +309,8 @@ func TestZeromqPublishAdapter_ExplicitVarsStillWins(t *testing.T) {
 	if err != nil {
 		t.Fatalf("construct port: %v", err)
 	}
-	p.Bind(ctx, zeromq.PublishAdapter(sock, handle, format.JSON(sensorCodec),
-		zeromq.DrainPublishOptions{Vars: map[string]string{"sensorID": "static-sensor"}}))
+	p.Bind(ctx, PublishAdapter(sock, handle, format.JSON(sensorCodec),
+		DrainPublishOptions{Vars: map[string]string{"sensorID": "static-sensor"}}))
 	p.Feed(ctx, gstream.From(ctx, ch))
 
 	sent := sock.sentSnapshot()
@@ -328,10 +324,10 @@ func TestZeromqPublishAdapter_ExplicitVarsStillWins(t *testing.T) {
 // G2 regression guard: SubscribeAdapter (SourceAdapter) still forwards
 // decode errors and delivers plain values when the channel declares no
 // merge fields — verifies the Activate rewrite (now delegating to
-// [zeromq.Subscribe]) preserved existing behavior.
+// [subscribe]) preserved existing behavior.
 func TestSubscribeAdapter_DeliversDecodedValues(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
-	handle := newChannelHandle()
+	handle := newSubscribeHandle()
 	sock := &mockSocket{inFrames: [][][]byte{
 		{[]byte("sensors/readings"), []byte(`{"sensor_id":"f47ac10b-58cc-4372-a567-0e02b2c3d479","value":1.5}`)},
 	}}
@@ -340,7 +336,7 @@ func TestSubscribeAdapter_DeliversDecodedValues(t *testing.T) {
 	if err != nil {
 		t.Fatalf("construct port: %v", err)
 	}
-	p.Bind(ctx, zeromq.SubscribeAdapter(sock, handle, format.JSON(sensorCodec), zeromq.SubscribeAdapterOptions{Buffer: 4}))
+	p.Bind(ctx, SubscribeAdapter(sock, handle, format.JSON(sensorCodec), SubscribeAdapterOptions{Buffer: 4}))
 	s := p.Stream(ctx)
 
 	var got sensorReading
@@ -360,8 +356,8 @@ func TestSubscribeAdapter_DeliversDecodedValues(t *testing.T) {
 
 // G2: SubscribeAdapter auto-merges topic vars when the channel declares
 // merge fields — proves the port-binding SourceAdapter (which now delegates
-// to [zeromq.Subscribe] instead of hand-rolling frame decode) gets the same
-// merge wiring [zeromq.Subscribe] callers get directly.
+// to [subscribe] instead of hand-rolling frame decode) gets the same
+// merge wiring [subscribe] callers get directly.
 func TestSubscribeAdapter_MergeFields_AutoMergesTopicVars(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	handle := newMergeChannelHandle()
@@ -374,7 +370,7 @@ func TestSubscribeAdapter_MergeFields_AutoMergesTopicVars(t *testing.T) {
 	if err != nil {
 		t.Fatalf("construct port: %v", err)
 	}
-	p.Bind(ctx, zeromq.SubscribeAdapter(sock, handle, format.JSON(sensorCodec), zeromq.SubscribeAdapterOptions{Buffer: 4}))
+	p.Bind(ctx, SubscribeAdapter(sock, handle, format.JSON(sensorCodec), SubscribeAdapterOptions{Buffer: 4}))
 	s := p.Stream(ctx)
 
 	var got sensorReading
@@ -412,7 +408,7 @@ func TestServeAdapter_HandlesRequestViaToolPort(t *testing.T) {
 		return gstream.Single(context.Background(), computeResp{Sum: req.X + req.Y})
 	})
 
-	if err := p.Bind(ctx, zeromq.ServeAdapter(sock, handle, zeromq.ServeOptions{})); err != nil {
+	if err := p.Bind(ctx, ServeAdapter(sock, handle, ServeOptions{})); err != nil {
 		t.Fatalf("Bind: %v", err)
 	}
 
@@ -448,7 +444,7 @@ func TestServeAdapter_NoPipelineError(t *testing.T) {
 	if err != nil {
 		t.Fatalf("construct port: %v", err)
 	}
-	if err := p.Bind(ctx, zeromq.ServeAdapter(sock, handle, zeromq.ServeOptions{})); err == nil {
+	if err := p.Bind(ctx, ServeAdapter(sock, handle, ServeOptions{})); err == nil {
 		t.Fatal("want error when no pipeline set")
 	}
 }
@@ -475,7 +471,7 @@ func TestZeromqLatestAdapter_ServesLatest(t *testing.T) {
 	port.Feed(ctx, gstream.From(ctx, seed))
 
 	sock := &mockSocket{inFrames: [][][]byte{{[]byte(`{}`)}}}
-	if err := port.Bind(ctx, zeromq.LatestAdapter(sock, handle, zeromq.ServeLatestOptions{})); err != nil {
+	if err := port.Bind(ctx, LatestAdapter(sock, handle, ServeLatestOptions{})); err != nil {
 		t.Fatalf("bind: %v", err)
 	}
 
@@ -508,7 +504,7 @@ func TestZeromqLatestAdapter_EmptyCache_ErrorReply(t *testing.T) {
 
 	errCh := make(chan error, 1)
 	sock := &mockSocket{inFrames: [][][]byte{{[]byte(`{}`)}}}
-	if err := port.Bind(ctx, zeromq.LatestAdapter(sock, handle, zeromq.ServeLatestOptions{
+	if err := port.Bind(ctx, LatestAdapter(sock, handle, ServeLatestOptions{
 		OnError: func(e error) { errCh <- e },
 	})); err != nil {
 		t.Fatalf("bind: %v", err)
@@ -516,7 +512,7 @@ func TestZeromqLatestAdapter_EmptyCache_ErrorReply(t *testing.T) {
 
 	select {
 	case e := <-errCh:
-		var nv zeromq.NoLatestValueError
+		var nv NoLatestValueError
 		if !errors.As(e, &nv) {
 			t.Errorf("want NoLatestValueError, got %T: %v", e, e)
 		}

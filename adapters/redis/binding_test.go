@@ -590,7 +590,7 @@ func TestDrainSetAdapter_OnError_ComposesWithEventsErrorChannel(t *testing.T) {
 	fake := newFake()
 	fake.setErr = cacheWriteErr{msg: "connection refused"}
 
-	b := events.NewBuilder(events.Info{Title: "Test", Version: "1.0.0"})
+	b := events.NewClient(events.WithInfo(events.Info{Title: "Test", Version: "1.0.0"}))
 	errHandle, err := events.NewChannel[user]("users/cache", userCodec,
 		events.ErrorChannel[cacheWriteErr, cacheErrPayload](
 			"users/cache/errors", cacheErrPayloadCodec,
@@ -598,7 +598,7 @@ func TestDrainSetAdapter_OnError_ComposesWithEventsErrorChannel(t *testing.T) {
 				return cacheErrPayload{Code: "cache_write", Message: e.msg}, nil
 			},
 		),
-	).Register(b)
+	).WithSubscribe(events.Subscribe{}).Handle(b)
 	if err != nil {
 		t.Fatalf("Register: %v", err)
 	}

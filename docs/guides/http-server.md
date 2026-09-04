@@ -14,7 +14,7 @@ The most comprehensive HTTP server demo. Shows the **three-layer codec pipeline*
 
 - Layer 1: shared field codecs (`emailFieldCodec`, `nameFieldCodec`) propagate constraints to all three boundary codecs (request, database, response)
 - Layer 2: pure domain functions (`buildUserRecord`, `buildUserResponse`) with zero IO — independently unit-testable
-- Layer 3: infrastructure (`UserStore` uses codec for all DB IO; `nethttp.Serve` — the one call that wires every declared route onto the mux — is the only HTTP line)
+- Layer 3: infrastructure (`UserStore` uses codec for all DB IO; `nethttp.AttachMux` + `Server.Serve(ctx)` — the calls that wire every declared route onto the mux and start serving — are the only HTTP lines)
 
 Key patterns:
 - `rest.RequestFormats(format.JSON(...), format.YAML(...))` declared inline in `NewRoute`'s opts — JSON + YAML bodies
@@ -184,7 +184,10 @@ noPipelineErrHandler := func(w http.ResponseWriter, r *http.Request, status int,
 noPipelineRoute = noPipelineRoute.WithHandler(noPipelineFn).
     WithOptions(nethttp.Options{ErrorHandler: noPipelineErrHandler})
 noPipelineRoute.Register(b)
-nethttp.Serve(mux, b)
+if err := nethttp.AttachMux(b, mux, addr); err != nil {
+    log.Fatal(err)
+}
+_ = b.Serve(ctx) // blocks, owns its own http.Server
 ```
 
 Pipeline (`PipelineHandler`): map status in route declaration; keep custom
@@ -237,7 +240,10 @@ uploadRoute = uploadRoute.WithHandler(handler).WithOptions(nethttp.Options{
     MaxBodyBytes: maxPNG,
 })
 uploadRoute.Register(b)
-nethttp.Serve(mux, b)
+if err := nethttp.AttachMux(b, mux, addr); err != nil {
+    log.Fatal(err)
+}
+_ = b.Serve(ctx) // blocks, owns its own http.Server
 ```
 
 See [`examples/png-upload`](https://github.com/DaniDeer/go-codex/tree/main/examples/png-upload) for a full upload + download route pair with path params, cookie validation, and OpenAPI spec generation.
@@ -247,3 +253,31 @@ See [`examples/png-upload`](https://github.com/DaniDeer/go-codex/tree/main/examp
 Standalone REST builder and OpenAPI spec generation demos without an HTTP server.
 
 → [examples/api-rest](https://github.com/DaniDeer/go-codex/tree/main/examples/api-rest) · [examples/rest-api](https://github.com/DaniDeer/go-codex/tree/main/examples/rest-api) · [examples/openapi](https://github.com/DaniDeer/go-codex/tree/main/examples/openapi)
+
+## `Server.Attach` + `Server.Serve` — the ONLY server startup workflow
+
+`nethttp.AttachMux(builder, mux, addr)` (or `chi.AttachRouter(builder, r, addr)`) binds a mux/router
++ address to `builder` as its `rest.ServerTransport`. From there, `builder.Serve(ctx)` wires every
+route (both plain and SSE) onto the mux/router AND owns its own `*http.Server`, blocking until
+`ctx` is cancelled (graceful shutdown via `http.Server.Shutdown`):
+
+```go
+builder := rest.NewServer(rest.Info{Title: "My API", Version: "1.0.0"})
+_, _ = createUserRoute.Register(builder)
+
+mux := http.NewServeMux()
+if err := nethttp.AttachMux(builder, mux, ":8080"); err != nil {
+    log.Fatal(err)
+}
+err := builder.Serve(ctx) // blocks, owns its own http.Server
+```
+
+This is the SOLE public server-startup workflow (per
+`docs/roadmap/pubsub-workflow-simplification.md`'s Decision 6 — "no escape hatches"): the
+lower-level, wire-only `Serve(mux, builder)`/`ServeSSE(mux, builder)` functions this guide's
+earlier code snippets used to call directly are now unexported internals that `AttachMux`/
+`AttachRouter` call for you — there is no other public entry point for wiring a `*rest.Server`
+onto a mux/router. `Server.Attach`/`Serve` give an app ONE unified `Attach`-then-`Serve` startup
+call across both its REST API and its pub/sub channels (see `events.Client.Attach`/
+`.ServeSubscribers` in `docs/guides/mqtt5.md`/`docs/guides/zeromq.md`) — see
+`docs/roadmap/transport-agnostic-serve-interface.md` for the full design.

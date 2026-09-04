@@ -9,7 +9,7 @@
 Routes are plain values — declare once, pass around, register anywhere:
 
 ```go
-b := rest.NewBuilder(
+b := rest.NewServer(
     rest.Info{Title: "User API", Version: "1.0.0"},
     rest.WithPathConstraints(validate.HTTPPath),
 )
@@ -92,7 +92,7 @@ var getUser = rest.NewRoute[GetUserReq, User]("GET", "/users/{id}", reqCodec, us
 )
 getUser.Register(builder)
 
-// nethttp.Serve / chi.Serve apply RouteHandle.MergeFields() automatically
+// AttachMux/AttachRouter's internal serve dispatch applies RouteHandle.MergeFields() automatically
 // whenever it is non-empty — the handler function just
 // receives a fully populated, validated GetUserReq:
 func(ctx context.Context, req GetUserReq) (User, error) {
@@ -173,7 +173,7 @@ for the underlying mechanism.
 ### Client-side encode — role-aware merge fields
 
 The merge fields declared via `NewPathParam`/`NewRequiredQueryParam`/etc.
-also benefit the CLIENT (encode) direction: `nethttp.Call` takes the
+also benefit the CLIENT (encode) direction: `nethttp.CallWithHandle`/`rest.Client.Call` take the
 `rest.Route` value directly and ALWAYS auto-derives path/query/header/cookie
 values from its declared merge fields internally — there is no manual
 `vars map[string]string`/`codex.EncodeVars` step for the caller to perform;
@@ -206,14 +206,16 @@ var getUserActivity = rest.NewRoute[GetUserActivityReq, User](
         func(r *GetUserActivityReq, v string) { r.Filter = v }),
 )
 
-caller := nethttp.NewCaller(client, baseURL)
+restClient := rest.NewClient()
+_ = nethttp.Attach(restClient, client, baseURL)
 req := GetUserActivityReq{ID: userID, Filter: "logins"}
 
-// nethttp.Call takes the rest.Route value directly and ALWAYS auto-derives
+// rest.Client.Call takes the rest.Route value directly and ALWAYS auto-derives
 // path/query/header/cookie values from its declared merge fields — no
 // manual codex.EncodeVars call, no vars map. req.ID merges into {id},
 // req.Filter merges into ?filter=... automatically.
-user, err := nethttp.Call(ctx, caller, getUserActivity, req, nethttp.CallOptions{})
+userAny, err := restClient.Call(ctx, getUserActivity, req)
+user := userAny.(User)
 ```
 
 The path value can never end up in the query string, and vice versa, even
@@ -241,7 +243,7 @@ var getUserActivity = rest.NewRoute[GetUserActivityReq, User]("GET", "/users/{id
 )
 ```
 
-On the **server**, `nethttp`/`chi`'s `Serve` (via `Route.WithHandler`)
+On the **server**, `nethttp`/`chi`'s internal serve dispatch (via `Route.WithHandler`, wired by `AttachMux`/`AttachRouter`)
 automatically encode `User.RequestID` into the actual `X-Request-Id` HTTP
 response header after your handler returns — no
 `nethttp.WithResponseHeaders` call needed:
@@ -252,10 +254,10 @@ route.WithHandler(func(ctx context.Context, req GetUserActivityReq) (User, error
     u.RequestID = generateTraceID() // adapter sets the X-Request-Id header from this automatically
     return u, nil
 }).Register(builder)
-// ... nethttp.Serve(mux, builder) wires it
+// ... nethttp.AttachMux(builder, mux, addr) + builder.Serve(ctx) wires it
 ```
 
-On the **client**, `nethttp.Call` automatically merges the HTTP response's
+On the **client**, `nethttp.CallWithHandle`/`rest.Client.Call` automatically merge the HTTP response's
 `X-Request-Id` header back into the decoded `User.RequestID` field — no
 `resp.Header.Get(...)` call needed. `NewRequiredResponseCookieParam`/
 `NewOptionalResponseCookieParam` work identically for Set-Cookie values.
@@ -267,18 +269,21 @@ Path/Secure/SameSite override) — use `nethttp.WithResponseCookies`
 directly for custom attributes, the same escape hatch that remains for any
 field not modeled as a struct field.
 
-### One-line client calls — nethttp.Call
+### One-line client calls — rest.Client.Call / nethttp.CallWithHandle
 
-`nethttp.Call` derives `vars`/`QueryParams`/`HeaderParams`/`CookieParams`
-from `req` automatically, using the route's role-aware merge-field
-accessors — no `codex.EncodeVars` calls needed at the call site. `Call`
-is the SOLE public client-side entry point (see
+`rest.Client.Call` (bound via `nethttp.Attach`) and `nethttp.CallWithHandle`
+both derive `vars`/`QueryParams`/`HeaderParams`/`CookieParams` from `req`
+automatically, using the route's role-aware merge-field accessors — no
+`codex.EncodeVars` calls needed at the call site. `rest.Client.Call` is the
+single-workflow client-side entry point (see
 [the HTTP Client feature page](http-client.md) for the full picture):
 
 ```go
-caller := nethttp.NewCaller(client, baseURL)
-activity, err := nethttp.Call(ctx, caller, getUserActivity,
-    GetUserActivityReq{ID: userID, Filter: "logins"}, nethttp.CallOptions{})
+restClient := rest.NewClient()
+_ = nethttp.Attach(restClient, client, baseURL)
+activityAny, err := restClient.Call(ctx, getUserActivity,
+    GetUserActivityReq{ID: userID, Filter: "logins"})
+activity := activityAny.(User)
 // activity.RequestID is already populated from the response header.
 ```
 
@@ -380,7 +385,7 @@ API. See `examples/rest-nested-binary` for the full runnable version:
 nested `Meta`/`Payload` sub-structs, Gob body projected onto `Payload`,
 header/query merged into `Meta`, and a response header merge field
 (`Resp.Meta.TraceID`) — one struct in, one struct out, on both
-`nethttp.CallWithHandle` (client) and `nethttp.Serve` (server).
+`nethttp.CallWithHandle` (client) and each adapter's internal serve dispatch, wired via `nethttp.AttachMux`/`chi.AttachRouter` (server).
 
 ## BuildPath — type-safe URL construction
 
@@ -397,14 +402,14 @@ import nethttp "github.com/DaniDeer/go-codex/adapters/nethttp"
 
 mux := http.NewServeMux()
 
-// Serve uses the Go 1.22+ "METHOD /path" ServeMux pattern automatically.
+// AttachMux uses the Go 1.22+ "METHOD /path" ServeMux pattern automatically.
 route := createUser.WithHandler(func(ctx context.Context, req CreateUserReq) (User, error) {
     return svc.CreateUser(ctx, req)
 }).WithOptions(nethttp.Options{Observer: obs})
 route.Register(builder)
-nethttp.Serve(mux, builder)
+nethttp.AttachMux(builder, mux, addr)
 
-http.ListenAndServe(":8080", mux)
+go func() { _ = builder.Serve(ctx) }()
 ```
 
 **What the adapter handles automatically:**
@@ -505,15 +510,16 @@ boundary, adapted to its transport: [`events.ErrorChannel`](events.md#error-path
 (MCP tools), and the [Store/IO boundaries](../guides/error-handling.md#storeio-boundaries-sql-cache-file--handlelog-by-default)
 composition pattern (SQL/Cache/File).
 
-### Client-side decode — `nethttp.Call` and `ErrorPatternResponse`
+### Client-side decode — `nethttp.CallWithHandle` and `ErrorPatternResponse`
 
 The declarative `ErrorPattern` data is not server-only — `Route.ClientHandle()`/
 `Register()` carry the SAME declared patterns onto the client-side
-`RouteHandle`. `nethttp.Call` consults them automatically on any non-2xx
+`RouteHandle`. `nethttp.CallWithHandle` consults them automatically on any non-2xx
 response:
 
 ```go
-_, err := nethttp.Call(ctx, caller, clientCreate, req, nethttp.CallOptions{})
+handle := clientCreate.ClientHandle()
+_, err := nethttp.CallWithHandle(ctx, client, baseURL, handle, req, nethttp.CallOptions{})
 if err != nil {
     var conflict nethttp.ErrorPatternResponse
     if errors.As(err, &conflict) {
@@ -559,7 +565,10 @@ chiRoute := getUser.WithHandler(func(ctx context.Context, _ struct{}) (User, err
     return svc.GetUser(ctx, gochi.URLParam(rr, "id"))
 })
 chiRoute.Register(builder)
-chiadapter.Serve(r, builder)
+if err := chiadapter.AttachRouter(builder, r, addr); err != nil {
+    log.Fatal(err)
+}
+_ = builder.Serve(ctx) // blocks, owns its own http.Server
 ```
 
 Same feature set as `adapters/nethttp` — all param validation, response headers/cookies, content negotiation, observer.
@@ -587,9 +596,9 @@ articleRoute := rest.NewRoute[struct{}, ArticleProps]("GET", "/article",
 ```
 
 `Route.ClientHandle()` applies these SAME declared formats identically to
-`Register`/`RegisterHandle` — `nethttp.Call` picks up a declared
+`Register`/`RegisterHandle` — `nethttp.CallWithHandle`/`rest.Client.Call` pick up a declared
 `RequestFormats`/`Formats` automatically, whether the route was registered
-with a `Builder` or built client-only via `ClientHandle()`.
+with a `Server` or built client-only via `ClientHandle()`.
 
 To override the format for ONE specific call without changing the route's
 declaration, set `CallOptions.RequestFormats`/`ResponseFormats` (type-erased
@@ -597,7 +606,8 @@ declaration, set `CallOptions.RequestFormats`/`ResponseFormats` (type-erased
 route-declared format for that call only:
 
 ```go
-resp, err := nethttp.Call(ctx, caller, createUser, req, nethttp.CallOptions{
+handle := createUser.ClientHandle()
+resp, err := nethttp.CallWithHandle(ctx, client, baseURL, handle, req, nethttp.CallOptions{
     ResponseFormats: []format.Format[User]{format.YAML(userCodec)},
 })
 ```
@@ -614,7 +624,8 @@ route := createUser.WithHandler(func(ctx context.Context, req CreateUserReq) (Us
     return u, nil
 })
 route.Register(builder)
-nethttp.Serve(mux, builder)
+nethttp.AttachMux(builder, mux, addr)
+go func() { _ = builder.Serve(ctx) }()
 
 // Declare response header + codec — validated after handler returns
 locationCodec := codex.String().Refine(validate.NonEmptyString)

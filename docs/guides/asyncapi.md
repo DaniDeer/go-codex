@@ -13,7 +13,7 @@ For the full API reference and all code examples, see the feature page.
 
 ## Combining pub/sub and request-reply in one AsyncAPI spec
 
-By default, `api/events.Builder` (PUB/SUB channels) and `api/reqreply.Builder`
+By default, `api/events.Client` (PUB/SUB channels) and `api/reqreply.Builder`
 (request-reply channels) each produce their own `AsyncAPISpec()`. To publish a
 **single combined AsyncAPI 3.0 document** covering both patterns, use
 `AppendTo(*asyncapi.DocumentBuilder)` on each builder:
@@ -32,8 +32,8 @@ doc.AddServer("mqtt5", asyncapi.Server{
 })
 
 // 2. Register pub/sub channels and append them.
-eventsB := events.NewBuilder(events.Info{Title: "Sensor Service API", Version: "1.0.0"})
-sensorHandle, _ := sensorChannel.Register(eventsB)
+eventsClient := events.NewClient(events.WithInfo(events.Info{Title: "Sensor Service API", Version: "1.0.0"}))
+sensorHandle, _ := sensorChannel.WithSubscribe(events.Subscribe{}).Handle(eventsB)
 if err := eventsB.AppendTo(doc); err != nil {
     log.Fatal(err)
 }
@@ -62,7 +62,7 @@ info:
   title: Sensor Service API
   version: 1.0.0
 channels:
-  sensor/reading:            # ← pub/sub channel from events.Builder
+  sensor/reading:            # ← pub/sub channel from events.Client
     address: sensor/reading
     ...
   computeAdd:                # ← request channel from reqreply.Builder

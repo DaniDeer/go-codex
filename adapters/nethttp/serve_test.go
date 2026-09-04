@@ -1,4 +1,4 @@
-package nethttp_test
+package nethttp
 
 import (
 	"bufio"
@@ -10,14 +10,13 @@ import (
 	"strings"
 	"testing"
 
-	nethttp "github.com/DaniDeer/go-codex/adapters/nethttp"
 	"github.com/DaniDeer/go-codex/api/rest"
 )
 
 // --- Serve (regular routes) ---
 
 func TestServe_HappyPath(t *testing.T) {
-	b := rest.NewBuilder(testInfo)
+	b := rest.NewServer(testInfo)
 	err := rest.NewRoute[createReq, userResp]("POST", "/users",
 		createReqCodec, userRespCodec, rest.RouteMeta{OperationID: "createUser"},
 	).WithHandler(func(ctx context.Context, req createReq) (userResp, error) {
@@ -28,7 +27,7 @@ func TestServe_HappyPath(t *testing.T) {
 	}
 
 	mux := http.NewServeMux()
-	if err := nethttp.Serve(mux, b); err != nil {
+	if err := serve(mux, b); err != nil {
 		t.Fatalf("Serve: %v", err)
 	}
 
@@ -53,7 +52,7 @@ func TestServe_HappyPath(t *testing.T) {
 // semantics: a route with NO WithHandler is spec-only and skipped
 // entirely — no validation, no wiring, no error.
 func TestServe_SkipsSpecOnlyRoutes(t *testing.T) {
-	b := rest.NewBuilder(testInfo)
+	b := rest.NewServer(testInfo)
 	if err := rest.NewRoute[createReq, userResp]("POST", "/spec-only",
 		createReqCodec, userRespCodec,
 	).Register(b); err != nil {
@@ -61,7 +60,7 @@ func TestServe_SkipsSpecOnlyRoutes(t *testing.T) {
 	}
 
 	mux := http.NewServeMux()
-	if err := nethttp.Serve(mux, b); err != nil {
+	if err := serve(mux, b); err != nil {
 		t.Fatalf("Serve: %v", err)
 	}
 
@@ -77,7 +76,7 @@ func TestServe_SkipsSpecOnlyRoutes(t *testing.T) {
 // detection: two handler-bearing routes with the SAME Method+Path fail
 // Serve with a DuplicateRouteError, wiring NEITHER.
 func TestServe_DuplicateRoute(t *testing.T) {
-	b := rest.NewBuilder(testInfo)
+	b := rest.NewServer(testInfo)
 	mkRoute := func() error {
 		return rest.NewRoute[createReq, userResp]("POST", "/dup",
 			createReqCodec, userRespCodec,
@@ -93,15 +92,15 @@ func TestServe_DuplicateRoute(t *testing.T) {
 	}
 
 	mux := http.NewServeMux()
-	err := nethttp.Serve(mux, b)
+	err := serve(mux, b)
 	if err == nil {
 		t.Fatal("want error for duplicate route, got nil")
 	}
-	var multiErr nethttp.MultiRouteError
+	var multiErr MultiRouteError
 	if !errors.As(err, &multiErr) {
 		t.Fatalf("want MultiRouteError, got %T: %v", err, err)
 	}
-	var dupErr nethttp.DuplicateRouteError
+	var dupErr DuplicateRouteError
 	if !errors.As(err, &dupErr) {
 		t.Fatalf("want DuplicateRouteError inside MultiRouteError, got %v", err)
 	}
@@ -116,7 +115,7 @@ func TestServeOne_HappyPath(t *testing.T) {
 		return userResp{ID: "1", Name: req.Name}, nil
 	})
 
-	h, err := nethttp.ServeOne(r)
+	h, err := ServeOne(r)
 	if err != nil {
 		t.Fatalf("ServeOne: %v", err)
 	}
@@ -134,7 +133,7 @@ func TestServeOne_HappyPath(t *testing.T) {
 // --- ServeSSE ---
 
 func TestServeSSE_HappyPath(t *testing.T) {
-	b := rest.NewBuilder(testInfo)
+	b := rest.NewServer(testInfo)
 	err := rest.NewSSERoute[createReq, sseEvent]("/events",
 		createReqCodec, sseEventCodec, rest.RouteMeta{OperationID: "streamEvents"},
 	).WithHandler(func(ctx context.Context, req createReq, send func(sseEvent) error) error {
@@ -148,7 +147,7 @@ func TestServeSSE_HappyPath(t *testing.T) {
 	}
 
 	mux := http.NewServeMux()
-	if err := nethttp.ServeSSE(mux, b); err != nil {
+	if err := serveSSE(mux, b); err != nil {
 		t.Fatalf("ServeSSE: %v", err)
 	}
 
@@ -187,7 +186,7 @@ func TestServeSSE_HappyPath(t *testing.T) {
 // TestServeSSE_SkipsSpecOnlyRoutes mirrors TestServe_SkipsSpecOnlyRoutes
 // for SSE routes.
 func TestServeSSE_SkipsSpecOnlyRoutes(t *testing.T) {
-	b := rest.NewBuilder(testInfo)
+	b := rest.NewServer(testInfo)
 	if err := rest.NewSSERoute[createReq, sseEvent]("/spec-only-sse",
 		createReqCodec, sseEventCodec,
 	).Register(b); err != nil {
@@ -195,7 +194,7 @@ func TestServeSSE_SkipsSpecOnlyRoutes(t *testing.T) {
 	}
 
 	mux := http.NewServeMux()
-	if err := nethttp.ServeSSE(mux, b); err != nil {
+	if err := serveSSE(mux, b); err != nil {
 		t.Fatalf("ServeSSE: %v", err)
 	}
 

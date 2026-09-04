@@ -572,7 +572,7 @@ declared directly on the `RESTPattern`'s own `Opts` via
 registry for REST):
 
 ```go
-restBuilder := rest.NewBuilder(rest.Info{Title: "OEE Service", Version: "1.0.0"})
+restBuilder := rest.NewServer(rest.Info{Title: "OEE Service", Version: "1.0.0"})
 restBuilder.AddGlobalSecurity(route.SecurityRequirement{"bearerAuth": {}})
 
 oeeTool := codex.Must(ports.NewToolPort[OEEIn, OEEResult]("oee-calc", oeeInCodec, oeeResultCodec,
@@ -596,8 +596,8 @@ spec, _ := restBuilder.OpenAPISpec()
 
 | `PortOptions` field | Pattern | Gives you |
 |---|---|---|
-| `RESTBuilder *rest.Builder` | `RESTPattern` | Global security, `rest.WithPathConstraints` (security SCHEMES are declared on the Pattern's own `Opts`) |
-| `EventBuilder *events.Builder` | `EventPattern` | Security schemes, global security, `events.WithTopicConstraints` |
+| `RESTBuilder *rest.Server` | `RESTPattern` | Global security, `rest.WithPathConstraints` (security SCHEMES are declared on the Pattern's own `Opts`) |
+| `EventClient *events.Client` | `EventPattern` | Security schemes, global security, `events.WithTopicConstraints` |
 | `ReqReplyBuilder *reqreply.Builder` | `ReqReplyPattern` | Duplicate-topic detection |
 | `MCPBuilder *apimcp.Builder` | `MCPPattern` | Duplicate-name detection |
 
@@ -618,13 +618,13 @@ afterward is redundant. Use `Register*` only when you did **not** supply a
 document after the fact:
 
 ```go
-b := rest.NewBuilder(rest.Info{Title: "OEE Service", Version: "1.0.0"})
+b := rest.NewServer(rest.Info{Title: "OEE Service", Version: "1.0.0"})
 ports.RegisterREST[OEEIn, OEEResult](b, domain.OEETool) //nolint:errcheck
 spec, _ := b.OpenAPISpec()
 ```
 
 `RegisterEvent`, `RegisterReqReply`, and `RegisterMCP` do the same for their
-builders. `RegisterSocket[In,Out](b *events.Builder, port)` renders a
+builders. `RegisterSocket[In,Out](b *events.Client, port)` renders a
 `SocketPattern` as an AsyncAPI channel (Subscribe = In frames the app
 receives, Publish = Out frames it sends) — the WebSocket spec story, since
 OpenAPI cannot express socket frames.

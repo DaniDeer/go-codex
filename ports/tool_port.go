@@ -67,7 +67,7 @@ type ToolPort[In, Out any] struct {
 	// PluginReqReplyPattern/PluginMCPPattern can register against the SAME
 	// shared builder every other Pattern-carrying declaration in the
 	// service uses.
-	restBuilder     *rest.Builder
+	restBuilder     *rest.Server
 	reqReplyBuilder *reqreply.Builder
 	mcpBuilder      *apimcp.Builder
 

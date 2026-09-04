@@ -46,8 +46,8 @@ func (b *Builder) Info() Info { return b.info }
 // resources, and prompts with their JSON Schemas.
 //
 // The returned [MCPSpec] is analogous to the OpenAPI spec produced by
-// [rest.Builder.OpenAPISpec] and the AsyncAPI spec from
-// [events.Builder.AsyncAPISpec]. It is compatible with the MCP protocol
+// [rest.Server.OpenAPISpec] and the AsyncAPI spec from
+// [events.Client.AsyncAPISpec]. It is compatible with the MCP protocol
 // tools/list, resources/list, and prompts/list response format.
 //
 // Marshal to JSON for documentation, testing, or static analysis:
@@ -283,7 +283,8 @@ func (t Tool[In, Out]) Register(b *Builder) (*ToolHandle[In, Out], error) {
 // rendered schemas are needed (no MCP spec document), or when constructing a
 // tool handle outside of a [Builder]-managed registration flow.
 //
-// Mirrors [rest.Route.ClientHandle], [events.Channel.ClientHandle], and
+// Mirrors [rest.Route.ClientHandle], [events.Subscriber.Handle]/
+// [events.Publisher.Handle] (called with a nil client), and
 // [reqreply.Route.ClientHandle].
 func (t Tool[In, Out]) ClientHandle() (*ToolHandle[In, Out], error) {
 	if t.name == "" {

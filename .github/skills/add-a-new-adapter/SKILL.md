@@ -148,7 +148,10 @@ route := route.WithHandler(func(ctx context.Context, req Req) (Resp, error) {
     return resp, nil // adapter auto-decoded req, will auto-encode resp
 })
 route.Register(b)
-nethttp.Serve(mux, b)
+if err := nethttp.AttachMux(b, mux, addr); err != nil {
+    log.Fatal(err)
+}
+_ = b.Serve(ctx) // blocks, owns its own http.Server
 ```
 
 **Checklist — implement all five, both directions, both roles:**

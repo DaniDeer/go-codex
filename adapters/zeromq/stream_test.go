@@ -1,4 +1,4 @@
-package zeromq_test
+package zeromq
 
 import (
 	"context"
@@ -7,14 +7,13 @@ import (
 	"testing"
 	"time"
 
-	zeromq "github.com/DaniDeer/go-codex/adapters/zeromq"
 	gstream "github.com/DaniDeer/go-codex/stream"
 )
 
 // ── AsPipelineFunc ────────────────────────────────────────────────────────────
 
 func TestAsPipelineFunc_ReturnsFirstValue(t *testing.T) {
-	fn := zeromq.AsPipelineFunc(func(ctx context.Context, req computeReq) gstream.Stream[computeResp] {
+	fn := AsPipelineFunc(func(ctx context.Context, req computeReq) gstream.Stream[computeResp] {
 		return gstream.Single(ctx, computeResp{Sum: req.X + req.Y})
 	})
 
@@ -28,7 +27,7 @@ func TestAsPipelineFunc_ReturnsFirstValue(t *testing.T) {
 }
 
 func TestAsPipelineFunc_ErrorTakesPrecedence(t *testing.T) {
-	fn := zeromq.AsPipelineFunc(func(ctx context.Context, req computeReq) gstream.Stream[computeResp] {
+	fn := AsPipelineFunc(func(ctx context.Context, req computeReq) gstream.Stream[computeResp] {
 		errCh := make(chan error, 1)
 		valCh := make(chan computeResp)
 		errCh <- fmt.Errorf("compute failed")
@@ -44,7 +43,7 @@ func TestAsPipelineFunc_ErrorTakesPrecedence(t *testing.T) {
 }
 
 func TestAsPipelineFunc_NoValueReturnsPipelineNoResponseError(t *testing.T) {
-	fn := zeromq.AsPipelineFunc(func(ctx context.Context, req computeReq) gstream.Stream[computeResp] {
+	fn := AsPipelineFunc(func(ctx context.Context, req computeReq) gstream.Stream[computeResp] {
 		errCh := make(chan error)
 		valCh := make(chan computeResp)
 		close(errCh)
@@ -53,7 +52,7 @@ func TestAsPipelineFunc_NoValueReturnsPipelineNoResponseError(t *testing.T) {
 	})
 
 	_, err := fn(context.Background(), computeReq{X: 1, Y: 2})
-	var nre zeromq.PipelineNoResponseError
+	var nre PipelineNoResponseError
 	if !isErrorAs(err, &nre) {
 		t.Errorf("want PipelineNoResponseError, got %T: %v", err, err)
 	}
@@ -84,7 +83,7 @@ func TestServeLatest_ReturnsLatestValue(t *testing.T) {
 		cancel()
 	}()
 
-	_ = zeromq.ServeLatest(ctx, sock, handle, src, zeromq.ServeLatestOptions{})
+	_ = ServeLatest(ctx, sock, handle, src, ServeLatestOptions{})
 }
 
 func TestServeLatest_NoValueSendsNoLatestValueError(t *testing.T) {
@@ -101,11 +100,11 @@ func TestServeLatest_NoValueSendsNoLatestValueError(t *testing.T) {
 	reqPayload, _ := json.Marshal(map[string]any{"x": 1, "y": 2})
 	sock := &mockSocket{inFrames: [][][]byte{{reqPayload}}}
 
-	var gotNoVal *zeromq.NoLatestValueError
-	zeromq.ServeLatest(ctx, sock, handle, src, //nolint:errcheck
-		zeromq.ServeLatestOptions{
+	var gotNoVal *NoLatestValueError
+	ServeLatest(ctx, sock, handle, src, //nolint:errcheck
+		ServeLatestOptions{
 			OnError: func(e error) {
-				var nv zeromq.NoLatestValueError
+				var nv NoLatestValueError
 				if isErrorAs(e, &nv) {
 					gotNoVal = &nv
 				}

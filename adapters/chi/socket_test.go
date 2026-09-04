@@ -1,4 +1,4 @@
-package chi_test
+package chi
 
 import (
 	"context"
@@ -11,7 +11,6 @@ import (
 	gochi "github.com/go-chi/chi/v5"
 	gorillaws "github.com/gorilla/websocket"
 
-	adapterchi "github.com/DaniDeer/go-codex/adapters/chi"
 	adapterws "github.com/DaniDeer/go-codex/adapters/websocket"
 	"github.com/DaniDeer/go-codex/codex"
 	"github.com/DaniDeer/go-codex/ports"
@@ -70,7 +69,7 @@ func TestChiDuplexSocket_SwapHandlerAndRoundTrip(t *testing.T) {
 	}
 
 	// Constructor registers the swap handler — BEFORE Activate/Bind.
-	adapter := adapterchi.DuplexSocketAdapter(router, hub, up, handle,
+	adapter := DuplexSocketAdapter(router, hub, up, handle,
 		adapterws.DuplexSocketAdapterOptions{})
 	if got := adapter.AdapterName(); got != "chi.DuplexSocketAdapter" {
 		t.Errorf("AdapterName: %s", got)

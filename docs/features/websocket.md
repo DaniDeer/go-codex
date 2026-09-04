@@ -160,13 +160,13 @@ expanded with `vars` (declared `PathParam` codecs validate each value).
 ## AsyncAPI spec — `ports.RegisterSocket`
 
 OpenAPI cannot express WebSocket frames; **AsyncAPI can**. `RegisterSocket`
-replays a port's `SocketPattern` against an `events.Builder` as a channel:
+replays a port's `SocketPattern` against an `events.Client` as a channel:
 
 ```go
-b := events.NewBuilder(events.Info{Title: "Live Ops Socket", Version: "1.0.0"})
-b.AddServer("prod", events.Server{URL: "live.example.com", Protocol: "ws"})
-_ = ports.RegisterSocket[Command, Update](b, Live)
-doc, _ := b.AsyncAPISpec()
+client := events.NewClient(events.WithInfo(events.Info{Title: "Live Ops Socket", Version: "1.0.0"}))
+client.AddServer("prod", events.Server{URL: "live.example.com", Protocol: "ws"})
+_ = ports.RegisterSocket[Command, Update](client, Live)
+doc, _ := client.AsyncAPISpec()
 ```
 
 - Channel name = the socket path template; `{var}` placeholders become
@@ -174,7 +174,7 @@ doc, _ := b.AsyncAPISpec()
 - Subscribe operation = frames the application RECEIVES (`In`); Publish
   operation = frames it SENDS (`Out`). One-directional ports emit only
   their live direction (the `struct{}` side is skipped).
-- Built on `events.Builder.AddChannelItem` — the escape hatch for channels
+- Built on `events.Client.AddChannelItem` — the escape hatch for channels
   whose two directions carry different payload types.
 
 (Supplying `PortOptions.RESTBuilder` still incidentally documents the

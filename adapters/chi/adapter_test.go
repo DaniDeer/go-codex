@@ -1,4 +1,4 @@
-package chi_test
+package chi
 
 import (
 	"context"
@@ -13,7 +13,6 @@ import (
 
 	gochi "github.com/go-chi/chi/v5"
 
-	chiadapter "github.com/DaniDeer/go-codex/adapters/chi"
 	"github.com/DaniDeer/go-codex/api/rest"
 	"github.com/DaniDeer/go-codex/codex"
 	"github.com/DaniDeer/go-codex/format"
@@ -30,7 +29,7 @@ import (
 // builds this shape internally (see
 // docs/design/middleware-workflow-simplification.md's "Decision:
 // HandleMW/ClientMW unification"); these tests exercise the OLD, still-
-// present chiadapter.Handler/Register directly (not HandleMW), so they
+// present Handler/Register directly (not HandleMW), so they
 // still need a raw middleware.ServerImplementation value to pass.
 func scopesImpl[Req any](schemeName string, extract func(context.Context, *http.Request, *Req) (map[string][]string, error)) middleware.ServerImplementation {
 	return middleware.ServerImplementation{
@@ -103,12 +102,12 @@ func decodeJSON(t *testing.T, body io.Reader, v any) {
 	}
 }
 
-// mustServeOne is a test helper wrapping [chiadapter.ServeOne], failing the
+// mustServeOne is a test helper wrapping [ServeOne], failing the
 // test immediately on error (every test route here is expected to be
 // valid — a ServeOne error indicates a genuine test bug).
 func mustServeOne[Req, Resp any](t *testing.T, route rest.Route[Req, Resp]) http.Handler {
 	t.Helper()
-	h, err := chiadapter.ServeOne(route)
+	h, err := serveOne(route)
 	if err != nil {
 		t.Fatalf("ServeOne: %v", err)
 	}
@@ -116,28 +115,28 @@ func mustServeOne[Req, Resp any](t *testing.T, route rest.Route[Req, Resp]) http
 }
 
 // mustServe is [mustServeOne]'s builder-based sibling — used when a test
-// needs builder-level state (e.g. [rest.Builder.AddGlobalSecurity]) that
+// needs builder-level state (e.g. [rest.Server.AddGlobalSecurity]) that
 // ServeOne's internal scratch Builder cannot expose.
-func mustServe[Req, Resp any](t *testing.T, route rest.Route[Req, Resp], b *rest.Builder) gochi.Router {
+func mustServe[Req, Resp any](t *testing.T, route rest.Route[Req, Resp], b *rest.Server) gochi.Router {
 	t.Helper()
 	if err := route.Register(b); err != nil {
 		t.Fatalf("Register: %v", err)
 	}
 	r := gochi.NewRouter()
-	if err := chiadapter.Serve(r, b); err != nil {
+	if err := serve(r, b); err != nil {
 		t.Fatalf("Serve: %v", err)
 	}
 	return r
 }
 
 // mustServeSSE is [mustServe]'s SSE sibling.
-func mustServeSSE[Req, Event any](t *testing.T, route rest.SSERoute[Req, Event], b *rest.Builder) gochi.Router {
+func mustServeSSE[Req, Event any](t *testing.T, route rest.SSERoute[Req, Event], b *rest.Server) gochi.Router {
 	t.Helper()
 	if err := route.Register(b); err != nil {
 		t.Fatalf("Register: %v", err)
 	}
 	r := gochi.NewRouter()
-	if err := chiadapter.ServeSSE(r, b); err != nil {
+	if err := serveSSE(r, b); err != nil {
 		t.Fatalf("ServeSSE: %v", err)
 	}
 	return r
@@ -190,7 +189,7 @@ func TestHandler_Post_InvalidBody(t *testing.T) {
 
 func TestHandler_PathParam_Chi(t *testing.T) {
 	route := newGetRoute("/users/{id}").WithHandler(func(ctx context.Context, _ getReq) (userResp, error) {
-		r, _ := chiadapter.RequestFromContext(ctx)
+		r, _ := RequestFromContext(ctx)
 		id := gochi.URLParam(r, "id")
 		return userResp{ID: id, Name: "Alice"}, nil
 	})
@@ -253,7 +252,7 @@ func TestHandler_NoMergeFields_UnchangedBehavior_Chi(t *testing.T) {
 		t.Fatalf("expected no merge fields for a plain route, got %d", got)
 	}
 	route := baseRoute.WithHandler(func(ctx context.Context, _ getReq) (userResp, error) {
-		r, _ := chiadapter.RequestFromContext(ctx)
+		r, _ := RequestFromContext(ctx)
 		id := gochi.URLParam(r, "id")
 		return userResp{ID: id, Name: "Alice"}, nil
 	})
@@ -272,16 +271,16 @@ func TestHandler_NoMergeFields_UnchangedBehavior_Chi(t *testing.T) {
 
 func TestServe_WiresOntoRouter(t *testing.T) {
 	route := newGetRoute("/users/{id}").WithHandler(func(ctx context.Context, _ getReq) (userResp, error) {
-		rr, _ := chiadapter.RequestFromContext(ctx)
+		rr, _ := RequestFromContext(ctx)
 		id := gochi.URLParam(rr, "id")
 		return userResp{ID: id, Name: "Bob"}, nil
 	})
-	b := rest.NewBuilder(testInfo)
+	b := rest.NewServer(testInfo)
 	if err := route.Register(b); err != nil {
 		t.Fatal(err)
 	}
 	r := gochi.NewRouter()
-	if err := chiadapter.Serve(r, b); err != nil {
+	if err := serve(r, b); err != nil {
 		t.Fatal(err)
 	}
 
@@ -312,7 +311,7 @@ func TestHandler_ResponseHeaders(t *testing.T) {
 	).WithHandler(func(ctx context.Context, req createReq) (userResp, error) {
 		header := make(http.Header)
 		header.Set("Location", "/users/1")
-		chiadapter.WithResponseHeaders(ctx, header)
+		WithResponseHeaders(ctx, header)
 		return userResp{ID: "1", Name: req.Name}, nil
 	})
 	srv := httptest.NewServer(mustServeOne(t, route))
@@ -339,9 +338,9 @@ func TestHandler_ResponseCookies(t *testing.T) {
 		createReqCodec, userRespCodec,
 		rest.ResponseCookieParam{Name: "session", Required: true, Codec: &sessionCodec},
 	).WithHandler(func(ctx context.Context, req createReq) (userResp, error) {
-		chiadapter.WithResponseCookies(ctx, chiadapter.PendingCookie{
+		WithResponseCookies(ctx, PendingCookie{
 			Name: "session", Value: "abcdefgh",
-			Opts: chiadapter.CookieOptions{MaxAge: 3600, Insecure: true},
+			Opts: CookieOptions{MaxAge: 3600, Insecure: true},
 		})
 		return userResp{ID: "1", Name: req.Name}, nil
 	})
@@ -546,7 +545,7 @@ func TestHandler_ErrorPattern_WithActionHandle_FallsThroughToErrorHandler_Chi(t 
 			}).WithAction(rest.ErrorHandle),
 	).WithHandler(func(_ context.Context, _ createReq) (userResp, error) {
 		return userResp{}, handlerConflictError{msg: "handled-not-responded"}
-	}).WithOptions(chiadapter.Options{
+	}).WithOptions(Options{
 		ErrorHandler: func(w http.ResponseWriter, _ *http.Request, status int, err error) {
 			gotErrorHandlerStatus = status
 			gotErrorHandlerErr = err
@@ -816,7 +815,7 @@ func TestRequestFormats_WrongContentType_returns415(t *testing.T) {
 		rest.RequestFormats(format.JSON(createReqCodec), format.YAML(createReqCodec)),
 	).WithHandler(func(_ context.Context, req createReq) (userResp, error) {
 		return userResp{ID: "1", Name: req.Name}, nil
-	}).WithOptions(chiadapter.Options{
+	}).WithOptions(Options{
 		ErrorHandler: func(w http.ResponseWriter, _ *http.Request, status int, e error) {
 			capturedErr = e
 			w.WriteHeader(status)
@@ -899,14 +898,14 @@ func TestSSEHandler_MultiLineDataFraming(t *testing.T) {
 	).WithHandler(func(_ context.Context, _ struct{}, send func(userResp) error) error {
 		return send(userResp{ID: "1", Name: "Alice"})
 	})
-	b := rest.NewBuilder(testInfo)
+	b := rest.NewServer(testInfo)
 	handle, err := route.RegisterHandle(b)
 	if err != nil {
 		t.Fatalf("RegisterHandle: %v", err)
 	}
 	handle.WithFormats(format.YAML(userRespCodec))
 	r := gochi.NewRouter()
-	if err := chiadapter.ServeSSE(r, b); err != nil {
+	if err := serveSSE(r, b); err != nil {
 		t.Fatalf("ServeSSE: %v", err)
 	}
 
@@ -947,7 +946,7 @@ func TestSSEHandler_streamEvents(t *testing.T) {
 		}
 		return nil
 	})
-	handler := mustServeSSE(t, route, rest.NewBuilder(testInfo))
+	handler := mustServeSSE(t, route, rest.NewServer(testInfo))
 
 	rec := httptest.NewRecorder()
 	r := httptest.NewRequest(http.MethodGet, "/events", nil)
@@ -975,7 +974,7 @@ func TestSSEHandler_validationRejectsEvent(t *testing.T) {
 		sendErr = send(sseEvent{Message: ""})
 		return nil
 	})
-	handler := mustServeSSE(t, route, rest.NewBuilder(testInfo))
+	handler := mustServeSSE(t, route, rest.NewServer(testInfo))
 
 	rec := httptest.NewRecorder()
 	r := httptest.NewRequest(http.MethodGet, "/events2", nil)
@@ -994,7 +993,7 @@ func TestSSEHandler_ServeSSE_wiresOntoRouter(t *testing.T) {
 		createReqCodec, sseEventCodec, rest.RouteMeta{OperationID: "streamRegister"}).WithHandler(func(ctx context.Context, _ createReq, send func(sseEvent) error) error {
 		return send(sseEvent{Message: "chi-registered"})
 	})
-	r := mustServeSSE(t, route, rest.NewBuilder(testInfo))
+	r := mustServeSSE(t, route, rest.NewServer(testInfo))
 
 	srv := httptest.NewServer(r)
 	defer srv.Close()
@@ -1111,7 +1110,7 @@ func TestHandler_SecurityFunc_UnpairedImplRejectedAtServeOne(t *testing.T) {
 		return userResp{ID: "1", Name: req.Name}, nil
 	}).HandleMW(&unrelatedMw, implMw.Fn) // "bearerAuth" was never .Use()'d on this route
 
-	_, err := chiadapter.ServeOne(route)
+	_, err := serveOne(route)
 	var unknownErr rest.UnknownMiddlewareImplementationError
 	if !errors.As(err, &unknownErr) {
 		t.Fatalf("want UnknownMiddlewareImplementationError, got %v (%T)", err, err)
@@ -1133,7 +1132,7 @@ func TestServeOne_MissingSecurityCoverage_RejectedAtServeTime(t *testing.T) {
 			return userResp{ID: "1", Name: req.Name}, nil
 		})
 
-	_, err := chiadapter.ServeOne(route)
+	_, err := serveOne(route)
 	var missingErr rest.MissingSecurityMiddlewareError
 	if !errors.As(err, &missingErr) {
 		t.Fatalf("want MissingSecurityMiddlewareError, got %v (%T)", err, err)
@@ -1151,12 +1150,12 @@ func TestServeSSE_MissingSecurityCoverage_RejectedAtServeTime(t *testing.T) {
 		return send(sseEvent{Message: "hi"})
 	})
 
-	b := rest.NewBuilder(testInfo)
+	b := rest.NewServer(testInfo)
 	if err := sseRoute.Register(b); err != nil {
 		t.Fatalf("Register: %v", err)
 	}
 	r := gochi.NewRouter()
-	err := chiadapter.ServeSSE(r, b)
+	err := serveSSE(r, b)
 	var missingErr rest.MissingSecurityMiddlewareError
 	if !errors.As(err, &missingErr) {
 		t.Fatalf("want MissingSecurityMiddlewareError, got %v (%T)", err, err)
@@ -1280,8 +1279,8 @@ func TestHandler_SecurityObserver_calledOnRejection(t *testing.T) {
 	}
 }
 
-func newGlobalSecuredChiRoute() (rest.Route[createReq, userResp], *rest.Builder) {
-	b := rest.NewBuilder(testInfo)
+func newGlobalSecuredChiRoute() (rest.Route[createReq, userResp], *rest.Server) {
+	b := rest.NewServer(testInfo)
 	b.AddGlobalSecurity(route.Require("bearerAuth"))
 	// No per-route Security — inherits global.
 	r := rest.NewRoute[createReq, userResp]("POST", "/users",
@@ -1354,7 +1353,7 @@ func TestChiHandler_GlobalSecurity_notCalledWhenExplicitlyEmpty(t *testing.T) {
 	// silently skipped; this test declares NO scheme and attaches NO
 	// implementation at all — its actual assertion, that explicit empty
 	// Security wins over inherited global security, needs neither).
-	b := rest.NewBuilder(testInfo)
+	b := rest.NewServer(testInfo)
 	b.AddGlobalSecurity(route.Require("bearerAuth"))
 	r := rest.NewRoute[createReq, userResp]("POST", "/users",
 		createReqCodec, userRespCodec,
@@ -1379,8 +1378,8 @@ func TestChiHandler_GlobalSecurity_notCalledWhenExplicitlyEmpty(t *testing.T) {
 
 // --- SSE security + param validation tests ---
 
-func newGlobalSecuredSSERoute() (rest.SSERoute[createReq, sseEvent], *rest.Builder) {
-	b := rest.NewBuilder(testInfo)
+func newGlobalSecuredSSERoute() (rest.SSERoute[createReq, sseEvent], *rest.Server) {
+	b := rest.NewServer(testInfo)
 	b.AddGlobalSecurity(route.Require("bearerAuth"))
 	r := rest.NewSSERoute[createReq, sseEvent]("/stream",
 		createReqCodec, sseEventCodec,
@@ -1451,7 +1450,7 @@ func TestChiSSEHandler_QueryParam_rejectsInvalid(t *testing.T) {
 	).WithHandler(func(_ context.Context, _ createReq, _ func(sseEvent) error) error {
 		return nil
 	})
-	router := mustServeSSE(t, r, rest.NewBuilder(testInfo))
+	router := mustServeSSE(t, r, rest.NewServer(testInfo))
 
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, "/stream?id=not-a-uuid", nil)
@@ -1470,7 +1469,7 @@ func TestChiSSEHandler_QueryParam_allowsValid(t *testing.T) {
 	).WithHandler(func(_ context.Context, _ createReq, send func(sseEvent) error) error {
 		return send(sseEvent{Message: "ok"})
 	})
-	router := mustServeSSE(t, r, rest.NewBuilder(testInfo))
+	router := mustServeSSE(t, r, rest.NewServer(testInfo))
 
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, "/stream?id=f47ac10b-58cc-4372-a567-0e02b2c3d479", nil)
@@ -1489,7 +1488,7 @@ func TestChiSSEHandler_CookieParam_rejectsInvalid(t *testing.T) {
 	).WithHandler(func(_ context.Context, _ createReq, _ func(sseEvent) error) error {
 		return nil
 	})
-	router := mustServeSSE(t, r, rest.NewBuilder(testInfo))
+	router := mustServeSSE(t, r, rest.NewServer(testInfo))
 
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, "/stream", nil)
@@ -1509,7 +1508,7 @@ func TestChiSSEHandler_HeaderParam_rejectsInvalid(t *testing.T) {
 	).WithHandler(func(_ context.Context, _ createReq, _ func(sseEvent) error) error {
 		return nil
 	})
-	router := mustServeSSE(t, r, rest.NewBuilder(testInfo))
+	router := mustServeSSE(t, r, rest.NewServer(testInfo))
 
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, "/stream", nil)
@@ -1529,10 +1528,10 @@ func TestSSEHandler_ResponseHeaderParam_appearsOnFirstSend(t *testing.T) {
 	).WithHandler(func(ctx context.Context, _ createReq, send func(sseEvent) error) error {
 		extra := make(http.Header)
 		extra.Set("X-Trace-Id", "trace-abc-123")
-		chiadapter.WithResponseHeaders(ctx, extra)
+		WithResponseHeaders(ctx, extra)
 		return send(sseEvent{Message: "hello"})
 	})
-	router := mustServeSSE(t, r, rest.NewBuilder(testInfo))
+	router := mustServeSSE(t, r, rest.NewServer(testInfo))
 
 	srv := httptest.NewServer(router)
 	defer srv.Close()
@@ -1559,7 +1558,7 @@ func TestSSEHandler_ResponseHeaderParam_codecViolation_abortsStream(t *testing.T
 	).WithHandler(func(ctx context.Context, _ createReq, send func(sseEvent) error) error {
 		extra := make(http.Header)
 		extra.Set("X-Trace-Id", "") // empty — codec rejects it
-		chiadapter.WithResponseHeaders(ctx, extra)
+		WithResponseHeaders(ctx, extra)
 		err := send(sseEvent{Message: "should not appear"})
 		if err != nil {
 			sendCalled = true
@@ -1567,7 +1566,7 @@ func TestSSEHandler_ResponseHeaderParam_codecViolation_abortsStream(t *testing.T
 		}
 		return nil
 	})
-	router := mustServeSSE(t, r, rest.NewBuilder(testInfo))
+	router := mustServeSSE(t, r, rest.NewServer(testInfo))
 
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, "/stream-rh2", nil)
@@ -1614,7 +1613,7 @@ func TestSSEHandler_PathParam_codecValidated(t *testing.T) {
 	).WithHandler(func(ctx context.Context, _ getReq, send func(sseEvent) error) error {
 		return send(sseEvent{Message: "hi"})
 	})
-	router := mustServeSSE(t, r, rest.NewBuilder(testInfo))
+	router := mustServeSSE(t, r, rest.NewServer(testInfo))
 
 	// Invalid UUID → 400.
 	rec := httptest.NewRecorder()
@@ -1659,7 +1658,7 @@ func TestSSEHandler_EventMerge_FromConnectionVars(t *testing.T) {
 	).WithHandler(func(_ context.Context, _ getReq, send func(mergedEvent) error) error {
 		return send(mergedEvent{ID: "wrong", Tenant: "wrong", Trace: "wrong", SID: "wrong"})
 	})
-	router := mustServeSSE(t, r, rest.NewBuilder(testInfo))
+	router := mustServeSSE(t, r, rest.NewServer(testInfo))
 
 	req := httptest.NewRequest(http.MethodGet, "/stream/550e8400-e29b-41d4-a716-446655440000?tenant=acme", nil)
 	req.Header.Set("X-Trace", "trace-1")
@@ -1680,7 +1679,13 @@ func TestSSEHandler_EventMerge_FromConnectionVars(t *testing.T) {
 
 // --- Example functions (shown on pkg.go.dev as runnable snippets) ---
 
-func ExampleServeOne() {
+// Example demonstrates serveOne — an internal helper now that [AttachRouter]
+// is the sole public server-side workflow (see
+// docs/roadmap/pubsub-workflow-simplification.md's Decision 6); named
+// Example() (not ExampleServeOne, which vet would reject for referring to
+// an unexported identifier) so it still runs as a documented runnable
+// snippet.
+func Example() {
 	type CreateReq struct{ Name string }
 	type Item struct{ ID, Name string }
 
@@ -1708,7 +1713,7 @@ func ExampleServeOne() {
 		return Item{ID: "1", Name: req.Name}, nil
 	})
 
-	r, err := chiadapter.ServeOne(route)
+	r, err := serveOne(route)
 	if err != nil {
 		fmt.Println("register error:", err)
 		return
@@ -1717,8 +1722,12 @@ func ExampleServeOne() {
 	srv := httptest.NewServer(r)
 	defer srv.Close()
 
-	resp, _ := http.Post(srv.URL+"/items", "application/json",
+	resp, err := http.Post(srv.URL+"/items", "application/json",
 		strings.NewReader(`{"name":"Widget"}`))
+	if err != nil {
+		fmt.Println("post error:", err)
+		return
+	}
 	defer resp.Body.Close()
 	fmt.Println(resp.StatusCode)
 	// Output:

@@ -19,7 +19,7 @@ go-codex has three codec layers — domain types, API contracts, and forge pipel
 ├─────────────────────────────────────────────────────────────────────────────┤
 │  LAYER 2 — API ADAPTERS (api/rest · api/events · api/mcp)                   │
 │                                                                             │
-│  nethttp.Serve  ·  mqtt.SubscribeHandler  ·  mcpgo.ToolHandler              │
+│  nethttp.AttachMux  ·  mqtt.NewSubscribeTransport  ·  mcpgo.ToolHandler     │
 │                                                                             │
 │  Observable:  stats.Observer (embeds ValidationObserver)                    │
 │               + stats.SecurityObserver (optional extension)                 │
@@ -230,7 +230,8 @@ obs := stats.NewFanout(
 // Pass the same value to every layer:
 stats.ReportErrors(obs, "config", err)                        // codec layer
 route.WithHandler(handler).WithOptions(nethttp.Options{Observer: obs})  // adapter
-mqtt.SubscribeHandler(ctx, handle, fn, mqtt.SubscribeOptions{Observer: obs})
+subTransport := mqtt.NewSubscribeTransport[T](client, 1, mqtt.SubscribeOptions{Observer: obs})
+events.SubscribeHandle(ctx, sub, subTransport, fn)
 file.Read(vars, ports.FileOptions{Observer: obs})            // file I/O
 forge.NewRegistry("P", "1.0.0").WithObserver(obs)            // forge
 ```
@@ -247,7 +248,7 @@ obs := stats.NewFanout(metricsObserver, stats.NewLoggingObserver(slog.Default())
 ctx := stats.WithObserver(context.Background(), obs)
 
 // Adapters resolve obs from ctx when Options.Observer is nil:
-mqtt.Subscribe(ctx, client, handle, 1, fn, mqtt.SubscribeOptions{})     // uses obs
+events.SubscribeHandle(ctx, sub, mqtt.NewSubscribeTransport[T](client, 1, mqtt.SubscribeOptions{}), fn) // uses obs
 stream.Apply(ctx, s, fn, stream.ApplyOptions{})                         // uses obs
 file.Read(vars, ports.FileOptions{Context: ctx})                       // uses obs
 forge.NewRegistry("P", "1.0.0").WithObserver(obs)                       // explicit — no ctx
@@ -255,7 +256,7 @@ forge.NewRegistry("P", "1.0.0").WithObserver(obs)                       // expli
 
 **Precedence:** explicit `opts.Observer` > context observer > `NoopObserver{}`.
 
-HTTP adapters (`nethttp.Serve`/`ServeOne`, `chi.Serve`/`ServeOne`) resolve the observer per-request
+HTTP adapters (`nethttp.AttachMux`/`ServeOne`, `chi.AttachRouter`) resolve the observer per-request
 from `r.Context()`, enabling per-request injection via a server middleware.
 `forge.Registry` uses the explicit `.WithObserver(obs)` builder — no context
 integration by design.
@@ -268,7 +269,7 @@ When an HTTP request arrives carrying a `traceparent` header (propagated by OTel
 
 ```
 Incoming HTTP request (traceparent header present)
-    └─ nethttp.Serve's dispatched request pipeline → StartSpan(ctx, "http.request", "/orders/{id}")
+    └─ nethttp's internal serve dispatch (wired via AttachMux) → StartSpan(ctx, "http.request", "/orders/{id}")
             └─ handler(ctx, req)
                     ├─ forge.Function.ApplyContext(ctx, in)
                     │       └─ StartSpan(ctx, "forge.apply", "availabilityCalc")

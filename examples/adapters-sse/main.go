@@ -6,8 +6,8 @@
 // # What this example shows
 //
 //   - [rest.NewSSERoute] — declaring a typed SSE route with request and event codecs
-//   - [nethttp.ServeSSE] — wiring a whole builder's SSE routes onto net/http
-//   - [chiadapter.ServeSSE] — wiring a whole builder's SSE routes onto chi
+//   - [nethttp.AttachMux] — wiring a whole builder's SSE routes onto net/http
+//   - [chiadapter.AttachRouter] — wiring a whole builder's SSE routes onto chi
 //   - Path parameter codec validation on {id} via [rest.PathParam.Codec]
 //   - [rest.SSERouteHandle.BuildPath] for validated URL assembly
 //   - Codec validation on each event before it is written to the client
@@ -28,6 +28,7 @@ import (
 	"fmt"
 	"log"
 	"log/slog"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -240,12 +241,40 @@ func handleSensorManualEscape(ctx context.Context, _ sensorPathReq, send func(re
 
 // ── Main ──────────────────────────────────────────────────────────────────────
 
-// mustServe exits the program if Register/ServeSSE returns an error — e.g. a
-// malformed middleware Fn shape, caught eagerly at wiring time.
+// mustServe exits the program if Register/AttachMux/AttachRouter returns an
+// error — e.g. a malformed middleware Fn shape, caught eagerly at wiring time.
 func mustServe(err error, what string) {
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "%s failed: %v\n", what, err)
 		os.Exit(1)
+	}
+}
+
+// mustFreeAddr reserves an OS-assigned free TCP port on localhost, then
+// releases it immediately so AttachMux/AttachRouter's own *http.Server can
+// bind to it.
+func mustFreeAddr() string {
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "reserve free port failed: %v\n", err)
+		os.Exit(1)
+	}
+	addr := l.Addr().String()
+	_ = l.Close()
+	return addr
+}
+
+// waitForReady polls addr until it accepts TCP connections — Serve wires
+// routes synchronously before starting its listener goroutine, so a
+// successful dial here guarantees the mux/router is fully wired.
+func waitForReady(addr string) {
+	for range 100 {
+		conn, err := net.DialTimeout("tcp", addr, 50*time.Millisecond)
+		if err == nil {
+			_ = conn.Close()
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
 	}
 }
 
@@ -262,13 +291,13 @@ func main() {
 	opts := nethttp.Options{}
 	chiOpts := chiadapter.Options{}
 
-	// Two builders: bHTTP feeds nethttp.ServeSSE/mux, bChi feeds
-	// chiadapter.ServeSSE/chi router. ServeSSE walks EVERY SSE route
-	// registered into the builder it's given, so a route destined for
-	// chi must live in a builder never passed to nethttp.ServeSSE (and
+	// Two builders: bHTTP feeds nethttp.AttachMux/mux, bChi feeds
+	// chiadapter.AttachRouter/chi router. AttachMux/AttachRouter walks EVERY
+	// SSE route registered into the builder it's given, so a route destined
+	// for chi must live in a builder never passed to nethttp.AttachMux (and
 	// vice versa) — otherwise it would get wired onto both.
-	bHTTP := rest.NewBuilder(rest.Info{Title: "SSE Demo API (net/http)", Version: "1.0.0"})
-	bChi := rest.NewBuilder(rest.Info{Title: "SSE Demo API (chi)", Version: "1.0.0"})
+	bHTTP := rest.NewServer(rest.Info{Title: "SSE Demo API (net/http)", Version: "1.0.0"})
+	bChi := rest.NewServer(rest.Info{Title: "SSE Demo API (chi)", Version: "1.0.0"})
 
 	// Every route is captured as a plain rest.SSERoute VALUE (not just
 	// registered inline) — this SAME value is reused below by
@@ -377,11 +406,27 @@ func main() {
 	}
 
 	// ── Wiring ────────────────────────────────────────────────────────────
+	//
+	// AttachMux/AttachRouter wire BOTH plain and SSE routes internally, so a
+	// single AttachMux/AttachRouter+Serve(ctx) call per builder replaces the
+	// old separate ServeSSE-only calls — bHTTP/bChi here happen to declare
+	// only SSE routes, so the plain-route half of each Serve(ctx) call
+	// simply wires nothing.
 	mux := http.NewServeMux()
-	mustServe(nethttp.ServeSSE(mux, bHTTP), "nethttp.ServeSSE")
+	httpAddr := mustFreeAddr()
+	mustServe(nethttp.AttachMux(bHTTP, mux, httpAddr), "nethttp.AttachMux")
+	httpCtx, httpCancel := context.WithCancel(context.Background())
+	go func() { _ = bHTTP.Serve(httpCtx) }()
+	defer httpCancel()
+	waitForReady(httpAddr)
 
 	r := gochi.NewRouter()
-	mustServe(chiadapter.ServeSSE(r, bChi), "chiadapter.ServeSSE")
+	chiAddr := mustFreeAddr()
+	mustServe(chiadapter.AttachRouter(bChi, r, chiAddr), "chiadapter.AttachRouter")
+	chiCtx, chiCancel := context.WithCancel(context.Background())
+	go func() { _ = bChi.Serve(chiCtx) }()
+	defer chiCancel()
+	waitForReady(chiAddr)
 	mux.Handle("/sse/sensor/", r)
 
 	srv := httptest.NewServer(mux)
@@ -547,7 +592,7 @@ func main() {
 	// bHTTP and bChi each generate their own spec — the SSE routes each
 	// builder holds appear in that builder's document regardless of
 	// which adapter ultimately serves them.
-	printSpec := func(label string, b *rest.Builder) {
+	printSpec := func(label string, b *rest.Server) {
 		fmt.Printf("=== OpenAPI 3.1 spec: %s (SSE routes included) ===\n", label)
 		doc, err := b.OpenAPISpec()
 		if err != nil {

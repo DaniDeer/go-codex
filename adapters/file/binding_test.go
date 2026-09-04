@@ -158,7 +158,7 @@ func TestDrainWriteAdapter_OnError_ComposesWithEventsErrorChannel(t *testing.T) 
 	ctx := context.Background()
 	var buf bytes.Buffer
 
-	b := events.NewBuilder(events.Info{Title: "Test", Version: "1.0.0"})
+	b := events.NewClient(events.WithInfo(events.Info{Title: "Test", Version: "1.0.0"}))
 	errHandle, err := events.NewChannel[item]("items/write", itemCodec,
 		events.ErrorChannel[fileadapter.WriteError, fileErrPayload](
 			"items/write/errors", fileErrPayloadCodec,
@@ -166,7 +166,7 @@ func TestDrainWriteAdapter_OnError_ComposesWithEventsErrorChannel(t *testing.T) 
 				return fileErrPayload{Code: "write_failed", Message: e.Error()}, nil
 			},
 		),
-	).Register(b)
+	).WithSubscribe(events.Subscribe{}).Handle(b)
 	if err != nil {
 		t.Fatalf("Register: %v", err)
 	}

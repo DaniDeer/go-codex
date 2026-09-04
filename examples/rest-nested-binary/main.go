@@ -195,7 +195,7 @@ func main() {
 	// ── Server ───────────────────────────────────────────────────────────────
 
 	// Single route, no other builder state needed — ServeOne builds a
-	// scratch single-route Builder internally, so no rest.NewBuilder call
+	// scratch single-route Builder internally, so no rest.NewServer call
 	// is needed on the server side at all.
 	handler, err := nethttp.ServeOne(uploadRoute.WithHandler(func(_ context.Context, req UploadReq) (UploadResp, error) {
 		// req arrives FULLY merged: ID (path), Meta.ContentHash (header),

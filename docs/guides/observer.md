@@ -115,7 +115,7 @@ obs := stats.NewFanout(metrics, stats.NewLoggingObserver(slog.Default()))
 ctx := stats.WithObserver(context.Background(), obs)
 
 // All of the below use obs because Options.Observer is nil:
-mqtt.Subscribe(ctx, client, handle, 1, fn, mqtt.SubscribeOptions{})
+events.SubscribeHandle(ctx, sub, mqtt.NewSubscribeTransport[T](client, 1, mqtt.SubscribeOptions{}), fn)
 stream.Apply(ctx, s, fn, stream.ApplyOptions{})
 zeromq.Call(ctx, sock, handle, req, zeromq.CallOptions{})
 ```
@@ -272,15 +272,17 @@ createUser.WithHandler(handler).WithOptions(nethttp.Options{Observer: obs})
 ### MQTT adapter
 
 ```go
-amqtt.SubscribeHandler(ctx, channel, handler, amqtt.SubscribeOptions{Observer: obs})
-amqtt.Publish(ctx, client, channel, qos, retained, msg, vars,
-    amqtt.PublishOptions{Observer: obs})
+subTransport := amqtt.NewSubscribeTransport[T](client, qos, amqtt.SubscribeOptions{Observer: obs})
+events.SubscribeHandle(ctx, sub, subTransport, handler)
+
+pubTransport := amqtt.NewPublishTransport[T](client, qos, retained, amqtt.PublishOptions[T]{Observer: obs})
+events.PublishHandle(ctx, pub, pubTransport, msg)
 ```
 
-> **Context observer:** `mqtt.Subscribe`, `mqtt.Publish`, `mqtt5.Subscribe`, `mqtt5.Publish`,
-> `mqtt5.Serve`, `mqtt5.Call`, and all ZeroMQ adapter functions resolve the observer from
-> `ctx` when `opts.Observer` is nil. Pass a context from `stats.WithObserver(ctx, obs)` at the
-> call site to use the context observer.
+> **Context observer:** `mqtt`/`mqtt5`/`zeromq`'s `NewSubscribeTransport`/`NewPublishTransport`
+> transports, `mqtt5.Serve`, `mqtt5.Call`, and all ZeroMQ request-reply adapter functions
+> resolve the observer from `ctx` when `opts.Observer` is nil. Pass a context from
+> `stats.WithObserver(ctx, obs)` at the call site to use the context observer.
 
 ### Forge pipeline (PipelineObserver)
 
@@ -409,8 +411,8 @@ Service B (server)
 | Entry point                                                         | ctx purpose                                           |
 | ------------------------------------------------------------------- | ----------------------------------------------------- |
 | `nethttp.Call(ctx, url, handle, req, vars, opts)`                   | Creates child span, sends `traceparent` header        |
-| `mqtt.SubscribeHandler(ctx, handle, fn, opts)`                      | Parent for subscribe span, passed to `fn(ctx, value)` |
-| `mqtt.Publish(ctx, client, handle, qos, retained, msg, vars, opts)` | Creates child span for publish                        |
+| `events.SubscribeHandle(ctx, sub, mqttTransport, fn)`               | Parent for subscribe span, passed to `fn(ctx, value)` |
+| `events.PublishHandle(ctx, pub, mqttTransport, msg)`                | Creates child span for publish                        |
 
 ### Forge (use ApplyContext)
 
@@ -472,8 +474,8 @@ func handler(ctx context.Context, req MyRequest) (MyResponse, error) {
 | Operation          | Call site                                        |
 | ------------------ | ------------------------------------------------ |
 | `"http.request"`   | nethttp/chi — handler or client call             |
-| `"mqtt.subscribe"` | mqtt — `SubscribeHandler`                        |
-| `"mqtt.publish"`   | mqtt — `Publish`                                 |
+| `"mqtt.subscribe"` | mqtt — `NewSubscribeTransport`'s `Subscribe`     |
+| `"mqtt.publish"`   | mqtt — `NewPublishTransport`'s `Publish`         |
 | `"forge.apply"`    | forge — `Apply`                                  |
 | `"file.read"`      | ports.File — `Read` / `Update`                  |
 | `"file.write"`     | ports.File — `Write` / `Patch` / `PatchEncoded` |

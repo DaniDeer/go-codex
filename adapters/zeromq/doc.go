@@ -8,7 +8,7 @@
 //
 // Four ZMQ patterns are supported:
 //
-//   - PUB/SUB (and PUSH/PULL) — via [api/events] channel declarations + [Subscribe]/[Publish]
+//   - PUB/SUB (and PUSH/PULL) — via [api/events] channel declarations + [Attach]
 //   - REQ/REP — via [api/rest] route declarations + [Serve]/[Call]
 //   - ROUTER/DEALER (concurrent) — [ServeRouter]/[CallDealer]; same options and error types
 //
@@ -25,7 +25,64 @@
 // a complete pebbe/zmq4 example:
 //
 //	sock := &pebbeSocket{s: zmqSocket}   // implements FramedSocket
-//	zeromq.Subscribe(ctx, sock, handle, fn, opts)
+//	zeromq.SubscribeWithHandle(ctx, sock, handle, fn, opts)
+//
+// # Attach and the SubscribeWithHandle primitive
+//
+// [Attach] binds a [FramedSocket] to an [api/events.Client] registry and
+// returns an [api/events.Transport], giving the [api/events.Client] a
+// literal `Publish(ctx, pub, msg)`/`Subscribe(ctx, sub, fn)`/
+// `ServeSubscribers(ctx)` call shape — the single workflow this package
+// exposes for pub/sub. Internally, an unexported caller type still
+// bundles the [FramedSocket] with the [api/events.Client] registry; none
+// of that is publicly reachable — call [Attach] and use the returned
+// [api/events.Client] methods instead:
+//
+//	_ = zeromq.Attach(eventsClient, sock)
+//	sub := SensorReadings.WithSubscribe(events.Subscribe{})
+//	err := eventsClient.Subscribe(ctx, sub, fn)
+//
+// [SubscribeWithHandle] remains the lower-level, handle-based primitive
+// for callers (e.g. [SubscribeAdapter]) that already own a pre-built
+// handle. [Publish]/[PublishHandle] are unchanged.
+//
+// A whole-[api/events.Client] consume-many-channels-at-once path is also
+// available: declare each channel's handler at declare time via
+// [api/events.Subscriber.WithHandler], register it via
+// [api/events.Subscriber.Register], then call
+// [api/events.Client.ServeSubscribers] (available once [Attach] has bound
+// a transport) to start consuming every registered channel in one call
+// over a SINGLE shared receive loop (see serve_subscribers.go's design
+// note for why one shared loop is used instead of one goroutine per
+// channel — ZMQ sockets are not safe for concurrent use, and the internal
+// caller bundles exactly one).
+//
+// # Security and general-purpose middleware
+//
+// [api/events.Subscriber.SubscribeMW]/[api/events.Publisher.PublishMW]
+// attach implementations recognized in TWO shapes: the security shape
+// (func(context.Context, *T, []route.SecurityRequirement) error — SAME
+// shape both directions, since ZeroMQ's [topic, payload] frames carry
+// nothing beyond what's already decoded into T) via
+// [SubscribeOptions.SecurityFunc]/[PublishOptions.CredentialFunc]'s
+// per-call equivalent, and the general-purpose wrapping shape
+// (func(next func(context.Context, T) error) func(context.Context, T) error)
+// used by [Observability]. Both are validated EAGERLY (a malformed
+// attachment is a hard [middleware.MiddlewareShapeError], never a silent
+// no-op) by [SubscribeWithHandle]/[Publish]/the internal ServeSubscribers path.
+// ZeroMQ had NO message-level security mechanism before this — see
+// [SubscribeOptions.SecurityFunc]'s doc comment.
+//
+// # TopicFilter — ZeroMQ prefix-filter bug fix
+//
+// ZeroMQ SUB-socket subscription filtering is a plain byte-prefix match
+// (no MQTT-style wildcard syntax). A channel topic template like
+// "sensors/{sensorID}/data" sent VERBATIM as the filter never matches a
+// real published topic. [SubscribeOptions.TopicFilter] (and its
+// ports-binding-layer equivalent, [SubscribeAdapterOptions.TopicFilter])
+// let you override the filter explicitly; left empty (the common case),
+// a prefix is derived automatically via the unexported deriveTopicPrefix
+// helper (everything up to the first "{" placeholder).
 //
 // # Observer
 //

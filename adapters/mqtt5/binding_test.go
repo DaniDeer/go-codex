@@ -1,4 +1,4 @@
-package mqtt5_test
+package mqtt5
 
 import (
 	"context"
@@ -8,7 +8,6 @@ import (
 	"testing"
 	"time"
 
-	mqtt5 "github.com/DaniDeer/go-codex/adapters/mqtt5"
 	"github.com/DaniDeer/go-codex/api/events"
 	"github.com/DaniDeer/go-codex/api/reqreply"
 	"github.com/DaniDeer/go-codex/codex"
@@ -21,12 +20,20 @@ import (
 
 // ── shared helpers ────────────────────────────────────────────────────────────
 
-func newSensorHandle() *events.ChannelHandle[sensorReading] {
-	b := events.NewBuilder(events.Info{Title: "Test", Version: "1.0.0"})
-	h, err := events.NewChannel[sensorReading]("sensors/data", sensorCodec,
-		events.Subscribe{Summary: "Sensor reading"},
-		events.Publish{Summary: "Sensor reading"},
-	).Register(b)
+func newSensorSubscribeHandle() *events.ChannelHandle[sensorReading] {
+	b := events.NewClient(events.WithInfo(events.Info{Title: "Test", Version: "1.0.0"}))
+	h, err := events.NewChannel[sensorReading]("sensors/data", sensorCodec).
+		WithSubscribe(events.Subscribe{Summary: "Sensor reading"}).Handle(b)
+	if err != nil {
+		panic(err)
+	}
+	return h
+}
+
+func newSensorPublishHandle() *events.ChannelHandle[sensorReading] {
+	b := events.NewClient(events.WithInfo(events.Info{Title: "Test", Version: "1.0.0"}))
+	h, err := events.NewChannel[sensorReading]("sensors/data", sensorCodec).
+		WithPublish(events.Publish{Summary: "Sensor reading"}).Handle(b)
 	if err != nil {
 		panic(err)
 	}
@@ -38,11 +45,10 @@ func newMsg(topic string, payload []byte) *pahomqtt5.Publish {
 }
 
 func newTemplatedSensorHandle() *events.ChannelHandle[sensorReading] {
-	b := events.NewBuilder(events.Info{Title: "Test", Version: "1.0.0"})
+	b := events.NewClient(events.WithInfo(events.Info{Title: "Test", Version: "1.0.0"}))
 	h, err := events.NewChannel[sensorReading]("sensors/{sensorID}/data", sensorCodec,
-		events.Subscribe{Summary: "Sensor reading"},
 		events.TopicParam{Name: "sensorID"},
-	).Register(b)
+	).WithSubscribe(events.Subscribe{Summary: "Sensor reading"}).Handle(b)
 	if err != nil {
 		panic(err)
 	}
@@ -65,7 +71,7 @@ func TestMQTT5SubscribeAdapter_AutoDerivesWildcardFilter(t *testing.T) {
 	if err != nil {
 		t.Fatalf("construct port: %v", err)
 	}
-	p.Bind(ctx, mqtt5.SubscribeAdapter(broker, router, handle, 0, format.JSON(sensorCodec), mqtt5.SubscribeAdapterOptions{}))
+	p.Bind(ctx, SubscribeAdapter(broker, router, handle, 0, format.JSON(sensorCodec), SubscribeAdapterOptions{}))
 	s := p.Stream(ctx)
 	router.waitHandler("sensors/+/data") // derived wildcard filter, not "sensors/{sensorID}/data"
 
@@ -81,14 +87,14 @@ func TestMQTT5SubscribeAdapter_AutoDerivesWildcardFilter(t *testing.T) {
 
 func TestMQTT5SubscribeAdapter_ValidPayload(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
-	handle := newSensorHandle()
+	handle := newSensorSubscribeHandle()
 	broker := &mockClient{}
 	router := newMockRouter()
 	p, err := ports.NewSourcePort[sensorReading]("test", sensorCodec, ports.PortOptions{Buffer: 8})
 	if err != nil {
 		t.Fatalf("construct port: %v", err)
 	}
-	p.Bind(ctx, mqtt5.SubscribeAdapter(broker, router, handle, 0, format.JSON(sensorCodec), mqtt5.SubscribeAdapterOptions{}))
+	p.Bind(ctx, SubscribeAdapter(broker, router, handle, 0, format.JSON(sensorCodec), SubscribeAdapterOptions{}))
 	s := p.Stream(ctx)                 // must call before cancel
 	router.waitHandler("sensors/data") // wait for handler registration in Activate goroutine
 
@@ -107,14 +113,14 @@ func TestMQTT5SubscribeAdapter_ValidPayload(t *testing.T) {
 
 func TestMQTT5SubscribeAdapter_DecodeErrorGoesToStreamErrors(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
-	handle := newSensorHandle()
+	handle := newSensorSubscribeHandle()
 	broker := &mockClient{}
 	router := newMockRouter()
 	p, err := ports.NewSourcePort[sensorReading]("test", sensorCodec, ports.PortOptions{Buffer: 8})
 	if err != nil {
 		t.Fatalf("construct port: %v", err)
 	}
-	p.Bind(ctx, mqtt5.SubscribeAdapter(broker, router, handle, 0, format.JSON(sensorCodec), mqtt5.SubscribeAdapterOptions{}))
+	p.Bind(ctx, SubscribeAdapter(broker, router, handle, 0, format.JSON(sensorCodec), SubscribeAdapterOptions{}))
 	s := p.Stream(ctx)                 // must call before cancel
 	router.waitHandler("sensors/data") // wait for handler registration
 
@@ -125,7 +131,7 @@ func TestMQTT5SubscribeAdapter_DecodeErrorGoesToStreamErrors(t *testing.T) {
 	if len(errs) == 0 {
 		t.Fatal("want decode error in Stream.Errors, got none")
 	}
-	var se mqtt5.SubscribeError
+	var se SubscribeError
 	if !errors.As(errs[0], &se) {
 		t.Errorf("want SubscribeError, got %T: %v", errs[0], errs[0])
 	}
@@ -136,7 +142,7 @@ func TestMQTT5SubscribeAdapter_DecodeErrorGoesToStreamErrors(t *testing.T) {
 func TestMQTT5PublishAdapter_PublishesEachItem(t *testing.T) {
 	ctx := context.Background()
 	client := &mockClient{}
-	handle := newSensorHandle()
+	handle := newSensorPublishHandle()
 
 	ch := make(chan sensorReading, 1)
 	ch <- sensorReading{SensorID: "550e8400-e29b-41d4-a716-446655440000", Value: 1.0}
@@ -146,7 +152,7 @@ func TestMQTT5PublishAdapter_PublishesEachItem(t *testing.T) {
 	if err != nil {
 		t.Fatalf("construct port: %v", err)
 	}
-	p.Bind(ctx, mqtt5.PublishAdapter(client, handle, format.JSON(sensorCodec), mqtt5.MQTT5DrainPublishOptions{}))
+	p.Bind(ctx, PublishAdapter(client, handle, format.JSON(sensorCodec), MQTT5DrainPublishOptions{}))
 	p.Feed(ctx, gstream.From(ctx, ch))
 
 	client.mu.Lock()
@@ -160,7 +166,7 @@ func TestMQTT5PublishAdapter_PublishesEachItem(t *testing.T) {
 func TestMQTT5PublishAdapter_StreamErrorsForwardedToOnError(t *testing.T) {
 	ctx := context.Background()
 	client := &mockClient{}
-	handle := newSensorHandle()
+	handle := newSensorPublishHandle()
 
 	errCh := make(chan error, 1)
 	valCh := make(chan sensorReading)
@@ -174,8 +180,8 @@ func TestMQTT5PublishAdapter_StreamErrorsForwardedToOnError(t *testing.T) {
 	if err != nil {
 		t.Fatalf("construct port: %v", err)
 	}
-	p.Bind(ctx, mqtt5.PublishAdapter(client, handle, format.JSON(sensorCodec),
-		mqtt5.MQTT5DrainPublishOptions{OnError: func(e error) { gotErr = e }}))
+	p.Bind(ctx, PublishAdapter(client, handle, format.JSON(sensorCodec),
+		MQTT5DrainPublishOptions{OnError: func(e error) { gotErr = e }}))
 	p.Feed(ctx, src)
 
 	if gotErr == nil {
@@ -190,16 +196,15 @@ func TestMQTT5PublishAdapter_ErrorChannelMatch_PublishesToDeclaredTopic(t *testi
 	ctx := context.Background()
 	client := &mockClient{}
 
-	b := events.NewBuilder(events.Info{Title: "Test", Version: "1.0.0"})
+	b := events.NewClient(events.WithInfo(events.Info{Title: "Test", Version: "1.0.0"}))
 	handle, err := events.NewChannel[sensorReading]("sensors/data", sensorCodec,
-		events.Publish{Summary: "Sensor reading"},
 		events.ErrorChannel[sensorValidationErr, sensorErrPayload](
 			"sensors/data/errors", sensorErrPayloadCodec,
 			func(e sensorValidationErr) (sensorErrPayload, error) {
 				return sensorErrPayload{Code: "validation", Message: e.msg}, nil
 			},
 		),
-	).Register(b)
+	).WithPublish(events.Publish{Summary: "Sensor reading"}).Handle(b)
 	if err != nil {
 		t.Fatalf("Register: %v", err)
 	}
@@ -216,8 +221,8 @@ func TestMQTT5PublishAdapter_ErrorChannelMatch_PublishesToDeclaredTopic(t *testi
 	if err != nil {
 		t.Fatalf("construct port: %v", err)
 	}
-	p.Bind(ctx, mqtt5.PublishAdapter(client, handle, format.JSON(sensorCodec),
-		mqtt5.MQTT5DrainPublishOptions{OnError: func(e error) { gotOnError = e }}))
+	p.Bind(ctx, PublishAdapter(client, handle, format.JSON(sensorCodec),
+		MQTT5DrainPublishOptions{OnError: func(e error) { gotOnError = e }}))
 	p.Feed(ctx, src)
 
 	if gotOnError != nil {
@@ -246,16 +251,15 @@ func TestMQTT5PublishAdapter_ErrorChannelNoMatch_FallsBackToOnError(t *testing.T
 	ctx := context.Background()
 	client := &mockClient{}
 
-	b := events.NewBuilder(events.Info{Title: "Test", Version: "1.0.0"})
+	b := events.NewClient(events.WithInfo(events.Info{Title: "Test", Version: "1.0.0"}))
 	handle, err := events.NewChannel[sensorReading]("sensors/data", sensorCodec,
-		events.Publish{Summary: "Sensor reading"},
 		events.ErrorChannel[sensorValidationErr, sensorErrPayload](
 			"sensors/data/errors", sensorErrPayloadCodec,
 			func(e sensorValidationErr) (sensorErrPayload, error) {
 				return sensorErrPayload{Code: "validation", Message: e.msg}, nil
 			},
 		),
-	).Register(b)
+	).WithPublish(events.Publish{Summary: "Sensor reading"}).Handle(b)
 	if err != nil {
 		t.Fatalf("Register: %v", err)
 	}
@@ -272,8 +276,8 @@ func TestMQTT5PublishAdapter_ErrorChannelNoMatch_FallsBackToOnError(t *testing.T
 	if err != nil {
 		t.Fatalf("construct port: %v", err)
 	}
-	p.Bind(ctx, mqtt5.PublishAdapter(client, handle, format.JSON(sensorCodec),
-		mqtt5.MQTT5DrainPublishOptions{OnError: func(e error) { gotOnError = e }}))
+	p.Bind(ctx, PublishAdapter(client, handle, format.JSON(sensorCodec),
+		MQTT5DrainPublishOptions{OnError: func(e error) { gotOnError = e }}))
 	p.Feed(ctx, src)
 
 	if gotOnError == nil {
@@ -292,16 +296,15 @@ func TestMQTT5PublishAdapter_ErrorChannelHandleAction_NoAutoPublish(t *testing.T
 	ctx := context.Background()
 	client := &mockClient{}
 
-	b := events.NewBuilder(events.Info{Title: "Test", Version: "1.0.0"})
+	b := events.NewClient(events.WithInfo(events.Info{Title: "Test", Version: "1.0.0"}))
 	handle, err := events.NewChannel[sensorReading]("sensors/data", sensorCodec,
-		events.Publish{Summary: "Sensor reading"},
 		events.ErrorChannel[sensorValidationErr, sensorErrPayload](
 			"sensors/data/errors", sensorErrPayloadCodec,
 			func(e sensorValidationErr) (sensorErrPayload, error) {
 				return sensorErrPayload{Code: "validation", Message: e.msg}, nil
 			},
 		).WithAction(events.ErrorHandle),
-	).Register(b)
+	).WithPublish(events.Publish{Summary: "Sensor reading"}).Handle(b)
 	if err != nil {
 		t.Fatalf("Register: %v", err)
 	}
@@ -318,8 +321,8 @@ func TestMQTT5PublishAdapter_ErrorChannelHandleAction_NoAutoPublish(t *testing.T
 	if err != nil {
 		t.Fatalf("construct port: %v", err)
 	}
-	p.Bind(ctx, mqtt5.PublishAdapter(client, handle, format.JSON(sensorCodec),
-		mqtt5.MQTT5DrainPublishOptions{OnError: func(e error) { gotOnError = e }}))
+	p.Bind(ctx, PublishAdapter(client, handle, format.JSON(sensorCodec),
+		MQTT5DrainPublishOptions{OnError: func(e error) { gotOnError = e }}))
 	p.Feed(ctx, src)
 
 	if gotOnError == nil {
@@ -357,7 +360,7 @@ var sensorErrPayloadCodec = codex.Struct[sensorErrPayload](
 // ── AsPipelineFunc ────────────────────────────────────────────────────────────
 
 func TestMQTT5AsPipelineFunc_ReturnsFirstValue(t *testing.T) {
-	fn := mqtt5.AsPipelineFunc(func(ctx context.Context, req computeReq) gstream.Stream[computeResp] {
+	fn := AsPipelineFunc(func(ctx context.Context, req computeReq) gstream.Stream[computeResp] {
 		return gstream.Single(ctx, computeResp{Sum: req.X + req.Y})
 	})
 
@@ -371,7 +374,7 @@ func TestMQTT5AsPipelineFunc_ReturnsFirstValue(t *testing.T) {
 }
 
 func TestMQTT5AsPipelineFunc_ErrorTakesPrecedence(t *testing.T) {
-	fn := mqtt5.AsPipelineFunc(func(ctx context.Context, req computeReq) gstream.Stream[computeResp] {
+	fn := AsPipelineFunc(func(ctx context.Context, req computeReq) gstream.Stream[computeResp] {
 		errCh := make(chan error, 1)
 		valCh := make(chan computeResp)
 		errCh <- fmt.Errorf("compute failed")
@@ -387,7 +390,7 @@ func TestMQTT5AsPipelineFunc_ErrorTakesPrecedence(t *testing.T) {
 }
 
 func TestMQTT5AsPipelineFunc_NoValueReturnsPipelineNoResponseError(t *testing.T) {
-	fn := mqtt5.AsPipelineFunc(func(ctx context.Context, req computeReq) gstream.Stream[computeResp] {
+	fn := AsPipelineFunc(func(ctx context.Context, req computeReq) gstream.Stream[computeResp] {
 		errCh := make(chan error)
 		valCh := make(chan computeResp)
 		close(errCh)
@@ -396,7 +399,7 @@ func TestMQTT5AsPipelineFunc_NoValueReturnsPipelineNoResponseError(t *testing.T)
 	})
 
 	_, err := fn(context.Background(), computeReq{})
-	var pnr mqtt5.PipelineNoResponseError
+	var pnr PipelineNoResponseError
 	if !errors.As(err, &pnr) {
 		t.Errorf("want PipelineNoResponseError, got %T: %v", err, err)
 	}
@@ -404,7 +407,7 @@ func TestMQTT5AsPipelineFunc_NoValueReturnsPipelineNoResponseError(t *testing.T)
 
 // ── G1: per-item vars derivation (shipped) ───────────────────────────────────
 
-// G1-3: mqtt5.PublishAdapter derives topic vars PER-ITEM from each item's
+// G1-3: PublishAdapter derives topic vars PER-ITEM from each item's
 // own merge fields when opts.Vars is nil — two items with different sensor
 // IDs must publish to two different concrete topics.
 func TestMQTT5PublishAdapter_DerivesVarsPerItem_WhenOptsVarsNil(t *testing.T) {
@@ -422,7 +425,7 @@ func TestMQTT5PublishAdapter_DerivesVarsPerItem_WhenOptsVarsNil(t *testing.T) {
 		t.Fatalf("construct port: %v", err)
 	}
 	// opts.Vars left nil -> per-item derivation via PublishHandle.
-	p.Bind(ctx, mqtt5.PublishAdapter(client, handle, format.JSON(sensorCodec), mqtt5.MQTT5DrainPublishOptions{}))
+	p.Bind(ctx, PublishAdapter(client, handle, format.JSON(sensorCodec), MQTT5DrainPublishOptions{}))
 	p.Feed(ctx, gstream.From(ctx, ch))
 
 	client.mu.Lock()
@@ -452,8 +455,8 @@ func TestMQTT5PublishAdapter_ExplicitVarsStillWins(t *testing.T) {
 	if err != nil {
 		t.Fatalf("construct port: %v", err)
 	}
-	p.Bind(ctx, mqtt5.PublishAdapter(client, handle, format.JSON(sensorCodec),
-		mqtt5.MQTT5DrainPublishOptions{Vars: map[string]string{"sensorID": "static-sensor"}}))
+	p.Bind(ctx, PublishAdapter(client, handle, format.JSON(sensorCodec),
+		MQTT5DrainPublishOptions{Vars: map[string]string{"sensorID": "static-sensor"}}))
 	p.Feed(ctx, gstream.From(ctx, ch))
 
 	client.mu.Lock()
@@ -467,7 +470,7 @@ func TestMQTT5PublishAdapter_ExplicitVarsStillWins(t *testing.T) {
 
 // templatedBrokerClient simulates a broker for a route with a TEMPLATE topic
 // (e.g. "compute/{tenantID}/add"): mockRouter.RegisterHandler keys handlers
-// by the raw template string (see mqtt5.Serve), while each concrete publish
+// by the raw template string (see Serve), while each concrete publish
 // carries the resolved topic (e.g. "compute/acme/add") — so dispatch must
 // use the fixed template key regardless of the concrete publish topic.
 type templatedBrokerClient struct {
@@ -483,7 +486,7 @@ func (c *templatedBrokerClient) Publish(ctx context.Context, p *pahomqtt5.Publis
 	}
 	// Reply publishes are registered under their own concrete topic
 	// (client.Subscribe -> router.RegisterHandler(concreteReplyTopic, ...));
-	// request publishes are registered under the raw template by mqtt5.Serve.
+	// request publishes are registered under the raw template by Serve.
 	if c.router.hasHandler(p.Topic) {
 		go c.router.dispatch(p.Topic, p)
 	} else {
@@ -492,7 +495,7 @@ func (c *templatedBrokerClient) Publish(ctx context.Context, p *pahomqtt5.Publis
 	return resp, nil
 }
 
-// G1-3: mqtt5.CallAdapter derives request-topic vars PER-ITEM from each
+// G1-3: CallAdapter derives request-topic vars PER-ITEM from each
 // item's own merge fields when opts.Vars is nil — two items with different
 // tenant IDs must publish to two different concrete request topics.
 func TestMQTT5CallAdapter_DerivesVarsPerItem_WhenOptsVarsNil(t *testing.T) {
@@ -502,11 +505,11 @@ func TestMQTT5CallAdapter_DerivesVarsPerItem_WhenOptsVarsNil(t *testing.T) {
 	defer cancel()
 
 	handle := newTenantRouteHandle()
-	_ = mqtt5.Serve(ctx, client, router, handle,
+	_ = Serve(ctx, client, router, handle,
 		func(_ context.Context, req tenantReq) (tenantResp, error) {
 			return tenantResp{Sum: req.X + req.Y}, nil
 		},
-		mqtt5.ServeOptions{})
+		ServeOptions{})
 
 	ch := make(chan tenantReq, 2)
 	ch <- tenantReq{TenantID: "acme", X: 1, Y: 2}
@@ -518,7 +521,7 @@ func TestMQTT5CallAdapter_DerivesVarsPerItem_WhenOptsVarsNil(t *testing.T) {
 		t.Fatalf("construct port: %v", err)
 	}
 	// opts.Vars left nil -> per-item derivation via CallHandle.
-	p.Bind(ctx, mqtt5.CallAdapter(client, router, handle, mqtt5.CallOptions{ReplyTopicPrefix: "replies"})) //nolint:errcheck
+	p.Bind(ctx, CallAdapter(client, router, handle, CallOptions{ReplyTopicPrefix: "replies"})) //nolint:errcheck
 	out := p.Connect(ctx, gstream.From(ctx, ch))
 	vals, errs := gstream.Collect(ctx, out)
 	if len(errs) != 0 {
@@ -565,7 +568,7 @@ func TestMQTT5CallAdapter_ErrorsForwardedFromSrc(t *testing.T) {
 	if err != nil {
 		t.Fatalf("construct port: %v", err)
 	}
-	p.Bind(ctx, mqtt5.CallAdapter(client, router, handle, mqtt5.CallOptions{})) //nolint:errcheck
+	p.Bind(ctx, CallAdapter(client, router, handle, CallOptions{})) //nolint:errcheck
 	out := p.Connect(ctx, src)
 	_, errs := gstream.Collect(ctx, out)
 	if len(errs) != 1 {
@@ -596,7 +599,7 @@ func TestMQTT5ServeAdapter_HandlesRequestViaToolPort(t *testing.T) {
 		return gstream.Single(context.Background(), computeResp{Sum: req.X + req.Y})
 	})
 
-	if err := p.Bind(ctx, mqtt5.ServeAdapter(client, router, handle, mqtt5.ServeOptions{})); err != nil {
+	if err := p.Bind(ctx, ServeAdapter(client, router, handle, ServeOptions{})); err != nil {
 		t.Fatalf("Bind: %v", err)
 	}
 
@@ -646,7 +649,7 @@ func TestMQTT5ServeAdapter_NoPipelineError(t *testing.T) {
 	if err != nil {
 		t.Fatalf("construct port: %v", err)
 	}
-	if err := p.Bind(ctx, mqtt5.ServeAdapter(client, router, handle, mqtt5.ServeOptions{})); err == nil {
+	if err := p.Bind(ctx, ServeAdapter(client, router, handle, ServeOptions{})); err == nil {
 		t.Fatal("want error when no pipeline set")
 	}
 }

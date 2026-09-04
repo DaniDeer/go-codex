@@ -1,4 +1,4 @@
-package chi_test
+package chi
 
 import (
 	"errors"
@@ -6,7 +6,6 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	chiadapter "github.com/DaniDeer/go-codex/adapters/chi"
 	"github.com/DaniDeer/go-codex/api/rest"
 	"github.com/DaniDeer/go-codex/codex"
 	"github.com/DaniDeer/go-codex/validate"
@@ -29,7 +28,7 @@ func findCookieChi(cookies []*http.Cookie, name string) *http.Cookie {
 
 func TestChiSetCookie_defaults(t *testing.T) {
 	rec := httptest.NewRecorder()
-	if err := chiadapter.SetCookie(rec, "session", "abc", chiadapter.CookieOptions{}); err != nil {
+	if err := SetCookie(rec, "session", "abc", CookieOptions{}); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	cookies := parseCookiesChi(rec)
@@ -54,7 +53,7 @@ func TestChiSetCookie_defaults(t *testing.T) {
 func TestChiSetCookie_Codec_valid(t *testing.T) {
 	minLen := codex.String().Refine(validate.MinLen(8))
 	rec := httptest.NewRecorder()
-	err := chiadapter.SetCookie(rec, "token", "longenoughtoken", chiadapter.CookieOptions{}.WithCodec(minLen))
+	err := SetCookie(rec, "token", "longenoughtoken", CookieOptions{}.WithCodec(minLen))
 	if err != nil {
 		t.Fatalf("want nil, got %v", err)
 	}
@@ -66,7 +65,7 @@ func TestChiSetCookie_Codec_valid(t *testing.T) {
 func TestChiSetCookie_Codec_invalid(t *testing.T) {
 	minLen := codex.String().Refine(validate.MinLen(8))
 	rec := httptest.NewRecorder()
-	err := chiadapter.SetCookie(rec, "token", "short", chiadapter.CookieOptions{}.WithCodec(minLen))
+	err := SetCookie(rec, "token", "short", CookieOptions{}.WithCodec(minLen))
 
 	var cookieErr rest.CookieParamError
 	if !errors.As(err, &cookieErr) {
@@ -85,7 +84,7 @@ func TestChiSetCookie_Codec_invalid(t *testing.T) {
 
 func TestChiCookieOptions_WithCodec_setsCodec(t *testing.T) {
 	c := codex.String().Refine(validate.MinLen(4))
-	opts := chiadapter.CookieOptions{}.WithCodec(c)
+	opts := CookieOptions{}.WithCodec(c)
 	if opts.Codec == nil {
 		t.Fatal("want Codec set, got nil")
 	}
@@ -93,7 +92,7 @@ func TestChiCookieOptions_WithCodec_setsCodec(t *testing.T) {
 
 func TestChiCookieOptions_WithCodec_returnsDistinctCopy(t *testing.T) {
 	c := codex.String().Refine(validate.MinLen(4))
-	base := chiadapter.CookieOptions{MaxAge: 3600}
+	base := CookieOptions{MaxAge: 3600}
 	updated := base.WithCodec(c)
 	if base.Codec != nil {
 		t.Error("WithCodec must not mutate the original")

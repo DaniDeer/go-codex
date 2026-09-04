@@ -78,7 +78,7 @@ But `ReceiveAdapter` can no longer build the wrapped handler itself the way
 the old design assumed — there is today NO exported function that turns a
 bare `*rest.RouteHandle[T, struct{}]` into an `http.Handler` (the whole
 decode/validate/security/dispatch pipeline lives behind `Serve`, which
-consumes a `*rest.Builder`'s *already-registered* routes — a bare handle
+consumes a `*rest.Server`'s *already-registered* routes — a bare handle
 can't be re-added to a fresh `Builder`, since registration needs the
 original `rest.Route` value, not a handle). **This makes a small, additive
 change to `nethttp.IngestAdapter` a genuine Phase 0 PREREQUISITE for this

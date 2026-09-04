@@ -45,7 +45,7 @@
 // request), while exactUnitPathConstraint validates the route TEMPLATE's
 // SHAPE (prefix, exactly one placeholder, nothing after — checked once at
 // Register time via rest.WithPathConstraints on each ToolPort's own
-// rest.Builder). Both reuse the same declare-once idiom this file follows
+// rest.Server). Both reuse the same declare-once idiom this file follows
 // throughout.
 //
 // # Running
@@ -270,14 +270,14 @@ func main() {
 
 	mux := http.NewServeMux()
 
-	// Each ToolPort gets its own rest.Builder with exactUnitPathConstraint
+	// Each ToolPort gets its own rest.Server with exactUnitPathConstraint
 	// bound to its own prefix — WithPathConstraints checks the literal
 	// route TEMPLATE at Register time, so a typo'd path (wrong prefix, an
 	// extra trailing segment, a differently-named placeholder) fails
 	// immediately instead of silently registering.
-	convertBuilder := rest.NewBuilder(rest.Info{Title: "ports-plain-go", Version: "1.0.0"},
+	convertBuilder := rest.NewServer(rest.Info{Title: "ports-plain-go", Version: "1.0.0"},
 		rest.WithPathConstraints(exactUnitPathConstraint("/convert/")))
-	pipelineBuilder := rest.NewBuilder(rest.Info{Title: "ports-plain-go-pipeline", Version: "1.0.0"},
+	pipelineBuilder := rest.NewServer(rest.Info{Title: "ports-plain-go-pipeline", Version: "1.0.0"},
 		rest.WithPathConstraints(exactUnitPathConstraint("/convert-pipeline/")))
 
 	// ── ToolPort #1: SetFunc — path + header codecs, plain-Go style ────────

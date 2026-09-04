@@ -237,7 +237,7 @@ func (b *Builder) AsyncAPISpec() (asyncapi.Document, error) {
 	// to iterate here, unlike rest/events — schemes are accumulated
 	// directly into b.securitySchemes as each route registers, in
 	// [Route.Register]). Collision policy is last-registered-wins,
-	// matching [rest.Builder.OpenAPISpec]/[events.Builder.AsyncAPISpec].
+	// matching [rest.Server.OpenAPISpec]/[events.Client.AsyncAPISpec].
 	for name, s := range b.securitySchemes {
 		b.docBuilder.AddSecurityScheme(name, s.SecurityScheme)
 	}
@@ -249,7 +249,7 @@ func (b *Builder) AsyncAPISpec() (asyncapi.Document, error) {
 // is responsible for configuring those on db.
 //
 // Use AppendTo to combine request-reply channels with pub/sub channels from
-// [api/events.Builder] in a single AsyncAPI 3.0 document:
+// [api/events.Client] in a single AsyncAPI 3.0 document:
 //
 //	import asyncapi "github.com/DaniDeer/go-codex/render/asyncapi/v3"
 //

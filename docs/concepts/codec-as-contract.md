@@ -9,10 +9,10 @@ contract/
   contract.go   ← shared types, codecs, route/channel specs
 
 producer/
-  main.go       ← imports contract/, calls Publish / nethttp.Call
+  main.go       ← imports contract/, calls events.PublishHandle / rest.Client.Call
 
 consumer/
-  main.go       ← imports contract/, calls SubscribeHandler / nethttp.Serve
+  main.go       ← imports contract/, calls events.SubscribeHandle / nethttp.AttachMux
 ```
 
 ## HTTP example
@@ -27,11 +27,14 @@ var CreateUser = rest.NewRoute[CreateUserReq, User](
 // server/main.go
 route := contract.CreateUser.WithHandler(myHandler).WithOptions(opts)
 route.Register(builder)
-nethttp.Serve(mux, builder)
+nethttp.AttachMux(builder, mux, addr)
+go func() { _ = builder.Serve(ctx) }()
 
 // client/main.go — same Route, no duplication
-caller := nethttp.NewCaller(http.DefaultClient, serverURL)
-user, err := nethttp.Call(ctx, caller, contract.CreateUser, req, opts)
+client := rest.NewClient()
+nethttp.Attach(client, http.DefaultClient, serverURL)
+userAny, err := client.Call(ctx, contract.CreateUser, req)
+user := userAny.(User)
 ```
 
 ## MQTT example
@@ -40,18 +43,19 @@ user, err := nethttp.Call(ctx, caller, contract.CreateUser, req, opts)
 // contract/contract.go
 var ReadingsChannel = events.NewChannel[SensorReading](
     "sensors/{sensorID}/readings", sensorReadingCodec,
-    events.Subscribe{...}, events.Publish{...},
     events.TopicParam{Name: "sensorID"}.WithCodec(uuidCodec),
 )
 
-// producer/main.go — PublishHandle auto-derives topic vars from reading's
+// producer/main.go — events.PublishHandle auto-derives topic vars from reading's
 // declared merge fields, no manual vars map needed
-handle, _ := contract.ReadingsChannel.Register(producerBuilder)
-adaptermqtt.PublishHandle(ctx, client, handle, 1, false, reading, opts)
+pub := contract.ReadingsChannel.WithPublish(events.Publish{...})
+transport := adaptermqtt.NewPublishTransport[SensorReading](client, 1, false, adaptermqtt.PublishOptions[SensorReading]{})
+err := events.PublishHandle(ctx, pub, transport, reading)
 
 // consumer/main.go
-handle, _ := contract.ReadingsChannel.Register(consumerBuilder)
-client.Subscribe(topic, 1, adaptermqtt.SubscribeHandler(ctx, handle, fn, opts))
+sub := contract.ReadingsChannel.WithSubscribe(events.Subscribe{...})
+subTransport := adaptermqtt.NewSubscribeTransport[SensorReading](client, 1, opts)
+go func() { _ = events.SubscribeHandle(ctx, sub, subTransport, fn) }()
 ```
 
 ## One struct, one call — for free
@@ -64,9 +68,10 @@ declaring the route/channel once. See
 [API Contracts — Design principle: one struct, one call](api-contracts.md#design-principle-one-struct-one-call)
 for the underlying promise and its per-boundary coverage — REST is the
 reference implementation, but events/req-reply/WebSocket/SSE all ship the
-same single-call convenience today (`mqtt5.PublishHandle`/
-`zeromq.PublishHandle`/`mqtt.PublishHandle` for pub/sub;
-`mqtt5.CallHandle`/`zeromq.CallHandle` for req/reply).
+same single-call convenience today (`events.PublishHandle` + each
+adapter's `NewPublishTransport` for pub/sub — Decision 7 of
+`docs/roadmap/pubsub-workflow-simplification.md`; `mqtt5.CallHandle`/
+`zeromq.CallHandle` for req/reply).
 
 ## When to use this pattern
 

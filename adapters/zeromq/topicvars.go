@@ -10,7 +10,7 @@ import (
 
 // TopicVarsFromMessage is the inverse of [events.ChannelHandle.BuildTopic].
 // It matches a concrete ZeroMQ topic (the first frame of a [topic, payload]
-// message, as read by [Subscribe]) against the channel's topic template and
+// message, as read by [subscribe]) against the channel's topic template and
 // returns the extracted variable values — the zeromq equivalent of
 // [adapters/mqtt5.TopicVarsFromMessage] and [adapters/mqtt.TopicVarsFromMessage],
 // adapted for zeromq's plain-string topic (no message struct to extract it
@@ -25,7 +25,7 @@ import (
 // Typical usage — channel defined with go-codex template variables declared
 // via merge-capable [events.NewTopicParam] fields, so the extracted vars can
 // be merged directly into the payload via [events.ChannelHandle.DecodeMerged]
-// (this is exactly what [Subscribe] does internally whenever the channel
+// (this is exactly what [subscribe] does internally whenever the channel
 // declares merge fields):
 //
 //	vars, err := zeromq.TopicVarsFromMessage(sensorChannel, topic)

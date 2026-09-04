@@ -1,4 +1,4 @@
-package mqtt_test
+package mqtt
 
 import (
 	"context"
@@ -11,7 +11,6 @@ import (
 
 	pahomqtt "github.com/eclipse/paho.mqtt.golang"
 
-	adaptermqtt "github.com/DaniDeer/go-codex/adapters/mqtt"
 	"github.com/DaniDeer/go-codex/api/events"
 	"github.com/DaniDeer/go-codex/codex"
 	"github.com/DaniDeer/go-codex/format"
@@ -39,9 +38,9 @@ var userEventCodec = codex.Struct[userEvent](
 )
 
 func newHandle() *events.ChannelHandle[userEvent] {
-	b := events.NewBuilder(events.Info{Title: "Test", Version: "1.0.0"})
-	h, err := events.NewChannel[userEvent]("user/created", userEventCodec,
-		events.Subscribe{Summary: "User created"}).Register(b)
+	b := events.NewClient(events.WithInfo(events.Info{Title: "Test", Version: "1.0.0"}))
+	h, err := events.NewChannel[userEvent]("user/created", userEventCodec).
+		WithSubscribe(events.Subscribe{Summary: "User created"}).Handle(b)
 	if err != nil {
 		panic(err)
 	}
@@ -201,11 +200,11 @@ func TestSubscribeHandler_ValidPayload(t *testing.T) {
 	handle := newHandle()
 	var received userEvent
 
-	handler := adaptermqtt.SubscribeHandler(context.Background(), handle,
+	handler := subscribeHandler(context.Background(), handle,
 		func(_ context.Context, e userEvent) error {
 			received = e
 			return nil
-		}, adaptermqtt.SubscribeOptions{})
+		}, SubscribeOptions{})
 
 	handler(nil, &mockMessage{payload: []byte(validPayload)})
 
@@ -216,14 +215,14 @@ func TestSubscribeHandler_ValidPayload(t *testing.T) {
 
 func TestSubscribeHandler_DecodeError(t *testing.T) {
 	handle := newHandle()
-	var gotErr adaptermqtt.SubscribeError
+	var gotErr SubscribeError
 
-	handler := adaptermqtt.SubscribeHandler(context.Background(), handle,
+	handler := subscribeHandler(context.Background(), handle,
 		func(_ context.Context, e userEvent) error {
 			t.Fatal("fn must not be called on decode error")
 			return nil
 		},
-		adaptermqtt.SubscribeOptions{OnError: func(e adaptermqtt.SubscribeError) { gotErr = e }},
+		SubscribeOptions{OnError: func(e SubscribeError) { gotErr = e }},
 	)
 
 	handler(nil, &mockMessage{payload: []byte(`{"id":"bad-uuid","email":"not-email"}`)})
@@ -231,7 +230,7 @@ func TestSubscribeHandler_DecodeError(t *testing.T) {
 	if gotErr.Err == nil {
 		t.Fatal("want error, got nil")
 	}
-	if gotErr.Kind != adaptermqtt.KindDecode {
+	if gotErr.Kind != KindDecode {
 		t.Fatalf("want KindDecode, got %v", gotErr.Kind)
 	}
 	if gotErr.Topic != "user/created" {
@@ -241,12 +240,12 @@ func TestSubscribeHandler_DecodeError(t *testing.T) {
 
 func TestSubscribeHandler_FnError(t *testing.T) {
 	handle := newHandle()
-	var gotErr adaptermqtt.SubscribeError
+	var gotErr SubscribeError
 	fnErr := errors.New("downstream failure")
 
-	handler := adaptermqtt.SubscribeHandler(context.Background(), handle,
+	handler := subscribeHandler(context.Background(), handle,
 		func(_ context.Context, _ userEvent) error { return fnErr },
-		adaptermqtt.SubscribeOptions{OnError: func(e adaptermqtt.SubscribeError) { gotErr = e }},
+		SubscribeOptions{OnError: func(e SubscribeError) { gotErr = e }},
 	)
 
 	handler(nil, &mockMessage{payload: []byte(validPayload)})
@@ -254,16 +253,16 @@ func TestSubscribeHandler_FnError(t *testing.T) {
 	if !errors.Is(gotErr.Err, fnErr) {
 		t.Fatalf("want fnErr in gotErr.Err, got %v", gotErr.Err)
 	}
-	if gotErr.Kind != adaptermqtt.KindHandler {
+	if gotErr.Kind != KindHandler {
 		t.Fatalf("want KindHandler, got %v", gotErr.Kind)
 	}
 }
 
 func TestSubscribeHandler_NilOnErrNoPanic(t *testing.T) {
 	handle := newHandle()
-	handler := adaptermqtt.SubscribeHandler(context.Background(), handle,
+	handler := subscribeHandler(context.Background(), handle,
 		func(_ context.Context, _ userEvent) error { return errors.New("boom") },
-		adaptermqtt.SubscribeOptions{},
+		SubscribeOptions{},
 	)
 	// Must not panic.
 	handler(nil, &mockMessage{payload: []byte(validPayload)})
@@ -274,7 +273,7 @@ func TestPublish_Success(t *testing.T) {
 	client := &mockClient{token: newCompletedToken(nil)}
 
 	event := userEvent{ID: "f47ac10b-58cc-4372-a567-0e02b2c3d479", Email: "alice@example.com"}
-	err := adaptermqtt.Publish(context.Background(), client, handle, 1, false, event, nil, adaptermqtt.PublishOptions{})
+	err := publish(context.Background(), client, handle, 1, false, event, nil, PublishOptions[userEvent]{})
 	if err != nil {
 		t.Fatalf("want nil error, got %v", err)
 	}
@@ -292,7 +291,7 @@ func TestPublish_BrokerError(t *testing.T) {
 	client := &mockClient{token: newCompletedToken(brokerErr)}
 
 	event := userEvent{ID: "f47ac10b-58cc-4372-a567-0e02b2c3d479", Email: "alice@example.com"}
-	err := adaptermqtt.Publish(context.Background(), client, handle, 1, false, event, nil, adaptermqtt.PublishOptions{})
+	err := publish(context.Background(), client, handle, 1, false, event, nil, PublishOptions[userEvent]{})
 	if !errors.Is(err, brokerErr) {
 		t.Fatalf("want brokerErr, got %v", err)
 	}
@@ -306,18 +305,18 @@ func TestPublish_ContextCancelled(t *testing.T) {
 	cancel() // cancel immediately
 
 	event := userEvent{ID: "f47ac10b-58cc-4372-a567-0e02b2c3d479", Email: "alice@example.com"}
-	err := adaptermqtt.Publish(ctx, client, handle, 1, false, event, nil, adaptermqtt.PublishOptions{})
+	err := publish(ctx, client, handle, 1, false, event, nil, PublishOptions[userEvent]{})
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("want context.Canceled, got %v", err)
 	}
 }
 
 func newTemplateHandle() *events.ChannelHandle[userEvent] {
-	b := events.NewBuilder(events.Info{Title: "Test", Version: "1.0.0"})
+	b := events.NewClient(events.WithInfo(events.Info{Title: "Test", Version: "1.0.0"}))
 	uuidCodec := codex.String().Refine(validate.UUID)
 	h, err := events.NewChannel[userEvent]("users/{userID}/events", userEventCodec,
-		events.Publish{Summary: "User event"},
-		events.TopicParam{Name: "userID", Codec: &uuidCodec}).Register(b)
+		events.TopicParam{Name: "userID", Codec: &uuidCodec}).
+		WithPublish(events.Publish{Summary: "User event"}).Handle(b)
 	if err != nil {
 		panic(err)
 	}
@@ -328,13 +327,13 @@ func newTemplateHandle() *events.ChannelHandle[userEvent] {
 // (events.NewTopicParam) — mirrors mqtt5/zeromq's newMergeChannelHandle,
 // used for G3 (SubscribeHandler auto-merge, PublishHandle) tests.
 func newMergeHandle() *events.ChannelHandle[userEvent] {
-	b := events.NewBuilder(events.Info{Title: "Test", Version: "1.0.0"})
+	b := events.NewClient(events.WithInfo(events.Info{Title: "Test", Version: "1.0.0"}))
 	uuidCodec := codex.String().Refine(validate.UUID)
 	h, err := events.NewChannel[userEvent]("users/{userID}/events", userEventCodec,
 		events.NewTopicParam("userID", uuidCodec,
 			func(e userEvent) string { return e.ID },
 			func(e *userEvent, v string) { e.ID = v }),
-	).Register(b)
+	).WithSubscribe(events.Subscribe{}).Handle(b)
 	if err != nil {
 		panic(err)
 	}
@@ -348,11 +347,11 @@ func TestSubscribeHandler_MergeFields_AutoMergesTopicVars(t *testing.T) {
 	handle := newMergeHandle()
 	var received userEvent
 
-	handler := adaptermqtt.SubscribeHandler(context.Background(), handle,
+	handler := subscribeHandler(context.Background(), handle,
 		func(_ context.Context, e userEvent) error {
 			received = e
 			return nil
-		}, adaptermqtt.SubscribeOptions{})
+		}, SubscribeOptions{})
 
 	// Payload JSON deliberately carries a DIFFERENT id — merge must
 	// OVERWRITE it with the value extracted from the concrete topic.
@@ -376,11 +375,11 @@ func TestSubscribeHandler_NoMergeFields_NoTopicVarMergeAttempted(t *testing.T) {
 	handle := newHandle()
 	var received userEvent
 
-	handler := adaptermqtt.SubscribeHandler(context.Background(), handle,
+	handler := subscribeHandler(context.Background(), handle,
 		func(_ context.Context, e userEvent) error {
 			received = e
 			return nil
-		}, adaptermqtt.SubscribeOptions{})
+		}, SubscribeOptions{})
 
 	handler(nil, &mockMessage{payload: []byte(validPayload)})
 
@@ -396,7 +395,7 @@ func TestPublishHandle_DerivesTopicFromMsg(t *testing.T) {
 	client := &mockClient{token: newCompletedToken(nil)}
 
 	event := userEvent{ID: "f47ac10b-58cc-4372-a567-0e02b2c3d479", Email: "alice@example.com"}
-	err := adaptermqtt.PublishHandle(context.Background(), client, handle, 1, false, event, adaptermqtt.PublishOptions{})
+	err := publishHandle(context.Background(), client, handle, 1, false, event, PublishOptions[userEvent]{})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -407,13 +406,13 @@ func TestPublishHandle_DerivesTopicFromMsg(t *testing.T) {
 }
 
 // PublishHandle with no merge fields declared behaves identically to a bare
-// Publish(..., nil, ...) call (regression guard).
+// publish(..., nil, ...) call (regression guard).
 func TestPublishHandle_NoMergeFields_MatchesPlainPublish(t *testing.T) {
 	handle := newHandle()
 	client := &mockClient{token: newCompletedToken(nil)}
 
 	event := userEvent{ID: "f47ac10b-58cc-4372-a567-0e02b2c3d479", Email: "alice@example.com"}
-	err := adaptermqtt.PublishHandle(context.Background(), client, handle, 1, false, event, adaptermqtt.PublishOptions{})
+	err := publishHandle(context.Background(), client, handle, 1, false, event, PublishOptions[userEvent]{})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -427,8 +426,8 @@ func TestPublish_TemplateVars(t *testing.T) {
 	client := &mockClient{token: newCompletedToken(nil)}
 
 	event := userEvent{ID: "f47ac10b-58cc-4372-a567-0e02b2c3d479", Email: "alice@example.com"}
-	err := adaptermqtt.Publish(context.Background(), client, handle, 1, false, event,
-		map[string]string{"userID": "f47ac10b-58cc-4372-a567-0e02b2c3d479"}, adaptermqtt.PublishOptions{})
+	err := publish(context.Background(), client, handle, 1, false, event,
+		map[string]string{"userID": "f47ac10b-58cc-4372-a567-0e02b2c3d479"}, PublishOptions[userEvent]{})
 	if err != nil {
 		t.Fatalf("want nil error, got %v", err)
 	}
@@ -442,8 +441,8 @@ func TestPublish_TemplateVars_InvalidUUID(t *testing.T) {
 	client := &mockClient{token: newCompletedToken(nil)}
 
 	event := userEvent{ID: "f47ac10b-58cc-4372-a567-0e02b2c3d479", Email: "alice@example.com"}
-	err := adaptermqtt.Publish(context.Background(), client, handle, 1, false, event,
-		map[string]string{"userID": "not-a-uuid"}, adaptermqtt.PublishOptions{})
+	err := publish(context.Background(), client, handle, 1, false, event,
+		map[string]string{"userID": "not-a-uuid"}, PublishOptions[userEvent]{})
 	if err == nil {
 		t.Fatal("want error for invalid UUID, got nil")
 	}
@@ -462,8 +461,8 @@ func TestObserver_RecordPublish_buildTopicError(t *testing.T) {
 	client := &mockClient{token: newCompletedToken(nil)}
 
 	event := userEvent{ID: "f47ac10b-58cc-4372-a567-0e02b2c3d479", Email: "alice@example.com"}
-	err := adaptermqtt.Publish(context.Background(), client, handle, 1, false, event,
-		map[string]string{"userID": "not-a-uuid"}, adaptermqtt.PublishOptions{Observer: obs})
+	err := publish(context.Background(), client, handle, 1, false, event,
+		map[string]string{"userID": "not-a-uuid"}, PublishOptions[userEvent]{Observer: obs})
 	if err == nil {
 		t.Fatal("want error, got nil")
 	}
@@ -484,11 +483,11 @@ func TestMessageFromContext_InsideHandler(t *testing.T) {
 	var gotMsg pahomqtt.Message
 	var gotOK bool
 
-	handler := adaptermqtt.SubscribeHandler(context.Background(), handle,
+	handler := subscribeHandler(context.Background(), handle,
 		func(ctx context.Context, _ userEvent) error {
-			gotMsg, gotOK = adaptermqtt.MessageFromContext(ctx)
+			gotMsg, gotOK = MessageFromContext(ctx)
 			return nil
-		}, adaptermqtt.SubscribeOptions{})
+		}, SubscribeOptions{})
 
 	handler(nil, msg)
 
@@ -501,7 +500,7 @@ func TestMessageFromContext_InsideHandler(t *testing.T) {
 }
 
 func TestMessageFromContext_OutsideHandler(t *testing.T) {
-	msg, ok := adaptermqtt.MessageFromContext(context.Background())
+	msg, ok := MessageFromContext(context.Background())
 	if ok {
 		t.Fatalf("MessageFromContext: want ok=false on plain context, got true with %v", msg)
 	}
@@ -544,9 +543,9 @@ func TestObserver_RecordSubscribe_success(t *testing.T) {
 	handle := newHandle()
 	obs := &mqttSpyObserver{}
 
-	handler := adaptermqtt.SubscribeHandler(context.Background(), handle,
+	handler := subscribeHandler(context.Background(), handle,
 		func(_ context.Context, _ userEvent) error { return nil },
-		adaptermqtt.SubscribeOptions{Observer: obs},
+		SubscribeOptions{Observer: obs},
 	)
 	handler(nil, &mockMessage{payload: []byte(validPayload)})
 
@@ -568,9 +567,9 @@ func TestObserver_RecordSubscribe_decodeError(t *testing.T) {
 	handle := newHandle()
 	obs := &mqttSpyObserver{}
 
-	handler := adaptermqtt.SubscribeHandler(context.Background(), handle,
+	handler := subscribeHandler(context.Background(), handle,
 		func(_ context.Context, _ userEvent) error { return nil },
-		adaptermqtt.SubscribeOptions{Observer: obs},
+		SubscribeOptions{Observer: obs},
 	)
 	handler(nil, &mockMessage{payload: []byte(`{"id":"bad","email":"not-email"}`)})
 
@@ -589,9 +588,9 @@ func TestObserver_RecordValidationError_payload(t *testing.T) {
 	handle := newHandle()
 	obs := &mqttSpyObserver{}
 
-	handler := adaptermqtt.SubscribeHandler(context.Background(), handle,
+	handler := subscribeHandler(context.Background(), handle,
 		func(_ context.Context, _ userEvent) error { return nil },
-		adaptermqtt.SubscribeOptions{Observer: obs},
+		SubscribeOptions{Observer: obs},
 	)
 	handler(nil, &mockMessage{payload: []byte(`{"id":"bad-uuid","email":"bad-email"}`)})
 
@@ -611,8 +610,8 @@ func TestObserver_RecordPublish_success(t *testing.T) {
 	client := &mockClient{token: newCompletedToken(nil)}
 
 	event := userEvent{ID: "f47ac10b-58cc-4372-a567-0e02b2c3d479", Email: "alice@example.com"}
-	err := adaptermqtt.Publish(context.Background(), client, handle, 1, false, event, nil,
-		adaptermqtt.PublishOptions{Observer: obs})
+	err := publish(context.Background(), client, handle, 1, false, event, nil,
+		PublishOptions[userEvent]{Observer: obs})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -637,8 +636,8 @@ func TestObserver_RecordPublish_brokerError(t *testing.T) {
 	client := &mockClient{token: newCompletedToken(brokerErr)}
 
 	event := userEvent{ID: "f47ac10b-58cc-4372-a567-0e02b2c3d479", Email: "alice@example.com"}
-	err := adaptermqtt.Publish(context.Background(), client, handle, 1, false, event, nil,
-		adaptermqtt.PublishOptions{Observer: obs})
+	err := publish(context.Background(), client, handle, 1, false, event, nil,
+		PublishOptions[userEvent]{Observer: obs})
 	if !errors.Is(err, brokerErr) {
 		t.Fatalf("want brokerErr, got %v", err)
 	}
@@ -659,8 +658,8 @@ func TestObserver_RecordValidationError_topicParam_publish(t *testing.T) {
 	client := &mockClient{token: newCompletedToken(nil)}
 
 	event := userEvent{ID: "f47ac10b-58cc-4372-a567-0e02b2c3d479", Email: "alice@example.com"}
-	err := adaptermqtt.Publish(context.Background(), client, handle, 1, false, event,
-		map[string]string{"userID": "not-a-uuid"}, adaptermqtt.PublishOptions{Observer: obs})
+	err := publish(context.Background(), client, handle, 1, false, event,
+		map[string]string{"userID": "not-a-uuid"}, PublishOptions[userEvent]{Observer: obs})
 	if err == nil {
 		t.Fatal("want error, got nil")
 	}
@@ -684,7 +683,7 @@ func TestObserver_RecordValidationError_topicParam_subscribe(t *testing.T) {
 	obs := &mqttSpyObserver{}
 
 	// Handler simulates what TopicVarsFromMessage returns when the topic param fails.
-	handler := adaptermqtt.SubscribeHandler(context.Background(), handle,
+	handler := subscribeHandler(context.Background(), handle,
 		func(_ context.Context, _ userEvent) error {
 			return events.TopicParamError{
 				Name:  "userID",
@@ -692,7 +691,7 @@ func TestObserver_RecordValidationError_topicParam_subscribe(t *testing.T) {
 				Err:   errors.New("constraint failed (uuid): invalid UUID"),
 			}
 		},
-		adaptermqtt.SubscribeOptions{Observer: obs},
+		SubscribeOptions{Observer: obs},
 	)
 	handler(nil, &mockMessage{
 		topic:   "users/not-a-uuid/events",
@@ -715,14 +714,14 @@ func TestObserver_RecordValidationError_topicMismatch_subscribe(t *testing.T) {
 	obs := &mqttSpyObserver{}
 
 	// Handler simulates what TopicVarsFromMessage returns on structural mismatch.
-	handler := adaptermqtt.SubscribeHandler(context.Background(), handle,
+	handler := subscribeHandler(context.Background(), handle,
 		func(_ context.Context, _ userEvent) error {
-			return adaptermqtt.TopicMismatchError{
+			return TopicMismatchError{
 				Template: "users/{userID}/events",
 				Topic:    "wrong/topic",
 			}
 		},
-		adaptermqtt.SubscribeOptions{Observer: obs},
+		SubscribeOptions{Observer: obs},
 	)
 	handler(nil, &mockMessage{
 		topic:   "wrong/topic",
@@ -745,12 +744,12 @@ func TestObserver_RecordValidationError_topicMismatch_subscribe(t *testing.T) {
 func TestSubscribeHandler_YAMLFormat(t *testing.T) {
 	handle := newHandle()
 	var received userEvent
-	handler := adaptermqtt.SubscribeHandler(context.Background(), handle,
+	handler := subscribeHandler(context.Background(), handle,
 		func(_ context.Context, e userEvent) error {
 			received = e
 			return nil
 		},
-		adaptermqtt.SubscribeOptions{},
+		SubscribeOptions{},
 		format.YAML(userEventCodec),
 	)
 
@@ -769,11 +768,11 @@ func TestSubscribeHandler_YAMLFormat(t *testing.T) {
 
 func TestSubscribeHandler_YAMLFormat_DecodeError(t *testing.T) {
 	handle := newHandle()
-	var subErr adaptermqtt.SubscribeError
-	handler := adaptermqtt.SubscribeHandler(context.Background(), handle,
+	var subErr SubscribeError
+	handler := subscribeHandler(context.Background(), handle,
 		func(_ context.Context, _ userEvent) error { return nil },
-		adaptermqtt.SubscribeOptions{
-			OnError: func(e adaptermqtt.SubscribeError) { subErr = e },
+		SubscribeOptions{
+			OnError: func(e SubscribeError) { subErr = e },
 		},
 		format.YAML(userEventCodec),
 	)
@@ -782,7 +781,7 @@ func TestSubscribeHandler_YAMLFormat_DecodeError(t *testing.T) {
 	msg := &mockMessage{topic: "user/created", payload: []byte("id: bad\nemail: alice@example.com\n")}
 	handler(nil, msg)
 
-	if subErr.Kind != adaptermqtt.KindDecode {
+	if subErr.Kind != KindDecode {
 		t.Errorf("want KindDecode, got %v", subErr.Kind)
 	}
 }
@@ -795,8 +794,8 @@ func TestPublish_YAMLFormat(t *testing.T) {
 		ID:    "f47ac10b-58cc-4372-a567-0e02b2c3d479",
 		Email: "alice@example.com",
 	}
-	err := adaptermqtt.Publish(context.Background(), client, handle, 1, false, event, nil,
-		adaptermqtt.PublishOptions{},
+	err := publish(context.Background(), client, handle, 1, false, event, nil,
+		PublishOptions[userEvent]{},
 		format.YAML(userEventCodec),
 	)
 	if err != nil {
@@ -817,8 +816,8 @@ func TestPublish_YAMLFormat_EncodeError(t *testing.T) {
 
 	// Empty email fails the Email constraint.
 	event := userEvent{ID: "f47ac10b-58cc-4372-a567-0e02b2c3d479", Email: ""}
-	err := adaptermqtt.Publish(context.Background(), client, handle, 1, false, event, nil,
-		adaptermqtt.PublishOptions{},
+	err := publish(context.Background(), client, handle, 1, false, event, nil,
+		PublishOptions[userEvent]{},
 		format.YAML(userEventCodec),
 	)
 	if err == nil {
@@ -832,13 +831,13 @@ func TestPublish_EncodeError_returnsPublishEncodeError(t *testing.T) {
 
 	// Empty email fails the Email constraint on default JSON encode.
 	event := userEvent{ID: "f47ac10b-58cc-4372-a567-0e02b2c3d479", Email: ""}
-	err := adaptermqtt.Publish(context.Background(), client, handle, 1, false, event, nil,
-		adaptermqtt.PublishOptions{},
+	err := publish(context.Background(), client, handle, 1, false, event, nil,
+		PublishOptions[userEvent]{},
 	)
 	if err == nil {
 		t.Fatal("expected PublishEncodeError, got nil")
 	}
-	var encErr adaptermqtt.PublishEncodeError
+	var encErr PublishEncodeError
 	if !errors.As(err, &encErr) {
 		t.Fatalf("want errors.As(PublishEncodeError), got %T: %v", err, err)
 	}
@@ -852,7 +851,7 @@ func TestPublish_EncodeError_returnsPublishEncodeError(t *testing.T) {
 
 func TestPublishEncodeError_ErrorAndUnwrap(t *testing.T) {
 	inner := errors.New("constraint failed")
-	e := adaptermqtt.PublishEncodeError{Topic: "sensors/01", Err: inner}
+	e := PublishEncodeError{Topic: "sensors/01", Err: inner}
 
 	if e.Error() != "mqtt encode sensors/01: constraint failed" {
 		t.Errorf("unexpected Error() string: %s", e.Error())
@@ -876,13 +875,21 @@ func (o *mockSecurityObserver) RecordSecurityRejection(location, scheme string) 
 }
 
 func newSecuredHandle() (*events.ChannelHandle[userEvent], error) {
-	b := events.NewBuilder(events.Info{Title: "Test", Version: "1.0.0"})
-	return events.NewChannel[userEvent]("user/created", userEventCodec,
-		events.Subscribe{
+	b := events.NewClient(events.WithInfo(events.Info{Title: "Test", Version: "1.0.0"}))
+	// CheckCoverage (unconditional at Subscriber.Handle time) requires a
+	// paired SubscribeMW implementation for every declared scheme — the fn
+	// itself is a placeholder never consulted by SubscribeHandler
+	// (which enforces security via its OWN SubscribeOptions.SecurityFunc,
+	// completely independent of Implementations/CheckCoverage).
+	mw := events.FromSecurityScheme("bearerAuth", events.SecurityScheme{SecurityScheme: route.BearerScheme("JWT")}, nil)
+	return events.NewChannel[userEvent]("user/created", userEventCodec).
+		WithSubscribe(events.Subscribe{
 			Summary:  "User created",
 			Security: []route.SecurityRequirement{route.Require("bearerAuth")},
-		},
-	).Register(b)
+		}).
+		Use(mw).
+		SubscribeMW(&mw, func() {}).
+		Handle(b)
 }
 
 func TestSubscribeHandler_SecurityFunc_calledForSecuredChannel(t *testing.T) {
@@ -892,12 +899,12 @@ func TestSubscribeHandler_SecurityFunc_calledForSecuredChannel(t *testing.T) {
 	}
 	secFuncCalled := false
 	handlerCalled := false
-	handler := adaptermqtt.SubscribeHandler(context.Background(), handle,
+	handler := subscribeHandler(context.Background(), handle,
 		func(_ context.Context, e userEvent) error {
 			handlerCalled = true
 			return nil
 		},
-		adaptermqtt.SubscribeOptions{
+		SubscribeOptions{
 			SecurityFunc: func(_ context.Context, _ pahomqtt.Message, _ []route.SecurityRequirement) error {
 				secFuncCalled = true
 				return nil
@@ -920,17 +927,17 @@ func TestSubscribeHandler_SecurityFunc_rejectsMessage(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	var subErr adaptermqtt.SubscribeError
-	handler := adaptermqtt.SubscribeHandler(context.Background(), handle,
+	var subErr SubscribeError
+	handler := subscribeHandler(context.Background(), handle,
 		func(_ context.Context, e userEvent) error {
 			t.Fatal("handler must not be called when SecurityFunc rejects")
 			return nil
 		},
-		adaptermqtt.SubscribeOptions{
+		SubscribeOptions{
 			SecurityFunc: func(_ context.Context, _ pahomqtt.Message, _ []route.SecurityRequirement) error {
 				return errors.New("unauthorized")
 			},
-			OnError: func(e adaptermqtt.SubscribeError) {
+			OnError: func(e SubscribeError) {
 				subErr = e
 			},
 		},
@@ -938,7 +945,7 @@ func TestSubscribeHandler_SecurityFunc_rejectsMessage(t *testing.T) {
 
 	handler(nil, &mockMessage{payload: []byte(validPayload)})
 
-	if subErr.Kind != adaptermqtt.KindSecurity {
+	if subErr.Kind != KindSecurity {
 		t.Errorf("want KindSecurity, got %v", subErr.Kind)
 	}
 }
@@ -946,9 +953,9 @@ func TestSubscribeHandler_SecurityFunc_rejectsMessage(t *testing.T) {
 func TestSubscribeHandler_SecurityFunc_notCalledForUnsecuredChannel(t *testing.T) {
 	handle := newHandle()
 	secFuncCalled := false
-	handler := adaptermqtt.SubscribeHandler(context.Background(), handle,
+	handler := subscribeHandler(context.Background(), handle,
 		func(_ context.Context, e userEvent) error { return nil },
-		adaptermqtt.SubscribeOptions{
+		SubscribeOptions{
 			SecurityFunc: func(_ context.Context, _ pahomqtt.Message, _ []route.SecurityRequirement) error {
 				secFuncCalled = true
 				return nil
@@ -969,9 +976,9 @@ func TestSubscribeHandler_SecurityObserver_calledOnRejection(t *testing.T) {
 		t.Fatal(err)
 	}
 	obs := &mockSecurityObserver{}
-	handler := adaptermqtt.SubscribeHandler(context.Background(), handle,
+	handler := subscribeHandler(context.Background(), handle,
 		func(_ context.Context, e userEvent) error { return nil },
-		adaptermqtt.SubscribeOptions{
+		SubscribeOptions{
 			Observer: obs,
 			SecurityFunc: func(_ context.Context, _ pahomqtt.Message, _ []route.SecurityRequirement) error {
 				return errors.New("unauthorized")
@@ -990,15 +997,17 @@ func TestSubscribeHandler_SecurityObserver_calledOnRejection(t *testing.T) {
 }
 
 func newGlobalSecuredMQTTHandle() (*events.ChannelHandle[userEvent], error) {
-	b := events.NewBuilder(events.Info{Title: "Test", Version: "1.0.0"})
+	b := events.NewClient(events.WithInfo(events.Info{Title: "Test", Version: "1.0.0"}))
 	b.AddGlobalSecurity(route.Require("bearerAuth"))
 	// No per-operation Security — inherits global.
-	return events.NewChannel[userEvent]("user/created", userEventCodec,
-		events.Subscribe{Summary: "User created"},
-		events.WithSecurityScheme("bearerAuth", events.SecurityScheme{
-			SecurityScheme: route.BearerScheme("JWT"),
-		}),
-	).Register(b)
+	mw := events.FromSecurityScheme("bearerAuth", events.SecurityScheme{
+		SecurityScheme: route.BearerScheme("JWT"),
+	}, nil)
+	return events.NewChannel[userEvent]("user/created", userEventCodec).
+		WithSubscribe(events.Subscribe{Summary: "User created"}).
+		Use(mw).
+		SubscribeMW(&mw, func() {}).
+		Handle(b)
 }
 
 func TestSubscribeHandler_GlobalSecurity_enforcedWhenNoPerChannelSecurity(t *testing.T) {
@@ -1007,9 +1016,9 @@ func TestSubscribeHandler_GlobalSecurity_enforcedWhenNoPerChannelSecurity(t *tes
 		t.Fatal(err)
 	}
 	secFuncCalled := false
-	handler := adaptermqtt.SubscribeHandler(context.Background(), handle,
+	handler := subscribeHandler(context.Background(), handle,
 		func(_ context.Context, e userEvent) error { return nil },
-		adaptermqtt.SubscribeOptions{
+		SubscribeOptions{
 			SecurityFunc: func(_ context.Context, _ pahomqtt.Message, _ []route.SecurityRequirement) error {
 				secFuncCalled = true
 				return nil
@@ -1029,11 +1038,11 @@ func TestSubscribeHandler_GlobalSecurity_rejectsMessage(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	var gotErr adaptermqtt.SubscribeError
-	handler := adaptermqtt.SubscribeHandler(context.Background(), handle,
+	var gotErr SubscribeError
+	handler := subscribeHandler(context.Background(), handle,
 		func(_ context.Context, e userEvent) error { return nil },
-		adaptermqtt.SubscribeOptions{
-			OnError: func(e adaptermqtt.SubscribeError) { gotErr = e },
+		SubscribeOptions{
+			OnError: func(e SubscribeError) { gotErr = e },
 			SecurityFunc: func(_ context.Context, _ pahomqtt.Message, _ []route.SecurityRequirement) error {
 				return errors.New("missing api key")
 			},
@@ -1042,31 +1051,31 @@ func TestSubscribeHandler_GlobalSecurity_rejectsMessage(t *testing.T) {
 
 	handler(nil, &mockMessage{payload: []byte(validPayload)})
 
-	if gotErr.Kind != adaptermqtt.KindSecurity {
+	if gotErr.Kind != KindSecurity {
 		t.Errorf("want KindSecurity, got %v", gotErr.Kind)
 	}
 }
 
 func TestSubscribeHandler_GlobalSecurity_notCalledWhenExplicitlyEmpty(t *testing.T) {
-	b := events.NewBuilder(events.Info{Title: "Test", Version: "1.0.0"})
+	b := events.NewClient(events.WithInfo(events.Info{Title: "Test", Version: "1.0.0"}))
 	b.AddGlobalSecurity(route.Require("bearerAuth"))
-	// Explicitly empty Security = no auth on this channel.
-	handle, err := events.NewChannel[userEvent]("user/created", userEventCodec,
-		events.Subscribe{
+	// Explicitly empty Security = no auth on this channel. No .Use()/scheme
+	// declaration here — attaching one would itself contribute a security
+	// requirement (Subscriber.Use's OWN declared purpose), defeating the
+	// "explicitly no auth" case this test verifies.
+	handle, err := events.NewChannel[userEvent]("user/created", userEventCodec).
+		WithSubscribe(events.Subscribe{
 			Summary:  "User created",
 			Security: []route.SecurityRequirement{},
-		},
-		events.WithSecurityScheme("bearerAuth", events.SecurityScheme{
-			SecurityScheme: route.BearerScheme("JWT"),
-		}),
-	).Register(b)
+		}).
+		Handle(b)
 	if err != nil {
 		t.Fatal(err)
 	}
 	secFuncCalled := false
-	handler := adaptermqtt.SubscribeHandler(context.Background(), handle,
+	handler := subscribeHandler(context.Background(), handle,
 		func(_ context.Context, e userEvent) error { return nil },
-		adaptermqtt.SubscribeOptions{
+		SubscribeOptions{
 			SecurityFunc: func(_ context.Context, _ pahomqtt.Message, _ []route.SecurityRequirement) error {
 				secFuncCalled = true
 				return nil
@@ -1097,21 +1106,20 @@ func ExamplePublish() {
 		),
 	)
 
-	b := events.NewBuilder(events.Info{Title: "Alert Service", Version: "1.0.0"})
+	b := events.NewClient(events.WithInfo(events.Info{Title: "Alert Service", Version: "1.0.0"}))
 	alertChannel, _ := events.NewChannel[Alert]("alerts/{sensorID}", alertCodec,
-		events.Publish{OperationID: "publishAlert", Summary: "Publish a threshold alert"},
 		events.TopicParam{Name: "sensorID"}.WithCodec(
 			codex.String().Refine(validate.NonEmptyString),
 		),
-	).Register(b)
+	).WithPublish(events.Publish{OperationID: "publishAlert", Summary: "Publish a threshold alert"}).Handle(b)
 
 	// Mock client records the published topic and payload.
 	client := &mockClient{token: newCompletedToken(nil)}
 
-	err := adaptermqtt.Publish(context.Background(), client, alertChannel, 1, false,
+	err := publish(context.Background(), client, alertChannel, 1, false,
 		Alert{SensorID: "s1", Message: "threshold exceeded"},
 		map[string]string{"sensorID": "sensor-01"},
-		adaptermqtt.PublishOptions{},
+		PublishOptions[Alert]{},
 	)
 	fmt.Println(err)
 	fmt.Println(client.publishedTopicSnapshot())

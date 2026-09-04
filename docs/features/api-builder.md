@@ -4,8 +4,8 @@ go-codex provides three transport-agnostic API builders — one for each layer 2
 
 | Builder | Package | Declares | Generates |
 |---------|---------|----------|-----------|
-| `rest.Builder` | `api/rest` | HTTP routes + params | OpenAPI 3.1 spec |
-| `events.Builder` | `api/events` | Event channels + topic params | AsyncAPI 3.0 spec |
+| `rest.Server` | `api/rest` | HTTP routes + params | OpenAPI 3.1 spec |
+| `events.Client` | `api/events` | Event channels + topic params | AsyncAPI 3.0 spec |
 | `mcp.Builder` | `api/mcp` | Tools, Resources, Prompts | MCP JSON manifest |
 
 All three follow the same pattern: **declare → register → handle**.
@@ -49,17 +49,17 @@ The returned `Handle` carries:
 
 ## Builder options
 
-Both `rest.Builder` and `events.Builder` accept a builder-level codec that validates every path/topic registered with that builder:
+Both `rest.Server` and `events.Client` accept a builder-level codec that validates every path/topic registered with that builder:
 
 ```go
 // REST — validate every path at Register time
-b := rest.NewBuilder(info,
+b := rest.NewServer(info,
     rest.WithPathConstraints(validate.HTTPPath),     // built-in path rules
     rest.WithPathConstraints(myDomainPathConstraint), // compose custom rules
 )
 
 // Events — validate every topic at Register time
-b := events.NewBuilder(info,
+client := events.NewClient(events.WithInfo(info),
     events.WithTopicConstraints(validate.MQTTPublishTopic),
     events.WithTopicConstraints(mySensorTopicConstraint),
 )

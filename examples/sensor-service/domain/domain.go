@@ -274,7 +274,7 @@ var SensorIDCodec = codex.String().Refine(validate.UUID)
 // ── Constraints ───────────────────────────────────────────────────────────────
 
 // SensorTopicConstraint is a custom Constraint[string] enforcing the two known
-// topic shapes registered against the shared events.Builder (see ioports):
+// topic shapes registered against the shared events.Client (see ioports):
 // "sensors/<id>/data" (3 segments) and "alerts/<id>" (2 segments). Mirrors
 // examples/adapters-mqtt's sensorTopicConstraint, composed the same way via
 // events.WithTopicConstraints — but here it is applied to Patterns declared

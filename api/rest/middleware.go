@@ -157,9 +157,10 @@ func (o handlerOpt) applyRoute(rb *routeBuilder) { rb.handlerFn = o.fn }
 
 // WithHandler returns a NEW [Route] with fn attached as the route's own
 // business handler — the LAST step before [Route.Register], consumed by
-// [nethttp.Serve]/[chi.Serve] (or [nethttp.ServeOne]) to wire the actual
-// mux.Handle(...) call. A route with NO WithHandler call is spec-only —
-// Serve skips it entirely (see "Serve's whole-builder failure semantics"
+// each adapter's internal serve dispatch (invoked via
+// [nethttp.AttachMux]/[chi.AttachRouter], or [nethttp.ServeOne]) to wire
+// the actual mux.Handle(...) call. A route with NO WithHandler call is
+// spec-only — Serve skips it entirely (see "Serve's whole-builder failure semantics"
 // in docs/design/middleware-workflow-simplification.md).
 func (r Route[Req, Resp]) WithHandler(fn func(ctx context.Context, req Req) (Resp, error)) Route[Req, Resp] {
 	r.opts = append(slices.Clone(r.opts), handlerOpt{fn: fn})
@@ -188,8 +189,9 @@ func (o optionsOpt) applyRoute(rb *routeBuilder) { rb.handlerOpts = o.opts }
 // own adapter Options (e.g. nethttp.Options) — per-route customization
 // (a different ErrorHandler for different routes on the same server,
 // say). Defaults to the adapter's zero-value Options when never called.
-// [nethttp.Serve]/[chi.Serve] take NO Options parameter at all — they use
-// whatever each route declared via WithOptions.
+// Each adapter's internal serve dispatch (invoked via
+// [nethttp.AttachMux]/[chi.AttachRouter]) takes NO Options parameter at
+// all — they use whatever each route declared via WithOptions.
 func (r Route[Req, Resp]) WithOptions(opts any) Route[Req, Resp] {
 	r.opts = append(slices.Clone(r.opts), optionsOpt{opts: opts})
 	return r
@@ -788,9 +790,9 @@ func (e ConflictingParamContributionError) LogValue() slog.Value {
 // ValidateRoute runs the IDENTICAL validation [Route.Register] would run —
 // the FULL opts list (manual RouteOpts AND [WithMiddleware]-attached
 // middleware together), via a scratch [routeBuilder] that is discarded
-// afterward — without needing a live [Builder] or registering anything.
+// afterward — without needing a live [Server] or registering anything.
 // Use this in a domain package that declares routes/middleware but doesn't
-// own the [Builder] used to wire them (typically main.go).
+// own the [Server] used to wire them (typically main.go).
 //
 // meta and opts are the SAME arguments [NewRoute] would receive (minus
 // method/path/codecs, which don't affect middleware/security validation).

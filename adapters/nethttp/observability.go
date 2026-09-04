@@ -29,7 +29,7 @@ import (
 // implementation's Fn (or any downstream code) can resolve the SAME
 // observer via [stats.ObserverFromContext] to call
 // [stats.SecurityObserver.RecordSecurityRejection] itself. The
-// credential-FORMAT check inside Serve/ServeSSE ALSO resolves obs this
+// credential-FORMAT check inside serve/serveSSE ALSO resolves obs this
 // same way.
 func Observability(obs stats.Observer) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {

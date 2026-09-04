@@ -6,10 +6,11 @@ import (
 
 // Consumer is a client-side convenience holder for SSE consumption,
 // removing repeated client/baseURL boilerplate across many [Consume]
-// calls to the same API — the STRICT SSE-consumption EQUIVALENT of
-// [Caller] ([Caller] is for one-shot request/response via [Call];
+// calls to the same API — the STRICT SSE-consumption EQUIVALENT of the
+// package's internal caller type (caller is for one-shot request/response
+// via the internal call helper, reachable publicly via [CallWithHandle];
 // Consumer is for long-lived event streams via [Consume]). Field-for-
-// field, method-for-method identical shape to Caller: no defaultMws, no
+// field, method-for-method identical shape to caller: no defaultMws, no
 // per-Consumer credential slot — client-side credential fulfillment is
 // declared PER-ROUTE via [rest.SSERoute.ClientMW], mirroring how Caller
 // defers entirely to [rest.Route.ClientMW].
@@ -25,16 +26,16 @@ type Consumer struct {
 }
 
 // NewConsumer builds a [Consumer] bound to client and baseURL. Mirrors
-// [NewCaller] exactly.
+// the package's internal newCaller constructor exactly.
 func NewConsumer(client *http.Client, baseURL string) *Consumer {
 	return &Consumer{client: client, baseURL: baseURL}
 }
 
 // WithBaseURL returns a NEW [Consumer] sharing c's *http.Client but bound
-// to a different baseURL. Mirrors [Caller.WithBaseURL] exactly — same
-// non-mutating-copy semantics, same "ergonomic sugar, not a structural
-// requirement" rationale (a fresh Consumer is always cheap to construct
-// directly via [NewConsumer]).
+// to a different baseURL. Mirrors the internal caller type's WithBaseURL
+// exactly — same non-mutating-copy semantics, same "ergonomic sugar, not
+// a structural requirement" rationale (a fresh Consumer is always cheap
+// to construct directly via [NewConsumer]).
 func (c *Consumer) WithBaseURL(baseURL string) *Consumer {
 	return &Consumer{client: c.client, baseURL: baseURL}
 }

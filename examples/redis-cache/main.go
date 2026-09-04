@@ -264,7 +264,7 @@ func main() {
 	// ── Section 6: error-path ergonomics — OnError + events.ErrorChannel ─
 	fmt.Println("\n─── Section 6: Error-path ergonomics (OnError + events.ErrorChannel)")
 
-	errBuilder := events.NewBuilder(events.Info{Title: "Cache Errors", Version: "1.0.0"})
+	errBuilder := events.NewClient(events.WithInfo(events.Info{Title: "Cache Errors", Version: "1.0.0"}))
 	errHandle, err := events.NewChannel[User]("users/cache", userCodec,
 		events.ErrorChannel[CacheWriteError, CacheErrorPayload](
 			"users/cache/errors", cacheErrorPayloadCodec,
@@ -272,7 +272,7 @@ func main() {
 				return CacheErrorPayload{Code: "cache_write", Message: e.Error()}, nil
 			},
 		),
-	).Register(errBuilder)
+	).WithPublish(events.Publish{}).Handle(errBuilder)
 	if err != nil {
 		panic(err)
 	}

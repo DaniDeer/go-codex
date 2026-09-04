@@ -63,12 +63,12 @@ type SinkPort[T any] struct {
 	obs    stats.Observer
 	buffer int
 
-	// eventBuilder/restBuilder are stored (not used eagerly) so
+	// eventClient/restBuilder are stored (not used eagerly) so
 	// PluginEventPattern/PluginRESTPattern/PluginFilePattern/
 	// PluginCachePattern can register against the SAME shared builder
 	// every other Pattern-carrying declaration in the service uses.
-	eventBuilder *events.Builder
-	restBuilder  *rest.Builder
+	eventClient *events.Client
+	restBuilder *rest.Server
 
 	handlesMu sync.Mutex
 	handles   map[string]any
@@ -98,20 +98,20 @@ const (
 
 // NewSinkPort creates a SinkPort with the given name and payload codec.
 // opts configures IO params, buffer size, observer, and (optionally) shared
-// RESTBuilder/EventBuilder references for later [PluginEventPattern]/
+// RESTBuilder/EventClient references for later [PluginEventPattern]/
 // [PluginRESTPattern]/[PluginFilePattern]/[PluginCachePattern] calls —
 // declare the port's communication Pattern separately (see [PortOptions]).
 func NewSinkPort[T any](name string, codec codex.Codec[T], opts PortOptions) (*SinkPort[T], error) {
 	return &SinkPort[T]{
-		name:         name,
-		codec:        codec,
-		params:       opts.Params,
-		obs:          opts.Observer,
-		buffer:       opts.Buffer,
-		eventBuilder: opts.EventBuilder,
-		restBuilder:  opts.RESTBuilder,
-		handles:      map[string]any{},
-		specs:        map[string]any{},
+		name:        name,
+		codec:       codec,
+		params:      opts.Params,
+		obs:         opts.Observer,
+		buffer:      opts.Buffer,
+		eventClient: opts.EventClient,
+		restBuilder: opts.RESTBuilder,
+		handles:     map[string]any{},
+		specs:       map[string]any{},
 	}, nil
 }
 
@@ -126,7 +126,7 @@ func (p *SinkPort[T]) pluginPattern(pattern Pattern, kind string) (any, error) {
 	}
 	p.handlesMu.Unlock()
 
-	handles, specs, err := buildEventPatternHandles(p.name, []Pattern{pattern}, p.codec, roleSink, p.eventBuilder, p.restBuilder)
+	handles, specs, err := buildEventPatternHandles(p.name, []Pattern{pattern}, p.codec, roleSink, p.eventClient, p.restBuilder)
 	if err != nil {
 		return nil, err
 	}
@@ -142,7 +142,7 @@ func (p *SinkPort[T]) pluginPattern(pattern Pattern, kind string) (any, error) {
 	return handles[kind], nil
 }
 
-// PluginEventPattern registers pattern (against the EventBuilder supplied to
+// PluginEventPattern registers pattern (against the EventClient supplied to
 // [NewSinkPort]'s [PortOptions], or a private single-use builder if none)
 // and returns the resulting [events.ChannelHandle] directly — bind a
 // [SinkAdapter] to it (e.g. mqtt5.PublishAdapter) immediately after.

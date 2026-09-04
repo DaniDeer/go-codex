@@ -6,9 +6,9 @@
 
 go-codex generates AsyncAPI 3.0 (and 2.6) documents from the same codec definitions that drive runtime decode/encode — no separate YAML authoring, no drift.
 
-## Via `api/events` builder (recommended)
+## Via `api/events` client (recommended)
 
-The `api/events` builder generates a complete AsyncAPI 3.0 document from all registered channels:
+The `api/events` client generates a complete AsyncAPI 3.0 document from all registered channels:
 
 ```go
 import (
@@ -16,11 +16,11 @@ import (
     "github.com/DaniDeer/go-codex/validate"
 )
 
-b := events.NewBuilder(
-    events.Info{Title: "User Events", Version: "1.0.0"},
+eventsClient := events.NewClient(
+    events.WithInfo(events.Info{Title: "User Events", Version: "1.0.0"}),
     events.WithTopicConstraints(validate.MQTTPublishTopic),
 )
-b.AddServer("production", events.Server{
+eventsClient.AddServer("production", events.Server{
     URL:      "broker.example.com",
     Protocol: "mqtt",
 })
@@ -32,7 +32,7 @@ userCreated, _ := events.NewChannel[UserCreatedEvent]("user/created", userCreate
         Summary:     "A user was created",
         SchemaName:  "UserCreatedEvent",  // → $ref in spec
     },
-).Register(b)
+).Register(eventsClient)
 
 // Register a template topic channel with parameter
 sensorUUIDCodec := codex.String().Refine(validate.UUID)
@@ -47,16 +47,16 @@ sensorMeasurement, _ := events.NewChannel[Measurement]("sensors/{sensorID}/measu
         Name:        "sensorID",
         Description: "UUID of the sensor publishing the measurement.",
     }.WithCodec(sensorUUIDCodec),  // codec validates + flows schema into spec parameters:
-).Register(b)
+).Register(eventsClient)
 
 // Register both directions on same channel
 events.NewChannel[UserEvent]("user/events", codec,
     events.Subscribe{OperationID: "receiveUserEvent", Summary: "Receive user events"},
     events.Publish{OperationID: "sendUserEvent",    Summary: "Send user events"},
-).Register(b)
+).Register(eventsClient)
 
 // Generate the full AsyncAPI 3.0 spec:
-doc, err := b.AsyncAPISpec()
+doc, err := eventsClient.AsyncAPISpec()
 yamlBytes, _ := doc.MarshalYAML()
 ```
 
@@ -153,7 +153,7 @@ userCreated, _ := events.NewChannel[UserCreatedEvent]("user/created", codec,
         Summary:  "Receive user created events",
         Security: []route.SecurityRequirement{route.Require("bearerAuth")},
     },
-).Register(b)
+).Register(eventsClient)
 ```
 
 ## Error types
@@ -167,7 +167,7 @@ userCreated, _ := events.NewChannel[UserCreatedEvent]("user/created", codec,
 
 ## Combining pub/sub and request-reply in one document
 
-`events.Builder` and `reqreply.Builder` each call `AsyncAPISpec()` separately by
+`events.Client` and `reqreply.Builder` each call `AsyncAPISpec()` separately by
 default. To produce a **single combined document**, use `AppendTo` on both:
 
 ```go

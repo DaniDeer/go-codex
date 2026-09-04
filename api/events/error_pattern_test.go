@@ -37,15 +37,14 @@ var sensorErrorPayloadCodec = codex.Struct[sensorErrorPayload](
 )
 
 func TestErrorChannel_MappedPayload_MatchAndEncode(t *testing.T) {
-	b := events.NewBuilder(testInfo)
+	b := events.NewClient(events.WithInfo(testInfo))
 	h, err := events.NewChannel[userEvent]("sensors/{id}/data", userEventCodec,
 		events.ErrorChannel[sensorValidationError, sensorErrorPayload](
 			"sensors/{id}/errors", sensorErrorPayloadCodec,
 			func(e sensorValidationError) (sensorErrorPayload, error) {
 				return sensorErrorPayload{Code: "validation", Message: e.msg}, nil
 			},
-		),
-	).Register(b)
+		)).WithSubscribe(events.Subscribe{}).Handle(b)
 	if err != nil {
 		t.Fatalf("Register: %v", err)
 	}
@@ -73,12 +72,11 @@ func TestErrorChannel_MappedPayload_MatchAndEncode(t *testing.T) {
 }
 
 func TestErrorChannel_DirectMode_TypeAssignable(t *testing.T) {
-	b := events.NewBuilder(testInfo)
+	b := events.NewClient(events.WithInfo(testInfo))
 	h, err := events.NewChannel[userEvent]("sensors/{id}/data", userEventCodec,
 		events.ErrorChannel[sensorErrorPayload, sensorErrorPayload](
 			"sensors/{id}/errors", sensorErrorPayloadCodec,
-		),
-	).Register(b)
+		)).WithSubscribe(events.Subscribe{}).Handle(b)
 	if err != nil {
 		t.Fatalf("Register: %v", err)
 	}
@@ -100,15 +98,14 @@ func TestErrorChannel_DirectMode_TypeAssignable(t *testing.T) {
 }
 
 func TestErrorChannel_NoMatch_ReturnsFalse(t *testing.T) {
-	b := events.NewBuilder(testInfo)
+	b := events.NewClient(events.WithInfo(testInfo))
 	h, err := events.NewChannel[userEvent]("sensors/{id}/data", userEventCodec,
 		events.ErrorChannel[sensorValidationError, sensorErrorPayload](
 			"sensors/{id}/errors", sensorErrorPayloadCodec,
 			func(e sensorValidationError) (sensorErrorPayload, error) {
 				return sensorErrorPayload{Code: "validation", Message: e.msg}, nil
 			},
-		),
-	).Register(b)
+		)).WithSubscribe(events.Subscribe{}).Handle(b)
 	if err != nil {
 		t.Fatalf("Register: %v", err)
 	}
@@ -123,7 +120,7 @@ func TestErrorChannel_NoMatch_ReturnsFalse(t *testing.T) {
 }
 
 func TestErrorChannel_Precedence_FirstDeclaredWins(t *testing.T) {
-	b := events.NewBuilder(testInfo)
+	b := events.NewClient(events.WithInfo(testInfo))
 	h, err := events.NewChannel[userEvent]("sensors/{id}/data", userEventCodec,
 		events.ErrorChannel[sensorValidationError, sensorErrorPayload](
 			"sensors/{id}/errors-first", sensorErrorPayloadCodec,
@@ -136,8 +133,7 @@ func TestErrorChannel_Precedence_FirstDeclaredWins(t *testing.T) {
 			func(e sensorValidationError) (sensorErrorPayload, error) {
 				return sensorErrorPayload{Code: "second", Message: e.msg}, nil
 			},
-		),
-	).Register(b)
+		)).WithSubscribe(events.Subscribe{}).Handle(b)
 	if err != nil {
 		t.Fatalf("Register: %v", err)
 	}
@@ -155,15 +151,14 @@ func TestErrorChannel_Precedence_FirstDeclaredWins(t *testing.T) {
 }
 
 func TestErrorChannel_WithAction_Handle(t *testing.T) {
-	b := events.NewBuilder(testInfo)
+	b := events.NewClient(events.WithInfo(testInfo))
 	h, err := events.NewChannel[userEvent]("sensors/{id}/data", userEventCodec,
 		events.ErrorChannel[sensorValidationError, sensorErrorPayload](
 			"sensors/{id}/errors", sensorErrorPayloadCodec,
 			func(e sensorValidationError) (sensorErrorPayload, error) {
 				return sensorErrorPayload{Code: "validation", Message: e.msg}, nil
 			},
-		).WithAction(events.ErrorHandle),
-	).Register(b)
+		).WithAction(events.ErrorHandle)).WithSubscribe(events.Subscribe{}).Handle(b)
 	if err != nil {
 		t.Fatalf("Register: %v", err)
 	}
@@ -181,15 +176,14 @@ func TestErrorChannel_WithAction_Handle(t *testing.T) {
 }
 
 func TestErrorChannel_WithAction_Log(t *testing.T) {
-	b := events.NewBuilder(testInfo)
+	b := events.NewClient(events.WithInfo(testInfo))
 	h, err := events.NewChannel[userEvent]("sensors/{id}/data", userEventCodec,
 		events.ErrorChannel[sensorValidationError, sensorErrorPayload](
 			"sensors/{id}/errors", sensorErrorPayloadCodec,
 			func(e sensorValidationError) (sensorErrorPayload, error) {
 				return sensorErrorPayload{Code: "validation", Message: e.msg}, nil
 			},
-		).WithAction(events.ErrorLog),
-	).Register(b)
+		).WithAction(events.ErrorLog)).WithSubscribe(events.Subscribe{}).Handle(b)
 	if err != nil {
 		t.Fatalf("Register: %v", err)
 	}
@@ -208,15 +202,14 @@ func TestErrorChannel_WithAction_Log(t *testing.T) {
 
 func TestErrorChannel_MapperError_ReturnsMatchedWithError(t *testing.T) {
 	wantErr := errors.New("mapper failed")
-	b := events.NewBuilder(testInfo)
+	b := events.NewClient(events.WithInfo(testInfo))
 	h, err := events.NewChannel[userEvent]("sensors/{id}/data", userEventCodec,
 		events.ErrorChannel[sensorValidationError, sensorErrorPayload](
 			"sensors/{id}/errors", sensorErrorPayloadCodec,
 			func(e sensorValidationError) (sensorErrorPayload, error) {
 				return sensorErrorPayload{}, wantErr
 			},
-		),
-	).Register(b)
+		)).WithSubscribe(events.Subscribe{}).Handle(b)
 	if err != nil {
 		t.Fatalf("Register: %v", err)
 	}
@@ -231,14 +224,16 @@ func TestErrorChannel_MapperError_ReturnsMatchedWithError(t *testing.T) {
 }
 
 func TestErrorChannel_ClientHandle_carriesRules(t *testing.T) {
-	h := events.NewChannel[userEvent]("sensors/{id}/data", userEventCodec,
+	h, err := events.NewChannel[userEvent]("sensors/{id}/data", userEventCodec,
 		events.ErrorChannel[sensorValidationError, sensorErrorPayload](
 			"sensors/{id}/errors", sensorErrorPayloadCodec,
 			func(e sensorValidationError) (sensorErrorPayload, error) {
 				return sensorErrorPayload{Code: "validation", Message: e.msg}, nil
 			},
-		),
-	).ClientHandle()
+		)).WithSubscribe(events.Subscribe{}).Handle(nil)
+	if err != nil {
+		t.Fatalf("Handle: %v", err)
+	}
 
 	_, matched, mapErr := h.ErrorResponseFor(sensorValidationError{msg: "x"})
 	if mapErr != nil {

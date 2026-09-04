@@ -28,13 +28,17 @@ sensors := stream.From(ctx, ch)
 ```go
 rawCh := make(chan []byte, 64)
 
-// Fill rawCh from MQTT SubscribeHandler:
-mqttClient.Subscribe("sensors/+/data", 0,
-    adaptermqtt.SubscribeHandler(ctx, channelHandle,
+// Fill rawCh via the mqtt adapter's spec-free, handle-based Decision 7 call surface
+// (docs/roadmap/pubsub-workflow-simplification.md):
+sub := rawChannel.WithSubscribe(events.Subscribe{})
+transport := adaptermqtt.NewSubscribeTransport[[]byte](mqttClient, 0, adaptermqtt.SubscribeOptions{})
+go func() {
+    _ = events.SubscribeHandle(ctx, sub, transport,
         func(_ context.Context, raw []byte) error {
             select { case rawCh <- raw: default: } // drop if pipeline is saturated
             return nil
-        }, adaptermqtt.SubscribeOptions{}))
+        })
+}()
 
 // Decode with any format — JSON, YAML, TOML, or custom:
 sensors := stream.FromCodec(ctx, rawCh, format.JSON(sensorCodec),
@@ -226,10 +230,10 @@ lefts, rights := stream.SplitEither(ctx, unionStream, stream.SwitchOptions{})
 concurrently in a single select loop — no goroutine leaks:
 
 ```go
+alertTransport := adaptermqtt5.NewPublishTransport[Alert](mqttClient, 0, false, adaptermqtt5.PublishOptions[Alert]{Observer: obs})
 stream.Drain(ctx, debounced,
     func(ctx context.Context, oee OEE) error {
-        return adaptermqtt5.Publish(ctx, mqttClient, alertHandle, 0, false,
-            buildAlert(oee), nil, adaptermqtt5.PublishOptions{Observer: obs})
+        return events.PublishHandle(ctx, alertPub, alertTransport, buildAlert(oee))
     },
     func(err error) {
         // Explicit error handler — every error is typed

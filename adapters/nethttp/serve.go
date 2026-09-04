@@ -29,7 +29,7 @@ func (e RouteError) Error() string {
 
 func (e RouteError) Unwrap() error { return e.Err }
 
-// MultiRouteError is returned by [Serve]/[ServeSSE] when one or more
+// MultiRouteError is returned by [serve]/[serveSSE] when one or more
 // handler-bearing routes fail validation. Carries EVERY individual
 // failure found during the pre-wiring validation pass — not just the
 // first — so a caller sees the complete list of what's wrong in one
@@ -101,19 +101,19 @@ type wiredRoute struct {
 	handler      http.Handler
 }
 
-// Serve walks every [rest.Route] registered into b (via [rest.Route.Register]/
+// serve walks every [rest.Route] registered into b (via [rest.Route.Register]/
 // [rest.Route.RegisterHandle]) and wires each handler-bearing one onto mux
 // — the SOLE public server-side entry point for regular (non-SSE) routes
 // (see docs/design/middleware-workflow-simplification.md's "Decision:
-// Serve is the only public server-side entry point").
+// serve is the only public server-side entry point").
 //
 // Part 1 — routes with NO [rest.Route.WithHandler] call are spec-only and
 // SKIPPED entirely: no validation, no wiring, no error (see "Decision:
-// Serve's whole-builder failure semantics").
+// serve's whole-builder failure semantics").
 //
 // Part 2 — every handler-bearing route is validated FIRST (implementation
 // shape + security coverage), collecting ALL failures into ONE
-// [MultiRouteError] — Serve wires NOTHING (zero mux.Handle calls) if even
+// [MultiRouteError] — serve wires NOTHING (zero mux.Handle calls) if even
 // one fails.
 //
 // Part 3 — duplicate Method+Path is detected proactively (folded into the
@@ -121,14 +121,14 @@ type wiredRoute struct {
 // recover() around the wiring loop converts any other unanticipated
 // mux.Handle panic into a returned error.
 //
-// Generic dispatch: Serve is non-generic and walks a HETEROGENEOUS
+// Generic dispatch: serve is non-generic and walks a HETEROGENEOUS
 // collection of routes with different Req/Resp per route — building each
 // one's http.Handler uses reflect.Value.Call against the route's
 // ALREADY-CONCRETE exported closures (Decode/Encode/HandlerFn/each
 // [middleware.ServerImplementation.Fn]), never reflective generic
-// instantiation (which Go does not support) — see "Decision: Serve's
+// instantiation (which Go does not support) — see "Decision: serve's
 // generic dispatch mechanism" in the roadmap doc for the full rationale.
-func Serve(mux *http.ServeMux, b *rest.Builder) error {
+func serve(mux *http.ServeMux, b *rest.Server) error {
 	entries := b.RouteEntries()
 
 	var routeErrs []RouteError
@@ -164,7 +164,7 @@ func Serve(mux *http.ServeMux, b *rest.Builder) error {
 func wireRoutes(mux *http.ServeMux, toWire []wiredRoute) (err error) {
 	defer func() {
 		if r := recover(); r != nil {
-			err = fmt.Errorf("nethttp.Serve: panic wiring routes: %v", r)
+			err = fmt.Errorf("nethttp.serve: panic wiring routes: %v", r)
 		}
 	}()
 	for _, rt := range toWire {
@@ -175,16 +175,16 @@ func wireRoutes(mux *http.ServeMux, toWire []wiredRoute) (err error) {
 
 // ServeOne builds a bare [http.Handler] for exactly ONE route — pure
 // sugar, implemented as "build a scratch single-route Builder, register
-// route into it, call Serve, return the resulting mux." Reuses Serve's
+// route into it, call serve, return the resulting mux." Reuses serve's
 // exact validation path; not a bypass. Takes no [Options] parameter —
 // call route.WithOptions(opts) first for a custom Options on this route.
 func ServeOne[Req, Resp any](r rest.Route[Req, Resp]) (http.Handler, error) {
-	b := rest.NewBuilder(rest.Info{})
+	b := rest.NewServer(rest.Info{})
 	if err := r.Register(b); err != nil {
 		return nil, err
 	}
 	mux := http.NewServeMux()
-	if err := Serve(mux, b); err != nil {
+	if err := serve(mux, b); err != nil {
 		return nil, err
 	}
 	return mux, nil
@@ -200,7 +200,7 @@ func ServeOne[Req, Resp any](r rest.Route[Req, Resp]) (http.Handler, error) {
 func buildRouteHandler(handle any) (http.Handler, error) {
 	hv := reflect.ValueOf(handle)
 	if hv.Kind() != reflect.Pointer || hv.IsNil() {
-		return nil, fmt.Errorf("nethttp.Serve: expected non-nil *rest.RouteHandle[Req, Resp], got %T", handle)
+		return nil, fmt.Errorf("nethttp.serve: expected non-nil *rest.RouteHandle[Req, Resp], got %T", handle)
 	}
 	elem := hv.Elem()
 
@@ -211,7 +211,7 @@ func buildRouteHandler(handle any) (http.Handler, error) {
 	handlerOptsAny := elem.FieldByName("HandlerOpts").Interface()
 	handlerFnVal := elem.FieldByName("HandlerFn")
 	if handlerFnVal.IsNil() {
-		return nil, fmt.Errorf("nethttp.Serve: route %s %s has no handler (internal error — HasHandler should have skipped it)", descriptor.Method, descriptor.Path)
+		return nil, fmt.Errorf("nethttp.serve: route %s %s has no handler (internal error — HasHandler should have skipped it)", descriptor.Method, descriptor.Path)
 	}
 	handlerFn := handlerFnVal.Elem() // unwrap the `any` field to the concrete func value
 	reqType := handlerFn.Type().In(1)
@@ -226,7 +226,7 @@ func buildRouteHandler(handle any) (http.Handler, error) {
 	// to GlobalSecurity, same resolution rule the runtime path uses) must
 	// have a matching impls[i].Satisfies entry — catches a route that
 	// declares a security requirement via .Use() but never attaches a
-	// matching .HandleMW() implementation, EAGERLY at Serve time instead of
+	// matching .HandleMW() implementation, EAGERLY at serve time instead of
 	// letting every request fail closed at runtime with no clear signal why.
 	coverageReqs := descriptor.Security
 	if coverageReqs == nil {
@@ -568,7 +568,7 @@ func buildRouteHandler(handle any) (http.Handler, error) {
 // reflect.Value) and returns its single error result (nil on success).
 // Used for the family of RouteHandle methods whose signature never names
 // Req/Resp (map[string]string -> error, etc.) — reflect is only needed
-// here because target's static type is unknown to Serve, not because the
+// here because target's static type is unknown to serve, not because the
 // METHOD itself is generic.
 func callErr(target reflect.Value, method string, arg reflect.Value) error {
 	results := target.MethodByName(method).Call([]reflect.Value{arg})
@@ -603,12 +603,12 @@ func formatContentTypesReflect(formats reflect.Value) []string {
 }
 
 // negotiateFormatReflect (Resp-direction) is defined in serve_sse.go —
-// shared with [Serve]/SSE's own reflect dispatch since both need to pick a
+// shared with [serve]/SSE's own reflect dispatch since both need to pick a
 // format.Format[T] (T erased) by Accept header.
 
 // negotiateRequestFormatReflect is [negotiateRequestFormat]'s reflect-based
 // equivalent — formats is a reflect.Value of type []format.Format[Req]
-// (Req erased at [Serve]'s call site). Picks the format whose ContentType
+// (Req erased at [serve]'s call site). Picks the format whose ContentType
 // exactly matches contentType (parameters stripped).
 func negotiateRequestFormatReflect(formats reflect.Value, contentType string) (reflect.Value, bool) {
 	n := formats.Len()
@@ -624,7 +624,7 @@ func negotiateRequestFormatReflect(formats reflect.Value, contentType string) (r
 
 // writeErrorPatternResponseReflect is [writeErrorPatternResponse]'s
 // reflect-based equivalent — elem is the *rest.RouteHandle[Req, Resp]
-// reflect.Value (Resp erased at [Serve]'s call site) and respType is
+// reflect.Value (Resp erased at [serve]'s call site) and respType is
 // Resp's reflect.Type (recovered from the route's HandlerFn — see
 // [buildRouteHandler]). pattern.Value's response header/cookie
 // merge-field values are applied ONLY when its concrete type equals Resp
@@ -685,11 +685,11 @@ func writeErrorPatternResponseReflect(
 }
 
 // validateImplementationShapesReflect checks every attached impl.Fn against
-// the two concrete shapes this package recognizes, EAGERLY at Serve
+// the two concrete shapes this package recognizes, EAGERLY at serve
 // construction time rather than deferring to the first incoming request —
 // a malformed Fn fails loudly and immediately. reqType is the route's Req
 // type, recovered at runtime via reflect (see [buildRouteHandler]), letting
-// Serve build the EXACT expected security Fn shape
+// serve build the EXACT expected security Fn shape
 // (func(context.Context, *http.Request, *Req) (map[string][]string, error))
 // dynamically instead of via a static type parameter.
 func validateImplementationShapesReflect(routeLabel string, reqType reflect.Type, impls []middleware.ServerImplementation) error {

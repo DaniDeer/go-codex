@@ -111,21 +111,24 @@ func WithObserver(obs stats.Observer) SecuredClientOption {
 // validation" contract used everywhere else in the security model) —
 // NewSecuredClient always succeeds in that case.
 //
-// go-codex still never calls Connect() itself — connect first, THEN wrap.
+// Connect first, THEN wrap — whether the connection was established via
+// [Connect] or by constructing a raw [pahomqtt.Client] directly.
 // Recommendation: also declare the SAME requirement via
 // [events.Server.Security] when building an AsyncAPI spec for this
 // connection, purely for documentation parity between the spec output and
 // this runtime check — Server.Security itself has no code-level link to
 // ConnectSecurityScheme/NewSecuredClient.
 //
-//	opts := pahomqtt.NewClientOptions().SetUsername("svc-account").SetPassword(token)
-//	client := pahomqtt.NewClient(opts)
-//	if token := client.Connect(); token.Wait() && token.Error() != nil { /* handle */ }
+//	client, err := mqtt.Connect(ctx, "tcp://broker:1883", mqtt.ConnectOptions{
+//	    ClientID: "svc-account", Username: "svc-account", Password: token,
+//	})
+//	if err != nil { /* handle */ }
 //
 //	secured, err := mqtt.NewSecuredClient(client, bearerAuth, "svc-account", token)
 //	if err != nil { /* malformed credential — client is never used */ }
 //
-//	mqtt.Publish(ctx, secured, handle, 1, false, msg, nil, mqtt.PublishOptions{}) // works exactly as before
+//	transport := mqtt.NewPublishTransport[T](secured, 1, false, mqtt.PublishOptions[T]{})
+//	err = events.PublishHandle(ctx, pub, transport, msg) // works exactly as before
 func NewSecuredClient(client pahomqtt.Client, scheme ConnectSecurityScheme, username, password string, opts ...SecuredClientOption) (*SecuredClient, error) {
 	o := resolveSecuredClientOptions(opts)
 	if scheme.Codec != nil {

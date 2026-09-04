@@ -97,8 +97,8 @@ var sensorChannel = events.NewChannel[SensorReading]("sensors/{sensorID}/reading
 )
 
 func main() {
-	b := events.NewBuilder(events.Info{Title: "Sensor Events API", Version: "1.0.0"})
-	handle, err := sensorChannel.Register(b)
+	b := events.NewClient(events.WithInfo(events.Info{Title: "Sensor Events API", Version: "1.0.0"}))
+	handle, err := sensorChannel.WithSubscribe(events.Subscribe{}).Handle(b)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "register:", err)
 		os.Exit(1)

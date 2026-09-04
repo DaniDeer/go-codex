@@ -1,4 +1,4 @@
-package nethttp_test
+package nethttp
 
 import (
 	"context"
@@ -16,7 +16,6 @@ import (
 
 	atempl "github.com/a-h/templ"
 
-	nethttp "github.com/DaniDeer/go-codex/adapters/nethttp"
 	adapttempl "github.com/DaniDeer/go-codex/adapters/templ"
 	"github.com/DaniDeer/go-codex/api/rest"
 	"github.com/DaniDeer/go-codex/codex"
@@ -31,7 +30,7 @@ import (
 
 func newIngestRoute(t *testing.T) *rest.RouteHandle[createReq, struct{}] {
 	t.Helper()
-	b := rest.NewBuilder(testInfo)
+	b := rest.NewServer(testInfo)
 	h, err := rest.NewRoute[createReq, struct{}]("POST", "/ingest",
 		createReqCodec, codex.Struct[struct{}](), rest.RouteMeta{OperationID: "ingest"}).RegisterHandle(b)
 	if err != nil {
@@ -51,7 +50,7 @@ func TestIngestAdapter_DeliversToPipelineSource(t *testing.T) {
 	if err != nil {
 		t.Fatalf("construct port: %v", err)
 	}
-	p.Bind(ctx, nethttp.IngestAdapter(mux, handle, nethttp.IngestAdapterOptions{Buffer: 4}))
+	p.Bind(ctx, IngestAdapter(mux, handle, IngestAdapterOptions{Buffer: 4}))
 	s := p.Stream(ctx)
 
 	srv := httptest.NewServer(mux)
@@ -97,7 +96,7 @@ func TestPollAdapter_EmitsResponsePerTick(t *testing.T) {
 	srv := httptest.NewServer(mux)
 	defer srv.Close()
 
-	b := rest.NewBuilder(testInfo)
+	b := rest.NewServer(testInfo)
 	h, _ := rest.NewRoute[getReq, userResp]("GET", "/users/latest",
 		getReqCodec, userRespCodec, rest.RouteMeta{}).RegisterHandle(b)
 
@@ -105,7 +104,7 @@ func TestPollAdapter_EmitsResponsePerTick(t *testing.T) {
 	if err != nil {
 		t.Fatalf("construct port: %v", err)
 	}
-	p.Bind(ctx, nethttp.PollAdapter(http.DefaultClient, srv.URL, h, getReq{}, 30*time.Millisecond, nethttp.PollStreamOptions{Buffer: 4}))
+	p.Bind(ctx, PollAdapter(http.DefaultClient, srv.URL, h, getReq{}, 30*time.Millisecond, PollStreamOptions{Buffer: 4}))
 	s := p.Stream(ctx)
 
 	timeCtx, tc := context.WithTimeout(ctx, 110*time.Millisecond)
@@ -134,7 +133,7 @@ func TestCallAdapter_EmitsResponsePerItem(t *testing.T) {
 	srv := httptest.NewServer(mux)
 	defer srv.Close()
 
-	b := rest.NewBuilder(testInfo)
+	b := rest.NewServer(testInfo)
 	h, _ := rest.NewRoute[createReq, userResp]("POST", "/users",
 		createReqCodec, userRespCodec, rest.RouteMeta{OperationID: "createUser"}).RegisterHandle(b)
 
@@ -147,7 +146,7 @@ func TestCallAdapter_EmitsResponsePerItem(t *testing.T) {
 	if err != nil {
 		t.Fatalf("construct port: %v", err)
 	}
-	p.Bind(ctx, nethttp.CallAdapter(http.DefaultClient, srv.URL, h, nethttp.CallStreamOptions{})) //nolint:errcheck
+	p.Bind(ctx, CallAdapter(http.DefaultClient, srv.URL, h, CallStreamOptions{})) //nolint:errcheck
 	out := p.Connect(ctx, src)
 	vals, errs := gstream.Collect(ctx, out)
 	if len(errs) != 0 {
@@ -166,7 +165,7 @@ func TestCallAdapter_ErrorsGoToStreamErrors(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	b := rest.NewBuilder(testInfo)
+	b := rest.NewServer(testInfo)
 	h, _ := rest.NewRoute[createReq, userResp]("POST", "/users",
 		createReqCodec, userRespCodec, rest.RouteMeta{}).RegisterHandle(b)
 
@@ -178,13 +177,13 @@ func TestCallAdapter_ErrorsGoToStreamErrors(t *testing.T) {
 	if err != nil {
 		t.Fatalf("construct port: %v", err)
 	}
-	p.Bind(ctx, nethttp.CallAdapter(http.DefaultClient, srv.URL, h, nethttp.CallStreamOptions{})) //nolint:errcheck
+	p.Bind(ctx, CallAdapter(http.DefaultClient, srv.URL, h, CallStreamOptions{})) //nolint:errcheck
 	out := p.Connect(ctx, gstream.From(ctx, ch))
 	_, errs := gstream.Collect(ctx, out)
 	if len(errs) == 0 {
 		t.Error("want error from 500 response, got 0")
 	}
-	var use nethttp.UnexpectedStatusError
+	var use UnexpectedStatusError
 	if !errors.As(errs[0], &use) {
 		t.Errorf("want UnexpectedStatusError, got %T", errs[0])
 	}
@@ -207,7 +206,7 @@ func TestDrainCallAdapter_PostsEachItem(t *testing.T) {
 	defer srv.Close()
 	_ = mu
 
-	b := rest.NewBuilder(testInfo)
+	b := rest.NewServer(testInfo)
 	h, _ := rest.NewRoute[createReq, userResp]("POST", "/notify",
 		createReqCodec, userRespCodec, rest.RouteMeta{}).RegisterHandle(b)
 
@@ -220,7 +219,7 @@ func TestDrainCallAdapter_PostsEachItem(t *testing.T) {
 	if err != nil {
 		t.Fatalf("construct port: %v", err)
 	}
-	p.Bind(ctx, nethttp.DrainCallAdapter(http.DefaultClient, srv.URL, h, nethttp.DrainCallOptions{}))
+	p.Bind(ctx, DrainCallAdapter(http.DefaultClient, srv.URL, h, DrainCallOptions{}))
 	p.Feed(ctx, gstream.From(ctx, ch))
 
 	if len(received) != 2 {
@@ -256,7 +255,7 @@ func TestDrainCallAdapter_DerivesVarsPerItem_WhenOptsVarsNil(t *testing.T) {
 		t.Fatalf("construct port: %v", err)
 	}
 	// opts.Vars left nil -> per-item derivation via CallHandle.
-	p.Bind(ctx, nethttp.DrainCallAdapter(srv.Client(), srv.URL, handle, nethttp.DrainCallOptions{}))
+	p.Bind(ctx, DrainCallAdapter(srv.Client(), srv.URL, handle, DrainCallOptions{}))
 	p.Feed(ctx, gstream.From(ctx, ch))
 
 	if len(gotPaths) != 2 {
@@ -293,8 +292,8 @@ func TestDrainCallAdapter_ExplicitVarsStillWins(t *testing.T) {
 	}
 	// Explicit static Vars: every item resolves to the SAME path, regardless
 	// of the item's own ID field.
-	p.Bind(ctx, nethttp.DrainCallAdapter(srv.Client(), srv.URL, handle,
-		nethttp.DrainCallOptions{Vars: map[string]string{"id": "static-id"}}))
+	p.Bind(ctx, DrainCallAdapter(srv.Client(), srv.URL, handle,
+		DrainCallOptions{Vars: map[string]string{"id": "static-id"}}))
 	p.Feed(ctx, gstream.From(ctx, ch))
 
 	if len(gotPaths) != 2 {
@@ -332,7 +331,7 @@ func TestCallAdapter_DerivesVarsPerItem_WhenOptsVarsNil(t *testing.T) {
 	if err != nil {
 		t.Fatalf("construct port: %v", err)
 	}
-	p.Bind(ctx, nethttp.CallAdapter(srv.Client(), srv.URL, handle, nethttp.CallStreamOptions{})) //nolint:errcheck
+	p.Bind(ctx, CallAdapter(srv.Client(), srv.URL, handle, CallStreamOptions{})) //nolint:errcheck
 	out := p.Connect(ctx, gstream.From(ctx, ch))
 	_, errs := gstream.Collect(ctx, out)
 	if len(errs) != 0 {
@@ -349,7 +348,7 @@ func TestPipelineAdapter_RegistersAndHandlesRequests(t *testing.T) {
 	ctx := context.Background()
 
 	mux := http.NewServeMux()
-	b := rest.NewBuilder(testInfo)
+	b := rest.NewServer(testInfo)
 	handle, _ := rest.NewRoute[createReq, userResp]("POST", "/pipeline",
 		createReqCodec, userRespCodec, rest.RouteMeta{OperationID: "pipeline"}).RegisterHandle(b)
 
@@ -361,7 +360,7 @@ func TestPipelineAdapter_RegistersAndHandlesRequests(t *testing.T) {
 		return gstream.Single(context.Background(), userResp{ID: "u1", Name: req.Name})
 	})
 
-	if err := p.Bind(ctx, nethttp.PipelineAdapter(mux, handle, nethttp.PipelineAdapterOptions{})); err != nil {
+	if err := p.Bind(ctx, PipelineAdapter(mux, handle, PipelineAdapterOptions{})); err != nil {
 		t.Fatalf("Bind: %v", err)
 	}
 
@@ -400,7 +399,7 @@ func TestIngestAdapter_ViaRESTPattern(t *testing.T) {
 	if err != nil {
 		t.Fatalf("want pattern-derived ingest handle, got err %v", err)
 	}
-	p.Bind(ctx, nethttp.IngestAdapter(mux, handle, nethttp.IngestAdapterOptions{Buffer: 4}))
+	p.Bind(ctx, IngestAdapter(mux, handle, IngestAdapterOptions{Buffer: 4}))
 	s := p.Stream(ctx)
 
 	srv := httptest.NewServer(mux)
@@ -458,7 +457,7 @@ func TestSSEAdapter_ViaRESTPattern(t *testing.T) {
 	if err != nil {
 		t.Fatalf("want pattern-derived SSE handle, got err %v", err)
 	}
-	p.Bind(ctx, nethttp.SSEAdapter(mux, handle, nethttp.SSEAdapterOptions{}))
+	p.Bind(ctx, SSEAdapter(mux, handle, SSEAdapterOptions{}))
 
 	srv := httptest.NewServer(mux)
 	defer srv.Close()
@@ -538,16 +537,16 @@ func TestConsume_HappyPath_SingleEvent(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 
-	consumer := nethttp.NewConsumer(srv.Client(), srv.URL)
+	consumer := NewConsumer(srv.Client(), srv.URL)
 	var got userResp
 	done := make(chan struct{})
-	err := nethttp.Consume(ctx, consumer, newSSETestRoute(), sseTestReq{ID: "machine-1"},
+	err := Consume(ctx, consumer, newSSETestRoute(), sseTestReq{ID: "machine-1"},
 		func(_ context.Context, e userResp) error {
 			got = e
 			close(done)
 			cancel()
 			return nil
-		}, nethttp.ConsumeOptions{})
+		}, ConsumeOptions{})
 	select {
 	case <-done:
 	default:
@@ -577,10 +576,10 @@ func TestConsume_HappyPath_MultipleEvents(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 
-	consumer := nethttp.NewConsumer(srv.Client(), srv.URL)
+	consumer := NewConsumer(srv.Client(), srv.URL)
 	var mu sync.Mutex
 	var got []string
-	_ = nethttp.Consume(ctx, consumer, newSSETestRoute(), sseTestReq{},
+	_ = Consume(ctx, consumer, newSSETestRoute(), sseTestReq{},
 		func(_ context.Context, e userResp) error {
 			mu.Lock()
 			got = append(got, e.ID)
@@ -589,7 +588,7 @@ func TestConsume_HappyPath_MultipleEvents(t *testing.T) {
 				cancel()
 			}
 			return nil
-		}, nethttp.ConsumeOptions{})
+		}, ConsumeOptions{})
 
 	mu.Lock()
 	defer mu.Unlock()
@@ -602,12 +601,12 @@ func TestConsume_ConnectionFailure_ReportsSSEConnectError(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 1*time.Second)
 	defer cancel()
 
-	consumer := nethttp.NewConsumer(http.DefaultClient, "http://127.0.0.1:1")
+	consumer := NewConsumer(http.DefaultClient, "http://127.0.0.1:1")
 	var mu sync.Mutex
 	var errs []error
-	_ = nethttp.Consume(ctx, consumer, newSSETestRoute(), sseTestReq{},
+	_ = Consume(ctx, consumer, newSSETestRoute(), sseTestReq{},
 		func(_ context.Context, _ userResp) error { return nil },
-		nethttp.ConsumeOptions{
+		ConsumeOptions{
 			MaxBackoff: 10 * time.Millisecond,
 			OnError: func(err error) {
 				mu.Lock()
@@ -621,7 +620,7 @@ func TestConsume_ConnectionFailure_ReportsSSEConnectError(t *testing.T) {
 	if len(errs) == 0 {
 		t.Fatal("want at least one SSEConnectError reported")
 	}
-	var connErr nethttp.SSEConnectError
+	var connErr SSEConnectError
 	if !errors.As(errs[0], &connErr) {
 		t.Fatalf("want SSEConnectError, got %T: %v", errs[0], errs[0])
 	}
@@ -647,20 +646,20 @@ func TestConsume_MalformedEvent_ReportsSSEParseError_ContinuesConsuming(t *testi
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 
-	consumer := nethttp.NewConsumer(srv.Client(), srv.URL)
+	consumer := NewConsumer(srv.Client(), srv.URL)
 	var mu sync.Mutex
 	var parseErrs int
 	var gotValid userResp
-	_ = nethttp.Consume(ctx, consumer, newSSETestRoute(), sseTestReq{},
+	_ = Consume(ctx, consumer, newSSETestRoute(), sseTestReq{},
 		func(_ context.Context, e userResp) error {
 			mu.Lock()
 			gotValid = e
 			mu.Unlock()
 			cancel()
 			return nil
-		}, nethttp.ConsumeOptions{
+		}, ConsumeOptions{
 			OnError: func(err error) {
-				var parseErr nethttp.SSEParseError
+				var parseErr SSEParseError
 				if errors.As(err, &parseErr) {
 					mu.Lock()
 					parseErrs++
@@ -699,11 +698,11 @@ func TestConsume_HandlerError_ReportsSSEHandlerError_ContinuesConsuming(t *testi
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 
-	consumer := nethttp.NewConsumer(srv.Client(), srv.URL)
+	consumer := NewConsumer(srv.Client(), srv.URL)
 	var mu sync.Mutex
 	var handlerErrs int
 	var calls []string
-	_ = nethttp.Consume(ctx, consumer, newSSETestRoute(), sseTestReq{},
+	_ = Consume(ctx, consumer, newSSETestRoute(), sseTestReq{},
 		func(_ context.Context, e userResp) error {
 			mu.Lock()
 			calls = append(calls, e.ID)
@@ -716,9 +715,9 @@ func TestConsume_HandlerError_ReportsSSEHandlerError_ContinuesConsuming(t *testi
 				return fmt.Errorf("boom")
 			}
 			return nil
-		}, nethttp.ConsumeOptions{
+		}, ConsumeOptions{
 			OnError: func(err error) {
-				var handlerErr nethttp.SSEHandlerError
+				var handlerErr SSEHandlerError
 				if errors.As(err, &handlerErr) {
 					mu.Lock()
 					handlerErrs++
@@ -746,12 +745,12 @@ func TestConsume_ContextCancellation_ReturnsPromptly(t *testing.T) {
 	defer srv.Close()
 
 	ctx, cancel := context.WithCancel(context.Background())
-	consumer := nethttp.NewConsumer(srv.Client(), srv.URL)
+	consumer := NewConsumer(srv.Client(), srv.URL)
 
 	done := make(chan error, 1)
 	go func() {
-		done <- nethttp.Consume(ctx, consumer, newSSETestRoute(), sseTestReq{},
-			func(_ context.Context, _ userResp) error { return nil }, nethttp.ConsumeOptions{})
+		done <- Consume(ctx, consumer, newSSETestRoute(), sseTestReq{},
+			func(_ context.Context, _ userResp) error { return nil }, ConsumeOptions{})
 	}()
 	time.Sleep(50 * time.Millisecond)
 	cancel()
@@ -773,10 +772,10 @@ func TestConsume_NilObserver_NoPanic(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 1*time.Second)
 	defer cancel()
-	consumer := nethttp.NewConsumer(srv.Client(), srv.URL)
-	_ = nethttp.Consume(ctx, consumer, newSSETestRoute(), sseTestReq{},
+	consumer := NewConsumer(srv.Client(), srv.URL)
+	_ = Consume(ctx, consumer, newSSETestRoute(), sseTestReq{},
 		func(_ context.Context, _ userResp) error { cancel(); return nil },
-		nethttp.ConsumeOptions{Observer: nil})
+		ConsumeOptions{Observer: nil})
 }
 
 // TestConsume_CredentialReDerivedPerReconnect (S11): a ClientMW Fn
@@ -813,10 +812,10 @@ func TestConsume_CredentialReDerivedPerReconnect(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
-	consumer := nethttp.NewConsumer(srv.Client(), srv.URL)
-	_ = nethttp.Consume(ctx, consumer, sseRoute, sseTestReq{},
+	consumer := NewConsumer(srv.Client(), srv.URL)
+	_ = Consume(ctx, consumer, sseRoute, sseTestReq{},
 		func(context.Context, userResp) error { return nil },
-		nethttp.ConsumeOptions{MaxBackoff: 10 * time.Millisecond})
+		ConsumeOptions{MaxBackoff: 10 * time.Millisecond})
 
 	mu.Lock()
 	defer mu.Unlock()
@@ -845,11 +844,11 @@ func TestConsume_OnCredentialRejected_FiresOn401(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
 	defer cancel()
-	consumer := nethttp.NewConsumer(srv.Client(), srv.URL)
+	consumer := NewConsumer(srv.Client(), srv.URL)
 	var rejected int32
-	_ = nethttp.Consume(ctx, consumer, sseRoute, sseTestReq{},
+	_ = Consume(ctx, consumer, sseRoute, sseTestReq{},
 		func(context.Context, userResp) error { return nil },
-		nethttp.ConsumeOptions{
+		ConsumeOptions{
 			MaxBackoff:           10 * time.Millisecond,
 			OnCredentialRejected: func() { atomic.AddInt32(&rejected, 1) },
 		})
@@ -866,11 +865,11 @@ func TestConsume_OnCredentialRejected_NotCalledWithoutEngagedCredential(t *testi
 
 	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
 	defer cancel()
-	consumer := nethttp.NewConsumer(srv.Client(), srv.URL)
+	consumer := NewConsumer(srv.Client(), srv.URL)
 	var rejected int32
-	_ = nethttp.Consume(ctx, consumer, newSSETestRoute(), sseTestReq{},
+	_ = Consume(ctx, consumer, newSSETestRoute(), sseTestReq{},
 		func(context.Context, userResp) error { return nil },
-		nethttp.ConsumeOptions{
+		ConsumeOptions{
 			MaxBackoff:           10 * time.Millisecond,
 			OnCredentialRejected: func() { atomic.AddInt32(&rejected, 1) },
 		})
@@ -889,7 +888,7 @@ func TestCallSSEAdapter_HappyPath(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	b := rest.NewBuilder(testInfo)
+	b := rest.NewServer(testInfo)
 	handle, err := newSSETestRoute().RegisterHandle(b)
 	if err != nil {
 		t.Fatalf("RegisterHandle: %v", err)
@@ -902,7 +901,7 @@ func TestCallSSEAdapter_HappyPath(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewSourcePort: %v", err)
 	}
-	p.Bind(ctx, nethttp.CallSSEAdapter(srv.Client(), srv.URL, handle, sseTestReq{}, nethttp.ConsumeOptions{}))
+	p.Bind(ctx, CallSSEAdapter(srv.Client(), srv.URL, handle, sseTestReq{}, ConsumeOptions{}))
 
 	select {
 	case v := <-p.Stream(ctx).Values:
@@ -932,7 +931,7 @@ func TestCallSSEAdapter_MalformedEvent_ReportsErrorContinues(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	b := rest.NewBuilder(testInfo)
+	b := rest.NewServer(testInfo)
 	handle, err := newSSETestRoute().RegisterHandle(b)
 	if err != nil {
 		t.Fatalf("RegisterHandle: %v", err)
@@ -944,7 +943,7 @@ func TestCallSSEAdapter_MalformedEvent_ReportsErrorContinues(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewSourcePort: %v", err)
 	}
-	p.Bind(ctx, nethttp.CallSSEAdapter(srv.Client(), srv.URL, handle, sseTestReq{}, nethttp.ConsumeOptions{}))
+	p.Bind(ctx, CallSSEAdapter(srv.Client(), srv.URL, handle, sseTestReq{}, ConsumeOptions{}))
 
 	stream := p.Stream(ctx)
 	var gotErr, gotVal bool
@@ -977,7 +976,7 @@ func TestCallSSEAdapter_NeverProducesHandlerError(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	b := rest.NewBuilder(testInfo)
+	b := rest.NewServer(testInfo)
 	handle, err := newSSETestRoute().RegisterHandle(b)
 	if err != nil {
 		t.Fatalf("RegisterHandle: %v", err)
@@ -988,7 +987,7 @@ func TestCallSSEAdapter_NeverProducesHandlerError(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewSourcePort: %v", err)
 	}
-	p.Bind(ctx, nethttp.CallSSEAdapter(srv.Client(), srv.URL, handle, sseTestReq{}, nethttp.ConsumeOptions{}))
+	p.Bind(ctx, CallSSEAdapter(srv.Client(), srv.URL, handle, sseTestReq{}, ConsumeOptions{}))
 
 	stream := p.Stream(ctx)
 	select {
@@ -997,7 +996,7 @@ func TestCallSSEAdapter_NeverProducesHandlerError(t *testing.T) {
 	}
 	select {
 	case err := <-stream.Errors:
-		var handlerErr nethttp.SSEHandlerError
+		var handlerErr SSEHandlerError
 		if errors.As(err, &handlerErr) {
 			t.Fatal("want CallSSEAdapter to never produce SSEHandlerError")
 		}
@@ -1017,13 +1016,13 @@ func ExampleConsume() {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 
-	consumer := nethttp.NewConsumer(srv.Client(), srv.URL)
-	_ = nethttp.Consume(ctx, consumer, newSSETestRoute(), sseTestReq{ID: "demo"},
+	consumer := NewConsumer(srv.Client(), srv.URL)
+	_ = Consume(ctx, consumer, newSSETestRoute(), sseTestReq{ID: "demo"},
 		func(_ context.Context, e userResp) error {
 			fmt.Println(e.Name)
 			cancel()
 			return nil
-		}, nethttp.ConsumeOptions{})
+		}, ConsumeOptions{})
 	// Output: Alice
 }
 
@@ -1039,11 +1038,11 @@ func TestConsume_Observer_RecordRequestPerAttempt(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
 	defer cancel()
-	consumer := nethttp.NewConsumer(srv.Client(), srv.URL)
+	consumer := NewConsumer(srv.Client(), srv.URL)
 	obs := &spyObserver{}
-	_ = nethttp.Consume(ctx, consumer, newSSETestRoute(), sseTestReq{},
+	_ = Consume(ctx, consumer, newSSETestRoute(), sseTestReq{},
 		func(_ context.Context, _ userResp) error { return nil },
-		nethttp.ConsumeOptions{Observer: obs, MaxBackoff: 10 * time.Millisecond})
+		ConsumeOptions{Observer: obs, MaxBackoff: 10 * time.Millisecond})
 
 	if len(obs.requests) == 0 {
 		t.Fatal("want at least one RecordRequest call")
@@ -1069,10 +1068,10 @@ func TestConsume_Backoff_Doubles(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 1300*time.Millisecond)
 	defer cancel()
-	consumer := nethttp.NewConsumer(srv.Client(), srv.URL)
-	_ = nethttp.Consume(ctx, consumer, newSSETestRoute(), sseTestReq{},
+	consumer := NewConsumer(srv.Client(), srv.URL)
+	_ = Consume(ctx, consumer, newSSETestRoute(), sseTestReq{},
 		func(context.Context, userResp) error { return nil },
-		nethttp.ConsumeOptions{}) // default 30s MaxBackoff — no cap within this window
+		ConsumeOptions{}) // default 30s MaxBackoff — no cap within this window
 
 	mu.Lock()
 	defer mu.Unlock()
@@ -1102,10 +1101,10 @@ func TestConsume_Backoff_Caps(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 400*time.Millisecond)
 	defer cancel()
-	consumer := nethttp.NewConsumer(srv.Client(), srv.URL)
-	_ = nethttp.Consume(ctx, consumer, newSSETestRoute(), sseTestReq{},
+	consumer := NewConsumer(srv.Client(), srv.URL)
+	_ = Consume(ctx, consumer, newSSETestRoute(), sseTestReq{},
 		func(context.Context, userResp) error { return nil },
-		nethttp.ConsumeOptions{MaxBackoff: 60 * time.Millisecond})
+		ConsumeOptions{MaxBackoff: 60 * time.Millisecond})
 
 	mu.Lock()
 	defer mu.Unlock()
@@ -1164,10 +1163,10 @@ func TestConsume_Backoff_ResetsAfterSuccess(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 1*time.Second)
 	defer cancel()
-	consumer := nethttp.NewConsumer(srv.Client(), srv.URL)
-	_ = nethttp.Consume(ctx, consumer, newSSETestRoute(), sseTestReq{},
+	consumer := NewConsumer(srv.Client(), srv.URL)
+	_ = Consume(ctx, consumer, newSSETestRoute(), sseTestReq{},
 		func(context.Context, userResp) error { return nil },
-		nethttp.ConsumeOptions{MaxBackoff: 5 * time.Second})
+		ConsumeOptions{MaxBackoff: 5 * time.Second})
 
 	mu.Lock()
 	defer mu.Unlock()
@@ -1203,7 +1202,7 @@ func TestConsume_MultiFormat_ResolvesFromContentType(t *testing.T) {
 	// struct-literal construction; here we register then set Formats on
 	// the resulting handle to exercise the resolution path via
 	// CallSSEAdapter (which takes a handle directly).
-	b := rest.NewBuilder(testInfo)
+	b := rest.NewServer(testInfo)
 	handle, err := sseRoute.RegisterHandle(b)
 	if err != nil {
 		t.Fatalf("RegisterHandle: %v", err)
@@ -1216,7 +1215,7 @@ func TestConsume_MultiFormat_ResolvesFromContentType(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewSourcePort: %v", err)
 	}
-	p.Bind(ctx, nethttp.CallSSEAdapter(srv.Client(), srv.URL, handle, sseTestReq{}, nethttp.ConsumeOptions{}))
+	p.Bind(ctx, CallSSEAdapter(srv.Client(), srv.URL, handle, sseTestReq{}, ConsumeOptions{}))
 
 	select {
 	case v := <-p.Stream(ctx).Values:
@@ -1241,7 +1240,7 @@ func TestConsume_Format_FallsBackToDecodeEvent(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	b := rest.NewBuilder(testInfo)
+	b := rest.NewServer(testInfo)
 	handle, err := newSSETestRoute().RegisterHandle(b)
 	if err != nil {
 		t.Fatalf("RegisterHandle: %v", err)
@@ -1252,14 +1251,14 @@ func TestConsume_Format_FallsBackToDecodeEvent(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 800*time.Millisecond)
 	defer cancel()
-	consumer := nethttp.NewConsumer(srv.Client(), srv.URL)
+	consumer := NewConsumer(srv.Client(), srv.URL)
 	var got userResp
-	_ = nethttp.Consume(ctx, consumer, newSSETestRoute(), sseTestReq{},
+	_ = Consume(ctx, consumer, newSSETestRoute(), sseTestReq{},
 		func(_ context.Context, e userResp) error {
 			got = e
 			cancel()
 			return nil
-		}, nethttp.ConsumeOptions{})
+		}, ConsumeOptions{})
 	if got.ID != "1" || got.Name != "Alice" {
 		t.Errorf("want DecodeEvent fallback to decode the event, got %+v", got)
 	}
@@ -1292,15 +1291,15 @@ func TestConsume_MultiLineDataAccumulation(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 800*time.Millisecond)
 	defer cancel()
-	consumer := nethttp.NewConsumer(srv.Client(), srv.URL)
+	consumer := NewConsumer(srv.Client(), srv.URL)
 	var got userResp
 	var gotErr error
-	_ = nethttp.Consume(ctx, consumer, newSSETestRoute(), sseTestReq{},
+	_ = Consume(ctx, consumer, newSSETestRoute(), sseTestReq{},
 		func(_ context.Context, e userResp) error {
 			got = e
 			cancel()
 			return nil
-		}, nethttp.ConsumeOptions{
+		}, ConsumeOptions{
 			OnError: func(err error) { gotErr = err },
 		})
 	if gotErr != nil {
@@ -1322,7 +1321,7 @@ func TestConsume_MultiLineDataAccumulation_ViaCallSSEAdapter(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	b := rest.NewBuilder(testInfo)
+	b := rest.NewServer(testInfo)
 	handle, err := newSSETestRoute().RegisterHandle(b)
 	if err != nil {
 		t.Fatalf("RegisterHandle: %v", err)
@@ -1335,7 +1334,7 @@ func TestConsume_MultiLineDataAccumulation_ViaCallSSEAdapter(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewSourcePort: %v", err)
 	}
-	p.Bind(ctx, nethttp.CallSSEAdapter(srv.Client(), srv.URL, handle, sseTestReq{}, nethttp.ConsumeOptions{}))
+	p.Bind(ctx, CallSSEAdapter(srv.Client(), srv.URL, handle, sseTestReq{}, ConsumeOptions{}))
 
 	select {
 	case v := <-p.Stream(ctx).Values:
@@ -1392,7 +1391,7 @@ func TestConsume_HTMLFormat_ReportsDecodeNotSupportedError(t *testing.T) {
 	}
 	var mu sync.Mutex
 	var gotErrs []error
-	p.Bind(ctx, nethttp.CallSSEAdapter(srv.Client(), srv.URL, handle, sseTestReq{}, nethttp.ConsumeOptions{
+	p.Bind(ctx, CallSSEAdapter(srv.Client(), srv.URL, handle, sseTestReq{}, ConsumeOptions{
 		OnError: func(err error) {
 			mu.Lock()
 			gotErrs = append(gotErrs, err)
@@ -1418,7 +1417,7 @@ func TestConsume_HTMLFormat_ReportsDecodeNotSupportedError(t *testing.T) {
 	if len(gotErrs) == 0 {
 		t.Fatal("want at least one SSEParseError reported via OnError")
 	}
-	var parseErr nethttp.SSEParseError
+	var parseErr SSEParseError
 	if !errors.As(gotErrs[0], &parseErr) {
 		t.Fatalf("want SSEParseError, got %T: %v", gotErrs[0], gotErrs[0])
 	}
@@ -1453,14 +1452,14 @@ func TestConsume_Formats_OverridesRouteDeclaredFormat(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 800*time.Millisecond)
 	defer cancel()
-	consumer := nethttp.NewConsumer(srv.Client(), srv.URL)
+	consumer := NewConsumer(srv.Client(), srv.URL)
 	var got userResp
-	err := nethttp.Consume(ctx, consumer, sseRoute, sseTestReq{},
+	err := Consume(ctx, consumer, sseRoute, sseTestReq{},
 		func(_ context.Context, e userResp) error {
 			got = e
 			cancel()
 			return nil
-		}, nethttp.ConsumeOptions{
+		}, ConsumeOptions{
 			Formats: []format.Format[userResp]{format.YAML(userRespCodec)},
 		})
 	_ = err
@@ -1492,14 +1491,14 @@ func TestConsume_Formats_RouteDeclaredStillAppliesWithoutOverride(t *testing.T) 
 
 	ctx, cancel := context.WithTimeout(context.Background(), 800*time.Millisecond)
 	defer cancel()
-	consumer := nethttp.NewConsumer(srv.Client(), srv.URL)
+	consumer := NewConsumer(srv.Client(), srv.URL)
 	var got userResp
-	_ = nethttp.Consume(ctx, consumer, sseRoute, sseTestReq{},
+	_ = Consume(ctx, consumer, sseRoute, sseTestReq{},
 		func(_ context.Context, e userResp) error {
 			got = e
 			cancel()
 			return nil
-		}, nethttp.ConsumeOptions{})
+		}, ConsumeOptions{})
 	if got.ID != "2" || got.Name != "Bob" {
 		t.Errorf("want decoded via route-declared YAML, got %+v", got)
 	}
@@ -1528,7 +1527,7 @@ func TestConsume_Formats_TypeMismatch_ReturnsCallFormatOptError(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewSourcePort: %v", err)
 	}
-	p.Bind(ctx, nethttp.CallSSEAdapter(srv.Client(), srv.URL, handle, sseTestReq{}, nethttp.ConsumeOptions{
+	p.Bind(ctx, CallSSEAdapter(srv.Client(), srv.URL, handle, sseTestReq{}, ConsumeOptions{
 		// Wrong type: []format.Format[sseTestReq] instead of []format.Format[userResp].
 		Formats: []format.Format[sseTestReq]{format.JSON(sseTestReqCodec)},
 		OnError: func(e error) {
@@ -1551,11 +1550,11 @@ func TestConsume_Formats_TypeMismatch_ReturnsCallFormatOptError(t *testing.T) {
 	if len(gotErrs) == 0 {
 		t.Fatal("want at least one SSEConnectError wrapping CallFormatOptError reported via OnError")
 	}
-	var connErr nethttp.SSEConnectError
+	var connErr SSEConnectError
 	if !errors.As(gotErrs[0], &connErr) {
 		t.Fatalf("want SSEConnectError, got %T: %v", gotErrs[0], gotErrs[0])
 	}
-	var fe nethttp.CallFormatOptError
+	var fe CallFormatOptError
 	if !errors.As(gotErrs[0], &fe) || fe.Direction != "response" {
 		t.Fatalf("want CallFormatOptError{response}, got %v", gotErrs[0])
 	}

@@ -35,10 +35,11 @@
 > since been worked through collaboratively and resolved into 5 concrete
 > decisions (a 6th confirmed the status quo as correct, no change).
 > **Scope: REST (`api/rest`/`adapters/nethttp`/`adapters/chi`) only** —
-> see [Events/ReqReply/Ports Workflow
-> Simplification](../roadmap/events-reqreply-ports-workflow-simplification.md) for
-> this same pattern's implications on `api/events`/`api/reqreply`/
-> `ports`, deliberately deferred until THIS doc's implementation ships.
+> `api/events`'s own equivalent shipped separately (see
+> [Pub/Sub Workflow Simplification](../roadmap/pubsub-workflow-simplification.md));
+> `api/reqreply`'s equivalent is designed in
+> [ReqReply Workflow Simplification](../roadmap/reqreply-workflow-simplification.md),
+> deliberately deferred until THIS doc's implementation ships.
 > The "Step 1–4"/"escape hatches" sections below describe the OLD, currently-
 > shipped workflow being replaced; the "## Decision: ..." sections
 > describe the NEW, agreed design. [← Back to Design Documents](index.md)
@@ -128,7 +129,7 @@
 > (spinning SSE CLIENT consumption — confirmed to not exist anywhere in
 > go-codex today — into its own new SSE Client Consumption roadmap doc,
 > since shipped and removed — see this doc's own addendum below);
-> `Builder` gains
+> `Server` gains
 > an internal mutex for concurrent `Register` calls (an explicit first
 > step toward, not a solution to, the separately-tracked [Dynamic Port
 > Rebinding](dynamic-port-rebinding.md) gap); and `MultiRouteError`'s
@@ -224,7 +225,7 @@
 > `ServerImplementation.Fn`) is already such a value, stored in an
 > exported field. Zero logic moves out of `Handler`/`chi.Handler` (they
 > stay untouched); `api/rest` gains only 2 small, reflection-free
-> accessors (`Builder.RouteEntries`/`SSEEntries`) and stays exactly as
+> accessors (`Server.RouteEntries`/`SSEEntries`) and stays exactly as
 > `net/http`/`reflect`-free as every other decision in this doc requires.
 > Zero open items remain from this pass either — ready for
 > implementation.
@@ -398,7 +399,7 @@ type RouteHandle[Req, Resp any] struct {
 
 `ValidateRoute[Req, Resp](meta RouteMeta, opts ...RouteOpt) error` — a
 dry-run of the IDENTICAL validation `Register` runs, without needing a
-live `*Builder` — same conflict errors, same "coverage not checked here"
+live `*Server` — same conflict errors, same "coverage not checked here"
 rule.
 
 ---
@@ -623,7 +624,7 @@ extraMws...)`. No new behavior, no new validation.
     `ServerImplementation` struct with an empty slice field as the only
     distinguishing signal.
 11. **`ValidateRoute`** — a dry-run validator usable with no live
-    `*Builder`, for pre-flight checking a route declaration's
+    `*Server`, for pre-flight checking a route declaration's
     conflicts/shape before ever calling `Register`.
 12. **`middleware.ContextField[V]`** (not detailed above, exists
     separately) — a codec-typed ctx value bus for cross-middleware data
@@ -641,7 +642,7 @@ introduced) accumulates its own business handler AND every attached
 middleware's implementation as part of the SAME declarative chain that
 already builds `.Use(mw)`; `Register` becomes the single moment
 everything (spec + handler + middleware implementations) is bound into
-the `Builder`; and a NEW builder-level adapter call performs the actual
+the `Server`; and a NEW builder-level adapter call performs the actual
 transport wiring (`mux.Handle(...)`) for every accumulated route in one
 shot.
 
@@ -696,14 +697,14 @@ func (r Route[Req, Resp]) HandleMW(mw *middleware.Middleware, fn any) Route[Req,
 // implementations) into the builder; a caller wiring routes through
 // Serve doesn't need a per-route handle anymore — the NEXT step
 // operates on the whole builder.
-func (r Route[Req, Resp]) Register(b *Builder) error
+func (r Route[Req, Resp]) Register(b *Server) error
 
 // adapters/nethttp (adapters/chi mirrors identically) — NEW,
 // builder-level. Walks every route the builder has accumulated (each
 // already carrying its own handler + middleware implementations, bound
 // at Register time above) and performs the actual mux.Handle(...) call
 // for each — the ONLY place literal transport wiring happens.
-func Serve(mux *http.ServeMux, b *rest.Builder) error
+func Serve(mux *http.ServeMux, b *rest.Server) error
 ```
 
 ### RESOLVED — a dedicated `RegisterHandle` for direct-wiring callers (`ports`), found during implementation planning
@@ -735,8 +736,8 @@ caller need to also call `Serve`, or is the handle enough on its own?");
 // binding + validation as Register — shares the same internal
 // implementation — but ALSO returns the handle, for callers that need
 // to wire an adapter directly instead of going through Serve.
-func (r Route[Req, Resp]) RegisterHandle(b *Builder) (*RouteHandle[Req, Resp], error)
-func (s SSERoute[Req, Event]) RegisterHandle(b *Builder) (*SSERouteHandle[Req, Event], error)
+func (r Route[Req, Resp]) RegisterHandle(b *Server) (*RouteHandle[Req, Resp], error)
+func (s SSERoute[Req, Event]) RegisterHandle(b *Server) (*SSERouteHandle[Req, Event], error)
 ```
 
 `ports/handle.go`'s two call sites (`roleSource`/`roleSink`) switch from
@@ -756,18 +757,18 @@ always did, just also handing back the handle.
   closure literal's own concrete type is inferred by Go directly. The
   adapter still validates the shape at `Register`/`Serve` time via the
   same type-switch mechanism (`MiddlewareShapeError` on mismatch).
-- `Route.Register(b *Builder)`'s wiring (binding handler+impls to the
+- `Route.Register(b *Server)`'s wiring (binding handler+impls to the
   route) happens **immediately, per-route, at the `Register` call** —
   not deferred to `Serve`. `Serve` only performs the literal
   `mux.Handle(...)` registration, walking what `Register` already bound.
-- The Builder becomes both the OpenAPI-spec accumulator (unchanged,
+- The Server becomes both the OpenAPI-spec accumulator (unchanged,
   existing role) AND the handler/implementation registry — extending the
-  SAME accumulation discipline `Builder` already has for security
+  SAME accumulation discipline `Server` already has for security
   schemes/global security to also cover handlers and middleware `Fn`s,
   keyed per route.
-- **`Builder` gains an internal `sync.RWMutex`, making concurrent
+- **`Server` gains an internal `sync.RWMutex`, making concurrent
   `Register` calls safe — closed during a final critical review pass.**
-  Confirmed via code: `Builder`'s entire mutation surface is THREE call
+  Confirmed via code: `Server`'s entire mutation surface is THREE call
   sites (`b.entries = append(...)` ×2, one per `Route.Register`/
   `SSERoute.Register`; `b.schemas[name] = s`, schema registration) —
   everything else (`OpenAPISpec`, and the new `Serve`/`ServeSSE`/
@@ -775,7 +776,7 @@ always did, just also handing back the handle.
   The fix is small and mechanical: one `mu sync.RWMutex` field; the 3
   write sites wrapped in `.Lock()`/`.Unlock()`; read-only iteration
   methods wrapped in `.RLock()`/`.RUnlock()`. No recursive/nested
-  `Builder`-method calls exist anywhere `Register` doesn't already
+  `Server`-method calls exist anywhere `Register` doesn't already
   return before the next one starts — zero deadlock risk to reason
   about.
 
@@ -790,10 +791,10 @@ always did, just also handing back the handle.
   [Dynamic Port Rebinding](dynamic-port-rebinding.md) ("REST/events/
   reqreply's immutable `RouteHandle`/`ChannelHandle` middleware hot-swap
   remains an acknowledged gap in both docs, not yet designed"). This
-  synchronized `Builder` is a deliberate FIRST STEP toward that direction
+  synchronized `Server` is a deliberate FIRST STEP toward that direction
   — concurrent-safe accumulation — not a claim that hot-reload itself is
   solved; a future round extending toward live rebinding would build on
-  this foundation rather than starting from an unsynchronized `Builder`.
+  this foundation rather than starting from an unsynchronized `Server`.
 - Scope: designed generically so `api/events`/`api/reqreply`/`api/mcp`
   could adopt the identical pattern later (`Channel.WithHandler`/
   `Channel.HandleMW`/`Channel.Register(builder) error` +
@@ -843,7 +844,7 @@ fully-merged form by the time `Register`'s pass runs, order-independent
 exactly like every other check in this pass.
 
 A NEW error (`UnknownMiddlewareImplementationError` or similar — exact
-name TBD at implementation time) is returned by `Register(b *Builder)
+name TBD at implementation time) is returned by `Register(b *Server)
 error` itself — surfacing PER-ROUTE, at `Register` time, which is far
 EARLIER than `Serve` (batched, potentially much later/farther away in
 `main.go`). Zero chain-method signature changes, zero order-dependency
@@ -893,7 +894,7 @@ to catch; a non-nil `mw` whose scheme was never actually `.Use()`'d is.
   `.WithOptions()` fits the same "declare everything on the route before
   `Register`" pattern as `.WithHandler()`/`.HandleMW()`/`.ClientMW()` —
   defaults to zero-value `Options` if never called, stored in the
-  `Builder` alongside the handler/impls. `Serve(mux, builder) error`
+  `Server` alongside the handler/impls. `Serve(mux, builder) error`
   takes NO `Options` parameter at all — it uses whatever each route
   declared.
   **`opts` is type-erased (`any`), not `nethttp.Options` directly —
@@ -917,14 +918,14 @@ to catch; a non-nil `mw` whose scheme was never actually `.Use()`'d is.
   route DOES now attach (`.ClientMW()`) and how `ClientHandle()`'s role
   shifts from "the user's own explicit step" to "an internal building
   block the new `Call` calls for you."
-- **RESOLVED — `Builder.OpenAPISpec()` stays UNAFFECTED.** It reads only
+- **RESOLVED — `Server.OpenAPISpec()` stays UNAFFECTED.** It reads only
   spec state (`Descriptor`, `SecuritySchemes`, `GlobalSecurity`, etc.)
   that existed before this redesign and is populated by `Register`
   exactly as today; the new handler/impl bindings `Register` ALSO now
   stores are simply never read by `OpenAPISpec()` — no construction
   changes anything about spec generation.
 - **RESOLVED — `chi`'s mirror is `chi.Serve(router gochi.Router, b
-  *rest.Builder) error`** (and `chi.ServeSSE`), identical shape to
+  *rest.Server) error`** (and `chi.ServeSSE`), identical shape to
   `nethttp.Serve`/`ServeSSE` — consistent with every other decision in
   this doc, where `chi` mirrors `nethttp`'s redesigned surface exactly
   (`HandleMW`/`WithHandler`/`WithOptions`/`ClientMW` are all declared
@@ -1233,12 +1234,12 @@ run BOTH checks unconditionally — there is no lower-safety door anymore.
    already uses) lets ANY external middleware (otel, custom logging,
    whatever) wrap a route's handler; it flows through `Serve`
    automatically as just another attached implementation.
-2. **"A route not part of any `Builder`"** (ad hoc handler, mounted on a
+2. **"A route not part of any `Server`"** (ad hoc handler, mounted on a
    DIFFERENT router such as gorilla/mux) — CONFIRMED DROPPED. Every route
    intended to actually serve traffic must go through `Register(builder)`
    + `Serve(mux, builder)` (or `ServeOne` for a single route). There is
    no more standalone "give me a bare handler for a route with no
-   Builder" path.
+   Server" path.
 
 ### SSE stays a separate function
 
@@ -1263,9 +1264,9 @@ separated from the regular request/response `Route` path.
 ### What replaces them
 
 ```go
-func Serve(mux *http.ServeMux, b *rest.Builder) error      // Route entries
+func Serve(mux *http.ServeMux, b *rest.Server) error      // Route entries
 func ServeOne[Req, Resp any](r rest.Route[Req, Resp]) (http.Handler, error) // single-route sugar
-func ServeSSE(mux *http.ServeMux, b *rest.Builder) error   // SSERoute entries
+func ServeSSE(mux *http.ServeMux, b *rest.Server) error   // SSERoute entries
 ```
 - **RESOLVED — a thin convenience wrapper, `ServeOne`, not a new
   mechanism.** Confirmed the scale of this need: `adapters/nethttp`'s
@@ -1275,7 +1276,7 @@ func ServeSSE(mux *http.ServeMux, b *rest.Builder) error   // SSERoute entries
 
   ```go
   // adapters/nethttp — pure sugar. Implemented as LITERALLY "build a
-  // scratch, single-route Builder, register route into it, call Serve,
+  // scratch, single-route Server, register route into it, call Serve,
   // return the resulting mux" — reuses Serve's exact validation path,
   // zero bypass, zero new mechanism. Still consistent with "Serve is the
   // only door" (Decision 4) — this is a convenience wrapper AROUND that
@@ -1296,13 +1297,13 @@ func ServeSSE(mux *http.ServeMux, b *rest.Builder) error   // SSERoute entries
 
   A test (or any caller) wanting a bare `http.Handler` for exactly one
   route calls `ServeOne` instead of manually spinning up a scratch
-  `Builder`/mux/`Serve` sequence by hand — but the underlying mechanism
+  `Server`/mux/`Serve` sequence by hand — but the underlying mechanism
   is IDENTICAL either way; `ServeOne` is not a bypass.
-- **RESOLVED — `Builder` does NOT need a route-lookup-by-label
+- **RESOLVED — `Server` does NOT need a route-lookup-by-label
   mechanism.** `ServeOne`'s scratch builder contains EXACTLY the one
-  route passed to it — it never searches an existing, larger `Builder`
-  at all, so there is no need for `Builder` to support looking up one
-  route among many by label/operation-ID. `Builder` stays a write-only
+  route passed to it — it never searches an existing, larger `Server`
+  at all, so there is no need for `Server` to support looking up one
+  route among many by label/operation-ID. `Server` stays a write-only
   accumulator, walked in full only by `Serve`/`ServeSSE`/`ServeOne`.
 
 ## Decision: `Serve`'s generic dispatch mechanism — `reflect`, isolated to `nethttp`/`chi`, found and resolved during implementation
@@ -1336,7 +1337,7 @@ unchanged) and ZERO new `net/http`/`reflect` dependency in `api/rest`.
 // api/rest — sealed exported interfaces (unexported marker method
 // prevents any OTHER package from implementing them, while still
 // letting nethttp/chi range over them) distinguishing Route entries
-// from SSERoute entries cleanly in Builder's single internal list.
+// from SSERoute entries cleanly in Server's single internal list.
 type RouteEntry interface {
     Method() string
     Path() string
@@ -1351,8 +1352,8 @@ type SSERouteEntry interface {
     Handle() any // *SSERouteHandle[Req, Event], erased
     isSSERouteEntry()
 }
-func (b *Builder) RouteEntries() []RouteEntry      // read-only, RLock-guarded
-func (b *Builder) SSEEntries() []SSERouteEntry     // read-only, RLock-guarded
+func (b *Server) RouteEntries() []RouteEntry      // read-only, RLock-guarded
+func (b *Server) SSEEntries() []SSERouteEntry     // read-only, RLock-guarded
 ```
 
 `nethttp.Serve`/`ServeSSE` (per handler-bearing entry): dereference
@@ -1461,13 +1462,13 @@ func (s SSERoute[Req, Event]) WithHandler(fn SSEHandlerFunc[Req, Event]) SSERout
 
 // Register — same signature SHAPE as Route's (error only, no
 // *SSERouteHandle returned), binding spec+handler+impls into the SAME
-// Builder Route.Register(b) already accumulates into.
-func (s SSERoute[Req, Event]) Register(b *Builder) error
+// Server Route.Register(b) already accumulates into.
+func (s SSERoute[Req, Event]) Register(b *Server) error
 
 // RegisterHandle — same ports-facing addition as Route's own (see
 // "RESOLVED — a dedicated RegisterHandle..." above); ports' roleSink/SSE
 // branch uses this instead of Register.
-func (s SSERoute[Req, Event]) RegisterHandle(b *Builder) (*SSERouteHandle[Req, Event], error)
+func (s SSERoute[Req, Event]) RegisterHandle(b *Server) (*SSERouteHandle[Req, Event], error)
 ```
 
 **`SSERoute.Register`'s merge pass is IDENTICAL to `Route.Register`'s —
@@ -1502,10 +1503,11 @@ credentials, which HAD an old design to redesign) — it would be a
 GENUINELY NEW capability. Deliberately NOT designed as part of this
 review pass; captured instead as its own roadmap doc, SSE Client
 Consumption — to be picked up AFTER this doc's implementation ships,
-same deferral pattern already established for [Events/ReqReply/Ports
-Workflow Simplification](../roadmap/events-reqreply-ports-workflow-simplification.md).
-(That roadmap doc has since shipped its Phase 1 and was removed after a
-confirmed zero-gap review — see this doc's own addendum below.)
+same deferral pattern already established for
+[ReqReply Workflow Simplification](../roadmap/reqreply-workflow-simplification.md).
+(`api/events`'s own equivalent has since shipped — see
+[Pub/Sub Workflow Simplification](../roadmap/pubsub-workflow-simplification.md)
+— and this doc's own addendum below.)
 
 ---
 
@@ -1579,7 +1581,7 @@ cheap to prevent).
 |---|---|---|---|---|---|
 | 1 | Manual `WithSecurityScheme`+`RouteMeta.Security` | Declare security spec without touching `middleware` at all | **Confirmed in code**: today's coverage check (`rest.CheckCoverage`) matches PURELY by scheme-name string, with zero dependency on any `Middleware` value — a fully-manual declaration and a `Scopes("bearerAuth", fn)` implementation satisfy each other today with no connection between them. `HandleMW(mw, fn)` requires an actual `mw` value; a manual declaration produces none — so under Decisions 1–2, a manually-declared scheme has **no way left to attach a server-side implementation at all**. | **Critical** (until resolved below) | **Resolved — see "Decision: eliminate manual per-route security declaration" below** (goes further than a bridge: the escape hatch is removed, not patched) |
 | 2 | `SecurityScheme` declared, never implemented (external-API docs) | Document a scheme with zero enforcement, on purpose | Still valid in isolation; converges with EH1 under the new design — both become "declared, unimplemented" cases. | **High** (was, until resolved) | **Resolved — see "RESOLVED: `Serve`'s whole-builder failure semantics" below.** A route with no `.WithHandler()` attached is unambiguously spec-only and is SKIPPED entirely by `Serve` (never validated, never an error) — this is exactly EH2's use case, now a first-class, zero-friction outcome rather than an unresolved tension |
-| 3 | `Handler`/`SSEHandler` bypass | Cheap unchecked handler, or standalone (no-`Builder`) usage | Already eliminated (Decision 4); mitigations already confirmed sufficient | — | Already decided: **stays dropped**, no change from this pass |
+| 3 | `Handler`/`SSEHandler` bypass | Cheap unchecked handler, or standalone (no-`Server`) usage | Already eliminated (Decision 4); mitigations already confirmed sufficient | — | Already decided: **stays dropped**, no change from this pass |
 | 4 | `ServerImplementation.Fn` as `any` | Adapter-agnostic type erasure | Unaffected; Decision 6 re-confirmed it's mandatory | — | **Keep** — foundational, not a "hatch" in the droppable sense |
 | 5 | Client `fn` as `any` (now on `.ClientMW()`) | Same, client side | Unaffected, relocated | — | **Keep** — same reasoning as #4 |
 | 6 | Per-call credential override | One-off/test credential swap | Already eliminated (Decision 3) — workaround is building a new `Route` value with a different `.ClientMW()` | **Low–Medium** | **Confirmed fine as-is** — considered and rejected a lightweight test-only override helper; building a fresh `Route` is acceptable ceremony for this narrow case |
@@ -1587,7 +1589,7 @@ cheap to prevent).
 | 8 | `RequestParams`/`ResponseParams` as `[]any` | Type-erased spec contribution | Unaffected by Decisions 1–4, BUT re-examined in the second pass: unlike `Fn`, these entries are already concrete, non-generic `api/rest` types — no obstacle to making them compile-time-typed | **Low** (as a compromise); genuine simplification opportunity | **ELIMINATED — see "Decision: typed `RequestParams`/`ResponseParams` fields" below** |
 | 9 | Conflicting param contribution detection | Safety net for typo/clash | Unaffected — still runs inside `Register`, now operating on typed inputs instead of type-switched `any` entries (per #8's resolution) | — | **Keep** — the safety net itself is still needed, just simplified |
 | 10 | General-purpose empty-`Satisfies` implementation | Unify logging/observability/rate-limiting under ONE mechanism | Unaffected — and is the EXPLICIT, already-confirmed mitigation for "compose external middleware" now that `Handler` is gone (Decision 4). Re-examined in the second pass: the "empty `Satisfies` = general-purpose" signal is implicit, worth making explicit given how load-bearing it now is. Re-examined AGAIN in a later review round: forcing this case through `.Use()`+`.HandleMW()` (mirroring security's pairing) was itself the bug — general-purpose implementations declare nothing, so there's nothing to match. Re-examined a THIRD time, in a fourth review round: even the interim `.Implement(impl)` fix was superseded — `HandleMW`'s `mw` became NILABLE, unifying the general-purpose case directly into `HandleMW`/`ClientMW` themselves, no separate method needed at all. | — | **Keep the mechanism, now UNIFIED directly into `HandleMW`/`ClientMW` — see "Decision: `HandleMW`/`ClientMW` unification" below** (supersedes the interim `.Implement()`/`Wrap` fix, which itself superseded and fixed an earlier, buggy `middleware.Wrap` draft) |
-| 11 | `ValidateRoute` dry-run | Pre-flight check, no live `Builder` needed | **RESOLVED — kept completely unchanged, no code change needed.** Confirmed `applyMiddlewareDeclarations` (what `ValidateRoute` calls) only ever reads `rb.middlewares`/security/param registries — the new opt kinds (`.HandleMW()`, `.WithHandler()`, `.WithOptions()`, `.ClientMW()`) populate OTHER fields it never touches, so it naturally, structurally ignores them. Considered extending it to also simulate `Serve`'s shape/coverage check, and explicitly rejected: `ValidateRoute` (declaration-only, no handler needed — useful for a "contract-first" workflow validating a shared route/middleware declaration in CI before any handler exists) and `ServeOne` (full check, requires `.WithHandler()`) now form a clean, non-overlapping two-tier validation story. A third "full check without building a handler" tier would be marginal, extra surface for a rare need — cuts against the "fewer doors" discipline established throughout this doc. | **Low** | **Keep as-is, unchanged — no extension** |
+| 11 | `ValidateRoute` dry-run | Pre-flight check, no live `Server` needed | **RESOLVED — kept completely unchanged, no code change needed.** Confirmed `applyMiddlewareDeclarations` (what `ValidateRoute` calls) only ever reads `rb.middlewares`/security/param registries — the new opt kinds (`.HandleMW()`, `.WithHandler()`, `.WithOptions()`, `.ClientMW()`) populate OTHER fields it never touches, so it naturally, structurally ignores them. Considered extending it to also simulate `Serve`'s shape/coverage check, and explicitly rejected: `ValidateRoute` (declaration-only, no handler needed — useful for a "contract-first" workflow validating a shared route/middleware declaration in CI before any handler exists) and `ServeOne` (full check, requires `.WithHandler()`) now form a clean, non-overlapping two-tier validation story. A third "full check without building a handler" tier would be marginal, extra surface for a rare need — cuts against the "fewer doors" discipline established throughout this doc. | **Low** | **Keep as-is, unchanged — no extension** |
 | 12 | `middleware.ContextField[V]` | Cross-middleware/handler data sharing, no `Req` pollution | Depends on `EnsureContextFields(ctx)` being called as the OUTERMOST step per route — currently done by `Register`/`Handler` (both removed by Decision 4). **Broadened during a final critical review pass**: confirmed via direct code inspection that `Handler`'s CURRENT body actually sets up FOUR ctx keys before any Fn runs, not just this one — `middleware.EnsureContextFields(ctx)`, raw `*http.Request` access (`contextKey{}`), the response-headers box (`responseHeadersKey{}`), and the response-cookies box (`responseCookiesKey{}`, backing `nethttp.WithResponseHeaders`/`WithResponseCookies`). Real risk of silent loss for ALL FOUR, not just `ContextField`, if whatever replaces `Handler`'s body doesn't carry every one of them forward. | **Low** | **Keep** — tracked as an explicit implementation-checklist item (ALL FOUR ctx pre-allocation steps, not just `ContextField`/`EnsureContextFields`), not a design question |
 
 ## Decision: eliminate manual per-route security declaration (resolves EH1's critical finding)
@@ -1600,7 +1602,7 @@ cannot produce anything `HandleMW` can attach an implementation to.
 
 `RouteMeta.Security`'s OTHER two states are UNRELATED to scheme
 declaration and are kept unchanged:
-- `nil` — inherit global security (via `Builder.AddGlobalSecurity`)
+- `nil` — inherit global security (via `Server.AddGlobalSecurity`)
 - `[]route.SecurityRequirement{}` (empty slice) — explicit opt-out, "no
   auth required" for this route
 
@@ -1628,8 +1630,8 @@ func FromSecurityScheme(schemeName string, scheme SecurityScheme, scopes []strin
 ```
 
 **Confirmed consequence: `rest.WithSecurityScheme` is REMOVED entirely.**
-There is no `Builder`-level scheme registration independent of routes
-(confirmed — no `Builder.AddSecurityScheme` exists), so `WithSecurityScheme`'s
+There is no `Server`-level scheme registration independent of routes
+(confirmed — no `Server.AddSecurityScheme` exists), so `WithSecurityScheme`'s
 only remaining purpose (registering a scheme's spec metadata) is fully
 subsumed by `FromSecurityScheme`/`SecurityScheme` — nothing is lost,
 there is no longer a second, parallel path to the same result.
@@ -1684,8 +1686,8 @@ model than "some unknown subset of my API silently isn't there,"
 discovered only via unexplained 404s later. A caller wanting partial
 degradation (e.g. one team's broken route shouldn't block another
 team's working ones) can still achieve it explicitly — by building
-SEPARATE `Builder`s per independently-deployable group of routes and
-calling `Serve` once per `Builder`/mux — rather than `Serve` silently
+SEPARATE `Server`s per independently-deployable group of routes and
+calling `Serve` once per `Server`/mux — rather than `Serve` silently
 doing this partitioning on their behalf.
 
 **Part 3 — duplicate Method+Path detection, closing a gap found during a

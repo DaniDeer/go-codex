@@ -65,7 +65,7 @@ Constraint schema reflection is automatic: `validate.*` constraints (`MinLen`, `
 The `api/rest` builder generates a complete OpenAPI 3.1 document from all registered routes. The same builder that drives runtime decode/encode/validate also produces the spec:
 
 ```go
-b := rest.NewBuilder(
+b := rest.NewServer(
     rest.Info{Title: "User API", Version: "1.0.0"},
     rest.WithPathConstraints(validate.HTTPPath),
 )
@@ -122,7 +122,7 @@ yamlBytes, _ := doc.MarshalYAML()
 `rest.FromSecurityScheme(schemeName, rest.SecurityScheme, scopes)`, attached
 via `Route.Use(mw)`, is the ONLY way to declare a security scheme — directly
 on the route, no builder-level registry (`rest.WithSecurityScheme` was
-REMOVED — there is no metadata-only registration anymore). `Builder.OpenAPISpec()`
+REMOVED — there is no metadata-only registration anymore). `Server.OpenAPISpec()`
 aggregates `components.securitySchemes` from every registered route
 automatically:
 

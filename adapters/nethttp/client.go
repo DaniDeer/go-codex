@@ -19,7 +19,7 @@ import (
 	"github.com/DaniDeer/go-codex/stats"
 )
 
-// CredentialFunc names the credential-providing shape [Call]/[CallWithHandle]
+// CredentialFunc names the credential-providing shape [call]/[CallWithHandle]
 // recognize on an attached [middleware.ClientImplementation.Fn] — a type ALIAS
 // (not a new defined type). Lets callers (and [NewCachingCredentialFunc])
 // name the shape instead of repeating the inline function type everywhere;
@@ -28,7 +28,7 @@ import (
 // precedent this mirrors.
 type CredentialFunc = func(ctx context.Context, reqs []route.SecurityRequirement) (http.Header, error)
 
-// CallOptions configures an outgoing HTTP request made via [Call].
+// CallOptions configures an outgoing HTTP request made via [call].
 type CallOptions struct {
 	// QueryParams appends query string parameters to the URL.
 	// Each value is validated against its registered [rest.QueryParam] codec (if any)
@@ -57,7 +57,7 @@ type CallOptions struct {
 	// with HTTP 401 AND at least one credential-providing [middleware.ClientImplementation]
 	// was attached to this call (mirrors the "only if the credential mechanism
 	// actually engaged" gating used for the symmetric client-side format check
-	// below). Purely a notification hook — Call does NOT retry the request
+	// below). Purely a notification hook — call does NOT retry the request
 	// automatically.
 	//
 	// [NewCachingCredentialFunc]'s returned invalidate function is designed
@@ -81,7 +81,7 @@ type CallOptions struct {
 	// RequestFormats, when non-nil, OVERRIDES the route's declared
 	// request-body encode format for THIS call only. Type-erased
 	// ([]format.Format[Req]) since CallOptions itself is not generic;
-	// [Call]/[CallWithHandle] type-assert it once Req is concrete,
+	// [call]/[CallWithHandle] type-assert it once Req is concrete,
 	// returning [CallFormatOptError] on a type mismatch.
 	//
 	// Priority: RequestFormats (this field) > handle.RequestFormats
@@ -93,7 +93,7 @@ type CallOptions struct {
 	//
 	// Example:
 	//
-	//	nethttp.Call(ctx, caller, route, req, nethttp.CallOptions{
+	//	nethttp.call(ctx, caller, route, req, nethttp.CallOptions{
 	//	    RequestFormats: []format.Format[MyReq]{format.YAML(myReqCodec)},
 	//	})
 	RequestFormats any
@@ -122,7 +122,7 @@ func resolveCallFormat[T any](declared []format.Format[T], overrideAny any, dire
 	return fmts, nil
 }
 
-// UnexpectedStatusError is returned by [Call] when the server responds with a
+// UnexpectedStatusError is returned by [call] when the server responds with a
 // non-2xx HTTP status code.
 //
 // Use [errors.As] to extract the structured fields for slog logging:
@@ -169,7 +169,7 @@ func (e UnexpectedStatusError) LogValue() slog.Value {
 	)
 }
 
-// ErrorPatternResponse is returned by [Call] instead of [UnexpectedStatusError]
+// ErrorPatternResponse is returned by [call] instead of [UnexpectedStatusError]
 // when the response status matches a route-declared [rest.ErrorPattern]
 // (tagged with the default [rest.ErrorRespond] action) and the body decodes
 // successfully via that pattern's declared codec.
@@ -202,7 +202,7 @@ func (e ErrorPatternResponse) LogValue() slog.Value {
 	)
 }
 
-// RequestBuildError is returned by [Call] when constructing the outgoing
+// RequestBuildError is returned by [call] when constructing the outgoing
 // *http.Request fails (e.g. malformed base URL or context already cancelled).
 //
 // Use [errors.As] to extract the underlying error for slog logging:
@@ -230,7 +230,7 @@ func (e RequestBuildError) LogValue() slog.Value {
 	)
 }
 
-// RequestError is returned by [Call] when executing the HTTP call fails
+// RequestError is returned by [call] when executing the HTTP call fails
 // (network error, DNS failure, TLS error, or context cancellation).
 //
 // Use [errors.As] to extract the structured fields for slog logging:
@@ -268,7 +268,7 @@ func (e RequestError) LogValue() slog.Value {
 	)
 }
 
-// ResponseBodyError is returned by [Call] when reading the HTTP response body
+// ResponseBodyError is returned by [call] when reading the HTTP response body
 // fails after a successful connection.
 //
 // Use [errors.As] to extract the underlying error for slog logging:
@@ -296,7 +296,7 @@ func (e ResponseBodyError) LogValue() slog.Value {
 	)
 }
 
-// CallFormatOptError is returned by [Call]/[CallWithHandle] when
+// CallFormatOptError is returned by [call]/[CallWithHandle] when
 // [CallOptions.RequestFormats] or [CallOptions.ResponseFormats] was set
 // with formats for a type that does not match the route's actual
 // request/response type parameter — the per-call analogue of
@@ -324,7 +324,7 @@ func (e CallFormatOptError) LogValue() slog.Value {
 	)
 }
 
-// ConflictingCredentialHeaderError is returned by [Call] when TWO attached
+// ConflictingCredentialHeaderError is returned by [call] when TWO attached
 // credential-providing middlewares (Fn shape
 // func(context.Context, []route.SecurityRequirement) (http.Header, error))
 // return DIFFERENT values for the SAME outgoing header key — see "L9" in
@@ -350,7 +350,7 @@ func (e ConflictingCredentialHeaderError) LogValue() slog.Value {
 }
 
 // validateClientImplementationShapes checks every attached impl.Fn against the
-// ONE concrete shape [Call] recognizes ([CredentialFunc]'s shape),
+// ONE concrete shape [call] recognizes ([CredentialFunc]'s shape),
 // EAGERLY before any network activity rather than letting
 // [mergeCredentialHeaders] silently skip a malformed Fn — a
 // [middleware.ClientImplementation] built for the wrong adapter (e.g. a Fn
@@ -394,7 +394,7 @@ func validateClientImplementationShapes(impls []middleware.ClientImplementation)
 //
 // Every impl.Fn here is already guaranteed to match this shape (or be
 // nil) — [validateClientImplementationShapes] rejects anything else EAGERLY,
-// at the top of [Call], before this function is ever reached.
+// at the top of [call], before this function is ever reached.
 func mergeCredentialHeaders(ctx context.Context, secReqs []route.SecurityRequirement, impls []middleware.ClientImplementation) (combined http.Header, ran bool, err error) {
 	combined = make(http.Header)
 	setBy := make(map[string]string)
@@ -449,12 +449,16 @@ func equalHeaderValues(a, b []string) bool {
 	return true
 }
 
-// Call executes a typed HTTP request for r against c's baseURL — the SOLE
-// public client-side entry point (see
+// call executes a typed HTTP request for r against c's baseURL —
+// unexported: the sole PUBLIC client-side workflow is [Attach] +
+// [rest.Client.Call] (see
+// docs/roadmap/pubsub-workflow-simplification.md's Decision 6); call
+// remains load-bearing internally, used by [clientTransport] and by
+// [ports]' handle-based binding adapters via [CallWithHandle] (see
 // docs/design/middleware-workflow-simplification.md's "Decision:
 // symmetric client-side declarative wiring"). r is a [rest.Route] value
 // (typically the SAME value the server side declared via [rest.Route.Use]/
-// [rest.Route.HandleMW]); Call derives a [*rest.RouteHandle] internally via
+// [rest.Route.HandleMW]); call derives a [*rest.RouteHandle] internally via
 // [rest.Route.ClientHandle] and ALWAYS auto-derives path/query/header/cookie
 // values from the route's declared merge fields (folding in what the
 // former CallHandle did exclusively) — there is no manual-vars variant
@@ -481,17 +485,10 @@ func equalHeaderValues(a, b []string) bool {
 // code, and total duration. Per-field validation errors are reported separately via
 // [stats.Observer.RecordValidationError].
 //
-// Example — GET with path variable declared via a merge field:
-//
-//	user, err := nethttp.Call(ctx, caller, getUserRoute, GetUserReq{ID: "f47ac10b"},
-//	    nethttp.CallOptions{Observer: obs})
-//
-// Example — POST with body, on a route declaring a bearer credential via ClientMW:
-//
-//	resp, err := nethttp.Call(ctx, caller, createUserRoute, createReq, nethttp.CallOptions{})
-func Call[Req, Resp any](
+// See [Attach] for the public entry point using this internally.
+func call[Req, Resp any](
 	ctx context.Context,
-	c *Caller,
+	c *caller,
 	r rest.Route[Req, Resp],
 	req Req,
 	opts CallOptions,
@@ -501,7 +498,7 @@ func Call[Req, Resp any](
 }
 
 // callWithVars is the UNEXPORTED, handle-based call primitive — the
-// actual call logic, shared internally by [Call] (via [CallWithHandle])
+// actual call logic, shared internally by [call] (via [CallWithHandle])
 // AND [ports]' nethttp binding adapters (which own a *rest.RouteHandle
 // directly, built once and called many times, and never a [rest.Route]
 // value — see docs/design/middleware-workflow-simplification.md's
@@ -526,7 +523,7 @@ func callWithVars[Req, Resp any](
 
 	// Ferry per-field validation errors (Class B) out via ctx, then drain
 	// them into obs.RecordValidationError exactly once before returning —
-	// Call has no outer wrapping concept the way Handler's
+	// call has no outer wrapping concept the way Handler's
 	// Observability does, so it drains inline via defer instead.
 	ctx = stats.WithDiagnostics(ctx)
 	defer func() {
@@ -823,9 +820,9 @@ func callWithVars[Req, Resp any](
 // route's role-aware merge-field accessors
 // ([rest.RouteHandle.PathMergeFields]/[QueryMergeFields]/
 // [HeaderMergeFields]/[CookieMergeFields]) and [codex.EncodeVars] — the
-// SAME auto-derivation the public [Call] performs internally.
+// SAME auto-derivation [call] performs internally.
 //
-// Prefer [Call] when a [rest.Route] value is available (the common
+// Prefer [call] when a [rest.Route] value is available (the common
 // case) — it additionally builds the handle for you via
 // [rest.Route.ClientHandle].
 //
@@ -867,7 +864,7 @@ func CallWithHandle[Req, Resp any](
 
 // overrideDerived merges derived (from codex.EncodeVars) and explicit (from
 // caller-supplied CallOptions) maps, with explicit taking precedence on key
-// collision. Returns nil when both inputs are empty (preserves Call's
+// collision. Returns nil when both inputs are empty (preserves call's
 // existing nil-is-fine behavior for CallOptions map fields).
 func overrideDerived(derived, explicit map[string]string) map[string]string {
 	if len(derived) == 0 {

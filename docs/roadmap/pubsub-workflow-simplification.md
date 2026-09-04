@@ -1,18 +1,213 @@
 # Pub/Sub Workflow Simplification — design decisions
 
-> **Status:** Decision 1 RESOLVED, and every design gap raised during
+> **Decision 7 status: IMPLEMENTED and verified** (`go build`/`go vet`/
+> `go test`/`just check`/`just examples` all green) — inverts the
+> handle-based primitives Decision 6 confirmed as legitimate exceptions
+> into `api/events` itself: new GENERIC `PublishTransport[T]`/
+> `SubscribeTransport[T]` interfaces (mirroring `ports.SourceAdapter[T]`'s
+> proven convention — NOT the `any`-typed reflection shape
+> `events.Transport` uses, since these are FREE FUNCTIONS, which CAN have
+> type parameters, unlike `Client`'s own methods) + `events.PublishHandle`/
+> `SubscribeHandle` call-time functions requiring NO `*events.Client`/spec
+> at all; `events.NewClient`'s `Info` became optional via a new
+> `events.WithInfo` option; `adapters/mqtt5`/`adapters/mqtt` gained new
+> connection-owning `Connect(ctx, brokerURL, opts)` entry points
+> (`adapters/zeromq` explicitly deferred — confirmed CGO-dependency
+> conflict with its own "no CGO in the adapter" design goal). Shipped
+> across `adapters/mqtt5`/`adapters/mqtt`/`adapters/zeromq`, all 4
+> mqtt-family examples migrated, and docs synced. See Decision 7 below for
+> the full design and rationale.
+>
+> **Decision 6 status: IMPLEMENTED and verified** (`go build`/`go vet`/
+> `go test`/`just check`/`just examples` all green) — a direct follow-up
+> user request ("I want a consistent workflow across the rest and event
+> api ... the single only [workflow] the framework provides without
+> escape hatches") removed every OLD, lower-level, call-time-competing
+> public primitive (`Caller`/`NewCaller`,
+> `Subscribe[T]`/`SubscribeWithHandle[T]`, `Publish[T]`/`PublishHandle[T]`,
+> `NewPublisherFor[T]`, `ServeOneSubscriber[T]` on the pub/sub side;
+> `Caller`/`NewCaller`, `Call[Req,Resp]`/`CallWithHandle[Req,Resp]`,
+> `Serve`/`ServeOne`/`ServeSSE` on the REST side) from each adapter's
+> PUBLIC API, WITH CONFIRMED EXCEPTIONS kept public for genuine advanced
+> needs (`nethttp.CallWithHandle`/`ServeOne`; each pub/sub adapter's
+> `SubscribeWithHandle`/`SubscribeHandler`/`Publish`/`PublishHandle`) —
+> see Decision 6 below for the full removal list, scope boundary
+> (pub/sub and REST ONLY — `reqreply`/`sql`/`redis`/`file`/`mcpgo`/`mcp`/
+> `llm`/`websocket` are explicitly deferred, unchanged), and the
+> confirmed-exception rationale.
+>
+> **Decision 5 status: IMPLEMENTED and verified** (`go build`/`go vet`/
+> `go test`/`just check`/`just examples` all green): `events.Transport`
+> interface + `Client.Attach`/`.Publish`/`.Subscribe`/`.ServeSubscribers`
+> methods — a reflection-based, type-erased convenience layer giving
+> `Client` a literal `Publish(ctx, pub, msg)`/`Subscribe(ctx, sub, fn)`
+> call shape (Go forbids generic methods, so this trades compile-time
+> type safety for the call shape, explicitly and narrowly). Shipped
+> across all 3 pub/sub adapters (`zeromq.Attach`, `mqtt5.Attach`,
+> `mqtt.Attach`, each wrapping their existing `*Caller` internally) plus
+> `examples/adapters-zeromq` reworked to demonstrate the full workflow
+> end to end. See Decision 5 below for the full design, and
+> [Transport-Agnostic `Serve`/`Caller` Interface](transport-agnostic-serve-interface.md)
+> for the matching `api/rest` counterpart this decision is unified with
+> (also implemented: `rest.Server.Attach`/`.Serve`, `rest.Client`/
+> `.Call`, `nethttp.AttachMux`/`chi.AttachRouter`, `nethttp.Attach`).
+>
+> **Implementation status (Decisions 1-4):** Design phases (below) are all CLOSED, and the
+> resulting design has been IMPLEMENTED and verified (`go build`/`go vet`/
+> `go test` all green): `events.Client` rename; role-scoped
+> `Subscriber[T]`/`Publisher[T]` builders (`WithSubscribe`/`WithPublish`,
+> `.Use`/`.SubscribeMW`/`.PublishMW`, `.Handle(client)`); `FromSecurityScheme`
+> + unconditional `CheckCoverage`; `events.SubscriberServer`/
+> `events.PublisherClient[T]` interfaces; adapter wiring across
+> `adapters/mqtt5` (`Caller`/`NewCaller`/`Subscribe`/`ServeSubscribers`/
+> `NewPublisherFor`/`Observability`), `adapters/mqtt` (v3, same shape,
+> `Caller` gains genuinely new capability since v3 had no router/bare
+> `Subscribe` before), and `adapters/zeromq` (`Caller`/`ServeSubscribers`/
+> `NewPublisherFor`/`Observability`, message-level security via
+> `SubscribeMW`/`PublishMW`); `ports.EventPattern` gained dedicated
+> `Subscribe`/`Publish` fields. **One phase remains genuinely open**:
+> `events.WithSecurityScheme` is DEPRECATED but not yet removed — a
+> repo-wide migration of its existing call sites (examples, adapter
+> tests, this package's own tests) onto `Channel.WithSubscribe`/
+> `WithPublish` + `FromSecurityScheme` is still tracked here (see
+> `events.WithSecurityScheme`'s own doc comment in `api/events/builder.go`)
+> and has NOT started; this doc is therefore kept (not archived) until
+> that migration lands. **A post-implementation audit (see escape hatches
+> #12/#13 below) found and fixed two real gaps between this doc's own
+> stated design and what shipped**: `Channel.Register`/`ClientHandle`
+> were supposed to be REMOVED per this doc's own Migration Checklist but
+> were initially kept, silently reopening `CheckCoverage`'s core
+> "no opt-out" guarantee for any handle built via them — now fully
+> resolved by completing the removal (both methods gone, every call site
+> migrated to `WithSubscribe`/`WithPublish` + `.Handle()`); and Decision
+> 1's promised `checkImplementationsDeclared`/
+> `UnknownMiddlewareImplementationError` reverse-coverage check (mirrors
+> REST) was never actually implemented — now added. Everything below
+> this banner is the ORIGINAL design-decision narrative, preserved as
+> historical record — read the code (`api/events/builder.go`,
+> `adapters/mqtt5`, `adapters/mqtt`, `adapters/zeromq`, `ports`) as the
+> source of truth for the SHIPPED shape; treat any divergence below as
+> superseded by the code.
+
+## Lessons Learned
+
+Real issues hit while implementing this doc's design (11 phases, executed
+mostly via parallel background agents), recorded here so future
+multi-phase implementation rounds can avoid repeating them.
+
+1. **Background agent session loss (happened twice).** Mid-flight session
+   interruptions lost two background agents outright (once during adapter
+   Fn-shape work, once during documentation sync) — checking on the agent
+   afterward returned "agent not found" with no partial output
+   recoverable. The recovery procedure that worked cleanly both times:
+   check `git status --short` to confirm prior phases' work was intact
+   and uncommitted-but-present, re-verify `go build`/`go test` still
+   green, then re-launch the SAME phase with an equivalent prompt under a
+   fresh agent ID. No duplicate or conflicting work resulted either time.
+   **Takeaway:** treat long-running background-agent phases as
+   resumable-but-not-durable; always re-verify repo state via
+   `git status`/build/test before relaunching rather than assuming the
+   lost agent made no progress (it may have, or may not have — check,
+   don't guess).
+
+2. **Additive-first staging was essential, not optional.** Every early
+   phase (`Client` rename, role-scoped builders, security merge) was
+   instructed to keep old mechanisms working (deprecated aliases,
+   `ChannelOpt` satisfaction, etc.) instead of a "big bang" breaking
+   change. This let the later exhaustive repo-wide migration phase run
+   safely against a codebase that was building/testing green at every
+   intermediate step. **Takeaway:** for large, multi-phase redesigns
+   spanning many files, sequence breaking removals LAST and keep every
+   intermediate phase independently green — never let two phases both
+   assume the other's not-yet-shipped shape.
+
+3. **Two "final removal" items were correctly refused by the
+   implementing agent.** The migration phase was asked to remove
+   `events.WithSecurityScheme` and `Subscribe`/`Publish`'s `ChannelOpt`
+   satisfaction entirely, but declined both because `api/events`'s OWN
+   regression test suite (intentionally preserved, not to be edited away
+   just to unblock a removal) still legitimately exercises both
+   mechanisms. **Takeaway:** "remove the old API" tasks must account for
+   the package's own test suite as a legitimate caller, not just external
+   call sites — full removal is a distinct, separately-scoped follow-up
+   decision, not an automatic conclusion of "no external callers remain."
+
+4. **Cross-agent file touch during parallel phases.** Running the three
+   adapter-wiring phases (mqtt5, mqtt v3, zeromq) plus the ports
+   integration phase as 4 simultaneous background agents caused one
+   incidental cross-package touch (the mqtt5 agent edited a line in
+   `adapters/mqtt/binding.go` for a shared generic instantiation while
+   the mqtt v3 agent was concurrently working in that same package).
+   Both agents' own summaries flagged awareness of it; the post-hoc
+   full-repo build/test after all 4 completed showed no actual conflict.
+   **Takeaway:** real but low-probability risk when parallelizing agents
+   across adjacent packages that share a generic type — acceptable given
+   a cheap post-hoc full-repo verification step, but worth watching for
+   in any future parallel-adapter work.
+
+5. **A stricter runtime check (`CheckCoverage` made unconditional)
+   silently broke a previously-passing example, and `go build`/`go vet`/
+   `go test` did not catch it.** `examples/adapters-mqtt-security`
+   declared a security requirement via `Subscribe.Security` +
+   `.Use(FromSecurityScheme(...))` but never paired it with a
+   `SubscribeMW` implementation — this compiled fine and passed `go
+   test` (no test exercises the example's `main()`), but failed at
+   runtime with `MissingSecurityMiddlewareError` the first time the
+   example was actually run. It was caught only because the final
+   verification pass explicitly ran every example, not because any
+   automated check flagged it. **Takeaway:** running every example
+   end-to-end is a MANDATORY verification step for any change that
+   tightens a runtime validation rule, not an optional nicety — static
+   checks are provably insufficient for this failure class.
+
+6. **A documentation-sync agent that self-reported "complete" still
+   missed two stale symbol references.** The docs-sync agent updated
+   `.github/instructions/go-codex.instructions.md`, the Zensical guides,
+   `doc.go`s, README, and project-structure, and reported success — but
+   a manual `grep -rn "events\.Builder\b"` sweep across `docs/`
+   afterward still found two live references
+   (`docs/features/api-builder.md`, `docs/features/websocket.md`) that
+   would not compile if copy-pasted. **Takeaway:** a green build does not
+   prove no dangling references remain — always run an explicit
+   repo-wide grep sweep for every renamed/removed exported symbol after
+   ANY doc-sync pass, even one an agent reports as complete; do not trust
+   self-reported completion for this specific failure class.
+
+7. **A function bundling two responsibilities silently dropped the less
+   obvious one when its call path was swapped.** `RegisterEvent` (in
+   `ports/spec.go`) was replaying a spec-less base `Channel[T]` instead of
+   the role-scoped `Subscriber[T]`/`Publisher[T]` builder, which produced
+   spurious AsyncAPI errors — found and fixed during the migration phase,
+   not anticipated by the original phase plan. **Takeaway:** when
+   swapping the underlying builder type behind an existing integration
+   point, explicitly re-verify EVERY caller of the old type's methods,
+   not just the ones the phase's task description called out — bundled
+   side effects are easy to lose silently.
+
+8. **Broker-dependent examples could only ever be build-verified, not
+   run, in this sandbox.** `examples/adapters-mqtt5`, `adapters-mqtt`,
+   `adapters-zeromq`, and `sensor-service` require live broker/socket
+   infrastructure absent from the implementation environment — accepted
+   as a permanent, unavoidable verification gap for this implementation
+   round, not a shortcut that should be revisited without first
+   provisioning that infrastructure.
+
+---
+
+> **Prior status (design-complete, pre-implementation):** Decision 1 RESOLVED, and every design gap raised during
 > a follow-up review pass has been CLOSED (Client-centric role model +
 > role-scoped `Subscriber[T]`/`Publisher[T]` builders — the former
 > separate "Decision 2, middleware attach mechanism" is FOLDED INTO
-> Decision 1). Spun out of
-> [Events/ReqReply/Ports Workflow Simplification](events-reqreply-ports-workflow-simplification.md)
-> after a critical re-review found that doc's Decision 1 borrowed REST/
-> `reqreply`'s `Register`/`ClientHandle` role split onto pub/sub WITHOUT
-> checking whether pub/sub's role structure actually fits — it does not
-> (see "Why pub/sub needs its own doc" below). That doc's pub/sub-scoped
-> content is now SUPERSEDED by this one; its `reqreply`-scoped content
-> remains on hold, pending a dedicated review pass once this doc is fully
-> design-complete. **Resolution (went through 3 drafts before landing
+> Decision 1). Spun out of a now-removed doc, "Events/ReqReply/Ports
+> Workflow Simplification", after a critical re-review found that doc's
+> Decision 1 borrowed REST/`reqreply`'s `Register`/`ClientHandle` role
+> split onto pub/sub WITHOUT checking whether pub/sub's role structure
+> actually fits — it does not (see "Why pub/sub needs its own doc"
+> below). That doc's pub/sub-scoped content is now fully superseded by
+> this one (this doc, design-complete and shipped); its `reqreply`-scoped
+> content was carried forward into its own dedicated doc — see
+> [ReqReply Workflow Simplification](reqreply-workflow-simplification.md).
+> **Resolution (went through 3 drafts before landing
 > here — see Decision 1's own subsections for the full history):**
 > pub/sub has no "server" role — a broker is the intermediary, both
 > publisher and subscriber are CLIENTS of a channel. `events.Builder` is
@@ -437,7 +632,7 @@ name/behavior), just renamed. `NewBuilder(...)` → `NewClient(...)`. This
 touches every existing pub/sub call site that constructs/references
 `*events.Builder` today, not only the security/middleware feature — see
 "Migration checklist" below. **Scoped to `api/events` ONLY** —
-`rest.Builder`/`reqreply.Builder` are NOT renamed: REST/reqreply's
+`rest.Server`/`reqreply.Builder` are NOT renamed: REST/reqreply's
 "Builder builds a SERVER-owned spec" framing already matches their
 genuinely asymmetric client/server relationship; there is no equivalent
 "who owns the spec" confusion to resolve there, and this rename must not
@@ -919,7 +1114,7 @@ times. **Resolution: add BOTH capabilities, fully independent, with NO
   confirmed placement: the ADAPTER (`mqtt5`/`mqtt`/`zeromq`, each gets
   its OWN) owns the responsibility of walking `events.Client`'s
   registered entries and starting consumption; the `Client` itself just
-  holds the registry, same relationship `rest.Builder` has to
+  holds the registry, same relationship `rest.Server` has to
   `nethttp.Serve`/`chi.Serve` — two DIFFERENT adapters, ONE shared
   builder). Takes a `*Caller` (see "New `mqtt5.Caller` bundling type"
   below):
@@ -985,7 +1180,7 @@ non-nil `*events.Client` with ≥1 `Register()`-ed `Subscriber[T]` —
 there was no "just one subscriber, no separate `Client` ceremony"
 shortcut for that specific path, mirroring EXACTLY why REST needed
 `nethttp.ServeOne(route)` (its only entry point, `Serve`, requires a
-`*rest.Builder` with ≥1 registered route). Fix, per adapter:
+`*rest.Server` with ≥1 registered route). Fix, per adapter:
 
 ```go
 // mqtt5.ServeOneSubscriber(ctx, client, router, sub) error — mirrors
@@ -1027,7 +1222,7 @@ handle pointer — so spec rendering was never at risk. Only
 `ServeSubscribers`'s need (an invokable closure) was missing.
 
 **Resolution:** `Client` gains a `sync.RWMutex`-guarded registry
-(mirrors `rest.Builder`'s own `mu sync.RWMutex`, confirmed via code)
+(mirrors `rest.Server`'s own `mu sync.RWMutex`, confirmed via code)
 with TWO DECOUPLED SLOTS per topic:
 
 1. The EXISTING plain-value spec copy (unchanged, feeds
@@ -1114,7 +1309,7 @@ precedent in REST's own shipped code:
   func (c *Client) SubscriberEntries() []SubscriberEntry
   ```
   Backed by slot 2 of the mutex-guarded registry above (`c.mu.RLock()`
-  around the read — mirrors `rest.Builder.RouteEntries()` exactly) —
+  around the read — mirrors `rest.Server.RouteEntries()` exactly) —
   populated EXCLUSIVELY by `Subscriber[T].Register(client)` calls, never
   by `.Handle(client)` calls (see the fixed bug above): every entry
   `SubscriberEntries()` returns is therefore guaranteed to have
@@ -2306,6 +2501,422 @@ doc — flagged here, now fully self-consistent, so implementation
 doesn't mistakenly follow the EARLIER, contradictory version of this
 Decision.
 
+### Decision 5 — `events.Transport` + `Client.Attach`/`.Publish`/`.Subscribe`/`.ServeSubscribers` (NEW, added after implementation review found the user wanted a literal `Client.Publish`/`.Subscribe` call shape)
+
+A post-implementation design review (triggered by a direct question:
+"how do I attach mqtt/zeromq to the client and use
+`Client.Publish`/`Client.Subscribe`?") found that Decisions 1-4's
+shipped design has NO such call shape — the workflow is
+adapter-function-takes-declaration (`zeromq.Subscribe(ctx, caller, sub,
+fn, opts)`), never `client.Subscribe(...)`. This decision adds that
+missing call shape as a NEW, ADDITIVE layer — every symbol below is
+new; nothing from Decisions 1-4 is removed, renamed, or behaviorally
+changed.
+
+**This decision is unified with an analogous change to `api/rest` —
+see
+[Transport-Agnostic `Serve`/`Caller` Interface](transport-agnostic-serve-interface.md),
+which this decision's `Transport` interface directly resolves (that
+doc was "idea only, no driver yet" — this decision, plus its own REST
+counterpart, is the concrete driver it was waiting for).**
+
+#### Why this can't be a literal generic method (confirmed via compile test)
+
+Go forbids a method from introducing its own type parameters — verified
+directly: `func (c *Client) Publish[T any](msg T) error` fails to
+compile with "method must have no type parameters," and this applies
+identically whether `T` is written explicitly on the method or would be
+inferred from an argument like `pub events.Publisher[T]`. Since
+`events.Client` is (and must remain) a single non-generic type
+accumulating MANY different channels of different payload types into
+ONE AsyncAPI spec, there is no way to give it a literal, compile-time
+type-safe `Publish[T]`/`Subscribe[T]` method. **The only way to get an
+ACTUAL method named `Publish`/`Subscribe` on `Client` is to type-erase
+the signature to `any` and recover the concrete type internally via
+reflection** — accepted as a deliberate, explicit, scoped trade-off
+(loses compile-time type safety at just this ONE call site; every other
+declarative API in this codebase stays fully type-safe).
+
+#### The reflection technique that makes this feasible
+
+Go cannot reflect-instantiate a generic FUNCTION for a type only known
+at runtime (there is no `reflect.ValueOf(zeromq.Publish[SomeRuntimeType])`).
+But a method CAN be called via reflection on a value whose DYNAMIC type
+is already a fully-instantiated generic type (e.g. an
+`events.Publisher[SensorReading]` value boxed in an `any`) — the method
+itself is already monomorphized/compiled for that concrete type, so
+`reflect.ValueOf(pubAny).MethodByName("Handle").Call(...)` works. Once
+the resulting `*ChannelHandle[T]` is recovered (also boxed in `any`),
+its exported closures (`Encode func(T)([]byte,error)`, `BuildTopic`,
+`MergeFields()`, etc.) are themselves already-concrete, reachable via
+`reflect.Value.FieldByName(...)`/`.Call(...)` — EXACTLY the mechanism
+`zeromq.ServeSubscribers`'s `buildSubscriberRoute` (Decision 3) already
+uses for decode/dispatch, now mirrored for the encode/publish
+direction. Each adapter's `Attach`-built shim re-implements the small
+"encode + build topic vars + send frames" sequence directly against
+these closures via reflection — it does NOT (cannot) call `Publish[T]`/
+`PublishHandle[T]` via reflection; it reimplements their few lines
+using the same already-proven technique, then hands off to the
+CONCRETE, non-generic transport (`FramedSocket.SendFrames`,
+`pahomqtt.Client.Publish`, etc.) with zero further reflection needed.
+
+#### The design
+
+```go
+// api/events — new:
+type Transport interface {
+    Publish(ctx context.Context, pub any, msg any) error
+    Subscribe(ctx context.Context, sub any, fn any) error
+    ServeSubscribers(ctx context.Context) error
+}
+
+// Client (existing type) gains:
+func (c *Client) Attach(t Transport) error   // returns TransportAlreadyAttachedError on a 2nd call
+func (c *Client) Publish(ctx context.Context, pub any, msg any) error
+func (c *Client) Subscribe(ctx context.Context, sub any, fn any) error
+func (c *Client) ServeSubscribers(ctx context.Context) error  // unchanged semantics vs today's *Caller.ServeSubscribers — walks the SAME SubscriberEntries() registry, just relocated onto Client
+```
+
+Each adapter provides an `Attach` entry point building an internal,
+unexported `transport` type that WRAPS the existing, unchanged
+`*Caller` (no wire logic is duplicated — the shim's `Subscribe`/
+`ServeSubscribers` re-enter `*Caller`'s existing generic methods once
+the concrete `T` is recovered via reflection; only `Publish` needs the
+NEW reflection-native encode path described above, since there is no
+way to re-enter a generic `Publish[T]` call with a runtime-only `T`):
+
+```go
+// e.g. adapters/zeromq:
+func Attach(client *events.Client, sock FramedSocket) error {
+    return client.Attach(&transport{caller: NewCaller(sock, client)})
+}
+```
+
+Resulting workflow:
+```go
+client := events.NewClient(events.Info{Title: "Sensor Network", Version: "1.0.0"})
+if err := zeromq.Attach(client, sock); err != nil { /* ... */ }
+
+sub := ReadingsChannel.WithSubscribe(events.Subscribe{...})
+pub := ReadingsChannel.WithPublish(events.Publish{...})
+
+err := client.Subscribe(ctx, sub, fn)
+err := client.Publish(ctx, pub, reading)
+```
+
+#### Resolved sub-decisions
+
+- **`Attach` is exclusive**: a second `Attach` call on the same
+  `Client` returns `TransportAlreadyAttachedError` rather than silently
+  replacing the transport (avoids silently swapping the wire underneath
+  already-in-flight calls). A caller wanting a different transport
+  builds a fresh `Client` — cheap, no different from today.
+- **`Client.ServeSubscribers` requires the SAME `Register()`-based
+  pre-registration** `*Caller.ServeSubscribers` already requires
+  (walks `Client.SubscriberEntries()`) — purely relocated onto `Client`
+  itself (which already owns that registry), zero behavior change.
+- **`*Caller` (mqtt5/mqtt/zeromq) is KEPT, not removed** — remains the
+  lower-level primitive each `Attach` shim wraps internally; every
+  existing direct `*Caller` usage (`NewCaller`, `Subscribe[T]`,
+  `NewPublisherFor[T]`) is completely unaffected.
+- **`Client` is no longer always side-effect-free once transport-attached**:
+  its doc comment must say so explicitly — `Publish`/`Subscribe`/
+  `ServeSubscribers` perform real I/O once a `Transport` is attached,
+  unlike every OTHER `Client` method (spec/registry manipulation, pure).
+- A `pub`/`sub` argument whose declared payload type doesn't match
+  `msg`'s/`fn`'s dynamic type is a NEW `TransportTypeMismatchError`,
+  returned at call time (not a compile error) — the explicit, accepted
+  cost of this convenience layer.
+
+### Decision 6 — Single-workflow REST + Events: delete every OLD, call-time-competing public primitive (PLANNED)
+
+**Trigger**: a direct follow-up user request, after Decision 5 shipped
+`Client.Attach`/`.Publish`/`.Subscribe`/`.ServeSubscribers` (pub/sub) and
+`Server.Attach`/`.Serve` + `rest.Client`/`.Call` (REST): "I want a
+consistent workflow across the rest and event api. I want this new
+workflow the single only [workflow] the framework provides without
+escape hatches ... despite what is currently necessary o[f] the ports
+integration (which we also rework towards this simplification)."
+
+**Scope boundary (confirmed via `ask_user`)**: PUB/SUB (`api/events` +
+`adapters/mqtt5`/`mqtt`/`zeromq`, pub/sub surface ONLY) and REST
+(`api/rest` + `adapters/nethttp`/`chi`) ONLY. Every other port
+type/pattern is explicitly deferred to a later round, untouched here:
+`reqreply` (including its mqtt5/zeromq-hosted reqreply-shaped functions
+— `Serve[Req,Resp]`, `Call[Req,Resp]`, `CallHandle`, `ServeRouter`,
+`CallDealer`, `UUIDReplyTopic`, `SharedReplyTopic`, zeromq's
+`LatestAdapter[Resp]`/`AsPipelineFunc`/`ServeLatest`, either adapter's
+reqreply-shaped `CallAdapter[Req,Resp]`/`ServeAdapter[Req,Resp]`),
+`sql`, `redis`, `file`, `mcpgo`, `mcp`, `llm`, `websocket`.
+
+**What "no escape hatches" means concretely**: every OLD, lower-level,
+call-time-competing public function/type that predates Decision 5/the
+REST `Attach` work is REMOVED from its package's public API — no
+back-compat alias, no `// Deprecated:` stub. Where the underlying LOGIC
+is still load-bearing (used internally by an `Attach` shim, or by
+`ports`' binding.go adapters), it is RELOCATED to an unexported
+(lowercase) function/type in the same package, never left publicly
+reachable.
+
+**Ports stays exactly as today, by explicit user confirmation**: "On
+the port boundary we set the api declaration (route, channel, other
+ports) and set the adapter that implements the declaration. That is
+the port declaration." — `ports.SourcePort.Bind(zeromq.SubscribeAdapter(...))`-style
+binding IS the desired final shape, not something this decision
+changes. Only the INTERNAL implementation of each binding.go adapter
+function changes, to stop referencing the (now-removed) old public
+primitives — a pure internal rename, since `SubscribeAdapter[T]`/
+`PublishAdapter[T]`/`CallAdapter[Req,Resp]` etc. are themselves already
+generic with T known at compile time (no reflection ever needed here,
+unlike `Client.Publish`/`.Subscribe`'s `any`-typed shim).
+
+**Exact removal/unexport list — pub/sub (`adapters/mqtt5`/`mqtt`/`zeromq`, pub/sub surface only):**
+
+- `NewCaller`, `Caller` (type) → unexported — still used internally by
+  each adapter's `Attach`/`transport` and by `SubscribeAdapter`/
+  `PublishAdapter` (ports binding).
+- `Subscribe[T]` (the `*Caller`-based convenience, NOT the reqreply
+  `Serve`/`Call` family), `NewPublisherFor[T]`, `ServeOneSubscriber[T]` →
+  unexported (or deleted, for `PublisherFor[T]`/`NewPublisherFor[T]`,
+  confirmed dead code with zero internal callers once `Client.Publish`
+  became the modern path), relocated where their logic is still needed.
+- **`SubscribeWithHandle[T]`(zeromq/mqtt5)/`SubscribeHandler[T]`(mqtt v3)
+  and `Publish[T]`/`PublishHandle[T]` (all three) are a CONFIRMED
+  EXCEPTION — stay PUBLIC, not unexported.** Found during implementation,
+  mirroring REST's identical `CallWithHandle`/`ServeOne` exception: these
+  are the direct pub/sub analogs of `nethttp.CallWithHandle` —
+  handle-based primitives supporting the FULL `SubscribeOptions`/
+  `PublishOptions` (custom `OnError`, `Observer`, explicit vars, security
+  impls) that `events.Client.Subscribe`/`.Publish`'s v1-scope reflection
+  shim CANNOT express (no `OnError` support at all, no custom options).
+  Real examples (`adapters-mqtt`, `adapters-mqtt-contract`,
+  `adapters-mqtt-security`, `adapters-mqtt5`) genuinely need these for
+  advanced scenarios (custom error handling, wildcard topics, security
+  demos) — the reflection shim only covers the simple common case.
+- `Observability[T](obs) func(...)` **stays PUBLIC** — this is a
+  declare-time `.Use()`-attachable general-purpose middleware VALUE
+  (part of the DECLARATION story, not a competing call-time mechanism).
+- `SubscribeAdapter[T]`/`PublishAdapter[T]` (ports binding) stay
+  PUBLIC, reimplemented internally against the now-unexported
+  primitives.
+- `Attach`, `SubscribeOptions`, `PublishOptions[T]`, all error types
+  stay public, unchanged.
+- `api/events.Client`/`Transport`/`Attach`/`.Publish`/`.Subscribe`/
+  `.ServeSubscribers` (Decision 5) — unchanged, already the sole
+  intended call-time workflow. `Channel.WithSubscribe`/`.WithPublish`/
+  `Subscriber[T]`/`Publisher[T]`/`.Handle(client)`/`.Register(client)`
+  are the DECLARATION layer (build the spec + registry entry) — NOT an
+  escape hatch, stay fully public; a `pub`/`sub` value built this way is
+  a REQUIRED argument to `Client.Publish`/`.Subscribe`, not an
+  alternate path around them.
+
+**Exact removal/unexport list — REST (`adapters/nethttp`/`chi`):**
+
+- `NewCaller`, `Caller` (type), `Call[Req,Resp]` (nethttp only — chi has
+  no client side) → unexported, still used internally by
+  `clientTransport` (Decision 5's REST counterpart) and by
+  `CallAdapter`/`DrainCallAdapter`/`PollAdapter` (ports binding).
+- **`CallWithHandle[Req,Resp]` and `ServeOne[Req,Resp]` are a CONFIRMED
+  EXCEPTION — stay PUBLIC, not unexported.** Found during implementation:
+  `adapters/mcprest` (an MCP-to-REST bridge, structurally adjacent to the
+  explicitly-deferred `mcp`/`mcpgo` area) calls `CallWithHandle` directly
+  against an ALREADY-BUILT `*rest.RouteHandle[Req,Resp]` (built via
+  `.ClientMW(...).ClientHandle()` for a custom per-route credential) —
+  `rest.Client.Call`'s reflection-based, `Route`-value-only signature
+  cannot express this (no pre-built-handle support, no custom
+  `CallOptions`). `api/rest/builder_test.go` similarly uses both to
+  demonstrate advanced handle-based reuse (custom merge fields,
+  credentials) as core library test coverage. Both remain the fully
+  typed, no-reflection foundation for callers needing a pre-built handle
+  or non-default `CallOptions` — exactly the same role `ClientHandle()`/
+  `Register()` play for the port layer (structurally required lower-level
+  building blocks, not a competing convenience for the common case).
+- `Serve(mux, server)`/`Serve(r, server)`, `ServeOne[Req,Resp]`,
+  `ServeSSE(mux, server)`/`ServeSSE(r, server)` → unexported. Fixes a
+  real gap found while scoping this decision: `AttachMux`/`AttachRouter`
+  today wire ONLY plain routes, never SSE routes — SSE is completely
+  unreachable through the `Attach` workflow. `AttachMux`'s/
+  `AttachRouter`'s `Serve(ctx)` now wires BOTH internally.
+- Port-binding adapters stay PUBLIC unchanged (`IngestAdapter`,
+  `SSEAdapter`, `CallAdapter`, `DrainCallAdapter`, `PollAdapter`,
+  `PipelineAdapter`, `LatestAdapter`, `CallSSEAdapter`, `Consume`,
+  `HandlerLatest`/`RegisterLatest`/`PipelineHandler`/`RegisterPipeline`/
+  `SSEFromHub`, chi's socket adapters) — the ports declaration surface,
+  reimplemented internally.
+- `api/rest.Server`/`Client`/`Attach`/`.Serve`/`.Call` (Decision 5's REST
+  counterpart, see [Transport-Agnostic Serve/Caller Interface](transport-agnostic-serve-interface.md))
+  — unchanged, already the sole intended workflow.
+
+**Execution plan**: one adapter package at a time (`zeromq` → `mqtt5` →
+`mqtt` → `nethttp` → `chi` — sequential, not parallel, per this doc's
+own Lessons Learned item 4 about cross-package touch risk when
+parallelizing adjacent adapter work), each verified green (`go build`/
+`go vet`/`go test` for that package) before moving to the next, then
+every affected example migrated to the Attach-only workflow, then full
+repo verification (`gofmt`/`go build`/`go vet`/`go test`/`just check`/
+`just examples` + a dangling-reference grep sweep for every removed
+symbol), then a docs sync pass (`.github/instructions/go-codex.instructions.md`,
+`docs/guides/{http-server,http-client,mqtt5,mqtt,zeromq}.md`).
+
+### Decision 7 — Invert handle-based primitives into `api/events`; optional `Client.Info`; mqtt5/mqtt broker-ownership (IMPLEMENTED)
+
+**Trigger**: a direct follow-up user request, after Decision 6 confirmed
+each adapter's handle-based primitives (`SubscribeWithHandle`/
+`SubscribeHandler`/`Publish`/`PublishHandle`) as legitimate, KEPT-PUBLIC
+exceptions for advanced use — the user still wanted the "no spec needed"
+call surface itself INVERTED into `api/events` (mirroring `Client.Attach`'s
+own inversion exactly), rather than living per-adapter with 3 different
+shapes: *"I want to rework the handle-based approach to be part of the
+event module (invert the dependencies like we did in the new Client
+approach). The idea is to have an event.PublishHandle(channel, adapter,
+event) or event.SubscribeHandle(channel, adapter, handler)."* Also
+requested: making `events.NewClient`'s `Info` optional (today a
+mandatory positional arg, even though `Channel.WithSubscribe(...).Handle(nil)`
+already builds a fully-working spec-free handle with ZERO `Client`
+involved — the friction was specifically about the `Client`+`Attach` path
+requiring spec ceremony even when unwanted), and giving `adapters/mqtt5`/
+`adapters/mqtt` new broker-connection-owning capability (both already
+hard-depend on `paho.golang`/`paho.mqtt.golang` at the type level).
+
+**A critical design question was raised and answered before finalizing
+the shape**: *"Are Go interfaces the right choice... for a route or
+channel [adapter]?"* Investigated this codebase's OWN established
+precedent for "what must an adapter implement to plug into a
+route/channel/port" — `ports.SourceAdapter[T any]`/`ports.SinkAdapter[T any]`/
+`ports.IOAdapter[Req,Resp any]`/`ports.ToolAdapter[In,Out any]` are ALL
+GENERIC interfaces, each adapter providing a GENERIC CONSTRUCTOR function
+(e.g. `zeromq.SubscribeAdapter[T any](sock, handle, fmt, opts) ports.SourceAdapter[T]`)
+returning a per-T-instantiated concrete type — fully type-safe, ZERO
+reflection, because Go forbids generic METHODS on a non-generic type but
+happily allows a GENERIC TYPE's own methods to use its type parameter.
+This is DIFFERENT from `events.Transport`/`rest.ServerTransport`/
+`rest.ClientTransport` (Decision 5), which are non-generic, `any`-typed,
+reflection-based — NOT because interfaces were the wrong tool there, but
+because `Client.Publish`/`.Subscribe`/`Server.Serve`/`Client.Call` are
+METHODS on the single, non-generic `*Client`/`*Server` value (one
+instance serves every channel/route T in an app) — methods cannot
+introduce their own type parameters, so THAT call shape genuinely has no
+generic option. Decision 7's `PublishHandle[T]`/`SubscribeHandle[T]` are
+being designed as FREE FUNCTIONS (never methods on a shared value), which
+CAN have type parameters — so there is no structural reason to fall back
+to reflection here; the adapter-facing interfaces below are GENERIC,
+mirroring `ports.SourceAdapter[T]` exactly. An earlier draft of this
+decision proposed a non-generic, byte/topic-level `HandleTransport`
+interface — rejected as an unforced regression to `any`-shaped thinking.
+
+**Resolved design:**
+
+```go
+// api/events — two new GENERIC interfaces (mirrors ports.SourceAdapter[T]/SinkAdapter[T]):
+type PublishTransport[T any] interface {
+    Publish(ctx context.Context, handle *ChannelHandle[T], msg T) error
+    AdapterName() string
+}
+type SubscribeTransport[T any] interface {
+    Subscribe(ctx context.Context, handle *ChannelHandle[T], fn func(context.Context, T) error) error
+    AdapterName() string
+}
+
+// api/events — shared GENERIC helper functions (functions CAN be
+// generic; this is what lets the adapter-specific PROTOCOL logic stay
+// thin while the merge-field/topic-derivation logic — duplicated 3x
+// today across zeromq/mqtt5/mqtt's own Publish[T]/PublishHandle[T]/
+// SubscribeWithHandle[T] — gets exactly ONE source of truth):
+func EncodeAndBuildTopic[T any](handle *ChannelHandle[T], msg T, formats ...format.Format[T]) (topic string, payload []byte, err error)
+func DecodeAndMergeVars[T any](handle *ChannelHandle[T], topic string, payload []byte, formats ...format.Format[T]) (T, error)
+
+// api/events — the actual call-time surface (mirrors the user's own
+// requested shape exactly): channel here is the role-scoped
+// Publisher[T]/Subscriber[T] value from Channel.WithPublish/
+// WithSubscribe — NO *events.Client involved anywhere in this path.
+func PublishHandle[T any](ctx context.Context, pub Publisher[T], adapter PublishTransport[T], msg T) error {
+    handle, err := pub.Handle(nil) // spec-free, mirrors Client.Publish's internal Handle(client) call with client=nil
+    if err != nil { return err }
+    return adapter.Publish(ctx, handle, msg)
+}
+func SubscribeHandle[T any](ctx context.Context, sub Subscriber[T], adapter SubscribeTransport[T], fn func(context.Context, T) error) error {
+    handle, err := sub.Handle(nil)
+    if err != nil { return err }
+    return adapter.Subscribe(ctx, handle, fn)
+}
+```
+
+Each adapter provides GENERIC constructor functions (mirrors
+`zeromq.SubscribeAdapter[T]` exactly):
+
+```go
+// adapters/mqtt5 (new):
+func NewPublishTransport[T any](client MQTTClient, opts PublishTransportOptions) events.PublishTransport[T]
+type PublishTransportOptions struct { QoS byte; Retained bool; ContentType string; UserProperties []UserProperty }
+
+func NewSubscribeTransport[T any](client MQTTClient, router MQTTRouter, opts SubscribeTransportOptions) events.SubscribeTransport[T]
+type SubscribeTransportOptions struct {
+    TopicFilter  string // empty = derive via deriveWildcardFilter, unchanged from today
+    QoS          byte
+    OnError      func(SubscribeError)
+    Observer     stats.Observer
+    SecurityFunc func(ctx context.Context, msg *pahomqtt5.Publish, reqs []route.SecurityRequirement) error // stays mqtt5-NATIVE
+}
+// adapters/mqtt (v3): same pattern, SecurityFunc stays pahomqtt.Message-shaped (unchanged, matches its own
+// documented no-op-for-credentials limitation). adapters/zeromq: same pattern, SecurityFunc stays *T-shaped
+// (unchanged — zeromq's SecurityFunc already operates on the decoded value, nothing new needed).
+```
+
+Each concrete `mqtt5PublishTransport[T]`/`mqtt5SubscribeTransport[T]`
+(etc.) is a small generic struct whose `Publish`/`Subscribe` methods call
+`events.EncodeAndBuildTopic[T]`/`events.DecodeAndMergeVars[T]`
+internally, then layer the adapter's own protocol-specific send/receive
+around it. **A direct, welcome consequence of this shape**: since each
+adapter's transport is its OWN concrete type with its OWN options struct,
+there is NO forced cross-adapter unification of `SecurityFunc`'s shape
+needed (an earlier draft proposed forcing all 3 adapters' `SecurityFunc`
+into one `headers map[string]string`-based signature — dropped as
+unnecessary complexity once the interface itself went generic).
+
+**Also confirmed as part of this decision:**
+
+- `SubscribeWithHandle[T]`/`Publish[T]`/`PublishHandle[T]` (zeromq,
+  mqtt5) and `SubscribeHandler[T]`/`Publish[T]`/`PublishHandle[T]`
+  (mqtt v3) are REPLACED (removed, not deprecated — same "replace, not
+  deprecate" precedent as Decision 6) — their logic relocates into each
+  adapter's new transport types, consumed exclusively via
+  `events.PublishHandle`/`events.SubscribeHandle` going forward.
+- `events.NewClient(info Info, opts ...ClientOption) *Client` becomes
+  `events.NewClient(opts ...ClientOption) *Client` + a new
+  `events.WithInfo(info Info) ClientOption` — BREAKING signature change,
+  every call site migrates to `events.NewClient(events.WithInfo(info))`.
+  Zero-value `Info{}` is used when `WithInfo` is never called.
+- `adapters/mqtt5`/`adapters/mqtt` gain a NEW, ADDITIVE
+  `Connect(ctx context.Context, brokerURL string, opts ConnectOptions) (...)`
+  entry point wrapping `paho.golang`/`paho.mqtt.golang`'s own connection
+  APIs — today's `Attach` (unchanged signature, still takes an
+  already-connected client) remains for callers needing full paho
+  control (custom TLS/keepalive/reconnect). **Confirmed: no env-var
+  reading inside go-codex itself** (verified: zero `os.Getenv` calls
+  anywhere in `adapters/*`/`api/*` non-example code, unchanged by this
+  decision) — `Connect` takes `brokerURL` as a plain string; sourcing it
+  from an env var remains the calling APPLICATION's job, exactly like
+  REST's baseURL already works.
+- **`adapters/zeromq` connection-ownership is explicitly DEFERRED** — a
+  real, confirmed finding: `adapters/zeromq` has ZERO dependency on any
+  concrete ZMQ library today (fully abstracted behind `FramedSocket`,
+  with an explicit, documented "no CGO in the adapter" design goal in
+  its own doc comments) — adding a `zeromq.Connect(brokerURL, ...)` would
+  force a hard `pebbe/zmq4` (CGO) dependency onto EVERY consumer of the
+  package, including ones never using the new capability. NOT
+  implemented this phase — see "Remaining open items" below for the
+  deferred options (accept the CGO cost outright; isolate it in a new
+  `adapters/zeromq/zmq4` sub-package; or continue skipping entirely).
+  zeromq DOES still get the handle-transport INVERSION itself
+  (`NewPublishTransport[T]`/`NewSubscribeTransport[T]`, caller-connects-
+  the-socket, exactly as `zeromq.Attach` works today) — inversion and
+  connection-ownership are ORTHOGONAL; only the latter is deferred.
+
+**Explicitly out of scope for Decision 7** (same boundary as Decision 6):
+`api/reqreply` and its mqtt5/zeromq reqreply-shaped functions (`Serve`,
+`Call`, `CallHandle`, `ServeRouter`, `CallDealer`, etc.); `sql`/`redis`/
+`file`/`mcpgo`/`mcp`/`llm`/`websocket`.
+
 ## Escape hatches that exist today (pub/sub-scoped, fresh audit)
 
 1. ~~**Role-asymmetry gap**~~ — **RESOLVED** by Decision 1's
@@ -2454,9 +3065,70 @@ Decision.
     migrated, but worth naming as a one-time migration cost distinct from
     every other item in this list (which describe STANDING, permanent
     behavior, not a one-time transition cost).
+12. ~~**`Channel.Register(b)`/`Channel.ClientHandle()` were kept instead
+    of removed during implementation, silently reopening escape hatch
+    #2's entire guarantee**~~ — **FOUND AND FULLY RESOLVED by a
+    post-implementation audit.** This doc's own Migration Checklist
+    always said these two methods are REMOVED, fully replaced by
+    `Subscriber[T].Handle`/`Publisher[T].Handle` — but the implementation
+    pass initially kept them anyway (an undocumented deviation). Traced
+    the runtime consequence: both old methods built a `*ChannelHandle[T]`
+    with `Implementations`/`ClientImplementations` always `nil` and never
+    called `CheckCoverage` — so a channel built via these methods that
+    DECLARED a `Security` requirement got **zero runtime enforcement,
+    silently, no error** — exactly what escape hatch #2's "unconditional,
+    no opt-out" `CheckCoverage` guarantee was supposed to make
+    impossible. The audit confirmed zero existing test combined a
+    declared `Security` requirement with `Register`/`ClientHandle`
+    (low blast radius), but both remained fully exported public API with
+    no deprecation warning — any external caller could have hit this
+    silently. **Resolved by completing the original plan**: both methods
+    removed entirely; every call site (`api/events`'s own ~84-call-site
+    regression-test suite plus a dozen adapter test/example call sites)
+    migrated to `WithSubscribe`/`WithPublish` + `.Handle(client)` (or
+    `.Handle(nil)` for `ClientHandle`'s old spec-free behavior).
+13. ~~**Decision 1 explicitly promised a `checkImplementationsDeclared`/
+    `events.UnknownMiddlewareImplementationError` check — the
+    REST-mirrored reverse-direction sibling to `CheckCoverage` — but it
+    was never actually implemented**~~ — **FOUND AND FIXED by the same
+    post-implementation audit.** `rest.checkImplementationsDeclared`/
+    `rest.UnknownMiddlewareImplementationError` exist and are called
+    unconditionally by `Route.Register`; the `api/events` equivalent
+    Decision 1 promised ("mirrors REST/reqreply's
+    `UnknownMiddlewareImplementationError` exactly") was simply never
+    written. Catches a `SubscribeMW` call PAIRED against a security
+    scheme name that was never `.Use()`'d on the same channel (e.g. a
+    copy-paste mistake reusing a different channel's
+    `middleware.Middleware`) — lower severity than item 12 (doesn't
+    silently disable enforcement of a REAL declared scheme, it's a
+    "did you mean" / dead-Fn catch), but a genuine gap between this
+    doc's own stated design and what shipped. Fixed: added
+    `events.UnknownMiddlewareImplementationError`/
+    `checkImplementationsDeclared`, called unconditionally alongside
+    `CheckCoverage` in `Subscriber.Handle`/`Subscriber.Register`
+    (subscribe-side only, same asymmetry as `CheckCoverage` — mirrors
+    REST exactly).
 
 ## Remaining open items
 
+- **NEW (Decision 7) — `adapters/zeromq` connection-ownership deferred.**
+  Unlike `adapters/mqtt5`/`adapters/mqtt` (both already hard-depend on
+  their respective paho package at the type level, making a
+  connection-owning `Connect(ctx, brokerURL, opts)` straightforward),
+  `adapters/zeromq` has ZERO dependency on any concrete ZMQ library
+  today — fully abstracted behind `FramedSocket`, with an explicit,
+  documented "no CGO in the adapter" design goal (the real `pebbe/zmq4`
+  library requires CGO). Three options were identified but NOT decided:
+  (1) accept the CGO cost outright as a direct dependency of
+  `adapters/zeromq` itself; (2) isolate it in a NEW
+  `adapters/zeromq/zmq4` sub-package, keeping the core package CGO-free
+  for consumers who don't need connection-ownership; (3) continue
+  skipping zeromq connection-ownership indefinitely (caller always
+  brings their own connected `FramedSocket`, as today). Left for a
+  future round to decide — `zeromq.Attach`/the new handle-transport
+  inversion (`NewPublishTransport[T]`/`NewSubscribeTransport[T]`) are
+  UNAFFECTED by this and ship normally (caller-connects-the-socket,
+  unchanged from today).
 - ~~Naming: whether to adopt "Caller"/"Server" terminology for
   `reqreply`~~ (out of scope for this doc, deferred to its own
   dedicated review pass once this doc is fully design-complete) —

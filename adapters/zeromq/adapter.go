@@ -11,6 +11,8 @@ import (
 	"github.com/DaniDeer/go-codex/api/reqreply"
 	"github.com/DaniDeer/go-codex/codex"
 	"github.com/DaniDeer/go-codex/format"
+	"github.com/DaniDeer/go-codex/middleware"
+	"github.com/DaniDeer/go-codex/route"
 	"github.com/DaniDeer/go-codex/stats"
 )
 
@@ -24,10 +26,33 @@ var (
 	statusError = []byte("error")
 )
 
-// SubscribeOptions configures [Subscribe].
-type SubscribeOptions struct {
-	// OnError, when non-nil, is called with a typed [SubscribeError] on decode
-	// or application handler failure. If nil, errors are silently discarded.
+// SubscribeOptions configures [subscribe]/[SubscribeWithHandle]. Generic
+// over T (BREAKING change from the previous non-generic SubscribeOptions)
+// since [SubscribeOptions.SecurityFunc] needs read/write access to the
+// decoded message — zeromq's [topic, payload] frames carry nothing beyond
+// what's already decoded into T, so there is no raw-message-equivalent
+// parameter to pass instead (unlike mqtt5's *pahomqtt5.Publish) — see
+// docs/roadmap/pubsub-workflow-simplification.md's Decision 3 "zeromq —
+// message-level mechanism now TRACTABLE" subsection.
+type SubscribeOptions[T any] struct {
+	// TopicFilter is the ZeroMQ SUB-socket prefix filter passed to
+	// [FramedSocket.SetSubscription]. Use this when the handle's topic
+	// template uses {varName} placeholders (e.g.
+	// "sensors/{sensorID}/data") — ZeroMQ subscription filtering is plain
+	// byte-prefix matching (no wildcard concept), so a literal template
+	// string never matches a real published topic. When empty (the common
+	// case), a prefix filter is derived automatically from handle.Topic
+	// via [deriveTopicPrefix] (returns everything up to the first "{"
+	// placeholder). Set explicitly only for a filter that differs from
+	// this derivation. BUG FIX this pass — see
+	// docs/roadmap/pubsub-workflow-simplification.md's "Confirmed bug,
+	// fixed this pass" subsection: a templated topic's placeholders were
+	// previously sent VERBATIM as the subscription filter, which never
+	// matches any real published topic.
+	TopicFilter string
+
+	// OnError, when non-nil, is called with a typed [SubscribeError] on decode,
+	// handler, or security failure. If nil, errors are silently discarded.
 	OnError func(SubscribeError)
 
 	// Observer, when non-nil, receives per-message lifecycle events:
@@ -37,10 +62,30 @@ type SubscribeOptions struct {
 	// with location "payload".
 	// Defaults to [stats.NoopObserver] when nil.
 	Observer stats.Observer
+
+	// SecurityFunc, when non-nil, is called for channels with non-empty
+	// security requirements before fn is invoked — the message-level
+	// security mechanism zeromq had NONE of before this pass (confirmed
+	// via docs/roadmap/pubsub-workflow-simplification.md's escape-hatch
+	// #5 discussion: "zeromq has literally no security mechanism at any
+	// layer"). msg is a pointer to the decoded value — read it to extract
+	// an in-payload credential field, and/or mutate it (the same
+	// read/write access [nethttp.Transform]-equivalent unpaired usage
+	// gets for free). Return a non-nil error to reject the message.
+	//
+	//	opts.SecurityFunc = func(ctx context.Context, msg *Reading, reqs []route.SecurityRequirement) error {
+	//	    if msg.AuthToken == "" {
+	//	        return errors.New("missing credential")
+	//	    }
+	//	    return verifyJWT(msg.AuthToken, reqs)
+	//	}
+	SecurityFunc func(ctx context.Context, msg *T, reqs []route.SecurityRequirement) error
 }
 
-// PublishOptions configures [Publish].
-type PublishOptions struct {
+// PublishOptions configures [Publish]/[PublishHandle]. Generic over T
+// (BREAKING change from the previous non-generic PublishOptions) for the
+// SAME reason as [SubscribeOptions] — see its doc comment.
+type PublishOptions[T any] struct {
 	// Observer, when non-nil, receives per-publish lifecycle events:
 	// [stats.Observer.RecordPublish] is called with success=true on broker send
 	// and success=false on encode failure or send error. Per-field payload encode
@@ -48,6 +93,21 @@ type PublishOptions struct {
 	// "payload". Topic variable errors are reported with location "topic_var".
 	// Defaults to [stats.NoopObserver] when nil.
 	Observer stats.Observer
+
+	// CredentialFunc, when non-nil, is called for channels that declare
+	// non-nil Publish.Security (or inherit non-empty GlobalSecurity) —
+	// the publish-side mirror of [SubscribeOptions.SecurityFunc], SAME
+	// shape as the subscribe side (deliberate symmetry — zeromq's frames
+	// carry nothing beyond T in either direction, unlike mqtt/mqtt5's
+	// asymmetric subscribe-side raw-message access). msg is a pointer to
+	// the value about to be encoded — mutate it to embed a credential as
+	// an ordinary payload field before it is marshalled.
+	//
+	//	opts.CredentialFunc = func(ctx context.Context, msg *Reading, reqs []route.SecurityRequirement) error {
+	//	    msg.AuthToken = "Bearer " + token
+	//	    return nil
+	//	}
+	CredentialFunc func(ctx context.Context, msg *T, reqs []route.SecurityRequirement) error
 }
 
 // ServeOptions configures [Serve].
@@ -125,18 +185,113 @@ func resolveCallFormat[T any](declared []format.Format[T], overrideAny any) ([]f
 	return fmts, nil
 }
 
-// Subscribe blocks and processes incoming messages from a SUB or PULL socket.
-// Each message is decoded using handle's codec and delivered to fn.
+// validateSubscribeImplementationShapes checks every attached impl.Fn
+// against the two shapes [events.Subscriber.SubscribeMW] recognizes for T
+// — the security shape (func(context.Context, *T,
+// []route.SecurityRequirement) error) or the general-purpose wrapping
+// shape (func(next func(context.Context, T) error) func(context.Context,
+// T) error) — EAGERLY at [SubscribeWithHandle] construction time rather
+// than deferring to the first incoming message. Mirrors
+// adapters/mqtt5.validateSubscribeImplementationShapes, adapted for
+// zeromq's simpler (no-grants) security shape.
+func validateSubscribeImplementationShapes[T any](impls []middleware.ServerImplementation) error {
+	for _, impl := range impls {
+		if impl.Fn == nil {
+			continue
+		}
+		switch impl.Fn.(type) {
+		case func(context.Context, *T, []route.SecurityRequirement) error:
+		case func(func(context.Context, T) error) func(context.Context, T) error:
+		default:
+			return middleware.MiddlewareShapeError{
+				Name:     impl.Name,
+				Expected: "func(context.Context, *T, []route.SecurityRequirement) error or func(func(context.Context, T) error) func(context.Context, T) error",
+				Got:      fmt.Sprintf("%T", impl.Fn),
+			}
+		}
+	}
+	return nil
+}
+
+// runSubscribeSecurityImpls runs every attached
+// [middleware.ServerImplementation] whose Fn matches the security shape
+// (func(context.Context, *T, []route.SecurityRequirement) error) IN
+// ATTACHMENT ORDER, fail-fast on the first error — the zeromq mirror of
+// [adapters/mqtt5.runSubscribeSecurityImpls], simplified: zeromq's Fn
+// shape returns a plain error (no grants map to merge/CheckScopes,
+// unlike mqtt5's User-Property-driven design) since zeromq has no
+// built-in credential-extraction mechanism of its own. General-purpose
+// wrapping-shaped Fns are silently skipped here (consumed instead by
+// [wrapSubscribeGeneral]).
+func runSubscribeSecurityImpls[T any](ctx context.Context, msg *T, secReqs []route.SecurityRequirement, impls []middleware.ServerImplementation) error {
+	for _, impl := range impls {
+		fn, ok := impl.Fn.(func(context.Context, *T, []route.SecurityRequirement) error)
+		if !ok {
+			continue // general-purpose or nil
+		}
+		if len(impl.Satisfies) > 0 && len(secReqs) == 0 {
+			continue
+		}
+		if err := fn(ctx, msg, secReqs); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// wrapSubscribeGeneral wraps fn with every general-purpose Fn found in
+// impls (shape func(next func(context.Context, T) error) func(context.Context, T) error),
+// OUTERMOST-in, in attachment order — mirrors
+// [adapters/mqtt5.wrapSubscribeGeneral] exactly. This is the mechanism
+// [Observability] uses. Security-shaped Fns are silently skipped here
+// (consumed instead by [runSubscribeSecurityImpls]).
+func wrapSubscribeGeneral[T any](fn func(context.Context, T) error, impls []middleware.ServerImplementation) func(context.Context, T) error {
+	for i := len(impls) - 1; i >= 0; i-- {
+		wrap, ok := impls[i].Fn.(func(func(context.Context, T) error) func(context.Context, T) error)
+		if !ok {
+			continue
+		}
+		fn = wrap(fn)
+	}
+	return fn
+}
+
+// SubscribeWithHandle blocks and processes incoming messages from a SUB or
+// PULL socket, dispatching decoded values to fn. RENAMED from this
+// package's previous bare Subscribe (BREAKING — existing callers of the
+// old handle-based Subscribe must rename their call site to
+// SubscribeWithHandle to keep identical behavior); see [subscribe] for the
+// new value-based convenience that takes a [*Caller] and an
+// [events.Subscriber] instead. This is the handle-based primitive, kept
+// as the lower-level path on raw sock+handle params — used directly by
+// ports/SubscribeAdapter-style callers who already own a pre-built
+// handle (confirmed via code: zeromq's own [ports]-binding
+// zmqSubscribeAdapter DOES call this exported function, unlike mqtt5's
+// ports binding — see this package's migration notes).
 //
-// For SUB sockets, Subscribe registers handle.Topic as the ZMQ subscription
-// prefix filter before entering the receive loop. For PULL sockets the filter
-// is a no-op — call [FramedSocket.SetSubscription]("") separately if needed.
+// The broker subscription filter resolves opts.TopicFilter if non-empty,
+// else a prefix derived from handle.Topic via [deriveTopicPrefix] (fixes
+// a pre-existing bug where a templated topic's placeholders were sent
+// VERBATIM as the subscription filter, which never matches any real
+// published topic — see
+// docs/roadmap/pubsub-workflow-simplification.md's wildcard/prefix
+// bug-fix subsection). A non-templated topic's behavior is unchanged. For
+// PULL sockets the filter is a no-op — call
+// [FramedSocket.SetSubscription]("") separately if needed.
 //
 // Messages are expected in [topic, payload] frame format. The topic frame is
 // used for observer reporting; the payload frame is decoded by the codec.
 //
+// Every attached [events.ChannelHandle.Implementations] Fn (from
+// [events.Subscriber.SubscribeMW]) is validated EAGERLY here, before the
+// broker subscription is made, via [validateSubscribeImplementationShapes]
+// — a malformed Fn fails loudly and immediately, never silently at
+// message time. General-purpose Fns wrap fn ([wrapSubscribeGeneral]);
+// security-shaped Fns run per-message ([runSubscribeSecurityImpls]),
+// AFTER opts.SecurityFunc.
+//
 // The loop runs until ctx is cancelled (returns nil) or a socket error occurs
-// (returns the error). Run Subscribe in a dedicated goroutine.
+// (returns the error). Run SubscribeWithHandle in a dedicated goroutine.
 //
 // The optional formats parameter overrides the channel handle's default JSON
 // codec. Priority: call-time formats > handle.SubscribeFormats > handle.Formats
@@ -145,25 +300,35 @@ func resolveCallFormat[T any](declared []format.Format[T], overrideAny any) ([]f
 // Example (PUB/SUB sensor readings):
 //
 //	go func() {
-//	    if err := zeromq.Subscribe(ctx, sock, readingsHandle, func(ctx context.Context, r SensorReading) error {
+//	    if err := zeromq.SubscribeWithHandle(ctx, sock, readingsHandle, func(ctx context.Context, r SensorReading) error {
 //	        return store.Save(ctx, r)
-//	    }, zeromq.SubscribeOptions{Observer: obs}); err != nil {
+//	    }, zeromq.SubscribeOptions[SensorReading]{Observer: obs}); err != nil {
 //	        log.Error("subscribe stopped", "err", err)
 //	    }
 //	}()
-func Subscribe[T any](
+func subscribeWithHandle[T any](
 	ctx context.Context,
 	sock FramedSocket,
 	handle *events.ChannelHandle[T],
 	fn func(context.Context, T) error,
-	opts SubscribeOptions,
+	opts SubscribeOptions[T],
 	formats ...format.Format[T],
 ) error {
 	obs := opts.Observer
 	if obs == nil {
 		obs = stats.ObserverFromContext(ctx)
 	}
-	if err := sock.SetSubscription(handle.Topic); err != nil {
+
+	if err := validateSubscribeImplementationShapes[T](handle.Implementations); err != nil {
+		return err
+	}
+	fn = wrapSubscribeGeneral(fn, handle.Implementations)
+
+	filter := opts.TopicFilter
+	if filter == "" {
+		filter = deriveTopicPrefix(handle.Topic)
+	}
+	if err := sock.SetSubscription(filter); err != nil {
 		return SocketError{Op: "set_subscription", Err: err}
 	}
 	if err := sock.SetRecvTimeout(recvPollInterval); err != nil {
@@ -176,6 +341,15 @@ func Subscribe[T any](
 	if len(effectiveFmts) == 0 {
 		effectiveFmts = handle.Formats
 	}
+
+	var secReqs []route.SecurityRequirement
+	if handle.Descriptor.Subscribe != nil {
+		secReqs = handle.Descriptor.Subscribe.Security
+	}
+	if secReqs == nil {
+		secReqs = handle.GlobalSecurity
+	}
+
 	for {
 		select {
 		case <-ctx.Done():
@@ -242,6 +416,39 @@ func Subscribe[T any](
 			}
 		}
 
+		// Security enforcement — opts.SecurityFunc runs first (if any),
+		// then every attached handle.Implementations security-shaped Fn
+		// (populated by [events.Subscriber.SubscribeMW]) runs
+		// UNCONDITIONALLY (mirrors mqtt5's ordering: an UNPAIRED,
+		// general-purpose Satisfies-empty Fn must run even on a channel
+		// with no declared security — e.g. a Transform-equivalent reading
+		// an in-payload field into *T before fn runs). Shapes were
+		// already validated eagerly above.
+		if opts.SecurityFunc != nil {
+			if err := opts.SecurityFunc(ctx, &value, secReqs); err != nil {
+				if secObs, ok := obs.(stats.SecurityObserver); ok {
+					secObs.RecordSecurityRejection(topic, firstSchemeName(secReqs))
+				}
+				obs.RecordSubscribe(topic, false, time.Since(start))
+				if opts.OnError != nil {
+					opts.OnError(SubscribeError{Kind: KindSecurity, Topic: topic, Err: events.SecurityError{Err: err}})
+				}
+				continue
+			}
+		}
+		if len(handle.Implementations) > 0 {
+			if err := runSubscribeSecurityImpls(ctx, &value, secReqs, handle.Implementations); err != nil {
+				if secObs, ok := obs.(stats.SecurityObserver); ok {
+					secObs.RecordSecurityRejection(topic, firstSchemeName(secReqs))
+				}
+				obs.RecordSubscribe(topic, false, time.Since(start))
+				if opts.OnError != nil {
+					opts.OnError(SubscribeError{Kind: KindSecurity, Topic: topic, Err: events.SecurityError{Err: err}})
+				}
+				continue
+			}
+		}
+
 		var spanCtx = ctx
 		if to, ok := obs.(stats.TraceObserver); ok {
 			spanCtx = to.StartSpan(ctx, "zmq.subscribe", topic)
@@ -261,6 +468,134 @@ func Subscribe[T any](
 	}
 }
 
+// firstSchemeName returns the first scheme name from the security
+// requirements — mirrors [adapters/mqtt5.firstScheme], used for
+// [stats.SecurityObserver.RecordSecurityRejection] reporting.
+func firstSchemeName(reqs []route.SecurityRequirement) string {
+	for _, req := range reqs {
+		for name := range req {
+			return name
+		}
+	}
+	return ""
+}
+
+// Subscribe is the NEW value-based convenience tier — mirrors
+// [nethttp.Call] taking a [rest.Route] value directly. Builds the handle
+// internally via sub.Handle(caller.events) (caller.events MAY be nil for
+// a spec-free handle — the common case for a typical application
+// subscribing without also registering a spec), then behaves identically
+// to [SubscribeWithHandle]. fn is STILL a call-time param, unchanged from
+// today's imperative "here's my handler, start consuming now" mental
+// model — see docs/roadmap/pubsub-workflow-simplification.md's two-tier
+// Subscribe subsection.
+//
+//	sub := SensorReadings.WithSubscribe(events.Subscribe{})
+//	caller := zeromq.NewCaller(sock, nil) // nil = no spec
+//	err := zeromq.Subscribe(ctx, caller, sub, fn, zeromq.SubscribeOptions[Reading]{})
+func subscribe[T any](
+	ctx context.Context,
+	caller *caller,
+	sub events.Subscriber[T],
+	fn func(context.Context, T) error,
+	opts SubscribeOptions[T],
+	formats ...format.Format[T],
+) error {
+	handle, err := sub.Handle(caller.events)
+	if err != nil {
+		return err
+	}
+	return subscribeWithHandle(ctx, caller.sock, handle, fn, opts, formats...)
+}
+
+// validatePublishImplementationShapes checks every attached impl.Fn
+// against the two shapes [events.Publisher.PublishMW] recognizes for T —
+// the revised security shape (func(context.Context, *T,
+// []route.SecurityRequirement) error) or the general-purpose wrapping
+// shape (func(next func(context.Context, T) error) func(context.Context, T) error)
+// — EAGERLY at the top of every [Publish] call. Mirrors
+// [adapters/mqtt5.validatePublishImplementationShapes], adapted for
+// zeromq's simpler (no-UserProperty) credential shape.
+func validatePublishImplementationShapes[T any](impls []middleware.ClientImplementation) error {
+	for _, impl := range impls {
+		if impl.Fn == nil {
+			continue
+		}
+		switch impl.Fn.(type) {
+		case func(context.Context, *T, []route.SecurityRequirement) error:
+		case func(func(context.Context, T) error) func(context.Context, T) error:
+		default:
+			return middleware.MiddlewareShapeError{
+				Name:     impl.Name,
+				Expected: "func(context.Context, *T, []route.SecurityRequirement) error or func(func(context.Context, T) error) func(context.Context, T) error",
+				Got:      fmt.Sprintf("%T", impl.Fn),
+			}
+		}
+	}
+	return nil
+}
+
+// runPublishSecurityImpls runs every attached
+// [middleware.ClientImplementation] whose Fn matches the revised security
+// shape (func(context.Context, *T, []route.SecurityRequirement) error) —
+// GATED by Satisfies vs secReqs, mirroring
+// [adapters/mqtt5.runPublishSecurityImpls] (an implementation with a
+// NON-EMPTY Satisfies only runs when at least one of its scheme names is
+// present in secReqs; an implementation with an EMPTY Satisfies
+// (general-purpose) always runs). msg is a pointer — an Fn may write into
+// it (in-payload credential embedding). General-purpose wrapping-shaped
+// Fns are silently skipped here (consumed instead by
+// [wrapPublishGeneral]).
+func runPublishSecurityImpls[T any](ctx context.Context, msg *T, secReqs []route.SecurityRequirement, impls []middleware.ClientImplementation) error {
+	reqSchemes := make(map[string]bool, len(secReqs))
+	for _, req := range secReqs {
+		for scheme := range req {
+			reqSchemes[scheme] = true
+		}
+	}
+	for _, impl := range impls {
+		fn, ok := impl.Fn.(func(context.Context, *T, []route.SecurityRequirement) error)
+		if !ok {
+			continue // general-purpose or nil
+		}
+		if len(impl.Satisfies) > 0 {
+			matched := false
+			for _, s := range impl.Satisfies {
+				if reqSchemes[s] {
+					matched = true
+					break
+				}
+			}
+			if !matched {
+				continue
+			}
+		}
+		if err := fn(ctx, msg, secReqs); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// wrapPublishGeneral wraps fn (the adapter's own "encode and transmit"
+// step) with every general-purpose Fn found in impls (shape
+// func(next func(context.Context, T) error) func(context.Context, T) error),
+// OUTERMOST-in, in attachment order — mirrors
+// [wrapSubscribeGeneral]'s publish-side sibling, deliberately symmetric,
+// and [adapters/mqtt5.wrapPublishGeneral]. Security-shaped Fns are
+// silently skipped here (consumed instead by [runPublishSecurityImpls]).
+// This is the mechanism [Observability] uses on the publish side.
+func wrapPublishGeneral[T any](fn func(context.Context, T) error, impls []middleware.ClientImplementation) func(context.Context, T) error {
+	for i := len(impls) - 1; i >= 0; i-- {
+		wrap, ok := impls[i].Fn.(func(func(context.Context, T) error) func(context.Context, T) error)
+		if !ok {
+			continue
+		}
+		fn = wrap(fn)
+	}
+	return fn
+}
+
 // Publish encodes msg using handle's codec and sends it to a PUB or PUSH socket.
 //
 // The message is framed as [topic, payload]:
@@ -274,22 +609,38 @@ func Subscribe[T any](
 //   - nil: use handle.Topic directly (static topics).
 //   - non-nil: call handle.BuildTopic(vars) to resolve a template topic.
 //
+// Security/credential resolution (opts.CredentialFunc AND every attached
+// [events.ChannelHandle.ClientImplementations] Fn from
+// [events.Publisher.PublishMW]) runs BEFORE msg is encoded — both
+// mechanisms get write-access to *msg (in-payload credential embedding),
+// so the encode step downstream observes any mutation. Every attached
+// ClientImplementations Fn is shape-validated EAGERLY via
+// [validatePublishImplementationShapes] before anything else runs.
+// General-purpose Fns wrap the internal "encode and transmit" step
+// ([wrapPublishGeneral]); security-shaped Fns run once each
+// ([runPublishSecurityImpls]).
+//
 // The optional formats parameter overrides the channel handle's default JSON
 // codec. Priority: call-time formats > handle.PublishFormats > handle.Formats
 // > handle.Encode (JSON fallback).
-func Publish[T any](
+func publish[T any](
 	ctx context.Context,
 	sock FramedSocket,
 	handle *events.ChannelHandle[T],
 	msg T,
 	vars map[string]string,
-	opts PublishOptions,
+	opts PublishOptions[T],
 	formats ...format.Format[T],
 ) error {
 	obs := opts.Observer
 	if obs == nil {
 		obs = stats.ObserverFromContext(ctx)
 	}
+
+	if err := validatePublishImplementationShapes[T](handle.ClientImplementations); err != nil {
+		return err
+	}
+
 	start := time.Now()
 	var err error
 	if to, ok := obs.(stats.TraceObserver); ok {
@@ -309,6 +660,29 @@ func Publish[T any](
 		}
 	}
 
+	// Security/credential resolution — opts.CredentialFunc runs first (if
+	// any), then every attached handle.ClientImplementations security-shaped
+	// Fn, mirroring SubscribeWithHandle's ordering on the subscribe side.
+	var secReqs []route.SecurityRequirement
+	if handle.Descriptor.Publish != nil {
+		secReqs = handle.Descriptor.Publish.Security
+	}
+	if secReqs == nil {
+		secReqs = handle.GlobalSecurity
+	}
+	if len(secReqs) > 0 && opts.CredentialFunc != nil {
+		if err = opts.CredentialFunc(ctx, &msg, secReqs); err != nil {
+			obs.RecordPublish(topic, false, time.Since(start))
+			return err
+		}
+	}
+	if len(handle.ClientImplementations) > 0 {
+		if err = runPublishSecurityImpls(ctx, &msg, secReqs, handle.ClientImplementations); err != nil {
+			obs.RecordPublish(topic, false, time.Since(start))
+			return err
+		}
+	}
+
 	effectiveFmts := formats
 	if len(effectiveFmts) == 0 {
 		effectiveFmts = handle.PublishFormats
@@ -316,21 +690,29 @@ func Publish[T any](
 	if len(effectiveFmts) == 0 {
 		effectiveFmts = handle.Formats
 	}
-	var payload []byte
-	if len(effectiveFmts) > 0 {
-		payload, err = effectiveFmts[0].Marshal(msg)
-	} else {
-		payload, err = handle.Encode(msg)
-	}
-	if err != nil {
-		stats.ReportErrors(obs, "payload", err)
-		obs.RecordPublish(topic, false, time.Since(start))
-		return PublishEncodeError{Topic: topic, Err: err}
-	}
 
-	if err = sock.SendFrames([][]byte{[]byte(topic), payload}); err != nil {
+	transmit := func(ctx context.Context, m T) error {
+		var payload []byte
+		var encErr error
+		if len(effectiveFmts) > 0 {
+			payload, encErr = effectiveFmts[0].Marshal(m)
+		} else {
+			payload, encErr = handle.Encode(m)
+		}
+		if encErr != nil {
+			stats.ReportErrors(obs, "payload", encErr)
+			return PublishEncodeError{Topic: topic, Err: encErr}
+		}
+		if sendErr := sock.SendFrames([][]byte{[]byte(topic), payload}); sendErr != nil {
+			return SocketError{Op: "send", Err: sendErr}
+		}
+		return nil
+	}
+	transmit = wrapPublishGeneral(transmit, handle.ClientImplementations)
+
+	if err = transmit(ctx, msg); err != nil {
 		obs.RecordPublish(topic, false, time.Since(start))
-		return SocketError{Op: "send", Err: err}
+		return err
 	}
 	obs.RecordPublish(topic, true, time.Since(start))
 	return nil
@@ -346,13 +728,13 @@ func Publish[T any](
 // that build the vars map themselves (e.g. no merge fields declared, or
 // vars come from a non-struct source).
 //
-//	err := zeromq.PublishHandle(ctx, sock, sensorChannel, reading, zeromq.PublishOptions{})
-func PublishHandle[T any](
+//	err := zeromq.PublishHandle(ctx, sock, sensorChannel, reading, zeromq.PublishOptions[Reading]{})
+func publishHandle[T any](
 	ctx context.Context,
 	sock FramedSocket,
 	handle *events.ChannelHandle[T],
 	msg T,
-	opts PublishOptions,
+	opts PublishOptions[T],
 	formats ...format.Format[T],
 ) error {
 	vars, err := codex.EncodeVars(msg, handle.MergeFields()...)
@@ -362,7 +744,7 @@ func PublishHandle[T any](
 	if len(vars) == 0 {
 		vars = nil
 	}
-	return Publish(ctx, sock, handle, msg, vars, opts, formats...)
+	return publish(ctx, sock, handle, msg, vars, opts, formats...)
 }
 
 // Serve runs a blocking REP loop: receives requests, calls fn, sends replies.

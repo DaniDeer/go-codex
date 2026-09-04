@@ -1,4 +1,4 @@
-package nethttp_test
+package nethttp
 
 import (
 	"bufio"
@@ -11,7 +11,6 @@ import (
 	"testing"
 	"time"
 
-	nethttp "github.com/DaniDeer/go-codex/adapters/nethttp"
 	"github.com/DaniDeer/go-codex/api/rest"
 	gstream "github.com/DaniDeer/go-codex/stream"
 )
@@ -28,7 +27,7 @@ func (e pipelineConflictError) Error() string {
 // ── HandlerLatest ─────────────────────────────────────────────────────────────
 
 func newGetHandle() (*rest.RouteHandle[getReq, userResp], error) {
-	b := rest.NewBuilder(testInfo)
+	b := rest.NewServer(testInfo)
 	return rest.NewRoute[getReq, userResp]("GET", "/latest",
 		getReqCodec, userRespCodec, rest.RouteMeta{OperationID: "getLatest"}).RegisterHandle(b)
 }
@@ -45,7 +44,7 @@ func TestHandlerLatest_ReturnsLatestValue(t *testing.T) {
 	close(errCh)
 	src := gstream.Stream[userResp]{Values: valCh, Errors: errCh}
 
-	h := nethttp.HandlerLatest(handle, src, nethttp.Options{})
+	h := HandlerLatest(handle, src, Options{})
 	// Give background goroutine time to populate latest.
 	time.Sleep(20 * time.Millisecond)
 	close(valCh)
@@ -76,7 +75,7 @@ func TestHandlerLatest_NoValueReturns503(t *testing.T) {
 	src := gstream.Stream[userResp]{Values: valCh, Errors: errCh}
 
 	var capturedErr error
-	h := nethttp.HandlerLatest(handle, src, nethttp.Options{
+	h := HandlerLatest(handle, src, Options{
 		ErrorHandler: func(w http.ResponseWriter, _ *http.Request, status int, e error) {
 			capturedErr = e
 			http.Error(w, e.Error(), status)
@@ -90,7 +89,7 @@ func TestHandlerLatest_NoValueReturns503(t *testing.T) {
 	if rec.Code != http.StatusServiceUnavailable {
 		t.Errorf("want 503, got %d", rec.Code)
 	}
-	var nlv nethttp.NoLatestValueError
+	var nlv NoLatestValueError
 	if !errors.As(capturedErr, &nlv) {
 		t.Errorf("want NoLatestValueError, got %T", capturedErr)
 	}
@@ -99,13 +98,13 @@ func TestHandlerLatest_NoValueReturns503(t *testing.T) {
 // ── PipelineHandler ───────────────────────────────────────────────────────────
 
 func newPipelineRoute() (*rest.RouteHandle[createReq, userResp], error) {
-	b := rest.NewBuilder(testInfo)
+	b := rest.NewServer(testInfo)
 	return rest.NewRoute[createReq, userResp]("POST", "/pipeline",
 		createReqCodec, userRespCodec, rest.RouteMeta{OperationID: "pipeline"}).RegisterHandle(b)
 }
 
 func newPipelineRouteWithMappedErrorStatus() (*rest.RouteHandle[createReq, userResp], error) {
-	b := rest.NewBuilder(testInfo)
+	b := rest.NewServer(testInfo)
 	return rest.NewRoute[createReq, userResp]("POST", "/pipeline-mapped",
 		createReqCodec, userRespCodec,
 		rest.RouteMeta{OperationID: "pipelineMapped"},
@@ -114,11 +113,11 @@ func newPipelineRouteWithMappedErrorStatus() (*rest.RouteHandle[createReq, userR
 }
 
 func newPipelineRouteWithNoResponseOverride(status int) (*rest.RouteHandle[createReq, userResp], error) {
-	b := rest.NewBuilder(testInfo)
+	b := rest.NewServer(testInfo)
 	return rest.NewRoute[createReq, userResp]("POST", "/pipeline-noresp-override",
 		createReqCodec, userRespCodec,
 		rest.RouteMeta{OperationID: "pipelineNoRespOverride"},
-		rest.ErrorStatus[nethttp.PipelineNoResponseError](status),
+		rest.ErrorStatus[PipelineNoResponseError](status),
 	).RegisterHandle(b)
 }
 
@@ -128,11 +127,11 @@ func TestPipelineHandler_ReturnsFirstValue(t *testing.T) {
 		t.Fatalf("build route: %v", err)
 	}
 
-	h := nethttp.PipelineHandler(handle,
+	h := PipelineHandler(handle,
 		func(ctx context.Context, req createReq) gstream.Stream[userResp] {
 			return gstream.Single(ctx, userResp{ID: "u1", Name: req.Name})
 		},
-		nethttp.Options{})
+		Options{})
 
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPost, "/pipeline",
@@ -155,7 +154,7 @@ func TestPipelineHandler_PipelineErrorReturns500(t *testing.T) {
 		t.Fatalf("build route: %v", err)
 	}
 
-	h := nethttp.PipelineHandler(handle,
+	h := PipelineHandler(handle,
 		func(ctx context.Context, _ createReq) gstream.Stream[userResp] {
 			errCh := make(chan error, 1)
 			valCh := make(chan userResp)
@@ -164,7 +163,7 @@ func TestPipelineHandler_PipelineErrorReturns500(t *testing.T) {
 			close(valCh)
 			return gstream.Stream[userResp]{Values: valCh, Errors: errCh}
 		},
-		nethttp.Options{})
+		Options{})
 
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPost, "/pipeline",
@@ -182,7 +181,7 @@ func TestPipelineHandler_PipelineErrorRouteMappingReturnsDeclaredStatus(t *testi
 	if err != nil {
 		t.Fatalf("build route: %v", err)
 	}
-	h := nethttp.PipelineHandler(handle,
+	h := PipelineHandler(handle,
 		func(context.Context, createReq) gstream.Stream[userResp] {
 			errCh := make(chan error, 1)
 			valCh := make(chan userResp)
@@ -191,7 +190,7 @@ func TestPipelineHandler_PipelineErrorRouteMappingReturnsDeclaredStatus(t *testi
 			close(valCh)
 			return gstream.Stream[userResp]{Values: valCh, Errors: errCh}
 		},
-		nethttp.Options{})
+		Options{})
 
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPost, "/pipeline-mapped",
@@ -211,7 +210,7 @@ func TestPipelineHandler_NoValueReturnsPipelineNoResponseError(t *testing.T) {
 	}
 
 	var capturedErr error
-	h := nethttp.PipelineHandler(handle,
+	h := PipelineHandler(handle,
 		func(ctx context.Context, _ createReq) gstream.Stream[userResp] {
 			errCh := make(chan error)
 			valCh := make(chan userResp)
@@ -219,7 +218,7 @@ func TestPipelineHandler_NoValueReturnsPipelineNoResponseError(t *testing.T) {
 			close(valCh)
 			return gstream.Stream[userResp]{Values: valCh, Errors: errCh}
 		},
-		nethttp.Options{
+		Options{
 			ErrorHandler: func(w http.ResponseWriter, _ *http.Request, status int, e error) {
 				capturedErr = e
 				http.Error(w, e.Error(), status)
@@ -232,7 +231,7 @@ func TestPipelineHandler_NoValueReturnsPipelineNoResponseError(t *testing.T) {
 	req.Header.Set("Content-Type", "application/json")
 	h.ServeHTTP(rec, req)
 
-	var pnr nethttp.PipelineNoResponseError
+	var pnr PipelineNoResponseError
 	if !errors.As(capturedErr, &pnr) {
 		t.Errorf("want PipelineNoResponseError, got %T", capturedErr)
 	}
@@ -246,7 +245,7 @@ func TestPipelineHandler_NoValueRouteMappingOverridesDefault503(t *testing.T) {
 	if err != nil {
 		t.Fatalf("build route: %v", err)
 	}
-	h := nethttp.PipelineHandler(handle,
+	h := PipelineHandler(handle,
 		func(context.Context, createReq) gstream.Stream[userResp] {
 			errCh := make(chan error)
 			valCh := make(chan userResp)
@@ -254,7 +253,7 @@ func TestPipelineHandler_NoValueRouteMappingOverridesDefault503(t *testing.T) {
 			close(valCh)
 			return gstream.Stream[userResp]{Values: valCh, Errors: errCh}
 		},
-		nethttp.Options{})
+		Options{})
 
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPost, "/pipeline-noresp-override",
@@ -275,7 +274,7 @@ func TestPipelineHandler_WithTapObservation(t *testing.T) {
 
 	var tapFired bool
 	var tapped string
-	h := nethttp.PipelineHandler(handle,
+	h := PipelineHandler(handle,
 		func(ctx context.Context, req createReq) gstream.Stream[userResp] {
 			s := gstream.Single(ctx, req)
 			s = gstream.Tap(ctx, s, func(v createReq) { tapFired = true; tapped = v.Name })
@@ -283,7 +282,7 @@ func TestPipelineHandler_WithTapObservation(t *testing.T) {
 				return []userResp{{ID: "u1", Name: v.Name}}
 			})
 		},
-		nethttp.Options{})
+		Options{})
 
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPost, "/pipeline",
@@ -330,9 +329,9 @@ func TestSSEFromHub_BroadcastsToAllClients(t *testing.T) {
 	src := gstream.From(ctx, valCh)
 	hub := gstream.NewBroadcastHub(ctx, src, 8)
 
-	fn := nethttp.SSEFromHub[getReq, userResp](hub, nethttp.SSEStreamOptions{Topic: "/events"})
+	fn := SSEFromHub[getReq, userResp](hub, SSEStreamOptions{Topic: "/events"})
 	route := newSSERoute().WithHandler(fn)
-	mux := mustServeSSE(t, route, rest.NewBuilder(testInfo))
+	mux := mustServeSSE(t, route, rest.NewServer(testInfo))
 	srv := httptest.NewServer(mux)
 	defer srv.Close()
 

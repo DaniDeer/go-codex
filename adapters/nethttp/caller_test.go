@@ -1,4 +1,4 @@
-package nethttp_test
+package nethttp
 
 import (
 	"context"
@@ -8,7 +8,6 @@ import (
 	"sync"
 	"testing"
 
-	nethttp "github.com/DaniDeer/go-codex/adapters/nethttp"
 	"github.com/DaniDeer/go-codex/api/rest"
 	"github.com/DaniDeer/go-codex/middleware"
 	"github.com/DaniDeer/go-codex/route"
@@ -24,8 +23,8 @@ func TestCall_HappyPath(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	caller := nethttp.NewCaller(srv.Client(), srv.URL)
-	resp, err := nethttp.Call(context.Background(), caller, r, createReq{Name: "Alice"}, nethttp.CallOptions{})
+	caller := newCaller(srv.Client(), srv.URL)
+	resp, err := call(context.Background(), caller, r, createReq{Name: "Alice"}, CallOptions{})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -60,9 +59,9 @@ func TestCall_ClientMWAppliedEveryCall(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	caller := nethttp.NewCaller(srv.Client(), srv.URL)
+	caller := newCaller(srv.Client(), srv.URL)
 	for i := 0; i < 2; i++ {
-		resp, err := nethttp.Call(context.Background(), caller, r, getReq{}, nethttp.CallOptions{})
+		resp, err := call(context.Background(), caller, r, getReq{}, CallOptions{})
 		if err != nil {
 			t.Fatalf("call %d: unexpected error: %v", i, err)
 		}
@@ -107,8 +106,8 @@ func TestCall_ClientMWSatisfiesGating_UnrelatedImplNotRun(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	caller := nethttp.NewCaller(srv.Client(), srv.URL)
-	if _, err := nethttp.Call(context.Background(), caller, r, getReq{}, nethttp.CallOptions{}); err != nil {
+	caller := newCaller(srv.Client(), srv.URL)
+	if _, err := call(context.Background(), caller, r, getReq{}, CallOptions{}); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if unrelatedRan {
@@ -119,10 +118,10 @@ func TestCall_ClientMWSatisfiesGating_UnrelatedImplNotRun(t *testing.T) {
 // ── Caller.WithBaseURL (ergonomic rebase convenience) ───────────────────────
 
 func TestCaller_WithBaseURL_ReturnsNewInstance(t *testing.T) {
-	base := nethttp.NewCaller(http.DefaultClient, "http://base.example")
+	base := newCaller(http.DefaultClient, "http://base.example")
 	rebased := base.WithBaseURL("http://rebased.example")
 	if rebased == base {
-		t.Fatal("WithBaseURL must return a DISTINCT *Caller, not the same pointer")
+		t.Fatal("WithBaseURL must return a DISTINCT *caller, not the same pointer")
 	}
 }
 
@@ -145,10 +144,10 @@ func TestCaller_WithBaseURL_DoesNotMutateOriginal(t *testing.T) {
 	defer srvRebased.Close()
 
 	r := rest.NewRoute[getReq, userResp]("GET", "/users", getReqCodec, userRespCodec)
-	base := nethttp.NewCaller(srvOriginal.Client(), srvOriginal.URL)
+	base := newCaller(srvOriginal.Client(), srvOriginal.URL)
 	_ = base.WithBaseURL(srvRebased.URL) // derive a rebased copy, discard it
 
-	if _, err := nethttp.Call(context.Background(), base, r, getReq{}, nethttp.CallOptions{}); err != nil {
+	if _, err := call(context.Background(), base, r, getReq{}, CallOptions{}); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if !reachedOriginal {
@@ -162,11 +161,11 @@ func TestCaller_WithBaseURL_DoesNotMutateOriginal(t *testing.T) {
 // TestCaller_WithBaseURL_SharesClient proves chaining WithBaseURL off an
 // already-rebased Caller keeps working (no accidental nil client).
 func TestCaller_WithBaseURL_SharesClient(t *testing.T) {
-	base := nethttp.NewCaller(http.DefaultClient, "http://base.example")
+	base := newCaller(http.DefaultClient, "http://base.example")
 	rebased := base.WithBaseURL("http://rebased.example")
 	rerebased := rebased.WithBaseURL("http://another.example")
 	if rerebased == nil || rerebased == rebased {
-		t.Fatal("WithBaseURL chained off a rebased Caller must return a distinct, non-nil *Caller")
+		t.Fatal("WithBaseURL chained off a rebased Caller must return a distinct, non-nil *caller")
 	}
 }
 
@@ -189,14 +188,14 @@ func TestCall_WithRebasedCaller_ReachesNewHost(t *testing.T) {
 	defer srvB.Close()
 
 	r := rest.NewRoute[getReq, userResp]("GET", "/users", getReqCodec, userRespCodec)
-	base := nethttp.NewCaller(http.DefaultClient, "")
+	base := newCaller(http.DefaultClient, "")
 	callerA := base.WithBaseURL(srvA.URL)
 	callerB := base.WithBaseURL(srvB.URL)
 
-	if _, err := nethttp.Call(context.Background(), callerA, r, getReq{}, nethttp.CallOptions{}); err != nil {
+	if _, err := call(context.Background(), callerA, r, getReq{}, CallOptions{}); err != nil {
 		t.Fatalf("callerA: unexpected error: %v", err)
 	}
-	if _, err := nethttp.Call(context.Background(), callerB, r, getReq{}, nethttp.CallOptions{}); err != nil {
+	if _, err := call(context.Background(), callerB, r, getReq{}, CallOptions{}); err != nil {
 		t.Fatalf("callerB: unexpected error: %v", err)
 	}
 	if !reachedA || !reachedB {
@@ -208,9 +207,9 @@ func TestCall_WithRebasedCaller_ReachesNewHost(t *testing.T) {
 // rebasing the SAME shared base Caller concurrently — WithBaseURL must
 // never mutate shared state.
 func TestCaller_WithBaseURL_ConcurrentRebaseIsSafe(t *testing.T) {
-	base := nethttp.NewCaller(http.DefaultClient, "http://base.example")
+	base := newCaller(http.DefaultClient, "http://base.example")
 	const n = 50
-	results := make([]*nethttp.Caller, n)
+	results := make([]*caller, n)
 	var wg sync.WaitGroup
 	for i := 0; i < n; i++ {
 		wg.Add(1)

@@ -50,17 +50,17 @@ func GetTags(ctx context.Context, httpClient *http.Client, imageURL string, opts
 	// Declare (GetTagsRoute, including its regmodels.BearerAuthDeclaration
 	// server-side Security declaration) → chain (ClientMW, paired against
 	// the SAME declaration) — authFn supplies the credential; see
-	// newAuthCredentialFunc's own doc comment (auth.go). caller is
+	// newAuthCredentialFunc's own doc comment (auth.go). The baseURL is
 	// rebuilt per call since the target registry host varies with
-	// ImageURL; nethttp.Caller is a trivial client+baseURL value, so this
-	// costs nothing over the old ClientHandle+CallWithHandle shape while
-	// using nethttp.Call, go-codex's sole public client entry point.
+	// ImageURL; nethttp.CallWithHandle takes httpClient/baseURL directly
+	// (no intermediate Caller value needed), which needs an Observer
+	// passed explicitly via CallOptions.
 	authFn := newAuthCredentialFunc(httpClient, ref.Registry, ref.Repository, opts...)
 	route := regmodels.GetTagsRoute.ClientMW(&regmodels.BearerAuthDeclaration, authFn)
-	caller := nethttp.NewCaller(httpClient, registryBaseURL(ref.Registry))
+	handle := route.ClientHandle()
 	callOpts := nethttp.CallOptions{Observer: o.observer}
 
-	return nethttp.Call(ctx, caller, route, regmodels.GetTagsReq{Name: ref.Repository}, callOpts)
+	return nethttp.CallWithHandle(ctx, httpClient, registryBaseURL(ref.Registry), handle, regmodels.GetTagsReq{Name: ref.Repository}, callOpts)
 }
 
 // GetTagsFiltered calls GetTags, then sorts/limits the result's Tags via

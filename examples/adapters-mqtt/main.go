@@ -25,6 +25,30 @@
 // Pure domain functions (Layer 2) have zero IO and can be unit-tested with
 // plain Go structs and no broker, no store, no setup.
 //
+// # Layer 3 (PUB/SUB) — TWO workflows, in order of preference
+//
+//  1. PREFERRED — events.Client + adaptermqtt.Attach + Client.Publish/.Subscribe
+//     (Decision 5 of docs/roadmap/pubsub-workflow-simplification.md). Attach
+//     the adapter to the client ONCE; from there, client.Publish/client.Subscribe
+//     fulfill each declared Subscriber[T]/Publisher[T]'s requirements directly —
+//     no further adaptermqtt.* calls needed at the usage site. The SAME client
+//     doubles as the spec source (client.AsyncAPISpec()) with zero extra
+//     ceremony. See runClientAttachDemo below.
+//
+//  2. ESCAPE HATCH — adaptermqtt.NewSubscribeTransport / NewPublishTransport
+//     build per-T [events.SubscribeTransport]/[events.PublishTransport] values
+//     bound to a client; events.SubscribeHandle / events.PublishHandle then
+//     drive them against a declared events.Subscriber[T]/events.Publisher[T]
+//     with NO *events.Client/spec required (Decision 7's inverted, handle-based
+//     call surface). Use this ONLY when Client.Attach's v1 reflection shim
+//     can't express what's needed: custom OnError, a per-call Observer
+//     override, non-default QoS, a wildcard TopicFilter, or a non-default
+//     payload format — main()'s remaining demos need exactly these
+//     (topic/payload validation-failure showcases, a "sensors/#" wildcard
+//     subscription, and a YAML multi-format demo). Building a spec from THIS
+//     workflow requires a SEPARATE, throwaway events.Client purely for
+//     .Handle(builder) — contrast with workflow 1's spec-for-free.
+//
 // Run with: go run ./examples/adapters-mqtt
 package main
 
@@ -449,10 +473,25 @@ func (m *mockMessage) Ack()              {}
 type mockClient struct {
 	mu       sync.Mutex
 	handlers map[string]pahomqtt.MessageHandler
+	// autoDispatch, when true, makes Publish immediately fan out to every
+	// matching registered handler (mirrors examples/adapters-mqtt-contract's
+	// mockClient) — used by runClientAttachDemo, where client.Publish must
+	// actually reach client.Subscribe's handler with no manual step. The
+	// REST of this file's demos need PRECISE, manual control over delivery
+	// timing (see deliver below) to test decode/validation error paths
+	// deterministically, so this defaults to false and is left off for them.
+	autoDispatch bool
 }
 
 func newMockClient() *mockClient {
 	return &mockClient{handlers: make(map[string]pahomqtt.MessageHandler)}
+}
+
+// newAutoDispatchMockClient returns a mockClient whose Publish immediately
+// delivers to matching subscribers — see the autoDispatch field's doc
+// comment.
+func newAutoDispatchMockClient() *mockClient {
+	return &mockClient{handlers: make(map[string]pahomqtt.MessageHandler), autoDispatch: true}
 }
 
 func (c *mockClient) Subscribe(topic string, _ byte, handler pahomqtt.MessageHandler) pahomqtt.Token {
@@ -464,6 +503,9 @@ func (c *mockClient) Subscribe(topic string, _ byte, handler pahomqtt.MessageHan
 
 func (c *mockClient) Publish(topic string, _ byte, _ bool, payload interface{}) pahomqtt.Token {
 	fmt.Printf("[broker] Published to %s: %s\n", topic, payload.([]byte))
+	if c.autoDispatch {
+		c.deliver(topic, payload.([]byte))
+	}
 	return newMockToken()
 }
 
@@ -499,6 +541,26 @@ func topicMatchesSub(sub, topic string) bool {
 		}
 	}
 	return len(subParts) == len(topicParts)
+}
+
+// waitForSubscription polls until filter has been registered by
+// [mockClient.Subscribe], or timeout elapses. events.SubscribeHandle (Decision
+// 7) registers the subscription then blocks until ctx is cancelled — so
+// callers run it in a goroutine and must synchronize before delivering
+// simulated broker messages. Mirrors adapters/mqtt/transport_test.go's
+// polling-for-registration pattern.
+func (c *mockClient) waitForSubscription(filter string, timeout time.Duration) bool {
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		c.mu.Lock()
+		_, ok := c.handlers[filter]
+		c.mu.Unlock()
+		if ok {
+			return true
+		}
+		time.Sleep(time.Millisecond)
+	}
+	return false
 }
 
 func (c *mockClient) IsConnected() bool       { return true }
@@ -541,9 +603,122 @@ var sensorTopicConstraint = codex.Constraint[string]{
 // sensorUUID is the fixed sensor identifier used in this demo.
 const sensorUUID = "f47ac10b-58cc-4372-a567-0e02b2c3d479"
 
+// runClientAttachDemo shows the PREFERRED Layer 3 workflow for the simple,
+// no-frills case (plain JSON payload, default QoS, no custom OnError) —
+// mirrors examples/adapters-zeromq exactly. Attach the adapter to the
+// client ONCE; from there, client.Publish/client.Subscribe fulfill the
+// declared Subscriber[T]/Publisher[T]'s requirements directly, with NO
+// further adaptermqtt.* calls at the usage site. The SAME client doubles
+// as the spec source below — Attach/Publish/Subscribe register into it
+// automatically, so client.AsyncAPISpec() needs no separate builder.
+// Contrast with the rest of main(), which needs the handle-based escape
+// hatch (and a separate throwaway builder) purely because it exercises
+// capabilities Client.Attach's v1 reflection shim doesn't support
+// (custom OnError, wildcard subscriptions, non-default formats).
+//
+// Uses its OWN mock client (separate from main()'s later `client`) to
+// avoid cross-talk with the escape-hatch demos' subscriptions on the same
+// topic.
+func runClientAttachDemo() {
+	fmt.Println("=== 1. Client.Attach — the PREFERRED workflow ===")
+
+	client := events.NewClient(events.WithInfo(events.Info{
+		Title:       "Measurement Ingestion Service",
+		Version:     "1.0.0",
+		Description: "Subscribe to sensor measurements published by the sensor network.",
+	}))
+	client.AddServer("production", events.Server{
+		URL:      "mqtt://broker.example.com:1883",
+		Protocol: "mqtt",
+	})
+
+	// measurementChannel is forked into its two roles — see
+	// [events.Channel.WithSubscribe]/[events.Channel.WithPublish]. Both
+	// roles are declared here since this demo shows a SINGLE service both
+	// publishing and consuming the same channel (a sensor gateway
+	// forwarding readings to itself, for demo purposes) — the alert-on-
+	// threshold pipeline (a SEPARATE consumer publishing a DIFFERENT
+	// AlertEvent channel) is the escape-hatch demos' own concern below.
+	measurementChannel := events.NewChannel[MeasurementEvent]("sensors/{sensorID}/measurements", measurementEventCodec,
+		events.ChannelMeta{Description: "Measurement points published by the sensor network."},
+		events.NewTopicParam("sensorID", measurementSensorCodec,
+			func(m MeasurementEvent) string { return m.SensorID },
+			func(m *MeasurementEvent, v string) { m.SensorID = v },
+		).WithDescription("UUID of the sensor publishing the measurement."),
+	)
+	measurementSub := measurementChannel.WithSubscribe(events.Subscribe{
+		OperationID: "receiveSensorMeasurement",
+		Summary:     "Receive sensor measurement",
+		SchemaName:  "MeasurementEvent",
+	})
+	measurementPub := measurementChannel.WithPublish(events.Publish{
+		OperationID: "publishSensorMeasurement",
+		Summary:     "Publish sensor measurement",
+		SchemaName:  "MeasurementEvent",
+	})
+
+	mock := newAutoDispatchMockClient()
+
+	// ATTACH the adapter to the client — the one place transport specifics
+	// (the mock client) enter the picture.
+	if err := adaptermqtt.Attach(client, mock); err != nil {
+		fmt.Fprintf(os.Stderr, "attach: %v\n", err)
+		os.Exit(1)
+	}
+
+	ctx := context.Background()
+	received := make(chan MeasurementEvent, 4)
+	go func() {
+		_ = client.Subscribe(ctx, measurementSub, func(_ context.Context, m MeasurementEvent) error {
+			fmt.Printf("  received: sensorID=%s value=%.1f %s\n", m.SensorID, m.Value, m.Unit)
+			received <- m
+			return nil
+		})
+	}()
+	// Client.Subscribe registers with the mock client asynchronously — wait
+	// for it before publishing.
+	mock.waitForSubscription("sensors/+/measurements", time.Second)
+
+	measurements := []MeasurementEvent{
+		{SensorID: sensorUUID, Value: 62.5, Unit: "celsius", Timestamp: "2024-01-15T10:30:00Z"},
+		{SensorID: sensorUUID, Value: 55.0, Unit: "celsius", Timestamp: "2024-01-15T10:32:00Z"},
+	}
+	for _, m := range measurements {
+		if err := client.Publish(ctx, measurementPub, m); err != nil {
+			fmt.Fprintf(os.Stderr, "publish: %v\n", err)
+			os.Exit(1)
+		}
+	}
+	for range measurements {
+		<-received
+	}
+
+	// The spec is a free byproduct of the calls above — no separate builder.
+	doc, err := client.AsyncAPISpec()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "spec: %v\n", err)
+		os.Exit(1)
+	}
+	specYAML, err := doc.MarshalYAML()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "marshal spec: %v\n", err)
+		os.Exit(1)
+	}
+	fmt.Println("\n  [spec — printed directly from the SAME client, zero extra ceremony]")
+	fmt.Println(string(specYAML))
+	fmt.Println()
+}
+
 func main() {
 	baseLogger := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelDebug}))
 	slog.SetDefault(baseLogger)
+
+	runClientAttachDemo()
+
+	fmt.Println("=== 2. Escape hatch: handle-based workflow (OnError, wildcard, multi-format) ===")
+	fmt.Println("    (needed below for custom OnError/Observer, a \"sensors/#\" wildcard")
+	fmt.Println("     subscription, and a YAML multi-format demo — none expressible via")
+	fmt.Println("     Client.Attach's v1 reflection shim; see the package doc comment)")
 
 	ctx := context.Background()
 	store := newTimeSeriesStore()
@@ -554,11 +729,11 @@ func main() {
 	mqttLogger := baseLogger.With("transport", "mqtt")
 
 	// Build the event API description (transport-agnostic).
-	b := events.NewBuilder(events.Info{
+	b := events.NewClient(events.WithInfo(events.Info{
 		Title:       "Measurement Ingestion Service",
 		Version:     "1.0.0",
 		Description: "Subscribe to sensor measurements, persist to TSDB, alert on threshold breach.",
-	},
+	}),
 		// WithTopicConstraints is optional. Compose built-in and custom constraints:
 		// - MQTTPublishTopic: non-empty, no wildcard characters (+ or #).
 		// - sensorTopicConstraint: topic must follow sensors/<uuid>/<action> format.
@@ -570,41 +745,39 @@ func main() {
 		Protocol: "mqtt",
 	})
 
-	measurementChannel, err := events.NewChannel[MeasurementEvent]("sensors/{sensorID}/measurements", measurementEventCodec,
+	// NewTopicParam both validates {sensorID} against the UUID codec AND
+	// registers it as a merge field: events.SubscribeHandle/PublishHandle
+	// (Decision 7) derive/merge the topic var from MeasurementEvent.SensorID
+	// automatically — no separate vars map needed at the call site below.
+	measurementSub := events.NewChannel[MeasurementEvent]("sensors/{sensorID}/measurements", measurementEventCodec,
 		events.ChannelMeta{Description: "Measurement points published by the sensor network."},
-		events.Subscribe{
-			OperationID: "receiveSensorMeasurement",
-			Summary:     "Receive sensor measurement",
-			SchemaName:  "MeasurementEvent",
-		},
-		// TopicParam describes {sensorID}: description enriches AsyncAPI spec;
-		// Codec validates UUID at BuildTopic time and flows schema into spec.
-		events.TopicParam{
-			Name:        "sensorID",
-			Description: "UUID of the sensor publishing the measurement.",
-			Codec:       &measurementSensorCodec,
-		},
-	).Register(b)
+		events.NewTopicParam("sensorID", measurementSensorCodec,
+			func(m MeasurementEvent) string { return m.SensorID },
+			func(m *MeasurementEvent, v string) { m.SensorID = v },
+		).WithDescription("UUID of the sensor publishing the measurement."),
+	).WithSubscribe(events.Subscribe{
+		OperationID: "receiveSensorMeasurement",
+		Summary:     "Receive sensor measurement",
+		SchemaName:  "MeasurementEvent",
+	})
+	measurementChannel, err := measurementSub.Handle(b)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "channel registration failed: %v\n", err)
 		os.Exit(1)
 	}
 
-	alertChannel, err := events.NewChannel[AlertEvent]("sensors/{sensorID}/alerts", alertEventCodec,
+	alertPub := events.NewChannel[AlertEvent]("sensors/{sensorID}/alerts", alertEventCodec,
 		events.ChannelMeta{Description: "Threshold breach alerts published by this service."},
-		events.Publish{
-			OperationID: "publishThresholdAlert",
-			Summary:     "Publish threshold alert",
-			SchemaName:  "AlertEvent",
-		},
-		// TopicParam describes {sensorID}: description enriches AsyncAPI spec;
-		// Codec validates UUID at BuildTopic time and flows schema into spec.
-		events.TopicParam{
-			Name:        "sensorID",
-			Description: "UUID of the sensor that triggered the alert.",
-			Codec:       &measurementSensorCodec,
-		},
-	).Register(b)
+		events.NewTopicParam("sensorID", measurementSensorCodec,
+			func(a AlertEvent) string { return a.SensorID },
+			func(a *AlertEvent, v string) { a.SensorID = v },
+		).WithDescription("UUID of the sensor that triggered the alert."),
+	).WithPublish(events.Publish{
+		OperationID: "publishThresholdAlert",
+		Summary:     "Publish threshold alert",
+		SchemaName:  "AlertEvent",
+	})
+	_, err = alertPub.Handle(b)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "channel registration failed: %v\n", err)
 		os.Exit(1)
@@ -627,11 +800,12 @@ func main() {
 		os.Exit(1)
 	}
 
-	// Publish uses the vars map to build and validate the concrete alert topic at publish time.
-	// Pass nil for static topics (no template variables).
+	// Decision 7: events.PublishHandle derives the concrete alert topic
+	// straight from alert.SensorID via the NewTopicParam merge field
+	// declared on alertPub above — no separate vars map needed.
+	alertTransport := adaptermqtt.NewPublishTransport[AlertEvent](client, 1, false, adaptermqtt.PublishOptions[AlertEvent]{}) // observer from ctx
 	publishAlert := func(ctx context.Context, alert AlertEvent) error {
-		return adaptermqtt.Publish(ctx, client, alertChannel, 1, false, alert,
-			map[string]string{"sensorID": sensorUUID}, adaptermqtt.PublishOptions{}) // observer from ctx
+		return events.PublishHandle(ctx, alertPub, alertTransport, alert)
 	}
 
 	// Attribute extractor for domain logging — extract business-relevant fields from requests.
@@ -649,36 +823,48 @@ func main() {
 		extractMeasurementAttrs,
 	)
 
-	client.Subscribe(measurementTopic, 1,
-		adaptermqtt.SubscribeHandler(ctx, measurementChannel, handler,
-			adaptermqtt.SubscribeOptions{
-				OnError: func(e adaptermqtt.SubscribeError) {
-					// Use mqttLogger for transport-level errors.
-					// Switch on Kind to distinguish decode vs handler failures.
-					switch e.Kind {
-					case adaptermqtt.KindDecode:
-						var validationErrs codex.ValidationErrors
-						if errors.As(e.Err, &validationErrs) {
-							mqttLogger.Warn("decode failed: validation errors",
-								"topic", e.Topic,
-								"errors", validationErrs, // triggers ValidationErrors.LogValue()
-							)
-						} else {
-							mqttLogger.Warn("decode failed",
-								"topic", e.Topic,
-								"error", e.Err, // triggers TypeMismatchError.LogValue() etc.
-							)
-						}
-					case adaptermqtt.KindHandler:
-						mqttLogger.Error("handler failed",
+	// Decision 7: events.SubscribeHandle registers the subscription then
+	// blocks until ctx is cancelled (mqtt v3 has no router — paho dispatches
+	// on its own goroutines once client.Subscribe registers the filter), so
+	// run it in a goroutine. subCtx is shared by every subscribe demo below
+	// and cancelled once when main returns.
+	subCtx, subCancel := context.WithCancel(ctx)
+	defer subCancel()
+
+	measurementTransport := adaptermqtt.NewSubscribeTransport[MeasurementEvent](client, 1,
+		adaptermqtt.SubscribeOptions{
+			OnError: func(e adaptermqtt.SubscribeError) {
+				// Use mqttLogger for transport-level errors.
+				// Switch on Kind to distinguish decode vs handler failures.
+				switch e.Kind {
+				case adaptermqtt.KindDecode:
+					var validationErrs codex.ValidationErrors
+					if errors.As(e.Err, &validationErrs) {
+						mqttLogger.Warn("decode failed: validation errors",
 							"topic", e.Topic,
-							"error", e.Err,
+							"errors", validationErrs, // triggers ValidationErrors.LogValue()
+						)
+					} else {
+						mqttLogger.Warn("decode failed",
+							"topic", e.Topic,
+							"error", e.Err, // triggers TypeMismatchError.LogValue() etc.
 						)
 					}
-				},
+				case adaptermqtt.KindHandler:
+					mqttLogger.Error("handler failed",
+						"topic", e.Topic,
+						"error", e.Err,
+					)
+				}
 			},
-		),
+		},
 	)
+	go func() {
+		if err := events.SubscribeHandle(subCtx, measurementSub, measurementTransport, handler); err != nil {
+			mqttLogger.Error("subscribe failed", "error", err)
+		}
+	}()
+	client.waitForSubscription("sensors/+/measurements", time.Second)
 
 	// Simulate the broker delivering messages.
 	fmt.Println("=== Measurement within threshold (no alert) ===")
@@ -725,17 +911,11 @@ func main() {
 
 	const sensorUUID2 = "a1b2c3d4-e5f6-7890-abcd-ef1234567890"
 
-	wildcardHandler := adaptermqtt.SubscribeHandler(ctx, measurementChannel,
-		func(ctx context.Context, m MeasurementEvent) error {
-			msg, _ := adaptermqtt.MessageFromContext(ctx)
-			vars, err := adaptermqtt.TopicVarsFromMessage(measurementChannel, msg)
-			if err != nil {
-				return err
-			}
-			fmt.Printf("  [wildcard] sensor=%s  value=%.1f %s\n", vars["sensorID"], m.Value, m.Unit)
-			return nil
-		},
+	// TopicFilter overrides the default "sensors/+/measurements" wildcard
+	// derivation with the multi-level "sensors/#" filter this demo needs.
+	wildcardTransport := adaptermqtt.NewSubscribeTransport[MeasurementEvent](client, 1,
 		adaptermqtt.SubscribeOptions{
+			TopicFilter: "sensors/#",
 			OnError: func(e adaptermqtt.SubscribeError) {
 				// KindHandler covers TopicVarsFromMessage errors (mismatch, topic codec,
 				// param codec). Distinguish all three for structured log fields.
@@ -774,9 +954,23 @@ func main() {
 			},
 		},
 	)
-
-	// Subscribe to sensors/# — the MQTT broker delivers any sub-topic.
-	client.Subscribe("sensors/#", 1, wildcardHandler)
+	go func() {
+		err := events.SubscribeHandle(subCtx, measurementSub, wildcardTransport,
+			func(ctx context.Context, m MeasurementEvent) error {
+				msg, _ := adaptermqtt.MessageFromContext(ctx)
+				vars, err := adaptermqtt.TopicVarsFromMessage(measurementChannel, msg)
+				if err != nil {
+					return err
+				}
+				fmt.Printf("  [wildcard] sensor=%s  value=%.1f %s\n", vars["sensorID"], m.Value, m.Unit)
+				return nil
+			},
+		)
+		if err != nil {
+			mqttLogger.Error("wildcard subscribe failed", "error", err)
+		}
+	}()
+	client.waitForSubscription("sensors/#", time.Second)
 
 	validPayload := func(v float64) []byte {
 		return []byte(fmt.Sprintf(`{"sensor_id":"temp","value":%.1f,"unit":"celsius","timestamp":"2024-01-15T11:00:00Z"}`, v))
@@ -796,34 +990,37 @@ func main() {
 	// ── Publish failure showcase ──────────────────────────────────────────────
 	//
 	// Publish has two codec-guarded failure paths:
-	//   1. Topic codec failure — BuildTopic rejects the vars before any broker call.
-	//      Returns TopicParamError (or MissingTopicVarError) when a var fails its codec.
+	//   1. Topic var codec failure — for a NewTopicParam merge field (Decision 7),
+	//      EncodeVars runs the SAME codec used to build the var, so an invalid
+	//      value fails there as codex.ValidationErrors, before BuildTopic's own
+	//      TopicParamError check is ever reached. (TopicParamError remains
+	//      reachable via a directly-supplied vars map, e.g. a manual BuildTopic
+	//      call — not through merge-field-derived Publish/PublishHandle.)
 	//   2. Payload codec failure — handle.Encode rejects the struct value.
-	//      Returns codex.ValidationErrors listing every failing field.
+	//      Also returns codex.ValidationErrors listing every failing field.
 	//
 	// Both are transport-layer errors; log them via mqttLogger, not the domain logger.
 
 	fmt.Println("\n=== Publish failure: topic codec (invalid sensorID) ===")
-	// "not-a-uuid" fails the UUID codec registered on {sensorID} via TopicParam.Codec.
-	// BuildTopic returns TopicParamError before Encode or broker I/O is attempted.
-	err = adaptermqtt.Publish(ctx, client, alertChannel, 1, false,
+	// Decision 7 derives the topic var straight from AlertEvent.SensorID (the
+	// NewTopicParam merge field declared on alertPub) — so an invalid
+	// sensorID is now expressed directly on the payload, not a separately
+	// mismatched vars map. "not-a-uuid" fails the UUID codec registered on
+	// {sensorID} at the EncodeVars step, before Encode or broker I/O is attempted.
+	err = events.PublishHandle(ctx, alertPub, alertTransport,
 		AlertEvent{
-			SensorID:  "temp-01",
+			SensorID:  "not-a-uuid",
 			Value:     90.0,
 			Unit:      "celsius",
 			Threshold: 75.0,
 			Timestamp: "2024-01-15T11:10:00Z",
 		},
-		map[string]string{"sensorID": "not-a-uuid"},
-		adaptermqtt.PublishOptions{}, // observer from ctx
 	)
 	if err != nil {
-		var paramErr events.TopicParamError
-		if errors.As(err, &paramErr) {
-			mqttLogger.Warn("publish failed: topic param codec",
-				"var", paramErr.Name,
-				"value", paramErr.Value,
-				"error", paramErr.Err,
+		var validationErrs codex.ValidationErrors
+		if errors.As(err, &validationErrs) {
+			mqttLogger.Warn("publish failed: topic var codec",
+				"errors", validationErrs, // triggers ValidationErrors.LogValue()
 			)
 		} else {
 			mqttLogger.Error("publish failed", "error", err)
@@ -832,18 +1029,19 @@ func main() {
 
 	fmt.Println("\n=== Publish failure: payload codec (invalid AlertEvent fields) ===")
 	// Refine constraints now run on both Encode and Decode — no explicit Validate
-	// call needed. Publish catches the invalid payload via handle.Encode and returns
-	// codex.ValidationErrors, just like the subscribe side does for invalid messages.
+	// call needed. PublishHandle catches the invalid payload via handle.Encode and
+	// returns codex.ValidationErrors, just like the subscribe side does for invalid
+	// messages. SensorID must stay a valid UUID here — Decision 7 also derives the
+	// topic var from it — so this demo isolates the PAYLOAD failure path (Value: 0)
+	// from the topic failure path already shown above.
 	badAlert := AlertEvent{
-		SensorID:  "", // fails NonEmptyString
-		Value:     0,  // fails NonZeroFloat
+		SensorID:  "f47ac10b-58cc-4372-a567-0e02b2c3d479",
+		Value:     0, // fails NonZeroFloat
 		Unit:      "celsius",
 		Threshold: 75.0,
 		Timestamp: "2024-01-15T11:10:00Z",
 	}
-	if err := adaptermqtt.Publish(ctx, client, alertChannel, 1, false, badAlert,
-		map[string]string{"sensorID": "f47ac10b-58cc-4372-a567-0e02b2c3d479"},
-		adaptermqtt.PublishOptions{}); /* observer from ctx */ err != nil {
+	if err := events.PublishHandle(ctx, alertPub, alertTransport, badAlert); err != nil {
 		var validationErrs codex.ValidationErrors
 		if errors.As(err, &validationErrs) {
 			mqttLogger.Warn("publish failed: payload encode validation",
@@ -860,31 +1058,41 @@ func main() {
 	// ── Multi-format showcase (YAML payload) ──────────────────────────────────
 	//
 	// MQTT 3.1.1 carries no content-type metadata — format is agreed out-of-band
-	// per subscription/publish. Configure once on the channel handle via
-	// WithFormats; the adapter picks it up automatically. Call-time format
-	// overrides are still accepted as a trailing variadic.
+	// per subscription/publish. Pass the format directly as NewSubscribeTransport/
+	// NewPublishTransport's trailing variadic — no need to build a
+	// channel-scoped ChannelHandle copy via WithFormats.
+	//
+	// A fresh mock client isolates this demo's subscription from the earlier
+	// "sensors/#" wildcard subscription still active on the shared client
+	// (which would otherwise also match this topic and fail decoding YAML as JSON).
 	fmt.Println("\n=== Multi-format: YAML subscribe + publish ===")
 
-	// Configure YAML as default format on a channel-scoped copy for this demo.
-	// In production you'd configure WithFormats when the channel is first set up.
-	yamlMeasurementChannel := measurementChannel.WithFormats(format.YAML(measurementEventCodec))
-	yamlAlertChannel := alertChannel.WithFormats(format.YAML(alertEventCodec))
-
+	yamlClient := newMockClient()
 	var yamlReceived MeasurementEvent
-	yamlHandler := adaptermqtt.SubscribeHandler(ctx, yamlMeasurementChannel,
-		func(_ context.Context, m MeasurementEvent) error {
-			yamlReceived = m
-			return nil
-		},
+	yamlTransport := adaptermqtt.NewSubscribeTransport[MeasurementEvent](yamlClient, 1,
 		adaptermqtt.SubscribeOptions{Observer: obs},
-		// no format arg needed — YAML is set on the handle
+		format.YAML(measurementEventCodec),
 	)
-	// Deliver a YAML-encoded measurement directly to the handler.
+	go func() {
+		_ = events.SubscribeHandle(subCtx, measurementSub, yamlTransport,
+			func(_ context.Context, m MeasurementEvent) error {
+				yamlReceived = m
+				return nil
+			},
+		)
+	}()
+	yamlClient.waitForSubscription("sensors/+/measurements", time.Second)
+
+	// Deliver a YAML-encoded measurement via the broker simulation.
 	yamlPayload := "sensor_id: temp-02\nvalue: 55.0\nunit: celsius\ntimestamp: \"2024-01-15T12:00:00Z\"\n"
-	yamlHandler(nil, &mockMessage{topic: measurementTopic, payload: []byte(yamlPayload)})
+	yamlClient.deliver(measurementTopic, []byte(yamlPayload))
 	fmt.Printf("Received (YAML): sensor=%s value=%.1f\n", yamlReceived.SensorID, yamlReceived.Value)
 
 	// Publish a YAML-encoded alert.
+	yamlAlertTransport := adaptermqtt.NewPublishTransport[AlertEvent](client, 1, false,
+		adaptermqtt.PublishOptions[AlertEvent]{}, // observer from ctx
+		format.YAML(alertEventCodec),
+	)
 	yamlAlert := AlertEvent{
 		SensorID:  "f47ac10b-58cc-4372-a567-0e02b2c3d479",
 		Value:     92.1,
@@ -892,11 +1100,7 @@ func main() {
 		Threshold: 75.0,
 		Timestamp: "2024-01-15T12:01:00Z",
 	}
-	if err := adaptermqtt.Publish(ctx, client, yamlAlertChannel, 1, false, yamlAlert,
-		map[string]string{"sensorID": "f47ac10b-58cc-4372-a567-0e02b2c3d479"},
-		adaptermqtt.PublishOptions{}, // observer from ctx
-		// no format arg needed — YAML is set on the handle
-	); err != nil {
+	if err := events.PublishHandle(ctx, alertPub, yamlAlertTransport, yamlAlert); err != nil {
 		fmt.Fprintf(os.Stderr, "YAML publish error: %v\n", err)
 	}
 

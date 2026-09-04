@@ -2,7 +2,7 @@
 
 > See also: [`adapters/mqtt5` on pkg.go.dev](https://pkg.go.dev/github.com/DaniDeer/go-codex/adapters/mqtt5) · [`api/reqreply`](../concepts/api-contracts.md) · [`api/events`](../concepts/api-contracts.md) · [Feature: Metrics Observer](../features/observer.md) · [MQTT 3.1.1 Examples](mqtt.md)
 >
-> **Runnable demo**: [`examples/adapters-mqtt5`](https://github.com/DaniDeer/go-codex/tree/main/examples/adapters-mqtt5) — showcases User Properties, UserPropertyParam validation, ContentType auto-format, and Request-Reply in a single self-contained example.
+> **Runnable demo**: [`examples/adapters-mqtt5`](https://github.com/DaniDeer/go-codex/tree/main/examples/adapters-mqtt5) — leads with the PREFERRED `Client.Attach` + `Client.Publish`/`.Subscribe` workflow (Demo 1, spec printed for free from the same client), then showcases the handle-based escape hatch for User Properties, UserPropertyParam validation, ContentType auto-format, and Request-Reply.
 
 `adapters/mqtt5` provides codec-backed adapters for **MQTT 5.0** using the [`paho.golang`](https://github.com/eclipse/paho.golang) library. It follows the same **declare → register → handle → adapt** pattern as `adapters/mqtt`, `adapters/nethttp`, and `adapters/zeromq`.
 
@@ -81,43 +81,102 @@ The `api/events.NewChannel` declaration is **identical**. Only the adapter impor
 
 ```go
 import (
+    "context"
+
     mqtt5adapter "github.com/DaniDeer/go-codex/adapters/mqtt5"
     "github.com/DaniDeer/go-codex/api/events"
     "github.com/DaniDeer/go-codex/stats"
 )
 
-// Subscribe
-if err := mqtt5adapter.Subscribe(ctx, client, router, readingsHandle, 1,
+// NewSubscribeTransport/NewPublishTransport — the spec-free, no-*Client-needed,
+// handle-based call surface Decision 7 inverted into api/events itself
+// (docs/roadmap/pubsub-workflow-simplification.md). Fully typed generic
+// constructors, no reflection; use these for custom OnError/Observer/security
+// impls or wildcard topics. The simple case uses Client.Attach/.Subscribe below
+// instead.
+subTransport := mqtt5adapter.NewSubscribeTransport[SensorReading](client, router, 1,
+    mqtt5adapter.SubscribeOptions{Observer: obs})
+
+sub := contract.ReadingsChannel.WithSubscribe(events.Subscribe{})
+if err := events.SubscribeHandle(ctx, sub, subTransport,
     func(ctx context.Context, r SensorReading) error {
         return store.Save(ctx, r)
     },
-    mqtt5adapter.SubscribeOptions{Observer: obs},
 ); err != nil {
     log.Fatal(err)
 }
 
 // Publish
-err := mqtt5adapter.Publish(ctx, client, readingsHandle, 1, false, reading,
-    map[string]string{"sensorID": sensorID},
-    mqtt5adapter.PublishOptions{
+pubTransport := mqtt5adapter.NewPublishTransport[SensorReading](client, 1, false,
+    mqtt5adapter.PublishOptions[SensorReading]{
         Observer:    obs,
-        ContentType: "application/json",     // sets MQTT 5 ContentType property
+        ContentType: "application/json", // sets MQTT 5 ContentType property
         UserProperties: []mqtt5adapter.UserProperty{
             {Key: "TenantID", Value: "acme"},
         },
     },
 )
+pub := contract.ReadingsChannel.WithPublish(events.Publish{})
+err := events.PublishHandle(ctx, pub, pubTransport, reading)
 ```
+
+`events.PublishHandle`/`events.SubscribeHandle` + each adapter's `NewPublishTransport[T]`/
+`NewSubscribeTransport[T]` are the spec-free, handle-based call surface Decision 7 of
+`docs/roadmap/pubsub-workflow-simplification.md` inverted into `api/events` itself (mirroring
+`Client.Attach`'s own inversion). The OLD per-adapter `SubscribeWithHandle`/`Publish`/
+`PublishHandle` primitives (once kept public as a Decision 6 exception) are now unexported
+(`subscribeWithHandle`/`publish`/`publishHandle`) — their logic lives inside each transport's
+`Subscribe`/`Publish` method. Every OTHER lower-level call-time primitive (`Caller`/`NewCaller`,
+the `*Caller`-based `Subscribe` convenience, `ServeOneSubscriber`, `NewPublisherFor`/
+`PublisherFor` — REMOVED entirely) is now unexported or deleted; alongside this handle-based
+workflow, the transport-agnostic, application-facing `Client.Attach` +
+`Client.Publish`/`.Subscribe`/`.ServeSubscribers` workflow (Decision 5) remains equally valid, see
+below.
+
+### `Client.Attach` — the inverted-control workflow
+
+`mqtt5.Attach(client, mqttClient, router)` binds mqttClient+router to `client` as its
+`events.Transport` — the "attach the adapter to the client" step. From there, call
+`client.Publish`/`client.Subscribe` directly on the `*events.Client` value itself:
+
+```go
+client := events.NewClient(events.WithInfo(events.Info{Title: "Sensor Network", Version: "1.0.0"}))
+if err := mqtt5.Attach(client, mqttClient, router); err != nil {
+    log.Fatal(err)
+}
+
+sub := contract.ReadingsChannel.WithSubscribe(events.Subscribe{})
+pub := contract.ReadingsChannel.WithPublish(events.Publish{})
+
+go func() {
+    _ = client.Subscribe(ctx, sub, func(ctx context.Context, r SensorReading) error {
+        log.Printf("received: %+v", r)
+        return nil
+    })
+}()
+
+err := client.Publish(ctx, pub, reading) // "one struct, one call"
+```
+
+Since `Client.Publish`/`Client.Subscribe` are ordinary Go methods (not generic — Go forbids a
+method from introducing its own type parameters), arguments are passed as `any` and their
+concrete types are recovered internally via reflection; a mismatch surfaces as
+`events.TransportTypeMismatchError` at CALL time. See
+`docs/roadmap/pubsub-workflow-simplification.md`'s Decision 5 for the full design and its
+documented v1 scope limits (no per-call format override, QoS 0 only, no general-purpose
+SubscribeMW/PublishMW wrapping, no custom `OnError` — use `events.SubscribeHandle`/
+`events.PublishHandle` with `mqtt5.NewSubscribeTransport`/`mqtt5.NewPublishTransport` directly
+for those).
 
 ### AsyncAPI spec
 
-Use the existing `api/events.Builder` with `Protocol: "mqtt5"` — no changes needed:
+Use the existing `api/events.Client` with `Protocol: "mqtt5"` — no changes needed:
 
 ```go
-builder := events.NewBuilder(events.Info{Title: "Sensor Network", Version: "1.0.0"})
-builder.AddServer("mqtt5", events.Server{URL: "mqtt://broker:1883", Protocol: "mqtt5"})
-handle, _ := ReadingsChannel.Register(builder)
-spec, _ := builder.AsyncAPISpec()
+eventsClient := events.NewClient(events.WithInfo(events.Info{Title: "Sensor Network", Version: "1.0.0"}))
+eventsClient.AddServer("mqtt5", events.Server{URL: "mqtt://broker:1883", Protocol: "mqtt5"})
+handle, _ := ReadingsChannel.WithSubscribe(events.Subscribe{}).Handle(eventsClient)
+spec, _ := eventsClient.AsyncAPISpec()
 ```
 
 ---
@@ -260,7 +319,7 @@ doc, _ := rrBuilder.AsyncAPISpec()  // AsyncAPI 3.0 with reply: block
 MQTT 5.0 User Properties expose per-message key-value pairs. Use them in `SecurityFunc` for runtime authentication:
 
 ```go
-mqtt5adapter.Subscribe(ctx, client, router, handle, 1, fn,
+transport := mqtt5adapter.NewSubscribeTransport[SensorReading](client, router, 1,
     mqtt5adapter.SubscribeOptions{
         SecurityFunc: func(ctx context.Context, msg *paho.Publish, reqs []route.SecurityRequirement) error {
             for _, p := range msg.Properties.User {
@@ -271,6 +330,7 @@ mqtt5adapter.Subscribe(ctx, client, router, handle, 1, fn,
             return errors.New("missing Authorization User Property")
         },
     })
+err := events.SubscribeHandle(ctx, sub, transport, fn)
 
 // Access User Properties inside the handler:
 func(ctx context.Context, r SensorReading) error {
@@ -294,7 +354,7 @@ func(ctx context.Context, r SensorReading) error {
 `UserPropertyParam` lets you validate MQTT 5 User Properties with codecs — the same mechanism as `rest.HeaderParam` for HTTP request headers. Define params in `SubscribeOptions.UserPropertyParams` (or `ServeOptions.UserPropertyParams` for request-reply responders).
 
 ```go
-mqtt5adapter.Subscribe(ctx, client, router, handle, 1, fn,
+transport := mqtt5adapter.NewSubscribeTransport[SensorReading](client, router, 1,
     mqtt5adapter.SubscribeOptions{
         UserPropertyParams: []mqtt5adapter.UserPropertyParam{
             // Required bearer token — validated with a codec:
@@ -305,6 +365,7 @@ mqtt5adapter.Subscribe(ctx, client, router, handle, 1, fn,
                 WithCodec(codex.String().Refine(validate.NonEmptyString)),
         },
     })
+err := events.SubscribeHandle(ctx, sub, transport, fn)
 ```
 
 **Validation order** for each incoming message:
@@ -342,11 +403,12 @@ Per-property validation errors are also reported via `obs.RecordValidationError(
 When a message carries a ContentType property, the adapter auto-selects the matching format from the provided `formats` slice by comparing `format.Format.ContentType()`. No manual content-type switching needed:
 
 ```go
-mqtt5adapter.Subscribe(ctx, client, router, handle, 1, fn,
+transport := mqtt5adapter.NewSubscribeTransport[SensorReading](client, router, 1,
     mqtt5adapter.SubscribeOptions{},
     format.JSON(sensorCodec),   // ContentType: "application/json"
     format.YAML(sensorCodec),   // ContentType: "application/yaml"
 )
+err := events.SubscribeHandle(ctx, sub, transport, fn)
 ```
 
 When the incoming message has `ContentType: "application/yaml"`, the YAML format is used automatically.
@@ -355,7 +417,7 @@ When the incoming message has `ContentType: "application/yaml"`, the YAML format
 
 ## Observer integration
 
-All four functions instrument the full observer chain:
+All four instrument the full observer chain:
 
 ```go
 obs := stats.NewFanout(
@@ -364,8 +426,12 @@ obs := stats.NewFanout(
     tracer,
 )
 
-mqtt5adapter.Subscribe(ctx, client, router, handle, 1, fn, mqtt5adapter.SubscribeOptions{Observer: obs})
-mqtt5adapter.Publish(ctx, client, handle, 1, false, msg, nil, mqtt5adapter.PublishOptions{Observer: obs})
+subTransport := mqtt5adapter.NewSubscribeTransport[SensorReading](client, router, 1, mqtt5adapter.SubscribeOptions{Observer: obs})
+err := events.SubscribeHandle(ctx, sub, subTransport, fn)
+
+pubTransport := mqtt5adapter.NewPublishTransport[SensorReading](client, 1, false, mqtt5adapter.PublishOptions[SensorReading]{Observer: obs})
+err = events.PublishHandle(ctx, pub, pubTransport, msg)
+
 mqtt5adapter.Serve(ctx, client, router, handle, fn, mqtt5adapter.ServeOptions{Observer: obs})
 mqtt5adapter.Call(ctx, client, router, handle, req, mqtt5adapter.CallOptions{Observer: obs})
 ```
@@ -424,7 +490,7 @@ if errors.As(err, &encErr) {
 
 - [`adapters/mqtt5` on pkg.go.dev](https://pkg.go.dev/github.com/DaniDeer/go-codex/adapters/mqtt5)
 - [`api/reqreply` on pkg.go.dev](https://pkg.go.dev/github.com/DaniDeer/go-codex/api/reqreply)
-- [examples/adapters-mqtt5](https://github.com/DaniDeer/go-codex/tree/main/examples/adapters-mqtt5) — runnable demo: User Properties, UserPropertyParam codec validation, ContentType auto-format, request-reply, AsyncAPI specs
+- [examples/adapters-mqtt5](https://github.com/DaniDeer/go-codex/tree/main/examples/adapters-mqtt5) — runnable demo: Client.Attach (preferred), User Properties, UserPropertyParam codec validation, ContentType auto-format, request-reply, AsyncAPI specs
 - [MQTT 3.1.1 Examples](mqtt.md)
 - [Concept: Codec Layers as Observable Layers](../concepts/observable-layers.md)
 - [Feature: Metrics Observer](../features/observer.md)

@@ -1,4 +1,4 @@
-package nethttp_test
+package nethttp
 
 import (
 	"bytes"
@@ -13,7 +13,6 @@ import (
 	"testing"
 	"time"
 
-	nethttp "github.com/DaniDeer/go-codex/adapters/nethttp"
 	"github.com/DaniDeer/go-codex/api/rest"
 	"github.com/DaniDeer/go-codex/codex"
 	"github.com/DaniDeer/go-codex/format"
@@ -25,7 +24,7 @@ import (
 
 // --- shared test types and codecs ---
 
-// scopesImpl reproduces the removed middleware.Scopes/nethttp.Scopes
+// scopesImpl reproduces the removed middleware.Scopes/Scopes
 // constructors' exact behavior — kept test-local since HandleMW now
 // builds this shape internally (see
 // docs/design/middleware-workflow-simplification.md's "Decision:
@@ -40,7 +39,7 @@ func scopesImpl[Req any](schemeName string, extract func(context.Context, *http.
 	}
 }
 
-// apiKeyImpl reproduces the removed nethttp.APIKey constructor's exact
+// apiKeyImpl reproduces the removed APIKey constructor's exact
 // behavior — same rationale as [scopesImpl].
 func apiKeyImpl[Req any](headerName string, verify func(ctx context.Context, key string) error) middleware.ServerImplementation {
 	return middleware.ServerImplementation{
@@ -81,18 +80,18 @@ var getReqCodec = codex.Struct[getReq]()
 var testInfo = rest.Info{Title: "Test API", Version: "1.0.0"}
 
 // newCreateRoute is a helper that declares a POST /users route (undecorated
-// — call .WithHandler/.HandleMW/.WithOptions then nethttp.ServeOne/Serve).
+// — call .WithHandler/.HandleMW/.WithOptions then ServeOne/Serve).
 func newCreateRoute() rest.Route[createReq, userResp] {
 	return rest.NewRoute[createReq, userResp]("POST", "/users",
 		createReqCodec, userRespCodec, rest.RouteMeta{OperationID: "createUser"})
 }
 
-// mustServeOne is a test helper wrapping [nethttp.ServeOne], failing the
+// mustServeOne is a test helper wrapping [ServeOne], failing the
 // test immediately on error (every test route here is expected to be
 // valid — a ServeOne error indicates a genuine test bug).
 func mustServeOne[Req, Resp any](t *testing.T, route rest.Route[Req, Resp]) http.Handler {
 	t.Helper()
-	h, err := nethttp.ServeOne(route)
+	h, err := ServeOne(route)
 	if err != nil {
 		t.Fatalf("ServeOne: %v", err)
 	}
@@ -100,28 +99,28 @@ func mustServeOne[Req, Resp any](t *testing.T, route rest.Route[Req, Resp]) http
 }
 
 // mustServe is [mustServeOne]'s builder-based sibling — used when a test
-// needs builder-level state (e.g. [rest.Builder.AddGlobalSecurity]) that
+// needs builder-level state (e.g. [rest.Server.AddGlobalSecurity]) that
 // ServeOne's internal scratch Builder cannot expose.
-func mustServe[Req, Resp any](t *testing.T, route rest.Route[Req, Resp], b *rest.Builder) *http.ServeMux {
+func mustServe[Req, Resp any](t *testing.T, route rest.Route[Req, Resp], b *rest.Server) *http.ServeMux {
 	t.Helper()
 	if err := route.Register(b); err != nil {
 		t.Fatalf("Register: %v", err)
 	}
 	mux := http.NewServeMux()
-	if err := nethttp.Serve(mux, b); err != nil {
+	if err := serve(mux, b); err != nil {
 		t.Fatalf("Serve: %v", err)
 	}
 	return mux
 }
 
 // mustServeSSE is [mustServe]'s SSE sibling.
-func mustServeSSE[Req, Event any](t *testing.T, route rest.SSERoute[Req, Event], b *rest.Builder) *http.ServeMux {
+func mustServeSSE[Req, Event any](t *testing.T, route rest.SSERoute[Req, Event], b *rest.Server) *http.ServeMux {
 	t.Helper()
 	if err := route.Register(b); err != nil {
 		t.Fatalf("Register: %v", err)
 	}
 	mux := http.NewServeMux()
-	if err := nethttp.ServeSSE(mux, b); err != nil {
+	if err := serveSSE(mux, b); err != nil {
 		t.Fatalf("ServeSSE: %v", err)
 	}
 	return mux
@@ -268,12 +267,12 @@ func TestServe_WiresCorrectPattern(t *testing.T) {
 	route := newCreateRoute().WithHandler(func(_ context.Context, req createReq) (userResp, error) {
 		return userResp{ID: "1", Name: req.Name}, nil
 	})
-	builder := rest.NewBuilder(testInfo)
+	builder := rest.NewServer(testInfo)
 	if err := route.Register(builder); err != nil {
 		t.Fatal(err)
 	}
 	mux := http.NewServeMux()
-	if err := nethttp.Serve(mux, builder); err != nil {
+	if err := serve(mux, builder); err != nil {
 		t.Fatal(err)
 	}
 
@@ -323,7 +322,7 @@ func TestHandler_RequestFromContext(t *testing.T) {
 	var gotID string
 	route := rest.NewRoute[getReq, userResp]("GET", "/users/{id}",
 		getReqCodec, userRespCodec, rest.RouteMeta{OperationID: "getUser"}).WithHandler(func(ctx context.Context, _ getReq) (userResp, error) {
-		r, ok := nethttp.RequestFromContext(ctx)
+		r, ok := RequestFromContext(ctx)
 		if !ok {
 			return userResp{}, errors.New("no request in context")
 		}
@@ -351,7 +350,7 @@ func TestHandlerWithOptions_CustomErrorHandler(t *testing.T) {
 	var capturedStatus int
 	var capturedMsg string
 
-	opts := nethttp.Options{
+	opts := Options{
 		ErrorHandler: func(w http.ResponseWriter, _ *http.Request, status int, err error) {
 			capturedStatus = status
 			capturedMsg = err.Error()
@@ -441,7 +440,7 @@ func TestObserver_RecordRequest_success(t *testing.T) {
 	obs := &spyObserver{}
 	route := newCreateRoute().WithHandler(func(_ context.Context, req createReq) (userResp, error) {
 		return userResp{ID: "1", Name: req.Name}, nil
-	}).HandleMW(nil, nethttp.Observability(obs))
+	}).HandleMW(nil, Observability(obs))
 	h := mustServeOne(t, route)
 
 	rec := httptest.NewRecorder()
@@ -468,7 +467,7 @@ func TestObserver_RecordRequest_handlerError(t *testing.T) {
 	obs := &spyObserver{}
 	route := newCreateRoute().WithHandler(func(_ context.Context, req createReq) (userResp, error) {
 		return userResp{}, errors.New("oops")
-	}).HandleMW(nil, nethttp.Observability(obs))
+	}).HandleMW(nil, Observability(obs))
 	h := mustServeOne(t, route)
 
 	rec := httptest.NewRecorder()
@@ -488,7 +487,7 @@ func TestObserver_RecordValidationError_body(t *testing.T) {
 	obs := &spyObserver{}
 	route := newCreateRoute().WithHandler(func(_ context.Context, req createReq) (userResp, error) {
 		return userResp{}, nil
-	}).HandleMW(nil, nethttp.Observability(obs))
+	}).HandleMW(nil, Observability(obs))
 	h := mustServeOne(t, route)
 
 	rec := httptest.NewRecorder()
@@ -513,7 +512,7 @@ func TestObserver_RecordValidationError_query(t *testing.T) {
 	route := rest.NewRoute[getReq, userResp]("GET", "/users", getReqCodec, userRespCodec, rest.QueryParam{Name: "id", Codec: &uuidCodec}).
 		WithHandler(func(_ context.Context, _ getReq) (userResp, error) {
 			return userResp{}, nil
-		}).HandleMW(nil, nethttp.Observability(obs))
+		}).HandleMW(nil, Observability(obs))
 	handler := mustServeOne(t, route)
 
 	rec := httptest.NewRecorder()
@@ -607,7 +606,7 @@ func TestObserver_RecordValidationError_cookie(t *testing.T) {
 	route := rest.NewRoute[getReq, userResp]("GET", "/protected", getReqCodec, userRespCodec, rest.CookieParam{Name: "session_token", Codec: &tokenCodec}).
 		WithHandler(func(_ context.Context, _ getReq) (userResp, error) {
 			return userResp{}, nil
-		}).HandleMW(nil, nethttp.Observability(obs))
+		}).HandleMW(nil, Observability(obs))
 	handler := mustServeOne(t, route)
 
 	rec := httptest.NewRecorder()
@@ -632,7 +631,7 @@ func TestObserver_RecordValidationError_header(t *testing.T) {
 	route := rest.NewRoute[getReq, userResp]("GET", "/items", getReqCodec, userRespCodec, rest.HeaderParam{Name: "X-Request-Id", Codec: &uuidCodec}).
 		WithHandler(func(_ context.Context, _ getReq) (userResp, error) {
 			return userResp{}, nil
-		}).HandleMW(nil, nethttp.Observability(obs))
+		}).HandleMW(nil, Observability(obs))
 	handler := mustServeOne(t, route)
 
 	rec := httptest.NewRecorder()
@@ -658,10 +657,10 @@ func TestOptions_MaxBodyBytes_rejectOversized(t *testing.T) {
 				return userResp{}, nil
 			})
 	}
-	handler := mustServeOne(t, newRoute().WithOptions(nethttp.Options{MaxBodyBytes: 10})) // 10 bytes — tiny
+	handler := mustServeOne(t, newRoute().WithOptions(Options{MaxBodyBytes: 10})) // 10 bytes — tiny
 
 	var capturedErr error
-	captureHandler := mustServeOne(t, newRoute().WithOptions(nethttp.Options{
+	captureHandler := mustServeOne(t, newRoute().WithOptions(Options{
 		MaxBodyBytes: 10,
 		ErrorHandler: func(w http.ResponseWriter, _ *http.Request, status int, err error) {
 			capturedErr = err
@@ -699,7 +698,7 @@ func TestOptions_ContentType_415onWrongType(t *testing.T) {
 	route := rest.NewRoute[createReq, userResp]("POST", "/users", createReqCodec, userRespCodec).
 		WithHandler(func(_ context.Context, _ createReq) (userResp, error) {
 			return userResp{}, nil
-		}).WithOptions(nethttp.Options{
+		}).WithOptions(Options{
 		ErrorHandler: func(w http.ResponseWriter, _ *http.Request, status int, err error) {
 			capturedErr = err
 			w.WriteHeader(status)
@@ -751,7 +750,7 @@ func TestOptions_MultiValueQueryParams_valid(t *testing.T) {
 	route := rest.NewRoute[getReq, userResp]("GET", "/items", getReqCodec, userRespCodec, rest.QueryParam{Name: "id", Codec: &uuidCodec}).
 		WithHandler(func(_ context.Context, _ getReq) (userResp, error) {
 			return userResp{ID: "1", Name: "Alice"}, nil
-		}).WithOptions(nethttp.Options{MultiValueQueryParams: true})
+		}).WithOptions(Options{MultiValueQueryParams: true})
 	handler := mustServeOne(t, route)
 
 	rec := httptest.NewRecorder()
@@ -768,7 +767,7 @@ func TestOptions_MultiValueQueryParams_invalid(t *testing.T) {
 	route := rest.NewRoute[getReq, userResp]("GET", "/items", getReqCodec, userRespCodec, rest.QueryParam{Name: "id", Codec: &uuidCodec}).
 		WithHandler(func(_ context.Context, _ getReq) (userResp, error) {
 			return userResp{}, nil
-		}).WithOptions(nethttp.Options{MultiValueQueryParams: true})
+		}).WithOptions(Options{MultiValueQueryParams: true})
 	handler := mustServeOne(t, route)
 
 	rec := httptest.NewRecorder()
@@ -786,7 +785,7 @@ func TestWithResponseHeaders_setsHeaderOnSuccess(t *testing.T) {
 	route := newCreateRoute().WithHandler(func(ctx context.Context, req createReq) (userResp, error) {
 		extra := make(http.Header)
 		extra.Set("Location", "/users/42")
-		nethttp.WithResponseHeaders(ctx, extra)
+		WithResponseHeaders(ctx, extra)
 		return userResp{ID: "42", Name: req.Name}, nil
 	})
 	h := mustServeOne(t, route)
@@ -809,7 +808,7 @@ func TestWithResponseHeaders_multiValueHeader(t *testing.T) {
 		extra := make(http.Header)
 		extra.Add("X-Tag", "alpha")
 		extra.Add("X-Tag", "beta")
-		nethttp.WithResponseHeaders(ctx, extra)
+		WithResponseHeaders(ctx, extra)
 		return userResp{ID: "1", Name: req.Name}, nil
 	})
 	h := mustServeOne(t, route)
@@ -830,7 +829,7 @@ func TestWithResponseHeaders_multiValueHeader(t *testing.T) {
 
 func TestResponseHeadersFromContext_falseWhenAbsent(t *testing.T) {
 	ctx := context.Background()
-	if _, ok := nethttp.ResponseHeadersFromContext(ctx); ok {
+	if _, ok := ResponseHeadersFromContext(ctx); ok {
 		t.Error("want false for empty context, got true")
 	}
 }
@@ -839,7 +838,7 @@ func TestWithResponseHeaders_notAppliedOnError(t *testing.T) {
 	route := newCreateRoute().WithHandler(func(ctx context.Context, req createReq) (userResp, error) {
 		extra := make(http.Header)
 		extra.Set("Location", "/users/99")
-		nethttp.WithResponseHeaders(ctx, extra) // headers must NOT appear on error path
+		WithResponseHeaders(ctx, extra) // headers must NOT appear on error path
 		return userResp{}, errors.New("handler failed")
 	})
 	h := mustServeOne(t, route)
@@ -866,7 +865,7 @@ func TestResponseHeaderParam_validHeader_appearsInResponse(t *testing.T) {
 		rest.ResponseHeaderParam{Name: "Location", Codec: &uuidCodec}).WithHandler(func(ctx context.Context, req createReq) (userResp, error) {
 		extra := make(http.Header)
 		extra.Set("Location", "f47ac10b-58cc-4372-a567-0e02b2c3d479")
-		nethttp.WithResponseHeaders(ctx, extra)
+		WithResponseHeaders(ctx, extra)
 		return userResp{ID: "1", Name: req.Name}, nil
 	})
 	handler := mustServeOne(t, route)
@@ -892,9 +891,9 @@ func TestResponseHeaderParam_codecViolation_returns500(t *testing.T) {
 		rest.ResponseHeaderParam{Name: "Location", Codec: &uuidCodec}).WithHandler(func(ctx context.Context, req createReq) (userResp, error) {
 		extra := make(http.Header)
 		extra.Set("Location", "not-a-uuid") // violates UUID codec
-		nethttp.WithResponseHeaders(ctx, extra)
+		WithResponseHeaders(ctx, extra)
 		return userResp{ID: "1", Name: req.Name}, nil
-	}).WithOptions(nethttp.Options{
+	}).WithOptions(Options{
 		ErrorHandler: func(w http.ResponseWriter, _ *http.Request, status int, err error) {
 			capturedErr = err
 			w.WriteHeader(status)
@@ -924,7 +923,7 @@ func TestResponseHeaderParam_unregisteredHeaderPassesThrough(t *testing.T) {
 		rest.RouteMeta{OperationID: "createUser"}).WithHandler(func(ctx context.Context, req createReq) (userResp, error) { // no ResponseHeaderParams
 		extra := make(http.Header)
 		extra.Set("X-Custom", "whatever")
-		nethttp.WithResponseHeaders(ctx, extra)
+		WithResponseHeaders(ctx, extra)
 		return userResp{ID: "1", Name: req.Name}, nil
 	})
 	handler := mustServeOne(t, route)
@@ -948,10 +947,10 @@ func TestWithResponseCookies_setsCookieOnSuccess(t *testing.T) {
 	sessionCodec := codex.String().Refine(validate.MinLen(8))
 	route := rest.NewRoute[createReq, userResp]("POST", "/users", createReqCodec, userRespCodec,
 		rest.ResponseCookieParam{Name: "session", Required: true, Codec: &sessionCodec}).WithHandler(func(ctx context.Context, req createReq) (userResp, error) {
-		nethttp.WithResponseCookies(ctx, nethttp.PendingCookie{
+		WithResponseCookies(ctx, PendingCookie{
 			Name:  "session",
 			Value: "tok_abcdefgh",
-			Opts:  nethttp.CookieOptions{MaxAge: 3600},
+			Opts:  CookieOptions{MaxAge: 3600},
 		})
 		return userResp{ID: "1", Name: req.Name}, nil
 	})
@@ -981,7 +980,7 @@ func TestWithResponseCookies_codecViolationReturns500(t *testing.T) {
 	sessionCodec := codex.String().Refine(validate.MinLen(32))
 	route := rest.NewRoute[createReq, userResp]("POST", "/users", createReqCodec, userRespCodec,
 		rest.ResponseCookieParam{Name: "session", Required: true, Codec: &sessionCodec}).WithHandler(func(ctx context.Context, req createReq) (userResp, error) {
-		nethttp.WithResponseCookies(ctx, nethttp.PendingCookie{
+		WithResponseCookies(ctx, PendingCookie{
 			Name:  "session",
 			Value: "tooshort", // violates MinLen(32)
 		})
@@ -1023,7 +1022,7 @@ var userRespWithMetaBodyCodec = codex.Struct[userRespWithMeta](
 	),
 )
 
-// R6: nethttp.Handler route WITH response header/cookie merge fields —
+// R6: Handler route WITH response header/cookie merge fields —
 // server sets the header/cookie automatically from the handler's returned
 // Resp, no WithResponseHeaders/WithResponseCookies call needed.
 func TestHandler_ResponseMergeFields_AutoAppliesFromResp(t *testing.T) {
@@ -1149,7 +1148,7 @@ func TestHandler_ErrorPattern_WithActionHandle_FallsThroughToErrorHandler(t *tes
 			}).WithAction(rest.ErrorHandle),
 	).WithHandler(func(_ context.Context, _ createReq) (userResp, error) {
 		return userResp{}, handlerConflictError{msg: "handled-not-responded"}
-	}).WithOptions(nethttp.Options{
+	}).WithOptions(Options{
 		ErrorHandler: func(w http.ResponseWriter, _ *http.Request, status int, err error) {
 			gotErrorHandlerStatus = status
 			gotErrorHandlerErr = err
@@ -1201,7 +1200,7 @@ func TestHandler_ResponseMergeFields_CodecViolationReturns500(t *testing.T) {
 	}
 }
 
-// R7: nethttp.Handler route WITHOUT response merge fields behaves
+// R7: Handler route WITHOUT response merge fields behaves
 // byte-for-byte identically to today — regression guard.
 func TestHandler_ResponseMergeFields_NoneDeclaredIsUnaffected(t *testing.T) {
 	route := newCreateRoute().WithHandler(func(_ context.Context, req createReq) (userResp, error) { // no response merge fields declared
@@ -1495,7 +1494,7 @@ func TestRequestFormats_WrongContentType_returns415(t *testing.T) {
 		rest.RequestFormats(format.JSON(createReqCodec), format.YAML(createReqCodec)),
 	).WithHandler(func(_ context.Context, req createReq) (userResp, error) {
 		return userResp{ID: "1", Name: req.Name}, nil
-	}).WithOptions(nethttp.Options{
+	}).WithOptions(Options{
 		ErrorHandler: func(w http.ResponseWriter, _ *http.Request, status int, e error) {
 			capturedErr = e
 			w.WriteHeader(status)
@@ -1524,7 +1523,7 @@ func TestRequestFormats_WrongContentType_returns415(t *testing.T) {
 }
 
 func TestRequestFormats_SpecContentTypesUpdated(t *testing.T) {
-	b := rest.NewBuilder(testInfo)
+	b := rest.NewServer(testInfo)
 	h, err := rest.NewRoute[createReq, userResp]("POST", "/users", createReqCodec, userRespCodec).RegisterHandle(b)
 	if err != nil {
 		t.Fatal(err)
@@ -1577,7 +1576,7 @@ func TestSSEHandler_streamEvents(t *testing.T) {
 		}
 		return nil
 	})
-	handler := mustServeSSE(t, route, rest.NewBuilder(testInfo))
+	handler := mustServeSSE(t, route, rest.NewServer(testInfo))
 
 	rec := httptest.NewRecorder()
 	r := httptest.NewRequest(http.MethodGet, "/events", nil)
@@ -1606,7 +1605,7 @@ func TestSSEHandler_validationRejectsEvent(t *testing.T) {
 		sendErr = send(sseEvent{Message: ""}) // empty message fails NonEmptyString
 		return nil
 	})
-	handler := mustServeSSE(t, route, rest.NewBuilder(testInfo))
+	handler := mustServeSSE(t, route, rest.NewServer(testInfo))
 
 	rec := httptest.NewRecorder()
 	r := httptest.NewRequest(http.MethodGet, "/events", nil)
@@ -1633,7 +1632,7 @@ func TestSSEHandler_clientDisconnect(t *testing.T) {
 		}
 		return nil
 	})
-	handler := mustServeSSE(t, route, rest.NewBuilder(testInfo))
+	handler := mustServeSSE(t, route, rest.NewServer(testInfo))
 
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel() // pre-cancel
@@ -1651,7 +1650,7 @@ func TestSSEHandler_ServeSSE_wiresOntoMux(t *testing.T) {
 		createReqCodec, sseEventCodec, rest.RouteMeta{OperationID: "streamRegister"}).WithHandler(func(ctx context.Context, _ createReq, send func(sseEvent) error) error {
 		return send(sseEvent{Message: "registered"})
 	})
-	mux := mustServeSSE(t, route, rest.NewBuilder(testInfo))
+	mux := mustServeSSE(t, route, rest.NewServer(testInfo))
 
 	srv := httptest.NewServer(mux)
 	defer srv.Close()
@@ -1772,7 +1771,7 @@ func TestHandler_SecurityFunc_UnpairedImplRejectedAtServeOne(t *testing.T) {
 		return userResp{ID: "1", Name: req.Name}, nil
 	}).HandleMW(&unrelatedMw, implMw.Fn) // "bearerAuth" was never .Use()'d on this route
 
-	_, err := nethttp.ServeOne(route)
+	_, err := ServeOne(route)
 	var unknownErr rest.UnknownMiddlewareImplementationError
 	if !errors.As(err, &unknownErr) {
 		t.Fatalf("want UnknownMiddlewareImplementationError, got %v (%T)", err, err)
@@ -1798,7 +1797,7 @@ func TestServeOne_MissingSecurityCoverage_RejectedAtServeTime(t *testing.T) {
 		})
 	// ...but NO .HandleMW() call ever attaches an implementation for it.
 
-	_, err := nethttp.ServeOne(route)
+	_, err := ServeOne(route)
 	var missingErr rest.MissingSecurityMiddlewareError
 	if !errors.As(err, &missingErr) {
 		t.Fatalf("want MissingSecurityMiddlewareError, got %v (%T)", err, err)
@@ -1816,12 +1815,12 @@ func TestServeSSE_MissingSecurityCoverage_RejectedAtServeTime(t *testing.T) {
 		return send(sseEvent{Message: "hi"})
 	})
 
-	b := rest.NewBuilder(testInfo)
+	b := rest.NewServer(testInfo)
 	if err := sseRoute.Register(b); err != nil {
 		t.Fatalf("Register: %v", err)
 	}
 	mux := http.NewServeMux()
-	err := nethttp.ServeSSE(mux, b)
+	err := serveSSE(mux, b)
 	var missingErr rest.MissingSecurityMiddlewareError
 	if !errors.As(err, &missingErr) {
 		t.Fatalf("want MissingSecurityMiddlewareError, got %v (%T)", err, err)
@@ -1960,8 +1959,8 @@ func TestHandler_SecurityObserver_calledOnRejection(t *testing.T) {
 	}
 }
 
-func newGlobalSecuredRoute() (rest.Route[createReq, userResp], *rest.Builder) {
-	b := rest.NewBuilder(testInfo)
+func newGlobalSecuredRoute() (rest.Route[createReq, userResp], *rest.Server) {
+	b := rest.NewServer(testInfo)
 	b.AddGlobalSecurity(route.Require("bearerAuth"))
 	// No per-route Security — inherits global.
 	r := rest.NewRoute[createReq, userResp]("POST", "/users",
@@ -2042,7 +2041,7 @@ func TestHandler_GlobalSecurity_notCalledWhenExplicitlyEmpty(t *testing.T) {
 	// attaches NO implementation at all — its actual assertion (explicit
 	// empty Security wins over inherited global security, so the request
 	// succeeds with no Authorization header at all) needs neither.
-	b := rest.NewBuilder(testInfo)
+	b := rest.NewServer(testInfo)
 	b.AddGlobalSecurity(route.Require("bearerAuth"))
 	// Empty Security slice = explicitly "no auth" on this route.
 	r := rest.NewRoute[createReq, userResp]("POST", "/users",
@@ -2068,8 +2067,8 @@ func TestHandler_GlobalSecurity_notCalledWhenExplicitlyEmpty(t *testing.T) {
 
 // --- SSE security + param validation tests ---
 
-func newGlobalSecuredSSERoute() (rest.SSERoute[createReq, sseEvent], *rest.Builder) {
-	b := rest.NewBuilder(testInfo)
+func newGlobalSecuredSSERoute() (rest.SSERoute[createReq, sseEvent], *rest.Server) {
+	b := rest.NewServer(testInfo)
 	b.AddGlobalSecurity(route.Require("bearerAuth"))
 	r := rest.NewSSERoute[createReq, sseEvent]("/stream",
 		createReqCodec, sseEventCodec,
@@ -2140,7 +2139,7 @@ func TestSSEHandler_QueryParam_rejectsInvalid(t *testing.T) {
 	).WithHandler(func(_ context.Context, _ createReq, _ func(sseEvent) error) error {
 		return nil
 	})
-	h := mustServeSSE(t, route, rest.NewBuilder(testInfo))
+	h := mustServeSSE(t, route, rest.NewServer(testInfo))
 
 	rec := httptest.NewRecorder()
 	r := httptest.NewRequest(http.MethodGet, "/stream?id=not-a-uuid", nil)
@@ -2159,7 +2158,7 @@ func TestSSEHandler_QueryParam_allowsValid(t *testing.T) {
 	).WithHandler(func(_ context.Context, _ createReq, send func(sseEvent) error) error {
 		return send(sseEvent{Message: "ok"})
 	})
-	h := mustServeSSE(t, route, rest.NewBuilder(testInfo))
+	h := mustServeSSE(t, route, rest.NewServer(testInfo))
 
 	rec := httptest.NewRecorder()
 	r := httptest.NewRequest(http.MethodGet, "/stream?id=f47ac10b-58cc-4372-a567-0e02b2c3d479", nil)
@@ -2178,7 +2177,7 @@ func TestSSEHandler_CookieParam_rejectsInvalid(t *testing.T) {
 	).WithHandler(func(_ context.Context, _ createReq, _ func(sseEvent) error) error {
 		return nil
 	})
-	h := mustServeSSE(t, route, rest.NewBuilder(testInfo))
+	h := mustServeSSE(t, route, rest.NewServer(testInfo))
 
 	rec := httptest.NewRecorder()
 	r := httptest.NewRequest(http.MethodGet, "/stream", nil)
@@ -2198,7 +2197,7 @@ func TestSSEHandler_HeaderParam_rejectsInvalid(t *testing.T) {
 	).WithHandler(func(_ context.Context, _ createReq, _ func(sseEvent) error) error {
 		return nil
 	})
-	h := mustServeSSE(t, route, rest.NewBuilder(testInfo))
+	h := mustServeSSE(t, route, rest.NewServer(testInfo))
 
 	rec := httptest.NewRecorder()
 	r := httptest.NewRequest(http.MethodGet, "/stream", nil)
@@ -2218,10 +2217,10 @@ func TestSSEHandler_ResponseHeaderParam_appearsOnFirstSend(t *testing.T) {
 	).WithHandler(func(ctx context.Context, _ createReq, send func(sseEvent) error) error {
 		extra := make(http.Header)
 		extra.Set("X-Trace-Id", "trace-abc-123")
-		nethttp.WithResponseHeaders(ctx, extra)
+		WithResponseHeaders(ctx, extra)
 		return send(sseEvent{Message: "hello"})
 	})
-	h := mustServeSSE(t, route, rest.NewBuilder(testInfo))
+	h := mustServeSSE(t, route, rest.NewServer(testInfo))
 
 	srv := httptest.NewServer(h)
 	defer srv.Close()
@@ -2248,7 +2247,7 @@ func TestSSEHandler_ResponseHeaderParam_codecViolation_abortsStream(t *testing.T
 	).WithHandler(func(ctx context.Context, _ createReq, send func(sseEvent) error) error {
 		extra := make(http.Header)
 		extra.Set("X-Trace-Id", "") // empty — codec rejects it
-		nethttp.WithResponseHeaders(ctx, extra)
+		WithResponseHeaders(ctx, extra)
 		err := send(sseEvent{Message: "should not appear"})
 		if err != nil {
 			sendCalled = true
@@ -2256,7 +2255,7 @@ func TestSSEHandler_ResponseHeaderParam_codecViolation_abortsStream(t *testing.T
 		}
 		return nil
 	})
-	h := mustServeSSE(t, route, rest.NewBuilder(testInfo))
+	h := mustServeSSE(t, route, rest.NewServer(testInfo))
 
 	rec := httptest.NewRecorder()
 	r := httptest.NewRequest(http.MethodGet, "/stream-rh2", nil)
@@ -2295,7 +2294,7 @@ func TestHandler_PathParam_codecValidated(t *testing.T) {
 	}
 }
 
-// P5: nethttp.Handler for a route WITH merge fields — the handler function
+// P5: Handler for a route WITH merge fields — the handler function
 // receives an already-merged, validated req; no manual r.PathValue needed.
 func TestHandler_MergeFields_AutomaticMerge(t *testing.T) {
 	type getUserReq struct{ ID string }
@@ -2323,7 +2322,7 @@ func TestHandler_MergeFields_AutomaticMerge(t *testing.T) {
 	}
 }
 
-// P6: nethttp.Handler for a route WITHOUT merge fields — byte-for-byte
+// P6: Handler for a route WITHOUT merge fields — byte-for-byte
 // identical behavior to before this feature (regression guard).
 func TestHandler_NoMergeFields_UnchangedBehavior(t *testing.T) {
 	uuidCodec := codex.String().Refine(validate.UUID)
@@ -2354,7 +2353,7 @@ func TestSSEHandler_PathParam_codecValidated(t *testing.T) {
 	).WithHandler(func(ctx context.Context, _ getReq, send func(sseEvent) error) error {
 		return send(sseEvent{Message: "hi"})
 	})
-	mux := mustServeSSE(t, route, rest.NewBuilder(testInfo))
+	mux := mustServeSSE(t, route, rest.NewServer(testInfo))
 
 	// Invalid UUID → 400.
 	rec := httptest.NewRecorder()
@@ -2399,7 +2398,7 @@ func TestSSEHandler_EventMerge_FromConnectionVars(t *testing.T) {
 	).WithHandler(func(_ context.Context, _ getReq, send func(mergedEvent) error) error {
 		return send(mergedEvent{ID: "wrong", Tenant: "wrong", Trace: "wrong", SID: "wrong"})
 	})
-	mux := mustServeSSE(t, route, rest.NewBuilder(testInfo))
+	mux := mustServeSSE(t, route, rest.NewServer(testInfo))
 
 	req := httptest.NewRequest(http.MethodGet, "/stream/550e8400-e29b-41d4-a716-446655440000?tenant=acme", nil)
 	req.Header.Set("X-Trace", "trace-1")
@@ -2429,7 +2428,7 @@ func TestSSEHandler_EventMerge_MissingRequiredFailsSend(t *testing.T) {
 	).WithHandler(func(_ context.Context, _ getReq, send func(mergedEvent) error) error {
 		return send(mergedEvent{})
 	})
-	mux := mustServeSSE(t, route, rest.NewBuilder(testInfo))
+	mux := mustServeSSE(t, route, rest.NewServer(testInfo))
 
 	rec := httptest.NewRecorder()
 	mux.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/stream", nil))
@@ -2475,7 +2474,7 @@ func decodeSSEFirstFrame(t *testing.T, body []byte) []byte {
 // ServeSSE + raw-response path every other SSE test in this file uses —
 // no access to the unexported writeSSEData needed.
 func TestSSEHandler_MultiLineDataFraming(t *testing.T) {
-	b := rest.NewBuilder(testInfo)
+	b := rest.NewServer(testInfo)
 	handle, err := rest.NewSSERoute[struct{}, userResp]("/stream",
 		codex.Empty, userRespCodec,
 	).WithHandler(func(_ context.Context, _ struct{}, send func(userResp) error) error {
@@ -2486,7 +2485,7 @@ func TestSSEHandler_MultiLineDataFraming(t *testing.T) {
 	}
 	handle.WithFormats(format.YAML(userRespCodec))
 	mux := http.NewServeMux()
-	if err := nethttp.ServeSSE(mux, b); err != nil {
+	if err := serveSSE(mux, b); err != nil {
 		t.Fatalf("ServeSSE: %v", err)
 	}
 	rec := httptest.NewRecorder()
@@ -2537,7 +2536,7 @@ func TestSSEHandler_EventMerge_NestedGobFormat(t *testing.T) {
 		codex.RequiredField("blob", codex.Bytes(), func(e mergedEvent) []byte { return e.Payload.Blob }, func(e *mergedEvent, v []byte) { e.Payload.Blob = v }),
 	)
 	uuidCodec := codex.String().Refine(validate.UUID)
-	b := rest.NewBuilder(testInfo)
+	b := rest.NewServer(testInfo)
 	handle, err := rest.NewSSERoute[getReq, mergedEvent]("/stream/{id}",
 		getReqCodec, evtCodec,
 		rest.PathParam{Name: "id", Codec: &uuidCodec},
@@ -2558,7 +2557,7 @@ func TestSSEHandler_EventMerge_NestedGobFormat(t *testing.T) {
 	gobFmt := format.Gob(evtCodec)
 	handle.WithFormats(gobFmt)
 	mux := http.NewServeMux()
-	if err := nethttp.ServeSSE(mux, b); err != nil {
+	if err := serveSSE(mux, b); err != nil {
 		t.Fatalf("ServeSSE: %v", err)
 	}
 
@@ -2592,7 +2591,7 @@ func TestSSEHandler_EventMerge_NestedGobFormat(t *testing.T) {
 // RecordRequest/TraceObserver moved ENTIRELY into Observability,
 // the sole remaining stats.Observer call site in this package. A caller
 // wanting context-based observer resolution now attaches
-// nethttp.Observability(stats.ObserverFromContext(ctx)) itself.
+// Observability(stats.ObserverFromContext(ctx)) itself.
 func TestHandler_ContextObserver_NotUsedWithoutObservability(t *testing.T) {
 	var recorded bool
 	spy := &testSpyObserver{onRequest: func() { recorded = true }}
@@ -2630,7 +2629,7 @@ func TestHandler_ExplicitObserverBeatsContext(t *testing.T) {
 	route := rest.NewRoute[getReq, userResp]("GET", "/users",
 		getReqCodec, userRespCodec, rest.RouteMeta{}).WithHandler(func(_ context.Context, _ getReq) (userResp, error) {
 		return userResp{}, nil
-	}).HandleMW(nil, nethttp.Observability(explicit)) // explicit wins
+	}).HandleMW(nil, Observability(explicit)) // explicit wins
 	h := mustServeOne(t, route)
 
 	// Even if context observer is present, explicit wins.

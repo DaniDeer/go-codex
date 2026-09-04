@@ -14,7 +14,7 @@ go-codex documents security requirements in the spec and provides declarative ho
 
 ## Connection-level vs message-level security
 
-REST is stateless per-request — every `nethttp.Call`/incoming request IS a
+REST is stateless per-request — every `nethttp.CallWithHandle`/incoming request IS a
 fresh connection-equivalent, so there's no "connection level" distinct
 from "message level" at all.
 
@@ -52,9 +52,11 @@ security layers exist:
    secured, err := mqtt5.NewSecuredClient(client, connectBearerAuth, "svc-account", token)
    if err != nil { /* malformed credential — client is never used */ }
 
-   // secured is a drop-in replacement — every Subscribe/Publish/Serve/Call
-   // call site below is UNCHANGED from how it would look with the raw client.
-   mqtt5.Subscribe(ctx, secured, router, handle, fn, opts)
+   // secured is a drop-in replacement — every NewSubscribeTransport/
+   // NewPublishTransport/Serve/Call call site below is UNCHANGED from how
+   // it would look with the raw client.
+   transport := mqtt5.NewSubscribeTransport[T](secured, router, 1, opts)
+   err = events.SubscribeHandle(ctx, sub, transport, fn)
    ```
 
    `NewSecuredClient` combines `username`+`password` into a single
@@ -101,7 +103,7 @@ var apiKeyAuthScheme = rest.SecurityScheme{
 }
 var apiKeyAuth = rest.FromSecurityScheme("apiKey", apiKeyAuthScheme, nil)
 
-b := rest.NewBuilder(rest.Info{Title: "User API", Version: "1.0.0"})
+b := rest.NewServer(rest.Info{Title: "User API", Version: "1.0.0"})
 
 // Attach the scheme directly to every route that needs it, via Use.
 createUser := rest.NewRoute[CreateUserReq, User]("POST", "/users",
@@ -111,7 +113,7 @@ createUser := rest.NewRoute[CreateUserReq, User]("POST", "/users",
 err := createUser.Register(b) // error only — see "Runtime enforcement" below for HandleMW
 ```
 
-`Builder.OpenAPISpec()` aggregates `components.securitySchemes` automatically from every registered route's own `.Use()`-attached declarations — no separate builder-level step needed. When two routes declare the same scheme name with different values, the last-registered route wins (no error); define the scheme once as a shared value (as above) to avoid relying on this.
+`Server.OpenAPISpec()` aggregates `components.securitySchemes` automatically from every registered route's own `.Use()`-attached declarations — no separate builder-level step needed. When two routes declare the same scheme name with different values, the last-registered route wins (no error); define the scheme once as a shared value (as above) to avoid relying on this.
 
 Built-in scheme constructors:
 
@@ -126,7 +128,7 @@ route.OpenIDConnectScheme("https://.../.well-known")// OIDC discovery
 
 ## Global and per-route security
 
-`Builder.AddGlobalSecurity`/`RouteMeta.Security` answer "which routes require auth" — a SEPARATE, unchanged concern from a `.Use()`-attached scheme declaration ("what does a named scheme look like"). `RouteMeta.Security`'s `nil` (inherit global) and `[]route.SecurityRequirement{}` (explicit opt-out) states are UNCHANGED by the security-declaration redesign — only the THIRD state (a non-empty, MANUALLY-set `Security` paired with metadata-only registration) was removed, since `middleware.SecurityScheme`/`rest.FromSecurityScheme` now populate `RouteMeta.Security` automatically as part of `.Use()`:
+`Server.AddGlobalSecurity`/`RouteMeta.Security` answer "which routes require auth" — a SEPARATE, unchanged concern from a `.Use()`-attached scheme declaration ("what does a named scheme look like"). `RouteMeta.Security`'s `nil` (inherit global) and `[]route.SecurityRequirement{}` (explicit opt-out) states are UNCHANGED by the security-declaration redesign — only the THIRD state (a non-empty, MANUALLY-set `Security` paired with metadata-only registration) was removed, since `middleware.SecurityScheme`/`rest.FromSecurityScheme` now populate `RouteMeta.Security` automatically as part of `.Use()`:
 
 ```go
 // Global security — applies to all operations by default.
@@ -240,7 +242,8 @@ route := createUser.WithHandler(handler).WithOptions(nethttp.Options{
     },
 })
 route.Register(b)
-nethttp.Serve(mux, b)
+nethttp.AttachMux(b, mux, addr)
+go func() { _ = b.Serve(ctx) }()
 ```
 
 The adapter enforcement sequence:
@@ -250,7 +253,7 @@ The adapter enforcement sequence:
 
 Routes with `nil Security` (default) trigger enforcement when global security is set.
 
-`nethttp.Call` (client-side) runs the SAME sequence, symmetrically, on the OUTGOING request before it is sent — see "HTTP client — credential-providing ClientMW" below.
+`nethttp.CallWithHandle`/`rest.Client.Call` (client-side) run the SAME sequence, symmetrically, on the OUTGOING request before it is sent — see "HTTP client — credential-providing ClientMW" below.
 
 ## Credential format validation
 
@@ -269,7 +272,7 @@ codex.String().Refine(validate.NonEmptyString)
 
 ## HTTP client — credential-providing `ClientMW`
 
-For `nethttp.Call`, provide credentials via a credential-providing
+For `nethttp.CallWithHandle`/`rest.Client.Call`, provide credentials via a credential-providing
 implementation attached with [`Route.ClientMW`](../features/http-client.md),
 PAIRED against the SAME `middleware.Middleware` value the route's security
 requirement was declared with (via `.Use(mw)`). The Fn matches
@@ -291,8 +294,8 @@ securedRoute := rest.NewRoute[GetDataReq, Data]("GET", "/data",
     return h, nil
 })
 
-caller := nethttp.NewCaller(http.DefaultClient, serverURL)
-data, err := nethttp.Call(ctx, caller, securedRoute, GetDataReq{}, nethttp.CallOptions{})
+handle := securedRoute.ClientHandle()
+data, err := nethttp.CallWithHandle(ctx, http.DefaultClient, serverURL, handle, GetDataReq{}, nethttp.CallOptions{})
 ```
 
 The credential-providing `Fn` is GATED by `Satisfies` (derived from
@@ -351,15 +354,16 @@ securedRoute := contract.GetSecuredData(securedMw).ClientMW(&securedMw, credFn)
 callOpts := nethttp.CallOptions{
     OnCredentialRejected: invalidate, // purges the cache; does NOT retry
 }
-resp, err := nethttp.Call(ctx, caller, securedRoute, req, callOpts)
+handle := securedRoute.ClientHandle()
+resp, err := nethttp.CallWithHandle(ctx, http.DefaultClient, serverURL, handle, req, callOpts)
 
 var statusErr nethttp.UnexpectedStatusError
 if errors.As(err, &statusErr) && statusErr.StatusCode == http.StatusUnauthorized {
-    resp, err = nethttp.Call(ctx, caller, securedRoute, req, callOpts) // fresh credential now
+    resp, err = nethttp.CallWithHandle(ctx, http.DefaultClient, serverURL, handle, req, callOpts) // fresh credential now
 }
 ```
 
-`OnCredentialRejected` is purely a notification hook — `Call`
+`OnCredentialRejected` is purely a notification hook — `CallWithHandle`
 never retries automatically, keeping control flow explicit and in the
 caller's hands.
 
@@ -394,15 +398,16 @@ both containers into real `nethttp` server/client hooks.
 
 Just like REST, an events security scheme is declared ONCE, directly on the
 channel (`events.WithSecurityScheme`) — there is no builder-level scheme
-registry — and the SAME declaration is consumed identically by both the
-server (`Channel.Register`) and the client (`Channel.ClientHandle`):
+registry — and the SAME declaration is consumed identically regardless of
+role or client (`Subscriber.Handle`/`Publisher.Handle`, with a `Client` or
+`nil`):
 
 ```go
 var bearerAuth = events.SecurityScheme{
     SecurityScheme: route.BearerScheme("JWT"),
 }.WithCodec(codex.String().Refine(validate.BearerToken))
 
-b := events.NewBuilder(events.Info{Title: "User Events", Version: "1.0.0"})
+eventsClient := events.NewClient(events.WithInfo(events.Info{Title: "User Events", Version: "1.0.0"}))
 b.AddServer("production", events.Server{
     URL:      "broker.example.com",
     Protocol: "mqtt5",
@@ -410,12 +415,11 @@ b.AddServer("production", events.Server{
 })
 
 userCreated, _ := events.NewChannel[UserCreated]("user/created", codec,
-    events.Subscribe{
-        Summary:  "Receive user created events",
-        Security: []route.SecurityRequirement{route.Require("bearerAuth")},
-    },
     events.WithSecurityScheme("bearerAuth", bearerAuth),
-).Register(b)
+).WithSubscribe(events.Subscribe{
+    Summary:  "Receive user created events",
+    Security: []route.SecurityRequirement{route.Require("bearerAuth")},
+}).Handle(b)
 ```
 
 MQTT5 adapter — the server side runs a BUILT-IN codec-based credential
@@ -425,25 +429,26 @@ check (extracting the "Authorization" MQTT5 User Property for `http`/`oauth2`/
 order as the nethttp/chi request pipeline:
 
 ```go
-mqtt5.Subscribe(ctx, client, router, userCreated, handler, mqtt5.SubscribeOptions{
+transport := mqtt5.NewSubscribeTransport[UserCreated](client, router, 1, mqtt5.SubscribeOptions{
     SecurityFunc: func(ctx context.Context, msg *paho.Publish, reqs []route.SecurityRequirement) error {
         // Runs AFTER the built-in Codec check passes — add extra business
         // logic here (e.g. a database revocation check) if needed.
         return checkNotRevoked(msg, reqs)
     },
 })
+err := events.SubscribeHandle(ctx, userCreated.WithSubscribe(events.Subscribe{}), transport, handler)
 ```
 
 The client (publish) side is symmetric: `PublishOptions.CredentialFunc`
 supplies the credential as MQTT5 User Properties, and the SAME built-in
 codec check runs BEFORE the message is actually published — mirroring
-`nethttp.Call`'s `CredentialFunc` handling exactly, including the
+`nethttp.CallWithHandle`'s `CredentialFunc` handling exactly, including the
 "a `CredentialFunc` returning `(nil, nil)` for 'no credential needed' is not
 an error" contract:
 
 ```go
-mqtt5.Publish(ctx, client, userCreated, 1, false, event, nil, mqtt5.PublishOptions{
-    CredentialFunc: func(ctx context.Context, reqs []route.SecurityRequirement) ([]mqtt5.UserProperty, error) {
+pubTransport := mqtt5.NewPublishTransport[UserCreated](client, 1, false, mqtt5.PublishOptions[UserCreated]{
+    CredentialFunc: func(ctx context.Context, msg *UserCreated, reqs []route.SecurityRequirement) ([]mqtt5.UserProperty, error) {
         token, err := fetchToken(ctx)
         if err != nil {
             return nil, err
@@ -451,6 +456,7 @@ mqtt5.Publish(ctx, client, userCreated, 1, false, event, nil, mqtt5.PublishOptio
         return []mqtt5.UserProperty{{Key: "Authorization", Value: "Bearer " + token}}, nil
     },
 })
+err = events.PublishHandle(ctx, userCreated.WithPublish(events.Publish{}), pubTransport, event)
 ```
 
 MQTT 3.1.1 (`adapters/mqtt`) has no per-message metadata channel — codec-level
@@ -469,16 +475,16 @@ REQ/REP/PUB/SUB patterns have no CONNECT-time credential handshake to
 validate). A `Channel` declaring `Security` and used exclusively over
 `adapters/zeromq` has that requirement completely UNENFORCED at runtime —
 the AsyncAPI spec documents a requirement the code never checks. This is a
-known, tracked gap — see [Events/ReqReply/Ports Workflow
-Simplification](../roadmap/events-reqreply-ports-workflow-simplification.md).
+known, tracked gap — see
+[ZeroMQ Security Mechanism](../roadmap/zeromq-security.md).
 
 ## Security for request-reply routes (reqreply)
 
 `api/reqreply` (MQTT5 only — `adapters/zeromq`'s reqreply `Call`/`Serve` have
 no security mechanism today, confirmed: `Descriptor.Security`/
 `GlobalSecurity` are never even read, since ZeroMQ carries no per-message
-metadata; same tracked gap as pub/sub above — see [Events/ReqReply/Ports
-Workflow Simplification](../roadmap/events-reqreply-ports-workflow-simplification.md))
+metadata; same class of gap as pub/sub above — see
+[ReqReply Workflow Simplification](../roadmap/reqreply-workflow-simplification.md))
 mirrors the exact same declare-once, enforce-symmetrically model:
 
 ```go

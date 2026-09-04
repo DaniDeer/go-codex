@@ -1,12 +1,10 @@
-package nethttp_test
+package nethttp
 
 import (
 	"errors"
 	"fmt"
 	"log/slog"
 	"testing"
-
-	"github.com/DaniDeer/go-codex/adapters/nethttp"
 )
 
 func attrKeysNH(lv slog.Value) map[string]bool {
@@ -18,7 +16,7 @@ func attrKeysNH(lv slog.Value) map[string]bool {
 }
 
 func TestNoLatestValueError_LogValue(t *testing.T) {
-	e := nethttp.NoLatestValueError{Path: "/oee/current"}
+	e := NoLatestValueError{Path: "/oee/current"}
 	lv := e.LogValue()
 	if lv.Kind() != slog.KindGroup {
 		t.Fatalf("want KindGroup, got %v", lv.Kind())
@@ -29,9 +27,9 @@ func TestNoLatestValueError_LogValue(t *testing.T) {
 }
 
 func TestNoLatestValueError_ErrorsAs(t *testing.T) {
-	e := nethttp.NoLatestValueError{Path: "/oee"}
+	e := NoLatestValueError{Path: "/oee"}
 	wrapped := fmt.Errorf("wrap: %w", e)
-	var got nethttp.NoLatestValueError
+	var got NoLatestValueError
 	if !errors.As(wrapped, &got) {
 		t.Error("errors.As must reach NoLatestValueError")
 	}
@@ -41,7 +39,7 @@ func TestNoLatestValueError_ErrorsAs(t *testing.T) {
 }
 
 func TestPipelineFullError_LogValue(t *testing.T) {
-	e := nethttp.PipelineFullError{Path: "/ingest", Capacity: 256}
+	e := PipelineFullError{Path: "/ingest", Capacity: 256}
 	lv := e.LogValue()
 	if lv.Kind() != slog.KindGroup {
 		t.Fatalf("want KindGroup, got %v", lv.Kind())
@@ -55,7 +53,7 @@ func TestPipelineFullError_LogValue(t *testing.T) {
 }
 
 func TestPipelineNoResponseError_LogValue(t *testing.T) {
-	e := nethttp.PipelineNoResponseError{Path: "/compute"}
+	e := PipelineNoResponseError{Path: "/compute"}
 	lv := e.LogValue()
 	if lv.Kind() != slog.KindGroup {
 		t.Fatalf("want KindGroup, got %v", lv.Kind())
@@ -66,7 +64,7 @@ func TestPipelineNoResponseError_LogValue(t *testing.T) {
 }
 
 func TestSSEWriteError_LogValue(t *testing.T) {
-	e := nethttp.SSEWriteError{Path: "/events", Err: fmt.Errorf("write: broken pipe")}
+	e := SSEWriteError{Path: "/events", Err: fmt.Errorf("write: broken pipe")}
 	lv := e.LogValue()
 	if lv.Kind() != slog.KindGroup {
 		t.Fatalf("want KindGroup, got %v", lv.Kind())
@@ -81,14 +79,14 @@ func TestSSEWriteError_LogValue(t *testing.T) {
 
 func TestSSEWriteError_Unwrap(t *testing.T) {
 	inner := fmt.Errorf("broken pipe")
-	e := nethttp.SSEWriteError{Path: "/events", Err: inner}
+	e := SSEWriteError{Path: "/events", Err: inner}
 	if !errors.Is(e, inner) {
 		t.Error("errors.Is must reach inner via Unwrap")
 	}
 }
 
 func TestSSEConnectError_LogValue(t *testing.T) {
-	e := nethttp.SSEConnectError{URL: "http://svc/events", Attempt: 3, Err: fmt.Errorf("connection refused")}
+	e := SSEConnectError{URL: "http://svc/events", Attempt: 3, Err: fmt.Errorf("connection refused")}
 	lv := e.LogValue()
 	if lv.Kind() != slog.KindGroup {
 		t.Fatalf("want KindGroup, got %v", lv.Kind())
@@ -103,14 +101,14 @@ func TestSSEConnectError_LogValue(t *testing.T) {
 
 func TestSSEConnectError_Unwrap(t *testing.T) {
 	inner := fmt.Errorf("conn refused")
-	e := nethttp.SSEConnectError{URL: "http://x", Attempt: 1, Err: inner}
+	e := SSEConnectError{URL: "http://x", Attempt: 1, Err: inner}
 	if !errors.Is(e, inner) {
 		t.Error("errors.Is must reach inner via Unwrap")
 	}
 }
 
 func TestSSEParseError_LogValue(t *testing.T) {
-	e := nethttp.SSEParseError{URL: "http://svc/events", Line: "{bad}", Err: fmt.Errorf("json error")}
+	e := SSEParseError{URL: "http://svc/events", Line: "{bad}", Err: fmt.Errorf("json error")}
 	lv := e.LogValue()
 	if lv.Kind() != slog.KindGroup {
 		t.Fatalf("want KindGroup, got %v", lv.Kind())
@@ -125,14 +123,14 @@ func TestSSEParseError_LogValue(t *testing.T) {
 
 func TestSSEParseError_Unwrap(t *testing.T) {
 	inner := fmt.Errorf("json: unexpected")
-	e := nethttp.SSEParseError{URL: "http://x", Line: "{}", Err: inner}
+	e := SSEParseError{URL: "http://x", Line: "{}", Err: inner}
 	if !errors.Is(e, inner) {
 		t.Error("errors.Is must reach inner via Unwrap")
 	}
 }
 
 func TestSSEHandlerError_LogValue(t *testing.T) {
-	e := nethttp.SSEHandlerError{URL: "http://svc/events", Err: fmt.Errorf("handler failed")}
+	e := SSEHandlerError{URL: "http://svc/events", Err: fmt.Errorf("handler failed")}
 	lv := e.LogValue()
 	if lv.Kind() != slog.KindGroup {
 		t.Fatalf("want KindGroup, got %v", lv.Kind())
@@ -147,7 +145,7 @@ func TestSSEHandlerError_LogValue(t *testing.T) {
 
 func TestSSEHandlerError_Unwrap(t *testing.T) {
 	inner := fmt.Errorf("handler boom")
-	e := nethttp.SSEHandlerError{URL: "http://x", Err: inner}
+	e := SSEHandlerError{URL: "http://x", Err: inner}
 	if !errors.Is(e, inner) {
 		t.Error("errors.Is must reach inner via Unwrap")
 	}
