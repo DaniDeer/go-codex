@@ -6,6 +6,7 @@ import (
 	"encoding/gob"
 	"errors"
 	"log/slog"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -377,6 +378,60 @@ func TestSubscribe_HandlerError(t *testing.T) {
 	}
 	if !errors.Is(gotErr, handlerErr) {
 		t.Fatal("errors.Is must find handlerErr via Unwrap")
+	}
+}
+
+// TestSubscribe_HandlerError_MatchedErrorChannel_PublishesTypedPayload
+// confirms subscribeWithHandle's message handler consults a declared
+// events.ErrorChannel when fn returns a matching domain error, publishing
+// the typed payload to the declared error-output topic and SKIPPING
+// OnError — mirrors mqtt5PublishAdapter.handleUpstreamError's action
+// dispatch, extended to the subscribe side (Decision 8).
+func TestSubscribe_HandlerError_MatchedErrorChannel_PublishesTypedPayload(t *testing.T) {
+	client := &mockClient{}
+	router := newMockRouter()
+
+	b := events.NewClient(events.WithInfo(events.Info{Title: "Test", Version: "1.0.0"}))
+	handle, err := events.NewChannel[sensorReading]("sensors/readings", sensorCodec,
+		events.ErrorChannel[sensorValidationErr, sensorErrPayload](
+			"sensors/readings/errors", sensorErrPayloadCodec,
+			func(e sensorValidationErr) (sensorErrPayload, error) {
+				return sensorErrPayload{Code: "out_of_range", Message: e.msg}, nil
+			},
+		),
+	).WithSubscribe(events.Subscribe{Summary: "test"}).Handle(b)
+	if err != nil {
+		t.Fatalf("Handle: %v", err)
+	}
+
+	onErrorCalled := false
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+
+	_ = subscribeWithHandle(ctx, client, router, handle, 1,
+		func(_ context.Context, _ sensorReading) error {
+			return sensorValidationErr{msg: "value too high"}
+		},
+		SubscribeOptions{OnError: func(SubscribeError) { onErrorCalled = true }})
+
+	router.dispatch("sensors/readings", &pahomqtt5.Publish{
+		Topic: "sensors/readings", Payload: []byte(validSensorJSON),
+	})
+
+	if onErrorCalled {
+		t.Error("OnError should NOT be called when an ErrorChannel matches")
+	}
+	found := false
+	for _, p := range client.published {
+		if p.Topic == "sensors/readings/errors" {
+			found = true
+			if !strings.Contains(string(p.Payload), "out_of_range") {
+				t.Errorf("error payload = %s, want it to contain out_of_range", p.Payload)
+			}
+		}
+	}
+	if !found {
+		t.Fatal("expected a message published to the declared error-output topic")
 	}
 }
 

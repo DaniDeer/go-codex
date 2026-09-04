@@ -616,10 +616,16 @@ const sensorUUID = "f47ac10b-58cc-4372-a567-0e02b2c3d479"
 // capabilities Client.Attach's v1 reflection shim doesn't support
 // (custom OnError, wildcard subscriptions, non-default formats).
 //
+// ctx carries the SAME stats.Observer main() wires for the escape-hatch
+// demo below (via stats.WithObserver) — Client.Attach's Publish/Subscribe
+// resolve it from ctx automatically (Decision 8's Observer fix), so this
+// demo's calls count toward the SAME "Observer stats" summary printed at
+// the end of main(), proving both workflows share one Observer.
+//
 // Uses its OWN mock client (separate from main()'s later `client`) to
 // avoid cross-talk with the escape-hatch demos' subscriptions on the same
 // topic.
-func runClientAttachDemo() {
+func runClientAttachDemo(ctx context.Context) {
 	fmt.Println("=== 1. Client.Attach — the PREFERRED workflow ===")
 
 	client := events.NewClient(events.WithInfo(events.Info{
@@ -666,7 +672,6 @@ func runClientAttachDemo() {
 		os.Exit(1)
 	}
 
-	ctx := context.Background()
 	received := make(chan MeasurementEvent, 4)
 	go func() {
 		_ = client.Subscribe(ctx, measurementSub, func(_ context.Context, m MeasurementEvent) error {
@@ -713,14 +718,22 @@ func main() {
 	baseLogger := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelDebug}))
 	slog.SetDefault(baseLogger)
 
-	runClientAttachDemo()
+	// metrics/obs are shared by BOTH the Client.Attach demo below and the
+	// escape-hatch demo that follows — ctx carries obs via
+	// stats.WithObserver so Client.Attach's Publish/Subscribe pick it up
+	// automatically, proving they route through the SAME Observer as the
+	// escape-hatch primitives (Decision 8's Observer fix).
+	metrics := &CountingObserver{}
+	obs := stats.NewFanout(metrics, stats.NewLoggingObserver(baseLogger.With("component", "mqtt")))
+	ctx := stats.WithObserver(context.Background(), obs)
+
+	runClientAttachDemo(ctx)
 
 	fmt.Println("=== 2. Escape hatch: handle-based workflow (OnError, wildcard, multi-format) ===")
 	fmt.Println("    (needed below for custom OnError/Observer, a \"sensors/#\" wildcard")
 	fmt.Println("     subscription, and a YAML multi-format demo — none expressible via")
 	fmt.Println("     Client.Attach's v1 reflection shim; see the package doc comment)")
 
-	ctx := context.Background()
 	store := newTimeSeriesStore()
 	const threshold = 75.0 // alert when value > 75
 
@@ -786,11 +799,6 @@ func main() {
 	// Wire infrastructure: inject store + alert publish function.
 	// Use domain logging decorator to separate logging concern from handler body.
 	client := newMockClient()
-	metrics := &CountingObserver{}
-	obs := stats.NewFanout(metrics, stats.NewLoggingObserver(baseLogger.With("component", "mqtt")))
-	// Store obs in the context once — Subscribe and Publish all resolve it
-	// automatically from ctx when Options.Observer is nil.
-	ctx = stats.WithObserver(ctx, obs)
 
 	// BuildTopic substitutes {sensorID} and validates it against the UUID codec.
 	// The concrete topic is needed for client.Subscribe and client.deliver.

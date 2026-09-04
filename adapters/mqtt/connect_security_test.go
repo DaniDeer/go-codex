@@ -105,7 +105,7 @@ func TestSecuredClient_TransparentDelegation(t *testing.T) {
 	// client. SubscribeHandler builds the pahomqtt.MessageHandler;
 	// the caller (here, through the SecuredClient wrapper) registers it
 	// with the broker via the client's own Subscribe method.
-	handler := subscribeHandler(context.Background(), newHandle(),
+	handler := subscribeHandler(context.Background(), nil, newHandle(),
 		func(_ context.Context, _ userEvent) error { return nil },
 		SubscribeOptions{})
 	secured.Subscribe("user/created", 1, handler)

@@ -312,6 +312,59 @@ func TestSubscribe_HandlerError(t *testing.T) {
 	}
 }
 
+// TestSubscribe_HandlerError_MatchedErrorChannel_PublishesTypedPayload
+// confirms subscribeWithHandle consults a declared events.ErrorChannel
+// when fn returns a matching domain error, publishing the typed payload
+// to the declared error-output topic and SKIPPING OnError — mirrors
+// mqtt5's identical extension (Decision 8).
+func TestSubscribe_HandlerError_MatchedErrorChannel_PublishesTypedPayload(t *testing.T) {
+	sock := &mockSocket{
+		inFrames: [][][]byte{
+			{[]byte("sensors/readings"), []byte(validSensorJSON)},
+		},
+	}
+	b := events.NewClient(events.WithInfo(events.Info{Title: "Test", Version: "1.0.0"}))
+	handle, err := events.NewChannel[sensorReading]("sensors/readings", sensorCodec,
+		events.ErrorChannel[sensorZmqValidationErr, sensorZmqErrPayload](
+			"sensors/readings/errors", sensorZmqErrPayloadCodec,
+			func(e sensorZmqValidationErr) (sensorZmqErrPayload, error) {
+				return sensorZmqErrPayload{Code: "out_of_range", Message: e.msg}, nil
+			},
+		),
+	).WithSubscribe(events.Subscribe{Summary: "test"}).Handle(b)
+	if err != nil {
+		t.Fatalf("Handle: %v", err)
+	}
+
+	onErrorCalled := false
+	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+	defer cancel()
+	_ = subscribeWithHandle(ctx, sock, handle,
+		func(_ context.Context, _ sensorReading) error {
+			return sensorZmqValidationErr{msg: "value too high"}
+		},
+		SubscribeOptions[sensorReading]{OnError: func(SubscribeError) { onErrorCalled = true }},
+	)
+
+	if onErrorCalled {
+		t.Error("OnError should NOT be called when an ErrorChannel matches")
+	}
+	sock.mu.Lock()
+	defer sock.mu.Unlock()
+	found := false
+	for _, frames := range sock.sentFrames {
+		if len(frames) >= 2 && string(frames[0]) == "sensors/readings/errors" {
+			found = true
+			if !strings.Contains(string(frames[1]), "out_of_range") {
+				t.Errorf("error payload = %s, want it to contain out_of_range", frames[1])
+			}
+		}
+	}
+	if !found {
+		t.Fatal("expected a message published to the declared error-output topic")
+	}
+}
+
 func TestSubscribe_ObserverRecordSubscribeSuccess(t *testing.T) {
 	obs := &testObserver{}
 	sock := &mockSocket{

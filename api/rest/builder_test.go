@@ -2658,6 +2658,140 @@ func TestDecodeMergedResponse_NoMergeFieldsIsNoop(t *testing.T) {
 	}
 }
 
+// ── EncodeRequestWithFormats / DecodeResponseWithFormats (canonical format resolution) ──
+//
+// These are the single source of truth every client-side caller
+// (escape-hatch callWithVars AND ClientTransport/Client.Attach) delegates
+// to instead of duplicating format-resolution logic itself — see
+// docs/design/middleware-workflow-simplification.md's Addendum 2.
+
+// FMT1: EncodeRequestWithFormats falls back to plain EncodeRequest (JSON)
+// when no format is declared and no call-time override is given.
+func TestEncodeRequestWithFormats_NoFormatDeclared_FallsBackToPlainEncodeRequest(t *testing.T) {
+	b := rest.NewServer(testInfo)
+	h, err := rest.NewRoute[createReq, userResp]("POST", "/users", createReqCodec, userCodec).RegisterHandle(b)
+	if err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+	req := createReq{Name: "Alice"}
+	viaEncode, err := h.EncodeRequest(req)
+	if err != nil {
+		t.Fatalf("EncodeRequest: %v", err)
+	}
+	body, contentType, err := h.EncodeRequestWithFormats(req)
+	if err != nil {
+		t.Fatalf("EncodeRequestWithFormats: %v", err)
+	}
+	if string(body) != string(viaEncode) {
+		t.Errorf("EncodeRequestWithFormats body should match plain EncodeRequest when no format declared: %s vs %s", body, viaEncode)
+	}
+	if contentType != "application/json" {
+		t.Errorf("contentType = %q, want application/json", contentType)
+	}
+}
+
+// FMT2: EncodeRequestWithFormats uses the route's declared RequestFormats
+// over plain EncodeRequest — proves the route's OWN declaration (not the
+// adapter) is the single source of truth for which format applies.
+func TestEncodeRequestWithFormats_UsesDeclaredRequestFormat(t *testing.T) {
+	b := rest.NewServer(testInfo)
+	h, err := rest.NewRoute[createReq, userResp]("POST", "/users", createReqCodec, userCodec).RegisterHandle(b)
+	if err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+	h = h.WithRequestFormats(format.YAML(createReqCodec))
+	body, contentType, err := h.EncodeRequestWithFormats(createReq{Name: "Alice"})
+	if err != nil {
+		t.Fatalf("EncodeRequestWithFormats: %v", err)
+	}
+	if !strings.Contains(string(body), "name: Alice") {
+		t.Errorf("expected YAML output, got: %s", body)
+	}
+	if contentType != format.YAML(createReqCodec).ContentType() {
+		t.Errorf("contentType = %q, want YAML content type", contentType)
+	}
+}
+
+// FMT3: a call-time format override wins over the declared RequestFormats.
+func TestEncodeRequestWithFormats_CallTimeOverrideWinsOverDeclared(t *testing.T) {
+	b := rest.NewServer(testInfo)
+	h, err := rest.NewRoute[createReq, userResp]("POST", "/users", createReqCodec, userCodec).RegisterHandle(b)
+	if err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+	h = h.WithRequestFormats(format.YAML(createReqCodec))
+	body, contentType, err := h.EncodeRequestWithFormats(createReq{Name: "Alice"}, format.JSON(createReqCodec))
+	if err != nil {
+		t.Fatalf("EncodeRequestWithFormats: %v", err)
+	}
+	if !strings.Contains(string(body), `"name":"Alice"`) {
+		t.Errorf("expected JSON output (call-time override should win), got: %s", body)
+	}
+	if contentType != "application/json" {
+		t.Errorf("contentType = %q, want application/json", contentType)
+	}
+}
+
+// FMT4: DecodeResponseWithFormats falls back to plain DecodeResponse
+// (JSON) when no format is declared.
+func TestDecodeResponseWithFormats_NoFormatDeclared_FallsBackToPlainDecodeResponse(t *testing.T) {
+	b := rest.NewServer(testInfo)
+	h, err := rest.NewRoute[createReq, userResp]("POST", "/users", createReqCodec, userCodec).RegisterHandle(b)
+	if err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+	body := []byte(`{"id":"u1","name":"Alice"}`)
+	viaDecode, err := h.DecodeResponse(body)
+	if err != nil {
+		t.Fatalf("DecodeResponse: %v", err)
+	}
+	viaFormats, err := h.DecodeResponseWithFormats(body)
+	if err != nil {
+		t.Fatalf("DecodeResponseWithFormats: %v", err)
+	}
+	if viaDecode != viaFormats {
+		t.Errorf("DecodeResponseWithFormats should match plain DecodeResponse when no format declared: %+v vs %+v", viaDecode, viaFormats)
+	}
+}
+
+// FMT5: DecodeResponseWithFormats uses the route's declared Formats.
+func TestDecodeResponseWithFormats_UsesDeclaredFormat(t *testing.T) {
+	b := rest.NewServer(testInfo)
+	h, err := rest.NewRoute[createReq, userResp]("POST", "/users", createReqCodec, userCodec).RegisterHandle(b)
+	if err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+	h = h.WithFormats(format.YAML(userCodec))
+	resp, err := h.DecodeResponseWithFormats([]byte("id: u1\nname: Alice\n"))
+	if err != nil {
+		t.Fatalf("DecodeResponseWithFormats: %v", err)
+	}
+	if resp.ID != "u1" || resp.Name != "Alice" {
+		t.Errorf("unexpected decoded resp: %+v", resp)
+	}
+}
+
+// FMT6: ResponseFormat resolves the declared Formats for pre-flight Accept
+// header setting, independent of the decode step.
+func TestResponseFormat_ResolvesDeclaredFormat(t *testing.T) {
+	b := rest.NewServer(testInfo)
+	h, err := rest.NewRoute[createReq, userResp]("POST", "/users", createReqCodec, userCodec).RegisterHandle(b)
+	if err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+	if _, ok := h.ResponseFormat(); ok {
+		t.Fatal("want ok=false with no format declared")
+	}
+	h = h.WithFormats(format.YAML(userCodec))
+	fmtVal, ok := h.ResponseFormat()
+	if !ok {
+		t.Fatal("want ok=true with a declared format")
+	}
+	if fmtVal.ContentType() != format.YAML(userCodec).ContentType() {
+		t.Errorf("ContentType() = %q, want YAML content type", fmtVal.ContentType())
+	}
+}
+
 // ── Round 4: nested struct composition + non-JSON body formats ────────────
 
 // N1: merge-field get/set closures reach into a NESTED sub-struct exactly

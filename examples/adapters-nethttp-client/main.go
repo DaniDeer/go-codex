@@ -8,22 +8,37 @@
 // Both server and client import it. The Go compiler enforces the contract:
 // any change breaks compilation on both sides immediately — no stale YAML.
 //
-// # CallWithHandle — the recommended pattern for many calls to one API
+// # Section 0 — Client.Attach: the PREFERRED workflow
+//
+// [rest.NewClient] + [nethttp.Attach] + [rest.Client.Call] is the preferred,
+// simplest workflow for talking to a go-codex REST API — one attach call,
+// then every route call is `client.Call(ctx, route, req)`, no per-route
+// handle bookkeeping. It used to have two real gaps versus the escape hatch
+// below (dropped [stats.Observer] wiring, and no [rest.ErrorPattern]
+// decode on non-2xx responses) — both are FIXED (see
+// docs/design/middleware-workflow-simplification.md's Observer/ErrorPattern
+// addendum, and its second addendum for a declared-format gap fixed the
+// same way). Section 0 proves both fixes: a happy-path create followed by
+// a duplicate-email conflict decoded via [errors.As] into
+// contract.EmailConflictError, with [stats.WithObserver] on the ctx picked
+// up automatically by both calls.
+//
+// # Sections 1-5 — CallWithHandle: the escape hatch for per-call HTTP options
 //
 // This example makes over a dozen calls, all against the SAME
 // (httpClient, baseURL) pair, and relies on [stats.WithObserver]'s
 // context-based metrics collection for EVERY call (see the Observer
-// summary section at the end) — [nethttp.CallWithHandle] is used
-// throughout instead of the higher-level [nethttp.Attach]/[rest.Client.Call]
-// workflow specifically because that workflow's v1 scope does not route
-// per-call metrics through [stats.Observer] at all, which would silently
-// undercount the Observer summary this example demonstrates. Each distinct
-// contract.Route value builds its own *rest.RouteHandle ONCE, right after
-// the server starts (or right after a fresh .ClientMW(...) call for the
-// security scenarios in section 4, since ClientMW produces a distinct
-// route value each time), and every call against that route reuses the
-// SAME handle — no repeating httpClient/baseURL boilerplate at each call
-// site.
+// summary section at the end) — [nethttp.CallWithHandle] remains in use
+// for sections 1-5 because they demonstrate [nethttp.CallOptions] fields
+// (credential caching/invalidation, per-call retry-once-on-401) that
+// [rest.Client.Call]'s simpler, option-free signature does not expose —
+// NOT because of any remaining Observer/ErrorPattern gap (that gap is
+// closed; Section 0 proves it). Each distinct contract.Route value builds
+// its own *rest.RouteHandle ONCE, right after the server starts (or right
+// after a fresh .ClientMW(...) call for the security scenarios in section
+// 4, since ClientMW produces a distinct route value each time), and every
+// call against that route reuses the SAME handle — no repeating
+// httpClient/baseURL boilerplate at each call site.
 //
 // Credential fulfillment is declared PER-ROUTE via [rest.Route.ClientMW]
 // (paired against the SAME [middleware.Middleware] the route's security
@@ -319,6 +334,50 @@ func main() {
 	getUserHandle := contract.GetUser.ClientHandle()
 	getUserActivityHandle := contract.GetUserActivity.ClientHandle()
 	getProfileHandle := contract.GetProfile.ClientHandle()
+
+	// ── 0. Client.Attach — the PREFERRED workflow ─────────────────────────────
+	fmt.Println("=== 0. Client.Attach: rest.NewClient + nethttp.Attach + Client.Call ===")
+
+	// rest.NewClient/nethttp.Attach/Client.Call is the preferred, simplest
+	// workflow — one Attach call, then every route call is just
+	// `client.Call(ctx, route, req)`. clientCtx (carrying obs via
+	// stats.WithObserver, set up above) is picked up automatically by
+	// Client.Call too — no separate wiring needed.
+	restClient := rest.NewClient()
+	if err := nethttp.Attach(restClient, httpClient, baseURL); err != nil {
+		fmt.Fprintln(os.Stderr, "attach rest client:", err)
+		os.Exit(1)
+	}
+
+	bobAny, err := restClient.Call(clientCtx, contract.CreateUser,
+		contract.CreateUserReq{Name: "Bob", Email: "bob@example.com"})
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "create bob via Client.Attach:", err)
+		os.Exit(1)
+	}
+	bob := bobAny.(contract.User)
+	fmt.Printf("created via Client.Attach: %+v\n", bob)
+
+	// Duplicate email — CreateUser's declared rest.ErrorPattern still
+	// decodes correctly through Client.Attach: errors.As extracts the
+	// SAME typed contract.EmailConflictError Call's escape-hatch sibling
+	// (nethttp.CallWithHandle, section 1b below) also produces.
+	_, err = restClient.Call(clientCtx, contract.CreateUser,
+		contract.CreateUserReq{Name: "Bob Again", Email: "bob@example.com"})
+	var attachConflictResp nethttp.ErrorPatternResponse
+	if errors.As(err, &attachConflictResp) {
+		if conflict, ok := attachConflictResp.Value.(contract.EmailConflictError); ok {
+			fmt.Printf("Client.Attach conflict decoded: status=%d email=%s\n",
+				attachConflictResp.StatusCode, conflict.Email)
+		} else {
+			fmt.Fprintln(os.Stderr, "expected EmailConflictError, got:", attachConflictResp.Value)
+			os.Exit(1)
+		}
+	} else {
+		fmt.Fprintln(os.Stderr, "expected ErrorPatternResponse via Client.Attach, got:", err)
+		os.Exit(1)
+	}
+	fmt.Println()
 
 	// ── 1. Body — POST /users ─────────────────────────────────────────────────
 	fmt.Println("=== 1. Body: POST /users (request body codec) ===")

@@ -136,7 +136,7 @@ func subscribeHandle[T any](
 		filter = deriveWildcardFilter(handle.Topic)
 	}
 
-	handler := subscribeHandler(ctx, handle, finalFn, opts, formats...)
+	handler := subscribeHandler(ctx, client, handle, finalFn, opts, formats...)
 	token := client.Subscribe(filter, qos, handler)
 	token.Wait()
 	return token.Error()

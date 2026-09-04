@@ -2917,6 +2917,186 @@ unnecessary complexity once the interface itself went generic).
 `Call`, `CallHandle`, `ServeRouter`, `CallDealer`, etc.); `sql`/`redis`/
 `file`/`mcpgo`/`mcp`/`llm`/`websocket`.
 
+### Decision 8 — Observer + `ErrorChannel` parity for `Client.Attach` (IMPLEMENTED)
+
+**Trigger**: a dedicated review of error handling and `stats.Observer`
+integration across REST and events under the "thin adapter" `Client.Attach`
+workflow (Decision 5), triggered by a direct user request to confirm both
+concerns are handled declaratively now that adapters are reduced to thin
+IO-binding layers. Companion REST-side fix documented in
+`docs/design/middleware-workflow-simplification.md`'s own addendum.
+
+**Confirmed bug**: `mqtt5`, `mqtt` (v3), and `zeromq`'s `transport.go`
+(the reflection-based shim behind `events.Client.Publish`/`.Subscribe`,
+built by each adapter's `Attach`) called `stats.Observer` **NOWHERE AT
+ALL** — confirmed via repo-wide grep returning zero hits for
+`stats.`/`Observer` in any of the three files, before this fix. This
+silently dropped ALL metrics/logging/tracing for every call made through
+the "preferred" `Client.Attach` workflow, while the escape-hatch
+primitives (`publish`/`subscribeHandler`/`subscribeWithHandle`, consumed
+via `NewPublishTransport`/`NewSubscribeTransport` + `PublishHandle`/
+`SubscribeHandle`) had always wired `stats.Observer` correctly
+(`RecordPublish`/`RecordSubscribe`, `TraceObserver` spans,
+`SecurityObserver` where applicable).
+
+**Fix**: each adapter's `transport.Publish`/`transport.Subscribe` now
+resolves `obs := stats.ObserverFromContext(ctx)` (ctx-only — `events.
+Transport`'s interface shape has no per-call `Options` struct to carry an
+explicit override, mirroring how `Client.Attach`'s v1 scope note already
+documents no per-call format/QoS overrides either) and calls
+`RecordPublish`/`RecordSubscribe` on every exit path, plus wires
+`TraceObserver` spans identically to the escape-hatch primitives
+(`"mqtt5.publish"`/`"mqtt.publish"`/`"zmq.publish"` span names, matching
+each adapter's own existing `publish` function's span name exactly).
+
+**Second confirmed gap, closed in the same pass**: a plain SUBSCRIBE
+handler's returned domain error previously had NO declarative redirect
+path — only the escape-hatch req-reply `Serve` (handler error → typed
+reply) and the `SinkAdapter`/`PublishAdapter` binding (upstream stream
+error → typed error-channel message) consulted a declared
+`events.ErrorChannel`; the plain subscribe path (both `Client.Attach`'s
+`Subscribe` AND the escape-hatch `subscribeHandler`/`subscribeHandle`/
+`subscribeWithHandle`) simply forwarded every handler error straight to
+`opts.OnError`, with no way to express "redirect this specific domain
+error to a typed error-output topic" declaratively. **Fixed**: when the
+caller's subscribe handler (`fn`) returns a non-nil error, EVERY adapter
+now consults `handle.ErrorResponseFor(err)` FIRST — on a match with
+action `events.ErrorRespond`, the typed payload is published to the
+declared error-output topic (via the adapter's own native publish
+primitive: `client.Publish`/`sock.SendFrames` as appropriate) and
+`OnError` is SKIPPED; any other action (or no match) falls through to
+`OnError` unchanged — mirroring `mqtt5PublishAdapter.handleUpstreamError`'s
+existing action-dispatch precedent exactly, now extended symmetrically to
+the subscribe side across all three adapters (`mqtt5`'s
+`makeSubscribeMessageHandler`, `mqtt`(v3)'s `subscribeHandler`,
+`zeromq`'s `subscribeWithHandle`, AND each adapter's `Client.Attach`
+`Subscribe` reflection shim).
+
+**Files changed**: `adapters/nethttp/clienttransport.go` (REST's
+`Client.Attach` companion fix — see the middleware-workflow-simplification.md
+addendum for the REST-specific detail); `adapters/mqtt5/transport.go`,
+`adapters/mqtt5/adapter.go` (+ `binding.go` call-site update);
+`adapters/mqtt/transport.go`, `adapters/mqtt/adapter.go` (+ `binding.go`/
+`caller.go` call-site updates); `adapters/zeromq/transport.go`,
+`adapters/zeromq/adapter.go`. New tests in each package's
+`transport_test.go`/`adapter_test.go` cover: `Client.Attach` RecordPublish/
+RecordSubscribe/TraceObserver wiring (success and failure paths), and a
+matched `ErrorChannel` redirecting a subscribe handler's domain error to
+the declared error-output topic (both via `Client.Attach` and via each
+adapter's escape-hatch subscribe primitive). Verified: `gofmt`/`go build`/
+`go vet`/`go test` (including `-race` for `mqtt`/`mqtt5`/`zeromq`) all
+green repo-wide; zero regressions in existing test suites.
+
+### Decision 9 — Centralized format resolution on the handle (IMPLEMENTED)
+
+**Trigger**: while proving Decision 8's Observer/`ErrorChannel` fix via
+example rework, a deeper review of `Client.Attach`'s format handling
+surfaced a second, unrelated bug of the same shape. The identical fix
+also landed on the REST side in the same round — see
+`docs/design/middleware-workflow-simplification.md`'s Addendum 2 for the
+REST-specific detail (`RouteHandle[Req,Resp]`'s mirror-image methods).
+
+**Confirmed bug**: `Client.Attach`'s `Publish`/`Subscribe` reflection
+shims (all three events adapters — `mqtt5`, `mqtt` v3, `zeromq`) always
+called `ChannelHandle[T]`'s plain `Encode`/`Decode`, which are hardcoded
+to JSON codec encode/decode by original design (their own doc comments
+say so explicitly), silently ignoring a channel's declared
+`WithFormats`/`WithPublishFormats`/`WithSubscribeFormats` (YAML, TOML,
+Gob, or a custom binary codec). Every escape-hatch adapter primitive
+(`publish`, `subscribeHandler`, `subscribeWithHandle`) DID correctly
+resolve and honor this declaration, but duplicated the identical
+resolution logic inline at its own call site ("call-time override >
+declared SubscribeFormats/PublishFormats > declared Formats > fallback to
+plain Encode/Decode") — `Client.Attach` was simply the one caller that
+never had this logic at all. A route/channel declared with a non-JSON
+format would silently break the moment a caller switched from the escape
+hatch to `Client.Attach`. This is **not** about per-call format overrides
+(which stay legitimately out of `Client.Attach`'s scope, same as
+Decision 5's other documented v1 limitations) — it is about the
+channel's own **declared** format, the single most basic contract a
+handle makes about its own wire shape.
+
+**Fix**: rather than teach `Client.Attach` to duplicate the same
+resolution logic a fourth time, the logic moved **onto
+`ChannelHandle[T]` itself** — the single source of truth for a channel's
+own declared configuration — and every existing escape-hatch adapter
+primitive was refactored to call the new canonical method too, deleting
+its own duplicated copy. This makes **every** adapter (`Client.Attach`'s
+shims AND the escape-hatch primitives) a thin caller of one method; the
+declaration lives in exactly one place. New methods on
+`ChannelHandle[T]` (`api/events/builder.go`):
+
+```go
+// EffectivePublishFormats returns the full candidate format slice for a
+// publish: call-time override (if any) > declared PublishFormats > declared
+// Formats. Exposed as its own method (not folded into EncodeWithFormats)
+// because mqtt5's ContentType-property auto-match needs to scan every
+// candidate, not just take the winner.
+func (h *ChannelHandle[T]) EffectivePublishFormats(formats ...format.Format[T]) []format.Format[T]
+
+// EncodeWithFormats resolves EffectivePublishFormats and encodes with the
+// winner, falling back to plain Encode if the list is empty.
+func (h *ChannelHandle[T]) EncodeWithFormats(msg T, formats ...format.Format[T]) ([]byte, error)
+
+// EffectiveSubscribeFormats mirrors EffectivePublishFormats for the
+// subscribe direction (declared SubscribeFormats > declared Formats).
+func (h *ChannelHandle[T]) EffectiveSubscribeFormats(formats ...format.Format[T]) []format.Format[T]
+
+// DecodeWithFormats resolves EffectiveSubscribeFormats and decodes with
+// the winner (no topic-var merge — callers needing separate decode vs.
+// merge error reporting, like mqtt5's ContentType path, use this alone).
+func (h *ChannelHandle[T]) DecodeWithFormats(payload []byte, formats ...format.Format[T]) (T, error)
+
+// DecodeMergedWithFormats composes DecodeWithFormats + the existing merge
+// step — the one-call convenience used by Client.Attach's Subscribe shim.
+func (h *ChannelHandle[T]) DecodeMergedWithFormats(payload []byte, topicVars map[string]string, formats ...format.Format[T]) (T, error)
+```
+
+**Adapters refactored to call the canonical methods**:
+
+- `adapters/mqtt5/adapter.go` — `publish`'s encode step now calls
+  `handle.EncodeWithFormats(msg, formats...)`; `subscribeWithHandle`'s
+  effective-format resolution now calls
+  `handle.EffectiveSubscribeFormats(formats...)` (unchanged:
+  `makeSubscribeMessageHandler` keeps its own MQTT5-specific
+  ContentType-property auto-match pre-step, a genuine protocol/wire
+  concern that stays in the adapter).
+- `adapters/mqtt/adapter.go` (v3) — `publish`'s encode step and
+  `subscribeHandler`'s decode step collapse to
+  `handle.EncodeWithFormats`/`handle.DecodeWithFormats` (no ContentType
+  concept in v3, so the whole block collapses).
+- `adapters/zeromq/adapter.go` — same collapse in `publish`/
+  `subscribeWithHandle`.
+- **`Client.Attach`'s three reflection shims** (`mqtt5`/`mqtt`/`zeromq`'s
+  `transport.go` `Publish`/`Subscribe`) now call the SAME canonical
+  methods via `reflect.Value.MethodByName(...)` with zero-length
+  variadic (no call-time override — `Client.Attach` still has no
+  per-call override concept, unchanged from Decision 5's documented v1
+  scope).
+
+Net effect: every adapter's `publish`/`subscribeHandler`/`Client.Attach`
+shim shrinks (duplicated resolution logic deleted); the only logic left
+in each adapter is genuine protocol/wire-specific work (envelope
+construction, QoS, MQTT5's ContentType property matching) — exactly the
+"thin adapter, pure IO" principle already established for
+Decision 5/6/7/8.
+
+**Tests**: canonical method unit tests in `api/events/builder_test.go`
+(declared-format-wins, call-time-override-wins-over-declared,
+empty-falls-back-to-plain-Encode/Decode, merge still runs after
+`DecodeMergedWithFormats`); existing escape-hatch adapter tests
+(YAML/ContentType-match/merge-field coverage already in each
+`adapter_test.go`) pass unmodified, confirming the refactor preserves
+100% existing behavior; new round-trip tests proving `Client.Attach` now
+honors a declared YAML format end-to-end —
+`TestAttach_ClientPublishSubscribe_HonorsDeclaredYAMLFormat` in
+`adapters/mqtt5/transport_test.go`, `adapters/mqtt/transport_test.go`,
+and `adapters/zeromq/transport_test.go`.
+
+**Verified**: `gofmt`/`go build`/`go vet`/`go test` all green repo-wide;
+`just check` (staticcheck + gosec) with no new suppressions; zero
+regressions in existing test suites.
+
 ## Escape hatches that exist today (pub/sub-scoped, fresh audit)
 
 1. ~~**Role-asymmetry gap**~~ — **RESOLVED** by Decision 1's

@@ -11,6 +11,8 @@ import (
 
 	"github.com/DaniDeer/go-codex/api/events"
 	"github.com/DaniDeer/go-codex/codex"
+	"github.com/DaniDeer/go-codex/format"
+	"github.com/DaniDeer/go-codex/stats"
 )
 
 // ── Client.Attach/Publish/Subscribe (Decision 5) ────────────────────────────
@@ -221,5 +223,187 @@ func TestNewSubscribeTransport_SubscribeHandle_RoundTrip(t *testing.T) {
 
 	if received.SensorID == "" {
 		t.Fatal("expected message delivered to handler")
+	}
+}
+
+// ── Observer + ErrorChannel parity for Client.Attach (Decision 8) ──────────
+//
+// Confirmed gap (see docs/roadmap/pubsub-workflow-simplification.md's
+// Decision 8): transport.Publish/Subscribe used to call neither
+// stats.Observer NOR consult a declared events.ErrorChannel on a
+// subscribe handler's returned error — these tests lock in the fix.
+
+func TestAttach_ClientPublish_RecordsObserver(t *testing.T) {
+	client := &mockClient{}
+	router := newMockRouter()
+	c := events.NewClient(events.WithInfo(events.Info{Title: "Test", Version: "1.0.0"}))
+	if err := Attach(c, client, router); err != nil {
+		t.Fatalf("Attach: %v", err)
+	}
+
+	obs := &testObserver{}
+	ctx := stats.WithObserver(context.Background(), obs)
+	pub := mergeSensorChannel("sensors/{sensorID}/readings").WithPublish(events.Publish{})
+	reading := sensorReading{SensorID: "f47ac10b-58cc-4372-a567-0e02b2c3d479", Value: 22.5}
+	if err := c.Publish(ctx, pub, reading); err != nil {
+		t.Fatalf("Publish: %v", err)
+	}
+
+	if len(obs.publishes) != 1 || !obs.publishes[0] {
+		t.Fatalf("RecordPublish calls = %v, want exactly one successful call", obs.publishes)
+	}
+	if len(obs.startSpanOps) != 1 || obs.startSpanOps[0] != "mqtt5.publish" {
+		t.Errorf("TraceObserver.StartSpan calls = %v, want [mqtt5.publish]", obs.startSpanOps)
+	}
+}
+
+func TestAttach_ClientSubscribe_RecordsObserver(t *testing.T) {
+	client := &mockClient{}
+	router := newMockRouter()
+	c := events.NewClient(events.WithInfo(events.Info{Title: "Test", Version: "1.0.0"}))
+	if err := Attach(c, client, router); err != nil {
+		t.Fatalf("Attach: %v", err)
+	}
+
+	obs := &testObserver{}
+	ctx, cancel := context.WithTimeout(stats.WithObserver(context.Background(), obs), 300*time.Millisecond)
+	defer cancel()
+
+	sub := plainSensorChannel("sensors/readings").WithSubscribe(events.Subscribe{})
+	done := make(chan error, 1)
+	go func() {
+		done <- c.Subscribe(ctx, sub, func(_ context.Context, _ sensorReading) error { return nil })
+	}()
+
+	router.waitHandler("sensors/readings")
+	router.dispatch("sensors/readings", &pahomqtt5.Publish{
+		Topic:   "sensors/readings",
+		Payload: []byte(validSensorJSON),
+	})
+	<-done
+
+	if len(obs.subscribes) != 1 || !obs.subscribes[0] {
+		t.Fatalf("RecordSubscribe calls = %v, want exactly one successful call", obs.subscribes)
+	}
+}
+
+// TestAttach_ClientSubscribe_HandlerError_MatchedErrorChannel_PublishesTypedPayload
+// confirms a subscribe handler's returned domain error is redirected to a
+// declared events.ErrorChannel's error-output topic — mirrors
+// mqtt5PublishAdapter.handleUpstreamError's existing action dispatch,
+// extended here to the Client.Attach Subscribe path.
+func TestAttach_ClientSubscribe_HandlerError_MatchedErrorChannel_PublishesTypedPayload(t *testing.T) {
+	client := &mockClient{}
+	router := newMockRouter()
+	c := events.NewClient(events.WithInfo(events.Info{Title: "Test", Version: "1.0.0"}))
+	if err := Attach(c, client, router); err != nil {
+		t.Fatalf("Attach: %v", err)
+	}
+
+	ch := events.NewChannel[sensorReading]("sensors/readings", sensorCodec,
+		events.ErrorChannel[sensorValidationErr, sensorErrPayload](
+			"sensors/readings/errors", sensorErrPayloadCodec,
+			func(e sensorValidationErr) (sensorErrPayload, error) {
+				return sensorErrPayload{Code: "out_of_range", Message: e.msg}, nil
+			},
+		),
+	)
+	sub := ch.WithSubscribe(events.Subscribe{})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
+	defer cancel()
+	done := make(chan error, 1)
+	go func() {
+		done <- c.Subscribe(ctx, sub, func(_ context.Context, _ sensorReading) error {
+			return sensorValidationErr{msg: "value too high"}
+		})
+	}()
+
+	router.waitHandler("sensors/readings")
+	router.dispatch("sensors/readings", &pahomqtt5.Publish{
+		Topic:   "sensors/readings",
+		Payload: []byte(validSensorJSON),
+	})
+	<-done
+
+	time.Sleep(50 * time.Millisecond) // handler runs on the router's own goroutine
+	found := false
+	for _, p := range client.published {
+		if p.Topic == "sensors/readings/errors" {
+			found = true
+			if !strings.Contains(string(p.Payload), "out_of_range") {
+				t.Errorf("error payload = %s, want it to contain out_of_range", p.Payload)
+			}
+		}
+	}
+	if !found {
+		t.Fatal("expected a message published to the declared error-output topic")
+	}
+}
+
+// ── Client.Attach honors the channel's declared format (pubsub-workflow-simplification.md Decision 9) ──
+//
+// Confirmed gap (see docs/roadmap/pubsub-workflow-simplification.md's Decision 9): Client.Attach's
+// Publish/Subscribe used to ALWAYS assume JSON, silently ignoring a
+// channel's declared WithFormats/WithPublishFormats/WithSubscribeFormats
+// — this test locks in the fix (round-trips YAML through Client.Attach).
+func TestAttach_ClientPublishSubscribe_HonorsDeclaredYAMLFormat(t *testing.T) {
+	client := &mockClient{}
+	router := newMockRouter()
+	c := events.NewClient(events.WithInfo(events.Info{Title: "Test", Version: "1.0.0"}))
+	if err := Attach(c, client, router); err != nil {
+		t.Fatalf("Attach: %v", err)
+	}
+
+	ch := events.NewChannel[sensorReading]("sensors/readings", sensorCodec,
+		events.Formats(format.YAML(sensorCodec)),
+	)
+	sub := ch.WithSubscribe(events.Subscribe{})
+	pub := ch.WithPublish(events.Publish{})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
+	defer cancel()
+	received := make(chan sensorReading, 1)
+	go func() {
+		_ = c.Subscribe(ctx, sub, func(_ context.Context, r sensorReading) error {
+			received <- r
+			return nil
+		})
+	}()
+	router.waitHandler("sensors/readings")
+
+	reading := sensorReading{SensorID: "f47ac10b-58cc-4372-a567-0e02b2c3d479", Value: 22.5}
+	if err := c.Publish(ctx, pub, reading); err != nil {
+		t.Fatalf("Publish: %v", err)
+	}
+
+	// Confirm the WIRE bytes are actually YAML, not JSON — proves
+	// EncodeWithFormats (not plain Encode) was used.
+	got := client.lastPublished()
+	if got == nil {
+		t.Fatal("want 1 published message, got none")
+	}
+	if strings.HasPrefix(strings.TrimSpace(string(got.Payload)), "{") {
+		t.Errorf("expected YAML wire payload, got JSON-shaped: %s", got.Payload)
+	}
+	if !strings.Contains(string(got.Payload), "value: 22.5") {
+		t.Errorf("expected YAML payload containing 'value: 22.5', got: %s", got.Payload)
+	}
+
+	// The mock client's Publish does not loop back to the router (unlike a
+	// real broker) — dispatch the just-published wire bytes to the
+	// subscriber handler directly, as other tests in this file do.
+	router.dispatch("sensors/readings", &pahomqtt5.Publish{
+		Topic:   "sensors/readings",
+		Payload: got.Payload,
+	})
+
+	select {
+	case r := <-received:
+		if r.SensorID != reading.SensorID || r.Value != reading.Value {
+			t.Errorf("round-tripped reading = %+v, want %+v", r, reading)
+		}
+	case <-ctx.Done():
+		t.Fatal("timed out waiting for the YAML-decoded message via Client.Subscribe")
 	}
 }

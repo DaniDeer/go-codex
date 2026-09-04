@@ -431,6 +431,15 @@ func (c *eventCounter) RecordRequest(_, _ string, _ int, _ time.Duration) {
 }
 func (c *eventCounter) RecordValidationError(_, _, _ string) {}
 
+// Print reports the accumulated counts — called after Demo 1 to prove
+// Client.Attach's Publish/Subscribe route through the SAME stats.Observer
+// as the escape-hatch primitives (Decision 8's Observer fix).
+func (c *eventCounter) Print() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	fmt.Printf("  [metrics] subscribes=%d publishes=%d requests=%d\n", c.subscribes, c.publishes, c.requests)
+}
+
 // ── main ──────────────────────────────────────────────────────────────────────
 
 func main() {
@@ -450,7 +459,7 @@ func main() {
 	fmt.Println(" MQTT 5 adapter — features specific to MQTT 5.0")
 	fmt.Println("═══════════════════════════════════════════════════════")
 
-	runClientAttachDemo(ctx, logger)
+	runClientAttachDemo(ctx, logger, counter)
 	runPubSubDemo(ctx, logger)
 	runErrorChannelDemo(ctx)
 	runRequestReplyDemo(ctx, logger)
@@ -472,7 +481,7 @@ func main() {
 // no separate builder. Contrast with Demo 2, which needs the handle-based
 // escape hatch (and a SEPARATE throwaway builder) purely because it uses
 // capabilities Client.Attach's v1 reflection shim doesn't support.
-func runClientAttachDemo(ctx context.Context, logger *slog.Logger) {
+func runClientAttachDemo(ctx context.Context, logger *slog.Logger, counter *eventCounter) {
 	fmt.Println("\n── Demo 1: Client.Attach — the PREFERRED workflow ──")
 
 	broker, router := newMockBroker()
@@ -539,6 +548,7 @@ func runClientAttachDemo(ctx context.Context, logger *slog.Logger) {
 	}
 	fmt.Println("\n  [spec — printed directly from the SAME client, zero extra ceremony]")
 	fmt.Println(string(specYAML))
+	counter.Print()
 	_ = logger
 }
 

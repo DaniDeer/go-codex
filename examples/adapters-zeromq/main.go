@@ -20,6 +20,15 @@
 //     adapter FULFILLS each declaration's requirements when called; no
 //     package-qualified zeromq.Subscribe/zeromq.Publish call needed at the
 //     actual usage site anymore, only at Attach time
+//
+// Already the reference example for this workflow before Decision 8/9
+// existed: obs (stats.NewLoggingObserver) is stored on ctx via
+// stats.WithObserver ONCE, so Client.Attach's Publish/Subscribe already
+// routed through it correctly (Decision 8's Observer fix, confirmed with
+// zero changes needed here) — same for the channel's declared format
+// (Decision 9's centralized-resolution fix), which this example's plain
+// JSON codec doesn't exercise directly but which now applies identically
+// whether called via Client.Attach or the escape-hatch primitives.
 package main
 
 import (

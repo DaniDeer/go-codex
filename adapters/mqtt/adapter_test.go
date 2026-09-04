@@ -200,7 +200,7 @@ func TestSubscribeHandler_ValidPayload(t *testing.T) {
 	handle := newHandle()
 	var received userEvent
 
-	handler := subscribeHandler(context.Background(), handle,
+	handler := subscribeHandler(context.Background(), nil, handle,
 		func(_ context.Context, e userEvent) error {
 			received = e
 			return nil
@@ -217,7 +217,7 @@ func TestSubscribeHandler_DecodeError(t *testing.T) {
 	handle := newHandle()
 	var gotErr SubscribeError
 
-	handler := subscribeHandler(context.Background(), handle,
+	handler := subscribeHandler(context.Background(), nil, handle,
 		func(_ context.Context, e userEvent) error {
 			t.Fatal("fn must not be called on decode error")
 			return nil
@@ -243,7 +243,7 @@ func TestSubscribeHandler_FnError(t *testing.T) {
 	var gotErr SubscribeError
 	fnErr := errors.New("downstream failure")
 
-	handler := subscribeHandler(context.Background(), handle,
+	handler := subscribeHandler(context.Background(), nil, handle,
 		func(_ context.Context, _ userEvent) error { return fnErr },
 		SubscribeOptions{OnError: func(e SubscribeError) { gotErr = e }},
 	)
@@ -260,12 +260,53 @@ func TestSubscribeHandler_FnError(t *testing.T) {
 
 func TestSubscribeHandler_NilOnErrNoPanic(t *testing.T) {
 	handle := newHandle()
-	handler := subscribeHandler(context.Background(), handle,
+	handler := subscribeHandler(context.Background(), nil, handle,
 		func(_ context.Context, _ userEvent) error { return errors.New("boom") },
 		SubscribeOptions{},
 	)
 	// Must not panic.
 	handler(nil, &mockMessage{payload: []byte(validPayload)})
+}
+
+// TestSubscribeHandler_HandlerError_MatchedErrorChannel_PublishesTypedPayload
+// confirms subscribeHandler consults a declared events.ErrorChannel when fn
+// returns a matching domain error, publishing the typed payload to the
+// declared error-output topic and SKIPPING OnError — mirrors mqtt5's
+// identical extension (Decision 8).
+func TestSubscribeHandler_HandlerError_MatchedErrorChannel_PublishesTypedPayload(t *testing.T) {
+	client := &mockClient{token: newCompletedToken(nil)}
+	b := events.NewClient(events.WithInfo(events.Info{Title: "Test", Version: "1.0.0"}))
+	handle, err := events.NewChannel[userEvent]("user/created", userEventCodec,
+		events.ErrorChannel[userValidationErr, userErrPayload](
+			"user/created/errors", userErrPayloadCodec,
+			func(e userValidationErr) (userErrPayload, error) {
+				return userErrPayload{Code: "validation", Message: e.msg}, nil
+			},
+		),
+	).WithSubscribe(events.Subscribe{Summary: "test"}).Handle(b)
+	if err != nil {
+		t.Fatalf("Handle: %v", err)
+	}
+
+	onErrorCalled := false
+	handler := subscribeHandler(context.Background(), client, handle,
+		func(_ context.Context, _ userEvent) error {
+			return userValidationErr{msg: "invalid email"}
+		},
+		SubscribeOptions{OnError: func(SubscribeError) { onErrorCalled = true }},
+	)
+
+	handler(client, &mockMessage{payload: []byte(validPayload)})
+
+	if onErrorCalled {
+		t.Error("OnError should NOT be called when an ErrorChannel matches")
+	}
+	if client.publishedTopicSnapshot() != "user/created/errors" {
+		t.Fatalf("published topic = %q, want user/created/errors", client.publishedTopicSnapshot())
+	}
+	if !strings.Contains(string(client.publishedPayloadSnapshot()), "validation") {
+		t.Errorf("error payload = %s, want it to contain validation", client.publishedPayloadSnapshot())
+	}
 }
 
 func TestPublish_Success(t *testing.T) {
@@ -347,7 +388,7 @@ func TestSubscribeHandler_MergeFields_AutoMergesTopicVars(t *testing.T) {
 	handle := newMergeHandle()
 	var received userEvent
 
-	handler := subscribeHandler(context.Background(), handle,
+	handler := subscribeHandler(context.Background(), nil, handle,
 		func(_ context.Context, e userEvent) error {
 			received = e
 			return nil
@@ -375,7 +416,7 @@ func TestSubscribeHandler_NoMergeFields_NoTopicVarMergeAttempted(t *testing.T) {
 	handle := newHandle()
 	var received userEvent
 
-	handler := subscribeHandler(context.Background(), handle,
+	handler := subscribeHandler(context.Background(), nil, handle,
 		func(_ context.Context, e userEvent) error {
 			received = e
 			return nil
@@ -483,7 +524,7 @@ func TestMessageFromContext_InsideHandler(t *testing.T) {
 	var gotMsg pahomqtt.Message
 	var gotOK bool
 
-	handler := subscribeHandler(context.Background(), handle,
+	handler := subscribeHandler(context.Background(), nil, handle,
 		func(ctx context.Context, _ userEvent) error {
 			gotMsg, gotOK = MessageFromContext(ctx)
 			return nil
@@ -509,8 +550,10 @@ func TestMessageFromContext_OutsideHandler(t *testing.T) {
 // ── Observer tests ─────────────────────────────────────────────────────────────
 
 type mqttSpyObserver struct {
-	messages  []mqttSpyMessage
-	valErrors []mqttSpyValError
+	messages     []mqttSpyMessage
+	valErrors    []mqttSpyValError
+	startSpanOps []string
+	endSpanErrs  []error
 }
 
 type mqttSpyMessage struct {
@@ -539,11 +582,23 @@ func (s *mqttSpyObserver) RecordValidationError(location, constraintName, field 
 	s.valErrors = append(s.valErrors, mqttSpyValError{location: location, constraintName: constraintName, field: field})
 }
 
+// StartSpan/EndSpan implement [stats.TraceObserver] — used by
+// TestAttach_ClientPublish_RecordsObserver/TestAttach_ClientSubscribe_RecordsObserver
+// to confirm Client.Attach's transport wires tracing too.
+func (s *mqttSpyObserver) StartSpan(ctx context.Context, op, _ string) context.Context {
+	s.startSpanOps = append(s.startSpanOps, op)
+	return ctx
+}
+
+func (s *mqttSpyObserver) EndSpan(_ context.Context, err error) {
+	s.endSpanErrs = append(s.endSpanErrs, err)
+}
+
 func TestObserver_RecordSubscribe_success(t *testing.T) {
 	handle := newHandle()
 	obs := &mqttSpyObserver{}
 
-	handler := subscribeHandler(context.Background(), handle,
+	handler := subscribeHandler(context.Background(), nil, handle,
 		func(_ context.Context, _ userEvent) error { return nil },
 		SubscribeOptions{Observer: obs},
 	)
@@ -567,7 +622,7 @@ func TestObserver_RecordSubscribe_decodeError(t *testing.T) {
 	handle := newHandle()
 	obs := &mqttSpyObserver{}
 
-	handler := subscribeHandler(context.Background(), handle,
+	handler := subscribeHandler(context.Background(), nil, handle,
 		func(_ context.Context, _ userEvent) error { return nil },
 		SubscribeOptions{Observer: obs},
 	)
@@ -588,7 +643,7 @@ func TestObserver_RecordValidationError_payload(t *testing.T) {
 	handle := newHandle()
 	obs := &mqttSpyObserver{}
 
-	handler := subscribeHandler(context.Background(), handle,
+	handler := subscribeHandler(context.Background(), nil, handle,
 		func(_ context.Context, _ userEvent) error { return nil },
 		SubscribeOptions{Observer: obs},
 	)
@@ -683,7 +738,7 @@ func TestObserver_RecordValidationError_topicParam_subscribe(t *testing.T) {
 	obs := &mqttSpyObserver{}
 
 	// Handler simulates what TopicVarsFromMessage returns when the topic param fails.
-	handler := subscribeHandler(context.Background(), handle,
+	handler := subscribeHandler(context.Background(), nil, handle,
 		func(_ context.Context, _ userEvent) error {
 			return events.TopicParamError{
 				Name:  "userID",
@@ -714,7 +769,7 @@ func TestObserver_RecordValidationError_topicMismatch_subscribe(t *testing.T) {
 	obs := &mqttSpyObserver{}
 
 	// Handler simulates what TopicVarsFromMessage returns on structural mismatch.
-	handler := subscribeHandler(context.Background(), handle,
+	handler := subscribeHandler(context.Background(), nil, handle,
 		func(_ context.Context, _ userEvent) error {
 			return TopicMismatchError{
 				Template: "users/{userID}/events",
@@ -744,7 +799,7 @@ func TestObserver_RecordValidationError_topicMismatch_subscribe(t *testing.T) {
 func TestSubscribeHandler_YAMLFormat(t *testing.T) {
 	handle := newHandle()
 	var received userEvent
-	handler := subscribeHandler(context.Background(), handle,
+	handler := subscribeHandler(context.Background(), nil, handle,
 		func(_ context.Context, e userEvent) error {
 			received = e
 			return nil
@@ -769,7 +824,7 @@ func TestSubscribeHandler_YAMLFormat(t *testing.T) {
 func TestSubscribeHandler_YAMLFormat_DecodeError(t *testing.T) {
 	handle := newHandle()
 	var subErr SubscribeError
-	handler := subscribeHandler(context.Background(), handle,
+	handler := subscribeHandler(context.Background(), nil, handle,
 		func(_ context.Context, _ userEvent) error { return nil },
 		SubscribeOptions{
 			OnError: func(e SubscribeError) { subErr = e },
@@ -899,7 +954,7 @@ func TestSubscribeHandler_SecurityFunc_calledForSecuredChannel(t *testing.T) {
 	}
 	secFuncCalled := false
 	handlerCalled := false
-	handler := subscribeHandler(context.Background(), handle,
+	handler := subscribeHandler(context.Background(), nil, handle,
 		func(_ context.Context, e userEvent) error {
 			handlerCalled = true
 			return nil
@@ -928,7 +983,7 @@ func TestSubscribeHandler_SecurityFunc_rejectsMessage(t *testing.T) {
 		t.Fatal(err)
 	}
 	var subErr SubscribeError
-	handler := subscribeHandler(context.Background(), handle,
+	handler := subscribeHandler(context.Background(), nil, handle,
 		func(_ context.Context, e userEvent) error {
 			t.Fatal("handler must not be called when SecurityFunc rejects")
 			return nil
@@ -953,7 +1008,7 @@ func TestSubscribeHandler_SecurityFunc_rejectsMessage(t *testing.T) {
 func TestSubscribeHandler_SecurityFunc_notCalledForUnsecuredChannel(t *testing.T) {
 	handle := newHandle()
 	secFuncCalled := false
-	handler := subscribeHandler(context.Background(), handle,
+	handler := subscribeHandler(context.Background(), nil, handle,
 		func(_ context.Context, e userEvent) error { return nil },
 		SubscribeOptions{
 			SecurityFunc: func(_ context.Context, _ pahomqtt.Message, _ []route.SecurityRequirement) error {
@@ -976,7 +1031,7 @@ func TestSubscribeHandler_SecurityObserver_calledOnRejection(t *testing.T) {
 		t.Fatal(err)
 	}
 	obs := &mockSecurityObserver{}
-	handler := subscribeHandler(context.Background(), handle,
+	handler := subscribeHandler(context.Background(), nil, handle,
 		func(_ context.Context, e userEvent) error { return nil },
 		SubscribeOptions{
 			Observer: obs,
@@ -1016,7 +1071,7 @@ func TestSubscribeHandler_GlobalSecurity_enforcedWhenNoPerChannelSecurity(t *tes
 		t.Fatal(err)
 	}
 	secFuncCalled := false
-	handler := subscribeHandler(context.Background(), handle,
+	handler := subscribeHandler(context.Background(), nil, handle,
 		func(_ context.Context, e userEvent) error { return nil },
 		SubscribeOptions{
 			SecurityFunc: func(_ context.Context, _ pahomqtt.Message, _ []route.SecurityRequirement) error {
@@ -1039,7 +1094,7 @@ func TestSubscribeHandler_GlobalSecurity_rejectsMessage(t *testing.T) {
 		t.Fatal(err)
 	}
 	var gotErr SubscribeError
-	handler := subscribeHandler(context.Background(), handle,
+	handler := subscribeHandler(context.Background(), nil, handle,
 		func(_ context.Context, e userEvent) error { return nil },
 		SubscribeOptions{
 			OnError: func(e SubscribeError) { gotErr = e },
@@ -1073,7 +1128,7 @@ func TestSubscribeHandler_GlobalSecurity_notCalledWhenExplicitlyEmpty(t *testing
 		t.Fatal(err)
 	}
 	secFuncCalled := false
-	handler := subscribeHandler(context.Background(), handle,
+	handler := subscribeHandler(context.Background(), nil, handle,
 		func(_ context.Context, e userEvent) error { return nil },
 		SubscribeOptions{
 			SecurityFunc: func(_ context.Context, _ pahomqtt.Message, _ []route.SecurityRequirement) error {

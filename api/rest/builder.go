@@ -1011,6 +1011,67 @@ func (h *RouteHandle[Req, Resp]) DecodeMergedResponse(
 	return resp, nil
 }
 
+// EncodeRequestWithFormats is the canonical "encode using whatever format
+// THIS route declares" method — the single source of truth every
+// client-side caller (escape-hatch [callWithVars] AND
+// [ClientTransport]/Client.Attach) delegates to, instead of each
+// duplicating its own format-resolution logic inline. Resolves, in
+// priority order: formats (a call-time override, passed by escape-hatch
+// callers that support one; empty for Client.Attach, which has no
+// call-time-override concept) > h.RequestFormats[0] > plain
+// [RouteHandle.EncodeRequest] (assumed "application/json"). Returns the
+// matching Content-Type alongside the encoded body.
+func (h *RouteHandle[Req, Resp]) EncodeRequestWithFormats(req Req, formats ...format.Format[Req]) (body []byte, contentType string, err error) {
+	effectiveFmts := formats
+	if len(effectiveFmts) == 0 {
+		effectiveFmts = h.RequestFormats
+	}
+	if len(effectiveFmts) > 0 {
+		body, err = effectiveFmts[0].Marshal(req)
+		if err != nil {
+			return nil, "", err
+		}
+		return body, effectiveFmts[0].ContentType(), nil
+	}
+	body, err = h.EncodeRequest(req)
+	return body, "application/json", err
+}
+
+// ResponseFormat resolves the effective response format for this route,
+// in priority order: formats (a call-time override) > h.Formats[0] >
+// none (zero value, false — caller falls back to
+// [RouteHandle.DecodeResponse]/"application/json"). The route's OWN
+// declaration ([RouteHandle.WithFormats]) is the single source of truth;
+// this is the resolution step a client-side caller needs BOTH before
+// sending the request (to set the Accept header, via
+// [format.Format.ContentType]) and again before decoding the response
+// body (via [RouteHandle.DecodeResponseWithFormats]) — split out from
+// the decode step itself since those two happen at different times.
+func (h *RouteHandle[Req, Resp]) ResponseFormat(formats ...format.Format[Resp]) (format.Format[Resp], bool) {
+	effectiveFmts := formats
+	if len(effectiveFmts) == 0 {
+		effectiveFmts = h.Formats
+	}
+	if len(effectiveFmts) > 0 {
+		return effectiveFmts[0], true
+	}
+	var zero format.Format[Resp]
+	return zero, false
+}
+
+// DecodeResponseWithFormats decodes body via [RouteHandle.ResponseFormat]'s
+// resolution, falling back to plain [RouteHandle.DecodeResponse] when
+// unresolved — the canonical "decode using whatever format THIS route
+// declares" method every client-side caller (escape-hatch [callWithVars]
+// AND [ClientTransport]/Client.Attach) delegates to. See
+// [EncodeRequestWithFormats]'s doc comment for the shared rationale.
+func (h *RouteHandle[Req, Resp]) DecodeResponseWithFormats(body []byte, formats ...format.Format[Resp]) (Resp, error) {
+	if resolvedFmt, ok := h.ResponseFormat(formats...); ok {
+		return resolvedFmt.Unmarshal(body)
+	}
+	return h.DecodeResponse(body)
+}
+
 // WithHandler is [Route.WithHandler]'s post-registration equivalent —
 // attaches fn as h's business handler AFTER [Route.RegisterHandle] instead
 // of before. Use this when the handler's dependencies (a database handle,

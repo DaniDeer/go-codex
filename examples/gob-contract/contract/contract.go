@@ -15,6 +15,7 @@ package contract
 
 import (
 	"github.com/DaniDeer/go-codex/api/events"
+	"github.com/DaniDeer/go-codex/api/rest"
 	"github.com/DaniDeer/go-codex/codex"
 	"github.com/DaniDeer/go-codex/format"
 	"github.com/DaniDeer/go-codex/validate"
@@ -63,10 +64,21 @@ var OrderCodec = codex.Struct[Order](
 var GobFormat = format.Gob(OrderCodec)
 
 // OrderChannel is the typed channel definition for the orders topic.
-// Each service calls OrderChannel.WithPublish(...).Handle(builder) to get a
-// *ChannelHandle and register the channel in its own events.Client. Both
-// services get the same topic template, codec, and format — the contract is
-// enforced by the Go compiler and the shared codec constraints.
+// Each service calls OrderChannel.WithPublish(...)/.WithSubscribe(...)
+// .Handle(builder) to get a *ChannelHandle and register the channel in
+// its own events.Client. Both services get the same topic template,
+// codec, and format — the contract is enforced by the Go compiler and
+// the shared codec constraints.
+//
+// The topic param is MERGE-capable (events.NewTopicParam, not a plain
+// events.TopicParam) — orderId is derived directly from Order.ID, so a
+// caller never builds the topic vars map by hand ("one struct, one
+// call"). GobFormat is declared inline via events.Formats — a
+// first-class part of the channel's own declaration — so Client.Attach's
+// Publish/Subscribe resolve it automatically (see the fix documented in
+// docs/roadmap/pubsub-workflow-simplification.md's Decision 9); no
+// per-call format override or post-hoc handle.WithFormats call is
+// needed.
 var OrderChannel = events.NewChannel(
 	"orders/{orderId}",
 	OrderCodec,
@@ -74,9 +86,46 @@ var OrderChannel = events.NewChannel(
 		Title:       "Order Events",
 		Description: "Publishes Order messages whenever a new order is placed.",
 	},
-	events.TopicParam{Name: "orderId", Description: "The UUID of the order being published."},
-).WithPublish(events.Publish{
+	events.NewTopicParam("orderId", codex.String().Refine(validate.UUID),
+		func(o Order) string { return o.ID },
+		func(o *Order, v string) { o.ID = v },
+	).WithDescription("The UUID of the order being published."),
+	events.Formats(GobFormat),
+)
+
+// OrderSubscriber forks OrderChannel's shared declaration into the
+// subscribe role — see [events.Channel.WithSubscribe]. Needed alongside
+// OrderChannel's own WithPublish fork so the pub/sub demo in main.go can
+// exercise BOTH client.Publish and client.Subscribe against the SAME
+// channel declaration.
+var OrderSubscriber = OrderChannel.WithSubscribe(events.Subscribe{
+	Summary:    "Receive order event",
+	SchemaName: "Order",
+	Tags:       []string{"orders"},
+})
+
+// OrderPublisher forks OrderChannel's shared declaration into the publish
+// role, mirroring OrderSubscriber above.
+var OrderPublisher = OrderChannel.WithPublish(events.Publish{
 	Summary:    "Send order event",
 	SchemaName: "Order",
 	Tags:       []string{"orders"},
 })
+
+// OrderRoute is REST's mirror-image declaration of the SAME "Go library
+// as contract" pattern: an echo-style route (receives an Order, returns
+// it unchanged) with GobFormat declared for BOTH directions
+// (rest.RequestFormats for the request body, rest.Formats for the
+// response body) — proving the identical Decision 9 fix on the REST
+// side (docs/design/middleware-workflow-simplification.md's Addendum 2):
+// Client.Call now resolves a route's declared Gob format automatically,
+// for both EncodeRequestWithFormats and DecodeResponseWithFormats.
+var OrderRoute = rest.NewRoute[Order, Order]("POST", "/orders",
+	OrderCodec, OrderCodec,
+	rest.RouteMeta{
+		OperationID: "createOrder",
+		Summary:     "Echo an Order — Gob request AND response body",
+	},
+	rest.RequestFormats[Order](GobFormat),
+	rest.Formats[Order](GobFormat),
+)

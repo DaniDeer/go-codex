@@ -8,6 +8,10 @@ import (
 	"testing"
 
 	"github.com/DaniDeer/go-codex/api/rest"
+	"github.com/DaniDeer/go-codex/codex"
+	"github.com/DaniDeer/go-codex/format"
+	"github.com/DaniDeer/go-codex/stats"
+	"github.com/DaniDeer/go-codex/validate"
 )
 
 // ── rest.Client.Call via Attach (Decision 5 / transport-agnostic-serve-interface) ──────────
@@ -124,5 +128,216 @@ func TestAttach_ClientCall_NonSuccessStatus_ReturnsUnexpectedStatusError(t *test
 	var statusErr UnexpectedStatusError
 	if !errors.As(err, &statusErr) {
 		t.Fatalf("want UnexpectedStatusError, got %v (%T)", err, err)
+	}
+}
+
+// ── Observer + ErrorPattern parity for Client.Attach ────────────────────────
+//
+// Confirmed gap (see docs/design/middleware-workflow-simplification.md's
+// addendum): the reflection-based clientTransport.Call used to call
+// neither stats.Observer NOR consult a declared ErrorPattern on non-2xx —
+// these tests lock in the fix.
+
+// TestAttach_ClientCall_RecordsObserver_Success confirms RecordRequest is
+// called with the real status code on a successful round trip — mirrors
+// TestCall_POST_HappyPath's escape-hatch equivalent.
+func TestAttach_ClientCall_RecordsObserver_Success(t *testing.T) {
+	s := rest.NewServer(testInfo)
+	route := rest.NewRoute[createReq, userResp]("POST", "/users",
+		createReqCodec, userRespCodec, rest.RouteMeta{OperationID: "createUser"},
+	).WithHandler(func(ctx context.Context, req createReq) (userResp, error) {
+		return userResp{ID: "1", Name: req.Name}, nil
+	})
+	if err := route.Register(s); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+	mux := http.NewServeMux()
+	if err := serve(mux, s); err != nil {
+		t.Fatalf("Serve: %v", err)
+	}
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	client := rest.NewClient()
+	if err := Attach(client, srv.Client(), srv.URL); err != nil {
+		t.Fatalf("Attach: %v", err)
+	}
+
+	obs := &testObserver{}
+	ctx := stats.WithObserver(context.Background(), obs)
+	if _, err := client.Call(ctx, route, createReq{Name: "Alice"}); err != nil {
+		t.Fatalf("Call: %v", err)
+	}
+	if !obs.called {
+		t.Fatal("RecordRequest was never called — Observer wiring regressed")
+	}
+	if obs.status != http.StatusCreated {
+		t.Errorf("status = %d, want 201 (POST success)", obs.status)
+	}
+	if obs.method != http.MethodPost || obs.path != "/users" {
+		t.Errorf("method/path = %q/%q, want POST//users", obs.method, obs.path)
+	}
+}
+
+// TestAttach_ClientCall_RecordsObserver_NetworkFailure confirms RecordRequest
+// is called with status 0 when the request never reaches a server —
+// mirrors [callWithVars]'s own "status 0 = no HTTP request reached the
+// network" convention.
+func TestAttach_ClientCall_RecordsObserver_NetworkFailure(t *testing.T) {
+	route := rest.NewRoute[createReq, userResp]("POST", "/users",
+		createReqCodec, userRespCodec, rest.RouteMeta{OperationID: "createUser"},
+	)
+	client := rest.NewClient()
+	// Port 0 on localhost — connection refused, no server listening.
+	if err := Attach(client, http.DefaultClient, "http://127.0.0.1:1"); err != nil {
+		t.Fatalf("Attach: %v", err)
+	}
+
+	obs := &testObserver{}
+	ctx := stats.WithObserver(context.Background(), obs)
+	_, err := client.Call(ctx, route, createReq{Name: "Alice"})
+	if err == nil {
+		t.Fatal("expected a network error, got nil")
+	}
+	if !obs.called {
+		t.Fatal("RecordRequest was never called on network failure")
+	}
+	if obs.status != 0 {
+		t.Errorf("status = %d, want 0 (no request reached the network)", obs.status)
+	}
+}
+
+// clientTransportErrPayload/clientTransportErrPayloadCodec mirror
+// client_test.go's clientErrPayload/clientErrPayloadCodec for a route
+// value usable directly with Client.Attach (a Route value, not a
+// pre-built handle from a throwaway builder).
+type clientTransportErrPayload struct {
+	Code string `json:"code"`
+}
+
+func (e clientTransportErrPayload) Error() string { return "client error " + e.Code }
+
+var clientTransportErrPayloadCodec = codex.Struct[clientTransportErrPayload](
+	codex.RequiredField("code", codex.String().Refine(validate.NonEmptyString),
+		func(e clientTransportErrPayload) string { return e.Code },
+		func(e *clientTransportErrPayload, v string) { e.Code = v },
+	),
+)
+
+// TestAttach_ClientCall_ErrorPatternResponse_MatchedPattern confirms
+// Client.Attach's Call consults a declared ErrorPattern on a non-2xx
+// response, returning the typed ErrorPatternResponse instead of a bare
+// UnexpectedStatusError — mirrors TestCall_ErrorPatternResponse_MatchedPattern's
+// escape-hatch equivalent.
+func TestAttach_ClientCall_ErrorPatternResponse_MatchedPattern(t *testing.T) {
+	route := rest.NewRoute[createReq, userResp]("POST", "/errors/attach-call",
+		createReqCodec, userRespCodec,
+		rest.ErrorPattern[clientTransportErrPayload, clientTransportErrPayload](http.StatusConflict, clientTransportErrPayloadCodec),
+	)
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusConflict)
+		_, _ = w.Write([]byte(`{"code":"conflict"}`))
+	}))
+	defer srv.Close()
+
+	client := rest.NewClient()
+	if err := Attach(client, srv.Client(), srv.URL); err != nil {
+		t.Fatalf("Attach: %v", err)
+	}
+	_, err := client.Call(context.Background(), route, createReq{Name: "Alice"})
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	var epr ErrorPatternResponse
+	if !errors.As(err, &epr) {
+		t.Fatalf("expected ErrorPatternResponse, got %T: %v", err, err)
+	}
+	if epr.StatusCode != http.StatusConflict {
+		t.Errorf("status = %d, want 409", epr.StatusCode)
+	}
+	payload, ok := epr.Value.(clientTransportErrPayload)
+	if !ok {
+		t.Fatalf("Value type = %T, want clientTransportErrPayload", epr.Value)
+	}
+	if payload.Code != "conflict" {
+		t.Errorf("code = %q, want conflict", payload.Code)
+	}
+}
+
+// TestAttach_ClientCall_ErrorPatternResponse_NoMatch_FallsBackToUnexpectedStatus
+// confirms an UNDECLARED status still falls back to UnexpectedStatusError,
+// same as before this fix — additive-only, no behavior change for routes
+// with no ErrorPattern.
+func TestAttach_ClientCall_ErrorPatternResponse_NoMatch_FallsBackToUnexpectedStatus(t *testing.T) {
+	route := rest.NewRoute[createReq, userResp]("POST", "/errors/attach-call-nomatch",
+		createReqCodec, userRespCodec,
+		rest.ErrorPattern[clientTransportErrPayload, clientTransportErrPayload](http.StatusConflict, clientTransportErrPayloadCodec),
+	)
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError) // NOT the declared 409
+	}))
+	defer srv.Close()
+
+	client := rest.NewClient()
+	if err := Attach(client, srv.Client(), srv.URL); err != nil {
+		t.Fatalf("Attach: %v", err)
+	}
+	_, err := client.Call(context.Background(), route, createReq{Name: "Alice"})
+	var epr ErrorPatternResponse
+	if errors.As(err, &epr) {
+		t.Fatalf("expected fallback to UnexpectedStatusError, got ErrorPatternResponse: %+v", epr)
+	}
+	var statusErr UnexpectedStatusError
+	if !errors.As(err, &statusErr) {
+		t.Fatalf("want UnexpectedStatusError, got %v (%T)", err, err)
+	}
+	if statusErr.StatusCode != http.StatusInternalServerError {
+		t.Errorf("status = %d, want 500", statusErr.StatusCode)
+	}
+}
+
+// ── Client.Call honors the route's declared format (middleware-workflow-simplification.md Addendum 2) ──
+//
+// Confirmed gap (see docs/design/middleware-workflow-simplification.md's Addendum 2): Client.Call's
+// reflection shim used to ALWAYS assume JSON, silently ignoring a route's
+// declared RequestFormats/Formats — this test locks in the fix
+// (round-trips YAML request+response through Client.Call via Attach).
+func TestAttach_ClientCall_HonorsDeclaredYAMLFormat(t *testing.T) {
+	s := rest.NewServer(testInfo)
+	route := rest.NewRoute[createReq, userResp]("POST", "/users",
+		createReqCodec, userRespCodec, rest.RouteMeta{OperationID: "createUser"},
+		rest.RequestFormats(format.YAML(createReqCodec)),
+		rest.Formats(format.YAML(userRespCodec)),
+	).WithHandler(func(ctx context.Context, req createReq) (userResp, error) {
+		return userResp{ID: "1", Name: req.Name}, nil
+	})
+	if err := route.Register(s); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+
+	mux := http.NewServeMux()
+	if err := serve(mux, s); err != nil {
+		t.Fatalf("Serve: %v", err)
+	}
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	client := rest.NewClient()
+	if err := Attach(client, srv.Client(), srv.URL); err != nil {
+		t.Fatalf("Attach: %v", err)
+	}
+	respAny, err := client.Call(context.Background(), route, createReq{Name: "Alice"})
+	if err != nil {
+		t.Fatalf("Call: %v", err)
+	}
+	resp, ok := respAny.(userResp)
+	if !ok {
+		t.Fatalf("Call returned %T, want userResp", respAny)
+	}
+	if resp.Name != "Alice" || resp.ID != "1" {
+		t.Errorf("unexpected response: %+v", resp)
 	}
 }

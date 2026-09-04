@@ -97,7 +97,7 @@ func (a *mqttSubscribeAdapter[T]) Activate(ctx context.Context, dst chan<- T, er
 			}
 		},
 	}
-	handler := subscribeHandler(ctx, a.handle,
+	handler := subscribeHandler(ctx, a.client, a.handle,
 		func(_ context.Context, v T) error {
 			select {
 			case dst <- v:

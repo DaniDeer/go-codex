@@ -106,7 +106,7 @@ func (a *mqtt5SubscribeAdapter[T]) Activate(ctx context.Context, dst chan<- T, e
 			}
 		},
 	}
-	handler := makeSubscribeMessageHandler(ctx, a.handle, []format.Format[T]{a.fmt},
+	handler := makeSubscribeMessageHandler(ctx, a.client, a.handle, []format.Format[T]{a.fmt},
 		func(_ context.Context, v T) error {
 			select {
 			case dst <- v:

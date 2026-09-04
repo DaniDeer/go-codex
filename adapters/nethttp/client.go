@@ -626,19 +626,18 @@ func callWithVars[Req, Resp any](
 		}
 	}
 
-	// 7. Encode request body (body-bearing methods only).
+	// 7. Encode request body (body-bearing methods only). The route's OWN
+	// declaration (WithRequestFormats) is the single source of truth for
+	// which format applies — EncodeRequestWithFormats resolves it (reqFormats,
+	// already merged with any CallOptions.RequestFormats override above,
+	// wins when non-empty; otherwise handle.RequestFormats applies), this
+	// adapter never duplicates that resolution logic itself.
 	var body io.Reader
 	var contentType string
 	switch method {
 	case http.MethodPost, http.MethodPut, http.MethodPatch:
 		var bodyBytes []byte
-		if len(reqFormats) > 0 {
-			bodyBytes, err = reqFormats[0].Marshal(req)
-			contentType = reqFormats[0].ContentType()
-		} else {
-			bodyBytes, err = handle.EncodeRequest(req)
-			contentType = "application/json"
-		}
+		bodyBytes, contentType, err = handle.EncodeRequestWithFormats(req, reqFormats...)
 		if err != nil {
 			reportBodyErrors(ctx, err)
 			obs.RecordRequest(method, routePath, 0, time.Since(start))
@@ -770,13 +769,13 @@ func callWithVars[Req, Resp any](
 		}
 	}
 
-	// 12. Decode typed response.
-	var result Resp
-	if len(respFormats) > 0 {
-		result, err = respFormats[0].Unmarshal(respBody)
-	} else {
-		result, err = handle.DecodeResponse(respBody)
-	}
+	// 12. Decode typed response. The route's OWN declaration
+	// (WithFormats) is the single source of truth for which format
+	// applies — DecodeResponseWithFormats resolves it (respFormats,
+	// already merged with any CallOptions.ResponseFormats override
+	// above, wins when non-empty; otherwise handle.Formats applies),
+	// this adapter never duplicates that resolution logic itself.
+	result, err := handle.DecodeResponseWithFormats(respBody, respFormats...)
 	if err != nil {
 		reportBodyErrors(ctx, err)
 		return zero, err

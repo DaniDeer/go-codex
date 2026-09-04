@@ -9,7 +9,10 @@
 //
 // A single stats.NewFanout value wires a demo tracer, metrics, and structured
 // logging. The tracer records parent→child span names to prove context propagation
-// works through every layer.
+// works through every layer — including across the client-side rest.Client.Call
+// via nethttp.Attach (the preferred workflow), whose Observer wiring was a
+// confirmed, now-fixed gap (see docs/design/middleware-workflow-simplification.md's
+// Observer/ErrorPattern addendum).
 //
 // Run with: go run ./examples/http-trace-span-propagation
 package main
@@ -185,8 +188,11 @@ func main() {
 		rest.RouteMeta{OperationID: "greet", Summary: "Returns a greeting"},
 	)
 
-	// Client handle (no builder — client-only use).
-	clientHandle := route.ClientHandle()
+	// rest.Client + nethttp.Attach — the preferred workflow. One Attach
+	// call, then Client.Call(ctx, route, req) reads obs from ctx via
+	// stats.WithObserver (below), proving trace-span propagation survives
+	// the Client.Attach boundary too (Decision 8's Observer fix).
+	client := rest.NewClient()
 
 	// ── Temp dir for file output ──────────────────────────────────────────
 
@@ -221,19 +227,23 @@ func main() {
 	srv := httptest.NewServer(mux)
 	defer srv.Close()
 
+	if err := nethttp.Attach(client, srv.Client(), srv.URL); err != nil {
+		fmt.Fprintf(os.Stderr, "Attach failed: %v\n", err)
+		os.Exit(1)
+	}
+
 	// ── Client call — creates root span ──────────────────────────────────
 
 	clientCtx := tracer.StartSpan(context.Background(), "client:http.request", greetPath)
+	clientCtx = stats.WithObserver(clientCtx, obs)
 	defer tracer.EndSpan(clientCtx, nil)
 
-	resp, err := nethttp.CallWithHandle(clientCtx, srv.Client(), srv.URL,
-		clientHandle, GreetIn{Name: "Alice"},
-		nethttp.CallOptions{Observer: obs},
-	)
+	respAny, err := client.Call(clientCtx, route, GreetIn{Name: "Alice"})
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Call failed: %v\n", err)
 		os.Exit(1)
 	}
+	resp := respAny.(GreetOut)
 
 	fmt.Printf("Response: %+v\n\n", resp)
 	tracer.Print()

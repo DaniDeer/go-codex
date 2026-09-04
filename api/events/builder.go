@@ -675,6 +675,100 @@ func (h *ChannelHandle[T]) DecodeMerged(payload []byte, topicVars map[string]str
 	return msg, nil
 }
 
+// EffectivePublishFormats resolves the CANDIDATE format list for
+// publish/encode, in priority order: formats (a call-time override) >
+// h.PublishFormats > h.Formats — the single source of truth every
+// adapter's Publish (escape-hatch AND [Transport]/Client.Attach)
+// delegates to, instead of each duplicating this resolution inline.
+// Returns the FULL candidate slice (not just the winning format) for
+// adapters that need to scan every candidate themselves (e.g. mqtt5's
+// ContentType-property auto-selection); [EncodeWithFormats] is the
+// simpler "resolve AND encode in one call" convenience built on top of
+// this for adapters that only need the single winning format.
+func (h *ChannelHandle[T]) EffectivePublishFormats(formats ...format.Format[T]) []format.Format[T] {
+	if len(formats) > 0 {
+		return formats
+	}
+	if len(h.PublishFormats) > 0 {
+		return h.PublishFormats
+	}
+	return h.Formats
+}
+
+// EncodeWithFormats is the canonical "encode using whatever format THIS
+// channel declares" method — resolves via [EffectivePublishFormats] then
+// encodes with the winning format, falling back to plain
+// [ChannelHandle.Encode] when unresolved. Reflection-callable (T fixed
+// by the receiver) — see [ChannelHandle.EncodeVars]'s doc comment for
+// why this matters for [Transport] implementations.
+func (h *ChannelHandle[T]) EncodeWithFormats(msg T, formats ...format.Format[T]) ([]byte, error) {
+	effectiveFmts := h.EffectivePublishFormats(formats...)
+	if len(effectiveFmts) > 0 {
+		return effectiveFmts[0].Marshal(msg)
+	}
+	return h.Encode(msg)
+}
+
+// EffectiveSubscribeFormats resolves the CANDIDATE format list for
+// subscribe/decode, in priority order: formats (a call-time override) >
+// h.SubscribeFormats > h.Formats — the subscribe-side mirror of
+// [EffectivePublishFormats]; see its doc comment for the shared
+// rationale (mqtt5's ContentType-property auto-selection is the adapter
+// that needs the full candidate slice, not just the winning format).
+func (h *ChannelHandle[T]) EffectiveSubscribeFormats(formats ...format.Format[T]) []format.Format[T] {
+	if len(formats) > 0 {
+		return formats
+	}
+	if len(h.SubscribeFormats) > 0 {
+		return h.SubscribeFormats
+	}
+	return h.Formats
+}
+
+// DecodeWithFormats is the canonical "decode using whatever format THIS
+// channel declares" method, WITHOUT the topic-var merge step — the
+// decode-only half of [DecodeMergedWithFormats], split out for adapters
+// that need to run their OWN topic-var extraction/merge step separately
+// (e.g. to report a topic-var failure under a DIFFERENT stats.Observer
+// location than a payload-decode failure — see mqtt5/mqtt(v3)/zeromq's
+// own subscribe primitives). Resolves via [EffectiveSubscribeFormats]
+// then decodes with the winning format, falling back to plain
+// [ChannelHandle.Decode] when unresolved.
+func (h *ChannelHandle[T]) DecodeWithFormats(payload []byte, formats ...format.Format[T]) (T, error) {
+	effectiveFmts := h.EffectiveSubscribeFormats(formats...)
+	if len(effectiveFmts) > 0 {
+		return effectiveFmts[0].Unmarshal(payload)
+	}
+	return h.Decode(payload)
+}
+
+// DecodeMergedWithFormats mirrors [ChannelHandle.DecodeMerged], but
+// decodes via [DecodeWithFormats] first (so the channel's OWN declared
+// format is honored) before merging topic vars — the canonical
+// "decode+merge using whatever format THIS channel declares" method
+// every adapter's Subscribe (escape-hatch AND [Transport]/Client.Attach)
+// delegates to when it doesn't need decode/merge failures reported
+// separately (e.g. Client.Attach's reflection shim, which has no
+// per-failure-kind callback at all). See [EncodeWithFormats]'s doc
+// comment for the shared rationale.
+func (h *ChannelHandle[T]) DecodeMergedWithFormats(payload []byte, topicVars map[string]string, formats ...format.Format[T]) (T, error) {
+	var msg T
+	var err error
+	if len(payload) > 0 {
+		msg, err = h.DecodeWithFormats(payload, formats...)
+		if err != nil {
+			return msg, err
+		}
+	}
+	if len(h.mergeFields) == 0 {
+		return msg, nil
+	}
+	if err := codex.DecodeVars(&msg, topicVars, h.mergeFields...); err != nil {
+		return msg, err
+	}
+	return msg, nil
+}
+
 // BuildTopic substitutes {varName} placeholders in the channel's topic template
 // with the values provided in vars, validating each against its registered
 // codec (if any).

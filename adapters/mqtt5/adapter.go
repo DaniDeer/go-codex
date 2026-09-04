@@ -219,10 +219,21 @@ type PublishOptions[T any] struct {
 // UserPropertyParams validation, security enforcement, observer calls, and
 // tracing, then delivers the decoded value to fn.
 //
+// When fn returns a non-nil error, a declared [events.ErrorChannel] on
+// handle is consulted via handle.ErrorResponseFor — on an
+// [events.ErrorRespond] match, the typed payload is published (via
+// client) to the declared error-output topic BEFORE falling through to
+// opts.OnError; any other action (or no match) falls through to
+// opts.OnError unchanged, identical to this function's pre-existing
+// behavior. Mirrors [mqtt5PublishAdapter.handleUpstreamError]'s action
+// dispatch, extended here to the subscribe side — see
+// docs/roadmap/pubsub-workflow-simplification.md's Decision 8.
+//
 // Separating handler creation from broker subscription lets SubscribeStream
 // reuse the same validation logic without calling the broker.
 func makeSubscribeMessageHandler[T any](
 	ctx context.Context,
+	client MQTTClient,
 	handle *events.ChannelHandle[T],
 	effectiveFmts []format.Format[T],
 	fn func(context.Context, T) error,
@@ -385,6 +396,15 @@ func makeSubscribeMessageHandler[T any](
 		if fnErr != nil {
 			stats.ReportErrors(obs, "topic_var", fnErr)
 			obs.RecordSubscribe(msg.Topic, false, time.Since(start))
+			if resp, matched, matchErr := handle.ErrorResponseFor(fnErr); matched && matchErr == nil && resp.Action == events.ErrorRespond {
+				if _, pubErr := client.Publish(ctx, &pahomqtt5.Publish{
+					Topic:   resp.Topic,
+					Payload: resp.Body,
+				}); pubErr != nil {
+					stats.ReportErrors(obs, "error_channel", pubErr)
+				}
+				return
+			}
 			if opts.OnError != nil {
 				opts.OnError(SubscribeError{Kind: KindHandler, Topic: msg.Topic, Err: fnErr})
 			}
@@ -529,13 +549,10 @@ func subscribeWithHandle[T any](
 	}
 	fn = wrapSubscribeGeneral(fn, handle.Implementations)
 
-	effectiveFmts := formats
-	if len(effectiveFmts) == 0 {
-		effectiveFmts = handle.SubscribeFormats
-	}
-	if len(effectiveFmts) == 0 {
-		effectiveFmts = handle.Formats
-	}
+	// The channel's OWN declaration (WithFormats/WithSubscribeFormats) is
+	// the single source of truth for which formats apply — resolved here
+	// via the canonical method, never duplicated inline.
+	effectiveFmts := handle.EffectiveSubscribeFormats(formats...)
 
 	filter := opts.TopicFilter
 	if filter == "" {
@@ -543,7 +560,7 @@ func subscribeWithHandle[T any](
 	}
 
 	router.RegisterHandler(filter,
-		makeSubscribeMessageHandler(ctx, handle, effectiveFmts, fn, obs, opts))
+		makeSubscribeMessageHandler(ctx, client, handle, effectiveFmts, fn, obs, opts))
 
 	_, err := client.Subscribe(ctx, &pahomqtt5.Subscribe{
 		Subscriptions: []pahomqtt5.SubscribeOptions{
@@ -772,14 +789,6 @@ func publish[T any](
 		}
 	}
 
-	effectiveFmts := formats
-	if len(effectiveFmts) == 0 {
-		effectiveFmts = handle.PublishFormats
-	}
-	if len(effectiveFmts) == 0 {
-		effectiveFmts = handle.Formats
-	}
-
 	props := &pahomqtt5.PublishProperties{}
 	if opts.ContentType != "" {
 		props.ContentType = opts.ContentType
@@ -789,13 +798,11 @@ func publish[T any](
 	}
 
 	transmit := func(ctx context.Context, m T) error {
-		var payload []byte
-		var encErr error
-		if len(effectiveFmts) > 0 {
-			payload, encErr = effectiveFmts[0].Marshal(m)
-		} else {
-			payload, encErr = handle.Encode(m)
-		}
+		// The channel's OWN declaration (WithFormats/WithPublishFormats)
+		// is the single source of truth for which format applies —
+		// EncodeWithFormats resolves it, this adapter never duplicates
+		// that resolution logic itself.
+		payload, encErr := handle.EncodeWithFormats(m, formats...)
 		if encErr != nil {
 			stats.ReportErrors(obs, "payload", encErr)
 			return PublishEncodeError{Topic: topic, Err: encErr}

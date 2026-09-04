@@ -2507,3 +2507,159 @@ boundary (a long-lived stream instead of a single request/response) without
 needing new design work — the strongest practical validation this document's
 core patterns could receive short of a third independent adapter adopting
 them.
+
+## Addendum: `Client.Attach`'s Observer + `ErrorPattern` parity fix
+
+Added after a dedicated review of error handling and `stats.Observer`
+integration across REST and events under the "thin adapter" `Client.Attach`
+workflow (Decision 5, this doc's own `nethttp.Attach`/`AttachMux` design),
+triggered by a direct user request. Companion events-side fix documented in
+`docs/roadmap/pubsub-workflow-simplification.md`'s Decision 8.
+
+**Confirmed via code inspection: server-side `Attach` had NO gap.**
+`nethttp.AttachMux`/`chi.AttachRouter` delegate straight to the existing
+`serve`/`serveSSE` functions — the SAME functions the pre-`Attach` API
+surface already used — so `ErrorPattern` and `stats.Observer` wiring were
+never at risk on the server side; `serverTransport.Serve` (see this doc's
+own Revision 2 "Decision: unexported handle-based primitive" section) is a
+pure wiring wrapper, not a reimplementation.
+
+**Confirmed bug: `nethttp.Attach`'s CLIENT-side `clientTransport.Call`
+called `stats.Observer` NOWHERE AT ALL, and did NOT consult a declared
+`rest.ErrorPattern` on a non-2xx response** — it reimplemented the HTTP
+call from scratch (a hand-rolled `http.NewRequestWithContext`/`client.Do`/
+`io.ReadAll` sequence) rather than delegating to the existing, already-
+correct `callWithVars` (this doc's own Decision: unexported handle-based
+primitive). This meant every call made through the "preferred" `Client.
+Attach` workflow silently dropped ALL metrics/logging/tracing, AND lost the
+declarative typed-error-decode `ErrorPattern` promises entirely — falling
+back to a bare `UnexpectedStatusError` even when a route declared a
+matching `rest.ErrorPattern`.
+
+**Fix**: `clientTransport.Call` now resolves `obs :=
+stats.ObserverFromContext(ctx)` (ctx-only — this reflection shim has no
+per-call `CallOptions`-equivalent struct to carry an explicit override,
+matching its own documented v1 scope) and calls `obs.RecordRequest(method,
+path, statusCode, duration)` on EVERY exit path — status 0 before a
+response is ever received (pre-flight/build/network failures), mirroring
+`callWithVars`'s own convention exactly. `TraceObserver` span start/end is
+wired identically (`"http.request"` span name, matching `callWithVars`'s
+own). On a non-2xx response, `clientTransport.Call` now calls
+`handle.DecodeErrorFor(statusCode, respBody)` (the client-side counterpart
+of `RouteHandle.ErrorResponseFor` — see this doc's own error-pattern
+sections) via the SAME reflection technique already used for `BuildPath`/
+`EncodeRequest`/`DecodeResponse`, returning the typed `ErrorPatternResponse`
+on a match, falling back to `UnexpectedStatusError` unchanged otherwise —
+mirroring `callWithVars`'s own step 11 exactly.
+
+**Why this was missed originally**: `clientTransport.Call` was written as
+a from-scratch reflection shim (necessarily so, since `rest.Client.Call`'s
+`any`-typed signature requires runtime type recovery this doc's Decision 5
+already establishes) rather than delegating to `callWithVars` — a
+reasonable-looking choice at the time, since the CORE request/response
+mechanics (encode, build URL, decode) had to be reflection-driven anyway.
+But this meant the Observer/ErrorPattern wiring — which does NOT need
+reflection, since `obs` and the error-decode call are both resolved via
+already-concrete values (`stats.ObserverFromContext(ctx)` returns a
+concrete `stats.Observer`; `handle.DecodeErrorFor` is called via reflection
+only because `handle`'s own concrete type is runtime-only, not because the
+call itself needs anything special) — was simply never added, since there
+was no existing "add this one wiring block" pattern to notice was missing.
+**Lesson, consistent with this doc's own "Lessons Learned" section**: a
+reflection-based shim built to solve ONE structural problem (recovering a
+generic type at runtime) can silently regress OTHER, unrelated concerns
+(observability, declarative error handling) that have nothing to do with
+the reflection problem itself, if the shim is written as a fresh
+implementation instead of a thin wrapper delegating to the already-correct
+non-reflection-blocked pieces.
+
+**Verification**: new tests in `adapters/nethttp/clienttransport_test.go`
+cover `RecordRequest` on success (with the real status code) and network
+failure (status 0), plus a matched `ErrorPattern` returning
+`ErrorPatternResponse` and an unmatched non-2xx status falling back to
+`UnexpectedStatusError` unchanged. `gofmt`/`go build`/`go vet`/`go test`
+all green; zero regressions in the existing `TestAttach_*`/`TestCall_*`
+suites.
+
+## Addendum 2: `Client.Call`'s declared-format gap, fixed by centralizing resolution on `RouteHandle`
+
+A second, structurally identical gap surfaced while proving the Observer/
+`ErrorPattern` fix above via example rework. The identical fix also
+landed on the events side in the same round — see
+`docs/roadmap/pubsub-workflow-simplification.md`'s Decision 9 for the
+events-specific detail (`ChannelHandle[T]`'s mirror-image methods).
+
+**Confirmed bug**: `clientTransport.Call`'s request-encode/response-decode
+steps ALSO always called `RouteHandle[Req,Resp]`'s plain
+`EncodeRequest`/`DecodeResponse`, which are hardcoded to JSON codec
+encode/decode by original design (their own doc comments say so
+explicitly), silently ignoring a route's declared
+`WithFormats`/`WithRequestFormats` (YAML, TOML, Gob, custom binary) —
+while `callWithVars` (the existing, already-correct escape-hatch
+primitive) resolved this correctly by duplicating the resolution logic
+inline at its own call site ("call-time override > declared
+RequestFormats/Formats > plain EncodeRequest/DecodeResponse"). A route
+declared with a non-JSON format would silently break the moment a caller
+switched from the escape hatch to `Client.Attach`. This is **not** about
+per-call format overrides (which stay a legitimate client-side
+`CallOptions` concern, untouched) — it is about the route's own
+**declared** format, the single most basic contract a handle makes about
+its own wire shape.
+
+**Fix**: rather than teach `Call` to duplicate `callWithVars`'s resolution
+logic a second time, the logic moved **onto `RouteHandle[Req,Resp]`
+itself** — the single source of truth for a route's own declared
+configuration. REST's format model has only two levels (no three-level
+Subscribe/Publish/Formats chain like events) — override > declared, no
+further fallback chain needed. Three new canonical methods
+(`api/rest/builder.go`):
+
+```go
+// EncodeRequestWithFormats resolves formats (call-time override) >
+// declared RequestFormats > plain EncodeRequest, returning the matching
+// Content-Type alongside the bytes (a pre-flight concern, needed before
+// sending the request).
+func (h *RouteHandle[Req, Resp]) EncodeRequestWithFormats(req Req, formats ...format.Format[Req]) (body []byte, contentType string, err error)
+
+// ResponseFormat resolves the SAME priority for the response direction,
+// returning only the resolved format's ContentType — used for the Accept
+// header, a pre-flight concern separate from decode (a post-flight
+// concern), hence its own method.
+func (h *RouteHandle[Req, Resp]) ResponseFormat(formats ...format.Format[Resp]) string
+
+// DecodeResponseWithFormats resolves formats > declared Formats > plain
+// DecodeResponse.
+func (h *RouteHandle[Req, Resp]) DecodeResponseWithFormats(body []byte, formats ...format.Format[Resp]) (resp Resp, acceptContentType string, err error)
+```
+
+BOTH `callWithVars` and `Call` now call these methods, deleting
+`callWithVars`'s own inline duplicated copy in the process:
+`adapters/nethttp/client.go`'s `callWithVars` request-encode/response-
+decode steps now call `handle.EncodeRequestWithFormats`/
+`handle.DecodeResponseWithFormats`, passing the existing
+`resolveCallFormat`-derived override through unchanged (still a
+client-side `CallOptions` concern); `adapters/nethttp/clienttransport.go`'s
+`Call` calls the SAME canonical methods via
+`reflect.Value.MethodByName(...)` with zero-length variadic (no
+call-time override — `Client.Attach` still has no per-call override
+concept, unchanged from Decision 5's documented v1 scope). Net effect:
+`callWithVars` and `Call` both shrink; the only logic left in
+`clienttransport.go`'s `Call` is the reflection dispatch itself, exactly
+the "thin adapter, pure IO" principle this doc's own Addendum 1 already
+established for Observer/`ErrorPattern`.
+
+**Tests**: canonical method unit tests in `api/rest/builder_test.go`
+(declared-format-wins, call-time-override-wins-over-declared,
+empty-falls-back-to-plain-EncodeRequest/DecodeResponse); existing
+escape-hatch `callWithVars` tests pass unmodified, confirming the
+refactor preserves 100% existing behavior; a new round-trip test proving
+`Client.Attach`'s `Call` now honors a declared YAML format end-to-end —
+`TestAttach_ClientCall_HonorsDeclaredYAMLFormat` in
+`adapters/nethttp/clienttransport_test.go` (a real `httptest.Server` +
+`rest.Route` declared with `RequestFormats(format.YAML(...))`/
+`Formats(format.YAML(...))`, called via `rest.NewClient()` +
+`nethttp.Attach` + `Client.Call`).
+
+**Verified**: `gofmt`/`go build`/`go vet`/`go test` all green repo-wide;
+`just check` (staticcheck + gosec) with no new suppressions; zero
+regressions in existing test suites.

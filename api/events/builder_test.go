@@ -1705,6 +1705,124 @@ func TestDecodeMerged_NoMergeFieldsIsNoop(t *testing.T) {
 	}
 }
 
+// ── EncodeWithFormats / DecodeMergedWithFormats (canonical format resolution) ──
+//
+// These are the single source of truth every adapter's Publish/Subscribe
+// (escape-hatch AND Transport/Client.Attach) delegates to instead of
+// duplicating format-resolution logic itself — see
+// docs/roadmap/pubsub-workflow-simplification.md's Decision 9.
+
+// FMT1: EncodeWithFormats falls back to plain Encode when no format is
+// declared and no call-time override is given (regression guard,
+// mirrors TestDecodeMerged_NoMergeFieldsIsNoop's rationale).
+func TestEncodeWithFormats_NoFormatDeclared_FallsBackToPlainEncode(t *testing.T) {
+	b := events.NewClient(events.WithInfo(testInfo))
+	h, err := events.NewChannel[userEvent]("users", userEventCodec).WithPublish(events.Publish{}).Handle(b)
+	if err != nil {
+		t.Fatalf("Handle: %v", err)
+	}
+	msg := userEvent{ID: "u1", Name: "Alice"}
+	viaEncode, err := h.Encode(msg)
+	if err != nil {
+		t.Fatalf("Encode: %v", err)
+	}
+	viaFormats, err := h.EncodeWithFormats(msg)
+	if err != nil {
+		t.Fatalf("EncodeWithFormats: %v", err)
+	}
+	if string(viaEncode) != string(viaFormats) {
+		t.Errorf("EncodeWithFormats should match plain Encode when no format declared: %s vs %s", viaEncode, viaFormats)
+	}
+}
+
+// FMT2: EncodeWithFormats uses the channel's declared PublishFormats over
+// plain Encode — proves the channel's OWN declaration (not the adapter)
+// is the single source of truth for which format applies.
+func TestEncodeWithFormats_UsesDeclaredPublishFormat(t *testing.T) {
+	b := events.NewClient(events.WithInfo(testInfo))
+	h, err := events.NewChannel[userEvent]("users", userEventCodec).WithPublish(events.Publish{}).Handle(b)
+	if err != nil {
+		t.Fatalf("Handle: %v", err)
+	}
+	h = h.WithPublishFormats(format.YAML(userEventCodec))
+	out, err := h.EncodeWithFormats(userEvent{ID: "u1", Name: "Alice"})
+	if err != nil {
+		t.Fatalf("EncodeWithFormats: %v", err)
+	}
+	if !strings.Contains(string(out), "name: Alice") {
+		t.Errorf("expected YAML output, got: %s", out)
+	}
+}
+
+// FMT3: a call-time format override wins over the declared PublishFormats
+// — proves the escape-hatch adapters' own per-call override still works
+// unchanged after delegating to this canonical method.
+func TestEncodeWithFormats_CallTimeOverrideWinsOverDeclared(t *testing.T) {
+	b := events.NewClient(events.WithInfo(testInfo))
+	h, err := events.NewChannel[userEvent]("users", userEventCodec).WithPublish(events.Publish{}).Handle(b)
+	if err != nil {
+		t.Fatalf("Handle: %v", err)
+	}
+	h = h.WithPublishFormats(format.YAML(userEventCodec))
+	out, err := h.EncodeWithFormats(userEvent{ID: "u1", Name: "Alice"}, format.JSON(userEventCodec))
+	if err != nil {
+		t.Fatalf("EncodeWithFormats: %v", err)
+	}
+	if !strings.Contains(string(out), `"name":"Alice"`) {
+		t.Errorf("expected JSON output (call-time override should win), got: %s", out)
+	}
+}
+
+// FMT4: DecodeMergedWithFormats falls back to plain DecodeMerged (Decode +
+// merge) when no format is declared (regression guard).
+func TestDecodeMergedWithFormats_NoFormatDeclared_FallsBackToPlainDecodeMerged(t *testing.T) {
+	b := events.NewClient(events.WithInfo(testInfo))
+	h, err := events.NewChannel[userEvent]("users", userEventCodec).WithSubscribe(events.Subscribe{}).Handle(b)
+	if err != nil {
+		t.Fatalf("Handle: %v", err)
+	}
+	body := []byte(`{"id":"u1","name":"Alice"}`)
+	viaMerged, err := h.DecodeMerged(body, nil)
+	if err != nil {
+		t.Fatalf("DecodeMerged: %v", err)
+	}
+	viaFormats, err := h.DecodeMergedWithFormats(body, nil)
+	if err != nil {
+		t.Fatalf("DecodeMergedWithFormats: %v", err)
+	}
+	if viaMerged != viaFormats {
+		t.Errorf("DecodeMergedWithFormats should match DecodeMerged when no format declared: %+v vs %+v", viaMerged, viaFormats)
+	}
+}
+
+// FMT5: DecodeMergedWithFormats uses the channel's declared
+// SubscribeFormats AND still merges topic vars afterward — proves the
+// format resolution and the merge step compose correctly.
+func TestDecodeMergedWithFormats_UsesDeclaredSubscribeFormat_AndMerges(t *testing.T) {
+	nestedCodec := codex.Struct[nestedUserEvent](
+		codex.RequiredField("name", codex.String().Refine(validate.NonEmptyString),
+			func(e nestedUserEvent) string { return e.Name },
+			func(e *nestedUserEvent, v string) { e.Name = v },
+		),
+	)
+	b := events.NewClient(events.WithInfo(testInfo))
+	h, err := events.NewChannel[nestedUserEvent]("users/{id}", nestedCodec,
+		events.NewTopicParam("id", codex.String().Refine(validate.NonEmptyString),
+			func(e nestedUserEvent) string { return e.Meta.ID },
+			func(e *nestedUserEvent, v string) { e.Meta.ID = v })).WithSubscribe(events.Subscribe{}).Handle(b)
+	if err != nil {
+		t.Fatalf("Handle: %v", err)
+	}
+	h = h.WithSubscribeFormats(format.YAML(nestedCodec))
+	msg, err := h.DecodeMergedWithFormats([]byte("name: Alice\n"), map[string]string{"id": "u1"})
+	if err != nil {
+		t.Fatalf("DecodeMergedWithFormats: %v", err)
+	}
+	if msg.Name != "Alice" || msg.Meta.ID != "u1" {
+		t.Errorf("unexpected merged msg: %+v", msg)
+	}
+}
+
 // ── Topic ────────────────────────────────────────────────────────────────────
 
 func TestTopic_BuildTopic_RoundTrip(t *testing.T) {

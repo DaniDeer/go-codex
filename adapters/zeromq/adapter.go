@@ -334,14 +334,6 @@ func subscribeWithHandle[T any](
 	if err := sock.SetRecvTimeout(recvPollInterval); err != nil {
 		return SocketError{Op: "set_recv_timeout", Err: err}
 	}
-	effectiveFmts := formats
-	if len(effectiveFmts) == 0 {
-		effectiveFmts = handle.SubscribeFormats
-	}
-	if len(effectiveFmts) == 0 {
-		effectiveFmts = handle.Formats
-	}
-
 	var secReqs []route.SecurityRequirement
 	if handle.Descriptor.Subscribe != nil {
 		secReqs = handle.Descriptor.Subscribe.Security
@@ -375,13 +367,11 @@ func subscribeWithHandle[T any](
 		payload := frames[1]
 		start := time.Now()
 
-		var value T
-		var decErr error
-		if len(effectiveFmts) > 0 {
-			value, decErr = effectiveFmts[0].Unmarshal(payload)
-		} else {
-			value, decErr = handle.Decode(payload)
-		}
+		// The channel's OWN declaration (WithFormats/WithSubscribeFormats)
+		// is the single source of truth for which format applies —
+		// DecodeWithFormats resolves it, this adapter never duplicates
+		// that resolution logic itself.
+		value, decErr := handle.DecodeWithFormats(payload, formats...)
 		if decErr != nil {
 			stats.ReportErrors(obs, "payload", decErr)
 			obs.RecordSubscribe(topic, false, time.Since(start))
@@ -459,6 +449,16 @@ func subscribeWithHandle[T any](
 		}
 		if fnErr != nil {
 			obs.RecordSubscribe(topic, false, time.Since(start))
+			// Consult a declared events.ErrorChannel BEFORE falling
+			// through to OnError — mirrors
+			// mqtt5PublishAdapter.handleUpstreamError's action dispatch,
+			// extended here to the subscribe side (Decision 8).
+			if resp, matched, matchErr := handle.ErrorResponseFor(fnErr); matched && matchErr == nil && resp.Action == events.ErrorRespond {
+				if pubErr := sock.SendFrames([][]byte{[]byte(resp.Topic), resp.Body}); pubErr != nil {
+					stats.ReportErrors(obs, "error_channel", pubErr)
+				}
+				continue
+			}
 			if opts.OnError != nil {
 				opts.OnError(SubscribeError{Kind: KindHandler, Topic: topic, Err: fnErr})
 			}
@@ -683,22 +683,12 @@ func publish[T any](
 		}
 	}
 
-	effectiveFmts := formats
-	if len(effectiveFmts) == 0 {
-		effectiveFmts = handle.PublishFormats
-	}
-	if len(effectiveFmts) == 0 {
-		effectiveFmts = handle.Formats
-	}
-
 	transmit := func(ctx context.Context, m T) error {
-		var payload []byte
-		var encErr error
-		if len(effectiveFmts) > 0 {
-			payload, encErr = effectiveFmts[0].Marshal(m)
-		} else {
-			payload, encErr = handle.Encode(m)
-		}
+		// The channel's OWN declaration (WithFormats/WithPublishFormats)
+		// is the single source of truth for which format applies —
+		// EncodeWithFormats resolves it, this adapter never duplicates
+		// that resolution logic itself.
+		payload, encErr := handle.EncodeWithFormats(m, formats...)
 		if encErr != nil {
 			stats.ReportErrors(obs, "payload", encErr)
 			return PublishEncodeError{Topic: topic, Err: encErr}

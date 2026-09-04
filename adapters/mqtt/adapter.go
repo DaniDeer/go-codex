@@ -207,8 +207,19 @@ func MessageFromContext(ctx context.Context) (pahomqtt.Message, bool) {
 // callback but does not itself subscribe or block. Application code should
 // use [NewSubscribeTransport] together with [events.SubscribeHandle], or
 // [Attach]'s [events.Client]-based workflow, instead.
+//
+// When fn returns a non-nil error, a declared [events.ErrorChannel] on
+// handle is consulted via handle.ErrorResponseFor — on an
+// [events.ErrorRespond] match, the typed payload is published (via
+// client) to the declared error-output topic BEFORE falling through to
+// opts.OnError; any other action (or no match) falls through to
+// opts.OnError unchanged, identical to this function's pre-existing
+// behavior. Mirrors mqtt5's makeSubscribeMessageHandler's identical
+// extension — see docs/roadmap/pubsub-workflow-simplification.md's
+// Decision 8.
 func subscribeHandler[T any](
 	ctx context.Context,
+	client pahomqtt.Client,
 	handle *events.ChannelHandle[T],
 	fn func(context.Context, T) error,
 	opts SubscribeOptions,
@@ -218,24 +229,15 @@ func subscribeHandler[T any](
 	if obs == nil {
 		obs = stats.ObserverFromContext(ctx)
 	}
-	// Priority: call-time formats > handle.SubscribeFormats > handle.Formats > JSON fallback (handle.Decode).
-	effectiveFmts := formats
-	if len(effectiveFmts) == 0 {
-		effectiveFmts = handle.SubscribeFormats
-	}
-	if len(effectiveFmts) == 0 {
-		effectiveFmts = handle.Formats
-	}
 	return func(_ pahomqtt.Client, msg pahomqtt.Message) {
 		start := time.Now()
 		ctx := context.WithValue(ctx, contextKey{}, msg)
-		var value T
-		var err error
-		if len(effectiveFmts) > 0 {
-			value, err = effectiveFmts[0].Unmarshal(msg.Payload())
-		} else {
-			value, err = handle.Decode(msg.Payload())
-		}
+		// The channel's OWN declaration (WithFormats/WithSubscribeFormats)
+		// is the single source of truth for which format applies —
+		// DecodeWithFormats resolves it (call-time formats override >
+		// handle.SubscribeFormats > handle.Formats > JSON fallback), this
+		// adapter never duplicates that resolution logic itself.
+		value, err := handle.DecodeWithFormats(msg.Payload(), formats...)
 		if err != nil {
 			reportPayloadErrors(err, obs)
 			obs.RecordSubscribe(msg.Topic(), false, time.Since(start))
@@ -317,6 +319,14 @@ func subscribeHandler[T any](
 			reportInvalidTopicErrors(err, obs)
 			reportMissingTopicVarErrors(err, obs)
 			obs.RecordSubscribe(msg.Topic(), false, time.Since(start))
+			if resp, matched, matchErr := handle.ErrorResponseFor(err); matched && matchErr == nil && resp.Action == events.ErrorRespond {
+				token := client.Publish(resp.Topic, 0, false, resp.Body)
+				token.Wait()
+				if pubErr := token.Error(); pubErr != nil {
+					stats.ReportErrors(obs, "error_channel", pubErr)
+				}
+				return
+			}
 			if opts.OnError != nil {
 				opts.OnError(SubscribeError{Kind: KindHandler, Topic: msg.Topic(), Err: err})
 			}
@@ -515,23 +525,12 @@ func publish[T any](ctx context.Context, client pahomqtt.Client, handle *events.
 		}
 	}
 
-	// Priority: call-time formats > handle.PublishFormats > handle.Formats > JSON fallback (handle.Encode).
-	effectiveFmts := formats
-	if len(effectiveFmts) == 0 {
-		effectiveFmts = handle.PublishFormats
-	}
-	if len(effectiveFmts) == 0 {
-		effectiveFmts = handle.Formats
-	}
-
 	transmit := func(_ context.Context, m T) error {
-		var payload []byte
-		var encErr error
-		if len(effectiveFmts) > 0 {
-			payload, encErr = effectiveFmts[0].Marshal(m)
-		} else {
-			payload, encErr = handle.Encode(m)
-		}
+		// The channel's OWN declaration (WithFormats/WithPublishFormats)
+		// is the single source of truth for which format applies —
+		// EncodeWithFormats resolves it, this adapter never duplicates
+		// that resolution logic itself.
+		payload, encErr := handle.EncodeWithFormats(m, formats...)
 		if encErr != nil {
 			reportPayloadErrors(encErr, obs)
 			obs.RecordPublish(topic, false, time.Since(start))

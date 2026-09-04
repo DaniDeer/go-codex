@@ -585,7 +585,7 @@ func TestSubscribeHandler_PreExisting_StillWorksIdentically(t *testing.T) {
 	client := &mockClient{token: newCompletedToken(nil)}
 
 	var received userEvent
-	handler := subscribeHandler(context.Background(), handle,
+	handler := subscribeHandler(context.Background(), nil, handle,
 		func(_ context.Context, e userEvent) error { received = e; return nil },
 		SubscribeOptions{},
 	)
