@@ -2188,27 +2188,18 @@ func (c *Client) SubscriberEntries() []SubscriberEntry {
 // underneath — reachable uniformly via [Client.Attach] (e.g.
 // mqtt5.Attach, mqtt.Attach, zeromq.Attach) followed by
 // [Client.ServeSubscribers].
+//
+// There is no publish-side counterpart to this interface — [Client.Publish]
+// itself is already the SOLE, transport-agnostic publish call shape (e.g.
+// [zeromq.Attach], mqtt5.Attach, mqtt.Attach all bind into the SAME
+// [Client.Publish] method), so no separate per-channel binding type or
+// interface is needed on that side.
 type SubscriberServer interface {
 	// ServeSubscribers walks every [Subscriber] registered against the
 	// underlying [Client] via [Subscriber.Register] and starts consuming
 	// each one, blocking until ctx is cancelled or all consumption
 	// goroutines exit.
 	ServeSubscribers(ctx context.Context) error
-}
-
-// PublisherClient completes SubscriberServer's transport-agnostic symmetry
-// on the PUBLISH side — lives alongside SubscriberServer, same rationale
-// (neutral, transport-agnostic location, zero adapter imports). Named
-// PublisherClient, NOT Publisher — [Publisher] is already the role-scoped
-// BUILDER type from [Channel.WithPublish]; PublisherClient emphasizes this
-// is a bound RUNTIME client object, distinct from the declare-time
-// builder. The single-workflow path satisfying this interface today is
-// [Client.Publish] itself, via each adapter's Attach-returned [Transport]
-// (e.g. [zeromq.Attach], mqtt5.Attach, mqtt.Attach) — no separate
-// per-channel binding type is publicly exposed.
-type PublisherClient[T any] interface {
-	// Publish sends msg on the bound channel.
-	Publish(ctx context.Context, msg T) error
 }
 
 // Transport is implemented by each adapter's internal, unexported binding

@@ -25,9 +25,10 @@
 // a complete pebbe/zmq4 example:
 //
 //	sock := &pebbeSocket{s: zmqSocket}   // implements FramedSocket
-//	zeromq.SubscribeWithHandle(ctx, sock, handle, fn, opts)
+//	subTransport := zeromq.NewSubscribeTransport[SensorReading](sock, zeromq.SubscribeOptions[SensorReading]{})
+//	err := events.SubscribeHandle(ctx, sub, subTransport, fn)
 //
-// # Attach and the SubscribeWithHandle primitive
+// # Attach — the single-workflow entry point
 //
 // [Attach] binds a [FramedSocket] to an [api/events.Client] registry and
 // returns an [api/events.Transport], giving the [api/events.Client] a
@@ -42,9 +43,12 @@
 //	sub := SensorReadings.WithSubscribe(events.Subscribe{})
 //	err := eventsClient.Subscribe(ctx, sub, fn)
 //
-// [SubscribeWithHandle] remains the lower-level, handle-based primitive
-// for callers (e.g. [SubscribeAdapter]) that already own a pre-built
-// handle. [Publish]/[PublishHandle] are unchanged.
+// A caller who already owns a pre-built handle (e.g. [SubscribeAdapter])
+// reaches the same underlying logic via [events.SubscribeHandle]/
+// [events.PublishHandle] + [NewSubscribeTransport]/[NewPublishTransport] —
+// Decision 7's (docs/design/d-0002-pubsub-workflow-simplification.md)
+// handle-based path inverted into api/events itself, rather than any
+// zeromq-exported primitive directly.
 //
 // A whole-[api/events.Client] consume-many-channels-at-once path is also
 // available: declare each channel's handler at declare time via
@@ -69,7 +73,9 @@
 // (func(next func(context.Context, T) error) func(context.Context, T) error)
 // used by [Observability]. Both are validated EAGERLY (a malformed
 // attachment is a hard [middleware.MiddlewareShapeError], never a silent
-// no-op) by [SubscribeWithHandle]/[Publish]/the internal ServeSubscribers path.
+// no-op) at subscribe/publish construction/dispatch time, across both the
+// [NewSubscribeTransport]/[NewPublishTransport] handle-based path and the
+// internal ServeSubscribers path.
 // ZeroMQ had NO message-level security mechanism before this — see
 // [SubscribeOptions.SecurityFunc]'s doc comment.
 //

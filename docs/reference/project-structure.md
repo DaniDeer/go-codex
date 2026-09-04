@@ -68,7 +68,7 @@ go-codex/
 │   │   │                   #   (Info optional since Decision 7), Channel[T]/NewChannel, ChannelHandle,
 │   │   │                   #   BuildTopic, WithSubscribe/WithPublish → Subscriber[T]/Publisher[T]
 │   │   │                   #   (role-scoped, Use/SubscribeMW/PublishMW/Handle), FromSecurityScheme,
-│   │   │                   #   CheckCoverage, SubscriberServer, PublisherClient[T], AddServer,
+│   │   │                   #   CheckCoverage, SubscriberServer, AddServer,
 │   │   │                   #   AddSchema, AddGlobalSecurity, TopicParam, ChannelMeta, Subscribe,
 │   │   │                   #   Publish, SecurityScheme
 │   │   └── handletransport.go # PublishTransport[T]/SubscribeTransport[T] (generic interfaces),

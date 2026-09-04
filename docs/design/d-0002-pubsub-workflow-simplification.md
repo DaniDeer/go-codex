@@ -3204,6 +3204,115 @@ moved to `docs/design/d-0002-pubsub-workflow-simplification.md` (see
 `docs/design/index.md` for its new entry; this doc's `docs/roadmap/`
 listing is removed).
 
+### Decision 11 — REST/events architectural-sync review (IMPLEMENTED)
+
+**Trigger**: a direct user request, after `d-0001`'s (REST) and this
+doc's own designs had both shipped, to review the two APIs against the
+original goal stated when this whole pub/sub effort began: keep REST and
+events in architectural/conceptual sync — including their adapters
+staying equally thin — while respecting their genuinely different
+communication patterns (REST: real client/server split, request/
+response; pub/sub: broker-mediated, no server role, both publisher and
+subscriber are clients of a channel).
+
+**Method**: systematically compared `api/rest` vs `api/events`'s
+exported type/method surfaces, `adapters/nethttp`/`chi` vs
+`adapters/mqtt5`/`mqtt`/`zeromq`'s file structure and escape-hatch symbol
+shapes, and middleware Fn-shape validation on both sides — judging each
+apparent asymmetry against whether it's explained by the two APIs'
+documented, fundamentally different communication patterns before
+calling it a gap.
+
+**Confirmed correct/intentional** (the large majority of the surface):
+`rest.ServerTransport`/`ClientTransport` (REST's genuine two-role split)
+vs. `events.Transport` (pub/sub's single-role model); `rest.RouteEntry`/
+`SSERouteEntry` (server-side dispatch registry) vs.
+`events.SubscriberEntry` (pub/sub's client-side registry, since there is
+no server); `HandleMW`/`ClientMW` vs. `SubscribeMW`/`PublishMW` (identical
+signature shape on both sides, `FromSecurityScheme`/`CheckCoverage`/
+`checkImplementationsDeclared` mirrored symbol-for-symbol); `rest.
+CallWithHandle`/`ServeOne` staying adapter-level public escape hatches
+while pub/sub's equivalent (`SubscribeWithHandle`/`Publish`/
+`PublishHandle`) got INVERTED into `api/events` itself by Decision 7 —
+justified, since Decision 7 solved a genuinely PUB/SUB-SPECIFIC problem
+(3 independent broker adapters each duplicating the SAME merge-field/
+topic-derivation logic) that REST never had (a single HTTP mechanism,
+with chi delegating via swapHandler rather than an independent
+reimplementation); `events.Client`'s much richer method set
+(`AddServer`/`AddSchema`/`AddGlobalSecurity`/`SubscriberEntries`/
+`Attach`/`Publish`/`Subscribe`/`ServeSubscribers`/`AsyncAPISpec`/
+`AppendTo`/`AddChannelItem`) vs. `rest.Client`'s minimal 2-method set —
+correct, because pub/sub has no separate Server type (one `Client`
+unifies "spec builder" + "subscriber registry" + "transport-attached
+call surface"), while REST's spec-building lives entirely on
+`rest.Server` instead, which carries the mirrored richer set.
+
+**Two real, confirmed gaps found and fixed**:
+
+1. **`events.PublisherClient[T]` was dead, unimplemented public API with
+   a factually incorrect doc comment.** Zero implementations existed
+   anywhere in the shipped codebase (confirmed via exhaustive grep for
+   its exact 1-arg `Publish(ctx, msg T) error` signature — only a
+   throwaway compile-check type in `api/events/builder_test.go`). Its
+   own doc comment claimed `Client.Publish` "satisfies" it — false:
+   `Client.Publish`'s actual signature is `Publish(ctx, pub any, msg any)
+   error` (2 dynamic args), which structurally cannot satisfy a 1-arg
+   interface. The same false claim was repeated verbatim in
+   `adapters/mqtt5/doc.go` and `adapters/mqtt/doc.go`'s package doc
+   comments, and a softer version in `docs/guides/zeromq.md`. Its only
+   INTENDED implementer, `mqtt5.PublisherFor[T]`/`NewPublisherFor[T]`,
+   was already explicitly deleted by Decision 6 ("confirmed dead code
+   with zero internal callers once `Client.Publish` became the modern
+   path") — but `PublisherClient[T]` itself was never revisited after
+   that deletion. Its sibling `SubscriberServer` interface, by contrast,
+   IS genuinely implemented by all 3 adapters (`var _
+   events.SubscriberServer = (*caller)(nil)`) and fully load-bearing —
+   confirming this was a real, ONE-SIDED asymmetry inside `api/events`
+   itself, not a protocol-driven difference. **Fixed**: removed
+   `events.PublisherClient[T]` entirely (same precedent as
+   `PublisherFor[T]`'s earlier deletion); removed the dead
+   `dummyPublisherClient[T]` compile-check type and its half of the
+   combined interface-compliance test; fixed every doc-comment
+   cross-reference that falsely claimed `Client.Publish` "satisfies"/
+   "implements" it (`api/events/builder.go`'s `SubscriberServer` doc
+   comment now self-contained; `adapters/mqtt5/doc.go`,
+   `adapters/mqtt/doc.go`, `docs/guides/zeromq.md`,
+   `docs/reference/project-structure.md`, `.github/instructions/
+   go-codex.instructions.md`).
+2. **`adapters/mqtt5/doc.go` and `adapters/zeromq/doc.go`'s package doc
+   comments were stale** — still described `SubscribeWithHandle`/
+   `Publish`/`PublishHandle` as public/exported primitives and included a
+   `zeromq.SubscribeWithHandle(...)` code example calling a function that
+   no longer exists, even though Decision 7 unexported all of these
+   (`subscribeWithHandle`/`publish`/`subscribe` lowercase in every
+   adapter) in favor of the canonical `events.PublishHandle`/
+   `SubscribeHandle` + `NewPublishTransport`/`NewSubscribeTransport`
+   path. `adapters/mqtt/doc.go` (v3) was ALREADY correctly updated to
+   describe this shape — confirming the staleness was inconsistent
+   ACROSS the 3 adapters, itself a form of "not in sync" this very
+   review was looking for. **Fixed**: updated both files' doc comments
+   and code examples to describe the current shape, mirroring
+   `adapters/mqtt/doc.go`'s already-correct wording as the reference.
+
+**Confirmed, real, but correctly out of scope**: REST's `ClientMW`
+accepts only the credential-Fn shape, while events' `PublishMW`
+additionally accepts a general-purpose wrapping shape — a genuine
+asymmetry, but NOT new and NOT silently dropped: already tracked in its
+own dedicated doc,
+[REST Client-Side General-Purpose Middleware](../roadmap/rest-client-general-purpose-middleware.md)
+("idea only, no driver yet"). Not re-opened or fixed by this pass.
+
+**Verified**: `gofmt`/`go build`/`go vet`/`go test` all green repo-wide;
+`just check`/`just examples` clean; zero remaining references to
+`PublisherClient` anywhere in the repo.
+
+**Conclusion**: aside from the two fixes above (now closed), REST and
+events are confirmed architecturally in sync given their different
+communication patterns — every apparent difference in the remaining
+surface traces directly to a real protocol/role difference between a
+genuine client/server split (REST) and a broker-mediated, no-server-role
+model (pub/sub), not to an unintentional drift between the two designs.
+
 ## Escape hatches that exist today (pub/sub-scoped, fresh audit)
 
 1. ~~**Role-asymmetry gap**~~ — **RESOLVED** by Decision 1's

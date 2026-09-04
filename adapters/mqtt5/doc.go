@@ -25,9 +25,13 @@
 //	err := eventsClient.Subscribe(ctx, sub, fn)
 //
 // [subscribe] builds the handle internally via [events.Subscriber.Handle]
-// and delegates to [SubscribeWithHandle], the handle-based primitive that
-// remains public for callers (e.g. [SubscribeAdapter]) that already own a
-// pre-built handle.
+// and delegates to the unexported [subscribeWithHandle] primitive — the
+// handle-based path Decision 7
+// (docs/design/d-0002-pubsub-workflow-simplification.md) inverted into
+// api/events itself. A caller who already owns a pre-built handle (e.g.
+// [SubscribeAdapter]) reaches this same logic via
+// [events.SubscribeHandle] + [NewSubscribeTransport] instead of any
+// mqtt5-exported primitive directly.
 //
 // [(*caller).ServeSubscribers] implements [events.SubscriberServer] — the
 // whole-client entry point that walks every [events.Subscriber] registered
@@ -40,9 +44,10 @@
 // [serveOneSubscriber] is the zero-ceremony shortcut for a single channel.
 //
 // Publishing goes through [events.Client.Publish] (once [Attach] has bound
-// a transport), which satisfies [events.PublisherClient] with just
-// (ctx, msg) — the publish-side mirror of the subscribe-side abstractions
-// above. [Publish]/[PublishHandle] remain the lower-level primitives.
+// a transport) — the publish-side mirror of the subscribe-side
+// abstractions above. A caller who already owns a pre-built handle reaches
+// the same underlying logic via [events.PublishHandle] +
+// [NewPublishTransport] instead.
 //
 // [Observability] builds a declare-time, general-purpose
 // `func(next func(context.Context, T) error) func(context.Context, T) error`
@@ -55,9 +60,10 @@
 // # Fn shapes for SubscribeMW/PublishMW
 //
 // Every [events.Subscriber.SubscribeMW]/[events.Publisher.PublishMW]-attached
-// Fn is validated eagerly (at [subscribe]/[SubscribeWithHandle]/
-// [(*caller).ServeSubscribers]/[Publish] construction/dispatch time) against
-// two recognized shapes, returning [middleware.MiddlewareShapeError] on any
+// Fn is validated eagerly (at subscribe/publish construction/dispatch
+// time, across both the [NewSubscribeTransport]/[NewPublishTransport]
+// handle-based path and [(*caller).ServeSubscribers]) against two
+// recognized shapes, returning [middleware.MiddlewareShapeError] on any
 // other shape:
 //
 //   - Security-shaped: subscribe side

@@ -2723,21 +2723,15 @@ func TestSubscriberWithOptions_PopulatesHandlerOpts(t *testing.T) {
 	}
 }
 
-// dummySubscriberServer/dummyPublisherClient are compile-time-only helper
-// types asserting interface compliance — mirrors
-// stats/observer_test.go's TestLoggingObserver_ImplementsAllInterfaces
-// idiom.
+// dummySubscriberServer is a compile-time-only helper type asserting
+// interface compliance — mirrors stats/observer_test.go's
+// TestLoggingObserver_ImplementsAllInterfaces idiom.
 type dummySubscriberServer struct{}
 
 func (dummySubscriberServer) ServeSubscribers(ctx context.Context) error { return nil }
 
-type dummyPublisherClient[T any] struct{}
-
-func (dummyPublisherClient[T]) Publish(ctx context.Context, msg T) error { return nil }
-
-func TestSubscriberServerAndPublisherClient_InterfaceCompliance(t *testing.T) {
+func TestSubscriberServer_InterfaceCompliance(t *testing.T) {
 	var _ events.SubscriberServer = dummySubscriberServer{}
-	var _ events.PublisherClient[userEvent] = dummyPublisherClient[userEvent]{}
 }
 
 // ── Subscriber.SubscribeMW / Publisher.PublishMW (Phase 4) ─────────────────

@@ -205,10 +205,9 @@ func main() {
 `events.SubscriberServer` through the package's internal, unexported caller type — dispatches
 every channel registered via `Subscriber[T].Register(client)` over one shared receive loop
 on the socket (ZMQ sockets aren't safe for concurrent multi-goroutine use).
-`eventsClient.Publish(ctx, pub, msg)` (once `Attach`-bound) implements
-`events.PublisherClient[T]`'s call shape for transport-agnostic publish-side application code —
-the former `NewPublisherFor[T]`/`PublisherFor[T]` were DELETED, with no separate binding type
-needed anymore.
+`eventsClient.Publish(ctx, pub, msg)` (once `Attach`-bound) is the SOLE, transport-agnostic
+publish-side call shape for application code — the former `NewPublisherFor[T]`/`PublisherFor[T]`
+were DELETED, with no separate binding type needed anymore.
 
 ### `Client.Attach` — the inverted-control workflow
 

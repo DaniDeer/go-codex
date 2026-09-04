@@ -76,8 +76,7 @@
 // [events.Subscriber.Register] and subscribes each one in one call —
 // useful for an application with many channels declared up front.
 //
-// Publishing goes through [events.Client.Publish], which satisfies
-// [events.PublisherClient] with just (ctx, msg) via the same [Attach]-
+// Publishing goes through [events.Client.Publish] via the same [Attach]-
 // returned [events.Transport] — the publish-side mirror of the
 // subscribe-side abstractions above.
 //
