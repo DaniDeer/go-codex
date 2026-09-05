@@ -2472,7 +2472,8 @@ lineage that remains after that deletion.
 
 `SSERoute.ClientHandle()`/`ClientMW()` — the pair that lets a single
 `rest.SSERoute` declaration serve BOTH the server side (`ServeSSE`) and the
-client side (`nethttp.Consume`/`CallSSEAdapter`) with no separate
+client side (`Client.Consume`/`CallSSEAdapter`, per Addendum 4 below —
+originally `nethttp.Consume`, since retired) with no separate
 declaration — is not a new design. It is a direct, mechanical application of
 two decisions already made and shipped by THIS document:
 
@@ -2663,3 +2664,276 @@ refactor preserves 100% existing behavior; a new round-trip test proving
 **Verified**: `gofmt`/`go build`/`go vet`/`go test` all green repo-wide;
 `just check` (staticcheck + gosec) with no new suppressions; zero
 regressions in existing test suites.
+
+## Addendum 3: client-side general-purpose `ClientMW` hook (closes the last known REST/events middleware asymmetry)
+
+Folded in from `docs/roadmap/rest-client-general-purpose-middleware.md`,
+now deleted (its content lives here). Spun out of the events-side review
+(`docs/design/d-0002-pubsub-workflow-simplification.md`'s Decision 11),
+which flagged this exact asymmetry as the one remaining known gap between
+REST and events middleware: `Route.HandleMW` (server-side) recognizes
+TWO Fn shapes — the security-Fn shape and a general-purpose
+`func(http.Handler) http.Handler` — and pub/sub's `PublishMW`/
+`SubscribeMW` (`adapters/mqtt5/adapter.go`, mirrored in `mqtt`/`zeromq`)
+also recognize two shapes each. `Route.ClientMW` (client-side, via
+`adapters/nethttp.Call`/`CallWithHandle`) recognized only ONE shape — the
+credential shape — hard-erroring on anything else. There was no way to
+attach general-purpose, non-credential behavior (custom request/response
+transformation, retry logic, bespoke tracing) to `ClientMW` at all.
+
+**Fix, mirroring the shipped pub/sub precedent exactly**
+(`adapters/mqtt5/adapter.go`'s `wrapPublishGeneral`/
+`validatePublishImplementationShapes`/`publish`): a new Fn shape,
+
+```go
+func(next func(context.Context, Req) (Resp, error)) func(context.Context, Req) (Resp, error)
+```
+
+recognized alongside the credential shape by a new
+`validateCallImplementationShapes[Req, Resp]` (used ONLY by
+`callWithVars`/`CallWithHandle`), and dispatched by a new
+`wrapCallGeneral[Req, Resp]` (`adapters/nethttp/client.go`), which wraps
+fn OUTERMOST-in, in attachment order — identical contract to
+`wrapPublishGeneral`.
+
+**Wrap boundary** — confirmed by mirroring `publish`'s shipped structure:
+topic derivation and security/credential resolution happen OUTSIDE
+`wrapPublishGeneral`'s wrap, which applies ONLY to an "encode and
+transmit" closure. REST's direct equivalent: the wrap applies ONLY to
+`callWithVars`'s network-round-trip step (encode request body → build+
+send `httpReq` → decode response → response header/cookie merge-fields),
+NOT to path/query/header/cookie param derivation+validation, format
+resolution, URL building, or credential resolution — those stay outside
+the wrap and are closed over by the wrapped closure. `CallOptions.Observer`
+is unaffected — it stays a permanent per-call field, exactly like
+`PublishOptions.Observer` stays independent of `PublishMW`'s own general
+hook; every existing `obs.RecordRequest(...)` call site was relocated
+verbatim into the new closure's lexical scope, not altered.
+
+**Variable-scoping verification** (the one non-mechanical risk in this
+refactor): `callWithVars`'s `err` is a single, function-body-scoped
+variable, first declared at `concretePath, err := handle.BuildPath(vars)`
+and reused via `:=`/`=` throughout (Go's `:=` reuses an existing
+same-scope variable whenever at least one new variable also appears on
+the LHS); every place that needs the variable NOT to propagate uses an
+`if err := ...; err != nil { return ... }` block-scoped shadow that
+returns immediately. Moving the network-round-trip step into a nested
+closure introduces a genuinely new function scope, but the closure's
+return value is combined back into the SAME outer `err` at the call site
+(`result, err := next(ctx, req)`, executed at the pre-existing outer
+scope, not inside the closure) — so the deferred
+`to.EndSpan(ctx, err)` (`stats.TraceObserver`) continues to observe the
+correct final error exactly as before the refactor. Locked in by
+`TestCall_GeneralShape_TraceObserver_SeesFinalError`.
+
+**SSE deliberately NOT touched**: `consumeSSE` (SSE's `Consume`/
+`CallSSEAdapter`) shares `validateClientImplementationShapes` (the
+original, credential-only validator) with `callWithVars` today. Rather
+than widen that shared function — which would let a general-purpose Fn
+attached to an SSE route silently pass validation while never being
+invoked (SSE's per-event dispatch shape, `func(context.Context, Event)
+error` called repeatedly, doesn't match the single-call wrap shape) — a
+SEPARATE validator (`validateCallImplementationShapes`) was introduced,
+used only by `callWithVars`/`CallWithHandle`. `consumeSSE` keeps calling
+the original, completely untouched `validateClientImplementationShapes`.
+Mirrors mqtt5/mqtt/zeromq's existing precedent of separate
+`validateSubscribeImplementationShapes` vs
+`validatePublishImplementationShapes` rather than one universal
+function. Locked in by `TestConsume_GeneralShapeFn_StillRejected`
+(`adapters/nethttp/binding_test.go`) — a regression guard confirming SSE
+was NOT widened by this change.
+
+**`rest.Route.ClientMW`/`rest.SSERoute.ClientMW` needed ZERO code
+changes** — they already accept untyped `fn any` with no shape
+validation of their own (all shape validation and dispatch logic lives
+in the consuming adapter). The entire fix is scoped to
+`adapters/nethttp/client.go`.
+
+**Explicitly out of scope** (both confirmed during this doc's own
+finalization, not new information):
+- `adapters/nethttp/clienttransport.go`'s `Client.Attach`-backed `Call`
+  (used by `rest.Client.Call`) — its own, already-documented, much
+  narrower "v1 scope" (no path/query/header/cookie params, no security/
+  credential handling AT ALL, per Decision 5 above) is a separate,
+  larger, pre-existing gap, not conflated with this feature.
+- SSE's own general-purpose hook — a structurally different, future
+  design problem (SSE's per-event dispatch shape doesn't match the
+  single-call wrap shape), analogous to why pub/sub needed separate
+  `Subscribe`/`Publish` general shapes rather than one universal one.
+- `adapters/chi` — confirmed to have ZERO client-side code (a
+  server-side-only router library); the original roadmap doc's title
+  incorrectly listed it in scope and was corrected before this fold-in.
+
+**Structured errors / observer**: no new types. `middleware.MiddlewareShapeError`
+(already `slog.LogValuer`-compliant) is reused as-is for the new
+shape-mismatch case, mirroring `validatePublishImplementationShapes`'s
+reuse of the same type. No observer changes beyond the verbatim
+relocation described above.
+
+**Tests** (`adapters/nethttp/client_test.go` unless noted): `TestCall_GeneralShape_WrapsRequest`
+(happy path, one general-purpose Fn wraps `next`), `TestCall_GeneralShape_MultipleFns_OuterToInner_AttachmentOrder`
+(two Fns compose outermost-in, in attachment order), `TestCall_GeneralAndCredential_Coexist`
+(a credential-shaped Fn and a general-purpose Fn attached together, both
+run correctly), `TestCall_GeneralShape_TraceObserver_SeesFinalError`
+(regression guard for the variable-scoping verification above),
+`TestConsume_GeneralShapeFn_StillRejected` (`adapters/nethttp/binding_test.go`,
+regression guard confirming SSE stays untouched); the pre-existing
+`TestCall_WrongShapeMiddleware_ReturnsMiddlewareShapeError` (server-side
+`func(http.Handler) http.Handler` shape attached to `ClientMW`) continues
+to correctly fail, confirmed unaffected by the second recognized shape.
+
+**Verified**: `gofmt`/`go build`/`go vet`/`go test` all green repo-wide;
+`just check` (staticcheck + gosec, 0 issues); `just examples` (all pass);
+zero regressions in existing test suites.
+
+## Addendum 4: `Client.Call`/`Client.Consume` full `ClientTransport` feature parity, and retiring `nethttp.Consumer`/`Consume`
+
+Folded in from `docs/roadmap/rest-client-transport-full-parity.md`, now
+deleted (its content lives here). Triggered by a direct user request to
+add `rest.Client.Consume` — a declarative, `ClientTransport`-based SSE
+counterpart to `Client.Call` mirroring events' `Client.Subscribe` — which
+surfaced that `Client.Call`'s existing reflection shim
+(`clientTransport.Call`) had a documented "v1 scope" excluding path/query/
+header/cookie params, security/credential `ClientMW`, per-call format
+overrides, and general-purpose `ClientMW` wrapping. A naive
+`Client.Consume` mirroring that same scope would have been unusable for
+SSE's common path-templated routes, so this addendum closes ALL FOUR
+gaps for BOTH `Client.Call` and the new `Client.Consume` together, then
+retires the now-fully-redundant `nethttp.Consumer`/`Consume`.
+
+**Part 1 — `ClientTransport` interface gains `Consume`.** Mirrors BOTH
+`ClientTransport.Call` (REST's own precedent) and `events.Transport`'s
+bundled `Publish`/`Subscribe`/`ServeSubscribers` shape (one interface per
+boundary role, ALL operations bundled, ONE adapter type implementing all
+of them):
+
+```go
+type ClientTransport interface {
+    Call(ctx context.Context, route any, req any, opts ...ClientCallOptions) (any, error)
+    Consume(ctx context.Context, sseRoute any, req any, fn any, opts ...ClientConsumeOptions) error
+}
+```
+
+`nethttp.Attach`'s existing `clientTransport` struct implements BOTH
+methods. `Client.Consume` is a thin dispatcher, exactly mirroring
+`Client.Call`. `opts` is variadic (0 or 1 value) on both methods —
+additive, backward-compatible with every existing 3-arg `Call` call site.
+
+**Part 2 — new `EncodeVars`-family methods close the param-derivation
+wall.** `RouteHandle[Req,Resp]`/`SSERouteHandle[Req,Event]` gained
+`EncodeVars`/`EncodeQueryVars`/`EncodeHeaderVars`/`EncodeCookieVars(req
+Req) (map[string]string, error)` — each a 1-line wrapper around
+`codex.EncodeVars(req, h.xMergeFields()...)`, mirroring
+`events.ChannelHandle[T].EncodeVars` exactly. These exist as
+monomorphized METHODS (not direct `codex.EncodeVars` calls) specifically
+because a reflection-based caller with a runtime-only `Req` (like
+`clientTransport.Call`/`.Consume`) cannot reflect a generic FREE function
+— Go forbids it — but CAN call an exported method already monomorphized
+for a concrete `Req` at compile time. This same wall previously forced
+`clientTransport.Call` to pass a `nil` vars map to `BuildPath`, meaning
+ANY path-templated route (or one with query/header/cookie params) could
+never be called through `Client.Call` at all before this fix.
+
+**Part 3 — `SSERouteHandle` gained `EffectiveEventFormats`/
+`ResolveEventDecoder`.** Extracted from `adapters/nethttp/binding.go`'s
+previously free-function `resolveSSEDecodeFormat` (which now delegates to
+these), mirroring `events.ChannelHandle.EffectiveSubscribeFormats`
+exactly: `EffectiveEventFormats(formats ...format.Format[Event])
+[]format.Format[Event]` resolves override > declared `h.Formats`;
+`ResolveEventDecoder(accept string, formats ...format.Format[Event])
+func([]byte) (Event, error)` picks the one decoder via the SAME
+Accept-header-matching algorithm the server's own Accept-negotiation
+uses. Behavior-neutral refactor — confirmed via the full existing SSE
+test suite staying green unmodified.
+
+**Part 4 — security/credential `ClientMW` and format overrides.**
+`clientTransport.Call`/`.Consume` now call the EXISTING, non-generic
+`mergeCredentialHeaders`/`validateSecurityCredentials` directly (no
+reflection needed for the call itself, only to reach the plain-typed
+`Descriptor.Security`/`GlobalSecurity`/`ClientImplementations`/
+`SecuritySchemes` fields on the type-erased handle). New
+`ClientCallOptions{RequestFormats, ResponseFormats any}`/
+`ClientConsumeOptions{Formats any}` — plain, type-erased structs
+(consistent with the codebase's existing `CallOptions`/`ConsumeOptions`
+idiom, not a new functional-options pattern) — provide per-call format
+overrides, resolved via `reflect.Value` type-comparison against the
+reflected handle method's expected parameter type (the reflection
+sibling of `resolveCallFormat`).
+
+**Part 5 — general-purpose `ClientMW` wrapping, via `reflect.MakeFunc`.**
+For `Call`, the network round-trip (encode → send → decode) is built as
+a `reflect.MakeFunc`-constructed closure of type `func(context.Context,
+Req) (Resp, error)`, then wrapped by every attached general-purpose
+`ClientImplementation.Fn` whose reflected type matches `func(next
+<that type>) <that type>`, iterated OUTERMOST-in in attachment order —
+mirrors `wrapCallGeneral`'s static-generics contract exactly, just via
+reflection instead of a type assertion. For `Consume`, the wrap applies
+to the PER-EVENT dispatch (`func(context.Context, Event) error`) instead
+— mirrors `wrapSubscribeGeneral`'s identical per-message (not
+per-connection) wrap boundary, the natural SSE analogue since Consume has
+no single "Resp" the way Call does.
+
+**Part 6 — `nethttp.Consumer`/`Consume`/`NewConsumer` retired.**
+Confirmed via code that `Consume[Req,Event](ctx, consumer, sseRoute, req,
+fn, opts)` was a 2-line delegate (`sseRoute.ClientHandle()` +
+`consumeSSE(...)`) — structurally identical in role to the ALREADY-REMOVED
+`Call[Req,Resp]`/`Caller` (Decision 6: demoted to unexported
+`call`/`caller`, `CallWithHandle` remaining the sole escape hatch).
+Deleted `Consume` and `consumer.go`'s `Consumer`/`NewConsumer`/
+`WithBaseURL` entirely — `CallSSEAdapter` (handle-based, plain
+`client,baseURL` params) remains the SOLE public escape hatch, mirroring
+`CallWithHandle` exactly, delegating to the unchanged `consumeSSE`/
+`consumeSSEOnce` primitive.
+
+**Migration completed**: `examples/adapters-sse/main.go` — every
+`Consume`/`Consumer` call site migrated to `rest.Client.Consume` (via
+`nethttp.Attach`); the one demo needing `ConsumeOptions.OnError` (the
+codec-rejection demo, and the negative unauthenticated-request demo)
+migrated to `nethttp.CallSSEAdapter` + `ports.SourcePort` instead, since
+`Client.Consume` deliberately has no `OnError`/`OnCredentialRejected`/
+`MaxBackoff`/`ExtraHeaders` hooks. `adapters/nethttp/binding_test.go`'s 23
+`TestConsume_*` tests migrated to call the unexported `consumeSSE`
+primitive directly (same package, handle built via `route.ClientHandle()`)
+— a mechanical rename, zero behavior change, since `Consume`'s body was
+always just a 2-line delegate to this exact primitive. One test
+(`ExampleConsume`) rewritten as `ExampleClient_Consume`, demonstrating the
+new public API instead of the removed one. Swept dangling `[Consume]`/
+`[nethttp.Consume]`/`[Consumer]` godoc bracket-links across
+`adapters/nethttp/{binding,stream_errors,clienttransport,serve_sse}.go`
+and `api/rest/{builder,middleware}.go`, plus prose references in
+`docs/features/sse-streaming.md`, `docs/concepts/api-contracts.md`, and
+this document's own earlier SSE-consumption addendum.
+
+**Structured errors / observer**: no new error types. `CallFormatOptError`
+(pre-existing) is reused for the new format-override type-mismatch case.
+No observer changes — every existing `RecordRequest`/`TraceObserver`/
+`SecurityObserver` call site was preserved exactly, only reached via a
+new code path (the extended `clientTransport.Call`) or a new sibling
+(`clientTransport.Consume`).
+
+**Tests**: `TestAttach_ClientCall_DerivesPathVars`,
+`TestAttach_ClientCall_CredentialClientMW_Invoked`,
+`TestAttach_ClientCall_GeneralPurposeClientMW_Wraps`,
+`TestAttach_ClientCall_WithClientRequestResponseFormats_Overrides`,
+`TestAttach_ClientCall_BackwardCompatible_NoOptsStillWorks`,
+`TestAttach_ClientConsume_RoundTrip`,
+`TestAttach_ClientConsume_DerivesPathVars`,
+`TestAttach_ClientConsume_CredentialClientMW_Invoked`,
+`TestAttach_ClientConsume_GeneralPurposeClientMW_Wraps`,
+`TestAttach_ClientConsume_WithFormats_Overrides`,
+`TestAttach_ClientConsume_NoTransportAttached_ReturnsNoClientTransportAttachedError`,
+`TestAttach_ClientConsume_WrongRouteType_ReturnsTransportTypeMismatchError`
+(`adapters/nethttp/clienttransport_test.go`); 8 new
+`RouteHandle`/`SSERouteHandle.EncodeVars`-family tests
+(`api/rest/builder_test.go`).
+
+**Verified**: `gofmt`/`go build`/`go vet`/`go test` all green repo-wide
+(zero regressions across the full existing test suite, including the 23
+migrated `TestConsume_*` tests); `just check` (staticcheck + gosec, 0
+issues — one new `G124` false-positive exclusion added to
+`gosec.config.json` for `adapters/nethttp/clienttransport.go`, mirroring
+the SAME pre-existing exclusion already applied to
+`client.go`/`binding.go`/`cookie.go` for the identical outgoing-cookie
+pattern); `just examples` (all pass, including the migrated
+`adapters-sse` example, verified console output for both the
+credential-supplied and unauthenticated-rejection demo paths).

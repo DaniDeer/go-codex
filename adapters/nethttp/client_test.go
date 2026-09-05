@@ -367,7 +367,7 @@ func TestCall_CredentialFunc_Invoked(t *testing.T) {
 	credCalled := false
 	handle, err := rest.NewRoute[getReq, userResp]("GET", "/me",
 		getReqCodec, userRespCodec,
-	).ClientMW(&declMw, func(ctx context.Context, reqs []route.SecurityRequirement) (http.Header, error) {
+	).Use(declMw).ClientMW(&declMw, func(ctx context.Context, reqs []route.SecurityRequirement) (http.Header, error) {
 		credCalled = true
 		h := make(http.Header)
 		h.Set("Authorization", "test-bearer-token")
@@ -409,7 +409,7 @@ func TestCall_CredentialFunc_Error(t *testing.T) {
 	credErr := errors.New("token expired")
 	handle, err := rest.NewRoute[getReq, userResp]("GET", "/me",
 		getReqCodec, userRespCodec,
-	).ClientMW(&declMw, func(ctx context.Context, reqs []route.SecurityRequirement) (http.Header, error) {
+	).Use(declMw).ClientMW(&declMw, func(ctx context.Context, reqs []route.SecurityRequirement) (http.Header, error) {
 		return nil, credErr
 	}).RegisterHandle(b)
 	if err != nil {
@@ -447,6 +447,185 @@ func TestCall_WrongShapeMiddleware_ReturnsMiddlewareShapeError(t *testing.T) {
 	}
 }
 
+// --- General-purpose ClientMW ---
+
+// TestCall_GeneralShape_WrapsRequest locks in the new general-purpose
+// ClientMW shape (func(next func(context.Context, Req) (Resp, error))
+// func(context.Context, Req) (Resp, error)), mirroring adapters/mqtt5's
+// wrapPublishGeneral. An UNPAIRED (nil Security) Fn of this shape must run
+// unconditionally, composing around the network round-trip.
+func TestCall_GeneralShape_WrapsRequest(t *testing.T) {
+	var wrapperRan bool
+	handle := rest.NewRoute[getReq, userResp]("GET", "/me", getReqCodec, userRespCodec).
+		ClientMW(nil, func(next func(context.Context, getReq) (userResp, error)) func(context.Context, getReq) (userResp, error) {
+			return func(ctx context.Context, req getReq) (userResp, error) {
+				wrapperRan = true
+				return next(ctx, req)
+			}
+		}).
+		ClientHandle()
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]string{"id": "me", "name": "Alice"}) //nolint:errcheck
+	}))
+	defer srv.Close()
+
+	resp, err := CallWithHandle(context.Background(), srv.Client(), srv.URL,
+		handle, getReq{}, CallOptions{})
+
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !wrapperRan {
+		t.Error("general-purpose ClientMW Fn did not run")
+	}
+	if resp.ID != "me" {
+		t.Errorf("unexpected response: %+v", resp)
+	}
+}
+
+// TestCall_GeneralShape_MultipleFns_OuterToInner_AttachmentOrder locks in
+// that multiple general-purpose Fns compose OUTERMOST-in, in attachment
+// order — mirrors wrapPublishGeneral's reverse-iteration contract
+// (adapters/mqtt5/adapter.go).
+func TestCall_GeneralShape_MultipleFns_OuterToInner_AttachmentOrder(t *testing.T) {
+	var order []string
+	wrap := func(name string) func(next func(context.Context, getReq) (userResp, error)) func(context.Context, getReq) (userResp, error) {
+		return func(next func(context.Context, getReq) (userResp, error)) func(context.Context, getReq) (userResp, error) {
+			return func(ctx context.Context, req getReq) (userResp, error) {
+				order = append(order, name+":before")
+				resp, err := next(ctx, req)
+				order = append(order, name+":after")
+				return resp, err
+			}
+		}
+	}
+	handle := rest.NewRoute[getReq, userResp]("GET", "/me", getReqCodec, userRespCodec).
+		ClientMW(nil, wrap("first")).
+		ClientMW(nil, wrap("second")).
+		ClientHandle()
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]string{"id": "me", "name": "Alice"}) //nolint:errcheck
+	}))
+	defer srv.Close()
+
+	_, err := CallWithHandle(context.Background(), srv.Client(), srv.URL,
+		handle, getReq{}, CallOptions{})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	want := []string{"first:before", "second:before", "second:after", "first:after"}
+	if len(order) != len(want) {
+		t.Fatalf("want order %v, got %v", want, order)
+	}
+	for i := range want {
+		if order[i] != want[i] {
+			t.Fatalf("want order %v, got %v", want, order)
+		}
+	}
+}
+
+// TestCall_GeneralAndCredential_Coexist locks in that a credential-shaped
+// Fn and a general-purpose-shaped Fn attached to the SAME route both run
+// correctly with no interference — the credential Fn's header lands on
+// the outgoing request AND the general wrapper's side effect is observed.
+func TestCall_GeneralAndCredential_Coexist(t *testing.T) {
+	b := rest.NewServer(testInfo)
+	b.AddGlobalSecurity(route.Require("bearerAuth"))
+	declMw := middleware.SecurityScheme("bearerAuth", route.BearerScheme("JWT"), nil, nil)
+	var wrapperRan bool
+	handle, err := rest.NewRoute[getReq, userResp]("GET", "/me",
+		getReqCodec, userRespCodec,
+	).Use(declMw).ClientMW(&declMw, func(ctx context.Context, reqs []route.SecurityRequirement) (http.Header, error) {
+		h := make(http.Header)
+		h.Set("Authorization", "test-bearer-token")
+		return h, nil
+	}).ClientMW(nil, func(next func(context.Context, getReq) (userResp, error)) func(context.Context, getReq) (userResp, error) {
+		return func(ctx context.Context, req getReq) (userResp, error) {
+			wrapperRan = true
+			return next(ctx, req)
+		}
+	}).RegisterHandle(b)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") != "test-bearer-token" {
+			w.WriteHeader(http.StatusUnauthorized)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]string{"id": "me", "name": "Alice"}) //nolint:errcheck
+	}))
+	defer srv.Close()
+
+	resp, err := CallWithHandle(context.Background(), srv.Client(), srv.URL,
+		handle, getReq{}, CallOptions{})
+
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !wrapperRan {
+		t.Error("general-purpose ClientMW Fn did not run")
+	}
+	if resp.ID != "me" {
+		t.Errorf("unexpected response: %+v", resp)
+	}
+}
+
+// TestCall_GeneralShape_TraceObserver_SeesFinalError locks in that an
+// error returned by a general-purpose ClientMW Fn's own next() call is
+// still visible to a stats.TraceObserver's EndSpan — a regression guard
+// for the variable-scoping refactor that moved the network round-trip
+// into a nested closure (see docs/roadmap/rest-client-general-purpose-middleware.md).
+type recordingTraceObserver struct {
+	stats.NoopObserver
+	endSpanErr error
+	endCalled  bool
+}
+
+func (o *recordingTraceObserver) StartSpan(ctx context.Context, name, target string) context.Context {
+	return ctx
+}
+
+func (o *recordingTraceObserver) EndSpan(ctx context.Context, err error) {
+	o.endCalled = true
+	o.endSpanErr = err
+}
+
+func TestCall_GeneralShape_TraceObserver_SeesFinalError(t *testing.T) {
+	wantErr := errors.New("boom from general Fn")
+	handle := rest.NewRoute[getReq, userResp]("GET", "/me", getReqCodec, userRespCodec).
+		ClientMW(nil, func(next func(context.Context, getReq) (userResp, error)) func(context.Context, getReq) (userResp, error) {
+			return func(ctx context.Context, req getReq) (userResp, error) {
+				var zero userResp
+				return zero, wantErr
+			}
+		}).
+		ClientHandle()
+
+	to := &recordingTraceObserver{}
+	ctx := stats.WithObserver(context.Background(), to)
+
+	_, err := CallWithHandle(ctx, http.DefaultClient, "http://localhost",
+		handle, getReq{}, CallOptions{})
+
+	if !errors.Is(err, wantErr) {
+		t.Fatalf("want %v, got %v", wantErr, err)
+	}
+	if !to.endCalled {
+		t.Fatal("TraceObserver.EndSpan was never called")
+	}
+	if !errors.Is(to.endSpanErr, wantErr) {
+		t.Fatalf("want EndSpan to observe %v, got %v", wantErr, to.endSpanErr)
+	}
+}
+
 // TestCall_TwoCredentialMiddlewares_DifferingHeaderValuesConflict locks in
 // "L9" in docs/roadmap/declarative-middleware.md: two attached
 // credential-providing middlewares that return DIFFERENT values for the
@@ -462,7 +641,7 @@ func TestCall_TwoCredentialMiddlewares_DifferingHeaderValuesConflict(t *testing.
 	// still tell them apart as distinct sources.
 	handle, err := rest.NewRoute[getReq, userResp]("GET", "/me",
 		getReqCodec, userRespCodec,
-	).ClientMW(&declMw, func(_ context.Context, _ []route.SecurityRequirement) (http.Header, error) {
+	).Use(declMw).ClientMW(&declMw, func(_ context.Context, _ []route.SecurityRequirement) (http.Header, error) {
 		h := make(http.Header)
 		h.Set("Authorization", "Bearer token-a")
 		return h, nil
@@ -504,7 +683,7 @@ func TestCall_TwoCredentialMiddlewares_IdenticalHeaderValuesMergeSilently(t *tes
 	}
 	handle, err := rest.NewRoute[getReq, userResp]("GET", "/me",
 		getReqCodec, userRespCodec,
-	).ClientMW(&declMw, credFn).ClientMW(&declMw, credFn).RegisterHandle(b)
+	).Use(declMw).ClientMW(&declMw, credFn).ClientMW(&declMw, credFn).RegisterHandle(b)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -535,7 +714,7 @@ func TestCall_OnCredentialRejected_FiresOn401(t *testing.T) {
 	declMw := middleware.SecurityScheme("bearerAuth", route.BearerScheme("JWT"), nil, nil)
 	handle, err := rest.NewRoute[getReq, userResp]("GET", "/me",
 		getReqCodec, userRespCodec,
-	).ClientMW(&declMw, func(ctx context.Context, reqs []route.SecurityRequirement) (http.Header, error) {
+	).Use(declMw).ClientMW(&declMw, func(ctx context.Context, reqs []route.SecurityRequirement) (http.Header, error) {
 		h := make(http.Header)
 		h.Set("Authorization", "test-bearer-token")
 		return h, nil
@@ -597,7 +776,7 @@ func TestCall_OnCredentialRejected_NotCalledOnNon401Status(t *testing.T) {
 	declMw := middleware.SecurityScheme("bearerAuth", route.BearerScheme("JWT"), nil, nil)
 	handle, err := rest.NewRoute[getReq, userResp]("GET", "/me",
 		getReqCodec, userRespCodec,
-	).ClientMW(&declMw, func(ctx context.Context, reqs []route.SecurityRequirement) (http.Header, error) {
+	).Use(declMw).ClientMW(&declMw, func(ctx context.Context, reqs []route.SecurityRequirement) (http.Header, error) {
 		h := make(http.Header)
 		h.Set("Authorization", "test-bearer-token")
 		return h, nil

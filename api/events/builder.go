@@ -28,14 +28,19 @@ type Server = asyncapi.Server
 // SecurityScheme combines [route.SecurityScheme] spec metadata with optional
 // runtime credential validation for message broker adapters.
 //
-// [WithSecurityScheme] declares a SecurityScheme on a channel — the ONLY way
-// to declare one; there is no builder-level equivalent (mirrors
-// [rest.WithSecurityScheme] exactly). The spec fields flow into the AsyncAPI
-// document (aggregated from all registered channels by [Client.AsyncAPISpec]);
-// Codec, when non-nil, is used by MQTT5 adapters to validate the raw
-// credential string extracted from a message's User Properties before
-// SecurityFunc is called (server-side, [adapters/mqtt5.Subscribe]) or before
-// the message is published (client-side, [adapters/mqtt5.Publish]).
+// A channel declares a SecurityScheme in one of two ways: the modern,
+// preferred path is [FromSecurityScheme] + [Subscriber.Use]/[Publisher.Use]
+// (attached per-role, mirrors REST's own current
+// `middleware.SecurityScheme`/`rest.FromSecurityScheme` + `Route.Use`
+// mechanism); [WithSecurityScheme] is the older, deprecated, channel-level
+// declaration kept for backward compatibility — see its own doc comment.
+// There is no builder-level equivalent for either. The spec fields flow into
+// the AsyncAPI document (aggregated from all registered channels by
+// [Client.AsyncAPISpec]); Codec, when non-nil, is used by MQTT5 adapters to
+// validate the raw credential string extracted from a message's User
+// Properties before SecurityFunc is called (server-side subscribe) or
+// before the message is published (client-side publish) — see
+// adapters/mqtt5's `SubscribeOptions.SecurityFunc`/`PublishOptions.CredentialFunc`.
 //
 // MQTT 3.1.1 ([adapters/mqtt]) and ZeroMQ ([adapters/zeromq]) pub/sub have no
 // per-message metadata channel — Codec-level extraction only applies to MQTT5
@@ -82,7 +87,11 @@ func (o securitySchemeOpt) applyChannel(cb *channelBuilder) {
 // populate [ChannelHandle.SecuritySchemes] from this declaration, so the SAME
 // channel value — including its security scheme — builds a subscribe-side
 // handle and a publish-side handle with IDENTICAL credential-format
-// enforcement on both sides. Mirrors [rest.WithSecurityScheme] exactly.
+// enforcement on both sides. Mirrored REST's OWN identically-named,
+// now-removed `rest.WithSecurityScheme` mechanism before REST's Revision 2
+// replaced it with `middleware.SecurityScheme`/`rest.FromSecurityScheme` +
+// `Route.Use` — see [FromSecurityScheme] for this package's equivalent
+// modern replacement.
 //
 // Define a scheme once as a package-level value and reuse it across every
 // channel that shares it:
@@ -1243,11 +1252,11 @@ type Channel[T any] struct {
 //
 //	var userCreated = events.NewChannel[UserCreated]("user/created", userCreatedCodec,
 //	    events.ChannelMeta{Description: "A user was created"},
-//	    events.Subscribe{Summary: "Receive user created events", SchemaName: "UserCreatedEvent"},
 //	)
 //
-//	// Later, register with a builder:
-//	handle, err := userCreated.Register(b)
+//	// Later, fork into the subscribe role and register with a client:
+//	sub := userCreated.WithSubscribe(events.Subscribe{Summary: "Receive user created events", SchemaName: "UserCreatedEvent"})
+//	handle, err := sub.Handle(b)
 func NewChannel[T any](
 	topic string,
 	codec codex.Codec[T],
@@ -1471,15 +1480,29 @@ func (e MissingSecurityMiddlewareError) LogValue() slog.Value {
 // checkImplementationsDeclared is the REVERSE-direction sibling to
 // [CheckCoverage]: instead of "every DECLARED scheme has a covering
 // implementation," it verifies "every IMPLEMENTED (non-empty-Satisfies)
-// scheme was actually declared" — catching a [Subscriber.SubscribeMW] call
-// PAIRED against a security scheme name that was never `.Use()`'d on the
-// SAME [Subscriber] (e.g. a copy-paste mistake reusing a different
-// channel's [middleware.Middleware]). Called UNCONDITIONALLY by
-// [Subscriber.Handle]/[Subscriber.Register] — mirrors [rest.Route.Register]'s
-// identically-named helper exactly (a gap found during a post-implementation
-// audit: this doc's own Decision 1 explicitly promised this check, but it
-// was never actually added when api/events was implemented).
-func checkImplementationsDeclared(topic string, mws []middleware.Middleware, impls []middleware.ServerImplementation) error {
+// scheme was actually declared" — catching a [Subscriber.SubscribeMW]/
+// [Publisher.PublishMW] call PAIRED against a security scheme name that
+// was never `.Use()`'d on the SAME [Subscriber]/[Publisher] (e.g. a
+// copy-paste mistake reusing a different channel's
+// [middleware.Middleware]). Called UNCONDITIONALLY by
+// [Subscriber.Handle]/[Subscriber.Register]/[Publisher.Handle] — mirrors
+// [rest.Route.Register]'s identically-named helper exactly (a gap found
+// during a post-implementation audit: this doc's own Decision 1
+// explicitly promised this check, but it was never actually added when
+// api/events was implemented).
+//
+// Checks clientImpls (from [Publisher.PublishMW]) alongside impls (from
+// [Subscriber.SubscribeMW]) against the SAME declared set — unlike
+// [CheckCoverage] (correctly subscribe-side only, since a Publisher never
+// enforces anything against an incoming message), a Satisfies-name typo
+// is an internal-consistency bug on EITHER side: a [Publisher.PublishMW]
+// call paired against an undeclared scheme silently never runs (gated
+// out by every consuming adapter's Satisfies-vs-declared-security check,
+// e.g. adapters/mqtt5's runPublishSecurityImpls), with no error
+// anywhere — exactly the silent misconfiguration this check exists to
+// catch loudly instead, now for both directions. Mirrors
+// [rest.checkImplementationsDeclared]'s identical extension.
+func checkImplementationsDeclared(topic string, mws []middleware.Middleware, impls []middleware.ServerImplementation, clientImpls []middleware.ClientImplementation) error {
 	declared := make(map[string]bool, len(mws))
 	for _, mw := range mws {
 		if mw.Security != nil {
@@ -1487,6 +1510,13 @@ func checkImplementationsDeclared(topic string, mws []middleware.Middleware, imp
 		}
 	}
 	for _, impl := range impls {
+		for _, scheme := range impl.Satisfies {
+			if !declared[scheme] {
+				return UnknownMiddlewareImplementationError{Topic: topic, Scheme: scheme}
+			}
+		}
+	}
+	for _, impl := range clientImpls {
 		for _, scheme := range impl.Satisfies {
 			if !declared[scheme] {
 				return UnknownMiddlewareImplementationError{Topic: topic, Scheme: scheme}
@@ -1954,16 +1984,19 @@ func buildChannelHandle[T any](ch Channel[T], client *Client, role channelRole, 
 		return nil, mergeErr
 	}
 
-	// Unconditional coverage enforcement (Decision 1): subscribe-side only,
-	// mirrors REST/reqreply's asymmetry — a Publisher never enforces
-	// anything against an incoming message, so it never needs coverage.
-	// h.Implementations reflects whatever [Subscriber.SubscribeMW] calls
-	// were made on s before this Handle() call — see [CheckCoverage]'s
-	// doc comment.
+	// checkImplementationsDeclared (the reverse-Satisfies pairing-typo
+	// check) runs UNCONDITIONALLY, regardless of role — a mismatched
+	// Satisfies pairing is a channel-internal-consistency bug on EITHER
+	// side, unlike CheckCoverage below (which stays correctly
+	// subscribe-side only: a Publisher never enforces anything against
+	// an incoming message, so it never needs coverage). h.Implementations/
+	// h.ClientImplementations reflect whatever [Subscriber.SubscribeMW]/
+	// [Publisher.PublishMW] calls were made before this Handle() call.
+	if err := checkImplementationsDeclared(ch.topic, mws, h.Implementations, h.ClientImplementations); err != nil {
+		return nil, err
+	}
+
 	if role == roleSubscribe {
-		if err := checkImplementationsDeclared(ch.topic, mws, h.Implementations); err != nil {
-			return nil, err
-		}
 		if err := CheckCoverage(ch.topic, *securityField, h.Implementations); err != nil {
 			return nil, err
 		}

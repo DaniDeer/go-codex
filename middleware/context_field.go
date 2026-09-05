@@ -29,9 +29,15 @@ type contextFieldBox struct {
 
 // EnsureContextFields pre-allocates the shared ContextField box on ctx if
 // not already present, and returns the resulting context. Called ONCE by
-// each adapter's request pipeline (e.g. nethttp/chi's Serve dispatch,
-// ports.File.Read/Write, mcpgo's handlers), BEFORE any attached Fn runs.
-// Idempotent — safe to call more than once on the same ctx chain.
+// the request pipeline (today: adapters/nethttp's and adapters/chi's Serve
+// dispatch), BEFORE any attached Fn runs. Idempotent — safe to call more
+// than once on the same ctx chain.
+//
+// Events adapters (mqtt/mqtt5/zeromq) do not call this — their
+// security-shaped SubscribeMW/PublishMW Fns already get write access to
+// the decoded payload (*T) directly, serving the same cross-cutting-data
+// need ContextField serves for REST, via a different mechanism suited to
+// pub/sub's own Fn shape.
 func EnsureContextFields(ctx context.Context) context.Context {
 	if _, ok := ctx.Value(ctxFieldBoxKey{}).(*contextFieldBox); ok {
 		return ctx

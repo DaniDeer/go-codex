@@ -1592,6 +1592,153 @@ func TestSSERouteHandle_ReqMergeFields_PopulatedOnClientHandle(t *testing.T) {
 	}
 }
 
+// ── RouteHandle/SSERouteHandle.EncodeVars/EncodeQueryVars/EncodeHeaderVars/
+//    EncodeCookieVars — reflectable, monomorphized-method wrappers around
+//    codex.EncodeVars, added for docs/design/d-0001-rest-middleware-workflow-simplification.md's Addendum 4
+//    (mirrors events.ChannelHandle.EncodeVars). ──────────────────────────────
+
+type encodeVarsReq struct {
+	ID     string
+	Filter string
+	Auth   string
+	Sess   string
+}
+
+func newEncodeVarsRoute() *rest.RouteHandle[encodeVarsReq, userResp] {
+	return rest.NewRoute[encodeVarsReq, userResp]("GET", "/items/{id}",
+		codex.Struct[encodeVarsReq](), userCodec,
+		rest.NewPathParam("id", codex.String(),
+			func(r encodeVarsReq) string { return r.ID },
+			func(r *encodeVarsReq, v string) { r.ID = v }),
+		rest.NewOptionalQueryParam("filter", codex.String(),
+			func(r encodeVarsReq) string { return r.Filter },
+			func(r *encodeVarsReq, v string) { r.Filter = v }),
+		rest.NewRequiredHeaderParam("Authorization", codex.String(),
+			func(r encodeVarsReq) string { return r.Auth },
+			func(r *encodeVarsReq, v string) { r.Auth = v }),
+		rest.NewOptionalCookieParam("session", codex.String(),
+			func(r encodeVarsReq) string { return r.Sess },
+			func(r *encodeVarsReq, v string) { r.Sess = v }),
+	).ClientHandle()
+}
+
+func TestRouteHandle_EncodeVars_DerivesPathValue(t *testing.T) {
+	h := newEncodeVarsRoute()
+	vars, err := h.EncodeVars(encodeVarsReq{ID: "item-1"})
+	if err != nil {
+		t.Fatalf("EncodeVars: %v", err)
+	}
+	if vars["id"] != "item-1" {
+		t.Errorf("want id=item-1, got %+v", vars)
+	}
+}
+
+func TestRouteHandle_EncodeQueryVars_DerivesQueryValue(t *testing.T) {
+	h := newEncodeVarsRoute()
+	vars, err := h.EncodeQueryVars(encodeVarsReq{Filter: "active"})
+	if err != nil {
+		t.Fatalf("EncodeQueryVars: %v", err)
+	}
+	if vars["filter"] != "active" {
+		t.Errorf("want filter=active, got %+v", vars)
+	}
+}
+
+func TestRouteHandle_EncodeHeaderVars_DerivesHeaderValue(t *testing.T) {
+	h := newEncodeVarsRoute()
+	vars, err := h.EncodeHeaderVars(encodeVarsReq{Auth: "token-a"})
+	if err != nil {
+		t.Fatalf("EncodeHeaderVars: %v", err)
+	}
+	if vars["Authorization"] != "token-a" {
+		t.Errorf("want Authorization=token-a, got %+v", vars)
+	}
+}
+
+func TestRouteHandle_EncodeCookieVars_DerivesCookieValue(t *testing.T) {
+	h := newEncodeVarsRoute()
+	vars, err := h.EncodeCookieVars(encodeVarsReq{Sess: "sess-1"})
+	if err != nil {
+		t.Fatalf("EncodeCookieVars: %v", err)
+	}
+	if vars["session"] != "sess-1" {
+		t.Errorf("want session=sess-1, got %+v", vars)
+	}
+}
+
+func TestRouteHandle_EncodeVarsFamily_NoMergeFields_ReturnsEmptyMap(t *testing.T) {
+	h := rest.NewRoute[struct{}, userResp]("GET", "/plain", codex.Empty, userCodec).ClientHandle()
+	vars, err := h.EncodeVars(struct{}{})
+	if err != nil {
+		t.Fatalf("EncodeVars: %v", err)
+	}
+	if len(vars) != 0 {
+		t.Errorf("want empty map, got %+v", vars)
+	}
+}
+
+func newEncodeVarsSSERoute() *rest.SSERouteHandle[encodeVarsReq, userResp] {
+	return rest.NewSSERoute[encodeVarsReq, userResp]("/stream/{id}",
+		codex.Struct[encodeVarsReq](), userCodec,
+		rest.NewPathParam("id", codex.String(),
+			func(r encodeVarsReq) string { return r.ID },
+			func(r *encodeVarsReq, v string) { r.ID = v }),
+		rest.NewOptionalQueryParam("filter", codex.String(),
+			func(r encodeVarsReq) string { return r.Filter },
+			func(r *encodeVarsReq, v string) { r.Filter = v }),
+		rest.NewRequiredHeaderParam("Authorization", codex.String(),
+			func(r encodeVarsReq) string { return r.Auth },
+			func(r *encodeVarsReq, v string) { r.Auth = v }),
+		rest.NewOptionalCookieParam("session", codex.String(),
+			func(r encodeVarsReq) string { return r.Sess },
+			func(r *encodeVarsReq, v string) { r.Sess = v }),
+	).ClientHandle()
+}
+
+func TestSSERouteHandle_EncodeVars_DerivesPathValue(t *testing.T) {
+	h := newEncodeVarsSSERoute()
+	vars, err := h.EncodeVars(encodeVarsReq{ID: "room-1"})
+	if err != nil {
+		t.Fatalf("EncodeVars: %v", err)
+	}
+	if vars["id"] != "room-1" {
+		t.Errorf("want id=room-1, got %+v", vars)
+	}
+}
+
+func TestSSERouteHandle_EncodeQueryVars_DerivesQueryValue(t *testing.T) {
+	h := newEncodeVarsSSERoute()
+	vars, err := h.EncodeQueryVars(encodeVarsReq{Filter: "active"})
+	if err != nil {
+		t.Fatalf("EncodeQueryVars: %v", err)
+	}
+	if vars["filter"] != "active" {
+		t.Errorf("want filter=active, got %+v", vars)
+	}
+}
+
+func TestSSERouteHandle_EncodeHeaderVars_DerivesHeaderValue(t *testing.T) {
+	h := newEncodeVarsSSERoute()
+	vars, err := h.EncodeHeaderVars(encodeVarsReq{Auth: "token-a"})
+	if err != nil {
+		t.Fatalf("EncodeHeaderVars: %v", err)
+	}
+	if vars["Authorization"] != "token-a" {
+		t.Errorf("want Authorization=token-a, got %+v", vars)
+	}
+}
+
+func TestSSERouteHandle_EncodeCookieVars_DerivesCookieValue(t *testing.T) {
+	h := newEncodeVarsSSERoute()
+	vars, err := h.EncodeCookieVars(encodeVarsReq{Sess: "sess-1"})
+	if err != nil {
+		t.Fatalf("EncodeCookieVars: %v", err)
+	}
+	if vars["session"] != "sess-1" {
+		t.Errorf("want session=sess-1, got %+v", vars)
+	}
+}
+
 // TestSSERoute_Formats_AppliesOnRegisterHandle verifies rest.Formats
 // declared inline in NewSSERoute's opts is applied by registerHandle
 // (server side). Regression test for a confirmed bug where

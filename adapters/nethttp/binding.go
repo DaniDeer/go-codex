@@ -508,7 +508,9 @@ func (a *nethttpLatestAdapter[Resp]) Serve(_ context.Context, latest func() (Res
 
 // ── Consume + CallSSEAdapter ───────────────────────────────────────────────
 
-// ConsumeOptions configures [Consume]/[CallSSEAdapter].
+// ConsumeOptions configures [CallSSEAdapter] (the escape hatch — see
+// [rest.Client.Consume] for the declarative, ClientTransport-based
+// convenience, which has no Options parameter of its own).
 type ConsumeOptions struct {
 	// QueryParams/CookieParams/HeaderParams/ExtraHeaders — same shape and
 	// precedence as [CallOptions] (explicit wins over Req-derived).
@@ -546,9 +548,9 @@ type ConsumeOptions struct {
 	Observer stats.Observer
 
 	// Formats, when non-nil, OVERRIDES the route's declared event decode
-	// format for THIS Consume/CallSSEAdapter call only. Type-erased
+	// format for THIS CallSSEAdapter call only. Type-erased
 	// ([]format.Format[Event]) since ConsumeOptions itself is not
-	// generic; [Consume]/[CallSSEAdapter] type-assert it once Event is
+	// generic; [CallSSEAdapter] type-asserts it once Event is
 	// concrete, returning [CallFormatOptError] on a type mismatch — same
 	// resolution/priority contract as [CallOptions.ResponseFormats].
 	//
@@ -566,11 +568,16 @@ func (o ConsumeOptions) maxBackoff() time.Duration {
 
 const sseInitialBackoff = 250 * time.Millisecond
 
-// consumeSSE is the SHARED, unexported connect+decode+reconnect loop both
-// [Consume] and [CallSSEAdapter] delegate to — mirrors
-// [zeromq.SubscribeAdapter]'s documented "Activate delegates to Subscribe"
-// relationship exactly. BLOCKS until ctx is cancelled or a fatal
-// pre-connect setup error occurs (e.g. merge-field encoding failure).
+// consumeSSE is the unexported connect+decode+reconnect loop
+// [CallSSEAdapter] delegates to — mirrors [zeromq.SubscribeAdapter]'s
+// documented "Activate delegates to Subscribe" relationship exactly.
+// ([rest.Client.Consume]'s reflection-based adapter shim, in
+// adapters/nethttp/clienttransport.go, has its own separate but
+// behaviorally-equivalent reconnect loop — it cannot call this generic
+// function directly for a runtime-only Event, the same constraint
+// documented on [rest.RouteHandle.EncodeVars].) BLOCKS until ctx is
+// cancelled or a fatal pre-connect setup error occurs (e.g. merge-field
+// encoding failure).
 //
 // The merge-field vars AND the ClientMW credential are BOTH RE-DERIVED on
 // EVERY reconnect attempt, never cached across attempts — the correct
@@ -844,59 +851,23 @@ func consumeSSEOnce[Req, Event any](
 // specific Accept → matching ContentType; no match/no Formats declared →
 // handle.DecodeEvent, the JSON default).
 func resolveSSEDecodeFormat[Req, Event any](handle *rest.SSERouteHandle[Req, Event], eventFormats []format.Format[Event], accept string) func(string) (Event, error) {
-	if len(eventFormats) > 0 {
-		if accept == "" || accept == "*/*" {
-			f := eventFormats[0]
-			return func(data string) (Event, error) { return f.Unmarshal([]byte(data)) }
-		}
-		for _, part := range strings.Split(accept, ",") {
-			want := strings.TrimSpace(strings.SplitN(part, ";", 2)[0])
-			if want == "*/*" {
-				f := eventFormats[0]
-				return func(data string) (Event, error) { return f.Unmarshal([]byte(data)) }
-			}
-			for _, f := range eventFormats {
-				ct, _, _ := strings.Cut(f.ContentType(), ";")
-				if strings.TrimSpace(ct) == want {
-					f := f
-					return func(data string) (Event, error) { return f.Unmarshal([]byte(data)) }
-				}
-			}
-		}
-	}
-	return func(data string) (Event, error) { return handle.DecodeEvent([]byte(data)) }
+	decode := handle.ResolveEventDecoder(accept, eventFormats...)
+	return func(data string) (Event, error) { return decode([]byte(data)) }
 }
 
-// Consume opens a long-lived SSE connection to sseRoute against
-// consumer's baseURL — the STRICT equivalent of [Call] for a stream of
-// many events instead of one Resp. BLOCKS until ctx is cancelled or a
-// fatal connection-setup error occurs — mirrors [zeromq.Subscribe]'s
-// blocking shape exactly, so the CALLER'S OWN goroutine must run the loop
-// (typically via `go nethttp.Consume(...)`).
-//
-// fn is called once per decoded Event. fn's returned error is NON-FATAL:
-// wrapped in [SSEHandlerError] and reported via opts.OnError, then
-// consumption continues with the next event.
-func Consume[Req, Event any](
-	ctx context.Context,
-	consumer *Consumer,
-	sseRoute rest.SSERoute[Req, Event],
-	req Req,
-	fn func(ctx context.Context, event Event) error,
-	opts ConsumeOptions,
-) error {
-	handle := sseRoute.ClientHandle()
-	return consumeSSE(ctx, consumer.client, consumer.baseURL, handle, req, fn, opts)
-}
-
-// CallSSEAdapter returns a [ports.SourceAdapter] that DELEGATES to the
-// SAME underlying connect+decode+reconnect loop [Consume] uses. Takes a
-// pre-built *rest.SSERouteHandle (not a bare [rest.SSERoute]) — matching
-// [CallAdapter]/[DrainCallAdapter]'s existing handle-based convention.
-// Deliberately stays on PLAIN client/baseURL parameters, NOT a [Consumer]
-// — matching [CallAdapter]/[DrainCallAdapter]'s existing precedent. Not to
-// be confused with [SSEAdapter], the SERVER-side counterpart that SERVES
-// events out — CallSSEAdapter CONSUMES a remote SSE endpoint as a client.
+// CallSSEAdapter returns a [ports.SourceAdapter] that DELEGATES to
+// [consumeSSE], the SAME underlying connect+decode+reconnect loop. Takes
+// a pre-built *rest.SSERouteHandle (not a bare [rest.SSERoute]) —
+// matching [CallAdapter]/[DrainCallAdapter]'s existing handle-based
+// convention (mirrors [CallWithHandle], the equally handle-based
+// escape-hatch sibling for request/response — see
+// [rest.Client.Consume] for the declarative, route-value-based
+// convenience, plumbed through a SEPARATE reflection-based
+// implementation). Deliberately stays on PLAIN client/baseURL
+// parameters — matching [CallAdapter]/[DrainCallAdapter]'s existing
+// precedent. Not to be confused with [SSEAdapter], the SERVER-side
+// counterpart that SERVES events out — CallSSEAdapter CONSUMES a remote
+// SSE endpoint as a client.
 // Use with [ports.SourcePort.Bind]:
 //
 //	port, _ := ports.NewSourcePort[Event]("sseEvents", eventCodec, ports.PortOptions{})

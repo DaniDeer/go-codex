@@ -40,5 +40,8 @@
 //	yaml, _  := doc.MarshalYAML()
 //
 // Encoding is JSON only by default. For other formats construct a [format.Format]
-// directly and pass it to the adapter (e.g. [adapters/mqtt.SubscribeHandler]).
+// directly and pass it to the adapter's transport constructor (e.g.
+// adapters/mqtt.NewSubscribeTransport/NewPublishTransport, consumed via
+// [SubscribeHandle]/[PublishHandle]) or attach it declaratively via [Formats]/
+// [SubscribeFormats]/[PublishFormats].
 package events

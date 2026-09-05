@@ -839,6 +839,37 @@ func (h *RouteHandle[Req, Resp]) CookieMergeFields() []codex.FieldCodec[Req] {
 	return h.cookieMergeFields
 }
 
+// EncodeVars derives the path-var map from req using [RouteHandle.PathMergeFields]
+// — the reflectable, MONOMORPHIZED-METHOD counterpart to calling
+// [codex.EncodeVars] directly (which a reflection-based caller like
+// [Client.Call]/[Client.Consume]'s adapter shim CANNOT do: Go forbids
+// reflecting a generic FREE function for a runtime-only Req, but CAN call
+// an exported METHOD already monomorphized for a concrete Req at compile
+// time — see docs/design/d-0001-rest-middleware-workflow-simplification.md's Addendum 4). Mirrors
+// [events.ChannelHandle.EncodeVars] exactly. A route with no path merge
+// fields returns an empty, non-nil map.
+func (h *RouteHandle[Req, Resp]) EncodeVars(req Req) (map[string]string, error) {
+	return codex.EncodeVars(req, h.pathMergeFields...)
+}
+
+// EncodeQueryVars is [EncodeVars]'s query-param sibling, deriving from
+// [RouteHandle.QueryMergeFields].
+func (h *RouteHandle[Req, Resp]) EncodeQueryVars(req Req) (map[string]string, error) {
+	return codex.EncodeVars(req, h.queryMergeFields...)
+}
+
+// EncodeHeaderVars is [EncodeVars]'s header-param sibling, deriving from
+// [RouteHandle.HeaderMergeFields].
+func (h *RouteHandle[Req, Resp]) EncodeHeaderVars(req Req) (map[string]string, error) {
+	return codex.EncodeVars(req, h.headerMergeFields...)
+}
+
+// EncodeCookieVars is [EncodeVars]'s cookie-param sibling, deriving from
+// [RouteHandle.CookieMergeFields].
+func (h *RouteHandle[Req, Resp]) EncodeCookieVars(req Req) (map[string]string, error) {
+	return codex.EncodeVars(req, h.cookieMergeFields...)
+}
+
 // DecodeMerged decodes body (if the route has a request body — pass nil
 // for body-less routes) AND merges every [MergeFields]-registered path/
 // query/header/cookie value into the SAME Req value, using
@@ -2393,18 +2424,20 @@ func (b *Server) Attach(t ServerTransport) error {
 
 // Serve wires every handler-bearing route and BLOCKS, via b's attached
 // [ServerTransport], until ctx is cancelled or a fatal serve error occurs
-// — a NEW, ADDITIVE, opt-in convenience for callers wanting ONE unified
-// startup call (mirrors [events.Client.ServeSubscribers]'s role on the
-// pub/sub side). Returns [NoServerTransportAttachedError] if
+// — the sole server-side workflow (mirrors [events.Client.ServeSubscribers]'s
+// role on the pub/sub side). Returns [NoServerTransportAttachedError] if
 // [Server.Attach] was never called.
 //
-// Today's existing nethttp.Serve(mux, builder)/chi.Serve(r, builder)
-// (wire-only, non-blocking, caller owns their own *http.Server) remain
-// completely UNCHANGED and available for callers needing full control
-// over TLS/timeouts/etc. — Serve is an alternative, not a replacement.
+// The older, non-blocking wire-only primitives this replaces
+// (`nethttp.Serve(mux, builder)`/`chi.Serve(r, builder)`) were REMOVED
+// (unexported) once `AttachMux`/`AttachRouter` + Serve shipped — see
+// `docs/design/d-0002-pubsub-workflow-simplification.md`'s Decision 6.
+// A caller needing full control over TLS/timeouts/etc. builds their own
+// `*http.Server{Handler: mux}` after `AttachMux`/`AttachRouter` has wired
+// mux, without ever calling `Serve` itself.
 //
 //	builder := rest.NewServer(rest.Info{...})
-//	_, _ = createUserRoute.Register(builder)
+//	if err := createUserRoute.Register(builder); err != nil { ... }
 //	mux := http.NewServeMux()
 //	_ = nethttp.AttachMux(builder, mux, ":8080")
 //	err := builder.Serve(ctx) // blocks, owns its own http.Server
@@ -2476,18 +2509,61 @@ func (e TransportTypeMismatchError) LogValue() slog.Value {
 	)
 }
 
+// ClientCallOptions configures a single [Client.Call] invocation —
+// additive and optional (existing call sites passing no options are
+// unaffected). Type-erased (`any` fields), consistent with
+// [CallOptions.RequestFormats]/[ResponseFormats]'s existing idiom —
+// [Client.Call]/[ClientTransport.Call] have no Req/Resp type parameter
+// to constrain a generic options type. See
+// docs/design/d-0001-rest-middleware-workflow-simplification.md's Addendum 4.
+type ClientCallOptions struct {
+	// RequestFormats, when non-nil, OVERRIDES the route's declared
+	// request-body encode format for THIS call only
+	// ([]format.Format[Req]) — mirrors [CallOptions.RequestFormats]
+	// exactly, resolved generically by the attached [ClientTransport].
+	RequestFormats any
+
+	// ResponseFormats is [RequestFormats]'s response-direction sibling
+	// ([]format.Format[Resp]) — mirrors [CallOptions.ResponseFormats].
+	ResponseFormats any
+}
+
+// ClientConsumeOptions is [ClientCallOptions]'s SSE-consumption sibling,
+// configuring a single [Client.Consume] invocation.
+type ClientConsumeOptions struct {
+	// Formats, when non-nil, OVERRIDES the route's declared event decode
+	// format for THIS Consume call only ([]format.Format[Event]) —
+	// mirrors [ConsumeOptions.Formats] exactly.
+	Formats any
+}
+
 // ClientTransport is implemented by each adapter's internal, unexported
 // binding attached to a [Client] via an adapter-specific Attach function
 // (e.g. [nethttp.Attach]) — see [Client.Attach]. Mirrors
 // [events.Transport] (docs/design/d-0002-pubsub-workflow-simplification.md's
 // Decision 5) for the pub/sub side of this same unification — see
 // docs/roadmap/transport-agnostic-serve-interface.md for the full
-// rationale.
+// rationale. Bundles BOTH request/response AND SSE-stream consumption in
+// ONE interface, mirroring [events.Transport]'s own
+// Publish/Subscribe/ServeSubscribers bundling: an adapter is attachable
+// to a [Client] ONLY if it implements the WHOLE interface (see
+// docs/design/d-0001-rest-middleware-workflow-simplification.md's Addendum 4).
 type ClientTransport interface {
 	// Call performs a round trip against route (dynamic type
 	// rest.Route[Req, Resp]) with req (dynamic type Req), returning the
-	// decoded response as `any` (dynamic type Resp).
-	Call(ctx context.Context, route any, req any) (any, error)
+	// decoded response as `any` (dynamic type Resp). opts is VARIADIC
+	// (0 or 1 value; a 2nd+ is ignored) so existing 3-arg call sites stay
+	// source-compatible — see [ClientCallOptions].
+	Call(ctx context.Context, route any, req any, opts ...ClientCallOptions) (any, error)
+
+	// Consume starts consuming the SSE route sseRoute (dynamic type
+	// rest.SSERoute[Req, Event]) with req (dynamic type Req), calling fn
+	// (dynamic type func(context.Context, Event) error) for each event.
+	// Blocks until ctx is cancelled — mirrors [events.Transport.Subscribe]'s
+	// identical blocking contract for the SAME reason (a long-lived
+	// stream, not a one-shot call). opts is variadic for the SAME reason
+	// as [Call]'s.
+	Consume(ctx context.Context, sseRoute any, req any, fn any, opts ...ClientConsumeOptions) error
 }
 
 // Client is a client-side, api-level connection holder — the mirror of
@@ -2542,14 +2618,41 @@ func (c *Client) Attach(t ClientTransport) error {
 //	_ = nethttp.Attach(client, httpClient, baseURL)
 //	respAny, err := client.Call(ctx, getUserRoute, GetUserReq{ID: "f47ac10b"})
 //	resp := respAny.(GetUserResp)
-func (c *Client) Call(ctx context.Context, route any, req any) (any, error) {
+//
+// opts is variadic (0 or 1 value) — additive, backward-compatible with
+// every existing 3-arg call site.
+func (c *Client) Call(ctx context.Context, route any, req any, opts ...ClientCallOptions) (any, error) {
 	c.mu.RLock()
 	t := c.transport
 	c.mu.RUnlock()
 	if t == nil {
 		return nil, NoClientTransportAttachedError{}
 	}
-	return t.Call(ctx, route, req)
+	return t.Call(ctx, route, req, opts...)
+}
+
+// Consume starts consuming sseRoute with req, via c's attached
+// [ClientTransport] — the SSE-stream mirror of [Client.Call]: fn
+// (dynamic type func(context.Context, Event) error) is called for each
+// decoded event; Consume BLOCKS until ctx is cancelled or a fatal setup
+// error occurs (mirrors [events.Client.Subscribe]'s identical blocking
+// contract). Returns [NoClientTransportAttachedError] if [Client.Attach]
+// was never called.
+//
+//	client := rest.NewClient()
+//	_ = nethttp.Attach(client, httpClient, baseURL)
+//	err := client.Consume(ctx, sensorStreamRoute, GetSensorReq{ID: "room-42"},
+//	    func(ctx context.Context, e SensorReading) error { ...; return nil })
+//
+// opts is variadic (0 or 1 value) — additive.
+func (c *Client) Consume(ctx context.Context, sseRoute any, req any, fn any, opts ...ClientConsumeOptions) error {
+	c.mu.RLock()
+	t := c.transport
+	c.mu.RUnlock()
+	if t == nil {
+		return NoClientTransportAttachedError{}
+	}
+	return t.Consume(ctx, sseRoute, req, fn, opts...)
 }
 
 // ClientTransportAlreadyAttachedError is returned by [Client.Attach] when
@@ -2566,8 +2669,8 @@ func (e ClientTransportAlreadyAttachedError) LogValue() slog.Value {
 	return slog.GroupValue()
 }
 
-// NoClientTransportAttachedError is returned by [Client.Call] when
-// [Client.Attach] was never called.
+// NoClientTransportAttachedError is returned by [Client.Call]/
+// [Client.Consume] when [Client.Attach] was never called.
 type NoClientTransportAttachedError struct{}
 
 func (e NoClientTransportAttachedError) Error() string {
@@ -2748,7 +2851,7 @@ type Route[Req, Resp any] struct {
 //	)
 //
 //	// Later, register with a builder:
-//	handle, err := createUser.Register(b)
+//	handle, err := createUser.RegisterHandle(b)
 func NewRoute[Req, Resp any](
 	method, path string,
 	reqCodec codex.Codec[Req],
@@ -2836,7 +2939,7 @@ func (r Route[Req, Resp]) registerHandle(b *Server) (*RouteHandle[Req, Resp], er
 		return nil, err
 	}
 
-	if err := checkImplementationsDeclared(r.method+" "+r.path, rb.middlewares, rb.impls); err != nil {
+	if err := checkImplementationsDeclared(r.method+" "+r.path, rb.middlewares, rb.impls, rb.clientImpls); err != nil {
 		return nil, err
 	}
 
@@ -3069,7 +3172,7 @@ type SSERouteHandle[Req, Event any] struct {
 
 	// DecodeEvent deserialises and validates one SSE "data:" line's raw
 	// bytes into an Event — the complement of EncodeEvent, used by
-	// client-side consumption ([nethttp.Consume]/[nethttp.CallSSEAdapter])
+	// client-side consumption ([Client.Consume]/[nethttp.CallSSEAdapter])
 	// as the fallback decoder when no Formats entry matches the
 	// connection's negotiated Content-Type (or none are declared).
 	DecodeEvent func(data []byte) (Event, error)
@@ -3166,8 +3269,8 @@ type SSERouteHandle[Req, Event any] struct {
 	// ClientImplementations holds every [middleware.ClientImplementation]
 	// attached via [SSERoute.ClientMW], in attachment order — mirrors
 	// [RouteHandle.ClientImplementations] exactly; consumed by
-	// [nethttp.Consume]/[nethttp.CallSSEAdapter] the same way
-	// nethttp.Call consumes RouteHandle's field.
+	// [Client.Consume]/[nethttp.CallSSEAdapter] the same way
+	// [Client.Call] consumes RouteHandle's field.
 	ClientImplementations []middleware.ClientImplementation
 }
 
@@ -3198,6 +3301,32 @@ func (h *SSERouteHandle[Req, Event]) HeaderMergeFields() []codex.FieldCodec[Req]
 // [RouteHandle.CookieMergeFields] exactly.
 func (h *SSERouteHandle[Req, Event]) CookieMergeFields() []codex.FieldCodec[Req] {
 	return h.cookieMergeFields
+}
+
+// EncodeVars derives the path-var map from req using
+// [SSERouteHandle.PathMergeFields] — mirrors [RouteHandle.EncodeVars]
+// exactly; see its doc comment for why this exists as a reflectable
+// METHOD rather than a direct [codex.EncodeVars] call.
+func (h *SSERouteHandle[Req, Event]) EncodeVars(req Req) (map[string]string, error) {
+	return codex.EncodeVars(req, h.pathMergeFields...)
+}
+
+// EncodeQueryVars is [EncodeVars]'s query-param sibling, deriving from
+// [SSERouteHandle.QueryMergeFields].
+func (h *SSERouteHandle[Req, Event]) EncodeQueryVars(req Req) (map[string]string, error) {
+	return codex.EncodeVars(req, h.queryMergeFields...)
+}
+
+// EncodeHeaderVars is [EncodeVars]'s header-param sibling, deriving from
+// [SSERouteHandle.HeaderMergeFields].
+func (h *SSERouteHandle[Req, Event]) EncodeHeaderVars(req Req) (map[string]string, error) {
+	return codex.EncodeVars(req, h.headerMergeFields...)
+}
+
+// EncodeCookieVars is [EncodeVars]'s cookie-param sibling, deriving from
+// [SSERouteHandle.CookieMergeFields].
+func (h *SSERouteHandle[Req, Event]) EncodeCookieVars(req Req) (map[string]string, error) {
+	return codex.EncodeVars(req, h.cookieMergeFields...)
 }
 
 // BuildPath substitutes {varName} placeholders in the route's path template
@@ -3245,6 +3374,60 @@ func (h *SSERouteHandle[Req, Event]) WithFormats(fmts ...format.Format[Event]) *
 		h.Descriptor.Responses[0].ContentTypes = cts
 	}
 	return h
+}
+
+// EffectiveEventFormats resolves the CANDIDATE format list for
+// decoding an incoming SSE event, in priority order: formats (a
+// call-time override) > h.Formats — the single source of truth every
+// client-side consumer (the escape-hatch `consumeSSE` primitive AND
+// [Client.Consume]'s adapter shim) delegates to instead of duplicating
+// this resolution inline. Mirrors [events.ChannelHandle.EffectiveSubscribeFormats]
+// exactly. Returns the FULL candidate slice (not just the winning
+// format) since [ResolveEventDecoder] needs every candidate to match
+// against an Accept header.
+func (h *SSERouteHandle[Req, Event]) EffectiveEventFormats(formats ...format.Format[Event]) []format.Format[Event] {
+	if len(formats) > 0 {
+		return formats
+	}
+	return h.Formats
+}
+
+// ResolveEventDecoder picks the ONE decode function to use for every
+// event on a connection, given the Accept header value THIS client
+// itself sent (a client-and-server-independently-agree algorithm — see
+// the caller's own doc comment for why no round-trip is needed): empty/
+// "*/*" Accept resolves to formats[0]; a specific Accept resolves to the
+// matching declared format's ContentType; no match/no formats resolves
+// to [SSERouteHandle.DecodeEvent] (the JSON default). Mirrors the
+// server's own Accept-negotiation algorithm exactly (see
+// negotiateFormatReflect in adapters/nethttp/serve_sse.go). Extracted as
+// a method (rather than staying a free function in adapters/nethttp) so
+// it is REFLECTABLE — a runtime-only Event type cannot reflect-call a
+// generic free function, but CAN call an exported method already
+// monomorphized for a concrete Event at compile time (see
+// [RouteHandle.EncodeVars]'s doc comment for the same rationale).
+func (h *SSERouteHandle[Req, Event]) ResolveEventDecoder(accept string, formats ...format.Format[Event]) func([]byte) (Event, error) {
+	if len(formats) > 0 {
+		if accept == "" || accept == "*/*" {
+			f := formats[0]
+			return func(data []byte) (Event, error) { return f.Unmarshal(data) }
+		}
+		for _, part := range strings.Split(accept, ",") {
+			want := strings.TrimSpace(strings.SplitN(part, ";", 2)[0])
+			if want == "*/*" {
+				f := formats[0]
+				return func(data []byte) (Event, error) { return f.Unmarshal(data) }
+			}
+			for _, f := range formats {
+				ct, _, _ := strings.Cut(f.ContentType(), ";")
+				if strings.TrimSpace(ct) == want {
+					f := f
+					return func(data []byte) (Event, error) { return f.Unmarshal(data) }
+				}
+			}
+		}
+	}
+	return h.DecodeEvent
 }
 
 // MergeFields returns the merge-capable fields registered via
@@ -3472,7 +3655,7 @@ type SSERoute[Req, Event any] struct {
 //	    rest.RouteMeta{OperationID: "streamNotifications"},
 //	)
 //
-//	handle, err := notifRoute.Register(b)
+//	handle, err := notifRoute.RegisterHandle(b)
 func NewSSERoute[Req, Event any](
 	path string,
 	reqCodec codex.Codec[Req],
@@ -3529,7 +3712,7 @@ func (s SSERoute[Req, Event]) RegisterHandle(b *Server) (*SSERouteHandle[Req, Ev
 //
 // Use for client-only scenarios where no OpenAPI spec is needed, or when
 // sharing an [SSERoute] definition between server and client in the same
-// binary — see [nethttp.Consume]/[nethttp.CallSSEAdapter].
+// binary — see [Client.Consume]/[nethttp.CallSSEAdapter].
 func (s SSERoute[Req, Event]) ClientHandle() *SSERouteHandle[Req, Event] {
 	var rb routeBuilder
 	for _, opt := range s.opts {
@@ -3592,7 +3775,7 @@ func (s SSERoute[Req, Event]) registerHandle(b *Server) (*SSERouteHandle[Req, Ev
 		return nil, err
 	}
 
-	if err := checkImplementationsDeclared("GET "+s.path, rb.middlewares, rb.impls); err != nil {
+	if err := checkImplementationsDeclared("GET "+s.path, rb.middlewares, rb.impls, rb.clientImpls); err != nil {
 		return nil, err
 	}
 

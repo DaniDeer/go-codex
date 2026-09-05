@@ -2808,6 +2808,33 @@ func TestSubscribeMW_PairedAgainstDeclaredScheme_NoError(t *testing.T) {
 	}
 }
 
+// TestPublishMW_PairedAgainstUndeclaredScheme_ReturnsUnknownMiddlewareImplementationError
+// is the CLIENT-side (publish) mirror of
+// TestSubscribeMW_PairedAgainstUndeclaredScheme_ReturnsUnknownMiddlewareImplementationError
+// — a regression test for a finding from a review-go-codex consistency
+// audit: checkImplementationsDeclared used to run subscribe-side only,
+// so a PublishMW call paired against an undeclared scheme silently never
+// ran its Fn (gated out by the adapter's Satisfies-vs-declared-security
+// check) with no error anywhere.
+func TestPublishMW_PairedAgainstUndeclaredScheme_ReturnsUnknownMiddlewareImplementationError(t *testing.T) {
+	declMw := events.FromSecurityScheme("bearerAuth", events.SecurityScheme{SecurityScheme: route.BearerScheme("JWT")}, nil)
+	mismatchedMw := events.FromSecurityScheme("otherAuth", events.SecurityScheme{SecurityScheme: route.BearerScheme("JWT")}, nil)
+
+	pub := events.NewChannel[userEvent]("sensors/data", userEventCodec).
+		WithPublish(events.Publish{}).
+		Use(declMw).
+		PublishMW(&mismatchedMw, func() {})
+
+	_, err := pub.Handle(nil)
+	var unknownErr events.UnknownMiddlewareImplementationError
+	if !errors.As(err, &unknownErr) {
+		t.Fatalf("want UnknownMiddlewareImplementationError, got %v (%T)", err, err)
+	}
+	if unknownErr.Scheme != "otherAuth" {
+		t.Errorf("want Scheme %q, got %q", "otherAuth", unknownErr.Scheme)
+	}
+}
+
 func TestSubscribeMW_unpaired_generalPurpose_emptySatisfies(t *testing.T) {
 	sub := events.NewChannel[userEvent]("user/created", userEventCodec).
 		WithSubscribe(events.Subscribe{}).

@@ -1,4 +1,4 @@
-# go-codex Review History (R1–R127, plus middleware-workflow-simplification G1–G15, pubsub-workflow-simplification G1–G4, F1–F2)
+# go-codex Review History (R1–R133, plus middleware-workflow-simplification G1–G15, pubsub-workflow-simplification G1–G4, F1–F2)
 
 Do not re-report any of these findings. They have been implemented and tested.
 
@@ -58,6 +58,333 @@ Verification: `go build ./...` clean, `go vet ./...` only the pre-existing unrel
 `adapters/chi/adapter_test.go:1722` note, `go test ./...` 56/56 packages green (including the 3 new
 regression tests), `just check` (fmt+staticcheck+gosec) clean with 0 gosec issues, `just examples`
 all pass.
+
+---
+
+## Round 133 (`examples/adapters-sse` — declare-once security middleware roundtrip)
+
+Focused review of the SSE simplified workflow and its middleware, per a direct user request to
+review `examples/adapters-sse` specifically for whether it demonstrates the "declare a route once,
+consume it from both the server and client role" strength for MIDDLEWARE, not just format/
+observability/merge-fields (which it already covered well). Confirmed via code
+(`adapters/nethttp/serve.go`'s `runSecurityMiddlewareReflect`/`runGeneralMiddlewareReflect`,
+`adapters/nethttp/binding.go`'s `consumeSSE`) that `SSERoute.HandleMW`/`ClientMW`'s underlying
+machinery is fully correct and consistent (no code bug) — the gap was ENTIRELY in the example's
+own coverage.
+
+- **G1 [small] — `examples/adapters-sse/main.go` had ZERO route demonstrating SSE's declare-once
+  security middleware pairing** (`.Use(mw)` once, `.HandleMW(&mw, fn)` server-side,
+  `.ClientMW(&mw, fn)` client-side, all against the SAME shared `middleware.Middleware` value and
+  the SAME `rest.SSERoute` value) — every existing route only showed the general-purpose
+  observability hook (`HandleMW(nil, obsFn)`), never security specifically, despite the package's
+  own doc comment claiming a "FULL ROUNDTRIP" demonstration. Fixed by adding a new
+  `/sse/secured` route: `securedMw := middleware.SecurityScheme(...)` declared once via
+  `.Use(securedMw)`, verified server-side via `.HandleMW(&securedMw, secureImplFn)`, fulfilled
+  client-side via `.ClientMW(&securedMw, credFn)` — all on ONE shared route value, registered
+  server-side AND passed directly to `nethttp.Consume` client-side. Added a companion NEGATIVE
+  demo (`securedBase`, the pre-`ClientMW` value, consumed with no credential attached) proving the
+  same server enforcement genuinely rejects an unauthenticated request
+  (`nethttp.SSEConnectError` wrapping a 401 `UnexpectedStatusError`), not just spec decoration.
+
+Verification: `gofmt`/`go build`/`go vet`/`go test` all green repo-wide, `just check` (staticcheck
++ gosec, 0 issues), `just examples` all pass (including the modified example itself, exit 0,
+confirmed both the happy-path and rejection-path console output are correct).
+
+---
+
+## Round 132 (format/security/observer parity across REST and events' simplified `Client.Attach` workflows)
+
+Focused review of format resolution, security-scheme enforcement, and observer integration for
+the simplified `Client.Attach`+declare-once workflows in both REST (`nethttp.Attach`/
+`rest.Client.Call`) and events (`mqtt5`/`mqtt`/`zeromq.Attach`+`events.Client.Publish`/`.Subscribe`),
+per a direct user request. Format resolution (`EncodeRequestWithFormats`/`DecodeResponseWithFormats`
+on REST, `EncodeWithFormats`/`DecodeWithFormats`/`EffectivePublishFormats`/`EffectiveSubscribeFormats`
+on events) and observer wiring (`RecordRequest`/`RecordPublish`/`RecordSubscribe`, `TraceObserver`)
+were confirmed CORRECT and fully consistent across both APIs' `Client.Attach` reflection shims.
+Security scheme enforcement, however, surfaced a real, actively MISLEADING documentation defect
+(not merely an ambiguity) traced to the same root cause the general-purpose `ClientMW` work
+(Round 131) had already partially uncovered.
+
+- **G1 [bug] — `docs/features/security.md` FALSELY claimed `rest.Client.Call` enforces credential
+  ClientMW "symmetrically" with `nethttp.CallWithHandle`, and showed a WORKING-LOOKING
+  `mqtt5.Attach`+`Client.Subscribe` code example with a `SubscribeMW`-attached credential Fn that
+  is NEVER actually invoked through that call path**: confirmed via code
+  (`adapters/nethttp/clienttransport.go`'s `Call`, `adapters/mqtt5/transport.go`'s `Publish`/
+  `Subscribe`) that ALL FOUR `Client.Attach` reflection shims (REST + mqtt5 + mqtt + zeromq) skip
+  `ClientImplementations`/`Implementations` (SubscribeMW/PublishMW/ClientMW) entirely, of EITHER
+  shape (credential-paired or general-purpose) — a channel/route declaring Security plus a
+  correctly-paired credential implementation gets ZERO runtime enforcement through
+  `Client.Attach`, silently, with no error. Fixed: corrected the false "run the SAME sequence,
+  symmetrically" claim and the `ClientMW` section's header to explicitly exclude `rest.Client.Call`;
+  replaced the misleading `mqtt5.Attach`+`Client.Subscribe` example with the actually-correct
+  `events.SubscribeHandle`+`mqtt5.NewSubscribeTransport` combination (which DOES delegate to the
+  full-featured, SubscribeMW-enforcing internal logic).
+- **G2 [small] — `adapters/{mqtt5,mqtt,zeromq}/transport.go`'s `Attach` v1-scope doc comments
+  described the limitation ambiguously ("declare-time general-purpose SubscribeMW/PublishMW
+  wrapping are NOT exercised"), which could be misread as excluding only the UNPAIRED shape while
+  implying the credential-paired shape IS honored — when in fact NEITHER shape is ever invoked**:
+  only zeromq's own `Subscribe` method doc comment happened to already say this correctly ("no
+  Implementations/security-impl enforcement"). Fixed by aligning all three adapters' `Attach` doc
+  comments to explicitly state NEITHER shape is invoked, mirroring
+  `adapters/nethttp/clienttransport.go`'s existing "no security/credential handling" precedent.
+  Also updated `adapters/nethttp/clienttransport.go`'s OWN v1-scope note (previously only
+  mentioning "no security/credential handling") to additionally name the general-purpose `ClientMW`
+  shape shipped in Round 131's Addendum 3, which the reflection shim equally does not invoke.
+
+Verification: `gofmt`/`go build`/`go vet`/`go test` all green repo-wide (docs + comment-only
+changes, zero functional/behavioral impact), `just check` (staticcheck + gosec, 0 issues),
+`just examples` all pass.
+
+---
+
+## Round 131 (REST client-side middleware — security, observer/general-purpose, and spec-adding pairing consistency)
+
+Focused review of the REST client-side middleware surface (`Route.ClientMW`/`SSERoute.ClientMW`,
+`adapters/nethttp.callWithVars`), per a direct user request to review security middleware,
+observer/general-purpose middleware, and spec-adding middleware pairing — following the same
+session's implementation of the general-purpose `ClientMW` hook (`docs/design/d-0001-...md`'s
+Addendum 3). Found two genuine, reproduced bugs (a silent-no-op class identical to the one
+`checkImplementationsDeclared` already exists to catch on the server side, but never extended
+to the client side) and two documentation-completeness gaps for the newly-shipped hook.
+
+- **G1 [bug] — REST: `Route.ClientMW`/`SSERoute.ClientMW` paired against an undeclared security
+  scheme silently never runs, with zero error anywhere**: `checkImplementationsDeclared`
+  (the reverse-Satisfies pairing-typo check that already covers `HandleMW`/`rb.impls`) never
+  checked `rb.clientImpls` at all — a `ClientMW` call whose `Satisfies` names a scheme that was
+  never `.Use()`'d on the same route silently passed `Register`/`RegisterHandle`, and its Fn was
+  then silently skipped at Call time by every consuming adapter's Satisfies-vs-declared-security
+  gating (e.g. `nethttp.mergeCredentialHeaders`), producing only an eventual, unexplained 401 —
+  reproduced via a standalone test before fixing. Fixed by extending `checkImplementationsDeclared`
+  to accept and check `clientImpls []middleware.ClientImplementation` too, called from both
+  `Route.registerHandle` and `SSERoute.registerHandle` with `rb.clientImpls`. Added
+  `TestRoute_ClientMW_PairedAgainstUndeclaredScheme_ReturnsUnknownMiddlewareImplementationError`,
+  `TestRoute_ClientMW_PairedAgainstDeclaredScheme_NoError`, and
+  `TestSSERoute_ClientMW_PairedAgainstUndeclaredScheme_ReturnsUnknownMiddlewareImplementationError`
+  (`api/rest/middleware_test.go`). Fixing this surfaced 7 pre-existing tests in
+  `adapters/nethttp/client_test.go` that attached `ClientMW` paired against a scheme declared only
+  via `Server.AddGlobalSecurity` (never `.Use()`'d on the route itself) — a pattern `ClientMW`'s own
+  doc comment already documented as requiring a "previously-`.Use()`'d declaration," just never
+  enforced; fixed each test to add the missing `.Use(declMw)` call, aligning them with the
+  documented contract and with every existing `HandleMW` test's pairing convention.
+- **G2 [bug] — events: `Publisher.PublishMW` had the IDENTICAL gap**: `buildChannelHandle`'s call
+  to `checkImplementationsDeclared` was gated to `role == roleSubscribe` only, conflating it with
+  `CheckCoverage`'s correctly-subscribe-only design (a Publisher never enforces anything against
+  an incoming message, so it never needs coverage) — but the pairing-typo check is a DIFFERENT
+  concern (internal Satisfies-vs-declared consistency), applicable to either role identically.
+  Fixed by extending events' own `checkImplementationsDeclared` to also accept and check
+  `clientImpls`, and made the call UNCONDITIONAL (both roles), while `CheckCoverage` stays
+  correctly gated to `role == roleSubscribe`. Added
+  `TestPublishMW_PairedAgainstUndeclaredScheme_ReturnsUnknownMiddlewareImplementationError`
+  (`api/events/builder_test.go`).
+- **G3 [small] — `docs/features/http-client.md` documented only `ClientMW`'s credential shape**:
+  the general-purpose wrapping shape shipped earlier this session (Addendum 3 to
+  `docs/design/d-0001-rest-middleware-workflow-simplification.md`) had design-doc and
+  instructions-file coverage but zero user-facing feature-doc coverage. Fixed by adding a
+  "General-purpose `ClientMW` hook" section with a runnable snippet, placed between the existing
+  "Observer (metrics)" and "Credential caching" sections.
+- **G4 [trivial, not implemented] — no `examples/*` demonstrates the general-purpose
+  `ClientMW`/`PublishMW` shape end-to-end**, only unit tests and design docs. Confirmed this is a
+  PRE-EXISTING, SYMMETRIC gap across both REST and pub/sub (pub/sub's own `wrapPublishGeneral`,
+  shipped earlier, also has no example) — not a new regression from this round's work. Left as a
+  follow-up, not blocking.
+
+Verification: `gofmt`/`go build`/`go vet`/`go test` all green repo-wide (all packages, zero
+regressions from either fix), `just check` (staticcheck + gosec, 0 issues), `just examples` all
+pass.
+
+---
+
+## Round 130 (prose documentation integrity — `middleware` package scope + events security mechanism staleness)
+
+Focused review of the `middleware` package and its REST/events implementations, per a direct
+user request. The package's own Go code, test coverage, and REST/events' Fn-shape validation
+were all confirmed CORRECT and consistent (this session's earlier Decision 1-11 work already
+covered REST/events middleware parity symmetrically) — `go build`/`go vet`/`go test`/
+`staticcheck`/`gosec`/`just examples` were all already green. This round's findings are entirely
+checklist §14 (godoc/documentation-site reference integrity), but concentrated in PROSE
+documentation (`.github/instructions/go-codex.instructions.md`, `docs/features/security.md`) — a
+category Rounds 128/129 didn't check as thoroughly (those focused on Go doc-comment bracket
+links). Both docs severely misdescribed the middleware package's actual current scope and
+events' current security mechanism, even though the underlying CODE and a real, runnable example
+(`examples/adapters-mqtt-security`) were already fully correct and up to date.
+
+- **G1 [bug] — `.github/instructions/go-codex.instructions.md`'s `middleware` package row opened
+  with "REST-only (`api/rest` + `adapters/nethttp`/`chi`)"**: factually wrong — the package
+  (`Middleware`/`ServerImplementation`/`ClientImplementation`/`FromSecurityScheme`-style
+  bridging/`CheckScopes`) is also used by `api/events` + `adapters/mqtt`/`mqtt5`/`zeromq`, directly
+  contradicting the SAME file's own `api/events` row two lines later. Corrected the opening clause
+  to describe the package as SHARED across REST and events, while preserving the accurate,
+  narrower claim that the 5 `XParamSpec` fields ARE genuinely REST-only (rejected eagerly for
+  pub/sub via `events.UnsupportedMiddlewareParamsError`).
+- **G2 [bug] — `docs/features/security.md`'s "Security for event channels (AsyncAPI)" section
+  exclusively described the DEPRECATED `events.WithSecurityScheme`** with zero mention of
+  `events.FromSecurityScheme` + `Subscriber.Use`/`Publisher.Use` + `SubscribeMW`/`PublishMW` — the
+  modern, preferred mechanism established by Decision 1 of
+  `d-0002-pubsub-workflow-simplification.md` and already correctly used by the real, runnable
+  `examples/adapters-mqtt-security` example. Rewrote the section to show the modern pattern first
+  (mirroring the "Security schemes (REST)" section's own framing), with `WithSecurityScheme`
+  mentioned only as the legacy alternative.
+- **G3 [bug] — the same section falsely claimed "ZeroMQ pub/sub (`adapters/zeromq`) has NO
+  security mechanism at any layer today"**: confirmed via direct code inspection that
+  `adapters/zeromq/adapter.go`'s `SubscribeOptions[T].SecurityFunc`/`PublishOptions[T].CredentialFunc`
+  fields exist and are fully wired (an in-payload write-access mechanism, `func(ctx, *T, reqs)
+  error` shape). Rewrote to describe the actual shipped mechanism and narrowed the "known gap"
+  framing to what's genuinely still open per `docs/roadmap/zeromq-security.md` (an optional
+  additional out-of-band frame mechanism + the connection-level/CURVE question — not "no
+  mechanism at all"). Also corrected an adjacent, similarly stale claim that MQTT 3.1.1's
+  publish side has "no credential mechanism at all" — `PublishOptions.CredentialFunc` closes that
+  gap via the same in-payload pattern.
+- **G4 [bug] — `docs/features/security.md`'s "OpenAPI / AsyncAPI output" section repeated the
+  same stale claim**: "events/reqreply: `WithSecurityScheme` — route/channel-level, the ONLY
+  declaration mechanism for both" — wrong for events (correct for reqreply, which genuinely still
+  only has `WithSecurityScheme`, no redesign done there yet). Split the parenthetical: events now
+  documents `FromSecurityScheme`/`.Use()` as current with `WithSecurityScheme` noted as
+  deprecated; reqreply's mention stays unchanged.
+- **G5 [small] — `middleware/context_field.go`'s `EnsureContextFields` doc comment falsely
+  claimed callers include "e.g. nethttp/chi's Serve dispatch, ports.File.Read/Write, mcpgo's
+  handlers"**: confirmed via exhaustive grep that `ports.File`/`adapters/mcpgo` never call
+  `EnsureContextFields`/reference `ContextField` at all; only `adapters/nethttp`/`adapters/chi`
+  do. Corrected the caller list and added a note on WHY events adapters don't need it (their
+  security-shaped Fns already get `*T` write-access as their own equivalent cross-cutting-data
+  channel — a legitimate design divergence, not an oversight).
+
+Confirmed NOT findings (checked, correctly intentional): ZeroMQ's `runSubscribeSecurityImpls` not
+calling `middleware.CheckScopes` (unlike `mqtt`/`mqtt5`) is explicitly documented in the code as
+intentional — zeromq's Fn shape returns a plain `error` with no grants map to merge, since it has
+no built-in credential-extraction mechanism of its own; `docs/features/security.md`'s reqreply
+section (unrelated to G2-G4's events fix) is confirmed accurate and untouched.
+
+Verification: `gofmt -l .` clean, `go build ./...`/`go vet ./...`/`go test ./...` all green,
+`just check` (staticcheck+gosec) 0 new issues, `just examples` all pass, and a repo-wide grep for
+each stale claim's exact wording (`"REST-only"` in the instructions row, `"ONLY declaration
+mechanism"` for events, `"NO security mechanism at any layer"`) returns zero hits.
+
+---
+
+## Round 129 (godoc integrity sweep — `Route.Register`/`RegisterHandle` arity split fallout)
+
+Focused review of `api/rest` and the REST simplified workflow (`d-0001-rest-middleware-workflow-simplification.md`),
+per a direct user request — the REST-side sequel to Round 128's events-side sweep. All
+functional/structural consistency issues were already resolved by this session's earlier
+Decision 8–11 work (which covered REST and events symmetrically) — `go build`/`go vet`/`go test`/
+`staticcheck`/`gosec`/`just examples` were all already green. This round's findings are entirely
+checklist §14 (godoc/documentation-site reference integrity), concentrated in ONE root cause:
+`rest.Route.Register(b) error` and `rest.Route.RegisterHandle(b) (*RouteHandle[Req,Resp], error)`
+are two DIFFERENT methods with different arities (the split lets `AttachMux`/`AttachRouter`'s
+internal dispatch use the simpler `Register` while direct handle-wiring callers use
+`RegisterHandle`) — several doc comments, including `api/rest`'s OWN package doc and 3 of its own
+exported constructors, were never updated after this split and still showed
+`handle, err := route.Register(b)`, a genuine compile error if copy-pasted (`Register` returns
+only 1 value).
+
+- **G1 [bug] — `api/rest/doc.go`'s package doc comment (the FIRST thing a pkg.go.dev visitor
+  sees) had the Register-arity bug**: `handle, err := createUser.Register(b)`. Fixed to
+  `RegisterHandle`.
+- **G2 [bug] — `rest.Server.Serve`'s doc comment had TWO stale claims**: the same Register-arity
+  bug (`_, _ = createUserRoute.Register(builder)`, discarding 2 values from a 1-value return),
+  plus a FACTUALLY FALSE claim that the removed `nethttp.Serve(mux, builder)`/`chi.Serve(r, builder)`
+  "remain completely UNCHANGED and available" — both were fully deleted (unexported) by Decision 6.
+  Rewrote to describe `AttachMux`/`AttachRouter` as the sole server-side workflow (mirroring
+  `adapters/nethttp/doc.go`'s own already-correct wording) and fixed the arity bug.
+- **G3 [bug] — `rest.NewRoute`'s own doc comment had the same Register-arity bug**: fixed to
+  `RegisterHandle`.
+- **G4 [bug] — `rest.NewSSERoute`'s own doc comment had the same Register-arity bug**
+  (`SSERoute.Register` also returns only `error`): fixed to `RegisterHandle`.
+- **G5 [bug] — `nethttp.AttachMux`'s doc comment had the same Register-arity bug**
+  (`_, _ = createUserRoute.Register(builder)`): fixed to single-value
+  `if err := createUserRoute.Register(builder); err != nil { ... }`.
+- **G6 [bug] — `chi.AttachRouter`'s doc comment had the identical Register-arity bug**: same fix
+  as G5.
+- **G7 [small] — `references/checklist.md`'s §7/§12/§13 all referenced the removed public
+  generic `nethttp.Call[Req,Resp]` free function as the current client entry point, and
+  described `Handler`/`RegisterSSE` as "legacy" (implying still present) when both were fully
+  DELETED by Decision 6**: updated all three locations to `rest.Client.Call` (via
+  `nethttp.Attach`, the preferred workflow) / `nethttp.CallWithHandle` (the handle-based escape
+  hatch) and `AttachMux`/`AttachRouter` + `Serve`.
+- **G8 [small] — `references/checklist.md`'s §1/§3 never updated `events.Builder` to
+  `events.Client`** (renamed by Decision 1 of `d-0002-pubsub-workflow-simplification.md`, long
+  since shipped), **and the `AddSecurityScheme` comparison row was stale on BOTH sides** — it
+  showed REST=✗/events=✓, but `AddSecurityScheme` was ALSO removed from events (moved to
+  channel-level `WithSecurityScheme`/`FromSecurityScheme`, mirroring REST's own route-level
+  move) — the two packages CONVERGED, no longer a divergence. Renamed `events.Builder`→
+  `events.Client` throughout; fixed the `AddSecurityScheme` row and its surrounding prose in
+  §1 and the `mcp.Builder` parity section.
+- **G9 [trivial] — `api/events/builder.go`'s `NewChannel` doc comment (found in the same sweep,
+  events-adjacent but same broken-symbol class) referenced the fully-removed `Channel.Register`
+  method**: `handle, err := userCreated.Register(b)`. Reworded to the current
+  `userCreated.WithSubscribe(events.Subscribe{...}).Handle(b)` pattern.
+
+No other `bug`-severity findings this round beyond the Register-arity/stale-claim class above.
+Confirmed NOT findings: `reqreply.Route.Register`/`llm.Call.Register`/`apimcp.Tool.Register` all
+genuinely return `(*Handle, error)`, so their own doc comments' `handle, err := X.Register(b)`
+pattern is correct and untouched; every example file using `rest.Route.Register`/
+`rest.SSERoute.Register` already correctly used single-value assignment.
+
+Verification: `gofmt -l .` clean, `go build ./...`/`go vet ./...`/`go test ./...` all green,
+`just check` (staticcheck+gosec) 0 new issues, `just examples` all pass, and a repo-wide grep for
+the Register-arity bug pattern (excluding the genuinely 2-value-returning `reqreply`/`llm`/`mcp`
+`Register` methods) returns zero hits.
+
+---
+
+## Round 128 (godoc integrity sweep — pub/sub adapter escape-hatch rename fallout)
+
+Focused review of `api/events` and the pub/sub simplified workflow's three adapters
+(`mqtt5`/`mqtt`/`zeromq`), per a direct user request. All functional/structural consistency
+issues were already resolved by the extensive Decision 8–11 work done immediately before this
+round (Observer/ErrorChannel parity, format-resolution centralization, a REST/events
+architectural-sync review). This round's findings are concentrated entirely in checklist §14
+(godoc/documentation-site reference integrity) — a large, previously-unswept documentation-only
+gap left behind when Decision 6/7 unexported every pub/sub adapter's escape-hatch primitive
+(`Subscribe`/`Publish`/`PublishHandle`/`SubscribeWithHandle`/`SubscribeHandler` → lowercase
+`subscribe`/`publish`/`publishHandle`/`subscribeWithHandle`/`subscribeHandler`). A prior pass fixed
+each package's own `doc.go` package-level comment but never swept sibling files using the exact
+same capitalized bracket-links.
+
+- **G1 [small] — `api/events/doc.go`'s package doc comment referenced `[adapters/mqtt.SubscribeHandler]`**:
+  that symbol was unexported to `subscribeHandler` — a dangling cross-package godoc link. Reworded
+  to describe the current canonical path (`adapters/mqtt.NewSubscribeTransport` +
+  `events.SubscribeHandle`, or declarative `Formats`/`SubscribeFormats`/`PublishFormats`).
+- **G2 [small] — `api/events/builder.go`'s `SecurityScheme` struct doc comment had three stale
+  claims in one paragraph**: a dangling `[rest.WithSecurityScheme]` link (that symbol was REMOVED
+  entirely by REST's own Revision 2, not just renamed); a factually stale claim that
+  `WithSecurityScheme` is "the ONLY way to declare" a channel security scheme (untrue since
+  `FromSecurityScheme` + `.Use()` is now the modern mechanism — `WithSecurityScheme` itself is
+  deprecated); and dangling `[adapters/mqtt5.Subscribe]`/`[adapters/mqtt5.Publish]` links (both
+  unexported to lowercase by Decision 7). Rewrote to describe both mechanisms accurately, dropped
+  the stale "ONLY way" claim, and fixed the mqtt5 cross-references.
+- **G3 [small] — `WithSecurityScheme`'s own doc comment said "Mirrors `[rest.WithSecurityScheme]`
+  exactly"**: same dangling link to the fully-removed REST symbol. Reworded to describe the
+  historical mirroring in prose ("mirrored REST's OWN identically-named, now-removed
+  `rest.WithSecurityScheme` mechanism before REST's Revision 2 replaced it with
+  `middleware.SecurityScheme`/`rest.FromSecurityScheme` + `Route.Use`") without a dangling link.
+- **G4 [small] — ~48 dangling capitalized bracket-links across 11 files in `adapters/mqtt5`
+  (`adapter.go`, `binding.go`, `caller.go`, `transport.go`, `reqreply.go`), `adapters/zeromq`
+  (`adapter.go`, `binding.go`, `observability.go`, `serve_subscribers.go`, `transport.go`), and
+  `adapters/mqtt` (`caller.go`, `transport.go`)**: every one still used `[SubscribeWithHandle]`,
+  `[Publish]`, `[PublishHandle]`, or `[SubscribeHandler]` — none of which exist under those exact
+  (capitalized) names anymore. Fixed each to its correct current-case same-package reference
+  (`[subscribeWithHandle]`/`[publish]`/`[publishHandle]`/`[subscribeHandler]`, all still valid
+  same-package unexported godoc links per checklist §14's own rule). Carefully distinguished from
+  unrelated, correctly-capitalized references to the paho library's OWN `*paho.Publish` message
+  type and `pahomqtt5.Subscribe` method, and from `api/events.PublishHandle`/`SubscribeHandle`
+  (genuinely exported, unaffected) — none of those were touched.
+- **G5 [trivial] — `api/reqreply/route.go`'s `WithSecurityScheme` doc comment (both the
+  `SecurityScheme` struct's and the function's own) said "Mirrors `[rest.WithSecurityScheme]`
+  and `[events.WithSecurityScheme]` exactly"**: same dangling `[rest.WithSecurityScheme]` link as
+  G3, found in reqreply-adjacent (not core pub/sub) code sharing the identical broken-symbol
+  class. Reworded both occurrences the same way as G3 (the `[events.WithSecurityScheme]` half
+  stayed unchanged — that symbol still exists, just deprecated).
+
+No `bug`-severity findings this round — all five are documentation-accuracy issues, the same
+class already established as `small`/`trivial` by Round 123's G12–G14 (which this round is
+effectively a sequel to, covering the pub/sub adapters' own rename fallout instead of REST's).
+
+Verification: `gofmt -l .` clean, `go build ./...`/`go vet ./...`/`go test ./...` all green,
+`just check` (staticcheck+gosec) 0 new issues, `just examples` all pass, and a repo-wide grep for
+every dangling bracket pattern fixed in this round returns zero hits (confirmed the only
+remaining `[PublishHandle]`/`[SubscribeHandle]` matches are the genuinely exported
+`api/events.PublishHandle`/`SubscribeHandle` functions, correctly self-referenced).
 
 ---
 

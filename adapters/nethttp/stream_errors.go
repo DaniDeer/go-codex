@@ -100,9 +100,9 @@ func (e SSEWriteError) LogValue() slog.Value {
 	)
 }
 
-// SSEConnectError is sent to opts.OnError by [Consume]/[CallSSEAdapter]
-// when an HTTP connection attempt to the SSE endpoint fails. Consumption
-// retries after backoff; this error is informational per reconnect attempt.
+// SSEConnectError is sent to opts.OnError by [CallSSEAdapter] when an
+// HTTP connection attempt to the SSE endpoint fails. Consumption retries
+// after backoff; this error is informational per reconnect attempt.
 type SSEConnectError struct {
 	// URL is the SSE endpoint URL.
 	URL string
@@ -128,10 +128,10 @@ func (e SSEConnectError) LogValue() slog.Value {
 	)
 }
 
-// SSEParseError is sent to opts.OnError by [Consume]/[CallSSEAdapter] when
-// an SSE data line cannot be decoded using the route's event codec —
-// malformed JSON, failed codec validation, or other decode failure.
-// Consumption continues; only the one failing event is dropped.
+// SSEParseError is sent to opts.OnError by [CallSSEAdapter] when an SSE
+// data line cannot be decoded using the route's event codec — malformed
+// JSON, failed codec validation, or other decode failure. Consumption
+// continues; only the one failing event is dropped.
 type SSEParseError struct {
 	// URL is the SSE endpoint URL.
 	URL string
@@ -157,12 +157,15 @@ func (e SSEParseError) LogValue() slog.Value {
 	)
 }
 
-// SSEHandlerError is sent to opts.OnError by [Consume] when fn returns a
-// non-nil error for one decoded event — mirrors
+// SSEHandlerError wraps a per-event handler error for consumeSSE's
+// internal fn callback — mirrors
 // [mqtt5.SubscribeError]/[zeromq.SubscribeError]'s existing
-// handler-error-is-non-fatal convention exactly. Consumption continues
-// with the next event. Never occurs for [CallSSEAdapter] — its internal
-// fn (a channel push) never returns an error.
+// handler-error-is-non-fatal convention. Consumption continues with the
+// next event. Never occurs for [CallSSEAdapter] — its internal fn (a
+// channel push) never returns an error; [rest.Client.Consume] also never
+// surfaces it (no OnError hook — see
+// docs/design/d-0001-rest-middleware-workflow-simplification.md's Addendum 4). Retained for the
+// shape's own documentation/errors.As completeness.
 type SSEHandlerError struct {
 	// URL is the SSE endpoint URL.
 	URL string

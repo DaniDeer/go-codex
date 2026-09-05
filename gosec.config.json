@@ -21,6 +21,10 @@
 			"rules": ["G124"]
 		},
 		{
+			"path": "adapters/nethttp/clienttransport.go",
+			"rules": ["G124"]
+		},
+		{
 			"path": "adapters/nethttp/adapter.go",
 			"rules": ["G705"]
 		},

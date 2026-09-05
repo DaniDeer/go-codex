@@ -269,6 +269,44 @@ OpenTelemetry instruments. `stats.WithObserver(ctx, obs)` stores an
 observer in `ctx` once — every call that receives that `ctx` picks it up
 automatically when `CallOptions.Observer` is nil.
 
+## General-purpose `ClientMW` hook
+
+`Route.ClientMW`/`SSERoute.ClientMW` also recognize a SECOND Fn shape,
+alongside the credential shape above — a general-purpose hook that wraps
+the network round-trip itself (encode request → send → decode response),
+for cross-cutting concerns other than credentials (custom tracing,
+request/response transformation, retry logic):
+
+```go
+func(next func(ctx context.Context, req Req) (Resp, error)) func(ctx context.Context, req Req) (Resp, error)
+```
+
+Attach it via `.ClientMW(nil, fn)` — `nil` marks it general-purpose
+(unpaired, runs unconditionally), mirroring how `.HandleMW(nil, fn)`
+attaches a general-purpose server-side hook:
+
+```go
+loggingHook := func(next func(context.Context, GetUserReq) (UserResp, error)) func(context.Context, GetUserReq) (UserResp, error) {
+    return func(ctx context.Context, req GetUserReq) (UserResp, error) {
+        start := time.Now()
+        resp, err := next(ctx, req)
+        log.Printf("call took %s, err=%v", time.Since(start), err)
+        return resp, err
+    }
+}
+
+route := contract.GetUser().ClientMW(nil, loggingHook)
+```
+
+Multiple general-purpose hooks compose outermost-in, in attachment
+order — the first `.ClientMW(nil, ...)` call wraps every later one.
+`CallOptions.Observer`/`RecordRequest` are unaffected — the observer stays
+a permanent per-call field, independent of this hook, exactly as before.
+
+Only `Call`/`CallWithHandle` recognize this shape; SSE's
+`Consume`/`CallSSEAdapter` recognize only the credential shape (SSE's
+per-event dispatch doesn't match the single-call wrap signature).
+
 ## Credential caching
 
 Re-authenticating on every call is wasteful when the credential fetch does

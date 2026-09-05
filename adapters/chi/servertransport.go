@@ -49,7 +49,7 @@ type serverTransport struct {
 // *http.Server control.
 //
 //	builder := rest.NewServer(rest.Info{Title: "My API", Version: "1.0.0"})
-//	_, _ = createUserRoute.Register(builder)
+//	if err := createUserRoute.Register(builder); err != nil { ... }
 //	r := gochi.NewRouter()
 //	if err := chi.AttachRouter(builder, r, ":8080"); err != nil { ... }
 //	err := builder.Serve(ctx) // blocks, owns its own http.Server

@@ -14,12 +14,22 @@
 //   - Stats observer counting validation errors from rejected events
 //   - [rest.ResponseHeaderParam] on SSE routes — custom response header committed on first send
 //   - OpenAPI 3.1 spec generation including SSE routes
-//   - [nethttp.Consumer] + [nethttp.Consume] — the CLIENT-side counterpart
-//     to Call/Caller: declare a route once, pass the SAME value to Consume
-//     for consumption, no separate client-side declaration needed
-//   - [nethttp.CallSSEAdapter] — the port-adapter counterpart of Consume,
-//     taking a pre-built *SSERouteHandle directly (for [ports.SourcePort]
-//     pipelines, or when a caller already holds a handle)
+//   - [rest.Client.Consume] via [nethttp.Attach] — the CLIENT-side
+//     counterpart to [rest.Client.Call]: declare a route once, pass the
+//     SAME value to Consume for consumption, no separate client-side
+//     declaration needed
+//   - [nethttp.CallSSEAdapter] — the port-adapter counterpart of
+//     Client.Consume, taking a pre-built *SSERouteHandle directly (for
+//     [ports.SourcePort] pipelines, or when a caller already holds a
+//     handle, or needs [ConsumeOptions.OnError] which Client.Consume
+//     does not expose)
+//   - Bearer-secured SSE — a single [middleware.SecurityScheme] value,
+//     [rest.SSERoute.Use]-declared ONCE, then paired on BOTH roles of
+//     the SAME [rest.SSERoute] value: server-side via
+//     [rest.SSERoute.HandleMW] (verifies the credential), client-side via
+//     [rest.SSERoute.ClientMW] (supplies it) — the clearest illustration
+//     of this example's "declare once, consume from both roles" promise
+//     applied to security specifically, not just format/observability.
 package main
 
 import (
@@ -42,7 +52,9 @@ import (
 	"github.com/DaniDeer/go-codex/api/rest"
 	"github.com/DaniDeer/go-codex/codex"
 	"github.com/DaniDeer/go-codex/format"
+	"github.com/DaniDeer/go-codex/middleware"
 	"github.com/DaniDeer/go-codex/ports"
+	"github.com/DaniDeer/go-codex/route"
 	"github.com/DaniDeer/go-codex/stats"
 	"github.com/DaniDeer/go-codex/validate"
 )
@@ -349,6 +361,56 @@ func main() {
 		log.Fatalf("NewSSERoute with-headers: %v", err)
 	}
 
+	// ── Bearer-secured SSE: declare-once middleware, both roles ─────────────
+	//
+	// ONE middleware.SecurityScheme value (securedMw) is declared ONCE via
+	// .Use(securedMw) on securedBase — this is the SAME declaration
+	// mechanism REST's plain routes use (see examples/mutable-security-keys),
+	// applied here to an SSERoute. Two INDEPENDENT chains are then derived
+	// from securedBase, each supplying its OWN half of "how do I fulfill
+	// this declared requirement":
+	//   - securedRoute (server): .HandleMW(&securedMw, secureImplFn) VERIFIES
+	//     the credential against the fixed demo token, PLUS the general-
+	//     purpose observability hook every other route here also attaches.
+	//   - unauthenticatedConsumeRoute (client, negative demo): securedBase
+	//     itself, reused UNCHANGED with no .ClientMW attached at all —
+	//     demonstrates the server correctly REJECTING an unauthenticated
+	//     request (a route need not be re-declared or re-registered to
+	//     demonstrate this; Consume only needs a value whose ClientHandle()
+	//     resolves the same path).
+	// securedRoute (WITH .ClientMW(&securedMw, credFn) chained on, below)
+	// is the value BOTH .Register(bHTTP) (server) AND nethttp.Consume
+	// (client, further down) use — one declared route, one shared
+	// middleware.Middleware value, both roles.
+	bearerTokenCodec := codex.String().Refine(validate.BearerToken)
+	securedMw := middleware.SecurityScheme("bearerAuth", route.BearerScheme("JWT"), nil, &bearerTokenCodec)
+	const demoBearerToken = "demo-secret-token"
+	secureImplFn := func(_ context.Context, r *http.Request, _ *struct{}) (map[string][]string, error) {
+		token := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
+		if token != demoBearerToken {
+			return nil, fmt.Errorf("invalid bearer token")
+		}
+		return map[string][]string{"bearerAuth": nil}, nil
+	}
+	credFn := func(_ context.Context, _ []route.SecurityRequirement) (http.Header, error) {
+		h := make(http.Header)
+		h.Set("Authorization", "Bearer "+demoBearerToken)
+		return h, nil
+	}
+	securedBase := rest.NewSSERoute[struct{}, counterEvent]("/sse/secured",
+		codex.Empty, counterEventCodec,
+		rest.RouteMeta{OperationID: "streamSecured", Summary: "Bearer-secured SSE stream"},
+	).Use(securedMw)
+	securedRoute := securedBase.
+		WithHandler(handleCounter).
+		HandleMW(&securedMw, secureImplFn).
+		HandleMW(nil, obsFn).
+		ClientMW(&securedMw, credFn).
+		WithOptions(opts)
+	if err := securedRoute.Register(bHTTP); err != nil {
+		log.Fatalf("NewSSERoute secured: %v", err)
+	}
+
 	// Both routes below now declare a Req-side merge-capable NewPathParam
 	// (sensorPathReq, same type sensorRoute uses) — this is what lets the
 	// CLIENT side auto-derive "/sse/merge/room-42"/"/sse/manual/room-42"
@@ -432,18 +494,23 @@ func main() {
 	srv := httptest.NewServer(mux)
 	defer srv.Close()
 
-	// ── Client-side consumption via nethttp.Consumer/nethttp.Consume ───────
+	// ── Client-side consumption via rest.Client.Consume ─────────────────────
 	//
 	// This is the FULL ROUNDTRIP this example demonstrates: every route
 	// above is declared ONCE (rest.NewSSERoute) and reused for BOTH roles
 	// — .Register/.RegisterHandle wires the SERVER side (above), and the
-	// SAME route value is passed directly to nethttp.Consume for the
+	// SAME route value is passed directly to client.Consume for the
 	// CLIENT side below, no separate client-side declaration needed.
-	consumer := nethttp.NewConsumer(srv.Client(), srv.URL)
+	// client.Consume is the thin, ClientTransport-based SSE counterpart of
+	// client.Call — see docs/design/d-0001-rest-middleware-workflow-simplification.md's Addendum 4.
+	client := rest.NewClient()
+	if err := nethttp.Attach(client, srv.Client(), srv.URL); err != nil {
+		log.Fatalf("nethttp.Attach: %v", err)
+	}
 
-	// consumeN runs a bounded Consume call: cancels its own context after
-	// collecting `want` events (or a short timeout), for a deterministic,
-	// finite demo run against a long-lived stream.
+	// consumeN runs a bounded client.Consume call: cancels its own context
+	// after collecting `want` events (or a short timeout), for a
+	// deterministic, finite demo run against a long-lived stream.
 	consumeN := func(label string, want int, run func(ctx context.Context, cancel context.CancelFunc) error) {
 		fmt.Printf("=== %s ===\n", label)
 		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
@@ -455,9 +522,9 @@ func main() {
 	}
 
 	// ── Counter stream ─────────────────────────────────────────────────────
-	consumeN("Consume /sse/counter (3 events)", 3, func(ctx context.Context, cancel context.CancelFunc) error {
+	consumeN("client.Consume /sse/counter (3 events)", 3, func(ctx context.Context, cancel context.CancelFunc) error {
 		n := 0
-		return nethttp.Consume(ctx, consumer, counterRoute, struct{}{},
+		return client.Consume(ctx, counterRoute, struct{}{},
 			func(_ context.Context, e counterEvent) error {
 				fmt.Printf("  event: {count:%d}\n", e.Count)
 				n++
@@ -465,13 +532,13 @@ func main() {
 					cancel()
 				}
 				return nil
-			}, nethttp.ConsumeOptions{})
+			})
 	})
 
 	// ── Sensor stream with path param codec (served by chi) ────────────────
-	consumeN("Consume /sse/sensor/room-42 (chi, {id} codec-validated)", 2, func(ctx context.Context, cancel context.CancelFunc) error {
+	consumeN("client.Consume /sse/sensor/room-42 (chi, {id} codec-validated)", 2, func(ctx context.Context, cancel context.CancelFunc) error {
 		n := 0
-		return nethttp.Consume(ctx, consumer, sensorRoute, sensorPathReq{ID: "room-42"},
+		return client.Consume(ctx, sensorRoute, sensorPathReq{ID: "room-42"},
 			func(_ context.Context, e sensorReading) error {
 				fmt.Printf("  event: {sensor:%s temp:%.1f%s}\n", e.SensorID, e.Temperature, e.Unit)
 				n++
@@ -479,67 +546,125 @@ func main() {
 					cancel()
 				}
 				return nil
-			}, nethttp.ConsumeOptions{})
+			})
 	})
 
-	// ── Invalid event demo ─────────────────────────────────────────────────
-	consumeN("Consume /sse/invalid (middle event rejected by codec)", 2, func(ctx context.Context, cancel context.CancelFunc) error {
+	// ── Invalid event demo (needs OnError, which client.Consume does not
+	// expose) — uses nethttp.CallSSEAdapter instead, the SOLE remaining
+	// full-featured escape hatch (mirrors nethttp.CallWithHandle exactly),
+	// taking a pre-built *rest.SSERouteHandle directly.
+	fmt.Println("=== CallSSEAdapter /sse/invalid (middle event rejected by codec) ===")
+	func() {
 		n, parseErrs := 0, 0
-		err := nethttp.Consume(ctx, consumer, invalidRoute, struct{}{},
-			func(_ context.Context, e sensorReading) error {
+		invalidHandle := invalidRoute.ClientHandle()
+		p, err := ports.NewSourcePort[sensorReading]("invalidEvents", sensorReadingCodec, ports.PortOptions{Buffer: 4})
+		if err != nil {
+			log.Fatalf("NewSourcePort invalidEvents: %v", err)
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 1*time.Second)
+		defer cancel()
+		p.Bind(ctx, nethttp.CallSSEAdapter(srv.Client(), srv.URL, invalidHandle, struct{}{}, nethttp.ConsumeOptions{
+			OnError: func(err error) {
+				var parseErr nethttp.SSEParseError
+				if errors.As(err, &parseErr) {
+					parseErrs++
+				}
+			},
+		}))
+		stream := p.Stream(ctx)
+		for n < 2 {
+			select {
+			case e := <-stream.Values:
 				fmt.Printf("  event: {sensor:%s temp:%.1f%s}\n", e.SensorID, e.Temperature, e.Unit)
 				n++
-				if n >= 2 {
-					cancel()
-				}
-				return nil
-			}, nethttp.ConsumeOptions{
-				OnError: func(err error) {
-					var parseErr nethttp.SSEParseError
-					if errors.As(err, &parseErr) {
-						parseErrs++
-					}
-				},
-			})
+			case <-time.After(1 * time.Second):
+				n = 2 // avoid an infinite wait if the stream stalls
+			}
+		}
 		fmt.Printf("  received %d valid events, %d rejected by codec\n", n, parseErrs)
-		return err
-	})
+		fmt.Println()
+	}()
 
 	// ── ResponseHeaderParam: custom header committed on first send ─────────
-	// Consume derives Req-side path/query/header/cookie values, but a
-	// RESPONSE header (like X-Trace-Id here) is read from the raw HTTP
-	// response — outside Consume's per-event Event value entirely, same
-	// asymmetry REST's own response-header merge has (response headers
-	// merge into Resp for request/response Call, but SSE has no single
-	// Resp to merge into). CallSSEAdapter's port-based form doesn't
-	// expose the raw response either — reading a response header from an
-	// SSE connection remains a case-by-case concern for now, so this demo
+	// client.Consume derives Req-side path/query/header/cookie values, but
+	// a RESPONSE header (like X-Trace-Id here) is read from the raw HTTP
+	// response — outside client.Consume's per-event Event value entirely,
+	// same asymmetry REST's own response-header merge has (response
+	// headers merge into Resp for request/response Call, but SSE has no
+	// single Resp to merge into). Reading a response header from an SSE
+	// connection remains a case-by-case concern for now, so this demo
 	// simply shows the events; the header itself was validated in the
 	// server-side handler already (see handleWithHeaders).
-	consumeN("Consume /sse/with-headers (X-Trace-Id committed server-side on first send)", 1, func(ctx context.Context, cancel context.CancelFunc) error {
-		return nethttp.Consume(ctx, consumer, withHeadersRoute, struct{}{},
+	consumeN("client.Consume /sse/with-headers (X-Trace-Id committed server-side on first send)", 1, func(ctx context.Context, cancel context.CancelFunc) error {
+		return client.Consume(ctx, withHeadersRoute, struct{}{},
 			func(_ context.Context, e counterEvent) error {
 				fmt.Printf("  event: {count:%d}\n", e.Count)
 				cancel()
 				return nil
-			}, nethttp.ConsumeOptions{})
+			})
 	})
+
+	// ── Bearer-secured SSE: same route value, both roles ────────────────────
+	// securedRoute is the SAME value .Register(bHTTP) used above — its
+	// ClientMW(&securedMw, credFn) supplies the SAME token secureImplFn
+	// verifies server-side, both PAIRED against the SAME securedMw value
+	// via .Use()/.HandleMW()/.ClientMW() — one declaration, one shared
+	// credential, no separate client-side re-declaration. client.Consume
+	// fully supports credential-providing ClientMW (see
+	// docs/design/d-0001-rest-middleware-workflow-simplification.md's Addendum 4).
+	consumeN("client.Consume /sse/secured (bearer credential supplied via ClientMW)", 3, func(ctx context.Context, cancel context.CancelFunc) error {
+		n := 0
+		return client.Consume(ctx, securedRoute, struct{}{},
+			func(_ context.Context, e counterEvent) error {
+				fmt.Printf("  event: {count:%d}\n", e.Count)
+				n++
+				if n >= 3 {
+					cancel()
+				}
+				return nil
+			})
+	})
+
+	// Negative demo: securedBase (the pre-ClientMW value) proves the SAME
+	// server enforcement rejects a request with NO credential attached —
+	// the server's HandleMW pairing is doing real work, not just spec
+	// decoration. client.Consume has no OnError hook (it retries
+	// indefinitely on a connect failure, exactly like the escape hatch
+	// does) — use CallSSEAdapter's OnError instead to observe the
+	// rejection directly, one attempt, no retry needed for this demo.
+	fmt.Println("=== CallSSEAdapter /sse/secured with NO ClientMW attached (expect rejection) ===")
+	func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+		defer cancel()
+		securedBaseHandle := securedBase.ClientHandle()
+		p, err := ports.NewSourcePort[counterEvent]("rejectedEvents", counterEventCodec, ports.PortOptions{Buffer: 1})
+		if err != nil {
+			log.Fatalf("NewSourcePort rejectedEvents: %v", err)
+		}
+		p.Bind(ctx, nethttp.CallSSEAdapter(srv.Client(), srv.URL, securedBaseHandle, struct{}{}, nethttp.ConsumeOptions{
+			OnError: func(err error) {
+				var connectErr nethttp.SSEConnectError
+				if errors.As(err, &connectErr) {
+					fmt.Printf("  rejected unauthenticated request (expected): %v\n", connectErr)
+					cancel() // stop after the first rejection, no retry needed for this demo
+				}
+			},
+		}))
+		<-ctx.Done()
+		fmt.Println()
+	}()
 
 	// ── Side-by-side: one-struct merge vs manual escape hatch (YAML) ───────
 	// Both routes declare rest.Formats(format.YAML(...)) INLINE above —
-	// nethttp.Consume (the route-value convenience, not a pre-built
-	// handle) picks up that declared format automatically, since its
-	// internally-derived ClientHandle() now applies the SAME rb.respFormats
-	// registerHandle applies server-side (a previously-fixed bug: an
-	// earlier version required building a client handle by hand and
-	// calling WithFormats(YAML) on it, then using CallSSEAdapter instead
-	// of Consume — no longer necessary).
-	fmt.Println("=== Side-by-side: one-struct merge vs manual escape hatch (YAML, via Consume) ===")
+	// client.Consume picks up that declared format automatically, since
+	// its internally-derived ClientHandle() applies the SAME rb.respFormats
+	// registerHandle applies server-side.
+	fmt.Println("=== Side-by-side: one-struct merge vs manual escape hatch (YAML, via client.Consume) ===")
 	consumeViaConsume := func(label string, sseRoute rest.SSERoute[sensorPathReq, readingEvent]) {
 		ctx, cancel := context.WithTimeout(context.Background(), 1500*time.Millisecond)
 		defer cancel()
 		n := 0
-		err := nethttp.Consume(ctx, consumer, sseRoute, sensorPathReq{ID: "room-42"},
+		err := client.Consume(ctx, sseRoute, sensorPathReq{ID: "room-42"},
 			func(_ context.Context, e readingEvent) error {
 				fmt.Printf("  %s event: {sensor:%s temp:%.1f%s}\n", label, e.Meta.SensorID, e.Payload.Temperature, e.Payload.Unit)
 				n++
@@ -547,7 +672,7 @@ func main() {
 					cancel() // both events collected — stop before a reconnect attempt
 				}
 				return nil
-			}, nethttp.ConsumeOptions{})
+			})
 		if err != nil {
 			fmt.Printf("  %s Consume error: %v\n", label, err)
 		}
@@ -557,7 +682,7 @@ func main() {
 	fmt.Println("  both routes deliver same payload; merge route removes manual path-value stitching")
 	fmt.Println()
 
-	// ── CallSSEAdapter: the ports.SourcePort counterpart of Consume ────────
+	// ── CallSSEAdapter: the ports.SourcePort counterpart of client.Consume ──
 	// Same reconnect loop Consume uses, exposed as a ports.SourceAdapter
 	// for pipeline/port-based consumers instead of a direct callback.
 	// Takes a pre-built *SSERouteHandle directly (here, a plain

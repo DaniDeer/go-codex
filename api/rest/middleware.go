@@ -312,8 +312,8 @@ func (r Route[Req, Resp]) ClientMW(mw *middleware.Middleware, fn any) Route[Req,
 // with Security set gates fn to run only when the route's declared
 // security requirements include that scheme; mw nil (or Security nil)
 // marks fn general-purpose (always runs). Consumed by
-// [nethttp.Consume]/[nethttp.CallSSEAdapter] the same way
-// [nethttp.Call] consumes [Route.ClientMW]'s attached implementations.
+// [Client.Consume]/[nethttp.CallSSEAdapter] the same way
+// [Client.Call] consumes [Route.ClientMW]'s attached implementations.
 func (s SSERoute[Req, Event]) ClientMW(mw *middleware.Middleware, fn any) SSERoute[Req, Event] {
 	idx := 0
 	for _, o := range s.opts {
@@ -521,15 +521,28 @@ func CheckCoverage(routeLabel string, secReqs []route.SecurityRequirement, impls
 // checkImplementationsDeclared is the REVERSE-direction sibling to
 // [CheckCoverage]: instead of "every DECLARED scheme has a covering
 // implementation," it verifies "every IMPLEMENTED (non-empty-Satisfies)
-// scheme was actually declared" — catching a [Route.HandleMW] call
-// PAIRED against a security scheme name that was never [Route.Use]'d on
-// the SAME route (e.g. a copy-paste mistake reusing a different route's
-// [middleware.Middleware]). Called by [Route.Register]/[Route.RegisterHandle]
-// (and their [SSERoute] equivalents) — unlike CheckCoverage, this runs
-// UNCONDITIONALLY, regardless of whether the route has a handler attached,
-// since a mismatched pairing is a route-internal-consistency bug, not an
+// scheme was actually declared" — catching a [Route.HandleMW]/
+// [Route.ClientMW] call PAIRED against a security scheme name that was
+// never [Route.Use]'d on the SAME route (e.g. a copy-paste mistake
+// reusing a different route's [middleware.Middleware]). Called by
+// [Route.Register]/[Route.RegisterHandle] (and their [SSERoute]
+// equivalents) — unlike CheckCoverage, this runs UNCONDITIONALLY,
+// regardless of whether the route has a handler attached, since a
+// mismatched pairing is a route-internal-consistency bug, not an
 // EH2-style "declared but intentionally unimplemented" case.
-func checkImplementationsDeclared(routeLabel string, mws []middleware.Middleware, impls []middleware.ServerImplementation) error {
+//
+// Checks clientImpls (from [Route.ClientMW]) alongside impls (from
+// [Route.HandleMW]) against the SAME declared set — unlike
+// [CheckCoverage] (which is correctly server/subscribe-side only, since
+// only the server enforces anything against an incoming request), a
+// Satisfies-name typo is an internal-consistency bug on EITHER side: a
+// [Route.ClientMW] call paired against an undeclared scheme silently
+// never runs (its Fn is gated out by every consuming adapter's
+// Satisfies-vs-declared-security check, e.g. nethttp's
+// mergeCredentialHeaders), with no error anywhere — exactly the silent
+// misconfiguration this check exists to catch loudly instead, now for
+// both directions.
+func checkImplementationsDeclared(routeLabel string, mws []middleware.Middleware, impls []middleware.ServerImplementation, clientImpls []middleware.ClientImplementation) error {
 	declared := make(map[string]bool, len(mws))
 	for _, mw := range mws {
 		if mw.Security != nil {
@@ -537,6 +550,13 @@ func checkImplementationsDeclared(routeLabel string, mws []middleware.Middleware
 		}
 	}
 	for _, impl := range impls {
+		for _, scheme := range impl.Satisfies {
+			if !declared[scheme] {
+				return UnknownMiddlewareImplementationError{Route: routeLabel, Scheme: scheme}
+			}
+		}
+	}
+	for _, impl := range clientImpls {
 		for _, scheme := range impl.Satisfies {
 			if !declared[scheme] {
 				return UnknownMiddlewareImplementationError{Route: routeLabel, Scheme: scheme}

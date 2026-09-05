@@ -43,7 +43,7 @@ type serverTransport struct {
 // convenience.
 //
 //	builder := rest.NewServer(rest.Info{Title: "My API", Version: "1.0.0"})
-//	_, _ = createUserRoute.Register(builder)
+//	if err := createUserRoute.Register(builder); err != nil { ... }
 //	mux := http.NewServeMux()
 //	if err := nethttp.AttachMux(builder, mux, ":8080"); err != nil { ... }
 //	err := builder.Serve(ctx) // blocks, owns its own http.Server

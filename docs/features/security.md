@@ -253,7 +253,7 @@ The adapter enforcement sequence:
 
 Routes with `nil Security` (default) trigger enforcement when global security is set.
 
-`nethttp.CallWithHandle`/`rest.Client.Call` (client-side) run the SAME sequence, symmetrically, on the OUTGOING request before it is sent — see "HTTP client — credential-providing ClientMW" below.
+`nethttp.CallWithHandle` (client-side) runs the SAME sequence, symmetrically, on the OUTGOING request before it is sent — see "HTTP client — credential-providing ClientMW" below. **`rest.Client.Call` (the `nethttp.Attach`-based reflection shim) does NOT** — it is v1-scoped to the core JSON encode/decode case with no path/query/header/cookie params and no `ClientMW` of any shape (credential or general-purpose); a route relying on `ClientMW` for credentials must use `CallWithHandle` directly (see `adapters/nethttp/clienttransport.go`'s own doc comment for the full v1-scope note).
 
 ## Credential format validation
 
@@ -272,7 +272,9 @@ codex.String().Refine(validate.NonEmptyString)
 
 ## HTTP client — credential-providing `ClientMW`
 
-For `nethttp.CallWithHandle`/`rest.Client.Call`, provide credentials via a credential-providing
+For `nethttp.CallWithHandle` (NOT `rest.Client.Call` — see the "Runtime
+enforcement" section above for why the `nethttp.Attach`-based reflection
+shim doesn't honor this), provide credentials via a credential-providing
 implementation attached with [`Route.ClientMW`](../features/http-client.md),
 PAIRED against the SAME `middleware.Middleware` value the route's security
 requirement was declared with (via `.Use(mw)`). The Fn matches
@@ -396,87 +398,104 @@ both containers into real `nethttp` server/client hooks.
 
 ## Security for event channels (AsyncAPI)
 
-Just like REST, an events security scheme is declared ONCE, directly on the
-channel (`events.WithSecurityScheme`) — there is no builder-level scheme
-registry — and the SAME declaration is consumed identically regardless of
-role or client (`Subscriber.Handle`/`Publisher.Handle`, with a `Client` or
-`nil`):
+Just like REST, an events security scheme is declared ONCE and attached to
+a channel's subscribe/publish role via `.Use()` — mirroring
+`middleware.SecurityScheme`/`rest.FromSecurityScheme`/`Route.Use` exactly:
 
 ```go
-var bearerAuth = events.SecurityScheme{
+import (
+    "github.com/DaniDeer/go-codex/api/events"
+    "github.com/DaniDeer/go-codex/route"
+    "github.com/DaniDeer/go-codex/validate"
+)
+
+// Declare each scheme ONCE as a shared value.
+var bearerAuthScheme = events.SecurityScheme{
     SecurityScheme: route.BearerScheme("JWT"),
 }.WithCodec(codex.String().Refine(validate.BearerToken))
 
+var bearerAuth = events.FromSecurityScheme("bearerAuth", bearerAuthScheme, nil)
+
 eventsClient := events.NewClient(events.WithInfo(events.Info{Title: "User Events", Version: "1.0.0"}))
-b.AddServer("production", events.Server{
+eventsClient.AddServer("production", events.Server{
     URL:      "broker.example.com",
     Protocol: "mqtt5",
-    Security: []route.SecurityRequirement{route.Require("bearerAuth")},
 })
 
-userCreated, _ := events.NewChannel[UserCreated]("user/created", codec,
-    events.WithSecurityScheme("bearerAuth", bearerAuth),
+// Attach the scheme directly to the subscribe role that needs it, via Use —
+// CheckCoverage (run unconditionally by Subscriber.Handle) rejects a
+// declared Security requirement with no attached SubscribeMW implementation
+// satisfying it.
+userCreatedSub := events.NewChannel[UserCreated]("user/created", codec,
+    events.ChannelMeta{Description: "A user was created"},
 ).WithSubscribe(events.Subscribe{
     Summary:  "Receive user created events",
     Security: []route.SecurityRequirement{route.Require("bearerAuth")},
-}).Handle(b)
+}).Use(bearerAuth)
 ```
+
+`Client.AsyncAPISpec()` aggregates `components.securitySchemes` automatically
+from every registered channel's own `.Use()`-attached declarations — no
+separate builder-level step needed, same last-registered-wins-on-collision
+policy as REST.
+
+`events.WithSecurityScheme` is a DEPRECATED, older declaration mechanism
+(kept only for backward-compat regression coverage) — new code should use
+`FromSecurityScheme` + `.Use()` as shown above.
 
 MQTT5 adapter — the server side runs a BUILT-IN codec-based credential
 check (extracting the "Authorization" MQTT5 User Property for `http`/`oauth2`/
 `openIdConnect` schemes, or the User Property named `scheme.Name` for
-`apiKey` schemes) BEFORE the optional custom `SecurityFunc` — same two-step
-order as the nethttp/chi request pipeline:
+`apiKey` schemes) BEFORE the optional custom `SubscribeMW`-attached
+security Fn — same two-step order as the nethttp/chi request pipeline:
 
 ```go
-transport := mqtt5.NewSubscribeTransport[UserCreated](client, router, 1, mqtt5.SubscribeOptions{
-    SecurityFunc: func(ctx context.Context, msg *paho.Publish, reqs []route.SecurityRequirement) error {
+// NOTE: mqtt5.Attach + Client.Subscribe is v1-scoped and does NOT enforce
+// SubscribeMW of any shape (see adapters/mqtt5/transport.go's Attach doc
+// comment) — use events.SubscribeHandle + mqtt5.NewSubscribeTransport
+// directly, which delegates to the SAME full-featured internal logic
+// mqtt5.Serve's dispatch uses, to get SubscribeMW enforcement.
+transport := mqtt5.NewSubscribeTransport[UserCreated](client, router, 1, mqtt5.SubscribeOptions{})
+err := events.SubscribeHandle(ctx, userCreatedSub.SubscribeMW(&bearerAuth,
+    func(ctx context.Context, msg *paho.Publish, value *UserCreated) (map[string][]string, error) {
         // Runs AFTER the built-in Codec check passes — add extra business
-        // logic here (e.g. a database revocation check) if needed.
-        return checkNotRevoked(msg, reqs)
-    },
-})
-err := events.SubscribeHandle(ctx, userCreated.WithSubscribe(events.Subscribe{}), transport, handler)
-```
-
-The client (publish) side is symmetric: `PublishOptions.CredentialFunc`
-supplies the credential as MQTT5 User Properties, and the SAME built-in
-codec check runs BEFORE the message is actually published — mirroring
-`nethttp.CallWithHandle`'s `CredentialFunc` handling exactly, including the
-"a `CredentialFunc` returning `(nil, nil)` for 'no credential needed' is not
-an error" contract:
-
-```go
-pubTransport := mqtt5.NewPublishTransport[UserCreated](client, 1, false, mqtt5.PublishOptions[UserCreated]{
-    CredentialFunc: func(ctx context.Context, msg *UserCreated, reqs []route.SecurityRequirement) ([]mqtt5.UserProperty, error) {
-        token, err := fetchToken(ctx)
-        if err != nil {
+        // logic here (e.g. a database revocation check) if needed. Write
+        // access to value lets a credential be embedded as an ordinary
+        // payload field too, if needed.
+        if err := checkNotRevoked(msg); err != nil {
             return nil, err
         }
-        return []mqtt5.UserProperty{{Key: "Authorization", Value: "Bearer " + token}}, nil
-    },
-})
-err = events.PublishHandle(ctx, userCreated.WithPublish(events.Publish{}), pubTransport, event)
+        return map[string][]string{"bearerAuth": nil}, nil
+    }), transport, handler)
 ```
 
-MQTT 3.1.1 (`adapters/mqtt`) has no per-message metadata channel — codec-level
-extraction (and `CredentialFunc`) only applies to MQTT5; `adapters/mqtt`'s
-`SubscribeOptions.SecurityFunc` still exists for subscribe-side verification
-(closure over connection-time credentials), but `PublishOptions` has no
-credential mechanism at all — MQTT 3.1.1 has nowhere to carry a per-publish
-credential even in principle (no User Properties). Use connection-level
-`mqtt.SecuredClient` for MQTT 3.1.1 publish-side enforcement instead.
+The client (publish) side is symmetric via `PublishMW` — supplies the
+credential as MQTT5 User Properties, and the SAME built-in codec check runs
+BEFORE the message is actually published, mirroring
+`nethttp.CallWithHandle`'s `CredentialFunc` handling exactly.
 
-**ZeroMQ pub/sub (`adapters/zeromq`) has NO security mechanism at any layer
-today** — not message-level (no `SecurityFunc`/`CredentialFunc` option
-exists on `SubscribeOptions`/`PublishOptions` at all, unlike `mqtt`/`mqtt5`)
-and no connection-level `SecuredClient` equivalent either (ZMQ's base
-REQ/REP/PUB/SUB patterns have no CONNECT-time credential handshake to
-validate). A `Channel` declaring `Security` and used exclusively over
-`adapters/zeromq` has that requirement completely UNENFORCED at runtime —
-the AsyncAPI spec documents a requirement the code never checks. This is a
-known, tracked gap — see
-[ZeroMQ Security Mechanism](../roadmap/zeromq-security.md).
+MQTT 3.1.1 (`adapters/mqtt`) has no per-message metadata channel, so
+User-Property-style codec extraction only applies to MQTT5 — but message-level
+security is NOT absent for MQTT 3.1.1: `SubscribeOptions.SecurityFunc`
+(subscribe side, `func(ctx, msg pahomqtt.Message, reqs) error`) and
+`PublishOptions.CredentialFunc` (publish side, `func(ctx, msg *T, reqs) error`,
+gaining WRITE-ACCESS to the outgoing payload) both exist — the publish-side
+credential is embedded as an ordinary field in the codec-decoded payload
+itself, rather than a protocol-native side channel, closing what was
+originally a real MQTT 3.1.1 publish-side gap. Use connection-level
+`mqtt.SecuredClient` for connection-level (not message-level) enforcement.
+
+**ZeroMQ pub/sub (`adapters/zeromq`) now has a message-level security
+mechanism too**, via the SAME in-payload write-access pattern as MQTT 3.1.1:
+`SubscribeOptions.SecurityFunc`/`PublishOptions.CredentialFunc`
+(`func(ctx, msg *T, reqs) error`, both directions — ZeroMQ's `[topic,
+payload]` frames carry nothing beyond what's already decoded into `T`, so
+there's no separate raw-message parameter unlike `mqtt`/`mqtt5`'s subscribe
+side). There is still no connection-level `SecuredClient` equivalent for
+ZeroMQ (its base REQ/REP/PUB/SUB patterns have no CONNECT-time credential
+handshake to validate) — an optional additional out-of-band frame-based
+mechanism and the connection-level/CURVE question remain open, narrower
+gaps, tracked in [ZeroMQ Security Mechanism](../roadmap/zeromq-security.md).
 
 ## Security for request-reply routes (reqreply)
 
@@ -549,7 +568,7 @@ func (o *TelemetryObserver) RecordSecurityRejection(location, scheme string) {
 
 ## OpenAPI / AsyncAPI output
 
-Security schemes appear in `components/securitySchemes`; global security at document root (REST only — AsyncAPI 3.0 has no document-level global security field); per-operation security overrides inline — all generated automatically from each route/channel's own security declaration (REST: `middleware.SecurityScheme`/`rest.FromSecurityScheme` attached via `.Use()`; events/reqreply: `WithSecurityScheme` — route/channel-level, the ONLY declaration mechanism for both; aggregated by `Builder.OpenAPISpec`/`Builder.AsyncAPISpec`, last-registered-wins on name collision) / `AddGlobalSecurity` / `RouteMeta.Security` / `Subscribe.Security` / `Publish.Security`. No manual YAML needed.
+Security schemes appear in `components/securitySchemes`; global security at document root (REST only — AsyncAPI 3.0 has no document-level global security field); per-operation security overrides inline — all generated automatically from each route/channel's own security declaration (REST: `middleware.SecurityScheme`/`rest.FromSecurityScheme` attached via `Route.Use()`; events: `events.FromSecurityScheme` attached via `Subscriber.Use()`/`Publisher.Use()` — mirrors REST exactly (`events.WithSecurityScheme` is the older, deprecated, channel-level mechanism, kept only for backward compatibility); reqreply: `reqreply.WithSecurityScheme` — route-level, still the ONLY declaration mechanism there (no redesign has happened for `api/reqreply` yet); aggregated by `Server.OpenAPISpec`/`Client.AsyncAPISpec`, last-registered-wins on name collision) / `AddGlobalSecurity` / `RouteMeta.Security` / `Subscribe.Security` / `Publish.Security`. No manual YAML needed.
 
 ## See also
 

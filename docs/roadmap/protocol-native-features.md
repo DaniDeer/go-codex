@@ -161,8 +161,7 @@ exists, not necessarily required to):**
 
 A follow-up discussion surfaced a genuinely larger architectural
 insight: REST's EXISTING `HeaderParam`/`CookieParam`/`QueryParam`
-declarations (and their `FromHeaderParam`-style middleware bridges,
-see [REST Client-Side General-Purpose Middleware](rest-client-general-purpose-middleware.md))
+declarations (and their `FromHeaderParam`-style middleware bridges)
 are CONCEPTUALLY THE SAME KIND OF THING as a pub/sub `ProtocolFeature`
 — a declared CAPABILITY REQUIREMENT that only a compatible adapter can
 fulfill. REST already enforces something similar structurally (only
@@ -194,11 +193,13 @@ a future investigation):**
   may be SUPERSEDED by the generalized `Feature`-slice idea above,
   rather than pursued as originally scoped (struct-splitting). Not
   decided — both remain open until a dedicated comparison session.
-- [REST Client-Side General-Purpose Middleware](rest-client-general-purpose-middleware.md) —
-  a `Feature`-based `ClientMW` could close that doc's gap uniformly
-  (the SAME declare-and-validate mechanism working for client-side
-  capabilities too), rather than inventing a separate general-purpose
-  Fn shape specifically for `ClientMW`.
+- REST's client-side general-purpose `ClientMW` hook (resolved via a
+  dedicated Fn-shape mechanism mirroring pub/sub's `PublishMW` — see
+  [d-0001's Addendum 3](../design/d-0001-rest-middleware-workflow-simplification.md#addendum-3-client-side-general-purpose-clientmw-hook-closes-the-last-known-restevents-middleware-asymmetry))
+  — a `Feature`-based `ClientMW` COULD have closed that gap uniformly
+  too (the SAME declare-and-validate mechanism working for client-side
+  capabilities), but the shipped fix used a dedicated Fn shape instead;
+  left here as a historical alternative-design note, not re-opened.
 - [MQTT5 User Property Merge](mqtt5-user-property-merge.md) — User
   Properties become a CONCRETE `ProtocolFeature`/`Feature` instance
   under this design, resolving that doc's own explicitly-flagged

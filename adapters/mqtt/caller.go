@@ -27,10 +27,10 @@ import (
 // per-topic [pahomqtt.MessageHandler] directly, and the client's own
 // connection loop dispatches incoming messages to it — there is nothing
 // else to bundle. This is GENUINELY NEW capability for this package (not a
-// mechanical rename): today's callers build a [SubscribeHandler] closure
+// mechanical rename): today's callers build a [subscribeHandler] closure
 // and wire it into their own client.Subscribe call BY HAND; [subscribe]
 // does that FOR the caller, uniformly with mqtt5/zeromq's own caller-based
-// workflow, while [SubscribeHandler] itself stays completely unchanged as
+// workflow, while [subscribeHandler] itself stays completely unchanged as
 // the lower-level primitive underneath.
 type caller struct {
 	client pahomqtt.Client
@@ -53,9 +53,9 @@ func newCaller(client pahomqtt.Client, ev *events.Client) *caller {
 var _ events.SubscriberServer = (*caller)(nil)
 
 // Subscribe is the value-based convenience built on top of the existing,
-// unchanged [SubscribeHandler] primitive: it builds sub's [events.ChannelHandle]
+// unchanged [subscribeHandler] primitive: it builds sub's [events.ChannelHandle]
 // via sub.Handle(caller.events), builds the [pahomqtt.MessageHandler] closure
-// via [SubscribeHandler] (decoding, topic-var merge, security enforcement,
+// via [subscribeHandler] (decoding, topic-var merge, security enforcement,
 // observer calls all delegated to it, unchanged), then calls
 // caller.client.Subscribe itself — the wiring today's callers otherwise do
 // by hand.

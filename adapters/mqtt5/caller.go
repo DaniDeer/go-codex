@@ -47,7 +47,7 @@ func newCaller(client MQTTClient, router MQTTRouter, eventsClient *events.Client
 // sub.Handle(caller.events) (caller.events MAY be nil for a spec-free
 // handle — the common case for an application subscribing without also
 // registering a spec), then behaves identically to
-// [SubscribeWithHandle]. fn is STILL a call-time param, matching the
+// [subscribeWithHandle]. fn is STILL a call-time param, matching the
 // imperative "here's my handler, start consuming now" mental model.
 //
 // Net delta over the pre-redesign handle-based call:
@@ -492,8 +492,8 @@ func runErasedBuiltinSecurityCheck(msg *pahomqtt5.Publish, secReqs []route.Secur
 // [PublishOptions.Observer] (resolved from ctx when nil) remain the
 // PRIMARY, zero-ceremony path for the common case; Observability is for
 // callers who want observability declared ONCE, consistently applied
-// regardless of which specific [subscribe]/[SubscribeWithHandle]/
-// [Publish]/[ServeSubscribers] call site is used.
+// regardless of which specific [subscribe]/[subscribeWithHandle]/
+// [publish]/[ServeSubscribers] call site is used.
 //
 // Direction (subscribe vs. publish) is detected via [MessageFromContext]:
 // present (the subscribe-side dispatch path always stores it) ->

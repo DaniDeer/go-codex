@@ -84,14 +84,14 @@ type zmqSubscribeAdapter[T any] struct {
 
 func (a *zmqSubscribeAdapter[T]) AdapterName() string { return "zeromq.SubscribeAdapter" }
 
-// Activate delegates to [SubscribeWithHandle] (rather than hand-rolling
+// Activate delegates to [subscribeWithHandle] (rather than hand-rolling
 // frame reads + [gstream.FromCodec] as it did before merge-field support
 // was added) so that topic-var merging (when the channel declares
 // merge-capable [events.NewTopicParam] fields) is applied automatically —
 // mirroring mqtt5.SubscribeAdapter's wiring. An internal buffered pair of
 // channels preserves [SubscribeAdapterOptions.Buffer]'s existing sizing
-// behavior. Uses [SubscribeWithHandle] (RENAMED from this package's
-// previous bare Subscribe — see [subscribe]/[SubscribeWithHandle]'s doc
+// behavior. Uses [subscribeWithHandle] (RENAMED from this package's
+// previous bare Subscribe — see [subscribe]/[subscribeWithHandle]'s doc
 // comments) since this adapter already owns a pre-built handle, not a
 // declare-time [events.Subscriber] value.
 func (a *zmqSubscribeAdapter[T]) Activate(ctx context.Context, dst chan<- T, errs chan<- error) {
@@ -154,7 +154,7 @@ type DrainPublishOptions struct {
 	//
 	// When nil, topic vars are derived PER-ITEM from each item's own
 	// merge-field-declared struct fields (the same convenience
-	// [PublishHandle] provides) — every item may resolve to a different
+	// [publishHandle] provides) — every item may resolve to a different
 	// concrete topic. When set to a non-nil map (including an explicitly
 	// empty one), that map is used as-is for every item (static topic vars
 	// only) — the escape hatch, unchanged from prior behavior.

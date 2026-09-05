@@ -15,10 +15,10 @@ format specified in SKILL.md.
 | MCP Opt interfaces | `ToolOpt`, `ResourceOpt`, `PromptOpt` — all three exist as sealed interfaces |
 | Info struct naming | `PipelineInfo{Title, Version, Description, Author, ApprovedBy, ApprovedAt}` — governance mirrors `FunctionMeta` governance fields |
 | MCP Info | `mcp.Info{Name, Version}` — uses `Name` (MCP protocol) not `Title` (OpenAPI/AsyncAPI); correct by design |
-| Builder naming | `rest.Server`, `events.Builder`, `forge.Registry` — consistent fluent builder pattern |
+| Builder naming | `rest.Server`, `events.Client`, `forge.Registry` — consistent fluent builder pattern (`events.Builder` was renamed to `events.Client` by Decision 1 of `docs/design/d-0002-pubsub-workflow-simplification.md`) |
 | MCP Builder | `mcp.Builder` with `NewBuilder(info)`, `Info()`, `MCPSpec()` — analogous to `OpenAPISpec()`/`AsyncAPISpec()` |
-| `AddServer` | Both `rest.Server.AddServer(name, Server)` and `events.Builder.AddServer(name, Server)` exist; description fallback on both |
-| Security scheme declaration | REST: `middleware.SecurityScheme(schemeName, scheme, scopes, codec) middleware.Middleware` / `rest.FromSecurityScheme(schemeName, rest.SecurityScheme, scopes) middleware.Middleware`, attached via `Route.Use(mw)` (`rest.WithSecurityScheme` was REMOVED by `docs/design/d-0001-rest-middleware-workflow-simplification.md` — no metadata-only registration exists anymore) vs `events.Builder.AddSecurityScheme(name, SecurityScheme)` (builder-level) — INTENTIONAL divergence, do not flag; see `docs/features/security.md` for the design rationale (REST needed client+server symmetry via `Route.ClientHandle`, which has no `Builder` at all) |
+| `AddServer` | Both `rest.Server.AddServer(name, Server)` and `events.Client.AddServer(name, Server)` exist; description fallback on both |
+| Security scheme declaration | REST and events CONVERGED on the same route/channel-level pattern (no longer a divergence): REST: `middleware.SecurityScheme(schemeName, scheme, scopes, codec) middleware.Middleware` / `rest.FromSecurityScheme(schemeName, rest.SecurityScheme, scopes) middleware.Middleware`, attached via `Route.Use(mw)` (`rest.WithSecurityScheme` was REMOVED by `docs/design/d-0001-rest-middleware-workflow-simplification.md` — no metadata-only registration exists anymore); events: `events.FromSecurityScheme(schemeName, events.SecurityScheme, scopes) middleware.Middleware`, attached via `Subscriber.Use(mw)`/`Publisher.Use(mw)` (`events.WithSecurityScheme` is deprecated-but-kept for backward-compat regression coverage, mirrors REST's OLD mechanism before its own Revision 2 removal — see `events.WithSecurityScheme`'s own doc comment). Neither package has a BUILDER-level security-scheme declaration anymore — do not look for `events.Client.AddSecurityScheme`, it does not exist |
 | `AddGlobalSecurity` | Both builders have `AddGlobalSecurity(reqs...)` |
 | Server description fallback | Both builders fall back `Server.Description = name` when empty |
 
@@ -43,14 +43,13 @@ format specified in SKILL.md.
 
 ## 3. Builder Method Parity
 
-### rest.Server vs events.Builder
+### rest.Server vs events.Client
 
-| Method | rest.Server | events.Builder |
+| Method | rest.Server | events.Client |
 |--------|-------------|----------------|
 | `AddServer` | ✓ | ✓ |
-| `AddSecurityScheme` | ✗ (removed — see `middleware.SecurityScheme`/`rest.FromSecurityScheme` + `Route.Use`, route-level) | ✓ |
+| `AddSecurityScheme` | ✗ (removed — see `middleware.SecurityScheme`/`rest.FromSecurityScheme` + `Route.Use`, route-level) | ✗ (removed on this side too — see `events.FromSecurityScheme` + `Subscriber.Use`/`Publisher.Use`, channel-level; both packages CONVERGED on the same declaration-level pattern, no longer a divergence) |
 | `AddGlobalSecurity` | ✓ | ✓ |
-| `Build()` | ✓ | ✓ |
 
 ### RouteHandle vs ChannelHandle
 
@@ -70,7 +69,7 @@ If a method exists on `RouteHandle` and has a natural equivalent on `ChannelHand
 |---------|---------------------|-------------|
 | Spec generation | `OpenAPISpec()` / `AsyncAPISpec()` | `MCPSpec()` → `*MCPSpec{Name, Version, Tools, Resources, Prompts}` |
 | Server info | `NewBuilder(Info{Title, Version})` | `NewBuilder(Info{Name, Version})` — Name per MCP protocol |
-| Security | REST: `middleware.SecurityScheme`/`rest.FromSecurityScheme` + `Route.Use` (route-level); events: `WithSecurityScheme` (channel-level); both + `AddGlobalSecurity` (builder-level) | n/a — MCP security outside builder |
+| Security | REST: `middleware.SecurityScheme`/`rest.FromSecurityScheme` + `Route.Use` (route-level); events: `events.FromSecurityScheme` + `Subscriber.Use`/`Publisher.Use` (channel-level); both + `AddGlobalSecurity` (builder-level) | n/a — MCP security outside builder |
 
 ### mcp Handle parity
 
@@ -196,7 +195,14 @@ All must be `errors.As`-navigable. Bare `fmt.Errorf` in `adapter.go` Publish wit
 | `mcp.PromptArgError{Name, Err}` | `PromptHandle.ValidateArgs` — arg codec failure |
 | `mcp.MissingPromptArgError{Name}` | `PromptHandle.ValidateArgs` — required arg absent |
 
-### adapters/nethttp client (`nethttp.Call`)
+### adapters/nethttp client (`rest.Client.Call` via `nethttp.Attach`, and `nethttp.CallWithHandle`)
+
+The public generic `nethttp.Call[Req,Resp]` free function was unexported (now internal `call`)
+by Decision 6 of `docs/design/d-0002-pubsub-workflow-simplification.md` — the modern public surface
+is `rest.Client.Call(ctx, route, req) (any, error)` (via `rest.NewClient()` + `nethttp.Attach`,
+the preferred workflow) and `nethttp.CallWithHandle[Req,Resp]` (the handle-based escape hatch for
+callers needing per-call `CallOptions`). Both delegate through the same internal error-producing
+logic, so the table below applies identically to either.
 
 | Error type | When to use |
 |------------|-------------|
@@ -497,7 +503,7 @@ encode-or-decode direction with one struct value in (or out), one call?**
 
 | Boundary | Declare-once constructors | Escape hatch | Encode/decode symmetry | Role symmetry | Single-call wrapper | Nested + non-JSON coverage | Status |
 |---|---|---|---|---|---|---|---|
-| `api/rest` (REST) | `NewPathParam[T]`/`NewRequiredQueryParam[T]`/etc. + `NewRequiredResponseHeaderParam[Resp]`/etc. | `PathParam`/`QueryParam`/etc. struct literals still work | `DecodeMerged` (decode) + `PathMergeFields()`/`QueryMergeFields()`/etc. (encode) | server (`Serve`/`Register`, or legacy `Handler`/`Register`) + client (`Call`) both covered | `nethttp.Call` (route-based, SOLE public client entry point) / `nethttp.CallWithHandle` (lower-level handle-based primitive `Call` wraps) + `Serve`/`Handler` auto-merge (server) — see `docs/design/d-0001-rest-middleware-workflow-simplification.md` (`nethttp.CallHandle` was renamed to `CallWithHandle`) | ✅ `examples/rest-nested-binary` + `TestNestedStructMergeFields_GetSetReachIntoSubstruct`/`TestGobBodyFormat_ComposesWithNestedMergeFields` — nested `Meta`/`Payload` sub-structs, Gob body via `format.NewTyped` projection | ✅ Reference implementation for the CORE API — see the port-binding-layer caveat below |
+| `api/rest` (REST) | `NewPathParam[T]`/`NewRequiredQueryParam[T]`/etc. + `NewRequiredResponseHeaderParam[Resp]`/etc. | `PathParam`/`QueryParam`/etc. struct literals still work | `DecodeMerged` (decode) + `PathMergeFields()`/`QueryMergeFields()`/etc. (encode) | server (`AttachMux`/`AttachRouter` + `Serve`, or the escape-hatch `ServeOne`) + client (`rest.Client.Call` via `nethttp.Attach`) both covered | `rest.Client.Call` (route-based, SOLE public client entry point) / `nethttp.CallWithHandle` (lower-level handle-based escape hatch `Call` wraps) + `AttachMux`/`AttachRouter`/`ServeOne` auto-merge (server) — see `docs/design/d-0002-pubsub-workflow-simplification.md`'s Decision 6 (the old public generic `nethttp.Call[Req,Resp]`/`Handler`/`RegisterSSE` were REMOVED, not kept as "legacy"; `nethttp.CallHandle` was renamed to `CallWithHandle` by `docs/design/d-0001-rest-middleware-workflow-simplification.md`) | ✅ `examples/rest-nested-binary` + `TestNestedStructMergeFields_GetSetReachIntoSubstruct`/`TestGobBodyFormat_ComposesWithNestedMergeFields` — nested `Meta`/`Payload` sub-structs, Gob body via `format.NewTyped` projection | ✅ Reference implementation for the CORE API — see the port-binding-layer caveat below |
 | `api/events` (pub/sub) | `NewTopicParam[T]` | `TopicParam` struct literals still work | `ChannelHandle.DecodeMerged` (decode) + `MergeFields()` (encode — single flat slice, no role-split needed, only ONE var destination) | subscriber (`Subscribe`/`SubscribeHandler` auto-merge) + publisher (`PublishHandle`) both covered, per transport | `mqtt5.PublishHandle`/`zeromq.PublishHandle`/`mqtt.PublishHandle` | ✅ `examples/events-nested-binary` — nested `Meta`/`Value` payload, Gob body via `format.NewTyped` projection | ✅ SHIPPED across `adapters/mqtt5`, `adapters/zeromq` (own pub/sub, G2), and `adapters/mqtt` v3 (G3) |
 | `api/reqreply` (req/reply) | `NewTopicParam[T]` (Req-side only) | `TopicParam` struct literals still work | `RouteHandle.DecodeMerged` (decode) + `MergeFields()` (encode) | server (`mqtt5.Serve` auto-merge) + client (`mqtt5.CallHandle`/`zeromq.CallHandle`) both covered | `mqtt5.CallHandle`/`zeromq.CallHandle` | ✅ nested-Req + Gob round trip test (`TestServeCallHandle_NestedReq_RoundTrip`) | ✅ SHIPPED, with a documented exception: `zeromq.CallHandle` is client-side ONLY — `zeromq.Serve` reads raw socket frames with no per-message topic string, architecturally cannot decode-merge server-side |
 | **Port-binding layer** (`ports.Pattern` + `adapters/*/binding.go`) | n/a | n/a | Decode side (`SubscribeAdapter`) inherits the underlying `Subscribe`/`Handler` auto-merge for free; `zeromq.SubscribeAdapter` now delegates to `Subscribe` itself (previously hand-rolled, bypassing merge wiring entirely) | n/a | `DrainCallAdapter`/`PublishAdapter`/`CallAdapter` delegate to `CallHandle`/`PublishHandle` and derive vars PER-ITEM whenever `Vars` is left `nil`, across `nethttp`/`mqtt5`/`zeromq`/`mqtt` — a non-nil `Vars` map remains the static-vars escape hatch | n/a | ✅ SHIPPED. Flag as a finding if a NEW port-binding adapter reproduces the OLD static-`Vars`-only pattern instead of delegating to its own Handle-suffixed convenience. SSE/WebSocket connection-level merge and hardening are also shipped (see docs/features pages). |
@@ -535,7 +541,7 @@ for user-facing docs.
 | `api/mcp` | `mcp.ErrorPattern[E,B](codec, mapFn...)` on `NewTool` (Tool only — Resources/Prompts out of scope, protocol-level not business errors) | n/a (tool result, not HTTP/topic) | n/a — matched → structured `IsError:true` result; unmatched → plain-text `IsError:true` result |
 | `adapters/websocket` | `websocket.ErrorFrame[E,B](codec, mapFn...) ErrorFrameRule` on BOTH `DuplexSocketAdapterOptions.ErrorFrames []ErrorFrameRule` AND `BroadcastSocketAdapterOptions.ErrorFrames []ErrorFrameRule` (plain slice, non-generic rule type — declares its OWN codec, independent of the socket's `Out` type; matched against upstream stream `Errors` only, never per-session write/encode failures) | broadcast to all sessions (no dedicated topic — broadcast IS the notification path) | Full: shares `events.ErrorAction` (`.WithAction(events.ErrorHandle)` + `.WithHandle(func(error))`) |
 | SQL/Cache/File (`adapters/sql`/`adapters/redis`/`adapters/file`) | **NO dedicated declaration type** — compose the existing `OnError func(error)` hook with a declared `events.ErrorChannel.ErrorResponseFor(err)` lookup inline | n/a (internal boundary, no caller) | `OnError` IS the `handle` action; nil `OnError` is `log`; `respond`-equivalent achieved by composition, not new API |
-| `adapters/nethttp.Call` (client-side) | **No new declaration** — reuses the SAME `rest.ErrorPattern` rules already on `RouteHandle` via `RouteHandle.DecodeErrorFor(status, body) (ErrorPatternResponse, bool, error)`, status-only match (no Go error to match via `errors.As` client-side) | HTTP status (client reads it off the wire) | Only `ErrorRespond`-tagged rules are eligible — `ErrorHandle`/`ErrorLog`-tagged rules are skipped (server doesn't guarantee those wrote the typed body); `Call` returns `nethttp.ErrorPatternResponse` on match, unchanged `UnexpectedStatusError` on no-match or decode failure |
+| `rest.Client.Call`/`nethttp.CallWithHandle` (client-side) | **No new declaration** — reuses the SAME `rest.ErrorPattern` rules already on `RouteHandle` via `RouteHandle.DecodeErrorFor(status, body) (ErrorPatternResponse, bool, error)`, status-only match (no Go error to match via `errors.As` client-side) | HTTP status (client reads it off the wire) | Only `ErrorRespond`-tagged rules are eligible — `ErrorHandle`/`ErrorLog`-tagged rules are skipped (server doesn't guarantee those wrote the typed body); both `Call`/`CallWithHandle` return `nethttp.ErrorPatternResponse` on match, unchanged `UnexpectedStatusError` on no-match or decode failure |
 
 ### Rules
 

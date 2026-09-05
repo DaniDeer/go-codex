@@ -574,6 +574,61 @@ func TestSSERoute_HandleMW_PairedAgainstUndeclaredScheme_ReturnsUnknownMiddlewar
 	}
 }
 
+func TestRoute_ClientMW_PairedAgainstUndeclaredScheme_ReturnsUnknownMiddlewareImplementationError(t *testing.T) {
+	// The CLIENT-side mirror of TestRoute_HandleMW_PairedAgainstUndeclaredScheme:
+	// declMw declares "bearerAuth" but ClientMW is paired against a
+	// DIFFERENT, never-.Use()'d scheme name ("otherAuth") — a copy-paste
+	// mistake. Before checkImplementationsDeclared checked clientImpls
+	// too, this silently succeeded at Register time and the attached
+	// credential Fn simply never ran at Call time, with no error anywhere.
+	declMw := requireScopesMW("bearerAuth", nil)
+	mismatchedMw := requireScopesMW("otherAuth", nil)
+
+	_, err := rest.NewRoute[mwTestReq, userResp]("GET", "/profile", mwTestReqCodec, userCodec,
+		rest.RouteMeta{OperationID: "getProfile"},
+	).Use(declMw).ClientMW(&mismatchedMw, func(_ context.Context, _ []route.SecurityRequirement) (http.Header, error) {
+		return nil, nil
+	}).RegisterHandle(rest.NewServer(testInfo))
+
+	var unknownErr rest.UnknownMiddlewareImplementationError
+	if !errors.As(err, &unknownErr) {
+		t.Fatalf("want UnknownMiddlewareImplementationError, got %v (%T)", err, err)
+	}
+	if unknownErr.Scheme != "otherAuth" {
+		t.Errorf("want Scheme %q, got %q", "otherAuth", unknownErr.Scheme)
+	}
+}
+
+func TestRoute_ClientMW_PairedAgainstDeclaredScheme_NoError(t *testing.T) {
+	declMw := requireScopesMW("bearerAuth", nil)
+
+	_, err := rest.NewRoute[mwTestReq, userResp]("GET", "/profile", mwTestReqCodec, userCodec,
+		rest.RouteMeta{OperationID: "getProfile"},
+	).Use(declMw).ClientMW(&declMw, func(_ context.Context, _ []route.SecurityRequirement) (http.Header, error) {
+		return nil, nil
+	}).RegisterHandle(rest.NewServer(testInfo))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestSSERoute_ClientMW_PairedAgainstUndeclaredScheme_ReturnsUnknownMiddlewareImplementationError(t *testing.T) {
+	declMw := requireScopesMW("bearerAuth", nil)
+	mismatchedMw := requireScopesMW("otherAuth", nil)
+
+	_, err := rest.NewSSERoute[mwTestReq, sseEvent]("/stream", mwTestReqCodec, sseEventCodec).Use(declMw).ClientMW(&mismatchedMw, func(_ context.Context, _ []route.SecurityRequirement) (http.Header, error) {
+		return nil, nil
+	}).RegisterHandle(rest.NewServer(testInfo))
+
+	var unknownErr rest.UnknownMiddlewareImplementationError
+	if !errors.As(err, &unknownErr) {
+		t.Fatalf("want UnknownMiddlewareImplementationError, got %v (%T)", err, err)
+	}
+	if unknownErr.Scheme != "otherAuth" {
+		t.Errorf("want Scheme %q, got %q", "otherAuth", unknownErr.Scheme)
+	}
+}
+
 func TestUnknownMiddlewareImplementationError_LogValue(t *testing.T) {
 	e := rest.UnknownMiddlewareImplementationError{Route: "GET /profile", Scheme: "otherAuth"}
 	if e.Error() == "" {

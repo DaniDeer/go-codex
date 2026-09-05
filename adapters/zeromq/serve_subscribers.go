@@ -54,7 +54,7 @@ type subscriberRoute struct {
 	// [middleware.ServerImplementation] (from [events.Subscriber.SubscribeMW]),
 	// run in attachment order after securityFn, mirroring
 	// [runSubscribeSecurityImpls]'s ordering on the generic
-	// [SubscribeWithHandle] path.
+	// [subscribeWithHandle] path.
 	implSecurity []middleware.ServerImplementation
 	secReqs      []route.SecurityRequirement
 	onError      func(SubscribeError)
@@ -254,7 +254,7 @@ func resolveSubscribeOptsReflect(topic string, handlerOptsAny any) (resolvedSubs
 // necessarily receives some non-matching concrete topics sharing the
 // same prefix too (confirmed safe via
 // docs/design/d-0002-pubsub-workflow-simplification.md's bug-fix subsection —
-// the SAME reasoning [SubscribeWithHandle]'s own merge-field mismatch
+// the SAME reasoning [subscribeWithHandle]'s own merge-field mismatch
 // handling already relies on).
 func dispatchToRoute(ctx context.Context, routes []*subscriberRoute, topic string, payload []byte) {
 	for _, r := range routes {
@@ -286,7 +286,7 @@ func (r *subscriberRoute) reportError(se SubscribeError) {
 
 // processMessage runs the full decode → merge → security → handler
 // pipeline for one incoming message on this route — the ServeSubscribers
-// mirror of [SubscribeWithHandle]'s inline per-message logic, expressed
+// mirror of [subscribeWithHandle]'s inline per-message logic, expressed
 // via reflect since T is erased here.
 func (r *subscriberRoute) processMessage(ctx context.Context, topic string, payload []byte, vars map[string]string) {
 	obs := r.observer
@@ -449,7 +449,7 @@ func (c *caller) ServeSubscribers(ctx context.Context) error {
 // whole-client path without needing an [events.Client] pre-populated by
 // the caller. Blocks exactly like ServeSubscribers.
 //
-// Unlike [subscribe]/[SubscribeWithHandle], serveOneSubscriber takes no
+// Unlike [subscribe]/[subscribeWithHandle], serveOneSubscriber takes no
 // call-time formats parameter — the internal ServeSubscribers reflect-
 // based dispatch decodes via [events.ChannelHandle.DecodeMerged], which is
 // JSON-only (it does not consult SubscribeFormats/Formats); declare a

@@ -537,10 +537,9 @@ func TestConsume_HappyPath_SingleEvent(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 
-	consumer := NewConsumer(srv.Client(), srv.URL)
 	var got userResp
 	done := make(chan struct{})
-	err := Consume(ctx, consumer, newSSETestRoute(), sseTestReq{ID: "machine-1"},
+	err := consumeSSE(ctx, srv.Client(), srv.URL, newSSETestRoute().ClientHandle(), sseTestReq{ID: "machine-1"},
 		func(_ context.Context, e userResp) error {
 			got = e
 			close(done)
@@ -556,6 +555,35 @@ func TestConsume_HappyPath_SingleEvent(t *testing.T) {
 		t.Errorf("unexpected event: %+v", got)
 	}
 	_ = err // ctx cancellation inside fn is expected to unwind Consume with nil
+}
+
+// TestConsume_GeneralShapeFn_StillRejected is a regression guard for
+// docs/roadmap/rest-client-general-purpose-middleware.md: consumeSSE
+// deliberately keeps using the OLD, credential-only
+// validateClientImplementationShapes rather than the new
+// validateCallImplementationShapes callWithVars/CallWithHandle use — a
+// general-purpose-shaped Fn attached via ClientMW to an SSE route must
+// still hard-error here exactly as before, NOT silently pass validation
+// while never being invoked (SSE's per-event dispatch shape doesn't match
+// the single-call wrap shape).
+func TestConsume_GeneralShapeFn_StillRejected(t *testing.T) {
+	route := rest.NewSSERoute[sseTestReq, userResp]("/stream/{id}", sseTestReqCodec, userRespCodec,
+		rest.NewPathParam("id", codex.String(),
+			func(r sseTestReq) string { return r.ID },
+			func(r *sseTestReq, v string) { r.ID = v }),
+	).ClientMW(nil, func(next func(context.Context, sseTestReq) (userResp, error)) func(context.Context, sseTestReq) (userResp, error) {
+		return func(ctx context.Context, req sseTestReq) (userResp, error) {
+			return next(ctx, req)
+		}
+	})
+
+	err := consumeSSE(context.Background(), http.DefaultClient, "http://localhost", route.ClientHandle(), sseTestReq{ID: "machine-1"},
+		func(_ context.Context, _ userResp) error { return nil }, ConsumeOptions{})
+
+	var shapeErr middleware.MiddlewareShapeError
+	if !errors.As(err, &shapeErr) {
+		t.Fatalf("want MiddlewareShapeError, got %v", err)
+	}
 }
 
 func TestConsume_HappyPath_MultipleEvents(t *testing.T) {
@@ -576,10 +604,9 @@ func TestConsume_HappyPath_MultipleEvents(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 
-	consumer := NewConsumer(srv.Client(), srv.URL)
 	var mu sync.Mutex
 	var got []string
-	_ = Consume(ctx, consumer, newSSETestRoute(), sseTestReq{},
+	_ = consumeSSE(ctx, srv.Client(), srv.URL, newSSETestRoute().ClientHandle(), sseTestReq{},
 		func(_ context.Context, e userResp) error {
 			mu.Lock()
 			got = append(got, e.ID)
@@ -601,10 +628,9 @@ func TestConsume_ConnectionFailure_ReportsSSEConnectError(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 1*time.Second)
 	defer cancel()
 
-	consumer := NewConsumer(http.DefaultClient, "http://127.0.0.1:1")
 	var mu sync.Mutex
 	var errs []error
-	_ = Consume(ctx, consumer, newSSETestRoute(), sseTestReq{},
+	_ = consumeSSE(ctx, http.DefaultClient, "http://127.0.0.1:1", newSSETestRoute().ClientHandle(), sseTestReq{},
 		func(_ context.Context, _ userResp) error { return nil },
 		ConsumeOptions{
 			MaxBackoff: 10 * time.Millisecond,
@@ -646,11 +672,10 @@ func TestConsume_MalformedEvent_ReportsSSEParseError_ContinuesConsuming(t *testi
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 
-	consumer := NewConsumer(srv.Client(), srv.URL)
 	var mu sync.Mutex
 	var parseErrs int
 	var gotValid userResp
-	_ = Consume(ctx, consumer, newSSETestRoute(), sseTestReq{},
+	_ = consumeSSE(ctx, srv.Client(), srv.URL, newSSETestRoute().ClientHandle(), sseTestReq{},
 		func(_ context.Context, e userResp) error {
 			mu.Lock()
 			gotValid = e
@@ -698,11 +723,10 @@ func TestConsume_HandlerError_ReportsSSEHandlerError_ContinuesConsuming(t *testi
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 
-	consumer := NewConsumer(srv.Client(), srv.URL)
 	var mu sync.Mutex
 	var handlerErrs int
 	var calls []string
-	_ = Consume(ctx, consumer, newSSETestRoute(), sseTestReq{},
+	_ = consumeSSE(ctx, srv.Client(), srv.URL, newSSETestRoute().ClientHandle(), sseTestReq{},
 		func(_ context.Context, e userResp) error {
 			mu.Lock()
 			calls = append(calls, e.ID)
@@ -745,11 +769,10 @@ func TestConsume_ContextCancellation_ReturnsPromptly(t *testing.T) {
 	defer srv.Close()
 
 	ctx, cancel := context.WithCancel(context.Background())
-	consumer := NewConsumer(srv.Client(), srv.URL)
 
 	done := make(chan error, 1)
 	go func() {
-		done <- Consume(ctx, consumer, newSSETestRoute(), sseTestReq{},
+		done <- consumeSSE(ctx, srv.Client(), srv.URL, newSSETestRoute().ClientHandle(), sseTestReq{},
 			func(_ context.Context, _ userResp) error { return nil }, ConsumeOptions{})
 	}()
 	time.Sleep(50 * time.Millisecond)
@@ -772,8 +795,7 @@ func TestConsume_NilObserver_NoPanic(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 1*time.Second)
 	defer cancel()
-	consumer := NewConsumer(srv.Client(), srv.URL)
-	_ = Consume(ctx, consumer, newSSETestRoute(), sseTestReq{},
+	_ = consumeSSE(ctx, srv.Client(), srv.URL, newSSETestRoute().ClientHandle(), sseTestReq{},
 		func(_ context.Context, _ userResp) error { cancel(); return nil },
 		ConsumeOptions{Observer: nil})
 }
@@ -812,8 +834,7 @@ func TestConsume_CredentialReDerivedPerReconnect(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
-	consumer := NewConsumer(srv.Client(), srv.URL)
-	_ = Consume(ctx, consumer, sseRoute, sseTestReq{},
+	_ = consumeSSE(ctx, srv.Client(), srv.URL, sseRoute.ClientHandle(), sseTestReq{},
 		func(context.Context, userResp) error { return nil },
 		ConsumeOptions{MaxBackoff: 10 * time.Millisecond})
 
@@ -844,9 +865,8 @@ func TestConsume_OnCredentialRejected_FiresOn401(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
 	defer cancel()
-	consumer := NewConsumer(srv.Client(), srv.URL)
 	var rejected int32
-	_ = Consume(ctx, consumer, sseRoute, sseTestReq{},
+	_ = consumeSSE(ctx, srv.Client(), srv.URL, sseRoute.ClientHandle(), sseTestReq{},
 		func(context.Context, userResp) error { return nil },
 		ConsumeOptions{
 			MaxBackoff:           10 * time.Millisecond,
@@ -865,9 +885,8 @@ func TestConsume_OnCredentialRejected_NotCalledWithoutEngagedCredential(t *testi
 
 	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
 	defer cancel()
-	consumer := NewConsumer(srv.Client(), srv.URL)
 	var rejected int32
-	_ = Consume(ctx, consumer, newSSETestRoute(), sseTestReq{},
+	_ = consumeSSE(ctx, srv.Client(), srv.URL, newSSETestRoute().ClientHandle(), sseTestReq{},
 		func(context.Context, userResp) error { return nil },
 		ConsumeOptions{
 			MaxBackoff:           10 * time.Millisecond,
@@ -1005,7 +1024,7 @@ func TestCallSSEAdapter_NeverProducesHandlerError(t *testing.T) {
 }
 
 // ExampleConsume demonstrates the client-side SSE consumption entry point.
-func ExampleConsume() {
+func ExampleClient_Consume() {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
 		w.WriteHeader(http.StatusOK)
@@ -1013,16 +1032,20 @@ func ExampleConsume() {
 	}))
 	defer srv.Close()
 
+	client := rest.NewClient()
+	if err := Attach(client, srv.Client(), srv.URL); err != nil {
+		panic(err)
+	}
+
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 
-	consumer := NewConsumer(srv.Client(), srv.URL)
-	_ = Consume(ctx, consumer, newSSETestRoute(), sseTestReq{ID: "demo"},
+	_ = client.Consume(ctx, newSSETestRoute(), sseTestReq{ID: "demo"},
 		func(_ context.Context, e userResp) error {
 			fmt.Println(e.Name)
 			cancel()
 			return nil
-		}, ConsumeOptions{})
+		})
 	// Output: Alice
 }
 
@@ -1038,9 +1061,8 @@ func TestConsume_Observer_RecordRequestPerAttempt(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
 	defer cancel()
-	consumer := NewConsumer(srv.Client(), srv.URL)
 	obs := &spyObserver{}
-	_ = Consume(ctx, consumer, newSSETestRoute(), sseTestReq{},
+	_ = consumeSSE(ctx, srv.Client(), srv.URL, newSSETestRoute().ClientHandle(), sseTestReq{},
 		func(_ context.Context, _ userResp) error { return nil },
 		ConsumeOptions{Observer: obs, MaxBackoff: 10 * time.Millisecond})
 
@@ -1068,8 +1090,7 @@ func TestConsume_Backoff_Doubles(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 1300*time.Millisecond)
 	defer cancel()
-	consumer := NewConsumer(srv.Client(), srv.URL)
-	_ = Consume(ctx, consumer, newSSETestRoute(), sseTestReq{},
+	_ = consumeSSE(ctx, srv.Client(), srv.URL, newSSETestRoute().ClientHandle(), sseTestReq{},
 		func(context.Context, userResp) error { return nil },
 		ConsumeOptions{}) // default 30s MaxBackoff — no cap within this window
 
@@ -1101,8 +1122,7 @@ func TestConsume_Backoff_Caps(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 400*time.Millisecond)
 	defer cancel()
-	consumer := NewConsumer(srv.Client(), srv.URL)
-	_ = Consume(ctx, consumer, newSSETestRoute(), sseTestReq{},
+	_ = consumeSSE(ctx, srv.Client(), srv.URL, newSSETestRoute().ClientHandle(), sseTestReq{},
 		func(context.Context, userResp) error { return nil },
 		ConsumeOptions{MaxBackoff: 60 * time.Millisecond})
 
@@ -1163,8 +1183,7 @@ func TestConsume_Backoff_ResetsAfterSuccess(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 1*time.Second)
 	defer cancel()
-	consumer := NewConsumer(srv.Client(), srv.URL)
-	_ = Consume(ctx, consumer, newSSETestRoute(), sseTestReq{},
+	_ = consumeSSE(ctx, srv.Client(), srv.URL, newSSETestRoute().ClientHandle(), sseTestReq{},
 		func(context.Context, userResp) error { return nil },
 		ConsumeOptions{MaxBackoff: 5 * time.Second})
 
@@ -1251,9 +1270,8 @@ func TestConsume_Format_FallsBackToDecodeEvent(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 800*time.Millisecond)
 	defer cancel()
-	consumer := NewConsumer(srv.Client(), srv.URL)
 	var got userResp
-	_ = Consume(ctx, consumer, newSSETestRoute(), sseTestReq{},
+	_ = consumeSSE(ctx, srv.Client(), srv.URL, newSSETestRoute().ClientHandle(), sseTestReq{},
 		func(_ context.Context, e userResp) error {
 			got = e
 			cancel()
@@ -1291,10 +1309,9 @@ func TestConsume_MultiLineDataAccumulation(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 800*time.Millisecond)
 	defer cancel()
-	consumer := NewConsumer(srv.Client(), srv.URL)
 	var got userResp
 	var gotErr error
-	_ = Consume(ctx, consumer, newSSETestRoute(), sseTestReq{},
+	_ = consumeSSE(ctx, srv.Client(), srv.URL, newSSETestRoute().ClientHandle(), sseTestReq{},
 		func(_ context.Context, e userResp) error {
 			got = e
 			cancel()
@@ -1452,9 +1469,8 @@ func TestConsume_Formats_OverridesRouteDeclaredFormat(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 800*time.Millisecond)
 	defer cancel()
-	consumer := NewConsumer(srv.Client(), srv.URL)
 	var got userResp
-	err := Consume(ctx, consumer, sseRoute, sseTestReq{},
+	err := consumeSSE(ctx, srv.Client(), srv.URL, sseRoute.ClientHandle(), sseTestReq{},
 		func(_ context.Context, e userResp) error {
 			got = e
 			cancel()
@@ -1491,9 +1507,8 @@ func TestConsume_Formats_RouteDeclaredStillAppliesWithoutOverride(t *testing.T) 
 
 	ctx, cancel := context.WithTimeout(context.Background(), 800*time.Millisecond)
 	defer cancel()
-	consumer := NewConsumer(srv.Client(), srv.URL)
 	var got userResp
-	_ = Consume(ctx, consumer, sseRoute, sseTestReq{},
+	_ = consumeSSE(ctx, srv.Client(), srv.URL, sseRoute.ClientHandle(), sseTestReq{},
 		func(_ context.Context, e userResp) error {
 			got = e
 			cancel()

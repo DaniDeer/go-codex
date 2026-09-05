@@ -48,10 +48,16 @@ type transport struct {
 // CORE common case (JSON default format, automatic topic-var
 // derivation via [events.ChannelHandle.EncodeVars]/[events.ChannelHandle.BuildTopic],
 // observer resolved from ctx). Per-call [format.Format] overrides and
-// declare-time general-purpose SubscribeMW/PublishMW wrapping are NOT
-// exercised by this shim — a caller needing those should use
-// [SubscribeWithHandle]/[Publish] directly, which remain fully
-// featured and completely unaffected by this addition.
+// declare-time SubscribeMW/PublishMW — of EITHER shape, credential-paired
+// OR general-purpose wrapping — are NOT exercised by this shim (mirrors
+// [adapters/nethttp/clienttransport.go]'s identical "no security/
+// credential handling" v1-scope limitation): a channel declaring
+// Security plus a correctly-paired credential SubscribeMW/PublishMW gets
+// ZERO runtime enforcement through Client.Attach — no credential is
+// fetched or injected, silently, with no error. A caller needing ANY
+// declared SubscribeMW/PublishMW (credential or general-purpose)
+// enforced should use [subscribeWithHandle]/[publish] directly, which
+// remain fully featured and completely unaffected by this addition.
 // [stats.Observer] (RecordPublish/RecordSubscribe, TraceObserver) IS
 // fully wired; a subscribe handler's returned error also consults a
 // declared [events.ErrorChannel] — see
@@ -166,16 +172,16 @@ func (t *transport) Publish(ctx context.Context, pubAny, msgAny any) (err error)
 // touch any subscriber registry, so it never conflicts with OTHER
 // subscriptions on the same client) so [events.Client.AsyncAPISpec]
 // correctly includes this operation, then runs a DEDICATED receive loop
-// scoped to just this one channel — mirroring [SubscribeWithHandle]'s
+// scoped to just this one channel — mirroring [subscribeWithHandle]'s
 // core steps (SetSubscription, decode+topic-var-merge via
 // [events.ChannelHandle.DecodeMerged], dispatch to fn) via reflection,
-// since SubscribeWithHandle itself cannot be called with a runtime-only
+// since subscribeWithHandle itself cannot be called with a runtime-only
 // T. matchTopicTemplate/deriveTopicPrefix are plain, non-generic,
 // same-package functions, called directly (no reflection needed). See
 // [Attach]'s doc comment for v1 scope notes (no per-call format
 // override, no Implementations/security-impl enforcement, no
 // general-purpose SubscribeMW wrapping — a caller needing those uses
-// [subscribe]/[SubscribeWithHandle] directly).
+// [subscribe]/[subscribeWithHandle] directly).
 func (t *transport) Subscribe(ctx context.Context, subAny, fnAny any) error {
 	obs := stats.ObserverFromContext(ctx)
 

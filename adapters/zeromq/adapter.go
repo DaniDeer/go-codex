@@ -26,7 +26,7 @@ var (
 	statusError = []byte("error")
 )
 
-// SubscribeOptions configures [subscribe]/[SubscribeWithHandle]. Generic
+// SubscribeOptions configures [subscribe]/[subscribeWithHandle]. Generic
 // over T (BREAKING change from the previous non-generic SubscribeOptions)
 // since [SubscribeOptions.SecurityFunc] needs read/write access to the
 // decoded message — zeromq's [topic, payload] frames carry nothing beyond
@@ -82,7 +82,7 @@ type SubscribeOptions[T any] struct {
 	SecurityFunc func(ctx context.Context, msg *T, reqs []route.SecurityRequirement) error
 }
 
-// PublishOptions configures [Publish]/[PublishHandle]. Generic over T
+// PublishOptions configures [publish]/[publishHandle]. Generic over T
 // (BREAKING change from the previous non-generic PublishOptions) for the
 // SAME reason as [SubscribeOptions] — see its doc comment.
 type PublishOptions[T any] struct {
@@ -190,7 +190,7 @@ func resolveCallFormat[T any](declared []format.Format[T], overrideAny any) ([]f
 // — the security shape (func(context.Context, *T,
 // []route.SecurityRequirement) error) or the general-purpose wrapping
 // shape (func(next func(context.Context, T) error) func(context.Context,
-// T) error) — EAGERLY at [SubscribeWithHandle] construction time rather
+// T) error) — EAGERLY at [subscribeWithHandle] construction time rather
 // than deferring to the first incoming message. Mirrors
 // adapters/mqtt5.validateSubscribeImplementationShapes, adapted for
 // zeromq's simpler (no-grants) security shape.
@@ -485,7 +485,7 @@ func firstSchemeName(reqs []route.SecurityRequirement) string {
 // internally via sub.Handle(caller.events) (caller.events MAY be nil for
 // a spec-free handle — the common case for a typical application
 // subscribing without also registering a spec), then behaves identically
-// to [SubscribeWithHandle]. fn is STILL a call-time param, unchanged from
+// to [subscribeWithHandle]. fn is STILL a call-time param, unchanged from
 // today's imperative "here's my handler, start consuming now" mental
 // model — see docs/design/d-0002-pubsub-workflow-simplification.md's two-tier
 // Subscribe subsection.

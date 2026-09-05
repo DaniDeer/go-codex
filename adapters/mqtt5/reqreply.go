@@ -511,7 +511,7 @@ func Call[Req, Resp any](
 	}
 
 	// Resolve security requirements and obtain credentials (client-side
-	// mirror of Serve's built-in check, and of [Publish]'s CredentialFunc
+	// mirror of Serve's built-in check, and of [publish]'s CredentialFunc
 	// handling).
 	secReqs := handle.Security
 	if secReqs == nil {

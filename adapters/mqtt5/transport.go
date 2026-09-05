@@ -48,10 +48,17 @@ type transport struct {
 // NOTE — v1 scope: the reflection shim's Publish/Subscribe cover the
 // CORE common case (JSON default format, automatic topic-var derivation,
 // observer resolved from ctx, QoS 0). Per-call [format.Format] overrides,
-// non-zero QoS, and declare-time general-purpose SubscribeMW/PublishMW
-// wrapping are NOT exercised by this shim — a caller needing those should
-// use [subscribe]/[Publish] directly, which remain
-// fully featured and completely unaffected by this addition.
+// non-zero QoS, and declare-time SubscribeMW/PublishMW — of EITHER shape,
+// credential-paired OR general-purpose wrapping — are NOT exercised by
+// this shim (mirrors [adapters/nethttp/clienttransport.go]'s identical
+// "no security/credential handling" v1-scope limitation): a channel
+// declaring Security plus a correctly-paired credential SubscribeMW/
+// PublishMW gets ZERO runtime enforcement through Client.Attach — no
+// credential is fetched or injected, silently, with no error. A caller
+// needing ANY declared SubscribeMW/PublishMW (credential or
+// general-purpose) enforced should use [subscribe]/[Publish]
+// directly, which remain fully featured and completely unaffected by
+// this addition.
 // [stats.Observer] (RecordPublish/RecordSubscribe, TraceObserver) IS
 // fully wired, resolved from ctx same as [subscribe]/[Publish]; a
 // subscribe handler's returned error also consults a declared
@@ -59,7 +66,7 @@ type transport struct {
 // docs/design/d-0002-pubsub-workflow-simplification.md's Decision 8 for the
 // fix history.
 //
-// Unlike [SubscribeWithHandle] (non-blocking — registers with the router
+// Unlike [subscribeWithHandle] (non-blocking — registers with the router
 // and returns immediately, dispatch happens via the router's OWN
 // callback mechanism), [Client.Subscribe] BLOCKS until ctx is cancelled —
 // a deliberate uniform contract across every [events.Transport]
@@ -166,7 +173,7 @@ func (t *transport) Publish(ctx context.Context, pubAny, msgAny any) (err error)
 
 // Subscribe implements [events.Transport]. Registers a reflection-built
 // [pahomqtt5.MessageHandler] with the router (mirrors
-// [SubscribeWithHandle]'s registration step, since that function itself
+// [subscribeWithHandle]'s registration step, since that function itself
 // cannot be called with a runtime-only T) and issues the broker SUBSCRIBE,
 // then BLOCKS until ctx is cancelled, unregistering the handler on exit —
 // see [Attach]'s doc comment for why this blocks (a deliberate, uniform

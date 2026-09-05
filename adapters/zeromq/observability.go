@@ -23,7 +23,7 @@ import (
 // into [stats.Observer.RecordValidationError] after next returns. Does
 // NOT itself call [stats.Observer.RecordSubscribe]/RecordPublish — those
 // per-message lifecycle events are ALREADY recorded by
-// [SubscribeWithHandle]/[Publish] via [SubscribeOptions.Observer]/
+// [subscribeWithHandle]/[publish] via [SubscribeOptions.Observer]/
 // [PublishOptions.Observer] (or the ctx-injection fallback via
 // [stats.ObserverFromContext]) — this general-purpose hook is an
 // ADDITIONAL, opt-in mechanism for declare-time attachment, not a

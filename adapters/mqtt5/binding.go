@@ -147,7 +147,7 @@ type MQTT5DrainPublishOptions struct {
 	//
 	// When nil, topic vars are derived PER-ITEM from each item's own
 	// merge-field-declared struct fields (the same convenience
-	// [PublishHandle] provides) — every item may resolve to a different
+	// [publishHandle] provides) — every item may resolve to a different
 	// concrete topic. When set to a non-nil map (including an explicitly
 	// empty one), that map is used as-is for every item (static topic vars
 	// only) — the escape hatch, unchanged from prior behavior.

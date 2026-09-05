@@ -40,7 +40,7 @@ type contextKey struct{}
 // userPropsKey stores MQTT 5 User Properties in context.
 type userPropsKey struct{}
 
-// MessageFromContext retrieves the [*paho.Publish] stored in ctx by [subscribe]/[SubscribeWithHandle].
+// MessageFromContext retrieves the [*paho.Publish] stored in ctx by [subscribe]/[subscribeWithHandle].
 // Returns false if ctx was not created by this package.
 func MessageFromContext(ctx context.Context) (*pahomqtt5.Publish, bool) {
 	msg, ok := ctx.Value(contextKey{}).(*pahomqtt5.Publish)
@@ -95,7 +95,7 @@ func (p UserPropertyParam) WithCodec(c codex.Codec[string]) UserPropertyParam {
 	return p
 }
 
-// SubscribeOptions configures [subscribe]/[SubscribeWithHandle].
+// SubscribeOptions configures [subscribe]/[subscribeWithHandle].
 type SubscribeOptions struct {
 	// TopicFilter is the MQTT subscription filter for [pahomqtt5.Subscribe].
 	// Use this when the handle's topic template uses {varName} placeholders
@@ -106,7 +106,7 @@ type SubscribeOptions struct {
 	// each {varName} placeholder with "+") — the common case needs no
 	// manual restatement. Set explicitly only for a filter that differs
 	// from this derivation (e.g. a multi-level "#" wildcard). Consumed by
-	// [SubscribeWithHandle] (and therefore [subscribe]/ServeSubscribers/
+	// [subscribeWithHandle] (and therefore [subscribe]/ServeSubscribers/
 	// [serveOneSubscriber], which all funnel through it).
 	TopicFilter string
 
@@ -115,7 +115,7 @@ type SubscribeOptions struct {
 	// the MQTT quality-of-service level (*caller).ServeSubscribers uses to
 	// subscribe that channel — there is no other way for ServeSubscribers
 	// to learn a per-channel QoS, since it has no call-time qos parameter
-	// (unlike [subscribe]/[SubscribeWithHandle], whose own qos parameter
+	// (unlike [subscribe]/[subscribeWithHandle], whose own qos parameter
 	// ALWAYS takes precedence and never reads this field). Defaults to 0.
 	QoS byte
 
@@ -156,7 +156,7 @@ type SubscribeOptions struct {
 	UserPropertyParams []UserPropertyParam
 }
 
-// PublishOptions configures [Publish]/[PublishHandle]. Generic over T
+// PublishOptions configures [publish]/[publishHandle]. Generic over T
 // (BREAKING change from the previous non-generic PublishOptions) since
 // [PublishOptions.CredentialFunc]'s revised shape needs write-access to
 // the outgoing message — see that field's doc comment.
@@ -371,7 +371,7 @@ func makeSubscribeMessageHandler[T any](
 		// Satisfies-empty) security-shaped Fn (e.g. a Transform-equivalent
 		// reading a User Property into *T) must run even on a channel with
 		// no declared security. Shapes were already validated eagerly by
-		// [SubscribeWithHandle] before this handler was ever registered.
+		// [subscribeWithHandle] before this handler was ever registered.
 		if len(handle.Implementations) > 0 {
 			if err := runSubscribeSecurityImpls(msgCtx, msg, &value, secReqs, handle.Implementations); err != nil {
 				if secObs, ok := obs.(stats.SecurityObserver); ok {
@@ -468,7 +468,7 @@ func wrapSubscribeGeneral[T any](fn func(context.Context, T) error, impls []midd
 // security shape (func(context.Context, *pahomqtt5.Publish, *T)
 // (map[string][]string, error)) or the general-purpose wrapping shape
 // (func(next func(context.Context, T) error) func(context.Context, T) error)
-// — EAGERLY at [SubscribeWithHandle] construction time rather than
+// — EAGERLY at [subscribeWithHandle] construction time rather than
 // deferring to the first incoming message. Mirrors adapters/nethttp's
 // validateImplementationShapesReflect, but via a plain type switch (T is
 // concrete here, no reflect.FuncOf needed).

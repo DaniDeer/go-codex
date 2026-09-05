@@ -350,12 +350,21 @@ func (e ConflictingCredentialHeaderError) LogValue() slog.Value {
 }
 
 // validateClientImplementationShapes checks every attached impl.Fn against the
-// ONE concrete shape [call] recognizes ([CredentialFunc]'s shape),
+// ONE concrete shape [consumeSSE] recognizes ([CredentialFunc]'s shape),
 // EAGERLY before any network activity rather than letting
 // [mergeCredentialHeaders] silently skip a malformed Fn — a
 // [middleware.ClientImplementation] built for the wrong adapter (e.g. a Fn
 // shape meant for a different transport, passed here by mistake) fails
 // loudly and immediately instead.
+//
+// Used ONLY by SSE's [consumeSSE] today. [call]/[CallWithHandle] use the
+// generic [validateCallImplementationShapes] instead, which additionally
+// recognizes a general-purpose wrapping shape — SSE's per-event dispatch
+// shape (func(context.Context, Event) error, invoked repeatedly for a
+// long-lived stream) does not match that wrap shape, so widening THIS
+// function would let a general-purpose Fn silently pass validation on an
+// SSE route while never actually being invoked anywhere. See
+// docs/roadmap/rest-client-general-purpose-middleware.md's scope table.
 func validateClientImplementationShapes(impls []middleware.ClientImplementation) error {
 	for _, impl := range impls {
 		switch impl.Fn.(type) {
@@ -372,6 +381,58 @@ func validateClientImplementationShapes(impls []middleware.ClientImplementation)
 		}
 	}
 	return nil
+}
+
+// validateCallImplementationShapes checks every attached impl.Fn against
+// the TWO shapes [call]/[CallWithHandle] recognize for Req/Resp — the
+// credential shape (func(context.Context, []route.SecurityRequirement)
+// (http.Header, error)) or the general-purpose wrapping shape
+// (func(next func(context.Context, Req) (Resp, error))
+// func(context.Context, Req) (Resp, error)) — EAGERLY before any network
+// activity. Mirrors adapters/mqtt5's validatePublishImplementationShapes,
+// extended with the second, general-purpose shape (unlike SSE's
+// [validateClientImplementationShapes], which recognizes only the
+// credential shape — see that function's own doc comment for why).
+func validateCallImplementationShapes[Req, Resp any](impls []middleware.ClientImplementation) error {
+	for _, impl := range impls {
+		switch impl.Fn.(type) {
+		case nil:
+			continue // spec-only/no-op implementation — allowed
+		case func(context.Context, []route.SecurityRequirement) (http.Header, error):
+			continue
+		case func(func(context.Context, Req) (Resp, error)) func(context.Context, Req) (Resp, error):
+			continue
+		default:
+			return middleware.MiddlewareShapeError{
+				Name:     impl.Name,
+				Expected: "func(context.Context, []route.SecurityRequirement) (http.Header, error) or func(next func(context.Context, Req) (Resp, error)) func(context.Context, Req) (Resp, error)",
+				Got:      fmt.Sprintf("%T", impl.Fn),
+			}
+		}
+	}
+	return nil
+}
+
+// wrapCallGeneral wraps fn (the adapter's own "encode request, send,
+// decode response" step) with every general-purpose Fn found in impls
+// (shape func(next func(context.Context, Req) (Resp, error))
+// func(context.Context, Req) (Resp, error)), OUTERMOST-in, in attachment
+// order — mirrors adapters/mqtt5's wrapPublishGeneral, deliberately
+// symmetric. Credential-shaped Fns are silently skipped here (consumed
+// instead by mergeCredentialHeaders, which runs BEFORE this wrap — see
+// [callWithVars]).
+func wrapCallGeneral[Req, Resp any](
+	fn func(context.Context, Req) (Resp, error),
+	impls []middleware.ClientImplementation,
+) func(context.Context, Req) (Resp, error) {
+	for i := len(impls) - 1; i >= 0; i-- {
+		wrap, ok := impls[i].Fn.(func(func(context.Context, Req) (Resp, error)) func(context.Context, Req) (Resp, error))
+		if !ok {
+			continue
+		}
+		fn = wrap(fn)
+	}
+	return fn
 }
 
 // mergeCredentialHeaders runs every attached credential-providing Fn IN
@@ -543,7 +604,7 @@ func callWithVars[Req, Resp any](
 	// middleware.ClientImplementation.Fn's own doc comment: "fails
 	// LOUDLY... never silently").
 	allImpls := handle.ClientImplementations
-	if err := validateClientImplementationShapes(allImpls); err != nil {
+	if err := validateCallImplementationShapes[Req, Resp](allImpls); err != nil {
 		obs.RecordRequest(method, routePath, 0, time.Since(start))
 		return zero, err
 	}
@@ -626,186 +687,213 @@ func callWithVars[Req, Resp any](
 		}
 	}
 
-	// 7. Encode request body (body-bearing methods only). The route's OWN
-	// declaration (WithRequestFormats) is the single source of truth for
-	// which format applies — EncodeRequestWithFormats resolves it (reqFormats,
-	// already merged with any CallOptions.RequestFormats override above,
-	// wins when non-empty; otherwise handle.RequestFormats applies), this
-	// adapter never duplicates that resolution logic itself.
-	var body io.Reader
-	var contentType string
-	switch method {
-	case http.MethodPost, http.MethodPut, http.MethodPatch:
-		var bodyBytes []byte
-		bodyBytes, contentType, err = handle.EncodeRequestWithFormats(req, reqFormats...)
+	// 7-13. Encode request body, send it over the wire, and decode the
+	// response — the adapter's own "network round-trip" step, wrapped in
+	// a closure so any attached general-purpose ClientMW Fn (shape
+	// func(next func(context.Context, Req) (Resp, error))
+	// func(context.Context, Req) (Resp, error)) can compose around it.
+	// Mirrors adapters/mqtt5's publish, which wraps ONLY its own
+	// "encode and transmit" step the same way — topic/credential
+	// resolution (this function's steps 0-6, above) stay OUTSIDE the
+	// wrap and are closed over here, exactly like topic/credential
+	// resolution stays outside adapters/mqtt5's wrapPublishGeneral. obs,
+	// start, method, and routePath are captured by the closure; every
+	// obs.RecordRequest call below is the SAME call site that ran here
+	// before this refactor, merely relocated into the closure's scope —
+	// not altered.
+	next := func(ctx context.Context, req Req) (Resp, error) {
+		// 7. Encode request body (body-bearing methods only). The route's
+		// OWN declaration (WithRequestFormats) is the single source of
+		// truth for which format applies — EncodeRequestWithFormats
+		// resolves it (reqFormats, already merged with any
+		// CallOptions.RequestFormats override above, wins when
+		// non-empty; otherwise handle.RequestFormats applies), this
+		// adapter never duplicates that resolution logic itself.
+		var body io.Reader
+		var contentType string
+		switch method {
+		case http.MethodPost, http.MethodPut, http.MethodPatch:
+			bodyBytes, ct, err := handle.EncodeRequestWithFormats(req, reqFormats...)
+			if err != nil {
+				reportBodyErrors(ctx, err)
+				obs.RecordRequest(method, routePath, 0, time.Since(start))
+				return zero, err
+			}
+			contentType = ct
+			body = bytes.NewReader(bodyBytes)
+		}
+
+		// 8. Build the HTTP request.
+		httpReq, err := http.NewRequestWithContext(ctx, method, rawURL, body)
+		if err != nil {
+			obs.RecordRequest(method, routePath, 0, time.Since(start))
+			return zero, RequestBuildError{Err: err}
+		}
+
+		// Set Content-Type for body-bearing methods.
+		if contentType != "" {
+			httpReq.Header.Set("Content-Type", contentType)
+		}
+
+		// Set Accept header from resolved response formats.
+		if len(respFormats) > 0 {
+			if ct := respFormats[0].ContentType(); ct != "" {
+				httpReq.Header.Set("Accept", ct)
+			}
+		} else {
+			httpReq.Header.Set("Accept", "application/json")
+		}
+
+		// Merge declared header params.
+		for k, v := range opts.HeaderParams {
+			httpReq.Header.Set(k, v)
+		}
+
+		// Merge extra headers (no codec validation).
+		for k, vs := range opts.ExtraHeaders {
+			for _, v := range vs {
+				httpReq.Header.Add(k, v)
+			}
+		}
+
+		// Merge credential headers.
+		for k, vs := range credHeaders {
+			for _, v := range vs {
+				httpReq.Header.Add(k, v)
+			}
+		}
+
+		// Add cookies.
+		for k, v := range opts.CookieParams {
+			httpReq.AddCookie(&http.Cookie{Name: k, Value: v})
+		}
+
+		// 8b. Validate the outgoing credential FORMAT — the client-side
+		// mirror of the server-side check in Handler
+		// (validateSecurityCredentials). httpReq now carries every
+		// header/cookie/query value that will be sent, including
+		// credHeaders merged above, so it is a valid input to the SAME
+		// extraction/validation helpers the server adapter uses on an
+		// incoming request — reused here verbatim, zero duplication. A
+		// route with no [rest.WithSecurityScheme] declaration
+		// (handle.SecuritySchemes empty) or a scheme with a nil Codec is
+		// a no-op, identical to today's behavior.
+		//
+		// Gated on len(credHeaders) > 0 — i.e. the merge actually
+		// PRODUCED at least one header — NOT on credentialFnRan or
+		// len(secReqs) > 0 alone. A credential-providing middleware that
+		// deliberately returns (nil, nil) to mean "this call needs no
+		// credential" (e.g. an auth flow that first probes whether the
+		// specific server instance requires auth at all, like
+		// examples/go-edge-models/docker/registry's
+		// NewAuthCredentialFunc) must stay a non-error — symmetric with
+		// the pre-existing "nil CredentialFunc on a secured route is
+		// not an error" contract. Without this gate, a route declaring
+		// both Security and a non-empty-string Codec would wrongly
+		// reject every request where the credential mechanism correctly
+		// determined no credential was needed, since the resulting
+		// (absent) Authorization header extracts as "" either way.
+		if len(secReqs) > 0 && len(credHeaders) > 0 {
+			if credErr := validateSecurityCredentials(httpReq, secReqs, handle.SecuritySchemes); credErr != nil {
+				if secObs, ok := obs.(stats.SecurityObserver); ok {
+					secObs.RecordSecurityRejection(routePath, firstScheme(secReqs))
+				}
+				obs.RecordRequest(method, routePath, 0, time.Since(start))
+				return zero, credErr
+			}
+		}
+
+		// 9. Execute the request.
+		resp, err := client.Do(httpReq)
+		if err != nil {
+			obs.RecordRequest(method, routePath, 0, time.Since(start))
+			return zero, RequestError{Method: method, Path: routePath, Err: err}
+		}
+		defer resp.Body.Close()
+
+		statusCode := resp.StatusCode
+		obs.RecordRequest(method, routePath, statusCode, time.Since(start))
+
+		// 10. Read response body.
+		respBody, err := io.ReadAll(resp.Body)
+		if err != nil {
+			return zero, ResponseBodyError{Err: err}
+		}
+
+		// 11. Non-2xx → structured error, preferring a declared
+		// ErrorPattern decode over the untyped fallback when one
+		// matches.
+		if statusCode < 200 || statusCode >= 300 {
+			// A 401 with an engaged CredentialFunc means the credential
+			// we sent was rejected — notify OnCredentialRejected (if
+			// configured) so a caching wrapper can invalidate its
+			// cached credential before the caller's own next attempt.
+			// This fires regardless of whether an ErrorPattern also
+			// matches below — it is orthogonal to that decoding
+			// concern.
+			if statusCode == http.StatusUnauthorized && credentialFnRan && opts.OnCredentialRejected != nil {
+				opts.OnCredentialRejected()
+			}
+			if errResp, matched, decErr := handle.DecodeErrorFor(statusCode, respBody); matched && decErr == nil {
+				return zero, ErrorPatternResponse{
+					StatusCode: errResp.Status,
+					Value:      errResp.Value,
+					Body:       errResp.Body,
+				}
+			}
+			return zero, UnexpectedStatusError{
+				Method:     method,
+				Path:       routePath,
+				StatusCode: statusCode,
+				Body:       respBody,
+				Header:     resp.Header,
+			}
+		}
+
+		// 12. Decode typed response. The route's OWN declaration
+		// (WithFormats) is the single source of truth for which format
+		// applies — DecodeResponseWithFormats resolves it (respFormats,
+		// already merged with any CallOptions.ResponseFormats override
+		// above, wins when non-empty; otherwise handle.Formats
+		// applies), this adapter never duplicates that resolution logic
+		// itself.
+		result, err := handle.DecodeResponseWithFormats(respBody, respFormats...)
 		if err != nil {
 			reportBodyErrors(ctx, err)
-			obs.RecordRequest(method, routePath, 0, time.Since(start))
 			return zero, err
 		}
-		body = bytes.NewReader(bodyBytes)
-	}
 
-	// 8. Build the HTTP request.
-	httpReq, err := http.NewRequestWithContext(ctx, method, rawURL, body)
-	if err != nil {
-		obs.RecordRequest(method, routePath, 0, time.Since(start))
-		return zero, RequestBuildError{Err: err}
-	}
-
-	// Set Content-Type for body-bearing methods.
-	if contentType != "" {
-		httpReq.Header.Set("Content-Type", contentType)
-	}
-
-	// Set Accept header from resolved response formats.
-	if len(respFormats) > 0 {
-		if ct := respFormats[0].ContentType(); ct != "" {
-			httpReq.Header.Set("Accept", ct)
-		}
-	} else {
-		httpReq.Header.Set("Accept", "application/json")
-	}
-
-	// Merge declared header params.
-	for k, v := range opts.HeaderParams {
-		httpReq.Header.Set(k, v)
-	}
-
-	// Merge extra headers (no codec validation).
-	for k, vs := range opts.ExtraHeaders {
-		for _, v := range vs {
-			httpReq.Header.Add(k, v)
-		}
-	}
-
-	// Merge credential headers.
-	for k, vs := range credHeaders {
-		for _, v := range vs {
-			httpReq.Header.Add(k, v)
-		}
-	}
-
-	// Add cookies.
-	for k, v := range opts.CookieParams {
-		httpReq.AddCookie(&http.Cookie{Name: k, Value: v})
-	}
-
-	// 8b. Validate the outgoing credential FORMAT — the client-side mirror
-	// of the server-side check in Handler (validateSecurityCredentials).
-	// httpReq now carries every header/cookie/query value that will be
-	// sent, including credHeaders merged above, so it is a valid input to
-	// the SAME extraction/validation helpers the server adapter uses on an
-	// incoming request — reused here verbatim, zero duplication. A route
-	// with no [rest.WithSecurityScheme] declaration (handle.SecuritySchemes
-	// empty) or a scheme with a nil Codec is a no-op, identical to today's
-	// behavior.
-	//
-	// Gated on len(credHeaders) > 0 — i.e. the merge actually PRODUCED at
-	// least one header — NOT on credentialFnRan or len(secReqs) > 0 alone.
-	// A credential-providing middleware that deliberately returns (nil,
-	// nil) to mean "this call needs no credential" (e.g. an auth flow that
-	// first probes whether the specific server instance requires auth at
-	// all, like examples/go-edge-models/docker/registry's
-	// NewAuthCredentialFunc) must stay a non-error — symmetric with the
-	// pre-existing "nil CredentialFunc on a secured route is not an error"
-	// contract. Without this gate, a route declaring both Security and a
-	// non-empty-string Codec would wrongly reject every request where the
-	// credential mechanism correctly determined no credential was needed,
-	// since the resulting (absent) Authorization header extracts as ""
-	// either way.
-	if len(secReqs) > 0 && len(credHeaders) > 0 {
-		if credErr := validateSecurityCredentials(httpReq, secReqs, handle.SecuritySchemes); credErr != nil {
-			if secObs, ok := obs.(stats.SecurityObserver); ok {
-				secObs.RecordSecurityRejection(routePath, firstScheme(secReqs))
+		// 13. Merge response header/cookie values declared via
+		// rest.NewRequiredResponseHeaderParam/etc. into the SAME result
+		// value — the response-direction mirror of how request merge
+		// fields are applied server-side. Additive: only runs when the
+		// route has response merge-capable params; identical behavior
+		// otherwise.
+		headerFields := handle.ResponseHeaderMergeFields()
+		cookieFields := handle.ResponseCookieMergeFields()
+		if len(headerFields)+len(cookieFields) > 0 {
+			vars := make(map[string]string, len(headerFields)+len(cookieFields))
+			for _, c := range resp.Cookies() {
+				vars[c.Name] = c.Value
 			}
-			obs.RecordRequest(method, routePath, 0, time.Since(start))
-			return zero, credErr
-		}
-	}
-
-	// 9. Execute the request.
-	resp, err := client.Do(httpReq)
-	if err != nil {
-		obs.RecordRequest(method, routePath, 0, time.Since(start))
-		return zero, RequestError{Method: method, Path: routePath, Err: err}
-	}
-	defer resp.Body.Close()
-
-	statusCode := resp.StatusCode
-	obs.RecordRequest(method, routePath, statusCode, time.Since(start))
-
-	// 10. Read response body.
-	respBody, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return zero, ResponseBodyError{Err: err}
-	}
-
-	// 11. Non-2xx → structured error, preferring a declared ErrorPattern
-	// decode over the untyped fallback when one matches.
-	if statusCode < 200 || statusCode >= 300 {
-		// A 401 with an engaged CredentialFunc means the credential we sent
-		// was rejected — notify OnCredentialRejected (if configured) so a
-		// caching wrapper can invalidate its cached credential before the
-		// caller's own next attempt. This fires regardless of whether an
-		// ErrorPattern also matches below — it is orthogonal to that
-		// decoding concern.
-		if statusCode == http.StatusUnauthorized && credentialFnRan && opts.OnCredentialRejected != nil {
-			opts.OnCredentialRejected()
-		}
-		if errResp, matched, decErr := handle.DecodeErrorFor(statusCode, respBody); matched && decErr == nil {
-			return zero, ErrorPatternResponse{
-				StatusCode: errResp.Status,
-				Value:      errResp.Value,
-				Body:       errResp.Body,
+			for k := range resp.Header {
+				vars[k] = resp.Header.Get(k)
+			}
+			mergeFields := make([]codex.FieldCodec[Resp], 0, len(headerFields)+len(cookieFields))
+			mergeFields = append(mergeFields, headerFields...)
+			mergeFields = append(mergeFields, cookieFields...)
+			if err := codex.DecodeVars(&result, vars, mergeFields...); err != nil {
+				reportBodyErrors(ctx, err)
+				return zero, err
 			}
 		}
-		return zero, UnexpectedStatusError{
-			Method:     method,
-			Path:       routePath,
-			StatusCode: statusCode,
-			Body:       respBody,
-			Header:     resp.Header,
-		}
+
+		return result, nil
 	}
 
-	// 12. Decode typed response. The route's OWN declaration
-	// (WithFormats) is the single source of truth for which format
-	// applies — DecodeResponseWithFormats resolves it (respFormats,
-	// already merged with any CallOptions.ResponseFormats override
-	// above, wins when non-empty; otherwise handle.Formats applies),
-	// this adapter never duplicates that resolution logic itself.
-	result, err := handle.DecodeResponseWithFormats(respBody, respFormats...)
-	if err != nil {
-		reportBodyErrors(ctx, err)
-		return zero, err
-	}
-
-	// 13. Merge response header/cookie values declared via
-	// rest.NewRequiredResponseHeaderParam/etc. into the SAME result value —
-	// the response-direction mirror of how request merge fields are
-	// applied server-side. Additive: only runs when the route has
-	// response merge-capable params; identical behavior otherwise.
-	headerFields := handle.ResponseHeaderMergeFields()
-	cookieFields := handle.ResponseCookieMergeFields()
-	if len(headerFields)+len(cookieFields) > 0 {
-		vars := make(map[string]string, len(headerFields)+len(cookieFields))
-		for _, c := range resp.Cookies() {
-			vars[c.Name] = c.Value
-		}
-		for k := range resp.Header {
-			vars[k] = resp.Header.Get(k)
-		}
-		mergeFields := make([]codex.FieldCodec[Resp], 0, len(headerFields)+len(cookieFields))
-		mergeFields = append(mergeFields, headerFields...)
-		mergeFields = append(mergeFields, cookieFields...)
-		if err := codex.DecodeVars(&result, vars, mergeFields...); err != nil {
-			reportBodyErrors(ctx, err)
-			return zero, err
-		}
-	}
-
-	return result, nil
+	next = wrapCallGeneral(next, allImpls)
+	result, err := next(ctx, req)
+	return result, err
 }
 
 // CallWithHandle is [callWithVars]'s single-call convenience wrapper,

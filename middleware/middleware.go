@@ -206,10 +206,19 @@ type ServerImplementation struct {
 //
 // Fn is deliberately untyped (any) for the SAME reason as
 // [ServerImplementation.Fn] — resolved by the specific client adapter
-// function that consumes it (e.g. nethttp.Call's credential-providing
-// shape). A ClientImplementation built for the wrong adapter/role fails
-// LOUDLY with a typed [MiddlewareShapeError] at Call time — never
-// silently.
+// function that consumes it. adapters/mqtt5/mqtt/zeromq's Publish and
+// adapters/nethttp's Call/CallWithHandle each recognize TWO concrete
+// shapes: the credential-providing shape (satisfies-gated, per Satisfies
+// above) and a general-purpose wrapping shape that composes around the
+// adapter's own "encode and transmit"/"network round-trip" step,
+// unconditionally, in attachment order (see
+// docs/roadmap/rest-client-general-purpose-middleware.md for the REST
+// side and adapters/mqtt5/adapter.go's wrapPublishGeneral for the
+// pub/sub precedent it mirrors). adapters/nethttp's SSE
+// Consume/CallSSEAdapter recognizes only the credential shape — its
+// per-event dispatch shape doesn't match the general-purpose wrap shape.
+// A ClientImplementation built for the wrong adapter/role fails LOUDLY
+// with a typed [MiddlewareShapeError] at Call time — never silently.
 type ClientImplementation struct {
 	// Name identifies this implementation in errors and observability.
 	Name string

@@ -21,7 +21,7 @@
 //	    rest.PathParam{Name: "id"}.WithCodec(uuidCodec),
 //	)
 //
-//	handle, err := createUser.Register(b)
+//	handle, err := createUser.RegisterHandle(b)
 //	handle.
 //	    WithRequestFormats(format.JSON(createUserCodec), format.YAML(createUserCodec)).
 //	    WithFormats(format.JSON(userCodec))

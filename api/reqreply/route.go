@@ -278,9 +278,10 @@ func (m RouteMeta) applyRoute(rb *routeBuilder) { rb.meta = m }
 // runtime credential validation for request-reply adapters.
 //
 // [WithSecurityScheme] declares a SecurityScheme on a route — the ONLY way to
-// declare one; there is no builder-level equivalent (mirrors
-// [rest.WithSecurityScheme] and [events.WithSecurityScheme] exactly). The
-// spec fields flow into the AsyncAPI document (aggregated from all
+// declare one; there is no builder-level equivalent (mirrored REST's OWN
+// identically-named, now-removed `rest.WithSecurityScheme` mechanism, and
+// still mirrors [events.WithSecurityScheme]'s equivalent, deprecated
+// declaration). The spec fields flow into the AsyncAPI document (aggregated from all
 // registered routes by [Builder.AsyncAPISpec]); Codec, when non-nil, is used
 // by MQTT5 adapters ([adapters/mqtt5/reqreply.Serve]/[adapters/mqtt5/reqreply.Call])
 // to validate the raw credential string extracted from a message's User
@@ -331,8 +332,10 @@ func (o securitySchemeOpt) applyRoute(rb *routeBuilder) {
 // populate [RouteHandle.SecuritySchemes] from this declaration, so the SAME
 // route value — including its security scheme — builds a server-side handle
 // (Register) and a client-side handle (ClientHandle) with IDENTICAL
-// credential-format enforcement on both sides. Mirrors [rest.WithSecurityScheme]
-// and [events.WithSecurityScheme] exactly.
+// credential-format enforcement on both sides. Mirrored REST's OWN
+// identically-named, now-removed `rest.WithSecurityScheme` mechanism, and
+// still mirrors [events.WithSecurityScheme]'s equivalent, deprecated
+// declaration.
 //
 // Define a scheme once as a package-level value and reuse it across every
 // route that shares it:

@@ -22,8 +22,8 @@ import (
 // prefix in front of a raw multi-line payload (as an earlier version of
 // this file did) is NOT spec-compliant: any standards-conformant reader
 // (a browser's native EventSource, or this package's own
-// [Consume]/[CallSSEAdapter]) would misread everything after the first
-// embedded newline as un-prefixed noise, silently losing it. This
+// [CallSSEAdapter]/[rest.Client.Consume]) would misread everything after
+// the first embedded newline as un-prefixed noise, silently losing it. This
 // matters for any format whose encoding embeds raw newlines — YAML's
 // block style, or an [adapters/templ.Format] HTML fragment — not just
 // contrived multi-line test payloads.

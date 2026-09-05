@@ -360,9 +360,10 @@ multi-phase implementation rounds can avoid repeating them.
 > (mirrors REST server-side `HandleMW`'s `func(http.Handler) http.Handler`
 > for `SubscribeMW`; a NEW design for `PublishMW`, since REST's
 > client-side `ClientMW` has NO general-purpose hook at all — a
-> pre-existing REST gap, spun out to
-> [REST Client-Side General-Purpose Middleware](rest-client-general-purpose-middleware.md)
-> rather than fixed here). **A dedicated review of `TopicParam`/param
+> pre-existing REST gap, spun out at the time to a dedicated roadmap doc
+> rather than fixed here; now resolved and folded into
+> [d-0001's Addendum 3](d-0001-rest-middleware-workflow-simplification.md#addendum-3-client-side-general-purpose-clientmw-hook-closes-the-last-known-restevents-middleware-asymmetry)).
+> **A dedicated review of `TopicParam`/param
 > declaration, matching, and rendering confirmed TopicParams are
 > IDENTICAL across both roles by construction** (declared on
 > `Channel[T]` itself, before the role fork) **and found `.Handle(client)`
@@ -2221,10 +2222,11 @@ own dispatch code:
   by ctx/`opts`-resolved `obs`, so no middleware wrapper was ever
   needed for THAT specific concern. **This is a genuine, PRE-EXISTING
   gap in REST's OWN `ClientMW` design** for any OTHER use case (custom
-  logging, request transformation, retries) — spun out to
-  [REST Client-Side General-Purpose Middleware](rest-client-general-purpose-middleware.md)
-  rather than fixed here (out of THIS doc's scope, exactly like the
-  `zeromq`/common-middleware findings above).
+  logging, request transformation, retries) — spun out at the time to a
+  dedicated roadmap doc rather than fixed here (out of THIS doc's scope,
+  exactly like the `zeromq`/common-middleware findings above); now
+  resolved and folded into
+  [d-0001's Addendum 3](d-0001-rest-middleware-workflow-simplification.md#addendum-3-client-side-general-purpose-clientmw-hook-closes-the-last-known-restevents-middleware-asymmetry).
 
 **Fix, scoped to pub/sub, designed for BOTH `SubscribeMW` and
 `PublishMW`** (unlike REST, where only the server side got a
@@ -3187,12 +3189,13 @@ found and fixed:
 **Confirmed accurate, no changes needed**: `adapters/zeromq`'s
 connection-ownership deferral (a real, intentional, CGO-driven
 tradeoff — not a gap); the REST-workflow-review reminder (genuinely
-still open, but already fully and concretely tracked via 4 spun-out
+still open, but already fully and concretely tracked via spun-out
 docs — `zeromq-security.md`, `reqreply-workflow-simplification.md`,
-`rest-client-general-purpose-middleware.md`,
 `common-middleware-architecture.md`, `protocol-native-features.md` —
 all still "idea only"/"PLANNED", none blocking THIS doc's own
-completion).
+completion; the fifth spun-out item, REST's client-side general-purpose
+`ClientMW` hook, has since been resolved and folded into
+[d-0001's Addendum 3](d-0001-rest-middleware-workflow-simplification.md#addendum-3-client-side-general-purpose-clientmw-hook-closes-the-last-known-restevents-middleware-asymmetry)).
 
 **Verified**: `gofmt`/`go build`/`go vet`/`go test` all green repo-wide
 after the `handletransport.go` fix; zero regressions.
@@ -3294,13 +3297,15 @@ call surface"), while REST's spec-building lives entirely on
    and code examples to describe the current shape, mirroring
    `adapters/mqtt/doc.go`'s already-correct wording as the reference.
 
-**Confirmed, real, but correctly out of scope**: REST's `ClientMW`
-accepts only the credential-Fn shape, while events' `PublishMW`
-additionally accepts a general-purpose wrapping shape — a genuine
-asymmetry, but NOT new and NOT silently dropped: already tracked in its
-own dedicated doc,
-[REST Client-Side General-Purpose Middleware](../roadmap/rest-client-general-purpose-middleware.md)
-("idea only, no driver yet"). Not re-opened or fixed by this pass.
+**Confirmed, real, but correctly out of scope at the time**: REST's
+`ClientMW` accepted only the credential-Fn shape, while events'
+`PublishMW` additionally accepted a general-purpose wrapping shape — a
+genuine asymmetry, but NOT new and NOT silently dropped: tracked in its
+own dedicated roadmap doc at the time ("idea only, no driver yet"). Not
+re-opened or fixed by this pass — **since resolved**, in a later round,
+by mirroring `PublishMW`'s shipped `wrapPublishGeneral` precedent
+exactly; see
+[d-0001's Addendum 3](d-0001-rest-middleware-workflow-simplification.md#addendum-3-client-side-general-purpose-clientmw-hook-closes-the-last-known-restevents-middleware-asymmetry).
 
 **Verified**: `gofmt`/`go build`/`go vet`/`go test` all green repo-wide;
 `just check`/`just examples` clean; zero remaining references to
@@ -3616,10 +3621,10 @@ model (pub/sub), not to an unintentional drift between the two designs.
   [Transport-Agnostic `Serve`/`Caller` Interface](transport-agnostic-serve-interface.md)'s
   own "carries a reminder" note (found `Serve`'s wire-vs-block shape
   mismatch as a byproduct of reviewing PUB/SUB's own goals, explicitly
-  NOT a dedicated REST review), plus
-  [REST Client-Side General-Purpose Middleware](rest-client-general-purpose-middleware.md)
-  (REST's `ClientMW` has no general-purpose hook — found while
-  reviewing pub/sub's OWN middleware concept),
+  NOT a dedicated REST review), plus REST's `ClientMW` general-purpose
+  hook gap (found while reviewing pub/sub's OWN middleware concept,
+  since resolved — see
+  [d-0001's Addendum 3](d-0001-rest-middleware-workflow-simplification.md#addendum-3-client-side-general-purpose-clientmw-hook-closes-the-last-known-restevents-middleware-asymmetry)),
   [Common-Base + Per-Pattern-Derived Middleware Types](common-middleware-architecture.md)
   (REST's `middleware.Middleware` struct carries fields only REST
   uses — found while reviewing pub/sub's OWN middleware params), and
