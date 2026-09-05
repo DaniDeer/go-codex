@@ -234,4 +234,4 @@ format override, no error-pattern decoding. `nethttp.CallWithHandle` (the lower-
 handle-based primitive `Attach`'s internal transport wraps) remains fully featured and
 unaffected; use it directly for anything beyond the simple case. `Client.Attach` is exclusive —
 a second `Attach` call returns `rest.ClientTransportAlreadyAttachedError`. See
-`docs/roadmap/transport-agnostic-serve-interface.md` for the full design.
+`docs/design/d-0001-rest-middleware-workflow-simplification.md`'s Addendum 5 for the full design.

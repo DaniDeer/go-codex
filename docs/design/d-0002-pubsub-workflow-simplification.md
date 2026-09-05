@@ -47,7 +47,7 @@
 > `mqtt.Attach`, each wrapping their existing `*Caller` internally) plus
 > `examples/adapters-zeromq` reworked to demonstrate the full workflow
 > end to end. See Decision 5 below for the full design, and
-> [Transport-Agnostic `Serve`/`Caller` Interface](transport-agnostic-serve-interface.md)
+> [d-0001's Addendum 5](d-0001-rest-middleware-workflow-simplification.md#addendum-5-servertransportclienttransport-serverattachserverctx-and-clientnethttpattachcall--the-transport-agnostic-attach-then-call-vocabulary)
 > for the matching `api/rest` counterpart this decision is unified with
 > (also implemented: `rest.Server.Attach`/`.Serve`, `rest.Client`/
 > `.Call`, `nethttp.AttachMux`/`chi.AttachRouter`, `nethttp.Attach`).
@@ -274,7 +274,7 @@ multi-phase implementation rounds can avoid repeating them.
 > with the ALREADY-EXISTING `events.Publisher[T]` role-scoped builder —
 > a real collision caught before finalizing). Whether REST/`nethttp`/
 > `chi` should adopt an ANALOGOUS interface is spun out to its own doc,
-> [Transport-Agnostic `Serve`/`Caller` Interface](transport-agnostic-serve-interface.md),
+> [d-0001's Addendum 5](d-0001-rest-middleware-workflow-simplification.md#addendum-5-servertransportclienttransport-serverattachserverctx-and-clientnethttpattachcall--the-transport-agnostic-attach-then-call-vocabulary),
 > after finding a real shape mismatch (REST's `Serve` wires-and-returns
 > immediately; pub/sub's `ServeSubscribers` blocks-and-runs). Checking
 > `mqtt`(v3)/`zeromq`'s actual code also caught a real error in an
@@ -1403,7 +1403,7 @@ shape itself.
 
 **Whether REST/`nethttp`/`chi` should adopt an analogous shared
 interface for `Serve` is a SEPARATE, NOT YET RESOLVED question** — see
-[Transport-Agnostic `Serve`/`Caller` Interface](transport-agnostic-serve-interface.md),
+[d-0001's Addendum 5](d-0001-rest-middleware-workflow-simplification.md#addendum-5-servertransportclienttransport-serverattachserverctx-and-clientnethttpattachcall--the-transport-agnostic-attach-then-call-vocabulary),
 spun out to its own doc after finding a real shape mismatch (REST's
 `Serve` wires-and-returns immediately; pub/sub's `ServeSubscribers`
 blocks-and-runs) that needs its own investigation, not a drop-in mirror
@@ -2532,7 +2532,7 @@ changed.
 
 **This decision is unified with an analogous change to `api/rest` —
 see
-[Transport-Agnostic `Serve`/`Caller` Interface](transport-agnostic-serve-interface.md),
+[d-0001's Addendum 5](d-0001-rest-middleware-workflow-simplification.md#addendum-5-servertransportclienttransport-serverattachserverctx-and-clientnethttpattachcall--the-transport-agnostic-attach-then-call-vocabulary),
 which this decision's `Transport` interface directly resolves (that
 doc was "idea only, no driver yet" — this decision, plus its own REST
 counterpart, is the concrete driver it was waiting for).**
@@ -2761,7 +2761,7 @@ unlike `Client.Publish`/`.Subscribe`'s `any`-typed shim).
   `SSEFromHub`, chi's socket adapters) — the ports declaration surface,
   reimplemented internally.
 - `api/rest.Server`/`Client`/`Attach`/`.Serve`/`.Call` (Decision 5's REST
-  counterpart, see [Transport-Agnostic Serve/Caller Interface](transport-agnostic-serve-interface.md))
+  counterpart, see [d-0001's Addendum 5](d-0001-rest-middleware-workflow-simplification.md#addendum-5-servertransportclienttransport-serverattachserverctx-and-clientnethttpattachcall--the-transport-agnostic-attach-then-call-vocabulary))
   — unchanged, already the sole intended workflow.
 
 **Execution plan**: one adapter package at a time (`zeromq` → `mqtt5` →
@@ -3566,7 +3566,7 @@ model (pub/sub), not to an unintentional drift between the two designs.
   ServeSubscribers(ctx) error }`, implemented by each adapter's
   `*Caller`. Whether REST/`nethttp`/`chi` should adopt an ANALOGOUS
   interface for `Serve` is spun out to its own doc —
-  [Transport-Agnostic `Serve`/`Caller` Interface](transport-agnostic-serve-interface.md)
+  [d-0001's Addendum 5](d-0001-rest-middleware-workflow-simplification.md#addendum-5-servertransportclienttransport-serverattachserverctx-and-clientnethttpattachcall--the-transport-agnostic-attach-then-call-vocabulary)
   — after finding a real shape mismatch (REST's `Serve` wires-and-
   returns immediately; pub/sub's `ServeSubscribers` blocks-and-runs)
   that needs its own investigation.
@@ -3618,7 +3618,7 @@ model (pub/sub), not to an unintentional drift between the two designs.
   is still owed — this doc's OWN reviews repeatedly surfaced REST-side
   gaps only as BYPRODUCTS (never as the target of a dedicated REST
   pass): see
-  [Transport-Agnostic `Serve`/`Caller` Interface](transport-agnostic-serve-interface.md)'s
+  [d-0001's Addendum 5](d-0001-rest-middleware-workflow-simplification.md#addendum-5-servertransportclienttransport-serverattachserverctx-and-clientnethttpattachcall--the-transport-agnostic-attach-then-call-vocabulary)'s
   own "carries a reminder" note (found `Serve`'s wire-vs-block shape
   mismatch as a byproduct of reviewing PUB/SUB's own goals, explicitly
   NOT a dedicated REST review), plus REST's `ClientMW` general-purpose

@@ -12,7 +12,7 @@ import (
 // serverTransport implements [rest.ServerTransport], wiring builder's
 // routes onto mux (reusing the unexported [serve]/[serveSSE] internally)
 // and owning its own [*http.Server] — built by [AttachMux]. See
-// docs/roadmap/transport-agnostic-serve-interface.md for the full design.
+// docs/design/d-0001-rest-middleware-workflow-simplification.md's Addendum 5 for the full design.
 //
 // Fixes a real gap confirmed while scoping Decision 6 (see
 // docs/design/d-0002-pubsub-workflow-simplification.md): earlier, [AttachMux]'s

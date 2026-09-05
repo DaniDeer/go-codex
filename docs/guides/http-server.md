@@ -280,4 +280,4 @@ earlier code snippets used to call directly are now unexported internals that `A
 onto a mux/router. `Server.Attach`/`Serve` give an app ONE unified `Attach`-then-`Serve` startup
 call across both its REST API and its pub/sub channels (see `events.Client.Attach`/
 `.ServeSubscribers` in `docs/guides/mqtt5.md`/`docs/guides/zeromq.md`) — see
-`docs/roadmap/transport-agnostic-serve-interface.md` for the full design.
+`docs/design/d-0001-rest-middleware-workflow-simplification.md`'s Addendum 5 for the full design.

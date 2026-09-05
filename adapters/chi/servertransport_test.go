@@ -14,7 +14,7 @@ import (
 	gochi "github.com/go-chi/chi/v5"
 )
 
-// ── Builder.Attach/Serve (Decision 5 / transport-agnostic-serve-interface) ──
+// ── Builder.Attach/Serve (Decision 5 / d-0001 Addendum 5) ──
 
 func TestAttachRouter_SecondCall_ReturnsServerTransportAlreadyAttachedError(t *testing.T) {
 	b := rest.NewServer(testInfo)

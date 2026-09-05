@@ -77,7 +77,7 @@ go-codex is a Go port of the core ideas from Haskell's [autodocodec](https://hac
 ### Decision 5 addendum — `Attach`/inverted-control convenience (pub/sub + REST)
 
 `docs/design/d-0002-pubsub-workflow-simplification.md`'s Decision 5 and
-`docs/roadmap/transport-agnostic-serve-interface.md` add a small,
+`docs/design/d-0001-rest-middleware-workflow-simplification.md`'s Addendum 5 add a small,
 reflection-based convenience layer giving a literal `Attach`-then-call shape across both API
 families — Go forbids methods from introducing their own type parameters, so these methods are
 `any`-typed, recovering concrete types at runtime (a mismatch is `TransportTypeMismatchError` at

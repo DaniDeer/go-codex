@@ -17,7 +17,7 @@ import (
 	"github.com/DaniDeer/go-codex/validate"
 )
 
-// ── rest.Client.Call via Attach (Decision 5 / transport-agnostic-serve-interface) ──────────
+// ── rest.Client.Call via Attach (Decision 5 / d-0001 Addendum 5) ──────────
 
 func TestAttach_ClientCall_RoundTrip(t *testing.T) {
 	s := rest.NewServer(testInfo)

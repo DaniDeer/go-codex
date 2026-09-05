@@ -13,7 +13,7 @@ import (
 	"github.com/DaniDeer/go-codex/api/rest"
 )
 
-// ── Builder.Attach/Serve (Decision 5 / transport-agnostic-serve-interface) ──
+// ── Builder.Attach/Serve (Decision 5 / d-0001 Addendum 5) ──
 
 func TestAttachMux_BuilderServe_RoundTrip(t *testing.T) {
 	b := rest.NewServer(testInfo)

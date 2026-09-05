@@ -2380,8 +2380,8 @@ type Server struct {
 	// chi.AttachRouter) — nil until Attach is called. See
 	// [Server.Serve]'s doc comment and Decision 5 of
 	// docs/design/d-0002-pubsub-workflow-simplification.md /
-	// docs/roadmap/transport-agnostic-serve-interface.md for the full
-	// design (this is purely ADDITIVE — today's existing
+	// docs/design/d-0001-rest-middleware-workflow-simplification.md's
+	// Addendum 5 for the full design (this is purely ADDITIVE — today's existing
 	// nethttp.Serve(mux, builder)/chi.Serve(r, builder), wire-only,
 	// caller owns their own http.Server, remain completely unchanged).
 	transport ServerTransport
@@ -2392,8 +2392,8 @@ type Server struct {
 // (e.g. [nethttp.AttachMux], chi.AttachRouter) — see [Server.Attach].
 // Mirrors [events.Transport] (docs/design/d-0002-pubsub-workflow-simplification.md's
 // Decision 5) for the pub/sub side of this same unification — see
-// docs/roadmap/transport-agnostic-serve-interface.md for the full
-// rationale.
+// docs/design/d-0001-rest-middleware-workflow-simplification.md's
+// Addendum 5 for the full rationale.
 type ServerTransport interface {
 	// Serve wires every handler-bearing route (reusing today's existing
 	// nethttp.Serve/chi.Serve logic internally, unchanged) and BLOCKS,
@@ -2542,8 +2542,8 @@ type ClientConsumeOptions struct {
 // (e.g. [nethttp.Attach]) — see [Client.Attach]. Mirrors
 // [events.Transport] (docs/design/d-0002-pubsub-workflow-simplification.md's
 // Decision 5) for the pub/sub side of this same unification — see
-// docs/roadmap/transport-agnostic-serve-interface.md for the full
-// rationale. Bundles BOTH request/response AND SSE-stream consumption in
+// docs/design/d-0001-rest-middleware-workflow-simplification.md's
+// Addendum 5 for the full rationale. Bundles BOTH request/response AND SSE-stream consumption in
 // ONE interface, mirroring [events.Transport]'s own
 // Publish/Subscribe/ServeSubscribers bundling: an adapter is attachable
 // to a [Client] ONLY if it implements the WHOLE interface (see

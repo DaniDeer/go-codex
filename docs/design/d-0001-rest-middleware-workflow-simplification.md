@@ -1185,7 +1185,17 @@ just not yet connected to this question when it was first raised.
 
 ## Decision: `Serve` is the only public server-side entry point (resolves Question 4)
 
-**Status: FULLY IMPLEMENTED.** `Serve(mux, b) error`/`ServeSSE(mux,
+> **Superseded by [Addendum 5](#addendum-5-servertransportclienttransport-serverattachserverctx-and-clientnethttpattachcall--the-transport-agnostic-attach-then-call-vocabulary)
+> below.** This section remains accurate as a HISTORICAL record of the
+> intermediate state it describes (`Serve`/`ServeSSE` as the sole public
+> entry points, both still exported and wire-only) — a LATER step
+> unexported `Serve`/`ServeSSE` to `serve`/`serveSSE`, making
+> `nethttp.AttachMux`/`chi.AttachRouter` (Addendum 5) the TRUE sole public
+> server-side entry point today. `ServeOne` remains a confirmed public
+> exception throughout.
+
+**Status: FULLY IMPLEMENTED (at the time; see the superseded-by note
+above for the subsequent step).** `Serve(mux, b) error`/`ServeSSE(mux,
 b) error` are the SOLE public server-side entry points in both
 `adapters/nethttp` and `adapters/chi` — the OLD `Handler`/`Register`/
 `SSEHandler`/`RegisterSSE` per-route functions have been DELETED
@@ -2937,3 +2947,109 @@ the SAME pre-existing exclusion already applied to
 pattern); `just examples` (all pass, including the migrated
 `adapters-sse` example, verified console output for both the
 credential-supplied and unauthenticated-rejection demo paths).
+
+## Addendum 5: `ServerTransport`/`ClientTransport`, `Server.Attach`/`.Serve(ctx)`, and `Client`/`nethttp.Attach`/`.Call` — the transport-agnostic `Attach`-then-call vocabulary
+
+Folded in from `docs/roadmap/transport-agnostic-serve-interface.md`, now
+deleted (its content lives here). This is the FOUNDATIONAL design
+Addenda 1-4 above already assume exists (e.g. "Client.Attach's Observer +
+ErrorPattern parity fix" references `Client.Attach` directly) — it was
+never itself folded into this document until now, despite being core
+REST design content. Spun out of a review of
+`docs/design/d-0002-pubsub-workflow-simplification.md`'s new
+`events.SubscriberServer`/`events.Client.Attach` design, which surfaced a
+genuine, pre-existing shape mismatch: REST's `Serve(mux, builder) error`
+(as it existed at the time) took no `ctx`, WIRED every handler-bearing
+route onto `mux`, and RETURNED IMMEDIATELY — actual request-serving
+happened later via a separately-called `http.Server.ListenAndServe()`
+entirely outside `rest`/`nethttp`'s control. Pub/sub's
+`ServeSubscribers(ctx) error`, by contrast, BLOCKS — it actually RUNS
+every registered subscription until `ctx` is cancelled. A shared interface
+literally named `Serve(ctx) error` could not mean the same thing in both
+places without resolving this mismatch first.
+
+**Resolved via Option 1** (give REST a genuinely NEW, ADDITIVE, opt-in
+BLOCKING variant, rather than forcing pub/sub's shape to match REST's
+wire-only one): `rest.Server` gained an `Attach(t ServerTransport) error`
+method and a blocking `Serve(ctx context.Context) error` method, mirroring
+`events.Client.Attach`/`.ServeSubscribers(ctx)` exactly:
+
+```go
+type ServerTransport interface {
+    Serve(ctx context.Context) error
+}
+func (b *Server) Attach(t ServerTransport) error       // ServerTransportAlreadyAttachedError on a 2nd call
+func (b *Server) Serve(ctx context.Context) error      // NoServerTransportAttachedError if never attached; BLOCKS
+```
+
+`nethttp.AttachMux(builder, mux, addr string) error` / `chi.AttachRouter(builder,
+r, addr string) error` each build an internal `ServerTransport` whose
+`Serve(ctx)` wires every handler-bearing route (reusing the existing
+wire-only dispatch internally, unchanged) onto `mux`/`r`, then constructs
+its OWN `&http.Server{Addr: addr, Handler: mux}` and calls
+`ListenAndServe()`, shutting down gracefully via `http.Server.Shutdown` on
+`ctx.Done()`.
+
+**Client side mirrors `events.Client` exactly** — NOT an adapter-level
+`nethttp.Caller` method, per a direct user request ("I want a rest.Client
+and a rest.Server ... to mirror the exact design of the event api"):
+
+```go
+type ClientTransport interface {
+    Call(ctx context.Context, route any, req any) (any, error)
+}
+type Client struct { /* unexported: mu sync.RWMutex; transport ClientTransport */ }
+func NewClient() *Client
+func (c *Client) Attach(t ClientTransport) error       // ClientTransportAlreadyAttachedError on a 2nd call
+func (c *Client) Call(ctx context.Context, route any, req any) (any, error) // NoClientTransportAttachedError if never attached
+```
+
+`nethttp.Attach(client *rest.Client, httpClient *http.Client, baseURL
+string) error` builds an internal `ClientTransport` wrapping the
+(then-existing) `nethttp.Caller`/`Call[Req,Resp]` — mirrors
+`zeromq.Attach`/`mqtt5.Attach` wrapping their own `*caller` internally.
+`route`/`req` are `any` (Go forbids a method introducing its own
+`[Req,Resp]` type parameters) — the internal transport recovers the
+concrete types via reflection against the route's already-concrete
+`Decode`/`Encode`/`BuildPath` closures, the SAME technique
+`events.Client.Publish`/`.Subscribe` uses; a type mismatch surfaces as
+`rest.TransportTypeMismatchError` at call time, not a compile error — the
+same explicit, scoped trade-off pub/sub's Decision 5 accepted.
+`rest.Client` carries NO spec/registry (unlike `rest.Server`) — a pure
+connection/transport holder. `chi` has no client side to unify (confirmed
+via code — chi is server-routing-only, no `Caller`/`Call` exists in
+`adapters/chi` at all); this design applies to `nethttp` only.
+
+**Resulting workflow**, mirroring `events.Client` symbol-for-symbol:
+
+```go
+client := rest.NewClient()
+_ = nethttp.Attach(client, httpClient, baseURL)
+respAny, err := client.Call(ctx, getUserRoute, req)
+resp := respAny.(GetUserResp)
+```
+
+**Both `Server.Attach`/`.Serve(ctx)` and today's existing wire-only
+dispatch were KEPT — this was purely additive, zero regression** at the
+time it shipped. A LATER step (tracked as Decision 6 in
+`docs/design/d-0002-pubsub-workflow-simplification.md`, executed as REST
+sub-phases 17e/17f of that plan) went further: `Serve`/`ServeSSE`
+(the wire-only dispatch functions) were UNEXPORTED to `serve`/`serveSSE`,
+called internally by `AttachMux`/`AttachRouter`'s `Serve(ctx)` — making
+`AttachMux`/`AttachRouter` the SOLE public server-side entry point today,
+not merely an additive alternative to a still-public `Serve`. See this
+document's own "Decision: `Serve` is the only public server-side entry
+point" above for the (now superseded, but historically accurate as an
+intermediate step) state that decision describes, and its own "Superseded
+by Addendum 5" pointer.
+
+**Structured errors / observer**: `ServerTransportAlreadyAttachedError`,
+`NoServerTransportAttachedError`, `ClientTransportAlreadyAttachedError`,
+`NoClientTransportAttachedError`, `TransportTypeMismatchError` — all
+`errors.As`-navigable + `slog.LogValuer`, mirroring `events.Client`'s
+identically-shaped error set exactly. No new observer hooks — `Client.Call`
+resolves `stats.Observer` from ctx the same way `nethttp.Call`/`CallHandle`
+already did.
+
+**Verified at the time**: `gofmt`/`go build`/`go vet`/`go test`/`just
+check`/`just examples` all green.
