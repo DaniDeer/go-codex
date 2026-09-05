@@ -92,8 +92,9 @@ err = redis.Set(ctx, client, userCache, map[string]string{"id": user.ID}, user, 
 `ports.Cache[T]` (via `NewCache`) is the declarative descriptor — the same
 role `RouteHandle`/`ChannelHandle` play via `route.ClientHandle()`/
 `channel.ClientHandle()`. `Get`/`Set` are the concrete redis implementation
-against it, the same role `nethttp.Call`/`mqtt.Publish` play against a
-route/channel handle. This mirrors every other non-pipeline building block
+against it, the same role `rest.Client.Call`/`events.Client.Publish` play
+against a route/channel handle. This mirrors every other non-pipeline
+building block
 in go-codex — see [Design pattern: declarative descriptor + plain
 function](ports.md#design-pattern-declarative-descriptor--plain-function)
 for the full comparison table across `file`/`cache`/`rest`/`events`/`sql`.

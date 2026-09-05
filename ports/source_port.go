@@ -20,8 +20,10 @@ import (
 // Implemented by transport binding constructors:
 //
 //	mqtt5.SubscribeAdapter, mqtt.SubscribeAdapter, nethttp.IngestAdapter,
-//	nethttp.PollAdapter, zeromq.SubscribeAdapter, file.ScanAdapter,
-//	file.WatchAdapter, sql.QueryAdapter, websocket.IngestSocketAdapter
+//	nethttp.PollAdapter, nethttp.CallSSEAdapter, zeromq.SubscribeAdapter,
+//	file.ScanAdapter, file.WatchAdapter, sql.QueryAdapter,
+//	chi.IngestAdapter, chi.IngestSocketAdapter,
+//	websocket.IngestSocketAdapter, websocket.DialSourceAdapter
 type SourceAdapter[T any] interface {
 	// Activate runs the adapter until ctx is cancelled, writing items to dst
 	// and errors to errs. Must not close either channel.

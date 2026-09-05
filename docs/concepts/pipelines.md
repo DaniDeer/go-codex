@@ -181,7 +181,7 @@ func(in OEEIn) (OEE, error) {
 // ❌ Wrong: I/O inside forge function violates the design
 // func(in InputData) (Out, error) {
 //     cfg, _ := configFile.Read(...)  ← file I/O
-//     resp, _ := nethttp.Call(...)    ← HTTP call
+//     resp, _ := nethttp.CallWithHandle(...) ← HTTP call
 //     row, _ := db.Query(...)         ← database query
 //     return combine(in, cfg, resp), nil
 // }

@@ -97,10 +97,41 @@ switch.
 ## Relationship to adapters used directly
 
 Every adapter package (`adapters/nethttp`, `adapters/mqtt5`,
-`adapters/sql`, ...) also exposes its constructors for direct use without any
-port at all (`nethttp.Call`, `mqtt5.Publish`, `sql.Validate`, etc.) — this is
-unchanged and remains the right choice for one-off scripts or code that has
-no reason to declare a reusable boundary. `ports` is for applications that
-want that boundary to be declared once, independent of the transport choice,
+`adapters/sql`, ...) also works WITHOUT any `ports` involvement at all — this
+is unchanged and remains the right choice for one-off scripts or code that
+has no reason to declare a reusable boundary. `ports` is for applications
+that want the boundary declared once, independent of the transport choice,
 and swappable in one place. Reaching for `ports` does not require adopting
 `forge` — see the table above.
+
+Used directly, an adapter is STILL never a raw bypass of `api/rest`/
+`api/events`'s own vocabulary — this is an architectural constraint, not a
+style preference. Every adapter entry point is one of exactly three shapes:
+
+1. **A `ClientTransport`/`ServerTransport` (REST) or `Transport` (events)
+   implementation**, attached via `rest.Client.Attach`/`rest.Server.Attach`/
+   `events.Client.Attach` — e.g. `nethttp.Attach`, `nethttp.AttachMux`,
+   `chi.AttachRouter`, `mqtt5.Attach`, `mqtt.Attach`, `zeromq.Attach`. This is
+   the declarative, common-case path: `client.Call(...)`/`client.Consume(...)`
+   for REST, `client.Publish(...)`/`client.Subscribe(...)` for events.
+2. **A `ports.SourceAdapter`/`SinkAdapter`/`IOAdapter`/etc. implementation**,
+   bound via `Port.Bind` — the pipeline path this page is about.
+3. **A SANCTIONED, handle-based escape hatch** — for callers who need a
+   pre-built `*rest.RouteHandle`/`*rest.SSERouteHandle`/`*events.ChannelHandle`
+   directly rather than a `rest.Route`/`rest.SSERoute`/`events.Channel`
+   value, or who need capability the declarative path doesn't expose (e.g.
+   per-call retry/backoff control). `nethttp.CallWithHandle`,
+   `nethttp.CallSSEAdapter`, and `mqtt5`/`mqtt`/`zeromq`'s
+   `NewPublishTransport`/`NewSubscribeTransport` (paired with
+   `events.PublishHandle`/`SubscribeHandle`) are the shipped examples. Every
+   one of these STILL takes a handle built by `api/rest`/`api/events` — none
+   of them decode/encode/dispatch independently of it.
+
+There is no fourth shape: no adapter exposes a bare, non-handle-based
+`Publish`/`Subscribe`/`Call`/`Serve` function that bypasses `RouteHandle`/
+`ChannelHandle` entirely (an earlier design did — `nethttp.Call[Req,Resp]`,
+removed per `docs/design/d-0002-pubsub-workflow-simplification.md`'s
+Decision 6 — the unification onto `Client`/`ClientTransport` is what
+replaced it). A NEW adapter must follow the same rule: see the
+`add-a-new-adapter` skill's own architectural-boundary rule for the concrete
+checklist.

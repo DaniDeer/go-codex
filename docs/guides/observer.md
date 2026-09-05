@@ -397,7 +397,7 @@ TraceObserver spans form a parent-child tree. go-codex adapters propagate the tr
 
 ```
 Service A (client)
-  nethttp.Call(ctx, ...)
+  client.Call(ctx, ...)
   └─ traceparent header → Service B
 
 Service B (server)
@@ -410,7 +410,7 @@ Service B (server)
 
 | Entry point                                                         | ctx purpose                                           |
 | ------------------------------------------------------------------- | ----------------------------------------------------- |
-| `nethttp.Call(ctx, url, handle, req, vars, opts)`                   | Creates child span, sends `traceparent` header        |
+| `rest.Client.Call(ctx, route, req)` / `nethttp.CallWithHandle(ctx, client, baseURL, handle, req, opts)` | Creates child span, sends `traceparent` header |
 | `events.SubscribeHandle(ctx, sub, mqttTransport, fn)`               | Parent for subscribe span, passed to `fn(ctx, value)` |
 | `events.PublishHandle(ctx, pub, mqttTransport, msg)`                | Creates child span for publish                        |
 
@@ -573,7 +573,7 @@ How it works:
 1. **Server adapters** pass the incoming `*http.Request.Context()` to `StartSpan`. When
    an OTel middleware has extracted a `traceparent` header, the new span is a **child**.
    Without middleware, a **root** span is created.
-2. **Client adapters** (`nethttp.Call`, `mqtt.Publish`) create a child span from the
+2. **Client adapters** (`rest.Client.Call`, `events.Client.Publish`) create a child span from the
    user-provided `ctx`. For HTTP, the `traceparent` header propagates via the SDK's
    > **Note**: `LoggingObserver` does **not** implement `TraceObserver` (slog has no tracing
    > built-in). To correlate log output with trace IDs, configure the logging observer's

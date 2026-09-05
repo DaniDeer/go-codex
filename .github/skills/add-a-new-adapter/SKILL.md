@@ -212,6 +212,57 @@ typed value via reflection, bypassing the codec's Encode/Decode). See
 `api/rest/builder_test.go`'s `TestGobBodyFormat_ComposesWithNestedMergeFields`
 and `examples/rest-nested-binary` for the reference pattern to mirror.
 
+## Step 5c — Adapters are thin: no adapter-invented escape hatch (MANDATORY architectural constraint)
+
+**The rule, stated plainly**: a new adapter must NEVER expose a bare,
+non-handle-based `Publish`/`Subscribe`/`Call`/`Serve`-style function that
+decodes/encodes/dispatches independently of the owning `api/*` package's
+own `RouteHandle`/`ChannelHandle`/`Route`/`Channel`/`Server`/`Client`. This
+is stricter than — and a superset of — Step 5b's ergonomics checklist:
+Step 5b is about what a handle-based call FEELS like (one struct, one
+call); this rule is about the adapter never being able to bypass the handle
+at all.
+
+Every adapter entry point must be exactly one of these three shapes —
+there is no fourth:
+
+1. **A `ClientTransport`/`ServerTransport` (REST-shaped) or `Transport`
+   (pub/sub-shaped, bundling publish+subscribe+serve) implementation**,
+   attached via the owning `api/*` package's `Client.Attach`/`Server.Attach`
+   method. This is the declarative, common-case path — see
+   `rest.ClientTransport`/`rest.ServerTransport` and `events.Transport` for
+   the exact interfaces every REST/events adapter implements today
+   (`nethttp.Attach`/`AttachMux`, `chi.AttachRouter`, `mqtt5`/`mqtt`/
+   `zeromq.Attach`).
+2. **A `ports.SourceAdapter`/`SinkAdapter`/`IOAdapter`/`ToolAdapter`/
+   `LatestAdapter`/`DuplexAdapter` implementation**, bound via `Port.Bind`
+   (Step 1's port-type classification).
+3. **A SANCTIONED, handle-based escape hatch** for callers needing a
+   pre-built handle directly, or capability the declarative path doesn't
+   expose — `nethttp.CallWithHandle`/`CallSSEAdapter`,
+   `mqtt5`/`mqtt`/`zeromq`'s `NewPublishTransport`/`NewSubscribeTransport`
+   (paired with `events.PublishHandle`/`SubscribeHandle`) are the shipped
+   examples. Every one of these STILL takes a `*RouteHandle`/
+   `*SSERouteHandle`/`*ChannelHandle` built by the owning `api/*` package —
+   none of them independently decode/encode/dispatch.
+
+**Why this matters**: an adapter-invented bypass (e.g. a bare
+`Publish(client, topic, msg)` taking no handle at all) duplicates
+decode/encode/merge-field/security/observer logic the owning `api/*`
+package already owns, guaranteeing DRIFT the moment that package's logic
+changes — exactly the mistake `docs/design/d-0002-pubsub-workflow-simplification.md`'s
+Decision 6 fixed by removing the old bare `nethttp.Call[Req,Resp]` in favor
+of `rest.Client`/`ClientTransport`. See
+`docs/concepts/ports-and-adapters.md`'s "Relationship to adapters used
+directly" section for the full, user-facing statement of this rule —
+confirmed currently true for REST (request/response AND SSE) and events
+pub/sub across `nethttp`/`chi`/`mqtt5`/`mqtt`/`zeromq` via a
+`review-go-codex`-style exported-symbol audit; `api/reqreply` has not yet
+received the `Client`/`ClientTransport` unification (tracked separately in
+`docs/roadmap/reqreply-workflow-simplification.md`) — a NEW req/reply-shaped
+adapter may still need a handle-based (not bare) entry point in the
+interim, but should still avoid a bare non-handle escape hatch.
+
 ## Step 6 — Use the checklist
 
 Work through [references/checklist.md](references/checklist.md) — a
@@ -267,4 +318,5 @@ verification ritual. Track progress with todos, one per checklist block.
 - `adapters/sql/` — reference store adapter (metadata Pattern, validate/observer patterns)
 - `api/rest/builder.go` + `adapters/nethttp/{adapter,client}.go` — reference implementation of Step 5b's one-struct-one-call pattern (`NewPathParam`/etc., `DecodeMerged`, role-aware `PathMergeFields`/etc., `NewRequiredResponseHeaderParam`/etc., `DecodeMergedResponse`, `CallHandle`)
 - `docs/concepts/api-contracts.md` — "one struct, one call" design principle, user-facing framing
+- `docs/concepts/ports-and-adapters.md` — Step 5c's "no adapter-invented escape hatch" principle, user-facing framing
 - `ports/pattern.go`, `ports/handle.go` — Pattern declaration + build machinery

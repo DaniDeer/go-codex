@@ -159,9 +159,11 @@ var sensorChannel = events.NewChannel[SensorReading]("sensors/{sensorID}/reading
 )
 handle, _ := sensorChannel.WithSubscribe(events.Subscribe{}).Handle(client)
 
-// adapters/mqtt5.Subscribe calls ChannelHandle.DecodeMerged automatically
-// whenever handle.MergeFields() is non-empty — the handler function just
-// receives a fully populated, validated SensorReading:
+// adapters/mqtt5's subscribe dispatch (reached via events.Client.Subscribe
+// or events.SubscribeHandle+NewSubscribeTransport) calls
+// ChannelHandle.DecodeMerged automatically whenever handle.MergeFields()
+// is non-empty — the handler function just receives a fully populated,
+// validated SensorReading:
 func(ctx context.Context, r SensorReading) error {
     store.Save(r) // r.SensorID already validated as a UUID
     ...

@@ -37,7 +37,8 @@ type Framed[T any] struct {
 //
 // Implemented by transport binding constructors:
 //
-//	websocket.DuplexSocketAdapter
+//	websocket.DuplexSocketAdapter, websocket.DialDuplexAdapter,
+//	chi.DuplexSocketAdapter
 type DuplexAdapter[In, Out any] interface {
 	// Activate runs the endpoint until ctx is cancelled or src terminates.
 	// Must not close dst or errs.

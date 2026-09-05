@@ -17,6 +17,7 @@ go-codex is a Go port of the core ideas from Haskell's [autodocodec](https://hac
 - Codecs are values, not magic; pass them, return them, store them.
 - Errors carry context; decoding failures include field path and expected type.
 - No reflection, no struct tags for codec logic; all wiring is explicit in Go code.
+- Adapters are thin: every entry point is a `ClientTransport`/`ServerTransport`/`Transport` implementation (attached via `Client`/`Server.Attach`), a `ports.XxxAdapter` (bound via `Port.Bind`), or a sanctioned handle-based escape hatch (`CallWithHandle`, `CallSSEAdapter`, `NewXTransport`+`PublishHandle`/`SubscribeHandle`) — never a bare, adapter-invented bypass of the owning `api/*` package's `RouteHandle`/`ChannelHandle` (see `docs/concepts/ports-and-adapters.md`).
 
 ## Package Structure and Responsibilities
 

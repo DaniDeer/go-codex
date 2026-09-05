@@ -23,7 +23,8 @@ import (
 //
 // Implemented by transport binding constructors:
 //
-//	nethttp.LatestAdapter, zeromq.LatestAdapter, mcpgo.LatestAdapter
+//	nethttp.LatestAdapter, chi.LatestAdapter, zeromq.LatestAdapter,
+//	mcpgo.LatestAdapter
 type LatestAdapter[T any] interface {
 	// Serve runs the endpoint, answering each request with latest().
 	Serve(ctx context.Context, latest func() (T, bool)) error

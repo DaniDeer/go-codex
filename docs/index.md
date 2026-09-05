@@ -28,7 +28,7 @@ var UserCodec = codex.Struct[User](
 - **Custom constraints** — `codex.Constraint[T]` with optional schema annotation; compose with `.Refine()` and `.RefineFunc()` for cross-field rules
 - **OpenAPI 3.1** — complete spec (paths, operations, params, security) from the same codec definitions; no manual YAML, no drift
 - **AsyncAPI 3.0** — complete event-driven spec from channel descriptors; same schemas, no duplication
-- **REST + HTTP client** — typed `Decode`/`Encode` per route; `nethttp.Call` typed client; both share the same `Route` definition — shared contract, compiler-enforced
+- **REST + HTTP client** — typed `Decode`/`Encode` per route; `rest.Client.Call` typed client; both share the same `Route` definition — shared contract, compiler-enforced
 - **MQTT events** — typed subscribe/publish with topic template validation, wildcard support, `TopicVarsFromMessage`, and AsyncAPI spec
 - **MCP server** — Tools, Resources, and Prompts follow declare → register → handle; codec drives `inputSchema` automatically
 - **SSE (Server-Sent Events)** — codec-validated event streams; path params work identically to REST routes

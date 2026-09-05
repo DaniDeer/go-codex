@@ -21,8 +21,10 @@ import (
 //
 //	mqtt5.PublishAdapter, mqtt.PublishAdapter, nethttp.SSEAdapter,
 //	nethttp.DrainCallAdapter, zeromq.PublishAdapter, file.DrainWriteAdapter,
-//	file.DrainWriteFileAdapter, sql.DrainInsertAdapter, redis.DrainSetAdapter,
-//	websocket.BroadcastSocketAdapter
+//	file.DrainWriteFileAdapter, file.DrainPatchAdapter,
+//	file.DrainPatchEncodedAdapter, sql.DrainInsertAdapter,
+//	redis.DrainSetAdapter, chi.SSEAdapter, chi.BroadcastSocketAdapter,
+//	websocket.BroadcastSocketAdapter, websocket.DialSinkAdapter
 type SinkAdapter[T any] interface {
 	// Activate consumes src until it terminates or ctx is cancelled.
 	Activate(ctx context.Context, src gstream.Stream[T])

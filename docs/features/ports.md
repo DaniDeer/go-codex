@@ -1258,8 +1258,10 @@ supported — useful when sharing one handle across a port-based binding and a s
 standalone adapter call, or when the port itself doesn't need a `Pattern` (handle-less
 adapters like `file`/`sql` use `Params` instead; see below).
 
-Standalone (non-pipeline) use of adapters — `mqtt5.Subscribe`, `nethttp.Call`,
-`zeromq.Serve`, etc. — remains fully supported and unaffected by `ports`.
+Standalone (non-pipeline) use of adapters — `mqtt5.NewSubscribeTransport`/
+`events.SubscribeHandle`, `rest.Client.Call`/`nethttp.CallWithHandle`,
+`zeromq.Serve` (req/reply), etc. — remains fully supported and unaffected by
+`ports`.
 
 ## Design pattern: declarative descriptor + plain function
 
@@ -1281,8 +1283,8 @@ use follows the same two-part shape, for the same three reasons:
 |---|---|---|---|
 | `ports` + `adapters/file` (file) | `ports.NewFile(path, fmt, opts...)` | `File.Read`/`.Write`/`.Update`/`.Patch` | `ports.FilePathParam.WithCodec` |
 | `ports` + `adapters/redis` (cache) | `ports.NewCache(key, fmt, opts...)` | `redis.Get`/`redis.Set`/`redis.Seed` | `ports.CacheKeyParam.WithCodec` |
-| `api/rest` | `route.ClientHandle()` | `nethttp.Call` | `rest.PathParam.WithCodec` |
-| `api/events` | `channel.ClientHandle()` | `mqtt.Publish`/`Subscribe` | `events.TopicParam.WithCodec` |
+| `api/rest` | `route.ClientHandle()` | `rest.Client.Call`/`nethttp.CallWithHandle` | `rest.PathParam.WithCodec` |
+| `api/events` | `channel.ClientHandle()` | `events.Client.Publish`/`.Subscribe` (or `mqtt.NewPublishTransport`/`NewSubscribeTransport` + `events.PublishHandle`/`SubscribeHandle`) | `events.TopicParam.WithCodec` |
 | `adapters/sql` | `codex.Codec[T]` (the codec itself — no wrapper needed) | `sql.Validate`, or declared once via `sql.DecorateInput`/`DecorateOutput` | **N/A — no templated key exists** (see below) |
 
 `ports.File[T]` and `ports.Cache[T]` both "have a" `format.Format[T]` field
