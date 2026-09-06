@@ -286,9 +286,9 @@ func main() {
 			// doesn't apply to this ToolPort/pipeline shape — it requires a
 			// typed Req struct field to merge into. r.PathValue("sensorID")
 			// is still codec-validated by the RESTPattern's PathParam
-			// before this closure runs. See examples/adapters-nethttp's
-			// makeGetUserHandler for the automatic-merge pattern on a
-			// typed Req.
+			// before this closure runs. See examples/rest-api's
+			// handlers.MakeGetUserHandler for the automatic-merge pattern
+			// on a typed Req.
 			r, _ := nethttp.RequestFromContext(ctx)
 			return r.PathValue("sensorID")
 		}))

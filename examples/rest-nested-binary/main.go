@@ -23,6 +23,10 @@
 // marshal/unmarshal that projects onto/from that sub-field manually — that
 // is exactly what this example does.
 //
+// See also examples/rest-api (full adapter-based project, flat structs
+// only), examples/rest-builder (transport-agnostic builder core), and
+// examples/rest-schema-docs (schema-only, no routes).
+//
 // Run with: go run ./examples/rest-nested-binary
 package main
 

@@ -334,15 +334,21 @@ go-codex/
     └── validate/           # explicit Validate before marshal
     │
     │   # ── REST / HTTP (Layer 2) ───────────────────────────────────────────────
-    ├── api-rest/               # REST API builder: typed helpers + OpenAPI spec
-    ├── openapi/                # OpenAPI components/schemas generation from a Codec
-    ├── rest-api/               # full OpenAPI 3.1 document from route descriptors
-    ├── adapters-nethttp/       # net/http adapter: three-layer pipeline, multi-format bodies, observer
-    ├── adapters-nethttp-security/   # net/http adapter: bearer JWT, scopes, SecurityFunc, observer
+    ├── rest-builder/           # REST API builder: typed helpers + OpenAPI spec, transport-agnostic
+    ├── rest-schema-docs/       # OpenAPI components/schemas generation from a Codec, no routes
+    ├── rest-nested-binary/     # nested-struct merge fields + non-JSON (Gob) body format symmetry
+    ├── rest-api/               # declare→build-server→build-client REST project: routes/,
+    │   │                         # handlers/, chiserver/, nethttpserver/, client/ packages;
+    │   │                         # three-layer pipeline, multi-format bodies, bearer JWT +
+    │   │                         # scopes, observer, general-purpose middleware, both chi
+    │   │                         # and net/http server adapters, hand-rolled spec endpoint
+    │   ├── routes/                 #   declare: domain codecs, middleware, unattached Route values
+    │   ├── handlers/                #   implement: adapter-agnostic business logic + security
+    │   ├── chiserver/                #   assemble (chi): AttachRouter + full route wiring
+    │   ├── nethttpserver/             #   assemble (net/http): AttachMux + full route wiring
+    │   └── client/                     #   assemble (client): nethttp.Attach + per-identity variants
     ├── adapters-nethttp-client/     # codec-as-contract HTTP client: shared contract/, Caller, security middleware
     │   └── contract/               #   shared Route specs, codecs, types (importable by both sides)
-    ├── adapters-chi/           # chi adapter: wiring api/rest to chi.Router
-    ├── adapters-chi-security/  # chi adapter: bearer JWT security, per-route scopes
     ├── adapters-sse/           # SSE: NewSSERoute, SSEHandler, path codec, OpenAPI spec
     ├── adapters-streaming-sse-templ/ # chunked streaming + SSE HTML fragments via templ components
     ├── adapters-templ/         # templ SSR: same route serves HTML and JSON; observer wired

@@ -254,7 +254,7 @@ const threshold = 30.0
 // doConvertRequest performs req and returns the response body, closing it
 // via defer (the standard net/http idiom — unlike a bare call, a deferred
 // Close's discarded error is the accepted pattern used throughout
-// examples/adapters-nethttp and examples/adapters-chi).
+// examples/rest-api).
 func doConvertRequest(req *http.Request) ([]byte, error) {
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {

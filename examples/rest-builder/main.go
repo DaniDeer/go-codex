@@ -1,11 +1,14 @@
-// Package api-rest demonstrates the api/rest builder: define routes with
+// Package rest-builder demonstrates the api/rest builder: define routes with
 // codec-backed types, get typed Decode/Encode helpers, and generate a full
 // OpenAPI 3.1 spec — all without importing net/http or any HTTP framework.
 //
 // The same RouteHandle.Decode and RouteHandle.Encode helpers work unchanged
-// with net/http, Gin, Chi, Echo, or any other HTTP library.
+// with net/http, Gin, Chi, Echo, or any other HTTP library. See also
+// examples/rest-api (full adapter-based project via chi/net/http),
+// examples/rest-schema-docs (schema-only, no routes), and
+// examples/rest-nested-binary (nested-struct merge + non-JSON body format).
 //
-// Run with: go run ./examples/api-rest
+// Run with: go run ./examples/rest-builder
 package main
 
 import (
@@ -105,7 +108,7 @@ func main() {
 	// no live handler here) with plain rest.PathParam (validate-only). For
 	// a typed Req that wants the path value merged in automatically (no
 	// manual r.PathValue("id") extraction), use rest.NewPathParam instead
-	// — see examples/adapters-nethttp's makeGetUserHandler and
+	// — see examples/rest-api's handlers.MakeGetUserHandler and
 	// docs/features/rest-api.md's "Path/query/header params with
 	// automatic merge" section for the full pattern.
 	getUser, err := rest.NewRoute[struct{}, User]("GET", "/users/{id}",

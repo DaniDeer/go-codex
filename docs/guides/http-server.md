@@ -8,44 +8,32 @@ This guide walks through the HTTP server examples in `examples/`. For the full A
 - [SSE & Streaming](../features/sse-streaming.md) — NewSSERoute, templ SSR, chunked streaming
 - [Formats & Serialization](../features/formats.md) — multi-format request/response
 
-## examples/adapters-nethttp
+## examples/rest-api
 
-The most comprehensive HTTP server demo. Shows the **three-layer codec pipeline**:
+The most comprehensive HTTP server (and client) demo — structured as a real
+small project (`routes/`, `handlers/`, `chiserver/`, `nethttpserver/`,
+`client/` packages) demonstrating the **declare → build server → build
+client** workflow, with the SAME `routes`/`handlers` packages assembled onto
+BOTH the `net/http` and `chi` adapters unchanged — proving routes and
+business logic are adapter-agnostic. Shows the **three-layer codec
+pipeline**:
 
 - Layer 1: shared field codecs (`emailFieldCodec`, `nameFieldCodec`) propagate constraints to all three boundary codecs (request, database, response)
-- Layer 2: pure domain functions (`buildUserRecord`, `buildUserResponse`) with zero IO — independently unit-testable
-- Layer 3: infrastructure (`UserStore` uses codec for all DB IO; `nethttp.AttachMux` + `Server.Serve(ctx)` — the calls that wire every declared route onto the mux and start serving — are the only HTTP lines)
+- Layer 2: pure domain functions (`handlers.BuildUserRecord`, `handlers.BuildUserResponse`) with zero IO — independently unit-testable
+- Layer 3: infrastructure (`handlers.UserStore` uses codec for all DB IO; `nethttp.AttachMux`/`chiadapter.AttachRouter` + `Server.Serve(ctx)` — the calls that wire every declared route onto the mux/router and start serving — are the only HTTP lines)
 
 Key patterns:
 - `rest.RequestFormats(format.JSON(...), format.YAML(...))` declared inline in `NewRoute`'s opts — JSON + YAML bodies
-- `rest.NewPathParam` — declares the path param's spec/validation AND a merge field in one call; the handler receives an already-merged, validated request (`req.ID`) instead of manually calling `r.PathValue("id")` — see [REST API — Path/query/header params with automatic merge](../features/rest-api.md#pathqueryheader-params-with-automatic-merge)
+- `rest.NewPathParam` — declares the path param's spec/validation AND a merge field in one call; the handler receives an already-merged, validated request (`req.ID`) instead of manually calling `r.PathValue("id")`/`chi.URLParam(r, "id")` — see [REST API — Path/query/header params with automatic merge](../features/rest-api.md#pathqueryheader-params-with-automatic-merge)
 - `ResponseHeaderParam` + `ResponseCookieParam` — server-side contract validation on outgoing headers/cookies
-- `nethttp.SetCookie` with `.WithCodec()` — symmetric read/write validation using the same codec
-- `CountingObserver` — in-memory metrics (swap for Prometheus in production)
-- `withDomainLogging` decorator — separates logging concern from handler body
+- `chiadapter.SetCookie`/`nethttp` cookie helpers with `.WithCodec()` — symmetric read/write validation using the same codec
+- Bearer JWT security: `middleware.SecurityScheme("bearerAuth", route.BearerScheme("JWT"), scopes, &bearerCodec)` declares the scheme + per-route scope requirement in one value, attached via `.Use(declMw)`; per-route scopes are separate `middleware.SecurityScheme` values (`[]string{"profile"}` vs `[]string{"admin"}`); enforced server-side via a `handlers.ScopesImpl`-built `middleware.ServerImplementation` attached via `.HandleMW(&declMw, impl.Fn)`; supplied client-side via a per-identity `credFn` (`aliceCredFn`/`adminCredFn`) attached via `.ClientMW(&declMw, credFn)`
+- A general-purpose timing middleware (`routes.TimingServerMW`/`routes.TimingClientMW`) shown on BOTH server (`HandleMW(nil, ...)`) and client (`ClientMW(nil, ...)`) roles — the general-purpose `ClientMW` hook (via `reflect.MakeFunc`)
+- `CountingObserver` — in-memory metrics (swap for Prometheus in production), wired via `nethttp.Observability`/`chiadapter.Observability`
+- `handlers.WithDomainLogging` decorator — separates logging concern from handler body
+- A hand-rolled `GET /openapi.yaml` endpoint on both servers — go-codex has no declarative "serve my own spec" convenience yet (see `docs/roadmap/openapi-spec-endpoint.md`)
 
-→ [examples/adapters-nethttp](https://github.com/DaniDeer/go-codex/tree/main/examples/adapters-nethttp)
-
-## examples/adapters-nethttp-security
-
-Demonstrates bearer JWT authentication with per-route scope enforcement:
-
-- `middleware.SecurityScheme("bearerAuth", route.BearerScheme("JWT"), scopes, &bearerCodec)` declares the scheme + per-route scope requirement in one value, attached via `.Use(declMw)`
-- `b.AddGlobalSecurity(route.Require("bearerAuth"))`
-- Per-route scopes: one `middleware.SecurityScheme` value per required scope set (`[]string{"profile"}` vs `[]string{"admin"}`)
-- Custom `ErrorHandler` mapping `invalidCredentialsError` → 401
-- A `scopesImpl`-built `middleware.ServerImplementation` that calls `verifyToken()` after codec format validation, attached via `.HandleMW(&declMw, impl.Fn)` (paired against the declared scheme via its `Satisfies`)
-
-→ [examples/adapters-nethttp-security](https://github.com/DaniDeer/go-codex/tree/main/examples/adapters-nethttp-security)
-
-## examples/adapters-chi
-
-Same patterns as `adapters-nethttp` but using chi router. Demonstrates both
-the low-level `chi.URLParam(r, "id")` extraction (for validate-only params)
-and `rest.NewPathParam`'s automatic merge (chi's `Serve` applies
-`RouteHandle.MergeFields()` internally exactly like `nethttp.Serve` does).
-
-→ [examples/adapters-chi](https://github.com/DaniDeer/go-codex/tree/main/examples/adapters-chi) · [examples/adapters-chi-security](https://github.com/DaniDeer/go-codex/tree/main/examples/adapters-chi-security)
+→ [examples/rest-api](https://github.com/DaniDeer/go-codex/tree/main/examples/rest-api)
 
 ## examples/adapters-sse
 
@@ -213,9 +201,9 @@ nethttp.RegisterPipeline(mux, pipelineHandle, pipelineFn,
 | No emitted pipeline value handling | N/A | `PipelineNoResponseError` default `503` (overridable by route mapping) |
 | Redirect success path (`3xx` + `Location`) | `RespStatus` + response header merge / `WithResponseHeaders` | Same (pipeline does not change redirect mechanics) |
 
-`examples/adapters-nethttp` now includes both routes (`/ergonomics/no-pipeline`
-and `/ergonomics/pipeline`) with the same domain error type so you can compare
-the two styles directly.
+The code sample above sketches both styles side by side with the same domain
+error type so you can compare them directly; no standalone runnable example
+demonstrates this specific comparison today.
 
 ### `MaxBodyBytes` and `validate.MaxBytes`
 
@@ -248,11 +236,15 @@ _ = b.Serve(ctx) // blocks, owns its own http.Server
 
 See [`examples/png-upload`](https://github.com/DaniDeer/go-codex/tree/main/examples/png-upload) for a full upload + download route pair with path params, cookie validation, and OpenAPI spec generation.
 
-## examples/api-rest + examples/rest-api + examples/openapi
+## examples/rest-builder + examples/rest-schema-docs
 
-Standalone REST builder and OpenAPI spec generation demos without an HTTP server.
+Standalone REST builder and OpenAPI spec generation demos without an HTTP server —
+`examples/rest-builder` demonstrates the transport-agnostic `api/rest` builder core
+(routes, spec, manual Decode/Encode, no HTTP framework); `examples/rest-schema-docs`
+demonstrates schema-only OpenAPI generation straight from a Codec, no routes at all.
+See the `## examples/rest-api` section above for the full adapter-based server demo.
 
-→ [examples/api-rest](https://github.com/DaniDeer/go-codex/tree/main/examples/api-rest) · [examples/rest-api](https://github.com/DaniDeer/go-codex/tree/main/examples/rest-api) · [examples/openapi](https://github.com/DaniDeer/go-codex/tree/main/examples/openapi)
+→ [examples/rest-builder](https://github.com/DaniDeer/go-codex/tree/main/examples/rest-builder) · [examples/rest-schema-docs](https://github.com/DaniDeer/go-codex/tree/main/examples/rest-schema-docs)
 
 ## `Server.Attach` + `Server.Serve` — the ONLY server startup workflow
 

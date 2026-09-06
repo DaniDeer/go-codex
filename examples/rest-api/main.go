@@ -1,133 +1,105 @@
-// Package rest-api demonstrates generating a full OpenAPI 3.1 document from
-// route descriptors and Codec-derived schemas using the render/openapi package.
+// Package rest-api demonstrates go-codex's declare → assemble workflow as
+// a small, real, multi-package project — not one big file — showing that
+// route/middleware declarations, business logic, and server assembly are
+// genuinely separable, adapter-agnostic concerns:
+//
+//	routes/         — domain models, codecs, and THREE middleware kinds
+//	                  (security, observer, general-purpose timing) — every
+//	                  rest.Route is an UNATTACHED spec value here, no
+//	                  handler/HandleMW/ClientMW yet.
+//	handlers/       — SERVER-side business logic + security enforcement,
+//	                  adapter-agnostic (works identically whether nethttp
+//	                  or chi supplies the *http.Request).
+//	chiserver/      — assembles routes/+handlers/ onto adapters/chi.
+//	nethttpserver/  — assembles the SAME routes/+handlers/ onto
+//	                  adapters/nethttp — proving the declarations
+//	                  themselves are adapter-agnostic.
+//	client/         — CLIENT-side credential + general-purpose middleware
+//	                  variants of the SAME routes/ declarations, built on
+//	                  adapters/nethttp's rest.Client — used to call BOTH
+//	                  servers, since a declared rest.Route/rest.Client
+//	                  pair is transport-agnostic on the wire.
+//	demo_*.go       — one file per route/concern, assembling the demo
+//	                  calls that exercise the above.
+//	main.go         — this file: builds both servers, builds the client,
+//	                  runs every demo in narrative order.
+//
+// See also examples/rest-builder (transport-agnostic builder core, no
+// adapter), examples/rest-schema-docs (schema-only, no routes), and
+// examples/rest-nested-binary (nested-struct merge + non-JSON body format).
 //
 // Run with: go run ./examples/rest-api
 package main
 
 import (
+	"context"
 	"fmt"
+	"log/slog"
+	"net/http"
 	"os"
 
-	"github.com/DaniDeer/go-codex/codex"
-	"github.com/DaniDeer/go-codex/render/openapi"
-	"github.com/DaniDeer/go-codex/route"
-	"github.com/DaniDeer/go-codex/schema"
-	"github.com/DaniDeer/go-codex/validate"
-)
-
-// User is a domain type whose codec is the single source of truth for
-// encoding, decoding, validation, and schema documentation.
-type User struct {
-	ID    string
-	Name  string
-	Email string
-}
-
-var UserCodec = codex.Struct[User](
-	codex.RequiredField("id", codex.String().Refine(validate.UUID).WithDescription("Unique user ID (UUID)."), func(u User) string { return u.ID }, func(u *User, v string) { u.ID = v }),
-	codex.RequiredField("name", codex.String().Refine(validate.NonEmptyString).Refine(validate.MaxLen(100)).WithDescription("Full display name."), func(u User) string { return u.Name }, func(u *User, v string) { u.Name = v }),
-	codex.RequiredField("email", codex.String().Refine(validate.Email).WithDescription("Primary email address."), func(u User) string { return u.Email }, func(u *User, v string) { u.Email = v }),
-)
-
-// CreateUserRequest is the request body for POST /users.
-type CreateUserRequest struct {
-	Name  string
-	Email string
-}
-
-var CreateUserRequestCodec = codex.Struct[CreateUserRequest](
-	codex.RequiredField("name", codex.String().Refine(validate.NonEmptyString).Refine(validate.MaxLen(100)).WithDescription("Full display name."), func(r CreateUserRequest) string { return r.Name }, func(r *CreateUserRequest, v string) { r.Name = v }),
-	codex.RequiredField("email", codex.String().Refine(validate.Email).WithDescription("Primary email address."), func(r CreateUserRequest) string { return r.Email }, func(r *CreateUserRequest, v string) { r.Email = v }),
+	"github.com/DaniDeer/go-codex/examples/rest-api/chiserver"
+	restapiclient "github.com/DaniDeer/go-codex/examples/rest-api/client"
+	"github.com/DaniDeer/go-codex/examples/rest-api/handlers"
+	"github.com/DaniDeer/go-codex/examples/rest-api/nethttpserver"
+	"github.com/DaniDeer/go-codex/stats"
 )
 
 func main() {
-	userSchema := UserCodec.Schema
-	createSchema := CreateUserRequestCodec.Schema
+	logger := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelDebug}))
+	slog.SetDefault(logger)
 
-	doc, err := openapi.NewDocumentBuilder(openapi.Info{
-		Title:       "User API",
-		Version:     "1.0.0",
-		Description: "CRUD API for managing users.",
-	}).
-		AddServer(openapi.Server{
-			URL:         "https://api.example.com/v1",
-			Description: "Production",
-		}).
-		AddServer(openapi.Server{
-			URL:         "http://localhost:8080/v1",
-			Description: "Local development",
-		}).
-		AddRoute(route.Route{
-			Method:      "GET",
-			Path:        "/users",
-			OperationID: "listUsers",
-			Summary:     "List users",
-			Tags:        []string{"users"},
-			QueryParams: []route.Param{
-				{Name: "limit", Description: "Maximum number of results.", Schema: schema.Schema{Type: "integer"}},
-				{Name: "offset", Description: "Number of results to skip.", Schema: schema.Schema{Type: "integer"}},
-			},
-			Responses: []route.Response{
-				{Status: "200", Description: "List of users.", Schema: &schema.Schema{Type: "array", Items: &userSchema}, SchemaName: ""},
-			},
-		}).
-		AddRoute(route.Route{
-			Method:      "POST",
-			Path:        "/users",
-			OperationID: "createUser",
-			Summary:     "Create a user",
-			Tags:        []string{"users"},
-			RequestBody: &route.Body{
-				Required:   true,
-				Schema:     createSchema,
-				SchemaName: "CreateUserRequest",
-			},
-			Responses: []route.Response{
-				{Status: "201", Description: "User created.", Schema: &userSchema, SchemaName: "User"},
-				{Status: "400", Description: "Validation error."},
-			},
-		}).
-		AddRoute(route.Route{
-			Method:      "GET",
-			Path:        "/users/{id}",
-			OperationID: "getUser",
-			Summary:     "Get a user",
-			Tags:        []string{"users"},
-			PathParams: []route.Param{
-				{Name: "id", Required: true, Description: "User ID (UUID).", Schema: schema.Schema{Type: "string", Format: "uuid"}},
-			},
-			Responses: []route.Response{
-				{Status: "200", Description: "User found.", Schema: &userSchema, SchemaName: "User"},
-				{Status: "404", Description: "User not found."},
-			},
-		}).
-		AddRoute(route.Route{
-			Method:      "DELETE",
-			Path:        "/users/{id}",
-			OperationID: "deleteUser",
-			Summary:     "Delete a user",
-			Tags:        []string{"users"},
-			PathParams: []route.Param{
-				{Name: "id", Required: true, Description: "User ID (UUID).", Schema: schema.Schema{Type: "string", Format: "uuid"}},
-			},
-			Responses: []route.Response{
-				{Status: "204", Description: "User deleted."},
-				{Status: "404", Description: "User not found."},
-			},
-		}).
-		Build()
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "build error: %v\n", err)
-		os.Exit(1)
-	}
+	store := handlers.NewUserStore()
+	metrics := &CountingObserver{}
+	obs := stats.NewFanout(metrics, stats.NewLoggingObserver(logger.With("component", "http")))
 
-	yamlBytes, err := doc.MarshalYAML()
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "render error: %v\n", err)
-		os.Exit(1)
-	}
+	// ── Build both servers — SAME routes/handlers, different adapters ──────
+	chiAddr := mustFreeAddr()
+	chiBuilt, err := chiserver.Build(store, obs, logger, chiAddr)
+	must(err, "build chi server")
+	chiCtx, chiCancel := context.WithCancel(context.Background())
+	defer chiCancel()
+	go func() { _ = chiBuilt.Server.Serve(chiCtx) }()
+	waitForReady(chiAddr)
 
-	fmt.Println("# Full OpenAPI 3.1 document (YAML)")
+	nethttpAddr := mustFreeAddr()
+	nethttpBuilt, err := nethttpserver.Build(store, obs, logger, nethttpAddr)
+	must(err, "build net/http server")
+	nethttpCtx, nethttpCancel := context.WithCancel(context.Background())
+	defer nethttpCancel()
+	go func() { _ = nethttpBuilt.Server.Serve(nethttpCtx) }()
+	waitForReady(nethttpAddr)
+
+	// ── Build the client(s) — adapters/nethttp against EITHER server ───────
+	chiClient, err := restapiclient.Build(http.DefaultClient, "http://"+chiAddr)
+	must(err, "build chi client")
+	nethttpClient, err := restapiclient.Build(http.DefaultClient, "http://"+nethttpAddr)
+	must(err, "build net/http client")
+
+	fmt.Println("=== rest-api demo: declare → assemble (chi + net/http) → client tests server ===")
 	fmt.Println()
+
+	demoLogin(chiClient, nethttpClient)
+	demoCreateUser(chiClient, "http://"+chiAddr)
+	demoGetUser(chiClient, chiBuilt.GetUserHandle)
+	demoUpdateUser(chiClient)
+	demoListUsers(chiClient, "http://"+chiAddr)
+	demoProfile(chiClient)
+	demoAdminAction(chiClient)
+	demoResponseHeaderCookieViolation()
+	demoResponseBodyViolation()
+	demoSetCookie()
+	demoSpecEndpoint(chiAddr, nethttpAddr)
+
+	fmt.Println("=== Observer summary (merged: both servers) ===")
+	metrics.Print()
+	fmt.Println()
+
+	fmt.Println("=== OpenAPI 3.1 spec (chi server — identical to net/http server, same routes/) ===")
+	doc, err := chiBuilt.Server.OpenAPISpec()
+	must(err, "build OpenAPI spec")
+	yamlBytes, err := doc.MarshalYAML()
+	must(err, "marshal OpenAPI spec")
 	fmt.Print(string(yamlBytes))
+
 }

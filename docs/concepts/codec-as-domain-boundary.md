@@ -115,5 +115,5 @@ The three-layer pattern above is for **cross-boundary mappings** (HTTP request �
 - [Concept: Codec — declare once](codec.md) — `Codec[T]`, `RequiredField`, `OptionalField`, shared field codecs
 - [Feature: REST API & HTTP Adapters](../features/rest-api.md) — three-layer pipeline in HTTP context
 - [Feature: Event Channels & MQTT](../features/events.md) — same pattern for event-driven systems
-- [examples/adapters-nethttp](https://github.com/DaniDeer/go-codex/tree/main/examples/adapters-nethttp) — full three-layer pipeline demo with `UserStore`, pure domain functions, and HTTP adapter
+- [examples/rest-api](https://github.com/DaniDeer/go-codex/tree/main/examples/rest-api) — full three-layer pipeline demo with `UserStore`, pure domain functions, and both net/http and chi adapters
 - [examples/adapters-mqtt](https://github.com/DaniDeer/go-codex/tree/main/examples/adapters-mqtt) — three-layer pipeline for MQTT (MeasurementEvent → TSDB → AlertEvent)

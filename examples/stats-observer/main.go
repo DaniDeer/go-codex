@@ -300,7 +300,7 @@ func main() {
 	fmt.Printf("  ObserverFromContext(context.Background()) is NoopObserver: %v\n", isNoop)
 
 	// For the full adapter-level context observer pattern, see:
-	// - examples/adapters-nethttp — ObserverMiddleware injects obs per HTTP request
+	// - examples/rest-api — ObserverMiddleware injects obs per HTTP request
 	// - examples/sensor-service   — ctx = stats.WithObserver(ctx, obs) for MQTT + stream + SQL
 
 	// ── Business logic without pipelines ────────────────────────────────────

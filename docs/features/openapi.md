@@ -2,7 +2,7 @@
 
 > See also: [`render/openapi` on pkg.go.dev](https://pkg.go.dev/github.com/DaniDeer/go-codex/render/openapi) · [`api/rest` on pkg.go.dev](https://pkg.go.dev/github.com/DaniDeer/go-codex/api/rest)
 >
-> Runnable demos: [`examples/openapi`](https://github.com/DaniDeer/go-codex/tree/main/examples/openapi) · [`examples/rest-api`](https://github.com/DaniDeer/go-codex/tree/main/examples/rest-api) · [`examples/api-rest`](https://github.com/DaniDeer/go-codex/tree/main/examples/api-rest)
+> Runnable demos: [`examples/rest-schema-docs`](https://github.com/DaniDeer/go-codex/tree/main/examples/rest-schema-docs) · [`examples/rest-api`](https://github.com/DaniDeer/go-codex/tree/main/examples/rest-api) · [`examples/rest-builder`](https://github.com/DaniDeer/go-codex/tree/main/examples/rest-builder)
 
 go-codex generates OpenAPI 3.1 documents from the same codec definitions that drive your runtime encode/decode — no separate YAML authoring, no drift.
 
@@ -185,6 +185,6 @@ doc, err := openapi.NewDocumentBuilder(openapi.Info{
 ## See also
 
 - [Guide: HTTP Server](../guides/http-server.md) — full `api/rest` + `adapters/nethttp` example
-- [examples/openapi](https://github.com/DaniDeer/go-codex/tree/main/examples/openapi) — components/schemas generation
+- [examples/rest-schema-docs](https://github.com/DaniDeer/go-codex/tree/main/examples/rest-schema-docs) — components/schemas generation
 - [examples/rest-api](https://github.com/DaniDeer/go-codex/tree/main/examples/rest-api) — full OpenAPI 3.1 document
-- [examples/api-rest](https://github.com/DaniDeer/go-codex/tree/main/examples/api-rest) — REST builder + spec
+- [examples/rest-builder](https://github.com/DaniDeer/go-codex/tree/main/examples/rest-builder) — REST builder + spec

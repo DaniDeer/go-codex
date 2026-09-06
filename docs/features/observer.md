@@ -2,7 +2,7 @@
 
 > See also: [`stats` package on pkg.go.dev](https://pkg.go.dev/github.com/DaniDeer/go-codex/stats) · [Guide: Using the Observer Pattern](../guides/observer.md) · [http-trace-span-propagation example](https://github.com/DaniDeer/go-codex/tree/main/examples/http-trace-span-propagation)
 >
-> Runnable demos: [`examples/stats-observer`](https://github.com/DaniDeer/go-codex/tree/main/examples/stats-observer) · [`examples/adapters-nethttp`](https://github.com/DaniDeer/go-codex/tree/main/examples/adapters-nethttp) · [`examples/adapters-mqtt`](https://github.com/DaniDeer/go-codex/tree/main/examples/adapters-mqtt) · [`examples/flat-key-patch`](https://github.com/DaniDeer/go-codex/tree/main/examples/flat-key-patch) · [`examples/sensor-service`](https://github.com/DaniDeer/go-codex/tree/main/examples/sensor-service) — multi-adapter observer across HTTP, MQTT, and SQL in one fanout
+> Runnable demos: [`examples/stats-observer`](https://github.com/DaniDeer/go-codex/tree/main/examples/stats-observer) · [`examples/rest-api`](https://github.com/DaniDeer/go-codex/tree/main/examples/rest-api) · [`examples/adapters-mqtt`](https://github.com/DaniDeer/go-codex/tree/main/examples/adapters-mqtt) · [`examples/flat-key-patch`](https://github.com/DaniDeer/go-codex/tree/main/examples/flat-key-patch) · [`examples/sensor-service`](https://github.com/DaniDeer/go-codex/tree/main/examples/sensor-service) — multi-adapter observer across HTTP, MQTT, and SQL in one fanout
 
 The observer pattern is go-codex's unified observability layer across **all layers** of the library: codecs, adapters, formats (files), forge, and SQL. It provides structured hooks for three observability signals — **metrics, logging, and distributed tracing** — with no library dependency.
 

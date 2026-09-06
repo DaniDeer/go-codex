@@ -2,7 +2,7 @@
 
 > Feature overview: [Metrics Observer](../features/observer.md)
 >
-> Runnable demos: [`examples/stats-observer`](https://github.com/DaniDeer/go-codex/tree/main/examples/stats-observer) · [`examples/adapters-nethttp`](https://github.com/DaniDeer/go-codex/tree/main/examples/adapters-nethttp) · [`examples/adapters-mqtt`](https://github.com/DaniDeer/go-codex/tree/main/examples/adapters-mqtt) · [`examples/flat-key-patch`](https://github.com/DaniDeer/go-codex/tree/main/examples/flat-key-patch)
+> Runnable demos: [`examples/stats-observer`](https://github.com/DaniDeer/go-codex/tree/main/examples/stats-observer) · [`examples/rest-api`](https://github.com/DaniDeer/go-codex/tree/main/examples/rest-api) · [`examples/adapters-mqtt`](https://github.com/DaniDeer/go-codex/tree/main/examples/adapters-mqtt) · [`examples/flat-key-patch`](https://github.com/DaniDeer/go-codex/tree/main/examples/flat-key-patch)
 
 ## End-to-end example: using all six interfaces
 
@@ -854,7 +854,7 @@ See `examples/stats-observer` for a runnable version of this whole section
 ## See also
 
 - [`examples/stats-observer`](https://github.com/DaniDeer/go-codex/tree/main/examples/stats-observer) — codec-only `ValidationObserver`; business logic without pipelines (ctx-resolved observer, manual `TraceObserver` span, custom `OrderObserver` interface, `NewFanout` limitation)
-- [`examples/adapters-nethttp`](https://github.com/DaniDeer/go-codex/tree/main/examples/adapters-nethttp) — HTTP metrics via `NewFanout`
+- [`examples/rest-api`](https://github.com/DaniDeer/go-codex/tree/main/examples/rest-api) — HTTP metrics via `NewFanout`
 - [`examples/adapters-mqtt`](https://github.com/DaniDeer/go-codex/tree/main/examples/adapters-mqtt) — MQTT metrics via `NewFanout`
 - [`examples/flat-key-patch`](https://github.com/DaniDeer/go-codex/tree/main/examples/flat-key-patch) — `FileObserver` with `NewFanout`
 - [`examples/forge-collection`](https://github.com/DaniDeer/go-codex/tree/main/examples/forge-collection) — forge `PipelineObserver` with `NewFanout`

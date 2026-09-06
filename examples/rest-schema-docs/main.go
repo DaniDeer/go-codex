@@ -1,7 +1,10 @@
-// Package openapi demonstrates generating an OpenAPI components/schemas section
-// from Codec definitions using the render/openapi package.
+// Package rest-schema-docs demonstrates generating an OpenAPI
+// components/schemas section from Codec definitions using the
+// render/openapi package — no routes, no Server, no HTTP framework at all.
+// See also examples/rest-builder (full route+spec generation, still
+// transport-agnostic) and examples/rest-api (full adapter-based project).
 //
-// Run with: go run ./examples/openapi
+// Run with: go run ./examples/rest-schema-docs
 package main
 
 import (

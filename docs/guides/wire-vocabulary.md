@@ -133,7 +133,7 @@ is passed through to `NewChannelFromTopic`/`NewRouteFromPath`/
 — using a bundle for the template+params portion restricts nothing else
 about the declaration.
 
-See `examples/api-events`, `examples/api-rest`, and `examples/file-io`
+See `examples/api-events`, `examples/rest-builder`, and `examples/file-io`
 for runnable demonstrations of each.
 
 ### Does this restrict richer route/channel declarations (e.g. HATEOAS)?

@@ -164,8 +164,8 @@ rest.NewRoute[UpdateUserReq, User]("PUT", "/users/{id}", updateUserReqCodec, use
 
 The only rule: the body codec and the merge-field declarations must not
 declare the SAME field name — otherwise whichever runs second silently
-overwrites the first. See `examples/adapters-nethttp`/`examples/adapters-chi`
-(`PUT /users/{id}`) for the full runnable version.
+overwrites the first. See `examples/rest-api` (`PUT /users/{id}`, both the
+chi and net/http server variants) for the full runnable version.
 
 See [Concepts: Codec — Reusing Field declarations](../concepts/codec.md#reusing-field-declarations-for-pathtopicheaderquery-vars)
 for the underlying mechanism.
@@ -697,6 +697,5 @@ See [Feature: Security & Auth](security.md) for full security documentation.
 - [Feature: Security & Auth](security.md) — bearer JWT, SecurityFunc, per-route scopes
 - [Feature: SSE & Streaming](sse-streaming.md) — SSE routes, streaming, templ SSR
 - [Feature: HTTP Client](http-client.md) — typed HTTP client reusing the same Route
-- [examples/adapters-nethttp](https://github.com/DaniDeer/go-codex/tree/main/examples/adapters-nethttp) — three-layer pipeline demo
-- [examples/adapters-chi](https://github.com/DaniDeer/go-codex/tree/main/examples/adapters-chi) — chi router demo
-- [examples/api-rest](https://github.com/DaniDeer/go-codex/tree/main/examples/api-rest) — REST builder + OpenAPI spec
+- [examples/rest-api](https://github.com/DaniDeer/go-codex/tree/main/examples/rest-api) — three-layer pipeline demo, both net/http and chi adapters, security, observer, and general-purpose middleware
+- [examples/rest-builder](https://github.com/DaniDeer/go-codex/tree/main/examples/rest-builder) — REST builder + OpenAPI spec, transport-agnostic (no HTTP framework)

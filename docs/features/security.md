@@ -2,7 +2,7 @@
 
 > See also: [`route` package on pkg.go.dev](https://pkg.go.dev/github.com/DaniDeer/go-codex/route)
 >
-> Runnable demos: [`examples/adapters-nethttp-security`](https://github.com/DaniDeer/go-codex/tree/main/examples/adapters-nethttp-security) · [`examples/adapters-chi-security`](https://github.com/DaniDeer/go-codex/tree/main/examples/adapters-chi-security) · [`examples/adapters-mqtt-security`](https://github.com/DaniDeer/go-codex/tree/main/examples/adapters-mqtt-security) · [`examples/adapters-mqtt5`](https://github.com/DaniDeer/go-codex/tree/main/examples/adapters-mqtt5) (Demo 3: message-level; Demo 3b: connect-level `SecuredClient`)
+> Runnable demos: [`examples/rest-api`](https://github.com/DaniDeer/go-codex/tree/main/examples/rest-api) (bearer JWT + scopes, both chi and net/http servers) · [`examples/adapters-mqtt-security`](https://github.com/DaniDeer/go-codex/tree/main/examples/adapters-mqtt-security) · [`examples/adapters-mqtt5`](https://github.com/DaniDeer/go-codex/tree/main/examples/adapters-mqtt5) (Demo 3: message-level; Demo 3b: connect-level `SecuredClient`)
 >
 > `api/mcp` has NO security methods by deliberate, permanent design — MCP
 > security is handled by the host application (its own OAuth flow, or
@@ -575,4 +575,4 @@ Security schemes appear in `components/securitySchemes`; global security at docu
 - [Guide: HTTP Server](../guides/http-server.md) — `SecurityFunc` wiring in the adapter
 - [Guide: HTTP Client](../guides/http-client.md) — `CredentialFunc` for client-side credentials
 - [Guide: Observer](../guides/observer.md) — `SecurityObserver` metrics
-- [examples/adapters-nethttp-security](https://github.com/DaniDeer/go-codex/tree/main/examples/adapters-nethttp-security) — bearer JWT + scopes + observer
+- [examples/rest-api](https://github.com/DaniDeer/go-codex/tree/main/examples/rest-api) — bearer JWT + scopes + observer, both chi and net/http adapters
